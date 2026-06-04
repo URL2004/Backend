@@ -1212,7 +1212,8 @@ function cleanText(text) {
   return text
     .replace(/[\u200B-\u200D\uFEFF\u00AD\u034F\u061C\u180E\u2000-\u200F\u2028-\u202F\u205F-\u206F]/g, '')
     .replace(/\u00A0/g, ' ')
-    .replace(/[*#`~]/g, '')
+    .replace(/[*#`]/g, '')
+    .replace(/~~/g, '')
     .replace(/\.([가-힣A-Za-z])/g, '. $1')
     .replace(/,([가-힣A-Za-z])/g, ', $1')
     .replace(/ {2,}/g, ' ')

@@ -47,20 +47,11 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
     try {
       const out = await analyze.runHumanize({ text: c.text, mode: c.mode, lang: c.lang, floorV2: true, optIn: c.lang === 'en' });
       const r = out.result, fl = r.floorLength || {}, pd = out.povDrift || {};
-      const nov = r.floorNovelty || {}, lost = r.lostFacts || {}, rep = r.repetition || {};
-      // FLOOR 불변식(반드시 0이어야 — 모든 글 공통). 위반 시 ✗.
-      const hard = [];
-      if (nov.count) hard.push('novelty주입 ' + nov.items.join(','));
-      if (lost.count) hard.push('사실증발 ' + lost.items.join(','));
-      if (pd.introducedFirstPerson && c.lang !== 'en') hard.push('1인칭주입');
-      if (rep.count) hard.push('결론반복 ' + rep.count);
-      // 경고(품질·정보 — 글에 따라 허용될 수 있음).
-      const soft = [];
-      if (fl.status === 'overHard') soft.push('과확장 ' + fl.ratio);
-      if (fl.status === 'short') soft.push('과압축 ' + fl.ratio);
-      if (pd.droppedFirstPerson) soft.push('화자손실(1인칭→0)');
-      console.log(`  결과: 분량 ${fl.ratio}(${fl.status}) · pov ${pd.input_fp_singular}→${pd.output_fp_singular} · novelty ${nov.count} · lost ${lost.count} · refine ${out.refineReason}`);
-      console.log(`  판정: ${hard.length ? '✗ FLOOR 위반: ' + hard.join(' | ') : '✅ FLOOR 통과'}${soft.length ? '  ⚠️ ' + soft.join(' / ') : ''}`);
+      const fr = out.floorReport || { status: '?', criticals: [], warnings: [] };
+      const crit = (fr.criticals || []).map(c2 => `${c2.gate}(${c2.detail})`).join(', ');
+      const warn = (fr.warnings || []).map(c2 => c2.gate).join(', ');
+      console.log(`  결과: 분량 ${fl.ratio}(${fl.status}) · pov ${pd.input_fp_singular}→${pd.output_fp_singular} · novelty ${(r.floorNovelty||{}).count} · lost ${(r.lostFacts||{}).count}`);
+      console.log(`  🚦 판정: ${String(fr.status).toUpperCase()}${crit ? ' — ' + crit : ''}${warn ? '  (warn: ' + warn + ')' : ''}`);
     } catch (e) {
       console.log(`  💥 실패: ${e.message}`);
     }

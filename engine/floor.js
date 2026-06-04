@@ -114,7 +114,7 @@ function extractFacts(text, hasHangul) {
 
 // 신규 사실 주입(출력에 있으나 입력엔 없음) — 전 모드.
 function measureNovelty(rawText, outputText) {
-  const hasHangul = /[가-힣]/.test((rawText || '') + (outputText || ''));
+  const hasHangul = /[가-힣]/.test(rawText || ''); // 소스 언어 기준(출력 언어 섞임 시 CAPWORD 오탐 방지)
   const inKeys = new Set(extractFacts(rawText, hasHangul).map(factKey));
   const seen = new Set(), items = [];
   for (const f of extractFacts(outputText, hasHangul)) {
@@ -147,7 +147,7 @@ function measureLength(rawText, outputText, mode) {
 // ── 손실 가드 (§3.1 "숫자 증발") — 입력의 hard fact가 출력에서 사라짐 ──
 // novelty가 "추가"를 잡는다면, 이건 "소실"을 잡는다(set-diff 반대 방향).
 function measureLostFacts(rawText, outputText) {
-  const hasHangul = /[가-힣]/.test((rawText || '') + (outputText || ''));
+  const hasHangul = /[가-힣]/.test(rawText || ''); // 소스 언어 기준(출력 언어 섞임 시 CAPWORD 오탐 방지)
   const outKeys = new Set(extractFacts(outputText, hasHangul).map(factKey));
   const seen = new Set(), items = [];
   for (const f of extractFacts(rawText, hasHangul)) {

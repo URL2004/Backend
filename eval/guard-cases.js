@@ -41,6 +41,21 @@ module.exports = [
     expect: { noveltyCount0: true }
   },
 
+  {
+    name: 'novelty/영어 문장 첫 대문자 오탐 금지',
+    mode: 'assignment',
+    input: 'Most people call it an art. We reverse-engineered a method.',
+    output: 'Finding it feels like art. But we built a method. So the odds improve.',
+    expect: { noveltyCount0: true }
+  },
+  {
+    name: 'novelty/영어 신규 ALLCAPS 약어 검출',
+    mode: 'thesis',
+    input: 'We backed many companies early.',
+    output: 'We backed many companies and later filed with the SEC after an NDA.',
+    expect: { noveltyHas: ['SEC', 'NDA'] }
+  },
+
   // ── pov: 양성(드리프트 잡아야) ──
   {
     name: 'pov/비인칭 원문 → 1인칭 일화 주입',

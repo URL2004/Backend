@@ -72,8 +72,8 @@ const ORG_RE = /[가-힣]{2,}(?:상공회의소|연구원|공사|협회|재단|�
 // 숫자+단위 (연도·% 제외 — 위에서 별도 처리). "96회", "300분", "12명", "1,200원" 등.
 const NUM_UNIT_RE = /\d[\d,]*(?:\.\d+)?\s*(?:회|분|시간|초|명|개|건|곳|배|위|점|원|달러|엔|위안|유로|일|주|개월|차|등|등급|km|kg|개국|가지|시|살|세|줄|쪽|페이지|문항)/g;
 // 라틴 약어(ESM, CUDA, SNS) + 대문자 시작 영단어(Twenge, Cognitive, Method, Test).
-const LATIN_ACRONYM_RE = /\b[A-Z]{2,}\b/g;
-const LATIN_CAPWORD_RE = /\b[A-Z][a-z]{1,}\b/g;
+const LATIN_ACRONYM_RE = /\b[A-Z]{2,}\b/g;       // ESM, CUDA, SEC — ALLCAPS 약어(영/한 공통, 문장 첫 대문자와 무관)
+const LATIN_CAPWORD_RE = /\b[A-Z][a-z]{1,}\b/g;  // 한국어 텍스트의 외래 고유명사(Twenge)용 — 영어엔 미적용(문장 첫 대문자 오탐)
 const LATIN_ALLOW = new Set(['AI', 'SNS', 'IT', 'PC', 'TV', 'OK', 'PDF', 'URL', 'CEO', 'GPT', 'LLM', 'API', 'OS', 'CPU', 'GPU']);
 const normTok = (s) => s.replace(/\s+/g, '').toLowerCase();
 
@@ -94,9 +94,15 @@ function measureNovelty(rawText, outputText) {
   // 숫자+단위
   const inN = new Set((inT.match(NUM_UNIT_RE) || []).map(normTok));
   for (const m of (outT.match(NUM_UNIT_RE) || [])) if (!inN.has(normTok(m))) push(m.trim());
-  // 라틴 약어/고유명사
-  const inL = new Set([...(inT.match(LATIN_ACRONYM_RE) || []), ...(inT.match(LATIN_CAPWORD_RE) || [])].map(s => s.toLowerCase()));
-  for (const m of [...(outT.match(LATIN_ACRONYM_RE) || []), ...(outT.match(LATIN_CAPWORD_RE) || [])]) {
+  // 라틴 약어/고유명사 — 언어 인지.
+  //   한국어 텍스트: 단일 라틴 대문자어도 외래 고유명사로 간주(주입 검출).
+  //   영어 텍스트: 문장 첫 대문자(This/So/Finding)가 전부라 단일어는 오탐 → ALLCAPS + 다단어 고유명사 시퀀스만.
+  const hasHangul = /[가-힣]/.test(inT + outT);
+  const latinOf = (s) => hasHangul
+    ? [...(s.match(LATIN_ACRONYM_RE) || []), ...(s.match(LATIN_CAPWORD_RE) || [])]  // 한국어: 외래 고유명사 단일어도 검출
+    : [...(s.match(LATIN_ACRONYM_RE) || [])];                                        // 영어: ALLCAPS 약어만(문장 첫 대문자 오탐 회피)
+  const inL = new Set(latinOf(inT).map(x => x.toLowerCase()));
+  for (const m of latinOf(outT)) {
     if (LATIN_ALLOW.has(m.toUpperCase())) continue;
     if (!inL.has(m.toLowerCase())) push(m);
   }

@@ -1,0 +1,39 @@
+Most people describe finding product-market fit as an art, not a science. But when it comes to sales-led B2B startups, we've reverse engineered a method to increase the odds of unlocking it.
+
+We've worked with some of the world's most iconic enterprise founders and distilled what they did in their first six months into a series of tactical sessions for taking a straighter path to PMF. Today, we're open sourcing the first session, which shares how we've broken PMF down to an incredibly granular level in order to help more builders get there faster.
+
+Even though finding product-market fit is the single most important objective any company must achieve, it's still a black box for founders — seemingly requiring some mysterious combination of luck, market timing, and sheer grit.
+
+While much has been written on the topic, no one has broken down the inputs, leading indicators and tactical steps that could increase the odds of finding PMF. In our view, one of the key reasons this topic hasn't been successfully "framework-ified" is that most folks still talk about the concept in generalities.
+
+Fish are jumping into the boat. Leads are falling on the floor. You're chasing — not pushing — a boulder. The product is being pulled out of your hands. You'll know it when you see it. You can feel when it's not happening. These descriptions lack the specificity that we see in other areas of company building.
+
+Another issue? Most resources target a wide range of builders — which results in watered-down advice that's more hand-wavy than tactical. Founders are left with approaches that are neither replicable nor practical, ranging from unhelpful "We kind of just started going viral" founding stories to one-size-fits-all frameworks that don't address the nuances of their specific business.
+
+While the hunt for PMF can be more of a dice game with poor odds for, say, consumer apps, our experience has taught us that for sales-led B2B companies, you can reduce the role of luck.
+
+Here's how we've developed that conviction: As a firm of former founders and startup builders, we're coming up on our 20th year of investing in pre-product-market fit startups. Along with Square, Notion, Looker, and Verkada, we've backed hundreds of companies when they were just a couple of founders and an idea.
+
+Drawing on our own data and observations from more than 500 investments, we've spent the last several years breaking down the decade-long project of building a category-defining B2B company into more concrete steps — in hopes that we could create this resource that we feel is missing from the ecosystem.
+
+To put it even more plainly: Despite all the talk about product-market fit, it didn't seem like anyone was meaningfully putting the pieces together to help B2B founders increase their odds of finding it. We wanted to change that.
+
+In addition to distilling lessons from decades of our own experience, we've layered on hundreds of hours of research and interviewed dozens of founders who've gotten further on this journey than most, from both within and outside of our community.
+
+As the culmination of that work, today we're proud to unveil Product-Market Fit Method, an intensive 14-week experience designed to help exceptional pre-seed founders build epic B2B SaaS companies. From proven tactics to detailed benchmarks that help founders gauge progress, we've mined the secrets that are buried in the best B2B builders' experiences to create a new methodology that helps startups take a straighter path to PMF.
+
+The program consists of eight tactical sessions. We'll cover everything from validating your product insight and market, to approaching positioning, design partners, and product iteration, to learning the ropes of what we call "dollar-driven discovery" and founder-led sales.
+
+While this is currently a highly-curated program with a limited number of spots, our tradition here at First Round has been to open-source everything we can to share what we've learned with the broader startup ecosystem. In keeping with that spirit, we've decided to publish the content of the first session in full, as a preview.
+
+The deck may seem stacked, but we're on a mission to rebalance the odds in the early founder's favor. We're firm believers that you don't have to go at it alone — and you don't have to make it all up as you go either.
+
+Let's start with the obvious question: What is product-market fit? Extreme product-market fit is a state of widespread demand for a product that satisfies a critical need and — crucially — can be delivered repeatably and efficiently to each customer.
+
+Product-market fit progresses in levels. It's not a binary state where you have it and you're golden, or you don't and you're not on the path. But it's also not a vague spectrum or fuzzy sliding scale, where you can't be sure where you're at.
+
+There are a few dimensions of PMF that are in tension with each other, requiring deliberate tradeoffs at each level. There isn't just one element to emphasize above all else. There are different times in a company's lifespan where founders need to intentionally prioritize one over another.
+
+There isn't nearly enough emphasis on repeatability. As you move your way up through the different levels of product-market fit, what you're really unlocking is repeatability — across demand generation, product development, customer satisfaction and unit economics.
+
+Repeatability is the holy grail on the hunt for product-market fit. Without any patterns, it's nearly impossible to generate early momentum and plot a course forward.

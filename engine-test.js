@@ -47,7 +47,7 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   let out;
   try {
     out = chunked
-      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn })
+      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn, judge: doJudge ? 'force' : false })
       : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn, judge: doJudge ? 'force' : false });
   } catch (e) {
     console.error('❌ runHumanize 실패:', e.message);
@@ -87,7 +87,7 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   if (r.judge) {
     if (r.judge.ran) {
       console.log(`  ★ semanticJudge        : ${r.judge.pass ? 'pass ✅' : '⚠️ 위반 ' + r.judge.violations.length + '건'} (claims ${r.judge.claims}, evidence폐기 ${r.judge.dropped})`);
-      (r.judge.violations || []).forEach(v => console.log(`      [${v.type}] "${(v.span || '').slice(0, 50)}" — ${v.detail}`));
+      (r.judge.violations || []).forEach(v => console.log(`      [${v.type}${v.nearest_chunk_id != null ? ' @chunk' + v.nearest_chunk_id : ''}] "${(v.span || '').slice(0, 50)}" — ${v.detail}`));
     } else {
       console.log(`  ★ semanticJudge        : skip (${r.judge.reason || r.judge.error})`);
     }

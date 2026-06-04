@@ -98,6 +98,10 @@ check('chunk/position 1문단', JSON.stringify(p1) === JSON.stringify(['single']
 const cc = chunk.splitChunks('가.\n\n나.\n\n다.');
 cc[1].outputText = '나나나.';
 check('chunk/merge with outputText', chunk.mergeChunks(cc) === '가.\n\n나나나.\n\n다.', `merge=${JSON.stringify(chunk.mergeChunks(cc))}`);
+// nearestChunkId: span → 해당 청크 index
+const nc = chunk.splitChunks('도입 문장이다.\n\n본문 핵심 주장.\n\n결론 요약이다.');
+check('chunk/nearestChunkId 본문', chunk.nearestChunkId(nc, '본문 핵심 주장') === 1, `id=${chunk.nearestChunkId(nc, '본문 핵심 주장')}`);
+check('chunk/nearestChunkId 미존재', chunk.nearestChunkId(nc, '없는 문장 xyz') === null, `id=${chunk.nearestChunkId(nc, '없는 문장 xyz')}`);
 
 console.log('\n════════ FLOOR 가드 결정론 EVAL ════════');
 console.log(`케이스 ${cases.length}개 · 검사 ${pass + fail}건 · 통과 ${pass} · 실패 ${fail}`);

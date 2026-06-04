@@ -48,4 +48,15 @@ function mergeChunks(chunks) {
   return (chunks || []).map(c => (c._lead || '') + (c.outputText != null ? c.outputText : c.text) + (c.sep || '')).join('');
 }
 
-module.exports = { splitChunks, mergeChunks };
+// 위반 span이 어느 청크에서 나왔는지 매핑 (semanticJudge의 span→nearest_chunk_id, §7.2).
+function nearestChunkId(chunks, span) {
+  const norm = (s) => (s || '').replace(/\s+/g, '').toLowerCase();
+  const key = norm(span).slice(0, 16);
+  if (!key) return null;
+  for (const c of (chunks || [])) {
+    if (norm(c.outputText != null ? c.outputText : c.text).includes(key)) return c.index;
+  }
+  return null;
+}
+
+module.exports = { splitChunks, mergeChunks, nearestChunkId };

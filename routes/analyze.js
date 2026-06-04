@@ -1994,9 +1994,9 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
 // server-side chunking 오케스트레이션 — 문단별 재작성 + 좌/우 경계 + 청크별 FLOOR + 병합(§7.2).
 // 긴 글에서 프론트 분할(prevContext 300자)을 대체. 청크별로 novelty/화자를 잡고, 병합 후 전체 재검사.
-async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false } = {}) {
+async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false } = {}) {
   const floor = require('../engine/floor');
-  const { splitChunks, mergeChunks } = require('../engine/chunk');
+  const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
   const povSeed = floor.computePovSeed(text);
   const chunks = splitChunks(text);
 
@@ -2042,19 +2042,36 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
   const merged = mergeChunks(chunks);
   const result = { outputText: merged };
-  // 비청크 경로와 동일하게 guard 데이터를 result.*에 부착(engine-test 표시 정합).
   result.povSeed = povSeed;
-  result.povDrift = floor.measurePovDrift(text, merged, povSeed);
-  result.floorNovelty = floor.measureNovelty(text, merged);
-  result.floorLength = floor.measureLength(text, merged, mode);
-  result.repetition = floor.measureRepetition(merged);
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, merged);
+
+  // P2-c: judge on merged(닫힌세계=전체 ledger) → 위반 시 repair → 재judge. span은 nearest_chunk_id로 매핑(§7.2).
+  if (judge && (judge === 'force' || result.softDrift.flagged)) {
+    try {
+      const j = require('../engine/judge');
+      const jr = await j.judgeAndRepair(text, merged, { lang, signal });
+      if (jr.outputText !== merged) result.outputText = jr.outputText;
+      const violations = (jr.verdict.violations || []).map(v => ({ ...v, nearest_chunk_id: nearestChunkId(chunks, v.span) }));
+      result.judge = { ran: true, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations, rounds: jr.rounds };
+      result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
+    } catch (e) { if (signal?.aborted) throw e; result.judge = { ran: false, error: e.message }; }
+  } else if (judge) {
+    result.judge = { ran: false, reason: 'softDrift not flagged (cheap gate)' };
+  }
+
+  // 최종 출력 기준 가드 재측정.
+  const finalOut = result.outputText;
+  result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);
+  result.floorNovelty = floor.measureNovelty(text, finalOut);
+  result.floorLength = floor.measureLength(text, finalOut, mode);
+  result.repetition = floor.measureRepetition(finalOut);
   const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode });
   return {
     result, mode, lang, chunked: true, chunkCount: chunks.length,
     chunks: chunks.map(c => ({ index: c.index, position: c.position, inLen: c.text.length, outLen: (c.outputText || '').length })),
     povDrift: result.povDrift, floorNovelty: result.floorNovelty, floorLength: result.floorLength,
-    repetition: result.repetition, floorViolations, povSeed, optIn, floorV2: true
+    repetition: result.repetition, softDrift: result.softDrift, judge: result.judge,
+    floorViolations, povSeed, optIn, floorV2: true
   };
 }
 

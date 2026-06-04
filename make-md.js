@@ -8,20 +8,32 @@ const [, , inFile, mode = 'assignment', lang = 'en', outFile = 'result.md'] = pr
 const analyze = require('./routes/analyze');
 const text = fs.readFileSync(inFile, 'utf8').trim();
 
+const doJudge = process.env.JUDGE === '1';
+
 (async () => {
   const t0 = Date.now();
-  const out = await analyze.runHumanize({ text, mode, lang, floorV2: true, optIn: lang === 'en' });
+  const out = await analyze.runHumanize({ text, mode, lang, floorV2: true, optIn: lang === 'en', judge: doJudge ? 'force' : false });
   const sec = ((Date.now() - t0) / 1000).toFixed(0);
   const r = out.result;
   const fl = r.floorLength || {};
   const nov = r.floorNovelty || {};
+  const sd = r.softDrift || {};
+  let judgeLine = '';
+  if (r.judge) {
+    judgeLine = r.judge.ran
+      ? `> semanticJudge: ${r.judge.pass ? 'pass ✅' : '⚠️ 위반 ' + r.judge.violations.length + '건'} (claims ${r.judge.claims}, rounds ${r.judge.rounds ?? '-'})\n`
+      : `> semanticJudge: skip (${r.judge.reason || r.judge.error})\n`;
+    (r.judge.violations || []).forEach(v => { judgeLine += `>   - [${v.type}] "${(v.span || '').slice(0, 60)}" — ${v.detail}\n`; });
+  }
   const md =
     `# Humanized — ${mode}/${lang}\n\n` +
     `> FLOOR v2 엔진 · LLM_BACKEND=${process.env.LLM_BACKEND} · ${sec}s · refine=${out.refineReason || '-'}\n` +
     `> 가드: novelty ${nov.count ?? '?'}건${nov.count ? ' (' + (nov.items || []).join(', ') + ')' : ''} · ` +
-    `length ${fl.ratio ?? '?'}(${fl.status ?? '?'}) · povDrift ${out.povDrift ? out.povDrift.introducedFirstPerson : '?'}\n\n` +
-    `---\n\n` + (r.outputText || '(없음)') + '\n';
+    `length ${fl.ratio ?? '?'}(${fl.status ?? '?'}) · povDrift ${out.povDrift ? out.povDrift.introducedFirstPerson : '?'} · ` +
+    `softDrift ${sd.flagged ? 'flagged' : 'none'}\n` +
+    judgeLine +
+    `\n---\n\n` + (r.outputText || '(없음)') + '\n';
   fs.writeFileSync(outFile, md, 'utf8');
   console.log(`✅ wrote ${outFile}`);
-  console.log(`   novelty=${JSON.stringify(nov.items || [])} length=${fl.ratio}(${fl.status}) refine=${out.refineReason} ${sec}s`);
+  console.log(`   novelty=${JSON.stringify(nov.items || [])} length=${fl.ratio}(${fl.status}) refine=${out.refineReason} judge=${r.judge ? (r.judge.ran ? (r.judge.pass ? 'pass' : r.judge.violations.length + 'viol') : 'skip') : '-'} ${sec}s`);
 })().catch(e => { console.error('❌', e.message); process.exit(1); });

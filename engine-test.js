@@ -68,7 +68,10 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   console.log(`  ★ 화자 드리프트(pov)    : 원문 1인칭 ${pd.input_fp_singular ?? '?'} → 출력 ${pd.output_fp_singular ?? '?'}  ${pd.introducedFirstPerson ? '⚠️ 새 1인칭 주입(화자 변경)' : '✅ 보존'}`);
   console.log(`  ★ 신규 사실 주입(novelty): ${nov.length ? '⚠️ ' + nov.join(', ') : '0건 ✅'}`);
   if (r.fakeInternalRefs) console.log(`  ★ 허위 내부참조(thesis)  : ${r.fakeInternalRefs.count ? '⚠️ ' + r.fakeInternalRefs.fabricated.join(', ') : '0건 ✅'}`);
-  console.log(`  ★ 분량비(length)        : ${pct(r.lengthRatio)} ${r.lengthShortfall ? '⚠️ 90% 미만' : '✅'}`);
+  const lr = r.lengthRatio;
+  let lmark = '✅';
+  if (typeof lr === 'number') { if (lr > 1.3) lmark = '⚠️ 과확장'; else if (lr < 0.9) lmark = '⚠️ 분량 부족'; }
+  console.log(`  ★ 분량비(length)        : ${pct(lr)} ${lmark}  (목표 0.9~1.3)`);
 
   line();
   if (floorV2) {

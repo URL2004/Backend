@@ -4,7 +4,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "eval": "node eval/runEval.js"
+    "eval": "node eval/runEval.js",
+    "eval:judge": "node eval/runJudgeEval.js"
   },
   "dependencies": {
     "firebase-admin": "^12.0.0",

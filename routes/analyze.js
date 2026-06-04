@@ -1975,6 +1975,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
   result.repetition = floor.measureRepetition(result.outputText);
   result.lostFacts = floor.measureLostFacts(text, result.outputText);
+  // ★ 노출 게이트(E.3): 모든 측정을 criticals/warnings로 모아 status 결정. criticals 있으면 blocked.
+  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn });
   const surfaceReport = floor.collectSurfaceReport(result);
   result.contract = contract; // 단일 진실 첨부
 
@@ -1984,6 +1986,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     lang,
     refined,
     refineReason,
+    status: result.floorReport.status,
+    floorReport: result.floorReport,
     contract,
     failedFields: failed,
     floorViolations,
@@ -2076,9 +2080,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.repetition = floor.measureRepetition(finalOut);
   result.lostFacts = floor.measureLostFacts(text, finalOut);
   const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode });
+  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode, povSeed, optIn });
   result.contract = contract;
   return {
     result, mode, lang, chunked: true, chunkCount: chunks.length, contract,
+    status: result.floorReport.status, floorReport: result.floorReport,
     chunks: chunks.map(c => ({ index: c.index, position: c.position, inLen: c.text.length, outLen: (c.outputText || '').length })),
     povDrift: result.povDrift, floorNovelty: result.floorNovelty, floorLength: result.floorLength,
     repetition: result.repetition, softDrift: result.softDrift, judge: result.judge,

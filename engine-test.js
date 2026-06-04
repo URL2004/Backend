@@ -66,6 +66,9 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   }
   line();
 
+  const fr = out.floorReport || { status: '?', criticals: [] };
+  console.log(`[🚦 출고 판정: ${String(fr.status).toUpperCase()}]${fr.criticals && fr.criticals.length ? ' criticals: ' + fr.criticals.map(c => c.gate + '(' + c.detail + ')').join(', ') : ''}`);
+  line();
   console.log('[FLOOR 가드 — ★ 사실성·보존 (전 모드)]');
   const ct = r.contract || out.contract;
   if (ct) console.log(`  · contract: pov(fp단수 ${ct.povSeed.fp_singular}) 화자게이트=${ct.speakerGateClosed ? 'closed' : 'open'} 길이[${ct.lengthPolicy.min}~${ct.lengthPolicy.max}/${ct.lengthPolicy.hardMax}] ledger=${ct.softClaimLedger ? ct.softClaimLedger.claims.length + 'claims' : '-'}`);

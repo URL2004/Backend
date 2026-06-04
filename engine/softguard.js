@@ -38,4 +38,19 @@ function measureSoftDrift(rawText, outputText) {
   return { added, total, modalShift, flagged };
 }
 
-module.exports = { measureSoftDrift };
+// 결론부(끝 20%) soft drift — 원문엔 없던 회의·불확실·미래·감정이 결론에 추가되면 FLOOR critical 후보(§E.5-4).
+// 결론 의도 역전(긍정 의지 → "모르겠다/무릎 꿇을지")의 1차 탐지. 전체 drift보다 가중.
+function measureConclusionDrift(rawText, outputText) {
+  const sents = (outputText || '').split(/(?<=[.!?。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+  if (sents.length < 3) return { flagged: false, markers: [], zoneSentences: sents.length };
+  const zone = sents.slice(Math.floor(sents.length * 0.8)).join(' ');
+  const raw = rawText || '';
+  const markers = [];
+  // 결론부에 등장하나 원문 전체엔 없는 마커 종류 = 추가된 결론 정서/전망.
+  for (const [k, re] of Object.entries(MARKERS)) {
+    if (count(zone, re) > 0 && count(raw, re) === 0) markers.push(k);
+  }
+  return { flagged: markers.length > 0, markers, zone };
+}
+
+module.exports = { measureSoftDrift, measureConclusionDrift };

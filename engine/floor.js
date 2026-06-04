@@ -225,7 +225,63 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode }) {
     v.push({ type: 'length_overrun', detail: `${(len.ratio * 100).toFixed(0)}% (상한 ${Math.round(len.policy.hardMax * 100)}%)`,
       fix: `출력이 원문 대비 ${(len.ratio * 100).toFixed(0)}%로 과확장됐다. 원문에 없는 부연·예시·감정·수치·내부참조·반복 설명을 삭제해 전체 길이를 원문 대비 ${Math.round(len.policy.max * 100)}% 이하로 줄여라. 원문의 핵심 주장·숫자·고유명사·인용은 보존. 새 정보 추가·결론 새로 쓰기 금지(절삭만).` });
   }
+  // 과압축(min 미만) = 정보 손실 → 복원 repair(새 내용 금지, 원문에 실제 있던 것만).
+  if (len.status === 'short') {
+    v.push({ type: 'length_short', detail: `${(len.ratio * 100).toFixed(0)}% (하한 ${Math.round(len.policy.min * 100)}%)`,
+      fix: `출력이 원문 대비 ${(len.ratio * 100).toFixed(0)}%로 너무 짧아 핵심 정보가 누락됐다. 원문에 실제로 존재하는 누락 claim·문단만 복원하라. 원문에 없는 예시·경험·감정·미래전망·수치·기관명은 절대 추가하지 마라.` });
+  }
+  // 사실 증발 (숫자 증발 §3.1)
+  const lost = measureLostFacts(rawText, out);
+  if (lost.count >= 1) {
+    v.push({ type: 'lost_facts', detail: lost.items.join(', '),
+      fix: `원문에 있던 사실이 출력에서 사라졌다: ${lost.items.join(', ')}. 원문대로 복원하라(새 사실 추가 금지).` });
+  }
+  // 결론/CTA 반복
+  const rep = measureRepetition(out);
+  if (rep.count >= 1) {
+    v.push({ type: 'repetition', detail: `${rep.count}건(최대 ${rep.maxRepeat}회)`,
+      fix: `같은 결론·문장이 반복된다. 중복 문장을 하나로 합치고 결론을 한 번만 제시하라.` });
+  }
+  // 결론부 soft drift (회의·불확실·미래·감정 추가)
+  const concl = require('./softguard').measureConclusionDrift(rawText, out);
+  if (concl.flagged) {
+    v.push({ type: 'conclusion_drift', detail: concl.markers.join(', '),
+      fix: `결론부에 원문에 없던 ${concl.markers.join('·')} 표현(회의·불확실·미래전망·감정)이 추가돼 결론 의도가 바뀌었다. 그 표현을 제거하고 원문의 결론 의도(방향·정서)를 그대로 유지하라.` });
+  }
   return v;
+}
+
+// floorReport 조립 — 측정값을 criticals/warnings로 분류하고 status 결정(노출 게이트의 단일 판정, §E.3).
+function buildFloorReport({ result, rawText, mode, povSeed, optIn }) {
+  const out = result?.outputText || '';
+  const criticals = [], warnings = [];
+  const nov = result.floorNovelty || measureNovelty(rawText, out);
+  const lost = result.lostFacts || measureLostFacts(rawText, out);
+  const len = result.floorLength || measureLength(rawText, out, mode);
+  const rep = result.repetition || measureRepetition(out);
+  const drift = result.povDrift || measurePovDrift(rawText, out, povSeed);
+  const concl = require('./softguard').measureConclusionDrift(rawText, out);
+
+  if (nov.count) criticals.push({ gate: 'novelty', detail: nov.items.join(', ') });
+  if (lost.count) criticals.push({ gate: 'lostFacts', detail: lost.items.join(', ') });
+  if (len.status === 'short') criticals.push({ gate: 'length_short', detail: len.ratio });
+  if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
+  if (isSpeakerGateClosed(povSeed, optIn) && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });
+  if (rep.count) criticals.push({ gate: 'repetition', detail: rep.count });
+  if (concl.flagged) criticals.push({ gate: 'conclusion_drift', detail: concl.markers.join(', ') });
+  if (mode === 'thesis') { const fake = measureFakeInternalRefs(rawText, out); if (fake.count) criticals.push({ gate: 'fake_ref', detail: fake.fabricated.join(', ') }); }
+  if (result.judge && result.judge.ran && result.judge.pass === false) criticals.push({ gate: 'semanticJudge', detail: (result.judge.violations || []).length + '건' });
+
+  if (len.status === 'overSoft') warnings.push({ gate: 'length_overSoft', detail: len.ratio });
+  if (drift.droppedFirstPerson) warnings.push({ gate: 'pov_dropped', detail: `${drift.input_fp_singular}→0` });
+
+  const status = criticals.length ? 'blocked' : 'clean';
+  return {
+    status, criticals, warnings,
+    metrics: { lengthRatio: len.ratio, novelty: nov.count, lostFacts: lost.count, repetition: rep.count,
+      povInject: !!(drift.introducedFirstPerson && isSpeakerGateClosed(povSeed, optIn)), conclusionDrift: concl.flagged,
+      judge: result.judge ? (result.judge.ran ? (result.judge.pass ? 'pass' : 'fail') : 'skip') : null }
+  };
 }
 
 function buildFloorRefineUser(humanizeText, prevOutput, violations) {
@@ -263,6 +319,7 @@ module.exports = {
   measureRepetition,
   LENGTH_POLICY,
   collectFloorViolations,
+  buildFloorReport,
   buildFloorRefineUser,
   collectSurfaceReport
 };

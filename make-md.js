@@ -29,9 +29,14 @@ const doJudge = process.env.JUDGE === '1';
   const rep = r.repetition || {};
   const inLen = text.replace(/\s+/g, '').length;
   const outLen = (r.outputText || '').replace(/\s+/g, '').length;
+  const fr = out.floorReport || { status: '?', criticals: [] };
+  const critLine = fr.criticals && fr.criticals.length
+    ? ' — ' + fr.criticals.map(c => `${c.gate}(${c.detail})`).join(', ')
+    : '';
   const md =
     `# Humanized — ${mode}/${lang}\n\n` +
     `## 엔진 리포트 (FLOOR v2)\n` +
+    `- 🚦 **출고 판정: ${String(fr.status).toUpperCase()}**${fr.status === 'blocked' ? ' (노출 차단)' : ''}${critLine}\n` +
     `- LLM_BACKEND: ${process.env.LLM_BACKEND} · 소요 ${sec}s · refine: ${out.refineReason || '-'}\n` +
     `- 입력 ${inLen}자 → 출력 ${outLen}자 (분량비 **${fl.ratio ?? '?'}**, ${fl.status ?? '?'}; 목표 ${ct.lengthPolicy ? ct.lengthPolicy.min + '~' + ct.lengthPolicy.max : '-'})\n` +
     `- ★ 화자 보존(pov): 원문 1인칭 ${out.povDrift ? out.povDrift.input_fp_singular : '?'} → 출력 ${out.povDrift ? out.povDrift.output_fp_singular : '?'} → ${out.povDrift && out.povDrift.introducedFirstPerson ? '⚠️ 새 1인칭 주입' : '✅ 보존'} (화자게이트 ${ct.speakerGateClosed ? 'closed' : 'open'})\n` +
@@ -43,5 +48,5 @@ const doJudge = process.env.JUDGE === '1';
     `\n---\n\n` + (r.outputText || '(없음)') + '\n';
   fs.writeFileSync(outFile, md, 'utf8');
   console.log(`✅ wrote ${outFile}`);
-  console.log(`   novelty=${JSON.stringify(nov.items || [])} length=${fl.ratio}(${fl.status}) refine=${out.refineReason} judge=${r.judge ? (r.judge.ran ? (r.judge.pass ? 'pass' : r.judge.violations.length + 'viol') : 'skip') : '-'} ${sec}s`);
+  console.log(`   🚦 ${String(fr.status).toUpperCase()}${critLine} | length=${fl.ratio}(${fl.status}) novelty=${nov.count} lost=${(r.lostFacts||{}).count} judge=${r.judge ? (r.judge.ran ? (r.judge.pass ? 'pass' : 'fail') : 'skip') : '-'} ${sec}s`);
 })().catch(e => { console.error('❌', e.message); process.exit(1); });

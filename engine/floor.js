@@ -9,8 +9,9 @@
 // rawText에서 화자 시드 측정(결정론). fp_singular가 일화 게이트의 기준값.
 function computePovSeed(rawText) {
   const t = rawText || '';
-  // ★ 앞에 한글 음절이 붙으면 다른 단어의 일부(하"나를", 문"제가", 언"제가", 만"나는")이므로 제외 — lookbehind로 단어 경계 강제.
-  const fpSingularRe = /(?<![가-힣])(저는|저의|저도|저를|저에게|저로서|저랑|저와|저한테|제가|제 생각|제 경험|제 친구|제 룸메|내가|나는|나의|나를|내게|나도|나에게)/g;
+  // ★ lookbehind 2겹: (1) 앞 한글 음절 붙으면 다른 단어(하"나를"·문"제가") 제외,
+  //   (2) 주격조사+공백("냄새가 나는", "물이 나도") 뒤면 동사 '나다'이므로 1인칭에서 제외.
+  const fpSingularRe = /(?<![가-힣])(?<!(?:가|이|은|는|들)\s)(저는|저의|저도|저를|저에게|저로서|저랑|저와|저한테|제가|제 생각|제 경험|제 친구|제 룸메|내가|나는|나의|나를|내게|나도|나에게)/g;
   const fpPluralRe = /(?<![가-힣])(우리는|우리가|우리의|우리도|저희는|저희가|저희의)/g;
   const orgVoiceRe = /(본\s*보고서|본\s*연구|본\s*글|이\s*글은|이\s*보고서|본고|본\s*논문)/g;
   return {
@@ -66,7 +67,8 @@ function measurePovDrift(rawText, outputText, povSeed) {
 // verifyCheckFields의 차집합은 assignment 전용이라, floor는 자체 측정으로 전 모드 커버.
 function extractYears(s) { return new Set((s || '').match(/(?:19|20)\d{2}/g) || []); }
 function extractPercents(s) {
-  return new Set(((s || '').match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).map(p => p.replace(/\s+/g, '')));
+  // 표기 정규화: "60퍼센트"·"60 ％"·"60%" → "60%" (set-diff 오탐 방지).
+  return new Set(((s || '').match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).map(p => p.replace(/\s+/g, '').replace(/퍼센트|％/g, '%')));
 }
 const ORG_RE = /[가-힣]{2,}(?:상공회의소|연구원|공사|협회|재단|위원회|기구|연구소|본부|센터|기관|대학교|학회)/g;
 // 숫자+단위 (연도·% 제외 — 위에서 별도 처리). "96회", "300분", "12명", "1,200원" 등.
@@ -129,6 +131,23 @@ function measureLength(rawText, outputText, mode) {
   else if (ratio > pol.max) status = 'overSoft';     // 경고만(report)
   else if (ratio < pol.min) status = 'short';        // 부족(원문 정보만 복원)
   return { ratio: Number(ratio.toFixed(3)), status, policy: pol, rawLen, outLen };
+}
+
+// ── 손실 가드 (§3.1 "숫자 증발") — 입력의 hard fact가 출력에서 사라짐 ──
+// novelty가 "추가"를 잡는다면, 이건 "소실"을 잡는다(set-diff 반대 방향).
+function measureLostFacts(rawText, outputText) {
+  const inT = rawText || '', outT = outputText || '';
+  const lost = [];
+  const outY = extractYears(outT);
+  for (const y of extractYears(inT)) if (!outY.has(y)) lost.push(y);
+  const outP = extractPercents(outT);
+  for (const p of extractPercents(inT)) if (!outP.has(p)) lost.push(p);
+  const outO = new Set(outT.match(ORG_RE) || []);
+  for (const o of new Set(inT.match(ORG_RE) || [])) if (!outO.has(o)) lost.push(o);
+  const outN = new Set((outT.match(NUM_UNIT_RE) || []).map(normTok));
+  for (const m of (inT.match(NUM_UNIT_RE) || [])) if (!outN.has(normTok(m))) lost.push(m.trim());
+  const uniq = [...new Set(lost)];
+  return { items: uniq, count: uniq.length };
 }
 
 // ── thesis 허위 내부참조/인용 가드 (C2~C4: Table/Eq/§/연도인용 신규 생성 금지) ──
@@ -230,6 +249,7 @@ module.exports = {
   gateFailedFields,
   measurePovDrift,
   measureNovelty,
+  measureLostFacts,
   measureFakeInternalRefs,
   measureLength,
   measureRepetition,

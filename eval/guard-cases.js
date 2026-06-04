@@ -56,6 +56,39 @@ module.exports = [
     expect: { noveltyHas: ['SEC', 'NDA'] }
   },
 
+  // ── novelty: % 표기 정규화(60%↔60퍼센트 오탐 금지) ──
+  {
+    name: 'novelty/퍼센트 표기 차이 오탐 금지',
+    mode: 'blog',
+    input: '쾌적한 습도는 60% 정도다.',
+    output: '쾌적한 습도는 60퍼센트 정도예요.',
+    expect: { noveltyCount0: true }
+  },
+
+  // ── pov: 동사 나다('냄새가 나는')는 1인칭 아님 + 진짜 1인칭 주입은 검출 ──
+  {
+    name: 'pov/동사 나다 오탐 금지 + 실제 1인칭 주입 검출',
+    mode: 'blog',
+    input: '냄새가 나는 빨래는 잘 안 마른 것이다. 곰팡이가 생기기도 한다.',
+    output: '냄새가 나는 빨래는 잘 안 말랐다는 뜻이에요. 제가 어제 그래서 다시 빨았어요.',
+    expect: { povDrift: true }
+  },
+  // ── 손실 가드 (숫자 증발) ──
+  {
+    name: 'lost/입력 수치 증발 검출',
+    mode: 'blog',
+    input: '하루 30분 환기하고 습도 60%를 유지하며 수건 3개를 쓴다.',
+    output: '환기를 자주 하고 습도를 적당히 유지하세요.',
+    expect: { lostHas: ['30분', '60%', '3개'] }
+  },
+  {
+    name: 'lost/수치 보존 시 손실 0',
+    mode: 'blog',
+    input: '하루 30분 환기하고 습도 60%.',
+    output: '하루 30분 정도 환기하고 습도는 60%로 유지해요.',
+    expect: { lostCount0: true }
+  },
+
   // ── pov: 양성(드리프트 잡아야) ──
   {
     name: 'pov/비인칭 원문 → 1인칭 일화 주입',

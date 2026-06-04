@@ -62,6 +62,18 @@ for (const c of cases) {
     check(c.name, len.status === e.lengthStatus, `length 기대=${e.lengthStatus} 실제=${len.status} (ratio=${len.ratio})`);
   }
 
+  // lost facts (숫자 증발)
+  if (e.lostHas || e.lostCount0) {
+    const lost = floor.measureLostFacts(c.input, c.output);
+    if (e.lostHas) {
+      const missing = e.lostHas.filter(t => !lost.items.some(it => it.includes(t) || t.includes(it)));
+      check(c.name, missing.length === 0, `lost 누락(recall): ${missing.join(', ')} | 검출=${JSON.stringify(lost.items)}`);
+    }
+    if (e.lostCount0) {
+      check(c.name, lost.count === 0, `lost 오탐(FP): ${JSON.stringify(lost.items)}`);
+    }
+  }
+
   // soft drift (cheap risk detector)
   if (typeof e.softFlagged === 'boolean' || e.softHas) {
     const sd = softguard.measureSoftDrift(c.input, c.output);

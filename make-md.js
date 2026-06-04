@@ -36,6 +36,7 @@ const doJudge = process.env.JUDGE === '1';
     `- 입력 ${inLen}자 → 출력 ${outLen}자 (분량비 **${fl.ratio ?? '?'}**, ${fl.status ?? '?'}; 목표 ${ct.lengthPolicy ? ct.lengthPolicy.min + '~' + ct.lengthPolicy.max : '-'})\n` +
     `- ★ 화자 보존(pov): 원문 1인칭 ${out.povDrift ? out.povDrift.input_fp_singular : '?'} → 출력 ${out.povDrift ? out.povDrift.output_fp_singular : '?'} → ${out.povDrift && out.povDrift.introducedFirstPerson ? '⚠️ 새 1인칭 주입' : '✅ 보존'} (화자게이트 ${ct.speakerGateClosed ? 'closed' : 'open'})\n` +
     `- ★ 신규 사실(novelty): ${nov.count ?? '?'}건 ${nov.count ? '⚠️ (' + (nov.items || []).join(', ') + ')' : '✅'}\n` +
+    `- ★ 사실 증발(lost facts): ${(r.lostFacts && r.lostFacts.count) ? '⚠️ ' + r.lostFacts.count + '건 (' + r.lostFacts.items.join(', ') + ')' : '0건 ✅'}\n` +
     `- ★ 결론 반복(repetition): ${rep.count ? '⚠️ ' + rep.count + '건' : '0건 ✅'}\n` +
     `- soft drift (judge 후보): ${sd.flagged ? '⚠️ flagged' : 'none ✅'} · added=${JSON.stringify(sd.added || {})} · modalΔ=${sd.modalShift ?? '-'}\n` +
     (judgeLine ? judgeLine : '') +

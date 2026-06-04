@@ -1973,6 +1973,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   }
 
   result.repetition = floor.measureRepetition(result.outputText);
+  result.lostFacts = floor.measureLostFacts(text, result.outputText);
   const surfaceReport = floor.collectSurfaceReport(result);
   result.contract = contract; // 단일 진실 첨부
 
@@ -2072,6 +2073,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.floorNovelty = floor.measureNovelty(text, finalOut);
   result.floorLength = floor.measureLength(text, finalOut, mode);
   result.repetition = floor.measureRepetition(finalOut);
+  result.lostFacts = floor.measureLostFacts(text, finalOut);
   const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode });
   result.contract = contract;
   return {

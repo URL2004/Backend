@@ -17,35 +17,40 @@ function parseJSON(s) {
   try { return JSON.parse(t); } catch { return null; }
 }
 
-// LLM에서 JSON 받기 — claudecode(구독) 또는 api(키) 백엔드.
-// 중첩 claude 실행의 "Execution error"·파싱 실패에 대비해 최대 4회 재시도+백오프.
-async function llmJSON({ system, user, signal, maxTokens = 2048 }) {
-  const prompt = `${user}\n\n반드시 유효한 JSON 객체 하나만 출력하세요. 코드펜스·설명·머리말 금지.`;
+// LLM에서 텍스트 받기 — claudecode(구독) 또는 api(키). "Execution error"·빈응답에 4회 재시도+백오프.
+async function llmText({ system, user, signal, maxTokens = 4096 }) {
   const isBad = (s) => !s || /^execution error/i.test(String(s).trim()) || String(s).replace(/\s+/g, '').length < 5;
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
   async function once() {
     if (process.env.LLM_BACKEND === 'claudecode') {
       const { runClaudeCode } = require('./claudecode');
-      return runClaudeCode(`${system}\n\n${prompt}`, { model: MODEL, signal });
+      return runClaudeCode(`${system}\n\n${user}`, { model: MODEL, signal });
     }
     const key = process.env.ANTHROPIC_API_KEY;
     if (!key) throw new Error('judge: ANTHROPIC_API_KEY 없음 (api 모드)');
     const resp = await fetch(API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
       signal
     });
     const data = await resp.json();
     return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
   }
-
   for (let attempt = 0; attempt < 4; attempt++) {
     if (attempt > 0) await sleep(1500);
     let raw = '';
     try { raw = await once(); } catch (e) { if (signal?.aborted) throw e; }
-    if (isBad(raw)) continue;
+    if (!isBad(raw)) return String(raw).trim();
+  }
+  return '';
+}
+
+// JSON은 llmText + 파싱(파싱 실패 시 추가 재시도).
+async function llmJSON({ system, user, signal, maxTokens = 2048 }) {
+  const u = `${user}\n\n반드시 유효한 JSON 객체 하나만 출력하세요. 코드펜스·설명·머리말 금지.`;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const raw = await llmText({ system, user: u, signal, maxTokens });
     const parsed = parseJSON(raw);
     if (parsed) return parsed;
   }
@@ -85,4 +90,34 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal 
   return { violations: verified, rawCount: violations.length, pass: verified.length === 0 };
 }
 
-module.exports = { buildSoftClaimLedger, semanticJudge, llmJSON, evidenceMatches };
+// 위반 span만 외과적으로 교정(삭제/수정). 새 정보 추가 금지. 텍스트 반환.
+async function repairViolations(rawText, outputText, ledger, violations, { lang = 'ko', signal } = {}) {
+  if (!violations || !violations.length) return outputText;
+  const claimsText = (ledger?.claims || []).map((c, i) => `${i + 1}. ${c.claim}`).join('\n') || '(none)';
+  const vText = violations.map((v, i) => `${i + 1}. [${v.type}] "${v.span}" — ${v.detail}`).join('\n');
+  const system = lang === 'en'
+    ? 'You are an editor. Fix ONLY the listed violations in the REWRITE: remove or correct each flagged span so it no longer contradicts the ledger or adds unsupported claims/emotion/future projections. Keep all other text intact. Add NO new information. Output only the corrected text.'
+    : '편집자. REWRITE에서 "지정된 위반"만 고쳐라: 각 위반 span을 원장과 모순되지 않고 근거 없는 주장·감정·미래전망을 추가하지 않도록 삭제하거나 수정한다. 나머지 텍스트는 그대로 둔다. 새 정보 추가 금지.';
+  const user = `[CLAIM LEDGER — 허용된 유일 주장]\n${claimsText}\n\n[위반 — 이것만 수정]\n${vText}\n\n[REWRITE]\n${outputText}\n\n수정된 본문만 출력(설명·따옴표·코드펜스 금지).`;
+  const out = await llmText({ system, user, signal, maxTokens: 8192 });
+  // repair는 날조를 삭제하므로 짧아지는 게 정상 — 비었을(LLM 실패) 때만 원본 유지.
+  return out && out.replace(/\s+/g, '').length >= 5 ? out : outputText;
+}
+
+// 원장 1회 추출 → judge → 위반 시 repair → 재judge, 최대 maxRounds. P2-c 닫힌 루프(§7.2).
+async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRounds = 2 } = {}) {
+  const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
+  let text = outputText;
+  let verdict = await semanticJudge(rawText, text, ledger, { lang, signal });
+  let rounds = 0;
+  while (!verdict.pass && rounds < maxRounds) {
+    rounds++;
+    const repaired = await repairViolations(rawText, text, ledger, verdict.violations, { lang, signal });
+    if (repaired === text) break; // 변화 없으면 중단
+    text = repaired;
+    verdict = await semanticJudge(rawText, text, ledger, { lang, signal });
+  }
+  return { ledger, outputText: text, verdict, rounds };
+}
+
+module.exports = { buildSoftClaimLedger, semanticJudge, repairViolations, judgeAndRepair, llmJSON, llmText, evidenceMatches };

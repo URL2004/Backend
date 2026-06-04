@@ -1951,13 +1951,20 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
   if (selectedMode === 'thesis') result.fakeInternalRefs = floor.measureFakeInternalRefs(text, result.outputText);
 
-  // P2-c: cheap detector가 flag하면(또는 force) semanticJudge 실행 — Soft Claim Ledger 닫힌세계 대조.
+  // P2-c: cheap detector가 flag하면(또는 force) semanticJudge → 위반 시 repair → 재judge(닫힌 루프).
   if (judge && (judge === 'force' || result.softDrift.flagged)) {
     try {
       const j = require('../engine/judge');
-      const ledger = await j.buildSoftClaimLedger(text, { lang, signal });
-      const verdict = await j.semanticJudge(text, result.outputText, ledger, { lang, signal });
-      result.judge = { ran: true, claims: ledger.claims.length, dropped: ledger.dropped, pass: verdict.pass, violations: verdict.violations };
+      const jr = await j.judgeAndRepair(text, result.outputText, { lang, signal });
+      if (jr.outputText !== result.outputText) {
+        result.outputText = jr.outputText;
+        // 교정으로 출력이 바뀌었으니 보존 가드 재측정.
+        result.povDrift = floor.measurePovDrift(text, result.outputText, povSeed);
+        result.floorNovelty = floor.measureNovelty(text, result.outputText);
+        result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
+        result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
+      }
+      result.judge = { ran: true, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations: jr.verdict.violations, rounds: jr.rounds };
     } catch (e) { if (signal?.aborted) throw e; result.judge = { ran: false, error: e.message }; }
   } else if (judge) {
     result.judge = { ran: false, reason: 'softDrift not flagged (cheap gate)' };

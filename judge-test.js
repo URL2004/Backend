@@ -24,4 +24,9 @@ function line() { console.log('─'.repeat(60)); }
   console.log(`[날조된 출력] pass=${b.pass}  위반 ${b.violations.length}건`);
   b.violations.forEach(v => console.log(`  ⚠️ [${v.type}] "${v.span}" — ${v.detail}`));
   line();
+  // judge → repair → 재judge 닫힌 루프
+  const jr = await judge.judgeAndRepair(source, badOut, { lang: 'ko' });
+  console.log(`[judge→repair] rounds=${jr.rounds}  최종 pass=${jr.verdict.pass}  잔여 위반 ${jr.verdict.violations.length}건`);
+  console.log('  교정 결과:', jr.outputText);
+  line();
 })().catch(e => { console.error('❌', e.message); process.exit(1); });

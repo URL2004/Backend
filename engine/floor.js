@@ -146,6 +146,21 @@ function measureFakeInternalRefs(rawText, outputText) {
   return { fabricated, count: fabricated.length };
 }
 
+// ── 반복 가드 (§3.1 결론/CTA 반복 — 청크 경계에서 같은 결론이 두 번 나오는 문제) ──
+// 병합된 전체 텍스트에서 동일(정규화) 문장이 2회 이상이면 반복으로 카운트.
+function measureRepetition(text) {
+  const sents = (text || '').split(/(?<=[.!?。])\s+|\n+/).map(s => s.trim())
+    .filter(s => s.replace(/\s+/g, '').length >= 15);
+  const seen = new Map();
+  for (const s of sents) {
+    const key = s.replace(/\s+/g, '').toLowerCase();
+    seen.set(key, (seen.get(key) || 0) + 1);
+  }
+  const repeated = [];
+  for (const [, n] of seen) if (n >= 2) repeated.push(n);
+  return { count: repeated.length, maxRepeat: repeated.length ? Math.max(...repeated) : 1 };
+}
+
 // 1차 결과에서 FLOOR critical 위반만 추출 (surface는 제외 — regression report로 §11).
 function collectFloorViolations({ result, rawText, povSeed, optIn, mode }) {
   const out = result?.outputText || '';
@@ -211,6 +226,7 @@ module.exports = {
   measureNovelty,
   measureFakeInternalRefs,
   measureLength,
+  measureRepetition,
   collectFloorViolations,
   buildFloorRefineUser,
   collectSurfaceReport

@@ -16,6 +16,7 @@ const path = require('path');
 if (!process.env.LLM_BACKEND) process.env.LLM_BACKEND = 'claudecode';
 const floorV2 = process.env.FLOOR_V2 === '1';   // FLOOR_V2=1 → 화자 보존 게이트 ON
 const optIn = process.env.OPT_IN === '1';       // OPT_IN=1 → "내 경험 추가" 허용
+const chunked = process.env.CHUNK === '1';      // CHUNK=1 → server-side chunking 경로(자동 floorV2)
 
 const [, , fileArg, modeArg = 'assignment', langArg = 'ko'] = process.argv;
 if (!fileArg) {
@@ -35,7 +36,7 @@ function line() { console.log('─'.repeat(64)); }
 function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '–'; }
 
 (async () => {
-  console.log(`\n🚀 LLM_BACKEND=${process.env.LLM_BACKEND}  mode=${modeArg}  lang=${langArg}  FLOOR_V2=${floorV2 ? 'ON' : 'OFF'}  optIn=${optIn}  입력 ${text.length}자`);
+  console.log(`\n🚀 LLM_BACKEND=${process.env.LLM_BACKEND}  mode=${modeArg}  lang=${langArg}  FLOOR_V2=${floorV2 || chunked ? 'ON' : 'OFF'}  CHUNK=${chunked ? 'ON' : 'OFF'}  optIn=${optIn}  입력 ${text.length}자`);
   line();
   console.log('[입력 미리보기]');
   console.log(text.slice(0, 300) + (text.length > 300 ? ' …' : ''));
@@ -44,7 +45,9 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   const t0 = Date.now();
   let out;
   try {
-    out = await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn });
+    out = chunked
+      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn })
+      : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn });
   } catch (e) {
     console.error('❌ runHumanize 실패:', e.message);
     process.exit(1);
@@ -73,6 +76,11 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   const lmark = fl.status === 'overHard' ? '⚠️ 과확장(hard)' : fl.status === 'overSoft' ? '△ 상한 초과(soft)' : fl.status === 'short' ? '⚠️ 분량 부족' : '✅';
   const pol = fl.policy ? `(목표 ${fl.policy.min}~${fl.policy.max}, hard ${fl.policy.hardMax})` : '';
   console.log(`  ★ 분량비(length)        : ${pct(fl.ratio ?? r.lengthRatio)} ${lmark}  ${pol}`);
+  if (out.chunked) {
+    const rep = out.repetition || {};
+    console.log(`  ★ 결론 반복(repetition) : ${rep.count ? '⚠️ ' + rep.count + '건(최대 ' + rep.maxRepeat + '회)' : '0건 ✅'}`);
+    console.log(`  · 청크 ${out.chunkCount}개: ${out.chunks.map(c => `${c.position}(${c.inLen}→${c.outLen})`).join(', ')}`);
+  }
 
   line();
   if (floorV2) {

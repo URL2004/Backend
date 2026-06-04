@@ -1971,6 +1971,71 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   };
 }
 
+// server-side chunking 오케스트레이션 — 문단별 재작성 + 좌/우 경계 + 청크별 FLOOR + 병합(§7.2).
+// 긴 글에서 프론트 분할(prevContext 300자)을 대체. 청크별로 novelty/화자를 잡고, 병합 후 전체 재검사.
+async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false } = {}) {
+  const floor = require('../engine/floor');
+  const { splitChunks, mergeChunks } = require('../engine/chunk');
+  const povSeed = floor.computePovSeed(text);
+  const chunks = splitChunks(text);
+
+  let humanizeSystem = getHumanizeSystem(mode, lang);
+  if (floorV2) {
+    const d = floor.buildFloorDirective(povSeed, optIn);
+    if (d) humanizeSystem = d + '\n' + humanizeSystem;
+  }
+  const tool = getHumanizeToolFor(mode, lang);
+  const tail = (s, n) => (s || '').slice(-n);
+  const head = (s, n) => (s || '').slice(0, n);
+
+  for (let i = 0; i < chunks.length; i++) {
+    if (signal?.aborted) throw new Error('aborted');
+    const c = chunks[i];
+    const prevOut = i > 0 ? (chunks[i - 1].outputText || chunks[i - 1].text) : '';
+    const nextRaw = i < chunks.length - 1 ? chunks[i + 1].text : '';
+    const posNote = c.position === 'conclusion'
+      ? '※ 결론부다. 앞에서 이미 말한 주장·CTA를 반복하지 말고, 새 사실·미래전망을 추가하지 마라. 길이는 원문 청크와 비슷하게.'
+      : c.position === 'intro' ? '※ 도입부다.' : '※ 본문이다.';
+    const boundary =
+      (prevOut ? `[앞 청크 끝 — 문체 연속성 참고, 다시 쓰지 말 것]\n...${tail(prevOut, 150)}\n\n` : '') +
+      (nextRaw ? `[뒤에 이어질 원문 — 손대지 말 것]\n${head(nextRaw, 100)}...\n\n` : '');
+    const userContent = `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
+
+    const data = await callClaude({ userText: userContent, systemText: humanizeSystem, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+    const r = extractClaudeResult(data, tool.name);
+    await applyPassC(r, lang, signal);
+    c.outputText = r.outputText || c.text;
+
+    // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair
+    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode });
+    if (viol.length) {
+      try {
+        const ru = floor.buildFloorRefineUser(c.text, c.outputText, viol);
+        const rd = await callClaude({ userText: ru, systemText: humanizeSystem, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const r2 = extractClaudeResult(rd, tool.name);
+        await applyPassC(r2, lang, signal);
+        if (r2.outputText) c.outputText = r2.outputText;
+      } catch (e) { if (signal?.aborted) throw e; }
+    }
+  }
+
+  const merged = mergeChunks(chunks);
+  const result = { outputText: merged };
+  // 비청크 경로와 동일하게 guard 데이터를 result.*에 부착(engine-test 표시 정합).
+  result.povSeed = povSeed;
+  result.povDrift = floor.measurePovDrift(text, merged, povSeed);
+  result.floorNovelty = floor.measureNovelty(text, merged);
+  result.floorLength = floor.measureLength(text, merged, mode);
+  result.repetition = floor.measureRepetition(merged);
+  const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode });
+  return {
+    result, mode, lang, chunked: true, chunkCount: chunks.length,
+    chunks: chunks.map(c => ({ index: c.index, position: c.position, inLen: c.text.length, outLen: (c.outputText || '').length })),
+    povDrift: result.povDrift, floorNovelty: result.floorNovelty, floorLength: result.floorLength,
+    repetition: result.repetition, floorViolations, povSeed, optIn, floorV2: true
+  };
+}
+
 // --- 라우트 ---
 
 router.post('/analyze', async (req, res) => {
@@ -2384,4 +2449,5 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 router.verifyCheckFields = verifyCheckFields;
 router.collectFailedFields = collectFailedFields;
 router.runHumanize = runHumanize;
+router.runHumanizeChunked = runHumanizeChunked;
 module.exports = router;

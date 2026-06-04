@@ -5,6 +5,42 @@
 //
 // 핵심 불변식: outputText를 안 채우면 mergeChunks(splitChunks(text)) === text (왕복 보존).
 
+// 청크 목표/상한 크기(공백 포함 문자수). 과대 문단은 단일 LLM 호출 부담·출력 길이 변동을 키우므로 2차 분할.
+const TARGET_CHARS = 1600;   // 목표(1200~1800 중앙)
+const HARD_MAX = 2500;       // 이 길이를 넘으면 반드시 분할
+
+// 과대 청크(text > HARD_MAX)를 문장 경계로 분할. 슬라이스가 연속이고 sep은 마지막 조각만 가져 왕복 보존.
+function splitLongChunk(c) {
+  const text = c.text;
+  if (text.length <= HARD_MAX) return [c];
+  const cuts = [];                                  // 문장 끝(.!?。 뒤 공백/끝) 또는 줄바꿈 위치
+  const re = /[.!?。](?=\s|$)|\n/g; let m;
+  while ((m = re.exec(text)) !== null) cuts.push(m.index + 1);
+  const ranges = [];
+  let segStart = 0;
+  while (text.length - segStart > HARD_MAX) {
+    const ideal = segStart + TARGET_CHARS;
+    let cut = -1;
+    for (const x of cuts) {
+      if (x <= segStart || x > segStart + HARD_MAX) continue;
+      if (cut === -1 || Math.abs(x - ideal) < Math.abs(cut - ideal)) cut = x;
+    }
+    if (cut === -1) cut = segStart + HARD_MAX;       // 문장경계 없음 → 강제 컷(왕복은 슬라이스 연속이라 유지)
+    ranges.push([segStart, cut]);
+    segStart = cut;
+  }
+  ranges.push([segStart, text.length]);
+  return ranges.map(([a, b], k) => {
+    const piece = {
+      start: c.start + a, end: c.start + b,
+      sep: k === ranges.length - 1 ? c.sep : '',
+      text: text.slice(a, b), outputText: null
+    };
+    if (k === 0 && c._lead) piece._lead = c._lead;   // 선행 공백은 첫 조각만
+    return piece;
+  });
+}
+
 // 문단 경계(\n{2,})로 분할. 각 청크는 원본 charRange[start,end)와 뒤따르는 구분자(sep)를 보존.
 // position: intro(첫) / conclusion(끝) / body(중간) / single(1개뿐).
 function splitChunks(text) {
@@ -35,12 +71,16 @@ function splitChunks(text) {
   // 선행 공백(carrySep) 보존
   if (carrySep && chunks.length > 0) chunks[0]._lead = (chunks[0]._lead || '') + carrySep;
 
-  const n = chunks.length;
-  chunks.forEach((c, i) => {
+  // ★ 과대 문단 2차 분할(§리뷰#9) — 문장 경계로 쪼개 단일 호출 길이/변동 억제. 왕복 불변식 유지.
+  const sized = [];
+  for (const c of chunks) for (const sc of splitLongChunk(c)) sized.push(sc);
+
+  const n = sized.length;
+  sized.forEach((c, i) => {
     c.index = i;
     c.position = n === 1 ? 'single' : (i === 0 ? 'intro' : (i === n - 1 ? 'conclusion' : 'body'));
   });
-  return chunks;
+  return sized;
 }
 
 // 청크를 원본 구분자로 재조립. outputText가 있으면 그것을, 없으면 원본 text를 사용 → 문단 경계 복원.
@@ -59,4 +99,4 @@ function nearestChunkId(chunks, span) {
   return null;
 }
 
-module.exports = { splitChunks, mergeChunks, nearestChunkId };
+module.exports = { splitChunks, mergeChunks, nearestChunkId, TARGET_CHARS, HARD_MAX };

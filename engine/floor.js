@@ -214,18 +214,51 @@ function measureFakeInternalRefs(rawText, outputText) {
 }
 
 // ── 반복 가드 (§3.1 결론/CTA 반복 — 청크 경계에서 같은 결론이 두 번 나오는 문제) ──
-// 병합된 전체 텍스트에서 동일(정규화) 문장이 2회 이상이면 반복으로 카운트.
+// 병합된 전체에서 (1)동일(정규화) 문장 2회+ = exact, (2)어미·일부 단어만 다른 근접중복 = fuzzy.
+// 청크 단위 재작성은 같은 결론을 어미만 바꿔 두 번 쓰는 일이 잦아 fuzzy까지 잡아야 한다.
+function normSent(s) {
+  return (s || '').replace(/\s+/g, '').toLowerCase().replace(/[.!?。,，、'"“”‘’()[\]]/g, '');
+}
+function bigrams(s) {
+  const g = new Set();
+  for (let i = 0; i < s.length - 1; i++) g.add(s.slice(i, i + 2));
+  return g;
+}
+function jaccard(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+const FUZZY_SIM = 0.6;       // char-bigram Jaccard 임계(저-FP: 어미·소수 단어만 다른 근접중복만)
+const FUZZY_MIN_LEN = 16;    // 정규화 길이 하한(짧은 상투구 오탐 방지)
 function measureRepetition(text) {
   const sents = (text || '').split(/(?<=[.!?。])\s+|\n+/).map(s => s.trim())
     .filter(s => s.replace(/\s+/g, '').length >= 15);
+  // (1) exact — 정규화 동일 문장 2회+
   const seen = new Map();
   for (const s of sents) {
-    const key = s.replace(/\s+/g, '').toLowerCase();
+    const key = normSent(s);
     seen.set(key, (seen.get(key) || 0) + 1);
   }
   const repeated = [];
   for (const [, n] of seen) if (n >= 2) repeated.push(n);
-  return { count: repeated.length, maxRepeat: repeated.length ? Math.max(...repeated) : 1 };
+  // (2) fuzzy — 서로 다른(정규화) 문장이지만 bigram 유사도 높음(근접중복)
+  const keys = [...seen.keys()].filter(k => k.length >= FUZZY_MIN_LEN);
+  const grams = keys.map(bigrams);
+  let fuzzyCount = 0; const fuzzyPairs = [];
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      const sim = jaccard(grams[i], grams[j]);
+      if (sim >= FUZZY_SIM) { fuzzyCount++; fuzzyPairs.push(Number(sim.toFixed(2))); }
+    }
+  }
+  return {
+    count: repeated.length,                                   // exact 그룹 수(하위호환)
+    maxRepeat: repeated.length ? Math.max(...repeated) : 1,
+    fuzzyCount, fuzzyPairs,
+    total: repeated.length + fuzzyCount                       // 노출 판정용 합산
+  };
 }
 
 // 1차 결과에서 FLOOR critical 위반만 추출 (surface는 제외 — regression report로 §11).
@@ -271,11 +304,11 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
     v.push({ type: 'lost_facts', detail: lost.items.join(', '),
       fix: `원문에 있던 사실이 출력에서 사라졌다: ${lost.items.join(', ')}. 원문대로 복원하라(새 사실 추가 금지).` });
   }
-  // 결론/CTA 반복
+  // 결론/CTA 반복 (exact + 근접중복)
   const rep = measureRepetition(out);
-  if (rep.count >= 1) {
-    v.push({ type: 'repetition', detail: `${rep.count}건(최대 ${rep.maxRepeat}회)`,
-      fix: `같은 결론·문장이 반복된다. 중복 문장을 하나로 합치고 결론을 한 번만 제시하라.` });
+  if (rep.total >= 1) {
+    v.push({ type: 'repetition', detail: `완전중복 ${rep.count}건·근접중복 ${rep.fuzzyCount}건`,
+      fix: `같은 결론·문장이 (어미·표현만 바꿔) 반복된다. 의미가 겹치는 문장을 하나로 합치고 결론을 한 번만 제시하라.` });
   }
   // 결론부 soft drift — 문서 결론/병합 결과(whole·conclusion)에서만 critical. body 청크 끝은 제외(오탐 방지 §리뷰5).
   if (position === 'whole' || position === 'conclusion') {
@@ -304,7 +337,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn }) {
   if (len.status === 'short') criticals.push({ gate: 'length_short', detail: len.ratio });
   if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
   if (!optIn && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });
-  if (rep.count) criticals.push({ gate: 'repetition', detail: rep.count });
+  if (rep.total) criticals.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
   if (concl.flagged) criticals.push({ gate: 'conclusion_drift', detail: concl.markers.join(', ') });
   if (mode === 'thesis') { const fake = measureFakeInternalRefs(rawText, out); if (fake.count) criticals.push({ gate: 'fake_ref', detail: fake.fabricated.join(', ') }); }
   if (result.judge && result.judge.ran && result.judge.pass === false) criticals.push({ gate: 'semanticJudge', detail: (result.judge.violations || []).length + '건' });
@@ -315,7 +348,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn }) {
   const status = criticals.length ? 'blocked' : 'clean';
   return {
     status, criticals, warnings,
-    metrics: { lengthRatio: len.ratio, novelty: nov.count, lostFacts: lost.count, repetition: rep.count,
+    metrics: { lengthRatio: len.ratio, novelty: nov.count, lostFacts: lost.count, repetition: rep.total,
       povInject: !!(drift.introducedFirstPerson && isSpeakerGateClosed(povSeed, optIn)), conclusionDrift: concl.flagged,
       judge: result.judge ? (result.judge.ran ? (result.judge.pass ? 'pass' : 'fail') : 'skip') : null }
   };

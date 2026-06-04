@@ -74,6 +74,17 @@ for (const c of cases) {
     }
   }
 
+  // repetition (exact + fuzzy 근접중복)
+  if (typeof e.repFlagged === 'boolean' || typeof e.repFuzzy === 'boolean') {
+    const rep = floor.measureRepetition(c.output);
+    if (typeof e.repFlagged === 'boolean') {
+      check(c.name, (rep.total >= 1) === e.repFlagged, `rep 기대=${e.repFlagged} 실제 total=${rep.total} (exact=${rep.count} fuzzy=${rep.fuzzyCount} pairs=${JSON.stringify(rep.fuzzyPairs)})`);
+    }
+    if (typeof e.repFuzzy === 'boolean') {
+      check(c.name, (rep.fuzzyCount >= 1) === e.repFuzzy, `repFuzzy 기대=${e.repFuzzy} 실제=${rep.fuzzyCount} (pairs=${JSON.stringify(rep.fuzzyPairs)})`);
+    }
+  }
+
   // conclusion drift (결론부 zone-vs-zone)
   if (typeof e.conclusionDrift === 'boolean' || e.conclusionHas) {
     const cd = softguard.measureConclusionDrift(c.input, c.output);
@@ -123,6 +134,20 @@ check('chunk/position 1문단', JSON.stringify(p1) === JSON.stringify(['single']
 const cc = chunk.splitChunks('가.\n\n나.\n\n다.');
 cc[1].outputText = '나나나.';
 check('chunk/merge with outputText', chunk.mergeChunks(cc) === '가.\n\n나나나.\n\n다.', `merge=${JSON.stringify(chunk.mergeChunks(cc))}`);
+// 과대 문단 2차 분할(#9): 문장경계 있음/없음 모두 (1)왕복 보존 (2)모든 청크 ≤ HARD_MAX (3)분할 발생
+const bigSentencePara = ('이것은 한 문장입니다. ').repeat(400);  // ~8000자, 문장경계 풍부
+const bigA = chunk.splitChunks(bigSentencePara);
+check('chunk/과대문단 분할 왕복', chunk.mergeChunks(bigA) === bigSentencePara, `merge!=원본 (len ${chunk.mergeChunks(bigA).length} vs ${bigSentencePara.length})`);
+check('chunk/과대문단 각 청크 ≤ HARD_MAX', bigA.every(c => c.text.length <= chunk.HARD_MAX), `최대=${Math.max(...bigA.map(c => c.text.length))}`);
+check('chunk/과대문단 실제 분할됨', bigA.length >= 3, `청크수=${bigA.length}`);
+check('chunk/과대문단 charRange 정합', bigA.every(c => bigSentencePara.slice(c.start, c.end) === c.text), 'slice 불일치');
+const bigNoBoundary = '가'.repeat(7000);  // 문장경계 전혀 없음 → 강제 컷
+const bigB = chunk.splitChunks(bigNoBoundary);
+check('chunk/경계없는 과대문단 왕복', chunk.mergeChunks(bigB) === bigNoBoundary, 'merge!=원본');
+check('chunk/경계없는 과대문단 ≤ HARD_MAX', bigB.every(c => c.text.length <= chunk.HARD_MAX), `최대=${Math.max(...bigB.map(c => c.text.length))}`);
+// 정상 크기 문단은 분할 안 함(과분할 방지)
+const small = chunk.splitChunks('짧은 문단 하나.\n\n또 다른 짧은 문단.');
+check('chunk/정상 크기는 분할 안 함', small.length === 2, `청크수=${small.length}`);
 // nearestChunkId: span → 해당 청크 index
 const nc = chunk.splitChunks('도입 문장이다.\n\n본문 핵심 주장.\n\n결론 요약이다.');
 check('chunk/nearestChunkId 본문', chunk.nearestChunkId(nc, '본문 핵심 주장') === 1, `id=${chunk.nearestChunkId(nc, '본문 핵심 주장')}`);

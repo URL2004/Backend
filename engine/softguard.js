@@ -32,8 +32,9 @@ function measureSoftDrift(rawText, outputText) {
     total += a;
   }
   const modalShift = Number((hedgeRatio(outputText) - hedgeRatio(rawText)).toFixed(2));
-  // 마커 2개+ 추가 또는 hedge 비율 15%p+ 변화 → 의심(judge 트리거).
-  const flagged = total >= 2 || Math.abs(modalShift) >= 0.15;
+  // 마커(감정·미래·불확실·반응) 2개+ 추가 시만 judge 트리거.
+  // ★ modalShift는 보고용으로만 — 휴머나이저는 원래 hedge를 의도적으로 *추가*하므로 flag 기준에서 제외(과교정 방지).
+  const flagged = total >= 2;
   return { added, total, modalShift, flagged };
 }
 

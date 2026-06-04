@@ -80,8 +80,8 @@ async function buildSoftClaimLedger(rawText, { lang = 'ko', signal } = {}) {
 async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal } = {}) {
   const claimsText = (ledger?.claims || []).map((c, i) => `${i + 1}. ${c.claim}`).join('\n') || '(none)';
   const system = lang === 'en'
-    ? 'You are a strict fact-checker. The CLAIM LEDGER is the ONLY allowed set of claims (closed world). Flag where the REWRITE (a) contradicts/distorts a ledger claim, or (b) adds a NEW claim, emotion, future projection, or evaluation NOT supported by the ledger. Do NOT flag faithful paraphrase. Each span must be a verbatim substring of REWRITE.'
-    : '엄격한 사실검증자. CLAIM LEDGER가 허용된 유일한 주장 집합(닫힌세계)이다. REWRITE가 (a)원장 claim을 왜곡/모순하거나 (b)원장에 없는 새 주장·감정·미래전망·평가를 추가한 지점을 잡아라. 충실한 paraphrase는 절대 잡지 마라. 각 span은 REWRITE의 그대로 부분 문자열이어야 한다.';
+    ? 'You are a strict but fair fact-checker against the CLAIM LEDGER (closed world). Flag ONLY these three: (1) fabricated external facts/statistics/years/proper nouns, (2) reversing or strongly distorting a ledger claim (e.g., turning possibility "can ~" into a flat assertion "~ does"), (3) adding future projections, emotions, or strong subjective evaluations absent from the ledger. ★ Natural paraphrase, synonym swaps, reordering, minor qualifiers, and added hedges are NOT violations. Each span must be a verbatim substring of REWRITE.'
+    : '엄격하되 공정한 사실검증자. CLAIM LEDGER(닫힌세계)에 대해 다음 3가지만 위반으로 잡아라: (1) 외부 사실·통계·연도·고유명사 날조, (2) 원장 claim의 의미를 뒤집거나 강하게 왜곡(예: 가능성 "~할 수 있다"를 단정 "~한다"로 강화), (3) 원장에 없는 미래전망·감정·강한 주관적 평가 추가. ★ 자연스러운 의역·동의어 교체·어순 변경·사소한 수식어·hedge(완화) 표현 추가는 위반이 아니다. 각 span은 REWRITE의 그대로 부분 문자열이어야 한다.';
   const user = `JSON: {"violations":[{"type":"distortion|added_claim","span":"REWRITE 그대로 인용","detail":"왜 위반인지"}]}\n\n[CLAIM LEDGER — 허용된 유일 주장]\n${claimsText}\n\n[REWRITE]\n${outputText}`;
   const out = await llmJSON({ system, user, signal });
   const violations = Array.isArray(out?.violations) ? out.violations : [];

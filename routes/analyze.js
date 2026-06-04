@@ -1866,13 +1866,11 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     }
   }
 
-  let humanizeSystem = getHumanizeSystem(selectedMode, lang);
-  // ★ FLOOR v2: 원문 1인칭 0 && !optIn → 새 1인칭 화자·일화 금지 지시를 최상단 prepend (C5 override).
-  let floorDirective = '';
-  if (floorV2) {
-    floorDirective = floor.buildFloorDirective(povSeed, optIn);
-    if (floorDirective) humanizeSystem = floorDirective + '\n' + humanizeSystem;
-  }
+  // ★ FLOOR v2: 보존 우선 프롬프트로 레거시 모드 프롬프트 대체(내용 파괴/변질 지시 제거). 모드는 톤 오버레이.
+  //   floorV2 미설정 시 레거시 프롬프트(프로덕션 동작 불변).
+  let humanizeSystem = floorV2
+    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerGateClosed: contract.speakerGateClosed })
+    : getHumanizeSystem(selectedMode, lang);
   const humanizeTool = getHumanizeToolFor(selectedMode, lang);
   const userContent = `[재작성할 텍스트]\n${humanizeText}`;
   const inputParaCount = humanizeText.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
@@ -2012,11 +2010,9 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const povSeed = contract.povSeed;
   const chunks = splitChunks(text);
 
-  let humanizeSystem = getHumanizeSystem(mode, lang);
-  if (floorV2) {
-    const d = floor.buildFloorDirective(povSeed, optIn);
-    if (d) humanizeSystem = d + '\n' + humanizeSystem;
-  }
+  let humanizeSystem = floorV2
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerGateClosed: contract.speakerGateClosed })
+    : getHumanizeSystem(mode, lang);
   const tool = getHumanizeToolFor(mode, lang);
   const tail = (s, n) => (s || '').slice(-n);
   const head = (s, n) => (s || '').slice(0, n);

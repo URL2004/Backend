@@ -64,6 +64,35 @@ module.exports = [
     output: '쾌적한 습도는 60퍼센트 정도예요.',
     expect: { noveltyCount0: true }
   },
+  // ── novelty 확장: 브랜드·한글수사·천원·URL·소수 (blind spot 해소) ──
+  {
+    name: 'novelty/한국 브랜드 주입',
+    mode: 'blog',
+    input: '여러 회사가 경쟁한다.',
+    output: '카카오와 네이버가 경쟁한다.',
+    expect: { noveltyHas: ['카카오', '네이버'] }
+  },
+  {
+    name: 'novelty/한글 수사 주입',
+    mode: 'assignment',
+    input: '효과가 늘었고 사람이 왔다.',
+    output: '효과가 세 배 늘고 열 명이 왔다.',
+    expect: { noveltyHas: ['세 배', '열 명'] }
+  },
+  {
+    name: 'novelty/천원 단위 금액 주입',
+    mode: 'blog',
+    input: '가격이 적당하다.',
+    output: '가격은 4천~5천원이다.',
+    expect: { noveltyHas: ['5천원'] }
+  },
+  {
+    name: 'novelty/URL·소수 주입',
+    mode: 'thesis',
+    input: '자료를 참고했다. 값이 나왔다.',
+    output: 'https://example.com/data 를 참고했고 값은 0.42였다.',
+    expect: { noveltyHas: ['example.com', '0.42'] }
+  },
 
   // ── pov: 동사 나다('냄새가 나는')는 1인칭 아님 + 진짜 1인칭 주입은 검출 ──
   {
@@ -71,6 +100,13 @@ module.exports = [
     mode: 'blog',
     input: '냄새가 나는 빨래는 잘 안 마른 것이다. 곰팡이가 생기기도 한다.',
     output: '냄새가 나는 빨래는 잘 안 말랐다는 뜻이에요. 제가 어제 그래서 다시 빨았어요.',
+    expect: { povDrift: true }
+  },
+  {
+    name: 'pov/비격식 1인칭(난·내) 주입 검출',
+    mode: 'blog',
+    input: '습한 날에는 환기가 중요하다. 빨래는 잘 안 마른다.',
+    output: '습한 날엔 환기가 중요해요. 난 그래서 늘 창문을 열어두고, 내 방은 항상 건조하게 유지해요.',
     expect: { povDrift: true }
   },
   // ── 손실 가드 (숫자 증발) ──

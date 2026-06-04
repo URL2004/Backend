@@ -9,13 +9,15 @@
 // rawText에서 화자 시드 측정(결정론). fp_singular가 일화 게이트의 기준값.
 function computePovSeed(rawText) {
   const t = rawText || '';
-  // ★ lookbehind 2겹: (1) 앞 한글 음절 붙으면 다른 단어(하"나를"·문"제가") 제외,
-  //   (2) 주격조사+공백("냄새가 나는", "물이 나도") 뒤면 동사 '나다'이므로 1인칭에서 제외.
-  const fpSingularRe = /(?<![가-힣])(?<!(?:가|이|은|는|들)\s)(저는|저의|저도|저를|저에게|저로서|저랑|저와|저한테|제가|제 생각|제 경험|제 친구|제 룸메|내가|나는|나의|나를|내게|나도|나에게)/g;
+  // ★ 1인칭 단수 — 2그룹.
+  //   B군(동사 충돌 없음): 앞 한글 음절만 제외. 저/제 계열 + 내가/내게/나에게/나의 + 비격식 "내 X"(소유격).
+  //   A군(동사 '나다' 충돌): 추가로 주격조사+공백 뒤 제외("냄새가 나는", "불이 난"). 나는/나도/나를/난.
+  const fpRe_B = /(?<![가-힣])(저는|저의|저도|저를|저에게|저로서|저랑|저와|저한테|제가|제 생각|제 경험|제 친구|제 룸메|내가|내게|나에게|나의|내(?=\s))/g;
+  const fpRe_A = /(?<![가-힣])(?<!(?:가|이|은|는|들)\s)(나는|나도|나를|난(?=\s))/g;
   const fpPluralRe = /(?<![가-힣])(우리는|우리가|우리의|우리도|저희는|저희가|저희의)/g;
   const orgVoiceRe = /(본\s*보고서|본\s*연구|본\s*글|이\s*글은|이\s*보고서|본고|본\s*논문)/g;
   return {
-    fp_singular: (t.match(fpSingularRe) || []).length,
+    fp_singular: (t.match(fpRe_B) || []).length + (t.match(fpRe_A) || []).length,
     fp_plural: (t.match(fpPluralRe) || []).length,
     org_voice_likely: (t.match(orgVoiceRe) || []).length > 0
   };
@@ -59,58 +61,68 @@ function measurePovDrift(rawText, outputText, povSeed) {
   return {
     input_fp_singular: seed.fp_singular,
     output_fp_singular: outSeed.fp_singular,
-    introducedFirstPerson: seed.fp_singular === 0 && outSeed.fp_singular > 0
+    introducedFirstPerson: seed.fp_singular === 0 && outSeed.fp_singular > 0,  // 비인칭→개인(FLOOR 위반)
+    droppedFirstPerson: seed.fp_singular > 0 && outSeed.fp_singular === 0      // 개인→비인칭(화자 손실, 보고용)
   };
 }
 
 // ── 신규 사실 주입 가드 (C26: Hard Ledger 전신, 전 모드) ──────────
 // verifyCheckFields의 차집합은 assignment 전용이라, floor는 자체 측정으로 전 모드 커버.
-function extractYears(s) { return new Set((s || '').match(/(?:19|20)\d{2}/g) || []); }
+function extractYears(s) { return (s || '').match(/(?:19|20)\d{2}/g) || []; }
 function extractPercents(s) {
   // 표기 정규화: "60퍼센트"·"60 ％"·"60%" → "60%" (set-diff 오탐 방지).
-  return new Set(((s || '').match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).map(p => p.replace(/\s+/g, '').replace(/퍼센트|％/g, '%')));
+  return ((s || '').match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).map(p => p.replace(/\s+/g, '').replace(/퍼센트|％/g, '%'));
 }
 const ORG_RE = /[가-힣]{2,}(?:상공회의소|연구원|공사|협회|재단|위원회|기구|연구소|본부|센터|기관|대학교|학회)/g;
-// 숫자+단위 (연도·% 제외 — 위에서 별도 처리). "96회", "300분", "12명", "1,200원" 등.
+// 숫자+단위. "96회", "300분", "12명", "1,200원" 등.
 const NUM_UNIT_RE = /\d[\d,]*(?:\.\d+)?\s*(?:회|분|시간|초|명|개|건|곳|배|위|점|원|달러|엔|위안|유로|일|주|개월|차|등|등급|km|kg|개국|가지|시|살|세|줄|쪽|페이지|문항)/g;
-// 라틴 약어(ESM, CUDA, SNS) + 대문자 시작 영단어(Twenge, Cognitive, Method, Test).
-const LATIN_ACRONYM_RE = /\b[A-Z]{2,}\b/g;       // ESM, CUDA, SEC — ALLCAPS 약어(영/한 공통, 문장 첫 대문자와 무관)
-const LATIN_CAPWORD_RE = /\b[A-Z][a-z]{1,}\b/g;  // 한국어 텍스트의 외래 고유명사(Twenge)용 — 영어엔 미적용(문장 첫 대문자 오탐)
+// 한국어 금액/수량 단위 (천/만/억/조). "5천원", "3만", "2억원", "4천~5천원".
+const KR_AMOUNT_RE = /\d[\d,]*\s*(?:천|만|억|조)\s*(?:원|명|개|건|배)?/g;
+// 한글 수사 + 단위 ("세 배", "열 명"). '한'은 관형사 충돌로 제외.
+const NATIVE_NUM_RE = /(?<![가-힣])(?:두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|스물|서른|마흔|쉰|예순)\s*(?:개|명|번|배|살|마리|권|잔|그루|채|대|장|건|곳|가지|달|해|시간|줄|쪽)/g;
+// 단위 없는 소수 (0.42). 연도·% 와 별개.
+const DECIMAL_RE = /(?<![\d.])\d+\.\d+(?![\d%％])/g;
+// URL / 이메일 / DOI.
+const URL_RE = /(?:https?:\/\/[^\s)]+|www\.[^\s)]+|\b10\.\d{4,}\/\S+|[\w.+-]+@[\w-]+\.[\w.-]+)/gi;
+// 라틴 약어 + 대문자 영단어.
+const LATIN_ACRONYM_RE = /\b[A-Z]{2,}\b/g;
+const LATIN_CAPWORD_RE = /\b[A-Z][a-z]{1,}\b/g;
 const LATIN_ALLOW = new Set(['AI', 'SNS', 'IT', 'PC', 'TV', 'OK', 'PDF', 'URL', 'CEO', 'GPT', 'LLM', 'API', 'OS', 'CPU', 'GPU']);
+// 접미사 없는 주요 브랜드/서비스 — 허용리스트로 명시 검출(인명은 NER 영역이라 제외, judge가 의미로 보완).
+const BRANDS = ['카카오', '네이버', '쿠팡', '배달의민족', '배민', '토스', '당근마켓', '당근', '구글', '유튜브', '인스타그램', '페이스북', '트위터', '삼성', '엘지', '현대자동차', '현대', '기아', '애플', '아마존', '넷플릭스', '챗지피티', '오픈에이아이', '마이크로소프트'];
 const normTok = (s) => s.replace(/\s+/g, '').toLowerCase();
+const factKey = (s) => s.replace(/\s+/g, '').toLowerCase();
 
+// 텍스트의 모든 hard fact 토큰 추출(전 모드 Hard Ledger §7.3). hasHangul로 라틴 처리 분기.
+function extractFacts(text, hasHangul) {
+  const t = text || '';
+  const facts = [];
+  for (const y of extractYears(t)) facts.push(y);
+  for (const p of extractPercents(t)) facts.push(p);
+  for (const o of (t.match(ORG_RE) || [])) facts.push(o);
+  for (const m of (t.match(KR_AMOUNT_RE) || [])) facts.push(m.replace(/\s+/g, ''));
+  for (const m of (t.match(NUM_UNIT_RE) || [])) facts.push(m.trim());
+  for (const m of (t.match(NATIVE_NUM_RE) || [])) facts.push(m.replace(/\s+/g, ' ').trim());
+  for (const m of (t.match(DECIMAL_RE) || [])) facts.push(m);
+  for (const m of (t.match(URL_RE) || [])) facts.push(m);
+  for (const b of BRANDS) if (t.includes(b)) facts.push(b);
+  const latin = hasHangul
+    ? [...(t.match(LATIN_ACRONYM_RE) || []), ...(t.match(LATIN_CAPWORD_RE) || [])]
+    : [...(t.match(LATIN_ACRONYM_RE) || [])];
+  for (const m of latin) if (!LATIN_ALLOW.has(m.toUpperCase())) facts.push(m);
+  return facts;
+}
+
+// 신규 사실 주입(출력에 있으나 입력엔 없음) — 전 모드.
 function measureNovelty(rawText, outputText) {
-  const inT = rawText || '', outT = outputText || '';
-  const items = [];
-  const push = (x) => items.push(x);
-
-  // 연도
-  const inY = extractYears(inT), outY = extractYears(outT);
-  for (const y of outY) if (!inY.has(y)) push(y);
-  // %
-  const inP = extractPercents(inT), outP = extractPercents(outT);
-  for (const p of outP) if (!inP.has(p)) push(p);
-  // 한국어 기관·기업 접미사
-  const inO = new Set(inT.match(ORG_RE) || []), outO = new Set(outT.match(ORG_RE) || []);
-  for (const o of outO) if (!inO.has(o)) push(o);
-  // 숫자+단위
-  const inN = new Set((inT.match(NUM_UNIT_RE) || []).map(normTok));
-  for (const m of (outT.match(NUM_UNIT_RE) || [])) if (!inN.has(normTok(m))) push(m.trim());
-  // 라틴 약어/고유명사 — 언어 인지.
-  //   한국어 텍스트: 단일 라틴 대문자어도 외래 고유명사로 간주(주입 검출).
-  //   영어 텍스트: 문장 첫 대문자(This/So/Finding)가 전부라 단일어는 오탐 → ALLCAPS + 다단어 고유명사 시퀀스만.
-  const hasHangul = /[가-힣]/.test(inT + outT);
-  const latinOf = (s) => hasHangul
-    ? [...(s.match(LATIN_ACRONYM_RE) || []), ...(s.match(LATIN_CAPWORD_RE) || [])]  // 한국어: 외래 고유명사 단일어도 검출
-    : [...(s.match(LATIN_ACRONYM_RE) || [])];                                        // 영어: ALLCAPS 약어만(문장 첫 대문자 오탐 회피)
-  const inL = new Set(latinOf(inT).map(x => x.toLowerCase()));
-  for (const m of latinOf(outT)) {
-    if (LATIN_ALLOW.has(m.toUpperCase())) continue;
-    if (!inL.has(m.toLowerCase())) push(m);
+  const hasHangul = /[가-힣]/.test((rawText || '') + (outputText || ''));
+  const inKeys = new Set(extractFacts(rawText, hasHangul).map(factKey));
+  const seen = new Set(), items = [];
+  for (const f of extractFacts(outputText, hasHangul)) {
+    const k = factKey(f);
+    if (!inKeys.has(k) && !seen.has(k)) { seen.add(k); items.push(f); }
   }
-
-  const uniq = [...new Set(items)];
-  return { items: uniq, count: uniq.length };
+  return { items, count: items.length };
 }
 
 // ── 분량 과확장 가드 (C18: lengthOverrun — 모드별 정책) ──────────
@@ -136,18 +148,14 @@ function measureLength(rawText, outputText, mode) {
 // ── 손실 가드 (§3.1 "숫자 증발") — 입력의 hard fact가 출력에서 사라짐 ──
 // novelty가 "추가"를 잡는다면, 이건 "소실"을 잡는다(set-diff 반대 방향).
 function measureLostFacts(rawText, outputText) {
-  const inT = rawText || '', outT = outputText || '';
-  const lost = [];
-  const outY = extractYears(outT);
-  for (const y of extractYears(inT)) if (!outY.has(y)) lost.push(y);
-  const outP = extractPercents(outT);
-  for (const p of extractPercents(inT)) if (!outP.has(p)) lost.push(p);
-  const outO = new Set(outT.match(ORG_RE) || []);
-  for (const o of new Set(inT.match(ORG_RE) || [])) if (!outO.has(o)) lost.push(o);
-  const outN = new Set((outT.match(NUM_UNIT_RE) || []).map(normTok));
-  for (const m of (inT.match(NUM_UNIT_RE) || [])) if (!outN.has(normTok(m))) lost.push(m.trim());
-  const uniq = [...new Set(lost)];
-  return { items: uniq, count: uniq.length };
+  const hasHangul = /[가-힣]/.test((rawText || '') + (outputText || ''));
+  const outKeys = new Set(extractFacts(outputText, hasHangul).map(factKey));
+  const seen = new Set(), items = [];
+  for (const f of extractFacts(rawText, hasHangul)) {
+    const k = factKey(f);
+    if (!outKeys.has(k) && !seen.has(k)) { seen.add(k); items.push(f); }
+  }
+  return { items, count: items.length };
 }
 
 // ── thesis 허위 내부참조/인용 가드 (C2~C4: Table/Eq/§/연도인용 신규 생성 금지) ──

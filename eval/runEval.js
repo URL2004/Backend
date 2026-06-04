@@ -8,6 +8,7 @@
 // 종료코드: 불일치 1건이라도 있으면 1 (CI 실패).
 
 const floor = require('../engine/floor');
+const chunk = require('../engine/chunk');
 const cases = require('./guard-cases');
 
 let pass = 0, fail = 0;
@@ -59,6 +60,31 @@ for (const c of cases) {
     check(c.name, len.status === e.lengthStatus, `length 기대=${e.lengthStatus} 실제=${len.status} (ratio=${len.ratio})`);
   }
 }
+
+// ── 청킹 결정론 테스트 (split/merge 왕복·position·charRange) ──
+const chunkTexts = [
+  '한 문단짜리 글입니다. 줄바꿈 없음.',
+  '첫 문단입니다.\n\n둘째 문단입니다.\n\n셋째 결론 문단입니다.',
+  '\n\n앞에 빈 줄.\n\n본문.\n\n\n\n뒤에 여러 줄.\n\n',
+  '인트로.\n\n바디1.\n\n바디2.\n\n결론.'
+];
+for (const t of chunkTexts) {
+  const chunks = chunk.splitChunks(t);
+  // 왕복 보존(불변식)
+  check('chunk/round-trip', chunk.mergeChunks(chunks) === t, `merge!=원본: ${JSON.stringify(t)} -> ${JSON.stringify(chunk.mergeChunks(chunks))}`);
+  // charRange 정합 (각 청크 text === 원본 슬라이스)
+  const rangeOk = chunks.every(c => t.slice(c.start, c.end) === c.text);
+  check('chunk/charRange', rangeOk, `charRange 불일치: ${JSON.stringify(chunks.map(c => [c.start, c.end]))}`);
+}
+// position 배정
+const p3 = chunk.splitChunks('인트로.\n\n바디.\n\n결론.').map(c => c.position);
+check('chunk/position 3문단', JSON.stringify(p3) === JSON.stringify(['intro', 'body', 'conclusion']), `position=${JSON.stringify(p3)}`);
+const p1 = chunk.splitChunks('한 문단.').map(c => c.position);
+check('chunk/position 1문단', JSON.stringify(p1) === JSON.stringify(['single']), `position=${JSON.stringify(p1)}`);
+// outputText 치환 후 merge (재작성 시뮬레이션)
+const cc = chunk.splitChunks('가.\n\n나.\n\n다.');
+cc[1].outputText = '나나나.';
+check('chunk/merge with outputText', chunk.mergeChunks(cc) === '가.\n\n나나나.\n\n다.', `merge=${JSON.stringify(chunk.mergeChunks(cc))}`);
 
 console.log('\n════════ FLOOR 가드 결정론 EVAL ════════');
 console.log(`케이스 ${cases.length}개 · 검사 ${pass + fail}건 · 통과 ${pass} · 실패 ${fail}`);

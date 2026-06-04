@@ -1846,7 +1846,7 @@ function buildRefineUser(humanizeText, prevOutput, failed) {
 // 엔진 단독 실행 진입점 — billing/auth/Firebase 없이 humanize 파이프라인만.
 // 라우트(/analyze)의 humanize 분기와 동일 로직: preprocess → LLM → Pass C → verify → refine.
 // engine-test.js(로컬 테스트)와 향후 재구축이 공유하는 services/humanizer의 시드.
-async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false } = {}) {
+async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false } = {}) {
   const selectedMode = mode;
   const floor = require('../engine/floor');
   const povSeed = floor.computePovSeed(text); // rawText(원문) 기준 — 화자 보존 게이트 기준값
@@ -1950,6 +1950,19 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
   if (selectedMode === 'thesis') result.fakeInternalRefs = floor.measureFakeInternalRefs(text, result.outputText);
+
+  // P2-c: cheap detector가 flag하면(또는 force) semanticJudge 실행 — Soft Claim Ledger 닫힌세계 대조.
+  if (judge && (judge === 'force' || result.softDrift.flagged)) {
+    try {
+      const j = require('../engine/judge');
+      const ledger = await j.buildSoftClaimLedger(text, { lang, signal });
+      const verdict = await j.semanticJudge(text, result.outputText, ledger, { lang, signal });
+      result.judge = { ran: true, claims: ledger.claims.length, dropped: ledger.dropped, pass: verdict.pass, violations: verdict.violations };
+    } catch (e) { if (signal?.aborted) throw e; result.judge = { ran: false, error: e.message }; }
+  } else if (judge) {
+    result.judge = { ran: false, reason: 'softDrift not flagged (cheap gate)' };
+  }
+
   const surfaceReport = floor.collectSurfaceReport(result);
 
   return {

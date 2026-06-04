@@ -17,6 +17,7 @@ if (!process.env.LLM_BACKEND) process.env.LLM_BACKEND = 'claudecode';
 const floorV2 = process.env.FLOOR_V2 === '1';   // FLOOR_V2=1 → 화자 보존 게이트 ON
 const optIn = process.env.OPT_IN === '1';       // OPT_IN=1 → "내 경험 추가" 허용
 const chunked = process.env.CHUNK === '1';      // CHUNK=1 → server-side chunking 경로(자동 floorV2)
+const doJudge = process.env.JUDGE === '1';      // JUDGE=1 → semanticJudge 강제 실행(P2-c)
 
 const [, , fileArg, modeArg = 'assignment', langArg = 'ko'] = process.argv;
 if (!fileArg) {
@@ -47,7 +48,7 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   try {
     out = chunked
       ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn })
-      : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn });
+      : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn, judge: doJudge ? 'force' : false });
   } catch (e) {
     console.error('❌ runHumanize 실패:', e.message);
     process.exit(1);
@@ -83,6 +84,14 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   }
   const sd = r.softDrift || {};
   console.log(`  · soft drift (judge 후보): ${sd.flagged ? '⚠️ flagged' : 'none ✅'}  added=${JSON.stringify(sd.added || {})} modalΔ=${sd.modalShift ?? '-'}`);
+  if (r.judge) {
+    if (r.judge.ran) {
+      console.log(`  ★ semanticJudge        : ${r.judge.pass ? 'pass ✅' : '⚠️ 위반 ' + r.judge.violations.length + '건'} (claims ${r.judge.claims}, evidence폐기 ${r.judge.dropped})`);
+      (r.judge.violations || []).forEach(v => console.log(`      [${v.type}] "${(v.span || '').slice(0, 50)}" — ${v.detail}`));
+    } else {
+      console.log(`  ★ semanticJudge        : skip (${r.judge.reason || r.judge.error})`);
+    }
+  }
 
   line();
   if (floorV2) {

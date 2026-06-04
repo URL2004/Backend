@@ -169,6 +169,13 @@ check('contract/speakerType 조직(영어 we)', cOrg.speakerType === 'organizati
 const cOrgKo = buildContract('본 연구는 다음을 분석한다. 우리는 데이터를 수집했다.', { mode: 'thesis', lang: 'ko', optIn: false });
 check('contract/speakerType 조직(한국어 우리/본연구)', cOrgKo.speakerType === 'organization', `type=${cOrgKo.speakerType} seed=${JSON.stringify(cOrgKo.povSeed)}`);
 
+// ── Soft Claim Ledger health gate(#6) 결정론 테스트 ──
+const { validateLedgerHealth } = require('../engine/judge');
+check('ledger/0건 → no_claims', validateLedgerHealth({ claims: [], total: 0, dropped: 0 }, '짧은 글').reason === 'no_claims', 'health 분류 오류');
+check('ledger/과다폐기 → high_drop', validateLedgerHealth({ claims: [{}], total: 5, dropped: 4 }, '글').reason === 'high_drop', 'health 분류 오류');
+check('ledger/장문 과소표집 → undercovered', validateLedgerHealth({ claims: [{}, {}], total: 2, dropped: 0 }, '가'.repeat(1600)).reason === 'undercovered', 'health 분류 오류');
+check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {}, {}], total: 5, dropped: 0 }, '짧은 글').healthy === true, 'health 분류 오류');
+
 console.log('\n════════ FLOOR 가드 결정론 EVAL ════════');
 console.log(`케이스 ${cases.length}개 · 검사 ${pass + fail}건 · 통과 ${pass} · 실패 ${fail}`);
 if (fails.length) {

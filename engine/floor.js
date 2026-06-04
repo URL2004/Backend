@@ -344,6 +344,10 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn }) {
 
   if (len.status === 'overSoft') warnings.push({ gate: 'length_overSoft', detail: len.ratio });
   if (drift.droppedFirstPerson) warnings.push({ gate: 'pov_dropped', detail: `${drift.input_fp_singular}→0` });
+  // judge가 돌았지만 원장이 약해(LEDGER_TOO_WEAK) 의미판정 신뢰도 낮음 → 경고로 노출(§리뷰#6).
+  if (result.judge && result.judge.ran && result.judge.ledgerHealth && !result.judge.ledgerHealth.healthy) {
+    warnings.push({ gate: 'judge_weak_ledger', detail: result.judge.ledgerHealth.reason });
+  }
 
   const status = criticals.length ? 'blocked' : 'clean';
   return {

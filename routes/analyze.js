@@ -379,6 +379,43 @@ function buildHumanizeTool(mode, lang = 'ko') {
   };
 }
 
+// ★ FLOOR v2 전용 lean tool(§리뷰#7): 레거시 스키마의 표면 지표 필드(firstPersonAnecdoteCount·
+//   abstractStatementRatio 등)는 모델에게 "1인칭 일화 추가/추상 진술 늘리기" 같은 anti-FLOOR 행동을
+//   유도한다. floorV2는 보존이 최우선이므로 outputText만 받고, 표면 지표는 서버가 실측(verifyCheckFields).
+//   plan을 outputText 앞에 둬 JSON-CoT(선계획→후작성) 이점은 유지.
+function buildLeanHumanizeTool(lang = 'ko') {
+  const isEn = lang === 'en';
+  return {
+    name: 'return_humanized_result',
+    description: isEn
+      ? 'Return the rewritten text under the FLOOR rules (preservation-first).'
+      : 'FLOOR(보존 우선) 규칙을 지켜 재작성한 텍스트를 반환한다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        plan: {
+          type: 'string',
+          description: isEn
+            ? 'Brief pre-writing plan (2-4 sentences): (1) list the facts/numbers/proper nouns to keep verbatim and declare NO new ones will be added; (2) name the source speaker to preserve (individual "I" / organization "we" / impersonal) and declare no new speaker/anecdote; (3) state the target length. Then write outputText accordingly.'
+            : '작성 전 간단 계획(2~4문장): (1) 그대로 유지할 사실·숫자·고유명사를 나열하고 새로 추가하지 않겠다고 선언, (2) 보존할 화자(개인 "나/저" / 조직 "우리" / 비인칭)를 적고 새 화자·새 일화를 만들지 않겠다고 선언, (3) 목표 분량 명시. 그런 다음 outputText를 작성.'
+        },
+        outputText: {
+          type: 'string',
+          description: isEn ? 'The full rewritten text. Follow the plan and the FLOOR above.' : '재작성한 글 전체. 위 plan과 FLOOR를 지켜 작성.'
+        },
+        riskFlags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: isEn
+            ? 'Optional: FLOOR risks you could not fully avoid (e.g. "had to shorten a section", "uncertain proper noun kept"). Empty array if none.'
+            : '선택: 완전히 피하지 못한 FLOOR 위험(예: "일부 축약 불가피", "불확실한 고유명사 유지"). 없으면 빈 배열.'
+        }
+      },
+      required: ['plan', 'outputText']
+    }
+  };
+}
+
 function buildDetectTool(lang = 'ko') {
   const isEn = lang === 'en';
   return {
@@ -446,6 +483,9 @@ function getDetectTool(lang = 'ko') {
 }
 function getHumanizeToolFor(mode, lang = 'ko') {
   return buildHumanizeTool(mode, lang);
+}
+function getLeanHumanizeTool(lang = 'ko') {
+  return buildLeanHumanizeTool(lang);
 }
 
 // ★ 모델의 자기보고를 신뢰하지 않고 서버가 직접 실측. 실측 > 보고면 덮어쓰고 selfCheckPass를 재계산.
@@ -1845,6 +1885,18 @@ function buildRefineUser(humanizeText, prevOutput, failed) {
 }
 
 // 엔진 단독 실행 진입점 — billing/auth/Firebase 없이 humanize 파이프라인만.
+// 의미판정(semanticJudge) 트리거 사유(§리뷰#5): cheap soft-drift 외에 결정론 위험신호
+//   (분량 부족·사실 소실·반복·신규 사실)도 judge로 재확인 → repair 기회 + 의미 검증.
+function judgeTriggerReasons(result) {
+  const r = [];
+  if (result.softDrift?.flagged) r.push('softDrift');
+  if (result.floorLength?.status === 'short') r.push('length_short');
+  if ((result.lostFacts?.count || 0) > 0) r.push('lostFacts');
+  if ((result.repetition?.total || 0) > 0) r.push('repetition');
+  if ((result.floorNovelty?.count || 0) > 0) r.push('novelty');
+  return r;
+}
+
 // 라우트(/analyze)의 humanize 분기와 동일 로직: preprocess → LLM → Pass C → verify → refine.
 // engine-test.js(로컬 테스트)와 향후 재구축이 공유하는 services/humanizer의 시드.
 async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false } = {}) {
@@ -1871,7 +1923,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   let humanizeSystem = floorV2
     ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy })
     : getHumanizeSystem(selectedMode, lang);
-  const humanizeTool = getHumanizeToolFor(selectedMode, lang);
+  // floorV2는 lean tool(outputText 중심) — 레거시 표면지표 필드의 anti-FLOOR 유도 제거(§리뷰#7).
+  const humanizeTool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(selectedMode, lang);
   const userContent = `[재작성할 텍스트]\n${humanizeText}`;
   const inputParaCount = humanizeText.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
   const inputCharLen = humanizeText.replace(/\s+/g, '').length;
@@ -1949,30 +2002,33 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   result.floorNovelty = floor.measureNovelty(text, result.outputText);
   result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
+  result.repetition = floor.measureRepetition(result.outputText);
+  result.lostFacts = floor.measureLostFacts(text, result.outputText);
   if (selectedMode === 'thesis') result.fakeInternalRefs = floor.measureFakeInternalRefs(text, result.outputText);
 
-  // P2-c: cheap detector가 flag하면(또는 force) semanticJudge → 위반 시 repair → 재judge(닫힌 루프).
-  if (judge && (judge === 'force' || result.softDrift.flagged)) {
+  // P2-c: semanticJudge 트리거(§리뷰#5) — soft drift + 결정론 위험신호 → 위반 시 repair → 재judge(닫힌 루프).
+  const judgeTrigger = judgeTriggerReasons(result);
+  if (judge && (judge === 'force' || judgeTrigger.length)) {
     try {
       const j = require('../engine/judge');
       const jr = await j.judgeAndRepair(text, result.outputText, { lang, signal });
       contract.softClaimLedger = jr.ledger; // Contract에 Soft Claim Ledger 채움
       if (jr.outputText !== result.outputText) {
         result.outputText = jr.outputText;
-        // 교정으로 출력이 바뀌었으니 보존 가드 재측정.
+        // 교정으로 출력이 바뀌었으니 보존 가드 전부 재측정.
         result.povDrift = floor.measurePovDrift(text, result.outputText, povSeed);
         result.floorNovelty = floor.measureNovelty(text, result.outputText);
         result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
         result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
+        result.repetition = floor.measureRepetition(result.outputText);
+        result.lostFacts = floor.measureLostFacts(text, result.outputText);
       }
-      result.judge = { ran: true, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations: jr.verdict.violations, rounds: jr.rounds };
+      result.judge = { ran: true, trigger: judgeTrigger, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations: jr.verdict.violations, rounds: jr.rounds, ledgerHealth: jr.ledgerHealth };
     } catch (e) { if (signal?.aborted) throw e; result.judge = { ran: false, error: e.message }; }
   } else if (judge) {
-    result.judge = { ran: false, reason: 'softDrift not flagged (cheap gate)' };
+    result.judge = { ran: false, reason: 'no risk trigger (cheap gate)' };
   }
 
-  result.repetition = floor.measureRepetition(result.outputText);
-  result.lostFacts = floor.measureLostFacts(text, result.outputText);
   // ★ 노출 게이트(E.3): 모든 측정을 criticals/warnings로 모아 status 결정. criticals 있으면 blocked.
   result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn });
   const surfaceReport = floor.collectSurfaceReport(result);
@@ -2013,7 +2069,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   let humanizeSystem = floorV2
     ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy })
     : getHumanizeSystem(mode, lang);
-  const tool = getHumanizeToolFor(mode, lang);
+  const tool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(mode, lang);  // floorV2 lean tool(§리뷰#7)
   const tail = (s, n) => (s || '').slice(-n);
   const head = (s, n) => (s || '').slice(0, n);
 
@@ -2045,30 +2101,48 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         await applyPassC(r2, lang, signal);
         if (r2.outputText) c.outputText = r2.outputText;
       } catch (e) { if (signal?.aborted) throw e; }
+      // ★ repair 재검증 + raw fallback(§리뷰#3): 고치고도 날조·소실·화자주입이 남으면 원문 청크로 폴백
+      //   (휴머나이징 포기 < 날조/소실 노출 방지 — FLOOR가 탐지기 우회보다 우선).
+      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position });
+      const HARD = new Set(['novelty', 'lost_facts', 'pov', 'fake_ref']);
+      const residual = after.filter(x => HARD.has(x.type));
+      if (residual.length) {
+        c.outputText = c.text;            // 원문 그대로 — 이 청크는 사실·화자가 정의상 보존됨
+        c.fellBack = true;
+        c.fallbackReason = residual.map(x => x.type).join(',');
+      }
     }
   }
+  const fallbackCount = chunks.filter(c => c.fellBack).length;
 
   const merged = mergeChunks(chunks);
   const result = { outputText: merged };
   result.povSeed = povSeed;
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, merged);
+  // 트리거 판단용 결정론 측정(병합 기준).
+  result.floorNovelty = floor.measureNovelty(text, merged);
+  result.floorLength = floor.measureLength(text, merged, mode);
+  result.repetition = floor.measureRepetition(merged);
+  result.lostFacts = floor.measureLostFacts(text, merged);
 
-  // P2-c: judge on merged(닫힌세계=전체 ledger) → 위반 시 repair → 재judge. span은 nearest_chunk_id로 매핑(§7.2).
-  if (judge && (judge === 'force' || result.softDrift.flagged)) {
+  // P2-c: semanticJudge 트리거(§리뷰#5) — soft drift + 결정론 위험신호. 닫힌세계=전체 ledger.
+  //   span은 nearest_chunk_id로 매핑(§7.2).
+  const judgeTrigger = judgeTriggerReasons(result);
+  if (judge && (judge === 'force' || judgeTrigger.length)) {
     try {
       const j = require('../engine/judge');
       const jr = await j.judgeAndRepair(text, merged, { lang, signal });
       contract.softClaimLedger = jr.ledger;
       if (jr.outputText !== merged) result.outputText = jr.outputText;
       const violations = (jr.verdict.violations || []).map(v => ({ ...v, nearest_chunk_id: nearestChunkId(chunks, v.span) }));
-      result.judge = { ran: true, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations, rounds: jr.rounds };
+      result.judge = { ran: true, trigger: judgeTrigger, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations, rounds: jr.rounds, ledgerHealth: jr.ledgerHealth };
       result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
     } catch (e) { if (signal?.aborted) throw e; result.judge = { ran: false, error: e.message }; }
   } else if (judge) {
-    result.judge = { ran: false, reason: 'softDrift not flagged (cheap gate)' };
+    result.judge = { ran: false, reason: 'no risk trigger (cheap gate)' };
   }
 
-  // 최종 출력 기준 가드 재측정.
+  // 최종 출력 기준 가드 재측정(judge repair 반영).
   const finalOut = result.outputText;
   result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);
   result.floorNovelty = floor.measureNovelty(text, finalOut);
@@ -2081,7 +2155,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   return {
     result, mode, lang, chunked: true, chunkCount: chunks.length, contract,
     status: result.floorReport.status, floorReport: result.floorReport,
-    chunks: chunks.map(c => ({ index: c.index, position: c.position, inLen: c.text.length, outLen: (c.outputText || '').length })),
+    chunks: chunks.map(c => ({ index: c.index, position: c.position, inLen: c.text.length, outLen: (c.outputText || '').length, fellBack: !!c.fellBack, fallbackReason: c.fallbackReason || null })),
+    fallbackCount,
     povDrift: result.povDrift, floorNovelty: result.floorNovelty, floorLength: result.floorLength,
     repetition: result.repetition, softDrift: result.softDrift, judge: result.judge,
     floorViolations, povSeed, optIn, floorV2: true

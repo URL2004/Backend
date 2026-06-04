@@ -77,6 +77,21 @@ async function buildSoftClaimLedger(rawText, { lang = 'ko', signal } = {}) {
   return { claims: capped, total: claims.length, dropped: claims.length - kept.length };
 }
 
+// 원장 건전성 게이트(§리뷰#6): 닫힌세계 판정의 신뢰도 사전점검.
+//   - 0건: 닫힌세계가 비어 semanticJudge의 "pass"가 무의미(보통 LLM 일시 실패).
+//   - 과다 폐기(채택<절반): evidence_text 환각이 많아 원장 신뢰 불가.
+//   - 장문 과소표집: 본문은 긴데 claim이 3건 미만 → 커버리지 부족.
+function validateLedgerHealth(ledger, rawText) {
+  const claims = ledger?.claims?.length || 0;
+  const total = ledger?.total || 0;
+  const dropped = ledger?.dropped || 0;
+  const rawLen = (rawText || '').replace(/\s+/g, '').length;
+  if (claims === 0) return { healthy: false, reason: 'no_claims' };
+  if (total >= 3 && dropped / total > 0.5) return { healthy: false, reason: 'high_drop' };
+  if (rawLen >= 1500 && claims < 3) return { healthy: false, reason: 'undercovered' };
+  return { healthy: true, reason: 'ok' };
+}
+
 async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal } = {}) {
   const claimsText = (ledger?.claims || []).map((c, i) => `${i + 1}. ${c.claim}`).join('\n') || '(none)';
   const system = lang === 'en'
@@ -106,7 +121,14 @@ async function repairViolations(rawText, outputText, ledger, violations, { lang 
 
 // 원장 1회 추출 → judge → 위반 시 repair → 재judge, 최대 maxRounds. P2-c 닫힌 루프(§7.2).
 async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRounds = 2 } = {}) {
-  const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
+  let ledger = await buildSoftClaimLedger(rawText, { lang, signal });
+  let health = validateLedgerHealth(ledger, rawText);
+  // 0건/과다폐기는 claudecode 일시실패가 잦아 1회 재구축 시도.
+  if (!health.healthy && (health.reason === 'no_claims' || health.reason === 'high_drop')) {
+    const retry = await buildSoftClaimLedger(rawText, { lang, signal });
+    const retryHealth = validateLedgerHealth(retry, rawText);
+    if ((retry.claims.length || 0) > (ledger.claims.length || 0) || retryHealth.healthy) { ledger = retry; health = retryHealth; }
+  }
   let text = outputText;
   let verdict = await semanticJudge(rawText, text, ledger, { lang, signal });
   let rounds = 0;
@@ -117,7 +139,7 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRou
     text = repaired;
     verdict = await semanticJudge(rawText, text, ledger, { lang, signal });
   }
-  return { ledger, outputText: text, verdict, rounds };
+  return { ledger, outputText: text, verdict, rounds, ledgerHealth: health };
 }
 
-module.exports = { buildSoftClaimLedger, semanticJudge, repairViolations, judgeAndRepair, llmJSON, llmText, evidenceMatches };
+module.exports = { buildSoftClaimLedger, semanticJudge, repairViolations, judgeAndRepair, validateLedgerHealth, llmJSON, llmText, evidenceMatches };

@@ -307,7 +307,7 @@ Follow these rules strictly when rewriting.
 5. 감각,수치 디테일: 추상적 서술 대신 구체 감각 (온도, 시간 경과, 농도, 횟수, 오차 범위)
 
 ### [Phase 1: 구조적 엔트로피 강화 (Burstiness & Perplexity)]
-1. 문장 길이의 동적 비대칭성: '3단 장문(40자+) - 1단 단문(15자 내외)' 주기를 철저히 준수하라. AI 특유의 일정한 문장 호흡을 의도적으로 파괴하라.
+1. 문장 길이의 동적 비대칭성: 장문(40자+)과 단문(15자 내외)을 불규칙하게 교차해 AI 특유의 일정한 문장 호흡을 깨라. ★ 단, 문장을 늘리거나 새 문장을 추가해 분량을 키우지 마라 — 원문 문장을 재구성·재배치할 뿐이다(전체 길이 원문 대비 0.85~1.20 유지).
 2. 논리적 파편화와 재연결: '또한', '게다가', '결과적으로' 같은 선형적 연결어를 80% 제거하라. 대신 "이러한 현상의 이면에는...", "기존 가설과 대치되는 지점은...", "본 실험의 한계치인 ~에 주목할 필요가 있다"와 같은 비선형적 전환구를 사용하라.
 
 ### [Phase 2: 원문 정보 보존 (FLOOR — 신규 사실 생성 금지)]
@@ -347,9 +347,9 @@ Follow these rules strictly when rewriting.
 # Goal: Reconstruct the input text to achieve a 0% AI detection rate by eliminating "statistical predictability" and replacing it with high-entropy, data-dense, and critical scholarly prose.
 
 ### [Phase 1: Entropy & Burstiness Engineering]
-1. Dynamic Sentence Variance: Strictly alternate between "Complex-Long" (35+ words) and "Punchy-Short" (under 12 words) sentences. Avoid the rhythmic monotony typical of LLMs.
+1. Dynamic Sentence Variance: Alternate between "Complex-Long" (35+ words) and "Punchy-Short" (under 12 words) sentences to avoid LLM monotony. ★ Do NOT add length or new sentences to achieve this — restructure existing source sentences only (keep total length within 0.85–1.20 of the source).
 2. Connector Suppression: Reduce the use of "Moreover," "Furthermore," and "In conclusion" by 90%. Instead, use "Notably," "This discrepancy suggests," or "In this light," or use zero-connector transitions where the logic flows through the subject matter itself.
-3. Parenthetical Disruption: Interject technical details or citations mid-sentence using parentheses—e.g., (cf. Smith et al., 2023) or (p < .05)—to break the linear prediction of the AI detector.
+3. Parenthetical Disruption: Use parenthetical asides ONLY for technical details already present in the source. Do NOT invent citations, author names, years, or p-values (never fabricate "(cf. Smith et al., 2023)" or "(p < .05)").
 
 ### [Phase 2: Preserve Source Facts (FLOOR — no fabrication)]
 1. Preserve academic information already in the source (figures, variable names, versions, citations, proper nouns) exactly.

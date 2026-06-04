@@ -77,10 +77,12 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   const pol = fl.policy ? `(목표 ${fl.policy.min}~${fl.policy.max}, hard ${fl.policy.hardMax})` : '';
   console.log(`  ★ 분량비(length)        : ${pct(fl.ratio ?? r.lengthRatio)} ${lmark}  ${pol}`);
   if (out.chunked) {
-    const rep = out.repetition || {};
+    const rep = out.repetition || r.repetition || {};
     console.log(`  ★ 결론 반복(repetition) : ${rep.count ? '⚠️ ' + rep.count + '건(최대 ' + rep.maxRepeat + '회)' : '0건 ✅'}`);
     console.log(`  · 청크 ${out.chunkCount}개: ${out.chunks.map(c => `${c.position}(${c.inLen}→${c.outLen})`).join(', ')}`);
   }
+  const sd = r.softDrift || {};
+  console.log(`  · soft drift (judge 후보): ${sd.flagged ? '⚠️ flagged' : 'none ✅'}  added=${JSON.stringify(sd.added || {})} modalΔ=${sd.modalShift ?? '-'}`);
 
   line();
   if (floorV2) {

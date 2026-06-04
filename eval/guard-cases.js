@@ -90,6 +90,37 @@ module.exports = [
     expect: { fakeRefCount0: true }
   },
 
+  // ── soft drift (cheap risk detector): 양성 ──
+  {
+    name: 'soft/미래전망+불확실 추가(보고서 예시)',
+    mode: 'assignment',
+    input: '꾸준히 기록하고 싶다.',
+    output: '6개월 후 몸이 어떻게 반응할지 모르겠다.',
+    expect: { softFlagged: true, softHas: ['future', 'uncertainty'] }
+  },
+  {
+    name: 'soft/영어 reaction+future+uncertainty',
+    mode: 'assignment',
+    input: 'Keep a record of the process.',
+    output: 'Honestly, in the future who knows how it turns out.',
+    expect: { softFlagged: true }
+  },
+  // ── soft drift: 음성(오탐 금지) ──
+  {
+    name: 'soft/마커 추가 없음 → flag 안 함',
+    mode: 'assignment',
+    input: '기술이 사회를 바꾼다. 사람들은 적응한다.',
+    output: '기술은 사회를 빠르게 바꾼다. 사람들은 그에 적응해 간다.',
+    expect: { softFlagged: false }
+  },
+  {
+    name: 'soft/원문에 이미 있던 감정은 추가 아님',
+    mode: 'blog',
+    input: '솔직히 그때 좀 무서웠다.',
+    output: '솔직히 그 순간이 꽤 무서웠다.',
+    expect: { softFlagged: false }
+  },
+
   // ── length: 모드별 상태 ──
   {
     name: 'length/thesis 과확장 hard',

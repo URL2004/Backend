@@ -9,6 +9,7 @@
 
 const floor = require('../engine/floor');
 const chunk = require('../engine/chunk');
+const softguard = require('../engine/softguard');
 const cases = require('./guard-cases');
 
 let pass = 0, fail = 0;
@@ -58,6 +59,18 @@ for (const c of cases) {
   if (e.lengthStatus) {
     const len = floor.measureLength(c.input, c.output, c.mode);
     check(c.name, len.status === e.lengthStatus, `length 기대=${e.lengthStatus} 실제=${len.status} (ratio=${len.ratio})`);
+  }
+
+  // soft drift (cheap risk detector)
+  if (typeof e.softFlagged === 'boolean' || e.softHas) {
+    const sd = softguard.measureSoftDrift(c.input, c.output);
+    if (typeof e.softFlagged === 'boolean') {
+      check(c.name, sd.flagged === e.softFlagged, `softFlagged 기대=${e.softFlagged} 실제=${sd.flagged} (added=${JSON.stringify(sd.added)} modalShift=${sd.modalShift})`);
+    }
+    if (e.softHas) {
+      const missing = e.softHas.filter(k => (sd.added[k] || 0) < 1);
+      check(c.name, missing.length === 0, `soft 누락: ${missing.join(', ')} | added=${JSON.stringify(sd.added)}`);
+    }
   }
 }
 

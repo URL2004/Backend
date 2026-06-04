@@ -1948,6 +1948,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   result.povDrift = povDrift;
   result.floorNovelty = floor.measureNovelty(text, result.outputText);
   result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
+  result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
   if (selectedMode === 'thesis') result.fakeInternalRefs = floor.measureFakeInternalRefs(text, result.outputText);
   const surfaceReport = floor.collectSurfaceReport(result);
 
@@ -2027,6 +2028,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.floorNovelty = floor.measureNovelty(text, merged);
   result.floorLength = floor.measureLength(text, merged, mode);
   result.repetition = floor.measureRepetition(merged);
+  result.softDrift = require('../engine/softguard').measureSoftDrift(text, merged);
   const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode });
   return {
     result, mode, lang, chunked: true, chunkCount: chunks.length,

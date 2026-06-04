@@ -1849,7 +1849,8 @@ function buildRefineUser(humanizeText, prevOutput, failed) {
 async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false } = {}) {
   const selectedMode = mode;
   const floor = require('../engine/floor');
-  const povSeed = floor.computePovSeed(text); // rawText(원문) 기준 — 화자 보존 게이트 기준값
+  const contract = require('../engine/contract').buildContract(text, { mode: selectedMode, lang, optIn }); // 단일 진실
+  const povSeed = contract.povSeed; // 화자 보존 게이트 기준값(Contract에서)
 
   // 사전 처리(assignment만): 결정론 swap + (API 키 있을 때만)콤마/단정정의문 micro-surgery.
   let humanizeText = text;
@@ -1956,6 +1957,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     try {
       const j = require('../engine/judge');
       const jr = await j.judgeAndRepair(text, result.outputText, { lang, signal });
+      contract.softClaimLedger = jr.ledger; // Contract에 Soft Claim Ledger 채움
       if (jr.outputText !== result.outputText) {
         result.outputText = jr.outputText;
         // 교정으로 출력이 바뀌었으니 보존 가드 재측정.
@@ -1971,6 +1973,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   }
 
   const surfaceReport = floor.collectSurfaceReport(result);
+  result.contract = contract; // 단일 진실 첨부
 
   return {
     result,
@@ -1978,6 +1981,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     lang,
     refined,
     refineReason,
+    contract,
     failedFields: failed,
     floorViolations,
     surfaceReport,
@@ -1997,7 +2001,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false } = {}) {
   const floor = require('../engine/floor');
   const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
-  const povSeed = floor.computePovSeed(text);
+  const contract = require('../engine/contract').buildContract(text, { mode, lang, optIn }); // 단일 진실
+  const povSeed = contract.povSeed;
   const chunks = splitChunks(text);
 
   let humanizeSystem = getHumanizeSystem(mode, lang);
@@ -2050,6 +2055,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const j = require('../engine/judge');
       const jr = await j.judgeAndRepair(text, merged, { lang, signal });
+      contract.softClaimLedger = jr.ledger;
       if (jr.outputText !== merged) result.outputText = jr.outputText;
       const violations = (jr.verdict.violations || []).map(v => ({ ...v, nearest_chunk_id: nearestChunkId(chunks, v.span) }));
       result.judge = { ran: true, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations, rounds: jr.rounds };
@@ -2066,8 +2072,9 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.floorLength = floor.measureLength(text, finalOut, mode);
   result.repetition = floor.measureRepetition(finalOut);
   const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode });
+  result.contract = contract;
   return {
-    result, mode, lang, chunked: true, chunkCount: chunks.length,
+    result, mode, lang, chunked: true, chunkCount: chunks.length, contract,
     chunks: chunks.map(c => ({ index: c.index, position: c.position, inLen: c.text.length, outLen: (c.outputText || '').length })),
     povDrift: result.povDrift, floorNovelty: result.floorNovelty, floorLength: result.floorLength,
     repetition: result.repetition, softDrift: result.softDrift, judge: result.judge,

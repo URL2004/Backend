@@ -10,6 +10,7 @@
 const floor = require('../engine/floor');
 const chunk = require('../engine/chunk');
 const softguard = require('../engine/softguard');
+const { buildContract } = require('../engine/contract');
 const cases = require('./guard-cases');
 
 let pass = 0, fail = 0;
@@ -102,6 +103,15 @@ check('chunk/merge with outputText', chunk.mergeChunks(cc) === '가.\n\n나나�
 const nc = chunk.splitChunks('도입 문장이다.\n\n본문 핵심 주장.\n\n결론 요약이다.');
 check('chunk/nearestChunkId 본문', chunk.nearestChunkId(nc, '본문 핵심 주장') === 1, `id=${chunk.nearestChunkId(nc, '본문 핵심 주장')}`);
 check('chunk/nearestChunkId 미존재', chunk.nearestChunkId(nc, '없는 문장 xyz') === null, `id=${chunk.nearestChunkId(nc, '없는 문장 xyz')}`);
+
+// ── Contract 결정론 테스트 ──
+const cKo = buildContract('이 글은 비인칭 서술이다. 기술이 사회를 바꾼다.', { mode: 'thesis', lang: 'ko', optIn: false });
+check('contract/thesis 비인칭 게이트 닫힘', cKo.speakerGateClosed === true && cKo.povSeed.fp_singular === 0, `seed=${JSON.stringify(cKo.povSeed)} gate=${cKo.speakerGateClosed}`);
+check('contract/thesis length 정책', cKo.lengthPolicy && cKo.lengthPolicy.hardMax === 1.3, `pol=${JSON.stringify(cKo.lengthPolicy)}`);
+const cFp = buildContract('저는 작년에 그 일을 했습니다.', { mode: 'assignment', lang: 'ko', optIn: false });
+check('contract/1인칭 있으면 게이트 열림', cFp.speakerGateClosed === false && cFp.povSeed.fp_singular >= 1, `seed=${JSON.stringify(cFp.povSeed)} gate=${cFp.speakerGateClosed}`);
+const cOpt = buildContract('비인칭 서술.', { mode: 'assignment', lang: 'ko', optIn: true });
+check('contract/optIn이면 게이트 열림', cOpt.speakerGateClosed === false, `gate=${cOpt.speakerGateClosed}`);
 
 console.log('\n════════ FLOOR 가드 결정론 EVAL ════════');
 console.log(`케이스 ${cases.length}개 · 검사 ${pass + fail}건 · 통과 ${pass} · 실패 ${fail}`);

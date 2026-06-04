@@ -233,6 +233,7 @@ module.exports = {
   measureFakeInternalRefs,
   measureLength,
   measureRepetition,
+  LENGTH_POLICY,
   collectFloorViolations,
   buildFloorRefineUser,
   collectSurfaceReport

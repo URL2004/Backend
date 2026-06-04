@@ -29,4 +29,12 @@ function line() { console.log('─'.repeat(60)); }
   console.log(`[judge→repair] rounds=${jr.rounds}  최종 pass=${jr.verdict.pass}  잔여 위반 ${jr.verdict.violations.length}건`);
   console.log('  교정 결과:', jr.outputText);
   line();
+  // 정서/의도 역전 케이스 (만자 엔딩형: 긍정 의지 → 불확실/부정)
+  const intentSrc = '앞으로도 꾸준히 이어가고 싶다. 매일 기록할 생각이다.';
+  const invertedOut = '앞으로 계속 이어갈 수 있을지 솔직히 모르겠다. 어느 날 갑자기 그만둘지도 모른다.';
+  const il = await judge.buildSoftClaimLedger(intentSrc, { lang: 'ko' });
+  const iv = await judge.semanticJudge(intentSrc, invertedOut, il, { lang: 'ko' });
+  console.log(`[정서 역전] pass=${iv.pass}  위반 ${iv.violations.length}건 (기대: 검출)`);
+  iv.violations.forEach(v => console.log(`  ⚠️ [${v.type}] "${v.span}" — ${v.detail}`));
+  line();
 })().catch(e => { console.error('❌', e.message); process.exit(1); });

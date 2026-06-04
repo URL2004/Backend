@@ -1972,6 +1972,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     result.judge = { ran: false, reason: 'softDrift not flagged (cheap gate)' };
   }
 
+  result.repetition = floor.measureRepetition(result.outputText);
   const surfaceReport = floor.collectSurfaceReport(result);
   result.contract = contract; // 단일 진실 첨부
 

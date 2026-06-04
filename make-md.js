@@ -25,13 +25,20 @@ const doJudge = process.env.JUDGE === '1';
       : `> semanticJudge: skip (${r.judge.reason || r.judge.error})\n`;
     (r.judge.violations || []).forEach(v => { judgeLine += `>   - [${v.type}] "${(v.span || '').slice(0, 60)}" — ${v.detail}\n`; });
   }
+  const ct = r.contract || {};
+  const rep = r.repetition || {};
+  const inLen = text.replace(/\s+/g, '').length;
+  const outLen = (r.outputText || '').replace(/\s+/g, '').length;
   const md =
     `# Humanized — ${mode}/${lang}\n\n` +
-    `> FLOOR v2 엔진 · LLM_BACKEND=${process.env.LLM_BACKEND} · ${sec}s · refine=${out.refineReason || '-'}\n` +
-    `> 가드: novelty ${nov.count ?? '?'}건${nov.count ? ' (' + (nov.items || []).join(', ') + ')' : ''} · ` +
-    `length ${fl.ratio ?? '?'}(${fl.status ?? '?'}) · povDrift ${out.povDrift ? out.povDrift.introducedFirstPerson : '?'} · ` +
-    `softDrift ${sd.flagged ? 'flagged' : 'none'}\n` +
-    judgeLine +
+    `## 엔진 리포트 (FLOOR v2)\n` +
+    `- LLM_BACKEND: ${process.env.LLM_BACKEND} · 소요 ${sec}s · refine: ${out.refineReason || '-'}\n` +
+    `- 입력 ${inLen}자 → 출력 ${outLen}자 (분량비 **${fl.ratio ?? '?'}**, ${fl.status ?? '?'}; 목표 ${ct.lengthPolicy ? ct.lengthPolicy.min + '~' + ct.lengthPolicy.max : '-'})\n` +
+    `- ★ 화자 보존(pov): 원문 1인칭 ${out.povDrift ? out.povDrift.input_fp_singular : '?'} → 출력 ${out.povDrift ? out.povDrift.output_fp_singular : '?'} → ${out.povDrift && out.povDrift.introducedFirstPerson ? '⚠️ 새 1인칭 주입' : '✅ 보존'} (화자게이트 ${ct.speakerGateClosed ? 'closed' : 'open'})\n` +
+    `- ★ 신규 사실(novelty): ${nov.count ?? '?'}건 ${nov.count ? '⚠️ (' + (nov.items || []).join(', ') + ')' : '✅'}\n` +
+    `- ★ 결론 반복(repetition): ${rep.count ? '⚠️ ' + rep.count + '건' : '0건 ✅'}\n` +
+    `- soft drift (judge 후보): ${sd.flagged ? '⚠️ flagged' : 'none ✅'} · added=${JSON.stringify(sd.added || {})} · modalΔ=${sd.modalShift ?? '-'}\n` +
+    (judgeLine ? judgeLine : '') +
     `\n---\n\n` + (r.outputText || '(없음)') + '\n';
   fs.writeFileSync(outFile, md, 'utf8');
   console.log(`✅ wrote ${outFile}`);

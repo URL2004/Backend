@@ -63,8 +63,10 @@ async function callViaClaudeCode({ userText, systemText, tool, model, signal }) 
 
   // 헤드리스 flakiness 방어: 빈/짧은 응답 또는 "Execution error" 사텐넬이면 최대 3회 재시도.
   const isBad = (s) => !s || s.replace(/\s+/g, '').length < 30 || /^execution error/i.test(s.trim());
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   let text = '';
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await sleep(1500); // transient "Execution error" 완화용 짧은 백오프
     try {
       text = await runClaudeCode(combined, { model, signal });
     } catch (e) {

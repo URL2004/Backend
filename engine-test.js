@@ -65,13 +65,14 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   console.log('[FLOOR 가드 — ★ 사실성·보존 (전 모드)]');
   const pd = out.povDrift || {};
   const nov = (r.floorNovelty && r.floorNovelty.items) || r.noveltyInjectionItems || [];
-  console.log(`  ★ 화자 드리프트(pov)    : 원문 1인칭 ${pd.input_fp_singular ?? '?'} → 출력 ${pd.output_fp_singular ?? '?'}  ${pd.introducedFirstPerson ? '⚠️ 새 1인칭 주입(화자 변경)' : '✅ 보존'}`);
+  const povMark = pd.introducedFirstPerson ? (optIn ? '✅ 허용(opt-in)' : '⚠️ 새 1인칭 주입(화자 변경)') : '✅ 보존';
+  console.log(`  ★ 화자 드리프트(pov)    : 원문 1인칭 ${pd.input_fp_singular ?? '?'} → 출력 ${pd.output_fp_singular ?? '?'}  ${povMark}`);
   console.log(`  ★ 신규 사실 주입(novelty): ${nov.length ? '⚠️ ' + nov.join(', ') : '0건 ✅'}`);
   if (r.fakeInternalRefs) console.log(`  ★ 허위 내부참조(thesis)  : ${r.fakeInternalRefs.count ? '⚠️ ' + r.fakeInternalRefs.fabricated.join(', ') : '0건 ✅'}`);
-  const lr = r.lengthRatio;
-  let lmark = '✅';
-  if (typeof lr === 'number') { if (lr > 1.3) lmark = '⚠️ 과확장'; else if (lr < 0.9) lmark = '⚠️ 분량 부족'; }
-  console.log(`  ★ 분량비(length)        : ${pct(lr)} ${lmark}  (목표 0.9~1.3)`);
+  const fl = r.floorLength || {};
+  const lmark = fl.status === 'overHard' ? '⚠️ 과확장(hard)' : fl.status === 'overSoft' ? '△ 상한 초과(soft)' : fl.status === 'short' ? '⚠️ 분량 부족' : '✅';
+  const pol = fl.policy ? `(목표 ${fl.policy.min}~${fl.policy.max}, hard ${fl.policy.hardMax})` : '';
+  console.log(`  ★ 분량비(length)        : ${pct(fl.ratio ?? r.lengthRatio)} ${lmark}  ${pol}`);
 
   line();
   if (floorV2) {

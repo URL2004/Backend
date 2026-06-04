@@ -215,7 +215,7 @@ function buildHumanizeTool(mode, lang = 'ko') {
       type: 'string',
       description: isEn
         ? "Mandatory pre-writing plan, written in English. State 1 sentence each for: (1) List every statistic, year, proper noun, and organization name from the input — mark which ones will be kept verbatim, and declare that NO new statistics/years/proper nouns will be introduced. (2) Declare that the example text's vocabulary will NOT be copied; only its tone, structure, and hedge distribution will be imitated. (3) Identify the 3 rules from the system prompt most at risk of being violated for this specific text. (4) If the original follows a stock frame, state the rearrangement direction. (5) **Natural flow first**: declare that information will NOT be compressed into one sentence; natural connectors (so / but / however / in practice / honestly / in the end) will be used between sentences to keep flow smooth. Rule satisfaction must not create a disjointed feel. 5–7 sentences."
-        : '글 작성 전 필수 적용 계획. 다음 5개 항목을 1문장씩 명시: (1) 입력 글에 등장한 통계·연도·고유명사·기관명을 모두 나열하고, 출력에서 그대로 유지할 항목만 표시. 입력에 없는 새 통계·연도·고유명사는 절대 추가하지 않는다고 선언. (2) 위 예시 글의 어휘를 그대로 베끼지 않고 톤·구조·hedge 분포만 모방한다고 선언. (3) 시스템 프롬프트의 P1·P2·룰 1·2·4·5 중 이 글에 가장 위험한 룰 3개 식별. **P2 분량 보존(원문 ×0.9~1.1)은 무조건 충족** — 짧아지면 원문 디테일·근거·예시 복원으로 채움 (P0 띄어쓰기·룰 2 콤마 누적·룰 3 GPT-ism 어휘·P1-보강 단정정의문은 서버 결정론 강제). (4) 원문 흐름이 전형 프레임이면 재배치 방향. (5) **자연 흐름 우선**: 정보를 한 문장에 압축하지 않고, 문장 사이를 자연 연결 어구(그래서/그런데/다만/물론/결국)로 매끄럽게 잇는다고 선언. 룰 충족이 단절감을 만들면 안 됨. 5~7문장.'
+        : '글 작성 전 필수 적용 계획. 다음 5개 항목을 1문장씩 명시: (1) 입력 글에 등장한 통계·연도·고유명사·기관명을 모두 나열하고, 출력에서 그대로 유지할 항목만 표시. 입력에 없는 새 통계·연도·고유명사는 절대 추가하지 않는다고 선언. (2) 위 예시 글의 어휘를 그대로 베끼지 않고 톤·구조·hedge 분포만 모방한다고 선언. (3) 시스템 프롬프트의 P1·P2·룰 1·2·4·5 중 이 글에 가장 위험한 룰 3개 식별. 분량은 원문 대비 0.85~1.20 유지(없는 내용으로 증축 금지) — 새 통계·사실·일화로 분량을 채우지 않는다. 부족하면 원문에 실제로 있는 정보만 복원 (P0 띄어쓰기·룰 2 콤마 누적·룰 3 GPT-ism 어휘·P1-보강 단정정의문은 서버 결정론 강제). (4) 원문 흐름이 전형 프레임이면 재배치 방향. (5) **자연 흐름 우선**: 정보를 한 문장에 압축하지 않고, 문장 사이를 자연 연결 어구(그래서/그런데/다만/물론/결국)로 매끄럽게 잇는다고 선언. 룰 충족이 단절감을 만들면 안 됨. 5~7문장.'
     },
     outputText: {
       type: 'string',
@@ -258,7 +258,7 @@ function buildHumanizeTool(mode, lang = 'ko') {
     },
     outputCharLen: {
       type: 'integer',
-      description: '출력 글 공백 제외 글자 수. **목표: 입력 글자 수 × 0.9~1.1 (분량 보존 필수, 작업 지침 룰)**. 너무 짧으면 빠진 원문 디테일·근거·예시 복원해 채우기, 너무 길면 군더더기 제거. 작성 후 카운트해서 보고. 서버 실측으로 덮어씀.'
+      description: '출력 글 공백 제외 글자 수. 목표: 입력 글자 수 × 0.85~1.20. 부족·초과 시 원문 정보 보존 기준으로 최소 수정 — 새 정보로 분량을 채우지 말 것. 너무 길면 원문에 없는 부연·반복을 삭제. 서버 실측으로 덮어씀.'
     },
     selfCheckPass: {
       type: 'boolean',
@@ -1893,11 +1893,13 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   let floorViolations = [];
 
   if (floorV2) {
-    // ★ FLOOR v2: surface 시그널은 refine 트리거에서 제외(regression report·§11).
-    //   FLOOR critical(novelty·화자 드리프트·thesis 허위참조)만 refine. 전 모드 적용(C30).
+    // ★ FLOOR v2: surface는 report(§11). FLOOR critical(novelty·화자·허위참조·과확장)만 refine. 전 모드(C30).
+    //   과확장은 1패스로 안 줄 수 있어 최대 2라운드 shrink/repair.
+    const MAX_FLOOR_ROUNDS = 2;
     floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode });
-    if (floorViolations.length) {
-      refineReason = 'floor:' + floorViolations.map(v => v.type).join('+');
+    let round = 0;
+    while (floorViolations.length && round < MAX_FLOOR_ROUNDS) {
+      round++;
       try {
         const refineUser = floor.buildFloorRefineUser(humanizeText, result.outputText, floorViolations);
         const refineData = await callClaude({
@@ -1911,11 +1913,12 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
         floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode }); // 재검증
       } catch (e) {
         if (signal?.aborted) throw e;
-        result = firstResult;
+        break; // 마지막 성공 결과 유지
       }
-    } else {
-      refineReason = 'pass(floor-clean)';
     }
+    refineReason = floorViolations.length
+      ? `floor-unresolved:${floorViolations.map(v => v.type).join('+')}(${round}R)`
+      : (refined ? `floor-resolved(${round}R)` : 'pass(floor-clean)');
   } else {
     // legacy 경로 (프로덕션 동일)
     const decision = shouldRefine(result, selectedMode, inputParaCount);
@@ -1944,6 +1947,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   result.povSeed = povSeed;
   result.povDrift = povDrift;
   result.floorNovelty = floor.measureNovelty(text, result.outputText);
+  result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
   if (selectedMode === 'thesis') result.fakeInternalRefs = floor.measureFakeInternalRefs(text, result.outputText);
   const surfaceReport = floor.collectSurfaceReport(result);
 

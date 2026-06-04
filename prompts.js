@@ -310,9 +310,11 @@ Follow these rules strictly when rewriting.
 1. 문장 길이의 동적 비대칭성: '3단 장문(40자+) - 1단 단문(15자 내외)' 주기를 철저히 준수하라. AI 특유의 일정한 문장 호흡을 의도적으로 파괴하라.
 2. 논리적 파편화와 재연결: '또한', '게다가', '결과적으로' 같은 선형적 연결어를 80% 제거하라. 대신 "이러한 현상의 이면에는...", "기존 가설과 대치되는 지점은...", "본 실험의 한계치인 ~에 주목할 필요가 있다"와 같은 비선형적 전환구를 사용하라.
 
-### [Phase 2: 도메인 고유 사실 강제 주입 (Hard-Fact Injection)]
-1. 구체성 70% 원칙: 모든 추상적 개념은 반드시 '수치', '변수명', '라이브러리 버전', '식별 전략', 혹은 '오차 범위'와 결합되어야 한다. 원문에 데이터가 부족하다면 해당 분야의 '기술적 상식'을 바탕으로 디테일을 보강하라.
-2. 재귀적 참조: 문장 중간에 '(Table 1 참조)', '(Eq. 4)', '(Section 3.2에서 논의된 바와 같이)' 등 논문 내부 구조를 참조하는 표현을 삽입하여 텍스트의 맥락적 깊이를 더하라.
+### [Phase 2: 원문 정보 보존 (FLOOR — 신규 사실 생성 금지)]
+1. 원문에 이미 있는 학술적 정보(수치·변수명·버전·인용·고유명사)는 정확히 보존한다.
+2. 원문에 없는 수치·표·식·섹션·모델명·p-value·장비명·기관명·연도·통계는 생성하지 않는다. "기술적 상식"으로 디테일을 보강하지 마라.
+3. 추상적 문장은 학술적으로 더 명확하게 다듬되, 새로운 사실로 보강하지 않는다. '(Table 1 참조)'·'(Eq. 4)'·'(Section 3.2)' 같은 내부참조를 새로 삽입하지 마라.
+4. 문장 밀도는 높이되 전체 길이는 원문 대비 0.85~1.20을 유지한다(없는 내용으로 증축 금지).
 
 ### [Phase 3: AI 흔적 지우기 (Forbidden Words & GPT-isms)]
 1. 금지어 리스트(절대 사용 금지):
@@ -322,10 +324,11 @@ Follow these rules strictly when rewriting.
    - 관용구: "~에 대한 심층적 고찰", "~에 대한 시사점", "결론적으로", "요약하자면", "~를 통해 발전할 수 있다"
 2. 비판적 어조 유지: 연구 결과에 대한 무조건적인 긍정을 지양하라. 대신 "유의미하나 ~에 국한됨", "해석의 여지가 존재함", "통제 변수의 민감도에 따른 변동성" 등 조심스럽고 비판적인 학술적 태도를 견지하라.
 
-### [Phase 4: 분야별 특화 알고리즘 적용]
-- [자연과학]: 실험 장비의 모델명이나 구체적인 시약의 농도(M, pH), 재현 시 발생한 예외 로그를 서술에 포함하라.
-- [경제]: 단순 현상 나열을 멈추고, 내생성(Endogeneity) 통제 방법이나 특정 가설 검정의 p-value 임계치에 대해 논하라.
-- [IT]: 알고리즘의 시간 복잡도(O-notation), 특정 환경(Ubuntu 22.04 등)에서의 종속성 이슈, 혹은 하이퍼파라미터 튜닝 시의 트레이드오프를 명시하라.
+### [Phase 4: 분야별 어조 (원문에 있는 정보만 보존 — 신규 생성 금지)]
+- 분야별 전문 용어·논리는 원문에 등장한 범위에서만 정확히 살린다.
+- [자연과학]: 원문에 장비명·시약 농도(M, pH)·예외 로그가 있으면 보존하되, 없으면 새로 만들지 마라.
+- [경제]: 원문에 내생성·가설검정·p-value 논의가 있으면 보존하되, 없으면 새 수치·임계치를 지어내지 마라.
+- [IT]: 원문에 시간복잡도·환경·버전·하이퍼파라미터가 있으면 보존하되, 없으면 새 버전명·환경을 생성하지 마라.
 
 ### [Phase 5: 의도적 비선형성 및 자가 검증]
 1. 방어적 서술(Defensive Writing): 주장에 앞서 데이터의 한계나 예외 케이스를 먼저 언급하여 논리적 입체감을 형성하라.
@@ -348,19 +351,22 @@ Follow these rules strictly when rewriting.
 2. Connector Suppression: Reduce the use of "Moreover," "Furthermore," and "In conclusion" by 90%. Instead, use "Notably," "This discrepancy suggests," or "In this light," or use zero-connector transitions where the logic flows through the subject matter itself.
 3. Parenthetical Disruption: Interject technical details or citations mid-sentence using parentheses—e.g., (cf. Smith et al., 2023) or (p < .05)—to break the linear prediction of the AI detector.
 
-### [Phase 2: Hard-Fact & Domain Injection]
-1. The 70/30 Specificity Rule: Ensure 70% of the prose consists of technical "Hard Facts" (parameters, variables, model versions, or specific constraints). Replace all generalities (What) with methodological nuances (How).
-2. Internal Referencing: Embed references to non-existent but logical internal structures, such as "(as detailed in Section 3.2)" or "(refer to Table 1)," to simulate a deeply contextualized manuscript.
+### [Phase 2: Preserve Source Facts (FLOOR — no fabrication)]
+1. Preserve academic information already in the source (figures, variable names, versions, citations, proper nouns) exactly.
+2. Do NOT invent numbers, tables, equations, sections, model names, p-values, instrument names, organizations, years, or statistics absent from the source. Do not "fill in" detail from domain common-sense.
+3. Sharpen abstract sentences for clarity WITHOUT adding new facts. Do not insert internal references like "(see Section 3.2)" or "(refer to Table 1)."
+4. Increase sentence density but keep total length within 0.85–1.20 of the source (no padding with invented content).
 
 ### [Phase 3: Academic Hedging & GPT-ism Purge]
 1. Absolute Ban on GPT-isms: Never use "pivotal," "comprehensive," "transformative," "delve," "tapestry," "it's important to note," "unlocking potential," "robust," "seamless," "leverage," "holistic," "paradigm," "intricate," "underscore," "navigate" (figurative), "multifaceted," "pivotal role," "in today's world," "stands as a testament," "a testament to," "at the forefront of," "plays a crucial role," or "shed light on."
 2. Radical Hedging: Replace certainties with academic caution. Use "may partially be attributed to," "warrants further scrutiny," "remains inconclusive within the current scope," or "is contingent upon."
 3. Critical Stance: Shift from "AI-like optimism" to "Researcher-like skepticism." Emphasize limitations, margin of errors, and potential biases in the data.
 
-### [Phase 4: Field-Specific Calibration]
-- [STEM]: Focus on instrument precision (e.g., ±0.01%), specific chemical grades, or computational environment (e.g., Python 3.10 on CUDA 11.8).
-- [Economics/Social Sci]: Discuss endogeneity, instrumental variables (IV), or the specific p-value thresholds and robustness check anomalies.
-- [IT/CS]: Mention specific library versions, O-notation bottlenecks, or edge-case failure modes in the benchmarking phase.
+### [Phase 4: Field-Specific Tone (preserve only what the source contains — no fabrication)]
+- Keep field-specific terminology only within the range that appears in the source.
+- [STEM]: Preserve instrument precision, chemical grades, or environment IF present in the source; do not invent them.
+- [Economics/Social Sci]: Preserve endogeneity/IV/p-value discussion IF present; do not fabricate thresholds or anomalies.
+- [IT/CS]: Preserve library versions/O-notation/failure modes IF present; do not invent version names or environments.
 
 ### [Phase 5: Self-Correction Loop]
 - Final Audit: Before outputting, check if the prose feels "too smooth." If a paragraph is too easy to read, intentionally re-order the clauses or use "Nominalization" (turning verbs into complex nouns) to increase academic friction.

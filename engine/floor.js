@@ -105,6 +105,26 @@ function measureNovelty(rawText, outputText) {
   return { items: uniq, count: uniq.length };
 }
 
+// ── 분량 과확장 가드 (C18: lengthOverrun — 모드별 정책) ──────────
+// thesis는 과확장+허위 디테일 위험이 커 상한이 가장 빡빡. conclusion은 호출부에서 더 조일 수 있음.
+const LENGTH_POLICY = {
+  thesis:     { min: 0.85, max: 1.20, hardMax: 1.30 },
+  assignment: { min: 0.85, max: 1.20, hardMax: 1.30 },
+  blog:       { min: 0.85, max: 1.30, hardMax: 1.50 },
+  resume:     { min: 0.90, max: 1.25, hardMax: 1.40 }
+};
+function measureLength(rawText, outputText, mode) {
+  const pol = LENGTH_POLICY[mode] || LENGTH_POLICY.assignment;
+  const rawLen = (rawText || '').replace(/\s+/g, '').length;
+  const outLen = (outputText || '').replace(/\s+/g, '').length;
+  const ratio = rawLen > 0 ? outLen / rawLen : 1;
+  let status = 'ok';
+  if (ratio > pol.hardMax) status = 'overHard';      // FLOOR 위반 → shrink repair
+  else if (ratio > pol.max) status = 'overSoft';     // 경고만(report)
+  else if (ratio < pol.min) status = 'short';        // 부족(원문 정보만 복원)
+  return { ratio: Number(ratio.toFixed(3)), status, policy: pol, rawLen, outLen };
+}
+
 // ── thesis 허위 내부참조/인용 가드 (C2~C4: Table/Eq/§/연도인용 신규 생성 금지) ──
 function extractInternalRefs(s) {
   const t = s || '';
@@ -150,6 +170,13 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode }) {
         fix: `원문에 없는 내부참조·인용(Table/Eq/그림/§/(저자, 연도)/p값)을 모두 삭제하라. 논문 구조를 지어내지 마라: ${fake.fabricated.join(', ')}` });
     }
   }
+
+  // 과확장(hardMax 초과) = FLOOR 위반 → shrink repair(늘리기 아닌 절삭).
+  const len = measureLength(rawText, out, mode);
+  if (len.status === 'overHard') {
+    v.push({ type: 'length_overrun', detail: `${(len.ratio * 100).toFixed(0)}% (상한 ${Math.round(len.policy.hardMax * 100)}%)`,
+      fix: `출력이 원문 대비 ${(len.ratio * 100).toFixed(0)}%로 과확장됐다. 원문에 없는 부연·예시·감정·수치·내부참조·반복 설명을 삭제해 전체 길이를 원문 대비 ${Math.round(len.policy.max * 100)}% 이하로 줄여라. 원문의 핵심 주장·숫자·고유명사·인용은 보존. 새 정보 추가·결론 새로 쓰기 금지(절삭만).` });
+  }
   return v;
 }
 
@@ -183,6 +210,7 @@ module.exports = {
   measurePovDrift,
   measureNovelty,
   measureFakeInternalRefs,
+  measureLength,
   collectFloorViolations,
   buildFloorRefineUser,
   collectSurfaceReport

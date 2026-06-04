@@ -1,15 +1,24 @@
 // [설정] Firebase 초기화, CORS 허용 도메인, 요청 제한(Rate Limiter)을 관리하는 파일
 
-const admin = require('firebase-admin');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 
-// 렌더 환경변수에 파이어베이스 키를 넣었다면 이렇게 사용
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-const db = admin.firestore();
+// 렌더 환경변수에 파이어베이스 키를 넣었다면 이렇게 사용.
+// ★ 로컬 엔진 테스트: FIREBASE_SERVICE_ACCOUNT 미설정 시 Firebase 초기화를 건너뛴다(require 시 crash 방지).
+//   프로덕션(env 설정)에서는 기존과 100% 동일하게 초기화. admin/db는 미설정 시 null이며,
+//   인증·결제 경로(/analyze 등)는 동작하지 않지만 엔진(humanize) 단독 테스트는 가능.
+let admin = null;
+let db = null;
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  admin = require('firebase-admin');
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+  db = admin.firestore();
+} else {
+  console.warn('[config] FIREBASE_SERVICE_ACCOUNT 미설정 — Firebase 비활성 (로컬 엔진 테스트 모드).');
+}
 
 // CORS 설정
 const allowedOrigins = [
@@ -52,7 +61,7 @@ const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm
 
 // Firebase ID Token 검증 헬퍼 (실패 시 null)
 async function verifyToken(idToken) {
-  if (!idToken) return null;
+  if (!idToken || !admin) return null;
   try {
     const decoded = await admin.auth().verifyIdToken(idToken);
     return decoded.uid;

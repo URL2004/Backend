@@ -1625,6 +1625,12 @@ async function preprocessInput(text, lang, signal) {
 // SSE 누적 결과는 non-streaming 응답과 동일한 모양({content, usage, stop_reason})으로
 // 재조립해 extractClaudeResult를 그대로 재사용한다 — 호출 측 변경 없음.
 async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens, signal }) {
+  // ★ dev 백엔드 스위치: LLM_BACKEND=claudecode면 내 Claude Code 구독(Sonnet)으로 호출 (API 키 불필요).
+  //   엔진 로컬 테스트용. 프로덕션은 LLM_BACKEND 미설정 → 기존 API 경로.
+  if (process.env.LLM_BACKEND === 'claudecode') {
+    const { callViaClaudeCode } = require('../engine/claudecode');
+    return callViaClaudeCode({ userText, systemText, tool, model: MODEL, signal });
+  }
   if (!ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is not configured');
   }
@@ -1832,6 +1838,135 @@ async function fetchWebSearchExamples(text, lang, signal) {
   }
 }
 
+// 2-pass refine용 user 프롬프트 생성 — 라우트와 runHumanize가 공유(드리프트 방지).
+function buildRefineUser(humanizeText, prevOutput, failed) {
+  return `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${humanizeText}\n\n[이전 출력]\n${prevOutput}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 1인칭 구체 일화 부족 또는 추상 진술 잔존이면, 해당 문장을 글쓴이 1인칭 경험(시간·장소·인물 동반, 예: "제가 작년 학기에 ~", "제 룸메이트가 ~")으로 *교체*하라 — 단 외부 통계·연도(YYYY)·기관명·기업명·인명·% 수치는 절대 금지(개인 경험만). 판단 회피 1인칭("저는 잘 모르겠습니다 / 알 수 없습니다")은 행동·관찰·단정과 결합("저는 ~를 했다 / 저는 ~여야 한다고 본다")으로 바꿔라. 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형은 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 결론·핵심 주장 문장은 hedge 없이 단정 종결로 마무리해 균형을 잡아라.`;
+}
+
+// 엔진 단독 실행 진입점 — billing/auth/Firebase 없이 humanize 파이프라인만.
+// 라우트(/analyze)의 humanize 분기와 동일 로직: preprocess → LLM → Pass C → verify → refine.
+// engine-test.js(로컬 테스트)와 향후 재구축이 공유하는 services/humanizer의 시드.
+async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false } = {}) {
+  const selectedMode = mode;
+  const floor = require('../engine/floor');
+  const povSeed = floor.computePovSeed(text); // rawText(원문) 기준 — 화자 보존 게이트 기준값
+
+  // 사전 처리(assignment만): 결정론 swap + (API 키 있을 때만)콤마/단정정의문 micro-surgery.
+  let humanizeText = text;
+  let preInfo = null;
+  if (selectedMode === 'assignment') {
+    try {
+      const pp = await preprocessInput(text, lang, signal);
+      humanizeText = pp.text;
+      preInfo = { gptismCount: pp.gptismCount, commaSplitCount: pp.commaSplitCount, declarativeCount: pp.declarativeCount };
+    } catch (e) {
+      if (signal?.aborted) throw e;
+    }
+  }
+
+  let humanizeSystem = getHumanizeSystem(selectedMode, lang);
+  // ★ FLOOR v2: 원문 1인칭 0 && !optIn → 새 1인칭 화자·일화 금지 지시를 최상단 prepend (C5 override).
+  let floorDirective = '';
+  if (floorV2) {
+    floorDirective = floor.buildFloorDirective(povSeed, optIn);
+    if (floorDirective) humanizeSystem = floorDirective + '\n' + humanizeSystem;
+  }
+  const humanizeTool = getHumanizeToolFor(selectedMode, lang);
+  const userContent = `[재작성할 텍스트]\n${humanizeText}`;
+  const inputParaCount = humanizeText.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
+  const inputCharLen = humanizeText.replace(/\s+/g, '').length;
+
+  // 1차
+  const data = await callClaude({
+    userText: userContent, systemText: humanizeSystem, tool: humanizeTool,
+    temperature: 0.5, maxOutputTokens: 16384, signal
+  });
+  let result = extractClaudeResult(data, humanizeTool.name);
+  await applyPassC(result, lang, signal);
+  verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
+
+  // ===== 2-pass =====
+  let refined = false;
+  const firstResult = result;
+  let refineReason = null;
+  let failed = [];
+  let floorViolations = [];
+
+  if (floorV2) {
+    // ★ FLOOR v2: surface 시그널은 refine 트리거에서 제외(regression report·§11).
+    //   FLOOR critical(novelty·화자 드리프트·thesis 허위참조)만 refine. 전 모드 적용(C30).
+    floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode });
+    if (floorViolations.length) {
+      refineReason = 'floor:' + floorViolations.map(v => v.type).join('+');
+      try {
+        const refineUser = floor.buildFloorRefineUser(humanizeText, result.outputText, floorViolations);
+        const refineData = await callClaude({
+          userText: refineUser, systemText: humanizeSystem, tool: humanizeTool,
+          temperature: 0.5, maxOutputTokens: 16384, signal
+        });
+        result = extractClaudeResult(refineData, humanizeTool.name);
+        await applyPassC(result, lang, signal);
+        verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
+        refined = true;
+        floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode }); // 재검증
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        result = firstResult;
+      }
+    } else {
+      refineReason = 'pass(floor-clean)';
+    }
+  } else {
+    // legacy 경로 (프로덕션 동일)
+    const decision = shouldRefine(result, selectedMode, inputParaCount);
+    failed = decision.refine ? collectFailedFields(result, selectedMode, inputParaCount) : [];
+    if (decision.refine) {
+      refineReason = decision.reason;
+      try {
+        const refineUser = buildRefineUser(humanizeText, result.outputText, failed);
+        const refineData = await callClaude({
+          userText: refineUser, systemText: humanizeSystem, tool: humanizeTool,
+          temperature: 0.5, maxOutputTokens: 16384, signal
+        });
+        result = extractClaudeResult(refineData, humanizeTool.name);
+        await applyPassC(result, lang, signal);
+        verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
+        refined = true;
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        result = firstResult;
+      }
+    }
+  }
+
+  // 보존 가드 측정 결과를 result에 부착 (전 모드)
+  const povDrift = floor.measurePovDrift(text, result.outputText, povSeed);
+  result.povSeed = povSeed;
+  result.povDrift = povDrift;
+  result.floorNovelty = floor.measureNovelty(text, result.outputText);
+  if (selectedMode === 'thesis') result.fakeInternalRefs = floor.measureFakeInternalRefs(text, result.outputText);
+  const surfaceReport = floor.collectSurfaceReport(result);
+
+  return {
+    result,
+    mode: selectedMode,
+    lang,
+    refined,
+    refineReason,
+    failedFields: failed,
+    floorViolations,
+    surfaceReport,
+    preInfo,
+    inputParaCount,
+    inputCharLen,
+    humanizeText,
+    floorV2,
+    optIn,
+    povSeed,
+    povDrift
+  };
+}
+
 // --- 라우트 ---
 
 router.post('/analyze', async (req, res) => {
@@ -1977,7 +2112,7 @@ router.post('/analyze', async (req, res) => {
         try {
           const failed = collectFailedFields(result, selectedMode, inputParaCount);
           console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
-          const refineUser = `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${humanizeText}\n\n[이전 출력]\n${result.outputText}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 1인칭 구체 일화 부족 또는 추상 진술 잔존이면, 해당 문장을 글쓴이 1인칭 경험(시간·장소·인물 동반, 예: "제가 작년 학기에 ~", "제 룸메이트가 ~")으로 *교체*하라 — 단 외부 통계·연도(YYYY)·기관명·기업명·인명·% 수치는 절대 금지(개인 경험만). 판단 회피 1인칭("저는 잘 모르겠습니다 / 알 수 없습니다")은 행동·관찰·단정과 결합("저는 ~를 했다 / 저는 ~여야 한다고 본다")으로 바꿔라. 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형은 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 결론·핵심 주장 문장은 hedge 없이 단정 종결로 마무리해 균형을 잡아라.`;
+          const refineUser = buildRefineUser(humanizeText, result.outputText, failed);
           const refineData = await callClaude({
             userText: refineUser,
             systemText: humanizeSystem,
@@ -2244,4 +2379,5 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
 router.verifyCheckFields = verifyCheckFields;
 router.collectFailedFields = collectFailedFields;
+router.runHumanize = runHumanize;
 module.exports = router;

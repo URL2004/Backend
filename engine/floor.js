@@ -63,15 +63,40 @@ function extractPercents(s) {
   return new Set(((s || '').match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).map(p => p.replace(/\s+/g, '')));
 }
 const ORG_RE = /[가-힣]{2,}(?:상공회의소|연구원|공사|협회|재단|위원회|기구|연구소|본부|센터|기관|대학교|학회)/g;
+// 숫자+단위 (연도·% 제외 — 위에서 별도 처리). "96회", "300분", "12명", "1,200원" 등.
+const NUM_UNIT_RE = /\d[\d,]*(?:\.\d+)?\s*(?:회|분|시간|초|명|개|건|곳|배|위|점|원|달러|엔|위안|유로|일|주|개월|차|등|등급|km|kg|개국|가지|시|살|세|줄|쪽|페이지|문항)/g;
+// 라틴 약어(ESM, CUDA, SNS) + 대문자 시작 영단어(Twenge, Cognitive, Method, Test).
+const LATIN_ACRONYM_RE = /\b[A-Z]{2,}\b/g;
+const LATIN_CAPWORD_RE = /\b[A-Z][a-z]{1,}\b/g;
+const LATIN_ALLOW = new Set(['AI', 'SNS', 'IT', 'PC', 'TV', 'OK', 'PDF', 'URL', 'CEO', 'GPT', 'LLM', 'API', 'OS', 'CPU', 'GPU']);
+const normTok = (s) => s.replace(/\s+/g, '').toLowerCase();
+
 function measureNovelty(rawText, outputText) {
-  const inY = extractYears(rawText), outY = extractYears(outputText);
-  const inP = extractPercents(rawText), outP = extractPercents(outputText);
-  const inO = new Set((rawText || '').match(ORG_RE) || []), outO = new Set((outputText || '').match(ORG_RE) || []);
+  const inT = rawText || '', outT = outputText || '';
   const items = [];
-  for (const y of outY) if (!inY.has(y)) items.push(y);
-  for (const p of outP) if (!inP.has(p)) items.push(p);
-  for (const o of outO) if (!inO.has(o)) items.push(o);
-  return { items, count: items.length };
+  const push = (x) => items.push(x);
+
+  // 연도
+  const inY = extractYears(inT), outY = extractYears(outT);
+  for (const y of outY) if (!inY.has(y)) push(y);
+  // %
+  const inP = extractPercents(inT), outP = extractPercents(outT);
+  for (const p of outP) if (!inP.has(p)) push(p);
+  // 한국어 기관·기업 접미사
+  const inO = new Set(inT.match(ORG_RE) || []), outO = new Set(outT.match(ORG_RE) || []);
+  for (const o of outO) if (!inO.has(o)) push(o);
+  // 숫자+단위
+  const inN = new Set((inT.match(NUM_UNIT_RE) || []).map(normTok));
+  for (const m of (outT.match(NUM_UNIT_RE) || [])) if (!inN.has(normTok(m))) push(m.trim());
+  // 라틴 약어/고유명사
+  const inL = new Set([...(inT.match(LATIN_ACRONYM_RE) || []), ...(inT.match(LATIN_CAPWORD_RE) || [])].map(s => s.toLowerCase()));
+  for (const m of [...(outT.match(LATIN_ACRONYM_RE) || []), ...(outT.match(LATIN_CAPWORD_RE) || [])]) {
+    if (LATIN_ALLOW.has(m.toUpperCase())) continue;
+    if (!inL.has(m.toLowerCase())) push(m);
+  }
+
+  const uniq = [...new Set(items)];
+  return { items: uniq, count: uniq.length };
 }
 
 // ── thesis 허위 내부참조/인용 가드 (C2~C4: Table/Eq/§/연도인용 신규 생성 금지) ──

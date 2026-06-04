@@ -1869,7 +1869,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   // ★ FLOOR v2: 보존 우선 프롬프트로 레거시 모드 프롬프트 대체(내용 파괴/변질 지시 제거). 모드는 톤 오버레이.
   //   floorV2 미설정 시 레거시 프롬프트(프로덕션 동작 불변).
   let humanizeSystem = floorV2
-    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerGateClosed: contract.speakerGateClosed })
+    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy })
     : getHumanizeSystem(selectedMode, lang);
   const humanizeTool = getHumanizeToolFor(selectedMode, lang);
   const userContent = `[재작성할 텍스트]\n${humanizeText}`;
@@ -2011,7 +2011,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const chunks = splitChunks(text);
 
   let humanizeSystem = floorV2
-    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerGateClosed: contract.speakerGateClosed })
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy })
     : getHumanizeSystem(mode, lang);
   const tool = getHumanizeToolFor(mode, lang);
   const tail = (s, n) => (s || '').slice(-n);
@@ -2036,7 +2036,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     c.outputText = r.outputText || c.text;
 
     // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair
-    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode });
+    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position });
     if (viol.length) {
       try {
         const ru = floor.buildFloorRefineUser(c.text, c.outputText, viol);

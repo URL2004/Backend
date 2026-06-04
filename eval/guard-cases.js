@@ -159,6 +159,70 @@ module.exports = [
     expect: { fakeRefCount0: true }
   },
 
+  // ── 영어 화자(POV): 조직 we → 개인 I 주입은 위반, we 유지는 보존(FP 금지) ──
+  {
+    name: 'pov/영어 조직 we → 개인 I 주입 검출',
+    mode: 'assignment',
+    input: 'We backed many companies early on. We reviewed each deal carefully.',
+    output: 'I backed many companies early on. I reviewed each deal carefully.',
+    expect: { povDrift: true }
+  },
+  {
+    name: 'pov/영어 조직 we 유지 — 오탐 금지',
+    mode: 'assignment',
+    input: 'We backed many companies early on. We reviewed each deal carefully.',
+    output: "We've backed plenty of companies and reviewed every deal ourselves.",
+    expect: { povDrift: false }
+  },
+
+  // ── 영어 Title-Case/약어 엔티티: 주입(novelty) + 소실(lost) ──
+  {
+    name: 'novelty/영어 Title-Case 기관 주입',
+    mode: 'assignment',
+    input: 'We funded universities early.',
+    output: 'We funded Stanford and MIT early.',
+    expect: { noveltyHas: ['Stanford', 'MIT'] }
+  },
+  {
+    name: 'lost/영어 Title-Case 기관 소실',
+    mode: 'assignment',
+    input: 'We funded Stanford and MIT early.',
+    output: 'We funded some universities early.',
+    expect: { lostHas: ['Stanford', 'MIT'] }
+  },
+
+  // ── 숫자 정규화(5천원↔5000원, 3만원↔30000원): 표기만 다르면 주입·소실 0 ──
+  {
+    name: 'novelty/숫자 정규화 5천원↔5000원 오탐 금지',
+    mode: 'blog',
+    input: '지원금은 5천원이다.',
+    output: '지원금은 5000원이에요.',
+    expect: { noveltyCount0: true, lostCount0: true }
+  },
+  {
+    name: 'novelty/숫자 정규화 3만원↔30000원 오탐 금지',
+    mode: 'blog',
+    input: '예산은 3만원이다.',
+    output: '예산은 30000원으로 잡았어요.',
+    expect: { noveltyCount0: true, lostCount0: true }
+  },
+
+  // ── 결론부 zone-vs-zone: 원문 중간에 미래어가 있어도 결론 추가는 잡고, 깨끗한 결론은 오탐 금지 ──
+  {
+    name: 'conclusion/원문 중간 미래어 + 결론에 불확실 추가 검출',
+    mode: 'assignment',
+    input: '기술은 사회를 바꾼다. 앞으로의 방향은 다양하다. 사람들은 적응한다. 변화는 빠르다. 결국 우리는 더 나아진다.',
+    output: '기술은 사회를 바꾼다. 방향은 다양하다. 사람들은 적응한다. 변화는 빠르다. 하지만 앞으로 어떻게 될지 모르겠다.',
+    expect: { conclusionDrift: true, conclusionHas: ['future', 'uncertainty'] }
+  },
+  {
+    name: 'conclusion/결론 보존 — 오탐 금지',
+    mode: 'assignment',
+    input: '기술은 사회를 바꾼다. 앞으로의 방향은 다양하다. 사람들은 적응한다. 변화는 빠르다. 결국 우리는 더 나아진다.',
+    output: '기술은 사회를 바꾼다. 방향은 다양하다. 사람들은 적응해 간다. 변화는 빠르게 일어난다. 결국 우리는 더 나아진다.',
+    expect: { conclusionDrift: false }
+  },
+
   // ── soft drift (cheap risk detector): 양성 ──
   {
     name: 'soft/미래전망+불확실 추가(보고서 예시)',

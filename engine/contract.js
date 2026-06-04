@@ -13,6 +13,9 @@ const floor = require('./floor');
  * @property {boolean} optIn              "내 경험 추가" 허용 여부
  * @property {{fp_singular:number, fp_plural:number, org_voice_likely:boolean}} povSeed  화자 시드(정규식 실측)
  * @property {boolean} speakerGateClosed  원문 1인칭 0 && !optIn → 새 1인칭 화자 금지
+ * @property {('individual'|'organization'|'impersonal')} speakerType  화자 유형(prompt 화자 규칙 근거)
+ * @property {string[]} allowedPronouns   유지 가능한 인칭(예: we/our/우리)
+ * @property {string[]} forbiddenPronouns 새로 끌어들이면 안 되는 인칭(예: I/저/제가)
  * @property {{min:number, max:number, hardMax:number}} lengthPolicy  모드별 분량 정책
  * @property {?object} softClaimLedger    judge가 비동기로 채움(닫힌세계 claim 원장). 미생성 시 null
  */
@@ -23,6 +26,16 @@ const floor = require('./floor');
  */
 function buildContract(rawText, { mode = 'assignment', lang = 'ko', optIn = false } = {}) {
   const povSeed = floor.computePovSeed(rawText);
+  // 화자 유형: 개인(I/저) > 조직(we/우리/본 연구) > 비인칭.
+  let speakerType, allowedPronouns, forbiddenPronouns;
+  if (povSeed.fp_singular > 0) {
+    speakerType = 'individual'; allowedPronouns = ['I', 'my', '저', '제가']; forbiddenPronouns = [];
+  } else if (povSeed.fp_plural > 0) {
+    // 조직/집단 화자는 실제 복수대명사(우리/we)로만 판정 — '본 연구/이 글은' 자기참조는 비인칭으로 둔다.
+    speakerType = 'organization'; allowedPronouns = ['we', 'our', '우리']; forbiddenPronouns = ['I', 'my', '저', '제가(개인)'];
+  } else {
+    speakerType = 'impersonal'; allowedPronouns = []; forbiddenPronouns = ['I', 'we', '저', '우리(모든 1인칭)'];
+  }
   return {
     rawText,
     mode,
@@ -30,6 +43,9 @@ function buildContract(rawText, { mode = 'assignment', lang = 'ko', optIn = fals
     optIn,
     povSeed,
     speakerGateClosed: floor.isSpeakerGateClosed(povSeed, optIn),
+    speakerType,
+    allowedPronouns,
+    forbiddenPronouns,
     lengthPolicy: floor.LENGTH_POLICY[mode] || floor.LENGTH_POLICY.assignment,
     softClaimLedger: null
   };

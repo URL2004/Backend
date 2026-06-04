@@ -74,6 +74,18 @@ for (const c of cases) {
     }
   }
 
+  // conclusion drift (결론부 zone-vs-zone)
+  if (typeof e.conclusionDrift === 'boolean' || e.conclusionHas) {
+    const cd = softguard.measureConclusionDrift(c.input, c.output);
+    if (typeof e.conclusionDrift === 'boolean') {
+      check(c.name, cd.flagged === e.conclusionDrift, `conclusionDrift 기대=${e.conclusionDrift} 실제=${cd.flagged} (markers=${JSON.stringify(cd.markers)})`);
+    }
+    if (e.conclusionHas) {
+      const missing = e.conclusionHas.filter(k => !cd.markers.includes(k));
+      check(c.name, missing.length === 0, `conclusion 누락: ${missing.join(', ')} | markers=${JSON.stringify(cd.markers)}`);
+    }
+  }
+
   // soft drift (cheap risk detector)
   if (typeof e.softFlagged === 'boolean' || e.softHas) {
     const sd = softguard.measureSoftDrift(c.input, c.output);
@@ -124,6 +136,13 @@ const cFp = buildContract('저는 작년에 그 일을 했습니다.', { mode: '
 check('contract/1인칭 있으면 게이트 열림', cFp.speakerGateClosed === false && cFp.povSeed.fp_singular >= 1, `seed=${JSON.stringify(cFp.povSeed)} gate=${cFp.speakerGateClosed}`);
 const cOpt = buildContract('비인칭 서술.', { mode: 'assignment', lang: 'ko', optIn: true });
 check('contract/optIn이면 게이트 열림', cOpt.speakerGateClosed === false, `gate=${cOpt.speakerGateClosed}`);
+// speakerType: 개인/조직/비인칭 분류 (prompt 화자 규칙의 근거)
+check('contract/speakerType 개인', cFp.speakerType === 'individual', `type=${cFp.speakerType}`);
+check('contract/speakerType 비인칭', cKo.speakerType === 'impersonal', `type=${cKo.speakerType}`);
+const cOrg = buildContract('We backed many companies. We reviewed each deal carefully.', { mode: 'assignment', lang: 'en', optIn: false });
+check('contract/speakerType 조직(영어 we)', cOrg.speakerType === 'organization' && cOrg.forbiddenPronouns.includes('I'), `type=${cOrg.speakerType} forbid=${JSON.stringify(cOrg.forbiddenPronouns)}`);
+const cOrgKo = buildContract('본 연구는 다음을 분석한다. 우리는 데이터를 수집했다.', { mode: 'thesis', lang: 'ko', optIn: false });
+check('contract/speakerType 조직(한국어 우리/본연구)', cOrgKo.speakerType === 'organization', `type=${cOrgKo.speakerType} seed=${JSON.stringify(cOrgKo.povSeed)}`);
 
 console.log('\n════════ FLOOR 가드 결정론 EVAL ════════');
 console.log(`케이스 ${cases.length}개 · 검사 ${pass + fail}건 · 통과 ${pass} · 실패 ${fail}`);

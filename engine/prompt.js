@@ -18,20 +18,25 @@ const TONE_EN = {
   resume: 'First-person experience told through action and result. Do not exaggerate achievements or numbers not in the source.'
 };
 
-function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerGateClosed = false } = {}) {
+function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy } = {}) {
   const tone = (lang === 'en' ? TONE_EN : TONE_KO)[mode] || (lang === 'en' ? TONE_EN : TONE_KO).assignment;
+  const lp = lengthPolicy || { min: 0.85, max: 1.20 };
+  const lenKo = `원문의 ${lp.min}~${lp.max}배`;
+  const lenEn = `${lp.min}–${lp.max}× the source`;
 
   if (lang === 'en') {
-    const speaker = speakerGateClosed
-      ? 'The source has NO first-person narrator. You may keep a friendly tone, but do NOT use ANY first-person pronoun (I/my/me/we) and add no personal anecdote/feeling. Keep the impersonal viewpoint.'
-      : 'Keep the source\'s point of view; do not change who is speaking.';
+    const speaker = speakerType === 'impersonal'
+      ? 'The source has NO first-person narrator. Do NOT use ANY first-person pronoun (I/my/me/we/our) and add no personal anecdote/feeling. Keep the impersonal viewpoint.'
+      : speakerType === 'organization'
+        ? 'The source uses an ORGANIZATION voice (we/our). Keep we/our; do NOT introduce an individual "I/my/me" speaker or personal anecdote.'
+        : 'Keep the source\'s first-person voice; do not fabricate new personal anecdotes, achievements, or feelings.';
     return [
       '[GLOBAL FLOOR — supreme, non-negotiable]',
       'You are a preservation-first humanizer. Strip the AI feel from the prose ONLY; keep the source\'s facts, speaker, conclusion, and information intact.',
       '',
       'HARD RULES:',
       '1. Facts: keep every number, range, date, amount, proper noun, brand, statistic exactly. Invent NO new statistics/years/orgs/figures/proper nouns.',
-      '2. Length: output 0.9–1.15× the source. Do not drop paragraphs, items, or core claims (no wholesale cutting / over-compression). Do not pad with new content either.',
+      `2. Length: output ${lenEn}. Do not drop paragraphs, items, or core claims (no wholesale cutting / over-compression). Do not pad with new content either.`,
       '3. Conclusion: keep the source conclusion\'s intent, direction, and sentiment. Never flip positive resolve into doubt/negativity; add no new uncertainty, future projection, or emotion in the ending.',
       `4. Speaker: ${speaker}`,
       '5. No repetition: never restate the same conclusion/sentence twice.',
@@ -48,16 +53,18 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerGateClosed
     ].join('\n');
   }
 
-  const speaker = speakerGateClosed
-    ? '원문에는 1인칭 화자(저/제가/나)가 전혀 없다. 친근한 말투(~해요 등)는 써도 되지만 1인칭 대명사(저·제가·나·내·우리)는 절대 쓰지 마라. 주어 없이 ~해요체로 정보를 전달하고, 새 개인 일화·경험·감상도 만들지 마라. 비인칭·일반 서술 시점을 유지하라.'
-    : '원문의 화자 시점을 유지하라. 말하는 주체를 바꾸지 마라.';
+  const speaker = speakerType === 'impersonal'
+    ? '원문에는 1인칭 화자(저/제가/나/우리)가 전혀 없다. 친근한 말투(~해요 등)는 써도 되지만 1인칭 대명사(저·제가·나·내·우리)는 절대 쓰지 마라. 주어 없이 정보를 전달하고, 새 개인 일화·경험·감상도 만들지 마라. 비인칭·일반 서술 시점을 유지하라.'
+    : speakerType === 'organization'
+      ? '원문은 조직·집단(우리/본 연구/저희) 화자다. 우리·저희는 유지하되, 개인 1인칭(저·제가·나)이나 개인 일화·감상을 새로 끌어들이지 마라.'
+      : '원문의 1인칭 화자 시점을 유지하라. 말하는 주체를 바꾸지 말고, 없는 개인 일화·성과·감정을 지어내지 마라.';
   return [
     '[GLOBAL FLOOR — 최우선·불변]',
     '너는 원문 보존형 휴머나이저다. AI 문장 티만 걷어내고, 원문의 사실·화자·결론·정보량은 그대로 유지한다.',
     '',
     '절대 규칙:',
     '1. 사실 보존: 원문의 숫자·범위(40~60%)·날짜·금액·고유명사·브랜드·통계를 하나도 빠뜨리거나 바꾸지 마라. 원문에 없는 통계·연도·기관·수치·고유명사를 새로 만들지 마라.',
-    '2. 분량 보존: 출력은 원문의 0.9~1.15배. 문단·항목·핵심 주장을 빼지 마라(통째 삭제·과도 압축 금지). 없는 내용으로 늘리지도 마라.',
+    `2. 분량 보존: 출력은 ${lenKo}. 문단·항목·핵심 주장을 빼지 마라(통째 삭제·과도 압축 금지). 없는 내용으로 늘리지도 마라.`,
     '3. 결론 보존: 원문 결론의 의도·방향·정서를 유지하라. 긍정 의지를 불확실/부정으로 뒤집지 말고, 원문에 없는 회의·미래전망·감정을 결론에 넣지 마라.',
     `4. 화자 보존: ${speaker}`,
     '5. 반복 금지: 같은 결론·문장을 두 번 쓰지 마라.',

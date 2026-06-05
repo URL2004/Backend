@@ -2040,19 +2040,28 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   if (judge && (judge === 'force' || judgeTrigger.length)) {
     try {
       const j = require('../engine/judge');
-      const jr = await j.judgeAndRepair(text, result.outputText, { lang, signal });
+      const preJudge = result.outputText;
+      const jr = await j.judgeAndRepair(text, preJudge, { lang, signal });
       contract.softClaimLedger = jr.ledger; // Contract에 Soft Claim Ledger 채움
-      if (jr.outputText !== result.outputText) {
-        result.outputText = jr.outputText;
+      // ★ judge 재작성이 결정론 FLOOR를 악화(사실 소실·과압축·날조)시키면 폐기하고 judge 이전 출력 유지(FLOOR>우회).
+      let judgedOut = jr.outputText, repairRejected = false;
+      if (judgedOut !== preJudge) {
+        const preV = floor.collectFloorViolations({ result: { outputText: preJudge }, rawText: text, povSeed, optIn, mode: selectedMode });
+        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: text, povSeed, optIn, mode: selectedMode });
+        if (postV.length > preV.length) { judgedOut = preJudge; repairRejected = true; }
+      }
+      if (judgedOut !== result.outputText) {
+        result.outputText = judgedOut;
         // 교정으로 출력이 바뀌었으니 보존 가드 전부 재측정.
         result.povDrift = floor.measurePovDrift(text, result.outputText, povSeed);
         result.floorNovelty = floor.measureNovelty(text, result.outputText);
         result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
         result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
+        result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(text, result.outputText);
         result.repetition = floor.measureRepetition(result.outputText);
         result.lostFacts = floor.measureLostFacts(text, result.outputText);
       }
-      result.judge = { ran: true, trigger: judgeTrigger, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations: jr.verdict.violations, rounds: jr.rounds, ledgerHealth: jr.ledgerHealth };
+      result.judge = { ran: true, trigger: judgeTrigger, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations: jr.verdict.violations, rounds: jr.rounds, ledgerHealth: jr.ledgerHealth, repairRejected };
     } catch (e) { if (signal?.aborted) throw e; result.judge = { ran: false, error: e.message }; }
   } else if (judge) {
     result.judge = { ran: false, reason: 'no risk trigger (cheap gate)' };
@@ -2171,9 +2180,16 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       const j = require('../engine/judge');
       const jr = await j.judgeAndRepair(text, merged, { lang, signal });
       contract.softClaimLedger = jr.ledger;
-      if (jr.outputText !== merged) result.outputText = jr.outputText;
+      // ★ judge 재작성이 결정론 FLOOR를 악화시키면 폐기하고 병합본 유지(FLOOR>우회).
+      let judgedOut = jr.outputText, repairRejected = false;
+      if (judgedOut !== merged) {
+        const preV = floor.collectFloorViolations({ result: { outputText: merged }, rawText: text, povSeed, optIn, mode });
+        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: text, povSeed, optIn, mode });
+        if (postV.length > preV.length) { judgedOut = merged; repairRejected = true; }
+      }
+      if (judgedOut !== merged) result.outputText = judgedOut;
       const violations = (jr.verdict.violations || []).map(v => ({ ...v, nearest_chunk_id: nearestChunkId(chunks, v.span) }));
-      result.judge = { ran: true, trigger: judgeTrigger, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations, rounds: jr.rounds, ledgerHealth: jr.ledgerHealth };
+      result.judge = { ran: true, trigger: judgeTrigger, claims: jr.ledger.claims.length, dropped: jr.ledger.dropped, pass: jr.verdict.pass, violations, rounds: jr.rounds, ledgerHealth: jr.ledgerHealth, repairRejected };
       result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
     } catch (e) { if (signal?.aborted) throw e; result.judge = { ran: false, error: e.message }; }
   } else if (judge) {

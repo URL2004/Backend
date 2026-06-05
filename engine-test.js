@@ -18,6 +18,7 @@ const floorV2 = process.env.FLOOR_V2 === '1';   // FLOOR_V2=1 → 화자 보존 
 const optIn = process.env.OPT_IN === '1';       // OPT_IN=1 → "내 경험 추가" 허용
 const chunked = process.env.CHUNK === '1';      // CHUNK=1 → server-side chunking 경로(자동 floorV2)
 const doJudge = process.env.JUDGE === '1';      // JUDGE=1 → semanticJudge 강제 실행(P2-c)
+const doAntiDetect = process.env.ANTIDETECT === '1'; // ANTIDETECT=1 → GPTZero 전용 2차 우회 패스
 
 const [, , fileArg, modeArg = 'assignment', langArg = 'ko'] = process.argv;
 if (!fileArg) {
@@ -47,8 +48,8 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   let out;
   try {
     out = chunked
-      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn, judge: doJudge ? 'force' : false })
-      : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn, judge: doJudge ? 'force' : false });
+      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect })
+      : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect });
   } catch (e) {
     console.error('❌ runHumanize 실패:', e.message);
     process.exit(1);
@@ -66,6 +67,10 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   }
   line();
 
+  if (r.antiDetect) {
+    console.log(`🕶  anti-detect 2차 패스: ${r.antiDetect.applied ? '적용됨 ✅' : '미적용(' + (r.antiDetect.reason || '?') + ')'}`);
+    line();
+  }
   const fr = out.floorReport || { status: '?', criticals: [] };
   console.log(`[🚦 출고 판정: ${String(fr.status).toUpperCase()}]${fr.criticals && fr.criticals.length ? ' criticals: ' + fr.criticals.map(c => c.gate + '(' + c.detail + ')').join(', ') : ''}`);
   line();

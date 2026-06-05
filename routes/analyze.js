@@ -1898,9 +1898,36 @@ function judgeTriggerReasons(result) {
   return r;
 }
 
+// GPTZero 전용 2차 우회 패스 적용 — perplexity 교란 후 FLOOR 재검사. 위반(날조·소실·화자·분량)이면
+// 결과를 폐기하고 1차 출력 유지(FLOOR가 우회보다 우선). 채택 시 result.outputText를 교체하고 가드 재측정.
+async function applyAntiDetect({ result, rawText, povSeed, optIn, mode, lang, speakerType, signal, floor }) {
+  const before = result.outputText;
+  let perturbed;
+  try {
+    perturbed = await require('../engine/antidetect').antiDetectPass(before, { lang, speakerType, signal });
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    return { applied: false, reason: 'error:' + e.message };
+  }
+  if (!perturbed || perturbed === before) return { applied: false, reason: 'no-change' };
+  // FLOOR 재검사: 교란 결과가 사실/화자/분량/반복 위반이면 폐기.
+  const viol = floor.collectFloorViolations({ result: { outputText: perturbed }, rawText, povSeed, optIn, mode });
+  if (viol.length) return { applied: false, reason: 'floor-violation:' + viol.map(v => v.type).join(','), rejected: true };
+  // 채택 — 출력 교체 + 가드 재측정(보고/노출 게이트가 최종 텍스트 기준이 되도록).
+  result.outputText = perturbed;
+  result.povDrift = floor.measurePovDrift(rawText, perturbed, povSeed);
+  result.floorNovelty = floor.measureNovelty(rawText, perturbed);
+  result.floorLength = floor.measureLength(rawText, perturbed, mode);
+  result.softDrift = require('../engine/softguard').measureSoftDrift(rawText, perturbed);
+  result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(rawText, perturbed);
+  result.repetition = floor.measureRepetition(perturbed);
+  result.lostFacts = floor.measureLostFacts(rawText, perturbed);
+  return { applied: true };
+}
+
 // 라우트(/analyze)의 humanize 분기와 동일 로직: preprocess → LLM → Pass C → verify → refine.
 // engine-test.js(로컬 테스트)와 향후 재구축이 공유하는 services/humanizer의 시드.
-async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false } = {}) {
+async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false, antiDetect = false } = {}) {
   const selectedMode = mode;
   const floor = require('../engine/floor');
   const contract = require('../engine/contract').buildContract(text, { mode: selectedMode, lang, optIn }); // 단일 진실
@@ -2031,6 +2058,14 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     result.judge = { ran: false, reason: 'no risk trigger (cheap gate)' };
   }
 
+  // ★ GPTZero 전용 2차 우회 패스(§우회): perplexity 교란 → FLOOR 재검사 → 깨지면 1차 출력 폴백.
+  if (antiDetect) {
+    result.antiDetect = await applyAntiDetect({
+      result, rawText: text, povSeed, optIn, mode: selectedMode, lang,
+      speakerType: contract.speakerType, signal, floor
+    });
+  }
+
   // ★ 노출 게이트(E.3): 모든 측정을 criticals/warnings로 모아 status 결정. criticals 있으면 blocked.
   result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn });
   const surfaceReport = floor.collectSurfaceReport(result);
@@ -2061,7 +2096,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
 // server-side chunking 오케스트레이션 — 문단별 재작성 + 좌/우 경계 + 청크별 FLOOR + 병합(§7.2).
 // 긴 글에서 프론트 분할(prevContext 300자)을 대체. 청크별로 novelty/화자를 잡고, 병합 후 전체 재검사.
-async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false } = {}) {
+async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false } = {}) {
   const floor = require('../engine/floor');
   const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
   const contract = require('../engine/contract').buildContract(text, { mode, lang, optIn }); // 단일 진실
@@ -2145,7 +2180,14 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     result.judge = { ran: false, reason: 'no risk trigger (cheap gate)' };
   }
 
-  // 최종 출력 기준 가드 재측정(judge repair 반영).
+  // ★ GPTZero 전용 2차 우회 패스(§우회): 병합 결과에 적용 → FLOOR 재검사 → 깨지면 폐기.
+  if (antiDetect) {
+    result.antiDetect = await applyAntiDetect({
+      result, rawText: text, povSeed, optIn, mode, lang, speakerType: contract.speakerType, signal, floor
+    });
+  }
+
+  // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).
   const finalOut = result.outputText;
   result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);
   result.floorNovelty = floor.measureNovelty(text, finalOut);
@@ -2162,6 +2204,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     fallbackCount,
     povDrift: result.povDrift, floorNovelty: result.floorNovelty, floorLength: result.floorLength,
     repetition: result.repetition, softDrift: result.softDrift, judge: result.judge,
+    antiDetect: result.antiDetect,
     floorViolations, povSeed, optIn, floorV2: true
   };
 }

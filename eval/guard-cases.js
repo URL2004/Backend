@@ -245,6 +245,14 @@ module.exports = [
     output: '기술은 사회를 바꾼다. 방향은 다양하다. 사람들은 적응해 간다. 변화는 빠르게 일어난다. 결국 우리는 더 나아진다.',
     expect: { conclusionDrift: false }
   },
+  {
+    // ★ 블로그 톤(~더라고요)은 처방된 말투지 결론 의도 역전이 아님 — conclusion_drift 오탐 금지.
+    name: 'conclusion/블로그 톤 더라고요 결론 — 오탐 금지',
+    mode: 'blog',
+    input: '작은 습관이 삶을 바꾼다. 환경을 정리하면 도움이 된다. 기록도 좋다. 회복력이 중요하다. 오늘 작은 행동 하나를 정하자. 삶은 작은 습관에서 조용히 달라진다.',
+    output: '작은 습관이 삶을 바꿔요. 환경을 정리하면 도움이 돼요. 기록도 좋아요. 회복력이 중요해요. 오늘 작은 행동 하나를 정해보세요. 삶은 작은 습관에서 조용히 달라지더라고요.',
+    expect: { conclusionDrift: false }
+  },
 
   // ── soft drift (cheap risk detector): 양성 ──
   {

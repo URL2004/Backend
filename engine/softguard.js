@@ -10,8 +10,14 @@ const MARKERS = {
   emotion: /무섭|두렵|설레|벅차|뭉클|행복|슬프|짜증|화가\s*나|불안|외로|뿌듯|허전|기쁘|괴로|두근|초조|막막|울컥|반갑|scary|afraid|excited|thrilled|nervous|anxious|lonely|proud|heartbreaking|devastat/gi,
   future: /앞으로|향후|미래|장차|언젠가|머지않아|훗날|장래|\d+\s*(?:개월|년|주|일)\s*(?:후|뒤)|in the future|going forward|years from now|months from now|down the road|someday/gi,
   uncertainty: /모르겠|불확실|장담할\s*수\s*없|확신할\s*수\s*없|미지수|두고\s*봐야|살아봐야\s*알|답은\s*없|답을\s*찾|어떻게\s*될지|계속할\s*수\s*있을지|not sure|uncertain|who knows|hard to say|remains to be seen|no idea|still don'?t know|where this goes/gi,
-  reaction: /솔직히|개인적으로|내\s*생각|제\s*생각|느끼기엔|돌이켜보면|새삼|처음엔|막상|더라고요|더라구요|honestly|personally|frankly|to be honest|in my view/gi
+  // ★ '더라고요/더라구요'는 블로그 모드가 처방하는 *말투 어미*(톤)라 drift 신호에서 제외 — 새 입장이 아님.
+  //   stance(프레이밍) 마커만 남긴다: 솔직히/개인적으로/막상 등.
+  reaction: /솔직히|개인적으로|내\s*생각|제\s*생각|느끼기엔|돌이켜보면|새삼|처음엔|막상|honestly|personally|frankly|to be honest|in my view/gi
 };
+
+// 결론 의도/정서 *역전*을 가리키는 카테고리만(emotion·future·uncertainty). reaction(프레이밍·말투)은
+// 의도 역전이 아니고 모드 톤 변환과 충돌하므로 conclusion_drift에서 제외(§blog 더라고요 오탐 수정).
+const CONCLUSION_DRIFT_KEYS = ['emotion', 'future', 'uncertainty'];
 
 const HEDGE_RE = /(것\s*같|듯하|듯합|지도\s*모|수도\s*있|기도\s*하|생각합니다|봅니다|아닐까|지\s*않을까|maybe|perhaps|might|i think|it seems)/i;
 
@@ -51,8 +57,8 @@ function measureConclusionDrift(rawText, outputText) {
   if (!outZone) return { flagged: false, markers: [] };
   const rawZone = conclusionZone(rawText);
   const markers = [];
-  for (const [k, re] of Object.entries(MARKERS)) {
-    if (count(outZone, re) > count(rawZone, re)) markers.push(k);  // 결론부에서 *늘어난* 마커
+  for (const k of CONCLUSION_DRIFT_KEYS) {                          // 의도 역전 카테고리만(reaction 제외)
+    if (count(outZone, MARKERS[k]) > count(rawZone, MARKERS[k])) markers.push(k);  // 결론부에서 *늘어난* 마커
   }
   return { flagged: markers.length > 0, markers, zone: outZone };
 }

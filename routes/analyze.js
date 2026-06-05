@@ -2091,8 +2091,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     await applyPassC(r, lang, signal);
     c.outputText = r.outputText || c.text;
 
-    // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair
-    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position });
+    // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair. chunkLevel: length_short 제외(§리뷰#18)
+    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true });
     if (viol.length) {
       try {
         const ru = floor.buildFloorRefineUser(c.text, c.outputText, viol);
@@ -2103,7 +2103,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       } catch (e) { if (signal?.aborted) throw e; }
       // ★ repair 재검증 + raw fallback(§리뷰#3): 고치고도 날조·소실·화자주입이 남으면 원문 청크로 폴백
       //   (휴머나이징 포기 < 날조/소실 노출 방지 — FLOOR가 탐지기 우회보다 우선).
-      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position });
+      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true });
       const HARD = new Set(['novelty', 'lost_facts', 'pov', 'fake_ref']);
       const residual = after.filter(x => HARD.has(x.type));
       if (residual.length) {

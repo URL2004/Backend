@@ -262,7 +262,7 @@ function measureRepetition(text) {
 }
 
 // 1차 결과에서 FLOOR critical 위반만 추출 (surface는 제외 — regression report로 §11).
-function collectFloorViolations({ result, rawText, povSeed, optIn, mode, position = 'whole' }) {
+function collectFloorViolations({ result, rawText, povSeed, optIn, mode, position = 'whole', chunkLevel = false }) {
   const out = result?.outputText || '';
   const v = [];
 
@@ -294,7 +294,9 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
       fix: `출력이 원문 대비 ${(len.ratio * 100).toFixed(0)}%로 과확장됐다. 원문에 없는 부연·예시·감정·수치·내부참조·반복 설명을 삭제해 전체 길이를 원문 대비 ${Math.round(len.policy.max * 100)}% 이하로 줄여라. 원문의 핵심 주장·숫자·고유명사·인용은 보존. 새 정보 추가·결론 새로 쓰기 금지(절삭만).` });
   }
   // 과압축(min 미만) = 정보 손실 → 복원 repair(새 내용 금지, 원문에 실제 있던 것만).
-  if (len.status === 'short') {
+  // ★ 청크 레벨에선 length_short를 잡지 않음(§리뷰#18): 개별 청크 분량은 자연히 출렁이고,
+  //   진짜 정보손실은 병합 전체(whole) 검사에서 잡는다. 청크마다 short를 올리면 불필요한 repair·raw폴백 유발.
+  if (len.status === 'short' && !chunkLevel) {
     v.push({ type: 'length_short', detail: `${(len.ratio * 100).toFixed(0)}% (하한 ${Math.round(len.policy.min * 100)}%)`,
       fix: `출력이 원문 대비 ${(len.ratio * 100).toFixed(0)}%로 너무 짧아 핵심 정보가 누락됐다. 원문에 실제로 존재하는 누락 claim·문단만 복원하라. 원문에 없는 예시·경험·감정·미래전망·수치·기관명은 절대 추가하지 마라.` });
   }

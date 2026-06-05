@@ -41,6 +41,11 @@ function splitLongChunk(c) {
   });
 }
 
+// 참고(§리뷰#18): 작은 인접 청크 coalesce(병합)는 검토 후 제외. 이 제품의 청킹은 "문단=단위"가 설계 전제
+//   (블로그 짧은 문단 유지·position 기반 intro/body/conclusion 처리·nearestChunkId·문단별 왕복 계약).
+//   블로그 문단이 본래 짧아(30~250자) "합칠 조각"과 "의도된 짧은 문단"을 가를 임계가 없어, coalesce는 구조를
+//   파괴한다. 대신 청크 길이 유연성은 length_short를 청크레벨에서 제외(floor.collectFloorViolations chunkLevel)로 해결.
+
 // 문단 경계(\n{2,})로 분할. 각 청크는 원본 charRange[start,end)와 뒤따르는 구분자(sep)를 보존.
 // position: intro(첫) / conclusion(끝) / body(중간) / single(1개뿐).
 function splitChunks(text) {

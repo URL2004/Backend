@@ -145,9 +145,11 @@ const bigNoBoundary = '가'.repeat(7000);  // 문장경계 전혀 없음 → 강
 const bigB = chunk.splitChunks(bigNoBoundary);
 check('chunk/경계없는 과대문단 왕복', chunk.mergeChunks(bigB) === bigNoBoundary, 'merge!=원본');
 check('chunk/경계없는 과대문단 ≤ HARD_MAX', bigB.every(c => c.text.length <= chunk.HARD_MAX), `최대=${Math.max(...bigB.map(c => c.text.length))}`);
-// 정상 크기 문단은 분할 안 함(과분할 방지)
-const small = chunk.splitChunks('짧은 문단 하나.\n\n또 다른 짧은 문단.');
-check('chunk/정상 크기는 분할 안 함', small.length === 2, `청크수=${small.length}`);
+// 청크 레벨 length_short 제외(#18): 짧아진 청크 출력도 chunkLevel이면 length_short 미발생
+const shortChunkViol = floor.collectFloorViolations({ result: { outputText: '가'.repeat(50) }, rawText: '가'.repeat(100), povSeed: floor.computePovSeed(''), optIn: false, mode: 'thesis', position: 'body', chunkLevel: true });
+check('chunk/chunkLevel length_short 제외', !shortChunkViol.some(x => x.type === 'length_short'), `viol=${JSON.stringify(shortChunkViol.map(x => x.type))}`);
+const shortWholeViol = floor.collectFloorViolations({ result: { outputText: '가'.repeat(50) }, rawText: '가'.repeat(100), povSeed: floor.computePovSeed(''), optIn: false, mode: 'thesis', position: 'whole' });
+check('chunk/whole length_short 유지', shortWholeViol.some(x => x.type === 'length_short'), `viol=${JSON.stringify(shortWholeViol.map(x => x.type))}`);
 // nearestChunkId: span → 해당 청크 index
 const nc = chunk.splitChunks('도입 문장이다.\n\n본문 핵심 주장.\n\n결론 요약이다.');
 check('chunk/nearestChunkId 본문', chunk.nearestChunkId(nc, '본문 핵심 주장') === 1, `id=${chunk.nearestChunkId(nc, '본문 핵심 주장')}`);

@@ -312,14 +312,8 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
     v.push({ type: 'repetition', detail: `완전중복 ${rep.count}건·근접중복 ${rep.fuzzyCount}건`,
       fix: `같은 결론·문장이 (어미·표현만 바꿔) 반복된다. 의미가 겹치는 문장을 하나로 합치고 결론을 한 번만 제시하라.` });
   }
-  // 결론부 soft drift — 문서 결론/병합 결과(whole·conclusion)에서만 critical. body 청크 끝은 제외(오탐 방지 §리뷰5).
-  if (position === 'whole' || position === 'conclusion') {
-    const concl = require('./softguard').measureConclusionDrift(rawText, out);
-    if (concl.flagged) {
-      v.push({ type: 'conclusion_drift', detail: concl.markers.join(', '),
-        fix: `결론부에 원문에 없던 ${concl.markers.join('·')} 표현(회의·불확실·미래전망·감정)이 추가돼 결론 의도가 바뀌었다. 그 표현을 제거하고 원문의 결론 의도(방향·정서)를 그대로 유지하라.` });
-    }
-  }
+  // ※ 결론부 drift는 여기서 하드 위반으로 잡지 않는다(§우회): 열린·여운 마무리는 우회 기법이라 허용.
+  //   결정론 conclusion_drift는 judge 트리거로만 쓰고(analyze.js), 진짜 "결론 의도 역전"은 semanticJudge가 차단.
   return v;
 }
 
@@ -340,7 +334,8 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn }) {
   if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
   if (!optIn && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });
   if (rep.total) criticals.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
-  if (concl.flagged) criticals.push({ gate: 'conclusion_drift', detail: concl.markers.join(', ') });
+  // 결론부 drift는 critical 아님(§우회: 열린 마무리 허용) — 경고로만 노출하고, 의도 역전은 semanticJudge가 차단.
+  if (concl.flagged) warnings.push({ gate: 'conclusion_drift', detail: concl.markers.join(', ') });
   if (mode === 'thesis') { const fake = measureFakeInternalRefs(rawText, out); if (fake.count) criticals.push({ gate: 'fake_ref', detail: fake.fabricated.join(', ') }); }
   if (result.judge && result.judge.ran && result.judge.pass === false) criticals.push({ gate: 'semanticJudge', detail: (result.judge.violations || []).length + '건' });
 

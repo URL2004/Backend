@@ -1890,6 +1890,7 @@ function buildRefineUser(humanizeText, prevOutput, failed) {
 function judgeTriggerReasons(result) {
   const r = [];
   if (result.softDrift?.flagged) r.push('softDrift');
+  if (result.conclusionDrift?.flagged) r.push('conclusion_drift'); // 결론부 회의·미래·감정 증가 → 의도역전 의심 → judge 확인
   if (result.floorLength?.status === 'short') r.push('length_short');
   if ((result.lostFacts?.count || 0) > 0) r.push('lostFacts');
   if ((result.repetition?.total || 0) > 0) r.push('repetition');
@@ -2002,6 +2003,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   result.floorNovelty = floor.measureNovelty(text, result.outputText);
   result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
+  result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(text, result.outputText);
   result.repetition = floor.measureRepetition(result.outputText);
   result.lostFacts = floor.measureLostFacts(text, result.outputText);
   if (selectedMode === 'thesis') result.fakeInternalRefs = floor.measureFakeInternalRefs(text, result.outputText);
@@ -2119,6 +2121,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const result = { outputText: merged };
   result.povSeed = povSeed;
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, merged);
+  result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(text, merged);
   // 트리거 판단용 결정론 측정(병합 기준).
   result.floorNovelty = floor.measureNovelty(text, merged);
   result.floorLength = floor.measureLength(text, merged, mode);

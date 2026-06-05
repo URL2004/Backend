@@ -178,6 +178,19 @@ check('ledger/과다폐기 → high_drop', validateLedgerHealth({ claims: [{}], 
 check('ledger/장문 과소표집 → undercovered', validateLedgerHealth({ claims: [{}, {}], total: 2, dropped: 0 }, '가'.repeat(1600)).reason === 'undercovered', 'health 분류 오류');
 check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {}, {}], total: 5, dropped: 0 }, '짧은 글').healthy === true, 'health 분류 오류');
 
+// ── conclusion_drift 강등(§우회): 결론부 불확실만 추가되고 나머지 깨끗하면 status=clean(경고)로 노출, 차단 아님 ──
+{
+  const raw = '기술은 사회를 바꾼다. 방향은 다양하다. 사람들은 적응한다. 변화는 빠르다. 결국 우리는 나아진다.';
+  const out = '기술은 사회를 바꾼다. 방향은 다양하다. 사람들은 적응해 간다. 변화는 빠르게 일어난다. 앞으로 어떻게 될지 모르겠다.';
+  const rep = floor.buildFloorReport({
+    result: { outputText: out, judge: { ran: true, pass: true, ledgerHealth: { healthy: true } } },
+    rawText: raw, mode: 'blog', povSeed: floor.computePovSeed(raw), optIn: false
+  });
+  check('floorReport/conclusion_drift는 경고(차단 아님)',
+    rep.status === 'clean' && rep.warnings.some(w => w.gate === 'conclusion_drift') && !rep.criticals.some(c => c.gate === 'conclusion_drift'),
+    `status=${rep.status} warns=${JSON.stringify(rep.warnings)} crits=${JSON.stringify(rep.criticals)}`);
+}
+
 console.log('\n════════ FLOOR 가드 결정론 EVAL ════════');
 console.log(`케이스 ${cases.length}개 · 검사 ${pass + fail}건 · 통과 ${pass} · 실패 ${fail}`);
 if (fails.length) {

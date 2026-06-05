@@ -196,8 +196,10 @@ router.post('/request-refund', async (req, res) => {
 
 // 환불 승인 (관리자용)
 router.post('/approve-refund', async (req, res) => {
-  const { orderId, idToken, kind: rawKind } = req.body;
+  const { orderId, idToken, kind: rawKind, full: rawFull } = req.body;
   const kind = rawKind === 'sub' || rawKind === 'subscription' ? 'subscription' : 'order';
+  // 전액 환불: 사용 크레딧과 무관하게 결제액 전체를 환불 (크레딧 주문에만 적용)
+  const isFullRefund = rawFull === true || rawFull === 'true';
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요합니다.' });
@@ -261,7 +263,7 @@ router.post('/approve-refund', async (req, res) => {
       return res.json({ ok: true, message: '환불이 완료되었습니다.' });
     }
 
-    // 크레딧 부분환불: 토스 호출 전에 트랜잭션으로 선차감 → 토스 → 확정/보상
+    // 크레딧 환불(부분/전액): 토스 호출 전에 트랜잭션으로 선차감 → 토스 → 확정/보상
     const orderAmount = parseInt(order.amount);
     const safeCreditsTotal = parseInt(order.safeCredits);
     if (!Number.isFinite(orderAmount) || orderAmount <= 0 ||
@@ -274,8 +276,9 @@ router.post('/approve-refund', async (req, res) => {
         const userSnap = await transaction.get(userRef);
         const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
         const refundable = Math.min(currentCredits, safeCreditsTotal);
-        if (refundable <= 0) throw new Error('NO_REFUNDABLE');
-        const amount = Math.floor(orderAmount * refundable / safeCreditsTotal);
+        // 부분 환불은 잔액 0이면 차단, 전액 환불은 잔액 0이어도 진행(0크레딧 회수 + 결제액 전액 환불)
+        if (!isFullRefund && refundable <= 0) throw new Error('NO_REFUNDABLE');
+        const amount = isFullRefund ? orderAmount : Math.floor(orderAmount * refundable / safeCreditsTotal);
         if (!Number.isFinite(amount) || amount <= 0) throw new Error('INVALID_AMOUNT');
         transaction.update(userRef, { credits: currentCredits - refundable });
         transaction.update(orderRef, {
@@ -335,7 +338,8 @@ router.post('/approve-refund', async (req, res) => {
       transaction.update(orderRef, {
         status: 'refunded',
         refundedAt: admin.firestore.FieldValue.serverTimestamp(),
-        refundedBy: adminUid
+        refundedBy: adminUid,
+        fullRefund: isFullRefund
       });
       const historyRef = db.collection('users').doc(order.uid).collection('creditHistory').doc();
       transaction.set(historyRef, {
@@ -348,7 +352,7 @@ router.post('/approve-refund', async (req, res) => {
       });
     });
 
-    console.log(`✅ 크레딧 부분환불 완료: ${orderId} (${refundableCredits}크레딧/${refundAmount}원, 관리자: ${adminUid})`);
+    console.log(`✅ 크레딧 ${isFullRefund ? '전액' : '부분'}환불 완료: ${orderId} (${refundableCredits}크레딧/${refundAmount}원, 관리자: ${adminUid})`);
     res.json({ ok: true, message: '환불이 완료되었습니다.' });
   } catch (err) {
     console.error('❌ 환불 승인 에러:', err);

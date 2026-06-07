@@ -24,8 +24,18 @@ const floor = require('./floor');
  * rawText에서 Contract를 1회 구성. 가드/파이프라인은 이 객체를 단일 소스로 참조한다.
  * @returns {Contract}
  */
+// 원문 종결 문체 감지: 평어체(~다/~이다/~한다) vs 존댓말(~합니다/~해요). 출력에서 일관 유지하기 위함.
+function detectRegister(t) {
+  const polite = ((t || '').match(/(습니다|합니다|입니다|됩니다|세요|해요|어요|예요|에요|니까요)(?=[.!?\s"”'’)]|$)/g) || []).length;
+  const plain = ((t || '').match(/(?:이?다|한다|된다|않다|없다|있다|었다|였다|진다|간다|난다|온다|본다)(?=[.!?\s"”'’)]|$)/g) || []).length;
+  if (plain >= polite * 1.5) return 'plain';
+  if (polite >= plain * 1.5) return 'polite';
+  return 'mixed';
+}
+
 function buildContract(rawText, { mode = 'assignment', lang = 'ko', optIn = false } = {}) {
   const povSeed = floor.computePovSeed(rawText);
+  const register = detectRegister(rawText);
   // 화자 유형: 개인(I/저) > 조직(we/우리/본 연구) > 비인칭.
   let speakerType, allowedPronouns, forbiddenPronouns;
   if (povSeed.fp_singular > 0) {
@@ -46,9 +56,10 @@ function buildContract(rawText, { mode = 'assignment', lang = 'ko', optIn = fals
     speakerType,
     allowedPronouns,
     forbiddenPronouns,
+    register,
     lengthPolicy: floor.LENGTH_POLICY[mode] || floor.LENGTH_POLICY.assignment,
     softClaimLedger: null
   };
 }
 
-module.exports = { buildContract };
+module.exports = { buildContract, detectRegister };

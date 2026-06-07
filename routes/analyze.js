@@ -1957,7 +1957,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   // ★ FLOOR v2: 보존 우선 프롬프트로 레거시 모드 프롬프트 대체(내용 파괴/변질 지시 제거). 모드는 톤 오버레이.
   //   floorV2 미설정 시 레거시 프롬프트(프로덕션 동작 불변).
   let humanizeSystem = floorV2
-    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes })
+    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes, register: contract.register })
     : getHumanizeSystem(selectedMode, lang);
   // floorV2는 lean tool(outputText 중심) — 레거시 표면지표 필드의 anti-FLOOR 유도 제거(§리뷰#7).
   const humanizeTool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(selectedMode, lang);
@@ -2130,7 +2130,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const chunks = splitChunks(text);
 
   const buildSys = (un) => floorV2
-    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un })
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register })
     : getHumanizeSystem(mode, lang);
   let humanizeSystem = buildSys('');  // 기본(메모 없음)
   // ★ 메모 청크별 분배(§v4): 각 경험을 *주제가 가장 맞는* 미사용 청크 하나에만 배정.

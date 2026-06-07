@@ -201,6 +201,23 @@ check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {
   check('judge/spanInSource 날조는 통과 안 함', spanInSource(fabricated, raw) === false, '날조를 원문으로 오인');
 }
 
+// ── surfaceguard(카피킬러 대응 지표) 결정론 테스트 ──
+{
+  const sg = require('../engine/surfaceguard');
+  // 실제 겪은 1인칭 과거 장면 → 구체(lived scene)
+  const lived = '지난 학기에 교환학생으로 나간 친구와 매주 영상통화를 했는데, 막상 귀국한 뒤보다 더 자주 봤습니다.';
+  check('surface/lived scene 인식', sg.analyzeParagraphs(lived).concrete === 1, `kind=${JSON.stringify(sg.analyzeParagraphs(lived).detail)}`);
+  // 추상 일반론(장면·사실 없음) → 위험
+  const abstract = '디지털 기술은 관계를 유지하는 방식을 바꾸어 놓았습니다. 온라인 소통은 분명 의미가 있지만 한계도 존재합니다. 결국 중요한 것은 균형입니다.';
+  check('surface/추상 일반론 위험 인식', sg.analyzeParagraphs(abstract).abstractRisk === 1, `kind=${JSON.stringify(sg.analyzeParagraphs(abstract).detail)}`);
+  // 구체 사실(연도·수치·고유명사 인용) → 구체(specific)
+  const specific = '2006년부터 17m 길이의 배를 만들었고, 300명이 넘는 사람들이 "함께 배를 건조하자"는 목표로 모였습니다.';
+  check('surface/구체 사실 인식', sg.analyzeParagraphs(specific).concrete === 1, `kind=${JSON.stringify(sg.analyzeParagraphs(specific).detail)}`);
+  // 추상 일반론 다수 문단 → needsUserAnchor
+  const generic2 = abstract + '\n\n' + '인간관계의 핵심은 진정성과 공감입니다. 기술은 그 과정을 돕는 도구일 뿐입니다. 태도가 가장 중요합니다.';
+  check('surface/needsUserAnchor 분기', sg.classifyInputRisk(generic2).needsUserAnchor === true, `risk=${JSON.stringify(sg.classifyInputRisk(generic2))}`);
+}
+
 console.log('\n════════ FLOOR 가드 결정론 EVAL ════════');
 console.log(`케이스 ${cases.length}개 · 검사 ${pass + fail}건 · 통과 ${pass} · 실패 ${fail}`);
 if (fails.length) {

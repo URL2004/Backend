@@ -2078,6 +2078,11 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   // ★ 노출 게이트(E.3): 모든 측정을 criticals/warnings로 모아 status 결정. criticals 있으면 blocked.
   result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn });
   const surfaceReport = floor.collectSurfaceReport(result);
+  // ★ surfaceguard(§카피킬러 대응): genericness·구체 grounding·관점·균일성 측정(리포트, FLOOR 게이트 아님).
+  //   inputRisk는 원문 기준(추상 일반론이면 needsUserAnchor) — 가짜 경험 생성 대신 사용자 메모 요청.
+  const sguard = require('../engine/surfaceguard');
+  result.surface = sguard.buildSurfaceReport(result.outputText);
+  result.inputRisk = sguard.classifyInputRisk(text);
   result.contract = contract; // 단일 진실 첨부
 
   return {
@@ -2092,6 +2097,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     failedFields: failed,
     floorViolations,
     surfaceReport,
+    surface: result.surface,
+    inputRisk: result.inputRisk,
     preInfo,
     inputParaCount,
     inputCharLen,
@@ -2220,9 +2227,13 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.lostFacts = floor.measureLostFacts(text, finalOut);
   const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode });
   result.floorReport = floor.buildFloorReport({ result, rawText: text, mode, povSeed, optIn });
+  const sguard = require('../engine/surfaceguard');
+  result.surface = sguard.buildSurfaceReport(finalOut);
+  result.inputRisk = sguard.classifyInputRisk(text);
   result.contract = contract;
   return {
-    result, mode, lang, chunked: true, chunkCount: chunks.length, contract,
+    result, surface: result.surface, inputRisk: result.inputRisk,
+    mode, lang, chunked: true, chunkCount: chunks.length, contract,
     status: result.floorReport.status, floorReport: result.floorReport,
     chunks: chunks.map(c => ({ index: c.index, position: c.position, inLen: c.text.length, outLen: (c.outputText || '').length, fellBack: !!c.fellBack, fallbackReason: c.fallbackReason || null })),
     fallbackCount,

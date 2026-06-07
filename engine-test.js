@@ -114,6 +114,14 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   }
 
   line();
+  if (out.surface) {
+    const sf = out.surface, pg = sf.paragraphs || {};
+    console.log('[surfaceguard — 카피킬러 대응 지표 (게이트 아님)]');
+    console.log(`  문단 ${pg.total}: 구체 ${pg.concrete} / 위험 ${pg.abstractRisk} = 추상위험비율 ${pg.abstractRiskRatio} (≈카피킬러 AI구간)`);
+    console.log(`  generic ${sf.genericness.ratio}(${sf.genericness.level}) · anchor ${sf.realAnchorDensity.ratio}(${sf.realAnchorDensity.level}) · stance ${sf.stanceDensity.ratio}(${sf.stanceDensity.level}) · lenCV ${sf.uniformity.lengthCV} · 종결연속 ${sf.uniformity.maxEndingRun}`);
+    if (out.inputRisk && out.inputRisk.needsUserAnchor) console.log(`  ⚠️ needsUserAnchor: 원문 추상위험 ${out.inputRisk.abstractRiskRatio} — 실제 경험 메모 권장(가짜 생성 안 함)`);
+    line();
+  }
   const s = out.surfaceReport || {};
   console.log('[표면 시그널 — regression report (게이트 아님, §11)]');
   console.log(`  3+나열:${s.listOfThree ?? '–'}  의문문:${s.questions ?? '–'}  콤마복문:${pct(s.commaClauseRatio)}  수동:${pct(s.passiveRatio)}  장문:${pct(s.longSentenceRatio)}  추상:${pct(s.abstractRatio)}  흐름연결:${pct(s.interSentenceConnector)}  주제어max:${s.topNounMax ?? '–'}`);

@@ -79,12 +79,47 @@ function measureUniformity(text) {
   };
 }
 
+// ── 개인 경험 날조 가드(§v4): hard novelty(숫자·고유명사)가 못 잡는 "지어낸 일화" 차단 ──
+// 출력의 1인칭 과거 경험 문장(lived scene)은 원문(rawText) 또는 사용자 메모에 근거해야 한다.
+// 둘 다에 없는 경험은 날조 → critical. (내용어 겹침으로 근거 판정 — 의역 허용, 완전 신규만 차단.)
+const PEN_STOP = new Set(['저는', '저도', '제가', '나는', '내가', '그날', '그때', '있었', '있습니다', '같습니다', '같다', '봤다', '느꼈', '됩니다', '합니다', '하는', '있는', '되는', '같은', '그리고', '하지만', '그런데', '정도', '경우', '때문', '이런', '그런']);
+function contentTokens(s) {
+  return [...new Set((s || '').match(/[가-힣]{2,}|[A-Za-z]{2,}|\d+/g) || [])].filter(t => !PEN_STOP.has(t));
+}
+function groundedIn(sentence, sourceText) {
+  const toks = contentTokens(sentence);
+  if (toks.length < 3) return true;               // 너무 짧으면 판단 보류(근거 있다고 간주)
+  const R = sourceText || '';
+  const hit = toks.filter(t => R.includes(t)).length;
+  return hit / toks.length >= 0.5;                 // 내용어 절반+가 원문/메모에 있으면 근거 있음
+}
+function measurePersonalExperienceNovelty(rawText, outputText, memo = '') {
+  const allowed = (rawText || '') + '\n' + (memo || '');
+  const fabricated = [];
+  for (const s of splitSentences(outputText)) {
+    if (isLivedScene(s) && !groundedIn(s, allowed)) fabricated.push(s.trim().slice(0, 50));
+  }
+  return { items: fabricated, count: fabricated.length };
+}
+// 메모 재사용 가드: 같은 경험 메모가 출력에 2회+ 등장(중복 위빙)하면 반복 신호.
+function measureMemoReuse(outputText, memo = '') {
+  const lines = (memo || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const scenes = splitSentences(outputText).filter(isLivedScene);
+  const reused = [];
+  for (const ln of lines) {
+    const cnt = scenes.filter(s => groundedIn(s, ln) && groundedIn(ln, s)).length;  // 양방향 겹침 = 같은 경험
+    if (cnt >= 2) reused.push({ memo: ln.slice(0, 30), count: cnt });
+  }
+  return { items: reused, count: reused.length };
+}
+
 function lv(ratio, lo, hi) { return ratio >= hi ? 'high' : ratio <= lo ? 'low' : 'mid'; }
 
 // "실제 겪은 장면"(lived scene): 1인칭/과거시점 맥락 + 과거시제 행동. 단순 명사 언급(친구·SNS)은 제외.
 //   카피킬러가 '낮음'으로 통과시키는 건 바로 이런 1인칭 과거 경험 문장이다.
 const PERSONAL_CTX_RE = /(저는|저도|제가|제\s|내가|나는|우리\s|지난\s*(학기|주|달|해|명절|방학)|그날|그때|작년|재작년|며칠\s*전|예전에|한때|어릴\s*때|고등학교\s*때|중학교\s*때|대학\s*때)/;
-const PAST_ACTION_RE = /(했|봤|느꼈|보냈|울렸|놓쳤|참았|들었|걸었|적었|나눴|만났|기다렸|뒀|들여다\s*봤|모였|받았|겪었|깨달았|실감했|굳어|돌아왔|지냈|살았|가라앉|다퉜|다툰|올렸|물었)(다|는데|었|던|고|으며|지만|어요|네요)?/;
+// 과거시제 형태소(일반화): ~았/었/였/갔/왔/봤/했... + 종결/연결어미. 특정 동사 나열 대신 과거형 자체를 잡는다.
+const PAST_ACTION_RE = /(았|었|였|했|갔|왔|봤|뒀|났|렸|췄|쳤|다툰)(다|다는|는데|던|던\s|고|으며|지만|음|어요|네요|거든요|습니다|기도)/;
 // 경험 표지: "~적이 있다", "~던 적", "~곤 했다" 자체가 구체적 과거 경험 진술.
 const EXPERIENCE_RE = /(적이\s*있|던\s*적|곤\s*했|적\s*있)/;
 function isLivedScene(s) {
@@ -156,5 +191,6 @@ function classifyInputRisk(rawText) {
 
 module.exports = {
   splitSentences, measureGenericness, measureRealAnchorDensity, measureStance,
-  measureUniformity, analyzeParagraphs, buildSurfaceReport, classifyInputRisk
+  measureUniformity, analyzeParagraphs, buildSurfaceReport, classifyInputRisk,
+  measurePersonalExperienceNovelty, measureMemoReuse, isLivedScene
 };

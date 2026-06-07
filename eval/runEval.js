@@ -201,6 +201,25 @@ check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {
   check('memo/메모·원문에도 없는 사실은 novelty 유지', floor.measureNovelty(raw, out2, memo).count >= 1, `items=${JSON.stringify(floor.measureNovelty(raw, out2, memo).items)}`);
 }
 
+// ── 개인 경험 날조 가드(personalExperienceNovelty): 원문/메모 근거 경험 허용, 날조 경험 차단 ──
+{
+  const sg = require('../engine/surfaceguard');
+  const raw = '디지털 기술은 가족관계도 바꾼다. 지난 명절에 온 가족이 모였는데 각자 스마트폰만 보느라 대화가 거의 없었다.';
+  // 원문에 근거한 경험(명절·가족·스마트폰) → 날조 아님
+  const grounded = '지난 명절에 온 가족이 모였는데 각자 스마트폰만 보느라 대화가 거의 없었습니다.';
+  check('expNov/원문 근거 경험 허용', sg.measurePersonalExperienceNovelty(raw, grounded, '').count === 0, `items=${JSON.stringify(sg.measurePersonalExperienceNovelty(raw, grounded, '').items)}`);
+  // 메모에 근거한 경험 → 날조 아님
+  const memo = '할머니가 작년에 영상통화 거는 법을 익히신 뒤로 매주 일요일 통화한다.';
+  const fromMemo = '할머니가 작년에 영상통화 거는 법을 익히신 뒤로 매주 일요일 저녁마다 통화했습니다.';
+  check('expNov/메모 근거 경험 허용', sg.measurePersonalExperienceNovelty(raw, fromMemo, memo).count === 0, `items=${JSON.stringify(sg.measurePersonalExperienceNovelty(raw, fromMemo, memo).items)}`);
+  // 원문·메모 어디에도 없는 경험 → 날조 차단
+  const fabricated = '지난 학기에 제가 부산으로 교환학생을 가서 기숙사에서 룸메이트와 매일 라면을 끓여 먹었습니다.';
+  check('expNov/날조 경험 차단', sg.measurePersonalExperienceNovelty(raw, fabricated, memo).count >= 1, `items=${JSON.stringify(sg.measurePersonalExperienceNovelty(raw, fabricated, memo).items)}`);
+  // 메모 재사용(같은 경험 2회) 검출
+  const reuseOut = '할머니가 작년에 영상통화 거는 법을 익히신 뒤 매주 통화했습니다. 또 할머니가 작년에 영상통화를 익히신 뒤로 매주 일요일 통화했습니다.';
+  check('memoReuse/같은 경험 2회 검출', sg.measureMemoReuse(reuseOut, memo).count >= 1, `items=${JSON.stringify(sg.measureMemoReuse(reuseOut, memo).items)}`);
+}
+
 // ── added_claim 오탐 방지(spanInSource): 보존된 원문 내용은 위반 아님, 진짜 날조는 위반 ──
 {
   const { spanInSource } = require('../engine/judge');

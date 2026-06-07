@@ -310,6 +310,20 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
     v.push({ type: 'lost_facts', detail: lost.items.join(', '),
       fix: `원문에 있던 사실이 출력에서 사라졌다: ${lost.items.join(', ')}. 원문대로 복원하라(새 사실 추가 금지).` });
   }
+  // ★ 개인 경험 날조 (§v4): 원문·메모에 없는 1인칭 일화를 지어냈다 — hard novelty가 못 잡는 경험 날조.
+  const expNov = require('./surfaceguard').measurePersonalExperienceNovelty(rawText, out, allowedExtra);
+  if (expNov.count >= 1) {
+    v.push({ type: 'experience_novelty', detail: expNov.items.join(' | '),
+      fix: `원문에도 사용자 경험 메모에도 없는 개인 일화를 지어냈다: ${expNov.items.join(' | ')}. 그 일화를 삭제하고, 원문이나 메모에 실제로 있는 내용만 써라(없는 경험 생성 금지).` });
+  }
+  // 메모 재사용 (§v4): 같은 경험 메모를 여러 곳에 반복 위빙
+  if (allowedExtra) {
+    const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra);
+    if (reuse.count >= 1) {
+      v.push({ type: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', '),
+        fix: `같은 경험 메모가 여러 문단에 반복됐다. 각 경험은 가장 잘 맞는 한 문단에만 한 번 쓰고 나머지는 제거하라.` });
+    }
+  }
   // 결론/CTA 반복 (exact + 근접중복)
   const rep = measureRepetition(out);
   if (rep.total >= 1) {
@@ -334,6 +348,9 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
 
   if (nov.count) criticals.push({ gate: 'novelty', detail: nov.items.join(', ') });
   if (lost.count) criticals.push({ gate: 'lostFacts', detail: lost.items.join(', ') });
+  const expNov = require('./surfaceguard').measurePersonalExperienceNovelty(rawText, out, allowedExtra);
+  if (expNov.count) criticals.push({ gate: 'experience_novelty', detail: expNov.items.join(' | ') });
+  if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', ') }); }
   if (len.status === 'short') criticals.push({ gate: 'length_short', detail: len.ratio });
   if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
   if (!optIn && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });

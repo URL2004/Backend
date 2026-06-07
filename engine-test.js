@@ -19,6 +19,9 @@ const optIn = process.env.OPT_IN === '1';       // OPT_IN=1 → "내 경험 추�
 const chunked = process.env.CHUNK === '1';      // CHUNK=1 → server-side chunking 경로(자동 floorV2)
 const doJudge = process.env.JUDGE === '1';      // JUDGE=1 → semanticJudge 강제 실행(P2-c)
 const doAntiDetect = process.env.ANTIDETECT === '1'; // ANTIDETECT=1 → GPTZero 전용 2차 우회 패스
+// NOTES=파일경로 또는 NOTES_TEXT=인라인 → 사용자 경험 메모(추상 문단 구체화 재료, novelty 허용)
+let userNotes = process.env.NOTES_TEXT || '';
+if (!userNotes && process.env.NOTES && fs.existsSync(process.env.NOTES)) userNotes = fs.readFileSync(process.env.NOTES, 'utf8');
 
 const [, , fileArg, modeArg = 'assignment', langArg = 'ko'] = process.argv;
 if (!fileArg) {
@@ -48,8 +51,8 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   let out;
   try {
     out = chunked
-      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect })
-      : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect });
+      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect, userNotes })
+      : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect, userNotes });
   } catch (e) {
     console.error('❌ runHumanize 실패:', e.message);
     process.exit(1);

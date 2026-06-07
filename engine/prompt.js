@@ -35,11 +35,23 @@ function speakerRuleEn(speakerType) {
   return "Keep the source's first-person voice. You may keep 1-2 natural personal reactions within that voice, but do not fabricate new anecdotes, achievements, or feelings.";
 }
 
-function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy } = {}) {
+function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '' } = {}) {
   const tone = (lang === 'en' ? TONE_EN : TONE_KO)[mode] || (lang === 'en' ? TONE_EN : TONE_KO).assignment;
   const lp = lengthPolicy || { min: 0.85, max: 1.20 };
   const lenKo = `원문의 ${lp.min}~${lp.max}배`;
   const lenEn = `${lp.min}–${lp.max}× the source`;
+  const notes = (userNotes || '').trim();
+  // 사용자 경험 메모: 추상 문단을 *이 메모 범위 안에서만* 1인칭 실제 장면으로 구체화(카피킬러 추상/구체근거 대응).
+  const anchorKo = notes ? [
+    '', '[사용자 실제 경험 메모 — 구체화 재료]',
+    notes,
+    '※ 위는 글쓴이가 실제로 겪은 경험이다. 추상적·일반론적 문단에 이 경험을 1인칭 실제 장면(시간·장소·인물·행동)으로 자연스럽게 녹여 구체화하라. 단 ★여기 적힌 범위 안에서만 — 메모에 없는 새 사건·수치·고유명사·감정은 절대 지어내지 마라. 메모를 글 전체에 1~2곳이 아니라 추상 문단마다 분산 배치하되, 억지로 모든 문단에 넣지는 마라.'
+  ].join('\n') : '';
+  const anchorEn = notes ? [
+    '', '[USER\'S REAL EXPERIENCE NOTES — material for grounding]',
+    notes,
+    '※ The above are things the writer actually experienced. Ground abstract/general paragraphs with these as concrete first-person scenes (time/place/people/action), naturally. But ONLY within what is written here — invent NO new events, numbers, proper nouns, or feelings beyond the notes. Distribute across abstract paragraphs rather than dumping in one place; do not force into every paragraph.'
+  ].join('\n') : '';
 
   if (lang === 'en') {
     return [
@@ -63,6 +75,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
       '- Output plain prose only — no markdown symbols (*, #, -, backticks).',
       '',
       `[TONE: ${mode}] ${tone}`,
+      anchorEn,
       '',
       'Rewrite the input below under the FLOOR. Output the body text only — no preamble, no markdown.'
     ].join('\n');
@@ -90,6 +103,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '· 마크다운 기호(*, #, -, 백틱) 금지 — 줄글로만.',
     '',
     `[톤: ${mode}] ${tone}`,
+    anchorKo,
     '',
     '아래 원문을 위 FLOOR를 지키며 자연스럽게 다시 써라. 본문만 출력(머리말·마크다운 금지).'
   ].join('\n');

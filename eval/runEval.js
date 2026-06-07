@@ -191,6 +191,16 @@ check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {
     `status=${rep.status} warns=${JSON.stringify(rep.warnings)} crits=${JSON.stringify(rep.criticals)}`);
 }
 
+// ── 사용자 경험 메모(allowedExtra): 메모에 있는 사실은 novelty 아님, 메모·원문에도 없으면 여전히 novelty ──
+{
+  const raw = '디지털 기술은 관계를 얕게 만들 수 있다.';
+  const out = '제가 지난 학기 단톡방 세 곳에서 수십 건을 주고받고도 룸메이트와는 말을 안 했어요.';
+  const memo = '지난 학기 단톡방 세 곳에서 메시지를 주고받았지만 룸메이트와는 대화가 없었다.';
+  check('memo/메모에 있는 사실은 novelty 아님', floor.measureNovelty(raw, out, memo).count === 0, `items=${JSON.stringify(floor.measureNovelty(raw, out, memo).items)}`);
+  const out2 = '제가 2019년에 토스 앱으로 50만원을 보냈어요.';
+  check('memo/메모·원문에도 없는 사실은 novelty 유지', floor.measureNovelty(raw, out2, memo).count >= 1, `items=${JSON.stringify(floor.measureNovelty(raw, out2, memo).items)}`);
+}
+
 // ── added_claim 오탐 방지(spanInSource): 보존된 원문 내용은 위반 아님, 진짜 날조는 위반 ──
 {
   const { spanInSource } = require('../engine/judge');

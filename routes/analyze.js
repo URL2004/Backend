@@ -1900,7 +1900,7 @@ function judgeTriggerReasons(result) {
 
 // GPTZero 전용 2차 우회 패스 적용 — perplexity 교란 후 FLOOR 재검사. 위반(날조·소실·화자·분량)이면
 // 결과를 폐기하고 1차 출력 유지(FLOOR가 우회보다 우선). 채택 시 result.outputText를 교체하고 가드 재측정.
-async function applyAntiDetect({ result, rawText, povSeed, optIn, mode, lang, speakerType, signal, floor }) {
+async function applyAntiDetect({ result, rawText, povSeed, optIn, mode, lang, speakerType, signal, floor, allowedExtra = '' }) {
   const before = result.outputText;
   let perturbed;
   try {
@@ -1911,12 +1911,12 @@ async function applyAntiDetect({ result, rawText, povSeed, optIn, mode, lang, sp
   }
   if (!perturbed || perturbed === before) return { applied: false, reason: 'no-change' };
   // FLOOR 재검사: 교란 결과가 사실/화자/분량/반복 위반이면 폐기.
-  const viol = floor.collectFloorViolations({ result: { outputText: perturbed }, rawText, povSeed, optIn, mode });
+  const viol = floor.collectFloorViolations({ result: { outputText: perturbed }, rawText, povSeed, optIn, mode, allowedExtra });
   if (viol.length) return { applied: false, reason: 'floor-violation:' + viol.map(v => v.type).join(','), rejected: true };
   // 채택 — 출력 교체 + 가드 재측정(보고/노출 게이트가 최종 텍스트 기준이 되도록).
   result.outputText = perturbed;
   result.povDrift = floor.measurePovDrift(rawText, perturbed, povSeed);
-  result.floorNovelty = floor.measureNovelty(rawText, perturbed);
+  result.floorNovelty = floor.measureNovelty(rawText, perturbed, allowedExtra);
   result.floorLength = floor.measureLength(rawText, perturbed, mode);
   result.softDrift = require('../engine/softguard').measureSoftDrift(rawText, perturbed);
   result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(rawText, perturbed);
@@ -1927,9 +1927,11 @@ async function applyAntiDetect({ result, rawText, povSeed, optIn, mode, lang, sp
 
 // 라우트(/analyze)의 humanize 분기와 동일 로직: preprocess → LLM → Pass C → verify → refine.
 // engine-test.js(로컬 테스트)와 향후 재구축이 공유하는 services/humanizer의 시드.
-async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false, antiDetect = false } = {}) {
+async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false, antiDetect = false, userNotes = '' } = {}) {
   const selectedMode = mode;
   const floor = require('../engine/floor');
+  const notes = (userNotes || '').trim();   // 사용자 경험 메모(있으면 추상 문단 구체화 재료 + novelty 허용 세계에 포함)
+  if (notes) optIn = true;                    // 경험 메모 제공 = 1인칭 경험 추가 동의 → pov 게이트 개방
   const contract = require('../engine/contract').buildContract(text, { mode: selectedMode, lang, optIn }); // 단일 진실
   const povSeed = contract.povSeed; // 화자 보존 게이트 기준값(Contract에서)
 
@@ -1949,7 +1951,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   // ★ FLOOR v2: 보존 우선 프롬프트로 레거시 모드 프롬프트 대체(내용 파괴/변질 지시 제거). 모드는 톤 오버레이.
   //   floorV2 미설정 시 레거시 프롬프트(프로덕션 동작 불변).
   let humanizeSystem = floorV2
-    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy })
+    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes })
     : getHumanizeSystem(selectedMode, lang);
   // floorV2는 lean tool(outputText 중심) — 레거시 표면지표 필드의 anti-FLOOR 유도 제거(§리뷰#7).
   const humanizeTool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(selectedMode, lang);
@@ -1977,7 +1979,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     // ★ FLOOR v2: surface는 report(§11). FLOOR critical(novelty·화자·허위참조·과확장)만 refine. 전 모드(C30).
     //   과확장은 1패스로 안 줄 수 있어 최대 2라운드 shrink/repair.
     const MAX_FLOOR_ROUNDS = 2;
-    floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode });
+    floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes });
     let round = 0;
     while (floorViolations.length && round < MAX_FLOOR_ROUNDS) {
       round++;
@@ -1991,7 +1993,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
         await applyPassC(result, lang, signal);
         verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
         refined = true;
-        floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode }); // 재검증
+        floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes }); // 재검증
       } catch (e) {
         if (signal?.aborted) throw e;
         break; // 마지막 성공 결과 유지
@@ -2027,7 +2029,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   const povDrift = floor.measurePovDrift(text, result.outputText, povSeed);
   result.povSeed = povSeed;
   result.povDrift = povDrift;
-  result.floorNovelty = floor.measureNovelty(text, result.outputText);
+  result.floorNovelty = floor.measureNovelty(text, result.outputText, notes);
   result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
   result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(text, result.outputText);
@@ -2046,15 +2048,15 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
       // ★ judge 재작성이 결정론 FLOOR를 악화(사실 소실·과압축·날조)시키면 폐기하고 judge 이전 출력 유지(FLOOR>우회).
       let judgedOut = jr.outputText, repairRejected = false;
       if (judgedOut !== preJudge) {
-        const preV = floor.collectFloorViolations({ result: { outputText: preJudge }, rawText: text, povSeed, optIn, mode: selectedMode });
-        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: text, povSeed, optIn, mode: selectedMode });
+        const preV = floor.collectFloorViolations({ result: { outputText: preJudge }, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes });
         if (postV.length > preV.length) { judgedOut = preJudge; repairRejected = true; }
       }
       if (judgedOut !== result.outputText) {
         result.outputText = judgedOut;
         // 교정으로 출력이 바뀌었으니 보존 가드 전부 재측정.
         result.povDrift = floor.measurePovDrift(text, result.outputText, povSeed);
-        result.floorNovelty = floor.measureNovelty(text, result.outputText);
+        result.floorNovelty = floor.measureNovelty(text, result.outputText, notes);
         result.floorLength = floor.measureLength(text, result.outputText, selectedMode);
         result.softDrift = require('../engine/softguard').measureSoftDrift(text, result.outputText);
         result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(text, result.outputText);
@@ -2071,12 +2073,12 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   if (antiDetect) {
     result.antiDetect = await applyAntiDetect({
       result, rawText: text, povSeed, optIn, mode: selectedMode, lang,
-      speakerType: contract.speakerType, signal, floor
+      speakerType: contract.speakerType, signal, floor, allowedExtra: notes
     });
   }
 
   // ★ 노출 게이트(E.3): 모든 측정을 criticals/warnings로 모아 status 결정. criticals 있으면 blocked.
-  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn });
+  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn, allowedExtra: notes });
   const surfaceReport = floor.collectSurfaceReport(result);
   // ★ surfaceguard(§카피킬러 대응): genericness·구체 grounding·관점·균일성 측정(리포트, FLOOR 게이트 아님).
   //   inputRisk는 원문 기준(추상 일반론이면 needsUserAnchor) — 가짜 경험 생성 대신 사용자 메모 요청.
@@ -2112,15 +2114,17 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
 // server-side chunking 오케스트레이션 — 문단별 재작성 + 좌/우 경계 + 청크별 FLOOR + 병합(§7.2).
 // 긴 글에서 프론트 분할(prevContext 300자)을 대체. 청크별로 novelty/화자를 잡고, 병합 후 전체 재검사.
-async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false } = {}) {
+async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, userNotes = '' } = {}) {
   const floor = require('../engine/floor');
   const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
+  const notes = (userNotes || '').trim();
+  if (notes) optIn = true;
   const contract = require('../engine/contract').buildContract(text, { mode, lang, optIn }); // 단일 진실
   const povSeed = contract.povSeed;
   const chunks = splitChunks(text);
 
   let humanizeSystem = floorV2
-    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy })
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes })
     : getHumanizeSystem(mode, lang);
   const tool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(mode, lang);  // floorV2 lean tool(§리뷰#7)
   const tail = (s, n) => (s || '').slice(-n);
@@ -2153,7 +2157,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     }
 
     // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair. chunkLevel: length_short 제외(§리뷰#18)
-    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true });
+    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
     if (viol.length) {
       try {
         const ru = floor.buildFloorRefineUser(c.text, c.outputText, viol);
@@ -2164,7 +2168,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       } catch (e) { if (signal?.aborted) throw e; }
       // ★ repair 재검증 + raw fallback(§리뷰#3): 고치고도 날조·소실·화자주입이 남으면 원문 청크로 폴백
       //   (휴머나이징 포기 < 날조/소실 노출 방지 — FLOOR가 탐지기 우회보다 우선).
-      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true });
+      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
       const HARD = new Set(['novelty', 'lost_facts', 'pov', 'fake_ref']);
       const residual = after.filter(x => HARD.has(x.type));
       if (residual.length) {
@@ -2182,7 +2186,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, merged);
   result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(text, merged);
   // 트리거 판단용 결정론 측정(병합 기준).
-  result.floorNovelty = floor.measureNovelty(text, merged);
+  result.floorNovelty = floor.measureNovelty(text, merged, notes);
   result.floorLength = floor.measureLength(text, merged, mode);
   result.repetition = floor.measureRepetition(merged);
   result.lostFacts = floor.measureLostFacts(text, merged);
@@ -2198,8 +2202,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       // ★ judge 재작성이 결정론 FLOOR를 악화시키면 폐기하고 병합본 유지(FLOOR>우회).
       let judgedOut = jr.outputText, repairRejected = false;
       if (judgedOut !== merged) {
-        const preV = floor.collectFloorViolations({ result: { outputText: merged }, rawText: text, povSeed, optIn, mode });
-        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: text, povSeed, optIn, mode });
+        const preV = floor.collectFloorViolations({ result: { outputText: merged }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length > preV.length) { judgedOut = merged; repairRejected = true; }
       }
       if (judgedOut !== merged) result.outputText = judgedOut;
@@ -2214,19 +2218,19 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ GPTZero 전용 2차 우회 패스(§우회): 병합 결과에 적용 → FLOOR 재검사 → 깨지면 폐기.
   if (antiDetect) {
     result.antiDetect = await applyAntiDetect({
-      result, rawText: text, povSeed, optIn, mode, lang, speakerType: contract.speakerType, signal, floor
+      result, rawText: text, povSeed, optIn, mode, lang, speakerType: contract.speakerType, signal, floor, allowedExtra: notes
     });
   }
 
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).
   const finalOut = result.outputText;
   result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);
-  result.floorNovelty = floor.measureNovelty(text, finalOut);
+  result.floorNovelty = floor.measureNovelty(text, finalOut, notes);
   result.floorLength = floor.measureLength(text, finalOut, mode);
   result.repetition = floor.measureRepetition(finalOut);
   result.lostFacts = floor.measureLostFacts(text, finalOut);
-  const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode });
-  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode, povSeed, optIn });
+  const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode, povSeed, optIn, allowedExtra: notes });
   const sguard = require('../engine/surfaceguard');
   result.surface = sguard.buildSurfaceReport(finalOut);
   result.inputRisk = sguard.classifyInputRisk(text);

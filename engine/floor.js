@@ -148,9 +148,13 @@ function extractFacts(text, hasHangul) {
 }
 
 // 신규 사실 주입(출력에 있으나 입력엔 없음) — 전 모드.
-function measureNovelty(rawText, outputText) {
+// allowedExtra: 사용자 경험 메모(userNotes). 제공 시 "허용 세계 = 원문 ∪ 메모" — 메모에 적힌 사실은
+//   날조가 아니다(사용자 동의·제공). 메모에도 원문에도 없는 사실만 novelty로 잡는다.
+function measureNovelty(rawText, outputText, allowedExtra) {
   const hasHangul = /[가-힣]/.test(rawText || ''); // 소스 언어 기준(출력 언어 섞임 시 CAPWORD 오탐 방지)
-  const inKeys = new Set(extractFacts(rawText, hasHangul).map(factKey));
+  const allowedFacts = extractFacts(rawText, hasHangul);
+  if (allowedExtra) allowedFacts.push(...extractFacts(allowedExtra, hasHangul));
+  const inKeys = new Set(allowedFacts.map(factKey));
   const seen = new Set(), items = [];
   for (const f of extractFacts(outputText, hasHangul)) {
     const k = factKey(f);
@@ -262,11 +266,11 @@ function measureRepetition(text) {
 }
 
 // 1차 결과에서 FLOOR critical 위반만 추출 (surface는 제외 — regression report로 §11).
-function collectFloorViolations({ result, rawText, povSeed, optIn, mode, position = 'whole', chunkLevel = false }) {
+function collectFloorViolations({ result, rawText, povSeed, optIn, mode, position = 'whole', chunkLevel = false, allowedExtra = '' }) {
   const out = result?.outputText || '';
   const v = [];
 
-  const nov = measureNovelty(rawText, out);
+  const nov = measureNovelty(rawText, out, allowedExtra);
   if (nov.count >= 1) {
     v.push({ type: 'novelty', detail: nov.items.join(', '),
       fix: `입력 글에 없는 통계·연도(YYYY)·기관명·% 수치를 모두 제거하고 원문에 있던 표현으로 되돌려라: ${nov.items.join(', ')}` });
@@ -318,10 +322,10 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
 }
 
 // floorReport 조립 — 측정값을 criticals/warnings로 분류하고 status 결정(노출 게이트의 단일 판정, §E.3).
-function buildFloorReport({ result, rawText, mode, povSeed, optIn }) {
+function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra = '' }) {
   const out = result?.outputText || '';
   const criticals = [], warnings = [];
-  const nov = result.floorNovelty || measureNovelty(rawText, out);
+  const nov = result.floorNovelty || measureNovelty(rawText, out, allowedExtra);
   const lost = result.lostFacts || measureLostFacts(rawText, out);
   const len = result.floorLength || measureLength(rawText, out, mode);
   const rep = result.repetition || measureRepetition(out);

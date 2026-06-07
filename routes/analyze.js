@@ -2123,9 +2123,22 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const povSeed = contract.povSeed;
   const chunks = splitChunks(text);
 
-  let humanizeSystem = floorV2
-    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes })
+  const buildSys = (un) => floorV2
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un })
     : getHumanizeSystem(mode, lang);
+  let humanizeSystem = buildSys('');  // 기본(메모 없음)
+  // ★ 메모 청크별 분배(§반복 방지): 각 경험을 한 청크에만 배정 → 같은 경험이 여러 청크에 중복 위빙되어
+  //   "동일 내용 과도한 반복"으로 잡히던 문제 해결. body 청크에 고르게 배정.
+  const chunkNotes = {};
+  if (floorV2 && notes) {
+    const noteLines = notes.split('\n').map(l => l.trim()).filter(Boolean);
+    const targets = chunks.map((c, i) => i).filter(i => chunks[i].position === 'body' || chunks[i].position === 'single');
+    const pool = targets.length ? targets : chunks.map((c, i) => i);
+    noteLines.forEach((ln, k) => {
+      const idx = pool[Math.min(pool.length - 1, Math.floor(k * pool.length / noteLines.length))];
+      chunkNotes[idx] = (chunkNotes[idx] ? chunkNotes[idx] + '\n' : '') + ln;
+    });
+  }
   const tool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(mode, lang);  // floorV2 lean tool(§리뷰#7)
   const tail = (s, n) => (s || '').slice(-n);
   const head = (s, n) => (s || '').slice(0, n);
@@ -2142,11 +2155,12 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       (prevOut ? `[앞 청크 끝 — 문체 연속성 참고, 다시 쓰지 말 것]\n...${tail(prevOut, 150)}\n\n` : '') +
       (nextRaw ? `[뒤에 이어질 원문 — 손대지 말 것]\n${head(nextRaw, 100)}...\n\n` : '');
     const userContent = `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
+    const chunkSys = chunkNotes[i] ? buildSys(chunkNotes[i]) : humanizeSystem;  // 이 청크에 배정된 경험만 위빙
 
     // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패해도 그 청크만 원문으로 폴백하고 계속.
     //   원문 청크는 사실·화자가 정의상 보존(FLOOR-clean)이라 전체 산출을 살린다.
     try {
-      const data = await callClaude({ userText: userContent, systemText: humanizeSystem, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+      const data = await callClaude({ userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
       const r = extractClaudeResult(data, tool.name);
       await applyPassC(r, lang, signal);
       c.outputText = r.outputText || c.text;

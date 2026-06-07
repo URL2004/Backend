@@ -2133,17 +2133,28 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un })
     : getHumanizeSystem(mode, lang);
   let humanizeSystem = buildSys('');  // 기본(메모 없음)
-  // ★ 메모 청크별 분배(§반복 방지): 각 경험을 한 청크에만 배정 → 같은 경험이 여러 청크에 중복 위빙되어
-  //   "동일 내용 과도한 반복"으로 잡히던 문제 해결. body 청크에 고르게 배정.
+  // ★ 메모 청크별 분배(§v4): 각 경험을 *주제가 가장 맞는* 미사용 청크 하나에만 배정.
+  //   같은 경험이 여러 청크에 중복 위빙("동일 내용 과도한 반복")되던 문제 + 엉뚱한 문단에 박히는 문제 해결.
   const chunkNotes = {};
   if (floorV2 && notes) {
     const noteLines = notes.split('\n').map(l => l.trim()).filter(Boolean);
-    const targets = chunks.map((c, i) => i).filter(i => chunks[i].position === 'body' || chunks[i].position === 'single');
-    const pool = targets.length ? targets : chunks.map((c, i) => i);
-    noteLines.forEach((ln, k) => {
-      const idx = pool[Math.min(pool.length - 1, Math.floor(k * pool.length / noteLines.length))];
-      chunkNotes[idx] = (chunkNotes[idx] ? chunkNotes[idx] + '\n' : '') + ln;
-    });
+    const topicSim = (a, b) => {
+      const ta = new Set((a.match(/[가-힣]{2,}/g) || []));
+      if (!ta.size) return 0;
+      let hit = 0; const seen = new Set();
+      for (const t of (b.match(/[가-힣]{2,}/g) || [])) if (ta.has(t) && !seen.has(t)) { seen.add(t); hit++; }
+      return hit / ta.size;
+    };
+    const used = new Set();
+    for (const ln of noteLines) {
+      let best = -1, bestScore = 0.05;  // 최소 유사도 미만이면 억지 배치 안 함
+      chunks.forEach((c, i) => {
+        if (used.has(i) || !(c.position === 'body' || c.position === 'single')) return;
+        const s = topicSim(ln, c.text);
+        if (s > bestScore) { bestScore = s; best = i; }
+      });
+      if (best >= 0) { chunkNotes[best] = ln; used.add(best); }  // 안 맞으면 미배치(생성 강요 X)
+    }
   }
   const tool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(mode, lang);  // floorV2 lean tool(§리뷰#7)
   const tail = (s, n) => (s || '').slice(-n);

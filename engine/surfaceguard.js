@@ -83,9 +83,15 @@ function lv(ratio, lo, hi) { return ratio >= hi ? 'high' : ratio <= lo ? 'low' :
 
 // "실제 겪은 장면"(lived scene): 1인칭/과거시점 맥락 + 과거시제 행동. 단순 명사 언급(친구·SNS)은 제외.
 //   카피킬러가 '낮음'으로 통과시키는 건 바로 이런 1인칭 과거 경험 문장이다.
-const PERSONAL_CTX_RE = /(저는|저도|제가|제\s|내가|나는|우리\s|지난\s*(학기|주|달|해|명절|방학)|그날|그때|작년|재작년|며칠\s*전|예전에)/;
-const PAST_ACTION_RE = /(했|봤|느꼈|보냈|울렸|놓쳤|참았|들었|걸었|적었|나눴|만났|기다렸|뒀|들여다\s*봤|모였|받았|겪었|깨달았|실감했|굳어|돌아왔|지냈|살았)(다|는데|었|고|으며|지만|어요|네요)?/;
-function isLivedScene(s) { return PERSONAL_CTX_RE.test(s) && PAST_ACTION_RE.test(s); }
+const PERSONAL_CTX_RE = /(저는|저도|제가|제\s|내가|나는|우리\s|지난\s*(학기|주|달|해|명절|방학)|그날|그때|작년|재작년|며칠\s*전|예전에|한때|어릴\s*때|고등학교\s*때|중학교\s*때|대학\s*때)/;
+const PAST_ACTION_RE = /(했|봤|느꼈|보냈|울렸|놓쳤|참았|들었|걸었|적었|나눴|만났|기다렸|뒀|들여다\s*봤|모였|받았|겪었|깨달았|실감했|굳어|돌아왔|지냈|살았|가라앉|다퉜|다툰|올렸|물었)(다|는데|었|던|고|으며|지만|어요|네요)?/;
+// 경험 표지: "~적이 있다", "~던 적", "~곤 했다" 자체가 구체적 과거 경험 진술.
+const EXPERIENCE_RE = /(적이\s*있|던\s*적|곤\s*했|적\s*있)/;
+function isLivedScene(s) {
+  if (EXPERIENCE_RE.test(s) && PAST_ACTION_RE.test(s)) return true;          // ~한 적이 있다 류
+  if (PERSONAL_CTX_RE.test(s) && PAST_ACTION_RE.test(s)) return true;        // 1인칭/특정시점 + 과거행동
+  return false;
+}
 
 // "구체 사실"(specificity): 연도·숫자+단위·한자·인용어구 등. 일반적 약어(SNS/AI)는 제외(너무 흔해 신호 아님).
 //   purpose 에세이처럼 1인칭 일화가 아니라 고유명사·수치로 구체적인 글이 카피킬러를 통과하는 경로.

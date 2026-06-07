@@ -45,12 +45,14 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
   const anchorKo = notes ? [
     '', '[사용자 실제 경험 메모 — 구체화 재료]',
     notes,
-    '※ 위는 글쓴이가 실제로 겪은 경험이다. 추상적·일반론적 문단에 이 경험을 1인칭 실제 장면(시간·장소·인물·행동)으로 자연스럽게 녹여 구체화하라. 단 ★여기 적힌 범위 안에서만 — 메모에 없는 새 사건·수치·고유명사·감정은 절대 지어내지 마라. 메모를 글 전체에 1~2곳이 아니라 추상 문단마다 분산 배치하되, 억지로 모든 문단에 넣지는 마라.'
+    '※ 위는 글쓴이가 실제로 겪은 경험이다. 추상적·일반론적 서술을 이 경험의 1인칭 실제 장면(시간·장소·인물·행동)으로 *교체*해 구체화하라(분량을 늘려 덧붙이는 게 아니라, 일반론 문장을 구체 장면으로 바꾸는 것 — 전체 길이는 원문 수준 유지).',
+    '★ 규칙: (1) 메모에 적힌 범위 안에서만 — 없는 사건·수치·고유명사·감정은 절대 지어내지 마라. (2) 각 경험은 가장 잘 맞는 한 문단에 딱 한 번만 써라 — 같은 경험·문장을 여러 문단에 반복하지 마라(반복은 AI 신호이자 위반). (3) 모든 문단에 억지로 넣지 말고, 경험 개수만큼만 자연스럽게 배치하라.'
   ].join('\n') : '';
   const anchorEn = notes ? [
     '', '[USER\'S REAL EXPERIENCE NOTES — material for grounding]',
     notes,
-    '※ The above are things the writer actually experienced. Ground abstract/general paragraphs with these as concrete first-person scenes (time/place/people/action), naturally. But ONLY within what is written here — invent NO new events, numbers, proper nouns, or feelings beyond the notes. Distribute across abstract paragraphs rather than dumping in one place; do not force into every paragraph.'
+    '※ The above are things the writer actually experienced. REPLACE abstract/general statements with these as concrete first-person scenes (time/place/people/action) — do not append extra length; swap generic sentences for concrete ones (keep total length near the source).',
+    '★ Rules: (1) ONLY within the notes — invent NO new events, numbers, proper nouns, or feelings. (2) Use each experience exactly ONCE, in the single best-fitting paragraph — never repeat the same experience/sentence across paragraphs (repetition is an AI signal and a violation). (3) Place only as many as there are experiences; do not force into every paragraph.'
   ].join('\n') : '';
 
   if (lang === 'en') {

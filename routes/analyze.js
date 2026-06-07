@@ -2132,10 +2132,18 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       (nextRaw ? `[뒤에 이어질 원문 — 손대지 말 것]\n${head(nextRaw, 100)}...\n\n` : '');
     const userContent = `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
 
-    const data = await callClaude({ userText: userContent, systemText: humanizeSystem, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
-    const r = extractClaudeResult(data, tool.name);
-    await applyPassC(r, lang, signal);
-    c.outputText = r.outputText || c.text;
+    // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패해도 그 청크만 원문으로 폴백하고 계속.
+    //   원문 청크는 사실·화자가 정의상 보존(FLOOR-clean)이라 전체 산출을 살린다.
+    try {
+      const data = await callClaude({ userText: userContent, systemText: humanizeSystem, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+      const r = extractClaudeResult(data, tool.name);
+      await applyPassC(r, lang, signal);
+      c.outputText = r.outputText || c.text;
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      c.outputText = c.text; c.fellBack = true; c.fallbackReason = 'llm-error';
+      continue; // repair/재검증도 건너뜀(원문 그대로면 위반 없음)
+    }
 
     // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair. chunkLevel: length_short 제외(§리뷰#18)
     const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true });

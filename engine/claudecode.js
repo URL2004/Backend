@@ -14,7 +14,7 @@
 const { spawn } = require('child_process');
 
 // claude CLI를 헤드리스로 실행하고 stdout(재작성 결과)을 받는다.
-function runClaudeCode(promptText, { model = 'claude-sonnet-4-6', signal, timeoutMs = 180000 } = {}) {
+function runClaudeCode(promptText, { model = 'claude-sonnet-4-6', signal, timeoutMs = 300000 } = {}) {
   return new Promise((resolve, reject) => {
     // Windows의 claude는 claude.ps1/claude.cmd → shell:true로 PATH 해석.
     const child = spawn('claude', ['-p', '--model', model], {

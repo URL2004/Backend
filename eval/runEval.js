@@ -191,6 +191,16 @@ check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {
     `status=${rep.status} warns=${JSON.stringify(rep.warnings)} crits=${JSON.stringify(rep.criticals)}`);
 }
 
+// ── added_claim 오탐 방지(spanInSource): 보존된 원문 내용은 위반 아님, 진짜 날조는 위반 ──
+{
+  const { spanInSource } = require('../engine/judge');
+  const raw = '미래에는 인공지능부터 메타버스까지 다양한 기술이 인간관계의 방식을 크게 바꿔놓을 것입니다. 가상공간에서 함께 활동하게 될지도 모릅니다.';
+  const preserved = '미래에는 인공지능부터 메타버스까지 다양한 기술이 인간관계의 방식을 지금보다 훨씬 크게 바꿔';
+  check('judge/spanInSource 보존 원문 인식', spanInSource(preserved, raw) === true, '보존 내용을 원문으로 인식 못함');
+  const fabricated = 'EPA에 따르면 노후 건물의 칠십 퍼센트가 위험하다고 발표했다';
+  check('judge/spanInSource 날조는 통과 안 함', spanInSource(fabricated, raw) === false, '날조를 원문으로 오인');
+}
+
 console.log('\n════════ FLOOR 가드 결정론 EVAL ════════');
 console.log(`케이스 ${cases.length}개 · 검사 ${pass + fail}건 · 통과 ${pass} · 실패 ${fail}`);
 if (fails.length) {

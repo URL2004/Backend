@@ -66,15 +66,30 @@ function evidenceMatches(rawText, ev) {
 }
 
 async function buildSoftClaimLedger(rawText, { lang = 'ko', signal } = {}) {
+  // ★ 원장 크기를 글 길이에 비례 — 긴 글에서 claim이 과소하면 보존된 원문이 judge에 "추가됨"으로 오판된다.
+  const rawLen = (rawText || '').replace(/\s+/g, '').length;
+  const cap = Math.min(40, Math.max(12, Math.round(rawLen / 300))); // 8900자 → ~30
   const system = lang === 'en'
-    ? 'Extract a closed-world claim ledger from SOURCE for fact-checking a rewrite. Each claim MUST be directly supported by SOURCE; evidence_text MUST be a verbatim substring of SOURCE. 3-7 core claims (more for long text, cap ~15). Do not infer beyond the text.'
-    : 'SOURCE에서 재작성 검증용 "닫힌세계 claim 원장"을 추출한다. 각 claim은 SOURCE에 직접 근거해야 하며, evidence_text는 SOURCE의 그대로(verbatim) 부분 문자열이어야 한다. 핵심 claim 3~7개(긴 글이면 더, 상한 ~15). 본문을 넘어 추론하지 마라.';
+    ? `Extract a closed-world claim ledger from SOURCE for fact-checking a rewrite. Each claim MUST be directly supported by SOURCE; evidence_text MUST be a verbatim substring of SOURCE. Cover the WHOLE source — roughly one claim per paragraph/idea so nothing real is later mistaken for "added" (aim for up to ${cap} claims for this length). Do not infer beyond the text.`
+    : `SOURCE에서 재작성 검증용 "닫힌세계 claim 원장"을 추출한다. 각 claim은 SOURCE에 직접 근거해야 하며, evidence_text는 SOURCE의 그대로(verbatim) 부분 문자열이어야 한다. SOURCE 전체를 빠짐없이 커버하라 — 문단·논점마다 1개 이상 뽑아, 나중에 보존된 원문이 "추가된 주장"으로 오인되지 않게 하라(이 길이면 최대 ${cap}개 정도). 본문을 넘어 추론하지 마라.`;
   const user = `JSON: {"claims":[{"claim":"핵심 주장 한 줄","evidence_text":"SOURCE 그대로 인용"}]}\n\n[SOURCE]\n${rawText}`;
-  const out = await llmJSON({ system, user, signal });
+  const out = await llmJSON({ system, user, signal, maxTokens: 4096 });
   const claims = Array.isArray(out?.claims) ? out.claims : [];
   const kept = claims.filter(c => evidenceMatches(rawText, c?.evidence_text));
-  const capped = kept.slice(0, 15);
+  const capped = kept.slice(0, cap);
   return { claims: capped, total: claims.length, dropped: claims.length - kept.length };
+}
+
+// added_claim 오탐 방지: 플래그된 span의 내용어 대부분이 SOURCE에 실재하면 "추가"가 아니라 보존된 원문이다.
+//   (원장은 SOURCE의 *표본*이라 닫힌세계가 불완전 → "원장에 없음"을 "추가됨"으로 단정하면 긴 글에서 오탐.)
+const SPAN_STOP = new Set(['그', '이', '저', '것', '수', '등', '및', '더', '좀', '꽤', '또', '그리고', '하지만', '그러나', '그런데', '때문', '위해', '통해', '대한', '하는', '있는', '되는', '같은', '경우', '정도', '가장', '훨씬', '이런', '저런', '그런']);
+function spanInSource(span, rawText) {
+  const toks = (span || '').match(/[가-힣]{2,}|[A-Za-z]{2,}|\d+%?/g) || [];
+  const content = [...new Set(toks)].filter(t => !SPAN_STOP.has(t));
+  if (content.length < 3) return false;
+  const R = rawText || '';
+  const hit = content.filter(t => R.includes(t)).length;
+  return hit / content.length >= 0.7; // 내용어 70%+ 가 원문에 있으면 보존된 내용
 }
 
 // 원장 건전성 게이트(§리뷰#6): 닫힌세계 판정의 신뢰도 사전점검.
@@ -112,7 +127,9 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal 
   const out = await llmJSON({ system, user, signal });
   const violations = Array.isArray(out?.violations) ? out.violations : [];
   // 환각 방지: span이 실제 REWRITE에 존재하는 위반만 채택.
-  const verified = violations.filter(v => v?.span && normWS(outputText).includes(normWS(v.span).slice(0, Math.min(24, normWS(v.span).length))));
+  let verified = violations.filter(v => v?.span && normWS(outputText).includes(normWS(v.span).slice(0, Math.min(24, normWS(v.span).length))));
+  // ★ added_claim 오탐 방지: span 내용이 SOURCE에 실재하면 보존된 원문이므로 폐기(원장 과소커버 보정).
+  verified = verified.filter(v => !((v.type === 'added_claim' || /added|추가|전망|미래/i.test(v.type || '')) && spanInSource(v.span, rawText)));
   return { violations: verified, rawCount: violations.length, pass: verified.length === 0 };
 }
 
@@ -153,4 +170,4 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRou
   return { ledger, outputText: text, verdict, rounds, ledgerHealth: health };
 }
 
-module.exports = { buildSoftClaimLedger, semanticJudge, repairViolations, judgeAndRepair, validateLedgerHealth, llmJSON, llmText, evidenceMatches };
+module.exports = { buildSoftClaimLedger, semanticJudge, repairViolations, judgeAndRepair, validateLedgerHealth, spanInSource, llmJSON, llmText, evidenceMatches };

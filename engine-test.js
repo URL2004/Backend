@@ -10,6 +10,7 @@
 //
 // 예)  node engine-test.js samples/sample-assignment.txt assignment
 
+try { require('dotenv').config(); } catch { /* dotenv 없으면 무시 — 명령행 env로도 동작 */ }
 const fs = require('fs');
 const path = require('path');
 

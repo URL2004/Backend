@@ -63,8 +63,9 @@ function buildGroundingPrompt(segText, anchors, lang = 'ko') {
 
 [핵심 작업 — 이것을 최우선으로]
 · 막연한 서술("~이 중요하다", "~할 수 있다", "~가 필요하다", "~도 하나의 요소다")을 **판단문**으로 바꿔라:
-  "문제는 A가 아니라 B다", "핵심은 A보다 B다", "위험은 A에서 온다", "A가 아니라 B가 갈랐다".
+  "문제는 A가 아니라 B", "핵심은 A보다 B", "위험은 A에서 온다", "A가 아니라 B가 갈랐다" 같은 구조.
 · 단, A·B는 반드시 **그 문단 안에 이미 있는 내용**이어야 한다. 문단의 대조·조건·한계를 더 또렷하게 드러낼 뿐, 새 내용을 넣지 마라.
+· ★말투(문체)를 문단 원래대로 유지하라 — 해요체면 판단문도 해요체("문제는 A가 아니라 B예요"), 한다체면 한다체("문제는 A가 아니라 B다"). 문단 안에서 말투를 섞지 마라.
 
 [절대 규칙 — 어기면 실패]
 · 새 회사·연도·수치·통계·고유명사를 만들지 마라(원문에 있는 것만).
@@ -111,13 +112,20 @@ async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetC
   let ledger = null;
   try { ledger = await buildSoftClaimLedger(rawText, { lang, signal }); } catch { /* 게이트 ②는 best-effort */ }
 
-  const out = [];
-  let repaired = 0;
-  for (const seg of segs) {
-    const r = await groundSegment(seg, rawText, anchorPool, { lang, signal, ledger });
-    if (r.changed) repaired++;
-    out.push(r.text);
-  }
+  // 병렬화: segment는 서로 독립(rawText·anchorPool·공유 ledger만 참조). 동시성 제한 + 순서 보존.
+  const concurrency = Number(process.env.CHUNK_CONCURRENCY) ||
+    (process.env.LLM_BACKEND === 'claudecode' ? 1 : 6);
+  const out = new Array(segs.length);
+  let repaired = 0, next = 0;
+  const worker = async () => {
+    while (next < segs.length) {
+      const i = next++;
+      const r = await groundSegment(segs[i], rawText, anchorPool, { lang, signal, ledger });
+      if (r.changed) repaired++;
+      out[i] = r.text;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, segs.length) }, worker));
   const result = out.join('\n\n');
   const after = sg.buildSegmentReport(result, rawText, targetChars);
   return {

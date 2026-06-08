@@ -2195,24 +2195,27 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const tail = (s, n) => (s || '').slice(-n);
   const head = (s, n) => (s || '').slice(0, n);
 
-  for (let i = 0; i < chunks.length; i++) {
+  // ★ 병렬화: 청크는 앞 청크의 '원문' 이웃만 참고(출력 의존 제거)하므로 서로 독립 → 동시 실행 가능.
+  //   claudecode(CLI)는 직렬(1), API는 동시성 6. CHUNK_CONCURRENCY로 override.
+  const CHUNK_CONCURRENCY = Number(process.env.CHUNK_CONCURRENCY) ||
+    (process.env.LLM_BACKEND === 'claudecode' ? 1 : 6);
+
+  async function processChunk(i) {
     if (signal?.aborted) throw new Error('aborted');
     const c = chunks[i];
-    const prevOut = i > 0 ? (chunks[i - 1].outputText || chunks[i - 1].text) : '';
+    const prevRaw = i > 0 ? chunks[i - 1].text : '';                 // ★ 원문 이웃(병렬 안전)
     const nextRaw = i < chunks.length - 1 ? chunks[i + 1].text : '';
     const posNote = c.position === 'conclusion'
       ? '※ 결론부다. 앞에서 이미 말한 주장·CTA를 반복하지 말고, 새 사실·미래전망을 추가하지 마라. 길이는 원문 청크와 비슷하게.'
       : c.position === 'intro' ? '※ 도입부다.' : '※ 본문이다.';
     const boundary =
-      (prevOut ? `[앞 청크 끝 — 문체 연속성 참고, 다시 쓰지 말 것]\n...${tail(prevOut, 150)}\n\n` : '') +
+      (prevRaw ? `[앞 부분 원문 — 문맥 참고, 다시 쓰지 말 것]\n...${tail(prevRaw, 150)}\n\n` : '') +
       (nextRaw ? `[뒤에 이어질 원문 — 손대지 말 것]\n${head(nextRaw, 100)}...\n\n` : '');
     const userContent = `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
     const chunkSys = chunkNotes[i] ? buildSys(chunkNotes[i]) : humanizeSystem;  // 이 청크에 배정된 경험만 위빙
 
     // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패하면 1회 더 재시도하고,
-    //   그래도 실패할 때만 그 청크만 원문으로 폴백하고 계속.
-    //   주의: raw 폴백은 FLOOR-clean(사실·화자 보존)이지만 휴머나이징이 안 된 원문이라
-    //   문체(register)가 깨지고 그 문단만 탐지율이 100%로 남는다 → 폴백은 정말 최후수단.
+    //   그래도 실패할 때만 그 청크만 원문으로 폴백한다.
     let chunkDone = false;
     for (let attempt = 0; attempt < 2 && !chunkDone; attempt++) {
       try {
@@ -2227,7 +2230,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         c.outputText = c.text; c.fellBack = true; c.fallbackReason = 'llm-error';
       }
     }
-    if (!chunkDone) continue; // 재시도까지 실패 → 원문 폴백, repair/재검증 건너뜀(원문은 위반 없음)
+    if (!chunkDone) return; // 재시도까지 실패 → 원문 폴백, repair/재검증 건너뜀(원문은 위반 없음)
 
     // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair. chunkLevel: length_short 제외(§리뷰#18)
     const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
@@ -2250,6 +2253,13 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         c.fallbackReason = residual.map(x => x.type).join(',');
       }
     }
+  }
+
+  // 동시성 제한 풀 — 인덱스 큐를 CHUNK_CONCURRENCY개 워커가 소진.
+  {
+    let next = 0;
+    const worker = async () => { while (next < chunks.length) { await processChunk(next++); } };
+    await Promise.all(Array.from({ length: Math.min(CHUNK_CONCURRENCY, chunks.length) }, worker));
   }
   const fallbackCount = chunks.filter(c => c.fellBack).length;
 

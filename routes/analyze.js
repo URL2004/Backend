@@ -2329,6 +2329,20 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     });
   }
 
+  // ★ Phase 1.5 multi-candidate 최적화(채점기 검증 후): 고위험 segment를 후보 N개 중 riskScore 최저로 교체.
+  //   grounding 뒤, polish 앞. OPTIMIZE=1일 때만. FLOOR 악화 시 폐기(무해).
+  if (process.env.OPTIMIZE === '1') {
+    try {
+      const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal });
+      if (opt.text && opt.text !== result.outputText) {
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: opt.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        if (postV.length <= preV.length) result.outputText = opt.text;
+      }
+      result.optimize = { changed: opt.changed, targets: opt.targets, log: opt.log };
+    } catch (e) { if (signal?.aborted) throw e; result.optimize = { error: e.message }; }
+  }
+
   // ★ Phase 0 폴리시(검출+국소 repair): 구어체 반복·register 혼합·압축 잔여 플래그 정리.
   //   grounding 뒤, antiDetect 앞. FLOOR 악화 시 폐기(무해).
   if (process.env.POLISH !== '0') {

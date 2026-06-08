@@ -8,10 +8,28 @@
 const sg = require('./surfaceguard');
 const floor = require('./floor');
 const { llmText, buildSoftClaimLedger, semanticJudge } = require('./judge');
+const { sentRegister } = require('./polish');
+
+// segment의 주 말투(해요체/한다체/합니다체) 판정
+function dominantRegister(seg) {
+  const regs = sg.splitSentences(seg).map(sentRegister);
+  const c = { haeyo: 0, handa: 0, hap: 0 };
+  for (const r of regs) if (c[r] !== undefined) c[r]++;
+  if (c.haeyo >= c.handa && c.haeyo >= c.hap) return 'haeyo';
+  if (c.handa >= c.hap) return 'handa';
+  return 'hap';
+}
+const REG_LABEL = { haeyo: '해요체(~예요/~거든요/~죠/~어요)', handa: '한다체(~다/~이다/~한다)', hap: '합니다체(~습니다/~ㅂ니다)' };
+// 후보가 목표 말투를 지켰는지(다른 말투 문장이 1개 이하면 통과)
+function registerOk(cand, target) {
+  const regs = sg.splitSentences(cand).map(sentRegister);
+  const off = regs.filter(r => r !== 'q' && r !== 'other' && r !== target).length;
+  return off <= 1;
+}
 
 // 전략별 시스템 프롬프트(공통 제약: 사실·말투·분량 보존, 새 정보 금지)
-function strategyPrompt(seg, strat, anchors, lang) {
-  const COMMON = '사실·수치·고유명사·의미·말투(문단 원래 해요체/한다체)·분량은 그대로 두고, 원문에 없는 새 정보·사례·수치는 절대 만들지 마라. 본문만 출력(설명·따옴표 금지).';
+function strategyPrompt(seg, strat, anchors, lang, register = 'haeyo') {
+  const COMMON = `★말투는 반드시 ${REG_LABEL[register]} 하나로만 — 다른 말투(특히 한다체)를 한 문장도 섞지 마라. 사실·수치·고유명사·의미·분량은 그대로 두고, 원문에 없는 새 정보·사례·수치는 절대 만들지 마라. 본문만 출력(설명·따옴표 금지).`;
   const map = {
     rhythm: `너는 한국어 글 편집자다. 아래 문단의 "문장 리듬"만 사람처럼 불규칙하게 바꿔라(기계적 균일성 제거):
 · 문장 길이를 극단적으로 들쭉날쭉하게 — 아주 짧은 문장(5~12자)과 긴 문장(45자+)을 섞어라. 같은 길이대 2연속 금지.
@@ -47,15 +65,17 @@ async function optimizeSegment(seg, anchorPool, rawText, { lang, signal, ledger,
   const anchors = anchorPool ? [...(anchorPool.specifics || []), ...(anchorPool.acronyms || []), ...(anchorPool.terms || [])]
     .filter(t => t.length >= 2 && seg.includes(t)).slice(0, 6) : [];
   const strats = pickStrategies(baseRisk);
+  const register = dominantRegister(seg);   // 후보가 지켜야 할 목표 말투
 
   // 후보 병렬 생성
   const cands = await Promise.all(strats.map(async (strat) => {
-    const { system, user } = strategyPrompt(seg, strat, anchors, lang);
+    const { system, user } = strategyPrompt(seg, strat, anchors, lang, register);
     let cand = '';
     try { cand = (await llmText({ system, user, signal, maxTokens: 1300 }) || '').trim(); } catch { return null; }
     if (!cand || cand.length < seg.length * 0.55) return null;
     if (cand.replace(/\s+/g, '').length > seg.replace(/\s+/g, '').length * 1.25) return null;  // 분량 폭증 금지
     if (floor.looksLikeRefusal(cand)) return null;
+    if (!registerOk(cand, register)) return null;   // ★한다체 섞인 후보 탈락(비인칭/혼합 방지)
     // FLOOR: 새 사실 0
     if (floor.measureNovelty(rawText || seg, cand, '').count >= 1) return null;
     // 닫힌세계 judge(선택)
@@ -77,7 +97,7 @@ async function optimizePass(text, rawText, { lang = 'ko', signal, targetChars = 
   const anchorPool = sg.buildSourceAnchorPool(rawText || text);
   const segs = sg.buildSegments(text, targetChars);
   const scored = segs.map((s, i) => ({ i, risk: sg.measureSegmentRisk(s, anchorPool).riskScore })).filter(x => x.risk >= threshold).sort((a, b) => b.risk - a.risk);
-  const MAX = Number(maxTargets) || Number(process.env.OPTIMIZE_MAX) || 12;
+  const MAX = Number(maxTargets) || Number(process.env.OPTIMIZE_MAX) || 35;
   const pick = scored.slice(0, MAX).map(x => x.i);
   if (!pick.length) return { text, changed: 0, targets: 0 };
 

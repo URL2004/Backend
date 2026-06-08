@@ -2076,7 +2076,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     try {
       const j = require('../engine/judge');
       const preJudge = result.outputText;
-      const jr = await j.judgeAndRepair(text, preJudge, { lang, signal });
+      const jr = await j.judgeAndRepair(text, preJudge, { lang, signal, allowedExtra: notes });
       contract.softClaimLedger = jr.ledger; // Contract에 Soft Claim Ledger 채움
       // ★ judge 재작성이 결정론 FLOOR를 악화(사실 소실·과압축·날조)시키면 폐기하고 judge 이전 출력 유지(FLOOR>우회).
       let judgedOut = jr.outputText, repairRejected = false;
@@ -2283,7 +2283,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   if (judge && (judge === 'force' || judgeTrigger.length)) {
     try {
       const j = require('../engine/judge');
-      const jr = await j.judgeAndRepair(text, merged, { lang, signal });
+      const jr = await j.judgeAndRepair(text, merged, { lang, signal, allowedExtra: notes });
       contract.softClaimLedger = jr.ledger;
       // ★ judge 재작성이 결정론 FLOOR를 악화시키면 폐기하고 병합본 유지(FLOOR>우회).
       let judgedOut = jr.outputText, repairRejected = false;

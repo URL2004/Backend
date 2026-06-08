@@ -128,7 +128,7 @@ function ledgerToText(ledger) {
   }).join('\n');
 }
 
-async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal } = {}) {
+async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, allowedExtra = '' } = {}) {
   const claimsText = ledgerToText(ledger);
   const system = lang === 'en'
     ? 'You are a strict but fair fact-checker against the CLAIM LEDGER (closed world). Each ledger entry has a verbatim source quote labeled 근거(원문) — that quote is the ground truth; judge the REWRITE against it, not against your own knowledge. Flag ONLY: (1) fabricated external facts/statistics/years/proper nouns, or newly specifying a vague reference into a concrete platform/product name. (2) Reversing or distorting a ledger claim\'s meaning, INTENT, or sentiment — e.g., flipping a positive intent ("want to keep going") into uncertainty/negativity ("not sure I can keep going / might quit"), or turning possibility ("can ~") into a flat assertion. (3) Introducing a NEW outlook/emotion/future projection/evaluation not in the ledger — even if phrased as a hedge, bringing in a new stance or prospect is a violation. ★ NOT violations: synonym swaps, reordering, minor qualifiers, and hedges that keep an existing claim\'s meaning intact. Each span must be a verbatim substring of REWRITE.'
@@ -138,8 +138,9 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal 
   const violations = Array.isArray(out?.violations) ? out.violations : [];
   // 환각 방지: span이 실제 REWRITE에 존재하는 위반만 채택.
   let verified = violations.filter(v => v?.span && normWS(outputText).includes(normWS(v.span).slice(0, Math.min(24, normWS(v.span).length))));
-  // ★ added_claim 오탐 방지: span 내용이 SOURCE에 실재하면 보존된 원문이므로 폐기(원장 과소커버 보정).
-  verified = verified.filter(v => !((v.type === 'added_claim' || /added|추가|전망|미래/i.test(v.type || '')) && spanInSource(v.span, rawText)));
+  // ★ added_claim 오탐 방지: span 내용이 SOURCE(또는 사용자 메모=allowedExtra)에 실재하면 허용된 내용이므로 폐기.
+  const allowedWorld = allowedExtra ? (rawText + '\n' + allowedExtra) : rawText;
+  verified = verified.filter(v => !((v.type === 'added_claim' || /added|추가|전망|미래/i.test(v.type || '')) && spanInSource(v.span, allowedWorld)));
   return { violations: verified, rawCount: violations.length, pass: verified.length === 0 };
 }
 
@@ -158,7 +159,7 @@ async function repairViolations(rawText, outputText, ledger, violations, { lang 
 }
 
 // 원장 1회 추출 → judge → 위반 시 repair → 재judge, 최대 maxRounds. P2-c 닫힌 루프(§7.2).
-async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRounds = 2 } = {}) {
+async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRounds = 2, allowedExtra = '' } = {}) {
   let ledger = await buildSoftClaimLedger(rawText, { lang, signal });
   let health = validateLedgerHealth(ledger, rawText);
   // 0건/과다폐기는 claudecode 일시실패가 잦아 1회 재구축 시도.
@@ -168,14 +169,14 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRou
     if ((retry.claims.length || 0) > (ledger.claims.length || 0) || retryHealth.healthy) { ledger = retry; health = retryHealth; }
   }
   let text = outputText;
-  let verdict = await semanticJudge(rawText, text, ledger, { lang, signal });
+  let verdict = await semanticJudge(rawText, text, ledger, { lang, signal, allowedExtra });
   let rounds = 0;
   while (!verdict.pass && rounds < maxRounds) {
     rounds++;
     const repaired = await repairViolations(rawText, text, ledger, verdict.violations, { lang, signal });
     if (repaired === text) break; // 변화 없으면 중단
     text = repaired;
-    verdict = await semanticJudge(rawText, text, ledger, { lang, signal });
+    verdict = await semanticJudge(rawText, text, ledger, { lang, signal, allowedExtra });
   }
   return { ledger, outputText: text, verdict, rounds, ledgerHealth: health };
 }

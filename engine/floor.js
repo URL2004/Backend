@@ -407,11 +407,21 @@ function collectSurfaceReport(result) {
   };
 }
 
+// ── 모델 거부 탐지 (★ 안전망) ──────────────────────────────
+// 모델이 청크 재작성을 거부하면("도와드릴 수 없는 요청…", "탐지기 우회는 지원 안 함") 그 거부 문구가
+// 출력에 박혀 글을 망친다(실제 카피킬러 결과에서 제목이 거부문으로 대체된 사고). 정상 에세이 본문엔
+// 거의 안 나오는 *메타 거부* 표현만 고정밀로 잡아 호출부에서 실패 처리(재시도→raw 폴백)한다.
+const REFUSAL_RE = /도와드릴 수 없|도와드리기?\s*(어렵|힘들|곤란)|도와줄 수 없|제공(해\s*드릴|할)\s*수\s*없는\s*요청|할 수 없는 요청|요청을?\s*(수행|처리|도와)\S*\s*수\s*없|탐지\s*기?\s*(우회|회피)|우회\s*(작업|를?\s*도|을?\s*도|는?\s*지원)|지원하지\s*않는\s*(작업|요청|서비스|기능)|(?:죄송하지만|미안하지만)[^.]{0,30}(없|어렵|않|곤란)|\bI'?m sorry\b|\bI can'?t (help|assist|do)|\bI (cannot|can ?not) (help|assist|comply)|\bI'?m unable to|\bI won'?t be able/i;
+function looksLikeRefusal(text) {
+  return REFUSAL_RE.test((text || '').slice(0, 400)); // 거부는 보통 응답 맨 앞
+}
+
 module.exports = {
   computePovSeed,
   isSpeakerGateClosed,
   buildFloorDirective,
   gateFailedFields,
+  looksLikeRefusal,
   measurePovDrift,
   measureNovelty,
   measureLostFacts,

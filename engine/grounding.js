@@ -88,6 +88,7 @@ async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal
     let cand = await llmText({ system, user, signal, maxTokens: 1200 });
     cand = (cand || '').trim();
     if (!cand || cand.length < segText.length * 0.5) continue;        // 빈/과소 응답 → 재시도
+    if (floor.looksLikeRefusal(cand)) continue;                      // ★ 거부문 → 폐기(원본 유지)
     // 분량 상한(교체이지 추가 아님)
     if (cand.replace(/\s+/g, '').length > segText.replace(/\s+/g, '').length * 1.15) continue;
     // ① 결정론 hard-novelty 게이트 (allowed world = 원문 전체. 원문에 있는 구체는 허용, 날조만 차단)

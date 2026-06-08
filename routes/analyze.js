@@ -2221,6 +2221,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       try {
         const data = await callClaude({ userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r = extractClaudeResult(data, tool.name);
+        if (floor.looksLikeRefusal(r.outputText)) throw new Error('model-refusal'); // ★ 거부문이 출력에 박히는 사고 차단 → 재시도/폴백
         await applyPassC(r, lang, signal);
         c.outputText = r.outputText || c.text;
         chunkDone = true;
@@ -2240,7 +2241,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         const rd = await callClaude({ userText: ru, systemText: humanizeSystem, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r2 = extractClaudeResult(rd, tool.name);
         await applyPassC(r2, lang, signal);
-        if (r2.outputText) c.outputText = r2.outputText;
+        if (r2.outputText && !floor.looksLikeRefusal(r2.outputText)) c.outputText = r2.outputText; // 거부문이면 적용 안 함
       } catch (e) { if (signal?.aborted) throw e; }
       // ★ repair 재검증 + raw fallback(§리뷰#3): 고치고도 날조·소실·화자주입이 남으면 원문 청크로 폴백
       //   (휴머나이징 포기 < 날조/소실 노출 방지 — FLOOR가 탐지기 우회보다 우선).

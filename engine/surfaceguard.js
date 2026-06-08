@@ -115,6 +115,120 @@ function measureMemoReuse(outputText, memo = '') {
 
 function lv(ratio, lo, hi) { return ratio >= hi ? 'high' : ratio <= lo ? 'low' : 'mid'; }
 
+// ════════════════════════════════════════════════════════════════
+// ★ source-internal grounding 슬라이스 (메모 없이) — 측정만 (repair는 다음 단계)
+//   카피킬러는 문서 평균이 아니라 "영역(≈700~1000자 묶음)"마다 AI 의심을 표시한다.
+//   따라서 점수↓ = 의심 영역 수↓. 여기서는 (1) 원문 내부 anchor pool 추출,
+//   (2) 카피킬러 영역 크기로 segment 분할, (3) segment별 위험 측정만 한다.
+//   ※ 이 측정이 실제 카피킬러 영역 플래그와 맞는지(프록시 검증)가 repair보다 먼저다.
+// ════════════════════════════════════════════════════════════════
+
+// ── (A) source anchor pool: 원문에 "이미 있는" 구체 재료. 새 사실 생성 아님(FLOOR-safe). ──
+const DOMAIN_STOP = new Set(['그리고','하지만','그런데','그러나','때문','경우','정도','우리','기업','조직','경영','사람','문제','방식','상황','결국','지금','과거','현재','미래','이것','그것','수가','수도','중요','필요','가능','대한','위한','통해','대해','한다','된다','이다']);
+function buildSourceAnchorPool(rawText) {
+  const R = rawText || '';
+  // 1) 강한 구체(specific): 연도·수치+단위·한자·따옴표 인용 → 가장 강한 anchor
+  const specifics = [...new Set((R.match(SPECIFIC_RE_G) || []).map(s => s.trim()))].filter(Boolean);
+  // 2) 약어/영문 개념(AI, ESG, SNS, IT, MVP, ...)
+  const acronyms = [...new Set((R.match(/[A-Za-z]{2,}/g) || []))];
+  // 3) 반복 등장하는 도메인 명사(2~6자, 2회+) — buzzword급이지만 추상문장 grounding엔 유효
+  const nounFreq = {};
+  for (const m of (R.match(/[가-힣]{2,6}/g) || [])) {
+    if (DOMAIN_STOP.has(m)) continue;
+    if (/[다라은는이가을를의도게한들며고지요나서]$/.test(m)) continue;  // 조사·어미 종결 = 명사 아님
+    nounFreq[m] = (nounFreq[m] || 0) + 1;
+  }
+  const terms = Object.entries(nounFreq).filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([t]) => t);
+  // 4) 사례/대조/한계 프레임 문장(원문 논리를 날카롭게 할 재료)
+  const sents = splitSentences(R);
+  const examples = sents.filter(s => /(예를\s*들|예컨대|가령|이를테면|같은\s*경우|처럼)/.test(s)).map(s => s.slice(0, 60));
+  const contrasts = sents.filter(s => /(아니라|보다|반면|대신|오히려|와\s*달리|에\s*비해|만으로(는|도)?\s*부족|뿐(만)?\s*아니)/.test(s)).map(s => s.slice(0, 60));
+  const caveats = sents.filter(s => /(하지만|그러나|다만|단,|함정|위험|놓치|간과|착각|역풍|되진\s*않|나오진\s*않)/.test(s)).map(s => s.slice(0, 60));
+  return {
+    specifics, acronyms, terms,
+    examples: examples.slice(0, 12), contrasts: contrasts.slice(0, 12), caveats: caveats.slice(0, 12),
+    anchorTerms: [...new Set([...specifics, ...acronyms, ...terms])]   // segment anchor 카운트용 통합 풀
+  };
+}
+
+// ── (B) 카피킬러 영역 크기로 segment 분할(연속 문단을 ~targetChars까지 묶음) ──
+function buildSegments(text, targetChars = 900) {
+  const paras = (text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const segs = [];
+  let cur = [];
+  let len = 0;
+  for (const p of paras) {
+    cur.push(p);
+    len += p.replace(/\s+/g, '').length;
+    if (len >= targetChars) { segs.push(cur.join('\n\n')); cur = []; len = 0; }
+  }
+  if (cur.length) {
+    // 마지막 자투리는 직전 segment에 합침(너무 짧은 꼬리 영역 방지)
+    if (segs.length && len < targetChars * 0.4) segs[segs.length - 1] += '\n\n' + cur.join('\n\n');
+    else segs.push(cur.join('\n\n'));
+  }
+  return segs;
+}
+
+// ── segment 전용 strict 구체 판정 (eval이 쓰는 isLivedScene/isSpecific은 건드리지 않음) ──
+//   카피킬러 3개 실측(65%/85%/100%)로 보정: 영역이 "안 잡히려면" 진짜 구체가 1개는 있어야 한다.
+//   진짜 구체 = ①진성 1인칭 과거 장면 ②연도·수치+단위·한자2+ ③고유 영문 ④사례 프레임 ⑤실제 대화 인용.
+//   제외(카피킬러가 안 속는 것): 일반 과거("그때 있었"), buzzword 나열(AI·ESG), 수사적 진술 인용.
+const SEG_ACRONYM = new Set(['AI', 'ESG', 'SNS', 'IT', 'MVP', 'CEO', 'KPI', 'ROI', 'DX']);
+const SEG_FIRST_PERSON = /(저는|저도|제가|내가|나는|우리가|우리는)/;
+const SEG_PAST = /(았|었|였|했|갔|왔|봤|뒀|났|렸|췄|쳤)(다|다는|는데|던|고|으며|지만|어요|네요|거든요|습니다|죠)/;
+const SEG_SPECIFIC = /(19|20)\d{2}|\d+\s*(명|개|건|배|원|시간|분|초|개월|차례|미터|km|kg|살|세|층|위|％|%|억|조)|[一-鿿]{2,}/;
+const SEG_EXAMPLE = /(예를\s*들|예컨대|가령|이를테면)/;
+const SEG_DIALOG = /["“”][^"“”]*[?？!][^"“”]*["“”]|["“”][^"“”]{0,20}(야|냐|니|어|지|해|줘|봐)[?？!]?["“”]/;
+function isSegmentConcrete(s) {
+  if (SEG_FIRST_PERSON.test(s) && SEG_PAST.test(s)) return true;     // 진성 1인칭 과거 장면
+  if (SEG_SPECIFIC.test(s)) return true;                            // 연도·수치+단위·한자
+  const eng = (s.match(/[A-Za-z]{3,}/g) || []).filter(w => !SEG_ACRONYM.has(w.toUpperCase()));
+  if (eng.length) return true;                                      // 고유 영문(흔한 약어 제외)
+  if (SEG_EXAMPLE.test(s)) return true;                             // 사례 프레임
+  if (SEG_DIALOG.test(s)) return true;                             // 실제 대화 인용
+  return false;
+}
+
+// ── (C) segment별 위험 측정. suspect = 카피킬러가 그 영역을 AI 의심으로 표시할 것으로 예측 ──
+//   핵심 가설(실측 보정 MAE≈0.14): 영역 안에 strict 구체가 하나도 없으면 잡힌다.
+function measureSegmentRisk(segText, anchorPool) {
+  const sents = splitSentences(segText);
+  const n = sents.length || 1;
+  const concreteSents = sents.filter(isSegmentConcrete);
+  const stanced = sents.filter(s => STANCE_RE.test(s)).length;
+  const generic = sents.filter(s => GENERIC_SUBJECT_RE.test(s.trim()) || ABSTRACT_NOUN_RE.test(s) || GENERIC_ENDING_RE.test(s)).length;
+  const anchorHits = anchorPool ? anchorPool.anchorTerms.filter(t => t.length >= 2 && segText.includes(t)).length : 0;
+  const u = measureUniformity(segText);
+  const concrete = concreteSents.length;
+  return {
+    chars: segText.replace(/\s+/g, '').length, sents: n,
+    concrete, stanced, generic, anchorHits,
+    genericRatio: Number((generic / n).toFixed(2)),
+    lengthCV: u.lengthCV, maxEndingRun: u.maxEndingRun,
+    suspect: concrete === 0   // 구체 0 → 카피킬러 AI 의심 예측
+  };
+}
+
+// ── (D) 문서 전체 segment 리포트: 의심 영역 비율 ≈ 카피킬러 AI% (프록시) ──
+function buildSegmentReport(text, rawText = '', targetChars = 350) {
+  const anchorPool = buildSourceAnchorPool(rawText || text);
+  const segs = buildSegments(text, targetChars);
+  const rows = segs.map((s, i) => ({ idx: i + 1, ...measureSegmentRisk(s, anchorPool), head: s.replace(/\s+/g, ' ').slice(0, 40) }));
+  const suspect = rows.filter(r => r.suspect).length;
+  return {
+    targetChars,
+    segments: rows.length,
+    suspectSegments: suspect,
+    suspectRatio: Number((suspect / (rows.length || 1)).toFixed(3)),  // ≈ 예측 카피킬러 AI%
+    anchorPool: {
+      specifics: anchorPool.specifics, acronyms: anchorPool.acronyms, terms: anchorPool.terms,
+      examples: anchorPool.examples.length, contrasts: anchorPool.contrasts.length, caveats: anchorPool.caveats.length
+    },
+    rows
+  };
+}
+
 // "실제 겪은 장면"(lived scene): 1인칭/과거시점 맥락 + 과거시제 행동. 단순 명사 언급(친구·SNS)은 제외.
 //   카피킬러가 '낮음'으로 통과시키는 건 바로 이런 1인칭 과거 경험 문장이다.
 const PERSONAL_CTX_RE = /(저는|저도|제가|제\s|내가|나는|우리\s|지난\s*(학기|주|달|해|명절|방학)|그날|그때|작년|재작년|며칠\s*전|예전에|한때|어릴\s*때|고등학교\s*때|중학교\s*때|대학\s*때)/;
@@ -131,6 +245,7 @@ function isLivedScene(s) {
 // "구체 사실"(specificity): 연도·숫자+단위·한자·인용어구 등. 일반적 약어(SNS/AI)는 제외(너무 흔해 신호 아님).
 //   purpose 에세이처럼 1인칭 일화가 아니라 고유명사·수치로 구체적인 글이 카피킬러를 통과하는 경로.
 const SPECIFIC_RE = /(19|20)\d{2}|\d+\s*(명|개|건|배|원|시간|분|초|개월|주|일|차례|번|미터|m|km|kg|살|세|층|위|등)|[一-鿿]|"[^"]{2,}"|“[^”]{2,}”|'[^']{3,}'|‘[^’]{3,}’/;
+const SPECIFIC_RE_G = /(19|20)\d{2}|\d+\s*(명|개|건|배|원|시간|분|초|개월|주|일|차례|번|미터|m|km|kg|살|세|층|위|등)|[一-鿿]{1,}|"[^"]{2,}"|“[^”]{2,}”/g;
 function isSpecific(s) { return SPECIFIC_RE.test(s); }
 
 // ── 문단 단위 분석 (★ 카피킬러는 문단별로 본다 — 문서 평균은 일화 문단이 추상 문단을 희석해 신호를 가린다) ──
@@ -192,5 +307,6 @@ function classifyInputRisk(rawText) {
 module.exports = {
   splitSentences, measureGenericness, measureRealAnchorDensity, measureStance,
   measureUniformity, analyzeParagraphs, buildSurfaceReport, classifyInputRisk,
-  measurePersonalExperienceNovelty, measureMemoReuse, isLivedScene
+  measurePersonalExperienceNovelty, measureMemoReuse, isLivedScene,
+  buildSourceAnchorPool, buildSegments, measureSegmentRisk, buildSegmentReport
 };

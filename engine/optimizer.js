@@ -33,7 +33,7 @@ ${anchors && anchors.length ? `· 이 구체를 끌어와 써라: ${anchors.join
 // 적용할 전략 결정(서브스코어 기반) — 약점에 맞는 후보를 만든다.
 function pickStrategies(risk) {
   const strats = ['rhythm'];                              // 균일성은 거의 항상 후보
-  if (risk.compressionRatio >= 0.2) strats.push('decompress');
+  if (risk.compressionRatio >= 0.12) strats.push('decompress');   // 압축은 카피킬러 빈발 → 민감하게
   if (risk.impersonalRatio >= 0.2 || risk.stanced === 0) strats.push('stance');
   if (risk.concrete === 0) strats.push('anchor');
   if (strats.length < 2) strats.push('decompress');       // 최소 2후보
@@ -73,7 +73,7 @@ async function optimizeSegment(seg, anchorPool, rawText, { lang, signal, ledger,
 }
 
 // 전체 패스: 고위험 segment 상위 N개만 최적화(예산 상한).
-async function optimizePass(text, rawText, { lang = 'ko', signal, targetChars = 350, threshold = 0.3, maxTargets } = {}) {
+async function optimizePass(text, rawText, { lang = 'ko', signal, targetChars = 350, threshold = 0.22, maxTargets } = {}) {
   const anchorPool = sg.buildSourceAnchorPool(rawText || text);
   const segs = sg.buildSegments(text, targetChars);
   const scored = segs.map((s, i) => ({ i, risk: sg.measureSegmentRisk(s, anchorPool).riskScore })).filter(x => x.risk >= threshold).sort((a, b) => b.risk - a.risk);

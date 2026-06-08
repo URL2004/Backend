@@ -249,7 +249,7 @@ function measureSegmentRisk(segText, anchorPool) {
   // 균일성: 종결 단조(maxEndingRun) + 길이 균일(lengthCV 낮음)
   const uniformity = Math.min(1, (u.maxEndingRun >= 4 ? 0.6 : u.maxEndingRun >= 3 ? 0.35 : 0) + (u.lengthCV < 0.35 ? 0.4 : u.lengthCV < 0.5 ? 0.2 : 0));
   // 합성 risk(잠정 가중치 — Phase 1-2에서 PDF로 보정). 0~1 clamp.
-  let risk = genericRatio * 0.9 + uniformity * 0.7 + impersonalRatio * 0.7 + compressionRatio * 0.7 + Math.min(1, ticDensity) * 0.4
+  let risk = genericRatio * 0.9 + uniformity * 0.7 + impersonalRatio * 0.7 + compressionRatio * 1.1 + Math.min(1, ticDensity) * 0.4
            - concreteRatio * 1.1 - stanceRatio * 0.5 - Math.min(1, anchorHits / 3) * 0.3;
   risk = Math.max(0, Math.min(1, risk + 0.15));   // bias로 0근처 보정
   return {

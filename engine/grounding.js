@@ -113,7 +113,7 @@ async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetC
   // ★ 선택 적용(#1): 추상 segment 전부가 아니라 "가장 추상적인 상위 N개"만 grounding.
   //   grounding은 호출을 거의 2배로 만들므로(ledger + segment별 judge) 비용을 N으로 상한.
   //   가장 generic(추상)한 segment부터 골라 효과 큰 곳에 예산을 쓴다.
-  const MAX = Number(maxTargets) || Number(process.env.GROUNDING_MAX_TARGETS) || 12;
+  const MAX = Number(maxTargets) || Number(process.env.GROUNDING_MAX_TARGETS) || 18; // 우회 우선: 더 많은 추상영역 정리(비용↑ 감수)
   const ranked = segs
     .map((s, i) => ({ i, gen: sg.measureSegmentRisk(s, anchorPool).genericRatio, target: isRepairTarget(s) }))
     .filter(x => x.target)

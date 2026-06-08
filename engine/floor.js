@@ -168,7 +168,7 @@ function measureNovelty(rawText, outputText, allowedExtra) {
 const LENGTH_POLICY = {
   thesis:     { min: 0.85, max: 1.20, hardMax: 1.30 },
   assignment: { min: 0.85, max: 1.20, hardMax: 1.30 },
-  blog:       { min: 0.85, max: 1.30, hardMax: 1.50 },
+  blog:       { min: 0.85, max: 1.15, hardMax: 1.35 },
   resume:     { min: 0.90, max: 1.25, hardMax: 1.40 }
 };
 function measureLength(rawText, outputText, mode) {

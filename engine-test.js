@@ -75,7 +75,7 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   if (r.grounding) {
     const gd = r.grounding;
     const ba = gd.before && gd.after ? ` 의심 ${gd.before.suspect}/${gd.before.segments}→${gd.after.suspect}/${gd.after.segments}` : '';
-    console.log(`🧩 grounding 패스: ${gd.applied ? '적용됨 ✅ (' + gd.repaired + '/' + gd.targets + ' 교체)' : '미적용(' + (gd.reason || '?') + ')'}${ba}`);
+    console.log(`🧩 grounding 패스: ${gd.applied ? '적용됨 ✅ (' + gd.repaired + '/' + (gd.grounded ?? gd.targets) + ' 교체, 추상타겟 ' + gd.targets + ' 상한 ' + gd.cappedAt + ')' : '미적용(' + (gd.reason || '?') + ')'}${ba}`);
     line();
   }
   if (r.antiDetect) {

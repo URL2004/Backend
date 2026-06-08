@@ -104,34 +104,49 @@ async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal
 }
 
 // ── 전체 grounding 패스 ──
-async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetChars = 350 } = {}) {
+async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetChars = 350, maxTargets } = {}) {
   const anchorPool = sg.buildSourceAnchorPool(rawText);
   const segs = sg.buildSegments(outputText, targetChars);
   const before = sg.buildSegmentReport(outputText, rawText, targetChars);
-  // 닫힌세계 원장은 1회만 — 전체 원문 기준(새 주장 판정의 allowed world)
-  let ledger = null;
-  try { ledger = await buildSoftClaimLedger(rawText, { lang, signal }); } catch { /* 게이트 ②는 best-effort */ }
 
-  // 병렬화: segment는 서로 독립(rawText·anchorPool·공유 ledger만 참조). 동시성 제한 + 순서 보존.
-  const concurrency = Number(process.env.CHUNK_CONCURRENCY) ||
-    (process.env.LLM_BACKEND === 'claudecode' ? 1 : 6);
-  const out = new Array(segs.length);
-  let repaired = 0, next = 0;
-  const worker = async () => {
-    while (next < segs.length) {
-      const i = next++;
-      const r = await groundSegment(segs[i], rawText, anchorPool, { lang, signal, ledger });
-      if (r.changed) repaired++;
-      out[i] = r.text;
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, segs.length) }, worker));
+  // ★ 선택 적용(#1): 추상 segment 전부가 아니라 "가장 추상적인 상위 N개"만 grounding.
+  //   grounding은 호출을 거의 2배로 만들므로(ledger + segment별 judge) 비용을 N으로 상한.
+  //   가장 generic(추상)한 segment부터 골라 효과 큰 곳에 예산을 쓴다.
+  const MAX = Number(maxTargets) || Number(process.env.GROUNDING_MAX_TARGETS) || 12;
+  const ranked = segs
+    .map((s, i) => ({ i, gen: sg.measureSegmentRisk(s, anchorPool).genericRatio, target: isRepairTarget(s) }))
+    .filter(x => x.target)
+    .sort((a, b) => b.gen - a.gen);
+  const pick = new Set(ranked.slice(0, MAX).map(x => x.i));
+
+  const out = segs.slice();   // 미선택 segment는 원본 그대로
+  let repaired = 0;
+  // 타겟 0개면 ledger 호출도 건너뜀(비용 0).
+  if (pick.size) {
+    let ledger = null;
+    try { ledger = await buildSoftClaimLedger(rawText, { lang, signal }); } catch { /* 게이트 ②는 best-effort */ }
+    const concurrency = Number(process.env.CHUNK_CONCURRENCY) ||
+      (process.env.LLM_BACKEND === 'claudecode' ? 1 : 6);
+    const idxs = [...pick];
+    let next = 0;
+    const worker = async () => {
+      while (next < idxs.length) {
+        const i = idxs[next++];
+        const r = await groundSegment(segs[i], rawText, anchorPool, { lang, signal, ledger });
+        if (r.changed) repaired++;
+        out[i] = r.text;
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, idxs.length) }, worker));
+  }
   const result = out.join('\n\n');
   const after = sg.buildSegmentReport(result, rawText, targetChars);
   return {
     text: result,
     repaired,
-    targets: segs.filter(isRepairTarget).length,
+    targets: ranked.length,     // 전체 추상 타겟 수
+    grounded: pick.size,        // 실제 grounding 시도 수(상한 적용)
+    cappedAt: MAX,
     before: { segments: before.segments, suspect: before.suspectSegments, ratio: before.suspectRatio },
     after: { segments: after.segments, suspect: after.suspectSegments, ratio: after.suspectRatio }
   };

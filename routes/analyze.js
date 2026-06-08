@@ -1955,7 +1955,7 @@ async function applyGrounding({ result, rawText, povSeed, optIn, mode, lang, sig
   result.floorLength = floor.measureLength(rawText, g.text, mode);
   result.repetition = floor.measureRepetition(g.text);
   result.lostFacts = floor.measureLostFacts(rawText, g.text);
-  return { applied: true, repaired: g.repaired, targets: g.targets, before: g.before, after: g.after };
+  return { applied: true, repaired: g.repaired, targets: g.targets, grounded: g.grounded, cappedAt: g.cappedAt, before: g.before, after: g.after };
 }
 
 // 라우트(/analyze)의 humanize 분기와 동일 로직: preprocess → LLM → Pass C → verify → refine.

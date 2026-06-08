@@ -264,7 +264,7 @@ function measureRepetition(text) {
     if (s.length >= 4 && s.length < 15) shortSeen.set(s, (shortSeen.get(s) || 0) + 1);
   }
   const shortRepeated = [];
-  for (const [, n] of shortSeen) if (n >= 3) shortRepeated.push(n);
+  for (const [, n] of shortSeen) if (n >= 4) shortRepeated.push(n); // 4회+ (전환구 3회 오차단 방지; 카피킬러 과도반복은 4+)
   return {
     count: repeated.length,                                   // exact 그룹 수(하위호환)
     maxRepeat: repeated.length ? Math.max(...repeated) : 1,
@@ -412,8 +412,11 @@ function collectSurfaceReport(result) {
 // 출력에 박혀 글을 망친다(실제 카피킬러 결과에서 제목이 거부문으로 대체된 사고). 정상 에세이 본문엔
 // 거의 안 나오는 *메타 거부* 표현만 고정밀로 잡아 호출부에서 실패 처리(재시도→raw 폴백)한다.
 const REFUSAL_RE = /도와드릴 수 없|도와드리기?\s*(어렵|힘들|곤란)|도와줄 수 없|제공(해\s*드릴|할)\s*수\s*없는\s*요청|할 수 없는 요청|요청을?\s*(수행|처리|도와)\S*\s*수\s*없|탐지\s*기?\s*(우회|회피)|우회\s*(작업|를?\s*도|을?\s*도|는?\s*지원)|지원하지\s*않는\s*(작업|요청|서비스|기능)|(?:죄송하지만|미안하지만)[^.]{0,30}(없|어렵|않|곤란)|\bI'?m sorry\b|\bI can'?t (help|assist|do)|\bI (cannot|can ?not) (help|assist|comply)|\bI'?m unable to|\bI won'?t be able/i;
+// 메타 혼란 응답(재작성이 아니라 프롬프트 구조·입력에 대해 불평) — 정상 글엔 안 나오는 표현.
+const META_RE = /\[(원본|이전|재작성|원문|입력)[^\]]{0,10}\]|(원문|입력|원본)\s*(텍스트|내용|글)?\s*(가|이)?\s*(빠져\s*있|비어\s*있|누락|보이지\s*않|없(어요|습니다|네요|고|는데))|항목에\s*(실제\s*)?내용이\s*없|제공(되지\s*않았|이\s*안\s*(되었|됐))/;
 function looksLikeRefusal(text) {
-  return REFUSAL_RE.test((text || '').slice(0, 400)); // 거부는 보통 응답 맨 앞
+  const head = (text || '').slice(0, 400); // 거부·메타 혼란은 보통 응답 맨 앞
+  return REFUSAL_RE.test(head) || META_RE.test(head);
 }
 
 module.exports = {

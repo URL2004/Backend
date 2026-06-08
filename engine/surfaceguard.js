@@ -190,8 +190,47 @@ function isSegmentConcrete(s) {
   return false;
 }
 
-// ── (C) segment별 위험 측정. suspect = 카피킬러가 그 영역을 AI 의심으로 표시할 것으로 예측 ──
+// ── 서브스코어(카피킬러 사유 taxonomy 대응) ──────────────────────
+// "간접 화법·비인칭 서술" — 비인칭·수동·정형 종결
+const IMPERSONAL_END_RE = /(된다|되곤\s*한다|되기도\s*한다|여겨진다|여겨진다는|이루어진다|요구된다|요구받는다|간주된다|평가된다|마련이다|법이다|뿐이다|셈이다|것이다|기도\s*한다)\.?$/;
+const IMPERSONAL_ANY_RE = /(볼\s*수\s*있|알\s*수\s*있|느낄\s*수\s*있|할\s*수\s*있다|필요가\s*있|라는\s*(얘기|뜻|의미)이?(다|에요|예요)|이라고\s*할\s*수)/;
+function measureImpersonal(text) {
+  const s = splitSentences(text);
+  if (!s.length) return 0;
+  const imp = s.filter(x => { const t = x.trim(); return IMPERSONAL_END_RE.test(t) || IMPERSONAL_ANY_RE.test(t); }).length;
+  return imp / s.length;
+}
+// "지나친 요약·압축" — 한 문장에 정보 과밀(요약문)
+const COMP_ABSTRACT_RE = /(중요성|필요성|가능성|영향|역할|방식|구조|균형|의미|가치|측면|태도|관점|경향|특성|본질|요소|차원|결과|과정|능력|문제|관리|습관|방향|기준|책임)/g;
+const COMP_CAUSAL_RE = /(그래서|때문|따라서|결국|그러므로|덕분|탓에|로\s*인해|결과적으로)/;
+function isCompressedSentence(s) {
+  const t = (s || '').trim();
+  const len = t.replace(/\s+/g, '').length;
+  const commas = (t.match(/[,·]/g) || []).length;
+  const abst = (t.match(COMP_ABSTRACT_RE) || []).length;
+  const causal = COMP_CAUSAL_RE.test(t) ? 1 : 0;
+  if (commas >= 3 && abst >= 3) return true;
+  if (len >= 60 && abst >= 3 && causal) return true;
+  if (len >= 55 && commas >= 2 && abst >= 4) return true;
+  return false;
+}
+function measureCompression(text) {
+  const s = splitSentences(text);
+  if (!s.length) return 0;
+  return s.filter(isCompressedSentence).length / s.length;
+}
+// 구어체 틱(반복 시 "기계적 균일성") — segment 내 등장 종류 수
+const CONV_TICS = ['근데', '거든요', '더라고요', '잖아요', '문제는', '핵심은', '결국', '슬쩍', '툭'];
+function measureTicDensity(text) {
+  const sents = splitSentences(text).length || 1;
+  let hits = 0;
+  for (const tic of CONV_TICS) { let i = 0; while ((i = text.indexOf(tic, i)) !== -1) { hits++; i += tic.length; } }
+  return hits / sents;
+}
+
+// ── (C) segment별 위험 측정 + 서브스코어 + 합성 riskScore ──
 //   핵심 가설(실측 보정 MAE≈0.14): 영역 안에 strict 구체가 하나도 없으면 잡힌다.
+//   riskScore: 카피킬러 사유별 서브스코어 가중합(0~1 clamp). 가중치는 PDF 라벨로 보정 예정(Phase 1-2).
 function measureSegmentRisk(segText, anchorPool) {
   const sents = splitSentences(segText);
   const n = sents.length || 1;
@@ -201,12 +240,29 @@ function measureSegmentRisk(segText, anchorPool) {
   const anchorHits = anchorPool ? anchorPool.anchorTerms.filter(t => t.length >= 2 && segText.includes(t)).length : 0;
   const u = measureUniformity(segText);
   const concrete = concreteSents.length;
+  const genericRatio = generic / n;
+  const impersonalRatio = measureImpersonal(segText);
+  const compressionRatio = measureCompression(segText);
+  const ticDensity = measureTicDensity(segText);
+  const stanceRatio = stanced / n;
+  const concreteRatio = concrete / n;
+  // 균일성: 종결 단조(maxEndingRun) + 길이 균일(lengthCV 낮음)
+  const uniformity = Math.min(1, (u.maxEndingRun >= 4 ? 0.6 : u.maxEndingRun >= 3 ? 0.35 : 0) + (u.lengthCV < 0.35 ? 0.4 : u.lengthCV < 0.5 ? 0.2 : 0));
+  // 합성 risk(잠정 가중치 — Phase 1-2에서 PDF로 보정). 0~1 clamp.
+  let risk = genericRatio * 0.9 + uniformity * 0.7 + impersonalRatio * 0.7 + compressionRatio * 0.7 + Math.min(1, ticDensity) * 0.4
+           - concreteRatio * 1.1 - stanceRatio * 0.5 - Math.min(1, anchorHits / 3) * 0.3;
+  risk = Math.max(0, Math.min(1, risk + 0.15));   // bias로 0근처 보정
   return {
     chars: segText.replace(/\s+/g, '').length, sents: n,
     concrete, stanced, generic, anchorHits,
-    genericRatio: Number((generic / n).toFixed(2)),
+    genericRatio: Number(genericRatio.toFixed(2)),
+    impersonalRatio: Number(impersonalRatio.toFixed(2)),
+    compressionRatio: Number(compressionRatio.toFixed(2)),
+    ticDensity: Number(ticDensity.toFixed(2)),
+    uniformity: Number(uniformity.toFixed(2)),
     lengthCV: u.lengthCV, maxEndingRun: u.maxEndingRun,
-    suspect: concrete === 0   // 구체 0 → 카피킬러 AI 의심 예측
+    riskScore: Number(risk.toFixed(3)),
+    suspect: concrete === 0   // (레거시 binary) — Phase 1-2 검증 후 riskScore 임계로 교체 예정
   };
 }
 
@@ -308,5 +364,6 @@ module.exports = {
   splitSentences, measureGenericness, measureRealAnchorDensity, measureStance,
   measureUniformity, analyzeParagraphs, buildSurfaceReport, classifyInputRisk,
   measurePersonalExperienceNovelty, measureMemoReuse, isLivedScene,
-  buildSourceAnchorPool, buildSegments, measureSegmentRisk, buildSegmentReport
+  buildSourceAnchorPool, buildSegments, measureSegmentRisk, buildSegmentReport,
+  measureImpersonal, measureCompression, isCompressedSentence, measureTicDensity
 };

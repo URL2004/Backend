@@ -33,21 +33,8 @@ function paragraphMixed(segText) {
   return { mixed: false };
 }
 
-// ── 압축(요약문) 검출: 한 문장에 정보 과밀 ──
-const CAUSAL_RE = /(그래서|때문|따라서|결국|그러므로|덕분|탓에|로\s*인해|결과적으로)/;
-const LIST_RE = /[,·]/g;
-function isCompressed(s) {
-  const t = (s || '').trim();
-  const len = t.replace(/\s+/g, '').length;
-  const commas = (t.match(LIST_RE) || []).length;
-  const abstractN = (t.match(/(중요성|필요성|가능성|영향|역할|방식|구조|균형|의미|가치|측면|태도|관점|경향|특성|본질|요소|차원|결과|과정|능력|문제|관리|습관|방향|기준|책임)/g) || []).length;
-  const causal = CAUSAL_RE.test(t) ? 1 : 0;
-  // 정보 과밀(요약문): 나열·추상명사 밀도 위주(길이는 보조). 단순 나열(추상명사 적음)은 제외.
-  if (commas >= 3 && abstractN >= 3) return true;                  // 추상 항목 나열형
-  if (len >= 60 && abstractN >= 3 && causal) return true;          // 긴 인과+추상 cram
-  if (len >= 55 && commas >= 2 && abstractN >= 4) return true;     // 추상 초과밀
-  return false;
-}
+// ── 압축(요약문) 검출 — surfaceguard의 측정 재사용(중복 정의 방지) ──
+const isCompressed = sg.isCompressedSentence;
 function compressionCount(segText) {
   return sg.splitSentences(segText).filter(isCompressed).length;
 }

@@ -1931,9 +1931,36 @@ async function applyAntiDetect({ result, rawText, povSeed, optIn, mode, lang, sp
   return { applied: true };
 }
 
+// source-internal grounding 패스(검증된 메모리스 레버, 카피킬러 64→50%): 추상 segment를 원문 anchor
+// 기반 stance-sharpening으로 교체. segment마다 novelty+semanticJudge 게이트가 날조를 차단(FLOOR-안전).
+// judge 이후·antiDetect 이전에 적용. 채택 시 출력 교체 + 가드 재측정.
+async function applyGrounding({ result, rawText, povSeed, optIn, mode, lang, signal, floor, allowedExtra = '' }) {
+  const before = result.outputText;
+  let g;
+  try {
+    g = await require('../engine/grounding').groundingPass(before, rawText, { lang, signal });
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    return { applied: false, reason: 'error:' + e.message };
+  }
+  if (!g || !g.text || g.text === before || !g.repaired) {
+    return { applied: false, reason: 'no-change', targets: g ? g.targets : 0, before: g ? g.before : null, after: g ? g.after : null };
+  }
+  // 안전망: segment 게이트를 통과했어도 전체 FLOOR 한 번 더(위반이면 폐기).
+  const viol = floor.collectFloorViolations({ result: { outputText: g.text }, rawText, povSeed, optIn, mode, allowedExtra });
+  if (viol.length) return { applied: false, reason: 'floor-violation:' + viol.map(v => v.type).join(','), rejected: true, before: g.before, after: g.after };
+  result.outputText = g.text;
+  result.povDrift = floor.measurePovDrift(rawText, g.text, povSeed);
+  result.floorNovelty = floor.measureNovelty(rawText, g.text, allowedExtra);
+  result.floorLength = floor.measureLength(rawText, g.text, mode);
+  result.repetition = floor.measureRepetition(g.text);
+  result.lostFacts = floor.measureLostFacts(rawText, g.text);
+  return { applied: true, repaired: g.repaired, targets: g.targets, before: g.before, after: g.after };
+}
+
 // 라우트(/analyze)의 humanize 분기와 동일 로직: preprocess → LLM → Pass C → verify → refine.
 // engine-test.js(로컬 테스트)와 향후 재구축이 공유하는 services/humanizer의 시드.
-async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false, antiDetect = false, userNotes = '' } = {}) {
+async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = false, optIn = false, judge = false, antiDetect = false, grounding = false, userNotes = '' } = {}) {
   const selectedMode = mode;
   const floor = require('../engine/floor');
   const notes = (userNotes || '').trim();   // 사용자 경험 메모(있으면 추상 문단 구체화 재료 + novelty 허용 세계에 포함)
@@ -2075,6 +2102,13 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     result.judge = { ran: false, reason: 'no risk trigger (cheap gate)' };
   }
 
+  // ★ source-internal grounding(검증된 메모리스 레버): 추상 segment를 stance-sharpening으로 교체(antiDetect 이전).
+  if (grounding) {
+    result.grounding = await applyGrounding({
+      result, rawText: text, povSeed, optIn, mode: selectedMode, lang, signal, floor, allowedExtra: notes
+    });
+  }
+
   // ★ GPTZero 전용 2차 우회 패스(§우회): perplexity 교란 → FLOOR 재검사 → 깨지면 1차 출력 폴백.
   if (antiDetect) {
     result.antiDetect = await applyAntiDetect({
@@ -2114,13 +2148,14 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     floorV2,
     optIn,
     povSeed,
-    povDrift
+    povDrift,
+    grounding: result.grounding
   };
 }
 
 // server-side chunking 오케스트레이션 — 문단별 재작성 + 좌/우 경계 + 청크별 FLOOR + 병합(§7.2).
 // 긴 글에서 프론트 분할(prevContext 300자)을 대체. 청크별로 novelty/화자를 잡고, 병합 후 전체 재검사.
-async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, userNotes = '' } = {}) {
+async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, grounding = false, userNotes = '' } = {}) {
   const floor = require('../engine/floor');
   const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
   const notes = (userNotes || '').trim();
@@ -2253,6 +2288,14 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     result.judge = { ran: false, reason: 'no risk trigger (cheap gate)' };
   }
 
+  // ★ source-internal grounding(검증된 메모리스 레버): 추상 segment를 stance-sharpening으로 교체.
+  //   antiDetect 이전에 적용(grounding은 의미층, antiDetect는 표면 perplexity 교란이라 마지막).
+  if (grounding) {
+    result.grounding = await applyGrounding({
+      result, rawText: text, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes
+    });
+  }
+
   // ★ GPTZero 전용 2차 우회 패스(§우회): 병합 결과에 적용 → FLOOR 재검사 → 깨지면 폐기.
   if (antiDetect) {
     result.antiDetect = await applyAntiDetect({
@@ -2281,7 +2324,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     fallbackCount,
     povDrift: result.povDrift, floorNovelty: result.floorNovelty, floorLength: result.floorLength,
     repetition: result.repetition, softDrift: result.softDrift, judge: result.judge,
-    antiDetect: result.antiDetect,
+    antiDetect: result.antiDetect, grounding: result.grounding,
     floorViolations, povSeed, optIn, floorV2: true
   };
 }

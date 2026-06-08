@@ -2109,12 +2109,32 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     });
   }
 
+  // ★ Phase 0 폴리시(검출+국소 repair): 구어체 반복·register 혼합·압축. grounding 뒤, antiDetect 앞.
+  if (process.env.POLISH !== '0') {
+    try {
+      const pol = await require('../engine/polish').polishPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
+      if (pol.text && pol.text !== result.outputText) {
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: pol.text }, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes });
+        if (postV.length <= preV.length) result.outputText = pol.text;
+      }
+      result.polish = { repaired: pol.repaired, stats: pol.stats };
+    } catch (e) { if (signal?.aborted) throw e; result.polish = { error: e.message }; }
+  }
+
   // ★ GPTZero 전용 2차 우회 패스(§우회): perplexity 교란 → FLOOR 재검사 → 깨지면 1차 출력 폴백.
   if (antiDetect) {
     result.antiDetect = await applyAntiDetect({
       result, rawText: text, povSeed, optIn, mode: selectedMode, lang,
       speakerType: contract.speakerType, signal, floor, allowedExtra: notes
     });
+  }
+
+  // ★ Phase 0 띄어쓰기 품질 게이트(결정론, 최종) — 공백만 조정, 사실·FLOOR 불변.
+  if (process.env.SPACING !== '0') {
+    const sp = require('../engine/spacing').fixSpacing(result.outputText);
+    result.outputText = sp.text;
+    result.spacing = { fixes: sp.fixes, warnings: sp.warnings };
   }
 
   // ★ 노출 게이트(E.3): 모든 측정을 criticals/warnings로 모아 status 결정. criticals 있으면 blocked.
@@ -2309,11 +2329,32 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     });
   }
 
+  // ★ Phase 0 폴리시(검출+국소 repair): 구어체 반복·register 혼합·압축 잔여 플래그 정리.
+  //   grounding 뒤, antiDetect 앞. FLOOR 악화 시 폐기(무해).
+  if (process.env.POLISH !== '0') {
+    try {
+      const pol = await require('../engine/polish').polishPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
+      if (pol.text && pol.text !== result.outputText) {
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: pol.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        if (postV.length <= preV.length) result.outputText = pol.text;
+      }
+      result.polish = { repaired: pol.repaired, stats: pol.stats };
+    } catch (e) { if (signal?.aborted) throw e; result.polish = { error: e.message }; }
+  }
+
   // ★ GPTZero 전용 2차 우회 패스(§우회): 병합 결과에 적용 → FLOOR 재검사 → 깨지면 폐기.
   if (antiDetect) {
     result.antiDetect = await applyAntiDetect({
       result, rawText: text, povSeed, optIn, mode, lang, speakerType: contract.speakerType, signal, floor, allowedExtra: notes
     });
+  }
+
+  // ★ Phase 0 띄어쓰기 품질 게이트(결정론, 최종) — 공백만 조정, 사실·FLOOR 불변.
+  if (process.env.SPACING !== '0') {
+    const sp = require('../engine/spacing').fixSpacing(result.outputText);
+    result.outputText = sp.text;
+    result.spacing = { fixes: sp.fixes, warnings: sp.warnings };
   }
 
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).

@@ -2216,8 +2216,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
     // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패하면 1회 더 재시도하고,
     //   그래도 실패할 때만 그 청크만 원문으로 폴백한다.
+    // claudecode(flaky·간헐 거부)는 3회, API는 2회 시도 후에만 raw 폴백.
+    const MAX_ATTEMPTS = process.env.LLM_BACKEND === 'claudecode' ? 3 : 2;
     let chunkDone = false;
-    for (let attempt = 0; attempt < 2 && !chunkDone; attempt++) {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS && !chunkDone; attempt++) {
       try {
         const data = await callClaude({ userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r = extractClaudeResult(data, tool.name);
@@ -2227,8 +2229,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         chunkDone = true;
       } catch (e) {
         if (signal?.aborted) throw e;
-        if (attempt === 0) { await new Promise(r => setTimeout(r, 800)); continue; } // 1회 재시도(백오프)
-        c.outputText = c.text; c.fellBack = true; c.fallbackReason = 'llm-error';
+        if (attempt < MAX_ATTEMPTS - 1) { await new Promise(r => setTimeout(r, 800 * (attempt + 1))); continue; } // 백오프 후 재시도
+        c.outputText = c.text; c.fellBack = true; c.fallbackReason = /refusal/i.test(e.message) ? 'refusal' : 'llm-error';
       }
     }
     if (!chunkDone) return; // 재시도까지 실패 → 원문 폴백, repair/재검증 건너뜀(원문은 위반 없음)

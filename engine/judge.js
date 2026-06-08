@@ -34,15 +34,23 @@ async function llmText({ system, user, signal, maxTokens = 4096 }) {
       body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
       signal
     });
+    if (!resp.ok) {                                  // ★ API 에러를 조용히 삼키지 않는다(크레딧·rate limit 등).
+      let msg = resp.statusText;
+      try { const e = await resp.json(); msg = e?.error?.message || msg; } catch {}
+      throw new Error(`Anthropic API ${resp.status}: ${msg}`);
+    }
     const data = await resp.json();
     return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
   }
+  let lastErr = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     if (attempt > 0) await sleep(1500);
     let raw = '';
-    try { raw = await once(); } catch (e) { if (signal?.aborted) throw e; }
+    try { raw = await once(); } catch (e) { if (signal?.aborted) throw e; lastErr = e; }
     if (!isBad(raw)) return String(raw).trim();
   }
+  // 4회 모두 실패 → 빈 문자열은 호출부에서 "claim 0 → judge 통과"로 오인되므로, 마지막 에러를 표면화.
+  if (lastErr) throw new Error(`llmText 실패(${4}회): ${lastErr.message}`);
   return '';
 }
 
@@ -72,8 +80,10 @@ async function buildSoftClaimLedger(rawText, { lang = 'ko', signal } = {}) {
   const system = lang === 'en'
     ? `Extract a closed-world claim ledger from SOURCE for fact-checking a rewrite. Each claim MUST be directly supported by SOURCE; evidence_text MUST be a verbatim substring of SOURCE. Cover the WHOLE source — roughly one claim per paragraph/idea so nothing real is later mistaken for "added" (aim for up to ${cap} claims for this length). Do not infer beyond the text.`
     : `SOURCE에서 재작성 검증용 "닫힌세계 claim 원장"을 추출한다. 각 claim은 SOURCE에 직접 근거해야 하며, evidence_text는 SOURCE의 그대로(verbatim) 부분 문자열이어야 한다. SOURCE 전체를 빠짐없이 커버하라 — 문단·논점마다 1개 이상 뽑아, 나중에 보존된 원문이 "추가된 주장"으로 오인되지 않게 하라(이 길이면 최대 ${cap}개 정도). 본문을 넘어 추론하지 마라.`;
-  const user = `JSON: {"claims":[{"claim":"핵심 주장 한 줄","evidence_text":"SOURCE 그대로 인용"}]}\n\n[SOURCE]\n${rawText}`;
-  const out = await llmJSON({ system, user, signal, maxTokens: 4096 });
+  const user = `JSON: {"claims":[{"claim":"핵심 주장 한 줄","evidence_text":"SOURCE의 짧은 verbatim 구절(8~20자)"}]}\n\n[SOURCE]\n${rawText}`;
+  // ★ 대용량 글: ${cap}(최대 40)개 claim+evidence가 4096토큰을 넘겨 응답이 truncate→파싱실패→0개가 되면
+  //   judge가 무의미 통과하고 grounding 게이트도 오작동한다. 토큰을 claim 수에 맞춰 넉넉히.
+  const out = await llmJSON({ system, user, signal, maxTokens: Math.min(8192, 2048 + cap * 200) });
   const claims = Array.isArray(out?.claims) ? out.claims : [];
   const kept = claims.filter(c => evidenceMatches(rawText, c?.evidence_text));
   const capped = kept.slice(0, cap);

@@ -2174,18 +2174,25 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     const userContent = `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
     const chunkSys = chunkNotes[i] ? buildSys(chunkNotes[i]) : humanizeSystem;  // 이 청크에 배정된 경험만 위빙
 
-    // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패해도 그 청크만 원문으로 폴백하고 계속.
-    //   원문 청크는 사실·화자가 정의상 보존(FLOOR-clean)이라 전체 산출을 살린다.
-    try {
-      const data = await callClaude({ userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
-      const r = extractClaudeResult(data, tool.name);
-      await applyPassC(r, lang, signal);
-      c.outputText = r.outputText || c.text;
-    } catch (e) {
-      if (signal?.aborted) throw e;
-      c.outputText = c.text; c.fellBack = true; c.fallbackReason = 'llm-error';
-      continue; // repair/재검증도 건너뜀(원문 그대로면 위반 없음)
+    // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패하면 1회 더 재시도하고,
+    //   그래도 실패할 때만 그 청크만 원문으로 폴백하고 계속.
+    //   주의: raw 폴백은 FLOOR-clean(사실·화자 보존)이지만 휴머나이징이 안 된 원문이라
+    //   문체(register)가 깨지고 그 문단만 탐지율이 100%로 남는다 → 폴백은 정말 최후수단.
+    let chunkDone = false;
+    for (let attempt = 0; attempt < 2 && !chunkDone; attempt++) {
+      try {
+        const data = await callClaude({ userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const r = extractClaudeResult(data, tool.name);
+        await applyPassC(r, lang, signal);
+        c.outputText = r.outputText || c.text;
+        chunkDone = true;
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        if (attempt === 0) { await new Promise(r => setTimeout(r, 800)); continue; } // 1회 재시도(백오프)
+        c.outputText = c.text; c.fellBack = true; c.fallbackReason = 'llm-error';
+      }
     }
+    if (!chunkDone) continue; // 재시도까지 실패 → 원문 폴백, repair/재검증 건너뜀(원문은 위반 없음)
 
     // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair. chunkLevel: length_short 제외(§리뷰#18)
     const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });

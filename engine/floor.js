@@ -257,11 +257,20 @@ function measureRepetition(text) {
       if (sim >= FUZZY_SIM) { fuzzyCount++; fuzzyPairs.push(Number(sim.toFixed(2))); }
     }
   }
+  // (3) 짧은 조각 반복 — 길이 임계값(15자) 아래라 (1)(2)가 놓치는 인상적 체언종결·도치
+  //     조각("투명성이 방패다", "닿지 않는다")이 글 전체에 3회+ 등장하면 카피킬러가 반복으로 잡는다.
+  const shortSeen = new Map();
+  for (const s of (text || '').split(/(?<=[.!?。])\s+|\n+/).map(x => normSent(x.trim()))) {
+    if (s.length >= 4 && s.length < 15) shortSeen.set(s, (shortSeen.get(s) || 0) + 1);
+  }
+  const shortRepeated = [];
+  for (const [, n] of shortSeen) if (n >= 3) shortRepeated.push(n);
   return {
     count: repeated.length,                                   // exact 그룹 수(하위호환)
     maxRepeat: repeated.length ? Math.max(...repeated) : 1,
     fuzzyCount, fuzzyPairs,
-    total: repeated.length + fuzzyCount                       // 노출 판정용 합산
+    shortFragCount: shortRepeated.length,
+    total: repeated.length + fuzzyCount + shortRepeated.length // 노출 판정용 합산
   };
 }
 
@@ -327,8 +336,8 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
   // 결론/CTA 반복 (exact + 근접중복)
   const rep = measureRepetition(out);
   if (rep.total >= 1) {
-    v.push({ type: 'repetition', detail: `완전중복 ${rep.count}건·근접중복 ${rep.fuzzyCount}건`,
-      fix: `같은 결론·문장이 (어미·표현만 바꿔) 반복된다. 의미가 겹치는 문장을 하나로 합치고 결론을 한 번만 제시하라.` });
+    v.push({ type: 'repetition', detail: `완전중복 ${rep.count}건·근접중복 ${rep.fuzzyCount}건·짧은조각 ${rep.shortFragCount || 0}건`,
+      fix: `같은 결론·문장이 (어미·표현만 바꿔) 반복된다. 의미가 겹치는 문장을 하나로 합치고, 같은 짧은 조각·체언종결("…방패다" 등)을 여러 번 재사용하지 말고 한 번만 써라.` });
   }
   // ※ 결론부 drift는 여기서 하드 위반으로 잡지 않는다(§우회): 열린·여운 마무리는 우회 기법이라 허용.
   //   결정론 conclusion_drift는 judge 트리거로만 쓰고(analyze.js), 진짜 "결론 의도 역전"은 semanticJudge가 차단.

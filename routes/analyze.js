@@ -2370,8 +2370,24 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { if (signal?.aborted) throw e; result.polish = { error: e.message }; }
   }
 
+  // ★ 구어체 연결어 예산(phrasebudget): C등급은 polish를 skip하므로 여기서 단독 실행(내용 불변·연결어 다양화만).
+  //   거든요/근데/더라고요 등 과다 반복은 그 자체로 '기계적 균일성' 신호(도시론 실측 거든요 58→7, risk 0.630→0.520).
+  //   A/B등급은 polishPass가 이미 phrasebudget을 포함하므로 중복 실행 안 함. PHRASE_C=0으로 해제.
+  if (skipPasses && process.env.PHRASE_C !== '0') {
+    try {
+      const pbr = await require('../engine/phrasebudget').repairPhraseOveruse(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
+      if (pbr.text && pbr.text !== result.outputText) {
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: pbr.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        if (postV.length <= preV.length) result.outputText = pbr.text;
+      }
+      result.phrasebudgetC = { repaired: pbr.repaired };
+    } catch (e) { if (signal?.aborted) throw e; result.phrasebudgetC = { error: e.message }; }
+  }
+
   // ★ 버스티니스(문장 길이 비균질화): '기계적 정확성·균일성' 공략. 도시론 실측 61→58 확인(Goodhart 아님).
   //   다른 패스와 달리 내용·말투 불변(문장만 쪼갬)이라 C등급에도 도움 → skipPasses 무관하게 실행. BURST=0으로 해제.
+  //   순서: phrasebudget(연결어) → burstiness(문장리듬). 둘은 다른 신호라 스택 시 risk 0.630→0.452(복리).
   if (process.env.BURST !== '0') {
     try {
       const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: 0.6 });

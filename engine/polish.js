@@ -83,6 +83,10 @@ async function polishPass(text, { lang = 'ko', signal, floor, rawText = '', allo
       const nov = floor.measureNovelty(rawText || seg, cand, allowedExtra || '');
       if (nov.count >= 1) continue;                 // 새 사실 → 폐기(무해)
     }
+    if (sg.measurePersonalExperienceNovelty) {       // 경험 날조도 per-segment 차단(all-or-nothing 게이트 전체거부 방지)
+      const ex = sg.measurePersonalExperienceNovelty(rawText || seg, cand, allowedExtra || '');
+      if (ex.count >= 1) continue;
+    }
     // 개선 확인: 금지어 감소 또는 압축/혼합 해소가 실제로 있어야 채택
     const phraseOk = !banPhrases.length || banPhrases.some(p => countOcc(cand, p) < countOcc(seg, p));
     const compOk = !issues.compression || compressionCount(cand) < comp;

@@ -85,6 +85,11 @@ async function repairPhraseOveruse(text, { lang = 'ko', signal, floor, rawText =
       const nov = floor.measureNovelty(rawText || segs[i], cand, allowedExtra || '');
       if (nov.count >= 1) continue;
     }
+    // ★ 경험 날조도 per-segment로 차단(구체 많은 글에서 Haiku가 1인칭 일화 첨가→pipeline all-or-nothing 게이트가 전체 거부하던 버그)
+    if (sg.measurePersonalExperienceNovelty) {
+      const ex = sg.measurePersonalExperienceNovelty(rawText || segs[i], cand, allowedExtra || '');
+      if (ex.count >= 1) continue;
+    }
     // 실제로 금지어가 줄었는지 확인(안 줄면 무의미 → 폐기)
     const reduced = ban.some(p => countOcc(cand, p) < countOcc(segs[i], p));
     if (!reduced) continue;

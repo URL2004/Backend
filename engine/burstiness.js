@@ -73,6 +73,10 @@ async function burstinessPass(text, { lang = 'ko', signal, floor, rawText = '', 
       const nov = floor.measureNovelty(rawText || p, cand, allowedExtra || '');
       if (nov.count >= 1) continue;                            // 새 사실 → 폐기(무해)
     }
+    if (sg.measurePersonalExperienceNovelty) {                 // 경험 날조도 per-segment 차단
+      const ex = sg.measurePersonalExperienceNovelty(rawText || p, cand, allowedExtra || '');
+      if (ex.count >= 1) continue;
+    }
     if (cvOf(sentLens(cand)) <= cv + 0.03) continue;           // 버스티니스 실제 개선만 채택
     out[i] = cand; repaired++;
   }

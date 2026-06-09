@@ -9,12 +9,14 @@
 const sg = require('./surfaceguard');
 const { llmText } = require('./judge');
 
-// 표현별 허용 횟수(문서 전체 기준). 초과분만 국소 수리.
-const PHRASE_BUDGET = {
-  '근데': 4, '거든요': 5, '더라고요': 3, '잖아요': 5,
-  '문제는': 3, '핵심은': 2, '중요한 건': 2, '결국': 4,
-  '지금은 달라요': 1, '쉽지 않아요': 1, '슬쩍': 3, '툭': 3, '확': 4,
+// 표현별 허용 "밀도"(1000자당). 고정 횟수는 긴 글/짧은 글을 같게 다뤄 오작동 → 밀도 기반.
+//   실제 예산 = max(floor, ceil(글자수/1000 × 밀도)). (예: 22K자 거든요 → ceil(22×0.5)=11)
+const PHRASE_DENSITY = {
+  '근데': 0.4, '거든요': 0.5, '더라고요': 0.3, '잖아요': 0.6,
+  '문제는': 0.35, '핵심은': 0.25, '중요한 건': 0.25, '결국': 0.45,
+  '지금은 달라요': 0.12, '쉽지 않아요': 0.12, '슬쩍': 0.35, '툭': 0.35, '확': 0.5,
 };
+const PHRASE_FLOOR = 3;   // 짧은 글에 과도하게 빡빡해지지 않게 최소 예산
 
 function countOcc(text, phrase) {
   if (!text) return 0;
@@ -23,14 +25,16 @@ function countOcc(text, phrase) {
   return n;
 }
 
-// 전역 사용량 측정 → 초과 표현 목록
-function measurePhraseUsage(text, budget = PHRASE_BUDGET) {
+// 전역 사용량 측정 → 예산(밀도×길이) 초과 표현 목록
+function measurePhraseUsage(text, densityMap = PHRASE_DENSITY) {
+  const chars = (text || '').replace(/\s+/g, '').length;
   const counts = {};
   const over = [];
-  for (const [p, b] of Object.entries(budget)) {
+  for (const [p, d] of Object.entries(densityMap)) {
     const c = countOcc(text, p);
+    const budget = Math.max(PHRASE_FLOOR, Math.ceil(chars / 1000 * d));
     if (c) counts[p] = c;
-    if (c > b) over.push({ phrase: p, count: c, budget: b });
+    if (c > budget) over.push({ phrase: p, count: c, budget });
   }
   over.sort((a, b) => (b.count - b.budget) - (a.count - a.budget));
   return { counts, over };
@@ -45,8 +49,8 @@ function buildRepairPrompt(segText, banPhrases, lang) {
 }
 
 // 국소 repair: 초과 표현이 든 segment만 재작성. floor.measureNovelty로 날조 차단.
-async function repairPhraseOveruse(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', targetChars = 350, budget = PHRASE_BUDGET } = {}) {
-  const before = measurePhraseUsage(text, budget);
+async function repairPhraseOveruse(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', targetChars = 350, densityMap = PHRASE_DENSITY } = {}) {
+  const before = measurePhraseUsage(text, densityMap);
   if (!before.over.length) return { text, repaired: 0, before: before.over, after: before.over };
 
   const overSet = new Set(before.over.map(o => o.phrase));
@@ -87,7 +91,7 @@ async function repairPhraseOveruse(text, { lang = 'ko', signal, floor, rawText =
     out[i] = cand; repaired++;
   }
   const result = out.join('\n\n');
-  return { text: result, repaired, before: before.over, after: measurePhraseUsage(result, budget).over };
+  return { text: result, repaired, before: before.over, after: measurePhraseUsage(result, densityMap).over };
 }
 
-module.exports = { PHRASE_BUDGET, measurePhraseUsage, repairPhraseOveruse, countOcc };
+module.exports = { PHRASE_DENSITY, measurePhraseUsage, repairPhraseOveruse, countOcc };

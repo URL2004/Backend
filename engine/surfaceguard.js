@@ -246,6 +246,26 @@ function measureCompression(text) {
   if (!s.length) return 0;
   return s.filter(isCompressedSentence).length / s.length;
 }
+// ★ 문단 단위 "지나친 요약·압축"(카피킬러식) — 한 문단에 논점/추상명사/접속이 과밀(요약문 나열).
+//   문장 단위 isCompressedSentence가 못 잡는 "여러 논점을 짧게 욱여넣은 문단"을 잡는다.
+const PC_CONNECTOR_RE = /(그래서|때문|따라서|결국|그러므로|덕분|탓에|로\s*인해|반면|하지만|그런데|오히려|게다가|또한)/g;
+function measureParagraphCompression(text) {
+  const sents = splitSentences(text);
+  if (sents.length < 3) return 0;
+  const charLen = text.replace(/\s+/g, '').length || 1;
+  const nouns = (text.match(/[가-힣]{2,}/g) || []).filter(w => !DOMAIN_STOP.has(w) && !/[다요죠음함됨임은는이가을를의에도만과와나]$/.test(w));
+  const distinct = new Set(nouns).size;
+  const abst = (text.match(COMP_ABSTRACT_RE) || []).length;
+  const conn = (text.match(PC_CONNECTOR_RE) || []).length;
+  const claimDensity = distinct / sents.length;          // 문장당 새 논점(명사)
+  const abstractDensity = abst / (charLen / 100);         // 100자당 추상명사
+  const connectorDensity = conn / sents.length;           // 문장당 접속(논점 전환)
+  let s = 0;
+  s += Math.min(1, Math.max(0, (claimDensity - 4) / 6));      // 문장당 4↑ 논점
+  s += Math.min(1, Math.max(0, (abstractDensity - 1.5) / 3)); // 100자당 1.5↑ 추상명사
+  s += Math.min(1, Math.max(0, (connectorDensity - 0.6) / 1));// 문장당 0.6↑ 접속
+  return Number((s / 3).toFixed(2));
+}
 // 구어체 틱(반복 시 "기계적 균일성") — segment 내 등장 종류 수
 const CONV_TICS = ['근데', '거든요', '더라고요', '잖아요', '문제는', '핵심은', '결국', '슬쩍', '툭'];
 function measureTicDensity(text) {
@@ -270,13 +290,14 @@ function measureSegmentRisk(segText, anchorPool) {
   const genericRatio = generic / n;
   const impersonalRatio = measureImpersonal(segText);
   const compressionRatio = measureCompression(segText);
+  const paragraphCompression = measureParagraphCompression(segText);   // 문단 단위 압축(카피킬러식)
   const ticDensity = measureTicDensity(segText);
   const stanceRatio = stanced / n;
   const concreteRatio = concrete / n;
   // 균일성: 종결 단조(maxEndingRun) + 길이 균일(lengthCV 낮음)
   const uniformity = Math.min(1, (u.maxEndingRun >= 4 ? 0.6 : u.maxEndingRun >= 3 ? 0.35 : 0) + (u.lengthCV < 0.35 ? 0.4 : u.lengthCV < 0.5 ? 0.2 : 0));
-  // 합성 risk(잠정 가중치 — Phase 1-2에서 PDF로 보정). 0~1 clamp.
-  let risk = genericRatio * 0.9 + uniformity * 0.7 + impersonalRatio * 0.7 + compressionRatio * 1.1 + Math.min(1, ticDensity) * 0.4
+  // 합성 risk(잠정 가중치 — Phase 1-2에서 PDF 라벨로 보정 예정). 0~1 clamp.
+  let risk = genericRatio * 0.9 + uniformity * 0.7 + impersonalRatio * 0.7 + compressionRatio * 1.1 + paragraphCompression * 0.6 + Math.min(1, ticDensity) * 0.4
            - concreteRatio * 1.1 - stanceRatio * 0.5 - Math.min(1, anchorHits / 3) * 0.3;
   risk = Math.max(0, Math.min(1, risk + 0.15));   // bias로 0근처 보정
   return {
@@ -285,6 +306,7 @@ function measureSegmentRisk(segText, anchorPool) {
     genericRatio: Number(genericRatio.toFixed(2)),
     impersonalRatio: Number(impersonalRatio.toFixed(2)),
     compressionRatio: Number(compressionRatio.toFixed(2)),
+    paragraphCompression,
     ticDensity: Number(ticDensity.toFixed(2)),
     uniformity: Number(uniformity.toFixed(2)),
     lengthCV: u.lengthCV, maxEndingRun: u.maxEndingRun,
@@ -393,5 +415,6 @@ module.exports = {
   measurePersonalExperienceNovelty, measureMemoReuse, isLivedScene,
   buildSourceAnchorPool, buildSegments, measureSegmentRisk, buildSegmentReport,
   measureImpersonal, measureCompression, isCompressedSentence, measureTicDensity,
+  measureParagraphCompression,
   sentRegister, measureRegisterMix, measureOpeningDuplication
 };

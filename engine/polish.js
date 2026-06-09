@@ -9,7 +9,7 @@
 
 const sg = require('./surfaceguard');
 const { llmText } = require('./judge');
-const { measurePhraseUsage, countOcc, PHRASE_BUDGET } = require('./phrasebudget');
+const { measurePhraseUsage, countOcc, PHRASE_DENSITY } = require('./phrasebudget');
 
 // ── register 분류 (surfaceguard 단일 정의 재사용) ──
 const sentRegister = sg.sentRegister;
@@ -45,8 +45,8 @@ ${rules.join('\n')}
 }
 
 // 통합 폴리시 패스
-async function polishPass(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', targetChars = 350, budget = PHRASE_BUDGET } = {}) {
-  const overUsage = measurePhraseUsage(text, budget).over;
+async function polishPass(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', targetChars = 350, densityMap = PHRASE_DENSITY } = {}) {
+  const overUsage = measurePhraseUsage(text, densityMap).over;
   const overPhrases = overUsage.map(o => o.phrase);
   const segs = sg.buildSegments(text, targetChars);
 

@@ -51,7 +51,7 @@ ${anchors && anchors.length ? `· 이 구체를 끌어와 써라: ${anchors.join
 // 적용할 전략 결정(서브스코어 기반) — 약점에 맞는 후보를 만든다.
 function pickStrategies(risk) {
   const strats = ['rhythm'];                              // 균일성은 거의 항상 후보
-  if (risk.compressionRatio >= 0.12) strats.push('decompress');   // 압축은 카피킬러 빈발 → 민감하게
+  if (risk.compressionRatio >= 0.12 || (risk.paragraphCompression || 0) >= 0.3) strats.push('decompress');  // 문장·문단 압축
   if (risk.impersonalRatio >= 0.2 || risk.stanced === 0) strats.push('stance');
   if (risk.concrete === 0) strats.push('anchor');
   if (strats.length < 2) strats.push('decompress');       // 최소 2후보

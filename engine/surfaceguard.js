@@ -79,6 +79,33 @@ function measureUniformity(text) {
   };
 }
 
+// ── 문체(register) 분류 + 혼합 측정 (카피킬러 "간접화법·비인칭"·patchwork 방지) ──
+function sentRegister(s) {
+  const t = (s || '').trim().replace(/["'”’)\]]+$/, '');
+  if (/[?？]$/.test(t)) return 'q';
+  if (/(습니다|ㅂ니다|입니다|입니까|습니까)\.?$/.test(t)) return 'hap';
+  if (/(요|죠|쥬|군요|걸요|는데요|ㄹ게요|ㄹ까요|에요|예요|아요|어요|네요|데요)\.?$/.test(t)) return 'haeyo';
+  if (/(이?다|한다|된다|않다|없다|있다|었다|였다|는다|ㄴ다|린다|진다|온다|난다|간다|싶다|보다)\.?$/.test(t)) return 'handa';
+  return 'other';
+}
+function measureRegisterMix(text) {
+  const regs = splitSentences(text).map(sentRegister);
+  const c = { haeyo: 0, handa: 0, hap: 0 };
+  for (const r of regs) if (c[r] !== undefined) c[r]++;
+  const total = c.haeyo + c.handa + c.hap;
+  if (!total) return { dominant: 'haeyo', offCount: 0, offRatio: 0 };
+  const dominant = c.haeyo >= c.handa && c.haeyo >= c.hap ? 'haeyo' : (c.handa >= c.hap ? 'handa' : 'hap');
+  const off = total - c[dominant];
+  return { dominant, offCount: off, offRatio: Number((off / total).toFixed(3)) };
+}
+// 같은 문장 시작(12자) 반복 = 내용 중복(카피킬러 "동일 내용 과도한 반복") 검출
+function measureOpeningDuplication(text) {
+  const sents = splitSentences(text).map(s => s.trim()).filter(s => s.length >= 12);
+  const seen = {}; let dup = 0;
+  for (const s of sents) { const k = s.replace(/\s+/g, '').slice(0, 12); if (seen[k]) dup++; else seen[k] = 1; }
+  return dup;
+}
+
 // ── 개인 경험 날조 가드(§v4): hard novelty(숫자·고유명사)가 못 잡는 "지어낸 일화" 차단 ──
 // 출력의 1인칭 과거 경험 문장(lived scene)은 원문(rawText) 또는 사용자 메모에 근거해야 한다.
 // 둘 다에 없는 경험은 날조 → critical. (내용어 겹침으로 근거 판정 — 의역 허용, 완전 신규만 차단.)
@@ -365,5 +392,6 @@ module.exports = {
   measureUniformity, analyzeParagraphs, buildSurfaceReport, classifyInputRisk,
   measurePersonalExperienceNovelty, measureMemoReuse, isLivedScene,
   buildSourceAnchorPool, buildSegments, measureSegmentRisk, buildSegmentReport,
-  measureImpersonal, measureCompression, isCompressedSentence, measureTicDensity
+  measureImpersonal, measureCompression, isCompressedSentence, measureTicDensity,
+  sentRegister, measureRegisterMix, measureOpeningDuplication
 };

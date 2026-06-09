@@ -11,15 +11,8 @@ const sg = require('./surfaceguard');
 const { llmText } = require('./judge');
 const { measurePhraseUsage, countOcc, PHRASE_BUDGET } = require('./phrasebudget');
 
-// ── register 분류 ──
-function sentRegister(s) {
-  const t = (s || '').trim().replace(/["'”’)\]]+$/, '');
-  if (/[?？]$/.test(t)) return 'q';
-  if (/(습니다|ㅂ니다|입니다|입니까|습니까)\.?$/.test(t)) return 'hap';      // 합니다체
-  if (/(요|죠|쥬|군요|걸요|는데요|ㄹ게요|ㄹ까요|에요|예요|아요|어요|네요|데요)\.?$/.test(t)) return 'haeyo';
-  if (/(이?다|한다|된다|않다|없다|있다|었다|였다|는다|ㄴ다|린다|진다|온다|난다|간다|싶다|보다)\.?$/.test(t)) return 'handa';
-  return 'other';   // 체언 종결·감탄 등 — register 중립(버스티니스용, 건드리지 않음)
-}
+// ── register 분류 (surfaceguard 단일 정의 재사용) ──
+const sentRegister = sg.sentRegister;
 
 // 문단별 register 혼합 검출(보수적): 해요체와 한다체가 둘 다 "복수" 섞인 문단만.
 function paragraphMixed(segText) {

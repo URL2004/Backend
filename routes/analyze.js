@@ -2321,6 +2321,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     result.judge = { ran: false, reason: 'no risk trigger (cheap gate)' };
   }
 
+  // ★ Step1 acceptance gate용 baseline 스냅샷(휴머나이즈+judge까지 = 검증된 안전 기준).
+  //   이후 grounding/optimize/polish 스택이 이 baseline보다 나빠지면 최종에서 revert(역효과 차단).
+  const baselineText = result.outputText;
+
   // ★ source-internal grounding(검증된 메모리스 레버): 추상 segment를 stance-sharpening으로 교체.
   //   antiDetect 이전에 적용(grounding은 의미층, antiDetect는 표면 perplexity 교란이라 마지막).
   if (grounding) {
@@ -2333,7 +2337,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   grounding 뒤, polish 앞. OPTIMIZE=1일 때만. FLOOR 악화 시 폐기(무해).
   if (process.env.OPTIMIZE === '1') {
     try {
-      const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal });
+      // C등급(순수 추상) 원문은 과수술 금지 — cap을 강하게 제한(역효과 방지).
+      const abstractR = require('../engine/surfaceguard').classifyInputRisk(text).abstractRiskRatio;
+      const optMax = abstractR >= 0.85 ? 8 : undefined;
+      const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal, maxTargets: optMax });
       if (opt.text && opt.text !== result.outputText) {
         const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
         const postV = floor.collectFloorViolations({ result: { outputText: opt.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
@@ -2355,6 +2362,34 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       }
       result.polish = { repaired: pol.repaired, stats: pol.stats };
     } catch (e) { if (signal?.aborted) throw e; result.polish = { error: e.message }; }
+  }
+
+  // ★★ Step1 최종 acceptance gate: grounding+optimize+polish 스택이 baseline보다
+  //   {중복·반복·문체혼합·추상·분량} 중 하나라도 나빠지면 baseline으로 revert.
+  //   카피킬러는 의심 "영역 수"를 보므로, 이 5개 신호가 늘면 영역이 늘 가능성이 큼 → 역효과 차단.
+  if (result.outputText !== baselineText) {
+    const sg2 = require('../engine/surfaceguard');
+    const srcLen = text.replace(/\s+/g, '').length;
+    const measure = (t) => ({
+      dup: sg2.measureOpeningDuplication(t),
+      rep: floor.measureRepetition(t).total,
+      mix: sg2.measureRegisterMix(t).offRatio,
+      abs: sg2.classifyInputRisk(t).abstractRiskRatio,
+      len: t.replace(/\s+/g, '').length,
+    });
+    const b = measure(baselineText), c = measure(result.outputText);
+    const reasons = [];
+    if (c.dup > b.dup) reasons.push(`중복증가(${b.dup}→${c.dup})`);
+    if (c.rep > b.rep) reasons.push(`반복증가(${b.rep}→${c.rep})`);
+    if (c.mix > b.mix + 0.05) reasons.push(`문체혼합(${b.mix}→${c.mix})`);
+    if (c.abs > b.abs + 0.03) reasons.push(`추상증가(${b.abs}→${c.abs})`);
+    if (c.len > srcLen * 1.20 && c.len > b.len) reasons.push(`분량초과(${Math.round(c.len / srcLen * 100)}%)`);
+    if (reasons.length) {
+      result.outputText = baselineText;   // 역효과 → 안전 기준으로 되돌림
+      result.acceptanceGate = { reverted: true, reasons };
+    } else {
+      result.acceptanceGate = { reverted: false };
+    }
   }
 
   // ★ GPTZero 전용 2차 우회 패스(§우회): 병합 결과에 적용 → FLOOR 재검사 → 깨지면 폐기.

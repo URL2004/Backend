@@ -8,11 +8,10 @@
 const sg = require('./surfaceguard');
 const floor = require('./floor');
 const { llmText, buildSoftClaimLedger, semanticJudge } = require('./judge');
-const { sentRegister } = require('./polish');
 
 // segment의 주 말투(해요체/한다체/합니다체) 판정
 function dominantRegister(seg) {
-  const regs = sg.splitSentences(seg).map(sentRegister);
+  const regs = sg.splitSentences(seg).map(sg.sentRegister);
   const c = { haeyo: 0, handa: 0, hap: 0 };
   for (const r of regs) if (c[r] !== undefined) c[r]++;
   if (c.haeyo >= c.handa && c.haeyo >= c.hap) return 'haeyo';
@@ -22,7 +21,7 @@ function dominantRegister(seg) {
 const REG_LABEL = { haeyo: '해요체(~예요/~거든요/~죠/~어요)', handa: '한다체(~다/~이다/~한다)', hap: '합니다체(~습니다/~ㅂ니다)' };
 // 후보가 목표 말투를 지켰는지(다른 말투 문장이 1개 이하면 통과)
 function registerOk(cand, target) {
-  const regs = sg.splitSentences(cand).map(sentRegister);
+  const regs = sg.splitSentences(cand).map(sg.sentRegister);
   const off = regs.filter(r => r !== 'q' && r !== 'other' && r !== target).length;
   return off <= 1;
 }
@@ -97,7 +96,7 @@ async function optimizePass(text, rawText, { lang = 'ko', signal, targetChars = 
   const anchorPool = sg.buildSourceAnchorPool(rawText || text);
   const segs = sg.buildSegments(text, targetChars);
   const scored = segs.map((s, i) => ({ i, risk: sg.measureSegmentRisk(s, anchorPool).riskScore })).filter(x => x.risk >= threshold).sort((a, b) => b.risk - a.risk);
-  const MAX = Number(maxTargets) || Number(process.env.OPTIMIZE_MAX) || 35;
+  const MAX = Number(maxTargets) || Number(process.env.OPTIMIZE_MAX) || 12;
   const pick = scored.slice(0, MAX).map(x => x.i);
   if (!pick.length) return { text, changed: 0, targets: 0 };
 

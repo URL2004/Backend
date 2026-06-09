@@ -35,7 +35,7 @@ function measureBurstiness(text) {
 
 function buildPrompt(para, lang, aggressive = false) {
   const intensity = aggressive
-    ? `이 문단의 호흡을 극단적으로 바꿔라. 아주 짧은 문장(한 호흡, 5~9자: "쉽지 않다." "현실은 다르다." "그게 핵심이다." "막을 수 없었다.")과 아주 긴 문장(40자 이상, 여러 절을 쉼표로 길게 이어 붙인)을 번갈아 배치해 길이 낙차를 최대한 키워라. 문장 두세 개마다 하나는 반드시 짧게 끊고, 비슷한 중간 길이 문장이 세 개 이상 연달아 나오지 않게 하라.`
+    ? `이 문단의 호흡을 과감하게 바꿔라. 문장 서너 개 중 하나는 아주 짧게(한 호흡, 예: "쉽지 않다." "현실은 다르다." "그게 핵심이다.") 만들고, 나머지는 길게 흘려라. 긴 문장과 짧은 문장의 낙차가 분명히 느껴지게.`
     : `아주 짧은 문장(예: "쉽지 않다." "현실은 다르다.")과 긴 문장을 섞어, 한 문단 안에서 호흡을 크게 바꿔라.`;
   const system = lang === 'en'
     ? `Rewrite the paragraph so sentence LENGTHS are more varied (bursty): mix very short punchy sentences (2-5 words) with longer ones, changing the breathing within the paragraph. Keep ALL facts, numbers, meaning, tone, and total length the same. Add no new information, opinions, or examples. Only split or merge existing sentences to change rhythm. Every sentence must be grammatically complete (no dangling fragments). Output only the rewritten paragraph.`

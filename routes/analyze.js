@@ -2394,10 +2394,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   순서: phrasebudget(연결어) → burstiness(문장리듬). 둘은 다른 신호라 스택 시 risk 0.630→0.452(복리).
   //   ★★ 격식 burstiness skip 실측 폐기(2026-06): EV 73→94%(+21%p) 폭등! punch 조각·문장길이 변동(burstiness)이
   //     점수를 누르던 핵심 레버였음(카피킬러=GPTZero류, burstiness를 사람글 신호로 봄). 격식도 burstiness 그대로 실행해야 함. 전 모드 적용.
-  //     ★검증된 유일 레버라 더 공격적으로 — lowCV 0.8(대상 문단 확대) + 극단 낙차 프롬프트. FLOOR 게이트가 그대로 차단. BURST_LOWCV로 조정.
+  //     ★burstiness 강화(lowCV 0.8+극단 프롬프트) 실측 폐기(2026-06): EV 73→92% 악화. 과도한 길이변동/잦은 punch는 오히려 부자연→직격.
+  //     moderate(lowCV 0.6+기존 프롬프트)가 sweet spot(73%). 강화도 제거도 둘 다 악화 — 73%는 burstiness가 떠받치는 국소 최적. BURST_LOWCV로 조정.
   if (process.env.BURST !== '0') {
     try {
-      const _burstLowCV = process.env.BURST_LOWCV ? parseFloat(process.env.BURST_LOWCV) : 0.8;
+      const _burstLowCV = process.env.BURST_LOWCV ? parseFloat(process.env.BURST_LOWCV) : 0.6;
       const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: _burstLowCV });
       if (br.text && br.text !== result.outputText) {
         const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });

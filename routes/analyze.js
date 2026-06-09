@@ -2374,12 +2374,15 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     const srcLen = text.replace(/\s+/g, '').length;
     // ※ register 혼합(한다체↔해요체)은 카피킬러 신호가 아님이 v4 실측으로 확인됨(유령 지표) → 게이트에서 제외.
     //   오히려 종결 다양성을 줘 균일성을 낮추기도 하므로, 한다체 섞임 자체는 막지 않는다.
+    // ★게이트는 "신뢰 가능한 재앙 신호"만 본다 — 중복·반복·큰 분량팽창.
+    //   abstractRisk는 측정이 거칠어(선명한 판단문을 '더 추상'으로 오판) revert 트리거에서 제외(기록만).
+    //   문체혼합은 카피킬러 비신호(v4 입증)라 이미 제외. dup/rep/length가 cap35식 참사(중복·팽창)는 잡는다.
     const dd = require('../engine/dedupe');
     const measure = (t) => ({
       dup: sg2.measureOpeningDuplication(t),
       nd: dd.measureNearDupSentences(t),     // 근접(의미) 중복 — 카피킬러 "동일 내용 과도한 반복"
       rep: floor.measureRepetition(t).total,
-      abs: sg2.classifyInputRisk(t).abstractRiskRatio,
+      abs: sg2.classifyInputRisk(t).abstractRiskRatio,   // 기록용(트리거 아님)
       len: t.replace(/\s+/g, '').length,
     });
     const b = measure(baselineText), c = measure(result.outputText);
@@ -2387,8 +2390,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     if (c.dup > b.dup) reasons.push(`중복증가(${b.dup}→${c.dup})`);
     if (c.nd > b.nd) reasons.push(`근접중복증가(${b.nd}→${c.nd})`);
     if (c.rep > b.rep) reasons.push(`반복증가(${b.rep}→${c.rep})`);
-    if (c.abs > b.abs + 0.03) reasons.push(`추상증가(${b.abs}→${c.abs})`);
-    if (c.len > srcLen * 1.20 && c.len > b.len) reasons.push(`분량초과(${Math.round(c.len / srcLen * 100)}%)`);
+    if (c.len > b.len * 1.10) reasons.push(`분량팽창(${b.len}→${c.len})`);   // baseline 대비 10%+ 팽창만 차단
     if (reasons.length) {
       result.outputText = baselineText;   // 역효과 → 안전 기준으로 되돌림
       result.acceptanceGate = { reverted: true, reasons };

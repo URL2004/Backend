@@ -45,18 +45,22 @@ ${tasks.join('\n')}
   return { system, user: `[문단]\n${para}` };
 }
 
-// 격식 칼럼 구조 정리: 번호 리스트가 있거나 punch 조각이 몰린 문단만 국소 수리. FLOOR로 날조 차단, 길이중립, 개선만 채택.
-async function columnCleanupPass(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', punchBudget = PUNCH_BUDGET } = {}) {
+// 격식 칼럼 구조 정리: 번호 리스트 해체(전부) + 반복 punch 조각 병합(예산 초과분, punch 많은 문단부터). FLOOR로 날조 차단, 길이중립, 개선만 채택.
+async function columnCleanupPass(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', punchBudget = PUNCH_BUDGET, maxParas = 24 } = {}) {
   const paras = text.split(/\n\n+/);
   const out = paras.slice();
   let repaired = 0, attempted = 0;
   const globalPunch = measurePunch(text);
   let punchExcess = Math.max(0, globalPunch - punchBudget);   // 전체 예산 초과분만 줄임
-  for (let i = 0; i < paras.length; i++) {
+  // punch 많은 문단부터 처리(예산 효율) — de-list는 예산과 무관하게 전 문단 적용.
+  const order = paras.map((p, i) => ({ i, punch: sg.splitSentences(p).filter(isPunch).length }))
+    .sort((a, b) => b.punch - a.punch).map(x => x.i);
+  for (const i of order) {
+    if (attempted >= maxParas) break;
     const p = paras[i];
     const delist = ORDINAL.test(p);
     const paraPunch = sg.splitSentences(p).filter(isPunch).length;
-    const mergePunch = punchExcess > 0 && paraPunch >= 2;     // 예산 초과 + 한 문단에 2개+ 몰린 곳만
+    const mergePunch = punchExcess > 0 && paraPunch >= 1;     // 예산 초과 시 punch 있는 문단(많은 곳부터) 병합
     if (!delist && !mergePunch) continue;
     attempted++;
     const { system, user } = buildPrompt(p, lang, { delist, mergePunch });
@@ -74,12 +78,13 @@ async function columnCleanupPass(text, { lang = 'ko', signal, floor, rawText = '
       const ex = sg.measurePersonalExperienceNovelty(rawText || p, cand, allowedExtra || '');
       if (ex.count >= 1) continue;
     }
-    // 개선 검증: 번호 라벨이 줄었거나 punch 조각이 줄어든 경우만 채택
+    // 개선 검증: 번호 라벨이 줄었거나 punch 조각이 줄어든 경우만 채택(둘 다 안 줄면 폐기)
     const ordBefore = countOrdinals(p), ordAfter = countOrdinals(cand);
-    const punchBefore = paraPunch, punchAfter = sg.splitSentences(cand).filter(isPunch).length;
-    const improved = (delist && ordAfter < ordBefore) || (mergePunch && punchAfter < punchBefore);
-    if (!improved) continue;
-    if (mergePunch) punchExcess -= (punchBefore - punchAfter);
+    const punchAfter = sg.splitSentences(cand).filter(isPunch).length;
+    const delistOK = delist && ordAfter < ordBefore;
+    const punchOK = mergePunch && punchAfter < paraPunch;
+    if (!delistOK && !punchOK) continue;
+    if (punchOK) punchExcess -= (paraPunch - punchAfter);
     out[i] = cand; repaired++;
   }
   return { text: out.join('\n\n'), repaired, attempted, globalPunch };

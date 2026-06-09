@@ -2392,12 +2392,12 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ 버스티니스(문장 길이 비균질화): '기계적 정확성·균일성' 공략. 도시론 실측 61→58 확인(Goodhart 아님).
   //   다른 패스와 달리 내용·말투 불변(문장만 쪼갬)이라 C등급에도 도움 → skipPasses 무관하게 실행. BURST=0으로 해제.
   //   순서: phrasebudget(연결어) → burstiness(문장리듬). 둘은 다른 신호라 스택 시 risk 0.630→0.452(복리).
-  //   ★격식 모드(assignment/thesis): aggressive=true는 punch 조각("현실은 다르다")을 양산 → 카피킬러 "구조적 전형성" 자초(EV 83% PDF).
-  //     격식은 비공격적으로(짧은 조각 남발 금지), columnCleanup이 초과분을 따로 정리.
-  if (process.env.BURST !== '0') {
+  //   ★격식 모드(assignment/thesis): burstiness는 짧은 punch 조각("현실은 다르다")을 양산(비공격 프롬프트도 동일) → 카피킬러
+  //     "구조적 전형성" 자초(EV 83% PDF). 격식의 '기계적 균일성' 플래그는 1개뿐(81% PDF)이라 이득 없음 → 격식은 burstiness 전면 skip,
+  //     punch 정리는 columnCleanup이 예산 기반으로 담당. blog/resume은 그대로 실행.
+  if (process.env.BURST !== '0' && !(mode === 'assignment' || mode === 'thesis')) {
     try {
-      const _formal = (mode === 'assignment' || mode === 'thesis');
-      const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: !_formal, lowCV: _formal ? 0.45 : 0.6 });
+      const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: 0.6 });
       if (br.text && br.text !== result.outputText) {
         const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
         const postV = floor.collectFloorViolations({ result: { outputText: br.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });

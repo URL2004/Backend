@@ -59,16 +59,9 @@ function assignAnchors(segText, anchorPool, rawText) {
 function buildGroundingPrompt(segText, anchors, lang = 'ko', mode = 'assignment') {
   const frameLines = anchors.frames.length ? `\n[원문에 이미 있는 사례/대조 — 이것을 끌어와 구체화에 써라]\n- ${anchors.frames.join('\n- ')}` : '';
   const termLine = anchors.terms.length ? `\n[이 문단에 이미 있는 핵심어 — 막연한 문장 대신 이것을 구체적으로 풀어라]\n${anchors.terms.join(', ')}` : '';
-  // ★ 격식 모드(assignment/thesis): 한다체 학술체는 비인칭·객관이라 카피킬러 "주관성 배제·비인칭" 직격(EV 81%).
-  //   판단문을 "비개인적"으로 두는 대신, 격식 1인칭 평가+수사의문문으로 주관을 드러내 그 플래그를 끈다(문체는 한다체 유지).
-  const formal = (mode === 'assignment' || mode === 'thesis');
-  const personaBlock = formal
-    ? `· ★격식 1인칭·주관을 적극 드러내라(비인칭 깨기 — 카피킬러 "주관성의 지나친 배제·비인칭 서술" 직격 대응):
-  - 비인칭·수동("여겨진다/이루어진다/볼 수 있다/전망된다/요구된다/평가된다")을 능동 단정으로: "~다", "오히려 ~다", "~라는 점은 분명하다".
-  - 학술적 1인칭 평가를 넣어라: "필자가 보기에", "여기서 핵심은", "간과해선 안 될 점은", "주목할 대목은", "분명한 것은".
-  - 수사의문문을 문단당 1개 정도 섞어라: "과연 ~로 충분한가?", "그렇다면 ~는 어떤가?".
-  - ★문체는 한다체 유지(존댓말 금지). 평가·해석·관점만 더할 뿐, 원문에 없는 새 사실·사례·수치·고유명사는 절대 금지.`
-    : `· "나는 ~라고 본다" 같은 새 1인칭 의견을 만들지 마라(판단문은 비개인적으로).`;
+  // ※ 격식 1인칭 평가(필자가 보기에/과연~인가) 주입은 semanticJudge가 "평가 추가" 위반으로 차단(EV 실측: grounding 미적용→baseline).
+  //   FLOOR(평가·견해 추가 금지) vs 카피킬러(주관성 배제 끄기=평가 추가 필요)가 정면 충돌 → 비인칭 판단문 유지(FLOOR 우선).
+  const personaBlock = `· "나는 ~라고 본다" 같은 새 1인칭 의견을 만들지 마라(판단문은 비개인적으로).`;
   const system = `너는 한국어 글에서 "무견해·막연한 일반론 문장"을 "선명한 판단 문장"으로 바꾸는 편집자다. 내용·사실·분량은 그대로 두고 표현의 날을 세운다.
 
 [핵심 작업 — 이것을 최우선으로]

@@ -1938,7 +1938,7 @@ async function applyGrounding({ result, rawText, povSeed, optIn, mode, lang, sig
   const before = result.outputText;
   let g;
   try {
-    g = await require('../engine/grounding').groundingPass(before, rawText, { lang, signal });
+    g = await require('../engine/grounding').groundingPass(before, rawText, { lang, signal, mode });
   } catch (e) {
     if (signal?.aborted) throw e;
     return { applied: false, reason: 'error:' + e.message };

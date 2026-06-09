@@ -56,21 +56,31 @@ function assignAnchors(segText, anchorPool, rawText) {
 }
 
 // ── grounding 프롬프트(§3 경계 제약) ──
-function buildGroundingPrompt(segText, anchors, lang = 'ko') {
+function buildGroundingPrompt(segText, anchors, lang = 'ko', mode = 'assignment') {
   const frameLines = anchors.frames.length ? `\n[원문에 이미 있는 사례/대조 — 이것을 끌어와 구체화에 써라]\n- ${anchors.frames.join('\n- ')}` : '';
   const termLine = anchors.terms.length ? `\n[이 문단에 이미 있는 핵심어 — 막연한 문장 대신 이것을 구체적으로 풀어라]\n${anchors.terms.join(', ')}` : '';
+  // ★ 격식 모드(assignment/thesis): 한다체 학술체는 비인칭·객관이라 카피킬러 "주관성 배제·비인칭" 직격(EV 81%).
+  //   판단문을 "비개인적"으로 두는 대신, 격식 1인칭 평가+수사의문문으로 주관을 드러내 그 플래그를 끈다(문체는 한다체 유지).
+  const formal = (mode === 'assignment' || mode === 'thesis');
+  const personaBlock = formal
+    ? `· ★격식 1인칭·주관을 적극 드러내라(비인칭 깨기 — 카피킬러 "주관성의 지나친 배제·비인칭 서술" 직격 대응):
+  - 비인칭·수동("여겨진다/이루어진다/볼 수 있다/전망된다/요구된다/평가된다")을 능동 단정으로: "~다", "오히려 ~다", "~라는 점은 분명하다".
+  - 학술적 1인칭 평가를 넣어라: "필자가 보기에", "여기서 핵심은", "간과해선 안 될 점은", "주목할 대목은", "분명한 것은".
+  - 수사의문문을 문단당 1개 정도 섞어라: "과연 ~로 충분한가?", "그렇다면 ~는 어떤가?".
+  - ★문체는 한다체 유지(존댓말 금지). 평가·해석·관점만 더할 뿐, 원문에 없는 새 사실·사례·수치·고유명사는 절대 금지.`
+    : `· "나는 ~라고 본다" 같은 새 1인칭 의견을 만들지 마라(판단문은 비개인적으로).`;
   const system = `너는 한국어 글에서 "무견해·막연한 일반론 문장"을 "선명한 판단 문장"으로 바꾸는 편집자다. 내용·사실·분량은 그대로 두고 표현의 날을 세운다.
 
 [핵심 작업 — 이것을 최우선으로]
 · 막연한 서술("~이 중요하다", "~할 수 있다", "~가 필요하다", "~도 하나의 요소다")을 **판단문**으로 바꿔라:
   "문제는 A가 아니라 B", "핵심은 A보다 B", "위험은 A에서 온다", "A가 아니라 B가 갈랐다" 같은 구조.
 · 단, A·B는 반드시 **그 문단 안에 이미 있는 내용**이어야 한다. 문단의 대조·조건·한계를 더 또렷하게 드러낼 뿐, 새 내용을 넣지 마라.
-· ★말투(문체)를 문단 원래대로 유지하라 — 해요체면 판단문도 해요체("문제는 A가 아니라 B예요"), 한다체면 한다체("문제는 A가 아니라 B다"). 문단 안에서 말투를 섞지 마라.
+· ★말투(문체)를 문단 원래대로 유지하라 — 해요체면 판단문도 해요체, 한다체면 한다체. 문단 안에서 말투를 섞지 마라.
+${personaBlock}
 
 [절대 규칙 — 어기면 실패]
 · 새 회사·연도·수치·통계·고유명사를 만들지 마라(원문에 있는 것만).
 · 원문이 "나열"만 한 것(예: 'ESG' 같은 단어)에 구체 설명·인과·결과를 새로 붙이지 마라.
-· "나는 ~라고 본다" 같은 새 1인칭 의견을 만들지 마라(판단문은 비개인적으로).
 · 추가하지 말고 교체하라. 분량을 늘리지 마라(원문 110% 이내).
 
 [출력] 고친 문단 본문만. 설명·머리말·따옴표 금지.`;
@@ -79,10 +89,10 @@ function buildGroundingPrompt(segText, anchors, lang = 'ko') {
 }
 
 // ── 한 segment grounding (LLM + 2단 게이트) ──
-async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal, ledger } = {}) {
+async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal, ledger, mode = 'assignment' } = {}) {
   if (!isRepairTarget(segText)) return { text: segText, changed: false, reason: 'not-target' };
   const anchors = assignAnchors(segText, anchorPool, rawText);
-  const { system, user } = buildGroundingPrompt(segText, anchors, lang);
+  const { system, user } = buildGroundingPrompt(segText, anchors, lang, mode);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     let cand = await llmText({ system, user, signal, maxTokens: 1200 });
@@ -105,7 +115,7 @@ async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal
 }
 
 // ── 전체 grounding 패스 ──
-async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetChars = 350, maxTargets } = {}) {
+async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetChars = 350, maxTargets, mode = 'assignment' } = {}) {
   const anchorPool = sg.buildSourceAnchorPool(rawText);
   const segs = sg.buildSegments(outputText, targetChars);
   const before = sg.buildSegmentReport(outputText, rawText, targetChars);
@@ -133,7 +143,7 @@ async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetC
     const worker = async () => {
       while (next < idxs.length) {
         const i = idxs[next++];
-        const r = await groundSegment(segs[i], rawText, anchorPool, { lang, signal, ledger });
+        const r = await groundSegment(segs[i], rawText, anchorPool, { lang, signal, ledger, mode });
         if (r.changed) repaired++;
         out[i] = r.text;
       }

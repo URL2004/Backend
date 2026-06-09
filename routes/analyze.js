@@ -2338,7 +2338,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   카피킬러 "주관성의 지나친 배제·비인칭" 플래그 직격(EV assignment 81% 실측). grounding이 학술적 1인칭
   //   견해·판단을 주입(문체는 한다체 유지)해 그 플래그를 끈다. blog/resume는 이미 구어로 주관이 있어 C등급 skip 유지.
   const groundingForce = (mode === 'assignment' || mode === 'thesis') && process.env.GROUND_FORMAL_C !== '0';
-  if (grounding && (!skipPasses || groundingForce)) {
+  // ★ B7 모드: grounding은 "말투 유지"로 합니다체를 한다체로 되돌리고 격식엔 도움도 안 됨 → skip.
+  if (grounding && (!skipPasses || groundingForce) && process.env.ASSIGNMENT_B7 !== '1') {
     result.grounding = await applyGrounding({
       result, rawText: text, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes
     });

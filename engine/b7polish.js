@@ -17,12 +17,13 @@ function hapShare(t) {
 }
 
 function buildPrompt(para, lang) {
+  const manyAnchor = anchorCount(para) >= 3;
   const system = lang === 'en'
-    ? 'Rewrite to a consistent polite Korean report register; keep facts/length; output only text.'
+    ? 'Rewrite to a consistent polite Korean report register; keep facts/length/hedges; output only text.'
     : `이 문단을 학부생 보고서형 존댓말로 다듬어라. 내용·사실·수치·논지·길이는 그대로 둔다.
-[고칠 것]
-· 모든 문장을 ~합니다/~입니다/~했습니다 존댓말로 통일하라. 평어(~다/~이다/~한다/~했다) 종결을 남기지 마라. 블로그체(~요/~죠/~거든요/~잖아요)도 쓰지 마라.
-· "저는/제 생각에는/저로서는" 같은 1인칭 필자 판단은 이 문단에 *최대 1개*만 남기고, 나머지는 같은 뜻의 비개인 문장으로 바꿔라(같은 anchor 반복 금지).
+[고칠 것 — 말투 통일이 최우선]
+· 모든 문장을 ~합니다/~입니다/~했습니다 존댓말로 통일하라. 평어 종결(~다/~이다/~한다/~했다/~없다/~아니다)을 단 하나도 남기지 마라. 블로그체(~요/~죠/~거든요/~잖아요)도 쓰지 마라.
+· ★hedge 표현("~인 것 같습니다/~지 않을까요?/~기도 합니다/~로 보입니다")과 필자 판단("저는 ~/제 생각에는 ~")은 *그대로 보존*하라 — 제거하지 마라(존댓말로만 바꾼다).${manyAnchor ? '\n· 단 이 문단에 "저는/제 생각에는" anchor가 3개 이상이라 과하다 — 가장 자연스러운 1~2개만 남기고 나머지는 같은 뜻의 비개인 문장으로 바꿔라.' : ''}
 [절대 금지] 새 사실·수치·기관·사례·개인경험 추가. 의미 변경. 길이 크게 늘리기(원문 115% 이내).
 [출력] 고친 문단 본문만(설명·머리말·따옴표 금지).`;
   return { system, user: `[문단]\n${para}` };
@@ -35,8 +36,8 @@ async function b7PolishPass(text, rawText, { lang = 'ko', signal, floor, allowed
   for (let i = 0; i < paras.length; i++) {
     const p = paras[i];
     if (sg.splitSentences(p).length < 1) continue;
-    const needHap = hapShare(p) < 0.85;        // 합니다체 아닌 문장이 있음
-    const needCap = anchorCount(p) >= 2;        // 1인칭 anchor 2개+ (문단당 ≤1로)
+    const needHap = hapShare(p) < 0.95;        // 합니다체 아닌 문장이 남아 있음
+    const needCap = anchorCount(p) >= 3;        // 한 문단에 anchor 3개+ (과함 → 1~2로). 1~2개는 보존.
     if (!needHap && !needCap) continue;
     attempted++;
     const { system, user } = buildPrompt(p, lang);

@@ -404,7 +404,7 @@ function buildSurfaceReport(text) {
 function inputGrade(abstractRiskRatio) {
   if (abstractRiskRatio < 0.35) return { grade: 'A', expectedBand: '20~40%', needsEvidence: false, skipPasses: false, note: '원문에 구체(경험·수치·사례)가 충분 — 메모 없이도 낮게 가능.' };
   if (abstractRiskRatio < 0.85) return { grade: 'B', expectedBand: '35~50%', needsEvidence: false, skipPasses: false, note: '추상+구체 혼합 — 40%대 예상. 휴머나이즈+패스가 도움. 구체 메모 더하면 추가 개선.' };
-  return { grade: 'C', expectedBand: '50~60%', needsEvidence: true, skipPasses: true, note: '순수 추상 일반론 위주 — 패스(grounding/optimize)가 오히려 악화시켜 baseline 출고. 메모리스 바닥 50%대, 실제 경험·검증 근거 없이는 그 이하 불가.' };
+  return { grade: 'C', expectedBand: '30~45%', needsEvidence: false, skipPasses: true, note: '순수 추상 일반론 — 유해 패스(grounding/optimize/polish)는 skip하되 무해 패스(phrasebudget 연결어예산 + burstiness 문장리듬)는 실행. 도시론 실측 87→32%(스택). 구체 메모 더하면 더 낮출 여지(추상·구체근거부족 잔여 플래그).' };
 }
 function classifyInputRisk(rawText) {
   const para = analyzeParagraphs(rawText);

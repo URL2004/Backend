@@ -397,16 +397,24 @@ function buildSurfaceReport(text) {
 }
 
 // 입력(원문) 위험 분류: 추상-위험 문단이 과반이면 경험 메모 없이 자연화해도 AI 의심이 남는다.
+// 입력 등급(A/B/C) + 기대 카피킬러 밴드 — 제품에서 "왜 더 못 내려가는지"를 사전 고지.
+//   바닥은 엔진이 아니라 "원문의 구체성"이 정한다는 사실을 사용자에게 정직하게 보여주기 위함.
+function inputGrade(abstractRiskRatio) {
+  if (abstractRiskRatio < 0.3) return { grade: 'A', expectedBand: '20~40%', needsEvidence: false, note: '원문에 구체(경험·수치·사례)가 충분 — 메모 없이도 낮게 가능.' };
+  if (abstractRiskRatio < 0.6) return { grade: 'B', expectedBand: '35~50%', needsEvidence: false, note: '일부 문단이 추상적 — 40%대 예상. 구체 메모를 더하면 추가 개선.' };
+  return { grade: 'C', expectedBand: '45~60%', needsEvidence: true, note: '순수 추상 일반론 위주 — 메모리스 바닥은 45%대. 실제 경험·검증 근거 없이는 그 이하 안정화 어려움.' };
+}
 function classifyInputRisk(rawText) {
   const para = analyzeParagraphs(rawText);
+  const grade = inputGrade(para.abstractRiskRatio);
+  const base = { abstractRiskRatio: para.abstractRiskRatio, abstractRisk: para.abstractRisk, total: para.total, ...grade };
   if (para.abstractRiskRatio >= 0.5) {
     return {
-      risk: 'generic_abstract_source', needsUserAnchor: true,
-      abstractRiskRatio: para.abstractRiskRatio, abstractRisk: para.abstractRisk, total: para.total,
+      risk: 'generic_abstract_source', needsUserAnchor: true, ...base,
       message: '원문에 추상 일반론 문단이 많아(실제 경험·장면이 부족), 그대로 자연화하면 AI 의심이 남을 수 있습니다. 실제 겪은 상황·인물·시간·장소를 1~2개 알려주시면 그 범위에서 자연스럽게 녹여 드립니다(없는 경험은 지어내지 않습니다).'
     };
   }
-  return { risk: 'normal', needsUserAnchor: false, abstractRiskRatio: para.abstractRiskRatio, abstractRisk: para.abstractRisk, total: para.total };
+  return { risk: 'normal', needsUserAnchor: false, ...base };
 }
 
 module.exports = {

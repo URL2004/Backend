@@ -146,7 +146,7 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
     console.log('[surfaceguard — 카피킬러 대응 지표 (게이트 아님)]');
     console.log(`  문단 ${pg.total}: 구체 ${pg.concrete} / 위험 ${pg.abstractRisk} = 추상위험비율 ${pg.abstractRiskRatio} (≈카피킬러 AI구간)`);
     console.log(`  generic ${sf.genericness.ratio}(${sf.genericness.level}) · anchor ${sf.realAnchorDensity.ratio}(${sf.realAnchorDensity.level}) · stance ${sf.stanceDensity.ratio}(${sf.stanceDensity.level}) · lenCV ${sf.uniformity.lengthCV} · 종결연속 ${sf.uniformity.maxEndingRun}`);
-    if (out.inputRisk && out.inputRisk.needsUserAnchor) console.log(`  ⚠️ needsUserAnchor: 원문 추상위험 ${out.inputRisk.abstractRiskRatio} — 실제 경험 메모 권장(가짜 생성 안 함)`);
+    if (out.inputRisk && out.inputRisk.grade) console.log(`  📊 입력 등급 ${out.inputRisk.grade} · 기대밴드 ${out.inputRisk.expectedBand}${out.inputRisk.needsEvidence ? ' · ⚠️근거필요(메모리스 바닥)' : ''} — ${out.inputRisk.note}`);
     line();
   }
   const s = out.surfaceReport || {};

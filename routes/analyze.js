@@ -2370,10 +2370,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   if (result.outputText !== baselineText) {
     const sg2 = require('../engine/surfaceguard');
     const srcLen = text.replace(/\s+/g, '').length;
+    // ※ register 혼합(한다체↔해요체)은 카피킬러 신호가 아님이 v4 실측으로 확인됨(유령 지표) → 게이트에서 제외.
+    //   오히려 종결 다양성을 줘 균일성을 낮추기도 하므로, 한다체 섞임 자체는 막지 않는다.
     const measure = (t) => ({
       dup: sg2.measureOpeningDuplication(t),
       rep: floor.measureRepetition(t).total,
-      mix: sg2.measureRegisterMix(t).offRatio,
       abs: sg2.classifyInputRisk(t).abstractRiskRatio,
       len: t.replace(/\s+/g, '').length,
     });
@@ -2381,7 +2382,6 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     const reasons = [];
     if (c.dup > b.dup) reasons.push(`중복증가(${b.dup}→${c.dup})`);
     if (c.rep > b.rep) reasons.push(`반복증가(${b.rep}→${c.rep})`);
-    if (c.mix > b.mix + 0.05) reasons.push(`문체혼합(${b.mix}→${c.mix})`);
     if (c.abs > b.abs + 0.03) reasons.push(`추상증가(${b.abs}→${c.abs})`);
     if (c.len > srcLen * 1.20 && c.len > b.len) reasons.push(`분량초과(${Math.round(c.len / srcLen * 100)}%)`);
     if (reasons.length) {

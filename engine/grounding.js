@@ -59,9 +59,16 @@ function assignAnchors(segText, anchorPool, rawText) {
 function buildGroundingPrompt(segText, anchors, lang = 'ko', mode = 'assignment') {
   const frameLines = anchors.frames.length ? `\n[원문에 이미 있는 사례/대조 — 이것을 끌어와 구체화에 써라]\n- ${anchors.frames.join('\n- ')}` : '';
   const termLine = anchors.terms.length ? `\n[이 문단에 이미 있는 핵심어 — 막연한 문장 대신 이것을 구체적으로 풀어라]\n${anchors.terms.join(', ')}` : '';
-  // ※ 격식 1인칭 평가(필자가 보기에/과연~인가) 주입은 semanticJudge가 "평가 추가" 위반으로 차단(EV 실측: grounding 미적용→baseline).
-  //   FLOOR(평가·견해 추가 금지) vs 카피킬러(주관성 배제 끄기=평가 추가 필요)가 정면 충돌 → 비인칭 판단문 유지(FLOOR 우선).
-  const personaBlock = `· "나는 ~라고 본다" 같은 새 1인칭 의견을 만들지 마라(판단문은 비개인적으로).`;
+  // ★ 격식 모드(assignment/thesis) FLOOR 완화(사장님 승인): 한다체 학술체는 비인칭·객관이라 카피킬러 "주관성 배제·비인칭" 직격.
+  //   격식 1인칭 평가+수사의문문으로 주관을 드러내 그 플래그를 끈다(문체 한다체 유지). semanticJudge도 mode=formal로 '평가'를 허용.
+  const formal = (mode === 'assignment' || mode === 'thesis');
+  const personaBlock = formal
+    ? `· ★격식 1인칭·주관을 적극 드러내라(비인칭 깨기 — 카피킬러 "주관성의 지나친 배제·비인칭 서술" 직격 대응):
+  - 비인칭·수동("여겨진다/이루어진다/볼 수 있다/전망된다/요구된다/평가된다")을 능동 단정으로 *교체*하라(앞에 덧붙이지 말 것): "~다", "오히려 ~다", "~라는 점은 분명하다".
+  - 학술적 1인칭 평가를 드러내라: "필자가 보기에", "여기서 핵심은", "간과해선 안 될 점은", "주목할 대목은".
+  - 수사의문문을 문단당 1개 정도 섞어라: "과연 ~로 충분한가?", "그렇다면 ~는 어떤가?".
+  - ★문체는 한다체 유지(존댓말 금지). 평가·해석·관점만 더할 뿐, 원문에 없는 새 사실·사례·수치·고유명사는 절대 금지.`
+    : `· "나는 ~라고 본다" 같은 새 1인칭 의견을 만들지 마라(판단문은 비개인적으로).`;
   const system = `너는 한국어 글에서 "무견해·막연한 일반론 문장"을 "선명한 판단 문장"으로 바꾸는 편집자다. 내용·사실·분량은 그대로 두고 표현의 날을 세운다.
 
 [핵심 작업 — 이것을 최우선으로]
@@ -92,15 +99,16 @@ async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal
     cand = (cand || '').trim();
     if (!cand || cand.length < segText.length * 0.5) continue;        // 빈/과소 응답 → 재시도
     if (floor.looksLikeRefusal(cand)) continue;                      // ★ 거부문 → 폐기(원본 유지)
-    // 분량 상한(교체이지 추가 아님)
-    if (cand.replace(/\s+/g, '').length > segText.replace(/\s+/g, '').length * 1.10) continue;   // 길이중립
-    // ① 결정론 hard-novelty 게이트 (allowed world = 원문 전체. 원문에 있는 구체는 허용, 날조만 차단)
+    // 분량 상한 — 격식 모드는 1인칭 평가·수사의문문 주입으로 길이가 느므로 캡 완화(1.25), 그 외 길이중립(1.10)
+    const isFormal = (mode === 'assignment' || mode === 'thesis');
+    if (cand.replace(/\s+/g, '').length > segText.replace(/\s+/g, '').length * (isFormal ? 1.25 : 1.10)) continue;
+    // ① 결정론 hard-novelty 게이트 (allowed world = 원문 전체. 원문에 있는 구체는 허용, 날조만 차단) — 격식 완화와 무관하게 새 사실은 차단
     const nov = floor.measureNovelty(rawText, cand, '');
     if (nov.count >= 1) continue;                                     // 새 수치·연도·기관 → 폐기, 재시도
-    // ② semanticJudge 게이트 (닫힌세계 = 원문 segment)
+    // ② semanticJudge 게이트 (닫힌세계 = 원문 segment). 격식 모드는 mode 전달 → '평가'는 허용, 새 사실·왜곡만 차단
     if (ledger) {
-      const v = await semanticJudge(rawText, cand, ledger, { lang, signal });
-      if (!v.pass) continue;                                          // added_claim/distortion → 폐기, 재시도
+      const v = await semanticJudge(rawText, cand, ledger, { lang, signal, mode });
+      if (!v.pass) continue;                                          // added_claim(새 사실)/distortion → 폐기, 재시도
     }
     return { text: cand, changed: true, anchors };
   }

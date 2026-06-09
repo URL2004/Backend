@@ -84,7 +84,7 @@ async function buildSoftClaimLedger(rawText, { lang = 'ko', signal } = {}) {
   const user = `JSON: {"claims":[{"claim":"핵심 주장 한 줄","evidence_text":"SOURCE의 짧은 verbatim 구절(8~20자)"}]}\n\n[SOURCE]\n${rawText}`;
   // ★ 대용량 글: ${cap}(최대 40)개 claim+evidence가 4096토큰을 넘겨 응답이 truncate→파싱실패→0개가 되면
   //   judge가 무의미 통과하고 grounding 게이트도 오작동한다. 토큰을 claim 수에 맞춰 넉넉히.
-  const out = await llmJSON({ system, user, signal, maxTokens: Math.min(8192, 2048 + cap * 200), model: HAIKU });
+  const out = await llmJSON({ system, user, signal, maxTokens: Math.min(8192, 2048 + cap * 200) });  // ★ ledger는 FLOOR 토대 — Sonnet 유지(불완전 원장→semanticJudge 거짓양성 BLOCK). 문서당 1회라 비용 미미.
   const claims = Array.isArray(out?.claims) ? out.claims : [];
   const kept = claims.filter(c => evidenceMatches(rawText, c?.evidence_text));
   const capped = kept.slice(0, cap);
@@ -135,7 +135,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     ? 'You are a strict but fair fact-checker against the CLAIM LEDGER (closed world). Each ledger entry has a verbatim source quote labeled 근거(원문) — that quote is the ground truth; judge the REWRITE against it, not against your own knowledge. Flag ONLY: (1) fabricated external facts/statistics/years/proper nouns, or newly specifying a vague reference into a concrete platform/product name. (2) Reversing or distorting a ledger claim\'s meaning, INTENT, or sentiment — e.g., flipping a positive intent ("want to keep going") into uncertainty/negativity ("not sure I can keep going / might quit"), or turning possibility ("can ~") into a flat assertion. (3) Introducing a NEW outlook/emotion/future projection/evaluation not in the ledger — even if phrased as a hedge, bringing in a new stance or prospect is a violation. ★ NOT violations: synonym swaps, reordering, minor qualifiers, and hedges that keep an existing claim\'s meaning intact. Each span must be a verbatim substring of REWRITE.'
     : '엄격하되 공정한 사실검증자. CLAIM LEDGER(닫힌세계)에 대조해 판정한다. 각 항목엔 원문 그대로의 근거(원문) 인용이 붙어 있다 — 그 인용이 사실 기준(ground truth)이며, 네 지식이 아니라 그 근거에 비추어 REWRITE를 판정하라. 다음만 위반으로 잡아라: (1) 외부 사실·통계·연도·고유명사 날조, 또는 모호한 표현을 특정 플랫폼/제품 고유명사로 신규 구체화. (2) 원장 claim의 의미·의도·정서를 뒤집거나 왜곡 — 예: 긍정 의지("계속하고 싶다")를 불확실·부정("계속할 수 있을지 모르겠다 / 그만둘지도")으로 역전, 또는 가능성("~할 수 있다")을 단정("~한다")으로 강화. (3) 원장에 없는 새 전망·감정·미래예측·평가를 *새로운 입장으로* 들여오기 — hedge(완화) 형식이어도 새 전망·정서를 도입하면 위반. ★ 위반 아님: 동의어 교체·어순 변경·사소한 수식어, 그리고 기존 claim의 뜻을 유지한 채 붙인 단순 hedge. 각 span은 REWRITE의 그대로 부분 문자열이어야 한다.';
   const user = `JSON: {"violations":[{"type":"distortion|added_claim","span":"REWRITE 그대로 인용","detail":"왜 위반인지"}]}\n\n[CLAIM LEDGER — 허용된 유일 주장 (각 항목 근거=원문 인용)]\n${claimsText}\n\n[REWRITE]\n${outputText}`;
-  const out = await llmJSON({ system, user, signal, model: HAIKU });
+  const out = await llmJSON({ system, user, signal });  // ★ semanticJudge는 FLOOR 게이트 — Sonnet 유지(거짓양성=BLOCK, 거짓음성=날조통과). 문서당 1~2회라 비용 미미.
   const violations = Array.isArray(out?.violations) ? out.violations : [];
   // 환각 방지: span이 실제 REWRITE에 존재하는 위반만 채택.
   let verified = violations.filter(v => v?.span && normWS(outputText).includes(normWS(v.span).slice(0, Math.min(24, normWS(v.span).length))));

@@ -8,7 +8,7 @@
 // segment당 issue가 1개라도 있으면 1회만 repair(결합 제약). 없으면 LLM 호출 0.
 
 const sg = require('./surfaceguard');
-const { llmText } = require('./judge');
+const { llmText, HAIKU } = require('./judge');
 const { measurePhraseUsage, countOcc, PHRASE_DENSITY } = require('./phrasebudget');
 
 // ── register 분류 (surfaceguard 단일 정의 재사용) ──
@@ -75,7 +75,7 @@ async function polishPass(text, { lang = 'ko', signal, floor, rawText = '', allo
 
     const { system, user } = buildRepairPrompt(seg, issues, lang);
     let cand = '';
-    try { cand = (await llmText({ system, user, signal, maxTokens: 1300 }) || '').trim(); } catch { continue; }
+    try { cand = (await llmText({ system, user, signal, maxTokens: 1300, model: HAIKU }) || '').trim(); } catch { continue; }
     if (!cand || cand.length < seg.length * 0.55) continue;
     if (cand.replace(/\s+/g, '').length > seg.replace(/\s+/g, '').length * 1.10) continue;   // 길이중립(폴리시도 추가 아닌 교체)
     if (floor?.looksLikeRefusal?.(cand)) continue;

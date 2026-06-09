@@ -7,7 +7,7 @@
 //   3) 해당 표현 금지하고 segment 재작성 → FLOOR(novelty) 재검 → 악화 시 원본 유지(무해)
 
 const sg = require('./surfaceguard');
-const { llmText } = require('./judge');
+const { llmText, HAIKU } = require('./judge');
 
 // 표현별 허용 "밀도"(1000자당). 고정 횟수는 긴 글/짧은 글을 같게 다뤄 오작동 → 밀도 기반.
 //   실제 예산 = max(floor, ceil(글자수/1000 × 밀도)). (예: 22K자 거든요 → ceil(22×0.5)=11)
@@ -77,7 +77,7 @@ async function repairPhraseOveruse(text, { lang = 'ko', signal, floor, rawText =
     if (!ban.length) continue;
     const { system, user } = buildRepairPrompt(segs[i], ban, lang);
     let cand = '';
-    try { cand = (await llmText({ system, user, signal, maxTokens: 1200 }) || '').trim(); } catch { continue; }
+    try { cand = (await llmText({ system, user, signal, maxTokens: 1200, model: HAIKU }) || '').trim(); } catch { continue; }
     if (!cand || cand.length < segs[i].length * 0.5) continue;
     if (floor && floor.looksLikeRefusal && floor.looksLikeRefusal(cand)) continue;
     // FLOOR: 새 사실 0 (allowed world = 원문 ∪ 메모)

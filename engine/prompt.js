@@ -31,6 +31,10 @@ function speakerRuleKo(speakerType) {
 function speakerRuleFormalHumanKo() {
   return '★[과제 자연체] 개인 일화·경험·감정(제가 ~했을 때/제 친구가/우리 가족이/직접 ~해보니)은 절대 넣지 마라 — 없는 경험 날조는 금지다. 단, *글 전체 논지에 대한 필자의 판단*은 1인칭으로 드러내도 된다(문서 전체 4~6회 정도): "나는 ~라고 본다 / 내가 더 중요하게 보는 부분은 ~ / 이 글에서 먼저 의심해야 할 전제는 ~ / 내가 보기에 ~". 새 사실·수치·고유명사는 만들지 말고, 원문에 이미 있는 근거를 *어떻게 읽고 판단하는지*만 1인칭으로 표현하라. "과연 ~인가?" 수사의문문은 쓰지 마라.';
 }
+// ★ B7 학부생 보고서형(존댓말): 1인칭 판단 anchor(저는/제 생각에는) 소량 허용, 개인 일화·사실 날조 strict 차단.
+function speakerRuleB7Ko() {
+  return '★[B7 학부생 보고서형] 개인 일화·경험(제가 ~해봤더니/제 친구가/우리 가족이)은 절대 금지 — 없는 경험 날조 금지. 단, 원문 근거를 해석하는 *필자 1인칭 판단*을 문서 전체 2~4회 허용한다: "저는 이 수치에서 A보다 B를 더 중요하게 봅니다 / 제 생각에는 ~입니다 / 저로서는 ~라고 보기는 어렵습니다". 같은 anchor 표현 반복 금지. 새 사실·수치·기관·사례는 만들지 마라.';
+}
 function speakerRuleEn(speakerType) {
   if (speakerType === 'impersonal')
     return 'The source has NO first-person narrator. Do NOT use ANY first-person pronoun (I/my/me/we/our) or add personal anecdote/feeling. Use only impersonal discourse markers ("actually/in the end/if anything"), never "I felt ~". Keep the impersonal viewpoint.';
@@ -50,6 +54,18 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
   // ★ 과제 자연체 토글(생성단 화자 정책 완화). 격식 모드에서만.
   const formalHuman = process.env.FORMAL_HUMAN === '1' && (mode === 'assignment' || mode === 'thesis');
   const fhKo = formalHuman ? '\n[과제 자연체 — 화자 거리감 줄이기] 비인칭 산업/정책 리포트체가 아니라 "필자가 근거를 읽고 판단하는" 격식 에세이체로 써라. 비인칭 단정문("~이다/~된다/~할 수 있다")을 필자 판단문으로 바꿔라("나는 ~라고 본다 / 내가 더 주목하는 부분은 ~ / 핵심은 ~"). 수치·사례 뒤에는 해석 주체를 드러내라("그 수치에서 내가 더 눈여겨보는 부분은 순위가 아니라 ~"). 문단을 요약·교훈 결론으로 닫지 말고 구체나 다음 쟁점으로 넘어가라. ★문체는 격식 한다체 유지(존댓말·구어 "거든요/잖아요" 금지). 단 개인 일화·경험은 금지(판단만 1인칭).' : '';
+  // ★ B7 학부생 보고서형 존댓말 모드 — 한다체 리포트(73~92%)와 다른 미검증 레지스터 축. 합니다체 강제 + B7 7요소.
+  const b7 = process.env.ASSIGNMENT_B7 === '1' && (mode === 'assignment' || mode === 'thesis');
+  const b7Ko = b7 ? [
+    '\n[B7 학부생 보고서형 존댓말 — 한다체 리포트체 금지]',
+    '· 글 전체를 ~합니다/~입니다/~했습니다 존댓말로 통일하라. 평어(~다/~이다/~한다) 혼입 금지, 블로그체(~요/~죠/~거든요/~잖아요)도 금지.',
+    '· 원문 근거를 해석하는 *필자 1인칭 판단*을 문서 전체 2~4회만 넣어라: "저는 이 수치에서 판매량보다 지역 편차를 더 중요하게 봅니다 / 제 생각에는 ~입니다 / 저로서는 ~라고 보기는 어렵습니다". 같은 표현 반복 금지. ★개인 경험·일화는 금지(판단만).',
+    '· hedge를 2종 이상 자연 분포(동일 표현 2회 이하): "~인 것 같습니다 / ~지도 모릅니다 / ~지 않을까요? / ~기도 합니다 / ~로 보입니다". 단 핵심 주장은 hedge 없이 단정.',
+    '· 비인칭·수동 종결("여겨진다/이루어진다/볼 수 있다/전망된다")을 능동 주체 문장으로 바꿔 전체의 25% 이하로 줄여라.',
+    '· 한 문장에 콤마는 1개 이하. 60자 넘는 장문은 쪼개 평균 30~45자로.',
+    '· 마지막 문장은 단정 결론 대신 조심스러운 관찰·의문·미해결 쟁점으로 끝내라.',
+    '· 새 사실·수치·기관·사례·경험은 절대 만들지 마라(원문에 있는 것만).'
+  ].join('\n') : '';
   const lp = lengthPolicy || { min: 0.85, max: 1.20 };
   const lenKo = `원문의 ${lp.min}~${lp.max}배`;
   const lenEn = `${lp.min}–${lp.max}× the source`;
@@ -104,7 +120,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '1. 사실 보존: 원문의 숫자·범위(40~60%)·날짜·금액·고유명사·브랜드·통계를 하나도 빠뜨리거나 바꾸지 마라. 원문에 없는 통계·연도·기관·수치·고유명사를 새로 만들지 마라.',
     `2. 분량 보존: 출력은 ${lenKo}. 문단·항목·핵심 주장을 빼지 마라(통째 삭제·과도 압축 금지). 없는 내용으로 늘리지도 마라.`,
     '3. 결론 보존: 원문 결론의 방향·핵심 메시지를 유지하라. 긍정 의지를 불확실·부정으로 뒤집지 마라(의도 역전 금지). 단, 단정적 요약 대신 여운 있는·열린 말투로 끝내는 것은 허용(방향만 유지하면 됨).',
-    `4. 화자 보존: ${formalHuman ? speakerRuleFormalHumanKo() : speakerRuleKo(speakerType)}`,
+    `4. 화자 보존: ${b7 ? speakerRuleB7Ko() : formalHuman ? speakerRuleFormalHumanKo() : speakerRuleKo(speakerType)}`,
     '5. 반복 금지: 같은 결론·문장을 두 번 쓰지 마라.',
     '',
     '자연스러운 사람 문체로 다듬기(위 FLOOR를 어기지 않는 선에서 *적극적으로* 적용 — 기계적 균일성·비인칭 문장이 가장 부자연스럽고 AI 티가 난다):',
@@ -123,7 +139,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '· ★구체 의무: 추상적 일반론 문단에는 원문에 이미 있는 구체(용어·상황·대조·항목)를 최소 1개 끌어와 받쳐라 — 단 원문에 없는 회사명·수치·연도·사건은 만들지 마라.',
     '· 마크다운 기호(*, #, -, 백틱) 금지 — 줄글로만.',
     '',
-    `[톤: ${mode}] ${tone}${regKo}${fhKo}`,
+    `[톤: ${mode}] ${tone}${b7 ? '\n[문체 통일] 글 전체를 ~합니다/~입니다 존댓말 보고서체로 통일하라(원문이 평어체여도 존댓말로 전환 — 평어·블로그체 혼입 금지).' : regKo}${fhKo}${b7Ko}`,
     anchorKo,
     '',
     '아래 원문을 위 FLOOR를 지키며 자연스럽게 다시 써라. 본문만 출력(머리말·마크다운 금지).'

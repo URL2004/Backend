@@ -177,7 +177,7 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRou
   }
   let text = outputText;
   // ★ 과제 자연체(FORMAL_HUMAN): semanticJudge에 mode=assignment 전달 → 필자 1인칭 판단을 added_claim으로 깎지 않음(사실 날조는 계속 차단).
-  const _mode = process.env.FORMAL_HUMAN === '1' ? 'assignment' : '';
+  const _mode = (process.env.FORMAL_HUMAN === '1' || process.env.ASSIGNMENT_B7 === '1') ? 'assignment' : '';
   let verdict = await semanticJudge(rawText, text, ledger, { lang, signal, allowedExtra, mode: _mode });
   let rounds = 0;
   while (!verdict.pass && rounds < maxRounds) {

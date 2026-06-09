@@ -47,10 +47,10 @@ function buildFloorDirective(povSeed, optIn) {
   ].join('\n'));
   if (isSpeakerGateClosed(povSeed, optIn)) {
     // ★ 과제 자연체(FORMAL_HUMAN): 개인 일화는 계속 금지하되, 필자 1인칭 *판단*은 허용(speakerPolicy 분리).
-    if (process.env.FORMAL_HUMAN === '1') {
+    if (process.env.FORMAL_HUMAN === '1' || process.env.ASSIGNMENT_B7 === '1') {
       blocks.push([
-        '[화자 보존 — 과제 자연체]',
-        '원문에 1인칭 화자가 없다. "제가 작년에 ~했다" 같은 개인 경험·일화·감정은 절대 만들지 마라(없는 경험 날조 금지). 단, 글 전체 논지에 대한 *필자의 판단*은 1인칭으로 드러내도 된다("나는 ~라고 본다 / 내가 더 중요하게 보는 부분은 ~"). 즉 개인 일화는 금지, 필자 판단은 허용이다.'
+        '[화자 보존 — 필자 판단 허용]',
+        '원문에 1인칭 화자가 없다. "제가 작년에 ~했다" 같은 개인 경험·일화·감정은 절대 만들지 마라(없는 경험 날조 금지). 단, 글 전체 논지에 대한 *필자의 판단*은 1인칭으로 드러내도 된다("나는/저는 ~라고 본다 / 내가 더 중요하게 보는 부분은 ~"). 즉 개인 일화는 금지, 필자 판단은 허용이다.'
       ].join('\n'));
     } else {
       blocks.push([
@@ -296,7 +296,7 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
   const drift = measurePovDrift(rawText, out, povSeed);
   // 개인 화자(I/저/제가) 신규 주입 = 위반(조직 we 문서에 I 추가도 포함). opt-in이면 허용.
   // ★ 과제 자연체(FORMAL_HUMAN, 격식 모드): 필자 1인칭 *판단* 허용 → pov 위반에서 제외. 단 개인 일화(experience_novelty)는 아래에서 계속 strict 차단.
-  const formalHuman = process.env.FORMAL_HUMAN === '1' && (mode === 'assignment' || mode === 'thesis');
+  const formalHuman = (process.env.FORMAL_HUMAN === '1' || process.env.ASSIGNMENT_B7 === '1') && (mode === 'assignment' || mode === 'thesis');
   if (!optIn && !formalHuman && drift.introducedFirstPerson) {
     v.push({ type: 'pov', detail: `출력 개인 1인칭 ${drift.output_fp_singular}건`,
       fix: '출력에 새로 등장한 개인 1인칭(I/my/저/제가/나/내가)과 개인 일화를 제거하라. 원문이 조직(we/우리) 화자면 그 시점을 유지하고, 비인칭이면 비인칭을 유지하라. 원문엔 개인 1인칭이 없었다.' });
@@ -373,7 +373,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   if (len.status === 'short') criticals.push({ gate: 'length_short', detail: len.ratio });
   if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
   // ★ 과제 자연체(FORMAL_HUMAN, 격식): 필자 1인칭 판단 허용 → pov_inject 제외(experience_novelty=일화는 위에서 계속 critical).
-  const _fhReport = process.env.FORMAL_HUMAN === '1' && (mode === 'assignment' || mode === 'thesis');
+  const _fhReport = (process.env.FORMAL_HUMAN === '1' || process.env.ASSIGNMENT_B7 === '1') && (mode === 'assignment' || mode === 'thesis');
   if (!optIn && !_fhReport && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });
   if (rep.total) criticals.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
   // 결론부 drift는 critical 아님(§우회: 열린 마무리 허용) — 경고로만 노출하고, 의도 역전은 semanticJudge가 차단.

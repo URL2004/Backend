@@ -65,6 +65,33 @@ function measureConcreteness(text) {
   return { verifiableRatio: Number((verifiable / s.length).toFixed(3)), decorativeRatio: Number((decorative / s.length).toFixed(3)), n: s.length };
 }
 
+// ★ B7 학부생 보고서형 점수(7요소) — 생성이 흔들리지 않게 서버가 강제 측정. prompts.js DETECT의 B7 시그니처와 정렬.
+const B7_HEDGE = [/(인\s*것\s*같습니다|것\s*같습니다)/, /(지도\s*모릅니다|지\s*모르겠)/, /(않을까요|을까요\s*\?|ㄹ까요\s*\?)/, /(기도\s*합니다)/, /(로\s*보입니다|것으로\s*보입니다)/, /(라고\s*생각합니다)/];
+const B7_AUTHOR = /(저는|제\s*생각|저로서는|제가\s*보기|제가\s*더|제가\s*가장)/;
+function measureB7Formal(text) {
+  const s = sg.splitSentences(text);
+  if (!s.length) return { score: 0, feats: {}, n: 0 };
+  let hap = 0, plain = 0;
+  s.forEach(x => { const r = sg.sentRegister(x); if (r === 'hap') hap++; else if (r === 'handa') plain++; });
+  const politeRegister = (hap / s.length) >= 0.6 && (plain / s.length) <= 0.15;
+  const hedgeCounts = B7_HEDGE.map(p => s.filter(x => p.test(x)).length);
+  const hedgeTypes = hedgeCounts.filter(c => c > 0).length;
+  const maxHedge = Math.max(0, ...hedgeCounts);
+  const hedgeDiversity = hedgeTypes >= 2 && maxHedge < 3;
+  const authorAnchorCount = s.filter(x => B7_AUTHOR.test(x)).length;
+  const authorAnchor = authorAnchorCount >= 2 && authorAnchorCount <= 6;
+  const commaDiscipline = (s.filter(x => ((x.match(/,/g) || []).length) >= 2).length / s.length) <= 0.15;
+  const longRatio = s.filter(x => x.replace(/\s+/g, '').length >= 60).length / s.length;
+  const longOK = longRatio <= 0.20;
+  const passiveRatio = sg.measureImpersonal(text);
+  const passiveOK = passiveRatio <= 0.25;
+  const last = (s[s.length - 1] || '').trim();
+  const finalHedged = /(\?|것\s*같|보입니다|모릅니다|않을까|아닐까|남습니다|생각합니다|봅니다)/.test(last);
+  const feats = { politeRegister, hedgeDiversity, authorAnchor, commaDiscipline, longOK, passiveOK, finalHedged };
+  const score = Object.values(feats).filter(Boolean).length;
+  return { score, feats, authorAnchorCount, longRatio: Number(longRatio.toFixed(2)), passiveRatio: Number(passiveRatio.toFixed(2)), politeShare: Number((hap / s.length).toFixed(2)), n: s.length };
+}
+
 function spacingErrorCount(text) {
   // 흔한 붙임 오류: 의존명사 '수' 붙음, '~만대/~만명' 붙음, 조사+동사 붙음 일부
   const pats = [/[가-힣](할|볼|낼|줄|들|버틸|쓸|살)수(가|는|도|를|\s|[.,])/g, /\d만(대|명|개|원)/g, /기꺼이끌어/g, /도가만히/g, /생활속/g];
@@ -105,4 +132,4 @@ function registerScore(text) {
   };
 }
 
-module.exports = { registerScore, measureSubjectivity, measureConcreteness, closerRepetition, impersonalCloserRatio, spacingErrorCount };
+module.exports = { registerScore, measureSubjectivity, measureConcreteness, measureB7Formal, closerRepetition, impersonalCloserRatio, spacingErrorCount };

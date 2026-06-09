@@ -1,0 +1,90 @@
+// [engine/registerscore.js] 격식 모드 register 위험 점수(결정론·무료) — 카피킬러 화자거리감 신호 surrogate
+// ────────────────────────────────────────────────────────────────
+// 동기(2026-06): EV 격식 4회 단발 실측(73/83/92/94%)이 모두 별개 humanize 생성이라 생성 노이즈가 큼 →
+//   카피킬러 단발에 이론 쌓기 위험. 4개 PDF 전반 일관 신호=화자 거리감(비인칭·간접화법·주관성배제·구조전형성).
+// 목적: 카피킬러 없이 "이 글이 얼마나 비인칭·정형적인가"를 결정론으로 측정 → register 교정이 의도대로(더 인칭적·덜 정형)
+//   움직이는지 무료로 수십 번 검증. 절대값이 카피킬러 %와 일치할 필요는 없고, register 방향에 단조이면 된다.
+// 가중치(사장님 제안): 0.30 비인칭 + 0.25 정형흐름 + 0.20 균일성 + 0.15 주관성배제 + 0.10 추상 + 소액 페널티(punch/번호/띄어쓰기).
+
+const sg = require('./surfaceguard');
+const cc = require('./columncleanup');
+
+const clamp01 = x => Math.max(0, Math.min(1, x));
+
+// 주관성/화자 현존 마커 — measureStance(좁음)가 놓치는 1인칭·구어·격식판단을 모두 포착.
+//   ① 1인칭 ② 격식 판단(필자 보기에/문제는 A아니라 B/핵심은) ③ 구어 주관(거든/잖아/더라).
+const SUBJ_FIRST = /(나는|내가|나도|나의|우리는|우리가|저는|제가|저도|필자)/;
+const SUBJ_JUDGMENT = /(라고\s*본다|라고\s*생각|보기에|주목할|주목한다|핵심은|중요한\s*(건|것은|점은)|문제는|더\s*중요한|놓치(지|면)\s*안|간과(해선|하면)|의심해야|싶다|싶었|분명하다|틀림없)/;
+const SUBJ_CASUAL = /(거든요?|잖아요?|더라(고|구)?\b|네요|던데|싶더|는데\s*말)/;
+function measureSubjectivity(text) {
+  const s = sg.splitSentences(text);
+  if (!s.length) return 0;
+  let n = 0;
+  for (const x of s) { const t = x.trim(); if (SUBJ_FIRST.test(t) || SUBJ_JUDGMENT.test(t) || SUBJ_CASUAL.test(t)) n++; }
+  return n / s.length;
+}
+
+// 문단 마지막 문장의 종결(마지막 한글 3자) 반복도 — "~신호다/~것이다/~다" 정형 마무리 반복
+function closerRepetition(text) {
+  const paras = (text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const closers = paras.map(p => {
+    const s = sg.splitSentences(p); if (!s.length) return '';
+    const last = s[s.length - 1].replace(/[^가-힣]/g, '');
+    return last.slice(-3);
+  }).filter(Boolean);
+  if (closers.length < 3) return 0;
+  const uniq = new Set(closers).size;
+  return clamp01(1 - uniq / closers.length);   // 높을수록 정형 마무리 반복
+}
+
+// 비인칭 단정 마무리(셈이다/것이다/뿐이다/된다…)로 닫는 문단 비율 — 정형 흐름 보강 신호
+const CLOSER_IMPERSONAL = /(된다|것이다|셈이다|뿐이다|마련이다|법이다|신호다|때문이다|있다|없다)\.?$/;
+function impersonalCloserRatio(text) {
+  const paras = (text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  if (!paras.length) return 0;
+  let n = 0;
+  for (const p of paras) { const s = sg.splitSentences(p); if (s.length && CLOSER_IMPERSONAL.test(s[s.length - 1].trim())) n++; }
+  return n / paras.length;
+}
+
+function spacingErrorCount(text) {
+  // 흔한 붙임 오류: 의존명사 '수' 붙음, '~만대/~만명' 붙음, 조사+동사 붙음 일부
+  const pats = [/[가-힣](할|볼|낼|줄|들|버틸|쓸|살)수(가|는|도|를|\s|[.,])/g, /\d만(대|명|개|원)/g, /기꺼이끌어/g, /도가만히/g, /생활속/g];
+  let c = 0; for (const re of pats) c += (text.match(re) || []).length; return c;
+}
+
+// 종합 register 위험(0~1, 높을수록 AI 비인칭·정형). components로 어떤 신호가 큰지 노출.
+function registerScore(text) {
+  const impersonal = sg.measureImpersonal(text);                       // 0~1 (비인칭 종결)
+  const subjectivity = measureSubjectivity(text);                      // 0~ (1인칭+격식판단+구어 주관)
+  const subjAbsence = clamp01(1 - subjectivity / 0.25);               // 주관성 배제(높을수록 배제)
+  const uni = sg.measureUniformity(text);
+  const lenRisk = clamp01((0.65 - uni.lengthCV) / 0.65);              // 길이 균일(낮은 CV)
+  const endRisk = clamp01((uni.maxEndingRun - 3) / 6);               // 같은 종결 연속
+  const uniformity = 0.6 * lenRisk + 0.4 * endRisk;
+  const paraComp = sg.measureParagraphCompression(text);              // 문단 요약·압축 과밀
+  const templatedFlow = clamp01(0.5 * paraComp + 0.5 * (0.5 * closerRepetition(text) + 0.5 * impersonalCloserRatio(text)));
+  const abstraction = sg.classifyInputRisk(text).abstractRiskRatio;   // 0~1 추상문단 비율
+
+  const punch = cc.measurePunch(text);
+  const ordinals = cc.countOrdinals(text);
+  const spacing = spacingErrorCount(text);
+  const penalty = Math.min(0.05, Math.max(0, (punch - 10)) * 0.004) + Math.min(0.04, ordinals * 0.01) + Math.min(0.04, spacing * 0.005);
+
+  const risk = 0.30 * impersonal + 0.25 * templatedFlow + 0.20 * uniformity + 0.15 * subjAbsence + 0.10 * abstraction + penalty;
+  return {
+    risk: Number(risk.toFixed(3)),
+    components: {
+      impersonal: Number(impersonal.toFixed(3)),
+      templatedFlow: Number(templatedFlow.toFixed(3)),
+      uniformity: Number(uniformity.toFixed(3)),
+      subjectivityAbsence: Number(subjAbsence.toFixed(3)),
+      abstraction: Number(abstraction.toFixed(3)),
+      subjectivity: Number(subjectivity.toFixed(3)),
+      penalty: Number(penalty.toFixed(3)),
+      punch, ordinals, spacing,
+    },
+  };
+}
+
+module.exports = { registerScore, closerRepetition, impersonalCloserRatio, spacingErrorCount };

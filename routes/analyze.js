@@ -2392,10 +2392,9 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ 버스티니스(문장 길이 비균질화): '기계적 정확성·균일성' 공략. 도시론 실측 61→58 확인(Goodhart 아님).
   //   다른 패스와 달리 내용·말투 불변(문장만 쪼갬)이라 C등급에도 도움 → skipPasses 무관하게 실행. BURST=0으로 해제.
   //   순서: phrasebudget(연결어) → burstiness(문장리듬). 둘은 다른 신호라 스택 시 risk 0.630→0.452(복리).
-  //   ★격식 모드(assignment/thesis): burstiness는 짧은 punch 조각("현실은 다르다")을 양산(비공격 프롬프트도 동일) → 카피킬러
-  //     "구조적 전형성" 자초(EV 83% PDF). 격식의 '기계적 균일성' 플래그는 1개뿐(81% PDF)이라 이득 없음 → 격식은 burstiness 전면 skip,
-  //     punch 정리는 columnCleanup이 예산 기반으로 담당. blog/resume은 그대로 실행.
-  if (process.env.BURST !== '0' && !(mode === 'assignment' || mode === 'thesis')) {
+  //   ★★ 격식 burstiness skip 실측 폐기(2026-06): EV 73→94%(+21%p) 폭등! punch 조각·문장길이 변동(burstiness)이
+  //     점수를 누르던 핵심 레버였음(카피킬러=GPTZero류, burstiness를 사람글 신호로 봄). 격식도 burstiness 그대로 실행해야 함. 전 모드 적용.
+  if (process.env.BURST !== '0') {
     try {
       const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: 0.6 });
       if (br.text && br.text !== result.outputText) {
@@ -2407,10 +2406,9 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { if (signal?.aborted) throw e; result.burstiness = { error: e.message }; }
   }
 
-  // ★ 격식 칼럼 구조 정리(columnCleanup): assignment/thesis 전용. '짜여진 흐름·구조적 전형성' 공략(FLOOR-안전).
-  //   ① 번호 나열(첫째/둘째…) 해체 → 흐름으로 ② 반복되는 punch 조각 초과분 병합. 내용·사실·말투·분량 보존, FLOOR(novelty=0·experience=0) 재검.
-  //   EV 83% 진단: 구체는 충분하나 레지스터·구조가 비인칭 산업리포트형이라 높음. COLUMN=0으로 해제.
-  if ((mode === 'assignment' || mode === 'thesis') && process.env.COLUMN !== '0') {
+  // ★★ columnCleanup(번호리스트 해체+punch 병합) 실측 폐기(2026-06): EV 73→94% 폭등에 기여. punch 병합·de-list가
+  //   문장 변동을 줄여 더 균일·매끈한 비인칭 산문이 됨 → 카피킬러 직격. 기본 OFF(COLUMN=1 명시해야 실행). 모듈은 보존(음성결과).
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.COLUMN === '1') {
     try {
       const cr = await require('../engine/columncleanup').columnCleanupPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (cr.text && cr.text !== result.outputText) {

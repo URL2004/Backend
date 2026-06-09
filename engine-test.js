@@ -66,6 +66,16 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   console.log(r.outputText || '(없음)');
   line();
 
+  if (r.registerRepair) {
+    const rr = r.registerRepair;
+    if (r.outputTextPreRegister) {
+      require('fs').writeFileSync('_reg_pre.txt', r.outputTextPreRegister, 'utf8');
+      require('fs').writeFileSync('_reg_post.txt', r.outputText, 'utf8');
+    }
+    console.log(`🗣  register 교정(Phase2): 수리 ${rr.repaired}/${rr.attempted} | risk ${rr.before?.risk}→${rr.after?.risk} | 주관 ${rr.before?.components?.subjectivity}→${rr.after?.components?.subjectivity} | 비인칭 ${rr.before?.components?.impersonal}→${rr.after?.components?.impersonal}${rr.error ? ' ERROR:' + rr.error : ''}`);
+    line();
+  }
+
   console.log(`⏱  ${sec}s   refine: ${out.refined ? `발동(${out.refineReason})` : '없음'}`);
   if (out.preInfo) {
     console.log(`🧹 사전처리: GPT-ism ${out.preInfo.gptismCount} · 콤마분할 ${out.preInfo.commaSplitCount} · 단정정의문 ${out.preInfo.declarativeCount}`);

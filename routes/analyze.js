@@ -2492,6 +2492,16 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { if (signal?.aborted) throw e; result.registerRepair = { error: e.message }; }
   }
 
+  // ★ B7 학부생 보고서형 마감(ASSIGNMENT_B7): 생성·패스가 흐트러뜨린 합니다체를 강제 통일 + 1인칭 anchor 예산 캡. FLOOR strict.
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.ASSIGNMENT_B7 === '1') {
+    try {
+      const rs2 = require('../engine/registerscore');
+      const bp = await require('../engine/b7polish').b7PolishPass(result.outputText, text, { lang, signal, floor, allowedExtra: notes });
+      result.outputText = bp.text;
+      result.b7 = { repaired: bp.repaired, attempted: bp.attempted, score: rs2.measureB7Formal(bp.text) };
+    } catch (e) { if (signal?.aborted) throw e; result.b7 = { error: e.message }; }
+  }
+
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).
   const finalOut = result.outputText;
   result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);

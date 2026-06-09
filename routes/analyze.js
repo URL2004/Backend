@@ -2334,7 +2334,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
   // ★ source-internal grounding(검증된 메모리스 레버): 추상 segment를 stance-sharpening으로 교체.
   //   antiDetect 이전에 적용(grounding은 의미층, antiDetect는 표면 perplexity 교란이라 마지막).
-  if (grounding && !skipPasses) {
+  // ★ 격식 모드(assignment/thesis)는 C등급이어도 grounding 실행: 격식 한다체는 본질적으로 비인칭·객관이라
+  //   카피킬러 "주관성의 지나친 배제·비인칭" 플래그 직격(EV assignment 81% 실측). grounding이 학술적 1인칭
+  //   견해·판단을 주입(문체는 한다체 유지)해 그 플래그를 끈다. blog/resume는 이미 구어로 주관이 있어 C등급 skip 유지.
+  const groundingForce = (mode === 'assignment' || mode === 'thesis') && process.env.GROUND_FORMAL_C !== '0';
+  if (grounding && (!skipPasses || groundingForce)) {
     result.grounding = await applyGrounding({
       result, rawText: text, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes
     });

@@ -90,7 +90,7 @@ async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal
     if (!cand || cand.length < segText.length * 0.5) continue;        // 빈/과소 응답 → 재시도
     if (floor.looksLikeRefusal(cand)) continue;                      // ★ 거부문 → 폐기(원본 유지)
     // 분량 상한(교체이지 추가 아님)
-    if (cand.replace(/\s+/g, '').length > segText.replace(/\s+/g, '').length * 1.15) continue;
+    if (cand.replace(/\s+/g, '').length > segText.replace(/\s+/g, '').length * 1.10) continue;   // 길이중립
     // ① 결정론 hard-novelty 게이트 (allowed world = 원문 전체. 원문에 있는 구체는 허용, 날조만 차단)
     const nov = floor.measureNovelty(rawText, cand, '');
     if (nov.count >= 1) continue;                                     // 새 수치·연도·기관 → 폐기, 재시도

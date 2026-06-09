@@ -73,7 +73,7 @@ async function optimizeSegment(seg, anchorPool, rawText, { lang, signal, ledger,
     let cand = '';
     try { cand = (await llmText({ system, user, signal, maxTokens: 1300 }) || '').trim(); } catch { return null; }
     if (!cand || cand.length < seg.length * 0.55) return null;
-    if (cand.replace(/\s+/g, '').length > seg.replace(/\s+/g, '').length * 1.25) return null;  // 분량 폭증 금지
+    if (cand.replace(/\s+/g, '').length > seg.replace(/\s+/g, '').length * 1.10) return null;  // 길이중립(교체이지 추가 아님) — 긴 글에서 패스가 게이트 분량초과로 안 죽게
     if (floor.looksLikeRefusal(cand)) return null;
     if (dd.boundaryLeak(cand, seg, neighbors)) return null;   // ★인접 segment 내용 재진술(중복 유발) → 탈락
     // FLOOR: 새 사실 0

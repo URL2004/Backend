@@ -77,6 +77,7 @@ async function polishPass(text, { lang = 'ko', signal, floor, rawText = '', allo
     let cand = '';
     try { cand = (await llmText({ system, user, signal, maxTokens: 1300 }) || '').trim(); } catch { continue; }
     if (!cand || cand.length < seg.length * 0.55) continue;
+    if (cand.replace(/\s+/g, '').length > seg.replace(/\s+/g, '').length * 1.10) continue;   // 길이중립(폴리시도 추가 아닌 교체)
     if (floor?.looksLikeRefusal?.(cand)) continue;
     if (floor?.measureNovelty) {
       const nov = floor.measureNovelty(rawText || seg, cand, allowedExtra || '');

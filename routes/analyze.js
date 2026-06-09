@@ -2325,9 +2325,16 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   이후 grounding/optimize/polish 스택이 이 baseline보다 나빠지면 최종에서 revert(역효과 차단).
   const baselineText = result.outputText;
 
+  // ★ C등급(순수 추상, abstractRisk≥0.85) skip: 실측상 grounding/optimize/polish가 오히려 악화(공부 57→73)
+  //   + 게이트도 그 악화를 못 잡음 → 패스를 아예 돌리지 않고 baseline 출고(품질↑·비용↓ 삼중 이득).
+  //   SKIP_C=0으로 강제 해제 가능. A/B등급은 패스가 도움(college 55→46)이라 유지.
+  const _ir = require('../engine/surfaceguard').classifyInputRisk(text);
+  const skipPasses = _ir.skipPasses && process.env.SKIP_C !== '0';
+  if (skipPasses) result.skippedPasses = { reason: 'C-grade', abstractRiskRatio: _ir.abstractRiskRatio };
+
   // ★ source-internal grounding(검증된 메모리스 레버): 추상 segment를 stance-sharpening으로 교체.
   //   antiDetect 이전에 적용(grounding은 의미층, antiDetect는 표면 perplexity 교란이라 마지막).
-  if (grounding) {
+  if (grounding && !skipPasses) {
     result.grounding = await applyGrounding({
       result, rawText: text, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes
     });
@@ -2336,13 +2343,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ Phase 1.5 multi-candidate 최적화(채점기 검증 후): 고위험 segment를 후보 N개 중 riskScore 최저로 교체.
   //   grounding 뒤, polish 앞. OPTIMIZE=1일 때만. FLOOR 악화 시 폐기(무해).
   // OPTIMIZE=1 적용 / OPTIMIZE_SHADOW=1 로그만(적용X, 카피킬러 대조 데이터 축적용) / 기본 off
-  const optMode = process.env.OPTIMIZE === '1' ? 'apply' : (process.env.OPTIMIZE_SHADOW === '1' ? 'shadow' : 'off');
-  if (optMode !== 'off') {
+  const optMode = (process.env.OPTIMIZE === '1' ? 'apply' : (process.env.OPTIMIZE_SHADOW === '1' ? 'shadow' : 'off'));
+  if (optMode !== 'off' && !skipPasses) {
     try {
-      // C등급(순수 추상) 원문은 과수술 금지 — cap을 강하게 제한(역효과 방지).
-      const abstractR = require('../engine/surfaceguard').classifyInputRisk(text).abstractRiskRatio;
-      const optMax = abstractR >= 0.85 ? 8 : undefined;
-      const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal, maxTargets: optMax });
+      const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal });
       if (optMode === 'apply' && opt.text && opt.text !== result.outputText) {
         const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
         const postV = floor.collectFloorViolations({ result: { outputText: opt.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
@@ -2353,8 +2357,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   }
 
   // ★ Phase 0 폴리시(검출+국소 repair): 구어체 반복·register 혼합·압축 잔여 플래그 정리.
-  //   grounding 뒤, antiDetect 앞. FLOOR 악화 시 폐기(무해).
-  if (process.env.POLISH !== '0') {
+  //   grounding 뒤, antiDetect 앞. FLOOR 악화 시 폐기(무해). C등급은 skip.
+  if (process.env.POLISH !== '0' && !skipPasses) {
     try {
       const pol = await require('../engine/polish').polishPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (pol.text && pol.text !== result.outputText) {

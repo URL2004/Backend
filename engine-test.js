@@ -78,6 +78,7 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
     console.log(`🧩 grounding 패스: ${gd.applied ? '적용됨 ✅ (' + gd.repaired + '/' + (gd.grounded ?? gd.targets) + ' 교체, 추상타겟 ' + gd.targets + ' 상한 ' + gd.cappedAt + ')' : '미적용(' + (gd.reason || '?') + ')'}${ba}`);
     line();
   }
+  if (r.skippedPasses) { console.log(`⏭  패스 skip: ${r.skippedPasses.reason} (추상위험 ${r.skippedPasses.abstractRiskRatio}) — grounding/optimize/polish 미실행, baseline 출고(비용↓·악화방지)`); line(); }
   if (r.optimize) {
     const o = r.optimize;
     console.log(`🛠  optimize 패스: ${o.error ? 'ERROR ' + o.error : '교체 ' + o.changed + '/' + o.targets + (o.log && o.log.length ? ' [' + o.log.map(x => x.strat).join(',') + ']' : '')}`);

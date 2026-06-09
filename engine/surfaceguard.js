@@ -399,10 +399,12 @@ function buildSurfaceReport(text) {
 // 입력(원문) 위험 분류: 추상-위험 문단이 과반이면 경험 메모 없이 자연화해도 AI 의심이 남는다.
 // 입력 등급(A/B/C) + 기대 카피킬러 밴드 — 제품에서 "왜 더 못 내려가는지"를 사전 고지.
 //   바닥은 엔진이 아니라 "원문의 구체성"이 정한다는 사실을 사용자에게 정직하게 보여주기 위함.
+// 경계는 실측 보정: college(0.7)=B에서 패스가 도움(55→46), study(0.94)=C에서 패스가 악화(57→73).
+//   → C(≥0.85)는 "패스 무효·악화" 구간이라 enhancement 패스를 skip하고 baseline 출고(skipPasses=true).
 function inputGrade(abstractRiskRatio) {
-  if (abstractRiskRatio < 0.3) return { grade: 'A', expectedBand: '20~40%', needsEvidence: false, note: '원문에 구체(경험·수치·사례)가 충분 — 메모 없이도 낮게 가능.' };
-  if (abstractRiskRatio < 0.6) return { grade: 'B', expectedBand: '35~50%', needsEvidence: false, note: '일부 문단이 추상적 — 40%대 예상. 구체 메모를 더하면 추가 개선.' };
-  return { grade: 'C', expectedBand: '45~60%', needsEvidence: true, note: '순수 추상 일반론 위주 — 메모리스 바닥은 45%대. 실제 경험·검증 근거 없이는 그 이하 안정화 어려움.' };
+  if (abstractRiskRatio < 0.35) return { grade: 'A', expectedBand: '20~40%', needsEvidence: false, skipPasses: false, note: '원문에 구체(경험·수치·사례)가 충분 — 메모 없이도 낮게 가능.' };
+  if (abstractRiskRatio < 0.85) return { grade: 'B', expectedBand: '35~50%', needsEvidence: false, skipPasses: false, note: '추상+구체 혼합 — 40%대 예상. 휴머나이즈+패스가 도움. 구체 메모 더하면 추가 개선.' };
+  return { grade: 'C', expectedBand: '50~60%', needsEvidence: true, skipPasses: true, note: '순수 추상 일반론 위주 — 패스(grounding/optimize)가 오히려 악화시켜 baseline 출고. 메모리스 바닥 50%대, 실제 경험·검증 근거 없이는 그 이하 불가.' };
 }
 function classifyInputRisk(rawText) {
   const para = analyzeParagraphs(rawText);

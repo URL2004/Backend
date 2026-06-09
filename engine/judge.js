@@ -176,14 +176,16 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRou
     if ((retry.claims.length || 0) > (ledger.claims.length || 0) || retryHealth.healthy) { ledger = retry; health = retryHealth; }
   }
   let text = outputText;
-  let verdict = await semanticJudge(rawText, text, ledger, { lang, signal, allowedExtra });
+  // ★ 과제 자연체(FORMAL_HUMAN): semanticJudge에 mode=assignment 전달 → 필자 1인칭 판단을 added_claim으로 깎지 않음(사실 날조는 계속 차단).
+  const _mode = process.env.FORMAL_HUMAN === '1' ? 'assignment' : '';
+  let verdict = await semanticJudge(rawText, text, ledger, { lang, signal, allowedExtra, mode: _mode });
   let rounds = 0;
   while (!verdict.pass && rounds < maxRounds) {
     rounds++;
     const repaired = await repairViolations(rawText, text, ledger, verdict.violations, { lang, signal });
     if (repaired === text) break; // 변화 없으면 중단
     text = repaired;
-    verdict = await semanticJudge(rawText, text, ledger, { lang, signal, allowedExtra });
+    verdict = await semanticJudge(rawText, text, ledger, { lang, signal, allowedExtra, mode: _mode });
   }
   return { ledger, outputText: text, verdict, rounds, ledgerHealth: health };
 }

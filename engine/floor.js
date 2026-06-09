@@ -46,10 +46,18 @@ function buildFloorDirective(povSeed, optIn) {
     '※ 이 지시는 아래 모드 규칙의 "디테일 보강 / 분량 늘리기 / 빠진 내용 채우기 / 70% 구체성 / 내부참조 삽입" 지시보다 우선한다.'
   ].join('\n'));
   if (isSpeakerGateClosed(povSeed, optIn)) {
-    blocks.push([
-      '[화자 보존]',
-      '원문에 1인칭 화자(저/제가/나/내가)가 전혀 없다. 새 1인칭 화자나 "제가 작년 학기에 ~한 적이 있다" 같은 개인 경험·일화를 만들지 마라. 원문의 비인칭·일반 서술 시점을 그대로 유지한다. 이 지시는 모드 규칙의 "1인칭 일화 추가/교체"보다 우선한다.'
-    ].join('\n'));
+    // ★ 과제 자연체(FORMAL_HUMAN): 개인 일화는 계속 금지하되, 필자 1인칭 *판단*은 허용(speakerPolicy 분리).
+    if (process.env.FORMAL_HUMAN === '1') {
+      blocks.push([
+        '[화자 보존 — 과제 자연체]',
+        '원문에 1인칭 화자가 없다. "제가 작년에 ~했다" 같은 개인 경험·일화·감정은 절대 만들지 마라(없는 경험 날조 금지). 단, 글 전체 논지에 대한 *필자의 판단*은 1인칭으로 드러내도 된다("나는 ~라고 본다 / 내가 더 중요하게 보는 부분은 ~"). 즉 개인 일화는 금지, 필자 판단은 허용이다.'
+      ].join('\n'));
+    } else {
+      blocks.push([
+        '[화자 보존]',
+        '원문에 1인칭 화자(저/제가/나/내가)가 전혀 없다. 새 1인칭 화자나 "제가 작년 학기에 ~한 적이 있다" 같은 개인 경험·일화를 만들지 마라. 원문의 비인칭·일반 서술 시점을 그대로 유지한다. 이 지시는 모드 규칙의 "1인칭 일화 추가/교체"보다 우선한다.'
+      ].join('\n'));
+    }
   }
   return blocks.join('\n\n') + '\n';
 }
@@ -287,7 +295,9 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
 
   const drift = measurePovDrift(rawText, out, povSeed);
   // 개인 화자(I/저/제가) 신규 주입 = 위반(조직 we 문서에 I 추가도 포함). opt-in이면 허용.
-  if (!optIn && drift.introducedFirstPerson) {
+  // ★ 과제 자연체(FORMAL_HUMAN, 격식 모드): 필자 1인칭 *판단* 허용 → pov 위반에서 제외. 단 개인 일화(experience_novelty)는 아래에서 계속 strict 차단.
+  const formalHuman = process.env.FORMAL_HUMAN === '1' && (mode === 'assignment' || mode === 'thesis');
+  if (!optIn && !formalHuman && drift.introducedFirstPerson) {
     v.push({ type: 'pov', detail: `출력 개인 1인칭 ${drift.output_fp_singular}건`,
       fix: '출력에 새로 등장한 개인 1인칭(I/my/저/제가/나/내가)과 개인 일화를 제거하라. 원문이 조직(we/우리) 화자면 그 시점을 유지하고, 비인칭이면 비인칭을 유지하라. 원문엔 개인 1인칭이 없었다.' });
   }

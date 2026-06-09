@@ -78,6 +78,22 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
     console.log(`🧩 grounding 패스: ${gd.applied ? '적용됨 ✅ (' + gd.repaired + '/' + (gd.grounded ?? gd.targets) + ' 교체, 추상타겟 ' + gd.targets + ' 상한 ' + gd.cappedAt + ')' : '미적용(' + (gd.reason || '?') + ')'}${ba}`);
     line();
   }
+  if (r.optimize) {
+    const o = r.optimize;
+    console.log(`🛠  optimize 패스: ${o.error ? 'ERROR ' + o.error : '교체 ' + o.changed + '/' + o.targets + (o.log && o.log.length ? ' [' + o.log.map(x => x.strat).join(',') + ']' : '')}`);
+    line();
+  }
+  if (r.polish) {
+    const p = r.polish;
+    console.log(`✨ polish 패스: ${p.error ? 'ERROR ' + p.error : '수리 ' + p.repaired + ' (phrase' + (p.stats?.phrase ?? 0) + '·register' + (p.stats?.register ?? 0) + '·압축' + (p.stats?.compression ?? 0) + ')'}`);
+    line();
+  }
+  if (r.acceptanceGate) {
+    const g = r.acceptanceGate;
+    console.log(`🚧 acceptance gate: ${g.reverted ? '⛔ REVERT → baseline (' + g.reasons.join(', ') + ')' : '✅ 통과(개선 유지)'}`);
+    line();
+  }
+  if (r.spacing) { console.log(`␣  spacing: ${r.spacing.fixes}건 교정${r.spacing.warnings && r.spacing.warnings.length ? ' / 복합명사경고 ' + r.spacing.warnings.length : ''}`); line(); }
   if (r.antiDetect) {
     console.log(`🕶  anti-detect 2차 패스: ${r.antiDetect.applied ? '적용됨 ✅' : '미적용(' + (r.antiDetect.reason || '?') + ')'}`);
     line();

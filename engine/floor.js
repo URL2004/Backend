@@ -372,7 +372,9 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', ') }); }
   if (len.status === 'short') criticals.push({ gate: 'length_short', detail: len.ratio });
   if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
-  if (!optIn && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });
+  // ★ 과제 자연체(FORMAL_HUMAN, 격식): 필자 1인칭 판단 허용 → pov_inject 제외(experience_novelty=일화는 위에서 계속 critical).
+  const _fhReport = process.env.FORMAL_HUMAN === '1' && (mode === 'assignment' || mode === 'thesis');
+  if (!optIn && !_fhReport && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });
   if (rep.total) criticals.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
   // 결론부 drift는 critical 아님(§우회: 열린 마무리 허용) — 경고로만 노출하고, 의도 역전은 semanticJudge가 차단.
   if (concl.flagged) warnings.push({ gate: 'conclusion_drift', detail: concl.markers.join(', ') });

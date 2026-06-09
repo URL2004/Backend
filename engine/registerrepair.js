@@ -9,7 +9,7 @@
 
 const sg = require('./surfaceguard');
 const rs = require('./registerscore');
-const { llmText, semanticJudge, HAIKU } = require('./judge');
+const { llmText, semanticJudge } = require('./judge');   // 기본 모델(Sonnet) — register 구조변형은 품질이 중요(Haiku는 약함)
 
 const noSp = s => s.replace(/\s+/g, '').length;
 const HAEYO_RE = /(해요|어요|예요|에요|세요|습니다|합니다|입니다|십시오|할게요|네요)/;   // 격식 한다체 깨짐(존댓말/구어) 감지
@@ -19,11 +19,13 @@ function buildPrompt(para, lang) {
     ? `Rewrite so the impersonal report tone becomes a visible authorial judgment, using ONLY facts already in the paragraph. Add no new facts/figures/proper nouns. No rhetorical questions. Keep 한다체. Output only the text.`
     : `너는 한국어 산업/시사 글을 다듬는 편집자다. 이 문단은 정보가 부족해서가 아니라 *비인칭 산업리포트 어투*(화자 거리감) 때문에 AI 의심을 받는다. 어투만 고친다.
 
-[고칠 것 — 기존 내용만 사용]
-· 비인칭 단정문("~이다/~된다/~할 수 있다") 1~2개를 *필자 판단문*으로 구조 변형하라:
-  "문제는 A가 아니라 B다", "핵심은 ~다", "필자가 보기에 ~", "여기서 더 주목할 부분은 ~", "오해하기 쉬운 지점은 ~".
-· 근거(수치·사례)가 나오면 해설로 닫지 말고 *재해석*하라: "자료에 따르면 X. 이것은 신호다" → "그 수치에서 더 눈여겨볼 부분은 ~".
+[고칠 것 — 기존 내용만 사용. 어투를 확실히 바꿔라]
+· 이 문단의 비인칭 단정문("~이다/~된다/~할 수 있다/~는 것이다") 중 2~3개를 *필자 판단문*으로 구조 변형하라:
+  "문제는 A가 아니라 B다", "핵심은 ~다", "필자가 보기에 ~", "여기서 더 주목할 부분은 ~", "오해하기 쉬운 지점은 ~", "간과해선 안 될 것은 ~".
+· 비인칭·수동("여겨진다/이루어진다/볼 수 있다/평가된다/전망된다")은 능동 단정으로 바꿔라.
+· 근거(수치·사례)가 나오면 해설로 닫지 말고 *재해석*하라: "자료에 따르면 X. 이것은 신호다" → "그 수치에서 더 눈여겨볼 부분은 순위가 아니라 ~".
 · 문단을 요약 결론("결국 ~다")으로 닫지 말고, 구체나 다음 쟁점으로 마무리하라.
+· 단, 한 문단에 "필자가 보기에"는 최대 1회 — 나머지는 "문제는/핵심은/주목할 부분은" 같은 비개인 판단 구조를 써라(과용 금지).
 
 [절대 규칙 — 어기면 실패]
 · 새 사실·수치·연도·고유명사·사례·경험을 만들지 마라(원문 문단에 있는 것만).
@@ -36,7 +38,7 @@ function buildPrompt(para, lang) {
 }
 
 // 격식 register 교정: 비인칭·주관성배제 높은 문단부터 판단문 구조 변형. FLOOR strict + register 개선 검증 후 채택.
-async function registerRepairPass(text, rawText, { lang = 'ko', signal, floor, ledger, mode = 'assignment', allowedExtra = '', maxParas = 14 } = {}) {
+async function registerRepairPass(text, rawText, { lang = 'ko', signal, floor, ledger, mode = 'assignment', allowedExtra = '', maxParas = 22 } = {}) {
   const paras = text.split(/\n\n+/);
   const out = paras.slice();
   let repaired = 0, attempted = 0;
@@ -58,7 +60,7 @@ async function registerRepairPass(text, rawText, { lang = 'ko', signal, floor, l
     try { cand = (await llmText({ system, user, signal, maxTokens: 1400, model: HAIKU }) || '').trim(); } catch { continue; }
     if (!cand) continue;
     const cc = noSp(cand), pc = noSp(p);
-    if (cc < pc * 0.8 || cc > pc * 1.2) continue;                     // 길이 근중립
+    if (cc < pc * 0.8 || cc > pc * 1.25) continue;                    // 길이 근중립(판단문 주입으로 다소 증가 허용)
     if (floor?.looksLikeRefusal?.(cand)) continue;
     if (HAEYO_RE.test(cand) && !HAEYO_RE.test(p)) continue;           // 한다체 깨짐(존댓말/구어 유입) → 폐기
     // ★ FLOOR strict: 새 사실·경험 날조 차단(완화와 무관)
@@ -66,10 +68,10 @@ async function registerRepairPass(text, rawText, { lang = 'ko', signal, floor, l
     const ex = sg.measurePersonalExperienceNovelty(rawText, cand, allowedExtra || ''); if (ex.count >= 1) continue;
     // ★ semanticJudge(mode=formal): 판단·해석은 허용, 새 사실·왜곡은 차단
     if (ledger) { const v = await semanticJudge(rawText, cand, ledger, { lang, signal, mode }); if (!v.pass) continue; }
-    // ★ register 개선 검증: 주관성↑ AND 문단 register risk↓ 일 때만 채택
+    // ★ register 개선 검증: 주관성↑(핵심 레버) AND risk가 크게 나빠지지 않을 때 채택(주관성 상승이 목표).
     const subjBefore = rs.measureSubjectivity(p), subjAfter = rs.measureSubjectivity(cand);
     const riskBefore = rs.registerScore(p).risk, riskAfter = rs.registerScore(cand).risk;
-    if (!(subjAfter > subjBefore && riskAfter < riskBefore)) continue;
+    if (!(subjAfter > subjBefore && riskAfter <= riskBefore + 0.02)) continue;
     out[i] = cand; repaired++;
   }
   const finalText = out.join('\n\n');

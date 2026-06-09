@@ -2370,7 +2370,21 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { if (signal?.aborted) throw e; result.polish = { error: e.message }; }
   }
 
-  // ★★ Step1 최종 acceptance gate: grounding+optimize+polish 스택이 baseline보다
+  // ★ 버스티니스(문장 길이 비균질화): '기계적 정확성·균일성' 공략. 도시론 실측 61→58 확인(Goodhart 아님).
+  //   다른 패스와 달리 내용·말투 불변(문장만 쪼갬)이라 C등급에도 도움 → skipPasses 무관하게 실행. BURST=0으로 해제.
+  if (process.env.BURST !== '0') {
+    try {
+      const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: 0.6 });
+      if (br.text && br.text !== result.outputText) {
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: br.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        if (postV.length <= preV.length) result.outputText = br.text;
+      }
+      result.burstiness = { repaired: br.repaired, attempted: br.attempted };
+    } catch (e) { if (signal?.aborted) throw e; result.burstiness = { error: e.message }; }
+  }
+
+  // ★★ Step1 최종 acceptance gate: grounding+optimize+polish+버스티니스 스택이 baseline보다
   //   {중복·반복·문체혼합·추상·분량} 중 하나라도 나빠지면 baseline으로 revert.
   //   카피킬러는 의심 "영역 수"를 보므로, 이 5개 신호가 늘면 영역이 늘 가능성이 큼 → 역효과 차단.
   if (result.outputText !== baselineText) {

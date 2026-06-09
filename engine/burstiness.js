@@ -33,10 +33,13 @@ function measureBurstiness(text) {
   return { cv, shortRatio, mean, n: lens.length };
 }
 
-function buildPrompt(para, lang) {
+function buildPrompt(para, lang, aggressive = false) {
+  const intensity = aggressive
+    ? `이 문단의 호흡을 과감하게 바꿔라. 문장 서너 개 중 하나는 아주 짧게(한 호흡, 예: "쉽지 않다." "현실은 다르다." "그게 핵심이다.") 만들고, 나머지는 길게 흘려라. 긴 문장과 짧은 문장의 낙차가 분명히 느껴지게.`
+    : `아주 짧은 문장(예: "쉽지 않다." "현실은 다르다.")과 긴 문장을 섞어, 한 문단 안에서 호흡을 크게 바꿔라.`;
   const system = lang === 'en'
-    ? `Rewrite the paragraph so sentence LENGTHS are more varied (bursty): mix very short punchy sentences (2-5 words) with longer ones, changing the breathing within the paragraph. Keep ALL facts, numbers, meaning, tone, and total length the same. Add no new information, opinions, or examples. Only split or merge existing sentences to change rhythm. Output only the rewritten paragraph.`
-    : `다음 문단을 문장 "길이"가 더 들쭉날쭉하도록 다시 써라. 아주 짧은 문장(예: "쉽지 않다." "현실은 다르다.")과 긴 문장을 섞어, 한 문단 안에서 호흡을 크게 바꿔라.
+    ? `Rewrite the paragraph so sentence LENGTHS are more varied (bursty): mix very short punchy sentences (2-5 words) with longer ones, changing the breathing within the paragraph. Keep ALL facts, numbers, meaning, tone, and total length the same. Add no new information, opinions, or examples. Only split or merge existing sentences to change rhythm. Every sentence must be grammatically complete (no dangling fragments). Output only the rewritten paragraph.`
+    : `다음 문단을 문장 "길이"가 더 들쭉날쭉하도록 다시 써라. ${intensity}
 규칙:
 · 사실·수치·고유명사·의미·말투(해요체/한다체)·전체 분량은 그대로 둔다.
 · 원문에 없는 새 정보·견해·예시는 절대 넣지 마라.
@@ -48,7 +51,7 @@ function buildPrompt(para, lang) {
 }
 
 // 국소 버스티니스 패스: 저CV(균일) 문단만 재작성. FLOOR로 날조 차단, 길이중립, CV 실제 개선만 채택.
-async function burstinessPass(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', lowCV = LOW_CV } = {}) {
+async function burstinessPass(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', lowCV = LOW_CV, aggressive = false } = {}) {
   const paras = text.split(/\n\n+/);
   const out = paras.slice();
   let repaired = 0, attempted = 0;
@@ -59,7 +62,7 @@ async function burstinessPass(text, { lang = 'ko', signal, floor, rawText = '', 
     const cv = cvOf(lens);
     if (cv >= lowCV) continue;                 // 이미 충분히 들쭉날쭉
     attempted++;
-    const { system, user } = buildPrompt(p, lang);
+    const { system, user } = buildPrompt(p, lang, aggressive);
     let cand = '';
     try { cand = (await llmText({ system, user, signal, maxTokens: 1300, model: HAIKU }) || '').trim(); } catch { continue; }
     if (!cand) continue;

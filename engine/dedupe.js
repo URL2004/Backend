@@ -60,4 +60,45 @@ function measureDuplication(text) {
   };
 }
 
-module.exports = { measureNearDupSentences, boundaryLeak, measureDuplication, contentTokens };
+// ── 결정론 문장 중복 제거 (floor.measureRepetition과 동일 척도) ──────────────
+//   휴머나이저가 도입부 등을 중복 생성하면 카피킬러 "동일 내용 과도한 반복" + FLOOR BLOCK.
+//   중복 문장은 새 정보가 0이므로 후속 등장만 삭제(첫 등장 보존) = 무손실. LLM 불필요.
+function _normSent(s) {
+  return (s || '').replace(/\s+/g, '').toLowerCase().replace(/[.!?。,，、'"“”‘’()[\]]/g, '');
+}
+function _bigrams(s) {
+  const g = new Set();
+  for (let i = 0; i < s.length - 1; i++) g.add(s.slice(i, i + 2));
+  return g;
+}
+const _DEDUP_FUZZY_SIM = 0.6;     // char-bigram Jaccard(=floor.FUZZY_SIM) — 어미·소수 단어만 다른 근접중복
+const _DEDUP_MIN_LEN = 16;        // 정규화 길이 하한(=floor.FUZZY_MIN_LEN)
+
+function dedupeSentences(text) {
+  const paras = (text || '').split(/\n{2,}/);
+  const keptNorm = new Set();     // 정확 중복용
+  const keptGrams = [];           // 근접 중복용(길이≥MIN_LEN 문장만)
+  let removed = 0;
+  const out = paras.map(p => {
+    const parts = p.split(/(?<=[.!?。])\s+/);          // floor.measureRepetition과 동일 문장분리
+    const keep = [];
+    for (const part of parts) {
+      const key = _normSent(part);
+      if (key.length < 15) { keep.push(part); continue; }   // 짧은 문장은 exact/fuzzy 대상 아님
+      if (keptNorm.has(key)) { removed++; continue; }        // 정확 중복 → 후속 삭제
+      let dup = false;
+      if (key.length >= _DEDUP_MIN_LEN) {
+        const g = _bigrams(key);
+        for (const kg of keptGrams) { if (jaccard(g, kg) >= _DEDUP_FUZZY_SIM) { dup = true; break; } }
+        if (!dup) keptGrams.push(g);
+      }
+      if (dup) { removed++; continue; }                      // 근접 중복 → 후속 삭제
+      keptNorm.add(key);
+      keep.push(part);
+    }
+    return keep.join(' ').trim();
+  }).filter(p => p.length > 0);
+  return { text: out.join('\n\n'), removed };
+}
+
+module.exports = { measureNearDupSentences, boundaryLeak, measureDuplication, contentTokens, dedupeSentences };

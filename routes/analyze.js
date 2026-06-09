@@ -2433,6 +2433,15 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     }
   }
 
+  // ★ 결정론 문장 중복 제거(최종): 휴머나이저가 도입부 등을 중복 생성하는 경우가 있고(변동성),
+  //   이는 baseline에도 남아 게이트 revert 후에도 생존 → 게이트 이후 최종 단계에서 제거.
+  //   중복 문장은 새 정보 0 → 후속 등장만 삭제(무손실). 카피킬러 "동일 내용 과도한 반복" + FLOOR repetition 직격. DEDUP=0 해제.
+  if (process.env.DEDUP !== '0') {
+    const dr = require('../engine/dedupe').dedupeSentences(result.outputText);
+    if (dr.removed > 0) result.outputText = dr.text;
+    result.dedupe = { removed: dr.removed };
+  }
+
   // ★ GPTZero 전용 2차 우회 패스(§우회): 병합 결과에 적용 → FLOOR 재검사 → 깨지면 폐기.
   if (antiDetect) {
     result.antiDetect = await applyAntiDetect({

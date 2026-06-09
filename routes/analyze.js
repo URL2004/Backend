@@ -2392,9 +2392,12 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ 버스티니스(문장 길이 비균질화): '기계적 정확성·균일성' 공략. 도시론 실측 61→58 확인(Goodhart 아님).
   //   다른 패스와 달리 내용·말투 불변(문장만 쪼갬)이라 C등급에도 도움 → skipPasses 무관하게 실행. BURST=0으로 해제.
   //   순서: phrasebudget(연결어) → burstiness(문장리듬). 둘은 다른 신호라 스택 시 risk 0.630→0.452(복리).
+  //   ★격식 모드(assignment/thesis): aggressive=true는 punch 조각("현실은 다르다")을 양산 → 카피킬러 "구조적 전형성" 자초(EV 83% PDF).
+  //     격식은 비공격적으로(짧은 조각 남발 금지), columnCleanup이 초과분을 따로 정리.
   if (process.env.BURST !== '0') {
     try {
-      const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: 0.6 });
+      const _formal = (mode === 'assignment' || mode === 'thesis');
+      const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: !_formal, lowCV: _formal ? 0.45 : 0.6 });
       if (br.text && br.text !== result.outputText) {
         const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
         const postV = floor.collectFloorViolations({ result: { outputText: br.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
@@ -2402,6 +2405,21 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       }
       result.burstiness = { repaired: br.repaired, attempted: br.attempted };
     } catch (e) { if (signal?.aborted) throw e; result.burstiness = { error: e.message }; }
+  }
+
+  // ★ 격식 칼럼 구조 정리(columnCleanup): assignment/thesis 전용. '짜여진 흐름·구조적 전형성' 공략(FLOOR-안전).
+  //   ① 번호 나열(첫째/둘째…) 해체 → 흐름으로 ② 반복되는 punch 조각 초과분 병합. 내용·사실·말투·분량 보존, FLOOR(novelty=0·experience=0) 재검.
+  //   EV 83% 진단: 구체는 충분하나 레지스터·구조가 비인칭 산업리포트형이라 높음. COLUMN=0으로 해제.
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.COLUMN !== '0') {
+    try {
+      const cr = await require('../engine/columncleanup').columnCleanupPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
+      if (cr.text && cr.text !== result.outputText) {
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: cr.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        if (postV.length <= preV.length) result.outputText = cr.text;
+      }
+      result.columnCleanup = { repaired: cr.repaired, attempted: cr.attempted, globalPunch: cr.globalPunch };
+    } catch (e) { if (signal?.aborted) throw e; result.columnCleanup = { error: e.message }; }
   }
 
   // ★★ Step1 최종 acceptance gate: grounding+optimize+polish+버스티니스 스택이 baseline보다

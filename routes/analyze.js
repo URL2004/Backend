@@ -2335,18 +2335,20 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
   // ★ Phase 1.5 multi-candidate 최적화(채점기 검증 후): 고위험 segment를 후보 N개 중 riskScore 최저로 교체.
   //   grounding 뒤, polish 앞. OPTIMIZE=1일 때만. FLOOR 악화 시 폐기(무해).
-  if (process.env.OPTIMIZE === '1') {
+  // OPTIMIZE=1 적용 / OPTIMIZE_SHADOW=1 로그만(적용X, 카피킬러 대조 데이터 축적용) / 기본 off
+  const optMode = process.env.OPTIMIZE === '1' ? 'apply' : (process.env.OPTIMIZE_SHADOW === '1' ? 'shadow' : 'off');
+  if (optMode !== 'off') {
     try {
       // C등급(순수 추상) 원문은 과수술 금지 — cap을 강하게 제한(역효과 방지).
       const abstractR = require('../engine/surfaceguard').classifyInputRisk(text).abstractRiskRatio;
       const optMax = abstractR >= 0.85 ? 8 : undefined;
       const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal, maxTargets: optMax });
-      if (opt.text && opt.text !== result.outputText) {
+      if (optMode === 'apply' && opt.text && opt.text !== result.outputText) {
         const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
         const postV = floor.collectFloorViolations({ result: { outputText: opt.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = opt.text;
       }
-      result.optimize = { changed: opt.changed, targets: opt.targets, log: opt.log };
+      result.optimize = { mode: optMode, changed: opt.changed, targets: opt.targets, log: opt.log };
     } catch (e) { if (signal?.aborted) throw e; result.optimize = { error: e.message }; }
   }
 
@@ -2372,8 +2374,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     const srcLen = text.replace(/\s+/g, '').length;
     // ※ register 혼합(한다체↔해요체)은 카피킬러 신호가 아님이 v4 실측으로 확인됨(유령 지표) → 게이트에서 제외.
     //   오히려 종결 다양성을 줘 균일성을 낮추기도 하므로, 한다체 섞임 자체는 막지 않는다.
+    const dd = require('../engine/dedupe');
     const measure = (t) => ({
       dup: sg2.measureOpeningDuplication(t),
+      nd: dd.measureNearDupSentences(t),     // 근접(의미) 중복 — 카피킬러 "동일 내용 과도한 반복"
       rep: floor.measureRepetition(t).total,
       abs: sg2.classifyInputRisk(t).abstractRiskRatio,
       len: t.replace(/\s+/g, '').length,
@@ -2381,6 +2385,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     const b = measure(baselineText), c = measure(result.outputText);
     const reasons = [];
     if (c.dup > b.dup) reasons.push(`중복증가(${b.dup}→${c.dup})`);
+    if (c.nd > b.nd) reasons.push(`근접중복증가(${b.nd}→${c.nd})`);
     if (c.rep > b.rep) reasons.push(`반복증가(${b.rep}→${c.rep})`);
     if (c.abs > b.abs + 0.03) reasons.push(`추상증가(${b.abs}→${c.abs})`);
     if (c.len > srcLen * 1.20 && c.len > b.len) reasons.push(`분량초과(${Math.round(c.len / srcLen * 100)}%)`);

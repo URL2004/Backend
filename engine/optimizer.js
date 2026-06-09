@@ -8,6 +8,7 @@
 const sg = require('./surfaceguard');
 const floor = require('./floor');
 const { llmText, buildSoftClaimLedger, semanticJudge } = require('./judge');
+const dd = require('./dedupe');
 
 // segment의 주 말투(해요체/한다체/합니다체) 판정
 function dominantRegister(seg) {
@@ -28,7 +29,7 @@ function registerOk(cand, target) {
 
 // 전략별 시스템 프롬프트(공통 제약: 사실·말투·분량 보존, 새 정보 금지)
 function strategyPrompt(seg, strat, anchors, lang, register = 'haeyo') {
-  const COMMON = `★말투는 반드시 ${REG_LABEL[register]} 하나로만 — 다른 말투(특히 한다체)를 한 문장도 섞지 마라. 사실·수치·고유명사·의미·분량은 그대로 두고, 원문에 없는 새 정보·사례·수치는 절대 만들지 마라. 본문만 출력(설명·따옴표 금지).`;
+  const COMMON = `문단의 기본 말투(${REG_LABEL[register]})를 큰 틀에서 유지하되 종결 표현은 단조롭지 않게 다양화하라. 사실·수치·고유명사·의미·분량은 그대로 두고, 원문에 없는 새 정보·사례·수치는 절대 만들지 마라. 본문만 출력(설명·따옴표 금지).`;
   const map = {
     rhythm: `너는 한국어 글 편집자다. 아래 문단의 "문장 리듬"만 사람처럼 불규칙하게 바꿔라(기계적 균일성 제거):
 · 문장 길이를 극단적으로 들쭉날쭉하게 — 아주 짧은 문장(5~12자)과 긴 문장(45자+)을 섞어라. 같은 길이대 2연속 금지.
@@ -57,7 +58,7 @@ function pickStrategies(risk) {
   return [...new Set(strats)];
 }
 
-async function optimizeSegment(seg, anchorPool, rawText, { lang, signal, ledger, threshold } = {}) {
+async function optimizeSegment(seg, anchorPool, rawText, { lang, signal, ledger, threshold, neighbors = [] } = {}) {
   const baseRisk = sg.measureSegmentRisk(seg, anchorPool);
   if (baseRisk.riskScore < threshold) return { text: seg, changed: false, reason: 'low-risk' };
 
@@ -74,7 +75,7 @@ async function optimizeSegment(seg, anchorPool, rawText, { lang, signal, ledger,
     if (!cand || cand.length < seg.length * 0.55) return null;
     if (cand.replace(/\s+/g, '').length > seg.replace(/\s+/g, '').length * 1.25) return null;  // 분량 폭증 금지
     if (floor.looksLikeRefusal(cand)) return null;
-    if (!registerOk(cand, register)) return null;   // ★한다체 섞인 후보 탈락(비인칭/혼합 방지)
+    if (dd.boundaryLeak(cand, seg, neighbors)) return null;   // ★인접 segment 내용 재진술(중복 유발) → 탈락
     // FLOOR: 새 사실 0
     if (floor.measureNovelty(rawText || seg, cand, '').count >= 1) return null;
     // 닫힌세계 judge(선택)
@@ -109,7 +110,8 @@ async function optimizePass(text, rawText, { lang = 'ko', signal, targetChars = 
   const worker = async () => {
     while (next < pick.length) {
       const i = pick[next++];
-      const r = await optimizeSegment(segs[i], anchorPool, rawText, { lang, signal, ledger, threshold });
+      const neighbors = [segs[i - 1], segs[i + 1]].filter(Boolean);
+      const r = await optimizeSegment(segs[i], anchorPool, rawText, { lang, signal, ledger, threshold, neighbors });
       if (r.changed) { out[i] = r.text; changed++; log.push({ i, strat: r.strat, from: r.from, to: r.to }); }
     }
   };

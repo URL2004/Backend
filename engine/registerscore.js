@@ -87,4 +87,4 @@ function registerScore(text) {
   };
 }
 
-module.exports = { registerScore, closerRepetition, impersonalCloserRatio, spacingErrorCount };
+module.exports = { registerScore, measureSubjectivity, closerRepetition, impersonalCloserRatio, spacingErrorCount };

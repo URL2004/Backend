@@ -2479,6 +2479,19 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     result.spacing = { fixes: sp.fixes, warnings: sp.warnings };
   }
 
+  // ★ Phase2 register 교정(격식 모드 화자 거리감): 비인칭 단정문 → 기존 사실만으로 필자 판단문 구조 변형. REGISTER=1만 실행(실험).
+  //   노이즈 제거 위해 pre-repair 텍스트(outputTextPreRegister) 보존 → 같은 생성문에 켜고/끈 clean A/B로 카피킬러 검증.
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.REGISTER === '1') {
+    try {
+      let ledger = contract.softClaimLedger;
+      if (!ledger) ledger = await require('../engine/judge').buildSoftClaimLedger(text, { lang, signal });
+      result.outputTextPreRegister = result.outputText;
+      const rr = await require('../engine/registerrepair').registerRepairPass(result.outputText, text, { lang, signal, floor, ledger, mode, allowedExtra: notes });
+      result.outputText = rr.text;
+      result.registerRepair = { repaired: rr.repaired, attempted: rr.attempted, before: rr.before, after: rr.after };
+    } catch (e) { if (signal?.aborted) throw e; result.registerRepair = { error: e.message }; }
+  }
+
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).
   const finalOut = result.outputText;
   result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);

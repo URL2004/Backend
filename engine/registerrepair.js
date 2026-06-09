@@ -1,0 +1,79 @@
+// [engine/registerrepair.js] Phase2 register 교정 패스 — 격식 모드 '화자 거리감' 공략 (FLOOR 완화: 판단 허용·사실 차단)
+// ────────────────────────────────────────────────────────────────
+// 진단(사장님): 격식 글의 카피킬러 병목은 구조·evidence가 아니라 비인칭 산업리포트 어투(화자 거리감). 4개 PDF 일관 신호=
+//   비인칭·간접화법·주관성배제·구조전형성. 해법: 비인칭 단정문을 *기존 사실만으로* 논증형 필자 판단문으로 구조 변형.
+// A(83%)와의 차이: ① 흩뿌리기 아님 — 비인칭 문단만 골라 1~2문장 구조 변형 ② 수사의문문(과연~인가) 금지(AI 전형) ③ 근거 재해석
+//   ("자료에 따르면 X. 신호다" → "수치에서 더 주목할 부분은 ~") ④ 요약 결론으로 문단 닫지 않기.
+// FLOOR: 새 사실·수치·고유명사·경험 날조는 결정론 게이트(measureNovelty·experience)로 strict 차단. 판단·해석만 semanticJudge(mode=formal)가 허용.
+// ★검증: register surrogate(subjectivity↑·risk↓) 개선 + 한다체 유지 + FLOOR clean일 때만 채택. 노이즈 제거 위해 같은 생성문에 켜고/끔 A/B.
+
+const sg = require('./surfaceguard');
+const rs = require('./registerscore');
+const { llmText, semanticJudge, HAIKU } = require('./judge');
+
+const noSp = s => s.replace(/\s+/g, '').length;
+const HAEYO_RE = /(해요|어요|예요|에요|세요|습니다|합니다|입니다|십시오|할게요|네요)/;   // 격식 한다체 깨짐(존댓말/구어) 감지
+
+function buildPrompt(para, lang) {
+  const system = lang === 'en'
+    ? `Rewrite so the impersonal report tone becomes a visible authorial judgment, using ONLY facts already in the paragraph. Add no new facts/figures/proper nouns. No rhetorical questions. Keep 한다체. Output only the text.`
+    : `너는 한국어 산업/시사 글을 다듬는 편집자다. 이 문단은 정보가 부족해서가 아니라 *비인칭 산업리포트 어투*(화자 거리감) 때문에 AI 의심을 받는다. 어투만 고친다.
+
+[고칠 것 — 기존 내용만 사용]
+· 비인칭 단정문("~이다/~된다/~할 수 있다") 1~2개를 *필자 판단문*으로 구조 변형하라:
+  "문제는 A가 아니라 B다", "핵심은 ~다", "필자가 보기에 ~", "여기서 더 주목할 부분은 ~", "오해하기 쉬운 지점은 ~".
+· 근거(수치·사례)가 나오면 해설로 닫지 말고 *재해석*하라: "자료에 따르면 X. 이것은 신호다" → "그 수치에서 더 눈여겨볼 부분은 ~".
+· 문단을 요약 결론("결국 ~다")으로 닫지 말고, 구체나 다음 쟁점으로 마무리하라.
+
+[절대 규칙 — 어기면 실패]
+· 새 사실·수치·연도·고유명사·사례·경험을 만들지 마라(원문 문단에 있는 것만).
+· "과연 ~인가?" 같은 수사의문문을 쓰지 마라(AI 전형).
+· 말투는 한다체 유지(존댓말·해요체·구어체 금지). 분량은 원문 120% 이내.
+· 판단은 *기존 논지를 또렷이 드러내는* 수준 — 원문에 없는 새 입장·전망·감정은 만들지 마라.
+
+[출력] 고친 문단 본문만(설명·머리말·따옴표 금지).`;
+  return { system, user: `[문단]\n${para}` };
+}
+
+// 격식 register 교정: 비인칭·주관성배제 높은 문단부터 판단문 구조 변형. FLOOR strict + register 개선 검증 후 채택.
+async function registerRepairPass(text, rawText, { lang = 'ko', signal, floor, ledger, mode = 'assignment', allowedExtra = '', maxParas = 14 } = {}) {
+  const paras = text.split(/\n\n+/);
+  const out = paras.slice();
+  let repaired = 0, attempted = 0;
+  // 비인칭 높고 주관성 낮은 문단부터(가장 register 위험)
+  const order = paras.map((p, i) => {
+    const s = sg.splitSentences(p);
+    if (s.length < 2) return { i, score: -1 };
+    const imp = sg.measureImpersonal(p), subj = rs.measureSubjectivity(p);
+    return { i, score: imp + (0.3 - Math.min(0.3, subj)) };   // 비인칭↑·주관↓일수록 우선
+  }).filter(x => x.score >= 0).sort((a, b) => b.score - a.score).map(x => x.i);
+
+  for (const i of order) {
+    if (attempted >= maxParas) break;
+    const p = paras[i];
+    if (sg.splitSentences(p).length < 2) continue;
+    attempted++;
+    const { system, user } = buildPrompt(p, lang);
+    let cand = '';
+    try { cand = (await llmText({ system, user, signal, maxTokens: 1400, model: HAIKU }) || '').trim(); } catch { continue; }
+    if (!cand) continue;
+    const cc = noSp(cand), pc = noSp(p);
+    if (cc < pc * 0.8 || cc > pc * 1.2) continue;                     // 길이 근중립
+    if (floor?.looksLikeRefusal?.(cand)) continue;
+    if (HAEYO_RE.test(cand) && !HAEYO_RE.test(p)) continue;           // 한다체 깨짐(존댓말/구어 유입) → 폐기
+    // ★ FLOOR strict: 새 사실·경험 날조 차단(완화와 무관)
+    if (floor?.measureNovelty) { const nv = floor.measureNovelty(rawText, cand, allowedExtra || ''); if (nv.count >= 1) continue; }
+    const ex = sg.measurePersonalExperienceNovelty(rawText, cand, allowedExtra || ''); if (ex.count >= 1) continue;
+    // ★ semanticJudge(mode=formal): 판단·해석은 허용, 새 사실·왜곡은 차단
+    if (ledger) { const v = await semanticJudge(rawText, cand, ledger, { lang, signal, mode }); if (!v.pass) continue; }
+    // ★ register 개선 검증: 주관성↑ AND 문단 register risk↓ 일 때만 채택
+    const subjBefore = rs.measureSubjectivity(p), subjAfter = rs.measureSubjectivity(cand);
+    const riskBefore = rs.registerScore(p).risk, riskAfter = rs.registerScore(cand).risk;
+    if (!(subjAfter > subjBefore && riskAfter < riskBefore)) continue;
+    out[i] = cand; repaired++;
+  }
+  const finalText = out.join('\n\n');
+  return { text: finalText, repaired, attempted, before: rs.registerScore(text), after: rs.registerScore(finalText) };
+}
+
+module.exports = { registerRepairPass };

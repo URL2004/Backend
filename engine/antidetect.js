@@ -12,14 +12,14 @@ const { llmText } = require('./judge');
 function buildAntiDetectSystem(lang = 'ko', speakerType = 'individual') {
   if (lang === 'en') {
     return [
-      '[Goal: evade AI detectors — preserve meaning 100%, destroy only statistical predictability]',
+      '[Goal: rewrite statistically smooth, predictable AI-sounding prose into natural human prose — preserve meaning 100%]',
       'The text below is already correct in meaning. Keep its meaning, facts, speaker, length, and conclusion direction EXACTLY. Remove only the "AI-written statistical smoothness."',
       '',
       'MUST NOT (FLOOR — violating any voids the result):',
       '- Do not change ANY number, figure, date, amount, proper noun, or brand. Add no new facts; drop no existing information.',
       '- Keep the same speaker. Keep the conclusion direction. Keep length similar to the input.',
       '',
-      'TO EVADE DETECTORS, aggressively:',
+      'TO SOUND NATURALLY HUMAN, aggressively:',
       '1. Replace predictable words with LESS COMMON but valid synonyms — avoid the first "default" word the model reaches for (meaning identical, still natural).',
       '2. Make sentence length wildly uneven — mix very short (2-5 words) with long sentences.',
       '3. Add human irregularity: sentence fragments, em-dashes (—), parenthetical asides, ellipses (…), small self-corrections ("well, more precisely ~").',
@@ -36,14 +36,14 @@ function buildAntiDetectSystem(lang = 'ko', speakerType = 'individual') {
       ? '화자: 조직(우리/저희) 시점 유지, 개인 1인칭 도입 금지.'
       : '화자: 원문 1인칭 시점 유지(새 일화·감정 추가 금지).';
   return [
-    '[목표: AI 탐지기 우회 — 의미는 100% 보존, 통계적 예측가능성만 파괴]',
+    '[목표: 통계적으로 매끄럽고 예측 가능한 AI 문체를 자연스러운 사람 글로 다듬기 — 의미는 100% 보존]',
     '아래 글은 의미가 이미 정확하다. 의미·사실·화자·분량·결론 방향은 그대로 두고, "AI가 쓴 듯한 통계적 매끄러움"만 깨라.',
     '',
     '절대 금지(FLOOR — 어기면 결과 무효):',
     '- 숫자·수치·날짜·금액·고유명사·브랜드를 한 글자도 바꾸지 마라. 새 사실 추가 금지, 기존 정보 삭제 금지.',
     `- ${speakerLine} 결론 방향 유지. 분량은 입력과 비슷하게.`,
     '',
-    '탐지기 우회를 위해 적극적으로:',
+    '자연스러운 사람 글로 만들기 위해 적극적으로:',
     '1. 예측 가능한 단어를 *덜 흔한* 동의어·표현으로 교체 — 모델이 가장 먼저 떠올리는 "정석" 단어를 피하라(의미는 동일, 어색하지 않게).',
     '2. 문장 길이를 극단적으로 들쭉날쭉하게 — 아주 짧은 문장(2~6자)과 긴 문장을 섞어라.',
     '3. 사람 특유의 불규칙 삽입: 문장 조각, 줄표(—), 삽입구(괄호), 말줄임(…), 가벼운 자기정정("아니, 정확히는~").',

@@ -96,7 +96,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
       `4. Speaker: ${speakerRuleEn(speakerType)}`,
       '5. No repetition: never restate the same conclusion/sentence twice.',
       '',
-      'DETECTOR EVASION (apply as much as possible WITHOUT breaking the FLOOR above):',
+      'NATURAL HUMAN STYLE (apply as much as possible WITHOUT breaking the FLOOR above — mechanical uniformity and impersonal sentences are the most unnatural, AI-like signals):',
       '- Burstiness: alternate long sentences (25+ words) with short ones (3-7 words) irregularly; never 3 same-length sentences in a row.',
       '- Perplexity: avoid smooth, predictable AI phrasings and clichés ("delve", "in conclusion", "it is important to note", "plays a crucial role"); swap repeated wording for synonyms; prefer plain words. (Keep source facts/proper nouns exact.)',
       '- Vary sentence endings; do not repeat the same ending 3-4 times in a row.',

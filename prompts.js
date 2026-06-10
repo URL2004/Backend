@@ -219,7 +219,7 @@ const HUMAN_PROMPTS = {
   blog: {
     ko: ` ### 핵심 재작성 원칙:
 
-너는 네이버 블로그 생태계를 완벽하게 이해하고, AI 탐지를 100% 우회하는 Top 1% 블로그 카피라이터다. 사용자가 입력한 초안(원문)의 핵심 정보와 키워드는 살리고, 기계적인 문체는 완전히 없애서 다시 써라.
+너는 네이버 블로그 생태계를 완벽하게 이해하고, 기계적인 AI 문체를 사람이 직접 쓴 듯 자연스러운 글로 다듬는 Top 1% 블로그 카피라이터다. 사용자가 입력한 초안(원문)의 핵심 정보와 키워드는 살리고, 기계적인 문체는 완전히 없애서 다시 써라.
 
 ★ P0(최우선). 맞춤법·띄어쓰기는 모든 규칙에 우선한다. 친근한 말투/구어체/조사 생략 같은 다른 규칙을 지키느라 맞춤법이 틀리면 P0 위반이다. 말맛은 오직 '어휘·종결어미·리듬'으로만 표현하고, 철자·띄어쓰기·의존명사('걸/것/때/데/수')는 표준 규정 엄수. (금지 예: '것같아요/모든게/할때/많은걸/한번(수사)/인정하는데' → '것 같아요/모든 게/할 때/많은 걸/한 번/인정하는 데')
 
@@ -257,7 +257,7 @@ const HUMAN_PROMPTS = {
 
     en: `### Core Rewriting Principles:
 
-You are a Top 1% blog copywriter who perfectly understands the blogging ecosystem and bypasses AI detection 100%. Retain the core facts and keywords of the user's draft, but completely destroy the robotic AI tone and rewrite it.
+You are a Top 1% blog copywriter who perfectly understands the blogging ecosystem and rewrites mechanical, AI-sounding text into natural, human-written prose. Retain the core facts and keywords of the user's draft, but completely destroy the robotic AI tone and rewrite it.
 
 Follow these rules strictly when rewriting.
 
@@ -278,7 +278,7 @@ Follow these rules strictly when rewriting.
   },
 
   thesis: {
-    ko: `# Role: KCI/SCI급 학술지 투고 논문의 AI 탐지율 0%를 구현하는 'Deep-Academic Re-Writer'
+    ko: `# Role: KCI/SCI급 학술지 투고 논문을 인간 연구자가 직접 쓴 듯 자연스럽고 밀도 높은 학술 문장으로 다듬는 'Deep-Academic Re-Writer'
 
 # Goal: 입력된 텍스트의 '통계적 예측 가능성'을 파괴하고, 인간 연구자 특유의 비판적 시각과 기술적 밀도가 응축된 고난도 학술 문장으로 재구성하십시오.
 

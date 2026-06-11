@@ -1,7 +1,7 @@
-// 이식 결정론 sanity (1회용 드라이버 — 검증 후 삭제)
-const P = require('./engine/prompt');
-const F = require('./engine/floor');
-const E = require('./engine/evidenceguard');
+﻿// 이식 결정론 sanity (1회용 드라이버 — 검증 후 삭제)
+const P = require('../engine/prompt');
+const F = require('../engine/floor');
+const E = require('../engine/evidenceguard');
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { cond ? pass++ : (fail++, console.log('  ❌ ' + name)); };
@@ -49,8 +49,10 @@ const dd = E.dedupeFactRecitations(doc, ev, '원문\n' + ev.join('\n'));
 ok('재인용 제거', (dd.match(/45\.9/g) || []).length === 1);
 
 // ⑥ judge augmented ledger(네트워크 없이 구조만)
-const src = require('fs').readFileSync('./engine/judge.js', 'utf8');
+const src = require('fs').readFileSync(require('path').join(__dirname, '../engine/judge.js'), 'utf8');
 ok('judge approvedFacts 시그니처', src.includes('approvedFacts') && src.includes('augmented'));
 
 console.log(`\n이식 sanity: ${pass}통과 / ${fail}실패`);
 process.exit(fail ? 1 : 0);
+
+

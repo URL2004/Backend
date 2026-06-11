@@ -1983,8 +1983,9 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
   // ★ FLOOR v2: 보존 우선 프롬프트로 레거시 모드 프롬프트 대체(내용 파괴/변질 지시 제거). 모드는 톤 오버레이.
   //   floorV2 미설정 시 레거시 프롬프트(프로덕션 동작 불변).
-  // ★ 목소리 앵커(genretransfer 이식): 격식 결의 최대 실레버. 비청크는 문서 1건이라 회전 없이 0번 고정.
-  const anchorsOn = floorV2 && lang === 'ko' && selectedMode === 'assignment' && process.env.STYLE_ANCHOR !== '0';
+  // ★ 목소리 앵커(genretransfer 이식): 보존형 재작성에서는 효과 0 실측(이식판 카피킬러 100% vs v2 94~95 — 델타 0,
+  //   앵커는 생성 조형 레버라 재생성 경로에서만 작동) → 메인 경로는 STYLE_ANCHOR=1 옵트인(프롬프트 비용 절감).
+  const anchorsOn = floorV2 && lang === 'ko' && selectedMode === 'assignment' && process.env.STYLE_ANCHOR === '1';
   let humanizeSystem = floorV2
     ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes, register: contract.register, anchorIdx: anchorsOn ? 0 : null })
     : getHumanizeSystem(selectedMode, lang);
@@ -2199,9 +2200,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ 승인 사실 무결성 가드(genretransfer 이식): 수치-출처 짝 검증 + 재인용 dedupe. 결정론·무비용.
   const evg = require('../engine/evidenceguard');
   const evidLines = evid ? evid.split('\n').map(l => l.trim()).filter(Boolean) : [];
-  // ★ 목소리 앵커(genretransfer 이식, 실측 89→73→43~45%): 한국어 assignment 전용, 청크 인덱스 기반 2개 회전
-  //   (한 목소리 과적합 방지). STYLE_ANCHOR=0 해제. 누출은 collectFloorViolations anchor_leak 게이트가 차단.
-  const anchorActive = floorV2 && lang === 'ko' && mode === 'assignment' && process.env.STYLE_ANCHOR !== '0';
+  // ★ 목소리 앵커(genretransfer 이식): 재생성 경로에선 89→73→43~45% 실레버지만, 보존형 청크 재작성에선
+  //   효과 0 실측(이식판 100% vs v2 94~95 — 골격 verbatim+분량 강제+원문 추종이라 분포 이동 불가, 1인칭
+  //   사후패치 0/22과 동일 패턴) → 메인 경로는 STYLE_ANCHOR=1 옵트인. 누출은 anchor_leak 게이트가 차단.
+  const anchorActive = floorV2 && lang === 'ko' && mode === 'assignment' && process.env.STYLE_ANCHOR === '1';
   const buildSys = (un, ev, anchorIdx = null) => floorV2
     ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev, anchorIdx })
     : getHumanizeSystem(mode, lang);

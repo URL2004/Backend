@@ -29,7 +29,7 @@ setInterval(() => {
 async function runSearchPhase(job, text) {
   try {
     job.stage = '근거 검색';
-    const ev = await suggestEvidence(text, { maxSegments: Number(process.env.EVIDENCE_MAX_SEGMENTS) || 6 });
+    const ev = await suggestEvidence(text, { maxSegments: Number(process.env.EVIDENCE_MAX_SEGMENTS) || 6, signal: job.ac.signal });
     const reviewed = reviewCandidates(ev.candidates || []);
     if (!reviewed.length) {
       console.warn(`⚠️ /transform ${job.id} 근거 후보 0건 — 근거 없이 재구성 진행`);
@@ -50,6 +50,7 @@ async function runSearchPhase(job, text) {
     job.stage = '근거 검수 대기';
     console.log(`▶ /transform ${job.id} 근거 ${job.candidates.length}건 검수 대기 (A ${job.candidates.filter(c => c.grade === 'A').length}·B ${job.candidates.filter(c => c.grade === 'B').length}·C ${job.candidates.filter(c => c.grade === 'C').length}·충돌 ${job.candidates.filter(c => c.conflict).length})`);
   } catch (e) {
+    if (job.ac.signal.aborted) { job.status = 'cancelled'; job.stage = '중단됨'; return; }
     console.error(`❌ /transform ${job.id} 근거 검색 실패 — 근거 없이 진행:`, e?.message);
     job.note = '근거 검색이 실패해 근거 없이 진행했어요.';
     return runJob(job, text, '');
@@ -60,8 +61,8 @@ async function runJob(job, text, evidence) {
   try {
     job.status = 'running';
     job.stage = '재구성';
-    // signal 미전달 = 의도적(클라이언트가 끊겨도 작업 계속 — job 방식의 존재 이유)
-    const out = await genreTransferV2(text, { evidence: evidence || '' });
+    // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
+    const out = await genreTransferV2(text, { evidence: evidence || '', signal: job.ac.signal });
     const gates = [];
     if (out.novelty?.count) gates.push('novelty');
     if (out.lostFacts?.count) gates.push('lostFacts');
@@ -97,6 +98,7 @@ async function runJob(job, text, evidence) {
       skeleton: out.skeleton
     };
   } catch (e) {
+    if (job.ac.signal.aborted) { job.status = 'cancelled'; job.stage = '중단됨'; return; }
     console.error(`❌ /transform ${job.id} 실패:`, e?.message);
     job.status = 'error';
     job.error = '재구성 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
@@ -123,16 +125,36 @@ router.post('/transform', async (req, res) => {
 
   const wantEvidence = req.body.evidence === true;
   const id = crypto.randomBytes(8).toString('hex');
+  const bare = text.replace(/\s+/g, '').length;
+  // 예상 시간: 슬롯 순차 생성이라 길이에 거의 선형(실측 college 1.8K=11분(근거)·7분(무근거)). 약간 과대 추정이
+  // 과소 추정보다 낫다(99%에 오래 머무는 것보다 60%에 끝나는 게 체감이 좋음).
+  const estSec = Math.max(240, Math.min(2700, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
   const job = {
     id, status: 'running', stage: wantEvidence ? '근거 검색' : '구조 계획', createdAt: Date.now(),
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
-    text   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
+    text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
+    estSec,
+    ac: new AbortController()   // 명시적 취소용(/cancel)
   };
   jobs.set(id, job);
   if (wantEvidence) runSearchPhase(job, text);   // await 없음 — 백그라운드 진행
   else runJob(job, text, '');
-  console.log(`▶ /transform job ${id} 시작 (${text.length}자, uid=${pre.uid}, 근거=${wantEvidence ? 'ON' : 'OFF'})`);
-  res.json({ ok: true, jobId: id, estSec: Math.max(180, Math.min(1800, Math.round(text.replace(/\s+/g, '').length / 6) + (wantEvidence ? 360 : 0))) });
+  console.log(`▶ /transform job ${id} 시작 (${text.length}자, uid=${pre.uid}, 근거=${wantEvidence ? 'ON' : 'OFF'}, 예상 ${Math.round(estSec / 60)}분)`);
+  res.json({ ok: true, jobId: id, estSec });
+});
+
+// ── 명시적 취소: 진행 중 LLM 호출을 abort — 차감은 완료 시에만 일어나므로 취소=항상 무과금.
+router.post('/transform/:id/cancel', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
+  if (job.status === 'done' || job.status === 'blocked' || job.status === 'error') {
+    return res.status(409).json({ error: '이미 끝난 작업이에요.' });
+  }
+  job.ac.abort();
+  job.status = 'cancelled';
+  job.stage = '중단됨';
+  console.log(`■ /transform ${job.id} 사용자 취소 (uid=${job.uid})`);
+  res.json({ ok: true });
 });
 
 // ── P4: 근거 승인 — 승인된 후보만 evidence로 재구성 재개. "미승인은 엔진이 차단"의 구현부:
@@ -153,9 +175,10 @@ router.post('/transform/:id/approve', (req, res) => {
 router.get('/transform/:id', (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
-  const base = { ok: true, status: job.status, stage: job.stage, elapsedSec: Math.round((Date.now() - job.createdAt) / 1000), ...(job.note ? { note: job.note } : {}) };
+  const base = { ok: true, status: job.status, stage: job.stage, elapsedSec: Math.round((Date.now() - job.createdAt) / 1000), estSec: job.estSec, ...(job.note ? { note: job.note } : {}) };
   if (job.status === 'done') return res.json({ ...base, result: job.result });
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
+  if (job.status === 'cancelled') return res.json(base);
   if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, error: '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요. 크레딧은 차감되지 않았어요.' });
   if (job.status === 'error') return res.json({ ...base, error: job.error });
   res.json(base);

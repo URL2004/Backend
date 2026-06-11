@@ -6,6 +6,13 @@
 // (burstiness·perplexity 파괴·단문 폭격·의태어·어휘 하향·추임새·순서 재배치·문단 이질성·열린 마무리)을
 // 다시 통합한다. 사실/화자/분량/결론 방향을 안 바꾸는 선에서 AI 티는 최대한 제거 = "보존 제약 하의 우회".
 
+// ★ LLM 한국어 격식 산문의 실측 지문(2026-06-10 문형 센서스: 우리 출력 vs 카피킬러 0~2% 사람 글, 100문장당):
+//   "~다는 것/점" 13 vs 1~2 · "~기도/이기도 하다" 12 vs 0~1 · 지시어+추상명사 주어("이 간극이") 4 vs 0 ·
+//   "~는 데 있다"/"~로 읽힌다"/메타담화("달리 말하면") 각 2~4 vs 0. 카피킬러 "간접 화법" 라벨의 실체에 가장 가까운 문형들.
+//   생성·재작성 프롬프트 공용(genretransfer도 import).
+const LLM_TIC_RULE = `· ★간접화법 문형 금지(이 글투가 AI 지문이다): 단정을 명사화·헷지로 감싸지 마라 — "~다는 것이다/~다는 점이다/~다는 사실" 꼬리표, "~기도 하다/~이기도 하다" 양다리 헷지, "~는 데 있다"("문제는 ~하는 데 있다"), "~로 읽힌다/~로 해석된다/~로 보인다" 해석동사, "달리 말하면/그렇게 보면/요컨대" 메타담화, "~에 달려 있다/~에 가깝다" — 글 전체에서 각각 2회 이하. 대신 그냥 단정하라("학습이 약해진다는 뜻이기도 하다" → "학습이 약해진다").
+· ★추상명사 주어 연쇄 금지: "이 간극이/그 미끄러짐이/이 긴장이"처럼 지시어+추상명사를 주어로 세우는 문장을 연달아 쓰지 마라. 주어는 구체 명사(사람·기관·사물)가 기본.`;
+
 const TONE_KO = {
   assignment: '차분한 학부생 보고서 문체(격식 유지), 종결어미 다변화, 단문은 문단당 1개로 절제(블로그식 단문 폭격 금지). ★문체는 원문을 따른다 — 원문이 평어체(~다/~이다)면 평어체로, 존댓말(~합니다)이면 존댓말로 글 전체를 하나로 통일(섞지 마라). ★자연스러움 강화(지어내지 말 것): (1) 무견해·판단회피 줄이기 — 원문(또는 사용자 메모)에 *이미 있는* 글쓴이의 견해·판단을 hedge("~인 것 같다/~인지 모르겠다") 없이 단정으로 또렷하게 드러내라. ★단, 원문·메모에 없는 새 견해·종합평가·전망("나는 ~라고 본다", "구조적 문제다")을 지어내지 마라 — 근거 없는 견해가 없으면 무견해를 억지로 없애려 하지 말 것. (2) 비인칭·수동 종결("여겨진다/이루어진다/볼 수 있다")을 능동·주체 명시("사람들은 ~한다/나는 ~라고 본다")로 바꿔 관점을 드러내라. (3) 강조·반전(그러나/오히려/사실은)과 인과(그래서/때문에/결국) 접속사로 논점 전환·논리 전개를 살려 기계적 균일성을 깨라. (4) 표준·정형 한자어를 더 자연스러운 우리말로(격식은 유지). (5) 추상 진술은 원문에 실제로 있는 구체 사례·관찰·맥락으로 뒷받침하라 — 단 원문에 없는 사례·수치·출처·일화는 절대 지어내지 마라. 구어체 SNS·블로그체 금지.',
   blog: '친근한 구어체 블로그 말투. 문단은 3문장 이하로 짧게, 사이에 빈 줄. ★5~10자 단문을 불규칙하게 3~4개 꽂아 문장 길이를 들쭉날쭉(burstiness) 만들고, 긴 문장(50자+)과 뒤섞어라 — 같은 길이대 2연속 금지. 의태어(확/슬쩍/푹/툭)도 자연스럽게. ★★종결어미를 계속 바꿔라(가장 중요 — 같은 어미가 줄줄이 이어지면 기계 티가 난다): ~예요/~이에요/~거든요/~더라고요/~죠/~잖아요/~네요/~군요/~ㄹ게요/~ㄹ까요?를 골고루 돌려 쓰고, ★같은 종결어미 2연속 금지, 특히 "~거든요"·"~요"만 반복하지 마라. 사이사이 의문문(…까요?/…잖아요?), 명사로 딱 끊는 체언 종결("결국 신뢰예요"가 아니라 "결국, 신뢰."), 감탄(…!)을 섞어 종결 리듬을 깨라 — 단 같은 짧은 표현을 반복하진 마라. ★말투·리듬을 적극적으로 바꾸되, 어떤 팁·항목·수치도 빼지 말고 원문에 없는 사실·사례·일화는 절대 지어내지 마라.',
@@ -43,7 +50,7 @@ function speakerRuleEn(speakerType) {
   return "Keep the source's first-person voice. You may keep 1-2 natural personal reactions within that voice, but do not fabricate new anecdotes, achievements, or feelings.";
 }
 
-function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '', register = 'mixed' } = {}) {
+function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '', register = 'mixed', evidence = '' } = {}) {
   const tone = (lang === 'en' ? TONE_EN : TONE_KO)[mode] || (lang === 'en' ? TONE_EN : TONE_KO).assignment;
   // 문체 일관성 규칙(§한다체 오믹스 버그): 청크마다 평어/존댓말이 섞이면 그 자체가 AI 신호. 원문 문체로 통일.
   //   blog/resume는 모드 고유 말투(해요/존댓말)를 쓰므로 제외, 학술계열(assignment/thesis)에만 적용.
@@ -83,6 +90,21 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '※ The above are things the writer actually experienced. REPLACE abstract/general statements with these as concrete first-person scenes (time/place/people/action) — do not append extra length; swap generic sentences for concrete ones (keep total length near the source).',
     '★ Rules: (1) ONLY within the notes — invent NO new events, numbers, proper nouns, or feelings. (2) Use each experience exactly ONCE, in the single best-fitting paragraph — never repeat the same experience/sentence across paragraphs (repetition is an AI signal and a violation). (3) Place only as many as there are experiences; do not force into every paragraph.'
   ].join('\n') : '';
+  // ★ evidence(RAG 근거보강, §설계-evidence-grounding): 웹검색으로 실재 확인 + 학생 승인된 공개 사실.
+  //   anchorKo(1인칭 경험 장면화)와 정반대 — 격식 3인칭 인용으로 추상 문장을 *뒷받침*한다. 격식 register 유지가 생명.
+  const evid = (evidence || '').trim();
+  const evidenceKo = evid ? [
+    '', '[검증된 참고 사실 — 출처 확인·승인 완료]',
+    evid,
+    '※ 위는 웹에서 실재가 확인된 공개 사실(통계·조사·기관·제도)이다. 이 글의 추상적·일반론 문장을 이 사실들로 *뒷받침*하라 — 막연한 주장("~할 가능성이 있다", "~로 보인다") 옆에 해당 사실을 자연스럽게 끼워 근거로 세워라.',
+    '★ 규칙: (1) 원문 격식 문체와 3인칭 서술을 유지하라 — 사실을 1인칭 경험·일화로 바꾸지 마라. (2) 사실의 수치·기관명·연도를 정확히 그대로 옮기고, "~조사에 따르면/~연구에서는/~가 발표한"처럼 출처 표지를 붙여라. (3) 각 사실은 가장 잘 맞는 자리에 딱 한 번만 — 같은 사실을 여러 문단에 반복하지 마라. (4) 이 목록에 없는 수치·기관·연구를 추가로 만들지 마라. (5) 원문의 논지·결론 방향은 그대로 두고 사실은 근거로만 써라. (6) 일반론 문장을 사실로 대체·압축하며 짜넣어 전체 분량은 원문 수준을 유지하라.'
+  ].join('\n') : '';
+  const evidenceEn = evid ? [
+    '', '[VERIFIED REFERENCE FACTS — source-checked and approved]',
+    evid,
+    '※ These are real, verified public facts (statistics, surveys, institutions, policies). Use them to SUPPORT the abstract/general claims in the text.',
+    '★ Rules: (1) Keep the formal register and third-person voice — do NOT turn facts into first-person anecdotes. (2) Copy numbers, institution names, and years exactly, with attribution markers ("according to..."). (3) Use each fact exactly once, in the best-fitting spot. (4) Invent NO numbers, institutions, or studies beyond this list. (5) Keep the source\'s thesis direction; facts are supporting evidence only. (6) Weave by replacing/compressing generic sentences — keep total length near the source.'
+  ].join('\n') : '';
 
   if (lang === 'en') {
     return [
@@ -107,6 +129,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
       '',
       `[TONE: ${mode}] ${tone}`,
       anchorEn,
+      evidenceEn,
       '',
       'Rewrite the input below under the FLOOR. Output the body text only — no preamble, no markdown.'
     ].join('\n');
@@ -128,6 +151,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '· ★문장 호흡 극단 비대칭(burstiness): AI는 문장 길이가 고르다. 이걸 깨라. 한 문단 안에서 아주 짧은 문장(2~8자: "그건 다르다.", "전부는 아니다.")과 아주 긴 문장(50자+)을 *일부러* 뒤섞어라. 같은 길이대 문장 2연속도 피하라.',
     '· ★정형 종결 깨기: "~할 수 있다/~할 필요가 있다/~중요하다/~이다"로 단조롭게 끝나는 문장이 줄줄이 이어지지 않게. 종결어미·문장 형태(평서/도치/짧은 단정)를 계속 바꿔라. 같은 종결 2~3연속 금지.',
     '· 예측가능성 파괴(perplexity): AI가 잘 쓰는 매끄럽고 정석적인 표현·상투어("결론적으로", "~라고 할 수 있다", "중요한 것은")를 피하고, 정형 한자어는 더 구체적이고 덜 흔한 우리말로 바꿔라. (원문의 사실·고유명사·수치는 그대로)',
+    LLM_TIC_RULE,
     '· 자연 추임새·전환: "사실/막상/결국/오히려/근데/그런데" 같은 표지로 논점 전환을 살려라 — 단 등간격 반복 금지.',
     '· ★문단 길이 극단 불균형: AI는 문단 길이도 고르다. 1~2문장짜리 짧은 문단과 5~7문장 긴 문단을 일부러 섞어라. 핵심 한 문장은 아예 한 문단으로 따로 떼라.',
     '· 문장 형태 다양화: 모든 문장을 똑같은 완결형으로 끝내지 마라. 가끔 짧은 체언 종결·도치·문장 조각을 섞어 불규칙을 만들되, ★여기 설명을 그대로 베끼지 말고 글의 실제 내용으로 만들어라. ★같은 표현·짧은 조각을 글 전체에서 두 번 이상 반복하지 마라(반복은 즉시 AI 신호 — 한 번 쓴 인상적 표현은 재사용 금지).',
@@ -141,9 +165,10 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '',
     `[톤: ${mode}] ${tone}${b7 ? '\n[문체 통일] 글 전체를 ~합니다/~입니다 존댓말 보고서체로 통일하라(원문이 평어체여도 존댓말로 전환 — 평어·블로그체 혼입 금지).' : regKo}${fhKo}${b7Ko}`,
     anchorKo,
+    evidenceKo,
     '',
     '아래 원문을 위 FLOOR를 지키며 자연스럽게 다시 써라. 본문만 출력(머리말·마크다운 금지).'
   ].join('\n');
 }
 
-module.exports = { buildSystemPrompt };
+module.exports = { buildSystemPrompt, LLM_TIC_RULE };

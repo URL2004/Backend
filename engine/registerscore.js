@@ -50,16 +50,23 @@ function impersonalCloserRatio(text) {
 // ★ 구체성 등급(사장님 L0~L4): 카피킬러 "구체적 근거 부족"은 명사 유무가 아니라 *검증가능 구체*(L3) 유무가 가른다.
 //   L3(검증가능): 수치·연도·%·단위, 라틴 약어(BYD/WHO/ESS), 고유명사+제도(법/조례/조사/지수/청/부/협약), 지역명(시/구/동).
 //   L1(장식 구체): 골목·벤치·놀이터·정류장·공원 등 일반 장면명사(특정성 없음) — 많아도 카피킬러는 '구체 부족'으로 봄.
-const L3_RE = /(\d|[％%]|(?:19|20)\d{2}|[가-힣]\s*(?:만|억|조|명|건|배|차례|위)\b|[A-Z]{2,}|[가-힣]{2,}(?:법|조례|협약|조사|지수|청|부처|위원회)|[가-힣]{2,}(?:시|구|동|군|읍|면|도)\b)/;
+//   ※ 대문자 약어는 둘로 갈린다: buzzword(AI·ESG·SNS·IT…)는 검증가능 구체가 아니다(주제어일 뿐).
+//   실제 고유 약어(WHO·OECD·BYD·SNE…)만 L3. surfaceguard.SEG_ACRONYM과 동일 stoplist로 일관.
+const L3_RE = /(\d|[％%]|(?:19|20)\d{2}|[가-힣]\s*(?:만|억|조|명|건|배|차례|위)\b|[가-힣]{2,}(?:법|조례|협약|조사|지수|청|부처|위원회)|[가-힣]{2,}(?:시|구|동|군|읍|면|도)\b)/;
+const BUZZWORD_ACR = new Set(['AI', 'ESG', 'SNS', 'IT', 'MVP', 'CEO', 'KPI', 'ROI', 'DX']);
 const DECOR_RE = /(골목|벤치|놀이터|정류장|공원|거리|보도|횡단보도|가게|카페|시장|상가|광장|화단|가로등|간판|놀이|산책로|벽|담장)/;
+function hasL3(t) {
+  if (L3_RE.test(t)) return true;
+  const acrs = t.match(/[A-Z]{2,}/g) || [];           // 대문자 약어는 buzzword 제외 후에만 L3
+  return acrs.some(a => !BUZZWORD_ACR.has(a));
+}
 function measureConcreteness(text) {
   const s = sg.splitSentences(text);
   if (!s.length) return { verifiableRatio: 0, decorativeRatio: 0, n: 0 };
   let verifiable = 0, decorative = 0;
   for (const x of s) {
     const t = x.trim();
-    const hasL3 = L3_RE.test(t);
-    if (hasL3) verifiable++;
+    if (hasL3(t)) verifiable++;
     else if (DECOR_RE.test(t)) decorative++;   // 장식 명사만 있고 L3 없음 = 장식적 구체
   }
   return { verifiableRatio: Number((verifiable / s.length).toFixed(3)), decorativeRatio: Number((decorative / s.length).toFixed(3)), n: s.length };

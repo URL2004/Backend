@@ -2175,31 +2175,41 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
 // server-side chunking 오케스트레이션 — 문단별 재작성 + 좌/우 경계 + 청크별 FLOOR + 병합(§7.2).
 // 긴 글에서 프론트 분할(prevContext 300자)을 대체. 청크별로 novelty/화자를 잡고, 병합 후 전체 재검사.
-async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, grounding = false, userNotes = '' } = {}) {
+async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, grounding = false, userNotes = '', evidence = '' } = {}) {
   const floor = require('../engine/floor');
   const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
-  const notes = (userNotes || '').trim();
-  if (notes) optIn = true;
+  // ★ 두 종류의 허용 추가재료(§설계-evidence-grounding):
+  //   memo = 사용자 경험 메모(1인칭 장면화, optIn으로 화자 게이트 개방)
+  //   evid = 웹검증+학생승인 사실(3인칭 격식 인용, 화자 게이트는 닫힌 채 유지)
+  //   notes = 둘의 합집합 — 기존 allowedExtra 사이트 전부가 이 변수를 쓰므로 "허용 세계 = 원문∪메모∪승인사실"이 자동 성립.
+  const memo = (userNotes || '').trim();
+  const evid = (evidence || '').trim();
+  const notes = [memo, evid].filter(Boolean).join('\n');
+  if (memo) optIn = true;
+  // ★ 승인 사실은 "원문의 일부"다(§설계-evidence-grounding): FLOOR 기준 원문 = 원문∪승인사실.
+  //   효과 ①분량 정책이 사실 포함 길이를 기준으로 잡혀 위빙이 과확장으로 안 찍힘
+  //        ②measureLostFacts가 승인 사실의 수치·기관 누락을 위반으로 잡음 = 사실 생존 강제(repair가 깎으면 되살림).
+  const textF = evid ? text + '\n\n' + evid : text;
   const contract = require('../engine/contract').buildContract(text, { mode, lang, optIn }); // 단일 진실
   const povSeed = contract.povSeed;
   const chunks = splitChunks(text);
 
-  const buildSys = (un) => floorV2
-    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register })
+  const buildSys = (un, ev) => floorV2
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev })
     : getHumanizeSystem(mode, lang);
-  let humanizeSystem = buildSys('');  // 기본(메모 없음)
+  let humanizeSystem = buildSys('', '');  // 기본(메모·evidence 없음)
+  const topicSim = (a, b) => {
+    const ta = new Set((a.match(/[가-힣]{2,}/g) || []));
+    if (!ta.size) return 0;
+    let hit = 0; const seen = new Set();
+    for (const t of (b.match(/[가-힣]{2,}/g) || [])) if (ta.has(t) && !seen.has(t)) { seen.add(t); hit++; }
+    return hit / ta.size;
+  };
   // ★ 메모 청크별 분배(§v4): 각 경험을 *주제가 가장 맞는* 미사용 청크 하나에만 배정.
   //   같은 경험이 여러 청크에 중복 위빙("동일 내용 과도한 반복")되던 문제 + 엉뚱한 문단에 박히는 문제 해결.
   const chunkNotes = {};
-  if (floorV2 && notes) {
-    const noteLines = notes.split('\n').map(l => l.trim()).filter(Boolean);
-    const topicSim = (a, b) => {
-      const ta = new Set((a.match(/[가-힣]{2,}/g) || []));
-      if (!ta.size) return 0;
-      let hit = 0; const seen = new Set();
-      for (const t of (b.match(/[가-힣]{2,}/g) || [])) if (ta.has(t) && !seen.has(t)) { seen.add(t); hit++; }
-      return hit / ta.size;
-    };
+  if (floorV2 && memo) {
+    const noteLines = memo.split('\n').map(l => l.trim()).filter(Boolean);
     const used = new Set();
     for (const ln of noteLines) {
       let best = -1, bestScore = 0.05;  // 최소 유사도 미만이면 억지 배치 안 함
@@ -2209,6 +2219,27 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         if (s > bestScore) { bestScore = s; best = i; }
       });
       if (best >= 0) { chunkNotes[best] = ln; used.add(best); }  // 안 맞으면 미배치(생성 강요 X)
+    }
+  }
+  // ★ evidence 청크별 분배: 메모와 달리 사실은 다수(15~25개)라 청크당 1개 제한이면 L3가 못 오름 →
+  //   청크당 최대 4개까지 주제 매칭 배정(서로 다른 사실이 한 문단에 오는 건 무해; 같은 사실 반복이 유해).
+  //   결론 청크 제외(결론부 posNote "새 사실 추가 금지"와 충돌 + 카피킬러도 결론 일반론은 본문 근거로 희석).
+  const chunkEvid = {};
+  if (floorV2 && evid) {
+    const evidLines = evid.split('\n').map(l => l.trim()).filter(Boolean);
+    // 사실 예산 = 청크 크기 비례(250자당 1개, 최대 3): 200자 문단에 사실 4개를 끼우면 분량이 2~3배가 돼
+    //   위빙 자체가 불가능하다(1차 실측: 17개 중 2개만 생존). 짧은 문단엔 1개만.
+    const capOf = (c) => Math.min(3, Math.max(1, Math.floor(c.text.replace(/\s+/g, '').length / 250)));
+    for (const ln of evidLines) {
+      let best = -1, bestScore = 0.03;
+      chunks.forEach((c, i) => {
+        if ((chunkEvid[i] || []).length >= capOf(c)) return;
+        if (!(c.position === 'body' || c.position === 'single' || c.position === 'intro')) return;
+        if (c.text.replace(/\s+/g, '').length < 80) return;  // 제목·소제목·한줄 청크엔 사실 위빙 금지
+        const s = topicSim(ln, c.text);
+        if (s > bestScore) { bestScore = s; best = i; }
+      });
+      if (best >= 0) (chunkEvid[best] = chunkEvid[best] || []).push(ln);  // 안 맞으면 미배치
     }
   }
   const tool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(mode, lang);  // floorV2 lean tool(§리뷰#7)
@@ -2232,12 +2263,26 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       (prevRaw ? `[앞 부분 원문 — 문맥 참고, 다시 쓰지 말 것]\n...${tail(prevRaw, 150)}\n\n` : '') +
       (nextRaw ? `[뒤에 이어질 원문 — 손대지 말 것]\n${head(nextRaw, 100)}...\n\n` : '');
     const userContent = `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
-    const chunkSys = chunkNotes[i] ? buildSys(chunkNotes[i]) : humanizeSystem;  // 이 청크에 배정된 경험만 위빙
+    const chunkSys = (chunkNotes[i] || chunkEvid[i])
+      ? buildSys(chunkNotes[i] || '', (chunkEvid[i] || []).join('\n'))   // 이 청크에 배정된 경험·사실만 위빙
+      : humanizeSystem;
 
     // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패하면 1회 더 재시도하고,
     //   그래도 실패할 때만 그 청크만 원문으로 폴백한다.
     // claudecode(flaky·간헐 거부)는 3회, API는 2회 시도 후에만 raw 폴백.
     const MAX_ATTEMPTS = process.env.LLM_BACKEND === 'claudecode' ? 3 : 2;
+    // ★ 기준 원문 = 청크 ∪ 배정사실(cRaw): 분량 기준이 사실 포함 길이로 잡히고, lostFacts가 사실 누락을
+    //   위반으로 잡아 repair가 사실을 "깎는" 게 아니라 "되살리는" 방향으로 작동(§설계-evidence-grounding).
+    //   폴백 시에도 승인 사실은 원문 그대로 덧붙인다(승인사실 verbatim 인용 = 무날조, 전체 lostFacts 정합).
+    const evidHere = (chunkEvid[i] || []).join('\n');
+    const cRaw = evidHere ? c.text + '\n' + evidHere : c.text;
+    const rawWithEvid = evidHere ? c.text + ' ' + evidHere.replace(/\n/g, ' ') : c.text;
+    // ★ 제목·소제목 청크는 LLM에 안 보내고 그대로 통과(보고서 장르 실측 버그 2건의 공통 원인):
+    //   ①posNote("※ 본문이다")를 출력에 베껴 넣음 ②"뒤에 이어질 원문" 미리보기를 패러프레이즈해
+    //   문단을 새로 만들고, 다음 청크가 같은 내용을 또 재작성 → 문단 중복·분량 폭증(144~162%).
+    //   판정: 60자 미만 + 문장 종결이 아님(제목은 명사로 끝남: "서론"·"연구의 필요성").
+    const bare = c.text.replace(/\s+/g, '');
+    if (bare.length < 60 && !/[.!?…다요죠함임음까]$/.test(bare)) { c.outputText = c.text; return; }
     let chunkDone = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !chunkDone; attempt++) {
       try {
@@ -2245,21 +2290,19 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         const r = extractClaudeResult(data, tool.name);
         if (floor.looksLikeRefusal(r.outputText)) throw new Error('model-refusal'); // ★ 거부문이 출력에 박히는 사고 차단 → 재시도/폴백
         await applyPassC(r, lang, signal);
-        c.outputText = r.outputText || c.text;
+        c.outputText = r.outputText || rawWithEvid;
         chunkDone = true;
       } catch (e) {
         if (signal?.aborted) throw e;
         if (attempt < MAX_ATTEMPTS - 1) { await new Promise(r => setTimeout(r, 800 * (attempt + 1))); continue; } // 백오프 후 재시도
-        c.outputText = c.text; c.fellBack = true; c.fallbackReason = /refusal/i.test(e.message) ? 'refusal' : 'llm-error';
+        c.outputText = rawWithEvid; c.fellBack = true; c.fallbackReason = /refusal/i.test(e.message) ? 'refusal' : 'llm-error';
       }
     }
-    if (!chunkDone) return; // 재시도까지 실패 → 원문 폴백, repair/재검증 건너뜀(원문은 위반 없음)
-
-    // 청크별 FLOOR (novelty vs 청크 raw, pov vs 전체 seed) — 1회 repair. chunkLevel: length_short 제외(§리뷰#18)
-    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
+    if (!chunkDone) return; // 재시도까지 실패 → 원문(+승인사실) 폴백, repair/재검증 건너뜀
+    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: cRaw, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
     if (viol.length) {
       try {
-        const ru = floor.buildFloorRefineUser(c.text, c.outputText, viol);
+        const ru = floor.buildFloorRefineUser(cRaw, c.outputText, viol);
         const rd = await callClaude({ userText: ru, systemText: humanizeSystem, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r2 = extractClaudeResult(rd, tool.name);
         await applyPassC(r2, lang, signal);
@@ -2267,11 +2310,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       } catch (e) { if (signal?.aborted) throw e; }
       // ★ repair 재검증 + raw fallback(§리뷰#3): 고치고도 날조·소실·화자주입이 남으면 원문 청크로 폴백
       //   (휴머나이징 포기 < 날조/소실 노출 방지 — FLOOR가 탐지기 우회보다 우선).
-      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: c.text, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
+      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: cRaw, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
       const HARD = new Set(['novelty', 'lost_facts', 'pov', 'fake_ref']);
       const residual = after.filter(x => HARD.has(x.type));
       if (residual.length) {
-        c.outputText = c.text;            // 원문 그대로 — 이 청크는 사실·화자가 정의상 보존됨
+        c.outputText = rawWithEvid;       // 원문(+승인사실 verbatim) — 사실·화자가 정의상 보존됨
         c.fellBack = true;
         c.fallbackReason = residual.map(x => x.type).join(',');
       }
@@ -2293,9 +2336,9 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(text, merged);
   // 트리거 판단용 결정론 측정(병합 기준).
   result.floorNovelty = floor.measureNovelty(text, merged, notes);
-  result.floorLength = floor.measureLength(text, merged, mode);
+  result.floorLength = floor.measureLength(textF, merged, mode);
   result.repetition = floor.measureRepetition(merged);
-  result.lostFacts = floor.measureLostFacts(text, merged);
+  result.lostFacts = floor.measureLostFacts(textF, merged);
 
   // P2-c: semanticJudge 트리거(§리뷰#5) — soft drift + 결정론 위험신호. 닫힌세계=전체 ledger.
   //   span은 nearest_chunk_id로 매핑(§7.2).
@@ -2308,8 +2351,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       // ★ judge 재작성이 결정론 FLOOR를 악화시키면 폐기하고 병합본 유지(FLOOR>우회).
       let judgedOut = jr.outputText, repairRejected = false;
       if (judgedOut !== merged) {
-        const preV = floor.collectFloorViolations({ result: { outputText: merged }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
-        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floor.collectFloorViolations({ result: { outputText: merged }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length > preV.length) { judgedOut = merged; repairRejected = true; }
       }
       if (judgedOut !== merged) result.outputText = judgedOut;
@@ -2341,7 +2384,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ B7 모드: grounding은 "말투 유지"로 합니다체를 한다체로 되돌리고 격식엔 도움도 안 됨 → skip.
   if (grounding && (!skipPasses || groundingForce) && process.env.ASSIGNMENT_B7 !== '1') {
     result.grounding = await applyGrounding({
-      result, rawText: text, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes
+      result, rawText: textF, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes
     });
   }
 
@@ -2353,8 +2396,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal });
       if (optMode === 'apply' && opt.text && opt.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
-        const postV = floor.collectFloorViolations({ result: { outputText: opt.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: opt.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = opt.text;
       }
       result.optimize = { mode: optMode, changed: opt.changed, targets: opt.targets, log: opt.log };
@@ -2367,8 +2410,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const pol = await require('../engine/polish').polishPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (pol.text && pol.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
-        const postV = floor.collectFloorViolations({ result: { outputText: pol.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: pol.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = pol.text;
       }
       result.polish = { repaired: pol.repaired, stats: pol.stats };
@@ -2382,8 +2425,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const pbr = await require('../engine/phrasebudget').repairPhraseOveruse(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (pbr.text && pbr.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
-        const postV = floor.collectFloorViolations({ result: { outputText: pbr.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: pbr.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = pbr.text;
       }
       result.phrasebudgetC = { repaired: pbr.repaired };
@@ -2402,12 +2445,27 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       const _burstLowCV = process.env.BURST_LOWCV ? parseFloat(process.env.BURST_LOWCV) : 0.6;
       const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: _burstLowCV });
       if (br.text && br.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
-        const postV = floor.collectFloorViolations({ result: { outputText: br.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: br.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = br.text;
       }
       result.burstiness = { repaired: br.repaired, attempted: br.attempted };
     } catch (e) { if (signal?.aborted) throw e; result.burstiness = { error: e.message }; }
+  }
+
+  // ★ 격식 표현예산(formalbudget): 판단프레임("A가 아니라 B" 누출)·punch 재사용("그것이 핵심이다"×N)·
+  //   정형 마무리 반복을 결정론 검출 → 초과 segment만 국소 다양화(Haiku) → FLOOR 재검.
+  //   카피킬러 % 레버 아님(격식 밴드 73~95 확정) — "동일 표현 반복" 품질 결함 제거가 목적. FORMALBUDGET=0 해제.
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.FORMALBUDGET !== '0') {
+    try {
+      const fb = await require('../engine/formalbudget').formalBudgetPass(result.outputText, { lang, signal, floor, rawText: textF, allowedExtra: notes });
+      if (fb.text && fb.text !== result.outputText) {
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: fb.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        if (postV.length <= preV.length) result.outputText = fb.text;
+      }
+      result.formalBudget = { repaired: fb.repaired, attempted: fb.attempted, before: fb.before, after: fb.after };
+    } catch (e) { if (signal?.aborted) throw e; result.formalBudget = { error: e.message }; }
   }
 
   // ★★ columnCleanup(번호리스트 해체+punch 병합) 실측 폐기(2026-06): EV 73→94% 폭등에 기여. punch 병합·de-list가
@@ -2416,8 +2474,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const cr = await require('../engine/columncleanup').columnCleanupPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (cr.text && cr.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
-        const postV = floor.collectFloorViolations({ result: { outputText: cr.text }, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const postV = floor.collectFloorViolations({ result: { outputText: cr.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = cr.text;
       }
       result.columnCleanup = { repaired: cr.repaired, attempted: cr.attempted, globalPunch: cr.globalPunch };
@@ -2469,7 +2527,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ GPTZero 전용 2차 우회 패스(§우회): 병합 결과에 적용 → FLOOR 재검사 → 깨지면 폐기.
   if (antiDetect) {
     result.antiDetect = await applyAntiDetect({
-      result, rawText: text, povSeed, optIn, mode, lang, speakerType: contract.speakerType, signal, floor, allowedExtra: notes
+      result, rawText: textF, povSeed, optIn, mode, lang, speakerType: contract.speakerType, signal, floor, allowedExtra: notes
     });
   }
 
@@ -2507,11 +2565,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const finalOut = result.outputText;
   result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);
   result.floorNovelty = floor.measureNovelty(text, finalOut, notes);
-  result.floorLength = floor.measureLength(text, finalOut, mode);
+  result.floorLength = floor.measureLength(textF, finalOut, mode);
   result.repetition = floor.measureRepetition(finalOut);
-  result.lostFacts = floor.measureLostFacts(text, finalOut);
-  const floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode, allowedExtra: notes });
-  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode, povSeed, optIn, allowedExtra: notes });
+  result.lostFacts = floor.measureLostFacts(textF, finalOut);
+  const floorViolations = floor.collectFloorViolations({ result, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+  result.floorReport = floor.buildFloorReport({ result, rawText: textF, mode, povSeed, optIn, allowedExtra: notes });
   const sguard = require('../engine/surfaceguard');
   result.surface = sguard.buildSurfaceReport(finalOut);
   result.inputRisk = sguard.classifyInputRisk(text);

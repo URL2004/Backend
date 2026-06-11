@@ -74,6 +74,19 @@ function _bigrams(s) {
 const _DEDUP_FUZZY_SIM = 0.6;     // char-bigram Jaccard(=floor.FUZZY_SIM) — 어미·소수 단어만 다른 근접중복
 const _DEDUP_MIN_LEN = 16;        // 정규화 길이 하한(=floor.FUZZY_MIN_LEN)
 
+// 꼬리 에코: 직전 문장의 꼬리를 짧은 파편으로 되풀이("…신뢰로 전환하는 일이다. 신뢰로 전환하는 일.").
+//   exact/fuzzy 둘 다 못 잡는 사각(파편이 15자 미만 + 장문 대비 jaccard 낮음). 정규화 파편이
+//   직전 문장에 부분문자열로 들어있거나 bigram이 거의 전부(≥0.85) 직전 문장에 포함되면 에코로 삭제.
+function _isTailEcho(key, prevKey) {
+  if (!prevKey || key.length < 4 || key.length > 20) return false;
+  if (key.length >= prevKey.length * 0.7) return false;     // 길이가 비슷하면 에코 아님(fuzzy 영역)
+  if (prevKey.includes(key)) return true;
+  const g = _bigrams(key), pg = _bigrams(prevKey);
+  if (g.size < 3) return false;
+  let inP = 0; for (const x of g) if (pg.has(x)) inP++;
+  return inP / g.size >= 0.85;
+}
+
 function dedupeSentences(text) {
   const paras = (text || '').split(/\n{2,}/);
   const keptNorm = new Set();     // 정확 중복용
@@ -82,9 +95,11 @@ function dedupeSentences(text) {
   const out = paras.map(p => {
     const parts = p.split(/(?<=[.!?。])\s+/);          // floor.measureRepetition과 동일 문장분리
     const keep = [];
+    let prevKey = '';                                   // 문단 내 직전 보존 문장(에코 판정용)
     for (const part of parts) {
       const key = _normSent(part);
-      if (key.length < 15) { keep.push(part); continue; }   // 짧은 문장은 exact/fuzzy 대상 아님
+      if (_isTailEcho(key, prevKey)) { removed++; continue; }  // 꼬리 에코 → 삭제
+      if (key.length < 15) { keep.push(part); prevKey = key; continue; }   // 짧은 문장은 exact/fuzzy 대상 아님
       if (keptNorm.has(key)) { removed++; continue; }        // 정확 중복 → 후속 삭제
       let dup = false;
       if (key.length >= _DEDUP_MIN_LEN) {
@@ -95,6 +110,7 @@ function dedupeSentences(text) {
       if (dup) { removed++; continue; }                      // 근접 중복 → 후속 삭제
       keptNorm.add(key);
       keep.push(part);
+      prevKey = key;
     }
     return keep.join(' ').trim();
   }).filter(p => p.length > 0);

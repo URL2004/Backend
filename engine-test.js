@@ -24,6 +24,9 @@ const doGrounding = process.env.GROUNDING === '1'; // GROUNDING=1 → source-int
 // NOTES=파일경로 또는 NOTES_TEXT=인라인 → 사용자 경험 메모(추상 문단 구체화 재료, novelty 허용)
 let userNotes = process.env.NOTES_TEXT || '';
 if (!userNotes && process.env.NOTES && fs.existsSync(process.env.NOTES)) userNotes = fs.readFileSync(process.env.NOTES, 'utf8');
+// EVIDENCE=파일경로 또는 EVIDENCE_TEXT=인라인 → 웹검증+학생승인 사실(3인칭 격식 인용, §설계-evidence-grounding). CHUNK=1 경로 전용.
+let evidence = process.env.EVIDENCE_TEXT || '';
+if (!evidence && process.env.EVIDENCE && fs.existsSync(process.env.EVIDENCE)) evidence = fs.readFileSync(process.env.EVIDENCE, 'utf8');
 
 const [, , fileArg, modeArg = 'assignment', langArg = 'ko'] = process.argv;
 if (!fileArg) {
@@ -53,7 +56,7 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   let out;
   try {
     out = chunked
-      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect, grounding: doGrounding, userNotes })
+      ? await analyze.runHumanizeChunked({ text, mode: modeArg, lang: langArg, floorV2: true, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect, grounding: doGrounding, userNotes, evidence })
       : await analyze.runHumanize({ text, mode: modeArg, lang: langArg, floorV2, optIn, judge: doJudge ? 'force' : false, antiDetect: doAntiDetect, grounding: doGrounding, userNotes });
   } catch (e) {
     console.error('❌ runHumanize 실패:', e.message);
@@ -97,6 +100,11 @@ function pct(n) { return typeof n === 'number' ? (n * 100).toFixed(0) + '%' : '�
   if (r.polish) {
     const p = r.polish;
     console.log(`✨ polish 패스: ${p.error ? 'ERROR ' + p.error : '수리 ' + p.repaired + ' (phrase' + (p.stats?.phrase ?? 0) + '·register' + (p.stats?.register ?? 0) + '·압축' + (p.stats?.compression ?? 0) + ')'}`);
+    line();
+  }
+  if (r.formalBudget) {
+    const fb = r.formalBudget;
+    console.log(`📏 격식 표현예산: ${fb.error ? 'ERROR ' + fb.error : `수리 ${fb.repaired}/${fb.attempted} | 초과 ${fb.before?.length ?? 0}→${fb.after?.length ?? 0}건${fb.before?.length ? ' [' + fb.before.map(o => o.key + ' ' + o.count + '/' + o.budget).join(', ') + ']' : ''}`}`);
     line();
   }
   if (r.acceptanceGate) {

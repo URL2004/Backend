@@ -1,0 +1,828 @@
+// [engine/genretransfer.js] Genre Profile Transfer — 문서 장르 변환기 (사장님 설계 2026-06-10)
+// ────────────────────────────────────────────────────────────────
+// 가설: 카피킬러는 "사람이 쓴 문장"보다 "사람이 쓴 문서처럼 생긴 구조"를 본다.
+//   근거: 한은 보고서(완전 비인칭 격식)=0~2% vs 우리 연구보고서 골격=94~95%(evidence 넣어도).
+//   사람 저점수 문서의 구조 통계(실측): 괄호 삽입구 4.7~8.1/1000자(우리 0.4), 의문문 0.9~3.5(우리 0.12),
+//   숫자 칼럼 5~13·데이터보고서 61~68, 비정형 소제목, 문단별 역할 다양(사례/반박/자료/의견), 미완결 문단.
+// 기존 휴머나이저와 다른 점: 문단 재작성이 아니라 ①장르 라우팅 ②document plan(골격 재구성)
+//   ③section role별 재작성 ④artifactGuard(연구보고서 잔재 제거) ⑤FLOOR/judge로 사실 보존.
+// ★ 경쟁가설 주의: "카피킬러=LLM 토큰분포" 가설이 맞으면 장르 전환도 80%대 유지 → 이 모듈의 MVP 실측이 판별 실험.
+
+const sg = require('./surfaceguard');
+const floor = require('./floor');
+const { llmText, llmJSON, buildSoftClaimLedger, semanticJudge, MODEL } = require('./judge');
+
+// ── 장르 프로파일(사람 저점수 문서 실측 기반 목표 통계) ──
+const GENRE_PROFILES = {
+  news_explainer: {
+    label: '뉴스 해설형 과제문',
+    lead: '사건·쟁점을 첫 문단에서 직격(배경 설명으로 시작 금지)',
+    roles: ['lead', 'fact', 'context', 'contrast', 'interpretation', 'proposal'],
+    targetStats: { parenPer1000: 5, questionPer1000: 1.0, numberPer1000: 10 },
+    targetAIRange: [50, 70],
+  },
+  policy_column: {
+    label: '정책 칼럼형',
+    lead: '주장 또는 반론을 먼저 던짐',
+    roles: ['claim', 'counterargument', 'evidence', 'interpretation', 'proposal'],
+    targetStats: { parenPer1000: 6, questionPer1000: 1.5, numberPer1000: 8 },
+    targetAIRange: [40, 65],
+  },
+  data_report: {
+    label: '데이터 보고서형',
+    lead: '핵심 수치 요약으로 시작',
+    roles: ['summary', 'indicator', 'comparison', 'cause', 'outlook'],
+    targetStats: { parenPer1000: 12, questionPer1000: 0, numberPer1000: 40 },
+    targetAIRange: [0, 30],
+  },
+};
+
+// ── 연구보고서 골격 감지(카피킬러 최악 골격 — AI학습 보고서 94~95% 증거) ──
+const BAD_RESEARCH_FRAME = [
+  /[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*\.\s*(서론|이론적\s*배경|결론|논의|제언)/,
+  /연구의\s*필요성/, /이론적\s*배경/, /본\s*연구[는의]/, /연구\s*문제/, /연구\s*방법/,
+  /가상\s*설문/, /구체적인\s*연구\s*목적은/, /시사점[을은]?\s*(제시|도출)/,
+  /첫째[,.][\s\S]{0,400}둘째[,.][\s\S]{0,400}셋째[,.]/,
+];
+function detectBadFrame(text) {
+  const hits = [];
+  for (const re of BAD_RESEARCH_FRAME) { const m = (text || '').match(re); if (m) hits.push(m[0].replace(/\s+/g, ' ').slice(0, 30)); }
+  return { bad: hits.length > 0, hits };
+}
+
+// ── 문서 구조 통계(사람 프로파일 대비 진단) ──
+function extractDocProfile(text) {
+  const chars = ((text || '').match(/[가-힣]/g) || []).length || 1;
+  const paras = (text || '').split(/\n{2,}/).map(p => p.trim()).filter(p => p.replace(/\s+/g, '').length > 20);
+  const lens = paras.map(p => p.replace(/\s+/g, '').length);
+  const mean = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : 0;
+  const cv = lens.length > 1 ? Math.sqrt(lens.map(l => (l - mean) ** 2).reduce((a, b) => a + b, 0) / lens.length) / (mean || 1) : 0;
+  // 교훈형/정형 마무리로 닫는 문단 비율
+  const formulaEnd = paras.filter(p => /(필요하다|중요하다|해야\s*한다|것이다|셈이다)\s*\.?$/.test(p)).length;
+  return {
+    hangulChars: chars,
+    parenPer1000: Number(((text.match(/\(/g) || []).length / chars * 1000).toFixed(1)),
+    questionPer1000: Number(((text.match(/\?/g) || []).length / chars * 1000).toFixed(2)),
+    numberPer1000: Number(((text.match(/\d[\d,.]*/g) || []).length / chars * 1000).toFixed(1)),
+    paragraphs: paras.length,
+    paragraphLenCV: Number(cv.toFixed(2)),
+    formulaEndingRatio: Number((paras.length ? formulaEnd / paras.length : 0).toFixed(2)),
+    badFrame: detectBadFrame(text),
+  };
+}
+
+// ── 1) Document Plan: 원문 주장(ledger)+승인근거를 장르 골격의 section role에 배정 ──
+async function buildDocumentPlan(rawText, { genre = 'news_explainer', evidenceList = [], ledger, lang = 'ko', signal } = {}) {
+  const profile = GENRE_PROFILES[genre];
+  const claims = (ledger?.claims || []).map((c, i) => `C${i + 1}. ${c.claim || c.text || ''}`).join('\n');
+  const evid = evidenceList.map((e, i) => `E${i + 1}. ${e}`).join('\n');
+  const system = `너는 문서 구조 편집자다. 아래 원문(연구보고서 골격)을 "${profile.label}" 장르의 문서로 재구성하는 **계획**을 세운다. 내용·사실은 그대로, 골격만 바꾼다.
+규칙:
+· 제목: 쟁점을 드러내는 도발적·구체적 제목(질문형 가능). "~에 미치는 영향 연구" 같은 보고서 제목 금지.
+· 섹션 역할 풀: ${profile.roles.join(', ')}. lead가 첫 섹션(소제목 없음, ${profile.lead}).
+· 섹션 5~7개. 소제목은 짧고 비정형(명사구·질문·단정 섞기). "서론/이론적 배경/결론" 금지.
+· 원문 주장(C#)을 전부 섹션에 배정하라 — 하나도 버리지 마라(여러 섹션 배정 가능).
+· 승인 근거(E#)는 그 주장을 뒷받침할 섹션에 배정(리드에 1개 이상).
+· 같은 역할 섹션이 연달아 오지 않게.
+JSON만 출력: {"title":"...","sections":[{"role":"lead","heading":null,"claims":["C1",...],"evidence":["E1",...],"targetChars":600},{"role":"fact","heading":"...","claims":[...],"evidence":[...],"targetChars":900},...]}`;
+  const user = `[원문]\n${rawText}\n\n[원문 주장 목록]\n${claims}\n\n[승인 근거 목록]\n${evid || '(없음)'}`;
+  const plan = await llmJSON({ system, user, signal, maxTokens: 3000, model: MODEL });
+  if (!plan || !Array.isArray(plan.sections) || !plan.sections.length) throw new Error('genre plan 생성 실패');
+  // ① 중복 배정 제거: 같은 주장/근거가 여러 섹션에 가면 내용이 두 번 쓰임(1차 실측: 오프로딩·45.9% 중복).
+  //   첫 등장 섹션만 유지.
+  const seenC = new Set(), seenE = new Set();
+  plan.sections.forEach(s => {
+    s.claims = (s.claims || []).filter(id => !seenC.has(id) && seenC.add(id));
+    s.evidence = (s.evidence || []).filter(id => !seenE.has(id) && seenE.add(id));
+  });
+  // ② 커버리지 보정: 미배정 주장/근거는 주제 유사도가 가장 높은 섹션에 추가(사실 소실 방지)
+  const place = (textOf, id) => {
+    const tok = new Set(((textOf || '').match(/[가-힣]{2,}/g) || []));
+    let best = Math.min(1, plan.sections.length - 1), bestScore = -1;
+    plan.sections.forEach((s, si) => {
+      if (si === 0) return; // lead 제외
+      const st = ((s.heading || '') + ' ' + (s.role || '')).match(/[가-힣]{2,}/g) || [];
+      let hit = 0; for (const t of st) if (tok.has(t)) hit++;
+      if (hit > bestScore) { bestScore = hit; best = si; }
+    });
+    return best;
+  };
+  (ledger?.claims || []).forEach((c, i) => {
+    const id = `C${i + 1}`;
+    if (!seenC.has(id)) { const b = place(c.claim, id); (plan.sections[b].claims = plan.sections[b].claims || []).push(id); seenC.add(id); }
+  });
+  evidenceList.forEach((e, i) => {
+    const id = `E${i + 1}`;
+    if (!seenE.has(id)) { const b = place(e, id); (plan.sections[b].evidence = plan.sections[b].evidence || []).push(id); seenE.add(id); }
+  });
+  // ③ 분량 스케일링: 섹션 합계가 원문의 ~85%가 되도록 targetChars 보정(1차 실측: 39%로 과소 — 미제출감).
+  const rawHangul = ((rawText.match(/[가-힣]/g) || []).length) || 1;
+  const desired = Math.round(rawHangul * 0.95);
+  const total = plan.sections.reduce((a, s) => a + (Number(s.targetChars) || 600), 0) || 1;
+  plan.sections.forEach(s => { s.targetChars = Math.max(450, Math.round((Number(s.targetChars) || 600) * desired / total)); });
+  return plan;
+}
+
+// ── 2) Section role별 재작성 ──
+const ROLE_GOAL = {
+  lead: '쟁점을 곧장 제시한다. 배경 설명·"현대 사회에서"식 도입 금지. 2~3문단.',
+  fact: '수치·조사·사례 중심으로 현황을 보여준다. 인용 표지("~조사에 따르면", "~가 발표한")를 자연스럽게.',
+  context: '배경과 맥락을 짧게 깔되, 자료·연도·기관을 끼워 넣는다.',
+  contrast: '반론·우려·엇갈리는 지점을 선제적으로 다룬다.',
+  counterargument: '예상 반박을 먼저 제시하고 원문 논지로 받아친다.',
+  claim: '원문의 핵심 주장을 단정적으로 먼저 던진다.',
+  evidence: '주장을 받치는 근거·수치를 배치한다.',
+  interpretation: '수치·사례가 무엇을 뜻하는지 원문 논지 안에서 해석한다.',
+  proposal: '금지·당위 나열 대신 구체적 기준·방안으로 마무리한다.',
+  summary: '핵심 수치를 요약한다.', indicator: '지표를 항목별로 짚는다.', comparison: '비교·대조한다.', cause: '원인을 짚는다.', outlook: '전망으로 닫는다.',
+};
+
+function buildSectionPrompt(plan, section, claimTexts, evidTexts, genre, lang) {
+  const profile = GENRE_PROFILES[genre];
+  const system = `너는 "${profile.label}" 글을 쓰는 한국어 필자다. 주어진 재료(원문 주장+승인 근거)만으로 문서의 한 섹션을 쓴다.
+[문체 — 과제 해설체]
+· 한다체(~다/~이다) 기본. 격식은 유지하되 연구보고서 어법 금지: "본 연구는/연구의 필요성/이론적 배경/첫째,…둘째,…셋째,…" 나열 금지.
+· ★괄호 삽입구를 자연스럽게 써라(1000자당 4~8개 수준) — 부연, 연도·기관, 단서, 짧은 예시를 괄호로. 사람 문서의 흔적이다.
+· 수사적 의문문은 글 전체에 1~2개만(이 섹션에 꼭 넣으라는 뜻 아님). "과연 ~인가?" 패턴 금지.
+· 인용 표지("~에 따르면", "~라고 답했다")로 근거를 문장 흐름 안에 녹여라 — 근거를 나열하지 말고 논점 전개의 재료로.
+· 문단 길이를 들쭉날쭉하게(한 문단짜리 단락 허용). ★일부 문단은 결론 없이 다음 쟁점으로 넘어가며 끝내라 — 매 문단을 교훈으로 닫지 마라.
+· 같은 수사 구조("문제는 ~가 아니라", "~이 핵심이다")를 반복하지 마라. 이 지시문의 표현을 그대로 베끼지 마라.
+[절대 규칙 — FLOOR]
+· 아래 재료에 없는 사실·수치·기관·연구·사례를 만들지 마라. 승인 근거의 수치·기관명·연도는 정확히 그대로.
+· 1인칭 경험·일화 금지(비인칭 유지). 원문 논지의 방향을 바꾸지 마라.
+· 출처 표기는 재료에 실제로 있는 것만.
+[이 섹션]
+· 역할: ${section.role} — ${ROLE_GOAL[section.role] || '내용을 전개한다.'}
+· 분량: 문단 ${Math.max(2, Math.round((section.targetChars || 700) / 320))}개(각 3~6문장), 공백 제외 약 ${section.targetChars || 700}자. ★이보다 눈에 띄게 짧으면 실패다 — 배정된 주장·근거를 충분히 풀어 써라(압축 요약 금지).
+· 출력: 본문만. 소제목·머리말·마크다운 금지(소제목은 시스템이 따로 붙인다).`;
+  const user = `[문서 제목(참고)]\n${plan.title}\n\n[이 섹션에 배정된 원문 주장]\n${claimTexts.join('\n') || '(없음)'}\n\n[이 섹션에 배정된 승인 근거]\n${evidTexts.join('\n') || '(없음)'}`;
+  return { system, user };
+}
+
+// ── 3) artifactGuard: 연구보고서 잔재·구조 통계 검사 ──
+function measureArtifacts(text, genre = 'news_explainer') {
+  const p = extractDocProfile(text);
+  const target = GENRE_PROFILES[genre]?.targetStats || {};
+  return { ...p, target, badFrameCount: p.badFrame.hits.length };
+}
+
+// ── 메인: 장르 변환 ──
+async function genreTransfer(rawText, { genre = 'news_explainer', evidence = '', lang = 'ko', signal, concurrency = 3 } = {}) {
+  const evidenceList = (evidence || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const allowed = evidence || '';
+  const textF = evidence ? rawText + '\n\n' + evidence : rawText;
+
+  const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
+  const plan = await buildDocumentPlan(rawText, { genre, evidenceList, ledger, lang, signal });
+
+  // 섹션 재작성(동시 3) — 섹션별 novelty 게이트(새 사실 생기면 1회 재시도)
+  const out = new Array(plan.sections.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < plan.sections.length) {
+      const i = next++;
+      const s = plan.sections[i];
+      const claimTexts = (s.claims || []).map(id => {
+        const c = ledger.claims[parseInt(String(id).replace(/\D/g, ''), 10) - 1];
+        return c ? `· ${c.claim || ''}${c.evidence_text ? `\n  (원문 근거: ${c.evidence_text})` : ''}` : null;
+      }).filter(Boolean);
+      const evidTexts = (s.evidence || []).map(id => {
+        const e = evidenceList[parseInt(String(id).replace(/\D/g, ''), 10) - 1];
+        return e ? `· ${e}` : null;
+      }).filter(Boolean);
+      const { system, user } = buildSectionPrompt(plan, s, claimTexts, evidTexts, genre, lang);
+      // 이 섹션이 반드시 품어야 할 수치 토큰(배정 근거에서 추출) — 1차 실측에서 근거 5~6건 증발의 재발 방지
+      const mustNums = [...new Set(evidTexts.join(' ').match(/\d[\d,.]*%?/g) || [])].filter(t => t.replace(/\D/g, '').length >= 2);
+      const minChars = Math.round((s.targetChars || 600) * 0.75);
+      let best = { body: '', score: -1 };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        let body = '';
+        const extra = attempt > 0 && mustNums.length ? `\n\n★이전 시도에서 누락됨 — 다음 수치를 본문에 반드시 포함하라: ${mustNums.join(', ')}\n★분량을 지켜라(공백 제외 ${s.targetChars}자 수준).` : '';
+        try { body = (await llmText({ system, user: user + extra, signal, maxTokens: 2500, model: MODEL }) || '').trim(); } catch { continue; }
+        if (!body || floor.looksLikeRefusal(body)) continue;
+        if (floor.measureNovelty(textF, body, allowed).count > 0) continue;   // 날조 → 폐기
+        const chars = (body.match(/[가-힣]/g) || []).length;
+        const missing = mustNums.filter(n => !body.includes(n)).length;
+        const score = (chars >= minChars ? 1 : 0) + (mustNums.length ? (mustNums.length - missing) / mustNums.length : 1);
+        if (score > best.score) best = { body, score };
+        if (chars >= minChars && missing === 0) break;          // 분량·근거 모두 충족 → 확정
+      }
+      out[i] = { ...s, body: best.body };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, plan.sections.length) }, worker));
+
+  // 조립: 제목 + (소제목 + 본문)
+  let doc = plan.title + '\n\n' + out.map((s, i) => {
+    if (!s.body) return '';
+    return (i === 0 || !s.heading) ? s.body : s.heading + '\n\n' + s.body;
+  }).filter(Boolean).join('\n\n');
+
+  // artifactGuard: 연구보고서 잔재가 남으면 해당 문단 1회 수리
+  let artifacts = measureArtifacts(doc, genre);
+  if (artifacts.badFrameCount > 0) {
+    const paras = doc.split(/\n{2,}/);
+    for (let i = 0; i < paras.length; i++) {
+      const bf = detectBadFrame(paras[i]);
+      if (!bf.bad) continue;
+      try {
+        const cand = (await llmText({
+          system: `다음 문단에서 연구보고서 어법(${bf.hits.join(', ')})을 제거하고 같은 내용을 해설문 어법으로 다시 써라. 사실·수치 그대로, 분량 유지, 본문만 출력.`,
+          user: paras[i], signal, maxTokens: 1200, model: MODEL
+        }) || '').trim();
+        if (cand && !detectBadFrame(cand).bad && floor.measureNovelty(textF, cand, allowed).count === 0) paras[i] = cand;
+      } catch { /* 유지 */ }
+    }
+    doc = paras.join('\n\n');
+    artifacts = measureArtifacts(doc, genre);
+  }
+
+  // 사실 소실 수리(최대 2라운드): 빠진 수치·고유명사를 가장 맞는 자리에 위빙
+  let lost = floor.measureLostFacts(textF, doc);
+  for (let round = 0; round < 2 && lost.count > 0; round++) {
+    try {
+      const cand = (await llmText({
+        system: `아래 문서에 빠진 사실들을 가장 자연스러운 자리에 끼워 넣어 전체 문서를 다시 출력하라. 빠진 사실: ${lost.items.join(', ')}. 문서의 구조·문체는 유지하고, 새 사실은 만들지 마라. 본문만 출력.`,
+        user: doc, signal, maxTokens: 8000, model: MODEL
+      }) || '').trim();
+      if (cand && floor.measureNovelty(textF, cand, allowed).count === 0) {
+        const lost2 = floor.measureLostFacts(textF, cand);
+        if (lost2.count < lost.count) { doc = cand; lost = lost2; }
+        else break;
+      } else break;
+    } catch { break; }
+  }
+
+  // 마감: 격식 표현예산(템플릿 반복) → 에코/중복 → 띄어쓰기
+  try {
+    const fb = await require('./formalbudget').formalBudgetPass(doc, { lang, signal, floor, rawText: textF, allowedExtra: allowed });
+    if (fb.text) doc = fb.text;
+  } catch { /* 무해 */ }
+  doc = require('./dedupe').dedupeSentences(doc).text;
+  doc = require('./spacing').fixSpacing(doc).text;
+
+  // 최종 FLOOR 리포트
+  const novelty = floor.measureNovelty(textF, doc, allowed);
+  lost = floor.measureLostFacts(textF, doc);
+  let judge = null;
+  try {
+    const v = await semanticJudge(rawText, doc, ledger, { lang, signal, allowedExtra: allowed });
+    judge = { pass: v.pass, violations: v.violations || [] };
+  } catch (e) { judge = { error: e.message }; }
+  artifacts = measureArtifacts(doc, genre);
+  const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / (((textF.match(/[가-힣]/g) || []).length) || 1);
+
+  return { text: doc, plan, artifacts, novelty, lostFacts: lost, judge, lenRatio: Number(lenRatio.toFixed(2)), claims: ledger.claims.length };
+}
+
+// ════════════════════════════════════════════════════════════════
+// Genre Transfer V2 (사장님 v2 설계) — skeleton slot-filling
+//   v1 실패 진단: 연구보고서 프레임은 제거했으나 "AI 해설문" 템플릿(~란 무엇인가/도움이 되는 순간/해야 할 일)으로
+//   갈아탐 → 94%. v2 = 서버가 사람 저점수 문서의 skeleton을 고르고, LLM은 slot에 claim/evidence를 채우기만.
+//   소제목 미사용(사람 칼럼: "소제목 있음❌ 문단 역할 다양성✅"), 슬롯 순차 생성(앞 슬롯 꼬리에 이어쓰기),
+//   genreframes.genreRiskScore(사람 1.3~2.8 vs v1출력 14.75)로 후보 선택·출고 게이트.
+// ════════════════════════════════════════════════════════════════
+const gf = require('./genreframes');
+
+const SKELETONS = {
+  debate_explainer: {
+    label: '찬반 해설형 과제문',
+    slots: [
+      { role: 'hook_fact', goal: '수치·사실로 곧장 시작하라. "최근 ~환경이 빠르게 변하고 있다"류 도입 상투구 금지.', w: 1.1 },
+      { role: 'uncomfortable_question', goal: '논점을 옮기는 불편한 질문 또는 반문을 던져라(사용 여부가 아니라 다른 차원으로). 질문은 1개만.', w: 0.7 },
+      { role: 'concept_reframe', goal: '핵심 개념을 교과서식으로 정의하지 말고 통념과 다른 각도로 재해석하라. "~란 무엇인가" 식 전개 금지.', w: 1.0 },
+      { role: 'benefit_case', goal: '도움이 되는 조건·사례를 흐름 속에서 보여라. 장점 나열 금지 — 어떤 조건에서 작동하는지로.', w: 1.2 },
+      { role: 'risk_case', goal: '위험을 조건문으로 보여라(언제·어떤 사용에서 문제가 되는가). 나열 금지.', w: 1.4 },
+      { role: 'institution_response', goal: '기관·제도의 실제 대응 사실을 짚고 그 의미를 따져라.', w: 1.2 },
+      { role: 'closing_standard', goal: '교훈 요약으로 닫지 마라. 구체적 기준·판단선을 제시하며 끝내라.', w: 0.9 },
+    ],
+  },
+  policy_column: {
+    label: '정책 칼럼형',
+    slots: [
+      { role: 'claim_first', goal: '주장을 먼저 단정적으로 던져라.', w: 1.0 },
+      { role: 'counterclaim', goal: '예상 반론을 먼저 제시하고 받아쳐라.', w: 1.1 },
+      { role: 'law_or_policy_fact', goal: '제도·정책·기관의 구체 사실을 배치하라.', w: 1.3 },
+      { role: 'field_problem', goal: '현장에서 실제로 생기는 문제를 보여라.', w: 1.3 },
+      { role: 'proposal', goal: '구체적 기준·방안을 제안하라.', w: 1.2 },
+      { role: 'remaining_limit', goal: '남는 한계·미해결 지점을 인정하며 끝내라(깔끔한 결론 금지).', w: 0.8 },
+    ],
+  },
+  news_article_style: {
+    label: '뉴스 기사형',
+    slots: [
+      { role: 'event_lead', goal: '사건·발표·수치로 리드를 써라(기사 첫 문단처럼).', w: 1.0 },
+      { role: 'numbers', goal: '핵심 수치들을 맥락과 함께 전달하라.', w: 1.2 },
+      { role: 'voices', goal: '조사·기관·연구를 인용 표지("~에 따르면/~라고 밝혔다")로 전달하라.', w: 1.2 },
+      { role: 'pros_cons', goal: '찬반·기대와 우려를 교차시켜라.', w: 1.3 },
+      { role: 'outlook', goal: '남은 쟁점과 전망으로 닫아라(교훈 금지).', w: 0.9 },
+    ],
+  },
+};
+
+// 서버 라우팅: 주제 신호로 skeleton 선택(이번 실험은 후보 전부 생성하므로 참고용)
+function pickSkeleton(rawText) {
+  if (/(법|조례|정책|행정|규제|지침|가이드라인)/.test(rawText) && /(제안|개선|대응)/.test(rawText)) return 'policy_column';
+  if (((rawText.match(/\d[\d,.]*%/g) || []).length) > 15) return 'news_article_style';
+  return 'debate_explainer';
+}
+
+async function buildSlotPlan(rawText, { skeleton, evidenceList = [], ledger, signal } = {}) {
+  const sk = SKELETONS[skeleton];
+  const claims = (ledger?.claims || []).map((c, i) => `C${i + 1}. ${c.claim || ''}`).join('\n');
+  const evid = evidenceList.map((e, i) => `E${i + 1}. ${e}`).join('\n');
+  const system = `너는 문서 편집자다. 원문의 주장(C#)과 승인 근거(E#)를 "${sk.label}" 골격의 슬롯에 배정한다.
+슬롯(순서 고정): ${sk.slots.map((s, i) => `${i + 1}.${s.role}(${s.goal.slice(0, 24)}…)`).join(' / ')}
+규칙: 모든 C#를 빠짐없이 한 슬롯에(중복 금지). 모든 E#도 한 슬롯에(중복 금지). 제목은 쟁점을 드러내는 구체적 제목+대시 부제("…— …"), "~에 미치는 영향/~란 무엇인가" 식 금지.
+JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":["C1"],"evidence":["E1"]},...]} (슬롯 순서·개수 고정)`;
+  const user = `[원문]\n${rawText}\n\n[주장]\n${claims}\n\n[승인 근거]\n${evid || '(없음)'}`;
+  const plan = await llmJSON({ system, user, signal, maxTokens: 2500, model: MODEL });
+  if (!plan || !Array.isArray(plan.slots)) throw new Error('slot plan 실패');
+  // 슬롯 정렬·보정 + 중복 제거 + 커버리지(미배정 → 주제 무관히 본문 슬롯에 순환 배정)
+  const slots = sk.slots.map(def => {
+    const found = plan.slots.find(s => s.role === def.role) || {};
+    return { ...def, claims: found.claims || [], evidence: found.evidence || [] };
+  });
+  const seenC = new Set(), seenE = new Set();
+  slots.forEach(s => {
+    s.claims = s.claims.filter(id => !seenC.has(id) && seenC.add(id));
+    s.evidence = s.evidence.filter(id => !seenE.has(id) && seenE.add(id));
+  });
+  let rr = 1;
+  (ledger?.claims || []).forEach((c, i) => { const id = `C${i + 1}`; if (!seenC.has(id)) { slots[rr % (slots.length - 1) + 0].claims.push(id); seenC.add(id); rr++; } });
+  evidenceList.forEach((e, i) => { const id = `E${i + 1}`; if (!seenE.has(id)) { slots[rr % (slots.length - 1) + 0].evidence.push(id); seenE.add(id); rr++; } });
+  // 분량: 가중치 비례로 원문의 ~92%
+  const desired = Math.round((((rawText.match(/[가-힣]/g) || []).length) || 1) * 0.92);
+  const wsum = slots.reduce((a, s) => a + s.w, 0);
+  slots.forEach(s => { s.targetChars = Math.max(420, Math.round(desired * s.w / wsum)); });
+  return { title: plan.title || '', subtitle: plan.subtitle || '', slots };
+}
+
+const { LLM_TIC_RULE } = require('./prompt');
+
+// ★ 목소리 앵커(2026-06-10): 규칙 나열 프롬프트 20여 회 실패 후의 방법 전환 — "금지/지시"가 아니라 "모방".
+//   카피킬러 0~2% 실제 사람 필자 문단(주택의미래·반도시주의자, 주제 무관)을 결 기준으로 제시.
+//   ★실측 89→73%(−16%p) — 격식 레지스터 최초의 실레버. 슬롯별 2개 회전(한 목소리 과적합 방지). STYLE_ANCHOR=0 해제.
+const ANCHOR_PARAS = [
+  `《예컨대 4억짜리 집을 1억의 자기자본과 3억의 전세를 끼고 사서, 운영기간에는 수익이 안 나더라도(월세로 받았을 경우와 비교해서는 오히려 손해더라도), 청산 시점에 집값이 8억이 되면 보증금을 반환하고도 4억을 번다. 이런 경우에는 중간에 3억원이 생겨도 이걸로 전세보증금을 돌려주고 월세로 전환하느니, 그 돈으로 갭투자를 세 군데 더 하는 게 낫다.》`,
+  `《특히 운영유지관리비용은 건설비의 5배가 넘는데, 분양 사업의 패러다임에서라면 공급자는 운영 단계의 비용절감에 둔감해지게 된다. 소유자 역시 손바뀜이 자주 일어나면 자기 건물이라 해도 운영관리 성능 개선에 큰 관심을 둘 유인이 적어진다. 그러나! 공급주체가 운영까지 책임지는 구조는 이 부분에서 매우 큰 강점을 보일 수 있다.》`,
+  `《그렇다면 오히려 '불평등의 증폭기'는 아니었나, 하면 너무 불온한 생각일까. 어쨌든 다주택자 때문에 집값이 올라서 집을 못 산다고 볼 수도 있지만, 막상 당장 들어가 살 집을 구해준 것도 그 시장이었음을 생각하면 이야기가 그리 간단하지 않다.》`,
+  `《아쉽지만 유입인구 50만 명의 직종이 무엇인지는 이 자료로 유추할 순 없겠다. 다만(학생의 경우는 제외한다면) 이 인구에서 유출인구를 뺀 7만 명 정도가 현재 직주근접하여 사는 인구인 셈이라는 것만은 알겠다. 이 발견을 어디다 써먹을 수 있을지도 아직은 모르겠으나.》`,
+  `《다만 면(面)적 차원에서의 초고밀개발은 오히려 에너지 효율이나 집중의 불경제를 야기하고, 40년 뒤 대규모 슬럼화의 위험이 있기에 막아야 한다. 요는 초쾌속 연결망이 큰 축을 엮고, 내부 정차역 수는 최소화하며, 개별 지점까지는 30분 이내 접근이 되도록 하는 것이다.》`,
+];
+const ANCHOR_HEADER = `[목소리 앵커 — 카피킬러 0~2%를 받은 실제 사람 필자의 문단들(주제 무관). 규칙이 아니라 이 "결"로 써라: 문장 호흡의 낙차, 괄호로 끼어드는 사족·단서·딴소리, 서슴없는 단정과 즉석 계산, 가끔 덜 닫힌 사념. ★내용·표현·수치·1인칭(나/내가/우리)·독자 호명은 가져오지 마라. ★앵커의 소재(부동산·집·전세·투자·도시·인구 등)를 비유로도 끌어오지 마라 — 오직 결만.]`;
+function pickAnchors(slotIdx) {
+  const a = ANCHOR_PARAS[slotIdx % ANCHOR_PARAS.length];
+  const b = ANCHOR_PARAS[(slotIdx + 2) % ANCHOR_PARAS.length];
+  return ANCHOR_HEADER + '\n' + a + '\n' + b;
+}
+// 앵커 소재 누출 게이트(결정론): novelty는 고유명사·수치만 잡아 일반명사 비유("갭투자로 집을…")는 통과 — 실측 1회 발생.
+const ANCHOR_LEAK_RE = /갭투자|전세|보증금|임대인|임차인|다주택|집값|월세|분양|슬럼화|직주근접|초고밀|매매차익/;
+// ★ 수치-출처 짝 검증(2026-06-11, 45% 실측본에서 의미 재조합 날조 2건 발견): novelty는 토큰만 보므로
+//   "666명 중 45.9%가 활용능력에 자신 없다"(두 조사 융합), "-0.68 상관계수→향상폭 0.68"(부호 탈락·의미 역전)을 통과시킴.
+//   결정론 보강: evidence 수치가 등장하는 문장(±직전 문장)에 그 수치가 속한 evidence 줄의 핵심 표지(기관·키워드)가
+//   하나는 있어야 한다. 없으면 = 수치가 출처에서 분리돼 떠돈 것 = 재조합 위험 → 거부/수리.
+const PAIR_STOP = new Set(['조사에서', '연구에서', '대상으로', '분석한', '결과', '대학생', '학생', '사용', '활용', '이상', '기준', '응답했다', '답했다', '나타났다']);
+// 수치 토큰 추출(단위 인지, 2026-06-11 routine v2 오탐 2건로 정밀화): 2자리 맨정수는 단위까지 키에 포함해
+// "30분"(원문 수사)과 "30%"(크로노타입 evidence)의 숫자-만 충돌을 차단. 3자리+·소수·콤마 수치는 그 자체로
+// 변별력이 있어 숫자만으로 매칭(단위 조사(로/을) 변형에 따른 recall 손실 방지).
+function _numToks(str) {
+  return [...new Set((str.match(/-?\d[\d,.]*(?:%|[가-힣])?/g) || []).map(t => {
+    const m = t.match(/^(-?[\d,.]+)(%|[가-힣])?$/);
+    if (!m) return null;
+    const digits = m[1].replace(/[.,]+$/, '');
+    if (digits.replace(/[^0-9]/g, '').length < 2) return null;
+    const short = digits.replace(/[^0-9]/g, '').length === 2 && !/[.,]/.test(digits);
+    return digits + (short ? '|' + (m[2] || '') : '');
+  }).filter(Boolean))];
+}
+// 기관 앵커 분류(2026-06-11 ai-study 출처 스왑 실측): "45.9%(한국직업능력연구원 조사다)" — 소유 줄은 오픈서베이.
+// 내용 단어 앵커("사고력")가 창에 있어 통과 → 기관이 있는 사실은 기관 앵커 일치를 요구해야 출처 스왑을 막는다.
+const ORG_RE = /^([가-힣]+(연구원|연구소|연구팀|학회|센터|협의회|신문|일보|대학교?|교육부|보)|[A-Z][A-Za-z]{2,}|[A-Z]{2,}[a-z]*|.*서베이.*|네이처|앤트로픽)$/;
+const ORG_STOP = new Set(['GPT', 'SNS', 'ESG', 'PDF', 'URL', 'HTML', 'IRA']);   // 기관 아닌 약어(경쟁 기관 오인 방지)
+function evidenceAnchorMap(evidenceList) {
+  return evidenceList.map(line => {
+    const nums = _numToks(line);
+    const anchors = [...new Set((line.match(/[가-힣]{3,}|[A-Za-z]{3,}/g) || []))].filter(w => !PAIR_STOP.has(w)).slice(0, 10);
+    const orgAnchors = anchors.filter(a => ORG_RE.test(a));
+    return { line, nums, anchors, orgAnchors };
+  });
+}
+function checkEvidencePairing(text, evidenceList) {
+  const map = evidenceAnchorMap(evidenceList);
+  const sents = sg.splitSentences(text);
+  const bad = [];
+  const isBareYear = (t) => /^(19|20)\d{2}$/.test(t.split('|')[0]);   // 연도는 일반 시점 표현으로 합법 사용 多 → 짝 검증 제외(오탐원)
+  sents.forEach((s, i) => {
+    // 창 ±직전 2문장(routine v2 오탐: 인용 직후의 정당한 후속 코멘트 "254일이면 거의 일 년"이 1문장 창 밖).
+    // 제목·부제(첫 2문장)는 앞으로 2문장도 본다 — 수치 헤드라인은 출처를 리드에서 밝히는 게 정상 패턴(ai-study 실측 오탐).
+    const fwd = i < 2 ? ' ' + sents.slice(i + 1, i + 3).join(' ') : '';
+    const window = sents.slice(Math.max(0, i - 2), i).join(' ') + ' ' + s + fwd;
+    const nums = _numToks(s).filter(t => !isBareYear(t));
+    // 창에 등장하는 기관 토큰(경쟁 귀속 후보) — GPT 등 기관 아닌 약어는 제외
+    const winOrgs = [...new Set((window.match(/[가-힣]{3,}|[A-Za-z]{3,}/g) || []))]
+      .filter(w => ORG_RE.test(w) && !PAIR_STOP.has(w) && !ORG_STOP.has(w));
+    for (const n of nums) {
+      const owners = map.filter(m => m.nums.includes(n) || m.nums.includes('-' + n));
+      if (!owners.length) continue;                                   // evidence 소속 수치만 검사
+      // 일반 앵커 일치가 기본. 단 "창에 경쟁 기관명이 있는데 소유 기관이 없는" 스왑 시그니처는 위반
+      // (일반화 패러프레이즈 "KCI 등재 연구→국내 연구"는 경쟁 기관이 없으므로 통과 — v6 오탐 실측 반영).
+      const ok = owners.some(o => {
+        if (!o.anchors.some(a => window.includes(a))) return false;
+        if (!o.orgAnchors.length) return true;
+        const ownerOrgPresent = o.orgAnchors.some(a => window.includes(a));
+        const competing = winOrgs.some(w => !o.orgAnchors.some(a => a.includes(w) || w.includes(a)));
+        return ownerOrgPresent || !competing;
+      });
+      if (!ok) bad.push({ num: n.split('|')[0], sent: s.replace(/\s+/g, ' ').slice(0, 90), owner: owners[0].line.slice(0, 60) });
+    }
+  });
+  return bad;
+}
+
+// 문단급 near-dup 제거(2026-06-11, 43% PDF에서 발견): weave가 사실 토큰을 끼우며 문단을 변주 복제
+// ("진입장벽~오프로딩" 4문장 2본) — 문장級 dedupe는 ③마감에서 weave보다 먼저 돌아 못 잡음. 카피킬러
+// '기계적 정확성·균일성' 라벨 2영역이 정확히 이 이음새였음. 순수 삭제 = FLOOR-safe.
+// 사실 손실이 늘지 않는 쪽 사본을 지운다(둘 다 늘면 유지 — 악화 금지).
+function _paraBigrams(s) { const t = s.replace(/\s+/g, ''); const set = new Set(); for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2)); return set; }
+function _paraJaccard(a, b) { const A = _paraBigrams(a), B = _paraBigrams(b); let inter = 0; for (const x of A) if (B.has(x)) inter++; const uni = A.size + B.size - inter; return uni ? inter / uni : 0; }
+function dedupeParas(doc, textF) {
+  const paras = doc.split(/\n{2,}/);
+  const drop = new Set();
+  const joined = (skip) => paras.filter((_, x) => !drop.has(x) && x !== skip).join('\n\n');
+  for (let i = 0; i < paras.length; i++) {
+    if (drop.has(i)) continue;
+    for (let j = i + 1; j < paras.length; j++) {
+      if (drop.has(j)) continue;
+      if (paras[i].replace(/\s+/g, '').length < 80 || paras[j].replace(/\s+/g, '').length < 80) continue;
+      if (_paraJaccard(paras[i], paras[j]) < 0.6) continue;
+      const base = floor.measureLostFacts(textF, joined(-1)).count;
+      if (floor.measureLostFacts(textF, joined(j)).count <= base) { drop.add(j); continue; }
+      if (floor.measureLostFacts(textF, joined(i)).count <= base) { drop.add(i); break; }
+    }
+  }
+  return paras.filter((_, x) => !drop.has(x)).join('\n\n');
+}
+
+// 사실 재인용 제거(2026-06-11 ai-study 63% PDF 실측): 같은 evidence 수치가 문서에서 2~4회 재인용
+// (13주×4·12대원칙×3·558명×2…) — 슬롯이 "원문 문단 직접 재료"로 남의 슬롯 사실을 다시 진술 + 독립 생성.
+// '기계적 정확성·균일성' 피탐의 직접 원인이자 품질 결함(같은 연구를 두 번 처음처럼 인용).
+// 규칙: 각 evidence 수치의 첫 인용 문장만 유지, 이후 문장은 그 문장의 모든 evidence 수치가 재인용일 때만 제거.
+function dedupeFactRecitations(doc, evidenceList, textF) {
+  const evNums = new Set();
+  for (const line of evidenceList) for (const t of _numToks(line)) evNums.add(t);
+  const isBareYear = (t) => /^(19|20)\d{2}$/.test(t.split('|')[0]);
+  const paras = doc.split(/\n{2,}/).map(p => p.split(/(?<=[.!?”"])\s+/));
+  const seen = new Set();
+  const out = [];
+  for (const sents of paras) {
+    const kept = [];
+    for (const s of sents) {
+      const nums = _numToks(s).filter(t => evNums.has(t) && !isBareYear(t));
+      if (nums.length && nums.every(n => seen.has(n))) continue;     // 전부 재인용 → 문장 제거
+      nums.forEach(n => seen.add(n));
+      kept.push(s);
+    }
+    if (kept.join('').replace(/\s+/g, '').length > 0) out.push(kept.join(' '));
+  }
+  const cand = out.join('\n\n');
+  return floor.measureLostFacts(textF, cand).count <= floor.measureLostFacts(textF, doc).count ? cand : doc;
+}
+
+// 문단 횡단 문장급 dup 해소(사실 인지형) — v5 실측: 사본들이 서로 다른 큰 문단 안에 박혀 문단 jaccard 0.497로
+// dedupeParas가 못 잡고, dedupe(문장級)는 "후속 등장 삭제"라 위빙된 사실 토큰("두 번~다섯 번")을 든 사본을 지워
+// lost를 재유발(순환). 해법: 뒤 사본 제거가 기본이되, 뒤 사본 제거로 lost가 늘면 앞자리에 뒤 문장을 심고 뒤를 제거.
+function resolveDupSentences(doc, textF) {
+  let guard = 0;
+  for (let changed = true; changed && guard < 12; guard++) {
+    changed = false;
+    const paras = doc.split(/\n{2,}/).map(p => p.split(/(?<=[.!?”"])\s+/));
+    const flat = [];
+    paras.forEach((sents, pi) => sents.forEach((s, si) => flat.push({ pi, si, s })));
+    outer:
+    for (let x = 0; x < flat.length; x++) {
+      for (let y = x + 1; y < flat.length; y++) {
+        const a = flat[x], b = flat[y];
+        if (a.s.replace(/\s+/g, '').length < 20 || b.s.replace(/\s+/g, '').length < 20) continue;
+        if (a.pi === b.pi && Math.abs(a.si - b.si) <= 1) continue;       // 인접 반복은 dedupe/꼬리에코 담당
+        if (_paraJaccard(a.s, b.s) < 0.62) continue;
+        const rebuild = (mut) => {
+          const P = paras.map(se => se.slice());
+          mut(P);
+          return P.map(se => se.filter(Boolean).join(' ')).filter(p => p.replace(/\s+/g, '').length > 0).join('\n\n');
+        };
+        const dropB = rebuild(P => { P[b.pi][b.si] = ''; });
+        const swapAB = rebuild(P => { P[a.pi][a.si] = b.s; P[b.pi][b.si] = ''; });
+        doc = floor.measureLostFacts(textF, swapAB).count < floor.measureLostFacts(textF, dropB).count ? swapAB : dropB;
+        changed = true;
+        break outer;
+      }
+    }
+  }
+  return doc;
+}
+
+// LLM 수리 패스의 메타 메모 누출 차단(실측: "미삽입 항목 처리 메모…밝힙니다"가 본문 끝에 붙어 측정됨)
+const META_NOTE_RE = /(메모\s*:|밝힙니다|지시에\s*따라|삽입하지\s*않|본문만\s*출력|위\s*지침|요청하신)/;
+// 지시문 윙크 누출(루틴 v1 실측: "…는 데 있다(아, 이 표현 쓰지 말라고 했지)" — 금지목록을 어기고 프롬프트에
+// 사과하는 메타 발화를 필자의 사족 괄호로 위장). 표현·단어·문장에 대한 금지 언급만 잡아 일반 내용 오탐 차단.
+const WINK_RE = /(표현|단어|문장|어투)[^.”"]{0,12}(쓰지\s*말|말라고\s*했|금지)/;
+
+// 용어귀속 날조 가드(루틴 v1 실측: "심리학 쪽에서는 '정-반 효과'라고 부르기도 한다" — 실재하지 않는 용어를
+// 학문에 귀속). novelty는 기관·수치 패턴만 보므로 일반명사 합성 용어는 통과, judge도 확률적으로 놓침(1회 실측).
+// 결정론 규칙: 따옴표 용어 + "~라고 부른다" 귀속문이면 그 용어가 원문∪근거에 실재해야 한다.
+function findCoinedTerms(text, textF) {
+  const bare = textF.replace(/\s+/g, '');
+  const bad = [];
+  for (const m of text.matchAll(/['‘"「]([^'’"」\n]{2,20})['’"」]\s*(?:이?라고?|이?라)\s*부르/g)) {
+    if (!bare.includes(m[1].replace(/\s+/g, ''))) bad.push(m[1]);
+  }
+  return bad;
+}
+function stripMetaNotes(doc) {
+  const paras = doc.split(/\n{2,}/);
+  while (paras.length && META_NOTE_RE.test(paras[paras.length - 1])) paras.pop();
+  return paras.filter(p => !META_NOTE_RE.test(p) || p.replace(/\s+/g, '').length > 300).join('\n\n');
+}
+
+const V2_BANS = `[금지 — 하나라도 어기면 실패]
+· 연구보고서 어법: 본 연구는/연구의 필요성/이론적 배경/연구 목적/첫째,…둘째,…셋째,…
+· AI 해설문 틀: "~란 무엇인가", "~의 의미/필요성", "도움이 되는 순간/지점", "위험한 지점", "~가 해야 할 일", "결국 ~에 달려 있다", "이 구조(과정)에서 가장 중요한", "이 사실(결과/수치)은 ~를 보여준다", "같은 맥락을 가리킨다"
+· "필자가 보기에", "과연 ~인가?", 교훈 요약 마무리("~가 중요하다/필요하다"로 문단 닫기 반복)
+· 재료(주장·근거)에 없는 사실·수치·기관·사례·1인칭 경험 생성
+${LLM_TIC_RULE}`;
+
+function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = []) {
+  const mustNums = [...new Set(evidTexts.join(' ').match(/\d[\d,.]*%?/g) || [])].filter(t => t.replace(/\D/g, '').length >= 2);
+  const banNums = usedNums.filter(n => !mustNums.includes(n));
+  const anchors = process.env.STYLE_ANCHOR === '0' ? '' : pickAnchors(slotIdx) + '\n';
+  const system = `너는 한국 시사 칼럼 필자다. 한 편의 칼럼을 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).
+${anchors}[문체 — 사람 칼럼의 결]
+· 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
+· 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 마라(금지 시작어: ${usedOpeners.slice(-8).join(', ') || '없음'}).
+· 한 문단 안에서 근거와 의견이 섞이게(근거 나열 문단 금지 — 근거는 논쟁의 무기다).
+${V2_BANS}
+[이 슬롯]
+· 역할: ${slot.role} — ${slot.goal}
+· 분량: 문단 ${Math.max(1, Math.round(slot.targetChars / 330))}개, 공백 제외 약 ${slot.targetChars}자. 짧으면 실패.
+${mustNums.length ? `· 반드시 포함할 수치: ${mustNums.join(', ')}` : ''}
+${banNums.length ? `· ★앞 슬롯에서 이미 인용한 수치·조사 — 재인용 금지(같은 글에서 같은 통계를 두 번 소개하면 실패다): ${banNums.join(', ')}` : ''}
+· 출력: 본문만(제목·소제목·머리말 금지).`;
+  const user = `[칼럼 제목(참고)]\n${plan.title} — ${plan.subtitle}\n\n[직전 문단 끝(여기서 자연스럽게 이어가라, 반복 금지)]\n${prevTail || '(글의 시작)'}\n\n[이 슬롯의 재료 — 원문 주장]\n${claimTexts.join('\n') || '(없음)'}\n\n[이 슬롯의 재료 — 승인 근거]\n${evidTexts.join('\n') || '(없음)'}${srcText ? `\n\n[이 슬롯의 원문 문단(디테일 재료 — 요약하지 말고 구체 디테일·예시를 살려서 분량을 채워라. 단 문체는 칼럼의 결로)]\n${srcText}` : ''}`;
+  return { system, user, mustNums };
+}
+
+async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidence = '', lang = 'ko', signal } = {}) {
+  const evidenceList = (evidence || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const allowed = evidence || '';
+  const textF = evidence ? rawText + '\n\n' + evidence : rawText;
+  const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
+  const plan = await buildSlotPlan(rawText, { skeleton, evidenceList, ledger, signal });
+
+  // 슬롯 순차 생성(앞 슬롯 꼬리에 이어 쓰기 — v1의 병렬 섹션 단절 문제 해소)
+  const bodies = [];
+  const usedOpeners = [];
+  let slotIdx = -1;
+  for (const slot of plan.slots) {
+    slotIdx++;
+    const claimTexts = (slot.claims || []).map(id => {
+      const c = ledger.claims[parseInt(String(id).replace(/\D/g, ''), 10) - 1];
+      return c ? `· ${c.claim || ''}${c.evidence_text ? ` (원문 근거: ${c.evidence_text})` : ''}` : null;
+    }).filter(Boolean);
+    const evidTexts = (slot.evidence || []).map(id => {
+      const e = evidenceList[parseInt(String(id).replace(/\D/g, ''), 10) - 1];
+      return e ? `· ${e}` : null;
+    }).filter(Boolean);
+    // 분량 49% 고질의 구조 원인 완화(2026-06-11): 재료가 ledger 요약뿐이라 디테일이 깎임 → claim의
+    // evidence_text(원문 인용)가 들어 있는 원문 문단을 디테일 재료로 직접 전달(중복 제거, 1400자 캡).
+    const rawParas = rawText.split(/\n{2,}/).map(p => p.trim()).filter(p => p.replace(/\s+/g, '').length > 40);
+    const srcSet = new Set();
+    for (const id of (slot.claims || [])) {
+      const c = ledger.claims[parseInt(String(id).replace(/\D/g, ''), 10) - 1];
+      if (!c || !c.evidence_text) continue;
+      const key = String(c.evidence_text).replace(/\s+/g, '').slice(0, 24);
+      const p = rawParas.find(rp => rp.replace(/\s+/g, '').includes(key));
+      if (p) srcSet.add(p);
+    }
+    const srcText = [...srcSet].join('\n').slice(0, 1400);
+    const prevTail = bodies.length ? bodies[bodies.length - 1].split(/\n{2,}/).pop().slice(-160) : '';
+    // 앞 슬롯들이 이미 인용한 수치 — 재인용 금지 목록(ai-study 63% 실측: 슬롯 독립 생성이 같은 통계를 2~4회 재진술)
+    const usedNumList = [...new Set(bodies.flatMap(b => _numToks(b)).map(t => t.split('|')[0]))];
+    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList);
+    const usedNumSet = new Set(usedNumList);
+    const minChars = Math.round(slot.targetChars * 0.8);   // 0.7→0.8(분량 미달이 best-pick으로 통과하던 폭 축소)
+    let best = { body: '', score: -1 };
+    for (let attempt = 0; attempt < 4; attempt++) {        // 3→4(분량 재시도 여유)
+      let body = '';
+      const extra = attempt > 0 ? `\n\n★재시도: ${mustNums.length ? `수치(${mustNums.join(', ')}) 누락 금지. ` : ''}분량 미달이다 — 공백 제외 ${slot.targetChars}자 이상을 반드시 채워라(원문 문단의 디테일·예시를 더 살려라). 금지 표현을 쓰지 마라. 앵커의 소재(부동산·도시 등)를 가져오지 마라.` : '';
+      try { body = (await llmText({ system, user: user + extra, signal, maxTokens: 2500, model: MODEL }) || '').trim(); } catch { continue; }
+      if (!body || floor.looksLikeRefusal(body)) continue;
+      if (ANCHOR_LEAK_RE.test(body)) continue;                       // 앵커 소재 번짐 → 폐기(실측 1회 발생)
+      if (META_NOTE_RE.test(body)) continue;                          // 메타 메모 → 폐기
+      if (WINK_RE.test(body)) continue;                               // 지시문 윙크 → 폐기(루틴 v1 실측)
+      if (findCoinedTerms(body, textF).length > 0) continue;          // 용어귀속 날조 → 폐기(루틴 v1 실측 '정-반 효과')
+      if (floor.measureNovelty(textF, body, allowed).count > 0) continue;
+      // 짝 위반은 폐기하지 않고 감점만 — 폐기 시 데이터 슬롯이 통째로 사라짐(v4 실측: lost 18, 분량 38%).
+      // 짝 위반은 결정론 검증 가능한 "수리 대상"이라 본문 단계 ①(수치 보존 교정)에 맡긴다.
+      const pairBad = checkEvidencePairing(body, evidenceList).length;
+      const frames = gf.measureGenreFrames(body);
+      const frameHits = frames.research.length + frames.explainerHeadings.length + frames.explainerSentences.length;
+      const chars = (body.match(/[가-힣]/g) || []).length;
+      const missing = mustNums.filter(n => !body.includes(n)).length;
+      // 앞 슬롯 수치 재인용은 감점(이 슬롯 배정분 mustNums는 제외)
+      const reCite = [...new Set(_numToks(body).map(t => t.split('|')[0]))].filter(n => usedNumSet.has(n) && !mustNums.includes(n)).length;
+      const score = (chars >= minChars ? 1 : chars / minChars) + (mustNums.length ? (mustNums.length - missing) / mustNums.length : 1) - frameHits - pairBad * 2 - reCite;
+      if (score > best.score) best = { body, score };
+      if (chars >= minChars && missing === 0 && frameHits === 0 && pairBad === 0) break;
+    }
+    // 이어쓰기 확장(2026-06-11, 분량 54% 진단): 슬롯 목표 합계는 원문의 92%로 정상인데 Sonnet이 호출당
+    // 500~650자에서 멈춰 충족률 ~60%(7,000목표→4,361실측). 재시도는 길이를 못 늘림(같은 길이로 다시 씀) →
+    // 미달분은 "끊긴 지점에서 이어쓰기"로 채운다. 패딩이 아니라 아직 안 쓴 원문 디테일 소화를 지시.
+    let bodyFinal = best.body;
+    // ★3회·0.95로 올렸다 원복(2026-06-11 v4 실측): 분량 65% 제자리 + lost 20(승인근거까지 증발) —
+    //   이어쓰기 비중이 커지면 부연이 사실 커버리지를 밀어냄. 2회·0.9가 이 구조의 분량 한계(65%).
+    for (let ext = 0; ext < 2 && bodyFinal && ((bodyFinal.match(/[가-힣]/g) || []).length) < slot.targetChars * 0.9; ext++) {
+      const need = slot.targetChars - ((bodyFinal.match(/[가-힣]/g) || []).length);
+      try {
+        const cont = (await llmText({
+          system,
+          user: user + `\n\n[지금까지 쓴 본문의 끝부분(여기서 이어서 계속)]\n${bodyFinal.slice(-800)}\n\n★위 본문에 자연스럽게 이어 붙일 다음 문단(들)만 출력하라 — 공백 제외 약 ${need}자. 이미 쓴 내용 반복 금지. 재료(원문 문단·주장·근거)에서 아직 소화하지 않은 디테일·예시를 살려라. 본문만.`,
+          signal, maxTokens: 3000, model: MODEL
+        }) || '').trim();
+        if (!cont || floor.looksLikeRefusal(cont)) break;
+        if (ANCHOR_LEAK_RE.test(cont) || META_NOTE_RE.test(cont) || WINK_RE.test(cont)) break;
+        if (findCoinedTerms(cont, textF).length > 0) break;
+        if (floor.measureNovelty(textF, cont, allowed).count > 0) break;
+        const merged = bodyFinal + '\n\n' + cont;
+        if (checkEvidencePairing(merged, evidenceList).length > checkEvidencePairing(bodyFinal, evidenceList).length) break;
+        bodyFinal = merged;
+      } catch { break; }
+    }
+    if (bodyFinal) {
+      bodies.push(bodyFinal);
+      usedOpeners.push((bodyFinal.split(/\s+/)[0] || '').slice(0, 3));
+    }
+  }
+
+  // 제목 novelty 게이트(2026-06-11 ai-study 실측): 계획이 만든 제목이 92.4→"92%"로 반올림 = 허용 세계 밖 토큰.
+  // 제목은 슬롯 게이트를 안 거치므로 여기서 검사 — 위반 시 전체문서 수리(재위빙 등) 후보가 전부 novelty 기각되는
+  // 연쇄 붕괴(lost 7 복구불능 실측)를 일으킨다. 수리 불가면 위반 토큰을 제목에서 제거(결정론).
+  let titleLine = `${plan.title}\n— ${plan.subtitle}`;
+  {
+    const tNov = floor.measureNovelty(textF, titleLine, allowed);
+    if (tNov.count > 0) {
+      try {
+        const cand = (await llmText({
+          system: `다음 칼럼 제목에서 원문에 없는 수치·고유명사(${tNov.items.join(', ')})를 빼고, 같은 논지의 제목으로 다시 써라. 원문에 실제로 있는 표현만 사용. 형식 유지(제목\\n— 부제), 그것만 출력.`,
+          user: titleLine, signal, maxTokens: 200, model: MODEL
+        }) || '').trim();
+        if (cand && floor.measureNovelty(textF, cand, allowed).count === 0 && !META_NOTE_RE.test(cand)) titleLine = cand;
+        else tNov.items.forEach(t => { titleLine = titleLine.split(t).join(''); });
+      } catch { tNov.items.forEach(t => { titleLine = titleLine.split(t).join(''); }); }
+    }
+  }
+  let doc = titleLine + '\n\n' + bodies.join('\n\n');
+
+  // 프레임 잔재 수리(문단 단위 1회)
+  let frames = gf.measureGenreFrames(doc);
+  if (frames.research.length + frames.explainerHeadings.length + frames.explainerSentences.length > 0) {
+    const paras = doc.split(/\n{2,}/);
+    for (let i = 0; i < paras.length; i++) {
+      const pf = gf.measureGenreFrames(paras[i]);
+      const hits = [...pf.research, ...pf.explainerHeadings, ...pf.explainerSentences];
+      if (!hits.length) continue;
+      try {
+        const cand = (await llmText({
+          system: `다음 문단에서 정형 표현(${hits.join(' | ')})을 제거하고 같은 내용을 다른 구조로 다시 써라. 사실·수치 그대로, 분량 유지, 본문만 출력.`,
+          user: paras[i], signal, maxTokens: 1200, model: MODEL
+        }) || '').trim();
+        const cf = gf.measureGenreFrames(cand || '');
+        if (cand && !(cf.research.length + cf.explainerHeadings.length + cf.explainerSentences.length) && floor.measureNovelty(textF, cand, allowed).count === 0) paras[i] = cand;
+      } catch { /* 유지 */ }
+    }
+    doc = paras.join('\n\n');
+  }
+
+  // ── 수리 순서(v3 실측 교훈): 짝 교정(수치 보존) → 사실 재위빙(짝 인지) → 마감 → judge 게이트+수리 → 최종 재위빙.
+  //    v3에서 짝 수리가 재위빙 "뒤"에 돌며 수치를 떨궈 lostFacts 4 발생 + judge가 진짜 재조합 3건을 보고만 하고 방치.
+
+  // 문장 단위 교정 헬퍼(문단 보존): 위반 문장을 찾아 재작성, 게이트(메타·novelty·짝) 통과 시만 교체
+  // 매칭은 judge의 span 검증과 동일 기준(normWS: 공백붕괴+trim+소문자, 첫 24자) — 다르면 수리가 조용히 스킵된다
+  const normKey = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  async function repairSentence(curDoc, sentKey, instruction) {
+    const key = normKey(sentKey).slice(0, 24);
+    if (!key) return curDoc;
+    const paras = curDoc.split(/\n{2,}/);
+    for (let pi = 0; pi < paras.length; pi++) {
+      const sents = paras[pi].split(/(?<=[.!?”"])\s+/);
+      const idx = sents.findIndex(s => normKey(s).includes(key));
+      if (idx < 0) continue;
+      try {
+        const cand = (await llmText({ system: instruction + '\n한 문장만 출력(설명·머리말 금지).', user: sents[idx], signal, maxTokens: 350, model: MODEL }) || '').trim();
+        if (cand && !META_NOTE_RE.test(cand) && !WINK_RE.test(cand) && findCoinedTerms(cand, textF).length === 0 && floor.measureNovelty(textF, cand, allowed).count === 0 && checkEvidencePairing(cand, evidenceList).length === 0) {
+          sents[idx] = cand;
+          paras[pi] = sents.join(' ');
+          return paras.join('\n\n');
+        }
+      } catch { /* 유지 */ }
+      return curDoc;
+    }
+    return curDoc;
+  }
+
+  // ① 수치-출처 짝 교정(수치 보존형 — "빼라" 폴백이 v3에서 lostFacts 4 유발)
+  let pairing = checkEvidencePairing(doc, evidenceList);
+  for (const bad of pairing) {
+    const owner = evidenceAnchorMap(evidenceList).find(m => m.nums.includes(bad.num) || m.nums.includes('-' + bad.num));
+    doc = await repairSentence(doc, bad.sent,
+      `다음 문장은 수치(${bad.num})를 출처와 다르게 결합했을 위험이 있다. 수치를 빼지 말고, 아래의 실제 사실에 맞게 문장을 교정하라(출처 표지를 함께 명시). 도저히 안 맞을 때만 수치를 빼라. 실제 사실: ${owner ? owner.line : ''}`);
+  }
+  pairing = checkEvidencePairing(doc, evidenceList);
+
+  // ② 사실 소실 재위빙(3라운드, 짝 인지형) — 수용 조건: lost 감소 + 짝 위반 비증가.
+  //    짝 위반이 늘면 끊지 말고 즉석 교정 후 재평가(v4 실측: 여기서 break하면 소실 18건이 복구 불능).
+  //    빠진 사실은 맨 토큰이 아니라 원문 맥락 인용과 함께 — v5 실측: "200명, 1차"만 주자 위빙 LLM이
+  //    자리를 추측해 남의 조사에 꽂음("성균관대 1차 조사 200명" — 원문은 가상 설문 가정·AI 1차 피드백).
+  const srcSentsAll = sg.splitSentences(textF);
+  const lostCtx = (it) => {
+    const s = srcSentsAll.find(x => x.includes(it));
+    return s ? `${it} (원문 맥락: "${s.trim().replace(/\s+/g, ' ').slice(0, 110)}" — 이 맥락 그대로만, 다른 조사·기관·수치와 결합 금지)` : it;
+  };
+  async function weaveLost(curDoc) {
+    let curLost = floor.measureLostFacts(textF, curDoc);
+    for (let r = 0; r < 3 && curLost.count > 0; r++) {
+      try {
+        let cand = stripMetaNotes((await llmText({
+          system: `아래 칼럼에 빠진 사실들을 가장 자연스러운 자리에 끼워 넣어 전체를 다시 출력하라. 빠진 사실:\n${curLost.items.map(lostCtx).map(x => '· ' + x).join('\n')}\n★각 수치는 반드시 그 수치의 출처 표지(기관·조사명)와 같은 문장에 두어라.\n★기존 문단을 복제·변주해 늘리지 마라 — 기존 문단 안에 제자리 수정으로 끼워라(43% 실측: 변주 복제가 '기계적 균일성' 피탐).\n★끼워 넣는 문장은 이 칼럼의 결로 써라 — 원문의 보고서 어투(~하였다/본 연구는/설정하였다)를 그대로 옮기지 마라. 가정·가상 사실은 가정임이 드러나게, 단 칼럼 문장으로.\n구조·문체 유지, 새 사실·새 결합 금지, 본문만 출력.`,
+          user: curDoc, signal, maxTokens: 8000, model: MODEL
+        }) || '').trim());
+        if (!cand || WINK_RE.test(cand) || findCoinedTerms(cand, textF).length > 0 || floor.measureNovelty(textF, cand, allowed).count > 0) continue;
+        const basePairs = checkEvidencePairing(curDoc, evidenceList).length;
+        if (checkEvidencePairing(cand, evidenceList).length > basePairs) {
+          for (const bad of checkEvidencePairing(cand, evidenceList)) {
+            const owner = evidenceAnchorMap(evidenceList).find(m => m.nums.includes(bad.num) || m.nums.includes('-' + bad.num));
+            cand = await repairSentence(cand, bad.sent,
+              `다음 문장은 수치(${bad.num})를 출처와 다르게 결합했을 위험이 있다. 수치를 빼지 말고, 아래의 실제 사실에 맞게 문장을 교정하라(출처 표지를 함께 명시). 실제 사실: ${owner ? owner.line : ''}`);
+          }
+          if (checkEvidencePairing(cand, evidenceList).length > basePairs) continue;   // 교정 실패 → 이 후보 버리고 다음 라운드
+        }
+        const l2 = floor.measureLostFacts(textF, cand);
+        if (l2.count < curLost.count) { curDoc = cand; curLost = l2; }
+      } catch { break; }
+    }
+    return resolveDupSentences(dedupeParas(curDoc, textF), textF);   // weave가 만든 변주 복제 즉시 제거(②·④ 두 호출처 공통)
+  }
+  doc = await weaveLost(doc);
+
+  // ③ 마감(표현예산·메타·중복·띄어쓰기)
+  try {
+    const fb = await require('./formalbudget').formalBudgetPass(doc, { lang, signal, floor, rawText: textF, allowedExtra: allowed });
+    if (fb.text) doc = fb.text;
+  } catch { /* 무해 */ }
+  doc = stripMetaNotes(doc);
+  doc = require('./dedupe').dedupeSentences(doc).text;
+  doc = resolveDupSentences(dedupeParas(doc, textF), textF);   // 슬롯 생성 자체의 문단·문장 중복도 커버
+  doc = dedupeFactRecitations(doc, evidenceList, textF);       // 같은 사실 재인용 제거(ai-study 63% 실측)
+  doc = require('./spacing').fixSpacing(doc).text;
+
+  // ④ semanticJudge 게이트 + 문장 수리(1라운드) — v3 실측: 짝 가드가 못 보는 "프레임 재조합"(교원 200명 가짜 설문 등)을 judge가 정확히 잡음
+  const judgeLedger = { ...ledger, claims: [...ledger.claims, ...evidenceList.map(e => ({ claim: e, evidence_text: e }))] };
+  let judge = null;
+  try {
+    let v = await semanticJudge(rawText, doc, judgeLedger, { lang, signal, allowedExtra: allowed });
+    for (let jr = 0; jr < 2 && !v.pass && (v.violations || []).length; jr++) {   // 2라운드 — v5 실측: 1라운드로는 수치 융합 1건 미수렴
+      for (const viol of v.violations.slice(0, 6)) {
+        if (!viol.span) continue;
+        // detail에 judge가 인용한 원장 사실(교정 근거)이 들어 있다 — 자르면 수리 LLM이 무엇이 맞는지 모른다(100자 절단이 v5 미수렴 원인 추정)
+        doc = await repairSentence(doc, viol.span,
+          `다음 문장은 원문·승인근거와 다른 주장을 담았다(${viol.type}). 판정 근거: ${(viol.detail || '').slice(0, 300)}\n판정 근거에 인용된 원장의 사실 그대로 따르도록 문장을 고쳐 써라 — 없는 조사·분석·인과·수치 결합을 지어내지 마라(주장 못 받치면 그 부분을 빼라).`);
+      }
+      doc = await weaveLost(doc);                                   // judge 수리가 사실을 떨궜으면 재위빙
+      v = await semanticJudge(rawText, doc, judgeLedger, { lang, signal, allowedExtra: allowed });
+    }
+    judge = { pass: v.pass, violations: v.violations || [] };
+  } catch (e) { judge = { error: e.message }; }
+
+  const novelty = floor.measureNovelty(textF, doc, allowed);
+  const lost = floor.measureLostFacts(textF, doc);
+  pairing = checkEvidencePairing(doc, evidenceList);
+  const risk = gf.genreRiskScore(doc);
+  const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
+  return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };
+}
+
+// 후보 3종 생성 → 하드게이트(novelty·프레임) + genreRiskScore 최저 선택
+async function genreTransferV2Candidates(rawText, { evidence = '', lang = 'ko', signal, skeletons = ['debate_explainer', 'policy_column', 'news_article_style'] } = {}) {
+  const candidates = [];
+  for (const sk of skeletons) {
+    try { candidates.push(await genreTransferV2(rawText, { skeleton: sk, evidence, lang, signal })); }
+    catch (e) { candidates.push({ skeleton: sk, error: e.message }); }
+  }
+  const ok = candidates.filter(c => !c.error);
+  const hard = ok.filter(c => c.novelty.count === 0 && c.risk.detail.research.length === 0 && c.risk.detail.explainerHeadings.length === 0);
+  const pool = hard.length ? hard : ok;
+  pool.sort((a, b) => (a.risk.score - b.risk.score) || (a.lostFacts.count - b.lostFacts.count));
+  return { winner: pool[0] || null, candidates };
+}
+
+module.exports = { GENRE_PROFILES, detectBadFrame, extractDocProfile, measureArtifacts, buildDocumentPlan, genreTransfer, SKELETONS, pickSkeleton, genreTransferV2, genreTransferV2Candidates, checkEvidencePairing, dedupeParas, resolveDupSentences, dedupeFactRecitations };

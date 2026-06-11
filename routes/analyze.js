@@ -7,6 +7,7 @@ const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const { getDetectSystem, getHumanizeSystem } = require('../prompts');
 const { admin, db } = require('../config');
+const crypto = require('crypto');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -88,6 +89,62 @@ async function retryAsync(fn, attempts = 3, baseDelayMs = 300) {
     }
   }
   throw lastErr;
+}
+
+// 클라가 읽는 history 컬렉션 문서 형태로 변환 (loadHistory와 동일 스키마).
+function buildHistoryData(opType, text, needed, result, plan) {
+  const unlimited = (plan || 'free') === 'unlimited';
+  const data = {
+    type: opType === 'detect' ? 'detect' : 'humanize',
+    inputText: text || '',
+    credits: unlimited ? 0 : needed
+  };
+  if (opType === 'detect') {
+    data.probability = typeof result.probability === 'number' ? result.probability : null;
+    data.summary = result.summary || '';
+    data.detail = result.detail || '';
+  } else {
+    data.outputText = result.outputText || '';
+    data.humanSummary = result.summary || '';
+    data.humanDetail = result.detail || '';
+  }
+  return data;
+}
+
+// ★ 핵심: 차감 ⟺ 결과 영속. 한 트랜잭션으로 [requestId 멱등 + 차감 + history(결과) + creditHistory + 멱등마커].
+//   응답이 유실돼도 history/analyzeRequests에 결과가 남아 회수 가능 → "차감됐는데 결과 없음"이 불가능해진다.
+async function commitAnalyzeResult({ uid, needed, opType, requestId, historyData, resultPayload, plan }) {
+  const userRef = db.collection('users').doc(uid);
+  const reqRef = userRef.collection('analyzeRequests').doc(requestId);
+  return await db.runTransaction(async (t) => {
+    // 멱등: 같은 requestId가 이미 처리됐으면 저장된 결과 반환 (재과금 0)
+    const reqSnap = await t.get(reqRef);
+    if (reqSnap.exists) {
+      const r = reqSnap.data();
+      return { alreadyDone: true, historyId: r.historyId, result: r.result || resultPayload };
+    }
+    const snap = await t.get(userRef);
+    if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+    const d = snap.data();
+    const unlimited = (d.plan || plan || 'free') === 'unlimited';
+    let remaining = d.credits || 0;
+    if (!unlimited) {
+      if (remaining < needed) throw Object.assign(new Error('INSUFFICIENT_CREDITS'), { status: 402 });
+      remaining = remaining - needed;
+      t.update(userRef, { credits: remaining });
+    }
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    const histRef = userRef.collection('history').doc();
+    t.set(histRef, { ...historyData, createdAt: now });
+    const chRef = userRef.collection('creditHistory').doc();
+    t.set(chRef, { type: opType, used: unlimited ? 0 : needed, amount: 0, remaining, createdAt: now });
+    const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 24 * 60 * 60 * 1000);
+    t.set(reqRef, {
+      uid, opType, historyId: histRef.id, charged: unlimited ? 0 : needed,
+      result: resultPayload, createdAt: now, expiresAt
+    });
+    return { alreadyDone: false, historyId: histRef.id, result: resultPayload };
+  });
 }
 
 // 정기결제(Pro 탭) 쿠폰 검증 + 1회 차감. 결제는 텍스트 길이 1회당 쿠폰 1개.
@@ -1850,6 +1907,10 @@ router.post('/analyze', async (req, res) => {
   });
 
   const { mode, text, idToken } = req.body;
+  // 멱등 키 — 클라가 부여(재시도·회수 시 동일 id). 없거나 비정상이면 서버 생성(구버전 클라 하위호환).
+  //   Firestore 문서 ID로 안전한 형태만 허용 (슬래시·과길이 차단).
+  const rawReqId = (typeof req.body.requestId === 'string') ? req.body.requestId.trim() : '';
+  const requestId = /^[A-Za-z0-9_-]{8,128}$/.test(rawReqId) ? rawReqId : ('srv_' + crypto.randomUUID());
   const lang = req.body.lang || 'ko';
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
   // 프런트 분할 호출 시 전달되는 직전 청크 말미 (문체 참고용, ≤300자 안전 가드)
@@ -1877,6 +1938,18 @@ router.post('/analyze', async (req, res) => {
       error: authErrorMessage(e.message),
       ...(e.charLimit !== undefined ? { charLimit: e.charLimit } : {})
     });
+  }
+
+  // 멱등/회수: 이미 처리된 requestId면 LLM·차감 없이 저장된 결과를 즉시 반환 (재시도·응답유실 대비).
+  if (billingMode !== 'coupon') {
+    try {
+      const reqSnap = await db.collection('users').doc(pre.uid)
+        .collection('analyzeRequests').doc(requestId).get();
+      if (reqSnap.exists) {
+        const r = reqSnap.data();
+        return res.json({ ok: true, result: r.result, historyId: r.historyId, savedHistory: true, requestId, idempotent: true });
+      }
+    } catch (e) { /* 조회 실패해도 진행 — 멱등 트랜잭션이 중복 차감을 막는다 */ }
   }
 
   // 2) LLM 호출 + 결과 검증 (실패 시 차감 없음)
@@ -2021,54 +2094,53 @@ router.post('/analyze', async (req, res) => {
     return;
   }
 
-  // 3) 결과 정상 → 차감 (실패 시 결과 응답 안 함)
-  //   차감 + 복구 안전망: Firestore 트랜잭션(100~500ms) 중 client disconnect 시 abort 신호가
-  //   트랜잭션 완료 후 도착해 res.json은 빈 socket에 쓰임 → "결과 없이 크레딧만 차감" 민원.
-  //   해결: 차감 commit 후 sync 체크 + abort listener 두 단계로 post-deduct disconnect 감지해 복구.
-  let deducted = false;
-  let responded = false;
-  let restoreDone = false;
-  const doRestore = async (reason) => {
-    if (restoreDone || !deducted || responded) return;
-    restoreDone = true;
-    console.log(`⚠️ /analyze 복구 트리거 [${reason}] uid=${pre.uid}`);
+  // 3) 결과 정상 → 차감 ⟺ 결과 영속을 단일 트랜잭션으로. 응답이 유실돼도 결과는 history/analyzeRequests에 남아 회수 가능.
+  if (billingMode === 'coupon') {
+    // 쿠폰 경로(현재 미사용) — 기존 차감만. 신규 원자 보장은 credit/unlimited에 적용.
     try {
-      await retryAsync(async () => {
-        if (billingMode === 'coupon') {
-          await commitCouponRestore(pre.uid, pre.tier, opType, text.length);
-        } else if (pre.plan !== 'unlimited') {
-          await commitCreditRestore(pre.uid, needed, opType);
-        }
-      });
-      console.log(`✅ /analyze 복구 완료 uid=${pre.uid}`);
-    } catch (e) {
-      console.error(`❌ /analyze 복구 실패 (재시도 소진, 수동 보정 필요) uid=${pre.uid}:`, e?.message);
-    }
-  };
-
-  try {
-    if (billingMode === 'coupon') {
       await commitCouponUsage(pre.uid, pre.tier, opType, text.length);
-    } else if (pre.plan !== 'unlimited') {
-      await commitCreditDeduct(pre.uid, needed, opType);
+    } catch (e) {
+      console.error('❌ /analyze coupon deduct fail:', e?.code, e?.message);
+      return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
     }
-    deducted = true;
+    return res.json({ ok: true, result, usage, refineUsage });
+  }
+
+  // credit / unlimited: 차감 + history(결과 포함) + creditHistory + 멱등마커를 원자적으로 커밋.
+  //   커밋이 성공해야만 차감이 일어나고, 그 순간 결과도 영속된다 → "차감됐는데 결과 없음"이 구조적으로 불가능.
+  const historyData = buildHistoryData(opType, text, needed, result, pre.plan);
+  let committed;
+  try {
+    committed = await commitAnalyzeResult({
+      uid: pre.uid, needed, opType, requestId,
+      historyData, resultPayload: JSON.parse(JSON.stringify(result || {})), plan: pre.plan
+    });
   } catch (e) {
-    console.error('❌ /analyze deduct fail:', e?.code, e?.message);
+    if (e?.status === 402) return res.status(402).json({ error: authErrorMessage('INSUFFICIENT_CREDITS') });
+    console.error('❌ /analyze commit fail:', e?.code, e?.message);
     return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
   }
+  console.log(`✅ /analyze 커밋 uid=${pre.uid} req=${requestId}${committed.alreadyDone ? ' (멱등)' : ''}`);
+  // 응답 유실돼도 committed가 진실 — 클라는 requestId로 /analyze/result 회수 가능.
+  res.json({ ok: true, result: committed.result, historyId: committed.historyId, savedHistory: true, requestId, idempotent: committed.alreadyDone, usage, refineUsage });
+});
 
-  // 차감 후 disconnect 감지 (sync) — 이미 abort됐으면 즉시 복구.
-  if (ac.signal.aborted) {
-    await doRestore('post-deduct sync');
-    return;
+// 결과 회수 — POST /analyze 응답이 유실됐을 때 클라가 requestId로 영속된 결과를 다시 가져온다 (본인 것만).
+router.post('/analyze/result', async (req, res) => {
+  const { requestId, idToken } = req.body || {};
+  if (!requestId) return res.status(400).json({ error: 'requestId가 없습니다.' });
+  let uid;
+  try { uid = (await admin.auth().verifyIdToken(idToken)).uid; }
+  catch { return res.status(401).json({ error: '로그인이 필요합니다.' }); }
+  try {
+    const snap = await db.collection('users').doc(uid).collection('analyzeRequests').doc(requestId).get();
+    if (!snap.exists) return res.status(404).json({ error: 'NOT_FOUND' });
+    const r = snap.data();
+    return res.json({ ok: true, result: r.result, historyId: r.historyId, savedHistory: true, requestId });
+  } catch (e) {
+    console.error('❌ /analyze/result 회수 실패:', e?.message);
+    return res.status(500).json({ error: '결과 회수 중 오류가 발생했어요.' });
   }
-  // 아직이면 listener 등록 — res.json finish 전 disconnect 발생 시 복구.
-  ac.signal.addEventListener('abort', () => { doRestore('post-deduct listener'); }, { once: true });
-
-  // 4) 응답 — 'finish'(OS 송신 큐 완료) 시점에만 responded 마킹.
-  res.once('finish', () => { responded = true; });
-  res.json({ ok: true, result, usage, refineUsage });
 });
 
 router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {

@@ -283,7 +283,37 @@ function measureRepetition(text) {
 }
 
 // 1차 결과에서 FLOOR critical 위반만 추출 (surface는 제외 — regression report로 §11).
-function collectFloorViolations({ result, rawText, povSeed, optIn, mode, position = 'whole', chunkLevel = false, allowedExtra = '' }) {
+// ── LLM 산출물 누출 가드(genretransfer에서 이식, 2026-06-11) ──────────
+// 메타 메모 누출(실측: "미삽입 항목 처리 메모…밝힙니다"가 본문 끝에 붙어 측정됨)
+const META_NOTE_RE = /(메모\s*:|밝힙니다|지시에\s*따라|삽입하지\s*않|본문만\s*출력|위\s*지침|요청하신)/;
+// 지시문 윙크 누출(루틴 v1 실측: "…는 데 있다(아, 이 표현 쓰지 말라고 했지)" — 금지목록을 어기고 프롬프트에
+// 사과하는 메타 발화를 필자의 사족 괄호로 위장). 표현·단어·문장에 대한 금지 언급만 잡아 일반 내용 오탐 차단.
+const WINK_RE = /(표현|단어|문장|어투)[^.”"]{0,12}(쓰지\s*말|말라고\s*했|금지)/;
+// ★ 메인 엔진은 임의 원문을 받으므로 "원문∪허용재료에 없는 경우만" 누출로 판정(원문이 원래 "밝힙니다"를
+//   쓰는 격식문·메타 글쓰기 에세이 오탐 방지 — genretransfer의 무조건 폐기와 다른 점).
+function findMetaLeaks(text, allowedWorld) {
+  const world = (allowedWorld || '').replace(/\s+/g, '');
+  const bad = [];
+  for (const re of [META_NOTE_RE, WINK_RE]) {
+    for (const m of (text || '').matchAll(new RegExp(re.source, 'g'))) {
+      if (!world.includes(m[0].replace(/\s+/g, ''))) bad.push(m[0]);
+    }
+  }
+  return [...new Set(bad)];
+}
+// 용어귀속 날조 가드(루틴 v1 실측: "심리학 쪽에서는 '정-반 효과'라고 부르기도 한다" — 실재하지 않는 용어를
+// 학문에 귀속). novelty는 기관·수치 패턴만 보므로 일반명사 합성 용어는 통과, judge도 확률적으로 놓침(1회 실측).
+// 결정론 규칙: 따옴표 용어 + "~라고 부른다" 귀속문이면 그 용어가 원문∪허용재료에 실재해야 한다.
+function findCoinedTerms(text, allowedWorld) {
+  const bare = (allowedWorld || '').replace(/\s+/g, '');
+  const bad = [];
+  for (const m of (text || '').matchAll(/['‘"「]([^'’"」\n]{2,20})['’"」]\s*(?:이?라고?|이?라)\s*부르/g)) {
+    if (!bare.includes(m[1].replace(/\s+/g, ''))) bad.push(m[1]);
+  }
+  return bad;
+}
+
+function collectFloorViolations({ result, rawText, povSeed, optIn, mode, position = 'whole', chunkLevel = false, allowedExtra = '', anchors = false }) {
   const out = result?.outputText || '';
   const v = [];
 
@@ -349,13 +379,33 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
     v.push({ type: 'repetition', detail: `완전중복 ${rep.count}건·근접중복 ${rep.fuzzyCount}건·짧은조각 ${rep.shortFragCount || 0}건`,
       fix: `같은 결론·문장이 (어미·표현만 바꿔) 반복된다. 의미가 겹치는 문장을 하나로 합치고, 같은 짧은 조각·체언종결("…방패다" 등)을 여러 번 재사용하지 말고 한 번만 써라.` });
   }
+  // ★ LLM 산출물 누출 3종(genretransfer 이식): 메타 메모·지시문 윙크 / 용어귀속 날조 / 앵커 소재 번짐.
+  //   기존 refine→재검증→raw폴백 기계에 그대로 태운다(fix 지시문 포함).
+  const allowedWorld = allowedExtra ? rawText + '\n' + allowedExtra : rawText;
+  const metaLeaks = findMetaLeaks(out, allowedWorld);
+  if (metaLeaks.length) {
+    v.push({ type: 'meta_leak', detail: metaLeaks.join(' | '),
+      fix: `지시문에 대한 메타 발화·작업 메모가 본문에 누출됐다: ${metaLeaks.join(' | ')}. 해당 문장·괄호를 삭제하라(본문 내용만 남길 것).` });
+  }
+  const coined = findCoinedTerms(out, allowedWorld);
+  if (coined.length) {
+    v.push({ type: 'coined_term', detail: coined.join(', '),
+      fix: `원문에 없는 용어를 만들어 학문·분야에 귀속시켰다: ${coined.join(', ')}. 그 용어와 귀속문("~라고 부른다")을 삭제하고 원문 표현으로 되돌려라.` });
+  }
+  if (anchors) {
+    const anchorLeaks = require('./prompt').findAnchorLeaks(out, allowedWorld);
+    if (anchorLeaks.length) {
+      v.push({ type: 'anchor_leak', detail: anchorLeaks.join(', '),
+        fix: `원문에 없는 부동산·도시 소재 어휘가 비유로 끼어들었다: ${anchorLeaks.join(', ')}. 해당 비유·문장을 삭제하고 글의 실제 소재로만 써라.` });
+    }
+  }
   // ※ 결론부 drift는 여기서 하드 위반으로 잡지 않는다(§우회): 열린·여운 마무리는 우회 기법이라 허용.
   //   결정론 conclusion_drift는 judge 트리거로만 쓰고(analyze.js), 진짜 "결론 의도 역전"은 semanticJudge가 차단.
   return v;
 }
 
 // floorReport 조립 — 측정값을 criticals/warnings로 분류하고 status 결정(노출 게이트의 단일 판정, §E.3).
-function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra = '' }) {
+function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra = '', anchors = false }) {
   const out = result?.outputText || '';
   const criticals = [], warnings = [];
   const nov = result.floorNovelty || measureNovelty(rawText, out, allowedExtra);
@@ -380,6 +430,18 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   if (concl.flagged) warnings.push({ gate: 'conclusion_drift', detail: concl.markers.join(', ') });
   if (mode === 'thesis') { const fake = measureFakeInternalRefs(rawText, out); if (fake.count) criticals.push({ gate: 'fake_ref', detail: fake.fabricated.join(', ') }); }
   if (result.judge && result.judge.ran && result.judge.pass === false) criticals.push({ gate: 'semanticJudge', detail: (result.judge.violations || []).length + '건' });
+  // ★ LLM 산출물 누출 3종(이식): 조용한 누출 → 차단(노출 게이트 원칙).
+  {
+    const allowedWorld = allowedExtra ? rawText + '\n' + allowedExtra : rawText;
+    const metaLeaks = findMetaLeaks(out, allowedWorld);
+    if (metaLeaks.length) criticals.push({ gate: 'meta_leak', detail: metaLeaks.join(' | ') });
+    const coined = findCoinedTerms(out, allowedWorld);
+    if (coined.length) criticals.push({ gate: 'coined_term', detail: coined.join(', ') });
+    if (anchors) {
+      const anchorLeaks = require('./prompt').findAnchorLeaks(out, allowedWorld);
+      if (anchorLeaks.length) criticals.push({ gate: 'anchor_leak', detail: anchorLeaks.join(', ') });
+    }
+  }
 
   if (len.status === 'overSoft') warnings.push({ gate: 'length_overSoft', detail: len.ratio });
   if (drift.droppedFirstPerson) warnings.push({ gate: 'pov_dropped', detail: `${drift.input_fp_singular}→0` });
@@ -447,5 +509,9 @@ module.exports = {
   collectFloorViolations,
   buildFloorReport,
   buildFloorRefineUser,
-  collectSurfaceReport
+  collectSurfaceReport,
+  META_NOTE_RE,
+  WINK_RE,
+  findMetaLeaks,
+  findCoinedTerms
 };

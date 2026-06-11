@@ -358,87 +358,11 @@ JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":[
   return { title: plan.title || '', subtitle: plan.subtitle || '', slots };
 }
 
-const { LLM_TIC_RULE } = require('./prompt');
-
-// ★ 목소리 앵커(2026-06-10): 규칙 나열 프롬프트 20여 회 실패 후의 방법 전환 — "금지/지시"가 아니라 "모방".
-//   카피킬러 0~2% 실제 사람 필자 문단(주택의미래·반도시주의자, 주제 무관)을 결 기준으로 제시.
-//   ★실측 89→73%(−16%p) — 격식 레지스터 최초의 실레버. 슬롯별 2개 회전(한 목소리 과적합 방지). STYLE_ANCHOR=0 해제.
-const ANCHOR_PARAS = [
-  `《예컨대 4억짜리 집을 1억의 자기자본과 3억의 전세를 끼고 사서, 운영기간에는 수익이 안 나더라도(월세로 받았을 경우와 비교해서는 오히려 손해더라도), 청산 시점에 집값이 8억이 되면 보증금을 반환하고도 4억을 번다. 이런 경우에는 중간에 3억원이 생겨도 이걸로 전세보증금을 돌려주고 월세로 전환하느니, 그 돈으로 갭투자를 세 군데 더 하는 게 낫다.》`,
-  `《특히 운영유지관리비용은 건설비의 5배가 넘는데, 분양 사업의 패러다임에서라면 공급자는 운영 단계의 비용절감에 둔감해지게 된다. 소유자 역시 손바뀜이 자주 일어나면 자기 건물이라 해도 운영관리 성능 개선에 큰 관심을 둘 유인이 적어진다. 그러나! 공급주체가 운영까지 책임지는 구조는 이 부분에서 매우 큰 강점을 보일 수 있다.》`,
-  `《그렇다면 오히려 '불평등의 증폭기'는 아니었나, 하면 너무 불온한 생각일까. 어쨌든 다주택자 때문에 집값이 올라서 집을 못 산다고 볼 수도 있지만, 막상 당장 들어가 살 집을 구해준 것도 그 시장이었음을 생각하면 이야기가 그리 간단하지 않다.》`,
-  `《아쉽지만 유입인구 50만 명의 직종이 무엇인지는 이 자료로 유추할 순 없겠다. 다만(학생의 경우는 제외한다면) 이 인구에서 유출인구를 뺀 7만 명 정도가 현재 직주근접하여 사는 인구인 셈이라는 것만은 알겠다. 이 발견을 어디다 써먹을 수 있을지도 아직은 모르겠으나.》`,
-  `《다만 면(面)적 차원에서의 초고밀개발은 오히려 에너지 효율이나 집중의 불경제를 야기하고, 40년 뒤 대규모 슬럼화의 위험이 있기에 막아야 한다. 요는 초쾌속 연결망이 큰 축을 엮고, 내부 정차역 수는 최소화하며, 개별 지점까지는 30분 이내 접근이 되도록 하는 것이다.》`,
-];
-const ANCHOR_HEADER = `[목소리 앵커 — 카피킬러 0~2%를 받은 실제 사람 필자의 문단들(주제 무관). 규칙이 아니라 이 "결"로 써라: 문장 호흡의 낙차, 괄호로 끼어드는 사족·단서·딴소리, 서슴없는 단정과 즉석 계산, 가끔 덜 닫힌 사념. ★내용·표현·수치·1인칭(나/내가/우리)·독자 호명은 가져오지 마라. ★앵커의 소재(부동산·집·전세·투자·도시·인구 등)를 비유로도 끌어오지 마라 — 오직 결만.]`;
-function pickAnchors(slotIdx) {
-  const a = ANCHOR_PARAS[slotIdx % ANCHOR_PARAS.length];
-  const b = ANCHOR_PARAS[(slotIdx + 2) % ANCHOR_PARAS.length];
-  return ANCHOR_HEADER + '\n' + a + '\n' + b;
-}
-// 앵커 소재 누출 게이트(결정론): novelty는 고유명사·수치만 잡아 일반명사 비유("갭투자로 집을…")는 통과 — 실측 1회 발생.
-const ANCHOR_LEAK_RE = /갭투자|전세|보증금|임대인|임차인|다주택|집값|월세|분양|슬럼화|직주근접|초고밀|매매차익/;
-// ★ 수치-출처 짝 검증(2026-06-11, 45% 실측본에서 의미 재조합 날조 2건 발견): novelty는 토큰만 보므로
-//   "666명 중 45.9%가 활용능력에 자신 없다"(두 조사 융합), "-0.68 상관계수→향상폭 0.68"(부호 탈락·의미 역전)을 통과시킴.
-//   결정론 보강: evidence 수치가 등장하는 문장(±직전 문장)에 그 수치가 속한 evidence 줄의 핵심 표지(기관·키워드)가
-//   하나는 있어야 한다. 없으면 = 수치가 출처에서 분리돼 떠돈 것 = 재조합 위험 → 거부/수리.
-const PAIR_STOP = new Set(['조사에서', '연구에서', '대상으로', '분석한', '결과', '대학생', '학생', '사용', '활용', '이상', '기준', '응답했다', '답했다', '나타났다']);
-// 수치 토큰 추출(단위 인지, 2026-06-11 routine v2 오탐 2건로 정밀화): 2자리 맨정수는 단위까지 키에 포함해
-// "30분"(원문 수사)과 "30%"(크로노타입 evidence)의 숫자-만 충돌을 차단. 3자리+·소수·콤마 수치는 그 자체로
-// 변별력이 있어 숫자만으로 매칭(단위 조사(로/을) 변형에 따른 recall 손실 방지).
-function _numToks(str) {
-  return [...new Set((str.match(/-?\d[\d,.]*(?:%|[가-힣])?/g) || []).map(t => {
-    const m = t.match(/^(-?[\d,.]+)(%|[가-힣])?$/);
-    if (!m) return null;
-    const digits = m[1].replace(/[.,]+$/, '');
-    if (digits.replace(/[^0-9]/g, '').length < 2) return null;
-    const short = digits.replace(/[^0-9]/g, '').length === 2 && !/[.,]/.test(digits);
-    return digits + (short ? '|' + (m[2] || '') : '');
-  }).filter(Boolean))];
-}
-// 기관 앵커 분류(2026-06-11 ai-study 출처 스왑 실측): "45.9%(한국직업능력연구원 조사다)" — 소유 줄은 오픈서베이.
-// 내용 단어 앵커("사고력")가 창에 있어 통과 → 기관이 있는 사실은 기관 앵커 일치를 요구해야 출처 스왑을 막는다.
-const ORG_RE = /^([가-힣]+(연구원|연구소|연구팀|학회|센터|협의회|신문|일보|대학교?|교육부|보)|[A-Z][A-Za-z]{2,}|[A-Z]{2,}[a-z]*|.*서베이.*|네이처|앤트로픽)$/;
-const ORG_STOP = new Set(['GPT', 'SNS', 'ESG', 'PDF', 'URL', 'HTML', 'IRA']);   // 기관 아닌 약어(경쟁 기관 오인 방지)
-function evidenceAnchorMap(evidenceList) {
-  return evidenceList.map(line => {
-    const nums = _numToks(line);
-    const anchors = [...new Set((line.match(/[가-힣]{3,}|[A-Za-z]{3,}/g) || []))].filter(w => !PAIR_STOP.has(w)).slice(0, 10);
-    const orgAnchors = anchors.filter(a => ORG_RE.test(a));
-    return { line, nums, anchors, orgAnchors };
-  });
-}
-function checkEvidencePairing(text, evidenceList) {
-  const map = evidenceAnchorMap(evidenceList);
-  const sents = sg.splitSentences(text);
-  const bad = [];
-  const isBareYear = (t) => /^(19|20)\d{2}$/.test(t.split('|')[0]);   // 연도는 일반 시점 표현으로 합법 사용 多 → 짝 검증 제외(오탐원)
-  sents.forEach((s, i) => {
-    // 창 ±직전 2문장(routine v2 오탐: 인용 직후의 정당한 후속 코멘트 "254일이면 거의 일 년"이 1문장 창 밖).
-    // 제목·부제(첫 2문장)는 앞으로 2문장도 본다 — 수치 헤드라인은 출처를 리드에서 밝히는 게 정상 패턴(ai-study 실측 오탐).
-    const fwd = i < 2 ? ' ' + sents.slice(i + 1, i + 3).join(' ') : '';
-    const window = sents.slice(Math.max(0, i - 2), i).join(' ') + ' ' + s + fwd;
-    const nums = _numToks(s).filter(t => !isBareYear(t));
-    // 창에 등장하는 기관 토큰(경쟁 귀속 후보) — GPT 등 기관 아닌 약어는 제외
-    const winOrgs = [...new Set((window.match(/[가-힣]{3,}|[A-Za-z]{3,}/g) || []))]
-      .filter(w => ORG_RE.test(w) && !PAIR_STOP.has(w) && !ORG_STOP.has(w));
-    for (const n of nums) {
-      const owners = map.filter(m => m.nums.includes(n) || m.nums.includes('-' + n));
-      if (!owners.length) continue;                                   // evidence 소속 수치만 검사
-      // 일반 앵커 일치가 기본. 단 "창에 경쟁 기관명이 있는데 소유 기관이 없는" 스왑 시그니처는 위반
-      // (일반화 패러프레이즈 "KCI 등재 연구→국내 연구"는 경쟁 기관이 없으므로 통과 — v6 오탐 실측 반영).
-      const ok = owners.some(o => {
-        if (!o.anchors.some(a => window.includes(a))) return false;
-        if (!o.orgAnchors.length) return true;
-        const ownerOrgPresent = o.orgAnchors.some(a => window.includes(a));
-        const competing = winOrgs.some(w => !o.orgAnchors.some(a => a.includes(w) || w.includes(a)));
-        return ownerOrgPresent || !competing;
-      });
-      if (!ok) bad.push({ num: n.split('|')[0], sent: s.replace(/\s+/g, ' ').slice(0, 90), owner: owners[0].line.slice(0, 60) });
-    }
-  });
-  return bad;
-}
+// ★ 목소리 앵커·누출 게이트·승인사실 무결성 가드 — 메인 엔진 이식(2026-06-11)으로 prompt.js/evidenceguard.js/floor.js가
+//   단일 진실 소스가 됨. 여기서는 import만(동작 동일). 앵커 헤더는 이식하며 디프레이밍됨(탐지기·점수 언급 제거).
+const { LLM_TIC_RULE, pickAnchors, ANCHOR_LEAK_RE } = require('./prompt');
+// ★ 수치-출처 짝 검증·수치 토큰·기관 앵커: engine/evidenceguard.js로 이식(메인 엔진 공용) — import만.
+const { _numToks, evidenceAnchorMap, checkEvidencePairing, dedupeFactRecitations } = require('./evidenceguard');
 
 // 문단급 near-dup 제거(2026-06-11, 43% PDF에서 발견): weave가 사실 토큰을 끼우며 문단을 변주 복제
 // ("진입장벽~오프로딩" 4문장 2본) — 문장級 dedupe는 ③마감에서 weave보다 먼저 돌아 못 잡음. 카피킬러
@@ -464,30 +388,7 @@ function dedupeParas(doc, textF) {
   return paras.filter((_, x) => !drop.has(x)).join('\n\n');
 }
 
-// 사실 재인용 제거(2026-06-11 ai-study 63% PDF 실측): 같은 evidence 수치가 문서에서 2~4회 재인용
-// (13주×4·12대원칙×3·558명×2…) — 슬롯이 "원문 문단 직접 재료"로 남의 슬롯 사실을 다시 진술 + 독립 생성.
-// '기계적 정확성·균일성' 피탐의 직접 원인이자 품질 결함(같은 연구를 두 번 처음처럼 인용).
-// 규칙: 각 evidence 수치의 첫 인용 문장만 유지, 이후 문장은 그 문장의 모든 evidence 수치가 재인용일 때만 제거.
-function dedupeFactRecitations(doc, evidenceList, textF) {
-  const evNums = new Set();
-  for (const line of evidenceList) for (const t of _numToks(line)) evNums.add(t);
-  const isBareYear = (t) => /^(19|20)\d{2}$/.test(t.split('|')[0]);
-  const paras = doc.split(/\n{2,}/).map(p => p.split(/(?<=[.!?”"])\s+/));
-  const seen = new Set();
-  const out = [];
-  for (const sents of paras) {
-    const kept = [];
-    for (const s of sents) {
-      const nums = _numToks(s).filter(t => evNums.has(t) && !isBareYear(t));
-      if (nums.length && nums.every(n => seen.has(n))) continue;     // 전부 재인용 → 문장 제거
-      nums.forEach(n => seen.add(n));
-      kept.push(s);
-    }
-    if (kept.join('').replace(/\s+/g, '').length > 0) out.push(kept.join(' '));
-  }
-  const cand = out.join('\n\n');
-  return floor.measureLostFacts(textF, cand).count <= floor.measureLostFacts(textF, doc).count ? cand : doc;
-}
+// 사실 재인용 제거(dedupeFactRecitations): engine/evidenceguard.js로 이식 — 위 import 사용.
 
 // 문단 횡단 문장급 dup 해소(사실 인지형) — v5 실측: 사본들이 서로 다른 큰 문단 안에 박혀 문단 jaccard 0.497로
 // dedupeParas가 못 잡고, dedupe(문장級)는 "후속 등장 삭제"라 위빙된 사실 토큰("두 번~다섯 번")을 든 사본을 지워
@@ -522,23 +423,8 @@ function resolveDupSentences(doc, textF) {
   return doc;
 }
 
-// LLM 수리 패스의 메타 메모 누출 차단(실측: "미삽입 항목 처리 메모…밝힙니다"가 본문 끝에 붙어 측정됨)
-const META_NOTE_RE = /(메모\s*:|밝힙니다|지시에\s*따라|삽입하지\s*않|본문만\s*출력|위\s*지침|요청하신)/;
-// 지시문 윙크 누출(루틴 v1 실측: "…는 데 있다(아, 이 표현 쓰지 말라고 했지)" — 금지목록을 어기고 프롬프트에
-// 사과하는 메타 발화를 필자의 사족 괄호로 위장). 표현·단어·문장에 대한 금지 언급만 잡아 일반 내용 오탐 차단.
-const WINK_RE = /(표현|단어|문장|어투)[^.”"]{0,12}(쓰지\s*말|말라고\s*했|금지)/;
-
-// 용어귀속 날조 가드(루틴 v1 실측: "심리학 쪽에서는 '정-반 효과'라고 부르기도 한다" — 실재하지 않는 용어를
-// 학문에 귀속). novelty는 기관·수치 패턴만 보므로 일반명사 합성 용어는 통과, judge도 확률적으로 놓침(1회 실측).
-// 결정론 규칙: 따옴표 용어 + "~라고 부른다" 귀속문이면 그 용어가 원문∪근거에 실재해야 한다.
-function findCoinedTerms(text, textF) {
-  const bare = textF.replace(/\s+/g, '');
-  const bad = [];
-  for (const m of text.matchAll(/['‘"「]([^'’"」\n]{2,20})['’"」]\s*(?:이?라고?|이?라)\s*부르/g)) {
-    if (!bare.includes(m[1].replace(/\s+/g, ''))) bad.push(m[1]);
-  }
-  return bad;
-}
+// 메타 메모·지시문 윙크·용어귀속 날조 가드: engine/floor.js로 이식(메인 엔진 공용) — import만.
+const { META_NOTE_RE, WINK_RE, findCoinedTerms } = require('./floor');
 function stripMetaNotes(doc) {
   const paras = doc.split(/\n{2,}/);
   while (paras.length && META_NOTE_RE.test(paras[paras.length - 1])) paras.pop();

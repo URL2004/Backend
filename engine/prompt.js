@@ -13,6 +13,34 @@
 const LLM_TIC_RULE = `· ★간접화법 문형 금지(이 글투가 AI 지문이다): 단정을 명사화·헷지로 감싸지 마라 — "~다는 것이다/~다는 점이다/~다는 사실" 꼬리표, "~기도 하다/~이기도 하다" 양다리 헷지, "~는 데 있다"("문제는 ~하는 데 있다"), "~로 읽힌다/~로 해석된다/~로 보인다" 해석동사, "달리 말하면/그렇게 보면/요컨대" 메타담화, "~에 달려 있다/~에 가깝다" — 글 전체에서 각각 2회 이하. 대신 그냥 단정하라("학습이 약해진다는 뜻이기도 하다" → "학습이 약해진다").
 · ★추상명사 주어 연쇄 금지: "이 간극이/그 미끄러짐이/이 긴장이"처럼 지시어+추상명사를 주어로 세우는 문장을 연달아 쓰지 마라. 주어는 구체 명사(사람·기관·사물)가 기본.`;
 
+// ★ 목소리 앵커(genretransfer에서 이식, 2026-06-11): 규칙 나열 프롬프트 20여 회 실패 후의 방법 전환 — "금지/지시"가 아니라 "모방".
+//   실제 사람 필자 문단(주택의미래·반도시주의자, 주제 무관)을 결 기준으로 제시. 장르전환 실측 89→73→43~45%(다양화 5종 회전)
+//   — 격식 레지스터 최초·최대의 실레버. 청크 인덱스 기반 2개 회전(한 목소리 과적합 방지). STYLE_ANCHOR=0 해제.
+//   ⚠️ 헤더는 디프레이밍 유지(탐지기·점수 언급 금지 — claudecode 백엔드 거부 실측, §gp-api-parallel-setup).
+const ANCHOR_PARAS = [
+  `《예컨대 4억짜리 집을 1억의 자기자본과 3억의 전세를 끼고 사서, 운영기간에는 수익이 안 나더라도(월세로 받았을 경우와 비교해서는 오히려 손해더라도), 청산 시점에 집값이 8억이 되면 보증금을 반환하고도 4억을 번다. 이런 경우에는 중간에 3억원이 생겨도 이걸로 전세보증금을 돌려주고 월세로 전환하느니, 그 돈으로 갭투자를 세 군데 더 하는 게 낫다.》`,
+  `《특히 운영유지관리비용은 건설비의 5배가 넘는데, 분양 사업의 패러다임에서라면 공급자는 운영 단계의 비용절감에 둔감해지게 된다. 소유자 역시 손바뀜이 자주 일어나면 자기 건물이라 해도 운영관리 성능 개선에 큰 관심을 둘 유인이 적어진다. 그러나! 공급주체가 운영까지 책임지는 구조는 이 부분에서 매우 큰 강점을 보일 수 있다.》`,
+  `《그렇다면 오히려 '불평등의 증폭기'는 아니었나, 하면 너무 불온한 생각일까. 어쨌든 다주택자 때문에 집값이 올라서 집을 못 산다고 볼 수도 있지만, 막상 당장 들어가 살 집을 구해준 것도 그 시장이었음을 생각하면 이야기가 그리 간단하지 않다.》`,
+  `《아쉽지만 유입인구 50만 명의 직종이 무엇인지는 이 자료로 유추할 순 없겠다. 다만(학생의 경우는 제외한다면) 이 인구에서 유출인구를 뺀 7만 명 정도가 현재 직주근접하여 사는 인구인 셈이라는 것만은 알겠다. 이 발견을 어디다 써먹을 수 있을지도 아직은 모르겠으나.》`,
+  `《다만 면(面)적 차원에서의 초고밀개발은 오히려 에너지 효율이나 집중의 불경제를 야기하고, 40년 뒤 대규모 슬럼화의 위험이 있기에 막아야 한다. 요는 초쾌속 연결망이 큰 축을 엮고, 내부 정차역 수는 최소화하며, 개별 지점까지는 30분 이내 접근이 되도록 하는 것이다.》`,
+];
+const ANCHOR_HEADER = `[목소리 앵커 — 실제 사람 필자가 쓴 문단들(주제 무관). 규칙이 아니라 이 "결"로 써라: 문장 호흡의 낙차, 괄호로 끼어드는 사족·단서·딴소리, 서슴없는 단정과 즉석 계산, 가끔 덜 닫힌 사념. ★내용·표현·수치·1인칭(나/내가/우리)·독자 호명은 가져오지 마라. ★앵커의 소재(부동산·집·전세·투자·도시·인구 등)를 비유로도 끌어오지 마라 — 오직 결만.]`;
+function pickAnchors(slotIdx) {
+  const a = ANCHOR_PARAS[slotIdx % ANCHOR_PARAS.length];
+  const b = ANCHOR_PARAS[(slotIdx + 2) % ANCHOR_PARAS.length];
+  return ANCHOR_HEADER + '\n' + a + '\n' + b;
+}
+// 앵커 소재 누출 게이트(결정론): novelty는 고유명사·수치만 잡아 일반명사 비유("갭투자로 집을…")는 통과 — 실측 1회 발생.
+// ★ 메인 엔진은 임의 원문을 받으므로(부동산 에세이도 옴) "원문∪허용재료에 없는 단어만" 누출로 판정 — 무조건 거부였던
+//   genretransfer판과 달리 소재 오탐을 구조적으로 차단.
+const ANCHOR_LEAK_RE = /갭투자|전세|보증금|임대인|임차인|다주택|집값|월세|분양|슬럼화|직주근접|초고밀|매매차익/;
+function findAnchorLeaks(text, allowedWorld) {
+  const hits = [...new Set((text || '').match(new RegExp(ANCHOR_LEAK_RE.source, 'g')) || [])];
+  if (!hits.length) return [];
+  const world = (allowedWorld || '').replace(/\s+/g, '');
+  return hits.filter(h => !world.includes(h));
+}
+
 const TONE_KO = {
   assignment: '차분한 학부생 보고서 문체(격식 유지), 종결어미 다변화, 단문은 문단당 1개로 절제(블로그식 단문 폭격 금지). ★문체는 원문을 따른다 — 원문이 평어체(~다/~이다)면 평어체로, 존댓말(~합니다)이면 존댓말로 글 전체를 하나로 통일(섞지 마라). ★자연스러움 강화(지어내지 말 것): (1) 무견해·판단회피 줄이기 — 원문(또는 사용자 메모)에 *이미 있는* 글쓴이의 견해·판단을 hedge("~인 것 같다/~인지 모르겠다") 없이 단정으로 또렷하게 드러내라. ★단, 원문·메모에 없는 새 견해·종합평가·전망("나는 ~라고 본다", "구조적 문제다")을 지어내지 마라 — 근거 없는 견해가 없으면 무견해를 억지로 없애려 하지 말 것. (2) 비인칭·수동 종결("여겨진다/이루어진다/볼 수 있다")을 능동·주체 명시("사람들은 ~한다/나는 ~라고 본다")로 바꿔 관점을 드러내라. (3) 강조·반전(그러나/오히려/사실은)과 인과(그래서/때문에/결국) 접속사로 논점 전환·논리 전개를 살려 기계적 균일성을 깨라. (4) 표준·정형 한자어를 더 자연스러운 우리말로(격식은 유지). (5) 추상 진술은 원문에 실제로 있는 구체 사례·관찰·맥락으로 뒷받침하라 — 단 원문에 없는 사례·수치·출처·일화는 절대 지어내지 마라. 구어체 SNS·블로그체 금지.',
   blog: '친근한 구어체 블로그 말투. 문단은 3문장 이하로 짧게, 사이에 빈 줄. ★5~10자 단문을 불규칙하게 3~4개 꽂아 문장 길이를 들쭉날쭉(burstiness) 만들고, 긴 문장(50자+)과 뒤섞어라 — 같은 길이대 2연속 금지. 의태어(확/슬쩍/푹/툭)도 자연스럽게. ★★종결어미를 계속 바꿔라(가장 중요 — 같은 어미가 줄줄이 이어지면 기계 티가 난다): ~예요/~이에요/~거든요/~더라고요/~죠/~잖아요/~네요/~군요/~ㄹ게요/~ㄹ까요?를 골고루 돌려 쓰고, ★같은 종결어미 2연속 금지, 특히 "~거든요"·"~요"만 반복하지 마라. 사이사이 의문문(…까요?/…잖아요?), 명사로 딱 끊는 체언 종결("결국 신뢰예요"가 아니라 "결국, 신뢰."), 감탄(…!)을 섞어 종결 리듬을 깨라 — 단 같은 짧은 표현을 반복하진 마라. ★말투·리듬을 적극적으로 바꾸되, 어떤 팁·항목·수치도 빼지 말고 원문에 없는 사실·사례·일화는 절대 지어내지 마라.',
@@ -50,7 +78,7 @@ function speakerRuleEn(speakerType) {
   return "Keep the source's first-person voice. You may keep 1-2 natural personal reactions within that voice, but do not fabricate new anecdotes, achievements, or feelings.";
 }
 
-function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '', register = 'mixed', evidence = '' } = {}) {
+function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '', register = 'mixed', evidence = '', anchorIdx = null } = {}) {
   const tone = (lang === 'en' ? TONE_EN : TONE_KO)[mode] || (lang === 'en' ? TONE_EN : TONE_KO).assignment;
   // 문체 일관성 규칙(§한다체 오믹스 버그): 청크마다 평어/존댓말이 섞이면 그 자체가 AI 신호. 원문 문체로 통일.
   //   blog/resume는 모드 고유 말투(해요/존댓말)를 쓰므로 제외, 학술계열(assignment/thesis)에만 적용.
@@ -92,6 +120,14 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
   ].join('\n') : '';
   // ★ evidence(RAG 근거보강, §설계-evidence-grounding): 웹검색으로 실재 확인 + 학생 승인된 공개 사실.
   //   anchorKo(1인칭 경험 장면화)와 정반대 — 격식 3인칭 인용으로 추상 문장을 *뒷받침*한다. 격식 register 유지가 생명.
+  // ★ 목소리 앵커 블록(한국어 assignment 전용, anchorIdx=청크 인덱스 회전): 격식 결을 사람 필자 모방으로 이동.
+  //   원문이 존댓말이면 앵커의 평어체를 베끼지 않도록 단서(문체 통일 규칙이 우선) — 메인 엔진 register-lock과의 충돌 방지.
+  const anchorsOn = anchorIdx != null && lang === 'ko' && mode === 'assignment' && process.env.STYLE_ANCHOR !== '0';
+  const voiceAnchor = anchorsOn
+    ? '\n' + pickAnchors(anchorIdx) + (register === 'polite'
+      ? '\n※ 앵커는 결(호흡 낙차·괄호 사족·단정·덜 닫힌 사념)만 참고하라 — 종결어미는 [문체 통일] 규칙(존댓말)을 따르고 앵커의 평어체를 베끼지 마라.'
+      : '')
+    : '';
   const evid = (evidence || '').trim();
   const evidenceKo = evid ? [
     '', '[검증된 참고 사실 — 출처 확인·승인 완료]',
@@ -164,6 +200,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '· 마크다운 기호(*, #, -, 백틱) 금지 — 줄글로만.',
     '',
     `[톤: ${mode}] ${tone}${b7 ? '\n[문체 통일] 글 전체를 ~합니다/~입니다 존댓말 보고서체로 통일하라(원문이 평어체여도 존댓말로 전환 — 평어·블로그체 혼입 금지).' : regKo}${fhKo}${b7Ko}`,
+    voiceAnchor,
     anchorKo,
     evidenceKo,
     '',
@@ -171,4 +208,4 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
   ].join('\n');
 }
 
-module.exports = { buildSystemPrompt, LLM_TIC_RULE };
+module.exports = { buildSystemPrompt, LLM_TIC_RULE, ANCHOR_PARAS, ANCHOR_HEADER, pickAnchors, ANCHOR_LEAK_RE, findAnchorLeaks };

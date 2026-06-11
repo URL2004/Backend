@@ -1983,8 +1983,10 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
   // ★ FLOOR v2: 보존 우선 프롬프트로 레거시 모드 프롬프트 대체(내용 파괴/변질 지시 제거). 모드는 톤 오버레이.
   //   floorV2 미설정 시 레거시 프롬프트(프로덕션 동작 불변).
+  // ★ 목소리 앵커(genretransfer 이식): 격식 결의 최대 실레버. 비청크는 문서 1건이라 회전 없이 0번 고정.
+  const anchorsOn = floorV2 && lang === 'ko' && selectedMode === 'assignment' && process.env.STYLE_ANCHOR !== '0';
   let humanizeSystem = floorV2
-    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes, register: contract.register })
+    ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes, register: contract.register, anchorIdx: anchorsOn ? 0 : null })
     : getHumanizeSystem(selectedMode, lang);
   // floorV2는 lean tool(outputText 중심) — 레거시 표면지표 필드의 anti-FLOOR 유도 제거(§리뷰#7).
   const humanizeTool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(selectedMode, lang);
@@ -2012,7 +2014,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     // ★ FLOOR v2: surface는 report(§11). FLOOR critical(novelty·화자·허위참조·과확장)만 refine. 전 모드(C30).
     //   과확장은 1패스로 안 줄 수 있어 최대 2라운드 shrink/repair.
     const MAX_FLOOR_ROUNDS = 2;
-    floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes });
+    floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes, anchors: anchorsOn });
     let round = 0;
     while (floorViolations.length && round < MAX_FLOOR_ROUNDS) {
       round++;
@@ -2026,7 +2028,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
         await applyPassC(result, lang, signal);
         verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
         refined = true;
-        floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes }); // 재검증
+        floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes, anchors: anchorsOn }); // 재검증
       } catch (e) {
         if (signal?.aborted) throw e;
         break; // 마지막 성공 결과 유지
@@ -2138,7 +2140,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   }
 
   // ★ 노출 게이트(E.3): 모든 측정을 criticals/warnings로 모아 status 결정. criticals 있으면 blocked.
-  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn, allowedExtra: notes });
+  result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn, allowedExtra: notes, anchors: anchorsOn });
   const surfaceReport = floor.collectSurfaceReport(result);
   // ★ surfaceguard(§카피킬러 대응): genericness·구체 grounding·관점·균일성 측정(리포트, FLOOR 게이트 아님).
   //   inputRisk는 원문 기준(추상 일반론이면 needsUserAnchor) — 가짜 경험 생성 대신 사용자 메모 요청.
@@ -2194,10 +2196,16 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const povSeed = contract.povSeed;
   const chunks = splitChunks(text);
 
-  const buildSys = (un, ev) => floorV2
-    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev })
+  // ★ 승인 사실 무결성 가드(genretransfer 이식): 수치-출처 짝 검증 + 재인용 dedupe. 결정론·무비용.
+  const evg = require('../engine/evidenceguard');
+  const evidLines = evid ? evid.split('\n').map(l => l.trim()).filter(Boolean) : [];
+  // ★ 목소리 앵커(genretransfer 이식, 실측 89→73→43~45%): 한국어 assignment 전용, 청크 인덱스 기반 2개 회전
+  //   (한 목소리 과적합 방지). STYLE_ANCHOR=0 해제. 누출은 collectFloorViolations anchor_leak 게이트가 차단.
+  const anchorActive = floorV2 && lang === 'ko' && mode === 'assignment' && process.env.STYLE_ANCHOR !== '0';
+  const buildSys = (un, ev, anchorIdx = null) => floorV2
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev, anchorIdx })
     : getHumanizeSystem(mode, lang);
-  let humanizeSystem = buildSys('', '');  // 기본(메모·evidence 없음)
+  let humanizeSystem = buildSys('', '', null);  // 기본(메모·evidence·앵커 없음 — 수리 패스용)
   const topicSim = (a, b) => {
     const ta = new Set((a.match(/[가-힣]{2,}/g) || []));
     if (!ta.size) return 0;
@@ -2226,7 +2234,6 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   결론 청크 제외(결론부 posNote "새 사실 추가 금지"와 충돌 + 카피킬러도 결론 일반론은 본문 근거로 희석).
   const chunkEvid = {};
   if (floorV2 && evid) {
-    const evidLines = evid.split('\n').map(l => l.trim()).filter(Boolean);
     // 사실 예산 = 청크 크기 비례(250자당 1개, 최대 3): 200자 문단에 사실 4개를 끼우면 분량이 2~3배가 돼
     //   위빙 자체가 불가능하다(1차 실측: 17개 중 2개만 생존). 짧은 문단엔 1개만.
     const capOf = (c) => Math.min(3, Math.max(1, Math.floor(c.text.replace(/\s+/g, '').length / 250)));
@@ -2263,8 +2270,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       (prevRaw ? `[앞 부분 원문 — 문맥 참고, 다시 쓰지 말 것]\n...${tail(prevRaw, 150)}\n\n` : '') +
       (nextRaw ? `[뒤에 이어질 원문 — 손대지 말 것]\n${head(nextRaw, 100)}...\n\n` : '');
     const userContent = `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
-    const chunkSys = (chunkNotes[i] || chunkEvid[i])
-      ? buildSys(chunkNotes[i] || '', (chunkEvid[i] || []).join('\n'))   // 이 청크에 배정된 경험·사실만 위빙
+    const chunkSys = (chunkNotes[i] || chunkEvid[i] || anchorActive)
+      ? buildSys(chunkNotes[i] || '', (chunkEvid[i] || []).join('\n'), anchorActive ? i : null)   // 배정된 경험·사실 + 청크 회전 앵커
       : humanizeSystem;
 
     // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패하면 1회 더 재시도하고,
@@ -2283,35 +2290,42 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     //   판정: 60자 미만 + 문장 종결이 아님(제목은 명사로 끝남: "서론"·"연구의 필요성").
     const bare = c.text.replace(/\s+/g, '');
     if (bare.length < 60 && !/[.!?…다요죠함임음까]$/.test(bare)) { c.outputText = c.text; return; }
+    // ★ 수치-출처 짝 청크 게이트(이식): 출력의 짝 위반이 청크원문(∪배정사실) 수준을 넘으면 재생성.
+    //   원문 자체에 출처 없이 떠도는 수치가 있을 수 있으므로 "비증가" 비교(절대 0 요구 시 오탐) — 폴백은
+    //   rawWithEvid(승인사실 verbatim)라 정의상 짝 안전.
+    const basePairCount = evid ? evg.checkEvidencePairing(rawWithEvid, evidLines).length : 0;
     let chunkDone = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !chunkDone; attempt++) {
       try {
         const data = await callClaude({ userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r = extractClaudeResult(data, tool.name);
         if (floor.looksLikeRefusal(r.outputText)) throw new Error('model-refusal'); // ★ 거부문이 출력에 박히는 사고 차단 → 재시도/폴백
+        if (evid && evg.checkEvidencePairing(r.outputText || '', evidLines).length > basePairCount) throw new Error('evidence-pairing'); // ★ 수치-출처 분리(재조합 위험) → 재시도/폴백
         await applyPassC(r, lang, signal);
         c.outputText = r.outputText || rawWithEvid;
         chunkDone = true;
       } catch (e) {
         if (signal?.aborted) throw e;
         if (attempt < MAX_ATTEMPTS - 1) { await new Promise(r => setTimeout(r, 800 * (attempt + 1))); continue; } // 백오프 후 재시도
-        c.outputText = rawWithEvid; c.fellBack = true; c.fallbackReason = /refusal/i.test(e.message) ? 'refusal' : 'llm-error';
+        c.outputText = rawWithEvid; c.fellBack = true; c.fallbackReason = /refusal/i.test(e.message) ? 'refusal' : /pairing/.test(e.message) ? 'evidence-pairing' : 'llm-error';
       }
     }
     if (!chunkDone) return; // 재시도까지 실패 → 원문(+승인사실) 폴백, repair/재검증 건너뜀
-    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: cRaw, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
+    const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: cRaw, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes, anchors: anchorActive });
     if (viol.length) {
       try {
         const ru = floor.buildFloorRefineUser(cRaw, c.outputText, viol);
-        const rd = await callClaude({ userText: ru, systemText: humanizeSystem, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const rd = await callClaude({ userText: ru, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r2 = extractClaudeResult(rd, tool.name);
         await applyPassC(r2, lang, signal);
-        if (r2.outputText && !floor.looksLikeRefusal(r2.outputText)) c.outputText = r2.outputText; // 거부문이면 적용 안 함
+        // 거부문이거나 수치-출처 짝을 새로 깨면 적용 안 함(이전 출력 유지)
+        if (r2.outputText && !floor.looksLikeRefusal(r2.outputText)
+          && !(evid && evg.checkEvidencePairing(r2.outputText, evidLines).length > basePairCount)) c.outputText = r2.outputText;
       } catch (e) { if (signal?.aborted) throw e; }
-      // ★ repair 재검증 + raw fallback(§리뷰#3): 고치고도 날조·소실·화자주입이 남으면 원문 청크로 폴백
+      // ★ repair 재검증 + raw fallback(§리뷰#3): 고치고도 날조·소실·화자주입·누출이 남으면 원문 청크로 폴백
       //   (휴머나이징 포기 < 날조/소실 노출 방지 — FLOOR가 탐지기 우회보다 우선).
-      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: cRaw, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes });
-      const HARD = new Set(['novelty', 'lost_facts', 'pov', 'fake_ref']);
+      const after = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: cRaw, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes, anchors: anchorActive });
+      const HARD = new Set(['novelty', 'lost_facts', 'pov', 'fake_ref', 'meta_leak', 'coined_term', 'anchor_leak']);
       const residual = after.filter(x => HARD.has(x.type));
       if (residual.length) {
         c.outputText = rawWithEvid;       // 원문(+승인사실 verbatim) — 사실·화자가 정의상 보존됨
@@ -2346,14 +2360,14 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   if (judge && (judge === 'force' || judgeTrigger.length)) {
     try {
       const j = require('../engine/judge');
-      const jr = await j.judgeAndRepair(text, merged, { lang, signal, allowedExtra: notes });
+      const jr = await j.judgeAndRepair(text, merged, { lang, signal, allowedExtra: notes, approvedFacts: evid });
       contract.softClaimLedger = jr.ledger;
       // ★ judge 재작성이 결정론 FLOOR를 악화시키면 폐기하고 병합본 유지(FLOOR>우회).
       let judgedOut = jr.outputText, repairRejected = false;
       if (judgedOut !== merged) {
-        const preV = floor.collectFloorViolations({ result: { outputText: merged }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
-        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
-        if (postV.length > preV.length) { judgedOut = merged; repairRejected = true; }
+        const preV = floor.collectFloorViolations({ result: { outputText: merged }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
+        const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
+        if (postV.length > preV.length || (evid && evg.checkEvidencePairing(judgedOut, evidLines).length > evg.checkEvidencePairing(merged, evidLines).length)) { judgedOut = merged; repairRejected = true; }
       }
       if (judgedOut !== merged) result.outputText = judgedOut;
       const violations = (jr.verdict.violations || []).map(v => ({ ...v, nearest_chunk_id: nearestChunkId(chunks, v.span) }));
@@ -2515,6 +2529,15 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     }
   }
 
+  // ★ 사실 재인용 제거(genretransfer 이식, ai-study 실측): 같은 evidence 수치가 여러 문단에서 재인용되면
+  //   첫 인용 문장만 유지("같은 연구를 두 번 처음처럼 인용"은 품질 결함 + 기계적 균일성 신호).
+  //   청크 병렬 생성이라 usedNums 전달이 불가하므로 문서 레벨 마감으로만 잡는다. lostFacts 비악화 가드 내장. FACT_DEDUP=0 해제.
+  if (evid && process.env.FACT_DEDUP !== '0') {
+    const beforeFD = result.outputText;
+    result.outputText = evg.dedupeFactRecitations(result.outputText, evidLines, textF);
+    result.factRecitationDedup = { changed: result.outputText !== beforeFD };
+  }
+
   // ★ 결정론 문장 중복 제거(최종): 휴머나이저가 도입부 등을 중복 생성하는 경우가 있고(변동성),
   //   이는 baseline에도 남아 게이트 revert 후에도 생존 → 게이트 이후 최종 단계에서 제거.
   //   중복 문장은 새 정보 0 → 후속 등장만 삭제(무손실). 카피킬러 "동일 내용 과도한 반복" + FLOOR repetition 직격. DEDUP=0 해제.
@@ -2561,6 +2584,29 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { if (signal?.aborted) throw e; result.b7 = { error: e.message }; }
   }
 
+  // ★ 수치-출처 짝 문서 마감 수리(genretransfer 이식, v5 원칙①②): 짝 위반은 novelty와 달리 "수리 가능한
+  //   위반" — 폐기가 아니라 수치는 보존한 채 소속 출처 표지를 복원하는 교정 1라운드. 수리 후에도 남으면
+  //   floorReport critical(evidence_pairing)로 차단(조용한 재조합 날조 노출 방지).
+  if (evid) {
+    const basePairs = evg.checkEvidencePairing(textF, evidLines).length;   // 원문 자체에 떠도는 수치는 베이스로 허용
+    let pairing = evg.checkEvidencePairing(result.outputText, evidLines);
+    if (pairing.length > basePairs) {
+      try {
+        const vText = pairing.map((p, k) => `${k + 1}. 수치 ${p.num} — 문장: "${p.sent}" / 소속 사실: ${p.owner}`).join('\n');
+        const sys = '편집자. 본문에서 지정된 문장들만 고친다: 각 문장의 수치는 빼지 말고 그대로 두되, 그 수치가 속한 출처(기관·조사명)를 같은 문장이나 직전 문장에 자연스럽게 명시해 수치-출처 연결을 복원하라. 다른 기관·조사와 결합하거나 새 사실을 추가하지 마라. 나머지 텍스트는 한 글자도 바꾸지 마라. 수정된 본문 전체만 출력(설명·코드펜스 금지).';
+        const usr = `[수치-출처 분리 — 이 문장들만 수정]\n${vText}\n\n[각 수치의 소속 사실(승인 원장)]\n${evid}\n\n[본문]\n${result.outputText}`;
+        const fixed = await require('../engine/judge').llmText({ system: sys, user: usr, signal, maxTokens: 16384 });
+        if (fixed && fixed.replace(/\s+/g, '').length >= result.outputText.replace(/\s+/g, '').length * 0.85) {
+          const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
+          const postV = floor.collectFloorViolations({ result: { outputText: fixed }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
+          if (postV.length <= preV.length && evg.checkEvidencePairing(fixed, evidLines).length < pairing.length) result.outputText = fixed;
+        }
+      } catch (e) { if (signal?.aborted) throw e; }
+      pairing = evg.checkEvidencePairing(result.outputText, evidLines);
+    }
+    result.evidencePairing = { violations: Math.max(0, pairing.length - basePairs), base: basePairs, items: pairing.slice(0, 5) };
+  }
+
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).
   const finalOut = result.outputText;
   result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);
@@ -2568,8 +2614,13 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.floorLength = floor.measureLength(textF, finalOut, mode);
   result.repetition = floor.measureRepetition(finalOut);
   result.lostFacts = floor.measureLostFacts(textF, finalOut);
-  const floorViolations = floor.collectFloorViolations({ result, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
-  result.floorReport = floor.buildFloorReport({ result, rawText: textF, mode, povSeed, optIn, allowedExtra: notes });
+  const floorViolations = floor.collectFloorViolations({ result, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
+  result.floorReport = floor.buildFloorReport({ result, rawText: textF, mode, povSeed, optIn, allowedExtra: notes, anchors: anchorActive });
+  // 짝 위반 잔존 = 재조합 날조 위험 → 노출 차단(critical).
+  if (result.evidencePairing && result.evidencePairing.violations > 0) {
+    result.floorReport.criticals.push({ gate: 'evidence_pairing', detail: result.evidencePairing.items.map(p => `${p.num}↛${(p.owner || '').slice(0, 30)}`).join(' | ') });
+    result.floorReport.status = 'blocked';
+  }
   const sguard = require('../engine/surfaceguard');
   result.surface = sguard.buildSurfaceReport(finalOut);
   result.inputRisk = sguard.classifyInputRisk(text);

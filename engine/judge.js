@@ -166,7 +166,10 @@ async function repairViolations(rawText, outputText, ledger, violations, { lang 
 }
 
 // 원장 1회 추출 → judge → 위반 시 repair → 재judge, 최대 maxRounds. P2-c 닫힌 루프(§7.2).
-async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRounds = 2, allowedExtra = '' } = {}) {
+// ★ approvedFacts(웹검증+학생승인 사실, genretransfer 이식): 닫힌세계 원장에 verbatim claim으로 포함.
+//   효과 ①승인 사실 인용이 added_claim으로 오탐되지 않음 ②judge가 사실의 원문을 ground truth로 들고 있어
+//   "재조합 왜곡"(두 조사 융합·부호 탈락)을 정당하게 위반으로 잡음(45% 실측본 날조 2건이 이 계열).
+async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRounds = 2, allowedExtra = '', approvedFacts = '' } = {}) {
   let ledger = await buildSoftClaimLedger(rawText, { lang, signal });
   let health = validateLedgerHealth(ledger, rawText);
   // 0건/과다폐기는 claudecode 일시실패가 잦아 1회 재구축 시도.
@@ -174,6 +177,10 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, maxRou
     const retry = await buildSoftClaimLedger(rawText, { lang, signal });
     const retryHealth = validateLedgerHealth(retry, rawText);
     if ((retry.claims.length || 0) > (ledger.claims.length || 0) || retryHealth.healthy) { ledger = retry; health = retryHealth; }
+  }
+  const evLines = (approvedFacts || '').split('\n').map(l => l.trim()).filter(Boolean);
+  if (evLines.length) {
+    ledger = { ...ledger, claims: [...ledger.claims, ...evLines.map(l => ({ claim: l, evidence_text: l }))], augmented: evLines.length };
   }
   let text = outputText;
   // ★ 과제 자연체(FORMAL_HUMAN): semanticJudge에 mode=assignment 전달 → 필자 1인칭 판단을 added_claim으로 깎지 않음(사실 날조는 계속 차단).

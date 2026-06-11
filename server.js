@@ -26,6 +26,7 @@ app.use('/diagnose', limiter);
 // 라우트
 app.use('/', require('./routes/analyze'));
 app.use('/', require('./routes/diagnose'));
+app.use('/', require('./routes/transform'));   // 회피모드 P3: 재구성 job (POST는 자체 검증, GET 폴링은 limiter 제외)
 app.use('/', require('./routes/kakaoLogin'));
 app.use('/', require('./routes/payment'));
 app.use('/', require('./routes/subscription'));

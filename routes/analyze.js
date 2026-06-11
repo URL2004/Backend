@@ -3096,4 +3096,10 @@ router.verifyCheckFields = verifyCheckFields;
 router.collectFailedFields = collectFailedFields;
 router.runHumanize = runHumanize;
 router.runHumanizeChunked = runHumanizeChunked;
+// ★ 과금·인증 헬퍼 재사용(routes/transform.js 등 — 차감 공식·복구 로직을 한 곳에 유지)
+router.precheckCredits = precheckCredits;
+router.commitCreditDeduct = commitCreditDeduct;
+router.commitCreditRestore = commitCreditRestore;
+router.retryAsync = retryAsync;
+router.authErrorMessage = authErrorMessage;
 module.exports = router;

@@ -21,9 +21,11 @@ app.use((req, res, next) => {
 // Rate Limiter
 app.use('/analyze', limiter);
 app.use('/analyze-pdf', limiter);
+app.use('/diagnose', limiter);
 
 // 라우트
 app.use('/', require('./routes/analyze'));
+app.use('/', require('./routes/diagnose'));
 app.use('/', require('./routes/kakaoLogin'));
 app.use('/', require('./routes/payment'));
 app.use('/', require('./routes/subscription'));

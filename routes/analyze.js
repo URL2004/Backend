@@ -2674,12 +2674,18 @@ router.post('/analyze', async (req, res) => {
   const needed = Math.ceil(text.length / 100);
   const opType = mode === 'detect' ? 'detect' : 'humanize';
 
+  // ★ 로컬 개발 전용 인증·과금 생략(이중 게이트): Firebase 비활성(키 미설정) + DEV_NO_AUTH=1 둘 다 필요.
+  //   프로덕션은 FIREBASE_SERVICE_ACCOUNT가 항상 설정돼 있어 이 분기를 절대 타지 않는다.
+  const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
+
   // 1) precheck — 토큰/잔량/구독 검증 (Firestore 읽기만, 차감 없음)
   let pre;
   try {
-    pre = billingMode === 'coupon'
-      ? await precheckCoupon(idToken, text.length)
-      : await precheckCredits(idToken, needed);
+    pre = devNoAuth
+      ? { uid: 'dev-local', plan: 'unlimited' }
+      : billingMode === 'coupon'
+        ? await precheckCoupon(idToken, text.length)
+        : await precheckCredits(idToken, needed);
   } catch (e) {
     return res.status(e.status || 500).json({
       error: authErrorMessage(e.message),
@@ -2691,6 +2697,7 @@ router.post('/analyze', async (req, res) => {
   let result;
   let usage;
   let refineUsage = null;
+  let evasion = null;   // 회피 모드(floorV2) 부가 응답 — 신뢰 배지용 floorReport 등
   try {
     if (mode === 'detect') {
       const detectUserContent = prevContext
@@ -2710,6 +2717,39 @@ router.post('/analyze', async (req, res) => {
         throw new Error('detect_incomplete');
       }
       usage = data.usage;
+    } else if (req.body.engine === 'floorV2') {
+      // ★ 회피 모드(P2, §회피모드 제품화): floorV2 청크 엔진 — 서버측 청킹+FLOOR 게이트+신뢰 리포트.
+      //   프런트가 engine:'floorV2'를 명시한 호출만 이 분기를 탄다(기존 호출 동작 100% 불변).
+      //   blog 어투 회피가 1차 대상(32~41% 실측 밴드). judge는 위험신호 트리거 기반, grounding은
+      //   모드·등급별 내부 로직(blog C등급 skip)을 그대로 따른다.
+      const selectedMode = req.body.humanizeMode || 'blog';
+      const userNotes = typeof req.body.userNotes === 'string' ? req.body.userNotes.slice(0, 2000) : '';
+      const out = await runHumanizeChunked({
+        text, mode: selectedMode, lang, signal: ac.signal,
+        floorV2: true, optIn: false, judge: true, grounding: true, userNotes
+      });
+      // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙). 차감 없이 종료.
+      if (out.floorReport && out.floorReport.status === 'blocked') {
+        const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
+        console.warn('⚠️ /analyze floorV2 BLOCKED:', gates);
+        return res.status(422).json({
+          error: '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요. 크레딧은 차감되지 않았어요. 글을 조금 수정해 다시 시도해주세요.',
+          floorStatus: 'blocked',
+          gates
+        });
+      }
+      result = { outputText: out.result.outputText };
+      evasion = {
+        floorReport: {
+          status: out.floorReport.status,
+          criticals: out.floorReport.criticals,
+          warnings: (out.floorReport.warnings || []).map(w => w.gate),
+          metrics: out.floorReport.metrics
+        },
+        chunkCount: out.chunkCount,
+        fallbackCount: out.fallbackCount
+      };
+      if (!result.outputText) throw new Error('humanize_incomplete');
     } else {
       // ★ 휴머나이저: Claude Sonnet tool_use(강제)로 호출.
       const selectedMode = req.body.humanizeMode || 'assignment';
@@ -2855,12 +2895,14 @@ router.post('/analyze', async (req, res) => {
   };
 
   try {
-    if (billingMode === 'coupon') {
+    if (devNoAuth) {
+      // 로컬 개발 — 과금 없음(이중 게이트 위에서 검증)
+    } else if (billingMode === 'coupon') {
       await commitCouponUsage(pre.uid, pre.tier, opType, text.length);
     } else if (pre.plan !== 'unlimited') {
       await commitCreditDeduct(pre.uid, needed, opType);
     }
-    deducted = true;
+    deducted = !devNoAuth;
   } catch (e) {
     console.error('❌ /analyze deduct fail:', e?.code, e?.message);
     return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
@@ -2876,7 +2918,7 @@ router.post('/analyze', async (req, res) => {
 
   // 4) 응답 — 'finish'(OS 송신 큐 완료) 시점에만 responded 마킹.
   res.once('finish', () => { responded = true; });
-  res.json({ ok: true, result, usage, refineUsage });
+  res.json({ ok: true, result, usage, refineUsage, ...(evasion ? { evasion } : {}) });
 });
 
 router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {

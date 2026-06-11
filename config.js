@@ -25,7 +25,10 @@ const allowedOrigins = [
   'https://gpkorea.ai.kr',
   'https://www.gpkorea.ai.kr',
   'http://localhost:3000',
-  'http://127.0.0.1:5500'
+  'http://127.0.0.1:5500',
+  // 로컬 정적 프런트 검증용 (python -m http.server 8741 --directory Frontend)
+  'http://localhost:8741',
+  'http://127.0.0.1:8741'
 ];
 
 const corsMiddleware = cors({

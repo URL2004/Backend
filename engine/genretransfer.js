@@ -442,19 +442,22 @@ function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpener
   const mustNums = [...new Set(evidTexts.join(' ').match(/\d[\d,.]*%?/g) || [])].filter(t => t.replace(/\D/g, '').length >= 2);
   const banNums = usedNums.filter(n => !mustNums.includes(n));
   const anchors = process.env.STYLE_ANCHOR === '0' ? '' : pickAnchors(slotIdx) + '\n';
+  // ★ prompt caching(§이식 ⑧): system은 고정부+앵커(5변형)만 — 슬롯별 가변부([이 슬롯]·금지 시작어·수치 목록)는
+  //   전부 user로 분리해 같은 앵커 변형의 슬롯·재시도가 system 캐시를 재사용할 수 있게 한다(지시 내용은 동일).
   const system = `너는 한국 시사 칼럼 필자다. 한 편의 칼럼을 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).
 ${anchors}[문체 — 사람 칼럼의 결]
 · 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
-· 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 마라(금지 시작어: ${usedOpeners.slice(-8).join(', ') || '없음'}).
+· 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
 · 한 문단 안에서 근거와 의견이 섞이게(근거 나열 문단 금지 — 근거는 논쟁의 무기다).
 ${V2_BANS}
-[이 슬롯]
+· 출력: 본문만(제목·소제목·머리말 금지).`;
+  const user = `[이 슬롯]
 · 역할: ${slot.role} — ${slot.goal}
 · 분량: 문단 ${Math.max(1, Math.round(slot.targetChars / 330))}개, 공백 제외 약 ${slot.targetChars}자. 짧으면 실패.
+· 금지 시작어(앞 문단들이 이미 쓴 첫 단어): ${usedOpeners.slice(-8).join(', ') || '없음'}
 ${mustNums.length ? `· 반드시 포함할 수치: ${mustNums.join(', ')}` : ''}
 ${banNums.length ? `· ★앞 슬롯에서 이미 인용한 수치·조사 — 재인용 금지(같은 글에서 같은 통계를 두 번 소개하면 실패다): ${banNums.join(', ')}` : ''}
-· 출력: 본문만(제목·소제목·머리말 금지).`;
-  const user = `[칼럼 제목(참고)]\n${plan.title} — ${plan.subtitle}\n\n[직전 문단 끝(여기서 자연스럽게 이어가라, 반복 금지)]\n${prevTail || '(글의 시작)'}\n\n[이 슬롯의 재료 — 원문 주장]\n${claimTexts.join('\n') || '(없음)'}\n\n[이 슬롯의 재료 — 승인 근거]\n${evidTexts.join('\n') || '(없음)'}${srcText ? `\n\n[이 슬롯의 원문 문단(디테일 재료 — 요약하지 말고 구체 디테일·예시를 살려서 분량을 채워라. 단 문체는 칼럼의 결로)]\n${srcText}` : ''}`;
+[칼럼 제목(참고)]\n${plan.title} — ${plan.subtitle}\n\n[직전 문단 끝(여기서 자연스럽게 이어가라, 반복 금지)]\n${prevTail || '(글의 시작)'}\n\n[이 슬롯의 재료 — 원문 주장]\n${claimTexts.join('\n') || '(없음)'}\n\n[이 슬롯의 재료 — 승인 근거]\n${evidTexts.join('\n') || '(없음)'}${srcText ? `\n\n[이 슬롯의 원문 문단(디테일 재료 — 요약하지 말고 구체 디테일·예시를 살려서 분량을 채워라. 단 문체는 칼럼의 결로)]\n${srcText}` : ''}`;
   return { system, user, mustNums };
 }
 

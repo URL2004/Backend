@@ -58,11 +58,15 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL }
 // JSON은 llmText + 파싱(파싱 실패 시 추가 재시도).
 async function llmJSON({ system, user, signal, maxTokens = 2048, model = MODEL }) {
   const u = `${user}\n\n반드시 유효한 JSON 객체 하나만 출력하세요. 코드펜스·설명·머리말 금지.`;
+  let lastRaw = '';
   for (let attempt = 0; attempt < 3; attempt++) {
     const raw = await llmText({ system, user: u, signal, maxTokens, model });
+    lastRaw = raw;
     const parsed = parseJSON(raw);
     if (parsed) return parsed;
   }
+  // 3회 전부 파싱 실패 — 무엇이 나왔는지 안 남기면 진단 불가('slot plan 실패' 실사고에서 확인).
+  console.warn('⚠️ llmJSON 파싱 3회 실패 — raw 헤드:', String(lastRaw).replace(/\s+/g, ' ').slice(0, 220));
   return null;
 }
 

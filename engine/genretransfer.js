@@ -336,8 +336,18 @@ async function buildSlotPlan(rawText, { skeleton, evidenceList = [], ledger, sig
 규칙: 모든 C#를 빠짐없이 한 슬롯에(중복 금지). 모든 E#도 한 슬롯에(중복 금지). 제목은 쟁점을 드러내는 구체적 제목+대시 부제("…— …"), "~에 미치는 영향/~란 무엇인가" 식 금지.
 JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":["C1"],"evidence":["E1"]},...]} (슬롯 순서·개수 고정)`;
   const user = `[원문]\n${rawText}\n\n[주장]\n${claims}\n\n[승인 근거]\n${evid || '(없음)'}`;
-  const plan = await llmJSON({ system, user, signal, maxTokens: 2500, model: MODEL });
-  if (!plan || !Array.isArray(plan.slots)) throw new Error('slot plan 실패');
+  let plan = await llmJSON({ system, user, signal, maxTokens: 2500, model: MODEL });
+  // ★작업 생존(2026-06-12 실사고 'slot plan 실패'): 계획 1콜이 흔들려도 전체 작업을 죽이지 않는다.
+  //   1차 실패 → 스키마 강조+토큰 여유로 재시도, 2차도 실패 → 결정론 폴백(빈 슬롯 → 아래 커버리지 보정이
+  //   모든 C#/E#를 라운드로빈 배정, 제목은 원문 첫 문장 = 허용 세계 내라 novelty-safe).
+  if (!plan || !Array.isArray(plan.slots)) {
+    console.warn('⚠️ slot plan 1차 실패 — 스키마 강조 재시도');
+    plan = await llmJSON({ system: system + '\n★출력은 JSON 객체 하나만 — {"title","subtitle","slots"} 스키마 그대로. JSON 외 텍스트·설명 절대 금지.', user, signal, maxTokens: 3500, model: MODEL });
+  }
+  if (!plan || !Array.isArray(plan.slots)) {
+    console.warn('⚠️ slot plan 2차도 실패 — 결정론 폴백(라운드로빈 배정)');
+    plan = { title: (sg.splitSentences(rawText)[0] || '').replace(/\s+/g, ' ').trim().slice(0, 60), subtitle: '', slots: [] };
+  }
   // 슬롯 정렬·보정 + 중복 제거 + 커버리지(미배정 → 주제 무관히 본문 슬롯에 순환 배정)
   const slots = sk.slots.map(def => {
     const found = plan.slots.find(s => s.role === def.role) || {};
@@ -558,7 +568,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   // 제목 novelty 게이트(2026-06-11 ai-study 실측): 계획이 만든 제목이 92.4→"92%"로 반올림 = 허용 세계 밖 토큰.
   // 제목은 슬롯 게이트를 안 거치므로 여기서 검사 — 위반 시 전체문서 수리(재위빙 등) 후보가 전부 novelty 기각되는
   // 연쇄 붕괴(lost 7 복구불능 실측)를 일으킨다. 수리 불가면 위반 토큰을 제목에서 제거(결정론).
-  let titleLine = `${plan.title}\n— ${plan.subtitle}`;
+  let titleLine = plan.subtitle ? `${plan.title}\n— ${plan.subtitle}` : `${plan.title}`;   // 폴백 계획은 부제 없음 — '— ' 꼬리 방지
   {
     const tNov = floor.measureNovelty(textF, titleLine, allowed);
     if (tNov.count > 0) {

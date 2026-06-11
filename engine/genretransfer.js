@@ -522,7 +522,9 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       const reCite = [...new Set(_numToks(body).map(t => t.split('|')[0]))].filter(n => usedNumSet.has(n) && !mustNums.includes(n)).length;
       const score = (chars >= minChars ? 1 : chars / minChars) + (mustNums.length ? (mustNums.length - missing) / mustNums.length : 1) - frameHits - pairBad * 2 - reCite;
       if (score > best.score) best = { body, score };
-      if (chars >= minChars && missing === 0 && frameHits === 0 && pairBad === 0) break;
+      // ★속도(2026-06-12): 분량은 재시도 사유에서 제외 — "재시도는 길이를 못 늘림(같은 길이로 다시 씀)" 실측 확정,
+      //   미달분은 어차피 아래 이어쓰기 확장이 채운다. 게이트 클린이면 즉시 채택(슬롯당 낭비 호출 최대 3회 제거).
+      if (missing === 0 && frameHits === 0 && pairBad === 0) break;
     }
     // 이어쓰기 확장(2026-06-11, 분량 54% 진단): 슬롯 목표 합계는 원문의 92%로 정상인데 Sonnet이 호출당
     // 500~650자에서 멈춰 충족률 ~60%(7,000목표→4,361실측). 재시도는 길이를 못 늘림(같은 길이로 다시 씀) →
@@ -639,13 +641,15 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   };
   async function weaveLost(curDoc) {
     let curLost = floor.measureLostFacts(textF, curDoc);
-    for (let r = 0; r < 3 && curLost.count > 0; r++) {
+    let stalled = 0;   // ★속도(2026-06-12): 개선 없는 라운드(풀문서 재작성 2~4분짜리)를 같은 프롬프트로 반복하지 않음
+    for (let r = 0; r < 3 && curLost.count > 0 && stalled < 1; r++) {
+      const before = curLost.count;
       try {
         let cand = stripMetaNotes((await llmText({
           system: `아래 칼럼에 빠진 사실들을 가장 자연스러운 자리에 끼워 넣어 전체를 다시 출력하라. 빠진 사실:\n${curLost.items.map(lostCtx).map(x => '· ' + x).join('\n')}\n★각 수치는 반드시 그 수치의 출처 표지(기관·조사명)와 같은 문장에 두어라.\n★기존 문단을 복제·변주해 늘리지 마라 — 기존 문단 안에 제자리 수정으로 끼워라(43% 실측: 변주 복제가 '기계적 균일성' 피탐).\n★끼워 넣는 문장은 이 칼럼의 결로 써라 — 원문의 보고서 어투(~하였다/본 연구는/설정하였다)를 그대로 옮기지 마라. 가정·가상 사실은 가정임이 드러나게, 단 칼럼 문장으로.\n구조·문체 유지, 새 사실·새 결합 금지, 본문만 출력.`,
           user: curDoc, signal, maxTokens: 8000, model: MODEL
         }) || '').trim());
-        if (!cand || WINK_RE.test(cand) || findCoinedTerms(cand, textF).length > 0 || floor.measureNovelty(textF, cand, allowed).count > 0) continue;
+        if (!cand || WINK_RE.test(cand) || findCoinedTerms(cand, textF).length > 0 || floor.measureNovelty(textF, cand, allowed).count > 0) { stalled++; continue; }
         const basePairs = checkEvidencePairing(curDoc, evidenceList).length;
         if (checkEvidencePairing(cand, evidenceList).length > basePairs) {
           for (const bad of checkEvidencePairing(cand, evidenceList)) {
@@ -653,10 +657,11 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
             cand = await repairSentence(cand, bad.sent,
               `다음 문장은 수치(${bad.num})를 출처와 다르게 결합했을 위험이 있다. 수치를 빼지 말고, 아래의 실제 사실에 맞게 문장을 교정하라(출처 표지를 함께 명시). 실제 사실: ${owner ? owner.line : ''}`);
           }
-          if (checkEvidencePairing(cand, evidenceList).length > basePairs) continue;   // 교정 실패 → 이 후보 버리고 다음 라운드
+          if (checkEvidencePairing(cand, evidenceList).length > basePairs) { stalled++; continue; }   // 교정 실패 → 후보 폐기, 정체로 집계
         }
         const l2 = floor.measureLostFacts(textF, cand);
         if (l2.count < curLost.count) { curDoc = cand; curLost = l2; }
+        if (curLost.count >= before) stalled++;   // 이 라운드에 개선 0 → 다음 라운드 중단(확률 반복의 기대값 < 비용)
       } catch { break; }
     }
     return resolveDupSentences(dedupeParas(curDoc, textF), textF);   // weave가 만든 변주 복제 즉시 제거(②·④ 두 호출처 공통)

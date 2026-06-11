@@ -164,7 +164,17 @@ router.post('/transform/:id/approve', (req, res) => {
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
   if (job.status !== 'awaiting_approval') return res.status(409).json({ error: '지금은 승인 단계가 아니에요.' });
   const ids = Array.isArray(req.body?.approved) ? req.body.approved : [];
-  const approved = (job.candidates || []).filter(c => ids.includes(c.id));
+  let approved = (job.candidates || []).filter(c => ids.includes(c.id));
+  // ★승인 수 캡(2026-06-12 실측 캘리브레이션): 사실 밀도 ~350자당 1건 초과는 위빙 생존 검증이 못 버팀
+  //   (성공 290자/건·17건 vs 실패 240자/건·24건=36분 후 lostFacts 차단). 초과분은 A등급·무충돌 우선으로 유지.
+  const bare = (job.text || '').replace(/\s+/g, '').length;
+  const cap = Number(process.env.EVIDENCE_APPROVE_CAP) || Math.max(8, Math.min(18, Math.floor(bare / 350)));
+  if (approved.length > cap) {
+    const rank = (c) => (c.conflict ? 2 : 0) + (c.grade === 'A' ? 0 : c.grade === 'B' ? 1 : 3);
+    approved = approved.slice().sort((a, b) => rank(a) - rank(b)).slice(0, cap);
+    job.note = `근거가 많아 사실 보존 검증이 가능한 상위 ${cap}건(공식 출처 우선)만 사용했어요.`;
+    console.warn(`⚠️ /transform ${job.id} 승인 ${ids.length}건 → 캡 ${cap}건 적용`);
+  }
   const lines = approved.map(c => `${c.fact} (출처: ${c.sourceTitle || c.host})`);
   job.approvedCount = approved.length;
   console.log(`▶ /transform ${job.id} 근거 승인 ${approved.length}/${(job.candidates || []).length}건 — 재구성 재개`);

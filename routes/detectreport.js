@@ -98,18 +98,23 @@ router.post('/detect-report', async (req, res) => {
   const copy = diagnose.COPY[grade] || diagnose.COPY.B;
 
   // ①·④ LLM 2건 병렬 — 각자 실패 허용
-  const detectP = (async () => {
+  //   maxOutputTokens 2200: 긴 글에서 detail이 길어지면 1200으론 tool JSON이 max_tokens에 잘려
+  //   probability 누락(detect_incomplete) → "판정 보류" 실사고(2026-06-12). 재시도 2회로 일시 오류도 흡수.
+  const detectP = analyze.retryAsync(async () => {
     const data = await analyze.callClaude({
       userText: text,
       systemText: getDetectSystem('ko'),
       tool: analyze.buildDetectTool('ko'),
       temperature: 0,
-      maxOutputTokens: 1200
+      maxOutputTokens: 2200
     });
     const r = analyze.extractClaudeResult(data, 'return_detection_result');
-    if (typeof r?.probability !== 'number') throw new Error('detect_incomplete');
+    if (typeof r?.probability !== 'number') {
+      console.warn(`⚠️ /detect-report 판정 불완전: stop=${data?.stop_reason} keys=${Object.keys(r || {}).join(',')}`);
+      throw new Error('detect_incomplete');
+    }
     return r;
-  })().catch(e => { console.warn('⚠️ /detect-report LLM 판정 실패(결정론만으로 진행):', e?.message); return null; });
+  }, 2).catch(e => { console.warn('⚠️ /detect-report LLM 판정 실패(엔진 추정으로 진행):', e?.message); return null; });
 
   const before = pickAiSentence(paras, detail);
   const exampleP = before
@@ -125,6 +130,11 @@ router.post('/detect-report', async (req, res) => {
 
   const [det, example] = await Promise.all([detectP, exampleP]);
 
+  // LLM 실패 시 엔진 추정 확률 — "판정 보류" 금지(사장님 지시): 게이지는 항상 숫자를 보여준다.
+  //   추상위험비율(0~1) → 22~92% 선형 매핑. 실측 감각(혼합 글 52·위험 짧은 글 88)과 대략 정합.
+  const engineProb = Math.round(Math.min(92, Math.max(15, 22 + 70 * (ir.abstractRiskRatio || 0))));
+  const probability = det ? Math.round(det.probability) : engineProb;
+
   // 카운트는 성공 직전 증가 — 서버 오류로 보고서를 못 받았는데 횟수만 소진되는 일 방지
   if (!devNoAuth) daily.set(key, { day, count: used + 1 });
 
@@ -135,7 +145,8 @@ router.post('/detect-report', async (req, res) => {
     ok: true,
     free: true,
     remainingToday: devNoAuth ? null : DAILY_CAP - used - 1,   // null이면 프론트가 잔여 표기 생략(dev 무제한)
-    probability: det ? Math.round(det.probability) : null,
+    probability,
+    probSource: det ? 'llm' : 'engine',
     summary: det ? det.summary : copy.desc,
     detail: det ? det.detail : null,
     grade,

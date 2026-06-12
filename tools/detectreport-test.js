@@ -11,13 +11,17 @@ function stub(p, exports) {
   require.cache[full] = { id: full, filename: full, loaded: true, exports };
 }
 
-// LLM 경로 스텁: detect는 88%, 미리보기는 고정 문장
+// LLM 경로 스텁: detect는 88%, 미리보기는 고정 문장. FAILLLM 마커가 들어오면 throw(엔진 폴백 검증용).
 stub(path.join(base, 'routes', 'analyze.js'), {
-  callClaude: async ({ tool }) => ({ _tool: tool.name }),
+  callClaude: async ({ userText, tool }) => {
+    if (String(userText).indexOf('FAILLLM') >= 0) throw new Error('stub: LLM down');
+    return { _tool: tool.name };
+  },
   buildDetectTool: () => ({ name: 'return_detection_result' }),
   extractClaudeResult: (data, name) => name === 'return_detection_result'
     ? { probability: 88, summary: 'AI 패턴이 강하게 보입니다.', detail: '균일한 문장 종결과 일반론 위주 구성이 관찰됩니다. 구체적 경험 진술이 없습니다.' }
-    : { rewritten: '사실 처음엔 저도 반신반의했는데, 직접 써 보니 생각이 좀 달라졌어요.' }
+    : { rewritten: '사실 처음엔 저도 반신반의했는데, 직접 써 보니 생각이 좀 달라졌어요.' },
+  retryAsync: async (fn) => fn()
 });
 // transform이 당기는 엔진들 스텁(여기선 미사용 — require 통과용)
 stub(path.join(base, 'engine', 'genretransfer.js'), { genreTransferV2: async () => ({}) });
@@ -70,6 +74,10 @@ const srv = app.listen(0, async () => {
     process.env.DEV_NO_AUTH = '1';
     const r4 = await post({ text: TEXT });
     check('DEV_NO_AUTH=1이면 한도 무시(200)·잔여 null', r4.status === 200 && r4.body.remainingToday === null, { status: r4.status, remain: r4.body.remainingToday });
+
+    // LLM 실패 → 엔진 추정 폴백: probability는 항상 숫자("판정 보류" 금지)
+    const r5 = await post({ text: 'FAILLLM ' + TEXT });
+    check('LLM 실패 시 엔진 추정 확률(숫자)·probSource=engine', r5.status === 200 && typeof r5.body.probability === 'number' && r5.body.probSource === 'engine', { prob: r5.body.probability, src: r5.body.probSource });
     delete process.env.DEV_NO_AUTH;
   } catch (e) {
     failed++;

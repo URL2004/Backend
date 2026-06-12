@@ -10,12 +10,40 @@ const MODEL = 'claude-sonnet-4-6';
 const HAIKU = 'claude-haiku-4-5';   // 판정·단순편집용 저가 티어(~3x 저렴). 생성(humanize/stance)은 Sonnet 유지.
 const API = 'https://api.anthropic.com/v1/messages';
 
+// ★ LLM JSON의 상습 독: 문자열 값 안의 이스케이프 안 된 큰따옴표(한국어 인용 — "알아서 잘 써라" 류).
+//   인용부호 많은 글에서 judge·slot plan JSON이 통째로 깨지던 실사고(2026-06-12) — judge는 조용히
+//   pass(거짓음성), slot plan은 작업 사망으로 이어졌다. 상태머신으로 "문자열 내부" 여부를 추적해,
+//   닫는 따옴표로 해석 불가능한 위치(뒤가 , } ] : 가 아닌)의 따옴표만 \"로 복구한다.
+function sanitizeJsonQuotes(t) {
+  let out = '';
+  let inStr = false;
+  for (let k = 0; k < t.length; k++) {
+    const ch = t[k];
+    if (!inStr) {
+      if (ch === '"') inStr = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '\\') { out += ch + (t[k + 1] || ''); k++; continue; }
+    if (ch === '"') {
+      const rest = t.slice(k + 1).match(/^\s*([\s\S])/);
+      const next = rest ? rest[1] : '';
+      if (next === ',' || next === '}' || next === ']' || next === ':') { inStr = false; out += ch; }
+      else if (next === '') { inStr = false; out += ch; }
+      else out += '\\"';                       // 문자열 내부 인용부호 → 이스케이프 복구
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
 function parseJSON(s) {
   if (!s) return null;
   let t = String(s).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   const i = t.indexOf('{'), j = t.lastIndexOf('}');
   if (i >= 0 && j > i) t = t.slice(i, j + 1);
-  try { return JSON.parse(t); } catch { return null; }
+  try { return JSON.parse(t); } catch { /* 복구 시도 */ }
+  try { return JSON.parse(sanitizeJsonQuotes(t)); } catch { return null; }
 }
 
 // LLM에서 텍스트 받기 — claudecode(구독) 또는 api(키). "Execution error"·빈응답에 4회 재시도+백오프.

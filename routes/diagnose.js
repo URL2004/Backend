@@ -64,4 +64,7 @@ router.post('/diagnose', (req, res) => {
   });
 });
 
+// ★ 밴드 테이블 재사용(routes/detectreport.js — 감지 보고서의 경로별 예상 밴드를 한 곳에 유지)
+router.BANDS = { POLISH_BAND, BLOG_BAND, RESTRUCTURE_BAND };
+router.COPY = COPY;
 module.exports = router;

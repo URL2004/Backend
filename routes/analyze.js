@@ -3110,6 +3110,10 @@ router.verifyCheckFields = verifyCheckFields;
 router.collectFailedFields = collectFailedFields;
 router.runHumanize = runHumanize;
 router.runHumanizeChunked = runHumanizeChunked;
+// ★ LLM 호출 경로 재사용(routes/detectreport.js — 백엔드 스위치·캐싱·idle 타임아웃을 한 곳에 유지)
+router.callClaude = callClaude;
+router.buildDetectTool = buildDetectTool;
+router.extractClaudeResult = extractClaudeResult;
 // ★ 과금·인증 헬퍼 재사용(routes/transform.js 등 — 차감 공식·복구 로직을 한 곳에 유지)
 router.precheckCredits = precheckCredits;
 router.commitCreditDeduct = commitCreditDeduct;

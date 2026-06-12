@@ -38,6 +38,16 @@ function kstDay() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
 }
 
+// ★ 과금 정책(2026-06-12 길이 구간 정액): 재구성은 슬롯·위빙이 글자수에 비례해 원가가 길수록 큼($2.5~7) →
+//   만 자 구간별 정액. 원가의 ~1.5배 마진. (~1만 200/300 · ~2만 400/500 · ~3만 600/700)
+//   감지 보고서(detectreport.js)의 비용 안내도 이 함수를 재사용 — 단가 단일 출처.
+function restructureCredit(len, ev) {
+  var tier = len <= 10000 ? 0 : (len <= 20000 ? 1 : 2);
+  var base = [200, 400, 600][tier];
+  return base + (ev ? 100 : 0);
+}
+router.restructureCredit = restructureCredit;
+
 function countActive(uid) {
   let running = 0, mine = 0;
   for (const j of jobs.values()) {
@@ -258,13 +268,6 @@ router.post('/transform', async (req, res) => {
 
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const wantEvidence = req.body.evidence === true;
-  // ★ 과금 정책(2026-06-12 길이 구간 정액): 재구성은 슬롯·위빙이 글자수에 비례해 원가가 길수록 큼($2.5~7) →
-  //   만 자 구간별 정액. 원가의 ~1.5배 마진. (~1만 200/300 · ~2만 400/500 · ~3만 600/700)
-  function restructureCredit(len, ev) {
-    var tier = len <= 10000 ? 0 : (len <= 20000 ? 1 : 2);
-    var base = [200, 400, 600][tier];
-    return base + (ev ? 100 : 0);
-  }
   const needed = restructureCredit(text.length, wantEvidence);
   let pre;
   try {

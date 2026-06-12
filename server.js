@@ -22,6 +22,7 @@ app.use((req, res, next) => {
 app.use('/analyze', limiter);
 app.use('/analyze-pdf', limiter);
 app.use('/diagnose', limiter);
+app.use('/detect-report', limiter);   // 무료 감지 — 일일 한도는 라우트 내부(uid/IP), 분당 폭주는 여기서
 // /transform은 POST(시작·취소·승인)만 제한 — GET 폴링은 90분 job 동안 수백 회가 정상이라 제외.
 app.use('/transform', (req, res, next) => (req.method === 'POST' ? limiter(req, res, next) : next()));
 
@@ -40,6 +41,7 @@ app.get(['/healthz', '/api/health'], (req, res) => {
 // 라우트
 app.use('/', require('./routes/analyze'));
 app.use('/', require('./routes/diagnose'));
+app.use('/', require('./routes/detectreport'));   // AI 감지 분리: 무료 감지 보고서(전환 퍼널)
 app.use('/', transformRouter);   // 회피모드 P3: 재구성 job (POST는 자체 검증, GET 폴링은 limiter 제외)
 app.use('/', require('./routes/kakaoLogin'));
 app.use('/', require('./routes/payment'));

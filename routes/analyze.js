@@ -2674,8 +2674,8 @@ router.post('/analyze', async (req, res) => {
     ? req.body.prevContext.trim().slice(-300)
     : '';
   if (!text || text.length < 5) return res.status(400).json({ error: '텍스트가 너무 짧습니다.' });
-  // 글자 수 상한: 크레딧 모드 10,000자, 쿠폰 모드 50,000자(무제한 티어용 안전 캡)
-  const HARD_MAX = billingMode === 'coupon' ? 50000 : 10000;
+  // 글자 수 상한: 크레딧 모드 30,000자(입력칸 표기와 일치), 쿠폰 모드 50,000자(무제한 티어용 안전 캡)
+  const HARD_MAX = billingMode === 'coupon' ? 50000 : 30000;
   if (text.length > HARD_MAX) {
     return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${HARD_MAX.toLocaleString()}자)` });
   }

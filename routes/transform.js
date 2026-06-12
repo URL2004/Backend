@@ -118,8 +118,8 @@ router.post('/transform', async (req, res) => {
   if (typeof text !== 'string' || text.replace(/\s+/g, '').length < 200) {
     return res.status(400).json({ error: '재구성하려면 최소 200자가 필요해요.' });
   }
-  if (text.length > 10000) {
-    return res.status(400).json({ error: '텍스트가 너무 깁니다. (재구성 최대 10,000자)' });
+  if (text.length > 30000) {
+    return res.status(400).json({ error: '텍스트가 너무 깁니다. (재구성 최대 30,000자)' });
   }
 
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
@@ -139,8 +139,8 @@ router.post('/transform', async (req, res) => {
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
   // 예상 시간: 슬롯 순차 생성이라 길이에 거의 선형(실측 college 1.8K=11분(근거)·7분(무근거)). 약간 과대 추정이
-  // 과소 추정보다 낫다(99%에 오래 머무는 것보다 60%에 끝나는 게 체감이 좋음).
-  const estSec = Math.max(240, Math.min(2700, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
+  // 과소 추정보다 낫다(99%에 오래 머무는 것보다 60%에 끝나는 게 체감이 좋음). 상한 90분(3만자 대비).
+  const estSec = Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
   const job = {
     id, status: 'running', stage: wantEvidence ? '근거 검색' : '구조 계획', createdAt: Date.now(),
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,

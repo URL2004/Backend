@@ -60,7 +60,10 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL }
     const resp = await fetch(API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
+      // ★ prompt caching(2026-06-12 비용 최적화): system을 ephemeral 캐시로 — 같은 system이 5분 내 반복되면
+      //   (judge 2라운드·위빙 반복 등) 입력 토큰을 캐시읽기로 재사용. 1024토큰 미만이면 API가 자동 무시(무해).
+      //   genretransfer 전 호출이 이 llmText를 타므로 한 곳 수정으로 재구성 경로 전체에 적용.
+      body: JSON.stringify({ model, max_tokens: maxTokens, system: system ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] : undefined, messages: [{ role: 'user', content: user }] }),
       signal
     });
     if (!resp.ok) {                                  // ★ API 에러를 조용히 삼키지 않는다(크레딧·rate limit 등).

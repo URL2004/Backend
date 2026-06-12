@@ -10,7 +10,7 @@
 
 const sg = require('./surfaceguard');
 const floor = require('./floor');
-const { llmText, llmJSON, buildSoftClaimLedger, semanticJudge, MODEL } = require('./judge');
+const { llmText, llmJSON, buildSoftClaimLedger, semanticJudge, MODEL, HAIKU } = require('./judge');
 
 // ── 장르 프로파일(사람 저점수 문서 실측 기반 목표 통계) ──
 const GENRE_PROFILES = {
@@ -603,7 +603,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       try {
         const cand = (await llmText({
           system: `다음 칼럼 제목에서 원문에 없는 수치·고유명사(${tNov.items.join(', ')})를 빼고, 같은 논지의 제목으로 다시 써라. 원문에 실제로 있는 표현만 사용. 형식 유지(제목\\n— 부제), 그것만 출력.`,
-          user: titleLine, signal, maxTokens: 200, model: MODEL
+          user: titleLine, signal, maxTokens: 200, model: HAIKU   // 단순 편집 → Haiku(비용↓), novelty 게이트가 결과 검증
         }) || '').trim();
         if (cand && floor.measureNovelty(textF, cand, allowed).count === 0 && !META_NOTE_RE.test(cand)) titleLine = cand;
         else tNov.items.forEach(t => { titleLine = titleLine.split(t).join(''); });
@@ -623,7 +623,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       try {
         const cand = (await llmText({
           system: `다음 문단에서 정형 표현(${hits.join(' | ')})을 제거하고 같은 내용을 다른 구조로 다시 써라. 사실·수치 그대로, 분량 유지, 본문만 출력.`,
-          user: paras[i], signal, maxTokens: 1200, model: MODEL
+          user: paras[i], signal, maxTokens: 1200, model: HAIKU   // 프레임 표현 제거(구조 재배치) → Haiku(비용↓), 프레임·novelty 게이트가 검증
         }) || '').trim();
         const cf = gf.measureGenreFrames(cand || '');
         if (cand && !(cf.research.length + cf.explainerHeadings.length + cf.explainerSentences.length) && floor.measureNovelty(textF, cand, allowed).count === 0) paras[i] = cand;
@@ -647,7 +647,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       const idx = sents.findIndex(s => normKey(s).includes(key));
       if (idx < 0) continue;
       try {
-        const cand = (await llmText({ system: instruction + '\n한 문장만 출력(설명·머리말 금지). ★출력 문장에 "원장"·"승인 근거"·"클레임" 같은 작업 용어를 절대 쓰지 마라 — 독자가 읽는 본문이다(실측: "원장은 시간 기준 설정…을 제시한다" 누출 사고).', user: sents[idx], signal, maxTokens: 350, model: MODEL }) || '').trim();
+        const cand = (await llmText({ system: instruction + '\n한 문장만 출력(설명·머리말 금지). ★출력 문장에 "원장"·"승인 근거"·"클레임" 같은 작업 용어를 절대 쓰지 마라 — 독자가 읽는 본문이다(실측: "원장은 시간 기준 설정…을 제시한다" 누출 사고).', user: sents[idx], signal, maxTokens: 350, model: HAIKU }) || '').trim();   // 문장 1개 교정 → Haiku(비용↓), 메타·novelty·짝 게이트가 검증
         if (cand && !META_NOTE_RE.test(cand) && !WINK_RE.test(cand) && findCoinedTerms(cand, textF).length === 0 && floor.measureNovelty(textF, cand, allowed).count === 0 && checkEvidencePairing(cand, evidenceList).length === 0) {
           sents[idx] = cand;
           paras[pi] = sents.join(' ');

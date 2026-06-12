@@ -2139,6 +2139,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     result.outputText = sp.text;
     result.spacing = { fixes: sp.fixes, warnings: sp.warnings };
   }
+  // ★ 문단 정리(2026-06-12): 문단 내부 단일 줄바꿈→공백(문단 구분 \n\n 보존) — UI "애매한 두 행" 방지.
+  result.outputText = require('../engine/genretransfer').tidyParagraphs(result.outputText);
 
   // ★ 노출 게이트(E.3): 모든 측정을 criticals/warnings로 모아 status 결정. criticals 있으면 blocked.
   result.floorReport = floor.buildFloorReport({ result, rawText: text, mode: selectedMode, povSeed, optIn, allowedExtra: notes, anchors: anchorsOn });
@@ -2562,6 +2564,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     result.outputText = sp.text;
     result.spacing = { fixes: sp.fixes, warnings: sp.warnings };
   }
+  // ★ 문단 정리(2026-06-12): 문단 내부 단일 줄바꿈→공백(문단 구분 \n\n 보존) — UI "애매한 두 행" 방지.
+  result.outputText = require('../engine/genretransfer').tidyParagraphs(result.outputText);
 
   // ★ Phase2 register 교정(격식 모드 화자 거리감): 비인칭 단정문 → 기존 사실만으로 필자 판단문 구조 변형. REGISTER=1만 실행(실험).
   //   노이즈 제거 위해 pre-repair 텍스트(outputTextPreRegister) 보존 → 같은 생성문에 켜고/끈 clean A/B로 카피킬러 검증.

@@ -390,6 +390,21 @@ const { LLM_TIC_RULE, pickAnchors, ANCHOR_LEAK_RE } = require('./prompt');
 // ★ 수치-출처 짝 검증·수치 토큰·기관 앵커: engine/evidenceguard.js로 이식(메인 엔진 공용) — import만.
 const { _numToks, evidenceAnchorMap, checkEvidencePairing, dedupeFactRecitations, injectOwnerMarkers } = require('./evidenceguard');
 
+// ★ 문단 정리(2026-06-12): LLM이 한 문단 안에서 문장마다 줄바꿈(\n)을 넣으면 pre-wrap UI에서 "문장 뜻 단위로
+//   두 행" 어색한 줄바꿈이 됨. 문단 구분(\n\n)은 유지하고 문단 내부 단일 \n만 공백으로. 제목 블록(첫 블록에
+//   "— 부제" 줄)은 제목/부제 줄바꿈을 보존.
+function tidyParagraphs(doc) {
+  const blocks = (doc || '').split(/\n{2,}/);
+  return blocks.map((b, i) => {
+    const t = b.trim();
+    if (!t) return '';
+    if (i === 0 && /\n\s*—/.test(b)) {                         // 제목\n— 부제 보존
+      return t.split('\n').map(l => l.trim()).filter(Boolean).join('\n');
+    }
+    return t.replace(/\s*\n\s*/g, ' ');                        // 문단 내부 줄바꿈 → 공백
+  }).filter(Boolean).join('\n\n');
+}
+
 // 문단급 near-dup 제거(2026-06-11, 43% PDF에서 발견): weave가 사실 토큰을 끼우며 문단을 변주 복제
 // ("진입장벽~오프로딩" 4문장 2본) — 문장級 dedupe는 ③마감에서 weave보다 먼저 돌아 못 잡음. 카피킬러
 // '기계적 정확성·균일성' 라벨 2영역이 정확히 이 이음새였음. 순수 삭제 = FLOOR-safe.
@@ -750,6 +765,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     doc = injectOwnerMarkers(doc, pairing, evidenceList);
     pairing = checkEvidencePairing(doc, evidenceList);
   }
+  doc = tidyParagraphs(doc);   // ★ 문단 내부 단일 줄바꿈 정리(2026-06-12: LLM이 문장마다 \n 넣어 "애매한 두 행" 발생)
   const risk = gf.genreRiskScore(doc);
   const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
   return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };
@@ -769,4 +785,4 @@ async function genreTransferV2Candidates(rawText, { evidence = '', lang = 'ko', 
   return { winner: pool[0] || null, candidates };
 }
 
-module.exports = { GENRE_PROFILES, detectBadFrame, extractDocProfile, measureArtifacts, buildDocumentPlan, genreTransfer, SKELETONS, pickSkeleton, genreTransferV2, genreTransferV2Candidates, checkEvidencePairing, dedupeParas, resolveDupSentences, dedupeFactRecitations };
+module.exports = { GENRE_PROFILES, detectBadFrame, extractDocProfile, measureArtifacts, buildDocumentPlan, genreTransfer, SKELETONS, pickSkeleton, genreTransferV2, genreTransferV2Candidates, checkEvidencePairing, dedupeParas, resolveDupSentences, dedupeFactRecitations, tidyParagraphs };

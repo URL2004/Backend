@@ -361,6 +361,22 @@ JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":[
   let rr = 1;
   (ledger?.claims || []).forEach((c, i) => { const id = `C${i + 1}`; if (!seenC.has(id)) { slots[rr % (slots.length - 1) + 0].claims.push(id); seenC.add(id); rr++; } });
   evidenceList.forEach((e, i) => { const id = `E${i + 1}`; if (!seenE.has(id)) { slots[rr % (slots.length - 1) + 0].evidence.push(id); seenE.add(id); rr++; } });
+  // ★ 사실 분산 캡(2026-06-12 실측 61%): 계획 LLM이 통계를 리드 슬롯에 몰빵(한 영역에 8~10개) →
+  //   나머지 영역이 맨몸 논증으로 남아 피탐. 실측 원칙(§설계): 문단당 1사실 분산=42% vs 몰림=58%.
+  //   슬롯당 캡 = ceil(전체/슬롯수)+1, 초과분은 사실이 적은 슬롯부터 순서대로 재배치(주제 매칭 일부 양보 <
+  //   분산 이득 — 영역 단위 면역은 분산이 만든다).
+  {
+    const totalE = evidenceList.length;
+    if (totalE > slots.length) {
+      const cap = Math.ceil(totalE / slots.length) + 1;
+      const overflow = [];
+      slots.forEach(s => { while (s.evidence.length > cap) overflow.push(s.evidence.pop()); });
+      for (const id of overflow) {
+        const target = slots.slice().sort((a, b) => a.evidence.length - b.evidence.length)[0];
+        target.evidence.push(id);
+      }
+    }
+  }
   // 분량: 가중치 비례로 원문의 ~92%
   const desired = Math.round((((rawText.match(/[가-힣]/g) || []).length) || 1) * 0.92);
   const wsum = slots.reduce((a, s) => a + s.w, 0);
@@ -403,6 +419,18 @@ function dedupeParas(doc, textF) {
 // 문단 횡단 문장급 dup 해소(사실 인지형) — v5 실측: 사본들이 서로 다른 큰 문단 안에 박혀 문단 jaccard 0.497로
 // dedupeParas가 못 잡고, dedupe(문장級)는 "후속 등장 삭제"라 위빙된 사실 토큰("두 번~다섯 번")을 든 사본을 지워
 // lost를 재유발(순환). 해법: 뒤 사본 제거가 기본이되, 뒤 사본 제거로 lost가 늘면 앞자리에 뒤 문장을 심고 뒤를 제거.
+// 패러프레이즈 포함관계(2026-06-12 실측: "틱톡이 EU의 조사가 시작되자 보상 프로그램을 자진 철회한 것은…" 직후
+// "틱톡은 조사가 착수되자 보상 프로그램을 자진 철회했다" 재진술 — 길이가 달라 bigram jaccard 0.62 미달로 생존).
+// 짧은 쪽의 내용어가 긴 쪽에 85%+ 포함되면 같은 사실의 재진술로 본다.
+function _containedDup(a, b) {
+  const toks = (s) => [...new Set((s.match(/[가-힣]{2,}|[A-Za-z]{2,}|\d[\d,.]*/g) || []))];
+  const [shorter, longer] = a.replace(/\s+/g, '').length <= b.replace(/\s+/g, '').length ? [a, b] : [b, a];
+  const st = toks(shorter);
+  if (st.length < 4) return false;
+  // 한국어 활용형("철회했다"↔"철회한", "틱톡은"↔"틱톡이") 때문에 토큰 동일성은 빗나간다 — 어간 2자 프리픽스로 매칭.
+  const hit = st.filter(t => longer.includes(t.slice(0, 2))).length;
+  return hit / st.length >= 0.85;
+}
 function resolveDupSentences(doc, textF) {
   let guard = 0;
   for (let changed = true; changed && guard < 12; guard++) {
@@ -415,8 +443,8 @@ function resolveDupSentences(doc, textF) {
       for (let y = x + 1; y < flat.length; y++) {
         const a = flat[x], b = flat[y];
         if (a.s.replace(/\s+/g, '').length < 20 || b.s.replace(/\s+/g, '').length < 20) continue;
-        if (a.pi === b.pi && Math.abs(a.si - b.si) <= 1) continue;       // 인접 반복은 dedupe/꼬리에코 담당
-        if (_paraJaccard(a.s, b.s) < 0.62) continue;
+        if (a.pi === b.pi && Math.abs(a.si - b.si) <= 1 && !_containedDup(a.s, b.s)) continue;   // 인접은 꼬리에코 담당, 단 포함관계 재진술은 여기서
+        if (_paraJaccard(a.s, b.s) < 0.62 && !_containedDup(a.s, b.s)) continue;
         const rebuild = (mut) => {
           const P = paras.map(se => se.slice());
           mut(P);
@@ -619,7 +647,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       const idx = sents.findIndex(s => normKey(s).includes(key));
       if (idx < 0) continue;
       try {
-        const cand = (await llmText({ system: instruction + '\n한 문장만 출력(설명·머리말 금지).', user: sents[idx], signal, maxTokens: 350, model: MODEL }) || '').trim();
+        const cand = (await llmText({ system: instruction + '\n한 문장만 출력(설명·머리말 금지). ★출력 문장에 "원장"·"승인 근거"·"클레임" 같은 작업 용어를 절대 쓰지 마라 — 독자가 읽는 본문이다(실측: "원장은 시간 기준 설정…을 제시한다" 누출 사고).', user: sents[idx], signal, maxTokens: 350, model: MODEL }) || '').trim();
         if (cand && !META_NOTE_RE.test(cand) && !WINK_RE.test(cand) && findCoinedTerms(cand, textF).length === 0 && floor.measureNovelty(textF, cand, allowed).count === 0 && checkEvidencePairing(cand, evidenceList).length === 0) {
           sents[idx] = cand;
           paras[pi] = sents.join(' ');
@@ -705,7 +733,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
         if (!viol.span) continue;
         // detail에 judge가 인용한 원장 사실(교정 근거)이 들어 있다 — 자르면 수리 LLM이 무엇이 맞는지 모른다(100자 절단이 v5 미수렴 원인 추정)
         doc = await repairSentence(doc, viol.span,
-          `다음 문장은 원문·승인근거와 다른 주장을 담았다(${viol.type}). 판정 근거: ${(viol.detail || '').slice(0, 300)}\n판정 근거에 인용된 원장의 사실 그대로 따르도록 문장을 고쳐 써라 — 없는 조사·분석·인과·수치 결합을 지어내지 마라(주장 못 받치면 그 부분을 빼라).`);
+          `다음 문장은 원문·승인근거와 다른 주장을 담았다(${viol.type}). 판정 근거: ${(viol.detail || '').slice(0, 300)}\n판정 근거에 인용된 원문·승인 근거의 사실 그대로 따르도록 문장을 고쳐 써라 — 없는 조사·분석·인과·수치 결합을 지어내지 마라(주장 못 받치면 그 부분을 빼라).`);
       }
       doc = await weaveLost(doc);                                   // judge 수리가 사실을 떨궜으면 재위빙
       v = await semanticJudge(rawText, doc, judgeLedger, { lang, signal, allowedExtra: allowed });

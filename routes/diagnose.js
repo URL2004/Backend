@@ -11,7 +11,9 @@ const sg = require('../engine/surfaceguard');
 
 // 보존형(그대로 다듬기) 실측 밴드: A=ESG 18·개인정보 35 / B=EV 73~81 / C=도시 87·보고서 94~100.
 const POLISH_BAND = { A: '20~50%', B: '50~85%', C: '85%+' };
-const RESTRUCTURE_BAND = '36~43%';
+// 재구성 밴드는 근거 보강 의존(★2026-06-12 UI 실측으로 재확인: 무근거 56·59% = routine v1 59% 재현,
+// 근거 분산이 −15~22%p 레버). 36~43은 "앵커+승인근거 분산" 풀레시피의 숫자 — 무근거 기대값을 함께 표기.
+const RESTRUCTURE_BAND = '36~43%(근거 보강 시)';
 
 const COPY = {
   A: {

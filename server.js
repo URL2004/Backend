@@ -22,11 +22,25 @@ app.use((req, res, next) => {
 app.use('/analyze', limiter);
 app.use('/analyze-pdf', limiter);
 app.use('/diagnose', limiter);
+// /transform은 POST(시작·취소·승인)만 제한 — GET 폴링은 90분 job 동안 수백 회가 정상이라 제외.
+app.use('/transform', (req, res, next) => (req.method === 'POST' ? limiter(req, res, next) : next()));
+
+// 헬스체크(배포 플랫폼용 — Render 등은 이 경로로 살아있는지 판단)
+const transformRouter = require('./routes/transform');
+app.get(['/healthz', '/api/health'], (req, res) => {
+  res.json({
+    ok: true,
+    llm: process.env.LLM_BACKEND || 'api',
+    firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+    uptimeSec: Math.round(process.uptime()),
+    ...transformRouter.stats()
+  });
+});
 
 // 라우트
 app.use('/', require('./routes/analyze'));
 app.use('/', require('./routes/diagnose'));
-app.use('/', require('./routes/transform'));   // 회피모드 P3: 재구성 job (POST는 자체 검증, GET 폴링은 limiter 제외)
+app.use('/', transformRouter);   // 회피모드 P3: 재구성 job (POST는 자체 검증, GET 폴링은 limiter 제외)
 app.use('/', require('./routes/kakaoLogin'));
 app.use('/', require('./routes/payment'));
 app.use('/', require('./routes/subscription'));
@@ -38,4 +52,18 @@ if (process.env.LLM_BACKEND === 'claudecode') {
   console.warn('⚠️⚠️ LLM_BACKEND=claudecode로 서버 구동 중 — UI 변환은 타임아웃 난다. 서버는 LLM_BACKEND 미설정(API)이 정상. claudecode는 engine-test 전용.');
 }
 
-app.listen(process.env.PORT || 3000, () => console.log(`서버 시작! (LLM=${process.env.LLM_BACKEND || 'api'}, 인증=${process.env.FIREBASE_SERVICE_ACCOUNT ? 'Firebase' : (process.env.DEV_NO_AUTH === '1' ? 'DEV 우회' : '비활성(요청 시 401)')})`));
+const server = app.listen(process.env.PORT || 3000, () => console.log(`서버 시작! (LLM=${process.env.LLM_BACKEND || 'api'}, 인증=${process.env.FIREBASE_SERVICE_ACCOUNT ? 'Firebase' : (process.env.DEV_NO_AUTH === '1' ? 'DEV 우회' : '비활성(요청 시 401)')})`));
+
+// ── graceful shutdown: 배포(Render는 SIGTERM)·Ctrl+C 시 새 작업 거부 → 진행 중 LLM 중단(비용 차단) →
+//   job 상태 영속화 후 종료. 영속화 덕에 폴링 클라이언트는 재시작 후에도 404 대신 정확한 상태를 받는다.
+let shuttingDown = false;
+async function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${sig} 수신 — 새 작업 거부, job 영속화 후 종료`);
+  try { await transformRouter.shutdown(); } catch (e) { console.error('[shutdown] job 영속화 실패:', e?.message); }
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 5000).unref();   // close가 keep-alive 연결에 막혀도 5초 내 종료 보장
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

@@ -12,6 +12,7 @@ const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
 const analyze = require('./analyze');   // 과금 헬퍼 재사용(차감 공식 단일 출처)
+const { db } = require('../config');
 const { genreTransferV2 } = require('../engine/genretransfer');
 const { suggestEvidence } = require('../engine/evidence');
 const { reviewCandidates, hostOf } = require('../engine/evidencereview');
@@ -20,8 +21,126 @@ const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
 setInterval(() => {
   const now = Date.now();
-  for (const [id, j] of jobs) if (now - j.createdAt > JOB_TTL_MS) jobs.delete(id);
+  for (const [id, j] of jobs) {
+    if (now - j.createdAt > JOB_TTL_MS) { jobs.delete(id); deletePersisted(id); }
+  }
+  const today = kstDay();
+  for (const [uid, d] of dailyStarts) if (d.day !== today) dailyStarts.delete(uid);
 }, 30 * 60 * 1000).unref();
+
+// ── 비용 방어(2026-06-12): 차감이 완료 시점이라 차단·에러·취소 job의 원가(최대 $7)는 회사 부담 →
+//   동시·일일 한도로 최악 비용을 캡. 한도는 "운영자가 감당 가능한 하루 최대 손실" 기준으로 env 조정.
+const MAX_ACTIVE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_ACTIVE) || 3;   // 전역 동시 실행(LLM 점유) 상한
+const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함)
+const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
+
+function kstDay() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+}
+
+function countActive(uid) {
+  let running = 0, mine = 0;
+  for (const j of jobs.values()) {
+    if (j.status === 'running') running++;
+    // 승인 대기는 LLM을 안 쓰지만 사용자 기준으로는 "진행 중 작업" — 같은 사용자가 쌓아두는 건 막는다.
+    if (j.uid === uid && (j.status === 'running' || j.status === 'awaiting_approval')) mine++;
+  }
+  return { running, mine };
+}
+
+function checkLimits(uid) {
+  const { running, mine } = countActive(uid);
+  if (mine >= 1) return { status: 409, error: '이미 진행 중인 재구성 작업이 있어요. 완료(또는 취소) 후 다시 시작해 주세요.' };
+  if (running >= MAX_ACTIVE_GLOBAL) return { status: 503, error: '지금 재구성 요청이 몰려 있어요. 잠시 후(5~10분) 다시 시도해 주세요.' };
+  const day = kstDay();
+  const d = dailyStarts.get(uid);
+  if (d && d.day === day && d.count >= DAILY_CAP_PER_UID) {
+    return { status: 429, error: `재구성은 하루 ${DAILY_CAP_PER_UID}회까지 시작할 수 있어요. 내일 다시 시도해 주세요.` };
+  }
+  return null;
+}
+
+function recordStart(uid) {
+  const day = kstDay();
+  const d = dailyStarts.get(uid);
+  if (d && d.day === day) d.count++;
+  else dailyStarts.set(uid, { day, count: 1 });
+}
+
+// ── job 영속화(2026-06-12): Firestore transformJobs — 재시작에도 결과·승인대기 생존.
+//   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
+//   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
+const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
+  'text', 'estSec', 'note', 'gates', 'gateDetail', 'candidates', 'approvedCount', 'result', 'error'];
+
+function persistJob(job) {
+  if (!db) return;
+  const doc = {};
+  for (const k of PERSIST_FIELDS) if (job[k] !== undefined) doc[k] = job[k];
+  db.collection('transformJobs').doc(job.id).set(doc, { merge: true })
+    .catch(e => console.error(`⚠️ /transform ${job.id} 영속화 실패(작업은 계속):`, e?.message));
+}
+
+function deletePersisted(id) {
+  if (!db) return;
+  db.collection('transformJobs').doc(id).delete()
+    .catch(e => console.error(`⚠️ /transform ${id} 영속 삭제 실패:`, e?.message));
+}
+
+// 서버 시작 시 복원: done·blocked·awaiting_approval은 그대로 살리고(폴링·승인 재개 가능),
+// running이었던 job은 프로세스가 죽어 실제로는 중단됨 → error로 정정(완료 차감이라 돈 사고는 없음).
+async function restoreJobs() {
+  if (!db) return;
+  try {
+    const snap = await db.collection('transformJobs').limit(500).get();
+    const cutoff = Date.now() - JOB_TTL_MS;
+    let kept = 0, interrupted = 0, expired = 0;
+    snap.forEach(d => {
+      const j = d.data();
+      if (!j.createdAt || j.createdAt < cutoff) { expired++; deletePersisted(d.id); return; }
+      j.ac = new AbortController();
+      if (j.status === 'running') {
+        j.status = 'error';
+        j.stage = '중단됨(서버 재시작)';
+        j.error = '서버 재시작으로 작업이 중단됐어요. 크레딧은 차감되지 않았어요 — 다시 시도해 주세요.';
+        interrupted++;
+        persistJob(j);
+      }
+      jobs.set(j.id, j);
+      kept++;
+    });
+    if (kept || expired) console.log(`[transform] 영속 job 복원 ${kept}건 (running→중단 정정 ${interrupted}건, 만료 정리 ${expired}건)`);
+  } catch (e) {
+    console.error('⚠️ [transform] 영속 job 복원 실패(새 작업은 정상):', e?.message);
+  }
+}
+restoreJobs();
+
+// ── graceful shutdown(server.js가 SIGTERM/SIGINT에서 호출): 새 작업 거부 → 진행 중 LLM 중단(비용 차단) →
+//   중단 상태 영속화. 차감은 완료 시에만 일어나므로 여기서 돈이 새는 경로는 없다.
+let draining = false;
+router.shutdown = async function shutdown() {
+  draining = true;
+  const writes = [];
+  for (const j of jobs.values()) {
+    if (j.status === 'running') {
+      try { j.ac.abort(); } catch {}
+      j.status = 'error';
+      j.stage = '중단됨(서버 재시작)';
+      j.error = '서버 재시작으로 작업이 중단됐어요. 크레딧은 차감되지 않았어요 — 다시 시도해 주세요.';
+    }
+    if (db) {
+      const doc = {};
+      for (const k of PERSIST_FIELDS) if (j[k] !== undefined) doc[k] = j[k];
+      writes.push(db.collection('transformJobs').doc(j.id).set(doc, { merge: true }).catch(() => {}));
+    }
+  }
+  await Promise.race([Promise.allSettled(writes), new Promise(r => setTimeout(r, 4000))]);
+};
+router.stats = () => {
+  const { running } = countActive('');
+  return { activeJobs: running, totalJobs: jobs.size, draining, maxActive: MAX_ACTIVE_GLOBAL };
+};
 
 // ── P4: 근거 검색 단계(evidence:true일 때 재구성 전에 실행) ──
 //   검색(웹·환각게이트) → 결정론 검수(등급·충돌) → awaiting_approval로 멈추고 학생 승인 대기.
@@ -48,9 +167,13 @@ async function runSearchPhase(job, text) {
     }));
     job.status = 'awaiting_approval';
     job.stage = '근거 검수 대기';
+    persistJob(job);   // 승인 대기는 재시작 후에도 text·후보가 살아 있어 그대로 승인→재개 가능
     console.log(`▶ /transform ${job.id} 근거 ${job.candidates.length}건 검수 대기 (A ${job.candidates.filter(c => c.grade === 'A').length}·B ${job.candidates.filter(c => c.grade === 'B').length}·C ${job.candidates.filter(c => c.grade === 'C').length}·충돌 ${job.candidates.filter(c => c.conflict).length})`);
   } catch (e) {
-    if (job.ac.signal.aborted) { job.status = 'cancelled'; job.stage = '중단됨'; return; }
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return;
+    }
     console.error(`❌ /transform ${job.id} 근거 검색 실패 — 근거 없이 진행:`, e?.message);
     job.note = '근거 검색이 실패해 근거 없이 진행했어요.';
     return runJob(job, text, '');
@@ -61,6 +184,7 @@ async function runJob(job, text, evidence) {
   try {
     job.status = 'running';
     job.stage = '재구성';
+    persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
     // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
     const out = await genreTransferV2(text, { evidence: evidence || '', signal: job.ac.signal });
     const gates = [];
@@ -80,6 +204,7 @@ async function runJob(job, text, evidence) {
       job.status = 'blocked';
       job.gates = gates;
       job.gateDetail = gateDetail;
+      persistJob(job);
       return;
     }
     // ★ 완료 시 차감 — 실패·차단 경로는 여기 도달하지 않으므로 결과 없는 차감이 구조적으로 불가능.
@@ -105,11 +230,17 @@ async function runJob(job, text, evidence) {
       genreRisk: out.risk?.score,
       skeleton: out.skeleton
     };
+    persistJob(job);
   } catch (e) {
-    if (job.ac.signal.aborted) { job.status = 'cancelled'; job.stage = '중단됨'; return; }
+    if (job.ac.signal.aborted) {
+      // shutdown이 이미 error(서버 재시작 안내)로 표시한 job을 "사용자 취소"로 덮어쓰면 안 됨 — abort 출처 구분.
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return;
+    }
     console.error(`❌ /transform ${job.id} 실패:`, e?.message);
     job.status = 'error';
     job.error = '재구성 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
+    persistJob(job);
   }
 }
 
@@ -120,6 +251,9 @@ router.post('/transform', async (req, res) => {
   }
   if (text.length > 30000) {
     return res.status(400).json({ error: '텍스트가 너무 깁니다. (재구성 최대 30,000자)' });
+  }
+  if (draining) {
+    return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
   }
 
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
@@ -138,6 +272,10 @@ router.post('/transform', async (req, res) => {
   } catch (e) {
     return res.status(e.status || 500).json({ error: analyze.authErrorMessage(e.message) });
   }
+  // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트.
+  const limited = checkLimits(pre.uid);
+  if (limited) return res.status(limited.status).json({ error: limited.error });
+  recordStart(pre.uid);
 
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
@@ -152,6 +290,7 @@ router.post('/transform', async (req, res) => {
     ac: new AbortController()   // 명시적 취소용(/cancel)
   };
   jobs.set(id, job);
+  persistJob(job);
   if (wantEvidence) runSearchPhase(job, text);   // await 없음 — 백그라운드 진행
   else runJob(job, text, '');
   console.log(`▶ /transform job ${id} 시작 (${text.length}자, uid=${pre.uid}, 근거=${wantEvidence ? 'ON' : 'OFF'}, 예상 ${Math.round(estSec / 60)}분)`);
@@ -168,6 +307,7 @@ router.post('/transform/:id/cancel', (req, res) => {
   job.ac.abort();
   job.status = 'cancelled';
   job.stage = '중단됨';
+  persistJob(job);
   console.log(`■ /transform ${job.id} 사용자 취소 (uid=${job.uid})`);
   res.json({ ok: true });
 });
@@ -178,6 +318,11 @@ router.post('/transform/:id/approve', (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
   if (job.status !== 'awaiting_approval') return res.status(409).json({ error: '지금은 승인 단계가 아니에요.' });
+  if (draining) return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 승인해 주세요. (작업은 사라지지 않아요)' });
+  // 승인 = LLM 재구성 시작이므로 전역 동시 한도를 여기서도 검사 — 승인 화면에 머물던 job들이 한꺼번에 풀리는 경로.
+  if (countActive('').running >= MAX_ACTIVE_GLOBAL) {
+    return res.status(503).json({ error: '지금 재구성 요청이 몰려 있어요. 잠시 후(5~10분) 다시 승인해 주세요. (작업은 사라지지 않아요)' });
+  }
   const ids = Array.isArray(req.body?.approved) ? req.body.approved : [];
   let approved = (job.candidates || []).filter(c => ids.includes(c.id));
   // ★승인 수 캡(2026-06-12 실측 캘리브레이션): 사실 밀도 ~350자당 1건 초과는 위빙 생존 검증이 못 버팀

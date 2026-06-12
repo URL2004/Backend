@@ -20,10 +20,11 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   console.warn('[config] FIREBASE_SERVICE_ACCOUNT 미설정 — Firebase 비활성 (로컬 엔진 테스트 모드).');
 }
 
-// CORS 설정
+// CORS 설정 — 기본 도메인 + env CORS_ORIGINS(콤마 구분)로 추가. 도메인 바뀔 때 코드 수정 없이 env로 대응.
 const allowedOrigins = [
   'https://gpkorea.ai.kr',
-  'https://www.gpkorea.ai.kr'
+  'https://www.gpkorea.ai.kr',
+  ...(process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
 ];
 
 // 로컬 개발 origin은 포트 무관 전부 허용(localhost/127.0.0.1 — Live Server 5500, http.server 8741 등 어떤 포트든).

@@ -69,9 +69,17 @@ async function runJob(job, text, evidence) {
     if (out.pairing?.length) gates.push('evidence_pairing');
     if (out.judge && out.judge.pass === false) gates.push('semanticJudge');
     if (gates.length) {
-      console.warn(`⚠️ /transform ${job.id} BLOCKED:`, gates.join(', '));
+      // 차단 상세를 남긴다 — "왜 막혔는지" 없는 차단은 진단 불가(2753자 글 연속 차단 실사고).
+      const gateDetail = {
+        novelty: (out.novelty?.items || []).slice(0, 5),
+        lostFacts: (out.lostFacts?.items || []).slice(0, 8),
+        pairing: (out.pairing || []).slice(0, 3).map(p => `${p.num}↛${(p.owner || '').slice(0, 40)}`),
+        judge: (out.judge?.violations || []).slice(0, 5).map(v => `[${v.type}] "${(v.span || '').slice(0, 70)}" — ${(v.detail || '').slice(0, 100)}`)
+      };
+      console.warn(`⚠️ /transform ${job.id} BLOCKED: ${gates.join(', ')}\n   상세: ${JSON.stringify(gateDetail, null, 1).slice(0, 1200)}`);
       job.status = 'blocked';
       job.gates = gates;
+      job.gateDetail = gateDetail;
       return;
     }
     // ★ 완료 시 차감 — 실패·차단 경로는 여기 도달하지 않으므로 결과 없는 차감이 구조적으로 불가능.
@@ -189,7 +197,7 @@ router.get('/transform/:id', (req, res) => {
   if (job.status === 'done') return res.json({ ...base, result: job.result });
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
   if (job.status === 'cancelled') return res.json(base);
-  if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, error: '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요. 크레딧은 차감되지 않았어요.' });
+  if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, error: '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요. 크레딧은 차감되지 않았어요. 같은 설정으로 다시 시도하면 통과되는 경우가 많아요.' });
   if (job.status === 'error') return res.json({ ...base, error: job.error });
   res.json(base);
 });

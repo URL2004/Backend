@@ -124,11 +124,14 @@ router.post('/transform', async (req, res) => {
 
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const wantEvidence = req.body.evidence === true;
-  // ★ 과금 정책(2026-06-12 수익 구조 개편): 재구성은 글자수와 무관하게 원가가 거의 일정(슬롯 6~10·위빙이 길이에
-  //   둔감) → 건당 정액. 무근거 200크레딧(원가 ~2,800원의 ~1.5배), 근거 보강 300(원가 ~4,000원 ~1.6배). env로 조정.
-  const needed = wantEvidence
-    ? (Number(process.env.RESTRUCTURE_CREDIT_EVIDENCE) || 300)
-    : (Number(process.env.RESTRUCTURE_CREDIT) || 200);
+  // ★ 과금 정책(2026-06-12 길이 구간 정액): 재구성은 슬롯·위빙이 글자수에 비례해 원가가 길수록 큼($2.5~7) →
+  //   만 자 구간별 정액. 원가의 ~1.5배 마진. (~1만 200/300 · ~2만 400/500 · ~3만 600/700)
+  function restructureCredit(len, ev) {
+    var tier = len <= 10000 ? 0 : (len <= 20000 ? 1 : 2);
+    var base = [200, 400, 600][tier];
+    return base + (ev ? 100 : 0);
+  }
+  const needed = restructureCredit(text.length, wantEvidence);
   let pre;
   try {
     pre = devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed);

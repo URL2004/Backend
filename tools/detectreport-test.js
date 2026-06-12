@@ -65,6 +65,12 @@ const srv = app.listen(0, async () => {
     check('2회차 200·잔여 0', r2.status === 200 && r2.body.remainingToday === 0, r2.body.remainingToday);
     const r3 = await post({ text: TEXT });
     check('3회차 429(일일 한도 2)', r3.status === 429, r3);
+
+    // 로컬 개발 모드(이중 게이트): 한도 미적용 + 잔여 표기 null — devNoAuth는 요청 시점에 env를 읽으므로 같은 프로세스에서 검증 가능
+    process.env.DEV_NO_AUTH = '1';
+    const r4 = await post({ text: TEXT });
+    check('DEV_NO_AUTH=1이면 한도 무시(200)·잔여 null', r4.status === 200 && r4.body.remainingToday === null, { status: r4.status, remain: r4.body.remainingToday });
+    delete process.env.DEV_NO_AUTH;
   } catch (e) {
     failed++;
     console.error('  ✗ 테스트 실행 오류:', e);

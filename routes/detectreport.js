@@ -70,13 +70,17 @@ router.post('/detect-report', async (req, res) => {
   if (bare.length < 100) return res.status(400).json({ error: 'AI 감지를 하려면 최소 100자가 필요해요.' });
   if (text.length > 30000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
 
+  // ★ 로컬 개발 전용(이중 게이트 — analyze.js와 동일): Firebase 비활성 + DEV_NO_AUTH=1이면
+  //   일일 한도 미적용(테스트 무제한). 프로덕션은 FIREBASE_SERVICE_ACCOUNT가 항상 있어 이 분기를 안 탐.
+  const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
+
   // 일일 한도 — 로그인 uid 우선(IP 공유 환경 오차단 방지), 비로그인은 IP
   const uid = await verifyToken(req.body?.idToken);
   const key = uid ? `u:${uid}` : `ip:${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`;
   const day = kstDay();
   const rec = daily.get(key);
   const used = (rec && rec.day === day) ? rec.count : 0;
-  if (used >= DAILY_CAP) {
+  if (!devNoAuth && used >= DAILY_CAP) {
     return res.status(429).json({ error: `무료 AI 감지는 하루 ${DAILY_CAP}회까지예요. 내일 다시 이용해 주세요.` });
   }
 
@@ -122,7 +126,7 @@ router.post('/detect-report', async (req, res) => {
   const [det, example] = await Promise.all([detectP, exampleP]);
 
   // 카운트는 성공 직전 증가 — 서버 오류로 보고서를 못 받았는데 횟수만 소진되는 일 방지
-  daily.set(key, { day, count: used + 1 });
+  if (!devNoAuth) daily.set(key, { day, count: used + 1 });
 
   // ③ 비용 — 실제 과금 공식과 동일 산식(다듬기 1/100자 · 블로그 2/100자 · 재구성 구간 정액)
   const len = text.length;
@@ -130,7 +134,7 @@ router.post('/detect-report', async (req, res) => {
   res.json({
     ok: true,
     free: true,
-    remainingToday: DAILY_CAP - used - 1,
+    remainingToday: devNoAuth ? null : DAILY_CAP - used - 1,   // null이면 프론트가 잔여 표기 생략(dev 무제한)
     probability: det ? Math.round(det.probability) : null,
     summary: det ? det.summary : copy.desc,
     detail: det ? det.detail : null,

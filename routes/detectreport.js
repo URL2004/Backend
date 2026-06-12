@@ -135,8 +135,9 @@ router.post('/detect-report', async (req, res) => {
   const engineProb = Math.round(Math.min(92, Math.max(15, 22 + 70 * (ir.abstractRiskRatio || 0))));
   const probability = det ? Math.round(det.probability) : engineProb;
 
-  // 카운트는 성공 직전 증가 — 서버 오류로 보고서를 못 받았는데 횟수만 소진되는 일 방지
-  if (!devNoAuth) daily.set(key, { day, count: used + 1 });
+  // 카운트는 성공 직전 증가 — 서버 오류로 보고서를 못 받았는데 횟수만 소진되는 일 방지.
+  // 클라이언트가 끊겼으면(새로고침·이탈) 응답을 못 받으므로 무료 횟수도 소진하지 않는다.
+  if (!devNoAuth && !req.aborted) daily.set(key, { day, count: used + 1 });
 
   // ③ 비용 — 실제 과금 공식과 동일 산식(다듬기 1/100자 · 블로그 2/100자 · 재구성 구간 정액)
   const len = text.length;

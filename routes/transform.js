@@ -12,7 +12,7 @@ const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
 const analyze = require('./analyze');   // 과금 헬퍼 재사용(차감 공식 단일 출처)
-const { db } = require('../config');
+const { db, verifyToken } = require('../config');
 const { genreTransferV2 } = require('../engine/genretransfer');
 const { suggestEvidence } = require('../engine/evidence');
 const { reviewCandidates, hostOf } = require('../engine/evidencereview');
@@ -30,9 +30,33 @@ setInterval(() => {
 
 // ── 비용 방어(2026-06-12): 차감이 완료 시점이라 차단·에러·취소 job의 원가(최대 $7)는 회사 부담 →
 //   동시·일일 한도로 최악 비용을 캡. 한도는 "운영자가 감당 가능한 하루 최대 손실" 기준으로 env 조정.
-const MAX_ACTIVE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_ACTIVE) || 3;   // 전역 동시 실행(LLM 점유) 상한
-const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함)
+const MAX_ACTIVE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_ACTIVE) || 3;   // 전역 동시 실행(LLM 점유) 상한 — formal(재구성)
+const BLOG_MAX_ACTIVE = Number(process.env.BLOG_MAX_ACTIVE) || 4;            // blog(기본 피하기) 전역 동시 — 짧고 저원가라 별도 풀
+const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함) — formal만
 const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
+
+function tokenFromReq(req) {
+  const auth = req.get('authorization') || '';
+  const bearer = auth.match(/^Bearer\s+(.+)$/i);
+  if (bearer) return bearer[1].trim();
+  return (req.body && req.body.idToken) || (req.query && req.query.idToken) || '';
+}
+
+async function requireJobOwner(req, res, job) {
+  if (job.devNoAuth && !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1') {
+    return job.uid || 'dev-local';
+  }
+  const uid = await verifyToken(tokenFromReq(req));
+  if (!uid) {
+    res.status(401).json({ error: '로그인이 필요해요.' });
+    return null;
+  }
+  if (uid !== job.uid) {
+    res.status(403).json({ error: '본인의 작업만 확인할 수 있어요.' });
+    return null;
+  }
+  return uid;
+}
 
 function kstDay() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
@@ -48,24 +72,29 @@ function restructureCredit(len, ev) {
 }
 router.restructureCredit = restructureCredit;
 
-function countActive(uid) {
+function countActive(uid, mode) {
   let running = 0, mine = 0;
   for (const j of jobs.values()) {
-    if (j.status === 'running') running++;
-    // 승인 대기는 LLM을 안 쓰지만 사용자 기준으로는 "진행 중 작업" — 같은 사용자가 쌓아두는 건 막는다.
+    // 전역 동시 한도는 모드별 풀(blog는 1~3분·저원가, formal은 5~90분·고원가 — 섞으면 서로 굶김)
+    if (j.status === 'running' && (j.mode || 'formal') === (mode || 'formal')) running++;
+    // 승인 대기는 LLM을 안 쓰지만 사용자 기준으로는 "진행 중 작업" — 같은 사용자가 쌓아두는 건 모드 무관 차단.
     if (j.uid === uid && (j.status === 'running' || j.status === 'awaiting_approval')) mine++;
   }
   return { running, mine };
 }
 
-function checkLimits(uid) {
-  const { running, mine } = countActive(uid);
-  if (mine >= 1) return { status: 409, error: '이미 진행 중인 재구성 작업이 있어요. 완료(또는 취소) 후 다시 시작해 주세요.' };
-  if (running >= MAX_ACTIVE_GLOBAL) return { status: 503, error: '지금 재구성 요청이 몰려 있어요. 잠시 후(5~10분) 다시 시도해 주세요.' };
-  const day = kstDay();
-  const d = dailyStarts.get(uid);
-  if (d && d.day === day && d.count >= DAILY_CAP_PER_UID) {
-    return { status: 429, error: `재구성은 하루 ${DAILY_CAP_PER_UID}회까지 시작할 수 있어요. 내일 다시 시도해 주세요.` };
+function checkLimits(uid, mode) {
+  const { running, mine } = countActive(uid, mode);
+  if (mine >= 1) return { status: 409, error: '이미 진행 중인 작업이 있어요. 완료(또는 취소) 후 다시 시작해 주세요.' };
+  const cap = mode === 'blog' ? BLOG_MAX_ACTIVE : MAX_ACTIVE_GLOBAL;
+  if (running >= cap) return { status: 503, error: '지금 요청이 몰려 있어요. 잠시 후(5~10분) 다시 시도해 주세요.' };
+  // 일일 시작 한도는 formal(고원가)만 — blog는 저원가라 레이트리밋·동시 1개로 충분.
+  if (mode !== 'blog') {
+    const day = kstDay();
+    const d = dailyStarts.get(uid);
+    if (d && d.day === day && d.count >= DAILY_CAP_PER_UID) {
+      return { status: 429, error: `재구성은 하루 ${DAILY_CAP_PER_UID}회까지 시작할 수 있어요. 내일 다시 시도해 주세요.` };
+    }
   }
   return null;
 }
@@ -81,7 +110,8 @@ function recordStart(uid) {
 //   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'text', 'estSec', 'note', 'gates', 'gateDetail', 'candidates', 'approvedCount', 'result', 'error'];
+  'text', 'estSec', 'note', 'gates', 'gateDetail', 'candidates', 'approvedCount', 'result', 'error',
+  'mode', 'memo', 'lang'];
 
 function persistJob(job) {
   if (!db) return;
@@ -218,9 +248,10 @@ async function runJob(job, text, evidence) {
       return;
     }
     // ★ 완료 시 차감 — 실패·차단 경로는 여기 도달하지 않으므로 결과 없는 차감이 구조적으로 불가능.
+    //   멱등 키로 job.id를 넘겨 재시작·재시도 중복 차감까지 차단(job.deducted 플래그 + 이중 안전).
     if (!job.devNoAuth && job.plan !== 'unlimited') {
       try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'restructure'));
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'restructure', 'job_' + job.id));
         job.deducted = true;
       } catch (e) {
         // 차감 실패(그 사이 잔액 소진 등) — 결과는 이미 만들어졌으니 사용자에겐 전달(고객 우선), 수동 보정 로그.
@@ -254,56 +285,121 @@ async function runJob(job, text, evidence) {
   }
 }
 
+// ── 기본 피하기(blog) job 러너(2026-06-13): 직접 fetch였던 블로그 변환을 job으로 — 새로고침·창닫기 생존.
+//   엔진은 기존 floorV2 청크 경로(analyze.runHumanizeChunked) 그대로, 차감·게이트 원칙은 formal과 동일.
+async function runBlogJob(job, text) {
+  try {
+    job.status = 'running';
+    job.stage = '문장 다듬는 중';
+    persistJob(job);
+    const out = await analyze.runHumanizeChunked({
+      text, mode: 'blog', lang: job.lang || 'ko', signal: job.ac.signal,
+      floorV2: true, optIn: false, judge: true, grounding: true, userNotes: job.memo || ''
+    });
+    // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
+    if (out.floorReport && out.floorReport.status === 'blocked') {
+      const gates = (out.floorReport.criticals || []).map(c => c.gate);
+      console.warn(`⚠️ /transform(blog) ${job.id} BLOCKED: ${gates.join(', ')}`);
+      job.status = 'blocked';
+      job.gates = gates;
+      job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
+      persistJob(job);
+      return;
+    }
+    if (!out.result || !out.result.outputText) throw new Error('humanize_incomplete');
+    if (!job.devNoAuth && job.plan !== 'unlimited') {
+      try {
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'humanize', 'job_' + job.id));
+        job.deducted = true;
+      } catch (e) {
+        console.error(`❌ /transform(blog) ${job.id} 완료 차감 실패(수동 보정 필요) uid=${job.uid}:`, e?.message);
+      }
+    }
+    job.status = 'done';
+    job.result = {
+      outputText: out.result.outputText,
+      floorReport: {
+        status: out.floorReport.status,
+        criticals: out.floorReport.criticals,
+        warnings: (out.floorReport.warnings || []).map(w => w.gate),
+        metrics: out.floorReport.metrics
+      },
+      metrics: out.floorReport.metrics,   // 배지 렌더 호환(formal과 동일 접근 경로)
+      chunkCount: out.chunkCount,
+      fallbackCount: out.fallbackCount
+    };
+    persistJob(job);
+  } catch (e) {
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return;
+    }
+    console.error(`❌ /transform(blog) ${job.id} 실패:`, e?.message);
+    job.status = 'error';
+    job.error = '처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
+    persistJob(job);
+  }
+}
+
 router.post('/transform', async (req, res) => {
   const { text, idToken } = req.body || {};
+  const mode = req.body?.mode === 'blog' ? 'blog' : 'formal';   // 화이트리스트 — 그 외 값은 formal
   if (typeof text !== 'string' || text.replace(/\s+/g, '').length < 200) {
-    return res.status(400).json({ error: '재구성하려면 최소 200자가 필요해요.' });
+    return res.status(400).json({ error: '변환하려면 최소 200자가 필요해요.' });
   }
   if (text.length > 30000) {
-    return res.status(400).json({ error: '텍스트가 너무 깁니다. (재구성 최대 30,000자)' });
+    return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
   }
   if (draining) {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
   }
 
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
-  const wantEvidence = req.body.evidence === true;
-  const needed = restructureCredit(text.length, wantEvidence);
+  const wantEvidence = mode === 'formal' && req.body.evidence === true;   // 근거 보강은 formal 전용(UI 잠금과 일치)
+  // 과금: formal=만자 구간 정액 / blog=글자수 비례(기존 /analyze floorV2와 동일 산식 — 단가 변화 없음)
+  const needed = mode === 'blog'
+    ? Math.max(2, Math.ceil(text.length / 100) * 2)
+    : restructureCredit(text.length, wantEvidence);
   let pre;
   try {
     pre = devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed);
   } catch (e) {
     return res.status(e.status || 500).json({ error: analyze.authErrorMessage(e.message) });
   }
-  // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트.
-  const limited = checkLimits(pre.uid);
+  // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트(formal만).
+  const limited = checkLimits(pre.uid, mode);
   if (limited) return res.status(limited.status).json({ error: limited.error });
-  recordStart(pre.uid);
+  if (mode !== 'blog') recordStart(pre.uid);
 
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
-  // 예상 시간: 슬롯 순차 생성이라 길이에 거의 선형(실측 college 1.8K=11분(근거)·7분(무근거)). 약간 과대 추정이
-  // 과소 추정보다 낫다(99%에 오래 머무는 것보다 60%에 끝나는 게 체감이 좋음). 상한 90분(3만자 대비).
-  const estSec = Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
+  // 예상 시간: formal=슬롯 순차라 길이 선형(상한 90분). blog=청크 병렬이라 짧음(프론트 ticker 공식과 동일).
+  const estSec = mode === 'blog'
+    ? Math.max(90, Math.min(1200, Math.round(bare / 12)))
+    : Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
   const job = {
-    id, status: 'running', stage: wantEvidence ? '근거 검색' : '구조 계획', createdAt: Date.now(),
+    id, mode, status: 'running', stage: mode === 'blog' ? '문장 다듬는 중' : (wantEvidence ? '근거 검색' : '구조 계획'), createdAt: Date.now(),
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
+    memo: mode === 'blog' && typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',
+    lang: req.body.lang === 'en' ? 'en' : 'ko',
     estSec,
     ac: new AbortController()   // 명시적 취소용(/cancel)
   };
   jobs.set(id, job);
   persistJob(job);
-  if (wantEvidence) runSearchPhase(job, text);   // await 없음 — 백그라운드 진행
+  if (mode === 'blog') runBlogJob(job, text);            // await 없음 — 백그라운드 진행(새로고침 생존)
+  else if (wantEvidence) runSearchPhase(job, text);
   else runJob(job, text, '');
-  console.log(`▶ /transform job ${id} 시작 (${text.length}자, uid=${pre.uid}, 근거=${wantEvidence ? 'ON' : 'OFF'}, 예상 ${Math.round(estSec / 60)}분)`);
-  res.json({ ok: true, jobId: id, estSec });
+  console.log(`▶ /transform job ${id} 시작 (${mode}, ${text.length}자, uid=${pre.uid}, 근거=${wantEvidence ? 'ON' : 'OFF'}, 예상 ${Math.round(estSec / 60)}분)`);
+  res.json({ ok: true, jobId: id, estSec, mode });
 });
 
 // ── 명시적 취소: 진행 중 LLM 호출을 abort — 차감은 완료 시에만 일어나므로 취소=항상 무과금.
-router.post('/transform/:id/cancel', (req, res) => {
+router.post('/transform/:id/cancel', async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
+  if (!(await requireJobOwner(req, res, job))) return;
   if (job.status === 'done' || job.status === 'blocked' || job.status === 'error') {
     return res.status(409).json({ error: '이미 끝난 작업이에요.' });
   }
@@ -317,13 +413,14 @@ router.post('/transform/:id/cancel', (req, res) => {
 
 // ── P4: 근거 승인 — 승인된 후보만 evidence로 재구성 재개. "미승인은 엔진이 차단"의 구현부:
 //   엔진에 전달되는 허용 세계 자체가 승인 목록뿐이므로 미승인 사실은 novelty 게이트가 자동 차단.
-router.post('/transform/:id/approve', (req, res) => {
+router.post('/transform/:id/approve', async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
+  if (!(await requireJobOwner(req, res, job))) return;
   if (job.status !== 'awaiting_approval') return res.status(409).json({ error: '지금은 승인 단계가 아니에요.' });
   if (draining) return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 승인해 주세요. (작업은 사라지지 않아요)' });
   // 승인 = LLM 재구성 시작이므로 전역 동시 한도를 여기서도 검사 — 승인 화면에 머물던 job들이 한꺼번에 풀리는 경로.
-  if (countActive('').running >= MAX_ACTIVE_GLOBAL) {
+  if (countActive('', 'formal').running >= MAX_ACTIVE_GLOBAL) {
     return res.status(503).json({ error: '지금 재구성 요청이 몰려 있어요. 잠시 후(5~10분) 다시 승인해 주세요. (작업은 사라지지 않아요)' });
   }
   const ids = Array.isArray(req.body?.approved) ? req.body.approved : [];
@@ -345,10 +442,11 @@ router.post('/transform/:id/approve', (req, res) => {
   res.json({ ok: true, approved: approved.length });
 });
 
-router.get('/transform/:id', (req, res) => {
+router.get('/transform/:id', async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
-  const base = { ok: true, status: job.status, stage: job.stage, elapsedSec: Math.round((Date.now() - job.createdAt) / 1000), estSec: job.estSec, ...(job.note ? { note: job.note } : {}) };
+  if (!(await requireJobOwner(req, res, job))) return;
+  const base = { ok: true, status: job.status, stage: job.stage, mode: job.mode || 'formal', elapsedSec: Math.round((Date.now() - job.createdAt) / 1000), estSec: job.estSec, ...(job.note ? { note: job.note } : {}) };
   if (job.status === 'done') return res.json({ ...base, result: job.result });
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
   if (job.status === 'cancelled') return res.json(base);

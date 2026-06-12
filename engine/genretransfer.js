@@ -372,7 +372,7 @@ JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":[
 //   단일 진실 소스가 됨. 여기서는 import만(동작 동일). 앵커 헤더는 이식하며 디프레이밍됨(탐지기·점수 언급 제거).
 const { LLM_TIC_RULE, pickAnchors, ANCHOR_LEAK_RE } = require('./prompt');
 // ★ 수치-출처 짝 검증·수치 토큰·기관 앵커: engine/evidenceguard.js로 이식(메인 엔진 공용) — import만.
-const { _numToks, evidenceAnchorMap, checkEvidencePairing, dedupeFactRecitations } = require('./evidenceguard');
+const { _numToks, evidenceAnchorMap, checkEvidencePairing, dedupeFactRecitations, injectOwnerMarkers } = require('./evidenceguard');
 
 // 문단급 near-dup 제거(2026-06-11, 43% PDF에서 발견): weave가 사실 토큰을 끼우며 문단을 변주 복제
 // ("진입장벽~오프로딩" 4문장 2본) — 문장級 dedupe는 ③마감에서 weave보다 먼저 돌아 못 잡음. 카피킬러
@@ -639,6 +639,12 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       `다음 문장은 수치(${bad.num})를 출처와 다르게 결합했을 위험이 있다. 수치를 빼지 말고, 아래의 실제 사실에 맞게 문장을 교정하라(출처 표지를 함께 명시). 도저히 안 맞을 때만 수치를 빼라. 실제 사실: ${owner ? owner.line : ''}`);
   }
   pairing = checkEvidencePairing(doc, evidenceList);
+  // ★ 결정론 최후 수단(2026-06-12 실사고: 잔여 위반 1건이 30분 작업 전체 차단): LLM 교정이 못 박은 위반은
+  //   수치 옆에 소속 출처 표지를 괄호 삽입(무날조 — 승인 사실의 출처 명시)으로 결정론 해소.
+  if (pairing.length) {
+    doc = injectOwnerMarkers(doc, pairing, evidenceList);
+    pairing = checkEvidencePairing(doc, evidenceList);
+  }
 
   // ② 사실 소실 재위빙(3라운드, 짝 인지형) — 수용 조건: lost 감소 + 짝 위반 비증가.
   //    짝 위반이 늘면 끊지 말고 즉석 교정 후 재평가(v4 실측: 여기서 break하면 소실 18건이 복구 불능).
@@ -710,6 +716,10 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   const novelty = floor.measureNovelty(textF, doc, allowed);
   const lost = floor.measureLostFacts(textF, doc);
   pairing = checkEvidencePairing(doc, evidenceList);
+  if (pairing.length) {   // judge 수리·재위빙이 끝물에 짝을 깼을 수 있음 — 최후 수단 1회 더
+    doc = injectOwnerMarkers(doc, pairing, evidenceList);
+    pairing = checkEvidencePairing(doc, evidenceList);
+  }
   const risk = gf.genreRiskScore(doc);
   const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
   return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };

@@ -2605,6 +2605,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         }
       } catch (e) { if (signal?.aborted) throw e; }
       pairing = evg.checkEvidencePairing(result.outputText, evidLines);
+      // ★ 결정론 최후 수단(이식, 2026-06-12 실사고): 잔여 위반은 수치 옆 출처 표지 괄호 삽입으로 해소(무날조).
+      if (pairing.length > basePairs) {
+        result.outputText = evg.injectOwnerMarkers(result.outputText, pairing, evidLines);
+        pairing = evg.checkEvidencePairing(result.outputText, evidLines);
+      }
     }
     result.evidencePairing = { violations: Math.max(0, pairing.length - basePairs), base: basePairs, items: pairing.slice(0, 5) };
   }

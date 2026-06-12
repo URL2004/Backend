@@ -98,4 +98,37 @@ function dedupeFactRecitations(doc, evidenceList, textF) {
   return floor.measureLostFacts(textF, cand).count <= floor.measureLostFacts(textF, doc).count ? cand : doc;
 }
 
-module.exports = { _numToks, PAIR_STOP, ORG_RE, ORG_STOP, evidenceAnchorMap, checkEvidencePairing, dedupeFactRecitations };
+// ★ 짝 위반 결정론 최후 수단(2026-06-12 실사고: 잔여 위반 1건이 30분 재구성 전체 차단):
+//   LLM 교정이 못 박은 위반 문장의 수치 바로 뒤에 소속 출처 표지를 괄호로 삽입 — 승인 사실의 출처를
+//   명시하는 것이므로 무날조이고, 짝 정의(±2문장 내 소유 앵커)상 위반이 결정론적으로 해소된다.
+function _escRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function injectOwnerMarkers(doc, violations, evidenceList) {
+  const map = evidenceAnchorMap(evidenceList);
+  const normKey = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 24);
+  let out = doc;
+  for (const bad of violations) {
+    const owner = map.find(m => m.nums.some(n => n.split('|')[0] === bad.num || n.split('|')[0] === '-' + bad.num));
+    const tag = owner && (owner.orgAnchors[0] || owner.anchors[0]);
+    if (!tag) continue;
+    const paras = out.split(/\n{2,}/);
+    let done = false;
+    for (let pi = 0; pi < paras.length && !done; pi++) {
+      const sents = paras[pi].split(/(?<=[.!?”"])\s+/);
+      for (let si = 0; si < sents.length; si++) {
+        if (!normKey(sents[si]).includes(normKey(bad.sent))) continue;
+        if (sents[si].includes(`(${tag}`)) { done = true; break; }   // 이미 삽입됨
+        const re = new RegExp(_escRe(bad.num) + '(?:[%가-힣])?');     // 수치(+단위 1글자)
+        const m = sents[si].match(re);
+        if (!m) break;
+        sents[si] = sents[si].replace(re, m[0] + `(${tag} 기준)`);
+        paras[pi] = sents.join(' ');
+        out = paras.join('\n\n');
+        done = true;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+module.exports = { _numToks, PAIR_STOP, ORG_RE, ORG_STOP, evidenceAnchorMap, checkEvidencePairing, dedupeFactRecitations, injectOwnerMarkers };

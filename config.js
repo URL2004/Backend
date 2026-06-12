@@ -26,6 +26,7 @@ const allowedOrigins = [
   'https://www.gpkorea.ai.kr',
   ...(process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
 ];
+const allowedOriginSuffixes = (process.env.CORS_ORIGIN_SUFFIXES || '').split(',').map(s => s.trim()).filter(Boolean);
 
 // 로컬 개발 origin은 포트 무관 전부 허용(localhost/127.0.0.1 — Live Server 5500, http.server 8741 등 어떤 포트든).
 // CORS는 브라우저 보호 장치일 뿐 인증이 아니므로(인증은 idToken) localhost 허용은 보안상 무해.
@@ -33,7 +34,8 @@ const LOCAL_DEV_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
 const corsMiddleware = cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || LOCAL_DEV_ORIGIN.test(origin)) {
+    const allowedBySuffix = origin && allowedOriginSuffixes.some(suffix => origin.endsWith(suffix));
+    if (!origin || allowedOrigins.includes(origin) || allowedBySuffix || LOCAL_DEV_ORIGIN.test(origin)) {
       callback(null, true);
     } else {
       callback(new Error('허용되지 않은 접근입니다.'));

@@ -21,6 +21,7 @@
 | `CRON_SECRET` | 무작위 시크릿 | 정기결제 갱신 cron 인증 |
 | `TOSS_WEBHOOK_SECRET` | 무작위 시크릿 | 웹훅 처리 인증. 미설정 시 `/toss/webhook` 503 |
 | `CORS_ORIGINS` | (선택) 추가 도메인 | 기본 gpkorea.ai.kr는 코드에 내장 |
+| `CORS_ORIGIN_SUFFIXES` | 비움 | staging preview에서만 `.vercel.app` 등 사용. 프로덕션은 비워둘 것 |
 | `RESTRUCTURE_MAX_ACTIVE` | (선택, 기본 3) | 전역 동시 재구성 수 — API rate limit·비용 감당치에 맞춤 |
 | `RESTRUCTURE_DAILY_CAP` | (선택, 기본 8) | 사용자당 일일 재구성 시작 횟수 |
 | `ENABLE_LEGACY_ANALYZE_PDF` | 기본 미설정 | 미사용 `/analyze-pdf` 호환이 꼭 필요할 때만 `1` |

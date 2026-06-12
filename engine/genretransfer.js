@@ -708,7 +708,9 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
         if (curLost.count >= before) stalled++;   // 이 라운드에 개선 0 → 다음 라운드 중단(확률 반복의 기대값 < 비용)
       } catch { break; }
     }
-    return resolveDupSentences(dedupeParas(curDoc, textF), textF);   // weave가 만든 변주 복제 즉시 제거(②·④ 두 호출처 공통)
+    // weave가 만든 변주 복제·재인용 즉시 제거(②·④ 두 호출처 공통). ★dedupeFactRecitations 포함(2026-06-12 47% PDF):
+    // ④ judge 루프의 weave는 ③마감 뒤에 돌아 재인용 dedupe를 안 거침 → "정부 16세 규제" 류 재진술 생존하던 구멍.
+    return dedupeFactRecitations(resolveDupSentences(dedupeParas(curDoc, textF), textF), evidenceList, textF);
   }
   doc = await weaveLost(doc);
 

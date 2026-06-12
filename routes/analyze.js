@@ -2676,7 +2676,12 @@ router.post('/analyze', async (req, res) => {
     return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${HARD_MAX.toLocaleString()}자)` });
   }
 
-  const needed = Math.ceil(text.length / 100);
+  // ★ 과금 정책(2026-06-12 수익 구조 개편): 100자=1크레딧 기본.
+  //   다듬기(레거시 /analyze)·detect는 기본. 블로그 회피(floorV2)는 원가가 ~3배(judge·grounding·다중 패스)라 100자=2크레딧.
+  //   재구성(genretransfer)은 별도 라우트(transform.js)에서 건당 정액(글자수 무관).
+  const isBlogEvasion = req.body.engine === 'floorV2' && (req.body.humanizeMode || 'blog') === 'blog';
+  const creditPer100 = isBlogEvasion ? 2 : 1;
+  const needed = Math.ceil(text.length / 100) * creditPer100;
   const opType = mode === 'detect' ? 'detect' : 'humanize';
 
   // ★ 로컬 개발 전용 인증·과금 생략(이중 게이트): Firebase 비활성(키 미설정) + DEV_NO_AUTH=1 둘 다 필요.

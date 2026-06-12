@@ -9,12 +9,14 @@ const express = require('express');
 const router = express.Router();
 const sg = require('../engine/surfaceguard');
 
-// 보존형(그대로 다듬기) 실측 밴드: A=ESG 18·개인정보 35 / B=EV 73~81 / C=도시 87·보고서 94~100.
-const POLISH_BAND = { A: '20~50%', B: '50~85%', C: '85%+' };
-// 재구성 밴드는 근거 보강 의존(★2026-06-12 UI 실측으로 재확인: 무근거 56·59% = routine v1 59% 재현,
-// 근거 분산이 −15~22%p 레버). 36~43은 "앵커+승인근거 분산" 풀레시피의 숫자 — 무근거 기대값을 함께 표기.
-// 풀레시피(근거 분산) 실측 누적: 36·37·40·41·47·48 — 분량 컷(−7%p, 미제품화) 제외 시 정직 밴드 36~48.
-const RESTRUCTURE_BAND = '36~48%(근거 보강 시)';
+// ★ UI 표기 밴드는 실측보다 보수적으로(2026-06-12 사장님 지시): 약속을 낮게 잡아 실망 방지.
+//   실측은 분포의 한 샘플이고 짧은 글은 ±15%p 출렁이므로, 표기는 실측 상단을 넉넉히 잡는다.
+// 보존형(그대로 다듬기) 실측: A=ESG 18·개인정보 35 / B=EV 73~81 / C=도시 87·보고서 94~100.
+const POLISH_BAND = { A: '30~55%', B: '60~85%', C: '85%+' };
+// 블로그 회피 실측: 숏폼 C가 27~54 분포. 보수 표기로 상단을 넉넉히.
+const BLOG_BAND = { A: '30~45%', B: '35~50%', C: '40~55%' };
+// 재구성 풀레시피(근거 분산) 실측 누적 36·37·40·41·47·48 → 보수 표기 40~55%(근거 보강 시).
+const RESTRUCTURE_BAND = '40~55%(근거 보강 시)';
 
 const COPY = {
   A: {
@@ -56,7 +58,7 @@ router.post('/diagnose', (req, res) => {
     desc: copy.desc,
     bands: {
       polish: POLISH_BAND[grade] || POLISH_BAND.B,
-      blog: ir.expectedBand || '32~41%',
+      blog: BLOG_BAND[grade] || BLOG_BAND.B,
       restructure: RESTRUCTURE_BAND
     }
   });

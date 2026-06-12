@@ -123,7 +123,12 @@ router.post('/transform', async (req, res) => {
   }
 
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
-  const needed = Math.ceil(text.length / 100);   // 임시 단가(휴머나이즈 동일) — 확정 시 교체
+  const wantEvidence = req.body.evidence === true;
+  // ★ 과금 정책(2026-06-12 수익 구조 개편): 재구성은 글자수와 무관하게 원가가 거의 일정(슬롯 6~10·위빙이 길이에
+  //   둔감) → 건당 정액. 무근거 200크레딧(원가 ~2,800원의 ~1.5배), 근거 보강 300(원가 ~4,000원 ~1.6배). env로 조정.
+  const needed = wantEvidence
+    ? (Number(process.env.RESTRUCTURE_CREDIT_EVIDENCE) || 300)
+    : (Number(process.env.RESTRUCTURE_CREDIT) || 200);
   let pre;
   try {
     pre = devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed);
@@ -131,7 +136,6 @@ router.post('/transform', async (req, res) => {
     return res.status(e.status || 500).json({ error: analyze.authErrorMessage(e.message) });
   }
 
-  const wantEvidence = req.body.evidence === true;
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
   // 예상 시간: 슬롯 순차 생성이라 길이에 거의 선형(실측 college 1.8K=11분(근거)·7분(무근거)). 약간 과대 추정이

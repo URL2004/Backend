@@ -1,4 +1,4 @@
-// [routes/transform.js] 회피 모드 P3 — 격식 유지 재구성(genreTransferV2) job 백엔드
+﻿// [routes/transform.js] 회피 모드 P3 — 격식 유지 재구성(genreTransferV2) job 백엔드
 // ────────────────────────────────────────────────────────────────
 // 재구성은 5~25분짜리 작업이라 동기 응답이 불가능 → job 방식:
 //   POST /transform → 즉시 jobId 반환, 백그라운드에서 genreTransferV2 실행(클라이언트가 끊겨도 계속)
@@ -72,11 +72,14 @@ function restructureCredit(len, ev) {
 }
 router.restructureCredit = restructureCredit;
 
+// 동시 실행 풀: formal(5~90분·고원가)과 short(blog·polish, 1~3분·저원가)를 분리 — 한 풀에 섞으면 서로 굶김.
+function poolOf(mode) { return (mode || 'formal') === 'formal' ? 'formal' : 'short'; }
+
 function countActive(uid, mode) {
   let running = 0, mine = 0;
+  const pool = poolOf(mode);
   for (const j of jobs.values()) {
-    // 전역 동시 한도는 모드별 풀(blog는 1~3분·저원가, formal은 5~90분·고원가 — 섞으면 서로 굶김)
-    if (j.status === 'running' && (j.mode || 'formal') === (mode || 'formal')) running++;
+    if (j.status === 'running' && poolOf(j.mode) === pool) running++;
     // 승인 대기는 LLM을 안 쓰지만 사용자 기준으로는 "진행 중 작업" — 같은 사용자가 쌓아두는 건 모드 무관 차단.
     if (j.uid === uid && (j.status === 'running' || j.status === 'awaiting_approval')) mine++;
   }
@@ -86,10 +89,10 @@ function countActive(uid, mode) {
 function checkLimits(uid, mode) {
   const { running, mine } = countActive(uid, mode);
   if (mine >= 1) return { status: 409, error: '이미 진행 중인 작업이 있어요. 완료(또는 취소) 후 다시 시작해 주세요.' };
-  const cap = mode === 'blog' ? BLOG_MAX_ACTIVE : MAX_ACTIVE_GLOBAL;
+  const cap = poolOf(mode) === 'short' ? BLOG_MAX_ACTIVE : MAX_ACTIVE_GLOBAL;
   if (running >= cap) return { status: 503, error: '지금 요청이 몰려 있어요. 잠시 후(5~10분) 다시 시도해 주세요.' };
-  // 일일 시작 한도는 formal(고원가)만 — blog는 저원가라 레이트리밋·동시 1개로 충분.
-  if (mode !== 'blog') {
+  // 일일 시작 한도는 formal(고원가)만 — short 모드는 저원가라 레이트리밋·동시 1개로 충분.
+  if (mode === 'formal') {
     const day = kstDay();
     const d = dailyStarts.get(uid);
     if (d && d.day === day && d.count >= DAILY_CAP_PER_UID) {
@@ -285,21 +288,22 @@ async function runJob(job, text, evidence) {
   }
 }
 
-// ── 기본 피하기(blog) job 러너(2026-06-13): 직접 fetch였던 블로그 변환을 job으로 — 새로고침·창닫기 생존.
-//   엔진은 기존 floorV2 청크 경로(analyze.runHumanizeChunked) 그대로, 차감·게이트 원칙은 formal과 동일.
-async function runBlogJob(job, text) {
+// ── short job 러너(2026-06-13): 직접 fetch였던 블로그 변환·다듬기를 job으로 — 새로고침·창닫기 생존.
+//   엔진은 기존 floorV2 청크 경로(analyze.runHumanizeChunked) 그대로(blog→blog, polish→assignment 보존형),
+//   차감·게이트 원칙은 formal과 동일.
+async function runHumanizeJob(job, text) {
   try {
     job.status = 'running';
     job.stage = '문장 다듬는 중';
     persistJob(job);
     const out = await analyze.runHumanizeChunked({
-      text, mode: 'blog', lang: job.lang || 'ko', signal: job.ac.signal,
+      text, mode: job.mode === 'polish' ? 'assignment' : 'blog', lang: job.lang || 'ko', signal: job.ac.signal,
       floorV2: true, optIn: false, judge: true, grounding: true, userNotes: job.memo || ''
     });
     // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
-      console.warn(`⚠️ /transform(blog) ${job.id} BLOCKED: ${gates.join(', ')}`);
+      console.warn(`⚠️ /transform(${job.mode}) ${job.id} BLOCKED: ${gates.join(', ')}`);
       job.status = 'blocked';
       job.gates = gates;
       job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
@@ -312,7 +316,7 @@ async function runBlogJob(job, text) {
         await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'humanize', 'job_' + job.id));
         job.deducted = true;
       } catch (e) {
-        console.error(`❌ /transform(blog) ${job.id} 완료 차감 실패(수동 보정 필요) uid=${job.uid}:`, e?.message);
+        console.error(`❌ /transform(${job.mode}) ${job.id} 완료 차감 실패(수동 보정 필요) uid=${job.uid}:`, e?.message);
       }
     }
     job.status = 'done';
@@ -334,7 +338,7 @@ async function runBlogJob(job, text) {
       if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
       return;
     }
-    console.error(`❌ /transform(blog) ${job.id} 실패:`, e?.message);
+    console.error(`❌ /transform(${job.mode}) ${job.id} 실패:`, e?.message);
     job.status = 'error';
     job.error = '처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     persistJob(job);
@@ -343,9 +347,11 @@ async function runBlogJob(job, text) {
 
 router.post('/transform', async (req, res) => {
   const { text, idToken } = req.body || {};
-  const mode = req.body?.mode === 'blog' ? 'blog' : 'formal';   // 화이트리스트 — 그 외 값은 formal
-  if (typeof text !== 'string' || text.replace(/\s+/g, '').length < 200) {
-    return res.status(400).json({ error: '변환하려면 최소 200자가 필요해요.' });
+  const mode = ['blog', 'polish'].includes(req.body?.mode) ? req.body.mode : 'formal';   // 화이트리스트 — 그 외 값은 formal
+  // 최소 길이: formal은 구조를 다시 짜는 작업이라 200자, short(blog·polish)는 50자(짧은 글 다듬기 허용)
+  const minLen = mode === 'formal' ? 200 : 50;
+  if (typeof text !== 'string' || text.replace(/\s+/g, '').length < minLen) {
+    return res.status(400).json({ error: `변환하려면 최소 ${minLen}자가 필요해요.` });
   }
   if (text.length > 30000) {
     return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
@@ -356,10 +362,12 @@ router.post('/transform', async (req, res) => {
 
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const wantEvidence = mode === 'formal' && req.body.evidence === true;   // 근거 보강은 formal 전용(UI 잠금과 일치)
-  // 과금: formal=만자 구간 정액 / blog=글자수 비례(기존 /analyze floorV2와 동일 산식 — 단가 변화 없음)
+  // 과금(기존 /analyze 산식과 동일 — 단가 변화 없음): blog=100자당 2 / polish(다듬기)=100자당 1 / formal=만자 구간 정액
   const needed = mode === 'blog'
     ? Math.max(2, Math.ceil(text.length / 100) * 2)
-    : restructureCredit(text.length, wantEvidence);
+    : mode === 'polish'
+      ? Math.max(1, Math.ceil(text.length / 100))
+      : restructureCredit(text.length, wantEvidence);
   let pre;
   try {
     pre = devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed);
@@ -369,16 +377,17 @@ router.post('/transform', async (req, res) => {
   // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트(formal만).
   const limited = checkLimits(pre.uid, mode);
   if (limited) return res.status(limited.status).json({ error: limited.error });
-  if (mode !== 'blog') recordStart(pre.uid);
+  if (mode === 'formal') recordStart(pre.uid);
 
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
-  // 예상 시간: formal=슬롯 순차라 길이 선형(상한 90분). blog=청크 병렬이라 짧음(프론트 ticker 공식과 동일).
-  const estSec = mode === 'blog'
+  const isShort = mode !== 'formal';
+  // 예상 시간: formal=슬롯 순차라 길이 선형(상한 90분). short(blog·polish)=청크 병렬이라 짧음(프론트 ticker 공식과 동일).
+  const estSec = isShort
     ? Math.max(90, Math.min(1200, Math.round(bare / 12)))
     : Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
   const job = {
-    id, mode, status: 'running', stage: mode === 'blog' ? '문장 다듬는 중' : (wantEvidence ? '근거 검색' : '구조 계획'), createdAt: Date.now(),
+    id, mode, status: 'running', stage: isShort ? '문장 다듬는 중' : (wantEvidence ? '근거 검색' : '구조 계획'), createdAt: Date.now(),
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
     memo: mode === 'blog' && typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',
@@ -388,7 +397,7 @@ router.post('/transform', async (req, res) => {
   };
   jobs.set(id, job);
   persistJob(job);
-  if (mode === 'blog') runBlogJob(job, text);            // await 없음 — 백그라운드 진행(새로고침 생존)
+  if (isShort) runHumanizeJob(job, text);            // await 없음 — 백그라운드 진행(새로고침 생존)
   else if (wantEvidence) runSearchPhase(job, text);
   else runJob(job, text, '');
   console.log(`▶ /transform job ${id} 시작 (${mode}, ${text.length}자, uid=${pre.uid}, 근거=${wantEvidence ? 'ON' : 'OFF'}, 예상 ${Math.round(estSec / 60)}분)`);
@@ -456,3 +465,4 @@ router.get('/transform/:id', async (req, res) => {
 });
 
 module.exports = router;
+

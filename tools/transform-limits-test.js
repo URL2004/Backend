@@ -106,6 +106,13 @@ const srv = app.listen(0, async () => {
     const g2 = await get(`/transform/${b4.body.jobId}`, 'u1');
     check('blog done + 결과·floorReport 수신', g2.body.status === 'done' && g2.body.mode === 'blog' && g2.body.result.outputText === '블로그 결과' && g2.body.result.floorReport.status === 'clean', g2.body);
 
+    // 4.6) polish job(그대로 다듬기): 같은 short 풀 — 50자부터 허용·일일 한도 미적용
+    const p1 = await post('/transform', { text: '가'.repeat(80), idToken: 'u2', mode: 'polish' });
+    check('u2 polish 시작 200(80자 — short 모드 50자 허용)', p1.status === 200 && p1.body.mode === 'polish', p1);
+    await sleep(1800);
+    const p2 = await get(`/transform/${p1.body.jobId}`, 'u2');
+    check('polish done + 결과 수신', p2.body.status === 'done' && p2.body.mode === 'polish' && p2.body.result.outputText === '블로그 결과', p2.body);
+
     // 5) 슬롯이 비면 다시 수용
     const c1 = await post('/transform', { text: TEXT, idToken: 'u4' });
     check('완료 후 u4 시작 200(슬롯 회수)', c1.status === 200, c1);

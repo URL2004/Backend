@@ -19,15 +19,18 @@
 | `FIREBASE_SERVICE_ACCOUNT` | 서비스 계정 JSON 통째 | 이게 있어야 인증·과금·job 영속화 동작 |
 | `TOSS_SECRET_KEY` | `live_` 키 | 테스트 키로 배포하면 결제 전부 실패 |
 | `CRON_SECRET` | 무작위 시크릿 | 정기결제 갱신 cron 인증 |
+| `TOSS_WEBHOOK_SECRET` | 무작위 시크릿 | 웹훅 처리 인증. 미설정 시 `/toss/webhook` 503 |
 | `CORS_ORIGINS` | (선택) 추가 도메인 | 기본 gpkorea.ai.kr는 코드에 내장 |
 | `RESTRUCTURE_MAX_ACTIVE` | (선택, 기본 3) | 전역 동시 재구성 수 — API rate limit·비용 감당치에 맞춤 |
 | `RESTRUCTURE_DAILY_CAP` | (선택, 기본 8) | 사용자당 일일 재구성 시작 횟수 |
+| `ENABLE_LEGACY_ANALYZE_PDF` | 기본 미설정 | 미사용 `/analyze-pdf` 호환이 꼭 필요할 때만 `1` |
 | `DEV_NO_AUTH` | **설정 금지** | 로컬 전용 인증 우회 |
 
 ## 배포 전 체크리스트
 
 - [ ] `DEV_NO_AUTH` 없음 (시작 로그가 `인증=Firebase`인지 확인 — `DEV 우회`면 중단)
 - [ ] `LLM_BACKEND`가 `api` 또는 미설정 (시작 로그 `LLM=api`)
+- [ ] `CRON_SECRET`, `TOSS_WEBHOOK_SECRET` 설정됨 (미설정이면 cron/webhook fail-close)
 - [ ] `GET /healthz` 200 + `firebase: true` 확인
 - [ ] 결제: Toss `live_` 키, 환불 경로 1회 점검
 - [ ] CORS: 운영 도메인에서 호출 1회 확인 (허용 외 origin은 차단됨)

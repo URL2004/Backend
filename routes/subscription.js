@@ -20,7 +20,42 @@ const CYCLE_MS = CYCLE_DAYS * 24 * 60 * 60 * 1000;
 // 토스 빌링 API 헬퍼
 function tossBasicToken() {
   const secretKey = process.env.TOSS_SECRET_KEY;
+  if (!secretKey) throw new Error('TOSS_SECRET_KEY_MISSING');
   return Buffer.from(secretKey + ':').toString('base64');
+}
+
+function bearerToken(req) {
+  const auth = req.get('authorization') || '';
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1].trim() : '';
+}
+
+function requireCronSecret(req, res) {
+  const secret = (process.env.CRON_SECRET || '').trim();
+  if (!secret) {
+    res.status(503).json({ error: 'cron disabled: CRON_SECRET is not configured' });
+    return null;
+  }
+  const supplied = bearerToken(req) || (req.body && req.body.internalKey) || '';
+  if (!supplied || supplied !== secret) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return secret;
+}
+
+function requireWebhookSecret(req, res) {
+  const secret = (process.env.TOSS_WEBHOOK_SECRET || '').trim();
+  if (!secret) {
+    res.status(503).json({ error: 'webhook disabled: TOSS_WEBHOOK_SECRET is not configured' });
+    return null;
+  }
+  const supplied = req.get('x-gp-webhook-secret') || req.get('x-webhook-secret') || bearerToken(req) || '';
+  if (!supplied || supplied !== secret) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return secret;
 }
 
 async function tossIssueBillingKey({ authKey, customerKey }) {
@@ -207,8 +242,9 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
 
 // === 2) 정기결제 1건 처리 (cron 전용) ===
 router.post('/subscription/charge', async (req, res) => {
-  const { uid, internalKey } = req.body;
-  if (internalKey !== process.env.CRON_SECRET) return res.status(403).json({ error: 'forbidden' });
+  const internalKey = requireCronSecret(req, res);
+  if (!internalKey) return;
+  const { uid } = req.body;
   if (!uid) return res.status(400).json({ error: 'uid required' });
 
   const userRef = db.collection('users').doc(uid);
@@ -344,8 +380,8 @@ async function runProcessDue(internalKey) {
 
 // POST 진입점 (기존 호환)
 router.post('/subscription/process-due', async (req, res) => {
-  const { internalKey } = req.body;
-  if (internalKey !== process.env.CRON_SECRET) return res.status(403).json({ error: 'forbidden' });
+  const internalKey = requireCronSecret(req, res);
+  if (!internalKey) return;
   try {
     const results = await runProcessDue(internalKey);
     res.json({ ok: true, ...results });
@@ -355,17 +391,9 @@ router.post('/subscription/process-due', async (req, res) => {
   }
 });
 
-// GET 진입점 (Render Cron Job 셸 인용 회피용 — 쿼리스트링 인증)
+// GET 쿼리스트링 인증은 secret이 URL/로그에 남으므로 운영에서는 닫는다.
 router.get('/subscription/process-due', async (req, res) => {
-  const key = req.query.key;
-  if (key !== process.env.CRON_SECRET) return res.status(403).json({ error: 'forbidden' });
-  try {
-    const results = await runProcessDue(key);
-    res.json({ ok: true, ...results });
-  } catch (e) {
-    console.error('❌ process-due fail:', e?.message, e?.stack);
-    res.status(500).json({ error: 'process-due failed', detail: e?.message || String(e) });
-  }
+  res.status(410).json({ error: 'deprecated: use POST /subscription/process-due with Authorization: Bearer <CRON_SECRET>' });
 });
 
 // === 4) 사용자 취소 ===
@@ -433,6 +461,7 @@ router.get('/subscription/status', async (req, res) => {
 // 등록 URL: https://ai-backend-3xtk.onrender.com/toss/webhook
 // 구독 이벤트: PAYMENT_STATUS_CHANGED, BILLING_DELETED, CANCEL_STATUS_CHANGED
 router.post('/toss/webhook', async (req, res) => {
+  if (!requireWebhookSecret(req, res)) return;
   res.status(200).send('OK');
 
   const { eventType, data } = req.body || {};

@@ -1,0 +1,147 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.uid in [
+        'nC90IyjgaIZ8Z0JTABMTiyQHF9g1',
+        'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2',
+        'upyxtXMQEgQXfqTUWPrf6QS9EqE2'
+      ];
+    }
+
+    function onlyChanged(keys) {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly(keys);
+    }
+
+    match /users/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+
+      allow create: if isSelf(uid)
+        && request.resource.data.keys().hasOnly(['email', 'name', 'credits', 'plan', 'refCode', 'createdAt'])
+        && request.resource.data.credits == 10
+        && request.resource.data.plan == 'free'
+        && request.resource.data.refCode is string;
+
+      allow update: if isSelf(uid)
+        && onlyChanged(['name', 'refCode', 'kakaoId', 'bookmarks']);
+
+      allow delete: if false;
+
+      match /history/{historyId} {
+        allow read, create, delete: if isSelf(uid);
+        allow update: if false;
+      }
+
+      match /notifications/{notificationId} {
+        allow read, update, delete: if isSelf(uid);
+        allow create: if signedIn()
+          && request.resource.data.keys().hasOnly(['type', 'postId', 'message', 'createdAt', 'read'])
+          && request.resource.data.read == false;
+      }
+
+      match /creditHistory/{historyId} {
+        allow read: if isSelf(uid) || isAdmin();
+        allow write: if false;
+      }
+
+      match /couponHistory/{historyId} {
+        allow read: if isSelf(uid) || isAdmin();
+        allow write: if false;
+      }
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /subscriptionOrders/{orderId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /couponCodes/{code} {
+      allow read, write: if false;
+    }
+
+    match /couponBatches/{batchId} {
+      allow read, write: if false;
+    }
+
+    match /transformJobs/{jobId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /webhookLogs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /posts/{postId} {
+      allow read: if true;
+
+      allow create: if signedIn()
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'title', 'body', 'category', 'authorId', 'authorName', 'isAnon',
+          'createdAt', 'views', 'likes', 'commentCount', 'imageUrls', 'photos', 'isFeatured'
+        ])
+        && (request.resource.data.get('isFeatured', false) == false || isAdmin());
+
+      allow update: if isAdmin()
+        || (signedIn() && resource.data.authorId == request.auth.uid
+          && !request.resource.data.diff(resource.data).changedKeys().hasAny(['hidden', 'isFeatured']))
+        || (signedIn() && onlyChanged(['views', 'likes', 'commentCount']));
+
+      allow delete: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
+
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if signedIn()
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.keys().hasOnly(['body', 'authorId', 'authorName', 'isAnon', 'createdAt', 'parentId', 'parentAuthor']);
+        allow delete: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
+        allow update: if false;
+      }
+    }
+
+    match /qna/{questionId} {
+      allow create: if signedIn()
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'title', 'body', 'authorId', 'authorName', 'isAnon',
+          'status', 'answer', 'createdAt', 'views'
+        ])
+        && request.resource.data.status == 'pending'
+        && request.resource.data.answer == null;
+
+      // 목록(list)은 본문 필드를 숨길 수 없으므로 관리자만 허용한다.
+      // 비관리자 목록은 서버 API에서 공개 필드만 내려주는 방식으로 대체해야 한다.
+      allow list: if isAdmin();
+      allow get: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
+
+      allow update: if isAdmin()
+        || (signedIn() && resource.data.authorId == request.auth.uid && onlyChanged(['views']));
+      allow delete: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
+    }
+
+    match /notices/{noticeId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

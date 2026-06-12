@@ -35,20 +35,29 @@ async function precheckCredits(idToken, needed) {
 
 // 결과 정상 후 호출. 원자적 차감 + creditHistory 기록.
 // 트랜잭션 안에서 다시 잔량을 검증해 동시 호출 레이스에서도 안전.
-async function commitCreditDeduct(uid, needed, opType) {
+// ★ 멱등성(requestId): 같은 작업이 두 번 도달해도 한 번만 차감한다.
+//   "차감+응답까지 끝났는데 응답 패킷만 유실 → 프런트 재시도 → 중복 차감" 민원(#11·#16 등)의 구조적 차단.
+//   creditHistory 문서 ID를 requestId로 고정하고, 트랜잭션 안에서 존재하면 재차감을 건너뛴다.
+async function commitCreditDeduct(uid, needed, opType, requestId) {
   const userRef = db.collection('users').doc(uid);
+  const histRef = requestId
+    ? userRef.collection('creditHistory').doc('req_' + requestId)
+    : userRef.collection('creditHistory').doc();
   await db.runTransaction(async (t) => {
     const snap = await t.get(userRef);
     if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+    // 트랜잭션 규칙상 모든 read는 write보다 먼저 — 멱등 키 존재 여부를 여기서 확인.
+    const dup = requestId ? (await t.get(histRef)).exists : false;
     const d = snap.data();
     if ((d.plan || 'free') === 'unlimited') return;
+    if (dup) return;   // 이미 차감된 작업 — 중복 차단
     const credits = d.credits || 0;
     if (credits < needed) throw Object.assign(new Error('INSUFFICIENT_CREDITS'), { status: 402 });
     const newCredits = credits - needed;
     t.update(userRef, { credits: newCredits });
-    const hist = userRef.collection('creditHistory').doc();
-    t.set(hist, {
+    t.set(histRef, {
       type: opType, used: needed, amount: 0, remaining: newCredits,
+      ...(requestId ? { requestId } : {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
   });
@@ -122,20 +131,26 @@ async function precheckCoupon(idToken, textLength) {
 }
 
 // 쿠폰: 결과 정상 후 호출. 원자적 차감 + couponHistory 기록.
-async function commitCouponUsage(uid, tier, opType, textLength) {
+// ★ 멱등성(requestId): commitCreditDeduct와 동일 — 같은 작업 재도달 시 1회만 차감.
+async function commitCouponUsage(uid, tier, opType, textLength, requestId) {
   const userRef = db.collection('users').doc(uid);
+  const histRef = requestId
+    ? userRef.collection('couponHistory').doc('req_' + requestId)
+    : userRef.collection('couponHistory').doc();
   await db.runTransaction(async (t) => {
     const snap = await t.get(userRef);
     if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+    const dup = requestId ? (await t.get(histRef)).exists : false;
     const d = snap.data();
     const sub = d.subscription;
     if (!sub) throw Object.assign(new Error('NO_SUBSCRIPTION'), { status: 403 });
+    if (dup) return;   // 이미 차감된 작업 — 중복 차단
     if (tier === 'unlimited') {
       t.update(userRef, { 'coupon.used': admin.firestore.FieldValue.increment(1) });
-      const hist = userRef.collection('couponHistory').doc();
-      t.set(hist, {
+      t.set(histRef, {
         type: 'use', tier, amount: 0, remaining: -1,
         mode: opType, textLength,
+        ...(requestId ? { requestId } : {}),
         createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
       return;
@@ -147,10 +162,10 @@ async function commitCouponUsage(uid, tier, opType, textLength) {
       'coupon.remaining': newRemaining,
       'coupon.used': admin.firestore.FieldValue.increment(1)
     });
-    const hist = userRef.collection('couponHistory').doc();
-    t.set(hist, {
+    t.set(histRef, {
       type: 'use', tier, amount: -1, remaining: newRemaining,
       mode: opType, textLength,
+      ...(requestId ? { requestId } : {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
   });
@@ -2669,6 +2684,10 @@ router.post('/analyze', async (req, res) => {
   const { mode, text, idToken } = req.body;
   const lang = req.body.lang || 'ko';
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
+  // ★ 멱등 키: 프런트가 작업(청크 포함)마다 고정 발급. 재시도해도 같은 값 → 중복 차감 방지. 안전 가드 ≤80자.
+  const requestId = (typeof req.body.requestId === 'string' && req.body.requestId.trim())
+    ? req.body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '')
+    : null;
   // 프런트 분할 호출 시 전달되는 직전 청크 말미 (문체 참고용, ≤300자 안전 가드)
   const prevContext = typeof req.body.prevContext === 'string' && req.body.prevContext.trim()
     ? req.body.prevContext.trim().slice(-300)
@@ -2864,6 +2883,15 @@ router.post('/analyze', async (req, res) => {
         }
       }
 
+      // ★ 증축 하드가드(P2-1): "다듬기"인데 원문보다 과도하게 길어지면(내용 임의 추가·증축) 결과를 내보내지 않는다.
+      //   프롬프트가 원문 ×0.9~1.1을 강제하므로 1.3배 초과는 명백한 오작동 — 차감 없이 차단(민원 #100 "1000자를 몇 배로 불림").
+      if (typeof result.lengthRatio === 'number' && result.lengthRatio > 1.3 && !ac.signal.aborted) {
+        console.warn(`⚠️ /analyze 레거시 증축 차단 ratio=${result.lengthRatio}`);
+        return res.status(422).json({
+          error: '변환 결과가 원문보다 과도하게 길어졌어요(내용이 임의로 늘어남). 크레딧은 차감되지 않았어요. 잠시 후 다시 시도해주세요.'
+        });
+      }
+
       if (!result.outputText) throw new Error('humanize_incomplete');
     }
   } catch (err) {
@@ -2912,9 +2940,9 @@ router.post('/analyze', async (req, res) => {
     if (devNoAuth) {
       // 로컬 개발 — 과금 없음(이중 게이트 위에서 검증)
     } else if (billingMode === 'coupon') {
-      await commitCouponUsage(pre.uid, pre.tier, opType, text.length);
+      await commitCouponUsage(pre.uid, pre.tier, opType, text.length, requestId);
     } else if (pre.plan !== 'unlimited') {
-      await commitCreditDeduct(pre.uid, needed, opType);
+      await commitCreditDeduct(pre.uid, needed, opType, requestId);
     }
     deducted = !devNoAuth;
   } catch (e) {
@@ -2936,6 +2964,11 @@ router.post('/analyze', async (req, res) => {
 });
 
 router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
+  if (process.env.ENABLE_LEGACY_ANALYZE_PDF !== '1') {
+    return res.status(410).json({
+      error: 'PDF 직접 분석 API는 종료되었습니다. 브라우저에서 텍스트를 추출한 뒤 /analyze를 사용해주세요.'
+    });
+  }
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   console.log(`[${new Date().toISOString()}] /analyze-pdf 요청 IP: ${ip}`);
 
@@ -2958,6 +2991,9 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   const idToken = req.body.idToken;
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
   const opType = mode === 'detect' ? 'detect' : 'humanize';
+  const requestId = (typeof req.body.requestId === 'string' && req.body.requestId.trim())
+    ? req.body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '')
+    : null;
 
   let pdfText;
   try {
@@ -3080,9 +3116,9 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
   try {
     if (billingMode === 'coupon') {
-      await commitCouponUsage(pre.uid, pre.tier, opType, pdfText.length);
+      await commitCouponUsage(pre.uid, pre.tier, opType, pdfText.length, requestId);
     } else if (pre.plan !== 'unlimited') {
-      await commitCreditDeduct(pre.uid, needed, opType);
+      await commitCreditDeduct(pre.uid, needed, opType, requestId);
     }
     deducted = true;
   } catch (e) {

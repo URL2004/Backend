@@ -8,6 +8,7 @@ captureProcessErrors();
 const { corsMiddleware, limiter } = require('./config');
 const requestContext = require('./middleware/requestContext');
 const errorHandler = require('./middleware/errorHandler');
+const maintenanceMode = require('./middleware/maintenanceMode');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -16,6 +17,7 @@ app.set('trust proxy', 1);
 app.use(requestContext);
 app.use(corsMiddleware);
 app.use(express.json({ limit: '10mb' }));
+app.use(maintenanceMode);
 
 // Rate Limiter
 app.use('/analyze', limiter);
@@ -32,6 +34,7 @@ app.get(['/healthz', '/api/health'], (req, res) => {
     ok: true,
     llm: process.env.LLM_BACKEND || 'api',
     firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+    maintenance: maintenanceMode.isMaintenanceEnabled(),
     uptimeSec: Math.round(process.uptime()),
     ...transformRouter.stats()
   });

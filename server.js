@@ -26,6 +26,7 @@ app.use('/diagnose', limiter);
 app.use('/detect-report', limiter);   // 무료 감지 — 일일 한도는 라우트 내부(uid/IP), 분당 폭주는 여기서
 // /transform은 POST(시작·취소·승인)만 제한 — GET 폴링은 90분 job 동안 수백 회가 정상이라 제외.
 app.use('/transform', (req, res, next) => (req.method === 'POST' ? limiter(req, res, next) : next()));
+app.use('/events', limiter);   // 알림 중계 — 인증 전 폭주 방지
 
 // 헬스체크(배포 플랫폼용 — Render 등은 이 경로로 살아있는지 판단)
 const transformRouter = require('./routes/transform');
@@ -50,6 +51,7 @@ app.use('/', require('./routes/account'));   // 회원 탈퇴(Admin SDK — 클�
 app.use('/', require('./routes/payment'));
 app.use('/', require('./routes/subscription'));
 app.use('/', require('./routes/coupon'));
+app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
 
 // ★ 안전망: 서버를 claudecode 백엔드로 돌리면 호출당 ~45초·직렬(동시성 1)이라 UI 변환이 수십 분 걸려
 //   프런트 타임아웃으로 전부 실패한다(2026-06-11 실사고 — .env의 LLM_BACKEND=claudecode가 원인).

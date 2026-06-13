@@ -5,6 +5,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const discord = require('../lib/discord');
 
 const router = express.Router();
 
@@ -202,6 +203,7 @@ router.post('/redeem-coupon', async (req, res) => {
     });
 
     logger.info('coupon.redeemed', { uid, credits: result.granted, newBalance: result.newBalance });
+    discord.couponUsed({ uid, code: normalized, credits: result.granted });
     res.json({ ok: true, credits: result.granted, newBalance: result.newBalance });
   } catch (err) {
     if (err.status) {

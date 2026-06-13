@@ -3,6 +3,7 @@
 const express = require('express');
 const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const discord = require('../lib/discord');
 
 const router = express.Router();
 
@@ -110,6 +111,7 @@ router.post('/confirm-payment', async (req, res) => {
           credits: safeCredits,
           customerEmail
         });
+        discord.paymentDone({ uid: verifiedUid, amount: parseInt(amount, 10), credits: safeCredits, kind: '크레딧 충전', name: customerEmail });
         res.json({ ok: true, message: "충전 성공", creditAmount: safeCredits });
       } catch (e) {
         if (e.message === '이미 처리된 결제입니다.') {
@@ -212,6 +214,7 @@ router.post('/request-refund', async (req, res) => {
       kind,
       reasonLength: cancelReason.trim().length
     });
+    discord.refundRequest({ uid, amount: order.amount, credits: order.safeCredits, reason: cancelReason.trim(), name: order.customerEmail });
     res.json({ ok: true, message: '환불 요청이 접수되었습니다.' });
   } catch (err) {
     logger.error('refund.request_failed', { uid, orderId, kind, err });
@@ -484,6 +487,7 @@ router.post('/apply-referral', async (req, res) => {
     });
 
     logger.info('referral.applied', { referrerUid, newUid, credits: 20 });
+    discord.referral({ inviter: referrerDoc.data().name || referrerUid, invitee: newUserSnap.data().name || newUid });
     res.json({ ok: true });
   } catch (err) {
     logger.error('referral.failed', { err });

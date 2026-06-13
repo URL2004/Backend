@@ -3,6 +3,7 @@
 const express = require('express');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const discord = require('../lib/discord');
 
 const router = express.Router();
 
@@ -244,6 +245,8 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
   }
 
   logger.info('subscription.started', { uid, tier, amount: plan.amount, orderId });
+  discord.subscription({ uid, tier, action: '시작' });
+  discord.paymentDone({ uid, amount: plan.amount, kind: `구독 시작 · ${tier}` });
   res.json({ ok: true, tier, amount: plan.amount, orderId });
 });
 
@@ -312,6 +315,7 @@ router.post('/subscription/charge', async (req, res) => {
       requestedAt: admin.firestore.FieldValue.serverTimestamp(),
       failReason: charged.data.message || 'unknown'
     });
+    discord.paymentFailed({ uid, tier: sub.tier, reason: charged.data.message || 'unknown' });
     return res.status(charged.status).json({ error: '정기결제 실패' });
   }
 
@@ -330,6 +334,7 @@ router.post('/subscription/charge', async (req, res) => {
   }
 
   logger.info('subscription.charge_succeeded', { uid, tier: sub.tier, orderId });
+  discord.paymentDone({ uid, amount: plan.amount, kind: `구독 갱신 · ${sub.tier}` });
   res.json({ ok: true, orderId });
 });
 
@@ -424,6 +429,7 @@ router.post('/subscription/cancel', async (req, res) => {
   });
 
   logger.info('subscription.cancelled_by_user', { uid, tier: sub.tier });
+  discord.subscription({ uid, tier: sub.tier, action: '해지' });
   res.json({ ok: true, message: '구독이 취소되었습니다. 다음 결제일까지 사용 가능합니다.' });
 });
 
@@ -451,6 +457,7 @@ router.post('/subscription/resume', async (req, res) => {
   });
 
   logger.info('subscription.resumed_by_user', { uid, tier: sub.tier });
+  discord.subscription({ uid, tier: sub.tier, action: '재개' });
   res.json({ ok: true, message: '구독이 재개되었습니다.' });
 });
 

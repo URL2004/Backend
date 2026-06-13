@@ -25,7 +25,14 @@
 | `RESTRUCTURE_MAX_ACTIVE` | (선택, 기본 3) | 전역 동시 재구성 수 — API rate limit·비용 감당치에 맞춤 |
 | `RESTRUCTURE_DAILY_CAP` | (선택, 기본 8) | 사용자당 일일 재구성 시작 횟수 |
 | `ENABLE_LEGACY_ANALYZE_PDF` | 기본 미설정 | 미사용 `/analyze-pdf` 호환이 꼭 필요할 때만 `1` |
+| `DISCORD_WEBHOOK_CS/SALES/ALERT/GROWTH` | (선택) 채널별 웹훅 | 운영 알림. 없으면 `DISCORD_WEBHOOK_URL` 단일 채널 폴백, 둘 다 없으면 비활성 |
 | `DEV_NO_AUTH` | **설정 금지** | 로컬 전용 인증 우회 |
+
+### Discord 운영 알림
+- 채널: `cs`(문의·환불·정기결제 실패) / `sales`(결제·구독) / `alert`(error·fatal 로그=장애) / `growth`(가입·쿠폰·초대).
+- 미설정 시 전부 no-op이라 안전. `alert`는 로그 시스템 연동 — `logger.error`/`fatal`이 자동 전송(같은 에러 30초 중복 억제).
+- 문의·가입·초대는 클라이언트발이라 `POST /events`(idToken 검증+레이트리밋) relay로 알림만. 결제·구독·쿠폰·환불은 서버 핸들러에서 직접.
+- 검증: `node tools/discord-test.js` (실제 전송 없이 채널 라우팅·로거 연동 14케이스).
 
 ## 배포 전 체크리스트
 

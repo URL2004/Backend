@@ -73,6 +73,11 @@ const titleOf = (e) => e && e.json && e.json.embeds && e.json.embeds[0] && e.jso
   logger.info('test.fine', { ok: true });
   check('info 로그는 alert 미전송', sent.length === b2);
 
+  // noAlert 표시된 기록(접근 로그 등)은 error여도 alert 미전송 — 503 백프레셔·중복 알림 노이즈 차단
+  const b3 = sent.length;
+  logger.error('http.request', { statusCode: 500, noAlert: true });
+  check('noAlert error 로그는 alert 미전송', sent.length === b3, { b3, after: sent.length });
+
   console.log('\n결과: ' + pass + '통과 / ' + fail + '실패');
   process.exit(fail ? 1 : 0);
 })();

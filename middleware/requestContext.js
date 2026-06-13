@@ -29,10 +29,14 @@ function requestContext(req, res, next) {
       const fields = {
         statusCode: res.statusCode,
         durationMs: Math.round(durationMs),
-        responseBytes: Number(res.getHeader('content-length')) || undefined
+        responseBytes: Number(res.getHeader('content-length')) || undefined,
+        // 접근 로그는 Discord 중복/무내용 알림을 안 보냄 — 실제 에러는 errorHandler(http.unhandled_error)나
+        // 라우트의 logger.error가 메시지·스택과 함께 보낸다.
+        noAlert: true
       };
       const event = 'http.request';
-      if (res.statusCode >= 500) logger.error(event, fields);
+      // 503은 기대된 백프레셔(드레이닝·동시한도)라 서버 에러가 아님 → warn으로(알림도 안 감).
+      if (res.statusCode >= 500 && res.statusCode !== 503) logger.error(event, fields);
       else if (res.statusCode >= 400) logger.warn(event, fields);
       else logger.info(event, fields);
     });

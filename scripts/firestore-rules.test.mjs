@@ -13,9 +13,11 @@ import {
   getDoc,
   getDocs,
   increment,
+  query,
   serverTimestamp,
   setDoc,
-  updateDoc
+  updateDoc,
+  where
 } from 'firebase/firestore';
 
 const PROJECT_ID = 'demo-gp-local';
@@ -142,8 +144,16 @@ try {
     await assertSucceeds(getDocs(collection(adminDb, 'qna')));
   });
 
-  await run('qna: non-admin list is denied', async () => {
+  await run('qna: non-admin full-collection list is denied', async () => {
     await assertFails(getDocs(collection(aliceDb, 'qna')));
+  });
+
+  await run('qna: non-admin can list own via authorId query', async () => {
+    await assertSucceeds(getDocs(query(collection(aliceDb, 'qna'), where('authorId', '==', 'alice'))));
+  });
+
+  await run('qna: non-admin cannot list others via authorId query', async () => {
+    await assertFails(getDocs(query(collection(aliceDb, 'qna'), where('authorId', '==', 'bob'))));
   });
 
   await run('qna: admin can answer', async () => {

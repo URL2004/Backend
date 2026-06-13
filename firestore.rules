@@ -125,9 +125,10 @@ service cloud.firestore {
         && request.resource.data.status == 'pending'
         && request.resource.data.answer == null;
 
-      // 목록(list)은 본문 필드를 숨길 수 없으므로 관리자만 허용한다.
-      // 비관리자 목록은 서버 API에서 공개 필드만 내려주는 방식으로 대체해야 한다.
-      allow list: if isAdmin();
+      // 1:1 문의: 관리자는 전체 목록, 일반 사용자는 본인 문의만 목록 조회 가능.
+      // list 규칙은 매칭되는 각 문서에 대해 평가되므로, 클라이언트가 where('authorId','==',uid)로
+      // 질의해야(본인 문서만 매칭) 통과한다. where 없이 전체를 질의하면 거부된다.
+      allow list: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
       allow get: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
 
       allow update: if isAdmin()

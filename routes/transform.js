@@ -402,8 +402,9 @@ router.post('/transform', async (req, res) => {
   const { text, idToken } = req.body || {};
   const mode = ['blog', 'polish'].includes(req.body?.mode) ? req.body.mode : 'formal';   // 화이트리스트 — 그 외 값은 formal
   // 최소 길이: formal은 구조를 다시 짜는 작업이라 200자, short(blog·polish)는 50자(짧은 글 다듬기 허용)
+  // 글자수 기준 통일: 표시·과금(needed)과 동일하게 공백 포함 raw length으로 판정.
   const minLen = mode === 'formal' ? 200 : 50;
-  if (typeof text !== 'string' || text.replace(/\s+/g, '').length < minLen) {
+  if (typeof text !== 'string' || text.length < minLen) {
     return res.status(400).json({ error: `변환하려면 최소 ${minLen}자가 필요해요.` });
   }
   if (text.length > 30000) {

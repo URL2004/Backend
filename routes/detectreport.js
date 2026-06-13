@@ -67,8 +67,8 @@ const REWRITE_SYSTEM = '너는 한국어 문장 교열가다. 사용자가 준 �
 
 router.post('/detect-report', async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
-  const bare = text.replace(/\s+/g, '');
-  if (bare.length < 100) return res.status(400).json({ error: 'AI 감지를 하려면 최소 100자가 필요해요.' });
+  // 글자수 기준 통일: 표시 카운트와 동일하게 공백 포함 raw length으로 최소 길이 판정.
+  if (text.length < 100) return res.status(400).json({ error: 'AI 감지를 하려면 최소 100자가 필요해요.' });
   if (text.length > 30000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
 
   // ★ 로컬 개발 전용(이중 게이트 — analyze.js와 동일): Firebase 비활성 + DEV_NO_AUTH=1이면

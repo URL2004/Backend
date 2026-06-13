@@ -16,6 +16,11 @@ app.set('trust proxy', 1);
 // 미들웨어
 app.use(requestContext);
 app.use(corsMiddleware);
+
+// Discord 슬래시 커맨드(Interactions) — Ed25519 서명검증에 raw body가 필요하므로
+// express.json 보다 먼저, 자체 raw 파서로 마운트한다. maintenanceMode보다도 앞이라 점검 모드에도 응답.
+app.post('/discord/interactions', express.raw({ type: '*/*' }), require('./routes/discordBot').handleInteractions);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(maintenanceMode);
 
@@ -52,6 +57,7 @@ app.use('/', require('./routes/payment'));
 app.use('/', require('./routes/subscription'));
 app.use('/', require('./routes/coupon'));
 app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
+app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
 
 // ★ 안전망: 서버를 claudecode 백엔드로 돌리면 호출당 ~45초·직렬(동시성 1)이라 UI 변환이 수십 분 걸려
 //   프런트 타임아웃으로 전부 실패한다(2026-06-11 실사고 — .env의 LLM_BACKEND=claudecode가 원인).

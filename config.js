@@ -2,6 +2,7 @@
 
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
+const { logger } = require('./lib/logger');
 
 // 렌더 환경변수에 파이어베이스 키를 넣었다면 이렇게 사용.
 // ★ 로컬 엔진 테스트: FIREBASE_SERVICE_ACCOUNT 미설정 시 Firebase 초기화를 건너뛴다(require 시 crash 방지).
@@ -17,7 +18,9 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   });
   db = admin.firestore();
 } else {
-  console.warn('[config] FIREBASE_SERVICE_ACCOUNT 미설정 — Firebase 비활성 (로컬 엔진 테스트 모드).');
+  logger.warn('config.firebase_disabled', {
+    message: 'FIREBASE_SERVICE_ACCOUNT 미설정 - Firebase 비활성'
+  });
 }
 
 // CORS 설정 — 기본 도메인 + env CORS_ORIGINS(콤마 구분)로 추가. 도메인 바뀔 때 코드 수정 없이 env로 대응.
@@ -38,6 +41,7 @@ const corsMiddleware = cors({
     if (!origin || allowedOrigins.includes(origin) || allowedBySuffix || LOCAL_DEV_ORIGIN.test(origin)) {
       callback(null, true);
     } else {
+      logger.warn('cors.origin_rejected', { origin });
       callback(new Error('허용되지 않은 접근입니다.'));
     }
   }

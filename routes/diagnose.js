@@ -8,6 +8,7 @@
 const express = require('express');
 const router = express.Router();
 const sg = require('../engine/surfaceguard');
+const { logger } = require('../lib/logger');
 
 // ★ UI 표기 밴드는 실측보다 보수적으로(2026-06-12 사장님 지시): 약속을 낮게 잡아 실망 방지.
 //   실측은 분포의 한 샘플이고 짧은 글은 ±15%p 출렁이므로, 표기는 실측 상단을 넉넉히 잡는다.
@@ -43,12 +44,13 @@ router.post('/diagnose', (req, res) => {
   try {
     ir = sg.classifyInputRisk(text);
   } catch (e) {
-    console.error('❌ /diagnose 실패:', e.message);
+    logger.error('diagnose.failed', { err: e });
     return res.status(500).json({ error: '진단 처리 중 오류가 발생했어요.' });
   }
 
   const grade = ir.grade || 'B';
   const copy = COPY[grade] || COPY.B;
+  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length });
   res.json({
     ok: true,
     grade,

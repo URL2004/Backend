@@ -2,8 +2,19 @@
 
 const express = require('express');
 const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
+const { logger, setLogContext } = require('../lib/logger');
 
 const router = express.Router();
+
+function tossBasicToken(res) {
+  const secretKey = process.env.TOSS_SECRET_KEY;
+  if (!secretKey) {
+    logger.error('payment.toss_secret_missing');
+    res.status(503).json({ error: '결제 서버 설정이 완료되지 않았습니다.' });
+    return null;
+  }
+  return Buffer.from(secretKey + ':').toString('base64');
+}
 
 router.post('/confirm-payment', async (req, res) => {
   const { paymentKey, orderId, amount, customerEmail, uid, idToken } = req.body;
@@ -23,16 +34,17 @@ router.post('/confirm-payment', async (req, res) => {
   try {
     const decoded = await admin.auth().verifyIdToken(idToken);
     verifiedUid = decoded.uid;
+    setLogContext({ uid: verifiedUid });
   } catch (e) {
     return res.status(401).json({ error: '로그인 정보가 만료됐어요. 다시 로그인 후 결제를 완료해주세요.' });
   }
   if (uid && uid !== verifiedUid) {
-    console.warn(`UID mismatch blocked: client=${uid}, token=${verifiedUid}`);
+    logger.warn('payment.uid_mismatch_blocked', { clientUid: uid, verifiedUid, orderId, amount });
     return res.status(403).json({ error: '사용자 정보가 일치하지 않습니다.' });
   }
 
-  const secretKey = process.env.TOSS_SECRET_KEY;
-  const basicToken = Buffer.from(secretKey + ":").toString("base64");
+  const basicToken = tossBasicToken(res);
+  if (!basicToken) return;
 
   try {
     const response = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
@@ -91,20 +103,27 @@ router.post('/confirm-payment', async (req, res) => {
           });
         });
 
-        console.log(`✅ 성공: ${customerEmail}(${verifiedUid})님께 ${safeCredits}크레딧 지급 완료!`);
+        logger.info('payment.confirmed', {
+          uid: verifiedUid,
+          orderId,
+          amount: parseInt(amount, 10),
+          credits: safeCredits,
+          customerEmail
+        });
         res.json({ ok: true, message: "충전 성공", creditAmount: safeCredits });
       } catch (e) {
         if (e.message === '이미 처리된 결제입니다.') {
-          console.log(`⚠️ 중복 요청 차단: ${orderId}`);
+          logger.warn('payment.duplicate_confirm_blocked', { uid: verifiedUid, orderId, amount: parseInt(amount, 10) });
           return res.status(400).json({ error: "이미 처리된 결제입니다." });
         }
         throw e;
       }
     } else {
+      logger.warn('payment.toss_confirm_failed', { uid: verifiedUid, orderId, amount: parseInt(amount, 10), status: response.status, toss: result });
       res.status(response.status).json(result);
     }
   } catch (err) {
-    console.error("❌ 서버 에러:", err);
+    logger.error('payment.confirm_failed', { uid: verifiedUid, orderId, amount: parseInt(amount, 10), err });
     res.status(500).json({ error: '서버 에러 발생' });
   }
 });
@@ -130,6 +149,7 @@ router.post('/request-refund', async (req, res) => {
 
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  setLogContext({ uid });
   if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
   if (!cancelReason || cancelReason.trim().length < 2) {
     return res.status(400).json({ error: '환불 사유를 입력해주세요.' });
@@ -186,10 +206,15 @@ router.post('/request-refund', async (req, res) => {
       refundRequestedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    console.log(`📋 환불 요청 (${kind}): ${orderId} (사유: ${cancelReason.trim()})`);
+    logger.info('refund.requested', {
+      uid,
+      orderId,
+      kind,
+      reasonLength: cancelReason.trim().length
+    });
     res.json({ ok: true, message: '환불 요청이 접수되었습니다.' });
   } catch (err) {
-    console.error('❌ 환불 요청 에러:', err);
+    logger.error('refund.request_failed', { uid, orderId, kind, err });
     res.status(500).json({ error: '서버 에러 발생' });
   }
 });
@@ -201,6 +226,7 @@ router.post('/approve-refund', async (req, res) => {
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  setLogContext({ uid: adminUid, actorUid: adminUid });
   if (!ADMIN_UIDS.includes(adminUid)) return res.status(403).json({ error: '관리자 권한이 없습니다.' });
   if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
 
@@ -219,8 +245,8 @@ router.post('/approve-refund', async (req, res) => {
     }
 
     const userRef = db.collection('users').doc(order.uid);
-    const secretKey = process.env.TOSS_SECRET_KEY;
-    const basicToken = Buffer.from(secretKey + ':').toString('base64');
+    const basicToken = tossBasicToken(res);
+    if (!basicToken) return;
     const tossUrl = `https://api.tosspayments.com/v1/payments/${order.paymentKey}/cancel`;
 
     if (kind === 'subscription') {
@@ -232,7 +258,7 @@ router.post('/approve-refund', async (req, res) => {
       });
       const tossResult = await tossRes.json();
       if (!tossRes.ok) {
-        console.error('❌ 토스 환불 실패:', tossResult);
+        logger.error('refund.toss_cancel_failed', { orderId, kind, uid: order.uid, status: tossRes.status, toss: tossResult });
         return res.status(tossRes.status).json({
           error: '토스 환불 처리 실패: ' + (tossResult.message || '알 수 없는 오류')
         });
@@ -257,7 +283,7 @@ router.post('/approve-refund', async (req, res) => {
           orderId, createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
       });
-      console.log(`✅ 정기결제 환불 완료: ${orderId} (uid=${order.uid}, 관리자=${adminUid})`);
+      logger.info('refund.subscription_approved', { orderId, uid: order.uid, adminUid, tier: order.tier });
       return res.json({ ok: true, message: '환불이 완료되었습니다.' });
     }
 
@@ -319,11 +345,11 @@ router.post('/approve-refund', async (req, res) => {
           });
         });
       } catch (compErr) {
-        console.error('🚨 보상 트랜잭션 실패. 수동 복구 필요:', {
+        logger.error('refund.compensation_failed_manual_action', {
           orderId, uid: order.uid, refundableCredits, refundAmount, compErr
         });
       }
-      console.error('❌ 토스 환불 실패:', tossResult);
+      logger.error('refund.toss_cancel_failed', { orderId, kind, uid: order.uid, status: tossRes.status, toss: tossResult });
       return res.status(tossRes.status).json({
         error: '토스 환불 처리 실패: ' + (tossResult.message || '알 수 없는 오류')
       });
@@ -348,10 +374,16 @@ router.post('/approve-refund', async (req, res) => {
       });
     });
 
-    console.log(`✅ 크레딧 부분환불 완료: ${orderId} (${refundableCredits}크레딧/${refundAmount}원, 관리자: ${adminUid})`);
+    logger.info('refund.credit_approved', {
+      orderId,
+      uid: order.uid,
+      adminUid,
+      refundableCredits,
+      refundAmount
+    });
     res.json({ ok: true, message: '환불이 완료되었습니다.' });
   } catch (err) {
-    console.error('❌ 환불 승인 에러:', err);
+    logger.error('refund.approve_failed', { orderId, kind, adminUid, err });
     res.status(500).json({ error: '서버 에러 발생' });
   }
 });
@@ -363,6 +395,7 @@ router.post('/reject-refund', async (req, res) => {
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  setLogContext({ uid: adminUid, actorUid: adminUid });
   if (!ADMIN_UIDS.includes(adminUid)) return res.status(403).json({ error: '관리자 권한이 없습니다.' });
   if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
   if (!rejectReason || rejectReason.trim().length < 2) {
@@ -387,10 +420,15 @@ router.post('/reject-refund', async (req, res) => {
       rejectedBy: adminUid
     });
 
-    console.log(`❌ 환불 거절 (${kind}): ${orderId} (사유: ${rejectReason.trim()}, 관리자: ${adminUid})`);
+    logger.info('refund.rejected', {
+      orderId,
+      kind,
+      adminUid,
+      rejectReasonLength: rejectReason.trim().length
+    });
     res.json({ ok: true, message: '환불 요청이 거절되었습니다.' });
   } catch (err) {
-    console.error('❌ 환불 거절 에러:', err);
+    logger.error('refund.reject_failed', { orderId, kind, adminUid, err });
     res.status(500).json({ error: '서버 에러 발생' });
   }
 });
@@ -404,6 +442,7 @@ router.post('/apply-referral', async (req, res) => {
     // 1. 신규 유저 인증 확인
     const decoded = await admin.auth().verifyIdToken(idToken);
     const newUid = decoded.uid;
+    setLogContext({ uid: newUid });
 
     // 2. 자기 자신 추천 방지
     const newUserSnap = await db.collection('users').doc(newUid).get();
@@ -444,10 +483,10 @@ router.post('/apply-referral', async (req, res) => {
       detail: '친구 추천 보상 (초대)', createdAt: now
     });
 
-    console.log(`🎉 추천 완료: ${referrerUid} → ${newUid} (각 20크레딧)`);
+    logger.info('referral.applied', { referrerUid, newUid, credits: 20 });
     res.json({ ok: true });
   } catch (err) {
-    console.error('❌ 추천 에러:', err);
+    logger.error('referral.failed', { err });
     res.status(500).json({ error: '추천 처리 실패' });
   }
 });

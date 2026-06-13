@@ -7,6 +7,7 @@ const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const { getDetectSystem, getHumanizeSystem } = require('../prompts');
 const { admin, db } = require('../config');
+const { logger, setLogContext } = require('../lib/logger');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -1067,10 +1068,10 @@ function verifyCheckFields(result, mode, inputParaCount, inputCharLen, inputText
   const recomputedPass = !violations;
 
   if (overrides.length > 0) {
-    console.log(`🔎 서버 재검증 덮어쓰기: ${overrides.join(' | ')}`);
+    logger.debug('analyze.verify_overrides', { overrides });
   }
   if (result.selfCheckPass !== recomputedPass) {
-    console.log(`🔎 selfCheckPass 재계산: ${result.selfCheckPass} → ${recomputedPass}`);
+    logger.debug('analyze.self_check_recomputed', { previous: result.selfCheckPass, recomputed: recomputedPass });
     result.selfCheckPass = recomputedPass;
   }
 
@@ -1665,7 +1666,7 @@ async function preprocessInput(text, lang, signal) {
 
   const result = await Promise.race([work, timeout]);
   if (result.timedOut) {
-    console.log('⚠️ 사전 처리 8초 초과 — micro-call 결과 폐기하고 swap-only로 진행');
+    logger.warn('analyze.preprocess_timeout_fallback');
   }
 
   return {
@@ -1841,12 +1842,16 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
 
   const cacheCreate = usage.cache_creation_input_tokens || 0;
   const cacheRead = usage.cache_read_input_tokens || 0;
-  console.log("-----------------------------------------");
-  console.log(`📊 비용 리포트: 입력 ${usage.input_tokens || 0} (캐시생성 ${cacheCreate}, 캐시읽기 ${cacheRead}) / 출력 ${usage.output_tokens || 0}`);
-  console.log("-----------------------------------------");
+  logger.info('llm.usage', {
+    inputTokens: usage.input_tokens || 0,
+    cacheCreateTokens: cacheCreate,
+    cacheReadTokens: cacheRead,
+    outputTokens: usage.output_tokens || 0,
+    model: MODEL
+  });
 
   if (stopReason === 'max_tokens') {
-    console.log('⚠️ 응답이 max_tokens 제한으로 잘림');
+    logger.warn('llm.max_tokens_stop', { model: MODEL });
   }
 
   return {
@@ -2667,9 +2672,6 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 // --- 라우트 ---
 
 router.post('/analyze', async (req, res) => {
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  console.log(`[${new Date().toISOString()}] /analyze 요청 IP: ${ip}`);
-
   // ★ client disconnect 추적: 응답 보내기 전에 connection 끊기면 백엔드 작업 중단.
   //   "휴머나이징 오류 + 크레딧만 차감" 민원의 주범 — 사용자가 응답 대기 중 abort하면
   //   백엔드는 모르고 진행, 차감 commit 성공 후 res.json 실패해서 결과 손실.
@@ -2677,7 +2679,7 @@ router.post('/analyze', async (req, res) => {
   req.on('close', () => {
     if (!res.writableEnded) {
       ac.abort();
-      console.log('⚠️ client disconnect — 백엔드 작업 중단 신호');
+      logger.warn('analyze.client_disconnected');
     }
   });
 
@@ -2707,6 +2709,18 @@ router.post('/analyze', async (req, res) => {
   const needed = Math.ceil(text.length / 100) * creditPer100;
   const opType = mode === 'detect' ? 'detect' : 'humanize';
 
+  logger.info('analyze.started', {
+    opType,
+    mode,
+    engine: req.body.engine || 'legacy',
+    humanizeMode: req.body.humanizeMode,
+    billingMode,
+    requestId,
+    textLength: text.length,
+    needed,
+    creditPer100
+  });
+
   // ★ 로컬 개발 전용 인증·과금 생략(이중 게이트): Firebase 비활성(키 미설정) + DEV_NO_AUTH=1 둘 다 필요.
   //   프로덕션은 FIREBASE_SERVICE_ACCOUNT가 항상 설정돼 있어 이 분기를 절대 타지 않는다.
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
@@ -2720,11 +2734,13 @@ router.post('/analyze', async (req, res) => {
         ? await precheckCoupon(idToken, text.length)
         : await precheckCredits(idToken, needed);
   } catch (e) {
+    logger.warn('analyze.precheck_failed', { opType, billingMode, needed, requestId, err: e });
     return res.status(e.status || 500).json({
       error: authErrorMessage(e.message),
       ...(e.charLimit !== undefined ? { charLimit: e.charLimit } : {})
     });
   }
+  setLogContext({ uid: pre.uid });
 
   // 2) LLM 호출 + 결과 검증 (실패 시 차감 없음)
   let result;
@@ -2764,7 +2780,7 @@ router.post('/analyze', async (req, res) => {
       // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙). 차감 없이 종료.
       if (out.floorReport && out.floorReport.status === 'blocked') {
         const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
-        console.warn('⚠️ /analyze floorV2 BLOCKED:', gates);
+        logger.warn('analyze.floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
         return res.status(422).json({
           error: '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요. 크레딧은 차감되지 않았어요. 글을 조금 수정해 다시 시도해주세요.',
           floorStatus: 'blocked',
@@ -2795,10 +2811,14 @@ router.post('/analyze', async (req, res) => {
         try {
           const pp = await preprocessInput(text, lang, ac.signal);
           humanizeText = pp.text;
-          console.log(`🧹 사전 처리: GPT-ism swap ${pp.gptismCount}건, 콤마 분할 ${pp.commaSplitCount}건, 단정정의문 변환 ${pp.declarativeCount}건`);
+          logger.debug('analyze.preprocess_completed', {
+            gptismCount: pp.gptismCount,
+            commaSplitCount: pp.commaSplitCount,
+            declarativeCount: pp.declarativeCount
+          });
         } catch (e) {
           if (ac.signal.aborted) throw e;
-          console.error('❌ 사전 처리 실패 — 원본으로 진행:', e.message);
+          logger.warn('analyze.preprocess_failed_fallback_original', { err: e });
         }
       }
 
@@ -2813,7 +2833,7 @@ router.post('/analyze', async (req, res) => {
           examples = await fetchWebSearchExamples(humanizeText, lang, ac.signal);
         } catch (e) {
           if (ac.signal.aborted) throw e;
-          console.error('❌ 웹 검색 실패 — 사례 없이 진행:', e.message);
+          logger.warn('analyze.web_search_failed_fallback', { err: e });
         }
       }
 
@@ -2841,7 +2861,7 @@ router.post('/analyze', async (req, res) => {
         });
       } catch (e) {
         if (ac.signal.aborted) throw e;
-        console.error('❌ 1차 LLM 실패:', e.message);
+        logger.error('analyze.first_llm_failed', { err: e });
         throw e;
       }
       result = extractClaudeResult(data, humanizeTool.name);
@@ -2857,7 +2877,7 @@ router.post('/analyze', async (req, res) => {
       if (refineDecision.refine) {
         try {
           const failed = collectFailedFields(result, selectedMode, inputParaCount);
-          console.log(`⚠️ 2-pass 발동 [${refineDecision.reason}]. 위반: ${failed.join(' | ')}`);
+          logger.warn('analyze.refine_started', { reason: refineDecision.reason, failed });
           const refineUser = buildRefineUser(humanizeText, result.outputText, failed);
           const refineData = await callClaude({
             userText: refineUser,
@@ -2874,11 +2894,11 @@ router.post('/analyze', async (req, res) => {
           verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
           refineUsage = refineData.usage;
           if (result.selfCheckPass === false) {
-            console.log(`⚠️ 2-pass 후에도 selfCheckPass=false. 결과 그대로 반환.`);
+            logger.warn('analyze.refine_self_check_still_false', { reason: refineDecision.reason });
           }
         } catch (e) {
           if (ac.signal.aborted) throw e;  // disconnect는 outer catch로 위임
-          console.error(`❌ 2-pass refine 실패 — 1차 결과 폴백: ${e.message}`);
+          logger.warn('analyze.refine_failed_fallback_first_result', { err: e });
           // result는 1차 그대로, refineUsage는 null 유지
         }
       }
@@ -2886,7 +2906,7 @@ router.post('/analyze', async (req, res) => {
       // ★ 증축 하드가드(P2-1): "다듬기"인데 원문보다 과도하게 길어지면(내용 임의 추가·증축) 결과를 내보내지 않는다.
       //   프롬프트가 원문 ×0.9~1.1을 강제하므로 1.3배 초과는 명백한 오작동 — 차감 없이 차단(민원 #100 "1000자를 몇 배로 불림").
       if (typeof result.lengthRatio === 'number' && result.lengthRatio > 1.3 && !ac.signal.aborted) {
-        console.warn(`⚠️ /analyze 레거시 증축 차단 ratio=${result.lengthRatio}`);
+        logger.warn('analyze.length_ratio_blocked', { uid: pre.uid, requestId, ratio: result.lengthRatio });
         return res.status(422).json({
           error: '변환 결과가 원문보다 과도하게 길어졌어요(내용이 임의로 늘어남). 크레딧은 차감되지 않았어요. 잠시 후 다시 시도해주세요.'
         });
@@ -2897,17 +2917,17 @@ router.post('/analyze', async (req, res) => {
   } catch (err) {
     // client disconnect 시 응답 자체가 의미 없음 — 차감 안 하고 그대로 종료
     if (ac.signal.aborted) {
-      console.log('⚠️ /analyze client disconnect — 응답·차감 스킵');
+      logger.warn('analyze.aborted_before_deduct', { uid: pre?.uid, requestId });
       return;
     }
-    console.error('❌ /analyze LLM error:', err && err.message);
+    logger.error('analyze.llm_failed', { uid: pre?.uid, requestId, opType, err });
     return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.' });
   }
 
   // ★ 차감 직전 abort 체크 — 사용자가 끊었으면 차감하지 않고 종료.
   //   "결과 못 받고 크레딧만 차감" 민원의 마지막 안전망.
   if (ac.signal.aborted) {
-    console.log('⚠️ /analyze 차감 직전 client disconnect — 차감·응답 스킵');
+    logger.warn('analyze.aborted_before_deduct_commit', { uid: pre.uid, requestId });
     return;
   }
 
@@ -2921,7 +2941,7 @@ router.post('/analyze', async (req, res) => {
   const doRestore = async (reason) => {
     if (restoreDone || !deducted || responded) return;
     restoreDone = true;
-    console.log(`⚠️ /analyze 복구 트리거 [${reason}] uid=${pre.uid}`);
+    logger.warn('analyze.restore_triggered', { uid: pre.uid, requestId, billingMode, reason });
     try {
       await retryAsync(async () => {
         if (billingMode === 'coupon') {
@@ -2930,9 +2950,9 @@ router.post('/analyze', async (req, res) => {
           await commitCreditRestore(pre.uid, needed, opType);
         }
       });
-      console.log(`✅ /analyze 복구 완료 uid=${pre.uid}`);
+      logger.info('analyze.restore_completed', { uid: pre.uid, requestId, billingMode, reason });
     } catch (e) {
-      console.error(`❌ /analyze 복구 실패 (재시도 소진, 수동 보정 필요) uid=${pre.uid}:`, e?.message);
+      logger.error('analyze.restore_failed_manual_action', { uid: pre.uid, requestId, billingMode, reason, err: e });
     }
   };
 
@@ -2945,8 +2965,17 @@ router.post('/analyze', async (req, res) => {
       await commitCreditDeduct(pre.uid, needed, opType, requestId);
     }
     deducted = !devNoAuth;
+    logger.info('analyze.deducted', {
+      uid: pre.uid,
+      requestId,
+      opType,
+      billingMode,
+      needed,
+      plan: pre.plan,
+      devNoAuth
+    });
   } catch (e) {
-    console.error('❌ /analyze deduct fail:', e?.code, e?.message);
+    logger.error('analyze.deduct_failed', { uid: pre.uid, requestId, opType, billingMode, needed, err: e });
     return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
   }
 
@@ -2960,24 +2989,32 @@ router.post('/analyze', async (req, res) => {
 
   // 4) 응답 — 'finish'(OS 송신 큐 완료) 시점에만 responded 마킹.
   res.once('finish', () => { responded = true; });
+  logger.info('analyze.completed', {
+    uid: pre.uid,
+    requestId,
+    opType,
+    billingMode,
+    deducted,
+    floorStatus: evasion?.floorReport?.status,
+    chunkCount: evasion?.chunkCount
+  });
   res.json({ ok: true, result, usage, refineUsage, ...(evasion ? { evasion } : {}) });
 });
 
 router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   if (process.env.ENABLE_LEGACY_ANALYZE_PDF !== '1') {
+    logger.warn('analyze_pdf.disabled');
     return res.status(410).json({
       error: 'PDF 직접 분석 API는 종료되었습니다. 브라우저에서 텍스트를 추출한 뒤 /analyze를 사용해주세요.'
     });
   }
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  console.log(`[${new Date().toISOString()}] /analyze-pdf 요청 IP: ${ip}`);
 
   // ★ client disconnect 추적 (PDF 경로도 동일)
   const ac = new AbortController();
   req.on('close', () => {
     if (!res.writableEnded) {
       ac.abort();
-      console.log('⚠️ /analyze-pdf client disconnect — 백엔드 작업 중단 신호');
+      logger.warn('analyze_pdf.client_disconnected');
     }
   });
 
@@ -2994,6 +3031,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   const requestId = (typeof req.body.requestId === 'string' && req.body.requestId.trim())
     ? req.body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '')
     : null;
+  logger.info('analyze_pdf.started', { opType, billingMode, requestId, fileSize: req.file?.size });
 
   let pdfText;
   try {
@@ -3015,11 +3053,13 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       ? await precheckCoupon(idToken, pdfText.length)
       : await precheckCredits(idToken, needed);
   } catch (e) {
+    logger.warn('analyze_pdf.precheck_failed', { opType, billingMode, needed, requestId, err: e });
     return res.status(e.status || 500).json({
       error: authErrorMessage(e.message),
       ...(e.charLimit !== undefined ? { charLimit: e.charLimit } : {})
     });
   }
+  setLogContext({ uid: pre.uid });
 
   // 2) LLM 호출 + 결과 검증 (실패 시 차감 없음)
   let result;
@@ -3049,10 +3089,14 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         try {
           const pp = await preprocessInput(text, lang, ac.signal);
           humanizeText = pp.text;
-          console.log(`🧹 사전 처리(PDF): GPT-ism swap ${pp.gptismCount}건, 콤마 분할 ${pp.commaSplitCount}건, 단정정의문 변환 ${pp.declarativeCount}건`);
+          logger.debug('analyze_pdf.preprocess_completed', {
+            gptismCount: pp.gptismCount,
+            commaSplitCount: pp.commaSplitCount,
+            declarativeCount: pp.declarativeCount
+          });
         } catch (e) {
           if (ac.signal.aborted) throw e;
-          console.error('❌ /analyze-pdf 사전 처리 실패 — 원본으로 진행:', e.message);
+          logger.warn('analyze_pdf.preprocess_failed_fallback_original', { err: e });
         }
       }
       const humanizeSystem = getHumanizeSystem(humanizeModePdf, lang);
@@ -3069,7 +3113,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         });
       } catch (e) {
         if (ac.signal.aborted) throw e;
-        console.error('❌ /analyze-pdf LLM 실패:', e.message);
+        logger.error('analyze_pdf.first_llm_failed', { err: e });
         throw e;
       }
       result = extractClaudeResult(data, humanizeTool.name);
@@ -3079,16 +3123,16 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     }
   } catch (err) {
     if (ac.signal.aborted) {
-      console.log('⚠️ /analyze-pdf client disconnect — 응답·차감 스킵');
+      logger.warn('analyze_pdf.aborted_before_deduct', { uid: pre?.uid, requestId });
       return;
     }
-    console.error('❌ /analyze-pdf LLM error:', err && err.message);
+    logger.error('analyze_pdf.llm_failed', { uid: pre?.uid, requestId, opType, err });
     return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.' });
   }
 
   // ★ 차감 직전 abort 체크
   if (ac.signal.aborted) {
-    console.log('⚠️ /analyze-pdf 차감 직전 client disconnect — 차감·응답 스킵');
+    logger.warn('analyze_pdf.aborted_before_deduct_commit', { uid: pre.uid, requestId });
     return;
   }
 
@@ -3099,7 +3143,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   const doRestore = async (reason) => {
     if (restoreDone || !deducted || responded) return;
     restoreDone = true;
-    console.log(`⚠️ /analyze-pdf 복구 트리거 [${reason}] uid=${pre.uid}`);
+    logger.warn('analyze_pdf.restore_triggered', { uid: pre.uid, requestId, billingMode, reason });
     try {
       await retryAsync(async () => {
         if (billingMode === 'coupon') {
@@ -3108,9 +3152,9 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
           await commitCreditRestore(pre.uid, needed, opType);
         }
       });
-      console.log(`✅ /analyze-pdf 복구 완료 uid=${pre.uid}`);
+      logger.info('analyze_pdf.restore_completed', { uid: pre.uid, requestId, billingMode, reason });
     } catch (e) {
-      console.error(`❌ /analyze-pdf 복구 실패 (재시도 소진, 수동 보정 필요) uid=${pre.uid}:`, e?.message);
+      logger.error('analyze_pdf.restore_failed_manual_action', { uid: pre.uid, requestId, billingMode, reason, err: e });
     }
   };
 
@@ -3121,8 +3165,9 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       await commitCreditDeduct(pre.uid, needed, opType, requestId);
     }
     deducted = true;
+    logger.info('analyze_pdf.deducted', { uid: pre.uid, requestId, opType, billingMode, needed, plan: pre.plan });
   } catch (e) {
-    console.error('❌ /analyze-pdf deduct fail:', e?.code, e?.message);
+    logger.error('analyze_pdf.deduct_failed', { uid: pre.uid, requestId, opType, billingMode, needed, err: e });
     return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
   }
 
@@ -3134,6 +3179,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
   // 4) 응답
   res.once('finish', () => { responded = true; });
+  logger.info('analyze_pdf.completed', { uid: pre.uid, requestId, opType, billingMode, deducted });
   res.json({
     ok: true,
     result,

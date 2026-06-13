@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const analyze = require('./analyze');   // 과금 헬퍼 재사용(차감 공식 단일 출처)
 const { db, verifyToken } = require('../config');
+const { logger, setLogContext } = require('../lib/logger');
 const { genreTransferV2 } = require('../engine/genretransfer');
 const { suggestEvidence } = require('../engine/evidence');
 const { reviewCandidates, hostOf } = require('../engine/evidencereview');
@@ -51,6 +52,7 @@ async function requireJobOwner(req, res, job) {
     res.status(401).json({ error: '로그인이 필요해요.' });
     return null;
   }
+  setLogContext({ uid });
   if (uid !== job.uid) {
     res.status(403).json({ error: '본인의 작업만 확인할 수 있어요.' });
     return null;
@@ -121,13 +123,13 @@ function persistJob(job) {
   const doc = {};
   for (const k of PERSIST_FIELDS) if (job[k] !== undefined) doc[k] = job[k];
   db.collection('transformJobs').doc(job.id).set(doc, { merge: true })
-    .catch(e => console.error(`⚠️ /transform ${job.id} 영속화 실패(작업은 계속):`, e?.message));
+    .catch(e => logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
 }
 
 function deletePersisted(id) {
   if (!db) return;
   db.collection('transformJobs').doc(id).delete()
-    .catch(e => console.error(`⚠️ /transform ${id} 영속 삭제 실패:`, e?.message));
+    .catch(e => logger.warn('transform.persist_delete_failed', { jobId: id, err: e }));
 }
 
 // 서버 시작 시 복원: done·blocked·awaiting_approval은 그대로 살리고(폴링·승인 재개 가능),
@@ -152,9 +154,11 @@ async function restoreJobs() {
       jobs.set(j.id, j);
       kept++;
     });
-    if (kept || expired) console.log(`[transform] 영속 job 복원 ${kept}건 (running→중단 정정 ${interrupted}건, 만료 정리 ${expired}건)`);
+    if (kept || expired) {
+      logger.info('transform.jobs_restored', { kept, interrupted, expired });
+    }
   } catch (e) {
-    console.error('⚠️ [transform] 영속 job 복원 실패(새 작업은 정상):', e?.message);
+    logger.warn('transform.jobs_restore_failed', { err: e });
   }
 }
 restoreJobs();
@@ -194,7 +198,7 @@ async function runSearchPhase(job, text) {
     const ev = await suggestEvidence(text, { maxSegments: Number(process.env.EVIDENCE_MAX_SEGMENTS) || 6, signal: job.ac.signal });
     const reviewed = reviewCandidates(ev.candidates || []);
     if (!reviewed.length) {
-      console.warn(`⚠️ /transform ${job.id} 근거 후보 0건 — 근거 없이 재구성 진행`);
+      logger.warn('transform.evidence_empty', { jobId: job.id, uid: job.uid });
       job.note = '주제와 맞는 검증 가능한 근거를 찾지 못해 근거 없이 진행했어요.';
       return runJob(job, text, '');
     }
@@ -211,13 +215,21 @@ async function runSearchPhase(job, text) {
     job.status = 'awaiting_approval';
     job.stage = '근거 검수 대기';
     persistJob(job);   // 승인 대기는 재시작 후에도 text·후보가 살아 있어 그대로 승인→재개 가능
-    console.log(`▶ /transform ${job.id} 근거 ${job.candidates.length}건 검수 대기 (A ${job.candidates.filter(c => c.grade === 'A').length}·B ${job.candidates.filter(c => c.grade === 'B').length}·C ${job.candidates.filter(c => c.grade === 'C').length}·충돌 ${job.candidates.filter(c => c.conflict).length})`);
+    logger.info('transform.awaiting_evidence_approval', {
+      jobId: job.id,
+      uid: job.uid,
+      candidates: job.candidates.length,
+      gradeA: job.candidates.filter(c => c.grade === 'A').length,
+      gradeB: job.candidates.filter(c => c.grade === 'B').length,
+      gradeC: job.candidates.filter(c => c.grade === 'C').length,
+      conflicts: job.candidates.filter(c => c.conflict).length
+    });
   } catch (e) {
     if (job.ac.signal.aborted) {
       if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
       return;
     }
-    console.error(`❌ /transform ${job.id} 근거 검색 실패 — 근거 없이 진행:`, e?.message);
+    logger.error('transform.evidence_search_failed', { jobId: job.id, uid: job.uid, err: e });
     job.note = '근거 검색이 실패해 근거 없이 진행했어요.';
     return runJob(job, text, '');
   }
@@ -243,7 +255,13 @@ async function runJob(job, text, evidence) {
         pairing: (out.pairing || []).slice(0, 3).map(p => `${p.num}↛${(p.owner || '').slice(0, 40)}`),
         judge: (out.judge?.violations || []).slice(0, 5).map(v => `[${v.type}] "${(v.span || '').slice(0, 70)}" — ${(v.detail || '').slice(0, 100)}`)
       };
-      console.warn(`⚠️ /transform ${job.id} BLOCKED: ${gates.join(', ')}\n   상세: ${JSON.stringify(gateDetail, null, 1).slice(0, 1200)}`);
+      logger.warn('transform.blocked', {
+        jobId: job.id,
+        uid: job.uid,
+        mode: job.mode,
+        gates,
+        gateDetail
+      });
       job.status = 'blocked';
       job.gates = gates;
       job.gateDetail = gateDetail;
@@ -258,7 +276,13 @@ async function runJob(job, text, evidence) {
         job.deducted = true;
       } catch (e) {
         // 차감 실패(그 사이 잔액 소진 등) — 결과는 이미 만들어졌으니 사용자에겐 전달(고객 우선), 수동 보정 로그.
-        console.error(`❌ /transform ${job.id} 완료 차감 실패(수동 보정 필요) uid=${job.uid}:`, e?.message);
+        logger.error('transform.credit_deduct_failed_manual_action', {
+          jobId: job.id,
+          uid: job.uid,
+          needed: job.needed,
+          opType: 'restructure',
+          err: e
+        });
       }
     }
     job.status = 'done';
@@ -275,13 +299,22 @@ async function runJob(job, text, evidence) {
       skeleton: out.skeleton
     };
     persistJob(job);
+    logger.info('transform.done', {
+      jobId: job.id,
+      uid: job.uid,
+      mode: job.mode,
+      needed: job.needed,
+      deducted: job.deducted,
+      skeleton: out.skeleton,
+      genreRisk: out.risk?.score
+    });
   } catch (e) {
     if (job.ac.signal.aborted) {
       // shutdown이 이미 error(서버 재시작 안내)로 표시한 job을 "사용자 취소"로 덮어쓰면 안 됨 — abort 출처 구분.
       if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
       return;
     }
-    console.error(`❌ /transform ${job.id} 실패:`, e?.message);
+    logger.error('transform.failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
     job.status = 'error';
     job.error = '재구성 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     persistJob(job);
@@ -303,7 +336,12 @@ async function runHumanizeJob(job, text) {
     // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
-      console.warn(`⚠️ /transform(${job.mode}) ${job.id} BLOCKED: ${gates.join(', ')}`);
+      logger.warn('transform.humanize_blocked', {
+        jobId: job.id,
+        uid: job.uid,
+        mode: job.mode,
+        gates
+      });
       job.status = 'blocked';
       job.gates = gates;
       job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
@@ -316,7 +354,13 @@ async function runHumanizeJob(job, text) {
         await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'humanize', 'job_' + job.id));
         job.deducted = true;
       } catch (e) {
-        console.error(`❌ /transform(${job.mode}) ${job.id} 완료 차감 실패(수동 보정 필요) uid=${job.uid}:`, e?.message);
+        logger.error('transform.humanize_credit_deduct_failed_manual_action', {
+          jobId: job.id,
+          uid: job.uid,
+          mode: job.mode,
+          needed: job.needed,
+          err: e
+        });
       }
     }
     job.status = 'done';
@@ -333,12 +377,21 @@ async function runHumanizeJob(job, text) {
       fallbackCount: out.fallbackCount
     };
     persistJob(job);
+    logger.info('transform.humanize_done', {
+      jobId: job.id,
+      uid: job.uid,
+      mode: job.mode,
+      needed: job.needed,
+      deducted: job.deducted,
+      chunkCount: out.chunkCount,
+      fallbackCount: out.fallbackCount
+    });
   } catch (e) {
     if (job.ac.signal.aborted) {
       if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
       return;
     }
-    console.error(`❌ /transform(${job.mode}) ${job.id} 실패:`, e?.message);
+    logger.error('transform.humanize_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
     job.status = 'error';
     job.error = '처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     persistJob(job);
@@ -372,8 +425,10 @@ router.post('/transform', async (req, res) => {
   try {
     pre = devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed);
   } catch (e) {
+    logger.warn('transform.precheck_failed', { mode, needed, billingMode: 'credit', err: e });
     return res.status(e.status || 500).json({ error: analyze.authErrorMessage(e.message) });
   }
+  setLogContext({ uid: pre.uid });
   // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트(formal만).
   const limited = checkLimits(pre.uid, mode);
   if (limited) return res.status(limited.status).json({ error: limited.error });
@@ -400,7 +455,17 @@ router.post('/transform', async (req, res) => {
   if (isShort) runHumanizeJob(job, text);            // await 없음 — 백그라운드 진행(새로고침 생존)
   else if (wantEvidence) runSearchPhase(job, text);
   else runJob(job, text, '');
-  console.log(`▶ /transform job ${id} 시작 (${mode}, ${text.length}자, uid=${pre.uid}, 근거=${wantEvidence ? 'ON' : 'OFF'}, 예상 ${Math.round(estSec / 60)}분)`);
+  logger.info('transform.started', {
+    jobId: id,
+    uid: pre.uid,
+    mode,
+    textLength: text.length,
+    bareLength: bare,
+    evidence: wantEvidence,
+    needed,
+    plan: pre.plan,
+    estSec
+  });
   res.json({ ok: true, jobId: id, estSec, mode });
 });
 
@@ -416,7 +481,7 @@ router.post('/transform/:id/cancel', async (req, res) => {
   job.status = 'cancelled';
   job.stage = '중단됨';
   persistJob(job);
-  console.log(`■ /transform ${job.id} 사용자 취소 (uid=${job.uid})`);
+  logger.info('transform.cancelled_by_user', { jobId: job.id, uid: job.uid, mode: job.mode });
   res.json({ ok: true });
 });
 
@@ -442,11 +507,21 @@ router.post('/transform/:id/approve', async (req, res) => {
     const rank = (c) => (c.conflict ? 2 : 0) + (c.grade === 'A' ? 0 : c.grade === 'B' ? 1 : 3);
     approved = approved.slice().sort((a, b) => rank(a) - rank(b)).slice(0, cap);
     job.note = `근거가 많아 사실 보존 검증이 가능한 상위 ${cap}건(공식 출처 우선)만 사용했어요.`;
-    console.warn(`⚠️ /transform ${job.id} 승인 ${ids.length}건 → 캡 ${cap}건 적용`);
+    logger.warn('transform.evidence_approval_capped', {
+      jobId: job.id,
+      uid: job.uid,
+      requested: ids.length,
+      cap
+    });
   }
   const lines = approved.map(c => `${c.fact} (출처: ${c.sourceTitle || c.host})`);
   job.approvedCount = approved.length;
-  console.log(`▶ /transform ${job.id} 근거 승인 ${approved.length}/${(job.candidates || []).length}건 — 재구성 재개`);
+  logger.info('transform.evidence_approved', {
+    jobId: job.id,
+    uid: job.uid,
+    approved: approved.length,
+    candidates: (job.candidates || []).length
+  });
   runJob(job, job.text, lines.join('\n'));   // await 없음
   res.json({ ok: true, approved: approved.length });
 });
@@ -465,4 +540,3 @@ router.get('/transform/:id', async (req, res) => {
 });
 
 module.exports = router;
-

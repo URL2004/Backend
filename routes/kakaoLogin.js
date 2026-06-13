@@ -1,6 +1,7 @@
 // [인증] 카카오톡 OAuth 로그인 처리
 
 const express = require('express');
+const { logger } = require('../lib/logger');
 const router = express.Router();
 
 router.post('/kakao-login', async (req, res) => {
@@ -13,15 +14,20 @@ router.post('/kakao-login', async (req, res) => {
     });
     const userData = await userRes.json();
 
-    if (!userData.id) return res.json({ error: '카카오 사용자 정보를 가져올 수 없습니다.' });
+    if (!userData.id) {
+      logger.warn('auth.kakao_user_fetch_failed', { status: userRes.status, kakao: userData });
+      return res.json({ error: '카카오 사용자 정보를 가져올 수 없습니다.' });
+    }
 
     const kakaoId = String(userData.id);
     const nickname = userData.kakao_account?.profile?.nickname || '카카오유저';
     const email = userData.kakao_account?.email || (kakaoId + '@kakao.com');
     const photo = userData.kakao_account?.profile?.profile_image_url || '';
 
+    logger.info('auth.kakao_login_succeeded', { kakaoId, email });
     res.json({ ok: true, kakaoId, nickname, email, photo });
   } catch(err) {
+    logger.error('auth.kakao_login_failed', { err });
     res.json({ error: err.message });
   }
 });

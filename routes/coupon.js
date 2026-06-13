@@ -4,6 +4,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
+const { logger, setLogContext } = require('../lib/logger');
 
 const router = express.Router();
 
@@ -36,6 +37,9 @@ router.post('/admin/create-coupons', async (req, res) => {
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
+  setLogContext({ uid: adminUid, actorUid: adminUid });
+  setLogContext({ uid: adminUid, actorUid: adminUid });
+  setLogContext({ uid: adminUid, actorUid: adminUid });
   if (!ADMIN_UIDS.includes(adminUid)) {
     return res.status(403).json({ error: '관리자 권한이 없어요.' });
   }
@@ -110,7 +114,13 @@ router.post('/admin/create-coupons', async (req, res) => {
     });
     await wb.commit();
 
-    console.log(`✅ 쿠폰 발급: admin=${adminUid}, ${creditsInt}크레딧 × ${countInt}개, batchId=${batchRef.id}`);
+    logger.info('coupon.batch_created', {
+      adminUid,
+      credits: creditsInt,
+      count: countInt,
+      batchId: batchRef.id,
+      expiresAt: expiresAtTs ? expiresAtTs.toMillis() : null
+    });
 
     res.json({
       ok: true,
@@ -120,7 +130,7 @@ router.post('/admin/create-coupons', async (req, res) => {
       codes: codeList.map(c => ({ raw: c, display: formatCode(c) }))
     });
   } catch (err) {
-    console.error('❌ 쿠폰 발급 실패:', err);
+    logger.error('coupon.batch_create_failed', { adminUid, credits: creditsInt, count: countInt, err });
     res.status(500).json({ error: '쿠폰 발급 중 오류가 발생했어요.' });
   }
 });
@@ -133,6 +143,7 @@ router.post('/redeem-coupon', async (req, res) => {
 
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요해요.' });
+  setLogContext({ uid });
 
   const normalized = normalizeCode(code);
   if (normalized.length !== CODE_LENGTH) {
@@ -190,13 +201,13 @@ router.post('/redeem-coupon', async (req, res) => {
       return { granted: coupon.credits, newBalance: newCredits };
     });
 
-    console.log(`✅ 쿠폰 사용: uid=${uid}, code=${normalized}, +${result.granted}크레딧`);
+    logger.info('coupon.redeemed', { uid, credits: result.granted, newBalance: result.newBalance });
     res.json({ ok: true, credits: result.granted, newBalance: result.newBalance });
   } catch (err) {
     if (err.status) {
       return res.status(err.status).json({ error: err.message });
     }
-    console.error('❌ 쿠폰 사용 실패:', err);
+    logger.error('coupon.redeem_failed', { uid, err });
     res.status(500).json({ error: '쿠폰 사용 중 오류가 발생했어요.' });
   }
 });
@@ -257,7 +268,7 @@ router.post('/admin/list-coupon-batches', async (req, res) => {
       : null;
     res.json({ ok: true, batches, nextCursor });
   } catch (err) {
-    console.error('❌ 쿠폰 이력 조회 실패:', err);
+    logger.error('coupon.batch_list_failed', { adminUid, err });
     res.status(500).json({ error: '쿠폰 이력 조회 중 오류가 발생했어요.' });
   }
 });
@@ -270,6 +281,7 @@ router.post('/admin/get-coupon-batch', async (req, res) => {
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
+  setLogContext({ uid: adminUid, actorUid: adminUid });
   if (!ADMIN_UIDS.includes(adminUid)) {
     return res.status(403).json({ error: '관리자 권한이 없어요.' });
   }
@@ -343,7 +355,7 @@ router.post('/admin/get-coupon-batch', async (req, res) => {
       codes
     });
   } catch (err) {
-    console.error('❌ 배치 상세 조회 실패:', err);
+    logger.error('coupon.batch_get_failed', { adminUid, batchId, err });
     res.status(500).json({ error: '배치 상세 조회 중 오류가 발생했어요.' });
   }
 });
@@ -356,6 +368,7 @@ router.post('/admin/void-coupons', async (req, res) => {
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
+  setLogContext({ uid: adminUid, actorUid: adminUid });
   if (!ADMIN_UIDS.includes(adminUid)) {
     return res.status(403).json({ error: '관리자 권한이 없어요.' });
   }
@@ -389,11 +402,11 @@ router.post('/admin/void-coupons', async (req, res) => {
         t.update(batchRef, { voidedCount: admin.firestore.FieldValue.increment(1) });
         return { batchId: c.batchId };
       });
-      console.log(`✅ 쿠폰 개별 무효화: admin=${adminUid}, code=${normalized}, batchId=${result.batchId}`);
+      logger.info('coupon.code_voided', { adminUid, batchId: result.batchId });
       return res.json({ ok: true, voidedCount: 1 });
     } catch (err) {
       if (err.status) return res.status(err.status).json({ error: err.message });
-      console.error('❌ 쿠폰 개별 무효화 실패:', err);
+      logger.error('coupon.code_void_failed', { adminUid, err });
       return res.status(500).json({ error: '쿠폰 무효화 중 오류가 발생했어요.' });
     }
   }
@@ -421,11 +434,11 @@ router.post('/admin/void-coupons', async (req, res) => {
       t.update(batchRef, { voidedCount: admin.firestore.FieldValue.increment(snap.size) });
       return snap.size;
     });
-    console.log(`✅ 쿠폰 배치 무효화: admin=${adminUid}, batchId=${batchId}, ${voidedCount}개`);
+    logger.info('coupon.batch_voided', { adminUid, batchId, voidedCount });
     res.json({ ok: true, voidedCount });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
-    console.error('❌ 쿠폰 배치 무효화 실패:', err);
+    logger.error('coupon.batch_void_failed', { adminUid, batchId, err });
     res.status(500).json({ error: '쿠폰 무효화 중 오류가 발생했어요.' });
   }
 });
@@ -462,11 +475,11 @@ router.post('/admin/delete-coupon-batch', async (req, res) => {
       t.delete(batchRef);
       return codesSnap.size;
     });
-    console.log(`✅ 배치 기록 삭제: admin=${adminUid}, batchId=${batchId}, codes=${deletedCount}개`);
+    logger.info('coupon.batch_deleted', { adminUid, batchId, deletedCodes: deletedCount });
     res.json({ ok: true, deletedCodes: deletedCount });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
-    console.error('❌ 배치 기록 삭제 실패:', err);
+    logger.error('coupon.batch_delete_failed', { adminUid, batchId, err });
     res.status(500).json({ error: '배치 삭제 중 오류가 발생했어요.' });
   }
 });
@@ -479,6 +492,7 @@ router.post('/admin/update-batch-expiry', async (req, res) => {
 
   const adminUid = await verifyToken(idToken);
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
+  setLogContext({ uid: adminUid, actorUid: adminUid });
   if (!ADMIN_UIDS.includes(adminUid)) {
     return res.status(403).json({ error: '관리자 권한이 없어요.' });
   }
@@ -513,11 +527,11 @@ router.post('/admin/update-batch-expiry', async (req, res) => {
       return codesSnap.size;
     });
     const expStr = expiresAtTs ? new Date(expiresAtTs.toMillis()).toISOString() : '무기한';
-    console.log(`✅ 배치 만료일 변경: admin=${adminUid}, batchId=${batchId}, expiresAt=${expStr}, codes=${updated}`);
+    logger.info('coupon.batch_expiry_updated', { adminUid, batchId, expiresAt: expStr, updatedCodes: updated });
     res.json({ ok: true, updatedCodes: updated, expiresAt: expiresAtTs ? expiresAtTs.toMillis() : null });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
-    console.error('❌ 배치 만료일 변경 실패:', err);
+    logger.error('coupon.batch_expiry_update_failed', { adminUid, batchId, err });
     res.status(500).json({ error: '만료일 변경 중 오류가 발생했어요.' });
   }
 });

@@ -16,6 +16,7 @@ const transform = require('./transform');       // restructureCredit 재사용(�
 const sg = require('../engine/surfaceguard');
 const { getDetectSystem } = require('../prompts');
 const { verifyToken } = require('../config');
+const { logger, setLogContext } = require('../lib/logger');
 
 const DAILY_CAP = Number(process.env.DETECT_DAILY_CAP) || 5;
 const daily = new Map();   // 'u:uid' | 'ip:addr' → { day, count } — 메모리(재시작 리셋은 사용자에게 유리한 방향)
@@ -76,13 +77,16 @@ router.post('/detect-report', async (req, res) => {
 
   // 일일 한도 — 로그인 uid 우선(IP 공유 환경 오차단 방지), 비로그인은 IP
   const uid = await verifyToken(req.body?.idToken);
+  if (uid) setLogContext({ uid });
   const key = uid ? `u:${uid}` : `ip:${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`;
   const day = kstDay();
   const rec = daily.get(key);
   const used = (rec && rec.day === day) ? rec.count : 0;
   if (!devNoAuth && used >= DAILY_CAP) {
+    logger.warn('detect_report.daily_cap_exceeded', { uid, used, cap: DAILY_CAP });
     return res.status(429).json({ error: `무료 AI 감지는 하루 ${DAILY_CAP}회까지예요. 내일 다시 이용해 주세요.` });
   }
+  logger.info('detect_report.started', { uid, textLength: text.length, usedToday: used, cap: DAILY_CAP, devNoAuth });
 
   // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
   let ir, paras, detail;
@@ -91,7 +95,7 @@ router.post('/detect-report', async (req, res) => {
     paras = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
     detail = sg.analyzeParagraphs(text).detail;
   } catch (e) {
-    console.error('❌ /detect-report 결정론 분석 실패:', e?.message);
+    logger.error('detect_report.surface_failed', { uid, err: e });
     return res.status(500).json({ error: '감지 처리 중 오류가 발생했어요.' });
   }
   const grade = ir.grade || 'B';
@@ -110,11 +114,11 @@ router.post('/detect-report', async (req, res) => {
     });
     const r = analyze.extractClaudeResult(data, 'return_detection_result');
     if (typeof r?.probability !== 'number') {
-      console.warn(`⚠️ /detect-report 판정 불완전: stop=${data?.stop_reason} keys=${Object.keys(r || {}).join(',')}`);
+      logger.warn('detect_report.llm_incomplete', { uid, stopReason: data?.stop_reason, keys: Object.keys(r || {}) });
       throw new Error('detect_incomplete');
     }
     return r;
-  }, 2).catch(e => { console.warn('⚠️ /detect-report LLM 판정 실패(엔진 추정으로 진행):', e?.message); return null; });
+  }, 2).catch(e => { logger.warn('detect_report.llm_failed_fallback_engine', { uid, err: e }); return null; });
 
   const before = pickAiSentence(paras, detail);
   const exampleP = before
@@ -125,7 +129,7 @@ router.post('/detect-report', async (req, res) => {
         });
         const r = analyze.extractClaudeResult(data, 'return_rewrite');
         return r?.rewritten ? { before, after: r.rewritten } : null;
-      })().catch(e => { console.warn('⚠️ /detect-report 미리보기 실패(보고서는 진행):', e?.message); return null; })
+      })().catch(e => { logger.warn('detect_report.preview_failed', { uid, err: e }); return null; })
     : Promise.resolve(null);
 
   const [det, example] = await Promise.all([detectP, exampleP]);
@@ -138,6 +142,13 @@ router.post('/detect-report', async (req, res) => {
   // 카운트는 성공 직전 증가 — 서버 오류로 보고서를 못 받았는데 횟수만 소진되는 일 방지.
   // 클라이언트가 끊겼으면(새로고침·이탈) 응답을 못 받으므로 무료 횟수도 소진하지 않는다.
   if (!devNoAuth && !req.aborted) daily.set(key, { day, count: used + 1 });
+  logger.info('detect_report.completed', {
+    uid,
+    grade,
+    probability,
+    probSource: det ? 'llm' : 'engine',
+    remainingToday: devNoAuth ? null : DAILY_CAP - used - 1
+  });
 
   // ③ 비용 — 실제 과금 공식과 동일 산식(다듬기 1/100자 · 블로그 2/100자 · 재구성 구간 정액)
   const len = text.length;

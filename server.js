@@ -3,20 +3,19 @@
 // 1. dotenv 설정을 최상단에 추가 (이게 있어야 .env 파일을 읽습니다)
 require('dotenv').config();
 const express = require('express');
+const { logger, captureProcessErrors } = require('./lib/logger');
+captureProcessErrors();
 const { corsMiddleware, limiter } = require('./config');
+const requestContext = require('./middleware/requestContext');
+const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 app.set('trust proxy', 1);
 
 // 미들웨어
+app.use(requestContext);
 app.use(corsMiddleware);
 app.use(express.json({ limit: '10mb' }));
-
-app.use((req, res, next) => {
-  const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - IP: ${ip}`);
-  next();
-});
 
 // Rate Limiter
 app.use('/analyze', limiter);
@@ -52,10 +51,20 @@ app.use('/', require('./routes/coupon'));
 // ★ 안전망: 서버를 claudecode 백엔드로 돌리면 호출당 ~45초·직렬(동시성 1)이라 UI 변환이 수십 분 걸려
 //   프런트 타임아웃으로 전부 실패한다(2026-06-11 실사고 — .env의 LLM_BACKEND=claudecode가 원인).
 if (process.env.LLM_BACKEND === 'claudecode') {
-  console.warn('⚠️⚠️ LLM_BACKEND=claudecode로 서버 구동 중 — UI 변환은 타임아웃 난다. 서버는 LLM_BACKEND 미설정(API)이 정상. claudecode는 engine-test 전용.');
+  logger.warn('server.llm_claudecode_warning', {
+    message: 'LLM_BACKEND=claudecode로 서버 구동 중입니다. UI 변환은 타임아웃 가능성이 높습니다.'
+  });
 }
 
-const server = app.listen(process.env.PORT || 3000, () => console.log(`서버 시작! (LLM=${process.env.LLM_BACKEND || 'api'}, 인증=${process.env.FIREBASE_SERVICE_ACCOUNT ? 'Firebase' : (process.env.DEV_NO_AUTH === '1' ? 'DEV 우회' : '비활성(요청 시 401)')})`));
+app.use(errorHandler);
+
+const server = app.listen(process.env.PORT || 3000, () => {
+  logger.info('server.started', {
+    port: Number(process.env.PORT || 3000),
+    llm: process.env.LLM_BACKEND || 'api',
+    auth: process.env.FIREBASE_SERVICE_ACCOUNT ? 'firebase' : (process.env.DEV_NO_AUTH === '1' ? 'dev_no_auth' : 'disabled')
+  });
+});
 
 // ── graceful shutdown: 배포(Render는 SIGTERM)·Ctrl+C 시 새 작업 거부 → 진행 중 LLM 중단(비용 차단) →
 //   job 상태 영속화 후 종료. 영속화 덕에 폴링 클라이언트는 재시작 후에도 404 대신 정확한 상태를 받는다.
@@ -63,8 +72,8 @@ let shuttingDown = false;
 async function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`[shutdown] ${sig} 수신 — 새 작업 거부, job 영속화 후 종료`);
-  try { await transformRouter.shutdown(); } catch (e) { console.error('[shutdown] job 영속화 실패:', e?.message); }
+  logger.warn('server.shutdown_started', { signal: sig });
+  try { await transformRouter.shutdown(); } catch (e) { logger.error('server.shutdown_persist_failed', { err: e }); }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 5000).unref();   // close가 keep-alive 연결에 막혀도 5초 내 종료 보장
 }

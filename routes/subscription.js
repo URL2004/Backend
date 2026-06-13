@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { admin, db } = require('../config');
+const { logger, setLogContext } = require('../lib/logger');
 
 const router = express.Router();
 
@@ -33,11 +34,13 @@ function bearerToken(req) {
 function requireCronSecret(req, res) {
   const secret = (process.env.CRON_SECRET || '').trim();
   if (!secret) {
+    logger.error('subscription.cron_secret_missing');
     res.status(503).json({ error: 'cron disabled: CRON_SECRET is not configured' });
     return null;
   }
   const supplied = bearerToken(req) || (req.body && req.body.internalKey) || '';
   if (!supplied || supplied !== secret) {
+    logger.warn('subscription.cron_secret_rejected');
     res.status(403).json({ error: 'forbidden' });
     return null;
   }
@@ -47,11 +50,13 @@ function requireCronSecret(req, res) {
 function requireWebhookSecret(req, res) {
   const secret = (process.env.TOSS_WEBHOOK_SECRET || '').trim();
   if (!secret) {
+    logger.error('toss.webhook_secret_missing');
     res.status(503).json({ error: 'webhook disabled: TOSS_WEBHOOK_SECRET is not configured' });
     return null;
   }
   const supplied = req.get('x-gp-webhook-secret') || req.get('x-webhook-secret') || bearerToken(req) || '';
   if (!supplied || supplied !== secret) {
+    logger.warn('toss.webhook_secret_rejected');
     res.status(403).json({ error: 'forbidden' });
     return null;
   }
@@ -173,6 +178,7 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
 
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  setLogContext({ uid });
   if (!authKey || !customerKey) return res.status(400).json({ error: '결제 정보가 누락되었습니다.' });
   if (customerKey !== `cust_${uid}`) return res.status(403).json({ error: '결제 식별자가 일치하지 않습니다.' });
 
@@ -197,7 +203,7 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
   // 1. 토스 빌링키 발급
   const issued = await tossIssueBillingKey({ authKey, customerKey });
   if (!issued.ok) {
-    console.error('❌ 빌링키 발급 실패:', issued.data);
+    logger.warn('subscription.billing_key_issue_failed', { uid, tier, status: issued.status, toss: issued.data });
     return res.status(issued.status).json({ error: '빌링키 발급 실패: ' + (issued.data.message || '알 수 없는 오류') });
   }
   const { billingKey, cardCompany, card } = issued.data;
@@ -216,7 +222,7 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
   });
 
   if (!charged.ok) {
-    console.error('❌ 첫 정기결제 실패:', charged.data);
+    logger.warn('subscription.first_charge_failed', { uid, tier, status: charged.status, toss: charged.data });
     return res.status(charged.status).json({ error: '결제 실패: ' + (charged.data.message || '알 수 없는 오류') });
   }
 
@@ -230,13 +236,14 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
     });
   } catch (e) {
     if (e.message === 'DUPLICATE_ORDER') {
+      logger.warn('subscription.duplicate_order_blocked', { uid, tier, orderId });
       return res.status(400).json({ error: '이미 처리된 주문입니다.' });
     }
-    console.error('❌ 구독 적용 실패:', e);
+    logger.error('subscription.apply_failed_manual_action', { uid, tier, orderId, err: e });
     return res.status(500).json({ error: '결제는 됐으나 구독 처리에 실패했습니다. 관리자에 문의해주세요.' });
   }
 
-  console.log(`✅ 구독 시작: uid=${uid}, tier=${tier}, amount=${plan.amount}`);
+  logger.info('subscription.started', { uid, tier, amount: plan.amount, orderId });
   res.json({ ok: true, tier, amount: plan.amount, orderId });
 });
 
@@ -246,6 +253,7 @@ router.post('/subscription/charge', async (req, res) => {
   if (!internalKey) return;
   const { uid } = req.body;
   if (!uid) return res.status(400).json({ error: 'uid required' });
+  setLogContext({ uid });
 
   const userRef = db.collection('users').doc(uid);
   const snap = await userRef.get();
@@ -278,7 +286,7 @@ router.post('/subscription/charge', async (req, res) => {
 
   // 카드사 일시 오류 대비 1회 재시도 (1.5초 후)
   if (!charged.ok) {
-    console.warn(`⚠️ 정기결제 1차 실패 → 재시도 uid=${uid}:`, charged.data?.code);
+    logger.warn('subscription.charge_retrying', { uid, tier: sub.tier, orderId, code: charged.data?.code });
     await new Promise(r => setTimeout(r, 1500));
     charged = await tossChargeBilling({
       billingKey: sub.billingKey,
@@ -290,7 +298,7 @@ router.post('/subscription/charge', async (req, res) => {
   }
 
   if (!charged.ok) {
-    console.error(`❌ 정기결제 최종 실패 uid=${uid}:`, charged.data);
+    logger.error('subscription.charge_failed', { uid, tier: sub.tier, orderId, status: charged.status, toss: charged.data });
     await userRef.update({
       'subscription.status': 'past_due',
       'plan': 'free'
@@ -317,11 +325,11 @@ router.post('/subscription/charge', async (req, res) => {
     });
   } catch (e) {
     if (e.message === 'DUPLICATE_ORDER') return res.json({ ok: true, deduped: true });
-    console.error('❌ 사이클 적용 실패:', e);
+    logger.error('subscription.cycle_apply_failed_manual_action', { uid, tier: sub.tier, orderId, err: e });
     return res.status(500).json({ error: '사이클 적용 실패' });
   }
 
-  console.log(`🔁 정기결제 성공: uid=${uid}, tier=${sub.tier}`);
+  logger.info('subscription.charge_succeeded', { uid, tier: sub.tier, orderId });
   res.json({ ok: true, orderId });
 });
 
@@ -348,7 +356,7 @@ async function runProcessDue(internalKey) {
       if (r.ok) results.charged++;
       else results.failed++;
     } catch (e) {
-      console.error('cron charge fail:', doc.id, e);
+      logger.error('subscription.cron_charge_request_failed', { uid: doc.id, err: e });
       results.failed++;
     }
   }
@@ -374,7 +382,7 @@ async function runProcessDue(internalKey) {
   }
   if (results.expired) await batch.commit();
 
-  console.log(`🕐 cron 결과: ${JSON.stringify(results)}`);
+  logger.info('subscription.cron_process_due_completed', results);
   return results;
 }
 
@@ -386,7 +394,7 @@ router.post('/subscription/process-due', async (req, res) => {
     const results = await runProcessDue(internalKey);
     res.json({ ok: true, ...results });
   } catch (e) {
-    console.error('❌ process-due fail:', e?.message, e?.stack);
+    logger.error('subscription.cron_process_due_failed', { err: e });
     res.status(500).json({ error: 'process-due failed', detail: e?.message || String(e) });
   }
 });
@@ -401,6 +409,7 @@ router.post('/subscription/cancel', async (req, res) => {
   const { idToken } = req.body;
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  setLogContext({ uid });
 
   const userRef = db.collection('users').doc(uid);
   const snap = await userRef.get();
@@ -414,7 +423,7 @@ router.post('/subscription/cancel', async (req, res) => {
     'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp()
   });
 
-  console.log(`🛑 구독 취소: uid=${uid}, tier=${sub.tier}`);
+  logger.info('subscription.cancelled_by_user', { uid, tier: sub.tier });
   res.json({ ok: true, message: '구독이 취소되었습니다. 다음 결제일까지 사용 가능합니다.' });
 });
 
@@ -423,6 +432,7 @@ router.post('/subscription/resume', async (req, res) => {
   const { idToken } = req.body;
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  setLogContext({ uid });
 
   const userRef = db.collection('users').doc(uid);
   const snap = await userRef.get();
@@ -440,6 +450,7 @@ router.post('/subscription/resume', async (req, res) => {
     'subscription.cancelledAt': null
   });
 
+  logger.info('subscription.resumed_by_user', { uid, tier: sub.tier });
   res.json({ ok: true, message: '구독이 재개되었습니다.' });
 });
 
@@ -448,6 +459,7 @@ router.get('/subscription/status', async (req, res) => {
   const idToken = req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.query.idToken;
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  setLogContext({ uid });
 
   const snap = await db.collection('users').doc(uid).get();
   if (!snap.exists) return res.json({ ok: true, subscription: null, coupon: null });
@@ -465,7 +477,12 @@ router.post('/toss/webhook', async (req, res) => {
   res.status(200).send('OK');
 
   const { eventType, data } = req.body || {};
-  console.log(`📨 toss webhook: ${eventType}`);
+  logger.info('toss.webhook_received', {
+    eventType,
+    orderId: data?.orderId,
+    paymentStatus: data?.status,
+    cancelStatus: data?.cancelStatus
+  });
 
   try {
     if (eventType === 'PAYMENT_STATUS_CHANGED') {
@@ -483,6 +500,7 @@ router.post('/toss/webhook', async (req, res) => {
       if (status === 'CANCELED' || status === 'ABORTED' || status === 'EXPIRED') {
         const order = snap.data();
         if (order.uid) {
+          logger.warn('toss.webhook_subscription_closed', { eventType, orderId, uid: order.uid, status });
           await db.collection('users').doc(order.uid).update({
             'subscription.status': 'refunded',
             'plan': 'free'
@@ -496,6 +514,7 @@ router.post('/toss/webhook', async (req, res) => {
         .where('subscription.billingKey', '==', billingKey)
         .limit(1).get();
       if (!found.empty) {
+        logger.warn('toss.webhook_billing_deleted', { uid: found.docs[0].id });
         await found.docs[0].ref.update({
           'subscription.status': 'cancelled',
           'subscription.billingKey': null,
@@ -512,7 +531,7 @@ router.post('/toss/webhook', async (req, res) => {
       });
     }
   } catch (e) {
-    console.error('webhook handler fail:', e);
+    logger.error('toss.webhook_handler_failed', { eventType, err: e });
   }
 });
 

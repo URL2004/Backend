@@ -66,7 +66,7 @@ const dailyLimiter = rateLimit({
 });
 
 // 관리자 UID 화이트리스트 (프론트엔드 ADMIN_ROLES와 동일하게 유지)
-const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2', 'upyxtXMQEgQXfqTUWPrf6QS9EqE2'];
+const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2', 'upyxtXMQEgQXfqTUWPrf6QS9EqE2', '9i6YA66mpXSBcpPJqNmJQ5jnJsT2'];
 
 // Firebase ID Token 검증 헬퍼 (실패 시 null)
 async function verifyToken(idToken) {

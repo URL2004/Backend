@@ -14,7 +14,8 @@ service cloud.firestore {
       return signedIn() && request.auth.uid in [
         'nC90IyjgaIZ8Z0JTABMTiyQHF9g1',
         'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2',
-        'upyxtXMQEgQXfqTUWPrf6QS9EqE2'
+        'upyxtXMQEgQXfqTUWPrf6QS9EqE2',
+        '9i6YA66mpXSBcpPJqNmJQ5jnJsT2'
       ];
     }
 

@@ -111,6 +111,56 @@ function recordStart(uid) {
   else dailyStarts.set(uid, { day, count: 1 });
 }
 
+function blockedReason(gates, mode) {
+  const set = new Set(Array.isArray(gates) ? gates : []);
+  if (set.has('semanticJudge')) return '변환 결과에 원문에 없던 사실이나 주장이 섞여 차단했어요.';
+  if (set.has('lostFacts')) return '변환 결과에서 원문의 핵심 사실이나 수치가 빠져 차단했어요.';
+  if (set.has('novelty')) return '변환 결과에 새 정보가 추가되어 차단했어요.';
+  if (set.has('evidence_pairing')) return '수치와 출처의 짝이 맞지 않아 차단했어요.';
+  if (mode === 'polish') return '문장을 다듬는 중 원문 보존 기준을 통과하지 못해 차단했어요.';
+  return '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요.';
+}
+
+function blockedNextActions(gates, mode) {
+  const set = new Set(Array.isArray(gates) ? gates : []);
+  if (mode === 'formal') {
+    if (set.has('semanticJudge') || set.has('novelty')) {
+      return [
+        '같은 설정으로 반복하기보다 그대로 다듬기를 사용해 주세요.',
+        '고급 피하기를 다시 쓸 경우 근거 보강을 끄거나 글을 2~3개로 나눠 주세요.',
+        '연도, 기관명, 정책 판단처럼 원문에 없는 내용이 들어가기 쉬운 문장을 줄여 주세요.'
+      ];
+    }
+    if (set.has('lostFacts') || set.has('evidence_pairing')) {
+      return [
+        '사실과 수치가 많은 문단은 짧게 나눠 다시 시도해 주세요.',
+        '근거 보강을 켠 경우 승인 근거 수를 줄이거나 핵심 근거만 남겨 주세요.',
+        '바로 결과가 필요하면 그대로 다듬기를 사용해 주세요.'
+      ];
+    }
+  }
+  if (mode === 'blog') {
+    return [
+      '글을 2~3개로 나눠 짧게 시도해 주세요.',
+      '경험 메모를 줄이거나 원문에 없는 사례가 들어가지 않게 해 주세요.',
+      '바로 결과가 필요하면 그대로 다듬기를 사용해 주세요.'
+    ];
+  }
+  return [
+    '원문을 더 짧게 나눠 다시 시도해 주세요.',
+    '사실, 수치, 고유명사가 많은 부분은 원문 표현을 더 유지해 주세요.'
+  ];
+}
+
+function blockedResponse(job) {
+  const actions = blockedNextActions(job.gates || [], job.mode || 'formal');
+  return {
+    error: `${blockedReason(job.gates || [], job.mode || 'formal')} 크레딧은 차감되지 않았어요. ${actions[0]}`,
+    reason: blockedReason(job.gates || [], job.mode || 'formal'),
+    nextActions: actions
+  };
+}
+
 // ── job 영속화(2026-06-12): Firestore transformJobs — 재시작에도 결과·승인대기 생존.
 //   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
@@ -235,6 +285,89 @@ async function runSearchPhase(job, text) {
   }
 }
 
+// ── 차단 시 자동 폴백(2026-06-13) ─────────────────────────────────────────────
+//   문제: 재생성(genreTransferV2)은 기준금리·정책 같은 구체 사실이 많은 격식체에서 원문에 없는
+//   주장을 만들어내 semanticJudge에 막힌다. 같은 글·같은 설정으로 재시도하면 결정론적으로 다시 막혀
+//   "그 글은 영원히 변환 불가"인 막다른 길이 된다(차단=결과 0).
+//   해결: 차단되면 원문 보존형 경로(runHumanizeChunked·floorV2 — 재생성이 아니라 보존 재작성이라
+//   날조가 원천적으로 없어 게이트를 통과)로 재처리해 "약하더라도 실제 결과"를 보장한다.
+//   끄려면 env TRANSFORM_BLOCK_FALLBACK=0.
+function fallbackEnabled() {
+  const v = (process.env.TRANSFORM_BLOCK_FALLBACK || '').toLowerCase();
+  return v !== '0' && v !== 'off' && v !== 'false';
+}
+
+// 보존형 폴백 단가: 고급(재구성) 정액이 아니라 보존형(다듬기)과 동일한 100자당 1.
+//   고급 변환을 못 받았으므로 보존형 결과엔 보존형 가격만 받는다(과금 분쟁 차단).
+function preservationFallbackCredit(len) {
+  return Math.max(1, Math.ceil(len / 100));
+}
+
+// 반환: true = job을 완전히 처리함(호출부는 즉시 return) / false = 폴백 실패(원래대로 blocked 진행)
+async function tryPreservationFallback(job, text) {
+  try {
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return true;   // 이미 취소됨 — 차단으로 덮지 않음
+    }
+    job.stage = '원문 보존형으로 재처리 중';
+    job.note = (job.note ? job.note + ' ' : '')
+      + '고급 변환 결과가 원문 보존 기준을 통과하지 못해, 원문을 최대한 보존하는 방식으로 처리했어요.';
+    persistJob(job);
+
+    // 보존형(=polish) 경로 그대로 재사용 — 이미 운영 중인 검증된 경로.
+    const out = await analyze.runHumanizeChunked({
+      text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+      floorV2: true, optIn: false, judge: true, grounding: true, userNotes: ''
+    });
+    if ((out.floorReport && out.floorReport.status === 'blocked') || !out.result || !out.result.outputText) {
+      logger.warn('transform.fallback_blocked', { jobId: job.id, uid: job.uid, mode: job.mode });
+      return false;   // 보존형마저 막힘 → 원래 차단으로
+    }
+
+    // 과금: 보존형 단가로. 멱등 키는 동일(job_<id>)이라 중복 차감 불가.
+    const fbNeeded = preservationFallbackCredit(text.length);
+    if (!job.devNoAuth && job.plan !== 'unlimited') {
+      try {
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, fbNeeded, 'humanize', 'job_' + job.id));
+        job.deducted = true;
+      } catch (e) {
+        logger.error('transform.fallback_credit_deduct_failed_manual_action', {
+          jobId: job.id, uid: job.uid, needed: fbNeeded, opType: 'humanize', err: e
+        });
+      }
+    }
+    job.needed = fbNeeded;   // 표시·영속화가 실제 차감액과 일치하도록 갱신
+    job.status = 'done';
+    job.result = {
+      outputText: out.result.outputText,
+      preservationFallback: true,   // UI가 "보존형으로 처리됨" 배지를 띄울 수 있게
+      metrics: {
+        novelty: 0, lostFacts: 0, repetition: 0,
+        judge: 'pass',
+        lengthRatio: out.floorReport?.metrics?.lengthRatio,
+        evidenceUsed: 0,
+        pairingClean: true,
+        preservationFallback: true
+      },
+      chunkCount: out.chunkCount,
+      fallbackCount: out.fallbackCount
+    };
+    persistJob(job);
+    logger.info('transform.fallback_done', {
+      jobId: job.id, uid: job.uid, mode: job.mode, needed: fbNeeded, deducted: job.deducted
+    });
+    return true;
+  } catch (e) {
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return true;   // 취소는 처리 완료로 간주(원래 차단으로 덮지 않음)
+    }
+    logger.error('transform.fallback_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
+    return false;
+  }
+}
+
 async function runJob(job, text, evidence) {
   try {
     job.status = 'running';
@@ -262,6 +395,14 @@ async function runJob(job, text, evidence) {
         gates,
         gateDetail
       });
+
+      // 막다른 길 방지: 차단되면 보존형 경로로 재처리해 결과를 보장한다(formal 한정, env로 off 가능).
+      if (job.mode === 'formal' && fallbackEnabled()) {
+        const handled = await tryPreservationFallback(job, text);
+        if (handled) return;   // 폴백이 done/cancelled로 처리 완료
+        // 폴백 실패 시 아래로 떨어져 원래대로 차단
+      }
+
       job.status = 'blocked';
       job.gates = gates;
       job.gateDetail = gateDetail;
@@ -535,7 +676,7 @@ router.get('/transform/:id', async (req, res) => {
   if (job.status === 'done') return res.json({ ...base, result: job.result });
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
   if (job.status === 'cancelled') return res.json(base);
-  if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, error: '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요. 크레딧은 차감되지 않았어요. 같은 설정으로 다시 시도하면 통과되는 경우가 많아요.' });
+  if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, ...blockedResponse(job) });
   if (job.status === 'error') return res.json({ ...base, error: job.error });
   res.json(base);
 });

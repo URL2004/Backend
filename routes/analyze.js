@@ -2781,8 +2781,13 @@ router.post('/analyze', async (req, res) => {
       if (out.floorReport && out.floorReport.status === 'blocked') {
         const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
         logger.warn('analyze.floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
+        const blockedHint = gates.includes('lostFacts')
+          ? '원문의 핵심 사실이나 수치가 빠져 차단했어요. 글을 짧게 나누거나 사실·수치가 많은 문단은 원문 표현을 더 유지해 주세요.'
+          : gates.includes('novelty') || gates.includes('judge')
+            ? '원문에 없던 내용이 섞여 차단했어요. 경험 메모나 추가 지시를 줄이고, 바로 결과가 필요하면 그대로 다듬기를 사용해 주세요.'
+            : '원문 보존 기준을 통과하지 못해 차단했어요. 같은 글을 반복하기보다 글을 짧게 나누거나 그대로 다듬기를 사용해 주세요.';
         return res.status(422).json({
-          error: '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요. 크레딧은 차감되지 않았어요. 글을 조금 수정해 다시 시도해주세요.',
+          error: `${blockedHint} 크레딧은 차감되지 않았어요.`,
           floorStatus: 'blocked',
           gates
         });

@@ -140,6 +140,134 @@ function getOrderRef(kind, orderId) {
     : db.collection('orders').doc(orderId);
 }
 
+async function requireAdmin(req, res) {
+  const { idToken } = req.body || {};
+  const adminUid = await verifyToken(idToken);
+  if (!adminUid) {
+    res.status(401).json({ error: '로그인이 필요합니다.' });
+    return null;
+  }
+  setLogContext({ uid: adminUid, actorUid: adminUid });
+  if (!ADMIN_UIDS.includes(adminUid)) {
+    res.status(403).json({ error: '관리자 권한이 없습니다.' });
+    return null;
+  }
+  return adminUid;
+}
+
+function timestampMs(ts) {
+  if (!ts) return 0;
+  if (typeof ts.toMillis === 'function') return ts.toMillis();
+  if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+  if (ts._seconds) return ts._seconds * 1000;
+  const parsed = Date.parse(ts);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function serializeCreditHistoryDoc(docSnap, userByUid) {
+  const h = docSnap.data() || {};
+  const uid = docSnap.ref.parent.parent ? docSnap.ref.parent.parent.id : '';
+  const u = userByUid[uid] || {};
+  return {
+    id: docSnap.id,
+    uid,
+    type: h.type || null,
+    used: Number(h.used) || 0,
+    amount: Number(h.amount) || 0,
+    remaining: Number(h.remaining) || 0,
+    plan: h.plan || null,
+    orderId: h.orderId || null,
+    createdAtMs: timestampMs(h.createdAt),
+    userName: u.name || '알 수 없음',
+    userEmail: u.email || ''
+  };
+}
+
+async function getUserMap(uids) {
+  const unique = Array.from(new Set(uids.filter(Boolean)));
+  if (!unique.length) return {};
+  const refs = unique.map(uid => db.collection('users').doc(uid));
+  const snaps = await db.getAll(...refs);
+  const out = {};
+  snaps.forEach((snap, idx) => {
+    out[unique[idx]] = snap.exists ? snap.data() : {};
+  });
+  return out;
+}
+
+async function loadCreditHistoryViaCollectionGroup(maxRows) {
+  const snap = await db.collectionGroup('creditHistory')
+    .orderBy('createdAt', 'desc')
+    .limit(maxRows)
+    .get();
+  const uids = snap.docs.map(d => d.ref.parent.parent && d.ref.parent.parent.id);
+  const userByUid = await getUserMap(uids);
+  return snap.docs.map(d => serializeCreditHistoryDoc(d, userByUid));
+}
+
+async function loadCreditHistoryViaUsers(maxRows) {
+  const usersSnap = await db.collection('users').get();
+  const perUserLimit = Math.min(Math.max(maxRows, 1), 200);
+  const rows = [];
+  const userByUid = {};
+  await Promise.all(usersSnap.docs.map(async userDoc => {
+    const uid = userDoc.id;
+    userByUid[uid] = userDoc.data() || {};
+    const histSnap = await userDoc.ref.collection('creditHistory')
+      .orderBy('createdAt', 'desc')
+      .limit(perUserLimit)
+      .get();
+    histSnap.docs.forEach(d => rows.push(serializeCreditHistoryDoc(d, userByUid)));
+  }));
+  rows.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+  return rows.slice(0, maxRows);
+}
+
+async function getAdminCreditHistory(maxRows) {
+  try {
+    return {
+      source: 'collectionGroup',
+      rows: await loadCreditHistoryViaCollectionGroup(maxRows)
+    };
+  } catch (err) {
+    logger.warn('admin.credit_history_collection_group_failed_fallback', { err });
+    return {
+      source: 'usersFallback',
+      rows: await loadCreditHistoryViaUsers(maxRows)
+    };
+  }
+}
+
+// 관리자: 전체 사용자 크레딧 내역
+router.post('/admin/credit-history', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+
+  const rawLimit = parseInt(req.body && req.body.limit, 10);
+  const maxRows = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 2000) : 1000;
+
+  try {
+    const { rows, source } = await getAdminCreditHistory(maxRows);
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const dailyUsed = {};
+    rows.forEach(h => {
+      if (!h.createdAtMs || h.createdAtMs < sevenDaysAgo.getTime()) return;
+      if (h.type === 'charge' || h.type === 'refund') return;
+      const day = new Date(h.createdAtMs).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul' });
+      dailyUsed[day] = (dailyUsed[day] || 0) + (Number(h.used) || 0);
+    });
+
+    logger.info('admin.credit_history_loaded', { adminUid, count: rows.length, source });
+    res.json({ ok: true, history: rows, dailyUsed, source });
+  } catch (err) {
+    logger.error('admin.credit_history_failed', { adminUid, err });
+    res.status(500).json({ error: '전체 사용자 내역을 불러오지 못했습니다.' });
+  }
+});
+
 const REFUND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 // 무료 보너스(회원가입 10 + 추천 20×N)는 결제 크레딧보다 먼저 소진된다고 가정.
 // → 지갑에 남은 크레딧은 모두 결제분으로 간주하고 주문 크레딧 수만큼만 cap.

@@ -334,7 +334,7 @@ async function findUserByQuery(rawQuery) {
   return null;
 }
 
-async function processRefund({ orderRef, orderSnap, kind, adminUid, reason }) {
+async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount }) {
   const order = orderSnap.data();
   if (!['paid', 'refund_requested', 'refund_rejected'].includes(order.status)) {
     throw Object.assign(new Error('환불할 수 없는 주문 상태입니다. 현재: ' + order.status), { status: 400 });
@@ -403,28 +403,50 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason }) {
     throw Object.assign(new Error('주문 데이터가 올바르지 않아 환불 계산이 불가합니다.'), { status: 400 });
   }
 
+  // 환불 모드: 'remaining'(미사용분 비례·기본) | 'full'(전액) | 'custom'(금액 직접 입력)
+  const refundMode = ['remaining', 'full', 'custom'].includes(mode) ? mode : 'remaining';
+  const reqAmount = parseInt(customAmount, 10);
+  if (refundMode === 'custom' && (!Number.isFinite(reqAmount) || reqAmount <= 0 || reqAmount > orderAmount)) {
+    throw Object.assign(new Error(`직접 입력 환불 금액은 1원 이상 결제금액(${orderAmount.toLocaleString('ko-KR')}원) 이하여야 합니다.`), { status: 400 });
+  }
+
   let refundAmount, refundableCredits;
   try {
     const result = await db.runTransaction(async (transaction) => {
       const userSnap = await transaction.get(userRef);
       const currentCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
-      const refundable = Math.min(currentCredits, safeCreditsTotal);
-      if (refundable <= 0) throw new Error('NO_REFUNDABLE');
-      const amount = Math.floor(orderAmount * refundable / safeCreditsTotal);
+      const usableCredits = Math.min(currentCredits, safeCreditsTotal); // 음수 방지: 이 주문 크레딧·현재 잔액 한도
+
+      let amount, creditsToDeduct;
+      if (refundMode === 'full') {
+        // 전액 환불: 결제금액 전부 환불, 크레딧은 가능한 만큼만 차감(이미 쓴 분은 재차감 안 함)
+        amount = orderAmount;
+        creditsToDeduct = usableCredits;
+      } else if (refundMode === 'custom') {
+        // 직접 입력: 입력 금액 환불, 크레딧은 금액 비례로 차감(잔액 한도 내)
+        amount = reqAmount;
+        creditsToDeduct = Math.min(usableCredits, Math.floor(safeCreditsTotal * amount / orderAmount));
+      } else {
+        // 남은건 환불(기본): 미사용 크레딧 비례
+        if (usableCredits <= 0) throw new Error('NO_REFUNDABLE');
+        amount = Math.floor(orderAmount * usableCredits / safeCreditsTotal);
+        creditsToDeduct = usableCredits;
+      }
       if (!Number.isFinite(amount) || amount <= 0) throw new Error('INVALID_AMOUNT');
-      transaction.update(userRef, { credits: currentCredits - refundable });
+      transaction.update(userRef, { credits: currentCredits - creditsToDeduct });
       transaction.update(orderRef, {
         cancelReason,
+        refundMode,
         refundAmount: amount,
-        refundedCredits: refundable
+        refundedCredits: creditsToDeduct
       });
-      return { refundAmount: amount, refundableCredits: refundable };
+      return { refundAmount: amount, refundableCredits: creditsToDeduct };
     });
     refundAmount = result.refundAmount;
     refundableCredits = result.refundableCredits;
   } catch (e) {
     if (e.message === 'NO_REFUNDABLE') {
-      throw Object.assign(new Error('이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다.'), { status: 400 });
+      throw Object.assign(new Error('이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다. (전액/직접입력 모드를 사용하세요)'), { status: 400 });
     }
     if (e.message === 'INVALID_AMOUNT') {
       throw Object.assign(new Error('환불 금액 계산 오류'), { status: 400 });
@@ -607,6 +629,8 @@ router.post('/admin/direct-refund', async (req, res) => {
   const orderId = String((req.body && req.body.orderId) || '').trim();
   const kind = (req.body && (req.body.kind === 'sub' || req.body.kind === 'subscription')) ? 'subscription' : 'order';
   const reason = String((req.body && req.body.reason) || '').trim();
+  const mode = (req.body && req.body.mode) || 'remaining';
+  const customAmount = req.body && req.body.amount;
   if (!orderId) return res.status(400).json({ error: '주문번호가 필요합니다.' });
   if (reason.length < 2) return res.status(400).json({ error: '환불 사유를 2자 이상 입력해주세요.' });
 
@@ -614,7 +638,7 @@ router.post('/admin/direct-refund', async (req, res) => {
     const orderRef = getOrderRef(kind, orderId);
     const orderSnap = await orderRef.get();
     if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
-    const result = await processRefund({ orderRef, orderSnap, kind, adminUid, reason });
+    const result = await processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount });
     logger.info('admin.direct_refund_approved', {
       adminUid, orderId, kind, uid: orderSnap.data().uid,
       refundAmount: result.refundAmount, refundedCredits: result.refundedCredits

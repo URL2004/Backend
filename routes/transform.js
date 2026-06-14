@@ -182,6 +182,24 @@ function deletePersisted(id) {
     .catch(e => logger.warn('transform.persist_delete_failed', { jobId: id, err: e }));
 }
 
+// ── 서버측 이용 기록 노출(2026-06-14) ─────────────────────────────────────────
+//   기존엔 변환 결과가 transformJobs(서버) + localStorage 보관함에만 남아, 완료 화면을 못 보고 이탈하면
+//   (폴링 401·뒤로가기·브라우저 전환 등) 사용자 화면(이용 기록)에서 결과가 사라졌다.
+//   해결: 완료 시 analyze와 동일 컬렉션·스키마(users/{uid}/history)로도 저장 → 이용 기록에 노출되어
+//   완료 화면을 못 봐도 결과를 복원할 수 있다. 멱등키 job_<id>(재시작·중복 호출에도 1건).
+//   fire-and-forget — 결과는 이미 transformJobs에 있으므로 저장 실패가 job을 죽이면 안 된다.
+function saveJobHistory(job, text, outputText) {
+  if (!db || job.devNoAuth || typeof analyze.saveAnalyzeHistory !== 'function') return;
+  analyze.saveAnalyzeHistory({
+    uid: job.uid,
+    requestId: 'job_' + job.id,
+    opType: 'humanize',
+    text: text || job.text || '',
+    needed: job.needed,
+    result: { outputText: outputText || '' }
+  }).catch(e => logger.warn('transform.history_save_failed', { jobId: job.id, uid: job.uid, err: e }));
+}
+
 // 서버 시작 시 복원: done·blocked·awaiting_approval은 그대로 살리고(폴링·승인 재개 가능),
 // running이었던 job은 프로세스가 죽어 실제로는 중단됨 → error로 정정(완료 차감이라 돈 사고는 없음).
 async function restoreJobs() {
@@ -354,6 +372,7 @@ async function tryPreservationFallback(job, text) {
       fallbackCount: out.fallbackCount
     };
     persistJob(job);
+    saveJobHistory(job, text, out.result.outputText);   // 이용 기록(서버) 노출
     logger.info('transform.fallback_done', {
       jobId: job.id, uid: job.uid, mode: job.mode, needed: fbNeeded, deducted: job.deducted
     });
@@ -440,6 +459,7 @@ async function runJob(job, text, evidence) {
       skeleton: out.skeleton
     };
     persistJob(job);
+    saveJobHistory(job, text, out.text);   // 이용 기록(서버)에도 노출 — 완료 화면을 못 봐도 결과 복원 가능
     logger.info('transform.done', {
       jobId: job.id,
       uid: job.uid,
@@ -518,6 +538,7 @@ async function runHumanizeJob(job, text) {
       fallbackCount: out.fallbackCount
     };
     persistJob(job);
+    saveJobHistory(job, text, out.result.outputText);   // 이용 기록(서버) 노출
     logger.info('transform.humanize_done', {
       jobId: job.id,
       uid: job.uid,
@@ -680,5 +701,7 @@ router.get('/transform/:id', async (req, res) => {
   if (job.status === 'error') return res.json({ ...base, error: job.error });
   res.json(base);
 });
+
+router.saveJobHistory = saveJobHistory;   // 테스트용
 
 module.exports = router;

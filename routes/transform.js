@@ -90,9 +90,44 @@ function countActive(uid, mode) {
   return { running, mine };
 }
 
+function activeJobFor(uid) {
+  let found = null;
+  for (const j of jobs.values()) {
+    if (j.uid !== uid) continue;
+    if (j.status !== 'running' && j.status !== 'awaiting_approval') continue;
+    if (!found || (j.createdAt || 0) > (found.createdAt || 0)) found = j;
+  }
+  return found;
+}
+
+function activeJobPayload(job) {
+  if (!job) return null;
+  const base = {
+    id: job.id,
+    status: job.status,
+    stage: job.stage,
+    mode: job.mode || 'formal',
+    elapsedSec: Math.max(0, Math.round((Date.now() - (job.createdAt || Date.now())) / 1000)),
+    estSec: job.estSec,
+    createdAt: job.createdAt,
+    needed: job.needed
+  };
+  if (job.note) base.note = job.note;
+  if (job.status === 'awaiting_approval') base.candidates = job.candidates || [];
+  return base;
+}
+
 function checkLimits(uid, mode) {
   const { running, mine } = countActive(uid, mode);
-  if (mine >= 1) return { status: 409, error: '이미 진행 중인 작업이 있어요. 완료(또는 취소) 후 다시 시작해 주세요.' };
+  if (mine >= 1) {
+    const active = activeJobFor(uid);
+    return {
+      status: 409,
+      error: '이미 진행 중인 작업이 있어요. 완료(또는 취소) 후 다시 시작해 주세요.',
+      activeJobId: active?.id || null,
+      activeStatus: active?.status || null
+    };
+  }
   const cap = poolOf(mode) === 'short' ? BLOG_MAX_ACTIVE : MAX_ACTIVE_GLOBAL;
   if (running >= cap) return { status: 503, error: '지금 요청이 몰려 있어요. 잠시 후(5~10분) 다시 시도해 주세요.' };
   // 일일 시작 한도는 formal(고원가)만 — short 모드는 저원가라 레이트리밋·동시 1개로 충분.
@@ -617,7 +652,20 @@ router.post('/transform', async (req, res) => {
   setLogContext({ uid: pre.uid });
   // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트(formal만).
   const limited = checkLimits(pre.uid, mode);
-  if (limited) return res.status(limited.status).json({ error: limited.error });
+  if (limited) {
+    logger.warn('transform.limit_blocked', {
+      uid: pre.uid,
+      mode,
+      status: limited.status,
+      activeJobId: limited.activeJobId || null,
+      activeStatus: limited.activeStatus || null
+    });
+    return res.status(limited.status).json({
+      error: limited.error,
+      activeJobId: limited.activeJobId || null,
+      activeStatus: limited.activeStatus || null
+    });
+  }
   if (mode === 'formal') recordStart(pre.uid);
 
   const id = crypto.randomBytes(8).toString('hex');
@@ -653,6 +701,15 @@ router.post('/transform', async (req, res) => {
     estSec
   });
   res.json({ ok: true, jobId: id, estSec, mode });
+});
+
+// 로컬 jobRef를 잃어도 서버에 남은 진행/승인대기 작업으로 복귀시키는 복구 엔드포인트.
+router.get('/transform/active', async (req, res) => {
+  const uid = await verifyToken(tokenFromReq(req));
+  if (!uid) return res.status(401).json({ error: '로그인이 필요해요.' });
+  setLogContext({ uid });
+  const job = activeJobFor(uid);
+  res.json({ ok: true, job: activeJobPayload(job) });
 });
 
 // ── 명시적 취소: 진행 중 LLM 호출을 abort — 차감은 완료 시에만 일어나므로 취소=항상 무과금.

@@ -638,6 +638,105 @@ router.post('/admin/user-history-item', async (req, res) => {
   }
 });
 
+// 관리자: 작업(transformJobs) 모니터 — 전체 사용자의 실패·중단·진행 작업을 상태·기간으로 조회.
+// 영향 사용자 일괄 식별용. createdAt은 ms(number)로 저장되어 단일필드 범위쿼리(복합 인덱스 불필요).
+const JOB_STATUS_SETS = {
+  issues: ['error', 'blocked', 'cancelled', 'awaiting_approval'],
+  active: ['queued', 'running', 'awaiting_approval'],
+  all: null
+};
+router.post('/admin/jobs', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const filterKey = (req.body && req.body.filter) || 'issues';
+    const allowed = JOB_STATUS_SETS[filterKey] !== undefined ? JOB_STATUS_SETS[filterKey] : JOB_STATUS_SETS.issues;
+    const hoursRaw = parseInt(req.body && req.body.hours, 10);
+    const hours = Number.isInteger(hoursRaw) ? Math.min(Math.max(hoursRaw, 1), 720) : 24;
+    const sinceMs = Date.now() - hours * 3600 * 1000;
+    const rawLimit = parseInt(req.body && req.body.limit, 10);
+    const cap = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 500) : 200;
+
+    const snap = await db.collection('transformJobs')
+      .where('createdAt', '>=', sinceMs)
+      .orderBy('createdAt', 'desc')
+      .limit(cap)
+      .get();
+
+    let rows = snap.docs.map(d => {
+      const j = d.data() || {};
+      return {
+        id: d.id,
+        uid: j.uid || '',
+        status: j.status || '',
+        stage: j.stage || '',
+        mode: j.mode || '',
+        needed: Number(j.needed) || 0,
+        deducted: !!j.deducted,
+        createdAtMs: Number(j.createdAt) || 0,
+        error: j.error || ''
+      };
+    });
+    if (allowed) rows = rows.filter(r => allowed.includes(r.status));
+
+    // 이메일 매핑(중복 uid 제거 후 일괄 조회)
+    const uids = [...new Set(rows.map(r => r.uid).filter(Boolean))];
+    const emailByUid = {};
+    await Promise.all(uids.map(async u => {
+      try { const us = await db.collection('users').doc(u).get(); if (us.exists) emailByUid[u] = us.data().email || ''; } catch (_) {}
+    }));
+    rows.forEach(r => { r.email = emailByUid[r.uid] || ''; });
+
+    const summary = {};
+    rows.forEach(r => { summary[r.status] = (summary[r.status] || 0) + 1; });
+    const chargedCount = rows.filter(r => r.deducted).length;
+    const affectedUids = [...new Set(rows.map(r => r.uid).filter(Boolean))];
+
+    logger.info('admin.jobs_loaded', { adminUid, filter: filterKey, hours, count: rows.length, chargedCount });
+    res.json({ ok: true, rows, summary, count: rows.length, chargedCount, affectedUids });
+  } catch (err) {
+    logger.error('admin.jobs_failed', { adminUid, err });
+    res.status(500).json({ error: '작업 목록을 불러오지 못했습니다. (transformJobs 색인 확인)' });
+  }
+});
+
+// 관리자: 영향 사용자에게 인앱 알림 일괄 발송 (users/{uid}/notifications)
+// 고정 docId(clientId)로 멱등 — 같은 공지 재발송 시 중복 안 쌓임.
+router.post('/admin/notify-users', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  const uids = Array.isArray(req.body && req.body.uids) ? [...new Set(req.body.uids.filter(Boolean))].slice(0, 500) : [];
+  const title = String((req.body && req.body.title) || '').trim().slice(0, 60);
+  const message = String((req.body && req.body.message) || '').trim().slice(0, 500);
+  const clientId = (String((req.body && req.body.clientId) || '').trim() || ('admin_notice_' + Date.now())).slice(0, 80);
+  if (!uids.length) return res.status(400).json({ error: '대상 사용자가 없습니다.' });
+  if (title.length < 1 || message.length < 2) return res.status(400).json({ error: '제목과 메시지를 입력해주세요.' });
+  try {
+    let sent = 0;
+    await Promise.all(uids.map(async (uid) => {
+      try {
+        await db.collection('users').doc(uid).collection('notifications').doc(clientId).set({
+          clientId,
+          type: 'notice',
+          title,
+          message,
+          action: { tab: 'main' },
+          postId: null,
+          read: false,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdAtMs: Date.now()
+        }, { merge: true });
+        sent++;
+      } catch (_) {}
+    }));
+    logger.info('admin.notify_users', { adminUid, total: uids.length, sent, clientId });
+    res.json({ ok: true, sent, total: uids.length });
+  } catch (err) {
+    logger.error('admin.notify_users_failed', { adminUid, err });
+    res.status(500).json({ error: '알림 발송에 실패했습니다.' });
+  }
+});
+
 // 관리자: 대시보드 매출 요약 (오늘 + 이번 달) — 관리자 페이지 상단 개요 바
 router.post('/admin/revenue-summary', async (req, res) => {
   const adminUid = await requireAdmin(req, res);

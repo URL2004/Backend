@@ -24,7 +24,11 @@ stub(path.join(base, 'engine', 'genretransfer.js'), {
     if (opts && opts.signal) opts.signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')); });
   })
 });
-stub(path.join(base, 'engine', 'evidence.js'), { suggestEvidence: async () => ({ candidates: [] }) });
+stub(path.join(base, 'engine', 'evidence.js'), {
+  suggestEvidence: async (text) => text.includes('근거테스트')
+    ? { candidates: [{ fact: '검증된 사실', sourceTitle: '공식 자료', sourceUrl: 'https://example.com/source', grade: 'A' }] }
+    : { candidates: [] }
+});
 stub(path.join(base, 'engine', 'evidencereview.js'), { reviewCandidates: c => c, hostOf: () => '' });
 // 소유자 검증(requireJobOwner)용 config 스텁: 토큰 문자열 = uid (멀티 유저 시뮬과 일관)
 stub(path.join(base, 'config.js'), { admin: null, db: null, verifyToken: async (t) => t || null });
@@ -83,17 +87,22 @@ const srv = app.listen(0, async () => {
     const a5 = await post('/transform', { text: TEXT, idToken: 'u1' });
     check('u1 4번째 시작 429(일일 한도 3)', a5.status === 429, a5);
 
-    // 3) 전역 동시 한도 2
+    // 3) 전역 동시 한도 2 — 초과분은 503 거절이 아니라 queued 접수
     const b1 = await post('/transform', { text: TEXT, idToken: 'u2' });
     const b2 = await post('/transform', { text: TEXT, idToken: 'u3' });
     check('u2·u3 시작 200(전역 2 자리)', b1.status === 200 && b2.status === 200, { b1, b2 });
     const b3 = await post('/transform', { text: TEXT, idToken: 'u4' });
-    check('u4 시작 503(전역 동시 한도)', b3.status === 503, b3);
+    check('u4 시작 200 + queued(전역 동시 한도 초과)', b3.status === 200 && b3.body.queued === true && b3.body.job.status === 'queued', b3);
 
-    // 4) 완료 폴링 — 스텁 2.5초 후 done + 결과
+    // 4) 완료 폴링 — 앞 슬롯이 끝나면 queued 작업이 자동 running→done
     await sleep(3200);
     const d1 = await get(`/transform/${b1.body.jobId}`, 'u2');
     check('u2 job done + 결과 수신', d1.body.status === 'done' && d1.body.result && d1.body.result.outputText === '재구성 결과', d1.body);
+    const q1 = await get(`/transform/${b3.body.jobId}`, 'u4');
+    check('u4 queued job 자동 시작', q1.body.status === 'running' || q1.body.status === 'done', q1.body);
+    await sleep(2600);
+    const q2 = await get(`/transform/${b3.body.jobId}`, 'u4');
+    check('u4 queued job done + 결과 수신', q2.body.status === 'done' && q2.body.result && q2.body.result.outputText === '재구성 결과', q2.body);
 
     // 4.5) blog job(기본 피하기): 새로고침 생존용 job 전환 — formal 일일 한도 미적용·별도 동시 풀·결과 형태
     const b4 = await post('/transform', { text: TEXT, idToken: 'u1', mode: 'blog' });
@@ -113,15 +122,34 @@ const srv = app.listen(0, async () => {
     const p2 = await get(`/transform/${p1.body.jobId}`, 'u2');
     check('polish done + 결과 수신', p2.body.status === 'done' && p2.body.mode === 'polish' && p2.body.result.outputText === '블로그 결과', p2.body);
 
-    // 5) 슬롯이 비면 다시 수용
-    const c1 = await post('/transform', { text: TEXT, idToken: 'u4' });
-    check('완료 후 u4 시작 200(슬롯 회수)', c1.status === 200, c1);
+    // 5) evidence 승인 후 재구성도 슬롯이 꽉 차면 queued → 자동 재개
+    const evText = '근거테스트' + '가'.repeat(300);
+    const ev1 = await post('/transform', { text: evText, idToken: 'u7', evidence: true });
+    check('evidence job 시작 200', ev1.status === 200, ev1);
+    await sleep(100);
+    const evWait = await get(`/transform/${ev1.body.jobId}`, 'u7');
+    check('evidence job 승인 대기', evWait.body.status === 'awaiting_approval' && evWait.body.candidates.length === 1, evWait.body);
+    const f1 = await post('/transform', { text: TEXT, idToken: 'u8' });
+    const f2 = await post('/transform', { text: TEXT, idToken: 'u9' });
+    check('승인 전 formal 슬롯 2개 점유', f1.status === 200 && f2.status === 200, { f1, f2 });
+    const evApprove = await post(`/transform/${ev1.body.jobId}/approve`, { idToken: 'u7', approved: [0] });
+    check('승인 후 슬롯 만석이면 queued', evApprove.status === 200 && evApprove.body.job.status === 'queued', evApprove);
+    await sleep(3200);
+    const evRun = await get(`/transform/${ev1.body.jobId}`, 'u7');
+    check('승인 queued job 자동 재개', evRun.body.status === 'running' || evRun.body.status === 'done', evRun.body);
+    await sleep(2600);
+    const evDone = await get(`/transform/${ev1.body.jobId}`, 'u7');
+    check('승인 queued job done', evDone.body.status === 'done' && evDone.body.result.outputText === '재구성 결과', evDone.body);
 
-    // 6) shutdown: running job 중단 정정 + 신규 거부(드레인)
+    // 6) 슬롯이 비면 새 작업은 즉시 running으로 수용
+    const c1 = await post('/transform', { text: TEXT, idToken: 'u5' });
+    check('완료 후 u5 시작 200(슬롯 회수)', c1.status === 200, c1);
+
+    // 7) shutdown: running job 중단 정정 + 신규 거부(드레인)
     await transform.shutdown();
-    const s1 = await get(`/transform/${c1.body.jobId}`, 'u4');
+    const s1 = await get(`/transform/${c1.body.jobId}`, 'u5');
     check('shutdown 후 running job → error(중단 안내)', s1.body.status === 'error' && /재시작/.test(s1.body.error || ''), s1.body);
-    const s2 = await post('/transform', { text: TEXT, idToken: 'u5' });
+    const s2 = await post('/transform', { text: TEXT, idToken: 'u6' });
     check('드레인 중 신규 시작 503', s2.status === 503, s2);
     check('stats: draining=true·activeJobs=0', transform.stats().draining === true && transform.stats().activeJobs === 0, transform.stats());
   } catch (e) {
@@ -132,4 +160,3 @@ const srv = app.listen(0, async () => {
   srv.close();
   process.exit(failed ? 1 : 0);
 });
-

@@ -21,6 +21,7 @@ const discord = require('../lib/discord');
 
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
+let draining = false;
 setInterval(() => {
   const now = Date.now();
   for (const [id, j] of jobs) {
@@ -34,6 +35,9 @@ setInterval(() => {
 //   동시·일일 한도로 최악 비용을 캡. 한도는 "운영자가 감당 가능한 하루 최대 손실" 기준으로 env 조정.
 const MAX_ACTIVE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_ACTIVE) || 3;   // 전역 동시 실행(LLM 점유) 상한 — formal(재구성)
 const BLOG_MAX_ACTIVE = Number(process.env.BLOG_MAX_ACTIVE) || 4;            // blog(기본 피하기) 전역 동시 — 짧고 저원가라 별도 풀
+const MAX_QUEUE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_QUEUE) || 30;    // formal 대기열 상한 — 무한 접수 방지
+const BLOG_MAX_QUEUE = Number(process.env.BLOG_MAX_QUEUE) || 50;             // short 대기열 상한
+const QUEUE_DRAIN_INTERVAL_MS = Number(process.env.TRANSFORM_QUEUE_TICK_MS) || 3000;
 const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함) — formal만
 const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
 const orphan401 = new Map();   // jobId → 폴링 GET 401 연속 횟수(결과 유실 의심 감지용)
@@ -80,45 +84,85 @@ router.restructureCredit = restructureCredit;
 function poolOf(mode) { return (mode || 'formal') === 'formal' ? 'formal' : 'short'; }
 
 function countActive(uid, mode) {
-  let running = 0, mine = 0;
+  let running = 0, queued = 0, mine = 0;
   const pool = poolOf(mode);
   for (const j of jobs.values()) {
     if (j.status === 'running' && poolOf(j.mode) === pool) running++;
-    // 승인 대기는 LLM을 안 쓰지만 사용자 기준으로는 "진행 중 작업" — 같은 사용자가 쌓아두는 건 모드 무관 차단.
-    if (j.uid === uid && (j.status === 'running' || j.status === 'awaiting_approval')) mine++;
+    if (j.status === 'queued' && poolOf(j.mode) === pool) queued++;
+    // 승인·대기는 LLM을 안 쓰지만 사용자 기준으로는 "진행 중 작업" — 같은 사용자가 쌓아두는 건 모드 무관 차단.
+    if (j.uid === uid && (j.status === 'running' || j.status === 'queued' || j.status === 'awaiting_approval')) mine++;
   }
-  return { running, mine };
+  return { running, queued, mine };
 }
 
 function activeJobFor(uid) {
   let found = null;
   for (const j of jobs.values()) {
     if (j.uid !== uid) continue;
-    if (j.status !== 'running' && j.status !== 'awaiting_approval') continue;
+    if (j.status !== 'running' && j.status !== 'queued' && j.status !== 'awaiting_approval') continue;
     if (!found || (j.createdAt || 0) > (found.createdAt || 0)) found = j;
   }
   return found;
 }
 
+function poolCap(mode) {
+  return poolOf(mode) === 'short' ? BLOG_MAX_ACTIVE : MAX_ACTIVE_GLOBAL;
+}
+
+function queueCap(mode) {
+  return poolOf(mode) === 'short' ? BLOG_MAX_QUEUE : MAX_QUEUE_GLOBAL;
+}
+
+function queueUnitSec(mode, estSec) {
+  return poolOf(mode) === 'short' ? 120 : Math.max(300, Math.min(1200, estSec || 900));
+}
+
+function queuedJobsForPool(pool) {
+  return [...jobs.values()]
+    .filter(j => j.status === 'queued' && poolOf(j.mode) === pool)
+    .sort((a, b) => (a.queuedAt || a.createdAt || 0) - (b.queuedAt || b.createdAt || 0));
+}
+
+function queueDetails(job) {
+  if (!job || job.status !== 'queued') return {};
+  const pool = poolOf(job.mode);
+  const queued = queuedJobsForPool(pool);
+  const position = Math.max(1, queued.findIndex(j => j.id === job.id) + 1);
+  const { running } = countActive('', job.mode);
+  const free = Math.max(0, poolCap(job.mode) - running);
+  const wave = position <= free ? 0 : Math.ceil((position - free) / Math.max(1, poolCap(job.mode)));
+  return {
+    queuePosition: position,
+    queueSize: queued.length,
+    queueEtaSec: wave === 0 ? 15 : wave * queueUnitSec(job.mode, job.estSec)
+  };
+}
+
 function activeJobPayload(job) {
   if (!job) return null;
+  const elapsedBase = job.status === 'queued'
+    ? (job.queuedAt || job.createdAt || Date.now())
+    : (job.startedAt || job.createdAt || Date.now());
   const base = {
     id: job.id,
     status: job.status,
     stage: job.stage,
     mode: job.mode || 'formal',
-    elapsedSec: Math.max(0, Math.round((Date.now() - (job.createdAt || Date.now())) / 1000)),
+    elapsedSec: Math.max(0, Math.round((Date.now() - elapsedBase) / 1000)),
     estSec: job.estSec,
     createdAt: job.createdAt,
+    queuedAt: job.queuedAt,
+    startedAt: job.startedAt,
     needed: job.needed
   };
+  Object.assign(base, queueDetails(job));
   if (job.note) base.note = job.note;
   if (job.status === 'awaiting_approval') base.candidates = job.candidates || [];
   return base;
 }
 
 function checkLimits(uid, mode) {
-  const { running, mine } = countActive(uid, mode);
+  const { running, queued, mine } = countActive(uid, mode);
   if (mine >= 1) {
     const active = activeJobFor(uid);
     return {
@@ -128,8 +172,6 @@ function checkLimits(uid, mode) {
       activeStatus: active?.status || null
     };
   }
-  const cap = poolOf(mode) === 'short' ? BLOG_MAX_ACTIVE : MAX_ACTIVE_GLOBAL;
-  if (running >= cap) return { status: 503, error: '지금 요청이 몰려 있어요. 잠시 후(5~10분) 다시 시도해 주세요.' };
   // 일일 시작 한도는 formal(고원가)만 — short 모드는 저원가라 레이트리밋·동시 1개로 충분.
   if (mode === 'formal') {
     const day = kstDay();
@@ -137,6 +179,10 @@ function checkLimits(uid, mode) {
     if (d && d.day === day && d.count >= DAILY_CAP_PER_UID) {
       return { status: 429, error: `재구성은 하루 ${DAILY_CAP_PER_UID}회까지 시작할 수 있어요. 내일 다시 시도해 주세요.` };
     }
+  }
+  const cap = poolCap(mode);
+  if (running >= cap && queued >= queueCap(mode)) {
+    return { status: 503, error: '현재 대기열이 가득 찼어요. 잠시 후 다시 시도해 주세요.' };
   }
   return null;
 }
@@ -203,7 +249,7 @@ function blockedResponse(job) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'memo', 'lang'];
+  'mode', 'memo', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence'];
 
 function persistJob(job) {
   if (!db) return;
@@ -218,6 +264,72 @@ function deletePersisted(id) {
   db.collection('transformJobs').doc(id).delete()
     .catch(e => logger.warn('transform.persist_delete_failed', { jobId: id, err: e }));
 }
+
+let queueDrainPending = false;
+function scheduleQueueDrain(delayMs = 0) {
+  if (draining || queueDrainPending) return;
+  queueDrainPending = true;
+  const t = setTimeout(() => {
+    queueDrainPending = false;
+    drainQueue();
+  }, Math.max(0, delayMs));
+  if (t.unref) t.unref();
+}
+
+function drainQueue() {
+  if (draining) return 0;
+  let started = 0;
+  started += drainQueuePool('formal');
+  started += drainQueuePool('short');
+  return started;
+}
+
+function drainQueuePool(pool) {
+  const cap = pool === 'short' ? BLOG_MAX_ACTIVE : MAX_ACTIVE_GLOBAL;
+  const running = countActive('', pool).running;
+  let slots = Math.max(0, cap - running);
+  if (!slots) return 0;
+  let started = 0;
+  for (const job of queuedJobsForPool(pool)) {
+    if (slots <= 0) break;
+    if (launchQueuedJob(job)) {
+      slots--;
+      started++;
+    }
+  }
+  return started;
+}
+
+function launchQueuedJob(job) {
+  if (!job || job.status !== 'queued') return false;
+  const isShort = job.mode !== 'formal';
+  const waitMs = Math.max(0, Date.now() - (job.queuedAt || job.createdAt || Date.now()));
+  job.status = 'running';
+  job.startedAt = Date.now();
+  job.stage = isShort ? '문장 다듬는 중' : (job.wantEvidence ? '근거 검색' : '구조 계획');
+  persistJob(job);
+  logger.info('transform.started', {
+    jobId: job.id,
+    uid: job.uid,
+    mode: job.mode,
+    textLength: (job.text || '').length,
+    bareLength: (job.text || '').replace(/\s+/g, '').length,
+    evidence: !!job.wantEvidence,
+    needed: job.needed,
+    plan: job.plan,
+    estSec: job.estSec,
+    queuedMs: waitMs
+  });
+  const hasApprovedEvidence = Object.prototype.hasOwnProperty.call(job, 'approvedEvidence');
+  if (isShort) runHumanizeJob(job, job.text || '');
+  else if (hasApprovedEvidence) runJob(job, job.text || '', job.approvedEvidence || '');
+  else if (job.wantEvidence) runSearchPhase(job, job.text || '');
+  else runJob(job, job.text || '', '');
+  return true;
+}
+
+const queueDrainInterval = setInterval(() => scheduleQueueDrain(), QUEUE_DRAIN_INTERVAL_MS);
+if (queueDrainInterval.unref) queueDrainInterval.unref();
 
 // ── 서버측 이용 기록 노출(2026-06-14) ─────────────────────────────────────────
 //   기존엔 변환 결과가 transformJobs(서버) + localStorage 보관함에만 남아, 완료 화면을 못 보고 이탈하면
@@ -244,7 +356,7 @@ function saveJobHistory(job, text, outputText) {
 //   여기까지 반복해서 오지 않는다 → 3번째 연속 401에만 1회 발송(지속 실패=진짜 유실 위험).
 function maybeNotifyOrphan(job) {
   if (!job) return;
-  if (job.status !== 'running' && job.status !== 'done' && job.status !== 'awaiting_approval') return;
+  if (job.status !== 'running' && job.status !== 'queued' && job.status !== 'done' && job.status !== 'awaiting_approval') return;
   const n = (orphan401.get(job.id) || 0) + 1;
   orphan401.set(job.id, n);
   if (n !== 3) return;   // 3번째에만 1회 발송(이후 n>3은 무시)
@@ -283,6 +395,7 @@ async function restoreJobs() {
     if (kept || expired) {
       logger.info('transform.jobs_restored', { kept, interrupted, expired });
     }
+    scheduleQueueDrain(1000);
   } catch (e) {
     logger.warn('transform.jobs_restore_failed', { err: e });
   }
@@ -291,7 +404,6 @@ restoreJobs();
 
 // ── graceful shutdown(server.js가 SIGTERM/SIGINT에서 호출): 새 작업 거부 → 진행 중 LLM 중단(비용 차단) →
 //   중단 상태 영속화. 차감은 완료 시에만 일어나므로 여기서 돈이 새는 경로는 없다.
-let draining = false;
 router.shutdown = async function shutdown() {
   draining = true;
   const writes = [];
@@ -311,8 +423,15 @@ router.shutdown = async function shutdown() {
   await Promise.race([Promise.allSettled(writes), new Promise(r => setTimeout(r, 4000))]);
 };
 router.stats = () => {
-  const { running } = countActive('');
-  return { activeJobs: running, totalJobs: jobs.size, draining, maxActive: MAX_ACTIVE_GLOBAL };
+  const formal = countActive('', 'formal');
+  const short = countActive('', 'blog');
+  return {
+    activeJobs: formal.running + short.running,
+    queuedJobs: formal.queued + short.queued,
+    totalJobs: jobs.size,
+    draining,
+    maxActive: MAX_ACTIVE_GLOBAL
+  };
 };
 
 // ── P4: 근거 검색 단계(evidence:true일 때 재구성 전에 실행) ──
@@ -320,6 +439,7 @@ router.stats = () => {
 //   승인 전이므로 과금 없음. 후보 0건이면 근거 없이 바로 재구성 진행(차단 아님 — 검색 실패가 작업을 죽이면 안 됨).
 async function runSearchPhase(job, text) {
   try {
+    job.status = 'running';
     job.stage = '근거 검색';
     const ev = await suggestEvidence(text, { maxSegments: Number(process.env.EVIDENCE_MAX_SEGMENTS) || 6, signal: job.ac.signal });
     const reviewed = reviewCandidates(ev.candidates || []);
@@ -350,9 +470,11 @@ async function runSearchPhase(job, text) {
       gradeC: job.candidates.filter(c => c.grade === 'C').length,
       conflicts: job.candidates.filter(c => c.conflict).length
     });
+    scheduleQueueDrain();
   } catch (e) {
     if (job.ac.signal.aborted) {
       if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      scheduleQueueDrain();
       return;
     }
     logger.error('transform.evidence_search_failed', { jobId: job.id, uid: job.uid, err: e });
@@ -537,6 +659,8 @@ async function runJob(job, text, evidence) {
     job.status = 'error';
     job.error = '재구성 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     persistJob(job);
+  } finally {
+    scheduleQueueDrain();
   }
 }
 
@@ -615,6 +739,8 @@ async function runHumanizeJob(job, text) {
     job.status = 'error';
     job.error = '처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     persistJob(job);
+  } finally {
+    scheduleQueueDrain();
   }
 }
 
@@ -676,31 +802,36 @@ router.post('/transform', async (req, res) => {
     ? Math.max(90, Math.min(1200, Math.round(bare / 12)))
     : Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
   const job = {
-    id, mode, status: 'running', stage: isShort ? '문장 다듬는 중' : (wantEvidence ? '근거 검색' : '구조 계획'), createdAt: Date.now(),
+    id, mode, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
     memo: mode === 'blog' && typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',
     lang: req.body.lang === 'en' ? 'en' : 'ko',
+    wantEvidence,
     estSec,
     ac: new AbortController()   // 명시적 취소용(/cancel)
   };
   jobs.set(id, job);
   persistJob(job);
-  if (isShort) runHumanizeJob(job, text);            // await 없음 — 백그라운드 진행(새로고침 생존)
-  else if (wantEvidence) runSearchPhase(job, text);
-  else runJob(job, text, '');
-  logger.info('transform.started', {
-    jobId: id,
-    uid: pre.uid,
-    mode,
-    textLength: text.length,
-    bareLength: bare,
-    evidence: wantEvidence,
-    needed,
-    plan: pre.plan,
-    estSec
-  });
-  res.json({ ok: true, jobId: id, estSec, mode });
+  drainQueue();   // 슬롯이 비어 있으면 같은 tick에서 queued→running 승격, 아니면 대기열에 남김.
+  const payload = activeJobPayload(job);
+  if (job.status === 'queued') {
+    logger.info('transform.queued', {
+      jobId: id,
+      uid: pre.uid,
+      mode,
+      textLength: text.length,
+      bareLength: bare,
+      evidence: wantEvidence,
+      needed,
+      plan: pre.plan,
+      estSec,
+      queuePosition: payload.queuePosition,
+      queueSize: payload.queueSize,
+      queueEtaSec: payload.queueEtaSec
+    });
+  }
+  res.json({ ok: true, jobId: id, estSec, mode, status: job.status, queued: job.status === 'queued', job: payload });
 });
 
 // 로컬 jobRef를 잃어도 서버에 남은 진행/승인대기 작업으로 복귀시키는 복구 엔드포인트.
@@ -724,6 +855,7 @@ router.post('/transform/:id/cancel', async (req, res) => {
   job.status = 'cancelled';
   job.stage = '중단됨';
   persistJob(job);
+  scheduleQueueDrain();
   logger.info('transform.cancelled_by_user', { jobId: job.id, uid: job.uid, mode: job.mode });
   res.json({ ok: true });
 });
@@ -736,10 +868,6 @@ router.post('/transform/:id/approve', async (req, res) => {
   if (!(await requireJobOwner(req, res, job))) return;
   if (job.status !== 'awaiting_approval') return res.status(409).json({ error: '지금은 승인 단계가 아니에요.' });
   if (draining) return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 승인해 주세요. (작업은 사라지지 않아요)' });
-  // 승인 = LLM 재구성 시작이므로 전역 동시 한도를 여기서도 검사 — 승인 화면에 머물던 job들이 한꺼번에 풀리는 경로.
-  if (countActive('', 'formal').running >= MAX_ACTIVE_GLOBAL) {
-    return res.status(503).json({ error: '지금 재구성 요청이 몰려 있어요. 잠시 후(5~10분) 다시 승인해 주세요. (작업은 사라지지 않아요)' });
-  }
   const ids = Array.isArray(req.body?.approved) ? req.body.approved : [];
   let approved = (job.candidates || []).filter(c => ids.includes(c.id));
   // ★승인 수 캡(2026-06-12 실측 캘리브레이션): 사실 밀도 ~350자당 1건 초과는 위빙 생존 검증이 못 버팀
@@ -759,14 +887,31 @@ router.post('/transform/:id/approve', async (req, res) => {
   }
   const lines = approved.map(c => `${c.fact} (출처: ${c.sourceTitle || c.host})`);
   job.approvedCount = approved.length;
+  job.approvedEvidence = lines.join('\n');
+  job.status = 'queued';
+  job.stage = '승인 완료 · 대기 중';
+  job.queuedAt = Date.now();
   logger.info('transform.evidence_approved', {
     jobId: job.id,
     uid: job.uid,
     approved: approved.length,
     candidates: (job.candidates || []).length
   });
-  runJob(job, job.text, lines.join('\n'));   // await 없음
-  res.json({ ok: true, approved: approved.length });
+  persistJob(job);
+  drainQueue();
+  const payload = activeJobPayload(job);
+  if (job.status === 'queued') {
+    logger.info('transform.queued', {
+      jobId: job.id,
+      uid: job.uid,
+      mode: job.mode,
+      reason: 'evidence_approved',
+      queuePosition: payload.queuePosition,
+      queueSize: payload.queueSize,
+      queueEtaSec: payload.queueEtaSec
+    });
+  }
+  res.json({ ok: true, approved: approved.length, job: payload });
 });
 
 router.get('/transform/:id', async (req, res) => {
@@ -778,8 +923,9 @@ router.get('/transform/:id', async (req, res) => {
     return;
   }
   orphan401.delete(job.id);   // 정상 폴링 1회 = 인증 회복 → 카운터 리셋
-  const base = { ok: true, status: job.status, stage: job.stage, mode: job.mode || 'formal', elapsedSec: Math.round((Date.now() - job.createdAt) / 1000), estSec: job.estSec, ...(job.note ? { note: job.note } : {}) };
+  const base = { ok: true, status: job.status, stage: job.stage, mode: job.mode || 'formal', elapsedSec: Math.round((Date.now() - (job.status === 'running' ? (job.startedAt || job.createdAt) : job.status === 'queued' ? (job.queuedAt || job.createdAt) : job.createdAt)) / 1000), estSec: job.estSec, ...queueDetails(job), ...(job.note ? { note: job.note } : {}) };
   if (job.status === 'done') return res.json({ ...base, result: job.result });
+  if (job.status === 'queued') return res.json(base);
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
   if (job.status === 'cancelled') return res.json(base);
   if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, ...blockedResponse(job) });

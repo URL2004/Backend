@@ -555,6 +555,89 @@ router.post('/admin/credit-history', async (req, res) => {
   }
 });
 
+// 관리자: 특정 사용자의 작업 기록(users/{uid}/history) 목록 — 미리보기 + 커서 페이지네이션
+function historyPreview(s, n) {
+  const t = String(s || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n) + '…' : t;
+}
+router.post('/admin/user-history', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    let uid = String((req.body && req.body.uid) || '').trim();
+    if (!uid) uid = await findUserByQuery(req.body && req.body.query);
+    if (!uid) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
+
+    const rawLimit = parseInt(req.body && req.body.limit, 10);
+    const pageSize = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 50) : 20;
+    const cursorMs = Number(req.body && req.body.cursorMs) || 0;
+
+    let q = db.collection('users').doc(uid).collection('history')
+      .orderBy('createdAt', 'desc');
+    if (cursorMs > 0) q = q.startAfter(admin.firestore.Timestamp.fromMillis(cursorMs));
+    const snap = await q.limit(pageSize + 1).get();
+
+    const docs = snap.docs.slice(0, pageSize);
+    const hasMore = snap.docs.length > pageSize;
+    const items = docs.map(d => {
+      const h = d.data() || {};
+      return {
+        id: d.id,
+        type: h.type || 'unknown',
+        createdAtMs: timestampMs(h.createdAt),
+        credits: Number(h.credits) || 0,
+        probability: typeof h.probability === 'number' ? h.probability : null,
+        summaryPreview: historyPreview(h.summary, 160),
+        inputPreview: historyPreview(h.inputText, 160),
+        outputPreview: historyPreview(h.outputText, 160),
+        inputLen: String(h.inputText || '').length,
+        outputLen: String(h.outputText || '').length,
+        savedBy: h.savedBy || null
+      };
+    });
+    const last = docs[docs.length - 1];
+    const nextCursorMs = hasMore && last ? timestampMs(last.data().createdAt) : null;
+    logger.info('admin.user_history_loaded', { adminUid, targetUid: uid, count: items.length });
+    res.json({ ok: true, uid, items, nextCursorMs });
+  } catch (err) {
+    logger.error('admin.user_history_failed', { adminUid, err });
+    res.status(500).json({ error: '작업 기록을 불러오지 못했습니다.' });
+  }
+});
+
+// 관리자: 작업 기록 1건 전체(원문·결과·탐지 상세) — 문의/환불 근거 확인용
+router.post('/admin/user-history-item', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const uid = String((req.body && req.body.uid) || '').trim();
+    const id = String((req.body && req.body.id) || '').trim();
+    if (!uid || !id) return res.status(400).json({ error: 'uid와 id가 필요합니다.' });
+    const snap = await db.collection('users').doc(uid).collection('history').doc(id).get();
+    if (!snap.exists) return res.status(404).json({ error: '기록을 찾을 수 없습니다.' });
+    const h = snap.data() || {};
+    const asText = (v) => (typeof v === 'string' ? v : (v ? JSON.stringify(v) : ''));
+    logger.info('admin.user_history_item_loaded', { adminUid, targetUid: uid, id });
+    res.json({ ok: true, item: {
+      id,
+      type: h.type || 'unknown',
+      createdAtMs: timestampMs(h.createdAt),
+      credits: Number(h.credits) || 0,
+      probability: typeof h.probability === 'number' ? h.probability : null,
+      summary: asText(h.summary),
+      detail: asText(h.detail),
+      inputText: String(h.inputText || ''),
+      outputText: String(h.outputText || ''),
+      humanSummary: asText(h.humanSummary),
+      humanDetail: asText(h.humanDetail),
+      savedBy: h.savedBy || null
+    } });
+  } catch (err) {
+    logger.error('admin.user_history_item_failed', { adminUid, err });
+    res.status(500).json({ error: '기록 상세를 불러오지 못했습니다.' });
+  }
+});
+
 // 관리자: 대시보드 매출 요약 (오늘 + 이번 달) — 관리자 페이지 상단 개요 바
 router.post('/admin/revenue-summary', async (req, res) => {
   const adminUid = await requireAdmin(req, res);

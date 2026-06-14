@@ -4,6 +4,7 @@ const express = require('express');
 const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
+const { getRevenue } = require('../lib/revenue');
 
 const router = express.Router();
 
@@ -512,6 +513,25 @@ router.post('/admin/credit-history', async (req, res) => {
   } catch (err) {
     logger.error('admin.credit_history_failed', { adminUid, err });
     res.status(500).json({ error: '전체 사용자 내역을 불러오지 못했습니다.' });
+  }
+});
+
+// 관리자: 대시보드 매출 요약 (오늘 + 이번 달) — 관리자 페이지 상단 개요 바
+router.post('/admin/revenue-summary', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const [today, month] = await Promise.all([getRevenue('today'), getRevenue('month')]);
+    const slim = (r) => ({
+      totalPaid: r.totalPaid,
+      totalCount: r.totalCount,
+      refundAmount: r.refundAmount,
+      refundCount: r.refundCount
+    });
+    res.json({ ok: true, today: slim(today), month: slim(month) });
+  } catch (err) {
+    logger.error('admin.revenue_summary_failed', { adminUid, err });
+    res.status(500).json({ error: '매출 요약을 불러오지 못했습니다.' });
   }
 });
 

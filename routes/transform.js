@@ -17,13 +17,14 @@ const { logger, setLogContext } = require('../lib/logger');
 const { genreTransferV2 } = require('../engine/genretransfer');
 const { suggestEvidence } = require('../engine/evidence');
 const { reviewCandidates, hostOf } = require('../engine/evidencereview');
+const discord = require('../lib/discord');
 
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
 setInterval(() => {
   const now = Date.now();
   for (const [id, j] of jobs) {
-    if (now - j.createdAt > JOB_TTL_MS) { jobs.delete(id); deletePersisted(id); }
+    if (now - j.createdAt > JOB_TTL_MS) { jobs.delete(id); deletePersisted(id); orphan401.delete(id); }
   }
   const today = kstDay();
   for (const [uid, d] of dailyStarts) if (d.day !== today) dailyStarts.delete(uid);
@@ -35,6 +36,7 @@ const MAX_ACTIVE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_ACTIVE) || 3;   // 
 const BLOG_MAX_ACTIVE = Number(process.env.BLOG_MAX_ACTIVE) || 4;            // blog(기본 피하기) 전역 동시 — 짧고 저원가라 별도 풀
 const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함) — formal만
 const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
+const orphan401 = new Map();   // jobId → 폴링 GET 401 연속 횟수(결과 유실 의심 감지용)
 
 function tokenFromReq(req) {
   const auth = req.get('authorization') || '';
@@ -198,6 +200,27 @@ function saveJobHistory(job, text, outputText) {
     needed: job.needed,
     result: { outputText: outputText || '' }
   }).catch(e => logger.warn('transform.history_save_failed', { jobId: job.id, uid: job.uid, err: e }));
+}
+
+// ── 결과 유실 의심 감지(2026-06-14) ───────────────────────────────────────────
+//   폴링(GET /transform/:id) 중 토큰 만료로 401이 반복되면, 작업은 서버에서 완료되는데 사용자는
+//   결과 화면을 못 본다(클라가 떠남). 그 순간 토큰이 죽어 클라가 스스로 보고할 수도 없으므로,
+//   서버가 job.uid로 직접 cs 채널에 알린다. 일시 만료는 클라가 토큰을 갱신해 복구되므로(프론트 폴링 fix)
+//   여기까지 반복해서 오지 않는다 → 3번째 연속 401에만 1회 발송(지속 실패=진짜 유실 위험).
+function maybeNotifyOrphan(job) {
+  if (!job) return;
+  if (job.status !== 'running' && job.status !== 'done' && job.status !== 'awaiting_approval') return;
+  const n = (orphan401.get(job.id) || 0) + 1;
+  orphan401.set(job.id, n);
+  if (n !== 3) return;   // 3번째에만 1회 발송(이후 n>3은 무시)
+  discord.resultRisk({
+    uid: job.uid,
+    jobId: job.id,
+    kind: (job.mode || 'formal') + ' · ' + job.status,
+    credits: job.needed,
+    reason: '폴링 중 로그인 만료(401)가 반복됐어요. 작업은 서버에 있으나 사용자가 결과를 못 볼 수 있어요.'
+  });
+  logger.warn('transform.orphan_risk_notified', { jobId: job.id, uid: job.uid, status: job.status, needed: job.needed });
 }
 
 // 서버 시작 시 복원: done·blocked·awaiting_approval은 그대로 살리고(폴링·승인 재개 가능),
@@ -692,7 +715,12 @@ router.post('/transform/:id/approve', async (req, res) => {
 router.get('/transform/:id', async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
-  if (!(await requireJobOwner(req, res, job))) return;
+  if (!(await requireJobOwner(req, res, job))) {
+    // 인증 실패(주로 토큰 만료)로 폴링이 401을 받은 경우 — 진행/완료된 유료 작업이면 결과 유실 의심 알림.
+    if (res.statusCode === 401) maybeNotifyOrphan(job);
+    return;
+  }
+  orphan401.delete(job.id);   // 정상 폴링 1회 = 인증 회복 → 카운터 리셋
   const base = { ok: true, status: job.status, stage: job.stage, mode: job.mode || 'formal', elapsedSec: Math.round((Date.now() - job.createdAt) / 1000), estSec: job.estSec, ...(job.note ? { note: job.note } : {}) };
   if (job.status === 'done') return res.json({ ...base, result: job.result });
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
@@ -703,5 +731,6 @@ router.get('/transform/:id', async (req, res) => {
 });
 
 router.saveJobHistory = saveJobHistory;   // 테스트용
+router.maybeNotifyOrphan = maybeNotifyOrphan;   // 테스트용
 
 module.exports = router;

@@ -200,6 +200,7 @@ function serializeOrderDoc(docSnap, kind) {
     cancelReason: o.cancelReason || '',
     rejectReason: o.rejectReason || '',
     refundAmount: Number(o.refundAmount) || 0,
+    refundedAmount: Number(o.refundedAmount) || 0,
     refundedCredits: Number(o.refundedCredits) || 0,
     createdAtMs: timestampMs(o.createdAt || o.approvedAt || o.requestedAt),
     refundRequestedAtMs: timestampMs(o.refundRequestedAt),
@@ -336,7 +337,7 @@ async function findUserByQuery(rawQuery) {
 
 async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount }) {
   const order = orderSnap.data();
-  if (!['paid', 'refund_requested', 'refund_rejected'].includes(order.status)) {
+  if (!['paid', 'refund_requested', 'refund_rejected', 'partially_refunded'].includes(order.status)) {
     throw Object.assign(new Error('환불할 수 없는 주문 상태입니다. 현재: ' + order.status), { status: 400 });
   }
   if (!order.paymentKey) {
@@ -403,47 +404,60 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
     throw Object.assign(new Error('주문 데이터가 올바르지 않아 환불 계산이 불가합니다.'), { status: 400 });
   }
 
-  // 환불 모드: 'remaining'(미사용분 비례·기본) | 'full'(전액) | 'custom'(금액 직접 입력)
+  // 환불 모드: 'remaining'(미사용분 비례·기본) | 'full'(잔액 전부) | 'custom'(금액 직접 입력)
+  // 누적 부분환불 지원: 이미 환불된 금액/크레딧을 빼고 "남은 잔액" 기준으로 계산한다.
   const refundMode = ['remaining', 'full', 'custom'].includes(mode) ? mode : 'remaining';
+  const priorRefundedAmount = Number(order.refundedAmount) || 0;
+  const priorRefundedCredits = Number(order.refundedCredits) || 0;
+  const remainingMoney = orderAmount - priorRefundedAmount;          // 추가로 환불 가능한 결제 잔액
+  const remainingOrderCredits = Math.max(0, safeCreditsTotal - priorRefundedCredits);
+  if (remainingMoney <= 0) {
+    throw Object.assign(new Error('이미 전액 환불된 주문입니다.'), { status: 400 });
+  }
   const reqAmount = parseInt(customAmount, 10);
-  if (refundMode === 'custom' && (!Number.isFinite(reqAmount) || reqAmount <= 0 || reqAmount > orderAmount)) {
-    throw Object.assign(new Error(`직접 입력 환불 금액은 1원 이상 결제금액(${orderAmount.toLocaleString('ko-KR')}원) 이하여야 합니다.`), { status: 400 });
+  if (refundMode === 'custom' && (!Number.isFinite(reqAmount) || reqAmount <= 0 || reqAmount > remainingMoney)) {
+    throw Object.assign(new Error(`직접 입력 환불 금액은 1원 이상 환불 가능액(${remainingMoney.toLocaleString('ko-KR')}원) 이하여야 합니다.`), { status: 400 });
   }
 
-  let refundAmount, refundableCredits;
+  let refundAmount, refundableCredits, willBeFullyRefunded;
   try {
     const result = await db.runTransaction(async (transaction) => {
       const userSnap = await transaction.get(userRef);
       const currentCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
-      const usableCredits = Math.min(currentCredits, safeCreditsTotal); // 음수 방지: 이 주문 크레딧·현재 잔액 한도
+      const usableCredits = Math.min(currentCredits, remainingOrderCredits); // 음수 방지: 남은 주문 크레딧·현재 잔액 한도
 
       let amount, creditsToDeduct;
       if (refundMode === 'full') {
-        // 전액 환불: 결제금액 전부 환불, 크레딧은 가능한 만큼만 차감(이미 쓴 분은 재차감 안 함)
-        amount = orderAmount;
+        // 전액(잔액) 환불: 남은 결제 잔액 전부 환불, 크레딧은 가능한 만큼만 차감
+        amount = remainingMoney;
         creditsToDeduct = usableCredits;
       } else if (refundMode === 'custom') {
         // 직접 입력: 입력 금액 환불, 크레딧은 금액 비례로 차감(잔액 한도 내)
         amount = reqAmount;
         creditsToDeduct = Math.min(usableCredits, Math.floor(safeCreditsTotal * amount / orderAmount));
       } else {
-        // 남은건 환불(기본): 미사용 크레딧 비례
+        // 남은건 환불(기본): 미사용 크레딧 비례 (남은 잔액으로 cap)
         if (usableCredits <= 0) throw new Error('NO_REFUNDABLE');
-        amount = Math.floor(orderAmount * usableCredits / safeCreditsTotal);
+        amount = Math.min(remainingMoney, Math.floor(orderAmount * usableCredits / safeCreditsTotal));
         creditsToDeduct = usableCredits;
       }
       if (!Number.isFinite(amount) || amount <= 0) throw new Error('INVALID_AMOUNT');
+
+      const newRefundedAmount = priorRefundedAmount + amount;
+      const newRefundedCredits = priorRefundedCredits + creditsToDeduct;
       transaction.update(userRef, { credits: currentCredits - creditsToDeduct });
       transaction.update(orderRef, {
         cancelReason,
         refundMode,
-        refundAmount: amount,
-        refundedCredits: creditsToDeduct
+        refundAmount: newRefundedAmount,    // 누적(레거시 표시 호환)
+        refundedAmount: newRefundedAmount,  // 누적 환불 금액
+        refundedCredits: newRefundedCredits // 누적 환불 크레딧
       });
-      return { refundAmount: amount, refundableCredits: creditsToDeduct };
+      return { amount, creditsToDeduct, fully: newRefundedAmount >= orderAmount };
     });
-    refundAmount = result.refundAmount;
-    refundableCredits = result.refundableCredits;
+    refundAmount = result.amount;
+    refundableCredits = result.creditsToDeduct;
+    willBeFullyRefunded = result.fully;
   } catch (e) {
     if (e.message === 'NO_REFUNDABLE') {
       throw Object.assign(new Error('이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다. (전액/직접입력 모드를 사용하세요)'), { status: 400 });
@@ -466,9 +480,11 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
         const userSnap = await transaction.get(userRef);
         const currentCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
         transaction.update(userRef, { credits: currentCredits + refundableCredits });
+        // 이번 회차분만 되돌린다 — 이전 누적 부분환불 기록은 보존
         transaction.update(orderRef, {
-          refundAmount: admin.firestore.FieldValue.delete(),
-          refundedCredits: admin.firestore.FieldValue.delete()
+          refundAmount: priorRefundedAmount > 0 ? priorRefundedAmount : admin.firestore.FieldValue.delete(),
+          refundedAmount: priorRefundedAmount > 0 ? priorRefundedAmount : admin.firestore.FieldValue.delete(),
+          refundedCredits: priorRefundedCredits > 0 ? priorRefundedCredits : admin.firestore.FieldValue.delete()
         });
       });
     } catch (compErr) {
@@ -486,7 +502,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
     const userSnap = await transaction.get(userRef);
     const remainingCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
     transaction.update(orderRef, {
-      status: 'refunded',
+      status: willBeFullyRefunded ? 'refunded' : 'partially_refunded',
       refundedAt: admin.firestore.FieldValue.serverTimestamp(),
       refundedBy: adminUid
     });
@@ -496,7 +512,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       amount: -refundableCredits,
       remaining: remainingCredits,
       orderId: orderRef.id,
-      detail: '관리자 직접 환불',
+      detail: willBeFullyRefunded ? '관리자 직접 환불' : '관리자 부분 환불',
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
   });
@@ -504,7 +520,8 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   return {
     refundAmount,
     refundedCredits: refundableCredits,
-    message: '크레딧 결제 미사용분 환불이 완료되었습니다.'
+    fullyRefunded: willBeFullyRefunded,
+    message: willBeFullyRefunded ? '크레딧 결제 환불이 완료되었습니다.' : '부분 환불이 완료되었습니다.'
   };
 }
 

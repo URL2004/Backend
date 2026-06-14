@@ -2671,6 +2671,36 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
 // --- 라우트 ---
 
+// ── 서버측 이용 기록 저장(2026-06-14) ────────────────────────────────────────
+//   배경: 결과 저장이 그동안 브라우저 책임(클라가 users/{uid}/history에 addDoc)이라,
+//   응답은 받았지만 저장에 실패하면(JS오류·즉시 이탈·쓰기 실패) "차감만 남고 결과 0건" 민원 발생.
+//   해결: 단일 호출은 서버가 같은 컬렉션·스키마로 직접 저장(Admin SDK) → "차감↔저장" 원자화.
+//   클라 saveHistory와 동일 스키마라 이용 기록 화면이 그대로 렌더한다.
+//   requestId를 문서 ID로 사용해 재시도·중복 호출에도 1건만 남게(멱등).
+async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result }) {
+  if (!db) return;
+  const isDetect = opType === 'detect';
+  const doc = {
+    type: isDetect ? 'detect' : 'humanize',
+    inputText: text || '',
+    credits: typeof needed === 'number' ? needed : 0,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    savedBy: 'server'
+  };
+  if (isDetect) {
+    doc.probability = (result && typeof result.probability === 'number') ? result.probability : null;
+    doc.summary = (result && result.summary) || '';
+    doc.detail = (result && result.detail) || '';
+  } else {
+    doc.outputText = (result && result.outputText) || '';
+    doc.humanSummary = (result && result.summary) || '';
+    doc.humanDetail = (result && result.detail) || '';
+  }
+  const col = db.collection('users').doc(uid).collection('history');
+  if (requestId) await col.doc(requestId).set(doc, { merge: true });
+  else await col.add(doc);
+}
+
 router.post('/analyze', async (req, res) => {
   // ★ client disconnect 추적: 응답 보내기 전에 connection 끊기면 백엔드 작업 중단.
   //   "휴머나이징 오류 + 크레딧만 차감" 민원의 주범 — 사용자가 응답 대기 중 abort하면
@@ -2984,13 +3014,36 @@ router.post('/analyze', async (req, res) => {
     return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
   }
 
-  // 차감 후 disconnect 감지 (sync) — 이미 abort됐으면 즉시 복구.
+  // 차감 후 disconnect 감지 (sync) — 이미 abort됐으면 즉시 복구(저장 전이므로 결과 미저장 = 정합).
   if (ac.signal.aborted) {
     await doRestore('post-deduct sync');
     return;
   }
-  // 아직이면 listener 등록 — res.json finish 전 disconnect 발생 시 복구.
-  ac.signal.addEventListener('abort', () => { doRestore('post-deduct listener'); }, { once: true });
+
+  // ★ 서버 결과 영속화: "차감↔결과저장" 원자화(2026-06-14). 단일 호출은 서버가 직접 저장하고,
+  //   청크 호출(requestId에 ':' 포함, >5500자)은 클라가 합쳐 저장하므로 여기선 건너뛴다(추후 /transform 통일 대상).
+  const isChunkCall = !!(requestId && requestId.includes(':'));
+  let historySaved = false;
+  if (db && !devNoAuth && !isChunkCall) {
+    try {
+      await retryAsync(() => saveAnalyzeHistory({ uid: pre.uid, requestId, opType, text, needed, result }));
+      historySaved = true;
+    } catch (e) {
+      logger.error('analyze.history_persist_failed', { uid: pre.uid, requestId, opType, billingMode, err: e });
+      // 실제 크레딧이 차감된 경우엔 "결과 없는 차감"을 막으려 롤백 후 에러 — 사용자는 무과금으로 재시도 가능.
+      if (billingMode === 'credit' && pre.plan !== 'unlimited') {
+        await doRestore('history_persist_failed');
+        return res.status(500).json({ error: '결과 저장 중 오류가 발생했어요. 크레딧은 차감되지 않았어요. 잠시 뒤 다시 시도해주세요.' });
+      }
+      // 쿠폰·무제한: 비과금이라 결과는 그대로 전달하고, 클라이언트 폴백 저장에 맡긴다.
+    }
+  }
+
+  // 저장이 끝났으면 disconnect로 복구하지 않는다(결과가 영구 저장돼 이용 기록에서 확인 가능).
+  // 미저장(청크·쿠폰·무제한 폴백)일 때만 기존처럼 "응답 못 받고 차감"을 disconnect 복구로 막는다.
+  if (!historySaved) {
+    ac.signal.addEventListener('abort', () => { doRestore('post-deduct listener'); }, { once: true });
+  }
 
   // 4) 응답 — 'finish'(OS 송신 큐 완료) 시점에만 responded 마킹.
   res.once('finish', () => { responded = true; });
@@ -3000,10 +3053,11 @@ router.post('/analyze', async (req, res) => {
     opType,
     billingMode,
     deducted,
+    historySaved,
     floorStatus: evasion?.floorReport?.status,
     chunkCount: evasion?.chunkCount
   });
-  res.json({ ok: true, result, usage, refineUsage, ...(evasion ? { evasion } : {}) });
+  res.json({ ok: true, result, usage, refineUsage, ...(evasion ? { evasion } : {}), historySaved });
 });
 
 router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
@@ -3206,5 +3260,6 @@ router.precheckCredits = precheckCredits;
 router.commitCreditDeduct = commitCreditDeduct;
 router.commitCreditRestore = commitCreditRestore;
 router.retryAsync = retryAsync;
+router.saveAnalyzeHistory = saveAnalyzeHistory;   // 테스트·재사용용
 router.authErrorMessage = authErrorMessage;
 module.exports = router;

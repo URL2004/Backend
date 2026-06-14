@@ -11,7 +11,7 @@ function tossBasicToken(res) {
   const secretKey = process.env.TOSS_SECRET_KEY;
   if (!secretKey) {
     logger.error('payment.toss_secret_missing');
-    res.status(503).json({ error: '결제 서버 설정이 완료되지 않았습니다.' });
+    if (res) res.status(503).json({ error: '결제 서버 설정이 완료되지 않았습니다.' });
     return null;
   }
   return Buffer.from(secretKey + ':').toString('base64');
@@ -177,9 +177,59 @@ function serializeCreditHistoryDoc(docSnap, userByUid) {
     remaining: Number(h.remaining) || 0,
     plan: h.plan || null,
     orderId: h.orderId || null,
+    detail: h.detail || '',
+    adminUid: h.adminUid || null,
     createdAtMs: timestampMs(h.createdAt),
     userName: u.name || '알 수 없음',
     userEmail: u.email || ''
+  };
+}
+
+function serializeOrderDoc(docSnap, kind) {
+  const o = docSnap.data() || {};
+  return {
+    id: docSnap.id,
+    kind,
+    uid: o.uid || '',
+    status: o.status || '',
+    amount: Number(o.amount) || 0,
+    safeCredits: Number(o.safeCredits) || 0,
+    tier: o.tier || null,
+    paymentKey: o.paymentKey ? 'present' : null,
+    cancelReason: o.cancelReason || '',
+    rejectReason: o.rejectReason || '',
+    refundAmount: Number(o.refundAmount) || 0,
+    refundedCredits: Number(o.refundedCredits) || 0,
+    createdAtMs: timestampMs(o.createdAt || o.approvedAt || o.requestedAt),
+    refundRequestedAtMs: timestampMs(o.refundRequestedAt),
+    refundedAtMs: timestampMs(o.refundedAt),
+    customerEmail: o.customerEmail || ''
+  };
+}
+
+function serializeUserDoc(userSnap) {
+  const u = userSnap.data() || {};
+  const sub = u.subscription || null;
+  const coupon = u.coupon || null;
+  return {
+    uid: userSnap.id,
+    email: u.email || '',
+    name: u.name || '',
+    credits: Number(u.credits) || 0,
+    plan: u.plan || 'free',
+    createdAtMs: timestampMs(u.createdAt),
+    subscription: sub ? {
+      tier: sub.tier || null,
+      status: sub.status || null,
+      nextBillingAtMs: timestampMs(sub.nextBillingAt),
+      cancelledAtMs: timestampMs(sub.cancelledAt)
+    } : null,
+    coupon: coupon ? {
+      tier: coupon.tier || null,
+      remaining: Number(coupon.remaining) || 0,
+      granted: Number(coupon.granted) || 0,
+      used: Number(coupon.used) || 0
+    } : null
   };
 }
 
@@ -238,6 +288,203 @@ async function getAdminCreditHistory(maxRows) {
   }
 }
 
+async function loadAdminUserBundle(uid) {
+  const userRef = db.collection('users').doc(uid);
+  const userSnap = await userRef.get();
+  if (!userSnap.exists) return null;
+
+  const [creditSnap, subSnap, histSnap] = await Promise.all([
+    db.collection('orders').where('uid', '==', uid).orderBy('createdAt', 'desc').limit(30).get(),
+    db.collection('subscriptionOrders').where('uid', '==', uid).limit(30).get(),
+    userRef.collection('creditHistory').orderBy('createdAt', 'desc').limit(30).get()
+  ]);
+
+  const orders = [
+    ...creditSnap.docs.map(d => serializeOrderDoc(d, 'order')),
+    ...subSnap.docs.map(d => serializeOrderDoc(d, 'subscription'))
+  ];
+  orders.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+
+  const userByUid = { [uid]: userSnap.data() || {} };
+  const creditHistory = histSnap.docs.map(d => serializeCreditHistoryDoc(d, userByUid));
+
+  return {
+    user: serializeUserDoc(userSnap),
+    orders,
+    creditHistory
+  };
+}
+
+async function findUserByQuery(rawQuery) {
+  const q = String(rawQuery || '').trim();
+  if (!q) return null;
+  if (!q.includes('/')) {
+    const directSnap = await db.collection('users').doc(q).get();
+    if (directSnap.exists) return directSnap.id;
+  }
+
+  const email = q.toLowerCase();
+  const emailSnap = await db.collection('users').where('email', '==', email).limit(1).get();
+  if (!emailSnap.empty) return emailSnap.docs[0].id;
+
+  const exactEmailSnap = await db.collection('users').where('email', '==', q).limit(1).get();
+  if (!exactEmailSnap.empty) return exactEmailSnap.docs[0].id;
+
+  return null;
+}
+
+async function processRefund({ orderRef, orderSnap, kind, adminUid, reason }) {
+  const order = orderSnap.data();
+  if (!['paid', 'refund_requested', 'refund_rejected'].includes(order.status)) {
+    throw Object.assign(new Error('환불할 수 없는 주문 상태입니다. 현재: ' + order.status), { status: 400 });
+  }
+  if (!order.paymentKey) {
+    throw Object.assign(new Error('paymentKey가 없어 환불할 수 없습니다. (이전 결제건)'), { status: 400 });
+  }
+
+  const userRef = db.collection('users').doc(order.uid);
+  const basicToken = tossBasicToken();
+  if (!basicToken) {
+    throw Object.assign(new Error('결제 서버 설정이 완료되지 않았습니다.'), { status: 503, code: 'TOSS_SECRET_MISSING' });
+  }
+  const tossUrl = `https://api.tosspayments.com/v1/payments/${order.paymentKey}/cancel`;
+  const cancelReason = String(reason || order.cancelReason || '관리자 직접 환불').trim();
+
+  if (kind === 'subscription') {
+    const tossRes = await fetch(tossUrl, {
+      method: 'POST',
+      headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cancelReason })
+    });
+    const tossResult = await tossRes.json();
+    if (!tossRes.ok) {
+      throw Object.assign(new Error('토스 환불 처리 실패: ' + (tossResult.message || '알 수 없는 오류')), {
+        status: tossRes.status,
+        toss: tossResult
+      });
+    }
+
+    await db.runTransaction(async (t) => {
+      t.update(orderRef, {
+        status: 'refunded',
+        cancelReason,
+        refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+        refundedBy: adminUid
+      });
+      t.update(userRef, {
+        'subscription.status': 'refunded',
+        'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
+        'plan': 'free',
+        'coupon.remaining': 0,
+        'coupon.used': 0
+      });
+      t.set(userRef.collection('couponHistory').doc(), {
+        type: 'refund',
+        tier: order.tier,
+        amount: 0,
+        remaining: 0,
+        orderId: orderRef.id,
+        detail: '관리자 직접 환불',
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    });
+    return {
+      refundAmount: Number(order.amount) || 0,
+      refundedCredits: 0,
+      message: '정기결제 환불이 완료되었습니다.'
+    };
+  }
+
+  const orderAmount = parseInt(order.amount, 10);
+  const safeCreditsTotal = parseInt(order.safeCredits, 10);
+  if (!Number.isFinite(orderAmount) || orderAmount <= 0 ||
+      !Number.isFinite(safeCreditsTotal) || safeCreditsTotal <= 0) {
+    throw Object.assign(new Error('주문 데이터가 올바르지 않아 환불 계산이 불가합니다.'), { status: 400 });
+  }
+
+  let refundAmount, refundableCredits;
+  try {
+    const result = await db.runTransaction(async (transaction) => {
+      const userSnap = await transaction.get(userRef);
+      const currentCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
+      const refundable = Math.min(currentCredits, safeCreditsTotal);
+      if (refundable <= 0) throw new Error('NO_REFUNDABLE');
+      const amount = Math.floor(orderAmount * refundable / safeCreditsTotal);
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('INVALID_AMOUNT');
+      transaction.update(userRef, { credits: currentCredits - refundable });
+      transaction.update(orderRef, {
+        cancelReason,
+        refundAmount: amount,
+        refundedCredits: refundable
+      });
+      return { refundAmount: amount, refundableCredits: refundable };
+    });
+    refundAmount = result.refundAmount;
+    refundableCredits = result.refundableCredits;
+  } catch (e) {
+    if (e.message === 'NO_REFUNDABLE') {
+      throw Object.assign(new Error('이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다.'), { status: 400 });
+    }
+    if (e.message === 'INVALID_AMOUNT') {
+      throw Object.assign(new Error('환불 금액 계산 오류'), { status: 400 });
+    }
+    throw e;
+  }
+
+  const tossRes = await fetch(tossUrl, {
+    method: 'POST',
+    headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cancelReason, cancelAmount: refundAmount })
+  });
+  const tossResult = await tossRes.json();
+  if (!tossRes.ok) {
+    try {
+      await db.runTransaction(async (transaction) => {
+        const userSnap = await transaction.get(userRef);
+        const currentCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
+        transaction.update(userRef, { credits: currentCredits + refundableCredits });
+        transaction.update(orderRef, {
+          refundAmount: admin.firestore.FieldValue.delete(),
+          refundedCredits: admin.firestore.FieldValue.delete()
+        });
+      });
+    } catch (compErr) {
+      logger.error('refund.compensation_failed_manual_action', {
+        orderId: orderRef.id, uid: order.uid, refundableCredits, refundAmount, compErr
+      });
+    }
+    throw Object.assign(new Error('토스 환불 처리 실패: ' + (tossResult.message || '알 수 없는 오류')), {
+      status: tossRes.status,
+      toss: tossResult
+    });
+  }
+
+  await db.runTransaction(async (transaction) => {
+    const userSnap = await transaction.get(userRef);
+    const remainingCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
+    transaction.update(orderRef, {
+      status: 'refunded',
+      refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+      refundedBy: adminUid
+    });
+    transaction.set(userRef.collection('creditHistory').doc(), {
+      type: 'refund',
+      used: 0,
+      amount: -refundableCredits,
+      remaining: remainingCredits,
+      orderId: orderRef.id,
+      detail: '관리자 직접 환불',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+  });
+
+  return {
+    refundAmount,
+    refundedCredits: refundableCredits,
+    message: '크레딧 결제 미사용분 환불이 완료되었습니다.'
+  };
+}
+
 // 관리자: 전체 사용자 크레딧 내역
 router.post('/admin/credit-history', async (req, res) => {
   const adminUid = await requireAdmin(req, res);
@@ -265,6 +512,101 @@ router.post('/admin/credit-history', async (req, res) => {
   } catch (err) {
     logger.error('admin.credit_history_failed', { adminUid, err });
     res.status(500).json({ error: '전체 사용자 내역을 불러오지 못했습니다.' });
+  }
+});
+
+// 관리자: 사용자 검색 + 결제/크레딧 요약
+router.post('/admin/user-summary', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+
+  try {
+    const uid = await findUserByQuery(req.body && req.body.query);
+    if (!uid) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
+    const bundle = await loadAdminUserBundle(uid);
+    if (!bundle) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
+    logger.info('admin.user_summary_loaded', { adminUid, targetUid: uid });
+    res.json({ ok: true, ...bundle });
+  } catch (err) {
+    logger.error('admin.user_summary_failed', { adminUid, err });
+    res.status(500).json({ error: '사용자 정보를 불러오지 못했습니다.' });
+  }
+});
+
+// 관리자: 크레딧 수동 추가/차감
+router.post('/admin/adjust-credits', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+
+  const targetUid = String((req.body && req.body.uid) || '').trim();
+  const delta = parseInt(req.body && req.body.delta, 10);
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!targetUid) return res.status(400).json({ error: '대상 UID가 필요합니다.' });
+  if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 100000) {
+    return res.status(400).json({ error: '크레딧 변동값은 -100000~100000 사이의 0이 아닌 정수여야 합니다.' });
+  }
+  if (reason.length < 2) return res.status(400).json({ error: '조정 사유를 2자 이상 입력해주세요.' });
+
+  const userRef = db.collection('users').doc(targetUid);
+  try {
+    const result = await db.runTransaction(async (t) => {
+      const userSnap = await t.get(userRef);
+      if (!userSnap.exists) throw Object.assign(new Error('사용자를 찾을 수 없습니다.'), { status: 404 });
+      const current = Number(userSnap.data().credits) || 0;
+      const next = current + delta;
+      if (next < 0) throw Object.assign(new Error('보유 크레딧보다 많이 차감할 수 없습니다.'), { status: 400 });
+      t.update(userRef, {
+        credits: next,
+        lastAdminCreditAdjustedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      t.set(userRef.collection('creditHistory').doc(), {
+        type: 'admin_adjust',
+        used: delta < 0 ? Math.abs(delta) : 0,
+        amount: delta,
+        remaining: next,
+        detail: reason,
+        adminUid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      return { current, next };
+    });
+    logger.info('admin.credits_adjusted', { adminUid, targetUid, delta, before: result.current, after: result.next });
+    res.json({ ok: true, before: result.current, after: result.next, delta });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    logger.error('admin.credits_adjust_failed', { adminUid, targetUid, delta, err });
+    res.status(500).json({ error: '크레딧 조정에 실패했습니다.' });
+  }
+});
+
+// 관리자: 고객 요청 없이 결제건 직접 환불
+router.post('/admin/direct-refund', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+
+  const orderId = String((req.body && req.body.orderId) || '').trim();
+  const kind = (req.body && (req.body.kind === 'sub' || req.body.kind === 'subscription')) ? 'subscription' : 'order';
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!orderId) return res.status(400).json({ error: '주문번호가 필요합니다.' });
+  if (reason.length < 2) return res.status(400).json({ error: '환불 사유를 2자 이상 입력해주세요.' });
+
+  try {
+    const orderRef = getOrderRef(kind, orderId);
+    const orderSnap = await orderRef.get();
+    if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
+    const result = await processRefund({ orderRef, orderSnap, kind, adminUid, reason });
+    logger.info('admin.direct_refund_approved', {
+      adminUid, orderId, kind, uid: orderSnap.data().uid,
+      refundAmount: result.refundAmount, refundedCredits: result.refundedCredits
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    if (err.status) {
+      logger.warn('admin.direct_refund_rejected', { adminUid, orderId, kind, status: err.status, err });
+      return res.status(err.status).json({ error: err.message });
+    }
+    logger.error('admin.direct_refund_failed', { adminUid, orderId, kind, err });
+    res.status(500).json({ error: '환불 처리에 실패했습니다.' });
   }
 });
 

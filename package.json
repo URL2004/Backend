@@ -4,6 +4,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "start:gemini": "powershell -ExecutionPolicy Bypass -File scripts/run-local-gemini.ps1",
+    "smoke:gemini": "node scripts/smoke-gemini-local.mjs",
     "eval": "node eval/runEval.js",
     "eval:judge": "node eval/runJudgeEval.js",
     "test:rules": "node scripts/firestore-rules.test.mjs",

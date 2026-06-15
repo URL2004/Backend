@@ -1,10 +1,12 @@
 .env
+.env.local.gemini
 node_modules/
 dist/
 .DS_Store
 firebase-debug.log
 firestore-debug.log
 results/_*
+results/gemini-local-runs/
 
 _excerpt*
 _mgmt-src*

@@ -1695,6 +1695,10 @@ async function preprocessInput(text, lang, signal) {
 // SSE 누적 결과는 non-streaming 응답과 동일한 모양({content, usage, stop_reason})으로
 // 재조립해 extractClaudeResult를 그대로 재사용한다 — 호출 측 변경 없음.
 async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens, signal }) {
+  if (process.env.LLM_BACKEND === 'gemini') {
+    const llm = require('../llm/router');
+    return llm.callClaudeCompat({ userText, systemText, tool, temperature, maxOutputTokens, signal });
+  }
   // ★ dev 백엔드 스위치: LLM_BACKEND=claudecode면 내 Claude Code 구독(Sonnet)으로 호출 (API 키 불필요).
   //   엔진 로컬 테스트용. 프로덕션은 LLM_BACKEND 미설정 → 기존 API 경로.
   if (process.env.LLM_BACKEND === 'claudecode') {

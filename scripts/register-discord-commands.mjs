@@ -28,7 +28,8 @@ const commands = [
           { name: '오늘', value: 'today' },
           { name: '어제', value: 'yesterday' },
           { name: '이번주', value: 'week' },
-          { name: '이번달', value: 'month' }
+          { name: '이번달', value: 'month' },
+          { name: '오픈이후', value: 'all' }
         ]
       }
     ]

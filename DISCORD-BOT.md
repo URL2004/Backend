@@ -4,9 +4,10 @@
 
 - **건별 결제 알림**(결제 1건마다): 이미 작동 중 (`lib/discord.js` → `sales` 채널)
 - **집계 매출**(이번에 추가):
-  - `/매출 [오늘|어제|이번주|이번달]` 슬래시 커맨드 — 본인에게만 표시(ephemeral)
+  - `/매출 [오늘|어제|이번주|이번달|오픈이후]` 슬래시 커맨드 — 본인에게만 표시(ephemeral)
   - 매일 자동 리포트 — `어제 매출 + 이번 달 누적`을 `sales` 채널에 게시
   - 관리자 온디맨드 HTTP — `GET /admin/revenue?token=...&period=today`
+  - 오픈 이후 누적 HTTP — `GET /admin/revenue?token=...&period=all`
 
 매출 데이터 출처: Firestore `orders`(크레딧 충전) + `subscriptionOrders`(구독). 시간대 KST.
 
@@ -64,7 +65,7 @@ node scripts/register-discord-commands.mjs
    - 실패하면: `DISCORD_PUBLIC_KEY` 오타 / 배포 미반영 / 경로 오타 확인
 
 ### 4) 사용
-디스코드에서 `/매출` 입력 → `기간` 선택(오늘/어제/이번주/이번달, 기본 오늘) → 본인에게만 결과 표시.
+디스코드에서 `/매출` 입력 → `기간` 선택(오늘/어제/이번주/이번달/오픈이후, 기본 오늘) → 본인에게만 결과 표시.
 
 ---
 

@@ -39,7 +39,10 @@ async function precheckCredits(idToken, needed) {
 // ★ 멱등성(requestId): 같은 작업이 두 번 도달해도 한 번만 차감한다.
 //   "차감+응답까지 끝났는데 응답 패킷만 유실 → 프런트 재시도 → 중복 차감" 민원(#11·#16 등)의 구조적 차단.
 //   creditHistory 문서 ID를 requestId로 고정하고, 트랜잭션 안에서 존재하면 재차감을 건너뛴다.
-async function commitCreditDeduct(uid, needed, opType, requestId) {
+// meta(선택): 관리자/이용 기록에 "정확히 무슨 작업이었는지" 표시하기 위한 설명용 필드.
+//   과금 계산엔 영향 없음(순수 기록). { mode: 'polish'|'blog'|'formal'|'assignment'..., evidence, textLength, fallback }
+//   값이 있을 때만 저장(구 문서·구 호출과 하위호환).
+async function commitCreditDeduct(uid, needed, opType, requestId, meta = {}) {
   const userRef = db.collection('users').doc(uid);
   const histRef = requestId
     ? userRef.collection('creditHistory').doc('req_' + requestId)
@@ -58,6 +61,10 @@ async function commitCreditDeduct(uid, needed, opType, requestId) {
     t.update(userRef, { credits: newCredits });
     t.set(histRef, {
       type: opType, used: needed, amount: 0, remaining: newCredits,
+      ...(meta.mode ? { mode: String(meta.mode) } : {}),
+      ...(meta.evidence != null ? { evidence: !!meta.evidence } : {}),
+      ...(meta.textLength ? { textLength: Number(meta.textLength) || 0 } : {}),
+      ...(meta.fallback ? { fallback: true } : {}),
       ...(requestId ? { requestId } : {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
@@ -3024,7 +3031,7 @@ router.post('/analyze', async (req, res) => {
     } else if (billingMode === 'coupon') {
       await commitCouponUsage(pre.uid, pre.tier, opType, text.length, requestId);
     } else if (pre.plan !== 'unlimited') {
-      await commitCreditDeduct(pre.uid, needed, opType, requestId);
+      await commitCreditDeduct(pre.uid, needed, opType, requestId, { mode, textLength: text.length });
     }
     deducted = !devNoAuth;
     logger.info('analyze.deducted', {

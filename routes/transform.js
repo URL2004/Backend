@@ -548,7 +548,7 @@ async function tryPreservationFallback(job, text) {
     const fbNeeded = preservationFallbackCredit(text.length);
     if (!job.devNoAuth && job.plan !== 'unlimited') {
       try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, fbNeeded, 'humanize', 'job_' + job.id));
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, fbNeeded, 'humanize', 'job_' + job.id, { mode: 'polish', fallback: true, textLength: (text || '').length }));
         job.deducted = true;
       } catch (e) {
         logger.error('transform.fallback_credit_deduct_failed_manual_action', {
@@ -634,7 +634,7 @@ async function runJob(job, text, evidence) {
     //   멱등 키로 job.id를 넘겨 재시작·재시도 중복 차감까지 차단(job.deducted 플래그 + 이중 안전).
     if (!job.devNoAuth && job.plan !== 'unlimited') {
       try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'restructure', 'job_' + job.id));
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'restructure', 'job_' + job.id, { mode: 'formal', evidence: !!job.wantEvidence, textLength: (text || '').length }));
         job.deducted = true;
       } catch (e) {
         // 차감 실패(그 사이 잔액 소진 등) — 결과는 이미 만들어졌으니 사용자에겐 전달(고객 우선), 수동 보정 로그.
@@ -721,7 +721,7 @@ async function runHumanizeJob(job, text) {
     if (!out.result || !out.result.outputText) throw new Error('humanize_incomplete');
     if (!job.devNoAuth && job.plan !== 'unlimited') {
       try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'humanize', 'job_' + job.id));
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'humanize', 'job_' + job.id, { mode: job.mode || 'polish', textLength: (job.text || '').length }));
         job.deducted = true;
       } catch (e) {
         logger.error('transform.humanize_credit_deduct_failed_manual_action', {

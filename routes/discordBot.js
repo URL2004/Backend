@@ -1,5 +1,5 @@
 // routes/discordBot.js — Discord 슬래시 커맨드(Interactions) 처리.
-//  /매출 [기간:오늘|어제|이번주|이번달]  → 해당 기간 매출을 본인에게만(ephemeral) 응답.
+//  /매출 [기간:오늘|어제|이번주|이번달|오픈이후]  → 해당 기간 매출을 본인에게만(ephemeral) 응답.
 //
 // 동작 방식:
 //   Discord는 등록된 Interactions Endpoint URL 로 모든 명령을 HTTPS POST 한다.
@@ -32,7 +32,7 @@ function verifySignature(rawBody, signatureHex, timestamp, publicKeyHex) {
   }
 }
 
-const PERIOD_VALUES = new Set(['today', 'yesterday', 'week', 'month']);
+const PERIOD_VALUES = new Set(['today', 'yesterday', 'week', 'month', 'all']);
 
 async function handleInteractions(req, res) {
   const publicKey = (process.env.DISCORD_PUBLIC_KEY || '').trim();

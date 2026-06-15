@@ -588,6 +588,87 @@ async function tryPreservationFallback(job, text) {
   }
 }
 
+// blog 휴머나이즈가 novelty/judge에 막히면, 같은 입력을 더 보수적인 "과제 어투 다듬기" 경로로
+// 자동 재처리한다. 결과가 약해져도 차단 화면보다 낫고, 과금도 보존형 단가로 낮춘다.
+async function tryBlogPreservationFallback(job, text) {
+  try {
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return true;
+    }
+    job.stage = '원문 보존형으로 재처리 중';
+    job.note = (job.note ? job.note + ' ' : '')
+      + '자연화 결과가 원문 보존 기준을 통과하지 못해, 원문을 최대한 보존하는 방식으로 처리했어요.';
+    persistJob(job);
+
+    const out = await analyze.runHumanizeChunked({
+      text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+      floorV2: true, optIn: false, judge: false, grounding: false, userNotes: '', tonePolish: true
+    });
+    const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
+    if (!out.result || !out.result.outputText || fbCriticals.length) {
+      logger.warn('transform.blog_fallback_blocked', {
+        jobId: job.id,
+        uid: job.uid,
+        mode: job.mode,
+        fbCriticals,
+        gateDetail: { criticals: (out.floorReport?.criticals || []).slice(0, 8) }
+      });
+      return false;
+    }
+
+    const fbNeeded = preservationFallbackCredit(text.length);
+    if (!job.devNoAuth && job.plan !== 'unlimited') {
+      try {
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, fbNeeded, 'humanize', 'job_' + job.id, { mode: 'polish', fallback: true, fromMode: 'blog', textLength: (text || '').length }));
+        job.deducted = true;
+      } catch (e) {
+        logger.error('transform.blog_fallback_credit_deduct_failed_manual_action', {
+          jobId: job.id, uid: job.uid, needed: fbNeeded, opType: 'humanize', err: e
+        });
+      }
+    }
+    job.needed = fbNeeded;
+    job.status = 'done';
+    job.result = {
+      outputText: out.result.outputText,
+      preservationFallback: true,
+      metrics: {
+        novelty: 0,
+        lostFacts: 0,
+        repetition: 0,
+        judge: 'skip',
+        lengthRatio: out.floorReport?.metrics?.lengthRatio,
+        preservationFallback: true
+      },
+      floorReport: {
+        status: out.floorReport?.status || 'clean',
+        criticals: out.floorReport?.criticals || [],
+        warnings: out.floorReport?.warnings || []
+      },
+      chunkCount: out.chunkCount,
+      fallbackCount: out.fallbackCount
+    };
+    persistJob(job);
+    saveJobHistory(job, text, out.result.outputText);
+    logger.info('transform.blog_fallback_done', {
+      jobId: job.id,
+      uid: job.uid,
+      fromMode: 'blog',
+      needed: fbNeeded,
+      deducted: job.deducted
+    });
+    return true;
+  } catch (e) {
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return true;
+    }
+    logger.error('transform.blog_fallback_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
+    return false;
+  }
+}
+
 async function runJob(job, text, evidence) {
   try {
     job.status = 'running';
@@ -705,16 +786,22 @@ async function runHumanizeJob(job, text) {
     // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
+      const gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
       logger.warn('transform.humanize_blocked', {
         jobId: job.id,
         uid: job.uid,
         mode: job.mode,
-        gates
+        gates,
+        gateDetail
       });
+      if (job.mode === 'blog' && fallbackEnabled()) {
+        const handled = await tryBlogPreservationFallback(job, text);
+        if (handled) return;
+      }
       job.status = 'blocked';
       job.stage = blockedStage(gates);
       job.gates = gates;
-      job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
+      job.gateDetail = gateDetail;
       persistJob(job);
       return;
     }

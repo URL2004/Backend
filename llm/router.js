@@ -29,7 +29,7 @@ function textLengthOf(s) {
 function inferTask({ task, tool, model }) {
   if (task) return task;
   if (tool?.name === 'return_detection_result') return 'detect';
-  if (tool?.name === 'return_humanized_result') return 'rewrite';
+  if (tool?.name === 'return_humanized_result' || tool?.name === 'return_rewrite') return 'rewrite';
   if (model === CLAUDE_HAIKU) return 'repair';
   if (model === CLAUDE_SONNET) return 'rewrite';
   return 'text';
@@ -38,8 +38,10 @@ function inferTask({ task, tool, model }) {
 function chooseGeminiModel({ task, mode, riskLevel, textLength, model, tool }) {
   const t = inferTask({ task, tool, model });
   const len = Number(textLength) || 0;
-  if (t === 'classify' || t === 'route' || t === 'schema' || t === 'detect') return gemini.MODELS.LITE;
+  if (t === 'classify' || t === 'route' || t === 'schema') return gemini.MODELS.LITE;
+  if (t === 'detect') return gemini.MODELS.FLASH;
   if (t === 'ledger' || t === 'judge' || t === 'evidence') return gemini.MODELS.PRO;
+  if (t === 'formal' || t === 'thesis' || t === 'grounding') return gemini.MODELS.PRO;
   if (riskLevel === 'high' || mode === 'formal' || mode === 'thesis' || len > 8000) return gemini.MODELS.PRO;
   if (model === CLAUDE_SONNET && t !== 'rewrite') return gemini.MODELS.PRO;
   return gemini.MODELS.FLASH;
@@ -67,6 +69,9 @@ function usageLogBase(meta, provider, model, startedAt, status, usage, err) {
     thinkingTokens: usage?.thinking_tokens || 0,
     cacheCreateTokens: usage?.cache_creation_input_tokens || 0,
     cacheReadTokens: usage?.cache_read_input_tokens || 0,
+    cachedTokens: usage?.cached_tokens || usage?.cache_read_input_tokens || 0,
+    thinkingLevel: usage?.thinking_level || null,
+    cachedContent: usage?.cached_content || null,
     latencyMs: Date.now() - startedAt,
     retryCount: meta.retryCount || 0,
     status,
@@ -87,7 +92,7 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = CLAUDE_
     const gm = chooseGeminiModel(meta);
     const startedAt = Date.now();
     try {
-      const out = await gemini.generate({ system, user, model: gm, maxTokens, temperature, signal });
+      const out = await gemini.generate({ system, user, model: gm, maxTokens, temperature, signal, task: meta.task, riskLevel: meta.riskLevel });
       localRuns.write(usageLogBase(meta, 'gemini', gm, startedAt, 'ok', out.usage));
       if (shadowEnabled() && process.env.ANTHROPIC_API_KEY) {
         anthropic.text({ system, user, model, maxTokens, temperature, signal })
@@ -97,7 +102,7 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = CLAUDE_
       return out.text;
     } catch (e) {
       localRuns.write(usageLogBase(meta, 'gemini', gm, startedAt, 'error', {}, e));
-      if (!fallbackEnabled()) throw e;
+      if (!fallbackEnabled() || !process.env.ANTHROPIC_API_KEY) throw e;
       const fbStarted = Date.now();
       const text = await anthropic.text({ system, user, model, maxTokens, temperature, signal });
       localRuns.write(usageLogBase(meta, 'anthropic-fallback', model, fbStarted, 'ok', {}));
@@ -116,6 +121,25 @@ async function llmJSON(opts = {}) {
     const parsed = parseJSON(lastRaw);
     if (parsed) return parsed;
   }
+  if (backend() === 'gemini' && fallbackEnabled() && process.env.ANTHROPIC_API_KEY) {
+    const meta = { ...opts, user: prompt, task: opts.task || 'json', retryCount: 3 };
+    const startedAt = Date.now();
+    try {
+      const raw = await anthropic.text({
+        system: opts.system,
+        user: prompt,
+        model: opts.model || CLAUDE_SONNET,
+        maxTokens: opts.maxTokens || 2048,
+        temperature: opts.temperature,
+        signal: opts.signal
+      });
+      const parsed = parseJSON(raw);
+      localRuns.write(usageLogBase(meta, 'anthropic-fallback', opts.model || CLAUDE_SONNET, startedAt, parsed ? 'ok' : 'parse_failed', {}));
+      if (parsed) return parsed;
+    } catch (e) {
+      localRuns.write(usageLogBase(meta, 'anthropic-fallback', opts.model || CLAUDE_SONNET, startedAt, 'error', {}, e));
+    }
+  }
   return null;
 }
 
@@ -133,7 +157,9 @@ async function llmStructured({ system, user, schema, maxTokens, temperature, sig
         temperature,
         responseSchema: schema,
         jsonMode: true,
-        signal
+        signal,
+        task,
+        riskLevel
       });
       const parsed = parseJSON(out.text);
       if (!parsed) throw new Error('Gemini structured output parse failed');
@@ -180,7 +206,9 @@ async function callClaudeCompat({ userText, systemText, tool, temperature, maxOu
         temperature,
         responseSchema: schema,
         jsonMode: !!tool,
-        signal
+        signal,
+        task: meta.task,
+        riskLevel: meta.riskLevel
       });
     } catch (schemaErr) {
       if (!tool) throw schemaErr;
@@ -192,7 +220,9 @@ async function callClaudeCompat({ userText, systemText, tool, temperature, maxOu
         maxTokens: maxOutputTokens || 8192,
         temperature,
         jsonMode: true,
-        signal
+        signal,
+        task: meta.task,
+        riskLevel: meta.riskLevel
       });
     }
     let parsed = tool ? parseJSON(out.text) : null;
@@ -204,7 +234,9 @@ async function callClaudeCompat({ userText, systemText, tool, temperature, maxOu
         maxTokens: maxOutputTokens || 8192,
         temperature,
         jsonMode: false,
-        signal
+        signal,
+        task: meta.task,
+        riskLevel: meta.riskLevel
       });
       parsed = parseJSON(retry.text);
       out.usage = retry.usage;
@@ -227,7 +259,7 @@ async function callClaudeCompat({ userText, systemText, tool, temperature, maxOu
     };
   } catch (e) {
     localRuns.write(usageLogBase(meta, 'gemini', gm, startedAt, 'error', {}, e));
-    if (!fallbackEnabled()) throw e;
+    if (!fallbackEnabled() || !process.env.ANTHROPIC_API_KEY) throw e;
     const fbStarted = Date.now();
     const data = await anthropic.message({ system: systemText, user: userText, model: CLAUDE_SONNET, maxTokens: maxOutputTokens || 8192, temperature, tool, signal });
     localRuns.write(usageLogBase(meta, 'anthropic-fallback', CLAUDE_SONNET, fbStarted, 'ok', data.usage));

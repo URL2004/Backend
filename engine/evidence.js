@@ -4,7 +4,7 @@
 //   실재 검증가능 구체(통계·연도·기관·법령·사례)를 학생 승인 하에 인용 → L3↑ → 50%대.
 // ★ 무날조 유지: 엔진이 사실을 생성하면 날조. 여기선 web_search가 *실제 반환한* 결과만 쓰고,
 //   모델이 인용한 sourceUrl이 검색결과 URL 집합에 없으면 폐기(환각 차단). 최종 채택은 학생 승인.
-// ★ 백엔드 제약: web_search는 Anthropic 서버툴 → API 키 필수. claudecode CLI 경로 불가.
+// ★ 운영 기본은 Anthropic web_search. Gemini 로컬 테스트에서는 Google Search grounding을 우선 사용한다.
 
 const sg = require('./surfaceguard');
 
@@ -12,10 +12,22 @@ const MODEL = process.env.EVIDENCE_MODEL || 'claude-sonnet-4-6';  // 엔진 기�
 const API = 'https://api.anthropic.com/v1/messages';
 const WEB_SEARCH_TOOL = { type: 'web_search_20260209', name: 'web_search' };
 
+function usingGeminiBackend() {
+  return (process.env.LLM_BACKEND || '').toLowerCase() === 'gemini';
+}
+
+function geminiSearchEnabled() {
+  return usingGeminiBackend() && process.env.GEMINI_SEARCH_GROUNDING !== '0';
+}
+
+function claudeFallbackEnabled() {
+  return process.env.LLM_CLAUDE_FALLBACK !== '0';
+}
+
 // ── 응답 블록에서 web_search가 *실제* 반환한 URL 집합 추출(환각 게이트 기준) ──
 //   web_search_tool_result 블록의 content[].url 이 ground truth. 모델 본문이 인용한 출처가
 //   이 집합에 없으면 = 검색이 안 가져온 것 = 모델 환각 → 폐기.
-function collectResultUrls(content) {
+function collectResultUrls(content, groundingMetadata) {
   const urls = new Set();
   for (const block of content || []) {
     if (block.type === 'web_search_tool_result' && Array.isArray(block.content)) {
@@ -23,6 +35,10 @@ function collectResultUrls(content) {
         if (r && typeof r.url === 'string') urls.add(normalizeUrl(r.url));
       }
     }
+  }
+  for (const chunk of groundingMetadata?.groundingChunks || []) {
+    const uri = chunk?.web?.uri || chunk?.retrievedContext?.uri;
+    if (uri) urls.add(normalizeUrl(uri));
   }
   return urls;
 }
@@ -41,8 +57,60 @@ function parseJSON(s) {
   try { return JSON.parse(t); } catch { return null; }
 }
 
-// ── web_search 서버툴 1콜 (pause_turn resume 루프) ──
-async function llmWebSearch({ system, user, signal, maxTokens = 4096, maxUses = 5 }) {
+function collectGroundingTitles(groundingMetadata) {
+  const titles = new Set();
+  for (const chunk of groundingMetadata?.groundingChunks || []) {
+    const title = chunk?.web?.title || chunk?.retrievedContext?.title;
+    if (title) titles.add(String(title).trim().toLowerCase());
+  }
+  return titles;
+}
+
+async function llmGeminiWebSearch({ system, user, signal, maxTokens = 4096 }) {
+  const gemini = require('../llm/providers/gemini');
+  const localRuns = require('../llm/localRuns');
+  const startedAt = Date.now();
+  const out = await gemini.generate({
+    system,
+    user,
+    model: gemini.MODELS.PRO,
+    maxTokens,
+    temperature: 0.1,
+    signal,
+    task: 'evidence',
+    riskLevel: 'high',
+    tools: [{ google_search: {} }]
+  });
+  const groundingMetadata = out.raw?.candidates?.[0]?.groundingMetadata || null;
+  localRuns.write({
+    provider: 'gemini',
+    model: gemini.MODELS.PRO,
+    task: 'evidence_search',
+    mode: 'formal',
+    riskLevel: 'high',
+    inputTokens: out.usage?.input_tokens || 0,
+    outputTokens: out.usage?.output_tokens || 0,
+    thinkingTokens: out.usage?.thinking_tokens || 0,
+    cacheCreateTokens: out.usage?.cache_creation_input_tokens || 0,
+    cacheReadTokens: out.usage?.cache_read_input_tokens || 0,
+    cachedTokens: out.usage?.cached_tokens || 0,
+    thinkingLevel: out.usage?.thinking_level || null,
+    cachedContent: out.usage?.cached_content || null,
+    latencyMs: Date.now() - startedAt,
+    retryCount: 0,
+    status: 'ok',
+    searchQueryCount: groundingMetadata?.webSearchQueries?.length || 0
+  });
+  return {
+    content: [{ type: 'text', text: out.text || '' }],
+    groundingMetadata,
+    usage: out.usage,
+    _provider: 'gemini'
+  };
+}
+
+// ── Anthropic web_search 서버툴 1콜 (pause_turn resume 루프) ──
+async function llmAnthropicWebSearch({ system, user, signal, maxTokens = 4096, maxUses = 5 }) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('evidence: ANTHROPIC_API_KEY 필요 — web_search 서버툴은 API 백엔드 전용(claudecode 불가)');
   let messages = [{ role: 'user', content: user }];
@@ -70,6 +138,44 @@ async function llmWebSearch({ system, user, signal, maxTokens = 4096, maxUses = 
   throw new Error('evidence: pause_turn 4회 초과');
 }
 
+async function llmWebSearch({ system, user, signal, maxTokens = 4096, maxUses = 5 }) {
+  if (geminiSearchEnabled()) {
+    try {
+      return await llmGeminiWebSearch({ system, user, signal, maxTokens });
+    } catch (e) {
+      if (!claudeFallbackEnabled() || !process.env.ANTHROPIC_API_KEY) throw e;
+    }
+  }
+  return llmAnthropicWebSearch({ system, user, signal, maxTokens, maxUses });
+}
+
+function groundedCandidates(data) {
+  const resultUrls = collectResultUrls(data.content, data.groundingMetadata);
+  const resultTitles = collectGroundingTitles(data.groundingMetadata);
+  const parsed = parseJSON(joinText(data.content)) || [];
+
+  // 환각 게이트: 모델이 인용한 출처가 *실제 검색결과* URL 집합에 있어야 채택.
+  const out = [];
+  for (const c of parsed) {
+    if (!c || typeof c.fact !== 'string' || typeof c.sourceUrl !== 'string') continue;
+    const url = normalizeUrl(c.sourceUrl);
+    const title = String(c.sourceTitle || '').trim().toLowerCase();
+    // 정확 일치 또는 도메인/경로 prefix 일치(검색결과가 더 긴 URL일 수 있음).
+    const grounded = resultUrls.has(url)
+      || [...resultUrls].some(r => r.startsWith(url) || url.startsWith(r))
+      || (!!title && resultTitles.has(title));
+    if (!grounded) continue;                                   // 출처 환각 → 폐기
+    out.push({
+      fact: c.fact.trim(),
+      sourceUrl: c.sourceUrl.trim(),
+      sourceTitle: (c.sourceTitle || '').trim(),
+      relevance: (c.relevance || '').trim(),
+      grounded: true
+    });
+  }
+  return { candidates: out, searchedUrlCount: resultUrls.size, rawCount: parsed.length };
+}
+
 // ── 한 추상 segment에 대한 근거 후보 수집 + 환각 게이트 + 구조화 파싱 ──
 async function suggestEvidenceForSegment(segText, { lang = 'ko', signal, maxUses = 5 } = {}) {
   const topic = (segText.match(/[가-힣]{2,}|[A-Za-z]{3,}/g) || []).slice(0, 30).join(' ');
@@ -89,26 +195,12 @@ async function suggestEvidenceForSegment(segText, { lang = 'ko', signal, maxUses
     : `[추상 문단]\n${segText}\n\n[주제어]\n${topic}\n\nweb_search로 실재 근거를 찾고, JSON 배열을 출력하라.`;
 
   const data = await llmWebSearch({ system, user, signal, maxUses });
-  const resultUrls = collectResultUrls(data.content);
-  const parsed = parseJSON(joinText(data.content)) || [];
-
-  // 환각 게이트: 모델이 인용한 출처가 *실제 검색결과* URL 집합에 있어야 채택.
-  const out = [];
-  for (const c of parsed) {
-    if (!c || typeof c.fact !== 'string' || typeof c.sourceUrl !== 'string') continue;
-    const url = normalizeUrl(c.sourceUrl);
-    // 정확 일치 또는 도메인/경로 prefix 일치(검색결과가 더 긴 URL일 수 있음).
-    const grounded = resultUrls.has(url) || [...resultUrls].some(r => r.startsWith(url) || url.startsWith(r));
-    if (!grounded) continue;                                   // 출처 환각 → 폐기
-    out.push({
-      fact: c.fact.trim(),
-      sourceUrl: c.sourceUrl.trim(),
-      sourceTitle: (c.sourceTitle || '').trim(),
-      relevance: (c.relevance || '').trim(),
-      grounded: true
-    });
+  let packed = groundedCandidates(data);
+  if (data._provider === 'gemini' && packed.candidates.length === 0 && claudeFallbackEnabled() && process.env.ANTHROPIC_API_KEY) {
+    const fb = await llmAnthropicWebSearch({ system, user, signal, maxUses });
+    packed = groundedCandidates(fb);
   }
-  return { candidates: out, searchedUrlCount: resultUrls.size, rawCount: parsed.length };
+  return packed;
 }
 
 // ── 전체: 추상 segment 상위 N개에 대해 후보 수집 ──
@@ -150,4 +242,4 @@ async function suggestEvidence(rawText, { lang = 'ko', signal, maxSegments, targ
   };
 }
 
-module.exports = { suggestEvidence, suggestEvidenceForSegment, llmWebSearch, collectResultUrls, normalizeUrl };
+module.exports = { suggestEvidence, suggestEvidenceForSegment, llmWebSearch, llmAnthropicWebSearch, collectResultUrls, normalizeUrl };

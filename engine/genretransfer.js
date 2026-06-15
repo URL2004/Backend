@@ -10,7 +10,27 @@
 
 const sg = require('./surfaceguard');
 const floor = require('./floor');
-const { llmText, llmJSON, buildSoftClaimLedger, semanticJudge, MODEL, HAIKU } = require('./judge');
+const judgeEngine = require('./judge');
+const { buildSoftClaimLedger, semanticJudge, MODEL, HAIKU } = judgeEngine;
+
+function llmText(opts = {}) {
+  const repairLike = opts.model === HAIKU;
+  return judgeEngine.llmText({
+    task: repairLike ? 'repair' : 'formal',
+    mode: repairLike ? undefined : 'formal',
+    riskLevel: repairLike ? 'medium' : 'high',
+    ...opts
+  });
+}
+
+function llmJSON(opts = {}) {
+  return judgeEngine.llmJSON({
+    task: 'formal',
+    mode: 'formal',
+    riskLevel: 'high',
+    ...opts
+  });
+}
 
 // ── 장르 프로파일(사람 저점수 문서 실측 기반 목표 통계) ──
 const GENRE_PROFILES = {

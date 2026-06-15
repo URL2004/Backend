@@ -90,7 +90,16 @@ async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal
   const { system, user } = buildGroundingPrompt(segText, anchors, lang, mode);
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    let cand = await llmText({ system, user, signal, maxTokens: 1200 });
+    let cand = await llmText({
+      system,
+      user,
+      signal,
+      maxTokens: 1200,
+      task: 'grounding',
+      mode,
+      riskLevel: 'high',
+      textLength: segText.replace(/\s+/g, '').length
+    });
     cand = (cand || '').trim();
     if (!cand || cand.length < segText.length * 0.5) continue;        // 빈/과소 응답 → 재시도
     if (floor.looksLikeRefusal(cand)) continue;                      // ★ 거부문 → 폐기(원본 유지)

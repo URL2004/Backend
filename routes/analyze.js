@@ -1,6 +1,6 @@
 // [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리
-// ★ 탐지(detect)·휴머나이즈·웹 검색 모두 Anthropic Claude.
-// ★ Anthropic prompt caching: detect/humanize 시스템 프롬프트에 cache_control: ephemeral (5분 TTL, 1024+ 토큰).
+// ★ 운영 기본은 Anthropic Claude, 로컬 테스트 브랜치에서는 LLM_BACKEND=gemini adapter로 우회.
+// ★ Anthropic prompt caching은 운영 API 경로에서 cache_control: ephemeral, Gemini는 llm/provider의 implicit/explicit cache 설정을 사용.
 
 const express = require('express');
 const multer = require('multer');
@@ -1271,6 +1271,54 @@ function timeoutSignal(ms) {
   return ac.signal;
 }
 
+function usingGeminiBackend() {
+  return (process.env.LLM_BACKEND || '').toLowerCase() === 'gemini';
+}
+
+function hasMicroLlm() {
+  return usingGeminiBackend()
+    ? !!(process.env.GEMINI_API_KEY || '').trim()
+    : !!ANTHROPIC_API_KEY;
+}
+
+function cleanMicroOutput(out) {
+  return String(out || '')
+    .trim()
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .replace(/\n+/g, ' ')
+    .trim() || null;
+}
+
+async function callMicroText(prompt, sentence, signal) {
+  const microSignal = combineSignals(signal, timeoutSignal(30_000));
+  if (usingGeminiBackend()) {
+    try {
+      const llm = require('../llm/router');
+      const out = await llm.llmText({
+        system: '',
+        user: prompt,
+        signal: microSignal,
+        maxTokens: 512,
+        temperature: 0.3,
+        task: 'repair',
+        mode: 'polish',
+        riskLevel: 'low',
+        textLength: (sentence || '').replace(/\s+/g, '').length
+      });
+      return cleanMicroOutput(out);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function routingRiskForMode(mode, textLength = 0) {
+  if (mode === 'formal' || mode === 'thesis') return 'high';
+  if (Number(textLength) > 8000) return 'high';
+  return 'medium';
+}
+
 function cleanText(text) {
   return text
     .replace(/[\u200B-\u200D\uFEFF\u00AD\u034F\u061C\u180E\u2000-\u200F\u2028-\u202F\u205F-\u206F]/g, '')
@@ -1375,7 +1423,7 @@ const enforceInputRules = enforceMechanicalRules;
 // 위반 문장 1개당 micro-call (~150 토큰), 다른 문장은 손대지 않음.
 // ★ \n\n 단락 경계 보존: sentences를 join하지 않고 원본 text 위에서 surgical replace.
 async function fixListsOfThree(text, lang, signal) {
-  if (!text || !ANTHROPIC_API_KEY) return text;
+  if (!text || !hasMicroLlm()) return text;
   if (signal?.aborted) return text;
 
   // verifyCheckFields와 동일 기준으로 문장 분리(매칭 검출용)
@@ -1423,7 +1471,8 @@ Sentence: ${sentence}`
 
 문장: ${sentence}`;
 
-  // Claude 텍스트 생성 (tool 없이) — 외과수술용 micro-call. 실패는 best-effort 폴백.
+  // 외과수술용 micro-call. Gemini 로컬 테스트에서는 llm router, 운영 기본은 Anthropic 직접 경로.
+  if (usingGeminiBackend()) return callMicroText(prompt, sentence, signal);
   const microSignal = combineSignals(signal, timeoutSignal(30_000));
   let response;
   try {
@@ -1475,7 +1524,7 @@ async function applyPassC(result, lang, signal) {
 // 한 문장 안에 콤마 2+ 누적 + 종결/연결어미 2개+ 패턴만 외과수술로 분할.
 // 룰 3 콤마 절제 — 사용자 카피킬러 감지 시그너처 직격(KatFishNet: 한국어 LLM은 인간 대비 콤마 2.3배).
 async function fixCommaStacking(text, lang, signal) {
-  if (!text || !ANTHROPIC_API_KEY) return { text, count: 0 };
+  if (!text || !hasMicroLlm()) return { text, count: 0 };
   if (signal?.aborted) return { text, count: 0 };
 
   const sentences = text.split(/(?<=[.!?？。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
@@ -1527,6 +1576,7 @@ Sentence: ${sentence}`
 
 문장: ${sentence}`;
 
+  if (usingGeminiBackend()) return callMicroText(prompt, sentence, signal);
   const microSignal = combineSignals(signal, timeoutSignal(30_000));
   let response;
   try {
@@ -1563,7 +1613,7 @@ Sentence: ${sentence}`
 // "[고유명사]는 ~사례/증거/상징/표현/결과입니다" 같은 단정 정의문만 관찰형으로 변환.
 // 룰 4 LLM overconfidence 시그너처 직격. verifyCheckFields의 declarativeRe와 동일 패턴.
 async function fixDeclarativeDefinition(text, lang, signal) {
-  if (!text || !ANTHROPIC_API_KEY) return { text, count: 0 };
+  if (!text || !hasMicroLlm()) return { text, count: 0 };
   if (signal?.aborted) return { text, count: 0 };
 
   const declarativeRe = /[가-힣A-Za-z0-9]{2,}(?:은|는)\s+[^.!?]{4,}(?:사례입니다|사례이다|증거입니다|증거이다|증명입니다|증명이다|예시입니다|예시이다|상징입니다|상징이다|표현입니다|표현이다|결과입니다|결과이다|보여줍니다|보여준다|드러냅니다|드러낸다|증명합니다|증명한다|입증합니다|입증한다)[.!?]/g;
@@ -1609,6 +1659,7 @@ Sentence: ${sentence}`
 
 문장: ${sentence}`;
 
+  if (usingGeminiBackend()) return callMicroText(prompt, sentence, signal);
   const microSignal = combineSignals(signal, timeoutSignal(30_000));
   let response;
   try {
@@ -1694,10 +1745,10 @@ async function preprocessInput(text, lang, signal) {
 //   long generation은 끝까지 받고, 진짜 hang(네트워크/서버 stall)만 끊는다.
 // SSE 누적 결과는 non-streaming 응답과 동일한 모양({content, usage, stop_reason})으로
 // 재조립해 extractClaudeResult를 그대로 재사용한다 — 호출 측 변경 없음.
-async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens, signal }) {
+async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens, signal, task, mode, riskLevel, textLength }) {
   if (process.env.LLM_BACKEND === 'gemini') {
     const llm = require('../llm/router');
-    return llm.callClaudeCompat({ userText, systemText, tool, temperature, maxOutputTokens, signal });
+    return llm.callClaudeCompat({ userText, systemText, tool, temperature, maxOutputTokens, signal, task, mode, riskLevel, textLength });
   }
   // ★ dev 백엔드 스위치: LLM_BACKEND=claudecode면 내 Claude Code 구독(Sonnet)으로 호출 (API 키 불필요).
   //   엔진 로컬 테스트용. 프로덕션은 LLM_BACKEND 미설정 → 기존 API 경로.
@@ -1876,6 +1927,59 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
 // 웹 검색: Anthropic Messages API의 web_search 서버 도구 사용 (default ON).
 // 실패/빈 응답이면 null 반환 → 호출 측은 기존 휴머나이즈 흐름과 동일하게 진행.
 async function fetchWebSearchExamples(text, lang, signal) {
+  if (usingGeminiBackend()) {
+    if (!(process.env.GEMINI_API_KEY || '').trim()) return null;
+    if (process.env.GEMINI_SEARCH_GROUNDING === '0') return null;
+    if (signal?.aborted) return null;
+    const startedAt = Date.now();
+    try {
+      const gemini = require('../llm/providers/gemini');
+      const localRuns = require('../llm/localRuns');
+      const searchPrompt = lang === 'en'
+        ? `Identify the topic of the following text and briefly provide 2-3 specific real-world examples or statistics related to it. Text: ${text.substring(0, 500)}`
+        : `다음 글의 주제를 파악하고, 관련된 구체적인 실제 사례나 통계를 2~3개 간략히 제시해줘. 글: ${text.substring(0, 500)}`;
+      const out = await gemini.generate({
+        user: searchPrompt,
+        model: gemini.MODELS.FLASH,
+        maxTokens: 2048,
+        temperature: 0.2,
+        signal: combineSignals(signal, timeoutSignal(45_000)),
+        task: 'evidence',
+        riskLevel: 'medium',
+        tools: [{ google_search: {} }]
+      });
+      localRuns.write({
+        provider: 'gemini',
+        model: gemini.MODELS.FLASH,
+        task: 'web_search_examples',
+        riskLevel: 'medium',
+        inputTokens: out.usage?.input_tokens || 0,
+        outputTokens: out.usage?.output_tokens || 0,
+        thinkingTokens: out.usage?.thinking_tokens || 0,
+        cacheReadTokens: out.usage?.cache_read_input_tokens || 0,
+        latencyMs: Date.now() - startedAt,
+        retryCount: 0,
+        status: 'ok'
+      });
+      const outputText = cleanMicroOutput(out.text || '');
+      if (!outputText || outputText.length < 50) return null;
+      return outputText.substring(0, 800);
+    } catch (e) {
+      try {
+        require('../llm/localRuns').write({
+          provider: 'gemini',
+          model: 'gemini-3.5-flash',
+          task: 'web_search_examples',
+          riskLevel: 'medium',
+          latencyMs: Date.now() - startedAt,
+          retryCount: 0,
+          status: 'error',
+          error: e.message
+        });
+      } catch {}
+      return null;
+    }
+  }
   if (!ANTHROPIC_API_KEY) return null;
   if (signal?.aborted) return null;
   try {
@@ -2034,7 +2138,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   // 1차
   const data = await callClaude({
     userText: userContent, systemText: humanizeSystem, tool: humanizeTool,
-    temperature: 0.5, maxOutputTokens: 16384, signal
+    temperature: 0.5, maxOutputTokens: 16384, signal,
+    task: 'rewrite', mode: selectedMode, riskLevel: routingRiskForMode(selectedMode, inputCharLen), textLength: inputCharLen
   });
   let result = extractClaudeResult(data, humanizeTool.name);
   await applyPassC(result, lang, signal);
@@ -2059,7 +2164,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
         const refineUser = floor.buildFloorRefineUser(humanizeText, result.outputText, floorViolations, lang);
         const refineData = await callClaude({
           userText: refineUser, systemText: humanizeSystem, tool: humanizeTool,
-          temperature: 0.5, maxOutputTokens: 16384, signal
+          temperature: 0.5, maxOutputTokens: 16384, signal,
+          task: 'repair', mode: selectedMode, riskLevel: routingRiskForMode(selectedMode, inputCharLen), textLength: inputCharLen
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
         await applyPassC(result, lang, signal);
@@ -2084,7 +2190,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
         const refineUser = buildRefineUser(humanizeText, result.outputText, failed, lang);
         const refineData = await callClaude({
           userText: refineUser, systemText: humanizeSystem, tool: humanizeTool,
-          temperature: 0.5, maxOutputTokens: 16384, signal
+          temperature: 0.5, maxOutputTokens: 16384, signal,
+          task: 'repair', mode: selectedMode, riskLevel: routingRiskForMode(selectedMode, inputCharLen), textLength: inputCharLen
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
         await applyPassC(result, lang, signal);
@@ -2347,7 +2454,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     let chunkDone = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !chunkDone; attempt++) {
       try {
-        const data = await callClaude({ userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const data = await callClaude({
+          userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal,
+          task: 'rewrite', mode, riskLevel: routingRiskForMode(mode, c.text.replace(/\s+/g, '').length), textLength: c.text.replace(/\s+/g, '').length
+        });
         const r = extractClaudeResult(data, tool.name);
         if (floor.looksLikeRefusal(r.outputText)) throw new Error('model-refusal'); // ★ 거부문이 출력에 박히는 사고 차단 → 재시도/폴백
         if (evid && evg.checkEvidencePairing(r.outputText || '', evidLines).length > basePairCount) throw new Error('evidence-pairing'); // ★ 수치-출처 분리(재조합 위험) → 재시도/폴백
@@ -2365,7 +2475,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     if (viol.length) {
       try {
         const ru = floor.buildFloorRefineUser(cRaw, c.outputText, viol, lang);
-        const rd = await callClaude({ userText: ru, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const rd = await callClaude({
+          userText: ru, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal,
+          task: 'repair', mode, riskLevel: routingRiskForMode(mode, cRaw.replace(/\s+/g, '').length), textLength: cRaw.replace(/\s+/g, '').length
+        });
         const r2 = extractClaudeResult(rd, tool.name);
         await applyPassC(r2, lang, signal);
         // 거부문이거나 수치-출처 짝을 새로 깨면 적용 안 함(이전 출력 유지)
@@ -2653,7 +2766,16 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         const usr = lang === 'en'
           ? `[NUMBER-SOURCE SEPARATION — fix only these sentences]\n${vText}\n\n[OWNING FACTS FOR EACH NUMBER]\n${evid}\n\n[BODY]\n${result.outputText}`
           : `[수치-출처 분리 — 이 문장들만 수정]\n${vText}\n\n[각 수치의 소속 사실(승인 원장)]\n${evid}\n\n[본문]\n${result.outputText}`;
-        const fixed = await require('../engine/judge').llmText({ system: sys, user: usr, signal, maxTokens: 16384 });
+        const fixed = await require('../engine/judge').llmText({
+          system: sys,
+          user: usr,
+          signal,
+          maxTokens: 16384,
+          task: 'repair',
+          mode,
+          riskLevel: routingRiskForMode(mode, result.outputText.replace(/\s+/g, '').length),
+          textLength: result.outputText.replace(/\s+/g, '').length
+        });
         if (fixed && fixed.replace(/\s+/g, '').length >= result.outputText.replace(/\s+/g, '').length * 0.85) {
           const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
           const postV = floor.collectFloorViolations({ result: { outputText: fixed }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
@@ -2821,7 +2943,10 @@ router.post('/analyze', async (req, res) => {
         systemText: detectSystem,
         tool: detectTool,
         maxOutputTokens: 4096,
-        signal: ac.signal
+        signal: ac.signal,
+        task: 'detect',
+        riskLevel: 'low',
+        textLength: text.replace(/\s+/g, '').length
       });
       result = extractClaudeResult(data, detectTool.name);
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
@@ -2930,7 +3055,11 @@ router.post('/analyze', async (req, res) => {
           tool: humanizeTool,
           temperature: 0.5,
           maxOutputTokens: 16384,
-          signal: ac.signal
+          signal: ac.signal,
+          task: 'rewrite',
+          mode: selectedMode,
+          riskLevel: routingRiskForMode(selectedMode, inputCharLen),
+          textLength: inputCharLen
         });
       } catch (e) {
         if (ac.signal.aborted) throw e;
@@ -2958,7 +3087,11 @@ router.post('/analyze', async (req, res) => {
             tool: humanizeTool,
             temperature: 0.5,
             maxOutputTokens: 16384,
-            signal: ac.signal
+            signal: ac.signal,
+            task: 'repair',
+            mode: selectedMode,
+            riskLevel: routingRiskForMode(selectedMode, inputCharLen),
+            textLength: inputCharLen
           });
           const refined = extractClaudeResult(refineData, humanizeTool.name);
           // 1차 result는 폴백용으로 보관 → refined가 정상이면 교체
@@ -3172,7 +3305,10 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         systemText: detectSystem,
         tool: detectTool,
         maxOutputTokens: 4096,
-        signal: ac.signal
+        signal: ac.signal,
+        task: 'detect',
+        riskLevel: 'low',
+        textLength: text.replace(/\s+/g, '').length
       });
       result = extractClaudeResult(data, detectTool.name);
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
@@ -3206,7 +3342,11 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
           tool: humanizeTool,
           temperature: 0.5,
           maxOutputTokens: 16384,
-          signal: ac.signal
+          signal: ac.signal,
+          task: 'rewrite',
+          mode: humanizeModePdf,
+          riskLevel: routingRiskForMode(humanizeModePdf, humanizeText.replace(/\s+/g, '').length),
+          textLength: humanizeText.replace(/\s+/g, '').length
         });
       } catch (e) {
         if (ac.signal.aborted) throw e;

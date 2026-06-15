@@ -694,9 +694,13 @@ async function runHumanizeJob(job, text) {
     job.status = 'running';
     job.stage = '문장 다듬는 중';
     persistJob(job);
+    const isPolish = job.mode === 'polish';
     const out = await analyze.runHumanizeChunked({
-      text, mode: job.mode === 'polish' ? 'assignment' : 'blog', lang: job.lang || 'ko', signal: job.ac.signal,
-      floorV2: true, optIn: false, judge: true, grounding: true, userNotes: job.memo || ''
+      text, mode: isPolish ? 'assignment' : 'blog', lang: job.lang || 'ko', signal: job.ac.signal,
+      // 과제 어투 다듬기(polish)는 회피가 목적이 아니므로 의미 게이트(semanticJudge) 분리 → 차단 급감.
+      //   사실 게이트(novelty·lostFacts)는 buildFloorReport가 계속 잡아 날조·사실누락은 그대로 차단.
+      //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
+      floorV2: true, optIn: false, judge: !isPolish, grounding: true, userNotes: job.memo || '', tonePolish: isPolish
     });
     // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
     if (out.floorReport && out.floorReport.status === 'blocked') {

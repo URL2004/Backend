@@ -2205,7 +2205,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
 // server-side chunking 오케스트레이션 — 문단별 재작성 + 좌/우 경계 + 청크별 FLOOR + 병합(§7.2).
 // 긴 글에서 프론트 분할(prevContext 300자)을 대체. 청크별로 novelty/화자를 잡고, 병합 후 전체 재검사.
-async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, grounding = false, userNotes = '', evidence = '' } = {}) {
+async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, grounding = false, userNotes = '', evidence = '', tonePolish = false } = {}) {
   const floor = require('../engine/floor');
   const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
   // ★ 두 종류의 허용 추가재료(§설계-evidence-grounding):
@@ -2232,7 +2232,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   사후패치 0/22과 동일 패턴) → 메인 경로는 STYLE_ANCHOR=1 옵트인. 누출은 anchor_leak 게이트가 차단.
   const anchorActive = floorV2 && lang === 'ko' && mode === 'assignment' && process.env.STYLE_ANCHOR === '1';
   const buildSys = (un, ev, anchorIdx = null) => floorV2
-    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev, anchorIdx })
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev, anchorIdx, tonePolish })
     : getHumanizeSystem(mode, lang);
   let humanizeSystem = buildSys('', '', null);  // 기본(메모·evidence·앵커 없음 — 수리 패스용)
   const topicSim = (a, b) => {

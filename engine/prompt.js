@@ -79,7 +79,7 @@ function speakerRuleEn(speakerType) {
   return "Keep the source's first-person voice. You may keep 1-2 natural personal reactions within that voice, but do not fabricate new anecdotes, achievements, or feelings.";
 }
 
-function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '', register = 'mixed', evidence = '', anchorIdx = null } = {}) {
+function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '', register = 'mixed', evidence = '', anchorIdx = null, tonePolish = false } = {}) {
   const tone = (lang === 'en' ? TONE_EN : TONE_KO)[mode] || (lang === 'en' ? TONE_EN : TONE_KO).assignment;
   // 문체 일관성 규칙(§한다체 오믹스 버그): 청크마다 평어/존댓말이 섞이면 그 자체가 AI 신호. 원문 문체로 통일.
   //   blog/resume는 모드 고유 말투(해요/존댓말)를 쓰므로 제외, 학술계열(assignment/thesis)에만 적용.
@@ -142,6 +142,61 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '※ These are real, verified public facts (statistics, surveys, institutions, policies). Use them to SUPPORT the abstract/general claims in the text.',
     '★ Rules: (1) Keep the formal register and third-person voice — do NOT turn facts into first-person anecdotes. (2) Copy numbers, institution names, and years exactly, with attribution markers ("according to..."). (3) Use each fact exactly once, in the best-fitting spot. (4) Invent NO numbers, institutions, or studies beyond this list. (5) Keep the source\'s thesis direction; facts are supporting evidence only. (6) Weave by replacing/compressing generic sentences — keep total length near the source.'
   ].join('\n') : '';
+
+  // ★ 과제 어투 다듬기(tonePolish) 분기 — 우회/캐주얼화 블록 제거. "보존 우선 + 최소 손질 + 격식 과제체".
+  //   회피가 목적이 아니므로 burstiness·추임새·어휘 하향·순서 재배치 같은 재창작성 우회 기법을 빼고,
+  //   FLOOR(사실·분량·구조·화자·결론 보존)를 더 강하게 — 원문을 새로 쓰지 않고 어색한 표현만 손본다.
+  if (tonePolish) {
+    if (lang === 'en') {
+      return [
+        '[GLOBAL FLOOR — supreme]',
+        "You are an editor polishing a college assignment. Keep the source's facts, sentences, structure, order, and information intact; fix ONLY awkward or AI-sounding phrasing so it reads like clean academic prose. This is NOT a rewrite — do not re-create the text.",
+        '',
+        'PRESERVATION (most important):',
+        '1. Keep every number, date, amount, proper noun, statistic exactly. Invent nothing new.',
+        `2. Output ${lenEn}. Keep paragraph count, order, and structure (no reorder / merge / split). Keep sentence order.`,
+        '3. Keep all original claims, evidence, examples. No summarizing, compressing, deleting, or adding content.',
+        `4. Speaker: ${speakerRuleEn(speakerType)}. Do not invent personal anecdotes.`,
+        '',
+        'POLISH (touch only these; leave every other sentence as-is):',
+        '· Minimal edits — do not rewrite whole sentences; fix only what is genuinely awkward.',
+        '· Consistent formal academic register; never casual/SNS tone.',
+        '· Remove AI clichés ("in conclusion", "it is important to note", "I learned a lot").',
+        '· Ease only excessive uniformity (4+ identical endings in a row) and run-on sentences with 2+ commas.',
+        '· Keep academic vocabulary — do not dumb it down. No filler, no reordering, no new info, no moral-summary endings.',
+        '· Plain prose only — no markdown.',
+        '',
+        '[TONE] Calm, well-ordered undergraduate assignment/report prose.',
+        '',
+        'Lightly polish the source below under the FLOOR (no rewrite). Output the body text only.'
+      ].join('\n');
+    }
+    return [
+      '[GLOBAL FLOOR — 최우선·불변]',
+      '너는 대학 과제 글을 다듬는 한국어 편집자다. 원문의 사실·문장·구조·순서·정보량을 최대한 그대로 두고, AI 티가 나거나 어색한 표현만 최소한으로 손봐 "대학 과제체"로 매끄럽게 정리한다. ★재작성·재창작이 아니다 — 원문을 새로 쓰지 마라.',
+      '',
+      '절대 규칙(보존 — 가장 중요):',
+      '1. 사실 보존: 원문의 숫자·범위·날짜·금액·고유명사·통계를 하나도 빼거나 바꾸지 마라. 원문에 없는 사실·수치·연도·기관·사례를 새로 만들지 마라.',
+      `2. 분량·구조 보존: 출력은 ${lenKo}. 문단 수·순서·구조를 유지하라(문단 재배치·통합·분할 금지). 문장 순서도 바꾸지 마라.`,
+      '3. 내용 보존: 원문의 주장·근거·예시를 그대로 두라. 요약·압축·삭제 금지, 새 내용·해석·일화 추가 금지.',
+      `4. 화자 보존: ${speakerRuleKo(speakerType)} — 1인칭 개인 경험·일화를 새로 지어내지 마라.`,
+      '',
+      '다듬기 지침(아래만 손봐라 — 그 외 멀쩡한 문장은 원문 그대로 두라):',
+      '· ★최소 개입: 원문 문장을 통째로 새로 쓰지 마라. 어색한 부분만 부분 수정하고, 자연스러운 문장은 건드리지 마라.',
+      '· ★격식 과제체 유지: 원문의 종결체(평어 ~다/~이다/~한다 또는 ~합니다)를 따르되 글 전체를 일관되게 통일하라. 구어·SNS·블로그체(~요/~죠/~네요/~거든요/~잖아요/근데/막상/뭐랄까) 절대 금지.',
+      '· AI 상투어·평가형 GPT-ism만 정리: "결론적으로/~라고 할 수 있다/중요한 것은/많은 것을 배웠습니다/유익했습니다/~의 중요성을 깨달았습니다/뜻깊었습니다" 같은 표현을 자연스러운 과제 문장으로 바꾸거나 덜어내라.',
+      '· 과도한 정형성만 완화: 같은 종결어미가 4문장 이상 연속되거나 동일 표현이 여러 번 반복될 때 그 일부만 살짝 바꿔라(글 전체를 흔들지 말 것).',
+      '· 비인칭·수동 남발은 약간만 완화: "~여겨진다/이루어진다/볼 수 있다"가 과하면 일부만 능동으로. 단 격식은 유지하고, 없는 주체를 새로 지어내지 마라.',
+      '· 한 문장에 콤마가 2개 이상으로 늘어진 문장만 자연스럽게 끊어라.',
+      '· ★어휘는 과제 수준 유지: 학술 한자어를 굳이 쉬운 말·구어로 낮추지 마라(격식 유지). 명백한 번역투·어색한 조사만 고쳐라.',
+      '· 금지: 추임새·구어 표지 삽입, 1인칭 일화 추가, 문단·문장 순서 재배치, 새 정보·요약·교훈형 결론 추가.',
+      '· 마크다운 기호(*, #, -, 백틱) 금지 — 줄글로만.',
+      '',
+      `[톤: 대학 과제체] 차분하고 정돈된 학부생 과제·보고서 문체. 구어·SNS 금지, 지나친 현학·번역투도 지양 — 교수가 읽기 자연스러운 격식 산문.${regKo}`,
+      '',
+      '아래 원문을 위 FLOOR를 지키며 "최소한의 손질"로 과제체로 다듬어라(재작성 금지). 본문만 출력(머리말·마크다운 금지).'
+    ].join('\n');
+  }
 
   if (lang === 'en') {
     return [

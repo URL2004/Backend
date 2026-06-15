@@ -699,7 +699,7 @@ async function runJob(job, text, evidence) {
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
     // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
-    const out = await genreTransferV2(text, { evidence: evidence || '', userNotes: job.memo || '', signal: job.ac.signal });
+    const out = await genreTransferV2(text, { evidence: evidence || '', userNotes: job.memo || '', lengthMode: job.lengthMode || 'keep', signal: job.ac.signal });
     const gates = [];
     if (out.novelty?.count) gates.push('novelty');
     // ★ B(2026-06-15 사장님 결정 "동작은 해야"): 원문 사실 "누락"(lostFacts)은 하드 차단하지 않는다.
@@ -954,6 +954,8 @@ router.post('/transform', async (req, res) => {
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
     memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',   // 경험·사례 메모 — blog·formal(재구성) 공통 적용(2026-06-15)
     lang: req.body.lang === 'en' ? 'en' : 'ko',
+    lengthMode: req.body.length === 'compact' ? 'compact' : 'keep',   // 분량 옵션(재구성 전용) — 엔진 연결(2026-06-15). 기본 keep(유지)
+
     wantEvidence,
     estSec,
     ac: new AbortController()   // 명시적 취소용(/cancel)

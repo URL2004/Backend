@@ -347,7 +347,7 @@ function pickSkeleton(rawText) {
   return 'debate_explainer';
 }
 
-async function buildSlotPlan(rawText, { skeleton, evidenceList = [], ledger, signal } = {}) {
+async function buildSlotPlan(rawText, { skeleton, evidenceList = [], ledger, lengthMode = 'keep', signal } = {}) {
   const sk = SKELETONS[skeleton];
   const claims = (ledger?.claims || []).map((c, i) => `C${i + 1}. ${c.claim || ''}`).join('\n');
   const evid = evidenceList.map((e, i) => `E${i + 1}. ${e}`).join('\n');
@@ -397,8 +397,10 @@ JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":[
       }
     }
   }
-  // 분량: 가중치 비례로 원문의 ~92%
-  const desired = Math.round((((rawText.match(/[가-힣]/g) || []).length) || 1) * 0.92);
+  // 분량 모드(2026-06-15 사장님 "유지 골라도 짧다" — 옵션을 엔진에 연결): keep=원문 95% 목표, compact=60%.
+  //   재구성은 원장 요약에서 재생성하므로 100%는 불가(요약 압축) — keep도 실측 상한 ~65~75%. compact는 의도적 축약.
+  const lenScale = lengthMode === 'compact' ? 0.6 : 0.95;
+  const desired = Math.round((((rawText.match(/[가-힣]/g) || []).length) || 1) * lenScale);
   const wsum = slots.reduce((a, s) => a + s.w, 0);
   slots.forEach(s => { s.targetChars = Math.max(420, Math.round(desired * s.w / wsum)); });
   return { title: plan.title || '', subtitle: plan.subtitle || '', slots };
@@ -592,7 +594,7 @@ function correctDistortedNumbers(doc, rawText, allowedText) {
   return out;
 }
 
-async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidence = '', userNotes = '', lang = 'ko', signal } = {}) {
+async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidence = '', userNotes = '', lang = 'ko', lengthMode = 'keep', signal } = {}) {
   const evidenceList = (evidence || '').split('\n').map(l => l.trim()).filter(Boolean);
   // ★ 사용자 실제 경험·사례 메모(2026-06-15): 추상 격식글이 회피에 막히는 근본 원인=구체 부족 → 엔진이
   //   못 지어내는 진짜 구체를 사용자가 제공. 메모는 허용 세계(원문∪근거∪메모)에 들어가 날조가 아니게 되고,
@@ -610,7 +612,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   const factsafe = require('./factsafe');
   const factMap = factsafe.buildFactMap(rawText);
   const fsafe = factMap.count >= 3;
-  const plan = await buildSlotPlan(rawText, { skeleton, evidenceList, ledger, signal });
+  const plan = await buildSlotPlan(rawText, { skeleton, evidenceList, ledger, lengthMode, signal });
 
   // 슬롯 순차 생성(앞 슬롯 꼬리에 이어 쓰기 — v1의 병렬 섹션 단절 문제 해소)
   const bodies = [];
@@ -677,9 +679,10 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     // 500~650자에서 멈춰 충족률 ~60%(7,000목표→4,361실측). 재시도는 길이를 못 늘림(같은 길이로 다시 씀) →
     // 미달분은 "끊긴 지점에서 이어쓰기"로 채운다. 패딩이 아니라 아직 안 쓴 원문 디테일 소화를 지시.
     let bodyFinal = best.body;
-    // ★3회·0.95로 올렸다 원복(2026-06-11 v4 실측): 분량 65% 제자리 + lost 20(승인근거까지 증발) —
-    //   이어쓰기 비중이 커지면 부연이 사실 커버리지를 밀어냄. 2회·0.9가 이 구조의 분량 한계(65%).
-    for (let ext = 0; ext < 2 && bodyFinal && ((bodyFinal.match(/[가-힣]/g) || []).length) < slot.targetChars * 0.9; ext++) {
+    // ★분량 강화(2026-06-15 B 이후): 예전엔 3회·0.95로 올리면 lost 20(승인근거 증발)→lostFacts 하드차단이라 2회·0.9로 묶었다.
+    //   이제 lostFacts는 소프트(B) + factsafe가 hard fact를 토큰으로 보존하므로 더 밀어도 차단되지 않는다 → 4회·0.95.
+    //   날조(novelty)·짝(pairing) 가드는 아래 루프 안에 그대로 살아 있어 사실 안전성은 유지된다.
+    for (let ext = 0; ext < 4 && bodyFinal && ((bodyFinal.match(/[가-힣]/g) || []).length) < slot.targetChars * 0.95; ext++) {
       const need = slot.targetChars - ((bodyFinal.match(/[가-힣]/g) || []).length);
       try {
         const cont = (await llmText({

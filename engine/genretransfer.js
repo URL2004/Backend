@@ -504,7 +504,11 @@ function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpener
   // ★ prompt caching(§이식 ⑧): system은 고정부+앵커(5변형)만 — 슬롯별 가변부([이 슬롯]·금지 시작어·수치 목록)는
   //   전부 user로 분리해 같은 앵커 변형의 슬롯·재시도가 system 캐시를 재사용할 수 있게 한다(지시 내용은 동일).
   const system = `너는 한국 시사 칼럼 필자다. 한 편의 칼럼을 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).
-${anchors}[문체 — 사람 칼럼의 결]
+${anchors}[사실 보존 — 절대 규칙, 문체보다 우선]
+· 연도·날짜·기간·인용연도·퍼센트·통계 수치·금액·법령번호는 원문 표기 그대로 옮겨라. 절대 바꾸지 마라(2023을 2022로, 40%를 45%로 쓰면 실패).
+· "반드시 포함할 수치"로 준 값은 빠짐없이, 정확히 그대로 본문에 넣어라. 재구성하더라도 이 숫자들은 손대지 않는다.
+· 원문에 없는 연도·수치·출처·기관·인용을 새로 만들지 마라.
+[문체 — 사람 칼럼의 결]
 · 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
 · 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
 · 한 문단 안에서 근거와 의견이 섞이게(근거 나열 문단 금지 — 근거는 논쟁의 무기다).
@@ -530,36 +534,23 @@ function correctDistortedNumbers(doc, rawText, allowedText) {
   const outKeys = new Set(outAll);
   const novel = [...new Set(outAll)].filter(n => !srcKeys.has(n));
   if (!novel.length) return doc;
-  const tok = s => {
-    const set = new Set();
-    for (const w of s.replace(/[^가-힣A-Za-z0-9]/g, ' ').split(/\s+/)) if (w.length >= 2) set.add(w);
-    return set;
-  };
-  const overlap = (a, b) => {
-    const A = tok(a), B = tok(b);
-    if (!A.size) return 0;
-    let h = 0;
-    for (const w of A) if (B.has(w)) h++;
-    return h / A.size;
-  };
+  const tok = s => { const set = new Set(); for (const w of s.replace(/[^가-힣A-Za-z0-9]/g, ' ').split(/\s+/)) if (w.length >= 2) set.add(w); return set; };
+  const overlap = (a, b) => { const A = tok(a), B = tok(b); if (!A.size) return 0; let h = 0; for (const w of A) if (B.has(w)) h++; return h / A.size; };
   const lost = [];
   for (const s of sg.splitSentences(rawText)) {
-    for (const m of (s.match(NUM_RE) || [])) {
-      const k = norm(m);
-      if (!outKeys.has(k)) lost.push({ key: k, sent: s, year: isYear(k) });
-    }
+    for (const m of (s.match(NUM_RE) || [])) { const k = norm(m); if (!outKeys.has(k)) lost.push({ key: k, sent: s, year: isYear(k) }); }
   }
   if (!lost.length) return doc;
   let out = doc;
   const outSents = sg.splitSentences(doc);
+  const cntType = (s, year) => (s.match(NUM_RE) || []).map(norm).filter(k => isYear(k) === year).length;
   for (const nv of novel) {
     const host = outSents.find(s => (s.match(NUM_RE) || []).map(norm).includes(nv));
-    if (!host) continue;
+    if (!host || cntType(host, isYear(nv)) !== 1) continue;
     let best = null, bestOv = 0;
     for (const L of lost) {
-      if (L.year !== isYear(nv)) continue;
-      const ov = overlap(host, L.sent);
-      if (ov > bestOv) { bestOv = ov; best = L; }
+      if (L.year !== isYear(nv) || cntType(L.sent, L.year) !== 1) continue;
+      const ov = overlap(host, L.sent); if (ov > bestOv) { bestOv = ov; best = L; }
     }
     if (best && bestOv >= 0.6) {
       const re = new RegExp(nv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');

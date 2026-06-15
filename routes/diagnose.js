@@ -32,6 +32,18 @@ function looksLikeResume(text) {
   return fpPer1k >= 3 && vocab >= 2;
 }
 
+// 연도·수치·인용이 빽빽한 글은 자유 재구성에서 사실 누락/연도 오기 위험이 커서 보존형 다듬기를 권장한다.
+function factDensity(text) {
+  const t = text || '';
+  const years = (t.match(/(?:19|20)\d{2}/g) || []).length;
+  const pcts = (t.match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).length;
+  const cites = (t.match(/\([^)]*(?:19|20)\d{2}[^)]*\)|[가-힣]{2,}(?:연구원|협회|재단|위원회|학회|대학교|공사|기구|청|부)/g) || []).length;
+  const nums = (t.match(/\d[\d,]*(?:\.\d+)?\s*(?:명|개|건|원|달러|배|점|회|개월|조|억|만)/g) || []).length;
+  const bare = t.replace(/\s+/g, '').length || 1;
+  return (years * 2 + pcts * 2 + cites + nums) / Math.max(1, bare / 1000);
+}
+const FACT_DENSE_THRESHOLD = Number(process.env.FACT_DENSE_THRESHOLD) || 5;
+
 const COPY = {
   A: {
     title: '구체적 정보가 풍부한 글이에요',
@@ -64,13 +76,16 @@ router.post('/diagnose', (req, res) => {
   const grade = ir.grade || 'B';
   const copy = COPY[grade] || COPY.B;
   const resumeLike = looksLikeResume(text);
-  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike });
+  const density = factDensity(text);
+  const factDense = density >= FACT_DENSE_THRESHOLD;
+  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike, density: Number(density.toFixed(1)), factDense });
   res.json({
     ok: true,
     grade,
     abstractRiskRatio: ir.abstractRiskRatio,
     needsUserAnchor: !!ir.needsUserAnchor,
     resumeLike,
+    factDense,
     title: copy.title,
     desc: copy.desc,
     bands: {

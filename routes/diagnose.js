@@ -21,18 +21,21 @@ const BLOG_BAND = { A: '30~45%', B: '35~50%', C: '40~55%' };
 const RESTRUCTURE_BAND = '35~60%';
 
 // ★ 자소서·이력 유형 감지(2026-06-15): 1인칭 자기서술 + 지원/이력 어휘가 잦으면 자소서류.
-//   이런 글을 재구성에 넣으면 "지원자를 반박하는 비평 칼럼"으로 뒤집혀 added_claim 차단이 폭증한다.
-//   재구성은 시사·논증 글 전용이라 자소서와 장르가 충돌 → 프런트에서 재구성 잠그고 다듬기/블로그로 유도한다.
+//   이런 글을 재구성(genretransfer debate_explainer)에 넣으면 "지원자를 반박하는 비평 칼럼"으로 뒤집혀
+//   judge가 added_claim 폭발로 차단(실측: 자소서→불합격 예측·면접 공격 문장 9건 added_claim). 재구성은 시사·논증
+//   글 전용이라 자소서와 장르가 충돌 → 프런트에서 재구성 잠그고 다듬기/블로그로 유도한다.
 function looksLikeResume(text) {
   const t = text || '';
   const bare = t.replace(/\s+/g, '').length || 1;
   const fp = (t.match(/저는|저의|저를|저도|제가|제 강점|제 경험|본인은|본인의/g) || []).length;
-  const fpPer1k = fp / (bare / 1000);
+  const fpPer1k = fp / (bare / 1000);              // 1000자당 1인칭 자기지칭
   const vocab = (t.match(/지원|합격|자격증|면접|입사|자기소개|지원동기|강점|역량|기여하겠|되겠습니다|성장하|채용|포부/g) || []).length;
-  return fpPer1k >= 3 && vocab >= 2;
+  return fpPer1k >= 3 && vocab >= 2;               // 1인칭 밀도 + 자소서 어휘 동시 충족
 }
 
-// 연도·수치·인용이 빽빽한 글은 자유 재구성에서 사실 누락/연도 오기 위험이 커서 보존형 다듬기를 권장한다.
+// ★ 사실 밀도 라우팅(2026-06-15, 사장님 설계): 연도·%·인용·통계가 빼곡한 격식논문·보고서는 자유 재구성하면
+//   사실 누락(lostFacts)·연도 오기(distortion)가 거의 필연 → 재구성보다 "보존형 다듬기"를 강하게 권장한다.
+//   실측: 사회복지 법률논문(연도 8+·%·인용 다수)에서 같은 글로 5회 연속 차단. 밀도 = 가중합 / (천자 단위 길이).
 function factDensity(text) {
   const t = text || '';
   const years = (t.match(/(?:19|20)\d{2}/g) || []).length;
@@ -77,7 +80,7 @@ router.post('/diagnose', (req, res) => {
   const copy = COPY[grade] || COPY.B;
   const resumeLike = looksLikeResume(text);
   const density = factDensity(text);
-  const factDense = density >= FACT_DENSE_THRESHOLD;
+  const factDense = density >= FACT_DENSE_THRESHOLD;   // 연도·%·인용 빼곡 → 재구성 시 사실오류 필연 → 보존형 권장
   logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike, density: Number(density.toFixed(1)), factDense });
   res.json({
     ok: true,

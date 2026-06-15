@@ -10,7 +10,27 @@
 
 const sg = require('./surfaceguard');
 const floor = require('./floor');
-const { llmText, llmJSON, buildSoftClaimLedger, semanticJudge, MODEL, HAIKU } = require('./judge');
+const judgeEngine = require('./judge');
+const { buildSoftClaimLedger, semanticJudge, MODEL, HAIKU } = judgeEngine;
+
+function llmText(opts = {}) {
+  const repairLike = opts.model === HAIKU;
+  return judgeEngine.llmText({
+    task: repairLike ? 'repair' : 'formal',
+    mode: repairLike ? undefined : 'formal',
+    riskLevel: repairLike ? 'medium' : 'high',
+    ...opts
+  });
+}
+
+function llmJSON(opts = {}) {
+  return judgeEngine.llmJSON({
+    task: 'formal',
+    mode: 'formal',
+    riskLevel: 'high',
+    ...opts
+  });
+}
 
 // ── 장르 프로파일(사람 저점수 문서 실측 기반 목표 통계) ──
 const GENRE_PROFILES = {
@@ -492,11 +512,17 @@ const V2_BANS = `[금지 — 하나라도 어기면 실패]
 ${LLM_TIC_RULE}`;
 
 function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = [], memoLines = []) {
-  // 수치 캐시: 승인 근거뿐 아니라 이 슬롯의 원문 문단에 있는 연도·%도 반드시 포함해 누락/변형을 줄인다.
+  // ★ "수치 캐시"(2026-06-15) — 격식논문 재구성에서 연도·%가 떨어지거나(2023 누락=lostFacts) 바뀌는(2023→2022=distortion)
+  //   차단의 예방책: 승인 근거뿐 아니라 "이 슬롯의 원문 문단(srcText)"에 실재하는 수치·연도·법령번호도 "반드시 포함"으로
+  //   못 박는다. 원문에 있는 수치만 강제(생성 아님) → retry 채점(누락 시 감점)이 누락·변형을 강하게 억제.
+  //   근거 수치를 앞에 둬 우선 보존, 과밀 방지로 14개 상한.
   const evNums = (evidTexts.join(' ').match(/\d[\d,.]*%?/g) || []);
-  const srcNums = ((srcText || '').match(/\d[\d,.]*%?/g) || []);
-  const mustNums = [...new Set([...evNums, ...srcNums])].filter(t => t.replace(/\D/g, '').length >= 2).slice(0, 14);
+  const srcPH = ((srcText || '').match(/⟦F[a-z]{2}⟧/g) || []);   // factsafe 자리표시자 — 있으면 이게 "반드시 보존" 대상
+  const srcNums = srcPH.length ? srcPH : ((srcText || '').match(/\d[\d,.]*%?/g) || []).filter(t => t.replace(/\D/g, '').length >= 2);
+  const mustNums = [...new Set([...evNums, ...srcNums])].slice(0, 16);
+  const hasPH = srcPH.length > 0;
   const banNums = usedNums.filter(n => !mustNums.includes(n));
+  // 사용자 실제 경험·사례(메모): 관련 있는 슬롯에 구체 예시로 녹인다. 메모에 없는 건 생성 금지(허용 세계=원문∪근거∪메모).
   const memoBlock = (memoLines && memoLines.length)
     ? `\n\n[필자(사용자)가 직접 제공한 실제 경험·사례 — 이 슬롯 논점과 관련 있으면 추상 서술을 구체적 장면·예시로 바꿔 녹여라. 메모에 없는 경험·수치·기관·사실은 절대 지어내지 말 것. 한 경험은 글 전체에서 한 번만 쓴다]\n${memoLines.map(m => `· ${m}`).join('\n')}`
     : '';
@@ -506,8 +532,8 @@ function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpener
   const system = `너는 한국 시사 칼럼 필자다. 한 편의 칼럼을 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).
 ${anchors}[사실 보존 — 절대 규칙, 문체보다 우선]
 · 연도·날짜·기간·인용연도·퍼센트·통계 수치·금액·법령번호는 원문 표기 그대로 옮겨라. 절대 바꾸지 마라(2023을 2022로, 40%를 45%로 쓰면 실패).
-· "반드시 포함할 수치"로 준 값은 빠짐없이, 정확히 그대로 본문에 넣어라. 재구성하더라도 이 숫자들은 손대지 않는다.
-· 원문에 없는 연도·수치·출처·기관·인용을 새로 만들지 마라.
+· "반드시 포함할 수치"로 준 값은 빠짐없이, 정확히 그대로 본문에 넣어라. 재구성하더라도 이 값들은 손대지 않는다.
+· 원문에 없는 연도·수치·출처·기관·인용을 새로 만들지 마라.${hasPH ? '\n· ★⟦F##⟧ 형태의 토큰은 원문 사실(연도·수치)의 자리표시자다. 그 자체를 본문에 그대로 옮겨 쓰고(숫자로 바꾸지 말 것), 위치·개수를 유지하라. 토큰을 삭제·변형·생성하면 실패. 예: "⟦Fab⟧년에 제정"은 그대로 "⟦Fab⟧년에 제정"으로.' : ''}
 [문체 — 사람 칼럼의 결]
 · 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
 · 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
@@ -524,7 +550,10 @@ ${banNums.length ? `· ★앞 슬롯에서 이미 인용한 수치·조사 — �
   return { system, user, mustNums };
 }
 
-// 연도·%가 원문 값과 다르게 옮겨진 경우, 같은 종류와 유사 문맥에서만 원문 값으로 되돌린다.
+// ★ 수치 변형(distortion) 결정론 복원(2026-06-15): 재생성 중 LLM이 연도·%를 잘못 옮긴 경우(원문 2023→출력 2022)를
+//   semanticJudge가 distortion으로 '차단'하던 것을, 차단 대신 '원문 값으로 복원'한다. 출력에만 있는(허용세계에 없는)
+//   수치를 — 같은 종류(연도/%)이고 문장 맥락이 매우 유사한(토큰 겹침≥0.6) "원문에서 사라진 수치"로 되돌린다.
+//   겹침이 높을 때만 동작해 서로 다른 수치를 잘못 합치는 오교정을 막는다(진짜 날조는 매칭 안 돼 그대로 차단).
 function correctDistortedNumbers(doc, rawText, allowedText) {
   const NUM_RE = /(?:19|20)\d{2}년?|\d[\d,]*(?:\.\d+)?\s*%/g;
   const norm = s => s.replace(/\s+/g, '').replace(/년$/, '');
@@ -543,6 +572,8 @@ function correctDistortedNumbers(doc, rawText, allowedText) {
   if (!lost.length) return doc;
   let out = doc;
   const outSents = sg.splitSentences(doc);
+  // ★ 단순 치환만 자동복구(사장님 F안): 출력·원문 대응 문장 모두 같은 종류 수치가 "1개"일 때만. 여러 연도가
+  //   섞인 문장(2021·2022·2023 비교)은 단순 치환하면 더 망가지므로 자동복구 금지 → 차단(보존형 재시도로 보냄).
   const cntType = (s, year) => (s.match(NUM_RE) || []).map(norm).filter(k => isYear(k) === year).length;
   for (const nv of novel) {
     const host = outSents.find(s => (s.match(NUM_RE) || []).map(norm).includes(nv));
@@ -554,7 +585,7 @@ function correctDistortedNumbers(doc, rawText, allowedText) {
     }
     if (best && bestOv >= 0.6) {
       const re = new RegExp(nv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-      out = out.replace(host, host.replace(re, best.key));
+      out = out.replace(host, host.replace(re, best.key));   // 출력 수치 → 원문 값 복원
       lost.splice(lost.indexOf(best), 1);
     }
   }
@@ -563,10 +594,22 @@ function correctDistortedNumbers(doc, rawText, allowedText) {
 
 async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidence = '', userNotes = '', lang = 'ko', signal } = {}) {
   const evidenceList = (evidence || '').split('\n').map(l => l.trim()).filter(Boolean);
+  // ★ 사용자 실제 경험·사례 메모(2026-06-15): 추상 격식글이 회피에 막히는 근본 원인=구체 부족 → 엔진이
+  //   못 지어내는 진짜 구체를 사용자가 제공. 메모는 허용 세계(원문∪근거∪메모)에 들어가 날조가 아니게 되고,
+  //   슬롯 생성에 재료로 녹아 추상도를 낮춘다. blog 경로(userNotes)와 동일 원리를 재구성에 확장.
   const memoLines = (userNotes || '').split('\n').map(l => l.trim()).filter(Boolean);
   const allowed = [evidence, userNotes].filter(Boolean).join('\n');
+  // 메모는 allowed에만(=날조 아님, 선택 재료) — textF(사실 생존 강제/lostFacts 기준)엔 넣지 않는다.
+  //   evidence는 학생이 승인한 사실이라 textF에 포함해 생존을 강제하지만, 메모는 "관련 있으면 녹이는" 선택지라
+  //   강제하면 관련 없는 메모 한 줄이 lostFacts로 차단을 유발한다(2026-06-15 설계 결정).
   const textF = evidence ? rawText + '\n\n' + evidence : rawText;
   const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
+  // ★ 설계 D — 사실 자리표시자 보호(2026-06-15): 슬롯 생성이 흩어진 연도·수치를 떨구거나(2023 누락) 바꾸는(2023→2022)
+  //   걸 원천 차단. 원문 hard fact를 ⟦Faa⟧ 토큰으로 가려 생성하고(LLM이 값 못 바꿈·잘 안 떨굼), 슬롯 생성+프레임수리
+  //   직후 복원해 값 정확성을 보장한다. 이후 weaveLost·judge·게이트는 실제 값으로 본다. 사실 3개+ 글에만 적용.
+  const factsafe = require('./factsafe');
+  const factMap = factsafe.buildFactMap(rawText);
+  const fsafe = factMap.count >= 3;
   const plan = await buildSlotPlan(rawText, { skeleton, evidenceList, ledger, signal });
 
   // 슬롯 순차 생성(앞 슬롯 꼬리에 이어 쓰기 — v1의 병렬 섹션 단절 문제 해소)
@@ -594,11 +637,14 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       const p = rawParas.find(rp => rp.replace(/\s+/g, '').includes(key));
       if (p) srcSet.add(p);
     }
-    const srcText = [...srcSet].join('\n').slice(0, 1400);
+    let srcText = [...srcSet].join('\n').slice(0, 1400);
+    // 사실 자리표시자 보호: 슬롯 재료(원문 문단·주장)의 연도·수치를 토큰으로 가린다(병합 후 복원).
+    let claimTextsP = claimTexts;
+    if (fsafe) { srcText = factsafe.mask(srcText, factMap); claimTextsP = claimTexts.map(c => factsafe.mask(c, factMap)); }
     const prevTail = bodies.length ? bodies[bodies.length - 1].split(/\n{2,}/).pop().slice(-160) : '';
     // 앞 슬롯들이 이미 인용한 수치 — 재인용 금지 목록(ai-study 63% 실측: 슬롯 독립 생성이 같은 통계를 2~4회 재진술)
     const usedNumList = [...new Set(bodies.flatMap(b => _numToks(b)).map(t => t.split('|')[0]))];
-    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList, memoLines);
+    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTextsP, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList, memoLines);
     const usedNumSet = new Set(usedNumList);
     const minChars = Math.round(slot.targetChars * 0.8);   // 0.7→0.8(분량 미달이 best-pick으로 통과하던 폭 축소)
     let best = { body: '', score: -1 };
@@ -694,6 +740,11 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     }
     doc = paras.join('\n\n');
   }
+
+  // ★ 사실 자리표시자 복원(설계 D): 슬롯 생성+프레임 수리까지 토큰으로 보호한 사실을 원래 값으로 되돌린다.
+  //   이후 단계(짝교정·weaveLost·judge·게이트)는 실제 값을 보고 동작한다. 떨궈진 토큰은 복원 후 사라져
+  //   lostFacts가 잡고 weaveLost가 재삽입을 시도(차단보다 복구 우선).
+  if (fsafe) doc = factsafe.restore(doc, factMap);
 
   // ── 수리 순서(v3 실측 교훈): 짝 교정(수치 보존) → 사실 재위빙(짝 인지) → 마감 → judge 게이트+수리 → 최종 재위빙.
   //    v3에서 짝 수리가 재위빙 "뒤"에 돌며 수치를 떨궈 lostFacts 4 발생 + judge가 진짜 재조합 3건을 보고만 하고 방치.
@@ -806,10 +857,12 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     judge = { pass: v.pass, violations: v.violations || [] };
   } catch (e) { judge = { error: e.message }; }
 
-  doc = correctDistortedNumbers(doc, rawText, textF);
+  doc = correctDistortedNumbers(doc, rawText, textF);   // 연도·% 변형(2023→2022) 결정론 복원 — 차단 전 마지막 교정
   const novelty = floor.measureNovelty(textF, doc, allowed);
-  // ★ 사실 소실 게이트 분리(2026-06-15): 원문 사실 소실만 하드 차단(rawText 기준).
-  //   승인 근거는 선택 보강이라 일부가 자연스럽게 못 들어가도 전체 작업을 막지 않고 안내만 남긴다.
+  // ★ 사실 소실 게이트 분리(2026-06-15, 고급+근거 차단 빈발 완화): 원문 사실 소실만 하드 차단(rawText 기준).
+  //   승인 근거는 weaveLost가 최선을 다해 녹이되, 끝내 못 녹인 건 차단이 아니라 '미반영'으로 둔다 —
+  //   선택 보강이라 한두 건 때문에 30분 작업을 통째로 막지 않는다(실측: 근거 24건 중 일부 미위빙→통째 차단).
+  //   evidenceLost는 노트·표시용 소프트 신호(차단 아님).
   const lost = floor.measureLostFacts(rawText, doc);
   const evidenceLost = evidence ? floor.measureLostFacts(evidence, doc) : { count: 0, items: [] };
   pairing = checkEvidencePairing(doc, evidenceList);

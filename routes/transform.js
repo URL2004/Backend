@@ -39,7 +39,7 @@ const MAX_QUEUE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_QUEUE) || 30;    // 
 const BLOG_MAX_QUEUE = Number(process.env.BLOG_MAX_QUEUE) || 50;             // short 대기열 상한
 const QUEUE_DRAIN_INTERVAL_MS = Number(process.env.TRANSFORM_QUEUE_TICK_MS) || 3000;
 const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함) — formal만
-const CANCEL_WINDOW_SEC = Number(process.env.CANCEL_WINDOW_SEC) || 45;       // running 취소 허용 시간. UI 30초에 서버 여유 45초.
+const CANCEL_WINDOW_SEC = Number(process.env.CANCEL_WINDOW_SEC) || 45;       // 시작 후 이 시간 안에서만 사용자 취소 허용(원가 거의 안 쓴 구간). UI 버튼은 30초, 서버는 시계·네트워크 지연 여유로 45초.
 const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
 const orphan401 = new Map();   // jobId → 폴링 GET 401 연속 횟수(결과 유실 의심 감지용)
 
@@ -256,7 +256,9 @@ function blockedResponse(job) {
   };
 }
 
-// 동의 기반 차단 안내 재료: 자동 폴백+자동 과금 대신 사용자가 재시도/보존형/취소를 고르게 한다.
+// ★ 동의 기반 차단 안내 재료(2026-06-15): 자동 폴백+자동 과금을 폐기 → 사용자가 화면에서 고르게 한다.
+//   ① 왜 막혔나(surfaceguard 추상 문단 = "여기에 실제 경험·사례를 더하면 회피가 된다") ② 보존형 받기 단가
+//   ③ 재시도 가능 여부(근거 보강은 formal·미사용 시). polish(보존형 자체)는 폴백 의미 없어 제외.
 function buildBlockOffer(job, text) {
   let abstractParas = [];
   try {
@@ -267,7 +269,7 @@ function buildBlockOffer(job, text) {
       .map((d, i) => ({ kind: d.kind, snippet: (paras[i] || '').replace(/\s+/g, ' ').slice(0, 70) }))
       .filter(d => d.kind === 'abstract_risk' && d.snippet)
       .slice(0, 5);
-  } catch { /* 안내 재료 생성 실패가 차단 응답을 막으면 안 됨 */ }
+  } catch { /* surfaceguard 실패해도 차단 안내는 나가야 함 */ }
   return {
     fallbackOffer: fallbackEnabled() && job.mode !== 'polish',
     fallbackCredit: preservationFallbackCredit((text || '').length),
@@ -719,6 +721,9 @@ async function runJob(job, text, evidence) {
         gateDetail
       });
 
+      // ★ 자동 폴백 폐기(2026-06-15): 회피를 산 사용자에게 비회피(보존형) 결과를 동의 없이 차감하지 않는다.
+      //   대신 차단 사유 + 재시도(메모/근거)·보존형 받기·취소를 화면에서 고르게 한다. 보존형 실행은
+      //   POST /transform/:id/accept-fallback 이 명시 동의로 트리거(buildBlockOffer가 그 재료를 실어 보냄).
       job.status = 'blocked';
       job.stage = blockedStage(gates);   // '재처리 중'에 멈춰 보이던 표시 버그 해결
       job.gates = gates;
@@ -815,6 +820,7 @@ async function runHumanizeJob(job, text) {
         gates,
         gateDetail
       });
+      // ★ 자동 폴백 폐기(2026-06-15) — 동의 기반(accept-fallback)으로 전환. buildBlockOffer가 안내 재료 첨부.
       job.status = 'blocked';
       job.stage = blockedStage(gates);
       job.gates = gates;
@@ -937,7 +943,7 @@ router.post('/transform', async (req, res) => {
     id, mode, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
-    memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',
+    memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',   // 경험·사례 메모 — blog·formal(재구성) 공통 적용(2026-06-15)
     lang: req.body.lang === 'en' ? 'en' : 'ko',
     wantEvidence,
     estSec,
@@ -983,6 +989,9 @@ router.post('/transform/:id/cancel', async (req, res) => {
   if (job.status === 'done' || job.status === 'blocked' || job.status === 'error') {
     return res.status(409).json({ error: '이미 끝난 작업이에요.' });
   }
+  // ★ 30초 취소 창(2026-06-15): running 작업이 시작 후 일정 시간을 넘기면 취소 거부 — LLM 원가를 거의
+  //   다 쓴 뒤 무과금으로 빠져나가는 손실을 차단(UI 버튼도 30초 후 사라짐). 대기열·근거승인 대기는
+  //   비싼 생성 전이라 그대로 허용(원가 미발생).
   if (job.status === 'running') {
     const elapsedSec = (Date.now() - (job.startedAt || job.createdAt || Date.now())) / 1000;
     if (elapsedSec > CANCEL_WINDOW_SEC) {
@@ -998,25 +1007,26 @@ router.post('/transform/:id/cancel', async (req, res) => {
   res.json({ ok: true });
 });
 
-// 차단된 회피 작업을 사용자가 명시적으로 원할 때만 보존형(다듬기)으로 재처리한다.
+// ── 동의 기반 보존형 받기(2026-06-15): 차단된 회피 작업을, 사용자가 명시적으로 원할 때만 보존형(다듬기)으로
+//   재처리한다(보존형 단가 차감). 자동 폴백을 폐기한 자리 — "회피 산 사람에게 비회피 결과를 몰래 과금" 방지.
 router.post('/transform/:id/accept-fallback', async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
   if (!(await requireJobOwner(req, res, job))) return;
   if (job.status !== 'blocked') return res.status(409).json({ error: '차단된 작업만 보존형으로 받을 수 있어요.' });
   if (!fallbackEnabled() || job.mode === 'polish') return res.status(409).json({ error: '이 작업은 보존형으로 받을 수 없어요.' });
-  res.json({ ok: true });
+  res.json({ ok: true });   // 즉시 응답 — 보존형 재처리는 백그라운드, 프론트는 폴링으로 done 수신.
   job.status = 'running';
   job.stage = '원문 보존형으로 재처리 중';
   job.blockOffer = null;
-  job.startedAt = Date.now();
-  job.ac = new AbortController();
+  job.startedAt = Date.now();        // 새 시작점 — 30초 취소 창이 이 보존형 재처리 기준으로 적용되게.
+  job.ac = new AbortController();     // 차단 시 abort된 컨트롤러 교체
   persistJob(job);
   try {
     const handled = job.mode === 'blog'
       ? await tryBlogPreservationFallback(job, job.text || '')
       : await tryPreservationFallback(job, job.text || '');
-    if (!handled && job.status !== 'cancelled') {
+    if (!handled && job.status !== 'cancelled') {   // 보존형마저 사실·의미 사고 → 다시 차단
       job.status = 'blocked';
       job.stage = blockedStage(job.gates || []);
       job.blockOffer = buildBlockOffer(job, job.text || '');

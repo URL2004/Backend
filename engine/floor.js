@@ -90,13 +90,19 @@ function extractPercents(s) {
 }
 const ORG_RE = /[가-힣]{2,}(?:상공회의소|연구원|공사|협회|재단|위원회|기구|연구소|본부|센터|기관|대학교|학회)/g;
 // 숫자+단위. "96회", "300분", "12명", "1,200원" 등.
-// 쪽/페이지(페이지 참조)는 문서 구조 메타라 내용 사실이 아님. 정수+단위만 추적해 목차번호 "2.1 개요" 오탐을 피한다.
+// ★ 쪽/페이지(페이지 참조)는 문서 구조 메타라 내용 사실이 아님 — "3쪽" 한 토큰이 9.4K 글을 통째 차단하던 lostFacts FP(2026-06-15) 제거.
+// ★ 정수만(소수 제외) + 앞에 "숫자." 없을 때만(2026-06-15): 목차번호 "2.1 시장"의 .1을 "1 시"로, "2.1 개요"를
+//   "1 개"로 먹던 lostFacts FP 차단. 실데이터 소수+단위(2.1배·3.5시간)는 DECIMAL_RE가 숫자를 잡는다.
 const NUM_UNIT_RE = /(?<![\d.])\d[\d,]*\s*(?:회|분|시간|초|명|개|건|곳|배|위|점|원|달러|엔|위안|유로|일|주|개월|차|등|등급|km|kg|개국|시|살|세|줄|문항)/g;
 // 한국어 금액/수량 단위 (천/만/억/조). "5천원", "3만", "2억원", "4천~5천원", "5천 자", "30만 자".
-const KR_AMOUNT_RE = /\d[\d,]*\s*(?:천|만|억|조)\s*(?:원|명|개|건|배|자|장|권|회|곳|군데|화)?/g;
+// ★ (?<!제): "제2조·제6조·제16조~제32조"(조문 번호=條)를 "2조"(兆, 트릴리언)로 오인하던 lostFacts FP 차단(2026-06-15).
+//   조문 번호는 문서 구조 참조라 내용 사실이 아님. 돈/수량 "2조 원"은 제 없이 그대로 잡힌다.
+const KR_AMOUNT_RE = /(?<!제\d*)\d[\d,]*\s*(?:천|만|억|조)\s*(?:원|명|개|건|배|자|장|권|회|곳|군데|화)?/g;
 // 한글 수사 + 단위 ("세 배", "열 명"). '한'은 관형사 충돌로 제외.
 const NATIVE_NUM_RE = /(?<![가-힣])(?:두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|스물|서른|마흔|쉰|예순)\s*(?:개|명|번|배|살|마리|권|잔|그루|채|대|장|건|곳|달|해|시간|줄)/g;
-// 단위 없는 소수 (0.42). 목차/개요 번호("2.1 시장")처럼 뒤가 공백인 구조 번호는 제외.
+// 단위 없는 소수 (0.42). 연도·% 와 별개.
+// ★ 목차/개요 번호("2.1 시장 규모", "3.2 ...") 오탐 제외(2026-06-15 실측 lostFacts FP): 소수 뒤가 공백이면
+//   문서 구조 번호일 확률이 높다 → 데이터 소수는 보통 단위·조사가 붙음(0.42였다·2.1배·1.44℃). 공백 동반 소수는 사실에서 제외.
 const DECIMAL_RE = /(?<![\d.])\d+\.\d+(?![\d%％\s])/g;
 // URL / 이메일 / DOI.
 const URL_RE = /(?:https?:\/\/[^\s)]+|www\.[^\s)]+|\b10\.\d{4,}\/\S+|[\w.+-]+@[\w-]+\.[\w.-]+)/gi;
@@ -119,7 +125,8 @@ const LATIN_COMMON = new Set([
   'NEW', 'OLD', 'GOOD', 'BAD', 'MORE', 'LESS', 'JUST'
 ]);
 // 접미사 없는 주요 브랜드/서비스 — 허용리스트로 명시 검출(인명은 NER 영역이라 제외, judge가 의미로 보완).
-// 단독 '현대'는 '현대 사회·현대인·현대 미술'(modern) 오탐이 많아 제외하고 현대자동차/현대차만 추적.
+// ★ 단독 '현대'는 '현대 사회·현대인·현대 미술'(=modern) 오탐이 압도적이라 브랜드에서 제외(2026-06-15 실측 lostFacts FP).
+//   현대자동차/현대차만 브랜드로 추적(기업 의미일 때만).
 const BRANDS = ['카카오', '네이버', '쿠팡', '배달의민족', '배민', '토스', '당근마켓', '당근', '구글', '유튜브', '인스타그램', '페이스북', '트위터', '삼성', '엘지', '현대자동차', '현대차', '기아', '애플', '아마존', '넷플릭스', '챗지피티', '오픈에이아이', '마이크로소프트',
   'Kakao', 'Naver', 'Coupang', 'Toss', 'Google', 'YouTube', 'Instagram', 'Facebook', 'Twitter', 'Apple', 'Amazon', 'Netflix', 'OpenAI', 'ChatGPT', 'Microsoft'];
 const normTok = (s) => s.replace(/\s+/g, '').toLowerCase();
@@ -165,11 +172,13 @@ function extractFacts(text, hasHangul) {
   for (const m of (t.match(DECIMAL_RE) || [])) facts.push(m);
   for (const m of (t.match(URL_RE) || [])) facts.push(m);
   for (const b of BRANDS) if (t.includes(b)) facts.push(b);
-  // 영어 본문은 문장 첫 Title Case 일반어를 더 강하게 걸러 "The/Question/Chatbots" 오탐을 줄인다.
-  // 한국어 본문 속 드문 영어 고유명사는 기존처럼 전수 추적해 인명·브랜드 recall을 유지한다.
+  // 라틴 엔티티: 약어(ACRONYM) + Title-Case 고유명사.
+  //   ★ 영어 본문(영어 단어 우세)은 extractEnEntities(문장 첫 대문자 단어 단독 제외)로 "The/Today/Question/Chatbots"
+  //     오탐 차단. 한국어 본문(영어는 드문 외래 인명·브랜드)은 raw CAPWORD로 전수 추적 — 문장첫·괄호인용이라도
+  //     "Twenge"(인명) 같은 진짜 엔티티를 놓치지 않는다(2026-06-15, 영어 요약글 novelty FP ↔ 논문 인명 recall 양립).
   const koCount = (t.match(/[가-힣]/g) || []).length;
   const enWordCount = (t.match(/[A-Za-z]{2,}/g) || []).length;
-  const enDominant = enWordCount >= 10 && enWordCount * 4 > koCount;
+  const enDominant = enWordCount >= 10 && enWordCount * 4 > koCount;   // 영어 본문 판정(영어 단어가 한글의 1/4 이상 & 10단어+)
   const latin = enDominant
     ? [...(t.match(LATIN_ACRONYM_RE) || []), ...extractEnEntities(t)]
     : [...(t.match(LATIN_ACRONYM_RE) || []), ...(t.match(LATIN_CAPWORD_RE) || [])];
@@ -311,7 +320,10 @@ function measureRepetition(text) {
 // 1차 결과에서 FLOOR critical 위반만 추출 (surface는 제외 — regression report로 §11).
 // ── LLM 산출물 누출 가드(genretransfer에서 이식, 2026-06-11) ──────────
 // 메타 메모 누출(실측: "미삽입 항목 처리 메모…밝힙니다"가 본문 끝에 붙어 측정됨)
-// 판정/수리 스캐폴딩("# 판정", "added_claim", "수정 문장")이 본문에 박히는 사고까지 차단한다.
+// ★ 판정 스캐폴딩 누출 추가(2026-06-15 실측): 수리/판정 LLM이 "교정 본문" 대신 판정 마크다운
+//   ("# 판정: added_claim 확인됨 … ## 수정 문장: …")을 통째로 반환해 본문에 박히는 사고.
+//   added_claim·distortion은 내부 위반 타입명이라 사용자 본문엔 사실상 안 나오는 고정밀 토큰.
+//   '판정/근거'는 마크다운 헤더(#) 동반일 때만 매칭해 일반 산문 오탐을 피한다.
 const META_NOTE_RE = /(메모\s*:|밝힙니다|지시에\s*따라|삽입하지\s*않|본문만\s*출력|위\s*지침|요청하신|원장[은는이가]\s|승인\s*근거|added_claim|distortion|claim\s*ledger|\bREWRITE\b|수정\s*문장\s*[:：]|#{1,6}\s*판정|#{1,6}\s*근거)/i;
 // 지시문 윙크 누출(루틴 v1 실측: "…는 데 있다(아, 이 표현 쓰지 말라고 했지)" — 금지목록을 어기고 프롬프트에
 // 사과하는 메타 발화를 필자의 사족 괄호로 위장). 표현·단어·문장에 대한 금지 언급만 잡아 일반 내용 오탐 차단.

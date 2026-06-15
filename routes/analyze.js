@@ -1906,7 +1906,10 @@ async function fetchWebSearchExamples(text, lang, signal) {
 }
 
 // 2-pass refine용 user 프롬프트 생성 — 라우트와 runHumanize가 공유(드리프트 방지).
-function buildRefineUser(humanizeText, prevOutput, failed) {
+function buildRefineUser(humanizeText, prevOutput, failed, lang = 'ko') {
+  if (lang === 'en') {
+    return `[SOURCE TEXT — reference only for restoring information. Do not copy it verbatim; keep the first draft's tone]\n${humanizeText}\n\n[PREVIOUS OUTPUT]\n${prevOutput}\n\n[FAILED CHECKS]\n${failed.join('\n')}\n\nMake the smallest possible edits that fix only the failed checks. Keep all other sentences unchanged. If the output is too short, restore missing source details, evidence, or examples from [SOURCE TEXT] using the first draft's tone. Do not invent external statistics, years, organizations, company names, people, percentages, anecdotes, or feelings. If first-person concrete experience is required, use only experiences already present in the source text. Keep the conclusion's direction intact and output the full revised body text only.`;
+  }
   return `[원본 텍스트 — 정보 복원 시 참고용. 그대로 옮기지 말고 1차 출력 톤 유지]\n${humanizeText}\n\n[이전 출력]\n${prevOutput}\n\n[위반 항목]\n${failed.join('\n')}\n\n위반된 부분만 최소 수정하라. 다른 문장은 그대로 유지. 분량 부족이 위반 항목에 있으면 [원본 텍스트]에서 빠진 디테일·근거·예시를 복원해 채워라(원본 문장 그대로 복사 X — 1차 출력 톤으로 다시 써라). 1인칭 구체 일화 부족 또는 추상 진술 잔존이면, 해당 문장을 글쓴이 1인칭 경험(시간·장소·인물 동반, 예: "제가 작년 학기에 ~", "제 룸메이트가 ~")으로 *교체*하라 — 단 외부 통계·연도(YYYY)·기관명·기업명·인명·% 수치는 절대 금지(개인 경험만). 판단 회피 1인칭("저는 잘 모르겠습니다 / 알 수 없습니다")은 행동·관찰·단정과 결합("저는 ~를 했다 / 저는 ~여야 한다고 본다")으로 바꿔라. 새로운 흐름 꺾기 한정어·메타 사색·종결 어미 변형은 추가하지 마라(추가하면 정형성이 짙어져 디텍터에 더 잘 잡힌다). 결론·핵심 주장 문장은 hedge 없이 단정 종결로 마무리해 균형을 잡아라.`;
 }
 
@@ -2011,7 +2014,9 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     : getHumanizeSystem(selectedMode, lang);
   // floorV2는 lean tool(outputText 중심) — 레거시 표면지표 필드의 anti-FLOOR 유도 제거(§리뷰#7).
   const humanizeTool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(selectedMode, lang);
-  const userContent = `[재작성할 텍스트]\n${humanizeText}`;
+  const userContent = lang === 'en'
+    ? `[TEXT TO REWRITE]\n${humanizeText}`
+    : `[재작성할 텍스트]\n${humanizeText}`;
   const inputParaCount = humanizeText.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
   const inputCharLen = humanizeText.replace(/\s+/g, '').length;
 
@@ -2040,7 +2045,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     while (floorViolations.length && round < MAX_FLOOR_ROUNDS) {
       round++;
       try {
-        const refineUser = floor.buildFloorRefineUser(humanizeText, result.outputText, floorViolations);
+        const refineUser = floor.buildFloorRefineUser(humanizeText, result.outputText, floorViolations, lang);
         const refineData = await callClaude({
           userText: refineUser, systemText: humanizeSystem, tool: humanizeTool,
           temperature: 0.5, maxOutputTokens: 16384, signal
@@ -2065,7 +2070,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     if (decision.refine) {
       refineReason = decision.reason;
       try {
-        const refineUser = buildRefineUser(humanizeText, result.outputText, failed);
+        const refineUser = buildRefineUser(humanizeText, result.outputText, failed, lang);
         const refineData = await callClaude({
           userText: refineUser, systemText: humanizeSystem, tool: humanizeTool,
           temperature: 0.5, maxOutputTokens: 16384, signal
@@ -2287,13 +2292,23 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     const c = chunks[i];
     const prevRaw = i > 0 ? chunks[i - 1].text : '';                 // ★ 원문 이웃(병렬 안전)
     const nextRaw = i < chunks.length - 1 ? chunks[i + 1].text : '';
-    const posNote = c.position === 'conclusion'
-      ? '※ 결론부다. 앞에서 이미 말한 주장·CTA를 반복하지 말고, 새 사실·미래전망을 추가하지 마라. 길이는 원문 청크와 비슷하게.'
-      : c.position === 'intro' ? '※ 도입부다.' : '※ 본문이다.';
+    const posNote = lang === 'en'
+      ? (c.position === 'conclusion'
+        ? 'Note: This is the conclusion. Do not repeat claims or calls-to-action already made earlier. Do not add new facts or future predictions. Keep the length close to the source chunk.'
+        : c.position === 'intro' ? 'Note: This is the introduction.' : 'Note: This is a body section.')
+      : (c.position === 'conclusion'
+        ? '※ 결론부다. 앞에서 이미 말한 주장·CTA를 반복하지 말고, 새 사실·미래전망을 추가하지 마라. 길이는 원문 청크와 비슷하게.'
+        : c.position === 'intro' ? '※ 도입부다.' : '※ 본문이다.');
     const boundary =
-      (prevRaw ? `[앞 부분 원문 — 문맥 참고, 다시 쓰지 말 것]\n...${tail(prevRaw, 150)}\n\n` : '') +
-      (nextRaw ? `[뒤에 이어질 원문 — 손대지 말 것]\n${head(nextRaw, 100)}...\n\n` : '');
-    const userContent = `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
+      (prevRaw ? (lang === 'en'
+        ? `[PREVIOUS SOURCE CONTEXT — reference only, do not rewrite]\n...${tail(prevRaw, 150)}\n\n`
+        : `[앞 부분 원문 — 문맥 참고, 다시 쓰지 말 것]\n...${tail(prevRaw, 150)}\n\n`) : '') +
+      (nextRaw ? (lang === 'en'
+        ? `[NEXT SOURCE CONTEXT — do not touch]\n${head(nextRaw, 100)}...\n\n`
+        : `[뒤에 이어질 원문 — 손대지 말 것]\n${head(nextRaw, 100)}...\n\n`) : '');
+    const userContent = lang === 'en'
+      ? `${boundary}[TEXT TO REWRITE — this section only]\n${c.text}\n\n${posNote}`
+      : `${boundary}[재작성할 텍스트 — 이 부분만]\n${c.text}\n\n${posNote}`;
     const chunkSys = (chunkNotes[i] || chunkEvid[i] || anchorActive)
       ? buildSys(chunkNotes[i] || '', (chunkEvid[i] || []).join('\n'), anchorActive ? i : null)   // 배정된 경험·사실 + 청크 회전 앵커
       : humanizeSystem;
@@ -2338,7 +2353,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     const viol = floor.collectFloorViolations({ result: { outputText: c.outputText }, rawText: cRaw, povSeed, optIn, mode, position: c.position, chunkLevel: true, allowedExtra: notes, anchors: anchorActive });
     if (viol.length) {
       try {
-        const ru = floor.buildFloorRefineUser(cRaw, c.outputText, viol);
+        const ru = floor.buildFloorRefineUser(cRaw, c.outputText, viol, lang);
         const rd = await callClaude({ userText: ru, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r2 = extractClaudeResult(rd, tool.name);
         await applyPassC(r2, lang, signal);
@@ -2618,9 +2633,15 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     let pairing = evg.checkEvidencePairing(result.outputText, evidLines);
     if (pairing.length > basePairs) {
       try {
-        const vText = pairing.map((p, k) => `${k + 1}. 수치 ${p.num} — 문장: "${p.sent}" / 소속 사실: ${p.owner}`).join('\n');
-        const sys = '편집자. 본문에서 지정된 문장들만 고친다: 각 문장의 수치는 빼지 말고 그대로 두되, 그 수치가 속한 출처(기관·조사명)를 같은 문장이나 직전 문장에 자연스럽게 명시해 수치-출처 연결을 복원하라. 다른 기관·조사와 결합하거나 새 사실을 추가하지 마라. 나머지 텍스트는 한 글자도 바꾸지 마라. 수정된 본문 전체만 출력(설명·코드펜스 금지).';
-        const usr = `[수치-출처 분리 — 이 문장들만 수정]\n${vText}\n\n[각 수치의 소속 사실(승인 원장)]\n${evid}\n\n[본문]\n${result.outputText}`;
+        const vText = pairing.map((p, k) => lang === 'en'
+          ? `${k + 1}. Number ${p.num} — sentence: "${p.sent}" / owning fact: ${p.owner}`
+          : `${k + 1}. 수치 ${p.num} — 문장: "${p.sent}" / 소속 사실: ${p.owner}`).join('\n');
+        const sys = lang === 'en'
+          ? 'Editor. Fix only the specified sentences in the body. Keep each number exactly, but restore the source attribution for that number (institution/survey/study name) in the same sentence or the immediately previous sentence. Do not combine it with another institution or study. Do not add new facts. Do not change any other text. Output the full revised body text only, with no explanation or code fences.'
+          : '편집자. 본문에서 지정된 문장들만 고친다: 각 문장의 수치는 빼지 말고 그대로 두되, 그 수치가 속한 출처(기관·조사명)를 같은 문장이나 직전 문장에 자연스럽게 명시해 수치-출처 연결을 복원하라. 다른 기관·조사와 결합하거나 새 사실을 추가하지 마라. 나머지 텍스트는 한 글자도 바꾸지 마라. 수정된 본문 전체만 출력(설명·코드펜스 금지).';
+        const usr = lang === 'en'
+          ? `[NUMBER-SOURCE SEPARATION — fix only these sentences]\n${vText}\n\n[OWNING FACTS FOR EACH NUMBER]\n${evid}\n\n[BODY]\n${result.outputText}`
+          : `[수치-출처 분리 — 이 문장들만 수정]\n${vText}\n\n[각 수치의 소속 사실(승인 원장)]\n${evid}\n\n[본문]\n${result.outputText}`;
         const fixed = await require('../engine/judge').llmText({ system: sys, user: usr, signal, maxTokens: 16384 });
         if (fixed && fixed.replace(/\s+/g, '').length >= result.outputText.replace(/\s+/g, '').length * 0.85) {
           const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
@@ -2875,11 +2896,17 @@ router.post('/analyze', async (req, res) => {
       const humanizeSystem = getHumanizeSystem(selectedMode, lang);
       const humanizeTool = getHumanizeToolFor(selectedMode, lang);
       const prevContextBlock = prevContext
-        ? `[앞 청크의 마지막 일부 — 문체 연속성 참고용, 다시 변환하지 말 것]\n${prevContext}\n\n`
+        ? (lang === 'en'
+          ? `[PREVIOUS CHUNK TAIL — style-continuity reference only, do not rewrite]\n${prevContext}\n\n`
+          : `[앞 청크의 마지막 일부 — 문체 연속성 참고용, 다시 변환하지 말 것]\n${prevContext}\n\n`)
         : '';
-      const userContent = examples
-        ? `${prevContextBlock}[재작성할 텍스트]\n${humanizeText}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
-        : `${prevContextBlock}[재작성할 텍스트]\n${humanizeText}`;
+      const userContent = lang === 'en'
+        ? (examples
+          ? `${prevContextBlock}[TEXT TO REWRITE]\n${humanizeText}\n\n[REFERENCE EXAMPLES / STATISTICS — weave in naturally]\n${examples}`
+          : `${prevContextBlock}[TEXT TO REWRITE]\n${humanizeText}`)
+        : (examples
+          ? `${prevContextBlock}[재작성할 텍스트]\n${humanizeText}\n\n[참고할 실제 사례/통계 (자연스럽게 녹여 활용)]\n${examples}`
+          : `${prevContextBlock}[재작성할 텍스트]\n${humanizeText}`);
       const inputParaCount = humanizeText.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
       const inputCharLen = humanizeText.replace(/\s+/g, '').length;
 
@@ -2913,7 +2940,7 @@ router.post('/analyze', async (req, res) => {
         try {
           const failed = collectFailedFields(result, selectedMode, inputParaCount);
           logger.warn('analyze.refine_started', { reason: refineDecision.reason, failed });
-          const refineUser = buildRefineUser(humanizeText, result.outputText, failed);
+          const refineUser = buildRefineUser(humanizeText, result.outputText, failed, lang);
           const refineData = await callClaude({
             userText: refineUser,
             systemText: humanizeSystem,
@@ -3130,7 +3157,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       const detectSystem = getDetectSystem(lang);
       const detectTool = getDetectTool(lang);
       const data = await callClaude({
-        userText: `[분석할 글]\n${text}`,
+        userText: lang === 'en' ? `[TEXT TO ANALYZE]\n${text}` : `[분석할 글]\n${text}`,
         systemText: detectSystem,
         tool: detectTool,
         maxOutputTokens: 4096,
@@ -3163,7 +3190,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       let data;
       try {
         data = await callClaude({
-          userText: `[재작성할 텍스트]\n${humanizeText}`,
+          userText: lang === 'en' ? `[TEXT TO REWRITE]\n${humanizeText}` : `[재작성할 텍스트]\n${humanizeText}`,
           systemText: humanizeSystem,
           tool: humanizeTool,
           temperature: 0.5,

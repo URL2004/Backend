@@ -459,8 +459,32 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   };
 }
 
-function buildFloorRefineUser(humanizeText, prevOutput, violations) {
-  const lines = violations.map((x, i) => `${i + 1}. [${x.type}] ${x.fix}`).join('\n');
+function floorFixText(v, lang = 'ko') {
+  if (lang !== 'en') return v.fix || '';
+  const detail = v.detail ? ` Detail: ${v.detail}` : '';
+  const common = 'Change only the violating part. Keep the rest of the previous output unchanged.';
+  const map = {
+    novelty: `Remove every statistic, year, organization, proper noun, or factual detail that is not present in the source.${detail}`,
+    pov: `Remove any newly introduced first-person speaker, personal anecdote, or feeling. Preserve the source viewpoint.${detail}`,
+    fake_ref: `Delete any citation, table, figure, equation, section reference, author-year reference, or p-value that is not in the source.${detail}`,
+    length_overrun: `The output is too long. Cut only unsupported padding, examples, feelings, repeated explanation, or invented context while preserving source facts and claims.${detail}`,
+    length_short: `The output is too short. Restore missing claims, details, and examples from the source only. Do not copy whole source sentences verbatim and do not add new information.${detail}`,
+    lost_facts: `Restore the source facts that disappeared from the output. Do not add facts beyond the source.${detail}`,
+    experience_novelty: `Remove personal experience or anecdote not present in the source or allowed notes.${detail}`,
+    memo_reuse: `Reduce repeated use of the same user-provided note. Use each allowed experience only where it naturally fits.${detail}`,
+    repetition: `Remove exact or near repetition without deleting source information.${detail}`,
+    meta_leak: `Remove meta text, prompt labels, bracketed instructions, or commentary about rewriting.${detail}`,
+    coined_term: `Remove or rephrase any coined term attributed to a field/group unless the term appears in the source.${detail}`,
+    anchor_leak: `Remove any leaked style-anchor subject matter that is not present in the source.${detail}`
+  };
+  return `${map[v.type] || `Fix the ${v.type} violation using only source information.${detail}`} ${common}`;
+}
+
+function buildFloorRefineUser(humanizeText, prevOutput, violations, lang = 'ko') {
+  const lines = violations.map((x, i) => `${i + 1}. [${x.type}] ${floorFixText(x, lang)}`).join('\n');
+  if (lang === 'en') {
+    return `[SOURCE TEXT]\n${humanizeText}\n\n[PREVIOUS OUTPUT]\n${prevOutput}\n\n[FLOOR VIOLATIONS — fix these only; keep all other sentences unchanged]\n${lines}\n\nFix only the listed FLOOR violations. Do not invent facts, first-person voice, anecdotes, citations, paper structure, statistics, years, organizations, or proper nouns. Use only information that exists in the source. Output the full revised body text only.`;
+  }
   return `[원본 텍스트]\n${humanizeText}\n\n[이전 출력]\n${prevOutput}\n\n[FLOOR 위반 — 반드시 수정, 그 외 문장은 그대로 유지]\n${lines}\n\n위 FLOOR 위반만 고쳐라. 새 사실·새 1인칭·새 일화·새 논문구조를 만들지 마라. 원문에 있는 내용만으로 다시 써라.`;
 }
 

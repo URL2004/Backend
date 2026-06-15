@@ -492,7 +492,10 @@ const V2_BANS = `[금지 — 하나라도 어기면 실패]
 ${LLM_TIC_RULE}`;
 
 function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = [], memoLines = []) {
-  const mustNums = [...new Set(evidTexts.join(' ').match(/\d[\d,.]*%?/g) || [])].filter(t => t.replace(/\D/g, '').length >= 2);
+  // 수치 캐시: 승인 근거뿐 아니라 이 슬롯의 원문 문단에 있는 연도·%도 반드시 포함해 누락/변형을 줄인다.
+  const evNums = (evidTexts.join(' ').match(/\d[\d,.]*%?/g) || []);
+  const srcNums = ((srcText || '').match(/\d[\d,.]*%?/g) || []);
+  const mustNums = [...new Set([...evNums, ...srcNums])].filter(t => t.replace(/\D/g, '').length >= 2).slice(0, 14);
   const banNums = usedNums.filter(n => !mustNums.includes(n));
   const memoBlock = (memoLines && memoLines.length)
     ? `\n\n[필자(사용자)가 직접 제공한 실제 경험·사례 — 이 슬롯 논점과 관련 있으면 추상 서술을 구체적 장면·예시로 바꿔 녹여라. 메모에 없는 경험·수치·기관·사실은 절대 지어내지 말 것. 한 경험은 글 전체에서 한 번만 쓴다]\n${memoLines.map(m => `· ${m}`).join('\n')}`
@@ -515,6 +518,56 @@ ${mustNums.length ? `· 반드시 포함할 수치: ${mustNums.join(', ')}` : ''
 ${banNums.length ? `· ★앞 슬롯에서 이미 인용한 수치·조사 — 재인용 금지(같은 글에서 같은 통계를 두 번 소개하면 실패다): ${banNums.join(', ')}` : ''}
 [칼럼 제목(참고)]\n${plan.title} — ${plan.subtitle}\n\n[직전 문단 끝(여기서 자연스럽게 이어가라, 반복 금지)]\n${prevTail || '(글의 시작)'}\n\n[이 슬롯의 재료 — 원문 주장]\n${claimTexts.join('\n') || '(없음)'}\n\n[이 슬롯의 재료 — 승인 근거]\n${evidTexts.join('\n') || '(없음)'}${srcText ? `\n\n[이 슬롯의 원문 문단(디테일 재료 — 요약하지 말고 구체 디테일·예시를 살려서 분량을 채워라. 단 문체는 칼럼의 결로)]\n${srcText}` : ''}${memoBlock}`;
   return { system, user, mustNums };
+}
+
+// 연도·%가 원문 값과 다르게 옮겨진 경우, 같은 종류와 유사 문맥에서만 원문 값으로 되돌린다.
+function correctDistortedNumbers(doc, rawText, allowedText) {
+  const NUM_RE = /(?:19|20)\d{2}년?|\d[\d,]*(?:\.\d+)?\s*%/g;
+  const norm = s => s.replace(/\s+/g, '').replace(/년$/, '');
+  const isYear = k => /^(?:19|20)\d{2}$/.test(k);
+  const srcKeys = new Set(((allowedText || rawText).match(NUM_RE) || []).map(norm));
+  const outAll = (doc.match(NUM_RE) || []).map(norm);
+  const outKeys = new Set(outAll);
+  const novel = [...new Set(outAll)].filter(n => !srcKeys.has(n));
+  if (!novel.length) return doc;
+  const tok = s => {
+    const set = new Set();
+    for (const w of s.replace(/[^가-힣A-Za-z0-9]/g, ' ').split(/\s+/)) if (w.length >= 2) set.add(w);
+    return set;
+  };
+  const overlap = (a, b) => {
+    const A = tok(a), B = tok(b);
+    if (!A.size) return 0;
+    let h = 0;
+    for (const w of A) if (B.has(w)) h++;
+    return h / A.size;
+  };
+  const lost = [];
+  for (const s of sg.splitSentences(rawText)) {
+    for (const m of (s.match(NUM_RE) || [])) {
+      const k = norm(m);
+      if (!outKeys.has(k)) lost.push({ key: k, sent: s, year: isYear(k) });
+    }
+  }
+  if (!lost.length) return doc;
+  let out = doc;
+  const outSents = sg.splitSentences(doc);
+  for (const nv of novel) {
+    const host = outSents.find(s => (s.match(NUM_RE) || []).map(norm).includes(nv));
+    if (!host) continue;
+    let best = null, bestOv = 0;
+    for (const L of lost) {
+      if (L.year !== isYear(nv)) continue;
+      const ov = overlap(host, L.sent);
+      if (ov > bestOv) { bestOv = ov; best = L; }
+    }
+    if (best && bestOv >= 0.6) {
+      const re = new RegExp(nv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+      out = out.replace(host, host.replace(re, best.key));
+      lost.splice(lost.indexOf(best), 1);
+    }
+  }
+  return out;
 }
 
 async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidence = '', userNotes = '', lang = 'ko', signal } = {}) {
@@ -762,6 +815,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     judge = { pass: v.pass, violations: v.violations || [] };
   } catch (e) { judge = { error: e.message }; }
 
+  doc = correctDistortedNumbers(doc, rawText, textF);
   const novelty = floor.measureNovelty(textF, doc, allowed);
   // ★ 사실 소실 게이트 분리(2026-06-15): 원문 사실 소실만 하드 차단(rawText 기준).
   //   승인 근거는 선택 보강이라 일부가 자연스럽게 못 들어가도 전체 작업을 막지 않고 안내만 남긴다.

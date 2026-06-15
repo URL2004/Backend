@@ -39,6 +39,7 @@ const MAX_QUEUE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_QUEUE) || 30;    // 
 const BLOG_MAX_QUEUE = Number(process.env.BLOG_MAX_QUEUE) || 50;             // short 대기열 상한
 const QUEUE_DRAIN_INTERVAL_MS = Number(process.env.TRANSFORM_QUEUE_TICK_MS) || 3000;
 const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함) — formal만
+const CANCEL_WINDOW_SEC = Number(process.env.CANCEL_WINDOW_SEC) || 45;       // running 취소 허용 시간. UI 30초에 서버 여유 45초.
 const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
 const orphan401 = new Map();   // jobId → 폴링 GET 401 연속 횟수(결과 유실 의심 감지용)
 
@@ -981,6 +982,12 @@ router.post('/transform/:id/cancel', async (req, res) => {
   if (!(await requireJobOwner(req, res, job))) return;
   if (job.status === 'done' || job.status === 'blocked' || job.status === 'error') {
     return res.status(409).json({ error: '이미 끝난 작업이에요.' });
+  }
+  if (job.status === 'running') {
+    const elapsedSec = (Date.now() - (job.startedAt || job.createdAt || Date.now())) / 1000;
+    if (elapsedSec > CANCEL_WINDOW_SEC) {
+      return res.status(409).json({ error: '취소 가능 시간이 지났어요. 변환이 이미 진행돼, 완료되면 결과를 받게 돼요.' });
+    }
   }
   job.ac.abort();
   job.status = 'cancelled';

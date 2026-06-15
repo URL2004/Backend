@@ -90,11 +90,12 @@ function extractPercents(s) {
 }
 const ORG_RE = /[가-힣]{2,}(?:상공회의소|연구원|공사|협회|재단|위원회|기구|연구소|본부|센터|기관|대학교|학회)/g;
 // 숫자+단위. "96회", "300분", "12명", "1,200원" 등.
-const NUM_UNIT_RE = /\d[\d,]*(?:\.\d+)?\s*(?:회|분|시간|초|명|개|건|곳|배|위|점|원|달러|엔|위안|유로|일|주|개월|차|등|등급|km|kg|개국|시|살|세|줄|쪽|페이지|문항)/g;
+// 쪽/페이지(페이지 참조)는 문서 구조 메타라 내용 사실이 아님 — "3쪽" 하나로 장문이 막히던 lostFacts 오탐 제거.
+const NUM_UNIT_RE = /\d[\d,]*(?:\.\d+)?\s*(?:회|분|시간|초|명|개|건|곳|배|위|점|원|달러|엔|위안|유로|일|주|개월|차|등|등급|km|kg|개국|시|살|세|줄|문항)/g;
 // 한국어 금액/수량 단위 (천/만/억/조). "5천원", "3만", "2억원", "4천~5천원", "5천 자", "30만 자".
 const KR_AMOUNT_RE = /\d[\d,]*\s*(?:천|만|억|조)\s*(?:원|명|개|건|배|자|장|권|회|곳|군데|화)?/g;
 // 한글 수사 + 단위 ("세 배", "열 명"). '한'은 관형사 충돌로 제외.
-const NATIVE_NUM_RE = /(?<![가-힣])(?:두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|스물|서른|마흔|쉰|예순)\s*(?:개|명|번|배|살|마리|권|잔|그루|채|대|장|건|곳|달|해|시간|줄|쪽)/g;
+const NATIVE_NUM_RE = /(?<![가-힣])(?:두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|스물|서른|마흔|쉰|예순)\s*(?:개|명|번|배|살|마리|권|잔|그루|채|대|장|건|곳|달|해|시간|줄)/g;
 // 단위 없는 소수 (0.42). 연도·% 와 별개.
 const DECIMAL_RE = /(?<![\d.])\d+\.\d+(?![\d%％])/g;
 // URL / 이메일 / DOI.
@@ -118,7 +119,8 @@ const LATIN_COMMON = new Set([
   'NEW', 'OLD', 'GOOD', 'BAD', 'MORE', 'LESS', 'JUST'
 ]);
 // 접미사 없는 주요 브랜드/서비스 — 허용리스트로 명시 검출(인명은 NER 영역이라 제외, judge가 의미로 보완).
-const BRANDS = ['카카오', '네이버', '쿠팡', '배달의민족', '배민', '토스', '당근마켓', '당근', '구글', '유튜브', '인스타그램', '페이스북', '트위터', '삼성', '엘지', '현대자동차', '현대', '기아', '애플', '아마존', '넷플릭스', '챗지피티', '오픈에이아이', '마이크로소프트',
+// 단독 '현대'는 '현대 사회·현대인·현대 미술'(modern) 오탐이 많아 제외하고 현대자동차/현대차만 추적.
+const BRANDS = ['카카오', '네이버', '쿠팡', '배달의민족', '배민', '토스', '당근마켓', '당근', '구글', '유튜브', '인스타그램', '페이스북', '트위터', '삼성', '엘지', '현대자동차', '현대차', '기아', '애플', '아마존', '넷플릭스', '챗지피티', '오픈에이아이', '마이크로소프트',
   'Kakao', 'Naver', 'Coupang', 'Toss', 'Google', 'YouTube', 'Instagram', 'Facebook', 'Twitter', 'Apple', 'Amazon', 'Netflix', 'OpenAI', 'ChatGPT', 'Microsoft'];
 const normTok = (s) => s.replace(/\s+/g, '').toLowerCase();
 // 숫자 정규화 포함 비교 키: "5천"↔"5000", "1만 자"↔"10,000자"↔"10000자".
@@ -163,9 +165,14 @@ function extractFacts(text, hasHangul) {
   for (const m of (t.match(DECIMAL_RE) || [])) facts.push(m);
   for (const m of (t.match(URL_RE) || [])) facts.push(m);
   for (const b of BRANDS) if (t.includes(b)) facts.push(b);
-  const latin = hasHangul
-    ? [...(t.match(LATIN_ACRONYM_RE) || []), ...(t.match(LATIN_CAPWORD_RE) || [])]  // 한국어: 외래 단일어도
-    : [...(t.match(LATIN_ACRONYM_RE) || []), ...extractEnEntities(t)];              // 영어: 약어 + Title-Case 엔티티(문장첫 필터)
+  // 영어 본문은 문장 첫 Title Case 일반어를 더 강하게 걸러 "The/Question/Chatbots" 오탐을 줄인다.
+  // 한국어 본문 속 드문 영어 고유명사는 기존처럼 전수 추적해 인명·브랜드 recall을 유지한다.
+  const koCount = (t.match(/[가-힣]/g) || []).length;
+  const enWordCount = (t.match(/[A-Za-z]{2,}/g) || []).length;
+  const enDominant = enWordCount >= 10 && enWordCount * 4 > koCount;
+  const latin = enDominant
+    ? [...(t.match(LATIN_ACRONYM_RE) || []), ...extractEnEntities(t)]
+    : [...(t.match(LATIN_ACRONYM_RE) || []), ...(t.match(LATIN_CAPWORD_RE) || [])];
   for (const m of latin) {
     const up = m.toUpperCase();
     if (!LATIN_ALLOW.has(up) && !LATIN_COMMON.has(up)) facts.push(m);
@@ -304,7 +311,8 @@ function measureRepetition(text) {
 // 1차 결과에서 FLOOR critical 위반만 추출 (surface는 제외 — regression report로 §11).
 // ── LLM 산출물 누출 가드(genretransfer에서 이식, 2026-06-11) ──────────
 // 메타 메모 누출(실측: "미삽입 항목 처리 메모…밝힙니다"가 본문 끝에 붙어 측정됨)
-const META_NOTE_RE = /(메모\s*:|밝힙니다|지시에\s*따라|삽입하지\s*않|본문만\s*출력|위\s*지침|요청하신|원장[은는이가]\s|승인\s*근거)/;
+// 판정/수리 스캐폴딩("# 판정", "added_claim", "수정 문장")이 본문에 박히는 사고까지 차단한다.
+const META_NOTE_RE = /(메모\s*:|밝힙니다|지시에\s*따라|삽입하지\s*않|본문만\s*출력|위\s*지침|요청하신|원장[은는이가]\s|승인\s*근거|added_claim|distortion|claim\s*ledger|\bREWRITE\b|수정\s*문장\s*[:：]|#{1,6}\s*판정|#{1,6}\s*근거)/i;
 // 지시문 윙크 누출(루틴 v1 실측: "…는 데 있다(아, 이 표현 쓰지 말라고 했지)" — 금지목록을 어기고 프롬프트에
 // 사과하는 메타 발화를 필자의 사족 괄호로 위장). 표현·단어·문장에 대한 금지 언급만 잡아 일반 내용 오탐 차단.
 const WINK_RE = /(표현|단어|문장|어투)[^.”"]{0,12}(쓰지\s*말|말라고\s*했|금지)/;

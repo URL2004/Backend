@@ -255,11 +255,32 @@ function blockedResponse(job) {
   };
 }
 
+// 동의 기반 차단 안내 재료: 자동 폴백+자동 과금 대신 사용자가 재시도/보존형/취소를 고르게 한다.
+function buildBlockOffer(job, text) {
+  let abstractParas = [];
+  try {
+    const sg = require('../engine/surfaceguard');
+    const pa = sg.analyzeParagraphs(text || '');
+    const paras = (text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+    abstractParas = (pa.detail || [])
+      .map((d, i) => ({ kind: d.kind, snippet: (paras[i] || '').replace(/\s+/g, ' ').slice(0, 70) }))
+      .filter(d => d.kind === 'abstract_risk' && d.snippet)
+      .slice(0, 5);
+  } catch { /* 안내 재료 생성 실패가 차단 응답을 막으면 안 됨 */ }
+  return {
+    fallbackOffer: fallbackEnabled() && job.mode !== 'polish',
+    fallbackCredit: preservationFallbackCredit((text || '').length),
+    canEvidence: job.mode === 'formal' && !job.wantEvidence,
+    mode: job.mode || 'formal',
+    abstractParas
+  };
+}
+
 // ── job 영속화(2026-06-12): Firestore transformJobs — 재시작에도 결과·승인대기 생존.
 //   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'text', 'estSec', 'note', 'gates', 'gateDetail', 'candidates', 'approvedCount', 'result', 'error',
+  'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'memo', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence'];
 
 function persistJob(job) {
@@ -675,7 +696,7 @@ async function runJob(job, text, evidence) {
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
     // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
-    const out = await genreTransferV2(text, { evidence: evidence || '', signal: job.ac.signal });
+    const out = await genreTransferV2(text, { evidence: evidence || '', userNotes: job.memo || '', signal: job.ac.signal });
     const gates = [];
     if (out.novelty?.count) gates.push('novelty');
     if (out.lostFacts?.count) gates.push('lostFacts');
@@ -697,17 +718,11 @@ async function runJob(job, text, evidence) {
         gateDetail
       });
 
-      // 막다른 길 방지: 차단되면 보존형 경로로 재처리해 결과를 보장한다(formal 한정, env로 off 가능).
-      if (job.mode === 'formal' && fallbackEnabled()) {
-        const handled = await tryPreservationFallback(job, text);
-        if (handled) return;   // 폴백이 done/cancelled로 처리 완료
-        // 폴백 실패 시 아래로 떨어져 원래대로 차단
-      }
-
       job.status = 'blocked';
       job.stage = blockedStage(gates);   // '재처리 중'에 멈춰 보이던 표시 버그 해결
       job.gates = gates;
       job.gateDetail = gateDetail;
+      job.blockOffer = buildBlockOffer(job, text);
       persistJob(job);
       return;
     }
@@ -794,14 +809,11 @@ async function runHumanizeJob(job, text) {
         gates,
         gateDetail
       });
-      if (job.mode === 'blog' && fallbackEnabled()) {
-        const handled = await tryBlogPreservationFallback(job, text);
-        if (handled) return;
-      }
       job.status = 'blocked';
       job.stage = blockedStage(gates);
       job.gates = gates;
       job.gateDetail = gateDetail;
+      job.blockOffer = buildBlockOffer(job, text);
       persistJob(job);
       return;
     }
@@ -919,7 +931,7 @@ router.post('/transform', async (req, res) => {
     id, mode, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
-    memo: mode === 'blog' && typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',
+    memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',
     lang: req.body.lang === 'en' ? 'en' : 'ko',
     wantEvidence,
     estSec,
@@ -972,6 +984,41 @@ router.post('/transform/:id/cancel', async (req, res) => {
   scheduleQueueDrain();
   logger.info('transform.cancelled_by_user', { jobId: job.id, uid: job.uid, mode: job.mode });
   res.json({ ok: true });
+});
+
+// 차단된 회피 작업을 사용자가 명시적으로 원할 때만 보존형(다듬기)으로 재처리한다.
+router.post('/transform/:id/accept-fallback', async (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
+  if (!(await requireJobOwner(req, res, job))) return;
+  if (job.status !== 'blocked') return res.status(409).json({ error: '차단된 작업만 보존형으로 받을 수 있어요.' });
+  if (!fallbackEnabled() || job.mode === 'polish') return res.status(409).json({ error: '이 작업은 보존형으로 받을 수 없어요.' });
+  res.json({ ok: true });
+  job.status = 'running';
+  job.stage = '원문 보존형으로 재처리 중';
+  job.blockOffer = null;
+  job.startedAt = Date.now();
+  job.ac = new AbortController();
+  persistJob(job);
+  try {
+    const handled = job.mode === 'blog'
+      ? await tryBlogPreservationFallback(job, job.text || '')
+      : await tryPreservationFallback(job, job.text || '');
+    if (!handled && job.status !== 'cancelled') {
+      job.status = 'blocked';
+      job.stage = blockedStage(job.gates || []);
+      job.blockOffer = buildBlockOffer(job, job.text || '');
+      persistJob(job);
+    }
+  } catch (e) {
+    logger.error('transform.accept_fallback_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
+    if (job.status !== 'done' && job.status !== 'cancelled') {
+      job.status = 'blocked';
+      job.blockOffer = buildBlockOffer(job, job.text || '');
+      persistJob(job);
+    }
+  }
+  scheduleQueueDrain();
 });
 
 // ── P4: 근거 승인 — 승인된 후보만 evidence로 재구성 재개. "미승인은 엔진이 차단"의 구현부:
@@ -1042,7 +1089,7 @@ router.get('/transform/:id', async (req, res) => {
   if (job.status === 'queued') return res.json(base);
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
   if (job.status === 'cancelled') return res.json(base);
-  if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, ...blockedResponse(job) });
+  if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, blockOffer: job.blockOffer || null, ...blockedResponse(job) });
   if (job.status === 'error') return res.json({ ...base, error: job.error });
   res.json(base);
 });

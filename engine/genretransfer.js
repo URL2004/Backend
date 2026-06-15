@@ -491,9 +491,12 @@ const V2_BANS = `[금지 — 하나라도 어기면 실패]
 · 재료(주장·근거)에 없는 사실·수치·기관·사례·1인칭 경험 생성
 ${LLM_TIC_RULE}`;
 
-function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = []) {
+function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = [], memoLines = []) {
   const mustNums = [...new Set(evidTexts.join(' ').match(/\d[\d,.]*%?/g) || [])].filter(t => t.replace(/\D/g, '').length >= 2);
   const banNums = usedNums.filter(n => !mustNums.includes(n));
+  const memoBlock = (memoLines && memoLines.length)
+    ? `\n\n[필자(사용자)가 직접 제공한 실제 경험·사례 — 이 슬롯 논점과 관련 있으면 추상 서술을 구체적 장면·예시로 바꿔 녹여라. 메모에 없는 경험·수치·기관·사실은 절대 지어내지 말 것. 한 경험은 글 전체에서 한 번만 쓴다]\n${memoLines.map(m => `· ${m}`).join('\n')}`
+    : '';
   const anchors = process.env.STYLE_ANCHOR === '0' ? '' : pickAnchors(slotIdx) + '\n';
   // ★ prompt caching(§이식 ⑧): system은 고정부+앵커(5변형)만 — 슬롯별 가변부([이 슬롯]·금지 시작어·수치 목록)는
   //   전부 user로 분리해 같은 앵커 변형의 슬롯·재시도가 system 캐시를 재사용할 수 있게 한다(지시 내용은 동일).
@@ -510,13 +513,14 @@ ${V2_BANS}
 · 금지 시작어(앞 문단들이 이미 쓴 첫 단어): ${usedOpeners.slice(-8).join(', ') || '없음'}
 ${mustNums.length ? `· 반드시 포함할 수치: ${mustNums.join(', ')}` : ''}
 ${banNums.length ? `· ★앞 슬롯에서 이미 인용한 수치·조사 — 재인용 금지(같은 글에서 같은 통계를 두 번 소개하면 실패다): ${banNums.join(', ')}` : ''}
-[칼럼 제목(참고)]\n${plan.title} — ${plan.subtitle}\n\n[직전 문단 끝(여기서 자연스럽게 이어가라, 반복 금지)]\n${prevTail || '(글의 시작)'}\n\n[이 슬롯의 재료 — 원문 주장]\n${claimTexts.join('\n') || '(없음)'}\n\n[이 슬롯의 재료 — 승인 근거]\n${evidTexts.join('\n') || '(없음)'}${srcText ? `\n\n[이 슬롯의 원문 문단(디테일 재료 — 요약하지 말고 구체 디테일·예시를 살려서 분량을 채워라. 단 문체는 칼럼의 결로)]\n${srcText}` : ''}`;
+[칼럼 제목(참고)]\n${plan.title} — ${plan.subtitle}\n\n[직전 문단 끝(여기서 자연스럽게 이어가라, 반복 금지)]\n${prevTail || '(글의 시작)'}\n\n[이 슬롯의 재료 — 원문 주장]\n${claimTexts.join('\n') || '(없음)'}\n\n[이 슬롯의 재료 — 승인 근거]\n${evidTexts.join('\n') || '(없음)'}${srcText ? `\n\n[이 슬롯의 원문 문단(디테일 재료 — 요약하지 말고 구체 디테일·예시를 살려서 분량을 채워라. 단 문체는 칼럼의 결로)]\n${srcText}` : ''}${memoBlock}`;
   return { system, user, mustNums };
 }
 
-async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidence = '', lang = 'ko', signal } = {}) {
+async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidence = '', userNotes = '', lang = 'ko', signal } = {}) {
   const evidenceList = (evidence || '').split('\n').map(l => l.trim()).filter(Boolean);
-  const allowed = evidence || '';
+  const memoLines = (userNotes || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const allowed = [evidence, userNotes].filter(Boolean).join('\n');
   const textF = evidence ? rawText + '\n\n' + evidence : rawText;
   const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
   const plan = await buildSlotPlan(rawText, { skeleton, evidenceList, ledger, signal });
@@ -550,7 +554,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     const prevTail = bodies.length ? bodies[bodies.length - 1].split(/\n{2,}/).pop().slice(-160) : '';
     // 앞 슬롯들이 이미 인용한 수치 — 재인용 금지 목록(ai-study 63% 실측: 슬롯 독립 생성이 같은 통계를 2~4회 재진술)
     const usedNumList = [...new Set(bodies.flatMap(b => _numToks(b)).map(t => t.split('|')[0]))];
-    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList);
+    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList, memoLines);
     const usedNumSet = new Set(usedNumList);
     const minChars = Math.round(slot.targetChars * 0.8);   // 0.7→0.8(분량 미달이 best-pick으로 통과하던 폭 축소)
     let best = { body: '', score: -1 };
@@ -741,7 +745,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   doc = require('./spacing').fixSpacing(doc).text;
 
   // ④ semanticJudge 게이트 + 문장 수리(1라운드) — v3 실측: 짝 가드가 못 보는 "프레임 재조합"(교원 200명 가짜 설문 등)을 judge가 정확히 잡음
-  const judgeLedger = { ...ledger, claims: [...ledger.claims, ...evidenceList.map(e => ({ claim: e, evidence_text: e }))] };
+  const judgeLedger = { ...ledger, claims: [...ledger.claims, ...evidenceList.map(e => ({ claim: e, evidence_text: e })), ...memoLines.map(m => ({ claim: m, evidence_text: m }))] };
   let judge = null;
   try {
     let v = await semanticJudge(rawText, doc, judgeLedger, { lang, signal, allowedExtra: allowed });

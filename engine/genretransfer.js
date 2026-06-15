@@ -650,6 +650,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     const usedNumSet = new Set(usedNumList);
     const minChars = Math.round(slot.targetChars * 0.8);   // 0.7→0.8(분량 미달이 best-pick으로 통과하던 폭 축소)
     let best = { body: '', score: -1 };
+    let bestNovel = { body: '', score: -1, items: [] };   // 날조 토큰 포함 후보 — 클린 슬롯이 0이면 토큰만 빼고 살려 슬롯 붕괴 방지(2026-06-16)
     for (let attempt = 0; attempt < 4; attempt++) {        // 3→4(분량 재시도 여유)
       let body = '';
       const extra = attempt > 0 ? `\n\n★재시도: ${mustNums.length ? `수치(${mustNums.join(', ')}) 누락 금지. ` : ''}분량 미달이다 — 공백 제외 ${slot.targetChars}자 이상을 반드시 채워라(원문 문단의 디테일·예시를 더 살려라). 금지 표현을 쓰지 마라. 앵커의 소재(부동산·도시 등)를 가져오지 마라.` : '';
@@ -658,8 +659,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       if (ANCHOR_LEAK_RE.test(body)) continue;                       // 앵커 소재 번짐 → 폐기(실측 1회 발생)
       if (META_NOTE_RE.test(body)) continue;                          // 메타 메모 → 폐기
       if (WINK_RE.test(body)) continue;                               // 지시문 윙크 → 폐기(루틴 v1 실측)
-      if (findCoinedTerms(body, textF).length > 0) continue;          // 용어귀속 날조 → 폐기(루틴 v1 실측 '정-반 효과')
-      if (floor.measureNovelty(textF, body, allowed).count > 0) continue;
+      if (findCoinedTerms(body, textF).length > 0) continue;          // 용어귀속 날조 → 폐기(수리 불가 — 폐기 유지)
       // 짝 위반은 폐기하지 않고 감점만 — 폐기 시 데이터 슬롯이 통째로 사라짐(v4 실측: lost 18, 분량 38%).
       // 짝 위반은 결정론 검증 가능한 "수리 대상"이라 본문 단계 ①(수치 보존 교정)에 맡긴다.
       const pairBad = checkEvidencePairing(body, evidenceList).length;
@@ -670,6 +670,9 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       // 앞 슬롯 수치 재인용은 감점(이 슬롯 배정분 mustNums는 제외)
       const reCite = [...new Set(_numToks(body).map(t => t.split('|')[0]))].filter(n => usedNumSet.has(n) && !mustNums.includes(n)).length;
       const score = (chars >= minChars ? 1 : chars / minChars) + (mustNums.length ? (mustNums.length - missing) / mustNums.length : 1) - frameHits - pairBad * 2 - reCite;
+      // ★날조(novelty) 토큰이 있으면 클린 후보엔 못 넣지만, 슬롯 통째 폐기(붕괴) 대비로 best-novel에 보관한다(아래에서 토큰만 제거).
+      const nov = floor.measureNovelty(textF, body, allowed);
+      if (nov.count > 0) { if (score > bestNovel.score) bestNovel = { body, score, items: nov.items }; continue; }
       if (score > best.score) best = { body, score };
       // ★속도(2026-06-12): 분량은 재시도 사유에서 제외 — "재시도는 길이를 못 늘림(같은 길이로 다시 씀)" 실측 확정,
       //   미달분은 어차피 아래 이어쓰기 확장이 채운다. 게이트 클린이면 즉시 채택(슬롯당 낭비 호출 최대 3회 제거).
@@ -679,6 +682,27 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     // 500~650자에서 멈춰 충족률 ~60%(7,000목표→4,361실측). 재시도는 길이를 못 늘림(같은 길이로 다시 씀) →
     // 미달분은 "끊긴 지점에서 이어쓰기"로 채운다. 패딩이 아니라 아직 안 쓴 원문 디테일 소화를 지시.
     let bodyFinal = best.body;
+    // ★붕괴 방지(2026-06-16): 클린 슬롯이 끝내 안 나오면(전 시도가 날조로 폐기) 슬롯을 통째로 버리지 않고,
+    //   날조 토큰만 빼고 살린다(B 원칙: 날조는 제거하되 그 슬롯의 정당한 논지·사실·분량까지 버리지 않는다).
+    //   초고밀도 격식글에서 슬롯 대부분이 날조로 폐기→분량 10%·사실 수십 건 증발하던 붕괴를 막는다.
+    //   제목 수리와 동일 패턴: Haiku로 토큰 빼고 재작성(novelty 재검증) → 실패 시 결정론 토큰 제거.
+    if (!bodyFinal && bestNovel.body) {
+      try {
+        const cand = (await llmText({
+          system: `다음 문단에서 원문에 없는 수치·고유명사(${bestNovel.items.slice(0, 12).join(', ')})를 빼고, 같은 논지로 자연스럽게 다시 써라. 원문에 실제로 있는 표현만 사용하고 새 정보를 더하지 마라. 본문만 출력.`,
+          user: bestNovel.body, signal, maxTokens: 2500, model: HAIKU
+        }) || '').trim();
+        if (cand && floor.measureNovelty(textF, cand, allowed).count === 0
+            && !META_NOTE_RE.test(cand) && !ANCHOR_LEAK_RE.test(cand) && !WINK_RE.test(cand)
+            && findCoinedTerms(cand, textF).length === 0) bodyFinal = cand;
+      } catch { /* 폴백: 결정론 제거 */ }
+      if (!bodyFinal) {                                              // LLM 수리 실패 → 토큰 직접 제거로라도 살린다(붕괴보단 낫다)
+        let r = bestNovel.body;
+        for (const it of bestNovel.items) r = r.split(it).join('');
+        r = r.replace(/\s{2,}/g, ' ').replace(/\s+([.,)\]])/g, '$1').trim();
+        if (r && floor.measureNovelty(textF, r, allowed).count === 0) bodyFinal = r;
+      }
+    }
     // ★분량 강화(2026-06-15 B 이후): 예전엔 3회·0.95로 올리면 lost 20(승인근거 증발)→lostFacts 하드차단이라 2회·0.9로 묶었다.
     //   이제 lostFacts는 소프트(B) + factsafe가 hard fact를 토큰으로 보존하므로 더 밀어도 차단되지 않는다 → 4회·0.95.
     //   날조(novelty)·짝(pairing) 가드는 아래 루프 안에 그대로 살아 있어 사실 안전성은 유지된다.

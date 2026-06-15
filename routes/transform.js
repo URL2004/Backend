@@ -201,6 +201,7 @@ function blockedReason(gates, mode) {
   if (set.has('lostFacts')) return '변환 결과에서 원문의 핵심 사실이나 수치가 빠져 차단했어요.';
   if (set.has('novelty')) return '변환 결과에 새 정보가 추가되어 차단했어요.';
   if (set.has('evidence_pairing')) return '수치와 출처의 짝이 맞지 않아 차단했어요.';
+  if (set.has('length_collapse')) return '재구성 과정에서 분량이 원문보다 크게 줄어(상당 부분이 빠져) 결과를 그대로 내보내지 않았어요. 아래에서 원문 보존 다듬기로 받으면 분량·사실이 유지돼요.';
   if (mode === 'polish') return '문장을 다듬는 중 원문 보존 기준을 통과하지 못해 차단했어요.';
   return '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요.';
 }
@@ -211,6 +212,7 @@ function blockedStage(gates) {
   if (set.has('lostFacts')) return '차단됨 · 원문 사실 누락';
   if (set.has('semanticJudge') || set.has('novelty')) return '차단됨 · 원문에 없는 주장 추가';
   if (set.has('length_short')) return '차단됨 · 결과가 너무 짧음';
+  if (set.has('length_collapse')) return '보류됨 · 분량이 너무 줄어듦';
   if (set.has('length_overrun')) return '차단됨 · 과도하게 늘어남';
   if (set.has('evidence_pairing')) return '차단됨 · 수치-출처 불일치';
   return '차단됨 · 원문 보존 기준 미통과';
@@ -226,7 +228,7 @@ function blockedNextActions(gates, mode) {
         '연도, 기관명, 정책 판단처럼 원문에 없는 내용이 들어가기 쉬운 문장을 줄여 주세요.'
       ];
     }
-    if (set.has('lostFacts') || set.has('evidence_pairing')) {
+    if (set.has('lostFacts') || set.has('evidence_pairing') || set.has('length_collapse')) {
       return [
         '사실과 수치가 많은 문단은 짧게 나눠 다시 시도해 주세요.',
         '근거 보강을 켠 경우 승인 근거 수를 줄이거나 핵심 근거만 남겨 주세요.',
@@ -731,6 +733,21 @@ async function runJob(job, text, evidence) {
       job.stage = blockedStage(gates);   // '재처리 중'에 멈춰 보이던 표시 버그 해결
       job.gates = gates;
       job.gateDetail = gateDetail;
+      job.blockOffer = buildBlockOffer(job, text);
+      persistJob(job);
+      return;
+    }
+    // ★ 붕괴 보류(2026-06-16): 날조·짝·왜곡 게이트는 통과해도, 분량이 원문 30% 미만으로 무너진 결과는
+    //   "슬롯 대부분이 사라진 변환 실패"다(실측 10%·사실 36건 증발). 회피를 정액으로 산 사용자에게 이런
+    //   파편을 받고 전달하지 않는다 — 차단과 동일하게 동의 기반(재시도/보존형/취소)으로 넘긴다(무차감).
+    //   보존형 받기를 고르면 분량·사실을 그대로 살린 결과를 보존형 단가로 받는다. 끄려면 env 없음(상시).
+    if ((out.lenRatio || 0) > 0 && out.lenRatio < 0.30) {
+      const gates2 = ['length_collapse'];
+      logger.warn('transform.collapsed_too_short', { jobId: job.id, uid: job.uid, mode: job.mode, lenRatio: out.lenRatio, lostCount: out.lostFacts?.count || 0 });
+      job.status = 'blocked';
+      job.stage = blockedStage(gates2);
+      job.gates = gates2;
+      job.gateDetail = { lenRatio: Math.round((out.lenRatio || 0) * 100), lostFacts: (out.lostFacts?.items || []).slice(0, 8) };
       job.blockOffer = buildBlockOffer(job, text);
       persistJob(job);
       return;

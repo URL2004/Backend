@@ -197,7 +197,11 @@ async function repairViolations(rawText, outputText, ledger, violations, { lang 
   const user = `[CLAIM LEDGER — 허용된 유일 주장 (각 항목 근거=원문 인용)]\n${claimsText}\n\n[위반 — 이것만 수정]\n${vText}\n\n[REWRITE]\n${outputText}\n\n수정된 본문만 출력(설명·따옴표·코드펜스 금지).`;
   const out = await llmText({ system, user, signal, maxTokens: 8192, model: HAIKU });
   // repair는 날조를 삭제하므로 짧아지는 게 정상 — 비었을(LLM 실패) 때만 원본 유지.
-  return out && out.replace(/\s+/g, '').length >= 5 ? out : outputText;
+  // ★ 수리 LLM이 "교정 본문" 대신 판정 스캐폴딩(# 판정/## 수정 문장/added_claim…)을 통째로 반환하는
+  //   누출(2026-06-15 실측)을 차단 — 그런 후보는 폐기하고 직전 본문 유지(다음 라운드 judge가 재시도).
+  const JUDGE_SCAFFOLD = /(added_claim|distortion|claim\s*ledger|\bREWRITE\b|수정\s*문장\s*[:：]|#{1,6}\s*판정|#{1,6}\s*근거)/i;
+  if (!out || out.replace(/\s+/g, '').length < 5 || JUDGE_SCAFFOLD.test(out)) return outputText;
+  return out;
 }
 
 // 원장 1회 추출 → judge → 위반 시 repair → 재judge, 최대 maxRounds. P2-c 닫힌 루프(§7.2).

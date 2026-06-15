@@ -39,6 +39,7 @@ const MAX_QUEUE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_QUEUE) || 30;    // 
 const BLOG_MAX_QUEUE = Number(process.env.BLOG_MAX_QUEUE) || 50;             // short 대기열 상한
 const QUEUE_DRAIN_INTERVAL_MS = Number(process.env.TRANSFORM_QUEUE_TICK_MS) || 3000;
 const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함) — formal만
+const CANCEL_WINDOW_SEC = Number(process.env.CANCEL_WINDOW_SEC) || 45;       // 시작 후 이 시간 안에서만 사용자 취소 허용(원가 거의 안 쓴 구간). UI 버튼은 30초, 서버는 시계·네트워크 지연 여유로 45초.
 const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
 const orphan401 = new Map();   // jobId → 폴링 GET 401 연속 횟수(결과 유실 의심 감지용)
 
@@ -964,6 +965,15 @@ router.post('/transform/:id/cancel', async (req, res) => {
   if (!(await requireJobOwner(req, res, job))) return;
   if (job.status === 'done' || job.status === 'blocked' || job.status === 'error') {
     return res.status(409).json({ error: '이미 끝난 작업이에요.' });
+  }
+  // ★ 30초 취소 창(2026-06-15): running 작업이 시작 후 일정 시간을 넘기면 취소 거부 — LLM 원가를 거의
+  //   다 쓴 뒤 무과금으로 빠져나가는 손실을 차단(UI 버튼도 30초 후 사라짐). 대기열·근거승인 대기는
+  //   비싼 생성 전이라 그대로 허용(원가 미발생).
+  if (job.status === 'running') {
+    const elapsedSec = (Date.now() - (job.startedAt || job.createdAt || Date.now())) / 1000;
+    if (elapsedSec > CANCEL_WINDOW_SEC) {
+      return res.status(409).json({ error: '취소 가능 시간이 지났어요. 변환이 이미 진행돼, 완료되면 결과를 받게 돼요.' });
+    }
   }
   job.ac.abort();
   job.status = 'cancelled';

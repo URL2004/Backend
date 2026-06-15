@@ -103,8 +103,23 @@ const URL_RE = /(?:https?:\/\/[^\s)]+|www\.[^\s)]+|\b10\.\d{4,}\/\S+|[\w.+-]+@[\
 const LATIN_ACRONYM_RE = /\b[A-Z]{2,}\b/g;
 const LATIN_CAPWORD_RE = /\b[A-Z][a-z]{1,}\b/g;
 const LATIN_ALLOW = new Set(['AI', 'SNS', 'IT', 'PC', 'TV', 'OK', 'PDF', 'URL', 'CEO', 'GPT', 'LLM', 'API', 'OS', 'CPU', 'GPU']);
+// Title Case 영어 일반어 오탐 방지. 한국어 글에 모델이 "The Question" 같은 영어식 소제목을
+// 흘리면 기존 LATIN_CAPWORD_RE가 이를 새 고유명사로 잘못 잡아 차단했다.
+const LATIN_COMMON = new Set([
+  'A', 'AN', 'THE', 'THIS', 'THAT', 'THESE', 'THOSE',
+  'AND', 'OR', 'BUT', 'SO', 'IF', 'THEN', 'BECAUSE', 'ALTHOUGH',
+  'IN', 'ON', 'AT', 'TO', 'FROM', 'FOR', 'WITH', 'WITHOUT', 'OF', 'BY', 'AS',
+  'IS', 'ARE', 'WAS', 'WERE', 'BE', 'BEEN', 'BEING', 'DO', 'DOES', 'DID',
+  'NOT', 'NO', 'YES', 'CAN', 'COULD', 'MAY', 'MIGHT', 'MUST', 'SHOULD', 'WOULD', 'WILL',
+  'WHAT', 'WHY', 'HOW', 'WHEN', 'WHERE', 'WHO', 'WHICH',
+  'QUESTION', 'ANSWER', 'PROBLEM', 'ISSUE', 'POINT', 'CASE', 'EXAMPLE',
+  'INTRODUCTION', 'CONCLUSION', 'SUMMARY', 'TITLE', 'TEXT', 'SOURCE', 'REWRITE',
+  'FIRST', 'SECOND', 'THIRD', 'MAIN', 'KEY', 'IMPORTANT', 'REAL', 'TRUE', 'FALSE',
+  'NEW', 'OLD', 'GOOD', 'BAD', 'MORE', 'LESS', 'JUST'
+]);
 // 접미사 없는 주요 브랜드/서비스 — 허용리스트로 명시 검출(인명은 NER 영역이라 제외, judge가 의미로 보완).
-const BRANDS = ['카카오', '네이버', '쿠팡', '배달의민족', '배민', '토스', '당근마켓', '당근', '구글', '유튜브', '인스타그램', '페이스북', '트위터', '삼성', '엘지', '현대자동차', '현대', '기아', '애플', '아마존', '넷플릭스', '챗지피티', '오픈에이아이', '마이크로소프트'];
+const BRANDS = ['카카오', '네이버', '쿠팡', '배달의민족', '배민', '토스', '당근마켓', '당근', '구글', '유튜브', '인스타그램', '페이스북', '트위터', '삼성', '엘지', '현대자동차', '현대', '기아', '애플', '아마존', '넷플릭스', '챗지피티', '오픈에이아이', '마이크로소프트',
+  'Kakao', 'Naver', 'Coupang', 'Toss', 'Google', 'YouTube', 'Instagram', 'Facebook', 'Twitter', 'Apple', 'Amazon', 'Netflix', 'OpenAI', 'ChatGPT', 'Microsoft'];
 const normTok = (s) => s.replace(/\s+/g, '').toLowerCase();
 // 숫자 정규화 포함 비교 키: "5천"↔"5000", "1만 자"↔"10,000자"↔"10000자".
 function factKey(s) {
@@ -151,7 +166,10 @@ function extractFacts(text, hasHangul) {
   const latin = hasHangul
     ? [...(t.match(LATIN_ACRONYM_RE) || []), ...(t.match(LATIN_CAPWORD_RE) || [])]  // 한국어: 외래 단일어도
     : [...(t.match(LATIN_ACRONYM_RE) || []), ...extractEnEntities(t)];              // 영어: 약어 + Title-Case 엔티티(문장첫 필터)
-  for (const m of latin) if (!LATIN_ALLOW.has(m.toUpperCase())) facts.push(m);
+  for (const m of latin) {
+    const up = m.toUpperCase();
+    if (!LATIN_ALLOW.has(up) && !LATIN_COMMON.has(up)) facts.push(m);
+  }
   return facts;
 }
 

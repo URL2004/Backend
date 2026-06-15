@@ -702,7 +702,10 @@ async function runJob(job, text, evidence) {
     const out = await genreTransferV2(text, { evidence: evidence || '', userNotes: job.memo || '', signal: job.ac.signal });
     const gates = [];
     if (out.novelty?.count) gates.push('novelty');
-    if (out.lostFacts?.count) gates.push('lostFacts');
+    // ★ B(2026-06-15 사장님 결정 "동작은 해야"): 원문 사실 "누락"(lostFacts)은 하드 차단하지 않는다.
+    //   재구성이 7~14K 격식논문의 흩어진 사실(연도·기관·날짜 수십 개)을 전부 보존하긴 원리적으로 어려워
+    //   factsafe가 있어도 8/10이 막히던 문제 → 누락=소프트(결과 전달+경고). 단, '날조'(novelty)·'왜곡'(judge)·
+    //   '수치-출처 오결합'(짝)은 그대로 하드 차단한다 — 없는 사실을 지어내는 것은 절대 금지(무날조 원칙 유지).
     if (out.pairing?.length) gates.push('evidence_pairing');
     if (out.judge && out.judge.pass === false) gates.push('semanticJudge');
     if (gates.length) {
@@ -753,11 +756,17 @@ async function runJob(job, text, evidence) {
     if (out.evidenceLost && out.evidenceLost.count > 0) {
       job.note = (job.note ? job.note + ' ' : '') + '승인하신 근거 중 일부는 본문에 자연스럽게 들어가지 않아 제외됐어요(반영된 근거만 사용).';
     }
+    // ★ B: 원문 사실 누락도 소프트 — 차단 대신 결과 전달 + 경고(사용자가 연도·수치·기관명을 원문과 대조하도록).
+    const lostN = out.lostFacts?.count || 0;
+    if (lostN > 0) {
+      logger.warn('transform.lostfacts_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, lostCount: lostN, items: (out.lostFacts?.items || []).slice(0, 12) });
+      job.note = (job.note ? job.note + ' ' : '') + `원문의 사실 ${lostN}건(연도·수치·기관명 등)이 재구성 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 확인해 주세요.`;
+    }
     job.status = 'done';
     job.result = {
       outputText: out.text,
       metrics: {
-        novelty: 0, lostFacts: 0, repetition: 0,
+        novelty: 0, lostFacts: lostN, repetition: 0,
         judge: out.judge?.error ? 'skip' : 'pass',
         lengthRatio: out.lenRatio,
         evidenceUsed: job.approvedCount || 0,

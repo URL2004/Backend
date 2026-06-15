@@ -176,7 +176,8 @@ function measureNovelty(rawText, outputText, allowedExtra) {
 const LENGTH_POLICY = {
   thesis:     { min: 0.85, max: 1.20, hardMax: 1.30 },
   assignment: { min: 0.85, max: 1.20, hardMax: 1.30 },
-  blog:       { min: 0.85, max: 1.35, hardMax: 1.55 },
+  // blog(짧은 다듬기·기본 피하기)은 자연히 압축되는 장르라 하한을 완화(0.85→0.72, env BLOG_LEN_MIN).
+  blog:       { min: Number(process.env.BLOG_LEN_MIN) || 0.72, max: 1.35, hardMax: 1.55 },
   resume:     { min: 0.90, max: 1.25, hardMax: 1.40 }
 };
 function measureLength(rawText, outputText, mode) {
@@ -420,7 +421,12 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   const expNov = require('./surfaceguard').measurePersonalExperienceNovelty(rawText, out, allowedExtra);
   if (expNov.count) criticals.push({ gate: 'experience_novelty', detail: expNov.items.join(' | ') });
   if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', ') }); }
-  if (len.status === 'short') criticals.push({ gate: 'length_short', detail: len.ratio });
+  // length_short 단독(사실 손실 없음)은 차단하지 않고 경고로만 노출 — 진짜 정보손실은 lostFacts가 잡는다.
+  //   "결과가 줄어들면서 막힘"이 환불 민원이 되던 케이스를 완화(요약처럼 짧아져도 사실 보존이면 전달).
+  if (len.status === 'short') {
+    if (lost.count) criticals.push({ gate: 'length_short', detail: len.ratio });
+    else warnings.push({ gate: 'length_short', detail: len.ratio });
+  }
   if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
   // ★ 과제 자연체(FORMAL_HUMAN, 격식): 필자 1인칭 판단 허용 → pov_inject 제외(experience_novelty=일화는 위에서 계속 critical).
   const _fhReport = (process.env.FORMAL_HUMAN === '1' || process.env.ASSIGNMENT_B7 === '1') && (mode === 'assignment' || mode === 'thesis');

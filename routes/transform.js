@@ -204,6 +204,17 @@ function blockedReason(gates, mode) {
   return '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요.';
 }
 
+// 관리자/사용자 표시용 짧은 차단 단계 라벨 — blocked인데 "재처리 중"으로 멈춰 보이던 표시 버그 해결.
+function blockedStage(gates) {
+  const set = new Set(Array.isArray(gates) ? gates : []);
+  if (set.has('lostFacts')) return '차단됨 · 원문 사실 누락';
+  if (set.has('semanticJudge') || set.has('novelty')) return '차단됨 · 원문에 없는 주장 추가';
+  if (set.has('length_short')) return '차단됨 · 결과가 너무 짧음';
+  if (set.has('length_overrun')) return '차단됨 · 과도하게 늘어남';
+  if (set.has('evidence_pairing')) return '차단됨 · 수치-출처 불일치';
+  return '차단됨 · 원문 보존 기준 미통과';
+}
+
 function blockedNextActions(gates, mode) {
   const set = new Set(Array.isArray(gates) ? gates : []);
   if (mode === 'formal') {
@@ -518,9 +529,19 @@ async function tryPreservationFallback(job, text) {
       text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
       floorV2: true, optIn: false, judge: true, grounding: true, userNotes: ''
     });
-    if ((out.floorReport && out.floorReport.status === 'blocked') || !out.result || !out.result.outputText) {
-      logger.warn('transform.fallback_blocked', { jobId: job.id, uid: job.uid, mode: job.mode });
-      return false;   // 보존형마저 막힘 → 원래 차단으로
+    // 보존형 폴백은 "약하더라도 실제 결과를 보장"이 목적(막다른 길 제거).
+    // 단 semanticJudge/novelty/lostFacts/meta leak 등은 사실·의미 사고로 이어질 수 있어 계속 hard block.
+    // 길이·반복처럼 전달해도 위험이 낮은 품질성 게이트만 soft-deliver한다.
+    const FB_SOFT = ['length_short', 'length_overrun', 'repetition', 'pov_inject'];
+    const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
+    const fbHardHit = fbCriticals.filter(g => !FB_SOFT.includes(g));
+    if (!out.result || !out.result.outputText || fbHardHit.length) {
+      logger.warn('transform.fallback_blocked', { jobId: job.id, uid: job.uid, mode: job.mode, fbCriticals, fbHardHit });
+      return false;   // 보존형마저 사실·의미 사고 위험 → 원래 차단 유지
+    }
+    const fbSoftGates = fbCriticals.filter(g => FB_SOFT.includes(g));
+    if (fbSoftGates.length) {
+      logger.info('transform.fallback_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, fbSoftGates });
     }
 
     // 과금: 보존형 단가로. 멱등 키는 동일(job_<id>)이라 중복 차감 불가.
@@ -603,6 +624,7 @@ async function runJob(job, text, evidence) {
       }
 
       job.status = 'blocked';
+      job.stage = blockedStage(gates);   // '재처리 중'에 멈춰 보이던 표시 버그 해결
       job.gates = gates;
       job.gateDetail = gateDetail;
       persistJob(job);
@@ -686,6 +708,7 @@ async function runHumanizeJob(job, text) {
         gates
       });
       job.status = 'blocked';
+      job.stage = blockedStage(gates);
       job.gates = gates;
       job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
       persistJob(job);

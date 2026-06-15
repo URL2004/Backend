@@ -743,6 +743,10 @@ async function runJob(job, text, evidence) {
         });
       }
     }
+    // 근거 일부 미반영(소프트 — 차단 아님): 승인 근거가 본문에 다 녹지 못한 경우 투명하게 안내.
+    if (out.evidenceLost && out.evidenceLost.count > 0) {
+      job.note = (job.note ? job.note + ' ' : '') + '승인하신 근거 중 일부는 본문에 자연스럽게 들어가지 않아 제외됐어요(반영된 근거만 사용).';
+    }
     job.status = 'done';
     job.result = {
       outputText: out.text,
@@ -751,6 +755,7 @@ async function runJob(job, text, evidence) {
         judge: out.judge?.error ? 'skip' : 'pass',
         lengthRatio: out.lenRatio,
         evidenceUsed: job.approvedCount || 0,
+        evidenceUnwoven: out.evidenceLost ? out.evidenceLost.count : 0,
         pairingClean: true   // 게이트 통과 시점 = 수치-출처 짝 위반 0
       },
       genreRisk: out.risk?.score,

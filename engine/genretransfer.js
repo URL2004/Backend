@@ -763,7 +763,10 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   } catch (e) { judge = { error: e.message }; }
 
   const novelty = floor.measureNovelty(textF, doc, allowed);
-  const lost = floor.measureLostFacts(textF, doc);
+  // ★ 사실 소실 게이트 분리(2026-06-15): 원문 사실 소실만 하드 차단(rawText 기준).
+  //   승인 근거는 선택 보강이라 일부가 자연스럽게 못 들어가도 전체 작업을 막지 않고 안내만 남긴다.
+  const lost = floor.measureLostFacts(rawText, doc);
+  const evidenceLost = evidence ? floor.measureLostFacts(evidence, doc) : { count: 0, items: [] };
   pairing = checkEvidencePairing(doc, evidenceList);
   if (pairing.length) {   // judge 수리·재위빙이 끝물에 짝을 깼을 수 있음 — 최후 수단 1회 더
     doc = injectOwnerMarkers(doc, pairing, evidenceList);
@@ -772,7 +775,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   doc = tidyParagraphs(doc);   // ★ 문단 내부 단일 줄바꿈 정리(2026-06-12: LLM이 문장마다 \n 넣어 "애매한 두 행" 발생)
   const risk = gf.genreRiskScore(doc);
   const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
-  return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };
+  return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, evidenceLost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };
 }
 
 // 후보 3종 생성 → 하드게이트(novelty·프레임) + genreRiskScore 최저 선택

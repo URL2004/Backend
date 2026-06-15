@@ -20,6 +20,18 @@ const BLOG_BAND = { A: '30~45%', B: '35~50%', C: '40~55%' };
 //   넉넉한 보수 표기 35~60%. (UI 헤드라인 "예상 탐지율 35~60%"와 단일 표기로 일치)
 const RESTRUCTURE_BAND = '35~60%';
 
+// ★ 자소서·이력 유형 감지(2026-06-15): 1인칭 자기서술 + 지원/이력 어휘가 잦으면 자소서류.
+//   이런 글을 재구성에 넣으면 "지원자를 반박하는 비평 칼럼"으로 뒤집혀 added_claim 차단이 폭증한다.
+//   재구성은 시사·논증 글 전용이라 자소서와 장르가 충돌 → 프런트에서 재구성 잠그고 다듬기/블로그로 유도한다.
+function looksLikeResume(text) {
+  const t = text || '';
+  const bare = t.replace(/\s+/g, '').length || 1;
+  const fp = (t.match(/저는|저의|저를|저도|제가|제 강점|제 경험|본인은|본인의/g) || []).length;
+  const fpPer1k = fp / (bare / 1000);
+  const vocab = (t.match(/지원|합격|자격증|면접|입사|자기소개|지원동기|강점|역량|기여하겠|되겠습니다|성장하|채용|포부/g) || []).length;
+  return fpPer1k >= 3 && vocab >= 2;
+}
+
 const COPY = {
   A: {
     title: '구체적 정보가 풍부한 글이에요',
@@ -51,12 +63,14 @@ router.post('/diagnose', (req, res) => {
 
   const grade = ir.grade || 'B';
   const copy = COPY[grade] || COPY.B;
-  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length });
+  const resumeLike = looksLikeResume(text);
+  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike });
   res.json({
     ok: true,
     grade,
     abstractRiskRatio: ir.abstractRiskRatio,
     needsUserAnchor: !!ir.needsUserAnchor,
+    resumeLike,
     title: copy.title,
     desc: copy.desc,
     bands: {

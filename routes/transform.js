@@ -799,6 +799,18 @@ async function runJob(job, text, evidence) {
         gateDetail
       });
 
+      // ★ 재구성 자동 복구(2026-06-16, 청크 회피): 단일패스 genreTransferV2가 원문을 부풀리며(실측 영화평 151%·
+      //   주거보고서 84%) 원문에 없는 평가·주장을 합성해 semanticJudge·novelty로 막히던 글(영화평·문학비평·
+      //   미래설계 보고서 등)을, 문단별로 충실히 재작성하는 청크 회피로 자동 복구한다. 우회(피하기)는 유지하되
+      //   합성 주장은 생기지 않는다(두 경로 실측: genreTransferV2 차단 vs 청크 clean 통과 97%/102%). 통계 삽입
+      //   placeholder 같은 날조 유발 문단은 청크별 FLOOR가 원문으로 되돌려(raw 폴백) 안전. 청크 경로도 막히면
+      //   거기서 정상 차단·보존형 제안으로 넘어간다(중복 호출 없음 — 막다른 길이 아니라 한 번의 복구).
+      //   끄려면 env RESTRUCTURE_CHUNK_RECOVERY=0.
+      if (process.env.RESTRUCTURE_CHUNK_RECOVERY !== '0') {
+        logger.info('transform.restructure_chunk_recovery', { jobId: job.id, uid: job.uid, fromGates: gates });
+        return await runLongThesisChunked(job, text, evidence);
+      }
+
       // ★ 자동 폴백 폐기(2026-06-15): 회피를 산 사용자에게 비회피(보존형) 결과를 동의 없이 차감하지 않는다.
       //   대신 차단 사유 + 재시도(메모/근거)·보존형 받기·취소를 화면에서 고르게 한다. 보존형 실행은
       //   POST /transform/:id/accept-fallback 이 명시 동의로 트리거(buildBlockOffer가 그 재료를 실어 보냄).
@@ -817,6 +829,11 @@ async function runJob(job, text, evidence) {
     if ((out.lenRatio || 0) > 0 && out.lenRatio < 0.30) {
       const gates2 = ['length_collapse'];
       logger.warn('transform.collapsed_too_short', { jobId: job.id, uid: job.uid, mode: job.mode, lenRatio: out.lenRatio, lostCount: out.lostFacts?.count || 0 });
+      // ★ 붕괴도 청크 회피로 복구(문단별이라 요약 collapse가 구조적으로 없음). 끄려면 RESTRUCTURE_CHUNK_RECOVERY=0.
+      if (process.env.RESTRUCTURE_CHUNK_RECOVERY !== '0') {
+        logger.info('transform.restructure_chunk_recovery', { jobId: job.id, uid: job.uid, fromGates: gates2 });
+        return await runLongThesisChunked(job, text, evidence);
+      }
       job.status = 'blocked';
       job.stage = blockedStage(gates2);
       job.gates = gates2;
@@ -899,7 +916,7 @@ async function runJob(job, text, evidence) {
 async function runLongThesisChunked(job, text, evidence) {
   try {
     job.status = 'running';
-    job.stage = '장문 논문 — 문단별 안전 재작성 중';
+    job.stage = '문단별 안전 재작성 중';   // 장문 논문·학술·재구성 복구 공용(특정 종류 단정 안 함)
     persistJob(job);
     const out = await analyze.runHumanizeChunked({
       text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,

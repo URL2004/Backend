@@ -133,17 +133,33 @@ function restructureUnfit(text, ir = {}) {
 function detectInputDuplication(text) {
   const t = text || '';
   const norm = (s) => (s || '').replace(/\s+/g, '');
-  const blocks = t.split(/\n{2,}/).map(norm).filter(b => b.length >= 30);
-  if (blocks.length < 4) return { duplicated: false, ratio: 0 };
-  const seen = new Set();
-  let dup = 0, total = 0;
-  for (const b of blocks) {
-    total += b.length;
-    const key = b.slice(0, 80);   // 문단 앞 80자로 근사 동일성 판정(완전 일치 반복을 안정적으로 포착)
-    if (seen.has(key)) dup += b.length; else seen.add(key);
+  // ① 문단/줄 단위 반복. ★ 분할을 \n{2,}→\n+ 로 넓힌다(2026-06-16 실측: 환경교육 보고서가 빈 줄 없이
+  //   단일 개행으로 두 번 이어붙어 \n{2,}로는 1블록 → 미감지였다). 키(앞 80자) 반복은 내용이 실제로
+  //   겹칠 때만 발생하므로 줄 단위로 잘게 나눠도 정상 글 오탐은 없다.
+  const blocks = t.split(/\n+/).map(norm).filter(b => b.length >= 30);
+  if (blocks.length >= 3) {
+    const seen = new Set();
+    let dup = 0, total = 0;
+    for (const b of blocks) {
+      total += b.length;
+      const key = b.slice(0, 80);   // 문단 앞 80자로 근사 동일성 판정(완전 일치 반복을 안정적으로 포착)
+      if (seen.has(key)) dup += b.length; else seen.add(key);
+    }
+    const ratio = total ? dup / total : 0;
+    if (ratio >= 0.35) return { duplicated: true, ratio: Math.round(ratio * 100) / 100 };
   }
-  const ratio = total ? dup / total : 0;
-  return { duplicated: ratio >= 0.35, ratio: Math.round(ratio * 100) / 100 };
+  // ② 통짜 반복(경계 무시): 앞 절반의 60자 윈도우 다수가 뒤 절반에 그대로 재등장하면 두 번 붙여넣기다.
+  //   문단 경계가 재붙여넣기로 달라져 ①이 놓치는 경우(부분 줄바꿈)까지 포착. 60자 정확 일치는 정상 글에서
+  //   거의 안 겹쳐 오탐이 낮다.
+  const full = norm(t);
+  if (full.length >= 400) {
+    const h = Math.floor(full.length / 2);
+    const a = full.slice(0, h), b = full.slice(h);
+    let match = 0, n = 0;
+    for (let i = 0; i + 60 <= a.length; i += 60) { n++; if (b.includes(a.slice(i, i + 60))) match++; }
+    if (n >= 3 && match / n >= 0.6) return { duplicated: true, ratio: Math.round((match / n) * 100) / 100 };
+  }
+  return { duplicated: false, ratio: 0 };
 }
 
 module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };

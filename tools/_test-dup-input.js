@@ -15,9 +15,13 @@ const base = [
 const duplicated = base + '\n\n' + base;                 // 통째 2회 반복(=실측 약사 리포트 케이스)
 const normal = base;                                     // 정상(중복 없음)
 const refrain = base + '\n\n약사는 국민 건강을 지킨다.';   // 짧은 한 줄만 추가(중복 아님)
+// ★ 단일 개행으로 이어붙인 중복(2026-06-16 실측 환경교육 보고서): 빈 줄 없이 \n 하나로 두 번 붙여넣어
+//   기존 \n{2,} 분할로는 못 잡던 케이스. \n+ 분할 + 통짜 절반-겹침 보강으로 잡혀야 한다.
+const dupSingleNl = base.replace(/\n\n/g, '\n') + '\n' + base.replace(/\n\n/g, '\n');
 
 const cases = [
   { name: '중복 입력(문서 2회 붙여넣기)', text: duplicated, expect: true },
+  { name: '단일 개행 이어붙인 중복', text: dupSingleNl, expect: true },
   { name: '정상 입력(중복 없음)', text: normal, expect: false },
   { name: '짧은 추가 한 줄(중복 아님)', text: refrain, expect: false },
 ];

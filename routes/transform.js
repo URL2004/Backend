@@ -770,7 +770,7 @@ async function runJob(job, text, evidence) {
     }
     // ★ 장문 논문 라우팅(2026-06-16 실측 zoz040224: 26,934자 논문이 단일패스 재구성에서 요약 collapse 29%·8%로 차단).
     //   단일 genreTransferV2 대신 '청크 기반 격식 회피'로 보낸다 — 우회(피하기)는 유지하되 문단별이라 접힘이 없다.
-    if (inputrouting.isLongStructuredThesis(text) || inputrouting.isAcademicCited(text)) {
+    if (inputrouting.isLongStructuredThesis(text) || inputrouting.isAcademicCited(text) || inputrouting.isFootnoteCited(text)) {
       return await runLongThesisChunked(job, text, evidence);
     }
     // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.

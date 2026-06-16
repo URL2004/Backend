@@ -93,6 +93,15 @@ function isEnglishInput(text) {
 }
 const ENGLISH_UNFIT_REASON = '영어 글은 「피하기」가 아니라 「그대로 다듬기」로 진행해 주세요. 피하기(기본·고급)는 한국어 전용이라 영어를 넣으면 한국어로 번역·축약돼 원문이 크게 손상돼요. 다듬기는 영어를 영어 그대로 자연스럽게 다듬어요.';
 
+// ★ 각주(¹⁾ ²⁾ …) 인용이 많은 논증·학술 글(2026-06-16 실측 학생선수 최저학력제 논증문): 단일패스
+//   genreTransferV2가 원문을 부풀리며 평가·메타주장을 합성(added_claim)해 semanticJudge로 막힌다(차단 후
+//   복구해도 genreTransferV2 호출 1회 낭비 + 합성본). 위첨자 각주 표지가 3개 이상이면 처음부터 청크 회피
+//   (문단별 충실 재작성)로 직행시켜 낭비 없이 충실한 우회 결과를 낸다. 실측: 청크 경로 100% clean 통과.
+function isFootnoteCited(text) {
+  const sup = ((text || '').match(/[⁰¹²³⁴⁵⁶⁷⁸⁹]+\s*⁾/g) || []).length;   // ¹⁾ ²⁾ … ¹⁴⁾
+  return sup >= 3;
+}
+
 // 재구성 부적합 판정 + 사용자에게 그대로 보여줄 '명확한 사유'. ir = surfaceguard.classifyInputRisk(text).
 //   factDense(사실 빼곡)는 '권장'(소프트)이라 여기서 막지 않는다 — 사장님 결정으로 사실밀집 글도 고급을
 //   돌릴 수 있어야 함(B). 막다른 길로 만드는 두 부류만 사전 차단한다: ① 자소서·생기부·탐구 ② 짧고 추상적.
@@ -165,4 +174,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };

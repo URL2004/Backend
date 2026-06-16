@@ -57,6 +57,83 @@ function parseJSON(s) {
   try { return JSON.parse(t); } catch { return null; }
 }
 
+function toolShape(tool) {
+  const props = tool?.input_schema?.properties || {};
+  const out = {};
+  for (const [key, spec] of Object.entries(props)) {
+    if (spec?.type === 'number' || spec?.type === 'integer') out[key] = spec.type === 'integer' ? 0 : 0;
+    else if (spec?.type === 'boolean') out[key] = false;
+    else if (spec?.type === 'array') out[key] = [];
+    else if (spec?.type === 'object') out[key] = {};
+    else out[key] = '';
+  }
+  return out;
+}
+
+function compactSchema(schema, depth = 0) {
+  if (!schema || typeof schema !== 'object' || depth > 8) return undefined;
+  const out = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'description' || key === 'title' || key === 'default' || key === 'additionalProperties') continue;
+    if (key === 'properties' && value && typeof value === 'object') {
+      out.properties = {};
+      for (const [pk, pv] of Object.entries(value)) out.properties[pk] = compactSchema(pv, depth + 1);
+      continue;
+    }
+    if (key === 'items') {
+      out.items = compactSchema(value, depth + 1);
+      continue;
+    }
+    if (Array.isArray(value)) out[key] = value;
+    else if (value && typeof value === 'object') out[key] = compactSchema(value, depth + 1);
+    else out[key] = value;
+  }
+  return out;
+}
+
+function normalizeToolResult(tool, parsed) {
+  if (!tool || !parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed;
+  const name = tool.name || '';
+  const out = { ...parsed };
+  if (name === 'return_detection_result') {
+    if (typeof out.probability === 'string') {
+      const n = Number(out.probability.replace(/[^\d.]/g, ''));
+      if (Number.isFinite(n)) out.probability = n;
+    }
+    if (typeof out.probability === 'number') out.probability = Math.max(0, Math.min(100, out.probability));
+    if (!out.summary && typeof out.reason === 'string') out.summary = out.reason;
+    if (!out.detail && typeof out.analysis === 'string') out.detail = out.analysis;
+  }
+  if (name === 'return_rewrite') {
+    if (!out.rewritten && typeof out.outputText === 'string') out.rewritten = out.outputText;
+    if (!out.rewritten && typeof out.text === 'string') out.rewritten = out.text;
+  }
+  if (name === 'return_humanized_result') {
+    if (!out.outputText && typeof out.rewritten === 'string') out.outputText = out.rewritten;
+    if (!out.outputText && typeof out.text === 'string') out.outputText = out.text;
+    if (out.riskFlags && !Array.isArray(out.riskFlags)) out.riskFlags = [];
+  }
+  return out;
+}
+
+function hasRequiredFields(tool, parsed) {
+  if (!tool || !parsed || typeof parsed !== 'object') return false;
+  const required = tool.input_schema?.required || [];
+  return required.every(k => parsed[k] !== undefined && parsed[k] !== null && String(parsed[k]).length > 0);
+}
+
+function buildRepairPrompt({ userText, tool, previousText }) {
+  const shape = toolShape(tool);
+  return [
+    `아래 작업을 다시 수행해서 JSON 객체 하나만 출력하세요.`,
+    `도구 이름: ${tool?.name || 'structured'}`,
+    `필수 JSON 형태: ${JSON.stringify(shape)}`,
+    `규칙: 코드펜스, 설명, 머리말, 따옴표 감싸기 금지. JSON 객체 외 텍스트 금지.`,
+    previousText ? `[직전 모델 응답]\n${String(previousText).slice(0, 2000)}` : '',
+    `[입력]\n${userText || ''}`
+  ].filter(Boolean).join('\n\n');
+}
+
 function usageLogBase(meta, provider, model, startedAt, status, usage, err) {
   return {
     provider,
@@ -76,6 +153,23 @@ function usageLogBase(meta, provider, model, startedAt, status, usage, err) {
     retryCount: meta.retryCount || 0,
     status,
     error: err ? err.message || String(err) : undefined
+  };
+}
+
+function mergeUsage(a, b) {
+  if (!a) return b || {};
+  if (!b) return a || {};
+  return {
+    ...b,
+    input_tokens: (a.input_tokens || 0) + (b.input_tokens || 0),
+    output_tokens: (a.output_tokens || 0) + (b.output_tokens || 0),
+    thinking_tokens: (a.thinking_tokens || 0) + (b.thinking_tokens || 0),
+    cache_creation_input_tokens: (a.cache_creation_input_tokens || 0) + (b.cache_creation_input_tokens || 0),
+    cache_read_input_tokens: (a.cache_read_input_tokens || 0) + (b.cache_read_input_tokens || 0),
+    cached_tokens: (a.cached_tokens || 0) + (b.cached_tokens || 0),
+    total_tokens: (a.total_tokens || 0) + (b.total_tokens || 0),
+    thinking_level: b.thinking_level || a.thinking_level || null,
+    cached_content: b.cached_content || a.cached_content || null
   };
 }
 
@@ -204,7 +298,7 @@ async function callClaudeCompat({ userText, systemText, tool, temperature, maxOu
         model: gm,
         maxTokens: maxOutputTokens || 8192,
         temperature,
-        responseSchema: schema,
+        responseSchema: compactSchema(schema),
         jsonMode: !!tool,
         signal,
         task: meta.task,
@@ -225,7 +319,7 @@ async function callClaudeCompat({ userText, systemText, tool, temperature, maxOu
         riskLevel: meta.riskLevel
       });
     }
-    let parsed = tool ? parseJSON(out.text) : null;
+    let parsed = tool ? normalizeToolResult(tool, parseJSON(out.text)) : null;
     if (tool && !parsed) {
       const retry = await gemini.generate({
         system: systemText,
@@ -238,11 +332,29 @@ async function callClaudeCompat({ userText, systemText, tool, temperature, maxOu
         task: meta.task,
         riskLevel: meta.riskLevel
       });
-      parsed = parseJSON(retry.text);
-      out.usage = retry.usage;
+      parsed = normalizeToolResult(tool, parseJSON(retry.text));
+      out.usage = mergeUsage(out.usage, retry.usage);
       out.stop_reason = retry.stop_reason;
+      out.text = retry.text;
     }
-    if (tool && !parsed) throw new Error(`Gemini structured output parse failed for ${tool.name}`);
+    if (tool && (!parsed || !hasRequiredFields(tool, parsed))) {
+      const repair = await gemini.generate({
+        system: systemText,
+        user: buildRepairPrompt({ userText, tool, previousText: out.text }),
+        model: gm,
+        maxTokens: Math.max(maxOutputTokens || 0, 1200),
+        temperature: typeof temperature === 'number' ? Math.min(temperature, 0.2) : 0.1,
+        responseSchema: compactSchema(schema),
+        jsonMode: true,
+        signal,
+        task: 'schema',
+        riskLevel: meta.riskLevel || 'low'
+      });
+      parsed = normalizeToolResult(tool, parseJSON(repair.text));
+      out.usage = mergeUsage(out.usage, repair.usage);
+      out.stop_reason = repair.stop_reason;
+    }
+    if (tool && (!parsed || !hasRequiredFields(tool, parsed))) throw new Error(`Gemini structured output parse failed for ${tool.name}`);
     localRuns.write(usageLogBase(meta, 'gemini', gm, startedAt, 'ok', out.usage));
     if (shadowEnabled() && process.env.ANTHROPIC_API_KEY) {
       anthropic.message({ system: systemText, user: userText, model: CLAUDE_SONNET, maxTokens: maxOutputTokens || 8192, temperature, tool, signal })

@@ -87,7 +87,18 @@ function sanitizeSchema(schema, depth = 0) {
   if (!schema || typeof schema !== 'object' || depth > 12) return undefined;
   const out = {};
   for (const [key, value] of Object.entries(schema)) {
-    if (key === 'additionalProperties' || key === '$schema' || key === 'default') continue;
+    if (
+      key === 'additionalProperties' ||
+      key === '$schema' ||
+      key === 'default' ||
+      key === 'description' ||
+      key === 'title' ||
+      key === 'examples' ||
+      key === 'minimum' ||
+      key === 'maximum' ||
+      key === 'minLength' ||
+      key === 'maxLength'
+    ) continue;
     if (key === 'properties' && value && typeof value === 'object') {
       out.properties = {};
       for (const [pk, pv] of Object.entries(value)) out.properties[pk] = sanitizeSchema(pv, depth + 1);
@@ -126,15 +137,20 @@ function usageFrom(data, model) {
   };
 }
 
-function inferThinkingLevel({ model, task, riskLevel }) {
+function inferThinkingLevel({ model, task, riskLevel, jsonMode, maxTokens }) {
   const t = String(task || '').toLowerCase();
   const highRisk = riskLevel === 'high' || t === 'judge' || t === 'ledger' || t === 'evidence' || t === 'formal';
+  const budget = Number(maxTokens) || 0;
   let level;
   if (model === MODELS.PRO) {
-    level = (process.env.GEMINI_THINKING_PRO || (highRisk ? 'high' : 'medium')).toLowerCase();
+    level = (process.env.GEMINI_THINKING_PRO || (jsonMode ? 'low' : (highRisk ? 'high' : 'medium'))).toLowerCase();
     if (level === 'minimal') level = 'low';
   } else if (model === MODELS.LITE) {
     level = (process.env.GEMINI_THINKING_LITE || (highRisk ? 'low' : 'minimal')).toLowerCase();
+  } else if (jsonMode && budget > 0 && budget <= 1200) {
+    level = (process.env.GEMINI_THINKING_STRUCTURED_SHORT || 'minimal').toLowerCase();
+  } else if (jsonMode && t === 'detect') {
+    level = (process.env.GEMINI_THINKING_STRUCTURED_DETECT || 'low').toLowerCase();
   } else {
     level = (process.env.GEMINI_THINKING_FLASH || (highRisk ? 'high' : (t === 'repair' ? 'low' : 'medium'))).toLowerCase();
   }
@@ -161,7 +177,7 @@ async function generate({
   const generationConfig = {
     maxOutputTokens: maxTokens,
     thinkingConfig: {
-      thinkingLevel: inferThinkingLevel({ model, task, riskLevel })
+      thinkingLevel: inferThinkingLevel({ model, task, riskLevel, jsonMode, maxTokens })
     }
   };
   if (typeof temperature === 'number') generationConfig.temperature = temperature;

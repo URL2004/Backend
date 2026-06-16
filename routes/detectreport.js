@@ -65,6 +65,10 @@ const REWRITE_TOOL = {
 // 무날조 원칙은 미리보기에도 동일 적용 — 새 사실·수치·고유명사 주입 금지.
 const REWRITE_SYSTEM = '너는 한국어 문장 교열가다. 사용자가 준 한 문장을 사람이 직접 쓴 것처럼 자연스럽게 다시 써라. 규칙: 새로운 사실·수치·고유명사·예시 추가 절대 금지, 원문 의미 보존, 길이는 원문의 0.8~1.3배, 균일한 문어체 종결과 기계적 나열을 깨고 자연스러운 리듬으로. 결과는 도구로만 반환한다.';
 
+function usingGeminiBackend() {
+  return (process.env.LLM_BACKEND || '').toLowerCase() === 'gemini';
+}
+
 router.post('/detect-report', async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   // 글자수 기준 통일: 표시 카운트와 동일하게 공백 포함 raw length으로 최소 길이 판정.
@@ -110,7 +114,7 @@ router.post('/detect-report', async (req, res) => {
       systemText: getDetectSystem('ko'),
       tool: analyze.buildDetectTool('ko'),
       temperature: 0,
-      maxOutputTokens: 2200
+      maxOutputTokens: usingGeminiBackend() ? 4096 : 2200
     });
     const r = analyze.extractClaudeResult(data, 'return_detection_result');
     if (typeof r?.probability !== 'number') {
@@ -125,7 +129,7 @@ router.post('/detect-report', async (req, res) => {
     ? (async () => {
         const data = await analyze.callClaude({
           userText: before, systemText: REWRITE_SYSTEM, tool: REWRITE_TOOL,
-          temperature: 0.7, maxOutputTokens: 500
+          temperature: 0.7, maxOutputTokens: usingGeminiBackend() ? 1200 : 500
         });
         const r = analyze.extractClaudeResult(data, 'return_rewrite');
         return r?.rewritten ? { before, after: r.rewritten } : null;

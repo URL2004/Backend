@@ -110,7 +110,7 @@ async function groundSegment(segText, rawText, anchorPool, { lang = 'ko', signal
 }
 
 // ── 전체 grounding 패스 ──
-async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetChars = 350, maxTargets, mode = 'assignment' } = {}) {
+async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetChars = 350, maxTargets, mode = 'assignment', ledger = null } = {}) {
   const anchorPool = sg.buildSourceAnchorPool(rawText);
   const segs = sg.buildSegments(outputText, targetChars);
   const before = sg.buildSegmentReport(outputText, rawText, targetChars);
@@ -129,8 +129,12 @@ async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetC
   let repaired = 0;
   // 타겟 0개면 ledger 호출도 건너뜀(비용 0).
   if (pick.size) {
-    let ledger = null;
-    try { ledger = await buildSoftClaimLedger(rawText, { lang, signal }); } catch { /* 게이트 ②는 best-effort */ }
+    // ★ ledger 재사용(2026-06-16): judge가 이미 만든 ledger(contract.softClaimLedger)를 받으면 재구축 안 함
+    //   — 같은 원문에서 같은 Sonnet ledger를 두 번 뽑던 중복 제거. 없으면(judge 미실행) 여기서 1회 생성.
+    let segLedger = ledger;
+    if (!segLedger) {
+      try { segLedger = await buildSoftClaimLedger(rawText, { lang, signal }); } catch { /* 게이트 ②는 best-effort */ }
+    }
     const concurrency = Number(process.env.CHUNK_CONCURRENCY) ||
       (process.env.LLM_BACKEND === 'claudecode' ? 1 : 6);
     const idxs = [...pick];
@@ -138,7 +142,7 @@ async function groundingPass(outputText, rawText, { lang = 'ko', signal, targetC
     const worker = async () => {
       while (next < idxs.length) {
         const i = idxs[next++];
-        const r = await groundSegment(segs[i], rawText, anchorPool, { lang, signal, ledger, mode });
+        const r = await groundSegment(segs[i], rawText, anchorPool, { lang, signal, ledger: segLedger, mode });
         if (r.changed) repaired++;
         out[i] = r.text;
       }

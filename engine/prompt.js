@@ -148,7 +148,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
   //   FLOOR(사실·분량·구조·화자·결론 보존)를 더 강하게 — 원문을 새로 쓰지 않고 어색한 표현만 손본다.
   if (tonePolish) {
     if (lang === 'en') {
-      return [
+      return { volatile: '', stable: [
         '[GLOBAL FLOOR — supreme]',
         "You are an editor polishing a college assignment. Keep the source's facts, sentences, structure, order, and information intact; fix ONLY awkward or AI-sounding phrasing so it reads like clean academic prose. This is NOT a rewrite — do not re-create the text.",
         '',
@@ -169,9 +169,9 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
         '[TONE] Calm, well-ordered undergraduate assignment/report prose.',
         '',
         'Lightly polish the source below under the FLOOR (no rewrite). Output the body text only.'
-      ].join('\n');
+      ].join('\n') };
     }
-    return [
+    return { volatile: '', stable: [
       '[GLOBAL FLOOR — 최우선·불변]',
       '너는 대학 과제 글을 다듬는 한국어 편집자다. 원문의 사실·문장·구조·순서·정보량을 최대한 그대로 두고, AI 티가 나거나 어색한 표현만 최소한으로 손봐 "대학 과제체"로 매끄럽게 정리한다. ★재작성·재창작이 아니다 — 원문을 새로 쓰지 마라.',
       '',
@@ -195,11 +195,11 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
       `[톤: 대학 과제체] 차분하고 정돈된 학부생 과제·보고서 문체. 구어·SNS 금지, 지나친 현학·번역투도 지양 — 교수가 읽기 자연스러운 격식 산문.${regKo}`,
       '',
       '아래 원문을 위 FLOOR를 지키며 "최소한의 손질"로 과제체로 다듬어라(재작성 금지). 본문만 출력(머리말·마크다운 금지).'
-    ].join('\n');
+    ].join('\n') };
   }
 
   if (lang === 'en') {
-    return [
+    const _stable = [
       '[GLOBAL FLOOR — supreme, non-negotiable]',
       "You are an editor who rewrites stiff, mechanical AI-sounding text into natural human prose. Keep the source's facts, speaker, conclusion direction, and information intact; fix only the unnatural, robotic phrasing.",
       '',
@@ -219,15 +219,21 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
       "- Avoid tidy summaries / \"in conclusion\" closers; a reflective or open ending is good (keep the direction).",
       '- Output plain prose only — no markdown symbols (*, #, -, backticks).',
       '',
-      `[TONE: ${mode}] ${tone}`,
-      anchorEn,
-      evidenceEn,
-      '',
-      'Rewrite the input below under the FLOOR. Output the body text only — no preamble, no markdown.'
-    ].join('\n');
+      `[TONE: ${mode}] ${tone}`
+    ];
+    // ★ 캐시 분리(2026-06-16): _stable은 한 작업 내 불변 → cache_control. 가변부(evidence·최종 지시)는 비캐시 블록.
+    return {
+      stable: _stable.join('\n'),
+      volatile: [
+        anchorEn,
+        evidenceEn,
+        '',
+        'Rewrite the input below under the FLOOR. Output the body text only — no preamble, no markdown.'
+      ].join('\n')
+    };
   }
 
-  return [
+  const _stable = [
     '[GLOBAL FLOOR — 최우선·불변]',
     '너는 AI가 쓴 듯 어색하고 기계적인 한국어 문장을 사람이 자연스럽게 쓴 글로 다듬는 한국어 글 편집자다. 원문의 사실·화자·결론 방향·정보량은 그대로 유지하면서, 부자연스러운 문장 표현만 자연스럽게 고친다.',
     '',
@@ -258,13 +264,22 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '· ★구체 의무: 추상적 일반론 문단에는 원문에 이미 있는 구체(용어·상황·대조·항목)를 최소 1개 끌어와 받쳐라 — 단 원문에 없는 회사명·수치·연도·사건은 만들지 마라.',
     '· 마크다운 기호(*, #, -, 백틱) 금지 — 줄글로만.',
     '',
-    `[톤: ${mode}] ${tone}${b7 ? '\n[문체 통일] 글 전체를 ~합니다/~입니다 존댓말 보고서체로 통일하라(원문이 평어체여도 존댓말로 전환 — 평어·블로그체 혼입 금지).' : regKo}${fhKo}${b7Ko}`,
-    voiceAnchor,
-    anchorKo,
-    evidenceKo,
-    '',
-    '아래 원문을 위 FLOOR를 지키며 자연스럽게 다시 써라. 본문만 출력(머리말·마크다운 금지).'
-  ].join('\n');
+    `[톤: ${mode}] ${tone}${b7 ? '\n[문체 통일] 글 전체를 ~합니다/~입니다 존댓말 보고서체로 통일하라(원문이 평어체여도 존댓말로 전환 — 평어·블로그체 혼입 금지).' : regKo}${fhKo}${b7Ko}`
+  ];
+  // ★ 캐시 분리(2026-06-16): _stable은 한 작업 내 불변(모드·화자·register·길이정책만 의존)이라 cache_control 대상.
+  //   아래 가변부(앵커 회전·사용자 메모·evidence·최종 지시)는 요청마다 달라 비캐시 블록으로 분리한다.
+  //   두 블록을 이어 붙이면 모델이 보는 시스템 프롬프트는 종전과 동일(블록 경계 공백만 무의미하게 다름).
+  //   ★Sonnet 4.6 캐시 최소 prefix=2048토큰 — _stable(FLOOR 본문)은 이를 충분히 초과하므로 실제로 캐시된다.
+  return {
+    stable: _stable.join('\n'),
+    volatile: [
+      voiceAnchor,
+      anchorKo,
+      evidenceKo,
+      '',
+      '아래 원문을 위 FLOOR를 지키며 자연스럽게 다시 써라. 본문만 출력(머리말·마크다운 금지).'
+    ].join('\n')
+  };
 }
 
 module.exports = { buildSystemPrompt, LLM_TIC_RULE, ANCHOR_PARAS, ANCHOR_HEADER, pickAnchors, ANCHOR_LEAK_RE, findAnchorLeaks };

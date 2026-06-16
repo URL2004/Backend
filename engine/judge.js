@@ -10,6 +10,26 @@ const MODEL = 'claude-sonnet-4-6';
 const HAIKU = 'claude-haiku-4-5';   // 판정·단순편집용 저가 티어(~3x 저렴). 생성(humanize/stance)은 Sonnet 유지.
 const API = 'https://api.anthropic.com/v1/messages';
 
+// ★ 구조화 출력 스키마(2026-06-16): output_config.format으로 유효 JSON을 API가 보장 → 파싱실패 3회 재시도·
+//   "반드시 JSON" 지시 토큰 제거. additionalProperties:false 필수. STRUCT_JSON=0으로 전면 해제(텍스트+재시도 폴백).
+//   ★형식만 강제하고 모델 추론은 불변 — 추출/판정 품질 무손실. claudecode(CLI)는 미지원 → 자동 폴백.
+const LEDGER_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['claims'],
+  properties: { claims: { type: 'array', items: {
+    type: 'object', additionalProperties: false, required: ['claim', 'evidence_text'],
+    properties: { claim: { type: 'string' }, evidence_text: { type: 'string' } }
+  } } }
+};
+const JUDGE_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['violations'],
+  properties: { violations: { type: 'array', items: {
+    type: 'object', additionalProperties: false, required: ['type', 'span', 'detail'],
+    // ★ type은 enum 고정: 구조화 출력이 'fabrication' 등 다른 어휘로 드리프트하면 하위 added_claim
+    //   거짓양성 필터(verified.filter, §added_claim)가 안 먹는다. 프롬프트 어휘와 정확히 일치시킴.
+    properties: { type: { type: 'string', enum: ['distortion', 'added_claim'] }, span: { type: 'string' }, detail: { type: 'string' } }
+  } } }
+};
+
 // ★ LLM JSON의 상습 독: 문자열 값 안의 이스케이프 안 된 큰따옴표(한국어 인용 — "알아서 잘 써라" 류).
 //   인용부호 많은 글에서 judge·slot plan JSON이 통째로 깨지던 실사고(2026-06-12) — judge는 조용히
 //   pass(거짓음성), slot plan은 작업 사망으로 이어졌다. 상태머신으로 "문자열 내부" 여부를 추적해,
@@ -47,7 +67,7 @@ function parseJSON(s) {
 }
 
 // LLM에서 텍스트 받기 — claudecode(구독) 또는 api(키). "Execution error"·빈응답에 4회 재시도+백오프.
-async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL }) {
+async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL, outputFormat = null }) {
   const isBad = (s) => !s || /^execution error/i.test(String(s).trim()) || String(s).replace(/\s+/g, '').length < 5;
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   async function once() {
@@ -60,10 +80,16 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL }
     const resp = await fetch(API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      // ★ prompt caching(2026-06-12 비용 최적화): system을 ephemeral 캐시로 — 같은 system이 5분 내 반복되면
-      //   (judge 2라운드·위빙 반복 등) 입력 토큰을 캐시읽기로 재사용. 1024토큰 미만이면 API가 자동 무시(무해).
-      //   genretransfer 전 호출이 이 llmText를 타므로 한 곳 수정으로 재구성 경로 전체에 적용.
-      body: JSON.stringify({ model, max_tokens: maxTokens, system: system ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] : undefined, messages: [{ role: 'user', content: user }] }),
+      // ★ prompt caching: system을 ephemeral 캐시 후보로 표시. ★단 Sonnet 4.6 캐시 최소 prefix=2048토큰·
+      //   Haiku 4.5=4096토큰인데, judge/genretransfer system은 대개 300~1000토큰이라 현재는 API가 캐시를
+      //   만들지 않는다(cache_control 무효·무해 — 프롬프트가 임계를 넘기면 자동 활성). 실효 절감은 analyze.js의
+      //   대형 FLOOR system이며, 거긴 고정코어/가변부 2블록 분리로 cache_read를 살린다(2026-06-16).
+      //   genretransfer 전 호출이 이 llmText를 타므로 한 곳에서 일괄 적용.
+      body: JSON.stringify((() => {
+        const _b = { model, max_tokens: maxTokens, system: system ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] : undefined, messages: [{ role: 'user', content: user }] };
+        if (outputFormat) _b.output_config = { format: outputFormat };   // ★ 구조화 출력(유효 JSON 보장)
+        return _b;
+      })()),
       signal
     });
     if (!resp.ok) {                                  // ★ API 에러를 조용히 삼키지 않는다(크레딧·rate limit 등).
@@ -87,7 +113,16 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL }
 }
 
 // JSON은 llmText + 파싱(파싱 실패 시 추가 재시도).
-async function llmJSON({ system, user, signal, maxTokens = 2048, model = MODEL }) {
+async function llmJSON({ system, user, signal, maxTokens = 2048, model = MODEL, schema = null }) {
+  // ★ A(2026-06-16): schema 제공 + API 모드 + STRUCT_JSON≠0 → 구조화 출력으로 유효 JSON 보장(파싱실패 재시도 0).
+  //   실패(네트워크·거부 등)·claudecode 모드면 아래 텍스트+3회 재시도 폴백. STRUCT_JSON=0으로 전면 해제.
+  if (schema && process.env.STRUCT_JSON !== '0' && process.env.LLM_BACKEND !== 'claudecode') {
+    try {
+      const raw = await llmText({ system, user, signal, maxTokens, model, outputFormat: { type: 'json_schema', schema } });
+      const parsed = parseJSON(raw);
+      if (parsed) return parsed;
+    } catch (e) { if (signal?.aborted) throw e; /* 구조화 실패 → 텍스트 폴백 */ }
+  }
   const u = `${user}\n\n반드시 유효한 JSON 객체 하나만 출력하세요. 코드펜스·설명·머리말 금지.`;
   let lastRaw = '';
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -119,7 +154,7 @@ async function buildSoftClaimLedger(rawText, { lang = 'ko', signal } = {}) {
   const user = `JSON: {"claims":[{"claim":"핵심 주장 한 줄","evidence_text":"SOURCE의 짧은 verbatim 구절(8~20자)"}]}\n\n[SOURCE]\n${rawText}`;
   // ★ 대용량 글: ${cap}(최대 40)개 claim+evidence가 4096토큰을 넘겨 응답이 truncate→파싱실패→0개가 되면
   //   judge가 무의미 통과하고 grounding 게이트도 오작동한다. 토큰을 claim 수에 맞춰 넉넉히.
-  const out = await llmJSON({ system, user, signal, maxTokens: Math.min(8192, 2048 + cap * 200) });  // ★ ledger는 FLOOR 토대 — Sonnet 유지(불완전 원장→semanticJudge 거짓양성 BLOCK). 문서당 1회라 비용 미미.
+  const out = await llmJSON({ system, user, signal, maxTokens: Math.min(8192, 2048 + cap * 200), schema: LEDGER_SCHEMA });  // ★ ledger는 FLOOR 토대 — Sonnet 유지(불완전 원장→semanticJudge 거짓양성 BLOCK). 문서당 1회라 비용 미미. 구조화 출력으로 파싱실패 0.
   const claims = Array.isArray(out?.claims) ? out.claims : [];
   const kept = claims.filter(c => evidenceMatches(rawText, c?.evidence_text));
   const capped = kept.slice(0, cap);
@@ -176,7 +211,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     ? 'You are a strict but fair fact-checker against the CLAIM LEDGER (closed world). Each ledger entry has a verbatim source quote labeled 근거(원문) — that quote is the ground truth; judge the REWRITE against it, not against your own knowledge. Flag ONLY: (1) fabricated external facts/statistics/years/proper nouns, or newly specifying a vague reference into a concrete platform/product name. (2) Reversing or distorting a ledger claim\'s meaning, INTENT, or sentiment — e.g., flipping a positive intent ("want to keep going") into uncertainty/negativity ("not sure I can keep going / might quit"), or turning possibility ("can ~") into a flat assertion. (3) Introducing a NEW outlook/emotion/future projection/evaluation not in the ledger — even if phrased as a hedge, bringing in a new stance or prospect is a violation. ★ NOT violations: synonym swaps, reordering, minor qualifiers, and hedges that keep an existing claim\'s meaning intact. Each span must be a verbatim substring of REWRITE.' + formalEn
     : '엄격하되 공정한 사실검증자. CLAIM LEDGER(닫힌세계)에 대조해 판정한다. 각 항목엔 원문 그대로의 근거(원문) 인용이 붙어 있다 — 그 인용이 사실 기준(ground truth)이며, 네 지식이 아니라 그 근거에 비추어 REWRITE를 판정하라. 다음만 위반으로 잡아라: (1) 외부 사실·통계·연도·고유명사 날조, 또는 모호한 표현을 특정 플랫폼/제품 고유명사로 신규 구체화. (2) 원장 claim의 의미·의도·정서를 뒤집거나 왜곡 — 예: 긍정 의지("계속하고 싶다")를 불확실·부정("계속할 수 있을지 모르겠다 / 그만둘지도")으로 역전, 또는 가능성("~할 수 있다")을 단정("~한다")으로 강화. (3) 원장에 없는 새 전망·감정·미래예측·평가를 *새로운 입장으로* 들여오기 — hedge(완화) 형식이어도 새 전망·정서를 도입하면 위반. ★ 위반 아님: 동의어 교체·어순 변경·사소한 수식어, 그리고 기존 claim의 뜻을 유지한 채 붙인 단순 hedge. 각 span은 REWRITE의 그대로 부분 문자열이어야 한다.' + formalKo;
   const user = `JSON: {"violations":[{"type":"distortion|added_claim","span":"REWRITE 그대로 인용","detail":"왜 위반인지"}]}\n\n[CLAIM LEDGER — 허용된 유일 주장 (각 항목 근거=원문 인용)]\n${claimsText}\n\n[REWRITE]\n${outputText}`;
-  const out = await llmJSON({ system, user, signal });  // ★ semanticJudge는 FLOOR 게이트 — Sonnet 유지(거짓양성=BLOCK, 거짓음성=날조통과). 문서당 1~2회라 비용 미미.
+  const out = await llmJSON({ system, user, signal, schema: JUDGE_SCHEMA });  // ★ semanticJudge는 FLOOR 게이트 — Sonnet 유지. grounding에서 segment당 호출되므로 구조화 출력으로 파싱실패 재시도 제거.
   const violations = Array.isArray(out?.violations) ? out.violations : [];
   // 환각 방지: span이 실제 REWRITE에 존재하는 위반만 채택.
   let verified = violations.filter(v => v?.span && normWS(outputText).includes(normWS(v.span).slice(0, Math.min(24, normWS(v.span).length))));

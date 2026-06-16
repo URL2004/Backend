@@ -5,19 +5,21 @@ const E = require('../engine/evidenceguard');
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { cond ? pass++ : (fail++, console.log('  ❌ ' + name)); };
+// buildSystemPrompt는 캐시 분리(2026-06-16) 후 {stable, volatile} 반환 — 합본 문자열로 검사.
+const BSP = (...a) => { const o = P.buildSystemPrompt(...a); return o.stable + '\n' + o.volatile; };
 
 // ① 앵커: assignment+ko+anchorIdx → 앵커 포함, 회전, 토글, polite 단서, blog/EN 제외
-const s0 = P.buildSystemPrompt('assignment', 'ko', { anchorIdx: 0 });
-const s1 = P.buildSystemPrompt('assignment', 'ko', { anchorIdx: 1 });
+const s0 = BSP('assignment', 'ko', { anchorIdx: 0 });
+const s1 = BSP('assignment', 'ko', { anchorIdx: 1 });
 ok('앵커 포함(idx0)', s0.includes('목소리 앵커') && s0.includes('갭투자'));
 ok('회전(idx0≠idx1)', s0 !== s1 && s1.includes('운영유지관리비용'));
 ok('앵커 헤더 디프레이밍', !P.ANCHOR_HEADER.includes('카피킬러') && !P.ANCHOR_HEADER.includes('탐지') && !P.ANCHOR_HEADER.includes('0~2%'));
-const sP = P.buildSystemPrompt('assignment', 'ko', { anchorIdx: 0, register: 'polite' });
+const sP = BSP('assignment', 'ko', { anchorIdx: 0, register: 'polite' });
 ok('polite 단서', sP.includes('앵커의 평어체를 베끼지 마라'));
-ok('anchorIdx 없으면 미포함', !P.buildSystemPrompt('assignment', 'ko', {}).includes('목소리 앵커'));
-ok('blog 미포함', !P.buildSystemPrompt('blog', 'ko', { anchorIdx: 0 }).includes('목소리 앵커'));
+ok('anchorIdx 없으면 미포함', !BSP('assignment', 'ko', {}).includes('목소리 앵커'));
+ok('blog 미포함', !BSP('blog', 'ko', { anchorIdx: 0 }).includes('목소리 앵커'));
 process.env.STYLE_ANCHOR = '0';
-ok('STYLE_ANCHOR=0 해제', !P.buildSystemPrompt('assignment', 'ko', { anchorIdx: 0 }).includes('목소리 앵커'));
+ok('STYLE_ANCHOR=0 해제', !BSP('assignment', 'ko', { anchorIdx: 0 }).includes('목소리 앵커'));
 delete process.env.STYLE_ANCHOR;
 
 // ② 앵커 누출: 원문에 없는 부동산 어휘만 위반

@@ -20,32 +20,10 @@ const BLOG_BAND = { A: '30~45%', B: '35~50%', C: '40~55%' };
 //   넉넉한 보수 표기 35~60%. (UI 헤드라인 "예상 탐지율 35~60%"와 단일 표기로 일치)
 const RESTRUCTURE_BAND = '35~60%';
 
-// ★ 자소서·이력 유형 감지(2026-06-15): 1인칭 자기서술 + 지원/이력 어휘가 잦으면 자소서류.
-//   이런 글을 재구성(genretransfer debate_explainer)에 넣으면 "지원자를 반박하는 비평 칼럼"으로 뒤집혀
-//   judge가 added_claim 폭발로 차단(실측: 자소서→불합격 예측·면접 공격 문장 9건 added_claim). 재구성은 시사·논증
-//   글 전용이라 자소서와 장르가 충돌 → 프런트에서 재구성 잠그고 다듬기/블로그로 유도한다.
-function looksLikeResume(text) {
-  const t = text || '';
-  const bare = t.replace(/\s+/g, '').length || 1;
-  const fp = (t.match(/저는|저의|저를|저도|제가|제 강점|제 경험|본인은|본인의/g) || []).length;
-  const fpPer1k = fp / (bare / 1000);              // 1000자당 1인칭 자기지칭
-  const vocab = (t.match(/지원|합격|자격증|면접|입사|자기소개|지원동기|강점|역량|기여하겠|되겠습니다|성장하|채용|포부/g) || []).length;
-  return fpPer1k >= 3 && vocab >= 2;               // 1인칭 밀도 + 자소서 어휘 동시 충족
-}
-
-// ★ 사실 밀도 라우팅(2026-06-15, 사장님 설계): 연도·%·인용·통계가 빼곡한 격식논문·보고서는 자유 재구성하면
-//   사실 누락(lostFacts)·연도 오기(distortion)가 거의 필연 → 재구성보다 "보존형 다듬기"를 강하게 권장한다.
-//   실측: 사회복지 법률논문(연도 8+·%·인용 다수)에서 같은 글로 5회 연속 차단. 밀도 = 가중합 / (천자 단위 길이).
-function factDensity(text) {
-  const t = text || '';
-  const years = (t.match(/(?:19|20)\d{2}/g) || []).length;
-  const pcts = (t.match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).length;
-  const cites = (t.match(/\([^)]*(?:19|20)\d{2}[^)]*\)|[가-힣]{2,}(?:연구원|협회|재단|위원회|학회|대학교|공사|기구|청|부)/g) || []).length;
-  const nums = (t.match(/\d[\d,]*(?:\.\d+)?\s*(?:명|개|건|원|달러|배|점|회|개월|조|억|만)/g) || []).length;
-  const bare = t.replace(/\s+/g, '').length || 1;
-  return (years * 2 + pcts * 2 + cites + nums) / Math.max(1, bare / 1000);
-}
-const FACT_DENSE_THRESHOLD = Number(process.env.FACT_DENSE_THRESHOLD) || 5;
+// ★ 재구성 부적합 사전감지 — engine/inputrouting로 단일화(2026-06-16 탐구/생기부·짧고추상 확장 포함).
+//   /diagnose(프런트 고급 잠금)와 /transform(생성 호출 '전' 차단)이 같은 결정론 판정을 공유한다 →
+//   막다른 재구성(자소서·생기부·탐구문·짧고추상)을 생성 시작 전에 걸러 API 낭비를 0으로. 사유도 같이 노출.
+const { looksLikeResume, factDensity, restructureUnfit, FACT_DENSE_THRESHOLD } = require('../engine/inputrouting');
 
 const COPY = {
   A: {
@@ -80,8 +58,9 @@ router.post('/diagnose', (req, res) => {
   const copy = COPY[grade] || COPY.B;
   const resumeLike = looksLikeResume(text);
   const density = factDensity(text);
-  const factDense = density >= FACT_DENSE_THRESHOLD;   // 연도·%·인용 빼곡 → 재구성 시 사실오류 필연 → 보존형 권장
-  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike, density: Number(density.toFixed(1)), factDense });
+  const factDense = density >= FACT_DENSE_THRESHOLD;   // 연도·%·인용 빼곡 → 재구성 시 사실오류 위험(권장 안내)
+  const ru = restructureUnfit(text, ir);                // 재구성 부적합(자소서·생기부·탐구문·짧고추상) + 명확한 사유
+  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike, density: Number(density.toFixed(1)), factDense, restructureUnfit: ru.unfit, unfitKind: ru.kind });
   res.json({
     ok: true,
     grade,
@@ -89,6 +68,8 @@ router.post('/diagnose', (req, res) => {
     needsUserAnchor: !!ir.needsUserAnchor,
     resumeLike,
     factDense,
+    restructureUnfit: ru.unfit,         // 프런트: 고급 시작 자체를 막고 사유 노출
+    restructureUnfitReason: ru.reason,  // 사용자에게 보여줄 '명확한 사유'
     title: copy.title,
     desc: copy.desc,
     bands: {

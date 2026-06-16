@@ -15,6 +15,7 @@ const analyze = require('./analyze');   // 과금 헬퍼 재사용(차감 공식
 const { db, verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { genreTransferV2 } = require('../engine/genretransfer');
+const inputrouting = require('../engine/inputrouting');   // 재구성 부적합 사전감지(생성 호출 '전' 차단 → API 낭비 0)
 const { suggestEvidence } = require('../engine/evidence');
 const { reviewCandidates, hostOf } = require('../engine/evidencereview');
 const discord = require('../lib/discord');
@@ -202,6 +203,7 @@ function blockedReason(gates, mode) {
   if (set.has('novelty')) return '변환 결과에 새 정보가 추가되어 차단했어요.';
   if (set.has('evidence_pairing')) return '수치와 출처의 짝이 맞지 않아 차단했어요.';
   if (set.has('length_collapse')) return '재구성 과정에서 분량이 원문보다 크게 줄어(상당 부분이 빠져) 결과를 그대로 내보내지 않았어요. 아래에서 원문 보존 다듬기로 받으면 분량·사실이 유지돼요.';
+  if (set.has('restructure_unfit')) return '이 글은 고급(재구성)에 맞지 않아요. 재구성은 글을 새로 써내는 방식이라, 자소서·생기부·탐구문이나 짧고 추상적인 글은 원문에 없는 내용이 지어내져 차단돼요. 아래에서 「원문 보존 다듬기」로 받으면 그대로 안전하게 처리돼요.';
   if (mode === 'polish') return '문장을 다듬는 중 원문 보존 기준을 통과하지 못해 차단했어요.';
   return '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요.';
 }
@@ -211,6 +213,7 @@ function blockedStage(gates) {
   const set = new Set(Array.isArray(gates) ? gates : []);
   if (set.has('lostFacts')) return '차단됨 · 원문 사실 누락';
   if (set.has('semanticJudge') || set.has('novelty')) return '차단됨 · 원문에 없는 주장 추가';
+  if (set.has('restructure_unfit')) return '보류됨 · 고급에 맞지 않는 글(자소서·짧은 글)';
   if (set.has('length_short')) return '차단됨 · 결과가 너무 짧음';
   if (set.has('length_collapse')) return '보류됨 · 분량이 너무 줄어듦';
   if (set.has('length_overrun')) return '차단됨 · 과도하게 늘어남';
@@ -220,6 +223,13 @@ function blockedStage(gates) {
 
 function blockedNextActions(gates, mode) {
   const set = new Set(Array.isArray(gates) ? gates : []);
+  if (set.has('restructure_unfit')) {
+    return [
+      '이 글은 「그대로 다듬기」가 가장 잘 맞아요 — 사실·분량을 지키며 AI 티만 줄여요.',
+      '시사·논증 주제의 글이라면 「기본 피하기」도 좋아요.',
+      '고급을 꼭 쓰려면, 구체적 경험·수치·사례를 더 넣어 다시 시도해 주세요.'
+    ];
+  }
   if (mode === 'formal') {
     if (set.has('semanticJudge') || set.has('novelty')) {
       return [
@@ -700,6 +710,26 @@ async function runJob(job, text, evidence) {
     job.status = 'running';
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
+
+    // ★ 재구성 부적합 사전 차단(2026-06-16, API 낭비 0): 자소서·생기부·탐구문이나 짧고 추상적인 글은
+    //   재구성에 넣으면 LLM이 원문에 없는 사실·평가를 지어내(added_claim) 거의 확정 차단된다. ledger·슬롯·
+    //   judge로 수십 번 호출을 태우기 '전에' 결정론으로 걸러 보존형으로 유도한다. 사유를 명확히 노출(무차감).
+    {
+      let ir = {};
+      try { ir = require('../engine/surfaceguard').classifyInputRisk(text); } catch { /* 진단 실패해도 차단 판정은 진행 */ }
+      const ru = inputrouting.restructureUnfit(text, ir);
+      if (ru.unfit) {
+        logger.warn('transform.restructure_unfit_preblock', { jobId: job.id, uid: job.uid, kind: ru.kind, textLength: (text || '').length });
+        job.status = 'blocked';
+        job.gates = ['restructure_unfit'];
+        job.stage = blockedStage(job.gates);
+        job.gateDetail = { kind: ru.kind };
+        job.note = ru.reason;
+        job.blockOffer = buildBlockOffer(job, text);
+        persistJob(job);
+        return;   // genreTransferV2 호출 안 함 → 생성 API 0
+      }
+    }
     // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
     const out = await genreTransferV2(text, { evidence: evidence || '', userNotes: job.memo || '', lengthMode: job.lengthMode || 'keep', signal: job.ac.signal });
     const gates = [];

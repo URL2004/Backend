@@ -1,0 +1,57 @@
+// [engine/inputrouting.js] 입력 글이 '재구성(재생성)'에 부적합한지 결정론으로 판정(무LLM·무과금).
+// ────────────────────────────────────────────────────────────────
+// 왜: 부적합한 글(자소서·생기부·탐구문, 짧고 추상적인 글)을 고급(재구성)에 넣으면 LLM이 원문에 없는
+//   사실·평가·전망을 지어내(added_claim) 거의 확정적으로 차단된다. 그 사이 ledger·plan·슬롯×시도·weave·
+//   judge·수리로 수십 번의 생성 호출이 통째로 낭비된다(실측: 재구성 1건 차단 = 수백 크레딧 상당 API).
+//   → /diagnose(무LLM)와 /transform 시작점에서 결정론으로 걸러 보존형(다듬기)으로 유도, API 낭비를 0으로.
+
+// 자소서·생기부·탐구 유형 감지. '저/제' 1인칭이 드물어도(존댓말 자기서술) 강한 신호어가 있으면 자소서류로 본다.
+//   기존엔 1인칭 밀도 + '지원/면접/역량' 어휘를 동시에 요구해, "주제를 선정했습니다"식 생기부·탐구문(1인칭
+//   대명사·취업 어휘 없음)이 안 걸려 재구성까지 가 added_claim 폭발(실측 junnny1004 2026-06-16).
+function looksLikeResume(text) {
+  const t = text || '';
+  const bare = t.replace(/\s+/g, '').length || 1;
+  const fp = (t.match(/저는|저의|저를|저도|제가|제 강점|제 경험|본인은|본인의/g) || []).length;
+  const fpPer1k = fp / (bare / 1000);                 // 1000자당 1인칭 자기지칭
+  const vocab = (t.match(/지원|합격|자격증|면접|입사|자기소개|지원동기|강점|역량|기여하겠|되겠습니다|성장하|채용|포부/g) || []).length;
+  // 강한 신호어: 있으면 1인칭 밀도와 무관하게 자소서·생기부·탐구로 본다(정상 시사·논증 글엔 거의 안 나옴).
+  const strong = /주제\s*(?:를|로)?\s*선정|선정하(?:게|였|았|고자|기로|는\s*과정)|탐구\s*(?:주제|활동|보고서|하(?:고자|게|였|면서|는))|세부\s*능력\s*및?\s*특기|세특|생활기록부|생기부|진로\s*(?:활동|희망|탐색)|동아리\s*활동|지원\s*동기|자기소개서|이\s*주제를\s*선정/.test(t);
+  return strong || (fpPer1k >= 3 && vocab >= 2);
+}
+
+// 사실 밀도(연도·%·인용·통계 가중합 / 천자). 빼곡하면 재구성 시 사실 누락·연도 오기 위험 → 보존형 권장.
+function factDensity(text) {
+  const t = text || '';
+  const years = (t.match(/(?:19|20)\d{2}/g) || []).length;
+  const pcts = (t.match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).length;
+  const cites = (t.match(/\([^)]*(?:19|20)\d{2}[^)]*\)|[가-힣]{2,}(?:연구원|협회|재단|위원회|학회|대학교|공사|기구|청|부)/g) || []).length;
+  const nums = (t.match(/\d[\d,]*(?:\.\d+)?\s*(?:명|개|건|원|달러|배|점|회|개월|조|억|만)/g) || []).length;
+  const bare = t.replace(/\s+/g, '').length || 1;
+  return (years * 2 + pcts * 2 + cites + nums) / Math.max(1, bare / 1000);
+}
+const FACT_DENSE_THRESHOLD = Number(process.env.FACT_DENSE_THRESHOLD) || 5;
+
+// 재구성 부적합 판정 + 사용자에게 그대로 보여줄 '명확한 사유'. ir = surfaceguard.classifyInputRisk(text).
+//   factDense(사실 빼곡)는 '권장'(소프트)이라 여기서 막지 않는다 — 사장님 결정으로 사실밀집 글도 고급을
+//   돌릴 수 있어야 함(B). 막다른 길로 만드는 두 부류만 사전 차단한다: ① 자소서·생기부·탐구 ② 짧고 추상적.
+function restructureUnfit(text, ir = {}) {
+  const t = text || '';
+  const bare = t.replace(/\s+/g, '').length || 1;
+  if (looksLikeResume(t)) {
+    return {
+      unfit: true, kind: 'resume',
+      reason: '이 글은 자소서·생활기록부·탐구활동처럼 1인칭으로 자기 경험·동기를 적은 글이에요. 고급(재구성)은 시사·논증 칼럼으로 새로 써내는 방식이라, 이런 글을 넣으면 AI가 원문에 없는 지원 동기·평가·일화를 지어내 차단돼요. 「그대로 다듬기」나 「기본 피하기」로 진행해 주세요.'
+    };
+  }
+  // 짧고 추상적이라 풀어낼 사실이 거의 없는 글: 재구성이 빈 자리를 지어내 채운다.
+  const abstract = (ir.grade === 'C') || (Number(ir.abstractRiskRatio) >= 0.5);
+  if (bare < 600 && abstract && factDensity(t) < 1.0) {
+    return {
+      unfit: true, kind: 'thin',
+      reason: '글이 짧고 추상적이라(구체적인 수치·사례·이름이 거의 없어요) 고급(재구성)이 빈 내용을 지어내 채우다 차단되기 쉬워요. 구체적 경험·수치를 더 보태거나 「그대로 다듬기」로 진행해 주세요.'
+    };
+  }
+  return { unfit: false, kind: null, reason: '' };
+}
+
+module.exports = { looksLikeResume, factDensity, restructureUnfit, FACT_DENSE_THRESHOLD };

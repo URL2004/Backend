@@ -553,7 +553,9 @@ function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpener
 ${anchors}[사실 보존 — 절대 규칙, 문체보다 우선]
 · 연도·날짜·기간·인용연도·퍼센트·통계 수치·금액·법령번호는 원문 표기 그대로 옮겨라. 절대 바꾸지 마라(2023을 2022로, 40%를 45%로 쓰면 실패).
 · "반드시 포함할 수치"로 준 값은 빠짐없이, 정확히 그대로 본문에 넣어라. 재구성하더라도 이 값들은 손대지 않는다.
-· 원문에 없는 연도·수치·출처·기관·인용을 새로 만들지 마라. 또한 원문에 없는 평가·전망·인과관계·진단을 새 주장으로 덧붙이지 마라(예: "~로 순응도가 낮아진다", "부처가 충돌했다", "주기가 짧아진다" 같은 추론·확장 금지 — 원문이 말한 범위만 다른 문장으로 옮겨라).${hasPH ? '\n· ★⟦F##⟧ 형태의 토큰은 원문 사실(연도·수치)의 자리표시자다. 그 자체를 본문에 그대로 옮겨 쓰고(숫자로 바꾸지 말 것), 위치·개수를 유지하라. 토큰을 삭제·변형·생성하면 실패. 예: "⟦Fab⟧년에 제정"은 그대로 "⟦Fab⟧년에 제정"으로.' : ''}
+· 원문에 없는 연도·수치·출처·기관·인용을 새로 만들지 마라. 또한 원문에 없는 평가·전망·인과관계·진단을 새 주장으로 덧붙이지 마라(예: "~로 순응도가 낮아진다", "부처가 충돌했다", "주기가 짧아진다" 같은 추론·확장 금지 — 원문이 말한 범위만 다른 문장으로 옮겨라).
+· ★원문에 등장하는 고유명사(인물·기관·책·제품·기술명)에는 원문이 그 대상에 대해 말한 사실만 옮겨라. 그 대상에 원문에 없는 활동·저작·발언·업적·특성·역할을 새로 붙이지 마라(예: 원문이 "○○의 책을 읽었다"까지만 말했으면, "○○가 ~기법을 체계적으로 다룬다"처럼 그 인물의 행적을 지어내 확장하면 실패).
+· ★재료(원문 주장·근거)가 빈약하면 빈약한 대로 짧게 써라. 분량을 채우려고 원문에 없는 기술적 설명·메커니즘·구체 수치·인과·온도/규격을 지어내 채우지 마라 — 분량 미달보다 날조가 훨씬 큰 실패다(짧은 글은 짧게 재구성하는 것이 정답이다).${hasPH ? '\n· ★⟦F##⟧ 형태의 토큰은 원문 사실(연도·수치)의 자리표시자다. 그 자체를 본문에 그대로 옮겨 쓰고(숫자로 바꾸지 말 것), 위치·개수를 유지하라. 토큰을 삭제·변형·생성하면 실패. 예: "⟦Fab⟧년에 제정"은 그대로 "⟦Fab⟧년에 제정"으로.' : ''}
 [문체 — 사람 칼럼의 결]
 · 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
 · 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
@@ -898,6 +900,22 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
       }
       doc = await weaveLost(doc);                                   // judge 수리가 사실을 떨궜으면 재위빙
       v = await semanticJudge(rawText, doc, judgeLedger, { lang, signal, allowedExtra: allowed });
+    }
+    // ★ 최종 회수 패스(2026-06-16): 문장별 수리가 끝내 수렴 못 한 잔여 위반은 차단 직전에 한 번 더 도려낸다.
+    //   repairViolations = 원장 기준 일괄 교정(날조 span 삭제/원문값 복원, 새 정보 추가 금지). per-span repairSentence가
+    //   정체한 케이스(서로 얽힌 added_claim 다발)를 전체 위반을 한꺼번에 보며 정리해 통과시킬 수 있다.
+    //   분량이 절반 미만으로 무너지면(=핵심까지 도려냄) 채택하지 않고 차단 유지(보존형 폴백으로 보냄).
+    if (!v.pass && (v.violations || []).length) {
+      try {
+        const stripped = await judgeEngine.repairViolations(rawText, doc, judgeLedger, v.violations, { lang, signal });
+        if (stripped && stripped !== doc) {
+          const keptRatio = ((stripped.match(/[가-힣]/g) || []).length) / (((doc.match(/[가-힣]/g) || []).length) || 1);
+          if (keptRatio >= 0.5) {
+            const sv = await semanticJudge(rawText, stripped, judgeLedger, { lang, signal, allowedExtra: allowed });
+            if (sv.pass) { doc = stripped; v = sv; }   // 통과 + 분량 절반 이상 보존 → 회수 채택(차단 회피)
+          }
+        }
+      } catch { /* 회수 실패는 무해 — 아래에서 원래 verdict로 차단 진행 */ }
     }
     judge = { pass: v.pass, violations: v.violations || [] };
   } catch (e) { judge = { error: e.message }; }

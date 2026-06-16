@@ -1073,6 +1073,23 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
   if (!(await requireJobOwner(req, res, job))) return;
   if (job.status !== 'blocked') return res.status(409).json({ error: '차단된 작업만 보존형으로 받을 수 있어요.' });
   if (!fallbackEnabled() || job.mode === 'polish') return res.status(409).json({ error: '이 작업은 보존형으로 받을 수 없어요.' });
+  // ★ 크레딧 사전 검증(2026-06-16): 보존형 받기도 과금 작업이다 — 잔액이 부족하면 작업을 '돌리기 전에' 막는다.
+  //   기존엔 precheck 없이 백그라운드로 돌려, 작업이 끝난 뒤 차감이 실패해도(잔액 0) 결과를 전달했다(무상 제공 구멍).
+  //   재시도 버튼(POST /transform)은 이미 precheckCredits로 막히는데 이 버튼만 빠져 있어 동작이 불일치했다.
+  const fbNeeded = preservationFallbackCredit((job.text || '').length);
+  if (!job.devNoAuth && job.plan !== 'unlimited') {
+    try {
+      await analyze.precheckCredits(tokenFromReq(req), fbNeeded);
+    } catch (e) {
+      const status = e.status || 402;
+      return res.status(status).json({
+        error: status === 402
+          ? `보존형으로 받으려면 ${fbNeeded}크레딧이 필요해요. 크레딧이 부족해 충전 후 다시 시도해 주세요.`
+          : analyze.authErrorMessage(e.message),
+        needed: fbNeeded
+      });
+    }
+  }
   res.json({ ok: true });   // 즉시 응답 — 보존형 재처리는 백그라운드, 프론트는 폴링으로 done 수신.
   job.status = 'running';
   job.stage = '원문 보존형으로 재처리 중';

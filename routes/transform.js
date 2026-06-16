@@ -238,6 +238,13 @@ function blockedNextActions(gates, mode) {
         '연도, 기관명, 정책 판단처럼 원문에 없는 내용이 들어가기 쉬운 문장을 줄여 주세요.'
       ];
     }
+    if (set.has('length_collapse')) {
+      return [
+        '이 글은 장문 논문이라 한 번에 재구성하면 요약처럼 접혀요 — 「그대로 다듬기」로 받으면 문단을 나눠 분량·사실을 지켜요.',
+        '고급을 꼭 쓰려면 장(章) 단위로 글을 나눠 따로 시도해 주세요.',
+        '크레딧은 차감되지 않았어요.'
+      ];
+    }
     if (set.has('lostFacts') || set.has('evidence_pairing') || set.has('length_collapse')) {
       return [
         '사실과 수치가 많은 문단은 짧게 나눠 다시 시도해 주세요.',
@@ -761,6 +768,11 @@ async function runJob(job, text, evidence) {
         return;   // genreTransferV2 호출 안 함 → 생성 API 0
       }
     }
+    // ★ 장문 논문 라우팅(2026-06-16 실측 zoz040224: 26,934자 논문이 단일패스 재구성에서 요약 collapse 29%·8%로 차단).
+    //   단일 genreTransferV2 대신 '청크 기반 격식 회피'로 보낸다 — 우회(피하기)는 유지하되 문단별이라 접힘이 없다.
+    if (inputrouting.isLongStructuredThesis(text)) {
+      return await runLongThesisChunked(job, text, evidence);
+    }
     // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
     const out = await genreTransferV2(text, { evidence: evidence || '', userNotes: job.memo || '', lengthMode: job.lengthMode || 'keep', signal: job.ac.signal });
     const gates = [];
@@ -874,6 +886,72 @@ async function runJob(job, text, evidence) {
     logger.error('transform.failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
     job.status = 'error';
     job.error = '재구성 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
+    persistJob(job);
+  } finally {
+    scheduleQueueDrain();
+  }
+}
+
+// ── 장문 논문 재구성(2026-06-16): 26,934자 논문이 단일패스 genreTransferV2에서 요약 collapse(29%·8%)로 차단되던 사고.
+//   해결: 단일 재구성 대신 '청크 기반 격식 회피'(runHumanizeChunked mode=assignment, tonePolish=false). 효과 ①우회(피하기)
+//   유지(보존형 polish와 달리 tonePolish=false라 burstiness·grounding·register 우회 적용) ②문단별이라 요약 collapse 없음
+//   ③청크별 lostFacts/novelty 게이트로 사실 보존. 과금은 재구성(formal) 단가 그대로(피하기 결과를 받으므로).
+async function runLongThesisChunked(job, text, evidence) {
+  try {
+    job.status = 'running';
+    job.stage = '장문 논문 — 문단별 안전 재작성 중';
+    persistJob(job);
+    const out = await analyze.runHumanizeChunked({
+      text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+      floorV2: true, optIn: false, judge: true, grounding: true,
+      userNotes: job.memo || '', evidence: evidence || '', tonePolish: false   // ★ tonePolish=false = 우회(피하기) 유지
+    });
+    if (out.floorReport && out.floorReport.status === 'blocked') {
+      const gates = (out.floorReport.criticals || []).map(c => c.gate);
+      logger.warn('transform.long_thesis_blocked', { jobId: job.id, uid: job.uid, gates, chunkCount: out.chunkCount });
+      job.status = 'blocked';
+      job.gates = gates;
+      job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
+      job.stage = blockedStage(gates);
+      job.blockOffer = buildBlockOffer(job, text);
+      persistJob(job);
+      return;
+    }
+    if (!out.result || !out.result.outputText) throw new Error('long_thesis_incomplete');
+    // 과금: 재구성(formal) 단가 그대로. 멱등 키 동일(job_<id>) — 재시작·재시도 중복 차감 불가.
+    if (!job.devNoAuth && job.plan !== 'unlimited') {
+      try {
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'restructure', 'job_' + job.id, { mode: 'formal', longThesis: true, textLength: (text || '').length }));
+        job.deducted = true;
+      } catch (e) {
+        logger.error('transform.long_thesis_credit_deduct_failed_manual_action', { jobId: job.id, uid: job.uid, needed: job.needed, err: e });
+      }
+    }
+    job.status = 'done';
+    job.result = {
+      outputText: out.result.outputText,
+      longThesis: true,   // UI가 "장문 논문 안전 재작성" 배지를 띄울 수 있게
+      floorReport: {
+        status: out.floorReport.status,
+        criticals: out.floorReport.criticals,
+        warnings: (out.floorReport.warnings || []).map(w => w.gate),
+        metrics: out.floorReport.metrics
+      },
+      metrics: out.floorReport.metrics,
+      chunkCount: out.chunkCount,
+      fallbackCount: out.fallbackCount
+    };
+    persistJob(job);
+    saveJobHistory(job, text, out.result.outputText);
+    logger.info('transform.long_thesis_done', { jobId: job.id, uid: job.uid, needed: job.needed, deducted: job.deducted, chunkCount: out.chunkCount, fallbackCount: out.fallbackCount });
+  } catch (e) {
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return;
+    }
+    logger.error('transform.long_thesis_failed', { jobId: job.id, uid: job.uid, err: e });
+    job.status = 'error';
+    job.error = '장문 논문 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     persistJob(job);
   } finally {
     scheduleQueueDrain();

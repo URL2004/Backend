@@ -2375,6 +2375,9 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !chunkDone; attempt++) {
       try {
         const data = await callClaude({ userText: userContent, systemText: chunkSys.stable, systemVolatile: chunkSys.volatile, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        // ★ 토큰 상한 절단 수용 금지(2026-06-16): stop_reason=max_tokens면 청크가 중간에 잘린 것 — 요약 collapse와
+        //   구분해 폐기하고 재시도, 끝내 실패하면 원문 청크로 폴백(잘린 결과를 절대 내보내지 않는다 = 분량 보존).
+        if (data?.stop_reason === 'max_tokens') throw new Error('max_tokens-truncated');
         const r = extractClaudeResult(data, tool.name);
         if (floor.looksLikeRefusal(r.outputText)) throw new Error('model-refusal'); // ★ 거부문이 출력에 박히는 사고 차단 → 재시도/폴백
         if (evid && evg.checkEvidencePairing(r.outputText || '', evidLines).length > basePairCount) throw new Error('evidence-pairing'); // ★ 수치-출처 분리(재조합 위험) → 재시도/폴백
@@ -2384,7 +2387,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       } catch (e) {
         if (signal?.aborted) throw e;
         if (attempt < MAX_ATTEMPTS - 1) { await new Promise(r => setTimeout(r, 800 * (attempt + 1))); continue; } // 백오프 후 재시도
-        c.outputText = rawWithEvid; c.fellBack = true; c.fallbackReason = /refusal/i.test(e.message) ? 'refusal' : /pairing/.test(e.message) ? 'evidence-pairing' : 'llm-error';
+        c.outputText = rawWithEvid; c.fellBack = true; c.fallbackReason = /truncat|max_tokens/i.test(e.message) ? 'max_tokens' : /refusal/i.test(e.message) ? 'refusal' : /pairing/.test(e.message) ? 'evidence-pairing' : 'llm-error';
       }
     }
     if (!chunkDone) return; // 재시도까지 실패 → 원문(+승인사실) 폴백, repair/재검증 건너뜀
@@ -2393,6 +2396,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       try {
         const ru = floor.buildFloorRefineUser(cRaw, c.outputText, viol, lang);
         const rd = await callClaude({ userText: ru, systemText: chunkSys.stable, systemVolatile: chunkSys.volatile, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        if (rd?.stop_reason === 'max_tokens') throw new Error('max_tokens-truncated');   // 절단된 repair는 적용 안 함(이전 출력 유지)
         const r2 = extractClaudeResult(rd, tool.name);
         await applyPassC(r2, lang, signal, { rawText: cRaw, mode });
         // 거부문이거나 수치-출처 짝을 새로 깨면 적용 안 함(이전 출력 유지)
@@ -2705,6 +2709,20 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       }
     }
     result.evidencePairing = { violations: Math.max(0, pairing.length - basePairs), base: basePairs, items: pairing.slice(0, 5) };
+  }
+
+  // ★ 말투 일관성 결정론 정규화(2026-06-16 실사고: 존댓말 성찰문이 패스들의 한다체 펀치 주입으로 말투가 혼입되고
+  //   "저"가 "나"로 추락). 격식·보존형(assignment/thesis)은 원문 말투를 따라야 하므로, 출력의 종결어미·1인칭을 원문
+  //   dominant 말투로 통일한다(무날조·무LLM — 종결어미·대명사만 결정론 치환). blog는 해요체 목표라 제외(프롬프트로 처리).
+  if (mode === 'assignment' || mode === 'thesis') {
+    try {
+      const origReg = require('../engine/surfaceguard').measureRegisterMix(text).dominant;
+      if (origReg === 'hap' || origReg === 'handa') {
+        const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, origReg);
+        if (rn.changed) result.outputText = rn.text;
+        result.registerNormalize = { target: origReg, changed: rn.changed };
+      }
+    } catch (e) { result.registerNormalize = { error: e.message }; }
   }
 
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).

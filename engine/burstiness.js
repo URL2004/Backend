@@ -35,13 +35,14 @@ function measureBurstiness(text) {
 
 function buildPrompt(para, lang, aggressive = false) {
   const intensity = aggressive
-    ? `이 문단의 호흡을 과감하게 바꿔라. 문장 서너 개 중 하나는 아주 짧게(한 호흡, 예: "쉽지 않다." "현실은 다르다." "그게 핵심이다.") 만들고, 나머지는 길게 흘려라. 긴 문장과 짧은 문장의 낙차가 분명히 느껴지게.`
-    : `아주 짧은 문장(예: "쉽지 않다." "현실은 다르다.")과 긴 문장을 섞어, 한 문단 안에서 호흡을 크게 바꿔라.`;
+    ? `이 문단의 호흡을 과감하게 바꿔라. 문장 서너 개 중 하나는 아주 짧게(한 호흡) 만들고, 나머지는 길게 흘려라. 긴 문장과 짧은 문장의 낙차가 분명히 느껴지게. ★짧은 문장도 그 문단의 말투를 그대로 따르고(존댓말 글이면 존댓말로, 한다체면 한다체로), 앞 문장의 단어를 되받는 공허한 한 단어 단정은 만들지 마라.`
+    : `아주 짧은 문장과 긴 문장을 섞어, 한 문단 안에서 호흡을 크게 바꿔라 — 단 짧은 문장도 그 문단의 말투를 그대로 따른다.`;
   const system = lang === 'en'
     ? `Rewrite the paragraph so sentence LENGTHS are more varied (bursty): mix very short punchy sentences (2-5 words) with longer ones, changing the breathing within the paragraph. Keep ALL facts, numbers, meaning, tone, and total length the same. Add no new information, opinions, or examples. Only split or merge existing sentences to change rhythm. Every sentence must be grammatically complete (no dangling fragments). Output only the rewritten paragraph.`
     : `다음 문단을 문장 "길이"가 더 들쭉날쭉하도록 다시 써라. ${intensity}
 규칙:
-· 사실·수치·고유명사·의미·말투(해요체/한다체)·전체 분량은 그대로 둔다.
+· 사실·수치·고유명사·의미·전체 분량은 그대로 둔다.
+· ★말투를 그 문단 그대로 유지하라(존댓말 ~습니다 / 한다체 ~다 / 해요체 ~요 중 원래 것). 존댓말 문단에 한다체 단정("~이다/~았다")을 섞지 마라 — 말투 혼입은 어색함·기계 신호다.
 · 원문에 없는 새 정보·견해·예시는 절대 넣지 마라.
 · 기존 문장을 쪼개거나 합치는 방식으로만 리듬을 바꿔라(내용 추가 금지).
 · ★ 모든 문장은 그 자체로 문법적으로 완전해야 한다. 어순을 비틀지 말고, 주어나 서술어가 없는 파편("중요하다." 처럼 무엇이 중요한지 없는 문장)을 만들지 마라.

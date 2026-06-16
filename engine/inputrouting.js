@@ -14,11 +14,14 @@ function looksLikeResume(text) {
   const fp = (t.match(/저는|저의|저를|저도|제가|제 강점|제 경험|본인은|본인의/g) || []).length;
   const fpPer1k = fp / (bare / 1000);                 // 1000자당 1인칭 자기지칭
   const vocab = (t.match(/지원|합격|자격증|면접|입사|자기소개|지원동기|강점|역량|기여하겠|되겠습니다|성장하|채용|포부/g) || []).length;
-  // 강한 신호어(단독 성립): 주제 선정/선택, 세특·생기부·자소서·진로·동아리 골격어 — 정상 시사·논증 글엔 거의 안 나옴.
-  //   ★2026-06-16 확장: '선정'만 잡던 패턴에 '선택'을 추가(실측 gy6326 탐구문은 "이 주제를 선택했다"라 기존 패턴을 빠져나가
-  //   재구성→added_claim 차단). '선정하' 어간 패턴도 '선택하'로 함께 확장.
-  const strong = /주제\s*(?:를|로)?\s*(?:선정|선택)|(?:선정|선택)하(?:게|였|았|고자|기로|는\s*과정)|(?:이|해당)\s*주제를?\s*(?:선정|선택)|세부\s*능력\s*및?\s*특기|세특|생활기록부|생기부|진로\s*(?:활동|희망|탐색)|동아리\s*활동|지원\s*동기|자기소개서/.test(t);
-  if (strong) return true;
+  // ① 강한 자소서·생기부 골격어(단독 성립, 인용 유무와 무관): 세특·생기부·자소서·진로·동아리·지원동기 — 시사·논증 글엔 안 나옴.
+  if (/세부\s*능력\s*및?\s*특기|세특|생활기록부|생기부|진로\s*(?:활동|희망|탐색)|동아리\s*활동|지원\s*동기|자기소개서/.test(t)) return true;
+  // ② 주제 선정/선택: 탐구·생기부에 흔하지만 일반 보고서에도 나온다("이 주제를 선택한 이유는…"). 그래서 단독 성립이되,
+  //   ★인용 기반 논증 보고서 예외(2026-06-16 실측 dayoung3360 '북한 정보통제' 보고서: 인용 6개인데 "주제로 선택한 이유"에
+  //   걸려 자소서로 오분류→보존형 오라우팅). (이름, 2023)식 학술 인용이 2개+면 재구성이 지어낼 게 없는 사실기반 논증 글
+  //   (=시사·논증=재구성 적합)이므로 이 신호로는 라우팅하지 않는다. (gy6326 탐구문은 이런 인용이 없어 그대로 잡힘.)
+  const citations = (t.match(/\([가-힣A-Za-z·]+\s*,?\s*(?:19|20)\d{2}\)/g) || []).length;
+  if (citations < 2 && /주제\s*(?:를|로)?\s*(?:선정|선택)|(?:선정|선택)하(?:게|였|았|고자|기로|는\s*과정)|(?:이|해당)\s*주제를?\s*(?:선정|선택)/.test(t)) return true;
   // ★탐구·세특 보고서 골격어(2026-06-16): 단일 출현은 정상 글에도 있을 수 있어 2개 이상 동시 출현 시에만 성립(오탐 방지).
   //   "주제를 선정/선택" 명시구가 없는 탐구문(예: gy6326)도 이 조합으로 잡아 보존형으로 유도한다.
   const inquiry = (t.match(/탐구\s*(?:주제|활동|보고서|내용|과정|동기|결과)|탐구(?:를|해)?\s*(?:통해|보고\s*싶|해\s*보고\s*싶)|후속\s*활동|이번\s*탐구|느낀\s*점|더\s*깊이\s*탐구|탐구해\s*보고\s*싶/g) || []).length;
@@ -42,6 +45,20 @@ function factDensity(text) {
   return (years * 2 + pcts * 2 + cites + nums) / Math.max(1, bare / 1000);
 }
 const FACT_DENSE_THRESHOLD = Number(process.env.FACT_DENSE_THRESHOLD) || 5;
+
+// 장문 구조화 논문 감지(2026-06-16 실측 zoz040224: 26,934자 논문 재구성→결과 29%·8%로 접힘=length_collapse 차단,
+//   연도·수치 대량 누락). 재구성(genreTransferV2)은 글 전체를 한 번에 새로 써내므로 초장문은 모델이 '요약'으로
+//   오해해 접힌다. 이런 논문은 보존형(runHumanizeChunked=문단 청크별 재작성+청크별 FLOOR)으로 보내야 collapse가 없다.
+//   조건: 매우 긴 글(공백제외 14,000자+) AND 논문 구조 신호(로마숫자 대제목 목차 또는 학술 섹션 표지).
+//   ※ 사실밀집(factDense)만으론 막지 않는다(사장님 결정) — 구조 신호가 있는 초장문 논문만 라우팅.
+function isLongStructuredThesis(text) {
+  const t = text || '';
+  const noSp = t.replace(/\s+/g, '').length;
+  if (noSp < 14000) return false;
+  const hasRoman = /[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*\./.test(t);                       // Ⅰ. 서론 … Ⅵ. 결론
+  const hasToc = /(논문의\s*구성|선행\s*연구|이론적\s*배경|참고\s*문헌|연구\s*(?:방법|배경|목적|문제)|초록|Abstract)/.test(t);
+  return hasRoman || hasToc;
+}
 
 // 재구성 부적합 판정 + 사용자에게 그대로 보여줄 '명확한 사유'. ir = surfaceguard.classifyInputRisk(text).
 //   factDense(사실 빼곡)는 '권장'(소프트)이라 여기서 막지 않는다 — 사장님 결정으로 사실밀집 글도 고급을
@@ -68,6 +85,9 @@ function restructureUnfit(text, ir = {}) {
       reason: '이 글은 자소서·생활기록부·탐구활동처럼 1인칭으로 자기 경험·동기를 적은 글이에요. 고급(재구성)은 시사·논증 칼럼으로 새로 써내는 방식이라, 이런 글을 넣으면 AI가 원문에 없는 지원 동기·평가·일화를 지어내 차단돼요. 「그대로 다듬기」나 「기본 피하기」로 진행해 주세요.'
     };
   }
+  // ※ 초장문 구조화 논문(isLongStructuredThesis)은 여기서 unfit으로 막지 않는다 — 보존형(그대로 다듬기)으로 보내면
+  //   '피하기(우회)' 기능이 빠지기 때문. 대신 transform.runJob이 단일패스 재구성(collapse) 대신 '청크 기반 격식 회피'
+  //   (runHumanizeChunked mode=assignment·tonePolish=false = 우회 유지 + 문단별이라 접힘 없음)로 라우팅한다.
   // 짧고 추상적이라 풀어낼 사실이 거의 없는 글: 재구성이 빈 자리를 지어내 채운다.
   const abstract = (ir.grade === 'C') || (Number(ir.abstractRiskRatio) >= 0.5);
   if (bare < 600 && abstract && factDensity(t) < 1.0) {
@@ -99,4 +119,4 @@ function detectInputDuplication(text) {
   return { duplicated: ratio >= 0.35, ratio: Math.round(ratio * 100) / 100 };
 }
 
-module.exports = { looksLikeResume, factDensity, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, factDensity, isLongStructuredThesis, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };

@@ -21,11 +21,17 @@ const column = `정부가 발표한 부동산 대책은 공급 확대에 방점�
 const lgcns = `LG CNS는 금융, 공공, 교육 등 다양한 산업의 문제를 IT 기술로 해결하며 고객의 업무와 서비스를 실제로 변화시키는 기업이라고 생각했습니다. 저는 학위 연구와 프로젝트를 통해 데이터가 바뀌어도 안정적으로 작동하는 모델을 고민해 왔고, LG Aimers, 추천시스템 프로젝트를 통해 데이터 전처리, 모델링, 성능 개선 경험을 쌓았습니다. 이러한 역량을 모델 성능 개선에 머무르지 않고 고객이 체감하는 서비스와 플랫폼으로 연결하고 싶어 지원했습니다.
 입사 후에는 최신 AI 기술과 클라우드 기술을 학습하겠습니다. 또한 고객의 도메인 지식들의 학습도 게을리 하지 않을 것입니다. 이후에는 도메인 변화와 예외 상황에도 안정적으로 동작하는 AI 서비스를 설계하여, 금융 AX와 지능형 공공 서비스의 품질을 높이는 인재가 되고 싶습니다. 장기적으로는 LG CNS의 성공사례를 확장하는 전문가로 성장하겠습니다.`;
 
+// 실측 오탐 케이스(dayoung3360 '북한 정보통제' 보고서): 인용 6개 시사·논증 보고서인데 "주제로 선택한 이유"에 걸려
+//   resume로 오분류되던 FP. citations≥2 예외로 통과(재구성 적합)해야 함.
+let nk = '';
+try { nk = require('fs').readFileSync(require('path').resolve(__dirname, '../samples/nk-report.txt'), 'utf8'); } catch {}
+
 const cases = [
   { name: '#3 junnny1004 (JWST 탐구문)', text: junnny, expectUnfit: true },
   { name: '#1·#2 gy6326 (경사하강법 탐구문)', text: gy, expectUnfit: true },
   { name: 'LG CNS 자소서(합니다체·1인칭 희박)', text: lgcns, expectUnfit: true },
   { name: '대조군: 정상 부동산 칼럼', text: column, expectUnfit: false },
+  ...(nk ? [{ name: '대조군: 북한 정보통제 보고서(인용6·"주제로 선택")', text: nk, expectUnfit: false }] : []),
 ];
 
 let fail = 0;

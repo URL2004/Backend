@@ -2413,7 +2413,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       if (judgedOut !== merged) {
         const preV = floor.collectFloorViolations({ result: { outputText: merged }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
         const postV = floor.collectFloorViolations({ result: { outputText: judgedOut }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
-        if (postV.length > preV.length || (evid && evg.checkEvidencePairing(judgedOut, evidLines).length > evg.checkEvidencePairing(merged, evidLines).length)) { judgedOut = merged; repairRejected = true; }
+        // ★ 길이 급감 방어(2026-06-16 실사고): judge repair가 토큰 상한에 잘려 문서가 통째로 짧아지면, FLOOR 위반
+        //   수는 오히려 줄어(=내용이 사라져) 위 가드를 통과한다. 병합본 대비 40%+ 짧아지면 절단으로 보고 병합본 유지.
+        const mBare = merged.replace(/\s+/g, '').length, jBare = judgedOut.replace(/\s+/g, '').length;
+        const truncated = mBare > 1500 && jBare < mBare * 0.6;
+        if (truncated || postV.length > preV.length || (evid && evg.checkEvidencePairing(judgedOut, evidLines).length > evg.checkEvidencePairing(merged, evidLines).length)) { judgedOut = merged; repairRejected = true; }
       }
       if (judgedOut !== merged) result.outputText = judgedOut;
       const violations = (jr.verdict.violations || []).map(v => ({ ...v, nearest_chunk_id: nearestChunkId(chunks, v.span) }));

@@ -950,6 +950,15 @@ router.post('/transform', async (req, res) => {
   if (text.length > 30000) {
     return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
   }
+  // ★ 중복 입력 사전 차단(2026-06-16): 같은 문서를 두 번 붙여넣은 입력은 중복 분량만큼 과금되고 긴 입력이라 결과까지
+  //   꼬인다(실측 blog 2만자=412크레딧 + 잘린 결과). 차감·작업 시작 전에 막는다(무차감 — 중복 빼고 재시도하면 절약).
+  {
+    const dup = inputrouting.detectInputDuplication(text);
+    if (dup.duplicated) {
+      logger.warn('transform.duplicate_input_blocked', { mode, textLength: text.length, dupRatio: dup.ratio });
+      return res.status(400).json({ error: `입력에 같은 내용이 반복돼 있어요(약 ${Math.round(dup.ratio * 100)}%). 중복된 부분을 빼고 다시 시도하면 크레딧도 절약돼요.` });
+    }
+  }
   if (draining) {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
   }

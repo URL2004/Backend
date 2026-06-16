@@ -197,7 +197,15 @@ async function repairViolations(rawText, outputText, ledger, violations, { lang 
   const user = `[CLAIM LEDGER — 허용된 유일 주장 (각 항목 근거=원문 인용)]\n${claimsText}\n\n[위반 — 이것만 수정]\n${vText}\n\n[REWRITE]\n${outputText}\n\n수정된 본문만 출력(설명·따옴표·코드펜스 금지).`;
   const out = await llmText({ system, user, signal, maxTokens: 8192, model: HAIKU });
   // repair는 날조를 삭제하므로 짧아지는 게 정상 — 비었을(LLM 실패) 때만 원본 유지.
-  return out && out.replace(/\s+/g, '').length >= 5 ? out : outputText;
+  if (!out || out.replace(/\s+/g, '').length < 5) return outputText;
+  // ★ 토큰 상한 truncation 가드(2026-06-16 실사고: blog 2만자 입력이 여기서 8192토큰에 잘려 결과 절반 소실,
+  //   차감된 채 잘린 결과가 전달됨). repairViolations는 문서 전체를 한 번에 재작성하므로, 8192토큰(≈한국어 5,500자)을
+  //   넘는 장문은 출력이 통째로 잘린다. 정상 repair는 위반 span 제거분만큼만 짧아지지 — 40%+ 소실은 절단으로 보고
+  //   폐기하고 전체 원본을 유지한다(잘린 결과를 절대 내보내지 않는다). 위반 몇 건은 남더라도 완결성이 우선.
+  const inBare = outputText.replace(/\s+/g, '').length;
+  const outBare = out.replace(/\s+/g, '').length;
+  if (inBare > 1500 && outBare < inBare * 0.6) return outputText;
+  return out;
 }
 
 // 원장 1회 추출 → judge → 위반 시 repair → 재judge, 최대 maxRounds. P2-c 닫힌 루프(§7.2).

@@ -23,6 +23,11 @@ function looksLikeResume(text) {
   //   "주제를 선정/선택" 명시구가 없는 탐구문(예: gy6326)도 이 조합으로 잡아 보존형으로 유도한다.
   const inquiry = (t.match(/탐구\s*(?:주제|활동|보고서|내용|과정|동기|결과)|탐구(?:를|해)?\s*(?:통해|보고\s*싶|해\s*보고\s*싶)|후속\s*활동|이번\s*탐구|느낀\s*점|더\s*깊이\s*탐구|탐구해\s*보고\s*싶/g) || []).length;
   if (inquiry >= 2) return true;
+  // ★자소서·지원서 신호어(2026-06-16): 합니다체 자소서는 명시적 1인칭("저는")이 드물어 fpPer1k 기준을 빠져나간다
+  //   (실측 LG CNS 자소서 fpPer1k 2.2 → 미탐지 → 재구성이 자소서를 '지원자 비평 칼럼'으로 바꿔 배출). "지원했/입사 후/
+  //   성장하겠/인재가 되고 싶" 같은 지원·포부 표현이 2개 이상이면 자소서로 본다(정상 시사·논증 글엔 이 조합이 거의 없음).
+  const apply = (t.match(/지원했|지원하게\s*된|지원하(?:고|게)\s*싶|지원\s*동기|지원\s*이유|입사\s*후|입사하(?:면|게|여)|인재가?\s*되|기여하(?:겠|고\s*싶)|성장하(?:겠|고\s*싶)|되고\s*싶습니다|뽑아\s*주|합격하/g) || []).length;
+  if (apply >= 2) return true;
   return (fpPer1k >= 3 && vocab >= 2);
 }
 
@@ -61,4 +66,24 @@ function restructureUnfit(text, ir = {}) {
   return { unfit: false, kind: null, reason: '' };
 }
 
-module.exports = { looksLikeResume, factDensity, restructureUnfit, FACT_DENSE_THRESHOLD };
+// 입력에 같은 내용이 통째로 반복됐는지 결정론 감지(무LLM·무과금). 실측(2026-06-16): 사용자가 약사 리포트를
+//   실수로 두 번 붙여넣어 ~2만 자(blog 412크레딧)로 제출 → 중복 분량만큼 과금되고, 긴 입력이 judge 수리에서
+//   잘려 결과까지 절반 소실. 차감 전에 막아 비용·혼선을 없앤다(차단 시 무차감 — 중복 빼고 재시도 유도).
+//   판정: 문단(공백 무시 30자+)을 앞 80자 키로 묶어, 2회+ 나온 문단의 분량이 전체 본문의 35%+면 중복 입력.
+function detectInputDuplication(text) {
+  const t = text || '';
+  const norm = (s) => (s || '').replace(/\s+/g, '');
+  const blocks = t.split(/\n{2,}/).map(norm).filter(b => b.length >= 30);
+  if (blocks.length < 4) return { duplicated: false, ratio: 0 };
+  const seen = new Set();
+  let dup = 0, total = 0;
+  for (const b of blocks) {
+    total += b.length;
+    const key = b.slice(0, 80);   // 문단 앞 80자로 근사 동일성 판정(완전 일치 반복을 안정적으로 포착)
+    if (seen.has(key)) dup += b.length; else seen.add(key);
+  }
+  const ratio = total ? dup / total : 0;
+  return { duplicated: ratio >= 0.35, ratio: Math.round(ratio * 100) / 100 };
+}
+
+module.exports = { looksLikeResume, factDensity, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };

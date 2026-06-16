@@ -81,24 +81,27 @@ function looksLikeReflection(text) {
   return book >= 1 && reflect >= 3;   // 책 언급 + 1인칭 성찰 3개+ = 독후감/감상문(정상 시사·논증 글엔 이 조합 드묾)
 }
 
+// ★ 영어(비한국어) 위주 입력 판정(2026-06-16). 회피(기본 blog·고급 재구성) 엔진은 "한국 시사 칼럼 필자"로
+//   하드코딩된 한국어 전용이라, 영어를 넣으면 한국어로 번역·축약해 원문을 망친다(영어 28,891자 → 한국어
+//   4,081자, 14% 손상). hangul/letters<0.15 = 영어 위주(프런트 evDetectLang과 동일 기준). 다듬기(polish)는
+//   영어를 영어 그대로 다듬으므로 이 판정으로 막지 않는다.
+function isEnglishInput(text) {
+  const t = text || '';
+  const hangul = (t.match(/[가-힣]/g) || []).length;
+  const letters = (t.match(/[A-Za-z가-힣]/g) || []).length || 1;
+  return letters >= 200 && hangul / letters < 0.15;
+}
+const ENGLISH_UNFIT_REASON = '영어 글은 「피하기」가 아니라 「그대로 다듬기」로 진행해 주세요. 피하기(기본·고급)는 한국어 전용이라 영어를 넣으면 한국어로 번역·축약돼 원문이 크게 손상돼요. 다듬기는 영어를 영어 그대로 자연스럽게 다듬어요.';
+
 // 재구성 부적합 판정 + 사용자에게 그대로 보여줄 '명확한 사유'. ir = surfaceguard.classifyInputRisk(text).
 //   factDense(사실 빼곡)는 '권장'(소프트)이라 여기서 막지 않는다 — 사장님 결정으로 사실밀집 글도 고급을
 //   돌릴 수 있어야 함(B). 막다른 길로 만드는 두 부류만 사전 차단한다: ① 자소서·생기부·탐구 ② 짧고 추상적.
 function restructureUnfit(text, ir = {}) {
   const t = text || '';
   const bare = t.replace(/\s+/g, '').length || 1;
-  // ★ 영어(비한국어) 글(2026-06-16 실측): 재구성은 "한국 시사 칼럼 필자"로 하드코딩된 한국어 전용 엔진이라,
-  //   영어를 넣으면 한국어로 번역·축약해 원문을 통째로 망친다(영어 28,891자 → 한국어 4,081자, 14%·600크레딧 차감).
-  //   영어는 「그대로 다듬기」(영어 지원)로 보낸다. hangul/letters<0.15 = 영어 위주(프런트 evDetectLang과 동일 기준).
-  {
-    const hangul = (t.match(/[가-힣]/g) || []).length;
-    const letters = (t.match(/[A-Za-z가-힣]/g) || []).length || 1;
-    if (letters >= 200 && hangul / letters < 0.15) {
-      return {
-        unfit: true, kind: 'english',
-        reason: '고급(재구성)은 한국어 글 전용이에요. 영어 글을 넣으면 한국어로 번역·축약돼 원문이 크게 손상돼요. 영어 글은 「그대로 다듬기」로 진행해 주세요 — 영어를 영어 그대로 자연스럽게 다듬어요.'
-      };
-    }
+  // 영어 위주 글 → 「그대로 다듬기」로 유도(POST 진입부에서 1차 차단하지만 직접 호출 대비 방어).
+  if (isEnglishInput(t)) {
+    return { unfit: true, kind: 'english', reason: ENGLISH_UNFIT_REASON };
   }
   if (looksLikeResume(t)) {
     return {
@@ -162,4 +165,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };

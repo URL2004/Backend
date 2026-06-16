@@ -500,10 +500,21 @@ function resolveDupSentences(doc, textF) {
 
 // 메타 메모·지시문 윙크·용어귀속 날조 가드: engine/floor.js로 이식(메인 엔진 공용) — import만.
 const { META_NOTE_RE, WINK_RE, findCoinedTerms } = require('./floor');
+// ★문장 단위 메타 제거(2026-06-16 누출 재발): 예전엔 문단 단위 + >300자 문단 예외라, 긴 문단 안에
+//   끼인 지시문(인라인 누출)이 통째로 통과했다. 이제 문단을 문장으로 쪼개 "지시문 문장만" 빼고 본문은
+//   살린다 → 인라인 누출 차단 + 정상 문장 보존(문단 통째 삭제로 인한 본문 손실도 방지). 순수 메타 문단은
+//   모든 문장이 빠져 자동 제거된다. META_NOTE_RE는 정상 산문 오탐이 거의 없는 고정밀 토큰만 담는다.
 function stripMetaNotes(doc) {
-  const paras = doc.split(/\n{2,}/);
-  while (paras.length && META_NOTE_RE.test(paras[paras.length - 1])) paras.pop();
-  return paras.filter(p => !META_NOTE_RE.test(p) || p.replace(/\s+/g, '').length > 300).join('\n\n');
+  const out = [];
+  for (const p of String(doc || '').split(/\n{2,}/)) {
+    const t = p.trim();
+    if (!t) continue;
+    const sents = t.split(/(?<=[.!?”"。…])\s+/);
+    const kept = sents.filter(s => { const ss = s.trim(); return ss && !META_NOTE_RE.test(ss); });
+    const joined = kept.join(' ').trim();
+    if (joined) out.push(joined);
+  }
+  return out.join('\n\n');
 }
 
 const V2_BANS = `[금지 — 하나라도 어기면 실패]
@@ -898,6 +909,8 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     pairing = checkEvidencePairing(doc, evidenceList);
   }
   doc = tidyParagraphs(doc);   // ★ 문단 내부 단일 줄바꿈 정리(2026-06-12: LLM이 문장마다 \n 넣어 "애매한 두 행" 발생)
+  doc = stripMetaNotes(doc);   // ★최종 scrub(2026-06-16): judge 수리·재위빙·교정이 끼운 지시문/메타를 return 직전 제거.
+  //   기존 scrub은 judge 루프 '이전'(③마감)뿐이라, 그 뒤 repairSentence/weaveLost가 넣은 누출이 그대로 나갔다.
   const risk = gf.genreRiskScore(doc);
   const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
   return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, evidenceLost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };

@@ -925,14 +925,29 @@ async function runLongThesisChunked(job, text, evidence) {
     });
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
-      logger.warn('transform.long_thesis_blocked', { jobId: job.id, uid: job.uid, gates, chunkCount: out.chunkCount });
-      job.status = 'blocked';
-      job.gates = gates;
-      job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
-      job.stage = blockedStage(gates);
-      job.blockOffer = buildBlockOffer(job, text);
-      persistJob(job);
-      return;
+      // ★ semanticJudge 소프트화(2026-06-16, zoz040224 26K 학술논문 실측): 청크 회피는 문단별 grounded 재작성이라
+      //   added_claim이 남아도 대개 해석·평가 표현이다(사실 날조는 novelty가 하드로 잡음). 장문·학술글이 1~2건의
+      //   added_claim으로 통째 차단되면 결과를 못 받는다. 사실·누출 게이트(novelty·meta_leak·coined_term·fake_ref·
+      //   pov·anchor)는 그대로 하드 차단. 차단 critical이 semanticJudge(또는 품질성 repetition)뿐이고 judge 위반이
+      //   적으면(≤2) 전달 + 원문대조 경고. 많으면(≥3=합성 패턴) 차단 유지. 끄려면 RESTRUCTURE_JUDGE_SOFT=0.
+      const SOFTABLE = new Set(['semanticJudge', 'repetition']);
+      const judgeCount = (out.result?.judge?.violations || []).length;
+      const softMax = Number(process.env.RESTRUCTURE_JUDGE_SOFT_MAX || 2);
+      const judgeSoftOK = process.env.RESTRUCTURE_JUDGE_SOFT !== '0'
+        && gates.length > 0 && gates.every(g => SOFTABLE.has(g)) && judgeCount <= softMax;
+      if (!judgeSoftOK) {
+        logger.warn('transform.long_thesis_blocked', { jobId: job.id, uid: job.uid, gates, judgeCount, chunkCount: out.chunkCount });
+        job.status = 'blocked';
+        job.gates = gates;
+        job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
+        job.stage = blockedStage(gates);
+        job.blockOffer = buildBlockOffer(job, text);
+        persistJob(job);
+        return;
+      }
+      // semanticJudge 소수만 차단 사유 → 전달(아래로 진행) + 원문 대조 경고.
+      logger.info('transform.long_thesis_judge_soft_delivered', { jobId: job.id, uid: job.uid, judgeCount, gates, chunkCount: out.chunkCount });
+      job.note = (job.note ? job.note + ' ' : '') + `원문에 없던 해석·평가 표현이 일부(${judgeCount}건) 섞였을 수 있어요. 결과를 원문과 한 번 대조해 주세요.`;
     }
     if (!out.result || !out.result.outputText) throw new Error('long_thesis_incomplete');
     // 과금: 재구성(formal) 단가 그대로. 멱등 키 동일(job_<id>) — 재시작·재시도 중복 차감 불가.

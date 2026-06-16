@@ -85,6 +85,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
   //   blog/resume는 모드 고유 말투(해요/존댓말)를 쓰므로 제외, 학술계열(assignment/thesis)에만 적용.
   const regKo = (mode === 'assignment' || mode === 'thesis')
     ? (register === 'plain' ? '\n[문체 통일] 원문이 평어체(~다/~이다/~한다)다. 글 전체를 평어체로 일관 통일하라 — 존댓말(~합니다)로 바꾸거나 섞지 마라.'
+      : register === 'haeyo' ? '\n[문체 통일] 원문이 해요체(~예요/~어요/~죠/~거든요)다. 글 전체를 해요체로 일관 통일하라 — 합니다체(~습니다/~입니다)나 평어체(~다/~이다)로 바꾸거나 섞지 마라. 원문의 캐주얼한 말투를 그대로 살려라.'
       : register === 'polite' ? '\n[문체 통일] 원문이 존댓말(~합니다)이다. 글 전체를 존댓말로 일관 통일하라 — 평어체(~다)로 섞지 마라.' : '')
     : '';
   // ★ 과제 자연체 토글(생성단 화자 정책 완화). 격식 모드에서만.
@@ -125,8 +126,8 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
   //   원문이 존댓말이면 앵커의 평어체를 베끼지 않도록 단서(문체 통일 규칙이 우선) — 메인 엔진 register-lock과의 충돌 방지.
   const anchorsOn = anchorIdx != null && lang === 'ko' && mode === 'assignment' && process.env.STYLE_ANCHOR !== '0';
   const voiceAnchor = anchorsOn
-    ? '\n' + pickAnchors(anchorIdx) + (register === 'polite'
-      ? '\n※ 앵커는 결(호흡 낙차·괄호 사족·단정·덜 닫힌 사념)만 참고하라 — 종결어미는 [문체 통일] 규칙(존댓말)을 따르고 앵커의 평어체를 베끼지 마라.'
+    ? '\n' + pickAnchors(anchorIdx) + ((register === 'polite' || register === 'haeyo')
+      ? '\n※ 앵커는 결(호흡 낙차·괄호 사족·단정·덜 닫힌 사념)만 참고하라 — 종결어미는 [문체 통일] 규칙을 따르고 앵커의 평어체를 베끼지 마라.'
       : '')
     : '';
   const evid = (evidence || '').trim();

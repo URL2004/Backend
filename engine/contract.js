@@ -24,12 +24,18 @@ const floor = require('./floor');
  * rawText에서 Contract를 1회 구성. 가드/파이프라인은 이 객체를 단일 소스로 참조한다.
  * @returns {Contract}
  */
-// 원문 종결 문체 감지: 평어체(~다/~이다/~한다) vs 존댓말(~합니다/~해요). 출력에서 일관 유지하기 위함.
+// 원문 종결 문체 감지: 평어체(plain ~다/~한다) vs 합니다체(polite ~습니다) vs 해요체(haeyo ~요/~죠/~거든요).
+//   ★2026-06-16: 해요체와 합니다체를 분리(기존엔 둘 다 'polite'로 뭉쳐, 해요체 입력이 합니다체로 격식화되던 버그).
+//   prompt.js가 register로 말투를 통일하므로, 'haeyo'를 받아야 해요체를 해요체로 보존한다.
 function detectRegister(t) {
-  const polite = ((t || '').match(/(습니다|합니다|입니다|됩니다|세요|해요|어요|예요|에요|니까요)(?=[.!?\s"”'’)]|$)/g) || []).length;
-  const plain = ((t || '').match(/(?:이?다|한다|된다|않다|없다|있다|었다|였다|진다|간다|난다|온다|본다)(?=[.!?\s"”'’)]|$)/g) || []).length;
+  const s = t || '';
+  const END = '(?=[.!?…\\s"”\'’)]|$)';
+  const hap = (s.match(new RegExp('(니다|니까)' + END, 'g')) || []).length;     // 합니다체(격식): ~습니다/~습니까
+  const haeyo = (s.match(new RegExp('요' + END, 'g')) || []).length;            // 해요체: 문장 끝 ~요(해요/거든요/죠/네요…)
+  const plain = (s.match(new RegExp('(?<![니요])(?:이?다|한다|된다|않다|없다|있다|었다|였다|진다|간다|난다|온다|본다)' + END, 'g')) || []).length;
+  const polite = hap + haeyo;
   if (plain >= polite * 1.5) return 'plain';
-  if (polite >= plain * 1.5) return 'polite';
+  if (polite >= plain * 1.5) return haeyo >= hap ? 'haeyo' : 'polite';          // 존댓말 우세 → 해요체 vs 합니다체 구분
   return 'mixed';
 }
 

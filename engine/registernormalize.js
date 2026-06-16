@@ -24,6 +24,20 @@ const HAP_TO_HANDA = [
   ['입니다', '이다'], ['아닙니다', '아니다'],
   ['있습니다', '있다'], ['없습니다', '없다'], ['같습니다', '같다'], ['싶습니다', '싶다'], ['겠습니다', '겠다'],
 ];
+// 한다체 → 해요체 변환 (해요체 글에 섞인 한다체 단정 조각 정리용)
+const HANDA_TO_HAEYO = [
+  ['했다', '했어요'], ['됐다', '됐어요'], ['였다', '였어요'], ['았다', '았어요'], ['었다', '었어요'],
+  ['한다', '해요'], ['된다', '돼요'], ['진다', '져요'], ['린다', '려요'], ['난다', '나요'], ['본다', '봐요'], ['든다', '들어요'],
+  ['있다', '있어요'], ['없다', '없어요'], ['같다', '같아요'], ['싶다', '싶어요'], ['겠다', '겠어요'],
+  ['아니다', '아니에요'], ['이다', '이에요'], ['모른다', '몰라요'], ['만든다', '만들어요'], ['하다', '해요'],
+];
+// 합니다체 → 해요체 변환 (해요체 원문인데 출력이 합니다체로 드리프트했을 때 되돌림). 고빈도·명확 어미만.
+const HAP_TO_HAEYO = [
+  ['했습니다', '했어요'], ['됐습니다', '됐어요'], ['였습니다', '였어요'], ['았습니다', '았어요'], ['었습니다', '었어요'], ['겠습니다', '겠어요'],
+  ['합니다', '해요'], ['됩니다', '돼요'], ['집니다', '져요'], ['옵니다', '와요'], ['봅니다', '봐요'], ['갑니다', '가요'], ['납니다', '나요'],
+  ['입니다', '이에요'], ['아닙니다', '아니에요'],
+  ['있습니다', '있어요'], ['없습니다', '없어요'], ['같습니다', '같아요'], ['싶습니다', '싶어요'], ['모릅니다', '몰라요'],
+];
 // 존댓말 글의 1인칭: 나/내 → 저/제 (앞이 한글이면 '하나는' 같은 단어 내부라 보호: 음의 lookbehind)
 const PRONOUN_TO_HAP = [
   ['내가', '제가'], ['나는', '저는'], ['나도', '저도'], ['나의', '저의'], ['나를', '저를'], ['나에게', '저에게'], ['내게', '제게'],
@@ -46,14 +60,22 @@ function applyPronouns(text, pairs) {
   return { out, changed };
 }
 
-// target: 'hap'(존댓말) | 'handa'(한다체). 출력을 target 말투로 종결어미 통일.
+// target: 'hap'(존댓말 ~습니다) | 'handa'(한다체 ~다) | 'haeyo'(해요체 ~요). 출력을 target 말투로 종결어미 통일.
 function normalizeRegister(text, target) {
-  if (target !== 'hap' && target !== 'handa') return { text, changed: 0 };
   let out = text, changed = 0;
-  const e = applyEndings(out, target === 'hap' ? HANDA_TO_HAP : HAP_TO_HANDA);
-  out = e.out; changed += e.changed;
-  if (target === 'hap') { const p = applyPronouns(out, PRONOUN_TO_HAP); out = p.out; changed += p.changed; }
+  if (target === 'hap') {
+    const e = applyEndings(out, HANDA_TO_HAP); out = e.out; changed += e.changed;
+    const p = applyPronouns(out, PRONOUN_TO_HAP); out = p.out; changed += p.changed;
+  } else if (target === 'handa') {
+    const e = applyEndings(out, HAP_TO_HANDA); out = e.out; changed += e.changed;
+  } else if (target === 'haeyo') {
+    // 한다체 조각 + 합니다체 드리프트 둘 다 해요체로. (단 명사+다 축약 copula "문제다" 등은 모호해 보존)
+    const e1 = applyEndings(out, HANDA_TO_HAEYO); out = e1.out; changed += e1.changed;
+    const e2 = applyEndings(out, HAP_TO_HAEYO); out = e2.out; changed += e2.changed;
+  } else {
+    return { text, changed: 0 };
+  }
   return { text: out, changed };
 }
 
-module.exports = { normalizeRegister, HANDA_TO_HAP, HAP_TO_HANDA };
+module.exports = { normalizeRegister, HANDA_TO_HAP, HAP_TO_HANDA, HANDA_TO_HAEYO, HAP_TO_HAEYO };

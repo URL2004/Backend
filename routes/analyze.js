@@ -2716,8 +2716,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   dominant 말투로 통일한다(무날조·무LLM — 종결어미·대명사만 결정론 치환). blog는 해요체 목표라 제외(프롬프트로 처리).
   if (mode === 'assignment' || mode === 'thesis') {
     try {
-      const origReg = require('../engine/surfaceguard').measureRegisterMix(text).dominant;
-      if (origReg === 'hap' || origReg === 'handa') {
+      const origReg = require('../engine/surfaceguard').measureRegisterMix(text).dominant;   // 'hap'|'handa'|'haeyo'
+      if (origReg === 'hap' || origReg === 'handa' || origReg === 'haeyo') {
         const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, origReg);
         if (rn.changed) result.outputText = rn.text;
         result.registerNormalize = { target: origReg, changed: rn.changed };

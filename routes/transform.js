@@ -900,6 +900,11 @@ async function runHumanizeJob(job, text) {
         });
       }
     }
+    // ★ no-op(약한 변환) 안내(2026-06-16 품질리포트): 결과가 원문과 거의 같으면(보존형 수준) 강도 상향 추천.
+    //   polish(그대로 다듬기)는 보존이 목적이라 applyPassC에서 weakTransform=false로 둔다 → blog에서만 안내.
+    if (out.result.weakTransform) {
+      job.note = (job.note ? job.note + ' ' : '') + '원문과 큰 차이 없이 나왔어요(보존형 수준). 더 바꾸려면 「고급 피하기」를 쓰거나 경험 메모를 더해 다시 시도해 주세요.';
+    }
     job.status = 'done';
     job.result = {
       outputText: out.result.outputText,
@@ -910,6 +915,9 @@ async function runHumanizeJob(job, text) {
         metrics: out.floorReport.metrics
       },
       metrics: out.floorReport.metrics,   // 배지 렌더 호환(formal과 동일 접근 경로)
+      weakTransform: !!out.result.weakTransform,   // 약한 변환(보존형 수준) — UI 안내·강도 추천용
+      noOpScore: out.result.noOpScore,
+      registerLeak: out.result.registerLeak,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount
     };

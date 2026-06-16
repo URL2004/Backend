@@ -936,6 +936,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   doc = tidyParagraphs(doc);   // ★ 문단 내부 단일 줄바꿈 정리(2026-06-12: LLM이 문장마다 \n 넣어 "애매한 두 행" 발생)
   doc = stripMetaNotes(doc);   // ★최종 scrub(2026-06-16): judge 수리·재위빙·교정이 끼운 지시문/메타를 return 직전 제거.
   //   기존 scrub은 judge 루프 '이전'(③마감)뿐이라, 그 뒤 repairSentence/weaveLost가 넣은 누출이 그대로 나갔다.
+  doc = require('./outputguard').stripPunchTemplates(doc, rawText, { strict: true }).text;   // ★독립형 punch 단정 제거(2026-06-16 품질리포트): "그게 핵심이다"·"정책이 뒤흔들렸다" 등(원문에 있던 건 보존). formalBudgetPass(LLM) 뒤 결정론 안전망.
   const risk = gf.genreRiskScore(doc);
   const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
   return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, evidenceLost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };

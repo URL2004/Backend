@@ -1,6 +1,9 @@
 // [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리
 // ★ 탐지(detect)·휴머나이즈·웹 검색 모두 Anthropic Claude.
-// ★ Anthropic prompt caching: detect/humanize 시스템 프롬프트에 cache_control: ephemeral (5분 TTL, 1024+ 토큰).
+// ★ Anthropic prompt caching: detect/humanize 시스템 프롬프트에 cache_control: ephemeral (5분 TTL).
+// ★캐시 최소 prefix: Sonnet 4.6=2048토큰, Haiku 4.5=4096토큰 — 이 미만이면 API가 캐시를 만들지 않는다(무효).
+//   FLOOR humanize system은 고정코어/가변부 2블록 분리(2026-06-16): 고정코어만 캐시 → 메모·evidence·앵커가
+//   달라도 cache_read 재사용. judge/genretransfer system은 2048 미만이라 캐시 불가(거긴 cache_control 무효).
 
 const express = require('express');
 const multer = require('multer');
@@ -1459,12 +1462,33 @@ Sentence: ${sentence}`
 
 // 휴머나이저 출력에 cleanText + Tier 1 + Tier 2를 일괄 적용.
 // 1차 출력과 2-pass 출력 각각에 호출 → mechanical 위반 잔여 0건 보장.
-async function applyPassC(result, lang, signal) {
+async function applyPassC(result, lang, signal, ctx = {}) {
   if (!result?.outputText) return;
   let t = cleanText(result.outputText);
   t = enforceMechanicalRules(t);
   t = await fixListsOfThree(t, lang, signal);
+  // ★ 출고 품질 gate(2026-06-16 품질리포트 P0) — 전부 결정론(추가 LLM 0):
+  //   ① 영어 편집 마커 제거 ② 격식·자소서 punch 단정 제거 ③ no-op·register 이탈 측정(표시·강도추천용).
+  const og = require('../engine/outputguard');
+  if (lang === 'en') {
+    t = og.stripEnglishArtifacts(t);
+  } else if (ctx.rawText) {   // 원문 대조가 있어야 '엔진이 더한 punch'만 안전히 지움(원문 punch는 보존)
+    const strict = ctx.mode !== 'blog';   // 블로그(구어체)만 punch 1개 허용, 격식·자소서·다듬기는 0
+    const pr = og.stripPunchTemplates(t, ctx.rawText, { strict });
+    if (pr.removed.length) logger.info('humanize.punch_stripped', { mode: ctx.mode, count: pr.removed.length, samples: pr.removed.slice(0, 3) });
+    t = pr.text;
+    if (ctx.mode !== 'blog') {   // 합니다체 문서에 튄 소수 평어 문장 교정(블로그는 평어 허용 — 제외)
+      const rl = og.normalizeRegisterLeaks(t, ctx.rawText);
+      if (rl.fixed) { logger.info('humanize.register_fixed', { mode: ctx.mode, fixed: rl.fixed }); t = rl.text; }
+    }
+  }
   result.outputText = t;
+  // 품질 지표(차단 아님 — 표시·로깅용): no-op(보존형 수준)·register 이탈.
+  if (ctx.rawText) {
+    result.noOpScore = og.noOpScore(ctx.rawText, t);
+    result.weakTransform = ctx.mode !== 'polish' && result.noOpScore >= 0.86;   // 변환 약함(폴리시는 보존이 목적이라 제외)
+    result.registerLeak = lang === 'en' ? 0 : og.registerLeakCount(t, ctx.rawText);
+  }
 }
 
 // ============================================================
@@ -1685,7 +1709,7 @@ async function preprocessInput(text, lang, signal) {
 }
 
 // ─── Anthropic Messages API 호출 (streaming) ─────────────────
-// 시스템 프롬프트는 cache_control: ephemeral로 5분 TTL 자동 캐싱 (1024+ 토큰 필요).
+// 시스템 프롬프트는 cache_control: ephemeral로 5분 TTL 자동 캐싱 (★Sonnet 4.6 최소 2048토큰 / Haiku 4.5 4096토큰 — 미만이면 무효).
 // 구조화 출력은 tool + tool_choice 강제 호출로 처리.
 //
 // ★ streaming 사용 이유: max_tokens=16384에 Sonnet 출력 속도(~50-80 tok/s) 고려하면
@@ -1694,12 +1718,14 @@ async function preprocessInput(text, lang, signal) {
 //   long generation은 끝까지 받고, 진짜 hang(네트워크/서버 stall)만 끊는다.
 // SSE 누적 결과는 non-streaming 응답과 동일한 모양({content, usage, stop_reason})으로
 // 재조립해 extractClaudeResult를 그대로 재사용한다 — 호출 측 변경 없음.
-async function callClaude({ userText, systemText, tool, temperature, maxOutputTokens, signal }) {
+async function callClaude({ userText, systemText, systemVolatile, tool, temperature, maxOutputTokens, signal }) {
   // ★ dev 백엔드 스위치: LLM_BACKEND=claudecode면 내 Claude Code 구독(Sonnet)으로 호출 (API 키 불필요).
   //   엔진 로컬 테스트용. 프로덕션은 LLM_BACKEND 미설정 → 기존 API 경로.
   if (process.env.LLM_BACKEND === 'claudecode') {
     const { callViaClaudeCode } = require('../engine/claudecode');
-    return callViaClaudeCode({ userText, systemText, tool, model: MODEL, signal });
+    // claudecode는 단일 system 문자열만 받으므로 고정+가변을 다시 합쳐 종전과 동일한 프롬프트로 호출.
+    const combinedSystem = systemVolatile ? `${systemText}\n${systemVolatile}` : systemText;
+    return callViaClaudeCode({ userText, systemText: combinedSystem, tool, model: MODEL, signal });
   }
   if (!ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is not configured');
@@ -1714,11 +1740,15 @@ async function callClaude({ userText, systemText, tool, temperature, maxOutputTo
   if (typeof temperature === 'number') body.temperature = temperature;
 
   if (systemText) {
+    // ★ 캐시 분리: 고정 코어(systemText)에만 cache_control → 매 요청 동일 prefix로 cache_read 재사용.
+    //   가변부(systemVolatile: 사용자 메모·evidence·앵커 회전)는 cache_control 없는 둘째 블록으로 — prefix를 안 깬다.
+    //   (Sonnet 4.6 캐시 최소 prefix=2048토큰. FLOOR 고정 코어는 이를 초과하므로 실제 캐시된다.)
     body.system = [{
       type: 'text',
       text: systemText,
       cache_control: { type: 'ephemeral' }
     }];
+    if (systemVolatile) body.system.push({ type: 'text', text: systemVolatile });
   }
 
   if (tool) {
@@ -1964,11 +1994,11 @@ async function applyAntiDetect({ result, rawText, povSeed, optIn, mode, lang, sp
 // source-internal grounding 패스(검증된 메모리스 레버, 카피킬러 64→50%): 추상 segment를 원문 anchor
 // 기반 stance-sharpening으로 교체. segment마다 novelty+semanticJudge 게이트가 날조를 차단(FLOOR-안전).
 // judge 이후·antiDetect 이전에 적용. 채택 시 출력 교체 + 가드 재측정.
-async function applyGrounding({ result, rawText, povSeed, optIn, mode, lang, signal, floor, allowedExtra = '' }) {
+async function applyGrounding({ result, rawText, povSeed, optIn, mode, lang, signal, floor, allowedExtra = '', ledger = null }) {
   const before = result.outputText;
   let g;
   try {
-    g = await require('../engine/grounding').groundingPass(before, rawText, { lang, signal, mode });
+    g = await require('../engine/grounding').groundingPass(before, rawText, { lang, signal, mode, ledger });  // ★ judge ledger 재사용(중복 Sonnet 제거)
   } catch (e) {
     if (signal?.aborted) throw e;
     return { applied: false, reason: 'error:' + e.message };
@@ -2018,7 +2048,7 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   const anchorsOn = floorV2 && lang === 'ko' && selectedMode === 'assignment' && process.env.STYLE_ANCHOR === '1';
   let humanizeSystem = floorV2
     ? require('../engine/prompt').buildSystemPrompt(selectedMode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: notes, register: contract.register, anchorIdx: anchorsOn ? 0 : null })
-    : getHumanizeSystem(selectedMode, lang);
+    : { stable: getHumanizeSystem(selectedMode, lang), volatile: '' };  // ★ 캐시: 비-floor도 {stable,volatile}로 통일
   // floorV2는 lean tool(outputText 중심) — 레거시 표면지표 필드의 anti-FLOOR 유도 제거(§리뷰#7).
   const humanizeTool = floorV2 ? getLeanHumanizeTool(lang) : getHumanizeToolFor(selectedMode, lang);
   const userContent = lang === 'en'
@@ -2029,11 +2059,11 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
   // 1차
   const data = await callClaude({
-    userText: userContent, systemText: humanizeSystem, tool: humanizeTool,
+    userText: userContent, systemText: humanizeSystem.stable, systemVolatile: humanizeSystem.volatile, tool: humanizeTool,
     temperature: 0.5, maxOutputTokens: 16384, signal
   });
   let result = extractClaudeResult(data, humanizeTool.name);
-  await applyPassC(result, lang, signal);
+  await applyPassC(result, lang, signal, { rawText: humanizeText, mode: selectedMode });
   verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
 
   // ===== 2-pass =====
@@ -2054,11 +2084,11 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
       try {
         const refineUser = floor.buildFloorRefineUser(humanizeText, result.outputText, floorViolations, lang);
         const refineData = await callClaude({
-          userText: refineUser, systemText: humanizeSystem, tool: humanizeTool,
+          userText: refineUser, systemText: humanizeSystem.stable, systemVolatile: humanizeSystem.volatile, tool: humanizeTool,
           temperature: 0.5, maxOutputTokens: 16384, signal
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
-        await applyPassC(result, lang, signal);
+        await applyPassC(result, lang, signal, { rawText: humanizeText, mode: selectedMode });
         verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
         refined = true;
         floorViolations = floor.collectFloorViolations({ result, rawText: text, povSeed, optIn, mode: selectedMode, allowedExtra: notes, anchors: anchorsOn }); // 재검증
@@ -2079,11 +2109,11 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
       try {
         const refineUser = buildRefineUser(humanizeText, result.outputText, failed, lang);
         const refineData = await callClaude({
-          userText: refineUser, systemText: humanizeSystem, tool: humanizeTool,
+          userText: refineUser, systemText: humanizeSystem.stable, systemVolatile: humanizeSystem.volatile, tool: humanizeTool,
           temperature: 0.5, maxOutputTokens: 16384, signal
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
-        await applyPassC(result, lang, signal);
+        await applyPassC(result, lang, signal, { rawText: humanizeText, mode: selectedMode });
         verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
         refined = true;
       } catch (e) {
@@ -2140,7 +2170,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   // ★ source-internal grounding(검증된 메모리스 레버): 추상 segment를 stance-sharpening으로 교체(antiDetect 이전).
   if (grounding) {
     result.grounding = await applyGrounding({
-      result, rawText: text, povSeed, optIn, mode: selectedMode, lang, signal, floor, allowedExtra: notes
+      result, rawText: text, povSeed, optIn, mode: selectedMode, lang, signal, floor, allowedExtra: notes,
+      ledger: contract.softClaimLedger   // ★ judge가 만든 ledger 재사용(없으면 grounding이 1회 생성)
     });
   }
 
@@ -2240,7 +2271,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const anchorActive = floorV2 && lang === 'ko' && mode === 'assignment' && process.env.STYLE_ANCHOR === '1';
   const buildSys = (un, ev, anchorIdx = null) => floorV2
     ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev, anchorIdx, tonePolish })
-    : getHumanizeSystem(mode, lang);
+    : { stable: getHumanizeSystem(mode, lang), volatile: '' };  // ★ 캐시: 비-floor도 {stable,volatile}로 통일
   let humanizeSystem = buildSys('', '', null);  // 기본(메모·evidence·앵커 없음 — 수리 패스용)
   const topicSim = (a, b) => {
     const ta = new Set((a.match(/[가-힣]{2,}/g) || []));
@@ -2343,11 +2374,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     let chunkDone = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !chunkDone; attempt++) {
       try {
-        const data = await callClaude({ userText: userContent, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const data = await callClaude({ userText: userContent, systemText: chunkSys.stable, systemVolatile: chunkSys.volatile, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r = extractClaudeResult(data, tool.name);
         if (floor.looksLikeRefusal(r.outputText)) throw new Error('model-refusal'); // ★ 거부문이 출력에 박히는 사고 차단 → 재시도/폴백
         if (evid && evg.checkEvidencePairing(r.outputText || '', evidLines).length > basePairCount) throw new Error('evidence-pairing'); // ★ 수치-출처 분리(재조합 위험) → 재시도/폴백
-        await applyPassC(r, lang, signal);
+        await applyPassC(r, lang, signal, { rawText: c.text, mode });
         c.outputText = r.outputText || rawWithEvid;
         chunkDone = true;
       } catch (e) {
@@ -2361,9 +2392,9 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     if (viol.length) {
       try {
         const ru = floor.buildFloorRefineUser(cRaw, c.outputText, viol, lang);
-        const rd = await callClaude({ userText: ru, systemText: chunkSys, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const rd = await callClaude({ userText: ru, systemText: chunkSys.stable, systemVolatile: chunkSys.volatile, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
         const r2 = extractClaudeResult(rd, tool.name);
-        await applyPassC(r2, lang, signal);
+        await applyPassC(r2, lang, signal, { rawText: cRaw, mode });
         // 거부문이거나 수치-출처 짝을 새로 깨면 적용 안 함(이전 출력 유지)
         if (r2.outputText && !floor.looksLikeRefusal(r2.outputText)
           && !(evid && evg.checkEvidencePairing(r2.outputText, evidLines).length > basePairCount)) c.outputText = r2.outputText;
@@ -2384,6 +2415,11 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // 동시성 제한 풀 — 인덱스 큐를 CHUNK_CONCURRENCY개 워커가 소진.
   {
     let next = 0;
+    // ★ 캐시 워밍(opt-in, CHUNK_CACHE_WARM=1): 첫 청크를 단독 실행해 FLOOR 고정코어 캐시를 먼저 채운 뒤
+    //   (cache write) 나머지를 동시 실행 → 동일 prefix를 cache_read로 재사용. N개 청크가 같은 prefix를
+    //   동시에 write하던 낭비(캐시 doc "concurrent-request timing")를 제거 = 입력비용↓·hit rate↑.
+    //   대가는 첫 청크만큼 지연↑ — 속도 민감 시 기본 OFF, 비용/알람 우선 시 1로 켠다.
+    if (process.env.CHUNK_CACHE_WARM === '1' && chunks.length > 1) { await processChunk(0); next = 1; }
     const worker = async () => { while (next < chunks.length) { await processChunk(next++); } };
     await Promise.all(Array.from({ length: Math.min(CHUNK_CONCURRENCY, chunks.length) }, worker));
   }
@@ -2448,7 +2484,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ B7 모드: grounding은 "말투 유지"로 합니다체를 한다체로 되돌리고 격식엔 도움도 안 됨 → skip.
   if (grounding && (!skipPasses || groundingForce) && process.env.ASSIGNMENT_B7 !== '1') {
     result.grounding = await applyGrounding({
-      result, rawText: textF, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes
+      result, rawText: textF, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes,
+      ledger: contract.softClaimLedger   // ★ judge가 만든 ledger 재사용(없으면 grounding이 1회 생성)
     });
   }
 
@@ -2940,7 +2977,7 @@ router.post('/analyze', async (req, res) => {
       result = extractClaudeResult(data, humanizeTool.name);
       // Pass C: cleanText + 결정론적 mechanical 후처리 (특수문자, GPT-ism, 3+ 나열).
       // verifyCheckFields가 후처리된 텍스트를 보게 해서 2-pass가 mechanical 위반으론 발동하지 않게 함.
-      await applyPassC(result, lang, ac.signal);
+      await applyPassC(result, lang, ac.signal, { rawText: humanizeText, mode: selectedMode });
       verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
       usage = data.usage;
 
@@ -2963,7 +3000,7 @@ router.post('/analyze', async (req, res) => {
           const refined = extractClaudeResult(refineData, humanizeTool.name);
           // 1차 result는 폴백용으로 보관 → refined가 정상이면 교체
           result = refined;
-          await applyPassC(result, lang, ac.signal);
+          await applyPassC(result, lang, ac.signal, { rawText: humanizeText, mode: selectedMode });
           verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
           refineUsage = refineData.usage;
           if (result.selfCheckPass === false) {
@@ -3214,7 +3251,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         throw e;
       }
       result = extractClaudeResult(data, humanizeTool.name);
-      await applyPassC(result, lang, ac.signal);
+      await applyPassC(result, lang, ac.signal, { rawText: humanizeText, mode });
       if (!result.outputText) throw new Error('humanize_incomplete');
       usage = data.usage;
     }

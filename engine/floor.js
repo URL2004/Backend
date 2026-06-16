@@ -457,21 +457,27 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   const concl = require('./softguard').measureConclusionDrift(rawText, out);
 
   if (nov.count) criticals.push({ gate: 'novelty', detail: nov.items.join(', ') });
-  if (lost.count) criticals.push({ gate: 'lostFacts', detail: lost.items.join(', ') });
+  // ★ lostFacts 소프트화(2026-06-16): 재구성(formal)은 이미 "누락=경고+전달"인데 청크 경로(blog/다듬기)만 하드라
+  //   26K 논문이 숫자 1건("1,235만") 누락에 차단되던 불일치를 제거. 누락은 경고로 노출하고 전달한다(청크별 폴백이
+  //   사실을 이미 최대 보존). 날조(novelty)는 하드 차단 유지 — 없는 사실을 지어내는 건 절대 금지.
+  if (lost.count) warnings.push({ gate: 'lostFacts', detail: lost.items.join(', ') });
   const expNov = require('./surfaceguard').measurePersonalExperienceNovelty(rawText, out, allowedExtra);
   if (expNov.count) criticals.push({ gate: 'experience_novelty', detail: expNov.items.join(' | ') });
   if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', ') }); }
   // length_short 단독(사실 손실 없음)은 차단하지 않고 경고로만 노출 — 진짜 정보손실은 lostFacts가 잡는다.
   //   "결과가 줄어들면서 막힘"이 환불 민원이 되던 케이스를 완화(요약처럼 짧아져도 사실 보존이면 전달).
-  if (len.status === 'short') {
-    if (lost.count) criticals.push({ gate: 'length_short', detail: len.ratio });
-    else warnings.push({ gate: 'length_short', detail: len.ratio });
-  }
+  // length_short는 lostFacts가 소프트가 됐으므로 항상 경고(사실 보존 우선 — 짧아져도 전달, 누락은 lostFacts 경고로 노출).
+  if (len.status === 'short') warnings.push({ gate: 'length_short', detail: len.ratio });
   if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
   // ★ 과제 자연체(FORMAL_HUMAN, 격식): 필자 1인칭 판단 허용 → pov_inject 제외(experience_novelty=일화는 위에서 계속 critical).
   const _fhReport = (process.env.FORMAL_HUMAN === '1' || process.env.ASSIGNMENT_B7 === '1') && (mode === 'assignment' || mode === 'thesis');
   if (!optIn && !_fhReport && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });
-  if (rep.total) criticals.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
+  // ★ 반복 소프트화(2026-06-16): 단일 정확중복(exact≤1·fuzzy≤2)은 26K 장문에서 사소하다 → 경고. 기계적 반복(다수)만
+  //   하드 차단(AI 신호). 26K 논문이 exact 1건에 차단되던 케이스(#6) 완화.
+  if (rep.total) {
+    if (rep.count >= 2 || rep.fuzzyCount >= 3) criticals.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
+    else warnings.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
+  }
   // 결론부 drift는 critical 아님(§우회: 열린 마무리 허용) — 경고로만 노출하고, 의도 역전은 semanticJudge가 차단.
   if (concl.flagged) warnings.push({ gate: 'conclusion_drift', detail: concl.markers.join(', ') });
   if (mode === 'thesis') { const fake = measureFakeInternalRefs(rawText, out); if (fake.count) criticals.push({ gate: 'fake_ref', detail: fake.fabricated.join(', ') }); }

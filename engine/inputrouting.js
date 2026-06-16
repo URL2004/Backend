@@ -60,6 +60,17 @@ function isLongStructuredThesis(text) {
   return hasRoman || hasToc;
 }
 
+// 독후감·서평·감상문(개인 성찰문) 감지(2026-06-16 실측 yune0604 '수치심' 독후감: 재구성이 없는 장 번호("10장이
+//   경고하는 대목")·평가를 날조해 차단). 책 내용에 대한 개인 감상이라 새 외부 사실이 없어 재구성이 빈자리를 지어낸다
+//   → 보존형(다듬기)으로 유도. 강한 정형 구조(【줄거리】/【시사점】·독후감/서평)는 단독, 그 외엔 책 언급+1인칭 성찰 다수.
+function looksLikeReflection(text) {
+  const t = text || '';
+  if (/【\s*줄거리\s*】|【\s*시사점\s*】|독후감|서평|감상문/.test(t)) return true;
+  const book = (t.match(/이\s*책(은|이|을|에서|의|을\s*통해|을\s*읽)|저자는|글쓴이는|작가는|책을\s*읽/g) || []).length;
+  const reflect = (t.match(/나는|내가|느꼈|깨달았|깨닫게|생각이\s*들|마음에\s*남|위안이\s*되|돌아보게/g) || []).length;
+  return book >= 1 && reflect >= 3;   // 책 언급 + 1인칭 성찰 3개+ = 독후감/감상문(정상 시사·논증 글엔 이 조합 드묾)
+}
+
 // 재구성 부적합 판정 + 사용자에게 그대로 보여줄 '명확한 사유'. ir = surfaceguard.classifyInputRisk(text).
 //   factDense(사실 빼곡)는 '권장'(소프트)이라 여기서 막지 않는다 — 사장님 결정으로 사실밀집 글도 고급을
 //   돌릴 수 있어야 함(B). 막다른 길로 만드는 두 부류만 사전 차단한다: ① 자소서·생기부·탐구 ② 짧고 추상적.
@@ -83,6 +94,12 @@ function restructureUnfit(text, ir = {}) {
     return {
       unfit: true, kind: 'resume',
       reason: '이 글은 자소서·생활기록부·탐구활동처럼 1인칭으로 자기 경험·동기를 적은 글이에요. 고급(재구성)은 시사·논증 칼럼으로 새로 써내는 방식이라, 이런 글을 넣으면 AI가 원문에 없는 지원 동기·평가·일화를 지어내 차단돼요. 「그대로 다듬기」나 「기본 피하기」로 진행해 주세요.'
+    };
+  }
+  if (looksLikeReflection(t)) {
+    return {
+      unfit: true, kind: 'reflection',
+      reason: '이 글은 책에 대한 개인 감상(독후감·서평)이에요. 고급(재구성)은 시사·논증 칼럼으로 새로 써내는 방식이라, 책 내용에 없는 장 번호·평가·해석을 지어내 차단돼요. 「그대로 다듬기」나 「기본 피하기」로 진행해 주세요.'
     };
   }
   // ※ 초장문 구조화 논문(isLongStructuredThesis)은 여기서 unfit으로 막지 않는다 — 보존형(그대로 다듬기)으로 보내면
@@ -119,4 +136,4 @@ function detectInputDuplication(text) {
   return { duplicated: ratio >= 0.35, ratio: Math.round(ratio * 100) / 100 };
 }
 
-module.exports = { looksLikeResume, factDensity, isLongStructuredThesis, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };

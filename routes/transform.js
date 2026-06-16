@@ -927,6 +927,9 @@ async function runLongThesisChunked(job, text, evidence) {
         logger.error('transform.long_thesis_credit_deduct_failed_manual_action', { jobId: job.id, uid: job.uid, needed: job.needed, err: e });
       }
     }
+    if ((out.floorReport.warnings || []).some(w => w.gate === 'lostFacts')) {
+      job.note = (job.note ? job.note + ' ' : '') + '원문의 사실 일부(연도·수치·기관명 등)가 재작성 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 주세요.';
+    }
     job.status = 'done';
     job.result = {
       outputText: out.result.outputText,
@@ -1013,6 +1016,10 @@ async function runHumanizeJob(job, text) {
     //   polish(그대로 다듬기)는 보존이 목적이라 applyPassC에서 weakTransform=false로 둔다 → blog에서만 안내.
     if (out.result.weakTransform) {
       job.note = (job.note ? job.note + ' ' : '') + '원문과 큰 차이 없이 나왔어요(보존형 수준). 더 바꾸려면 「고급 피하기」를 쓰거나 경험 메모를 더해 다시 시도해 주세요.';
+    }
+    // ★ 사실 누락 소프트 안내(2026-06-16): lostFacts가 소프트가 되어 차단 대신 전달되므로, 빠진 사실을 사용자가 대조하게 안내.
+    if ((out.floorReport.warnings || []).some(w => w.gate === 'lostFacts')) {
+      job.note = (job.note ? job.note + ' ' : '') + '원문의 사실 일부(연도·수치·기관명 등)가 다듬는 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 주세요.';
     }
     job.status = 'done';
     job.result = {

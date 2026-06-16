@@ -301,12 +301,37 @@ const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'ne
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'memo', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence'];
 
+function pruneUndefinedForFirestore(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (Array.isArray(value)) {
+    return value.map(pruneUndefinedForFirestore).filter(v => v !== undefined);
+  }
+  if (typeof value === 'object') {
+    if (value instanceof Date) return value;
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      const cleaned = pruneUndefinedForFirestore(v);
+      if (cleaned !== undefined) out[k] = cleaned;
+    }
+    return out;
+  }
+  return value;
+}
+
 function persistJob(job) {
   if (!db) return;
   const doc = {};
-  for (const k of PERSIST_FIELDS) if (job[k] !== undefined) doc[k] = job[k];
-  db.collection('transformJobs').doc(job.id).set(doc, { merge: true })
-    .catch(e => logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
+  for (const k of PERSIST_FIELDS) {
+    const cleaned = pruneUndefinedForFirestore(job[k]);
+    if (cleaned !== undefined) doc[k] = cleaned;
+  }
+  try {
+    db.collection('transformJobs').doc(job.id).set(doc, { merge: true })
+      .catch(e => logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
+  } catch (e) {
+    logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e });
+  }
 }
 
 function deletePersisted(id) {
@@ -466,7 +491,10 @@ router.shutdown = async function shutdown() {
     }
     if (db) {
       const doc = {};
-      for (const k of PERSIST_FIELDS) if (j[k] !== undefined) doc[k] = j[k];
+      for (const k of PERSIST_FIELDS) {
+        const cleaned = pruneUndefinedForFirestore(j[k]);
+        if (cleaned !== undefined) doc[k] = cleaned;
+      }
       writes.push(db.collection('transformJobs').doc(j.id).set(doc, { merge: true }).catch(() => {}));
     }
   }
@@ -919,7 +947,7 @@ async function runHumanizeJob(job, text) {
       },
       metrics: out.floorReport.metrics,   // 배지 렌더 호환(formal과 동일 접근 경로)
       weakTransform: !!out.result.weakTransform,   // 약한 변환(보존형 수준) — UI 안내·강도 추천용
-      noOpScore: out.result.noOpScore,
+      noOpScore: Number.isFinite(out.result.noOpScore) ? out.result.noOpScore : null,
       registerLeak: out.result.registerLeak,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount

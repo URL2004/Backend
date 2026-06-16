@@ -49,6 +49,19 @@ const FACT_DENSE_THRESHOLD = Number(process.env.FACT_DENSE_THRESHOLD) || 5;
 function restructureUnfit(text, ir = {}) {
   const t = text || '';
   const bare = t.replace(/\s+/g, '').length || 1;
+  // ★ 영어(비한국어) 글(2026-06-16 실측): 재구성은 "한국 시사 칼럼 필자"로 하드코딩된 한국어 전용 엔진이라,
+  //   영어를 넣으면 한국어로 번역·축약해 원문을 통째로 망친다(영어 28,891자 → 한국어 4,081자, 14%·600크레딧 차감).
+  //   영어는 「그대로 다듬기」(영어 지원)로 보낸다. hangul/letters<0.15 = 영어 위주(프런트 evDetectLang과 동일 기준).
+  {
+    const hangul = (t.match(/[가-힣]/g) || []).length;
+    const letters = (t.match(/[A-Za-z가-힣]/g) || []).length || 1;
+    if (letters >= 200 && hangul / letters < 0.15) {
+      return {
+        unfit: true, kind: 'english',
+        reason: '고급(재구성)은 한국어 글 전용이에요. 영어 글을 넣으면 한국어로 번역·축약돼 원문이 크게 손상돼요. 영어 글은 「그대로 다듬기」로 진행해 주세요 — 영어를 영어 그대로 자연스럽게 다듬어요.'
+      };
+    }
+  }
   if (looksLikeResume(t)) {
     return {
       unfit: true, kind: 'resume',

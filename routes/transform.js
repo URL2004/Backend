@@ -260,10 +260,13 @@ function blockedNextActions(gates, mode) {
 }
 
 function blockedResponse(job) {
-  const actions = blockedNextActions(job.gates || [], job.mode || 'formal');
+  const gates = job.gates || [];
+  const actions = blockedNextActions(gates, job.mode || 'formal');
+  // 재구성 부적합(자소서·짧고추상·영어)은 종류별 '구체 사유'를 job.note에 담아 두므로 그걸 우선 노출.
+  const reason = (gates.includes('restructure_unfit') && job.note) ? job.note : blockedReason(gates, job.mode || 'formal');
   return {
-    error: `${blockedReason(job.gates || [], job.mode || 'formal')} 크레딧은 차감되지 않았어요. ${actions[0]}`,
-    reason: blockedReason(job.gates || [], job.mode || 'formal'),
+    error: `${reason} 크레딧은 차감되지 않았어요. ${actions[0]}`,
+    reason,
     nextActions: actions
   };
 }

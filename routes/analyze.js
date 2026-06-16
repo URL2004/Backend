@@ -2723,6 +2723,18 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         result.registerNormalize = { target: origReg, changed: rn.changed };
       }
     } catch (e) { result.registerNormalize = { error: e.message }; }
+  } else if (mode === 'blog' && process.env.BLOG_REGISTER_NORM !== '0') {
+    // ★ blog 말투 일관화(2026-06-17 실측: 청크별 재작성이 앞=해요체·뒤=한다체로 갈려 중간에 어투가 바뀜).
+    //   blog는 캐주얼(해요체)이 목표라, 출력이 해요체 우세인데 한다체가 섞였을 때만 해요체로 결정론 통일한다
+    //   (종결어미만·무날조·무LLM). 과거형 ㅆ다→ㅆ어요 일괄 규칙으로 학술 과거형 잔류까지 정리. 끄려면 BLOG_REGISTER_NORM=0.
+    try {
+      const outReg = require('../engine/surfaceguard').measureRegisterMix(result.outputText).dominant;
+      if (outReg === 'haeyo') {
+        const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, 'haeyo');
+        if (rn.changed) result.outputText = rn.text;
+        result.registerNormalize = { target: 'haeyo', changed: rn.changed, basis: 'blog' };
+      }
+    } catch (e) { result.registerNormalize = { error: e.message }; }
   }
 
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).

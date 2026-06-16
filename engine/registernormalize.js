@@ -30,6 +30,10 @@ const HANDA_TO_HAEYO = [
   ['한다', '해요'], ['된다', '돼요'], ['진다', '져요'], ['린다', '려요'], ['난다', '나요'], ['본다', '봐요'], ['든다', '들어요'],
   ['있다', '있어요'], ['없다', '없어요'], ['같다', '같아요'], ['싶다', '싶어요'], ['겠다', '겠어요'],
   ['아니다', '아니에요'], ['이다', '이에요'], ['모른다', '몰라요'], ['만든다', '만들어요'], ['하다', '해요'],
+  // 고빈도 동사·형용사 종결 보강(2026-06-17 실측: 학술 해요체에 '준다·않다·넓다' 등 한다체 잔류)
+  ['않다', '않아요'], ['준다', '줘요'], ['간다', '가요'], ['온다', '와요'], ['산다', '사요'], ['받는다', '받아요'],
+  ['넓다', '넓어요'], ['깊다', '깊어요'], ['높다', '높아요'], ['낮다', '낮아요'], ['좋다', '좋아요'], ['많다', '많아요'],
+  ['적다', '적어요'], ['작다', '작아요'], ['크다', '커요'], ['길다', '길어요'], ['짧다', '짧아요'], ['쉽다', '쉬워요'], ['어렵다', '어려워요'],
 ];
 // 합니다체 → 해요체 변환 (해요체 원문인데 출력이 합니다체로 드리프트했을 때 되돌림). 고빈도·명확 어미만.
 const HAP_TO_HAEYO = [
@@ -60,6 +64,22 @@ function applyPronouns(text, pairs) {
   return { out, changed };
 }
 
+// ★ 과거형 일괄 변환(2026-06-17): 한국어 과거 종결은 항상 'ㅆ받침+다'(했다/졌다/냈다/왔다/봤다/췄다…) →
+//   해요체는 그 음절+'어요'(했어요/졌어요/냈어요…)로 균일하다. ㅆ받침을 유니코드로 판정해 고정 목록이 놓치는
+//   모든 과거형 종결을 한 번에 해요체로. 문장 끝(종결부호/줄끝)만, 무날조(어미만). 형태론 불확실한 현재형·
+//   형용사는 건드리지 않는다(고정 목록이 담당).
+function pastTenseDaToHaeyo(text) {
+  let changed = 0;
+  const re = new RegExp('([가-힣])다' + END, 'g');
+  const out = text.replace(re, (m, syl) => {
+    const code = syl.charCodeAt(0) - 0xAC00;
+    if (code < 0 || code > 11171) return m;
+    if (code % 28 === 20) { changed++; return syl + '어요'; }   // 받침 ㅆ(인덱스 20) = 과거 → 다 떼고 어요
+    return m;
+  });
+  return { out, changed };
+}
+
 // target: 'hap'(존댓말 ~습니다) | 'handa'(한다체 ~다) | 'haeyo'(해요체 ~요). 출력을 target 말투로 종결어미 통일.
 function normalizeRegister(text, target) {
   let out = text, changed = 0;
@@ -70,6 +90,7 @@ function normalizeRegister(text, target) {
     const e = applyEndings(out, HAP_TO_HANDA); out = e.out; changed += e.changed;
   } else if (target === 'haeyo') {
     // 한다체 조각 + 합니다체 드리프트 둘 다 해요체로. (단 명사+다 축약 copula "문제다" 등은 모호해 보존)
+    const e0 = pastTenseDaToHaeyo(out); out = e0.out; changed += e0.changed;   // 모든 과거형 ㅆ다→ㅆ어요 일괄
     const e1 = applyEndings(out, HANDA_TO_HAEYO); out = e1.out; changed += e1.changed;
     const e2 = applyEndings(out, HAP_TO_HAEYO); out = e2.out; changed += e2.changed;
   } else {

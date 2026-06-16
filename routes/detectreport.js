@@ -18,7 +18,7 @@ const { getDetectSystem } = require('../prompts');
 const { verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 
-const DAILY_CAP = Number(process.env.DETECT_DAILY_CAP) || 5;
+const DAILY_CAP = Number(process.env.DETECT_DAILY_CAP) || 3;   // 무료 감지 하루 한도(이후 유료 100자당 1크레딧)
 const daily = new Map();   // 'u:uid' | 'ip:addr' → { day, count } — 메모리(재시작 리셋은 사용자에게 유리한 방향)
 setInterval(() => {
   const d = kstDay();
@@ -82,11 +82,29 @@ router.post('/detect-report', async (req, res) => {
   const day = kstDay();
   const rec = daily.get(key);
   const used = (rec && rec.day === day) ? rec.count : 0;
-  if (!devNoAuth && used >= DAILY_CAP) {
-    logger.warn('detect_report.daily_cap_exceeded', { uid, used, cap: DAILY_CAP });
-    return res.status(429).json({ error: `무료 AI 감지는 하루 ${DAILY_CAP}회까지예요. 내일 다시 이용해 주세요.` });
+  // 무료 한도(기본 3회) 소진 후엔 차단 대신 유료 감지(100자당 1크레딧, 기존 감지 단가)로 전환.
+  const overFree = !devNoAuth && used >= DAILY_CAP;
+  const wantPaid = req.body?.paid === true;
+  const cost = Math.ceil(text.length / 100);
+  const requestId = (typeof req.body?.requestId === 'string' && req.body.requestId.trim())
+    ? req.body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '') : null;
+
+  // 무료 소진 + 유료 의사 없음 → 유료 안내(프론트가 확인받고 paid:true로 재요청)
+  if (overFree && !wantPaid) {
+    logger.info('detect_report.free_exhausted', { uid, used, cap: DAILY_CAP, cost });
+    return res.status(402).json({ ok: false, code: 'FREE_EXHAUSTED', cost, freeCap: DAILY_CAP, message: `오늘 무료 ${DAILY_CAP}회를 모두 썼어요. 계속하려면 ${cost}크레딧이 필요해요.` });
   }
-  logger.info('detect_report.started', { uid, textLength: text.length, usedToday: used, cap: DAILY_CAP, devNoAuth });
+  // 유료 감지 — 로그인·잔액 선검증(차감은 성공 후)
+  let paidPre = null;
+  if (overFree && wantPaid) {
+    if (!uid) return res.status(401).json({ error: '유료 감지는 로그인이 필요해요.', code: 'LOGIN_REQUIRED' });
+    try {
+      paidPre = await analyze.precheckCredits(req.body.idToken, cost);
+    } catch (e) {
+      return res.status(e.status || 402).json({ error: analyze.authErrorMessage(e.message), code: 'INSUFFICIENT_CREDITS', cost });
+    }
+  }
+  logger.info('detect_report.started', { uid, textLength: text.length, usedToday: used, cap: DAILY_CAP, paid: overFree && wantPaid, devNoAuth });
 
   // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
   let ir, paras, detail;
@@ -139,9 +157,20 @@ router.post('/detect-report', async (req, res) => {
   const engineProb = Math.round(Math.min(92, Math.max(15, 22 + 70 * (ir.abstractRiskRatio || 0))));
   const probability = det ? Math.round(det.probability) : engineProb;
 
-  // 카운트는 성공 직전 증가 — 서버 오류로 보고서를 못 받았는데 횟수만 소진되는 일 방지.
-  // 클라이언트가 끊겼으면(새로고침·이탈) 응답을 못 받으므로 무료 횟수도 소진하지 않는다.
-  if (!devNoAuth && !req.aborted) daily.set(key, { day, count: used + 1 });
+  // 과금/카운트는 성공 직전에만 — 서버 오류로 보고서를 못 받았는데 횟수 소진·차감되는 일 방지.
+  const isPaidRun = overFree && wantPaid;
+  if (isPaidRun) {
+    // 유료 감지: 성공 후 차감(실패 시 차감 없음). unlimited 플랜은 제외. 멱등키로 중복 차감 방지.
+    if (paidPre && paidPre.plan !== 'unlimited' && !req.aborted) {
+      try {
+        await analyze.commitCreditDeduct(paidPre.uid, cost, 'detect', requestId, { mode: 'detect', textLength: text.length });
+      } catch (e) {
+        logger.error('detect_report.paid_deduct_failed_manual_action', { uid, cost, requestId, err: e });
+      }
+    }
+  } else if (!devNoAuth && !req.aborted) {
+    daily.set(key, { day, count: used + 1 });   // 무료 횟수 소진
+  }
   logger.info('detect_report.completed', {
     uid,
     grade,
@@ -155,8 +184,9 @@ router.post('/detect-report', async (req, res) => {
   const B = diagnose.BANDS;
   res.json({
     ok: true,
-    free: true,
-    remainingToday: devNoAuth ? null : DAILY_CAP - used - 1,   // null이면 프론트가 잔여 표기 생략(dev 무제한)
+    free: !isPaidRun,
+    charged: isPaidRun ? cost : 0,
+    remainingToday: devNoAuth ? null : (overFree ? 0 : Math.max(0, DAILY_CAP - used - 1)),   // null이면 프론트가 잔여 표기 생략(dev 무제한)
     probability,
     probSource: det ? 'llm' : 'engine',
     summary: det ? det.summary : copy.desc,

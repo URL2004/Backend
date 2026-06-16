@@ -455,14 +455,22 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   const rep = result.repetition || measureRepetition(out);
   const drift = result.povDrift || measurePovDrift(rawText, out, povSeed);
   const concl = require('./softguard').measureConclusionDrift(rawText, out);
+  // ★ 영어 입력 FLOOR 세이프(2026-06-16): 한국어용 novelty/experience 추출기가 영어 Title-Case 다단어 런
+  //   ("Company Primary Leaders Leadership Style Core Mechanism" 같은 표 헤더 등)을 재배열 후 못 맞춰 대량 오탐
+  //   → 영어 글이 다듬기/blog에서 매번 차단(실측 차단 10건 중 6건). 영어는 한국어 게이트로 내용검증이 불가하므로
+  //   novelty·experience를 '경고'로 내리고 전달한다. ※영어 humanize는 TONE_EN으로 정상 동작 — 게이트만 오탐.
+  //   한국어 글의 날조 차단(novelty 하드)은 그대로 유지된다.
+  const _rawHangul = (rawText.match(/[가-힣]/g) || []).length;
+  const _rawLetters = (rawText.match(/[A-Za-z가-힣]/g) || []).length || 1;
+  const englishInput = _rawLetters >= 200 && _rawHangul / _rawLetters < 0.15;
 
-  if (nov.count) criticals.push({ gate: 'novelty', detail: nov.items.join(', ') });
+  if (nov.count) (englishInput ? warnings : criticals).push({ gate: 'novelty', detail: nov.items.join(', ') });
   // ★ lostFacts 소프트화(2026-06-16): 재구성(formal)은 이미 "누락=경고+전달"인데 청크 경로(blog/다듬기)만 하드라
   //   26K 논문이 숫자 1건("1,235만") 누락에 차단되던 불일치를 제거. 누락은 경고로 노출하고 전달한다(청크별 폴백이
   //   사실을 이미 최대 보존). 날조(novelty)는 하드 차단 유지 — 없는 사실을 지어내는 건 절대 금지.
   if (lost.count) warnings.push({ gate: 'lostFacts', detail: lost.items.join(', ') });
   const expNov = require('./surfaceguard').measurePersonalExperienceNovelty(rawText, out, allowedExtra);
-  if (expNov.count) criticals.push({ gate: 'experience_novelty', detail: expNov.items.join(' | ') });
+  if (expNov.count) (englishInput ? warnings : criticals).push({ gate: 'experience_novelty', detail: expNov.items.join(' | ') });
   if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', ') }); }
   // length_short 단독(사실 손실 없음)은 차단하지 않고 경고로만 노출 — 진짜 정보손실은 lostFacts가 잡는다.
   //   "결과가 줄어들면서 막힘"이 환불 민원이 되던 케이스를 완화(요약처럼 짧아져도 사실 보존이면 전달).

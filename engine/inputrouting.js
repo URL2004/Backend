@@ -60,6 +60,16 @@ function isLongStructuredThesis(text) {
   return hasRoman || hasToc;
 }
 
+// 학술 논문(학위논문·학회지 인용 기반) 감지(2026-06-16 실측 #9 항공논문 섹션): 인용 예외로 재구성에 들어가면 단일패스
+//   재구성이 국토부 논의·저자명·정책 전망을 날조해 added_claim 차단된다(정당한 차단). 학술 논문은 사실·인용 밀도가
+//   높아 재구성이 빈자리를 지어내므로, 차단 대신 '청크 기반 격식 회피'로 보낸다(보존+우회=날조 없음). 길이 무관.
+//   시사 칼럼(뉴스 인용 "(이름, 2023)")과 구분: 학위논문·학회지·『저널명』 같은 학술 1차출처 표기 2개+.
+function isAcademicCited(text) {
+  const t = text || '';
+  const refs = (t.match(/학위\s*논문|석사\s*학위|박사\s*학위|학회지|학술지|『[^』\n]{2,}』/g) || []).length;
+  return refs >= 2;
+}
+
 // 독후감·서평·감상문(개인 성찰문) 감지(2026-06-16 실측 yune0604 '수치심' 독후감: 재구성이 없는 장 번호("10장이
 //   경고하는 대목")·평가를 날조해 차단). 책 내용에 대한 개인 감상이라 새 외부 사실이 없어 재구성이 빈자리를 지어낸다
 //   → 보존형(다듬기)으로 유도. 강한 정형 구조(【줄거리】/【시사점】·독후감/서평)는 단독, 그 외엔 책 언급+1인칭 성찰 다수.
@@ -136,4 +146,4 @@ function detectInputDuplication(text) {
   return { duplicated: ratio >= 0.35, ratio: Math.round(ratio * 100) / 100 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };

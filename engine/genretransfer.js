@@ -500,14 +500,20 @@ function resolveDupSentences(doc, textF) {
 
 // 메타 메모·지시문 윙크·용어귀속 날조 가드: engine/floor.js로 이식(메인 엔진 공용) — import만.
 const { META_NOTE_RE, WINK_RE, findCoinedTerms } = require('./floor');
-// ★문장 단위 메타 제거(2026-06-16 누출 재발): 예전엔 문단 단위 + >300자 문단 예외라, 긴 문단 안에
-//   끼인 지시문(인라인 누출)이 통째로 통과했다. 이제 문단을 문장으로 쪼개 "지시문 문장만" 빼고 본문은
-//   살린다 → 인라인 누출 차단 + 정상 문장 보존(문단 통째 삭제로 인한 본문 손실도 방지). 순수 메타 문단은
-//   모든 문장이 빠져 자동 제거된다. META_NOTE_RE는 정상 산문 오탐이 거의 없는 고정밀 토큰만 담는다.
+// ★판정 스캐폴딩 줄 제거(2026-06-16 실측 2건): 판정/수리 LLM이 교정 본문 대신 마크다운 판정을 통째로
+//   토해 본문에 박히는 사고 — "# 판정: added_claim", "## 근거 - …", "---", "**문제점:** - …",
+//   "## 수정 문장:" 등. 칼럼 산문엔 마크다운 헤더·수평선·판정 라벨이 존재하지 않으므로 줄 단위로 안전하게
+//   제거한다(일반어 '근거/판정/문제점'은 "라벨+콜론" 형태일 때만 매칭 — 정상 산문 오탐 회피).
+const SCAFFOLD_LINE_RE = /^(?:#{1,6}\s|[-—*_]{3,}\s*$|\*{0,2}\s*(?:판정|근거|문제점|수정\s*문장|위반(?:\s*(?:사항|내용))?|진단|평가\s*결과)\s*\*{0,2}\s*[:：])/;
+// ★문장 단위 메타 제거(2026-06-16): 예전엔 문단 단위 + >300자 문단 예외라, 긴 문단 안에 끼인 지시문/판정
+//   (인라인 누출, 예: "… 받는다. # 판정: added_claim")이 통째로 통과했다. 이제 ① 줄 단위로 판정 스캐폴딩
+//   줄을 빼고 ② 남은 문단을 문장으로 쪼개 META 매칭 문장만 뺀다 → 본문은 보존, 누출만 제거. 순수 메타 문단은
+//   모든 줄·문장이 빠져 자동 삭제. META_NOTE_RE·SCAFFOLD_LINE_RE 모두 정상 산문 오탐이 거의 없는 고정밀.
 function stripMetaNotes(doc) {
   const out = [];
-  for (const p of String(doc || '').split(/\n{2,}/)) {
-    const t = p.trim();
+  for (const para of String(doc || '').split(/\n{2,}/)) {
+    const lines = para.split(/\n/).map(l => l.trim()).filter(l => l && !SCAFFOLD_LINE_RE.test(l));
+    const t = lines.join(' ').trim();
     if (!t) continue;
     const sents = t.split(/(?<=[.!?”"。…])\s+/);
     const kept = sents.filter(s => { const ss = s.trim(); return ss && !META_NOTE_RE.test(ss); });

@@ -87,6 +87,30 @@ function _isTailEcho(key, prevKey) {
   return inP / g.size >= 0.85;
 }
 
+// ★ 짧은 동의어 되풀이 에코(2026-06-17, #2 "…어렵다. 불가능하다."): 표면 겹침이 없어 _isTailEcho가 못 잡는,
+//   직전 단정을 짧은 동의어 단정으로 다시 말하는 사각. 전체 어간으로만 매칭('가능'은 '불가능'의 부분문자열이라
+//   아예 그룹에서 제외 — 반대뜻 오삭제 방지). ≤12자 + 다/음/함 종결 + 직전 문장이 더 길고 같은 어간 그룹 공유일
+//   때만. 못 잡으면 그냥 유지(과삭제 0). env DEDUP_SYNECHO=0으로 해제.
+const SHORT_ECHO_SYNS = [
+  ['어렵', '불가능', '힘들', '곤란', '난해'],
+  ['쉽', '수월', '간단', '용이'],
+  ['중요', '핵심', '관건', '결정적'],
+  ['필요', '필수', '불가결'],
+];
+function _isShortSynEcho(part, prevPart) {
+  if (process.env.DEDUP_SYNECHO === '0') return false;
+  const raw = (part || '').trim();
+  const k = _normSent(part);
+  if (k.length < 3 || k.length > 12) return false;
+  if (!/(?:다|음|함)[.!?。]?$/.test(raw)) return false;
+  const pp = prevPart || '';
+  if (pp.length <= raw.length) return false;                // 직전 문장이 더 길어야 '짧은 되풀이'
+  for (const grp of SHORT_ECHO_SYNS) {
+    if (grp.some(w => raw.includes(w)) && grp.some(w => pp.includes(w))) return true;
+  }
+  return false;
+}
+
 function dedupeSentences(text) {
   const paras = (text || '').split(/\n{2,}/);
   const keptNorm = new Set();     // 정확 중복용
@@ -95,11 +119,11 @@ function dedupeSentences(text) {
   const out = paras.map(p => {
     const parts = p.split(/(?<=[.!?。])\s+/);          // floor.measureRepetition과 동일 문장분리
     const keep = [];
-    let prevKey = '';                                   // 문단 내 직전 보존 문장(에코 판정용)
+    let prevKey = '', prevPart = '';                    // 문단 내 직전 보존 문장(에코 판정용)
     for (const part of parts) {
       const key = _normSent(part);
-      if (_isTailEcho(key, prevKey)) { removed++; continue; }  // 꼬리 에코 → 삭제
-      if (key.length < 15) { keep.push(part); prevKey = key; continue; }   // 짧은 문장은 exact/fuzzy 대상 아님
+      if (_isTailEcho(key, prevKey) || _isShortSynEcho(part, prevPart)) { removed++; continue; }  // 꼬리/동의어 에코 → 삭제
+      if (key.length < 15) { keep.push(part); prevKey = key; prevPart = part; continue; }   // 짧은 문장은 exact/fuzzy 대상 아님
       if (keptNorm.has(key)) { removed++; continue; }        // 정확 중복 → 후속 삭제
       let dup = false;
       if (key.length >= _DEDUP_MIN_LEN) {
@@ -110,7 +134,7 @@ function dedupeSentences(text) {
       if (dup) { removed++; continue; }                      // 근접 중복 → 후속 삭제
       keptNorm.add(key);
       keep.push(part);
-      prevKey = key;
+      prevKey = key; prevPart = part;
     }
     return keep.join(' ').trim();
   }).filter(p => p.length > 0);

@@ -18,6 +18,15 @@ const citedSrc = '백선희·이승창·이상학, 「항공 마일리지」, �
 const citedOut = '백선희·이승창·이상학의 『한국항공운항학회지』(2014) 연구가 이를 뒷받침한다.';
 ok(ir.countFabricatedCitations(citedSrc, citedOut) === 0, '원문에 있던 인용 보존 → 오탐 0');
 
+console.log('\n=== 날조 인용 결정론 제거(#99: 괄호형만 안전 제거) ===');
+const fsrc = '남강댐 건설 이후 하류 퇴적 환경이 달라졌다. 외부 사례를 검토할 필요가 있다.';
+const fout = '남강댐 건설 이후(출처: 한국민족문화대백과사전) 하류 퇴적 환경이 달라졌다(추태호·채수권, 2012). 외부 사례를 검토할 필요가 있다.';
+const fr = ir.stripFabricatedCitations(fsrc, fout);
+ok(fr.removed >= 2 && !fr.text.includes('출처') && !fr.text.includes('2012'), `괄호형 날조인용 제거 (${fr.removed}건)`);
+ok(fr.text.includes('하류 퇴적 환경이 달라졌다') && fr.text.includes('외부 사례'), '본문은 보존(문장 안 깨짐)');
+const presSrc = '백선희, 『한국항공운항학회지』(2014)가 이를 보였다.';
+ok(ir.stripFabricatedCitations(presSrc, '이는 백선희, (2014)에서 확인된다.').removed === 0, '원문에 있던 인용(2014)은 보존');
+
 console.log('\n=== 고유명사 과반복 감지(#86: 인용 제목 8회 반복) ===');
 const repSrc = '지다웨이의 <막>은 1995년, 제17회 롄허보 문학상 중편소설 대상을 받은 작품이다.';
 const repOut = '제17회 수상작이다. 제17회 그 작품은. 제17회를 받은. 제17회 위상. 제17회 의미. 제17회 깊이. 제17회 평가. 제17회 가치.';

@@ -1462,8 +1462,28 @@ Sentence: ${sentence}`
 
 // 휴머나이저 출력에 cleanText + Tier 1 + Tier 2를 일괄 적용.
 // 1차 출력과 2-pass 출력 각각에 호출 → mechanical 위반 잔여 0건 보장.
+// ★ em-dash 과다 톤다운(2026-06-17, #6): 휴머나이징이 본문에 대시(—)를 남발(실측 3→104회)해 오히려 LLM
+//   문체 지문이 됨. 제목 블록(첫 \n\n 앞)의 "제목 — 부제" 대시는 보존하고, 본문 1,000자당 1.5개 초과면 ", "로
+//   치환. 정상 사용(1~3개)은 임계값 아래라 불변. env EMDASH_CAP=0으로 해제.
+function tonedownEmDash(text) {
+  const t = text || '';
+  const idx = t.indexOf('\n\n');
+  const head = idx >= 0 ? t.slice(0, idx) : '';
+  let body = idx >= 0 ? t.slice(idx) : t;
+  const dashes = (body.match(/[—―–]/g) || []).length;
+  const per1k = dashes / Math.max(1, (body.match(/[가-힣]/g) || []).length / 1000);
+  if (per1k > 1.5) body = body.replace(/\s*[—―–]\s*/g, ', ').replace(/,\s*,/g, ',');
+  return head + body;
+}
+
 async function applyPassC(result, lang, signal, ctx = {}) {
   if (!result?.outputText) return;
+  // ★ ※본문/도입부/결론부 플레이스홀더 제거(2026-06-17, #14·#90): posNote("※ 본문이다" 등)가 출력에 베껴
+  //   박히는 누출을 결정론으로 제거(전 모드·무LLM). cleanText 전에 떼어 잔여 이중공백은 cleanText가 정리.
+  //   '※ 표는 부록 참조' 같은 정상 ※문구는 (본문|도입부|결론부)+(이다|이에요…) 패턴만 매칭해 보존.
+  result.outputText = result.outputText
+    .replace(/※\s*결론부(?:다|이에요|예요)[^。\n]*?비슷하게\.?/g, '')
+    .replace(/※\s*(?:본문|도입부|결론부)(?:이다|이에요|예요|다)\.?/g, '');
   let t = cleanText(result.outputText);
   t = enforceMechanicalRules(t);
   t = await fixListsOfThree(t, lang, signal);
@@ -1481,6 +1501,7 @@ async function applyPassC(result, lang, signal, ctx = {}) {
       const rl = og.normalizeRegisterLeaks(t, ctx.rawText);
       if (rl.fixed) { logger.info('humanize.register_fixed', { mode: ctx.mode, fixed: rl.fixed }); t = rl.text; }
     }
+    if (process.env.EMDASH_CAP !== '0') t = tonedownEmDash(t);   // em-dash 남발 톤다운(#6)
   }
   result.outputText = t;
   // 품질 지표(차단 아님 — 표시·로깅용): no-op(보존형 수준)·register 이탈.

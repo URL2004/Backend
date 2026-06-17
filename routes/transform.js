@@ -1044,6 +1044,16 @@ async function runHumanizeJob(job, text) {
       return;
     }
     if (!out.result || !out.result.outputText) throw new Error('humanize_incomplete');
+    // ★ 블로그 날조 인용 결정론 제거(2026-06-17, #99): blog는 더 깨끗한 재라우팅 경로가 없으니, 원문에 없는
+    //   괄호형 인용/출처만 안전 제거(문장 안 깨짐). 인라인 외부사례는 격식문서 라우팅(고급)으로 처리. polish 제외.
+    if (!isPolish) {
+      const sc = inputrouting.stripFabricatedCitations(text, out.result.outputText);
+      if (sc.removed) {
+        out.result.outputText = sc.text;
+        job.note = (job.note ? job.note + ' ' : '') + '원문에 없던 출처·인용 표기를 자동으로 정리했어요.';
+        logger.info('transform.blog_fab_citation_stripped', { jobId: job.id, uid: job.uid, removed: sc.removed });
+      }
+    }
     if (!job.devNoAuth && job.plan !== 'unlimited') {
       try {
         await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'humanize', 'job_' + job.id, { mode: job.mode || 'polish', textLength: (job.text || '').length }));
@@ -1135,6 +1145,12 @@ router.post('/transform', async (req, res) => {
   if (mode !== 'polish' && inputrouting.isEnglishInput(text)) {
     logger.warn('transform.english_input_blocked', { mode, textLength: text.length });
     return res.status(400).json({ error: inputrouting.ENGLISH_UNFIT_REASON, route: 'polish' });
+  }
+  // ★ 격식문서 → 고급 안내(2026-06-17, #21·#83·#72·#90): 보고서·계약서·논문을 기본 피하기에 넣으면 구어체로
+  //   변질된다. 입력 단계에서 고급 피하기로 유도(blog만, 무차감·무API). 다듬기·고급은 그대로 통과.
+  if (mode === 'blog' && inputrouting.isFormalDocument(text)) {
+    logger.warn('transform.formal_doc_to_advanced', { mode, textLength: text.length });
+    return res.status(400).json({ error: inputrouting.FORMAL_GUIDANCE_REASON, route: 'formal' });
   }
   // ★ 제출자 메타데이터 제거(2026-06-17, #97): "제출자: OO학부 20260423 변정빈" 머리말이 본문에 인용 저자처럼
   //   엮이던 사고 — 돌리기 전에 떼어낸다(본문 내용 불변, 무차감). 차단 아님.

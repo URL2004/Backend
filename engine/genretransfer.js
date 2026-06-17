@@ -353,7 +353,7 @@ async function buildSlotPlan(rawText, { skeleton, evidenceList = [], ledger, len
   const evid = evidenceList.map((e, i) => `E${i + 1}. ${e}`).join('\n');
   const system = `너는 문서 편집자다. 원문의 주장(C#)과 승인 근거(E#)를 "${sk.label}" 골격의 슬롯에 배정한다.
 슬롯(순서 고정): ${sk.slots.map((s, i) => `${i + 1}.${s.role}(${s.goal.slice(0, 24)}…)`).join(' / ')}
-규칙: 모든 C#를 빠짐없이 한 슬롯에(중복 금지). 모든 E#도 한 슬롯에(중복 금지). 제목은 쟁점을 드러내는 구체적 제목+대시 부제("…— …"), "~에 미치는 영향/~란 무엇인가" 식 금지.
+규칙: 모든 C#를 빠짐없이 한 슬롯에(중복 금지). 모든 E#도 한 슬롯에(중복 금지). 제목은 쟁점을 드러내는 구체적 제목(부제는 꼭 필요할 때만 짧게 — 대시 부제·콜론 남용 금지), "~에 미치는 영향/~란 무엇인가" 식·극적 부제 금지.
 JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":["C1"],"evidence":["E1"]},...]} (슬롯 순서·개수 고정)`;
   const user = `[원문]\n${rawText}\n\n[주장]\n${claims}\n\n[승인 근거]\n${evid || '(없음)'}`;
   let plan = await llmJSON({ system, user, signal, maxTokens: 2500, model: MODEL });
@@ -415,6 +415,21 @@ const { _numToks, evidenceAnchorMap, checkEvidencePairing, dedupeFactRecitations
 // ★ 문단 정리(2026-06-12): LLM이 한 문단 안에서 문장마다 줄바꿈(\n)을 넣으면 pre-wrap UI에서 "문장 뜻 단위로
 //   두 행" 어색한 줄바꿈이 됨. 문단 구분(\n\n)은 유지하고 문단 내부 단일 \n만 공백으로. 제목 블록(첫 블록에
 //   "— 부제" 줄)은 제목/부제 줄바꿈을 보존.
+// ★ 문서 구조 줄(헤딩·번호·불릿·표 행·조항)이면 앞 줄바꿈을 보존, 아니면 공백 합침(2026-06-17, 구조 붕괴 #100·#16·
+//   #92·#34·#90 수정). LLM이 문장마다 넣는 잡 \n은 그대로 공백 처리(현행 유지) — 다음 줄이 구조 줄일 때만 \n 보존.
+//   \d{1,2}(?!\d) 가드: 4자리 연도(2023.)를 1.리스트로 오인 금지.
+const STRUCT_LINE_RE = /^\s*(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.、)]|\d{1,2}(?!\d)\s*[.)]\s|\d{1,2}\.\d{1,2}|[가-하]\s*[.)]\s|[①②③④⑤⑥⑦⑧⑨⑩]|[-•*▪◦·]\s|\|.*\||제\s?\d{1,3}\s?(?:조|장|절|항))/;
+function structJoin(text) {
+  const ls = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  if (!ls.length) return '';
+  let acc = ls[0];
+  for (let k = 1; k < ls.length; k++) {
+    // 현재 줄이 구조 줄(리스트·하위헤딩) 또는 직전 줄이 구조 줄(헤딩 다음 본문 분리)이면 줄바꿈 보존.
+    const keepNl = STRUCT_LINE_RE.test(ls[k]) || STRUCT_LINE_RE.test(ls[k - 1]);
+    acc += (keepNl ? '\n' : ' ') + ls[k];
+  }
+  return acc;
+}
 function tidyParagraphs(doc) {
   const blocks = (doc || '').split(/\n{2,}/);
   return blocks.map((b, i) => {
@@ -423,7 +438,7 @@ function tidyParagraphs(doc) {
     if (i === 0 && /\n\s*—/.test(b)) {                         // 제목\n— 부제 보존
       return t.split('\n').map(l => l.trim()).filter(Boolean).join('\n');
     }
-    return t.replace(/\s*\n\s*/g, ' ');                        // 문단 내부 줄바꿈 → 공백
+    return structJoin(t);                                       // 문단 내부: 구조 줄만 줄바꿈 보존, 나머지는 공백
   }).filter(Boolean).join('\n\n');
 }
 
@@ -513,19 +528,19 @@ function stripMetaNotes(doc) {
   const out = [];
   for (const para of String(doc || '').split(/\n{2,}/)) {
     const lines = para.split(/\n/).map(l => l.trim()).filter(l => l && !SCAFFOLD_LINE_RE.test(l));
-    const t = lines.join(' ').trim();
-    if (!t) continue;
-    const sents = t.split(/(?<=[.!?”"。…])\s+/);
-    const kept = sents.filter(s => { const ss = s.trim(); return ss && !META_NOTE_RE.test(ss); });
-    const joined = kept.join(' ').trim();
-    if (joined) out.push(joined);
+    // ★ 구조 보존(2026-06-17): 줄별로 META 문장만 제거한 뒤 struct-aware 재조합(헤딩·리스트 줄바꿈 유지).
+    const keptLines = lines.map(line => {
+      const sents = line.split(/(?<=[.!?”"。…])\s+/);
+      return sents.filter(s => { const ss = s.trim(); return ss && !META_NOTE_RE.test(ss); }).join(' ').trim();
+    }).filter(Boolean);
+    if (keptLines.length) out.push(structJoin(keptLines.join('\n')));
   }
   return out.join('\n\n');
 }
 
 const V2_BANS = `[금지 — 하나라도 어기면 실패]
 · 연구보고서 어법: 본 연구는/연구의 필요성/이론적 배경/연구 목적/첫째,…둘째,…셋째,…
-· AI 해설문 틀: "~란 무엇인가", "~의 의미/필요성", "도움이 되는 순간/지점", "위험한 지점", "~가 해야 할 일", "결국 ~에 달려 있다", "이 구조(과정)에서 가장 중요한", "이 사실(결과/수치)은 ~를 보여준다", "같은 맥락을 가리킨다"
+· AI 해설문 틀: "~란 무엇인가", "~의 의미/필요성", "도움이 되는 순간/지점", "위험한 지점", "~가 해야 할 일", "결국 ~에 달려 있다", "이 구조(과정)에서 가장 중요한", "이 사실(결과/수치)은 ~를 보여준다", "같은 맥락을 가리킨다", "문제는 ~라는 데 있다", "~라는 점에서", "달리 말하면 ~", "제목 — 부제 — 또 다른 부제"식 대시 남발
 · "필자가 보기에", "과연 ~인가?", 교훈 요약 마무리("~가 중요하다/필요하다"로 문단 닫기 반복)
 · 재료(주장·근거)에 없는 사실·수치·기관·사례·1인칭 경험 생성
 · 원문에 없는 평가·전망·인과·진단을 새 주장으로 덧붙이기(순응도 저하·부처 충돌·주기 단축처럼 "그럴듯한 추론"을 사실인 양 확장 금지 — 원문이 말한 범위만 옮겨라)

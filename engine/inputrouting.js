@@ -93,6 +93,23 @@ function isEnglishInput(text) {
 }
 const ENGLISH_UNFIT_REASON = '영어 글은 「피하기」가 아니라 「그대로 다듬기」로 진행해 주세요. 피하기(기본·고급)는 한국어 전용이라 영어를 넣으면 한국어로 번역·축약돼 원문이 크게 손상돼요. 다듬기는 영어를 영어 그대로 자연스럽게 다듬어요.';
 
+// ★ 격식 문서 감지(2026-06-17, CSV 감사 #21·#83·#90·#72): 보고서·계약서·실험·논문을 기본 피하기(blog)에 넣으면
+//   해요체 구어체로 변질된다(가벼운 말투가 그 형식에 안 맞음). 가중 점수 ≥2면 격식문서로 보고 고급 피하기로 안내.
+//   강신호(계약 조항·계약서)는 +2로 단독 통과. 캐주얼 블로그 오탐을 줄이려 '서론/본론/결론' 같은 흔한 말은 제외.
+function isFormalDocument(text) {
+  const t = text || '';
+  let score = 0;
+  if (/제\s?\d{1,3}\s?조(?:\s*\(|\s|$)/.test(t)) score += 2;                                   // 제N조(계약·법령)
+  if (/계약(?:서|자)|합의서|협약서|갑\s*(?:과|은|는)\s*을/.test(t)) score += 2;                    // 계약 강신호
+  if (/[ⅠⅡⅢⅣⅤ]\s*[.、)].*[ⅠⅡⅢⅣⅤ]\s*[.、)]|^\s*목\s*차\s*$/ms.test(t)) score += 1;             // 로마숫자 목차(2개+)
+  if (/가설|대조군|유의\s*수준|실험\s*방법|시료|측정\s*결과/.test(t)) score += 1;                   // 실험보고서
+  if (/참고\s*문헌|초록|Abstract|선행\s*연구|이론적\s*배경/.test(t)) score += 1;                    // 학술
+  if (/(?:<|\[|\(|【)?\s*표\s*\d+/.test(t)) score += 1;                                          // 표N
+  if (((t.match(/\([가-힣A-Za-z·]+,?\s*(?:19|20)\d{2}\)/g) || []).length) >= 2) score += 1;       // 인용 2개+
+  return score >= 2;
+}
+const FORMAL_GUIDANCE_REASON = '이 글은 보고서·계약서·논문 같은 격식 문서 형식이에요. 가벼운 말투의 「기본 피하기」로 돌리면 구어체로 바뀌어 형식이 깨져요. 원문 구조와 격식을 살리는 「고급 피하기(재구성)」로 진행해 주세요.';
+
 // ★ 각주(¹⁾ ²⁾ …) 인용이 많은 논증·학술 글(2026-06-16 실측 학생선수 최저학력제 논증문): 단일패스
 //   genreTransferV2가 원문을 부풀리며 평가·메타주장을 합성(added_claim)해 semanticJudge로 막힌다(차단 후
 //   복구해도 genreTransferV2 호출 1회 낭비 + 합성본). 위첨자 각주 표지가 3개 이상이면 처음부터 청크 회피
@@ -153,6 +170,20 @@ function countFabricatedCitations(src, out) {
   const hits = new Set();
   for (const m of (out || '').matchAll(re)) { const tok = m[0]; if (!S.includes(norm(tok))) hits.add(tok); }
   return hits.size;
+}
+
+// ★ 날조 인용 결정론 제거(2026-06-17, #99): 블로그처럼 더 깨끗한 재라우팅 경로가 없는 곳에서, 원문에 없는
+//   '괄호형' 인용/출처만 안전하게 떼어낸다(문장 안 깨짐 — 괄호는 통째 제거 가능). 본문에 녹아든 인라인 인용은
+//   건드리지 않는다(그건 isFormalDocument 라우팅으로 고급에 보내 재수정). stripSubmitterMeta와 동형.
+function stripFabricatedCitations(src, out) {
+  const norm = s => (s || '').replace(/\s+/g, '');
+  const S = norm(src);
+  let t = out || '', removed = 0;
+  const drop = m => { if (!S.includes(norm(m))) { removed++; return ''; } return m; };
+  t = t.replace(/[(（]\s*출처\s*[:：][^)）\n]*[)）]/g, drop);                                              // (출처: …)
+  t = t.replace(/[(（]\s*[가-힣A-Za-z·]+(?:\s*[·,]\s*[가-힣A-Za-z·]+)*\s*,?\s*(?:19|20)\d{2}\s*[)）]/g, drop);  // (저자, 2023)
+  if (removed) t = t.replace(/ {2,}/g, ' ').replace(/\s+([.,，。])/g, '$1');
+  return { text: t, removed };
 }
 
 // ★ 고유명사 과반복 감지(2026-06-17, CSV 감사 #86): genreTransferV2가 매 문단을 원문의 distinctive 명사구에
@@ -218,4 +249,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, maxNamedRepeat, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };

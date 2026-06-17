@@ -414,7 +414,11 @@ JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":[
   const lenScale = lengthMode === 'compact' ? 0.6 : 0.95;
   const desired = Math.round((((rawText.match(/[가-힣]/g) || []).length) || 1) * lenScale);
   const wsum = slots.reduce((a, s) => a + s.w, 0);
-  slots.forEach(s => { s.targetChars = Math.max(420, Math.round(desired * s.w / wsum)); });
+  // ★길이 규율(2026-06-18): 슬롯 최소 floor를 입력 길이에 비례시킨다. 고정 420 floor는 짧은 글을
+  //   슬롯수×420까지 부풀려(966자→2940자 강제) "같은 논점 반복 패딩"을 유발 → 카피킬러 반복 태그로 피탐.
+  //   무날조 원칙상 짧은 글은 못 부풀린다(새 사실 금지) → 짧게 나오는 게 정답. floor = min(420, desired/슬롯수).
+  const floorPer = Math.min(420, Math.round(desired / Math.max(1, slots.length)));
+  slots.forEach(s => { s.targetChars = Math.max(floorPer, Math.round(desired * s.w / wsum)); });
   return { title: plan.title || '', subtitle: plan.subtitle || '', slots };
 }
 

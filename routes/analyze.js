@@ -20,7 +20,7 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-6';
 const WEB_SEARCH_MODEL = 'claude-haiku-4-5';
 const ANTHROPIC_API_BASE = 'https://api.anthropic.com/v1';
-const CLAUDE_CACHE_MIN_PREFIX_CHARS = Number(process.env.CLAUDE_CACHE_MIN_PREFIX_CHARS) || 6000;
+const CLAUDE_CACHE_MIN_PREFIX_CHARS = Number(process.env.CLAUDE_CACHE_MIN_PREFIX_CHARS) || 3000;
 
 function shortHash(value) {
   if (!value) return undefined;

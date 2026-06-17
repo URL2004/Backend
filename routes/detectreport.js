@@ -128,7 +128,11 @@ router.post('/detect-report', async (req, res) => {
       systemText: getDetectSystem('ko'),
       tool: analyze.buildDetectTool('ko'),
       temperature: 0,
-      maxOutputTokens: 2200
+      maxOutputTokens: 2200,
+      task: 'detect_report',
+      phase: 'detect:main',
+      mode: 'detect',
+      cacheZeroWarn: true
     });
     const r = analyze.extractClaudeResult(data, 'return_detection_result');
     if (typeof r?.probability !== 'number') {
@@ -143,7 +147,10 @@ router.post('/detect-report', async (req, res) => {
     ? (async () => {
         const data = await analyze.callClaude({
           userText: before, systemText: REWRITE_SYSTEM, tool: REWRITE_TOOL,
-          temperature: 0.7, maxOutputTokens: 500
+          temperature: 0.7, maxOutputTokens: 500,
+          task: 'detect_report',
+          phase: 'preview:rewrite',
+          mode: 'preview'
         });
         const r = analyze.extractClaudeResult(data, 'return_rewrite');
         return r?.rewritten ? { before, after: r.rewritten } : null;

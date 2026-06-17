@@ -842,6 +842,16 @@ async function runJob(job, text, evidence) {
       persistJob(job);
       return;
     }
+    // ★ 인용 날조 재수정(2026-06-17, #56·#47): genreTransferV2가 원문에 없던 학술인용·통계를 지어내도 게이트가
+    //   놓친다(novelty·judge 사각). 차단 대신 청크 회피(문단별 충실 재작성, 실측 97%·날조 0)로 다시 만들어 전달한다.
+    //   감지 ≥2종(전체 100건 오탐 0). 끄려면 RESTRUCTURE_CHUNK_RECOVERY=0.
+    if (process.env.RESTRUCTURE_CHUNK_RECOVERY !== '0') {
+      const fabCount = inputrouting.countFabricatedCitations(text, out.outputText || '');
+      if (fabCount >= 2) {
+        logger.warn('transform.fabricated_citations_rerun', { jobId: job.id, uid: job.uid, fabCount, lenRatio: out.lenRatio });
+        return await runLongThesisChunked(job, text, evidence);
+      }
+    }
     // ★ 완료 시 차감 — 실패·차단 경로는 여기 도달하지 않으므로 결과 없는 차감이 구조적으로 불가능.
     //   멱등 키로 job.id를 넘겨 재시작·재시도 중복 차감까지 차단(job.deducted 플래그 + 이중 안전).
     if (!job.devNoAuth && job.plan !== 'unlimited') {
@@ -1095,7 +1105,7 @@ async function runHumanizeJob(job, text) {
 }
 
 router.post('/transform', async (req, res) => {
-  const { text, idToken } = req.body || {};
+  let { text, idToken } = req.body || {};
   const mode = ['blog', 'polish'].includes(req.body?.mode) ? req.body.mode : 'formal';   // 화이트리스트 — 그 외 값은 formal
   // 최소 길이: formal은 구조를 다시 짜는 작업이라 200자, short(blog·polish)는 50자(짧은 글 다듬기 허용)
   // 글자수 기준 통일: 표시·과금(needed)과 동일하게 공백 포함 raw length으로 판정.
@@ -1121,6 +1131,12 @@ router.post('/transform', async (req, res) => {
   if (mode !== 'polish' && inputrouting.isEnglishInput(text)) {
     logger.warn('transform.english_input_blocked', { mode, textLength: text.length });
     return res.status(400).json({ error: inputrouting.ENGLISH_UNFIT_REASON, route: 'polish' });
+  }
+  // ★ 제출자 메타데이터 제거(2026-06-17, #97): "제출자: OO학부 20260423 변정빈" 머리말이 본문에 인용 저자처럼
+  //   엮이던 사고 — 돌리기 전에 떼어낸다(본문 내용 불변, 무차감). 차단 아님.
+  {
+    const sm = inputrouting.stripSubmitterMeta(text);
+    if (sm.changed) { logger.info('transform.submitter_meta_stripped', { mode, removed: sm.changed }); text = sm.text; }
   }
   if (draining) {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });

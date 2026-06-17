@@ -142,6 +142,34 @@ function restructureUnfit(text, ir = {}) {
 //   실수로 두 번 붙여넣어 ~2만 자(blog 412크레딧)로 제출 → 중복 분량만큼 과금되고, 긴 입력이 judge 수리에서
 //   잘려 결과까지 절반 소실. 차감 전에 막아 비용·혼선을 없앤다(차단 시 무차감 — 중복 빼고 재시도 유도).
 //   판정: 문단(공백 무시 30자+)을 앞 80자 키로 묶어, 2회+ 나온 문단의 분량이 전체 본문의 35%+면 중복 입력.
+// ★ 인용 날조 감지(2026-06-17, CSV 100건 감사 #56·#47): genreTransferV2가 근거 빈약한 학술 글을 부풀리며
+//   원문에 없던 논문·학회지·저자(연도)·출처·통계 인용을 지어낸다(실측 lenRatio 207%, novelty·semanticJudge가
+//   모두 통과시킴 — 게이트 사각지대). 출력에 있고 원문(공백무시)엔 없는 학술인용 표지 종류 수를 센다. ≥2면
+//   날조로 보고 청크 회피(충실 재작성)로 재수정(차단 아님). 전체 100건 임계값 ≥2 오탐 0 실측.
+function countFabricatedCitations(src, out) {
+  const norm = s => (s || '').replace(/\s+/g, '');
+  const S = norm(src);
+  const re = /『[^』\n]{1,40}』|학회지|학위\s*논문|등재\s*(?:논문|연구)|출처\s*[:：]|[가-힣]{2,4}·[가-힣]{2,4}\s*\(?\s*20\d{2}|[가-힣]{2,4},\s*「|KISTI|KCI|WIPO|USPTO|pp?\.?\s*\d|\d+\s*권\s*\d*\s*호|보고서\s*\(?\s*20\d{2}/g;
+  const hits = new Set();
+  for (const m of (out || '').matchAll(re)) { const tok = m[0]; if (!S.includes(norm(tok))) hits.add(tok); }
+  return hits.size;
+}
+
+// ★ 제출자 메타데이터 제거(2026-06-17, CSV 감사 #97): 입력 머리말의 "제출자: OO학부 20260423 변정빈"을
+//   재생성 엔진이 인용 저자처럼 본문에 엮어("변정빈(20260423)이 설계한…") 학생 본인 이름이 가짜 인용이 됐다.
+//   돌리기 전에 학부·학번·이름/라벨형 메타데이터를 결정론으로 떼어낸다(본문 내용은 안 건드림). 학번은 6자리+
+//   연속 숫자라 4자리 연도와 구분된다.
+function stripSubmitterMeta(text) {
+  let t = text || '', changed = 0;
+  const patterns = [
+    /제\s*출\s*자\s*[:：]?\s*[가-힣]{0,20}(?:학부|학과|전공|대학원)?\s*\d{6,10}\s*[가-힣]{2,4}/g,
+    /[가-힣]{2,12}(?:학부|학과|전공|대학원)\s+\d{6,10}\s+[가-힣]{2,4}/g,
+    /(?:학\s*번|성\s*명|이\s*름|제\s*출\s*일|담당\s*교수|과목\s*명)\s*[:：]\s*[^\n,]{1,20}/g,
+  ];
+  for (const re of patterns) t = t.replace(re, () => { changed++; return ''; });
+  return { text: t, changed };
+}
+
 function detectInputDuplication(text) {
   const t = text || '';
   const norm = (s) => (s || '').replace(/\s+/g, '');
@@ -174,4 +202,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, FACT_DENSE_THRESHOLD };

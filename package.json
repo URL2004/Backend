@@ -6,6 +6,7 @@
     "start": "node server.js",
     "eval": "node eval/runEval.js",
     "eval:judge": "node eval/runJudgeEval.js",
+    "cache:logs": "powershell -ExecutionPolicy Bypass -File scripts/claude-cache-logs.ps1",
     "test:rules": "node scripts/firestore-rules.test.mjs",
     "emulator:rules": "powershell -ExecutionPolicy Bypass -File scripts/run-firestore-rules.ps1"
   },

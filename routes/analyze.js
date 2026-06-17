@@ -8,6 +8,7 @@
 const express = require('express');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
+const crypto = require('crypto');
 const { getDetectSystem, getHumanizeSystem } = require('../prompts');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
@@ -19,6 +20,18 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-sonnet-4-6';
 const WEB_SEARCH_MODEL = 'claude-haiku-4-5';
 const ANTHROPIC_API_BASE = 'https://api.anthropic.com/v1';
+const CLAUDE_CACHE_MIN_PREFIX_CHARS = Number(process.env.CLAUDE_CACHE_MIN_PREFIX_CHARS) || 6000;
+
+function shortHash(value) {
+  if (!value) return undefined;
+  return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
+}
+
+function jsonCharLength(value) {
+  if (!value) return 0;
+  try { return JSON.stringify(value).length; }
+  catch { return 0; }
+}
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
 async function precheckCredits(idToken, needed) {
@@ -1739,7 +1752,21 @@ async function preprocessInput(text, lang, signal) {
 //   long generation은 끝까지 받고, 진짜 hang(네트워크/서버 stall)만 끊는다.
 // SSE 누적 결과는 non-streaming 응답과 동일한 모양({content, usage, stop_reason})으로
 // 재조립해 extractClaudeResult를 그대로 재사용한다 — 호출 측 변경 없음.
-async function callClaude({ userText, systemText, systemVolatile, tool, temperature, maxOutputTokens, signal }) {
+async function callClaude({
+  userText,
+  systemText,
+  systemVolatile,
+  tool,
+  temperature,
+  maxOutputTokens,
+  signal,
+  task,
+  phase,
+  mode,
+  chunkIndex,
+  attempt,
+  cacheZeroWarn = false
+}) {
   // ★ dev 백엔드 스위치: LLM_BACKEND=claudecode면 내 Claude Code 구독(Sonnet)으로 호출 (API 키 불필요).
   //   엔진 로컬 테스트용. 프로덕션은 LLM_BACKEND 미설정 → 기존 API 경로.
   if (process.env.LLM_BACKEND === 'claudecode') {
@@ -1751,6 +1778,31 @@ async function callClaude({ userText, systemText, systemVolatile, tool, temperat
   if (!ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is not configured');
   }
+
+  const systemStableChars = typeof systemText === 'string' ? systemText.length : 0;
+  const systemVolatileChars = typeof systemVolatile === 'string' ? systemVolatile.length : 0;
+  const toolSchemaChars = jsonCharLength(tool);
+  const cachePrefixChars = systemStableChars + toolSchemaChars;
+  const cacheControlApplied = Boolean(systemText);
+  const cacheEligible = cacheControlApplied && cachePrefixChars >= CLAUDE_CACHE_MIN_PREFIX_CHARS;
+  const llmLogBase = {
+    task: task || 'unspecified',
+    phase: phase || 'unspecified',
+    mode,
+    toolName: tool?.name,
+    chunkIndex,
+    attempt,
+    temperature,
+    maxOutputTokens: typeof maxOutputTokens === 'number' ? maxOutputTokens : 8192,
+    systemStableChars,
+    systemVolatileChars,
+    toolSchemaChars,
+    cachePrefixChars,
+    cacheControlApplied,
+    cacheEligible,
+    stablePromptHash: shortHash(systemText),
+    cachePrefixHash: shortHash(`${tool ? JSON.stringify(tool) : ''}\n${systemText || ''}`)
+  };
 
   const body = {
     model: MODEL,
@@ -1901,15 +1953,24 @@ async function callClaude({ userText, systemText, systemVolatile, tool, temperat
   const cacheCreate = usage.cache_creation_input_tokens || 0;
   const cacheRead = usage.cache_read_input_tokens || 0;
   logger.info('llm.usage', {
+    ...llmLogBase,
     inputTokens: usage.input_tokens || 0,
     cacheCreateTokens: cacheCreate,
     cacheReadTokens: cacheRead,
     outputTokens: usage.output_tokens || 0,
     model: MODEL
   });
+  if (cacheZeroWarn && cacheEligible && cacheCreate === 0 && cacheRead === 0) {
+    logger.warn('llm.cache_zero', {
+      ...llmLogBase,
+      inputTokens: usage.input_tokens || 0,
+      outputTokens: usage.output_tokens || 0,
+      model: MODEL
+    });
+  }
 
   if (stopReason === 'max_tokens') {
-    logger.warn('llm.max_tokens_stop', { model: MODEL });
+    logger.warn('llm.max_tokens_stop', { ...llmLogBase, model: MODEL });
   }
 
   return {
@@ -2081,7 +2142,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
   // 1차
   const data = await callClaude({
     userText: userContent, systemText: humanizeSystem.stable, systemVolatile: humanizeSystem.volatile, tool: humanizeTool,
-    temperature: 0.5, maxOutputTokens: 16384, signal
+    temperature: 0.5, maxOutputTokens: 16384, signal,
+    task: 'humanize', phase: 'humanize:first', mode: selectedMode, cacheZeroWarn: true
   });
   let result = extractClaudeResult(data, humanizeTool.name);
   await applyPassC(result, lang, signal, { rawText: humanizeText, mode: selectedMode });
@@ -2106,7 +2168,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
         const refineUser = floor.buildFloorRefineUser(humanizeText, result.outputText, floorViolations, lang);
         const refineData = await callClaude({
           userText: refineUser, systemText: humanizeSystem.stable, systemVolatile: humanizeSystem.volatile, tool: humanizeTool,
-          temperature: 0.5, maxOutputTokens: 16384, signal
+          temperature: 0.5, maxOutputTokens: 16384, signal,
+          task: 'humanize', phase: 'humanize:floor_refine', mode: selectedMode, attempt: round, cacheZeroWarn: true
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
         await applyPassC(result, lang, signal, { rawText: humanizeText, mode: selectedMode });
@@ -2131,7 +2194,8 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
         const refineUser = buildRefineUser(humanizeText, result.outputText, failed, lang);
         const refineData = await callClaude({
           userText: refineUser, systemText: humanizeSystem.stable, systemVolatile: humanizeSystem.volatile, tool: humanizeTool,
-          temperature: 0.5, maxOutputTokens: 16384, signal
+          temperature: 0.5, maxOutputTokens: 16384, signal,
+          task: 'humanize', phase: 'humanize:legacy_refine', mode: selectedMode, cacheZeroWarn: true
         });
         result = extractClaudeResult(refineData, humanizeTool.name);
         await applyPassC(result, lang, signal, { rawText: humanizeText, mode: selectedMode });
@@ -2395,7 +2459,21 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     let chunkDone = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !chunkDone; attempt++) {
       try {
-        const data = await callClaude({ userText: userContent, systemText: chunkSys.stable, systemVolatile: chunkSys.volatile, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const data = await callClaude({
+          userText: userContent,
+          systemText: chunkSys.stable,
+          systemVolatile: chunkSys.volatile,
+          tool,
+          temperature: 0.5,
+          maxOutputTokens: 8192,
+          signal,
+          task: 'humanize_chunked',
+          phase: 'chunk:main',
+          mode,
+          chunkIndex: i,
+          attempt: attempt + 1,
+          cacheZeroWarn: true
+        });
         // ★ 토큰 상한 절단 수용 금지(2026-06-16): stop_reason=max_tokens면 청크가 중간에 잘린 것 — 요약 collapse와
         //   구분해 폐기하고 재시도, 끝내 실패하면 원문 청크로 폴백(잘린 결과를 절대 내보내지 않는다 = 분량 보존).
         if (data?.stop_reason === 'max_tokens') throw new Error('max_tokens-truncated');
@@ -2416,7 +2494,20 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     if (viol.length) {
       try {
         const ru = floor.buildFloorRefineUser(cRaw, c.outputText, viol, lang);
-        const rd = await callClaude({ userText: ru, systemText: chunkSys.stable, systemVolatile: chunkSys.volatile, tool, temperature: 0.5, maxOutputTokens: 8192, signal });
+        const rd = await callClaude({
+          userText: ru,
+          systemText: chunkSys.stable,
+          systemVolatile: chunkSys.volatile,
+          tool,
+          temperature: 0.5,
+          maxOutputTokens: 8192,
+          signal,
+          task: 'humanize_chunked',
+          phase: 'chunk:repair',
+          mode,
+          chunkIndex: i,
+          cacheZeroWarn: true
+        });
         if (rd?.stop_reason === 'max_tokens') throw new Error('max_tokens-truncated');   // 절단된 repair는 적용 안 함(이전 출력 유지)
         const r2 = extractClaudeResult(rd, tool.name);
         await applyPassC(r2, lang, signal, { rawText: cRaw, mode });
@@ -2909,7 +3000,10 @@ router.post('/analyze', async (req, res) => {
         systemText: detectSystem,
         tool: detectTool,
         maxOutputTokens: 4096,
-        signal: ac.signal
+        signal: ac.signal,
+        task: 'analyze',
+        phase: 'detect:main',
+        mode: 'detect'
       });
       result = extractClaudeResult(data, detectTool.name);
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
@@ -3018,7 +3112,11 @@ router.post('/analyze', async (req, res) => {
           tool: humanizeTool,
           temperature: 0.5,
           maxOutputTokens: 16384,
-          signal: ac.signal
+          signal: ac.signal,
+          task: 'analyze',
+          phase: 'humanize:first',
+          mode: selectedMode,
+          cacheZeroWarn: true
         });
       } catch (e) {
         if (ac.signal.aborted) throw e;
@@ -3046,7 +3144,11 @@ router.post('/analyze', async (req, res) => {
             tool: humanizeTool,
             temperature: 0.5,
             maxOutputTokens: 16384,
-            signal: ac.signal
+            signal: ac.signal,
+            task: 'analyze',
+            phase: 'humanize:legacy_refine',
+            mode: selectedMode,
+            cacheZeroWarn: true
           });
           const refined = extractClaudeResult(refineData, humanizeTool.name);
           // 1차 result는 폴백용으로 보관 → refined가 정상이면 교체
@@ -3260,7 +3362,10 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         systemText: detectSystem,
         tool: detectTool,
         maxOutputTokens: 4096,
-        signal: ac.signal
+        signal: ac.signal,
+        task: 'analyze_pdf',
+        phase: 'detect:main',
+        mode: 'detect'
       });
       result = extractClaudeResult(data, detectTool.name);
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
@@ -3294,7 +3399,11 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
           tool: humanizeTool,
           temperature: 0.5,
           maxOutputTokens: 16384,
-          signal: ac.signal
+          signal: ac.signal,
+          task: 'analyze_pdf',
+          phase: 'humanize:first',
+          mode: humanizeModePdf,
+          cacheZeroWarn: true
         });
       } catch (e) {
         if (ac.signal.aborted) throw e;

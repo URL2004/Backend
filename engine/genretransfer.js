@@ -558,7 +558,7 @@ const V2_BANS = `[금지 — 하나라도 어기면 실패]
 · 원문에 없는 평가·전망·인과·진단을 새 주장으로 덧붙이기(순응도 저하·부처 충돌·주기 단축처럼 "그럴듯한 추론"을 사실인 양 확장 금지 — 원문이 말한 범위만 옮겨라)
 ${LLM_TIC_RULE}`;
 
-function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = [], memoLines = []) {
+function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = [], memoLines = [], skeleton = '') {
   // ★ "수치 캐시"(2026-06-15) — 격식논문 재구성에서 연도·%가 떨어지거나(2023 누락=lostFacts) 바뀌는(2023→2022=distortion)
   //   차단의 예방책: 승인 근거뿐 아니라 "이 슬롯의 원문 문단(srcText)"에 실재하는 수치·연도·법령번호도 "반드시 포함"으로
   //   못 박는다. 원문에 있는 수치만 강제(생성 아님) → retry 채점(누락 시 감점)이 누락·변형을 강하게 억제.
@@ -573,20 +573,34 @@ function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpener
   const memoBlock = (memoLines && memoLines.length)
     ? `\n\n[필자(사용자)가 직접 제공한 실제 경험·사례 — 이 슬롯 논점과 관련 있으면 추상 서술을 구체적 장면·예시로 바꿔 녹여라. 메모에 없는 경험·수치·기관·사실은 절대 지어내지 말 것. 한 경험은 글 전체에서 한 번만 쓴다]\n${memoLines.map(m => `· ${m}`).join('\n')}`
     : '';
-  const anchors = process.env.STYLE_ANCHOR === '0' ? '' : pickAnchors(slotIdx) + '\n';
+  const isFormal = skeleton === 'formal_brief';
+  const anchors = (isFormal || process.env.STYLE_ANCHOR === '0') ? '' : pickAnchors(slotIdx) + '\n';
+  // 페르소나·문체를 스켈레톤별로 — 격식 보고서형은 칼럼 voice가 아니라 비인칭 분석체 + 리듬 변주(균일성 직격)
+  const persona = isFormal
+    ? '너는 한국어 분석 보고서를 쓰는 필자다. 한 편의 분석 보고서를 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).'
+    : '너는 한국 시사 칼럼 필자다. 한 편의 칼럼을 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).';
+  // ※ 격식톤은 칼럼톤보다 탐지가 구조적으로 높다(격식 register 어휘가 주관배제·무견해 태그를 올림 — 3회 실측 확정).
+  //   균일성/판단주입/리듬 지시로 균일성은 낮출 수 있어도 register penalty는 못 없앤다. register 보존이 목적인 옵션.
+  const styleBlock = isFormal
+    ? `[문체 — 분석 보고서의 결(비인칭·격식, 단 상투 템플릿/헤지 회피)]
+· 한다체·비인칭 격식 유지. 단 "본 연구는/연구의 필요성/이론적 배경/첫째,…둘째,…" 보고서 상투 템플릿과 "~할 수 있다·가능성이 있다·고려할 필요가 있다" 헤지는 금지.
+· 문장 길이를 들쭉날쭉하게: 짧은 단정문과 긴 분석문을 섞고, 같은 구조 문장을 3개 이상 연속하지 마라.
+· 칼럼식 수사(반문 "과연 ~인가?", 구어 추임새, 1인칭) 금지. 괄호 삽입구는 단서·부연에 한해 절제(1000자당 2~3개).
+· 같은 내용·문장을 다른 슬롯에서 반복하지 마라 — 직전 문단 끝을 보고 새 내용으로 전개하라.`
+    : `[문체 — 사람 칼럼의 결]
+· 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
+· 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
+· 한 문단 안에서 근거와 의견이 섞이게(근거 나열 문단 금지 — 근거는 논쟁의 무기다).`;
   // ★ prompt caching(§이식 ⑧): system은 고정부+앵커(5변형)만 — 슬롯별 가변부([이 슬롯]·금지 시작어·수치 목록)는
   //   전부 user로 분리해 같은 앵커 변형의 슬롯·재시도가 system 캐시를 재사용할 수 있게 한다(지시 내용은 동일).
-  const system = `너는 한국 시사 칼럼 필자다. 한 편의 칼럼을 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).
+  const system = `${persona}
 ${anchors}[사실 보존 — 절대 규칙, 문체보다 우선]
 · 연도·날짜·기간·인용연도·퍼센트·통계 수치·금액·법령번호는 원문 표기 그대로 옮겨라. 절대 바꾸지 마라(2023을 2022로, 40%를 45%로 쓰면 실패).
 · "반드시 포함할 수치"로 준 값은 빠짐없이, 정확히 그대로 본문에 넣어라. 재구성하더라도 이 값들은 손대지 않는다.
 · 원문에 없는 연도·수치·출처·기관·인용을 새로 만들지 마라. 또한 원문에 없는 평가·전망·인과관계·진단을 새 주장으로 덧붙이지 마라(예: "~로 순응도가 낮아진다", "부처가 충돌했다", "주기가 짧아진다" 같은 추론·확장 금지 — 원문이 말한 범위만 다른 문장으로 옮겨라).
 · ★원문에 등장하는 고유명사(인물·기관·책·제품·기술명)에는 원문이 그 대상에 대해 말한 사실만 옮겨라. 그 대상에 원문에 없는 활동·저작·발언·업적·특성·역할을 새로 붙이지 마라(예: 원문이 "○○의 책을 읽었다"까지만 말했으면, "○○가 ~기법을 체계적으로 다룬다"처럼 그 인물의 행적을 지어내 확장하면 실패).
 · ★재료(원문 주장·근거)가 빈약하면 빈약한 대로 짧게 써라. 분량을 채우려고 원문에 없는 기술적 설명·메커니즘·구체 수치·인과·온도/규격을 지어내 채우지 마라 — 분량 미달보다 날조가 훨씬 큰 실패다(짧은 글은 짧게 재구성하는 것이 정답이다).${hasPH ? '\n· ★⟦F##⟧ 형태의 토큰은 원문 사실(연도·수치)의 자리표시자다. 그 자체를 본문에 그대로 옮겨 쓰고(숫자로 바꾸지 말 것), 위치·개수를 유지하라. 토큰을 삭제·변형·생성하면 실패. 예: "⟦Fab⟧년에 제정"은 그대로 "⟦Fab⟧년에 제정"으로.' : ''}
-[문체 — 사람 칼럼의 결]
-· 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
-· 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
-· 한 문단 안에서 근거와 의견이 섞이게(근거 나열 문단 금지 — 근거는 논쟁의 무기다).
+${styleBlock}
 ${V2_BANS}
 · 출력: 본문만(제목·소제목·머리말 금지).`;
   const user = `[이 슬롯]
@@ -693,7 +707,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     const prevTail = bodies.length ? bodies[bodies.length - 1].split(/\n{2,}/).pop().slice(-160) : '';
     // 앞 슬롯들이 이미 인용한 수치 — 재인용 금지 목록(ai-study 63% 실측: 슬롯 독립 생성이 같은 통계를 2~4회 재진술)
     const usedNumList = [...new Set(bodies.flatMap(b => _numToks(b)).map(t => t.split('|')[0]))];
-    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTextsP, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList, memoLines);
+    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTextsP, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList, memoLines, skeleton);
     const usedNumSet = new Set(usedNumList);
     const minChars = Math.round(slot.targetChars * 0.8);   // 0.7→0.8(분량 미달이 best-pick으로 통과하던 폭 축소)
     let best = { body: '', score: -1 };

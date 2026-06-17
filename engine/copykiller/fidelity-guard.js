@@ -63,4 +63,28 @@ function checkFabrication(src, out) {
   return { ok, addedNumbers, addedSources, attributions, addedCitations };
 }
 
-module.exports = { checkFabrication, numberCores };
+// 날조 문장 제거(repair): 원문에 없는 수치·출처·귀속·인용을 "도입한" 문장만 드롭.
+//   문단 구조 보존(문단별로 문장 필터 후 재조합). dropped에 제거된 문장 목록 반환.
+function stripFabricatedSentences(src, out) {
+  src = String(src || '');
+  const paras = String(out || '').split(/\n{2,}/);
+  const dropped = [];
+  const keptParas = paras.map(p => {
+    const lines = p.split(/\n/);
+    const keptLines = lines.map(line => {
+      // 한 줄 안에서 문장 단위 분리(종결부호/한국어 종결 + 공백)
+      const sents = line.split(/(?<=[.!?])\s+|(?<=다\.)\s*/).filter(Boolean);
+      const kept = [];
+      for (const s of sents) {
+        if (!s.trim()) continue;
+        if (checkFabrication(src, s).ok) kept.push(s);
+        else dropped.push(s.trim());
+      }
+      return kept.join(' ');
+    });
+    return keptLines.filter(Boolean).join('\n');
+  });
+  return { text: keptParas.filter(Boolean).join('\n\n').replace(/[ \t]{2,}/g, ' '), dropped };
+}
+
+module.exports = { checkFabrication, numberCores, stripFabricatedSentences };

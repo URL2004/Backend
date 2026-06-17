@@ -848,10 +848,14 @@ async function runJob(job, text, evidence) {
     //   회피(문단별 충실 재작성, 실측 97%·날조 0)로 다시 만들어 전달한다. 신호: 신규 연도·수치·기관 ≥5 또는
     //   원문에 없는 학술인용 표지 ≥2(전체 100건 오탐 0). 끄려면 RESTRUCTURE_CHUNK_RECOVERY=0.
     if (process.env.RESTRUCTURE_CHUNK_RECOVERY !== '0') {
-      const fabCount = inputrouting.countFabricatedCitations(text, out.outputText || '');
-      const novCount = require('../engine/floor').measureNovelty(text, out.outputText || '', '').count;
-      const repMax = inputrouting.maxNamedRepeat(text, out.outputText || '');   // 고유명사 과반복(#86)
-      if (novCount >= 5 || fabCount >= 2 || repMax >= 5) {
+      const gtOut = out.text || '';   // ★ genreTransferV2는 {text:…} 반환(outputText 아님 — 2026-06-17 버그픽스: 잘못된 필드로 감지 무동작이었음)
+      const fabCount = inputrouting.countFabricatedCitations(text, gtOut);
+      const novCount = require('../engine/floor').measureNovelty(text, gtOut, '').count;
+      const repMax = inputrouting.maxNamedRepeat(text, gtOut);   // 고유명사 과반복(#86)
+      // ★ 과확장(2026-06-17 실측: genreTransferV2가 인용 없이도 263%까지 부풀림 — 정상 윤문은 ≤1.3). 날조든
+      //   과확장이든 충실도 사고이므로 청크 회피로 재수정한다. 임계 1.5(정상 윤문 130% 위로 충분히 떨어짐).
+      const overExpand = (out.lenRatio || 0) > 1.5;
+      if (novCount >= 5 || fabCount >= 2 || repMax >= 5 || overExpand) {
         logger.warn('transform.fabrication_rerun', { jobId: job.id, uid: job.uid, novCount, fabCount, repMax, lenRatio: out.lenRatio });
         return await runLongThesisChunked(job, text, evidence);
       }

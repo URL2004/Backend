@@ -17,9 +17,9 @@ const TONES = [
   { key: 'formal_brief', label: '격식/보고서톤' },
 ];
 const SOURCES = [
-  { file: 'samples/housing-future-essay.txt', label: '주거 미래 에세이', slug: '주거에세이' },
-  { file: 'samples/namgang-report.txt', label: '남강댐 환경 리포트(추상)', slug: '남강리포트' },
-  { file: 'samples/athlete-essay-intro.txt', label: '학생선수 최저학력제 논증문', slug: '논증문' },
+  { file: 'samples/digital-notes-demo.txt', label: '개인 경험 메모(구체)', slug: '개인경험' },
+  { file: 'samples/it.txt', label: 'IT 도구론(추상+데이터)', slug: 'IT도구론' },
+  { file: 'samples/college.txt', label: '대학 생활(경험·성찰)', slug: '대학생활' },
 ];
 const TIMEOUT = Number(process.env.GT_TIMEOUT_MS || 110000);
 

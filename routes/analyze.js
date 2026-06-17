@@ -2732,6 +2732,27 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     }
   }
 
+  // ★ 분량 하한선(압축) 가드(2026-06-17, #07): 위 acceptance gate는 '팽창'(>1.10×baseline)만 막고 '압축'은
+  //   못 본다(2726행). 그래서 이미 사람 글에 가까운 입력이 과압축+과매끈화되어 오히려 카피킬러 AI%가 오르는
+  //   사고(#07: 원문 11%·100% 보존이 아니라 74%로 줄며 20%로 악화)를 놓쳤다. 입력 대비 공백제외 비율이 바닥
+  //   미만이면 '내용 손실' 신호로 기록·노출. polish(다듬기)는 원래 축약형이라 제외. COMPRESSION_FLOOR로 조정.
+  //   하드 폴백(COMPRESSION_FALLBACK=1, 기본 OFF): 손실 큰 재작성보다 원문 경량 정리가 낫다 → 원문 클린본 전달.
+  if (mode !== 'polish') {
+    const srcN = text.replace(/\s+/g, '').length, outN = result.outputText.replace(/\s+/g, '').length;
+    const ratio = outN / Math.max(1, srcN);
+    result.compressionRatio = Number(ratio.toFixed(2));
+    const floorR = process.env.COMPRESSION_FLOOR ? parseFloat(process.env.COMPRESSION_FLOOR) : 0.85;
+    if (ratio < floorR) {
+      result.compressed = true;
+      logger.warn('humanize.over_compressed', { mode, ratio: result.compressionRatio, srcN, outN });
+      if (process.env.COMPRESSION_FALLBACK === '1') {
+        result.outputTextPreCompFallback = result.outputText;
+        result.outputText = require('../engine/spacing').fixSpacing(cleanText(text)).text;
+        result.compressionFallback = true;
+      }
+    }
+  }
+
   // ★ 사실 재인용 제거(genretransfer 이식, ai-study 실측): 같은 evidence 수치가 여러 문단에서 재인용되면
   //   첫 인용 문장만 유지("같은 연구를 두 번 처음처럼 인용"은 품질 결함 + 기계적 균일성 신호).
   //   청크 병렬 생성이라 usedNums 전달이 불가하므로 문서 레벨 마감으로만 잡는다. lostFacts 비악화 가드 내장. FACT_DEDUP=0 해제.

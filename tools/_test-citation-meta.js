@@ -18,6 +18,12 @@ const citedSrc = '백선희·이승창·이상학, 「항공 마일리지」, �
 const citedOut = '백선희·이승창·이상학의 『한국항공운항학회지』(2014) 연구가 이를 뒷받침한다.';
 ok(ir.countFabricatedCitations(citedSrc, citedOut) === 0, '원문에 있던 인용 보존 → 오탐 0');
 
+console.log('\n=== 고유명사 과반복 감지(#86: 인용 제목 8회 반복) ===');
+const repSrc = '지다웨이의 <막>은 1995년, 제17회 롄허보 문학상 중편소설 대상을 받은 작품이다.';
+const repOut = '제17회 수상작이다. 제17회 그 작품은. 제17회를 받은. 제17회 위상. 제17회 의미. 제17회 깊이. 제17회 평가. 제17회 가치.';
+ok(ir.maxNamedRepeat(repSrc, repOut) >= 5, `과반복 감지 ≥5 (실측 ${ir.maxNamedRepeat(repSrc, repOut)}회)`);
+ok(ir.maxNamedRepeat(repSrc, '제17회 롄허보 문학상 대상을 받은 작품이다. 깊은 울림을 준다.') === 0, '정상 1회 언급 → 0(오탐 없음)');
+
 console.log('\n=== 제출자 메타데이터 제거 ===');
 const withMeta = "일본 동조압력의 인과관계 제출자:동아시아국제학부 20260423 변정빈\n1. 서론: 일본 사회를 공부하면서...";
 const sm = ir.stripSubmitterMeta(withMeta);

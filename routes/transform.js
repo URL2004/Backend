@@ -842,13 +842,17 @@ async function runJob(job, text, evidence) {
       persistJob(job);
       return;
     }
-    // ★ 인용 날조 재수정(2026-06-17, #56·#47): genreTransferV2가 원문에 없던 학술인용·통계를 지어내도 게이트가
-    //   놓친다(novelty·judge 사각). 차단 대신 청크 회피(문단별 충실 재작성, 실측 97%·날조 0)로 다시 만들어 전달한다.
-    //   감지 ≥2종(전체 100건 오탐 0). 끄려면 RESTRUCTURE_CHUNK_RECOVERY=0.
+    // ★ 날조 재수정(2026-06-17, #56·#16·#47): genreTransferV2가 원문에 없던 인용·통계·연도를 지어내도 게이트가
+    //   놓친다 — genreTransferV2 내부 novelty는 자기 생성 ledger에 오염돼 0을 내지만, 원문 대비 신선 측정은
+    //   정확하다(실측 #56=19·#16=15·#47=11 신규 엔티티, 나머지 100건 전부 ≤1 → 깨끗한 분리). 차단 대신 청크
+    //   회피(문단별 충실 재작성, 실측 97%·날조 0)로 다시 만들어 전달한다. 신호: 신규 연도·수치·기관 ≥5 또는
+    //   원문에 없는 학술인용 표지 ≥2(전체 100건 오탐 0). 끄려면 RESTRUCTURE_CHUNK_RECOVERY=0.
     if (process.env.RESTRUCTURE_CHUNK_RECOVERY !== '0') {
       const fabCount = inputrouting.countFabricatedCitations(text, out.outputText || '');
-      if (fabCount >= 2) {
-        logger.warn('transform.fabricated_citations_rerun', { jobId: job.id, uid: job.uid, fabCount, lenRatio: out.lenRatio });
+      const novCount = require('../engine/floor').measureNovelty(text, out.outputText || '', '').count;
+      const repMax = inputrouting.maxNamedRepeat(text, out.outputText || '');   // 고유명사 과반복(#86)
+      if (novCount >= 5 || fabCount >= 2 || repMax >= 5) {
+        logger.warn('transform.fabrication_rerun', { jobId: job.id, uid: job.uid, novCount, fabCount, repMax, lenRatio: out.lenRatio });
         return await runLongThesisChunked(job, text, evidence);
       }
     }

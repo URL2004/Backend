@@ -155,6 +155,22 @@ function countFabricatedCitations(src, out) {
   return hits.size;
 }
 
+// ★ 고유명사 과반복 감지(2026-06-17, CSV 감사 #86): genreTransferV2가 매 문단을 원문의 distinctive 명사구에
+//   재-앵커링하면서 같은 인용 제목·수상 이력("제17회 롄허보 문학상")을 8회씩 연결어처럼 반복(novelty·repetition
+//   게이트 둘 다 0). 출력의 명사구(상·학회지·제N회 등)가 원문 대비 4배+·5회+ 반복되면 그 횟수를 돌려준다(≥5면
+//   날조와 같은 청크 회피로 재수정). split 카운트라 정규식 이스케이프 불필요. 전체 100건 이 신호 오탐 0 실측.
+function maxNamedRepeat(src, out) {
+  const cands = [...new Set(((out || '').match(/[가-힣]{2,10}(?:문학상|대상|학회지|보고서|선언문?|협약|참사|사건|판결)|제\s?\d{1,3}\s?[회권호]/g) || []))];
+  let best = 0;
+  for (const c of cands) {
+    if (c.length < 3) continue;
+    const oc = out.split(c).length - 1;
+    const sc = (src || '').split(c).length - 1;
+    if (oc >= 5 && oc > sc * 2 && oc > best) best = oc;
+  }
+  return best;
+}
+
 // ★ 제출자 메타데이터 제거(2026-06-17, CSV 감사 #97): 입력 머리말의 "제출자: OO학부 20260423 변정빈"을
 //   재생성 엔진이 인용 저자처럼 본문에 엮어("변정빈(20260423)이 설계한…") 학생 본인 이름이 가짜 인용이 됐다.
 //   돌리기 전에 학부·학번·이름/라벨형 메타데이터를 결정론으로 떼어낸다(본문 내용은 안 건드림). 학번은 6자리+
@@ -202,4 +218,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, maxNamedRepeat, FACT_DENSE_THRESHOLD };

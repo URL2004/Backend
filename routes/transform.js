@@ -1143,9 +1143,10 @@ router.post('/transform', async (req, res) => {
       return res.status(400).json({ error: `입력에 같은 내용이 반복돼 있어요(약 ${Math.round(dup.ratio * 100)}%). 중복된 부분을 빼고 다시 시도하면 크레딧도 절약돼요.` });
     }
   }
-  // ★ 영어 글 사전 차단(2026-06-16): 피하기(기본 blog·고급 formal)는 한국어 전용 엔진이라 영어를 넣으면
-  //   번역·축약·변형으로 원문이 망가진다. '돌리기 전에'(인증·job 생성·API 전) 입력 단계에서 막고 「그대로
-  //   다듬기」(polish, 영어 지원)로 유도한다 — 무차감. 다듬기는 영어를 영어 그대로 다듬으므로 통과시킨다.
+  // ★ 영어 글 사전 차단(2026-06-16, 임계값·안내 정정 2026-06-17): 피하기(기본 blog·고급 formal)는 한국어 전용
+  //   엔진이라 영어를 넣으면 번역·변형으로 원문이 망가지고, '매끈하게' 다듬을수록 오히려 AI 패턴이 강해져
+  //   카피킬러 0→100% 참사(실측). '돌리기 전에' 입력 단계에서 막는다. ※ 과거엔 "다듬기로 유도"였으나 다듬기도
+  //   영어를 더 검출되게 만들어 잘못된 안내였음 — 메시지는 "영어 회피 불가·원문 유지"로 정정(ENGLISH_UNFIT_REASON).
   if (mode !== 'polish' && inputrouting.isEnglishInput(text)) {
     logger.warn('transform.english_input_blocked', { mode, textLength: text.length });
     return res.status(400).json({ error: inputrouting.ENGLISH_UNFIT_REASON, route: 'polish' });

@@ -601,7 +601,7 @@ async function tryPreservationFallback(job, text) {
     // 보존형(=polish) 경로 그대로 재사용 — 이미 운영 중인 검증된 경로.
     const out = await analyze.runHumanizeChunked({
       text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
-      floorV2: true, optIn: false, judge: true, grounding: true, userNotes: ''
+      floorV2: true, optIn: false, judge: true, grounding: true, userNotes: job.memo || ''   // ★경험 메모 보존형에도 적용(2026-06-17)
     });
     // 보존형 폴백은 "약하더라도 실제 결과를 보장"이 목적(막다른 길 제거).
     // 단 semanticJudge/novelty/lostFacts/meta leak 등은 사실·의미 사고로 이어질 수 있어 계속 hard block.
@@ -677,7 +677,7 @@ async function tryBlogPreservationFallback(job, text) {
 
     const out = await analyze.runHumanizeChunked({
       text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
-      floorV2: true, optIn: false, judge: false, grounding: false, userNotes: '', tonePolish: true
+      floorV2: true, optIn: false, judge: false, grounding: false, userNotes: job.memo || '', tonePolish: true   // ★경험 메모 보존형에도 적용(2026-06-17)
     });
     const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
     if (!out.result || !out.result.outputText || fbCriticals.length) {

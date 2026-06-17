@@ -36,6 +36,27 @@ const PARA_REASON = {
   thin: '구체적 근거가 부족해요. 경험이나 수치를 더하면 안전해져요.'
 };
 
+// ★ 카피킬러-risk 프록시 코칭(2026-06-17): 실제 카피킬러 PDF 라벨로 학습한 모델(JS 이식, Python 일치 검증)이
+//   문단별로 카피킬러가 붙일 태그를 예측 → '경험 메모' 어느 칸을 채우면 되는지 구체 안내. 무LLM·무비용·무날조.
+//   "메모로 해결되는" 태그만 코칭(균일성 등 문체 태그는 엔진 자동 처리라 제외). 모델 없으면 조용히 skip.
+const ckProxy = require('../engine/copykiller-proxy');
+const TAG_COACH = {
+  '구체적 근거 부족':        { fields: ['③ 정확히 아는 수치·출처', '② 구체 사례'], why: '주장만 있고 뒷받침 근거가 약해요' },
+  '추상적, 일반적 내용 구성': { fields: ['② 구체적인 사례·예시'],                why: '일반론 위주예요 — 실제 사례가 필요해요' },
+  '주관성의 지나친 배제':    { fields: ['④ 내 생각·입장'],                     why: '글쓴이 입장이 안 보여요' },
+  '무견해, 판단 회피적 성향': { fields: ['④ 내 생각·입장'],                     why: '판단이 흐릿해 AI스럽게 보여요' },
+  '간접 화법, 비인칭 서술':   { fields: ['④ 내 생각(능동 단정문)'],            why: '비인칭·간접 표현이 많아요' }
+};
+const COACH_TAGS = Object.keys(TAG_COACH);
+function predictCoach(text, minP) {
+  if (!ckProxy.available() || !text || text.replace(/\s/g, '').length < 30) return null;
+  let pr; try { pr = ckProxy.predict(text); } catch { return null; }
+  if (!pr) return null;
+  const top = COACH_TAGS.map(t => ({ tag: t, p: pr['tag:' + t] || 0 }))
+    .filter(x => x.p >= (minP || 0.6)).sort((a, b) => b.p - a.p).slice(0, 2);
+  return top.length ? top.map(x => ({ tag: x.tag, fields: TAG_COACH[x.tag].fields, why: TAG_COACH[x.tag].why })) : null;
+}
+
 // ④ 미리보기 후보: 위험 문단에서 30~160자, 경험 장면 아닌 문장 중 가장 긴 것
 //   (일반론 문장은 길수록 AI 티가 잘 드러나 before/after 대비가 큼)
 function pickAiSentence(paras, detail) {
@@ -203,8 +224,9 @@ router.post('/detect-report', async (req, res) => {
     abstractRiskRatio: ir.abstractRiskRatio,
     paragraphs: paras.map((p, i) => {
       const kind = (detail[i] && detail[i].kind) || 'thin';
-      return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 90) };
+      return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 90), coach: predictCoach(p) };   // ★문단별 예측태그→메모칸 코칭
     }),
+    coach: predictCoach(text, 0.5),   // ★글 전체 상위 예측태그 + 어느 경험 메모 칸을 채우면 되는지(코칭 요약)
     counts: {
       total: paras.length,
       risk: detail.filter(d => d.kind === 'abstract_risk').length,

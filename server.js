@@ -29,6 +29,7 @@ app.use('/analyze', limiter);
 app.use('/analyze-pdf', limiter);
 app.use('/diagnose', limiter);
 app.use('/detect-report', limiter);   // 무료 감지 — 일일 한도는 라우트 내부(uid/IP), 분당 폭주는 여기서
+app.use('/coach-suggest', limiter);   // 자동 코칭 후보 — 무인증 LLM 1콜이라 분당 폭주 방지(과금 대신 rate-limit)
 // /transform은 POST(시작·취소·승인)만 제한 — GET 폴링은 90분 job 동안 수백 회가 정상이라 제외.
 app.use('/transform', (req, res, next) => (req.method === 'POST' ? limiter(req, res, next) : next()));
 app.use('/events', limiter);   // 알림 중계 — 인증 전 폭주 방지

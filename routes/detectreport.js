@@ -246,4 +246,21 @@ router.post('/detect-report', async (req, res) => {
   });
 });
 
+// ── 자동 코칭 후보(2026-06-18): 시작 직전 선택 모달용. 글에서 입장·경험 후보를 생성해 반환 →
+//   프론트가 체크박스로 보여주고, 사용자가 고른 것만 memo로 합쳐 /transform에 보낸다(체크=저자 승인=무날조).
+//   무과금·무인증(diagnose류 사전 헬퍼). 짧은 글/실패는 빈 배열(흐름 안 막음).
+router.post('/coach-suggest', async (req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text : '';
+  if (text.replace(/\s/g, '').length < 80) return res.json({ ok: true, stances: [], experiences: [] });
+  if (text.length > 30000) return res.status(400).json({ ok: false, error: '텍스트가 너무 깁니다.' });
+  try {
+    const { generateCoach } = require('../lib/coachsuggest');
+    const out = await generateCoach(text);
+    res.json({ ok: true, stances: out.stances || [], experiences: out.experiences || [] });
+  } catch (e) {
+    logger.warn('coach_suggest.failed', { err: e && e.message });
+    res.json({ ok: true, stances: [], experiences: [] });
+  }
+});
+
 module.exports = router;

@@ -160,6 +160,20 @@ function isStructuredReport(text) {
   return score >= 2 && dense;
 }
 
+// ★ 회피 난이도 사전 안내(2026-06-18~19 실측, 소프트 — 차단 아님, 사용자는 진행 가능): 일부 장르는 무날조 회피가
+//   구조적으로 어렵다. 시작 전 솔직히 고지해 크레딧·환불 사고를 막는다(/diagnose로 노출).
+//   ① STEM 실험·방법론·스펙 보고서(SMILES·PDB·돌연변이 등): 객관 기술 서술이 장르 본질 → 코칭·재구성 다 무효
+//      (EGFR 분자도킹 보고서: 코칭없음·약한코칭·강한1인칭 3번 다 카피킬러 100% 실측).
+//   ② 구조화 데이터 보고서(목차·통계): 원문이 이미 낮은 경우가 많아 휴머나이징이 오히려 올릴 수 있음
+//      (사이버불링 보고서 원문 48% → 구조보존 우회 76% 실측).
+const ADVISORY_STEM = '이 글은 실험·방법론·연구 보고서예요. SMILES·화학식·PDB·메커니즘 같은 객관적 기술 서술은 AI 검출을 낮추기 매우 어렵습니다(사람이 써도 높게 나와요). 진행은 가능하지만 효과가 제한적일 수 있어요.';
+const ADVISORY_STRUCTURED = '이 글은 목차·통계가 있는 구조화 보고서예요. 이런 글은 원문 자체가 이미 낮게 나오는 경우가 많아, 휴머나이징이 오히려 탐지율을 올릴 수도 있어요. 원문을 먼저 검사해 보시고 높게 나올 때만 진행하시길 권해요.';
+function genreAdvisory(text) {
+  if (sciReportMarkers(text) >= 3) return { kind: 'stem_spec', reason: ADVISORY_STEM };
+  if (isStructuredReport(text)) return { kind: 'structured', reason: ADVISORY_STRUCTURED };
+  return null;
+}
+
 // 재구성 부적합 판정 + 사용자에게 그대로 보여줄 '명확한 사유'. ir = surfaceguard.classifyInputRisk(text).
 //   factDense(사실 빼곡)는 '권장'(소프트)이라 여기서 막지 않는다 — 사장님 결정으로 사실밀집 글도 고급을
 //   돌릴 수 있어야 함(B). 막다른 길로 만드는 두 부류만 사전 차단한다: ① 자소서·생기부·탐구 ② 짧고 추상적.
@@ -290,4 +304,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, sciReportMarkers, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };

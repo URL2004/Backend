@@ -2862,13 +2862,15 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { result.registerNormalize = { error: e.message }; }
   } else if (mode === 'blog' && process.env.BLOG_REGISTER_NORM !== '0') {
     // ★ blog 말투 일관화(2026-06-17 실측: 청크별 재작성이 앞=해요체·뒤=한다체로 갈려 중간에 어투가 바뀜).
-    //   blog는 캐주얼(해요체)이 목표라, 출력이 해요체 우세인데 한다체가 섞였을 때만 해요체로 결정론 통일한다
+    //   blog는 캐주얼 해요체가 *목표*이므로, dominant 무관하게 출력의 한다체·합쇼체 잔류를 항상 해요체로 통일한다
     //   (종결어미만·무날조·무LLM). 과거형 ㅆ다→ㅆ어요 일괄 규칙으로 학술 과거형 잔류까지 정리. 끄려면 BLOG_REGISTER_NORM=0.
+    //   ★버그픽스(2026-06-19 실측 #3 라틴어보고서): 기존 'haeyo 우세일 때만(outReg==="haeyo")' 가드가, 출력이 한다체/
+    //   합쇼체로 드리프트한 글(#3: dominant=hap, off 48%)을 통째로 건너뛰어 해요+합쇼+한다 3중 혼합을 방치했다. blog는
+    //   무조건 해요 목표라 가드 제거 → 항상 normalizeRegister(haeyo). 실측: #17 off 0.47→0(완벽), #3 0.48→0.18. 이미 순해요면 changed=0(무해).
     try {
-      const outReg = require('../engine/surfaceguard').measureRegisterMix(result.outputText).dominant;
-      if (outReg === 'haeyo') {
-        const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, 'haeyo');
-        if (rn.changed) result.outputText = rn.text;
+      const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, 'haeyo');
+      if (rn.changed) {
+        result.outputText = rn.text;
         result.registerNormalize = { target: 'haeyo', changed: rn.changed, basis: 'blog' };
       }
     } catch (e) { result.registerNormalize = { error: e.message }; }

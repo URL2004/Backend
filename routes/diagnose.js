@@ -23,7 +23,7 @@ const RESTRUCTURE_BAND = '35~60%';
 // ★ 재구성 부적합 사전감지 — engine/inputrouting로 단일화(2026-06-16 탐구/생기부·짧고추상 확장 포함).
 //   /diagnose(프런트 고급 잠금)와 /transform(생성 호출 '전' 차단)이 같은 결정론 판정을 공유한다 →
 //   막다른 재구성(자소서·생기부·탐구문·짧고추상)을 생성 시작 전에 걸러 API 낭비를 0으로. 사유도 같이 노출.
-const { looksLikeResume, factDensity, restructureUnfit, FACT_DENSE_THRESHOLD } = require('../engine/inputrouting');
+const { looksLikeResume, factDensity, restructureUnfit, genreAdvisory, FACT_DENSE_THRESHOLD } = require('../engine/inputrouting');
 
 const COPY = {
   A: {
@@ -60,7 +60,8 @@ router.post('/diagnose', (req, res) => {
   const density = factDensity(text);
   const factDense = density >= FACT_DENSE_THRESHOLD;   // 연도·%·인용 빼곡 → 재구성 시 사실오류 위험(권장 안내)
   const ru = restructureUnfit(text, ir);                // 재구성 부적합(자소서·생기부·탐구문·짧고추상) + 명확한 사유
-  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike, density: Number(density.toFixed(1)), factDense, restructureUnfit: ru.unfit, unfitKind: ru.kind });
+  const adv = genreAdvisory(text);                      // 회피 난이도 사전 안내(STEM 스펙·구조화 보고서) — 소프트(진행 가능)
+  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike, density: Number(density.toFixed(1)), factDense, restructureUnfit: ru.unfit, unfitKind: ru.kind, advisoryKind: adv?.kind });
   res.json({
     ok: true,
     grade,
@@ -70,6 +71,8 @@ router.post('/diagnose', (req, res) => {
     factDense,
     restructureUnfit: ru.unfit,         // 프런트: 고급 시작 자체를 막고 사유 노출
     restructureUnfitReason: ru.reason,  // 사용자에게 보여줄 '명확한 사유'
+    advisory: adv ? adv.reason : null,  // 회피 난이도 소프트 안내(STEM·구조화 보고서) — 차단 아님
+    advisoryKind: adv ? adv.kind : null,
     title: copy.title,
     desc: copy.desc,
     bands: {

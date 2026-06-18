@@ -1071,7 +1071,9 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   }
   doc = require('./outputguard').stripPunchTemplates(doc, rawText, { strict: true }).text;   // ★독립형 punch 단정 제거(2026-06-16 품질리포트): "그게 핵심이다"·"정책이 뒤흔들렸다" 등(원문에 있던 건 보존). formalBudgetPass(LLM) 뒤 결정론 안전망.
   doc = stripAdjacentContainedDup(doc);   // ★최종(2026-06-18): judge 수리·재위빙·punch제거가 만든 인접 포함 재진술 마지막 제거
-  doc = mergeShortParas(doc);             // ★최종(2026-06-18): 슬롯이 흩뿌린 단독 1줄 문단을 사람 산문 호흡으로 병합('기계적·균일' 구조 완화)
+  // ★ mergeShortParas 제거(2026-06-18 실측 역효과: 경영 48→100%): 단독 1줄 문단은 '지저분함'이 아니라
+  //   사람 글의 들쭉날쭉한 리듬(burstiness)이었다. 긴 균일 문단으로 합치니 카피킬러 'AI 균일성'이 도리어 폭증.
+  //   짧은 문단은 그대로 둔다(= 탐지 낮추는 자산). 함수는 보존하되 호출하지 않음.
   const risk = gf.genreRiskScore(doc);
   const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
   return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, evidenceLost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };

@@ -21,7 +21,11 @@ function looksLikeResume(text) {
   //   걸려 자소서로 오분류→보존형 오라우팅). (이름, 2023)식 학술 인용이 2개+면 재구성이 지어낼 게 없는 사실기반 논증 글
   //   (=시사·논증=재구성 적합)이므로 이 신호로는 라우팅하지 않는다. (gy6326 탐구문은 이런 인용이 없어 그대로 잡힘.)
   const citations = (t.match(/\([가-힣A-Za-z·]+\s*,?\s*(?:19|20)\d{2}\)/g) || []).length;
-  if (citations < 2 && /주제\s*(?:를|로)?\s*(?:선정|선택)|(?:선정|선택)하(?:게|였|았|고자|기로|는\s*과정)|(?:이|해당)\s*주제를?\s*(?:선정|선택)/.test(t)) return true;
+  // ★과학·기술 연구 보고서 예외(2026-06-18 실측 EGFR 분자도킹 보고서 4회 연속 오차단): "비소세포폐암을 관심 질병으로
+  //   선정하였다"의 '선정하였다'가 이 패턴에 걸리고, 인용이 (저자,2023) 아닌 (GeneCards)·(PubChem) DB명이라 인용 예외도
+  //   못 타 자소서로 오판됐다. SMILES·PDB·돌연변이 등 기술 마커가 3개+면 연구 보고서이므로 이 휴리스틱에서 제외한다
+  //   (강신호 ①·명시 주제선정은 그대로). 이런 보고서는 isStructuredReport가 받아 구조보존 청크 우회로 라우팅.
+  if (citations < 2 && sciReportMarkers(t) < 3 && /주제\s*(?:를|로)?\s*(?:선정|선택)|(?:선정|선택)하(?:게|였|았|고자|기로|는\s*과정)|(?:이|해당)\s*주제를?\s*(?:선정|선택)/.test(t)) return true;
   // ★탐구·세특 보고서 골격어(2026-06-16): 단일 출현은 정상 글에도 있을 수 있어 2개 이상 동시 출현 시에만 성립(오탐 방지).
   //   "주제를 선정/선택" 명시구가 없는 탐구문(예: gy6326)도 이 조합으로 잡아 보존형으로 유도한다.
   const inquiry = (t.match(/탐구\s*(?:주제|활동|보고서|내용|과정|동기|결과)|탐구(?:를|해)?\s*(?:통해|보고\s*싶|해\s*보고\s*싶)|후속\s*활동|이번\s*탐구|느낀\s*점|더\s*깊이\s*탐구|탐구해\s*보고\s*싶/g) || []).length;
@@ -45,6 +49,14 @@ function factDensity(text) {
   return (years * 2 + pcts * 2 + cites + nums) / Math.max(1, bare / 1000);
 }
 const FACT_DENSE_THRESHOLD = Number(process.env.FACT_DENSE_THRESHOLD) || 5;
+
+// ★ 과학·공학 연구 보고서 식별자 카운트(2026-06-18 실측 EGFR 분자도킹 보고서 4회 연속 오차단): SMILES 코드·PDB ID·
+//   유전자 돌연변이·DB명·실험설계 같은 마커는 factDensity(연도·%·통계)가 전혀 못 세는데, 이런 글은 사실·식별자가
+//   빼곡한 '기술 연구 보고서'다. 자소서·생기부·탐구반성문엔 거의 안 나온다. ≥3이면 기술 연구 보고서로 본다.
+//   용도: ① looksLikeResume의 '선정하였다' 휴리스틱에서 제외(자소서 오판 방지) ② isStructuredReport의 밀집 신호 보강.
+function sciReportMarkers(text) {
+  return ((text || '').match(/SMILES|PubChem|\bPDB\b|GeneCards|\bNCBI\b|\bCID\b|\bRTK\b|분자\s*도킹|시뮬레이션|키나아제|돌연변이|염기\s*서열|단백질|화합물|시약|시료|실험군|대조군|유의\s*수준|회귀\s*분석|배양|항체|효소|수용체/gi) || []).length;
+}
 
 // 장문 구조화 논문 감지(2026-06-16 실측 zoz040224: 26,934자 논문 재구성→결과 29%·8%로 접힘=length_collapse 차단,
 //   연도·수치 대량 누락). 재구성(genreTransferV2)은 글 전체를 한 번에 새로 써내므로 초장문은 모델이 '요약'으로
@@ -139,11 +151,13 @@ function isStructuredReport(text) {
   if (/제\s*출\s*자\s*[:：]|학\s*번\s*[:：]|학부\s*\/\s*\d{5,}|\/\s*\d{6,8}\s*\//.test(t)) score += 2;   // 제출자·학번 표지(보고서 표지)
   if (/<\s*목\s*차\s*>|(?:^|\n)\s*목\s*차\s*(?:\n|$)|(?:^|\n)\s*차\s*례\s*(?:\n|$)/.test(t)) score += 2;  // 목차/차례
   const topSec = (t.match(/(?:^|\n)[ \t]*\d{1,2}(?!\d)[.)]\s*[가-힣]{2,}/g) || []).length;             // 줄머리 "1. 서론"(연도 2024. 가드: \d{1,2}(?!\d))
-  if (topSec >= 3) score += 1;
+  if (topSec >= 3) score += 2;   // 줄머리 번호섹션 3개+ = 강한 보고서 구조(시사칼럼엔 없음). EGFR 보고서(1.질병~4.억제제)도 단독 통과
   const subSec = (t.match(/\d{1,2}(?!\d)\s*[-－]\s*\d{1,2}(?!\d)\s*[.)]?\s*[가-힣]/g) || []).length;     // "2-1. 발생 실태"
   if (subSec >= 2) score += 1;
-  // 구조 신호 충분(≥2) AND 통계·사실 밀집(보고서다움) — 둘 다라야 발동(시사칼럼 오탐 방지).
-  return score >= 2 && factDensity(t) >= FACT_DENSE_THRESHOLD;
+  // 밀집 신호: 통계(factDensity) OR 기술 식별자(SMILES·PDB·유전자 등 — factDensity가 못 세는 과학 보고서). 둘 중 하나면 보고서다움.
+  const dense = factDensity(t) >= FACT_DENSE_THRESHOLD || sciReportMarkers(t) >= 3;
+  // 구조 신호 충분(≥2) AND 밀집 — 둘 다라야 발동(시사칼럼·구조만 있는 감상문 오탐 방지).
+  return score >= 2 && dense;
 }
 
 // 재구성 부적합 판정 + 사용자에게 그대로 보여줄 '명확한 사유'. ir = surfaceguard.classifyInputRisk(text).
@@ -276,4 +290,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, sciReportMarkers, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };

@@ -215,10 +215,14 @@ const LENGTH_POLICY = {
   resume:     { min: 0.90, max: 1.25, hardMax: 1.40 }
 };
 function measureLength(rawText, outputText, mode) {
-  const pol = LENGTH_POLICY[mode] || LENGTH_POLICY.assignment;
+  const pol0 = LENGTH_POLICY[mode] || LENGTH_POLICY.assignment;
   const rawLen = (rawText || '').replace(/\s+/g, '').length;
   const outLen = (outputText || '').replace(/\s+/g, '').length;
   const ratio = rawLen > 0 ? outLen / rawLen : 1;
+  // ★ 짧은 글 비율 상한 완화(2026-06-19 실측 #8: 140자 글로벌시민교육 성찰이 blog 1.561배로 length_overrun 차단).
+  //   짧은 글은 한 문장만 풀어 써도 비율이 크게 튄다(절대 +수십 자는 사소). 무날조는 novelty/judge가 따로 잡으므로
+  //   여기선 '길이'만 본다 → rawLen<250(공백제외)이면 hardMax를 넉넉히(최소 2.2배) 완화. 긴 글 과확장 차단은 불변.
+  const pol = rawLen < 250 ? Object.assign({}, pol0, { hardMax: Math.max(pol0.hardMax, 2.2) }) : pol0;
   let status = 'ok';
   if (ratio > pol.hardMax) status = 'overHard';      // FLOOR 위반 → shrink repair
   else if (ratio > pol.max) status = 'overSoft';     // 경고만(report)
@@ -414,7 +418,7 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
   }
   // 메모 재사용 (§v4): 같은 경험 메모를 여러 곳에 반복 위빙
   if (allowedExtra) {
-    const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra);
+    const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra, rawText);
     if (reuse.count >= 1) {
       v.push({ type: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', '),
         fix: `같은 경험 메모가 여러 문단에 반복됐다. 각 경험은 가장 잘 맞는 한 문단에만 한 번 쓰고 나머지는 제거하라.` });
@@ -477,7 +481,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   if (lost.count) warnings.push({ gate: 'lostFacts', detail: lost.items.join(', ') });
   const expNov = require('./surfaceguard').measurePersonalExperienceNovelty(rawText, out, allowedExtra);
   if (expNov.count) (englishInput ? warnings : criticals).push({ gate: 'experience_novelty', detail: expNov.items.join(' | ') });
-  if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', ') }); }
+  if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra, rawText); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', ') }); }
   // length_short 단독(사실 손실 없음)은 차단하지 않고 경고로만 노출 — 진짜 정보손실은 lostFacts가 잡는다.
   //   "결과가 줄어들면서 막힘"이 환불 민원이 되던 케이스를 완화(요약처럼 짧아져도 사실 보존이면 전달).
   // length_short는 lostFacts가 소프트가 됐으므로 항상 경고(사실 보존 우선 — 짧아져도 전달, 누락은 lostFacts 경고로 노출).

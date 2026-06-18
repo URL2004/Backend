@@ -129,8 +129,12 @@ function measurePersonalExperienceNovelty(rawText, outputText, memo = '') {
   return { items: fabricated, count: fabricated.length };
 }
 // 메모 재사용 가드: 같은 경험 메모가 출력에 2회+ 등장(중복 위빙)하면 반복 신호.
-function measureMemoReuse(outputText, memo = '') {
-  const lines = (memo || '').split('\n').map(l => l.trim()).filter(Boolean);
+//   ★원문 주제 제외(2026-06-19 실측 #5 영화평론 <어느 가족>): 자동코칭 입장이 글 자체(영화)에서 도출되면 그
+//   "메모"가 곧 글의 주제라, 출력이 주제를 반복하는 걸 메모 재사용으로 오판해 차단됐다. 메모 줄이 원문(rawText)에
+//   이미 들어있으면(=주제·원래 내용) 메모재사용 대상에서 뺀다. 진짜 '주입 경험'(원문에 없는 사용자 메모)만 검사.
+function measureMemoReuse(outputText, memo = '', rawText = '') {
+  const lines = (memo || '').split('\n').map(l => l.trim()).filter(Boolean)
+    .filter(ln => !(rawText && groundedIn(ln, rawText)));   // 원문에 이미 있는 내용(주제)은 메모 재사용 아님
   const scenes = splitSentences(outputText).filter(isLivedScene);
   const reused = [];
   for (const ln of lines) {

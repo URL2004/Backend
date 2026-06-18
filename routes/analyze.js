@@ -2208,6 +2208,14 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
     }
   }
 
+  // ★ 완전·근접 중복 제거(2026-06-19 실측 #4 앤보가트 연극보고서: 그대로 다듬기 단일패스가 exact 2 중복에 차단).
+  //   청크 경로(아래 merge 단계)엔 이미 dedupe가 있는데 단일패스엔 없어, exact 중복이 floor repetition 게이트에
+  //   걸려 통째 차단됐다. 중복 문장은 새 정보 0이라 후속 등장만 삭제(무손실) → 차단 대신 수리. DEDUP=0으로 해제.
+  if (process.env.DEDUP !== '0') {
+    const dr = require('../engine/dedupe').dedupeSentences(result.outputText);
+    if (dr.removed > 0) result.outputText = dr.text;
+    result.dedupe = { removed: dr.removed };
+  }
   // 보존 가드 측정 결과를 result에 부착 (전 모드)
   const povDrift = floor.measurePovDrift(text, result.outputText, povSeed);
   result.povSeed = povSeed;

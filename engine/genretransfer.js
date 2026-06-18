@@ -894,11 +894,11 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   async function weaveLost(curDoc) {
     let curLost = floor.measureLostFacts(textF, curDoc);
     let stalled = 0;   // ★속도(2026-06-12): 개선 없는 라운드(풀문서 재작성 2~4분짜리)를 같은 프롬프트로 반복하지 않음
-    for (let r = 0; r < 3 && curLost.count > 0 && stalled < 1; r++) {
+    for (let r = 0; r < 3 && curLost.count > 0 && stalled < 2; r++) {   // stalled<1→2(2026-06-18: 수치 다수 글은 1라운드론 부족 — 한 번 막혀도 재시도)
       const before = curLost.count;
       try {
         let cand = stripMetaNotes((await llmText({
-          system: `아래 칼럼에 빠진 사실들을 가장 자연스러운 자리에 끼워 넣어 전체를 다시 출력하라. 빠진 사실:\n${curLost.items.map(lostCtx).map(x => '· ' + x).join('\n')}\n★각 수치는 반드시 그 수치의 출처 표지(기관·조사명)와 같은 문장에 두어라.\n★기존 문단을 복제·변주해 늘리지 마라 — 기존 문단 안에 제자리 수정으로 끼워라(43% 실측: 변주 복제가 '기계적 균일성' 피탐).\n★끼워 넣는 문장은 이 칼럼의 결로 써라 — 원문의 보고서 어투(~하였다/본 연구는/설정하였다)를 그대로 옮기지 마라. 가정·가상 사실은 가정임이 드러나게, 단 칼럼 문장으로.\n구조·문체 유지, 새 사실·새 결합 금지, 본문만 출력.`,
+          system: `아래 칼럼에 빠진 사실들을 가장 자연스러운 자리에 끼워 넣어 전체를 다시 출력하라. 빠진 사실:\n${curLost.items.map(lostCtx).map(x => '· ' + x).join('\n')}\n★★수치 뭉갬 교정(최우선): 빠진 수치 중 다수는 글에서 "뭉갠 표현"으로 바뀌어 있다 — 원문 "2,000만"이 "수백만"으로, "4분의 1"이 "상당한 수준"으로, "15.7%"가 통째로 누락된 식이다. 그 뭉갠 표현·누락 자리를 찾아 정확한 원문 수치로 교체하라(예: "수백만 대" → "2,000만 대"). 수치를 뭉개거나 빼면 실패 — 원문 숫자를 글자 그대로.\n★각 수치는 반드시 그 수치의 출처 표지(기관·조사명)와 같은 문장에 두어라.\n★기존 문단을 복제·변주해 늘리지 마라 — 기존 문단 안에 제자리 수정으로 끼워라(43% 실측: 변주 복제가 '기계적 균일성' 피탐).\n★끼워 넣는 문장은 이 칼럼의 결로 써라 — 원문의 보고서 어투(~하였다/본 연구는/설정하였다)를 그대로 옮기지 마라. 가정·가상 사실은 가정임이 드러나게, 단 칼럼 문장으로.\n구조·문체 유지, 새 사실·새 결합 금지, 본문만 출력.`,
           user: curDoc, signal, maxTokens: 8000, model: MODEL
         }) || '').trim());
         if (!cand || WINK_RE.test(cand) || findCoinedTerms(cand, textF).length > 0 || floor.measureNovelty(textF, cand, allowed).count > 0) { stalled++; continue; }

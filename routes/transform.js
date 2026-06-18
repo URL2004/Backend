@@ -310,7 +310,7 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'memo', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence'];
+  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount'];
 
@@ -807,6 +807,23 @@ async function runJob(job, text, evidence) {
         return;   // genreTransferV2 호출 안 함 → 생성 API 0
       }
     }
+    // ★ 자동 코칭(2026-06-18): 사용자가 메모를 직접 안 쓰는 채택 문제 → '자동 코칭' ON이면 시작 시 1회 글에서
+    //   입장(관점)을 도출해 userNotes(job.memo)에 자동 합류. 입장은 글 자체 논리의 1인칭화라 무날조(경험은
+    //   자동 적용 안 함 — 안 겪은 경험 자동 주입은 날조). 효과: 비인칭·무견해 신호를 사용자 시각으로 덮어
+    //   탐지율 '인하 확률↑'(확정 아님 — 추상글 변동 큼). 부적합 차단 '뒤'에 둬 차단될 글엔 호출 0.
+    if (job.autoCoach) {
+      try {
+        const { generateCoach } = require('../lib/coachsuggest');
+        const coach = await generateCoach(text, { signal: job.ac.signal });
+        const stanceLines = (coach.stances || []).map(s => s.text).filter(Boolean);
+        if (stanceLines.length) {
+          job.memo = [job.memo, ...stanceLines].filter(Boolean).join('\n').slice(0, 2000);
+          job.autoCoachApplied = stanceLines.length;
+          persistJob(job);
+          logger.info('transform.auto_coach_applied', { jobId: job.id, uid: job.uid, stances: stanceLines.length });
+        }
+      } catch (e) { logger.warn('transform.auto_coach_failed', { jobId: job.id, err: e && e.message }); }
+    }
     // ★ 장문 논문 라우팅(2026-06-16 실측 zoz040224: 26,934자 논문이 단일패스 재구성에서 요약 collapse 29%·8%로 차단).
     //   단일 genreTransferV2 대신 '청크 기반 격식 회피'로 보낸다 — 우회(피하기)는 유지하되 문단별이라 접힘이 없다.
     if (inputrouting.isLongStructuredThesis(text) || inputrouting.isAcademicCited(text) || inputrouting.isFootnoteCited(text)) {
@@ -1252,6 +1269,7 @@ router.post('/transform', async (req, res) => {
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
     memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',   // 경험·사례 메모 — blog·formal(재구성) 공통 적용(2026-06-15)
+    autoCoach: req.body.autoCoach === true && mode === 'formal',   // 자동 코칭(재구성 전용) — 시작 시 입장 자동 도출·적용(2026-06-18)
     lang: req.body.lang === 'en' ? 'en' : 'ko',
     lengthMode: req.body.length === 'compact' ? 'compact' : 'keep',   // 분량 옵션(재구성 전용) — 엔진 연결(2026-06-15). 기본 keep(유지)
 

@@ -333,9 +333,21 @@ const SKELETONS = {
     slots: [
       { role: 'event_lead', goal: '사건·발표·수치로 리드를 써라(기사 첫 문단처럼).', w: 1.0 },
       { role: 'numbers', goal: '핵심 수치들을 맥락과 함께 전달하라.', w: 1.2 },
-      { role: 'voices', goal: '조사·기관·연구를 인용 표지("~에 따르면/~라고 밝혔다")로 전달하라.', w: 1.2 },
+      { role: 'voices', goal: '원문에 있는 인용·출처만 인용 표지로 전달하라(원문에 없는 기관·"~에 따르면" 신설 금지).', w: 1.2 },
       { role: 'pros_cons', goal: '찬반·기대와 우려를 교차시켜라.', w: 1.3 },
       { role: 'outlook', goal: '남은 쟁점과 전망으로 닫아라(교훈 금지).', w: 0.9 },
+    ],
+  },
+  // 격식 보고서형 — 비인칭·압축·단정(한은 보고서 스타일 0~2%대). 칼럼 톤 X, 보고서 register 유지하되
+  //   탐지를 올리는 "본 연구는/이론적 배경/첫째,둘째 / ~할 수 있다·가능성이 있다·고려할 필요가 있다" 템플릿·헤지를 제거.
+  formal_brief: {
+    label: '격식 보고서형(비인칭·압축)',
+    slots: [
+      { role: 'definition_fact', goal: '대상을 도입 상투구 없이 사실 정의로 곧장 제시하라. "최근 ~중요해지고 있다/빠르게 변하고 있다"류 도입 금지.', w: 1.1 },
+      { role: 'mechanism', goal: '핵심 메커니즘·인과를 단정 서술로 압축하라. "~할 수 있다/가능성이 있다/볼 수 있다" 대신 조건을 명시한 단정문으로.', w: 1.3 },
+      { role: 'conditional_variation', goal: '구간·조건별로 결과가 어떻게 갈리는지 구체 분기하라(일반론·"다양한 요인" 금지).', w: 1.3 },
+      { role: 'analysis_basis', goal: '판단의 근거(무엇을 무엇과 대조·비교하는지)를 사실로 명시하라. "본 연구에서는 ~하고자 한다 / 이론적 배경 / 필요성" 선언·나열 금지.', w: 1.1 },
+      { role: 'implication_terse', goal: '그래서 무엇이 달라지고 무엇을 봐야 하는지 단정적으로 짚고 끝내라. 교훈 요약·"고려할 필요가 있다"·"중요한 의미를 가진다" 금지.', w: 1.0 },
     ],
   },
 };
@@ -402,7 +414,11 @@ JSON만: {"title":"...","subtitle":"...","slots":[{"role":"hook_fact","claims":[
   const lenScale = lengthMode === 'compact' ? 0.6 : 0.95;
   const desired = Math.round((((rawText.match(/[가-힣]/g) || []).length) || 1) * lenScale);
   const wsum = slots.reduce((a, s) => a + s.w, 0);
-  slots.forEach(s => { s.targetChars = Math.max(420, Math.round(desired * s.w / wsum)); });
+  // ★길이 규율(2026-06-18): 슬롯 최소 floor를 입력 길이에 비례시킨다. 고정 420 floor는 짧은 글을
+  //   슬롯수×420까지 부풀려(966자→2940자 강제) "같은 논점 반복 패딩"을 유발 → 카피킬러 반복 태그로 피탐.
+  //   무날조 원칙상 짧은 글은 못 부풀린다(새 사실 금지) → 짧게 나오는 게 정답. floor = min(420, desired/슬롯수).
+  const floorPer = Math.min(420, Math.round(desired / Math.max(1, slots.length)));
+  slots.forEach(s => { s.targetChars = Math.max(floorPer, Math.round(desired * s.w / wsum)); });
   return { title: plan.title || '', subtitle: plan.subtitle || '', slots };
 }
 
@@ -513,6 +529,58 @@ function resolveDupSentences(doc, textF) {
   return doc;
 }
 
+// ★ 인접 문장 통째 포함 중복 제거(2026-06-18 경영 실측: "문제는 속도가 아니다. 내 생각엔 문제는 속도가 아니다."):
+//   한 문장이 옆 문장에 통째로 포함된 재진술. resolveDupSentences는 <20자·<4토큰을 건너뛰어 못 잡는다.
+//   공백·말미 문장부호 제거 후 한쪽이 다른 쪽을 포함(내용 6자+)하면 짧은 쪽(재진술)을 버리고 긴 쪽을 남긴다.
+function stripAdjacentContainedDup(doc) {
+  const norm = s => (s || '').replace(/\s+/g, '').replace(/["”'’.!?…]+$/g, '');
+  return String(doc || '').split(/\n{2,}/).map(para => {
+    const sents = para.split(/(?<=[.!?”"])\s+/);
+    const keep = [];
+    for (const s of sents) {
+      const cur = norm(s);
+      if (cur.length >= 6 && keep.length) {
+        const prev = norm(keep[keep.length - 1]);
+        if (prev.length >= 6) {
+          if (prev.includes(cur)) continue;                              // 현재가 직전에 포함 → 현재 버림
+          if (cur.includes(prev)) { keep[keep.length - 1] = s; continue; } // 직전이 현재에 포함 → 직전을 더 긴 현재로 교체
+        }
+      }
+      keep.push(s);
+    }
+    return keep.join(' ');
+  }).join('\n\n');
+}
+
+// ★ 짧은 단독 문단 병합(2026-06-18 경영 슬롯 아티팩트): 슬롯이 잘게 쪼개져 1~2문장짜리 연결 경구가
+//   독립 문단으로 흩뿌려지면(실측 7개) 카피킬러가 '기계적·균일' 구조로 읽는다. 본문 중 한글 minHangul자
+//   미만 문단을 앞 문단(없으면 다음 문단)에 흡수해 사람 산문의 문단 호흡으로 되돌린다. 제목 블록·구조
+//   줄(헤딩·리스트)·이미 긴 문단(700자+)은 건드리지 않는다(벽글 방지·구조 보존).
+function mergeShortParas(doc, minHangul = 90) {
+  const blocks = String(doc || '').split(/\n{2,}/);
+  if (blocks.length <= 2) return doc;
+  const han = s => (String(s).match(/[가-힣]/g) || []).length;
+  const isStructBlock = b => String(b).split('\n').some(l => STRUCT_LINE_RE.test(l));
+  const title = blocks[0];
+  const out = [];
+  for (const b of blocks.slice(1)) {
+    const t = (b || '').trim();
+    if (!t) continue;
+    const prev = out.length ? out[out.length - 1] : null;
+    if (prev && !isStructBlock(t) && !isStructBlock(prev) && han(t) < minHangul && han(prev) < 700) {
+      out[out.length - 1] = prev.replace(/\s+$/, '') + ' ' + t;          // 앞 문단에 흡수
+    } else {
+      out.push(t);
+    }
+  }
+  // 첫 본문 문단이 짧으면(앞 흡수 대상이 없었음) 다음 문단 앞에 전방 병합.
+  if (out.length >= 2 && !isStructBlock(out[0]) && !isStructBlock(out[1]) && han(out[0]) < minHangul) {
+    out[1] = out[0].replace(/\s+$/, '') + ' ' + out[1];
+    out.shift();
+  }
+  return [title, ...out].join('\n\n');
+}
+
 // 메타 메모·지시문 윙크·용어귀속 날조 가드: engine/floor.js로 이식(메인 엔진 공용) — import만.
 const { META_NOTE_RE, WINK_RE, findCoinedTerms } = require('./floor');
 // ★판정 스캐폴딩 줄 제거(2026-06-16 실측 2건): 판정/수리 LLM이 교정 본문 대신 마크다운 판정을 통째로
@@ -542,11 +610,15 @@ const V2_BANS = `[금지 — 하나라도 어기면 실패]
 · 연구보고서 어법: 본 연구는/연구의 필요성/이론적 배경/연구 목적/첫째,…둘째,…셋째,…
 · AI 해설문 틀: "~란 무엇인가", "~의 의미/필요성", "도움이 되는 순간/지점", "위험한 지점", "~가 해야 할 일", "결국 ~에 달려 있다", "이 구조(과정)에서 가장 중요한", "이 사실(결과/수치)은 ~를 보여준다", "같은 맥락을 가리킨다", "문제는 ~라는 데 있다", "~라는 점에서", "달리 말하면 ~", "제목 — 부제 — 또 다른 부제"식 대시 남발
 · "필자가 보기에", "과연 ~인가?", 교훈 요약 마무리("~가 중요하다/필요하다"로 문단 닫기 반복)
+· ★★간접화법·비인칭 종결(카피킬러가 가장 자주 잡는 AI 지문 — 절대 금지): 단정을 명사화·헷지로 감싸지 마라. "~다는 것이다/~다는 점이다/~다는 사실이다" 꼬리표, "~기도 하다/~이기도 하다" 양다리 헷지, "~로 보인다/~로 읽힌다/~로 평가된다/~로 여겨진다/~로 해석된다" 해석동사, "~하는가 하는 점이다/점일 것이다", "~에 자리를 잡아왔다/~로 작용한다" 류 비인칭 서술 — 전부 그냥 단정으로 끝내라. 예: "복잡해졌다는 것이 핵심이다"→"복잡해졌다", "자리를 잡아왔다"→"자리를 잡았다", "압박을 받고 있다"→"밀리고 있다". 비인칭 수동("~된다/~되고 있다") 대신 주체를 드러낸 능동으로.
+· ★★맥락 끊긴 한 줄 일반론으로 문단·슬롯을 닫지 마라(카피킬러 '기계적·균일' 지문의 정체): 앞뒤 흐름과 동떨어진 짧은 격언식 단정을 툭 떨어뜨리는 것 — 예: "제조업 시절 규모의 경제가 성장 동력이었다.", "기준 없는 실험은 결과를 검증할 방법이 없다.", "없으면 짐일 뿐이다.", "방향 없는 속도는 소란일 뿐이다." 처럼 앞 문장과 인과·맥락 없이 떠 있는 요약 경구. 남은 주장은 앞 문장 흐름 안에 구체적으로 이어 붙이거나, 못 이으면 버려라(분량보다 흐름이 우선 — 무날조라 버려도 됨). 같은 논점을 다른 표현으로 두 번 말하지 마라.
+· ★★주제어를 사전처럼 정의하지 마라(카피킬러 비인칭 직격 + 대개 원문에 없는 AI 채움): "경영은 한정된 자원을 활용해 목표를 달성하는 과정이며 ~의 기술이다", "X란 ~를 의미한다", "X는 ~하는 활동(행위·과정·체계)이다" 식 교과서 정의문 금지. 원문이 그 개념을 비판·재해석했으면 정의로 되돌리지 말고 원문의 시각(또는 사용자 메모의 입장) 그대로 옮겨라 — 원문이 "자원배분 공식으로 보면 핵심이 빠진다"고 했으면 "경영은 ~과정이다"로 뒤집지 마라(충실도 위반이자 비인칭 지문).
 · 재료(주장·근거)에 없는 사실·수치·기관·사례·1인칭 경험 생성
 · 원문에 없는 평가·전망·인과·진단을 새 주장으로 덧붙이기(순응도 저하·부처 충돌·주기 단축처럼 "그럴듯한 추론"을 사실인 양 확장 금지 — 원문이 말한 범위만 옮겨라)
+· 본문에서 '원문/원본/지문/필자가 받은 글'처럼 원본 문서를 제3의 대상으로 가리키지 마라("원문이 단호하게 짚듯", "원문에 따르면", "원문이 지적하듯" 금지). 너의 출력이 곧 그 글이다 — 주장은 출처 언급 없이 그냥 단정하라(원문에 실제 그 단어가 있을 때만 예외).
 ${LLM_TIC_RULE}`;
 
-function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = [], memoLines = []) {
+function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = [], memoLines = [], skeleton = '') {
   // ★ "수치 캐시"(2026-06-15) — 격식논문 재구성에서 연도·%가 떨어지거나(2023 누락=lostFacts) 바뀌는(2023→2022=distortion)
   //   차단의 예방책: 승인 근거뿐 아니라 "이 슬롯의 원문 문단(srcText)"에 실재하는 수치·연도·법령번호도 "반드시 포함"으로
   //   못 박는다. 원문에 있는 수치만 강제(생성 아님) → retry 채점(누락 시 감점)이 누락·변형을 강하게 억제.
@@ -561,20 +633,36 @@ function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpener
   const memoBlock = (memoLines && memoLines.length)
     ? `\n\n[필자(사용자)가 직접 제공한 실제 경험·사례 — 이 슬롯 논점과 관련 있으면 추상 서술을 구체적 장면·예시로 바꿔 녹여라. 메모에 없는 경험·수치·기관·사실은 절대 지어내지 말 것. 한 경험은 글 전체에서 한 번만 쓴다]\n${memoLines.map(m => `· ${m}`).join('\n')}`
     : '';
-  const anchors = process.env.STYLE_ANCHOR === '0' ? '' : pickAnchors(slotIdx) + '\n';
+  const isFormal = skeleton === 'formal_brief';
+  const anchors = (isFormal || process.env.STYLE_ANCHOR === '0') ? '' : pickAnchors(slotIdx) + '\n';
+  // 페르소나·문체를 스켈레톤별로 — 격식 보고서형은 칼럼 voice가 아니라 비인칭 분석체 + 리듬 변주(균일성 직격)
+  const persona = isFormal
+    ? '너는 한국어 분석 보고서를 쓰는 필자다. 한 편의 분석 보고서를 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).'
+    : '너는 한국 시사 칼럼 필자다. 한 편의 칼럼을 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).';
+  // ※ 격식톤은 칼럼톤보다 탐지가 구조적으로 높다(격식 register 어휘가 주관배제·무견해 태그를 올림 — 3회 실측 확정).
+  //   균일성/판단주입/리듬 지시로 균일성은 낮출 수 있어도 register penalty는 못 없앤다. register 보존이 목적인 옵션.
+  const styleBlock = isFormal
+    ? `[문체 — 분석 보고서의 결(비인칭·격식, 단 상투 템플릿/헤지 회피)]
+· 한다체·비인칭 격식 유지. 단 "본 연구는/연구의 필요성/이론적 배경/첫째,…둘째,…" 보고서 상투 템플릿과 "~할 수 있다·가능성이 있다·고려할 필요가 있다" 헤지는 금지.
+· 문장 길이를 들쭉날쭉하게: 짧은 단정문과 긴 분석문을 섞고, 같은 구조 문장을 3개 이상 연속하지 마라.
+· 칼럼식 수사(반문 "과연 ~인가?", 구어 추임새, 1인칭) 금지. 괄호 삽입구는 단서·부연에 한해 절제(1000자당 2~3개).
+· 같은 내용·문장을 다른 슬롯에서 반복하지 마라 — 직전 문단 끝을 보고 새 내용으로 전개하라.`
+    : `[문체 — 사람 칼럼의 결]
+· 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
+· 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
+· 한 문단 안에서 근거와 의견이 섞이게(근거 나열 문단 금지 — 근거는 논쟁의 무기다).
+· ★★비인칭 분석 나열 금지(분석·시사 글의 간접화법 직격): "기업은/데이터는/조직은/시장은 ~된다/~이다"로 끝나는 3인칭 객관 서술을 죽 이어붙이지 마라 — 같은 비인칭 단정의 행렬이 카피킬러 '간접화법·비인칭' 태그의 정체다. 필자의 판단을 능동으로 드러내라. ★사용자 메모에 입장이 있으면 그걸 글 전체를 관통하는 한 줄 시각으로 끌고 가서, 객관 서술 사이사이 "내가 보기에 ~", "결국 핵심은 ~", "문제는 거기서 시작된다" 처럼 판단 주체를 드러내며 비인칭 수동("~된다/~로 평가된다/~게 된다")을 능동 단정으로 바꿔라. 단 원문·메모에 없는 새 견해·사실은 만들지 마라.
+· ★★병렬 나열 밀도 낮춰라(카피킬러 '기계적 정확성·균일성' 태그의 정체): "A하고, B하고, C하면" 식 3중 병렬 절이나 "AI·자동화·플랫폼·ESG·인구구조 변화까지" 식 4개+ 명사 나열을 한 문장·한 문단에 겹쳐 쌓지 마라. 원문에 나열이 있어도 그대로 옮기지 말고 — 한두 개만 대표로 살려 풀어 쓰거나(예: "기술 변화에 더해 AI까지 겹친다"), 종속절·예시로 흐트러뜨려 같은 리듬 문장이 연속되지 않게 하라(사실 누락 아님 — 같은 사실을 덜 기계적으로). 특히 도입부에서 병렬 나열을 연달아 쓰면 첫 단락이 통째로 '기계적' 태그를 받는다.`;
   // ★ prompt caching(§이식 ⑧): system은 고정부+앵커(5변형)만 — 슬롯별 가변부([이 슬롯]·금지 시작어·수치 목록)는
   //   전부 user로 분리해 같은 앵커 변형의 슬롯·재시도가 system 캐시를 재사용할 수 있게 한다(지시 내용은 동일).
-  const system = `너는 한국 시사 칼럼 필자다. 한 편의 칼럼을 슬롯 단위로 이어 쓰고 있다(소제목 없음 — 흐름으로 이어지는 줄글).
+  const system = `${persona}
 ${anchors}[사실 보존 — 절대 규칙, 문체보다 우선]
 · 연도·날짜·기간·인용연도·퍼센트·통계 수치·금액·법령번호는 원문 표기 그대로 옮겨라. 절대 바꾸지 마라(2023을 2022로, 40%를 45%로 쓰면 실패).
 · "반드시 포함할 수치"로 준 값은 빠짐없이, 정확히 그대로 본문에 넣어라. 재구성하더라도 이 값들은 손대지 않는다.
 · 원문에 없는 연도·수치·출처·기관·인용을 새로 만들지 마라. 또한 원문에 없는 평가·전망·인과관계·진단을 새 주장으로 덧붙이지 마라(예: "~로 순응도가 낮아진다", "부처가 충돌했다", "주기가 짧아진다" 같은 추론·확장 금지 — 원문이 말한 범위만 다른 문장으로 옮겨라).
 · ★원문에 등장하는 고유명사(인물·기관·책·제품·기술명)에는 원문이 그 대상에 대해 말한 사실만 옮겨라. 그 대상에 원문에 없는 활동·저작·발언·업적·특성·역할을 새로 붙이지 마라(예: 원문이 "○○의 책을 읽었다"까지만 말했으면, "○○가 ~기법을 체계적으로 다룬다"처럼 그 인물의 행적을 지어내 확장하면 실패).
 · ★재료(원문 주장·근거)가 빈약하면 빈약한 대로 짧게 써라. 분량을 채우려고 원문에 없는 기술적 설명·메커니즘·구체 수치·인과·온도/규격을 지어내 채우지 마라 — 분량 미달보다 날조가 훨씬 큰 실패다(짧은 글은 짧게 재구성하는 것이 정답이다).${hasPH ? '\n· ★⟦F##⟧ 형태의 토큰은 원문 사실(연도·수치)의 자리표시자다. 그 자체를 본문에 그대로 옮겨 쓰고(숫자로 바꾸지 말 것), 위치·개수를 유지하라. 토큰을 삭제·변형·생성하면 실패. 예: "⟦Fab⟧년에 제정"은 그대로 "⟦Fab⟧년에 제정"으로.' : ''}
-[문체 — 사람 칼럼의 결]
-· 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
-· 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
-· 한 문단 안에서 근거와 의견이 섞이게(근거 나열 문단 금지 — 근거는 논쟁의 무기다).
+${styleBlock}
 ${V2_BANS}
 · 출력: 본문만(제목·소제목·머리말 금지).`;
   const user = `[이 슬롯]
@@ -640,13 +728,29 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   //   evidence는 학생이 승인한 사실이라 textF에 포함해 생존을 강제하지만, 메모는 "관련 있으면 녹이는" 선택지라
   //   강제하면 관련 없는 메모 한 줄이 lostFacts로 차단을 유발한다(2026-06-15 설계 결정).
   const textF = evidence ? rawText + '\n\n' + evidence : rawText;
-  const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
   // ★ 설계 D — 사실 자리표시자 보호(2026-06-15): 슬롯 생성이 흩어진 연도·수치를 떨구거나(2023 누락) 바꾸는(2023→2022)
   //   걸 원천 차단. 원문 hard fact를 ⟦Faa⟧ 토큰으로 가려 생성하고(LLM이 값 못 바꿈·잘 안 떨굼), 슬롯 생성+프레임수리
   //   직후 복원해 값 정확성을 보장한다. 이후 weaveLost·judge·게이트는 실제 값으로 본다. 사실 3개+ 글에만 적용.
   const factsafe = require('./factsafe');
   const factMap = factsafe.buildFactMap(rawText);
   const fsafe = factMap.count >= 3;
+  // ※ 원장 마스킹/숫자보존 강제는 backfire(2026-06-18 실측: 사실손실 6→14) — 재구성은 "요약→재생성"이라
+  //   구조적으로 데이터 글의 숫자를 보존 못 함. 데이터 풍부 글은 재구성이 아닌 보존형(faithful) 경로로 라우팅해야 함.
+  const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
+  // ★ 주장 의미중복 병합(2026-06-18, 경영 73% 실측): 원장이 같은 논점을 패러프레이즈로 둘 이상 담으면
+  //   서로 다른 슬롯에 배정돼 본문에서 재진술된다("편향 데이터→오판" 2회, "제조업 효율=경쟁력" 2회) —
+  //   resolveDupSentences의 jaccard≥0.62 아래 패러프레이즈라 사후 dedupe도 못 잡는다. 원천에서 합쳐 막는다.
+  //   숫자 든 근거(evidence_text에 \d)는 절대 병합 안 함(사실 보호). 이 시점 이후 C# 인덱스 일관(plan·본문 동일 배열).
+  if (Array.isArray(ledger.claims) && ledger.claims.length > 3) {
+    const kept = [];
+    for (const c of ledger.claims) {
+      const txt = String(c.claim || '');
+      const hasNum = /\d/.test(String(c.evidence_text || ''));
+      if (hasNum || txt.replace(/\s+/g, '').length < 6) { kept.push(c); continue; }
+      if (!kept.some(k => _paraJaccard(txt, String(k.claim || '')) >= 0.55)) kept.push(c);
+    }
+    if (kept.length < ledger.claims.length) ledger.claims = kept;
+  }
   const plan = await buildSlotPlan(rawText, { skeleton, evidenceList, ledger, lengthMode, signal });
 
   // 슬롯 순차 생성(앞 슬롯 꼬리에 이어 쓰기 — v1의 병렬 섹션 단절 문제 해소)
@@ -681,7 +785,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
     const prevTail = bodies.length ? bodies[bodies.length - 1].split(/\n{2,}/).pop().slice(-160) : '';
     // 앞 슬롯들이 이미 인용한 수치 — 재인용 금지 목록(ai-study 63% 실측: 슬롯 독립 생성이 같은 통계를 2~4회 재진술)
     const usedNumList = [...new Set(bodies.flatMap(b => _numToks(b)).map(t => t.split('|')[0]))];
-    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTextsP, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList, memoLines);
+    const { system, user, mustNums } = buildSlotPrompt(plan, slot, claimTextsP, evidTexts, prevTail, usedOpeners, slotIdx, srcText, usedNumList, memoLines, skeleton);
     const usedNumSet = new Set(usedNumList);
     const minChars = Math.round(slot.targetChars * 0.8);   // 0.7→0.8(분량 미달이 best-pick으로 통과하던 폭 축소)
     let best = { body: '', score: -1 };
@@ -806,7 +910,13 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   // ★ 사실 자리표시자 복원(설계 D): 슬롯 생성+프레임 수리까지 토큰으로 보호한 사실을 원래 값으로 되돌린다.
   //   이후 단계(짝교정·weaveLost·judge·게이트)는 실제 값을 보고 동작한다. 떨궈진 토큰은 복원 후 사라져
   //   lostFacts가 잡고 weaveLost가 재삽입을 시도(차단보다 복구 우선).
-  if (fsafe) doc = factsafe.restore(doc, factMap);
+  if (fsafe) {
+    doc = factsafe.restore(doc, factMap);
+    // ★토큰 망가짐 정리(2026-06-18 북한 실측: LLM이 ⟦Fab⟧을 ⟦⟧·⟦ab⟧로 뭉개 restore가 못 잡음 → 본문에 잔류):
+    //   잔여 토큰을 제거(앞 공백·뒤 조사 정리). 값은 사라지지만 아래 weaveLost가 measureLostFacts로 잡아
+    //   원문 맥락과 함께 제자리 재주입한다(차단 아닌 복구 — 토큰 메커니즘의 취약점을 weaveLost로 보완).
+    doc = doc.replace(/\s*⟦[A-Za-z]{0,4}⟧\s*(?:짜리|년|명|세|개|건|차|회|원)?/g, ' ').replace(/ {2,}/g, ' ').replace(/ ([,.])/g, '$1');
+  }
 
   // ── 수리 순서(v3 실측 교훈): 짝 교정(수치 보존) → 사실 재위빙(짝 인지) → 마감 → judge 게이트+수리 → 최종 재위빙.
   //    v3에서 짝 수리가 재위빙 "뒤"에 돌며 수치를 떨궈 lostFacts 4 발생 + judge가 진짜 재조합 3건을 보고만 하고 방치.
@@ -862,11 +972,11 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   async function weaveLost(curDoc) {
     let curLost = floor.measureLostFacts(textF, curDoc);
     let stalled = 0;   // ★속도(2026-06-12): 개선 없는 라운드(풀문서 재작성 2~4분짜리)를 같은 프롬프트로 반복하지 않음
-    for (let r = 0; r < 3 && curLost.count > 0 && stalled < 1; r++) {
+    for (let r = 0; r < 3 && curLost.count > 0 && stalled < 2; r++) {   // stalled<1→2(2026-06-18: 수치 다수 글은 1라운드론 부족 — 한 번 막혀도 재시도)
       const before = curLost.count;
       try {
         let cand = stripMetaNotes((await llmText({
-          system: `아래 칼럼에 빠진 사실들을 가장 자연스러운 자리에 끼워 넣어 전체를 다시 출력하라. 빠진 사실:\n${curLost.items.map(lostCtx).map(x => '· ' + x).join('\n')}\n★각 수치는 반드시 그 수치의 출처 표지(기관·조사명)와 같은 문장에 두어라.\n★기존 문단을 복제·변주해 늘리지 마라 — 기존 문단 안에 제자리 수정으로 끼워라(43% 실측: 변주 복제가 '기계적 균일성' 피탐).\n★끼워 넣는 문장은 이 칼럼의 결로 써라 — 원문의 보고서 어투(~하였다/본 연구는/설정하였다)를 그대로 옮기지 마라. 가정·가상 사실은 가정임이 드러나게, 단 칼럼 문장으로.\n구조·문체 유지, 새 사실·새 결합 금지, 본문만 출력.`,
+          system: `아래 칼럼에 빠진 사실들을 가장 자연스러운 자리에 끼워 넣어 전체를 다시 출력하라. 빠진 사실:\n${curLost.items.map(lostCtx).map(x => '· ' + x).join('\n')}\n★★수치 뭉갬 교정(최우선): 빠진 수치 중 다수는 글에서 "뭉갠 표현"으로 바뀌어 있다 — 원문 "2,000만"이 "수백만"으로, "4분의 1"이 "상당한 수준"으로, "15.7%"가 통째로 누락된 식이다. 그 뭉갠 표현·누락 자리를 찾아 정확한 원문 수치로 교체하라(예: "수백만 대" → "2,000만 대"). 수치를 뭉개거나 빼면 실패 — 원문 숫자를 글자 그대로.\n★각 수치는 반드시 그 수치의 출처 표지(기관·조사명)와 같은 문장에 두어라.\n★기존 문단을 복제·변주해 늘리지 마라 — 기존 문단 안에 제자리 수정으로 끼워라(43% 실측: 변주 복제가 '기계적 균일성' 피탐).\n★끼워 넣는 문장은 이 칼럼의 결로 써라 — 원문의 보고서 어투(~하였다/본 연구는/설정하였다)를 그대로 옮기지 마라. 가정·가상 사실은 가정임이 드러나게, 단 칼럼 문장으로.\n구조·문체 유지, 새 사실·새 결합 금지, 본문만 출력.`,
           user: curDoc, signal, maxTokens: 8000, model: MODEL
         }) || '').trim());
         if (!cand || WINK_RE.test(cand) || findCoinedTerms(cand, textF).length > 0 || floor.measureNovelty(textF, cand, allowed).count > 0) { stalled++; continue; }
@@ -898,6 +1008,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   doc = stripMetaNotes(doc);
   doc = require('./dedupe').dedupeSentences(doc).text;
   doc = resolveDupSentences(dedupeParas(doc, textF), textF);   // 슬롯 생성 자체의 문단·문장 중복도 커버
+  doc = stripAdjacentContainedDup(doc);                        // 인접 문장 통째 포함 재진술("X. ~X.") — 위 dedup이 못 잡는 짧은 중복
   doc = dedupeFactRecitations(doc, evidenceList, textF);       // 같은 사실 재인용 제거(ai-study 63% 실측)
   doc = require('./spacing').fixSpacing(doc).text;
 
@@ -951,7 +1062,18 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   doc = tidyParagraphs(doc);   // ★ 문단 내부 단일 줄바꿈 정리(2026-06-12: LLM이 문장마다 \n 넣어 "애매한 두 행" 발생)
   doc = stripMetaNotes(doc);   // ★최종 scrub(2026-06-16): judge 수리·재위빙·교정이 끼운 지시문/메타를 return 직전 제거.
   //   기존 scrub은 judge 루프 '이전'(③마감)뿐이라, 그 뒤 repairSentence/weaveLost가 넣은 누출이 그대로 나갔다.
+  // ★ '원문/원본/지문' 작업용어 누출 제거(2026-06-18 경영 실측: "원문이 단호하게 짚듯, ~"): 휴머나이즈 출력은
+  //   그 자체가 글이라 원본을 제3의 대상으로 가리키면 기계처리 흔적. 원문 텍스트에 그 단어가 없을 때만(오탐 방지)
+  //   인용 클로즈("원문이 ~짚듯,", "원문에 따르면")를 제거 — 뒤 본문 절은 보존(문장 통삭제 아님).
+  if (!/(원문|원본|지문)/.test(rawText)) {
+    doc = doc.replace(/(원문|원본|지문)(?:이|은|에서|에는|에서는|에|도)?[ \t]*[^,.\n]{0,22}?(?:짚(?:듯|었듯)|지적(?:하)?듯|밝히듯|말(?:하)?듯|강조(?:하)?듯|보여주듯|적시(?:하)?듯|언급(?:하)?듯|에[ \t]*따르면|대로|처럼)[ \t]*,?[ \t]*/g, '')
+             .replace(/[ \t]{2,}/g, ' ').replace(/ +([,.])/g, '$1').replace(/(^|\n)[ \t,]+/g, '$1');   // ★\n 보존(줄바꿈 먹는 \s·^…gm 금지 — 문단 붕괴 버그)
+  }
   doc = require('./outputguard').stripPunchTemplates(doc, rawText, { strict: true }).text;   // ★독립형 punch 단정 제거(2026-06-16 품질리포트): "그게 핵심이다"·"정책이 뒤흔들렸다" 등(원문에 있던 건 보존). formalBudgetPass(LLM) 뒤 결정론 안전망.
+  doc = stripAdjacentContainedDup(doc);   // ★최종(2026-06-18): judge 수리·재위빙·punch제거가 만든 인접 포함 재진술 마지막 제거
+  // ★ mergeShortParas 제거(2026-06-18 실측 역효과: 경영 48→100%): 단독 1줄 문단은 '지저분함'이 아니라
+  //   사람 글의 들쭉날쭉한 리듬(burstiness)이었다. 긴 균일 문단으로 합치니 카피킬러 'AI 균일성'이 도리어 폭증.
+  //   짧은 문단은 그대로 둔다(= 탐지 낮추는 자산). 함수는 보존하되 호출하지 않음.
   const risk = gf.genreRiskScore(doc);
   const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
   return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, evidenceLost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };

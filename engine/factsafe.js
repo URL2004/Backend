@@ -53,6 +53,9 @@ function mask(text, factMap) {
 function restore(text, factMap) {
   if (!factMap || !factMap.count) return text || '';
   let out = String(text || '');
+  // ★복원 견고화(2026-06-18): LLM이 토큰에 공백·대문자를 섞어(⟦ Fab ⟧, ⟦FAB⟧) 정확 매칭이 깨지면
+  //   숫자가 그대로 삭제되던 버그(15.7%→삭제) 방지 — 토큰을 정규형(⟦Fxx⟧)으로 먼저 정규화.
+  out = out.replace(/⟦\s*F\s*([A-Za-z])\s*([A-Za-z])\s*⟧/g, (_m, a, b) => '⟦F' + a.toLowerCase() + b.toLowerCase() + '⟧');
   for (const [tok, val] of Object.entries(factMap.map)) out = out.split(tok).join(val);
   return out;
 }

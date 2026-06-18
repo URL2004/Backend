@@ -26,14 +26,19 @@ function splitLongChunk(c) {
       if (cut === -1 || Math.abs(x - ideal) < Math.abs(cut - ideal)) cut = x;
     }
     if (cut === -1) cut = segStart + HARD_MAX;       // 문장경계 없음 → 강제 컷(왕복은 슬라이스 연속이라 유지)
-    ranges.push([segStart, cut]);
-    segStart = cut;
+    // ★ 컷 직후 공백을 이 조각의 sep로 흡수(2026-06-18 실데이터 "활용하였다.고객의" 잼 수정): cut은 구두점 직후라
+    //   다음 조각이 공백으로 시작 → LLM 재작성이 그 앞 공백을 떨구면 병합 시 문장이 붙어 긴 문단이 벽글이 된다.
+    //   공백을 sep에 넣고 다음 조각을 공백 뒤부터 시작 → 잼 방지 + 왕복 보존(중복 공백 없음). 공백 없으면 한 칸 보강.
+    let wsEnd = cut;
+    while (wsEnd < text.length && /[ \t]/.test(text.charAt(wsEnd))) wsEnd++;
+    ranges.push([segStart, cut, wsEnd > cut ? text.slice(cut, wsEnd) : ' ']);
+    segStart = wsEnd;
   }
-  ranges.push([segStart, text.length]);
-  return ranges.map(([a, b], k) => {
+  ranges.push([segStart, text.length, null]);        // 마지막 조각: 원래 청크 sep 사용
+  return ranges.map(([a, b, sepWs], k) => {
     const piece = {
       start: c.start + a, end: c.start + b,
-      sep: k === ranges.length - 1 ? c.sep : '',
+      sep: sepWs == null ? c.sep : sepWs,
       text: text.slice(a, b), outputText: null
     };
     if (k === 0 && c._lead) piece._lead = c._lead;   // 선행 공백은 첫 조각만

@@ -341,9 +341,17 @@ const PERSONAL_CTX_RE = /(저는|저도|제가|제\s|내가|나는|우리\s|지�
 const PAST_ACTION_RE = /(았|었|였|했|갔|왔|봤|뒀|났|렸|췄|쳤|다툰)(다|다는|는데|던|던\s|고|으며|지만|음|어요|네요|거든요|습니다|기도)/;
 // 경험 표지: "~적이 있다", "~던 적", "~곤 했다" 자체가 구체적 과거 경험 진술.
 const EXPERIENCE_RE = /(적이\s*있|던\s*적|곤\s*했|적\s*있)/;
+// 1인칭 *대명사*(화자 자신)만 — PERSONAL_CTX_RE의 시점어(그때/작년/지난 학기)는 줄거리·역사서술에도 흔해 제외.
+const FIRST_PERSON_SPEAKER_RE = /(저는|저도|저의|제가|제\s|내가|나는|나도|우리\s)/;
 function isLivedScene(s) {
-  if (EXPERIENCE_RE.test(s) && PAST_ACTION_RE.test(s)) return true;          // ~한 적이 있다 류
-  if (PERSONAL_CTX_RE.test(s) && PAST_ACTION_RE.test(s)) return true;        // 1인칭/특정시점 + 과거행동
+  // ★ P0(2026-06-18 실데이터: 자소서 #50 "저도 ~ 가르쳐본 적이 있어요" 날조가 게이트 통과): "~한 적이 있다/있어요/있습니다"는
+  //   경험 표현 자체인데 가르쳐'본'(관형형)·있'어요/있다'(현재형)엔 과거어미(았/었)가 없어 PAST_ACTION_RE가 탈락 →
+  //   해요체·관형형 경험을 통째로 놓쳤다. EXPERIENCE_RE(적이 있/던 적/곤 했) + 1인칭 화자면 과거어미 없이도 경험으로 본다.
+  //   ★1인칭 '대명사'에 한함(시점어 그때/작년 제외): #4 "그때만 이 약은 작동했다"·#78 "1995년 도입 이후" 같은 줄거리·사실
+  //   서술 오탐 방지. (실제 날조 여부는 groundedIn이 최종 판정 — isLivedScene은 검사 대상만 넓힘.)
+  if (EXPERIENCE_RE.test(s) && FIRST_PERSON_SPEAKER_RE.test(s)) return true; // 저/제가/나 + ~한 적이 있다(해요체·관형형 포함)
+  if (EXPERIENCE_RE.test(s) && PAST_ACTION_RE.test(s)) return true;          // ~한 적이 있다 + 과거행동(기존)
+  if (PERSONAL_CTX_RE.test(s) && PAST_ACTION_RE.test(s)) return true;        // 1인칭/특정시점 + 과거행동(기존)
   return false;
 }
 

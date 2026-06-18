@@ -830,6 +830,15 @@ async function runJob(job, text, evidence) {
     if (inputrouting.isLongStructuredThesis(text) || inputrouting.isAcademicCited(text) || inputrouting.isFootnoteCited(text)) {
       return await runLongThesisChunked(job, text, evidence);
     }
+    // ★ 구조화 통계 보고서 라우팅(2026-06-18 실측 사이버불링 보고서: 원문 48% → 단일 재구성이 목차·섹션을 부수고
+    //   줄글로 만들어 "간접화법·비인칭"이 글 전체를 덮음 → 93%·100%로 악화). 구조(목차·번호섹션)·통계가 점수를
+    //   지켜주던 글이라, 구조를 깨는 단일 재구성 대신 구조보존 청크 우회(runLongThesisChunked: 목차·문단 보존 +
+    //   문단별 우회)로 보낸다. isLongStructuredThesis의 단문판(14k 미만 사각지대). 끄려면 STRUCTURED_REPORT_CHUNK=0.
+    if (process.env.STRUCTURED_REPORT_CHUNK !== '0' && inputrouting.isStructuredReport(text)) {
+      logger.info('transform.structured_report_chunk', { jobId: job.id, uid: job.uid, textLength: (text || '').length });
+      job.note = (job.note ? job.note + ' ' : '') + '목차·통계가 있는 구조화 보고서라, 구조를 깨는 재구성 대신 구조를 보존하며 문단별로 우회했어요.';
+      return await runLongThesisChunked(job, text, evidence);
+    }
     // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
     const out = await genreTransferV2(text, { evidence: evidence || '', userNotes: job.memo || '', lengthMode: job.lengthMode || 'keep', signal: job.ac.signal });
     const gates = [];

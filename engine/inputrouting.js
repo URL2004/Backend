@@ -124,6 +124,28 @@ function isFootnoteCited(text) {
   return sup >= 3;
 }
 
+// ★ 구조화 통계 보고서 감지(2026-06-18 실측 사이버불링 보고서): 원문 48%였는데 단일 재구성(genreTransferV2)이
+//   목차·섹션 구조를 부수고 줄글로 만들어 "간접화법·비인칭"이 글 전체를 덮음 → 93%·100%로 *악화*. 구조(목차·번호
+//   섹션)와 빼곡한 통계가 원문의 점수를 지켜주던 글인데, 구조를 깨는 단일 재구성이 그 방패를 부순 것. 이런 글은
+//   isLongStructuredThesis(14k+)와 똑같이 청크 기반 구조보존 우회(runLongThesisChunked: 목차·문단 보존 + 문단별
+//   burstiness·register 우회)로 보내야 한다. 그 단문판(길이 무관) — 14k 미만 보고서가 단일 재구성으로 새던 사각지대.
+//   ★ NARROW 설계: 시사·논증 칼럼(재구성이 효과적인 본업)을 절대 건드리지 않게, 보고서 고유 표지(제출자·학번 표지 /
+//   목차 / 줄머리 번호섹션)로 score≥2 AND 통계 밀집(factDense)을 둘 다 요구한다. 구조만·통계만으론 발동 안 함.
+function isStructuredReport(text) {
+  const t = text || '';
+  const noSp = t.replace(/\s+/g, '').length;
+  if (noSp < 700) return false;                                  // 짧은 글은 thin 게이트 소관(여긴 보고서급만)
+  let score = 0;
+  if (/제\s*출\s*자\s*[:：]|학\s*번\s*[:：]|학부\s*\/\s*\d{5,}|\/\s*\d{6,8}\s*\//.test(t)) score += 2;   // 제출자·학번 표지(보고서 표지)
+  if (/<\s*목\s*차\s*>|(?:^|\n)\s*목\s*차\s*(?:\n|$)|(?:^|\n)\s*차\s*례\s*(?:\n|$)/.test(t)) score += 2;  // 목차/차례
+  const topSec = (t.match(/(?:^|\n)[ \t]*\d{1,2}(?!\d)[.)]\s*[가-힣]{2,}/g) || []).length;             // 줄머리 "1. 서론"(연도 2024. 가드: \d{1,2}(?!\d))
+  if (topSec >= 3) score += 1;
+  const subSec = (t.match(/\d{1,2}(?!\d)\s*[-－]\s*\d{1,2}(?!\d)\s*[.)]?\s*[가-힣]/g) || []).length;     // "2-1. 발생 실태"
+  if (subSec >= 2) score += 1;
+  // 구조 신호 충분(≥2) AND 통계·사실 밀집(보고서다움) — 둘 다라야 발동(시사칼럼 오탐 방지).
+  return score >= 2 && factDensity(t) >= FACT_DENSE_THRESHOLD;
+}
+
 // 재구성 부적합 판정 + 사용자에게 그대로 보여줄 '명확한 사유'. ir = surfaceguard.classifyInputRisk(text).
 //   factDense(사실 빼곡)는 '권장'(소프트)이라 여기서 막지 않는다 — 사장님 결정으로 사실밀집 글도 고급을
 //   돌릴 수 있어야 함(B). 막다른 길로 만드는 두 부류만 사전 차단한다: ① 자소서·생기부·탐구 ② 짧고 추상적.
@@ -254,4 +276,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };

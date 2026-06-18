@@ -516,7 +516,13 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
     warnings.push({ gate: 'judge_weak_ledger', detail: result.judge.ledgerHealth.reason });
   }
 
-  const status = criticals.length ? 'blocked' : 'clean';
+  // ★ P1-2(2026-06-18 감사): 사실 누락이 많으면 'clean'으로 내보내지 않는다. 과제/논문에서 사실 누락은 품질
+  //   실패라, 차단까진 아니어도 clean과 구분해 'needs_review'로 라벨한다(UI·관리자 로그에서 "일부 사실 빠짐"
+  //   노출용). downstream은 'blocked'만 차단 체크하므로 needs_review는 결과 전달엔 영향 없음(라벨만).
+  let status = criticals.length ? 'blocked' : 'clean';
+  if (status === 'clean' && (mode === 'assignment' || mode === 'thesis') && lost.count >= 3) {
+    status = 'needs_review';
+  }
   return {
     status, criticals, warnings,
     metrics: { lengthRatio: len.ratio, novelty: nov.count, lostFacts: lost.count, repetition: rep.total,

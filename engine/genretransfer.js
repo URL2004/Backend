@@ -529,6 +529,58 @@ function resolveDupSentences(doc, textF) {
   return doc;
 }
 
+// ★ 인접 문장 통째 포함 중복 제거(2026-06-18 경영 실측: "문제는 속도가 아니다. 내 생각엔 문제는 속도가 아니다."):
+//   한 문장이 옆 문장에 통째로 포함된 재진술. resolveDupSentences는 <20자·<4토큰을 건너뛰어 못 잡는다.
+//   공백·말미 문장부호 제거 후 한쪽이 다른 쪽을 포함(내용 6자+)하면 짧은 쪽(재진술)을 버리고 긴 쪽을 남긴다.
+function stripAdjacentContainedDup(doc) {
+  const norm = s => (s || '').replace(/\s+/g, '').replace(/["”'’.!?…]+$/g, '');
+  return String(doc || '').split(/\n{2,}/).map(para => {
+    const sents = para.split(/(?<=[.!?”"])\s+/);
+    const keep = [];
+    for (const s of sents) {
+      const cur = norm(s);
+      if (cur.length >= 6 && keep.length) {
+        const prev = norm(keep[keep.length - 1]);
+        if (prev.length >= 6) {
+          if (prev.includes(cur)) continue;                              // 현재가 직전에 포함 → 현재 버림
+          if (cur.includes(prev)) { keep[keep.length - 1] = s; continue; } // 직전이 현재에 포함 → 직전을 더 긴 현재로 교체
+        }
+      }
+      keep.push(s);
+    }
+    return keep.join(' ');
+  }).join('\n\n');
+}
+
+// ★ 짧은 단독 문단 병합(2026-06-18 경영 슬롯 아티팩트): 슬롯이 잘게 쪼개져 1~2문장짜리 연결 경구가
+//   독립 문단으로 흩뿌려지면(실측 7개) 카피킬러가 '기계적·균일' 구조로 읽는다. 본문 중 한글 minHangul자
+//   미만 문단을 앞 문단(없으면 다음 문단)에 흡수해 사람 산문의 문단 호흡으로 되돌린다. 제목 블록·구조
+//   줄(헤딩·리스트)·이미 긴 문단(700자+)은 건드리지 않는다(벽글 방지·구조 보존).
+function mergeShortParas(doc, minHangul = 90) {
+  const blocks = String(doc || '').split(/\n{2,}/);
+  if (blocks.length <= 2) return doc;
+  const han = s => (String(s).match(/[가-힣]/g) || []).length;
+  const isStructBlock = b => String(b).split('\n').some(l => STRUCT_LINE_RE.test(l));
+  const title = blocks[0];
+  const out = [];
+  for (const b of blocks.slice(1)) {
+    const t = (b || '').trim();
+    if (!t) continue;
+    const prev = out.length ? out[out.length - 1] : null;
+    if (prev && !isStructBlock(t) && !isStructBlock(prev) && han(t) < minHangul && han(prev) < 700) {
+      out[out.length - 1] = prev.replace(/\s+$/, '') + ' ' + t;          // 앞 문단에 흡수
+    } else {
+      out.push(t);
+    }
+  }
+  // 첫 본문 문단이 짧으면(앞 흡수 대상이 없었음) 다음 문단 앞에 전방 병합.
+  if (out.length >= 2 && !isStructBlock(out[0]) && !isStructBlock(out[1]) && han(out[0]) < minHangul) {
+    out[1] = out[0].replace(/\s+$/, '') + ' ' + out[1];
+    out.shift();
+  }
+  return [title, ...out].join('\n\n');
+}
+
 // 메타 메모·지시문 윙크·용어귀속 날조 가드: engine/floor.js로 이식(메인 엔진 공용) — import만.
 const { META_NOTE_RE, WINK_RE, findCoinedTerms } = require('./floor');
 // ★판정 스캐폴딩 줄 제거(2026-06-16 실측 2건): 판정/수리 LLM이 교정 본문 대신 마크다운 판정을 통째로
@@ -563,6 +615,7 @@ const V2_BANS = `[금지 — 하나라도 어기면 실패]
 · ★★주제어를 사전처럼 정의하지 마라(카피킬러 비인칭 직격 + 대개 원문에 없는 AI 채움): "경영은 한정된 자원을 활용해 목표를 달성하는 과정이며 ~의 기술이다", "X란 ~를 의미한다", "X는 ~하는 활동(행위·과정·체계)이다" 식 교과서 정의문 금지. 원문이 그 개념을 비판·재해석했으면 정의로 되돌리지 말고 원문의 시각(또는 사용자 메모의 입장) 그대로 옮겨라 — 원문이 "자원배분 공식으로 보면 핵심이 빠진다"고 했으면 "경영은 ~과정이다"로 뒤집지 마라(충실도 위반이자 비인칭 지문).
 · 재료(주장·근거)에 없는 사실·수치·기관·사례·1인칭 경험 생성
 · 원문에 없는 평가·전망·인과·진단을 새 주장으로 덧붙이기(순응도 저하·부처 충돌·주기 단축처럼 "그럴듯한 추론"을 사실인 양 확장 금지 — 원문이 말한 범위만 옮겨라)
+· 본문에서 '원문/원본/지문/필자가 받은 글'처럼 원본 문서를 제3의 대상으로 가리키지 마라("원문이 단호하게 짚듯", "원문에 따르면", "원문이 지적하듯" 금지). 너의 출력이 곧 그 글이다 — 주장은 출처 언급 없이 그냥 단정하라(원문에 실제 그 단어가 있을 때만 예외).
 ${LLM_TIC_RULE}`;
 
 function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpeners, slotIdx = 0, srcText = '', usedNums = [], memoLines = [], skeleton = '') {
@@ -598,7 +651,8 @@ function buildSlotPrompt(plan, slot, claimTexts, evidTexts, prevTail, usedOpener
 · 한다체. 괄호 삽입구(부연·연도·단서)를 자연스럽게(1000자당 4~8개). 인용 표지("~에 따르면")로 근거를 논점 전개 재료로.
 · 문단 길이 들쭉날쭉. 일부 문단은 결론 없이 다음 쟁점으로 넘어가다 만 듯 끝내라. 모든 문단을 같은 단어로 시작하지 말고, user가 주는 금지 시작어를 피하라.
 · 한 문단 안에서 근거와 의견이 섞이게(근거 나열 문단 금지 — 근거는 논쟁의 무기다).
-· ★★비인칭 분석 나열 금지(분석·시사 글의 간접화법 직격): "기업은/데이터는/조직은/시장은 ~된다/~이다"로 끝나는 3인칭 객관 서술을 죽 이어붙이지 마라 — 같은 비인칭 단정의 행렬이 카피킬러 '간접화법·비인칭' 태그의 정체다. 필자의 판단을 능동으로 드러내라. ★사용자 메모에 입장이 있으면 그걸 글 전체를 관통하는 한 줄 시각으로 끌고 가서, 객관 서술 사이사이 "내가 보기에 ~", "결국 핵심은 ~", "문제는 거기서 시작된다" 처럼 판단 주체를 드러내며 비인칭 수동("~된다/~로 평가된다/~게 된다")을 능동 단정으로 바꿔라. 단 원문·메모에 없는 새 견해·사실은 만들지 마라.`;
+· ★★비인칭 분석 나열 금지(분석·시사 글의 간접화법 직격): "기업은/데이터는/조직은/시장은 ~된다/~이다"로 끝나는 3인칭 객관 서술을 죽 이어붙이지 마라 — 같은 비인칭 단정의 행렬이 카피킬러 '간접화법·비인칭' 태그의 정체다. 필자의 판단을 능동으로 드러내라. ★사용자 메모에 입장이 있으면 그걸 글 전체를 관통하는 한 줄 시각으로 끌고 가서, 객관 서술 사이사이 "내가 보기에 ~", "결국 핵심은 ~", "문제는 거기서 시작된다" 처럼 판단 주체를 드러내며 비인칭 수동("~된다/~로 평가된다/~게 된다")을 능동 단정으로 바꿔라. 단 원문·메모에 없는 새 견해·사실은 만들지 마라.
+· ★★병렬 나열 밀도 낮춰라(카피킬러 '기계적 정확성·균일성' 태그의 정체): "A하고, B하고, C하면" 식 3중 병렬 절이나 "AI·자동화·플랫폼·ESG·인구구조 변화까지" 식 4개+ 명사 나열을 한 문장·한 문단에 겹쳐 쌓지 마라. 원문에 나열이 있어도 그대로 옮기지 말고 — 한두 개만 대표로 살려 풀어 쓰거나(예: "기술 변화에 더해 AI까지 겹친다"), 종속절·예시로 흐트러뜨려 같은 리듬 문장이 연속되지 않게 하라(사실 누락 아님 — 같은 사실을 덜 기계적으로). 특히 도입부에서 병렬 나열을 연달아 쓰면 첫 단락이 통째로 '기계적' 태그를 받는다.`;
   // ★ prompt caching(§이식 ⑧): system은 고정부+앵커(5변형)만 — 슬롯별 가변부([이 슬롯]·금지 시작어·수치 목록)는
   //   전부 user로 분리해 같은 앵커 변형의 슬롯·재시도가 system 캐시를 재사용할 수 있게 한다(지시 내용은 동일).
   const system = `${persona}
@@ -954,6 +1008,7 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   doc = stripMetaNotes(doc);
   doc = require('./dedupe').dedupeSentences(doc).text;
   doc = resolveDupSentences(dedupeParas(doc, textF), textF);   // 슬롯 생성 자체의 문단·문장 중복도 커버
+  doc = stripAdjacentContainedDup(doc);                        // 인접 문장 통째 포함 재진술("X. ~X.") — 위 dedup이 못 잡는 짧은 중복
   doc = dedupeFactRecitations(doc, evidenceList, textF);       // 같은 사실 재인용 제거(ai-study 63% 실측)
   doc = require('./spacing').fixSpacing(doc).text;
 
@@ -1007,7 +1062,16 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   doc = tidyParagraphs(doc);   // ★ 문단 내부 단일 줄바꿈 정리(2026-06-12: LLM이 문장마다 \n 넣어 "애매한 두 행" 발생)
   doc = stripMetaNotes(doc);   // ★최종 scrub(2026-06-16): judge 수리·재위빙·교정이 끼운 지시문/메타를 return 직전 제거.
   //   기존 scrub은 judge 루프 '이전'(③마감)뿐이라, 그 뒤 repairSentence/weaveLost가 넣은 누출이 그대로 나갔다.
+  // ★ '원문/원본/지문' 작업용어 누출 제거(2026-06-18 경영 실측: "원문이 단호하게 짚듯, ~"): 휴머나이즈 출력은
+  //   그 자체가 글이라 원본을 제3의 대상으로 가리키면 기계처리 흔적. 원문 텍스트에 그 단어가 없을 때만(오탐 방지)
+  //   인용 클로즈("원문이 ~짚듯,", "원문에 따르면")를 제거 — 뒤 본문 절은 보존(문장 통삭제 아님).
+  if (!/(원문|원본|지문)/.test(rawText)) {
+    doc = doc.replace(/(원문|원본|지문)(?:이|은|에서|에는|에서는|에|도)?[ \t]*[^,.\n]{0,22}?(?:짚(?:듯|었듯)|지적(?:하)?듯|밝히듯|말(?:하)?듯|강조(?:하)?듯|보여주듯|적시(?:하)?듯|언급(?:하)?듯|에[ \t]*따르면|대로|처럼)[ \t]*,?[ \t]*/g, '')
+             .replace(/[ \t]{2,}/g, ' ').replace(/ +([,.])/g, '$1').replace(/(^|\n)[ \t,]+/g, '$1');   // ★\n 보존(줄바꿈 먹는 \s·^…gm 금지 — 문단 붕괴 버그)
+  }
   doc = require('./outputguard').stripPunchTemplates(doc, rawText, { strict: true }).text;   // ★독립형 punch 단정 제거(2026-06-16 품질리포트): "그게 핵심이다"·"정책이 뒤흔들렸다" 등(원문에 있던 건 보존). formalBudgetPass(LLM) 뒤 결정론 안전망.
+  doc = stripAdjacentContainedDup(doc);   // ★최종(2026-06-18): judge 수리·재위빙·punch제거가 만든 인접 포함 재진술 마지막 제거
+  doc = mergeShortParas(doc);             // ★최종(2026-06-18): 슬롯이 흩뿌린 단독 1줄 문단을 사람 산문 호흡으로 병합('기계적·균일' 구조 완화)
   const risk = gf.genreRiskScore(doc);
   const lenRatio = ((doc.match(/[가-힣]/g) || []).length) / ((((textF.match(/[가-힣]/g) || []).length)) || 1);
   return { text: doc, skeleton, plan, risk, novelty, lostFacts: lost, evidenceLost, judge, pairing, lenRatio: Number(lenRatio.toFixed(2)) };

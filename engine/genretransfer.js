@@ -670,13 +670,15 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   //   evidence는 학생이 승인한 사실이라 textF에 포함해 생존을 강제하지만, 메모는 "관련 있으면 녹이는" 선택지라
   //   강제하면 관련 없는 메모 한 줄이 lostFacts로 차단을 유발한다(2026-06-15 설계 결정).
   const textF = evidence ? rawText + '\n\n' + evidence : rawText;
-  const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
   // ★ 설계 D — 사실 자리표시자 보호(2026-06-15): 슬롯 생성이 흩어진 연도·수치를 떨구거나(2023 누락) 바꾸는(2023→2022)
   //   걸 원천 차단. 원문 hard fact를 ⟦Faa⟧ 토큰으로 가려 생성하고(LLM이 값 못 바꿈·잘 안 떨굼), 슬롯 생성+프레임수리
   //   직후 복원해 값 정확성을 보장한다. 이후 weaveLost·judge·게이트는 실제 값으로 본다. 사실 3개+ 글에만 적용.
   const factsafe = require('./factsafe');
   const factMap = factsafe.buildFactMap(rawText);
   const fsafe = factMap.count >= 3;
+  // ※ 원장 마스킹/숫자보존 강제는 backfire(2026-06-18 실측: 사실손실 6→14) — 재구성은 "요약→재생성"이라
+  //   구조적으로 데이터 글의 숫자를 보존 못 함. 데이터 풍부 글은 재구성이 아닌 보존형(faithful) 경로로 라우팅해야 함.
+  const ledger = await buildSoftClaimLedger(rawText, { lang, signal });
   const plan = await buildSlotPlan(rawText, { skeleton, evidenceList, ledger, lengthMode, signal });
 
   // 슬롯 순차 생성(앞 슬롯 꼬리에 이어 쓰기 — v1의 병렬 섹션 단절 문제 해소)

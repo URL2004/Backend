@@ -2913,11 +2913,12 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 //   해결: 단일 호출은 서버가 같은 컬렉션·스키마로 직접 저장(Admin SDK) → "차감↔저장" 원자화.
 //   클라 saveHistory와 동일 스키마라 이용 기록 화면이 그대로 렌더한다.
 //   requestId를 문서 ID로 사용해 재시도·중복 호출에도 1건만 남게(멱등).
-async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result }) {
+async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result, mode }) {
   if (!db) return;
   const isDetect = opType === 'detect';
   const doc = {
     type: isDetect ? 'detect' : 'humanize',
+    mode: mode || null,   // ★ P1(2026-06-18 실데이터: history mode 전부 None): blog/formal/polish 기록(분석·CS·환불대응)
     inputText: text || '',
     credits: typeof needed === 'number' ? needed : 0,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -3279,7 +3280,7 @@ router.post('/analyze', async (req, res) => {
   let historySaved = false;
   if (db && !devNoAuth && !isChunkCall) {
     try {
-      await retryAsync(() => saveAnalyzeHistory({ uid: pre.uid, requestId, opType, text, needed, result }));
+      await retryAsync(() => saveAnalyzeHistory({ uid: pre.uid, requestId, opType, text, needed, result, mode }));
       historySaved = true;
     } catch (e) {
       logger.error('analyze.history_persist_failed', { uid: pre.uid, requestId, opType, billingMode, err: e });

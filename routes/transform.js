@@ -462,7 +462,8 @@ function saveJobHistory(job, text, outputText) {
     opType: 'humanize',
     text: text || job.text || '',
     needed: job.needed,
-    result: { outputText: outputText || '' }
+    result: { outputText: outputText || '' },
+    mode: job.mode || null   // ★ P1: blog/formal/polish 기록(실데이터 분석 갭)
   }).catch(e => logger.warn('transform.history_save_failed', { jobId: job.id, uid: job.uid, err: e }));
 }
 

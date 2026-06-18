@@ -182,6 +182,7 @@ function serializeCreditHistoryDoc(docSnap, userByUid) {
     remaining: Number(h.remaining) || 0,
     plan: h.plan || null,
     orderId: h.orderId || null,
+    requestId: h.requestId || null,
     detail: h.detail || '',
     adminUid: h.adminUid || null,
     createdAtMs: timestampMs(h.createdAt),
@@ -236,6 +237,155 @@ function serializeUserDoc(userSnap) {
       granted: Number(coupon.granted) || 0,
       used: Number(coupon.used) || 0
     } : null
+  };
+}
+
+function serializeSavedHistoryDoc(docSnap) {
+  const h = docSnap.data() || {};
+  return {
+    id: docSnap.id,
+    type: h.type || null,
+    credits: Number(h.credits) || 0,
+    savedBy: h.savedBy || null,
+    createdAtMs: timestampMs(h.createdAt),
+    inputLength: typeof h.inputText === 'string' ? h.inputText.length : 0,
+    outputLength: typeof h.outputText === 'string' ? h.outputText.length : 0
+  };
+}
+
+function auditNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function creditRequestId(row) {
+  if (row && row.requestId) return String(row.requestId);
+  if (row && typeof row.id === 'string' && row.id.startsWith('req_')) return row.id.slice(4);
+  return '';
+}
+
+const RESULT_DEBIT_TYPES = new Set(['humanize', 'restructure']);
+const HISTORY_MATCH_WINDOW_MS = 60 * 60 * 1000;
+const DUPLICATE_HINT_WINDOW_MS = 30 * 60 * 1000;
+
+function isAuditableResultDebit(row) {
+  const type = String(row?.type || '');
+  const requestId = creditRequestId(row);
+  if (!RESULT_DEBIT_TYPES.has(type)) return false;
+  if (type.endsWith('_restore')) return false;
+  if (requestId.includes(':')) return false; // chunk calls are saved as one combined result by the client.
+  return auditNumber(row?.used) > 0;
+}
+
+function buildCreditAudit({ user, orders, creditHistory, savedHistory }) {
+  const sortedCreditHistory = [...(creditHistory || [])].sort((a, b) => auditNumber(a.createdAtMs) - auditNumber(b.createdAtMs));
+  const sortedSavedHistory = [...(savedHistory || [])].sort((a, b) => auditNumber(a.createdAtMs) - auditNumber(b.createdAtMs));
+  const chargeTimes = sortedCreditHistory
+    .filter(h => h.type === 'charge' && auditNumber(h.amount) > 0 && auditNumber(h.createdAtMs) > 0)
+    .map(h => auditNumber(h.createdAtMs));
+  const orderTimes = (orders || [])
+    .filter(o => o.kind === 'order' && auditNumber(o.amount) > 0 && auditNumber(o.safeCredits) > 0 && auditNumber(o.createdAtMs) > 0)
+    .map(o => auditNumber(o.createdAtMs));
+  const paidStartCandidates = [...chargeTimes, ...orderTimes].filter(Boolean);
+  const firstPaidAtMs = paidStartCandidates.length ? Math.min(...paidStartCandidates) : 0;
+  const ledgerDelta = sortedCreditHistory.reduce((sum, h) => sum + auditNumber(h.amount) - auditNumber(h.used), 0);
+  const currentCredits = auditNumber(user?.credits);
+  const debits = sortedCreditHistory.filter(isAuditableResultDebit);
+  const savedMatches = sortedSavedHistory.filter(h => auditNumber(h.credits) > 0);
+  const usedSavedIds = new Set();
+  const matchedDebits = [];
+  const orphanDebits = [];
+
+  debits.forEach(debit => {
+    const debitCredits = auditNumber(debit.used);
+    const debitMs = auditNumber(debit.createdAtMs);
+    const requestId = creditRequestId(debit);
+    let matched = null;
+    let matchReason = '';
+
+    if (requestId) {
+      matched = savedMatches.find(h => h.id === requestId);
+      if (matched) matchReason = 'requestId';
+    }
+
+    if (!matched && debitMs > 0) {
+      const candidates = savedMatches
+        .filter(h => {
+          if (usedSavedIds.has(h.id)) return false;
+          if (auditNumber(h.credits) !== debitCredits) return false;
+          const savedMs = auditNumber(h.createdAtMs);
+          if (!savedMs) return false;
+          if (savedMs < debitMs - 60 * 1000) return false;
+          if (savedMs > debitMs + HISTORY_MATCH_WINDOW_MS) return false;
+          return !h.type || !debit.type || h.type === debit.type || (debit.type === 'restructure' && h.type === 'humanize');
+        })
+        .sort((a, b) => Math.abs(auditNumber(a.createdAtMs) - debitMs) - Math.abs(auditNumber(b.createdAtMs) - debitMs));
+      matched = candidates[0] || null;
+      if (matched) matchReason = 'nearHistorySameCredits';
+    }
+
+    if (matched) {
+      usedSavedIds.add(matched.id);
+      matchedDebits.push({
+        id: debit.id,
+        type: debit.type,
+        used: debitCredits,
+        requestId: requestId || null,
+        createdAtMs: debitMs,
+        historyId: matched.id,
+        matchReason
+      });
+      return;
+    }
+
+    const duplicatePeer = debits.find(other => {
+      if (other.id === debit.id) return false;
+      if (other.type !== debit.type) return false;
+      if (auditNumber(other.used) !== debitCredits) return false;
+      const otherMs = auditNumber(other.createdAtMs);
+      return debitMs > 0 && otherMs > 0 && Math.abs(otherMs - debitMs) <= DUPLICATE_HINT_WINDOW_MS;
+    });
+    orphanDebits.push({
+      id: debit.id,
+      type: debit.type,
+      mode: debit.mode || null,
+      used: debitCredits,
+      textLength: auditNumber(debit.textLength) || null,
+      requestId: requestId || null,
+      createdAtMs: debitMs,
+      isAfterFirstPaid: !!(firstPaidAtMs && debitMs >= firstPaidAtMs),
+      duplicateHint: !!duplicatePeer
+    });
+  });
+
+  const paidOrphanDebits = orphanDebits.filter(h => h.isAfterFirstPaid);
+  const prePaidOrphanDebits = orphanDebits.filter(h => !h.isAfterFirstPaid);
+  const skippedChunkDebits = sortedCreditHistory.filter(h => {
+    const requestId = creditRequestId(h);
+    return RESULT_DEBIT_TYPES.has(String(h.type || '')) && auditNumber(h.used) > 0 && requestId.includes(':');
+  });
+
+  return {
+    checkedAtMs: Date.now(),
+    currentCredits,
+    ledgerDelta,
+    balanceOffset: currentCredits - ledgerDelta,
+    firstPaidAtMs,
+    debitCount: debits.length,
+    debitCredits: debits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    savedHistoryCount: savedMatches.length,
+    savedHistoryCredits: savedMatches.reduce((sum, h) => sum + auditNumber(h.credits), 0),
+    matchedDebitCount: matchedDebits.length,
+    matchedDebitCredits: matchedDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    orphanDebitCount: orphanDebits.length,
+    orphanDebitCredits: orphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    paidOrphanDebitCount: paidOrphanDebits.length,
+    paidOrphanDebitCredits: paidOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    prePaidOrphanDebitCount: prePaidOrphanDebits.length,
+    prePaidOrphanDebitCredits: prePaidOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    skippedChunkDebitCount: skippedChunkDebits.length,
+    skippedChunkDebitCredits: skippedChunkDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    orphanDebits: orphanDebits.slice(-20).reverse()
   };
 }
 
@@ -299,10 +449,11 @@ async function loadAdminUserBundle(uid) {
   const userSnap = await userRef.get();
   if (!userSnap.exists) return null;
 
-  const [creditSnap, subSnap, histSnap] = await Promise.all([
+  const [creditSnap, subSnap, histSnap, savedHistSnap] = await Promise.all([
     db.collection('orders').where('uid', '==', uid).orderBy('createdAt', 'desc').limit(30).get(),
     db.collection('subscriptionOrders').where('uid', '==', uid).limit(30).get(),
-    userRef.collection('creditHistory').orderBy('createdAt', 'desc').limit(30).get()
+    userRef.collection('creditHistory').orderBy('createdAt', 'desc').limit(200).get(),
+    userRef.collection('history').orderBy('createdAt', 'desc').limit(200).get()
   ]);
 
   const orders = [
@@ -313,11 +464,15 @@ async function loadAdminUserBundle(uid) {
 
   const userByUid = { [uid]: userSnap.data() || {} };
   const creditHistory = histSnap.docs.map(d => serializeCreditHistoryDoc(d, userByUid));
+  const savedHistory = savedHistSnap.docs.map(serializeSavedHistoryDoc);
+  const user = serializeUserDoc(userSnap);
+  const creditAudit = buildCreditAudit({ user, orders, creditHistory, savedHistory });
 
   return {
-    user: serializeUserDoc(userSnap),
+    user,
     orders,
-    creditHistory
+    creditHistory,
+    creditAudit
   };
 }
 
@@ -770,7 +925,12 @@ router.post('/admin/user-summary', async (req, res) => {
     if (!uid) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
     const bundle = await loadAdminUserBundle(uid);
     if (!bundle) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
-    logger.info('admin.user_summary_loaded', { adminUid, targetUid: uid });
+    logger.info('admin.user_summary_loaded', {
+      adminUid,
+      targetUid: uid,
+      paidOrphanDebitCount: bundle.creditAudit?.paidOrphanDebitCount || 0,
+      paidOrphanDebitCredits: bundle.creditAudit?.paidOrphanDebitCredits || 0
+    });
     res.json({ ok: true, ...bundle });
   } catch (err) {
     logger.error('admin.user_summary_failed', { adminUid, err });

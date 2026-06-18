@@ -83,6 +83,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /transformJobArchive/{jobId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
     match /webhookLogs/{logId} {
       allow read: if isAdmin();
       allow write: if false;

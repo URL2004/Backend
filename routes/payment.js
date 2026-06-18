@@ -7,6 +7,7 @@ const discord = require('../lib/discord');
 const { getRevenue } = require('../lib/revenue');
 
 const router = express.Router();
+const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
 
 function tossBasicToken(res) {
   const secretKey = process.env.TOSS_SECRET_KEY;
@@ -182,6 +183,7 @@ function serializeCreditHistoryDoc(docSnap, userByUid) {
     remaining: Number(h.remaining) || 0,
     plan: h.plan || null,
     orderId: h.orderId || null,
+    requestId: h.requestId || null,
     detail: h.detail || '',
     adminUid: h.adminUid || null,
     createdAtMs: timestampMs(h.createdAt),
@@ -236,6 +238,155 @@ function serializeUserDoc(userSnap) {
       granted: Number(coupon.granted) || 0,
       used: Number(coupon.used) || 0
     } : null
+  };
+}
+
+function serializeSavedHistoryDoc(docSnap) {
+  const h = docSnap.data() || {};
+  return {
+    id: docSnap.id,
+    type: h.type || null,
+    credits: Number(h.credits) || 0,
+    savedBy: h.savedBy || null,
+    createdAtMs: timestampMs(h.createdAt),
+    inputLength: typeof h.inputText === 'string' ? h.inputText.length : 0,
+    outputLength: typeof h.outputText === 'string' ? h.outputText.length : 0
+  };
+}
+
+function auditNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function creditRequestId(row) {
+  if (row && row.requestId) return String(row.requestId);
+  if (row && typeof row.id === 'string' && row.id.startsWith('req_')) return row.id.slice(4);
+  return '';
+}
+
+const RESULT_DEBIT_TYPES = new Set(['humanize', 'restructure']);
+const HISTORY_MATCH_WINDOW_MS = 60 * 60 * 1000;
+const DUPLICATE_HINT_WINDOW_MS = 30 * 60 * 1000;
+
+function isAuditableResultDebit(row) {
+  const type = String(row?.type || '');
+  const requestId = creditRequestId(row);
+  if (!RESULT_DEBIT_TYPES.has(type)) return false;
+  if (type.endsWith('_restore')) return false;
+  if (requestId.includes(':')) return false; // chunk calls are saved as one combined result by the client.
+  return auditNumber(row?.used) > 0;
+}
+
+function buildCreditAudit({ user, orders, creditHistory, savedHistory }) {
+  const sortedCreditHistory = [...(creditHistory || [])].sort((a, b) => auditNumber(a.createdAtMs) - auditNumber(b.createdAtMs));
+  const sortedSavedHistory = [...(savedHistory || [])].sort((a, b) => auditNumber(a.createdAtMs) - auditNumber(b.createdAtMs));
+  const chargeTimes = sortedCreditHistory
+    .filter(h => h.type === 'charge' && auditNumber(h.amount) > 0 && auditNumber(h.createdAtMs) > 0)
+    .map(h => auditNumber(h.createdAtMs));
+  const orderTimes = (orders || [])
+    .filter(o => o.kind === 'order' && auditNumber(o.amount) > 0 && auditNumber(o.safeCredits) > 0 && auditNumber(o.createdAtMs) > 0)
+    .map(o => auditNumber(o.createdAtMs));
+  const paidStartCandidates = [...chargeTimes, ...orderTimes].filter(Boolean);
+  const firstPaidAtMs = paidStartCandidates.length ? Math.min(...paidStartCandidates) : 0;
+  const ledgerDelta = sortedCreditHistory.reduce((sum, h) => sum + auditNumber(h.amount) - auditNumber(h.used), 0);
+  const currentCredits = auditNumber(user?.credits);
+  const debits = sortedCreditHistory.filter(isAuditableResultDebit);
+  const savedMatches = sortedSavedHistory.filter(h => auditNumber(h.credits) > 0);
+  const usedSavedIds = new Set();
+  const matchedDebits = [];
+  const orphanDebits = [];
+
+  debits.forEach(debit => {
+    const debitCredits = auditNumber(debit.used);
+    const debitMs = auditNumber(debit.createdAtMs);
+    const requestId = creditRequestId(debit);
+    let matched = null;
+    let matchReason = '';
+
+    if (requestId) {
+      matched = savedMatches.find(h => h.id === requestId);
+      if (matched) matchReason = 'requestId';
+    }
+
+    if (!matched && debitMs > 0) {
+      const candidates = savedMatches
+        .filter(h => {
+          if (usedSavedIds.has(h.id)) return false;
+          if (auditNumber(h.credits) !== debitCredits) return false;
+          const savedMs = auditNumber(h.createdAtMs);
+          if (!savedMs) return false;
+          if (savedMs < debitMs - 60 * 1000) return false;
+          if (savedMs > debitMs + HISTORY_MATCH_WINDOW_MS) return false;
+          return !h.type || !debit.type || h.type === debit.type || (debit.type === 'restructure' && h.type === 'humanize');
+        })
+        .sort((a, b) => Math.abs(auditNumber(a.createdAtMs) - debitMs) - Math.abs(auditNumber(b.createdAtMs) - debitMs));
+      matched = candidates[0] || null;
+      if (matched) matchReason = 'nearHistorySameCredits';
+    }
+
+    if (matched) {
+      usedSavedIds.add(matched.id);
+      matchedDebits.push({
+        id: debit.id,
+        type: debit.type,
+        used: debitCredits,
+        requestId: requestId || null,
+        createdAtMs: debitMs,
+        historyId: matched.id,
+        matchReason
+      });
+      return;
+    }
+
+    const duplicatePeer = debits.find(other => {
+      if (other.id === debit.id) return false;
+      if (other.type !== debit.type) return false;
+      if (auditNumber(other.used) !== debitCredits) return false;
+      const otherMs = auditNumber(other.createdAtMs);
+      return debitMs > 0 && otherMs > 0 && Math.abs(otherMs - debitMs) <= DUPLICATE_HINT_WINDOW_MS;
+    });
+    orphanDebits.push({
+      id: debit.id,
+      type: debit.type,
+      mode: debit.mode || null,
+      used: debitCredits,
+      textLength: auditNumber(debit.textLength) || null,
+      requestId: requestId || null,
+      createdAtMs: debitMs,
+      isAfterFirstPaid: !!(firstPaidAtMs && debitMs >= firstPaidAtMs),
+      duplicateHint: !!duplicatePeer
+    });
+  });
+
+  const paidOrphanDebits = orphanDebits.filter(h => h.isAfterFirstPaid);
+  const prePaidOrphanDebits = orphanDebits.filter(h => !h.isAfterFirstPaid);
+  const skippedChunkDebits = sortedCreditHistory.filter(h => {
+    const requestId = creditRequestId(h);
+    return RESULT_DEBIT_TYPES.has(String(h.type || '')) && auditNumber(h.used) > 0 && requestId.includes(':');
+  });
+
+  return {
+    checkedAtMs: Date.now(),
+    currentCredits,
+    ledgerDelta,
+    balanceOffset: currentCredits - ledgerDelta,
+    firstPaidAtMs,
+    debitCount: debits.length,
+    debitCredits: debits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    savedHistoryCount: savedMatches.length,
+    savedHistoryCredits: savedMatches.reduce((sum, h) => sum + auditNumber(h.credits), 0),
+    matchedDebitCount: matchedDebits.length,
+    matchedDebitCredits: matchedDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    orphanDebitCount: orphanDebits.length,
+    orphanDebitCredits: orphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    paidOrphanDebitCount: paidOrphanDebits.length,
+    paidOrphanDebitCredits: paidOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    prePaidOrphanDebitCount: prePaidOrphanDebits.length,
+    prePaidOrphanDebitCredits: prePaidOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    skippedChunkDebitCount: skippedChunkDebits.length,
+    skippedChunkDebitCredits: skippedChunkDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    orphanDebits: orphanDebits.slice(-20).reverse()
   };
 }
 
@@ -299,10 +450,11 @@ async function loadAdminUserBundle(uid) {
   const userSnap = await userRef.get();
   if (!userSnap.exists) return null;
 
-  const [creditSnap, subSnap, histSnap] = await Promise.all([
+  const [creditSnap, subSnap, histSnap, savedHistSnap] = await Promise.all([
     db.collection('orders').where('uid', '==', uid).orderBy('createdAt', 'desc').limit(30).get(),
     db.collection('subscriptionOrders').where('uid', '==', uid).limit(30).get(),
-    userRef.collection('creditHistory').orderBy('createdAt', 'desc').limit(30).get()
+    userRef.collection('creditHistory').orderBy('createdAt', 'desc').limit(200).get(),
+    userRef.collection('history').orderBy('createdAt', 'desc').limit(200).get()
   ]);
 
   const orders = [
@@ -313,11 +465,15 @@ async function loadAdminUserBundle(uid) {
 
   const userByUid = { [uid]: userSnap.data() || {} };
   const creditHistory = histSnap.docs.map(d => serializeCreditHistoryDoc(d, userByUid));
+  const savedHistory = savedHistSnap.docs.map(serializeSavedHistoryDoc);
+  const user = serializeUserDoc(userSnap);
+  const creditAudit = buildCreditAudit({ user, orders, creditHistory, savedHistory });
 
   return {
-    user: serializeUserDoc(userSnap),
+    user,
     orders,
-    creditHistory
+    creditHistory,
+    creditAudit
   };
 }
 
@@ -644,11 +800,30 @@ router.post('/admin/user-history-item', async (req, res) => {
 
 // 관리자: 작업(transformJobs) 모니터 — 전체 사용자의 실패·중단·진행 작업을 상태·기간으로 조회.
 // 영향 사용자 일괄 식별용. createdAt은 ms(number)로 저장되어 단일필드 범위쿼리(복합 인덱스 불필요).
+// 장기 목록은 transformJobs(6시간 TTL)가 아니라 원문·결과가 빠진 transformJobArchive에서 조회한다.
 const JOB_STATUS_SETS = {
   issues: ['error', 'blocked', 'cancelled', 'awaiting_approval'],
   active: ['queued', 'running', 'awaiting_approval'],
   all: null
 };
+function serializeAdminJobDoc(docSnap) {
+  const j = docSnap.data() || {};
+  return {
+    id: j.id || docSnap.id,
+    uid: j.uid || '',
+    status: j.status || '',
+    stage: j.stage || '',
+    mode: j.mode || '',
+    needed: Number(j.needed) || 0,
+    deducted: !!j.deducted,
+    createdAtMs: Number(j.createdAt) || timestampMs(j.createdAt),
+    updatedAtMs: Number(j.updatedAtMs) || 0,
+    textLength: Number(j.textLength) || 0,
+    resultLength: Number(j.resultLength) || 0,
+    candidatesCount: Number(j.candidatesCount) || 0,
+    error: j.error || ''
+  };
+}
 router.post('/admin/jobs', async (req, res) => {
   const adminUid = await requireAdmin(req, res);
   if (!adminUid) return;
@@ -656,32 +831,47 @@ router.post('/admin/jobs', async (req, res) => {
     const filterKey = (req.body && req.body.filter) || 'issues';
     const allowed = JOB_STATUS_SETS[filterKey] !== undefined ? JOB_STATUS_SETS[filterKey] : JOB_STATUS_SETS.issues;
     const hoursRaw = parseInt(req.body && req.body.hours, 10);
-    const hours = Number.isInteger(hoursRaw) ? Math.min(Math.max(hoursRaw, 1), 720) : 24;
+    const hours = Number.isInteger(hoursRaw) ? Math.min(Math.max(hoursRaw, 1), 2160) : 24;
     const sinceMs = Date.now() - hours * 3600 * 1000;
     const rawLimit = parseInt(req.body && req.body.limit, 10);
-    const cap = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 500) : 200;
+    const cap = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 25;
+    const requestedCursorMs = Number(req.body && req.body.cursorMs) || 0;
+    let scanCursorMs = requestedCursorMs > 0 ? requestedCursorMs : 0;
+    const scanLimit = Math.min(Math.max(cap * 4, 80), 500);
+    const rows = [];
+    let lastIncludedCursorMs = 0;
+    let lastScannedCursorMs = 0;
+    let sawExtra = false;
+    let moreRaw = false;
 
-    const snap = await db.collection('transformJobs')
-      .where('createdAt', '>=', sinceMs)
-      .orderBy('createdAt', 'desc')
-      .limit(cap)
-      .get();
+    for (let guard = 0; guard < 8 && !sawExtra; guard++) {
+      let q = db.collection(JOB_ARCHIVE_COLLECTION)
+        .where('createdAt', '>=', sinceMs);
+      if (scanCursorMs > 0) q = q.where('createdAt', '<', scanCursorMs);
+      q = q.orderBy('createdAt', 'desc');
+      const snap = await q.limit(scanLimit).get();
+      if (snap.empty) { moreRaw = false; break; }
 
-    let rows = snap.docs.map(d => {
-      const j = d.data() || {};
-      return {
-        id: d.id,
-        uid: j.uid || '',
-        status: j.status || '',
-        stage: j.stage || '',
-        mode: j.mode || '',
-        needed: Number(j.needed) || 0,
-        deducted: !!j.deducted,
-        createdAtMs: Number(j.createdAt) || 0,
-        error: j.error || ''
-      };
-    });
-    if (allowed) rows = rows.filter(r => allowed.includes(r.status));
+      for (const d of snap.docs) {
+        const row = serializeAdminJobDoc(d);
+        if (!row.createdAtMs) continue;
+        lastScannedCursorMs = row.createdAtMs;
+        if (allowed && !allowed.includes(row.status)) continue;
+        if (rows.length >= cap) { sawExtra = true; break; }
+        rows.push(row);
+        lastIncludedCursorMs = row.createdAtMs;
+      }
+
+      if (sawExtra) break;
+      if (snap.docs.length < scanLimit) { moreRaw = false; break; }
+      scanCursorMs = lastScannedCursorMs;
+      moreRaw = true;
+    }
+
+    const nextCursorMs = sawExtra
+      ? lastIncludedCursorMs
+      : (moreRaw ? lastScannedCursorMs : null);
+    const hasMore = !!nextCursorMs && (sawExtra || moreRaw);
 
     // 이메일 매핑(중복 uid 제거 후 일괄 조회)
     const uids = [...new Set(rows.map(r => r.uid).filter(Boolean))];
@@ -696,11 +886,11 @@ router.post('/admin/jobs', async (req, res) => {
     const chargedCount = rows.filter(r => r.deducted).length;
     const affectedUids = [...new Set(rows.map(r => r.uid).filter(Boolean))];
 
-    logger.info('admin.jobs_loaded', { adminUid, filter: filterKey, hours, count: rows.length, chargedCount });
-    res.json({ ok: true, rows, summary, count: rows.length, chargedCount, affectedUids });
+    logger.info('admin.jobs_loaded', { adminUid, filter: filterKey, hours, count: rows.length, chargedCount, cursorMs: requestedCursorMs || null, hasMore });
+    res.json({ ok: true, rows, summary, count: rows.length, chargedCount, affectedUids, nextCursorMs, hasMore, source: JOB_ARCHIVE_COLLECTION });
   } catch (err) {
     logger.error('admin.jobs_failed', { adminUid, err });
-    res.status(500).json({ error: '작업 목록을 불러오지 못했습니다. (transformJobs 색인 확인)' });
+    res.status(500).json({ error: '작업 목록을 불러오지 못했습니다. (transformJobArchive 색인 확인)' });
   }
 });
 
@@ -770,7 +960,12 @@ router.post('/admin/user-summary', async (req, res) => {
     if (!uid) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
     const bundle = await loadAdminUserBundle(uid);
     if (!bundle) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
-    logger.info('admin.user_summary_loaded', { adminUid, targetUid: uid });
+    logger.info('admin.user_summary_loaded', {
+      adminUid,
+      targetUid: uid,
+      paidOrphanDebitCount: bundle.creditAudit?.paidOrphanDebitCount || 0,
+      paidOrphanDebitCredits: bundle.creditAudit?.paidOrphanDebitCredits || 0
+    });
     res.json({ ok: true, ...bundle });
   } catch (err) {
     logger.error('admin.user_summary_failed', { adminUid, err });

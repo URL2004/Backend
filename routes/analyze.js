@@ -2849,11 +2849,15 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   dominant 말투로 통일한다(무날조·무LLM — 종결어미·대명사만 결정론 치환). blog는 해요체 목표라 제외(프롬프트로 처리).
   if (mode === 'assignment' || mode === 'thesis') {
     try {
-      const origReg = require('../engine/surfaceguard').measureRegisterMix(text).dominant;   // 'hap'|'handa'|'haeyo'
-      if (origReg === 'hap' || origReg === 'handa' || origReg === 'haeyo') {
-        const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, origReg);
+      // ★ P0-1(2026-06-18 감사): ASSIGNMENT_B7은 학부생 보고서형 '합쇼체(hap)'가 목표다. 원문이 평어체(handa)여도
+      //   origReg로 정규화하면 앞단 b7PolishPass가 만든 합쇼체를 도로 평어체로 되돌려(앞·뒤 패스 상쇄) 말투가 흔들린다.
+      //   → B7이면 target을 'hap'으로 고정(원문 dominant 무시), 아니면 기존대로 원문 dominant 말투 보존.
+      const b7 = process.env.ASSIGNMENT_B7 === '1';
+      const targetReg = b7 ? 'hap' : require('../engine/surfaceguard').measureRegisterMix(text).dominant;   // 'hap'|'handa'|'haeyo'
+      if (targetReg === 'hap' || targetReg === 'handa' || targetReg === 'haeyo') {
+        const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, targetReg);
         if (rn.changed) result.outputText = rn.text;
-        result.registerNormalize = { target: origReg, changed: rn.changed };
+        result.registerNormalize = { target: targetReg, changed: rn.changed, b7: b7 || undefined };
       }
     } catch (e) { result.registerNormalize = { error: e.message }; }
   } else if (mode === 'blog' && process.env.BLOG_REGISTER_NORM !== '0') {

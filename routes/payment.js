@@ -81,6 +81,7 @@ router.post('/confirm-payment', async (req, res) => {
           transaction.set(orderRef, {
             uid: verifiedUid, amount, safeCredits,
             paymentKey,
+            customerEmail: typeof customerEmail === 'string' ? customerEmail.slice(0, 160) : '',
             status: 'paid',
             createdAt: admin.firestore.FieldValue.serverTimestamp()
           });

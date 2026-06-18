@@ -134,7 +134,14 @@ git status --short --branch
 
 ## Frontend 배포
 
-프론트 변경이 있을 때만 배포한다.
+프론트 변경이 있을 때만 배포한다. 프론트는 Vercel 프로젝트 `frontend`, scope `toavoidtheprofessor`, 운영 alias `https://gpkorea.ai.kr` 기준이다.
+
+중요:
+
+- 전역 `vercel` CLI가 없어도 `npx -y vercel ...`로 배포한다.
+- `.vercel/project.json`이 있는 `Frontend` 디렉터리에서 실행해야 한다.
+- 배포 후 `https://gpkorea.ai.kr/main`에서 실제 운영 alias 반영까지 확인한다.
+- `firestore.rules` 배포는 Firebase CLI/권한이 별도라 백엔드/프론트 Vercel 배포와 분리한다.
 
 1. 상태 확인
 
@@ -169,22 +176,40 @@ git push origin release/prod-maintenance-test
 Git push로 자동 배포되는 구성이면 Vercel 배포 목록에서 최신 커밋을 확인한다.
 
 ```powershell
-vercel ls --scope toavoidtheprofessor
+npx -y vercel ls --scope toavoidtheprofessor
 ```
 
-필요 시 수동 프로덕션 배포:
+수동 프로덕션 배포가 필요하면 아래 명령을 사용한다. 전역 CLI 설치 여부와 무관하게 동작한다.
 
 ```powershell
-vercel --prod --scope toavoidtheprofessor
+npx -y vercel deploy --prod --scope toavoidtheprofessor --yes
 ```
+
+정상 출력 기준:
+
+- `readyState: READY`
+- `target: production`
+- `Aliased https://gpkorea.ai.kr`
 
 5. 운영 화면 확인
 
 ```powershell
-Start-Process 'https://gpkorea.ai.kr'
+$r = Invoke-WebRequest -Uri 'https://gpkorea.ai.kr/main' -UseBasicParsing -TimeoutSec 30
+[int]$r.StatusCode
 ```
 
-모바일/PC 관련 변경이면 실제 화면 또는 브라우저 테스트로 캐시 버전과 UI 반영 여부를 확인한다.
+정상 기준:
+
+- HTTP `200`
+- 변경한 HTML/JS 문자열이 운영 alias 응답에 포함됨
+
+예:
+
+```powershell
+$r.Content -match 'lavAutoCoach'
+```
+
+모바일/PC 관련 변경이면 실제 화면 또는 브라우저 테스트로 캐시 버전과 UI 반영 여부를 추가 확인한다.
 
 ## 환경변수
 
@@ -214,3 +239,4 @@ Start-Process 'https://gpkorea.ai.kr'
 
 - Backend `b6d01a8` → Render `dep-d8ohbhm7r5hc73c30stg` → `live`
 - Frontend `6b1aa9f` → 운영 반영 완료
+- Frontend `2876359` → Vercel `dpl_4LQuHdLJDWPRr6hHswgKC59X6sTM` → `https://gpkorea.ai.kr` alias 반영 완료

@@ -7,6 +7,7 @@ const discord = require('../lib/discord');
 const { getRevenue } = require('../lib/revenue');
 
 const router = express.Router();
+const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
 
 function tossBasicToken(res) {
   const secretKey = process.env.TOSS_SECRET_KEY;
@@ -799,11 +800,30 @@ router.post('/admin/user-history-item', async (req, res) => {
 
 // 관리자: 작업(transformJobs) 모니터 — 전체 사용자의 실패·중단·진행 작업을 상태·기간으로 조회.
 // 영향 사용자 일괄 식별용. createdAt은 ms(number)로 저장되어 단일필드 범위쿼리(복합 인덱스 불필요).
+// 장기 목록은 transformJobs(6시간 TTL)가 아니라 원문·결과가 빠진 transformJobArchive에서 조회한다.
 const JOB_STATUS_SETS = {
   issues: ['error', 'blocked', 'cancelled', 'awaiting_approval'],
   active: ['queued', 'running', 'awaiting_approval'],
   all: null
 };
+function serializeAdminJobDoc(docSnap) {
+  const j = docSnap.data() || {};
+  return {
+    id: j.id || docSnap.id,
+    uid: j.uid || '',
+    status: j.status || '',
+    stage: j.stage || '',
+    mode: j.mode || '',
+    needed: Number(j.needed) || 0,
+    deducted: !!j.deducted,
+    createdAtMs: Number(j.createdAt) || timestampMs(j.createdAt),
+    updatedAtMs: Number(j.updatedAtMs) || 0,
+    textLength: Number(j.textLength) || 0,
+    resultLength: Number(j.resultLength) || 0,
+    candidatesCount: Number(j.candidatesCount) || 0,
+    error: j.error || ''
+  };
+}
 router.post('/admin/jobs', async (req, res) => {
   const adminUid = await requireAdmin(req, res);
   if (!adminUid) return;
@@ -811,32 +831,47 @@ router.post('/admin/jobs', async (req, res) => {
     const filterKey = (req.body && req.body.filter) || 'issues';
     const allowed = JOB_STATUS_SETS[filterKey] !== undefined ? JOB_STATUS_SETS[filterKey] : JOB_STATUS_SETS.issues;
     const hoursRaw = parseInt(req.body && req.body.hours, 10);
-    const hours = Number.isInteger(hoursRaw) ? Math.min(Math.max(hoursRaw, 1), 720) : 24;
+    const hours = Number.isInteger(hoursRaw) ? Math.min(Math.max(hoursRaw, 1), 2160) : 24;
     const sinceMs = Date.now() - hours * 3600 * 1000;
     const rawLimit = parseInt(req.body && req.body.limit, 10);
-    const cap = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 500) : 200;
+    const cap = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 25;
+    const requestedCursorMs = Number(req.body && req.body.cursorMs) || 0;
+    let scanCursorMs = requestedCursorMs > 0 ? requestedCursorMs : 0;
+    const scanLimit = Math.min(Math.max(cap * 4, 80), 500);
+    const rows = [];
+    let lastIncludedCursorMs = 0;
+    let lastScannedCursorMs = 0;
+    let sawExtra = false;
+    let moreRaw = false;
 
-    const snap = await db.collection('transformJobs')
-      .where('createdAt', '>=', sinceMs)
-      .orderBy('createdAt', 'desc')
-      .limit(cap)
-      .get();
+    for (let guard = 0; guard < 8 && !sawExtra; guard++) {
+      let q = db.collection(JOB_ARCHIVE_COLLECTION)
+        .where('createdAt', '>=', sinceMs);
+      if (scanCursorMs > 0) q = q.where('createdAt', '<', scanCursorMs);
+      q = q.orderBy('createdAt', 'desc');
+      const snap = await q.limit(scanLimit).get();
+      if (snap.empty) { moreRaw = false; break; }
 
-    let rows = snap.docs.map(d => {
-      const j = d.data() || {};
-      return {
-        id: d.id,
-        uid: j.uid || '',
-        status: j.status || '',
-        stage: j.stage || '',
-        mode: j.mode || '',
-        needed: Number(j.needed) || 0,
-        deducted: !!j.deducted,
-        createdAtMs: Number(j.createdAt) || 0,
-        error: j.error || ''
-      };
-    });
-    if (allowed) rows = rows.filter(r => allowed.includes(r.status));
+      for (const d of snap.docs) {
+        const row = serializeAdminJobDoc(d);
+        if (!row.createdAtMs) continue;
+        lastScannedCursorMs = row.createdAtMs;
+        if (allowed && !allowed.includes(row.status)) continue;
+        if (rows.length >= cap) { sawExtra = true; break; }
+        rows.push(row);
+        lastIncludedCursorMs = row.createdAtMs;
+      }
+
+      if (sawExtra) break;
+      if (snap.docs.length < scanLimit) { moreRaw = false; break; }
+      scanCursorMs = lastScannedCursorMs;
+      moreRaw = true;
+    }
+
+    const nextCursorMs = sawExtra
+      ? lastIncludedCursorMs
+      : (moreRaw ? lastScannedCursorMs : null);
+    const hasMore = !!nextCursorMs && (sawExtra || moreRaw);
 
     // 이메일 매핑(중복 uid 제거 후 일괄 조회)
     const uids = [...new Set(rows.map(r => r.uid).filter(Boolean))];
@@ -851,11 +886,11 @@ router.post('/admin/jobs', async (req, res) => {
     const chargedCount = rows.filter(r => r.deducted).length;
     const affectedUids = [...new Set(rows.map(r => r.uid).filter(Boolean))];
 
-    logger.info('admin.jobs_loaded', { adminUid, filter: filterKey, hours, count: rows.length, chargedCount });
-    res.json({ ok: true, rows, summary, count: rows.length, chargedCount, affectedUids });
+    logger.info('admin.jobs_loaded', { adminUid, filter: filterKey, hours, count: rows.length, chargedCount, cursorMs: requestedCursorMs || null, hasMore });
+    res.json({ ok: true, rows, summary, count: rows.length, chargedCount, affectedUids, nextCursorMs, hasMore, source: JOB_ARCHIVE_COLLECTION });
   } catch (err) {
     logger.error('admin.jobs_failed', { adminUid, err });
-    res.status(500).json({ error: '작업 목록을 불러오지 못했습니다. (transformJobs 색인 확인)' });
+    res.status(500).json({ error: '작업 목록을 불러오지 못했습니다. (transformJobArchive 색인 확인)' });
   }
 });
 

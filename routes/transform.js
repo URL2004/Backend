@@ -22,11 +22,15 @@ const discord = require('../lib/discord');
 
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
+const JOB_ARCHIVE_COLLECTION = 'transformJobArchive'; // 관리자 모니터 장기 보관용(원문·결과 제외)
 let draining = false;
 setInterval(() => {
   const now = Date.now();
   for (const [id, j] of jobs) {
-    if (now - j.createdAt > JOB_TTL_MS) { jobs.delete(id); deletePersisted(id); orphan401.delete(id); }
+    if (now - j.createdAt > JOB_TTL_MS) {
+      archiveJob(j, { expiredAtMs: now });
+      jobs.delete(id); deletePersisted(id); orphan401.delete(id);
+    }
   }
   const today = kstDay();
   for (const [uid, d] of dailyStarts) if (d.day !== today) dailyStarts.delete(uid);
@@ -307,6 +311,8 @@ function buildBlockOffer(job, text) {
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'memo', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence'];
+const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
+  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -336,9 +342,38 @@ function persistJob(job) {
   try {
     db.collection('transformJobs').doc(job.id).set(doc, { merge: true })
       .catch(e => logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
+    archiveJob(job);
   } catch (e) {
     logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e });
   }
+}
+
+function resultLength(result) {
+  if (!result) return 0;
+  if (typeof result === 'string') return result.length;
+  if (typeof result.outputText === 'string') return result.outputText.length;
+  if (typeof result.text === 'string') return result.text.length;
+  return 0;
+}
+
+function archiveJob(job, extra = {}) {
+  if (!db || !job || !job.id) return;
+  const doc = {};
+  for (const k of ARCHIVE_FIELDS) {
+    const cleaned = pruneUndefinedForFirestore(job[k]);
+    if (cleaned !== undefined) doc[k] = cleaned;
+  }
+  doc.jobId = job.id;
+  doc.updatedAtMs = Date.now();
+  doc.textLength = typeof job.text === 'string' ? job.text.length : 0;
+  doc.resultLength = resultLength(job.result);
+  doc.candidatesCount = Array.isArray(job.candidates) ? job.candidates.length : 0;
+  for (const [k, v] of Object.entries(extra || {})) {
+    const cleaned = pruneUndefinedForFirestore(v);
+    if (cleaned !== undefined) doc[k] = cleaned;
+  }
+  return db.collection(JOB_ARCHIVE_COLLECTION).doc(job.id).set(doc, { merge: true })
+    .catch(e => logger.warn('transform.archive_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
 }
 
 function deletePersisted(id) {
@@ -462,7 +497,8 @@ async function restoreJobs() {
     let kept = 0, interrupted = 0, expired = 0;
     snap.forEach(d => {
       const j = d.data();
-      if (!j.createdAt || j.createdAt < cutoff) { expired++; deletePersisted(d.id); return; }
+      if (!j.createdAt || j.createdAt < cutoff) { expired++; archiveJob({ ...j, id: j.id || d.id }, { expiredAtMs: Date.now() }); deletePersisted(d.id); return; }
+      j.id = j.id || d.id;
       j.ac = new AbortController();
       if (j.status === 'running') {
         j.status = 'error';
@@ -471,6 +507,7 @@ async function restoreJobs() {
         interrupted++;
         persistJob(j);
       }
+      archiveJob(j);
       jobs.set(j.id, j);
       kept++;
     });
@@ -503,6 +540,8 @@ router.shutdown = async function shutdown() {
         if (cleaned !== undefined) doc[k] = cleaned;
       }
       writes.push(db.collection('transformJobs').doc(j.id).set(doc, { merge: true }).catch(() => {}));
+      const archiveWrite = archiveJob(j);
+      if (archiveWrite) writes.push(archiveWrite.catch(() => {}));
     }
   }
   await Promise.race([Promise.allSettled(writes), new Promise(r => setTimeout(r, 4000))]);

@@ -39,13 +39,22 @@ t('2글자 토큰은 양쪽 동일(하위호환)', () => {
   assert.strictEqual(off, 1); assert.strictEqual(on, 1);
 });
 
-console.log('— ③ ★한계 명시: factKey 스왑만으로는 1만5천 동치 미해결(추출이 쪼갬) → B2b 필요 —');
-t('"1만 5천 명" vs "15,000명"은 flag-on이어도 floor가 오탐(추출 분리 때문)', () => {
+console.log('— ③ B2b end-to-end: "1만 5천 명"↔"15,000명" 동치 + 부호 반전을 floor가 올바로 측정 —');
+t('"1만 5천 명" vs "15,000명": flag-off는 오탐(현행 버그), flag-on은 0(B2b 수정)', () => {
   const raw = '작년 행사에 1만 5천 명이 참여했다.';
   const out = '작년 행사에는 15,000명이 왔다.';
-  const onNov = withFlag(true, () => floor.measureNovelty(raw, out).count);
-  // factKey는 맞지만 추출이 "1만"+"5천명" vs "15,000명"으로 입자도가 달라 동치 인식 불가 → B2b(추출)에서 해결.
-  assert(onNov >= 1, `예상: 추출 분리로 여전히 오탐(>0). 실제 ${onNov} — 0이면 추출이 이미 합쳐진 것이니 B2b 재평가`);
+  const off = withFlag(false, () => floor.measureNovelty(raw, out).count);
+  const on = withFlag(true, () => floor.measureNovelty(raw, out).count);
+  assert(off >= 1, `flag-off는 현행 버그로 오탐해야(>0). 실제 ${off}`);
+  assert.strictEqual(on, 0, `flag-on은 복합 통째+factKey로 동치 인식 → novelty 0. 실제 ${on}`);
+});
+t('부호 반전 "-0.68"→"0.68": flag-off는 미탐, flag-on은 novelty 잡음(의미역전 감지)', () => {
+  const raw = '상관계수는 -0.68로 음의 관계였다.';
+  const out = '상관계수는 0.68로 양의 관계였다.';   // 부호 반전 = 의미 역전
+  const off = withFlag(false, () => floor.measureNovelty(raw, out).count);
+  const on = withFlag(true, () => floor.measureNovelty(raw, out).count);
+  assert.strictEqual(off, 0, `flag-off는 부호 미포착으로 0.68=−0.68 → 역전 미탐. 실제 ${off}`);
+  assert(on >= 1, `flag-on은 "0.68"(출력)이 원문(−0.68)에 없는 새 사실 → 잡아야. 실제 ${on}`);
 });
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAIL'} (pass ${pass} / fail ${fail})`);

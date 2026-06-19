@@ -1465,6 +1465,7 @@ Sentence: ${sentence}`
   }
   if (!response.ok) return null;
   const data = await response.json();
+  try { require('../engine/usagemeter').recordUsage({ model: MODEL, usage: data.usage, task: 'microcall' }); } catch {}   // 비용 hotspot 측정(감사 §5)
   if (data?.stop_reason === 'refusal') return null;
   const blocks = Array.isArray(data?.content) ? data.content : [];
   let out = '';
@@ -1615,6 +1616,7 @@ Sentence: ${sentence}`
   }
   if (!response.ok) return null;
   const data = await response.json();
+  try { require('../engine/usagemeter').recordUsage({ model: MODEL, usage: data.usage, task: 'microcall' }); } catch {}   // 비용 hotspot 측정(감사 §5)
   if (data?.stop_reason === 'refusal') return null;
   const blocks = Array.isArray(data?.content) ? data.content : [];
   let out = '';
@@ -1697,6 +1699,7 @@ Sentence: ${sentence}`
   }
   if (!response.ok) return null;
   const data = await response.json();
+  try { require('../engine/usagemeter').recordUsage({ model: MODEL, usage: data.usage, task: 'microcall' }); } catch {}   // 비용 hotspot 측정(감사 §5)
   if (data?.stop_reason === 'refusal') return null;
   const blocks = Array.isArray(data?.content) ? data.content : [];
   let out = '';
@@ -1980,7 +1983,8 @@ async function callClaude({
     cacheCreateTokens: cacheCreate,
     cacheReadTokens: cacheRead,
     outputTokens: usage.output_tokens || 0,
-    model: MODEL
+    model: MODEL,
+    estimatedUsd: Number(require('../engine/usagemeter').estimateUsd(MODEL, usage).toFixed(6))   // 비용 hotspot 측정(감사 §5)
   });
   if (cacheZeroWarn && cacheEligible && cacheCreate === 0 && cacheRead === 0) {
     logger.warn('llm.cache_zero', {

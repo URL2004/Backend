@@ -61,6 +61,7 @@ async function llmWebSearch({ system, user, signal, maxTokens = 4096, maxUses = 
       throw new Error(`evidence web_search ${resp.status}: ${msg}`);
     }
     const data = await resp.json();
+    try { require('./usagemeter').recordUsage({ model: MODEL, usage: data.usage, task: 'evidence' }); } catch {}   // 검색비+토큰 hotspot(감사 §5)
     if (data.stop_reason === 'pause_turn') {
       messages.push({ role: 'assistant', content: data.content });
       continue;  // resume: trailing server_tool_use를 API가 감지해 이어감

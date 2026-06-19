@@ -67,7 +67,7 @@ function parseJSON(s) {
 }
 
 // LLM에서 텍스트 받기 — claudecode(구독) 또는 api(키). "Execution error"·빈응답에 4회 재시도+백오프.
-async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL, outputFormat = null }) {
+async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL, outputFormat = null, meta = {} }) {
   const isBad = (s) => !s || /^execution error/i.test(String(s).trim()) || String(s).replace(/\s+/g, '').length < 5;
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   async function once() {
@@ -98,6 +98,7 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL, 
       throw new Error(`Anthropic API ${resp.status}: ${msg}`);
     }
     const data = await resp.json();
+    try { require('./usagemeter').recordUsage({ model, usage: data.usage, task: meta.task || 'judge', phase: meta.phase }); } catch {}
     return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
   }
   let lastErr = null;

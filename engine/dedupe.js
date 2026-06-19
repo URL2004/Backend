@@ -74,6 +74,12 @@ function _bigrams(s) {
 const _DEDUP_FUZZY_SIM = 0.6;     // char-bigram Jaccard(=floor.FUZZY_SIM) — 어미·소수 단어만 다른 근접중복
 const _DEDUP_MIN_LEN = 16;        // 정규화 길이 하한(=floor.FUZZY_MIN_LEN)
 
+// ★ 숫자집합(연도·수치) 추출/비교 — fuzzy 근접중복이 '다른 사실'을 지우는 것 방지(2026-06-19 R-03:
+//   "2023…매출 100억"·"2024…매출 200억"은 표면 bigram이 ≥0.6이지만 연도·금액이 달라 서로 다른 사실).
+//   숫자(쉼표·소수점 포함)를 정규화해 멀티셋으로 비교, 다르면 fuzzy 삭제 안 함(exact 중복은 영향 없음).
+function _numSet(s) { return ((s || '').match(/\d[\d,]*\.?\d*/g) || []).map(x => x.replace(/[.,]+$/, '').replace(/,/g, '')).sort(); }
+function _sameNums(a, b) { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
+
 // 꼬리 에코: 직전 문장의 꼬리를 짧은 파편으로 되풀이("…신뢰로 전환하는 일이다. 신뢰로 전환하는 일.").
 //   exact/fuzzy 둘 다 못 잡는 사각(파편이 15자 미만 + 장문 대비 jaccard 낮음). 정규화 파편이
 //   직전 문장에 부분문자열로 들어있거나 bigram이 거의 전부(≥0.85) 직전 문장에 포함되면 에코로 삭제.
@@ -105,6 +111,9 @@ function _isShortSynEcho(part, prevPart) {
   if (!/(?:다|음|함)[.!?。]?$/.test(raw)) return false;
   const pp = prevPart || '';
   if (pp.length <= raw.length) return false;                // 직전 문장이 더 길어야 '짧은 되풀이'
+  // ★ 부정 극성이 다르면 동의어라도 반대뜻 — 에코 아님(2026-06-19 R-04: "어렵지 않다"≠"불가능하다").
+  const NEG = /(?:지\s*않|지\s*못|안\s|못\s|없|아니)/;
+  if (NEG.test(pp) !== NEG.test(raw)) return false;
   for (const grp of SHORT_ECHO_SYNS) {
     if (grp.some(w => raw.includes(w)) && grp.some(w => pp.includes(w))) return true;
   }
@@ -128,8 +137,10 @@ function dedupeSentences(text) {
       let dup = false;
       if (key.length >= _DEDUP_MIN_LEN) {
         const g = _bigrams(key);
-        for (const kg of keptGrams) { if (jaccard(g, kg) >= _DEDUP_FUZZY_SIM) { dup = true; break; } }
-        if (!dup) keptGrams.push(g);
+        const nums = _numSet(part);
+        // 표면이 비슷(jaccard≥0.6)해도 숫자(연도·수치)가 다르면 다른 사실 → 삭제 금지(R-03)
+        for (const kg of keptGrams) { if (jaccard(g, kg.g) >= _DEDUP_FUZZY_SIM && _sameNums(nums, kg.nums)) { dup = true; break; } }
+        if (!dup) keptGrams.push({ g, nums });
       }
       if (dup) { removed++; continue; }                      // 근접 중복 → 후속 삭제
       keptNorm.add(key);

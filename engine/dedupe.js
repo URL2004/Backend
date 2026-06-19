@@ -80,6 +80,17 @@ const _DEDUP_MIN_LEN = 16;        // 정규화 길이 하한(=floor.FUZZY_MIN_LE
 function _numSet(s) { return ((s || '').match(/\d[\d,]*\.?\d*/g) || []).map(x => x.replace(/[.,]+$/, '').replace(/,/g, '')).sort(); }
 function _sameNums(a, b) { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
 
+// ★ 부정·양태 시그니처(2026-06-19 R-04 확장) — fuzzy 근접중복이 '반대 극성/다른 양태'를 지우면 의미가 뒤집힌다.
+//   "효과가 있다고 평가된다" vs "효과가 없다고 평가된다"(긴 문장)는 jaccard 높고 숫자 같아 fuzzy로 삭제되던 사각.
+//   기존 NEG 가드는 _isShortSynEcho(≤12자)에만 있어 긴 문장은 무방비 → 시그니처가 다르면 fuzzy 삭제 금지.
+const _NEG_RE = /(?:지\s*않|지\s*못|(?:^|[\s,])안\s|(?:^|[\s,])못\s|없|아니|불가)/;
+const _POSS_RE = /(?:수\s*있|수\s*도|가능|할\s*만)/;     // 가능성·여지
+const _OBLIG_RE = /(?:해야|하여야|반드시|필요가\s*있|당연|당위)/;  // 당위·의무
+function _stanceSig(s) {
+  const x = String(s || '');
+  return (_NEG_RE.test(x) ? 'N' : '') + (_POSS_RE.test(x) ? 'P' : '') + (_OBLIG_RE.test(x) ? 'O' : '');
+}
+
 // 꼬리 에코: 직전 문장의 꼬리를 짧은 파편으로 되풀이("…신뢰로 전환하는 일이다. 신뢰로 전환하는 일.").
 //   exact/fuzzy 둘 다 못 잡는 사각(파편이 15자 미만 + 장문 대비 jaccard 낮음). 정규화 파편이
 //   직전 문장에 부분문자열로 들어있거나 bigram이 거의 전부(≥0.85) 직전 문장에 포함되면 에코로 삭제.
@@ -138,9 +149,10 @@ function dedupeSentences(text) {
       if (key.length >= _DEDUP_MIN_LEN) {
         const g = _bigrams(key);
         const nums = _numSet(part);
-        // 표면이 비슷(jaccard≥0.6)해도 숫자(연도·수치)가 다르면 다른 사실 → 삭제 금지(R-03)
-        for (const kg of keptGrams) { if (jaccard(g, kg.g) >= _DEDUP_FUZZY_SIM && _sameNums(nums, kg.nums)) { dup = true; break; } }
-        if (!dup) keptGrams.push({ g, nums });
+        const sig = _stanceSig(part);
+        // 표면이 비슷(jaccard≥0.6)해도 숫자(R-03)나 부정/양태 시그니처(R-04 확장)가 다르면 다른 의미 → 삭제 금지
+        for (const kg of keptGrams) { if (jaccard(g, kg.g) >= _DEDUP_FUZZY_SIM && _sameNums(nums, kg.nums) && sig === kg.sig) { dup = true; break; } }
+        if (!dup) keptGrams.push({ g, nums, sig });
       }
       if (dup) { removed++; continue; }                      // 근접 중복 → 후속 삭제
       keptNorm.add(key);

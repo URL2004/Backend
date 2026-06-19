@@ -40,6 +40,23 @@ t('"어렵다."·"불가능하다." 동의어 에코는 여전히 삭제(원래 
   assert(!r.text.includes('불가능하다'), `동의어 에코 미삭제: ${r.text}`);
 });
 
+console.log('— R-04확장: 긴 fuzzy 문장의 부정/양태 반전은 보존(의미 역전 방지) —');
+t('"효과가 있다고 평가된다" vs "효과가 없다고 평가된다" 둘 다 보존(부정 극성)', () => {
+  const src = '이 정책은 사회 전반에 효과가 있다고 평가된다. 이 정책은 사회 전반에 효과가 없다고 평가된다.';
+  const r = dedupeSentences(src);
+  assert(r.text.includes('없다고'), `부정 반전이 fuzzy로 삭제됨: ${r.text}`);
+});
+t('"효과가 있다고 본다" vs "효과가 있을 수 있다고 본다" 둘 다 보존(양태)', () => {
+  const src = '연구진은 그 방법이 효과가 있다고 본다. 연구진은 그 방법이 효과가 있을 수 있다고 본다.';
+  const r = dedupeSentences(src);
+  assert(r.text.includes('있을 수 있다고'), `양태 차이가 fuzzy로 삭제됨: ${r.text}`);
+});
+t('같은 부정 극성·같은 양태의 진짜 근접중복은 여전히 삭제', () => {
+  const src = '이 정책은 사회 전반에 효과가 없다고 평가된다. 이 정책은 사회 전반에서 효과가 없다고 평가됩니다.';
+  const r = dedupeSentences(src);
+  assert(r.removed >= 1, `진짜 근접중복(같은 stance) 미삭제 removed=${r.removed}`);
+});
+
 console.log('— R-02: 강제컷이 공백 없는 런에 팬텀 공백 주입 안 함 (왕복 불변식 merge(split)===원문) —');
 t('공백·구두점 없는 긴 런(URL·SMILES·코드 벽)이 왕복 보존', () => {
   const wall = 'A'.repeat(6000);   // 6000자, 공백·구두점 0 → splitLongChunk 강제컷 발생

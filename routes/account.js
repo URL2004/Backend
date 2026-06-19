@@ -6,13 +6,14 @@
 const express = require('express');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 
 const router = express.Router();
 
 router.post('/delete-account', async (req, res) => {
   if (!admin || !db) return res.status(503).json({ error: '인증 서버가 비활성 상태예요. 잠시 후 다시 시도해주세요.' });
 
-  const idToken = req.body && req.body.idToken;
+  const idToken = bearerToken(req);   // 헤더 우선(body.idToken 폴백)
   if (!idToken) return res.status(401).json({ error: '로그인이 필요해요.' });
 
   let uid;

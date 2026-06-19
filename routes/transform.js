@@ -14,6 +14,7 @@ const router = express.Router();
 const analyze = require('./analyze');   // 과금 헬퍼 재사용(차감 공식 단일 출처)
 const { db, verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const { bearerToken } = require('../lib/reqtoken');   // idToken 추출 단일 출처(헤더 우선·폴백 deprecated)
 const { genreTransferV2 } = require('../engine/genretransfer');
 const inputrouting = require('../engine/inputrouting');   // 재구성 부적합 사전감지(생성 호출 '전' 차단 → API 낭비 0)
 const { suggestEvidence } = require('../engine/evidence');
@@ -48,12 +49,8 @@ const CANCEL_WINDOW_SEC = Number(process.env.CANCEL_WINDOW_SEC) || 45;       // 
 const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
 const orphan401 = new Map();   // jobId → 폴링 GET 401 연속 횟수(결과 유실 의심 감지용)
 
-function tokenFromReq(req) {
-  const auth = req.get('authorization') || '';
-  const bearer = auth.match(/^Bearer\s+(.+)$/i);
-  if (bearer) return bearer[1].trim();
-  return (req.body && req.body.idToken) || (req.query && req.query.idToken) || '';
-}
+// idToken 추출은 lib/reqtoken.bearerToken으로 단일화(헤더 우선, body/query 폴백 + deprecation 로그).
+function tokenFromReq(req) { return bearerToken(req); }
 
 async function requireJobOwner(req, res, job) {
   if (job.devNoAuth && !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1') {

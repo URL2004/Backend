@@ -17,6 +17,7 @@ const sg = require('../engine/surfaceguard');
 const { getDetectSystem } = require('../prompts');
 const { verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 
 const DAILY_CAP = Number(process.env.DETECT_DAILY_CAP) || 3;   // 무료 감지 하루 한도(이후 유료 100자당 1크레딧)
 const daily = new Map();   // 'u:uid' | 'ip:addr' → { day, count } — 메모리(재시작 리셋은 사용자에게 유리한 방향)
@@ -97,7 +98,8 @@ router.post('/detect-report', async (req, res) => {
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
 
   // 일일 한도 — 로그인 uid 우선(IP 공유 환경 오차단 방지), 비로그인은 IP
-  const uid = await verifyToken(req.body?.idToken);
+  const idToken = bearerToken(req);   // 헤더 우선(body.idToken 폴백)
+  const uid = await verifyToken(idToken);
   if (uid) setLogContext({ uid });
   const key = uid ? `u:${uid}` : `ip:${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`;
   const day = kstDay();
@@ -120,7 +122,7 @@ router.post('/detect-report', async (req, res) => {
   if (overFree && wantPaid) {
     if (!uid) return res.status(401).json({ error: '유료 감지는 로그인이 필요해요.', code: 'LOGIN_REQUIRED' });
     try {
-      paidPre = await analyze.precheckCredits(req.body.idToken, cost);
+      paidPre = await analyze.precheckCredits(idToken, cost);
     } catch (e) {
       return res.status(e.status || 402).json({ error: analyze.authErrorMessage(e.message), code: 'INSUFFICIENT_CREDITS', cost });
     }

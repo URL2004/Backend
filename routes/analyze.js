@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { getDetectSystem, getHumanizeSystem } = require('../prompts');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body/query 폴백(deprecated)
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -2965,7 +2966,8 @@ router.post('/analyze', async (req, res) => {
     }
   });
 
-  const { mode, text, idToken } = req.body;
+  const { mode, text } = req.body;
+  const idToken = bearerToken(req);   // 헤더 우선(body.idToken 폴백)
   const lang = req.body.lang || 'ko';
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
   // ★ 멱등 키: 프런트가 작업(청크 포함)마다 고정 발급. 재시도해도 같은 값 → 중복 차감 방지. 안전 가드 ≤80자.
@@ -3353,7 +3355,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
 
   const mode = req.body.mode || 'detect';
   const lang = req.body.lang || 'ko';
-  const idToken = req.body.idToken;
+  const idToken = bearerToken(req);   // 헤더 우선(multipart form의 body.idToken 폴백)
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
   const opType = mode === 'detect' ? 'detect' : 'humanize';
   const requestId = (typeof req.body.requestId === 'string' && req.body.requestId.trim())

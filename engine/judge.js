@@ -80,9 +80,9 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL, 
     const resp = await fetch(API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      // ★ prompt caching: system을 ephemeral 캐시 후보로 표시. ★단 Sonnet 4.6 캐시 최소 prefix=2048토큰·
-      //   Haiku 4.5=4096토큰인데, judge/genretransfer system은 대개 300~1000토큰이라 현재는 API가 캐시를
-      //   만들지 않는다(cache_control 무효·무해 — 프롬프트가 임계를 넘기면 자동 활성). 실효 절감은 analyze.js의
+      // ★ prompt caching: system을 ephemeral 캐시 후보로 표시. ★캐시 최소 prefix=Sonnet 4.6 1,024토큰·
+      //   Haiku 4.5 4,096토큰(공식 docs 확인 2026-06-19 — 이전 "2048" 주석은 오기). judge system은 대개 300~1000
+      //   토큰이라 Sonnet 1024 미만→API가 캐시를 안 만든다(cache_control 무효·무해 — 임계 넘기면 자동 활성). 실효 절감은 analyze.js의
       //   대형 FLOOR system이며, 거긴 고정코어/가변부 2블록 분리로 cache_read를 살린다(2026-06-16).
       //   genretransfer 전 호출이 이 llmText를 타므로 한 곳에서 일괄 적용.
       body: JSON.stringify((() => {
@@ -101,14 +101,22 @@ async function llmText({ system, user, signal, maxTokens = 4096, model = MODEL, 
     return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
   }
   let lastErr = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  // ★ 비용 규율(감사 5.3): 전송오류는 2~3회면 충분(4→3). 4xx(400/401/403)는 재시도해도 같은 실패 —
+  //   인증·요청오류를 4회 반복하는 건 순수 낭비라 즉시 표면화. 429/5xx·네트워크·isBad(빈응답)만 재시도.
+  const RETRIES = 3;
+  for (let attempt = 0; attempt < RETRIES; attempt++) {
     if (attempt > 0) await sleep(1500);
     let raw = '';
-    try { raw = await once(); } catch (e) { if (signal?.aborted) throw e; lastErr = e; }
+    try { raw = await once(); }
+    catch (e) {
+      if (signal?.aborted) throw e;
+      if (/Anthropic API (400|401|403)\b/.test(e.message || '')) throw e;   // 영구 오류 → 즉시 표면화(무재시도)
+      lastErr = e;
+    }
     if (!isBad(raw)) return String(raw).trim();
   }
-  // 4회 모두 실패 → 빈 문자열은 호출부에서 "claim 0 → judge 통과"로 오인되므로, 마지막 에러를 표면화.
-  if (lastErr) throw new Error(`llmText 실패(${4}회): ${lastErr.message}`);
+  // 전부 실패 → 빈 문자열은 호출부에서 "claim 0 → judge 통과"로 오인되므로, 마지막 에러를 표면화.
+  if (lastErr) throw new Error(`llmText 실패(${RETRIES}회): ${lastErr.message}`);
   return '';
 }
 

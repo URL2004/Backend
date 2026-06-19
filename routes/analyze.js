@@ -1,9 +1,10 @@
 // [분석 API] 텍스트/PDF AI 탐지 및 휴머나이즈 처리
 // ★ 탐지(detect)·휴머나이즈·웹 검색 모두 Anthropic Claude.
 // ★ Anthropic prompt caching: detect/humanize 시스템 프롬프트에 cache_control: ephemeral (5분 TTL).
-// ★캐시 최소 prefix: Sonnet 4.6=2048토큰, Haiku 4.5=4096토큰 — 이 미만이면 API가 캐시를 만들지 않는다(무효).
+// ★캐시 최소 prefix: Sonnet 4.6=1,024토큰, Haiku 4.5=4,096토큰(공식 docs 확인 2026-06-19 — 이전 "2048"은 오기).
+//   cache_control은 무조건 적용하고 API가 임계 충족 시 자동 캐시(미달이면 무해한 no-op)라 비용누수는 없다.
 //   FLOOR humanize system은 고정코어/가변부 2블록 분리(2026-06-16): 고정코어만 캐시 → 메모·evidence·앵커가
-//   달라도 cache_read 재사용. judge/genretransfer system은 2048 미만이라 캐시 불가(거긴 cache_control 무효).
+//   달라도 cache_read 재사용. judge system(300~1000토큰)은 Sonnet 1024 미만이라 여전히 캐시 불가.
 
 const express = require('express');
 const multer = require('multer');
@@ -1722,20 +1723,35 @@ async function preprocessInput(text, lang, signal) {
   t = enforceInputRules(t);
   const swapOnly = t;  // micro-call 타임아웃 시 폴백
 
+  // ★ 비용 누수 차단(감사 [C1] 확정): Promise.race timeout이 이겨도 work(=Sonnet micro-call fetch)는 계속 돌아
+  //   '버린 결과'를 끝까지 과금하던 hidden cost. 로컬 AbortController를 micro-call에 넘기고, 8초 timeout 또는 부모
+  //   signal에서 abort → rewriteCommaSentence의 microSignal→fetch까지 전파돼 in-flight 호출이 실제 취소된다.
+  const preAc = new AbortController();
+  if (signal) {
+    if (signal.aborted) preAc.abort(signal.reason);
+    else signal.addEventListener('abort', () => preAc.abort(signal.reason), { once: true });
+  }
+
   const work = (async () => {
     let tt = swapOnly;
-    const c = await fixCommaStacking(tt, lang, signal);
+    const c = await fixCommaStacking(tt, lang, preAc.signal);
     tt = c.text;
-    const d = await fixDeclarativeDefinition(tt, lang, signal);
+    const d = await fixDeclarativeDefinition(tt, lang, preAc.signal);
     tt = d.text;
     return { text: tt, commaSplitCount: c.count, declarativeCount: d.count };
   })();
 
-  const timeout = new Promise((resolve) =>
-    setTimeout(() => resolve({ text: swapOnly, commaSplitCount: 0, declarativeCount: 0, timedOut: true }), 8000)
-  );
+  let preTimer;
+  const timeout = new Promise((resolve) => {
+    preTimer = setTimeout(() => {
+      preAc.abort(new Error('preprocess timeout 8000ms'));   // ★ work의 in-flight micro-call 취소(과금 중단)
+      resolve({ text: swapOnly, commaSplitCount: 0, declarativeCount: 0, timedOut: true });
+    }, 8000);
+  });
 
   const result = await Promise.race([work, timeout]);
+  clearTimeout(preTimer);
+  work.catch(() => {});   // timeout 후 work가 abort로 reject해도 unhandled rejection 방지(결과는 이미 폴백 사용)
   if (result.timedOut) {
     logger.warn('analyze.preprocess_timeout_fallback');
   }
@@ -1749,7 +1765,7 @@ async function preprocessInput(text, lang, signal) {
 }
 
 // ─── Anthropic Messages API 호출 (streaming) ─────────────────
-// 시스템 프롬프트는 cache_control: ephemeral로 5분 TTL 자동 캐싱 (★Sonnet 4.6 최소 2048토큰 / Haiku 4.5 4096토큰 — 미만이면 무효).
+// 시스템 프롬프트는 cache_control: ephemeral로 5분 TTL 자동 캐싱 (★Sonnet 4.6 최소 1,024토큰 / Haiku 4.5 4,096토큰 — 미만이면 무효, 공식 docs 2026-06-19).
 // 구조화 출력은 tool + tool_choice 강제 호출로 처리.
 //
 // ★ streaming 사용 이유: max_tokens=16384에 Sonnet 출력 속도(~50-80 tok/s) 고려하면
@@ -1821,7 +1837,7 @@ async function callClaude({
   if (systemText) {
     // ★ 캐시 분리: 고정 코어(systemText)에만 cache_control → 매 요청 동일 prefix로 cache_read 재사용.
     //   가변부(systemVolatile: 사용자 메모·evidence·앵커 회전)는 cache_control 없는 둘째 블록으로 — prefix를 안 깬다.
-    //   (Sonnet 4.6 캐시 최소 prefix=2048토큰. FLOOR 고정 코어는 이를 초과하므로 실제 캐시된다.)
+    //   (Sonnet 4.6 캐시 최소 prefix=1,024토큰. FLOOR 고정 코어는 이를 초과하므로 실제 캐시된다.)
     body.system = [{
       type: 'text',
       text: systemText,

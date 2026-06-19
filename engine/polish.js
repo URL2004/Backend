@@ -91,7 +91,14 @@ async function polishPass(text, { lang = 'ko', signal, floor, rawText = '', allo
     const phraseOk = !banPhrases.length || banPhrases.some(p => countOcc(cand, p) < countOcc(seg, p));
     const compOk = !issues.compression || compressionCount(cand) < comp;
     const regOk = !issues.register || !paragraphMixed(cand).mixed;
-    if (!(phraseOk || compOk || regOk)) continue;
+    // ★ H-02 수정: '활성 이슈'만 본다. 기존 `!(phraseOk||compOk||regOk)`는 이슈 아닌 차원이 TRUE라(예: banPhrases
+    //   없으면 phraseOk=TRUE) OR이 단락(short-circuit)되어 '아무것도 개선 못 한 후보'까지 채택되던 버그.
+    //   활성 이슈 중 하나도 개선 못 하면 폐기 — every가 아니라 some(부분개선까지 거부하면 둘 다 남아 더 나빠짐).
+    const active = [];
+    if (banPhrases.length) active.push(phraseOk);
+    if (issues.compression) active.push(compressionCount(cand) < comp);
+    if (issues.register) active.push(regOk);
+    if (active.length && !active.some(Boolean)) continue;
     out[i] = cand; repaired++;
     if (banPhrases.length && phraseOk) stats.phrase++;
     if (issues.register && regOk) stats.register++;

@@ -58,7 +58,9 @@ async function registerRepairPass(text, rawText, { lang = 'ko', signal, floor, l
     attempted++;
     const { system, user } = buildPrompt(p, lang);
     let cand = '';
-    try { cand = (await llmText({ system, user, signal, maxTokens: 1400, model: HAIKU }) || '').trim(); } catch { continue; }
+    // ★ H-01 수정(2026-06-19): `model: HAIKU`는 미import 식별자라 ReferenceError→catch로 매 문단 무동작이었다
+    //   (REGISTER=1로 켜도 silent no-op). 주석 의도대로 기본 모델(Sonnet)을 쓴다 — register 구조변형은 품질 중요.
+    try { cand = (await llmText({ system, user, signal, maxTokens: 1400 }) || '').trim(); } catch { continue; }
     if (!cand) continue;
     const cc = noSp(cand), pc = noSp(p);
     if (cc < pc * 0.8 || cc > pc * 1.25) continue;                    // 길이 근중립(판단문 주입으로 다소 증가 허용)

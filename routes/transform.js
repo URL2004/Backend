@@ -1002,8 +1002,15 @@ async function runLongThesisChunked(job, text, evidence) {
     job.status = 'running';
     job.stage = '문단별 안전 재작성 중';   // 장문 논문·학술·재구성 복구 공용(특정 종류 단정 안 함)
     persistJob(job);
+    // ★ 학술 동결 블록 분리(2026-06-19 #43): 참고문헌·목차는 윤문 대상이 아니라 데이터다. 본문에서 떼어 verbatim
+    //   보존하고 본문만 우회한다(저자명 의역·절번호 붕괴 방지). 동결 없으면 통째 우회(기존과 동일).
+    const freeze = require('../engine/freezeblocks');
+    const fb = freeze.splitAcademicBlocks(text);   // 참고문헌 리스트·목차 동결(verbatim 보존) — 본문만 우회
+    if (fb.hasFrozen) logger.info('transform.academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: fb.refs.length });
+    // ※ 본문 인라인 다저자 인용 박제는 보류: 플레이스홀더를 LLM이 일부 떨어뜨려(2/7) 인용 유실+floor 차단 위험(2026-06-19 실측).
+    //   canonical 참고문헌 리스트는 위 split으로 안전 보존되므로, 본문 인라인 인용은 충실 재작성에 맡긴다(저우선 잔여).
     const out = await analyze.runHumanizeChunked({
-      text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+      text: fb.body, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
       floorV2: true, optIn: false, judge: true, grounding: true,
       userNotes: job.memo || '', evidence: evidence || '', tonePolish: false   // ★ tonePolish=false = 우회(피하기) 유지
     });
@@ -1034,6 +1041,8 @@ async function runLongThesisChunked(job, text, evidence) {
       job.note = (job.note ? job.note + ' ' : '') + `원문에 없던 해석·평가 표현이 일부(${judgeCount}건) 섞였을 수 있어요. 결과를 원문과 한 번 대조해 주세요.`;
     }
     if (!out.result || !out.result.outputText) throw new Error('long_thesis_incomplete');
+    // ★ 동결 블록(참고문헌 리스트·목차) 재조립 — 우회된 본문 앞뒤로 verbatim 복원.
+    const finalText = fb.hasFrozen ? freeze.reassembleAcademic(fb, out.result.outputText) : out.result.outputText;
     // 과금: 재구성(formal) 단가 그대로. 멱등 키 동일(job_<id>) — 재시작·재시도 중복 차감 불가.
     if (!job.devNoAuth && job.plan !== 'unlimited') {
       try {
@@ -1048,7 +1057,7 @@ async function runLongThesisChunked(job, text, evidence) {
     }
     job.status = 'done';
     job.result = {
-      outputText: out.result.outputText,
+      outputText: finalText,
       longThesis: true,   // UI가 "장문 논문 안전 재작성" 배지를 띄울 수 있게
       floorReport: {
         status: out.floorReport.status,
@@ -1061,8 +1070,8 @@ async function runLongThesisChunked(job, text, evidence) {
       fallbackCount: out.fallbackCount
     };
     persistJob(job);
-    saveJobHistory(job, text, out.result.outputText);
-    logger.info('transform.long_thesis_done', { jobId: job.id, uid: job.uid, needed: job.needed, deducted: job.deducted, chunkCount: out.chunkCount, fallbackCount: out.fallbackCount });
+    saveJobHistory(job, text, finalText);
+    logger.info('transform.long_thesis_done', { jobId: job.id, uid: job.uid, needed: job.needed, deducted: job.deducted, chunkCount: out.chunkCount, fallbackCount: out.fallbackCount, frozen: fb.hasFrozen || undefined });
   } catch (e) {
     if (job.ac.signal.aborted) {
       if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }

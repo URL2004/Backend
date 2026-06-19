@@ -7,8 +7,10 @@
 //   (front=제목/제출자 → 목차 → 본문 → 참고문헌)로 재조립한다. 플레이스홀더 대신 split 방식(meta_leak 오탐·
 //   토큰 훼손 위험 0, 순서 보존). SMILES·각주 박제와 같은 '동결' 철학.
 
-const REF_HEADING = /(^|\n)[ \t]*(?:<\s*참고\s*문헌\s*>|【\s*참고\s*문헌\s*】|\[\s*참고\s*문헌\s*\]|참고\s*문헌|참고\s*자료|인용\s*문헌|References|REFERENCES|Bibliography|Works\s+Cited)[ \t]*(?:\n|$)/;
-const TOC_HEADING = /(^|\n)[ \t]*(?:<\s*목\s*차\s*>|【\s*목\s*차\s*】|\[\s*목\s*차\s*\]|목\s*차|차\s*례|Contents|CONTENTS)[ \t]*(?:\n|$)/;
+// ★ heading 정규화(2026-06-19 실측 #18: "[참고자료]" 처럼 괄호로 감싼 변형이 분리되지 않아 참고문헌이 통째 누락).
+//   대괄호·꺾쇠·【】 어떤 조합이든, 끝에 콜론(:：)이 붙든, 일괄 허용한다(괄호 변형마다 패턴을 따로 두던 누락 제거).
+const REF_HEADING = /(^|\n)[ \t]*[<【\[]?\s*(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|참고\s*및\s*인용\s*문헌|References|REFERENCES|Bibliography|Works\s+Cited)\s*[>】\]]?[ \t]*[:：]?[ \t]*(?:\n|$)/;
+const TOC_HEADING = /(^|\n)[ \t]*[<【\[]?\s*(?:목\s*차|차\s*례|Contents|CONTENTS)\s*[>】\]]?[ \t]*[:：]?[ \t]*(?:\n|$)/;
 
 // 참고문헌 한 줄 entry: "저자명. (연도). 제목…" — 줄머리에 이름+근방 (YYYY).
 const CITE_LINE = /^[가-힣A-Za-z][^\n]{0,55}\(\s*(?:19|20)\d{2}[a-z]?\s*\)/;

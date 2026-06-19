@@ -78,4 +78,27 @@ function restoreCodeTokens(out, rawText) {
   return { text, fixed };
 }
 
-module.exports = { fixSpacing, restoreCodeTokens, AMBIGUOUS };
+// ── URL 공백 삽입 복원(2026-06-19 실측 #57·#58: 출력 참고문헌이 "https://www. scourt. go. kr"로 깨짐).
+//   원문(글자분리 복원 후)에 온전한 URL이 있고 출력에 그 URL의 '공백 낀' 형태가 있으면 원형으로 되돌린다.
+//   ★원문 대조라 안전(원문에 있던 URL만, 무날조·무LLM). 정상 출력(URL 온전)은 무동작.
+function restoreUrls(out, rawText) {
+  if (!out || !rawText) return { text: out || '', fixed: 0 };
+  const urlRe = /https?:\/\/[^\s<>()]+/g;
+  const urls = [...new Set((rawText.match(urlRe) || []))]
+    .filter(u => u.length >= 8 && u.length <= 300)
+    .sort((a, b) => b.length - a.length);   // 긴 URL 먼저(부분 URL 오복원 방지)
+  let text = out, fixed = 0;
+  for (const url of urls) {
+    if (text.includes(url)) continue;   // 이미 온전
+    // url의 각 문자 사이에 낀 공백(0~3칸)을 허용하는 패턴으로 찾아 원형 복원. 각 \s 뒤 필수 리터럴이라 선형(ReDoS 무위험).
+    const pattern = url.split('').map(ch => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s{0,3}');
+    let re;
+    try { re = new RegExp(pattern, 'g'); } catch { continue; }
+    const before = text;
+    text = text.replace(re, url);
+    if (text !== before) fixed++;
+  }
+  return { text, fixed };
+}
+
+module.exports = { fixSpacing, restoreCodeTokens, restoreUrls, AMBIGUOUS };

@@ -1226,6 +1226,14 @@ router.post('/transform', async (req, res) => {
   if (text.length > 30000) {
     return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
   }
+  // ★ 글자분리(PDF 추출 깨짐) 복원(2026-06-19 실측 #57·#58): 모든 글자가 공백 분리된 입력을 billing·엔진 처리 전에
+  //   재결합 — 공정 과금·URL 보존. 정상 글은 무동작. INPUT_REJOIN=0으로 해제.
+  if (process.env.INPUT_REJOIN !== '0') {
+    try {
+      const rj = inputrouting.rejoinSplitChars(text);
+      if (rj.changed) { logger.info('transform.input_rejoined', { mode, ratio: rj.ratio, before: text.length, after: rj.text.length }); text = rj.text; }
+    } catch (e) { logger.warn('transform.input_rejoin_failed', { err: e && e.message }); }
+  }
   // ★ 중복 입력 사전 차단(2026-06-16): 같은 문서를 두 번 붙여넣은 입력은 중복 분량만큼 과금되고 긴 입력이라 결과까지
   //   꼬인다(실측 blog 2만자=412크레딧 + 잘린 결과). 차감·작업 시작 전에 막는다(무차감 — 중복 빼고 재시도하면 절약).
   {

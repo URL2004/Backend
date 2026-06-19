@@ -29,10 +29,42 @@ function shortHash(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
 }
 
+// ── 중복 제출 디바운스(2026-06-19 실측 #57·#58: 같은 사용자가 동일 10510자를 1초 간격으로 두 번 제출 →
+//   requestId 멱등이 없는 구버전 클라이언트라 이중 차감·이중 결과). requestId 멱등(creditHistory/req_*)이
+//   닿지 않는 구간을 메모리 단기창으로 막는다: 같은 uid+opType+내용을 짧은 창(기본 20초) 안에 다시 보내면
+//   거절(무차감). 영구 차단이 아닌 단기창이라, 분 단위로 떨어진 정상 재실행·모드비교(#106/#109 등)는 허용.
+//   DEDUP_WINDOW_MS=0으로 해제. (LLM 처리가 수초 걸리는 in-flight 구간을 자연히 덮는다.)
+const recentSubmits = new Map();   // key(uid:opType:sha1) → ts(ms)
+const SUBMIT_DEDUP_WINDOW_MS = process.env.DEDUP_WINDOW_MS != null ? Number(process.env.DEDUP_WINDOW_MS) : 20000;
+function submitDedupKey(uid, opType, text) {
+  return uid + ':' + opType + ':' + crypto.createHash('sha1').update(text || '').digest('hex');
+}
+function recentDuplicateSubmit(key) {
+  const prev = recentSubmits.get(key);
+  return prev != null && (Date.now() - prev) < SUBMIT_DEDUP_WINDOW_MS;
+}
+setInterval(() => {
+  const cut = Date.now() - Math.max(SUBMIT_DEDUP_WINDOW_MS, 60000);
+  for (const [k, ts] of recentSubmits) if (ts < cut) recentSubmits.delete(k);
+}, 60000).unref();
+
 function jsonCharLength(value) {
   if (!value) return 0;
   try { return JSON.stringify(value).length; }
   catch { return 0; }
+}
+
+// ── 모드 라벨 정규화(2026-06-19 실측 #18·#57·#58: 구버전/직접호출 클라이언트가 mode를 "humanize"·빈값으로 보내
+//   history mode가 비거나 원시값으로 남음 → 분석·CS·환불대응 시 어떤 모드였는지 불명). 표시·기록용 라벨만 정규화하고
+//   (엔진 동작은 req.body.engine/humanizeMode가 좌우하므로 불변), 인식 못 한 입력은 로깅해 구버전 클라이언트를 식별한다.
+const KNOWN_HUMANIZE_LABELS = ['글쓰기 스타일', '기본 피하기', '그대로 다듬기'];
+function normalizeHumanizeModeLabel(rawMode, body) {
+  if (KNOWN_HUMANIZE_LABELS.includes(rawMode)) return rawMode;
+  const hm = body && body.humanizeMode;
+  if (body && body.engine === 'floorV2') return (hm === 'blog' || !hm) ? '기본 피하기' : '글쓰기 스타일';
+  if (hm === 'polish' || hm === 'preserve' || hm === '그대로 다듬기') return '그대로 다듬기';
+  if (hm === 'blog' || hm === '기본 피하기') return '기본 피하기';
+  return '글쓰기 스타일';   // 기본(assignment)
 }
 
 // 토큰 검증 + 잔량 사전 확인. Firestore 읽기만. 차감 없음.
@@ -1523,6 +1555,9 @@ async function applyPassC(result, lang, signal, ctx = {}) {
   if (ctx.rawText) {
     const ct = require('../engine/spacing').restoreCodeTokens(t, ctx.rawText);
     if (ct.fixed) { logger.info('humanize.code_token_restored', { mode: ctx.mode, fixed: ct.fixed }); t = ct.text; }
+    // ★ URL 공백 삽입 복원(2026-06-19 실측 #57·#58: "https://www. scourt. go. kr"). 원문 대조·무날조·전 모드.
+    const ur = require('../engine/spacing').restoreUrls(t, ctx.rawText);
+    if (ur.fixed) { logger.info('humanize.url_restored', { mode: ctx.mode, fixed: ur.fixed }); t = ur.text; }
   }
   result.outputText = t;
   // 품질 지표(차단 아님 — 표시·로깅용): no-op(보존형 수준)·register 이탈.
@@ -2919,6 +2954,21 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.lostFacts = floor.measureLostFacts(textF, finalOut);
   const floorViolations = floor.collectFloorViolations({ result, rawText: textF, povSeed, optIn, mode, allowedExtra: notes, anchors: anchorActive });
   result.floorReport = floor.buildFloorReport({ result, rawText: textF, mode, povSeed, optIn, allowedExtra: notes, anchors: anchorActive });
+  // ★ 무변환 가드(2026-06-19 실측 #122 '그대로 다듬기'가 원문과 100% 동일 출력): 최종 출력이 원문과 동일하면
+  //   휴머나이징이 일어나지 않은 것 → 조용히 과금/노출하지 않고 차단(무차감). NOOP_GUARD=0으로 해제.
+  //   ★보존(다듬기, tonePolish)은 띄어쓰기 교정도 가치 있는 변환이므로 '완전 동일(공백 포함)'만 무변환으로 본다
+  //   (공백만 고친 정상 다듬기를 오차단하지 않음). 회피·재작성 모드는 '내용(공백 무시) 동일'이면 무변환.
+  if (process.env.NOOP_GUARD !== '0') {
+    const noopBare = s => (s || '').replace(/\s+/g, '').trim();
+    const isNoOp = tonePolish
+      ? (finalOut.trim().length > 0 && finalOut.trim() === (text || '').trim())
+      : (noopBare(finalOut).length > 0 && noopBare(finalOut) === noopBare(text));
+    if (isNoOp) {
+      result.floorReport.criticals.push({ gate: 'noop_unchanged', detail: '출력이 원문과 동일(휴머나이징 미적용)' });
+      result.floorReport.status = 'blocked';
+      logger.warn('humanize.noop_unchanged', { mode, tonePolish: !!tonePolish, len: noopBare(text).length, fallbackCount });
+    }
+  }
   // 짝 위반 잔존 = 재조합 날조 위험 → 노출 차단(critical).
   if (result.evidencePairing && result.evidencePairing.violations > 0) {
     result.floorReport.criticals.push({ gate: 'evidence_pairing', detail: result.evidencePairing.items.map(p => `${p.num}↛${(p.owner || '').slice(0, 30)}`).join(' | ') });
@@ -2928,6 +2978,29 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   result.surface = sguard.buildSurfaceReport(finalOut);
   result.inputRisk = sguard.classifyInputRisk(text);
   result.contract = contract;
+
+  // ── ai%-정렬 모델 shadow(2026-06-19, CK_SHADOW=1): 로그only·무LLM·무행동변경. 생성 루프가 카피킬러 정렬
+  //   신호를 처음으로 '보는' 채널. 입력/baseline/최종의 모델 risk를 남겨 온라인 검증·데이터 누적(실 rerank 승격 전 단계).
+  //   현 모델 group-CV AUC 0.737이라 rerank용·관찰용이지 차단용 아님. 기본 OFF(opt-in).
+  if (process.env.CK_SHADOW === '1') {
+    try {
+      const ckp = require('../engine/copykiller-proxy');
+      if (ckp.airateAvailable()) {
+        const r3 = x => (x == null ? null : Math.round(x * 1000) / 1000);
+        const ri = ckp.predictAiRate(text);
+        const rb = ckp.predictAiRate(baselineText);
+        const rf = ckp.predictAiRate(finalOut);
+        result.ckShadow = { inputRisk: r3(ri), baselineRisk: r3(rb), finalRisk: r3(rf), deltaVsInput: r3(rf - ri), deltaVsBaseline: r3(rf - rb) };
+        logger.info('humanize.ck_shadow', {
+          mode, tonePolish: !!tonePolish, inLen: (text || '').length, outLen: finalOut.length,
+          inputRisk: r3(ri), baselineRisk: r3(rb), finalRisk: r3(rf),
+          deltaVsInput: r3(rf - ri), deltaVsBaseline: r3(rf - rb),
+          worsened: ri < 0.5 && rf > ri + 0.1   // 모델이 보기에 사람글을 AI쪽으로 악화시켰나(0→100 류 조기경보)
+        });
+      }
+    } catch (e) { logger.warn('humanize.ck_shadow_failed', { err: e && e.message }); }
+  }
+
   return {
     result, surface: result.surface, inputRisk: result.inputRisk,
     mode, lang, chunked: true, chunkCount: chunks.length, contract,
@@ -2986,7 +3059,8 @@ router.post('/analyze', async (req, res) => {
     }
   });
 
-  const { mode, text } = req.body;
+  const { mode } = req.body;
+  let { text } = req.body;
   const idToken = bearerToken(req);   // 헤더 우선(body.idToken 폴백)
   const lang = req.body.lang || 'ko';
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
@@ -2999,6 +3073,17 @@ router.post('/analyze', async (req, res) => {
     ? req.body.prevContext.trim().slice(-300)
     : '';
   if (!text || text.length < 5) return res.status(400).json({ error: '텍스트가 너무 짧습니다.' });
+  // ★ 글자분리(PDF 추출 깨짐) 복원(2026-06-19 실측 #57·#58: 모든 글자가 공백 분리된 입력 → 과금 2배·URL 손상·품질 저하):
+  //   billing·길이검사·엔진 처리 '전에' 재결합해 공정 과금·URL 보존. 정상 글(단일글자 비율 낮음)은 무동작. INPUT_REJOIN=0으로 해제.
+  if (process.env.INPUT_REJOIN !== '0' && typeof text === 'string') {
+    try {
+      const rj = require('../engine/inputrouting').rejoinSplitChars(text);
+      if (rj.changed) {
+        logger.info('analyze.input_rejoined', { uid: undefined, ratio: rj.ratio, before: text.length, after: rj.text.length });
+        text = rj.text;
+      }
+    } catch (e) { logger.warn('analyze.input_rejoin_failed', { err: e && e.message }); }
+  }
   // 글자 수 상한: 크레딧 모드 30,000자(입력칸 표기와 일치), 쿠폰 모드 50,000자(무제한 티어용 안전 캡)
   const HARD_MAX = billingMode === 'coupon' ? 50000 : 30000;
   if (text.length > HARD_MAX) {
@@ -3012,6 +3097,17 @@ router.post('/analyze', async (req, res) => {
   const creditPer100 = isBlogEvasion ? 2 : 1;
   const needed = Math.ceil(text.length / 100) * creditPer100;
   const opType = mode === 'detect' ? 'detect' : 'humanize';
+  // ★ history·creditHistory에 기록할 모드 라벨(표시·분석용). 구버전 클라이언트가 빈값·원시값을 보내도
+  //   엔진 파라미터로 표시 라벨을 채운다. 정규화가 일어나면 구버전 클라이언트 식별용으로 로깅.
+  const historyMode = opType === 'detect' ? 'detect' : normalizeHumanizeModeLabel(mode, req.body);
+  if (opType === 'humanize' && historyMode !== mode) {
+    logger.info('analyze.mode_label_normalized', {
+      rawMode: mode === undefined ? null : mode,
+      normalized: historyMode,
+      engine: req.body.engine || 'legacy',
+      humanizeMode: req.body.humanizeMode || null
+    });
+  }
 
   logger.info('analyze.started', {
     opType,
@@ -3045,6 +3141,20 @@ router.post('/analyze', async (req, res) => {
     });
   }
   setLogContext({ uid: pre.uid });
+
+  // ★ 중복 제출 디바운스(2026-06-19): requestId 멱등이 없는 구버전 클라이언트의 1초 간격 이중 제출(실측 #57·#58)을
+  //   막는다. LLM 호출 '전'에 기록해야 in-flight(수초)인 두 번째 요청을 잡는다. 무차감 거절.
+  let dedupKey = null;
+  if (SUBMIT_DEDUP_WINDOW_MS > 0 && !devNoAuth) {
+    dedupKey = submitDedupKey(pre.uid, opType, text);
+    if (recentDuplicateSubmit(dedupKey)) {
+      logger.warn('analyze.duplicate_submit_blocked', { uid: pre.uid, requestId, opType, windowMs: SUBMIT_DEDUP_WINDOW_MS });
+      return res.status(429).json({ error: '같은 내용을 방금 처리 중이거나 처리했어요. 잠시 후 다시 시도해 주세요. (중복 차감 방지)', duplicate: true });
+    }
+    recentSubmits.set(dedupKey, Date.now());
+  }
+  // 처리 실패·중단처럼 과금이 일어나지 않은 경우엔 디바운스 흔적을 지워 즉시 재시도를 허용한다(차단 자체가 의도인 422는 유지).
+  const clearDedup = () => { if (dedupKey) recentSubmits.delete(dedupKey); };
 
   // 2) LLM 호출 + 결과 검증 (실패 시 차감 없음)
   let result;
@@ -3132,6 +3242,22 @@ router.post('/analyze', async (req, res) => {
           if (ac.signal.aborted) throw e;
           logger.warn('analyze.preprocess_failed_fallback_original', { err: e });
         }
+      }
+
+      // ★ 학술 동결 블록 분리(2026-06-19 실측 #18: 6696자 보고서의 [참고자료]·학번·출처가 통째로 누락 — 레거시
+      //   동기 경로는 전문을 LLM에 보내 참고문헌을 산문으로 흡수·삭제했다). 참고문헌·목차는 윤문 대상이 아니라
+      //   데이터라 떼어 verbatim 보존하고 본문만 변환 후 재조립한다(transform 청크 경로와 동일 정책). assignment 전용.
+      //   FREEZE_BLOCKS=0으로 해제. 본문 <200자면 splitAcademicBlocks가 동결 취소(통째 처리).
+      let frozen = null;
+      if (selectedMode === 'assignment' && process.env.FREEZE_BLOCKS !== '0') {
+        try {
+          const fb = require('../engine/freezeblocks').splitAcademicBlocks(humanizeText);
+          if (fb.hasFrozen) {
+            frozen = fb;
+            humanizeText = fb.body;   // 본문만 LLM으로 — 참고문헌·목차는 보존
+            logger.info('analyze.academic_freeze', { uid: pre.uid, requestId, hasToc: !!fb.toc, refsLen: fb.refs.length });
+          }
+        } catch (e) { logger.warn('analyze.academic_freeze_failed', { err: e && e.message }); }
       }
 
       // ★ 웹 검색: 기본 OFF (사용자 실측 진단 결과).
@@ -3229,6 +3355,55 @@ router.post('/analyze', async (req, res) => {
         }
       }
 
+      // ★ 무변환 가드(2026-06-19 실측 #16·#26·#122: 출력이 원문과 글자 단위 100% 동일 — 휴머나이징 미적용인데 과금):
+      //   출력이 (공백 무시) 입력과 동일하면 재작성이 일어나지 않은 것 → 강제 1회 재생성(표현을 바꾸라 명시),
+      //   그래도 동일하면 차감 없이 차단해 "무변환 결제"를 막는다. NOOP_GUARD=0으로 해제.
+      const noopNorm = s => (s || '').replace(/\s+/g, '').trim();
+      // 보존(다듬기) 모드는 공백 교정도 가치 → '완전 동일'만 무변환으로 본다(공백만 고친 정상 다듬기 오차단 방지).
+      const isPreserveMode = selectedMode === 'polish' || selectedMode === 'preserve';
+      const noopHit = (out) => isPreserveMode
+        ? ((out || '').trim() === (humanizeText || '').trim())
+        : (noopNorm(out) === noopNorm(humanizeText));
+      if (process.env.NOOP_GUARD !== '0' && result.outputText
+        && noopNorm(humanizeText).length > 0
+        && noopHit(result.outputText) && !ac.signal.aborted) {
+        logger.warn('analyze.noop_detected_retry', { uid: pre.uid, requestId, mode: selectedMode, len: noopNorm(humanizeText).length });
+        try {
+          const noopSys = humanizeSystem + (lang === 'en'
+            ? '\n\nCRITICAL: Do NOT return the input unchanged. Rephrase sentence structure and wording while preserving meaning, facts, and length.'
+            : '\n\n★중요: 입력을 절대 그대로 반환하지 마라. 의미·사실·분량은 보존하되 문장 구조와 표현을 반드시 바꿔 다시 작성하라.');
+          const retryData = await callClaude({
+            userText: userContent,
+            systemText: noopSys,
+            tool: humanizeTool,
+            temperature: 0.85,
+            maxOutputTokens: 16384,
+            signal: ac.signal,
+            task: 'analyze',
+            phase: 'humanize:noop_retry',
+            mode: selectedMode,
+            cacheZeroWarn: true
+          });
+          const retried = extractClaudeResult(retryData, humanizeTool.name);
+          await applyPassC(retried, lang, ac.signal, { rawText: humanizeText, mode: selectedMode });
+          if (retried.outputText && !noopHit(retried.outputText)) {
+            result = retried;
+            verifyCheckFields(result, selectedMode, inputParaCount, inputCharLen, humanizeText);
+          }
+        } catch (e) {
+          if (ac.signal.aborted) throw e;
+          logger.warn('analyze.noop_retry_failed', { uid: pre.uid, requestId, err: e });
+        }
+        // 재생성 후에도 동일하면 무차감 차단(결과 미노출).
+        if (noopHit(result.outputText) && !ac.signal.aborted) {
+          clearDedup();   // 엔진 글리치(무차감) — 즉시 재시도 허용
+          logger.warn('analyze.noop_blocked', { uid: pre.uid, requestId, mode: selectedMode });
+          return res.status(422).json({
+            error: '변환 결과가 원문과 동일해(휴머나이징이 적용되지 않음) 결과를 내보내지 않았어요. 크레딧은 차감되지 않았어요. 잠시 후 다시 시도해 주세요.'
+          });
+        }
+      }
+
       // ★ 증축 하드가드(P2-1): "다듬기"인데 원문보다 과도하게 길어지면(내용 임의 추가·증축) 결과를 내보내지 않는다.
       //   프롬프트가 원문 ×0.9~1.1을 강제하므로 1.3배 초과는 명백한 오작동 — 차감 없이 차단(민원 #100 "1000자를 몇 배로 불림").
       if (typeof result.lengthRatio === 'number' && result.lengthRatio > 1.3 && !ac.signal.aborted) {
@@ -3239,13 +3414,20 @@ router.post('/analyze', async (req, res) => {
       }
 
       if (!result.outputText) throw new Error('humanize_incomplete');
+
+      // ★ 동결 블록(참고문헌·목차) 재조립 — 변환된 본문 앞뒤로 verbatim 복원(가드는 본문 기준으로 이미 통과).
+      if (frozen) {
+        result.outputText = require('../engine/freezeblocks').reassembleAcademic(frozen, result.outputText);
+      }
     }
   } catch (err) {
     // client disconnect 시 응답 자체가 의미 없음 — 차감 안 하고 그대로 종료
     if (ac.signal.aborted) {
+      clearDedup();
       logger.warn('analyze.aborted_before_deduct', { uid: pre?.uid, requestId });
       return;
     }
+    clearDedup();   // 처리 실패(무차감) — 같은 내용 즉시 재시도 허용
     logger.error('analyze.llm_failed', { uid: pre?.uid, requestId, opType, err });
     return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.' });
   }
@@ -3253,6 +3435,7 @@ router.post('/analyze', async (req, res) => {
   // ★ 차감 직전 abort 체크 — 사용자가 끊었으면 차감하지 않고 종료.
   //   "결과 못 받고 크레딧만 차감" 민원의 마지막 안전망.
   if (ac.signal.aborted) {
+    clearDedup();
     logger.warn('analyze.aborted_before_deduct_commit', { uid: pre.uid, requestId });
     return;
   }
@@ -3288,7 +3471,7 @@ router.post('/analyze', async (req, res) => {
     } else if (billingMode === 'coupon') {
       await commitCouponUsage(pre.uid, pre.tier, opType, text.length, requestId);
     } else if (pre.plan !== 'unlimited') {
-      await commitCreditDeduct(pre.uid, needed, opType, requestId, { mode, textLength: text.length });
+      await commitCreditDeduct(pre.uid, needed, opType, requestId, { mode: historyMode, textLength: text.length });
     }
     deducted = !devNoAuth;
     logger.info('analyze.deducted', {
@@ -3301,6 +3484,7 @@ router.post('/analyze', async (req, res) => {
       devNoAuth
     });
   } catch (e) {
+    clearDedup();   // 차감 실패(무차감) — 재시도 허용
     logger.error('analyze.deduct_failed', { uid: pre.uid, requestId, opType, billingMode, needed, err: e });
     return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
   }
@@ -3317,7 +3501,7 @@ router.post('/analyze', async (req, res) => {
   let historySaved = false;
   if (db && !devNoAuth && !isChunkCall) {
     try {
-      await retryAsync(() => saveAnalyzeHistory({ uid: pre.uid, requestId, opType, text, needed, result, mode }));
+      await retryAsync(() => saveAnalyzeHistory({ uid: pre.uid, requestId, opType, text, needed, result, mode: historyMode }));
       historySaved = true;
     } catch (e) {
       logger.error('analyze.history_persist_failed', { uid: pre.uid, requestId, opType, billingMode, err: e });
@@ -3553,6 +3737,17 @@ router.runHumanizeChunked = runHumanizeChunked;
 router.callClaude = callClaude;
 router.buildDetectTool = buildDetectTool;
 router.extractClaudeResult = extractClaudeResult;
+// ★ detect 단독 호출(검증·테스트용 — 핸들러 detect 분기와 동일 시스템·툴·경로). 반환 { probability, summary, detail }.
+router.runDetect = async function runDetect(text, lang = 'ko') {
+  const detectSystem = getDetectSystem(lang);
+  const detectTool = getDetectTool(lang);
+  const data = await callClaude({
+    userText: `[분석할 글]\n${text}`,
+    systemText: detectSystem, tool: detectTool,
+    maxOutputTokens: 4096, task: 'analyze', phase: 'detect:validate', mode: 'detect'
+  });
+  return extractClaudeResult(data, detectTool.name);
+};
 // ★ 과금·인증 헬퍼 재사용(routes/transform.js 등 — 차감 공식·복구 로직을 한 곳에 유지)
 router.precheckCredits = precheckCredits;
 router.commitCreditDeduct = commitCreditDeduct;

@@ -272,6 +272,48 @@ function stripSubmitterMeta(text) {
   return { text: t, changed };
 }
 
+// ★ 글자분리(PDF 추출 깨짐) 복원(2026-06-19 실측 #57·#58: "법 원 의 필 요 성" 처럼 모든 글자가 공백으로
+//   분해된 10510자 입력 — 단일글자 토큰 100%). 이런 입력은 ①과금이 부풀고(공백까지 글자수로 계산)
+//   ②URL이 "https://www. scourt. go. kr"로 깨지고 ③다운스트림 품질이 망가진다. 돌리기 '전에' 결정론으로 재결합.
+//   판정: 공백 분리 토큰 중 단일문자 비율이 임계 이상이면 깨진 것 → 단일문자 토큰 사이 공백을 제거해 재결합.
+//   무LLM·무날조(공백만 조정). 정상 글(단일글자 비율 낮음)은 건드리지 않는다. 끄려면 호출부 env.
+function rejoinSplitChars(text, threshold = 0.45) {
+  const t = text || '';
+  // 토큰화는 공백류만 기준(개행 포함) — 분리율 측정.
+  const toks = t.split(/\s+/).filter(Boolean);
+  if (toks.length < 50) return { text: t, changed: false, ratio: 0 };
+  const single = toks.filter(x => x.length === 1).length;
+  const ratio = single / toks.length;
+  if (ratio < threshold) return { text: t, changed: false, ratio: Math.round(ratio * 100) / 100 };
+  // 재결합: 줄 단위로 처리해 문단(개행) 구조는 보존. 각 줄에서 "단일문자 + 공백" 연쇄를 붙인다.
+  //   규칙: 한 글자(한글/영문/숫자/문장부호) 뒤의 단일 공백이, 그 공백 다음도 곧 단일문자로 이어지는 흐름이면 제거.
+  //   안전화: 이미 두 글자 이상으로 뭉친 토큰 사이의 공백은 정상 띄어쓰기로 보고 유지.
+  const lines = t.split('\n');
+  const fixedLines = lines.map(line => {
+    const parts = line.split(/(\s+)/);   // 토큰과 공백을 함께 보존
+    let out = '';
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      if (/^\s+$/.test(p)) {
+        // 공백 처리: ★단일 공백이고 양옆이 모두 단일문자면 글자분리 아티팩트 → 제거("법 원"→"법원",
+        //   "w w w . s c o u r t"→"www.scourt"). 2칸 이상 간격은 PDF에서 흔히 '진짜 단어 경계'라 한 칸으로
+        //   보존(구조 일부 회복). 탭·기타 공백류는 한 칸으로.
+        const prev = parts[i - 1] || '';
+        const next = parts[i + 1] || '';
+        const prevSingle = prev.length === 1;
+        const nextSingle = next.length === 1;
+        if (p === ' ' && prevSingle && nextSingle) continue;
+        out += ' ';
+      } else {
+        out += p;
+      }
+    }
+    return out;
+  });
+  let rejoined = fixedLines.join('\n').replace(/[^\S\n]{2,}/g, ' ');
+  return { text: rejoined, changed: rejoined !== t, ratio: Math.round(ratio * 100) / 100 };
+}
+
 function detectInputDuplication(text) {
   const t = text || '';
   const norm = (s) => (s || '').replace(/\s+/g, '');
@@ -304,4 +346,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };

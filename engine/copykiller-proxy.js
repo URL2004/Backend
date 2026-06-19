@@ -86,4 +86,34 @@ function predict(text) {
   return out;
 }
 
-module.exports = { predict, available };
+// ── ai%-정렬 모델(2026-06-19, 264 CK 라벨 학습): 라이브 태그 프록시와 별개 artifact.
+//   predict()(태그 가중합 composite_risk)와 달리 '실제 AI작성률≥50' 이진을 직접 학습 → 카피킬러와 더 정렬
+//   (group-CV AUC 0.737, 태그 composite r=0.30 대비 r=0.46). detect-report 코칭은 태그 모델을 그대로 쓰고,
+//   이건 생성 루프 rerank/shadow 신호 전용. 모델 파일 없으면 null(무동작).
+let AR = null;
+function airateModel() {
+  if (AR === null) {
+    const p = path.join(__dirname, 'copykiller_airate_model.json');
+    AR = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : false;
+  }
+  return AR;
+}
+function airateAvailable() { return !!airateModel(); }
+
+// 텍스트 → AI작성률≥50 확률(0~1). 높을수록 카피킬러가 AI로 볼 가능성↑.
+function predictAiRate(text) {
+  const m = airateModel();
+  if (!m) return null;
+  const cfg = m.config;
+  const lowered = cfg.lowercase ? String(text || '').toLowerCase() : String(text || '');
+  const charTf = tfidf(charCounts(lowered, cfg.char_ngram[0], cfg.char_ngram[1]), m.char);
+  const wordTf = tfidf(wordCounts(lowered, cfg.word_ngram[0], cfg.word_ngram[1]), m.word);
+  const cd = cfg.char_dim;
+  const h = m.heads.airate;
+  let z = h.intercept;
+  for (const [idx, v] of charTf) z += v * h.coef[idx];
+  for (const [idx, v] of wordTf) z += v * h.coef[cd + idx];
+  return sigmoid(z);
+}
+
+module.exports = { predict, available, predictAiRate, airateAvailable };

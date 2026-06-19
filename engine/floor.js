@@ -131,7 +131,10 @@ const BRANDS = ['카카오', '네이버', '쿠팡', '배달의민족', '배민',
   'Kakao', 'Naver', 'Coupang', 'Toss', 'Google', 'YouTube', 'Instagram', 'Facebook', 'Twitter', 'Apple', 'Amazon', 'Netflix', 'OpenAI', 'ChatGPT', 'Microsoft'];
 const normTok = (s) => s.replace(/\s+/g, '').toLowerCase();
 // 숫자 정규화 포함 비교 키: "5천"↔"5000", "1만 자"↔"10,000자"↔"10000자".
+// ★ FACT_AST=1: factast.factKey로 위임(부호 보존 + "1만5천"=15000 누적 교정). 단순케이스는 차등 테스트로
+//   기존과 동일 출력 증명(_test-factast.js) → flag-off 기본은 아래 기존 경로 그대로(무회귀).
 function factKey(s) {
+  if (process.env.FACT_AST === '1') return require('./factast').factKey(s);
   let k = String(s).replace(/\s+/g, '');
   k = k.replace(/(\d[\d,]*)억/g, (_, n) => String(Number(n.replace(/,/g, '')) * 100000000))
        .replace(/(\d[\d,]*)만/g, (_, n) => String(Number(n.replace(/,/g, '')) * 10000))

@@ -33,7 +33,10 @@ function buildFactMap(rawText) {
   const valToTok = {};  // 값 → 토큰
   let n = 0;
   // ★ 토큰은 글자 기반(⟦Faa⟧·⟦Fab⟧) — 숫자를 넣으면 _numToks·수치 정규식이 토큰 내부 숫자를 사실로 오인한다.
-  const tokOf = (i) => '⟦F' + String.fromCharCode(97 + Math.floor(i / 26)) + String.fromCharCode(97 + (i % 26)) + '⟧';
+  // ★ FACT_AST=1: factast.tokOf로 위임(무제한 — i≥676 깨짐 '{' 제거). i<676은 ⟦Faa⟧~⟦Fzz⟧로 기존과 동일.
+  const tokOf = process.env.FACT_AST === '1'
+    ? (i) => require('./factast').tokOf(i)
+    : (i) => '⟦F' + String.fromCharCode(97 + Math.floor(i / 26)) + String.fromCharCode(97 + (i % 26)) + '⟧';
   for (const sp of chosen) {
     if (!(sp.t in valToTok)) { const tok = tokOf(n++); valToTok[sp.t] = tok; map[tok] = sp.t; }
   }
@@ -61,6 +64,10 @@ function restore(text, factMap) {
 }
 
 // 출력에 남아있는/빠진 토큰 분석(누락 검출용).
-function placeholdersIn(text) { return (String(text || '').match(/⟦F[a-z]{2}⟧/g) || []); }
+// ★ FACT_AST=1: factast.placeholdersIn(/⟦F[a-z]{2,}⟧/ — 3글자 확장 토큰도 검출). tokOf와 반드시 함께 전환.
+function placeholdersIn(text) {
+  if (process.env.FACT_AST === '1') return require('./factast').placeholdersIn(text);
+  return (String(text || '').match(/⟦F[a-z]{2}⟧/g) || []);
+}
 
 module.exports = { buildFactMap, mask, restore, placeholdersIn };

@@ -7,7 +7,7 @@ const floor = require('../engine/floor');
 const factsafe = require('../engine/factsafe');
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log('  ✅', name); } catch (e) { fail++; console.log('  ❌', name, '\n      ', e.message); } }
-function withFlag(v, fn) { const old = process.env.FACT_AST; if (v) process.env.FACT_AST = '1'; else delete process.env.FACT_AST; try { return fn(); } finally { if (old === undefined) delete process.env.FACT_AST; else process.env.FACT_AST = old; } }
+function withFlag(v, fn) { const old = process.env.FACT_AST; if (v) process.env.FACT_AST = '1'; else process.env.FACT_AST = '0'; try { return fn(); } finally { if (old === undefined) delete process.env.FACT_AST; else process.env.FACT_AST = old; } }
 
 console.log('— ① flag-off 무회귀: 일반 문서 novelty/lostFacts 불변 —');
 const rawA = '2023년 매출은 100억 원으로, 전년 대비 40% 증가했다. 카카오와 네이버가 시장을 주도했다.';

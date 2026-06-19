@@ -7,7 +7,7 @@
 const floor = require('../engine/floor');
 const assert = require('assert');
 const factKey = floor.factKey;
-function withFlag(v, fn) { const old = process.env.FACT_AST; if (v) process.env.FACT_AST = '1'; else delete process.env.FACT_AST; try { return fn(); } finally { if (old === undefined) delete process.env.FACT_AST; else process.env.FACT_AST = old; } }
+function withFlag(v, fn) { const old = process.env.FACT_AST; if (v) process.env.FACT_AST = '1'; else process.env.FACT_AST = '0'; try { return fn(); } finally { if (old === undefined) delete process.env.FACT_AST; else process.env.FACT_AST = old; } }
 const xf = (t) => floor.extractFacts(t, /[가-힣]/.test(t));
 const keys = (t) => xf(t).map(factKey);
 

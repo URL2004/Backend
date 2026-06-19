@@ -131,10 +131,10 @@ const BRANDS = ['카카오', '네이버', '쿠팡', '배달의민족', '배민',
   'Kakao', 'Naver', 'Coupang', 'Toss', 'Google', 'YouTube', 'Instagram', 'Facebook', 'Twitter', 'Apple', 'Amazon', 'Netflix', 'OpenAI', 'ChatGPT', 'Microsoft'];
 const normTok = (s) => s.replace(/\s+/g, '').toLowerCase();
 // 숫자 정규화 포함 비교 키: "5천"↔"5000", "1만 자"↔"10,000자"↔"10000자".
-// ★ FACT_AST=1: factast.factKey로 위임(부호 보존 + "1만5천"=15000 누적 교정). 단순케이스는 차등 테스트로
-//   기존과 동일 출력 증명(_test-factast.js) → flag-off 기본은 아래 기존 경로 그대로(무회귀).
+// ★ factast.factKey로 위임(부호 보존 + "1만5천"=15000 누적 교정). 단순케이스는 차등 테스트로 기존과 동일
+//   출력 증명(_test-factast.js). 기본 on(2026-06-19 활성화, 88쌍 게이트변화0·50문서 FP0 검증). FACT_AST=0이면 기존 경로.
 function factKey(s) {
-  if (process.env.FACT_AST === '1') return require('./factast').factKey(s);
+  if (process.env.FACT_AST !== '0') return require('./factast').factKey(s);
   let k = String(s).replace(/\s+/g, '');
   k = k.replace(/(\d[\d,]*)억/g, (_, n) => String(Number(n.replace(/,/g, '')) * 100000000))
        .replace(/(\d[\d,]*)만/g, (_, n) => String(Number(n.replace(/,/g, '')) * 10000))
@@ -162,7 +162,7 @@ function extractEnEntities(text) {
   return ents;
 }
 
-// ── B2b(FACT_AST=1): 한국식 복합수량 통째 캡처 + 부호 포착(기본 off=아래 기존 경로 불변) ──────
+// ── B2b: 한국식 복합수량 통째 캡처 + 부호 포착(기본 on. FACT_AST=0이면 아래 기존 경로) ──────
 //   복합: "1만5천명"·"2억3천만 원"을 한 토큰으로(기존은 "1만"+"5천명"으로 쪼개 동치 비교 불가). (?<!제\d*) 가드 유지.
 //   ★단위는 천/만/억/조만(원본 KR_AMOUNT_RE와 동일) — 백/십은 "VGG16 백본"·"백신"·"십자" 등 단어 일부 FP라 제외.
 const KR_AMOUNT_COMPOUND_RE = /(?<!제\d*)\d[\d,]*\s*[조억만천](?:\s*\d[\d,]*)?(?:\s*[조억만천](?:\s*\d[\d,]*)?)*\s*(?:원|명|개|건|배|자|장|권|회|곳|군데|화)?/g;
@@ -186,7 +186,7 @@ const _normPct = (s) => s.replace(/\s+/g, '').replace(/퍼센트|％/g, '%');
 function extractFacts(text, hasHangul) {
   const t = text || '';
   const facts = [];
-  const factAst = process.env.FACT_AST === '1';
+  const factAst = process.env.FACT_AST !== '0';   // 기본 on(2026-06-19). FACT_AST=0으로만 끔(롤백용).
   for (const y of extractYears(t)) facts.push(y);
   for (const p of (factAst ? _signedMatches(t, _PCT_RE, _normPct) : extractPercents(t))) facts.push(p);
   for (const o of (t.match(ORG_RE) || [])) facts.push(o);

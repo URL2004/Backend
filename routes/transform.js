@@ -1095,8 +1095,22 @@ async function runHumanizeJob(job, text) {
     job.stage = '문장 다듬는 중';
     persistJob(job);
     const isPolish = job.mode === 'polish';
+    // ★ 격식 하락 방지(2026-06-19 88건 감사: 하다체/합쇼체 보고서·탐구·과학·논술문이 기본 피하기→blog 해요체로
+    //   변질 38건 "~거든요/~죠"). blog인데 원문이 격식체(handa/hap) 우세면 engine을 assignment로 돌린다 —
+    //   register 보존 우회(blog와 동일하게 judge·grounding=우회 ON, tonePolish=false). 진짜 해요체(캐주얼) 원문만
+    //   blog 유지. isFormalDocument가 못 잡는 탐구·과학·하다체 과제문을 register 신호로 보완. (사용자 의도=우회는 유지,
+    //   제출 품질만 살림.) 끄려면 FORMAL_BLOG_GUARD=0.
+    let engineMode = isPolish ? 'assignment' : 'blog';
+    if (!isPolish && process.env.FORMAL_BLOG_GUARD !== '0') {
+      const reg = require('../engine/surfaceguard').measureRegisterMix(text).dominant;
+      if (reg === 'handa' || reg === 'hap') {
+        engineMode = 'assignment';
+        job.note = (job.note ? job.note + ' ' : '') + '원문이 격식체(보고서·과제체)라, 해요체로 바꾸지 않고 격식을 살려 우회했어요.';
+        logger.info('transform.formal_blog_guard', { jobId: job.id, uid: job.uid, reg });
+      }
+    }
     const out = await analyze.runHumanizeChunked({
-      text, mode: isPolish ? 'assignment' : 'blog', lang: job.lang || 'ko', signal: job.ac.signal,
+      text, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
       // 과제 어투 다듬기(polish)는 회피가 목적이 아니므로 의미 게이트(semanticJudge) 분리 → 차단 급감.
       //   사실 게이트(novelty·lostFacts)는 buildFloorReport가 계속 잡아 날조·사실누락은 그대로 차단.
       //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).

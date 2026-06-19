@@ -60,4 +60,22 @@ function fixSpacing(text) {
   return { text: out, fixes, warnings };
 }
 
-module.exports = { fixSpacing, AMBIGUOUS };
+// ── 코드성 토큰 점뒤 공백 깨짐 복원(2026-06-19 88건 감사: LLM이 "CONTACT.MB_MB" → "CONTACT. MB_MB",
+//   "FUNCTION.XY" → "FUNCTION. XY"로 점을 문장 끝으로 오인해 공백 삽입 = 기술 표기 손상). 원문에 '공백 없는'
+//   코드성 토큰(영문·숫자·언더스코어 . 영문…, 대문자/언더스코어/숫자 포함)이 있고 출력에 그 토큰의 '점뒤 공백'
+//   형태가 있으면 원형으로 되돌린다. ★원문 대조라 안전(원문에 있던 토큰만, 무날조·무LLM).
+function restoreCodeTokens(out, rawText) {
+  if (!out || !rawText) return { text: out || '', fixed: 0 };
+  const tokenRe = /[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+/g;
+  const toks = [...new Set((rawText.match(tokenRe) || []))]
+    .filter(t => /[A-Z_0-9]/.test(t.replace(/^[A-Za-z]+/, '')) || /[A-Z_]/.test(t))   // 코드성(대문자·언더스코어·숫자)만
+    .filter(t => t.length >= 4 && /\.[A-Za-z0-9_]/.test(t));
+  let text = out, fixed = 0;
+  for (const tok of toks) {
+    const spaced = tok.replace(/\./g, '. ');   // CONTACT.MB_MB → "CONTACT. MB_MB"
+    if (spaced !== tok && text.includes(spaced)) { const before = text; text = text.split(spaced).join(tok); if (text !== before) fixed++; }
+  }
+  return { text, fixed };
+}
+
+module.exports = { fixSpacing, restoreCodeTokens, AMBIGUOUS };

@@ -1516,6 +1516,11 @@ async function applyPassC(result, lang, signal, ctx = {}) {
     }
     if (process.env.EMDASH_CAP !== '0') t = tonedownEmDash(t);   // em-dash 남발 톤다운(#6)
   }
+  // ★ 코드성 토큰 점뒤 공백 깨짐 복원(2026-06-19 감사: CONTACT.MB_MB → "CONTACT. MB_MB"). 원문 대조·무날조·전 모드.
+  if (ctx.rawText) {
+    const ct = require('../engine/spacing').restoreCodeTokens(t, ctx.rawText);
+    if (ct.fixed) { logger.info('humanize.code_token_restored', { mode: ctx.mode, fixed: ct.fixed }); t = ct.text; }
+  }
   result.outputText = t;
   // 품질 지표(차단 아님 — 표시·로깅용): no-op(보존형 수준)·register 이탈.
   if (ctx.rawText) {

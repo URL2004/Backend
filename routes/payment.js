@@ -23,7 +23,7 @@ router.post('/confirm-payment', async (req, res) => {
   const { paymentKey, orderId, amount, customerEmail, uid, idToken } = req.body;
 
   // 서버에서 금액 기준으로 크레딧 직접 계산
-  const CREDIT_MAP = { 2900: 100, 8700: 330, 14500: 600, 29000: 1300, 58000: 2700 };
+  const CREDIT_MAP = { 2900: 110, 8700: 330, 14500: 600, 29000: 1300, 58000: 2700 };
   const safeCredits = CREDIT_MAP[parseInt(amount)];
   if (!safeCredits) {
     return res.status(400).json({ error: "유효하지 않은 결제 금액입니다." });

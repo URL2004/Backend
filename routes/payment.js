@@ -453,7 +453,7 @@ function buildCreditAudit({ user, orders, creditHistory, savedHistory }) {
     handledOrphanDebitCredits: handledOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
     skippedChunkDebitCount: skippedChunkDebits.length,
     skippedChunkDebitCredits: skippedChunkDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
-    orphanDebits: orphanDebits.slice(-20).reverse()
+    orphanDebits: [...orphanDebits].reverse()
   };
 }
 
@@ -520,8 +520,8 @@ async function loadAdminUserBundle(uid) {
   const [creditSnap, subSnap, histSnap, savedHistSnap] = await Promise.all([
     db.collection('orders').where('uid', '==', uid).orderBy('createdAt', 'desc').limit(30).get(),
     db.collection('subscriptionOrders').where('uid', '==', uid).limit(30).get(),
-    userRef.collection('creditHistory').orderBy('createdAt', 'desc').limit(200).get(),
-    userRef.collection('history').orderBy('createdAt', 'desc').limit(200).get()
+    userRef.collection('creditHistory').orderBy('createdAt', 'desc').get(),
+    userRef.collection('history').orderBy('createdAt', 'desc').get()
   ]);
 
   const orders = [

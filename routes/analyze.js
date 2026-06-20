@@ -1410,9 +1410,10 @@ const GPT_ISM_POOL = [
   { from: /깨달았습니다/g, toPool: ['알게 됐습니다', '비로소 알았습니다', '그제서야 보였습니다'] }
 ];
 
-function pickRandom(pool) {
-  return pool[Math.floor(Math.random() * pool.length)];
-}
+// ★ 결정적 선택(M-12): 같은 입력은 같은 치환 결과 — 매칭 텍스트+위치를 해시해 풀 인덱스를 정한다.
+//   Math.random 제거로 결정론 후처리의 재현성·회귀 가능성 확보(같은 글·버전이면 byte-identical).
+function hashStr(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return h; }
+function pickDeterministic(pool, seed) { return pool[hashStr(String(seed)) % pool.length]; }
 
 function enforceMechanicalRules(text) {
   if (!text) return text;
@@ -1427,9 +1428,9 @@ function enforceMechanicalRules(text) {
   for (const { from, to } of MECHANICAL_LEXICON_DETERMINISTIC) {
     out = out.replace(from, to);
   }
-  // 3) GPT-ism 풀 무작위 swap (매 매칭마다 다른 어휘로)
+  // 3) GPT-ism 풀 swap — 매칭 위치별로 다른 어휘이되 결정적(같은 글이면 항상 같은 선택)
   for (const { from, toPool } of GPT_ISM_POOL) {
-    out = out.replace(from, () => pickRandom(toPool));
+    out = out.replace(from, (m, offset) => pickDeterministic(toPool, m + ':' + offset));
   }
 
   // 정리: 중복 공백, 마침표 앞 공백

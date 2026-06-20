@@ -15,7 +15,8 @@ const diagnose = require('./diagnose');         // 밴드 테이블 재사용
 const transform = require('./transform');       // restructureCredit 재사용(단가 단일 출처)
 const sg = require('../engine/surfaceguard');
 const { getDetectSystem } = require('../prompts');
-const { verifyToken } = require('../config');
+const crypto = require('crypto');
+const { verifyToken, verifyAppCheck } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 
@@ -28,6 +29,20 @@ setInterval(() => {
 
 function kstDay() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+}
+
+// ── 코치 후보 어뷰즈 방어(H-05): 무인증 LLM 호출이라 (1) App Check(선택·env게이트), (2) IP별 시간당 캡,
+//   (3) 텍스트 해시 캐시로 봇 반복호출·중복 비용을 막는다. 완전한 분산 캡(Firestore)은 결제·운영 단계.
+const COACH_IP_HOURLY_CAP = Number(process.env.COACH_IP_HOURLY_CAP) || 20;
+const coachIp = new Map();      // ip → { hour, count }
+const coachCache = new Map();   // textHash → { stances, experiences } (FIFO, 최대 500)
+setInterval(() => {
+  const h = Math.floor(Date.now() / 3600000);
+  for (const [k, v] of coachIp) if (v.hour !== h) coachIp.delete(k);
+}, 60 * 60 * 1000).unref();
+function coachHour() { return Math.floor(Date.now() / 3600000); }
+function clientIp(req) {
+  return (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
 }
 
 // 문단 종류 → 사용자 언어 사유(보고서의 "알아듣기 쉬운 정리" 핵심)
@@ -255,10 +270,36 @@ router.post('/coach-suggest', async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   if (text.replace(/\s/g, '').length < 80) return res.json({ ok: true, stances: [], experiences: [] });
   if (text.length > 30000) return res.status(400).json({ ok: false, error: '텍스트가 너무 깁니다.' });
+
+  // (1) App Check — 콘솔·프런트 준비 후 APPCHECK_ENFORCE=1로 켜면 정상 앱 외 호출 차단.
+  if (process.env.APPCHECK_ENFORCE === '1') {
+    const ok = await verifyAppCheck(req.headers['x-firebase-appcheck']);
+    if (!ok) return res.status(401).json({ ok: false, error: '비정상 접근입니다.' });
+  }
+
+  // (2) IP별 시간당 캡 — 봇 반복호출로 인한 LLM 비용·동시성 소진 차단.
+  const ip = clientIp(req);
+  const hour = coachHour();
+  const rec = coachIp.get(ip);
+  const count = rec && rec.hour === hour ? rec.count : 0;
+  if (ip && count >= COACH_IP_HOURLY_CAP) {
+    logger.warn('coach_suggest.ip_capped', { ip, count });
+    return res.status(429).json({ ok: true, stances: [], experiences: [], capped: true });
+  }
+
+  // (3) 텍스트 해시 캐시 — 동일 입력 재호출은 LLM 없이 즉시 응답(중복 클릭·재시도 비용 제거).
+  const hash = crypto.createHash('sha256').update(text).digest('hex');
+  const cached = coachCache.get(hash);
+  if (cached) return res.json({ ok: true, stances: cached.stances, experiences: cached.experiences });
+
   try {
     const { generateCoach } = require('../lib/coachsuggest');
     const out = await generateCoach(text);
-    res.json({ ok: true, stances: out.stances || [], experiences: out.experiences || [] });
+    const result = { stances: out.stances || [], experiences: out.experiences || [] };
+    coachCache.set(hash, result);
+    if (coachCache.size > 500) coachCache.delete(coachCache.keys().next().value);
+    if (ip) coachIp.set(ip, { hour, count: count + 1 });
+    res.json({ ok: true, ...result });
   } catch (e) {
     logger.warn('coach_suggest.failed', { err: e && e.message });
     res.json({ ok: true, stances: [], experiences: [] });

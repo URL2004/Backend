@@ -35,9 +35,16 @@ const allowedOriginSuffixes = (process.env.CORS_ORIGIN_SUFFIXES || '').split(','
 // CORS는 브라우저 보호 장치일 뿐 인증이 아니므로(인증은 idToken) localhost 허용은 보안상 무해.
 const LOCAL_DEV_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
+// ★ H-10: 경계 없는 endsWith는 example.com 허용 시 evil-example.com도 통과시킨다.
+//    origin을 파싱해 호스트네임만 비교하고, 정확히 일치하거나 '.suffix'로 끝나는 경우만 허용한다.
+function originHostname(o) { try { return new URL(o).hostname; } catch { return ''; } }
+function normalizeSuffix(s) { return (s.includes('://') ? originHostname(s) : s).replace(/^\.+/, ''); }
+const normalizedSuffixes = allowedOriginSuffixes.map(normalizeSuffix).filter(Boolean);
+
 const corsMiddleware = cors({
   origin: (origin, callback) => {
-    const allowedBySuffix = origin && allowedOriginSuffixes.some(suffix => origin.endsWith(suffix));
+    const host = origin ? originHostname(origin) : '';
+    const allowedBySuffix = !!host && normalizedSuffixes.some(suffix => host === suffix || host.endsWith('.' + suffix));
     if (!origin || allowedOrigins.includes(origin) || allowedBySuffix || LOCAL_DEV_ORIGIN.test(origin)) {
       callback(null, true);
     } else {
@@ -79,4 +86,12 @@ async function verifyToken(idToken) {
   }
 }
 
-module.exports = { admin, db, corsMiddleware, limiter, dailyLimiter, ADMIN_UIDS, verifyToken };
+// ★ H-05: App Check 토큰 검증 헬퍼. 정상 앱(reCAPTCHA App Check)에서 온 요청만 통과시킨다.
+//   무인증 비용 민감 라우트(코치 등)에서 봇 호출을 차단하는 용도. admin 미설정 시 false.
+async function verifyAppCheck(token) {
+  if (!token || !admin) return false;
+  try { await admin.appCheck().verifyToken(token); return true; }
+  catch (e) { return false; }
+}
+
+module.exports = { admin, db, corsMiddleware, limiter, dailyLimiter, ADMIN_UIDS, verifyToken, verifyAppCheck };

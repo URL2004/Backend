@@ -30,10 +30,14 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['email', 'name', 'credits', 'plan', 'refCode', 'createdAt'])
         && request.resource.data.credits == 10
         && request.resource.data.plan == 'free'
-        && request.resource.data.refCode is string;
+        // ★ C-08: refCode는 uid 앞 8자로 결정. 사용자가 임의 코드를 고르거나 충돌시킬 수 없다.
+        && request.resource.data.refCode == request.auth.uid[0:8];
 
       allow update: if isSelf(uid)
-        && onlyChanged(['name', 'refCode', 'kakaoId', 'bookmarks']);
+        && onlyChanged(['name', 'refCode', 'kakaoId', 'bookmarks'])
+        // ★ C-08: refCode를 바꿀 땐 반드시 uid 앞 8자로만(백필 허용·임의변경 차단). 안 바꾸면 통과.
+        && (!request.resource.data.diff(resource.data).changedKeys().hasAny(['refCode'])
+            || request.resource.data.refCode == request.auth.uid[0:8]);
 
       allow delete: if false;
 
@@ -44,9 +48,23 @@ service cloud.firestore {
 
       match /notifications/{notificationId} {
         allow read, update, delete: if isSelf(uid);
+        // ★ H-01: 임의 교차 사용자 알림(피싱·스팸·괴롭힘) 차단.
+        //   본인에게 보내거나(시스템 알림), 관리자 발송(Q&A 답변)이거나,
+        //   '댓글' 알림은 실제 그 글의 작성자(uid)에게만 + 메시지 길이 제한.
         allow create: if signedIn()
-          && request.resource.data.keys().hasOnly(['type', 'postId', 'message', 'createdAt', 'read'])
-          && request.resource.data.read == false;
+          && request.resource.data.read == false
+          && (
+            isSelf(uid)
+            || isAdmin()
+            || (
+              request.resource.data.type == 'comment'
+              && request.resource.data.postId is string
+              && request.resource.data.get('message', '') is string
+              && request.resource.data.get('message', '').size() < 300
+              && exists(/databases/$(database)/documents/posts/$(request.resource.data.postId))
+              && get(/databases/$(database)/documents/posts/$(request.resource.data.postId)).data.authorId == uid
+            )
+          );
       }
 
       match /creditHistory/{historyId} {
@@ -68,6 +86,11 @@ service cloud.firestore {
     match /subscriptionOrders/{orderId} {
       allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
       allow write: if false;
+    }
+
+    // ★ C-03: 결제 비밀(billingKey)은 서버 전용. 본인조차 클라이언트에서 직접 읽을 수 없다.
+    match /billingSecrets/{uid} {
+      allow read, write: if false;
     }
 
     match /couponCodes/{code} {
@@ -107,7 +130,19 @@ service cloud.firestore {
       allow update: if isAdmin()
         || (signedIn() && resource.data.authorId == request.auth.uid
           && !request.resource.data.diff(resource.data).changedKeys().hasAny(['hidden', 'isFeatured']))
-        || (signedIn() && onlyChanged(['views', 'likes', 'commentCount']));
+        // ★ H-03: 인기도 카운터 조작 차단 — 조회수 +1, 댓글수 ±1, 좋아요는 본인 uid 1개만 토글.
+        || (signedIn() && onlyChanged(['views'])
+            && request.resource.data.views == resource.data.get('views', 0) + 1)
+        || (signedIn() && onlyChanged(['commentCount'])
+            && (request.resource.data.commentCount == resource.data.get('commentCount', 0) + 1
+                || request.resource.data.commentCount == resource.data.get('commentCount', 0) - 1))
+        || (signedIn() && onlyChanged(['likes']) && request.resource.data.likes is list
+            && (
+              (request.resource.data.likes.toSet().difference(resource.data.get('likes', []).toSet()).hasOnly([request.auth.uid])
+                && resource.data.get('likes', []).toSet().difference(request.resource.data.likes.toSet()).hasOnly([]))
+              || (resource.data.get('likes', []).toSet().difference(request.resource.data.likes.toSet()).hasOnly([request.auth.uid])
+                && request.resource.data.likes.toSet().difference(resource.data.get('likes', []).toSet()).hasOnly([]))
+            ));
 
       allow delete: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
 
@@ -115,7 +150,7 @@ service cloud.firestore {
         allow read: if true;
         allow create: if signedIn()
           && request.resource.data.authorId == request.auth.uid
-          && request.resource.data.keys().hasOnly(['body', 'authorId', 'authorName', 'isAnon', 'createdAt', 'parentId', 'parentAuthor']);
+          && request.resource.data.keys().hasOnly(['body', 'authorId', 'authorName', 'isAnon', 'createdAt', 'parentId', 'parentAuthor', 'parentCommentId', 'isReply']);
         allow delete: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
         allow update: if false;
       }

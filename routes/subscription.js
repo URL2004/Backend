@@ -154,7 +154,6 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
       paymentKey: paymentResult.paymentKey,
       orderId,
       status: 'paid',
-      billingKey,
       requestedAt: cycleStartedAt,
       approvedAt: cycleStartedAt,
       cycleStartedAt,
@@ -170,6 +169,15 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
       orderId,
       createdAt: cycleStartedAt
     });
+
+    // ★ C-03: 결제 비밀(billingKey)을 사용자가 읽는 users 문서가 아니라 서버 전용 컬렉션에 이중 기록.
+    //   billingSecrets/{uid}는 Rules에서 read/write를 전면 차단해 클라이언트가 직접 읽을 수 없다.
+    //   customerKey는 cust_${uid}로 결정적이라 저장 불필요. 읽기 경로 전환·기존문서 정리는 결제 무결성 단계.
+    t.set(db.collection('billingSecrets').doc(uid), {
+      billingKey,
+      cardCompany: cardCompany || null,
+      updatedAt: cycleStartedAt
+    }, { merge: true });
   });
 }
 
@@ -311,7 +319,6 @@ router.post('/subscription/charge', async (req, res) => {
       amount: plan.amount,
       orderId,
       status: 'failed',
-      billingKey: sub.billingKey,
       requestedAt: admin.firestore.FieldValue.serverTimestamp(),
       failReason: charged.data.message || 'unknown'
     });
@@ -472,7 +479,10 @@ router.get('/subscription/status', async (req, res) => {
   if (!snap.exists) return res.json({ ok: true, subscription: null, coupon: null });
 
   const d = snap.data();
-  res.json({ ok: true, subscription: d.subscription || null, coupon: d.coupon || null, plan: d.plan || 'free' });
+  // ★ C-03: 응답에서 결제 비밀(billingKey·customerKey)을 제거. 카드사·마스킹번호·상태·날짜만 노출한다.
+  const sub = d.subscription;
+  const safeSub = sub ? (({ billingKey, customerKey, ...rest }) => rest)(sub) : null;
+  res.json({ ok: true, subscription: safeSub, coupon: d.coupon || null, plan: d.plan || 'free' });
 });
 
 // === 7) 토스 웹훅 ===

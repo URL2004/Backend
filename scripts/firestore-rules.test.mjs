@@ -7,6 +7,7 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   addDoc,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -81,6 +82,19 @@ try {
       amount: 2900,
       status: 'approved'
     });
+    await setDoc(doc(db, 'posts', 'post-alice'), {
+      title: '앨리스 글',
+      body: '본문',
+      authorId: 'alice',
+      authorName: 'Alice',
+      isAnon: false,
+      category: '자유',
+      isFeatured: false,
+      commentCount: 0,
+      views: 0,
+      likes: [],
+      createdAt: serverTimestamp()
+    });
   });
 
   const aliceDb = testEnv.authenticatedContext('alice', user('alice')).firestore();
@@ -94,9 +108,24 @@ try {
       name: 'Bob',
       credits: 10,
       plan: 'free',
-      refCode: 'bob00001',
+      refCode: 'bob',
       createdAt: '2026-06-13T00:00:00.000Z'
     }));
+  });
+
+  await run('users: cannot self-create with attacker-chosen refCode (C-08)', async () => {
+    await assertFails(setDoc(doc(testEnv.authenticatedContext('carol', user('carol')).firestore(), 'users', 'carol'), {
+      email: 'carol@example.test',
+      name: 'Carol',
+      credits: 10,
+      plan: 'free',
+      refCode: 'PROMO999',
+      createdAt: '2026-06-13T00:00:00.000Z'
+    }));
+  });
+
+  await run('users: cannot change refCode to arbitrary value (C-08)', async () => {
+    await assertFails(updateDoc(doc(aliceDb, 'users', 'alice'), { refCode: 'hacked12' }));
   });
 
   await run('users: client cannot change own credits', async () => {
@@ -212,20 +241,83 @@ try {
     await assertFails(getDoc(doc(anonDb, 'users', 'alice')));
   });
 
-  await run('notifications/history: expected client paths still work', async () => {
+  await run('history: owner can write own history', async () => {
     await assertSucceeds(addDoc(collection(aliceDb, 'users', 'alice', 'history'), {
       text: '결과',
       createdAt: serverTimestamp()
     }));
+  });
+
+  await run('notifications: commenter can notify the actual post author (H-01 legit)', async () => {
     const notifRef = await addDoc(collection(bobDb, 'users', 'alice', 'notifications'), {
       type: 'comment',
-      postId: 'post-1',
-      message: '댓글이 달렸습니다.',
+      title: '새 댓글',
+      message: 'Bob님이 댓글을 달았어요',
+      action: { type: 'post', postId: 'post-alice' },
+      postId: 'post-alice',
+      read: false,
       createdAt: serverTimestamp(),
-      read: false
+      createdAtMs: 123
     });
     await assertSucceeds(updateDoc(doc(aliceDb, 'users', 'alice', 'notifications', notifRef.id), { read: true }));
     await assertSucceeds(deleteDoc(doc(aliceDb, 'users', 'alice', 'notifications', notifRef.id)));
+  });
+
+  await run('notifications: cannot notify a user who is not the post author (H-01)', async () => {
+    await assertFails(addDoc(collection(aliceDb, 'users', 'bob', 'notifications'), {
+      type: 'comment', message: '피싱 시도', postId: 'post-alice',
+      read: false, createdAt: serverTimestamp()
+    }));
+  });
+
+  await run('notifications: cannot notify referencing a non-existent post (H-01)', async () => {
+    await assertFails(addDoc(collection(bobDb, 'users', 'alice', 'notifications'), {
+      type: 'comment', message: '없는 글 참조', postId: 'no-such-post',
+      read: false, createdAt: serverTimestamp()
+    }));
+  });
+
+  await run('notifications: non-admin cannot send arbitrary cross-user notice (H-01)', async () => {
+    await assertFails(addDoc(collection(bobDb, 'users', 'alice', 'notifications'), {
+      type: 'system', message: '가짜 시스템 공지',
+      read: false, createdAt: serverTimestamp()
+    }));
+  });
+
+  await run('notifications: user can create own self-notification', async () => {
+    await assertSucceeds(addDoc(collection(aliceDb, 'users', 'alice', 'notifications'), {
+      type: 'notice', message: '내 알림', read: false, createdAt: serverTimestamp()
+    }));
+  });
+
+  await run('notifications: admin can send notification to a user', async () => {
+    await assertSucceeds(addDoc(collection(adminDb, 'users', 'alice', 'notifications'), {
+      type: 'qna', message: '문의 답변이 등록됐어요', read: false, createdAt: serverTimestamp()
+    }));
+  });
+
+  await run('posts: viewer can increment views by exactly 1 (H-03 legit)', async () => {
+    await assertSucceeds(updateDoc(doc(bobDb, 'posts', 'post-alice'), { views: increment(1) }));
+  });
+
+  await run('posts: cannot set views to an arbitrary value (H-03)', async () => {
+    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice'), { views: 99999 }));
+  });
+
+  await run('posts: cannot bump commentCount by more than 1 (H-03)', async () => {
+    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice'), { commentCount: increment(50) }));
+  });
+
+  await run('posts: user can toggle own like (H-03 legit)', async () => {
+    await assertSucceeds(updateDoc(doc(bobDb, 'posts', 'post-alice'), { likes: arrayUnion('bob') }));
+  });
+
+  await run('posts: cannot add another user to likes (H-03)', async () => {
+    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice'), { likes: arrayUnion('carol') }));
+  });
+
+  await run('posts: cannot overwrite likes with arbitrary array (H-03)', async () => {
+    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice'), { likes: ['bob', 'x1', 'x2', 'x3'] }));
   });
 } finally {
   await testEnv.cleanup();

@@ -123,19 +123,29 @@ async function commitCreditDeduct(uid, needed, opType, requestId, meta = {}) {
 
 // 복구: 차감은 commit 됐는데 응답 전 client disconnect 등으로 결과를 못 받았을 때 호출.
 // commitCreditDeduct를 뒤집어 크레딧을 되돌리고 복구 이력을 기록.
-async function commitCreditRestore(uid, amount, opType) {
+async function commitCreditRestore(uid, amount, opType, requestId) {
   const userRef = db.collection('users').doc(uid);
+  const deductRef = requestId ? userRef.collection('creditHistory').doc('req_' + requestId) : null;
+  const restoreRef = requestId
+    ? userRef.collection('creditHistory').doc('restore_req_' + requestId)
+    : userRef.collection('creditHistory').doc();
   await db.runTransaction(async (t) => {
     const snap = await t.get(userRef);
     if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+    // ★ 멱등(C-09): 모든 read는 write 전에. 이미 복구됐거나(restore 문서 존재) 원 차감이
+    //   없으면(차감 안 됨) 복구를 건너뛴다 — 응답만 유실된 재시도에서 중복 적립을 차단.
+    if (requestId) {
+      if ((await t.get(restoreRef)).exists) return;
+      if (!(await t.get(deductRef)).exists) return;
+    }
     const d = snap.data();
     if ((d.plan || 'free') === 'unlimited') return;
     const credits = d.credits || 0;
     const newCredits = credits + amount;
     t.update(userRef, { credits: newCredits });
-    const hist = userRef.collection('creditHistory').doc();
-    t.set(hist, {
+    t.set(restoreRef, {
       type: `${opType}_restore`, used: -amount, amount: 0, remaining: newCredits,
+      ...(requestId ? { requestId } : {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
   });
@@ -230,17 +240,26 @@ async function commitCouponUsage(uid, tier, opType, textLength, requestId) {
 }
 
 // 쿠폰 복구: 차감 commit 후 client disconnect 등으로 결과 못 받았을 때 호출.
-async function commitCouponRestore(uid, tier, opType, textLength) {
+async function commitCouponRestore(uid, tier, opType, textLength, requestId) {
   const userRef = db.collection('users').doc(uid);
+  const deductRef = requestId ? userRef.collection('couponHistory').doc('req_' + requestId) : null;
+  const restoreRef = requestId
+    ? userRef.collection('couponHistory').doc('restore_req_' + requestId)
+    : userRef.collection('couponHistory').doc();
   await db.runTransaction(async (t) => {
     const snap = await t.get(userRef);
     if (!snap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+    // ★ 멱등(C-09): 이미 복구됐거나 원 차감이 없으면 건너뛴다(재시도 시 중복 환원 차단).
+    if (requestId) {
+      if ((await t.get(restoreRef)).exists) return;
+      if (!(await t.get(deductRef)).exists) return;
+    }
     if (tier === 'unlimited') {
       t.update(userRef, { 'coupon.used': admin.firestore.FieldValue.increment(-1) });
-      const hist = userRef.collection('couponHistory').doc();
-      t.set(hist, {
+      t.set(restoreRef, {
         type: 'restore', tier, amount: 0, remaining: -1,
         mode: opType, textLength,
+        ...(requestId ? { requestId } : {}),
         createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
       return;
@@ -252,10 +271,10 @@ async function commitCouponRestore(uid, tier, opType, textLength) {
       'coupon.remaining': newRemaining,
       'coupon.used': admin.firestore.FieldValue.increment(-1)
     });
-    const hist = userRef.collection('couponHistory').doc();
-    t.set(hist, {
+    t.set(restoreRef, {
       type: 'restore', tier, amount: 1, remaining: newRemaining,
       mode: opType, textLength,
+      ...(requestId ? { requestId } : {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
   });
@@ -3454,9 +3473,9 @@ router.post('/analyze', async (req, res) => {
     try {
       await retryAsync(async () => {
         if (billingMode === 'coupon') {
-          await commitCouponRestore(pre.uid, pre.tier, opType, text.length);
+          await commitCouponRestore(pre.uid, pre.tier, opType, text.length, requestId);
         } else if (pre.plan !== 'unlimited') {
-          await commitCreditRestore(pre.uid, needed, opType);
+          await commitCreditRestore(pre.uid, needed, opType, requestId);
         }
       });
       logger.info('analyze.restore_completed', { uid: pre.uid, requestId, billingMode, reason });
@@ -3688,9 +3707,9 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     try {
       await retryAsync(async () => {
         if (billingMode === 'coupon') {
-          await commitCouponRestore(pre.uid, pre.tier, opType, pdfText.length);
+          await commitCouponRestore(pre.uid, pre.tier, opType, pdfText.length, requestId);
         } else if (pre.plan !== 'unlimited') {
-          await commitCreditRestore(pre.uid, needed, opType);
+          await commitCreditRestore(pre.uid, needed, opType, requestId);
         }
       });
       logger.info('analyze_pdf.restore_completed', { uid: pre.uid, requestId, billingMode, reason });

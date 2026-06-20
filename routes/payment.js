@@ -187,6 +187,15 @@ function serializeCreditHistoryDoc(docSnap, userByUid) {
     requestId: h.requestId || null,
     detail: h.detail || '',
     adminUid: h.adminUid || null,
+    orphanDebitResolved: h.orphanDebitResolved === true,
+    orphanDebitResolution: h.orphanDebitResolution || null,
+    restoredCredits: Number(h.restoredCredits) || 0,
+    restoredAtMs: timestampMs(h.restoredAt || h.resolvedAt),
+    restoredBy: h.restoredBy || h.resolvedBy || null,
+    restoreCreditHistoryId: h.restoreCreditHistoryId || h.resolveCreditHistoryId || null,
+    restoreReason: h.restoreReason || h.resolveReason || '',
+    originalCreditHistoryId: h.originalCreditHistoryId || null,
+    restoredDebitId: h.restoredDebitId || null,
     createdAtMs: timestampMs(h.createdAt),
     userName: u.name || '알 수 없음',
     userEmail: u.email || ''
@@ -269,6 +278,7 @@ function creditRequestId(row) {
 const RESULT_DEBIT_TYPES = new Set(['humanize', 'restructure']);
 const HISTORY_MATCH_WINDOW_MS = 60 * 60 * 1000;
 const DUPLICATE_HINT_WINDOW_MS = 30 * 60 * 1000;
+const MANUAL_RESTORE_HINT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 function isAuditableResultDebit(row) {
   const type = String(row?.type || '');
@@ -293,6 +303,22 @@ function buildCreditAudit({ user, orders, creditHistory, savedHistory }) {
   const ledgerDelta = sortedCreditHistory.reduce((sum, h) => sum + auditNumber(h.amount) - auditNumber(h.used), 0);
   const currentCredits = auditNumber(user?.credits);
   const debits = sortedCreditHistory.filter(isAuditableResultDebit);
+  const resolutionByDebitId = new Map();
+  const resolutionByRequestId = new Map();
+  sortedCreditHistory.forEach(h => {
+    const debitId = h.restoredDebitId || h.originalCreditHistoryId;
+    const isResolution = h.orphanDebitResolved || String(h.type || '').endsWith('_restore');
+    if (!isResolution) return;
+    if (debitId) resolutionByDebitId.set(String(debitId), h);
+    const requestId = creditRequestId(h);
+    if (requestId) resolutionByRequestId.set(requestId, h);
+  });
+  const manualRestoreHints = sortedCreditHistory.filter(h => {
+    if (h.type !== 'admin_adjust') return false;
+    if (auditNumber(h.amount) <= 0) return false;
+    const detail = String(h.detail || '');
+    return /결과|저장|차감|복구|환급|환불|중복/.test(detail);
+  });
   const savedMatches = sortedSavedHistory.filter(h => auditNumber(h.credits) > 0);
   const usedSavedIds = new Set();
   const matchedDebits = [];
@@ -347,6 +373,26 @@ function buildCreditAudit({ user, orders, creditHistory, savedHistory }) {
       const otherMs = auditNumber(other.createdAtMs);
       return debitMs > 0 && otherMs > 0 && Math.abs(otherMs - debitMs) <= DUPLICATE_HINT_WINDOW_MS;
     });
+    const resolution = resolutionByDebitId.get(debit.id) || (requestId ? resolutionByRequestId.get(requestId) : null) || null;
+    const handled = !!(
+      debit.orphanDebitResolved ||
+      debit.restoredAtMs ||
+      debit.restoreCreditHistoryId ||
+      resolution
+    );
+    const restoredCredits = Math.max(
+      auditNumber(debit.restoredCredits),
+      resolution ? Math.abs(auditNumber(resolution.used)) : 0,
+      resolution ? Math.max(0, auditNumber(resolution.amount)) : 0
+    );
+    const manualRestoreHint = handled ? null : manualRestoreHints
+      .filter(h => {
+        const adjustMs = auditNumber(h.createdAtMs);
+        if (!debitMs || !adjustMs || adjustMs < debitMs - 60 * 1000) return false;
+        if (adjustMs > debitMs + MANUAL_RESTORE_HINT_WINDOW_MS) return false;
+        return auditNumber(h.amount) === debitCredits;
+      })
+      .sort((a, b) => auditNumber(a.createdAtMs) - auditNumber(b.createdAtMs))[0] || null;
     orphanDebits.push({
       id: debit.id,
       type: debit.type,
@@ -356,12 +402,28 @@ function buildCreditAudit({ user, orders, creditHistory, savedHistory }) {
       requestId: requestId || null,
       createdAtMs: debitMs,
       isAfterFirstPaid: !!(firstPaidAtMs && debitMs >= firstPaidAtMs),
-      duplicateHint: !!duplicatePeer
+      duplicateHint: !!duplicatePeer,
+      handled,
+      status: handled ? 'resolved' : 'open',
+      resolution: debit.orphanDebitResolution || resolution?.orphanDebitResolution || (restoredCredits > 0 ? 'credit_restore' : null),
+      restoredCredits,
+      restoredAtMs: auditNumber(debit.restoredAtMs) || auditNumber(resolution?.createdAtMs),
+      restoredBy: debit.restoredBy || resolution?.adminUid || null,
+      restoreCreditHistoryId: debit.restoreCreditHistoryId || resolution?.id || null,
+      restoreReason: debit.restoreReason || resolution?.detail || '',
+      manualRestoreHint: manualRestoreHint ? {
+        id: manualRestoreHint.id,
+        amount: auditNumber(manualRestoreHint.amount),
+        createdAtMs: auditNumber(manualRestoreHint.createdAtMs),
+        detail: manualRestoreHint.detail || ''
+      } : null
     });
   });
 
-  const paidOrphanDebits = orphanDebits.filter(h => h.isAfterFirstPaid);
-  const prePaidOrphanDebits = orphanDebits.filter(h => !h.isAfterFirstPaid);
+  const openOrphanDebits = orphanDebits.filter(h => !h.handled);
+  const handledOrphanDebits = orphanDebits.filter(h => h.handled);
+  const paidOrphanDebits = openOrphanDebits.filter(h => h.isAfterFirstPaid);
+  const prePaidOrphanDebits = openOrphanDebits.filter(h => !h.isAfterFirstPaid);
   const skippedChunkDebits = sortedCreditHistory.filter(h => {
     const requestId = creditRequestId(h);
     return RESULT_DEBIT_TYPES.has(String(h.type || '')) && auditNumber(h.used) > 0 && requestId.includes(':');
@@ -379,12 +441,16 @@ function buildCreditAudit({ user, orders, creditHistory, savedHistory }) {
     savedHistoryCredits: savedMatches.reduce((sum, h) => sum + auditNumber(h.credits), 0),
     matchedDebitCount: matchedDebits.length,
     matchedDebitCredits: matchedDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
-    orphanDebitCount: orphanDebits.length,
-    orphanDebitCredits: orphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    totalOrphanDebitCount: orphanDebits.length,
+    totalOrphanDebitCredits: orphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    orphanDebitCount: openOrphanDebits.length,
+    orphanDebitCredits: openOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
     paidOrphanDebitCount: paidOrphanDebits.length,
     paidOrphanDebitCredits: paidOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
     prePaidOrphanDebitCount: prePaidOrphanDebits.length,
     prePaidOrphanDebitCredits: prePaidOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
+    handledOrphanDebitCount: handledOrphanDebits.length,
+    handledOrphanDebitCredits: handledOrphanDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
     skippedChunkDebitCount: skippedChunkDebits.length,
     skippedChunkDebitCredits: skippedChunkDebits.reduce((sum, h) => sum + auditNumber(h.used), 0),
     orphanDebits: orphanDebits.slice(-20).reverse()
@@ -1017,6 +1083,179 @@ router.post('/admin/adjust-credits', async (req, res) => {
     if (err.status) return res.status(err.status).json({ error: err.message });
     logger.error('admin.credits_adjust_failed', { adminUid, targetUid, delta, err });
     res.status(500).json({ error: '크레딧 조정에 실패했습니다.' });
+  }
+});
+
+function safeCreditHistoryId(raw) {
+  const id = String(raw || '').trim();
+  if (!id || id.includes('/') || id.length > 500) return '';
+  return id;
+}
+
+function orphanResolveDefaultReason(action, credits) {
+  const amount = auditNumber(credits).toLocaleString('ko-KR');
+  return action === 'mark'
+    ? `결과 저장 없는 유료 차감 ${amount}크레딧 수동 처리완료 표시`
+    : `결과 저장 없는 유료 차감 ${amount}크레딧 환급`;
+}
+
+// 관리자: 결과 저장 없이 차감된 유료 크레딧을 원장 항목에 연결해 환급/처리완료 표시
+router.post('/admin/resolve-orphan-debit', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+
+  const targetUid = String((req.body && req.body.uid) || '').trim();
+  const creditHistoryId = safeCreditHistoryId(req.body && req.body.creditHistoryId);
+  const action = (req.body && req.body.action) === 'mark' ? 'mark' : 'restore';
+  if (!targetUid) return res.status(400).json({ error: '대상 UID가 필요합니다.' });
+  if (!creditHistoryId) return res.status(400).json({ error: '처리할 차감 원장 ID가 필요합니다.' });
+
+  try {
+    const bundle = await loadAdminUserBundle(targetUid);
+    if (!bundle) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
+    const auditDebit = (bundle.creditAudit?.orphanDebits || []).find(d => d.id === creditHistoryId);
+    if (!auditDebit) {
+      return res.status(400).json({ error: '현재 결과 없는 차감 목록에 없는 항목입니다. 이미 결과와 매칭됐거나 목록을 새로고침해야 합니다.' });
+    }
+    if (!auditDebit.isAfterFirstPaid) {
+      return res.status(400).json({ error: '결제 전 차감은 유료 차감 환급 대상이 아닙니다.' });
+    }
+    if (auditDebit.handled) {
+      return res.json({
+        ok: true,
+        alreadyHandled: true,
+        action: auditDebit.resolution || 'resolved',
+        restoredCredits: auditNumber(auditDebit.restoredCredits),
+        message: '이미 처리완료로 표시된 차감입니다.'
+      });
+    }
+
+    const reason = String((req.body && req.body.reason) || '').trim() || orphanResolveDefaultReason(action, auditDebit.used);
+    const userRef = db.collection('users').doc(targetUid);
+    const debitRef = userRef.collection('creditHistory').doc(creditHistoryId);
+    const restoreRef = userRef.collection('creditHistory').doc('orphan_restore_' + creditHistoryId);
+
+    const result = await db.runTransaction(async (t) => {
+      const userSnap = await t.get(userRef);
+      const debitSnap = await t.get(debitRef);
+      const restoreSnap = action === 'restore' ? await t.get(restoreRef) : null;
+      if (!userSnap.exists) throw Object.assign(new Error('사용자를 찾을 수 없습니다.'), { status: 404 });
+      if (!debitSnap.exists) throw Object.assign(new Error('차감 원장을 찾을 수 없습니다.'), { status: 404 });
+
+      const debit = debitSnap.data() || {};
+      const row = {
+        id: debitSnap.id,
+        type: debit.type,
+        requestId: debit.requestId,
+        used: debit.used
+      };
+      if (!isAuditableResultDebit(row)) {
+        throw Object.assign(new Error('휴머나이저/재구성 유료 차감 항목만 처리할 수 있습니다.'), { status: 400 });
+      }
+
+      const alreadyHandled = debit.orphanDebitResolved === true ||
+        !!debit.restoredAt ||
+        !!debit.resolvedAt ||
+        !!debit.restoreCreditHistoryId ||
+        !!debit.resolveCreditHistoryId ||
+        !!(restoreSnap && restoreSnap.exists);
+      const current = auditNumber(userSnap.data().credits);
+      const used = auditNumber(debit.used);
+      if (alreadyHandled) {
+        return {
+          alreadyHandled: true,
+          before: current,
+          after: current,
+          restoredCredits: auditNumber(debit.restoredCredits) || used,
+          resolveCreditHistoryId: debit.restoreCreditHistoryId || debit.resolveCreditHistoryId || (restoreSnap && restoreSnap.exists ? restoreRef.id : null)
+        };
+      }
+
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      if (action === 'restore') {
+        const next = current + used;
+        t.update(userRef, {
+          credits: next,
+          lastAdminOrphanDebitResolvedAt: now
+        });
+        t.set(restoreRef, {
+          type: `${debit.type}_restore`,
+          used: -used,
+          amount: 0,
+          remaining: next,
+          ...(debit.mode ? { mode: String(debit.mode) } : {}),
+          ...(debit.evidence != null ? { evidence: !!debit.evidence } : {}),
+          ...(debit.fallback ? { fallback: true } : {}),
+          ...(debit.requestId ? { requestId: debit.requestId } : {}),
+          detail: reason,
+          adminUid,
+          originalType: debit.type,
+          originalCreditHistoryId: creditHistoryId,
+          restoredDebitId: creditHistoryId,
+          orphanDebitResolved: true,
+          orphanDebitResolution: 'credit_restore',
+          createdAt: now
+        });
+        t.update(debitRef, {
+          orphanDebitResolved: true,
+          orphanDebitResolution: 'credit_restore',
+          restoredCredits: used,
+          restoreCreditHistoryId: restoreRef.id,
+          restoredAt: now,
+          restoredBy: adminUid,
+          restoreReason: reason
+        });
+        return {
+          alreadyHandled: false,
+          before: current,
+          after: next,
+          restoredCredits: used,
+          resolveCreditHistoryId: restoreRef.id
+        };
+      }
+
+      t.update(userRef, {
+        lastAdminOrphanDebitResolvedAt: now
+      });
+      t.update(debitRef, {
+        orphanDebitResolved: true,
+        orphanDebitResolution: 'manual_handled',
+        restoredCredits: 0,
+        resolvedAt: now,
+        resolvedBy: adminUid,
+        resolveReason: reason
+      });
+      return {
+        alreadyHandled: false,
+        before: current,
+        after: current,
+        restoredCredits: 0,
+        resolveCreditHistoryId: null
+      };
+    });
+
+    logger.info('admin.orphan_debit_resolved', {
+      adminUid,
+      targetUid,
+      creditHistoryId,
+      action,
+      restoredCredits: result.restoredCredits,
+      alreadyHandled: result.alreadyHandled
+    });
+    res.json({
+      ok: true,
+      action,
+      ...result,
+      message: result.alreadyHandled
+        ? '이미 처리완료로 표시된 차감입니다.'
+        : action === 'restore'
+        ? '크레딧 환급 및 처리완료 표시가 끝났습니다.'
+        : '처리완료 표시가 끝났습니다.'
+    });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    logger.error('admin.orphan_debit_resolve_failed', { adminUid, targetUid, creditHistoryId, action, err });
+    res.status(500).json({ error: '결과 없는 차감 처리에 실패했습니다.' });
   }
 });
 

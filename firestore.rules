@@ -93,6 +93,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ★ C-04: 결제 운영키(paymentKey)도 서버 전용 — 환불에만 서버가 사용.
+    match /paymentSecrets/{orderId} {
+      allow read, write: if false;
+    }
+
     match /couponCodes/{code} {
       allow read, write: if false;
     }

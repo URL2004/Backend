@@ -80,10 +80,14 @@ router.post('/confirm-payment', async (req, res) => {
           // === 모든 WRITE 후 ===
           transaction.set(orderRef, {
             uid: verifiedUid, amount, safeCredits,
-            paymentKey,
+            paymentKeyPresent: true,   // ★ C-04: paymentKey 원문은 사용자가 읽는 주문 문서가 아니라 서버전용으로 분리
             customerEmail: typeof customerEmail === 'string' ? customerEmail.slice(0, 160) : '',
             status: 'paid',
             createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+          // ★ C-04: 결제 운영키(paymentKey)는 Rules deny-all인 paymentSecrets에 보관 — 환불 시 서버가 읽는다.
+          transaction.set(db.collection('paymentSecrets').doc(orderId), {
+            paymentKey, uid: verifiedUid, createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
 
           if (userSnap.exists) {
@@ -562,12 +566,22 @@ async function findUserByQuery(rawQuery) {
   return null;
 }
 
+// ★ C-04: 환불에 쓸 paymentKey는 서버전용 paymentSecrets에서 읽는다(없으면 기존 주문 문서 폴백 — 무파손 전환).
+async function readPaymentKey(orderId, order) {
+  try {
+    const s = await db.collection('paymentSecrets').doc(orderId).get();
+    if (s.exists && s.data().paymentKey) return s.data().paymentKey;
+  } catch (e) { logger.warn('payment.secret_read_failed', { orderId, err: e && e.message }); }
+  return (order && order.paymentKey) || null;
+}
+
 async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount }) {
   const order = orderSnap.data();
+  const paymentKey = await readPaymentKey(orderRef.id, order);   // ★ C-04
   if (!['paid', 'refund_requested', 'refund_rejected', 'partially_refunded'].includes(order.status)) {
     throw Object.assign(new Error('환불할 수 없는 주문 상태입니다. 현재: ' + order.status), { status: 400 });
   }
-  if (!order.paymentKey) {
+  if (!paymentKey) {
     throw Object.assign(new Error('paymentKey가 없어 환불할 수 없습니다. (이전 결제건)'), { status: 400 });
   }
 
@@ -576,7 +590,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   if (!basicToken) {
     throw Object.assign(new Error('결제 서버 설정이 완료되지 않았습니다.'), { status: 503, code: 'TOSS_SECRET_MISSING' });
   }
-  const tossUrl = `https://api.tosspayments.com/v1/payments/${order.paymentKey}/cancel`;
+  const tossUrl = `https://api.tosspayments.com/v1/payments/${paymentKey}/cancel`;
   const cancelReason = String(reason || order.cancelReason || '관리자 직접 환불').trim();
 
   if (kind === 'subscription') {
@@ -1392,17 +1406,18 @@ router.post('/approve-refund', async (req, res) => {
     if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
 
     const order = orderSnap.data();
+    const paymentKey = await readPaymentKey(orderRef.id, order);   // ★ C-04
     if (order.status !== 'refund_requested') {
       return res.status(400).json({ error: '환불 요청 상태가 아닙니다. 현재: ' + order.status });
     }
-    if (!order.paymentKey) {
+    if (!paymentKey) {
       return res.status(400).json({ error: 'paymentKey가 없어 환불할 수 없습니다. (이전 결제건)' });
     }
 
     const userRef = db.collection('users').doc(order.uid);
     const basicToken = tossBasicToken(res);
     if (!basicToken) return;
-    const tossUrl = `https://api.tosspayments.com/v1/payments/${order.paymentKey}/cancel`;
+    const tossUrl = `https://api.tosspayments.com/v1/payments/${paymentKey}/cancel`;
 
     if (kind === 'subscription') {
       // 정기결제: 전액 취소

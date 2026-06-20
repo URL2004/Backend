@@ -167,7 +167,7 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
     t.set(orderRef, {
       uid, tier,
       amount: plan.amount,
-      paymentKey: paymentResult.paymentKey,
+      paymentKeyPresent: true,   // ★ C-04: paymentKey 원문은 paymentSecrets로 분리
       orderId,
       status: 'paid',
       requestedAt: cycleStartedAt,
@@ -194,6 +194,10 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
       cardCompany: cardCompany || null,
       updatedAt: cycleStartedAt
     }, { merge: true });
+    // ★ C-04: 정기결제 paymentKey도 서버 전용 paymentSecrets로(환불 시 서버가 읽음).
+    t.set(db.collection('paymentSecrets').doc(orderId), {
+      paymentKey: paymentResult.paymentKey, uid, createdAt: cycleStartedAt
+    });
   });
 }
 

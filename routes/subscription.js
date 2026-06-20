@@ -1,6 +1,7 @@
 // [정기결제] 토스페이먼츠 빌링키 발급 + 매달 자동결제 + 쿠폰 부여 처리
 
 const express = require('express');
+const crypto = require('crypto');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
@@ -73,10 +74,14 @@ async function tossIssueBillingKey({ authKey, customerKey }) {
   return { ok: res.ok, status: res.status, data: await res.json() };
 }
 
-async function tossChargeBilling({ billingKey, customerKey, amount, orderId, orderName, customerEmail, customerName }) {
+async function tossChargeBilling({ billingKey, customerKey, amount, orderId, orderName, customerEmail, customerName, idempotencyKey }) {
+  const headers = { 'Authorization': `Basic ${tossBasicToken()}`, 'Content-Type': 'application/json' };
+  // ★ C-04: 같은 결제주기 재시도·다중 워커 동시 호출이 카드를 두 번 긁지 않도록 Idempotency-Key 전송.
+  //   Toss는 동일 키에 대해 15일간 같은 응답을 반환한다(중복 승인 방지).
+  if (idempotencyKey) headers['Idempotency-Key'] = String(idempotencyKey);
   const res = await fetch(`https://api.tosspayments.com/v1/billing/${encodeURIComponent(billingKey)}`, {
     method: 'POST',
-    headers: { 'Authorization': `Basic ${tossBasicToken()}`, 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ customerKey, amount, orderId, orderName, customerEmail, customerName })
   });
   return { ok: res.ok, status: res.status, data: await res.json() };
@@ -90,6 +95,17 @@ async function tossDeleteBillingKey(billingKey) {
     });
     return res.ok;
   } catch { return false; }
+}
+
+// ★ C-03: 결제 비밀(billingKey)은 서버 전용 billingSecrets/{uid}에서 읽는다.
+//   customerKey는 cust_${uid}로 결정적이라 계산. billingSecrets가 없는 미마이그레이션 사용자는 fallback(sub.billingKey).
+function customerKeyFor(uid) { return `cust_${uid}`; }
+async function readBillingKey(uid, fallback) {
+  try {
+    const s = await db.collection('billingSecrets').doc(uid).get();
+    if (s.exists && s.data().billingKey) return s.data().billingKey;
+  } catch (e) { logger.warn('billing.secret_read_failed', { uid, err: e }); }
+  return fallback || null;
 }
 
 async function verifyToken(idToken) {
@@ -122,8 +138,8 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
     const subscription = {
       tier,
       status: 'active',
-      customerKey,
-      billingKey,
+      // ★ C-03: billingKey·customerKey는 사용자가 읽는 이 문서에 더 이상 저장하지 않는다(billingSecrets/{uid}로 분리).
+      //   customerKey는 cust_${uid}로 결정적이라 보관 불필요. 카드사·마스킹번호만 표시용으로 유지.
       cardCompany: cardCompany || null,
       cardNumber: cardNumber || null,
       startedAt: isFirst ? cycleStartedAt : (userSnap.data()?.subscription?.startedAt || cycleStartedAt),
@@ -227,7 +243,8 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
     orderId,
     orderName: plan.name,
     customerEmail: customerEmail || null,
-    customerName: customerName || null
+    customerName: customerName || null,
+    idempotencyKey: orderId
   });
 
   if (!charged.ok) {
@@ -280,31 +297,43 @@ router.post('/subscription/charge', async (req, res) => {
   const plan = SUB_PLANS[sub.tier];
   if (!plan) return res.status(400).json({ error: 'invalid tier' });
 
-  const cycleTs = now;
-  const orderId = buildOrderId(uid, cycleTs);
+  // ★ C-04: orderId를 '결제 도래 시각(dueMs)' 기준으로 결정화한다. 다중 인스턴스 cron이 같은 사이클을
+  //   동시에 처리해도 동일 orderId를 만들어 orderSnap 중복검사·DUPLICATE_ORDER로 한 번만 청구된다.
+  const cycleKey = dueMs > 0 ? dueMs : now;
+  const orderId = buildOrderId(uid, cycleKey);
 
-  // 멱등성: 같은 사이클 시작 ms 기준 orderId 중복이면 즉시 반환
+  // 멱등성: 같은 결제주기 orderId가 이미 있으면 즉시 반환
   const orderSnap = await db.collection('subscriptionOrders').doc(orderId).get();
   if (orderSnap.exists) return res.json({ ok: true, deduped: true });
 
+  // ★ C-03: billingKey는 서버 전용 billingSecrets에서(없으면 sub.billingKey 폴백). customerKey는 결정적 계산.
+  const billingKey = await readBillingKey(uid, sub.billingKey);
+  const customerKey = customerKeyFor(uid);
+  if (!billingKey) {
+    logger.error('subscription.charge_no_billing_key', { uid, tier: sub.tier, orderId });
+    return res.status(400).json({ error: '결제 수단 정보가 없습니다.' });
+  }
+
   let charged = await tossChargeBilling({
-    billingKey: sub.billingKey,
-    customerKey: sub.customerKey,
+    billingKey,
+    customerKey,
     amount: plan.amount,
     orderId,
-    orderName: plan.name
+    orderName: plan.name,
+    idempotencyKey: orderId
   });
 
-  // 카드사 일시 오류 대비 1회 재시도 (1.5초 후)
+  // 카드사 일시 오류 대비 1회 재시도 (1.5초 후) — 같은 Idempotency-Key라 중복 승인되지 않음
   if (!charged.ok) {
     logger.warn('subscription.charge_retrying', { uid, tier: sub.tier, orderId, code: charged.data?.code });
     await new Promise(r => setTimeout(r, 1500));
     charged = await tossChargeBilling({
-      billingKey: sub.billingKey,
-      customerKey: sub.customerKey,
+      billingKey,
+      customerKey,
       amount: plan.amount,
       orderId,
-      orderName: plan.name
+      orderName: plan.name,
+      idempotencyKey: orderId
     });
   }
 
@@ -330,9 +359,9 @@ router.post('/subscription/charge', async (req, res) => {
     await applySubscriptionCycle({
       uid, tier: sub.tier, plan,
       paymentResult: { paymentKey: charged.data.paymentKey, orderId },
-      billingKey: sub.billingKey,
+      billingKey,
       cardCompany: sub.cardCompany, cardNumber: sub.cardNumber,
-      customerKey: sub.customerKey, isFirst: false
+      customerKey, isFirst: false
     });
   } catch (e) {
     if (e.message === 'DUPLICATE_ORDER') return res.json({ ok: true, deduped: true });
@@ -383,13 +412,15 @@ async function runProcessDue(internalKey) {
   const batch = db.batch();
   for (const doc of cancelledSnap.docs) {
     const sub = doc.data().subscription;
-    if (sub?.billingKey) await tossDeleteBillingKey(sub.billingKey);
+    const bk = await readBillingKey(doc.id, sub?.billingKey);   // ★ C-03: 서버 전용 비밀에서 읽기
+    if (bk) await tossDeleteBillingKey(bk);
     batch.update(doc.ref, {
       'subscription.status': 'expired',
       'subscription.billingKey': null,
       'plan': 'free',
       'coupon.remaining': 0
     });
+    batch.delete(db.collection('billingSecrets').doc(doc.id));   // ★ C-03: 만료 시 서버 비밀 제거
     results.expired++;
   }
   if (results.expired) await batch.commit();
@@ -491,9 +522,39 @@ router.get('/subscription/status', async (req, res) => {
 // 구독 이벤트: PAYMENT_STATUS_CHANGED, BILLING_DELETED, CANCEL_STATUS_CHANGED
 router.post('/toss/webhook', async (req, res) => {
   if (!requireWebhookSecret(req, res)) return;
-  res.status(200).send('OK');
 
-  const { eventType, data } = req.body || {};
+  const body = req.body || {};
+  const { eventType, data } = body;
+
+  // ★ C-07: 이벤트를 먼저 영속화(webhookInbox)한 뒤 200을 응답한다 — 200 후 처리 실패로 인한 이벤트 유실 방지.
+  //   같은 이벤트 재전송(최대 7회)은 본문 해시 멱등 키로 한 번만 처리한다(중복 권한 변경 차단).
+  const eventKey = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
+  const inboxRef = db.collection('webhookInbox').doc(eventKey);
+
+  let alreadyProcessed = false;
+  try {
+    await db.runTransaction(async (t) => {
+      const cur = await t.get(inboxRef);
+      if (cur.exists && cur.data().status === 'processed') { alreadyProcessed = true; return; }
+      t.set(inboxRef, {
+        eventType: eventType || null,
+        orderId: data?.orderId || null,
+        status: 'received',
+        receivedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    });
+  } catch (e) {
+    // 영속화 실패 시 200을 보내지 않는다 → Toss가 재전송하도록 유도(이벤트 유실 방지).
+    logger.error('toss.webhook_inbox_persist_failed', { eventType, err: e });
+    return res.status(503).send('inbox unavailable');
+  }
+
+  res.status(200).send('OK');
+  if (alreadyProcessed) {
+    logger.info('toss.webhook_duplicate_skipped', { eventType, orderId: data?.orderId });
+    return;
+  }
+
   logger.info('toss.webhook_received', {
     eventType,
     orderId: data?.orderId,
@@ -501,7 +562,7 @@ router.post('/toss/webhook', async (req, res) => {
     cancelStatus: data?.cancelStatus
   });
 
-  try {
+  const processEvent = async () => {
     if (eventType === 'PAYMENT_STATUS_CHANGED') {
       const { orderId, status, paymentKey } = data || {};
       if (!orderId) return;
@@ -527,17 +588,23 @@ router.post('/toss/webhook', async (req, res) => {
     } else if (eventType === 'BILLING_DELETED') {
       const { billingKey } = data || {};
       if (!billingKey) return;
-      const found = await db.collection('users')
-        .where('subscription.billingKey', '==', billingKey)
-        .limit(1).get();
-      if (!found.empty) {
-        logger.warn('toss.webhook_billing_deleted', { uid: found.docs[0].id });
-        await found.docs[0].ref.update({
+      // ★ C-03: billingKey는 billingSecrets에 있으므로 거기서 uid를 찾는다(없으면 구 users 쿼리 폴백).
+      let targetRef = null;
+      const bs = await db.collection('billingSecrets').where('billingKey', '==', billingKey).limit(1).get();
+      if (!bs.empty) targetRef = db.collection('users').doc(bs.docs[0].id);
+      else {
+        const found = await db.collection('users').where('subscription.billingKey', '==', billingKey).limit(1).get();
+        if (!found.empty) targetRef = found.docs[0].ref;
+      }
+      if (targetRef) {
+        logger.warn('toss.webhook_billing_deleted', { uid: targetRef.id });
+        await targetRef.update({
           'subscription.status': 'cancelled',
           'subscription.billingKey': null,
           'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
           'subscription.billingKeyDeleted': true
         });
+        await db.collection('billingSecrets').doc(targetRef.id).delete().catch(() => {});
       }
     } else if (eventType === 'CANCEL_STATUS_CHANGED') {
       const { paymentKey, cancelStatus } = data || {};
@@ -547,8 +614,14 @@ router.post('/toss/webhook', async (req, res) => {
         receivedAt: admin.firestore.FieldValue.serverTimestamp()
       });
     }
+  };
+
+  try {
+    await processEvent();
+    await inboxRef.update({ status: 'processed', processedAt: admin.firestore.FieldValue.serverTimestamp() });
   } catch (e) {
     logger.error('toss.webhook_handler_failed', { eventType, err: e });
+    await inboxRef.update({ status: 'error', error: String(e?.message || e) }).catch(() => {});
   }
 });
 

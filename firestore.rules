@@ -31,13 +31,13 @@ service cloud.firestore {
         && request.resource.data.credits == 10
         && request.resource.data.plan == 'free'
         // ★ C-08: refCode는 uid 앞 8자로 결정. 사용자가 임의 코드를 고르거나 충돌시킬 수 없다.
-        && request.resource.data.refCode == request.auth.uid[0:8];
+        && request.resource.data.refCode == (request.auth.uid.size() >= 8 ? request.auth.uid[0:8] : request.auth.uid);
 
       allow update: if isSelf(uid)
         && onlyChanged(['name', 'refCode', 'kakaoId', 'bookmarks'])
         // ★ C-08: refCode를 바꿀 땐 반드시 uid 앞 8자로만(백필 허용·임의변경 차단). 안 바꾸면 통과.
         && (!request.resource.data.diff(resource.data).changedKeys().hasAny(['refCode'])
-            || request.resource.data.refCode == request.auth.uid[0:8]);
+            || request.resource.data.refCode == (request.auth.uid.size() >= 8 ? request.auth.uid[0:8] : request.auth.uid));
 
       allow delete: if false;
 
@@ -112,6 +112,12 @@ service cloud.firestore {
     }
 
     match /webhookLogs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // ★ C-07: 웹훅 이벤트 멱등 inbox — 서버 전용.
+    match /webhookInbox/{eventId} {
       allow read: if isAdmin();
       allow write: if false;
     }

@@ -1368,39 +1368,41 @@ router.post('/apply-referral', async (req, res) => {
     // 3. 이미 추천 받은 유저인지 확인
     if (newUserSnap.data().referredBy) return res.status(400).json({ error: '이미 추천 적용됨' });
 
-    // 4. 추천인 찾기
+    // 4. 추천인 찾기 (쿼리는 트랜잭션 밖. 단, 이중지급 방지의 권위는 트랜잭션 안 newUser.referredBy)
     const referrerSnap = await db.collection('users').where('refCode', '==', refCode).limit(1).get();
     if (referrerSnap.empty) return res.status(400).json({ error: '유효하지 않은 추천 코드' });
     const referrerDoc = referrerSnap.docs[0];
     const referrerUid = referrerDoc.id;
+    if (referrerUid === newUid) return res.status(400).json({ error: '본인 추천 불가' });
 
-    // 5. 양쪽에 20크레딧 지급 (트랜잭션)
-    await db.runTransaction(async (t) => {
-      t.update(db.collection('users').doc(newUid), {
-        credits: admin.firestore.FieldValue.increment(20),
-        referredBy: refCode
-      });
-      t.update(db.collection('users').doc(referrerUid), {
-        credits: admin.firestore.FieldValue.increment(20)
-      });
-    });
-
-    // 6. 크레딧 히스토리 기록
+    // 5. ★ C-08: 검증·지급·이력을 하나의 트랜잭션으로. referredBy를 트랜잭션 안에서 다시 읽어
+    //    동시 요청 이중 지급을 차단하고, 결정적 history ID로 재시도 멱등을 보장한다.
     const now = admin.firestore.FieldValue.serverTimestamp();
-    const newUserCredits = (newUserSnap.data().credits || 0) + 20;
-    const referrerCredits = (referrerDoc.data().credits || 0) + 20;
-
-    await db.collection('users').doc(newUid).collection('creditHistory').add({
-      type: 'referral', used: 0, amount: 20, remaining: newUserCredits,
-      detail: '친구 추천 보상 (가입)', createdAt: now
+    const result = await db.runTransaction(async (t) => {
+      const newRef = db.collection('users').doc(newUid);
+      const refRef = db.collection('users').doc(referrerUid);
+      const newSnap = await t.get(newRef);
+      const refSnap = await t.get(refRef);
+      if (!newSnap.exists || !refSnap.exists) throw new Error('USER_NOT_FOUND');
+      if (newSnap.data().referredBy) return { applied: false };   // 이미 적용 — 멱등 종료
+      const newUserCredits = (newSnap.data().credits || 0) + 20;
+      const referrerCredits = (refSnap.data().credits || 0) + 20;
+      t.update(newRef, { credits: admin.firestore.FieldValue.increment(20), referredBy: refCode });
+      t.update(refRef, { credits: admin.firestore.FieldValue.increment(20) });
+      t.set(newRef.collection('creditHistory').doc('referral_' + newUid), {
+        type: 'referral', used: 0, amount: 20, remaining: newUserCredits,
+        detail: '친구 추천 보상 (가입)', createdAt: now
+      });
+      t.set(refRef.collection('creditHistory').doc('referral_from_' + newUid), {
+        type: 'referral', used: 0, amount: 20, remaining: referrerCredits,
+        detail: '친구 추천 보상 (초대)', createdAt: now
+      });
+      return { applied: true };
     });
-    await db.collection('users').doc(referrerUid).collection('creditHistory').add({
-      type: 'referral', used: 0, amount: 20, remaining: referrerCredits,
-      detail: '친구 추천 보상 (초대)', createdAt: now
-    });
 
+    if (!result.applied) return res.status(400).json({ error: '이미 추천 적용됨' });
     logger.info('referral.applied', { referrerUid, newUid, credits: 20 });
-    discord.referral({ inviter: referrerDoc.data().name || referrerUid, invitee: newUserSnap.data().name || newUid });
+    try { discord.referral({ inviter: referrerDoc.data().name || referrerUid, invitee: newUserSnap.data().name || newUid }); } catch {}
     res.json({ ok: true });
   } catch (err) {
     logger.error('referral.failed', { err });

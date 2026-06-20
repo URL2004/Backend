@@ -51,13 +51,37 @@ router.post('/delete-account', async (req, res) => {
       if (n % 400 !== 0) await batch.commit();
     }
 
+    // ★ H-10: 결제 비밀·UGC 정리 (재무 기록 orders/subscriptionOrders는 전자상거래법상 보존 위해 유지).
+    //   billingSecrets는 재결제 자격증명이라 반드시 삭제(C-03 분리로 새로 생긴 컬렉션 — 누락돼 있던 갭).
+    await db.collection('billingSecrets').doc(uid).delete().catch(() => {});
+    //   UGC는 best-effort: 인덱스 부재 등으로 실패해도 탈퇴 자체는 진행(개인정보 핵심은 위 user 문서·Auth).
+    const deleteByQuery = async (label, snapPromise, withComments = false) => {
+      try {
+        const docs = (await snapPromise).docs;
+        let batch = db.batch(), n = 0;
+        const flush = async () => { if (n % 400 === 0) { await batch.commit(); batch = db.batch(); } };
+        for (const d of docs) {
+          if (withComments) {
+            const cs = await d.ref.collection('comments').get();
+            for (const c of cs.docs) { batch.delete(c.ref); n++; await flush(); }
+          }
+          batch.delete(d.ref); n++; await flush();
+        }
+        if (n % 400 !== 0) await batch.commit();
+      } catch (e) { logger.warn('account.ugc_cleanup_failed', { uid, label, err: e && e.message }); }
+    };
+    await deleteByQuery('posts', db.collection('posts').where('authorId', '==', uid).get(), true);
+    await deleteByQuery('qna', db.collection('qna').where('authorId', '==', uid).get());
+    await deleteByQuery('comments', db.collectionGroup('comments').where('authorId', '==', uid).get());
+    // 주의: Storage 업로드 이미지는 경로가 UID 네임스페이스가 아니라 일괄삭제 보류 — storage.rules 작업에서 함께 처리.
+
     await userRef.delete();
 
     // Auth 계정 삭제 — Admin 권한이라 재인증 불필요. 이미 없으면(중복 호출 등) 성공으로 간주.
     try { await admin.auth().deleteUser(uid); }
     catch (e) { if (e.code !== 'auth/user-not-found') throw e; }
 
-    logger.info('account.deleted', { uid, deletedSubcollections: subcols });
+    logger.info('account.deleted', { uid, deletedSubcollections: subcols, billingSecrets: true, ugc: ['posts', 'qna', 'comments'] });
     return res.json({ ok: true });
   } catch (e) {
     logger.error('account.delete_failed', { uid, err: e });

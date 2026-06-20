@@ -501,7 +501,7 @@ router.post('/subscription/resume', async (req, res) => {
 
 // === 6) 상태 조회 ===
 router.get('/subscription/status', async (req, res) => {
-  const idToken = req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.query.idToken;
+  const idToken = req.headers.authorization?.replace(/^Bearer\s+/i, '') || (req.body && req.body.idToken) || '';   // ★ H-04: query 토큰 제거
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
   setLogContext({ uid });

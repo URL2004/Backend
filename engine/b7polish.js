@@ -30,6 +30,10 @@ function buildPrompt(para, lang) {
 }
 
 async function b7PolishPass(text, rawText, { lang = 'ko', signal, floor, allowedExtra = '' } = {}) {
+  // ★ B7은 한국어 존댓말(합니다체)·1인칭 anchor 전용 패스다. 영어 등 비한국어는 건드리지 않는다 —
+  //   기존 'en' 분기는 영어 문단을 "polite Korean register"로 재작성시키는 오지시였고(실측: 영어는
+  //   다듬을수록 AI 패턴↑), hapShare/anchorCount 자체가 한국어 형태 기준이라 무의미하다.
+  if (lang !== 'ko') return { text, repaired: 0, attempted: 0, skipped: 'non-ko' };
   const paras = text.split(/\n\n+/);
   const out = paras.slice();
   let repaired = 0, attempted = 0;

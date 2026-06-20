@@ -3009,12 +3009,20 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         const ri = ckp.predictAiRate(text);
         const rb = ckp.predictAiRate(baselineText);
         const rf = ckp.predictAiRate(finalOut);
-        result.ckShadow = { inputRisk: r3(ri), baselineRisk: r3(rb), finalRisk: r3(rf), deltaVsInput: r3(rf - ri), deltaVsBaseline: r3(rf - rb) };
+        // ★ 입력 AI% 게이트 shadow(①, 행동변경 0): risk-router가 이 입력을 보존(minimal_cleanup)으로
+        //   보냈을지를 함께 기록한다. worsened(역효과)와 교차하면 "게이트가 역효과 케이스를 잡는가 +
+        //   임계(0.30)가 맞는가"를 라이브 트래픽으로 검증할 수 있다(라이브 플립 전 데이터 누적).
+        let gateMode = null;
+        try { gateMode = require('../engine/copykiller/risk-router').decideMode({ proxyRisk: ri }).mode; } catch {}
+        const worsened = ri < 0.5 && rf > ri + 0.1;   // 모델이 보기에 사람글을 AI쪽으로 악화시켰나(0→100 류 조기경보)
+        result.ckShadow = { inputRisk: r3(ri), baselineRisk: r3(rb), finalRisk: r3(rf), deltaVsInput: r3(rf - ri), deltaVsBaseline: r3(rf - rb), gateMode, worsened };
         logger.info('humanize.ck_shadow', {
           mode, tonePolish: !!tonePolish, inLen: (text || '').length, outLen: finalOut.length,
           inputRisk: r3(ri), baselineRisk: r3(rb), finalRisk: r3(rf),
           deltaVsInput: r3(rf - ri), deltaVsBaseline: r3(rf - rb),
-          worsened: ri < 0.5 && rf > ri + 0.1   // 모델이 보기에 사람글을 AI쪽으로 악화시켰나(0→100 류 조기경보)
+          worsened,
+          gateMode,                                   // 'minimal_cleanup' = 게이트라면 보존(재작성 안 함)
+          gateWouldPreserve: gateMode === 'minimal_cleanup'
         });
       }
     } catch (e) { logger.warn('humanize.ck_shadow_failed', { err: e && e.message }); }

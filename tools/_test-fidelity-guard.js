@@ -3,7 +3,7 @@
 //   실물: samples/housing-future-essay.txt(원문) vs results/reranker-winner.txt(통계청·2.4배 날조 포함)
 //   실행: node tools/_test-fidelity-guard.js
 const fs = require('fs');
-const { checkFabrication } = require('../engine/copykiller/fidelity-guard');
+const { checkFabrication } = require('../engine/experimental/fidelity-guard');
 
 let pass = true;
 function chk(name, cond, extra) {

@@ -1,7 +1,7 @@
 'use strict';
 // [tools/_test-meta-strip.js] 소절번호 메타 누수 strip 테스트.
 //   실행: node tools/_test-meta-strip.js
-const { stripSectionMeta } = require('../engine/copykiller/meta-strip');
+const { stripSectionMeta } = require('../engine/experimental/meta-strip');
 
 let pass = true;
 function chk(name, cond, got) {

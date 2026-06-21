@@ -1070,6 +1070,13 @@ async function genreTransferV2(rawText, { skeleton = 'debate_explainer', evidenc
   // ★ P0-2(2026-06-18 감사): 위 최종 scrub(tidyParagraphs·stripMetaNotes·원문strip·stripPunchTemplates·
   //   stripAdjacentContainedDup)이 텍스트를 삭제·변경해 지표가 stale → 반환 직전 '최종본' 기준으로 재측정한다.
   //   안 하면 관리자 지표(novelty·lostFacts·짝)와 사용자가 받은 최종 텍스트가 어긋난다(특히 punch·원문strip이 문장 삭제 시).
+  // ★ 절단 마감 복구(2026-06-22 #209): 마지막 슬롯이 문장 중간에 끝나 문서가 미완으로 나가던 사고. 끊긴 조각만
+  //   결정론 트림해 완결을 보장(LLM·날조 없음). 과손실 위험(60% 미만 잔존)이면 원본 유지. TRUNC_GUARD=0 해제.
+  //   ★원문 자체가 미완 단편이면(사용자 입력이 끊김) 트림 안 함 — 출력의 그 미완은 원문 반영이지 엔진 절단 아님(#99류 과트림 방지).
+  if (process.env.TRUNC_GUARD !== '0' && floor.endsTruncated(doc) && !floor.endsTruncated(rawText)) {
+    const trimmed = floor.trimToLastComplete(doc);
+    if (trimmed !== doc) doc = trimmed;
+  }
   const novelty = floor.measureNovelty(textF, doc, allowed);
   // ★ 사실 소실 게이트 분리(2026-06-15): 원문 사실 소실만 하드 차단(rawText 기준). 승인 근거 미위빙은 차단 아닌 '미반영'(soft).
   const lost = floor.measureLostFacts(rawText, doc);

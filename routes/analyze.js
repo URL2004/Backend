@@ -1593,7 +1593,10 @@ async function applyPassC(result, lang, signal, ctx = {}) {
   // 품질 지표(차단 아님 — 표시·로깅용): no-op(보존형 수준)·register 이탈.
   if (ctx.rawText) {
     result.noOpScore = og.noOpScore(ctx.rawText, t);
-    result.weakTransform = ctx.mode !== 'polish' && result.noOpScore >= 0.86;   // 변환 약함(폴리시는 보존이 목적이라 제외)
+    // 변환 약함 신호. polish(다듬기)는 보존이 목적이라 일반 임계(0.86)에선 제외하되, ★내용이 거의 100% 동일
+    //   (공백만 바뀜, 0.97+)이면 "사실상 무변환"이므로 polish도 약변환으로 표기(2026-06-22 #40/#47: 다듬기가
+    //   내용 불변·재시도까지 동일출력·이중과금). 차단 아님 — UI 배지/안내·강도 추천용 신호만.
+    result.weakTransform = ctx.mode === 'polish' ? (result.noOpScore >= 0.97) : (result.noOpScore >= 0.86);
     result.registerLeak = lang === 'en' ? 0 : og.registerLeakCount(t, ctx.rawText);
   }
 }
@@ -2579,13 +2582,17 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         const r = extractClaudeResult(data, tool.name);
         if (floor.looksLikeRefusal(r.outputText)) throw new Error('model-refusal'); // ★ 거부문이 출력에 박히는 사고 차단 → 재시도/폴백
         if (evid && evg.checkEvidencePairing(r.outputText || '', evidLines).length > basePairCount) throw new Error('evidence-pairing'); // ★ 수치-출처 분리(재조합 위험) → 재시도/폴백
+        // ★ 절단 생성 복구(2026-06-22 #209·#217): stop_reason=max_tokens가 아니어도 LLM이 문장 중간에 멈추면(end_turn)
+        //   잘린 출력이 그대로 병합돼 결과가 미완으로 나간다. 입력 청크는 완결인데 출력이 절단이면 생성이 끊긴 것 →
+        //   max_tokens와 동일하게 재시도(다음 attempt) → 끝내 실패 시 raw 청크 폴백(완결한 원문 보존). TRUNC_GUARD=0 해제.
+        if (process.env.TRUNC_GUARD !== '0' && floor.endsTruncated(r.outputText) && !floor.endsTruncated(c.text)) throw new Error('truncated-generation');
         await applyPassC(r, lang, signal, { rawText: c.text, mode });
         c.outputText = r.outputText || rawWithEvid;
         chunkDone = true;
       } catch (e) {
         if (signal?.aborted) throw e;
         if (attempt < MAX_ATTEMPTS - 1) { await new Promise(r => setTimeout(r, 800 * (attempt + 1))); continue; } // 백오프 후 재시도
-        c.outputText = rawWithEvid; c.fellBack = true; c.fallbackReason = /truncat|max_tokens/i.test(e.message) ? 'max_tokens' : /refusal/i.test(e.message) ? 'refusal' : /pairing/.test(e.message) ? 'evidence-pairing' : 'llm-error';
+        c.outputText = rawWithEvid; c.fellBack = true; c.fallbackReason = /truncated-generation/.test(e.message) ? 'truncated' : /max_tokens/i.test(e.message) ? 'max_tokens' : /refusal/i.test(e.message) ? 'refusal' : /pairing/.test(e.message) ? 'evidence-pairing' : 'llm-error';
       }
     }
     if (!chunkDone) return; // 재시도까지 실패 → 원문(+승인사실) 폴백, repair/재검증 건너뜀
@@ -2704,6 +2711,18 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     });
   }
 
+  // ★ FLOOR preV 캐시(2026-06-21 최적화): 패스 스택(optimize·polish·phrasebudget·burstiness·formalbudget·column)이
+  //   매 패스 preV=collectFloorViolations(현재출력)를 전수 재계산하던 것을 캐시. collectFloorViolations는 순수함수라
+  //   동일 출력·동일 옵션이면 결과 동일. result.outputText가 바뀌면(apply 경로뿐) 식별자 비교로 자동 무효화 → 항상
+  //   collectFloorViolations(현재 result.outputText)와 동일. 패스가 reject/미실행이면 재사용(전수 스캔 절감). FLOOR_CACHE=0 해제.
+  const _floorStd = { rawText: textF, povSeed, optIn, mode, allowedExtra: notes };
+  let _floorPreText = null, _floorPreV = null;
+  const floorPreV = () => {
+    if (process.env.FLOOR_CACHE === '0') return floor.collectFloorViolations({ result: { outputText: result.outputText }, ..._floorStd });
+    if (_floorPreText !== result.outputText) { _floorPreText = result.outputText; _floorPreV = floor.collectFloorViolations({ result: { outputText: result.outputText }, ..._floorStd }); }
+    return _floorPreV;
+  };
+
   // ★ Phase 1.5 multi-candidate 최적화(채점기 검증 후): 고위험 segment를 후보 N개 중 riskScore 최저로 교체.
   //   grounding 뒤, polish 앞. OPTIMIZE=1일 때만. FLOOR 악화 시 폐기(무해).
   // OPTIMIZE=1 적용 / OPTIMIZE_SHADOW=1 로그만(적용X, 카피킬러 대조 데이터 축적용) / 기본 off
@@ -2712,7 +2731,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal });
       if (optMode === 'apply' && opt.text && opt.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floorPreV();
         const postV = floor.collectFloorViolations({ result: { outputText: opt.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = opt.text;
       }
@@ -2726,7 +2745,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const pol = await require('../engine/polish').polishPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (pol.text && pol.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floorPreV();
         const postV = floor.collectFloorViolations({ result: { outputText: pol.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = pol.text;
       }
@@ -2741,7 +2760,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const pbr = await require('../engine/phrasebudget').repairPhraseOveruse(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (pbr.text && pbr.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floorPreV();
         const postV = floor.collectFloorViolations({ result: { outputText: pbr.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = pbr.text;
       }
@@ -2761,7 +2780,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       const _burstLowCV = process.env.BURST_LOWCV ? parseFloat(process.env.BURST_LOWCV) : 0.6;
       const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: _burstLowCV });
       if (br.text && br.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floorPreV();
         const postV = floor.collectFloorViolations({ result: { outputText: br.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = br.text;
       }
@@ -2776,7 +2795,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const fb = await require('../engine/formalbudget').formalBudgetPass(result.outputText, { lang, signal, floor, rawText: textF, allowedExtra: notes });
       if (fb.text && fb.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floorPreV();
         const postV = floor.collectFloorViolations({ result: { outputText: fb.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = fb.text;
       }
@@ -2790,7 +2809,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     try {
       const cr = await require('../engine/columncleanup').columnCleanupPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (cr.text && cr.text !== result.outputText) {
-        const preV = floor.collectFloorViolations({ result: { outputText: result.outputText }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
+        const preV = floorPreV();
         const postV = floor.collectFloorViolations({ result: { outputText: cr.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
         if (postV.length <= preV.length) result.outputText = cr.text;
       }
@@ -2975,6 +2994,12 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { result.registerNormalize = { error: e.message }; }
   }
 
+  // ★ 절단 마감 안전망(2026-06-22): 청크 복구가 못 잡은 잔여 절단(judge repair 등 문서 단계)도 끊긴 조각만
+  //   결정론 트림해 완결 보장(청크 raw 폴백이 1차 방어, 이건 2차). TRUNC_GUARD=0 해제.
+  if (process.env.TRUNC_GUARD !== '0' && floor.endsTruncated(result.outputText) && !floor.endsTruncated(text)) {
+    const trimmed = floor.trimToLastComplete(result.outputText);
+    if (trimmed !== result.outputText) { logger.info('humanize.truncation_trimmed', { mode, before: result.outputText.length, after: trimmed.length }); result.outputText = trimmed; }
+  }
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).
   const finalOut = result.outputText;
   result.povDrift = floor.measurePovDrift(text, finalOut, povSeed);
@@ -3006,7 +3031,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   }
   const sguard = require('../engine/surfaceguard');
   result.surface = sguard.buildSurfaceReport(finalOut);
-  result.inputRisk = sguard.classifyInputRisk(text);
+  result.inputRisk = _ir;   // ★ 2689행 _ir 재사용(동일 text — 요청당 classifyInputRisk 1회 절감). text 불변 보장.
   result.contract = contract;
 
   // ── ai%-정렬 모델 shadow(2026-06-19, CK_SHADOW=1): 로그only·무LLM·무행동변경. 생성 루프가 카피킬러 정렬

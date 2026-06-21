@@ -2,7 +2,7 @@
 // [tools/_demo-lattice.js] 생성 0콜 변형 래티스 데모/검증.
 //   실행: node tools/_demo-lattice.js [파일경로]   (기본 samples/housing-future-essay.txt)
 const fs = require('fs');
-const { rerank, buildVariants, TARGET_TAGS } = require('../engine/copykiller/mutation-lattice');
+const { rerank, buildVariants, TARGET_TAGS } = require('../engine/experimental/mutation-lattice');
 const proxy = require('../engine/copykiller-proxy');
 
 const SHORT = { '무견해, 판단 회피적 성향': '판단회피', '주관성의 지나친 배제': '주관배제', '간접 화법, 비인칭 서술': '간접비인칭' };

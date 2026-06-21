@@ -619,12 +619,41 @@ function looksLikeRefusal(text) {
   return REFUSAL_RE.test(head) || META_RE.test(head);
 }
 
+// ★ 절단 생성 감지(2026-06-22 #209·#217): LLM이 stop_reason=max_tokens 없이도 문장 중간에 멈추는 경우가 있다.
+//   텍스트가 종결부호·닫음·URL·숫자·한국어 종결어미로 끝나지 '않으면' 미완(절단)으로 본다. 보수적 — 완결 신호가
+//   하나라도 있으면 false. 청크 단위로 "입력 완결 ∧ 출력 절단"이면 생성이 잘린 것 → 재시도/raw 폴백으로 복구.
+function endsTruncated(text) {
+  const t = (text || '').trim();
+  if (t.length < 15) return false;                                  // 너무 짧으면 판정 보류
+  if (/[.!?…。！？”’"'》〉」』\)\]]\s*$/.test(t)) return false;       // 종결부호·닫는 따옴표/괄호
+  if (/https?:\/\/\S+$/.test(t)) return false;                      // URL로 끝(참고문헌)
+  if (/[\d%）)\]]\s*$/.test(t)) return false;                        // 숫자·퍼센트·닫음
+  if (/[A-Za-z][.!?]\s*$/.test(t)) return false;                    // 영문 문장 종결
+  if (/(니다|습니다|세요|에요|예요|다|요|죠|까|네|함|됨|임|음|오|소|세|군|구나|라|자)\s*$/.test(t)) return false;   // 한국어 종결어미(마침표 생략 흔함)
+  return true;                                                       // 완결 신호 전무 = 미완(절단) 가능성
+}
+
+// ★ 미완 꼬리 트림(2026-06-22 #209): 문장 중간에 끝난 텍스트를 '마지막 완결 경계'까지 잘라 완결을 보장.
+//   끊긴 조각(완전한 정보가 없는 미완 단어들)만 제거. 60% 미만으로 줄면 과손실로 보고 원본 유지(다른 경로가 처리).
+//   LLM 무사용·무날조 — 결정론. 절단 아님(endsTruncated=false)이면 그대로 반환.
+function trimToLastComplete(text) {
+  const t = String(text || '').replace(/\s+$/, '');
+  if (!endsTruncated(t)) return text;
+  let last = -1, m;
+  const re = /[.!?…。](?=\s|$|["”’」』)\]])|(?:니다|습니다|다|요|죠|까|음|함|됨|임)(?=\s|$)/g;
+  while ((m = re.exec(t))) last = m.index + m[0].length;
+  if (last >= 0 && last >= t.length * 0.6) return t.slice(0, last).replace(/\s+$/, '');
+  return text;   // 완결 경계가 너무 앞(과트림 위험) → 원본 유지
+}
+
 module.exports = {
   computePovSeed,
   isSpeakerGateClosed,
   buildFloorDirective,
   gateFailedFields,
   looksLikeRefusal,
+  endsTruncated,
+  trimToLastComplete,
   measurePovDrift,
   measureNovelty,
   measureLostFacts,

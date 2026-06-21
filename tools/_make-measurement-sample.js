@@ -8,8 +8,8 @@ process.env.LLM_BACKEND = process.env.LLM_BACKEND || 'api';
 const fs = require('fs');
 const gt = require('../engine/genretransfer');
 const proxy = require('../engine/copykiller-proxy');
-const { checkFabrication, stripFabricatedSentences } = require('../engine/copykiller/fidelity-guard');
-const { stripSectionMeta } = require('../engine/copykiller/meta-strip');
+const { checkFabrication, stripFabricatedSentences } = require('../engine/experimental/fidelity-guard');
+const { stripSectionMeta } = require('../engine/experimental/meta-strip');
 
 const chars = s => String(s || '').replace(/\s/g, '').length;
 

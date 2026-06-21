@@ -52,14 +52,6 @@ function boundaryLeak(candidate, originalSeg, neighbors = []) {
   return false;
 }
 
-// 문서 전체 중복 지표(게이트용)
-function measureDuplication(text) {
-  return {
-    openingDup: sg.measureOpeningDuplication(text),
-    nearDup: measureNearDupSentences(text),
-  };
-}
-
 // ── 결정론 문장 중복 제거 (floor.measureRepetition과 동일 척도) ──────────────
 //   휴머나이저가 도입부 등을 중복 생성하면 카피킬러 "동일 내용 과도한 반복" + FLOOR BLOCK.
 //   중복 문장은 새 정보가 0이므로 후속 등장만 삭제(첫 등장 보존) = 무손실. LLM 불필요.
@@ -164,4 +156,4 @@ function dedupeSentences(text) {
   return { text: out.join('\n\n'), removed };
 }
 
-module.exports = { measureNearDupSentences, boundaryLeak, measureDuplication, contentTokens, dedupeSentences };
+module.exports = { measureNearDupSentences, boundaryLeak, contentTokens, dedupeSentences };

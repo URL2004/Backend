@@ -1106,8 +1106,14 @@ async function runHumanizeJob(job, text) {
         logger.info('transform.formal_blog_guard', { jobId: job.id, uid: job.uid, reg });
       }
     }
+    // ★ 학술 동결 블록 보존(2026-06-20 #66: 기본 피하기가 참고문헌을 흡수·손실 "조푸른솔…2025,14-32" 소실).
+    //   레거시·thesis 경로처럼 blog/polish 경로에도 참고문헌·목차를 verbatim 보존(본문만 우회 후 재조립). FREEZE_BLOCKS=0 해제.
+    const freeze = require('../engine/freezeblocks');
+    const fb = (process.env.FREEZE_BLOCKS !== '0') ? freeze.splitAcademicBlocks(text) : { hasFrozen: false };
+    const bodyText = fb.hasFrozen ? fb.body : text;
+    if (fb.hasFrozen) logger.info('transform.blog_academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: (fb.refs || '').length });
     const out = await analyze.runHumanizeChunked({
-      text, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
+      text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
       // 과제 어투 다듬기(polish)는 회피가 목적이 아니므로 의미 게이트(semanticJudge) 분리 → 차단 급감.
       //   사실 게이트(novelty·lostFacts)는 buildFloorReport가 계속 잡아 날조·사실누락은 그대로 차단.
       //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
@@ -1169,9 +1175,11 @@ async function runHumanizeJob(job, text) {
     if ((out.floorReport.warnings || []).some(w => w.gate === 'lostFacts')) {
       job.note = (job.note ? job.note + ' ' : '') + '원문의 사실 일부(연도·수치·기관명 등)가 다듬는 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 주세요.';
     }
+    // ★ 동결 블록(참고문헌·목차) 재조립 — 우회된 본문 앞뒤로 verbatim 복원(#66 참고문헌 손실 방지).
+    const finalText = fb.hasFrozen ? freeze.reassembleAcademic(fb, out.result.outputText) : out.result.outputText;
     job.status = 'done';
     job.result = {
-      outputText: out.result.outputText,
+      outputText: finalText,
       floorReport: {
         status: out.floorReport.status,
         criticals: out.floorReport.criticals,
@@ -1186,7 +1194,7 @@ async function runHumanizeJob(job, text) {
       fallbackCount: out.fallbackCount
     };
     persistJob(job);
-    saveJobHistory(job, text, out.result.outputText);   // 이용 기록(서버) 노출
+    saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
     logger.info('transform.humanize_done', {
       jobId: job.id,
       uid: job.uid,
@@ -1233,6 +1241,13 @@ router.post('/transform', async (req, res) => {
       const rj = inputrouting.rejoinSplitChars(text);
       if (rj.changed) { logger.info('transform.input_rejoined', { mode, ratio: rj.ratio, before: text.length, after: rj.text.length }); text = rj.text; }
     } catch (e) { logger.warn('transform.input_rejoin_failed', { err: e && e.message }); }
+  }
+  // ★ AI URL 지문 제거(2026-06-20 #68): utm_source=chatgpt.com 류를 엔진 처리 전 제거(참고문헌 동결 우회 경로 대비). STRIP_AI_URL=0 해제.
+  if (process.env.STRIP_AI_URL !== '0') {
+    try {
+      const ai = require('../engine/spacing').stripAiUrlParams(text);
+      if (ai.removed) { logger.info('transform.input_ai_url_stripped', { mode, removed: ai.removed }); text = ai.text; }
+    } catch (e) { logger.warn('transform.input_ai_url_strip_failed', { err: e && e.message }); }
   }
   // ★ 중복 입력 사전 차단(2026-06-16): 같은 문서를 두 번 붙여넣은 입력은 중복 분량만큼 과금되고 긴 입력이라 결과까지
   //   꼬인다(실측 blog 2만자=412크레딧 + 잘린 결과). 차감·작업 시작 전에 막는다(무차감 — 중복 빼고 재시도하면 절약).

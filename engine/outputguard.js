@@ -131,4 +131,26 @@ function normalizeRegisterLeaks(text, rawText) {
   return { text: out, fixed };
 }
 
-module.exports = { stripPunchTemplates, stripEnglishArtifacts, detectRegister, registerLeakCount, normalizeRegisterLeaks, noOpScore, isStandalonePunch };
+// ★ 편집자/조수 메타 헤딩 제거(2026-06-20 #62: blog가 휴머나이징 대신 "### [수정 간호계획안]" 같은
+//   편집자 프레이밍 헤딩을 주입 = "고쳐주는 조수" 모드). 입력에 없던 '[수정/정리/개선/보완/교정/재구성/최종...]'
+//   류 대괄호 편집 라벨로만 이뤄진 라인을 제거(원문에 있으면 보존, [참고문헌]·[참고자료]는 대상 아님).
+//   결정론·무API. 헤딩 라인만 — 프로즈 속 표현은 오삭제 방지 위해 건드리지 않는다.
+const EDIT_LABEL = /\[\s*(?:수정|정리|개선|보완|교정|재구성|최종)\s*(?:된|한)?\s*[^\]]{0,20}\]/;
+function stripEditorialMeta(text, rawText = '') {
+  const raw = String(rawText || '');
+  let removed = 0;
+  const lines = String(text || '').split('\n');
+  const kept = lines.filter(line => {
+    const bare = line.replace(/^[#>*\-\s]+/, '').trim();   // 마크다운 헤딩/리스트 마커 제거 후 검사
+    const m = bare.match(EDIT_LABEL);
+    // 라인이 '편집 라벨'만으로 구성(헤딩성)되고 그 라벨이 입력엔 없으면 = 모델 주입 → 제거
+    if (m && bare.replace(EDIT_LABEL, '').trim().length === 0 && !raw.includes(m[0]) && !raw.includes(bare)) {
+      removed++; return false;
+    }
+    return true;
+  });
+  const out = kept.join('\n').replace(/\n{3,}/g, '\n\n');
+  return { text: out, removed };
+}
+
+module.exports = { stripPunchTemplates, stripEnglishArtifacts, detectRegister, registerLeakCount, normalizeRegisterLeaks, noOpScore, isStandalonePunch, stripEditorialMeta };

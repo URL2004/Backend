@@ -9,11 +9,13 @@
 
 // ★ heading 정규화(2026-06-19 실측 #18: "[참고자료]" 처럼 괄호로 감싼 변형이 분리되지 않아 참고문헌이 통째 누락).
 //   대괄호·꺾쇠·【】 어떤 조합이든, 끝에 콜론(:：)이 붙든, 일괄 허용한다(괄호 변형마다 패턴을 따로 두던 누락 제거).
-const REF_HEADING = /(^|\n)[ \t]*[<【\[]?\s*(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|참고\s*및\s*인용\s*문헌|References|REFERENCES|Bibliography|Works\s+Cited)\s*[>】\]]?[ \t]*[:：]?[ \t]*(?:\n|$)/;
-const TOC_HEADING = /(^|\n)[ \t]*[<【\[]?\s*(?:목\s*차|차\s*례|Contents|CONTENTS)\s*[>】\]]?[ \t]*[:：]?[ \t]*(?:\n|$)/;
+// ★ 번호·(option) 머리 허용(2026-06-20 #66: "4.\t(option) 참고문헌"이 미인식돼 참고문헌 "조푸른솔…2025,14-32" 손실).
+//   "N. " 번호 목록 머리 + "(option)" 같은 접두를 헤딩 앞에 허용.
+const REF_HEADING = /(^|\n)[ \t]*(?:\d+[.)][ \t]*)?(?:\(\s*option\s*\)[ \t]*)?[<【\[**]*\s*(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|참고\s*및\s*인용\s*문헌|References|REFERENCES|Bibliography|Works\s+Cited)\s*[>】\]**]*[ \t]*[:：]?[ \t]*(?:\n|$)/;
+const TOC_HEADING = /(^|\n)[ \t]*(?:\d+[.)][ \t]*)?[<【\[**]*\s*(?:목\s*차|차\s*례|Contents|CONTENTS)\s*[>】\]**]*[ \t]*[:：]?[ \t]*(?:\n|$)/;
 
-// 참고문헌 한 줄 entry: "저자명. (연도). 제목…" — 줄머리에 이름+근방 (YYYY).
-const CITE_LINE = /^[가-힣A-Za-z][^\n]{0,55}\(\s*(?:19|20)\d{2}[a-z]?\s*\)/;
+// 참고문헌 한 줄 entry: "저자명. (연도). 제목…" — 줄머리에 (선택)번호 + 이름 + 근방 (YYYY).
+const CITE_LINE = /^(?:\d+[.)]\s*)?[가-힣A-Za-z][^\n]{0,60}\(\s*(?:19|20)\d{2}[a-z]?\s*\)/;
 
 // 참고문헌 블록 시작 char index 탐지. ① 후반부 heading 기반 ② heading 없는 꼬리 인용런(≥3줄 연속). 없으면 -1.
 function detectRefStart(work) {

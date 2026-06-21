@@ -1578,6 +1578,16 @@ async function applyPassC(result, lang, signal, ctx = {}) {
     // ★ URL 공백 삽입 복원(2026-06-19 실측 #57·#58: "https://www. scourt. go. kr"). 원문 대조·무날조·전 모드.
     const ur = require('../engine/spacing').restoreUrls(t, ctx.rawText);
     if (ur.fixed) { logger.info('humanize.url_restored', { mode: ctx.mode, fixed: ur.fixed }); t = ur.text; }
+    // ★ 편집자 메타 헤딩 제거(2026-06-20 #62: "### [수정 간호계획안]" 류 조수 프레이밍). 입력 대비 모델 주입분만.
+    if (process.env.EDITORIAL_META_STRIP !== '0') {
+      const em = og.stripEditorialMeta(t, ctx.rawText);
+      if (em.removed) { logger.info('humanize.editorial_meta_stripped', { mode: ctx.mode, removed: em.removed }); t = em.text; }
+    }
+  }
+  // ★ AI URL 지문 제거(2026-06-20 #68: utm_source=chatgpt.com). 원문 불요·전 모드.
+  if (process.env.STRIP_AI_URL !== '0') {
+    const ai = require('../engine/spacing').stripAiUrlParams(t);
+    if (ai.removed) { logger.info('humanize.ai_url_param_stripped', { mode: ctx.mode, removed: ai.removed }); t = ai.text; }
   }
   result.outputText = t;
   // 품질 지표(차단 아님 — 표시·로깅용): no-op(보존형 수준)·register 이탈.
@@ -3111,6 +3121,14 @@ router.post('/analyze', async (req, res) => {
         text = rj.text;
       }
     } catch (e) { logger.warn('analyze.input_rejoin_failed', { err: e && e.message }); }
+  }
+  // ★ AI URL 지문 제거(2026-06-20 #68): 입력의 utm_source=chatgpt.com 류를 '엔진 처리 전'에 제거 →
+  //   참고문헌 동결(verbatim 보존)로 출력 후처리를 우회하는 경로에서도 지문이 안 남는다. STRIP_AI_URL=0으로 해제.
+  if (process.env.STRIP_AI_URL !== '0' && typeof text === 'string') {
+    try {
+      const ai = require('../engine/spacing').stripAiUrlParams(text);
+      if (ai.removed) { logger.info('analyze.input_ai_url_stripped', { removed: ai.removed }); text = ai.text; }
+    } catch (e) { logger.warn('analyze.input_ai_url_strip_failed', { err: e && e.message }); }
   }
   // 글자 수 상한: 크레딧 모드 30,000자(입력칸 표기와 일치), 쿠폰 모드 50,000자(무제한 티어용 안전 캡)
   const HARD_MAX = billingMode === 'coupon' ? 50000 : 30000;

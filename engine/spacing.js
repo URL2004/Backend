@@ -101,4 +101,18 @@ function restoreUrls(out, rawText) {
   return { text, fixed };
 }
 
-module.exports = { fixSpacing, restoreCodeTokens, restoreUrls, AMBIGUOUS };
+// ── AI 사용 지문 제거(2026-06-20 #68): ChatGPT 공유 링크의 utm_source=chatgpt.com 류 추적 파라미터가
+//   휴머나이징 후에도 참고문헌 URL에 남아 'AI 사용 지문'이 된다(휴머나이징한 글에 chatgpt.com이 박혀 있으면 직격).
+//   URL 구조는 보존하고 값에 chatgpt/openai를 포함한 utm_* 파라미터만 제거. 다른 추적 파라미터는 유지(안전).
+function stripAiUrlParams(text) {
+  if (!text) return { text: text || '', removed: 0 };
+  let removed = 0;
+  let t = String(text);
+  const V = "utm_[a-z]+=[^\\s&#\"'<>]*(?:chatgpt|openai)[^\\s&#\"'<>]*";
+  t = t.replace(new RegExp('&' + V, 'gi'), () => { removed++; return ''; });        // &utm..=chatgpt → 제거
+  t = t.replace(new RegExp('\\?' + V + '&', 'gi'), () => { removed++; return '?'; }); // ?utm..=chatgpt&b → ?b
+  t = t.replace(new RegExp('\\?' + V, 'gi'), () => { removed++; return ''; });        // ?utm..=chatgpt(끝) → 제거
+  return { text: t, removed };
+}
+
+module.exports = { fixSpacing, restoreCodeTokens, restoreUrls, stripAiUrlParams, AMBIGUOUS };

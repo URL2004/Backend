@@ -7,7 +7,7 @@ const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 
 const router = express.Router();
-const ALLOWED = new Set(['inquiry', 'signup', 'referral']);
+const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error']);
 
 const hits = new Map(); // uid -> [timestamps]
 function rateLimited(uid) {
@@ -19,11 +19,51 @@ function rateLimited(uid) {
   return arr.length > max;
 }
 
+function text(value, max = 160) {
+  return String(value || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, max);
+}
+
+function int(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : undefined;
+}
+
+function logPaymentError(req, uid) {
+  const b = req.body || {};
+  logger.warn('client.payment_error', {
+    uid: uid || undefined,
+    authenticated: !!uid,
+    stage: text(b.stage, 60),
+    checkoutType: text(b.checkoutType || b.checkout_type, 40),
+    code: text(b.code, 80),
+    message: text(b.message, 300),
+    status: int(b.status),
+    orderId: text(b.orderId, 120),
+    amount: int(b.amount),
+    credits: int(b.credits),
+    plan: text(b.plan, 80),
+    tier: text(b.tier, 80),
+    endpoint: text(b.endpoint, 120),
+    page: text(b.page, 120),
+    userUidPresent: !!b.uid,
+    trafficSource: text(b.trafficSource || b.traffic_source, 60)
+  });
+}
+
 router.post('/events', async (req, res) => {
-  if (!discord.enabled()) return res.json({ ok: true, skipped: true }); // 알림 미설정 시 즉시 종료(0 비용)
   const { idToken, type } = req.body || {};
   if (!ALLOWED.has(type)) return res.status(400).json({ error: 'unknown event' });
   const uid = await verifyToken(idToken);
+
+  if (type === 'payment_error') {
+    if (uid) setLogContext({ uid });
+    const key = uid || `anon:${req.ip || 'unknown'}`;
+    if (rateLimited(key)) return res.json({ ok: true, throttled: true });
+    logPaymentError(req, uid);
+    return res.json({ ok: true });
+  }
+
+  if (!discord.enabled()) return res.json({ ok: true, skipped: true }); // 알림 미설정 시 즉시 종료(0 비용)
   if (!uid) return res.status(401).json({ error: 'auth required' });
   setLogContext({ uid });
   if (rateLimited(uid)) return res.json({ ok: true, throttled: true });

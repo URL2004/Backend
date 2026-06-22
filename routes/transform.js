@@ -83,6 +83,14 @@ function restructureCredit(len, ev) {
 }
 router.restructureCredit = restructureCredit;
 
+// 짧은 휴머나이징 계열(blog·polish·보존형 폴백) 공통 단가.
+// 신규 가입 10크레딧 체험권과 맞춰 최소 10크레딧, 이후 100자당 2크레딧.
+const SHORT_HUMANIZE_MIN_CREDITS = 10;
+function shortHumanizeCredit(len) {
+  return Math.max(SHORT_HUMANIZE_MIN_CREDITS, Math.ceil((Number(len) || 0) / 100) * 2);
+}
+router.shortHumanizeCredit = shortHumanizeCredit;
+
 // 동시 실행 풀: formal(5~90분·고원가)과 short(blog·polish, 1~3분·저원가)를 분리 — 한 풀에 섞으면 서로 굶김.
 function poolOf(mode) { return (mode || 'formal') === 'formal' ? 'formal' : 'short'; }
 
@@ -617,10 +625,10 @@ function fallbackEnabled() {
   return v !== '0' && v !== 'off' && v !== 'false';
 }
 
-// 보존형 폴백 단가: 고급(재구성) 정액이 아니라 보존형(다듬기)과 동일한 100자당 1.
-//   고급 변환을 못 받았으므로 보존형 결과엔 보존형 가격만 받는다(과금 분쟁 차단).
+// 보존형 폴백 단가: 고급(재구성) 정액이 아니라 짧은 휴머나이징 공통 단가.
+//   고급 변환을 못 받았으므로 보존형 결과엔 short 가격만 받는다(과금 분쟁 차단).
 function preservationFallbackCredit(len) {
-  return Math.max(1, Math.ceil(len / 100));
+  return shortHumanizeCredit(len);
 }
 
 // 반환: true = job을 완전히 처리함(호출부는 즉시 return) / false = 폴백 실패(원래대로 blocked 진행)
@@ -1287,12 +1295,10 @@ router.post('/transform', async (req, res) => {
 
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const wantEvidence = mode === 'formal' && req.body.evidence === true;   // 근거 보강은 formal 전용(UI 잠금과 일치)
-  // 과금(기존 /analyze 산식과 동일 — 단가 변화 없음): blog=100자당 2 / polish(다듬기)=100자당 1 / formal=만자 구간 정액
-  const needed = mode === 'blog'
-    ? Math.max(2, Math.ceil(text.length / 100) * 2)
-    : mode === 'polish'
-      ? Math.max(1, Math.ceil(text.length / 100))
-      : restructureCredit(text.length, wantEvidence);
+  // 과금: 탐지 제외 짧은 기능(blog·polish)은 최소 10크레딧 + 100자당 2크레딧. formal은 길이 구간 정액.
+  const needed = (mode === 'blog' || mode === 'polish')
+    ? shortHumanizeCredit(text.length)
+    : restructureCredit(text.length, wantEvidence);
   let pre;
   try {
     pre = devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed);

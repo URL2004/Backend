@@ -252,8 +252,8 @@ router.post('/detect-report', async (req, res) => {
     },
     example,   // { before, after } | null — null이면 프론트가 블록 자체를 숨김
     solutions: {
-      polish: { band: B.POLISH_BAND[grade], credits: Math.ceil(len / 100) },
-      blog: { band: B.BLOG_BAND[grade], credits: Math.ceil(len / 100) * 2 },
+      polish: { band: B.POLISH_BAND[grade], credits: transform.shortHumanizeCredit(len) },
+      blog: { band: B.BLOG_BAND[grade], credits: transform.shortHumanizeCredit(len) },
       restructure: {
         band: B.RESTRUCTURE_BAND,
         credits: transform.restructureCredit(len, false),

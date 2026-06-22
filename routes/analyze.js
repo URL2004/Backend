@@ -3161,13 +3161,13 @@ router.post('/analyze', async (req, res) => {
     return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${HARD_MAX.toLocaleString()}자)` });
   }
 
-  // ★ 과금 정책(2026-06-12 수익 구조 개편): 100자=1크레딧 기본.
-  //   다듬기(레거시 /analyze)·detect는 기본. 블로그 회피(floorV2)는 원가가 ~3배(judge·grounding·다중 패스)라 100자=2크레딧.
-  //   재구성(genretransfer)은 별도 라우트(transform.js)에서 건당 정액(글자수 무관).
-  const isBlogEvasion = req.body.engine === 'floorV2' && (req.body.humanizeMode || 'blog') === 'blog';
-  const creditPer100 = isBlogEvasion ? 2 : 1;
-  const needed = Math.ceil(text.length / 100) * creditPer100;
   const opType = mode === 'detect' ? 'detect' : 'humanize';
+  // ★ 과금 정책: detect는 100자당 1크레딧 유지.
+  //   humanize 계열은 신규 가입 10크레딧 체험권과 맞춰 최소 10크레딧, 이후 100자당 2크레딧.
+  //   재구성(genretransfer)은 별도 라우트(transform.js)에서 길이 구간 정액.
+  const creditPer100 = opType === 'humanize' ? 2 : 1;
+  const rawNeeded = Math.ceil(text.length / 100) * creditPer100;
+  const needed = opType === 'humanize' ? Math.max(10, rawNeeded) : rawNeeded;
   // ★ history·creditHistory에 기록할 모드 라벨(표시·분석용). 구버전 클라이언트가 빈값·원시값을 보내도
   //   엔진 파라미터로 표시 라벨을 채운다. 정규화가 일어나면 구버전 클라이언트 식별용으로 로깅.
   const historyMode = opType === 'detect' ? 'detect' : normalizeHumanizeModeLabel(mode, req.body);

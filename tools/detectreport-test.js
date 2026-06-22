@@ -60,15 +60,16 @@ const srv = app.listen(0, async () => {
     check('문단 사유 한국어 카피', /일반론|구체/.test(r1.body.paragraphs[0].reason), r1.body.paragraphs[0]);
     check('미리보기 before=위험 문단 문장', !!r1.body.example && RISKY.includes(r1.body.example.before.slice(0, 20)), r1.body.example);
     const len = TEXT.length;
+    const shortCost = Math.max(10, Math.ceil(len / 100) * 2);
     const sol = r1.body.solutions;
-    check('비용 산식 일치(다듬기·블로그·재구성)', sol.polish.credits === Math.ceil(len / 100) && sol.blog.credits === Math.ceil(len / 100) * 2 && sol.restructure.credits === 200 && sol.restructure.creditsEvidence === 300, sol);
+    check('비용 산식 일치(다듬기·블로그·재구성)', sol.polish.credits === shortCost && sol.blog.credits === shortCost && sol.restructure.credits === 200 && sol.restructure.creditsEvidence === 300, sol);
     check('밴드 3종 포함', !!sol.polish.band && !!sol.blog.band && !!sol.restructure.band, sol);
     check('잔여 횟수 1', r1.body.remainingToday === 1, r1.body.remainingToday);
 
     const r2 = await post({ text: TEXT });
     check('2회차 200·잔여 0', r2.status === 200 && r2.body.remainingToday === 0, r2.body.remainingToday);
     const r3 = await post({ text: TEXT });
-    check('3회차 429(일일 한도 2)', r3.status === 429, r3);
+    check('3회차 402(무료 소진 후 유료 감지 안내)', r3.status === 402 && r3.body.code === 'FREE_EXHAUSTED', r3);
 
     // 로컬 개발 모드(이중 게이트): 한도 미적용 + 잔여 표기 null — devNoAuth는 요청 시점에 env를 읽으므로 같은 프로세스에서 검증 가능
     process.env.DEV_NO_AUTH = '1';
@@ -84,6 +85,6 @@ const srv = app.listen(0, async () => {
     console.error('  ✗ 테스트 실행 오류:', e);
   }
   console.log(`\n결과: ${passed}통과 / ${failed}실패`);
-  srv.close(() => process.exit(failed ? 1 : 0));   // close 콜백 뒤 exit — Windows libuv 종료 레이스 회피
-  setTimeout(() => process.exit(failed ? 1 : 0), 1500).unref();
+  process.exitCode = failed ? 1 : 0;
+  srv.close();   // Windows에서 강제 process.exit가 libuv assertion을 낼 수 있어 자연 종료시킨다.
 });

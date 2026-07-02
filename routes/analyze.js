@@ -2431,14 +2431,15 @@ async function runHumanize({ text, mode = 'assignment', lang = 'ko', signal, flo
 
 // server-side chunking 오케스트레이션 — 문단별 재작성 + 좌/우 경계 + 청크별 FLOOR + 병합(§7.2).
 // 긴 글에서 프론트 분할(prevContext 300자)을 대체. 청크별로 novelty/화자를 잡고, 병합 후 전체 재검사.
-async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, grounding = false, userNotes = '', evidence = '', tonePolish = false } = {}) {
+async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', signal, floorV2 = true, optIn = false, judge = false, antiDetect = false, grounding = false, userNotes = '', evidence = '', tonePolish = false, styleProfile = '' } = {}) {
   const floor = require('../engine/floor');
   const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
+  const basicStyleStability = styleProfile === 'basic_style_stability';
   // ★ 두 종류의 허용 추가재료(§설계-evidence-grounding):
   //   memo = 사용자 경험 메모(1인칭 장면화, optIn으로 화자 게이트 개방)
   //   evid = 웹검증+학생승인 사실(3인칭 격식 인용, 화자 게이트는 닫힌 채 유지)
   //   notes = 둘의 합집합 — 기존 allowedExtra 사이트 전부가 이 변수를 쓰므로 "허용 세계 = 원문∪메모∪승인사실"이 자동 성립.
-  const memo = (userNotes || '').trim();
+  const memo = basicStyleStability ? '' : (userNotes || '').trim();
   const evid = (evidence || '').trim();
   const notes = [memo, evid].filter(Boolean).join('\n');
   if (memo) optIn = true;
@@ -2458,7 +2459,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   사후패치 0/22과 동일 패턴) → 메인 경로는 STYLE_ANCHOR=1 옵트인. 누출은 anchor_leak 게이트가 차단.
   const anchorActive = floorV2 && lang === 'ko' && mode === 'assignment' && process.env.STYLE_ANCHOR === '1';
   const buildSys = (un, ev, anchorIdx = null) => floorV2
-    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev, anchorIdx, tonePolish })
+    ? require('../engine/prompt').buildSystemPrompt(mode, lang, { speakerType: contract.speakerType, lengthPolicy: contract.lengthPolicy, userNotes: un, register: contract.register, evidence: ev, anchorIdx, tonePolish, styleProfile })
     : { stable: getHumanizeSystem(mode, lang), volatile: '' };  // ★ 캐시: 비-floor도 {stable,volatile}로 통일
   let humanizeSystem = buildSys('', '', null);  // 기본(메모·evidence·앵커 없음 — 수리 패스용)
   const topicSim = (a, b) => {
@@ -2650,6 +2651,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
   const merged = mergeChunks(chunks);
   const result = { outputText: merged };
+  if (styleProfile) result.styleProfile = styleProfile;
   result.povSeed = povSeed;
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, merged);
   result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(text, merged);
@@ -2779,7 +2781,16 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   if (process.env.BURST !== '0') {
     try {
       const _burstLowCV = process.env.BURST_LOWCV ? parseFloat(process.env.BURST_LOWCV) : 0.6;
-      const br = await require('../engine/burstiness').burstinessPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes, aggressive: true, lowCV: _burstLowCV });
+      const br = await require('../engine/burstiness').burstinessPass(result.outputText, {
+        lang,
+        signal,
+        floor,
+        rawText: text,
+        allowedExtra: notes,
+        aggressive: !basicStyleStability,
+        lowCV: basicStyleStability ? Math.max(0.5, Math.min(_burstLowCV, 0.55)) : _burstLowCV,
+        styleProfile
+      });
       if (br.text && br.text !== result.outputText) {
         const preV = floorPreV();
         const postV = floor.collectFloorViolations({ result: { outputText: br.text }, rawText: textF, povSeed, optIn, mode, allowedExtra: notes });
@@ -2993,6 +3004,15 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         result.registerNormalize = { target: 'haeyo', changed: rn.changed, basis: 'blog' };
       }
     } catch (e) { result.registerNormalize = { error: e.message }; }
+  }
+
+  // ★ 기본 피하기 개발테스트: 내용은 그대로 두고, 1문장짜리 문단이 과하게 끊기는 결과만 자연스럽게 묶는다.
+  if (basicStyleStability && process.env.BASIC_HUMANIZE_FLOW_COHESION !== '0') {
+    try {
+      const fc = require('../engine/flowcohesion').flowCohesion(result.outputText);
+      if (fc.text && fc.text !== result.outputText) result.outputText = fc.text;
+      result.flowCohesion = { merged: fc.merged, beforeParas: fc.beforeParas, afterParas: fc.afterParas };
+    } catch (e) { result.flowCohesion = { error: e.message }; }
   }
 
   // ★ 절단 마감 안전망(2026-06-22): 청크 복구가 못 잡은 잔여 절단(judge repair 등 문서 단계)도 끊긴 조각만

@@ -33,8 +33,11 @@ function measureBurstiness(text) {
   return { cv, shortRatio, mean, n: lens.length };
 }
 
-function buildPrompt(para, lang, aggressive = false) {
-  const intensity = aggressive
+function buildPrompt(para, lang, aggressive = false, styleProfile = '') {
+  const gentle = styleProfile === 'basic_style_stability';
+  const intensity = gentle
+    ? `문단 흐름을 깨지 않는 선에서만 문장 길이를 조금 다양하게 만들어라. 짧은 문장은 문단당 최대 1개, 12~25자 정도의 완결문만 허용한다. 짧은 문단을 새로 만들거나 빈 줄을 늘리지 마라.`
+    : aggressive
     ? `이 문단의 호흡을 과감하게 바꿔라. 문장 서너 개 중 하나는 아주 짧게(한 호흡) 만들고, 나머지는 길게 흘려라. 긴 문장과 짧은 문장의 낙차가 분명히 느껴지게. ★짧은 문장도 그 문단의 말투를 그대로 따르고(존댓말 글이면 존댓말로, 한다체면 한다체로), 앞 문장의 단어를 되받는 공허한 한 단어 단정은 만들지 마라.`
     : `아주 짧은 문장과 긴 문장을 섞어, 한 문단 안에서 호흡을 크게 바꿔라 — 단 짧은 문장도 그 문단의 말투를 그대로 따른다.`;
   const system = lang === 'en'
@@ -52,7 +55,7 @@ function buildPrompt(para, lang, aggressive = false) {
 }
 
 // 국소 버스티니스 패스: 저CV(균일) 문단만 재작성. FLOOR로 날조 차단, 길이중립, CV 실제 개선만 채택.
-async function burstinessPass(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', lowCV = LOW_CV, aggressive = false } = {}) {
+async function burstinessPass(text, { lang = 'ko', signal, floor, rawText = '', allowedExtra = '', lowCV = LOW_CV, aggressive = false, styleProfile = '' } = {}) {
   const paras = text.split(/\n\n+/);
   const out = paras.slice();
   let repaired = 0, attempted = 0;
@@ -63,7 +66,7 @@ async function burstinessPass(text, { lang = 'ko', signal, floor, rawText = '', 
     const cv = cvOf(lens);
     if (cv >= lowCV) continue;                 // 이미 충분히 들쭉날쭉
     attempted++;
-    const { system, user } = buildPrompt(p, lang, aggressive);
+    const { system, user } = buildPrompt(p, lang, aggressive, styleProfile);
     let cand = '';
     try { cand = (await llmText({ system, user, signal, maxTokens: 1300, model: HAIKU }) || '').trim(); } catch { continue; }
     if (!cand) continue;

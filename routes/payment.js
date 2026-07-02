@@ -6,6 +6,7 @@ const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const { getRevenue } = require('../lib/revenue');
 const detectCalibration = require('../lib/detectCalibration');
+const basicHumanizeExperiment = require('../lib/basicHumanizeExperiment');
 
 const router = express.Router();
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
@@ -1024,6 +1025,49 @@ router.post('/admin/update-detect-calibration', async (req, res) => {
   } catch (err) {
     logger.error('admin.detect_calibration_update_failed', { adminUid, err });
     res.status(500).json({ error: '감지 보정 설정 저장에 실패했습니다.' });
+  }
+});
+
+// 관리자: 기본 피하기 개발테스트 토글.
+// Firestore 설정이 있으면 env보다 우선 적용되고, 없으면 env 기본값이 사용된다.
+router.post('/admin/basic-humanize-experiment', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const config = await basicHumanizeExperiment.getRuntimeConfig({ db, logger, force: true });
+    res.json({
+      ok: true,
+      config,
+      envConfig: basicHumanizeExperiment.publicConfig(basicHumanizeExperiment.config(), 'env')
+    });
+  } catch (err) {
+    logger.error('admin.basic_humanize_experiment_load_failed', { adminUid, err });
+    res.status(500).json({ error: '기본 피하기 개발테스트 설정을 불러오지 못했습니다.' });
+  }
+});
+
+router.post('/admin/update-basic-humanize-experiment', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const patch = basicHumanizeExperiment.sanitizeConfig(req.body && req.body.config);
+    await db.collection(basicHumanizeExperiment.SETTINGS_COLLECTION).doc(basicHumanizeExperiment.SETTINGS_DOC).set({
+      ...patch,
+      version: basicHumanizeExperiment.VERSION,
+      updatedBy: adminUid,
+      updatedAtMs: Date.now(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    basicHumanizeExperiment.clearRuntimeConfigCache();
+    const config = await basicHumanizeExperiment.getRuntimeConfig({ db, logger, force: true });
+    logger.info('admin.basic_humanize_experiment_updated', {
+      adminUid,
+      enabled: config.enabled
+    });
+    res.json({ ok: true, config });
+  } catch (err) {
+    logger.error('admin.basic_humanize_experiment_update_failed', { adminUid, err });
+    res.status(500).json({ error: '기본 피하기 개발테스트 설정 저장에 실패했습니다.' });
   }
 });
 

@@ -20,6 +20,7 @@ const inputrouting = require('../engine/inputrouting');   // 재구성 부적합
 const { suggestEvidence } = require('../engine/evidence');
 const { reviewCandidates, hostOf } = require('../engine/evidencereview');
 const discord = require('../lib/discord');
+const basicHumanizeExperiment = require('../lib/basicHumanizeExperiment');
 
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
@@ -315,9 +316,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence'];
+  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicExperiment'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount'];
+  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicExperiment'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -1120,6 +1121,19 @@ async function runHumanizeJob(job, text) {
     const fb = (process.env.FREEZE_BLOCKS !== '0') ? freeze.splitAcademicBlocks(text) : { hasFrozen: false };
     const bodyText = fb.hasFrozen ? fb.body : text;
     if (fb.hasFrozen) logger.info('transform.blog_academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: (fb.refs || '').length });
+    let styleProfile = '';
+    if (!isPolish && job.mode === 'blog') {
+      try {
+        const exp = await basicHumanizeExperiment.getRuntimeConfig({ db, logger });
+        if (exp.enabled) {
+          styleProfile = 'basic_style_stability';
+          job.basicExperiment = { enabled: true, version: exp.version, profile: styleProfile };
+          logger.info('transform.basic_humanize_experiment_applied', { jobId: job.id, uid: job.uid, profile: styleProfile, source: exp.source });
+        }
+      } catch (e) {
+        logger.warn('transform.basic_humanize_experiment_load_failed', { jobId: job.id, uid: job.uid, err: e && e.message });
+      }
+    }
     const out = await analyze.runHumanizeChunked({
       text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
       // 과제 어투 다듬기(polish)는 회피가 목적이 아니므로 의미 게이트(semanticJudge) 분리 → 차단 급감.
@@ -1127,7 +1141,7 @@ async function runHumanizeJob(job, text) {
       //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
       // ★ P1-5(2026-06-18 감사): polish(그대로 다듬기)는 최소 수정이 목적인데 grounding(추상 문장→선명한 판단문
       //   교체)이 켜져 기대보다 많이 바뀌었다. polish면 grounding off(보존 우선), 회피 경로(blog)에선 유지.
-      floorV2: true, optIn: false, judge: !isPolish, grounding: !isPolish, userNotes: job.memo || '', tonePolish: isPolish
+      floorV2: true, optIn: false, judge: !isPolish, grounding: !isPolish, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
     });
     // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
     if (out.floorReport && out.floorReport.status === 'blocked') {
@@ -1202,7 +1216,10 @@ async function runHumanizeJob(job, text) {
       noOpScore: Number.isFinite(out.result.noOpScore) ? out.result.noOpScore : null,
       registerLeak: out.result.registerLeak,
       chunkCount: out.chunkCount,
-      fallbackCount: out.fallbackCount
+      fallbackCount: out.fallbackCount,
+      basicExperiment: job.basicExperiment || null,
+      styleProfile: out.result.styleProfile || null,
+      flowCohesion: out.result.flowCohesion || null
     };
     persistJob(job);
     saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출

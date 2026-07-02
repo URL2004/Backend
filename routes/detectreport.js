@@ -16,9 +16,10 @@ const transform = require('./transform');       // restructureCredit 재사용(�
 const sg = require('../engine/surfaceguard');
 const { getDetectSystem } = require('../prompts');
 const crypto = require('crypto');
-const { verifyToken, verifyAppCheck } = require('../config');
+const { db, verifyToken, verifyAppCheck } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
+const detectCalibration = require('../lib/detectCalibration');
 
 const DAILY_CAP = Number(process.env.DETECT_DAILY_CAP) || 3;   // 무료 감지 하루 한도(이후 유료 100자당 1크레딧)
 const daily = new Map();   // 'u:uid' | 'ip:addr' → { day, count } — 메모리(재시작 리셋은 사용자에게 유리한 방향)
@@ -200,7 +201,16 @@ router.post('/detect-report', async (req, res) => {
   // LLM 실패 시 엔진 추정 확률 — "판정 보류" 금지(사장님 지시): 게이지는 항상 숫자를 보여준다.
   //   추상위험비율(0~1) → 22~92% 선형 매핑. 실측 감각(혼합 글 52·위험 짧은 글 88)과 대략 정합.
   const engineProb = Math.round(Math.min(92, Math.max(15, 22 + 70 * (ir.abstractRiskRatio || 0))));
-  const probability = det ? Math.round(det.probability) : engineProb;
+  const rawProbability = det ? Math.round(det.probability) : engineProb;
+  const calibration = await detectCalibration.applyHistoryCalibration({
+    db,
+    uid,
+    text,
+    probability: rawProbability,
+    logger,
+    route: 'detect_report'
+  });
+  const probability = calibration.probability;
 
   // 과금/카운트는 성공 직전에만 — 서버 오류로 보고서를 못 받았는데 횟수 소진·차감되는 일 방지.
   const isPaidRun = overFree && wantPaid;
@@ -220,6 +230,9 @@ router.post('/detect-report', async (req, res) => {
     uid,
     grade,
     probability,
+    rawProbability: calibration.applied ? calibration.rawProbability : undefined,
+    calibrated: calibration.applied,
+    calibration: calibration.applied ? calibration.meta : undefined,
     probSource: det ? 'llm' : 'engine',
     remainingToday: devNoAuth ? null : DAILY_CAP - used - 1
   });
@@ -233,6 +246,11 @@ router.post('/detect-report', async (req, res) => {
     charged: isPaidRun ? cost : 0,
     remainingToday: devNoAuth ? null : (overFree ? 0 : Math.max(0, DAILY_CAP - used - 1)),   // null이면 프론트가 잔여 표기 생략(dev 무제한)
     probability,
+    ...(calibration.applied ? {
+      rawProbability: calibration.rawProbability,
+      calibrated: true,
+      probabilityCalibration: calibration.meta
+    } : {}),
     probSource: det ? 'llm' : 'engine',
     summary: det ? det.summary : copy.desc,
     detail: det ? det.detail : null,

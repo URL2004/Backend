@@ -14,6 +14,7 @@ const { getDetectSystem, getHumanizeSystem } = require('../prompts');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body/query 폴백(deprecated)
+const detectCalibration = require('../lib/detectCalibration');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -3098,6 +3099,8 @@ async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result
   };
   if (isDetect) {
     doc.probability = (result && typeof result.probability === 'number') ? result.probability : null;
+    if (result && typeof result.rawProbability === 'number') doc.rawProbability = result.rawProbability;
+    if (result && result.probabilityCalibration) doc.probabilityCalibration = result.probabilityCalibration;
     doc.summary = (result && result.summary) || '';
     doc.detail = (result && result.detail) || '';
   } else {
@@ -3252,6 +3255,19 @@ router.post('/analyze', async (req, res) => {
       result = extractClaudeResult(data, detectTool.name);
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
         throw new Error('detect_incomplete');
+      }
+      const calibration = await detectCalibration.applyHistoryCalibration({
+        db,
+        uid: pre.uid,
+        text,
+        probability: result.probability,
+        logger,
+        route: 'analyze'
+      });
+      if (calibration.applied) {
+        result.rawProbability = calibration.rawProbability;
+        result.probability = calibration.probability;
+        result.probabilityCalibration = calibration.meta;
       }
       usage = data.usage;
     } else if (req.body.engine === 'floorV2') {
@@ -3688,6 +3704,19 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       result = extractClaudeResult(data, detectTool.name);
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
         throw new Error('detect_incomplete');
+      }
+      const calibration = await detectCalibration.applyHistoryCalibration({
+        db,
+        uid: pre.uid,
+        text,
+        probability: result.probability,
+        logger,
+        route: 'analyze_pdf'
+      });
+      if (calibration.applied) {
+        result.rawProbability = calibration.rawProbability;
+        result.probability = calibration.probability;
+        result.probabilityCalibration = calibration.meta;
       }
       usage = data.usage;
     } else {

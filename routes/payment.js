@@ -5,6 +5,7 @@ const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const { getRevenue } = require('../lib/revenue');
+const detectCalibration = require('../lib/detectCalibration');
 
 const router = express.Router();
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
@@ -828,6 +829,8 @@ router.post('/admin/user-history', async (req, res) => {
         createdAtMs: timestampMs(h.createdAt),
         credits: Number(h.credits) || 0,
         probability: typeof h.probability === 'number' ? h.probability : null,
+        rawProbability: typeof h.rawProbability === 'number' ? h.rawProbability : null,
+        calibrated: !!(h.probabilityCalibration && h.probabilityCalibration.applied),
         summaryPreview: historyPreview(h.summary, 160),
         inputPreview: historyPreview(h.inputText, 160),
         outputPreview: historyPreview(h.outputText, 160),
@@ -865,6 +868,8 @@ router.post('/admin/user-history-item', async (req, res) => {
       createdAtMs: timestampMs(h.createdAt),
       credits: Number(h.credits) || 0,
       probability: typeof h.probability === 'number' ? h.probability : null,
+      rawProbability: typeof h.rawProbability === 'number' ? h.rawProbability : null,
+      probabilityCalibration: h.probabilityCalibration || null,
       summary: asText(h.summary),
       detail: asText(h.detail),
       inputText: String(h.inputText || ''),
@@ -972,6 +977,53 @@ router.post('/admin/jobs', async (req, res) => {
   } catch (err) {
     logger.error('admin.jobs_failed', { adminUid, err });
     res.status(500).json({ error: '작업 목록을 불러오지 못했습니다. (transformJobArchive 색인 확인)' });
+  }
+});
+
+// 관리자: AI 감지 보정 설정 조회/수정.
+// Firestore 설정이 있으면 env보다 우선 적용되고, 없으면 env 기본값이 사용된다.
+router.post('/admin/detect-calibration', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const config = await detectCalibration.getRuntimeConfig({ db, logger, force: true });
+    res.json({
+      ok: true,
+      config,
+      envConfig: detectCalibration.publicConfig(detectCalibration.config(), 'env')
+    });
+  } catch (err) {
+    logger.error('admin.detect_calibration_load_failed', { adminUid, err });
+    res.status(500).json({ error: '감지 보정 설정을 불러오지 못했습니다.' });
+  }
+});
+
+router.post('/admin/update-detect-calibration', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const patch = detectCalibration.sanitizeConfig(req.body && req.body.config);
+    await db.collection(detectCalibration.SETTINGS_COLLECTION).doc(detectCalibration.SETTINGS_DOC).set({
+      ...patch,
+      version: detectCalibration.VERSION,
+      updatedBy: adminUid,
+      updatedAtMs: Date.now(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    detectCalibration.clearRuntimeConfigCache();
+    const config = await detectCalibration.getRuntimeConfig({ db, logger, force: true });
+    logger.info('admin.detect_calibration_updated', {
+      adminUid,
+      enabled: config.enabled,
+      limit: config.limit,
+      factor: config.factor,
+      maxReduction: config.maxReduction,
+      floor: config.floor
+    });
+    res.json({ ok: true, config });
+  } catch (err) {
+    logger.error('admin.detect_calibration_update_failed', { adminUid, err });
+    res.status(500).json({ error: '감지 보정 설정 저장에 실패했습니다.' });
   }
 });
 

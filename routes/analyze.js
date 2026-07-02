@@ -2435,6 +2435,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const floor = require('../engine/floor');
   const { splitChunks, mergeChunks, nearestChunkId } = require('../engine/chunk');
   const basicReportStyle = styleProfile === 'basic_report' || styleProfile === 'basic_style_stability';
+  const basicBlogStyle = styleProfile === 'basic_blog';
   // ★ 두 종류의 허용 추가재료(§설계-evidence-grounding):
   //   memo = 사용자 경험 메모(1인칭 장면화, optIn으로 화자 게이트 개방)
   //   evid = 웹검증+학생승인 사실(3인칭 격식 인용, 화자 게이트는 닫힌 채 유지)
@@ -2787,8 +2788,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         floor,
         rawText: text,
         allowedExtra: notes,
-        aggressive: !basicReportStyle,
-        lowCV: basicReportStyle ? Math.max(0.5, Math.min(_burstLowCV, 0.55)) : _burstLowCV,
+        aggressive: !(basicReportStyle || basicBlogStyle),
+        lowCV: (basicReportStyle || basicBlogStyle) ? Math.max(0.5, Math.min(_burstLowCV, 0.55)) : _burstLowCV,
         styleProfile
       });
       if (br.text && br.text !== result.outputText) {
@@ -2996,6 +2997,13 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
       if (rn.changed) result.outputText = rn.text;
       result.registerNormalize = { target: 'hap', changed: rn.changed, basis: 'basic_report' };
     } catch (e) { result.registerNormalize = { error: e.message }; }
+  } else if (mode === 'blog' && basicBlogStyle && process.env.BASIC_BLOG_REGISTER_NORM !== '0') {
+    try {
+      const targetReg = contract.register === 'polite' ? 'hap' : 'haeyo';
+      const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, targetReg);
+      if (rn.changed) result.outputText = rn.text;
+      result.registerNormalize = { target: targetReg, changed: rn.changed, basis: 'basic_blog', sourceRegister: contract.register };
+    } catch (e) { result.registerNormalize = { error: e.message }; }
   } else if (mode === 'blog' && process.env.BLOG_REGISTER_NORM !== '0') {
     // ★ blog 말투 일관화(2026-06-17 실측: 청크별 재작성이 앞=해요체·뒤=한다체로 갈려 중간에 어투가 바뀜).
     //   blog는 캐주얼 해요체가 *목표*이므로, dominant 무관하게 출력의 한다체·합쇼체 잔류를 항상 해요체로 통일한다
@@ -3012,8 +3020,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { result.registerNormalize = { error: e.message }; }
   }
 
-  // ★ 기본 피하기 개발테스트: 내용은 그대로 두고, 1문장짜리 문단이 과하게 끊기는 결과만 자연스럽게 묶는다.
-  if (basicReportStyle && process.env.BASIC_HUMANIZE_FLOW_COHESION !== '0') {
+  // ★ 기본 피하기 문단 정리: 내용은 그대로 두고, 1문장짜리 문단이 과하게 끊기는 결과만 자연스럽게 묶는다.
+  if ((basicReportStyle || basicBlogStyle) && process.env.BASIC_HUMANIZE_FLOW_COHESION !== '0') {
     try {
       const fc = require('../engine/flowcohesion').flowCohesion(result.outputText);
       if (fc.text && fc.text !== result.outputText) result.outputText = fc.text;

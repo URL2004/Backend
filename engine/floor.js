@@ -10,15 +10,16 @@
 function computePovSeed(rawText) {
   const t = rawText || '';
   // ★ 1인칭 단수 — 명확한 마커만(앞 한글 음절 붙으면 다른 단어로 보고 제외).
-  //   저/제 계열 + 내가/내게/나에게/나의 + 소유격 "내 X". '나는/나도/나를/난'은 동사 '나다'
-  //   (냄새 나는·소리 나는·불이 난)와 충돌이 잦아 제외 — 캐주얼 누수는 '내/제가', 일화는 anecdote 가드가 커버.
+  //   저/제 계열 + 내가/내게/나에게/나의 + 소유격 "내 X".
+  //   '나는/난'은 "냄새 나는" 같은 관형형과 충돌하므로 문장 시작 위치만 별도 카운트한다.
   const fpRe = /(?<![가-힣])(저는|저의|저도|저를|저에게|저로서|저랑|저와|저한테|제가|제 생각|제 경험|제 친구|제 룸메|내가|내게|나에게|나의|내(?=\s))/g;
+  const fpLooseSentenceStartRe = /(?:^|[.!?…\n]\s*)(나는|난|나도|나를|나에게|나의)(?=\s)/g;
   const fpPluralRe = /(?<![가-힣])(우리는|우리가|우리의|우리도|저희는|저희가|저희의)/g;
   const orgVoiceRe = /(본\s*보고서|본\s*연구|본\s*글|이\s*글은|이\s*보고서|본고|본\s*논문)/g;
   // 영어 1인칭: 개인(I/me/my/mine) vs 조직(we/us/our/ours) 분리. "I"는 대문자 단독, 나머지는 소문자 단어경계.
   const enSingRe = /\bI\b|\b(?:me|my|mine|myself)\b/g;
   const enPlurRe = /\b(?:we|us|our|ours|ourselves)\b/gi;
-  const ko_fp_singular = (t.match(fpRe) || []).length;
+  const ko_fp_singular = (t.match(fpRe) || []).length + (t.match(fpLooseSentenceStartRe) || []).length;
   const ko_fp_plural = (t.match(fpPluralRe) || []).length;
   const en_fp_singular = (t.match(enSingRe) || []).length;
   const en_fp_plural = (t.match(enPlurRe) || []).length;
@@ -55,7 +56,7 @@ function buildFloorDirective(povSeed, optIn) {
     } else {
       blocks.push([
         '[화자 보존]',
-        '원문에 1인칭 화자(저/제가/나/내가)가 전혀 없다. 새 1인칭 화자나 "제가 작년 학기에 ~한 적이 있다" 같은 개인 경험·일화를 만들지 마라. 원문의 비인칭·일반 서술 시점을 그대로 유지한다. 이 지시는 모드 규칙의 "1인칭 일화 추가/교체"보다 우선한다.'
+        '원문에 1인칭 화자(저/제가/나/내가/우리/저희)가 전혀 없다. 새 1인칭 화자나 "제가 작년 학기에 ~한 적이 있다" 같은 개인 경험·일화를 만들지 마라. 원문의 비인칭·일반 서술 시점을 그대로 유지한다. 이 지시는 모드 규칙의 "1인칭 일화 추가/교체"보다 우선한다.'
       ].join('\n'));
     }
   }
@@ -69,14 +70,20 @@ function gateFailedFields(failed, povSeed, optIn) {
   return (failed || []).filter(f => !INJECTION_FAIL_MARKERS.some(m => f.includes(m)));
 }
 
-// 화자 드리프트 가드(C27): 원문 1인칭 단수 0인데 출력에 1인칭 단수가 등장 = FLOOR 위반.
+// 화자 드리프트 가드(C27): 원문에 없던 1인칭이 출력에 등장 = FLOOR 위반.
 function measurePovDrift(rawText, outputText, povSeed) {
   const seed = povSeed || computePovSeed(rawText);
   const outSeed = computePovSeed(outputText || '');
+  const introducedSingular = seed.fp_singular === 0 && outSeed.fp_singular > 0;
+  const introducedPlural = seed.fp_singular === 0 && seed.fp_plural === 0 && outSeed.fp_plural > 0;
   return {
     input_fp_singular: seed.fp_singular,
+    input_fp_plural: seed.fp_plural,
     output_fp_singular: outSeed.fp_singular,
-    introducedFirstPerson: seed.fp_singular === 0 && outSeed.fp_singular > 0,  // 비인칭→개인(FLOOR 위반)
+    output_fp_plural: outSeed.fp_plural,
+    introducedFirstPerson: introducedSingular,  // 비인칭/조직→개인(FLOOR 위반)
+    introducedFirstPersonPlural: introducedPlural,  // 비인칭→우리/저희(FLOOR 위반)
+    introducedAnyFirstPerson: introducedSingular || introducedPlural,
     droppedFirstPerson: seed.fp_singular > 0 && outSeed.fp_singular === 0      // 개인→비인칭(화자 손실, 보고용)
   };
 }
@@ -404,9 +411,9 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
   // 개인 화자(I/저/제가) 신규 주입 = 위반(조직 we 문서에 I 추가도 포함). opt-in이면 허용.
   // ★ 과제 자연체(FORMAL_HUMAN, 격식 모드): 필자 1인칭 *판단* 허용 → pov 위반에서 제외. 단 개인 일화(experience_novelty)는 아래에서 계속 strict 차단.
   const formalHuman = (process.env.FORMAL_HUMAN === '1' || process.env.ASSIGNMENT_B7 === '1') && (mode === 'assignment' || mode === 'thesis');
-  if (!optIn && !formalHuman && drift.introducedFirstPerson) {
-    v.push({ type: 'pov', detail: `출력 개인 1인칭 ${drift.output_fp_singular}건`,
-      fix: '출력에 새로 등장한 개인 1인칭(I/my/저/제가/나/내가)과 개인 일화를 제거하라. 원문이 조직(we/우리) 화자면 그 시점을 유지하고, 비인칭이면 비인칭을 유지하라. 원문엔 개인 1인칭이 없었다.' });
+  if (!optIn && !formalHuman && drift.introducedAnyFirstPerson) {
+    v.push({ type: 'pov', detail: `출력 1인칭 단수 ${drift.output_fp_singular}건·복수 ${drift.output_fp_plural}건`,
+      fix: '출력에 새로 등장한 1인칭(I/my/we/our/저/제가/나/내가/우리/저희)과 개인 일화를 제거하라. 원문이 조직(we/우리) 화자면 그 시점을 유지하고, 비인칭이면 비인칭을 유지하라. 원문에 없던 화자를 새로 만들지 마라.' });
   }
 
   if (mode === 'thesis') {
@@ -515,7 +522,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   if (len.status === 'overHard') criticals.push({ gate: 'length_overrun', detail: len.ratio });
   // ★ 과제 자연체(FORMAL_HUMAN, 격식): 필자 1인칭 판단 허용 → pov_inject 제외(experience_novelty=일화는 위에서 계속 critical).
   const _fhReport = (process.env.FORMAL_HUMAN === '1' || process.env.ASSIGNMENT_B7 === '1') && (mode === 'assignment' || mode === 'thesis');
-  if (!optIn && !_fhReport && drift.introducedFirstPerson) criticals.push({ gate: 'pov_inject', detail: drift.output_fp_singular });
+  if (!optIn && !_fhReport && drift.introducedAnyFirstPerson) criticals.push({ gate: 'pov_inject', detail: `singular ${drift.output_fp_singular}·plural ${drift.output_fp_plural}` });
   // ★ 반복 소프트화(2026-06-16): 단일 정확중복(exact≤1·fuzzy≤2)은 26K 장문에서 사소하다 → 경고. 기계적 반복(다수)만
   //   하드 차단(AI 신호). 26K 논문이 exact 1건에 차단되던 케이스(#6) 완화.
   if (rep.total) {
@@ -556,7 +563,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   return {
     status, criticals, warnings,
     metrics: { lengthRatio: len.ratio, novelty: nov.count, lostFacts: lost.count, repetition: rep.total,
-      povInject: !!(drift.introducedFirstPerson && isSpeakerGateClosed(povSeed, optIn)), conclusionDrift: concl.flagged,
+      povInject: !!(drift.introducedAnyFirstPerson && isSpeakerGateClosed(povSeed, optIn)), conclusionDrift: concl.flagged,
       judge: result.judge ? (result.judge.ran ? (result.judge.pass ? 'pass' : 'fail') : 'skip') : null }
   };
 }

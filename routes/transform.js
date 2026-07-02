@@ -1141,6 +1141,9 @@ async function runHumanizeJob(job, text) {
         };
       }
       logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle, profile: styleProfile });
+    } else if (!isPolish && job.mode === 'blog' && engineMode === 'blog') {
+      styleProfile = 'basic_blog';
+      logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle || 'blog', profile: styleProfile });
     }
     const out = await analyze.runHumanizeChunked({
       text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,

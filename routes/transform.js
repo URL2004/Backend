@@ -1231,6 +1231,7 @@ async function runHumanizeJob(job, text) {
       basicStyle: job.basicStyle || null,
       basicExperiment: job.basicExperiment || null,
       styleProfile: out.result.styleProfile || null,
+      basicBlogToneCleanup: out.result.basicBlogToneCleanup || null,
       flowCohesion: out.result.flowCohesion || null
     };
     persistJob(job);

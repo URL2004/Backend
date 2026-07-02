@@ -3020,6 +3020,16 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     } catch (e) { result.registerNormalize = { error: e.message }; }
   }
 
+  // ★ 기본 블로그 말투 마감: 업체 현장글에서 문학적·강한 표현만 담백하게 낮춘다.
+  if (mode === 'blog' && basicBlogStyle && process.env.BASIC_BLOG_TONE_CLEANUP !== '0') {
+    try {
+      const targetReg = result.registerNormalize?.target || (contract.register === 'polite' ? 'hap' : 'haeyo');
+      const bc = require('../engine/basicblogtone').cleanupBasicBlogTone(result.outputText, { register: targetReg });
+      if (bc.changed) result.outputText = bc.text;
+      result.basicBlogToneCleanup = { changed: bc.changed, fixes: bc.fixes };
+    } catch (e) { result.basicBlogToneCleanup = { error: e.message }; }
+  }
+
   // ★ 기본 피하기 문단 정리: 내용은 그대로 두고, 1문장짜리 문단이 과하게 끊기는 결과만 자연스럽게 묶는다.
   if ((basicReportStyle || basicBlogStyle) && process.env.BASIC_HUMANIZE_FLOW_COHESION !== '0') {
     try {

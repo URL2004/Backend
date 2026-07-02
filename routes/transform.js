@@ -62,6 +62,10 @@ function normalizeBasicStyle(value) {
   return 'blog';
 }
 
+function isPreserveLabJob(job) {
+  return !!(job && job.basicExperiment && job.basicExperiment.profile === 'preserve_lab');
+}
+
 async function requireJobOwner(req, res, job) {
   if (job.devNoAuth && !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1') {
     return job.uid || 'dev-local';
@@ -325,9 +329,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment'];
+  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment'];
+  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -798,11 +802,82 @@ async function tryBlogPreservationFallback(job, text) {
   }
 }
 
+async function runAdminPreserveLabJob(job, text, evidence) {
+  try {
+    job.status = 'running';
+    job.stage = '관리자 테스트 · 보존형 엔진';
+    if (job.basicExperiment) {
+      job.basicExperiment = { ...job.basicExperiment, applied: true, appliedAtMs: Date.now() };
+    }
+    persistJob(job);
+
+    const out = await analyze.runHumanizeChunked({
+      text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+      floorV2: true, optIn: false, judge: false, grounding: false,
+      userNotes: job.memo || '', evidence: evidence || '', tonePolish: false, styleProfile: 'preserve_lab'
+    });
+    if (out.floorReport && out.floorReport.status === 'blocked') {
+      const gates = (out.floorReport.criticals || []).map(c => c.gate);
+      logger.warn('transform.admin_preserve_lab_blocked', { jobId: job.id, uid: job.uid, gates });
+      job.status = 'blocked';
+      job.gates = gates;
+      job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
+      job.stage = blockedStage(gates);
+      job.blockOffer = buildBlockOffer(job, text);
+      persistJob(job);
+      return;
+    }
+    if (!out.result || !out.result.outputText) throw new Error('admin_preserve_lab_incomplete');
+    job.status = 'done';
+    job.result = {
+      outputText: out.result.outputText,
+      adminHumanizeLab: true,
+      floorReport: {
+        status: out.floorReport.status,
+        criticals: out.floorReport.criticals,
+        warnings: (out.floorReport.warnings || []).map(w => w.gate),
+        metrics: out.floorReport.metrics
+      },
+      metrics: out.floorReport.metrics,
+      chunkCount: out.chunkCount,
+      fallbackCount: out.fallbackCount,
+      basicExperiment: job.basicExperiment || null,
+      styleProfile: out.result.styleProfile || 'preserve_lab',
+      preserveLab: out.result.preserveLab || null,
+      compressionFallback: !!out.result.compressionFallback
+    };
+    persistJob(job);
+    logger.info('transform.admin_preserve_lab_done', {
+      jobId: job.id,
+      uid: job.uid,
+      mode: job.mode,
+      chunkCount: out.chunkCount,
+      fallbackCount: out.fallbackCount,
+      path: out.result.preserveLab && out.result.preserveLab.path
+    });
+  } catch (e) {
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
+      return;
+    }
+    logger.error('transform.admin_preserve_lab_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
+    job.status = 'error';
+    job.error = '관리자 테스트 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
+    persistJob(job);
+  } finally {
+    scheduleQueueDrain();
+  }
+}
+
 async function runJob(job, text, evidence) {
   try {
     job.status = 'running';
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
+
+    if (isPreserveLabJob(job)) {
+      return await runAdminPreserveLabJob(job, text, evidence);
+    }
 
     // ★ 재구성 부적합 사전 차단(2026-06-16, API 낭비 0): 자소서·생기부·탐구문이나 짧고 추상적인 글은
     //   재구성에 넣으면 LLM이 원문에 없는 사실·평가를 지어내(added_claim) 거의 확정 차단된다. ledger·슬롯·
@@ -1131,7 +1206,16 @@ async function runHumanizeJob(job, text) {
     const bodyText = fb.hasFrozen ? fb.body : text;
     if (fb.hasFrozen) logger.info('transform.blog_academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: (fb.refs || '').length });
     let styleProfile = '';
-    if (!isPolish && job.mode === 'blog' && job.basicStyle === 'report') {
+    const preserveLab = isPreserveLabJob(job);
+    if (preserveLab) {
+      styleProfile = 'preserve_lab';
+      job.basicExperiment = {
+        ...(job.basicExperiment || {}),
+        applied: true,
+        appliedAtMs: Date.now()
+      };
+      logger.info('transform.admin_preserve_lab_profile_applied', { jobId: job.id, uid: job.uid, mode: job.mode, profile: styleProfile });
+    } else if (!isPolish && job.mode === 'blog' && job.basicStyle === 'report') {
       styleProfile = 'basic_report';
       if (job.basicExperiment) {
         job.basicExperiment = {
@@ -1152,7 +1236,7 @@ async function runHumanizeJob(job, text) {
       //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
       // ★ P1-5(2026-06-18 감사): polish(그대로 다듬기)는 최소 수정이 목적인데 grounding(추상 문장→선명한 판단문
       //   교체)이 켜져 기대보다 많이 바뀌었다. polish면 grounding off(보존 우선), 회피 경로(blog)에선 유지.
-      floorV2: true, optIn: false, judge: !isPolish, grounding: !isPolish, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
+      floorV2: true, optIn: false, judge: !isPolish && !preserveLab, grounding: !isPolish && !preserveLab, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
     });
     // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
     if (out.floorReport && out.floorReport.status === 'blocked') {
@@ -1231,11 +1315,14 @@ async function runHumanizeJob(job, text) {
       basicStyle: job.basicStyle || null,
       basicExperiment: job.basicExperiment || null,
       styleProfile: out.result.styleProfile || null,
+      preserveLab: out.result.preserveLab || null,
+      adminHumanizeLab: !!job.adminHumanizeLab,
+      compressionFallback: !!out.result.compressionFallback,
       basicBlogToneCleanup: out.result.basicBlogToneCleanup || null,
       flowCohesion: out.result.flowCohesion || null
     };
     persistJob(job);
-    saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
+    if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
     logger.info('transform.humanize_done', {
       jobId: job.id,
       uid: job.uid,
@@ -1275,6 +1362,18 @@ router.post('/transform', async (req, res) => {
   if (text.length > 30000) {
     return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
   }
+  const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
+  const adminLabRequested = req.body && req.body.adminHumanizeLab === true;
+  let adminLabUid = null;
+  if (adminLabRequested) {
+    if (devNoAuth) {
+      adminLabUid = 'dev-local';
+    } else {
+      adminLabUid = await verifyToken(idToken);
+      if (!adminLabUid) return res.status(401).json({ error: '관리자 테스트는 로그인이 필요해요.' });
+      if (!isAdminUid(adminLabUid)) return res.status(403).json({ error: '관리자만 사용할 수 있는 테스트 페이지입니다.' });
+    }
+  }
   // ★ 글자분리(PDF 추출 깨짐) 복원(2026-06-19 실측 #57·#58): 모든 글자가 공백 분리된 입력을 billing·엔진 처리 전에
   //   재결합 — 공정 과금·URL 보존. 정상 글은 무동작. INPUT_REJOIN=0으로 해제.
   if (process.env.INPUT_REJOIN !== '0') {
@@ -1303,13 +1402,13 @@ router.post('/transform', async (req, res) => {
   //   엔진이라 영어를 넣으면 번역·변형으로 원문이 망가지고, '매끈하게' 다듬을수록 오히려 AI 패턴이 강해져
   //   카피킬러 0→100% 참사(실측). '돌리기 전에' 입력 단계에서 막는다. ※ 과거엔 "다듬기로 유도"였으나 다듬기도
   //   영어를 더 검출되게 만들어 잘못된 안내였음 — 메시지는 "영어 회피 불가·원문 유지"로 정정(ENGLISH_UNFIT_REASON).
-  if (mode !== 'polish' && inputrouting.isEnglishInput(text)) {
+  if (!adminLabUid && mode !== 'polish' && inputrouting.isEnglishInput(text)) {
     logger.warn('transform.english_input_blocked', { mode, textLength: text.length });
     return res.status(400).json({ error: inputrouting.ENGLISH_UNFIT_REASON, route: 'polish' });
   }
   // ★ 격식문서 → 고급 안내(2026-06-17, #21·#83·#72·#90): 보고서·계약서·논문을 기본 피하기에 넣으면 구어체로
   //   변질된다. 입력 단계에서 고급 피하기로 유도(blog만, 무차감·무API). 다듬기·고급은 그대로 통과.
-  if (mode === 'blog' && inputrouting.isFormalDocument(text)) {
+  if (!adminLabUid && mode === 'blog' && inputrouting.isFormalDocument(text)) {
     logger.warn('transform.formal_doc_to_advanced', { mode, textLength: text.length });
     return res.status(400).json({ error: inputrouting.FORMAL_GUIDANCE_REASON, route: 'formal' });
   }
@@ -1323,7 +1422,6 @@ router.post('/transform', async (req, res) => {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
   }
 
-  const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const wantEvidence = mode === 'formal' && req.body.evidence === true;   // 근거 보강은 formal 전용(UI 잠금과 일치)
   // 과금: 탐지 제외 짧은 기능(blog·polish)은 최소 10크레딧 + 100자당 2크레딧. formal은 길이 구간 정액.
   const needed = (mode === 'blog' || mode === 'polish')
@@ -1331,14 +1429,16 @@ router.post('/transform', async (req, res) => {
     : restructureCredit(text.length, wantEvidence);
   let pre;
   try {
-    pre = devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed);
+    pre = adminLabUid
+      ? { uid: adminLabUid, plan: 'unlimited' }
+      : (devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed));
   } catch (e) {
     logger.warn('transform.precheck_failed', { mode, needed, billingMode: 'credit', err: e });
     return res.status(e.status || 500).json({ error: analyze.authErrorMessage(e.message) });
   }
   setLogContext({ uid: pre.uid });
   // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트(formal만).
-  const limited = checkLimits(pre.uid, mode);
+  const limited = adminLabUid ? null : checkLimits(pre.uid, mode);
   if (limited) {
     logger.warn('transform.limit_blocked', {
       uid: pre.uid,
@@ -1353,15 +1453,33 @@ router.post('/transform', async (req, res) => {
       activeStatus: limited.activeStatus || null
     });
   }
-  if (mode === 'formal') recordStart(pre.uid);
-  const basicExperimentRequested = mode === 'blog' && req.body && req.body.basicExperiment === true;
-  const basicExperimentEnabled = basicExperimentRequested && isAdminUid(pre.uid);
-  if (basicExperimentRequested && !basicExperimentEnabled) {
-    logger.warn('transform.basic_humanize_experiment_ignored_non_admin', { uid: pre.uid, mode });
+  if (!adminLabUid && mode === 'formal') recordStart(pre.uid);
+  const adminOrDev = adminLabUid || isAdminUid(pre.uid) || (devNoAuth && pre.uid === 'dev-local');
+  const preserveExperimentRequested = adminLabRequested || (req.body && req.body.humanizeExperiment === true);
+  const preserveExperimentEnabled = preserveExperimentRequested && !!adminOrDev;
+  const legacyBasicExperimentRequested = mode === 'blog' && req.body && req.body.basicExperiment === true && !preserveExperimentRequested;
+  const legacyBasicExperimentEnabled = legacyBasicExperimentRequested && !!adminOrDev;
+  if ((preserveExperimentRequested || legacyBasicExperimentRequested) && !adminOrDev) {
+    logger.warn('transform.humanize_experiment_ignored_non_admin', { uid: pre.uid, mode, adminLabRequested, preserveExperimentRequested, legacyBasicExperimentRequested });
   }
   const basicStyle = mode === 'blog'
-    ? (basicExperimentEnabled ? 'report' : normalizeBasicStyle(req.body && req.body.basicStyle))
+    ? (legacyBasicExperimentEnabled ? 'report' : normalizeBasicStyle(req.body && req.body.basicStyle))
     : null;
+  const experimentMeta = preserveExperimentEnabled ? {
+    enabled: true,
+    requested: true,
+    applied: false,
+    version: 'preserve-lab-v1',
+    profile: 'preserve_lab',
+    source: adminLabRequested ? 'admin_humanize_lab_page' : 'admin_job_toggle'
+  } : (legacyBasicExperimentEnabled ? {
+    enabled: true,
+    requested: true,
+    applied: false,
+    version: 'basic-report-style-v1',
+    profile: 'basic_report',
+    source: 'admin_job_toggle_legacy'
+  } : null);
 
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
@@ -1379,14 +1497,8 @@ router.post('/transform', async (req, res) => {
     lang: req.body.lang === 'en' ? 'en' : 'ko',
     lengthMode: req.body.length === 'compact' ? 'compact' : 'keep',   // 분량 옵션(재구성 전용) — 엔진 연결(2026-06-15). 기본 keep(유지)
     basicStyle,
-    basicExperiment: basicExperimentEnabled ? {
-      enabled: true,
-      requested: true,
-      applied: false,
-      version: 'basic-report-style-v1',
-      profile: 'basic_report',
-      source: 'admin_job_toggle_legacy'
-    } : null,
+    basicExperiment: experimentMeta,
+    adminHumanizeLab: !!(adminLabRequested && preserveExperimentEnabled),
 
     wantEvidence,
     estSec,

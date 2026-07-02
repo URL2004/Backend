@@ -82,6 +82,7 @@ function speakerRuleEn(speakerType) {
 function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '', register = 'mixed', evidence = '', anchorIdx = null, tonePolish = false, styleProfile = '' } = {}) {
   const basicReportStyle = styleProfile === 'basic_report' || styleProfile === 'basic_style_stability';
   const basicBlogStyle = styleProfile === 'basic_blog';
+  const preserveLabStyle = styleProfile === 'preserve_lab' || styleProfile === 'preserve_humanize_test';
   let tone = (lang === 'en' ? TONE_EN : TONE_KO)[mode] || (lang === 'en' ? TONE_EN : TONE_KO).assignment;
   if (basicReportStyle && lang === 'ko' && mode === 'blog') {
     tone = '과제·보고서형 존댓말 문체. 현장 기록, 설명문, 과제 제출문처럼 사실을 차분하게 정리한다. 글 전체를 ~습니다/~입니다/~했습니다 계열로 일관되게 쓰고, 해요체(~요/~죠/~거든요/~잖아요)와 평어체(~다/~이다)를 섞지 마라. 문단은 대부분 2~4문장으로 이어 쓰고, 빈 줄은 제목·항목·화제 전환 지점에만 둔다. 1문장짜리 짧은 문단을 연속으로 만들지 말고, 항목형 정보(시설 유형, 규모, 인원, 시간, 범위, 장비, 주기)는 빠뜨리지 말고 유지하라. 말투와 문장 리듬만 정리하되, 원문에 없는 고객 요청·후기·홍보 문구·감정·사례·수치·업체 강점은 절대 만들지 마라.';
@@ -156,6 +157,76 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '※ These are real, verified public facts (statistics, surveys, institutions, policies). Use them to SUPPORT the abstract/general claims in the text.',
     '★ Rules: (1) Keep the formal register and third-person voice — do NOT turn facts into first-person anecdotes. (2) Copy numbers, institution names, and years exactly, with attribution markers ("according to..."). (3) Use each fact exactly once, in the best-fitting spot. (4) Invent NO numbers, institutions, or studies beyond this list. (5) Keep the source\'s thesis direction; facts are supporting evidence only. (6) Weave by replacing/compressing generic sentences — keep total length near the source.'
   ].join('\n') : '';
+
+  if (preserveLabStyle) {
+    if (lang === 'en') {
+      return {
+        volatile: [anchorEn, evidenceEn, '', 'Edit the source below under the preserve-lab policy. Return only the finished body text.'].join('\n'),
+        stable: [
+          '[PRESERVE-LAB — admin test profile]',
+          'You are testing a preservation-first humanizing engine. Do not rewrite the document wholesale.',
+          '',
+          'NON-NEGOTIABLE PRESERVATION:',
+          '1. Keep every fact, number, date, proper noun, claim, paragraph order, speaker, and conclusion direction.',
+          `2. Output ${lenEn}. Do not summarize, compress, pad, reorder, merge sections, or invent examples.`,
+          `3. Speaker: ${speakerRuleEn(speakerType)} No new personal anecdotes or first-person perspective unless it already exists in the source or provided notes.`,
+          '',
+          'EDIT ONLY RISKY SURFACES:',
+          '· Touch only sentences that are stiff, repetitive, overly impersonal, over-compressed, or too generic.',
+          '· Leave already natural sentences almost unchanged.',
+          '· Keep one consistent register. Do not switch between formal, casual, and plain styles mid-document.',
+          '· Do not add literary flourishes, dramatic metaphors, marketing claims, or over-polished summary endings.',
+          '· Keep paragraph breaks close to the source. Fix broken line breaks only when they clearly interrupt a paragraph.',
+          '· Plain prose only. No markdown, headings added by you, preface, or explanation.',
+          '',
+          `[MODE TONE] ${mode}: ${tone}`
+        ].join('\n')
+      };
+    }
+    const modeLine = mode === 'blog'
+      ? '블로그/업체글이면 친근하게 과장하지 말고 원문의 존댓말·해요체 결을 유지한다. 짧은 한 문장 문단을 연속으로 만들지 말고, 문단은 2~4문장 흐름을 기본으로 둔다.'
+      : mode === 'assignment' || mode === 'thesis'
+        ? '과제/보고서 글이면 원문의 격식 종결체를 유지한다. 합니다체와 한다체, 해요체가 섞이지 않게 한 결로 통일하되 새 관점이나 사례를 만들지 않는다.'
+        : '원문 장르와 화자 거리를 유지한다. 새 경험, 새 성과, 새 감정은 만들지 않는다.';
+    return {
+      volatile: [
+        anchorKo,
+        evidenceKo,
+        '',
+        '아래 원문을 [PRESERVE-LAB] 정책으로만 다듬어라. 본문만 출력하고 설명·마크다운은 쓰지 마라.'
+      ].join('\n'),
+      stable: [
+        '[PRESERVE-LAB — 관리자 테스트 전용 프로필]',
+        '너는 "보존형 휴머나이징"을 테스트하는 한국어 편집자다. 목표는 글을 많이 바꾸는 것이 아니라, 원문보다 더 자연스럽게 읽히도록 위험한 표면만 최소 수정하는 것이다. ★문서 전체를 새로 쓰지 마라.',
+        '',
+        '절대 보존 규칙:',
+        '1. 원문의 숫자·날짜·금액·범위·고유명사·출처·주장·근거·작업 범위·결론 방향을 빼거나 바꾸지 마라.',
+        `2. 출력은 ${lenKo}. 요약·압축·분량 부풀리기·문단 재배치·섹션 통합·새 항목 추가를 하지 마라.`,
+        `3. 화자 보존: ${speakerRuleKo(speakerType)} 원문 또는 사용자 메모에 없는 1인칭 경험·감정·사례를 만들지 마라.`,
+        '4. 이미 자연스러운 문장은 거의 그대로 둔다. 전체 문장을 새 표현으로 갈아엎지 마라.',
+        '',
+        '수정해도 되는 부분:',
+        '· 같은 종결어미나 같은 문장 구조가 여러 번 이어지는 곳을 일부만 완화한다.',
+        '· "~할 수 있다/~라고 할 수 있다/~중요하다/~필요하다" 같은 정형 표현이 반복될 때만 더 직접적인 문장으로 바꾼다.',
+        '· 비인칭·수동 표현이 과한 곳은 원문에 이미 있는 주체를 살려 일부만 능동으로 바꾼다. 주체가 없으면 만들지 말고 원문 표현을 유지한다.',
+        '· 한 문장에 논점이 너무 압축된 곳은 원문 내용 안에서만 자연스럽게 풀어 쓴다. 새 사실을 덧붙이지 않는다.',
+        '· 문학적 표현, 과장된 결과 단정, 감성적 비유, 홍보성 문구는 낮춘다. 담백하고 실제 글처럼 쓴다.',
+        '· 줄바꿈은 원문 흐름을 따른다. 깨진 줄바꿈만 고치고, 한 문장짜리 문단을 계속 만들지 않는다.',
+        '· 말투는 하나로 유지한다. 합니다체/한다체/해요체가 중간에 바뀌지 않게 한다.',
+        '· 마크다운 기호(*, #, -, 백틱), 설명문, "수정했습니다" 같은 머리말 금지.',
+        '',
+        `[모드별 결] ${modeLine}${mode === 'blog'
+          ? (register === 'polite'
+            ? '\n[문체 통일] 원문이 존댓말(~습니다/~입니다)이면 글 전체를 존댓말로 유지하고 해요체나 평어체를 섞지 마라.'
+            : register === 'haeyo'
+              ? '\n[문체 통일] 원문이 해요체면 글 전체를 해요체로 유지하고 합니다체나 평어체를 섞지 마라.'
+              : register === 'plain'
+                ? '\n[문체 통일] 원문이 평어체면 평어체 결을 유지하되, 중간에 해요체·합니다체를 섞지 마라.'
+                : '\n[문체 통일] 글 전체 종결체를 하나로 유지하라.')
+          : regKo}`
+      ].join('\n')
+    };
+  }
 
   // ★ 과제 어투 다듬기(tonePolish) 분기 — 우회/캐주얼화 블록 제거. "보존 우선 + 최소 손질 + 격식 과제체".
   //   회피가 목적이 아니므로 burstiness·추임새·어휘 하향·순서 재배치 같은 재창작성 우회 기법을 빼고,

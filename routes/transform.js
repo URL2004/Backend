@@ -86,6 +86,46 @@ function isAdminHumanizeLabJob(job) {
   return !!(job && job.adminHumanizeLab && job.basicExperiment);
 }
 
+function markAdminLabPipeline(job, path) {
+  if (!isAdminHumanizeLabJob(job)) return null;
+  const profile = adminLabProfileOf(job);
+  job.adminLabProfile = profile;
+  job.basicExperiment = {
+    ...(job.basicExperiment || {}),
+    profile,
+    applied: true,
+    appliedAtMs: Date.now(),
+    path
+  };
+  return profile;
+}
+
+function adminLabRuntimeMeta(job, path) {
+  const profile = job.adminLabProfile || adminLabProfileOf(job);
+  return {
+    version: 'admin-humanize-lab-v1',
+    profile,
+    path,
+    billing: 'admin_test_no_credit',
+    mode: job.mode || 'formal'
+  };
+}
+
+function attachAdminLabResultMeta(job, result, path) {
+  if (!isAdminHumanizeLabJob(job)) return result;
+  const meta = adminLabRuntimeMeta(job, path);
+  return {
+    ...result,
+    adminHumanizeLab: true,
+    adminLabProfile: meta.profile,
+    basicExperiment: job.basicExperiment || null,
+    humanizeMeta: {
+      ...(result && result.humanizeMeta ? result.humanizeMeta : {}),
+      ...meta
+    }
+  };
+}
+
 async function requireJobOwner(req, res, job) {
   if (job.devNoAuth && !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1') {
     return job.uid || 'dev-local';
@@ -904,8 +944,20 @@ async function runJob(job, text, evidence) {
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
 
-    if (isAdminHumanizeLabJob(job)) {
+    if (isAdminHumanizeLabJob(job) && job.mode !== 'formal') {
       return await runAdminHumanizeLabJob(job, text, evidence);
+    }
+    if (isAdminHumanizeLabJob(job)) {
+      const profile = markAdminLabPipeline(job, 'production_formal_pipeline');
+      job.stage = '관리자 테스트 · 운영 고급 재구성';
+      persistJob(job);
+      logger.info('transform.admin_humanize_lab_formal_pipeline_started', {
+        jobId: job.id,
+        uid: job.uid,
+        mode: job.mode,
+        profile,
+        path: 'production_formal_pipeline'
+      });
     }
 
     // ★ 재구성 부적합 사전 차단(2026-06-16, API 낭비 0): 자소서·생기부·탐구문이나 짧고 추상적인 글은
@@ -1073,7 +1125,7 @@ async function runJob(job, text, evidence) {
       job.note = (job.note ? job.note + ' ' : '') + `원문의 사실 ${lostN}건(연도·수치·기관명 등)이 재구성 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 확인해 주세요.`;
     }
     job.status = 'done';
-    job.result = {
+    job.result = attachAdminLabResultMeta(job, {
       outputText: out.text,
       metrics: {
         novelty: 0, lostFacts: lostN, repetition: 0,
@@ -1085,9 +1137,20 @@ async function runJob(job, text, evidence) {
       },
       genreRisk: out.risk?.score,
       skeleton: out.skeleton
-    };
+    }, 'production_formal_pipeline');
     persistJob(job);
-    saveJobHistory(job, text, out.text);   // 이용 기록(서버)에도 노출 — 완료 화면을 못 봐도 결과 복원 가능
+    if (!job.adminHumanizeLab) saveJobHistory(job, text, out.text);   // 이용 기록(서버)에도 노출 — 완료 화면을 못 봐도 결과 복원 가능
+    if (job.adminHumanizeLab) {
+      logger.info('transform.admin_humanize_lab_done', {
+        jobId: job.id,
+        uid: job.uid,
+        mode: job.mode,
+        profile: job.adminLabProfile || adminLabProfileOf(job),
+        path: 'production_formal_pipeline',
+        skeleton: out.skeleton,
+        deducted: job.deducted
+      });
+    }
     logger.info('transform.done', {
       jobId: job.id,
       uid: job.uid,
@@ -1175,7 +1238,7 @@ async function runLongThesisChunked(job, text, evidence) {
       job.note = (job.note ? job.note + ' ' : '') + '원문의 사실 일부(연도·수치·기관명 등)가 재작성 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 주세요.';
     }
     job.status = 'done';
-    job.result = {
+    job.result = attachAdminLabResultMeta(job, {
       outputText: finalText,
       longThesis: true,   // UI가 "장문 논문 안전 재작성" 배지를 띄울 수 있게
       floorReport: {
@@ -1187,9 +1250,21 @@ async function runLongThesisChunked(job, text, evidence) {
       metrics: out.floorReport.metrics,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount
-    };
+    }, 'production_formal_chunk_pipeline');
     persistJob(job);
-    saveJobHistory(job, text, finalText);
+    if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);
+    if (job.adminHumanizeLab) {
+      logger.info('transform.admin_humanize_lab_done', {
+        jobId: job.id,
+        uid: job.uid,
+        mode: job.mode,
+        profile: job.adminLabProfile || adminLabProfileOf(job),
+        path: 'production_formal_chunk_pipeline',
+        chunkCount: out.chunkCount,
+        fallbackCount: out.fallbackCount,
+        deducted: job.deducted
+      });
+    }
     logger.info('transform.long_thesis_done', { jobId: job.id, uid: job.uid, needed: job.needed, deducted: job.deducted, chunkCount: out.chunkCount, fallbackCount: out.fallbackCount, frozen: fb.hasFrozen || undefined });
   } catch (e) {
     if (job.ac.signal.aborted) {

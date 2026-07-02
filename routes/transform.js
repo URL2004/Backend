@@ -1001,6 +1001,14 @@ async function runJob(job, text, evidence) {
     if (inputrouting.isLongStructuredThesis(text) || inputrouting.isAcademicCited(text) || inputrouting.isFootnoteCited(text)) {
       return await runLongThesisChunked(job, text, evidence);
     }
+    // ★ 과제 보고서 구조 보존(2026-07-02): Ⅰ.서론/Ⅱ.본론/Ⅲ.결론 같은 짧은 과제 보고서는 통계가 적으면
+    //   isStructuredReport에 안 걸려 단일 genreTransferV2로 들어가고, 그 결과 칼럼형 문체로 바뀐다.
+    //   명시적 보고서 섹션 구조는 내용보다 형식이 과제 완성도에 중요하므로 문단별 구조보존 고급 경로로 보낸다.
+    if (process.env.SECTIONED_REPORT_CHUNK !== '0' && inputrouting.isSectionedAssignmentReport(text)) {
+      logger.info('transform.sectioned_report_chunk', { jobId: job.id, uid: job.uid, textLength: (text || '').length });
+      job.note = (job.note ? job.note + ' ' : '') + '서론·본론·결론 구조가 있는 과제 보고서라, 칼럼형 재구성 대신 구조를 보존하며 문단별로 고급 처리했어요.';
+      return await runLongThesisChunked(job, text, evidence, 'production_formal_sectioned_report_pipeline');
+    }
     // ★ 구조화 통계 보고서 라우팅(2026-06-18 실측 사이버불링 보고서: 원문 48% → 단일 재구성이 목차·섹션을 부수고
     //   줄글로 만들어 "간접화법·비인칭"이 글 전체를 덮음 → 93%·100%로 악화). 구조(목차·번호섹션)·통계가 점수를
     //   지켜주던 글이라, 구조를 깨는 단일 재구성 대신 구조보존 청크 우회(runLongThesisChunked: 목차·문단 보존 +
@@ -1179,7 +1187,7 @@ async function runJob(job, text, evidence) {
 //   해결: 단일 재구성 대신 '청크 기반 격식 회피'(runHumanizeChunked mode=assignment, tonePolish=false). 효과 ①우회(피하기)
 //   유지(보존형 polish와 달리 tonePolish=false라 burstiness·grounding·register 우회 적용) ②문단별이라 요약 collapse 없음
 //   ③청크별 lostFacts/novelty 게이트로 사실 보존. 과금은 재구성(formal) 단가 그대로(피하기 결과를 받으므로).
-async function runLongThesisChunked(job, text, evidence) {
+async function runLongThesisChunked(job, text, evidence, pipelinePath = 'production_formal_chunk_pipeline') {
   try {
     job.status = 'running';
     job.stage = '문단별 안전 재작성 중';   // 장문 논문·학술·재구성 복구 공용(특정 종류 단정 안 함)
@@ -1250,7 +1258,7 @@ async function runLongThesisChunked(job, text, evidence) {
       metrics: out.floorReport.metrics,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount
-    }, 'production_formal_chunk_pipeline');
+    }, pipelinePath);
     persistJob(job);
     if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);
     if (job.adminHumanizeLab) {
@@ -1259,13 +1267,13 @@ async function runLongThesisChunked(job, text, evidence) {
         uid: job.uid,
         mode: job.mode,
         profile: job.adminLabProfile || adminLabProfileOf(job),
-        path: 'production_formal_chunk_pipeline',
+        path: pipelinePath,
         chunkCount: out.chunkCount,
         fallbackCount: out.fallbackCount,
         deducted: job.deducted
       });
     }
-    logger.info('transform.long_thesis_done', { jobId: job.id, uid: job.uid, needed: job.needed, deducted: job.deducted, chunkCount: out.chunkCount, fallbackCount: out.fallbackCount, frozen: fb.hasFrozen || undefined });
+    logger.info('transform.long_thesis_done', { jobId: job.id, uid: job.uid, needed: job.needed, deducted: job.deducted, chunkCount: out.chunkCount, fallbackCount: out.fallbackCount, frozen: fb.hasFrozen || undefined, path: pipelinePath });
   } catch (e) {
     if (job.ac.signal.aborted) {
       if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }

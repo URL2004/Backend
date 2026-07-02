@@ -160,6 +160,27 @@ function isStructuredReport(text) {
   return score >= 2 && dense;
 }
 
+// 과제 보고서형 섹션 구조 감지: 통계가 많지 않아도 Ⅰ.서론/Ⅱ.본론/Ⅲ.결론 같은 골격은 보존해야 한다.
+// 단일 재구성(칼럼 스켈레톤)에 넣으면 보고서가 칼럼 문체로 바뀌므로, 문단별 구조보존 고급 경로로 보낸다.
+function isSectionedAssignmentReport(text) {
+  const t = text || '';
+  const noSp = t.replace(/\s+/g, '').length;
+  if (noSp < 300) return false;
+  const romanHead = '(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|[IVX]{1,5})';
+  const romanSectionRe = new RegExp('(?:^|\\n)\\s*' + romanHead + '\\s*[.、)]\\s*(?:서론|본론|결론|논의|분석|조사|연구|이론적\\s*배경)', 'g');
+  const romanSections = (t.match(romanSectionRe) || []).length;
+  const hasRomanIntro = new RegExp('(?:^|\\n)\\s*' + romanHead + '\\s*[.、)]\\s*서론').test(t);
+  const hasRomanConclusion = new RegExp('(?:^|\\n)\\s*' + romanHead + '\\s*[.、)]\\s*결론').test(t);
+  if (romanSections >= 2 && hasRomanIntro && hasRomanConclusion) return true;
+  if (noSp < 700) return false;
+
+  const numberedSections = (t.match(/(?:^|\n)[ \t]*\d{1,2}(?!\d)[.)]\s*[가-힣][^\n]{2,60}/g) || []).length;
+  const hasReportWords = /본\s*(?:글|보고서|과제)|조사\s*결과|분석하고자|근거\s*자료|비즈니스\s*전략|발생하는\s*문제|활용되는\s*정보기술/.test(t);
+  const hasIntroConclusion = /(?:^|\n)\s*(?:서론|결론)\s*$/m.test(t)
+    || (/(?:^|\n)\s*[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩIVX]+\s*[.、)]\s*서론/.test(t) && /(?:^|\n)\s*[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩIVX]+\s*[.、)]\s*결론/.test(t));
+  return numberedSections >= 3 && hasReportWords && hasIntroConclusion;
+}
+
 // ★ 회피 난이도 사전 안내(2026-06-18~19 실측, 소프트 — 차단 아님, 사용자는 진행 가능): 일부 장르는 무날조 회피가
 //   구조적으로 어렵다. 시작 전 솔직히 고지해 크레딧·환불 사고를 막는다(/diagnose로 노출).
 //   ① STEM 실험·방법론·스펙 보고서(SMILES·PDB·돌연변이 등): 객관 기술 서술이 장르 본질 → 코칭·재구성 다 무효
@@ -346,4 +367,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isSectionedAssignmentReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };

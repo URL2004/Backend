@@ -504,7 +504,7 @@ function buildLeanHumanizeTool(lang = 'ko') {
             : '선택: 완전히 피하지 못한 FLOOR 위험(예: "일부 축약 불가피", "불확실한 고유명사 유지"). 없으면 빈 배열.'
         }
       },
-      required: ['plan', 'outputText']
+      required: ['plan', 'riskFlags', 'outputText']
     }
   };
 }
@@ -1407,6 +1407,103 @@ function buildPreserveLabInputPlan(text) {
     out.ck = { available: false, error: e && e.message };
   }
   return out;
+}
+
+function isFinalReportEngineStyle(styleProfile) {
+  return styleProfile === 'final_report_engine'
+    || styleProfile === 'report_engine'
+    || styleProfile === 'final_report';
+}
+
+function safetyMetaKey(styleProfile) {
+  return isFinalReportEngineStyle(styleProfile) ? 'finalReportEngine' : 'preserveLab';
+}
+
+function safetyEngineVersion(styleProfile) {
+  return isFinalReportEngineStyle(styleProfile) ? 'final-report-engine-v1' : 'preserve-lab-v1';
+}
+
+function finalReportRiskFlags(plan, { userNotes = '', evidence = '' } = {}) {
+  const flags = [];
+  const surface = plan?.inputSurface || {};
+  const inputRisk = plan?.inputRisk || {};
+  const hasGrounding = !!String(userNotes || evidence || '').trim();
+  if (plan?.ck?.available && Number(plan.ck.inputRisk) <= 0.30) flags.push('low_proxy_risk');
+  if (plan?.route?.mode === 'minimal_cleanup') flags.push('safe_minimal');
+  if ((inputRisk.abstractRiskRatio || surface.abstractRiskRatio || 0) >= 0.80) flags.push('abstract_source');
+  if ((inputRisk.abstractRiskRatio || surface.abstractRiskRatio || 0) >= 0.80 && !hasGrounding) flags.push('no_concrete_source');
+  if ((surface.realAnchorDensity || 0) < 0.05) flags.push('low_anchor_density');
+  if ((surface.impersonal || 0) >= 0.35) flags.push('impersonal_source');
+  if ((surface.compression || 0) >= 0.35 || (surface.paragraphCompression || 0) >= 0.35) flags.push('compression_source');
+  if ((surface.maxEndingRun || 0) >= 4 || (surface.lengthCV || 0) <= 0.20) flags.push('uniform_sentence_rhythm');
+  return [...new Set(flags)];
+}
+
+function finalReportStrength(plan, { userNotes = '', evidence = '' } = {}) {
+  const flags = finalReportRiskFlags(plan, { userNotes, evidence });
+  if (plan?.route?.mode === 'minimal_cleanup') return 'low';
+  if (flags.includes('no_concrete_source')) return 'limited';
+  if (String(userNotes || evidence || '').trim()) return 'grounded';
+  return 'medium';
+}
+
+function finalReportDecision(plan, { userNotes = '', evidence = '' } = {}) {
+  if (plan?.route?.mode === 'minimal_cleanup') return 'safe_minimal';
+  const flags = finalReportRiskFlags(plan, { userNotes, evidence });
+  if (flags.includes('no_concrete_source')) return 'needs_anchor';
+  if (String(userNotes || evidence || '').trim()) return 'grounded_humanize';
+  return 'standard_humanize';
+}
+
+function finalReportMessage(meta) {
+  const path = meta?.path || '';
+  const decision = meta?.decision || '';
+  if (path.includes('ck_revert') || path.includes('surface_revert') || decision === 'reverted') {
+    return '재작성 결과가 원문이나 안전 기준보다 더 정형적으로 보일 가능성이 있어 안전한 버전으로 되돌렸습니다.';
+  }
+  if (decision === 'safe_minimal' || path === 'minimal_cleanup') {
+    return '원문이 저위험으로 판단되어 LLM 재작성 없이 표기와 줄바꿈만 최소 정리했습니다.';
+  }
+  if (decision === 'needs_anchor') {
+    return '추상적인 설명이 많고 실제 근거가 부족해, 원문 범위 안에서만 제한적으로 다듬었습니다.';
+  }
+  if (decision === 'grounded_humanize') {
+    return '사용자 메모나 근거 범위 안에서 반복, 비인칭, 일반론을 줄이는 보존형 휴머나이징을 적용했습니다.';
+  }
+  return '반복, 비인칭, 일반론, 지나치게 매끈한 결론을 줄이되 원문 흐름과 사실은 유지하는 보존형 휴머나이징을 적용했습니다.';
+}
+
+function buildFinalReportMeta(plan, { path = 'llm_preserve', userNotes = '', evidence = '', applied = [] } = {}) {
+  const riskFlags = finalReportRiskFlags(plan, { userNotes, evidence });
+  const meta = {
+    version: 'final-report-engine-v1',
+    path,
+    strength: finalReportStrength(plan, { userNotes, evidence }),
+    decision: finalReportDecision(plan, { userNotes, evidence }),
+    reason: plan?.route?.reason || '최종 개선보고서 엔진의 보존형 처리 경로로 판단했습니다.',
+    riskFlags,
+    applied,
+    input: plan || null
+  };
+  meta.message = finalReportMessage(meta);
+  return meta;
+}
+
+function attachHumanizeMetaForFinalReport(result, meta) {
+  if (!result || !meta) return;
+  result.finalReportEngine = meta;
+  result.humanizeMeta = {
+    profile: 'final_report_engine',
+    version: meta.version,
+    path: meta.path,
+    strength: meta.strength,
+    decision: meta.decision,
+    reason: meta.reason,
+    riskFlags: meta.riskFlags || [],
+    applied: meta.applied || [],
+    gates: meta.gates || {},
+    message: meta.message || finalReportMessage(meta)
+  };
 }
 
 function preserveCkGate(rawText, baselineText, outputText) {
@@ -2540,6 +2637,8 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const basicReportStyle = styleProfile === 'basic_report' || styleProfile === 'basic_style_stability';
   const basicBlogStyle = styleProfile === 'basic_blog';
   const preserveLabStyle = styleProfile === 'preserve_lab' || styleProfile === 'preserve_humanize_test';
+  const finalReportEngineStyle = isFinalReportEngineStyle(styleProfile);
+  const safetyEngineStyle = preserveLabStyle || finalReportEngineStyle;
   // ★ 두 종류의 허용 추가재료(§설계-evidence-grounding):
   //   memo = 사용자 경험 메모(1인칭 장면화, optIn으로 화자 게이트 개방)
   //   evid = 웹검증+학생승인 사실(3인칭 격식 인용, 화자 게이트는 닫힌 채 유지)
@@ -2555,14 +2654,15 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const contract = require('../engine/contract').buildContract(text, { mode, lang, optIn }); // 단일 진실
   const povSeed = contract.povSeed;
   const chunks = splitChunks(text);
-  const preserveLabPlan = preserveLabStyle ? buildPreserveLabInputPlan(text) : null;
-  if (preserveLabStyle && preserveLabPlan?.route?.mode === 'minimal_cleanup') {
+  const preserveLabPlan = safetyEngineStyle ? buildPreserveLabInputPlan(text) : null;
+  if (finalReportEngineStyle && preserveLabPlan) preserveLabPlan.version = 'final-report-engine-v1';
+  if (safetyEngineStyle && preserveLabPlan?.route?.mode === 'minimal_cleanup') {
     const minimal = minimalCleanupText(text);
     const result = {
       outputText: minimal,
       styleProfile,
-      preserveLab: {
-        version: 'preserve-lab-v1',
+      [safetyMetaKey(styleProfile)]: {
+        version: safetyEngineVersion(styleProfile),
         path: 'minimal_cleanup',
         strength: 'low',
         reason: preserveLabPlan.route.reason,
@@ -2583,7 +2683,17 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     result.surface = sguard.buildSurfaceReport(minimal);
     result.inputRisk = preserveLabPlan.inputRisk || sguard.classifyInputRisk(text || '');
     result.contract = contract;
-    logger.info('humanize.preserve_lab_minimal_cleanup', {
+    if (finalReportEngineStyle) {
+      const meta = buildFinalReportMeta(preserveLabPlan, {
+        path: 'minimal_cleanup',
+        userNotes: memo,
+        evidence: evid,
+        applied: ['spacing', 'paragraph_cleanup', 'minor_cleanup']
+      });
+      meta.surfaceAfter = preserveSurfaceSnapshot(minimal);
+      attachHumanizeMetaForFinalReport(result, meta);
+    }
+    logger.info(finalReportEngineStyle ? 'humanize.final_report_engine_minimal_cleanup' : 'humanize.preserve_lab_minimal_cleanup', {
       mode, inLen: (text || '').length, outLen: minimal.length,
       reason: preserveLabPlan.route.reason,
       ckInputRisk: preserveLabPlan.ck?.inputRisk
@@ -2801,14 +2911,24 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   const merged = mergeChunks(chunks);
   const result = { outputText: merged };
   if (styleProfile) result.styleProfile = styleProfile;
-  if (preserveLabStyle) {
-    result.preserveLab = {
-      version: 'preserve-lab-v1',
+  if (safetyEngineStyle) {
+    result[safetyMetaKey(styleProfile)] = {
+      version: safetyEngineVersion(styleProfile),
       path: 'llm_preserve',
-      strength: 'medium',
-      reason: '저위험 minimal_cleanup 조건이 아니라 보존형 LLM 1회 경로로 처리했습니다.',
+      strength: finalReportEngineStyle ? finalReportStrength(preserveLabPlan, { userNotes: memo, evidence: evid }) : 'medium',
+      reason: finalReportEngineStyle
+        ? '저위험 minimal_cleanup 조건이 아니라 최종 개선보고서 엔진의 LLM 1회 경로로 처리했습니다.'
+        : '저위험 minimal_cleanup 조건이 아니라 보존형 LLM 1회 경로로 처리했습니다.',
       input: preserveLabPlan || null
     };
+    if (finalReportEngineStyle) {
+      attachHumanizeMetaForFinalReport(result, buildFinalReportMeta(preserveLabPlan, {
+        path: 'llm_preserve',
+        userNotes: memo,
+        evidence: evid,
+        applied: ['llm_preserve_rewrite', 'floor_guard']
+      }));
+    }
   }
   result.povSeed = povSeed;
   result.softDrift = require('../engine/softguard').measureSoftDrift(text, merged);
@@ -2865,7 +2985,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   견해·판단을 주입(문체는 한다체 유지)해 그 플래그를 끈다. blog/resume는 이미 구어로 주관이 있어 C등급 skip 유지.
   const groundingForce = (mode === 'assignment' || mode === 'thesis') && process.env.GROUND_FORMAL_C !== '0';
   // ★ B7 모드: grounding은 "말투 유지"로 합니다체를 한다체로 되돌리고 격식엔 도움도 안 됨 → skip.
-  if (grounding && !preserveLabStyle && (!skipPasses || groundingForce) && process.env.ASSIGNMENT_B7 !== '1') {
+  if (grounding && !safetyEngineStyle && (!skipPasses || groundingForce) && process.env.ASSIGNMENT_B7 !== '1') {
     result.grounding = await applyGrounding({
       result, rawText: textF, povSeed, optIn, mode, lang, signal, floor, allowedExtra: notes,
       ledger: contract.softClaimLedger   // ★ judge가 만든 ledger 재사용(없으면 grounding이 1회 생성)
@@ -2888,7 +3008,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   grounding 뒤, polish 앞. OPTIMIZE=1일 때만. FLOOR 악화 시 폐기(무해).
   // OPTIMIZE=1 적용 / OPTIMIZE_SHADOW=1 로그만(적용X, 카피킬러 대조 데이터 축적용) / 기본 off
   const optMode = (process.env.OPTIMIZE === '1' ? 'apply' : (process.env.OPTIMIZE_SHADOW === '1' ? 'shadow' : 'off'));
-  if (optMode !== 'off' && !skipPasses && !preserveLabStyle) {
+  if (optMode !== 'off' && !skipPasses && !safetyEngineStyle) {
     try {
       const opt = await require('../engine/optimizer').optimizePass(result.outputText, text, { lang, signal });
       if (optMode === 'apply' && opt.text && opt.text !== result.outputText) {
@@ -2902,7 +3022,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
   // ★ Phase 0 폴리시(검출+국소 repair): 구어체 반복·register 혼합·압축 잔여 플래그 정리.
   //   grounding 뒤, antiDetect 앞. FLOOR 악화 시 폐기(무해). C등급은 skip.
-  if (process.env.POLISH !== '0' && !skipPasses && !preserveLabStyle) {
+  if (process.env.POLISH !== '0' && !skipPasses && !safetyEngineStyle) {
     try {
       const pol = await require('../engine/polish').polishPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (pol.text && pol.text !== result.outputText) {
@@ -2917,7 +3037,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ 구어체 연결어 예산(phrasebudget): C등급은 polish를 skip하므로 여기서 단독 실행(내용 불변·연결어 다양화만).
   //   거든요/근데/더라고요 등 과다 반복은 그 자체로 '기계적 균일성' 신호(도시론 실측 거든요 58→7, risk 0.630→0.520).
   //   A/B등급은 polishPass가 이미 phrasebudget을 포함하므로 중복 실행 안 함. PHRASE_C=0으로 해제.
-  if (skipPasses && process.env.PHRASE_C !== '0' && !preserveLabStyle) {
+  if (skipPasses && process.env.PHRASE_C !== '0' && !safetyEngineStyle) {
     try {
       const pbr = await require('../engine/phrasebudget').repairPhraseOveruse(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (pbr.text && pbr.text !== result.outputText) {
@@ -2936,7 +3056,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //     점수를 누르던 핵심 레버였음(카피킬러=GPTZero류, burstiness를 사람글 신호로 봄). 격식도 burstiness 그대로 실행해야 함. 전 모드 적용.
   //     ★burstiness 강화(lowCV 0.8+극단 프롬프트) 실측 폐기(2026-06): EV 73→92% 악화. 과도한 길이변동/잦은 punch는 오히려 부자연→직격.
   //     moderate(lowCV 0.6+기존 프롬프트)가 sweet spot(73%). 강화도 제거도 둘 다 악화 — 73%는 burstiness가 떠받치는 국소 최적. BURST_LOWCV로 조정.
-  if (process.env.BURST !== '0' && !preserveLabStyle) {
+  if (process.env.BURST !== '0' && !safetyEngineStyle) {
     try {
       const _burstLowCV = process.env.BURST_LOWCV ? parseFloat(process.env.BURST_LOWCV) : 0.6;
       const br = await require('../engine/burstiness').burstinessPass(result.outputText, {
@@ -2961,7 +3081,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ 격식 표현예산(formalbudget): 판단프레임("A가 아니라 B" 누출)·punch 재사용("그것이 핵심이다"×N)·
   //   정형 마무리 반복을 결정론 검출 → 초과 segment만 국소 다양화(Haiku) → FLOOR 재검.
   //   카피킬러 % 레버 아님(격식 밴드 73~95 확정) — "동일 표현 반복" 품질 결함 제거가 목적. FORMALBUDGET=0 해제.
-  if ((mode === 'assignment' || mode === 'thesis') && process.env.FORMALBUDGET !== '0' && !preserveLabStyle) {
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.FORMALBUDGET !== '0' && !safetyEngineStyle) {
     try {
       const fb = await require('../engine/formalbudget').formalBudgetPass(result.outputText, { lang, signal, floor, rawText: textF, allowedExtra: notes });
       if (fb.text && fb.text !== result.outputText) {
@@ -2975,7 +3095,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
   // ★★ columnCleanup(번호리스트 해체+punch 병합) 실측 폐기(2026-06): EV 73→94% 폭등에 기여. punch 병합·de-list가
   //   문장 변동을 줄여 더 균일·매끈한 비인칭 산문이 됨 → 카피킬러 직격. 기본 OFF(COLUMN=1 명시해야 실행). 모듈은 보존(음성결과).
-  if ((mode === 'assignment' || mode === 'thesis') && process.env.COLUMN === '1' && !preserveLabStyle) {
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.COLUMN === '1' && !safetyEngineStyle) {
     try {
       const cr = await require('../engine/columncleanup').columnCleanupPass(result.outputText, { lang, signal, floor, rawText: text, allowedExtra: notes });
       if (cr.text && cr.text !== result.outputText) {
@@ -3033,7 +3153,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     if (ratio < floorR) {
       result.compressed = true;
       logger.warn('humanize.over_compressed', { mode, ratio: result.compressionRatio, srcN, outN });
-      if (process.env.COMPRESSION_FALLBACK === '1' || preserveLabStyle) {
+      if (process.env.COMPRESSION_FALLBACK === '1' || safetyEngineStyle) {
         result.outputTextPreCompFallback = result.outputText;
         result.outputText = require('../engine/spacing').fixSpacing(cleanText(text)).text;
         result.compressionFallback = true;
@@ -3077,7 +3197,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
   // ★ Phase2 register 교정(격식 모드 화자 거리감): 비인칭 단정문 → 기존 사실만으로 필자 판단문 구조 변형. REGISTER=1만 실행(실험).
   //   노이즈 제거 위해 pre-repair 텍스트(outputTextPreRegister) 보존 → 같은 생성문에 켜고/끈 clean A/B로 카피킬러 검증.
-  if ((mode === 'assignment' || mode === 'thesis') && process.env.REGISTER === '1' && !preserveLabStyle) {
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.REGISTER === '1' && !safetyEngineStyle) {
     try {
       let ledger = contract.softClaimLedger;
       if (!ledger) ledger = await require('../engine/judge').buildSoftClaimLedger(text, { lang, signal });
@@ -3089,7 +3209,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   }
 
   // ★ B7 학부생 보고서형 마감(ASSIGNMENT_B7): 생성·패스가 흐트러뜨린 합니다체를 강제 통일 + 1인칭 anchor 예산 캡. FLOOR strict.
-  if ((mode === 'assignment' || mode === 'thesis') && process.env.ASSIGNMENT_B7 === '1' && !preserveLabStyle) {
+  if ((mode === 'assignment' || mode === 'thesis') && process.env.ASSIGNMENT_B7 === '1' && !safetyEngineStyle) {
     try {
       const rs2 = require('../engine/registerscore');
       const bp = await require('../engine/b7polish').b7PolishPass(result.outputText, text, { lang, signal, floor, allowedExtra: notes });
@@ -3135,7 +3255,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ 말투 일관성 결정론 정규화(2026-06-16 실사고: 존댓말 성찰문이 패스들의 한다체 펀치 주입으로 말투가 혼입되고
   //   "저"가 "나"로 추락). 격식·보존형(assignment/thesis)은 원문 말투를 따라야 하므로, 출력의 종결어미·1인칭을 원문
   //   dominant 말투로 통일한다(무날조·무LLM — 종결어미·대명사만 결정론 치환). blog는 해요체 목표라 제외(프롬프트로 처리).
-  if ((mode === 'assignment' || mode === 'thesis') && !preserveLabStyle) {
+  if ((mode === 'assignment' || mode === 'thesis') && !safetyEngineStyle) {
     try {
       // ★ P0-1(2026-06-18 감사): ASSIGNMENT_B7은 학부생 보고서형 '합쇼체(hap)'가 목표다. 원문이 평어체(handa)여도
       //   origReg로 정규화하면 앞단 b7PolishPass가 만든 합쇼체를 도로 평어체로 되돌려(앞·뒤 패스 상쇄) 말투가 흔들린다.
@@ -3148,20 +3268,20 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
         result.registerNormalize = { target: targetReg, changed: rn.changed, b7: b7 || undefined };
       }
     } catch (e) { result.registerNormalize = { error: e.message }; }
-  } else if (mode === 'blog' && basicReportStyle && !preserveLabStyle && process.env.BASIC_REPORT_REGISTER_NORM !== '0') {
+  } else if (mode === 'blog' && basicReportStyle && !safetyEngineStyle && process.env.BASIC_REPORT_REGISTER_NORM !== '0') {
     try {
       const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, 'hap');
       if (rn.changed) result.outputText = rn.text;
       result.registerNormalize = { target: 'hap', changed: rn.changed, basis: 'basic_report' };
     } catch (e) { result.registerNormalize = { error: e.message }; }
-  } else if (mode === 'blog' && basicBlogStyle && !preserveLabStyle && process.env.BASIC_BLOG_REGISTER_NORM !== '0') {
+  } else if (mode === 'blog' && basicBlogStyle && !safetyEngineStyle && process.env.BASIC_BLOG_REGISTER_NORM !== '0') {
     try {
       const targetReg = contract.register === 'polite' ? 'hap' : 'haeyo';
       const rn = require('../engine/registernormalize').normalizeRegister(result.outputText, targetReg);
       if (rn.changed) result.outputText = rn.text;
       result.registerNormalize = { target: targetReg, changed: rn.changed, basis: 'basic_blog', sourceRegister: contract.register };
     } catch (e) { result.registerNormalize = { error: e.message }; }
-  } else if (mode === 'blog' && !preserveLabStyle && process.env.BLOG_REGISTER_NORM !== '0') {
+  } else if (mode === 'blog' && !safetyEngineStyle && process.env.BLOG_REGISTER_NORM !== '0') {
     // ★ blog 말투 일관화(2026-06-17 실측: 청크별 재작성이 앞=해요체·뒤=한다체로 갈려 중간에 어투가 바뀜).
     //   blog는 캐주얼 해요체가 *목표*이므로, dominant 무관하게 출력의 한다체·합쇼체 잔류를 항상 해요체로 통일한다
     //   (종결어미만·무날조·무LLM). 과거형 ㅆ다→ㅆ어요 일괄 규칙으로 학술 과거형 잔류까지 정리. 끄려면 BLOG_REGISTER_NORM=0.
@@ -3178,7 +3298,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   }
 
   // ★ 기본 블로그 말투 마감: 업체 현장글에서 문학적·강한 표현만 담백하게 낮춘다.
-  if (mode === 'blog' && basicBlogStyle && !preserveLabStyle && process.env.BASIC_BLOG_TONE_CLEANUP !== '0') {
+  if (mode === 'blog' && basicBlogStyle && !safetyEngineStyle && process.env.BASIC_BLOG_TONE_CLEANUP !== '0') {
     try {
       const targetReg = result.registerNormalize?.target || (contract.register === 'polite' ? 'hap' : 'haeyo');
       const bc = require('../engine/basicblogtone').cleanupBasicBlogTone(result.outputText, { register: targetReg });
@@ -3188,7 +3308,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   }
 
   // ★ 기본 피하기 문단 정리: 내용은 그대로 두고, 1문장짜리 문단이 과하게 끊기는 결과만 자연스럽게 묶는다.
-  if ((basicReportStyle || basicBlogStyle || preserveLabStyle) && process.env.BASIC_HUMANIZE_FLOW_COHESION !== '0') {
+  if ((basicReportStyle || basicBlogStyle || safetyEngineStyle) && process.env.BASIC_HUMANIZE_FLOW_COHESION !== '0') {
     try {
       const fc = require('../engine/flowcohesion').flowCohesion(result.outputText);
       if (fc.text && fc.text !== result.outputText) result.outputText = fc.text;
@@ -3203,28 +3323,43 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     if (trimmed !== result.outputText) { logger.info('humanize.truncation_trimmed', { mode, before: result.outputText.length, after: trimmed.length }); result.outputText = trimmed; }
   }
 
-  if (preserveLabStyle) {
-    result.preserveLab = result.preserveLab || { version: 'preserve-lab-v1', path: 'llm_preserve' };
-    result.preserveLab.gates = result.preserveLab.gates || {};
+  if (safetyEngineStyle) {
+    const metaKey = safetyMetaKey(styleProfile);
+    result[metaKey] = result[metaKey] || { version: safetyEngineVersion(styleProfile), path: 'llm_preserve' };
+    result[metaKey].gates = result[metaKey].gates || {};
     const ckGate = preserveCkGate(text, baselineText, result.outputText);
     if (ckGate.reverted) {
       result.outputTextPrePreserveCkGate = result.outputText;
       result.outputText = ckGate.fallback === 'minimal_cleanup' ? minimalCleanupText(text) : baselineText;
-      result.preserveLab.path = ckGate.fallback === 'minimal_cleanup' ? 'ck_revert_minimal_cleanup' : 'ck_revert_baseline';
-      logger.warn('humanize.preserve_lab_ck_revert', { mode, reasons: ckGate.reasons, fallback: ckGate.fallback });
+      result[metaKey].path = ckGate.fallback === 'minimal_cleanup' ? 'ck_revert_minimal_cleanup' : 'ck_revert_baseline';
+      logger.warn(finalReportEngineStyle ? 'humanize.final_report_engine_ck_revert' : 'humanize.preserve_lab_ck_revert', { mode, reasons: ckGate.reasons, fallback: ckGate.fallback });
     }
-    result.preserveLab.gates.ck = ckGate;
+    result[metaKey].gates.ck = ckGate;
 
     const surfaceGate = preserveSurfaceGate(text, baselineText, result.outputText);
     if (surfaceGate.reverted) {
       result.outputTextPrePreserveSurfaceGate = result.outputText;
       result.outputText = baselineText;
-      result.preserveLab.path = 'surface_revert_baseline';
-      logger.warn('humanize.preserve_lab_surface_revert', { mode, reasons: surfaceGate.reasons });
+      result[metaKey].path = 'surface_revert_baseline';
+      logger.warn(finalReportEngineStyle ? 'humanize.final_report_engine_surface_revert' : 'humanize.preserve_lab_surface_revert', { mode, reasons: surfaceGate.reasons });
     }
-    result.preserveLab.gates.surface = surfaceGate;
-    result.preserveLab.surfaceAfter = preserveSurfaceSnapshot(result.outputText);
-    if (result.compressionFallback) result.preserveLab.gates.compressionFallback = true;
+    result[metaKey].gates.surface = surfaceGate;
+    result[metaKey].surfaceAfter = preserveSurfaceSnapshot(result.outputText);
+    if (result.compressionFallback) result[metaKey].gates.compressionFallback = true;
+    if (finalReportEngineStyle) {
+      const meta = result.finalReportEngine || buildFinalReportMeta(preserveLabPlan, {
+        path: result[metaKey].path || 'llm_preserve',
+        userNotes: memo,
+        evidence: evid,
+        applied: ['llm_preserve_rewrite', 'floor_guard']
+      });
+      Object.assign(meta, result[metaKey]);
+      meta.path = result[metaKey].path || meta.path;
+      meta.gates = result[metaKey].gates || {};
+      meta.surfaceAfter = result[metaKey].surfaceAfter;
+      meta.message = finalReportMessage(meta);
+      attachHumanizeMetaForFinalReport(result, meta);
+    }
   }
 
   // 최종 출력 기준 가드 재측정(judge repair·anti-detect 반영).
@@ -3240,7 +3375,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   //   휴머나이징이 일어나지 않은 것 → 조용히 과금/노출하지 않고 차단(무차감). NOOP_GUARD=0으로 해제.
   //   ★보존(다듬기, tonePolish)은 띄어쓰기 교정도 가치 있는 변환이므로 '완전 동일(공백 포함)'만 무변환으로 본다
   //   (공백만 고친 정상 다듬기를 오차단하지 않음). 회피·재작성 모드는 '내용(공백 무시) 동일'이면 무변환.
-  if (process.env.NOOP_GUARD !== '0' && !preserveLabStyle) {
+  if (process.env.NOOP_GUARD !== '0' && !safetyEngineStyle) {
     const noopBare = s => (s || '').replace(/\s+/g, '').trim();
     const isNoOp = tonePolish
       ? (finalOut.trim().length > 0 && finalOut.trim() === (text || '').trim())

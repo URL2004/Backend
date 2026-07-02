@@ -83,6 +83,7 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
   const basicReportStyle = styleProfile === 'basic_report' || styleProfile === 'basic_style_stability';
   const basicBlogStyle = styleProfile === 'basic_blog';
   const preserveLabStyle = styleProfile === 'preserve_lab' || styleProfile === 'preserve_humanize_test';
+  const finalReportEngineStyle = styleProfile === 'final_report_engine' || styleProfile === 'report_engine' || styleProfile === 'final_report';
   let tone = (lang === 'en' ? TONE_EN : TONE_KO)[mode] || (lang === 'en' ? TONE_EN : TONE_KO).assignment;
   if (basicReportStyle && lang === 'ko' && mode === 'blog') {
     tone = '과제·보고서형 존댓말 문체. 현장 기록, 설명문, 과제 제출문처럼 사실을 차분하게 정리한다. 글 전체를 ~습니다/~입니다/~했습니다 계열로 일관되게 쓰고, 해요체(~요/~죠/~거든요/~잖아요)와 평어체(~다/~이다)를 섞지 마라. 문단은 대부분 2~4문장으로 이어 쓰고, 빈 줄은 제목·항목·화제 전환 지점에만 둔다. 1문장짜리 짧은 문단을 연속으로 만들지 말고, 항목형 정보(시설 유형, 규모, 인원, 시간, 범위, 장비, 주기)는 빠뜨리지 말고 유지하라. 말투와 문장 리듬만 정리하되, 원문에 없는 고객 요청·후기·홍보 문구·감정·사례·수치·업체 강점은 절대 만들지 마라.';
@@ -157,6 +158,108 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     '※ These are real, verified public facts (statistics, surveys, institutions, policies). Use them to SUPPORT the abstract/general claims in the text.',
     '★ Rules: (1) Keep the formal register and third-person voice — do NOT turn facts into first-person anecdotes. (2) Copy numbers, institution names, and years exactly, with attribution markers ("according to..."). (3) Use each fact exactly once, in the best-fitting spot. (4) Invent NO numbers, institutions, or studies beyond this list. (5) Keep the source\'s thesis direction; facts are supporting evidence only. (6) Weave by replacing/compressing generic sentences — keep total length near the source.'
   ].join('\n') : '';
+
+  if (finalReportEngineStyle) {
+    if (lang === 'en') {
+      const modeLine = mode === 'blog'
+        ? 'Blog/company copy: keep the source register, avoid literary flourishes and marketing overclaim, and keep most paragraphs at 2-4 connected sentences.'
+        : 'Assignment/report copy: keep one consistent formal register. Do not switch between first/third person or formal/casual endings.';
+      return {
+        volatile: [anchorEn, evidenceEn, '', 'Edit the source below under the final-report test engine. Return only the finished body text.'].join('\n'),
+        stable: [
+          '[FINAL-REPORT-ENGINE — admin test profile]',
+          'You are testing a preservation-first humanizing editor. The goal is not to rewrite everything, but to reduce only risky surfaces: formulaic wording, repetition, impersonal phrasing, excessive generalities, over-compressed explanations, and too-neat summary endings.',
+          '',
+          'CORE RULES:',
+          '1. Keep natural sentences almost unchanged.',
+          '2. Edit only sentences that are stiff, repetitive, generic, overly impersonal, or compressed.',
+          '3. Preserve the source claims, facts, order, speaker, register, paragraph direction, and conclusion direction.',
+          '4. Invent no experiences, examples, numbers, dates, institutions, sources, emotions, customer reactions, or proper nouns.',
+          '5. Do not make the writing more polished, literary, promotional, or report-like than the source.',
+          '6. Do not force first-person perspective. Use only the viewpoint already present in the source or the provided notes.',
+          `7. Output ${lenEn}. Do not summarize or pad.`,
+          '',
+          'EDIT BUDGET:',
+          '· If the source already reads naturally, change only about 10-20%.',
+          '· If the source is repetitive or uniform, change about 25-40%.',
+          '· If the source is very formulaic, change up to 40-60%, but do not wholly rewrite more than 40% of the sentences.',
+          '· Prefer local edits inside a sentence over replacing the entire sentence.',
+          '',
+          'NO CONCRETE SOURCE:',
+          'If the source/notes do not contain concrete observations, examples, numbers, or experiences, do not fabricate them. Keep the edit limited and include "no_concrete_source" in riskFlags.',
+          '',
+          'AVOID:',
+          '· fabricated personal anecdotes, fabricated evidence, dramatic emotion, section reordering, chopped sentence fragments, mixed register, forced lesson-style endings, repeated conclusion words.',
+          '',
+          `[MODE] ${modeLine}`,
+          'Plain body text only. No markdown, headings added by you, preface, or explanation.'
+        ].join('\n')
+      };
+    }
+    const modeLine = mode === 'blog'
+      ? '블로그/업체글이면 원문 말투를 보존한다. 원문이 존댓말이면 존댓말, 해요체면 해요체를 유지하고 중간에 섞지 마라. 문학적 표현, 감성적 비유, 홍보성 단정은 낮춘다. 문단은 대부분 2~4문장으로 이어 쓰고, 한 문장짜리 문단을 연속으로 만들지 마라.'
+      : mode === 'assignment' || mode === 'thesis'
+        ? '과제/보고서 글이면 원문의 격식 종결체를 유지한다. 합니다체/한다체/해요체가 중간에 바뀌지 않게 하고, 3인칭 글을 1인칭 글로 바꾸거나 1인칭 글을 비인칭 보고서체로 밀지 마라.'
+        : '원문 장르, 화자 거리, 결론 방향을 유지한다.';
+    return {
+      volatile: [
+        anchorKo,
+        evidenceKo,
+        '',
+        '아래 원문을 [FINAL-REPORT-ENGINE] 테스트 정책으로만 다듬어라. 본문만 출력하고 설명·마크다운은 쓰지 마라.'
+      ].join('\n'),
+      stable: [
+        '[FINAL-REPORT-ENGINE — 관리자 테스트 전용 프로필]',
+        '너는 최종 개선보고서 기준의 보존형 휴머나이징 편집자다. 목표는 원문을 완전히 새로 쓰는 것이 아니라, AI 글처럼 보일 수 있는 정형성·반복·비인칭 표현·과도한 일반론·지나치게 매끈한 결론문만 줄이는 것이다.',
+        '',
+        '핵심 원칙:',
+        '1. 자연스러운 문장은 그대로 둔다.',
+        '2. 어색하거나 정형적인 문장만 부분적으로 고친다.',
+        '3. 원문의 주장, 정보, 문단 순서, 화자, 말투, 결론 방향을 유지한다.',
+        '4. 원문에 없는 경험, 수치, 사례, 날짜, 기관명, 출처, 고객 반응, 감정은 만들지 않는다.',
+        '5. 글을 더 화려하게 만들거나 더 매끈한 보고서처럼 정리하지 않는다.',
+        '6. 문단 순서를 대폭 바꾸거나 섹션을 새로 만들지 않는다.',
+        '7. 같은 표현이 반복될 때만 일부를 바꾼다.',
+        '8. 비인칭 표현이 많으면 원문에 이미 있는 주체를 살려 일부만 능동으로 바꾼다. 주체가 없으면 만들지 않는다.',
+        '9. 추상 문장은 원문 안에 이미 있는 구체 내용과만 연결한다.',
+        '10. 구체화할 재료가 없으면 억지 경험담이나 새 근거로 바꾸지 않는다.',
+        '',
+        '편집 예산:',
+        '· 원문이 이미 자연스러우면 10~20%만 수정한다.',
+        '· 원문이 반복적이면 25~40% 정도만 수정한다.',
+        '· 원문이 매우 AI식이어도 40~60%를 넘기지 않는다.',
+        '· 전체 문장의 40% 이상을 통째로 새로 쓰지 마라.',
+        '· 문장 전체 재작성보다 문장 내부의 부분 수정을 우선한다.',
+        `· 출력은 ${lenKo}. 요약·압축·분량 부풀리기를 하지 마라.`,
+        '',
+        '구체화 제한:',
+        '원문 또는 사용자 메모에 구체 사례, 수치, 경험, 관찰, 출처가 없으면 새로 만들지 않는다. 그 경우 riskFlags에 "no_concrete_source"를 넣고, 원문 범위 안에서만 덜 정형적으로 다듬는다.',
+        '',
+        '금지:',
+        '· 없는 개인 경험 추가',
+        '· 없는 근거 추가',
+        '· 감정 표현 과잉 삽입',
+        '· 문단 순서 대폭 변경',
+        '· 짧은 문장 조각 남발',
+        '· 체언 종결 남발',
+        '· 블로그체와 보고서체 혼합',
+        '· 교훈형 마무리 강제',
+        '· "결론적으로", "시사한다", "중요하다" 같은 결론형 표현 반복',
+        '',
+        `[모드별 결] ${modeLine}${mode === 'blog'
+          ? (register === 'polite'
+            ? '\n[문체 통일] 원문이 존댓말(~습니다/~입니다)이면 글 전체를 존댓말로 유지하고 해요체나 평어체를 섞지 마라.'
+            : register === 'haeyo'
+              ? '\n[문체 통일] 원문이 해요체면 글 전체를 해요체로 유지하고 합니다체나 평어체를 섞지 마라.'
+              : register === 'plain'
+                ? '\n[문체 통일] 원문이 평어체면 평어체를 유지하고 중간에 해요체·합니다체를 섞지 마라.'
+                : '\n[문체 통일] 글 전체 종결체와 인칭을 하나로 유지하라.')
+          : regKo}`,
+        '',
+        '출력: 수정된 본문만 출력한다.'
+      ].join('\n')
+    };
+  }
 
   if (preserveLabStyle) {
     if (lang === 'en') {

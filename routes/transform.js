@@ -62,8 +62,28 @@ function normalizeBasicStyle(value) {
   return 'blog';
 }
 
+function normalizeAdminLabProfile(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'final_report_engine' || v === 'report_engine' || v === 'final_report' || v === 'final-report-engine') {
+    return 'final_report_engine';
+  }
+  return 'preserve_lab';
+}
+
+function adminLabProfileOf(job) {
+  return normalizeAdminLabProfile(job && (job.adminLabProfile || job.basicExperiment?.profile));
+}
+
 function isPreserveLabJob(job) {
-  return !!(job && job.basicExperiment && job.basicExperiment.profile === 'preserve_lab');
+  return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'preserve_lab');
+}
+
+function isFinalReportEngineJob(job) {
+  return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'final_report_engine');
+}
+
+function isAdminHumanizeLabJob(job) {
+  return !!(job && job.adminHumanizeLab && job.basicExperiment);
 }
 
 async function requireJobOwner(req, res, job) {
@@ -329,9 +349,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab'];
+  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab'];
+  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -802,23 +822,28 @@ async function tryBlogPreservationFallback(job, text) {
   }
 }
 
-async function runAdminPreserveLabJob(job, text, evidence) {
+async function runAdminHumanizeLabJob(job, text, evidence) {
   try {
+    const profile = adminLabProfileOf(job);
+    const isFinalReport = profile === 'final_report_engine';
+    const engineMode = job.mode === 'blog' ? 'blog' : 'assignment';
+    const tonePolish = job.mode === 'polish';
     job.status = 'running';
-    job.stage = '관리자 테스트 · 보존형 엔진';
+    job.stage = isFinalReport ? '관리자 테스트 · 최종 개선보고서 엔진' : '관리자 테스트 · 보존형 엔진';
     if (job.basicExperiment) {
-      job.basicExperiment = { ...job.basicExperiment, applied: true, appliedAtMs: Date.now() };
+      job.basicExperiment = { ...job.basicExperiment, profile, applied: true, appliedAtMs: Date.now() };
     }
+    job.adminLabProfile = profile;
     persistJob(job);
 
     const out = await analyze.runHumanizeChunked({
-      text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+      text, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
       floorV2: true, optIn: false, judge: false, grounding: false,
-      userNotes: job.memo || '', evidence: evidence || '', tonePolish: false, styleProfile: 'preserve_lab'
+      userNotes: job.memo || '', evidence: evidence || '', tonePolish, styleProfile: profile
     });
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
-      logger.warn('transform.admin_preserve_lab_blocked', { jobId: job.id, uid: job.uid, gates });
+      logger.warn('transform.admin_humanize_lab_blocked', { jobId: job.id, uid: job.uid, profile, gates });
       job.status = 'blocked';
       job.gates = gates;
       job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
@@ -832,6 +857,7 @@ async function runAdminPreserveLabJob(job, text, evidence) {
     job.result = {
       outputText: out.result.outputText,
       adminHumanizeLab: true,
+      adminLabProfile: profile,
       floorReport: {
         status: out.floorReport.status,
         criticals: out.floorReport.criticals,
@@ -842,25 +868,28 @@ async function runAdminPreserveLabJob(job, text, evidence) {
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount,
       basicExperiment: job.basicExperiment || null,
-      styleProfile: out.result.styleProfile || 'preserve_lab',
+      styleProfile: out.result.styleProfile || profile,
       preserveLab: out.result.preserveLab || null,
+      finalReportEngine: out.result.finalReportEngine || null,
+      humanizeMeta: out.result.humanizeMeta || null,
       compressionFallback: !!out.result.compressionFallback
     };
     persistJob(job);
-    logger.info('transform.admin_preserve_lab_done', {
+    logger.info('transform.admin_humanize_lab_done', {
       jobId: job.id,
       uid: job.uid,
       mode: job.mode,
+      profile,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount,
-      path: out.result.preserveLab && out.result.preserveLab.path
+      path: (out.result.finalReportEngine || out.result.preserveLab || {}).path
     });
   } catch (e) {
     if (job.ac.signal.aborted) {
       if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
       return;
     }
-    logger.error('transform.admin_preserve_lab_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
+    logger.error('transform.admin_humanize_lab_failed', { jobId: job.id, uid: job.uid, mode: job.mode, profile: adminLabProfileOf(job), err: e });
     job.status = 'error';
     job.error = '관리자 테스트 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     persistJob(job);
@@ -875,8 +904,8 @@ async function runJob(job, text, evidence) {
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
 
-    if (isPreserveLabJob(job)) {
-      return await runAdminPreserveLabJob(job, text, evidence);
+    if (isAdminHumanizeLabJob(job)) {
+      return await runAdminHumanizeLabJob(job, text, evidence);
     }
 
     // ★ 재구성 부적합 사전 차단(2026-06-16, API 낭비 0): 자소서·생기부·탐구문이나 짧고 추상적인 글은
@@ -1207,14 +1236,27 @@ async function runHumanizeJob(job, text) {
     if (fb.hasFrozen) logger.info('transform.blog_academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: (fb.refs || '').length });
     let styleProfile = '';
     const preserveLab = isPreserveLabJob(job);
+    const finalReportLab = isFinalReportEngineJob(job);
+    const adminSafetyLab = preserveLab || finalReportLab;
     if (preserveLab) {
       styleProfile = 'preserve_lab';
       job.basicExperiment = {
         ...(job.basicExperiment || {}),
+        profile: styleProfile,
         applied: true,
         appliedAtMs: Date.now()
       };
       logger.info('transform.admin_preserve_lab_profile_applied', { jobId: job.id, uid: job.uid, mode: job.mode, profile: styleProfile });
+    } else if (finalReportLab) {
+      styleProfile = 'final_report_engine';
+      job.adminLabProfile = styleProfile;
+      job.basicExperiment = {
+        ...(job.basicExperiment || {}),
+        profile: styleProfile,
+        applied: true,
+        appliedAtMs: Date.now()
+      };
+      logger.info('transform.admin_final_report_engine_profile_applied', { jobId: job.id, uid: job.uid, mode: job.mode, profile: styleProfile });
     } else if (!isPolish && job.mode === 'blog' && job.basicStyle === 'report') {
       styleProfile = 'basic_report';
       if (job.basicExperiment) {
@@ -1236,7 +1278,7 @@ async function runHumanizeJob(job, text) {
       //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
       // ★ P1-5(2026-06-18 감사): polish(그대로 다듬기)는 최소 수정이 목적인데 grounding(추상 문장→선명한 판단문
       //   교체)이 켜져 기대보다 많이 바뀌었다. polish면 grounding off(보존 우선), 회피 경로(blog)에선 유지.
-      floorV2: true, optIn: false, judge: !isPolish && !preserveLab, grounding: !isPolish && !preserveLab, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
+      floorV2: true, optIn: false, judge: !isPolish && !adminSafetyLab, grounding: !isPolish && !adminSafetyLab, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
     });
     // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
     if (out.floorReport && out.floorReport.status === 'blocked') {
@@ -1316,6 +1358,9 @@ async function runHumanizeJob(job, text) {
       basicExperiment: job.basicExperiment || null,
       styleProfile: out.result.styleProfile || null,
       preserveLab: out.result.preserveLab || null,
+      finalReportEngine: out.result.finalReportEngine || null,
+      humanizeMeta: out.result.humanizeMeta || null,
+      adminLabProfile: job.adminLabProfile || (adminSafetyLab ? styleProfile : null),
       adminHumanizeLab: !!job.adminHumanizeLab,
       compressionFallback: !!out.result.compressionFallback,
       basicBlogToneCleanup: out.result.basicBlogToneCleanup || null,
@@ -1364,6 +1409,7 @@ router.post('/transform', async (req, res) => {
   }
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const adminLabRequested = req.body && req.body.adminHumanizeLab === true;
+  const requestedAdminLabProfile = adminLabRequested ? normalizeAdminLabProfile(req.body && req.body.adminLabProfile) : null;
   let adminLabUid = null;
   if (adminLabRequested) {
     if (devNoAuth) {
@@ -1469,8 +1515,8 @@ router.post('/transform', async (req, res) => {
     enabled: true,
     requested: true,
     applied: false,
-    version: 'preserve-lab-v1',
-    profile: 'preserve_lab',
+    version: requestedAdminLabProfile === 'final_report_engine' ? 'final-report-engine-v1' : 'preserve-lab-v1',
+    profile: requestedAdminLabProfile || 'preserve_lab',
     source: adminLabRequested ? 'admin_humanize_lab_page' : 'admin_job_toggle'
   } : (legacyBasicExperimentEnabled ? {
     enabled: true,
@@ -1499,6 +1545,7 @@ router.post('/transform', async (req, res) => {
     basicStyle,
     basicExperiment: experimentMeta,
     adminHumanizeLab: !!(adminLabRequested && preserveExperimentEnabled),
+    adminLabProfile: adminLabRequested && preserveExperimentEnabled ? (requestedAdminLabProfile || 'preserve_lab') : null,
 
     wantEvidence,
     estSec,

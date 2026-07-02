@@ -12,7 +12,7 @@ const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
 const analyze = require('./analyze');   // 과금 헬퍼 재사용(차감 공식 단일 출처)
-const { db, verifyToken } = require('../config');
+const { db, verifyToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken 추출 단일 출처(헤더 우선·폴백 deprecated)
 const { genreTransferV2 } = require('../engine/genretransfer');
@@ -52,6 +52,10 @@ const orphan401 = new Map();   // jobId → 폴링 GET 401 연속 횟수(결과 
 
 // idToken 추출은 lib/reqtoken.bearerToken으로 단일화(헤더 우선, body/query 폴백 + deprecation 로그).
 function tokenFromReq(req) { return bearerToken(req); }
+
+function isAdminUid(uid) {
+  return ADMIN_UIDS.includes(uid);
+}
 
 async function requireJobOwner(req, res, job) {
   if (job.devNoAuth && !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1') {
@@ -1122,17 +1126,14 @@ async function runHumanizeJob(job, text) {
     const bodyText = fb.hasFrozen ? fb.body : text;
     if (fb.hasFrozen) logger.info('transform.blog_academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: (fb.refs || '').length });
     let styleProfile = '';
-    if (!isPolish && job.mode === 'blog') {
-      try {
-        const exp = await basicHumanizeExperiment.getRuntimeConfig({ db, logger });
-        if (exp.enabled) {
-          styleProfile = 'basic_style_stability';
-          job.basicExperiment = { enabled: true, version: exp.version, profile: styleProfile };
-          logger.info('transform.basic_humanize_experiment_applied', { jobId: job.id, uid: job.uid, profile: styleProfile, source: exp.source });
-        }
-      } catch (e) {
-        logger.warn('transform.basic_humanize_experiment_load_failed', { jobId: job.id, uid: job.uid, err: e && e.message });
-      }
+    if (!isPolish && job.mode === 'blog' && job.basicExperiment && job.basicExperiment.enabled && isAdminUid(job.uid)) {
+      styleProfile = 'basic_style_stability';
+      job.basicExperiment = {
+        ...job.basicExperiment,
+        applied: true,
+        appliedAtMs: Date.now()
+      };
+      logger.info('transform.basic_humanize_experiment_applied', { jobId: job.id, uid: job.uid, profile: styleProfile, source: 'admin_job_toggle' });
     }
     const out = await analyze.runHumanizeChunked({
       text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
@@ -1341,6 +1342,11 @@ router.post('/transform', async (req, res) => {
     });
   }
   if (mode === 'formal') recordStart(pre.uid);
+  const basicExperimentRequested = mode === 'blog' && req.body && req.body.basicExperiment === true;
+  const basicExperimentEnabled = basicExperimentRequested && isAdminUid(pre.uid);
+  if (basicExperimentRequested && !basicExperimentEnabled) {
+    logger.warn('transform.basic_humanize_experiment_ignored_non_admin', { uid: pre.uid, mode });
+  }
 
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
@@ -1357,6 +1363,14 @@ router.post('/transform', async (req, res) => {
     autoCoach: req.body.autoCoach === true && mode === 'formal',   // 자동 코칭(재구성 전용) — 시작 시 입장 자동 도출·적용(2026-06-18)
     lang: req.body.lang === 'en' ? 'en' : 'ko',
     lengthMode: req.body.length === 'compact' ? 'compact' : 'keep',   // 분량 옵션(재구성 전용) — 엔진 연결(2026-06-15). 기본 keep(유지)
+    basicExperiment: basicExperimentEnabled ? {
+      enabled: true,
+      requested: true,
+      applied: false,
+      version: basicHumanizeExperiment.VERSION,
+      profile: 'basic_style_stability',
+      source: 'admin_job_toggle'
+    } : null,
 
     wantEvidence,
     estSec,

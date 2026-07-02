@@ -34,7 +34,7 @@ function measureBurstiness(text) {
 }
 
 function buildPrompt(para, lang, aggressive = false, styleProfile = '') {
-  const gentle = styleProfile === 'basic_style_stability';
+  const gentle = styleProfile === 'basic_report' || styleProfile === 'basic_style_stability';
   const intensity = gentle
     ? `문단 흐름을 깨지 않는 선에서만 문장 길이를 조금 다양하게 만들어라. 짧은 문장은 문단당 최대 1개, 12~25자 정도의 완결문만 허용한다. 짧은 문단을 새로 만들거나 빈 줄을 늘리지 마라.`
     : aggressive

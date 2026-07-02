@@ -80,10 +80,10 @@ function speakerRuleEn(speakerType) {
 }
 
 function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'individual', lengthPolicy, userNotes = '', register = 'mixed', evidence = '', anchorIdx = null, tonePolish = false, styleProfile = '' } = {}) {
-  const basicStyleStability = styleProfile === 'basic_style_stability';
+  const basicReportStyle = styleProfile === 'basic_report' || styleProfile === 'basic_style_stability';
   let tone = (lang === 'en' ? TONE_EN : TONE_KO)[mode] || (lang === 'en' ? TONE_EN : TONE_KO).assignment;
-  if (basicStyleStability && lang === 'ko' && mode === 'blog') {
-    tone = '친근한 구어체 블로그 말투. 대부분은 2~4문장짜리 자연스러운 문단으로 이어 쓰고, 빈 줄은 화제 전환 지점에만 둔다. 짧은 문장은 글 전체 1~2개만 쓰고 연속 금지 — 앞뒤 문맥과 이어져야 한다. 종결어미는 자연스럽게 바꾸되, 어투가 평어체(~다)나 합니다체로 떨어지지 않게 해요체 결을 유지한다. 말투·리듬은 바꾸되, 어떤 팁·항목·수치도 빼지 말고 원문에 없는 사실·사례·일화는 절대 지어내지 마라.';
+  if (basicReportStyle && lang === 'ko' && mode === 'blog') {
+    tone = '과제·보고서형 존댓말 문체. 현장 기록, 설명문, 과제 제출문처럼 사실을 차분하게 정리한다. 글 전체를 ~습니다/~입니다/~했습니다 계열로 일관되게 쓰고, 해요체(~요/~죠/~거든요/~잖아요)와 평어체(~다/~이다)를 섞지 마라. 문단은 대부분 2~4문장으로 이어 쓰고, 빈 줄은 제목·항목·화제 전환 지점에만 둔다. 1문장짜리 짧은 문단을 연속으로 만들지 말고, 항목형 정보(시설 유형, 규모, 인원, 시간, 범위, 장비, 주기)는 빠뜨리지 말고 유지하라. 말투와 문장 리듬만 정리하되, 원문에 없는 고객 요청·후기·홍보 문구·감정·사례·수치·업체 강점은 절대 만들지 마라.';
   }
   // 문체 일관성 규칙(§한다체 오믹스 버그): 청크마다 평어/존댓말이 섞이면 그 자체가 AI 신호. 원문 문체로 통일.
   //   blog/resume는 모드 고유 말투(해요/존댓말)를 쓰므로 제외, 학술계열(assignment/thesis)에만 적용.
@@ -238,10 +238,10 @@ function buildSystemPrompt(mode = 'assignment', lang = 'ko', { speakerType = 'in
     };
   }
 
-  const rhythmRuleKo = basicStyleStability
+  const rhythmRuleKo = basicReportStyle
     ? '· ★문장 호흡은 완만하게 비대칭으로 만든다. 짧은 문장은 문단당 최대 1개, 글 전체 1~2개 수준으로만 쓰고 연속 금지. 12~25자 정도의 짧은 완결문을 앞뒤 문맥에 붙여 쓰되, 공허한 한 단어 단정("유연함이다.", "역설이다.")은 절대 만들지 마라. 대부분의 문장은 자연스럽게 이어지는 중간 길이로 둔다.'
     : '· ★문장 호흡 극단 비대칭(burstiness): AI는 문장 길이가 고르다. 이걸 깨라. 한 문단 안에서 아주 짧은 문장(2~8자: "그건 다르다.", "전부는 아니다.")과 아주 긴 문장(50자+)을 *일부러* 뒤섞어라. 같은 길이대 문장 2연속도 피하라. ★단 짧은 문장도 반드시 *내용*(주장·대조·반응)을 담아야 한다 — 앞 문장의 명사·키워드를 그대로 되받는 한 단어 단정("유연함이다.", "역설이다.", "일방적이다.", "어렵다.", "시대가 달랐다." 류)은 절대 금지. 이런 공허한 체언 조각은 의미가 없고 오히려 기계 신호다.';
-  const paragraphRuleKo = basicStyleStability
+  const paragraphRuleKo = basicReportStyle
     ? '· ★문단 흐름: 대부분의 문단은 2~4문장으로 완성된 흐름을 만든다. 핵심 문장을 별도 문단으로 떼는 것은 글 전체 1회 이하로 제한하고, 1문장짜리 문단이 연속되게 만들지 마라. 빈 줄은 화제 전환에만 쓴다.'
     : '· ★문단 길이 극단 불균형: AI는 문단 길이도 고르다. 1~2문장짜리 짧은 문단과 5~7문장 긴 문단을 일부러 섞어라. 핵심 한 문장은 아예 한 문단으로 따로 떼라.';
   const _stable = [

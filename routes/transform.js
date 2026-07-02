@@ -20,7 +20,6 @@ const inputrouting = require('../engine/inputrouting');   // 재구성 부적합
 const { suggestEvidence } = require('../engine/evidence');
 const { reviewCandidates, hostOf } = require('../engine/evidencereview');
 const discord = require('../lib/discord');
-const basicHumanizeExperiment = require('../lib/basicHumanizeExperiment');
 
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
@@ -55,6 +54,12 @@ function tokenFromReq(req) { return bearerToken(req); }
 
 function isAdminUid(uid) {
   return ADMIN_UIDS.includes(uid);
+}
+
+function normalizeBasicStyle(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'report' || v === 'assignment' || v === 'school') return 'report';
+  return 'blog';
 }
 
 async function requireJobOwner(req, res, job) {
@@ -320,9 +325,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicExperiment'];
+  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicExperiment'];
+  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -1126,14 +1131,16 @@ async function runHumanizeJob(job, text) {
     const bodyText = fb.hasFrozen ? fb.body : text;
     if (fb.hasFrozen) logger.info('transform.blog_academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: (fb.refs || '').length });
     let styleProfile = '';
-    if (!isPolish && job.mode === 'blog' && job.basicExperiment && job.basicExperiment.enabled && isAdminUid(job.uid)) {
-      styleProfile = 'basic_style_stability';
-      job.basicExperiment = {
-        ...job.basicExperiment,
-        applied: true,
-        appliedAtMs: Date.now()
-      };
-      logger.info('transform.basic_humanize_experiment_applied', { jobId: job.id, uid: job.uid, profile: styleProfile, source: 'admin_job_toggle' });
+    if (!isPolish && job.mode === 'blog' && job.basicStyle === 'report') {
+      styleProfile = 'basic_report';
+      if (job.basicExperiment) {
+        job.basicExperiment = {
+          ...job.basicExperiment,
+          applied: true,
+          appliedAtMs: Date.now()
+        };
+      }
+      logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle, profile: styleProfile });
     }
     const out = await analyze.runHumanizeChunked({
       text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
@@ -1218,6 +1225,7 @@ async function runHumanizeJob(job, text) {
       registerLeak: out.result.registerLeak,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount,
+      basicStyle: job.basicStyle || null,
       basicExperiment: job.basicExperiment || null,
       styleProfile: out.result.styleProfile || null,
       flowCohesion: out.result.flowCohesion || null
@@ -1347,6 +1355,9 @@ router.post('/transform', async (req, res) => {
   if (basicExperimentRequested && !basicExperimentEnabled) {
     logger.warn('transform.basic_humanize_experiment_ignored_non_admin', { uid: pre.uid, mode });
   }
+  const basicStyle = mode === 'blog'
+    ? (basicExperimentEnabled ? 'report' : normalizeBasicStyle(req.body && req.body.basicStyle))
+    : null;
 
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
@@ -1363,13 +1374,14 @@ router.post('/transform', async (req, res) => {
     autoCoach: req.body.autoCoach === true && mode === 'formal',   // 자동 코칭(재구성 전용) — 시작 시 입장 자동 도출·적용(2026-06-18)
     lang: req.body.lang === 'en' ? 'en' : 'ko',
     lengthMode: req.body.length === 'compact' ? 'compact' : 'keep',   // 분량 옵션(재구성 전용) — 엔진 연결(2026-06-15). 기본 keep(유지)
+    basicStyle,
     basicExperiment: basicExperimentEnabled ? {
       enabled: true,
       requested: true,
       applied: false,
-      version: basicHumanizeExperiment.VERSION,
-      profile: 'basic_style_stability',
-      source: 'admin_job_toggle'
+      version: 'basic-report-style-v1',
+      profile: 'basic_report',
+      source: 'admin_job_toggle_legacy'
     } : null,
 
     wantEvidence,

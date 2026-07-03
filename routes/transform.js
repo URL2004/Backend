@@ -64,6 +64,9 @@ function normalizeBasicStyle(value) {
 
 function normalizeAdminLabProfile(value) {
   const v = String(value || '').trim().toLowerCase();
+  if (v === 'v6_engine' || v === 'v6-engine' || v === 'humanizing_v6' || v === 'humanizing-engine-v6' || v === 'engine_v6' || v === 'engine-v6') {
+    return 'v6_engine';
+  }
   if (v === 'fundamental_engine' || v === 'fundamental-engine' || v === 'root_improvement_engine' || v === 'root-improvement-engine') {
     return 'fundamental_engine';
   }
@@ -87,6 +90,10 @@ function isFinalReportEngineJob(job) {
 
 function isFundamentalEngineJob(job) {
   return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'fundamental_engine');
+}
+
+function isV6EngineJob(job) {
+  return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'v6_engine');
 }
 
 function isAdminHumanizeLabJob(job) {
@@ -874,10 +881,12 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     const profile = adminLabProfileOf(job);
     const isFinalReport = profile === 'final_report_engine';
     const isFundamental = profile === 'fundamental_engine';
+    const isV6 = profile === 'v6_engine';
     const engineMode = job.mode === 'blog' ? 'blog' : 'assignment';
     const tonePolish = job.mode === 'polish';
     job.status = 'running';
-    job.stage = isFundamental ? '관리자 테스트 · 근본개선 엔진'
+    job.stage = isV6 ? '관리자 테스트 · V6 장문 잠금 엔진'
+      : isFundamental ? '관리자 테스트 · 근본개선 엔진'
       : isFinalReport ? '관리자 테스트 · 최종 개선보고서 엔진'
         : '관리자 테스트 · 보존형 엔진';
     if (job.basicExperiment) {
@@ -886,10 +895,10 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     job.adminLabProfile = profile;
     persistJob(job);
 
-    const out = isFundamental
-      ? await require('../engine/humanizeLabTestEngine').run({
+    const out = (isFundamental || isV6)
+      ? await require(isV6 ? '../engine/humanizeV6TestEngine' : '../engine/humanizeLabTestEngine').run({
         text,
-        mode: engineMode,
+        mode: isV6 ? (job.mode || engineMode) : engineMode,
         lang: job.lang || 'ko',
         signal: job.ac.signal,
         userNotes: job.memo || '',
@@ -933,6 +942,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       preserveLab: out.result.preserveLab || null,
       finalReportEngine: out.result.finalReportEngine || null,
       fundamentalEngine: out.result.fundamentalEngine || null,
+      v6Engine: out.result.v6Engine || null,
       humanizeMeta: out.result.humanizeMeta || null,
       compressionFallback: !!out.result.compressionFallback
     };
@@ -944,7 +954,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       profile,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount,
-      path: (out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).path
+      path: (out.result.v6Engine || out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).path
     });
   } catch (e) {
     if (job.ac.signal.aborted) {
@@ -966,7 +976,7 @@ async function runJob(job, text, evidence) {
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
 
-    if (isAdminHumanizeLabJob(job) && (job.mode !== 'formal' || isFundamentalEngineJob(job))) {
+    if (isAdminHumanizeLabJob(job) && (job.mode !== 'formal' || isFundamentalEngineJob(job) || isV6EngineJob(job))) {
       return await runAdminHumanizeLabJob(job, text, evidence);
     }
     if (isAdminHumanizeLabJob(job)) {
@@ -1616,9 +1626,11 @@ router.post('/transform', async (req, res) => {
   const basicStyle = mode === 'blog'
     ? (legacyBasicExperimentEnabled ? 'report' : normalizeBasicStyle(req.body && req.body.basicStyle))
     : null;
-  const adminLabVersion = requestedAdminLabProfile === 'fundamental_engine'
-    ? 'fundamental-engine-v1'
-    : requestedAdminLabProfile === 'final_report_engine' ? 'final-report-engine-v1' : 'preserve-lab-v1';
+  const adminLabVersion = requestedAdminLabProfile === 'v6_engine'
+    ? 'humanizing-engine-v6-longdoc-locked'
+    : requestedAdminLabProfile === 'fundamental_engine'
+      ? 'fundamental-engine-v1'
+      : requestedAdminLabProfile === 'final_report_engine' ? 'final-report-engine-v1' : 'preserve-lab-v1';
   const experimentMeta = preserveExperimentEnabled ? {
     enabled: true,
     requested: true,

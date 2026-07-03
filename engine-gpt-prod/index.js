@@ -214,8 +214,9 @@ async function callHumanize(args) {
       evidence,
       riskProfile: compactRisk(inputRisk)
     });
+    const retryInstruction = phase === 'escalation' ? buildEscalationInstruction() : '';
     const response = await completeJson({
-      system: [hp.stable, hp.dynamic].filter(Boolean).join('\n\n'),
+      system: [hp.stable, retryInstruction, hp.dynamic].filter(Boolean).join('\n\n'),
       user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets }),
       schema: HUMANIZE_SCHEMA,
       schemaName: 'gpt_prod_humanize_result',
@@ -440,6 +441,7 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
 function evaluateChunkGate({ outputText, original, source, contract, mode, protectedTerms, sourceSurface }) {
   const warnings = [];
   const violations = [];
+  const sourceAnchors = collectStructureAnchors(original);
   if (!outputText || looksLikeMeta(outputText)) {
     return { hardFail: true, reason: 'empty_or_meta_output', warnings, violations };
   }
@@ -451,6 +453,23 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
   }
   if (looksTruncated(outputText)) {
     return { hardFail: true, reason: 'sentence_truncated', warnings, violations };
+  }
+  if (sourceAnchors.length >= 2) {
+    const missingAnchors = sourceAnchors.filter(a => !structureAnchorPresent(a, outputText));
+    if (missingAnchors.length) {
+      violations.push({
+        gate: 'section_anchor_loss',
+        missing: missingAnchors.slice(0, 8).map(a => a.raw)
+      });
+      warnings.push('section_anchor_loss');
+      return { hardFail: true, reason: 'section_anchor_loss', warnings, violations };
+    }
+  }
+  const lengthGate = measureLengthCollapse(original, outputText, sourceAnchors.length);
+  if (lengthGate.hardFail) {
+    violations.push(lengthGate.violation);
+    warnings.push('length_collapse');
+    return { hardFail: true, reason: 'length_collapse', warnings, violations };
   }
   const lostTerms = protectedTerms.filter(t => t.length >= 2 && !outputText.includes(t));
   if (lostTerms.length) {
@@ -494,6 +513,67 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
 function isBlockingViolation(v) {
   const t = String(v?.type || v?.gate || '').toLowerCase();
   return /novelty|lostfacts|pov|fabrication|evidence_pairing|fake_ref|coined_term|meta_leak|floor_check_error/.test(t);
+}
+
+function buildEscalationInstruction() {
+  return [
+    '[재시도 지시]',
+    '1차 결과가 품질 게이트에 걸렸다. 원문 전체 구조와 모든 제목/번호 항목을 누락 없이 유지해서 다시 작성한다.',
+    'Ⅰ/Ⅱ/Ⅲ, 1./2./3. 같은 제목 줄은 모두 출력에 포함한다. 제목을 삭제하거나 본문에 흡수하지 않는다.',
+    '문단이나 항목을 요약해 합치지 않는다. 각 항목의 핵심 설명량을 원문과 비슷하게 유지한다.'
+  ].join('\n');
+}
+
+function collectStructureAnchors(text) {
+  const lines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const anchors = [];
+  for (const line of lines) {
+    if (line.length < 2 || line.length > 140) continue;
+    let m = line.match(/^([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4})\s*[.)．]?\s*(.{0,90})$/);
+    if (m) {
+      anchors.push(anchorOf(line, 'roman', m[1], m[2]));
+      continue;
+    }
+    m = line.match(/^(\d{1,2})\s*[.)．]\s+(.{2,110})$/);
+    if (m) {
+      anchors.push(anchorOf(line, 'number', m[1], m[2]));
+      continue;
+    }
+    m = line.match(/^(제\s?\d{1,3}\s?(?:장|절|항))\s+(.{2,100})$/);
+    if (m) anchors.push(anchorOf(line, 'legal', m[1], m[2]));
+  }
+  return anchors.slice(0, 30);
+}
+
+function anchorOf(raw, type, marker, title) {
+  const markerKey = normalizeBare(marker).replace(/[.)．]/g, '');
+  const titleKey = normalizeBare(title).slice(0, 24);
+  return { raw, type, marker: markerKey, titleKey };
+}
+
+function structureAnchorPresent(anchor, outputText) {
+  const out = normalizeBare(outputText);
+  if (anchor.titleKey && anchor.titleKey.length >= 6) return out.includes(anchor.titleKey);
+  return out.includes(normalizeBare(anchor.raw));
+}
+
+function measureLengthCollapse(original, outputText, anchorCount = 0) {
+  const sourceLen = normalizeBare(original).length;
+  const outLen = normalizeBare(outputText).length;
+  if (sourceLen < 700 || outLen <= 0) return { hardFail: false };
+  const ratio = outLen / sourceLen;
+  const minRatio = anchorCount >= 3 ? 0.78 : 0.65;
+  if (ratio >= minRatio) return { hardFail: false };
+  return {
+    hardFail: true,
+    violation: {
+      gate: 'length_collapse',
+      sourceLen,
+      outLen,
+      ratio: Number(ratio.toFixed(3)),
+      minRatio
+    }
+  };
 }
 
 function isHighRiskChunk(text, protectedTerms, patchTargets, cfg, inputRisk) {

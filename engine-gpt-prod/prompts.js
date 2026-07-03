@@ -33,6 +33,8 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '원문을 그대로 반환하지 않는다. 띄어쓰기, 빈 줄, 문장부호만 바꾼 결과도 실패다.',
     '숫자, 고유명사, 참고문헌, 핵심 사실은 보존하되 일반 문장은 어순, 접속, 표현, 문장 호흡을 실제로 다듬는다.',
     '제목, 번호, 참고문헌, URL은 보존하지만 본문 문장을 통째로 복사해 나열하지 않는다.',
+    'Ⅰ/Ⅱ/Ⅲ, 1./2./3., 제1장/제2절 같은 제목 줄은 빠뜨리거나 본문에 흡수하지 말고 같은 순서로 유지한다.',
+    '여러 항목으로 나뉜 글은 항목을 요약해 합치지 않는다. 각 항목의 설명량과 논리 역할을 유지한다.',
     '',
     '[장르 원칙]',
     toneFor(mode, register),
@@ -70,6 +72,7 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
     patchTargets.length ? `[주의할 구간]\n${patchTargets.slice(0, 20).join('\n')}` : '',
     `[작업 위치]\n${position}`,
     '[필수 조건]\noutputText는 아래 재작성할 텍스트와 공백 제거 기준으로 동일하면 안 된다.',
+    '[구조 보존]\n재작성할 텍스트 안에 제목/번호 항목이 있으면 outputText에도 모두 포함한다. 일부 항목만 쓰고 결론으로 넘어가지 않는다.',
     `[재작성할 텍스트]\n${chunk.text}`
   ].filter(Boolean).join('\n\n');
 }

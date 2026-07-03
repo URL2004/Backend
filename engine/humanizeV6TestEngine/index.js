@@ -6,36 +6,100 @@ const { createPolicyLockedHumanizer, DEFAULT_POLICY } = require('./src');
 const VERSION = 'humanizing-engine-v8.1-high-semantic-locked';
 const PROFILE = 'v6_engine';
 
-function buildRawJsonTool() {
+function buildStructuredTool() {
   return {
     name: 'return_v8_humanize_json',
-    description: 'Return the exact JSON string requested by the V8.1 humanizing engine.',
+    description: 'Return the structured result requested by the V8.1 humanizing engine.',
     input_schema: {
       type: 'object',
-      additionalProperties: false,
+      additionalProperties: true,
       properties: {
+        outputText: {
+          type: 'string',
+          description: 'Full-mode transformed text.'
+        },
+        blocks: {
+          type: 'array',
+          description: 'Block-locked mode transformed blocks.',
+          items: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+              id: { type: 'string' },
+              text: { type: 'string' }
+            }
+          }
+        },
+        patches: {
+          type: 'array',
+          description: 'Patch-mode transformed block patches.',
+          items: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+              id: { type: 'string' },
+              text: { type: 'string' }
+            }
+          }
+        },
+        editIntensity: {
+          type: 'string',
+          description: 'light, medium, effective, or high_effective.'
+        },
+        changedRiskPatterns: {
+          type: 'array',
+          items: { type: 'string' }
+        },
+        warnings: {
+          type: 'array',
+          items: { type: 'string' }
+        },
+        protectedTermPolicy: {
+          type: 'string'
+        },
         rawJson: {
           type: 'string',
-          description: 'A JSON string matching the schema requested in the system prompt. Do not wrap it in markdown.'
+          description: 'Backward-compatible fallback only. Prefer the structured fields above.'
         }
-      },
-      required: ['rawJson']
+      }
     }
   };
+}
+
+function serializeStructuredToolResult(parsed) {
+  if (!parsed || typeof parsed !== 'object') return JSON.stringify({});
+  if (typeof parsed.rawJson === 'string' && !parsed.outputText && !parsed.blocks && !parsed.patches) {
+    return parsed.rawJson;
+  }
+  if (parsed.rawJson && typeof parsed.rawJson === 'object' && !parsed.outputText && !parsed.blocks && !parsed.patches) {
+    return JSON.stringify(parsed.rawJson);
+  }
+  const payload = {
+    outputText: typeof parsed.outputText === 'string' ? parsed.outputText : undefined,
+    blocks: Array.isArray(parsed.blocks) ? parsed.blocks : undefined,
+    patches: Array.isArray(parsed.patches) ? parsed.patches : undefined,
+    editIntensity: parsed.editIntensity,
+    changedRiskPatterns: Array.isArray(parsed.changedRiskPatterns) ? parsed.changedRiskPatterns : [],
+    warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+    protectedTermPolicy: parsed.protectedTermPolicy || 'kept'
+  };
+  Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
+  return JSON.stringify(payload);
 }
 
 function createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode = 'assignment' }) {
   return {
     async complete({ system, user, temperature, maxOutputTokens }) {
-      const tool = buildRawJsonTool();
+      const tool = buildStructuredTool();
       const data = await callClaude({
         userText: user,
         systemText: [
           system,
           '',
           '[서비스 어댑터 규칙]',
-          '위 프롬프트가 요구한 JSON 객체를 문자열로 직렬화해서 rawJson 필드에만 넣어 반환한다.',
-          'rawJson 바깥에는 설명, 마크다운, 코드블록을 넣지 않는다.'
+          '위 프롬프트가 요구한 JSON 객체를 tool 입력 필드로 직접 반환한다.',
+          'full_single_call이면 outputText를, block_locked_single_call이면 blocks를, patch_single_call이면 patches를 채운다.',
+          'rawJson 문자열에 JSON을 다시 넣지 않는다. 설명, 마크다운, 코드블록을 넣지 않는다.'
         ].join('\n'),
         tool,
         temperature,
@@ -46,8 +110,7 @@ function createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode 
         mode
       });
       const parsed = extractClaudeResult(data, tool.name) || {};
-      if (typeof parsed.rawJson === 'string') return parsed.rawJson;
-      return JSON.stringify(parsed.rawJson || parsed);
+      return serializeStructuredToolResult(parsed);
     }
   };
 }

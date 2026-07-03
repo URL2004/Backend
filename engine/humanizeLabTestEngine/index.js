@@ -38,6 +38,7 @@ function detectGenre(text, { mode = 'assignment' } = {}) {
   const scores = {
     academic_assignment: scoreIncludes(t, [
       [/서론|본론|결론|참고문헌|본\s*(글|보고서|과제)|분석하고자|조사\s*결과|근거\s*자료/g, 2],
+      [/교육과정|누리과정|교사|유아|놀이\s*중심|관찰일지|학습공동체|직무연수|참고문헌/g, 1],
       [/Ⅰ|Ⅱ|Ⅲ|Ⅳ|^\s*\d+\.\s+/gm, 1],
       [/과제|보고서|학부생|교수|제출/g, 1]
     ]),
@@ -58,8 +59,9 @@ function detectGenre(text, { mode = 'assignment' } = {}) {
       [/\((19|20)\d{2}\)|[A-Za-z]+,\s*(19|20)\d{2}/g, 1]
     ]),
     resume_sop: scoreIncludes(t, [
-      [/지원|직무|역량|입사|자기소개|성장|경험|프로젝트|기여|성과|강점|협업/g, 2],
-      [/저는|제가/g, 1]
+      [/지원\s*(동기|하게|하고자|했습니다|합니다|분야|직무|회사)|입사|귀사|채용|자기소개|자소서|직무|역량|포부/g, 3],
+      [/프로젝트|기여|성과|강점|협업/g, 1],
+      [/저는|제가|저의|제\s/g, 1]
     ])
   };
   if (mode === 'blog') scores.field_blog += 2;
@@ -68,6 +70,17 @@ function detectGenre(text, { mode = 'assignment' } = {}) {
   let label = 'academic_assignment';
   for (const [k, v] of Object.entries(scores)) {
     if (v > scores[label]) label = k;
+  }
+  const strongResume = /(지원\s*(동기|하게|하고자|했습니다|합니다|분야|직무|회사)|입사|귀사|채용|자기소개|자소서)/.test(t)
+    && /(저는|제가|저의|제\s|프로젝트|성과|강점|역량|포부)/.test(t);
+  if (label === 'resume_sop' && !strongResume) {
+    label = Object.entries(scores)
+      .filter(([k]) => k !== 'resume_sop')
+      .sort((a, b) => b[1] - a[1])[0]?.[0] || 'academic_assignment';
+  }
+  if (/(참고문헌|교육과정|누리과정|교사|유아|학습공동체)/.test(t) && !strongResume) {
+    if (scores.thesis_research >= 4 && scores.thesis_research > scores.academic_assignment + 2) label = 'thesis_research';
+    else label = 'academic_assignment';
   }
   if (scores.report_technical >= scores.academic_assignment && scores.report_technical >= 4) {
     label = 'report_technical';
@@ -102,19 +115,29 @@ function extractProtectedTerms(text) {
       || /^\d+[\.)]\s+[^\n]{2,60}$/.test(l)));
 
   const middleDot = unique(t.match(/[가-힣A-Za-z0-9]+(?:·[가-힣A-Za-z0-9]+)+/g) || []);
-  const numbers = unique(t.match(/(?:19|20)\d{2}\s*년?|\d+(?:\.\d+)?\s*(?:%|％|명|개|건|원|만원|억원|조원|평|시간|분|초|개월|년|차|위|배|km|kg|m|㎡|개소|대|쪽|페이지)/g) || []);
+  const numbers = unique(t.match(/(?:19|20)\d{2}\s*년?|\d+(?:\.\d+)?\s*(?:개월|개소|페이지|만원|억원|조원|시간|분|초|명|개|건|원|평|년|차|위|배|회|km|kg|m|㎡|대|쪽|%|％)/g) || []);
   const acronyms = unique([
     ...(t.match(/\b[A-Z][A-Z0-9+.-]{1,}\b/g) || []),
     ...(t.match(/\b[A-Z][A-Za-z0-9+.-]{2,}(?:\s+[A-Z][A-Za-z0-9+.-]{2,}){1,3}\b/g) || [])
   ]);
   const namedEntities = unique([
-    ...(t.match(/[가-힣A-Za-z0-9]+(?:\s*[가-힣A-Za-z0-9]+){0,3}\s*(?:택배|전자|대학교|대학|병원|시청|구청|부문|시스템|터미널|클라우드|허브|센터|기업|회사|공사|공단|연구원|연구소|협회|교육청|포털)/g) || []),
+    ...(t.match(/[가-힣A-Za-z0-9]{2,30}(?:택배|전자|대학교|시청|구청|부문|시스템|터미널|허브|센터|기업|회사|공사|공단|연구원|연구소|협회|교육청|포털)/g) || []),
+    ...(t.match(/[A-Z][A-Za-z0-9+.-]*(?:\s+[A-Z][A-Za-z0-9+.-]*){0,3}\s+(?:클라우드|포털|API|Portal|Cloud)/g) || []),
     ...(t.match(/[가-힣]{2,}(?:시|군|구|동|읍|면|리)\b/g) || [])
-  ]);
-  const citations = unique(lines
-    .map(l => l.trim())
-    .filter(l => /(출처|자료|보도자료|기사|언론|에\s*따르면|조사에\s*따르면|연구에서는|\((19|20)\d{2}\)|[A-Za-z가-힣]+,\s*(19|20)\d{2})/.test(l))
-    .slice(0, 40));
+  ].filter(v => v.length <= 60 && !/[.?!]\s/.test(v)));
+  const referenceLines = [];
+  let inRefs = false;
+  for (const line of lines.map(l => l.trim()).filter(Boolean)) {
+    if (/^참고문헌$|^References$/i.test(line)) { inRefs = true; referenceLines.push(line); continue; }
+    if (inRefs && line.length <= 180 && (/^(교육부|보건복지부|[가-힣A-Za-z·]{2,30})\.?\s*\((19|20)\d{2}\)/.test(line) || /세종:|학회지|Journal|출판/.test(line))) {
+      referenceLines.push(line);
+    }
+  }
+  const citationMarkers = unique([
+    ...(t.match(/[가-힣A-Za-z·]{2,30}\s*\((?:19|20)\d{2}[^)]{0,60}\)/g) || []),
+    ...(t.match(/(?:교육부|보건복지부|허지영|[가-힣]{2,8})\s*\([^)]{1,50}\)/g) || [])
+  ].filter(v => v.length <= 100));
+  const citations = unique([...referenceLines, ...citationMarkers].slice(0, 50));
 
   const all = unique([...headings, ...middleDot, ...numbers, ...acronyms, ...namedEntities, ...citations], 180);
   return { headings, middleDot, numbers, acronyms, namedEntities, citations, all };

@@ -16,7 +16,8 @@ const risks = {
   lowRiskSource: require('./risks/lowRiskSource'),
   abstractSource: require('./risks/abstractSource'),
   factDenseSource: require('./risks/factDenseSource'),
-  structureCritical: require('./risks/structureCritical')
+  structureCritical: require('./risks/structureCritical'),
+  highProxySurface: require('./risks/highProxySurface')
 };
 
 function riskTypes(ctx) {
@@ -27,6 +28,7 @@ function riskTypes(ctx) {
   if (route === 'limited_preserve' || flags.has('abstract_source') || flags.has('low_anchor_density')) out.push('abstractSource');
   if (flags.has('fact_dense')) out.push('factDenseSource');
   if (flags.has('structure_dense')) out.push('structureCritical');
+  if (flags.has('proxy_high')) out.push('highProxySurface');
   return out.length ? out : ['lowRiskSource'];
 }
 

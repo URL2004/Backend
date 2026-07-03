@@ -37,6 +37,8 @@ async function activeGptConfig() {
   return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
 }
 
+const NO_DELIVERY_GATES = new Set(['gpt_all_chunks_fallback', 'gpt_noop_unchanged', 'noop_unchanged']);
+
 function softenBlockedFloorReport(out, logName, meta = {}) {
   if (!out || !out.floorReport || out.floorReport.status !== 'blocked') return false;
   if (process.env.STRICT_QUALITY_GATE === '1') return false;
@@ -44,6 +46,7 @@ function softenBlockedFloorReport(out, logName, meta = {}) {
   if (!String(outputText || '').trim()) return false;
   const criticals = Array.isArray(out.floorReport.criticals) ? out.floorReport.criticals : [];
   const warnings = Array.isArray(out.floorReport.warnings) ? out.floorReport.warnings : [];
+  if (criticals.some(c => NO_DELIVERY_GATES.has(String(c.gate || c.type || '').trim()))) return false;
   const gates = criticals.map(c => c.gate || c.type || 'quality_gate');
   out.floorReport.status = 'needs_review';
   out.floorReport.criticals = [];

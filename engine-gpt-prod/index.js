@@ -9,9 +9,15 @@ const { splitChunks, mergeChunks } = require('../engine/chunk');
 const floor = require('../engine/floor');
 const surfaceguard = require('../engine/surfaceguard');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
+const { logger } = require('../lib/logger');
 
 const VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
+const NO_DELIVERY_GATES = new Set([
+  'gpt_all_chunks_fallback',
+  'gpt_noop_unchanged',
+  'noop_unchanged'
+]);
 
 function normalizeMode(mode) {
   const v = String(mode || '').trim().toLowerCase();
@@ -62,10 +68,10 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   const effectiveChunks = records.filter(r => !r.skipped).length;
   const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
   if (allFallback || normalizeBare(source) === normalizeBare(outputText)) {
-    result.floorReport = result.floorReport || { status: 'needs_review', criticals: [], warnings: [] };
-    result.floorReport.status = result.floorReport.status === 'clean' ? 'needs_review' : result.floorReport.status;
-    result.floorReport.warnings = result.floorReport.warnings || [];
-    result.floorReport.warnings.push({
+    result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
+    result.floorReport.status = 'blocked';
+    result.floorReport.criticals = result.floorReport.criticals || [];
+    result.floorReport.criticals.push({
       gate: allFallback ? 'gpt_all_chunks_fallback' : 'gpt_noop_unchanged',
       detail: allFallback ? 'All GPT chunks failed hard gates and fell back to source.' : 'GPT output is equivalent to source.'
     });
@@ -282,6 +288,16 @@ async function callHumanize(args) {
     };
   } catch (err) {
     if (signal?.aborted) throw err;
+    try {
+      logger.warn('gpt_prod.call_failed', {
+        task: 'humanize',
+        phase,
+        mode,
+        model,
+        chunkIndex: index,
+        err: err && err.message || String(err)
+      });
+    } catch {}
     return {
       outputText: original,
       hardFail: true,
@@ -461,6 +477,7 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
   if (normalizeBare(original).length > 120 && normalizeBare(original) === normalizeBare(outputText)) {
     warnings.push('noop_unchanged');
     violations.push({ gate: 'noop_unchanged', detail: 'output equivalent to source' });
+    return { hardFail: true, reason: 'noop_unchanged', warnings, violations };
   }
   try {
     const outSurface = surfaceguard.buildSurfaceReport(outputText);
@@ -636,6 +653,7 @@ function softenFloorReport(report) {
   if (!report || process.env.STRICT_QUALITY_GATE === '1') return report;
   if (report.status !== 'blocked') return report;
   const criticals = Array.isArray(report.criticals) ? report.criticals : [];
+  if (hasNoDeliveryCritical(criticals)) return report;
   const warnings = Array.isArray(report.warnings) ? report.warnings : [];
   report.status = 'needs_review';
   report.warnings = [
@@ -644,6 +662,10 @@ function softenFloorReport(report) {
   ];
   report.criticals = [];
   return report;
+}
+
+function hasNoDeliveryCritical(criticals) {
+  return (criticals || []).some(c => NO_DELIVERY_GATES.has(String(c?.gate || c?.type || '').trim()));
 }
 
 function chunkRecord({

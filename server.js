@@ -41,6 +41,7 @@ app.get(['/healthz', '/api/health'], (req, res) => {
     ok: true,
     llm: process.env.LLM_BACKEND || 'api',
     firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+    openai: !!process.env.OPENAI_API_KEY,
     maintenance: maintenanceMode.isMaintenanceEnabled(),
     uptimeSec: Math.round(process.uptime()),
     ...transformRouter.stats()

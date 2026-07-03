@@ -29,6 +29,11 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '모든 문장을 같은 길이, 같은 종결, 같은 접속어로 맞추지 않는다.',
     '“결국”, “이처럼”, “무엇보다”, “핵심 인프라”, “한층”, “비로소” 같은 정형적 수사 표현을 반복하지 않는다.',
     '',
+    '[변환 강도]',
+    '원문을 그대로 반환하지 않는다. 띄어쓰기, 빈 줄, 문장부호만 바꾼 결과도 실패다.',
+    '숫자, 고유명사, 참고문헌, 핵심 사실은 보존하되 일반 문장은 어순, 접속, 표현, 문장 호흡을 실제로 다듬는다.',
+    '제목, 번호, 참고문헌, URL은 보존하지만 본문 문장을 통째로 복사해 나열하지 않는다.',
+    '',
     '[장르 원칙]',
     toneFor(mode, register),
     speakerRule(speakerType),
@@ -64,6 +69,7 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
     protectedTerms.length ? `[보호표현 - 철자 그대로 유지]\n${protectedTerms.slice(0, 80).join('\n')}` : '',
     patchTargets.length ? `[주의할 구간]\n${patchTargets.slice(0, 20).join('\n')}` : '',
     `[작업 위치]\n${position}`,
+    '[필수 조건]\noutputText는 아래 재작성할 텍스트와 공백 제거 기준으로 동일하면 안 된다.',
     `[재작성할 텍스트]\n${chunk.text}`
   ].filter(Boolean).join('\n\n');
 }

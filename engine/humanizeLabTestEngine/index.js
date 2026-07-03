@@ -27,6 +27,13 @@ function countMatches(text, re) {
   return ((text || '').match(re) || []).length;
 }
 
+function countColloquialMarkers(text) {
+  const t = String(text || '');
+  const endings = countMatches(t, /(거든요|잖아요|더라고요)/g);
+  const wordMarkers = countMatches(t, /(^|[\s"'“”‘’([<{])(?:근데|뭐랄까|막|확|툭|슬쩍)(?=$|[\s,.!?~…"'“”‘’)\]}>])/g);
+  return endings + wordMarkers;
+}
+
 function scoreIncludes(text, terms) {
   let score = 0;
   for (const [re, weight] of terms) score += countMatches(text, re) * weight;
@@ -319,7 +326,7 @@ function genreGate(plan, rawText, outputText) {
   const paras = (outputText || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
   const oneSentenceParas = paras.filter(p => surfaceguard.splitSentences(p).length === 1).length;
   const oneSentenceRatio = paras.length ? oneSentenceParas / paras.length : 0;
-  const colloquial = countMatches(outputText, /(거든요|잖아요|더라고요|근데|뭐랄까|막|확|툭|슬쩍)/g);
+  const colloquial = countColloquialMarkers(outputText);
   const literary = countMatches(outputText, /(조용히\s*쌓|버티지\s*못|흐려지고\s*맙|여운|스며들|숨결|결을\s*따라|풍경처럼)/g);
   const report = {
     passed: true,
@@ -377,14 +384,20 @@ function riskGate(rawText, baselineText, outputText, plan) {
   const before = profileRisk(rawText || '', plan?.protectedTerms || extractProtectedTerms(rawText || ''));
   const afterTerms = extractProtectedTerms(outputText || '');
   const after = profileRisk(outputText || '', afterTerms);
-  const reasons = [];
-  if (after.genericness > Math.max(before.genericness || 0, 0.25) + 0.12) reasons.push('일반론 비율 증가');
-  if ((before.anchorDensity || 0) >= 0.05 && (after.anchorDensity || 0) < (before.anchorDensity || 0) - 0.05) reasons.push('구체 anchor 감소');
-  if ((after.registerMix?.offRatio || 0) > Math.max(before.registerMix?.offRatio || 0, 0.15) + 0.20) reasons.push('문체 혼합 악화');
-  if ((outputText || '').replace(/\s+/g, '').length < (rawText || '').replace(/\s+/g, '').length * 0.72) reasons.push('분량 과축소');
+  const warnings = [];
+  const hardReasons = [];
+  if (after.genericness > Math.max(before.genericness || 0, 0.25) + 0.12) warnings.push('일반론 비율 증가');
+  if ((before.anchorDensity || 0) >= 0.05 && (after.anchorDensity || 0) < (before.anchorDensity || 0) - 0.05) warnings.push('구체 anchor 감소');
+  if ((after.registerMix?.offRatio || 0) > Math.max(before.registerMix?.offRatio || 0, 0.15) + 0.20) warnings.push('문체 혼합 악화');
+  const rawBareLength = (rawText || '').replace(/\s+/g, '').length;
+  const outputBareLength = (outputText || '').replace(/\s+/g, '').length;
+  if (outputBareLength < rawBareLength * 0.60) hardReasons.push('분량 과축소');
+  else if (outputBareLength < rawBareLength * 0.78) warnings.push('분량 축소 확인 필요');
   return {
-    passed: reasons.length === 0,
-    reasons,
+    passed: hardReasons.length === 0,
+    reasons: [...hardReasons, ...warnings],
+    hardReasons,
+    warnings,
     before,
     after,
     baselineLength: (baselineText || '').length
@@ -397,12 +410,13 @@ function evaluateOutput(rawText, baselineText, outputText, plan) {
   const riskReport = riskGate(rawText, baselineText, outputText, plan);
   const criticals = [
     ...protectedReport.criticalMissing.map(t => `보호 용어 누락: ${t}`),
-    ...genreReport.criticals,
-    ...riskReport.reasons
+    ...(riskReport.hardReasons || [])
   ];
   const warnings = [
     ...protectedReport.warningMissing.map(t => `보호 후보 확인 필요: ${t}`),
-    ...genreReport.warnings
+    ...genreReport.criticals,
+    ...genreReport.warnings,
+    ...(riskReport.warnings || [])
   ];
   const reverted = criticals.length > 0;
   return {

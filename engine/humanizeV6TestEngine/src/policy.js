@@ -47,6 +47,17 @@ const DEFAULT_POLICY = Object.freeze({
     maxConsecutiveSameEnding: 3
   },
 
+  reversion: {
+    hardGateNames: [
+      'protected_terms',
+      'grammar_quality',
+      'speaker_lock',
+      'structure_preservation',
+      'block_protocol',
+      'patch_protocol'
+    ]
+  },
+
   prompt: {
     forbidExpansion: true,
     forbidSummary: true,

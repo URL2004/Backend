@@ -124,10 +124,17 @@ function createCopykillerSafeHumanizer({ llm, policy: policyOverrides = {} } = {
     let outputText = candidate;
     let status = gateResult.status;
 
-    if (gateResult.hardFails.length) {
-      // Do not ship a transformed result predicted to raise Copykiller-like risk or damage meaning.
+    const reverted = shouldRevertForHardFails(gateResult.hardFails, policy);
+    if (reverted) {
+      // Do not ship a transformed result if structural, speaker, grammar, or protected-term safety broke.
       outputText = sourceText;
       status = 'reverted_to_policy_safe';
+    } else if (gateResult.hardFails.length) {
+      // Admin-lab V9 should still expose the candidate when only predictive/rhetorical gates complain,
+      // so the operator can compare the actual text instead of seeing the source again.
+      status = gateResult.softFails.some(g => g.name === 'effective_change')
+        ? 'done_low_effect'
+        : 'done_limited_effect';
     }
 
     return {
@@ -146,12 +153,22 @@ function createCopykillerSafeHumanizer({ llm, policy: policyOverrides = {} } = {
         gates: gateResult.gates,
         hardFails: gateResult.hardFails.map(g => g.name),
         softFails: gateResult.softFails.map(g => g.name),
+        reverted,
         modelNotes: resultObject.notes || []
       }
     };
   }
 
   return { transform, policy };
+}
+
+function shouldRevertForHardFails(hardFails, policy) {
+  const names = Array.isArray(policy.reversion && policy.reversion.hardGateNames)
+    ? policy.reversion.hardGateNames
+    : [];
+  if (!names.length) return hardFails.length > 0;
+  const revertNames = new Set(names);
+  return hardFails.some(g => revertNames.has(g.name));
 }
 
 function applyPatches(blocks, patches) {

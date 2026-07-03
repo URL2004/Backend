@@ -954,7 +954,9 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       profile,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount,
-      path: (out.result.v6Engine || out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).path
+      path: (out.result.v6Engine || out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).path,
+      engineStatus: (out.result.v6Engine || out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).status,
+      hardFails: (out.result.v6Engine || out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).hardFails
     });
   } catch (e) {
     if (job.ac.signal.aborted) {

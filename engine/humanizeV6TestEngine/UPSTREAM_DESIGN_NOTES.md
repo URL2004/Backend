@@ -1,129 +1,128 @@
-# V6 Design Notes
+# V7 Design Notes
 
-## 1. 왜 V6가 필요한가
+## Problem fixed from V6
 
-V5는 관리자 정책 고정형 휴머나이징 엔진입니다. 사용자 요청을 무시하고 `humanize_only`만 수행하기 때문에 비용과 품질 안정성에서 장점이 있습니다. 하지만 1만 자 이상 긴 글을 한 번에 통째로 재작성하면 다음 문제가 생길 수 있습니다.
-
-- 중간 문단 누락
-- 제목/소제목 병합
-- 글 후반부 품질 저하
-- 화자 변경
-- 문체 drift
-- 사실 압축
-- 결론부 과장
-- JSON 파싱 실패
-
-V6는 이 문제를 해결하기 위해 **호출 수는 1회로 유지하되, 긴 글 전체 재작성은 금지**하는 구조를 추가했습니다.
-
-## 2. 핵심 원칙
+V6 emphasized safety:
 
 ```text
-짧은 글은 전체 1회 처리
-중간 글은 block id 잠금 처리
-긴 글은 위험 문단 patch 처리
-초장문은 top-risk 문단만 수정하고 나머지는 원문 유지
+보호 표현 유지
+구조 유지
+확장/요약 금지
+긴 글 patch 처리
 ```
 
-이 구조는 비용과 안정성을 동시에 고려한 절충안입니다.
-
-## 3. Length mode
-
-### full_single_call
-
-짧은 글에 사용합니다. 기존 V5 방식과 거의 같습니다.
-
-### block_locked_single_call
-
-중간 길이 글에 사용합니다. 원문을 블록으로 나누고, 모델이 같은 block id를 반환하도록 강제합니다. 이 방식은 전체 재작성의 자연화 효과를 유지하면서도 문단 누락과 소제목 병합을 줄입니다.
-
-### patch_single_call
-
-긴 글에 사용합니다. 전체 본문을 다시 쓰지 않습니다. 로컬 risk scorer가 위험 문단을 선정하고, LLM은 해당 문단의 수정 patch만 반환합니다. 최종 조립은 엔진이 수행합니다.
-
-## 4. Patch target selection
-
-각 블록에 대해 surrogate risk를 계산합니다.
+This prevented many bad outputs, but it could under-transform:
 
 ```text
-priority = risk
-  + 0.22 * formulaic
-  + 0.18 * uniformity
-  + 0.15 * repetition
-  + 0.12 * impersonal
-  + 0.10 * abstractness
+원문과 거의 같음
+카피킬러 AI작성률 변화 없음
+done_limited_effect 반복
 ```
 
-제목 블록은 patch 대상에서 제외합니다. 너무 짧은 블록도 제외합니다. 기본적으로 전체 블록의 34% 이하, 최대 28개 블록만 patch 대상으로 보냅니다.
+V7 adds a mandatory **effective-change layer**.
 
-## 5. Speaker lock
+## Principle
 
-긴 글은 화자가 중간에 바뀌기 쉽습니다. V6는 다음 정보를 로컬에서 분석합니다.
-
-- 1인칭 비율
-- 평어체/존댓말 종결
-- 명령문처럼 보이는 원문 문장
-
-모델 프롬프트에는 화자 잠금 정보를 넣고, 결과 gate에서도 화자 변경을 검출합니다.
-
-## 6. Block protocol gate
-
-block_locked mode에서 다음 상황은 hard fail입니다.
-
-- block id 누락
-- block id 추가
-- block 순서 변경
-- block 수 변경
-
-patch mode에서 다음 상황도 hard fail입니다.
-
-- 허용되지 않은 patch id 반환
-- 같은 patch id 중복 반환
-
-## 7. 카피킬러 평균 점수 전략
-
-카피킬러 내부 알고리즘은 알 수 없으므로 보장형 점수 예측은 하지 않습니다. 대신 이전 실패 패턴과 스타일로메트릭 feature를 기반으로 surrogate risk를 계산하고, 다음 결과를 차단합니다.
-
-- 원문보다 surrogate risk 상승
-- 충분한 위험 감소 없음
-- 보호 표현 손실
-- 구조 손실
-- 화자 변경
-- 반복/균일성/추상성 증가
-
-평균 점수를 낮추려면 좋은 후보를 여러 개 만드는 것보다, 점수를 올릴 가능성이 큰 실패 결과를 통과시키지 않는 것이 먼저입니다.
-
-## 8. 비용 전략
-
-V6는 청크별 호출을 하지 않습니다.
+Humanizing should not mean “make a new text,” but it also cannot mean “change two words.” V7 therefore applies a bounded transformation window:
 
 ```text
-로컬 분석은 비용 0
-LLM 호출은 1회
-게이트 검수는 비용 0
+Too little change  → soft fail: done_low_effect
+Enough change      → pass if other gates pass
+Too much change    → hard fail: reverted_to_policy_safe
 ```
 
-긴 글에서도 patch mode를 사용하므로 전체 출력 토큰을 만들지 않아도 됩니다. 특히 2만 자 이상 글에서는 전체 재작성보다 patch mode가 더 안정적이고 저렴합니다.
+## Effective-change metrics
 
-## 9. 운영 권장 방식
-
-처음부터 기존 엔진을 대체하지 말고 다음 순서로 적용합니다.
-
-1. `/transform-v6` 별도 라우트 추가
-2. shadow mode로 기존 결과와 비교
-3. `reverted_to_policy_safe`, `done_limited_effect` 비율 확인
-4. 실제 카피킬러 결과와 surrogate score 상관 확인
-5. `tools/calibrate-weights.js`로 가중치 보정
-6. 긴 글부터 V6 patch mode 우선 적용
-
-## 10. 최종 요약
-
-V6는 휴머나이징 엔진을 다음 구조로 바꿉니다.
+`src/analysis/effectiveChange.js` computes:
 
 ```text
-전체 재작성 엔진 ❌
-긴 글 patch 기반 보존형 휴머나이징 엔진 ✅
+charShingleSimilarity
+charChange = 1 - charShingleSimilarity
+sentenceChangedRatio
+paragraphChangedRatio
+exactSentenceCarryoverRatio
+lengthRatio
 ```
 
-가장 중요한 원칙은 다음입니다.
+This catches outputs that are safe but cosmetically edited.
 
-> 긴 글에서도 호출 수는 1회로 유지하되, 전체 재작성은 금지하고 위험 문단만 patch한다.
+## Prompt upgrade
+
+The V7 prompt now explicitly rejects weak conversions:
+
+```text
+동의어 몇 개만 교체 금지
+어미만 바꾸기 금지
+원문과 거의 같은 문장 반환 금지
+```
+
+It also requires real changes:
+
+```text
+문장 구조
+연결 방식
+종결 패턴
+반복 표현
+비인칭/수동 패턴
+정형 결론어
+```
+
+The engine remains policy-locked:
+
+```text
+확장 금지
+요약 금지
+장르 변경 금지
+새 정보 추가 금지
+사용자 요청 무시
+```
+
+## Long documents
+
+V7 keeps V6 long-document safety but increases patch coverage for high-risk texts.
+
+```text
+patchTargetRatio: 0.55
+patchMaxTargets: 60
+minPatchCoverageForHighRisk: 0.42
+```
+
+This avoids the issue where only a few paragraphs were patched and the whole-document score stayed nearly unchanged.
+
+## Gate severity
+
+`effective_change` is soft when output is too similar. It does not revert to the original because that would keep the external score unchanged. It returns the result with status `done_low_effect`, allowing the application to show that the result should not be treated as a strong humanization.
+
+It becomes hard only when the change is too large and drift is likely.
+
+## Recommended operating policy
+
+For production, collect pairs:
+
+```text
+source text
+V7 output
+V7 diagnostics
+real Copykiller score before/after
+```
+
+Then tune:
+
+```text
+targetRiskDrop
+patchModeTargetRiskDrop
+minCharShingleChange
+minChangedSentenceRatio
+minChangedParagraphRatio
+weights in riskScorer
+```
+
+The best target is not “always rewrite strongly,” but:
+
+```text
+average detector score down
+protected facts retained
+structure retained
+speaker retained
+low-effect outputs flagged
+```

@@ -31,7 +31,7 @@ function createPolicyLockedHumanizer({ llm, policy: policyOverrides = {}, logger
     const blocks = blockize(sourceText);
     const lengthMode = chooseLengthMode({ text: sourceText, blocks, sourceRisk, policy });
 
-    if (sourceRisk.score <= policy.lowRiskThreshold && policy.strength !== 'assertive') {
+    if (sourceRisk.score <= (policy.minimalPreserveThreshold ?? policy.lowRiskThreshold) && policy.strength !== 'assertive') {
       const cleaned = minimalCleanup(sourceText);
       const afterRisk = analyzeRisk(cleaned, policy);
       return {
@@ -174,8 +174,12 @@ function createPolicyLockedHumanizer({ llm, policy: policyOverrides = {}, logger
       };
     }
 
+    const lowEffective = gateResult.gates.find(g => g.name === 'effective_change' && !g.pass && g.detail === 'too_similar_to_source');
+    const lowRiskDrop = gateResult.gates.find(g => g.name === 'surrogate_risk' && !g.pass);
+    const status = gateResult.passed ? 'done' : (lowEffective ? 'done_low_effect' : (lowRiskDrop ? 'done_limited_risk_drop' : 'done_limited_effect'));
+
     return {
-      status: gateResult.passed ? 'done' : 'done_limited_effect',
+      status,
       outputText,
       policy: policy.version,
       operation: 'humanize_only',

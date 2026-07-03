@@ -155,24 +155,46 @@ function selectPatchTargets({ blocks, policy, sourceRisk }) {
     }
   }
 
-  const byPriority = candidates.sort((a, b) => b.priority - a.priority);
-  const capByRatio = Math.max(1, Math.floor(blocks.length * maxRatio));
-  let limit = Math.min(maxTargets, capByRatio, byPriority.length);
+  const allScored = blocks.map((b, i) => ({ b, i }))
+    .filter(x => x.b.type !== 'heading' && charCountNoSpace(x.b.text) >= minChars)
+    .map(x => {
+      const r = analyzeRisk(x.b.text, policy);
+      const c = r.components || {};
+      const priority = r.score
+        + 0.22 * (c.formulaic || 0)
+        + 0.18 * (c.uniformity || 0)
+        + 0.15 * (c.repetition || 0)
+        + 0.12 * (c.impersonal || 0)
+        + 0.10 * (c.abstractness || 0);
+      return { id: x.b.id, type: x.b.type, before: x.b.text, risk: round(r.score), priority: round(priority), components: r.components, context: summarizeContext(blocks, x.i) };
+    })
+    .sort((a, b) => b.priority - a.priority);
 
-  // If the whole document is high-risk but no block clears the threshold, patch the top few non-heading blocks.
-  if (limit === 0 && sourceRisk && sourceRisk.score >= (policy.highRiskThreshold || 0.62)) {
-    const fallback = blocks.map((b, i) => ({ b, i }))
-      .filter(x => x.b.type !== 'heading' && charCountNoSpace(x.b.text) >= minChars)
-      .map(x => {
-        const r = analyzeRisk(x.b.text, policy);
-        return { id: x.b.id, type: x.b.type, before: x.b.text, risk: round(r.score), priority: round(r.score), components: r.components, context: summarizeContext(blocks, x.i) };
-      })
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, Math.min(6, maxTargets));
-    return fallback;
+  const byPriority = candidates.sort((a, b) => b.priority - a.priority);
+  const nonHeadingCount = blocks.filter(b => b.type !== 'heading').length || blocks.length;
+  const capByRatio = Math.max(1, Math.floor(nonHeadingCount * maxRatio));
+  let limit = Math.min(maxTargets, capByRatio, Math.max(byPriority.length, 1));
+
+  let selected = byPriority.slice(0, limit);
+
+  // V7: if the whole document is high-risk, patch coverage must be high enough.
+  // This prevents long documents from returning almost unchanged and keeping the same detector score.
+  if (sourceRisk && sourceRisk.score >= (policy.highRiskThreshold || 0.58)) {
+    const minCoverage = cfg.minPatchCoverageForHighRisk ?? 0.42;
+    const minCount = Math.min(maxTargets, capByRatio, Math.max(1, Math.ceil(nonHeadingCount * minCoverage)));
+    if (selected.length < minCount) {
+      const selectedIds = new Set(selected.map(x => x.id));
+      const supplements = allScored.filter(x => !selectedIds.has(x.id)).slice(0, minCount - selected.length);
+      selected = selected.concat(supplements);
+    }
   }
 
-  return byPriority.slice(0, limit).sort((a, b) => a.id.localeCompare(b.id));
+  // If no candidate clears the threshold, patch the top scored blocks instead of doing nothing.
+  if (!selected.length && allScored.length) {
+    selected = allScored.slice(0, Math.min(Math.max(4, Math.ceil(nonHeadingCount * 0.22)), maxTargets, capByRatio));
+  }
+
+  return selected.slice(0, Math.min(maxTargets, capByRatio)).sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function round(x) { return Math.round(Number(x || 0) * 1000) / 1000; }

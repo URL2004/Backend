@@ -1,15 +1,15 @@
-// Admin-only wrapper for Humanizing Engine V6.
-// The upstream V6 source lives under ./src and is intentionally isolated from the production prompt path.
+// Admin-only wrapper for Humanizing Engine V7.
+// The upstream V7 source lives under ./src and is intentionally isolated from the production prompt path.
 
 const { createPolicyLockedHumanizer, DEFAULT_POLICY } = require('./src');
 
-const VERSION = 'humanizing-engine-v6-longdoc-locked';
+const VERSION = 'humanizing-engine-v7-effective-locked';
 const PROFILE = 'v6_engine';
 
 function buildRawJsonTool() {
   return {
-    name: 'return_v6_humanize_json',
-    description: 'Return the exact JSON string requested by the V6 humanizing engine.',
+    name: 'return_v7_humanize_json',
+    description: 'Return the exact JSON string requested by the V7 humanizing engine.',
     input_schema: {
       type: 'object',
       additionalProperties: false,
@@ -41,8 +41,8 @@ function createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode 
         temperature,
         maxOutputTokens,
         signal,
-        task: 'admin_humanize_lab_v6',
-        phase: 'v6:main',
+        task: 'admin_humanize_lab_v7',
+        phase: 'v7:main',
         mode
       });
       const parsed = extractClaudeResult(data, tool.name) || {};
@@ -53,13 +53,14 @@ function createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode 
 }
 
 function policyForMode(mode) {
-  const strength = mode === 'formal' ? 'assertive' : 'balanced';
+  const strength = mode === 'formal' ? 'assertive' : 'effective';
   return {
     ...DEFAULT_POLICY,
     strength,
     allowFallbackToOriginal: false,
-    // Admin lab should exercise the V6 model path instead of returning a local-only minimal result.
-    lowRiskThreshold: -1
+    // Admin lab should exercise the V7 model path instead of returning a local-only minimal result.
+    lowRiskThreshold: -1,
+    minimalPreserveThreshold: -1
   };
 }
 
@@ -81,7 +82,7 @@ function gateWarnings(gates) {
   return (gates || [])
     .filter(g => g && !g.pass)
     .map(g => ({
-      gate: `v6_${g.name || 'gate'}`,
+      gate: `v7_${g.name || 'gate'}`,
       detail: g.detail || (g.reasons || g.issues || g.missing || []).join(',') || 'not_passed',
       severity: g.severity || 'soft'
     }));
@@ -114,13 +115,15 @@ function buildMeta(result) {
 }
 
 function reasonForStatus(status) {
-  if (status === 'done') return 'V6 정책 잠금 엔진 결과가 로컬 게이트를 통과했습니다.';
-  if (status === 'done_limited_effect') return 'V6 결과에 일부 소프트 경고가 있어 제한 효과로 표시합니다.';
-  if (status === 'reverted_to_policy_safe') return 'V6 하드 게이트가 감지되어 정책상 안전한 기준 출력으로 되돌렸습니다.';
-  if (status === 'model_output_parse_failed') return 'V6 모델 JSON 파싱에 실패해 기준 출력으로 처리했습니다.';
-  if (status === 'llm_error') return 'V6 모델 호출 오류로 기준 출력을 반환했습니다.';
-  if (status === 'minimal_preserve') return 'V6 로컬 최소 보존 경로로 처리했습니다.';
-  return 'V6 정책 잠금 테스트 엔진으로 처리했습니다.';
+  if (status === 'done') return 'V7 정책 잠금 엔진 결과가 로컬 게이트를 통과했습니다.';
+  if (status === 'done_low_effect') return 'V7 유효 변화 기준이 낮아 제한 효과로 표시합니다.';
+  if (status === 'done_limited_risk_drop') return 'V7 표면 위험 감소가 제한적이라 제한 효과로 표시합니다.';
+  if (status === 'done_limited_effect') return 'V7 결과에 일부 소프트 경고가 있어 제한 효과로 표시합니다.';
+  if (status === 'reverted_to_policy_safe') return 'V7 하드 게이트가 감지되어 정책상 안전한 기준 출력으로 되돌렸습니다.';
+  if (status === 'model_output_parse_failed') return 'V7 모델 JSON 파싱에 실패해 기준 출력으로 처리했습니다.';
+  if (status === 'llm_error') return 'V7 모델 호출 오류로 기준 출력을 반환했습니다.';
+  if (status === 'minimal_preserve') return 'V7 로컬 최소 보존 경로로 처리했습니다.';
+  return 'V7 정책 잠금 테스트 엔진으로 처리했습니다.';
 }
 
 function floorReportFromMeta(meta) {
@@ -133,7 +136,7 @@ function floorReportFromMeta(meta) {
     criticals: [],
     warnings,
     metrics: {
-      v6Status: meta.status,
+      v7Status: meta.status,
       lengthMode: meta.lengthMode,
       sourceRisk: typeof meta.sourceRisk?.score === 'number' ? round(meta.sourceRisk.score) : null,
       afterRisk: typeof meta.afterRisk?.score === 'number' ? round(meta.afterRisk.score) : null,

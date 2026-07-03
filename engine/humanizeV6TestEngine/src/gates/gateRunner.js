@@ -2,6 +2,7 @@ const { analyzeRisk, contentOverlap } = require('../analysis/riskScorer');
 const { missingProtectedTerms } = require('../analysis/protectedTerms');
 const { getBasicStats, splitLines, charCountNoSpace } = require('../analysis/textStats');
 const { analyzeSpeakerProfile, speakerShift } = require('../analysis/speakerProfile');
+const { analyzeEffectiveChange, thresholdsForRisk } = require('../analysis/effectiveChange');
 
 function runGates({ sourceText, outputText, sourceRisk, protectedTerms, policy, mode = 'full_single_call', blockIssues = [] }) {
   const afterRisk = analyzeRisk(outputText, policy);
@@ -12,6 +13,7 @@ function runGates({ sourceText, outputText, sourceRisk, protectedTerms, policy, 
   gates.push(contentOverlapGate(sourceText, outputText, policy));
   gates.push(styleRegressionGate(sourceRisk, afterRisk, policy));
   gates.push(riskScoreGate(sourceRisk, afterRisk, policy, mode));
+  gates.push(effectiveChangeGate(sourceText, outputText, sourceRisk, policy, mode));
   gates.push(speakerShiftGate(sourceText, outputText));
   gates.push(blockProtocolGate(blockIssues));
 
@@ -163,6 +165,41 @@ function riskScoreGate(sourceRisk, afterRisk, policy, mode = 'full_single_call')
   };
 }
 
+
+
+function effectiveChangeGate(sourceText, outputText, sourceRisk, policy, mode = 'full_single_call') {
+  if (!policy.effectiveChange || policy.effectiveChange.enabled === false) {
+    return { name: 'effective_change', pass: true, severity: 'soft', detail: 'disabled' };
+  }
+  const m = analyzeEffectiveChange(sourceText, outputText, policy);
+  const t = thresholdsForRisk(sourceRisk, policy);
+
+  // Patch mode only rewrites selected blocks, so whole-document change is expected to be lower.
+  const patchFactor = mode === 'patch_single_call' ? 0.58 : 1;
+  const minChar = t.minCharChange * patchFactor;
+  const minSentence = t.minSentenceChangedRatio * patchFactor;
+  const minParagraph = t.minParagraphChangedRatio * patchFactor;
+
+  const reasons = [];
+  if (m.charChange < minChar) reasons.push(`char_change_too_low:${m.charChange}<${round(minChar)}`);
+  if (m.sentenceChangedRatio < minSentence) reasons.push(`sentence_change_too_low:${m.sentenceChangedRatio}<${round(minSentence)}`);
+  if (m.paragraphChangedRatio < minParagraph && m.beforeParagraphCount >= 3) reasons.push(`paragraph_change_too_low:${m.paragraphChangedRatio}<${round(minParagraph)}`);
+
+  // Too much change is a hard drift risk, because this engine is not allowed to expand or rewrite into a new text.
+  if (m.charChange > t.maxCharChange) reasons.push(`char_change_too_high:${m.charChange}>${t.maxCharChange}`);
+  if (m.sentenceChangedRatio > t.maxSentenceChangedRatio && m.beforeSentenceCount >= 8) reasons.push(`sentence_change_too_high:${m.sentenceChangedRatio}>${t.maxSentenceChangedRatio}`);
+
+  const tooMuch = reasons.some(r => r.includes('too_high'));
+  return {
+    name: 'effective_change',
+    pass: reasons.length === 0,
+    severity: tooMuch ? 'hard' : 'soft',
+    metrics: m,
+    thresholds: { ...t, minCharChangeApplied: round(minChar), minSentenceChangedRatioApplied: round(minSentence), minParagraphChangedRatioApplied: round(minParagraph) },
+    reasons,
+    detail: reasons.length ? (tooMuch ? 'possible_drift_or_overwrite' : 'too_similar_to_source') : 'ok'
+  };
+}
 
 function speakerShiftGate(sourceText, outputText) {
   const before = analyzeSpeakerProfile(sourceText);

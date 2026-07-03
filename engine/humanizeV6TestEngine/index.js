@@ -57,6 +57,7 @@ function policyForMode(mode) {
   return {
     ...DEFAULT_POLICY,
     strength,
+    allowFallbackToOriginal: false,
     // Admin lab should exercise the V6 model path instead of returning a local-only minimal result.
     lowRiskThreshold: -1
   };

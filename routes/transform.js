@@ -64,6 +64,9 @@ function normalizeBasicStyle(value) {
 
 function normalizeAdminLabProfile(value) {
   const v = String(value || '').trim().toLowerCase();
+  if (v === 'fundamental_engine' || v === 'fundamental-engine' || v === 'root_improvement_engine' || v === 'root-improvement-engine') {
+    return 'fundamental_engine';
+  }
   if (v === 'final_report_engine' || v === 'report_engine' || v === 'final_report' || v === 'final-report-engine') {
     return 'final_report_engine';
   }
@@ -80,6 +83,10 @@ function isPreserveLabJob(job) {
 
 function isFinalReportEngineJob(job) {
   return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'final_report_engine');
+}
+
+function isFundamentalEngineJob(job) {
+  return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'fundamental_engine');
 }
 
 function isAdminHumanizeLabJob(job) {
@@ -866,21 +873,35 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
   try {
     const profile = adminLabProfileOf(job);
     const isFinalReport = profile === 'final_report_engine';
+    const isFundamental = profile === 'fundamental_engine';
     const engineMode = job.mode === 'blog' ? 'blog' : 'assignment';
     const tonePolish = job.mode === 'polish';
     job.status = 'running';
-    job.stage = isFinalReport ? '관리자 테스트 · 최종 개선보고서 엔진' : '관리자 테스트 · 보존형 엔진';
+    job.stage = isFundamental ? '관리자 테스트 · 근본개선 엔진'
+      : isFinalReport ? '관리자 테스트 · 최종 개선보고서 엔진'
+        : '관리자 테스트 · 보존형 엔진';
     if (job.basicExperiment) {
       job.basicExperiment = { ...job.basicExperiment, profile, applied: true, appliedAtMs: Date.now() };
     }
     job.adminLabProfile = profile;
     persistJob(job);
 
-    const out = await analyze.runHumanizeChunked({
-      text, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
-      floorV2: true, optIn: false, judge: false, grounding: false,
-      userNotes: job.memo || '', evidence: evidence || '', tonePolish, styleProfile: profile
-    });
+    const out = isFundamental
+      ? await require('../engine/humanizeLabTestEngine').run({
+        text,
+        mode: engineMode,
+        lang: job.lang || 'ko',
+        signal: job.ac.signal,
+        userNotes: job.memo || '',
+        evidence: evidence || '',
+        callClaude: analyze.callClaude,
+        extractClaudeResult: analyze.extractClaudeResult
+      })
+      : await analyze.runHumanizeChunked({
+        text, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
+        floorV2: true, optIn: false, judge: false, grounding: false,
+        userNotes: job.memo || '', evidence: evidence || '', tonePolish, styleProfile: profile
+      });
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
       logger.warn('transform.admin_humanize_lab_blocked', { jobId: job.id, uid: job.uid, profile, gates });
@@ -911,6 +932,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       styleProfile: out.result.styleProfile || profile,
       preserveLab: out.result.preserveLab || null,
       finalReportEngine: out.result.finalReportEngine || null,
+      fundamentalEngine: out.result.fundamentalEngine || null,
       humanizeMeta: out.result.humanizeMeta || null,
       compressionFallback: !!out.result.compressionFallback
     };
@@ -922,7 +944,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       profile,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount,
-      path: (out.result.finalReportEngine || out.result.preserveLab || {}).path
+      path: (out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).path
     });
   } catch (e) {
     if (job.ac.signal.aborted) {
@@ -944,7 +966,7 @@ async function runJob(job, text, evidence) {
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
 
-    if (isAdminHumanizeLabJob(job) && job.mode !== 'formal') {
+    if (isAdminHumanizeLabJob(job) && (job.mode !== 'formal' || isFundamentalEngineJob(job))) {
       return await runAdminHumanizeLabJob(job, text, evidence);
     }
     if (isAdminHumanizeLabJob(job)) {
@@ -1594,11 +1616,14 @@ router.post('/transform', async (req, res) => {
   const basicStyle = mode === 'blog'
     ? (legacyBasicExperimentEnabled ? 'report' : normalizeBasicStyle(req.body && req.body.basicStyle))
     : null;
+  const adminLabVersion = requestedAdminLabProfile === 'fundamental_engine'
+    ? 'fundamental-engine-v1'
+    : requestedAdminLabProfile === 'final_report_engine' ? 'final-report-engine-v1' : 'preserve-lab-v1';
   const experimentMeta = preserveExperimentEnabled ? {
     enabled: true,
     requested: true,
     applied: false,
-    version: requestedAdminLabProfile === 'final_report_engine' ? 'final-report-engine-v1' : 'preserve-lab-v1',
+    version: adminLabVersion,
     profile: requestedAdminLabProfile || 'preserve_lab',
     source: adminLabRequested ? 'admin_humanize_lab_page' : 'admin_job_toggle'
   } : (legacyBasicExperimentEnabled ? {

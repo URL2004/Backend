@@ -217,6 +217,18 @@ $r.Content -match 'lavAutoCoach'
 |---|---|
 | `LLM_BACKEND` | 비우거나 `api`. `claudecode` 금지 |
 | `ANTHROPIC_API_KEY` | 운영 키 |
+| `OPENAI_API_KEY` | GPT 운영 엔진 키. 관리자 `adminSettings/gptRuntimeConfig` 값이 있으면 모델/추론/캐시 설정은 Firestore가 우선 |
+| `LLM_ACTIVE_PROVIDER` | 기본 `gpt`. 긴급히 Claude 운영으로 돌릴 때 `claude` |
+| `LLM_FALLBACK_PROVIDER` | 기본 `claude` |
+| `GPT_RUNTIME_FORCE_PROVIDER` | 긴급 강제 전환용. `gpt` 또는 `claude` |
+| `OPENAI_MODEL_FAST` | 기본 변환 모델. 예: `gpt-5.4-mini` |
+| `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 예: `gpt-5.4` |
+| `OPENAI_MODEL_JUDGE` / `OPENAI_MODEL_REPAIR` / `OPENAI_MODEL_DETECT` / `OPENAI_MODEL_EVIDENCE` | 계층별 GPT 모델 fallback |
+| `OPENAI_REASONING_HUMANIZE` / `OPENAI_REASONING_FACT_DENSE` / `OPENAI_REASONING_ESCALATION` | 변환·고위험·승격 reasoning fallback |
+| `OPENAI_REASONING_JUDGE` / `OPENAI_REASONING_REPAIR` / `OPENAI_REASONING_DETECT` / `OPENAI_REASONING_EVIDENCE` | 판정·수리·감지·근거검색 reasoning fallback |
+| `OPENAI_PROMPT_CACHE_ENABLED` / `OPENAI_PROMPT_CACHE_KEY_PREFIX` | GPT prompt caching 설정. 기본 prefix `gp-prod` |
+| `OPENAI_WEB_SEARCH_TOOL_TYPE` | 기본 `web_search` |
+| `GPT_ESCALATION_*` | mini-first 승격 기준 fallback. 관리자 페이지에서 조정 가능 |
 | `FIREBASE_SERVICE_ACCOUNT` | 서비스 계정 JSON 전체 |
 | `TOSS_SECRET_KEY` | `live_` 키 |
 | `CRON_SECRET` | cron 인증 |

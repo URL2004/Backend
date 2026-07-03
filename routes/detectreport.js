@@ -20,6 +20,8 @@ const { db, verifyToken, verifyAppCheck } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 const detectCalibration = require('../lib/detectCalibration');
+const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
+const gptAnalyze = require('./analyze-gpt');
 
 const DAILY_CAP = Number(process.env.DETECT_DAILY_CAP) || 3;   // 무료 감지 하루 한도(이후 유료 100자당 1크레딧)
 const daily = new Map();   // 'u:uid' | 'ip:addr' → { day, count } — 메모리(재시작 리셋은 사용자에게 유리한 방향)
@@ -103,6 +105,11 @@ const REWRITE_TOOL = {
 // 무날조 원칙은 미리보기에도 동일 적용 — 새 사실·수치·고유명사 주입 금지.
 const REWRITE_SYSTEM = '너는 한국어 문장 교열가다. 사용자가 준 한 문장을 사람이 직접 쓴 것처럼 자연스럽게 다시 써라. 규칙: 새로운 사실·수치·고유명사·예시 추가 절대 금지, 원문 의미 보존, 길이는 원문의 0.8~1.3배, 균일한 문어체 종결과 기계적 나열을 깨고 자연스러운 리듬으로. 결과는 도구로만 반환한다.';
 
+async function activeGptConfig() {
+  const cfg = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
+  return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
+}
+
 router.post('/detect-report', async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   // 글자수 기준 통일: 표시 카운트와 동일하게 공백 포함 raw length으로 최소 길이 판정.
@@ -162,6 +169,12 @@ router.post('/detect-report', async (req, res) => {
   //   maxOutputTokens 2200: 긴 글에서 detail이 길어지면 1200으론 tool JSON이 max_tokens에 잘려
   //   probability 누락(detect_incomplete) → "판정 보류" 실사고(2026-06-12). 재시도 2회로 일시 오류도 흡수.
   const detectP = analyze.retryAsync(async () => {
+    const gptCfg = await activeGptConfig();
+    if (gptCfg) {
+      const r = await gptAnalyze.runDetect(text, 'ko', { config: gptCfg, route: 'detect_report', allowLocalFallback: true });
+      if (typeof r?.probability !== 'number') throw new Error('detect_incomplete');
+      return r;
+    }
     const data = await analyze.callClaude({
       userText: text,
       systemText: getDetectSystem('ko'),
@@ -184,6 +197,11 @@ router.post('/detect-report', async (req, res) => {
   const before = pickAiSentence(paras, detail);
   const exampleP = before
     ? (async () => {
+        const gptCfg = await activeGptConfig();
+        if (gptCfg) {
+          const r = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg });
+          return r?.rewritten ? { before, after: r.rewritten } : null;
+        }
         const data = await analyze.callClaude({
           userText: before, systemText: REWRITE_SYSTEM, tool: REWRITE_TOOL,
           temperature: 0.7, maxOutputTokens: 500,

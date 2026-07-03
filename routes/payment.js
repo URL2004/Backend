@@ -7,6 +7,8 @@ const discord = require('../lib/discord');
 const { getRevenue } = require('../lib/revenue');
 const detectCalibration = require('../lib/detectCalibration');
 const basicHumanizeExperiment = require('../lib/basicHumanizeExperiment');
+const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
+const gptAnalyze = require('./analyze-gpt');
 
 const router = express.Router();
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
@@ -1068,6 +1070,106 @@ router.post('/admin/update-basic-humanize-experiment', async (req, res) => {
   } catch (err) {
     logger.error('admin.basic_humanize_experiment_update_failed', { adminUid, err });
     res.status(500).json({ error: '기본 피하기 개발테스트 설정 저장에 실패했습니다.' });
+  }
+});
+
+// 관리자: 운영 LLM 런타임 설정. Firestore 값이 env보다 우선하고 15초 캐시된다.
+router.post('/admin/gpt-runtime-config', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const config = await gptRuntimeConfig.getRuntimeConfig({ db, logger, force: true });
+    res.json({
+      ok: true,
+      config,
+      envConfig: gptRuntimeConfig.publicConfig(gptRuntimeConfig.envConfig(), 'env')
+    });
+  } catch (err) {
+    logger.error('admin.gpt_runtime_config_load_failed', { adminUid, err });
+    res.status(500).json({ error: '운영 LLM 설정을 불러오지 못했습니다.' });
+  }
+});
+
+router.post('/admin/update-gpt-runtime-config', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const patch = gptRuntimeConfig.sanitizeConfig(req.body && req.body.config);
+    await db.collection(gptRuntimeConfig.SETTINGS_COLLECTION).doc(gptRuntimeConfig.SETTINGS_DOC).set({
+      ...patch,
+      version: gptRuntimeConfig.VERSION,
+      updatedBy: adminUid,
+      updatedAtMs: Date.now(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    gptRuntimeConfig.clearRuntimeConfigCache();
+    const config = await gptRuntimeConfig.getRuntimeConfig({ db, logger, force: true });
+    logger.info('admin.gpt_runtime_config_updated', {
+      adminUid,
+      activeProvider: config.activeProvider,
+      fallbackProvider: config.fallbackProvider,
+      shadowMode: config.shadowMode,
+      humanizePrimary: config.models.humanizePrimary,
+      humanizeEscalation: config.models.humanizeEscalation,
+      detect: config.models.detect,
+      cacheEnabled: config.cache.enabled,
+      models: config.models,
+      reasoning: config.reasoning,
+      escalation: config.escalation
+    });
+    res.json({
+      ok: true,
+      config,
+      envConfig: gptRuntimeConfig.publicConfig(gptRuntimeConfig.envConfig(), 'env')
+    });
+  } catch (err) {
+    logger.error('admin.gpt_runtime_config_update_failed', { adminUid, err });
+    res.status(500).json({ error: '운영 LLM 설정 저장에 실패했습니다.' });
+  }
+});
+
+router.post('/admin/test-gpt-runtime-config', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(503).json({ error: 'OPENAI_API_KEY가 설정되어 있지 않습니다.' });
+  }
+  try {
+    const base = await gptRuntimeConfig.getRuntimeConfig({ db, logger, force: true });
+    const config = gptRuntimeConfig.publicConfig({
+      ...base,
+      ...(req.body && req.body.config ? gptRuntimeConfig.sanitizeConfig(req.body.config) : {})
+    }, 'admin_test');
+    const sampleText = String((req.body && req.body.sampleText) || '이번 설정은 운영 엔진 라우팅과 모델 응답 형식을 확인하기 위한 관리자 테스트 문장입니다.').slice(0, 1200);
+    const task = String((req.body && req.body.task) || 'detect').toLowerCase();
+    const startedAt = Date.now();
+    const result = task === 'humanize'
+      ? await gptAnalyze.runHumanizeChunked({ text: sampleText, mode: 'polish', lang: 'ko', config })
+      : await gptAnalyze.runDetect(sampleText, 'ko', { config, route: 'admin_test_gpt_runtime', allowLocalFallback: false });
+    logger.info('admin.gpt_runtime_config_tested', {
+      adminUid,
+      task,
+      activeProvider: config.activeProvider,
+      humanizePrimary: config.models.humanizePrimary,
+      elapsedMs: Date.now() - startedAt
+    });
+    res.json({
+      ok: true,
+      task,
+      elapsedMs: Date.now() - startedAt,
+      config,
+      envConfig: gptRuntimeConfig.publicConfig(gptRuntimeConfig.envConfig(), 'env'),
+      result: task === 'humanize'
+        ? {
+            status: result.status,
+            outputText: result.result?.outputText || '',
+            meta: result.gptEngine || result.result?.humanizeMeta || null
+          }
+        : result
+    });
+  } catch (err) {
+    logger.error('admin.gpt_runtime_config_test_failed', { adminUid, err });
+    res.status(500).json({ error: err && err.message || '운영 LLM 테스트 호출에 실패했습니다.' });
   }
 });
 

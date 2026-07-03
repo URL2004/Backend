@@ -15,6 +15,8 @@ const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body/query 폴백(deprecated)
 const detectCalibration = require('../lib/detectCalibration');
+const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
+const gptAnalyze = require('./analyze-gpt');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -28,6 +30,11 @@ const CLAUDE_CACHE_MIN_PREFIX_CHARS = Number(process.env.CLAUDE_CACHE_MIN_PREFIX
 function shortHash(value) {
   if (!value) return undefined;
   return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
+}
+
+async function activeGptConfig() {
+  const cfg = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
+  return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
 }
 
 // ── 중복 제출 디바운스(2026-06-19 실측 #57·#58: 같은 사용자가 동일 10510자를 1초 간격으로 두 번 제출 →
@@ -3601,19 +3608,33 @@ router.post('/analyze', async (req, res) => {
       const detectUserContent = prevContext
         ? `[앞 청크의 마지막 일부 — 문맥 참고용, 이 부분은 점수에 포함하지 말 것]\n${prevContext}\n\n[분석할 글]\n${text}`
         : `[분석할 글]\n${text}`;
-      const detectSystem = getDetectSystem(lang);
-      const detectTool = getDetectTool(lang);
-      const data = await callClaude({
-        userText: detectUserContent,
-        systemText: detectSystem,
-        tool: detectTool,
-        maxOutputTokens: 4096,
-        signal: ac.signal,
-        task: 'analyze',
-        phase: 'detect:main',
-        mode: 'detect'
-      });
-      result = extractClaudeResult(data, detectTool.name);
+      const gptCfg = await activeGptConfig();
+      let data = null;
+      if (gptCfg) {
+        result = await gptAnalyze.runDetect(detectUserContent, lang, {
+          text: detectUserContent,
+          lang,
+          signal: ac.signal,
+          config: gptCfg,
+          route: 'analyze',
+          allowLocalFallback: false
+        });
+        data = { usage: result.gptMeta?.usage || null };
+      } else {
+        const detectSystem = getDetectSystem(lang);
+        const detectTool = getDetectTool(lang);
+        data = await callClaude({
+          userText: detectUserContent,
+          systemText: detectSystem,
+          tool: detectTool,
+          maxOutputTokens: 4096,
+          signal: ac.signal,
+          task: 'analyze',
+          phase: 'detect:main',
+          mode: 'detect'
+        });
+        result = extractClaudeResult(data, detectTool.name);
+      }
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
         throw new Error('detect_incomplete');
       }
@@ -3638,10 +3659,21 @@ router.post('/analyze', async (req, res) => {
       //   모드·등급별 내부 로직(blog C등급 skip)을 그대로 따른다.
       const selectedMode = req.body.humanizeMode || 'blog';
       const userNotes = typeof req.body.userNotes === 'string' ? req.body.userNotes.slice(0, 2000) : '';
-      const out = await runHumanizeChunked({
-        text, mode: selectedMode, lang, signal: ac.signal,
-        floorV2: true, optIn: false, judge: true, grounding: true, userNotes
-      });
+      const gptCfg = await activeGptConfig();
+      const out = gptCfg
+        ? await gptAnalyze.runHumanizeChunked({
+            text,
+            mode: selectedMode,
+            lang,
+            signal: ac.signal,
+            userNotes,
+            config: gptCfg,
+            styleProfile: 'production_floor_v2'
+          })
+        : await runHumanizeChunked({
+            text, mode: selectedMode, lang, signal: ac.signal,
+            floorV2: true, optIn: false, judge: true, grounding: true, userNotes
+          });
       // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙). 차감 없이 종료.
       if (out.floorReport && out.floorReport.status === 'blocked') {
         const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
@@ -3672,6 +3704,42 @@ router.post('/analyze', async (req, res) => {
     } else {
       // ★ 휴머나이저: Claude Sonnet tool_use(강제)로 호출.
       const selectedMode = req.body.humanizeMode || 'assignment';
+      const gptCfg = await activeGptConfig();
+      if (gptCfg) {
+        const userNotes = typeof req.body.userNotes === 'string' ? req.body.userNotes.slice(0, 2000) : '';
+        const out = await gptAnalyze.runHumanizeChunked({
+          text,
+          mode: selectedMode,
+          lang,
+          signal: ac.signal,
+          userNotes,
+          config: gptCfg,
+          styleProfile: 'production_analyze'
+        });
+        if (out.floorReport && out.floorReport.status === 'blocked') {
+          const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
+          logger.warn('analyze.gpt_floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
+          return res.status(422).json({
+            error: '원문 보존 기준을 통과하지 못해 차단했어요. 크레딧은 차감되지 않았어요.',
+            floorStatus: 'blocked',
+            gates
+          });
+        }
+        result = { outputText: out.result.outputText, humanizeMeta: out.gptEngine || out.result.humanizeMeta || null };
+        usage = out.gptEngine?.usage || out.result?.humanizeMeta?.usage || null;
+        evasion = {
+          floorReport: {
+            status: out.floorReport.status,
+            criticals: out.floorReport.criticals,
+            warnings: (out.floorReport.warnings || []).map(w => w.gate),
+            metrics: out.floorReport.metrics
+          },
+          chunkCount: out.chunkCount,
+          fallbackCount: out.fallbackCount,
+          gptEngine: out.gptEngine || null
+        };
+        if (!result.outputText) throw new Error('humanize_incomplete');
+      } else {
 
       // ★ 사전 처리: assignment 모드에서만 결정론 룰을 입력 텍스트에 미리 적용.
       //    모델은 의미 의존 룰(P1 신규 사실 금지·룰 1·2·4 추상→구체·5 어휘 하향·6·7)에 집중.
@@ -3867,6 +3935,7 @@ router.post('/analyze', async (req, res) => {
       if (frozen) {
         result.outputText = require('../engine/freezeblocks').reassembleAcademic(frozen, result.outputText);
       }
+      }
     }
   } catch (err) {
     // client disconnect 시 응답 자체가 의미 없음 — 차감 안 하고 그대로 종료
@@ -4050,19 +4119,34 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
     const text = pdfText;
     const humanizeModePdf = req.body.humanizeMode || 'assignment';
     if (mode === 'detect') {
-      const detectSystem = getDetectSystem(lang);
-      const detectTool = getDetectTool(lang);
-      const data = await callClaude({
-        userText: lang === 'en' ? `[TEXT TO ANALYZE]\n${text}` : `[분석할 글]\n${text}`,
-        systemText: detectSystem,
-        tool: detectTool,
-        maxOutputTokens: 4096,
-        signal: ac.signal,
-        task: 'analyze_pdf',
-        phase: 'detect:main',
-        mode: 'detect'
-      });
-      result = extractClaudeResult(data, detectTool.name);
+      const detectInput = lang === 'en' ? `[TEXT TO ANALYZE]\n${text}` : `[분석할 글]\n${text}`;
+      const gptCfg = await activeGptConfig();
+      let data = null;
+      if (gptCfg) {
+        result = await gptAnalyze.runDetect(detectInput, lang, {
+          text: detectInput,
+          lang,
+          signal: ac.signal,
+          config: gptCfg,
+          route: 'analyze_pdf',
+          allowLocalFallback: false
+        });
+        data = { usage: result.gptMeta?.usage || null };
+      } else {
+        const detectSystem = getDetectSystem(lang);
+        const detectTool = getDetectTool(lang);
+        data = await callClaude({
+          userText: detectInput,
+          systemText: detectSystem,
+          tool: detectTool,
+          maxOutputTokens: 4096,
+          signal: ac.signal,
+          task: 'analyze_pdf',
+          phase: 'detect:main',
+          mode: 'detect'
+        });
+        result = extractClaudeResult(data, detectTool.name);
+      }
       if (typeof result.probability !== 'number' || !result.summary || !result.detail) {
         throw new Error('detect_incomplete');
       }
@@ -4081,6 +4165,28 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       }
       usage = data.usage;
     } else {
+      const gptCfg = await activeGptConfig();
+      if (gptCfg) {
+        const out = await gptAnalyze.runHumanizeChunked({
+          text,
+          mode: humanizeModePdf,
+          lang,
+          signal: ac.signal,
+          config: gptCfg,
+          styleProfile: 'production_analyze_pdf'
+        });
+        if (out.floorReport && out.floorReport.status === 'blocked') {
+          const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
+          logger.warn('analyze_pdf.gpt_floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
+          return res.status(422).json({
+            error: '원문 보존 기준을 통과하지 못해 차단했어요. 크레딧은 차감되지 않았어요.',
+            floorStatus: 'blocked',
+            gates
+          });
+        }
+        result = { outputText: out.result.outputText, humanizeMeta: out.gptEngine || out.result.humanizeMeta || null };
+        usage = out.gptEngine?.usage || out.result?.humanizeMeta?.usage || null;
+      } else {
       // ★ 사전 처리: assignment 모드만 결정론 룰을 입력에 미리 적용.
       let humanizeText = text;
       if (humanizeModePdf === 'assignment') {
@@ -4122,6 +4228,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
       await applyPassC(result, lang, ac.signal, { rawText: humanizeText, mode });
       if (!result.outputText) throw new Error('humanize_incomplete');
       usage = data.usage;
+      }
     }
   } catch (err) {
     if (ac.signal.aborted) {
@@ -4194,12 +4301,22 @@ router.verifyCheckFields = verifyCheckFields;
 router.collectFailedFields = collectFailedFields;
 router.runHumanize = runHumanize;
 router.runHumanizeChunked = runHumanizeChunked;
+router.gpt = gptAnalyze;
+router.callGpt = gptAnalyze.callGpt;
+router.extractGptResult = gptAnalyze.extractGptResult;
+router.runHumanizeGpt = gptAnalyze.runHumanize;
+router.runHumanizeChunkedGpt = gptAnalyze.runHumanizeChunked;
+router.runDetectGpt = gptAnalyze.runDetect;
 // ★ LLM 호출 경로 재사용(routes/detectreport.js — 백엔드 스위치·캐싱·idle 타임아웃을 한 곳에 유지)
 router.callClaude = callClaude;
 router.buildDetectTool = buildDetectTool;
 router.extractClaudeResult = extractClaudeResult;
 // ★ detect 단독 호출(검증·테스트용 — 핸들러 detect 분기와 동일 시스템·툴·경로). 반환 { probability, summary, detail }.
 router.runDetect = async function runDetect(text, lang = 'ko') {
+  const cfg = await activeGptConfig();
+  if (cfg) {
+    return await gptAnalyze.runDetect(text, lang, { config: cfg, route: 'analyze_validate', allowLocalFallback: false });
+  }
   const detectSystem = getDetectSystem(lang);
   const detectTool = getDetectTool(lang);
   const data = await callClaude({

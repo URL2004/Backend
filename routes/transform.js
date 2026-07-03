@@ -15,11 +15,19 @@ const analyze = require('./analyze');   // 과금 헬퍼 재사용(차감 공식
 const { db, verifyToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken 추출 단일 출처(헤더 우선·폴백 deprecated)
-const { genreTransferV2 } = require('../engine/genretransfer');
 const inputrouting = require('../engine/inputrouting');   // 재구성 부적합 사전감지(생성 호출 '전' 차단 → API 낭비 0)
-const { suggestEvidence } = require('../engine/evidence');
 const { reviewCandidates, hostOf } = require('../engine/evidencereview');
 const discord = require('../lib/discord');
+const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
+const gptAnalyze = require('./analyze-gpt');
+
+function claudeGenreTransferV2() {
+  return require('../engine/genretransfer').genreTransferV2;
+}
+
+function claudeSuggestEvidence() {
+  return require('../engine/evidence').suggestEvidence;
+}
 
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
@@ -56,6 +64,11 @@ function isAdminUid(uid) {
   return ADMIN_UIDS.includes(uid);
 }
 
+async function activeGptConfig() {
+  const cfg = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
+  return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
+}
+
 function normalizeBasicStyle(value) {
   const v = String(value || '').trim().toLowerCase();
   if (v === 'report' || v === 'assignment' || v === 'school') return 'report';
@@ -64,6 +77,9 @@ function normalizeBasicStyle(value) {
 
 function normalizeAdminLabProfile(value) {
   const v = String(value || '').trim().toLowerCase();
+  if (v === 'gpt_engine' || v === 'gpt-engine' || v === 'openai_engine' || v === 'openai-engine' || v === 'engine_gpt' || v === 'engine-gpt') {
+    return 'gpt_engine';
+  }
   if (v === 'v6_engine' || v === 'v6-engine' || v === 'humanizing_v6' || v === 'humanizing-engine-v6' || v === 'engine_v6' || v === 'engine-v6') {
     return 'v6_engine';
   }
@@ -94,6 +110,10 @@ function isFundamentalEngineJob(job) {
 
 function isV6EngineJob(job) {
   return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'v6_engine');
+}
+
+function isGptEngineJob(job) {
+  return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'gpt_engine');
 }
 
 function isAdminHumanizeLabJob(job) {
@@ -659,8 +679,19 @@ async function runSearchPhase(job, text) {
   try {
     job.status = 'running';
     job.stage = '근거 검색';
-    const ev = await suggestEvidence(text, { maxSegments: Number(process.env.EVIDENCE_MAX_SEGMENTS) || 6, signal: job.ac.signal });
-    const reviewed = reviewCandidates(ev.candidates || []);
+    const gptCfg = await activeGptConfig();
+    const ev = gptCfg
+      ? await gptAnalyze.suggestEvidence({ query: text, signal: job.ac.signal, config: gptCfg })
+      : await claudeSuggestEvidence()(text, { maxSegments: Number(process.env.EVIDENCE_MAX_SEGMENTS) || 6, signal: job.ac.signal });
+    const candidates = gptCfg
+      ? (ev.candidates || []).map(c => ({
+          fact: c.reason || c.title,
+          sourceTitle: c.title || c.publisher || hostOf(c.url),
+          sourceUrl: c.url,
+          publisher: c.publisher
+        }))
+      : (ev.candidates || []);
+    const reviewed = reviewCandidates(candidates);
     if (!reviewed.length) {
       logger.warn('transform.evidence_empty', { jobId: job.id, uid: job.uid });
       job.note = '주제와 맞는 검증 가능한 근거를 찾지 못해 근거 없이 진행했어요.';
@@ -732,10 +763,21 @@ async function tryPreservationFallback(job, text) {
     persistJob(job);
 
     // 보존형(=polish) 경로 그대로 재사용 — 이미 운영 중인 검증된 경로.
-    const out = await analyze.runHumanizeChunked({
-      text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
-      floorV2: true, optIn: false, judge: true, grounding: true, userNotes: job.memo || ''   // ★경험 메모 보존형에도 적용(2026-06-17)
-    });
+    const gptCfg = await activeGptConfig();
+    const out = gptCfg
+      ? await gptAnalyze.runHumanizeChunked({
+          text,
+          mode: 'assignment',
+          lang: job.lang || 'ko',
+          signal: job.ac.signal,
+          userNotes: job.memo || '',
+          config: gptCfg,
+          styleProfile: 'production_preservation_fallback'
+        })
+      : await analyze.runHumanizeChunked({
+          text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+          floorV2: true, optIn: false, judge: true, grounding: true, userNotes: job.memo || ''   // ★경험 메모 보존형에도 적용(2026-06-17)
+        });
     // 보존형 폴백은 "약하더라도 실제 결과를 보장"이 목적(막다른 길 제거).
     // 단 semanticJudge/novelty/lostFacts/meta leak 등은 사실·의미 사고로 이어질 수 있어 계속 hard block.
     // 길이·반복처럼 전달해도 위험이 낮은 품질성 게이트만 soft-deliver한다.
@@ -808,10 +850,21 @@ async function tryBlogPreservationFallback(job, text) {
       + '자연화 결과가 원문 보존 기준을 통과하지 못해, 원문을 최대한 보존하는 방식으로 처리했어요.';
     persistJob(job);
 
-    const out = await analyze.runHumanizeChunked({
-      text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
-      floorV2: true, optIn: false, judge: false, grounding: false, userNotes: job.memo || '', tonePolish: true   // ★경험 메모 보존형에도 적용(2026-06-17)
-    });
+    const gptCfg = await activeGptConfig();
+    const out = gptCfg
+      ? await gptAnalyze.runHumanizeChunked({
+          text,
+          mode: 'polish',
+          lang: job.lang || 'ko',
+          signal: job.ac.signal,
+          userNotes: job.memo || '',
+          config: gptCfg,
+          styleProfile: 'production_blog_preservation_fallback'
+        })
+      : await analyze.runHumanizeChunked({
+          text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+          floorV2: true, optIn: false, judge: false, grounding: false, userNotes: job.memo || '', tonePolish: true   // ★경험 메모 보존형에도 적용(2026-06-17)
+        });
     const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
     if (!out.result || !out.result.outputText || fbCriticals.length) {
       logger.warn('transform.blog_fallback_blocked', {
@@ -882,10 +935,12 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     const isFinalReport = profile === 'final_report_engine';
     const isFundamental = profile === 'fundamental_engine';
     const isV6 = profile === 'v6_engine';
+    const isGpt = profile === 'gpt_engine';
     const engineMode = job.mode === 'blog' ? 'blog' : 'assignment';
     const tonePolish = job.mode === 'polish';
     job.status = 'running';
-    job.stage = isV6 ? '관리자 테스트 · V9 카피킬러 안전 엔진'
+    job.stage = isGpt ? '관리자 테스트 · GPT 전용 엔진'
+      : isV6 ? '관리자 테스트 · V9 카피킬러 안전 엔진'
       : isFundamental ? '관리자 테스트 · 근본개선 엔진'
       : isFinalReport ? '관리자 테스트 · 최종 개선보고서 엔진'
         : '관리자 테스트 · 보존형 엔진';
@@ -895,7 +950,28 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     job.adminLabProfile = profile;
     persistJob(job);
 
-    const out = (isFundamental || isV6)
+    const runtimeCfg = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
+    const activeGpt = gptRuntimeConfig.isGptActive(runtimeCfg) ? runtimeCfg : null;
+    const gptTestCfg = job.gptModel
+      ? { ...runtimeCfg, models: { ...(runtimeCfg.models || {}), humanizePrimary: job.gptModel } }
+      : runtimeCfg;
+    const labCall = activeGpt
+      ? (opts) => gptAnalyze.callGpt({ ...opts, config: activeGpt })
+      : analyze.callClaude;
+    const labExtract = activeGpt ? gptAnalyze.extractGptResult : analyze.extractClaudeResult;
+
+    const out = isGpt
+      ? await gptAnalyze.runHumanizeChunked({
+        text,
+        mode: tonePolish ? 'polish' : engineMode,
+        lang: job.lang || 'ko',
+        signal: job.ac.signal,
+        userNotes: job.memo || '',
+        evidence: evidence || '',
+        config: gptTestCfg,
+        styleProfile: 'admin_gpt_engine'
+      })
+      : (isFundamental || isV6)
       ? await require(isV6 ? '../engine/humanizeV6TestEngine' : '../engine/humanizeLabTestEngine').run({
         text,
         mode: isV6 ? (job.mode || engineMode) : engineMode,
@@ -903,8 +979,19 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
         signal: job.ac.signal,
         userNotes: job.memo || '',
         evidence: evidence || '',
-        callClaude: analyze.callClaude,
-        extractClaudeResult: analyze.extractClaudeResult
+        callClaude: labCall,
+        extractClaudeResult: labExtract
+      })
+      : activeGpt
+      ? await gptAnalyze.runHumanizeChunked({
+        text,
+        mode: engineMode,
+        lang: job.lang || 'ko',
+        signal: job.ac.signal,
+        userNotes: job.memo || '',
+        evidence: evidence || '',
+        config: activeGpt,
+        styleProfile: profile
       })
       : await analyze.runHumanizeChunked({
         text, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
@@ -978,7 +1065,7 @@ async function runJob(job, text, evidence) {
     job.stage = '재구성';
     persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
 
-    if (isAdminHumanizeLabJob(job) && (job.mode !== 'formal' || isFundamentalEngineJob(job) || isV6EngineJob(job))) {
+    if (isAdminHumanizeLabJob(job) && (job.mode !== 'formal' || isFundamentalEngineJob(job) || isV6EngineJob(job) || isGptEngineJob(job))) {
       return await runAdminHumanizeLabJob(job, text, evidence);
     }
     if (isAdminHumanizeLabJob(job)) {
@@ -1052,8 +1139,12 @@ async function runJob(job, text, evidence) {
       job.note = (job.note ? job.note + ' ' : '') + '목차·통계가 있는 구조화 보고서라, 구조를 깨는 재구성 대신 구조를 보존하며 문단별로 우회했어요.';
       return await runLongThesisChunked(job, text, evidence);
     }
+    if (await activeGptConfig()) {
+      logger.info('transform.gpt_prod_formal_chunk', { jobId: job.id, uid: job.uid, textLength: (text || '').length });
+      return await runLongThesisChunked(job, text, evidence, 'production_formal_gpt_prod_pipeline');
+    }
     // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
-    const out = await genreTransferV2(text, { evidence: evidence || '', userNotes: job.memo || '', lengthMode: job.lengthMode || 'keep', signal: job.ac.signal });
+    const out = await claudeGenreTransferV2()(text, { evidence: evidence || '', userNotes: job.memo || '', lengthMode: job.lengthMode || 'keep', signal: job.ac.signal });
     const gates = [];
     if (out.novelty?.count) gates.push('novelty');
     // ★ B(2026-06-15 사장님 결정 "동작은 해야"): 원문 사실 "누락"(lostFacts)은 하드 차단하지 않는다.
@@ -1233,11 +1324,23 @@ async function runLongThesisChunked(job, text, evidence, pipelinePath = 'product
     if (fb.hasFrozen) logger.info('transform.academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: fb.refs.length });
     // ※ 본문 인라인 다저자 인용 박제는 보류: 플레이스홀더를 LLM이 일부 떨어뜨려(2/7) 인용 유실+floor 차단 위험(2026-06-19 실측).
     //   canonical 참고문헌 리스트는 위 split으로 안전 보존되므로, 본문 인라인 인용은 충실 재작성에 맡긴다(저우선 잔여).
-    const out = await analyze.runHumanizeChunked({
-      text: fb.body, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
-      floorV2: true, optIn: false, judge: true, grounding: true,
-      userNotes: job.memo || '', evidence: evidence || '', tonePolish: false   // ★ tonePolish=false = 우회(피하기) 유지
-    });
+    const gptCfg = await activeGptConfig();
+    const out = gptCfg
+      ? await gptAnalyze.runHumanizeChunked({
+          text: fb.body,
+          mode: 'assignment',
+          lang: job.lang || 'ko',
+          signal: job.ac.signal,
+          userNotes: job.memo || '',
+          evidence: evidence || '',
+          config: gptCfg,
+          styleProfile: 'production_long_chunk'
+        })
+      : await analyze.runHumanizeChunked({
+          text: fb.body, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
+          floorV2: true, optIn: false, judge: true, grounding: true,
+          userNotes: job.memo || '', evidence: evidence || '', tonePolish: false   // ★ tonePolish=false = 우회(피하기) 유지
+        });
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
       // ★ semanticJudge 소프트화(2026-06-16, zoz040224 26K 학술논문 실측): 청크 회피는 문단별 grounded 재작성이라
@@ -1388,15 +1491,26 @@ async function runHumanizeJob(job, text) {
       styleProfile = 'basic_blog';
       logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle || 'blog', profile: styleProfile });
     }
-    const out = await analyze.runHumanizeChunked({
-      text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
-      // 과제 어투 다듬기(polish)는 회피가 목적이 아니므로 의미 게이트(semanticJudge) 분리 → 차단 급감.
-      //   사실 게이트(novelty·lostFacts)는 buildFloorReport가 계속 잡아 날조·사실누락은 그대로 차단.
-      //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
-      // ★ P1-5(2026-06-18 감사): polish(그대로 다듬기)는 최소 수정이 목적인데 grounding(추상 문장→선명한 판단문
-      //   교체)이 켜져 기대보다 많이 바뀌었다. polish면 grounding off(보존 우선), 회피 경로(blog)에선 유지.
-      floorV2: true, optIn: false, judge: !isPolish && !adminSafetyLab, grounding: !isPolish && !adminSafetyLab, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
-    });
+    const gptCfg = await activeGptConfig();
+    const out = gptCfg
+      ? await gptAnalyze.runHumanizeChunked({
+          text: bodyText,
+          mode: engineMode,
+          lang: job.lang || 'ko',
+          signal: job.ac.signal,
+          userNotes: job.memo || '',
+          config: gptCfg,
+          styleProfile: styleProfile || 'production_transform_humanize'
+        })
+      : await analyze.runHumanizeChunked({
+          text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
+          // 과제 어투 다듬기(polish)는 회피가 목적이 아니므로 의미 게이트(semanticJudge) 분리 → 차단 급감.
+          //   사실 게이트(novelty·lostFacts)는 buildFloorReport가 계속 잡아 날조·사실누락은 그대로 차단.
+          //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
+          // ★ P1-5(2026-06-18 감사): polish(그대로 다듬기)는 최소 수정이 목적인데 grounding(추상 문장→선명한 판단문
+          //   교체)이 켜져 기대보다 많이 바뀌었다. polish면 grounding off(보존 우선), 회피 경로(blog)에선 유지.
+          floorV2: true, optIn: false, judge: !isPolish && !adminSafetyLab, grounding: !isPolish && !adminSafetyLab, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
+        });
     // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
@@ -1630,9 +1744,11 @@ router.post('/transform', async (req, res) => {
     : null;
   const adminLabVersion = requestedAdminLabProfile === 'v6_engine'
     ? 'humanizing-engine-v9-cksafe'
-    : requestedAdminLabProfile === 'fundamental_engine'
-      ? 'fundamental-engine-v1'
-      : requestedAdminLabProfile === 'final_report_engine' ? 'final-report-engine-v1' : 'preserve-lab-v1';
+    : requestedAdminLabProfile === 'gpt_engine'
+      ? 'gpt-openai-humanize-engine-v1'
+      : requestedAdminLabProfile === 'fundamental_engine'
+        ? 'fundamental-engine-v1'
+        : requestedAdminLabProfile === 'final_report_engine' ? 'final-report-engine-v1' : 'preserve-lab-v1';
   const experimentMeta = preserveExperimentEnabled ? {
     enabled: true,
     requested: true,
@@ -1668,6 +1784,7 @@ router.post('/transform', async (req, res) => {
     basicExperiment: experimentMeta,
     adminHumanizeLab: !!(adminLabRequested && preserveExperimentEnabled),
     adminLabProfile: adminLabRequested && preserveExperimentEnabled ? (requestedAdminLabProfile || 'preserve_lab') : null,
+    gptModel: typeof req.body.gptModel === 'string' ? req.body.gptModel.slice(0, 80) : '',
 
     wantEvidence,
     estSec,

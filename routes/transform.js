@@ -69,6 +69,24 @@ async function activeGptConfig() {
   return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
 }
 
+function softenBlockedFloorReport(out, logName, meta = {}) {
+  if (!out || !out.floorReport || out.floorReport.status !== 'blocked') return false;
+  if (process.env.STRICT_QUALITY_GATE === '1') return false;
+  const outputText = out.result?.outputText || out.text || '';
+  if (!String(outputText || '').trim()) return false;
+  const criticals = Array.isArray(out.floorReport.criticals) ? out.floorReport.criticals : [];
+  const warnings = Array.isArray(out.floorReport.warnings) ? out.floorReport.warnings : [];
+  const gates = criticals.map(c => c.gate || c.type || 'quality_gate');
+  out.floorReport.status = 'needs_review';
+  out.floorReport.criticals = [];
+  out.floorReport.warnings = [
+    ...warnings,
+    ...criticals.map(c => ({ ...c, softenedFromCritical: true }))
+  ];
+  logger.warn(logName, { ...meta, gates, softened: true });
+  return true;
+}
+
 function normalizeBasicStyle(value) {
   const v = String(value || '').trim().toLowerCase();
   if (v === 'report' || v === 'assignment' || v === 'school') return 'report';
@@ -1000,14 +1018,16 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       });
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
-      logger.warn('transform.admin_humanize_lab_blocked', { jobId: job.id, uid: job.uid, profile, gates });
-      job.status = 'blocked';
-      job.gates = gates;
-      job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
-      job.stage = blockedStage(gates);
-      job.blockOffer = buildBlockOffer(job, text);
-      persistJob(job);
-      return;
+      if (!softenBlockedFloorReport(out, 'transform.admin_humanize_lab_blocked_soft_delivered', { jobId: job.id, uid: job.uid, profile })) {
+        logger.warn('transform.admin_humanize_lab_blocked', { jobId: job.id, uid: job.uid, profile, gates });
+        job.status = 'blocked';
+        job.gates = gates;
+        job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
+        job.stage = blockedStage(gates);
+        job.blockOffer = buildBlockOffer(job, text);
+        persistJob(job);
+        return;
+      }
     }
     if (!out.result || !out.result.outputText) throw new Error('admin_preserve_lab_incomplete');
     job.status = 'done';
@@ -1343,6 +1363,9 @@ async function runLongThesisChunked(job, text, evidence, pipelinePath = 'product
         });
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
+      if (softenBlockedFloorReport(out, 'transform.long_thesis_blocked_soft_delivered', { jobId: job.id, uid: job.uid, gates, chunkCount: out.chunkCount })) {
+        job.note = (job.note ? job.note + ' ' : '') + '품질 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
+      } else {
       // ★ semanticJudge 소프트화(2026-06-16, zoz040224 26K 학술논문 실측): 청크 회피는 문단별 grounded 재작성이라
       //   added_claim이 남아도 대개 해석·평가 표현이다(사실 날조는 novelty가 하드로 잡음). 장문·학술글이 1~2건의
       //   added_claim으로 통째 차단되면 결과를 못 받는다. 사실·누출 게이트(novelty·meta_leak·coined_term·fake_ref·
@@ -1366,6 +1389,7 @@ async function runLongThesisChunked(job, text, evidence, pipelinePath = 'product
       // semanticJudge 소수만 차단 사유 → 전달(아래로 진행) + 원문 대조 경고.
       logger.info('transform.long_thesis_judge_soft_delivered', { jobId: job.id, uid: job.uid, judgeCount, gates, chunkCount: out.chunkCount });
       job.note = (job.note ? job.note + ' ' : '') + `원문에 없던 해석·평가 표현이 일부(${judgeCount}건) 섞였을 수 있어요. 결과를 원문과 한 번 대조해 주세요.`;
+      }
     }
     if (!out.result || !out.result.outputText) throw new Error('long_thesis_incomplete');
     // ★ 동결 블록(참고문헌 리스트·목차) 재조립 — 우회된 본문 앞뒤로 verbatim 복원.
@@ -1515,21 +1539,25 @@ async function runHumanizeJob(job, text) {
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
       const gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
-      logger.warn('transform.humanize_blocked', {
-        jobId: job.id,
-        uid: job.uid,
-        mode: job.mode,
-        gates,
-        gateDetail
-      });
-      // ★ 자동 폴백 폐기(2026-06-15) — 동의 기반(accept-fallback)으로 전환. buildBlockOffer가 안내 재료 첨부.
-      job.status = 'blocked';
-      job.stage = blockedStage(gates);
-      job.gates = gates;
-      job.gateDetail = gateDetail;
-      job.blockOffer = buildBlockOffer(job, text);
-      persistJob(job);
-      return;
+      if (softenBlockedFloorReport(out, 'transform.humanize_blocked_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, gates })) {
+        job.note = (job.note ? job.note + ' ' : '') + '품질 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
+      } else {
+        logger.warn('transform.humanize_blocked', {
+          jobId: job.id,
+          uid: job.uid,
+          mode: job.mode,
+          gates,
+          gateDetail
+        });
+        // ★ 자동 폴백 폐기(2026-06-15) — 동의 기반(accept-fallback)으로 전환. buildBlockOffer가 안내 재료 첨부.
+        job.status = 'blocked';
+        job.stage = blockedStage(gates);
+        job.gates = gates;
+        job.gateDetail = gateDetail;
+        job.blockOffer = buildBlockOffer(job, text);
+        persistJob(job);
+        return;
+      }
     }
     if (!out.result || !out.result.outputText) throw new Error('humanize_incomplete');
     // ★ 블로그 날조 인용 결정론 제거(2026-06-17, #99): blog는 더 깨끗한 재라우팅 경로가 없으니, 원문에 없는

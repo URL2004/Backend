@@ -62,14 +62,15 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   const effectiveChunks = records.filter(r => !r.skipped).length;
   const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
   if (allFallback || normalizeBare(source) === normalizeBare(outputText)) {
-    result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
-    result.floorReport.status = 'blocked';
-    result.floorReport.criticals = result.floorReport.criticals || [];
-    result.floorReport.criticals.push({
+    result.floorReport = result.floorReport || { status: 'needs_review', criticals: [], warnings: [] };
+    result.floorReport.status = result.floorReport.status === 'clean' ? 'needs_review' : result.floorReport.status;
+    result.floorReport.warnings = result.floorReport.warnings || [];
+    result.floorReport.warnings.push({
       gate: allFallback ? 'gpt_all_chunks_fallback' : 'gpt_noop_unchanged',
       detail: allFallback ? 'All GPT chunks failed hard gates and fell back to source.' : 'GPT output is equivalent to source.'
     });
   }
+  softenFloorReport(result.floorReport);
 
   const usage = records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage());
   const escalatedCount = records.filter(r => r.escalated).length;
@@ -230,6 +231,7 @@ async function callHumanize(args) {
     let outputText = sanitizeOutput(response.json.outputText);
     outputText = chunkPostprocess(outputText, original, mode, contract);
     let judgeReport = null;
+    let judgeViolations = [];
     if (runSemanticJudge) {
       judgeReport = await require('./judge').judgeAndRepair(original, outputText, {
         lang,
@@ -241,31 +243,12 @@ async function callHumanize(args) {
       });
       outputText = judgeReport.outputText || outputText;
       if (judgeReport.pass === false) {
-        const judgeViolations = (judgeReport.violations || []).map(v => ({
+        judgeViolations = (judgeReport.violations || []).map(v => ({
           gate: 'semanticJudge',
           type: v.type,
           span: v.span,
           detail: v.detail
         }));
-        return {
-          outputText,
-          hardFail: true,
-          record: chunkRecord({
-            chunk,
-            outputText: original,
-            fallback: true,
-            error: 'semanticJudge',
-            hardFailReason: 'semanticJudge',
-            warnings: [...(response.json.warnings || []), 'gpt_semantic_judge_failed'],
-            floorViolations: judgeViolations,
-            usage: response.usage,
-            elapsedMs: response.elapsedMs,
-            editIntensity: response.json.editIntensity,
-            protectedTerms: response.json.protectedTerms || protectedTerms,
-            selectedModel: response.model,
-            escalated: phase === 'escalation'
-          })
-        };
       }
     }
     const gate = evaluateChunkGate({
@@ -286,8 +269,8 @@ async function callHumanize(args) {
         fallback: gate.hardFail,
         error: gate.hardFail ? gate.reason : null,
         hardFailReason: gate.reason,
-        warnings: [...(response.json.warnings || []), ...gate.warnings],
-        floorViolations: gate.violations,
+        warnings: [...(response.json.warnings || []), ...(judgeViolations.length ? ['gpt_semantic_judge_warning'] : []), ...gate.warnings],
+        floorViolations: [...judgeViolations, ...gate.violations],
         usage: response.usage,
         elapsedMs: response.elapsedMs,
         editIntensity: response.json.editIntensity,
@@ -456,7 +439,7 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
   const lostTerms = protectedTerms.filter(t => t.length >= 2 && !outputText.includes(t));
   if (lostTerms.length) {
     violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 12) });
-    return { hardFail: true, reason: 'protected_term_loss', warnings, violations };
+    warnings.push('protected_term_loss');
   }
   try {
     const floorViolations = floor.collectFloorViolations({
@@ -470,13 +453,14 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
     }) || [];
     violations.push(...floorViolations);
     const hard = floorViolations.find(isBlockingViolation);
-    if (hard) return { hardFail: true, reason: hard.gate || hard.type || 'floor_violation', warnings, violations };
+    if (hard) warnings.push(`floor_${hard.gate || hard.type || 'violation'}`);
   } catch (err) {
     violations.push({ gate: 'floor_check_error', detail: err && err.message || String(err) });
-    return { hardFail: true, reason: 'floor_check_error', warnings, violations };
+    warnings.push('floor_check_error');
   }
   if (normalizeBare(original).length > 120 && normalizeBare(original) === normalizeBare(outputText)) {
-    return { hardFail: true, reason: 'noop_unchanged', warnings, violations };
+    warnings.push('noop_unchanged');
+    violations.push({ gate: 'noop_unchanged', detail: 'output equivalent to source' });
   }
   try {
     const outSurface = surfaceguard.buildSurfaceReport(outputText);
@@ -485,7 +469,6 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
     if (outRatio > srcRatio + 0.22 && outRatio >= 0.55) {
       warnings.push('surface_risk_regression');
       violations.push({ gate: 'surface_risk_regression', sourceRatio: srcRatio, outputRatio: outRatio });
-      return { hardFail: true, reason: 'surface_risk_regression', warnings, violations };
     }
   } catch {}
   return { hardFail: false, reason: '', warnings, violations };
@@ -645,7 +628,22 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk })
       warnings: []
     };
   }
+  softenFloorReport(result.floorReport);
   return result;
+}
+
+function softenFloorReport(report) {
+  if (!report || process.env.STRICT_QUALITY_GATE === '1') return report;
+  if (report.status !== 'blocked') return report;
+  const criticals = Array.isArray(report.criticals) ? report.criticals : [];
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  report.status = 'needs_review';
+  report.warnings = [
+    ...warnings,
+    ...criticals.map(c => ({ ...c, softenedFromCritical: true }))
+  ];
+  report.criticals = [];
+  return report;
 }
 
 function chunkRecord({

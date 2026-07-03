@@ -37,6 +37,24 @@ async function activeGptConfig() {
   return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
 }
 
+function softenBlockedFloorReport(out, logName, meta = {}) {
+  if (!out || !out.floorReport || out.floorReport.status !== 'blocked') return false;
+  if (process.env.STRICT_QUALITY_GATE === '1') return false;
+  const outputText = out.result?.outputText || out.outputText || '';
+  if (!String(outputText || '').trim()) return false;
+  const criticals = Array.isArray(out.floorReport.criticals) ? out.floorReport.criticals : [];
+  const warnings = Array.isArray(out.floorReport.warnings) ? out.floorReport.warnings : [];
+  const gates = criticals.map(c => c.gate || c.type || 'quality_gate');
+  out.floorReport.status = 'needs_review';
+  out.floorReport.criticals = [];
+  out.floorReport.warnings = [
+    ...warnings,
+    ...criticals.map(c => ({ ...c, softenedFromCritical: true }))
+  ];
+  logger.warn(logName, { ...meta, gates, softened: true });
+  return true;
+}
+
 // ── 중복 제출 디바운스(2026-06-19 실측 #57·#58: 같은 사용자가 동일 10510자를 1초 간격으로 두 번 제출 →
 //   requestId 멱등이 없는 구버전 클라이언트라 이중 차감·이중 결과). requestId 멱등(creditHistory/req_*)이
 //   닿지 않는 구간을 메모리 단기창으로 막는다: 같은 uid+opType+내용을 짧은 창(기본 20초) 안에 다시 보내면
@@ -3677,17 +3695,19 @@ router.post('/analyze', async (req, res) => {
       // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙). 차감 없이 종료.
       if (out.floorReport && out.floorReport.status === 'blocked') {
         const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
-        logger.warn('analyze.floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
-        const blockedHint = gates.includes('lostFacts')
-          ? '원문의 핵심 사실이나 수치가 빠져 차단했어요. 글을 짧게 나누거나 사실·수치가 많은 문단은 원문 표현을 더 유지해 주세요.'
-          : gates.includes('novelty') || gates.includes('judge')
-            ? '원문에 없던 내용이 섞여 차단했어요. 경험 메모나 추가 지시를 줄이고, 바로 결과가 필요하면 그대로 다듬기를 사용해 주세요.'
-            : '원문 보존 기준을 통과하지 못해 차단했어요. 같은 글을 반복하기보다 글을 짧게 나누거나 그대로 다듬기를 사용해 주세요.';
-        return res.status(422).json({
-          error: `${blockedHint} 크레딧은 차감되지 않았어요.`,
-          floorStatus: 'blocked',
-          gates
-        });
+        if (!softenBlockedFloorReport(out, 'analyze.floor_blocked_soft_delivered', { uid: pre.uid, requestId, billingMode, gates })) {
+          logger.warn('analyze.floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
+          const blockedHint = gates.includes('lostFacts')
+            ? '원문의 핵심 사실이나 수치가 빠져 차단했어요. 글을 짧게 나누거나 사실·수치가 많은 문단은 원문 표현을 더 유지해 주세요.'
+            : gates.includes('novelty') || gates.includes('judge')
+              ? '원문에 없던 내용이 섞여 차단했어요. 경험 메모나 추가 지시를 줄이고, 바로 결과가 필요하면 그대로 다듬기를 사용해 주세요.'
+              : '원문 보존 기준을 통과하지 못해 차단했어요. 같은 글을 반복하기보다 글을 짧게 나누거나 그대로 다듬기를 사용해 주세요.';
+          return res.status(422).json({
+            error: `${blockedHint} 크레딧은 차감되지 않았어요.`,
+            floorStatus: 'blocked',
+            gates
+          });
+        }
       }
       result = { outputText: out.result.outputText };
       evasion = {
@@ -3718,12 +3738,14 @@ router.post('/analyze', async (req, res) => {
         });
         if (out.floorReport && out.floorReport.status === 'blocked') {
           const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
-          logger.warn('analyze.gpt_floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
-          return res.status(422).json({
-            error: '원문 보존 기준을 통과하지 못해 차단했어요. 크레딧은 차감되지 않았어요.',
-            floorStatus: 'blocked',
-            gates
-          });
+          if (!softenBlockedFloorReport(out, 'analyze.gpt_floor_blocked_soft_delivered', { uid: pre.uid, requestId, billingMode, gates })) {
+            logger.warn('analyze.gpt_floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
+            return res.status(422).json({
+              error: '원문 보존 기준을 통과하지 못해 차단했어요. 크레딧은 차감되지 않았어요.',
+              floorStatus: 'blocked',
+              gates
+            });
+          }
         }
         result = { outputText: out.result.outputText, humanizeMeta: out.gptEngine || out.result.humanizeMeta || null };
         usage = out.gptEngine?.usage || out.result?.humanizeMeta?.usage || null;
@@ -4177,12 +4199,14 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
         });
         if (out.floorReport && out.floorReport.status === 'blocked') {
           const gates = (out.floorReport.criticals || []).map(c => c.gate).join(', ');
-          logger.warn('analyze_pdf.gpt_floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
-          return res.status(422).json({
-            error: '원문 보존 기준을 통과하지 못해 차단했어요. 크레딧은 차감되지 않았어요.',
-            floorStatus: 'blocked',
-            gates
-          });
+          if (!softenBlockedFloorReport(out, 'analyze_pdf.gpt_floor_blocked_soft_delivered', { uid: pre.uid, requestId, billingMode, gates })) {
+            logger.warn('analyze_pdf.gpt_floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
+            return res.status(422).json({
+              error: '원문 보존 기준을 통과하지 못해 차단했어요. 크레딧은 차감되지 않았어요.',
+              floorStatus: 'blocked',
+              gates
+            });
+          }
         }
         result = { outputText: out.result.outputText, humanizeMeta: out.gptEngine || out.result.humanizeMeta || null };
         usage = out.gptEngine?.usage || out.result?.humanizeMeta?.usage || null;

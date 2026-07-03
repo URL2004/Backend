@@ -25,10 +25,10 @@ function buildPrompt({ text, policy, profile, risk, protectedTerms }) {
     '- 화자 변경 금지: 중립문에 1인칭을 넣지 않고, 1인칭 원문에서 1인칭을 제거하지 않는다.',
     '- 길이 범위: 원문 대비 0.88~1.14 범위를 우선한다.',
     '',
-    '[V7 핵심: 유효 휴머나이징]',
+    '[V8.1 핵심: 고강도 유효 휴머나이징 + 사실 역할 잠금]',
     '이전 방식처럼 단어 몇 개만 바꾸는 표면 치환은 실패다.',
     '원문과 거의 같은 문장 구조를 유지한 채 “이러한→이 같은”, “확인하였다→알 수 있었다”처럼 바꾸지 않는다.',
-    '반드시 원문 정보 범위 안에서 문장 구조, 서술 순서, 종결 방식, 연결 방식을 실제로 조정한다.',
+    '반드시 원문 정보 범위 안에서 문장 구조, 절의 배치, 종결 방식, 연결 방식을 실제로 조정한다. 단, 서로 다른 기능을 하는 기술이나 원인·효과를 새롭게 결합하지 않는다.',
     '',
     editBudgetRules(risk),
     '',
@@ -39,6 +39,8 @@ function buildPrompt({ text, policy, profile, risk, protectedTerms }) {
     '- 긴 문장 중 하나는 둘로 나누고, 너무 짧은 문장이 반복되면 자연스럽게 합친다. 문장 길이 리듬을 일부 달리한다.',
     '- 문단마다 같은 시작 방식과 같은 결론형 종결이 반복되지 않도록 바꾼다.',
     '- 사실 설명 문단은 용어와 목록을 보존하면서 문장 흐름만 바꾼다. 평가/결론 문단은 정형적 결론어를 더 적극적으로 줄인다.',
+    '- 사실 역할 잠금: 원문에서 A가 비용 절감에 기여하고 B가 외부 연동에 기여한다면, 변환문에서도 A와 B의 기능을 섞지 않는다. 서로 다른 기술을 “함께/더불어/및”으로 묶어 하나의 효과를 내는 것처럼 쓰지 않는다.',
+    '- 문장 분리 잠금: “만들어내고 있으며” 같은 연결형 문장을 둘로 나눌 때는 뒤 문장에 “있으며,” “이며,” “하고,” 같은 연결 어미 조각을 남기지 않는다.',
     '',
     '[금지되는 약한 변환]',
     '- 동의어 몇 개만 교체',
@@ -85,9 +87,9 @@ function buildPrompt({ text, policy, profile, risk, protectedTerms }) {
 
 function editFloorForRisk(risk) {
   const grade = risk && risk.grade;
-  if (grade === 'high') return '문장 40~55%에서 구조적 수정 필요. 문단 절반 이상에서 유효 변화 필요.';
-  if (grade === 'medium') return '문장 30~45%에서 구조적 수정 필요. 문단 1/3 이상에서 유효 변화 필요.';
-  if (grade === 'low-medium') return '문장 20~35%에서 구조적 수정 필요. 표면 치환만으로 끝내지 말 것.';
+  if (grade === 'high') return '문장 55~70%에서 구조적 수정 필요. 문단 60% 이상에서 유효 변화 필요.';
+  if (grade === 'medium') return '문장 45~60%에서 구조적 수정 필요. 문단 절반 이상에서 유효 변화 필요.';
+  if (grade === 'low-medium') return '문장 30~45%에서 구조적 수정 필요. 표면 치환만으로 끝내지 말 것.';
   return '낮은 강도. 단, 호출된 이상 반복/정형 표현은 실제로 줄일 것.';
 }
 
@@ -101,28 +103,29 @@ function editBudgetRules(risk) {
   ];
   if (grade === 'high') {
     return base.concat([
-      '- 고위험 원문: 각 긴 문단마다 최소 1~2문장은 구조를 다시 짠다.',
-      '- 전체 문장의 약 40~55%는 단순 어휘 교체가 아니라 구문/연결/종결이 달라져야 한다.',
+      '- 고위험 원문: 각 긴 문단마다 최소 2~3문장은 구조를 다시 짠다.',
+      '- 전체 문장의 약 55~70%는 단순 어휘 교체가 아니라 구문/연결/종결이 달라져야 한다.',
       '- 반복되는 결론형 문장과 비인칭 서술을 적극적으로 줄인다.'
     ]).join('\n');
   }
   if (grade === 'medium') {
     return base.concat([
-      '- 중위험 원문: 각 주요 문단마다 최소 1문장은 구조를 다시 짠다.',
-      '- 전체 문장의 약 30~45%는 단순 어휘 교체가 아니라 구문/연결/종결이 달라져야 한다.',
+      '- 중위험 원문: 각 주요 문단마다 최소 1~2문장은 구조를 다시 짠다.',
+      '- 전체 문장의 약 45~60%는 단순 어휘 교체가 아니라 구문/연결/종결이 달라져야 한다.',
       '- 자연스러운 문장은 유지하되, 원문과 거의 같은 문장만 이어지는 결과는 피한다.'
     ]).join('\n');
   }
   return base.concat([
     '- 낮은~중간 위험 원문: 과도하게 바꾸지 않되, 반복 표현·정형 연결·기계적 종결은 실제로 줄인다.',
-    '- 전체 문장의 약 20~35%는 부분 구조나 연결 방식이 달라져야 한다.'
+    '- 전체 문장의 약 30~45%는 부분 구조나 연결 방식이 달라져야 한다.'
   ]).join('\n');
 }
 
 function temperatureByPolicy(policy, risk) {
   if (policy.strength === 'conservative') return 0.38;
   if (policy.strength === 'assertive') return 0.58;
-  if (policy.strength === 'effective') return risk.grade === 'high' ? 0.52 : 0.48;
+  if (policy.strength === 'high_effective') return risk.grade === 'high' ? 0.60 : risk.grade === 'medium' ? 0.57 : 0.53;
+  if (policy.strength === 'effective') return risk.grade === 'high' ? 0.50 : 0.47;
   if (risk.sourceType === 'lowRiskSource') return 0.36;
   return 0.46;
 }

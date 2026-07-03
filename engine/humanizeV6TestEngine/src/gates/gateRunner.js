@@ -3,6 +3,8 @@ const { missingProtectedTerms } = require('../analysis/protectedTerms');
 const { getBasicStats, splitLines, charCountNoSpace } = require('../analysis/textStats');
 const { analyzeSpeakerProfile, speakerShift } = require('../analysis/speakerProfile');
 const { analyzeEffectiveChange, thresholdsForRisk } = require('../analysis/effectiveChange');
+const { findGrammarIssues } = require('../analysis/grammarQuality');
+const { analyzeFactRoleDrift } = require('../analysis/factRole');
 
 function runGates({ sourceText, outputText, sourceRisk, protectedTerms, policy, mode = 'full_single_call', blockIssues = [] }) {
   const afterRisk = analyzeRisk(outputText, policy);
@@ -16,6 +18,8 @@ function runGates({ sourceText, outputText, sourceRisk, protectedTerms, policy, 
   gates.push(effectiveChangeGate(sourceText, outputText, sourceRisk, policy, mode));
   gates.push(speakerShiftGate(sourceText, outputText));
   gates.push(blockProtocolGate(blockIssues));
+  gates.push(grammarQualityGate(outputText, policy));
+  gates.push(factRoleDriftGate(sourceText, outputText, protectedTerms, sourceRisk, policy));
 
   const hardFailures = gates.filter(g => !g.pass && g.severity === 'hard');
   const softFailures = gates.filter(g => !g.pass && g.severity !== 'hard');
@@ -224,6 +228,37 @@ function blockProtocolGate(blockIssues) {
     severity: issues.length ? 'hard' : 'soft',
     issues: issues.slice(0, 20),
     detail: issues.length ? 'block_protocol_violation' : 'ok'
+  };
+}
+
+
+function grammarQualityGate(outputText, policy) {
+  const issues = findGrammarIssues(outputText);
+  return {
+    name: 'grammar_quality',
+    pass: issues.length === 0,
+    severity: issues.length ? 'hard' : 'soft',
+    issues: issues.slice(0, 20),
+    detail: issues.length ? 'orphan_connective_or_broken_sentence_detected' : 'ok'
+  };
+}
+
+function factRoleDriftGate(sourceText, outputText, protectedTerms, sourceRisk, policy) {
+  if (policy.semanticGuards && policy.semanticGuards.enabled === false) {
+    return { name: 'fact_role_drift', pass: true, severity: 'soft', detail: 'disabled' };
+  }
+  const result = analyzeFactRoleDrift(sourceText, outputText, protectedTerms, {
+    maxSafeSentenceDistance: policy.semanticGuards?.maxSafeSentenceDistance ?? 0
+  });
+  const issues = result.issues || [];
+  const grade = sourceRisk && sourceRisk.grade;
+  const hard = issues.some(i => i.severityHint === 'hard') && (grade === 'high' || grade === 'medium' || (policy.semanticGuards && policy.semanticGuards.hardFailOnRelationMix));
+  return {
+    name: 'fact_role_drift',
+    pass: issues.length === 0,
+    severity: hard ? 'hard' : 'soft',
+    issues: issues.slice(0, policy.semanticGuards?.maxIssuesInDiagnostics || 20),
+    detail: issues.length ? 'unverified_cross_sentence_relation_mix' : 'ok'
   };
 }
 

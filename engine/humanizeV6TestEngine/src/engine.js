@@ -7,6 +7,7 @@ const { buildPrompt } = require('./prompt/promptBuilder');
 const { buildBlockLockedPrompt, buildPatchPrompt } = require('./prompt/longPromptBuilder');
 const { parseModelOutput, parseBlockOutput, parsePatchOutput } = require('./prompt/parseModelOutput');
 const { formatRepair } = require('./postprocess/formatRepair');
+const { repairOrphanConnectives } = require('./analysis/grammarQuality');
 const { minimalCleanup } = require('./postprocess/minimalCleanup');
 const { runGates } = require('./gates/gateRunner');
 const { blockize, applyPatches, blockCoverage, mergeReturnedBlocks, selectPatchTargets } = require('./length/blockizer');
@@ -71,7 +72,7 @@ function createPolicyLockedHumanizer({ llm, policy: policyOverrides = {}, logger
     const parsed = parseModelOutput(raw);
     if (!parsed.ok) return failSafe('model_output_parse_failed', sourceText, { parseError: parsed.error, raw: parsed.raw, sourceRisk, profile, lengthMode: 'full_single_call' });
 
-    const repaired = formatRepair(parsed.data.outputText, sourceText);
+    const repaired = repairOrphanConnectives(formatRepair(parsed.data.outputText, sourceText));
     return await finalize({ sourceText, outputText: repaired, sourceRisk, protectedTerms, profile, model: parsed.data, semanticInput: null, metadata, lengthMode: 'full_single_call', blockIssues: [] });
   }
 
@@ -95,7 +96,7 @@ function createPolicyLockedHumanizer({ llm, policy: policyOverrides = {}, logger
     if (coverage.extra.length) blockIssues.push(`extra_blocks:${coverage.extra.slice(0, 8).join(',')}`);
 
     const merged = mergeReturnedBlocks(blocks, parsed.data.blocks);
-    const repaired = formatRepair(merged, sourceText);
+    const repaired = repairOrphanConnectives(formatRepair(merged, sourceText));
     return await finalize({ sourceText, outputText: repaired, sourceRisk, protectedTerms, profile, model: parsed.data, metadata, lengthMode: 'block_locked_single_call', blockIssues });
   }
 
@@ -135,7 +136,7 @@ function createPolicyLockedHumanizer({ llm, policy: policyOverrides = {}, logger
     if (duplicates.length) blockIssues.push(`duplicate_patch_ids:${duplicates.slice(0, 10).join(',')}`);
 
     const merged = applyPatches(blocks, (parsed.data.patches || []).filter(p => allowed.has(p.id)));
-    const repaired = formatRepair(merged, sourceText);
+    const repaired = repairOrphanConnectives(formatRepair(merged, sourceText));
     return await finalize({
       sourceText,
       outputText: repaired,

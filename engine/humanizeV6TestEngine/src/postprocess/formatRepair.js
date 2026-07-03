@@ -1,8 +1,10 @@
 const { splitLines } = require('../analysis/textStats');
+const { repairOrphanConnectives } = require('../analysis/grammarQuality');
 
 function formatRepair(outputText, sourceText) {
   let out = String(outputText || '').replace(/\r\n/g, '\n').trim();
   out = repairObviousHeadingMerges(out, sourceText);
+  out = repairOrphanConnectives(out);
   out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   return out;
 }

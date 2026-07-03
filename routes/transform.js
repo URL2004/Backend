@@ -885,7 +885,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     const engineMode = job.mode === 'blog' ? 'blog' : 'assignment';
     const tonePolish = job.mode === 'polish';
     job.status = 'running';
-    job.stage = isV6 ? '관리자 테스트 · V8.1 고강도 의미잠금 엔진'
+    job.stage = isV6 ? '관리자 테스트 · V9 카피킬러 안전 엔진'
       : isFundamental ? '관리자 테스트 · 근본개선 엔진'
       : isFinalReport ? '관리자 테스트 · 최종 개선보고서 엔진'
         : '관리자 테스트 · 보존형 엔진';
@@ -1627,7 +1627,7 @@ router.post('/transform', async (req, res) => {
     ? (legacyBasicExperimentEnabled ? 'report' : normalizeBasicStyle(req.body && req.body.basicStyle))
     : null;
   const adminLabVersion = requestedAdminLabProfile === 'v6_engine'
-    ? 'humanizing-engine-v8.1-high-semantic-locked'
+    ? 'humanizing-engine-v9-cksafe'
     : requestedAdminLabProfile === 'fundamental_engine'
       ? 'fundamental-engine-v1'
       : requestedAdminLabProfile === 'final_report_engine' ? 'final-report-engine-v1' : 'preserve-lab-v1';

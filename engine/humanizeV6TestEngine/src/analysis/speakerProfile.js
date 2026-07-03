@@ -1,49 +1,39 @@
-const { splitSentences, countMatches } = require('./textStats');
+'use strict';
+const { splitSentences, countOccurrences } = require('./textStats');
 
-function analyzeSpeakerProfile(text) {
-  const s = String(text || '');
-  const sentences = splitSentences(s);
-  const sentenceCount = Math.max(1, sentences.length);
-  const firstPerson = countMatches(s, [/저는/g, /제가/g, /나는/g, /내가/g, /우리/g, /필자는/g]);
-  const politeYo = sentences.filter(x => /(요\.|어요\.|아요\.|해요\.|됩니다요\.)$/.test(x.trim())).length;
-  const formalDa = sentences.filter(x => /(다\.|한다\.|된다\.|있다\.|없다\.|였다\.|이었다\.|것이다\.|습니다\.)$/.test(x.trim())).length;
-  const politeSeumnida = sentences.filter(x => /(습니다\.|입니다\.|합니다\.|됩니다\.)$/.test(x.trim())).length;
-  const imperative = countMatches(s, [/해줘/g, /써줘/g, /바꿔/g, /무시/g, /지시/g]);
+function analyzeSpeaker(text) {
+  const sentences = splitSentences(text);
+  const firstPerson = countOccurrences(text, [/\b(저는|제가|나는|내가|본인|필자|우리는|제가)\b/g]);
+  const politeYo = countOccurrences(text, [/(요\.|습니다\.|습니까\?|세요\.)/g]);
+  const formalDa = countOccurrences(text, [/(다\.|한다\.|했다\.|된다\.|있다\.|없다\.|이다\.)/g]);
+  const imperative = countOccurrences(text, [/(해줘|해주세요|써줘|바꿔줘|늘려줘|요약해|무시해)/g]);
 
   let person = 'neutral';
-  if (firstPerson / sentenceCount > 0.08 || firstPerson >= 3) person = 'first_person';
-  let ending = 'mixed';
-  if (formalDa >= Math.max(3, politeYo * 3)) ending = 'formal_da';
-  else if (politeYo >= Math.max(3, formalDa * 0.6)) ending = 'polite_yo';
-  else if (politeSeumnida >= 3) ending = 'polite_formal';
+  if (firstPerson > 0) person = 'first_person';
 
-  return {
-    person,
-    ending,
-    firstPersonCount: firstPerson,
-    politeYoCount: politeYo,
-    formalDaCount: formalDa,
-    politeFormalCount: politeSeumnida,
-    instructionLikeCount: imperative,
-    sentenceCount
-  };
+  let ending = 'mixed';
+  if (formalDa >= politeYo * 2 && formalDa >= 2) ending = 'formal_da';
+  else if (politeYo >= formalDa * 1.2 && politeYo >= 2) ending = 'polite';
+  else if (sentences.length && formalDa + politeYo === 0) ending = 'plain_or_fragment';
+
+  return { person, ending, firstPerson, politeYo, formalDa, imperative };
 }
 
-function speakerShift(sourceProfile, afterProfile) {
+function speakerShift(beforeProfile, afterProfile) {
   const reasons = [];
-  if (sourceProfile.person === 'neutral' && afterProfile.firstPersonCount > sourceProfile.firstPersonCount) {
+  if (beforeProfile.person === 'neutral' && afterProfile.firstPerson > beforeProfile.firstPerson) {
     reasons.push('first_person_injected');
   }
-  if (sourceProfile.person === 'first_person' && afterProfile.firstPersonCount < Math.max(1, sourceProfile.firstPersonCount * 0.35)) {
+  if (beforeProfile.person === 'first_person' && afterProfile.firstPerson === 0) {
     reasons.push('first_person_removed');
   }
-  if (sourceProfile.ending === 'formal_da' && afterProfile.politeYoCount > Math.max(2, afterProfile.formalDaCount * 0.35)) {
-    reasons.push('ending_shift_da_to_yo');
+  if (beforeProfile.ending === 'formal_da' && afterProfile.politeYo > Math.max(2, afterProfile.formalDa * 0.35)) {
+    reasons.push('ending_shift_formal_to_polite');
   }
-  if (sourceProfile.ending === 'polite_yo' && afterProfile.formalDaCount > Math.max(4, afterProfile.politeYoCount * 2.0)) {
-    reasons.push('ending_shift_yo_to_da');
+  if (beforeProfile.ending === 'polite' && afterProfile.formalDa > Math.max(2, afterProfile.politeYo * 1.2)) {
+    reasons.push('ending_shift_polite_to_formal');
   }
   return reasons;
 }
 
-module.exports = { analyzeSpeakerProfile, speakerShift };
+module.exports = { analyzeSpeaker, speakerShift };

@@ -1,16 +1,9 @@
-// This adapter is intentionally generic. Replace callYourModel with your own provider call.
-// The V5 engine does not pass user instructions. It only passes an admin-built system prompt and source text as data.
+'use strict';
 
-async function callYourModel({ system, user, temperature, maxOutputTokens }) {
-  throw new Error('Implement your model provider call here. Return the raw text response.');
+async function complete({ system, user, temperature, maxOutputTokens }) {
+  // Replace this with your actual model client.
+  // The engine expects a string containing JSON only.
+  throw new Error('Implement llm.complete({ system, user, temperature, maxOutputTokens })');
 }
 
-function createLlmAdapter() {
-  return {
-    async complete({ system, user, temperature, maxOutputTokens }) {
-      return await callYourModel({ system, user, temperature, maxOutputTokens });
-    }
-  };
-}
-
-module.exports = { createLlmAdapter };
+module.exports = { complete };

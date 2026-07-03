@@ -1,15 +1,16 @@
-// Admin-only wrapper for Humanizing Engine V8.1.
-// The upstream V8.1 source lives under ./src and is intentionally isolated from the production prompt path.
+// Admin-only wrapper for Humanizing Engine V9.
+// The upstream V9 source lives under ./src and is intentionally isolated from the production prompt path.
 
-const { createPolicyLockedHumanizer, DEFAULT_POLICY } = require('./src');
+const { createCopykillerSafeHumanizer } = require('./src');
+const { DEFAULT_POLICY } = require('./src/policy');
 
-const VERSION = 'humanizing-engine-v8.1-high-semantic-locked';
+const VERSION = 'humanizing-engine-v9-cksafe';
 const PROFILE = 'v6_engine';
 
 function buildStructuredTool() {
   return {
-    name: 'return_v8_humanize_json',
-    description: 'Return the structured result requested by the V8.1 humanizing engine.',
+    name: 'return_v9_humanize_json',
+    description: 'Return the structured result requested by the V9 Copykiller-safe humanizing engine.',
     input_schema: {
       type: 'object',
       additionalProperties: true,
@@ -26,6 +27,7 @@ function buildStructuredTool() {
             additionalProperties: true,
             properties: {
               id: { type: 'string' },
+              type: { type: 'string' },
               text: { type: 'string' }
             }
           }
@@ -57,6 +59,10 @@ function buildStructuredTool() {
         protectedTermPolicy: {
           type: 'string'
         },
+        notes: {
+          type: 'array',
+          items: { type: 'string' }
+        },
         rawJson: {
           type: 'string',
           description: 'Backward-compatible fallback only. Prefer the structured fields above.'
@@ -81,7 +87,8 @@ function serializeStructuredToolResult(parsed) {
     editIntensity: parsed.editIntensity,
     changedRiskPatterns: Array.isArray(parsed.changedRiskPatterns) ? parsed.changedRiskPatterns : [],
     warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
-    protectedTermPolicy: parsed.protectedTermPolicy || 'kept'
+    protectedTermPolicy: parsed.protectedTermPolicy || 'kept',
+    notes: Array.isArray(parsed.notes) ? parsed.notes : []
   };
   Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
   return JSON.stringify(payload);
@@ -105,8 +112,8 @@ function createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode 
         temperature,
         maxOutputTokens,
         signal,
-        task: 'admin_humanize_lab_v8',
-        phase: 'v8:main',
+        task: 'admin_humanize_lab_v9',
+        phase: 'v9:main',
         mode
       });
       const parsed = extractClaudeResult(data, tool.name) || {};
@@ -116,14 +123,12 @@ function createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode 
 }
 
 function policyForMode(mode) {
-  const strength = mode === 'formal' ? 'high_effective' : 'effective';
   return {
     ...DEFAULT_POLICY,
-    strength,
-    allowFallbackToOriginal: false,
-    // Admin lab should exercise the V8.1 model path instead of returning a local-only minimal result.
+    // Admin lab should exercise the V9 model path instead of returning a local-only minimal result.
     lowRiskThreshold: -1,
-    minimalPreserveThreshold: -1
+    minimalPreserveThreshold: -1,
+    temperature: mode === 'formal' ? 0.28 : DEFAULT_POLICY.temperature
   };
 }
 
@@ -133,7 +138,8 @@ function summarizeModel(model) {
     editIntensity: model.editIntensity || null,
     changedRiskPatterns: Array.isArray(model.changedRiskPatterns) ? model.changedRiskPatterns.slice(0, 12) : [],
     warnings: Array.isArray(model.warnings) ? model.warnings.slice(0, 12) : [],
-    protectedTermPolicy: model.protectedTermPolicy || null
+    protectedTermPolicy: model.protectedTermPolicy || null,
+    notes: Array.isArray(model.notes) ? model.notes.slice(0, 12) : []
   };
   if (Array.isArray(model.blocks)) summary.returnedBlockCount = model.blocks.length;
   if (Array.isArray(model.patches)) summary.returnedPatchCount = model.patches.length;
@@ -145,10 +151,15 @@ function gateWarnings(gates) {
   return (gates || [])
     .filter(g => g && !g.pass)
     .map(g => ({
-      gate: `v8_${g.name || 'gate'}`,
-      detail: g.detail || (g.reasons || g.issues || g.missing || []).join(',') || 'not_passed',
+      gate: `v9_${g.name || 'gate'}`,
+      detail: detailText(g.detail || g.reasons || g.issues || g.missing || 'not_passed'),
       severity: g.severity || 'soft'
     }));
+}
+
+function detailText(value) {
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value); } catch { return String(value); }
 }
 
 function buildMeta(result) {
@@ -157,7 +168,7 @@ function buildMeta(result) {
   const warnings = gateWarnings(gates);
   return {
     version: VERSION,
-    upstreamPolicy: result?.policy || DEFAULT_POLICY.version,
+    upstreamPolicy: 'v9-cksafe',
     profile: PROFILE,
     path: result?.lengthMode || 'unknown',
     status: result?.status || 'unknown',
@@ -166,27 +177,31 @@ function buildMeta(result) {
     operation: result?.operation || 'humanize_only',
     ignoredUserInstructions: result?.ignoredUserInstructions !== false,
     lengthMode: result?.lengthMode || null,
-    profileDetected: result?.profile || null,
+    profileDetected: diagnostics.profile || null,
     sourceRisk: diagnostics.sourceRisk || null,
     afterRisk: diagnostics.afterRisk || null,
-    fallbackRisk: diagnostics.fallbackRisk || null,
+    fallbackRisk: null,
     gates,
+    hardFails: diagnostics.hardFails || [],
+    softFails: diagnostics.softFails || [],
     warnings,
     patchTargets: diagnostics.patchTargets || null,
-    model: summarizeModel(result?.model)
+    model: summarizeModel({
+      notes: diagnostics.modelNotes || []
+    })
   };
 }
 
 function reasonForStatus(status) {
-  if (status === 'done') return 'V8.1 정책 잠금 엔진 결과가 로컬 게이트를 통과했습니다.';
-  if (status === 'done_low_effect') return 'V8.1 유효 변화 기준이 낮아 제한 효과로 표시합니다.';
-  if (status === 'done_limited_risk_drop') return 'V8.1 표면 위험 감소가 제한적이라 제한 효과로 표시합니다.';
-  if (status === 'done_limited_effect') return 'V8.1 결과에 일부 소프트 경고가 있어 제한 효과로 표시합니다.';
-  if (status === 'reverted_to_policy_safe') return 'V8.1 하드 게이트가 감지되어 정책상 안전한 기준 출력으로 되돌렸습니다.';
-  if (status === 'model_output_parse_failed') return 'V8.1 모델 JSON 파싱에 실패해 기준 출력으로 처리했습니다.';
-  if (status === 'llm_error') return 'V8.1 모델 호출 오류로 기준 출력을 반환했습니다.';
-  if (status === 'minimal_preserve') return 'V8.1 로컬 최소 보존 경로로 처리했습니다.';
-  return 'V8.1 정책 잠금 테스트 엔진으로 처리했습니다.';
+  if (status === 'done') return 'V9 카피킬러 안전 엔진 결과가 로컬 게이트를 통과했습니다.';
+  if (status === 'done_low_effect') return 'V9 유효 변화 기준이 낮아 제한 효과로 표시합니다.';
+  if (status === 'done_limited_risk_drop') return 'V9 대리 위험 감소가 제한적이라 제한 효과로 표시합니다.';
+  if (status === 'done_limited_effect') return 'V9 결과에 일부 소프트 경고가 있어 제한 효과로 표시합니다.';
+  if (status === 'reverted_to_policy_safe') return 'V9 하드 게이트가 감지되어 정책상 안전한 기준 출력으로 되돌렸습니다.';
+  if (status === 'model_output_parse_failed') return 'V9 모델 JSON 파싱에 실패해 기준 출력으로 처리했습니다.';
+  if (status === 'llm_error') return 'V9 모델 호출 오류로 기준 출력을 반환했습니다.';
+  if (status === 'minimal_preserve') return 'V9 로컬 최소 보존 경로로 처리했습니다.';
+  return 'V9 카피킬러 안전 테스트 엔진으로 처리했습니다.';
 }
 
 function floorReportFromMeta(meta) {
@@ -199,13 +214,19 @@ function floorReportFromMeta(meta) {
     criticals: [],
     warnings,
     metrics: {
-      v8Status: meta.status,
+      v9Status: meta.status,
       lengthMode: meta.lengthMode,
-      sourceRisk: typeof meta.sourceRisk?.score === 'number' ? round(meta.sourceRisk.score) : null,
-      afterRisk: typeof meta.afterRisk?.score === 'number' ? round(meta.afterRisk.score) : null,
+      sourceRisk: riskNumber(meta.sourceRisk),
+      afterRisk: riskNumber(meta.afterRisk),
       gateWarnings: warnings.length
     }
   };
+}
+
+function riskNumber(risk) {
+  if (typeof risk?.risk === 'number') return round(risk.risk);
+  if (typeof risk?.score === 'number') return round(risk.score);
+  return null;
 }
 
 async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, callClaude, extractClaudeResult } = {}) {
@@ -213,7 +234,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   if (typeof extractClaudeResult !== 'function') throw new Error('humanizeV6TestEngine requires extractClaudeResult');
 
   const policy = policyForMode(mode);
-  const engine = createPolicyLockedHumanizer({
+  const engine = createCopykillerSafeHumanizer({
     policy,
     llm: createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode })
   });

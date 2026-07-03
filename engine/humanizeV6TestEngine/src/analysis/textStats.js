@@ -1,52 +1,58 @@
+'use strict';
+
 function normalizeText(text) {
   return String(text || '')
     .replace(/\r\n/g, '\n')
-    .replace(/[\t\u00a0]+/g, ' ')
-    .replace(/[ ]{2,}/g, ' ')
+    .replace(/[\t\u00A0]+/g, ' ')
+    .replace(/[ ]+\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
     .trim();
 }
 
 function splitParagraphs(text) {
-  const normalized = normalizeText(text);
-  if (!normalized) return [];
-  return normalized
-    .split(/\n\s*\n/g)
-    .map(p => p.trim())
-    .filter(Boolean);
+  const t = normalizeText(text);
+  if (!t) return [];
+  return t.split(/\n\s*\n/).map(x => x.trim()).filter(Boolean);
 }
 
 function splitLines(text) {
-  return String(text || '').replace(/\r\n/g, '\n').split('\n');
+  return normalizeText(text).split('\n').map(x => x.trim()).filter(Boolean);
+}
+
+function isHeading(line) {
+  const x = String(line || '').trim();
+  if (!x) return false;
+  if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*\.?\s*[^\n]{1,30}$/.test(x)) return true;
+  if (/^\d+(?:\.\d+)*\.?\s+[^\n]{1,60}$/.test(x) && !/[.!?。]$/.test(x)) return true;
+  if (/^(서론|본론|결론|요약|개요|참고문헌|작업 후 확인|공용부 오염 상태|주차장과 분리배출장 정리)$/.test(x)) return true;
+  if (x.length <= 40 && !/[.!?。]$/.test(x) && /(상태|특징|비교|문제|사례|시사점|정리|확인|분석|결론|서론|본론)$/.test(x)) return true;
+  return false;
 }
 
 function splitSentences(text) {
-  const normalized = normalizeText(text);
-  if (!normalized) return [];
-  const rough = normalized
-    .replace(/([.!?。！？]|다\.|요\.|니다\.)\s+/g, '$1\n')
-    .split(/\n+/g)
-    .map(s => s.trim())
-    .filter(Boolean);
+  const t = normalizeText(text).replace(/\n+/g, ' ');
+  if (!t) return [];
   const out = [];
-  for (const s of rough) {
-    if (s.length > 160) {
-      const parts = s.split(/(?<=,|;|，|；)\s+/g).map(x => x.trim()).filter(Boolean);
-      if (parts.length > 1) out.push(...parts);
-      else out.push(s);
-    } else {
-      out.push(s);
+  let buf = '';
+  for (const ch of t) {
+    buf += ch;
+    if (/[.!?。！？]/.test(ch)) {
+      if (buf.trim()) out.push(buf.trim());
+      buf = '';
     }
   }
-  return out;
+  if (buf.trim()) out.push(buf.trim());
+  // Korean academic text often has no dots in headings; filter very short fragments.
+  return out.map(s => s.replace(/\s+/g, ' ').trim()).filter(s => s.length >= 2);
 }
 
-function tokenize(text) {
-  return String(text || '')
-    .match(/[가-힣]{1,}|[A-Za-z]+(?:[-_][A-Za-z0-9]+)*|\d+(?:[.,]\d+)?|[一-龥]+/g) || [];
+function words(text) {
+  const t = normalizeText(text);
+  return t.match(/[A-Za-z0-9가-힣]+/g) || [];
 }
 
-function charCountNoSpace(text) {
-  return String(text || '').replace(/\s+/g, '').length;
+function koreanTokens(text) {
+  return words(text).filter(w => /[가-힣]/.test(w));
 }
 
 function mean(arr) {
@@ -54,17 +60,15 @@ function mean(arr) {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-function std(arr) {
-  if (arr.length < 2) return 0;
+function stdev(arr) {
+  if (arr.length <= 1) return 0;
   const m = mean(arr);
-  const v = arr.reduce((s, x) => s + Math.pow(x - m, 2), 0) / arr.length;
-  return Math.sqrt(v);
+  return Math.sqrt(mean(arr.map(x => Math.pow(x - m, 2))));
 }
 
-function coeffVar(arr) {
+function cv(arr) {
   const m = mean(arr);
-  if (!m) return 0;
-  return std(arr) / m;
+  return m ? stdev(arr) / m : 0;
 }
 
 function entropy(values) {
@@ -72,129 +76,95 @@ function entropy(values) {
   if (!total) return 0;
   let h = 0;
   for (const v of values) {
-    if (v <= 0) continue;
+    if (!v) continue;
     const p = v / total;
     h -= p * Math.log2(p);
   }
   return h;
 }
 
-function sentenceLengthEntropy(sentences) {
-  const bins = [0, 0, 0, 0, 0];
-  for (const s of sentences) {
-    const len = charCountNoSpace(s);
-    if (len <= 25) bins[0]++;
-    else if (len <= 45) bins[1]++;
-    else if (len <= 70) bins[2]++;
-    else if (len <= 100) bins[3]++;
-    else bins[4]++;
-  }
-  return entropy(bins) / Math.log2(bins.length);
+function shingleSet(text, n = 5) {
+  const compact = normalizeText(text).replace(/\s+/g, '');
+  const set = new Set();
+  for (let i = 0; i <= compact.length - n; i++) set.add(compact.slice(i, i + n));
+  return set;
 }
 
-function countMatches(text, patterns) {
-  let n = 0;
+function jaccard(a, b) {
+  if (!a.size && !b.size) return 1;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  const union = a.size + b.size - inter;
+  return union ? inter / union : 0;
+}
+
+function sentenceEnding(sentence) {
+  const s = sentence.trim().replace(/[.!?。！？]+$/g, '');
+  const m = s.match(/(다|니다|요|함|음|됨|이다|한다|했다|있다|없다|된다|한다)$/);
+  return m ? m[1] : '';
+}
+
+function countOccurrences(text, patterns) {
+  const t = String(text || '');
+  let total = 0;
   for (const p of patterns) {
-    const re = typeof p === 'string'
-      ? new RegExp(escapeRegExp(p), 'g')
-      : new RegExp(p.source, p.flags.includes('g') ? p.flags : p.flags + 'g');
-    const m = String(text || '').match(re);
-    if (m) n += m.length;
+    if (p instanceof RegExp) total += (t.match(p) || []).length;
+    else total += (t.match(new RegExp(escapeRegExp(p), 'g')) || []).length;
   }
-  return n;
+  return total;
 }
 
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function ngramRepeatRatio(tokens, n = 3) {
-  if (tokens.length < n * 2) return 0;
-  const map = new Map();
+function ngramRepetition(tokens, n = 3) {
+  if (tokens.length < n) return 0;
+  const counts = new Map();
   for (let i = 0; i <= tokens.length - n; i++) {
-    const key = tokens.slice(i, i + n).join('|');
-    map.set(key, (map.get(key) || 0) + 1);
+    const k = tokens.slice(i, i + n).join(' ');
+    counts.set(k, (counts.get(k) || 0) + 1);
   }
   let repeated = 0;
-  for (const count of map.values()) {
-    if (count > 1) repeated += count - 1;
+  let total = 0;
+  for (const c of counts.values()) {
+    total += c;
+    if (c > 1) repeated += c - 1;
   }
-  return repeated / Math.max(1, tokens.length - n + 1);
+  return total ? repeated / total : 0;
 }
 
-function movingAverageTtr(tokens, window = 40) {
-  if (!tokens.length) return 0;
-  if (tokens.length <= window) return new Set(tokens.map(x => x.toLowerCase())).size / tokens.length;
-  let total = 0;
+function mattr(text, window = 50) {
+  const toks = words(text).map(w => w.toLowerCase());
+  if (!toks.length) return 0;
+  if (toks.length <= window) return new Set(toks).size / toks.length;
+  let sum = 0;
   let count = 0;
-  for (let i = 0; i <= tokens.length - window; i += Math.max(1, Math.floor(window / 2))) {
-    const slice = tokens.slice(i, i + window).map(x => x.toLowerCase());
-    total += new Set(slice).size / slice.length;
+  for (let i = 0; i <= toks.length - window; i++) {
+    const slice = toks.slice(i, i + window);
+    sum += new Set(slice).size / window;
     count++;
   }
-  return count ? total / count : 0;
-}
-
-function headingLines(text) {
-  return splitLines(text)
-    .map((line, idx) => ({ line: line.trim(), idx }))
-    .filter(({ line }) => {
-      if (!line) return false;
-      if (/^(#{1,6}\s+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\.|\d+\.\s*|[가-힣A-Za-z]\)\s*)/.test(line)) return true;
-      if (line.length <= 42 && !/[.!?。！？]$/.test(line) && /[가-힣A-Za-z]/.test(line)) return true;
-      return false;
-    });
-}
-
-function listLikeLines(text) {
-  return splitLines(text).filter(line => /^\s*([-*•]|\d+[.)]|[가-힣A-Za-z]\))\s+/.test(line));
-}
-
-function getBasicStats(text) {
-  const normalized = normalizeText(text);
-  const paragraphs = splitParagraphs(normalized);
-  const sentences = splitSentences(normalized);
-  const tokens = tokenize(normalized);
-  const sentenceLengths = sentences.map(charCountNoSpace);
-  const paragraphLengths = paragraphs.map(charCountNoSpace);
-  return {
-    charCount: String(text || '').length,
-    charCountNoSpace: charCountNoSpace(text),
-    paragraphCount: paragraphs.length,
-    sentenceCount: sentences.length,
-    tokenCount: tokens.length,
-    headings: headingLines(text),
-    listLineCount: listLikeLines(text).length,
-    avgSentenceLength: mean(sentenceLengths),
-    sentenceLengthCv: coeffVar(sentenceLengths),
-    sentenceLengthEntropy: sentenceLengthEntropy(sentences),
-    paragraphLengthCv: coeffVar(paragraphLengths),
-    mattr: movingAverageTtr(tokens),
-    repetition3: ngramRepeatRatio(tokens, 3),
-    repetition4: ngramRepeatRatio(tokens, 4),
-    paragraphs,
-    sentences,
-    tokens
-  };
+  return count ? sum / count : 0;
 }
 
 module.exports = {
   normalizeText,
   splitParagraphs,
   splitLines,
+  isHeading,
   splitSentences,
-  tokenize,
-  charCountNoSpace,
+  words,
+  koreanTokens,
   mean,
-  std,
-  coeffVar,
+  stdev,
+  cv,
   entropy,
-  sentenceLengthEntropy,
-  countMatches,
-  ngramRepeatRatio,
-  movingAverageTtr,
-  headingLines,
-  listLikeLines,
-  getBasicStats,
-  escapeRegExp
+  shingleSet,
+  jaccard,
+  sentenceEnding,
+  countOccurrences,
+  escapeRegExp,
+  ngramRepetition,
+  mattr
 };

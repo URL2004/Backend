@@ -44,10 +44,10 @@ const STRICT_DELIVERY_GATES = new Set([
   'meta_leak'
 ]);
 
-function normalizeMode(mode) {
+function normalizeMode(mode, { allowPolish = false } = {}) {
   const v = String(mode || '').trim().toLowerCase();
   if (v === 'blog' || v === 'basic') return 'blog';
-  if (v === 'polish' || v === 'preserve') return 'polish';
+  if ((v === 'polish' || v === 'preserve') && allowPolish) return 'polish';
   return 'assignment';
 }
 
@@ -55,11 +55,17 @@ async function loadConfig(config) {
   return config ? gptRuntimeConfig.publicConfig(config, config.source || 'inline') : gptRuntimeConfig.getRuntimeConfig({ force: false });
 }
 
+function allowPolishMode({ styleProfile = '', config } = {}) {
+  if (config && (config.allowPolishMode === true || config.allowPolish === true)) return true;
+  const profile = String(styleProfile || '').toLowerCase();
+  return profile.includes('admin') || profile.includes('lab');
+}
+
 async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '' } = {}) {
   const source = String(text || '').trim();
   if (!source) throw new Error('engine-gpt-prod: empty text');
   const cfg = await loadConfig(config);
-  const selectedMode = normalizeMode(mode);
+  const selectedMode = normalizeMode(mode, { allowPolish: allowPolishMode({ styleProfile, config }) });
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
@@ -250,7 +256,7 @@ async function callHumanize(args) {
       evidence,
       riskProfile: compactRisk(inputRisk)
     });
-    const retryInstruction = phase === 'escalation' ? buildEscalationInstruction() : '';
+    const retryInstruction = phase === 'escalation' ? prompts.buildEscalationInstruction() : '';
     const response = await completeJson({
       system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
       user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets, dynamicContext: hp.dynamic }),
@@ -681,15 +687,6 @@ function addFloorCriticals(report, violations, fallbackGate = 'gpt_final_gate_fa
 function isBlockingViolation(v) {
   const t = String(v?.type || v?.gate || '').toLowerCase();
   return /novelty|lostfacts|semantic|judge|pov|fabrication|evidence_pairing|fake_ref|coined_term|meta_leak|floor_check_error/.test(t);
-}
-
-function buildEscalationInstruction() {
-  return [
-    '[재시도 지시]',
-    '1차 결과가 품질 게이트에 걸렸다. 원문 전체 구조와 모든 제목/번호 항목을 누락 없이 유지해서 다시 작성한다.',
-    'Ⅰ/Ⅱ/Ⅲ, 1./2./3. 같은 제목 줄은 모두 출력에 포함한다. 제목을 삭제하거나 본문에 흡수하지 않는다.',
-    '문단이나 항목을 요약해 합치지 않는다. 각 항목의 핵심 설명량을 원문과 비슷하게 유지한다.'
-  ].join('\n');
 }
 
 function collectStructureAnchors(text) {

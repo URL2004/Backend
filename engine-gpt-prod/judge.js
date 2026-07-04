@@ -154,7 +154,7 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config
   const ledger = await buildSoftClaimLedger(rawText, { lang, signal, config });
   const health = validateLedgerHealth(ledger, rawText);
   if (!health.healthy) {
-    return { outputText, pass: true, skipped: true, reason: health.reason, ledger };
+    return { outputText, pass: false, skipped: true, reason: health.reason, ledger };
   }
   let current = outputText;
   let judge = await semanticJudge(rawText, current, ledger, { lang, signal, config, allowedExtra, mode });

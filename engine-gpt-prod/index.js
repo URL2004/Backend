@@ -1,5 +1,7 @@
 'use strict';
 
+const net = require('net');
+const dns = require('dns').promises;
 const { completeJson, webSearchTool } = require('./openaiClient');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
 const prompts = require('./prompts');
@@ -17,6 +19,28 @@ const NO_DELIVERY_GATES = new Set([
   'gpt_all_chunks_fallback',
   'gpt_noop_unchanged',
   'noop_unchanged'
+]);
+const STRICT_DELIVERY_GATES = new Set([
+  ...NO_DELIVERY_GATES,
+  'empty_or_meta_output',
+  'prompt_instruction_leak',
+  'encoding_corruption',
+  'sentence_truncated',
+  'section_anchor_loss',
+  'length_collapse',
+  'protected_term_loss',
+  'surface_risk_regression',
+  'semantic_judge_failed',
+  'semantic_judge_skipped',
+  'semanticJudge',
+  'floor_check_error',
+  'lostFacts',
+  'novelty',
+  'fabrication',
+  'evidence_pairing',
+  'fake_ref',
+  'coined_term',
+  'meta_leak'
 ]);
 
 function normalizeMode(mode) {
@@ -64,6 +88,16 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   let outputText = mergeChunks(chunks);
   outputText = finalPostprocess(outputText, source, selectedMode, contract);
   const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk });
+  const finalGate = evaluateWholeDocumentGate({
+    outputText,
+    source,
+    contract,
+    mode: selectedMode,
+    sourceSurface
+  });
+  if (finalGate.hardFail) {
+    addFloorCriticals(result.floorReport, finalGate.violations, finalGate.reason);
+  }
   const fallbackCount = records.filter(r => r.fallback).length;
   const effectiveChunks = records.filter(r => !r.skipped).length;
   const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
@@ -124,6 +158,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
   const patchTargets = buildPatchTargets(original, mode);
   const highRisk = isHighRiskChunk(original, protectedTerms, patchTargets, cfg, inputRisk);
   const primaryReasoning = highRisk ? cfg.reasoning.factDense : cfg.reasoning.humanize;
+  const chunkSurface = safeSurface(original) || sourceSurface;
 
   const first = await callHumanize({
     original,
@@ -133,7 +168,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     source,
     contract,
     inputRisk,
-    sourceSurface,
+    sourceSurface: chunkSurface,
     mode,
     lang,
     userNotes,
@@ -161,7 +196,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     source,
     contract,
     inputRisk,
-    sourceSurface,
+    sourceSurface: chunkSurface,
     mode,
     lang,
     userNotes,
@@ -239,6 +274,8 @@ async function callHumanize(args) {
     outputText = chunkPostprocess(outputText, original, mode, contract);
     let judgeReport = null;
     let judgeViolations = [];
+    let judgeHardFail = false;
+    let judgeHardFailReason = '';
     if (runSemanticJudge) {
       judgeReport = await require('./judge').judgeAndRepair(original, outputText, {
         lang,
@@ -250,12 +287,22 @@ async function callHumanize(args) {
       });
       outputText = judgeReport.outputText || outputText;
       if (judgeReport.pass === false) {
+        judgeHardFail = true;
+        judgeHardFailReason = 'semantic_judge_failed';
         judgeViolations = (judgeReport.violations || []).map(v => ({
-          gate: 'semanticJudge',
+          gate: 'semantic_judge_failed',
           type: v.type,
           span: v.span,
           detail: v.detail
         }));
+      } else if (judgeReport.skipped) {
+        judgeHardFail = true;
+        judgeHardFailReason = 'semantic_judge_skipped';
+        judgeViolations = [{
+          gate: 'semantic_judge_skipped',
+          reason: judgeReport.reason || 'judge_skipped',
+          detail: 'semantic judge did not have enough verified source claims'
+        }];
       }
     }
     const gate = evaluateChunkGate({
@@ -267,6 +314,12 @@ async function callHumanize(args) {
       protectedTerms,
       sourceSurface
     });
+    if (judgeHardFail) {
+      gate.hardFail = true;
+      gate.reason = judgeHardFailReason;
+      gate.warnings.push(judgeHardFailReason);
+      gate.violations.push(...judgeViolations);
+    }
     return {
       outputText,
       hardFail: gate.hardFail,
@@ -276,12 +329,19 @@ async function callHumanize(args) {
         fallback: gate.hardFail,
         error: gate.hardFail ? gate.reason : null,
         hardFailReason: gate.reason,
-        warnings: [...(response.json.warnings || []), ...(judgeViolations.length ? ['gpt_semantic_judge_warning'] : []), ...gate.warnings],
-        floorViolations: [...judgeViolations, ...gate.violations],
+        warnings: [
+          ...(response.json.warnings || []),
+          ...(response.json.riskFlags || []).map(v => `risk:${v}`),
+          ...(response.json.factualRiskNotes || []).map(v => `fact_note:${v}`),
+          ...(judgeViolations.length ? [judgeHardFailReason || 'gpt_semantic_judge_warning'] : []),
+          ...gate.warnings
+        ],
+        floorViolations: gate.violations,
         usage: response.usage,
         elapsedMs: response.elapsedMs,
         editIntensity: response.json.editIntensity,
         protectedTerms: response.json.protectedTerms || protectedTerms,
+        changedSentenceRatio: response.json.changedSentenceRatio,
         judgeReport,
         selectedModel: response.model,
         escalated: phase === 'escalation'
@@ -422,6 +482,11 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
   let candidates = (res.json.candidates || [])
     .map(c => ({ ...c, url: String(c.url || '').trim() }))
     .filter(c => /^https?:\/\//i.test(c.url))
+    .filter(c => {
+      const unsafe = isUnsafeEvidenceUrl(c.url);
+      if (unsafe) warnings.push('unsafe_source_url_filtered');
+      return !unsafe;
+    })
     .map(c => ({ ...c, sourceVerified: verifiedUrls.size ? hasVerifiedUrl(c.url, verifiedUrls) : false }));
   if (verifiedUrls.size) {
     candidates = candidates.filter(c => c.sourceVerified);
@@ -475,6 +540,7 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
   if (lostTerms.length) {
     violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 12) });
     warnings.push('protected_term_loss');
+    return { hardFail: true, reason: 'protected_term_loss', warnings, violations };
   }
   try {
     const floorViolations = floor.collectFloorViolations({
@@ -488,10 +554,14 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
     }) || [];
     violations.push(...floorViolations);
     const hard = floorViolations.find(isBlockingViolation);
-    if (hard) warnings.push(`floor_${hard.gate || hard.type || 'violation'}`);
+    if (hard) {
+      warnings.push(`floor_${hard.gate || hard.type || 'violation'}`);
+      return { hardFail: true, reason: String(hard.gate || hard.type || 'floor_violation'), warnings, violations };
+    }
   } catch (err) {
     violations.push({ gate: 'floor_check_error', detail: err && err.message || String(err) });
     warnings.push('floor_check_error');
+    return { hardFail: true, reason: 'floor_check_error', warnings, violations };
   }
   if (normalizeBare(original).length > 120 && normalizeBare(original) === normalizeBare(outputText)) {
     warnings.push('noop_unchanged');
@@ -505,14 +575,82 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
     if (outRatio > srcRatio + 0.22 && outRatio >= 0.55) {
       warnings.push('surface_risk_regression');
       violations.push({ gate: 'surface_risk_regression', sourceRatio: srcRatio, outputRatio: outRatio });
+      return { hardFail: true, reason: 'surface_risk_regression', warnings, violations };
     }
   } catch {}
   return { hardFail: false, reason: '', warnings, violations };
 }
 
+function evaluateWholeDocumentGate({ outputText, source, contract, mode, sourceSurface }) {
+  const warnings = [];
+  const violations = [];
+  if (!outputText || looksLikeMeta(outputText)) {
+    return { hardFail: true, reason: 'empty_or_meta_output', warnings, violations };
+  }
+  if (looksLikePromptLeak(outputText)) {
+    return { hardFail: true, reason: 'prompt_instruction_leak', warnings, violations };
+  }
+  if (looksEncodingCorrupted(source, outputText)) {
+    return { hardFail: true, reason: 'encoding_corruption', warnings, violations };
+  }
+  if (looksTruncated(outputText)) {
+    return { hardFail: true, reason: 'sentence_truncated', warnings, violations };
+  }
+  const sourceAnchors = collectStructureAnchors(source);
+  if (sourceAnchors.length >= 2) {
+    const missingAnchors = sourceAnchors.filter(a => !structureAnchorPresent(a, outputText));
+    if (missingAnchors.length) {
+      violations.push({ gate: 'section_anchor_loss', missing: missingAnchors.slice(0, 12).map(a => a.raw) });
+      warnings.push('section_anchor_loss');
+      return { hardFail: true, reason: 'section_anchor_loss', warnings, violations };
+    }
+  }
+  const lengthGate = measureLengthCollapse(source, outputText, sourceAnchors.length);
+  if (lengthGate.hardFail) {
+    violations.push(lengthGate.violation);
+    warnings.push('length_collapse');
+    return { hardFail: true, reason: 'length_collapse', warnings, violations };
+  }
+  const protectedTerms = extractProtectedTerms(source);
+  const lostTerms = protectedTerms.filter(t => t.length >= 2 && !outputText.includes(t));
+  if (lostTerms.length) {
+    violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 16) });
+    warnings.push('protected_term_loss');
+    return { hardFail: true, reason: 'protected_term_loss', warnings, violations };
+  }
+  if (normalizeBare(source).length > 120 && normalizeBare(source) === normalizeBare(outputText)) {
+    warnings.push('noop_unchanged');
+    violations.push({ gate: 'noop_unchanged', detail: 'final output equivalent to source' });
+    return { hardFail: true, reason: 'noop_unchanged', warnings, violations };
+  }
+  try {
+    const outSurface = surfaceguard.buildSurfaceReport(outputText);
+    const srcRatio = sourceSurface?.paragraphs?.abstractRiskRatio || 0;
+    const outRatio = outSurface?.paragraphs?.abstractRiskRatio || 0;
+    if (outRatio > srcRatio + 0.22 && outRatio >= 0.55) {
+      warnings.push('surface_risk_regression');
+      violations.push({ gate: 'surface_risk_regression', sourceRatio: srcRatio, outputRatio: outRatio });
+      return { hardFail: true, reason: 'surface_risk_regression', warnings, violations };
+    }
+  } catch {}
+  return { hardFail: false, reason: '', warnings, violations };
+}
+
+function addFloorCriticals(report, violations, fallbackGate = 'gpt_final_gate_failed') {
+  if (!report) return;
+  const criticals = Array.isArray(report.criticals) ? report.criticals : [];
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const additions = (violations || []).length
+    ? violations.map(v => ({ ...v, gate: v.gate || v.type || fallbackGate, finalDocumentGate: true }))
+    : [{ gate: fallbackGate, finalDocumentGate: true }];
+  report.status = 'blocked';
+  report.criticals = [...criticals, ...additions];
+  report.warnings = [...warnings, ...additions.map(v => v.gate || v.type || fallbackGate)];
+}
+
 function isBlockingViolation(v) {
   const t = String(v?.type || v?.gate || '').toLowerCase();
-  return /novelty|lostfacts|pov|fabrication|evidence_pairing|fake_ref|coined_term|meta_leak|floor_check_error/.test(t);
+  return /novelty|lostfacts|semantic|judge|pov|fabrication|evidence_pairing|fake_ref|coined_term|meta_leak|floor_check_error/.test(t);
 }
 
 function buildEscalationInstruction() {
@@ -594,6 +732,9 @@ function extractProtectedTerms(text) {
     /\b\d+(?:\.\d+)?\s?(?:%|원|만원|억원|조원|평|명|개|건|회|년|개월|일|시간|분|km|kg|g|cm|m)\b/g,
     /[A-Z][A-Za-z0-9&.-]{1,}(?:\s+[A-Z][A-Za-z0-9&.-]{1,}){0,3}/g,
     /[가-힣A-Za-z0-9]+(?:대학교|대학원|연구소|학회|기관|공사|공단|주식회사|택배|병원|유치원|어린이집|교육부|보건복지부|AWS|API)/g,
+    /[가-힣A-Za-z0-9]{2,}(?:·[가-힣A-Za-z0-9]{2,}){1,}/g,
+    /[가-힣A-Za-z0-9][가-힣A-Za-z0-9·\s-]{1,40}\([A-Za-z가-힣0-9][^)）]{1,40}\)/g,
+    /[가-힣A-Za-z0-9·-]{2,}(?:시스템|기술|설비|기능|인프라|포털|터미널|플랫폼|데이터|API|AI|AWS)/g,
     /[가-힣]{2,}\(\d{4}\)/g
   ];
   for (const re of patterns) {
@@ -733,7 +874,8 @@ function softenFloorReport(report) {
   if (!report || process.env.STRICT_QUALITY_GATE === '1') return report;
   if (report.status !== 'blocked') return report;
   const criticals = Array.isArray(report.criticals) ? report.criticals : [];
-  if (hasNoDeliveryCritical(criticals)) return report;
+  if (process.env.GPT_SOFTEN_FLOOR_REPORT === '0') return report;
+  if (hasStrictDeliveryCritical(criticals)) return report;
   const warnings = Array.isArray(report.warnings) ? report.warnings : [];
   report.status = 'needs_review';
   report.warnings = [
@@ -744,8 +886,11 @@ function softenFloorReport(report) {
   return report;
 }
 
-function hasNoDeliveryCritical(criticals) {
-  return (criticals || []).some(c => NO_DELIVERY_GATES.has(String(c?.gate || c?.type || '').trim()));
+function hasStrictDeliveryCritical(criticals) {
+  return (criticals || []).some(c => {
+    const gate = String(c?.gate || c?.type || '').trim();
+    return STRICT_DELIVERY_GATES.has(gate) || isBlockingViolation(c);
+  });
 }
 
 function chunkRecord({
@@ -761,6 +906,7 @@ function chunkRecord({
   usage = null,
   elapsedMs = 0,
   editIntensity = null,
+  changedSentenceRatio = null,
   protectedTerms = [],
   selectedModel = '',
   judgeReport = null
@@ -780,6 +926,7 @@ function chunkRecord({
     usage,
     elapsedMs,
     editIntensity,
+    changedSentenceRatio,
     protectedTerms,
     judgeReport,
     selectedModel
@@ -830,7 +977,8 @@ function collectWebSearchUrls(raw) {
     for (const [key, value] of Object.entries(node)) {
       const nextPath = path ? `${path}.${key}` : key;
       if (typeof value === 'string' && /url$/i.test(key) && /^https?:\/\//i.test(value) && looksLikeSearchSource) {
-        urls.add(normalizeEvidenceUrl(value));
+        const norm = normalizeEvidenceUrl(value);
+        if (norm && !isUnsafeEvidenceUrl(norm)) urls.add(norm);
       } else {
         walk(value, nextPath);
       }
@@ -852,20 +1000,12 @@ function normalizeEvidenceUrl(url) {
   }
 }
 
-function evidenceHost(url) {
-  try { return new URL(String(url || '')).hostname.replace(/^www\./, '').toLowerCase(); }
-  catch { return ''; }
-}
-
 function hasVerifiedUrl(url, verifiedUrls) {
   const norm = normalizeEvidenceUrl(url);
   if (!norm) return false;
   if (verifiedUrls.has(norm)) return true;
-  const host = evidenceHost(norm);
   for (const verified of verifiedUrls) {
     if (norm.startsWith(verified + '/') || verified.startsWith(norm + '/')) return true;
-    const vh = evidenceHost(verified);
-    if (host && vh && host === vh) return true;
   }
   return false;
 }
@@ -881,19 +1021,15 @@ async function verifyEvidenceCandidates(candidates, parentSignal) {
 }
 
 async function verifyEvidenceUrl(url, parentSignal) {
+  if (await isUnsafeEvidenceFetchTarget(url)) return false;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(process.env.GPT_EVIDENCE_URL_VERIFY_TIMEOUT_MS) || 6000);
   const onAbort = () => controller.abort();
   try {
     if (parentSignal) parentSignal.addEventListener('abort', onAbort, { once: true });
-    let resp = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
+    let resp = await fetchEvidenceWithRedirects(url, 'HEAD', controller.signal);
     if (resp.status === 405 || resp.status === 403) {
-      resp = await fetch(url, {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller.signal,
-        headers: { Range: 'bytes=0-2048' }
-      });
+      resp = await fetchEvidenceWithRedirects(url, 'GET', controller.signal);
     }
     return resp.status >= 200 && resp.status < 400;
   } catch {
@@ -902,6 +1038,83 @@ async function verifyEvidenceUrl(url, parentSignal) {
     clearTimeout(timer);
     if (parentSignal) parentSignal.removeEventListener('abort', onAbort);
   }
+}
+
+async function fetchEvidenceWithRedirects(url, method, signal) {
+  let current = String(url || '').trim();
+  for (let i = 0; i < 4; i += 1) {
+    if (await isUnsafeEvidenceFetchTarget(current)) throw new Error('unsafe_evidence_url');
+    const resp = await fetch(current, {
+      method,
+      redirect: 'manual',
+      signal,
+      headers: method === 'GET' ? { Range: 'bytes=0-2048' } : undefined
+    });
+    if (resp.status >= 300 && resp.status < 400) {
+      const location = resp.headers.get('location');
+      if (!location) return resp;
+      current = new URL(location, current).toString();
+      continue;
+    }
+    return resp;
+  }
+  throw new Error('too_many_evidence_redirects');
+}
+
+function isUnsafeEvidenceUrl(url) {
+  try {
+    const u = new URL(String(url || '').trim());
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+    const host = u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+    if (!host) return true;
+    if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+    if (host === 'metadata.google.internal') return true;
+    const ipType = net.isIP(host);
+    if (!ipType) return false;
+    return isPrivateIp(host, ipType);
+  } catch {
+    return true;
+  }
+}
+
+async function isUnsafeEvidenceFetchTarget(url) {
+  if (isUnsafeEvidenceUrl(url)) return true;
+  try {
+    const u = new URL(String(url || '').trim());
+    const host = u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+    if (net.isIP(host)) return false;
+    const records = await dns.lookup(host, { all: true, verbatim: true });
+    if (!records.length) return true;
+    return records.some(r => {
+      const ipType = net.isIP(r.address);
+      return !ipType || isPrivateIp(r.address, ipType);
+    });
+  } catch {
+    return true;
+  }
+}
+
+function isPrivateIp(host, ipType) {
+  if (ipType === 4) {
+    const parts = host.split('.').map(n => Number(n));
+    if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+    const [a, b] = parts;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true;
+    if (a >= 224) return true;
+    return false;
+  }
+  const v = host.toLowerCase();
+  if (v === '::' || v === '::1') return true;
+  if (v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80')) return true;
+  if (v.startsWith('::ffff:')) return true;
+  const mapped = v.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (mapped) return isPrivateIp(mapped[1], 4);
+  return false;
 }
 
 function metaFromResponse(res, cfg, extra = {}) {

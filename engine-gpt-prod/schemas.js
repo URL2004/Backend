@@ -7,9 +7,12 @@ const HUMANIZE_SCHEMA = {
     outputText: { type: 'string' },
     editIntensity: { type: 'string', enum: ['light', 'medium', 'strong'] },
     protectedTerms: { type: 'array', items: { type: 'string' } },
+    riskFlags: { type: 'array', items: { type: 'string' } },
+    changedSentenceRatio: { type: 'number' },
+    factualRiskNotes: { type: 'array', items: { type: 'string' } },
     warnings: { type: 'array', items: { type: 'string' } }
   },
-  required: ['outputText', 'editIntensity', 'protectedTerms', 'warnings']
+  required: ['outputText', 'editIntensity', 'protectedTerms', 'riskFlags', 'changedSentenceRatio', 'factualRiskNotes', 'warnings']
 };
 
 const DETECT_SCHEMA = {

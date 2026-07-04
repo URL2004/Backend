@@ -44,6 +44,9 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '[출력 형식]',
     '반드시 JSON schema에 맞는 JSON 객체만 반환한다.',
     'outputText에는 최종 본문만 넣는다. 설명, 라벨, 코드블록, 작업 과정은 넣지 않는다.',
+    'riskFlags에는 구조 누락, 보호표현 위험, 화자 흔들림, 사실 위험 등 발견한 내부 신호를 짧게 적는다. 없으면 빈 배열이다.',
+    'changedSentenceRatio는 실제로 표현·어순·접속을 다듬은 문장 비율을 0~1 사이 숫자로 추정한다.',
+    'factualRiskNotes에는 원문 보존상 주의해야 할 사실·기관명·수치 관련 메모를 적는다. 없으면 빈 배열이다.',
     `[profile:${styleProfile}]`
   ].join('\n');
 

@@ -38,6 +38,28 @@ async function activeGptConfig() {
 }
 
 const NO_DELIVERY_GATES = new Set(['gpt_all_chunks_fallback', 'gpt_noop_unchanged', 'noop_unchanged']);
+const STRICT_DELIVERY_GATES = new Set([
+  ...NO_DELIVERY_GATES,
+  'empty_or_meta_output',
+  'prompt_instruction_leak',
+  'encoding_corruption',
+  'sentence_truncated',
+  'section_anchor_loss',
+  'length_collapse',
+  'protected_term_loss',
+  'surface_risk_regression',
+  'semantic_judge_failed',
+  'semantic_judge_skipped',
+  'semanticJudge',
+  'floor_check_error',
+  'lostFacts',
+  'novelty',
+  'fabrication',
+  'evidence_pairing',
+  'fake_ref',
+  'coined_term',
+  'meta_leak'
+]);
 
 function softenBlockedFloorReport(out, logName, meta = {}) {
   if (!out || !out.floorReport || out.floorReport.status !== 'blocked') return false;
@@ -46,7 +68,7 @@ function softenBlockedFloorReport(out, logName, meta = {}) {
   if (!String(outputText || '').trim()) return false;
   const criticals = Array.isArray(out.floorReport.criticals) ? out.floorReport.criticals : [];
   const warnings = Array.isArray(out.floorReport.warnings) ? out.floorReport.warnings : [];
-  if (criticals.some(c => NO_DELIVERY_GATES.has(String(c.gate || c.type || '').trim()))) return false;
+  if (criticals.some(isStrictDeliveryCritical)) return false;
   const gates = criticals.map(c => c.gate || c.type || 'quality_gate');
   out.floorReport.status = 'needs_review';
   out.floorReport.criticals = [];
@@ -56,6 +78,12 @@ function softenBlockedFloorReport(out, logName, meta = {}) {
   ];
   logger.warn(logName, { ...meta, gates, softened: true });
   return true;
+}
+
+function isStrictDeliveryCritical(c) {
+  const gate = String(c?.gate || c?.type || '').trim();
+  if (STRICT_DELIVERY_GATES.has(gate)) return true;
+  return /novelty|lostfacts|semantic|judge|pov|fabrication|evidence_pairing|fake_ref|coined_term|meta_leak|floor_check_error/i.test(gate);
 }
 
 // ── 중복 제출 디바운스(2026-06-19 실측 #57·#58: 같은 사용자가 동일 10510자를 1초 간격으로 두 번 제출 →

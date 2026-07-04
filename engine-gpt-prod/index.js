@@ -852,27 +852,29 @@ function structJoinLocal(text) {
   if (!ls.length) return '';
   let acc = ls[0];
   for (let k = 1; k < ls.length; k += 1) {
-    const keepNl = STRUCT_LINE_RE.test(ls[k]) || STRUCT_LINE_RE.test(ls[k - 1]);
-    acc += (keepNl ? '\n' : ' ') + ls[k];
+    acc += '\n' + ls[k];
   }
   return acc;
 }
 
-function tidyParagraphsLocal(doc) {
+function tidyParagraphsLocal(doc, source = '') {
   const blocks = String(doc || '').split(/\n{2,}/);
+  const sourceParaCount = paragraphCount(source);
+  const outputParaCount = blocks.map(b => b.trim()).filter(Boolean).length;
   return blocks.map((b, i) => {
     const t = b.trim();
     if (!t) return '';
     if (i === 0 && /\n\s*—/.test(b)) {
       return t.split('\n').map(l => l.trim()).filter(Boolean).join('\n');
     }
-    return structJoinLocal(t);
+    if (sourceParaCount <= 1 && outputParaCount <= 1) return structJoinLocal(t);
+    return t.split('\n').map(l => l.trim()).filter(Boolean).join('\n');
   }).filter(Boolean).join('\n\n');
 }
 
 function finalPostprocess(text, source, mode, contract) {
   let out = String(text || '').trim();
-  try { out = tidyParagraphsLocal(out); } catch {}
+  try { out = tidyParagraphsLocal(out, source); } catch {}
   try { out = local.dedupe.dedupeSentences(out).text; } catch {}
   try {
     if (mode === 'blog') {
@@ -880,9 +882,16 @@ function finalPostprocess(text, source, mode, contract) {
       out = local.basicblogtone.cleanupBasicBlogTone(out, { register: target }).text;
     }
   } catch {}
-  try { out = local.flowcohesion.flowCohesion(out).text || out; } catch {}
+  try {
+    const fc = local.flowcohesion.flowCohesion(out, { preserveParagraphs: true });
+    out = fc.text || out;
+  } catch {}
   try { out = local.spacing.restoreUrls(out, source).text; } catch {}
   return out.trim();
+}
+
+function paragraphCount(text) {
+  return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
 }
 
 function buildResult({ source, outputText, contract, mode, records, inputRisk }) {

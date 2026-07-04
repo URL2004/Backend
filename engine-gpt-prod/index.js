@@ -62,11 +62,18 @@ function allowPolishMode({ styleProfile = '', config } = {}) {
   return profile.includes('admin') || profile.includes('lab');
 }
 
-async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '' } = {}) {
+function isNiklQualityTestEnabled(value, styleProfile = '') {
+  if (value !== true) return false;
+  const profile = String(styleProfile || '').toLowerCase();
+  return profile.includes('admin') || profile.includes('lab') || profile.includes('test');
+}
+
+async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false } = {}) {
   const source = String(text || '').trim();
   if (!source) throw new Error('engine-gpt-prod: empty text');
   const cfg = await loadConfig(config);
   const selectedMode = normalizeMode(mode, { allowPolish: allowPolishMode({ styleProfile, config }) });
+  const niklQualityTestEnabled = isNiklQualityTestEnabled(niklQualityTest, styleProfile);
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
@@ -88,6 +95,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
       evidence,
       cfg,
       styleProfile,
+      niklQualityTest: niklQualityTestEnabled,
       signal
     });
     records.push(record);
@@ -95,7 +103,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
 
   let outputText = mergeChunks(chunks);
   outputText = finalPostprocess(outputText, source, selectedMode, contract);
-  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk });
+  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityTestEnabled });
   const finalGate = evaluateWholeDocumentGate({
     outputText,
     source,
@@ -137,6 +145,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     estimatedUsd: usage.estimatedUsd,
     usage,
     koreanQuality: result.koreanQuality || null,
+    niklQualityTest: niklQualityTestEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     runtimeConfigSource: cfg.source,
     styleProfile: styleProfile || PROFILE
   };
@@ -157,7 +166,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   };
 }
 
-async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, signal }) {
+async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, niklQualityTest = false, signal }) {
   const original = chunk.text;
   if (shouldPassThrough(original)) {
     chunk.outputText = original;
@@ -189,6 +198,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     protectedTerms,
     patchTargets,
     styleProfile,
+    niklQualityTest,
     runSemanticJudge: highRisk,
     signal
   });
@@ -217,6 +227,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     protectedTerms,
     patchTargets,
     styleProfile,
+    niklQualityTest,
     runSemanticJudge: highRisk,
     signal
   });
@@ -246,7 +257,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
 async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence,
-    cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, runSemanticJudge, signal
+    cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, niklQualityTest = false, runSemanticJudge, signal
   } = args;
   try {
     const koreanSourceQuality = safeKoreanQualityAnalysis(original, {
@@ -254,7 +265,12 @@ async function callHumanize(args) {
       register: contract.register
     });
     const koreanQualityHints = safeKoreanQualityHints(koreanSourceQuality);
-    const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints);
+    const niklSourceQuality = niklQualityTest ? safeNiklQualityAnalysis(original, {
+      mode,
+      register: contract.register
+    }) : null;
+    const niklQualityHints = niklQualityTest ? safeNiklQualityHints(niklSourceQuality) : '';
+    const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints, niklQualityHints);
     const hp = prompts.buildHumanizePrompt(mode, lang, {
       speakerType: contract.speakerType,
       register: contract.register,
@@ -334,6 +350,11 @@ async function callHumanize(args) {
       register: contract.register,
       beforeAnalysis: koreanSourceQuality
     });
+    const niklQualityGate = niklQualityTest ? safeNiklQualityGate(original, outputText, {
+      mode,
+      register: contract.register,
+      beforeAnalysis: niklSourceQuality
+    }) : null;
     if (qualityGate) {
       if (Array.isArray(qualityGate.warnings) && qualityGate.warnings.length) {
         gate.warnings.push(...qualityGate.warnings);
@@ -344,6 +365,14 @@ async function callHumanize(args) {
       if (qualityGate.blocking) {
         gate.hardFail = true;
         gate.reason = qualityGate.reason || 'korean_quality_regression';
+      }
+    }
+    if (niklQualityGate) {
+      if (Array.isArray(niklQualityGate.warnings) && niklQualityGate.warnings.length) {
+        gate.warnings.push(...niklQualityGate.warnings);
+      }
+      if (Array.isArray(niklQualityGate.violations) && niklQualityGate.violations.length) {
+        gate.violations.push(...niklQualityGate.violations.map(v => ({ ...v, adminTestOnly: true })));
       }
     }
     if (judgeHardFail) {
@@ -376,6 +405,7 @@ async function callHumanize(args) {
         changedSentenceRatio: response.json.changedSentenceRatio,
         judgeReport,
         koreanQuality: compactKoreanQualityGate(qualityGate),
+        niklQuality: compactNiklQualityGate(niklQualityGate),
         selectedModel: response.model,
         escalated: phase === 'escalation'
       })
@@ -894,7 +924,7 @@ function paragraphCount(text) {
   return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
 }
 
-function buildResult({ source, outputText, contract, mode, records, inputRisk }) {
+function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false }) {
   const result = {
     outputText,
     styleProfile: PROFILE,
@@ -934,6 +964,15 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk })
     };
   }
   attachKoreanQualityWarnings(result.floorReport, result.koreanQuality);
+  if (niklQualityTest) {
+    try {
+      result.niklQualityTest = compactNiklQualityGate(safeNiklQualityGate(source, outputText, {
+        mode,
+        register: contract.register
+      }));
+    } catch {}
+    attachNiklQualityWarnings(result.floorReport, result.niklQualityTest);
+  }
   attachWeakTransformWarning(result.floorReport, result);
   softenFloorReport(result.floorReport);
   return result;
@@ -949,6 +988,24 @@ function attachKoreanQualityWarnings(report, quality) {
       action: quality.action,
       reason: quality.reason || '',
       riskDelta: quality.riskDelta
+    }
+  ];
+}
+
+function attachNiklQualityWarnings(report, quality) {
+  if (!report || !quality || quality.action === 'pass') return;
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  report.warnings = [
+    ...warnings,
+    {
+      gate: 'nikl_quality_test',
+      adminTestOnly: true,
+      action: quality.action,
+      reason: quality.reason,
+      niklRiskDelta: quality.niklRiskDelta,
+      beforeRisk: quality.beforeRisk,
+      afterRisk: quality.afterRisk,
+      missingTerms: quality.missingTerms || []
     }
   ];
 }
@@ -1006,7 +1063,8 @@ function chunkRecord({
   protectedTerms = [],
   selectedModel = '',
   judgeReport = null,
-  koreanQuality = null
+  koreanQuality = null,
+  niklQuality = null
 }) {
   return {
     index: chunk.index,
@@ -1027,6 +1085,7 @@ function chunkRecord({
     protectedTerms,
     judgeReport,
     koreanQuality,
+    niklQuality,
     selectedModel
   };
 }
@@ -1259,6 +1318,18 @@ function safeKoreanQualityGate(source, output, opts = {}) {
   try { return koreanQuality.evaluateKoreanQuality(source, output, opts); } catch { return null; }
 }
 
+function safeNiklQualityAnalysis(text, opts = {}) {
+  try { return koreanQuality.niklTest.analyzeNiklQuality(text, opts); } catch { return null; }
+}
+
+function safeNiklQualityHints(analysis) {
+  try { return analysis ? koreanQuality.niklTest.buildNiklPromptHints(analysis, { max: 6 }) : ''; } catch { return ''; }
+}
+
+function safeNiklQualityGate(source, output, opts = {}) {
+  try { return koreanQuality.niklTest.evaluateNiklQuality(source, output, opts); } catch { return null; }
+}
+
 function compactKoreanQualityGate(gate) {
   if (!gate) return null;
   return {
@@ -1275,6 +1346,10 @@ function compactKoreanQualityGate(gate) {
   };
 }
 
+function compactNiklQualityGate(gate) {
+  try { return koreanQuality.niklTest.compactNiklReport(gate); } catch { return null; }
+}
+
 function compactRisk(inputRisk) {
   if (!inputRisk) return '';
   return JSON.stringify({
@@ -1285,11 +1360,12 @@ function compactRisk(inputRisk) {
   });
 }
 
-function composeRiskProfile(inputRisk, koreanQualityHints) {
+function composeRiskProfile(inputRisk, koreanQualityHints, niklQualityHints = '') {
   const parts = [];
   const base = compactRisk(inputRisk);
   if (base) parts.push(base);
   if (koreanQualityHints) parts.push(koreanQualityHints);
+  if (niklQualityHints) parts.push(niklQualityHints);
   return parts.join('\n\n');
 }
 

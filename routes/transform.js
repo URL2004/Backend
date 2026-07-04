@@ -993,6 +993,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       : isFundamental ? '관리자 테스트 · 근본개선 엔진'
       : isFinalReport ? '관리자 테스트 · 최종 개선보고서 엔진'
         : '관리자 테스트 · 보존형 엔진';
+    if (job.niklQualityTest) job.stage += ' · 국어원식 품질 테스트';
     if (job.basicExperiment) {
       job.basicExperiment = { ...job.basicExperiment, profile, applied: true, appliedAtMs: Date.now() };
     }
@@ -1008,17 +1009,19 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       ? (opts) => gptAnalyze.callGpt({ ...opts, config: activeGpt })
       : analyze.callClaude;
     const labExtract = activeGpt ? gptAnalyze.extractGptResult : analyze.extractClaudeResult;
+    let baselineOut = null;
 
     const out = isGpt
-      ? await gptAnalyze.runHumanizeChunked({
+      ? await runAdminGptLabWithOptionalNiklCompare({
+        job,
         text,
         mode: tonePolish ? 'polish' : engineMode,
         lang: job.lang || 'ko',
-        signal: job.ac.signal,
-        userNotes: job.memo || '',
-        evidence: evidence || '',
+        evidence,
         config: gptTestCfg,
-        styleProfile: 'admin_gpt_engine'
+        styleProfile: 'admin_gpt_engine',
+        label: 'GPT 전용 엔진',
+        setBaseline: out => { baselineOut = out; }
       })
       : (isFundamental || isV6)
       ? await require(isV6 ? '../engine/humanizeV6TestEngine' : '../engine/humanizeLabTestEngine').run({
@@ -1032,15 +1035,16 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
         extractClaudeResult: labExtract
       })
       : activeGpt
-      ? await gptAnalyze.runHumanizeChunked({
+      ? await runAdminGptLabWithOptionalNiklCompare({
+        job,
         text,
         mode: engineMode,
         lang: job.lang || 'ko',
-        signal: job.ac.signal,
-        userNotes: job.memo || '',
-        evidence: evidence || '',
+        evidence,
         config: activeGpt,
-        styleProfile: profile
+        styleProfile: profile,
+        label: profile,
+        setBaseline: out => { baselineOut = out; }
       })
       : await analyze.runHumanizeChunked({
         text, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
@@ -1082,6 +1086,11 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       fundamentalEngine: out.result.fundamentalEngine || null,
       v6Engine: out.result.v6Engine || null,
       humanizeMeta: out.result.humanizeMeta || null,
+      niklQualityTest: out.result.niklQualityTest || out.result.humanizeMeta?.niklQualityTest || null,
+      niklQualityCompare: baselineOut ? buildAdminLabNiklCompare(baselineOut, out) : null,
+      baselineOutputText: baselineOut?.result?.outputText || '',
+      baselineHumanizeMeta: baselineOut?.result?.humanizeMeta || null,
+      baselineFloorReport: baselineOut?.floorReport || baselineOut?.result?.floorReport || null,
       compressionFallback: !!out.result.compressionFallback
     };
     persistJob(job);
@@ -1092,6 +1101,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       profile,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount,
+      niklQualityTest: job.niklQualityTest === true,
       path: (out.result.v6Engine || out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).path,
       engineStatus: (out.result.v6Engine || out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).status,
       hardFails: (out.result.v6Engine || out.result.fundamentalEngine || out.result.finalReportEngine || out.result.preserveLab || {}).hardFails
@@ -1108,6 +1118,121 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
   } finally {
     scheduleQueueDrain();
   }
+}
+
+async function runAdminGptLabWithOptionalNiklCompare({
+  job,
+  text,
+  mode,
+  lang,
+  evidence,
+  config,
+  styleProfile,
+  label,
+  setBaseline
+}) {
+  const common = {
+    text,
+    mode,
+    lang,
+    signal: job.ac.signal,
+    userNotes: job.memo || '',
+    evidence: evidence || '',
+    config,
+    styleProfile
+  };
+  if (job.niklQualityTest !== true) {
+    return await gptAnalyze.runHumanizeChunked({ ...common, niklQualityTest: false });
+  }
+
+  job.stage = `관리자 테스트 · ${label || 'GPT'} · 기준 결과 생성 중`;
+  persistJob(job);
+  const baseline = await gptAnalyze.runHumanizeChunked({ ...common, niklQualityTest: false });
+  if (typeof setBaseline === 'function') setBaseline(baseline);
+
+  job.stage = `관리자 테스트 · ${label || 'GPT'} · 국어원식 품질 테스트 결과 생성 중`;
+  persistJob(job);
+  return await gptAnalyze.runHumanizeChunked({ ...common, niklQualityTest: true });
+}
+
+function buildAdminLabNiklCompare(baselineOut, testOut) {
+  const baselineText = String(baselineOut?.result?.outputText || '');
+  const testText = String(testOut?.result?.outputText || '');
+  const baseSentences = splitCompareSentences(baselineText);
+  const testSentences = splitCompareSentences(testText);
+  const baseParagraphs = splitCompareParagraphs(baselineText);
+  const testParagraphs = splitCompareParagraphs(testText);
+  const changedSentenceRatio = compareChangedRatio(baseSentences, testSentences);
+  const changedParagraphRatio = compareChangedRatio(baseParagraphs, testParagraphs);
+  const baseTokens = compareTokenSet(baselineText);
+  const testTokens = compareTokenSet(testText);
+  const addedKeywords = [...testTokens].filter(t => !baseTokens.has(t)).slice(0, 20);
+  const removedKeywords = [...baseTokens].filter(t => !testTokens.has(t)).slice(0, 20);
+  return {
+    enabled: true,
+    baselineStatus: baselineOut?.floorReport?.status || baselineOut?.result?.floorReport?.status || baselineOut?.status || '',
+    testStatus: testOut?.floorReport?.status || testOut?.result?.floorReport?.status || testOut?.status || '',
+    length: {
+      baseline: baselineText.length,
+      test: testText.length,
+      delta: testText.length - baselineText.length
+    },
+    paragraphs: {
+      baseline: baseParagraphs.length,
+      test: testParagraphs.length,
+      delta: testParagraphs.length - baseParagraphs.length,
+      changedRatio: changedParagraphRatio
+    },
+    sentences: {
+      baseline: baseSentences.length,
+      test: testSentences.length,
+      delta: testSentences.length - baseSentences.length,
+      changedRatio: changedSentenceRatio
+    },
+    keywords: {
+      added: addedKeywords,
+      removed: removedKeywords
+    },
+    niklQualityTest: testOut?.result?.niklQualityTest || testOut?.result?.humanizeMeta?.niklQualityTest || null
+  };
+}
+
+function splitCompareParagraphs(text) {
+  return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+}
+
+function splitCompareSentences(text) {
+  return String(text || '')
+    .replace(/\r/g, '')
+    .split(/(?<=[.!?。！？])\s+|\n+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function compareChangedRatio(a, b) {
+  const max = Math.max(a.length, b.length);
+  if (!max) return 0;
+  let changed = 0;
+  for (let i = 0; i < max; i += 1) {
+    if (normalizeCompareUnit(a[i]) !== normalizeCompareUnit(b[i])) changed += 1;
+  }
+  return Number((changed / max).toFixed(3));
+}
+
+function normalizeCompareUnit(text) {
+  return String(text || '').replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
+}
+
+function compareTokenSet(text) {
+  const set = new Set();
+  const re = /[가-힣A-Za-z0-9][가-힣A-Za-z0-9+.#-]{1,}/g;
+  let match;
+  while ((match = re.exec(String(text || ''))) !== null) {
+    const token = String(match[0] || '').trim();
+    if (token.length >= 2 && token.length <= 28 && !/^\d+$/.test(token)) set.add(token);
+    if (set.size >= 300) break;
+  }
+  return set;
 }
 
 async function runJob(job, text, evidence) {
@@ -1814,7 +1939,8 @@ router.post('/transform', async (req, res) => {
     applied: false,
     version: adminLabVersion,
     profile: requestedAdminLabProfile || 'preserve_lab',
-    source: adminLabRequested ? 'admin_humanize_lab_page' : 'admin_job_toggle'
+    source: adminLabRequested ? 'admin_humanize_lab_page' : 'admin_job_toggle',
+    niklQualityTest: !!(adminLabRequested && req.body && req.body.niklQualityTest === true)
   } : (legacyBasicExperimentEnabled ? {
     enabled: true,
     requested: true,
@@ -1843,6 +1969,7 @@ router.post('/transform', async (req, res) => {
     basicExperiment: experimentMeta,
     adminHumanizeLab: !!(adminLabRequested && preserveExperimentEnabled),
     adminLabProfile: adminLabRequested && preserveExperimentEnabled ? (requestedAdminLabProfile || 'preserve_lab') : null,
+    niklQualityTest: !!(adminLabRequested && preserveExperimentEnabled && req.body && req.body.niklQualityTest === true),
     gptModel: typeof req.body.gptModel === 'string' ? req.body.gptModel.slice(0, 80) : '',
 
     wantEvidence,

@@ -1,0 +1,27 @@
+{
+  "generatedAt": "2026-07-04T15:21:58.491Z",
+  "commercialUsePolicy": "Only KOG Type 1 datasets are bundled. Runtime APIs must filter or ignore non-commercial items.",
+  "datasets": {
+    "publicLanguage": {
+      "title": "문화체육관광부 국립국어원_쉽고 바른 공공언어 쓰기 평가용 용어 목록",
+      "sourceUrl": "https://www.data.go.kr/data/15130006/fileData.do",
+      "publicDataPk": "15130006",
+      "publicDataDetailPk": "uddi:965e39a6-8b5f-4eb1-aeb2-8d8a2122147c",
+      "license": "KOG Type 1 - attribution required"
+    },
+    "normRules": {
+      "title": "문화체육관광부 국립국어원_한국어 어문규범 규정 정보",
+      "sourceUrl": "https://www.data.go.kr/data/15122678/fileData.do",
+      "publicDataPk": "15122678",
+      "publicDataDetailPk": "uddi:c3fbb318-f030-4aa4-9266-8a67deda5ae2",
+      "license": "KOG Type 1 - attribution required"
+    },
+    "corpusStats": {
+      "title": "문화체육관광부 국립국어원_말뭉치 통계 목록",
+      "sourceUrl": "https://www.data.go.kr/data/15123464/fileData.do",
+      "publicDataPk": "15123464",
+      "publicDataDetailPk": "uddi:dae1d3fd-5b62-4639-a4d8-82c1063a7f64",
+      "license": "KOG Type 1 - attribution required"
+    }
+  }
+}

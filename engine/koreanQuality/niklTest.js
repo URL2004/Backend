@@ -3,6 +3,7 @@
 const { analyzeText } = require('./detector');
 const { splitSentences } = require('./styleConsistency');
 const { normalizeSentence } = require('./grammarPrecheck');
+const officialResources = require('./officialResources');
 
 const VERSION = 'nikl-quality-test-v1';
 
@@ -68,6 +69,7 @@ const NORM_PATTERNS = [
 function analyzeNiklQuality(text, opts = {}) {
   const source = String(text || '');
   const base = analyzeText(source, opts);
+  const official = safeOfficialAnalysis(source, opts);
   const normMatches = scanPatterns(source, NORM_PATTERNS);
   const terms = extractTermCandidates(source);
   const sentences = splitSentences(source);
@@ -81,7 +83,8 @@ function analyzeNiklQuality(text, opts = {}) {
     ...(base.topPatterns || []),
     ...normMatches,
     ...publicLanguagePatterns(publicLanguageHardnessRisk),
-    ...corpusPatterns(corpusOutlierRisk)
+    ...corpusPatterns(corpusOutlierRisk),
+    ...(official?.topPatterns || [])
   ]).slice(0, opts.maxPatterns || 12);
 
   return {
@@ -106,8 +109,10 @@ function analyzeNiklQuality(text, opts = {}) {
       translationeseRisk: base.translationeseRisk,
       publicLanguageHardnessRisk,
       corpusOutlierRisk,
-      grammarBreakRisk
-    }))
+      grammarBreakRisk,
+      officialResourceRisk: official?.officialResourceRisk || 0
+    })),
+    official
   };
 }
 
@@ -125,7 +130,8 @@ function evaluateNiklQuality(source, output, opts = {}) {
     translationeseRisk: before.translationeseRisk,
     publicLanguageHardnessRisk: before.publicLanguageHardnessRisk,
     corpusOutlierRisk: before.corpusOutlierRisk,
-    grammarBreakRisk: before.grammarBreakRisk
+    grammarBreakRisk: before.grammarBreakRisk,
+    officialResourceRisk: before.official?.officialResourceRisk || 0
   });
   const afterRisk = weightedRisk({
     copykillerSurrogateRisk: after.copykillerSurrogateRisk,
@@ -134,7 +140,12 @@ function evaluateNiklQuality(source, output, opts = {}) {
     translationeseRisk: after.translationeseRisk,
     publicLanguageHardnessRisk: after.publicLanguageHardnessRisk,
     corpusOutlierRisk: after.corpusOutlierRisk,
-    grammarBreakRisk: after.grammarBreakRisk
+    grammarBreakRisk: after.grammarBreakRisk,
+    officialResourceRisk: after.official?.officialResourceRisk || 0
+  });
+  const officialGate = safeOfficialGate(source, output, {
+    beforeAnalysis: before.official,
+    afterAnalysis: after.official
   });
   const riskDelta = round3(afterRisk - beforeRisk);
   const grammarDelta = round3((after.grammarBreakRisk || 0) - (before.grammarBreakRisk || 0));
@@ -164,6 +175,17 @@ function evaluateNiklQuality(source, output, opts = {}) {
     reason = 'nikl_quality_risk_warning';
     warnings.push(reason);
   }
+  if (officialGate && officialGate.action && officialGate.action !== 'pass') {
+    warnings.push(...(officialGate.warnings || []));
+    if (officialGate.action === 'repair_candidate' && action === 'pass') {
+      action = 'repair_candidate';
+      reason = officialGate.reason || 'official_korean_resource_regression';
+    } else if (officialGate.action === 'warn' && action === 'pass') {
+      action = 'warn';
+      reason = officialGate.reason || 'official_korean_resource_warning';
+    }
+    violations.push(...(officialGate.violations || []).map(v => ({ ...v, officialResource: true })));
+  }
 
   for (const p of (after.topPatterns || []).slice(0, 5)) {
     warnings.push(`nikl_pattern:${p.id}`);
@@ -184,6 +206,7 @@ function evaluateNiklQuality(source, output, opts = {}) {
     normDelta,
     source: compactNiklAnalysis(before),
     output: compactNiklAnalysis(after),
+    official: officialResources.compactOfficialReport(officialGate),
     topPatterns: after.topPatterns || [],
     warnings: [...new Set(warnings)],
     violations
@@ -206,9 +229,12 @@ function buildNiklPromptHints(analysis, opts = {}) {
       translationeseRisk: analysis.translationeseRisk,
       publicLanguageHardnessRisk: analysis.publicLanguageHardnessRisk,
       corpusOutlierRisk: analysis.corpusOutlierRisk,
-      grammarBreakRisk: analysis.grammarBreakRisk
+      grammarBreakRisk: analysis.grammarBreakRisk,
+      officialResourceRisk: analysis.official?.officialResourceRisk || 0
     }))} / 등급 ${analysis.grade || 'A'}`
   ];
+  const officialHints = safeOfficialHints(analysis.official);
+  if (officialHints) lines.push(officialHints);
   const terms = (analysis.terms || []).slice(0, 10);
   if (terms.length) lines.push(`- 표기 보존 후보: ${terms.join(', ')}`);
   for (const pattern of patterns) {
@@ -236,6 +262,7 @@ function compactNiklReport(report) {
     normDelta: report.normDelta,
     source: report.source,
     output: report.output,
+    official: report.official || null,
     topPatterns: (report.topPatterns || []).slice(0, 8).map(compactPattern)
   };
 }
@@ -249,6 +276,8 @@ function compactNiklAnalysis(analysis) {
     publicLanguageHardnessRisk: round3(analysis.publicLanguageHardnessRisk),
     corpusOutlierRisk: round3(analysis.corpusOutlierRisk),
     grammarBreakRisk: round3(analysis.grammarBreakRisk),
+    officialResourceRisk: round3(analysis.official?.officialResourceRisk || 0),
+    official: officialResources.compactOfficialAnalysis(analysis.official),
     grade: analysis.grade,
     termCount: (analysis.terms || []).length,
     topPatterns: (analysis.topPatterns || []).slice(0, 6).map(compactPattern)
@@ -405,7 +434,8 @@ function weightedRisk(v) {
     (Number(v.translationeseRisk) || 0) * 0.15 +
     (Number(v.publicLanguageHardnessRisk) || 0) * 0.10 +
     (Number(v.corpusOutlierRisk) || 0) * 0.10 +
-    (Number(v.grammarBreakRisk) || 0) * 0.10
+    (Number(v.grammarBreakRisk) || 0) * 0.08 +
+    (Number(v.officialResourceRisk) || 0) * 0.02
   );
 }
 
@@ -460,6 +490,18 @@ function formatRisk(v) {
 
 function round3(v) {
   return Number(Number(v || 0).toFixed(3));
+}
+
+function safeOfficialAnalysis(text, opts = {}) {
+  try { return officialResources.analyzeOfficialQuality(text, opts); } catch { return null; }
+}
+
+function safeOfficialGate(source, output, opts = {}) {
+  try { return officialResources.evaluateOfficialQuality(source, output, opts); } catch { return null; }
+}
+
+function safeOfficialHints(analysis) {
+  try { return officialResources.buildOfficialPromptHints(analysis, { maxTerms: 4, maxPatterns: 4 }); } catch { return ''; }
 }
 
 module.exports = {

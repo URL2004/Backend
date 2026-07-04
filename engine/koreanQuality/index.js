@@ -5,6 +5,8 @@ const { analyzeText } = require('./detector');
 const { buildPromptHints, compactForLog } = require('./promptBlock');
 const { evaluateKoreanQuality } = require('./gate');
 const niklTest = require('./niklTest');
+const officialResources = require('./officialResources');
+const officialApi = require('./officialApi');
 
 module.exports = {
   DEFAULT_THRESHOLDS,
@@ -12,5 +14,7 @@ module.exports = {
   buildPromptHints,
   compactForLog,
   evaluateKoreanQuality,
-  niklTest
+  niklTest,
+  officialResources,
+  officialApi
 };

@@ -1,0 +1,7182 @@
+{
+  "version": "nikl-norm-regulations-v1",
+  "generatedAt": "2026-07-04T15:21:58.334Z",
+  "sourceTitle": "문화체육관광부 국립국어원_한국어 어문규범 규정 정보",
+  "sourceUrl": "https://www.data.go.kr/data/15122678/fileData.do",
+  "license": "KOG Type 1 - attribution required",
+  "note": "The runtime uses rule titles and topics only. Full normative text and example rows are not bundled into prompts.",
+  "codes": [
+    {
+      "code": "외래어 표기법",
+      "title": "문화체육관광부 고시 제2017-14호(2017. 3. 28.)",
+      "effectiveDate": "2017-03-28 00:00:00",
+      "status": "고시 발생"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "title": "문화체육관광부 고시 제2014-42호(2014. 12. 5.)",
+      "effectiveDate": "2014-12-05 00:00:00",
+      "status": "고시 발생"
+    },
+    {
+      "code": "표준어 규정",
+      "title": "문화체육관광부 고시 제2017-13호(2017. 3. 28.)",
+      "effectiveDate": "2017-03-28 00:00:00",
+      "status": "고시 발생"
+    },
+    {
+      "code": "한글 맞춤법",
+      "title": "문화체육관광부 고시 제2017-12호(2017. 3. 28.)",
+      "effectiveDate": "2017-03-28 00:00:00",
+      "status": "고시 발생"
+    }
+  ],
+  "rules": [
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "결정근거22",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "결정근거 테스트 입니다.",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "결정근거 내용 입력 테스트",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(1996. 3. 6.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(1997. 6. 4.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(1997. 6. 18.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(1997. 6. 26.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(1997. 7. 24.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(1999. 4. 6.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(2000. 6. 26.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어심의회(1994. 12. 26.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(1978. 5-11.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(1995. 12. 20.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "결정 근거 추가 작성",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어규범정비위원회(2015. 9. 24.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어심의회(2016. 11. 30.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "결정 근거 추가추가",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어심의회(2015. 3. 20.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어규범정비위원회(2015. 9. 24.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(2016. 11. 30.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어심의회(2012. 11. 30.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어심의회(2014. 8. 29.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "12",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1111",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "국어심의회(1994. 12. 26.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어규범정비위원회(2014. 12. 2.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어규범정비위원회(2014. 7. 11.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어심의회(2014. 8. 29.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어심의회(2014. 2. 5.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어심의회(2013. 4. 12.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어심의회(2012. 11. 30.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어심의회(2016. 11. 30.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어규범정비위원회(2015. 9. 24.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어 심의회(2016. 11. 30.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어심의회(2015. 3. 20.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "국어규범정비위원회(2015. 10. 23.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "국어심의회(2015. 3. 20.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "국어규범정비위원회(2015. 9. 24.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "국어심의회(2016. 11. 30.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "국어규범정비위원회(2016. 10. 18.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "국어규범정비위원회(2016. 7. 5.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "어문규범검토위원회(2015. 11. 24)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "국어규범정비위원회(2015. 10. 23.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "어문규범검토위원회(2014. 12. 31.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "어문규범검토위원회(2014. 5. 27.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어규범정비위원회(2015. 4. 17.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "어문규범검토위원회(2014. 4. 8.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어규범정비위원회(2014. 6. 24)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "국어심의회(2014. 8. 29.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어심의회(1992. 4.)",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "111",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "테스트등록",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "ㅇㅇㅇㅇㅇ",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "테스트",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "국어 심의회",
+      "subject": "",
+      "subSubject": "",
+      "level": "",
+      "status": ""
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "본문",
+      "subject": "",
+      "subSubject": "",
+      "level": "1",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제1장",
+      "subject": "총칙",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제1항",
+      "subject": "한글 맞춤법은 표준어를 소리대로 적되, 어법에 맞도록 함을 원칙으로 한다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제2항",
+      "subject": "문장의 각 단어는 띄어 씀을 원칙으로 한다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제3항",
+      "subject": "외래어는 ‘외래어 표기법’에 따라 적는다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제2장",
+      "subject": "자모",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제4항",
+      "subject": "한글 자모의 수는 스물넉 자로 하고, 그 순서와 이름은 다음과 같이 정한다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제3장",
+      "subject": "소리에 관한 것",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제1절",
+      "subject": "된소리",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제2절",
+      "subject": "구개음화",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제3절",
+      "subject": "ㄷ' 소리 받침",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제4절",
+      "subject": "모음",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제5절",
+      "subject": "두음 법칙",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제6절",
+      "subject": "겹쳐 나는 소리",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제5항",
+      "subject": "한 단어 안에서 뚜렷한 까닭 없이 나는 된소리는 다음 음절의 첫소리를 된소리로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제6항",
+      "subject": "‘ㄷ, ㅌ’ 받침 뒤에 종속적 관계를 가진 ‘- 이(-)’나 ‘- 히 -’가 올 적에는 그 ‘ㄷ, ㅌ’이 ‘ㅈ, ㅊ’으로 소리 나더라도 ‘ㄷ, ㅌ’으로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제7항",
+      "subject": "‘ㄷ’ 소리로 나는 받침 중에서 ‘ㄷ’으로 적을 근거가 없는 것은 ‘ㅅ’으로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제8항",
+      "subject": "‘계, 례, 몌, 폐, 혜’의 ‘ㅖ’는 ‘ㅔ’로 소리 나는 경우가 있더라도 ‘ㅖ’로 적는다. (ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제9항",
+      "subject": "‘의’나, 자음을 첫소리로 가지고 있는 음절의 ‘ㅢ’는 ‘ㅣ’로 소리 나는 경우가 있더라도 ‘ㅢ’로 적는다. (ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제10항",
+      "subject": "한자음 ‘녀, 뇨, 뉴, 니’가 단어 첫머리에 올 적에는, 두음 법칙에 따라 ‘여, 요, 유, 이’로 적는다. (ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제11항",
+      "subject": "한자음 ‘랴, 려, 례, 료, 류, 리’가 단어의 첫머리에 올 적에는, 두음 법칙에 따라 ‘야, 여, 예, 요, 유, 이’로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제12항",
+      "subject": "한자음 ‘라, 래, 로, 뢰, 루, 르’가 단어의 첫머리에 올 적에는, 두음 법칙에 따라 ‘나, 내, 노, 뇌, 누, 느’로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제13항",
+      "subject": "한 단어 안에서 같은 음절이나 비슷한 음절이 겹쳐 나는 부분은 같은 글자로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제4장",
+      "subject": "형태에 관한 것",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제1절",
+      "subject": "체언과 조사",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제2절",
+      "subject": "어간과 어미",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제3절",
+      "subject": "접미사가 붙어서 된 말",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제4절",
+      "subject": "합성어 및 접두사가 붙은 말",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제5절",
+      "subject": "준말",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제14항",
+      "subject": "체언은 조사와 구별하여 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제15항",
+      "subject": "용언의 어간과 어미는 구별하여 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제16항",
+      "subject": "어간의 끝음절 모음이 ‘ㅏ, ㅗ’일 때에는 어미를 ‘- 아’로 적고, 그 밖의 모음일 때에는 ‘- 어’로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제17항",
+      "subject": "어미 뒤에 덧붙는 조사 ‘요’는 ‘요’로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제18항",
+      "subject": "다음과 같은 용언들은 어미가 바뀔 경우, 그 어간이나 어미가 원칙에 벗어나면 벗어나는 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제19항",
+      "subject": "어간에 ‘-이’나 ‘-음/-ㅁ’이 붙어서 명사로 된 것과 ‘-이’나 ‘-히’가 붙어서 부사로 된 것은 그 어간의 원형을 밝히어 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제20항",
+      "subject": "명사 뒤에 ‘-이’가 붙어서 된 말은 그 명사의 원형을 밝히어 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제21항",
+      "subject": "명사나 혹은 용언의 어간 뒤에 자음으로 시작된 접미사가 붙어서 된 말은 그 명사나 어간의 원형을 밝히어 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제22항",
+      "subject": "용언의 어간에 다음과 같은 접미사들이 붙어서 이루어진 말들은 그 어간을 밝히어 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제23항",
+      "subject": "‘-하다’나 ‘-거리다’가 붙는 어근에 ‘-이’가 붙어서 명사가 된 것은 그 원형을 밝히어 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제24항",
+      "subject": "‘-거리다’가 붙을 수 있는 시늉말 어근에 ‘-이다’가 붙어서 된 용언은 그 어근을 밝히어 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제25항",
+      "subject": "‘-하다’가 붙는 어근에 ‘-히’나 ‘-이’가 붙어서 부사가 되거나, 부사에 ‘-이’가 붙어서 뜻을 더하는 경우에는 그 어근이나 부사의 원형을 밝히어 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제26항",
+      "subject": "‘-하다’나 ‘-없다’가 붙어서 된 용언은 그 ‘-하다’나 ‘-없다’를 밝히어 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제27항",
+      "subject": "둘 이상의 단어가 어울리거나 접두사가 붙어서 이루어진 말은 각각 그 원형을 밝히어 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제28항",
+      "subject": "끝소리가 ‘ㄹ’인 말과 딴 말이 어울릴 적에 ‘ㄹ’ 소리가 나지 아니하는 것은 아니 나는 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제29항",
+      "subject": "끝소리가 ‘ㄹ’인 말과 딴 말이 어울릴 적에 ‘ㄹ’ 소리가 ‘ㄷ’ 소리로 나는 것은 ‘ㄷ’으로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제30항",
+      "subject": "사이시옷은 다음과 같은 경우에 받치어 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제31항",
+      "subject": "두 말이 어울릴 적에 ‘ㅂ’ 소리나 ‘ㅎ’ 소리가 덧나는 것은 소리대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제32항",
+      "subject": "단어의 끝모음이 줄어지고 자음만 남은 것은 그 앞의 음절에 받침으로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제33항",
+      "subject": "체언과 조사가 어울려 줄어지는 경우에는 준 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제34항",
+      "subject": "모음 ‘ㅏ, ㅓ’로 끝난 어간에 ‘-아/-어, -았-/-었-’이 어울릴 적에는 준 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제35항",
+      "subject": "모음 ‘ㅗ, ㅜ’로 끝난 어간에 ‘-아/-어, -았-/-었-’이 어울려 ‘ㅘ/ㅝ, 될 적에는 준 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제36항",
+      "subject": "‘ㅣ’ 뒤에 ‘-어’가 와서 ‘ㅕ’로 줄 적에는 준 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제37항",
+      "subject": "‘ㅏ, ㅕ, ㅗ, ㅜ, ㅡ’로 끝난 어간에 ‘-이-’가 와서 각각 ‘ㅐ, ㅖ, ㅚ, ㅟ, ㅢ’로 줄 적에는 준 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제38항",
+      "subject": "‘ㅏ, ㅗ, ㅜ, ㅡ’ 뒤에 ‘-이어’가 어울려 줄어질 적에는 준 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제39항",
+      "subject": "어미 ‘-지’ 뒤에 ‘않 -’이 어울려 ‘-잖-’이 될 적과 ‘-하지’ 뒤에 ‘않 -’이 어울려 ‘-찮-’이 될 적에는 준 대로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제40항",
+      "subject": "어간의 끝음절 ‘하’의 ‘ㅏ’가 줄고 ‘ㅎ’이 다음 음절의 첫소리와 어울려 거센소리로 될 적에는 거센소리로 적는다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제5장",
+      "subject": "띄어쓰기",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제1절",
+      "subject": "조사",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제2절",
+      "subject": "의존 명사, 단위를 나타내는 명사 및 열거하는 말 등",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제3절",
+      "subject": "보조 용언",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제4절",
+      "subject": "고유 명사 및 전문 용어",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제41항",
+      "subject": "조사는 그 앞말에 붙여 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제6장",
+      "subject": "그 밖의 것",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "부록",
+      "subject": "",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1.마침표",
+      "subject": "",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "서술, 명령, 청유 등을 나타내는 문장의 끝에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제42항",
+      "subject": "의존 명사는 띄어 쓴다,",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제43항",
+      "subject": "단위를 나타내는 명사는 띄어 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제44항",
+      "subject": "수를 적을 적에는 ‘만(萬)’ 단위로 띄어 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제45항",
+      "subject": "두 말을 이어 주거나 열거할 적에 쓰이는 다음의 말들은 띄어 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제46항",
+      "subject": "단음절로 된 단어가 연이어 나타날 적에는 붙여 쓸 수 있다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제47항",
+      "subject": "보조 용언은 띄어 씀을 원칙으로 하되, 경우에 따라 붙여 씀도 허용한다.(ㄱ을 원칙으로 하고, ㄴ을 허용함.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제48항",
+      "subject": "성과 이름, 성과 호 등은 붙여 쓰고, 이에 덧붙는 호칭어, 관직명 등은 띄어 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제49항",
+      "subject": "성명 이외의 고유 명사는 단어별로 띄어 씀을 원칙으로 하되, 단위별로 띄어 쓸 수 있다.(ㄱ을 원칙으로 하고, ㄴ을 허용함.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제50항",
+      "subject": "전문 용어는 단어별로 띄어 씀을 원칙으로 하되, 붙여 쓸 수 있다.(ㄱ을 원칙으로 하고, ㄴ을 허용함.)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제51항",
+      "subject": "부사의 끝음절이 분명히 ‘이’로만 나는 것은 ‘-이’로 적고, ‘히’로만 나거나 ‘이’나 ‘히’로 나는 것은 ‘-히’로 적는다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제52항",
+      "subject": "한자어에서 본음으로도 나고 속음으로도 나는 것은 각각 그 소리에 따라 적는다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제53항",
+      "subject": "다음과 같은 어미는 예사소리로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제54항",
+      "subject": "다음과 같은 접미사는 된소리로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제55항",
+      "subject": "두 가지로 구별하여 적던 다음 말들은 한 가지로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제56항",
+      "subject": "‘- 더라, - 던’과 ‘- 든지’는 다음과 같이 적는다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제57항",
+      "subject": "다음 말들은 각각 구별하여 적는다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "아라비아 숫자만으로 연월일을 표시할 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "특정한 의미가 있는 날을 표시할 때 월과 일을 나타내는 아라비아 숫자 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "장, 절, 항 등을 표시하는 문자나 숫자 다음에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "2.물음표",
+      "subject": "",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "의문문이나 의문을 나타내는 어구의 끝에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "특정한 어구의 내용에 대하여 의심, 빈정거림 등을 표시할 때, 또는 적절한 말을 쓰기 어려울 때 소괄호 안에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "모르거나 불확실한 내용임을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "3.느낌표",
+      "subject": "",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "감탄문이나 감탄사의 끝에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "특별히 강한 느낌을 나타내는 어구, 평서문, 명령문, 청유문에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "물음의 말로 놀람이나 항의의 뜻을 나타내는 경우에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "감정을 넣어 대답하거나 다른 사람을 부를 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "4.쉼표",
+      "subject": "",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "한글 맞춤법은 표준어를 소리대로 적되, 어법에 맞도록 함을 원칙으로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "문장의 각 단어는 띄어 씀을 원칙으로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "외래어는 ‘외래어 표기법’에 따라 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "한글 자모의 수는 스물넉 자로 하고, 그 순서와 이름은 다음과 같이 정한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "한 단어 안에서 뚜렷한 까닭 없이 나는 된소리는 다음 음절의 첫소리를 된소리로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제7항",
+      "subject": "",
+      "subSubject": "‘ㄷ’ 소리로 나는 받침 중에서 ‘ㄷ’으로 적을 근거가 없는 것은 ‘ㅅ’으로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제8항",
+      "subject": "",
+      "subSubject": "‘계, 례, 몌, 폐, 혜’의 ‘ㅖ’는 ‘ㅔ’로 소리 나는 경우가 있더라도 ‘ㅖ’로 적는다. (ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제8항",
+      "subject": "",
+      "subSubject": "‘계, 례, 몌, 폐, 혜’의 ‘ㅖ’는 ‘ㅔ’로 소리나는 경우가 있더라도 ‘ㅖ’로 적는다. (ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제9항",
+      "subject": "",
+      "subSubject": "‘의’나, 자음을 첫소리로 가지고 있는 음절의 ‘ㅢ’는 ‘ㅣ’로 소리 나는 경우가 있더라도 ‘ㅢ’로 적는다. (ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제9항",
+      "subject": "",
+      "subSubject": "‘의’나, 자음을 첫소리로 가지고 있는 음절의 ‘ㅢ’는 ‘ㅣ’로 소리나는 경우가 있더라도 ‘ㅢ’로 적는다. (ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제10항",
+      "subject": "",
+      "subSubject": "한자음 ‘녀, 뇨, 뉴, 니’가 단어 첫머리에 올 적에는, 두음 법칙에 따라 ‘여, 요, 유, 이’로 적는다. (ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제11항",
+      "subject": "",
+      "subSubject": "한자음 ‘랴, 려, 례, 료, 류, 리’가 단어의 첫머리에 올 적에는, 두음 법칙에 따라 ‘야, 여, 예, 요, 유, 이’로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제11항",
+      "subject": "",
+      "subSubject": "한자음 ‘랴, 려, 례, 료, 류, 리’가 단어의 첫머리에 올 적에는 두음 법칙에 따라 ‘야, 여, 예, 요, 유, 이’로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제12항",
+      "subject": "",
+      "subSubject": "한자음 ‘라, 래, 로, 뢰, 루, 르’가 단어의 첫머리에 올 적에는, 두음 법칙에 따라 ‘나, 내, 노, 뇌, 누, 느’로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제12항",
+      "subject": "",
+      "subSubject": "한자음 ‘라, 래, 로, 뢰, 루, 르’가 단어의 첫머리에 올 적에는 두음 법칙에 따라 ‘나, 내, 노, 뇌, 누, 느’로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제13항",
+      "subject": "",
+      "subSubject": "한 단어 안에서 같은 음절이나 비슷한 음절이 겹쳐 나는 부분은 같은 글자로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제14항",
+      "subject": "",
+      "subSubject": "체언은 조사와 구별하여 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제15항",
+      "subject": "",
+      "subSubject": "용언의 어간과 어미는 구별하여 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제16항",
+      "subject": "",
+      "subSubject": "어간의 끝음절 모음이 ‘ㅏ, ㅗ’일 때에는 어미를 ‘- 아’로 적고, 그 밖의 모음일 때에는 ‘- 어’로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제17항",
+      "subject": "",
+      "subSubject": "어미 뒤에 덧붙는 조사 ‘요’는 ‘요’로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제17항",
+      "subject": "",
+      "subSubject": "어미 뒤에 덧붙는 조사 ‘-요’는 ‘-요’로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제18항",
+      "subject": "",
+      "subSubject": "다음과 같은 용언들은 어미가 바뀔 경우, 그 어간이나 어미가 원칙에 벗어나면 벗어나는 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제19항",
+      "subject": "",
+      "subSubject": "어간에 ‘-이’나 ‘-음/-ㅁ’이 붙어서 명사로 된 것과 ‘-이’나 ‘-히’가 붙어서 부사로 된 것은 그 어간의 원형을 밝히어 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제20항",
+      "subject": "",
+      "subSubject": "명사 뒤에 ‘-이’가 붙어서 된 말은 그 명사의 원형을 밝히어 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제21항",
+      "subject": "",
+      "subSubject": "명사나 혹은 용언의 어간 뒤에 자음으로 시작된 접미사가 붙어서 된 말은 그 명사나 어간의 원형을 밝히어 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제22항",
+      "subject": "",
+      "subSubject": "용언의 어간에 다음과 같은 접미사들이 붙어서 이루어진 말들은 그 어간을 밝히어 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제23항",
+      "subject": "",
+      "subSubject": "‘-하다’나 ‘-거리다’가 붙는 어근에 ‘-이’가 붙어서 명사가 된 것은 그 원형을 밝히어 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제24항",
+      "subject": "",
+      "subSubject": "‘-거리다’가 붙을 수 있는 시늉말 어근에 ‘-이다’가 붙어서 된 용언은 그 어근을 밝히어 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제25항",
+      "subject": "",
+      "subSubject": "‘-하다’가 붙는 어근에 ‘-히’나 ‘-이’가 붙어서 부사가 되거나, 부사에 ‘-이’가 붙어서 뜻을 더하는 경우에는 그 어근이나 부사의 원형을 밝히어 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제26항",
+      "subject": "",
+      "subSubject": "‘-하다’나 ‘-없다’가 붙어서 된 용언은 그 ‘-하다’나 ‘-없다’를 밝히어 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제27항",
+      "subject": "",
+      "subSubject": "둘 이상의 단어가 어울리거나 접두사가 붙어서 이루어진 말은 각각 그 원형을 밝히어 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제28항",
+      "subject": "",
+      "subSubject": "끝소리가 ‘ㄹ’인 말과 딴 말이 어울릴 적에 ‘ㄹ’ 소리가 나지 아니하는 것은 아니 나는 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제29항",
+      "subject": "",
+      "subSubject": "끝소리가 ‘ㄹ’인 말과 딴 말이 어울릴 적에 ‘ㄹ’ 소리가 ‘ㄷ’ 소리로 나는 것은 ‘ㄷ’으로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제30항",
+      "subject": "",
+      "subSubject": "사이시옷은 다음과 같은 경우에 받치어 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제31항",
+      "subject": "",
+      "subSubject": "두 말이 어울릴 적에 ‘ㅂ’ 소리나 ‘ㅎ’ 소리가 덧나는 것은 소리대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제32항",
+      "subject": "",
+      "subSubject": "단어의 끝모음이 줄어지고 자음만 남은 것은 그 앞의 음절에 받침으로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제33항",
+      "subject": "",
+      "subSubject": "체언과 조사가 어울려 줄어지는 경우에는 준 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제34항",
+      "subject": "",
+      "subSubject": "모음 ‘ㅏ, ㅓ’로 끝난 어간에 ‘-아/-어, -았-/-었-’이 어울릴 적에는 준 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제35항",
+      "subject": "",
+      "subSubject": "모음 ‘ㅗ, ㅜ’로 끝난 어간에 ‘-아/-어, -았-/-었-’이 어울려 ‘ㅘ/ㅝ, ㅘㅆ/ㅝㅆ'으로 될 적에는 준 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제35항",
+      "subject": "",
+      "subSubject": "모음 ‘ㅗ, ㅜ’로 끝난 어간에 ‘-아/-어, -았-/-었-’이 어울려 ‘ㅘ/ㅝ, 될 적에는 준 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제36항",
+      "subject": "",
+      "subSubject": "‘ㅣ’ 뒤에 ‘-어’가 와서 ‘ㅕ’로 줄 적에는 준 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제37항",
+      "subject": "",
+      "subSubject": "‘ㅏ, ㅕ, ㅗ, ㅜ, ㅡ’로 끝난 어간에 ‘-이-’가 와서 각각 ‘ㅐ, ㅖ, ㅚ, ㅟ, ㅢ’로 줄 적에는 준 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제38항",
+      "subject": "",
+      "subSubject": "‘ㅏ, ㅗ, ㅜ, ㅡ’ 뒤에 ‘-이어’가 어울려 줄어질 적에는 준 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제39항",
+      "subject": "",
+      "subSubject": "어미 ‘-지’ 뒤에 ‘않 -’이 어울려 ‘-잖-’이 될 적과 ‘-하지’ 뒤에 ‘않 -’이 어울려 ‘-찮-’이 될 적에는 준 대로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제40항",
+      "subject": "",
+      "subSubject": "어간의 끝음절 ‘하’의 ‘ㅏ’가 줄고 ‘ㅎ’이 다음 음절의 첫소리와 어울려 거센소리로 될 적에는 거센소리로 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제41항",
+      "subject": "",
+      "subSubject": "조사는 그 앞말에 붙여 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제42항",
+      "subject": "",
+      "subSubject": "의존 명사는 띄어 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제43항",
+      "subject": "",
+      "subSubject": "단위를 나타내는 명사는 띄어 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제44항",
+      "subject": "",
+      "subSubject": "수를 적을 적에는 ‘만(萬)’ 단위로 띄어 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제45항",
+      "subject": "",
+      "subSubject": "두 말을 이어 주거나 열거할 적에 쓰이는 다음의 말들은 띄어 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제46항",
+      "subject": "",
+      "subSubject": "단음절로 된 단어가 연이어 나타날 적에는 붙여 쓸 수 있다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제47항",
+      "subject": "",
+      "subSubject": "보조 용언은 띄어 씀을 원칙으로 하되, 경우에 따라 붙여 씀도 허용한다.(ㄱ을 원칙으로 하고, ㄴ을 허용함.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제48항",
+      "subject": "",
+      "subSubject": "성과 이름, 성과 호 등은 붙여 쓰고, 이에 덧붙는 호칭어, 관직명 등은 띄어 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제49항",
+      "subject": "",
+      "subSubject": "성명 이외의 고유 명사는 단어별로 띄어 씀을 원칙으로 하되, 단위별로 띄어 쓸 수 있다.(ㄱ을 원칙으로 하고, ㄴ을 허용함.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제50항",
+      "subject": "",
+      "subSubject": "전문 용어는 단어별로 띄어 씀을 원칙으로 하되, 붙여 쓸 수 있다.(ㄱ을 원칙으로 하고, ㄴ을 허용함.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제51항",
+      "subject": "",
+      "subSubject": "부사의 끝음절이 분명히 ‘이’로만 나는 것은 ‘-이’로 적고, ‘히’로만 나거나 ‘이’나 ‘히’로 나는 것은 ‘-히’로 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제52항",
+      "subject": "",
+      "subSubject": "한자어에서 본음으로도 나고 속음으로도 나는 것은 각각 그 소리에 따라 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제53항",
+      "subject": "",
+      "subSubject": "다음과 같은 어미는 예사소리로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제54항",
+      "subject": "",
+      "subSubject": "다음과 같은 접미사는 된소리로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제55항",
+      "subject": "",
+      "subSubject": "두 가지로 구별하여 적던 다음 말들은 한 가지로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제56항",
+      "subject": "",
+      "subSubject": "‘-더라, -던’과 ‘-든지’는 다음과 같이 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제57항",
+      "subject": "",
+      "subSubject": "다음 말들은 각각 구별하여 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제6항",
+      "subject": "",
+      "subSubject": "‘ㄷ, ㅌ’ 받침 뒤에 종속적 관계를 가진 ‘- 이(-)’나 ‘- 히 -’가 올 적에는 그 ‘ㄷ, ㅌ’이 ‘ㅈ, ㅊ’으로 소리 나더라도 ‘ㄷ, ㅌ’으로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "제6항",
+      "subject": "",
+      "subSubject": "‘ㄷ, ㅌ’ 받침 뒤에 종속적 관계를 가진 ‘- 이(-)’나 ‘- 히 -’가 올 적에는 그 ‘ㄷ, ㅌ’이 ‘ㅈ, ㅊ’으로 소리나더라도 ‘ㄷ, ㅌ’으로 적는다.(ㄱ을 취하고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제1부",
+      "subject": "표준어 사정 원칙",
+      "subSubject": "",
+      "level": "1",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제2부",
+      "subject": "표준 발음법",
+      "subSubject": "",
+      "level": "1",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제1장",
+      "subject": "총칙",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제2장",
+      "subject": "발음 변화에 따른 표준어 규정",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제3장",
+      "subject": "어휘 선택의 변화에 따른 표준어 규정",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "표준어는 교양 있는 사람들이 두루 쓰는 현대 서울말로 정함을 원칙으로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "외래어는 따로 사정한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제1절",
+      "subject": "자음",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제2절",
+      "subject": "모음",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제3절",
+      "subject": "준말",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제4절",
+      "subject": "단수 표준어",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제5절",
+      "subject": "복수 표준어",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "다음 단어들은 거센소리를 가진 형태를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "다음 단어들은 거센소리로 나지 않는 형태를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "어원에서 멀어진 형태로 굳어져서 널리 쓰이는 것은, 그것을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제6항",
+      "subject": "",
+      "subSubject": "다음 단어들은 의미를 구별함이 없이, 한 가지 형태만을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제7항",
+      "subject": "",
+      "subSubject": "수컷을 이르는 접두사는 '수-'로 통일한다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제8항",
+      "subject": "",
+      "subSubject": "양성 모음이 음성 모음으로 바뀌어 굳어진 다음 단어는 음성 모음 형태를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제8항",
+      "subject": "",
+      "subSubject": "양성모음이 음성모음으로 바뀌어 굳어진 다음 단어는 음성모음 형태를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제9항",
+      "subject": "",
+      "subSubject": "‘ㅣ’ 역행 동화 현상에 의한 발음은 원칙적으로 표준 발음으로 인정하지 아니하되, 다만 다음 단어들은 그러한 동화가 적용된 형태를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제10항",
+      "subject": "",
+      "subSubject": "다음 단어는 모음이 단순화한 형태를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제11항",
+      "subject": "",
+      "subSubject": "다음 단어에서는 모음의 발음 변화를 인정하여, 발음이 바뀌어 굳어진 형태를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제12항",
+      "subject": "",
+      "subSubject": "‘웃-’ 및 ‘윗-’은 명사 ‘위’에 맞추어 ‘윗-’으로 통일한다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제13항",
+      "subject": "",
+      "subSubject": "한자 ‘구(句)’가 붙어서 이루어진 단어는 ‘귀’로 읽는 것을 인정하지 아니하고, ‘구’로 통일한다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제14항",
+      "subject": "",
+      "subSubject": "준말이 널리 쓰이고 본말이 잘 쓰이지 않는 경우에는, 준말만을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제15항",
+      "subject": "",
+      "subSubject": "준말이 쓰이고 있더라도, 본말이 널리 쓰이고 있으면 본말을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제16항",
+      "subject": "",
+      "subSubject": "준말과 본말이 다 같이 널리 쓰이면서 준말의 효용이 뚜렷이 인정되는 것은, 두 가지를 다 표준어로 삼는다.(ㄱ은 본말이며, ㄴ은 준말임.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제17항",
+      "subject": "",
+      "subSubject": "비슷한 발음의 몇 형태가 쓰일 경우, 그 의미에 아무런 차이가 없고, 그중 하나가 더 널리 쓰이면, 그 한 형태만을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제17항",
+      "subject": "",
+      "subSubject": "비슷한 발음의 몇 형태가 쓰일 경우, 그 의미에 아무런 차이가 없고, 그 중 하나가 더 널리 쓰이면, 그 한 형태만을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제18항",
+      "subject": "",
+      "subSubject": "다음 단어는 ㄱ을 원칙으로 하고, ㄴ도 허용한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제19항",
+      "subject": "",
+      "subSubject": "어감의 차이를 나타내는 단어 또는 발음이 비슷한 단어들이 다 같이 널리 쓰이는 경우에는, 그 모두를 표준어로 삼는다.(ㄱ, ㄴ을 모두 표준어로 삼음.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제1절",
+      "subject": "고어",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제2절",
+      "subject": "한자어",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제3절",
+      "subject": "방언",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제20항",
+      "subject": "",
+      "subSubject": "사어(死語)가 되어 쓰이지 않게 된 단어는 고어로 처리하고, 현재 널리 사용되는 단어를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제21항",
+      "subject": "",
+      "subSubject": "고유어 계열의 단어가 널리 쓰이고 그에 대응되는 한자어 계열의 단어가 용도를 잃게 된 것은, 고유어 계열의 단어만을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제22항",
+      "subject": "",
+      "subSubject": "고유어 계열의 단어가 생명력을 잃고 그에 대응되는 한자어 계열의 단어가 널리 쓰이면, 한자어 계열의 단어를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제23항",
+      "subject": "",
+      "subSubject": "방언이던 단어가 표준어보다 더 널리 쓰이게 된 것은, 그것을 표준어로 삼는다. 이 경우, 원래의 표준어는 그대로 표준어로 남겨 두는 것을 원칙으로 한다.(ㄱ을 표준어로 삼고, ㄴ도 표준어로 남겨 둠.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제24항",
+      "subject": "",
+      "subSubject": "방언이던 단어가 널리 쓰이게 됨에 따라 표준어이던 단어가 안 쓰이게 된 것은, 방언이던 단어를 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제25항",
+      "subject": "",
+      "subSubject": "의미가 똑같은 형태가 몇 가지 있을 경우, 그중 어느 하나가 압도적으로 널리 쓰이면, 그 단어만을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제25항",
+      "subject": "",
+      "subSubject": "의미가 똑같은 형태가 몇 가지 있을 경우, 그 중 어느 하나가 압도적으로 널리 쓰이면, 그 단어만을 표준어로 삼는다.(ㄱ을 표준어로 삼고, ㄴ을 버림.)",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제26항",
+      "subject": "",
+      "subSubject": "한 가지 의미를 나타내는 형태 몇 가지가 널리 쓰이며 표준어 규정에 맞으면, 그 모두를 표준어로 삼는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제2장",
+      "subject": "자음과 모음",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제3장",
+      "subject": "음의 길이",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제4장",
+      "subject": "받침의 발음",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제5장",
+      "subject": "음의 동화",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제6장",
+      "subject": "경음화",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제7장",
+      "subject": "음의 첨가",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "표준 발음법은 표준어의 실제 발음을 따르되, 국어의 전통성과 합리성을 고려하여 정함을 원칙으로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "표준어의 자음은 다음 19개로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "표준어의 모음은 다음 21개로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "‘ㅏ ㅐ ㅓ ㅔ ㅗ ㅚ ㅜ ㅟ ㅡ ㅣ’는 단모음(單母音)으로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "‘ㅑ ㅒ ㅕ ㅖ ㅘ ㅙ ㅛ ㅝ ㅞ ㅠ ㅢ’는 이중 모음으로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "‘ㅑ ㅒ ㅕ ㅖ ㅘ ㅙ ㅛ ㅝ ㅞ ㅠ ㅢ’는 이중모음으로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제6항",
+      "subject": "",
+      "subSubject": "모음의 장단을 구별하여 발음하되, 단어의 첫음절에서만 긴소리가 나타나는 것을 원칙으로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제7항",
+      "subject": "",
+      "subSubject": "긴소리를 가진 음절이라도, 다음과 같은 경우에는 짧게 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제8항",
+      "subject": "",
+      "subSubject": "받침소리로는 ‘ㄱ, ㄴ, ㄷ, ㄹ, ㅁ, ㅂ, ㅇ’의 7개 자음만 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제9항",
+      "subject": "",
+      "subSubject": "받침 ‘ㄲ, ㅋ’, ‘ㅅ, ㅆ, ㅈ, ㅊ, ㅌ’, ‘ㅍ’은 어말 또는 자음 앞에서 각각 대표음 [ㄱ, ㄷ, ㅂ]으로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제10항",
+      "subject": "",
+      "subSubject": "겹받침 ‘ㄳ’, ‘ㄵ’, ‘ㄼ, ㄽ, ㄾ’, ‘ㅄ’은 어말 또는 자음 앞에서 각각 [ㄱ, ㄴ, ㄹ, ㅂ]으로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제11항",
+      "subject": "",
+      "subSubject": "겹받침 ‘ㄺ, ㄻ, ㄿ’은 어말 또는 자음 앞에서 각각 [ㄱ, ㅁ, ㅂ]으로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제12항",
+      "subject": "",
+      "subSubject": "받침 ‘ㅎ’의 발음은 다음과 같다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제13항",
+      "subject": "",
+      "subSubject": "홑받침이나 쌍받침이 모음으로 시작된 조사나 어미, 접미사와 결합되는 경우에는, 제 음가대로 뒤 음절 첫소리로 옮겨 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제14항",
+      "subject": "",
+      "subSubject": "겹받침이 모음으로 시작된 조사나 어미, 접미사와 결합되는 경우에는, 뒤엣것만을 뒤 음절 첫소리로 옮겨 발음한다.(이 경우, ‘ㅅ’은 된소리로 발음함.)",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제15항",
+      "subject": "",
+      "subSubject": "받침 뒤에 모음 ‘ㅏ, ㅓ, ㅗ, ㅜ, ㅟ’ 들로 시작되는 실질 형태소가 연결되는 경우에는, 대표음으로 바꾸어서 뒤 음절 첫소리로 옮겨 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제15항",
+      "subject": "",
+      "subSubject": "받침 뒤에 모음 ‘ㅏ, ㅓ, ㅗ, ㅜ, ㅟ’들로 시작되는 실질형태소가 연결되는 경우에는, 대표음으로 바꾸어서 뒤 음절 첫소리로 옮겨 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제16항",
+      "subject": "",
+      "subSubject": "한글 자모의 이름은 그 받침소리를 연음하되, ‘ㄷ, ㅈ, ㅊ, ㅋ, ㅌ, ㅍ, ㅎ’의 경우에는 특별히 다음과 같이 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제16항",
+      "subject": "",
+      "subSubject": "한글 자모의 이름은 그 받침 소리를 연음하되, ‘ㄷ, ㅈ, ㅊ, ㅋ, ㅌ, ㅍ, ㅎ’의 경우에는 특별히 다음과 같이 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제17항",
+      "subject": "",
+      "subSubject": "받침 ‘ㄷ, ㅌ(ㄾ)’이 조사나 접미사의 모음 ‘ㅣ’와 결합되는 경우에는, [ㅈ, ㅊ]으로 바꾸어서 뒤 음절 첫소리로 옮겨 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제18항",
+      "subject": "",
+      "subSubject": "받침 ‘ㄱ(ㄲ, ㅋ, ㄳ, ㄺ), ㄷ(ㅅ, ㅆ, ㅈ, ㅊ, ㅌ, ㅎ), ㅂ(ㅍ, ㄼ, ㄿ, ㅄ)’은 ‘ㄴ, ㅁ’ 앞에서 [ㅇ, ㄴ, ㅁ]으로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제19항",
+      "subject": "",
+      "subSubject": "받침 ‘ㅁ, ㅇ’ 뒤에 연결되는 ‘ㄹ’은 [ㄴ]으로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제20항",
+      "subject": "",
+      "subSubject": "‘ㄴ’은 ‘ㄹ’의 앞이나 뒤에서 [ㄹ]로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제21항",
+      "subject": "",
+      "subSubject": "위에서 지적한 이외의 자음 동화는 인정하지 않는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제22항",
+      "subject": "",
+      "subSubject": "다음과 같은 용언의 어미는 [어]로 발음함을 원칙으로 하되, [여]로 발음함도 허용한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제23항",
+      "subject": "",
+      "subSubject": "받침 ‘ㄱ(ㄲ, ㅋ, ㄳ, ㄺ), ㄷ(ㅅ, ㅆ, ㅈ, ㅊ, ㅌ), ㅂ(ㅍ, ㄼ, ㄿ, ㅄ)’ 뒤에 연결되는 ‘ㄱ, ㄷ, ㅂ, ㅅ, ㅈ’은 된소리로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제24항",
+      "subject": "",
+      "subSubject": "어간 받침 ‘ㄴ(ㄵ), ㅁ(ㄻ)’ 뒤에 결합되는 어미의 첫소리 ‘ㄱ, ㄷ, ㅅ, ㅈ’은 된소리로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제25항",
+      "subject": "",
+      "subSubject": "어간 받침 ‘ㄼ, ㄾ’ 뒤에 결합되는 어미의 첫소리 ‘ㄱ, ㄷ, ㅅ, ㅈ’은 된소리로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제26항",
+      "subject": "",
+      "subSubject": "한자어에서, ‘ㄹ’ 받침 뒤에 연결되는 ‘ㄷ, ㅅ, ㅈ’은 된소리로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제27항",
+      "subject": "",
+      "subSubject": "관형사형 ‘-(으)ㄹ’ 뒤에 연결되는 ‘ㄱ, ㄷ, ㅂ, ㅅ, ㅈ’은 된소리로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제28항",
+      "subject": "",
+      "subSubject": "표기상으로는 사이시옷이 없더라도, 관형격 기능을 지니는 사이시옷이 있어야 할(휴지가 성립되는) 합성어의 경우에는, 뒤 단어의 첫소리 ‘ㄱ, ㄷ, ㅂ, ㅅ, ㅈ’을 된소리로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제29항",
+      "subject": "",
+      "subSubject": "합성어 및 파생어에서, 앞 단어나 접두사의 끝이 자음이고 뒤 단어나 접미사의 첫음절이 ‘이, 야, 여, 요, 유’인 경우에는, ‘ㄴ’ 음을 첨가하여 [니, 냐, 녀, 뇨, 뉴]로 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "표준어 규정",
+      "section": "",
+      "title": "제30항",
+      "subject": "",
+      "subSubject": "사이시옷이 붙은 단어는 다음과 같이 발음한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "본문",
+      "subject": "",
+      "subSubject": "",
+      "level": "1",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1장",
+      "subject": "표기의 기본 원칙",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2장",
+      "subject": "표기 일람표",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3장",
+      "subject": "표기 세칙",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4장",
+      "subject": "인명, 지명 표기의 원칙",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "외래어는 국어의 현용 24 자모만으로 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "외래어의 1 음운은 원칙적으로 1 기호로 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "받침에는 ‘ㄱ, ㄴ, ㄹ, ㅁ, ㅂ, ㅅ, ㅇ’만을 쓴다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "파열음 표기에는 된소리를 쓰지 않는 것을 원칙으로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "이미 굳어진 외래어는 관용을 존중하되, 그 범위와 용례는 따로 정한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 1",
+      "subject": "국제 음성 기호와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 2",
+      "subject": "에스파냐 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 2",
+      "subject": "에스파냐어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 3",
+      "subject": "이탈리아어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 3",
+      "subject": "이탈리아 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 4",
+      "subject": "일본어의 가나와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 5",
+      "subject": "중국어의 주음 부호(注音 符號)와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 5",
+      "subject": "중국어의 발음 부호와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 6",
+      "subject": "폴란드 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 6",
+      "subject": "폴란드어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 7",
+      "subject": "체코 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 7",
+      "subject": "체코어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 8",
+      "subject": "세르보크로아트 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 8",
+      "subject": "세르보크로아트어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 9",
+      "subject": "루마니아 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 9",
+      "subject": "루마니아어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "본문",
+      "subject": "",
+      "subSubject": "",
+      "level": "1",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제1장",
+      "subject": "표기의 기본원칙",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제1장",
+      "subject": "표기의 기본 원칙",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 10",
+      "subject": "헝가리어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 10",
+      "subject": "헝가리 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 11",
+      "subject": "스웨덴어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 11",
+      "subject": "스웨덴 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 12",
+      "subject": "노르웨이어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 12",
+      "subject": "노르웨이 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 13",
+      "subject": "덴마크어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 13",
+      "subject": "덴마크 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "국어의 로마자 표기는 국어의 표준 발음법에 따라 적는 것을 원칙으로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "국어의 로마자 표기는 국어의 표준 발음에 따라 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "로마자 이외의 부호는 되도록 사용하지 않는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 14",
+      "subject": "말레이인도네시아어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 14",
+      "subject": "말레이인도네시아 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제2장",
+      "subject": "표기일람",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제2장",
+      "subject": "표기 일람",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 15",
+      "subject": "타이어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 15",
+      "subject": "타이 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 16",
+      "subject": "베트남어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 16",
+      "subject": "베트남 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 17",
+      "subject": "포르투갈어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 17",
+      "subject": "포르투갈 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "모음은 다음과 같이 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "모음은 다음 각호와 같이 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 18",
+      "subject": "네덜란드어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 18",
+      "subject": "네덜란드 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 19",
+      "subject": "러시아어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "표 19",
+      "subject": "러시아 어 자모와 한글 대조표",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "자음은 다음 각호와 같이 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "자음은 다음과 같이 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1절",
+      "subject": "영어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제3장",
+      "subject": "표기상의 유의점",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2절",
+      "subject": "독일어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "음운 변화가 일어날 때에는 변화의 결과에 따라 다음 각호와 같이 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "음운변화가 일어날 때는 변화의 결과에 따라 다음과 같이 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3절",
+      "subject": "프랑스어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3절",
+      "subject": "프랑스 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "발음상 혼동의 우려가 있을 때에는 음절 사이에 붙임표(-)를 쓸 수 있다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "발음상 혼동의 우려가 있을 때나, 기타 분절의 필요가 있을 때는 '-'(짧은줄표)를 써서 따로 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4절",
+      "subject": "에스파냐어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4절",
+      "subject": "에스파냐 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5절",
+      "subject": "이탈리아어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5절",
+      "subject": "이탈리아 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6절",
+      "subject": "일본어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "고유 명사는 첫 글자를 대문자로 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "고유명사는 첫소리를 대문자로 적는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7절",
+      "subject": "중국어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8절",
+      "subject": "폴란드어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8절",
+      "subject": "폴란드 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9절",
+      "subject": "체코어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9절",
+      "subject": "체코 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10절",
+      "subject": "세르보크로아트어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10절",
+      "subject": "세르보크로아트 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "인명은 성과 이름의 순서로 띄어 쓴다. 이름은 붙여 쓰는 것을 원칙으로 하되 음절 사이에 붙임표(-)를 쓰는 것을 허용한다.( ( ) 안의 표기를 허용함.)",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "인명은 성과 이름의 순서로 쓰되 띄어 쓰고, 이름 사이에는 '-'(짧은줄표)를 넣는다. 다만, 한자식의 이름이 아닌 경우에는 '-'를 생략할 수 있다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제11절",
+      "subject": "루마니아어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제11절",
+      "subject": "루마니아 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제12절",
+      "subject": "헝가리어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제12절",
+      "subject": "헝가리 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제13절",
+      "subject": "스웨덴어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제13절",
+      "subject": "스웨덴 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "‘도, 시, 군, 구, 읍, 면, 리, 동’의 행정 구역 단위와 ‘가’는 각각 ‘do, si, gun, gu, eup, myeon, ri, dong, ga’로 적고, 그 앞에는 붙임표(-)를 넣는다. 붙임표(-) 앞뒤에서 일어나는 음운 변화는 표기에 반영하지 않는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "제2항 붙임의 규정에도 불구하고 ‘도, 시, 군, 구, 읍, 면, 리, 동’의 행정구역 단위와 ‘가’는 각각 ‘do, shi, gun, gu, ŭp, myŏn, ri, dong, ga’로 적고, 그 앞에는 '-'(짧은줄표)를 넣는다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제14절",
+      "subject": "노르웨이어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제14절",
+      "subject": "노르웨이 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제15절",
+      "subject": "덴마크어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제15절",
+      "subject": "덴마크 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제16절",
+      "subject": "말레이인도네시아어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제16절",
+      "subject": "말레이인도네시아 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제17절",
+      "subject": "타이어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제17절",
+      "subject": "타이 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "",
+      "subSubject": "자연 지물명, 문화재명, 인공 축조물명은 붙임표(-) 없이 붙여 쓴다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "",
+      "subSubject": "자연지물명, 문화재명, 인공축조물명은 '-' 없이 붙여쓴다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제18절",
+      "subject": "베트남어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제18절",
+      "subject": "베트남 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제19절",
+      "subject": "포르투갈어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제19절",
+      "subject": "포르투갈 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "",
+      "subSubject": "인명, 회사명, 단체명 등은 그동안 써 온 표기를 쓸 수 있다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "",
+      "subSubject": "고유명사의 표기는 국제 관계 및 종래의 관습적 표기를 고려해서 갑자기 변경할 수 없는 것에 한하여 다음과 같이 적는 것을 허용한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제20절",
+      "subject": "네덜란드어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제20절",
+      "subject": "네덜란드 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제21절",
+      "subject": "러시아어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제21절",
+      "subject": "러시아 어의 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "",
+      "subSubject": "학술 연구 논문 등 특수 분야에서 한글 복원을 전제로 표기할 경우에는 한글 표기를 대상으로 적는다. 이 때1) 글자 대응은 제2장을 따르되 ‘ㄱ, ㄷ, ㅂ, ㄹ’은 ‘g, d, b, l’로만 적는다. 음가 없는 ‘ㅇ’은 붙임표(-)로 표기하되 어두에서는 생략하는 것을 원칙으로 한다. 기타 분절의 필요가 있을 때에도 붙임표(-)를 쓴다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "",
+      "subSubject": "인쇄나 타자의 어려움이 있을 때에는 의미의 혼동을 초래하지 않을 경우, ŏ, ŭ, yŏ, ŭi 등의 '˘'(반달표)와 k’, t’, p’, ch’들의 ' ’ '(어깨점)을 생략할 수 있다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "",
+      "subSubject": "학술 연구 논문 등 특수 분야에서 한글 복원을 전제로 표기할 경우에는 한글 표기를 대상으로 적는다. 이 때 글자 대응은 제2장을 따르되 ‘ㄱ, ㄷ, ㅂ, ㄹ’은 ‘g, d, b, l’로만 적는다. 음가 없는 ‘ㅇ’은 붙임표(-)로 표기하되 어두에서는 생략하는 것을 원칙으로 한다. 기타 분절의 필요가 있을 때에도 붙임표(-)를 쓴다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "무성 파열음 ([p], [t], [k])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "유성 파열음([b], [d], [g])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1절",
+      "subject": "표기 원칙",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "마찰음([s], [z], [f], [v], [θ], [ð], [ʃ], [ʒ])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "외국의 인명, 지명의 표기는 제1장, 제2장, 제3장의 규정을 따르는 것을 원칙으로 한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "파찰음([ʦ], [ʣ], [ʧ], [ʤ])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "비음([m], [n], [ŋ])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "유음([l])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "장모음",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "중모음 ([ai], [au], [ei], [ɔi], [ou], [auə])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9항",
+      "subject": "반모음([w], [j])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10항",
+      "subject": "복합어",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "제3장에 포함되어 있지 않은 언어권의 인명, 지명은 원지음을 따르는 것을 원칙으로 한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "원지음이 아닌 제3국의 발음으로 통용되고 있는 것은 관용을 따른다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "고유 명사의 번역명이 통용되는 경우 관용을 따른다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2절",
+      "subject": "동양의 인명, 지명 표기",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "중국 인명은 과거인과 현대인을 구분하여 과거인은 종전의 한자음대로 표기하고, 현대인은 원칙적으로 중국어 표기법에 따라 표기하되, 필요한 경우 한자를 병기한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "중국의 역사 지명으로서 현재 쓰이지 않는 것은 우리 한자음대로 하고, 현재 지명과 동일한 것은 중국어 표기법에 따라 표기하되, 필요한 경우 한자를 병기한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "일본의 인명과 지명은 과거와 현대의 구분 없이 일본어 표기법에 따라 표기하는 것을 원칙으로 하되, 필요한 경우 한자를 병기한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "중국 및 일본의 지명 가운데 한국 한자음으로 읽는 관용이 있는 것은 이를 허용한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3절",
+      "subject": "바다, 섬, 강, 산 등의 표기 세칙",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "[r]",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "바다는 '해(海)'로 통일한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "바다는 '해(海)'로 통일한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "어말 파열음",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "berg, burg",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "[ʃ]",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "우리 나라를 제외하고 섬은 모두 '섬'으로 통일한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "",
+      "subSubject": "우리나라를 제외하고 섬은 모두 '섬'으로 통일한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "[ɔy]",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "한자 사용 지역(일본, 중국)의 지명이 하나의 한자로 되어 있을 경우, '강', '산', '호', '섬' 등은 겹쳐 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "한자 사용 지역(일본, 중국)의 지명이 하나의 한자로 되어 있을 경우, '강', '산', '호', '섬' 등은 겹쳐 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "지명이 산맥, 산, 강 등의 뜻이 들어 있는 것은 '산맥', '산', '강' 등을 겹쳐 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "지명이 산맥, 산, 강 등의 뜻이 들어 있는 것은 '산맥', '산', '강' 등을 겹쳐 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "파열음([p], [t], [k]; [b], [d], [g])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "마찰음([ʃ], [ʒ])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "비자음([ɲ])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "반모음([j])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "반모음([w])",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "p(п), t(т), k(к), b(б), d(д), g(г), f(ф), v(в)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "z(з), zh(ж)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "-grad(град), -gorod(город)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "-ds(дс)-",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "l(л)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "gu, qu",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "l'(ль), m(м)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "c, g",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "e(е, э)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "x",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9항",
+      "subject": "연음 부호 '(ь)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "l",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "nc, ng",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10항",
+      "subject": "dz(дз), dzh(дж)",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "p, t, k",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "gl",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "gn",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "b, d",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "sc",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "v",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "c",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "g, ch",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "c, g",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "qu",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "l",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "l, ll",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "nk",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "촉음 [ッ]",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "장모음",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "성조",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10항",
+      "subject": "e",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "ㅑ, ㅖ, ㅛ, ㅠ",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제11항",
+      "subject": "같은 모음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제12항",
+      "subject": "",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "k, p",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제13항",
+      "subject": "",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "w, z, ź, dz, ż, rz, sz",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제14항",
+      "subject": "over-",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제15항",
+      "subject": "è, é, ê, ë, ï",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "ł",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "b, d, g",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "m",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "ę",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "c, z",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "b, d, d', g",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "v, w, z, ř, ž, š",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "l, lj",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "c, g",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "m",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "ě",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "gu, qu",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "d, t",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "l, lj",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "m",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "m, n, -ns",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "š",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "je",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "ng, nc, nq",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "c, p",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "r",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "c, g",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9항",
+      "subject": "s",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "l",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10항",
+      "subject": "sc, sç, xc",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "n",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제11항",
+      "subject": "x",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "e",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제12항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제13항",
+      "subject": "o",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제14항",
+      "subject": "e",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제15항",
+      "subject": "",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "s",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "nh",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "ye",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "qu",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "y",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "b, g, k, ck, p, t",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "l",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "c",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "파열음",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "g",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "l, ll",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "j",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "k",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "l",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "sr, thr",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "lj",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "y",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "n",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9항",
+      "subject": "nk",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "w",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10항",
+      "subject": "sk",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "or, oo, ee",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제11항",
+      "subject": "ö",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제2항",
+      "subject": "sy",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "인도네시아어 dj, tj",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "인도네시아 어 dj, tj",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "b, g, k, p, t",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "인도네시아 어 j, sj",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "인도네시아어 j, sj",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "인도네시아 어 bh, dh",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "인도네시아어 bh, dh",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "인도네시아 어 ch",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "인도네시아어 ch",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "d",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "말레이시아어 ch",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "말레이시아 어 ch",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "말레이시아어 gh, th",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "말레이시아 어 gh, th",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9항",
+      "subject": "l",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제4항",
+      "subject": "g",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "j",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제11항",
+      "subject": "w",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제6항",
+      "subject": "k",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제12항",
+      "subject": "y",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제13항",
+      "subject": "e",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제14항",
+      "subject": "같은 모음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제15항",
+      "subject": "인도네시아어 oe, ie",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제15항",
+      "subject": "인도네시아 어 oe, ie",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제9항",
+      "subject": "sk",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제10항",
+      "subject": "t",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "b, k, p, t",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제11항",
+      "subject": "eg",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제12항",
+      "subject": "ø",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제13항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제7항",
+      "subject": "v",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제8항",
+      "subject": "같은 자음이 겹쳐 나올 때",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "외래어는 표 1~19에 따라 표기한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "외래어는 표 1~10에 따라 표기한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "외래어는 표 1~5에 따라 표기한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "외래어는 표 1~16에 따라 표기한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "외래어는 표 1~13에 따라 표기한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 1에 따라 적되, 다음 사항에 유의하여 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "1 음운 1 기호의 표기를 원칙으로 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 1을 따르고 제1절(영어의 표기 세칙)을 준용한다. 다만, 독일어의 독특한 것은 그 특징을 살려서 다음과 같이 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 1에 따르고 제1절(영어의 표기 세칙)을 준용한다. 다만, 프랑스어의 독특한 것은 그 특징을 살려서 다음과 같이 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 1에 따르고 제1절(영어의 표기 세칙)을 준용한다. 다만, 프랑스 어의 독특한 것은 그 특징을 살려서 다음과 같이 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 2에 따라 적되, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 3에 따르고, 다음과 같은 특징은 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 4에 따르고, 다음 상황에 유의하여 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 5에 따르고, 다음 사항에 유의하여 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 6에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 7에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 8에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 9에 따르고, 다음과 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 10에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 11에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 12에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 13에 따르고, 다음과 같은 특징은 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 14에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 15에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 16에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 17에 따르고, 다음과 같은 특징을 살려서 적는다. 다만 ‘브라질 포르투갈어에서’라는 단서가 붙은 조항은 브라질 지명‧인명의 표기에만 적용한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 17에 따르고, 다음과 같은 특징을 살려서 적는다. 다만 ‘브라질 포르투갈 어에서’라는 단서가 붙은 조항은 브라질 지명‧인명의 표기에만 적용한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 18에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "",
+      "subSubject": "표 19에 따르고, 다음과 같은 특징을 살려서 적는다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "문장 부호",
+      "subject": "",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1",
+      "subject": "마침표( . )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "‘마침표’ 대신 ‘온점’이라는 용어를 쓸 수 있다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "마침표' 대신 '온점'이라는 용어를 쓸 수 있다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "2",
+      "subject": "물음표(?)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "3",
+      "subject": "느낌표(!)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "4",
+      "subject": "쉼표(,)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "같은 자격의 어구를 열거할 때 그 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "짝을 지어 구별할 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "이웃하는 수를 개략적으로 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "열거의 순서를 나타내는 어구 다음에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-5",
+      "subject": "문장의 연결 관계를 분명히 하고자 할 때 절과 절 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-6",
+      "subject": "같은 말이 되풀이되는 것을 피하기 위하여 일정한 부분을 줄여서 열거할 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-7",
+      "subject": "부르거나 대답하는 말 뒤에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-8",
+      "subject": "한 문장 안에서 앞말을 ‘곧’, ‘다시 말해’ 등과 같은 어구로 다시 설명할 때 앞말 다음에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-9",
+      "subject": "문장 앞부분에서 조사 없이 쓰인 제시어나 주제어의 뒤에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-10",
+      "subject": "한 문장에 같은 의미의 어구가 반복될 때 앞에 오는 어구 다음에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-11",
+      "subject": "도치문에서 도치된 어구들 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-12",
+      "subject": "바로 다음 말과 직접적인 관계에 있지 않음을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-13",
+      "subject": "문장 중간에 끼어든 어구의 앞뒤에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-14",
+      "subject": "특별한 효과를 위해 끊어 읽는 곳을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-15",
+      "subject": "짧게 더듬는 말을 표시할 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "‘쉼표’ 대신 ‘반점’이라는 용어를 쓸 수 있다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "5",
+      "subject": "가운뎃점(ㆍ)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "5",
+      "subject": "가운뎃점(·)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "열거할 어구들을 일정한 기준으로 묶어서 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "짝을 이루는 어구들 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "공통 성분을 줄여서 하나의 어구로 묶을 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "6",
+      "subject": "쌍점(:)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "표제 다음에 해당 항목을 들거나 설명을 붙일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "희곡 등에서 대화 내용을 제시할 때 말하는 이와 말한 내용 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "시와 분, 장과 절 등을 구별할 때 쓴다.",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "의존 명사 ‘대’가 쓰일 자리에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "쌍점의 앞은 붙여 쓰고 뒤는 띄어 쓴다. 다만, (3)과 (4)에서는 쌍점의 앞뒤를 붙여 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "7",
+      "subject": "빗금(/)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "대비되는 두 개 이상의 어구를 묶어 나타낼 때 그 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "기준 단위당 수량을 표시할 때 해당 수량과 기준 단위 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "시의 행이 바뀌는 부분임을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "빗금의 앞뒤는 (1)과 (2)에서는 붙여 쓰며, (3)에서는 띄어 쓰는 것을 원칙으로 하되 붙여 쓰는 것을 허용한다. 단, (1)에서 대비되는 어구가 두 어절 이상인 경우에는 빗금의 앞뒤를 띄어 쓸 수 있다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "8",
+      "subject": "큰따옴표(“ ”)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "글 가운데에서 직접 대화를 표시할 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "말이나 글을 직접 인용할 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "9",
+      "subject": "작은따옴표(‘ ’)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "인용한 말 안에 있는 인용한 말을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "마음속으로 한 말을 적을 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "10",
+      "subject": "소괄호( ( ) )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "주석이나 보충적인 내용을 덧붙일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "우리말 표기와 원어 표기를 아울러 보일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "생략할 수 있는 요소임을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "희곡 등 대화를 적은 글에서 동작이나 분위기, 상태를 드러낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-5",
+      "subject": "내용이 들어갈 자리임을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-6",
+      "subject": "항목의 순서나 종류를 나타내는 숫자나 문자 등에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "11",
+      "subject": "중괄호( { } )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "같은 범주에 속하는 여러 요소를 세로로 묶어서 보일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "열거된 항목 중 어느 하나가 자유롭게 선택될 수 있음을 보일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "12",
+      "subject": "대괄호( [ ] )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "괄호 안에 또 괄호를 쓸 필요가 있을 때 바깥쪽의 괄호로 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "고유어에 대응하는 한자어를 함께 보일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "원문에 대한 이해를 돕기 위해 설명이나 논평 등을 덧붙일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "13",
+      "subject": "겹낫표(『 』)와 겹화살괄호(≪ ≫)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "",
+      "subject": "책의 제목이나 신문 이름 등을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "14",
+      "subject": "홑낫표(「 」)와 홑화살괄호(< >)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "",
+      "subject": "소제목, 그림이나 노래와 같은 예술 작품의 제목, 상호, 법률, 규정 등을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "15",
+      "subject": "줄표( ― )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "",
+      "subject": "제목 다음에 표시하는 부제의 앞뒤에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "줄표의 앞뒤는 띄어 쓰는 것을 원칙으로 하되, 붙여 쓰는 것을 허용한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "16",
+      "subject": "붙임표( - )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "16",
+      "subject": "붙임표(-)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "차례대로 이어지는 내용을 하나로 묶어 열거할 때 각 어구 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "두 개 이상의 어구가 밀접한 관련이 있음을 나타내고자 할 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "17",
+      "subject": "물결표( ~ )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "",
+      "subject": "기간이나 거리 또는 범위를 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "18",
+      "subject": "드러냄표( ˙ )와 밑줄(__)",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "",
+      "subject": "문장 내용 중에서 주의가 미쳐야 할 곳이나 중요한 부분을 특별히 드러내 보일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "19",
+      "subject": "숨김표( O, X )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "금기어나 공공연히 쓰기 어려운 비속어임을 나타낼 때, 그 글자의 수효만큼 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "비밀을 유지해야 하거나 밝힐 수 없는 사항임을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "20",
+      "subject": "빠짐표( □ )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "옛 비문이나 문헌 등에서 글자가 분명하지 않을 때 그 글자의 수효만큼 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "글자가 들어가야 할 자리를 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "21",
+      "subject": "줄임표( …… )",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "할 말을 줄였을 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "말이 없음을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "문장이나 글의 일부를 생략할 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "머뭇거림을 보일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임 1]",
+      "subject": "",
+      "subSubject": "점은 가운데에 찍는 대신 아래쪽에 찍을 수도 있다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임 2]",
+      "subject": "",
+      "subSubject": "점은 여섯 점을 찍는 대신 세 점을 찍을 수도 있다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임 3]",
+      "subject": "",
+      "subSubject": "줄임표는 앞말에 붙여 쓴다. 다만, (3)에서는 줄임표의 앞뒤를 띄어 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "부 칙",
+      "subject": "",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "",
+      "subject": "(시행일)",
+      "subSubject": "이 규정은 공포한 날부터 시행한다. 다만, 제4장제3절 개정규정은 2017년 6월 1일부터 시행한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제5항",
+      "subject": "",
+      "subSubject": "",
+      "level": "4",
+      "status": "삭제"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "부칙",
+      "subject": "",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "",
+      "subject": "① (시행일)",
+      "subSubject": "이 규정은 고시한 날부터 시행한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "",
+      "subject": "② (표지판 등에 대한 경과조치)",
+      "subSubject": "이 표기법 시행당시 종전의 표기법에 의하여 설치된 표지판(도로, 광고물, 문화재 등의 안내판)은 2005. 12. 31.까지 이 표기법을 따라야 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "",
+      "subject": "③ (출판물 등에 대한 경과조치)",
+      "subSubject": "이 표기법 시행당시 종전의 표기법에 의하여 발간된 교과서 등 출판물은 2002. 2. 28.까지 이 표기법을 따라야 한다.",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "Ⅰ.",
+      "subject": "마침표[終止符]",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1",
+      "subject": "온점( . ), 고리점( 。)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "아라비아 숫자만으로 연월일을 표시할 적에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "표시 문자 다음에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "준말을 나타내는 데 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "직접 질문할 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "반어나 수사 의문(修辭疑問)을 나타낼 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "특정한 어구 또는 그 내용에 대하여 의심이나 빈정거림, 비웃음 등을 표시할 때, 또는 적절한 말을 쓰기 어려운 경우에 소괄호 안에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임 1]",
+      "subject": "",
+      "subSubject": "한 문장에서 몇 개의 선택적인 물음이 겹쳤을 때에는 맨 끝의 물음에만 쓰지만, 각각 독립된 물음인 경우에는 물음마다 쓴다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임 2]",
+      "subject": "",
+      "subSubject": "의문형 어미로 끝나는 문장이라도 의문의 정도가 약할 때에는 물음표 대신 온점(또는 고리점)을 쓸 수도 있다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "느낌을 힘차게 나타내기 위해 감탄사나 감탄형 종결어미 다음에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "강한 명령문 또는 청유문에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "감정을 넣어 다른 사람을 부르거나 대답할 적에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "물음의 말로써 놀람이나 항의의 뜻을 나타내는 경우에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "감탄형 어미로 끝나는 문장이라도 감탄의 정도가 약할 때에는 느낌표 대신 온점(또는 고리점)을 쓸 수도 있다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "Ⅱ.",
+      "subject": "쉼표[休止符]",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1",
+      "subject": "반점( , ), 모점( 、)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "같은 자격의 어구가 열거될 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "짝을 지어 구별할 필요가 있을 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "바로 다음의 말을 꾸미지 않을 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "대등하거나 종속적인 절이 이어질 때에 절 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-5",
+      "subject": "부르는 말이나 대답하는 말 뒤에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-6",
+      "subject": "제시어 다음에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-7",
+      "subject": "도치된 문장에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-8",
+      "subject": "가벼운 감탄을 나타내는 말 뒤에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-9",
+      "subject": "문장 첫머리의 접속이나 연결을 나타내는 말 다음에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-10",
+      "subject": "문장 중간에 끼어든 구절 앞뒤에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-11",
+      "subject": "되풀이를 피하기 위하여 한 부분을 줄일 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-12",
+      "subject": "문맥상 끊어 읽어야 할 곳에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-13",
+      "subject": "숫자를 나열할 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-14",
+      "subject": "수의 폭이나 개략의 수를 나타낼 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-15",
+      "subject": "수의 자릿점을 나타낼 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "2",
+      "subject": "가운뎃점( · )",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "쉼표로 열거된 어구가 다시 여러 단위로 나누어질 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "특정한 의미를 가지는 날을 나타내는 숫자에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "같은 계열의 단어 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "3",
+      "subject": "쌍점( : )",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "내포되는 종류를 들 적에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "소표제 뒤에 간단한 설명이 붙을 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "저자명 다음에 저서명을 적을 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-4",
+      "subject": "시(時)와 분(分), 장(章)과 절(節) 따위를 구별할 때나, 둘 이상을 대비할 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "4",
+      "subject": "빗금( / )",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "대응, 대립되거나 대등한 것을 함께 보이는 단어와 구, 절 사이에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "분수를 나타낼 때에 쓰기도 한다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "Ⅲ.",
+      "subject": "따옴표[引用符]",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1",
+      "subject": "큰따옴표( “ ” ), 겹낫표(『』)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "글 가운데서 직접 대화를 표시할 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "남의 말을 인용할 경우에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "2",
+      "subject": "작은따옴표( ‘ ’ ), 낫표(「」)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "따온 말 가운데 다시 따온 말이 들어 있을 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "마음 속으로 한 말을 적을 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "문장에서 중요한 부분을 두드러지게 하기 위해 드러냄표 대신에 쓰기도 한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "Ⅳ.",
+      "subject": "묶음표[括弧符]",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1",
+      "subject": "소괄호( ( ) )",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "원어, 연대, 주석, 설명 등을 넣을 적에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "특히 기호 또는 기호적인 구실을 하는 문자, 단어, 구에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-3",
+      "subject": "빈 자리임을 나타낼 적에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "2",
+      "subject": "중괄호({ })",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "",
+      "subject": "여러 단위를 동등하게 묶어서 보일 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "3",
+      "subject": "대괄호([ ])",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "묶음표 안의 말이 바깥 말과 음이 다를 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "묶음표 안에 또 묶음표가 있을 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "Ⅴ.",
+      "subject": "이음표[連結符]",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1",
+      "subject": "줄표 (─)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "문장 중간에 앞의 내용에 대해 부연하는 말이 끼어들 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "앞의 말을 정정 또는 변명하는 말이 이어질 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "2",
+      "subject": "붙임표( - )",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "사전, 논문 등에서 합성어를 나타낼 적에, 또는 접사나 어미임을 나타낼 적에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "외래어와 고유어 또는 한자어가 결합되는 경우에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "3",
+      "subject": "물결표(～)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "‘내지’라는 뜻에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "어떤 말의 앞이나 뒤에 들어갈 말 대신 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "Ⅵ.",
+      "subject": "드러냄표[顯在符]",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1",
+      "subject": "드러냄표( ˚ , ˙ )",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "",
+      "subject": "·이나 ∘을 가로쓰기에는 글자 위에, 세로쓰기에는 글자 오른쪽에 쓴다. 문장 내용 중에서 주의가 미쳐야 할 곳이나 중요한 부분을 특별히 드러내 보일 때 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "[붙임]",
+      "subject": "",
+      "subSubject": "가로쓰기에서는 밑줄( _____, ~~~~~~)을 치기도 한다.",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "Ⅶ.",
+      "subject": "안드러냄표[潛在符]",
+      "subSubject": "",
+      "level": "2",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "1",
+      "subject": "숨김표(××, ○○)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "금기어나 공공연히 쓰기 어려운 비속어의 경우, 그 글자의 수효만큼 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "비밀을 유지할 사항일 경우, 그 글자의 수효만큼 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "2",
+      "subject": "빠짐표(□)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "옛 비문이나 서적 등에서 글자가 분명하지 않을 때에 그 글자의 수효만큼 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "3",
+      "subject": "줄임표(······)",
+      "subSubject": "",
+      "level": "3",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-1",
+      "subject": "할 말을 줄였을 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "한글 맞춤법",
+      "section": "",
+      "title": "-2",
+      "subject": "말이 없음을 나타낼 때에 쓴다.",
+      "subSubject": "",
+      "level": "4",
+      "status": "정상"
+    },
+    {
+      "code": "국어의 로마자 표기법",
+      "section": "",
+      "title": "제3항",
+      "subject": "",
+      "subSubject": "",
+      "level": "3",
+      "status": "삭제"
+    },
+    {
+      "code": "외래어 표기법",
+      "section": "",
+      "title": "제1항",
+      "subject": "",
+      "subSubject": "해', '섬', '강', '산' 등이 외래어에 붙을 때에는 띄어 쓰고, 우리말에 붙을 때에는 붙여 쓴다.",
+      "level": "4",
+      "status": "정상"
+    }
+  ]
+}

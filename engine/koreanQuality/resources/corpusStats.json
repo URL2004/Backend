@@ -1,0 +1,1738 @@
+{
+  "version": "nikl-corpus-stats-v1",
+  "generatedAt": "2026-07-04T15:21:58.489Z",
+  "sourceTitle": "문화체육관광부 국립국어원_말뭉치 통계 목록",
+  "sourceUrl": "https://www.data.go.kr/data/15123464/fileData.do",
+  "license": "KOG Type 1 - attribution required",
+  "aggregate": {
+    "fileCount": 4272297,
+    "documentCount": 15756234,
+    "paragraphCount": 0,
+    "sentenceCount": 0,
+    "eojeolCount": 0,
+    "avgSentencesPerParagraph": 0,
+    "avgEojeolPerSentence": 0,
+    "rowCount": 191
+  },
+  "rows": [
+    {
+      "name": "국립국어원 신문 말뭉치",
+      "category": "신문말뭉치",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 문어 말뭉치",
+      "category": "문어말뭉치",
+      "fileCount": 20188,
+      "documentCount": 20188,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 구어 말뭉치",
+      "category": "구어말뭉치",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 메신저 말뭉치",
+      "category": "메신저말뭉치",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 웹 말뭉치",
+      "category": "웹말뭉치",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 문서 요약 말뭉치",
+      "category": "신문 기사 요약 말뭉치",
+      "fileCount": 1,
+      "documentCount": 13167,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 형태 분석 말뭉치",
+      "category": "morpheme",
+      "fileCount": 2,
+      "documentCount": 7688,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 어휘 의미 분석 말뭉치",
+      "category": "어휘 의미 분석",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치",
+      "category": "named",
+      "fileCount": 2,
+      "documentCount": 7688,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 구문 분석 말뭉치",
+      "category": "dependency",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 문법성 판단 말뭉치",
+      "category": "문법성 판단 말뭉치",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 유사 문장 말뭉치",
+      "category": "유사문장말뭉치",
+      "fileCount": 1,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 어휘 관계 자료 NIKLex",
+      "category": "어휘관계NIKLex",
+      "fileCount": 4,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 신문 말뭉치 2020",
+      "category": "신문말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2020",
+      "category": "구어말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2020",
+      "category": "일상 대화 음성 말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 무형 대용어 복원 말뭉치 2020",
+      "category": "무형 대용어 복원",
+      "fileCount": 2,
+      "documentCount": 7688,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 상호 참조 해결 말뭉치 2019",
+      "category": "상호 참조 해결",
+      "fileCount": 2,
+      "documentCount": 7265,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 서울말 낭독체 발화 말뭉치",
+      "category": "서울말 낭독체 발화 말뭉치",
+      "fileCount": 1,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 신문 말뭉치",
+      "category": "신문말뭉치",
+      "fileCount": 364,
+      "documentCount": 3536491,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 구어 말뭉치",
+      "category": "구어말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 구문 분석 말뭉치",
+      "category": "dependency",
+      "fileCount": 2,
+      "documentCount": 7688,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 2020",
+      "category": "named",
+      "fileCount": 50,
+      "documentCount": 635994,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2020",
+      "category": "구어말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2020",
+      "category": "일상 대화 음성 말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 신문 말뭉치 2020",
+      "category": "신문말뭉치",
+      "fileCount": 35,
+      "documentCount": 999685,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 비출판물 말뭉치",
+      "category": "비출판물",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 의미역 기술 모형",
+      "category": "의미역기술모형",
+      "fileCount": 3660,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 감성 분석 말뭉치 2020",
+      "category": "감성 분석",
+      "fileCount": 1,
+      "documentCount": 2081,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 의미역 분석 말뭉치",
+      "category": "의미역 분석",
+      "fileCount": 1,
+      "documentCount": 7265,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 어휘 의미 분석 말뭉치 2020",
+      "category": "어휘 의미 분석",
+      "fileCount": 2,
+      "documentCount": 7688,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 추론_확신성 분석 말뭉치 2020",
+      "category": "추론_확신성",
+      "fileCount": 2,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 구어 말뭉치",
+      "category": "구어말뭉치",
+      "fileCount": 25696,
+      "documentCount": 25696,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 비출판물 말뭉치",
+      "category": "비출판물",
+      "fileCount": 10753,
+      "documentCount": 10753,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2020",
+      "category": "구어말뭉치",
+      "fileCount": 2232,
+      "documentCount": 2232,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2020",
+      "category": "일상 대화 음성 말뭉치",
+      "fileCount": 870675,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 문법성 판단 말뭉치",
+      "category": "문법성 판단 말뭉치",
+      "fileCount": 6,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 신문 말뭉치 2021",
+      "category": "신문말뭉치",
+      "fileCount": 35,
+      "documentCount": 729280,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 맞춤법 교정 말뭉치 2021",
+      "category": "맞춤법 교정 말뭉치",
+      "fileCount": 2,
+      "documentCount": 44587,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 메신저 말뭉치",
+      "category": "메신저말뭉치",
+      "fileCount": 3836,
+      "documentCount": 3836,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 국회 회의록 말뭉치 2021",
+      "category": "국회 회의록 말뭉치",
+      "fileCount": 5395,
+      "documentCount": 5395,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 속성 기반 감성 분석 말뭉치 2021",
+      "category": "감성 분석",
+      "fileCount": 2,
+      "documentCount": 1026,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 어휘 의미 분석 말뭉치 2020",
+      "category": "어휘 의미 분석",
+      "fileCount": 3,
+      "documentCount": 10140,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 2020",
+      "category": "named",
+      "fileCount": 50,
+      "documentCount": 620092,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 2021",
+      "category": "named",
+      "fileCount": 173,
+      "documentCount": 9636,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 개체 연결 2021",
+      "category": "named",
+      "fileCount": 323,
+      "documentCount": 629728,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 추론_확신성 분석 말뭉치 2021",
+      "category": "추론_확신성",
+      "fileCount": 0,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 온라인 대화 말뭉치 2021",
+      "category": "메신저말뭉치",
+      "fileCount": 47421,
+      "documentCount": 74665,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 추론_확신성 분석 말뭉치 2021",
+      "category": "추론_확신성",
+      "fileCount": 0,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 추론_확신성 분석 말뭉치 2020",
+      "category": "추론_확신성",
+      "fileCount": 0,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 문어 말뭉치",
+      "category": "문어말뭉치",
+      "fileCount": 7061,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 2020",
+      "category": "named",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 개체 연결 2021",
+      "category": "named",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 사전 2021",
+      "category": "named",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "인공지능 언어 능력 평가: 속성 기반 감성 분석",
+      "category": "감성 분석",
+      "fileCount": 3,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 문어 말뭉치",
+      "category": "문어말뭉치",
+      "fileCount": 10045,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 비출판물 말뭉치",
+      "category": "비출판물",
+      "fileCount": 10753,
+      "documentCount": 10753,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2020",
+      "category": "구어말뭉치",
+      "fileCount": 2232,
+      "documentCount": 2232,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2021",
+      "category": "구어말뭉치",
+      "fileCount": 4143,
+      "documentCount": 4143,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 사전 2021",
+      "category": "named",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 개체 연결 2021",
+      "category": "named",
+      "fileCount": 323,
+      "documentCount": 629728,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2021",
+      "category": "일상 대화 음성 말뭉치",
+      "fileCount": 0,
+      "documentCount": 4143,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2020",
+      "category": "일상 대화 음성 말뭉치",
+      "fileCount": 0,
+      "documentCount": 872393,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 신문 말뭉치 2022",
+      "category": "신문말뭉치",
+      "fileCount": 34,
+      "documentCount": 978342,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "혐오 발언 탐지 과제",
+      "category": "평가용 말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "그림(사진) 기반 문장 생성 과제",
+      "category": "평가용 말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "확신성 추론 과제",
+      "category": "평가용 말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "표 기반 문장 생성 과제",
+      "category": "평가용 말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 속성 기반 감성 분석 말뭉치 2021",
+      "category": "감성 분석",
+      "fileCount": 2,
+      "documentCount": 1360,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 맞춤법 교정 말뭉치 2022",
+      "category": "맞춤법 교정 말뭉치",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 36,
+      "documentCount": 36,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-러시아어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 12,
+      "documentCount": 12,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-베트남어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 12,
+      "documentCount": 12,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-우즈베크어어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 12,
+      "documentCount": 12,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-인도네시아어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 12,
+      "documentCount": 12,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-캄보디아 크메르어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 12,
+      "documentCount": 12,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-태국어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 12,
+      "documentCount": 12,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-필리핀어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 12,
+      "documentCount": 12,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-힌디어 병렬 말뭉치 2021",
+      "category": "병렬 말뭉치",
+      "fileCount": 12,
+      "documentCount": 12,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 개체 연결 2022",
+      "category": "named",
+      "fileCount": 3,
+      "documentCount": 87061,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 2022",
+      "category": "named",
+      "fileCount": 3,
+      "documentCount": 870061,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 온라인 게시 자료 말뭉치 2022",
+      "category": "웹말뭉치",
+      "fileCount": 763,
+      "documentCount": 305174,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 국회 회의록 말뭉치 2021",
+      "category": "국회 회의록 말뭉치",
+      "fileCount": 5395,
+      "documentCount": 5395,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "감성 분석 과제_2023년 경진대회",
+      "category": "평가용 말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "이야기 완성 과제_2023년 경진대회",
+      "category": "평가용 말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 온라인 대화 말뭉치 2021",
+      "category": "메신저말뭉치",
+      "fileCount": 47421,
+      "documentCount": 74665,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 2022",
+      "category": "named",
+      "fileCount": 3,
+      "documentCount": 870061,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 분석 말뭉치 개체 연결 2022",
+      "category": "named",
+      "fileCount": 3,
+      "documentCount": 87061,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 개체명 사전 2022",
+      "category": "named",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 형태 분석 말뭉치",
+      "category": "morpheme",
+      "fileCount": 2,
+      "documentCount": 7688,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "함의 분석 평가용 말뭉치",
+      "category": "NONE",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "표의 일부분에 대한 해석 생성 평가용 말뭉치",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "부적절성 문장에 대한 태도 탐지 평가용 말뭉치",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "문자가 포함된 이미지 기반 문장 생성 평가용 말뭉치",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 그래프 기반 문장 생성 말뭉치 2022",
+      "category": "추론_확신성",
+      "fileCount": 1,
+      "documentCount": 1051,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 국회 회의록 요약 말뭉치 2022",
+      "category": "추론_확신성",
+      "fileCount": 0,
+      "documentCount": 500,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2022",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 4,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2022",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 4,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2022",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 4,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2022",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 4,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2022",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 4,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2022",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 4,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2022",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 4,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2022",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 4,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2022",
+      "category": "구어말뭉치",
+      "fileCount": 2654,
+      "documentCount": 2654,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2022",
+      "category": "구어말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 신문 말뭉치 2023",
+      "category": "",
+      "fileCount": 28,
+      "documentCount": 1023431,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2021",
+      "category": "일상 대화 음성 말뭉치",
+      "fileCount": 1420357,
+      "documentCount": 1420357,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2021",
+      "category": "구어말뭉치",
+      "fileCount": 4143,
+      "documentCount": 4143,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2020",
+      "category": "일상 대화 음성 말뭉치",
+      "fileCount": 872393,
+      "documentCount": 872393,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2020",
+      "category": "구어말뭉치",
+      "fileCount": 2232,
+      "documentCount": 2232,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-한국수어 병렬 말뭉치 2022",
+      "category": "수어 임시",
+      "fileCount": 240590,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 대화 맥락 추론 말뭉치 2023",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 4000,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "사전 공개_연결 문장 추론",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 대화 맥락 추론 말뭉치 2023",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 4000,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국어 역사 말뭉치",
+      "category": "",
+      "fileCount": 1153,
+      "documentCount": 1153,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국회 회의록 요약 말뭉치 2023",
+      "category": "",
+      "fileCount": 300,
+      "documentCount": 300,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "사전 공개_일상 대화 요약",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "사전 공개_대화 맥락 추론",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "사전 공개_부적절 발언 탐지",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "사전 공개_함의 분석 결과 설명문 생성",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "사전 공개_국회 회의록 요약",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "묵자-점자 병렬 말뭉치 2023",
+      "category": "NONE",
+      "fileCount": 5,
+      "documentCount": 126693,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "대화 맥락 추론_말평 과제용",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "일상 대화 요약_말평 과제용",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "일상 대화 요약 말뭉치 2023",
+      "category": "",
+      "fileCount": 2000,
+      "documentCount": 2000,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 2023 글쓰기 원시 자료 말뭉치",
+      "category": "",
+      "fileCount": 9171,
+      "documentCount": 9171,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 2023 글쓰기 채점 자료 말뭉치",
+      "category": "NONE",
+      "fileCount": 5000,
+      "documentCount": 5000,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "",
+      "fileCount": 3,
+      "documentCount": 3,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "",
+      "fileCount": 3,
+      "documentCount": 3,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "",
+      "fileCount": 3,
+      "documentCount": 3,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "",
+      "fileCount": 3,
+      "documentCount": 3,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "",
+      "fileCount": 3,
+      "documentCount": 3,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "",
+      "fileCount": 3,
+      "documentCount": 3,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "",
+      "fileCount": 3,
+      "documentCount": 3,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "",
+      "fileCount": 3,
+      "documentCount": 3,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국수어-한국어 병렬 말뭉치 2024",
+      "category": "수어 임시",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국수어 원시 말뭉치 2024",
+      "category": "수어 임시",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국수어 주석 말뭉치 2024",
+      "category": "수어 임시",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국회 회의록 요약",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "함의 분석 결과 설명문 생성",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "부절절 발안 탐지",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "연결 문장 추론",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "이야기 완성",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "감정 분석",
+      "category": "",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2023",
+      "category": "NONE",
+      "fileCount": 1973,
+      "documentCount": 1973,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2023",
+      "category": "NONE",
+      "fileCount": 1973,
+      "documentCount": 1973,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 지역어 말뭉치 2021",
+      "category": "",
+      "fileCount": 290,
+      "documentCount": 290,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 구문분석 말뭉치 2024",
+      "category": "구문 분석",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 무형 대용어 복원 말뭉치 2024",
+      "category": "무형 대용어 복원",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 대화 맥락 추론 말뭉치 2024",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 부적절 발언 탐지 말뭉치 2023",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 신문 말뭉치 2024",
+      "category": "신문말뭉치",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2024",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2024",
+      "category": "",
+      "fileCount": 0,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-한국수어 병렬 말뭉치 2023",
+      "category": "수어 임시",
+      "fileCount": 211782,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 묵자-점자 병렬 말뭉치 2022",
+      "category": "NONE",
+      "fileCount": 4,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 묵자-점자 병렬 말뭉치 2024",
+      "category": "NONE",
+      "fileCount": 2,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "한국어 어문 규범 기반 생성",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "한국문화 질의응답-가 유형",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "한국문화 질의응답-나 유형",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국어 문법 질의응답",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "대화맥락 기반 부적절 발언 탐지 과제",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "한국어 문장 간 논리 관계 판별",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "한국어 일상 대화 연결",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "대화 맥락 추론_2025말평",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "일상 대화 요약_2025말평",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국어 지식 기초 자료 2024",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1597,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "글쓰기 채점 자료 말뭉치 2023(2)",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 4371,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "글쓰기 원시 자료 말뭉치 2024",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 3009,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "글쓰기 채점 자료 말뭉치 2024",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 2629,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "글쓰기 첨삭 지원을 위한 지시문 기반 생성인스트럭션 말뭉치 2024",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 1500,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "문서 요약 말뭉치 2024",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 3856,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "문서 요약 평가 말뭉치 2024",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 3856,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "표 설명 문장 작성 말뭉치 2024",
+      "category": "NONE",
+      "fileCount": 1,
+      "documentCount": 10000,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "한국어-한국수어 병렬 말뭉치 2024",
+      "category": "NONE",
+      "fileCount": 412860,
+      "documentCount": 0,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 말뭉치 2023",
+      "category": "NONE",
+      "fileCount": 1978,
+      "documentCount": 1978,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 일상 대화 음성 말뭉치 2023",
+      "category": "NONE",
+      "fileCount": 1973,
+      "documentCount": 1973,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2023",
+      "category": "NONE",
+      "fileCount": 2,
+      "documentCount": 2,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2024",
+      "category": "",
+      "fileCount": 2,
+      "documentCount": 2,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2024",
+      "category": "",
+      "fileCount": 2,
+      "documentCount": 2,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2024",
+      "category": "",
+      "fileCount": 2,
+      "documentCount": 2,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2024",
+      "category": "",
+      "fileCount": 2,
+      "documentCount": 2,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2024",
+      "category": "",
+      "fileCount": 2,
+      "documentCount": 2,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2024",
+      "category": "",
+      "fileCount": 2,
+      "documentCount": 2,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국어-외국어 병렬 말뭉치 2024",
+      "category": "",
+      "fileCount": 2,
+      "documentCount": 2,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국수어 원시 말뭉치 2025",
+      "category": "",
+      "fileCount": 31,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국수어 주석 말뭉치 2025",
+      "category": "",
+      "fileCount": 24,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국수어-한국어 병렬 말뭉치 2025",
+      "category": "",
+      "fileCount": 24,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국수어-한국어 병렬 말뭉치 2024",
+      "category": "수어 임시",
+      "fileCount": 1,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    },
+    {
+      "name": "국립국어원 한국수어 주석 말뭉치 2024",
+      "category": "수어 임시",
+      "fileCount": 28,
+      "documentCount": 1,
+      "paragraphCount": 0,
+      "sentenceCount": 0,
+      "eojeolCount": 0
+    }
+  ]
+}

@@ -5,6 +5,8 @@ dist/
 firebase-debug.log
 firestore-debug.log
 results/_*
+data/nikl-api-cache.json
+data/nikl-api-cache.*.json
 
 _excerpt*
 _mgmt-src*

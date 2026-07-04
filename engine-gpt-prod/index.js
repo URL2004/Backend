@@ -11,6 +11,7 @@ const { buildContract } = local.contract;
 const { splitChunks, mergeChunks } = local.chunk;
 const floor = local.floor;
 const surfaceguard = local.surfaceguard;
+const koreanQuality = local.koreanQuality;
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { logger } = require('../lib/logger');
 
@@ -135,6 +136,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     reasoningTokens: usage.reasoningTokens,
     estimatedUsd: usage.estimatedUsd,
     usage,
+    koreanQuality: result.koreanQuality || null,
     runtimeConfigSource: cfg.source,
     styleProfile: styleProfile || PROFILE
   };
@@ -247,6 +249,12 @@ async function callHumanize(args) {
     cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, runSemanticJudge, signal
   } = args;
   try {
+    const koreanSourceQuality = safeKoreanQualityAnalysis(original, {
+      mode,
+      register: contract.register
+    });
+    const koreanQualityHints = safeKoreanQualityHints(koreanSourceQuality);
+    const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints);
     const hp = prompts.buildHumanizePrompt(mode, lang, {
       speakerType: contract.speakerType,
       register: contract.register,
@@ -254,7 +262,7 @@ async function callHumanize(args) {
       styleProfile: styleProfile || PROFILE,
       userNotes,
       evidence,
-      riskProfile: compactRisk(inputRisk)
+      riskProfile
     });
     const retryInstruction = phase === 'escalation' ? prompts.buildEscalationInstruction() : '';
     const response = await completeJson({
@@ -321,6 +329,23 @@ async function callHumanize(args) {
       protectedTerms,
       sourceSurface
     });
+    const qualityGate = safeKoreanQualityGate(original, outputText, {
+      mode,
+      register: contract.register,
+      beforeAnalysis: koreanSourceQuality
+    });
+    if (qualityGate) {
+      if (Array.isArray(qualityGate.warnings) && qualityGate.warnings.length) {
+        gate.warnings.push(...qualityGate.warnings);
+      }
+      if (Array.isArray(qualityGate.violations) && qualityGate.violations.length) {
+        gate.violations.push(...qualityGate.violations);
+      }
+      if (qualityGate.blocking) {
+        gate.hardFail = true;
+        gate.reason = qualityGate.reason || 'korean_quality_regression';
+      }
+    }
     if (judgeHardFail) {
       gate.hardFail = true;
       gate.reason = judgeHardFailReason;
@@ -350,6 +375,7 @@ async function callHumanize(args) {
         protectedTerms: response.json.protectedTerms || protectedTerms,
         changedSentenceRatio: response.json.changedSentenceRatio,
         judgeReport,
+        koreanQuality: compactKoreanQualityGate(qualityGate),
         selectedModel: response.model,
         escalated: phase === 'escalation'
       })
@@ -877,6 +903,7 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk })
   try { result.softDrift = local.softguard.measureSoftDrift(source, outputText); } catch {}
   try { result.conclusionDrift = local.softguard.measureConclusionDrift(source, outputText); } catch {}
   try { result.surface = surfaceguard.buildSurfaceReport(outputText); } catch {}
+  try { result.koreanQuality = compactKoreanQualityGate(koreanQuality.evaluateKoreanQuality(source, outputText, { mode, register: contract.register })); } catch {}
   try {
     result.floorReport = floor.buildFloorReport({
       result,
@@ -893,8 +920,23 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk })
       warnings: []
     };
   }
+  attachKoreanQualityWarnings(result.floorReport, result.koreanQuality);
   softenFloorReport(result.floorReport);
   return result;
+}
+
+function attachKoreanQualityWarnings(report, quality) {
+  if (!report || !quality || quality.action === 'pass') return;
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  report.warnings = [
+    ...warnings,
+    {
+      gate: 'korean_quality_final',
+      action: quality.action,
+      reason: quality.reason || '',
+      riskDelta: quality.riskDelta
+    }
+  ];
 }
 
 function softenFloorReport(report) {
@@ -936,7 +978,8 @@ function chunkRecord({
   changedSentenceRatio = null,
   protectedTerms = [],
   selectedModel = '',
-  judgeReport = null
+  judgeReport = null,
+  koreanQuality = null
 }) {
   return {
     index: chunk.index,
@@ -956,6 +999,7 @@ function chunkRecord({
     changedSentenceRatio,
     protectedTerms,
     judgeReport,
+    koreanQuality,
     selectedModel
   };
 }
@@ -1176,6 +1220,34 @@ function safeInputRisk(text) {
   try { return surfaceguard.classifyInputRisk(text); } catch { return null; }
 }
 
+function safeKoreanQualityAnalysis(text, opts = {}) {
+  try { return koreanQuality.analyzeText(text, opts); } catch { return null; }
+}
+
+function safeKoreanQualityHints(analysis) {
+  try { return analysis ? koreanQuality.buildPromptHints(analysis, { max: 8 }) : ''; } catch { return ''; }
+}
+
+function safeKoreanQualityGate(source, output, opts = {}) {
+  try { return koreanQuality.evaluateKoreanQuality(source, output, opts); } catch { return null; }
+}
+
+function compactKoreanQualityGate(gate) {
+  if (!gate) return null;
+  return {
+    action: gate.action,
+    reason: gate.reason || '',
+    koreanRiskDelta: gate.riskDelta,
+    grammarHardDelta: gate.grammarHardDelta || 0,
+    koreanSkillRisk: gate.output?.koreanSkillRisk,
+    translationeseRisk: gate.output?.translationeseRisk,
+    grammarRisk: gate.output?.grammarRisk,
+    styleConsistencyRisk: gate.output?.styleConsistencyRisk,
+    grade: gate.output?.grade,
+    topKoreanPatterns: (gate.output?.topPatterns || []).slice(0, 8)
+  };
+}
+
 function compactRisk(inputRisk) {
   if (!inputRisk) return '';
   return JSON.stringify({
@@ -1184,6 +1256,14 @@ function compactRisk(inputRisk) {
     abstractRiskRatio: inputRisk.abstractRiskRatio,
     needsUserAnchor: inputRisk.needsUserAnchor === true
   });
+}
+
+function composeRiskProfile(inputRisk, koreanQualityHints) {
+  const parts = [];
+  const base = compactRisk(inputRisk);
+  if (base) parts.push(base);
+  if (koreanQualityHints) parts.push(koreanQualityHints);
+  return parts.join('\n\n');
 }
 
 function looksLikeMeta(text) {

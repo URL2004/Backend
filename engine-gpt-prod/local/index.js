@@ -15,5 +15,6 @@ module.exports = {
   dedupe: require('../../engine/dedupe'),
   basicblogtone: require('../../engine/basicblogtone'),
   flowcohesion: require('../../engine/flowcohesion'),
-  softguard: require('../../engine/softguard')
+  softguard: require('../../engine/softguard'),
+  koreanQuality: require('../../engine/koreanQuality')
 };

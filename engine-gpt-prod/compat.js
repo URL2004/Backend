@@ -37,7 +37,7 @@ function modelForTask(cfg, task = '', phase = '') {
   if (t.includes('evidence') || t.includes('search')) return p.includes('escalation') ? cfg.models.evidenceEscalation : cfg.models.evidenceSearch;
   if (p.includes('repair') || p.includes('refine') || p.includes('rewrite')) return cfg.models.repair;
   if (t.includes('coach') || t.includes('classify')) return cfg.models.classify;
-  if (t.includes('judge')) return cfg.models.judge;
+  if (t.includes('judge')) return p.includes('escalation') ? (cfg.models.judgeEscalation || cfg.models.judge) : cfg.models.judge;
   if (t.includes('humanize') || t.includes('analyze')) return cfg.models.humanizePrimary;
   return cfg.models.judge;
 }
@@ -49,7 +49,7 @@ function reasoningForTask(cfg, task = '', phase = '') {
   if (t.includes('evidence') || t.includes('search')) return cfg.reasoning.evidenceSearch;
   if (p.includes('repair') || p.includes('refine') || p.includes('rewrite')) return cfg.reasoning.repair;
   if (t.includes('coach') || t.includes('classify')) return cfg.reasoning.classify;
-  if (t.includes('judge')) return cfg.reasoning.judge;
+  if (t.includes('judge')) return p.includes('escalation') ? (cfg.reasoning.escalation || cfg.reasoning.judge) : cfg.reasoning.judge;
   return cfg.reasoning.humanize;
 }
 
@@ -99,7 +99,7 @@ async function callGpt({
     type: 'message',
     provider: 'openai',
     model: res.model,
-    content: [{ type: 'tool_use', name: tool?.name || 'gpt_compat_result', input: res.json }],
+    content: [{ type: 'structured_result', name: tool?.name || 'gpt_compat_result', input: res.json }],
     usage: res.usage,
     stop_reason: res.incompleteReason ? 'max_tokens' : 'end_turn',
     gptMeta: {
@@ -115,7 +115,7 @@ async function callGpt({
 function extractGptResult(data, toolName) {
   if (data?.json && typeof data.json === 'object') return data.json;
   const blocks = Array.isArray(data?.content) ? data.content : [];
-  const useBlock = blocks.find(b => b && b.type === 'tool_use' && (!toolName || b.name === toolName));
+  const useBlock = blocks.find(b => b && (b.type === 'structured_result' || b.type === 'tool_use') && (!toolName || b.name === toolName));
   if (!useBlock) throw new Error('GPT structured response was not returned.');
   return useBlock.input && typeof useBlock.input === 'object' ? useBlock.input : {};
 }

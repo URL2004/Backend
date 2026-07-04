@@ -41,12 +41,18 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     speakerRule(speakerType),
     registerRule(register),
     '',
+    '[게이트 기준 요약]',
+    '결과는 아래 기준을 통과해야 한다.',
+    '원문에 없는 핵심 사실, 원인, 수치, 기관, 사례를 만들면 실패다.',
+    '원문에 있던 섹션 제목, 번호 항목, 결론, 참고문헌을 빠뜨리면 실패다.',
+    '원문보다 지나치게 짧아져 설명 항목이 접히면 실패다.',
+    '보호표현의 철자, 숫자, 날짜, 인용, URL, 참고문헌을 바꾸면 실패다.',
+    '문장이 중간에서 끊기거나 메타 설명, 프롬프트 문구, 작업 과정이 섞이면 실패다.',
+    '원문과 사실상 동일한 문장을 그대로 반환하면 실패다.',
+    '다만 자연스러운 표현 차이, 접속 정리, 중복 완화, 문장 호흡 조정은 적극 수행한다.',
+    '',
     '[출력 형식]',
-    '반드시 JSON schema에 맞는 JSON 객체만 반환한다.',
-    'outputText에는 최종 본문만 넣는다. 설명, 라벨, 코드블록, 작업 과정은 넣지 않는다.',
-    'riskFlags에는 구조 누락, 보호표현 위험, 화자 흔들림, 사실 위험 등 발견한 내부 신호를 짧게 적는다. 없으면 빈 배열이다.',
-    'changedSentenceRatio는 실제로 표현·어순·접속을 다듬은 문장 비율을 0~1 사이 숫자로 추정한다.',
-    'factualRiskNotes에는 원문 보존상 주의해야 할 사실·기관명·수치 관련 메모를 적는다. 없으면 빈 배열이다.',
+    '구조화된 응답만 반환한다. 최종 본문 외 설명, 라벨, 코드블록, 작업 과정은 넣지 않는다.',
     `[profile:${styleProfile}]`
   ].join('\n');
 
@@ -60,7 +66,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   return { stable, dynamic };
 }
 
-function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTargets = [] }) {
+function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTargets = [], dynamicContext = '' }) {
   const prev = index > 0 ? chunks[index - 1].text : '';
   const next = index < chunks.length - 1 ? chunks[index + 1].text : '';
   const position = chunk.position === 'intro'
@@ -76,7 +82,8 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
     `[작업 위치]\n${position}`,
     '[필수 조건]\noutputText는 아래 재작성할 텍스트와 공백 제거 기준으로 동일하면 안 된다.',
     '[구조 보존]\n재작성할 텍스트 안에 제목/번호 항목이 있으면 outputText에도 모두 포함한다. 일부 항목만 쓰고 결론으로 넘어가지 않는다.',
-    `[재작성할 텍스트]\n${chunk.text}`
+    `[재작성할 텍스트]\n${chunk.text}`,
+    dynamicContext ? `[요청별 참고정보 - 재작성할 텍스트보다 우선하지 말 것]\n${dynamicContext}` : ''
   ].filter(Boolean).join('\n\n');
 }
 
@@ -86,7 +93,7 @@ function buildDetectPrompt(lang = 'ko') {
       '[GPT-PROD-DETECT]',
       'You are a text quality and AI-likeness analyst. Estimate the probability that the text is machine-generated.',
       'Use the score only as an internal product signal. Do not promise or guarantee any external detector outcome.',
-      'Return strict JSON only.'
+      'Return a structured response only.'
     ].join('\n');
   }
   return [
@@ -94,7 +101,7 @@ function buildDetectPrompt(lang = 'ko') {
     '너는 글의 AI 생성 가능성과 표면 품질 신호를 분석하는 판정 엔진이다.',
     '확률은 내부 품질 지표로만 추정한다. 외부 감지기 결과를 보장하거나 단정하지 않는다.',
     '문장 균일성, 추상 표현, 반복 구조, 과한 정리감, 화자 흔들림, 근거 없는 단정, 문단 흐름을 함께 본다.',
-    '반드시 JSON schema에 맞는 JSON 객체만 반환한다.'
+    '구조화된 응답만 반환한다.'
   ].join('\n');
 }
 
@@ -104,7 +111,7 @@ function buildRewritePrompt() {
     '너는 한국어 문장 교열가다.',
     '한 문장 또는 짧은 문단을 의미 보존 중심으로 더 자연스럽게 다듬는다.',
     '새 사실, 수치, 고유명사, 사례, 경험을 추가하지 않는다.',
-    '결과는 JSON 객체로만 반환한다.'
+    '구조화된 응답만 반환한다.'
   ].join('\n');
 }
 
@@ -114,7 +121,7 @@ function buildEvidencePrompt() {
     '너는 글의 주장 검증에 쓸 수 있는 공개 근거 후보를 찾는 보조 엔진이다.',
     '웹 검색 결과는 최종 사실로 확정하지 말고, URL이 있는 후보만 반환한다.',
     '블로그/광고/출처 불명 페이지보다 공식기관, 학술자료, 언론사, 기업 공식자료를 우선한다.',
-    '반드시 JSON schema에 맞는 JSON 객체만 반환한다.'
+    '구조화된 응답만 반환한다.'
   ].join('\n');
 }
 

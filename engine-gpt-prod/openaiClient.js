@@ -10,7 +10,7 @@ const DEFAULT_RETRY_ATTEMPTS = 3;
 
 function sanitizeEffort(value, fallback = 'low') {
   const v = String(value || '').trim().toLowerCase();
-  return ['low', 'medium', 'high', 'minimal', 'default', 'none'].includes(v) ? v : fallback;
+  return ['none', 'low', 'medium', 'high', 'xhigh', 'minimal', 'default'].includes(v) ? v : fallback;
 }
 
 function promptCacheKey(config, { task, mode, profile, schemaName, phase, model } = {}) {
@@ -41,6 +41,8 @@ async function completeJson({
   maxOutputTokens = 4096,
   config,
   tools,
+  toolChoice,
+  include,
   signal,
   meta = {}
 } = {}) {
@@ -69,7 +71,7 @@ async function completeJson({
   };
 
   const effort = sanitizeEffort(reasoningEffort, 'low');
-  if (effort && effort !== 'default' && effort !== 'none') {
+  if (effort && effort !== 'default') {
     body.reasoning = { effort };
   }
 
@@ -78,6 +80,8 @@ async function completeJson({
   const retention = config?.cache?.retention || process.env.OPENAI_PROMPT_CACHE_RETENTION;
   if (retention) body.prompt_cache_retention = String(retention);
   if (Array.isArray(tools) && tools.length) body.tools = tools;
+  if (toolChoice) body.tool_choice = toolChoice;
+  if (Array.isArray(include) && include.length) body.include = include.map(v => String(v)).filter(Boolean);
 
   const startedAt = Date.now();
   const response = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, {

@@ -59,7 +59,7 @@ async function loadConfig(config) {
   return config ? gptRuntimeConfig.publicConfig(config, config.source || 'inline') : gptRuntimeConfig.getRuntimeConfig({ force: false });
 }
 
-async function buildSoftClaimLedger(rawText, { lang = 'ko', signal, config } = {}) {
+async function buildSoftClaimLedger(rawText, { lang = 'ko', signal, config, model, reasoningEffort, phase = 'ledger' } = {}) {
   const cfg = await loadConfig(config);
   const source = String(rawText || '');
   const cap = Math.min(40, Math.max(12, Math.round(source.replace(/\s+/g, '').length / 300)));
@@ -71,13 +71,13 @@ async function buildSoftClaimLedger(rawText, { lang = 'ko', signal, config } = {
     user: `[SOURCE]\n${source}`,
     schema: LEDGER_SCHEMA,
     schemaName: 'gpt_prod_soft_claim_ledger',
-    model: cfg.models.judge,
-    reasoningEffort: cfg.reasoning.judge,
+    model: model || cfg.models.judge,
+    reasoningEffort: reasoningEffort || cfg.reasoning.judge,
     verbosity: 'low',
     maxOutputTokens: Math.min(8192, 2048 + cap * 180),
     config: cfg,
     signal,
-    meta: { task: 'judge', phase: 'ledger', mode: 'judge', profile: 'gpt_prod_judge' }
+    meta: { task: 'judge', phase, mode: 'judge', profile: 'gpt_prod_judge' }
   });
   const claims = Array.isArray(res.json.claims) ? res.json.claims : [];
   const kept = claims.filter(c => evidenceMatches(source, c.evidence_text)).slice(0, cap);
@@ -89,7 +89,7 @@ async function buildSoftClaimLedger(rawText, { lang = 'ko', signal, config } = {
   };
 }
 
-async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, config, allowedExtra = '', mode = '' } = {}) {
+async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, config, allowedExtra = '', mode = '', model, reasoningEffort, phase = 'semantic' } = {}) {
   const cfg = await loadConfig(config);
   const claimsText = ledgerToText(ledger);
   const system = lang === 'en'
@@ -106,15 +106,20 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     user,
     schema: JUDGE_SCHEMA,
     schemaName: 'gpt_prod_semantic_judge',
-    model: cfg.models.judge,
-    reasoningEffort: cfg.reasoning.judge,
+    model: model || cfg.models.judge,
+    reasoningEffort: reasoningEffort || cfg.reasoning.judge,
     verbosity: 'low',
     maxOutputTokens: 2400,
     config: cfg,
     signal,
-    meta: { task: 'judge', phase: 'semantic', mode, profile: 'gpt_prod_judge' }
+    meta: { task: 'judge', phase, mode, profile: 'gpt_prod_judge' }
   });
-  const violations = (res.json.violations || []).filter(v => v && outputText.includes(v.span || ''));
+  const violations = (res.json.violations || [])
+    .filter(v => v && (v.type === 'distortion' || v.type === 'added_claim') && (v.detail || v.span))
+    .map(v => ({
+      ...v,
+      spanVerified: v.span ? outputText.includes(v.span) : false
+    }));
   return { pass: violations.length === 0, violations, gptMeta: responseMeta(res) };
 }
 
@@ -151,26 +156,108 @@ async function repairViolations(rawText, outputText, ledger, violations, { lang 
 }
 
 async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config, maxRounds = 1, allowedExtra = '', mode = '' } = {}) {
-  const ledger = await buildSoftClaimLedger(rawText, { lang, signal, config });
+  const cfg = await loadConfig(config);
+  const primary = await judgeAndRepairWithModel(rawText, outputText, {
+    lang,
+    signal,
+    config: cfg,
+    maxRounds,
+    allowedExtra,
+    mode,
+    judgeModel: cfg.models.judge,
+    judgeReasoning: cfg.reasoning.judge,
+    phasePrefix: 'primary'
+  });
+  if (primary.pass === true) return primary;
+
+  const escalationModel = cfg.models.judgeEscalation || cfg.models.humanizeEscalation || cfg.models.judge;
+  if (!escalationModel || escalationModel === cfg.models.judge) return primary;
+
+  const escalated = await judgeAndRepairWithModel(rawText, outputText, {
+    lang,
+    signal,
+    config: cfg,
+    maxRounds,
+    allowedExtra,
+    mode,
+    judgeModel: escalationModel,
+    judgeReasoning: cfg.reasoning.escalation || cfg.reasoning.judge,
+    phasePrefix: 'escalation'
+  });
+  return {
+    ...escalated,
+    escalated: true,
+    primaryJudge: summarizeJudge(primary)
+  };
+}
+
+async function judgeAndRepairWithModel(rawText, outputText, {
+  lang,
+  signal,
+  config,
+  maxRounds,
+  allowedExtra,
+  mode,
+  judgeModel,
+  judgeReasoning,
+  phasePrefix
+}) {
+  const ledger = await buildSoftClaimLedger(rawText, {
+    lang,
+    signal,
+    config,
+    model: judgeModel,
+    reasoningEffort: judgeReasoning,
+    phase: `${phasePrefix}:ledger`
+  });
   const health = validateLedgerHealth(ledger, rawText);
   if (!health.healthy) {
-    return { outputText, pass: false, skipped: true, reason: health.reason, ledger };
+    return { outputText, pass: false, skipped: true, reason: health.reason, ledger, selectedJudgeModel: judgeModel };
   }
   let current = outputText;
-  let judge = await semanticJudge(rawText, current, ledger, { lang, signal, config, allowedExtra, mode });
+  let judge = await semanticJudge(rawText, current, ledger, {
+    lang,
+    signal,
+    config,
+    allowedExtra,
+    mode,
+    model: judgeModel,
+    reasoningEffort: judgeReasoning,
+    phase: `${phasePrefix}:semantic`
+  });
   let rounds = 0;
   while (!judge.pass && rounds < maxRounds) {
     rounds++;
     const repaired = await repairViolations(rawText, current, ledger, judge.violations, { lang, signal, config });
     current = repaired.outputText || current;
-    judge = await semanticJudge(rawText, current, ledger, { lang, signal, config, allowedExtra, mode });
+    judge = await semanticJudge(rawText, current, ledger, {
+      lang,
+      signal,
+      config,
+      allowedExtra,
+      mode,
+      model: judgeModel,
+      reasoningEffort: judgeReasoning,
+      phase: `${phasePrefix}:semantic_after_repair`
+    });
   }
   return {
     outputText: current,
     pass: judge.pass,
     violations: judge.violations || [],
     ledger,
-    rounds
+    rounds,
+    selectedJudgeModel: judgeModel
+  };
+}
+
+function summarizeJudge(report) {
+  return {
+    pass: report?.pass === true,
+    skipped: report?.skipped === true,
+    reason: report?.reason || '',
+    selectedJudgeModel: report?.selectedJudgeModel || '',
+    violationCount: Array.isArray(report?.violations) ? report.violations.length : 0
   };
 }
 

@@ -6,10 +6,11 @@ const { completeJson, webSearchTool } = require('./openaiClient');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
 const prompts = require('./prompts');
 const { addUsage, emptyUsage } = require('./usageCost');
-const { buildContract } = require('../engine/contract');
-const { splitChunks, mergeChunks } = require('../engine/chunk');
-const floor = require('../engine/floor');
-const surfaceguard = require('../engine/surfaceguard');
+const local = require('./local');
+const { buildContract } = local.contract;
+const { splitChunks, mergeChunks } = local.chunk;
+const floor = local.floor;
+const surfaceguard = local.surfaceguard;
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { logger } = require('../lib/logger');
 
@@ -251,8 +252,8 @@ async function callHumanize(args) {
     });
     const retryInstruction = phase === 'escalation' ? buildEscalationInstruction() : '';
     const response = await completeJson({
-      system: [hp.stable, retryInstruction, hp.dynamic].filter(Boolean).join('\n\n'),
-      user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets }),
+      system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
+      user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets, dynamicContext: hp.dynamic }),
       schema: HUMANIZE_SCHEMA,
       schemaName: 'gpt_prod_humanize_result',
       model,
@@ -381,36 +382,47 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   const cfg = await loadConfig(config);
   const user = lang === 'en' ? `[TEXT TO ANALYZE]\n${source}` : `[분석할 글]\n${source}`;
   try {
-    const res = await completeJson({
-      system: prompts.buildDetectPrompt(lang),
+    const res = await callDetectModel({
+      prompt: prompts.buildDetectPrompt(lang),
       user,
-      schema: DETECT_SCHEMA,
-      schemaName: 'gpt_prod_detect_result',
+      cfg,
+      signal,
+      route,
+      phase: 'detect:primary',
       model: cfg.models.detect,
       reasoningEffort: cfg.reasoning.detect,
-      verbosity: 'low',
-      maxOutputTokens: 2200,
-      config: cfg,
-      signal,
-      meta: { task: route, phase: 'detect:primary', mode: 'detect', profile: PROFILE }
+      escalated: false
     });
-    const out = normalizeDetectResult(res.json);
+    let out = normalizeDetectResult(res.json);
     out.gptMeta = metaFromResponse(res, cfg, { task: route, escalated: false });
+    if (shouldEscalateDetect(out, source, cfg)) {
+      const esc = await callDetectModel({
+        prompt: prompts.buildDetectPrompt(lang),
+        user,
+        cfg,
+        signal,
+        route,
+        phase: 'detect:confidence_escalation',
+        model: cfg.models.detectEscalation,
+        reasoningEffort: cfg.reasoning.escalation,
+        escalated: true
+      });
+      out = normalizeDetectResult(esc.json);
+      out.gptMeta = metaFromResponse(esc, cfg, { task: route, escalated: true, primaryConfidence: res.json.confidence || '' });
+    }
     return out;
   } catch (firstErr) {
     try {
-      const res = await completeJson({
-        system: prompts.buildDetectPrompt(lang),
+      const res = await callDetectModel({
+        prompt: prompts.buildDetectPrompt(lang),
         user,
-        schema: DETECT_SCHEMA,
-        schemaName: 'gpt_prod_detect_result',
+        cfg,
+        signal,
+        route,
+        phase: 'detect:escalation',
         model: cfg.models.detectEscalation,
         reasoningEffort: cfg.reasoning.escalation,
-        verbosity: 'low',
-        maxOutputTokens: 2200,
-        config: cfg,
-        signal,
-        meta: { task: route, phase: 'detect:escalation', mode: 'detect', profile: PROFILE, escalated: true }
+        escalated: true
       });
       const out = normalizeDetectResult(res.json);
       out.gptMeta = metaFromResponse(res, cfg, { task: route, escalated: true, primaryError: firstErr.message });
@@ -421,6 +433,22 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       return deterministicDetectFallback(source, firstErr || err);
     }
   }
+}
+
+async function callDetectModel({ prompt, user, cfg, signal, route, phase, model, reasoningEffort, escalated }) {
+  return await completeJson({
+      system: prompt,
+      user,
+      schema: DETECT_SCHEMA,
+      schemaName: 'gpt_prod_detect_result',
+      model,
+      reasoningEffort,
+      verbosity: 'low',
+      maxOutputTokens: 2200,
+      config: cfg,
+      signal,
+      meta: { task: route, phase, mode: 'detect', profile: PROFILE, escalated }
+    });
 }
 
 async function rewriteSentence({ text, lang = 'ko', signal, config } = {}) {
@@ -473,6 +501,8 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
     verbosity: 'low',
     maxOutputTokens: 2500,
     tools: [webSearchTool()],
+    toolChoice: 'required',
+    include: ['web_search_call.action.sources'],
     config: cfg,
     signal,
     meta: { task: 'evidence_search', phase, mode: 'evidence', profile: PROFILE, escalated: phase.includes('escalation') }
@@ -780,14 +810,14 @@ function sanitizeOutput(value) {
 
 function chunkPostprocess(text, original, mode, contract) {
   let out = String(text || '').trim();
-  try { out = require('../engine/spacing').fixSpacing(out).text; } catch {}
-  try { out = require('../engine/spacing').restoreUrls(out, original).text; } catch {}
-  try { out = require('../engine/spacing').stripAiUrlParams(out).text; } catch {}
+  try { out = local.spacing.fixSpacing(out).text; } catch {}
+  try { out = local.spacing.restoreUrls(out, original).text; } catch {}
+  try { out = local.spacing.stripAiUrlParams(out).text; } catch {}
   try {
     const target = mode === 'blog'
       ? (contract.register === 'polite' ? 'hap' : contract.register === 'haeyo' ? 'haeyo' : null)
       : (contract.register === 'polite' ? 'hap' : contract.register === 'plain' ? 'handa' : contract.register === 'haeyo' ? 'haeyo' : null);
-    if (target) out = require('../engine/registernormalize').normalizeRegister(out, target).text;
+    if (target) out = local.registernormalize.normalizeRegister(out, target).text;
   } catch {}
   return out.trim();
 }
@@ -820,15 +850,15 @@ function tidyParagraphsLocal(doc) {
 function finalPostprocess(text, source, mode, contract) {
   let out = String(text || '').trim();
   try { out = tidyParagraphsLocal(out); } catch {}
-  try { out = require('../engine/dedupe').dedupeSentences(out).text; } catch {}
+  try { out = local.dedupe.dedupeSentences(out).text; } catch {}
   try {
     if (mode === 'blog') {
       const target = contract.register === 'polite' ? 'hap' : 'haeyo';
-      out = require('../engine/basicblogtone').cleanupBasicBlogTone(out, { register: target }).text;
+      out = local.basicblogtone.cleanupBasicBlogTone(out, { register: target }).text;
     }
   } catch {}
-  try { out = require('../engine/flowcohesion').flowCohesion(out).text || out; } catch {}
-  try { out = require('../engine/spacing').restoreUrls(out, source).text; } catch {}
+  try { out = local.flowcohesion.flowCohesion(out).text || out; } catch {}
+  try { out = local.spacing.restoreUrls(out, source).text; } catch {}
   return out.trim();
 }
 
@@ -847,8 +877,8 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk })
   try { result.floorLength = floor.measureLength(source, outputText, mode); } catch {}
   try { result.repetition = floor.measureRepetition(outputText); } catch {}
   try { result.lostFacts = floor.measureLostFacts(source, outputText); } catch {}
-  try { result.softDrift = require('../engine/softguard').measureSoftDrift(source, outputText); } catch {}
-  try { result.conclusionDrift = require('../engine/softguard').measureConclusionDrift(source, outputText); } catch {}
+  try { result.softDrift = local.softguard.measureSoftDrift(source, outputText); } catch {}
+  try { result.conclusionDrift = local.softguard.measureConclusionDrift(source, outputText); } catch {}
   try { result.surface = surfaceguard.buildSurfaceReport(outputText); } catch {}
   try {
     result.floorReport = floor.buildFloorReport({
@@ -961,6 +991,16 @@ function normalizeDetectResult(json) {
     signals: Array.isArray(json.signals) ? json.signals.slice(0, 12) : [],
     confidence: ['low', 'medium', 'high'].includes(json.confidence) ? json.confidence : 'medium'
   };
+}
+
+function shouldEscalateDetect(out, source, cfg) {
+  if (!cfg?.models?.detectEscalation || cfg.models.detectEscalation === cfg.models.detect) return false;
+  const probability = Number(out?.probability);
+  const signals = Array.isArray(out?.signals) ? out.signals.length : 0;
+  if (out?.confidence === 'low') return true;
+  if (Number.isFinite(probability) && probability >= 45 && probability <= 65 && signals < 3) return true;
+  if (String(source || '').length >= 6000 && out?.confidence !== 'high') return true;
+  return false;
 }
 
 function collectWebSearchUrls(raw) {

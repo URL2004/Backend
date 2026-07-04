@@ -4,13 +4,39 @@ const HUMANIZE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    outputText: { type: 'string' },
-    editIntensity: { type: 'string', enum: ['light', 'medium', 'strong'] },
-    protectedTerms: { type: 'array', items: { type: 'string' } },
-    riskFlags: { type: 'array', items: { type: 'string' } },
-    changedSentenceRatio: { type: 'number' },
-    factualRiskNotes: { type: 'array', items: { type: 'string' } },
-    warnings: { type: 'array', items: { type: 'string' } }
+    outputText: {
+      type: 'string',
+      description: 'Final rewritten body only. Do not include explanations, labels, or code fences.'
+    },
+    editIntensity: {
+      type: 'string',
+      enum: ['light', 'medium', 'strong'],
+      description: 'How much ordinary prose was edited while preserving protected terms and facts.'
+    },
+    protectedTerms: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Protected source terms that were preserved verbatim.'
+    },
+    riskFlags: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Short internal risk flags such as structure_loss, speaker_drift, protected_term_risk, or factual_risk.'
+    },
+    changedSentenceRatio: {
+      type: 'number',
+      description: 'Estimated 0-1 ratio of sentences whose wording, order, or connection changed meaning-preservingly.'
+    },
+    factualRiskNotes: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Brief notes about numbers, names, references, or claims that required preservation care.'
+    },
+    warnings: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Non-fatal warnings from the rewrite attempt.'
+    }
   },
   required: ['outputText', 'editIntensity', 'protectedTerms', 'riskFlags', 'changedSentenceRatio', 'factualRiskNotes', 'warnings']
 };

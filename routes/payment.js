@@ -1111,6 +1111,7 @@ router.post('/admin/update-gpt-runtime-config', async (req, res) => {
       shadowMode: config.shadowMode,
       humanizePrimary: config.models.humanizePrimary,
       humanizeEscalation: config.models.humanizeEscalation,
+      judgeEscalation: config.models.judgeEscalation,
       detect: config.models.detect,
       cacheEnabled: config.cache.enabled,
       models: config.models,

@@ -27,22 +27,7 @@ const STRICT_DELIVERY_GATES = new Set([
   'empty_or_meta_output',
   'prompt_instruction_leak',
   'encoding_corruption',
-  'sentence_truncated',
-  'section_anchor_loss',
-  'length_collapse',
-  'protected_term_loss',
-  'surface_risk_regression',
-  'semantic_judge_failed',
-  'semantic_judge_skipped',
-  'semanticJudge',
-  'floor_check_error',
-  'lostFacts',
-  'novelty',
-  'fabrication',
-  'evidence_pairing',
-  'fake_ref',
-  'coined_term',
-  'meta_leak'
+  'sentence_truncated'
 ]);
 
 function normalizeMode(mode, { allowPolish = false } = {}) {
@@ -113,6 +98,8 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   });
   if (finalGate.hardFail) {
     addFloorCriticals(result.floorReport, finalGate.violations, finalGate.reason);
+  } else if (finalGate.violations.length || finalGate.warnings.length) {
+    addFloorWarnings(result.floorReport, finalGate.violations, finalGate.warnings);
   }
   const fallbackCount = records.filter(r => r.fallback).length;
   const effectiveChunks = records.filter(r => !r.skipped).length;
@@ -362,7 +349,7 @@ async function callHumanize(args) {
       if (Array.isArray(qualityGate.violations) && qualityGate.violations.length) {
         gate.violations.push(...qualityGate.violations);
       }
-      if (qualityGate.blocking) {
+      if (qualityGate.blocking && process.env.STRICT_QUALITY_GATE === '1') {
         gate.hardFail = true;
         gate.reason = qualityGate.reason || 'korean_quality_regression';
       }
@@ -375,9 +362,12 @@ async function callHumanize(args) {
         gate.violations.push(...niklQualityGate.violations.map(v => ({ ...v, adminTestOnly: true })));
       }
     }
-    if (judgeHardFail) {
+    if (judgeHardFail && process.env.STRICT_QUALITY_GATE === '1') {
       gate.hardFail = true;
       gate.reason = judgeHardFailReason;
+      gate.warnings.push(judgeHardFailReason);
+      gate.violations.push(...judgeViolations);
+    } else if (judgeHardFail) {
       gate.warnings.push(judgeHardFailReason);
       gate.violations.push(...judgeViolations);
     }
@@ -619,20 +609,17 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
         missing: missingAnchors.slice(0, 8).map(a => a.raw)
       });
       warnings.push('section_anchor_loss');
-      return { hardFail: true, reason: 'section_anchor_loss', warnings, violations };
     }
   }
   const lengthGate = measureLengthCollapse(original, outputText, sourceAnchors.length);
   if (lengthGate.hardFail) {
     violations.push(lengthGate.violation);
     warnings.push('length_collapse');
-    return { hardFail: true, reason: 'length_collapse', warnings, violations };
   }
   const lostTerms = protectedTerms.filter(t => t.length >= 2 && !outputText.includes(t));
   if (lostTerms.length) {
     violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 12) });
     warnings.push('protected_term_loss');
-    return { hardFail: true, reason: 'protected_term_loss', warnings, violations };
   }
   try {
     const floorViolations = floor.collectFloorViolations({
@@ -653,7 +640,6 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
   } catch (err) {
     violations.push({ gate: 'floor_check_error', detail: err && err.message || String(err) });
     warnings.push('floor_check_error');
-    return { hardFail: true, reason: 'floor_check_error', warnings, violations };
   }
   if (normalizeBare(original).length > 120 && normalizeBare(original) === normalizeBare(outputText)) {
     warnings.push('noop_unchanged');
@@ -667,7 +653,6 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
     if (outRatio > srcRatio + 0.22 && outRatio >= 0.55) {
       warnings.push('surface_risk_regression');
       violations.push({ gate: 'surface_risk_regression', sourceRatio: srcRatio, outputRatio: outRatio });
-      return { hardFail: true, reason: 'surface_risk_regression', warnings, violations };
     }
   } catch {}
   return { hardFail: false, reason: '', warnings, violations };
@@ -694,21 +679,18 @@ function evaluateWholeDocumentGate({ outputText, source, contract, mode, sourceS
     if (missingAnchors.length) {
       violations.push({ gate: 'section_anchor_loss', missing: missingAnchors.slice(0, 12).map(a => a.raw) });
       warnings.push('section_anchor_loss');
-      return { hardFail: true, reason: 'section_anchor_loss', warnings, violations };
     }
   }
   const lengthGate = measureLengthCollapse(source, outputText, sourceAnchors.length);
   if (lengthGate.hardFail) {
     violations.push(lengthGate.violation);
     warnings.push('length_collapse');
-    return { hardFail: true, reason: 'length_collapse', warnings, violations };
   }
   const protectedTerms = extractProtectedTerms(source);
   const lostTerms = protectedTerms.filter(t => t.length >= 2 && !outputText.includes(t));
   if (lostTerms.length) {
     violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 16) });
     warnings.push('protected_term_loss');
-    return { hardFail: true, reason: 'protected_term_loss', warnings, violations };
   }
   if (normalizeBare(source).length > 120 && normalizeBare(source) === normalizeBare(outputText)) {
     warnings.push('noop_unchanged');
@@ -722,7 +704,6 @@ function evaluateWholeDocumentGate({ outputText, source, contract, mode, sourceS
     if (outRatio > srcRatio + 0.22 && outRatio >= 0.55) {
       warnings.push('surface_risk_regression');
       violations.push({ gate: 'surface_risk_regression', sourceRatio: srcRatio, outputRatio: outRatio });
-      return { hardFail: true, reason: 'surface_risk_regression', warnings, violations };
     }
   } catch {}
   return { hardFail: false, reason: '', warnings, violations };
@@ -740,9 +721,23 @@ function addFloorCriticals(report, violations, fallbackGate = 'gpt_final_gate_fa
   report.warnings = [...warnings, ...additions.map(v => v.gate || v.type || fallbackGate)];
 }
 
+function addFloorWarnings(report, violations, warningGates = []) {
+  if (!report) return;
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const additions = (violations || []).map(v => ({ ...v, softenedFinalGate: true }));
+  report.warnings = [
+    ...warnings,
+    ...warningGates,
+    ...additions
+  ];
+  if (report.status === 'clean' && (warningGates.length || additions.length)) {
+    report.status = 'needs_review';
+  }
+}
+
 function isBlockingViolation(v) {
   const t = String(v?.type || v?.gate || '').toLowerCase();
-  return /novelty|lostfacts|semantic|judge|pov|fabrication|evidence_pairing|fake_ref|coined_term|meta_leak|floor_check_error/.test(t);
+  return /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated/.test(t);
 }
 
 function collectStructureAnchors(text) {

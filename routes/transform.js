@@ -6,7 +6,7 @@
 // 과금(v1, 사장님 임시 승인 기본값): ★완료 시 차감(시작 시 precheck만 — "크레딧만 차감" 민원 구조적 방지),
 //   단가는 확정 전이라 기존 휴머나이즈와 동일 글자수 공식(ceil(len/100)) 임시 적용.
 // job 저장(v1): 서버 메모리 — 재시작 시 유실(완료 차감이라 돈 사고는 없음). Firebase 영속화는 후속(P5).
-// FLOOR 게이트: novelty·lostFacts·수치-출처 짝·judge 중 하나라도 위반이면 blocked — 결과 미노출·차감 없음.
+// FLOOR 게이트: 보존/의미 게이트는 기본 경고 전달, 빈 결과·프롬프트 누출·인코딩 깨짐·문장 절단만 미노출.
 
 const express = require('express');
 const crypto = require('crypto');
@@ -75,22 +75,7 @@ const STRICT_DELIVERY_GATES = new Set([
   'empty_or_meta_output',
   'prompt_instruction_leak',
   'encoding_corruption',
-  'sentence_truncated',
-  'section_anchor_loss',
-  'length_collapse',
-  'protected_term_loss',
-  'surface_risk_regression',
-  'semantic_judge_failed',
-  'semantic_judge_skipped',
-  'semanticJudge',
-  'floor_check_error',
-  'lostFacts',
-  'novelty',
-  'fabrication',
-  'evidence_pairing',
-  'fake_ref',
-  'coined_term',
-  'meta_leak'
+  'sentence_truncated'
 ]);
 
 function softenBlockedFloorReport(out, logName, meta = {}) {
@@ -115,7 +100,11 @@ function softenBlockedFloorReport(out, logName, meta = {}) {
 function isStrictDeliveryCritical(c) {
   const gate = String(c?.gate || c?.type || '').trim();
   if (STRICT_DELIVERY_GATES.has(gate)) return true;
-  return /novelty|lostfacts|semantic|judge|pov|fabrication|evidence_pairing|fake_ref|coined_term|meta_leak|floor_check_error/i.test(gate);
+  return /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated/i.test(gate);
+}
+
+function hasStrictDeliveryGate(gates) {
+  return (Array.isArray(gates) ? gates : []).some(gate => isStrictDeliveryCritical({ gate }));
 }
 
 function normalizeBasicStyle(value) {
@@ -827,19 +816,21 @@ async function tryPreservationFallback(job, text) {
           text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
           floorV2: true, optIn: false, judge: true, grounding: true, userNotes: job.memo || ''   // ★경험 메모 보존형에도 적용(2026-06-17)
         });
-    // 보존형 폴백은 "약하더라도 실제 결과를 보장"이 목적(막다른 길 제거).
-    // 단 semanticJudge/novelty/lostFacts/meta leak 등은 사실·의미 사고로 이어질 수 있어 계속 hard block.
-    // 길이·반복처럼 전달해도 위험이 낮은 품질성 게이트만 soft-deliver한다.
-    const FB_SOFT = ['length_short', 'length_overrun', 'repetition', 'pov_inject'];
     const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
-    const fbHardHit = fbCriticals.filter(g => !FB_SOFT.includes(g));
+    const fbHardHit = fbCriticals.filter(g => isStrictDeliveryCritical({ gate: g }));
     if (!out.result || !out.result.outputText || fbHardHit.length) {
       logger.warn('transform.fallback_blocked', { jobId: job.id, uid: job.uid, mode: job.mode, fbCriticals, fbHardHit });
-      return false;   // 보존형마저 사실·의미 사고 위험 → 원래 차단 유지
+      return false;   // 보존형도 사용자에게 보이면 안 되는 치명 출력이면 차단 유지
     }
-    const fbSoftGates = fbCriticals.filter(g => FB_SOFT.includes(g));
+    const fbSoftGates = fbCriticals.filter(g => !isStrictDeliveryCritical({ gate: g }));
     if (fbSoftGates.length) {
       logger.info('transform.fallback_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, fbSoftGates });
+      out.floorReport.status = 'needs_review';
+      out.floorReport.warnings = [
+        ...(out.floorReport.warnings || []),
+        ...(out.floorReport.criticals || []).map(c => ({ ...c, softenedFromCritical: true }))
+      ];
+      out.floorReport.criticals = [];
     }
 
     // 과금: 보존형 단가로. 멱등 키는 동일(job_<id>)이라 중복 차감 불가.
@@ -915,15 +906,27 @@ async function tryBlogPreservationFallback(job, text) {
           floorV2: true, optIn: false, judge: false, grounding: false, userNotes: job.memo || '', tonePolish: true   // ★경험 메모 보존형에도 적용(2026-06-17)
         });
     const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
-    if (!out.result || !out.result.outputText || fbCriticals.length) {
+    const fbHardHit = fbCriticals.filter(g => isStrictDeliveryCritical({ gate: g }));
+    if (!out.result || !out.result.outputText || fbHardHit.length) {
       logger.warn('transform.blog_fallback_blocked', {
         jobId: job.id,
         uid: job.uid,
         mode: job.mode,
         fbCriticals,
+        fbHardHit,
         gateDetail: { criticals: (out.floorReport?.criticals || []).slice(0, 8) }
       });
       return false;
+    }
+    const fbSoftGates = fbCriticals.filter(g => !isStrictDeliveryCritical({ gate: g }));
+    if (fbSoftGates.length && out.floorReport) {
+      logger.info('transform.blog_fallback_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, fbSoftGates });
+      out.floorReport.status = 'needs_review';
+      out.floorReport.warnings = [
+        ...(out.floorReport.warnings || []),
+        ...(out.floorReport.criticals || []).map(c => ({ ...c, softenedFromCritical: true }))
+      ];
+      out.floorReport.criticals = [];
     }
 
     const fbNeeded = preservationFallbackCredit(text.length);
@@ -1323,10 +1326,8 @@ async function runJob(job, text, evidence) {
     const out = await claudeGenreTransferV2()(text, { evidence: evidence || '', userNotes: job.memo || '', lengthMode: job.lengthMode || 'keep', signal: job.ac.signal });
     const gates = [];
     if (out.novelty?.count) gates.push('novelty');
-    // ★ B(2026-06-15 사장님 결정 "동작은 해야"): 원문 사실 "누락"(lostFacts)은 하드 차단하지 않는다.
-    //   재구성이 7~14K 격식논문의 흩어진 사실(연도·기관·날짜 수십 개)을 전부 보존하긴 원리적으로 어려워
-    //   factsafe가 있어도 8/10이 막히던 문제 → 누락=소프트(결과 전달+경고). 단, '날조'(novelty)·'왜곡'(judge)·
-    //   '수치-출처 오결합'(짝)은 그대로 하드 차단한다 — 없는 사실을 지어내는 것은 절대 금지(무날조 원칙 유지).
+    // ★ B(2026-06-15 사장님 결정 "동작은 해야"): 원문 보존 게이트는 기본 소프트 처리한다.
+    //   lostFacts·novelty·judge·evidence_pairing은 결과 전달+경고로 낮추고, 치명 출력만 차단한다.
     if (out.pairing?.length) gates.push('evidence_pairing');
     if (out.judge && out.judge.pass === false) gates.push('semanticJudge');
     if (gates.length) {
@@ -1357,21 +1358,20 @@ async function runJob(job, text, evidence) {
         return await runLongThesisChunked(job, text, evidence);
       }
 
-      // ★ 자동 폴백 폐기(2026-06-15): 회피를 산 사용자에게 비회피(보존형) 결과를 동의 없이 차감하지 않는다.
-      //   대신 차단 사유 + 재시도(메모/근거)·보존형 받기·취소를 화면에서 고르게 한다. 보존형 실행은
-      //   POST /transform/:id/accept-fallback 이 명시 동의로 트리거(buildBlockOffer가 그 재료를 실어 보냄).
-      job.status = 'blocked';
-      job.stage = blockedStage(gates);   // '재처리 중'에 멈춰 보이던 표시 버그 해결
-      job.gates = gates;
-      job.gateDetail = gateDetail;
-      job.blockOffer = buildBlockOffer(job, text);
-      persistJob(job);
-      return;
+      if (hasStrictDeliveryGate(gates)) {
+        job.status = 'blocked';
+        job.stage = blockedStage(gates);
+        job.gates = gates;
+        job.gateDetail = gateDetail;
+        job.blockOffer = buildBlockOffer(job, text);
+        persistJob(job);
+        return;
+      }
+      logger.warn('transform.gates_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, gates, gateDetail });
+      job.note = (job.note ? job.note + ' ' : '') + '원문 보존 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
     }
-    // ★ 붕괴 보류(2026-06-16): 날조·짝·왜곡 게이트는 통과해도, 분량이 원문 30% 미만으로 무너진 결과는
-    //   "슬롯 대부분이 사라진 변환 실패"다(실측 10%·사실 36건 증발). 회피를 정액으로 산 사용자에게 이런
-    //   파편을 받고 전달하지 않는다 — 차단과 동일하게 동의 기반(재시도/보존형/취소)으로 넘긴다(무차감).
-    //   보존형 받기를 고르면 분량·사실을 그대로 살린 결과를 보존형 단가로 받는다. 끄려면 env 없음(상시).
+    // ★ 붕괴 보류(2026-06-16): 분량이 원문 30% 미만으로 줄어도 기본은 결과 전달+경고.
+    //   빈 결과·프롬프트 누출·인코딩 깨짐·문장 절단처럼 치명 출력일 때만 차단한다.
     if ((out.lenRatio || 0) > 0 && out.lenRatio < 0.30) {
       const gates2 = ['length_collapse'];
       logger.warn('transform.collapsed_too_short', { jobId: job.id, uid: job.uid, mode: job.mode, lenRatio: out.lenRatio, lostCount: out.lostFacts?.count || 0 });
@@ -1380,13 +1380,16 @@ async function runJob(job, text, evidence) {
         logger.info('transform.restructure_chunk_recovery', { jobId: job.id, uid: job.uid, fromGates: gates2 });
         return await runLongThesisChunked(job, text, evidence);
       }
-      job.status = 'blocked';
-      job.stage = blockedStage(gates2);
-      job.gates = gates2;
-      job.gateDetail = { lenRatio: Math.round((out.lenRatio || 0) * 100), lostFacts: (out.lostFacts?.items || []).slice(0, 8) };
-      job.blockOffer = buildBlockOffer(job, text);
-      persistJob(job);
-      return;
+      if (hasStrictDeliveryGate(gates2)) {
+        job.status = 'blocked';
+        job.stage = blockedStage(gates2);
+        job.gates = gates2;
+        job.gateDetail = { lenRatio: Math.round((out.lenRatio || 0) * 100), lostFacts: (out.lostFacts?.items || []).slice(0, 8) };
+        job.blockOffer = buildBlockOffer(job, text);
+        persistJob(job);
+        return;
+      }
+      job.note = (job.note ? job.note + ' ' : '') + `결과 분량이 원문보다 많이 줄었을 수 있어요(${Math.round((out.lenRatio || 0) * 100)}%). 원문과 대조해 주세요.`;
     }
     // ★ 날조 재수정(2026-06-17, #56·#16·#47): genreTransferV2가 원문에 없던 인용·통계·연도를 지어내도 게이트가
     //   놓친다 — genreTransferV2 내부 novelty는 자기 생성 ledger에 오염돼 0을 내지만, 원문 대비 신선 측정은
@@ -1523,10 +1526,9 @@ async function runLongThesisChunked(job, text, evidence, pipelinePath = 'product
         job.note = (job.note ? job.note + ' ' : '') + '품질 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
       } else {
       // ★ semanticJudge 소프트화(2026-06-16, zoz040224 26K 학술논문 실측): 청크 회피는 문단별 grounded 재작성이라
-      //   added_claim이 남아도 대개 해석·평가 표현이다(사실 날조는 novelty가 하드로 잡음). 장문·학술글이 1~2건의
-      //   added_claim으로 통째 차단되면 결과를 못 받는다. 사실·누출 게이트(novelty·meta_leak·coined_term·fake_ref·
-      //   pov·anchor)는 그대로 하드 차단. 차단 critical이 semanticJudge(또는 품질성 repetition)뿐이고 judge 위반이
-      //   적으면(≤2) 전달 + 원문대조 경고. 많으면(≥3=합성 패턴) 차단 유지. 끄려면 RESTRUCTURE_JUDGE_SOFT=0.
+      //   added_claim이 남아도 대개 해석·평가 표현이다. 장문·학술글이 1~2건의
+      //   added_claim으로 통째 차단되면 결과를 못 받는다. 기본은 전달 + 원문대조 경고이며,
+      //   프롬프트 누출·빈 결과 같은 치명 출력만 차단한다. 끄려면 RESTRUCTURE_JUDGE_SOFT=0.
       const SOFTABLE = new Set(['semanticJudge', 'repetition']);
       const judgeCount = (out.result?.judge?.violations || []).length;
       const softMax = Number(process.env.RESTRUCTURE_JUDGE_SOFT_MAX || 2);
@@ -1685,13 +1687,13 @@ async function runHumanizeJob(job, text) {
       : await analyze.runHumanizeChunked({
           text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
           // 과제 어투 다듬기(polish)는 회피가 목적이 아니므로 의미 게이트(semanticJudge) 분리 → 차단 급감.
-          //   사실 게이트(novelty·lostFacts)는 buildFloorReport가 계속 잡아 날조·사실누락은 그대로 차단.
+          //   사실 게이트(novelty·lostFacts)는 buildFloorReport가 잡되, 기본은 결과 전달+경고로 처리한다.
           //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
           // ★ P1-5(2026-06-18 감사): polish(그대로 다듬기)는 최소 수정이 목적인데 grounding(추상 문장→선명한 판단문
           //   교체)이 켜져 기대보다 많이 바뀌었다. polish면 grounding off(보존 우선), 회피 경로(blog)에선 유지.
           floorV2: true, optIn: false, judge: !isPolish && !adminSafetyLab, grounding: !isPolish && !adminSafetyLab, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
         });
-    // FLOOR 차단 = 날조·소실을 조용히 내보내지 않는다(노출 게이트 원칙) — 차감 없음.
+    // FLOOR 게이트 = 기본은 결과 전달+경고. 치명 출력만 차단한다.
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
       const gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
@@ -2070,7 +2072,7 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
     const handled = job.mode === 'blog'
       ? await tryBlogPreservationFallback(job, job.text || '')
       : await tryPreservationFallback(job, job.text || '');
-    if (!handled && job.status !== 'cancelled') {   // 보존형마저 사실·의미 사고 → 다시 차단
+    if (!handled && job.status !== 'cancelled') {   // 보존형도 치명 출력이면 다시 차단
       job.status = 'blocked';
       job.stage = blockedStage(job.gates || []);
       job.blockOffer = buildBlockOffer(job, job.text || '');

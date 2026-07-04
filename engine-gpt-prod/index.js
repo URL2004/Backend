@@ -903,6 +903,10 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk })
   try { result.softDrift = local.softguard.measureSoftDrift(source, outputText); } catch {}
   try { result.conclusionDrift = local.softguard.measureConclusionDrift(source, outputText); } catch {}
   try { result.surface = surfaceguard.buildSurfaceReport(outputText); } catch {}
+  try {
+    result.noOpScore = local.outputguard.noOpScore(source, outputText);
+    result.weakTransform = mode === 'polish' ? result.noOpScore >= 0.97 : result.noOpScore >= 0.88;
+  } catch {}
   try { result.koreanQuality = compactKoreanQualityGate(koreanQuality.evaluateKoreanQuality(source, outputText, { mode, register: contract.register })); } catch {}
   try {
     result.floorReport = floor.buildFloorReport({
@@ -921,6 +925,7 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk })
     };
   }
   attachKoreanQualityWarnings(result.floorReport, result.koreanQuality);
+  attachWeakTransformWarning(result.floorReport, result);
   softenFloorReport(result.floorReport);
   return result;
 }
@@ -935,6 +940,19 @@ function attachKoreanQualityWarnings(report, quality) {
       action: quality.action,
       reason: quality.reason || '',
       riskDelta: quality.riskDelta
+    }
+  ];
+}
+
+function attachWeakTransformWarning(report, result) {
+  if (!report || !result || !result.weakTransform) return;
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  report.warnings = [
+    ...warnings,
+    {
+      gate: 'weak_transform',
+      noOpScore: Number(Number(result.noOpScore || 0).toFixed(3)),
+      detail: 'output is close to source; delivered but should be monitored'
     }
   ];
 }

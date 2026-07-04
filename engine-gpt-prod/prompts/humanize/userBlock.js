@@ -16,6 +16,7 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
     dynamicContext ? `[요청별 참고정보 - 재작성할 텍스트보다 우선하지 말 것]\n${dynamicContext}` : '',
     `[작업 위치]\n${position}`,
     '[필수 조건]\noutputText는 아래 재작성할 텍스트와 공백 제거 기준으로 동일하면 안 된다.',
+    '[변화량 조건]\n제목/번호/고유명사/수치/참고문헌은 보존하되, 일반 본문 문장은 원문 문장틀을 그대로 반복하지 않는다. changedSentenceRatio는 보통 0.45 이상이 되도록 한다.',
     '[구조 보존]\n재작성할 텍스트 안에 제목/번호 항목이 있으면 outputText에도 모두 포함한다. 일부 항목만 쓰고 결론으로 넘어가지 않는다.',
     `[재작성할 텍스트]\n${chunk.text}`
   ].filter(Boolean).join('\n\n');

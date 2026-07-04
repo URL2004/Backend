@@ -8,7 +8,7 @@ function buildPromptHints(analysis, opts = {}) {
   if (!patterns.length) return '';
   const lines = [
     '[한국어 품질 힌트]',
-    '아래 항목은 원문에서 감지된 표현 습관이다. 새 규칙으로 확장하지 말고, 해당 문제만 자연스럽게 완화한다.',
+    '아래 항목은 원문에서 감지된 표현 습관이다. 새 규칙으로 확장하지 말되, 피하기 결과가 보존형 교정처럼 약해지지 않도록 일반 문장도 자연스럽게 재서술한다.',
     `전체 위험도 ${formatRisk(analysis.koreanSkillRisk)} / 등급 ${analysis.grade || 'A'}`
   ];
   for (const pattern of patterns) {

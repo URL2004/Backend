@@ -16,5 +16,6 @@ module.exports = {
   basicblogtone: require('../../engine/basicblogtone'),
   flowcohesion: require('../../engine/flowcohesion'),
   softguard: require('../../engine/softguard'),
+  outputguard: require('../../engine/outputguard'),
   koreanQuality: require('../../engine/koreanQuality')
 };

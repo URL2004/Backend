@@ -40,7 +40,7 @@ function requireCronSecret(req, res) {
     res.status(503).json({ error: 'cron disabled: CRON_SECRET is not configured' });
     return null;
   }
-  const supplied = bearerToken(req) || (req.body && req.body.internalKey) || '';
+  const supplied = bearerToken(req) || req.get('x-cron-secret') || (req.body && req.body.internalKey) || '';
   if (!supplied || supplied !== secret) {
     logger.warn('subscription.cron_secret_rejected');
     res.status(403).json({ error: 'forbidden' });

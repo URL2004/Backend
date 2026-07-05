@@ -1,5 +1,6 @@
 .env
 node_modules/
+.python-packages/
 dist/
 .DS_Store
 firebase-debug.log

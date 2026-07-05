@@ -20,6 +20,7 @@ const { reviewCandidates, hostOf } = require('../engine/evidencereview');
 const discord = require('../lib/discord');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
+const layoutNormalizer = require('../engine/layout');
 
 function claudeGenreTransferV2() {
   return require('../engine/genretransfer').genreTransferV2;
@@ -468,9 +469,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile'];
+  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile'];
+  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -1128,6 +1129,9 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       grammarHardError: out.result.grammarHardError || null,
       niklQuality: out.result.niklQuality || null,
       externalApiHintsUsed: out.result.externalApiHintsUsed === true,
+      layoutNlpTest: job.layoutNlpTest === true,
+      layoutFormat: out.result.layoutFormat || null,
+      layoutFormatCompare: baselineOut && out.result.layoutFormat ? buildAdminLabLayoutCompare(baselineOut, out) : null,
       baselineOutputText: baselineOut?.result?.outputText || '',
       baselineHumanizeMeta: baselineOut?.result?.humanizeMeta || null,
       baselineFloorReport: baselineOut?.floorReport || baselineOut?.result?.floorReport || null,
@@ -1175,6 +1179,7 @@ async function runAdminGptLabWithOptionalNiklCompare({
   qualityPatternLab = false,
   setBaseline
 }) {
+  const layoutNlpTest = job.layoutNlpTest === true;
   const common = {
     text,
     mode,
@@ -1186,7 +1191,7 @@ async function runAdminGptLabWithOptionalNiklCompare({
   };
   const baseProfile = baselineStyleProfile || styleProfile;
   const onProfile = testStyleProfile || styleProfile;
-  const shouldCompare = forceCompare === true || qualityPatternLab === true || job.niklQualityTest === true;
+  const shouldCompare = forceCompare === true || qualityPatternLab === true || job.niklQualityTest === true || layoutNlpTest;
   if (!shouldCompare) {
     return await gptAnalyze.runHumanizeChunked({ ...common, styleProfile: baseProfile, niklQualityTest: false, qualityPatternLab: false });
   }
@@ -1196,16 +1201,53 @@ async function runAdminGptLabWithOptionalNiklCompare({
   const baseline = await gptAnalyze.runHumanizeChunked({ ...common, styleProfile: baseProfile, niklQualityTest: false, qualityPatternLab: false });
   if (typeof setBaseline === 'function') setBaseline(baseline);
 
-  job.stage = qualityPatternLab
+  let testText = text;
+  let preLayout = null;
+  if (layoutNlpTest) {
+    job.stage = `관리자 테스트 · ${label || 'GPT'} · 문서 형태 입력 복원 중`;
+    persistJob(job);
+    preLayout = await layoutNormalizer.formatDocument(text, {
+      mode,
+      phase: 'pre',
+      enableNlp: true,
+      timeoutMs: Number(process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000
+    });
+    testText = preLayout.text || text;
+  }
+
+  job.stage = layoutNlpTest
+    ? `관리자 테스트 · ${label || 'GPT'} · 레이아웃 NLP 결과 생성 중`
+    : qualityPatternLab
     ? `관리자 테스트 · ${label || 'GPT'} · 품질 패턴 v1 결과 생성 중`
     : `관리자 테스트 · ${label || 'GPT'} · 국어원식 품질 테스트 결과 생성 중`;
   persistJob(job);
-  return await gptAnalyze.runHumanizeChunked({
+  const testOut = await gptAnalyze.runHumanizeChunked({
     ...common,
+    text: testText,
     styleProfile: onProfile,
     niklQualityTest: true,
     qualityPatternLab: qualityPatternLab === true
   });
+  if (layoutNlpTest && testOut?.result?.outputText) {
+    job.stage = `관리자 테스트 · ${label || 'GPT'} · 문서 형태 출력 후처리 중`;
+    persistJob(job);
+    const postLayout = await layoutNormalizer.formatDocument(testOut.result.outputText, {
+      mode,
+      phase: 'post',
+      enableNlp: true,
+      timeoutMs: Number(process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000
+    });
+    testOut.result.outputText = postLayout.text || testOut.result.outputText;
+    testOut.result.layoutFormat = {
+      enabled: true,
+      version: layoutNormalizer.VERSION,
+      pre: preLayout?.report || null,
+      post: postLayout.report || null,
+      inputChanged: Boolean(preLayout?.report?.applied),
+      outputChanged: Boolean(postLayout.report?.applied)
+    };
+  }
+  return testOut;
 }
 
 function buildAdminLabNiklCompare(baselineOut, testOut) {
@@ -1287,6 +1329,60 @@ function buildAdminLabQualityPatternCompare(baselineOut, testOut) {
       externalApiHintsUsed: result.externalApiHintsUsed === true
     }
   };
+}
+
+function buildAdminLabLayoutCompare(baselineOut, testOut) {
+  const base = buildAdminLabNiklCompare(baselineOut, testOut);
+  const layout = testOut?.result?.layoutFormat || {};
+  const pre = layout.pre || {};
+  const post = layout.post || {};
+  return {
+    ...base,
+    compareType: 'layout_nlp_test',
+    labels: {
+      baseline: '현재 GPT',
+      test: '레이아웃 NLP ON'
+    },
+    layoutFormat: {
+      enabled: true,
+      inputChanged: layout.inputChanged === true,
+      outputChanged: layout.outputChanged === true,
+      pre: compactLayoutReportForCompare(pre),
+      post: compactLayoutReportForCompare(post),
+      engines: mergeLayoutEngines(pre, post)
+    }
+  };
+}
+
+function compactLayoutReportForCompare(report) {
+  if (!report) return null;
+  return {
+    phase: report.phase || '',
+    profile: report.profile || '',
+    applied: report.applied === true,
+    needScore: report.need?.score,
+    before: report.before || null,
+    after: report.after || null,
+    gates: report.gates || null,
+    nlp: report.nlp || null
+  };
+}
+
+function mergeLayoutEngines(pre, post) {
+  const names = ['kss', 'kiwipiepy', 'pykospacing'];
+  const out = {};
+  for (const name of names) {
+    const p = pre?.nlp?.engines?.[name] || {};
+    const q = post?.nlp?.engines?.[name] || {};
+    out[name] = {
+      ok: p.ok === true || q.ok === true,
+      version: p.version || q.version || '',
+      preOk: p.ok === true,
+      postOk: q.ok === true,
+      error: p.ok === true || q.ok === true ? '' : (q.error || p.error || '')
+    };
+  }
+  return out;
 }
 
 function compactFloorWarning(warning) {
@@ -2069,6 +2165,7 @@ router.post('/transform', async (req, res) => {
     adminHumanizeLab: !!(adminLabRequested && preserveExperimentEnabled),
     adminLabProfile: adminLabRequested && preserveExperimentEnabled ? (requestedAdminLabProfile || 'preserve_lab') : null,
     niklQualityTest: !!(adminLabRequested && preserveExperimentEnabled && req.body && req.body.niklQualityTest === true),
+    layoutNlpTest: !!(adminLabRequested && preserveExperimentEnabled && req.body && req.body.layoutNlpTest === true),
     gptModel: typeof req.body.gptModel === 'string' ? req.body.gptModel.slice(0, 80) : '',
 
     wantEvidence,

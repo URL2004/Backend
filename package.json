@@ -4,6 +4,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "postinstall": "node scripts/install-layout-nlp.js",
+    "layout:nlp:install": "node scripts/install-layout-nlp.js",
     "eval": "node eval/runEval.js",
     "eval:judge": "node eval/runJudgeEval.js",
     "cache:logs": "powershell -ExecutionPolicy Bypass -File scripts/claude-cache-logs.ps1",

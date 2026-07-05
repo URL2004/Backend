@@ -14,6 +14,7 @@ const surfaceguard = local.surfaceguard;
 const koreanQuality = local.koreanQuality;
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { logger } = require('../lib/logger');
+const layoutNormalizer = require('../engine/layout');
 
 const VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -65,11 +66,23 @@ function isQualityPatternLabEnabled(value, styleProfile = '') {
   return !isAdminNiklProfile(styleProfile);
 }
 
-async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false, qualityPatternLab } = {}) {
-  const source = String(text || '').trim();
-  if (!source) throw new Error('engine-gpt-prod: empty text');
+function isLayoutNlpEnabled(value) {
+  if (process.env.GPT_LAYOUT_NLP_ENABLED === '0' || process.env.LAYOUT_NLP_PRODUCTION_ENABLED === '0') return false;
+  if (value === true) return true;
+  if (value === false) return false;
+  return true;
+}
+
+async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false, qualityPatternLab, layoutNlp = null } = {}) {
+  const rawSource = String(text || '').trim();
+  if (!rawSource) throw new Error('engine-gpt-prod: empty text');
   const cfg = await loadConfig(config);
   const selectedMode = normalizeMode(mode, { allowPolish: allowPolishMode({ styleProfile, config }) });
+  const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp);
+  const preLayout = layoutNlpEnabled
+    ? await safeFormatLayout(rawSource, { mode: selectedMode, phase: 'pre' })
+    : null;
+  const source = preLayout?.text || rawSource;
   const qualityPatternLabEnabled = isQualityPatternLabEnabled(qualityPatternLab, styleProfile);
   const niklQualityEnabled = qualityPatternLabEnabled || isNiklQualityEnabled(niklQualityTest, styleProfile);
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
@@ -102,7 +115,14 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
 
   let outputText = mergeChunks(chunks);
   outputText = finalPostprocess(outputText, source, selectedMode, contract);
+  const postLayout = layoutNlpEnabled
+    ? await safeFormatLayout(outputText, { mode: selectedMode, phase: 'post' })
+    : null;
+  if (postLayout?.text) outputText = postLayout.text;
   const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled });
+  if (layoutNlpEnabled) {
+    result.layoutFormat = buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText);
+  }
   const finalGate = evaluateWholeDocumentGate({
     outputText,
     source,
@@ -161,6 +181,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     niklQuality: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     niklQualityTest: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     qualityPatternLab: qualityPatternLabEnabled ? (result.qualityPatternLab || { enabled: true }) : null,
+    layoutFormat: layoutNlpEnabled ? (result.layoutFormat || { enabled: true }) : null,
     runtimeConfigSource: cfg.source,
     styleProfile: styleProfile || PROFILE
   };
@@ -1625,6 +1646,75 @@ function formatNiklLookupHint(item) {
   }
   const wordList = [...words].slice(0, 4).join(', ');
   return `- "${item.query}": ${sourceNames.join('/')} 조회됨${wordList ? `, 표기 후보 ${wordList}` : ''}`;
+}
+
+async function safeFormatLayout(text, opts = {}) {
+  try {
+    const source = String(text || '').trim();
+    if (!source) return null;
+    return await layoutNormalizer.formatDocument(source, {
+      mode: opts.mode || 'assignment',
+      phase: opts.phase || 'post',
+      enableNlp: true,
+      timeoutMs: Number(process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000,
+      maxChars: Number(process.env.LAYOUT_NLP_MAX_CHARS || 12000) || 12000
+    });
+  } catch (err) {
+    logger.warn('gpt.layout_format_failed', {
+      phase: opts.phase || 'post',
+      err: err && err.message || String(err)
+    });
+    return null;
+  }
+}
+
+function buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText) {
+  const pre = preLayout?.report || null;
+  const post = postLayout?.report || null;
+  return {
+    enabled: true,
+    version: layoutNormalizer.VERSION,
+    inputChanged: pre?.applied === true,
+    outputChanged: post?.applied === true,
+    sourceChanged: pre?.applied === true,
+    finalOutputChanged: post?.applied === true,
+    pre: compactLayoutReport(pre),
+    post: compactLayoutReport(post),
+    engines: mergeLayoutEngines(pre, post),
+    beforeChars: String(rawSource || '').length,
+    afterChars: String(outputText || '').length
+  };
+}
+
+function compactLayoutReport(report) {
+  if (!report) return null;
+  return {
+    phase: report.phase || '',
+    profile: report.profile || '',
+    applied: report.applied === true,
+    need: report.need || null,
+    before: report.before || null,
+    after: report.after || null,
+    gates: report.gates || null,
+    nlp: report.nlp || null
+  };
+}
+
+function mergeLayoutEngines(pre, post) {
+  const names = ['kss', 'kiwipiepy', 'pykospacing'];
+  const out = {};
+  for (const name of names) {
+    const p = pre?.nlp?.engines?.[name] || {};
+    const q = post?.nlp?.engines?.[name] || {};
+    out[name] = {
+      ok: p.ok === true || q.ok === true,
+      version: p.version || q.version || '',
+      preOk: p.ok === true,
+      postOk: q.ok === true,
+      error: p.ok === true || q.ok === true ? '' : String(q.error || p.error || '').slice(0, 180)
+    };
+  }
+  return out;
 }
 
 function looksLikeMeta(text) {

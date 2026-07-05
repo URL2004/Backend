@@ -1187,6 +1187,7 @@ async function runAdminGptLabWithOptionalNiklCompare({
     signal: job.ac.signal,
     userNotes: job.memo || '',
     evidence: evidence || '',
+    layoutNlp: layoutNlpTest ? false : null,
     config
   };
   const baseProfile = baselineStyleProfile || styleProfile;

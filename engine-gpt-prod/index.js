@@ -8,7 +8,7 @@ const prompts = require('./prompts');
 const { addUsage, emptyUsage } = require('./usageCost');
 const local = require('./local');
 const { buildContract } = local.contract;
-const { splitChunks, mergeChunks } = local.chunk;
+const structureChunk = require('./structureChunk');
 const floor = local.floor;
 const surfaceguard = local.surfaceguard;
 const koreanQuality = local.koreanQuality;
@@ -88,7 +88,8 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
-  const chunks = splitChunks(source);
+  const chunkPlan = structureChunk.splitChunksForGpt(source);
+  const chunks = chunkPlan.chunks;
   const records = [];
 
   for (let i = 0; i < chunks.length; i++) {
@@ -113,15 +114,26 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     records.push(record);
   }
 
-  let outputText = mergeChunks(chunks);
+  const boundaryRepair = structureChunk.repairUnsafeChunkBoundaries(chunks);
+  let outputText = structureChunk.mergeChunks(chunks);
   outputText = finalPostprocess(outputText, source, selectedMode, contract);
   const postLayout = layoutNlpEnabled
     ? await safeFormatLayout(outputText, { mode: selectedMode, phase: 'post' })
     : null;
   if (postLayout?.text) outputText = postLayout.text;
-  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled });
+  const structureAudit = structureChunk.buildStructureAudit({
+    source,
+    outputText,
+    chunks,
+    plan: chunkPlan,
+    boundaryRepair
+  });
+  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled, structureAudit });
   if (layoutNlpEnabled) {
     result.layoutFormat = buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText);
+  }
+  if (structureAudit && (!structureAudit.pass || structureAudit.boundaryRepair?.applied)) {
+    addStructureWarnings(result.floorReport, structureAudit);
   }
   const finalGate = evaluateWholeDocumentGate({
     outputText,
@@ -177,6 +189,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     reasoningTokens: usage.reasoningTokens,
     estimatedUsd: usage.estimatedUsd,
     usage,
+    structureLock: result.structureLock || null,
     koreanQuality: result.koreanQuality || null,
     niklQuality: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     niklQualityTest: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
@@ -204,6 +217,17 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
 
 async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, niklQualityTest = false, qualityPatternLab = false, signal }) {
   const original = chunk.text;
+  if (chunk.locked) {
+    chunk.outputText = original;
+    return chunkRecord({
+      chunk,
+      outputText: original,
+      skipped: true,
+      locked: true,
+      lockType: chunk.lockType || 'structure',
+      warnings: [chunk.skipReason || 'structure_locked']
+    });
+  }
   if (shouldPassThrough(original)) {
     chunk.outputText = original;
     return chunkRecord({ chunk, outputText: original, skipped: true });
@@ -994,7 +1018,7 @@ function paragraphCount(text) {
   return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
 }
 
-function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false, qualityPatternLab = false }) {
+function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false, qualityPatternLab = false, structureAudit = null }) {
   const result = {
     outputText,
     styleProfile: PROFILE,
@@ -1002,7 +1026,8 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk, n
     contract,
     povSeed: contract.povSeed,
     records,
-    inputRisk
+    inputRisk,
+    structureLock: structureAudit || null
   };
   try { result.povDrift = floor.measurePovDrift(source, outputText, contract.povSeed); } catch {}
   try { result.floorNovelty = floor.measureNovelty(source, outputText, ''); } catch {}
@@ -1131,6 +1156,41 @@ function attachQualityPatternWarnings(report, audit) {
   if (report.status === 'clean') report.status = action === 'blocked' ? 'blocked' : 'needs_review';
 }
 
+function addStructureWarnings(report, audit) {
+  if (!report || !audit) return;
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const additions = [];
+  if (audit.lostLockedCount > 0) {
+    additions.push({
+      gate: 'structure_lock_loss',
+      action: 'needs_review',
+      lostLockedCount: audit.lostLockedCount,
+      lostLocked: audit.lostLocked || []
+    });
+  }
+  if (audit.boundaryRepair?.applied) {
+    additions.push({
+      gate: 'chunk_boundary_repaired',
+      action: 'pass',
+      count: audit.boundaryRepair.count,
+      repairs: audit.boundaryRepair.repairs || []
+    });
+  }
+  if (audit.unsafeBoundaryCount > 0) {
+    additions.push({
+      gate: 'unsafe_chunk_boundary',
+      action: 'needs_review',
+      count: audit.unsafeBoundaryCount,
+      samples: audit.unsafeBoundaries || []
+    });
+  }
+  if (!additions.length) return;
+  report.warnings = [...warnings, ...additions];
+  if (report.status === 'clean' && additions.some(v => v.action === 'needs_review')) {
+    report.status = 'needs_review';
+  }
+}
+
 function attachWeakTransformWarning(report, result) {
   if (!report || !result || !result.weakTransform) return;
   const warnings = Array.isArray(report.warnings) ? report.warnings : [];
@@ -1172,6 +1232,8 @@ function chunkRecord({
   outputText,
   fallback = false,
   skipped = false,
+  locked = false,
+  lockType = '',
   escalated = false,
   error = null,
   hardFailReason = '',
@@ -1195,6 +1257,9 @@ function chunkRecord({
     outLen: String(outputText || '').length,
     fallback,
     skipped,
+    locked,
+    lockType,
+    sectionPath: chunk.sectionPath || '',
     escalated,
     error,
     hardFailReason,

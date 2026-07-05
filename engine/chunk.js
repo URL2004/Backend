@@ -13,8 +13,8 @@ const HARD_MAX = 2500;       // 이 길이를 넘으면 반드시 분할
 function splitLongChunk(c) {
   const text = c.text;
   if (text.length <= HARD_MAX) return [c];
-  const cuts = [];                                  // 문장 끝(.!?。 뒤 공백/끝) 또는 줄바꿈 위치
-  const re = /[.!?。](?=\s|$)|\n/g; let m;
+  const cuts = [];                                  // 문장 끝(.!?。 뒤 공백/끝), 한국어 종결 어미 뒤 공백, 또는 줄바꿈 위치
+  const re = /[.!?。！？](?=\s|$)|(?:다|요|죠|까|음|함|임)(?=\s|$)|\n/g; let m;
   while ((m = re.exec(text)) !== null) cuts.push(m.index + 1);
   const ranges = [];
   let segStart = 0;
@@ -26,7 +26,7 @@ function splitLongChunk(c) {
       if (cut === -1 || Math.abs(x - ideal) < Math.abs(cut - ideal)) cut = x;
     }
     const forced = (cut === -1);
-    if (forced) cut = segStart + HARD_MAX;           // 문장경계 없음 → 강제 컷(왕복은 슬라이스 연속이라 유지)
+    if (forced) cut = chooseSafeForcedCut(text, segStart, HARD_MAX, ideal); // 문장경계 없음 → 안전한 공백 우선 강제 컷
     // ★ 컷 직후 공백을 이 조각의 sep로 흡수(2026-06-18 실데이터 "활용하였다.고객의" 잼 수정): 문장경계 컷은 구두점 직후라
     //   다음 조각이 공백으로 시작 → LLM 재작성이 그 앞 공백을 떨구면 병합 시 문장이 붙어 긴 문단이 벽글이 된다.
     //   공백을 sep에 넣고 다음 조각을 공백 뒤부터 시작 → 잼 방지 + 왕복 보존(중복 공백 없음).
@@ -47,6 +47,38 @@ function splitLongChunk(c) {
     if (k === 0 && c._lead) piece._lead = c._lead;   // 선행 공백은 첫 조각만
     return piece;
   });
+}
+
+function chooseSafeForcedCut(text, segStart, hardMax, ideal) {
+  const hardEnd = Math.min(text.length, segStart + hardMax);
+  const minEnd = Math.min(hardEnd, segStart + Math.max(900, Math.floor(hardMax * 0.45)));
+  let best = -1;
+  let bestScore = Infinity;
+  for (let i = minEnd; i < hardEnd; i += 1) {
+    if (!/\s/.test(text.charAt(i))) continue;
+    const left = text.slice(Math.max(segStart, i - 18), i).trim();
+    const right = text.slice(i + 1, Math.min(text.length, i + 32)).trim();
+    if (!left || !right) continue;
+    if (looksUnsafeCutTail(left) || looksUnsafeCutHead(right)) continue;
+    const score = Math.abs(i - ideal);
+    if (score < bestScore) {
+      best = i;
+      bestScore = score;
+    }
+  }
+  if (best !== -1) return best;
+  for (let i = Math.min(hardEnd - 1, ideal + 260); i >= minEnd; i -= 1) {
+    if (/\s/.test(text.charAt(i))) return i;
+  }
+  return hardEnd;
+}
+
+function looksUnsafeCutTail(left) {
+  return /(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한|그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/.test(String(left || '').trim());
+}
+
+function looksUnsafeCutHead(right) {
+  return /^(?:및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|때문에|위해|통해)\b/.test(String(right || '').trim());
 }
 
 // 참고(§리뷰#18): 작은 인접 청크 coalesce(병합)는 검토 후 제외. 이 제품의 청킹은 "문단=단위"가 설계 전제

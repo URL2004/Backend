@@ -47,10 +47,15 @@ function allowPolishMode({ styleProfile = '', config } = {}) {
   return profile.includes('admin') || profile.includes('lab');
 }
 
-function isNiklQualityTestEnabled(value, styleProfile = '') {
-  if (value !== true) return false;
+function isAdminNiklProfile(styleProfile = '') {
   const profile = String(styleProfile || '').toLowerCase();
   return profile.includes('admin') || profile.includes('lab') || profile.includes('test');
+}
+
+function isNiklQualityEnabled(value, styleProfile = '') {
+  if (process.env.GPT_NIKL_QUALITY_ENABLED === '0') return false;
+  if (isAdminNiklProfile(styleProfile)) return value === true;
+  return true;
 }
 
 async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false } = {}) {
@@ -58,7 +63,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   if (!source) throw new Error('engine-gpt-prod: empty text');
   const cfg = await loadConfig(config);
   const selectedMode = normalizeMode(mode, { allowPolish: allowPolishMode({ styleProfile, config }) });
-  const niklQualityTestEnabled = isNiklQualityTestEnabled(niklQualityTest, styleProfile);
+  const niklQualityEnabled = isNiklQualityEnabled(niklQualityTest, styleProfile);
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
@@ -80,7 +85,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
       evidence,
       cfg,
       styleProfile,
-      niklQualityTest: niklQualityTestEnabled,
+      niklQualityTest: niklQualityEnabled,
       signal
     });
     records.push(record);
@@ -88,7 +93,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
 
   let outputText = mergeChunks(chunks);
   outputText = finalPostprocess(outputText, source, selectedMode, contract);
-  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityTestEnabled });
+  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled });
   const finalGate = evaluateWholeDocumentGate({
     outputText,
     source,
@@ -132,7 +137,8 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     estimatedUsd: usage.estimatedUsd,
     usage,
     koreanQuality: result.koreanQuality || null,
-    niklQualityTest: niklQualityTestEnabled ? (result.niklQualityTest || { enabled: true }) : null,
+    niklQuality: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
+    niklQualityTest: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     runtimeConfigSource: cfg.source,
     styleProfile: styleProfile || PROFILE
   };
@@ -359,7 +365,7 @@ async function callHumanize(args) {
         gate.warnings.push(...niklQualityGate.warnings);
       }
       if (Array.isArray(niklQualityGate.violations) && niklQualityGate.violations.length) {
-        gate.violations.push(...niklQualityGate.violations.map(v => ({ ...v, adminTestOnly: true })));
+        gate.violations.push(...niklQualityGate.violations.map(v => ({ ...v, niklQuality: true })));
       }
     }
     if (judgeHardFail && process.env.STRICT_QUALITY_GATE === '1') {
@@ -993,8 +999,8 @@ function attachNiklQualityWarnings(report, quality) {
   report.warnings = [
     ...warnings,
     {
-      gate: 'nikl_quality_test',
-      adminTestOnly: true,
+      gate: 'nikl_quality',
+      niklQuality: true,
       action: quality.action,
       reason: quality.reason,
       niklRiskDelta: quality.niklRiskDelta,

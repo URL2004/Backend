@@ -22,7 +22,17 @@ if (!python) {
 try { fs.mkdirSync(target, { recursive: true }); } catch {}
 
 const required = ['kss', 'kiwipiepy'];
-const optional = process.env.LAYOUT_NLP_INSTALL_PYKOSPACING === '0' ? [] : ['pykospacing'];
+const optional = process.env.LAYOUT_NLP_INSTALL_PYKOSPACING === '0'
+  ? []
+  : [
+      {
+        label: 'pykospacing',
+        specs: [
+          'pykospacing',
+          'git+https://github.com/haven-jeon/PyKoSpacing.git'
+        ]
+      }
+    ];
 
 let installedAny = false;
 for (const pkg of required) {
@@ -30,7 +40,7 @@ for (const pkg of required) {
   installedAny = installedAny || ok;
 }
 for (const pkg of optional) {
-  const ok = installPackage(python, pkg, false);
+  const ok = installPackageGroup(python, pkg.label, pkg.specs, false);
   installedAny = installedAny || ok;
 }
 
@@ -80,5 +90,16 @@ function installPackage(command, pkg, important) {
   }
   const reason = (res.stderr || res.stdout || '').split(/\r?\n/).slice(-8).join('\n');
   console.log(`[layout-nlp] ${important ? 'required' : 'optional'} package ${pkg} not installed: ${reason}`);
+  return false;
+}
+
+function installPackageGroup(command, label, specs, important) {
+  for (const spec of specs) {
+    const ok = installPackage(command, spec, important);
+    if (ok) {
+      console.log(`[layout-nlp] installed ${label} via ${spec}`);
+      return true;
+    }
+  }
   return false;
 }

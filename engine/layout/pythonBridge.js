@@ -46,7 +46,7 @@ function pythonCandidates() {
 
 function tryPython(cmd, payload, opts = {}) {
   return new Promise(resolve => {
-    const timeoutMs = Math.max(1200, Math.min(12000, Number(opts.timeoutMs || process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000));
+    const timeoutMs = Math.max(1200, Math.min(60000, Number(opts.timeoutMs || process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000));
     let stdout = '';
     let stderr = '';
     let settled = false;

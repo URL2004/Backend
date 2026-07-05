@@ -1696,6 +1696,7 @@ function compactLayoutReport(report) {
     before: report.before || null,
     after: report.after || null,
     gates: report.gates || null,
+    spacingGate: report.spacingGate || null,
     nlp: report.nlp || null
   };
 }

@@ -4,6 +4,29 @@ const { runLayoutNlp } = require('./pythonBridge');
 
 const VERSION = 'layout-normalizer-v1';
 const ROMAN = 'ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ';
+const PROTECTED_LEXEMES = [
+  'Physical Computing',
+  'MakeCode',
+  'STEAM',
+  'SWOT',
+  'GRDP',
+  '오늘드림',
+  '카카오맵',
+  '네이버지도',
+  '무신사 뷰티',
+  '로켓럭셔리',
+  '조건문',
+  '반복문',
+  '행정사무감사',
+  '경영평가등급',
+  '피조세계',
+  '익명성',
+  '화장품',
+  '경영기회',
+  '기업적',
+  '목적보다',
+  '일상에서'
+];
 
 async function formatDocument(text, opts = {}) {
   const source = String(text || '');
@@ -12,9 +35,11 @@ async function formatDocument(text, opts = {}) {
   const profile = detectLayoutProfile(source, mode);
   const need = formatNeedScore(source);
   const protectedSource = protectSpans(normalizeRawWhitespace(source));
-  const needsSpacing = needsSpacingRepair(protectedSource.text);
+  const spacingRepairRequested = opts.forceSpacingRepair === true || opts.userRequestedSpacingRepair === true;
+  const needsSpacing = spacingRepairRequested || needsSpacingRepair(protectedSource.text);
   let working = protectedSource.text;
   let nlp = null;
+  let spacingGate = { requested: needsSpacing, applied: false, pass: true, reasons: [] };
 
   if (opts.enableNlp === true) {
     nlp = await runLayoutNlp(working, {
@@ -23,13 +48,16 @@ async function formatDocument(text, opts = {}) {
       maxChars: opts.maxChars
     });
     const spaced = String(nlp?.spacedText || '').trim();
-    if (spaced && contentPreservationGate(working, spaced).pass) {
+    spacingGate = spacingAcceptanceGate(working, spaced, { requested: needsSpacing });
+    if (spaced && spacingGate.pass) {
       working = spaced;
+      spacingGate.applied = true;
     }
   }
 
   working = restoreSpans(working, protectedSource.spans);
   working = repairHeadingBreaks(working);
+  working = repairUnsafeLineBreaks(working);
   working = repairKeyValueRuns(working, profile);
   const sentenceHints = restoreSentenceHints(nlp?.sentences || [], protectedSource.spans);
   const rendered = renderByProfile(working, {
@@ -38,7 +66,7 @@ async function formatDocument(text, opts = {}) {
     sentenceHints,
     force: need.score >= 0.25 || opts.force === true
   });
-  const normalized = normalizeBlankLines(rendered);
+  const normalized = normalizeBlankLines(repairUnsafeLineBreaks(rendered));
   const gate = buildFormatGate(source, normalized, protectedSource.spans, profile);
   const applied = gate.contentPreservation.pass && normalized !== source;
   const finalText = gate.contentPreservation.pass ? normalized : normalizeRawWhitespace(source);
@@ -52,6 +80,7 @@ async function formatDocument(text, opts = {}) {
       applied,
       need,
       nlp: compactNlp(nlp),
+      spacingGate,
       gates: gate,
       before: measureLayout(source),
       after: measureLayout(finalText)
@@ -80,11 +109,23 @@ function protectSpans(text) {
   const spans = [];
   let out = String(text || '');
   const patterns = [
+    /^(?:\s*(?:목차|참고문헌|References|Bibliography)\s*)$/gim,
+    /^(?:\s*(?:표|그림|가설)\s*[0-9A-Za-z가-힣.-]+[^\n]*)$/gm,
+    /^(?:\s*(?:H|가설)\s*\d+[a-zA-Z]?[^\n]*)$/gm,
+    /^(?:\s*[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\.\s*[^\n]{1,80})$/gm,
+    /^(?:\s*\d+(?:\.\d+)*\.?\s+[^\n]{1,90})$/gm,
+    /^(?:[^\n]*\t[^\n]*)$/gm,
+    /^(?:\s*\|[^\n]+\|\s*)$/gm,
     /https?:\/\/[^\s<>()]+/g,
-    /[A-Z]{2,}(?:[-_.][A-Z0-9]+)*(?:\s+[A-Z]{2,}(?:[-_.][A-Z0-9]+)*){0,2}/g,
+    /[A-Za-z][A-Za-z0-9+.#&/_-]{1,}(?:\s+[A-Za-z][A-Za-z0-9+.#&/_-]{1,}){0,5}/g,
     /\d+(?:\.\d+)?\s*(?:년|월|일|시간|분|개|명|층|동|%|원|만원|억원|조원|kg|g|km|m²|㎡|평)/g,
+    /\b(?:p|r|R²|F|t|β|B)\s*[<=>]\s*-?\d+(?:\.\d+)?\b/g,
     /(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ])\.\s*(?:서론|본론|결론|초록|참고문헌|이론적\s*배경|연구\s*방법|연구\s*결과)/g,
-    /\[[0-9]+\]/g
+    /\[[0-9]+\]/g,
+    ...PROTECTED_LEXEMES
+      .slice()
+      .sort((a, b) => b.length - a.length)
+      .map(term => new RegExp(escapeRe(term), 'g'))
   ];
   for (const rx of patterns) {
     out = out.replace(rx, match => {
@@ -113,8 +154,113 @@ function needsSpacingRepair(text) {
   const source = String(text || '');
   const spaceCount = (source.match(/\s/g) || []).length;
   const hangulRuns = source.match(/[가-힣]{30,}/g) || [];
+  const latinCount = (source.match(/[A-Za-z]/g) || []).length;
+  const structuralSignals = /(참고문헌|References|^\s*표\s*\d+|^\s*가설\s*\d+|^\s*목차)/m.test(source);
   const spaceRatio = spaceCount / Math.max(1, source.length);
-  return source.length > 80 && spaceRatio < 0.035 && hangulRuns.some(x => x.length >= 50);
+  const latinRatio = latinCount / Math.max(1, source.length);
+  if (structuralSignals || latinRatio > 0.025) return false;
+  return source.length > 80 && spaceRatio < 0.025 && hangulRuns.some(x => x.length >= 70);
+}
+
+function spacingAcceptanceGate(before, after, opts = {}) {
+  const source = String(before || '');
+  const spaced = String(after || '');
+  const reasons = [];
+  if (!opts.requested) {
+    return {
+      requested: false,
+      pass: false,
+      reasons: ['spacing_repair_not_requested'],
+      brokenTerms: [],
+      latinBreaks: [],
+      suspiciousShortBreaks: [],
+      beforeLen: source.length,
+      afterLen: spaced.length,
+      addedWhitespace: 0,
+      applied: false
+    };
+  }
+  const preservation = contentPreservationGate(source, spaced);
+  if (!spaced.trim()) reasons.push('empty_spacing_output');
+  if (!preservation.pass) reasons.push('content_preservation_failed');
+  const broken = findSpacingRegressions(source, spaced);
+  if (broken.length) reasons.push('protected_or_existing_term_split');
+  const latinBreaks = findLatinBreaks(source, spaced);
+  if (latinBreaks.length) reasons.push('latin_word_split');
+  const suspiciousShortBreaks = findSuspiciousShortHangulBreaks(source, spaced);
+  if (suspiciousShortBreaks.length) reasons.push('short_noun_internal_space');
+  return {
+    requested: opts.requested === true,
+    pass: reasons.length === 0,
+    reasons,
+    brokenTerms: broken.slice(0, 20),
+    latinBreaks: latinBreaks.slice(0, 20),
+    suspiciousShortBreaks: suspiciousShortBreaks.slice(0, 20),
+    beforeLen: source.length,
+    afterLen: spaced.length,
+    addedWhitespace: Math.max(0, (spaced.match(/\s/g) || []).length - (source.match(/\s/g) || []).length),
+    applied: false
+  };
+}
+
+function findSpacingRegressions(before, after) {
+  const source = String(before || '');
+  const spaced = String(after || '');
+  if (!source || !spaced) return [];
+  const compactAfter = bare(spaced);
+  const terms = new Set(PROTECTED_LEXEMES.map(x => String(x || '').trim()).filter(Boolean));
+  for (const token of source.match(/[A-Za-z][A-Za-z0-9+.#&/_-]{2,}(?:\s+[A-Za-z][A-Za-z0-9+.#&/_-]{2,}){0,4}/g) || []) {
+    if (token.length <= 80) terms.add(token);
+  }
+  for (const token of source.match(/[가-힣]{2,15}/g) || []) {
+    if (token.length >= 2 && token.length <= 15) terms.add(token);
+  }
+  const broken = [];
+  for (const term of terms) {
+    const compact = bare(term);
+    if (compact.length < 2) continue;
+    if (!bare(source).includes(compact)) continue;
+    if (spaced.includes(term)) continue;
+    if (compactAfter.includes(compact) && hasInsertedSpaceForTerm(spaced, compact)) {
+      broken.push(term);
+    }
+  }
+  return Array.from(new Set(broken));
+}
+
+function findLatinBreaks(before, after) {
+  const spaced = String(after || '');
+  const compactAfter = bare(spaced);
+  const out = [];
+  for (const token of new Set(String(before || '').match(/[A-Za-z][A-Za-z0-9+.#&/_-]{2,}/g) || [])) {
+    if (!spaced.includes(token) && compactAfter.includes(token) && hasInsertedSpaceForTerm(spaced, token)) {
+      out.push(token);
+    }
+  }
+  return out;
+}
+
+function findSuspiciousShortHangulBreaks(before, after) {
+  const out = [];
+  const compactBefore = bare(before);
+  for (const match of String(after || '').match(/[가-힣]{1,2}\s+[가-힣]{1,4}/g) || []) {
+    const compact = bare(match);
+    if (compact.length >= 2 && compact.length <= 5 && compactBefore.includes(compact)) out.push(match);
+  }
+  return Array.from(new Set(out));
+}
+
+function hasInsertedSpaceForTerm(text, compactTerm) {
+  const chars = Array.from(String(compactTerm || ''));
+  if (chars.length < 2 || chars.length > 80) return false;
+  const pattern = chars.map(escapeRe).join('\\s*');
+  const rx = new RegExp(pattern, 'g');
+  let match;
+  while ((match = rx.exec(String(text || ''))) !== null) {
+    if (/\s/.test(match[0])) return true;
+    if (rx.lastIndex === match.index) rx.lastIndex++;
+  }
+  return false;
 }
 
 function repairHeadingBreaks(text) {
@@ -129,6 +275,15 @@ function repairHeadingBreaks(text) {
       return `${lead && lead.includes('\n') ? lead : '\n'}${n}. ${title.trim()}\n\n`;
     });
   return normalizeBlankLines(out);
+}
+
+function repairUnsafeLineBreaks(text) {
+  let out = String(text || '');
+  out = out
+    .replace(/([가-힣A-Za-z0-9)][가-힣A-Za-z0-9\s]{0,24}(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한))\n(?=[가-힣A-Za-z0-9(])/g, '$1 ')
+    .replace(/(^|\n)([^\n.!?。！？]{2,40})\n및\s+([^\n]{2,80})(?=\n|$)/g, '$1$2 및 $3')
+    .replace(/(^|\n)(결과\s*분석|연구\s*결과|논의|분석)\n및\s+([^\n]{2,80})(?=\n|$)/g, '$1$2 및 $3');
+  return out;
 }
 
 function repairKeyValueRuns(text, profile) {
@@ -183,7 +338,7 @@ function renderByProfile(text, opts = {}) {
   const blocks = source.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
   const rendered = [];
   for (const block of blocks) {
-    if (isHeading(block) || isListBlock(block) || isReferenceBlock(block) || isKeyValueBlock(block)) {
+    if (isHeading(block) || isListBlock(block) || isReferenceBlock(block) || isKeyValueBlock(block) || isStructuralBlock(block)) {
       rendered.push(block);
       continue;
     }
@@ -344,6 +499,15 @@ function isReferenceBlock(text) {
 function isKeyValueBlock(text) {
   const s = String(text || '').trim();
   return /^[가-힣A-Za-z\s]{1,18}:\s*\S/.test(s) && s.length <= 120;
+}
+
+function isStructuralBlock(text) {
+  const s = String(text || '').trim();
+  return /^(목차|참고문헌|References)$/i.test(s) ||
+    /^(표|그림|가설)\s*[0-9A-Za-z가-힣.-]+/.test(s) ||
+    /^H\d+[a-zA-Z]?\s*[:.]/.test(s) ||
+    /^\|.+\|$/.test(s) ||
+    /\t/.test(s);
 }
 
 function normalizeBlankLines(text) {

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import json
+import os
 import sys
 import traceback
 from importlib import metadata
@@ -13,10 +14,26 @@ def package_version(name):
 
 
 def try_kss_sentences(text):
+    if os.environ.get("LAYOUT_NLP_ENABLE_KSS") != "1":
+        return {
+            "ok": False,
+            "engine": "kss",
+            "version": package_version("kss"),
+            "sentences": [],
+            "error": "skipped_by_policy",
+        }
+    if len(str(text or "")) > 260:
+        return {
+            "ok": False,
+            "engine": "kss",
+            "version": package_version("kss"),
+            "sentences": [],
+            "error": "skipped_by_length",
+        }
     try:
         import kss  # type: ignore
         try:
-            sentences = kss.split_sentences(text)
+            sentences = kss.split_sentences(text, num_workers=1)
         except TypeError:
             sentences = kss.split_sentences(text=text)
         return {
@@ -87,18 +104,18 @@ def main():
         max_chars = int(payload.get("maxChars") or 6000)
         work = text[:max_chars]
 
-        kss_result = try_kss_sentences(work)
         kiwi_result = try_kiwi(work, want_spacing)
+        kss_result = try_kss_sentences(work)
         pykospacing_result = try_pykospacing(work, want_spacing)
 
         sentences = []
         sentence_engine = ""
-        if kss_result.get("ok") and kss_result.get("sentences"):
-            sentences = kss_result.get("sentences") or []
-            sentence_engine = "kss"
-        elif kiwi_result.get("ok") and kiwi_result.get("sentences"):
+        if kiwi_result.get("ok") and kiwi_result.get("sentences"):
             sentences = kiwi_result.get("sentences") or []
             sentence_engine = "kiwipiepy"
+        elif kss_result.get("ok") and kss_result.get("sentences"):
+            sentences = kss_result.get("sentences") or []
+            sentence_engine = "kss"
 
         spaced_text = ""
         spacing_engine = ""

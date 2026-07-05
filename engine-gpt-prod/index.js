@@ -1335,11 +1335,11 @@ async function safeNiklExternalApiHints(text, protectedTerms = []) {
     const status = api.getApiStatus();
     const providers = selectedNiklApiProviders(status);
     if (!providers.length) return '';
-    const max = Math.max(0, Math.min(4, Number(process.env.GPT_NIKL_API_LOOKUP_MAX || 2) || 2));
+    const max = Math.max(0, Math.min(6, Number(process.env.GPT_NIKL_API_LOOKUP_MAX || 4) || 4));
     if (!max) return '';
     const candidates = selectNiklApiCandidates(text, protectedTerms).slice(0, max);
     if (!candidates.length) return '';
-    const timeoutMs = Math.max(500, Math.min(2500, Number(process.env.NIKL_API_TIMEOUT_MS || 900) || 900));
+    const timeoutMs = Math.max(500, Math.min(2500, Number(process.env.NIKL_API_TIMEOUT_MS || 1200) || 1200));
     const settled = await Promise.allSettled(candidates.map(query =>
       api.lookupCandidate(query, { providers, timeoutMs })
     ));
@@ -1351,7 +1351,8 @@ async function safeNiklExternalApiHints(text, protectedTerms = []) {
     if (!lookups.length) return '';
     const lines = [
       '[국립국어원 외부 API 조회 힌트]',
-      '표준국어대사전/우리말샘/온용어 조회 결과다. 정의문을 복사하지 말고, 용어 표기 보존과 어색한 치환 방지에만 사용한다.'
+      '표준국어대사전/우리말샘/온용어 조회 결과다. 정의문을 복사하지 말고, 용어 표기 보존과 어색한 치환 방지에만 사용한다.',
+      '조회된 용어는 원문 핵심 표기로 보아 임의로 쉬운 말이나 다른 용어로 바꾸지 않는다.'
     ];
     for (const item of lookups) lines.push(formatNiklLookupHint(item));
     return lines.join('\n');

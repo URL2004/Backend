@@ -37,15 +37,36 @@ function getApiStatus() {
 async function lookupCandidate(candidate, opts = {}) {
   const query = normalizeQuery(candidate);
   if (!query) return null;
-  const providers = opts.providers || ['opendict', 'stdict', 'term'];
+  const providers = uniqueProviders(opts.providers || ['opendict', 'stdict', 'term']);
   const out = { query, providers: {}, warnings: [] };
-  for (const provider of providers) {
+  const settled = await Promise.allSettled(providers.map(async provider => {
     try {
-      const result = await lookupProvider(provider, query, opts);
-      if (result) out.providers[provider] = result;
+      return {
+        provider,
+        result: await lookupProvider(provider, query, opts)
+      };
     } catch (err) {
-      out.warnings.push(`${provider}:${err.message || String(err)}`);
+      throw new Error(`${provider}:${err.message || String(err)}`);
     }
+  }));
+  for (const item of settled) {
+    if (item.status === 'fulfilled') {
+      if (item.value.result) out.providers[item.value.provider] = item.value.result;
+    } else {
+      out.warnings.push(item.reason?.message || String(item.reason));
+    }
+  }
+  return out;
+}
+
+function uniqueProviders(providers) {
+  const out = [];
+  const seen = new Set();
+  for (const provider of providers || []) {
+    const p = String(provider || '').trim().toLowerCase();
+    if (!['opendict', 'stdict', 'term'].includes(p) || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
   }
   return out;
 }

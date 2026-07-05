@@ -58,12 +58,13 @@ function isNiklQualityEnabled(value, styleProfile = '') {
   return true;
 }
 
-async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false } = {}) {
+async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false, qualityPatternLab = false } = {}) {
   const source = String(text || '').trim();
   if (!source) throw new Error('engine-gpt-prod: empty text');
   const cfg = await loadConfig(config);
   const selectedMode = normalizeMode(mode, { allowPolish: allowPolishMode({ styleProfile, config }) });
-  const niklQualityEnabled = isNiklQualityEnabled(niklQualityTest, styleProfile);
+  const qualityPatternLabEnabled = qualityPatternLab === true;
+  const niklQualityEnabled = qualityPatternLabEnabled || isNiklQualityEnabled(niklQualityTest, styleProfile);
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
@@ -86,6 +87,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
       cfg,
       styleProfile,
       niklQualityTest: niklQualityEnabled,
+      qualityPatternLab: qualityPatternLabEnabled,
       signal
     });
     records.push(record);
@@ -93,7 +95,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
 
   let outputText = mergeChunks(chunks);
   outputText = finalPostprocess(outputText, source, selectedMode, contract);
-  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled });
+  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled });
   const finalGate = evaluateWholeDocumentGate({
     outputText,
     source,
@@ -111,13 +113,25 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
   if (allFallback || normalizeBare(source) === normalizeBare(outputText)) {
     result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
-    result.floorReport.status = 'blocked';
-    result.floorReport.criticals = result.floorReport.criticals || [];
-    result.floorReport.criticals.push({
-      gate: allFallback ? 'gpt_all_chunks_fallback' : 'gpt_noop_unchanged',
-      detail: allFallback ? 'All GPT chunks failed hard gates and fell back to source.' : 'GPT output is equivalent to source.'
-    });
+    if (qualityPatternLabEnabled && !allFallback) {
+      result.floorReport.status = result.floorReport.status === 'clean' ? 'needs_review' : result.floorReport.status;
+      result.floorReport.warnings = [
+        ...(result.floorReport.warnings || []),
+        {
+          gate: 'quality_pattern_low_effect',
+          detail: 'quality pattern lab output is equivalent to source; delivered for audit comparison'
+        }
+      ];
+    } else {
+      result.floorReport.status = 'blocked';
+      result.floorReport.criticals = result.floorReport.criticals || [];
+      result.floorReport.criticals.push({
+        gate: allFallback ? 'gpt_all_chunks_fallback' : 'gpt_noop_unchanged',
+        detail: allFallback ? 'All GPT chunks failed hard gates and fell back to source.' : 'GPT output is equivalent to source.'
+      });
+    }
   }
+  if (qualityPatternLabEnabled) softenQualityPatternLabFloorReport(result.floorReport);
   softenFloorReport(result.floorReport);
 
   const usage = records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage());
@@ -139,6 +153,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     koreanQuality: result.koreanQuality || null,
     niklQuality: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     niklQualityTest: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
+    qualityPatternLab: qualityPatternLabEnabled ? (result.qualityPatternLab || { enabled: true }) : null,
     runtimeConfigSource: cfg.source,
     styleProfile: styleProfile || PROFILE
   };
@@ -159,7 +174,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   };
 }
 
-async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, niklQualityTest = false, signal }) {
+async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, niklQualityTest = false, qualityPatternLab = false, signal }) {
   const original = chunk.text;
   if (shouldPassThrough(original)) {
     chunk.outputText = original;
@@ -192,6 +207,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     patchTargets,
     styleProfile,
     niklQualityTest,
+    qualityPatternLab,
     runSemanticJudge: highRisk,
     signal
   });
@@ -221,6 +237,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     patchTargets,
     styleProfile,
     niklQualityTest,
+    qualityPatternLab,
     runSemanticJudge: highRisk,
     signal
   });
@@ -250,7 +267,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
 async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence,
-    cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, niklQualityTest = false, runSemanticJudge, signal
+    cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, signal
   } = args;
   try {
     const koreanSourceQuality = safeKoreanQualityAnalysis(original, {
@@ -264,7 +281,12 @@ async function callHumanize(args) {
     }) : null;
     const niklQualityHints = niklQualityTest ? safeNiklQualityHints(niklSourceQuality) : '';
     const niklExternalApiHints = niklQualityTest ? await safeNiklExternalApiHints(original, protectedTerms) : '';
-    const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints, [niklQualityHints, niklExternalApiHints].filter(Boolean).join('\n\n'));
+    const qualityPatternProfile = qualityPatternLab ? safeQualityPatternProfile(original, {
+      mode,
+      register: contract.register
+    }) : null;
+    const qualityPatternHints = qualityPatternLab ? safeQualityPatternHints(qualityPatternProfile) : '';
+    const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints, [niklQualityHints, niklExternalApiHints, qualityPatternHints].filter(Boolean).join('\n\n'));
     const hp = prompts.buildHumanizePrompt(mode, lang, {
       speakerType: contract.speakerType,
       register: contract.register,
@@ -349,6 +371,13 @@ async function callHumanize(args) {
       register: contract.register,
       beforeAnalysis: niklSourceQuality
     }) : null;
+    const qualityPatternAudit = qualityPatternLab ? safeQualityPatternAudit(original, outputText, {
+      mode,
+      register: contract.register,
+      beforeProfile: qualityPatternProfile,
+      protectedTerms,
+      externalApiHintsUsed: Boolean(niklExternalApiHints)
+    }) : null;
     if (qualityGate) {
       if (Array.isArray(qualityGate.warnings) && qualityGate.warnings.length) {
         gate.warnings.push(...qualityGate.warnings);
@@ -378,6 +407,16 @@ async function callHumanize(args) {
       gate.warnings.push(judgeHardFailReason);
       gate.violations.push(...judgeViolations);
     }
+    if (qualityPatternLab && gate.hardFail && gate.reason === 'noop_unchanged') {
+      gate.hardFail = false;
+      gate.reason = '';
+      gate.warnings.push('quality_pattern_low_effect');
+      gate.violations.push({ gate: 'quality_pattern_low_effect', detail: 'output equivalent to source; delivered for lab audit' });
+    }
+    if (qualityPatternAudit?.auditTrail?.warnings?.length) {
+      gate.warnings.push(...qualityPatternAudit.auditTrail.warnings.map(w => `quality_pattern:${w}`));
+      gate.violations.push(...qualityPatternAudit.auditTrail.warnings.map(w => ({ gate: w, qualityPatternLab: true })));
+    }
     return {
       outputText,
       hardFail: gate.hardFail,
@@ -403,6 +442,7 @@ async function callHumanize(args) {
         judgeReport,
         koreanQuality: compactKoreanQualityGate(qualityGate),
         niklQuality: compactNiklQualityGate(niklQualityGate),
+        qualityPatternLab: compactQualityPatternAudit(qualityPatternAudit),
         selectedModel: response.model,
         escalated: phase === 'escalation'
       })
@@ -926,7 +966,7 @@ function paragraphCount(text) {
   return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
 }
 
-function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false }) {
+function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false, qualityPatternLab = false }) {
   const result = {
     outputText,
     styleProfile: PROFILE,
@@ -973,9 +1013,40 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk, n
         register: contract.register
       }));
     } catch {}
+    result.niklQuality = result.niklQualityTest || null;
     attachNiklQualityWarnings(result.floorReport, result.niklQualityTest);
   }
+  if (qualityPatternLab) {
+    try {
+      const protectedTerms = collectRecordProtectedTerms(records);
+      const externalApiHintsUsed = records.some(r => r?.qualityPatternLab?.auditTrail?.externalApiHintsUsed === true);
+      const audit = safeQualityPatternAudit(source, outputText, {
+        mode,
+        register: contract.register,
+        protectedTerms,
+        externalApiHintsUsed
+      });
+      const compact = compactQualityPatternAudit(audit);
+      result.qualityPatternLab = {
+        enabled: true,
+        version: compact?.version || 'ko-quality-pattern-lab-v1',
+        action: compact?.auditTrail?.action || 'pass',
+        externalApiHintsUsed
+      };
+      result.qualityProfileBefore = compact?.qualityProfileBefore || null;
+      result.qualityProfileAfter = compact?.qualityProfileAfter || null;
+      result.patternDelta = compact?.patternDelta || null;
+      result.auditTrail = compact?.auditTrail || null;
+      result.protectedTermReport = compact?.protectedTermReport || null;
+      result.claimStrengthDrift = compact?.claimStrengthDrift || null;
+      result.rhetoricalInsertion = compact?.rhetoricalInsertion || null;
+      result.grammarHardError = compact?.grammarHardError || null;
+      result.externalApiHintsUsed = externalApiHintsUsed;
+      attachQualityPatternWarnings(result.floorReport, compact);
+    } catch {}
+  }
   attachWeakTransformWarning(result.floorReport, result);
+  if (qualityPatternLab) softenQualityPatternLabFloorReport(result.floorReport);
   softenFloorReport(result.floorReport);
   return result;
 }
@@ -1010,6 +1081,26 @@ function attachNiklQualityWarnings(report, quality) {
       missingTerms: quality.missingTerms || []
     }
   ];
+}
+
+function attachQualityPatternWarnings(report, audit) {
+  if (!report || !audit || !audit.auditTrail) return;
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const action = audit.auditTrail.action || 'pass';
+  if (action === 'pass') return;
+  report.warnings = [
+    ...warnings,
+    {
+      gate: 'quality_pattern_lab',
+      action,
+      warnings: audit.auditTrail.warnings || [],
+      blockers: audit.auditTrail.blockers || [],
+      riskDelta: audit.patternDelta?.riskDelta,
+      protectedTermLossCount: audit.protectedTermReport?.lossCount || 0,
+      grammarHardError: audit.grammarHardError?.introduced === true
+    }
+  ];
+  if (report.status === 'clean') report.status = action === 'blocked' ? 'blocked' : 'needs_review';
 }
 
 function attachWeakTransformWarning(report, result) {
@@ -1066,7 +1157,8 @@ function chunkRecord({
   selectedModel = '',
   judgeReport = null,
   koreanQuality = null,
-  niklQuality = null
+  niklQuality = null,
+  qualityPatternLab = null
 }) {
   return {
     index: chunk.index,
@@ -1088,6 +1180,7 @@ function chunkRecord({
     judgeReport,
     koreanQuality,
     niklQuality,
+    qualityPatternLab,
     selectedModel
   };
 }
@@ -1365,6 +1458,22 @@ function safeNiklQualityGate(source, output, opts = {}) {
   try { return koreanQuality.niklTest.evaluateNiklQuality(source, output, opts); } catch { return null; }
 }
 
+function safeQualityPatternProfile(text, opts = {}) {
+  try { return koreanQuality.qualityPatternLab.buildQualityProfile(text, opts); } catch { return null; }
+}
+
+function safeQualityPatternHints(profile) {
+  try { return profile ? koreanQuality.qualityPatternLab.buildPromptHints(profile, { max: 8 }) : ''; } catch { return ''; }
+}
+
+function safeQualityPatternAudit(source, output, opts = {}) {
+  try { return koreanQuality.qualityPatternLab.buildAudit(source, output, opts); } catch { return null; }
+}
+
+function compactQualityPatternAudit(audit) {
+  try { return koreanQuality.qualityPatternLab.compactAudit(audit); } catch { return null; }
+}
+
 function compactKoreanQualityGate(gate) {
   if (!gate) return null;
   return {
@@ -1383,6 +1492,52 @@ function compactKoreanQualityGate(gate) {
 
 function compactNiklQualityGate(gate) {
   try { return koreanQuality.niklTest.compactNiklReport(gate); } catch { return null; }
+}
+
+function collectRecordProtectedTerms(records = []) {
+  const out = [];
+  const seen = new Set();
+  for (const record of records || []) {
+    for (const term of record?.protectedTerms || []) {
+      const value = String(term || '').trim();
+      const key = value.toLowerCase();
+      if (!value || seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+      if (out.length >= 160) return out;
+    }
+  }
+  return out;
+}
+
+function softenQualityPatternLabFloorReport(report) {
+  if (!report || report.status !== 'blocked') return report;
+  const criticals = Array.isArray(report.criticals) ? report.criticals : [];
+  if (!criticals.length) return report;
+  const strict = criticals.filter(isQualityPatternStrictCritical);
+  const soft = criticals.filter(c => !isQualityPatternStrictCritical(c));
+  if (strict.length) {
+    report.criticals = strict;
+    if (soft.length) {
+      report.warnings = [
+        ...(Array.isArray(report.warnings) ? report.warnings : []),
+        ...soft.map(c => ({ ...c, softenedFromCritical: true, qualityPatternLab: true }))
+      ];
+    }
+    return report;
+  }
+  report.status = 'needs_review';
+  report.warnings = [
+    ...(Array.isArray(report.warnings) ? report.warnings : []),
+    ...soft.map(c => ({ ...c, softenedFromCritical: true, qualityPatternLab: true }))
+  ];
+  report.criticals = [];
+  return report;
+}
+
+function isQualityPatternStrictCritical(c) {
+  const gate = String(c?.gate || c?.type || '').trim();
+  return /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated/i.test(gate);
 }
 
 function compactRisk(inputRisk) {

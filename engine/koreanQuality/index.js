@@ -7,6 +7,7 @@ const { evaluateKoreanQuality } = require('./gate');
 const niklTest = require('./niklTest');
 const officialResources = require('./officialResources');
 const officialApi = require('./officialApi');
+const qualityPatternLab = require('./qualityPatternLab');
 
 module.exports = {
   DEFAULT_THRESHOLDS,
@@ -16,5 +17,6 @@ module.exports = {
   evaluateKoreanQuality,
   niklTest,
   officialResources,
-  officialApi
+  officialApi,
+  qualityPatternLab
 };

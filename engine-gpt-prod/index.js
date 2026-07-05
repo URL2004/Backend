@@ -58,12 +58,19 @@ function isNiklQualityEnabled(value, styleProfile = '') {
   return true;
 }
 
-async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false, qualityPatternLab = false } = {}) {
+function isQualityPatternLabEnabled(value, styleProfile = '') {
+  if (process.env.GPT_QUALITY_PATTERN_ENABLED === '0' || process.env.GPT_QUALITY_PATTERN_LAB_ENABLED === '0') return false;
+  if (value === true) return true;
+  if (value === false) return false;
+  return !isAdminNiklProfile(styleProfile);
+}
+
+async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false, qualityPatternLab } = {}) {
   const source = String(text || '').trim();
   if (!source) throw new Error('engine-gpt-prod: empty text');
   const cfg = await loadConfig(config);
   const selectedMode = normalizeMode(mode, { allowPolish: allowPolishMode({ styleProfile, config }) });
-  const qualityPatternLabEnabled = qualityPatternLab === true;
+  const qualityPatternLabEnabled = isQualityPatternLabEnabled(qualityPatternLab, styleProfile);
   const niklQualityEnabled = qualityPatternLabEnabled || isNiklQualityEnabled(niklQualityTest, styleProfile);
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);

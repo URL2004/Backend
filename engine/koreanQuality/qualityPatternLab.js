@@ -458,8 +458,9 @@ function extractTermCandidates(text) {
   addMatches(terms, s.match(/[가-힣A-Za-z0-9]+(?:대학교|대학원|연구소|학회|기관|공사|공단|주식회사|택배|병원|유치원|어린이집|교육부|보건복지부|AWS|API)/g));
   addMatches(terms, s.match(/[가-힣A-Za-z0-9]{2,}(?:·[가-힣A-Za-z0-9]{2,}){1,}/g));
   addMatches(terms, s.match(/[가-힣A-Za-z0-9·-]{2,}(?:시스템|기술|설비|기능|인프라|포털|터미널|플랫폼|데이터|API|AI|AWS)/g));
+  addMatches(terms, s.match(/[가-힣A-Za-z0-9][가-힣A-Za-z0-9·\s-]{1,40}\([A-Za-z가-힣0-9][^)）]{1,40}\)/g), normalizeParentheticalTerm);
   addMatches(terms, s.match(/['"“”‘’『』「」][^'"“”‘’『』「」\n]{2,40}['"“”‘’『』「」]/g), v => String(v || '').replace(/^['"“”‘’『』「」]+|['"“”‘’『』「」]+$/g, ''));
-  return unique(terms).filter(v => v.length >= 2 && v.length <= 80).slice(0, 120);
+  return unique(terms).filter(isTermCandidateSafe).slice(0, 120);
 }
 
 function addMatches(out, matches, normalize = normalizeTerm) {
@@ -471,6 +472,36 @@ function addMatches(out, matches, normalize = normalizeTerm) {
 
 function normalizeTerm(raw) {
   return String(raw || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeParentheticalTerm(raw) {
+  const v = normalizeTerm(raw);
+  const m = v.match(/^(.+?)\(([^)）]{1,60})\)$/);
+  if (!m) return v;
+  const inside = normalizeTerm(m[2]);
+  const before = trimParenTermPrefix(m[1]);
+  if (inside && /[A-Za-z0-9]/.test(inside)) return inside;
+  return before ? `${before}(${inside})` : inside;
+}
+
+function trimParenTermPrefix(value) {
+  const words = normalizeTerm(value).split(' ').filter(Boolean);
+  let picked = words.slice(-4);
+  while (picked.length > 1 && /(?:은|는|이|가|을|를|에서|으로|로|와|과|의|에)$/.test(picked[0])) {
+    picked = picked.slice(1);
+  }
+  return picked.join(' ');
+}
+
+function isTermCandidateSafe(value) {
+  const v = normalizeTerm(value);
+  if (v.length < 2 || v.length > 80) return false;
+  if (/[.!?。！？\r\n]/.test(v)) return false;
+  const words = v.split(' ').filter(Boolean);
+  if (words.length > 6) return false;
+  if (v.length > 42 && /(?:은|는|이|가|을|를|에서|으로|로|와|과|의|에)\b/.test(v)) return false;
+  if (v.length > 55 && !/[A-Z0-9%]/.test(v)) return false;
+  return true;
 }
 
 function splitParagraphs(text) {

@@ -30,6 +30,17 @@ const STRICT_DELIVERY_GATES = new Set([
   'encoding_corruption',
   'sentence_truncated'
 ]);
+const REVIEW_WARNING_GATES = new Set([
+  'section_anchor_loss',
+  'length_collapse',
+  'protected_term_loss',
+  'structure_lock_loss',
+  'unsafe_chunk_boundary',
+  'grammar_hard_error',
+  'speaker_drift',
+  'register_shift',
+  'paragraph_collapse'
+]);
 
 function normalizeMode(mode, { allowPolish = false } = {}) {
   const v = String(mode || '').trim().toLowerCase();
@@ -715,7 +726,7 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
     violations.push(lengthGate.violation);
     warnings.push('length_collapse');
   }
-  const lostTerms = protectedTerms.filter(t => t.length >= 2 && !outputText.includes(t));
+  const lostTerms = protectedTerms.filter(t => protectedTermMissing(t, outputText));
   if (lostTerms.length) {
     violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 12) });
     warnings.push('protected_term_loss');
@@ -786,7 +797,7 @@ function evaluateWholeDocumentGate({ outputText, source, contract, mode, sourceS
     warnings.push('length_collapse');
   }
   const protectedTerms = extractProtectedTerms(source);
-  const lostTerms = protectedTerms.filter(t => t.length >= 2 && !outputText.includes(t));
+  const lostTerms = protectedTerms.filter(t => protectedTermMissing(t, outputText));
   if (lostTerms.length) {
     violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 16) });
     warnings.push('protected_term_loss');
@@ -829,9 +840,18 @@ function addFloorWarnings(report, violations, warningGates = []) {
     ...warningGates,
     ...additions
   ];
-  if (report.status === 'clean' && (warningGates.length || additions.length)) {
+  if (report.status === 'clean' && shouldPromoteWarningsToNeedsReview([...warningGates, ...additions])) {
     report.status = 'needs_review';
   }
+}
+
+function shouldPromoteWarningsToNeedsReview(items = []) {
+  return (items || []).some(item => {
+    const gate = typeof item === 'string'
+      ? item
+      : String(item?.gate || item?.type || item?.action || '').trim();
+    return REVIEW_WARNING_GATES.has(gate);
+  });
 }
 
 function isBlockingViolation(v) {
@@ -916,11 +936,69 @@ function extractProtectedTerms(text) {
   ];
   for (const re of patterns) {
     for (const m of s.matchAll(re)) {
-      const v = String(m[0] || '').trim();
-      if (v.length >= 2 && v.length <= 80) out.add(v);
+      addProtectedTerm(out, m[0]);
     }
   }
   return [...out].slice(0, 120);
+}
+
+function addProtectedTerm(out, raw) {
+  for (const term of normalizeProtectedTermCandidate(raw)) {
+    if (term.length >= 2 && term.length <= 80) out.add(term);
+  }
+}
+
+function normalizeProtectedTermCandidate(raw) {
+  const v = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!v || /[\r\n]/.test(String(raw || ''))) return [];
+  const paren = v.match(/^(.+?)\(([^)）]{1,60})\)$/);
+  if (paren) {
+    const before = trimParenTermPrefix(paren[1]);
+    const inside = String(paren[2] || '').trim();
+    const out = [];
+    if (isProtectedTermLike(inside)) out.push(inside);
+    const combined = before ? `${before}(${inside})` : '';
+    if (isProtectedTermLike(combined)) out.push(combined);
+    return out;
+  }
+  return isProtectedTermLike(v) ? [v] : [];
+}
+
+function trimParenTermPrefix(value) {
+  const words = String(value || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  if (!words.length) return '';
+  let picked = words.slice(-4);
+  while (picked.length > 1 && /(?:은|는|이|가|을|를|에서|으로|로|와|과|의|에)$/.test(picked[0])) {
+    picked = picked.slice(1);
+  }
+  return picked.join(' ');
+}
+
+function isProtectedTermLike(value) {
+  const v = String(value || '').replace(/\s+/g, ' ').trim();
+  if (v.length < 2 || v.length > 80) return false;
+  if (/[.!?。！？]/.test(v)) return false;
+  const words = v.split(' ').filter(Boolean);
+  if (words.length > 6) return false;
+  if (v.length > 42 && /(?:은|는|이|가|을|를|에서|으로|로|와|과|의|에)\b/.test(v)) return false;
+  if (v.length > 55 && !/[A-Z0-9%]/.test(v)) return false;
+  return true;
+}
+
+function protectedTermMissing(term, outputText) {
+  const t = String(term || '').replace(/\s+/g, ' ').trim();
+  if (!isProtectedTermLike(t)) return false;
+  const out = String(outputText || '');
+  if (out.includes(t)) return false;
+  const compactOut = normalizeBare(out);
+  const compactTerm = normalizeBare(t);
+  if (compactTerm.length >= 3 && compactOut.includes(compactTerm)) return false;
+  const paren = t.match(/\(([^)）]{2,60})\)$/);
+  if (paren) {
+    const inner = String(paren[1] || '').trim();
+    if (inner && (out.includes(inner) || normalizeBare(inner).length >= 3 && compactOut.includes(normalizeBare(inner)))) return false;
+  }
+  return true;
 }
 
 function buildPatchTargets(text, mode) {
@@ -1141,19 +1219,26 @@ function attachQualityPatternWarnings(report, audit) {
   const warnings = Array.isArray(report.warnings) ? report.warnings : [];
   const action = audit.auditTrail.action || 'pass';
   if (action === 'pass') return;
+  const warningList = audit.auditTrail.warnings || [];
   report.warnings = [
     ...warnings,
     {
       gate: 'quality_pattern_lab',
       action,
-      warnings: audit.auditTrail.warnings || [],
+      warnings: warningList,
       blockers: audit.auditTrail.blockers || [],
       riskDelta: audit.patternDelta?.riskDelta,
       protectedTermLossCount: audit.protectedTermReport?.lossCount || 0,
       grammarHardError: audit.grammarHardError?.introduced === true
     }
   ];
-  if (report.status === 'clean') report.status = action === 'blocked' ? 'blocked' : 'needs_review';
+  if (report.status === 'clean') {
+    report.status = action === 'blocked'
+      ? 'blocked'
+      : shouldPromoteWarningsToNeedsReview(warningList)
+        ? 'needs_review'
+        : report.status;
+  }
 }
 
 function addStructureWarnings(report, audit) {

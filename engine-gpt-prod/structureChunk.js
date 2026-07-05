@@ -11,7 +11,8 @@ function splitChunksForGpt(text) {
   const state = {
     referenceMode: false,
     tocMode: false,
-    currentSection: ''
+    currentSection: '',
+    lastPiece: null
   };
 
   for (const chunk of base) {
@@ -45,6 +46,12 @@ function expandBaseChunk(chunk, state) {
   for (const piece of pieces) {
     const info = classifyPiece(piece.text, state);
     if (info.sectionLabel) state.currentSection = info.sectionLabel;
+    state.lastPiece = {
+      text: String(piece.text || '').trim(),
+      locked: info.locked,
+      lockType: info.lockType || '',
+      sectionLabel: info.sectionLabel || state.currentSection || ''
+    };
     const key = info.locked ? `locked:${info.lockType}` : 'body';
     if (!current || current.key !== key) {
       flushGroup(groups, current, state);
@@ -106,6 +113,10 @@ function classifyPiece(line, state) {
 
   if (isHeadingLine(s)) {
     return { locked: true, lockType: 'heading', sectionLabel: s };
+  }
+  if (isHeadingContinuationLine(s, state.lastPiece)) {
+    const sectionLabel = [state.currentSection, s].filter(Boolean).join(' ').trim() || s;
+    return { locked: true, lockType: 'heading_continuation', sectionLabel };
   }
   if (isHypothesisLine(s)) return { locked: true, lockType: 'hypothesis', sectionLabel: state.currentSection };
   if (isTableLine(s)) return { locked: true, lockType: 'table', sectionLabel: state.currentSection };
@@ -238,6 +249,7 @@ function findUnsafeOutputBoundaries(chunks) {
     const left = chunks[i];
     const right = chunks[i + 1];
     if (!left || !right || left.locked || right.locked) continue;
+    if (!/\n/.test(left.sep || '')) continue;
     const leftText = String(left.outputText != null ? left.outputText : left.text || '').trim();
     const rightText = String(right.outputText != null ? right.outputText : right.text || '').trim();
     if (!leftText || !rightText) continue;
@@ -257,27 +269,38 @@ function looksUnsafeChunkEnd(text) {
 }
 
 function isReferenceHeading(s) {
-  return /^(?:참고문헌|References|Bibliography|Works\s+Cited)$/i.test(s);
+  return /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/i.test(s);
 }
 
 function isTocHeading(s) {
-  return /^(?:목차|차례|Table\s+of\s+Contents)$/i.test(s);
+  return /^(?:목\s*차|차례|Table\s+of\s+Contents)$/i.test(s);
 }
 
 function isMainBodyHeading(s) {
-  return /^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]\s*(?:서론|본론|결론|초록|이론|연구|논의|참고문헌)/.test(s);
+  return /^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*(?:서론|본론|결론|초록|이론|연구|논의|참고\s*문헌)/.test(s) ||
+    /^제\s?\d{1,3}\s?(?:장|절|항)\b/.test(s);
 }
 
 function isHeadingLine(s) {
-  if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]\s*\S.{0,100}$/.test(s)) return true;
+  if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*\S.{0,100}$/.test(s)) return true;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/.test(s) && s.length <= 120) return true;
-  if (/^제\s?\d{1,3}\s?(?:장|절|항)\s+\S.{0,100}$/.test(s)) return true;
-  if (/^(?:서론|본론|결론|초록|연구\s*방법|연구\s*결과|논의|결과\s*분석\s*및\s*함의)$/.test(s)) return true;
+  if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/.test(s)) return true;
+  if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|참고\s*문헌|결과\s*분석\s*및\s*함의)$/.test(s)) return true;
+  if (/^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/i.test(s)) return true;
   return false;
 }
 
+function isHeadingContinuationLine(s, lastPiece) {
+  if (!lastPiece || !lastPiece.locked || !/^heading/.test(lastPiece.lockType || '')) return false;
+  if (!s || s.length > 40) return false;
+  if (/[.!?。！？]$/.test(s)) return false;
+  if (/^(?:및|과|와|또는|그리고)\s+\S.{0,34}$/.test(s)) return true;
+  return /^(?:함의|시사점|한계점|제언|논의|요약)$/.test(s);
+}
+
 function isHypothesisLine(s) {
-  return /^(?:가설|연구가설|H)\s*\d+[a-zA-Z]?\s*[.:)]?\s+/.test(s);
+  return /^(?:\(?\s*)?(?:가설|연구\s*가설|H)\s*[-:]?\s*\d+[a-zA-Z]?\s*[.:)：)]?(?:\s+|$)/.test(s) ||
+    /^(?:\(?\s*)?(?:가설|연구\s*가설|H)\s*[-:]?\s*\d+[a-zA-Z]?\s*[.:)：)]?\S.{0,180}$/.test(s);
 }
 
 function isTableLine(s) {

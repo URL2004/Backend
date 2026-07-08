@@ -24,20 +24,20 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   const stable = [
     humanizeStableCore(),
     '',
-    preservationBlock(lengthPolicy),
-    '',
     gptBiasGuardBlock(),
     '',
     transformStrengthBlock(),
     '',
+    gateSummaryBlock(),
+    '',
+    structuredOutputBlock(),
+    '',
+    preservationBlock(lengthPolicy),
+    '',
     '[장르 원칙]',
     genreBlock(mode, register, styleProfile),
     speakerBlock(speakerType),
-    registerBlock(register),
-    '',
-    gateSummaryBlock(),
-    '',
-    structuredOutputBlock()
+    registerBlock(register)
   ].join('\n');
 
   const dynamic = dynamicContextBlock({ riskProfile, userNotes, evidence, styleProfile });

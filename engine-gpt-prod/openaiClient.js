@@ -18,7 +18,10 @@ function promptCacheKey(config, { task, mode, profile, schemaName, phase, model 
   const prefix = String(config?.cache?.keyPrefix || process.env.OPENAI_PROMPT_CACHE_KEY_PREFIX || 'gp-prod')
     .replace(/[^\w.-]+/g, '_')
     .slice(0, 48);
-  const raw = [prefix, model || 'model', task || 'task', mode || 'default', profile || 'prod', schemaName || 'json', phase || 'main']
+  const includePhase = String(process.env.OPENAI_PROMPT_CACHE_KEY_INCLUDE_PHASE || '').trim() === '1';
+  const parts = [prefix, model || 'model', task || 'task', mode || 'default', profile || 'prod', schemaName || 'json'];
+  if (includePhase) parts.push(phase || 'main');
+  const raw = parts
     .map(v => String(v || '').replace(/[^\w.-]+/g, '_'))
     .join(':');
   if (raw.length <= 64) return raw;
@@ -77,7 +80,7 @@ async function completeJson({
 
   const cacheKey = promptCacheKey(config, { ...meta, schemaName, model });
   if (cacheKey) body.prompt_cache_key = cacheKey;
-  const retention = config?.cache?.retention || process.env.OPENAI_PROMPT_CACHE_RETENTION;
+  const retention = promptCacheRetention(config, model);
   if (retention) body.prompt_cache_retention = String(retention);
   if (Array.isArray(tools) && tools.length) body.tools = tools;
   if (toolChoice) body.tool_choice = toolChoice;
@@ -144,6 +147,23 @@ async function completeJson({
     incompleteReason,
     elapsedMs
   };
+}
+
+function promptCacheRetention(config, model) {
+  const raw = String(config?.cache?.retention || process.env.OPENAI_PROMPT_CACHE_RETENTION || '').trim();
+  if (raw && raw.toLowerCase() !== 'auto') return raw;
+  return supportsExtendedPromptCache(model) ? '24h' : '';
+}
+
+function supportsExtendedPromptCache(model) {
+  const m = String(model || '').toLowerCase();
+  if (!m) return false;
+  if (/^gpt-5\.4(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return true;
+  if (/^gpt-5\.2(?:-|$)/.test(m)) return true;
+  if (/^gpt-5\.1(?:-|$)/.test(m)) return true;
+  if (/^gpt-5(?:-|$)/.test(m) && !/^gpt-5\.4-(mini|nano)(?:-|$)/.test(m)) return true;
+  if (/^gpt-4\.1(?:-|$)/.test(m)) return true;
+  return false;
 }
 
 async function fetchOpenAIWithRetry(url, init, parentSignal) {

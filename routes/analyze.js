@@ -2826,8 +2826,10 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 
   // ★ 병렬화: 청크는 앞 청크의 '원문' 이웃만 참고(출력 의존 제거)하므로 서로 독립 → 동시 실행 가능.
   //   claudecode(CLI)는 직렬(1), API는 동시성 6. CHUNK_CONCURRENCY로 override.
-  const CHUNK_CONCURRENCY = Number(process.env.CHUNK_CONCURRENCY) ||
+  const rawChunkConcurrency = Number(process.env.CHUNK_CONCURRENCY) ||
     (process.env.LLM_BACKEND === 'claudecode' ? 1 : 6);
+  const chunkSafeCap = Math.max(1, Number(process.env.TRANSFORM_SAFE_CHUNK_CAP) || 1);
+  const CHUNK_CONCURRENCY = Math.min(rawChunkConcurrency, chunkSafeCap);
 
   async function processChunk(i) {
     if (signal?.aborted) throw new Error('aborted');

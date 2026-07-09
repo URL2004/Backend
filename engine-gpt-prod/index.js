@@ -1805,7 +1805,9 @@ async function safeFormatLayout(text, opts = {}) {
     return await layoutNormalizer.formatDocument(source, {
       mode: opts.mode || 'assignment',
       phase: opts.phase || 'post',
-      enableNlp: true,
+      // Python NLP(kiwipiepy/kss)는 변환마다 서브프로세스로 모델을 새로 로드해 Render 512Mi에서 OOM 크래시 루프를
+      // 일으켰다(2026-07-05~09 실사고). 운영은 JS 포맷팅만 쓰고, Python은 메모리 여유 있는 환경에서만 opt-in.
+      enableNlp: process.env.LAYOUT_NLP_PYTHON_ENABLED === '1',
       timeoutMs: Number(process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000,
       maxChars: Number(process.env.LAYOUT_NLP_MAX_CHARS || 12000) || 12000
     });

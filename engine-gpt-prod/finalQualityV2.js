@@ -135,6 +135,8 @@ async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signa
         skipped: report.skipped === true,
         reason: report.reason || '',
         rounds: report.rounds || 0,
+        repairRejected: report.repairRejected === true,
+        repairRejectReasons: report.repairRejectReasons || [],
         escalated: report.escalated === true,
         violations: report.violations || [],
         selectedJudgeModel: report.selectedJudgeModel || '',
@@ -153,6 +155,7 @@ async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signa
     pass: residual.length === 0,
     uncertain: residual.some(report => report.uncertain || report.skipped),
     repairCount: reports.reduce((sum, report) => sum + (report.rounds || 0), 0),
+    repairRejected: reports.some(report => report.repairRejected),
     escalated: reports.some(report => report.escalated),
     sectionCount: reports.length,
     reports,
@@ -286,6 +289,7 @@ function warningsFromSemantic(report) {
   if (!report?.ran || report.pass) return [];
   const codes = new Set((report.violations || []).map(item => item.type));
   const out = [];
+  if (report.repairRejected) out.push(warning('semantic_repair_rejected', '자동 수리 결과가 원문 보존 기준을 악화시켜 적용하지 않았어요.'));
   if (report.uncertain) out.push(warning('semantic_judge_uncertain', '의미 보존 자동 심사가 불확실해 결과를 직접 확인해 주세요.'));
   if (codes.has('added_claim')) out.push(warning('semantic_addition', '원문에 없는 내용이 추가됐을 가능성이 있어요.'));
   if (codes.has('distortion')) out.push(warning('semantic_distortion', '원문의 의미 일부가 달라졌을 가능성이 있어요.'));

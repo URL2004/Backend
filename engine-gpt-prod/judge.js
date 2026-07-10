@@ -3,7 +3,8 @@
 const { completeJson } = require('./openaiClient');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { addUsage, emptyUsage } = require('./usageCost');
-const { splitSentences } = require('../engine/koreanText');
+const floor = require('../engine/floor');
+const { splitSentences, computeEditMetrics } = require('../engine/koreanText');
 
 const LEDGER_SCHEMA = {
   type: 'object',
@@ -199,6 +200,8 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config
     ...escalated,
     escalated: true,
     rounds: (primary.rounds || 0) + (escalated.rounds || 0),
+    repairRejected: primary.repairRejected === true || escalated.repairRejected === true,
+    repairRejectReasons: [...new Set([...(primary.repairRejectReasons || []), ...(escalated.repairRejectReasons || [])])],
     primaryJudge: summarizeJudge(primary),
     usage: addUsage(primary.usage || emptyUsage(), escalated.usage)
   };
@@ -247,6 +250,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     safetyIdentifier
   });
   usage = addUsage(usage, judge?.gptMeta?.usage);
+  const initialViolations = [...(judge.violations || [])];
   let rounds = 0;
   while (!judge.pass && rounds < maxRounds) {
     rounds++;
@@ -262,7 +266,24 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       phase: `${phasePrefix}:repair`
     });
     usage = addUsage(usage, repaired?.gptMeta?.usage);
-    current = repaired.outputText || current;
+    const candidate = repaired.outputText || current;
+    const repairSafety = assessRepairCandidate(rawText, current, candidate, { mode, allowedExtra });
+    if (!repairSafety.pass) {
+      return {
+        outputText: current,
+        pass: false,
+        violations: initialViolations,
+        initialViolations,
+        ledger,
+        rounds,
+        repairRejected: true,
+        repairRejectReasons: repairSafety.reasons,
+        reason: 'repair_candidate_rejected',
+        selectedJudgeModel: judgeModel,
+        usage
+      };
+    }
+    current = candidate;
     judge = await semanticJudge(rawText, current, ledger, {
       lang,
       signal,
@@ -280,6 +301,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     outputText: current,
     pass: judge.pass,
     violations: judge.violations || [],
+    initialViolations,
     ledger,
     rounds,
     selectedJudgeModel: judgeModel,
@@ -292,6 +314,8 @@ function summarizeJudge(report) {
     pass: report?.pass === true,
     skipped: report?.skipped === true,
     reason: report?.reason || '',
+    repairRejected: report?.repairRejected === true,
+    repairRejectReasons: report?.repairRejectReasons || [],
     selectedJudgeModel: report?.selectedJudgeModel || '',
     violationCount: Array.isArray(report?.violations) ? report.violations.length : 0
   };
@@ -306,6 +330,60 @@ function validateLedgerHealth(ledger, rawText) {
   if (total >= 3 && dropped / total > 0.5) return { healthy: false, reason: 'high_drop' };
   if (rawLen >= 1500 && claims < 3) return { healthy: false, reason: 'undercovered' };
   return { healthy: true, reason: 'ok' };
+}
+
+function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', allowedExtra = '' } = {}) {
+  const source = String(rawText || '');
+  const before = String(beforeText || '');
+  const candidate = String(candidateText || '');
+  const reasons = [];
+  if (!candidate.trim()) reasons.push('empty_candidate');
+  const beforeMetrics = computeEditMetrics(source, before);
+  const candidateMetrics = computeEditMetrics(source, candidate);
+  const relativeLength = before.length ? candidate.length / before.length : 0;
+  const polish = mode === 'polish';
+  const minSourceLength = polish ? 0.9 : 0.82;
+  const maxSourceLength = polish ? 1.1 : 1.25;
+  if (candidateMetrics.lengthRatio < minSourceLength) reasons.push('source_length_short');
+  if (candidateMetrics.lengthRatio > maxSourceLength) reasons.push('source_length_overrun');
+  if (relativeLength < 0.82) reasons.push('repair_collapsed');
+  if (relativeLength > 1.2) reasons.push('repair_expanded');
+
+  const beforeLost = floor.measureLostFacts(source, before).count;
+  const candidateLost = floor.measureLostFacts(source, candidate).count;
+  const beforeNovelty = floor.measureNovelty(source, before, allowedExtra).count;
+  const candidateNovelty = floor.measureNovelty(source, candidate, allowedExtra).count;
+  if (candidateLost > beforeLost) reasons.push('lost_facts_worsened');
+  if (candidateNovelty > beforeNovelty) reasons.push('novelty_worsened');
+
+  const sourceStructure = repairStructureSignature(source);
+  const beforeStructure = repairStructureSignature(before);
+  const candidateStructure = repairStructureSignature(candidate);
+  for (const key of ['paragraphs', 'headings', 'listItems', 'quotes']) {
+    const beforeDelta = Math.abs(beforeStructure[key] - sourceStructure[key]);
+    const candidateDelta = Math.abs(candidateStructure[key] - sourceStructure[key]);
+    if (candidateDelta > beforeDelta) reasons.push(`${key}_worsened`);
+  }
+  return {
+    pass: reasons.length === 0,
+    reasons: [...new Set(reasons)],
+    beforeMetrics,
+    candidateMetrics,
+    beforeLost,
+    candidateLost,
+    beforeNovelty,
+    candidateNovelty
+  };
+}
+
+function repairStructureSignature(value) {
+  const text = String(value || '');
+  return {
+    paragraphs: text.split(/\n{2,}/u).map(item => item.trim()).filter(Boolean).length,
+    headings: (text.match(/^\s*(?:#{1,6}\s+|제\s*\d+\s*(?:장|절|항)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){1,3}[.)]?)\s*\S.*$/gmu) || []).length,
+    listItems: (text.match(/^\s*(?:[-*•▪◦]|\d+[.)]|[가-하][.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s+/gmu) || []).length,
+    quotes: (text.match(/["“”'‘’]/gu) || []).length
+  };
 }
 
 function buildDeterministicLedger(rawText) {

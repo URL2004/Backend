@@ -207,3 +207,20 @@ test('모델 claim 원장이 불건전하면 원문 문장 원장으로 대체�
   const semanticCall = mock.calls.find(call => call.name === 'gpt_prod_semantic_judge');
   assert.ok(String(semanticCall.body.input || '').includes(`[SOURCE]\n${source}`));
 });
+
+test('의미 수리 후보가 문서를 축약하면 폐기하고 수리 전 결과를 상위 모델에 재판정한다', { concurrency: false }, async t => {
+  const mock = installEngineMock(t, {
+    semanticViolation: true,
+    multipleLedgerClaims: true,
+    repairOutput: '핵심만 요약합니다.'
+  });
+  const source = SOURCE.repeat(8);
+  const beforeRepair = SAFE_POLISH.repeat(8);
+  const report = await qualityV2.runSemanticDocumentAudit({ source, outputText: beforeRepair, mode: 'polish', config: config() });
+  assert.equal(report.outputText, beforeRepair);
+  assert.equal(report.repairCount, 1);
+  assert.equal(report.repairRejected, true);
+  assert.equal(report.reports[0].repairRejected, true);
+  assert.ok(report.reports[0].repairRejectReasons.includes('repair_collapsed'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
+});

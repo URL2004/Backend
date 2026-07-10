@@ -173,6 +173,24 @@ test('v2 청크가 보호 사실을 잃으면 상위 모델 재시도 후 원문
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
 });
 
+test('일반 모드 무변환 재시도는 구조를 고정한 최소 수정 지시를 상위 모델에 보낸다', { concurrency: false }, async t => {
+  const source = '창가에 빛이 오래 머물렀습니다. 조용한 방 안에서 오래된 책장을 넘기며 지난 계절의 냄새를 떠올렸습니다. 말하지 못한 문장들은 그대로 남아 있었고, 저는 그 여백을 천천히 바라봤습니다. 그날의 바람은 얇은 커튼을 흔들었고, 멀리서 들려오는 발소리는 금세 고요 속으로 사라졌습니다. 저녁이 내려앉을 무렵에는 벽에 걸린 그림자도 조금씩 길어졌습니다. 손끝에 남은 종이의 감촉과 희미한 먼지 냄새가 방 안의 시간을 천천히 붙잡고 있었습니다.';
+  const mock = installEngineMock(t, {
+    humanize: body => JSON.stringify(body.input || '').includes('원문과 완전히 같은 출력은 이번 재시도 실패다')
+      ? source.replace('오래 머물렀습니다', '한동안 머물렀습니다')
+      : source
+  });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'creative-noop-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify({
+    criticals: out.floorReport?.criticals?.map(item => item.gate || item.type),
+    warnings: out.floorReport?.warnings,
+    chunkWarnings: out.chunks?.map(item => ({ hardFailReason: item.hardFailReason, warnings: item.warnings, fallback: item.fallback }))
+  }));
+  assert.notEqual(out.result.outputText, source);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+  assert.ok(mock.calls.some(call => JSON.stringify(call.body.input || '').includes('원문과 완전히 같은 출력은 이번 재시도 실패다')));
+});
+
 test('영어 입력은 세 공개 모드 모두 API 호출 전에 한국어 전용 오류로 차단한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t);
   const english = 'This is an English document that should never be sent to the humanizing model because the service is Korean only.';

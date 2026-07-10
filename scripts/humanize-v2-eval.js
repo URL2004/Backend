@@ -167,6 +167,8 @@ function makeChunkDetail(args) {
   if (scope === 'current81') rows = rows.filter(row => String(row.created_at_kst || '') >= LIVE_COMMIT_CUTOFF_KST);
   const requestedMode = ['blog', 'polish', 'formal'].includes(String(args.mode || '')) ? String(args.mode) : '';
   if (requestedMode) rows = rows.filter(row => validMode(row.mode) === requestedMode);
+  const caseIdFilter = String(args.caseId || args['case-id'] || '').trim();
+  if (caseIdFilter) rows = rows.filter(row => stableHash(row.history_id).slice(0, 16) === caseIdFilter);
   if (args.limit) rows = rows.slice(0, Number(args.limit));
   const documents = rows.map(row => {
     const source = readRtf(path.join(manifest.dir, row.original_file));
@@ -239,8 +241,12 @@ async function replay(args) {
   if (scope === 'current81') rows = rows.filter(row => String(row.created_at_kst || '') >= LIVE_COMMIT_CUTOFF_KST);
   const requestedModeFilter = ['blog', 'polish', 'formal'].includes(String(args.mode || '')) ? String(args.mode) : '';
   if (requestedModeFilter) rows = rows.filter(row => validMode(row.mode) === requestedModeFilter);
+  const caseIdFilter = String(args.caseId || args['case-id'] || '').trim();
+  if (caseIdFilter) rows = rows.filter(row => stableHash(row.history_id).slice(0, 16) === caseIdFilter);
   if (args.limit) rows = rows.slice(0, Number(args.limit));
-  const scopeLabel = requestedModeFilter ? `${scope}-${requestedModeFilter}` : scope;
+  const scopeLabel = caseIdFilter
+    ? `${scope}-case-${caseIdFilter}`
+    : (requestedModeFilter ? `${scope}-${requestedModeFilter}` : scope);
   const resultPath = path.join(outDir, `v2-replay-${scopeLabel}.jsonl`);
   const stream = fs.createWriteStream(resultPath, { flags: 'a', encoding: 'utf8' });
   const cfg = runtime.publicConfig(runtime.DEFAULT_CONFIG, 'local_eval');
@@ -609,7 +615,7 @@ function printHelp() {
     '  node scripts/humanize-v2-eval.js chunk-summary --manifest=.../pair_manifest.csv --scope=current81 --out=.../chunk-summary.json',
     '  node scripts/humanize-v2-eval.js chunk-detail --manifest=... --scope=current81 --mode=polish --limit=1',
     '  node scripts/humanize-v2-eval.js score-router --manifest=... --labels=... --split=holdout',
-    '  node scripts/humanize-v2-eval.js replay --manifest=... --scope=current81 --out-dir=... --execute=1',
+    '  node scripts/humanize-v2-eval.js replay --manifest=... --scope=current81 --case-id=... --out-dir=... --execute=1',
     '  node scripts/humanize-v2-eval.js report --input=...jsonl --out=...csv',
     '  node scripts/humanize-v2-eval.js copykiller-template --replay=...jsonl --out=...csv',
     '  node scripts/humanize-v2-eval.js copykiller-score --input=...csv --out=...json'

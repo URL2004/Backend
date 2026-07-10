@@ -527,6 +527,13 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return first.record;
   }
 
+  const escalationPatchTargets = v2Enabled && first.record?.hardFailReason === 'noop_unchanged'
+    ? [
+        ...patchTargets,
+        '원문과 완전히 같은 출력은 이번 재시도 실패다. 사실·이미지·화자·제목·줄바꿈은 고정하고 조사·어순·어휘 중 안전한 한 곳만 자연스럽게 다듬는다.'
+      ]
+    : patchTargets;
+
   const second = await callHumanize({
     original,
     chunk,
@@ -545,7 +552,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     reasoningEffort: cfg.reasoning.escalation,
     phase: 'escalation',
     protectedTerms,
-    patchTargets,
+    patchTargets: escalationPatchTargets,
     styleProfile,
     documentProfile,
     voiceProfile,

@@ -2,12 +2,17 @@
   "name": "ai-backend",
   "version": "1.0.0",
   "main": "server.js",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "start": "node server.js",
-    "postinstall": "node scripts/install-layout-nlp.js",
-    "layout:nlp:install": "node scripts/install-layout-nlp.js",
+    "setup:layout-nlp": "node scripts/install-layout-nlp.js",
     "eval": "node eval/runEval.js",
     "eval:judge": "node eval/runJudgeEval.js",
+    "test": "node --test test/*.test.js",
+    "test:v2": "node --test test/humanize-v2*.test.js test/openai-client.test.js",
+    "predeploy:v2": "node scripts/predeploy-v2.js",
     "cache:logs": "powershell -ExecutionPolicy Bypass -File scripts/claude-cache-logs.ps1",
     "test:rules": "node scripts/firestore-rules.test.mjs",
     "emulator:rules": "powershell -ExecutionPolicy Bypass -File scripts/run-firestore-rules.ps1"
@@ -17,12 +22,16 @@
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
-    "firebase-admin": "^12.0.0",
+    "firebase-admin": "14.1.0",
+    "form-data": "^4.0.6",
     "multer": "^1.4.5-lts.1",
     "pdf-parse": "^1.1.1"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.1",
     "firebase": "^12.14.0"
+  },
+  "overrides": {
+    "form-data": "^4.0.6"
   }
 }

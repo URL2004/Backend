@@ -11,7 +11,7 @@ const { logger } = require('./lib/logger');
 let admin = null;
 let db = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  admin = require('firebase-admin');
+  admin = require('./lib/firebaseAdminCompat');
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)

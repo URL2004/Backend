@@ -511,6 +511,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     niklQualityTest,
     qualityPatternLab,
     runSemanticJudge: v2Enabled ? false : highRisk,
+    v2Enabled,
     safetyIdentifier,
     signal
   });
@@ -551,6 +552,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     niklQualityTest,
     qualityPatternLab,
     runSemanticJudge: v2Enabled ? false : highRisk,
+    v2Enabled,
     safetyIdentifier,
     signal
   });
@@ -581,7 +583,7 @@ async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence,
     cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, documentProfile, voiceProfile,
-    niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, safetyIdentifier = '', signal
+    niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, v2Enabled = false, safetyIdentifier = '', signal
   } = args;
   try {
     const koreanSourceQuality = safeKoreanQualityAnalysis(original, {
@@ -691,6 +693,15 @@ async function callHumanize(args) {
         gate: 'structure_boundary_marker_failed',
         detail: '병합 청크의 원문 경계 토큰이 누락되거나 중복되었습니다.'
       });
+    }
+    if (v2Enabled && !gate.hardFail) {
+      const preservationViolation = gate.violations.find(isV2ChunkPreservationViolation);
+      if (preservationViolation) {
+        const preservationGate = String(preservationViolation.gate || preservationViolation.type || 'fact_preservation_failed');
+        gate.hardFail = true;
+        gate.reason = preservationGate;
+        gate.warnings.push(`v2_retry:${preservationGate}`);
+      }
     }
     const qualityGate = safeKoreanQualityGate(original, outputText, {
       mode,
@@ -1310,6 +1321,19 @@ function maxOutputTokensFor(text) {
   // otherwise valid long paragraphs to end as incomplete and then repeat on
   // the escalation model. The API bills actual usage, not this allowance.
   return Math.max(2400, Math.min(12000, Math.ceil(chars * 3.2)));
+}
+
+function isV2ChunkPreservationViolation(v) {
+  const gate = String(v?.gate || v?.type || '').trim().toLowerCase().replace(/[^a-z0-9]+/gu, '_');
+  return new Set([
+    'lostfacts',
+    'lost_facts',
+    'pov',
+    'pov_inject',
+    'protected_term_loss',
+    'section_anchor_loss',
+    'length_collapse'
+  ]).has(gate);
 }
 
 function shouldPassThrough(text) {

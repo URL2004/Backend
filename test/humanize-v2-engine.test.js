@@ -162,6 +162,17 @@ test('OpenAI refusal은 최종 결과로 전달하지 않고 strict 차단한다
   assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 2);
 });
 
+test('v2 청크가 보호 사실을 잃으면 상위 모델 재시도 후 원문으로 복귀한다', { concurrency: false }, async t => {
+  const source = '한국대학교 연구팀은 학생 20명을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 정리했습니다.';
+  const unsafe = '한 대학 연구팀은 여러 학생을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 자연스럽게 정리했습니다.';
+  const mock = installEngineMock(t, { humanize: unsafe });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'fact-loss-user', config: config() });
+  assert.equal(out.status, 'blocked');
+  assert.equal(out.result.outputText, source);
+  assert.equal(out.fallbackCount, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+});
+
 test('영어 입력은 세 공개 모드 모두 API 호출 전에 한국어 전용 오류로 차단한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t);
   const english = 'This is an English document that should never be sent to the humanizing model because the service is Korean only.';

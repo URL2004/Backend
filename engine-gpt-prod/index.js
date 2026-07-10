@@ -527,11 +527,8 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return first.record;
   }
 
-  const escalationPatchTargets = v2Enabled && first.record?.hardFailReason === 'noop_unchanged'
-    ? [
-        ...patchTargets,
-        '원문과 완전히 같은 출력은 이번 재시도 실패다. 사실·이미지·화자·제목·줄바꿈은 고정하고 조사·어순·어휘 중 안전한 한 곳만 자연스럽게 다듬는다.'
-      ]
+  const escalationPatchTargets = v2Enabled
+    ? buildV2EscalationPatchTargets(patchTargets, first.record)
     : patchTargets;
 
   const second = await callHumanize({
@@ -702,12 +699,25 @@ async function callHumanize(args) {
       });
     }
     if (v2Enabled && !gate.hardFail) {
-      const preservationViolation = gate.violations.find(isV2ChunkPreservationViolation);
+      const preservationViolations = gate.violations.filter(isV2ChunkPreservationViolation);
+      const hardPreservationViolation = preservationViolations.find(v => normalizedViolationGate(v) !== 'novelty');
+      const preservationViolation = hardPreservationViolation || preservationViolations[0];
       if (preservationViolation) {
         const preservationGate = String(preservationViolation.gate || preservationViolation.type || 'fact_preservation_failed');
-        gate.hardFail = true;
-        gate.reason = preservationGate;
-        gate.warnings.push(`v2_retry:${preservationGate}`);
+        const residualNovelty = phase === 'escalation'
+          && normalizedViolationGate(preservationViolation) === 'novelty'
+          && !hardPreservationViolation;
+        if (residualNovelty) {
+          // The upper model has already had one explicit fact-removal attempt.
+          // Residual semantic risk follows the v2 delivery policy: keep the
+          // candidate for whole-document audit and surface needs_review rather
+          // than silently reverting the chunk to the source.
+          gate.warnings.push('v2_residual:novelty');
+        } else {
+          gate.hardFail = true;
+          gate.reason = preservationGate;
+          gate.warnings.push(`v2_retry:${preservationGate}`);
+        }
       }
     }
     const qualityGate = safeKoreanQualityGate(original, outputText, {
@@ -1331,8 +1341,9 @@ function maxOutputTokensFor(text) {
 }
 
 function isV2ChunkPreservationViolation(v) {
-  const gate = String(v?.gate || v?.type || '').trim().toLowerCase().replace(/[^a-z0-9]+/gu, '_');
+  const gate = normalizedViolationGate(v);
   return new Set([
+    'novelty',
     'lostfacts',
     'lost_facts',
     'pov',
@@ -1341,6 +1352,26 @@ function isV2ChunkPreservationViolation(v) {
     'section_anchor_loss',
     'length_collapse'
   ]).has(gate);
+}
+
+function normalizedViolationGate(v) {
+  return String(v?.gate || v?.type || '').trim().toLowerCase().replace(/[^a-z0-9]+/gu, '_');
+}
+
+function buildV2EscalationPatchTargets(patchTargets, record) {
+  const targets = Array.isArray(patchTargets) ? [...patchTargets] : [];
+  if (record?.hardFailReason === 'noop_unchanged') {
+    targets.push('원문과 완전히 같은 출력은 이번 재시도 실패다. 사실·이미지·화자·제목·줄바꿈은 고정하고 조사·어순·어휘 중 안전한 한 곳만 자연스럽게 다듬는다.');
+  }
+  const novelty = (record?.floorViolations || []).find(v => normalizedViolationGate(v) === 'novelty');
+  if (novelty) {
+    const detail = String(novelty.detail || '').trim().slice(0, 240);
+    targets.push([
+      '1차 결과에 원문에 없는 사실이 검출됐다. 원문에 없는 수치·연도·기관명·인용·고유명사를 모두 제거하고, 원문에 실제로 있는 내용만으로 다시 작성한다.',
+      detail ? `검출 항목: ${detail}` : ''
+    ].filter(Boolean).join(' '));
+  }
+  return targets;
 }
 
 function shouldPassThrough(text) {

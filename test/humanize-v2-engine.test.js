@@ -150,8 +150,28 @@ test('수리 후 의미 위반이 남으면 done 호환 상태인 needs_review�
   assert.equal(out.status, 'needs_review');
   assert.equal(out.qualityStatus, 'needs_review');
   assert.ok(out.qualityWarnings.some(item => item.code === 'semantic_addition'));
+  assert.equal(out.fallbackCount, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 1);
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
+});
+
+test('청크에 새 사실이 생기면 상위 모델에 제거 항목을 명시해 재시도한다', { concurrency: false }, async t => {
+  const source = '연구팀은 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 설문 문항과 면담 기록을 함께 분석했으며, 조사 절차와 관찰 결과를 구분해 보고서로 정리했습니다. 연구 과정에서 확인한 자료의 범위와 해석의 한계도 원문에 적힌 수준으로 설명했습니다.';
+  const unsafe = `${source} 미래연구원은 2027년에 후속 조사를 시작합니다.`;
+  const safe = source.replace('함께 분석했으며', '함께 살펴봤으며');
+  const mock = installEngineMock(t, {
+    humanize: body => JSON.stringify(body.input || '').includes('1차 결과에 원문에 없는 사실이 검출됐다') ? safe : unsafe
+  });
+  const out = await engine.run({ text: source, mode: 'formal', uid: 'novelty-retry-user', config: config() });
+  assert.notEqual(out.status, 'blocked');
+  assert.equal(out.result.outputText, safe);
+  assert.equal(out.fallbackCount, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+  const escalation = mock.calls.find(call => JSON.stringify(call.body.input || '').includes('1차 결과에 원문에 없는 사실이 검출됐다'));
+  assert.ok(escalation);
+  assert.ok(JSON.stringify(escalation.body.input || '').includes('미래연구원'));
+  assert.ok(JSON.stringify(escalation.body.input || '').includes('2027'));
 });
 
 test('OpenAI refusal은 최종 결과로 전달하지 않고 strict 차단한다', { concurrency: false }, async t => {

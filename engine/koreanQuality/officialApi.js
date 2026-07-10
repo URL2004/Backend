@@ -2,10 +2,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const CACHE_PATH = path.join(ROOT, 'data', 'nikl-api-cache.json');
 const VERSION = 'nikl-official-api-v1';
+const CACHE_MAX_ENTRIES = 5000;
+const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 let cache = null;
 
@@ -89,7 +92,7 @@ async function lookupStdDict(query, opts = {}) {
   url.searchParams.set('target', '1');
   url.searchParams.set('method', 'exact');
   url.searchParams.set('num', '10');
-  const json = await cachedFetchJson(`stdict:${query}`, url, opts);
+  const json = await cachedFetchJson('stdict', query, url, opts);
   const channel = json?.channel || {};
   const items = normalizeArray(channel.item).map(item => ({
     word: clean(item.word),
@@ -116,7 +119,7 @@ async function lookupOpenDict(query, opts = {}) {
   url.searchParams.set('method', 'include');
   url.searchParams.set('norm', '0');
   url.searchParams.set('num', '10');
-  const json = await cachedFetchJson(`opendict:${query}`, url, opts);
+  const json = await cachedFetchJson('opendict', query, url, opts);
   const channel = json?.channel || {};
   const items = normalizeArray(channel.item).map(item => ({
     word: clean(item.word),
@@ -140,7 +143,7 @@ async function lookupTerm(query, opts = {}) {
   url.searchParams.set('start', '1');
   url.searchParams.set('num', '5');
   url.searchParams.set('sort', 'wt');
-  const json = await cachedFetchJson(`term:${query}`, url, opts);
+  const json = await cachedFetchJson('term', query, url, opts);
   const channel = json?.channel || {};
   const items = normalizeArray(channel.item).map(item => ({
     word: clean(item.word || item.wordinfo?.word),
@@ -159,25 +162,36 @@ async function lookupTerm(query, opts = {}) {
   };
 }
 
-async function cachedFetchJson(cacheKey, url, opts = {}) {
-  const ttlMs = Number(opts.ttlMs || process.env.NIKL_API_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 14);
+async function cachedFetchJson(provider, query, url, opts = {}) {
+  const requestedTtl = Number(opts.ttlMs || process.env.NIKL_API_CACHE_TTL_MS || CACHE_TTL_MS);
+  const ttlMs = Number.isFinite(requestedTtl) && requestedTtl > 0
+    ? Math.min(CACHE_TTL_MS, requestedTtl)
+    : CACHE_TTL_MS;
   const now = Date.now();
   const store = loadCache();
+  const cacheKey = hashedCacheKey(provider, query);
   const hit = store.entries[cacheKey];
-  if (hit && now - Number(hit.fetchedAtMs || 0) <= ttlMs) return hit.json;
+  if (hit && now - Number(hit.fetchedAtMs || 0) <= ttlMs) {
+    hit.accessedAtMs = now;
+    return hit.json;
+  }
   const json = await fetchJson(url, opts);
   store.entries[cacheKey] = {
     fetchedAtMs: now,
-    provider: cacheKey.split(':')[0],
-    query: cacheKey.slice(cacheKey.indexOf(':') + 1),
+    accessedAtMs: now,
+    provider,
     json
   };
+  pruneCache(store, now, ttlMs);
   saveCache(store);
   return json;
 }
 
 async function fetchJson(url, opts = {}) {
-  const timeoutMs = Number(opts.timeoutMs || process.env.NIKL_API_TIMEOUT_MS || 2500);
+  const requestedTimeout = Number(opts.timeoutMs || process.env.NIKL_API_TIMEOUT_MS || 1200);
+  const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+    ? Math.max(100, Math.min(1200, requestedTimeout))
+    : 1200;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -203,14 +217,34 @@ function loadCache() {
     cache = { version: VERSION, entries: {} };
   }
   if (!cache.entries || typeof cache.entries !== 'object') cache.entries = {};
+  // v1의 평문 질의 키는 재사용하지 않고 즉시 제거한다.
+  cache.entries = Object.fromEntries(Object.entries(cache.entries).filter(([key]) => /^[a-f0-9]{64}$/u.test(key)));
+  pruneCache(cache, Date.now(), CACHE_TTL_MS);
   return cache;
 }
 
 function saveCache(store) {
   try {
     fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
-    fs.writeFileSync(CACHE_PATH, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+    pruneCache(store, Date.now(), CACHE_TTL_MS);
+    const tempPath = `${CACHE_PATH}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tempPath, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
+    fs.renameSync(tempPath, CACHE_PATH);
   } catch {}
+}
+
+function hashedCacheKey(provider, query) {
+  return crypto.createHash('sha256').update(`${provider}\0${normalizeQuery(query)}`, 'utf8').digest('hex');
+}
+
+function pruneCache(store, now = Date.now(), ttlMs = CACHE_TTL_MS) {
+  const entries = Object.entries(store.entries || {})
+    .filter(([, item]) => now - Number(item?.fetchedAtMs || 0) <= ttlMs)
+    .sort((a, b) => Number(b[1]?.accessedAtMs || b[1]?.fetchedAtMs || 0) - Number(a[1]?.accessedAtMs || a[1]?.fetchedAtMs || 0))
+    .slice(0, CACHE_MAX_ENTRIES);
+  store.entries = Object.fromEntries(entries);
+  store.version = VERSION;
+  return store;
 }
 
 function readLooseEnv(name) {
@@ -262,5 +296,7 @@ module.exports = {
   lookupProvider,
   lookupStdDict,
   lookupOpenDict,
-  lookupTerm
+  lookupTerm,
+  hashedCacheKey,
+  pruneCache
 };

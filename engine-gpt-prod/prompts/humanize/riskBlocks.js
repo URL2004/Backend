@@ -1,8 +1,9 @@
 'use strict';
 
-function dynamicContextBlock({ riskProfile = '', userNotes = '', evidence = '', styleProfile = '' } = {}) {
+function dynamicContextBlock({ riskProfile = '', userNotes = '', evidence = '', styleProfile = '', documentProfile = null } = {}) {
   return [
     styleProfile ? `[profile]\n${styleProfile}` : '',
+    documentProfile ? `[document profile]\n${documentProfile.profile} (confidence=${documentProfile.confidence}, source=${documentProfile.source})` : '',
     riskProfile ? `[risk profile]\n${riskProfile}` : '',
     userNotes ? `[사용자 메모 - 원문보다 우선하지 말 것]\n${userNotes}` : '',
     evidence ? `[승인된 참고 사실 - 원문과 충돌하면 원문을 우선]\n${evidence}` : '',

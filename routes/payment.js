@@ -1107,8 +1107,6 @@ router.post('/admin/update-gpt-runtime-config', async (req, res) => {
     logger.info('admin.gpt_runtime_config_updated', {
       adminUid,
       activeProvider: config.activeProvider,
-      fallbackProvider: config.fallbackProvider,
-      shadowMode: config.shadowMode,
       humanizePrimary: config.models.humanizePrimary,
       humanizeEscalation: config.models.humanizeEscalation,
       judgeEscalation: config.models.judgeEscalation,
@@ -1145,8 +1143,8 @@ router.post('/admin/test-gpt-runtime-config', async (req, res) => {
     const task = String((req.body && req.body.task) || 'detect').toLowerCase();
     const startedAt = Date.now();
     const result = task === 'humanize'
-      ? await gptAnalyze.runHumanizeChunked({ text: sampleText, mode: 'polish', lang: 'ko', config })
-      : await gptAnalyze.runDetect(sampleText, 'ko', { config, route: 'admin_test_gpt_runtime', allowLocalFallback: false });
+      ? await gptAnalyze.runHumanizeChunked({ text: sampleText, mode: 'polish', lang: 'ko', config, allowPolish: true, uid: adminUid })
+      : await gptAnalyze.runDetect(sampleText, 'ko', { config, route: 'admin_test_gpt_runtime', allowLocalFallback: false, uid: adminUid });
     logger.info('admin.gpt_runtime_config_tested', {
       adminUid,
       task,

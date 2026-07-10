@@ -39,6 +39,8 @@ function emptyUsage() {
     outputTokens: 0,
     reasoningTokens: 0,
     totalTokens: 0,
+    webSearchRequests: 0,
+    webSearchEstimatedUsd: 0,
     estimatedUsd: 0
   };
 }
@@ -51,6 +53,9 @@ function addUsage(acc, usage) {
   out.outputTokens += Number(u.outputTokens) || 0;
   out.reasoningTokens += Number(u.reasoningTokens) || 0;
   out.totalTokens += Number(u.totalTokens) || 0;
+  out.webSearchRequests += Number(u.webSearchRequests) || 0;
+  out.webSearchEstimatedUsd += Number(u.webSearchEstimatedUsd) || 0;
+  out.webSearchEstimatedUsd = Math.round(out.webSearchEstimatedUsd * 1000000) / 1000000;
   out.estimatedUsd += Number(u.estimatedUsd) || 0;
   out.estimatedUsd = Math.round(out.estimatedUsd * 1000000) / 1000000;
   return out;

@@ -130,7 +130,7 @@ function extractProtectedTerms(text) {
   const namedEntities = unique([
     ...(t.match(/[가-힣A-Za-z0-9]{2,30}(?:택배|전자|대학교|시청|구청|부문|시스템|터미널|허브|센터|기업|회사|공사|공단|연구원|연구소|협회|교육청|포털)/g) || []),
     ...(t.match(/[A-Z][A-Za-z0-9+.-]*(?:\s+[A-Z][A-Za-z0-9+.-]*){0,3}\s+(?:클라우드|포털|API|Portal|Cloud)/g) || []),
-    ...(t.match(/[가-힣]{2,}(?:시|군|구|동|읍|면|리)\b/g) || [])
+    ...(t.match(/[가-힣]{2,}(?:시|군|구|동|읍|면|리)(?=$|[^가-힣A-Za-z0-9_])/g) || [])
   ].filter(v => v.length <= 60 && !/[.?!]\s/.test(v)));
   const referenceLines = [];
   let inRefs = false;

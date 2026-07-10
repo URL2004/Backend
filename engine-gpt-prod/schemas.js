@@ -23,10 +23,6 @@ const HUMANIZE_SCHEMA = {
       items: { type: 'string' },
       description: 'Short internal risk flags such as structure_loss, speaker_drift, protected_term_risk, or factual_risk.'
     },
-    changedSentenceRatio: {
-      type: 'number',
-      description: 'Estimated 0-1 ratio of sentences whose wording, order, or connection changed meaning-preservingly.'
-    },
     factualRiskNotes: {
       type: 'array',
       items: { type: 'string' },
@@ -38,7 +34,7 @@ const HUMANIZE_SCHEMA = {
       description: 'Non-fatal warnings from the rewrite attempt.'
     }
   },
-  required: ['outputText', 'editIntensity', 'protectedTerms', 'riskFlags', 'changedSentenceRatio', 'factualRiskNotes', 'warnings']
+  required: ['outputText', 'editIntensity', 'protectedTerms', 'riskFlags', 'factualRiskNotes', 'warnings']
 };
 
 const DETECT_SCHEMA = {

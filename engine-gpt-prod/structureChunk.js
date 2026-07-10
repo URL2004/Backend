@@ -1,18 +1,19 @@
 'use strict';
 
 const baseChunk = require('../engine/chunk');
+const freezeBlocks = require('../engine/freezeblocks');
 
 const VERSION = 'gpt-structure-chunk-v1';
 const UNSAFE_END_RE = /(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한|그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/;
 
-function splitChunksForGpt(text) {
+function splitChunksForGpt(text, { coalesceEditable = false } = {}) {
   const base = baseChunk.splitChunks(text);
+  const academicSpans = freezeBlocks.detectAcademicSpans(text);
   const chunks = [];
   const state = {
-    referenceMode: false,
-    tocMode: false,
     currentSection: '',
-    lastPiece: null
+    lastPiece: null,
+    academicSpans
   };
 
   for (const chunk of base) {
@@ -24,11 +25,12 @@ function splitChunksForGpt(text) {
     chunks.push(...expanded);
   }
 
-  reindexChunks(chunks);
+  const plannedChunks = coalesceEditable ? coalesceEditableChunks(chunks) : chunks;
+  reindexChunks(plannedChunks);
   return {
     version: VERSION,
-    chunks,
-    audit: buildPlanAudit(chunks)
+    chunks: plannedChunks,
+    audit: buildPlanAudit(plannedChunks)
   };
 }
 
@@ -44,7 +46,7 @@ function expandBaseChunk(chunk, state) {
   let current = null;
 
   for (const piece of pieces) {
-    const info = classifyPiece(piece.text, state);
+    const info = classifyPiece(piece, state);
     if (info.sectionLabel) state.currentSection = info.sectionLabel;
     state.lastPiece = {
       text: String(piece.text || '').trim(),
@@ -86,30 +88,13 @@ function splitLinePieces(text, offset = 0) {
   return out;
 }
 
-function classifyPiece(line, state) {
-  const raw = String(line || '');
+function classifyPiece(piece, state) {
+  const raw = String(piece?.text || '');
   const s = raw.trim();
   if (!s) return { locked: false, lockType: 'blank' };
 
-  if (state.referenceMode) {
-    return { locked: true, lockType: 'reference_item', sectionLabel: '참고문헌' };
-  }
-
-  if (isReferenceHeading(s)) {
-    state.referenceMode = true;
-    return { locked: true, lockType: 'reference_heading', sectionLabel: s };
-  }
-
-  if (state.tocMode && isMainBodyHeading(s)) {
-    state.tocMode = false;
-  } else if (state.tocMode) {
-    return { locked: true, lockType: 'toc_item', sectionLabel: '목차' };
-  }
-
-  if (isTocHeading(s)) {
-    state.tocMode = true;
-    return { locked: true, lockType: 'toc_heading', sectionLabel: s };
-  }
+  const frozen = freezeBlocks.academicSpanAt(state.academicSpans, piece.start, piece.end);
+  if (frozen) return { locked: true, lockType: frozen.type === 'toc' ? 'toc_item' : 'reference_item', sectionLabel: frozen.type === 'toc' ? '목차' : '참고문헌' };
 
   if (isHeadingLine(s)) {
     return { locked: true, lockType: 'heading', sectionLabel: s };
@@ -121,8 +106,6 @@ function classifyPiece(line, state) {
   if (isHypothesisLine(s)) return { locked: true, lockType: 'hypothesis', sectionLabel: state.currentSection };
   if (isTableLine(s)) return { locked: true, lockType: 'table', sectionLabel: state.currentSection };
   if (isStatLine(s)) return { locked: true, lockType: 'stat_line', sectionLabel: state.currentSection };
-  if (isReferenceLine(s)) return { locked: true, lockType: 'reference_item', sectionLabel: state.currentSection };
-
   return { locked: false, lockType: '', sectionLabel: state.currentSection };
 }
 
@@ -158,6 +141,68 @@ function reindexChunks(chunks) {
     chunk.index = i;
     chunk.position = n === 1 ? 'single' : (i === 0 ? 'intro' : (i === n - 1 ? 'conclusion' : 'body'));
   });
+}
+
+function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500) {
+  const out = [];
+  let current = null;
+  const flush = () => {
+    if (current) out.push(current);
+    current = null;
+  };
+  for (const sourceChunk of chunks || []) {
+    const chunk = { ...sourceChunk };
+    if (chunk.locked) {
+      flush();
+      out.push(chunk);
+      continue;
+    }
+    if (!current) {
+      current = chunk;
+      continue;
+    }
+    const sameSection = String(current.sectionPath || '') === String(chunk.sectionPath || '');
+    const boundary = `${current.sep || ''}${chunk._lead || ''}`;
+    const joinText = `${current.text || ''}${boundary}${chunk.text || ''}`;
+    if (sameSection && current.text.length < targetChars && joinText.length <= hardMaxChars) {
+      const existingMarkers = Array.isArray(current.boundaryMarkers) ? current.boundaryMarkers : [];
+      const marker = `[[[V2_BOUNDARY_${String(existingMarkers.length + 1).padStart(3, '0')}]]]`;
+      current.llmText = `${current.llmText || current.text || ''}${marker}${chunk.llmText || chunk.text || ''}`;
+      current.boundaryMarkers = [...existingMarkers, { marker, boundary }];
+      current.text = joinText;
+      current.end = chunk.end;
+      current.sep = chunk.sep || '';
+      current.outputText = null;
+      continue;
+    }
+    flush();
+    current = chunk;
+  }
+  flush();
+  return out;
+}
+
+function restoreBoundaryMarkers(outputText, chunk) {
+  const markers = Array.isArray(chunk?.boundaryMarkers) ? chunk.boundaryMarkers : [];
+  if (!markers.length) return { text: String(outputText || ''), ok: true, applied: false, missing: [], duplicated: [] };
+  let text = String(outputText || '');
+  const missing = [];
+  const duplicated = [];
+  for (const item of markers) {
+    const count = text.split(item.marker).length - 1;
+    if (count === 0) missing.push(item.marker);
+    if (count > 1) duplicated.push(item.marker);
+    if (count === 1) text = text.replace(item.marker, item.boundary);
+  }
+  const leaked = /\[\[\[V2_BOUNDARY_\d{3}\]\]\]/.test(text);
+  return {
+    text,
+    ok: missing.length === 0 && duplicated.length === 0 && !leaked,
+    applied: true,
+    missing,
+    duplicated,
+    leaked
+  };
 }
 
 function repairUnsafeChunkBoundaries(chunks) {
@@ -278,7 +323,7 @@ function isTocHeading(s) {
 
 function isMainBodyHeading(s) {
   return /^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*(?:서론|본론|결론|초록|이론|연구|논의|참고\s*문헌)/.test(s) ||
-    /^제\s?\d{1,3}\s?(?:장|절|항)\b/.test(s);
+    /^제\s?\d{1,3}\s?(?:장|절|항)(?=$|[^가-힣A-Za-z0-9_])/.test(s);
 }
 
 function isHeadingLine(s) {
@@ -316,13 +361,6 @@ function isStatLine(s) {
     /(?:유의확률|표준오차|회귀계수|결정계수|상관계수)\s*[:=]?\s*-?\d+(?:\.\d+)?/.test(s);
 }
 
-function isReferenceLine(s) {
-  if (s.length > 500) return false;
-  if (/https?:\/\/|doi\s*:|DOI\s*:|학술지|출판사|교육부|보건복지부|한국학술정보|KCI|RISS/i.test(s) && /\d{4}/.test(s)) return true;
-  if (/^[가-힣A-Za-z,\s·.-]+\(?(?:19|20)\d{2}\)?[.)]/.test(s) && s.length <= 360) return true;
-  return false;
-}
-
 function bare(text) {
   return String(text || '').replace(/\s+/g, '').replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
 }
@@ -333,5 +371,7 @@ module.exports = {
   mergeChunks,
   repairUnsafeChunkBoundaries,
   buildStructureAudit,
-  looksUnsafeChunkEnd
+  looksUnsafeChunkEnd,
+  coalesceEditableChunks,
+  restoreBoundaryMarkers
 };

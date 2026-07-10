@@ -16,8 +16,6 @@ async function main() {
   console.log(JSON.stringify({
     ok: true,
     activeProvider: config.activeProvider,
-    fallbackProvider: config.fallbackProvider,
-    shadowMode: config.shadowMode,
     models: config.models,
     reasoning: config.reasoning,
     cache: config.cache,

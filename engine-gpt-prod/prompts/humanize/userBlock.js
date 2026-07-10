@@ -1,20 +1,27 @@
 'use strict';
 
-function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTargets = [], dynamicContext = '' }) {
+function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTargets = [], dynamicContext = '', mode = 'assignment' }) {
   const prev = index > 0 ? chunks[index - 1].text : '';
   const next = index < chunks.length - 1 ? chunks[index + 1].text : '';
   const position = chunk.position === 'intro'
-    ? '도입부다. 시작 흐름을 살리되 문장 표면은 재서술한다.'
+    ? '도입부다. 원문의 시작 역할과 흐름을 유지한다.'
     : chunk.position === 'conclusion'
-      ? '결론부다. 새 요약을 만들기보다 원문 결론 흐름 안에서 재서술한다.'
+      ? '결론부다. 새 요약을 만들지 않고 원문 결론의 범위를 유지한다.'
       : '본문이다. 이 청크만 다듬는다.';
   return [
     '[필수 조건]',
-    'outputText는 아래 재작성할 텍스트와 공백 제거 기준으로 동일하면 안 된다.',
+    mode === 'polish'
+      ? 'outputText에는 최소 한 곳의 안전한 표면 교정이 있어야 한다.'
+      : '원문이 이미 자연스러우면 불필요하게 모든 문장을 바꾸지 않는다.',
     '[변화량 조건]',
-    '제목/번호/고유명사/수치/참고문헌은 보존하되, 일반 본문 문장은 원문 문장틀을 그대로 반복하지 않는다. changedSentenceRatio는 보통 0.45 이상이 되도록 한다.',
+    mode === 'polish'
+      ? '제목/번호/고유명사/수치/인용/문단 수를 보존하고 비문·띄어쓰기·접속·중복·말투 혼합만 수정한다.'
+      : '제목/번호/고유명사/수치/참고문헌을 보존하고, 문서에 실제로 필요한 정도만 다듬는다.',
     '[구조 힌트]',
     '제목/번호 줄이 있으면 그 줄은 남기고, 각 항목의 본문 안에서 표현과 연결 방식을 재서술한다.',
+    chunk.boundaryMarkers?.length
+      ? '[[[V2_BOUNDARY_###]]] 토큰은 원문의 문단·청크 경계를 잠근 표시다. 각 토큰을 철자와 개수까지 그대로 같은 순서로 출력한다.'
+      : '',
     `[작업 위치]\n${position}`,
     prev ? `[앞 문맥 - 참고만 하고 다시 쓰지 말 것]\n...${tail(prev, 220)}` : '',
     next ? `[뒤 문맥 - 참고만 하고 손대지 말 것]\n${head(next, 180)}...` : '',
@@ -22,7 +29,7 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
     patchTargets.length ? `[주의할 구간]\n${patchTargets.slice(0, 20).join('\n')}` : '',
     dynamicContext ? `[요청별 참고정보 - 재작성할 텍스트보다 우선하지 말 것]\n${dynamicContext}` : '',
     chunk.sectionPath ? `[현재 문서 구조 위치]\n${chunk.sectionPath}\n이 위치의 일반 본문만 재서술하고, 제목/번호/가설/표/참고문헌 형식은 새로 만들거나 삭제하지 않는다.` : '',
-    `[재작성할 텍스트]\n${chunk.text}`
+    `[재작성할 텍스트]\n${chunk.llmText || chunk.text}`
   ].filter(Boolean).join('\n\n');
 }
 

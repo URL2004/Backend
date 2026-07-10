@@ -1,14 +1,6 @@
 'use strict';
 
-function splitSentences(text) {
-  const normalized = String(text || '').replace(/\r/g, '');
-  const chunks = normalized
-    .split(/(?<=[.!?。！？])\s+|\n+/)
-    .map(s => s.trim())
-    .filter(Boolean);
-  if (chunks.length) return chunks;
-  return normalized.trim() ? [normalized.trim()] : [];
-}
+const { splitSentences } = require('../koreanText');
 
 function analyzeStyle(text) {
   const sentences = splitSentences(text);

@@ -215,12 +215,11 @@ $r.Content -match 'lavAutoCoach'
 
 | 변수 | 운영 값/주의 |
 |---|---|
-| `LLM_BACKEND` | 비우거나 `api`. `claudecode` 금지 |
 | `ANTHROPIC_API_KEY` | 운영 키 |
 | `OPENAI_API_KEY` | GPT 운영 엔진 키. 관리자 `adminSettings/gptRuntimeConfig` 값이 있으면 모델/추론/캐시 설정은 Firestore가 우선 |
-| `LLM_ACTIVE_PROVIDER` | 기본 `gpt`. 긴급히 Claude 운영으로 돌릴 때 `claude` |
-| `LLM_FALLBACK_PROVIDER` | 기본 `gpt`. 검증 기간에는 Claude 긴급 폴백 대신 GPT 자체 유지 |
-| `GPT_RUNTIME_FORCE_PROVIDER` | 긴급 강제 전환용. `gpt` 또는 `claude` |
+| `LLM_ACTIVE_PROVIDER` | 단일 운영 provider 설정. v2 운영값 `gpt` |
+| `HUMANIZE_ENGINE_V2_ENABLED` | `1`이면 v2, `0`이면 한 릴리스 동안 보존한 기존 경로로 즉시 복귀 |
+| `OPENAI_SAFETY_SALT` | UID를 `safety_identifier`용 HMAC-SHA256으로 변환하는 비밀값. 운영 필수 |
 | `OPENAI_MODEL_FAST` | 기본 변환 모델. 예: `gpt-5.4-mini` |
 | `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 예: `gpt-5.4` |
 | `OPENAI_MODEL_JUDGE` / `OPENAI_MODEL_REPAIR` / `OPENAI_MODEL_DETECT` / `OPENAI_MODEL_EVIDENCE` | 계층별 GPT 모델 fallback |

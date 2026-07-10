@@ -16,6 +16,7 @@ const TOC_HEADING = /(^|\n)[ \t]*(?:\d+[.)][ \t]*)?[<【\[**]*\s*(?:목\s*차|�
 
 // 참고문헌 한 줄 entry: "저자명. (연도). 제목…" — 줄머리에 (선택)번호 + 이름 + 근방 (YYYY).
 const CITE_LINE = /^(?:\d+[.)]\s*)?[가-힣A-Za-z][^\n]{0,60}\(\s*(?:19|20)\d{2}[a-z]?\s*\)/;
+const APPENDIX_HEADING_LINE = /^\s*(?:(?:제\s*\d+\s*)?부록|Appendix)(?:\s+[A-Z0-9가-힣.-]+)?\s*(?::.*)?$/iu;
 
 // 참고문헌 블록 시작 char index 탐지. ① 후반부 heading 기반 ② heading 없는 꼬리 인용런(≥3줄 연속). 없으면 -1.
 function detectRefStart(work) {
@@ -35,6 +36,116 @@ function detectRefStart(work) {
     if (charIdx > work.length * 0.4) return charIdx;
   }
   return -1;
+}
+
+function detectAcademicSpans(text) {
+  const source = String(text || '');
+  const lines = lineRecords(source);
+  const spans = [];
+
+  const tocHeadingIndex = lines.findIndex(line => isTocHeadingLine(line.text) && line.start < source.length * 0.5);
+  if (tocHeadingIndex >= 0) {
+    let entries = 0;
+    let sawBlankAfterEntries = false;
+    let end = lines[tocHeadingIndex].endWithNewline;
+    for (let i = tocHeadingIndex + 1; i < lines.length; i += 1) {
+      const raw = lines[i].text;
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        if (entries >= 2) sawBlankAfterEntries = true;
+        end = lines[i].endWithNewline;
+        continue;
+      }
+      if (entries >= 2 && (sawBlankAfterEntries && isBodyHeadingLine(trimmed) || isProseLine(trimmed))) break;
+      if (isTocEntryLine(trimmed)) entries += 1;
+      else if (entries >= 2) break;
+      end = lines[i].endWithNewline;
+    }
+    if (entries >= 2) spans.push({ type: 'toc', start: lines[tocHeadingIndex].start, end });
+  }
+
+  let refHeadingIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].start > source.length * 0.35 && isRefHeadingLine(lines[i].text)) {
+      refHeadingIndex = i;
+      break;
+    }
+  }
+  if (refHeadingIndex >= 0) {
+    let end = source.length;
+    for (let i = refHeadingIndex + 1; i < lines.length; i += 1) {
+      if (APPENDIX_HEADING_LINE.test(lines[i].text.trim())) {
+        end = lines[i].start;
+        break;
+      }
+    }
+    spans.push({ type: 'references', start: lines[refHeadingIndex].start, end });
+  } else {
+    const citationRun = detectTrailingCitationRun(lines, source.length);
+    if (citationRun) spans.push(citationRun);
+  }
+  return spans.sort((a, b) => a.start - b.start);
+}
+
+function academicSpanAt(spans, start, end) {
+  return (spans || []).find(span => start >= span.start && end <= span.end) || null;
+}
+
+function lineRecords(source) {
+  const out = [];
+  let start = 0;
+  for (let i = 0; i <= source.length; i += 1) {
+    if (i < source.length && source[i] !== '\n') continue;
+    const rawEnd = i > start && source[i - 1] === '\r' ? i - 1 : i;
+    out.push({ text: source.slice(start, rawEnd), start, end: rawEnd, endWithNewline: i < source.length ? i + 1 : i });
+    start = i + 1;
+  }
+  return out;
+}
+
+function isTocHeadingLine(value) {
+  return /^(?:\s*(?:\d+[.)]\s*)?[<【\[]*\s*)?(?:목\s*차|차\s*례|Contents|Table\s+of\s+Contents)\s*[>】\]]*\s*[:：]?\s*$/iu.test(String(value || ''));
+}
+
+function isRefHeadingLine(value) {
+  return /^(?:\s*(?:\d+[.)]\s*)?(?:\(\s*option\s*\)\s*)?[<【\[]*\s*)?(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|References|Bibliography|Works\s+Cited)\s*[>】\]]*\s*[:：]?\s*$/iu.test(String(value || ''));
+}
+
+function isTocEntryLine(value) {
+  const s = String(value || '').trim();
+  if (!s || s.length > 180) return false;
+  if (/^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|제\s*\d+\s*(?:장|절|항)|\d+(?:\.\d+){0,4}[.)]?|[가-힣][.)])\s*\S/u.test(s)) return true;
+  return /\.{2,}\s*\d+\s*$/u.test(s);
+}
+
+function isBodyHeadingLine(value) {
+  return /^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*|제\s*\d+\s*(?:장|절|항)\s*|\d+(?:\.\d+){0,3}[.)]?\s+)(?:서론|본론|결론|초록|연구|분석|논의|시사점|\S)/u.test(String(value || '').trim());
+}
+
+function isProseLine(value) {
+  const s = String(value || '').trim();
+  return s.length >= 70 && /(?:다|요|니다|한다|된다)[.!?。！？]?$/u.test(s);
+}
+
+function detectTrailingCitationRun(lines, sourceLength) {
+  let last = lines.length - 1;
+  while (last >= 0 && !lines[last].text.trim()) last -= 1;
+  if (last < 0) return null;
+  let first = last;
+  let citations = 0;
+  for (let i = last; i >= 0; i -= 1) {
+    const s = lines[i].text.trim();
+    if (!s) continue;
+    if (APPENDIX_HEADING_LINE.test(s)) break;
+    if (CITE_LINE.test(s) || (/(?:19|20)\d{2}/u.test(s) && /(?:doi|https?:\/\/|학술지|출판사)/iu.test(s))) {
+      citations += 1;
+      first = i;
+      continue;
+    }
+    break;
+  }
+  if (citations < 3 || lines[first].start <= sourceLength * 0.4) return null;
+  return { type: 'references', start: lines[first].start, end: sourceLength };
 }
 
 // text → { front, toc, body, refs, hasFrozen }. body만 우회 대상, 나머지는 verbatim.
@@ -87,4 +198,13 @@ function protectInlineCites(text) {
   return { text: out, count: map.length, restore: (s) => { let r = String(s || ''); for (const [tok, v] of map) r = r.split(tok).join(v); return r; }, tokens: map.map(x => x[0]) };
 }
 
-module.exports = { splitAcademicBlocks, reassembleAcademic, protectInlineCites, REF_HEADING, TOC_HEADING };
+module.exports = {
+  splitAcademicBlocks,
+  reassembleAcademic,
+  protectInlineCites,
+  detectAcademicSpans,
+  academicSpanAt,
+  REF_HEADING,
+  TOC_HEADING,
+  APPENDIX_HEADING_LINE
+};

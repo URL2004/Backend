@@ -171,7 +171,7 @@ router.post('/detect-report', async (req, res) => {
   const detectP = analyze.retryAsync(async () => {
     const gptCfg = await activeGptConfig();
     if (gptCfg) {
-      const r = await gptAnalyze.runDetect(text, 'ko', { config: gptCfg, route: 'detect_report', allowLocalFallback: true });
+      const r = await gptAnalyze.runDetect(text, 'ko', { config: gptCfg, route: 'detect_report', allowLocalFallback: true, uid: uid || '' });
       if (typeof r?.probability !== 'number') throw new Error('detect_incomplete');
       return r;
     }
@@ -199,7 +199,7 @@ router.post('/detect-report', async (req, res) => {
     ? (async () => {
         const gptCfg = await activeGptConfig();
         if (gptCfg) {
-          const r = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg });
+          const r = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '' });
           return r?.rewritten ? { before, after: r.rewritten } : null;
         }
         const data = await analyze.callClaude({

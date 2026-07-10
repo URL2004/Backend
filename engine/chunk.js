@@ -4,6 +4,7 @@
 // 이 파일은 LLM 없는 순수 함수: split/merge/position/charRange. 회귀를 eval로 잠근다.
 //
 // 핵심 불변식: outputText를 안 채우면 mergeChunks(splitChunks(text)) === text (왕복 보존).
+const { splitSentenceSpans } = require('./koreanText');
 
 // 청크 목표/상한 크기(공백 포함 문자수). 과대 문단은 단일 LLM 호출 부담·출력 길이 변동을 키우므로 2차 분할.
 const TARGET_CHARS = 1600;   // 목표(1200~1800 중앙)
@@ -13,9 +14,8 @@ const HARD_MAX = 2500;       // 이 길이를 넘으면 반드시 분할
 function splitLongChunk(c) {
   const text = c.text;
   if (text.length <= HARD_MAX) return [c];
-  const cuts = [];                                  // 문장 끝(.!?。 뒤 공백/끝), 한국어 종결 어미 뒤 공백, 또는 줄바꿈 위치
-  const re = /[.!?。！？](?=\s|$)|(?:다|요|죠|까|음|함|임)(?=\s|$)|\n/g; let m;
-  while ((m = re.exec(text)) !== null) cuts.push(m.index + 1);
+  // 소수점·목차 번호·영문 약어를 보호하는 공용 분리기의 실제 char offset을 그대로 쓴다.
+  const cuts = splitSentenceSpans(text).slice(0, -1).map(item => item.end);
   const ranges = [];
   let segStart = 0;
   while (text.length - segStart > HARD_MAX) {
@@ -78,7 +78,7 @@ function looksUnsafeCutTail(left) {
 }
 
 function looksUnsafeCutHead(right) {
-  return /^(?:및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|때문에|위해|통해)\b/.test(String(right || '').trim());
+  return /^(?:및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|때문에|위해|통해)(?=$|[^가-힣A-Za-z0-9_])/.test(String(right || '').trim());
 }
 
 // 참고(§리뷰#18): 작은 인접 청크 coalesce(병합)는 검토 후 제외. 이 제품의 청킹은 "문단=단위"가 설계 전제

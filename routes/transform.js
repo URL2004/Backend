@@ -72,13 +72,19 @@ async function activeGptConfig() {
   return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
 }
 
+function humanizeV2Enabled() {
+  return String(process.env.HUMANIZE_ENGINE_V2_ENABLED || '').trim() === '1';
+}
+
 const NO_DELIVERY_GATES = new Set(['gpt_all_chunks_fallback', 'gpt_noop_unchanged', 'noop_unchanged']);
 const STRICT_DELIVERY_GATES = new Set([
   ...NO_DELIVERY_GATES,
   'empty_or_meta_output',
   'prompt_instruction_leak',
   'encoding_corruption',
-  'sentence_truncated'
+  'sentence_truncated',
+  'refusal',
+  'polish_unchanged'
 ]);
 
 function softenBlockedFloorReport(out, logName, meta = {}) {
@@ -103,7 +109,7 @@ function softenBlockedFloorReport(out, logName, meta = {}) {
 function isStrictDeliveryCritical(c) {
   const gate = String(c?.gate || c?.type || '').trim();
   if (STRICT_DELIVERY_GATES.has(gate)) return true;
-  return /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated/i.test(gate);
+  return /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated|refusal|polish_unchanged/i.test(gate);
 }
 
 function hasStrictDeliveryGate(gates) {
@@ -315,6 +321,7 @@ function activeJobPayload(job) {
     status: job.status,
     stage: job.stage,
     mode: job.mode || 'formal',
+    modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
     elapsedSec: Math.max(0, Math.round((Date.now() - elapsedBase) / 1000)),
     estSec: job.estSec,
     createdAt: job.createdAt,
@@ -471,9 +478,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'mode', 'modeSource', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'estSec', 'note', 'error', 'mode', 'modeSource', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -624,7 +631,11 @@ function saveJobHistory(job, text, outputText) {
     text: text || job.text || '',
     needed: job.needed,
     result: { outputText: outputText || '' },
-    mode: job.mode || null   // ★ P1: blog/formal/polish 기록(실데이터 분석 갭)
+    mode: ['blog', 'formal', 'polish'].includes(job.mode) ? job.mode : 'formal',
+    modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
+    qualityStatus: job.result?.qualityStatus,
+    qualityWarningCodes: (job.result?.qualityWarnings || []).map(item => item?.code).filter(Boolean),
+    engineMeta: job.result?.engineMeta || null
   }).catch(e => logger.warn('transform.history_save_failed', { jobId: job.id, uid: job.uid, err: e }));
 }
 
@@ -729,7 +740,7 @@ async function runSearchPhase(job, text) {
     job.stage = '근거 검색';
     const gptCfg = await activeGptConfig();
     const ev = gptCfg
-      ? await gptAnalyze.suggestEvidence({ query: text, signal: job.ac.signal, config: gptCfg })
+      ? await gptAnalyze.suggestEvidence({ query: text, signal: job.ac.signal, config: gptCfg, uid: humanizeV2Enabled() ? job.uid : '' })
       : await claudeSuggestEvidence()(text, { maxSegments: Number(process.env.EVIDENCE_MAX_SEGMENTS) || 6, signal: job.ac.signal });
     const candidates = gptCfg
       ? (ev.candidates || []).map(c => ({
@@ -820,7 +831,8 @@ async function tryPreservationFallback(job, text) {
           signal: job.ac.signal,
           userNotes: job.memo || '',
           config: gptCfg,
-          styleProfile: 'production_preservation_fallback'
+          styleProfile: 'production_preservation_fallback',
+          uid: humanizeV2Enabled() ? job.uid : ''
         })
       : await analyze.runHumanizeChunked({
           text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
@@ -909,7 +921,9 @@ async function tryBlogPreservationFallback(job, text) {
           signal: job.ac.signal,
           userNotes: job.memo || '',
           config: gptCfg,
-          styleProfile: 'production_blog_preservation_fallback'
+          styleProfile: 'production_blog_preservation_fallback',
+          allowPolish: humanizeV2Enabled(),
+          uid: humanizeV2Enabled() ? job.uid : ''
         })
       : await analyze.runHumanizeChunked({
           text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
@@ -1190,7 +1204,9 @@ async function runAdminGptLabWithOptionalNiklCompare({
     userNotes: job.memo || '',
     evidence: evidence || '',
     layoutNlp: layoutNlpTest ? false : null,
-    config
+    config,
+    allowPolish: humanizeV2Enabled() && mode === 'polish',
+    uid: humanizeV2Enabled() ? job.uid : ''
   };
   const baseProfile = baselineStyleProfile || styleProfile;
   const onProfile = testStyleProfile || styleProfile;
@@ -1454,6 +1470,11 @@ async function runJob(job, text, evidence) {
       });
     }
 
+    // v2는 요청 모드와 원문 프로필을 한 엔진에서 분리 판정한다. formal도 동일 파이프라인으로 보낸다.
+    if (humanizeV2Enabled()) {
+      return await runHumanizeJob(job, text, evidence || '');
+    }
+
     // ★ 재구성 부적합 사전 차단(2026-06-16, API 낭비 0): 자소서·생기부·탐구문이나 짧고 추상적인 글은
     //   재구성에 넣으면 LLM이 원문에 없는 사실·평가를 지어내(added_claim) 거의 확정 차단된다. ledger·슬롯·
     //   judge로 수십 번 호출을 태우기 '전에' 결정론으로 걸러 보존형으로 유도한다. 사유를 명확히 노출(무차감).
@@ -1707,7 +1728,8 @@ async function runLongThesisChunked(job, text, evidence, pipelinePath = 'product
           userNotes: job.memo || '',
           evidence: evidence || '',
           config: gptCfg,
-          styleProfile: 'production_long_chunk'
+          styleProfile: 'production_long_chunk',
+          uid: humanizeV2Enabled() ? job.uid : ''
         })
       : await analyze.runHumanizeChunked({
           text: fb.body, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
@@ -1804,19 +1826,20 @@ async function runLongThesisChunked(job, text, evidence, pipelinePath = 'product
 // ── short job 러너(2026-06-13): 직접 fetch였던 블로그 변환·다듬기를 job으로 — 새로고침·창닫기 생존.
 //   엔진은 기존 floorV2 청크 경로(analyze.runHumanizeChunked) 그대로(blog→blog, polish→assignment 보존형),
 //   차감·게이트 원칙은 formal과 동일.
-async function runHumanizeJob(job, text) {
+async function runHumanizeJob(job, text, evidence = '') {
   try {
     job.status = 'running';
     job.stage = '문장 다듬는 중';
     persistJob(job);
     const isPolish = job.mode === 'polish';
+    const v2Enabled = humanizeV2Enabled();
     // ★ 격식 하락 방지(2026-06-19 88건 감사: 하다체/합쇼체 보고서·탐구·과학·논술문이 기본 피하기→blog 해요체로
     //   변질 38건 "~거든요/~죠"). blog인데 원문이 격식체(handa/hap) 우세면 engine을 assignment로 돌린다 —
     //   register 보존 우회(blog와 동일하게 judge·grounding=우회 ON, tonePolish=false). 진짜 해요체(캐주얼) 원문만
     //   blog 유지. isFormalDocument가 못 잡는 탐구·과학·하다체 과제문을 register 신호로 보완. (사용자 의도=우회는 유지,
     //   제출 품질만 살림.) 끄려면 FORMAL_BLOG_GUARD=0.
-    let engineMode = isPolish ? 'assignment' : 'blog';
-    if (!isPolish && process.env.FORMAL_BLOG_GUARD !== '0') {
+    let engineMode = v2Enabled ? job.mode : (isPolish ? 'assignment' : 'blog');
+    if (!v2Enabled && !isPolish && process.env.FORMAL_BLOG_GUARD !== '0') {
       const reg = require('../engine/surfaceguard').measureRegisterMix(text).dominant;
       if (reg === 'handa' || reg === 'hap') {
         engineMode = 'assignment';
@@ -1827,7 +1850,7 @@ async function runHumanizeJob(job, text) {
     // ★ 학술 동결 블록 보존(2026-06-20 #66: 기본 피하기가 참고문헌을 흡수·손실 "조푸른솔…2025,14-32" 소실).
     //   레거시·thesis 경로처럼 blog/polish 경로에도 참고문헌·목차를 verbatim 보존(본문만 우회 후 재조립). FREEZE_BLOCKS=0 해제.
     const freeze = require('../engine/freezeblocks');
-    const fb = (process.env.FREEZE_BLOCKS !== '0') ? freeze.splitAcademicBlocks(text) : { hasFrozen: false };
+    const fb = (!v2Enabled && process.env.FREEZE_BLOCKS !== '0') ? freeze.splitAcademicBlocks(text) : { hasFrozen: false };
     const bodyText = fb.hasFrozen ? fb.body : text;
     if (fb.hasFrozen) logger.info('transform.blog_academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: (fb.refs || '').length });
     let styleProfile = '';
@@ -1868,6 +1891,7 @@ async function runHumanizeJob(job, text) {
       logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle || 'blog', profile: styleProfile });
     }
     const gptCfg = await activeGptConfig();
+    if (v2Enabled && !gptCfg) throw new Error('HUMANIZE_ENGINE_V2 requires activeProvider=gpt');
     const out = gptCfg
       ? await gptAnalyze.runHumanizeChunked({
           text: bodyText,
@@ -1875,8 +1899,14 @@ async function runHumanizeJob(job, text) {
           lang: job.lang || 'ko',
           signal: job.ac.signal,
           userNotes: job.memo || '',
+          evidence: evidence || '',
           config: gptCfg,
-          styleProfile: styleProfile || 'production_transform_humanize'
+          styleProfile: styleProfile || 'production_transform_humanize',
+          basicStyle: job.basicStyle || '',
+          allowPolish: v2Enabled,
+          // 원본 UID는 OpenAI 요청에 직접 전달되지 않는다. v2 엔진 내부에서만
+          // OPENAI_SAFETY_SALT 기반 HMAC으로 변환하며, 레거시 롤백에는 넘기지 않는다.
+          uid: v2Enabled ? job.uid : ''
         })
       : await analyze.runHumanizeChunked({
           text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
@@ -1891,7 +1921,7 @@ async function runHumanizeJob(job, text) {
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
       const gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
-      if (softenBlockedFloorReport(out, 'transform.humanize_blocked_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, gates })) {
+      if (!v2Enabled && softenBlockedFloorReport(out, 'transform.humanize_blocked_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, gates })) {
         job.note = (job.note ? job.note + ' ' : '') + '품질 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
       } else {
         logger.warn('transform.humanize_blocked', {
@@ -1914,7 +1944,7 @@ async function runHumanizeJob(job, text) {
     if (!out.result || !out.result.outputText) throw new Error('humanize_incomplete');
     // ★ 블로그 날조 인용 결정론 제거(2026-06-17, #99): blog는 더 깨끗한 재라우팅 경로가 없으니, 원문에 없는
     //   괄호형 인용/출처만 안전 제거(문장 안 깨짐). 인라인 외부사례는 격식문서 라우팅(고급)으로 처리. polish 제외.
-    if (!isPolish) {
+    if (!v2Enabled && !isPolish) {
       const sc = inputrouting.stripFabricatedCitations(text, out.result.outputText);
       if (sc.removed) {
         out.result.outputText = sc.text;
@@ -1924,7 +1954,8 @@ async function runHumanizeJob(job, text) {
     }
     if (!job.devNoAuth && job.plan !== 'unlimited') {
       try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'humanize', 'job_' + job.id, { mode: job.mode || 'polish', textLength: (job.text || '').length }));
+        const operation = job.mode === 'formal' ? 'restructure' : 'humanize';
+        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, operation, 'job_' + job.id, { mode: job.mode || 'formal', textLength: (job.text || '').length }));
         job.deducted = true;
       } catch (e) {
         logger.error('transform.humanize_credit_deduct_failed_manual_action', {
@@ -1950,6 +1981,11 @@ async function runHumanizeJob(job, text) {
     }
     // ★ 동결 블록(참고문헌·목차) 재조립 — 우회된 본문 앞뒤로 verbatim 복원(#66 참고문헌 손실 방지).
     const finalText = fb.hasFrozen ? freeze.reassembleAcademic(fb, out.result.outputText) : out.result.outputText;
+    const v2QualityStatus = out.qualityStatus || out.result.qualityStatus || 'clean';
+    const v2QualityWarnings = out.qualityWarnings || out.result.qualityWarnings || [];
+    if (v2Enabled && v2QualityStatus === 'needs_review') {
+      job.note = (job.note ? job.note + ' ' : '') + '자동 품질 점검에서 확인할 항목이 있어요. 경고 내용을 보고 원문과 대조해 주세요.';
+    }
     job.status = 'done';
     job.result = {
       outputText: finalText,
@@ -1971,6 +2007,10 @@ async function runHumanizeJob(job, text) {
       preserveLab: out.result.preserveLab || null,
       finalReportEngine: out.result.finalReportEngine || null,
       humanizeMeta: out.result.humanizeMeta || null,
+      qualityStatus: v2QualityStatus,
+      qualityWarnings: v2QualityWarnings,
+      engineMeta: out.engineMeta || out.result.engineMeta || null,
+      naturalnessShadow: out.result.naturalnessShadow || null,
       adminLabProfile: job.adminLabProfile || (adminSafetyLab ? styleProfile : null),
       adminHumanizeLab: !!job.adminHumanizeLab,
       compressionFallback: !!out.result.compressionFallback,
@@ -2008,7 +2048,9 @@ router.post('/transform', async (req, res) => {
   // ★버그 수정(2026-06-19): A2 보안 마이그레이션 때 이 시작 핸들러만 body 직접 추출이 남아, FE가 body 토큰 전송을
   //   끊자(lav-138) 토큰이 undefined→precheck 401→로그인 리다이렉트로 휴머나이즈 시작이 전면 차단됐었다.
   const idToken = tokenFromReq(req);
-  const mode = ['blog', 'polish'].includes(req.body?.mode) ? req.body.mode : 'formal';   // 화이트리스트 — 그 외 값은 formal
+  const requestedModeValue = req.body?.mode;
+  const mode = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? requestedModeValue : 'formal';
+  const modeSource = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? 'provided' : 'defaulted';
   // 최소 길이: formal은 구조를 다시 짜는 작업이라 200자, short(blog·polish)는 50자(짧은 글 다듬기 허용)
   // 글자수 기준 통일: 표시·과금(needed)과 동일하게 공백 포함 raw length으로 판정.
   const minLen = mode === 'formal' ? 200 : 50;
@@ -2059,13 +2101,13 @@ router.post('/transform', async (req, res) => {
   //   엔진이라 영어를 넣으면 번역·변형으로 원문이 망가지고, '매끈하게' 다듬을수록 오히려 AI 패턴이 강해져
   //   카피킬러 0→100% 참사(실측). '돌리기 전에' 입력 단계에서 막는다. ※ 과거엔 "다듬기로 유도"였으나 다듬기도
   //   영어를 더 검출되게 만들어 잘못된 안내였음 — 메시지는 "영어 회피 불가·원문 유지"로 정정(ENGLISH_UNFIT_REASON).
-  if (!adminLabUid && mode !== 'polish' && inputrouting.isEnglishInput(text)) {
+  if (inputrouting.isEnglishInput(text)) {
     logger.warn('transform.english_input_blocked', { mode, textLength: text.length });
-    return res.status(400).json({ error: inputrouting.ENGLISH_UNFIT_REASON, route: 'polish' });
+    return res.status(400).json({ error: '현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.' });
   }
   // ★ 격식문서 → 고급 안내(2026-06-17, #21·#83·#72·#90): 보고서·계약서·논문을 기본 피하기에 넣으면 구어체로
   //   변질된다. 입력 단계에서 고급 피하기로 유도(blog만, 무차감·무API). 다듬기·고급은 그대로 통과.
-  if (!adminLabUid && mode === 'blog' && inputrouting.isFormalDocument(text)) {
+  if (!humanizeV2Enabled() && !adminLabUid && mode === 'blog' && inputrouting.isFormalDocument(text)) {
     logger.warn('transform.formal_doc_to_advanced', { mode, textLength: text.length });
     return res.status(400).json({ error: inputrouting.FORMAL_GUIDANCE_REASON, route: 'formal' });
   }
@@ -2156,12 +2198,13 @@ router.post('/transform', async (req, res) => {
     ? Math.max(90, Math.min(1200, Math.round(bare / 12)))
     : Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
   const job = {
-    id, mode, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
+    id, mode, modeSource, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
     uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
     memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',   // 경험·사례 메모 — blog·formal(재구성) 공통 적용(2026-06-15)
     autoCoach: req.body.autoCoach === true && mode === 'formal',   // 자동 코칭(재구성 전용) — 시작 시 입장 자동 도출·적용(2026-06-18)
-    lang: req.body.lang === 'en' ? 'en' : 'ko',
+    // v2는 한국어 전용이다. 한국어 본문에 lang=en만 붙여 영어 프롬프트로 우회하지 못하게 한다.
+    lang: humanizeV2Enabled() ? 'ko' : (req.body.lang === 'en' ? 'en' : 'ko'),
     lengthMode: req.body.length === 'compact' ? 'compact' : 'keep',   // 분량 옵션(재구성 전용) — 엔진 연결(2026-06-15). 기본 keep(유지)
     basicStyle,
     basicExperiment: experimentMeta,
@@ -2349,8 +2392,14 @@ router.get('/transform/:id', async (req, res) => {
     return;
   }
   orphan401.delete(job.id);   // 정상 폴링 1회 = 인증 회복 → 카운터 리셋
-  const base = { ok: true, status: job.status, stage: job.stage, mode: job.mode || 'formal', elapsedSec: Math.round((Date.now() - (job.status === 'running' ? (job.startedAt || job.createdAt) : job.status === 'queued' ? (job.queuedAt || job.createdAt) : job.createdAt)) / 1000), estSec: job.estSec, ...queueDetails(job), ...(job.note ? { note: job.note } : {}) };
-  if (job.status === 'done') return res.json({ ...base, result: job.result });
+  const base = { ok: true, status: job.status, stage: job.stage, mode: job.mode || 'formal', modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided', elapsedSec: Math.round((Date.now() - (job.status === 'running' ? (job.startedAt || job.createdAt) : job.status === 'queued' ? (job.queuedAt || job.createdAt) : job.createdAt)) / 1000), estSec: job.estSec, ...queueDetails(job), ...(job.note ? { note: job.note } : {}) };
+  if (job.status === 'done') return res.json({
+    ...base,
+    qualityStatus: job.result?.qualityStatus,
+    qualityWarnings: job.result?.qualityWarnings,
+    engineMeta: job.result?.engineMeta,
+    result: job.result
+  });
   if (job.status === 'queued') return res.json(base);
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
   if (job.status === 'cancelled') return res.json(base);

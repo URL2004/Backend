@@ -5,6 +5,7 @@
 //   (공부 v4에서 "동일 내용 과도한 반복" 3건이 실제로 이 문제였음)
 
 const sg = require('./surfaceguard');
+const { splitSentences } = require('./koreanText');
 
 const STOP = new Set(['그리고', '하지만', '그런데', '그러나', '그래서', '때문', '경우', '정도', '우리', '사람', '문제', '방식', '상황', '결국', '지금', '이것', '그것', '저것', '이런', '그런', '저런', '거예요', '거든요', '아니라', '있어요', '없어요', '해요', '대한', '위한', '통해', '대해']);
 function contentTokens(s) {
@@ -23,7 +24,7 @@ function overlapRatio(a, b) {   // a 중 b에 들어있는 비율(방향성)
 
 // 문장 단위 근접 중복 수: 앞선 문장과 토큰 Jaccard ≥ thr 이면 "같은 내용 재진술"로 카운트.
 function measureNearDupSentences(text, thr = 0.6) {
-  const sents = sg.splitSentences(text).filter(s => s.replace(/\s+/g, '').length >= 15);
+  const sents = splitSentences(text).filter(s => s.replace(/\s+/g, '').length >= 15);
   const toks = sents.map(contentTokens);
   let dup = 0;
   for (let i = 0; i < toks.length; i++) {
@@ -125,35 +126,55 @@ function _isShortSynEcho(part, prevPart) {
 
 function dedupeSentences(text) {
   const paras = (text || '').split(/\n{2,}/);
-  const keptNorm = new Set();     // 정확 중복용
-  const keptGrams = [];           // 근접 중복용(길이≥MIN_LEN 문장만)
   let removed = 0;
+  const fuzzyWarnings = [];
+  let previousSentence = null;
   const out = paras.map(p => {
-    const parts = p.split(/(?<=[.!?。])\s+/);          // floor.measureRepetition과 동일 문장분리
+    if (isDedupeProtectedParagraph(p)) {
+      previousSentence = null;
+      return p;
+    }
+    const parts = splitSentences(p);
+    if (!parts.length) return p;
     const keep = [];
-    let prevKey = '', prevPart = '';                    // 문단 내 직전 보존 문장(에코 판정용)
+    const seenInParagraph = new Set();
     for (const part of parts) {
       const key = _normSent(part);
-      if (_isTailEcho(key, prevKey) || _isShortSynEcho(part, prevPart)) { removed++; continue; }  // 꼬리/동의어 에코 → 삭제
-      if (key.length < 15) { keep.push(part); prevKey = key; prevPart = part; continue; }   // 짧은 문장은 exact/fuzzy 대상 아님
-      if (keptNorm.has(key)) { removed++; continue; }        // 정확 중복 → 후속 삭제
-      let dup = false;
-      if (key.length >= _DEDUP_MIN_LEN) {
-        const g = _bigrams(key);
-        const nums = _numSet(part);
-        const sig = _stanceSig(part);
-        // 표면이 비슷(jaccard≥0.6)해도 숫자(R-03)나 부정/양태 시그니처(R-04 확장)가 다르면 다른 의미 → 삭제 금지
-        for (const kg of keptGrams) { if (jaccard(g, kg.g) >= _DEDUP_FUZZY_SIM && _sameNums(nums, kg.nums) && sig === kg.sig) { dup = true; break; } }
-        if (!dup) keptGrams.push({ g, nums, sig });
+      if (!key) continue;
+      const exactInParagraph = seenInParagraph.has(key);
+      const exactAdjacent = previousSentence && previousSentence.key === key;
+      if (exactInParagraph || exactAdjacent) {
+        removed += 1;
+        continue;
       }
-      if (dup) { removed++; continue; }                      // 근접 중복 → 후속 삭제
-      keptNorm.add(key);
+      if (previousSentence && key.length >= _DEDUP_MIN_LEN && previousSentence.key.length >= _DEDUP_MIN_LEN) {
+        const similarity = jaccard(_bigrams(key), _bigrams(previousSentence.key));
+        if (similarity >= _DEDUP_FUZZY_SIM && key !== previousSentence.key) {
+          fuzzyWarnings.push({
+            similarity: Math.round(similarity * 1000) / 1000,
+            previous: previousSentence.text.slice(0, 160),
+            current: part.slice(0, 160)
+          });
+        }
+      }
+      seenInParagraph.add(key);
       keep.push(part);
-      prevKey = key; prevPart = part;
+      previousSentence = { key, text: part };
     }
     return keep.join(' ').trim();
   }).filter(p => p.length > 0);
-  return { text: out.join('\n\n'), removed };
+  return { text: out.join('\n\n'), removed, fuzzyWarnings: fuzzyWarnings.slice(0, 20) };
+}
+
+function isDedupeProtectedParagraph(value) {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  if (/^(?:[>#]|[-*•]\s|\d+[.)]\s|[가-힣][.)]\s)/u.test(text)) return true;
+  if (/^(?:목\s*차|차례|참고\s*문헌|참고\s*자료|References|Bibliography|부록|Appendix)(?=$|[^가-힣A-Za-z0-9_])/iu.test(text)) return true;
+  if (/^[“"'‘].+[”"'’]$/su.test(text)) return true;
+  if (/^(?:제\s*\d+\s*(?:장|절|항)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){0,3}[.)]?\s+)\S/u.test(text) && text.length <= 140) return true;
+  if (/https?:\/\/|doi\s*:/iu.test(text) && /(?:19|20)\d{2}/u.test(text)) return true;
+  return false;
 }
 
 module.exports = { measureNearDupSentences, boundaryLeak, contentTokens, dedupeSentences };

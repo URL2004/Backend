@@ -3,7 +3,7 @@ const { splitSentences, countOccurrences } = require('./textStats');
 
 function analyzeSpeaker(text) {
   const sentences = splitSentences(text);
-  const firstPerson = countOccurrences(text, [/\b(저는|제가|나는|내가|본인|필자|우리는|제가)\b/g]);
+  const firstPerson = countOccurrences(text, [/(?:^|[^가-힣A-Za-z0-9_])(저는|제가|나는|내가|본인|필자|우리는|제가)(?=$|[^가-힣A-Za-z0-9_])/g]);
   const politeYo = countOccurrences(text, [/(요\.|습니다\.|습니까\?|세요\.)/g]);
   const formalDa = countOccurrences(text, [/(다\.|한다\.|했다\.|된다\.|있다\.|없다\.|이다\.)/g]);
   const imperative = countOccurrences(text, [/(해줘|해주세요|써줘|바꿔줘|늘려줘|요약해|무시해)/g]);

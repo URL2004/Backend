@@ -2117,9 +2117,9 @@ async function callClaude({
   attempt,
   cacheZeroWarn = false
 }) {
-  // ★ dev 백엔드 스위치: LLM_BACKEND=claudecode면 내 Claude Code 구독(Sonnet)으로 호출 (API 키 불필요).
-  //   엔진 로컬 테스트용. 프로덕션은 LLM_BACKEND 미설정 → 기존 API 경로.
-  if (process.env.LLM_BACKEND === 'claudecode') {
+  // ★ dev provider 스위치: LLM_ACTIVE_PROVIDER=claudecode면 로컬 Claude Code 구독으로 호출한다.
+  //   엔진 로컬 테스트 전용이며, 운영은 LLM_ACTIVE_PROVIDER=gpt를 사용한다.
+  if (process.env.LLM_ACTIVE_PROVIDER === 'claudecode') {
     const { callViaClaudeCode } = require('../engine/claudecode');
     // claudecode는 단일 system 문자열만 받으므로 고정+가변을 다시 합쳐 종전과 동일한 프롬프트로 호출.
     const combinedSystem = systemVolatile ? `${systemText}\n${systemVolatile}` : systemText;
@@ -2827,7 +2827,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
   // ★ 병렬화: 청크는 앞 청크의 '원문' 이웃만 참고(출력 의존 제거)하므로 서로 독립 → 동시 실행 가능.
   //   claudecode(CLI)는 직렬(1), API는 동시성 6. CHUNK_CONCURRENCY로 override.
   const rawChunkConcurrency = Number(process.env.CHUNK_CONCURRENCY) ||
-    (process.env.LLM_BACKEND === 'claudecode' ? 1 : 6);
+    (process.env.LLM_ACTIVE_PROVIDER === 'claudecode' ? 1 : 6);
   const chunkSafeCap = Math.max(1, Number(process.env.TRANSFORM_SAFE_CHUNK_CAP) || 1);
   const CHUNK_CONCURRENCY = Math.min(rawChunkConcurrency, chunkSafeCap);
 
@@ -2860,7 +2860,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
     // ★ 긴 글 내성: 청크 본 호출이 (claudecode flakiness 등으로) 실패하면 1회 더 재시도하고,
     //   그래도 실패할 때만 그 청크만 원문으로 폴백한다.
     // claudecode(flaky·간헐 거부)는 3회, API는 2회 시도 후에만 raw 폴백.
-    const MAX_ATTEMPTS = process.env.LLM_BACKEND === 'claudecode' ? 3 : 2;
+    const MAX_ATTEMPTS = process.env.LLM_ACTIVE_PROVIDER === 'claudecode' ? 3 : 2;
     // ★ 기준 원문 = 청크 ∪ 배정사실(cRaw): 분량 기준이 사실 포함 길이로 잡히고, lostFacts가 사실 누락을
     //   위반으로 잡아 repair가 사실을 "깎는" 게 아니라 "되살리는" 방향으로 작동(§설계-evidence-grounding).
     //   폴백 시에도 승인 사실은 원문 그대로 덧붙인다(승인사실 verbatim 인용 = 무날조, 전체 lostFacts 정합).
@@ -3505,17 +3505,28 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 //   해결: 단일 호출은 서버가 같은 컬렉션·스키마로 직접 저장(Admin SDK) → "차감↔저장" 원자화.
 //   클라 saveHistory와 동일 스키마라 이용 기록 화면이 그대로 렌더한다.
 //   requestId를 문서 ID로 사용해 재시도·중복 호출에도 1건만 남게(멱등).
-async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result, mode }) {
+async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result, mode, modeSource, engineMeta, qualityStatus, qualityWarningCodes }) {
   if (!db) return;
   const isDetect = opType === 'detect';
+  const storedMode = isDetect ? 'detect' : normalizeStoredHumanizeMode(mode);
   const doc = {
     type: isDetect ? 'detect' : 'humanize',
-    mode: mode || null,   // ★ P1(2026-06-18 실데이터: history mode 전부 None): blog/formal/polish 기록(분석·CS·환불대응)
+    mode: storedMode,
     inputText: text || '',
     credits: typeof needed === 'number' ? needed : 0,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     savedBy: 'server'
   };
+  if (!isDetect) {
+    doc.modeSource = modeSource === 'defaulted' ? 'defaulted' : 'provided';
+    if (qualityStatus === 'clean' || qualityStatus === 'needs_review') doc.qualityStatus = qualityStatus;
+    if (Array.isArray(qualityWarningCodes)) {
+      doc.qualityWarningCodes = [...new Set(qualityWarningCodes.map(value => String(value || '').trim()).filter(Boolean))].slice(0, 30);
+    }
+    if (engineMeta && typeof engineMeta === 'object') {
+      doc.engineMeta = compactHistoryEngineMeta(engineMeta);
+    }
+  }
   if (isDetect) {
     doc.probability = (result && typeof result.probability === 'number') ? result.probability : null;
     if (result && typeof result.rawProbability === 'number') doc.rawProbability = result.rawProbability;
@@ -3530,6 +3541,30 @@ async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result
   const col = db.collection('users').doc(uid).collection('history');
   if (requestId) await col.doc(requestId).set(doc, { merge: true });
   else await col.add(doc);
+}
+
+function normalizeStoredHumanizeMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (['blog', 'basic', '기본 피하기'].includes(mode)) return 'blog';
+  if (['polish', 'preserve', '그대로 다듬기'].includes(mode)) return 'polish';
+  return 'formal';
+}
+
+function compactHistoryEngineMeta(meta) {
+  return {
+    schemaVersion: Number(meta.schemaVersion) || 2,
+    engineVersion: String(meta.engineVersion || '').slice(0, 60),
+    requestedMode: String(meta.requestedMode || '').slice(0, 20),
+    effectiveMode: String(meta.effectiveMode || '').slice(0, 20),
+    documentProfile: String(meta.documentProfile || 'unknown').slice(0, 40),
+    profileConfidence: Number.isFinite(Number(meta.profileConfidence)) ? Number(meta.profileConfidence) : null,
+    basicStyle: String(meta.basicStyle || '').slice(0, 20),
+    semanticJudgeRan: meta.semanticJudgeRan === true,
+    repairCount: Math.max(0, Number(meta.repairCount) || 0),
+    chunkCount: Math.max(0, Number(meta.chunkCount) || 0),
+    fallbackCount: Math.max(0, Number(meta.fallbackCount) || 0),
+    lengthRatio: Number.isFinite(Number(meta.lengthRatio)) ? Number(meta.lengthRatio) : null
+  };
 }
 
 router.post('/analyze', async (req, res) => {
@@ -3668,6 +3703,7 @@ router.post('/analyze', async (req, res) => {
           signal: ac.signal,
           config: gptCfg,
           route: 'analyze',
+          uid: pre.uid,
           allowLocalFallback: false
         });
         data = { usage: result.gptMeta?.usage || null };
@@ -3719,6 +3755,7 @@ router.post('/analyze', async (req, res) => {
             signal: ac.signal,
             userNotes,
             config: gptCfg,
+            uid: pre.uid,
             styleProfile: 'production_floor_v2'
           })
         : await runHumanizeChunked({
@@ -3742,7 +3779,12 @@ router.post('/analyze', async (req, res) => {
           });
         }
       }
-      result = { outputText: out.result.outputText };
+      result = {
+        outputText: out.result.outputText,
+        qualityStatus: out.qualityStatus || out.result.qualityStatus,
+        qualityWarnings: out.qualityWarnings || out.result.qualityWarnings || [],
+        engineMeta: out.engineMeta || out.result.engineMeta || null
+      };
       evasion = {
         floorReport: {
           status: out.floorReport.status,
@@ -3767,6 +3809,7 @@ router.post('/analyze', async (req, res) => {
           signal: ac.signal,
           userNotes,
           config: gptCfg,
+          uid: pre.uid,
           styleProfile: 'production_analyze'
         });
         if (out.floorReport && out.floorReport.status === 'blocked') {
@@ -3780,7 +3823,13 @@ router.post('/analyze', async (req, res) => {
             });
           }
         }
-        result = { outputText: out.result.outputText, humanizeMeta: out.gptEngine || out.result.humanizeMeta || null };
+        result = {
+          outputText: out.result.outputText,
+          humanizeMeta: out.gptEngine || out.result.humanizeMeta || null,
+          qualityStatus: out.qualityStatus || out.result.qualityStatus,
+          qualityWarnings: out.qualityWarnings || out.result.qualityWarnings || [],
+          engineMeta: out.engineMeta || out.result.engineMeta || null
+        };
         usage = out.gptEngine?.usage || out.result?.humanizeMeta?.usage || null;
         evasion = {
           floorReport: {
@@ -4073,7 +4122,20 @@ router.post('/analyze', async (req, res) => {
   let historySaved = false;
   if (db && !devNoAuth && !isChunkCall) {
     try {
-      await retryAsync(() => saveAnalyzeHistory({ uid: pre.uid, requestId, opType, text, needed, result, mode: historyMode }));
+      const requestedHistoryMode = req.body?.humanizeMode || (['blog', 'polish', 'formal'].includes(mode) ? mode : '');
+      await retryAsync(() => saveAnalyzeHistory({
+        uid: pre.uid,
+        requestId,
+        opType,
+        text,
+        needed,
+        result,
+        mode: historyMode,
+        modeSource: opType === 'humanize' && !requestedHistoryMode ? 'defaulted' : 'provided',
+        engineMeta: result?.engineMeta,
+        qualityStatus: result?.qualityStatus,
+        qualityWarningCodes: (result?.qualityWarnings || []).map(item => item?.code).filter(Boolean)
+      }));
       historySaved = true;
     } catch (e) {
       logger.error('analyze.history_persist_failed', { uid: pre.uid, requestId, opType, billingMode, err: e });
@@ -4184,6 +4246,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
           signal: ac.signal,
           config: gptCfg,
           route: 'analyze_pdf',
+          uid: pre.uid,
           allowLocalFallback: false
         });
         data = { usage: result.gptMeta?.usage || null };
@@ -4228,6 +4291,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
           lang,
           signal: ac.signal,
           config: gptCfg,
+          uid: pre.uid,
           styleProfile: 'production_analyze_pdf'
         });
         if (out.floorReport && out.floorReport.status === 'blocked') {

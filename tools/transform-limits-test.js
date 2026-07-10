@@ -2,7 +2,10 @@
 // 엔진·analyze를 require.cache로 스텁해 LLM 호출 없이(비용 0) 라우트 로직만 검사한다.
 // 실행: node tools/transform-limits-test.js  (서버 구동 불필요 — 자체 포트에 라우터만 마운트)
 process.env.RESTRUCTURE_MAX_ACTIVE = '2';
+process.env.TRANSFORM_SAFE_ACTIVE_CAP = '2';
 process.env.RESTRUCTURE_DAILY_CAP = '3';
+process.env.LLM_ACTIVE_PROVIDER = 'claude';
+process.env.HUMANIZE_ENGINE_V2_ENABLED = '0';
 delete process.env.DEV_NO_AUTH;
 delete process.env.FIREBASE_SERVICE_ACCOUNT;
 
@@ -31,7 +34,7 @@ stub(path.join(base, 'engine', 'evidence.js'), {
 });
 stub(path.join(base, 'engine', 'evidencereview.js'), { reviewCandidates: c => c, hostOf: () => '' });
 // 소유자 검증(requireJobOwner)용 config 스텁: 토큰 문자열 = uid (멀티 유저 시뮬과 일관)
-stub(path.join(base, 'config.js'), { admin: null, db: null, verifyToken: async (t) => t || null });
+stub(path.join(base, 'config.js'), { admin: null, db: null, ADMIN_UIDS: [], verifyToken: async (t) => t || null });
 // 스텁 인증·과금: idToken을 그대로 uid로 — 멀티 유저 시뮬레이션
 stub(path.join(base, 'routes', 'analyze.js'), {
   precheckCredits: async (idToken) => { if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 }); return { uid: idToken, plan: 'free' }; },
@@ -43,6 +46,9 @@ stub(path.join(base, 'routes', 'analyze.js'), {
     const t = setTimeout(() => resolve({
       result: { outputText: '블로그 결과' },
       floorReport: { status: 'clean', criticals: [], warnings: [], metrics: { novelty: 0, judge: 'pass' } },
+      qualityStatus: 'needs_review',
+      qualityWarnings: [{ code: 'semantic_omission', severity: 'warning', message: '원문 내용 일부가 축약됐을 수 있어요.' }],
+      engineMeta: { schemaVersion: 2, engineVersion: 'gpt-prod-v2', requestedMode: 'blog' },
       chunkCount: 1, fallbackCount: 0
     }), 1200);
     if (signal) signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')); });
@@ -55,7 +61,7 @@ const app = express();
 app.use(express.json());
 app.use('/', transform);
 
-const TEXT = '가'.repeat(300);
+const TEXT = '2026년 한국대학교 연구팀은 서울 지역 학생 20명을 대상으로 학습 환경을 조사했다. 참여자 35%는 주 3회 이상 도서관을 이용했고, 평균 학습 시간은 하루 2.5시간이었다. 연구팀은 설문 문항 12개와 면담 기록을 함께 분석했다. 이 결과를 바탕으로 공간 접근성과 학습 지속 시간의 관계를 설명하고, 조사 절차와 한계를 구분해 보고서에 정리한다.'.padEnd(300, ' 연구 내용을 구체적으로 검토한다.');
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
   if (cond) { passed++; console.log(`  ✓ ${name}`); }
@@ -67,12 +73,12 @@ const srv = app.listen(0, async () => {
   const url = `http://127.0.0.1:${srv.address().port}`;
   const post = (p, body) => fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then(async r => ({ status: r.status, body: await r.json() }));
   // 소유자 검증(requireJobOwner) 때문에 GET·cancel에도 토큰(=uid) 전달
-  const get = (p, uid) => fetch(url + p + (p.indexOf('?') < 0 ? '?' : '&') + 'idToken=' + (uid || ''), {}).then(async r => ({ status: r.status, body: await r.json() }));
+  const get = (p, uid) => fetch(url + p, { headers: uid ? { authorization: 'Bearer ' + uid } : {} }).then(async r => ({ status: r.status, body: await r.json() }));
 
   try {
     // 1) 사용자당 동시 1개
     const a1 = await post('/transform', { text: TEXT, idToken: 'u1' });
-    check('u1 첫 시작 200', a1.status === 200 && a1.body.jobId, a1);
+    check('u1 첫 시작 200 + mode 기본값 기록', a1.status === 200 && a1.body.jobId && a1.body.mode === 'formal' && a1.body.job?.modeSource === 'defaulted', a1);
     const a2 = await post('/transform', { text: TEXT, idToken: 'u1' });
     check('u1 중복 시작 409(동시 1개)', a2.status === 409, a2);
 
@@ -106,14 +112,14 @@ const srv = app.listen(0, async () => {
 
     // 4.5) blog job(기본 피하기): 새로고침 생존용 job 전환 — formal 일일 한도 미적용·별도 동시 풀·결과 형태
     const b4 = await post('/transform', { text: TEXT, idToken: 'u1', mode: 'blog' });
-    check('u1 blog 시작 200(formal 일일 한도 미적용)', b4.status === 200 && b4.body.mode === 'blog', b4);
+    check('u1 blog 시작 200(formal 일일 한도 미적용)', b4.status === 200 && b4.body.mode === 'blog' && b4.body.job?.modeSource === 'provided', b4);
     const b5 = await post('/transform', { text: TEXT, idToken: 'u1', mode: 'blog' });
     check('u1 blog 중복 409(사용자당 1개 — 모드 무관)', b5.status === 409, b5);
     const g1 = await get(`/transform/${b4.body.jobId}`, 'u1');
     check('blog GET: running + mode=blog', g1.body.status === 'running' && g1.body.mode === 'blog', g1.body);
     await sleep(1800);
     const g2 = await get(`/transform/${b4.body.jobId}`, 'u1');
-    check('blog done + 결과·floorReport 수신', g2.body.status === 'done' && g2.body.mode === 'blog' && g2.body.result.outputText === '블로그 결과' && g2.body.result.floorReport.status === 'clean', g2.body);
+    check('blog done + needs_review 호환 응답 수신', g2.body.status === 'done' && g2.body.mode === 'blog' && g2.body.result.outputText === '블로그 결과' && g2.body.result.floorReport.status === 'clean' && g2.body.qualityStatus === 'needs_review' && g2.body.qualityWarnings?.[0]?.code === 'semantic_omission' && g2.body.engineMeta?.schemaVersion === 2, g2.body);
 
     // 4.6) polish job(그대로 다듬기): 같은 short 풀 — 50자부터 허용·일일 한도 미적용
     const p1 = await post('/transform', { text: '가'.repeat(80), idToken: 'u2', mode: 'polish' });
@@ -123,7 +129,7 @@ const srv = app.listen(0, async () => {
     check('polish done + 결과 수신', p2.body.status === 'done' && p2.body.mode === 'polish' && p2.body.result.outputText === '블로그 결과', p2.body);
 
     // 5) evidence 승인 후 재구성도 슬롯이 꽉 차면 queued → 자동 재개
-    const evText = '근거테스트' + '가'.repeat(300);
+    const evText = '근거테스트 ' + TEXT;
     const ev1 = await post('/transform', { text: evText, idToken: 'u7', evidence: true });
     check('evidence job 시작 200', ev1.status === 200, ev1);
     await sleep(100);

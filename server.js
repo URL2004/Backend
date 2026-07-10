@@ -39,7 +39,8 @@ const transformRouter = require('./routes/transform');
 app.get(['/healthz', '/api/health'], (req, res) => {
   res.json({
     ok: true,
-    llm: process.env.LLM_BACKEND || 'api',
+    activeProvider: process.env.LLM_ACTIVE_PROVIDER || 'gpt',
+    humanizeEngineV2: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1',
     firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
     openai: !!process.env.OPENAI_API_KEY,
     maintenance: maintenanceMode.isMaintenanceEnabled(),
@@ -61,11 +62,11 @@ app.use('/', require('./routes/coupon'));
 app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
 app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
 
-// ★ 안전망: 서버를 claudecode 백엔드로 돌리면 호출당 ~45초·직렬(동시성 1)이라 UI 변환이 수십 분 걸려
-//   프런트 타임아웃으로 전부 실패한다(2026-06-11 실사고 — .env의 LLM_BACKEND=claudecode가 원인).
-if (process.env.LLM_BACKEND === 'claudecode') {
+// ★ 안전망: 로컬 claudecode provider는 호출당 ~45초·직렬(동시성 1)이라 UI 변환이 수십 분 걸린다.
+//   provider 선택은 운영·개발 모두 LLM_ACTIVE_PROVIDER 한 곳만 사용한다.
+if (process.env.LLM_ACTIVE_PROVIDER === 'claudecode') {
   logger.warn('server.llm_claudecode_warning', {
-    message: 'LLM_BACKEND=claudecode로 서버 구동 중입니다. UI 변환은 타임아웃 가능성이 높습니다.'
+    message: 'LLM_ACTIVE_PROVIDER=claudecode로 서버 구동 중입니다. UI 변환은 타임아웃 가능성이 높습니다.'
   });
 }
 
@@ -74,7 +75,7 @@ app.use(errorHandler);
 const server = app.listen(process.env.PORT || 3000, () => {
   logger.info('server.started', {
     port: Number(process.env.PORT || 3000),
-    llm: process.env.LLM_BACKEND || 'api',
+    activeProvider: process.env.LLM_ACTIVE_PROVIDER || 'gpt',
     auth: process.env.FIREBASE_SERVICE_ACCOUNT ? 'firebase' : (process.env.DEV_NO_AUTH === '1' ? 'dev_no_auth' : 'disabled')
   });
 });

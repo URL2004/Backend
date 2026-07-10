@@ -1,6 +1,7 @@
 'use strict';
 
 const { runLayoutNlp } = require('./pythonBridge');
+const { splitSentences: splitKoreanSentences } = require('../koreanText');
 
 const VERSION = 'layout-normalizer-v1';
 const ROMAN = 'ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ';
@@ -387,12 +388,7 @@ function chooseSentenceSplit(block, hints = []) {
 }
 
 function splitSentencesLocal(text) {
-  const source = String(text || '').replace(/\r/g, '');
-  const parts = source
-    .split(/(?<=[.!?。！？])\s+|(?<=[다요죠까음함임])\s+(?=[가-힣A-Za-z0-9"'])|\n+/)
-    .map(s => s.trim())
-    .filter(Boolean);
-  return parts.length ? parts : (source.trim() ? [source.trim()] : []);
+  return splitKoreanSentences(String(text || ''));
 }
 
 function buildFormatGate(before, after, spans, profile) {

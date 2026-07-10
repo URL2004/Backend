@@ -15,7 +15,7 @@ const clamp01 = x => Math.max(0, Math.min(1, x));
 //   ① 1인칭 ② 격식 판단(필자 보기에/문제는 A아니라 B/핵심은) ③ 구어 주관(거든/잖아/더라).
 const SUBJ_FIRST = /(나는|내가|나도|나의|우리는|우리가|저는|제가|저도|필자)/;
 const SUBJ_JUDGMENT = /(라고\s*본다|라고\s*생각|보기에|주목할|주목한다|핵심은|중요한\s*(건|것은|점은)|문제는|더\s*중요한|놓치(지|면)\s*안|간과(해선|하면)|의심해야|싶다|싶었|분명하다|틀림없)/;
-const SUBJ_CASUAL = /(거든요?|잖아요?|더라(고|구)?\b|네요|던데|싶더|는데\s*말)/;
+const SUBJ_CASUAL = /(거든요?|잖아요?|더라(고|구)?(?=$|[^가-힣A-Za-z0-9_])|네요|던데|싶더|는데\s*말)/;
 function measureSubjectivity(text) {
   const s = sg.splitSentences(text);
   if (!s.length) return 0;
@@ -52,7 +52,7 @@ function impersonalCloserRatio(text) {
 //   L1(장식 구체): 골목·벤치·놀이터·정류장·공원 등 일반 장면명사(특정성 없음) — 많아도 카피킬러는 '구체 부족'으로 봄.
 //   ※ 대문자 약어는 둘로 갈린다: buzzword(AI·ESG·SNS·IT…)는 검증가능 구체가 아니다(주제어일 뿐).
 //   실제 고유 약어(WHO·OECD·BYD·SNE…)만 L3. surfaceguard.SEG_ACRONYM과 동일 stoplist로 일관.
-const L3_RE = /(\d|[％%]|(?:19|20)\d{2}|[가-힣]\s*(?:만|억|조|명|건|배|차례|위)\b|[가-힣]{2,}(?:법|조례|협약|조사|지수|청|부처|위원회)|[가-힣]{2,}(?:시|구|동|군|읍|면|도)\b)/;
+const L3_RE = /(\d|[％%]|(?:19|20)\d{2}|[가-힣]\s*(?:만|억|조|명|건|배|차례|위)(?=$|[^가-힣A-Za-z0-9_])|[가-힣]{2,}(?:법|조례|협약|조사|지수|청|부처|위원회)|[가-힣]{2,}(?:시|구|동|군|읍|면|도)(?=$|[^가-힣A-Za-z0-9_])/;
 const BUZZWORD_ACR = new Set(['AI', 'ESG', 'SNS', 'IT', 'MVP', 'CEO', 'KPI', 'ROI', 'DX']);
 const DECOR_RE = /(골목|벤치|놀이터|정류장|공원|거리|보도|횡단보도|가게|카페|시장|상가|광장|화단|가로등|간판|놀이|산책로|벽|담장)/;
 function hasL3(t) {

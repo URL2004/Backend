@@ -453,7 +453,7 @@ function extractTermCandidates(text) {
   const terms = [];
   addMatches(terms, s.match(/\bhttps?:\/\/[^\s)]+/g));
   addMatches(terms, s.match(/\b\d{2,4}[.-]\d{1,2}[.-]\d{1,2}\b/g));
-  addMatches(terms, s.match(/\b\d+(?:\.\d+)?\s?(?:%|원|만원|억원|조원|평|명|개|건|회|년|개월|일|시간|분|km|kg|g|cm|m)\b/g));
+  addMatches(terms, s.match(/(?<![A-Za-z0-9_])\d+(?:\.\d+)?\s?(?:%|원|만원|억원|조원|평|명|개|건|회|년|개월|일|시간|분|km|kg|g|cm|m)(?=$|[^가-힣A-Za-z0-9_])/g));
   addMatches(terms, s.match(/[A-Z][A-Za-z0-9&.-]{1,}(?:\s+[A-Z][A-Za-z0-9&.-]{1,}){0,3}/g));
   addMatches(terms, s.match(/[가-힣A-Za-z0-9]+(?:대학교|대학원|연구소|학회|기관|공사|공단|주식회사|택배|병원|유치원|어린이집|교육부|보건복지부|AWS|API)/g));
   addMatches(terms, s.match(/[가-힣A-Za-z0-9]{2,}(?:·[가-힣A-Za-z0-9]{2,}){1,}/g));
@@ -499,7 +499,7 @@ function isTermCandidateSafe(value) {
   if (/[.!?。！？\r\n]/.test(v)) return false;
   const words = v.split(' ').filter(Boolean);
   if (words.length > 6) return false;
-  if (v.length > 42 && /(?:은|는|이|가|을|를|에서|으로|로|와|과|의|에)\b/.test(v)) return false;
+  if (v.length > 42 && /(?:은|는|이|가|을|를|에서|으로|로|와|과|의|에)(?=$|[^가-힣A-Za-z0-9_])/.test(v)) return false;
   if (v.length > 55 && !/[A-Z0-9%]/.test(v)) return false;
   return true;
 }

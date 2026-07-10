@@ -5,10 +5,7 @@
 //   추상적·일반적 내용 / 구체 근거 부족 / 무견해 / 경직 문어체 / 기계적 균일성 / 비인칭.
 // ★ 정책: 이 지표가 나쁘다고 "가짜 경험·수치"를 생성하면 FLOOR 위반. 측정·표시·국소수정만 하고,
 //   구체화는 (1)원문에 실제로 있는 것 또는 (2)사용자가 제공한 경험 메모 범위 안에서만.
-
-function splitSentences(t) {
-  return (t || '').split(/(?<=[.!?。])\s+|\n+/).map(s => s.trim()).filter(Boolean);
-}
+const { splitSentences } = require('./koreanText');
 
 // ── 1. genericness (추상적·일반적 내용 구성) ──
 const GENERIC_SUBJECT_RE = /^(디지털\s*기술|기술|사회|사람들?|인간관계|관계|현대\s*사회|온라인\s*공간|디지털\s*공간|SNS|익명성|소통|변화|문제|중요한\s*것|핵심은|우리는?)/i;

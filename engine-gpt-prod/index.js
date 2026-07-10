@@ -2,7 +2,7 @@
 
 const net = require('net');
 const dns = require('dns').promises;
-const { completeJson, webSearchTool } = require('./openaiClient');
+const { completeJson, webSearchTool, safetyIdentifierForUid } = require('./openaiClient');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
 const prompts = require('./prompts');
 const { addUsage, emptyUsage } = require('./usageCost');
@@ -15,8 +15,14 @@ const koreanQuality = local.koreanQuality;
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { logger } = require('../lib/logger');
 const layoutNormalizer = require('../engine/layout');
+const inputRouting = require('../engine/inputrouting');
+const { computeEditMetrics } = require('../engine/koreanText');
+const { detectDocumentProfile } = require('./documentProfile');
+const { buildVoiceProfile } = require('./voiceProfile');
+const qualityV2 = require('./finalQualityV2');
 
-const VERSION = 'gpt-prod-operating-engine-v1';
+const VERSION = 'gpt-prod-v2';
+const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
   'gpt_all_chunks_fallback',
@@ -28,7 +34,9 @@ const STRICT_DELIVERY_GATES = new Set([
   'empty_or_meta_output',
   'prompt_instruction_leak',
   'encoding_corruption',
-  'sentence_truncated'
+  'sentence_truncated',
+  'refusal',
+  'polish_unchanged'
 ]);
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -84,22 +92,89 @@ function isLayoutNlpEnabled(value) {
   return true;
 }
 
-async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false, qualityPatternLab, layoutNlp = null } = {}) {
+function isEngineV2Enabled() {
+  return String(process.env.HUMANIZE_ENGINE_V2_ENABLED || '').trim() === '1';
+}
+
+function normalizeRequestedMode(mode) {
+  const value = String(mode || '').trim().toLowerCase();
+  if (value === 'blog' || value === 'basic') return 'blog';
+  if (value === 'polish' || value === 'preserve') return 'polish';
+  return 'formal';
+}
+
+function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile) {
+  if (normalizedMode === 'polish') return 'polish';
+  if (requestedMode !== 'blog') return 'assignment';
+  const profile = documentProfile?.profile || 'unknown';
+  const confidence = Number(documentProfile?.confidence) || 0;
+  if (confidence >= 0.75 && [
+    'academic_paper',
+    'report_assignment',
+    'student_record',
+    'resume_application',
+    'long_explainer',
+    'mail_notice',
+    'creative'
+  ].includes(profile)) return 'assignment';
+  return 'blog';
+}
+
+async function run(options = {}) {
+  return runEngine(options, { v2Enabled: isEngineV2Enabled() });
+}
+
+async function runEngine({
+  text,
+  mode = 'assignment',
+  lang = 'ko',
+  userNotes = '',
+  evidence = '',
+  signal,
+  config,
+  styleProfile = '',
+  basicStyle = '',
+  allowPolish = false,
+  safetyIdentifier = '',
+  uid = '',
+  niklQualityTest = false,
+  qualityPatternLab,
+  layoutNlp = null
+} = {}, { v2Enabled = true } = {}) {
   const rawSource = String(text || '').trim();
   if (!rawSource) throw new Error('engine-gpt-prod: empty text');
+  if (v2Enabled && inputRouting.isEnglishInput(rawSource)) {
+    const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.');
+    error.code = 'HUMANIZE_KOREAN_ONLY';
+    error.noCharge = true;
+    throw error;
+  }
   const cfg = await loadConfig(config);
-  const selectedMode = normalizeMode(mode, { allowPolish: allowPolishMode({ styleProfile, config }) });
-  const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp);
-  const preLayout = layoutNlpEnabled
+  const requestedMode = normalizeRequestedMode(mode);
+  const polishAllowed = v2Enabled ? allowPolish === true : allowPolishMode({ styleProfile, config });
+  const normalizedMode = normalizeMode(mode, { allowPolish: polishAllowed });
+  const documentProfile = v2Enabled
+    ? detectDocumentProfile(rawSource, { basicStyle })
+    : { profile: 'unknown', confidence: 0, group: 'unknown', source: 'legacy', basicStyle: String(basicStyle || '') };
+  const selectedMode = v2Enabled ? effectiveModeForProfile(requestedMode, normalizedMode, documentProfile) : normalizedMode;
+  const voiceProfile = v2Enabled ? buildVoiceProfile(rawSource, { documentProfile: documentProfile.profile }) : null;
+  // v2에서만 UID를 비가역 safety_identifier로 바꾼다. 플래그를 0으로 내려
+  // 레거시 경로로 즉시 복귀할 때 OPENAI_SAFETY_SALT가 롤백을 막아서는 안 된다.
+  const safetyId = v2Enabled
+    ? (safetyIdentifier || (uid ? safetyIdentifierForUid(uid) : ''))
+    : (safetyIdentifier || '');
+  const creativeLayoutLocked = v2Enabled && voiceProfile?.lineBreakSensitive === true;
+  const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !creativeLayoutLocked;
+  const preLayout = !v2Enabled && layoutNlpEnabled
     ? await safeFormatLayout(rawSource, { mode: selectedMode, phase: 'pre' })
     : null;
   const source = preLayout?.text || rawSource;
-  const qualityPatternLabEnabled = isQualityPatternLabEnabled(qualityPatternLab, styleProfile);
+  const qualityPatternLabEnabled = v2Enabled ? false : isQualityPatternLabEnabled(qualityPatternLab, styleProfile);
   const niklQualityEnabled = qualityPatternLabEnabled || isNiklQualityEnabled(niklQualityTest, styleProfile);
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
-  const chunkPlan = structureChunk.splitChunksForGpt(source);
+  const chunkPlan = structureChunk.splitChunksForGpt(source, { coalesceEditable: v2Enabled });
   const chunks = chunkPlan.chunks;
   const records = [];
 
@@ -118,8 +193,12 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
       evidence,
       cfg,
       styleProfile,
+      documentProfile,
+      voiceProfile,
       niklQualityTest: niklQualityEnabled,
       qualityPatternLab: qualityPatternLabEnabled,
+      safetyIdentifier: safetyId,
+      v2Enabled,
       signal
     });
     records.push(record);
@@ -127,19 +206,129 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
 
   const boundaryRepair = structureChunk.repairUnsafeChunkBoundaries(chunks);
   let outputText = structureChunk.mergeChunks(chunks);
-  outputText = finalPostprocess(outputText, source, selectedMode, contract);
+  const frozen = v2Enabled ? freezeLockedBlocks(source, outputText, chunks) : null;
+  const auditSource = frozen?.source || source;
+  outputText = frozen?.output || outputText;
+  const postprocessMeta = {};
+  outputText = finalPostprocess(outputText, auditSource, selectedMode, contract, postprocessMeta, {
+    preserveLineBreaks: creativeLayoutLocked
+  });
+
+  let supplementalUsage = emptyUsage();
+  let polishReport = null;
+  let polishRetryCount = 0;
+  let polishStrictFailure = '';
+  if (v2Enabled && selectedMode === 'polish') {
+    polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
+    if (!polishReport.pass) {
+      try {
+        const retried = await qualityV2.retryPolishSurface({
+          source: auditSource,
+          currentOutput: outputText,
+          policy: polishReport,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        polishRetryCount = 1;
+        outputText = retried.outputText || outputText;
+        polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
+        if (!retried.safeChangeFound || polishReport.noSafeChange) polishStrictFailure = 'polish_unchanged';
+      } catch (error) {
+        polishStrictFailure = 'polish_unchanged';
+        polishReport = { ...(polishReport || {}), retryError: String(error?.message || error).slice(0, 180) };
+      }
+    }
+  }
+
+  let preSemanticStructureAudit = structureChunk.buildStructureAudit({
+    source: auditSource,
+    outputText,
+    chunks: frozen ? frozen.auditChunks : chunks,
+    plan: chunkPlan,
+    boundaryRepair
+  });
+  const auditVoiceProfile = v2Enabled ? buildVoiceProfile(auditSource, { documentProfile: documentProfile.profile }) : voiceProfile;
+  let deterministicAudit = v2Enabled ? qualityV2.buildDeterministicAudit({
+    source: auditSource,
+    outputText,
+    mode: selectedMode,
+    contract,
+    voiceProfile: auditVoiceProfile,
+    documentProfile,
+    structureAudit: preSemanticStructureAudit,
+    protectedTerms: collectRecordProtectedTerms(records),
+    allowedExtra: evidence || userNotes || ''
+  }) : null;
+  let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
+  if (v2Enabled && !polishStrictFailure) {
+    const semanticDecision = qualityV2.shouldRunSemanticJudge({
+      requestedMode,
+      effectiveMode: selectedMode,
+      source: auditSource,
+      documentProfile,
+      audit: deterministicAudit
+    });
+    semanticReport.decisionReason = semanticDecision.reason;
+    if (semanticDecision.run) {
+      semanticReport = await qualityV2.runSemanticDocumentAudit({
+        source: auditSource,
+        outputText,
+        lang,
+        signal,
+        config: cfg,
+        allowedExtra: evidence || userNotes || '',
+        mode: selectedMode,
+        safetyIdentifier: safetyId
+      });
+      supplementalUsage = addUsage(supplementalUsage, semanticReport.usage);
+      outputText = semanticReport.outputText || outputText;
+      preSemanticStructureAudit = structureChunk.buildStructureAudit({
+        source: auditSource,
+        outputText,
+        chunks: frozen ? frozen.auditChunks : chunks,
+        plan: chunkPlan,
+        boundaryRepair
+      });
+      deterministicAudit = qualityV2.buildDeterministicAudit({
+        source: auditSource,
+        outputText,
+        mode: selectedMode,
+        contract,
+        voiceProfile: auditVoiceProfile,
+        documentProfile,
+        structureAudit: preSemanticStructureAudit,
+        protectedTerms: collectRecordProtectedTerms(records),
+        allowedExtra: evidence || userNotes || ''
+      });
+    }
+  }
+
   const postLayout = layoutNlpEnabled
     ? await safeFormatLayout(outputText, { mode: selectedMode, phase: 'post' })
     : null;
   if (postLayout?.text) outputText = postLayout.text;
+  if (frozen) outputText = restoreLockedBlocks(outputText, frozen.blocks);
   const structureAudit = structureChunk.buildStructureAudit({
-    source,
+    source: rawSource,
     outputText,
     chunks,
     plan: chunkPlan,
     boundaryRepair
   });
-  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled, structureAudit });
+  const deliveryAudit = v2Enabled ? qualityV2.buildDeterministicAudit({
+    source: rawSource,
+    outputText,
+    mode: selectedMode,
+    contract,
+    voiceProfile,
+    documentProfile,
+    structureAudit,
+    protectedTerms: extractProtectedTerms(rawSource),
+    allowedExtra: evidence || userNotes || ''
+  }) : null;
+  const result = buildResult({ source: rawSource, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled, structureAudit });
   if (layoutNlpEnabled) {
     result.layoutFormat = buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText);
   }
@@ -148,12 +337,14 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   }
   const finalGate = evaluateWholeDocumentGate({
     outputText,
-    source,
+    source: rawSource,
     contract,
     mode: selectedMode,
     sourceSurface
   });
-  if (finalGate.hardFail) {
+  if (polishStrictFailure) {
+    addFloorCriticals(result.floorReport, [{ gate: polishStrictFailure, detail: '안전한 최소 표면 수정을 만들지 못했습니다.' }], polishStrictFailure);
+  } else if (finalGate.hardFail) {
     addFloorCriticals(result.floorReport, finalGate.violations, finalGate.reason);
   } else if (finalGate.violations.length || finalGate.warnings.length) {
     addFloorWarnings(result.floorReport, finalGate.violations, finalGate.warnings);
@@ -161,9 +352,9 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   const fallbackCount = records.filter(r => r.fallback).length;
   const effectiveChunks = records.filter(r => !r.skipped).length;
   const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
-  if (allFallback || normalizeBare(source) === normalizeBare(outputText)) {
+  if (allFallback || normalizeBare(rawSource) === normalizeBare(outputText)) {
     result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
-    if (qualityPatternLabEnabled && !allFallback) {
+    if (!v2Enabled && qualityPatternLabEnabled && !allFallback) {
       result.floorReport.status = result.floorReport.status === 'clean' ? 'needs_review' : result.floorReport.status;
       result.floorReport.warnings = [
         ...(result.floorReport.warnings || []),
@@ -182,13 +373,48 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     }
   }
   if (qualityPatternLabEnabled) softenQualityPatternLabFloorReport(result.floorReport);
-  softenFloorReport(result.floorReport);
+  if (v2Enabled) softenV2ReviewableCriticals(result.floorReport);
+  else softenFloorReport(result.floorReport);
 
-  const usage = records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage());
+  const usage = addUsage(records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage()), supplementalUsage);
   const escalatedCount = records.filter(r => r.escalated).length;
+  const finalEditMetrics = computeEditMetrics(rawSource, outputText);
+  const qualityWarnings = v2Enabled
+    ? dedupeQualityWarnings([
+        ...(deliveryAudit?.warnings || []),
+        ...qualityV2.warningsFromSemantic(semanticReport),
+        ...(polishReport?.excessiveChange ? [{ code: 'polish_edit_range', severity: 'warning', message: '보존형 윤문의 권장 편집 범위를 넘었을 수 있어요.' }] : []),
+        ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : [])
+      ])
+    : [];
+  const strictBlocked = result.floorReport?.status === 'blocked';
+  const qualityStatus = strictBlocked || qualityWarnings.length || result.floorReport?.status === 'needs_review' ? 'needs_review' : 'clean';
+  if (!strictBlocked && qualityStatus === 'needs_review' && result.floorReport?.status === 'clean') result.floorReport.status = 'needs_review';
+  result.qualityStatus = qualityStatus;
+  result.qualityWarnings = qualityWarnings;
+  result.naturalnessShadow = deliveryAudit?.naturalnessShadow || null;
+  result.documentProfile = documentProfile;
+  result.voiceProfile = voiceProfile;
+  result.semanticAudit = semanticReport;
+  result.editMetrics = finalEditMetrics;
+  result.dedupeAudit = postprocessMeta.dedupe || null;
+  result.engineMeta = {
+    schemaVersion: 2,
+    engineVersion: v2Enabled ? VERSION : LEGACY_VERSION,
+    requestedMode,
+    effectiveMode: selectedMode,
+    documentProfile: documentProfile.profile,
+    profileConfidence: documentProfile.confidence,
+    basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
+    semanticJudgeRan: semanticReport.ran === true,
+    repairCount: (semanticReport.repairCount || 0) + polishRetryCount,
+    chunkCount: records.length,
+    fallbackCount,
+    lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4))
+  };
   result.humanizeMeta = {
     provider: 'openai',
-    engine: VERSION,
+    engine: v2Enabled ? VERSION : LEGACY_VERSION,
     profile: PROFILE,
     selectedModel: cfg.models.humanizePrimary,
     escalationModel: cfg.models.humanizeEscalation,
@@ -206,6 +432,14 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     niklQualityTest: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     qualityPatternLab: qualityPatternLabEnabled ? (result.qualityPatternLab || { enabled: true }) : null,
     layoutFormat: layoutNlpEnabled ? (result.layoutFormat || { enabled: true }) : null,
+    naturalnessShadow: deliveryAudit?.naturalnessShadow || null,
+    dedupeAudit: result.dedupeAudit ? {
+      removedExactCount: result.dedupeAudit.removedExactCount || 0,
+      fuzzyWarningCount: result.dedupeAudit.fuzzyWarningCount || 0,
+      skipped: result.dedupeAudit.skipped === true,
+      reason: result.dedupeAudit.reason || ''
+    } : null,
+    engineMeta: result.engineMeta,
     runtimeConfigSource: cfg.source,
     styleProfile: styleProfile || PROFILE
   };
@@ -220,13 +454,16 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     chunkCount: chunks.length,
     status: result.floorReport.status,
     floorReport: result.floorReport,
+    qualityStatus,
+    qualityWarnings,
+    engineMeta: result.engineMeta,
     chunks: records,
     fallbackCount,
     gptEngine: result.humanizeMeta
   };
 }
 
-async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, niklQualityTest = false, qualityPatternLab = false, signal }) {
+async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, documentProfile, voiceProfile, niklQualityTest = false, qualityPatternLab = false, safetyIdentifier = '', v2Enabled = false, signal }) {
   const original = chunk.text;
   if (chunk.locked) {
     chunk.outputText = original;
@@ -239,7 +476,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
       warnings: [chunk.skipReason || 'structure_locked']
     });
   }
-  if (shouldPassThrough(original)) {
+  if (shouldPassThrough(original) && mode !== 'polish') {
     chunk.outputText = original;
     return chunkRecord({ chunk, outputText: original, skipped: true });
   }
@@ -269,11 +506,21 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     protectedTerms,
     patchTargets,
     styleProfile,
+    documentProfile,
+    voiceProfile,
     niklQualityTest,
     qualityPatternLab,
-    runSemanticJudge: highRisk,
+    runSemanticJudge: v2Enabled ? false : highRisk,
+    safetyIdentifier,
     signal
   });
+  if (v2Enabled && mode === 'polish' && first.hardFail && first.record?.hardFailReason === 'noop_unchanged') {
+    chunk.outputText = first.outputText;
+    first.record.fallback = false;
+    first.record.error = null;
+    first.record.warnings = [...(first.record.warnings || []), 'polish_surface_retry_pending'];
+    return first.record;
+  }
   if (!first.hardFail || cfg.escalation.enabled === false) {
     chunk.outputText = first.hardFail ? original : first.outputText;
     return first.record;
@@ -299,9 +546,12 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     protectedTerms,
     patchTargets,
     styleProfile,
+    documentProfile,
+    voiceProfile,
     niklQualityTest,
     qualityPatternLab,
-    runSemanticJudge: highRisk,
+    runSemanticJudge: v2Enabled ? false : highRisk,
+    safetyIdentifier,
     signal
   });
   if (!second.hardFail) {
@@ -330,7 +580,8 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
 async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence,
-    cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, signal
+    cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, documentProfile, voiceProfile,
+    niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, safetyIdentifier = '', signal
   } = args;
   try {
     const koreanSourceQuality = safeKoreanQualityAnalysis(original, {
@@ -357,12 +608,14 @@ async function callHumanize(args) {
       styleProfile: styleProfile || PROFILE,
       userNotes,
       evidence,
-      riskProfile
+      riskProfile,
+      documentProfile,
+      voiceProfile
     });
     const retryInstruction = phase === 'escalation' ? prompts.buildEscalationInstruction() : '';
     const response = await completeJson({
       system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
-      user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets, dynamicContext: hp.dynamic }),
+      user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets, dynamicContext: hp.dynamic, mode }),
       schema: HUMANIZE_SCHEMA,
       schemaName: 'gpt_prod_humanize_result',
       model,
@@ -371,6 +624,7 @@ async function callHumanize(args) {
       maxOutputTokens: maxOutputTokensFor(original),
       config: cfg,
       signal,
+      safetyIdentifier,
       meta: {
         task: 'humanize',
         phase,
@@ -381,7 +635,11 @@ async function callHumanize(args) {
       }
     });
     let outputText = sanitizeOutput(response.json.outputText);
-    outputText = chunkPostprocess(outputText, original, mode, contract);
+    const boundaryAudit = structureChunk.restoreBoundaryMarkers(outputText, chunk);
+    outputText = boundaryAudit.text;
+    outputText = chunkPostprocess(outputText, original, mode, contract, {
+      preserveLineBreaks: voiceProfile?.lineBreakSensitive === true
+    });
     let judgeReport = null;
     let judgeViolations = [];
     let judgeHardFail = false;
@@ -393,7 +651,8 @@ async function callHumanize(args) {
         config: cfg,
         maxRounds: 1,
         allowedExtra: evidence || userNotes || '',
-        mode
+        mode,
+        safetyIdentifier
       });
       outputText = judgeReport.outputText || outputText;
       if (judgeReport.pass === false) {
@@ -424,6 +683,15 @@ async function callHumanize(args) {
       protectedTerms,
       sourceSurface
     });
+    if (!boundaryAudit.ok) {
+      gate.hardFail = true;
+      gate.reason = 'structure_boundary_marker_failed';
+      gate.warnings.push('structure_boundary_marker_failed');
+      gate.violations.push({
+        gate: 'structure_boundary_marker_failed',
+        detail: '병합 청크의 원문 경계 토큰이 누락되거나 중복되었습니다.'
+      });
+    }
     const qualityGate = safeKoreanQualityGate(original, outputText, {
       mode,
       register: contract.register,
@@ -480,6 +748,7 @@ async function callHumanize(args) {
       gate.warnings.push(...qualityPatternAudit.auditTrail.warnings.map(w => `quality_pattern:${w}`));
       gate.violations.push(...qualityPatternAudit.auditTrail.warnings.map(w => ({ gate: w, qualityPatternLab: true })));
     }
+    const serverEditMetrics = computeEditMetrics(original, outputText);
     return {
       outputText,
       hardFail: gate.hardFail,
@@ -501,7 +770,9 @@ async function callHumanize(args) {
         elapsedMs: response.elapsedMs,
         editIntensity: response.json.editIntensity,
         protectedTerms: response.json.protectedTerms || protectedTerms,
-        changedSentenceRatio: response.json.changedSentenceRatio,
+        changedSentenceRatio: serverEditMetrics.changedSentenceRatio,
+        charEditRatio: serverEditMetrics.charEditRatio,
+        lengthRatio: serverEditMetrics.lengthRatio,
         judgeReport,
         koreanQuality: compactKoreanQualityGate(qualityGate),
         niklQuality: compactNiklQualityGate(niklQualityGate),
@@ -539,9 +810,12 @@ async function callHumanize(args) {
   }
 }
 
-async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true } = {}) {
+async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '' } = {}) {
   const source = String(text || '').trim();
   const cfg = await loadConfig(config);
+  const safetyId = isEngineV2Enabled() && uid
+    ? (safetyIdentifier || safetyIdentifierForUid(uid))
+    : (safetyIdentifier || '');
   const user = lang === 'en' ? `[TEXT TO ANALYZE]\n${source}` : `[분석할 글]\n${source}`;
   try {
     const res = await callDetectModel({
@@ -553,6 +827,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       phase: 'detect:primary',
       model: cfg.models.detect,
       reasoningEffort: cfg.reasoning.detect,
+      safetyIdentifier: safetyId,
       escalated: false
     });
     let out = normalizeDetectResult(res.json);
@@ -567,6 +842,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
         phase: 'detect:confidence_escalation',
         model: cfg.models.detectEscalation,
         reasoningEffort: cfg.reasoning.escalation,
+        safetyIdentifier: safetyId,
         escalated: true
       });
       out = normalizeDetectResult(esc.json);
@@ -584,6 +860,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
         phase: 'detect:escalation',
         model: cfg.models.detectEscalation,
         reasoningEffort: cfg.reasoning.escalation,
+        safetyIdentifier: safetyId,
         escalated: true
       });
       const out = normalizeDetectResult(res.json);
@@ -597,7 +874,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   }
 }
 
-async function callDetectModel({ prompt, user, cfg, signal, route, phase, model, reasoningEffort, escalated }) {
+async function callDetectModel({ prompt, user, cfg, signal, route, phase, model, reasoningEffort, escalated, safetyIdentifier = '' }) {
   return await completeJson({
       system: prompt,
       user,
@@ -609,13 +886,17 @@ async function callDetectModel({ prompt, user, cfg, signal, route, phase, model,
       maxOutputTokens: 2200,
       config: cfg,
       signal,
+      safetyIdentifier,
       meta: { task: route, phase, mode: 'detect', profile: PROFILE, escalated }
     });
 }
 
-async function rewriteSentence({ text, lang = 'ko', signal, config } = {}) {
+async function rewriteSentence({ text, lang = 'ko', signal, config, uid = '', safetyIdentifier = '' } = {}) {
   const cfg = await loadConfig(config);
   const source = String(text || '').trim();
+  const safetyId = isEngineV2Enabled() && uid
+    ? (safetyIdentifier || safetyIdentifierForUid(uid))
+    : (safetyIdentifier || '');
   const res = await completeJson({
     system: prompts.buildRewritePrompt(lang),
     user: `[원문]\n${source}`,
@@ -627,32 +908,36 @@ async function rewriteSentence({ text, lang = 'ko', signal, config } = {}) {
     maxOutputTokens: 600,
     config: cfg,
     signal,
+    safetyIdentifier: safetyId,
     meta: { task: 'rewrite_sentence', phase: 'repair', mode: 'preview', profile: PROFILE }
   });
   const rewritten = sanitizeOutput(res.json.rewritten);
   return { rewritten: rewritten || source, gptMeta: metaFromResponse(res, cfg, { task: 'rewrite_sentence' }) };
 }
 
-async function suggestEvidence({ query, signal, config } = {}) {
+async function suggestEvidence({ query, signal, config, uid = '', safetyIdentifier = '' } = {}) {
   const cfg = await loadConfig(config);
   const text = String(query || '').trim();
+  const safetyId = isEngineV2Enabled() && uid
+    ? (safetyIdentifier || safetyIdentifierForUid(uid))
+    : (safetyIdentifier || '');
   if (!text) return { candidates: [], warnings: ['empty_query'] };
   try {
-    const out = await callEvidenceSearch({ text, cfg, signal, phase: 'search:primary', model: cfg.models.evidenceSearch, reasoningEffort: cfg.reasoning.evidenceSearch });
+    const out = await callEvidenceSearch({ text, cfg, signal, phase: 'search:primary', model: cfg.models.evidenceSearch, reasoningEffort: cfg.reasoning.evidenceSearch, safetyIdentifier: safetyId });
     if ((out.warnings || []).includes('source_url_verification_filtered_all')) {
       throw new Error('source_url_verification_filtered_all');
     }
     return out;
   } catch (firstErr) {
     if (signal?.aborted) throw firstErr;
-    const out = await callEvidenceSearch({ text, cfg, signal, phase: 'search:escalation', model: cfg.models.evidenceEscalation, reasoningEffort: cfg.reasoning.escalation });
+    const out = await callEvidenceSearch({ text, cfg, signal, phase: 'search:escalation', model: cfg.models.evidenceEscalation, reasoningEffort: cfg.reasoning.escalation, safetyIdentifier: safetyId });
     out.warnings = [...(out.warnings || []), `primary_failed:${firstErr.message || String(firstErr)}`];
     out.gptMeta = { ...(out.gptMeta || {}), escalated: true, primaryError: firstErr.message || String(firstErr) };
     return out;
   }
 }
 
-async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEffort }) {
+async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEffort, safetyIdentifier = '' }) {
   const res = await completeJson({
     system: prompts.buildEvidencePrompt(),
     user: `[검증할 주장 또는 주제]\n${text}`,
@@ -667,6 +952,7 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
     include: ['web_search_call.action.sources'],
     config: cfg,
     signal,
+    safetyIdentifier,
     meta: { task: 'evidence_search', phase, mode: 'evidence', profile: PROFILE, escalated: phase.includes('escalation') }
   });
   const verifiedUrls = collectWebSearchUrls(res.raw);
@@ -773,6 +1059,9 @@ function evaluateWholeDocumentGate({ outputText, source, contract, mode, sourceS
   const violations = [];
   if (!outputText || looksLikeMeta(outputText)) {
     return { hardFail: true, reason: 'empty_or_meta_output', warnings, violations };
+  }
+  if (floor.looksLikeRefusal(outputText)) {
+    return { hardFail: true, reason: 'refusal', warnings, violations };
   }
   if (looksLikePromptLeak(outputText)) {
     return { hardFail: true, reason: 'prompt_instruction_leak', warnings, violations };
@@ -926,7 +1215,7 @@ function extractProtectedTerms(text) {
   const patterns = [
     /\bhttps?:\/\/[^\s)]+/g,
     /\b\d{2,4}[.-]\d{1,2}[.-]\d{1,2}\b/g,
-    /\b\d+(?:\.\d+)?\s?(?:%|원|만원|억원|조원|평|명|개|건|회|년|개월|일|시간|분|km|kg|g|cm|m)\b/g,
+    /(?<![A-Za-z0-9_])\d+(?:\.\d+)?\s?(?:%|원|만원|억원|조원|평|명|개|건|회|년|개월|일|시간|분|km|kg|g|cm|m)(?=$|[^가-힣A-Za-z0-9_])/g,
     /[A-Z][A-Za-z0-9&.-]{1,}(?:\s+[A-Z][A-Za-z0-9&.-]{1,}){0,3}/g,
     /[가-힣A-Za-z0-9]+(?:대학교|대학원|연구소|학회|기관|공사|공단|주식회사|택배|병원|유치원|어린이집|교육부|보건복지부|AWS|API)/g,
     /[가-힣A-Za-z0-9]{2,}(?:·[가-힣A-Za-z0-9]{2,}){1,}/g,
@@ -980,7 +1269,7 @@ function isProtectedTermLike(value) {
   if (/[.!?。！？]/.test(v)) return false;
   const words = v.split(' ').filter(Boolean);
   if (words.length > 6) return false;
-  if (v.length > 42 && /(?:은|는|이|가|을|를|에서|으로|로|와|과|의|에)\b/.test(v)) return false;
+  if (v.length > 42 && /(?:은|는|이|가|을|를|에서|으로|로|와|과|의|에)(?=$|[^가-힣A-Za-z0-9_])/.test(v)) return false;
   if (v.length > 55 && !/[A-Z0-9%]/.test(v)) return false;
   return true;
 }
@@ -1016,7 +1305,11 @@ function buildPatchTargets(text, mode) {
 
 function maxOutputTokensFor(text) {
   const chars = String(text || '').length;
-  return Math.max(1200, Math.min(12000, Math.ceil(chars * 1.9)));
+  // Korean rewrites can consume close to one output token per character, and
+  // Responses reasoning tokens share this same ceiling. A low ceiling caused
+  // otherwise valid long paragraphs to end as incomplete and then repeat on
+  // the escalation model. The API bills actual usage, not this allowance.
+  return Math.max(2400, Math.min(12000, Math.ceil(chars * 3.2)));
 }
 
 function shouldPassThrough(text) {
@@ -1033,8 +1326,9 @@ function sanitizeOutput(value) {
     .trim();
 }
 
-function chunkPostprocess(text, original, mode, contract) {
+function chunkPostprocess(text, original, mode, contract, { preserveLineBreaks = false } = {}) {
   let out = String(text || '').trim();
+  if (preserveLineBreaks) return out;
   try { out = local.spacing.fixSpacing(out).text; } catch {}
   try { out = local.spacing.restoreUrls(out, original).text; } catch {}
   try { out = local.spacing.stripAiUrlParams(out).text; } catch {}
@@ -1074,22 +1368,84 @@ function tidyParagraphsLocal(doc, source = '') {
   }).filter(Boolean).join('\n\n');
 }
 
-function finalPostprocess(text, source, mode, contract) {
+function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLineBreaks = false } = {}) {
   let out = String(text || '').trim();
-  try { out = tidyParagraphsLocal(out, source); } catch {}
-  try { out = local.dedupe.dedupeSentences(out).text; } catch {}
-  try {
-    if (mode === 'blog') {
-      const target = contract.register === 'polite' ? 'hap' : 'haeyo';
-      out = local.basicblogtone.cleanupBasicBlogTone(out, { register: target }).text;
-    }
-  } catch {}
-  try {
-    const fc = local.flowcohesion.flowCohesion(out, { preserveParagraphs: true });
-    out = fc.text || out;
-  } catch {}
+  if (!preserveLineBreaks) {
+    try { out = tidyParagraphsLocal(out, source); } catch {}
+    try {
+      if (mode === 'blog') {
+        const target = contract.register === 'polite' ? 'hap' : 'haeyo';
+        out = local.basicblogtone.cleanupBasicBlogTone(out, { register: target }).text;
+      }
+    } catch {}
+    // 문서 병합 뒤 흐름을 먼저 보정하고, 그 결과에 한해 제한적 exact dedupe를 적용한다.
+    try {
+      const fc = local.flowcohesion.flowCohesion(out, { preserveParagraphs: true });
+      out = fc.text || out;
+    } catch {}
+    try {
+      const dedupe = local.dedupe.dedupeSentences(out);
+      out = dedupe.text;
+      meta.dedupe = {
+        removedExactCount: dedupe.removed || 0,
+        fuzzyWarningCount: dedupe.fuzzyWarnings?.length || 0,
+        fuzzyWarnings: dedupe.fuzzyWarnings || []
+      };
+    } catch {}
+  } else {
+    meta.dedupe = { skipped: true, reason: 'creative_line_structure' };
+  }
   try { out = local.spacing.restoreUrls(out, source).text; } catch {}
   return out.trim();
+}
+
+function freezeLockedBlocks(source, outputText, chunks) {
+  let frozenSource = String(source || '');
+  let frozenOutput = String(outputText || '');
+  const blocks = [];
+  const tokenByIndex = new Map();
+  for (const chunk of chunks || []) {
+    if (!chunk?.locked || !String(chunk.text || '').trim()) continue;
+    const value = String(chunk.text);
+    const token = `ZXQLOCK${String(blocks.length).padStart(4, '0')}QXZ`;
+    const sourceReplaced = replaceFirstExact(frozenSource, value, token);
+    const outputReplaced = replaceFirstExact(frozenOutput, value, token);
+    if (!sourceReplaced.replaced || !outputReplaced.replaced) continue;
+    frozenSource = sourceReplaced.text;
+    frozenOutput = outputReplaced.text;
+    blocks.push({ token, value, lockType: chunk.lockType || 'structure', index: chunk.index });
+    tokenByIndex.set(chunk.index, token);
+  }
+  if (!blocks.length) return null;
+  const auditChunks = (chunks || []).map(chunk => {
+    const token = tokenByIndex.get(chunk.index);
+    if (!token) return chunk;
+    return { ...chunk, text: token, outputText: token };
+  });
+  return { source: frozenSource, output: frozenOutput, blocks, auditChunks };
+}
+
+function restoreLockedBlocks(text, blocks) {
+  let output = String(text || '');
+  for (const block of blocks || []) output = output.split(block.token).join(block.value);
+  return output;
+}
+
+function replaceFirstExact(text, needle, replacement) {
+  const index = String(text || '').indexOf(String(needle || ''));
+  if (index < 0) return { text, replaced: false };
+  return { text: text.slice(0, index) + replacement + text.slice(index + needle.length), replaced: true };
+}
+
+function dedupeQualityWarnings(items) {
+  const seen = new Set();
+  return (items || []).filter(item => {
+    if (!item?.code || !item?.message) return false;
+    const key = `${item.code}:${item.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function paragraphCount(text) {
@@ -1305,6 +1661,25 @@ function softenFloorReport(report) {
   return report;
 }
 
+function softenV2ReviewableCriticals(report) {
+  if (!report || report.status !== 'blocked') return report;
+  const criticals = Array.isArray(report.criticals) ? report.criticals : [];
+  const strict = criticals.filter(critical => {
+    const gate = String(critical?.gate || critical?.type || '').trim();
+    return STRICT_DELIVERY_GATES.has(gate) || isBlockingViolation(critical);
+  });
+  const reviewable = criticals.filter(critical => !strict.includes(critical));
+  if (reviewable.length) {
+    report.warnings = [
+      ...(Array.isArray(report.warnings) ? report.warnings : []),
+      ...reviewable.map(critical => ({ ...critical, softenedFromCritical: true, v2DeliveryPolicy: true }))
+    ];
+  }
+  report.criticals = strict;
+  report.status = strict.length ? 'blocked' : (reviewable.length ? 'needs_review' : report.status);
+  return report;
+}
+
 function hasStrictDeliveryCritical(criticals) {
   return (criticals || []).some(c => {
     const gate = String(c?.gate || c?.type || '').trim();
@@ -1328,6 +1703,8 @@ function chunkRecord({
   elapsedMs = 0,
   editIntensity = null,
   changedSentenceRatio = null,
+  charEditRatio = null,
+  lengthRatio = null,
   protectedTerms = [],
   selectedModel = '',
   judgeReport = null,
@@ -1354,6 +1731,8 @@ function chunkRecord({
     elapsedMs,
     editIntensity,
     changedSentenceRatio,
+    charEditRatio,
+    lengthRatio,
     protectedTerms,
     judgeReport,
     koreanQuality,
@@ -1601,16 +1980,16 @@ function safeNiklQualityHints(analysis) {
 
 async function safeNiklExternalApiHints(text, protectedTerms = []) {
   try {
-    if (process.env.GPT_NIKL_EXTERNAL_API_ENABLED === '0') return '';
+    if (process.env.GPT_NIKL_EXTERNAL_API_ENABLED !== '1') return '';
     const api = koreanQuality.officialApi;
     const status = api.getApiStatus();
     const providers = selectedNiklApiProviders(status);
     if (!providers.length) return '';
-    const max = Math.max(0, Math.min(6, Number(process.env.GPT_NIKL_API_LOOKUP_MAX || 4) || 4));
+    const max = Math.max(0, Math.min(2, Number(process.env.GPT_NIKL_API_LOOKUP_MAX || 2) || 2));
     if (!max) return '';
     const candidates = selectNiklApiCandidates(text, protectedTerms).slice(0, max);
     if (!candidates.length) return '';
-    const timeoutMs = Math.max(500, Math.min(2500, Number(process.env.NIKL_API_TIMEOUT_MS || 1200) || 1200));
+    const timeoutMs = Math.max(500, Math.min(1200, Number(process.env.NIKL_API_TIMEOUT_MS || 1200) || 1200));
     const settled = await Promise.allSettled(candidates.map(query =>
       api.lookupCandidate(query, { providers, timeoutMs })
     ));

@@ -11,6 +11,7 @@ const { registerBlock } = require('./registerBlocks');
 const { dynamicContextBlock } = require('./riskBlocks');
 const { buildHumanizeUser } = require('./userBlock');
 const { buildEscalationInstruction } = require('./escalation');
+const { voicePromptBlock } = require('../../voiceProfile');
 
 function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   speakerType = 'individual',
@@ -19,14 +20,16 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   styleProfile = 'gpt_prod',
   userNotes = '',
   evidence = '',
-  riskProfile = ''
+  riskProfile = '',
+  documentProfile = null,
+  voiceProfile = null
 } = {}) {
   const stable = [
     humanizeStableCore(),
     '',
     gptBiasGuardBlock(),
     '',
-    transformStrengthBlock(),
+    transformStrengthBlock(mode, documentProfile?.profile),
     '',
     gateSummaryBlock(),
     '',
@@ -35,12 +38,13 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     preservationBlock(lengthPolicy),
     '',
     '[장르 원칙]',
-    genreBlock(mode, register, styleProfile),
+    genreBlock(mode, register, styleProfile, documentProfile),
     speakerBlock(speakerType),
-    registerBlock(register)
+    registerBlock(register),
+    voicePromptBlock(voiceProfile)
   ].join('\n');
 
-  const dynamic = dynamicContextBlock({ riskProfile, userNotes, evidence, styleProfile });
+  const dynamic = dynamicContextBlock({ riskProfile, userNotes, evidence, styleProfile, documentProfile });
   return { stable, dynamic };
 }
 

@@ -96,6 +96,7 @@ function extractPercents(s) {
   return ((s || '').match(/\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g) || []).map(p => p.replace(/\s+/g, '').replace(/퍼센트|％/g, '%'));
 }
 const ORG_RE = /[가-힣]{2,}(?:상공회의소|연구원|공사|협회|재단|위원회|기구|연구소|본부|센터|기관|대학교|학회)/g;
+const GENERIC_ORG_RE = /^(?:해당|관련|관계|유관|연구|교육|의료|금융|공공|정부|민간|전문|소속|운영|참여|대상|국내|외부|협력|제공|수집|평가|인증)기관$/u;
 // 숫자+단위. "96회", "300분", "12명", "1,200원" 등.
 // ★ 쪽/페이지(페이지 참조)는 문서 구조 메타라 내용 사실이 아님 — "3쪽" 한 토큰이 9.4K 글을 통째 차단하던 lostFacts FP(2026-06-15) 제거.
 // ★ 정수만(소수 제외) + 앞에 "숫자." 없을 때만(2026-06-15): 목차번호 "2.1 시장"의 .1을 "1 시"로, "2.1 개요"를
@@ -186,6 +187,32 @@ function _signedMatches(t, re, normalize) {
   }
   return out;
 }
+function _numberUnitMatches(t, signed = true) {
+  const out = [];
+  NUM_UNIT_RE.lastIndex = 0;
+  let m;
+  while ((m = NUM_UNIT_RE.exec(t)) !== null) {
+    if (!m[0]) { NUM_UNIT_RE.lastIndex += 1; continue; }
+    if (isCopularDayExpression(t, m)) continue;
+    let tok = m[0].trim();
+    const i = m.index;
+    if (signed && t[i - 1] === '-' && (i - 2 < 0 || /[\s(\[<"'比約약]/.test(t[i - 2]))) tok = '-' + tok;
+    out.push(tok);
+  }
+  return out;
+}
+
+function isCopularDayExpression(text, match) {
+  const token = String(match?.[0] || '').replace(/\s+/gu, '');
+  if (!/^\d[\d,]*일$/u.test(token)) return false;
+  const after = String(text || '').slice(match.index + match[0].length);
+  if (!/^\s*(?:때|경우)(?=$|[^가-힣A-Za-z0-9_])/u.test(after)) return false;
+  const before = String(text || '').slice(Math.max(0, match.index - 28), match.index);
+  // 기간·소요일 같은 시간 명사가 바로 앞에 있으면 실제 일수 단위다.
+  // 그 밖의 "성분 수가 5일 때", "값이 3일 경우"는 숫자 뒤 서술격
+  // 조사 '이다'가 활용된 표현이므로 날짜 5일/3일로 추출하지 않는다.
+  return !/(?:기간|날짜|일정|소요|체류|휴가|근무|교육|입원|관찰|실험|여행|며칠)\s*(?:은|는|이|가)?\s*$/u.test(before);
+}
 const _PCT_RE = /\d+(?:\.\d+)?\s*(?:%|％|퍼센트)/g;
 const _normPct = (s) => s.replace(/\s+/g, '').replace(/퍼센트|％/g, '%');
 
@@ -196,9 +223,11 @@ function extractFacts(text, hasHangul) {
   const factAst = process.env.FACT_AST !== '0';   // 기본 on(2026-06-19). FACT_AST=0으로만 끔(롤백용).
   for (const y of extractYears(t)) facts.push(y);
   for (const p of (factAst ? _signedMatches(t, _PCT_RE, _normPct) : extractPercents(t))) facts.push(p);
-  for (const o of (t.match(ORG_RE) || [])) facts.push(o);
+  for (const o of (t.match(ORG_RE) || [])) {
+    if (!GENERIC_ORG_RE.test(o.replace(/\s+/gu, ''))) facts.push(o);
+  }
   for (const m of (factAst ? _signedMatches(t, KR_AMOUNT_COMPOUND_RE, s => s.replace(/\s+/g, '')) : (t.match(KR_AMOUNT_RE) || []).map(s => s.replace(/\s+/g, '')))) facts.push(m);
-  for (const m of (factAst ? _signedMatches(t, NUM_UNIT_RE, s => s.trim()) : (t.match(NUM_UNIT_RE) || []).map(s => s.trim()))) facts.push(m);
+  for (const m of _numberUnitMatches(t, factAst)) facts.push(m);
   for (const m of (t.match(NATIVE_NUM_RE) || [])) facts.push(m.replace(/\s+/g, ' ').trim());
   for (const m of (factAst ? _signedMatches(t, DECIMAL_RE, null) : (t.match(DECIMAL_RE) || []))) facts.push(m);
   for (const m of (t.match(URL_RE) || [])) facts.push(m);

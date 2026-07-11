@@ -22,6 +22,7 @@ async function main() {
   if (command === 'chunk-detail') return makeChunkDetail(args);
   if (command === 'score-router') return scoreRouter(args);
   if (command === 'replay') return replay(args);
+  if (command === 'replay-summary') return makeReplaySummary(args);
   if (command === 'report') return makeCrossTab(args);
   if (command === 'copykiller-template') return makeCopykillerTemplate(args);
   if (command === 'copykiller-score') return scoreCopykiller(args);
@@ -243,12 +244,33 @@ async function replay(args) {
   if (requestedModeFilter) rows = rows.filter(row => validMode(row.mode) === requestedModeFilter);
   const caseIdFilter = String(args.caseId || args['case-id'] || '').trim();
   if (caseIdFilter) rows = rows.filter(row => stableHash(row.history_id).slice(0, 16) === caseIdFilter);
+  const resume = args.resume === '1' || args.resume === true;
+  const skipCount = Math.max(0, Number.parseInt(String(args.skip || '0'), 10) || 0);
+  if (resume !== (skipCount > 0)) {
+    throw new Error('재개 실행은 --resume=1과 1 이상의 --skip을 함께 지정해야 합니다.');
+  }
+  if (skipCount > rows.length) throw new Error(`--skip=${skipCount}가 대상 ${rows.length}건보다 큽니다.`);
+  const expectedPrefix = rows.slice(0, skipCount).map(row => stableHash(row.history_id).slice(0, 16));
+  rows = rows.slice(skipCount);
   if (args.limit) rows = rows.slice(0, Number(args.limit));
   const scopeLabel = caseIdFilter
     ? `${scope}-case-${caseIdFilter}`
     : (requestedModeFilter ? `${scope}-${requestedModeFilter}` : scope);
   const resultPath = path.join(outDir, `v2-replay-${scopeLabel}.jsonl`);
-  const stream = fs.createWriteStream(resultPath, { flags: 'a', encoding: 'utf8' });
+  if (resume) {
+    if (!fs.existsSync(resultPath)) throw new Error(`재개할 결과 파일이 없습니다: ${resultPath}`);
+    const existing = readJsonLines(resultPath);
+    if (existing.length !== skipCount) {
+      throw new Error(`재개 위치 불일치: 기존 ${existing.length}건, --skip=${skipCount}`);
+    }
+    const mismatched = existing.findIndex((record, index) => record.caseId !== expectedPrefix[index]);
+    if (mismatched >= 0) {
+      throw new Error(`재개 대상 순서 불일치: ${mismatched + 1}번째 caseId가 매니페스트와 다릅니다.`);
+    }
+  } else if (fs.existsSync(resultPath) && fs.statSync(resultPath).size > 0) {
+    throw new Error(`기존 결과 파일이 있습니다. 새 출력 폴더를 쓰거나 --resume=1 --skip=<기존 건수>를 지정하세요: ${resultPath}`);
+  }
+  const stream = fs.createWriteStream(resultPath, { flags: resume ? 'a' : 'w', encoding: 'utf8' });
   const cfg = runtime.publicConfig(runtime.DEFAULT_CONFIG, 'local_eval');
   const summaries = [];
   for (let index = 0; index < rows.length; index += 1) {
@@ -272,16 +294,17 @@ async function replay(args) {
       const record = buildReplayRecord({ caseId, row, source, current, v2, out, elapsedMs: Date.now() - started });
       stream.write(JSON.stringify(record) + '\n');
       summaries.push(record);
-      console.log(`[${index + 1}/${rows.length}] ${caseId} ${record.status} ${record.documentProfile}`);
+      console.log(`[${skipCount + index + 1}/${skipCount + rows.length}] ${caseId} ${record.status} ${record.documentProfile}`);
     } catch (error) {
       const record = { caseId, requestedMode: validMode(row.mode), status: 'error', error: String(error?.message || error).slice(0, 240), elapsedMs: Date.now() - started };
       stream.write(JSON.stringify(record) + '\n');
       summaries.push(record);
-      console.error(`[${index + 1}/${rows.length}] ${caseId} error`);
+      console.error(`[${skipCount + index + 1}/${skipCount + rows.length}] ${caseId} error`);
     }
   }
   await new Promise(resolve => stream.end(resolve));
-  const summary = aggregateReplay(summaries, scopeLabel);
+  const summaryRows = resume ? readJsonLines(resultPath) : summaries;
+  const summary = aggregateReplay(summaryRows, scopeLabel);
   fs.writeFileSync(path.join(outDir, `v2-replay-${scopeLabel}-summary.json`), `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
   console.log(JSON.stringify({ resultPath, summary }, null, 2));
 }
@@ -291,6 +314,10 @@ function buildReplayRecord({ caseId, row, source, current, v2, out, elapsedMs })
   const lost = floor.measureLostFacts(source, v2);
   const currentNaturalness = compareNaturalnessShadow(source, current);
   const v2Naturalness = compareNaturalnessShadow(source, v2);
+  const floorReport = out.result?.floorReport || out.floorReport || {};
+  const strictGateCodes = [...new Set((floorReport.criticals || [])
+    .map(item => String(item?.gate || item?.type || '').trim())
+    .filter(Boolean))];
   return {
     caseId,
     requestedMode: validMode(row.mode),
@@ -304,10 +331,16 @@ function buildReplayRecord({ caseId, row, source, current, v2, out, elapsedMs })
     repairCount: out.engineMeta?.repairCount || 0,
     chunkCount: out.engineMeta?.chunkCount || 0,
     fallbackCount: out.engineMeta?.fallbackCount || 0,
+    strictGateCodes,
+    chunkFailureReasons: [...new Set((out.chunks || out.result?.records || [])
+      .flatMap(item => [item?.hardFailReason, item?.error])
+      .map(value => String(value || '').trim())
+      .filter(Boolean))].slice(0, 12),
     sourceChars: source.length,
     currentChars: current.length,
     v2Chars: v2.length,
     lengthRatio: source.length ? v2.length / source.length : 1,
+    charEditRatio: out.result?.editMetrics?.charEditRatio || 0,
     noTransform: compact(source) === compact(v2),
     newFactCount: novelty.count,
     lostFactCount: lost.count,
@@ -333,6 +366,7 @@ function aggregateReplay(rows, scope) {
     errors: rows.length - ok.length,
     noTransform: count(row => row.noTransform),
     newFacts: count(row => row.newFactCount > 0),
+    lostFacts: count(row => row.lostFactCount > 0),
     strictBlocked: count(row => row.status === 'blocked'),
     needsReview: count(row => row.qualityStatus === 'needs_review'),
     naturalnessRiskIncreased: count(row => row.v2NaturalnessRiskIncreased),
@@ -342,14 +376,30 @@ function aggregateReplay(rows, scope) {
     averageLengthRatio: mean('lengthRatio'),
     totalEstimatedUsd: ok.reduce((sum, row) => sum + (Number(row.estimatedUsd) || 0), 0),
     passCriteria: {
+      errorsZero: rows.length === ok.length,
       noTransformZero: count(row => row.noTransform) === 0,
       newFactsZero: count(row => row.newFactCount > 0) === 0,
+      lostFactsZero: count(row => row.lostFactCount > 0) === 0,
       strictBlockedZero: count(row => row.status === 'blocked') === 0,
       naturalnessRiskAtMost12Of81: scope !== 'current81' || count(row => row.v2NaturalnessRiskIncreased) <= 12,
       rhythmDeltaNonPositive: mean('v2RhythmUniformityDelta') <= 0,
       lengthRatioInRange: mean('lengthRatio') >= 0.9 && mean('lengthRatio') <= 1.12
     }
   };
+}
+
+function makeReplaySummary(args) {
+  const input = path.resolve(requireArg(args.input, '--input'));
+  const rows = readJsonLines(input);
+  const scope = String(args.scope || 'current81');
+  const summary = aggregateReplay(rows, scope);
+  const outPath = args.out
+    ? path.resolve(args.out)
+    : input.replace(/\.jsonl$/iu, '-summary.json');
+  ensureOutsideRepository(outPath);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+  console.log(JSON.stringify({ output: outPath, summary }, null, 2));
 }
 
 function makeCrossTab(args) {
@@ -616,6 +666,8 @@ function printHelp() {
     '  node scripts/humanize-v2-eval.js chunk-detail --manifest=... --scope=current81 --mode=polish --limit=1',
     '  node scripts/humanize-v2-eval.js score-router --manifest=... --labels=... --split=holdout',
     '  node scripts/humanize-v2-eval.js replay --manifest=... --scope=current81 --case-id=... --out-dir=... --execute=1',
+    '  node scripts/humanize-v2-eval.js replay --manifest=... --scope=current81 --out-dir=... --execute=1 --resume=1 --skip=57',
+    '  node scripts/humanize-v2-eval.js replay-summary --input=...jsonl --scope=current81 --out=...summary.json',
     '  node scripts/humanize-v2-eval.js report --input=...jsonl --out=...csv',
     '  node scripts/humanize-v2-eval.js copykiller-template --replay=...jsonl --out=...csv',
     '  node scripts/humanize-v2-eval.js copykiller-score --input=...csv --out=...json'

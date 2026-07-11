@@ -16,9 +16,9 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { logger } = require('../lib/logger');
 const layoutNormalizer = require('../engine/layout');
 const inputRouting = require('../engine/inputrouting');
-const { computeEditMetrics } = require('../engine/koreanText');
+const { computeEditMetrics, splitSentences } = require('../engine/koreanText');
 const { detectDocumentProfile } = require('./documentProfile');
-const { buildVoiceProfile } = require('./voiceProfile');
+const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile');
 const qualityV2 = require('./finalQualityV2');
 
 const VERSION = 'gpt-prod-v2';
@@ -163,8 +163,8 @@ async function runEngine({
   const safetyId = v2Enabled
     ? (safetyIdentifier || (uid ? safetyIdentifierForUid(uid) : ''))
     : (safetyIdentifier || '');
-  const creativeLayoutLocked = v2Enabled && voiceProfile?.lineBreakSensitive === true;
-  const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !creativeLayoutLocked;
+  const layoutStructureLocked = v2Enabled && voiceProfile?.lineStructureSensitive === true;
+  const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !layoutStructureLocked;
   const preLayout = !v2Enabled && layoutNlpEnabled
     ? await safeFormatLayout(rawSource, { mode: selectedMode, phase: 'pre' })
     : null;
@@ -174,7 +174,12 @@ async function runEngine({
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
-  const chunkPlan = structureChunk.splitChunksForGpt(source, { coalesceEditable: v2Enabled });
+  const chunkPlan = structureChunk.splitChunksForGpt(source, {
+    coalesceEditable: v2Enabled,
+    preserveSentenceBoundaries: v2Enabled && shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, selectedMode),
+    sentenceBoundaryMinimum: selectedMode === 'polish' ? 3 : 4,
+    preserveLineBoundaries: layoutStructureLocked
+  });
   const chunks = chunkPlan.chunks;
   const records = [];
 
@@ -211,12 +216,13 @@ async function runEngine({
   outputText = frozen?.output || outputText;
   const postprocessMeta = {};
   outputText = finalPostprocess(outputText, auditSource, selectedMode, contract, postprocessMeta, {
-    preserveLineBreaks: creativeLayoutLocked
+    preserveLineBreaks: layoutStructureLocked
   });
 
   let supplementalUsage = emptyUsage();
   let polishReport = null;
   let polishRetryCount = 0;
+  let generalSurfaceRetryCount = 0;
   let polishStrictFailure = '';
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
@@ -234,12 +240,67 @@ async function runEngine({
         polishRetryCount = 1;
         outputText = retried.outputText || outputText;
         polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
-        if (!retried.safeChangeFound || polishReport.noSafeChange) polishStrictFailure = 'polish_unchanged';
+        if (!retried.safeChangeFound || !polishReport.pass) {
+          polishStrictFailure = 'polish_unchanged';
+        } else {
+          for (const record of records) {
+            if ((record.warnings || []).includes('polish_surface_boundary_pending')) {
+              record.warnings = (record.warnings || []).filter(warning => ![
+                'polish_surface_boundary_pending',
+                'v2_residual:structure_boundary_marker_failed'
+              ].includes(warning));
+            }
+          }
+        }
       } catch (error) {
         polishStrictFailure = 'polish_unchanged';
         polishReport = { ...(polishReport || {}), retryError: String(error?.message || error).slice(0, 180) };
       }
     }
+  }
+  const generalSurfaceRetryPending = records.some(record => (record.warnings || []).includes('general_surface_retry_pending'))
+    && records.every(record => record.fallback !== true || (record.warnings || []).includes('general_surface_retry_safe_fallback'));
+  if (v2Enabled
+      && selectedMode !== 'polish'
+      && generalSurfaceRetryPending) {
+    try {
+      const deterministicOutput = buildDeterministicGeneralSurfaceEdit(auditSource);
+      const deterministicSafe = deterministicOutput
+        && isSafeGeneralSurfaceCandidate(auditSource, deterministicOutput, contract, documentProfile, selectedMode);
+      let retryOutput = deterministicSafe ? deterministicOutput : '';
+      let safeChangeFound = deterministicSafe;
+      if (!deterministicSafe) {
+        const retried = await qualityV2.retryGeneralSurface({
+          source: auditSource,
+          currentOutput: auditSource,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        retryOutput = retried.outputText;
+        safeChangeFound = retried.safeChangeFound === true
+          && isSafeGeneralSurfaceCandidate(auditSource, retryOutput, contract, documentProfile, selectedMode);
+      }
+      if (safeChangeFound) {
+        outputText = retryOutput;
+        generalSurfaceRetryCount = 1;
+        for (const record of records) {
+          if ((record.warnings || []).includes('general_surface_retry_safe_fallback')) {
+            record.fallback = false;
+            record.error = null;
+            record.hardFailReason = '';
+            record.floorViolations = [];
+            record.warnings = (record.warnings || []).filter(warning => ![
+              'general_surface_retry_pending',
+              'general_surface_retry_safe_fallback',
+              'v2_residual:structure_boundary_marker_failed',
+              'v2_residual:voice_existing_distribution_failed'
+            ].includes(warning));
+          }
+        }
+      }
+    } catch {}
   }
 
   let preSemanticStructureAudit = structureChunk.buildStructureAudit({
@@ -383,6 +444,12 @@ async function runEngine({
     ? dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []),
         ...qualityV2.warningsFromSemantic(semanticReport),
+        ...(records.some(record => (record.warnings || []).includes('v2_residual:structure_boundary_marker_failed'))
+          ? [{ code: 'sentence_distribution_shift', severity: 'warning', message: '원문의 문장 경계 일부가 결과에서 달라졌을 수 있어요.' }]
+          : []),
+        ...(records.some(record => (record.warnings || []).includes('v2_residual:voice_existing_distribution_failed'))
+          ? [{ code: 'sentence_distribution_shift', severity: 'warning', message: '원문의 장단문 분포가 결과에서 다소 평탄해졌을 수 있어요.' }]
+          : []),
         ...(polishReport?.excessiveChange ? [{ code: 'polish_edit_range', severity: 'warning', message: '보존형 윤문의 권장 편집 범위를 넘었을 수 있어요.' }] : []),
         ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : [])
       ])
@@ -407,7 +474,7 @@ async function runEngine({
     profileConfidence: documentProfile.confidence,
     basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
     semanticJudgeRan: semanticReport.ran === true,
-    repairCount: (semanticReport.repairCount || 0) + polishRetryCount,
+    repairCount: (semanticReport.repairCount || 0) + polishRetryCount + generalSurfaceRetryCount,
     chunkCount: records.length,
     fallbackCount,
     lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4))
@@ -569,6 +636,99 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return second.record;
   }
 
+  const reviewableBoundaryReasons = new Set(['structure_boundary_marker_failed', 'noop_unchanged']);
+  const boundaryFailureReasons = [first.record?.hardFailReason, second.record?.hardFailReason];
+  if (v2Enabled
+      && boundaryFailureReasons.includes('structure_boundary_marker_failed')
+      && boundaryFailureReasons.every(reason => reviewableBoundaryReasons.has(reason))) {
+    // 두 모델이 원문 경계 토큰을 지키지 못한 결과는 그대로 전달하지 않는다.
+    // polish는 뒤의 1회 표면 수정 단계가 원문에서 다시 시작하고, 일반 모드는
+    // 원문 기반 최소 표면 교정으로 회복할 수 있도록 안전 fallback으로 표시한다.
+    chunk.outputText = original;
+    const needsGeneralSurfaceRetry = mode !== 'polish';
+    second.record.fallback = needsGeneralSurfaceRetry;
+    second.record.error = needsGeneralSurfaceRetry ? 'structure_boundary_marker_failed' : null;
+    second.record.hardFailReason = needsGeneralSurfaceRetry ? 'structure_boundary_marker_failed' : '';
+    second.record.escalated = true;
+    second.record.primaryError = first.record.hardFailReason;
+    second.record.primaryUsage = first.record.usage || null;
+    second.record.usage = addUsage(second.record.usage || emptyUsage(), first.record.usage);
+    second.record.warnings = [
+      ...(second.record.warnings || []),
+      'v2_residual:structure_boundary_marker_failed',
+      ...(needsGeneralSurfaceRetry
+        ? ['general_surface_retry_pending', 'general_surface_retry_safe_fallback']
+        : ['polish_surface_boundary_pending'])
+    ];
+    return second.record;
+  }
+
+  if (v2Enabled
+      && first.record?.hardFailReason === 'voice_sparse_distribution_failed'
+      && second.record?.hardFailReason === 'voice_sparse_distribution_failed') {
+    // 구두점 없는 장문은 원문 그대로 되돌리면 다시 거대한 한 문장이 된다.
+    // 상위 모델도 길이 분포 계약을 완전히 맞추지 못한 경우, 사실·구조 게이트를
+    // 통과한 2차 결과를 전달하고 최종 voice 감사에서 검토 경고를 노출한다.
+    chunk.outputText = second.outputText;
+    second.record.fallback = false;
+    second.record.error = null;
+    second.record.hardFailReason = '';
+    second.record.escalated = true;
+    second.record.primaryError = first.record.hardFailReason;
+    second.record.primaryUsage = first.record.usage || null;
+    second.record.usage = addUsage(second.record.usage || emptyUsage(), first.record.usage);
+    second.record.warnings = [...(second.record.warnings || []), 'v2_residual:voice_sparse_distribution_failed'];
+    return second.record;
+  }
+
+  const voiceReviewAttempts = [first, second]
+    .filter(attempt => attempt.record?.hardFailReason === 'voice_existing_distribution_failed');
+  if (v2Enabled
+      && voiceReviewAttempts.length > 0
+      && [first.record, second.record].every(isRecoverableSurfaceFallbackRecord)) {
+    // 두 모델이 원문의 장단문 분포를 지키지 못했으면 그중 덜 나쁜 결과를
+    // 임의로 전달하지 않는다. 원문으로 되돌린 뒤 문장 수·사실·구조를 고정한
+    // 최소 표면 교정을 정확히 한 번 수행하고, 동일 voice 계약을 통과할 때만
+    // 채택한다. naturalness shadow 점수는 이 경로에 사용하지 않는다.
+    chunk.outputText = original;
+    second.record.fallback = true;
+    second.record.error = 'voice_existing_distribution_failed';
+    second.record.hardFailReason = 'voice_existing_distribution_failed';
+    second.record.escalated = true;
+    second.record.primaryError = first.record.hardFailReason;
+    second.record.primaryUsage = first.record.usage || null;
+    second.record.usage = addUsage(second.record.usage || emptyUsage(), first.record.usage);
+    second.record.floorViolations = [
+      ...(first.record?.floorViolations || []),
+      ...(second.record?.floorViolations || [])
+    ];
+    second.record.warnings = [
+      ...(second.record?.warnings || []),
+      'v2_residual:voice_existing_distribution_failed',
+      'general_surface_retry_pending',
+      'general_surface_retry_safe_fallback'
+    ];
+    return second.record;
+  }
+
+  if (v2Enabled
+      && mode !== 'polish'
+      && first.record?.hardFailReason === 'noop_unchanged'
+      && second.record?.hardFailReason === 'noop_unchanged') {
+    chunk.outputText = second.outputText;
+    second.record.fallback = false;
+    second.record.error = null;
+    second.record.escalated = true;
+    second.record.primaryError = first.record.hardFailReason;
+    second.record.primaryUsage = first.record.usage || null;
+    second.record.usage = addUsage(second.record.usage || emptyUsage(), first.record.usage);
+    second.record.warnings = [...(second.record.warnings || []), 'general_surface_retry_pending'];
+    return second.record;
+  }
+
+  const safeFallbackSurfaceRetry = v2Enabled
+    && mode !== 'polish'
+    && [first.record, second.record].every(isRecoverableSurfaceFallbackRecord);
   chunk.outputText = original;
   return chunkRecord({
     chunk,
@@ -576,7 +736,10 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     fallback: true,
     escalated: true,
     error: second.record.error || second.record.hardFailReason || first.record.error || 'gpt_hard_gate_failed',
-    warnings: ['gpt_primary_and_escalation_failed'],
+    warnings: [
+      'gpt_primary_and_escalation_failed',
+      ...(safeFallbackSurfaceRetry ? ['general_surface_retry_pending', 'general_surface_retry_safe_fallback'] : [])
+    ],
     floorViolations: [...(first.record.floorViolations || []), ...(second.record.floorViolations || [])],
     usage: addUsage(first.record.usage || emptyUsage(), second.record.usage),
     elapsedMs: (first.record.elapsedMs || 0) + (second.record.elapsedMs || 0)
@@ -695,7 +858,11 @@ async function callHumanize(args) {
       gate.warnings.push('structure_boundary_marker_failed');
       gate.violations.push({
         gate: 'structure_boundary_marker_failed',
-        detail: '병합 청크의 원문 경계 토큰이 누락되거나 중복되었습니다.'
+        detail: boundaryAudit.expectedLineCount !== null && boundaryAudit.expectedLineCount !== boundaryAudit.actualLineCount
+          ? `잠근 행 수가 달라졌습니다(${boundaryAudit.expectedLineCount}→${boundaryAudit.actualLineCount}).`
+          : boundaryAudit.segmentationChanged
+            ? `잠근 문장 수가 달라졌습니다(${boundaryAudit.expectedSentenceCount}→${boundaryAudit.actualSentenceCount}).`
+          : '병합 청크의 원문 경계 토큰이 누락되거나 중복되었습니다.'
       });
     }
     if (v2Enabled && !gate.hardFail) {
@@ -718,6 +885,36 @@ async function callHumanize(args) {
           gate.reason = preservationGate;
           gate.warnings.push(`v2_retry:${preservationGate}`);
         }
+      }
+    }
+    if (v2Enabled && !gate.hardFail) {
+      const voiceDistributionViolation = sparseVoiceDistributionViolation({
+        original,
+        source,
+        outputText,
+        voiceProfile,
+        documentProfile
+      });
+      if (voiceDistributionViolation) {
+        gate.hardFail = true;
+        gate.reason = voiceDistributionViolation.gate;
+        gate.warnings.push(`v2_retry:${voiceDistributionViolation.gate}`);
+        gate.violations.push(voiceDistributionViolation);
+      }
+    }
+    if (v2Enabled && !gate.hardFail) {
+      const existingDistributionViolation = existingVoiceDistributionViolation({
+        original,
+        source,
+        outputText,
+        mode,
+        documentProfile
+      });
+      if (existingDistributionViolation) {
+        gate.hardFail = true;
+        gate.reason = existingDistributionViolation.gate;
+        gate.warnings.push(`v2_retry:${existingDistributionViolation.gate}`);
+        gate.violations.push(existingDistributionViolation);
       }
     }
     const qualityGate = safeKoreanQualityGate(original, outputText, {
@@ -1354,6 +1551,128 @@ function isV2ChunkPreservationViolation(v) {
   ]).has(gate);
 }
 
+function shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, mode = '') {
+  const sentence = voiceProfile?.sentence || {};
+  const count = Number(sentence.count) || 0;
+  const cv = Number(sentence.cv) || 0;
+  const compactLength = String(source || '').replace(/\s+/gu, '').length;
+  // 짧은 문서에서 이미 성립하는 장·단문 대비만 구조로 보존한다.
+  // 구두점이 거의 없는 원문, 장문 문서, 창작 행갈이는 모델이 의미 단위로
+  // 고칠 여지를 남겨 두며 naturalness shadow 점수는 이 결정에 사용하지 않는다.
+  const minimumCount = mode === 'polish' ? 3 : 4;
+  // 보존형 윤문은 비문·접속을 고치기 위해 문장 경계를 조정할 수 있어야 한다.
+  // 긴 문서의 경계 토큰 실패가 원문 fallback으로 이어지지 않도록 기존 상한을 유지한다.
+  const maximumCount = mode === 'polish' ? 12 : 20;
+  return voiceProfile?.lineBreakSensitive !== true
+    && compactLength <= 1500
+    && count >= minimumCount
+    && count <= maximumCount
+    && cv >= 0.28;
+}
+
+function sparseVoiceDistributionViolation({ original, source, outputText, voiceProfile, documentProfile } = {}) {
+  const sentence = voiceProfile?.sentence || {};
+  const target = sentence.sparseSplitTarget;
+  if (sentence.punctuationSparse !== true || !target) return null;
+  if (normalizeBare(original) !== normalizeBare(source)) return null;
+  const current = buildVoiceProfile(outputText, { documentProfile: documentProfile?.profile || 'unknown' }).sentence;
+  const missed = [];
+  if (current.count < target.minCount || current.count > target.maxCount) {
+    missed.push(`문장 수 ${current.count}(목표 ${target.minCount}~${target.maxCount})`);
+  }
+  if (current.min > target.shortMax) missed.push(`최단 ${current.min}자(목표 ${target.shortMax}자 이하)`);
+  if (current.max < target.longMin) missed.push(`최장 ${current.max}자(목표 ${target.longMin}자 이상)`);
+  if (!missed.length) return null;
+  return {
+    gate: 'voice_sparse_distribution_failed',
+    type: 'voice_sparse_distribution_failed',
+    detail: `구두점 없는 장문 분할 계약 미충족: ${missed.join(', ')}`
+  };
+}
+
+function existingVoiceDistributionViolation({ original, source, outputText, mode, documentProfile } = {}) {
+  if (mode === 'polish' || normalizeBare(original) !== normalizeBare(source)) return null;
+  const profile = documentProfile?.profile || 'unknown';
+  const before = buildVoiceProfile(original, { documentProfile: profile }).sentence;
+  const after = buildVoiceProfile(outputText, { documentProfile: profile }).sentence;
+  // 청크·최종 감사·의미 수리가 모두 voiceProfile의 동일 판정을 사용한다.
+  // naturalness shadow 점수는 이 판정이나 후보 선택에 사용하지 않는다.
+  const distribution = sentenceDistributionShift(before, after);
+  if (!distribution.shift) return null;
+  return {
+    gate: 'voice_existing_distribution_failed',
+    type: 'voice_existing_distribution_failed',
+    detail: distribution.detail
+  };
+}
+
+function isSafeGeneralSurfaceCandidate(source, candidate, contract, documentProfile, mode = 'assignment') {
+  const before = String(source || '').trim();
+  const after = String(candidate || '').trim();
+  if (!before || !after || normalizeBare(before) === normalizeBare(after)) return false;
+  const metrics = computeEditMetrics(before, after);
+  if (metrics.charEditRatio <= 0 || metrics.charEditRatio > 0.18) return false;
+  if (metrics.lengthRatio < 0.95 || metrics.lengthRatio > 1.05) return false;
+  if (paragraphCount(before) !== paragraphCount(after)) return false;
+  if (meaningfulSentenceCount(before) !== meaningfulSentenceCount(after)) return false;
+  if (floor.measureNovelty(before, after, '').count > 0) return false;
+  if (floor.measureLostFacts(before, after).count > 0) return false;
+  if (floor.measurePovDrift(before, after, contract?.povSeed).introducedAnyFirstPerson) return false;
+  const profile = documentProfile?.profile || 'unknown';
+  const beforeVoice = buildVoiceProfile(before, { documentProfile: profile });
+  const afterVoice = buildVoiceProfile(after, { documentProfile: profile });
+  if (beforeVoice.lineStructureSensitive && beforeVoice.lineCount !== afterVoice.lineCount) return false;
+  if (existingVoiceDistributionViolation({
+    original: before,
+    source: before,
+    outputText: after,
+    mode,
+    documentProfile
+  })) return false;
+  return true;
+}
+
+function buildDeterministicGeneralSurfaceEdit(source) {
+  const value = String(source || '');
+  if (!value.trim()) return '';
+
+  // 한국어에서 선택적으로 쓸 수 있는 문장 첫 접속부사의 쉼표만 한 곳
+  // 토글한다. 의미·화자·사실·문장 수는 바뀌지 않으며 최종 안전 감사가
+  // 다시 검증한다. 문서 중간의 같은 단어에는 손대지 않는다.
+  const connector = /(^|[.!?…]\s+|\n+)(또한|그러나|하지만|따라서|결국|특히|나아가|한편|반면|결과적으로|이처럼|그렇다면|그렇기에|그러므로|그래서|그런데|더불어|무엇보다|우선|첫째|둘째|셋째|마지막으로|예를 들어|실제로)(,?)(?=\s)/u;
+  if (connector.test(value)) {
+    return value.replace(connector, (_match, prefix, word, comma) => `${prefix}${word}${comma ? '' : ','}`);
+  }
+
+  // 직선 작은따옴표로 감싼 짧은 한국어 구절은 내용은 유지하고 인용부호만
+  // 한국어 곡선 인용부호로 정규화한다.
+  const straightQuote = /'([^'\n]{1,80})'/u;
+  if (straightQuote.test(value)) return value.replace(straightQuote, '‘$1’');
+  return '';
+}
+
+function meaningfulSentenceCount(value) {
+  return splitSentences(value).filter(sentence => String(sentence || '').replace(/\s+/gu, '').length >= 3).length;
+}
+
+function isRecoverableSurfaceFallbackRecord(record) {
+  const gate = normalizedViolationGate({ gate: record?.hardFailReason });
+  return new Set([
+    'novelty',
+    'lostfacts',
+    'lost_facts',
+    'pov',
+    'pov_inject',
+    'protected_term_loss',
+    'section_anchor_loss',
+    'length_collapse',
+    'structure_boundary_marker_failed',
+    'voice_sparse_distribution_failed',
+    'voice_existing_distribution_failed',
+    'noop_unchanged'
+  ]).has(gate);
+}
+
 function normalizedViolationGate(v) {
   return String(v?.gate || v?.type || '').trim().toLowerCase().replace(/[^a-z0-9]+/gu, '_');
 }
@@ -1362,6 +1681,23 @@ function buildV2EscalationPatchTargets(patchTargets, record) {
   const targets = Array.isArray(patchTargets) ? [...patchTargets] : [];
   if (record?.hardFailReason === 'noop_unchanged') {
     targets.push('원문과 완전히 같은 출력은 이번 재시도 실패다. 사실·이미지·화자·제목·줄바꿈은 고정하고 조사·어순·어휘 중 안전한 한 곳만 자연스럽게 다듬는다.');
+  }
+  if (record?.hardFailReason === 'structure_boundary_marker_failed') {
+    targets.push('원문의 V2_SENTENCE 토큰 사이에는 정확히 한 문장만 둔다. 문장을 추가 마침표로 더 나누거나 토큰 양쪽 문장을 합치지 말고, 모든 경계 토큰을 같은 순서로 그대로 출력한다.');
+  }
+  if (record?.hardFailReason === 'voice_sparse_distribution_failed') {
+    const violation = (record.floorViolations || []).find(v => normalizedViolationGate(v) === 'voice_sparse_distribution_failed');
+    targets.push([
+      '구두점 없는 원문을 비슷한 길이의 문장들로 균등 분할한 것이 1차 실패 원인이다. 원문의 의미와 순서를 그대로 둔 채 짧은 문장과 긴 문장이 분명히 섞이도록 다시 나눈다. 짧은 문장은 원문에 있던 완전한 절만 독립시키고, 앞 문장을 요약·평가·반복하는 새 덧문장은 만들지 않는다.',
+      String(violation?.detail || '').trim()
+    ].filter(Boolean).join(' '));
+  }
+  if (record?.hardFailReason === 'voice_existing_distribution_failed') {
+    const violation = (record.floorViolations || []).find(v => normalizedViolationGate(v) === 'voice_existing_distribution_failed');
+    targets.push([
+      '1차 결과가 원문의 짧은 문장과 긴 문장 차이를 중간 길이로 평탄화했다. 문장별 주장과 경계를 유지하고, 원문의 문장 길이 순서·최단문·최장문 대비를 다시 보존한다.',
+      String(violation?.detail || '').trim()
+    ].filter(Boolean).join(' '));
   }
   const novelty = (record?.floorViolations || []).find(v => normalizedViolationGate(v) === 'novelty');
   if (novelty) {

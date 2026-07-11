@@ -5,6 +5,7 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { addUsage, emptyUsage } = require('./usageCost');
 const floor = require('../engine/floor');
 const { splitSentences, computeEditMetrics } = require('../engine/koreanText');
+const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile');
 
 const LEDGER_SCHEMA = {
   type: 'object',
@@ -97,8 +98,8 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
   const cfg = await loadConfig(config);
   const claimsText = ledgerToText(ledger);
   const system = lang === 'en'
-    ? 'You are a strict but fair fact checker. Use only SOURCE CLAIM LEDGER as ground truth. Flag fabricated facts, meaning reversals, and omitted material claims. Return JSON only.'
-    : '너는 엄격하지만 공정한 사실 검수 엔진이다. SOURCE CLAIM LEDGER만 기준으로 삼아 새 사실 추가, 의미 왜곡, 핵심 주장 누락을 잡는다. JSON만 반환한다.';
+    ? 'You are a strict but fair fact checker. SOURCE is the sole ground truth. SOURCE CLAIM LEDGER is a verified, non-exhaustive index of source passages. Compare the entire SOURCE and flag fabricated facts, meaning reversals, and omitted material claims. Return JSON only.'
+    : '너는 엄격하지만 공정한 사실 검수 엔진이다. SOURCE 전체를 유일한 사실 기준으로 삼는다. SOURCE CLAIM LEDGER는 원문 구절을 그대로 뽑은 검증 인덱스이며 완전한 목록은 아니다. SOURCE 전체와 비교해 새 사실 추가, 의미 왜곡, 핵심 주장 누락을 잡는다. JSON만 반환한다.';
   const user = [
     `[SOURCE]\n${rawText}`,
     `[SOURCE CLAIM LEDGER]\n${claimsText}`,
@@ -219,24 +220,12 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   phasePrefix,
   safetyIdentifier
 }) {
-  let ledger = await buildSoftClaimLedger(rawText, {
-    lang,
-    signal,
-    config,
-    model: judgeModel,
-    reasoningEffort: judgeReasoning,
-    phase: `${phasePrefix}:ledger`,
-    safetyIdentifier
-  });
-  let usage = addUsage(emptyUsage(), ledger?.gptMeta?.usage);
-  const health = validateLedgerHealth(ledger, rawText);
-  if (!health.healthy) {
-    ledger = {
-      ...buildDeterministicLedger(rawText),
-      extractionFallbackReason: health.reason,
-      gptMeta: ledger?.gptMeta || null
-    };
-  }
+  // 원문 구절을 그대로 균등 추출한 결정론 원장을 mini와 상위 판정기가
+  // 공통 사용한다. 판정 모델은 SOURCE 전체를 함께 받으므로 원장은 단지
+  // 검토 인덱스이며, 승격 때 같은 원장을 GPT로 다시 추출하지 않는다.
+  // 이 경로는 정확도를 낮추는 캐시가 아니라 중복 모델 호출 제거다.
+  const ledger = buildDeterministicLedger(rawText);
+  let usage = emptyUsage();
   let current = outputText;
   let judge = await semanticJudge(rawText, current, ledger, {
     lang,
@@ -355,6 +344,13 @@ function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', 
   const candidateNovelty = floor.measureNovelty(source, candidate, allowedExtra).count;
   if (candidateLost > beforeLost) reasons.push('lost_facts_worsened');
   if (candidateNovelty > beforeNovelty) reasons.push('novelty_worsened');
+  const compact = value => String(value || '').normalize('NFC').replace(/\s+/gu, '');
+  if (compact(candidate) === compact(source)
+      && compact(before) !== compact(source)
+      && beforeLost === 0
+      && beforeNovelty === 0) {
+    reasons.push('repair_erased_transform');
+  }
 
   const sourceStructure = repairStructureSignature(source);
   const beforeStructure = repairStructureSignature(before);
@@ -364,6 +360,19 @@ function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', 
     const candidateDelta = Math.abs(candidateStructure[key] - sourceStructure[key]);
     if (candidateDelta > beforeDelta) reasons.push(`${key}_worsened`);
   }
+  const beforeSentenceShape = sentenceShapeDistance(source, before);
+  const candidateSentenceShape = sentenceShapeDistance(source, candidate);
+  if (beforeSentenceShape.comparable
+      && candidateSentenceShape.comparable
+      && candidateSentenceShape.maxRelativeError > Math.max(0.35, beforeSentenceShape.maxRelativeError + 0.15)) {
+    reasons.push('sentence_shape_worsened');
+  }
+  const sourceSentenceDistribution = buildVoiceProfile(source).sentence;
+  const beforeDistributionShift = sentenceDistributionShift(sourceSentenceDistribution, buildVoiceProfile(before).sentence);
+  const candidateDistributionShift = sentenceDistributionShift(sourceSentenceDistribution, buildVoiceProfile(candidate).sentence);
+  if (!beforeDistributionShift.shift && candidateDistributionShift.shift) {
+    reasons.push('sentence_distribution_worsened');
+  }
   return {
     pass: reasons.length === 0,
     reasons: [...new Set(reasons)],
@@ -372,7 +381,25 @@ function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', 
     beforeLost,
     candidateLost,
     beforeNovelty,
-    candidateNovelty
+    candidateNovelty,
+    beforeSentenceShape,
+    candidateSentenceShape,
+    beforeDistributionShift,
+    candidateDistributionShift
+  };
+}
+
+function sentenceShapeDistance(sourceText, candidateText) {
+  const sourceLengths = splitSentences(sourceText).map(value => value.replace(/\s+/gu, '').length).filter(value => value >= 3);
+  const candidateLengths = splitSentences(candidateText).map(value => value.replace(/\s+/gu, '').length).filter(value => value >= 3);
+  if (sourceLengths.length < 4 || sourceLengths.length !== candidateLengths.length || sourceLengths.length > 40) {
+    return { comparable: false, maxRelativeError: 0, averageRelativeError: 0 };
+  }
+  const errors = sourceLengths.map((length, index) => Math.abs(candidateLengths[index] - length) / Math.max(1, length));
+  return {
+    comparable: true,
+    maxRelativeError: Math.max(...errors),
+    averageRelativeError: errors.reduce((sum, value) => sum + value, 0) / errors.length
   };
 }
 
@@ -393,7 +420,10 @@ function buildDeterministicLedger(rawText) {
   const candidates = [];
   const add = value => {
     const exact = String(value || '').trim();
-    if (exact.length < 4 || seen.has(exact)) return;
+    // SOURCE 전체가 한 줄인 문서는 그 줄 자체를 원장에 다시 넣으면 입력을
+    // 통째로 중복한다. 긴 구절은 SOURCE 본문에서 직접 판정하고, 원장에는
+    // 검토 위치를 찾는 데 유용한 짧은 원문 구절만 둔다.
+    if (exact.length < 4 || exact.length > 600 || seen.has(exact)) return;
     seen.add(exact);
     candidates.push(exact);
   };

@@ -11,7 +11,7 @@ const nikl = require('../engine/koreanQuality/niklTest');
 const freeze = require('../engine/freezeblocks');
 const structure = require('../engine-gpt-prod/structureChunk');
 const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
-const { buildVoiceProfile, auditVoice } = require('../engine-gpt-prod/voiceProfile');
+const { buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift } = require('../engine-gpt-prod/voiceProfile');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 
 test('한국어 문장 분리기는 장·절 번호, 소수점, 약어와 인용부호를 보존한다', () => {
@@ -31,6 +31,22 @@ test('한국어 Unicode 경계는 숫자 단위와 실제 조사 중복을 정�
     const report = nikl.analyzeNiklQuality(value);
     assert.equal(report.normPatterns.some(item => item.id === 'double_particle'), true);
   }
+});
+
+test('숫자 뒤 서술격 일 때는 날짜 단위로 오인하지 않는다', () => {
+  const copular = floor.measureNovelty('성분 수 5에서 성능이 높았다.', '성분 수가 5일 때 성능이 높았다.', '');
+  assert.equal(copular.count, 0);
+  const actualDay = floor.measureNovelty('관찰 기간은 5일이다.', '관찰 기간은 6일이다.', '');
+  assert.ok(actualDay.items.includes('6일'));
+  const calendarDay = floor.measureNovelty('행사 날짜는 정하지 않았다.', '행사는 5일에 열린다.', '');
+  assert.ok(calendarDay.items.includes('5일'));
+});
+
+test('일반 기관 지시어의 띄어쓰기는 고유 기관명 손실로 보지 않는다', () => {
+  const generic = floor.measureLostFacts('해당기관의 승인을 받았다.', '해당 기관의 승인을 받았다.');
+  assert.equal(generic.count, 0);
+  const named = floor.measureLostFacts('한국대학교 연구팀이 승인했다.', '연구팀이 승인했다.');
+  assert.ok(named.items.includes('한국대학교'));
 });
 
 test('고립 접속어와 조사로 시작하는 장문 청크 경계를 회귀 검사한다', () => {
@@ -104,6 +120,57 @@ test('v2 청커는 작은 본문 문단을 묶되 문단 구분과 동결 구조
   assert.equal(missing.ok, false);
 });
 
+test('길이 변동이 큰 짧은 문서는 문장 경계 토큰을 왕복 보존한다', () => {
+  const source = '짧은 관찰문임. 이 문장은 앞 문장보다 조금 더 길게 이어지는 내용임. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 질문에 답하며 탐구 내용을 확장한 매우 긴 관찰문임. 마지막은 다시 짧게 마무리함.';
+  const plan = structure.splitChunksForGpt(source, { coalesceEditable: true, preserveSentenceBoundaries: true });
+  const body = plan.chunks.find(item => item.sentenceBoundaryMarkers?.length);
+  assert.ok(body);
+  assert.equal(body.sentenceBoundaryMarkers.length, 3);
+  assert.match(body.llmText, /\[\[\[V2_SENTENCE_0001\]\]\]/);
+  const rewritten = body.llmText.replace('짧은 관찰문임', '짧게 관찰함');
+  const restored = structure.restoreBoundaryMarkers(rewritten, body);
+  assert.equal(restored.ok, true);
+  assert.equal(restored.text, source.replace('짧은 관찰문임', '짧게 관찰함'));
+  const missing = structure.restoreBoundaryMarkers(rewritten.replace('[[[V2_SENTENCE_0002]]]', ''), body);
+  assert.equal(missing.ok, false);
+  const extraSentence = structure.restoreBoundaryMarkers(rewritten.replace('이 문장은', '추가 문장임. 이 문장은'), body);
+  assert.equal(extraSentence.ok, false);
+  assert.equal(extraSentence.segmentationChanged, true);
+  assert.equal(extraSentence.actualSentenceCount, extraSentence.expectedSentenceCount + 1);
+});
+
+test('polish용 3문장 문서도 기존 경계를 잠글 수 있다', () => {
+  const source = '첫 문장은 다소 길게 이어지지만 하나의 의미 단위를 유지하며 기록함. 둘째 문장은 짧게 마무리함. 마지막 문장은 다시 충분한 설명을 담아 원문의 관찰 범위를 정리함.';
+  const plan = structure.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    preserveSentenceBoundaries: true,
+    sentenceBoundaryMinimum: 3
+  });
+  const body = plan.chunks.find(item => item.sentenceBoundaryMarkers?.length);
+  assert.ok(body);
+  assert.equal(body.sentenceBoundaryMarkers.length, 2);
+  assert.equal(structure.restoreBoundaryMarkers(body.llmText, body).ok, true);
+});
+
+test('세특의 제목·항목 행은 줄바꿈 경계 토큰으로 왕복 보존한다', () => {
+  const source = '교과 활동 관찰 기록\n학생은 자료를 비교하고 핵심 내용을 정리함. 발표 과정에서 친구의 질문에 답하며 탐구 범위를 넓힘.';
+  const plan = structure.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    preserveLineBoundaries: true
+  });
+  const body = plan.chunks.find(item => item.lineBoundaryMarkers?.length);
+  assert.ok(body);
+  assert.equal(body.lineBoundaryMarkers.length, 1);
+  assert.match(body.llmText, /\[\[\[V2_LINE_0001\]\]\]/u);
+  const restored = structure.restoreBoundaryMarkers(body.llmText.replace('핵심 내용을', '중요 내용을'), body);
+  assert.equal(restored.ok, true);
+  assert.equal(restored.text, source.replace('핵심 내용을', '중요 내용을'));
+  const missing = structure.restoreBoundaryMarkers(body.llmText.replace('[[[V2_LINE_0001]]]', ''), body);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.expectedLineCount, 2);
+  assert.equal(missing.actualLineCount, 1);
+});
+
 test('문서 프로필은 요청 mode 없이 원문과 basicStyle 보조 힌트만으로 판정한다', () => {
   const source = '지원 동기\n저는 직무 역량을 바탕으로 귀사에 지원하게 되었습니다. 입사 후 포부를 말씀드리겠습니다.';
   const reportA = detectDocumentProfile(source, { basicStyle: 'blog' });
@@ -113,6 +180,74 @@ test('문서 프로필은 요청 mode 없이 원문과 basicStyle 보조 힌트�
   assert.ok(reportA.confidence >= 0.75);
 });
 
+test('문단 안에서 반복되는 관찰형 명사 종결은 세특 프로필로 판정한다', () => {
+  const source = '체육 수업과 활동에 꾸준히 참여함. 친구들에게 자세와 방법을 알려 주며 협력하는 태도를 보임. 어려움이 있어도 끝까지 해내는 모습을 보임. 체력과 책임감을 함께 키워 나감. 다양한 방향을 탐색하며 성장하려는 자세를 지님.';
+  const report = detectDocumentProfile(source, { basicStyle: 'blog' });
+  assert.equal(report.profile, 'student_record');
+  assert.ok(report.confidence >= 0.75);
+  assert.ok(report.signals.nominalObservationEndings >= 3);
+});
+
+test('미래형 수업 계획 목록은 명사형 종결만으로 세특이 되지 않는다', () => {
+  const source = '- 명화의 배색을 분석하는 수업을 진행할 예정임.\n- 팔레트를 활용해 일러스트레이션을 제작할 계획임.\n- 디지털 도구 활용법을 익히는 것을 학습 목표로 설정함.';
+  const report = detectDocumentProfile(source);
+  assert.notEqual(report.profile, 'student_record');
+  assert.ok(report.signals.instructionalPlanSignals >= 2);
+  assert.ok(report.signals.bulletLineCount >= 2);
+});
+
+test('voice 프롬프트는 원문의 문장 길이 범위와 비균일 경계를 명시한다', () => {
+  const source = '짧은 문장임. 이 문장은 앞 문장보다 조금 더 길게 이어지는 관찰 내용임. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 친구들의 질문에 답하며 탐구 내용을 확장한 매우 긴 문장임. 마지막 문장은 다시 짧게 마무리함.';
+  const prompt = voicePromptBlock(buildVoiceProfile(source, { documentProfile: 'student_record' }));
+  assert.match(prompt, /문장 수≈4/);
+  assert.match(prompt, /길이 범위≈\d+~\d+자/);
+  assert.match(prompt, /원문 문장별 길이 순서≈\d+→\d+→\d+→\d+자/);
+  assert.match(prompt, /길이를 고르게 만들 목적으로 합치거나 쪼개지 않는다/);
+});
+
+test('voice 프롬프트는 20문장 이하의 길이 순서와 구두점 없는 장문의 비균일 분할 목표를 보존한다', () => {
+  const manySentences = Array.from({ length: 17 }, (_, index) => `${index + 1}번째 문장은 ${'내용을 '.repeat((index % 5) + 1)}기록함.`).join(' ');
+  const manyProfile = buildVoiceProfile(manySentences, { documentProfile: 'general_essay' });
+  assert.equal(manyProfile.sentence.lengthSequence.length, 17);
+  assert.match(voicePromptBlock(manyProfile), /원문 문장별 길이 순서≈/);
+
+  const runOn = '북한의 문화어 제정은 단순한 표준어 확립이 아니라 언어를 국가 이념과 사회 통제의 수단으로 재구성한 사례로 이해할 수 있다 국가 언어 정책은 민족 정체성을 내세우면서도 사회주의 사상 교육의 매개로 활용되었다 문화어는 그 담론을 일상 언어 속에 심는 제도적 장치였고 장기간 이어진 우리말 다듬기는 남북한 어휘 차이를 확대하는 결과를 낳았다 외부에서 보면 동일 언어 공동체 내부의 상호이해 가능성을 약화하는 방향으로 작용하였다 언어를 통한 통합의 장치라기보다 체제 내부 결속을 강화하고 외부와의 언어적 경계를 분명하게 만드는 분리의 장치로 기능하였으며 일상적인 표현과 교육 현장에도 지속적인 영향을 남겼다';
+  const runOnProfile = buildVoiceProfile(runOn, { documentProfile: 'unknown' });
+  const runOnPrompt = voicePromptBlock(runOnProfile);
+  assert.equal(runOnProfile.sentence.punctuationSparse, true);
+  assert.match(runOnPrompt, /구두점이 거의 없이 이어진 초안/);
+  assert.match(runOnPrompt, /짧은 문장과 \d+자 이상의 긴 문장/);
+  assert.match(runOnPrompt, /바로 앞 문장을 요약·평가·되풀이하는 새 덧문장을 만들지 않는다/);
+  assert.match(runOnPrompt, /원문 내용을 삭제하거나 서로 다른 주장을 억지로 합치지 않는다/);
+});
+
+test('voice 감사는 장단문 분포가 크게 평탄해지면 사용자 검토 경고를 남긴다', () => {
+  const source = '짧게 관찰함. 이 문장은 중간 길이의 관찰 내용을 기록함. 학생이 여러 자료를 직접 비교하고 발표 과정에서 질문에 답하며 탐구 내용을 크게 확장한 매우 긴 관찰 문장을 기록함. 다시 짧게 마무리함.';
+  const output = '학생의 활동을 차분하게 관찰하고 내용을 기록함. 관련 자료를 찾아 비교하며 탐구 내용을 정리함. 발표 과정에서 질문에 답하고 내용을 확장함. 마지막으로 활동의 의미와 과정을 함께 정리함.';
+  const profile = buildVoiceProfile(source, { documentProfile: 'student_record' });
+  const audit = auditVoice(profile, output, { documentProfile: 'student_record', mode: 'assignment' });
+  assert.ok(audit.warnings.some(item => item.code === 'sentence_distribution_shift'));
+});
+
+test('청크와 최종 감사가 같은 짧은 문서 장단문 분포 판정을 공유한다', () => {
+  const textWithLengths = lengths => lengths.map(length => `${'가'.repeat(length - 1)}.`).join(' ');
+  const source = buildVoiceProfile(textWithLengths([60, 92, 76, 72])).sentence;
+  const flattened = buildVoiceProfile(textWithLengths([63, 92, 70, 73])).sentence;
+  const localized = buildVoiceProfile(textWithLengths([60, 92, 76, 73])).sentence;
+  assert.equal(sentenceDistributionShift(source, flattened).shift, true);
+  assert.equal(sentenceDistributionShift(source, localized).shift, false);
+});
+
+test('voice 감사는 구두점 없는 장문의 분할 목표가 남지 않으면 검토 경고를 남긴다', () => {
+  const sourcePart = '학습 활동에 참여하면서 자료를 비교하고 핵심 내용을 정리하는 방법을 익혔다 처음에는 설명 방향을 잡기 어려웠지만 여러 사례를 차분히 살피면서 상대가 이해하기 어려워하는 지점을 확인했다 질문을 주고받는 과정에서 모호하게 알고 있던 개념을 다시 정리했고 다른 관점을 존중하는 태도도 배웠다 마지막에는 함께 문제를 해결한 과정이 확실한 복습이 되었으며 앞으로도 배운 내용을 꾸준히 나누겠다는 생각을 갖게 되었다';
+  const source = `${sourcePart} ${sourcePart}`;
+  const uniform = '학습 활동에 참여하면서 자료를 비교하고 핵심 내용을 정리하는 방법을 차분하게 익혔다. 처음에는 설명 방향을 잡기 어려웠지만 여러 사례를 살피면서 이해하기 어려운 지점을 확인했다. 질문을 주고받는 과정에서 모호하게 알고 있던 개념을 다시 정리하고 다른 관점을 존중했다. 마지막에는 함께 문제를 해결한 과정이 복습이 되었고 앞으로도 배운 내용을 꾸준히 나누기로 했다.';
+  const profile = buildVoiceProfile(source, { documentProfile: 'unknown' });
+  const audit = auditVoice(profile, uniform, { documentProfile: 'unknown', mode: 'assignment' });
+  assert.equal(profile.sentence.punctuationSparse, true);
+  assert.ok(audit.warnings.some(item => item.code === 'sentence_distribution_shift'));
+});
+
 test('창작문은 줄바꿈을 구조로 기록하고 화자 변화 감사를 공유한다', () => {
   const poem = '밤이 온다\n창문에 빛이 머문다\n나는 한참 서 있다\n바람은 대답하지 않는다';
   const voice = buildVoiceProfile(poem, { documentProfile: 'creative' });
@@ -120,6 +255,15 @@ test('창작문은 줄바꿈을 구조로 기록하고 화자 변화 감사를 �
   assert.equal(voice.lineCount, 4);
   const audit = auditVoice(voice, poem.replace('나는 ', ''), { documentProfile: 'creative' });
   assert.ok(audit.warnings.some(item => item.code === 'speaker_removed'));
+});
+
+test('세특의 제목 행과 줄바꿈은 voice 구조로 기록하고 변경을 경고한다', () => {
+  const source = '교과 활동 관찰 기록\n학생은 자료를 비교하고 발표 과정에서 질문에 답하며 탐구 범위를 넓힘.';
+  const voice = buildVoiceProfile(source, { documentProfile: 'student_record' });
+  assert.equal(voice.lineStructureSensitive, true);
+  assert.match(voicePromptBlock(voice), /원문의 행 수=2/);
+  const audit = auditVoice(voice, source.replace('\n', ' '), { documentProfile: 'student_record' });
+  assert.ok(audit.warnings.some(item => item.code === 'line_structure_changed'));
 });
 
 test('polish voice 감사는 새 문단과 제목 구조 변경을 경고한다', () => {

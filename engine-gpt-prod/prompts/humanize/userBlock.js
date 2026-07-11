@@ -19,8 +19,8 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
       : '제목/번호/고유명사/수치/참고문헌을 보존하고, 문서에 실제로 필요한 정도만 다듬는다.',
     '[구조 힌트]',
     '제목/번호 줄이 있으면 그 줄은 남기고, 각 항목의 본문 안에서 표현과 연결 방식을 재서술한다.',
-    chunk.boundaryMarkers?.length
-      ? '[[[V2_BOUNDARY_###]]] 토큰은 원문의 문단·청크 경계를 잠근 표시다. 각 토큰을 철자와 개수까지 그대로 같은 순서로 출력한다.'
+    chunk.boundaryMarkers?.length || chunk.lineBoundaryMarkers?.length || chunk.sentenceBoundaryMarkers?.length
+      ? '[[[V2_BOUNDARY_###]]], [[[V2_LINE_####]]], [[[V2_SENTENCE_####]]] 토큰은 원문의 문단·행·문장 경계를 잠근 표시다. 존재하는 각 토큰을 철자와 개수까지 그대로 같은 순서로 출력한다. V2_LINE 양쪽의 행을 합치거나 새 행을 만들지 않고, V2_SENTENCE 양쪽의 문장을 합치거나 새 마침표로 다시 나누지 않는다.'
       : '',
     `[작업 위치]\n${position}`,
     prev ? `[앞 문맥 - 참고만 하고 다시 쓰지 말 것]\n...${tail(prev, 220)}` : '',

@@ -2,11 +2,17 @@
 
 const baseChunk = require('../engine/chunk');
 const freezeBlocks = require('../engine/freezeblocks');
+const { splitSentenceSpans } = require('../engine/koreanText');
 
 const VERSION = 'gpt-structure-chunk-v1';
 const UNSAFE_END_RE = /(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한|그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/;
 
-function splitChunksForGpt(text, { coalesceEditable = false } = {}) {
+function splitChunksForGpt(text, {
+  coalesceEditable = false,
+  preserveSentenceBoundaries = false,
+  sentenceBoundaryMinimum = 4,
+  preserveLineBoundaries = false
+} = {}) {
   const base = baseChunk.splitChunks(text);
   const academicSpans = freezeBlocks.detectAcademicSpans(text);
   const chunks = [];
@@ -26,6 +32,8 @@ function splitChunksForGpt(text, { coalesceEditable = false } = {}) {
   }
 
   const plannedChunks = coalesceEditable ? coalesceEditableChunks(chunks) : chunks;
+  if (preserveLineBoundaries) addLineBoundaryMarkers(plannedChunks);
+  if (preserveSentenceBoundaries) addSentenceBoundaryMarkers(plannedChunks, sentenceBoundaryMinimum);
   reindexChunks(plannedChunks);
   return {
     version: VERSION,
@@ -167,8 +175,9 @@ function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500)
     if (sameSection && current.text.length < targetChars && joinText.length <= hardMaxChars) {
       const existingMarkers = Array.isArray(current.boundaryMarkers) ? current.boundaryMarkers : [];
       const marker = `[[[V2_BOUNDARY_${String(existingMarkers.length + 1).padStart(3, '0')}]]]`;
+      const start = String(current.text || '').length;
       current.llmText = `${current.llmText || current.text || ''}${marker}${chunk.llmText || chunk.text || ''}`;
-      current.boundaryMarkers = [...existingMarkers, { marker, boundary }];
+      current.boundaryMarkers = [...existingMarkers, { marker, boundary, start, end: start + boundary.length }];
       current.text = joinText;
       current.end = chunk.end;
       current.sep = chunk.sep || '';
@@ -183,7 +192,11 @@ function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500)
 }
 
 function restoreBoundaryMarkers(outputText, chunk) {
-  const markers = Array.isArray(chunk?.boundaryMarkers) ? chunk.boundaryMarkers : [];
+  const markers = [
+    ...(Array.isArray(chunk?.boundaryMarkers) ? chunk.boundaryMarkers : []),
+    ...(Array.isArray(chunk?.lineBoundaryMarkers) ? chunk.lineBoundaryMarkers : []),
+    ...(Array.isArray(chunk?.sentenceBoundaryMarkers) ? chunk.sentenceBoundaryMarkers : [])
+  ];
   if (!markers.length) return { text: String(outputText || ''), ok: true, applied: false, missing: [], duplicated: [] };
   let text = String(outputText || '');
   const missing = [];
@@ -194,15 +207,102 @@ function restoreBoundaryMarkers(outputText, chunk) {
     if (count > 1) duplicated.push(item.marker);
     if (count === 1) text = text.replace(item.marker, item.boundary);
   }
-  const leaked = /\[\[\[V2_BOUNDARY_\d{3}\]\]\]/.test(text);
+  const leaked = /\[\[\[V2_(?:BOUNDARY|LINE|SENTENCE)_\d{3,4}\]\]\]/.test(text);
+  const sentenceLocked = Array.isArray(chunk?.sentenceBoundaryMarkers) && chunk.sentenceBoundaryMarkers.length > 0;
+  const lineLocked = Array.isArray(chunk?.lineBoundaryMarkers) && chunk.lineBoundaryMarkers.length > 0;
+  const expectedSentenceCount = sentenceLocked ? splitSentenceSpans(String(chunk?.text || '')).length : null;
+  const actualSentenceCount = sentenceLocked ? splitSentenceSpans(text).length : null;
+  const expectedLineCount = lineLocked ? countLines(String(chunk?.text || '')) : null;
+  const actualLineCount = lineLocked ? countLines(text) : null;
+  const segmentationChanged = (sentenceLocked && expectedSentenceCount !== actualSentenceCount)
+    || (lineLocked && expectedLineCount !== actualLineCount);
   return {
     text,
-    ok: missing.length === 0 && duplicated.length === 0 && !leaked,
+    ok: missing.length === 0 && duplicated.length === 0 && !leaked && !segmentationChanged,
     applied: true,
     missing,
     duplicated,
-    leaked
+    leaked,
+    segmentationChanged,
+    expectedSentenceCount,
+    actualSentenceCount,
+    expectedLineCount,
+    actualLineCount
   };
+}
+
+function addLineBoundaryMarkers(chunks) {
+  let markerIndex = 1;
+  for (const chunk of chunks || []) {
+    if (!chunk || chunk.locked) continue;
+    const text = String(chunk.text || '');
+    const paragraphEvents = (chunk.boundaryMarkers || [])
+      .filter(item => Number.isInteger(item.start) && Number.isInteger(item.end))
+      .map(item => ({ ...item, kind: 'paragraph' }));
+    const lineEvents = [];
+    const lineBreaks = text.matchAll(/\r?\n/gu);
+    for (const match of lineBreaks) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (paragraphEvents.some(event => rangesOverlap(start, end, event.start, event.end))) continue;
+      const marker = `[[[V2_LINE_${String(markerIndex).padStart(4, '0')}]]]`;
+      markerIndex += 1;
+      lineEvents.push({ marker, boundary: match[0], start, end, kind: 'line' });
+    }
+    if (!lineEvents.length) continue;
+    chunk.lineBoundaryMarkers = lineEvents.map(({ kind, ...item }) => item);
+    chunk.llmText = renderMarkerEvents(text, [...paragraphEvents, ...lineEvents]);
+  }
+}
+
+function addSentenceBoundaryMarkers(chunks, minimumSentenceCount = 4) {
+  let markerIndex = 1;
+  for (const chunk of chunks || []) {
+    if (!chunk || chunk.locked) continue;
+    const text = String(chunk.text || '');
+    const spans = splitSentenceSpans(text);
+    if (spans.length < Math.max(2, Number(minimumSentenceCount) || 4)) continue;
+    const paragraphEvents = (chunk.boundaryMarkers || [])
+      .filter(item => Number.isInteger(item.start) && Number.isInteger(item.end))
+      .map(item => ({ ...item, kind: 'paragraph' }));
+    const lineEvents = (chunk.lineBoundaryMarkers || [])
+      .filter(item => Number.isInteger(item.start) && Number.isInteger(item.end))
+      .map(item => ({ ...item, kind: 'line' }));
+    const sentenceEvents = [];
+    for (let i = 0; i < spans.length - 1; i += 1) {
+      const start = spans[i].end;
+      const end = spans[i + 1].start;
+      if ([...paragraphEvents, ...lineEvents].some(event => rangesOverlap(start, end, event.start, event.end))) continue;
+      const marker = `[[[V2_SENTENCE_${String(markerIndex).padStart(4, '0')}]]]`;
+      markerIndex += 1;
+      sentenceEvents.push({ marker, boundary: text.slice(start, end), start, end, kind: 'sentence' });
+    }
+    if (!sentenceEvents.length) continue;
+    chunk.sentenceBoundaryMarkers = sentenceEvents.map(({ kind, ...item }) => item);
+    chunk.llmText = renderMarkerEvents(text, [...paragraphEvents, ...lineEvents, ...sentenceEvents]);
+  }
+}
+
+function renderMarkerEvents(text, events) {
+  const sorted = [...events].sort((a, b) => a.start - b.start || a.end - b.end);
+  let cursor = 0;
+  let output = '';
+  for (const event of sorted) {
+    if (event.start < cursor) continue;
+    output += text.slice(cursor, event.start) + event.marker;
+    cursor = event.end;
+  }
+  return output + text.slice(cursor);
+}
+
+function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+  if (aStart === aEnd) return aStart >= bStart && aStart <= bEnd;
+  if (bStart === bEnd) return bStart >= aStart && bStart <= aEnd;
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function countLines(value) {
+  return String(value || '').split(/\r?\n/u).length;
 }
 
 function repairUnsafeChunkBoundaries(chunks) {

@@ -50,6 +50,21 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
 
   add(scores, 'student_record', count(text, /(?:세부\s*능력\s*및\s*특기\s*사항|세특|생활\s*기록부|교과\s*활동|수업\s*중|발표함|탐구함|기여함|보여\s*줌|학생은)/gu), 1.35);
   add(scores, 'student_record', count(text, /(?:함|됨|임|음)\s*[.!?]?\s*(?=$|\n)/gmu), 0.25);
+  const nominalObservationEndings = sentences.filter(hasStudentRecordEnding).length;
+  const observationSignals = count(text, /(?:수업|활동|탐구|발표|참여|태도|역량|모습|성장|협력|책임감|돋보|뛰어남|보여\s*줌|기여)/gu);
+  const nominalEndingRatio = nominalObservationEndings / Math.max(1, sentences.length);
+  const bulletLineCount = lines.filter(line => /^(?:[-*•]|\d+(?:[-.]\d+)*[:.)])\s*/u.test(line)).length;
+  const instructionalPlanSignals = count(text, /(?:예정임|계획임|수업을\s*(?:할|진행할)\s*예정|학습\s*목표|차시|교수\s*학습)/gu);
+  const likelyInstructionPlan = bulletLineCount >= 2 && instructionalPlanSignals >= 2;
+  if (nominalObservationEndings >= 2 && nominalEndingRatio >= 0.4 && observationSignals >= 2 && !likelyInstructionPlan) {
+    // 실제 세특은 별도 라벨 없이 관찰형 명사 종결을 문장마다 반복하는 경우가 많다.
+    // 기존 끝/줄 단위 정규식은 문단 안의 "~함. ~보임."을 거의 세지 못해
+    // general_essay로 밀어냈다. 요청 mode와 무관한 원문 문체 신호로 보강한다.
+    scores.student_record += 1.1
+      + Math.min(nominalObservationEndings, 6) * 0.45
+      + Math.min(observationSignals, 5) * 0.18;
+  }
+  if (likelyInstructionPlan) scores.report_assignment += 1.4;
 
   add(scores, 'resume_application', count(text, /(?:지원\s*동기|입사\s*후\s*포부|성장\s*과정|직무\s*역량|자기\s*소개서|자소서|저의\s*(?:강점|경험)|귀사|지원하게\s*되었습니다)/gu), 1.35);
   add(scores, 'resume_application', count(text, /(?:저는|제가|저의|저에게)/gu), 0.28);
@@ -116,8 +131,22 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     source: decisionSource,
     basicStyle: normalizeBasicStyle(basicStyle),
     candidates: ranked.slice(0, 4).map(item => ({ profile: item.profile, score: round(item.score, 3) })),
-    signals: { compactLength, lineCount: lines.length, sentenceCount: sentences.length, headingCount: headingCount(lines) }
+    signals: {
+      compactLength,
+      lineCount: lines.length,
+      sentenceCount: sentences.length,
+      headingCount: headingCount(lines),
+      nominalObservationEndings,
+      observationSignals,
+      instructionalPlanSignals,
+      bulletLineCount
+    }
   };
+}
+
+function hasStudentRecordEnding(sentence) {
+  const value = String(sentence || '').replace(/[.!?…。！？"'”’」』】)\]]+$/gu, '').trim();
+  return /(?:함|됨|임|음|보임|지님|돋보임|뛰어남|기름|나감|시킴|갖춤|보여\s*줌)$/u.test(value);
 }
 
 function breakTieWithBasicStyle(ranked, basicStyle) {

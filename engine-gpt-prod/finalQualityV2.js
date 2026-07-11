@@ -71,7 +71,7 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     warnings.push(warning(code, warningMessage(code, violation.detail), { detail: violation.detail || '' }));
   }
 
-  const missingProtected = (protectedTerms || []).filter(term => !containsNormalized(outputText, term));
+  const missingProtected = (protectedTerms || []).filter(term => !containsProtectedTerm(outputText, term));
   if (missingProtected.length) {
     warnings.push(warning('protected_term_loss', '보호해야 할 명칭이나 표현 일부가 누락됐을 수 있어요.', { terms: missingProtected.slice(0, 16) }));
   }
@@ -285,6 +285,37 @@ async function retryPolishSurface({ source, currentOutput, policy, config, signa
   };
 }
 
+async function retryGeneralSurface({ source, currentOutput, config, signal, safetyIdentifier = '' }) {
+  const system = [
+    '너는 이미 자연스러운 한국어 문서의 최소 표면 교정기다.',
+    'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 문장 수, 줄바꿈, 문단 수와 순서를 그대로 보존한다.',
+    'CURRENT가 SOURCE와 실질적으로 같으므로, 기존 문장 한 곳에서만 조사·띄어쓰기·어순·중복 표현 중 안전한 표면 수정을 만든다.',
+    '새 사실·평가·감정·예시·문장·문단을 만들지 않고, 다른 문장은 그대로 둔다.',
+    '안전한 수정이 정말 불가능할 때만 safeChangeFound=false로 답한다.'
+  ].join('\n');
+  const response = await completeJson({
+    system,
+    user: `[SOURCE]\n${source}\n\n[CURRENT]\n${currentOutput}`,
+    schema: POLISH_REPAIR_SCHEMA,
+    schemaName: 'gpt_prod_general_surface_retry',
+    model: config.models.repair,
+    reasoningEffort: config.reasoning.repair,
+    verbosity: 'low',
+    maxOutputTokens: Math.max(800, Math.min(12000, Math.ceil(String(source || '').length * 1.5))),
+    config,
+    signal,
+    safetyIdentifier,
+    meta: { task: 'repair', phase: 'general_surface_retry', mode: 'surface', profile: 'gpt_prod_v2' }
+  });
+  return {
+    outputText: String(response.json.outputText || '').trim() || currentOutput,
+    safeChangeFound: response.json.safeChangeFound === true,
+    notes: response.json.notes || [],
+    usage: response.usage,
+    model: response.model
+  };
+}
+
 function warningsFromSemantic(report) {
   if (!report?.ran || report.pass) return [];
   const codes = new Set((report.violations || []).map(item => item.type));
@@ -343,6 +374,12 @@ function containsNormalized(haystack, needle) {
   return clean(haystack).includes(clean(needle));
 }
 
+function containsProtectedTerm(haystack, term) {
+  if (containsNormalized(haystack, term)) return true;
+  const paren = String(term || '').trim().match(/\(([^)）]{2,60})\)$/u);
+  return paren ? containsNormalized(haystack, paren[1]) : false;
+}
+
 function warning(code, message, extra = {}) {
   return { code, severity: 'warning', message, ...extra };
 }
@@ -382,5 +419,6 @@ module.exports = {
   splitIntoSectionCount,
   polishEditPolicy,
   retryPolishSurface,
+  retryGeneralSurface,
   warningsFromSemantic
 };

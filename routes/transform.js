@@ -253,6 +253,61 @@ function shortHumanizeCredit(len) {
 }
 router.shortHumanizeCredit = shortHumanizeCredit;
 
+// 완료된 transform job의 결제 단일 진입점. 크레딧과 구독 쿠폰이 같은 큐·엔진·게이트를
+// 공유하되 결제 수단만 달라지도록 한다. requestId는 job_<id>로 고정해 재시작·재시도에도
+// 한 번만 차감된다. 결과 생성 실패·차단은 이 함수에 도달하지 않으므로 무차감이다.
+async function commitJobBilling(job, {
+  creditAmount = job?.needed,
+  operation = 'humanize',
+  mode = job?.mode || 'formal',
+  textLength = (job?.text || '').length,
+  meta = {}
+} = {}) {
+  if (!job || job.devNoAuth) return false;
+  const requestId = 'job_' + job.id;
+  if (job.billingMode === 'coupon') {
+    if (typeof analyze.commitCouponUsage !== 'function' || !job.billingTier) {
+      throw new Error('coupon_billing_unavailable');
+    }
+    await analyze.retryAsync(() => analyze.commitCouponUsage(
+      job.uid,
+      job.billingTier,
+      mode,
+      textLength,
+      requestId
+    ));
+    job.deducted = true;
+    return true;
+  }
+  if (job.plan === 'unlimited') return false;
+  await analyze.retryAsync(() => analyze.commitCreditDeduct(
+    job.uid,
+    creditAmount,
+    operation,
+    requestId,
+    { ...meta, mode, textLength }
+  ));
+  job.deducted = true;
+  return true;
+}
+router.commitJobBilling = commitJobBilling;   // 회귀 테스트용
+
+// 차단 후 사용자가 보존형 재처리를 선택할 때도 최초 작업의 결제 수단을 유지한다.
+// 쿠폰 작업을 크레딧으로 재검사하면 유효한 Pro 사용자가 잔액 부족으로 막히므로,
+// 인증·구독·잔량을 쿠폰 계약으로 다시 확인하고 최신 티어를 job에 반영한다.
+async function precheckExistingJobBilling(job, idToken, creditAmount, textLength = (job?.text || '').length) {
+  if (!job || job.devNoAuth) return null;
+  if (job.billingMode === 'coupon') {
+    const checked = await analyze.precheckCoupon(idToken, textLength);
+    if (checked.uid !== job.uid) throw Object.assign(new Error('AUTH_INVALID'), { status: 401 });
+    job.billingTier = checked.tier;
+    return checked;
+  }
+  if (job.plan === 'unlimited') return { uid: job.uid, plan: 'unlimited' };
+  return analyze.precheckCredits(idToken, creditAmount);
+}
+router.precheckExistingJobBilling = precheckExistingJobBilling;   // 회귀 테스트용
+
 // 동시 실행 풀: formal(5~90분·고원가)과 short(blog·polish, 1~3분·저원가)를 분리 — 한 풀에 섞으면 서로 굶김.
 function poolOf(mode) { return (mode || 'formal') === 'formal' ? 'formal' : 'short'; }
 
@@ -322,6 +377,7 @@ function activeJobPayload(job) {
     stage: job.stage,
     mode: job.mode || 'formal',
     modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
+    billingMode: job.billingMode === 'coupon' ? 'coupon' : 'credit',
     elapsedSec: Math.max(0, Math.round((Date.now() - elapsedBase) / 1000)),
     estSec: job.estSec,
     createdAt: job.createdAt,
@@ -478,9 +534,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'modeSource', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'modeSource', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'estSec', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -857,17 +913,20 @@ async function tryPreservationFallback(job, text) {
 
     // 과금: 보존형 단가로. 멱등 키는 동일(job_<id>)이라 중복 차감 불가.
     const fbNeeded = preservationFallbackCredit(text.length);
-    if (!job.devNoAuth && job.plan !== 'unlimited') {
-      try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, fbNeeded, 'humanize', 'job_' + job.id, { mode: 'polish', fallback: true, textLength: (text || '').length }));
-        job.deducted = true;
-      } catch (e) {
-        logger.error('transform.fallback_credit_deduct_failed_manual_action', {
-          jobId: job.id, uid: job.uid, needed: fbNeeded, opType: 'humanize', err: e
-        });
-      }
+    try {
+      await commitJobBilling(job, {
+        creditAmount: fbNeeded,
+        operation: 'humanize',
+        mode: 'polish',
+        textLength: text.length,
+        meta: { fallback: true }
+      });
+    } catch (e) {
+      logger.error('transform.fallback_billing_failed_manual_action', {
+        jobId: job.id, uid: job.uid, needed: fbNeeded, billingMode: job.billingMode, opType: 'humanize', err: e
+      });
     }
-    job.needed = fbNeeded;   // 표시·영속화가 실제 차감액과 일치하도록 갱신
+    job.needed = job.billingMode === 'coupon' ? 1 : fbNeeded;   // 표시·영속화가 실제 차감 단위와 일치
     job.status = 'done';
     job.result = {
       outputText: out.result.outputText,
@@ -954,17 +1013,20 @@ async function tryBlogPreservationFallback(job, text) {
     }
 
     const fbNeeded = preservationFallbackCredit(text.length);
-    if (!job.devNoAuth && job.plan !== 'unlimited') {
-      try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, fbNeeded, 'humanize', 'job_' + job.id, { mode: 'polish', fallback: true, fromMode: 'blog', textLength: (text || '').length }));
-        job.deducted = true;
-      } catch (e) {
-        logger.error('transform.blog_fallback_credit_deduct_failed_manual_action', {
-          jobId: job.id, uid: job.uid, needed: fbNeeded, opType: 'humanize', err: e
-        });
-      }
+    try {
+      await commitJobBilling(job, {
+        creditAmount: fbNeeded,
+        operation: 'humanize',
+        mode: 'polish',
+        textLength: text.length,
+        meta: { fallback: true, fromMode: 'blog' }
+      });
+    } catch (e) {
+      logger.error('transform.blog_fallback_billing_failed_manual_action', {
+        jobId: job.id, uid: job.uid, needed: fbNeeded, billingMode: job.billingMode, opType: 'humanize', err: e
+      });
     }
-    job.needed = fbNeeded;
+    job.needed = job.billingMode === 'coupon' ? 1 : fbNeeded;
     job.status = 'done';
     job.result = {
       outputText: out.result.outputText,
@@ -1626,20 +1688,24 @@ async function runJob(job, text, evidence) {
     }
     // ★ 완료 시 차감 — 실패·차단 경로는 여기 도달하지 않으므로 결과 없는 차감이 구조적으로 불가능.
     //   멱등 키로 job.id를 넘겨 재시작·재시도 중복 차감까지 차단(job.deducted 플래그 + 이중 안전).
-    if (!job.devNoAuth && job.plan !== 'unlimited') {
-      try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'restructure', 'job_' + job.id, { mode: 'formal', evidence: !!job.wantEvidence, textLength: (text || '').length }));
-        job.deducted = true;
-      } catch (e) {
-        // 차감 실패(그 사이 잔액 소진 등) — 결과는 이미 만들어졌으니 사용자에겐 전달(고객 우선), 수동 보정 로그.
-        logger.error('transform.credit_deduct_failed_manual_action', {
-          jobId: job.id,
-          uid: job.uid,
-          needed: job.needed,
-          opType: 'restructure',
-          err: e
-        });
-      }
+    try {
+      await commitJobBilling(job, {
+        creditAmount: job.needed,
+        operation: 'restructure',
+        mode: 'formal',
+        textLength: text.length,
+        meta: { evidence: !!job.wantEvidence }
+      });
+    } catch (e) {
+      // 차감 실패(그 사이 잔액 소진 등) — 결과는 이미 만들어졌으니 사용자에겐 전달(고객 우선), 수동 보정 로그.
+      logger.error('transform.billing_failed_manual_action', {
+        jobId: job.id,
+        uid: job.uid,
+        needed: job.needed,
+        billingMode: job.billingMode,
+        opType: 'restructure',
+        err: e
+      });
     }
     // 근거 일부 미반영(소프트 — 차단 아님): 승인 근거가 본문에 다 녹지 못한 경우 투명하게 안내.
     if (out.evidenceLost && out.evidenceLost.count > 0) {
@@ -1769,13 +1835,18 @@ async function runLongThesisChunked(job, text, evidence, pipelinePath = 'product
     // ★ 동결 블록(참고문헌 리스트·목차) 재조립 — 우회된 본문 앞뒤로 verbatim 복원.
     const finalText = fb.hasFrozen ? freeze.reassembleAcademic(fb, out.result.outputText) : out.result.outputText;
     // 과금: 재구성(formal) 단가 그대로. 멱등 키 동일(job_<id>) — 재시작·재시도 중복 차감 불가.
-    if (!job.devNoAuth && job.plan !== 'unlimited') {
-      try {
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, 'restructure', 'job_' + job.id, { mode: 'formal', longThesis: true, textLength: (text || '').length }));
-        job.deducted = true;
-      } catch (e) {
-        logger.error('transform.long_thesis_credit_deduct_failed_manual_action', { jobId: job.id, uid: job.uid, needed: job.needed, err: e });
-      }
+    try {
+      await commitJobBilling(job, {
+        creditAmount: job.needed,
+        operation: 'restructure',
+        mode: 'formal',
+        textLength: text.length,
+        meta: { longThesis: true }
+      });
+    } catch (e) {
+      logger.error('transform.long_thesis_billing_failed_manual_action', {
+        jobId: job.id, uid: job.uid, needed: job.needed, billingMode: job.billingMode, err: e
+      });
     }
     if ((out.floorReport.warnings || []).some(w => w.gate === 'lostFacts')) {
       job.note = (job.note ? job.note + ' ' : '') + '원문의 사실 일부(연도·수치·기관명 등)가 재작성 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 주세요.';
@@ -1952,20 +2023,23 @@ async function runHumanizeJob(job, text, evidence = '') {
         logger.info('transform.blog_fab_citation_stripped', { jobId: job.id, uid: job.uid, removed: sc.removed });
       }
     }
-    if (!job.devNoAuth && job.plan !== 'unlimited') {
-      try {
-        const operation = job.mode === 'formal' ? 'restructure' : 'humanize';
-        await analyze.retryAsync(() => analyze.commitCreditDeduct(job.uid, job.needed, operation, 'job_' + job.id, { mode: job.mode || 'formal', textLength: (job.text || '').length }));
-        job.deducted = true;
-      } catch (e) {
-        logger.error('transform.humanize_credit_deduct_failed_manual_action', {
-          jobId: job.id,
-          uid: job.uid,
-          mode: job.mode,
-          needed: job.needed,
-          err: e
-        });
-      }
+    try {
+      const operation = job.mode === 'formal' ? 'restructure' : 'humanize';
+      await commitJobBilling(job, {
+        creditAmount: job.needed,
+        operation,
+        mode: job.mode || 'formal',
+        textLength: (job.text || '').length
+      });
+    } catch (e) {
+      logger.error('transform.humanize_billing_failed_manual_action', {
+        jobId: job.id,
+        uid: job.uid,
+        mode: job.mode,
+        needed: job.needed,
+        billingMode: job.billingMode,
+        err: e
+      });
     }
     // ★ no-op(약한 변환) 안내(2026-06-16 품질리포트): 결과가 원문과 거의 같으면 강도 상향 추천.
     //   ★polish(다듬기)는 보존이 목적이라 일반 약변환은 제외하지만, 내용이 거의 100% 동일(공백만)이면 안내
@@ -2048,6 +2122,7 @@ router.post('/transform', async (req, res) => {
   // ★버그 수정(2026-06-19): A2 보안 마이그레이션 때 이 시작 핸들러만 body 직접 추출이 남아, FE가 body 토큰 전송을
   //   끊자(lav-138) 토큰이 undefined→precheck 401→로그인 리다이렉트로 휴머나이즈 시작이 전면 차단됐었다.
   const idToken = tokenFromReq(req);
+  const billingMode = req.body?.billingMode === 'coupon' ? 'coupon' : 'credit';
   const requestedModeValue = req.body?.mode;
   const mode = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? requestedModeValue : 'formal';
   const modeSource = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? 'provided' : 'defaulted';
@@ -2057,8 +2132,9 @@ router.post('/transform', async (req, res) => {
   if (typeof text !== 'string' || text.length < minLen) {
     return res.status(400).json({ error: `변환하려면 최소 ${minLen}자가 필요해요.` });
   }
-  if (text.length > 30000) {
-    return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
+  const hardMax = billingMode === 'coupon' ? 50000 : 30000;
+  if (text.length > hardMax) {
+    return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${hardMax.toLocaleString()}자)` });
   }
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const adminLabRequested = req.body && req.body.adminHumanizeLab === true;
@@ -2123,17 +2199,25 @@ router.post('/transform', async (req, res) => {
 
   const wantEvidence = mode === 'formal' && req.body.evidence === true;   // 근거 보강은 formal 전용(UI 잠금과 일치)
   // 과금: 탐지 제외 짧은 기능(blog·polish)은 최소 10크레딧 + 100자당 2크레딧. formal은 길이 구간 정액.
-  const needed = (mode === 'blog' || mode === 'polish')
+  const creditNeeded = (mode === 'blog' || mode === 'polish')
     ? shortHumanizeCredit(text.length)
     : restructureCredit(text.length, wantEvidence);
+  const needed = billingMode === 'coupon' ? 1 : creditNeeded;
   let pre;
   try {
     pre = adminLabUid
       ? { uid: adminLabUid, plan: 'unlimited' }
-      : (devNoAuth ? { uid: 'dev-local', plan: 'unlimited' } : await analyze.precheckCredits(idToken, needed));
+      : (devNoAuth
+          ? { uid: 'dev-local', plan: 'unlimited' }
+          : billingMode === 'coupon'
+            ? await analyze.precheckCoupon(idToken, text.length)
+            : await analyze.precheckCredits(idToken, needed));
   } catch (e) {
-    logger.warn('transform.precheck_failed', { mode, needed, billingMode: 'credit', err: e });
-    return res.status(e.status || 500).json({ error: analyze.authErrorMessage(e.message) });
+    logger.warn('transform.precheck_failed', { mode, needed, creditNeeded, billingMode, err: e });
+    return res.status(e.status || 500).json({
+      error: analyze.authErrorMessage(e.message),
+      ...(e.charLimit !== undefined ? { charLimit: e.charLimit } : {})
+    });
   }
   setLogContext({ uid: pre.uid });
   // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트(formal만).
@@ -2199,7 +2283,13 @@ router.post('/transform', async (req, res) => {
     : Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
   const job = {
     id, mode, modeSource, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
-    uid: pre.uid, plan: pre.plan, needed, devNoAuth, deducted: false,
+    uid: pre.uid,
+    plan: pre.plan || (billingMode === 'coupon' ? `subscription:${pre.tier || 'unknown'}` : 'free'),
+    needed,
+    devNoAuth,
+    deducted: false,
+    billingMode: adminLabUid || devNoAuth ? 'credit' : billingMode,
+    billingTier: billingMode === 'coupon' && !adminLabUid && !devNoAuth ? pre.tier : null,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
     memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',   // 경험·사례 메모 — blog·formal(재구성) 공통 적용(2026-06-15)
     autoCoach: req.body.autoCoach === true && mode === 'formal',   // 자동 코칭(재구성 전용) — 시작 시 입장 자동 도출·적용(2026-06-18)
@@ -2231,6 +2321,7 @@ router.post('/transform', async (req, res) => {
       bareLength: bare,
       evidence: wantEvidence,
       needed,
+      billingMode: job.billingMode,
       plan: pre.plan,
       estSec,
       queuePosition: payload.queuePosition,
@@ -2288,16 +2379,17 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
   //   기존엔 precheck 없이 백그라운드로 돌려, 작업이 끝난 뒤 차감이 실패해도(잔액 0) 결과를 전달했다(무상 제공 구멍).
   //   재시도 버튼(POST /transform)은 이미 precheckCredits로 막히는데 이 버튼만 빠져 있어 동작이 불일치했다.
   const fbNeeded = preservationFallbackCredit((job.text || '').length);
-  if (!job.devNoAuth && job.plan !== 'unlimited') {
+  if (!job.devNoAuth) {
     try {
-      await analyze.precheckCredits(tokenFromReq(req), fbNeeded);
+      await precheckExistingJobBilling(job, tokenFromReq(req), fbNeeded, (job.text || '').length);
     } catch (e) {
       const status = e.status || 402;
       return res.status(status).json({
-        error: status === 402
+        error: status === 402 && job.billingMode !== 'coupon'
           ? `보존형으로 받으려면 ${fbNeeded}크레딧이 필요해요. 크레딧이 부족해 충전 후 다시 시도해 주세요.`
           : analyze.authErrorMessage(e.message),
-        needed: fbNeeded
+        needed: job.billingMode === 'coupon' ? 1 : fbNeeded,
+        billingMode: job.billingMode === 'coupon' ? 'coupon' : 'credit'
       });
     }
   }

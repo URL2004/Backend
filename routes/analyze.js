@@ -3594,6 +3594,22 @@ router.post('/analyze', async (req, res) => {
   const idToken = bearerToken(req);   // 헤더 우선(body.idToken 폴백)
   const lang = req.body.lang || 'ko';
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
+  // 휴머나이징 실행기는 /transform 하나로 통일한다. 과거 /analyze의 동기 humanize는
+  // 큐·가격·모드 정규화·품질 게이트가 달라 저가 formal 호출과 polish 오라우팅을 만들었다.
+  // 감지는 기존 계약을 유지하고, 휴머나이징 구형 클라이언트에는 이동 경로를 명시한다.
+  if (mode !== 'detect') {
+    logger.warn('analyze.legacy_humanize_rejected', {
+      mode: mode == null ? null : String(mode).slice(0, 40),
+      humanizeMode: req.body?.humanizeMode == null ? null : String(req.body.humanizeMode).slice(0, 40),
+      billingMode
+    });
+    return res.status(410).json({
+      error: '휴머나이징 요청 경로가 변경되었습니다. 새 변환 화면에서 다시 시작해 주세요.',
+      code: 'HUMANIZE_MOVED',
+      route: '/transform',
+      allowedModes: ['blog', 'polish', 'formal']
+    });
+  }
   // ★ 멱등 키: 프런트가 작업(청크 포함)마다 고정 발급. 재시도해도 같은 값 → 중복 차감 방지. 안전 가드 ≤80자.
   const requestId = (typeof req.body.requestId === 'string' && req.body.requestId.trim())
     ? req.body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '')
@@ -4206,6 +4222,15 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
   const idToken = bearerToken(req);   // 헤더 우선(multipart form의 body.idToken 폴백)
   const billingMode = req.body.billingMode === 'coupon' ? 'coupon' : 'credit';
   const opType = mode === 'detect' ? 'detect' : 'humanize';
+  if (opType !== 'detect') {
+    logger.warn('analyze_pdf.legacy_humanize_rejected', { mode, billingMode });
+    return res.status(410).json({
+      error: 'PDF 휴머나이징은 브라우저에서 텍스트를 추출한 뒤 새 변환 화면을 이용해 주세요.',
+      code: 'HUMANIZE_MOVED',
+      route: '/transform',
+      allowedModes: ['blog', 'polish', 'formal']
+    });
+  }
   const requestId = (typeof req.body.requestId === 'string' && req.body.requestId.trim())
     ? req.body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '')
     : null;
@@ -4461,6 +4486,9 @@ router.runDetect = async function runDetect(text, lang = 'ko') {
 router.precheckCredits = precheckCredits;
 router.commitCreditDeduct = commitCreditDeduct;
 router.commitCreditRestore = commitCreditRestore;
+router.precheckCoupon = precheckCoupon;
+router.commitCouponUsage = commitCouponUsage;
+router.commitCouponRestore = commitCouponRestore;
 router.retryAsync = retryAsync;
 router.saveAnalyzeHistory = saveAnalyzeHistory;   // 테스트·재사용용
 router.authErrorMessage = authErrorMessage;

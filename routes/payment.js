@@ -1094,7 +1094,15 @@ router.post('/admin/update-gpt-runtime-config', async (req, res) => {
   const adminUid = await requireAdmin(req, res);
   if (!adminUid) return;
   try {
-    const patch = gptRuntimeConfig.sanitizeConfig(req.body && req.body.config);
+    const requestedConfig = req.body && req.body.config || {};
+    if (requestedConfig.activeProvider != null && String(requestedConfig.activeProvider).toLowerCase() !== 'gpt') {
+      logger.warn('admin.gpt_runtime_provider_change_blocked', { adminUid, requested: String(requestedConfig.activeProvider).slice(0, 30) });
+      return res.status(409).json({
+        error: '운영 공급자는 GPT로 고정되어 있습니다. 롤백은 엔진 플래그와 직전 배포로 수행해 주세요.',
+        code: 'PROVIDER_CHANGE_REQUIRES_DEPLOYMENT'
+      });
+    }
+    const patch = { ...gptRuntimeConfig.sanitizeConfig(requestedConfig), activeProvider: 'gpt' };
     await db.collection(gptRuntimeConfig.SETTINGS_COLLECTION).doc(gptRuntimeConfig.SETTINGS_DOC).set({
       ...patch,
       version: gptRuntimeConfig.VERSION,
@@ -1132,6 +1140,12 @@ router.post('/admin/test-gpt-runtime-config', async (req, res) => {
   if (!adminUid) return;
   if (!process.env.OPENAI_API_KEY) {
     return res.status(503).json({ error: 'OPENAI_API_KEY가 설정되어 있지 않습니다.' });
+  }
+  if (req.body?.config?.activeProvider != null && String(req.body.config.activeProvider).toLowerCase() !== 'gpt') {
+    return res.status(409).json({
+      error: '운영 테스트 공급자는 GPT만 지원합니다.',
+      code: 'UNSUPPORTED_PROVIDER'
+    });
   }
   try {
     const base = await gptRuntimeConfig.getRuntimeConfig({ db, logger, force: true });

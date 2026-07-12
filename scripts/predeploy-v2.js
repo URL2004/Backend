@@ -24,6 +24,7 @@ async function main() {
   add('node_runtime', process.versions.node.split('.')[0] === '24' && packageJson.engines?.node === '24.x' && nodeVersionFile === '24', `runtime=${process.versions.node}, engines=${packageJson.engines?.node}, file=${nodeVersionFile}`);
   add('python_postinstall_removed', !packageJson.scripts?.postinstall && Boolean(packageJson.scripts?.['setup:layout-nlp']), packageJson.scripts?.['setup:layout-nlp'] || 'missing');
   add('form_data_patched', semverAtLeast(packageJson.dependencies?.['form-data'], 4, 0, 6), packageJson.dependencies?.['form-data'] || 'missing');
+  add('multer_2_patched', semverAtLeast(packageJson.dependencies?.multer, 2, 0, 0), packageJson.dependencies?.multer || 'missing');
   add('firebase_admin_14_1', packageJson.dependencies?.['firebase-admin'] === '14.1.0', packageJson.dependencies?.['firebase-admin'] || 'missing');
 
   const base = String(args.base || '').trim();

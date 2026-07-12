@@ -5,10 +5,12 @@ require('dotenv').config();
 const express = require('express');
 const { logger, captureProcessErrors } = require('./lib/logger');
 captureProcessErrors();
-const { corsMiddleware, limiter } = require('./config');
+const { corsMiddleware, limiter, db } = require('./config');
 const requestContext = require('./middleware/requestContext');
 const errorHandler = require('./middleware/errorHandler');
 const maintenanceMode = require('./middleware/maintenanceMode');
+const gptRuntimeConfig = require('./lib/gptRuntimeConfig');
+const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -36,17 +38,40 @@ app.use('/events', limiter);   // 알림 중계 — 인증 전 폭주 방지
 
 // 헬스체크(배포 플랫폼용 — Render 등은 이 경로로 살아있는지 판단)
 const transformRouter = require('./routes/transform');
-app.get(['/healthz', '/api/health'], (req, res) => {
-  res.json({
-    ok: true,
-    activeProvider: process.env.LLM_ACTIVE_PROVIDER || 'gpt',
-    humanizeEngineV2: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1',
-    firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-    openai: !!process.env.OPENAI_API_KEY,
-    maintenance: maintenanceMode.isMaintenanceEnabled(),
-    uptimeSec: Math.round(process.uptime()),
-    ...transformRouter.stats()
-  });
+app.get(['/healthz', '/api/health'], async (req, res) => {
+  const humanizeEngineV2 = process.env.HUMANIZE_ENGINE_V2_ENABLED === '1';
+  try {
+    const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
+    const compatibility = evaluateHumanizeRuntime({
+      humanizeEngineV2,
+      activeProvider: runtimeConfig.activeProvider
+    });
+    res.status(compatibility.ok ? 200 : 503).json({
+      ok: compatibility.ok,
+      activeProvider: compatibility.activeProvider,
+      providerCompatible: compatibility.providerCompatible,
+      ...(compatibility.code ? { code: compatibility.code } : {}),
+      runtimeConfigSource: runtimeConfig.source || 'unknown',
+      humanizeEngineV2,
+      firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+      openai: !!process.env.OPENAI_API_KEY,
+      maintenance: maintenanceMode.isMaintenanceEnabled(),
+      uptimeSec: Math.round(process.uptime()),
+      ...transformRouter.stats()
+    });
+  } catch (err) {
+    logger.error('server.health_runtime_config_failed', { err });
+    res.status(503).json({
+      ok: false,
+      code: 'RUNTIME_CONFIG_UNAVAILABLE',
+      humanizeEngineV2,
+      firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+      openai: !!process.env.OPENAI_API_KEY,
+      maintenance: maintenanceMode.isMaintenanceEnabled(),
+      uptimeSec: Math.round(process.uptime()),
+      ...transformRouter.stats()
+    });
+  }
 });
 
 // 라우트
@@ -62,20 +87,14 @@ app.use('/', require('./routes/coupon'));
 app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
 app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
 
-// ★ 안전망: 로컬 claudecode provider는 호출당 ~45초·직렬(동시성 1)이라 UI 변환이 수십 분 걸린다.
-//   provider 선택은 운영·개발 모두 LLM_ACTIVE_PROVIDER 한 곳만 사용한다.
-if (process.env.LLM_ACTIVE_PROVIDER === 'claudecode') {
-  logger.warn('server.llm_claudecode_warning', {
-    message: 'LLM_ACTIVE_PROVIDER=claudecode로 서버 구동 중입니다. UI 변환은 타임아웃 가능성이 높습니다.'
-  });
-}
-
 app.use(errorHandler);
 
-const server = app.listen(process.env.PORT || 3000, () => {
+const server = app.listen(process.env.PORT || 3000, async () => {
+  const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger, force: true });
   logger.info('server.started', {
     port: Number(process.env.PORT || 3000),
-    activeProvider: process.env.LLM_ACTIVE_PROVIDER || 'gpt',
+    activeProvider: runtimeConfig.activeProvider,
+    runtimeConfigSource: runtimeConfig.source,
     auth: process.env.FIREBASE_SERVICE_ACCOUNT ? 'firebase' : (process.env.DEV_NO_AUTH === '1' ? 'dev_no_auth' : 'disabled')
   });
 });

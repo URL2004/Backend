@@ -40,6 +40,20 @@ const COPY = {
   }
 };
 
+function v2BasicRecommendation(kind, fallback) {
+  if (process.env.HUMANIZE_ENGINE_V2_ENABLED !== '1') return fallback;
+  if (kind === 'resume') {
+    return '이 글은 자소서·생활기록부·탐구활동처럼 개인 경험과 관찰을 정확히 지키는 것이 중요해요. 기본 휴머나이징에도 해당 장르의 화자·경험 보존 규칙과 의미 검증이 적용되어, 고급의 추가 비용 대비 차이가 작습니다. 기본 휴머나이징을 권장해요.';
+  }
+  if (kind === 'reflection') {
+    return '이 글은 독후감·서평처럼 개인의 감상과 해석을 지키는 것이 중요해요. 기본 휴머나이징에도 감상문 장르 보존과 의미 검증이 적용되므로 기본을 권장합니다. 맞춤법과 연결만 고치려면 과제 어투로 다듬기를 선택하세요.';
+  }
+  if (kind === 'thin') {
+    return '글이 짧고 추상적이라 검증할 구체 정보가 적어요. 고급 휴머나이징도 원문에 없는 경험이나 수치를 만들지 않으므로 추가 이점이 작습니다. 구체적인 경험·수치를 원문에 보태거나 기본 휴머나이징으로 진행해 주세요.';
+  }
+  return fallback;
+}
+
 router.post('/diagnose', (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   const bare = text.replace(/\s+/g, '');
@@ -60,6 +74,7 @@ router.post('/diagnose', (req, res) => {
   const density = factDensity(text);
   const factDense = density >= FACT_DENSE_THRESHOLD;   // 연도·%·인용 빼곡 → 재구성 시 사실오류 위험(권장 안내)
   const ru = restructureUnfit(text, ir);                // 재구성 부적합(자소서·생기부·탐구문·짧고추상) + 명확한 사유
+  const recommendationReason = v2BasicRecommendation(ru.kind, ru.reason);
   const adv = genreAdvisory(text);                      // 회피 난이도 사전 안내(STEM 스펙·구조화 보고서) — 소프트(진행 가능)
   logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike, density: Number(density.toFixed(1)), factDense, restructureUnfit: ru.unfit, unfitKind: ru.kind, advisoryKind: adv?.kind });
   res.json({
@@ -70,7 +85,8 @@ router.post('/diagnose', (req, res) => {
     resumeLike,
     factDense,
     restructureUnfit: ru.unfit,         // 프런트: 고급 시작 자체를 막고 사유 노출
-    restructureUnfitReason: ru.reason,  // 사용자에게 보여줄 '명확한 사유'
+    restructureUnfitReason: recommendationReason,  // 사용자에게 보여줄 '명확한 사유'
+    restructureUnfitKind: ru.kind,
     advisory: adv ? adv.reason : null,  // 회피 난이도 소프트 안내(STEM·구조화 보고서) — 차단 아님
     advisoryKind: adv ? adv.kind : null,
     title: copy.title,

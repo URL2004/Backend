@@ -6,6 +6,7 @@ const { addUsage, emptyUsage } = require('./usageCost');
 const floor = require('../engine/floor');
 const { splitSentences, computeEditMetrics } = require('../engine/koreanText');
 const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile');
+const { compareNumberMultiset } = require('./factAudit');
 
 const LEDGER_SCHEMA = {
   type: 'object',
@@ -344,6 +345,12 @@ function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', 
   const candidateNovelty = floor.measureNovelty(source, candidate, allowedExtra).count;
   if (candidateLost > beforeLost) reasons.push('lost_facts_worsened');
   if (candidateNovelty > beforeNovelty) reasons.push('novelty_worsened');
+  const beforeNumbers = compareNumberMultiset(source, before, allowedExtra);
+  const candidateNumbers = compareNumberMultiset(source, candidate, allowedExtra);
+  if (candidateNumbers.removedCount > beforeNumbers.removedCount
+      || candidateNumbers.addedCount > beforeNumbers.addedCount) {
+    reasons.push('number_facts_worsened');
+  }
   const compact = value => String(value || '').normalize('NFC').replace(/\s+/gu, '');
   if (compact(candidate) === compact(source)
       && compact(before) !== compact(source)
@@ -485,6 +492,7 @@ module.exports = {
   semanticJudge,
   repairViolations,
   judgeAndRepair,
+  assessRepairCandidate,
   validateLedgerHealth,
   evidenceMatches
 };

@@ -121,6 +121,14 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.equal(out.engineMeta.requestedMode, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.equal(out.engineMeta.semanticJudgeRan, true);
+  assert.equal(out.engineMeta.logicalChunkCount, out.engineMeta.chunkCount);
+  assert.equal(out.engineMeta.lockedChunkCount, 0);
+  assert.equal(out.engineMeta.transformedChunkCount, 1);
+  assert.equal(out.engineMeta.humanizeCallCount, 1);
+  assert.equal(out.engineMeta.semanticModelCallCount, 1);
+  assert.equal(out.engineMeta.surfaceRetryCallCount, 0);
+  assert.equal(out.engineMeta.modelCallCount, 2);
+  assert.equal(out.engineMeta.semanticSectionCount, 1);
   assert.equal(out.result.records[0].changedSentenceRatio, 1);
   assert.ok(out.result.records[0].charEditRatio > 0);
   const humanizeCall = mock.calls.find(call => call.name === 'gpt_prod_humanize_result');
@@ -130,6 +138,42 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
     assert.equal(call.body.safety_identifier, expectedSafety);
     assert.equal(JSON.stringify(call.body).includes(uid), false);
   }
+});
+
+test('polish는 의미 심사 뒤 새 문단을 만들지 않고 원문 문단 수로 전달한다', { concurrency: false }, async t => {
+  const source = '첫 문장은 표현이 조금 어색합니다. 둘째 문장은 연결이 매끄럽지 않습니다. 마지막 문장은 핵심 내용을 정리합니다.';
+  const splitOutput = '첫 문장은 표현이 다소 어색합니다.\n\n둘째 문장은 연결이 자연스럽지 않습니다.\n\n마지막 문장은 핵심 내용을 정리합니다.';
+  installEngineMock(t, { humanize: splitOutput });
+  const out = await engine.run({ text: source, mode: 'polish', allowPolish: true, uid: 'paragraph-polish-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify({
+    criticals: out.floorReport?.criticals,
+    warnings: out.floorReport?.warnings,
+    gateWarnings: out.result?.gateWarnings,
+    records: out.result?.records
+  }));
+  assert.equal(out.result.outputText.split(/\n{2,}/u).length, 1);
+  assert.equal(out.result.outputText.replace(/\s+/gu, ''), splitOutput.replace(/\s+/gu, ''));
+  assert.equal(out.qualityWarnings.some(item => item.code === 'paragraph_structure_changed'), false);
+  assert.equal(out.result.structureLock.layoutRepair.paragraphs.policy, 'exact_polish');
+  assert.equal(out.result.structureLock.layoutRepair.paragraphs.afterCount, 1);
+});
+
+test('원문부터 있던 비인접 반복은 결과에서 늘지 않으면 needs_review로 올리지 않는다', { concurrency: false }, async t => {
+  const repeated = '같은 결론을 다시 설명하는 충분히 긴 문장입니다.';
+  const source = `${repeated} 중간에는 서로 다른 근거를 자세히 설명합니다. ${repeated} 마지막에는 적용 범위를 정리합니다.`;
+  const output = `${repeated} 중간에는 서로 다른 근거를 차례로 설명합니다. ${repeated} 마지막에는 적용 범위를 정돈합니다.`;
+  installEngineMock(t, { humanize: output });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'source-repetition-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify({
+    criticals: out.floorReport?.criticals,
+    warnings: out.floorReport?.warnings,
+    gateWarnings: out.result?.gateWarnings,
+    records: out.result?.records
+  }));
+  assert.equal(out.qualityWarnings.some(item => item.code === 'repetition'), false);
+  assert.equal(out.result.repetitionAudit.increased, false);
+  assert.ok(out.result.repetitionAudit.delta.total <= 0);
+  assert.equal(out.qualityStatus, 'clean');
 });
 
 test('polish 무변환은 표면 수정 재시도 정확히 1회 후 안전 결과를 전달한다', { concurrency: false }, async t => {

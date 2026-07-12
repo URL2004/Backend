@@ -110,11 +110,12 @@ function auditVoice(sourceProfile, output, { documentProfile = 'unknown', mode =
   if ((sourceProfile?.directQuoteCount || 0) !== current.directQuoteCount) {
     warnings.push(warning('quote_count_changed', '직접 인용의 개수가 달라졌을 수 있어요.'));
   }
-  if ((sourceProfile?.listItemCount || 0) > 0 && current.listItemCount < sourceProfile.listItemCount) {
+  const listStructureLocked = mode === 'polish'
+    || ['academic_paper', 'report_assignment', 'student_record', 'resume_application', 'long_explainer'].includes(documentProfile);
+  if (listStructureLocked && current.listItemCount !== (sourceProfile?.listItemCount || 0)) {
+    warnings.push(warning('list_structure_changed', '원문의 목록 항목 수나 구조가 달라졌을 수 있어요.'));
+  } else if ((sourceProfile?.listItemCount || 0) > 0 && current.listItemCount < sourceProfile.listItemCount) {
     warnings.push(warning('list_structure_changed', '목록 항목 일부가 합쳐지거나 누락됐을 수 있어요.'));
-  }
-  if (mode === 'polish' && current.listItemCount !== (sourceProfile?.listItemCount || 0)) {
-    warnings.push(warning('list_structure_changed', '보존형 윤문에서 목록 구조가 달라졌을 수 있어요.'));
   }
   if (current.headingCount !== (sourceProfile?.headingCount || 0)) {
     warnings.push(warning('heading_structure_changed', '제목이나 절 구조의 개수가 달라졌을 수 있어요.'));

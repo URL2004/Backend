@@ -6,6 +6,7 @@ const { auditVoice } = require('./voiceProfile');
 const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
 const { judgeAndRepair } = require('./judge');
 const { completeJson } = require('./openaiClient');
+const { compareNumberMultiset } = require('./factAudit');
 
 const POLISH_REPAIR_SCHEMA = {
   type: 'object',
@@ -46,12 +47,15 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'heading_structure_changed',
   'paragraph_structure_changed',
   'creative_line_structure',
-  'register_shift'
+  'register_shift',
+  'number_changed'
 ]);
 
 function buildDeterministicAudit({ source, outputText, mode, contract, voiceProfile, documentProfile, structureAudit, protectedTerms = [], allowedExtra = '' }) {
   const warnings = [];
   const editMetrics = computeEditMetrics(source, outputText);
+  const repetitionAudit = compareRepetitionDelta(source, outputText);
+  const numberAudit = compareNumberMultiset(source, outputText, allowedExtra);
   let floorViolations = [];
   try {
     floorViolations = floor.collectFloorViolations({
@@ -63,6 +67,9 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
       chunkLevel: false,
       allowedExtra
     }) || [];
+    if (!repetitionAudit.increased) {
+      floorViolations = floorViolations.filter(violation => String(violation?.type || violation?.gate || '') !== 'repetition');
+    }
   } catch (error) {
     warnings.push(warning('audit_error', `결정론적 품질 감사 일부를 실행하지 못했어요: ${safeMessage(error)}`));
   }
@@ -74,6 +81,13 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   const missingProtected = (protectedTerms || []).filter(term => !containsProtectedTerm(outputText, term));
   if (missingProtected.length) {
     warnings.push(warning('protected_term_loss', '보호해야 할 명칭이나 표현 일부가 누락됐을 수 있어요.', { terms: missingProtected.slice(0, 16) }));
+  }
+  if (numberAudit.changed) {
+    warnings.push(warning(
+      'number_changed',
+      '원문의 숫자나 수량 표기 일부가 추가되거나 누락됐을 수 있어요.',
+      { addedCount: numberAudit.addedCount, removedCount: numberAudit.removedCount }
+    ));
   }
 
   const voiceAudit = auditVoice(voiceProfile, outputText, { documentProfile: documentProfile?.profile || 'unknown', mode });
@@ -92,8 +106,38 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     floorViolations,
     warnings: dedupeWarnings(warnings),
     naturalnessShadow,
+    repetitionAudit,
+    numberAudit,
     protectedFactCount: countProtectedFacts(source),
     structureSignals: detectStructureSignals(source)
+  };
+}
+
+function compareRepetitionDelta(source, outputText) {
+  const before = floor.measureRepetition(source);
+  const after = floor.measureRepetition(outputText);
+  const delta = {
+    exactGroups: (after.count || 0) - (before.count || 0),
+    maxRepeat: (after.maxRepeat || 1) - (before.maxRepeat || 1),
+    fuzzyPairs: (after.fuzzyCount || 0) - (before.fuzzyCount || 0),
+    shortFragmentGroups: (after.shortFragCount || 0) - (before.shortFragCount || 0),
+    total: (after.total || 0) - (before.total || 0)
+  };
+  return {
+    before: compactRepetition(before),
+    after: compactRepetition(after),
+    delta,
+    increased: delta.exactGroups > 0 || delta.maxRepeat > 0 || delta.fuzzyPairs > 0 || delta.shortFragmentGroups > 0
+  };
+}
+
+function compactRepetition(value) {
+  return {
+    exactGroups: Number(value?.count) || 0,
+    maxRepeat: Number(value?.maxRepeat) || 1,
+    fuzzyPairs: Number(value?.fuzzyCount) || 0,
+    shortFragmentGroups: Number(value?.shortFragCount) || 0,
+    total: Number(value?.total) || 0
   };
 }
 
@@ -363,6 +407,7 @@ function warningMessage(code, detail) {
     length_short: '원문 내용 일부가 축약됐을 수 있어요.',
     length_overrun: '원문보다 과도하게 늘어난 부분이 있을 수 있어요.',
     repetition: '유사한 문장이 반복될 수 있어요.',
+    number_changed: '원문의 숫자나 수량 표기 일부가 추가되거나 누락됐을 수 있어요.',
     meta_leak: '내부 작업 지시가 결과에 노출됐을 수 있어요.',
     coined_term: '원문에 없는 용어가 만들어졌을 수 있어요.'
   };
@@ -418,6 +463,7 @@ module.exports = {
   buildReviewPairs,
   splitIntoSectionCount,
   polishEditPolicy,
+  compareRepetitionDelta,
   retryPolishSurface,
   retryGeneralSurface,
   warningsFromSemantic

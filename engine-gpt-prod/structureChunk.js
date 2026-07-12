@@ -2,7 +2,7 @@
 
 const baseChunk = require('../engine/chunk');
 const freezeBlocks = require('../engine/freezeblocks');
-const { splitSentenceSpans } = require('../engine/koreanText');
+const { splitSentenceSpans, splitSentences } = require('../engine/koreanText');
 
 const VERSION = 'gpt-structure-chunk-v1';
 const UNSAFE_END_RE = /(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한|그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/;
@@ -231,6 +231,210 @@ function restoreBoundaryMarkers(outputText, chunk) {
   };
 }
 
+// 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 이 단계는 동결 제목을
+// 독립 행으로 되돌리고, 보존형 윤문/고신뢰 보고서의 문단 경계만 조정한다.
+function restorePostSemanticLayout({ source, outputText, chunks, mode = '', documentProfile = '', profileConfidence = 0 } = {}) {
+  const heading = restoreLockedHeadingLayout(source, outputText, chunks);
+  const paragraphs = restoreParagraphLayout({
+    source,
+    outputText: heading.text,
+    chunks,
+    mode,
+    documentProfile,
+    profileConfidence
+  });
+  return {
+    text: paragraphs.text,
+    applied: heading.applied || paragraphs.applied,
+    heading,
+    paragraphs,
+    pass: heading.missingCount === 0 && paragraphs.pass
+  };
+}
+
+function restoreLockedHeadingLayout(source, outputText, chunks) {
+  const headings = (chunks || [])
+    .filter(chunk => chunk?.locked && chunk.lockType === 'heading' && String(chunk.text || '').trim())
+    .map(chunk => String(chunk.text).trim());
+  let text = normalizeNewlines(outputText);
+  const sourceText = normalizeNewlines(source);
+  let sourceCursor = 0;
+  let outputCursor = 0;
+  let restoredCount = 0;
+  let missingCount = 0;
+  for (const heading of headings) {
+    const sourceIndex = sourceText.indexOf(heading, sourceCursor);
+    const outputIndex = text.indexOf(heading, outputCursor);
+    if (outputIndex < 0) {
+      missingCount += 1;
+      continue;
+    }
+    const hasSourceBefore = sourceIndex > 0 && sourceText.slice(0, sourceIndex).trim().length > 0;
+    const hasSourceAfter = sourceIndex >= 0
+      && sourceText.slice(sourceIndex + heading.length).trim().length > 0;
+    let left = outputIndex;
+    let right = outputIndex + heading.length;
+    while (left > 0 && /\s/u.test(text[left - 1])) left -= 1;
+    while (right < text.length && /\s/u.test(text[right])) right += 1;
+    const sourceBefore = hasSourceBefore ? sourceLineSeparator(sourceText, sourceIndex, 'before') : '';
+    const sourceAfter = hasSourceAfter ? sourceLineSeparator(sourceText, sourceIndex + heading.length, 'after') : '';
+    const replacement = `${sourceBefore}${heading}${sourceAfter}`;
+    const previous = text.slice(left, right);
+    text = text.slice(0, left) + replacement + text.slice(right);
+    if (previous !== replacement) restoredCount += 1;
+    sourceCursor = sourceIndex >= 0 ? sourceIndex + heading.length : sourceCursor;
+    outputCursor = left + replacement.length;
+  }
+  return {
+    text,
+    applied: restoredCount > 0,
+    headingCount: headings.length,
+    restoredCount,
+    missingCount
+  };
+}
+
+function restoreParagraphLayout({ source, outputText, chunks, mode = '', documentProfile = '', profileConfidence = 0 } = {}) {
+  const sourceParagraphs = splitParagraphs(source);
+  const before = splitParagraphs(outputText);
+  const sourceCount = sourceParagraphs.length;
+  const beforeCount = before.length;
+  const sensitiveReport = Number(profileConfidence) >= 0.75
+    && ['academic_paper', 'report_assignment', 'long_explainer'].includes(String(documentProfile || ''));
+  let targetCount = beforeCount;
+  let policy = 'none';
+  if (mode === 'polish' && sourceCount > 0) {
+    targetCount = sourceCount;
+    policy = 'exact_polish';
+  } else if (sensitiveReport && sourceCount > 0) {
+    const maximum = Math.max(sourceCount + 2, Math.ceil(sourceCount * 1.6));
+    if (beforeCount > maximum) {
+      targetCount = maximum;
+      policy = 'bounded_sensitive_report';
+    }
+  }
+  if (policy === 'none' || beforeCount === targetCount) {
+    return {
+      text: String(outputText || ''),
+      applied: false,
+      policy,
+      sourceCount,
+      beforeCount,
+      targetCount,
+      afterCount: beforeCount,
+      pass: true
+    };
+  }
+
+  const protectedBlocks = new Set((chunks || [])
+    .filter(chunk => chunk?.locked)
+    .map(chunk => bare(chunk.text))
+    .filter(Boolean));
+  const paragraphs = [...before];
+  while (paragraphs.length > targetCount) {
+    const candidate = findMergeCandidate(paragraphs, protectedBlocks);
+    if (!candidate) break;
+    paragraphs.splice(
+      candidate.index,
+      2,
+      `${paragraphs[candidate.index].trim()}${candidate.separator}${paragraphs[candidate.index + 1].trim()}`.trim()
+    );
+  }
+  while (paragraphs.length < targetCount) {
+    const candidate = findSplitCandidate(paragraphs, protectedBlocks);
+    if (!candidate) break;
+    paragraphs.splice(candidate.index, 1, candidate.left, candidate.right);
+  }
+  const text = normalizeParagraphWhitespace(paragraphs.join('\n\n'));
+  const afterCount = splitParagraphs(text).length;
+  return {
+    text,
+    applied: text !== normalizeParagraphWhitespace(outputText),
+    policy,
+    sourceCount,
+    beforeCount,
+    targetCount,
+    afterCount,
+    pass: mode === 'polish' ? afterCount === sourceCount : afterCount <= targetCount
+  };
+}
+
+function sourceLineSeparator(text, boundary, direction) {
+  let start = boundary;
+  let end = boundary;
+  if (direction === 'before') {
+    while (start > 0 && /\s/u.test(text[start - 1])) start -= 1;
+  } else {
+    while (end < text.length && /\s/u.test(text[end])) end += 1;
+  }
+  const whitespace = direction === 'before' ? text.slice(start, boundary) : text.slice(boundary, end);
+  const newlineCount = (whitespace.match(/\n/gu) || []).length;
+  return newlineCount >= 2 ? '\n\n' : '\n';
+}
+
+function findMergeCandidate(paragraphs, protectedBlocks) {
+  let selected = null;
+  let selectedLength = Infinity;
+  for (let index = 0; index < paragraphs.length - 1; index += 1) {
+    const protectedPair = touchesProtectedBlock(paragraphs[index], protectedBlocks)
+      || touchesProtectedBlock(paragraphs[index + 1], protectedBlocks);
+    // Prefer ordinary body paragraphs. If the target still cannot be reached,
+    // remove only the blank line beside a locked block and retain a single
+    // newline so headings, tables and references remain exact standalone rows.
+    const score = bare(paragraphs[index]).length + bare(paragraphs[index + 1]).length
+      + (protectedPair ? 1000000 : 0);
+    if (score < selectedLength) {
+      selected = { index, separator: protectedPair ? '\n' : ' ' };
+      selectedLength = score;
+    }
+  }
+  return selected;
+}
+
+function findSplitCandidate(paragraphs, protectedBlocks) {
+  const ranked = paragraphs
+    .map((paragraph, index) => ({ paragraph, index, length: bare(paragraph).length }))
+    .filter(item => !touchesProtectedBlock(item.paragraph, protectedBlocks))
+    .sort((a, b) => b.length - a.length);
+  for (const item of ranked) {
+    const sentences = splitSentences(item.paragraph);
+    if (sentences.length < 2) continue;
+    const half = sentences.reduce((sum, sentence) => sum + bare(sentence).length, 0) / 2;
+    let running = 0;
+    let splitIndex = 1;
+    for (let index = 0; index < sentences.length - 1; index += 1) {
+      running += bare(sentences[index]).length;
+      splitIndex = index + 1;
+      if (running >= half) break;
+    }
+    const left = sentences.slice(0, splitIndex).join(' ').trim();
+    const right = sentences.slice(splitIndex).join(' ').trim();
+    if (left && right) return { index: item.index, left, right };
+  }
+  return null;
+}
+
+function touchesProtectedBlock(paragraph, protectedBlocks) {
+  const normalized = bare(paragraph);
+  if (!normalized) return false;
+  for (const block of protectedBlocks || []) {
+    if (normalized === block || normalized.includes(block)) return true;
+  }
+  return false;
+}
+
+function splitParagraphs(value) {
+  return normalizeNewlines(value).split(/\n{2,}/u).map(paragraph => paragraph.trim()).filter(Boolean);
+}
+
+function normalizeNewlines(value) {
+  return String(value || '').replace(/\r\n?/gu, '\n');
+}
+
+function normalizeParagraphWhitespace(value) {
+  return normalizeNewlines(value).replace(/[ \t]+\n/gu, '\n').replace(/\n[ \t]+/gu, '\n').replace(/\n{3,}/gu, '\n\n').trim();
+}
+
 function addLineBoundaryMarkers(chunks) {
   let markerIndex = 1;
   for (const chunk of chunks || []) {
@@ -335,7 +539,7 @@ function repairUnsafeChunkBoundaries(chunks) {
   };
 }
 
-function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair } = {}) {
+function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair, layoutRepair } = {}) {
   const locked = (chunks || []).filter(c => c.locked && String(c.text || '').trim());
   const output = String(outputText || '');
   const lost = [];
@@ -363,9 +567,33 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair 
     lostLockedCount: lost.length,
     lostLocked: lost.slice(0, 20),
     boundaryRepair: boundaryRepair || { applied: false, count: 0, repairs: [] },
+    layoutRepair: compactLayoutRepair(layoutRepair),
     unsafeBoundaryCount: boundaryWarnings.length,
     unsafeBoundaries: boundaryWarnings.slice(0, 20),
-    pass: lost.length === 0 && boundaryWarnings.length === 0
+    pass: lost.length === 0 && boundaryWarnings.length === 0 && layoutRepair?.pass !== false
+  };
+}
+
+function compactLayoutRepair(value) {
+  if (!value) return { applied: false };
+  return {
+    applied: value.applied === true,
+    pass: value.pass !== false,
+    heading: value.heading ? {
+      applied: value.heading.applied === true,
+      headingCount: Number(value.heading.headingCount) || 0,
+      restoredCount: Number(value.heading.restoredCount) || 0,
+      missingCount: Number(value.heading.missingCount) || 0
+    } : null,
+    paragraphs: value.paragraphs ? {
+      applied: value.paragraphs.applied === true,
+      policy: String(value.paragraphs.policy || 'none'),
+      sourceCount: Number(value.paragraphs.sourceCount) || 0,
+      beforeCount: Number(value.paragraphs.beforeCount) || 0,
+      targetCount: Number(value.paragraphs.targetCount) || 0,
+      afterCount: Number(value.paragraphs.afterCount) || 0,
+      pass: value.paragraphs.pass !== false
+    } : null
   };
 }
 
@@ -473,5 +701,8 @@ module.exports = {
   buildStructureAudit,
   looksUnsafeChunkEnd,
   coalesceEditableChunks,
-  restoreBoundaryMarkers
+  restoreBoundaryMarkers,
+  restorePostSemanticLayout,
+  restoreLockedHeadingLayout,
+  restoreParagraphLayout
 };

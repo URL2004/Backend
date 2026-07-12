@@ -3562,6 +3562,16 @@ function compactHistoryEngineMeta(meta) {
     semanticJudgeRan: meta.semanticJudgeRan === true,
     repairCount: Math.max(0, Number(meta.repairCount) || 0),
     chunkCount: Math.max(0, Number(meta.chunkCount) || 0),
+    logicalChunkCount: Math.max(0, Number(meta.logicalChunkCount) || Number(meta.chunkCount) || 0),
+    editableChunkCount: Math.max(0, Number(meta.editableChunkCount) || 0),
+    lockedChunkCount: Math.max(0, Number(meta.lockedChunkCount) || 0),
+    skippedChunkCount: Math.max(0, Number(meta.skippedChunkCount) || 0),
+    transformedChunkCount: Math.max(0, Number(meta.transformedChunkCount) || 0),
+    humanizeCallCount: Math.max(0, Number(meta.humanizeCallCount) || 0),
+    semanticModelCallCount: Math.max(0, Number(meta.semanticModelCallCount) || 0),
+    surfaceRetryCallCount: Math.max(0, Number(meta.surfaceRetryCallCount) || 0),
+    modelCallCount: Math.max(0, Number(meta.modelCallCount) || Number(meta.humanizeCallCount) || 0),
+    semanticSectionCount: Math.max(0, Number(meta.semanticSectionCount) || 0),
     fallbackCount: Math.max(0, Number(meta.fallbackCount) || 0),
     lengthRatio: Number.isFinite(Number(meta.lengthRatio)) ? Number(meta.lengthRatio) : null
   };

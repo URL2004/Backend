@@ -13,6 +13,8 @@ const structure = require('../engine-gpt-prod/structureChunk');
 const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
 const { buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift } = require('../engine-gpt-prod/voiceProfile');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
+const factAudit = require('../engine-gpt-prod/factAudit');
+const { assessRepairCandidate } = require('../engine-gpt-prod/judge');
 
 test('한국어 문장 분리기는 장·절 번호, 소수점, 약어와 인용부호를 보존한다', () => {
   const value = '제 1장. 연구 개요\n연구 배경\n값은 3.14이다. e.g. 예시는 유지한다. U.S. 자료도 유지한다. “인용문이다.” 다음 문장이다.';
@@ -22,6 +24,27 @@ test('한국어 문장 분리기는 장·절 번호, 소수점, 약어와 인용
   assert.ok(sentences.includes('e.g. 예시는 유지한다.'));
   assert.ok(sentences.includes('U.S. 자료도 유지한다.'));
   assert.ok(sentences.includes('“인용문이다.”'));
+});
+
+test('숫자 감사는 단위·연도·목록 번호의 횟수를 보존하고 사용자 메모 숫자만 추가 허용한다', () => {
+  const source = '제 1장 조사 결과에서 2026년 참여자는 20명이고 응답률은 35%였다.\n1. 첫 항목';
+  const same = '제1장 조사 결과에서 2026년 참여자는 20 명이며 응답률은 35％였다.\n1. 첫 항목';
+  const changed = '제1장 조사 결과에서 2026년 참여자는 21명이며 응답률은 35%였다.\n1. 첫 항목';
+  assert.equal(factAudit.compareNumberMultiset(source, same).changed, false);
+  const drift = factAudit.compareNumberMultiset(source, changed);
+  assert.equal(drift.changed, true);
+  assert.equal(drift.removedCount, 1);
+  assert.equal(drift.addedCount, 1);
+  assert.equal(factAudit.compareNumberMultiset(source, `${same} 추가 표본은 4명이었다.`, '추가 표본은 4명이었다.').changed, false);
+});
+
+test('의미 수리 후보가 원문 숫자를 새로 잃으면 안전 후보로 채택하지 않는다', () => {
+  const source = '2026년 조사에는 학생 20명이 참여했고 응답률은 35%였다.';
+  const before = '2026년 조사에는 학생 20명이 참여했으며 응답률은 35%였다.';
+  const candidate = '2026년 조사에는 학생들이 참여했으며 응답률은 35%였다.';
+  const audit = assessRepairCandidate(source, before, candidate);
+  assert.equal(audit.pass, false);
+  assert.ok(audit.reasons.includes('number_facts_worsened'));
 });
 
 test('한국어 Unicode 경계는 숫자 단위와 실제 조사 중복을 정확히 인식한다', () => {
@@ -52,6 +75,10 @@ test('일반 기관 지시어의 띄어쓰기는 고유 기관명 손실로 보�
 test('고립 접속어와 조사로 시작하는 장문 청크 경계를 회귀 검사한다', () => {
   const connector = nikl.analyzeNiklQuality('앞 문장은 끝났다. 그리고');
   assert.ok(connector.topPatterns.some(item => item.id === 'orphan_connector_after_period' || item.id === 'unfinished_final_sentence'));
+  const validConnector = nikl.analyzeNiklQuality('연구를 마쳤다. 또한 결과를 정리했다. 그러나 해석에는 한계가 있다.');
+  assert.equal(validConnector.topPatterns.some(item => item.id === 'orphan_connector_after_period'), false);
+  const validComma = nikl.analyzeNiklQuality('자료를 비교했고, 그 결과를 표로 정리했다.');
+  assert.equal(validComma.topPatterns.some(item => item.id === 'connector_comma_fragment'), false);
   const longText = '연구 자료를 바탕으로 결과를 자세히 분석하고 의미를 설명한다 '.repeat(90);
   const chunks = chunk.splitChunks(longText);
   assert.ok(chunks.length >= 2);
@@ -77,6 +104,19 @@ test('dedupe는 인과 방향이 다른 유사 문장을 보존하고 인접 완
   assert.equal(report.removed, 1);
 });
 
+test('반복 경고는 원문에 있던 반복이 아니라 결과에서 증가한 반복만 기록한다', () => {
+  const repeated = '같은 결론을 다시 설명하는 문장입니다.';
+  const source = `${repeated} ${repeated} 다른 근거를 설명하는 문장입니다.`;
+  const unchanged = `${repeated} ${repeated} 다른 근거를 조금 더 분명하게 설명합니다.`;
+  const increased = `${repeated} ${repeated} ${repeated} 다른 근거를 설명하는 문장입니다.`;
+  const unchangedAudit = qualityV2.compareRepetitionDelta(source, unchanged);
+  const increasedAudit = qualityV2.compareRepetitionDelta(source, increased);
+  assert.equal(unchangedAudit.increased, false);
+  assert.equal(unchangedAudit.delta.total, 0);
+  assert.equal(increasedAudit.increased, true);
+  assert.ok(increasedAudit.delta.exactGroups > 0 || increasedAudit.delta.maxRepeat > 0 || increasedAudit.delta.total > 0);
+});
+
 test('목차·참고문헌은 한 판정기로 잠그고 참고문헌 뒤 부록 본문은 변환 대상으로 둔다', () => {
   const source = [
     '제목', '', '목차', 'Ⅰ. 서론 .... 1', 'Ⅱ. 본론 .... 2', '',
@@ -100,6 +140,44 @@ test('표·로마 숫자 제목·통계 줄을 구조로 잠그고 청크 왕복
   assert.ok(plan.chunks.some(item => item.lockType === 'table'));
   assert.equal(structure.mergeChunks(plan.chunks), source);
   assert.equal(chunk.mergeChunks(chunk.splitChunks(source)), source);
+});
+
+test('의미 심사 뒤 제목을 독립 행으로 복원하고 보고서 문단 과분할을 제한한다', () => {
+  const source = 'Ⅰ. 서론\n첫 번째 설명 문장입니다. 두 번째 설명 문장입니다.\n\nⅡ. 결론\n세 번째 설명 문장입니다. 네 번째 설명 문장입니다.';
+  const plan = structure.splitChunksForGpt(source, { coalesceEditable: true });
+  const inline = 'Ⅰ. 서론 첫 번째 설명 문장입니다.\n\n두 번째 설명 문장입니다.\n\n중간 설명입니다.\n\nⅡ. 결론 세 번째 설명 문장입니다.\n\n네 번째 설명 문장입니다.\n\n마무리 설명입니다.';
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: inline,
+    chunks: plan.chunks,
+    mode: 'assignment',
+    documentProfile: 'report_assignment',
+    profileConfidence: 0.9
+  });
+  assert.equal(restored.heading.missingCount, 0);
+  assert.match(restored.text, /(?:^|\n)Ⅰ\. 서론(?:\n|$)/u);
+  assert.match(restored.text, /(?:^|\n)Ⅱ\. 결론(?:\n|$)/u);
+  assert.ok(restored.paragraphs.afterCount <= restored.paragraphs.targetCount);
+  assert.equal(restored.pass, true);
+});
+
+test('polish 최종 레이아웃은 어휘를 바꾸지 않고 원문 문단 수를 복원한다', () => {
+  const source = '첫 문장은 표현이 어색합니다. 둘째 문장은 연결이 매끄럽지 않습니다. 마지막 문장은 내용을 정리합니다.';
+  const output = '첫 문장은 표현이 다소 어색합니다.\n\n둘째 문장은 연결이 자연스럽지 않습니다.\n\n마지막 문장은 내용을 정리합니다.';
+  const plan = structure.splitChunksForGpt(source, { coalesceEditable: true });
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: output,
+    chunks: plan.chunks,
+    mode: 'polish',
+    documentProfile: 'general_essay',
+    profileConfidence: 0.6
+  });
+  assert.equal(restored.paragraphs.sourceCount, 1);
+  assert.equal(restored.paragraphs.beforeCount, 3);
+  assert.equal(restored.paragraphs.afterCount, 1);
+  assert.equal(restored.pass, true);
+  assert.equal(restored.text.replace(/\s+/gu, ''), output.replace(/\s+/gu, ''));
 });
 
 test('v2 청커는 작은 본문 문단을 묶되 문단 구분과 동결 구조 왕복을 보존한다', () => {
@@ -272,6 +350,13 @@ test('polish voice 감사는 새 문단과 제목 구조 변경을 경고한다'
   const audit = auditVoice(voice, '본문이 바뀝니다.\n\n새 문단이 생깁니다.', { documentProfile: 'report_assignment', mode: 'polish' });
   assert.ok(audit.warnings.some(item => item.code === 'paragraph_structure_changed'));
   assert.ok(audit.warnings.some(item => item.code === 'heading_structure_changed'));
+});
+
+test('민감 문서 프로필은 목록의 삭제뿐 아니라 신규 목록 추가도 경고한다', () => {
+  const source = '연구 결과는 본문 문장으로 설명한다.';
+  const voice = buildVoiceProfile(source, { documentProfile: 'report_assignment' });
+  const audit = auditVoice(voice, '- 연구 결과를 본문 문장으로 설명한다.', { documentProfile: 'report_assignment', mode: 'assignment' });
+  assert.ok(audit.warnings.some(item => item.code === 'list_structure_changed'));
 });
 
 test('polish 편집률 정책은 길이별 상·하한을 서버에서 계산한다', () => {

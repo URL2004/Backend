@@ -3555,9 +3555,23 @@ function compactHistoryEngineMeta(meta) {
     schemaVersion: Number(meta.schemaVersion) || 2,
     engineVersion: String(meta.engineVersion || '').slice(0, 60),
     requestedMode: String(meta.requestedMode || '').slice(0, 20),
+    requestStrength: String(meta.requestStrength || '').slice(0, 20),
     effectiveMode: String(meta.effectiveMode || '').slice(0, 20),
     documentProfile: String(meta.documentProfile || 'unknown').slice(0, 40),
     profileConfidence: Number.isFinite(Number(meta.profileConfidence)) ? Number(meta.profileConfidence) : null,
+    profileDecisionSource: String(meta.profileDecisionSource || '').slice(0, 40),
+    safetyProfiles: [...new Set((Array.isArray(meta.safetyProfiles) ? meta.safetyProfiles : [])
+      .map(value => String(value || '').slice(0, 40)).filter(Boolean))].slice(0, 8),
+    profileMargin: Number.isFinite(Number(meta.profileMargin)) ? Number(meta.profileMargin) : null,
+    formatProfile: {
+      length: String(meta.formatProfile?.length || 'standard').slice(0, 20),
+      primary: String(meta.formatProfile?.primary || 'plain').slice(0, 30),
+      flags: [...new Set((Array.isArray(meta.formatProfile?.flags) ? meta.formatProfile.flags : [])
+        .map(value => String(value || '').slice(0, 40)).filter(Boolean))].slice(0, 12)
+    },
+    riskFlags: [...new Set((Array.isArray(meta.riskFlags) ? meta.riskFlags : [])
+      .map(value => String(value || '').slice(0, 50)).filter(Boolean))].slice(0, 16),
+    tonePolicy: String(meta.tonePolicy || 'source_preserve').slice(0, 30),
     basicStyle: String(meta.basicStyle || '').slice(0, 20),
     semanticJudgeRan: meta.semanticJudgeRan === true,
     repairCount: Math.max(0, Number(meta.repairCount) || 0),

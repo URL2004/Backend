@@ -11,7 +11,8 @@ function splitChunksForGpt(text, {
   coalesceEditable = false,
   preserveSentenceBoundaries = false,
   sentenceBoundaryMinimum = 4,
-  preserveLineBoundaries = false
+  preserveLineBoundaries = false,
+  formatProfile = null
 } = {}) {
   const base = baseChunk.splitChunks(text);
   const academicSpans = freezeBlocks.detectAcademicSpans(text);
@@ -19,7 +20,9 @@ function splitChunksForGpt(text, {
   const state = {
     currentSection: '',
     lastPiece: null,
-    academicSpans
+    academicSpans,
+    questionnaire: formatProfile?.primary === 'questionnaire'
+      || formatProfile?.flags?.includes?.('questionnaire') === true
   };
 
   for (const chunk of base) {
@@ -104,6 +107,11 @@ function classifyPiece(piece, state) {
   const frozen = freezeBlocks.academicSpanAt(state.academicSpans, piece.start, piece.end);
   if (frozen) return { locked: true, lockType: frozen.type === 'toc' ? 'toc_item' : 'reference_item', sectionLabel: frozen.type === 'toc' ? '목차' : '참고문헌' };
 
+  // 문답형 문서는 질문/번호를 편집 대상에서 제외하고, 질문 사이의 답변만
+  // 독립 청크로 보낸다. 이 경계 때문에 서로 다른 답변의 문장이 이동할 수 없다.
+  if (state.questionnaire && isQuestionnaireQuestionLine(s)) {
+    return { locked: true, lockType: 'questionnaire_question', sectionLabel: s };
+  }
   if (isHeadingLine(s)) {
     return { locked: true, lockType: 'heading', sectionLabel: s };
   }
@@ -300,7 +308,7 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
   const sourceCount = sourceParagraphs.length;
   const beforeCount = before.length;
   const sensitiveReport = Number(profileConfidence) >= 0.75
-    && ['academic_paper', 'report_assignment', 'long_explainer'].includes(String(documentProfile || ''));
+    && ['academic_paper', 'report_assignment'].includes(String(documentProfile || ''));
   let targetCount = beforeCount;
   let policy = 'none';
   if (mode === 'polish' && sourceCount > 0) {
@@ -543,10 +551,20 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair,
   const locked = (chunks || []).filter(c => c.locked && String(c.text || '').trim());
   const output = String(outputText || '');
   const lost = [];
+  const outOfOrder = [];
+  let orderCursor = 0;
   for (const chunk of locked) {
     const value = String(chunk.text || '').trim();
     if (!value) continue;
-    if (output.includes(value)) continue;
+    const orderedIndex = output.indexOf(value, orderCursor);
+    if (orderedIndex >= 0) {
+      orderCursor = orderedIndex + value.length;
+      continue;
+    }
+    if (output.includes(value)) {
+      outOfOrder.push({ index: chunk.index, lockType: chunk.lockType || 'structure' });
+      continue;
+    }
     const key = bare(value).slice(0, 80);
     if (key.length >= 2 && bare(output).includes(key)) continue;
     lost.push({
@@ -566,11 +584,14 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair,
     lockedByType: counts,
     lostLockedCount: lost.length,
     lostLocked: lost.slice(0, 20),
+    lockedOrderChanged: outOfOrder.length > 0,
+    lockedOutOfOrderCount: outOfOrder.length,
+    lockedOutOfOrder: outOfOrder.slice(0, 20),
     boundaryRepair: boundaryRepair || { applied: false, count: 0, repairs: [] },
     layoutRepair: compactLayoutRepair(layoutRepair),
     unsafeBoundaryCount: boundaryWarnings.length,
     unsafeBoundaries: boundaryWarnings.slice(0, 20),
-    pass: lost.length === 0 && boundaryWarnings.length === 0 && layoutRepair?.pass !== false
+    pass: lost.length === 0 && outOfOrder.length === 0 && boundaryWarnings.length === 0 && layoutRepair?.pass !== false
   };
 }
 
@@ -663,6 +684,13 @@ function isHeadingLine(s) {
   return false;
 }
 
+function isQuestionnaireQuestionLine(s) {
+  const value = String(s || '').trim();
+  if (/^(?:\d{1,2}[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s+\S/u.test(value)) return true;
+  return /[?？]\s*$/u.test(value)
+    || /(?:무엇|어떻게|어떠했|왜|어떤|얼마나|서술(?:하시오|하세요)?|작성(?:하시오|하세요)?|설명(?:하시오|하세요)?|적어\s*(?:보세요|주세요)|말해\s*(?:보세요|주세요)|기술(?:하시오|하세요)?)(?:[?.？]|\s*$)/u.test(value);
+}
+
 function isHeadingContinuationLine(s, lastPiece) {
   if (!lastPiece || !lastPiece.locked || !/^heading/.test(lastPiece.lockType || '')) return false;
   if (!s || s.length > 40) return false;
@@ -704,5 +732,6 @@ module.exports = {
   restoreBoundaryMarkers,
   restorePostSemanticLayout,
   restoreLockedHeadingLayout,
-  restoreParagraphLayout
+  restoreParagraphLayout,
+  isQuestionnaireQuestionLine
 };

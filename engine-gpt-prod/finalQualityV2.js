@@ -25,7 +25,8 @@ const STRICT_CODES = new Set([
   'prompt_instruction_leak',
   'encoding_corruption',
   'sentence_truncated',
-  'polish_unchanged'
+  'polish_unchanged',
+  'polish_excessive_change'
 ]);
 
 const SEMANTIC_WARNING_TYPES = new Set([
@@ -46,6 +47,7 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'list_structure_changed',
   'heading_structure_changed',
   'paragraph_structure_changed',
+  'questionnaire_structure_changed',
   'creative_line_structure',
   'register_shift',
   'number_changed'
@@ -90,10 +92,16 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     ));
   }
 
-  const voiceAudit = auditVoice(voiceProfile, outputText, { documentProfile: documentProfile?.profile || 'unknown', mode });
+  const voiceAudit = auditVoice(voiceProfile, outputText, { documentProfile: documentProfile || 'unknown', mode });
   warnings.push(...voiceAudit.warnings);
   if (structureAudit?.lostLockedCount > 0) {
     warnings.push(warning('structure_lock_loss', '목차·참고문헌·제목 구조 일부가 달라졌을 수 있어요.', { count: structureAudit.lostLockedCount }));
+  }
+  if (structureAudit?.lockedOrderChanged) {
+    const questionnaire = documentProfile?.formatProfile?.flags?.includes?.('questionnaire');
+    warnings.push(questionnaire
+      ? warning('questionnaire_structure_changed', '질문 또는 답변 경계의 순서가 달라졌을 수 있어요.', { count: structureAudit.lockedOutOfOrderCount || 0 })
+      : warning('structure_lock_loss', '잠긴 제목이나 구조의 순서가 달라졌을 수 있어요.', { count: structureAudit.lockedOutOfOrderCount || 0 }));
   }
   if (structureAudit?.unsafeBoundaryCount > 0) {
     warnings.push(warning('unsafe_chunk_boundary', '청크 경계에서 문장이 자연스럽게 이어지지 않을 수 있어요.', { count: structureAudit.unsafeBoundaryCount }));
@@ -149,7 +157,21 @@ function shouldRunSemanticJudge({ requestedMode, effectiveMode, source, document
   if (audit?.structureSignals?.semanticRequired) return { run: true, reason: 'structure' };
   if ((audit?.editMetrics?.fiveGramSimilarity ?? 1) < 0.25) return { run: true, reason: 'low_similarity' };
   if ((audit?.warnings || []).some(item => SEMANTIC_WARNING_TYPES.has(item.code))) return { run: true, reason: 'deterministic_warning' };
-  if (['academic_paper', 'student_record', 'resume_application', 'creative'].includes(documentProfile?.profile) && documentProfile.confidence >= 0.75) {
+  const sensitiveProfiles = new Set([
+    String(documentProfile?.profile || ''),
+    ...(documentProfile?.safetyProfiles || []).map(value => String(value || ''))
+  ]);
+  if (documentProfile?.formatProfile?.flags?.includes?.('questionnaire')
+      || documentProfile?.riskFlags?.includes?.('questionnaire_answer_boundary')) {
+    return { run: true, reason: 'questionnaire' };
+  }
+  if ([...sensitiveProfiles].some(profile => [
+    'academic_paper',
+    'student_record_teacher',
+    'student_self_assessment',
+    'resume_application',
+    'creative'
+  ].includes(profile)) && (documentProfile?.confidence >= 0.75 || (documentProfile?.safetyProfiles || []).length > 0)) {
     return { run: true, reason: 'sensitive_profile' };
   }
   return { run: false, reason: 'not_required' };
@@ -286,24 +308,25 @@ function splitByParagraphBudget(value, maxChars) {
 function polishEditPolicy(source, outputText) {
   const metrics = computeEditMetrics(source, outputText);
   const short = String(source || '').length <= 120;
+  const lengthPolicy = floor.polishLengthPolicy(source);
   const limits = short
-    ? { minEdit: 0.02, maxEdit: 0.45, minLength: 0.85, maxLength: 1.15 }
-    : { minEdit: 0.01, maxEdit: 0.25, minLength: 0.9, maxLength: 1.1 };
-  const noSafeChange = metrics.charEditRatio < limits.minEdit;
+    ? { minEdit: 0.02, maxEdit: 0.45, minLength: lengthPolicy.min, maxLength: lengthPolicy.max }
+    : { minEdit: 0.01, maxEdit: 0.25, minLength: lengthPolicy.min, maxLength: lengthPolicy.max };
+  // 수정 의무는 청크가 아니라 문서 전체에 적용한다. 긴 문서에서 실제 오류 한
+  // 곳만 고친 결과를 비율 하한 때문에 무변환으로 오판하지 않는다.
+  const noSafeChange = metrics.charEditRatio <= 0;
+  const belowRecommendedChange = !noSafeChange && metrics.charEditRatio < limits.minEdit;
   const excessiveChange = metrics.charEditRatio > limits.maxEdit || metrics.lengthRatio < limits.minLength || metrics.lengthRatio > limits.maxLength;
-  return { pass: !noSafeChange && !excessiveChange, noSafeChange, excessiveChange, metrics, limits };
+  return { pass: !noSafeChange && !excessiveChange, noSafeChange, belowRecommendedChange, excessiveChange, metrics, limits };
 }
 
 async function retryPolishSurface({ source, currentOutput, policy, config, signal, safetyIdentifier = '' }) {
-  const needsMinimalChange = policy?.noSafeChange === true;
   const system = [
     '너는 한국어 보존형 윤문 수리기다.',
     '원문의 주장, 예시, 수치, 기관명, 인용, 화자, 문단 수와 순서를 바꾸지 않는다.',
     '비문, 띄어쓰기, 접속, 완전 중복, 말투 혼합 중 실제 오류만 수정한다.',
     '새 문장이나 새 문단을 만들지 않는다.',
-    needsMinimalChange
-      ? 'CURRENT가 SOURCE와 실질적으로 같다. SOURCE에서 실제로 안전하게 고칠 수 있는 표면 오류를 최소 한 곳만 고친다. 고칠 곳이 정말 없으면 safeChangeFound=false로 답한다.'
-      : 'CURRENT가 허용 편집 범위를 넘었다. SOURCE에 가깝게 되돌리면서 실제 표면 오류만 최소한으로 고친다.',
+    'CURRENT가 SOURCE와 실질적으로 같다. SOURCE에서 실제로 안전하게 고칠 수 있는 표면 오류를 최소 한 곳만 고친다. 고칠 곳이 정말 없으면 safeChangeFound=false로 답한다.',
     `허용 범위: 문자 편집률 ${policy?.limits?.minEdit ?? 0.01}~${policy?.limits?.maxEdit ?? 0.25}, 길이비 ${policy?.limits?.minLength ?? 0.9}~${policy?.limits?.maxLength ?? 1.1}.`
   ].join('\n');
   const response = await completeJson({

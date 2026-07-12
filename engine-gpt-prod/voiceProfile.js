@@ -8,15 +8,17 @@ const POV_PATTERNS = Object.freeze({
   firstPlural: /(?:^|[^가-힣A-Za-z0-9_])(?:우리는|우리가|우리의|저희는|저희가|저희의)(?=$|[^가-힣A-Za-z0-9_])/gu
 });
 
-function buildVoiceProfile(source, { documentProfile = 'unknown' } = {}) {
+function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles = [], formatProfile = null } = {}) {
+  const context = normalizeDocumentContext(documentProfile, safetyProfiles, formatProfile);
+  const profileName = context.profile;
   const text = String(source || '');
-  const sentences = splitSentences(text, { preserveLines: documentProfile === 'creative' });
+  const sentences = splitSentences(text, { preserveLines: profileName === 'creative' });
   const paragraphs = text.split(/\n{2,}/u).map(value => value.trim()).filter(Boolean);
   const sentenceLengths = sentences.map(value => normalizeCompact(value).length).filter(value => value >= 3);
   const paragraphLengths = paragraphs.map(value => normalizeCompact(value).length).filter(Boolean);
   const compactLength = normalizeCompact(text).length;
   const punctuationCount = (text.match(/[.!?。？！]/gu) || []).length;
-  const punctuationSparse = documentProfile !== 'creative'
+  const punctuationSparse = profileName !== 'creative'
     && compactLength >= 240
     && sentenceLengths.length <= 2
     && punctuationCount <= 2;
@@ -24,10 +26,13 @@ function buildVoiceProfile(source, { documentProfile = 'unknown' } = {}) {
   const firstSingular = safeMatches(text, POV_PATTERNS.firstSingular);
   const firstPlural = safeMatches(text, POV_PATTERNS.firstPlural);
   const endings = endingHistogram(sentences);
-  const lineBreakSensitive = documentProfile === 'creative' && isLineBreakSensitive(text);
-  const lineStructureSensitive = lineBreakSensitive || isStructuredLineSensitive(text, documentProfile);
+  const lineBreakSensitive = profileName === 'creative' && isLineBreakSensitive(text);
+  const lineStructureSensitive = lineBreakSensitive || isStructuredLineSensitive(text, context);
   return {
     version: 1,
+    documentProfile: profileName,
+    safetyProfiles: context.safetyProfiles,
+    formatProfile: context.formatProfile,
     register: detectRegister(text),
     pov: {
       firstSingular,
@@ -46,6 +51,7 @@ function buildVoiceProfile(source, { documentProfile = 'unknown' } = {}) {
     directQuoteCount: (text.match(/[“"][^”"\n]{2,}[”"]/gu) || []).length,
     listItemCount: (text.match(/^\s*(?:[-*•]|\d+[.)]|[가-힣][.)])\s+.+$/gmu) || []).length,
     headingCount: (text.match(/^\s*(?:(?:제\s*\d+\s*(?:장|절|항))(?:\s+\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*\S.*|\d+(?:\.\d+){0,3}[.)]?\s+\S.*|(?:서론|본론|결론|초록|요약|참고\s*문헌|부록))\s*$/gmu) || []).length,
+    questionnaireQuestionCount: countQuestionnaireQuestions(text),
     lineCount: lineCount(text),
     lineBreakSensitive,
     lineStructureSensitive
@@ -90,7 +96,12 @@ function voicePromptBlock(profile) {
 }
 
 function auditVoice(sourceProfile, output, { documentProfile = 'unknown', mode = '' } = {}) {
-  const current = buildVoiceProfile(output, { documentProfile });
+  const context = normalizeDocumentContext(
+    documentProfile,
+    sourceProfile?.safetyProfiles || [],
+    sourceProfile?.formatProfile || null
+  );
+  const current = buildVoiceProfile(output, { documentProfile: context });
   const warnings = [];
   if ((sourceProfile?.pov?.firstSingular || 0) === 0 && current.pov.firstSingular > 0) {
     warnings.push(warning('speaker_injected', '원문에 없던 1인칭 단수 화자가 추가됐을 수 있어요.'));
@@ -110,8 +121,17 @@ function auditVoice(sourceProfile, output, { documentProfile = 'unknown', mode =
   if ((sourceProfile?.directQuoteCount || 0) !== current.directQuoteCount) {
     warnings.push(warning('quote_count_changed', '직접 인용의 개수가 달라졌을 수 있어요.'));
   }
+  const protectedProfiles = new Set([context.profile, ...context.safetyProfiles]);
   const listStructureLocked = mode === 'polish'
-    || ['academic_paper', 'report_assignment', 'student_record', 'resume_application', 'long_explainer'].includes(documentProfile);
+    || context.formatProfile?.flags?.includes?.('questionnaire')
+    || context.formatProfile?.flags?.includes?.('list_heavy')
+    || [...protectedProfiles].some(profile => [
+      'academic_paper',
+      'report_assignment',
+      'student_record_teacher',
+      'student_self_assessment',
+      'resume_application'
+    ].includes(profile));
   if (listStructureLocked && current.listItemCount !== (sourceProfile?.listItemCount || 0)) {
     warnings.push(warning('list_structure_changed', '원문의 목록 항목 수나 구조가 달라졌을 수 있어요.'));
   } else if ((sourceProfile?.listItemCount || 0) > 0 && current.listItemCount < sourceProfile.listItemCount) {
@@ -119,6 +139,10 @@ function auditVoice(sourceProfile, output, { documentProfile = 'unknown', mode =
   }
   if (current.headingCount !== (sourceProfile?.headingCount || 0)) {
     warnings.push(warning('heading_structure_changed', '제목이나 절 구조의 개수가 달라졌을 수 있어요.'));
+  }
+  if (context.formatProfile?.flags?.includes?.('questionnaire')
+      && current.questionnaireQuestionCount !== (sourceProfile?.questionnaireQuestionCount || 0)) {
+    warnings.push(warning('questionnaire_structure_changed', '질문 번호나 질문·답변 경계가 달라졌을 수 있어요.'));
   }
   const sourceParagraphs = sourceProfile?.paragraph?.count || 0;
   const currentParagraphs = current.paragraph?.count || 0;
@@ -257,10 +281,46 @@ function isLineBreakSensitive(text) {
 }
 
 function isStructuredLineSensitive(text, documentProfile) {
-  if (!['student_record', 'resume_application', 'mail_notice'].includes(documentProfile)) return false;
+  const context = normalizeDocumentContext(documentProfile);
+  const profiles = new Set([context.profile, ...context.safetyProfiles]);
+  const sensitiveProfile = [...profiles].some(profile => [
+    'student_record_teacher',
+    'student_self_assessment',
+    'resume_application',
+    'mail_notice'
+  ].includes(profile));
+  if (!sensitiveProfile && !context.formatProfile?.flags?.includes?.('questionnaire')) return false;
   const lines = String(text || '').split(/\r?\n/u).map(value => value.trim()).filter(Boolean);
   if (lines.length < 2 || lines.length > 30) return false;
   return lines.some(line => !/[.!?。？！]$/u.test(line));
+}
+
+function normalizeDocumentContext(documentProfile, safetyProfiles = [], formatProfile = null) {
+  if (documentProfile && typeof documentProfile === 'object') {
+    return {
+      profile: String(documentProfile.profile || documentProfile.contentGenre || 'unknown'),
+      safetyProfiles: uniqueStrings(documentProfile.safetyProfiles || safetyProfiles),
+      formatProfile: documentProfile.formatProfile || formatProfile || null
+    };
+  }
+  return {
+    profile: String(documentProfile || 'unknown'),
+    safetyProfiles: uniqueStrings(safetyProfiles),
+    formatProfile: formatProfile || null
+  };
+}
+
+function countQuestionnaireQuestions(text) {
+  return String(text || '').split(/\r?\n/u).filter(line => {
+    const value = line.trim();
+    return /^(?:\d{1,2}[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s+\S/u.test(value)
+      && (/[?？]\s*$/u.test(value)
+        || /(?:무엇|어떻게|어떠했|왜|어떤|얼마나|서술|작성|설명|기술)/u.test(value));
+  }).length;
+}
+
+function uniqueStrings(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map(value => String(value || '').trim()).filter(Boolean))];
 }
 
 function safeMatches(text, pattern) {

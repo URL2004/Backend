@@ -15,6 +15,8 @@ const { buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShi
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const factAudit = require('../engine-gpt-prod/factAudit');
 const { assessRepairCandidate } = require('../engine-gpt-prod/judge');
+const prompts = require('../engine-gpt-prod/prompts');
+const contract = require('../engine/contract');
 
 test('한국어 문장 분리기는 장·절 번호, 소수점, 약어와 인용부호를 보존한다', () => {
   const value = '제 1장. 연구 개요\n연구 배경\n값은 3.14이다. e.g. 예시는 유지한다. U.S. 자료도 유지한다. “인용문이다.” 다음 문장이다.';
@@ -170,7 +172,7 @@ test('polish 최종 레이아웃은 어휘를 바꾸지 않고 원문 문단 수
     outputText: output,
     chunks: plan.chunks,
     mode: 'polish',
-    documentProfile: 'general_essay',
+    documentProfile: 'general',
     profileConfidence: 0.6
   });
   assert.equal(restored.paragraphs.sourceCount, 1);
@@ -249,19 +251,116 @@ test('세특의 제목·항목 행은 줄바꿈 경계 토큰으로 왕복 보�
   assert.equal(missing.actualLineCount, 1);
 });
 
-test('문서 프로필은 요청 mode 없이 원문과 basicStyle 보조 힌트만으로 판정한다', () => {
+test('문서 프로필은 요청 mode와 basicStyle 없이 원문만으로 판정한다', () => {
   const source = '지원 동기\n저는 직무 역량을 바탕으로 귀사에 지원하게 되었습니다. 입사 후 포부를 말씀드리겠습니다.';
   const reportA = detectDocumentProfile(source, { basicStyle: 'blog' });
   const reportB = detectDocumentProfile(source, { basicStyle: 'report' });
   assert.equal(reportA.profile, 'resume_application');
   assert.equal(reportB.profile, 'resume_application');
+  assert.equal(reportA.contentGenre, reportB.contentGenre);
+  assert.equal(reportA.profileDecisionSource, 'content_only');
+  assert.equal(reportA.tonePolicy, 'conversational');
+  assert.equal(reportB.tonePolicy, 'formal');
   assert.ok(reportA.confidence >= 0.75);
+});
+
+test('번호형 학생 자기평가는 basicStyle과 무관하게 장르·형식·위험 축을 분리한다', () => {
+  const questions = [
+    '이번 수업 활동에서 맡은 역할은 무엇인가요?',
+    '자료를 찾을 때 어떤 방법을 사용했나요?',
+    '모둠 활동에서 기여한 점을 설명하세요.',
+    '발표를 준비하며 가장 노력한 점은 무엇인가요?',
+    '활동 과정에서 어려웠던 점은 무엇인가요?',
+    '그 어려움을 어떻게 해결했나요?',
+    '이번 활동에서 새롭게 배운 점은 무엇인가요?',
+    '부족했던 점과 개선 방법을 작성하세요.',
+    '친구의 의견을 반영한 경험은 무엇인가요?',
+    '다음 학습에서 이어 갈 계획을 적어 주세요.'
+  ];
+  const source = questions.map((question, index) => (
+    `${index + 1}. ${question}\n${index < 2 ? '나는 ' : ''}자료를 살피고 의견을 정리하면서 맡은 활동을 수행했다.`
+  )).join('\n\n');
+  const variants = ['', 'blog', 'report'].map(basicStyle => detectDocumentProfile(source, { basicStyle }));
+  assert.deepEqual(variants.map(item => item.contentGenre), [
+    'student_self_assessment',
+    'student_self_assessment',
+    'student_self_assessment'
+  ]);
+  assert.deepEqual(variants.map(item => item.tonePolicy), ['source_preserve', 'conversational', 'formal']);
+  const profile = variants[1];
+  assert.equal(profile.formatProfile.primary, 'questionnaire');
+  assert.equal(profile.formatProfile.length, 'standard');
+  assert.ok(profile.formatProfile.flags.includes('line_sensitive'));
+  assert.ok(profile.safetyProfiles.includes('student_self_assessment'));
+  assert.ok(profile.riskFlags.includes('pov_sensitive'));
+  assert.ok(profile.riskFlags.includes('questionnaire_answer_boundary'));
+  assert.equal(profile.riskFlags.includes('number_dense'), false, '질문 번호는 사실 수치로 세지 않아야 한다');
+
+  const plan = structure.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    formatProfile: profile.formatProfile
+  });
+  const lockedQuestions = plan.chunks.filter(item => item.lockType === 'questionnaire_question');
+  const answers = plan.chunks.filter(item => !item.locked);
+  assert.equal(lockedQuestions.length, 10);
+  assert.equal(answers.length, 10);
+  assert.equal(structure.mergeChunks(plan.chunks), source);
+  assert.ok(answers.every(item => item.sectionPath && !item.text.includes('?')));
+  const reversed = [...plan.chunks].reverse().map(item => `${item.text}${item.sep || ''}`).join('');
+  const orderAudit = structure.buildStructureAudit({ source, outputText: reversed, chunks: plan.chunks, plan });
+  assert.equal(orderAudit.lockedOrderChanged, true);
+  assert.equal(orderAudit.pass, false);
+});
+
+test('보고서가 최종 장르여도 중간 신뢰도 학생 자기평가 후보의 보호 규칙을 합성한다', () => {
+  const source = [
+    '서론 본론 결론 보고서 목차 조사 결과 문제점 개선 방안 시사점',
+    'Ⅰ. 서론',
+    '1. 이번 수업 활동에서 맡은 역할은 무엇인가요?',
+    '자료를 비교하고 의견을 정리했다.',
+    '2. 활동 과정에서 배운 점은 무엇인가요?',
+    '설명 순서를 다시 확인하는 방법을 배웠다.',
+    '3. 부족했던 점을 어떻게 개선할 계획인가요?',
+    '다음 활동에서는 준비 시간을 더 체계적으로 나눌 계획이다.',
+    'Ⅱ. 결론'
+  ].join('\n');
+  const profile = detectDocumentProfile(source, { basicStyle: 'blog' });
+  assert.equal(profile.profile, 'report_assignment');
+  assert.ok(profile.candidateProfiles.some(item => item.profile === 'student_self_assessment'));
+  assert.ok(profile.safetyProfiles.includes('student_self_assessment'));
+  assert.ok(profile.riskFlags.includes('pov_sensitive'));
+  assert.ok(profile.riskFlags.includes('experience_claim'));
+  assert.ok(profile.riskFlags.includes('evaluation_claim'));
+  assert.ok(profile.riskFlags.includes('questionnaire_answer_boundary'));
+});
+
+test('공통 프롬프트는 불변 계약과 요청 강도를 한 번씩만 선언하고 업종 하드코딩을 포함하지 않는다', () => {
+  const source = '활동 질문에 답하고 배운 점을 정리했다.';
+  const documentProfile = detectDocumentProfile(source, { basicStyle: 'blog' });
+  const voiceProfile = buildVoiceProfile(source, { documentProfile });
+  const basic = prompts.buildHumanizePrompt('blog', 'ko', {
+    requestStrength: 'basic',
+    register: voiceProfile.register,
+    documentProfile,
+    voiceProfile
+  }).stable;
+  const advanced = prompts.buildHumanizePrompt('assignment', 'ko', {
+    requestStrength: 'advanced',
+    register: voiceProfile.register,
+    documentProfile,
+    voiceProfile
+  }).stable;
+  assert.equal((basic.match(/\[요청 강도: 기본\]/gu) || []).length, 1);
+  assert.equal((advanced.match(/\[요청 강도: 고급\]/gu) || []).length, 1);
+  assert.match(advanced, /고급은 더 많이 바꾸는 모드가 아니다/u);
+  assert.doesNotMatch(basic, /보존에 머무르지|원문과 가깝게 두지|충분히 재서술/u);
+  assert.doesNotMatch(advanced, /청소|청결|악취|곰팡|하수구|업체 후기/u);
 });
 
 test('문단 안에서 반복되는 관찰형 명사 종결은 세특 프로필로 판정한다', () => {
   const source = '체육 수업과 활동에 꾸준히 참여함. 친구들에게 자세와 방법을 알려 주며 협력하는 태도를 보임. 어려움이 있어도 끝까지 해내는 모습을 보임. 체력과 책임감을 함께 키워 나감. 다양한 방향을 탐색하며 성장하려는 자세를 지님.';
   const report = detectDocumentProfile(source, { basicStyle: 'blog' });
-  assert.equal(report.profile, 'student_record');
+  assert.equal(report.profile, 'student_record_teacher');
   assert.ok(report.confidence >= 0.75);
   assert.ok(report.signals.nominalObservationEndings >= 3);
 });
@@ -269,14 +368,14 @@ test('문단 안에서 반복되는 관찰형 명사 종결은 세특 프로필�
 test('미래형 수업 계획 목록은 명사형 종결만으로 세특이 되지 않는다', () => {
   const source = '- 명화의 배색을 분석하는 수업을 진행할 예정임.\n- 팔레트를 활용해 일러스트레이션을 제작할 계획임.\n- 디지털 도구 활용법을 익히는 것을 학습 목표로 설정함.';
   const report = detectDocumentProfile(source);
-  assert.notEqual(report.profile, 'student_record');
+  assert.notEqual(report.profile, 'student_record_teacher');
   assert.ok(report.signals.instructionalPlanSignals >= 2);
   assert.ok(report.signals.bulletLineCount >= 2);
 });
 
 test('voice 프롬프트는 원문의 문장 길이 범위와 비균일 경계를 명시한다', () => {
   const source = '짧은 문장임. 이 문장은 앞 문장보다 조금 더 길게 이어지는 관찰 내용임. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 친구들의 질문에 답하며 탐구 내용을 확장한 매우 긴 문장임. 마지막 문장은 다시 짧게 마무리함.';
-  const prompt = voicePromptBlock(buildVoiceProfile(source, { documentProfile: 'student_record' }));
+  const prompt = voicePromptBlock(buildVoiceProfile(source, { documentProfile: 'student_record_teacher' }));
   assert.match(prompt, /문장 수≈4/);
   assert.match(prompt, /길이 범위≈\d+~\d+자/);
   assert.match(prompt, /원문 문장별 길이 순서≈\d+→\d+→\d+→\d+자/);
@@ -285,7 +384,7 @@ test('voice 프롬프트는 원문의 문장 길이 범위와 비균일 경계�
 
 test('voice 프롬프트는 20문장 이하의 길이 순서와 구두점 없는 장문의 비균일 분할 목표를 보존한다', () => {
   const manySentences = Array.from({ length: 17 }, (_, index) => `${index + 1}번째 문장은 ${'내용을 '.repeat((index % 5) + 1)}기록함.`).join(' ');
-  const manyProfile = buildVoiceProfile(manySentences, { documentProfile: 'general_essay' });
+  const manyProfile = buildVoiceProfile(manySentences, { documentProfile: 'general' });
   assert.equal(manyProfile.sentence.lengthSequence.length, 17);
   assert.match(voicePromptBlock(manyProfile), /원문 문장별 길이 순서≈/);
 
@@ -302,8 +401,8 @@ test('voice 프롬프트는 20문장 이하의 길이 순서와 구두점 없는
 test('voice 감사는 장단문 분포가 크게 평탄해지면 사용자 검토 경고를 남긴다', () => {
   const source = '짧게 관찰함. 이 문장은 중간 길이의 관찰 내용을 기록함. 학생이 여러 자료를 직접 비교하고 발표 과정에서 질문에 답하며 탐구 내용을 크게 확장한 매우 긴 관찰 문장을 기록함. 다시 짧게 마무리함.';
   const output = '학생의 활동을 차분하게 관찰하고 내용을 기록함. 관련 자료를 찾아 비교하며 탐구 내용을 정리함. 발표 과정에서 질문에 답하고 내용을 확장함. 마지막으로 활동의 의미와 과정을 함께 정리함.';
-  const profile = buildVoiceProfile(source, { documentProfile: 'student_record' });
-  const audit = auditVoice(profile, output, { documentProfile: 'student_record', mode: 'assignment' });
+  const profile = buildVoiceProfile(source, { documentProfile: 'student_record_teacher' });
+  const audit = auditVoice(profile, output, { documentProfile: 'student_record_teacher', mode: 'assignment' });
   assert.ok(audit.warnings.some(item => item.code === 'sentence_distribution_shift'));
 });
 
@@ -337,10 +436,10 @@ test('창작문은 줄바꿈을 구조로 기록하고 화자 변화 감사를 �
 
 test('세특의 제목 행과 줄바꿈은 voice 구조로 기록하고 변경을 경고한다', () => {
   const source = '교과 활동 관찰 기록\n학생은 자료를 비교하고 발표 과정에서 질문에 답하며 탐구 범위를 넓힘.';
-  const voice = buildVoiceProfile(source, { documentProfile: 'student_record' });
+  const voice = buildVoiceProfile(source, { documentProfile: 'student_record_teacher' });
   assert.equal(voice.lineStructureSensitive, true);
   assert.match(voicePromptBlock(voice), /원문의 행 수=2/);
-  const audit = auditVoice(voice, source.replace('\n', ' '), { documentProfile: 'student_record' });
+  const audit = auditVoice(voice, source.replace('\n', ' '), { documentProfile: 'student_record_teacher' });
   assert.ok(audit.warnings.some(item => item.code === 'line_structure_changed'));
 });
 
@@ -359,14 +458,26 @@ test('민감 문서 프로필은 목록의 삭제뿐 아니라 신규 목록 추
   assert.ok(audit.warnings.some(item => item.code === 'list_structure_changed'));
 });
 
-test('polish 편집률 정책은 길이별 상·하한을 서버에서 계산한다', () => {
+test('polish 편집률 정책은 문서 단위 무변환과 길이별 상한을 서버에서 계산한다', () => {
   const source = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다.';
   const safe = qualityV2.polishEditPolicy(source, '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다.');
   assert.equal(safe.pass, true);
+  assert.deepEqual(
+    contract.buildContract(source, { mode: 'polish' }).lengthPolicy,
+    { min: safe.limits.minLength, max: safe.limits.maxLength, hardMax: safe.limits.maxLength }
+  );
   const noChange = qualityV2.polishEditPolicy(source, source);
   assert.equal(noChange.noSafeChange, true);
   const rewrite = qualityV2.polishEditPolicy(source, '전혀 다른 주장과 사례를 새로 만든 문장입니다.');
   assert.equal(rewrite.excessiveChange, true);
+  const longSource = `${source} `.repeat(40).trim();
+  const oneSafeEdit = qualityV2.polishEditPolicy(longSource, longSource.replace('조금 어색하고', '다소 어색하고'));
+  assert.equal(oneSafeEdit.pass, true);
+  assert.equal(oneSafeEdit.belowRecommendedChange, true);
+  assert.deepEqual(
+    contract.buildContract(longSource, { mode: 'polish' }).lengthPolicy,
+    { min: oneSafeEdit.limits.minLength, max: oneSafeEdit.limits.maxLength, hardMax: oneSafeEdit.limits.maxLength }
+  );
 });
 
 test('의미 심사 트리거는 formal·polish·장문 blog·저유사도·복합 구조를 포함한다', () => {
@@ -375,6 +486,14 @@ test('의미 심사 트리거는 formal·polish·장문 blog·저유사도·복�
   assert.equal(qualityV2.shouldRunSemanticJudge({ requestedMode: 'polish', effectiveMode: 'polish', source: '가', audit: base }).run, true);
   assert.equal(qualityV2.shouldRunSemanticJudge({ requestedMode: 'blog', effectiveMode: 'blog', source: '가'.repeat(1500), audit: base }).run, true);
   assert.equal(qualityV2.shouldRunSemanticJudge({ requestedMode: 'blog', effectiveMode: 'blog', source: '짧은 글', audit: { ...base, editMetrics: { fiveGramSimilarity: 0.2 } } }).run, true);
+  const questionnaire = {
+    profile: 'general',
+    confidence: 0.62,
+    safetyProfiles: ['student_self_assessment'],
+    formatProfile: { primary: 'questionnaire', flags: ['questionnaire'] },
+    riskFlags: ['questionnaire_answer_boundary']
+  };
+  assert.equal(qualityV2.shouldRunSemanticJudge({ requestedMode: 'blog', effectiveMode: 'blog', source: '짧은 답변', documentProfile: questionnaire, audit: base }).reason, 'questionnaire');
 });
 
 test('12,000자 초과 심사는 원문과 결과 중 더 긴 쪽 기준으로 겹침 섹션을 만든다', () => {

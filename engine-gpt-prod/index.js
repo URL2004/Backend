@@ -22,7 +22,7 @@ const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile
 const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 
-const VERSION = 'gpt-prod-v2';
+const VERSION = 'gpt-prod-v2.1';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -37,13 +37,16 @@ const STRICT_DELIVERY_GATES = new Set([
   'encoding_corruption',
   'sentence_truncated',
   'refusal',
-  'polish_unchanged'
+  'polish_unchanged',
+  'polish_excessive_change'
 ]);
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
   'length_collapse',
   'protected_term_loss',
   'structure_lock_loss',
+  'structure_lock_order',
+  'questionnaire_structure_changed',
   'unsafe_chunk_boundary',
   'grammar_hard_error',
   'speaker_drift',
@@ -105,6 +108,12 @@ function normalizeRequestedMode(mode) {
   return 'formal';
 }
 
+function requestStrengthForMode(requestedMode) {
+  if (requestedMode === 'polish') return 'polish';
+  if (requestedMode === 'blog') return 'basic';
+  return 'advanced';
+}
+
 function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile) {
   if (normalizedMode === 'polish') return 'polish';
   if (requestedMode !== 'blog') return 'assignment';
@@ -113,9 +122,9 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
   if (confidence >= 0.75 && [
     'academic_paper',
     'report_assignment',
-    'student_record',
+    'student_record_teacher',
+    'student_self_assessment',
     'resume_application',
-    'long_explainer',
     'mail_notice',
     'creative'
   ].includes(profile)) return 'assignment';
@@ -153,13 +162,28 @@ async function runEngine({
   }
   const cfg = await loadConfig(config);
   const requestedMode = normalizeRequestedMode(mode);
+  const requestStrength = requestStrengthForMode(requestedMode);
   const polishAllowed = v2Enabled ? allowPolish === true : allowPolishMode({ styleProfile, config });
   const normalizedMode = normalizeMode(mode, { allowPolish: polishAllowed });
   const documentProfile = v2Enabled
     ? detectDocumentProfile(rawSource, { basicStyle })
-    : { profile: 'unknown', confidence: 0, group: 'unknown', source: 'legacy', basicStyle: String(basicStyle || '') };
+    : {
+        profile: 'unknown',
+        contentGenre: 'unknown',
+        confidence: 0,
+        group: 'unknown',
+        source: 'legacy',
+        profileDecisionSource: 'legacy',
+        basicStyle: String(basicStyle || ''),
+        tonePolicy: 'source_preserve',
+        candidateProfiles: [],
+        safetyProfiles: [],
+        profileMargin: 0,
+        formatProfile: { length: 'standard', primary: 'plain', flags: [] },
+        riskFlags: []
+      };
   const selectedMode = v2Enabled ? effectiveModeForProfile(requestedMode, normalizedMode, documentProfile) : normalizedMode;
-  const voiceProfile = v2Enabled ? buildVoiceProfile(rawSource, { documentProfile: documentProfile.profile }) : null;
+  const voiceProfile = v2Enabled ? buildVoiceProfile(rawSource, { documentProfile }) : null;
   // v2에서만 UID를 비가역 safety_identifier로 바꾼다. 플래그를 0으로 내려
   // 레거시 경로로 즉시 복귀할 때 OPENAI_SAFETY_SALT가 롤백을 막아서는 안 된다.
   const safetyId = v2Enabled
@@ -180,7 +204,8 @@ async function runEngine({
     coalesceEditable: v2Enabled,
     preserveSentenceBoundaries: v2Enabled && shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, selectedMode),
     sentenceBoundaryMinimum: selectedMode === 'polish' ? 3 : 4,
-    preserveLineBoundaries: layoutStructureLocked
+    preserveLineBoundaries: layoutStructureLocked,
+    formatProfile: documentProfile.formatProfile
   });
   const chunks = chunkPlan.chunks;
   const records = [];
@@ -195,6 +220,7 @@ async function runEngine({
       inputRisk,
       sourceSurface,
       mode: selectedMode,
+      requestStrength,
       lang,
       userNotes,
       evidence,
@@ -230,7 +256,7 @@ async function runEngine({
   let polishStrictFailure = '';
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
-    if (!polishReport.pass) {
+    if (polishReport.noSafeChange) {
       try {
         polishRetryAttemptCount = 1;
         const retried = await qualityV2.retryPolishSurface({
@@ -245,8 +271,10 @@ async function runEngine({
         polishRetryCount = 1;
         outputText = retried.outputText || outputText;
         polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
-        if (!retried.safeChangeFound || !polishReport.pass) {
+        if (!retried.safeChangeFound || polishReport.noSafeChange) {
           polishStrictFailure = 'polish_unchanged';
+        } else if (polishReport.excessiveChange) {
+          polishStrictFailure = 'polish_excessive_change';
         } else {
           for (const record of records) {
             if ((record.warnings || []).includes('polish_surface_boundary_pending')) {
@@ -261,6 +289,10 @@ async function runEngine({
         polishStrictFailure = 'polish_unchanged';
         polishReport = { ...(polishReport || {}), retryError: String(error?.message || error).slice(0, 180) };
       }
+    } else if (polishReport.excessiveChange) {
+      // 과도한 결과를 두 번째 모델이 임의로 다시 쓰게 하지 않는다. 문서 전체가
+      // 동일한 경우에만 수리 호출을 허용하고, 상한 초과는 안전 오류로 차단한다.
+      polishStrictFailure = 'polish_excessive_change';
     }
   }
   const generalSurfaceRetryPending = records.some(record => (record.warnings || []).includes('general_surface_retry_pending'))
@@ -316,7 +348,7 @@ async function runEngine({
     plan: chunkPlan,
     boundaryRepair
   });
-  const auditVoiceProfile = v2Enabled ? buildVoiceProfile(auditSource, { documentProfile: documentProfile.profile }) : voiceProfile;
+  const auditVoiceProfile = v2Enabled ? buildVoiceProfile(auditSource, { documentProfile }) : voiceProfile;
   let deterministicAudit = v2Enabled ? qualityV2.buildDeterministicAudit({
     source: auditSource,
     outputText,
@@ -390,6 +422,8 @@ async function runEngine({
   outputText = layoutRepair.text || outputText;
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(rawSource, outputText);
+    if (!polishStrictFailure && polishReport.noSafeChange) polishStrictFailure = 'polish_unchanged';
+    if (!polishStrictFailure && polishReport.excessiveChange) polishStrictFailure = 'polish_excessive_change';
   }
   const structureAudit = structureChunk.buildStructureAudit({
     source: rawSource,
@@ -427,7 +461,10 @@ async function runEngine({
     allowedExtra: evidence || userNotes || ''
   });
   if (polishStrictFailure) {
-    addFloorCriticals(result.floorReport, [{ gate: polishStrictFailure, detail: '안전한 최소 표면 수정을 만들지 못했습니다.' }], polishStrictFailure);
+    const detail = polishStrictFailure === 'polish_excessive_change'
+      ? '보존형 윤문의 안전 편집 범위를 넘어 결과를 전달하지 않았습니다.'
+      : '안전한 최소 표면 수정을 만들지 못했습니다.';
+    addFloorCriticals(result.floorReport, [{ gate: polishStrictFailure, detail }], polishStrictFailure);
   } else if (finalGate.hardFail) {
     addFloorCriticals(result.floorReport, finalGate.violations, finalGate.reason);
   } else if (finalGate.violations.length || finalGate.warnings.length) {
@@ -496,9 +533,17 @@ async function runEngine({
     schemaVersion: 2,
     engineVersion: v2Enabled ? VERSION : LEGACY_VERSION,
     requestedMode,
+    requestStrength,
     effectiveMode: selectedMode,
     documentProfile: documentProfile.profile,
     profileConfidence: documentProfile.confidence,
+    profileDecisionSource: documentProfile.profileDecisionSource || documentProfile.source || 'unknown',
+    candidateProfiles: documentProfile.candidateProfiles || documentProfile.candidates || [],
+    safetyProfiles: documentProfile.safetyProfiles || [],
+    profileMargin: documentProfile.profileMargin ?? 0,
+    formatProfile: documentProfile.formatProfile || { length: 'standard', primary: 'plain', flags: [] },
+    riskFlags: documentProfile.riskFlags || [],
+    tonePolicy: documentProfile.tonePolicy || 'source_preserve',
     basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
     semanticJudgeRan: semanticReport.ran === true,
     repairCount: (semanticReport.repairCount || 0) + polishRetryCount + generalSurfaceRetryCount,
@@ -577,7 +622,7 @@ async function runEngine({
   };
 }
 
-async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, documentProfile, voiceProfile, niklQualityTest = false, qualityPatternLab = false, safetyIdentifier = '', v2Enabled = false, signal }) {
+async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength = '', lang, userNotes, evidence, cfg, styleProfile, documentProfile, voiceProfile, niklQualityTest = false, qualityPatternLab = false, safetyIdentifier = '', v2Enabled = false, signal }) {
   const original = chunk.text;
   if (chunk.locked) {
     chunk.outputText = original;
@@ -610,6 +655,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     inputRisk,
     sourceSurface: chunkSurface,
     mode,
+    requestStrength,
     lang,
     userNotes,
     evidence,
@@ -633,7 +679,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     chunk.outputText = first.outputText;
     first.record.fallback = false;
     first.record.error = null;
-    first.record.warnings = [...(first.record.warnings || []), 'polish_surface_retry_pending'];
+    first.record.warnings = [...(first.record.warnings || []), 'polish_chunk_unchanged_allowed'];
     return first.record;
   }
   if (!first.hardFail || cfg.escalation.enabled === false) {
@@ -655,6 +701,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     inputRisk,
     sourceSurface: chunkSurface,
     mode,
+    requestStrength,
     lang,
     userNotes,
     evidence,
@@ -795,7 +842,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
 
 async function callHumanize(args) {
   const {
-    original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence,
+    original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength, lang, userNotes, evidence,
     cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, documentProfile, voiceProfile,
     niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, v2Enabled = false, safetyIdentifier = '', signal
   } = args;
@@ -818,6 +865,7 @@ async function callHumanize(args) {
     const qualityPatternHints = qualityPatternLab ? safeQualityPatternHints(qualityPatternProfile) : '';
     const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints, [niklQualityHints, niklExternalApiHints, qualityPatternHints].filter(Boolean).join('\n\n'));
     const hp = prompts.buildHumanizePrompt(mode, lang, {
+      requestStrength,
       speakerType: contract.speakerType,
       register: contract.register,
       lengthPolicy: contract.lengthPolicy,
@@ -845,6 +893,7 @@ async function callHumanize(args) {
         task: 'humanize',
         phase,
         mode,
+        requestStrength,
         profile: PROFILE,
         chunkIndex: index,
         escalated: phase === 'escalation'
@@ -1303,11 +1352,20 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
     directPreservationReason = 'number_multiset_changed';
   }
   const profileName = String(documentProfile?.profile || '');
+  const profileNames = new Set([profileName, ...(documentProfile?.safetyProfiles || []).map(value => String(value || ''))]);
   const preserveLists = mode === 'polish'
-    || ['academic_paper', 'report_assignment', 'student_record', 'resume_application', 'long_explainer'].includes(profileName);
+    || documentProfile?.formatProfile?.flags?.includes?.('questionnaire')
+    || documentProfile?.formatProfile?.flags?.includes?.('list_heavy')
+    || [...profileNames].some(profile => [
+      'academic_paper',
+      'report_assignment',
+      'student_record_teacher',
+      'student_self_assessment',
+      'resume_application'
+    ].includes(profile));
   if (preserveLists) {
-    const sourceLists = buildVoiceProfile(original, { documentProfile: profileName }).listItemCount || 0;
-    const outputLists = buildVoiceProfile(outputText, { documentProfile: profileName }).listItemCount || 0;
+    const sourceLists = buildVoiceProfile(original, { documentProfile }).listItemCount || 0;
+    const outputLists = buildVoiceProfile(outputText, { documentProfile }).listItemCount || 0;
     if (sourceLists !== outputLists) {
       violations.push({ gate: 'list_structure_changed', sourceCount: sourceLists, outputCount: outputLists });
       warnings.push('list_structure_changed');
@@ -1668,7 +1726,7 @@ function sparseVoiceDistributionViolation({ original, source, outputText, voiceP
   const target = sentence.sparseSplitTarget;
   if (sentence.punctuationSparse !== true || !target) return null;
   if (normalizeBare(original) !== normalizeBare(source)) return null;
-  const current = buildVoiceProfile(outputText, { documentProfile: documentProfile?.profile || 'unknown' }).sentence;
+  const current = buildVoiceProfile(outputText, { documentProfile: documentProfile || 'unknown' }).sentence;
   const missed = [];
   if (current.count < target.minCount || current.count > target.maxCount) {
     missed.push(`문장 수 ${current.count}(목표 ${target.minCount}~${target.maxCount})`);
@@ -1685,9 +1743,8 @@ function sparseVoiceDistributionViolation({ original, source, outputText, voiceP
 
 function existingVoiceDistributionViolation({ original, source, outputText, mode, documentProfile } = {}) {
   if (mode === 'polish' || normalizeBare(original) !== normalizeBare(source)) return null;
-  const profile = documentProfile?.profile || 'unknown';
-  const before = buildVoiceProfile(original, { documentProfile: profile }).sentence;
-  const after = buildVoiceProfile(outputText, { documentProfile: profile }).sentence;
+  const before = buildVoiceProfile(original, { documentProfile: documentProfile || 'unknown' }).sentence;
+  const after = buildVoiceProfile(outputText, { documentProfile: documentProfile || 'unknown' }).sentence;
   // 청크·최종 감사·의미 수리가 모두 voiceProfile의 동일 판정을 사용한다.
   // naturalness shadow 점수는 이 판정이나 후보 선택에 사용하지 않는다.
   const distribution = sentenceDistributionShift(before, after);
@@ -1711,9 +1768,8 @@ function isSafeGeneralSurfaceCandidate(source, candidate, contract, documentProf
   if (floor.measureNovelty(before, after, '').count > 0) return false;
   if (floor.measureLostFacts(before, after).count > 0) return false;
   if (floor.measurePovDrift(before, after, contract?.povSeed).introducedAnyFirstPerson) return false;
-  const profile = documentProfile?.profile || 'unknown';
-  const beforeVoice = buildVoiceProfile(before, { documentProfile: profile });
-  const afterVoice = buildVoiceProfile(after, { documentProfile: profile });
+  const beforeVoice = buildVoiceProfile(before, { documentProfile: documentProfile || 'unknown' });
+  const afterVoice = buildVoiceProfile(after, { documentProfile: documentProfile || 'unknown' });
   if (beforeVoice.lineStructureSensitive && beforeVoice.lineCount !== afterVoice.lineCount) return false;
   if (existingVoiceDistributionViolation({
     original: before,
@@ -2106,6 +2162,14 @@ function addStructureWarnings(report, audit) {
       action: 'needs_review',
       lostLockedCount: audit.lostLockedCount,
       lostLocked: audit.lostLocked || []
+    });
+  }
+  if (audit.lockedOrderChanged) {
+    additions.push({
+      gate: 'structure_lock_order',
+      action: 'needs_review',
+      count: audit.lockedOutOfOrderCount || 0,
+      items: audit.lockedOutOfOrder || []
     });
   }
   if (audit.boundaryRepair?.applied) {

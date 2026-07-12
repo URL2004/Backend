@@ -119,7 +119,15 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.1');
+  assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
+  assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
+  assert.ok(Array.isArray(out.engineMeta.candidateProfiles));
+  assert.ok(Array.isArray(out.engineMeta.safetyProfiles));
+  assert.ok(Array.isArray(out.engineMeta.formatProfile.flags));
+  assert.ok(Array.isArray(out.engineMeta.riskFlags));
+  assert.equal(out.engineMeta.tonePolicy, 'source_preserve');
   assert.equal(out.engineMeta.semanticJudgeRan, true);
   assert.equal(out.engineMeta.logicalChunkCount, out.engineMeta.chunkCount);
   assert.equal(out.engineMeta.lockedChunkCount, 0);
@@ -184,6 +192,86 @@ test('polish 무변환은 표면 수정 재시도 정확히 1회 후 안전 결�
   assert.equal(out.engineMeta.repairCount, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
+});
+
+test('장문 polish는 자연스러운 청크의 무변환을 허용하고 문서 한 곳이 수정되면 재시도하지 않는다', { concurrency: false }, async t => {
+  const firstBody = Array.from({ length: 16 }, (_, index) => (
+    `첫 구간 ${index + 1}번째 문장은 원문의 사실과 흐름을 차분하게 설명하며 이미 자연스러운 상태를 유지합니다.`
+  )).join(' ');
+  const secondBody = Array.from({ length: 16 }, (_, index) => (
+    `둘째 구간 ${index + 1}번째 문장은 자료를 살피고 내용을 정리했으며 연결이 자연스럽지가 않습니다.`
+  )).join(' ');
+  const source = `Ⅰ. 첫 구간\n${firstBody}\n\nⅡ. 둘째 구간\n${secondBody}`;
+  const mock = installEngineMock(t, {
+    humanize: body => {
+      const input = String(body.input || '');
+      const marker = '[편집할 텍스트]\n';
+      const start = input.lastIndexOf(marker);
+      const editable = start >= 0 ? input.slice(start + marker.length).trim() : input;
+      return editable.includes('둘째 구간')
+        ? editable.replace('자연스럽지가 않습니다', '자연스럽지 않습니다')
+        : editable;
+    }
+  });
+  const out = await engine.run({ text: source, mode: 'polish', allowPolish: true, uid: 'document-polish-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
+  const beforeAwkward = (source.match(/자연스럽지가 않습니다/gu) || []).length;
+  const afterAwkward = (out.result.outputText.match(/자연스럽지가 않습니다/gu) || []).length;
+  assert.equal(afterAwkward, beforeAwkward - 1);
+  assert.ok(out.result.editMetrics.charEditRatio > 0);
+  assert.ok(out.result.editMetrics.charEditRatio < 0.01, '긴 문서의 안전한 한 곳 수정은 비율 하한으로 실패시키지 않는다');
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 0);
+  assert.ok(out.chunks.some(chunk => (chunk.warnings || []).includes('polish_chunk_unchanged_allowed')));
+});
+
+test('질문지는 번호·질문을 잠그고 답변별로만 편집하며 기본 말투가 장르를 바꾸지 않는다', { concurrency: false }, async t => {
+  const questions = [
+    '1. 이번 수업 활동에서 맡은 역할은 무엇인가요?',
+    '2. 자료를 찾으며 배운 점은 무엇인가요?',
+    '3. 다음 활동에서 개선할 점을 작성하세요.'
+  ];
+  const answers = [
+    '모둠의 의견을 모아 발표 순서를 정리했다.',
+    '여러 자료의 출처와 내용을 비교하며 핵심을 확인했다.',
+    '준비 시간을 나누고 설명이 부족한 부분을 다시 살필 계획이다.'
+  ];
+  const source = questions.map((question, index) => `${question}\n${answers[index]}`).join('\n\n');
+  const replacements = new Map([
+    [answers[0], '모둠의 의견을 모아 발표 순서를 정돈했다.'],
+    [answers[1], '여러 자료의 출처와 내용을 비교하며 핵심을 살폈다.'],
+    [answers[2], '준비 시간을 나누고 설명이 부족한 부분을 다시 확인할 계획이다.']
+  ]);
+  const mock = installEngineMock(t, {
+    humanize: body => {
+      const input = String(body.input || '');
+      const marker = '[편집할 텍스트]\n';
+      const start = input.lastIndexOf(marker);
+      const editable = start >= 0 ? input.slice(start + marker.length).trim() : input;
+      return replacements.get(editable) || editable;
+    }
+  });
+  const out = await engine.run({
+    text: source,
+    mode: 'blog',
+    basicStyle: 'blog',
+    uid: 'questionnaire-user',
+    config: config()
+  });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
+  assert.equal(out.engineMeta.documentProfile, 'student_self_assessment');
+  assert.equal(out.engineMeta.requestStrength, 'basic');
+  assert.equal(out.engineMeta.effectiveMode, 'assignment');
+  assert.equal(out.engineMeta.tonePolicy, 'conversational');
+  assert.equal(out.engineMeta.formatProfile.primary, 'questionnaire');
+  assert.ok(out.engineMeta.riskFlags.includes('questionnaire_answer_boundary'));
+  assert.equal(out.result.structureLock.lockedByType.questionnaire_question, 3);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 3);
+  for (const question of questions) assert.equal((out.result.outputText.split(question).length - 1), 1);
+  assert.equal(out.result.outputText.includes('저는'), false);
+  assert.equal(out.result.outputText.includes('정돈했다'), true);
+  assert.equal(out.result.outputText.includes('살폈다'), true);
+  assert.equal(out.result.outputText.includes('다시 확인할 계획이다'), true);
 });
 
 test('polish에서 안전한 수정이 없으면 차단하고 의미 심사 비용을 쓰지 않는다', { concurrency: false }, async t => {

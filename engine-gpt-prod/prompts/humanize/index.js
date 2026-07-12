@@ -20,6 +20,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   styleProfile = 'gpt_prod',
   userNotes = '',
   evidence = '',
+  requestStrength = '',
   riskProfile = '',
   documentProfile = null,
   voiceProfile = null
@@ -29,7 +30,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '',
     gptBiasGuardBlock(),
     '',
-    transformStrengthBlock(mode, documentProfile?.profile),
+    transformStrengthBlock(mode, documentProfile?.profile, requestStrength),
     '',
     gateSummaryBlock(),
     '',

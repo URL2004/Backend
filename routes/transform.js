@@ -1947,7 +1947,7 @@ async function runHumanizeJob(job, text, evidence = '') {
         appliedAtMs: Date.now()
       };
       logger.info('transform.admin_final_report_engine_profile_applied', { jobId: job.id, uid: job.uid, mode: job.mode, profile: styleProfile });
-    } else if (!isPolish && job.mode === 'blog' && job.basicStyle === 'report') {
+    } else if (!v2Enabled && !isPolish && job.mode === 'blog' && job.basicStyle === 'report') {
       styleProfile = 'basic_report';
       if (job.basicExperiment) {
         job.basicExperiment = {
@@ -1957,7 +1957,7 @@ async function runHumanizeJob(job, text, evidence = '') {
         };
       }
       logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle, profile: styleProfile });
-    } else if (!isPolish && job.mode === 'blog' && engineMode === 'blog') {
+    } else if (!v2Enabled && !isPolish && job.mode === 'blog' && engineMode === 'blog') {
       styleProfile = 'basic_blog';
       logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle || 'blog', profile: styleProfile });
     }

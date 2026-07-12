@@ -270,21 +270,27 @@ function measureNovelty(rawText, outputText, allowedExtra) {
 const LENGTH_POLICY = {
   thesis:     { min: 0.85, max: 1.20, hardMax: 1.30 },
   assignment: { min: 0.85, max: 1.20, hardMax: 1.30 },
+  polish:     { min: 0.90, max: 1.10, hardMax: 1.10 },
   // blog(짧은 다듬기·기본 피하기)은 자연히 압축되는 장르라 하한을 완화(0.85→0.72, env BLOG_LEN_MIN).
   //   ★증축 상한 env 튜너블(2026-06-20 #51·#62·#66 기본 피하기 x1.22~1.34 증축): 기본값 불변(회귀 0).
   //   증축이 문제되면 BLOG_LEN_HARDMAX(예 1.35)·BLOG_LEN_MAX로 무배포 조정. 짧은 글 완화(rawLen<250→2.2)는 measureLength에서 유지.
   blog:       { min: Number(process.env.BLOG_LEN_MIN) || 0.72, max: Number(process.env.BLOG_LEN_MAX) || 1.35, hardMax: Number(process.env.BLOG_LEN_HARDMAX) || 1.55 },
   resume:     { min: 0.90, max: 1.25, hardMax: 1.40 }
 };
+function polishLengthPolicy(rawText) {
+  return String(rawText || '').length <= 120
+    ? { min: 0.85, max: 1.15, hardMax: 1.15 }
+    : { ...LENGTH_POLICY.polish };
+}
 function measureLength(rawText, outputText, mode) {
-  const pol0 = LENGTH_POLICY[mode] || LENGTH_POLICY.assignment;
+  const pol0 = mode === 'polish' ? polishLengthPolicy(rawText) : (LENGTH_POLICY[mode] || LENGTH_POLICY.assignment);
   const rawLen = (rawText || '').replace(/\s+/g, '').length;
   const outLen = (outputText || '').replace(/\s+/g, '').length;
   const ratio = rawLen > 0 ? outLen / rawLen : 1;
   // ★ 짧은 글 비율 상한 완화(2026-06-19 실측 #8: 140자 글로벌시민교육 성찰이 blog 1.561배로 length_overrun 차단).
   //   짧은 글은 한 문장만 풀어 써도 비율이 크게 튄다(절대 +수십 자는 사소). 무날조는 novelty/judge가 따로 잡으므로
   //   여기선 '길이'만 본다 → rawLen<250(공백제외)이면 hardMax를 넉넉히(최소 2.2배) 완화. 긴 글 과확장 차단은 불변.
-  const pol = rawLen < 250 ? Object.assign({}, pol0, { hardMax: Math.max(pol0.hardMax, 2.2) }) : pol0;
+  const pol = mode !== 'polish' && rawLen < 250 ? Object.assign({}, pol0, { hardMax: Math.max(pol0.hardMax, 2.2) }) : pol0;
   let status = 'ok';
   if (ratio > pol.hardMax) status = 'overHard';      // FLOOR 위반 → shrink repair
   else if (ratio > pol.max) status = 'overSoft';     // 경고만(report)
@@ -695,6 +701,7 @@ module.exports = {
   measureLostFacts,
   measureFakeInternalRefs,
   measureLength,
+  polishLengthPolicy,
   measureRepetition,
   LENGTH_POLICY,
   collectFloorViolations,

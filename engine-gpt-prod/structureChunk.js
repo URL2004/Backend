@@ -3,6 +3,7 @@
 const baseChunk = require('../engine/chunk');
 const freezeBlocks = require('../engine/freezeblocks');
 const { splitSentenceSpans, splitSentences } = require('../engine/koreanText');
+const { paragraphExpansionLimit } = require('./voiceProfile');
 
 const VERSION = 'gpt-structure-chunk-v1';
 const UNSAFE_END_RE = /(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한|그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/;
@@ -309,16 +310,25 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
   const beforeCount = before.length;
   const sensitiveReport = Number(profileConfidence) >= 0.75
     && ['academic_paper', 'report_assignment'].includes(String(documentProfile || ''));
+  const creativeLayout = String(documentProfile || '') === 'creative';
   let targetCount = beforeCount;
   let policy = 'none';
   if (mode === 'polish' && sourceCount > 0) {
     targetCount = sourceCount;
     policy = 'exact_polish';
-  } else if (sensitiveReport && sourceCount > 0) {
-    const maximum = Math.max(sourceCount + 2, Math.ceil(sourceCount * 1.6));
+  } else if (!creativeLayout && sourceCount > 0) {
+    // 일반 글도 원문 문단 분포를 보존한다. 짧은 한 문단 원문은 2개까지,
+    // 장문의 미정리 초안은 약 350자당 한 문단(최대 12개)까지 허용한다.
+    // 여러 문단 원문은 +1 또는 1.5배까지만 허용해, 4→14처럼 의미 수리가
+    // 문장마다 빈 줄을 넣는 결과를 전달 직전에 어휘 변경 없이 되돌린다.
+    const compactSourceLength = bare(source).length;
+    const maximum = paragraphExpansionLimit(sourceCount, compactSourceLength);
     if (beforeCount > maximum) {
-      targetCount = maximum;
-      policy = 'bounded_sensitive_report';
+      // 여러 문단으로 이미 구조화된 원문은 gross over-split이 확인되면 원문
+      // 문단 수까지 복원한다. 상한에서 멈추면 비슷한 길이의 문단만 남아 오히려
+      // 대칭성이 커질 수 있다. 한 문단 초안만 길이 기반 가독성 상한을 사용한다.
+      targetCount = sourceCount > 1 ? sourceCount : maximum;
+      policy = sensitiveReport ? 'bounded_sensitive_report' : 'bounded_source_paragraphs';
     }
   }
   if (policy === 'none' || beforeCount === targetCount) {
@@ -614,6 +624,14 @@ function compactLayoutRepair(value) {
       targetCount: Number(value.paragraphs.targetCount) || 0,
       afterCount: Number(value.paragraphs.afterCount) || 0,
       pass: value.paragraphs.pass !== false
+    } : null,
+    speakerRestore: value.speakerRestore ? {
+      applied: value.speakerRestore.applied === true,
+      restoredSentenceCount: Number(value.speakerRestore.restoredSentenceCount) || 0,
+      restoredKinds: Array.isArray(value.speakerRestore.restoredKinds)
+        ? value.speakerRestore.restoredKinds.map(item => String(item || '')).filter(Boolean).slice(0, 2)
+        : [],
+      reason: String(value.speakerRestore.reason || '')
     } : null
   };
 }

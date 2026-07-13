@@ -4,8 +4,10 @@ const { splitSentences, normalizeCompact, mean, standardDeviation, koreanEnd } =
 const { detectRegister } = require('../engine/contract');
 
 const POV_PATTERNS = Object.freeze({
-  firstSingular: /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|저는|제가|저의|저에게)(?=$|[^가-힣A-Za-z0-9_])/gu,
-  firstPlural: /(?:^|[^가-힣A-Za-z0-9_])(?:우리는|우리가|우리의|저희는|저희가|저희의)(?=$|[^가-힣A-Za-z0-9_])/gu
+  firstSingular: /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|나도|나를|나에게|내게|저는|제가|저의|저도|저를|저에게)(?=$|[^가-힣A-Za-z0-9_])/gu,
+  // "우리 몸"처럼 조사가 생략된 관형형도 집단 화자다. 뒤에 한글이 바로
+  // 붙는 우리나라·우리말 등은 경계 조건으로 제외한다.
+  firstPlural: /(?:^|[^가-힣A-Za-z0-9_])(?:우리는|우리가|우리의|우리도|우리를|우리에게|우리와|우리로서|저희는|저희가|저희의|저희도|저희를|저희에게|저희와|저희로서|우리|저희)(?=$|[^가-힣A-Za-z0-9_])/gu
 });
 
 function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles = [], formatProfile = null } = {}) {
@@ -31,6 +33,7 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
   return {
     version: 1,
     documentProfile: profileName,
+    compactLength,
     safetyProfiles: context.safetyProfiles,
     formatProfile: context.formatProfile,
     register: detectRegister(text),
@@ -146,9 +149,12 @@ function auditVoice(sourceProfile, output, { documentProfile = 'unknown', mode =
   }
   const sourceParagraphs = sourceProfile?.paragraph?.count || 0;
   const currentParagraphs = current.paragraph?.count || 0;
+  const paragraphLimit = paragraphExpansionLimit(sourceParagraphs, sourceProfile?.compactLength || 0);
   const paragraphChanged = mode === 'polish'
     ? currentParagraphs !== sourceParagraphs
-    : sourceParagraphs >= 2 && (currentParagraphs < sourceParagraphs * 0.6 || currentParagraphs > sourceParagraphs * 1.6);
+    : sourceParagraphs === 1
+      ? currentParagraphs > paragraphLimit
+      : sourceParagraphs >= 2 && (currentParagraphs < sourceParagraphs * 0.6 || currentParagraphs > sourceParagraphs * 1.5);
   if (paragraphChanged) {
     warnings.push(warning('paragraph_structure_changed', '문단 수나 문단 구성이 원문과 크게 달라졌을 수 있어요.'));
   }
@@ -323,6 +329,15 @@ function uniqueStrings(values) {
   return [...new Set((Array.isArray(values) ? values : []).map(value => String(value || '').trim()).filter(Boolean))];
 }
 
+function paragraphExpansionLimit(sourceCount, compactLength = 0) {
+  const count = Math.max(0, Number(sourceCount) || 0);
+  if (!count) return 0;
+  if (count > 1) return Math.max(count + 1, Math.ceil(count * 1.5));
+  const length = Math.max(0, Number(compactLength) || 0);
+  if (length <= 1000) return 2;
+  return Math.min(12, Math.max(3, Math.ceil(length / 350)));
+}
+
 function safeMatches(text, pattern) {
   pattern.lastIndex = 0;
   return (String(text || '').match(pattern) || []).length;
@@ -346,4 +361,4 @@ function ratio(current, source) {
   return round(base ? (Number(current) || 0) / base : ((Number(current) || 0) ? 0 : 1), 4);
 }
 
-module.exports = { POV_PATTERNS, buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift };
+module.exports = { POV_PATTERNS, buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift, paragraphExpansionLimit };

@@ -109,3 +109,73 @@ test('v2 운영 상태는 GPT만 정상으로 판정하고 다른 provider는 �
   assert.equal(mismatch.providerCompatible, false);
   assert.equal(mismatch.code, 'HUMANIZE_V2_PROVIDER_MISMATCH');
 });
+
+test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관측 축약값을 보존한다', () => {
+  const job = {
+    id: 'archive-observability-1',
+    status: 'blocked',
+    stage: '전달 차단',
+    createdAt: 100,
+    uid: 'user-archive',
+    mode: 'blog',
+    text: '저장하면 안 되는 원문',
+    gates: ['gpt_noop_unchanged', { gate: 'sentence_truncated', detail: '저장 금지 상세' }],
+    gateDetail: { raw: '저장 금지' },
+    result: {
+      outputText: '저장하면 안 되는 결과',
+      qualityStatus: 'needs_review',
+      qualityWarnings: [{ code: 'paragraph_structure_changed', message: '상세 메시지' }],
+      floorReport: { criticals: [{ gate: 'gpt_noop_unchanged', detail: '상세' }], warnings: [] },
+      engineMeta: {
+        engineVersion: 'gpt-prod-v2.2',
+        requestedMode: 'blog',
+        effectiveMode: 'blog',
+        requestStrength: 'basic',
+        documentProfile: 'general',
+        profileConfidence: 0.81,
+        semanticJudgeRan: true,
+        repairCount: 2,
+        modelCallCount: 4,
+        humanizeCallCount: 2,
+        surfaceRetryCallCount: 1,
+        fallbackCount: 1,
+        finalNoopRecoveryCount: 0,
+        finalNoopRecoveryAttempted: true,
+        finalNoopRecoveryApplied: false,
+        finalNoopRecoveryReason: 'no_safe_surface_change',
+        polishSpeakerRestoreCount: 0
+      },
+      humanizeMeta: {
+        estimatedUsd: 0.012345,
+        dedupeAudit: { removedBlockCount: 1, removedBlockSentenceCount: 6 },
+        layoutRepair: { paragraphs: { policy: 'bounded_source_paragraphs', beforeCount: 14, afterCount: 6 } }
+      }
+    }
+  };
+
+  const first = transform.buildArchiveDocument(job, {}, 1000);
+  const later = transform.buildArchiveDocument(job, { expiredAtMs: 9000 }, 9000);
+  assert.equal(first.archiveSchemaVersion, 2);
+  assert.equal(first.terminalAtMs, 1000);
+  assert.equal(later.terminalAtMs, 1000, '후속 archive write가 최초 terminal 시각을 덮으면 안 된다');
+  assert.deepEqual(first.gates, ['gpt_noop_unchanged', 'sentence_truncated']);
+  assert.deepEqual(first.qualityWarningCodes, ['paragraph_structure_changed']);
+  assert.equal(first.engineVersion, 'gpt-prod-v2.2');
+  assert.equal(first.documentProfile, 'general');
+  assert.equal(first.estimatedUsd, 0.012345);
+  assert.equal(first.dedupeRemovedBlockCount, 1);
+  assert.equal(first.paragraphCountBeforeRepair, 14);
+  assert.equal(first.paragraphCountAfterRepair, 6);
+  assert.equal(first.finalNoopRecoveryAttempted, true);
+  assert.equal(first.finalNoopRecoveryReason, 'no_safe_surface_change');
+  assert.equal(Object.prototype.hasOwnProperty.call(first, 'text'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(first, 'result'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(first, 'gateDetail'), false);
+
+  job.status = 'running';
+  const reopened = transform.buildArchiveDocument(job, {}, 10000);
+  assert.equal(reopened.terminalAtMs, null, '차단 job 재처리 시 이전 terminal 시각을 지워야 한다');
+  job.status = 'done';
+  const completed = transform.buildArchiveDocument(job, {}, 11000);
+  assert.equal(completed.terminalAtMs, 11000);
+});

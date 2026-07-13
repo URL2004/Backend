@@ -14,7 +14,7 @@ function computePovSeed(rawText) {
   //   '나는/난'은 "냄새 나는" 같은 관형형과 충돌하므로 문장 시작 위치만 별도 카운트한다.
   const fpRe = /(?<![가-힣])(저는|저의|저도|저를|저에게|저로서|저랑|저와|저한테|제가|제 생각|제 경험|제 친구|제 룸메|내가|내게|나에게|나의|내(?=\s))/g;
   const fpLooseSentenceStartRe = /(?:^|[.!?…\n]\s*)(나는|난|나도|나를|나에게|나의)(?=\s)/g;
-  const fpPluralRe = /(?<![가-힣])(우리는|우리가|우리의|우리도|저희는|저희가|저희의)/g;
+  const fpPluralRe = /(?<![가-힣A-Za-z0-9_])(우리는|우리가|우리의|우리도|우리를|우리에게|우리와|우리로서|저희는|저희가|저희의|저희도|저희를|저희에게|저희와|저희로서|우리|저희)(?![가-힣A-Za-z0-9_])/g;
   const orgVoiceRe = /(본\s*보고서|본\s*연구|본\s*글|이\s*글은|이\s*보고서|본고|본\s*논문)/g;
   // 영어 1인칭: 개인(I/me/my/mine) vs 조직(we/us/our/ours) 분리. "I"는 대문자 단독, 나머지는 소문자 단어경계.
   const enSingRe = /\bI\b|\b(?:me|my|mine|myself)\b/g;
@@ -84,7 +84,10 @@ function measurePovDrift(rawText, outputText, povSeed) {
     introducedFirstPerson: introducedSingular,  // 비인칭/조직→개인(FLOOR 위반)
     introducedFirstPersonPlural: introducedPlural,  // 비인칭→우리/저희(FLOOR 위반)
     introducedAnyFirstPerson: introducedSingular || introducedPlural,
-    droppedFirstPerson: seed.fp_singular > 0 && outSeed.fp_singular === 0      // 개인→비인칭(화자 손실, 보고용)
+    droppedFirstPerson: seed.fp_singular > 0 && outSeed.fp_singular === 0,     // 개인→비인칭(화자 손실, 보고용)
+    droppedFirstPersonPlural: seed.fp_plural > 0 && outSeed.fp_plural === 0,
+    droppedAnyFirstPerson: (seed.fp_singular > 0 && outSeed.fp_singular === 0)
+      || (seed.fp_plural > 0 && outSeed.fp_plural === 0)
   };
 }
 

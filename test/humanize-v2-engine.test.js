@@ -119,7 +119,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.1');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.2');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -377,6 +377,26 @@ test('두 일반 모델이 모두 무변환이면 문서 표면 교정 1회로 �
   assert.equal(out.fallbackCount, 0);
   assert.equal(out.engineMeta.repairCount, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+});
+
+test('의미 수리 뒤 최종 결과가 원문으로 돌아가도 전달 직전 no-op 복구를 한 번 수행한다', { concurrency: false }, async t => {
+  const source = '한국대학교 연구팀은 학생 20명을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 정리했습니다.';
+  const unsafe = `${source} 미래연구원은 후속 조사를 시작합니다.`;
+  const safe = source.replace('함께 분석했고', '함께 살펴봤고');
+  const mock = installEngineMock(t, {
+    humanize: unsafe,
+    semanticViolation: true,
+    repairOutput: source,
+    generalRetryOutput: safe
+  });
+  const out = await engine.run({ text: source, mode: 'formal', uid: 'final-noop-recovery-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
+  assert.equal(out.result.outputText, safe);
+  assert.equal(out.engineMeta.finalNoopRecoveryAttempted, true);
+  assert.equal(out.engineMeta.finalNoopRecoveryApplied, true);
+  assert.equal(out.engineMeta.finalNoopRecoveryCount, 1);
+  assert.equal(out.engineMeta.finalNoopRecoveryMethod, 'model');
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
 });
 

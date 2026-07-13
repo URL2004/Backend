@@ -33,6 +33,7 @@ function claudeSuggestEvidence() {
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive'; // 관리자 모니터 장기 보관용(원문·결과 제외)
+const TERMINAL_JOB_STATUSES = new Set(['done', 'blocked', 'error', 'cancelled']);
 let draining = false;
 setInterval(() => {
   const now = Date.now();
@@ -534,9 +535,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'estSec', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -557,6 +558,7 @@ function pruneUndefinedForFirestore(value) {
 }
 
 function persistJob(job) {
+  ensureTerminalTimestamp(job);
   if (!db) return;
   const doc = {};
   for (const k of PERSIST_FIELDS) {
@@ -582,22 +584,117 @@ function resultLength(result) {
 
 function archiveJob(job, extra = {}) {
   if (!db || !job || !job.id) return;
+  const doc = buildArchiveDocument(job, extra);
+  return db.collection(JOB_ARCHIVE_COLLECTION).doc(job.id).set(doc, { merge: true })
+    .catch(e => logger.warn('transform.archive_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
+}
+
+function buildArchiveDocument(job, extra = {}, now = Date.now()) {
+  if (!job || !job.id) return {};
+  ensureTerminalTimestamp(job, now);
   const doc = {};
   for (const k of ARCHIVE_FIELDS) {
     const cleaned = pruneUndefinedForFirestore(job[k]);
     if (cleaned !== undefined) doc[k] = cleaned;
   }
   doc.jobId = job.id;
-  doc.updatedAtMs = Date.now();
+  doc.archiveSchemaVersion = 2;
   doc.textLength = typeof job.text === 'string' ? job.text.length : 0;
   doc.resultLength = resultLength(job.result);
   doc.candidatesCount = Array.isArray(job.candidates) ? job.candidates.length : 0;
+  Object.assign(doc, buildArchiveObservability(job));
   for (const [k, v] of Object.entries(extra || {})) {
     const cleaned = pruneUndefinedForFirestore(v);
     if (cleaned !== undefined) doc[k] = cleaned;
   }
-  return db.collection(JOB_ARCHIVE_COLLECTION).doc(job.id).set(doc, { merge: true })
-    .catch(e => logger.warn('transform.archive_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
+  if (Number.isFinite(Number(job.terminalAtMs)) && Number(job.terminalAtMs) > 0) doc.terminalAtMs = Number(job.terminalAtMs);
+  doc.updatedAtMs = Number(now) || Date.now();
+  return pruneUndefinedForFirestore(doc);
+}
+
+function ensureTerminalTimestamp(job, now = Date.now()) {
+  if (!job) return null;
+  if (!TERMINAL_JOB_STATUSES.has(String(job.status || ''))) {
+    if (job.terminalAtMs != null) job.terminalAtMs = null;
+    return null;
+  }
+  if (!Number.isFinite(Number(job.terminalAtMs)) || Number(job.terminalAtMs) <= 0) {
+    job.terminalAtMs = Number(now) || Date.now();
+  }
+  return job.terminalAtMs;
+}
+
+function buildArchiveObservability(job) {
+  const result = job?.result && typeof job.result === 'object' ? job.result : {};
+  const engineMeta = result.engineMeta || result.humanizeMeta?.engineMeta || {};
+  const humanizeMeta = result.humanizeMeta || {};
+  const usage = humanizeMeta.usage || {};
+  const layoutRepair = humanizeMeta.layoutRepair || humanizeMeta.structureLock?.layoutRepair || {};
+  const paragraphRepair = layoutRepair.paragraphs || {};
+  const dedupeAudit = humanizeMeta.dedupeAudit || {};
+  const warningCodes = uniqueArchiveCodes([
+    ...(Array.isArray(result.qualityWarnings) ? result.qualityWarnings : []),
+    ...(Array.isArray(result.floorReport?.warnings) ? result.floorReport.warnings : [])
+  ]);
+  const gateCodes = uniqueArchiveCodes([
+    ...(Array.isArray(job.gates) ? job.gates : []),
+    ...(Array.isArray(result.floorReport?.criticals) ? result.floorReport.criticals : [])
+  ]);
+  return pruneUndefinedForFirestore({
+    gates: gateCodes,
+    qualityStatus: archiveString(result.qualityStatus, 32),
+    qualityWarningCodes: warningCodes,
+    engineVersion: archiveString(engineMeta.engineVersion || humanizeMeta.engine, 80),
+    requestedMode: archiveString(engineMeta.requestedMode, 24),
+    effectiveMode: archiveString(engineMeta.effectiveMode, 24),
+    requestStrength: archiveString(engineMeta.requestStrength, 24),
+    documentProfile: archiveString(engineMeta.documentProfile, 64),
+    profileConfidence: archiveFinite(engineMeta.profileConfidence),
+    semanticJudgeRan: engineMeta.semanticJudgeRan === true,
+    repairCount: archiveFinite(engineMeta.repairCount),
+    modelCallCount: archiveFinite(engineMeta.modelCallCount),
+    humanizeCallCount: archiveFinite(engineMeta.humanizeCallCount),
+    surfaceRetryCallCount: archiveFinite(engineMeta.surfaceRetryCallCount),
+    fallbackCount: archiveFinite(engineMeta.fallbackCount ?? result.fallbackCount),
+    finalNoopRecoveryCount: archiveFinite(engineMeta.finalNoopRecoveryCount),
+    finalNoopRecoveryAttempted: engineMeta.finalNoopRecoveryAttempted === true,
+    finalNoopRecoveryApplied: engineMeta.finalNoopRecoveryApplied === true,
+    finalNoopRecoveryMethod: archiveString(engineMeta.finalNoopRecoveryMethod, 32),
+    finalNoopRecoveryReason: archiveString(engineMeta.finalNoopRecoveryReason, 96),
+    polishSpeakerRestoreCount: archiveFinite(engineMeta.polishSpeakerRestoreCount),
+    polishSpeakerRestoredSentenceCount: archiveFinite(engineMeta.polishSpeakerRestoredSentenceCount),
+    estimatedUsd: archiveFinite(humanizeMeta.estimatedUsd ?? usage.estimatedUsd),
+    dedupeRemovedBlockCount: archiveFinite(dedupeAudit.removedBlockCount),
+    dedupeRemovedBlockSentenceCount: archiveFinite(dedupeAudit.removedBlockSentenceCount),
+    paragraphRepairPolicy: archiveString(paragraphRepair.policy, 48),
+    paragraphCountBeforeRepair: archiveFinite(paragraphRepair.beforeCount),
+    paragraphCountAfterRepair: archiveFinite(paragraphRepair.afterCount)
+  });
+}
+
+function uniqueArchiveCodes(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values || []) {
+    const raw = typeof value === 'string' ? value : (value?.code || value?.gate || value?.type || '');
+    const code = String(raw || '').trim().replace(/[^A-Za-z0-9_.:-]+/gu, '_').slice(0, 80);
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+    if (out.length >= 24) break;
+  }
+  return out;
+}
+
+function archiveString(value, limit) {
+  const text = String(value || '').trim();
+  return text ? text.slice(0, limit) : undefined;
+}
+
+function archiveFinite(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
 }
 
 function deletePersisted(id) {
@@ -762,6 +859,7 @@ router.shutdown = async function shutdown() {
       j.stage = '중단됨(서버 재시작)';
       j.error = '서버 재시작으로 작업이 중단됐어요. 크레딧은 차감되지 않았어요 — 다시 시도해 주세요.';
     }
+    ensureTerminalTimestamp(j);
     if (db) {
       const doc = {};
       for (const k of PERSIST_FIELDS) {
@@ -2502,5 +2600,7 @@ router.get('/transform/:id', async (req, res) => {
 
 router.saveJobHistory = saveJobHistory;   // 테스트용
 router.maybeNotifyOrphan = maybeNotifyOrphan;   // 테스트용
+router.buildArchiveDocument = buildArchiveDocument;   // 테스트용(원문·결과 비저장 계약 검증)
+router.ensureTerminalTimestamp = ensureTerminalTimestamp;   // 테스트용
 
 module.exports = router;

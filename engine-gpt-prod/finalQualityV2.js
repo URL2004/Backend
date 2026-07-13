@@ -1,8 +1,8 @@
 'use strict';
 
 const floor = require('../engine/floor');
-const { computeEditMetrics } = require('../engine/koreanText');
-const { auditVoice } = require('./voiceProfile');
+const { computeEditMetrics, splitSentenceSpans } = require('../engine/koreanText');
+const { auditVoice, buildVoiceProfile, POV_PATTERNS } = require('./voiceProfile');
 const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
 const { judgeAndRepair } = require('./judge');
 const { completeJson } = require('./openaiClient');
@@ -320,6 +320,79 @@ function polishEditPolicy(source, outputText) {
   return { pass: !noSafeChange && !excessiveChange, noSafeChange, belowRecommendedChange, excessiveChange, metrics, limits };
 }
 
+// polish는 화자를 새로 쓰는 대신 원문을 최소 교정해야 한다. 의미 수리나
+// 레이아웃 복원 뒤 1인칭 종류가 완전히 사라졌다면, 문장 수가 그대로이고
+// 대응 문장이 충분히 유사한 경우에만 그 문장을 원문으로 되돌린다. 원문 문장을
+// 복원하는 방식이라 새 사실을 만들지 않으며, 다른 문장의 교정은 유지된다.
+function restoreMissingPolishSpeaker({ source, outputText, documentProfile = 'unknown' } = {}) {
+  const before = String(outputText || '');
+  const sourceProfile = buildVoiceProfile(source, { documentProfile });
+  const outputProfile = buildVoiceProfile(before, { documentProfile });
+  const missingKinds = [];
+  if ((sourceProfile.pov?.firstSingular || 0) > 0 && (outputProfile.pov?.firstSingular || 0) === 0) {
+    missingKinds.push('firstSingular');
+  }
+  if ((sourceProfile.pov?.firstPlural || 0) > 0 && (outputProfile.pov?.firstPlural || 0) === 0) {
+    missingKinds.push('firstPlural');
+  }
+  if (!missingKinds.length) return speakerRestoreResult(before, false, [], 0, 'not_needed');
+
+  const sourceSpans = splitSentenceSpans(source);
+  const outputSpans = splitSentenceSpans(before);
+  if (!sourceSpans.length || sourceSpans.length !== outputSpans.length) {
+    return speakerRestoreResult(before, false, missingKinds, 0, 'sentence_alignment_mismatch');
+  }
+  if (paragraphCountLocal(source) !== paragraphCountLocal(before)) {
+    return speakerRestoreResult(before, false, missingKinds, 0, 'paragraph_alignment_mismatch');
+  }
+
+  const replacementIndices = new Set();
+  for (const kind of missingKinds) {
+    const pattern = POV_PATTERNS[kind];
+    sourceSpans.forEach((span, index) => {
+      if (!patternMatches(pattern, span.text)) return;
+      const similarity = computeEditMetrics(span.text, outputSpans[index].text).fiveGramSimilarity;
+      if (similarity >= 0.25) replacementIndices.add(index);
+    });
+  }
+  if (!replacementIndices.size) {
+    return speakerRestoreResult(before, false, missingKinds, 0, 'no_safe_alignment');
+  }
+
+  let candidate = before;
+  for (const index of [...replacementIndices].sort((a, b) => b - a)) {
+    const target = outputSpans[index];
+    candidate = candidate.slice(0, target.start) + sourceSpans[index].text + candidate.slice(target.end);
+  }
+  const repairedProfile = buildVoiceProfile(candidate, { documentProfile });
+  const stillMissing = missingKinds.some(kind => (repairedProfile.pov?.[kind] || 0) === 0);
+  const numberBefore = compareNumberMultiset(source, before);
+  const numberAfter = compareNumberMultiset(source, candidate);
+  const numberRiskBefore = numberBefore.addedCount + numberBefore.removedCount;
+  const numberRiskAfter = numberAfter.addedCount + numberAfter.removedCount;
+  if (stillMissing
+      || splitSentenceSpans(candidate).length !== sourceSpans.length
+      || paragraphCountLocal(candidate) !== paragraphCountLocal(source)
+      || numberRiskAfter > numberRiskBefore) {
+    return speakerRestoreResult(before, false, missingKinds, 0, 'post_repair_validation_failed');
+  }
+  return speakerRestoreResult(candidate, candidate !== before, missingKinds, replacementIndices.size, 'restored');
+}
+
+function patternMatches(pattern, value) {
+  if (!pattern) return false;
+  pattern.lastIndex = 0;
+  return pattern.test(String(value || ''));
+}
+
+function paragraphCountLocal(value) {
+  return String(value || '').split(/\n{2,}/u).map(item => item.trim()).filter(Boolean).length;
+}
+
+function speakerRestoreResult(text, applied, restoredKinds, restoredSentenceCount, reason) {
+  return { text, applied, restoredKinds, restoredSentenceCount, reason };
+}
+
 async function retryPolishSurface({ source, currentOutput, policy, config, signal, safetyIdentifier = '' }) {
   const system = [
     '너는 한국어 보존형 윤문 수리기다.',
@@ -486,6 +559,7 @@ module.exports = {
   buildReviewPairs,
   splitIntoSectionCount,
   polishEditPolicy,
+  restoreMissingPolishSpeaker,
   compareRepetitionDelta,
   retryPolishSurface,
   retryGeneralSurface,

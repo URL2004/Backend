@@ -22,7 +22,7 @@ const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile
 const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 
-const VERSION = 'gpt-prod-v2.1';
+const VERSION = 'gpt-prod-v2.2';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -253,6 +253,10 @@ async function runEngine({
   let generalSurfaceRetryCount = 0;
   let polishRetryAttemptCount = 0;
   let generalSurfaceRetryAttemptCount = 0;
+  let polishSpeakerRestoreCount = 0;
+  let polishSpeakerRestoredSentenceCount = 0;
+  let finalNoopRecoveryCount = 0;
+  let finalNoopRecovery = { attempted: false, applied: false, method: '', reason: '' };
   let polishStrictFailure = '';
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
@@ -323,20 +327,7 @@ async function runEngine({
       if (safeChangeFound) {
         outputText = retryOutput;
         generalSurfaceRetryCount = 1;
-        for (const record of records) {
-          if ((record.warnings || []).includes('general_surface_retry_safe_fallback')) {
-            record.fallback = false;
-            record.error = null;
-            record.hardFailReason = '';
-            record.floorViolations = [];
-            record.warnings = (record.warnings || []).filter(warning => ![
-              'general_surface_retry_pending',
-              'general_surface_retry_safe_fallback',
-              'v2_residual:structure_boundary_marker_failed',
-              'v2_residual:voice_existing_distribution_failed'
-            ].includes(warning));
-          }
-        }
+        acceptGeneralSurfaceRecovery(records);
       }
     } catch {}
   }
@@ -420,6 +411,81 @@ async function runEngine({
       })
     : { text: outputText, applied: false, pass: true };
   outputText = layoutRepair.text || outputText;
+  let polishSpeakerRestore = { applied: false, restoredSentenceCount: 0, restoredKinds: [], reason: 'not_applicable' };
+  if (v2Enabled && selectedMode === 'polish') {
+    polishSpeakerRestore = qualityV2.restoreMissingPolishSpeaker({
+      source: rawSource,
+      outputText,
+      documentProfile
+    });
+    if (polishSpeakerRestore.applied) {
+      outputText = polishSpeakerRestore.text;
+      polishSpeakerRestoreCount = 1;
+      polishSpeakerRestoredSentenceCount = polishSpeakerRestore.restoredSentenceCount || 1;
+    }
+    layoutRepair.speakerRestore = {
+      applied: polishSpeakerRestore.applied === true,
+      restoredSentenceCount: polishSpeakerRestore.restoredSentenceCount || 0,
+      restoredKinds: polishSpeakerRestore.restoredKinds || [],
+      reason: polishSpeakerRestore.reason || ''
+    };
+  }
+
+  // 청크 단계에서는 달라졌더라도 의미 수리·동결 블록 재조립·레이아웃 복원 뒤
+  // 다시 원문과 같아질 수 있다. 최종 전달 직전 한 번 더 확인해, 엄격한 사실·숫자·
+  // 화자·문장·문단·잠금 구조 검증을 통과한 최소 표면 수정만 채택한다.
+  const finalEquivalentToSource = normalizeBare(rawSource) === normalizeBare(outputText);
+  const finalNoopRecoverable = records.every(record => record.fallback !== true || isRecoverableSurfaceFallbackRecord(record));
+  if (v2Enabled && selectedMode !== 'polish' && finalEquivalentToSource && finalNoopRecoverable) {
+    finalNoopRecovery.attempted = true;
+    try {
+      const deterministicOutput = buildDeterministicGeneralSurfaceEdit(rawSource);
+      const deterministicSafe = deterministicOutput
+        && isSafeGeneralSurfaceCandidate(rawSource, deterministicOutput, contract, documentProfile, selectedMode)
+        && preservesFinalStructure(rawSource, deterministicOutput, chunks, chunkPlan, boundaryRepair);
+      let retryOutput = deterministicSafe ? deterministicOutput : '';
+      let safeChangeFound = deterministicSafe;
+      let method = deterministicSafe ? 'deterministic' : '';
+      // 앞 단계에서 문서 표면 재시도를 이미 썼다면 API 호출을 중복하지 않는다.
+      if (!deterministicSafe && generalSurfaceRetryAttemptCount === 0) {
+        generalSurfaceRetryAttemptCount += 1;
+        const retried = await qualityV2.retryGeneralSurface({
+          source: rawSource,
+          currentOutput: outputText,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        retryOutput = retried.outputText;
+        safeChangeFound = retried.safeChangeFound === true
+          && isSafeGeneralSurfaceCandidate(rawSource, retryOutput, contract, documentProfile, selectedMode)
+          && preservesFinalStructure(rawSource, retryOutput, chunks, chunkPlan, boundaryRepair);
+        method = 'model';
+      }
+      if (safeChangeFound) {
+        outputText = retryOutput;
+        generalSurfaceRetryCount += 1;
+        finalNoopRecoveryCount = 1;
+        finalNoopRecovery = { attempted: true, applied: true, method, reason: 'safe_surface_change' };
+        acceptGeneralSurfaceRecovery(records);
+      } else {
+        finalNoopRecovery = {
+          attempted: true,
+          applied: false,
+          method: method || (generalSurfaceRetryAttemptCount > 0 ? 'already_attempted' : 'none'),
+          reason: 'no_safe_surface_change'
+        };
+      }
+    } catch (error) {
+      finalNoopRecovery = {
+        attempted: true,
+        applied: false,
+        method: 'model',
+        reason: `retry_error:${String(error?.code || error?.message || 'unknown').slice(0, 80)}`
+      };
+    }
+  }
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(rawSource, outputText);
     if (!polishStrictFailure && polishReport.noSafeChange) polishStrictFailure = 'polish_unchanged';
@@ -546,7 +612,7 @@ async function runEngine({
     tonePolicy: documentProfile.tonePolicy || 'source_preserve',
     basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
     semanticJudgeRan: semanticReport.ran === true,
-    repairCount: (semanticReport.repairCount || 0) + polishRetryCount + generalSurfaceRetryCount,
+    repairCount: (semanticReport.repairCount || 0) + polishRetryCount + generalSurfaceRetryCount + polishSpeakerRestoreCount,
     chunkCount: records.length,
     logicalChunkCount: chunkExecution.logicalChunkCount,
     editableChunkCount: chunkExecution.editableChunkCount,
@@ -559,7 +625,14 @@ async function runEngine({
     modelCallCount: chunkExecution.modelCallCount,
     semanticSectionCount: chunkExecution.semanticSectionCount,
     fallbackCount,
-    lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4))
+    lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4)),
+    polishSpeakerRestoreCount,
+    polishSpeakerRestoredSentenceCount,
+    finalNoopRecoveryCount,
+    finalNoopRecoveryAttempted: finalNoopRecovery.attempted === true,
+    finalNoopRecoveryApplied: finalNoopRecovery.applied === true,
+    finalNoopRecoveryMethod: finalNoopRecovery.applied ? finalNoopRecovery.method : '',
+    finalNoopRecoveryReason: finalNoopRecovery.reason || ''
   };
   result.humanizeMeta = {
     provider: 'openai',
@@ -594,6 +667,8 @@ async function runEngine({
     layoutRepair: result.structureLock?.layoutRepair || null,
     dedupeAudit: result.dedupeAudit ? {
       removedExactCount: result.dedupeAudit.removedExactCount || 0,
+      removedBlockCount: result.dedupeAudit.removedBlockCount || 0,
+      removedBlockSentenceCount: result.dedupeAudit.removedBlockSentenceCount || 0,
       fuzzyWarningCount: result.dedupeAudit.fuzzyWarningCount || 0,
       skipped: result.dedupeAudit.skipped === true,
       reason: result.dedupeAudit.reason || ''
@@ -1767,9 +1842,15 @@ function isSafeGeneralSurfaceCandidate(source, candidate, contract, documentProf
   if (meaningfulSentenceCount(before) !== meaningfulSentenceCount(after)) return false;
   if (floor.measureNovelty(before, after, '').count > 0) return false;
   if (floor.measureLostFacts(before, after).count > 0) return false;
-  if (floor.measurePovDrift(before, after, contract?.povSeed).introducedAnyFirstPerson) return false;
+  if (compareNumberMultiset(before, after).changed) return false;
+  const povDrift = floor.measurePovDrift(before, after, contract?.povSeed);
+  if (povDrift.introducedAnyFirstPerson || povDrift.droppedAnyFirstPerson) return false;
+  if (extractProtectedTerms(before).some(term => !containsNormalizedValue(after, term))) return false;
   const beforeVoice = buildVoiceProfile(before, { documentProfile: documentProfile || 'unknown' });
   const afterVoice = buildVoiceProfile(after, { documentProfile: documentProfile || 'unknown' });
+  if (beforeVoice.directQuoteCount !== afterVoice.directQuoteCount) return false;
+  if (beforeVoice.listItemCount !== afterVoice.listItemCount) return false;
+  if (beforeVoice.headingCount !== afterVoice.headingCount) return false;
   if (beforeVoice.lineStructureSensitive && beforeVoice.lineCount !== afterVoice.lineCount) return false;
   if (existingVoiceDistributionViolation({
     original: before,
@@ -1781,23 +1862,72 @@ function isSafeGeneralSurfaceCandidate(source, candidate, contract, documentProf
   return true;
 }
 
+function preservesFinalStructure(source, candidate, chunks, plan, boundaryRepair) {
+  const audit = structureChunk.buildStructureAudit({
+    source,
+    outputText: candidate,
+    chunks,
+    plan,
+    boundaryRepair
+  });
+  return (audit.lostLockedCount || 0) === 0 && audit.lockedOrderChanged !== true;
+}
+
+function acceptGeneralSurfaceRecovery(records) {
+  for (const record of records || []) {
+    const pending = (record.warnings || []).some(warning => [
+      'general_surface_retry_pending',
+      'general_surface_retry_safe_fallback'
+    ].includes(warning));
+    if (record.fallback === true && !pending && !isRecoverableSurfaceFallbackRecord(record)) continue;
+    if (pending || record.fallback === true) {
+      record.fallback = false;
+      record.error = null;
+      record.hardFailReason = '';
+      record.floorViolations = [];
+    }
+    record.warnings = (record.warnings || []).filter(warning => ![
+      'general_surface_retry_pending',
+      'general_surface_retry_safe_fallback',
+      'v2_residual:structure_boundary_marker_failed',
+      'v2_residual:voice_existing_distribution_failed'
+    ].includes(warning));
+  }
+}
+
 function buildDeterministicGeneralSurfaceEdit(source) {
   const value = String(source || '');
   if (!value.trim()) return '';
 
-  // 한국어에서 선택적으로 쓸 수 있는 문장 첫 접속부사의 쉼표만 한 곳
-  // 토글한다. 의미·화자·사실·문장 수는 바뀌지 않으며 최종 안전 감사가
+  // 한국어에서 선택적으로 쓸 수 있는 문장 첫 접속부사에 빠진 쉼표만 한 곳
+  // 보완한다. 의미·화자·사실·문장 수는 바뀌지 않으며 최종 안전 감사가
   // 다시 검증한다. 문서 중간의 같은 단어에는 손대지 않는다.
-  const connector = /(^|[.!?…]\s+|\n+)(또한|그러나|하지만|따라서|결국|특히|나아가|한편|반면|결과적으로|이처럼|그렇다면|그렇기에|그러므로|그래서|그런데|더불어|무엇보다|우선|첫째|둘째|셋째|마지막으로|예를 들어|실제로)(,?)(?=\s)/u;
+  const connector = /(^|[.!?…]\s+|\n+)(또한|그러나|하지만|따라서|결국|특히|나아가|한편|반면|결과적으로|이처럼|그렇다면|그렇기에|그러므로|그래서|그런데|더불어|무엇보다|우선|첫째|둘째|셋째|마지막으로|예를 들어|실제로)(?=\s)/u;
   if (connector.test(value)) {
-    return value.replace(connector, (_match, prefix, word, comma) => `${prefix}${word}${comma ? '' : ','}`);
+    return value.replace(connector, (_match, prefix, word) => `${prefix}${word},`);
   }
 
   // 직선 작은따옴표로 감싼 짧은 한국어 구절은 내용은 유지하고 인용부호만
   // 한국어 곡선 인용부호로 정규화한다.
   const straightQuote = /'([^'\n]{1,80})'/u;
   if (straightQuote.test(value)) return value.replace(straightQuote, '‘$1’');
+
+  // 의미를 바꾸지 않는 조사 결합형의 축약을 한 곳만 허용한다. 띄어쓰기만
+  // 바꾸면 no-op 판정에서 다시 같아지므로, 검증 가능한 표면형 변화만 쓴다.
+  const contractions = [
+    [/통하여/u, '통해'],
+    [/대하여/u, '대해'],
+    [/위하여/u, '위해']
+  ];
+  for (const [pattern, replacement] of contractions) {
+    if (pattern.test(value)) return value.replace(pattern, replacement);
+  }
   return '';
+}
+
+function containsNormalizedValue(haystack, needle) {
+  const normalize = value => String(value || '').normalize('NFC').replace(/\s+/gu, '').toLowerCase();
+  return normalize(haystack).includes(normalize(needle));
 }
 
 function meaningfulSentenceCount(value) {
@@ -1941,8 +2071,12 @@ function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLin
     try {
       const dedupe = local.dedupe.dedupeSentences(out);
       out = dedupe.text;
+      const blockDedupe = local.dedupe.removeNewExactDuplicateBlocks(source, out);
+      out = blockDedupe.text;
       meta.dedupe = {
-        removedExactCount: dedupe.removed || 0,
+        removedExactCount: (dedupe.removed || 0) + (blockDedupe.removedSentenceCount || 0),
+        removedBlockCount: blockDedupe.removedBlockCount || 0,
+        removedBlockSentenceCount: blockDedupe.removedSentenceCount || 0,
         fuzzyWarningCount: dedupe.fuzzyWarnings?.length || 0,
         fuzzyWarnings: dedupe.fuzzyWarnings || []
       };

@@ -11,7 +11,7 @@ const nikl = require('../engine/koreanQuality/niklTest');
 const freeze = require('../engine/freezeblocks');
 const structure = require('../engine-gpt-prod/structureChunk');
 const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
-const { buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift } = require('../engine-gpt-prod/voiceProfile');
+const { buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift, paragraphExpansionLimit } = require('../engine-gpt-prod/voiceProfile');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const factAudit = require('../engine-gpt-prod/factAudit');
 const { assessRepairCandidate } = require('../engine-gpt-prod/judge');
@@ -106,6 +106,43 @@ test('dedupe는 인과 방향이 다른 유사 문장을 보존하고 인접 완
   assert.equal(report.removed, 1);
 });
 
+test('원문에 없던 비인접 중복 블록은 완전 일치 anchor로만 제거한다', () => {
+  const block = [
+    '첫 번째 근거는 재정착 조건과 실제 부담의 관계를 충분히 설명하는 문장입니다.',
+    '두 번째 근거는 사업 진행 단계에 따라 비용이 달라지는 과정을 구체적으로 설명합니다.',
+    '세 번째 근거는 기존 주민이 선택할 수 있는 대안의 범위를 차분하게 정리합니다.',
+    '네 번째 근거는 정책의 평가 기준을 준공률에서 재정착률로 바꿔야 한다고 설명합니다.'
+  ];
+  const source = ['도입 문장은 논의의 범위를 제시합니다.', ...block, '마무리 문장은 다음 절의 내용을 안내합니다.'].join(' ');
+  const duplicated = [
+    '도입 문장은 논의의 범위를 제시합니다.',
+    ...block,
+    '연결 문장은 앞부분을 다시 붙이는 청크 오류입니다.',
+    ...block,
+    '마무리 문장은 다음 절의 내용을 안내합니다.'
+  ].join(' ');
+  const repaired = dedupe.removeNewExactDuplicateBlocks(source, duplicated);
+  assert.equal(repaired.applied, true);
+  assert.equal(repaired.removedBlockCount, 1);
+  assert.equal(repaired.removedSentenceCount, 4);
+  for (const sentence of block) assert.equal((repaired.text.split(sentence).length - 1), 1);
+
+  const intentionalSource = ['도입 문장입니다.', ...block, '중간 문장입니다.', ...block, '마무리 문장입니다.'].join(' ');
+  const intentional = dedupe.removeNewExactDuplicateBlocks(intentionalSource, intentionalSource);
+  assert.equal(intentional.applied, false);
+
+  const protectedBlock = [
+    '일반 설명으로 시작하지만 뒤의 목록과 함께 보존해야 하는 충분히 긴 첫 문장입니다.',
+    '- 첫 번째 목록 항목은 사용자가 직접 정한 구조이므로 중복처럼 보여도 자동 삭제하지 않습니다.',
+    '목록 다음 설명도 앞의 목록과 한 블록을 이루며 원래 순서를 그대로 유지해야 합니다.',
+    '마지막 설명은 보호 블록 판정에 필요한 세 번째 완전 일치 기준을 충분히 제공합니다.'
+  ];
+  const protectedSource = ['보호 구조 도입 문장입니다.', ...protectedBlock, '보호 구조 마무리 문장입니다.'].join('\n\n');
+  const protectedDuplicate = ['보호 구조 도입 문장입니다.', ...protectedBlock, ...protectedBlock, '보호 구조 마무리 문장입니다.'].join('\n\n');
+  const protectedResult = dedupe.removeNewExactDuplicateBlocks(protectedSource, protectedDuplicate);
+  assert.equal(protectedResult.applied, false);
+});
+
 test('반복 경고는 원문에 있던 반복이 아니라 결과에서 증가한 반복만 기록한다', () => {
   const repeated = '같은 결론을 다시 설명하는 문장입니다.';
   const source = `${repeated} ${repeated} 다른 근거를 설명하는 문장입니다.`;
@@ -180,6 +217,32 @@ test('polish 최종 레이아웃은 어휘를 바꾸지 않고 원문 문단 수
   assert.equal(restored.paragraphs.afterCount, 1);
   assert.equal(restored.pass, true);
   assert.equal(restored.text.replace(/\s+/gu, ''), output.replace(/\s+/gu, ''));
+});
+
+test('일반 글도 원문 문단 분포의 1.5배를 넘는 과분할을 어휘 변경 없이 줄인다', () => {
+  const source = [
+    '첫 문단은 주제의 배경과 문제의식을 설명합니다. 이어서 탐구 목적을 정리합니다.',
+    '둘째 문단은 작동 원리와 관련 근거를 설명합니다. 핵심 개념의 관계도 함께 정리합니다.',
+    '셋째 문단은 관찰 결과와 한계를 설명합니다. 표본이 작다는 점도 밝힙니다.',
+    '마지막 문단은 배운 점과 이후 계획을 정리합니다. 과도한 일반화는 피합니다.'
+  ].join('\n\n');
+  const output = koreanText.splitSentences(source).join('\n\n');
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: output,
+    chunks: structure.splitChunksForGpt(source).chunks,
+    mode: 'blog',
+    documentProfile: 'general',
+    profileConfidence: 0.65
+  });
+  assert.equal(restored.paragraphs.sourceCount, 4);
+  assert.equal(restored.paragraphs.beforeCount, 8);
+  assert.equal(restored.paragraphs.targetCount, 4);
+  assert.equal(restored.paragraphs.afterCount, 4);
+  assert.equal(restored.paragraphs.policy, 'bounded_source_paragraphs');
+  assert.equal(restored.text.replace(/\s+/gu, ''), output.replace(/\s+/gu, ''));
+  assert.equal(paragraphExpansionLimit(1, 900), 2);
+  assert.equal(paragraphExpansionLimit(1, 2880), 9, '긴 단일 문단은 읽기 가능한 분할 여지를 남긴다');
 });
 
 test('v2 청커는 작은 본문 문단을 묶되 문단 구분과 동결 구조 왕복을 보존한다', () => {
@@ -449,6 +512,25 @@ test('polish voice 감사는 새 문단과 제목 구조 변경을 경고한다'
   const audit = auditVoice(voice, '본문이 바뀝니다.\n\n새 문단이 생깁니다.', { documentProfile: 'report_assignment', mode: 'polish' });
   assert.ok(audit.warnings.some(item => item.code === 'paragraph_structure_changed'));
   assert.ok(audit.warnings.some(item => item.code === 'heading_structure_changed'));
+});
+
+test('우리 몸의 bare 우리를 집단 화자로 세고 polish의 실제 화자 완전 손실만 복원한다', () => {
+  const sourceWithCollective = '우리 몸은 방어 작용을 조절합니다. 우리의 미래 보건에도 중요한 의미가 있습니다.';
+  const preservedCollective = '우리 몸은 방어 작용을 조절합니다. 미래 보건에도 중요한 의미가 있습니다.';
+  const collectiveVoice = buildVoiceProfile(sourceWithCollective);
+  const collectiveAudit = auditVoice(collectiveVoice, preservedCollective, { mode: 'polish' });
+  assert.ok(collectiveVoice.pov.firstPlural >= 2);
+  assert.equal(collectiveAudit.warnings.some(item => item.code === 'speaker_removed'), false);
+
+  const source = '저는 관련 자료를 직접 조사했습니다. 결과는 표로 정리했고 표현이 조금 어색했습니다.';
+  const output = '관련 자료를 직접 조사했습니다. 결과는 표로 정리했고 표현이 다소 어색했습니다.';
+  const restored = qualityV2.restoreMissingPolishSpeaker({ source, outputText: output, documentProfile: 'general_essay' });
+  assert.equal(restored.applied, true);
+  assert.equal(restored.restoredSentenceCount, 1);
+  assert.match(restored.text, /^저는 관련 자료를 직접 조사했습니다\./u);
+  assert.match(restored.text, /표현이 다소 어색했습니다\.$/u);
+  const repairedAudit = auditVoice(buildVoiceProfile(source), restored.text, { mode: 'polish' });
+  assert.equal(repairedAudit.warnings.some(item => item.code === 'speaker_removed'), false);
 });
 
 test('민감 문서 프로필은 목록의 삭제뿐 아니라 신규 목록 추가도 경고한다', () => {

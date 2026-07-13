@@ -5,7 +5,7 @@
 //   (공부 v4에서 "동일 내용 과도한 반복" 3건이 실제로 이 문제였음)
 
 const sg = require('./surfaceguard');
-const { splitSentences } = require('./koreanText');
+const { splitSentences, splitSentenceSpans } = require('./koreanText');
 
 const STOP = new Set(['그리고', '하지만', '그런데', '그러나', '그래서', '때문', '경우', '정도', '우리', '사람', '문제', '방식', '상황', '결국', '지금', '이것', '그것', '저것', '이런', '그런', '저런', '거예요', '거든요', '아니라', '있어요', '없어요', '해요', '대한', '위한', '통해', '대해']);
 function contentTokens(s) {
@@ -166,6 +166,173 @@ function dedupeSentences(text) {
   return { text: out.join('\n\n'), removed, fuzzyWarnings: fuzzyWarnings.slice(0, 20) };
 }
 
+// 청크 병합이 이미 처리한 앞 구간을 뒤에 다시 붙이는 경우, 문장 하나가 아니라
+// 수백 자짜리 블록이 통째로 반복될 수 있다. fuzzy 문장을 임의로 지우지 않고,
+// 원문에서 한 번뿐인 완전 일치 문장들이 결과에서 같은 원문 위치로 되돌아가는
+// "역행 블록"만 제거한다. 중간에 짧은 인용 표기나 한두 문장의 가벼운 윤문이
+// 있어도 완전 일치 anchor 3개 이상이 있어야 하므로 단일 유사 문장에는 작동하지 않는다.
+function removeNewExactDuplicateBlocks(source, text, { maxBlocks = 4 } = {}) {
+  const original = String(text || '');
+  let output = original;
+  const blocks = [];
+  let removedSentenceCount = 0;
+  const limit = Math.max(1, Math.min(8, Number(maxBlocks) || 4));
+
+  for (let round = 0; round < limit; round += 1) {
+    const candidate = findNewExactDuplicateBlock(source, output);
+    if (!candidate) break;
+    output = removeSentenceRange(output, candidate.start, candidate.end);
+    removedSentenceCount += candidate.sentenceCount;
+    blocks.push({
+      sentenceCount: candidate.sentenceCount,
+      anchorCount: candidate.anchorCount,
+      sourceStart: candidate.sourceStart,
+      sourceEnd: candidate.sourceEnd
+    });
+  }
+
+  return {
+    text: output,
+    applied: output !== original,
+    removedBlockCount: blocks.length,
+    removedSentenceCount,
+    blocks
+  };
+}
+
+function findNewExactDuplicateBlock(source, text) {
+  const sourceSpans = splitSentenceSpans(source);
+  const outputSpans = splitSentenceSpans(text);
+  if (sourceSpans.length < 4 || outputSpans.length < sourceSpans.length + 2) return null;
+
+  const sourceOccurrences = new Map();
+  sourceSpans.forEach((span, index) => {
+    const key = _normSent(span.text);
+    if (key.length < _DEDUP_MIN_LEN) return;
+    const values = sourceOccurrences.get(key) || [];
+    values.push(index);
+    sourceOccurrences.set(key, values);
+  });
+  const uniqueSource = new Map();
+  for (const [key, indices] of sourceOccurrences.entries()) {
+    if (indices.length === 1) uniqueSource.set(key, indices[0]);
+  }
+  if (uniqueSource.size < 3) return null;
+
+  const sourceKeys = sourceSpans.map(span => _normSent(span.text));
+  const outputKeys = outputSpans.map(span => _normSent(span.text));
+  const mapped = outputKeys.map(key => uniqueSource.has(key) ? uniqueSource.get(key) : null);
+  const seen = new Set();
+  let priorMax = -1;
+
+  for (let index = 0; index < mapped.length; index += 1) {
+    const mappedIndex = mapped[index];
+    if (mappedIndex === null || !seen.has(mappedIndex)) {
+      if (mappedIndex !== null) {
+        seen.add(mappedIndex);
+        priorMax = Math.max(priorMax, mappedIndex);
+      }
+      continue;
+    }
+
+    const candidate = extendDuplicateRun({
+      start: index,
+      mapped,
+      seen,
+      priorMax,
+      outputKeys,
+      sourceKeys
+    });
+    if (candidate) {
+      const startSpan = outputSpans[candidate.start];
+      const endSpan = outputSpans[candidate.end];
+      if (!startSpan || !endSpan) return null;
+      const candidateText = String(text || '').slice(startSpan.start, endSpan.end);
+      if (containsDedupeProtectedContent(candidateText)) {
+        seen.add(mappedIndex);
+        priorMax = Math.max(priorMax, mappedIndex);
+        continue;
+      }
+      return {
+        ...candidate,
+        start: startSpan.start,
+        end: endSpan.end,
+        sentenceCount: candidate.end - candidate.start + 1
+      };
+    }
+
+    seen.add(mappedIndex);
+    priorMax = Math.max(priorMax, mappedIndex);
+  }
+  return null;
+}
+
+function extendDuplicateRun({ start, mapped, seen, priorMax, outputKeys, sourceKeys }) {
+  const anchors = [];
+  let end = start - 1;
+  let gaps = 0;
+  let lastSource = -1;
+  for (let index = start; index < mapped.length; index += 1) {
+    const sourceIndex = mapped[index];
+    if (sourceIndex !== null && sourceIndex > priorMax) break;
+    if (sourceIndex !== null && seen.has(sourceIndex)) {
+      if (lastSource >= 0 && sourceIndex < lastSource) break;
+      anchors.push({ outputIndex: index, sourceIndex });
+      lastSource = sourceIndex;
+      gaps = 0;
+      end = index;
+      continue;
+    }
+    gaps += 1;
+    if (gaps > 2) break;
+    end = index;
+  }
+  if (anchors.length < 3) return null;
+  const sourceStart = Math.min(...anchors.map(item => item.sourceIndex));
+  const sourceEnd = Math.max(...anchors.map(item => item.sourceIndex));
+  if (sourceEnd - sourceStart < 2) return null;
+
+  // 청크 seam이 앞 문장의 일부와 중복 블록의 첫 문장을 붙여 버린 형태도
+  // 복구한다. 다음 문장이 그 앞부분을 원문 그대로 완성하는 경우에만 범위를
+  // 한 문장 확장하므로, 새 내용을 함께 지우지 않는다.
+  let safeStart = start;
+  if (start > 0 && end + 1 < mapped.length && mapped[end + 1] !== null && mapped[end + 1] > priorMax) {
+    const previous = outputKeys[start - 1];
+    const nextSource = sourceKeys[mapped[end + 1]] || '';
+    let embedded = null;
+    for (const sourceIndex of seen) {
+      const key = sourceKeys[sourceIndex] || '';
+      if (key.length < 24) continue;
+      const at = previous.indexOf(key);
+      if (at <= 0) continue;
+      if (!embedded || key.length > embedded.key.length) embedded = { key, at };
+    }
+    if (embedded) {
+      const prefix = previous.slice(0, embedded.at);
+      if (prefix.length >= 10 && nextSource.startsWith(prefix)) safeStart = start - 1;
+    }
+  }
+
+  const normalizedChars = outputKeys.slice(safeStart, end + 1).reduce((sum, key) => sum + key.length, 0);
+  if (normalizedChars < 100) return null;
+  return {
+    start: safeStart,
+    end,
+    anchorCount: anchors.length,
+    sourceStart,
+    sourceEnd
+  };
+}
+
+function removeSentenceRange(text, start, end) {
+  const left = String(text || '').slice(0, start).replace(/[ \t]+$/u, '');
+  const right = String(text || '').slice(end).replace(/^[ \t]+/u, '');
+  if (!left) return right.trimStart();
+  if (!right) return left.trimEnd();
+  const separator = /\s$/u.test(left) || /^\s/u.test(right) ? '' : ' ';
+  return `${left}${separator}${right}`.replace(/\n{3,}/gu, '\n\n').trim();
+}
+
 function isDedupeProtectedParagraph(value) {
   const text = String(value || '').trim();
   if (!text) return true;
@@ -177,4 +344,16 @@ function isDedupeProtectedParagraph(value) {
   return false;
 }
 
-module.exports = { measureNearDupSentences, boundaryLeak, contentTokens, dedupeSentences };
+function containsDedupeProtectedContent(value) {
+  const paragraphs = String(value || '').split(/\n{2,}/u).map(item => item.trim()).filter(Boolean);
+  return paragraphs.some(paragraph => isDedupeProtectedParagraph(paragraph)
+    || paragraph.split(/\n/u).some(line => isDedupeProtectedParagraph(line)));
+}
+
+module.exports = {
+  measureNearDupSentences,
+  boundaryLeak,
+  contentTokens,
+  dedupeSentences,
+  removeNewExactDuplicateBlocks
+};

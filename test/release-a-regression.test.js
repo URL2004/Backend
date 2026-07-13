@@ -127,7 +127,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
       qualityWarnings: [{ code: 'paragraph_structure_changed', message: '상세 메시지' }],
       floorReport: { criticals: [{ gate: 'gpt_noop_unchanged', detail: '상세' }], warnings: [] },
       engineMeta: {
-        engineVersion: 'gpt-prod-v2.2',
+        engineVersion: 'gpt-prod-v2.3',
         requestedMode: 'blog',
         effectiveMode: 'blog',
         requestStrength: 'basic',
@@ -143,6 +143,14 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         finalNoopRecoveryAttempted: true,
         finalNoopRecoveryApplied: false,
         finalNoopRecoveryReason: 'no_safe_surface_change',
+        humanizationDepthEnabled: true,
+        humanizationDepthApplicable: true,
+        humanizationDepthPass: false,
+        humanizationRiskLevel: 'high',
+        substantiveEditRatio: 0.031,
+        substantiveChangedSentenceRatio: 0.2,
+        humanizationDepthRetryCount: 1,
+        humanizationDepthRetryApplied: false,
         polishSpeakerRestoreCount: 0
       },
       humanizeMeta: {
@@ -160,7 +168,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(later.terminalAtMs, 1000, '후속 archive write가 최초 terminal 시각을 덮으면 안 된다');
   assert.deepEqual(first.gates, ['gpt_noop_unchanged', 'sentence_truncated']);
   assert.deepEqual(first.qualityWarningCodes, ['paragraph_structure_changed']);
-  assert.equal(first.engineVersion, 'gpt-prod-v2.2');
+  assert.equal(first.engineVersion, 'gpt-prod-v2.3');
   assert.equal(first.documentProfile, 'general');
   assert.equal(first.estimatedUsd, 0.012345);
   assert.equal(first.dedupeRemovedBlockCount, 1);
@@ -168,6 +176,12 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.paragraphCountAfterRepair, 6);
   assert.equal(first.finalNoopRecoveryAttempted, true);
   assert.equal(first.finalNoopRecoveryReason, 'no_safe_surface_change');
+  assert.equal(first.humanizationDepthEnabled, true);
+  assert.equal(first.humanizationDepthApplicable, true);
+  assert.equal(first.humanizationDepthPass, false);
+  assert.equal(first.humanizationRiskLevel, 'high');
+  assert.equal(first.substantiveEditRatio, 0.031);
+  assert.equal(first.humanizationDepthRetryCount, 1);
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'text'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'result'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'gateDetail'), false);

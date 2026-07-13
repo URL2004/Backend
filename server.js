@@ -40,6 +40,7 @@ app.use('/events', limiter);   // 알림 중계 — 인증 전 폭주 방지
 const transformRouter = require('./routes/transform');
 app.get(['/healthz', '/api/health'], async (req, res) => {
   const humanizeEngineV2 = process.env.HUMANIZE_ENGINE_V2_ENABLED === '1';
+  const humanizationDepthGate = String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0';
   try {
     const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
     const compatibility = evaluateHumanizeRuntime({
@@ -53,6 +54,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       ...(compatibility.code ? { code: compatibility.code } : {}),
       runtimeConfigSource: runtimeConfig.source || 'unknown',
       humanizeEngineV2,
+      humanizationDepthGate,
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
       maintenance: maintenanceMode.isMaintenanceEnabled(),
@@ -65,6 +67,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       ok: false,
       code: 'RUNTIME_CONFIG_UNAVAILABLE',
       humanizeEngineV2,
+      humanizationDepthGate,
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
       maintenance: maintenanceMode.isMaintenanceEnabled(),

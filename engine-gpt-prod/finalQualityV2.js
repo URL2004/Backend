@@ -425,27 +425,34 @@ async function retryPolishSurface({ source, currentOutput, policy, config, signa
   };
 }
 
-async function retryGeneralSurface({ source, currentOutput, config, signal, safetyIdentifier = '' }) {
+async function retryGeneralSurface({ source, currentOutput, humanizationPlan = null, config, signal, safetyIdentifier = '' }) {
+  const plan = humanizationPlan || {};
   const system = [
-    '너는 이미 자연스러운 한국어 문서의 최소 표면 교정기다.',
-    'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 문장 수, 줄바꿈, 문단 수와 순서를 그대로 보존한다.',
-    'CURRENT가 SOURCE와 실질적으로 같으므로, 기존 문장 한 곳에서만 조사·띄어쓰기·어순·중복 표현 중 안전한 표면 수정을 만든다.',
-    '새 사실·평가·감정·예시·문장·문단을 만들지 않고, 다른 문장은 그대로 둔다.',
-    '안전한 수정이 정말 불가능할 때만 safeChangeFound=false로 답한다.'
+    '너는 한국어 실질 휴머나이징 재작성기다. 교정·다듬기 결과를 만드는 작업이 아니다.',
+    'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단 수와 내용 순서를 보존한다.',
+    'CURRENT는 변화가 너무 적거나 구조·보존 게이트에 실패한 후보이므로 그대로 조금 고치지 말고 SOURCE에서 다시 시작한다.',
+    '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
+    `일반 문장 ${plan.sourceSentenceCount || 0}개 중 최소 ${plan.requiredChangedSentenceCount || 1}개에서 절의 순서·어순·연결·호흡 중 하나 이상을 실질적으로 다시 구성한다.`,
+    plan.targetSentenceCount
+      ? `반복·상투어·추상성·균일한 리듬 위험 문장 ${plan.targetSentenceCount}개 중 최소 ${plan.requiredTargetChangedCount || 1}개를 우선 개선한다.`
+      : '반복 위험이 낮더라도 일반 문장의 어순과 연결을 국소적으로 재구성해 다듬기와 구분되는 결과를 만든다.',
+    '문장 수는 의미 단위를 자연스럽게 합치거나 나누는 범위에서만 조정하고, 문단·제목·목록·질문·인용 구조는 바꾸지 않는다.',
+    '새 사실·평가·감정·경험·수치·기관·인용·예시를 만들지 않는다.',
+    '이 보존 조건 안에서 실질 변화 기준을 만족할 수 없을 때만 safeChangeFound=false로 답한다.'
   ].join('\n');
   const response = await completeJson({
     system,
-    user: `[SOURCE]\n${source}\n\n[CURRENT]\n${currentOutput}`,
+    user: `[SOURCE]\n${source}\n\n[CURRENT - 참고용 실패 후보]\n${currentOutput}`,
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_general_surface_retry',
     model: config.models.repair,
     reasoningEffort: config.reasoning.repair,
     verbosity: 'low',
-    maxOutputTokens: Math.max(800, Math.min(12000, Math.ceil(String(source || '').length * 1.5))),
+    maxOutputTokens: Math.max(2400, Math.min(12000, Math.ceil(String(source || '').length * 3.2))),
     config,
     signal,
     safetyIdentifier,
-    meta: { task: 'repair', phase: 'general_surface_retry', mode: 'surface', profile: 'gpt_prod_v2' }
+    meta: { task: 'repair', phase: 'humanization_depth_retry', mode: 'humanize', profile: 'gpt_prod_v2' }
   });
   return {
     outputText: String(response.json.outputText || '').trim() || currentOutput,

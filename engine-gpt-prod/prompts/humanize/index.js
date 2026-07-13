@@ -12,6 +12,7 @@ const { dynamicContextBlock } = require('./riskBlocks');
 const { buildHumanizeUser } = require('./userBlock');
 const { buildEscalationInstruction } = require('./escalation');
 const { voicePromptBlock } = require('../../voiceProfile');
+const { buildHumanizationPromptBlock } = require('../../humanizationDepth');
 
 function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   speakerType = 'individual',
@@ -23,7 +24,8 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   requestStrength = '',
   riskProfile = '',
   documentProfile = null,
-  voiceProfile = null
+  voiceProfile = null,
+  humanizationPlan = null
 } = {}) {
   const stable = [
     humanizeStableCore(),
@@ -31,6 +33,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     gptBiasGuardBlock(),
     '',
     transformStrengthBlock(mode, documentProfile?.profile, requestStrength),
+    buildHumanizationPromptBlock(humanizationPlan),
     '',
     gateSummaryBlock(),
     '',

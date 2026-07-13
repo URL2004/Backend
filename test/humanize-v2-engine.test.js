@@ -37,7 +37,12 @@ function installEngineMock(t, options = {}) {
     v2: process.env.HUMANIZE_ENGINE_V2_ENABLED,
     layout: process.env.GPT_LAYOUT_NLP_ENABLED,
     nikl: process.env.GPT_NIKL_QUALITY_ENABLED,
-    qualityPattern: process.env.GPT_QUALITY_PATTERN_ENABLED
+    qualityPattern: process.env.GPT_QUALITY_PATTERN_ENABLED,
+    humanizationDepth: process.env.HUMANIZATION_DEPTH_GATE_ENABLED
+  };
+  const restoreEnv = (name, value) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
   };
   process.env.OPENAI_API_KEY = 'test-key';
   process.env.OPENAI_SAFETY_SALT = 'engine-test-salt';
@@ -45,6 +50,7 @@ function installEngineMock(t, options = {}) {
   process.env.GPT_LAYOUT_NLP_ENABLED = '0';
   process.env.GPT_NIKL_QUALITY_ENABLED = '0';
   process.env.GPT_QUALITY_PATTERN_ENABLED = '0';
+  process.env.HUMANIZATION_DEPTH_GATE_ENABLED = options.humanizationDepth === true ? '1' : '0';
   const calls = [];
   let semanticCalls = 0;
   global.fetch = async (_url, init) => {
@@ -103,12 +109,13 @@ function installEngineMock(t, options = {}) {
   };
   t.after(() => {
     global.fetch = originalFetch;
-    process.env.OPENAI_API_KEY = originalEnv.key;
-    process.env.OPENAI_SAFETY_SALT = originalEnv.salt;
-    process.env.HUMANIZE_ENGINE_V2_ENABLED = originalEnv.v2;
-    process.env.GPT_LAYOUT_NLP_ENABLED = originalEnv.layout;
-    process.env.GPT_NIKL_QUALITY_ENABLED = originalEnv.nikl;
-    process.env.GPT_QUALITY_PATTERN_ENABLED = originalEnv.qualityPattern;
+    restoreEnv('OPENAI_API_KEY', originalEnv.key);
+    restoreEnv('OPENAI_SAFETY_SALT', originalEnv.salt);
+    restoreEnv('HUMANIZE_ENGINE_V2_ENABLED', originalEnv.v2);
+    restoreEnv('GPT_LAYOUT_NLP_ENABLED', originalEnv.layout);
+    restoreEnv('GPT_NIKL_QUALITY_ENABLED', originalEnv.nikl);
+    restoreEnv('GPT_QUALITY_PATTERN_ENABLED', originalEnv.qualityPattern);
+    restoreEnv('HUMANIZATION_DEPTH_GATE_ENABLED', originalEnv.humanizationDepth);
   });
   return { calls, semanticCalls: () => semanticCalls };
 }
@@ -119,7 +126,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.2');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.3');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -349,10 +356,10 @@ test('두 모델이 보존 게이트에 실패하면 원문에서 안전한 표�
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
 });
 
-test('일반 모드 무변환 재시도는 구조를 고정한 최소 수정 지시를 상위 모델에 보낸다', { concurrency: false }, async t => {
+test('일반 모드 무변환 재시도는 구조를 보존한 실질 재구성 지시를 상위 모델에 보낸다', { concurrency: false }, async t => {
   const source = '창가에 빛이 오래 머물렀습니다. 조용한 방 안에서 오래된 책장을 넘기며 지난 계절의 냄새를 떠올렸습니다. 말하지 못한 문장들은 그대로 남아 있었고, 저는 그 여백을 천천히 바라봤습니다. 그날의 바람은 얇은 커튼을 흔들었고, 멀리서 들려오는 발소리는 금세 고요 속으로 사라졌습니다. 저녁이 내려앉을 무렵에는 벽에 걸린 그림자도 조금씩 길어졌습니다. 손끝에 남은 종이의 감촉과 희미한 먼지 냄새가 방 안의 시간을 천천히 붙잡고 있었습니다.';
   const mock = installEngineMock(t, {
-    humanize: body => JSON.stringify(body.input || '').includes('원문과 완전히 같은 출력은 이번 재시도 실패다')
+    humanize: body => JSON.stringify(body.input || '').includes('원문과 완전히 같거나 조사·구두점·동의어 한두 개만 바꾼 출력은 이번 재시도 실패다')
       ? source.replace('오래 머물렀습니다', '한동안 머물렀습니다')
       : source
   });
@@ -364,23 +371,50 @@ test('일반 모드 무변환 재시도는 구조를 고정한 최소 수정 지
   }));
   assert.notEqual(out.result.outputText, source);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.ok(mock.calls.some(call => JSON.stringify(call.body.input || '').includes('원문과 완전히 같은 출력은 이번 재시도 실패다')));
+  assert.ok(mock.calls.some(call => JSON.stringify(call.body.input || '').includes('원문과 완전히 같거나 조사·구두점·동의어 한두 개만 바꾼 출력은 이번 재시도 실패다')));
+  assert.ok(mock.calls.some(call => JSON.stringify(call.body.input || '').includes('절 순서·연결 방식·호흡을 실질적으로 다시 구성한다')));
+  assert.equal(mock.calls.some(call => JSON.stringify(call.body.input || '').includes('안전한 한 곳만 자연스럽게 다듬는다')), false);
 });
 
-test('두 일반 모델이 모두 무변환이면 문서 표면 교정 1회로 안전한 최소 수정을 만든다', { concurrency: false }, async t => {
+test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 번 재시도해 기준 충족 결과만 전달한다', { concurrency: false }, async t => {
   const source = '조금만 크게 볼 수는 없을까요. 사람마다 살아온 경험과 생각이 다르다는 점을 인정하면 됩니다. 상대를 완전히 이해하기 어렵더라도 서로의 자리와 배경을 존중할 수 있습니다. 유독 정치와 종교 같은 주제 앞에서 이 태도가 흔들리기도 합니다. 서로 다른 생각을 마주할 때에도 먼저 판단하기보다 차분히 듣는 태도가 필요합니다.';
-  const safe = source.replace('인정하면 됩니다', '받아들이면 됩니다');
-  const mock = installEngineMock(t, { humanize: source, generalRetryOutput: safe });
+  const safe = '조금만 크게 볼 수는 없을까요. 사람마다 살아온 경험과 생각은 다르다는 점을 먼저 인정해야 합니다. 상대를 완전히 이해하기는 어려워도 서로의 자리와 배경은 존중할 수 있습니다. 이 태도는 정치와 종교 같은 주제 앞에서 유독 흔들리기도 합니다. 서로 다른 생각을 마주할 때에도 먼저 판단하기보다 차분히 듣는 태도가 필요합니다.';
+  const mock = installEngineMock(t, { humanize: source, generalRetryOutput: safe, humanizationDepth: true });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'general-surface-user', config: config() });
   assert.notEqual(out.status, 'blocked');
   assert.equal(out.result.outputText, safe);
   assert.equal(out.fallbackCount, 0);
   assert.equal(out.engineMeta.repairCount, 1);
+  assert.equal(out.engineMeta.humanizationDepthEnabled, true);
+  assert.equal(out.engineMeta.humanizationDepthPass, true);
+  assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
+  assert.ok(out.engineMeta.substantiveEditRatio >= 0.11);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 1);
+  assert.ok(mock.calls.some(call => String(call.body.instructions || '').includes('실질 휴머나이징 계약')));
+});
+
+test('약 3%의 동의어 교체 결과도 그대로 전달하지 않고 실질 휴머나이징을 재시도한다', { concurrency: false }, async t => {
+  const source = '조금만 크게 볼 수는 없을까요. 사람마다 살아온 경험과 생각이 다르다는 점을 인정하면 됩니다. 상대를 완전히 이해하기 어렵더라도 서로의 자리와 배경을 존중할 수 있습니다. 유독 정치와 종교 같은 주제 앞에서 이 태도가 흔들리기도 합니다. 서로 다른 생각을 마주할 때에도 먼저 판단하기보다 차분히 듣는 태도가 필요합니다.';
+  const polishLike = source.replace('인정하면 됩니다', '받아들이면 됩니다');
+  const substantive = '조금만 크게 볼 수는 없을까요. 사람마다 살아온 경험과 생각은 다르다는 점을 먼저 인정해야 합니다. 상대를 완전히 이해하기는 어려워도 서로의 자리와 배경은 존중할 수 있습니다. 이 태도는 정치와 종교 같은 주제 앞에서 유독 흔들리기도 합니다. 서로 다른 생각을 마주할 때에도 먼저 판단하기보다 차분히 듣는 태도가 필요합니다.';
+  const mock = installEngineMock(t, {
+    humanize: polishLike,
+    generalRetryOutput: substantive,
+    humanizationDepth: true
+  });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'low-depth-retry-user', config: config() });
+  assert.notEqual(out.status, 'blocked');
+  assert.equal(out.result.outputText, substantive);
+  assert.equal(out.engineMeta.humanizationDepthPass, true);
+  assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
+  assert.ok(out.engineMeta.substantiveEditRatio >= 0.11);
+  assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
 });
 
-test('의미 수리 뒤 최종 결과가 원문으로 돌아가도 전달 직전 no-op 복구를 한 번 수행한다', { concurrency: false }, async t => {
+test('의미 수리 뒤 결과가 원문으로 돌아가면 의미 감사 이후 다시 쓰지 않고 차단한다', { concurrency: false }, async t => {
   const source = '한국대학교 연구팀은 학생 20명을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 정리했습니다.';
   const unsafe = `${source} 미래연구원은 후속 조사를 시작합니다.`;
   const safe = source.replace('함께 분석했고', '함께 살펴봤고');
@@ -391,13 +425,12 @@ test('의미 수리 뒤 최종 결과가 원문으로 돌아가도 전달 직전
     generalRetryOutput: safe
   });
   const out = await engine.run({ text: source, mode: 'formal', uid: 'final-noop-recovery-user', config: config() });
-  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
-  assert.equal(out.result.outputText, safe);
-  assert.equal(out.engineMeta.finalNoopRecoveryAttempted, true);
-  assert.equal(out.engineMeta.finalNoopRecoveryApplied, true);
-  assert.equal(out.engineMeta.finalNoopRecoveryCount, 1);
-  assert.equal(out.engineMeta.finalNoopRecoveryMethod, 'model');
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+  assert.equal(out.status, 'blocked');
+  assert.equal(out.result.outputText, source);
+  assert.equal(out.engineMeta.finalNoopRecoveryAttempted, false);
+  assert.equal(out.engineMeta.finalNoopRecoveryApplied, false);
+  assert.equal(out.engineMeta.finalNoopRecoveryCount, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 0);
 });
 
 test('구두점 없는 장문을 균등 분할하면 상위 모델로 1회 재시도해 장단문 분포를 복구한다', { concurrency: false }, async t => {
@@ -527,7 +560,7 @@ test('원문 기반 최소 교정도 장단문 분포를 평탄화하면 전달�
   assert.equal(out.result.outputText, source);
 });
 
-test('voice 재시도 실패 후 안전한 접속부사 문장부호는 모델 호출 없이 최소 교정한다', { concurrency: false }, async t => {
+test('voice 재시도 실패 후 구두점만 바꾼 결과는 휴머나이징으로 전달하지 않는다', { concurrency: false }, async t => {
   const source = '짧게 관찰함. 이 문장은 앞 문장보다 조금 더 길게 이어지는 활동 내용을 기록함. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 친구들의 질문에 답하며 탐구 내용을 크게 확장한 매우 긴 관찰 문장을 기록함. 그렇다면 마지막은 다시 짧게 마무리함.';
   const markers = ['[[[V2_SENTENCE_0001]]]', '[[[V2_SENTENCE_0002]]]', '[[[V2_SENTENCE_0003]]]'];
   const uniform = [
@@ -536,14 +569,16 @@ test('voice 재시도 실패 후 안전한 접속부사 문장부호는 모델 �
     '이 문장은 앞 문장보다 조금 더 길게 이어지고 내용을 크게 확장함.',
     '그렇다면 마지막은 활동을 짧게 관찰하고 다시 마무리함.'
   ].map((sentence, index) => `${sentence}${markers[index] || ''}`).join('');
-  const mock = installEngineMock(t, { humanize: uniform });
+  const punctuationOnly = source.replace('그렇다면 마지막은', '그렇다면, 마지막은');
+  const mock = installEngineMock(t, { humanize: uniform, generalRetryOutput: punctuationOnly, humanizationDepth: true });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'voice-deterministic-surface-user', config: config() });
-  assert.notEqual(out.status, 'blocked');
-  assert.equal(out.result.outputText, source.replace('그렇다면 마지막은', '그렇다면, 마지막은'));
-  assert.equal(out.engineMeta.repairCount, 1);
+  assert.equal(out.status, 'blocked');
+  assert.equal(out.result.outputText, source);
+  assert.ok(out.floorReport.criticals.some(item => item.gate === 'humanization_depth_low'));
+  assert.equal(out.engineMeta.repairCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 0);
-  assert.equal(out.qualityWarnings.some(item => item.code === 'sentence_distribution_shift'), false);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+  assert.equal(out.engineMeta.humanizationDepthRetryApplied, false);
 });
 
 test('18문장 polish는 비문·접속 교정을 위해 문장 경계 토큰을 강제하지 않는다', { concurrency: false }, async t => {

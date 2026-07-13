@@ -35,6 +35,7 @@ async function main() {
 
   if (args['skip-env'] !== '1') {
     add('v2_enabled', process.env.HUMANIZE_ENGINE_V2_ENABLED === '1', process.env.HUMANIZE_ENGINE_V2_ENABLED || 'unset');
+    add('humanization_depth_enabled', String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0', process.env.HUMANIZATION_DEPTH_GATE_ENABLED || 'default_on');
     add('active_provider', process.env.LLM_ACTIVE_PROVIDER === 'gpt', process.env.LLM_ACTIVE_PROVIDER || 'unset');
     add('openai_key', Boolean(process.env.OPENAI_API_KEY), process.env.OPENAI_API_KEY ? 'configured' : 'unset');
     add('safety_salt', String(process.env.OPENAI_SAFETY_SALT || '').length >= 32, process.env.OPENAI_SAFETY_SALT ? `${String(process.env.OPENAI_SAFETY_SALT).length} chars` : 'unset');
@@ -49,6 +50,7 @@ async function main() {
       add('active_jobs_zero', Number(health.activeJobs) === 0, `active=${health.activeJobs}, queued=${health.queuedJobs}`);
       if (args['expect-live-v2'] === '1') {
         add('live_v2', health.humanizeEngineV2 === true && health.activeProvider === 'gpt' && health.openai === true, `v2=${health.humanizeEngineV2}, provider=${health.activeProvider}, openai=${health.openai}`);
+        add('live_humanization_depth', health.humanizationDepthGate === true, `depth=${health.humanizationDepthGate}`);
       }
     } catch (error) {
       add('healthz', false, String(error?.message || error).slice(0, 180));

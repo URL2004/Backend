@@ -415,7 +415,9 @@ test('공통 프롬프트는 불변 계약과 요청 강도를 한 번씩만 선
   }).stable;
   assert.equal((basic.match(/\[요청 강도: 기본\]/gu) || []).length, 1);
   assert.equal((advanced.match(/\[요청 강도: 고급\]/gu) || []).length, 1);
-  assert.match(advanced, /고급은 더 많이 바꾸는 모드가 아니다/u);
+  assert.match(advanced, /고급은 기본과 같은 실질 휴머나이징/u);
+  assert.match(basic, /띄어쓰기·쉼표·조사·단순 동의어만 바꾼 결과는 실패/u);
+  assert.doesNotMatch(basic, /안전한 한 곳만|이 청크만 다듬는다/u);
   assert.doesNotMatch(basic, /보존에 머무르지|원문과 가깝게 두지|충분히 재서술/u);
   assert.doesNotMatch(advanced, /청소|청결|악취|곰팡|하수구|업체 후기/u);
 });

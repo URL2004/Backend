@@ -7,7 +7,7 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
     ? '도입부다. 원문의 시작 역할과 흐름을 유지한다.'
     : chunk.position === 'conclusion'
       ? '결론부다. 새 요약을 만들지 않고 원문 결론의 범위를 유지한다.'
-      : '본문이다. 이 청크만 다듬는다.';
+      : '본문이다. 이 청크만 선택한 강도에 맞게 변환한다.';
   return [
     '[청크 편집 범위]',
     '아래 텍스트만 편집하고 앞·뒤 문맥의 문장을 출력에 복사하지 않는다.',

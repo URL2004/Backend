@@ -8,6 +8,8 @@ const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
+const PLAN_VERSION = 2;
+const POLICY_VERSION = 'perceived-v2';
 
 const CAUTIOUS_PROFILES = new Set([
   'academic_paper',
@@ -19,21 +21,46 @@ const CAUTIOUS_PROFILES = new Set([
   'short_phrase'
 ]);
 
+// 최소선은 전달 게이트, 목표 범위는 모델이 실제로 노리는 체감 강도다.
+// 기본은 눈에 띄는 재구성, 고급은 더 넓은 재구성과 전 문서 의미 검증을 전제로 한다.
+const PERCEIVED_POLICY = Object.freeze({
+  basic: Object.freeze({
+    low: Object.freeze({ minEdit: 0.08, targetMin: 0.10, targetMax: 0.13, minSentence: 0.30, minTarget: 0.50 }),
+    medium: Object.freeze({ minEdit: 0.10, targetMin: 0.12, targetMax: 0.16, minSentence: 0.40, minTarget: 0.65 }),
+    high: Object.freeze({ minEdit: 0.13, targetMin: 0.15, targetMax: 0.19, minSentence: 0.50, minTarget: 0.75 })
+  }),
+  advanced: Object.freeze({
+    low: Object.freeze({ minEdit: 0.11, targetMin: 0.14, targetMax: 0.17, minSentence: 0.40, minTarget: 0.60 }),
+    medium: Object.freeze({ minEdit: 0.14, targetMin: 0.17, targetMax: 0.20, minSentence: 0.50, minTarget: 0.75 }),
+    high: Object.freeze({ minEdit: 0.17, targetMin: 0.20, targetMax: 0.23, minSentence: 0.60, minTarget: 0.85 })
+  })
+});
+
+const CREATIVE_POLICY = Object.freeze({
+  low: Object.freeze({ minEdit: 0.04, targetMin: 0.05, targetMax: 0.08, minSentence: 0.16, minTarget: 0.30 }),
+  medium: Object.freeze({ minEdit: 0.055, targetMin: 0.07, targetMax: 0.10, minSentence: 0.22, minTarget: 0.40 }),
+  high: Object.freeze({ minEdit: 0.075, targetMin: 0.09, targetMax: 0.13, minSentence: 0.32, minTarget: 0.50 })
+});
+
 function buildHumanizationPlan(source, {
   requestStrength = 'basic',
   documentProfile = null,
   inputRisk = null
 } = {}) {
-  const strength = String(requestStrength || 'basic');
+  const rawStrength = String(requestStrength || 'basic');
+  const strength = rawStrength === 'advanced' ? 'advanced' : (rawStrength === 'polish' ? 'polish' : 'basic');
   if (strength === 'polish') {
     return {
-      version: 1,
+      version: PLAN_VERSION,
+      policyVersion: POLICY_VERSION,
       applicable: false,
       requestStrength: strength,
       riskLevel: 'polish',
       targetSentenceCount: 0,
       requiredChangedSentenceCount: 0,
       minSubstantiveEditRatio: 0,
+      targetSubstantiveEditMin: 0,
+      targetSubstantiveEditMax: 0,
       minTargetCoverage: 0
     };
   }
@@ -66,27 +93,36 @@ function buildHumanizationPlan(source, {
   const cautious = CAUTIOUS_PROFILES.has(profile);
   const sourceChars = normalizeSubstantive(text).length;
 
-  const ratioByRisk = { low: 0.06, medium: 0.085, high: 0.11 };
-  const sentenceRatioByRisk = { low: 0.24, medium: 0.34, high: 0.44 };
-  const targetCoverageByRisk = { low: 0.40, medium: 0.55, high: 0.65 };
-  let minSubstantiveEditRatio = ratioByRisk[riskLevel];
-  let minChangedSentenceRatio = sentenceRatioByRisk[riskLevel];
-  let minTargetCoverage = targetCoverageByRisk[riskLevel];
+  const basePolicy = PERCEIVED_POLICY[strength][riskLevel];
+  let minSubstantiveEditRatio = basePolicy.minEdit;
+  let targetSubstantiveEditMin = basePolicy.targetMin;
+  let targetSubstantiveEditMax = basePolicy.targetMax;
+  let minChangedSentenceRatio = basePolicy.minSentence;
+  let minTargetCoverage = basePolicy.minTarget;
 
-  // 사실·형식 민감 장르는 강도를 한 단계 낮추되, 다듬기 수준인 3%대로
-  // 내려가지는 않는다. 창작문은 행갈이와 이미지 자체가 구조라 별도 보존값을 쓴다.
+  // 사실·형식 민감 장르는 2%p 완화하지만, 기본도 최소 6%, 고급도 최소 9%의
+  // 실질 변화를 유지한다. 창작문은 행갈이와 이미지 자체가 구조라 독립 정책을 쓴다.
   if (cautious) {
-    minSubstantiveEditRatio = Math.max(0.06, minSubstantiveEditRatio - 0.01);
-    minChangedSentenceRatio = Math.max(0.20, minChangedSentenceRatio - 0.05);
-    minTargetCoverage = Math.max(0.35, minTargetCoverage - 0.08);
+    minSubstantiveEditRatio = Math.max(strength === 'advanced' ? 0.09 : 0.06, minSubstantiveEditRatio - 0.02);
+    targetSubstantiveEditMin = Math.max(minSubstantiveEditRatio, targetSubstantiveEditMin - 0.02);
+    targetSubstantiveEditMax = Math.max(targetSubstantiveEditMin + 0.02, targetSubstantiveEditMax - 0.02);
+    minChangedSentenceRatio = Math.max(strength === 'advanced' ? 0.35 : 0.25, minChangedSentenceRatio - 0.05);
+    minTargetCoverage = Math.max(strength === 'advanced' ? 0.50 : 0.40, minTargetCoverage - 0.10);
   }
   if (creative) {
-    minSubstantiveEditRatio = Math.max(0.035, minSubstantiveEditRatio - 0.035);
-    minChangedSentenceRatio = Math.max(0.16, minChangedSentenceRatio - 0.12);
-    minTargetCoverage = Math.max(0.30, minTargetCoverage - 0.15);
+    const creativePolicy = CREATIVE_POLICY[riskLevel];
+    minSubstantiveEditRatio = creativePolicy.minEdit;
+    targetSubstantiveEditMin = creativePolicy.targetMin;
+    targetSubstantiveEditMax = creativePolicy.targetMax;
+    minChangedSentenceRatio = creativePolicy.minSentence;
+    minTargetCoverage = creativePolicy.minTarget;
   }
   if (sourceChars <= 120) {
-    minSubstantiveEditRatio = Math.max(creative ? 0.04 : 0.065, minSubstantiveEditRatio);
+    const shortMin = creative ? 0.04 : (strength === 'advanced' ? 0.12 : 0.09);
+    const shortTarget = creative ? 0.05 : (strength === 'advanced' ? 0.14 : 0.11);
+    minSubstantiveEditRatio = Math.max(shortMin, minSubstantiveEditRatio);
+    targetSubstantiveEditMin = Math.max(shortTarget, targetSubstantiveEditMin);
+    targetSubstantiveEditMax = Math.max(targetSubstantiveEditMin + 0.02, targetSubstantiveEditMax);
     minChangedSentenceRatio = sentenceCount ? 1 / sentenceCount : 1;
   }
 
@@ -98,7 +134,8 @@ function buildHumanizationPlan(source, {
     : 0;
 
   return {
-    version: 1,
+    version: PLAN_VERSION,
+    policyVersion: POLICY_VERSION,
     applicable: sourceChars >= 30 && sentenceCount > 0,
     requestStrength: strength,
     profile,
@@ -115,17 +152,19 @@ function buildHumanizationPlan(source, {
     requiredTargetChangedCount,
     minChangedSentenceRatio: round4(minChangedSentenceRatio),
     minSubstantiveEditRatio: round4(minSubstantiveEditRatio),
+    targetSubstantiveEditMin: round4(targetSubstantiveEditMin),
+    targetSubstantiveEditMax: round4(targetSubstantiveEditMax),
     minTargetCoverage: round4(minTargetCoverage),
     sourceNaturalnessRisk: round4(overallRisk)
   };
 }
 
 function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
-  const plan = planOrOptions?.version === 1
+  const plan = Number(planOrOptions?.version) >= 1
     ? planOrOptions
     : buildHumanizationPlan(source, planOrOptions);
   const metrics = measureSubstantiveEdit(source, output);
-  if (!plan.applicable) return { version: 1, applicable: false, pass: true, reasons: [], plan: publicPlan(plan), metrics };
+  if (!plan.applicable) return { version: PLAN_VERSION, applicable: false, pass: true, reasons: [], plan: publicPlan(plan), metrics };
 
   const targetIndices = new Set(plan.targetIndices || []);
   const targetChangedCount = metrics.sentenceEdits.filter(row => targetIndices.has(row.index) && row.substantiveChanged).length;
@@ -135,9 +174,15 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   if (metrics.substantiveChangedSentenceCount < plan.requiredChangedSentenceCount) reasons.push('substantive_sentence_coverage_low');
   if (plan.requiredTargetChangedCount > 0 && targetChangedCount < plan.requiredTargetChangedCount) reasons.push('risk_target_coverage_low');
   if (metrics.trivialOnly) reasons.push('punctuation_or_surface_only');
+  const targetDepthMet = metrics.substantiveEditRatio + 1e-9 >= Number(plan.targetSubstantiveEditMin || 0);
+  const aboveTargetRange = Number(plan.targetSubstantiveEditMax || 0) > 0
+    && metrics.substantiveEditRatio > Number(plan.targetSubstantiveEditMax) + 1e-9;
+  const deliveryDepthBand = reasons.length
+    ? 'below_minimum'
+    : (aboveTargetRange ? 'above_target' : (targetDepthMet ? 'target' : 'minimum'));
 
   return {
-    version: 1,
+    version: PLAN_VERSION,
     applicable: true,
     pass: reasons.length === 0,
     reasons,
@@ -146,7 +191,10 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       ...metrics,
       sentenceEdits: undefined,
       targetChangedCount,
-      targetCoverage: round4(targetCoverage)
+      targetCoverage: round4(targetCoverage),
+      targetDepthMet,
+      aboveTargetRange,
+      deliveryDepthBand
     }
   };
 }
@@ -195,10 +243,15 @@ function buildHumanizationPromptBlock(plan) {
     .filter(([, count]) => count > 0)
     .map(([key, count]) => `${labels[key] || key} ${count}곳`)
     .join(', ');
+  const strengthLabel = plan.requestStrength === 'advanced' ? '고급' : '기본';
+  const minPercent = formatPercent(plan.minSubstantiveEditRatio);
+  const targetMinPercent = formatPercent(plan.targetSubstantiveEditMin);
+  const targetMaxPercent = formatPercent(plan.targetSubstantiveEditMax);
   return [
     '[실질 휴머나이징 계약]',
     '이 모드는 교정·다듬기가 아니다. 원문의 뜻과 사실은 그대로 두되, AI식으로 반복되는 어순·상투어·추상명사·접속 방식·균일한 호흡을 사람이 직접 쓴 문장처럼 다시 구성한다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
+    `${strengthLabel} 휴머나이징의 서버 최소선은 실질 변화 ${minPercent}%이고, 실제 작성 목표는 ${targetMinPercent}~${targetMaxPercent}%다. 숫자를 맞추려고 동의어를 흩뿌리지 말고 대상 문장을 충분히 다시 쓴다.`,
     `원문 위험도=${plan.riskLevel}; 일반 문장 ${plan.sourceSentenceCount}개 중 최소 ${plan.requiredChangedSentenceCount}개는 절·어순·연결·호흡 가운데 하나 이상이 분명히 달라져야 한다.`,
     plan.targetSentenceCount
       ? `우선 개선 대상 ${plan.targetSentenceCount}개 중 최소 ${plan.requiredTargetChangedCount}개를 실질적으로 고친다${reasons ? `: ${reasons}` : '.'}`
@@ -345,7 +398,12 @@ function round4(value) {
   return Math.round(finite(value) * 10000) / 10000;
 }
 
+function formatPercent(value) {
+  return Number((finite(value) * 100).toFixed(1));
+}
+
 module.exports = {
+  POLICY_VERSION,
   buildHumanizationPlan,
   evaluateHumanizationDepth,
   measureSubstantiveEdit,

@@ -51,6 +51,7 @@ async function main() {
       if (args['expect-live-v2'] === '1') {
         add('live_v2', health.humanizeEngineV2 === true && health.activeProvider === 'gpt' && health.openai === true, `v2=${health.humanizeEngineV2}, provider=${health.activeProvider}, openai=${health.openai}`);
         add('live_humanization_depth', health.humanizationDepthGate === true, `depth=${health.humanizationDepthGate}`);
+        add('live_humanization_policy', health.humanizationDepthPolicy === 'perceived-v2', `policy=${health.humanizationDepthPolicy}`);
       }
     } catch (error) {
       add('healthz', false, String(error?.message || error).slice(0, 180));

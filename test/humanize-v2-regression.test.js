@@ -415,7 +415,8 @@ test('공통 프롬프트는 불변 계약과 요청 강도를 한 번씩만 선
   }).stable;
   assert.equal((basic.match(/\[요청 강도: 기본\]/gu) || []).length, 1);
   assert.equal((advanced.match(/\[요청 강도: 고급\]/gu) || []).length, 1);
-  assert.match(advanced, /고급은 기본과 같은 실질 휴머나이징/u);
+  assert.match(advanced, /고급은 기본보다 더 넓은 범위의 일반 문장/u);
+  assert.match(basic, /눈에 띄는 실질 휴머나이징/u);
   assert.match(basic, /띄어쓰기·쉼표·조사·단순 동의어만 바꾼 결과는 실패/u);
   assert.doesNotMatch(basic, /안전한 한 곳만|이 청크만 다듬는다/u);
   assert.doesNotMatch(basic, /보존에 머무르지|원문과 가깝게 두지|충분히 재서술/u);
@@ -514,6 +515,14 @@ test('polish voice 감사는 새 문단과 제목 구조 변경을 경고한다'
   const audit = auditVoice(voice, '본문이 바뀝니다.\n\n새 문단이 생깁니다.', { documentProfile: 'report_assignment', mode: 'polish' });
   assert.ok(audit.warnings.some(item => item.code === 'paragraph_structure_changed'));
   assert.ok(audit.warnings.some(item => item.code === 'heading_structure_changed'));
+});
+
+test('voice 프롬프트는 기존 1인칭을 최소 한 곳 남기고 새 화자는 만들지 않게 한다', () => {
+  const personal = voicePromptBlock(buildVoiceProfile('저는 자료를 읽었습니다. 결론을 다시 정리했습니다.', { documentProfile: 'general_essay' }));
+  const impersonal = voicePromptBlock(buildVoiceProfile('자료를 읽었습니다. 결론을 다시 정리했습니다.', { documentProfile: 'general_essay' }));
+  assert.match(personal, /1인칭 단수.*종류별로 최소 한 곳 남긴다/u);
+  assert.match(personal, /화자를 완전히 지우지 않는다/u);
+  assert.match(impersonal, /원문에 없는 나는·저는·제가·우리·저희/u);
 });
 
 test('우리 몸의 bare 우리를 집단 화자로 세고 polish의 실제 화자 완전 손실만 복원한다', () => {

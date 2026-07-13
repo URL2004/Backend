@@ -11,6 +11,7 @@ const errorHandler = require('./middleware/errorHandler');
 const maintenanceMode = require('./middleware/maintenanceMode');
 const gptRuntimeConfig = require('./lib/gptRuntimeConfig');
 const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
+const { POLICY_VERSION: HUMANIZATION_DEPTH_POLICY } = require('./engine-gpt-prod/humanizationDepth');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -55,6 +56,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       runtimeConfigSource: runtimeConfig.source || 'unknown',
       humanizeEngineV2,
       humanizationDepthGate,
+      humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
       maintenance: maintenanceMode.isMaintenanceEnabled(),
@@ -68,6 +70,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       code: 'RUNTIME_CONFIG_UNAVAILABLE',
       humanizeEngineV2,
       humanizationDepthGate,
+      humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
       maintenance: maintenanceMode.isMaintenanceEnabled(),

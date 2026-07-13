@@ -70,6 +70,12 @@ function voicePromptBlock(profile) {
   const maxSentence = Math.round(profile.sentence?.max || 0);
   const sentenceSequence = Array.isArray(profile.sentence?.lengthSequence) ? profile.sentence.lengthSequence : [];
   const sparseSplitTarget = profile.sentence?.sparseSplitTarget || null;
+  const povAnchors = [];
+  if ((profile.pov?.firstSingular || 0) > 0) povAnchors.push('1인칭 단수(나는·저는·제가 등)');
+  if ((profile.pov?.firstPlural || 0) > 0) povAnchors.push('1인칭 복수(우리·저희 등)');
+  const povAnchorInstruction = povAnchors.length
+    ? `원문에 있는 ${povAnchors.join('와 ')} 표현은 종류별로 최소 한 곳 남긴다. 자연스러운 주어 생략을 이유로 화자를 완전히 지우지 않는다.`
+    : '원문에 없는 나는·저는·제가·우리·저희 같은 1인칭 화자를 새로 만들지 않는다.';
   const sparseRunOnInstruction = profile.sentence?.punctuationSparse && sparseSplitTarget
     ? [
         `원문은 구두점이 거의 없이 이어진 초안이다. 의미 단위에 따라 약 ${sparseSplitTarget.minCount}~${sparseSplitTarget.maxCount}문장으로 나눈다.`,
@@ -92,6 +98,7 @@ function voicePromptBlock(profile) {
       : '',
     `직접 인용=${profile.directQuoteCount || 0}, 목록=${profile.listItemCount || 0}, 제목=${profile.headingCount || 0}`,
     '원문의 인칭과 종결체를 유지한다. 평균 길이만 맞추지 말고 문장·문단 길이 분포를 보존한다.',
+    povAnchorInstruction,
     rhythmInstruction,
     profile.lineStructureSensitive ? `원문의 행 수=${profile.lineCount || 1}다. 각 행의 역할과 줄바꿈 위치를 그대로 유지한다.` : '',
     profile.lineBreakSensitive ? '이 글은 줄바꿈 자체가 구조다. 행을 합치거나 새로 나누지 않는다.' : ''

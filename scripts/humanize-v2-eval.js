@@ -331,6 +331,14 @@ function buildReplayRecord({ caseId, row, source, current, v2, out, elapsedMs })
     repairCount: out.engineMeta?.repairCount || 0,
     chunkCount: out.engineMeta?.chunkCount || 0,
     fallbackCount: out.engineMeta?.fallbackCount || 0,
+    humanizationPolicyVersion: out.engineMeta?.humanizationPolicyVersion || '',
+    humanizationMinimumRatio: out.engineMeta?.humanizationMinimumRatio || 0,
+    humanizationTargetMinRatio: out.engineMeta?.humanizationTargetMinRatio || 0,
+    humanizationTargetMaxRatio: out.engineMeta?.humanizationTargetMaxRatio || 0,
+    substantiveEditRatio: out.engineMeta?.substantiveEditRatio || 0,
+    substantiveChangedSentenceRatio: out.engineMeta?.substantiveChangedSentenceRatio || 0,
+    humanizationTargetDepthMet: out.engineMeta?.humanizationTargetDepthMet === true,
+    humanizationDeliveryDepthBand: out.engineMeta?.humanizationDeliveryDepthBand || '',
     strictGateCodes,
     chunkFailureReasons: [...new Set((out.chunks || out.result?.records || [])
       .flatMap(item => [item?.hardFailReason, item?.error])
@@ -374,6 +382,9 @@ function aggregateReplay(rows, scope) {
     averageRhythmUniformityDelta: mean('v2RhythmUniformityDelta'),
     currentAverageRhythmUniformityDelta: mean('currentRhythmUniformityDelta'),
     averageLengthRatio: mean('lengthRatio'),
+    averageSubstantiveEditRatio: mean('substantiveEditRatio'),
+    targetDepthMet: count(row => row.humanizationTargetDepthMet),
+    deliveryDepthBands: countBy(ok, row => row.humanizationDeliveryDepthBand || 'not_applicable'),
     totalEstimatedUsd: ok.reduce((sum, row) => sum + (Number(row.estimatedUsd) || 0), 0),
     passCriteria: {
       errorsZero: rows.length === ok.length,

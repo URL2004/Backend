@@ -23,7 +23,7 @@ const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
 
-const VERSION = 'gpt-prod-v2.3';
+const VERSION = 'gpt-prod-v2.4';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -651,9 +651,19 @@ async function runEngine({
     humanizationDepthEnabled,
     humanizationDepthApplicable: humanizationDepthReport?.applicable === true,
     humanizationDepthPass: humanizationDepthReport?.pass === true,
+    humanizationPolicyVersion: humanizationDepthEnabled
+      ? (humanizationDepthReport?.plan?.policyVersion || humanizationDepth.POLICY_VERSION)
+      : '',
     humanizationRiskLevel: humanizationDepthReport?.plan?.riskLevel || '',
+    humanizationMinimumRatio: Number(humanizationDepthReport?.plan?.minSubstantiveEditRatio || 0),
+    humanizationTargetMinRatio: Number(humanizationDepthReport?.plan?.targetSubstantiveEditMin || 0),
+    humanizationTargetMaxRatio: Number(humanizationDepthReport?.plan?.targetSubstantiveEditMax || 0),
+    humanizationRequiredSentenceRatio: Number(humanizationDepthReport?.plan?.minChangedSentenceRatio || 0),
+    humanizationMinimumTargetCoverage: Number(humanizationDepthReport?.plan?.minTargetCoverage || 0),
     substantiveEditRatio: Number(humanizationDepthReport?.metrics?.substantiveEditRatio || 0),
     substantiveChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.substantiveChangedSentenceRatio || 0),
+    humanizationTargetDepthMet: humanizationDepthReport?.metrics?.targetDepthMet === true,
+    humanizationDeliveryDepthBand: humanizationDepthReport?.metrics?.deliveryDepthBand || '',
     humanizationDepthRetryCount,
     humanizationDepthRetryApplied
   };

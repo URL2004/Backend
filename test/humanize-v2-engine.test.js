@@ -126,7 +126,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.3');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -144,6 +144,8 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.equal(out.engineMeta.surfaceRetryCallCount, 0);
   assert.equal(out.engineMeta.modelCallCount, 2);
   assert.equal(out.engineMeta.semanticSectionCount, 1);
+  const semanticCall = mock.calls.find(call => call.name === 'gpt_prod_semantic_judge');
+  assert.match(String(semanticCall?.body?.instructions || ''), /1인칭 화자·관점/u);
   assert.equal(out.result.records[0].changedSentenceRatio, 1);
   assert.ok(out.result.records[0].charEditRatio > 0);
   const humanizeCall = mock.calls.find(call => call.name === 'gpt_prod_humanize_result');
@@ -388,7 +390,10 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthEnabled, true);
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
-  assert.ok(out.engineMeta.substantiveEditRatio >= 0.11);
+  assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2');
+  assert.ok(out.engineMeta.humanizationTargetMinRatio > out.engineMeta.humanizationMinimumRatio);
+  assert.ok(['minimum', 'target', 'above_target'].includes(out.engineMeta.humanizationDeliveryDepthBand));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 1);
@@ -409,7 +414,7 @@ test('약 3%의 동의어 교체 결과도 그대로 전달하지 않고 실질 
   assert.equal(out.result.outputText, substantive);
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
-  assert.ok(out.engineMeta.substantiveEditRatio >= 0.11);
+  assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
   assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
 });
@@ -626,6 +631,7 @@ test('v2 플래그를 0으로 내리면 safety salt 없이 레거시 엔진으�
   delete process.env.OPENAI_SAFETY_SALT;
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
   assert.equal(out.engineMeta.engineVersion, 'gpt-prod-operating-engine-v1');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, '');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), false);

@@ -56,23 +56,102 @@ test('위험 문장의 절·어순·연결·호흡을 폭넓게 바꾼 결과는
   assert.ok(report.metrics.targetCoverage >= plan.minTargetCoverage);
 });
 
-test('저위험 글에는 고위험 글보다 낮은 적응형 기준을 적용하되 3% 다듬기 수준으로 내리지 않는다', () => {
+test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표 범위를 적용한다', () => {
   const low = '수업이 끝났습니다. 친구와 도서관으로 걸어가 빌린 책을 펼쳐 보니 지난주에 연필로 적어 둔 긴 메모와 접어 둔 페이지가 한눈에 들어왔습니다. 빠진 내용은 둘이 소리 내어 확인했습니다. 다음 발표 역할도 나눴습니다.';
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.ok(lowPlan.minSubstantiveEditRatio >= 0.06);
-  assert.ok(highPlan.minSubstantiveEditRatio > lowPlan.minSubstantiveEditRatio);
+  assert.equal(lowPlan.policyVersion, 'perceived-v2');
+  assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
+  assert.equal(highPlan.riskLevel, 'high');
+  assert.equal(highPlan.minSubstantiveEditRatio, 0.13);
+  assert.equal(highPlan.targetSubstantiveEditMin, 0.15);
+  assert.equal(highPlan.targetSubstantiveEditMax, 0.19);
   assert.ok(highPlan.requiredChangedSentenceCount >= lowPlan.requiredChangedSentenceCount);
 });
 
-test('사실·형식 민감 장르도 실질 편집률 하한을 6% 아래로 낮추지 않는다', () => {
-  const source = '본 보고서는 연구 절차와 관찰 결과를 구분하여 설명합니다. 조사 대상과 분석 범위는 원문에 제시된 기준을 따릅니다. 결론에서는 확인된 내용만 정리합니다.';
-  const plan = depth.buildHumanizationPlan(source, {
-    requestStrength: 'advanced',
-    documentProfile: 'academic_paper'
+test('고급 피하기는 같은 글에서도 기본보다 편집·문장·위험대상 최소선이 높다', () => {
+  const source = `${SOURCE} ${SOURCE}`;
+  const basic = depth.buildHumanizationPlan(source, {
+    requestStrength: 'basic',
+    documentProfile: 'long_explainer',
+    inputRisk: { abstractRiskRatio: 1 }
   });
-  assert.ok(plan.minSubstantiveEditRatio >= 0.06);
+  const advanced = depth.buildHumanizationPlan(source, {
+    requestStrength: 'advanced',
+    documentProfile: 'long_explainer',
+    inputRisk: { abstractRiskRatio: 1 }
+  });
+  assert.equal(basic.minSubstantiveEditRatio, 0.13);
+  assert.equal(advanced.minSubstantiveEditRatio, 0.17);
+  assert.equal(advanced.targetSubstantiveEditMin, 0.20);
+  assert.equal(advanced.targetSubstantiveEditMax, 0.23);
+  assert.ok(advanced.requiredChangedSentenceCount > basic.requiredChangedSentenceCount);
+  assert.ok(advanced.requiredTargetChangedCount >= basic.requiredTargetChangedCount);
+});
+
+test('사실·형식 민감 장르는 2%p 완화하되 기본 6%·고급 9% 바닥을 지킨다', () => {
+  const source = `${SOURCE} ${SOURCE}`;
+  const basic = depth.buildHumanizationPlan(source, {
+    requestStrength: 'basic',
+    documentProfile: 'academic_paper',
+    inputRisk: { abstractRiskRatio: 1 }
+  });
+  const advanced = depth.buildHumanizationPlan(source, {
+    requestStrength: 'advanced',
+    documentProfile: 'academic_paper',
+    inputRisk: { abstractRiskRatio: 1 }
+  });
+  assert.equal(basic.minSubstantiveEditRatio, 0.11);
+  assert.equal(advanced.minSubstantiveEditRatio, 0.15);
+  assert.ok(basic.minSubstantiveEditRatio >= 0.06);
+  assert.ok(advanced.minSubstantiveEditRatio >= 0.09);
+});
+
+test('120자 이하 일반 글은 기본 9%·고급 12%보다 낮게 전달하지 않는다', () => {
+  const source = '오늘 수업에서 친구와 발표 자료를 함께 확인했습니다. 빠진 부분은 둘이 다시 읽었습니다.';
+  const basic = depth.buildHumanizationPlan(source, { requestStrength: 'basic', documentProfile: 'general_essay' });
+  const advanced = depth.buildHumanizationPlan(source, { requestStrength: 'advanced', documentProfile: 'general_essay' });
+  assert.equal(basic.minSubstantiveEditRatio, 0.09);
+  assert.equal(basic.targetSubstantiveEditMin, 0.11);
+  assert.equal(advanced.minSubstantiveEditRatio, 0.12);
+  assert.equal(advanced.targetSubstantiveEditMin, 0.14);
+  assert.equal(basic.requiredChangedSentenceCount, 1);
+  assert.equal(advanced.requiredChangedSentenceCount, 1);
+});
+
+test('창작문은 기본·고급 모두 행 구조를 보호하는 독립 강도 정책을 쓴다', () => {
+  const source = `${SOURCE}\n${SOURCE}`;
+  const basic = depth.buildHumanizationPlan(source, { requestStrength: 'basic', documentProfile: 'creative', inputRisk: { abstractRiskRatio: 1 } });
+  const advanced = depth.buildHumanizationPlan(source, { requestStrength: 'advanced', documentProfile: 'creative', inputRisk: { abstractRiskRatio: 1 } });
+  assert.equal(basic.creative, true);
+  assert.equal(basic.minSubstantiveEditRatio, 0.075);
+  assert.equal(basic.targetSubstantiveEditMin, 0.09);
+  assert.equal(basic.targetSubstantiveEditMax, 0.13);
+  assert.equal(advanced.minSubstantiveEditRatio, basic.minSubstantiveEditRatio);
+  assert.equal(advanced.minChangedSentenceRatio, basic.minChangedSentenceRatio);
+});
+
+test('최소선 통과와 목표 범위 도달을 별도 관측값으로 구분한다', () => {
+  const source = '가나다라마바사아자차카타파하거너더러머버서어저처커터퍼허.';
+  const minimumOutput = '가나다라마바사아자차카타파하고노도로머버서어저처커터퍼허.';
+  const plan = {
+    version: 2,
+    policyVersion: 'perceived-v2',
+    applicable: true,
+    requestStrength: 'basic',
+    targetIndices: [],
+    targetSentenceCount: 0,
+    requiredTargetChangedCount: 0,
+    requiredChangedSentenceCount: 1,
+    minSubstantiveEditRatio: 0.05,
+    targetSubstantiveEditMin: 0.15,
+    targetSubstantiveEditMax: 0.25
+  };
+  const report = depth.evaluateHumanizationDepth(source, minimumOutput, plan);
+  assert.equal(report.pass, true, JSON.stringify(report));
+  assert.equal(report.metrics.targetDepthMet, false);
+  assert.equal(report.metrics.deliveryDepthBand, 'minimum');
 });
 
 test('polish는 실질 휴머나이징 깊이 게이트 적용 대상이 아니다', () => {

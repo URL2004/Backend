@@ -100,7 +100,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
   const claimsText = ledgerToText(ledger);
   const system = lang === 'en'
     ? 'You are a strict but fair fact checker. SOURCE is the sole ground truth. SOURCE CLAIM LEDGER is a verified, non-exhaustive index of source passages. Compare the entire SOURCE and flag fabricated facts, meaning reversals, and omitted material claims. Return JSON only.'
-    : '너는 엄격하지만 공정한 사실 검수 엔진이다. SOURCE 전체를 유일한 사실 기준으로 삼는다. SOURCE CLAIM LEDGER는 원문 구절을 그대로 뽑은 검증 인덱스이며 완전한 목록은 아니다. SOURCE 전체와 비교해 새 사실 추가, 의미 왜곡, 핵심 주장 누락을 잡는다. JSON만 반환한다.';
+    : '너는 엄격하지만 공정한 사실 검수 엔진이다. SOURCE 전체를 유일한 사실 기준으로 삼는다. SOURCE CLAIM LEDGER는 원문 구절을 그대로 뽑은 검증 인덱스이며 완전한 목록은 아니다. SOURCE 전체와 비교해 새 사실 추가, 의미 왜곡, 핵심 주장 누락을 잡는다. 원문에 있던 1인칭 화자·관점이 결과에서 완전히 사라지거나 원문에 없던 화자가 생긴 경우도 의미 왜곡으로 판정한다. JSON만 반환한다.';
   const user = [
     `[SOURCE]\n${rawText}`,
     `[SOURCE CLAIM LEDGER]\n${claimsText}`,

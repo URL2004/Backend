@@ -427,11 +427,14 @@ async function retryPolishSurface({ source, currentOutput, policy, config, signa
 
 async function retryGeneralSurface({ source, currentOutput, humanizationPlan = null, config, signal, safetyIdentifier = '' }) {
   const plan = humanizationPlan || {};
+  const strengthLabel = plan.requestStrength === 'advanced' ? '고급' : '기본';
+  const percent = value => Number((Number(value || 0) * 100).toFixed(1));
   const system = [
     '너는 한국어 실질 휴머나이징 재작성기다. 교정·다듬기 결과를 만드는 작업이 아니다.',
     'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단 수와 내용 순서를 보존한다.',
     'CURRENT는 변화가 너무 적거나 구조·보존 게이트에 실패한 후보이므로 그대로 조금 고치지 말고 SOURCE에서 다시 시작한다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
+    `${strengthLabel} 모드의 실질 변화 최소선은 ${percent(plan.minSubstantiveEditRatio)}%이고 목표 범위는 ${percent(plan.targetSubstantiveEditMin)}~${percent(plan.targetSubstantiveEditMax)}%다. 숫자를 채우기 위한 동의어 치환 대신 대상 문장의 절·어순·연결·호흡을 다시 구성한다.`,
     `일반 문장 ${plan.sourceSentenceCount || 0}개 중 최소 ${plan.requiredChangedSentenceCount || 1}개에서 절의 순서·어순·연결·호흡 중 하나 이상을 실질적으로 다시 구성한다.`,
     plan.targetSentenceCount
       ? `반복·상투어·추상성·균일한 리듬 위험 문장 ${plan.targetSentenceCount}개 중 최소 ${plan.requiredTargetChangedCount || 1}개를 우선 개선한다.`

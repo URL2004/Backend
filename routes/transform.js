@@ -85,7 +85,8 @@ const STRICT_DELIVERY_GATES = new Set([
   'encoding_corruption',
   'sentence_truncated',
   'refusal',
-  'polish_unchanged'
+  'polish_unchanged',
+  'humanization_depth_no_effect'
 ]);
 
 function softenBlockedFloorReport(out, logName, meta = {}) {
@@ -535,7 +536,7 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest', 'engineMeta'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'estSec', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
@@ -626,7 +627,7 @@ function ensureTerminalTimestamp(job, now = Date.now()) {
 
 function buildArchiveObservability(job) {
   const result = job?.result && typeof job.result === 'object' ? job.result : {};
-  const engineMeta = result.engineMeta || result.humanizeMeta?.engineMeta || {};
+  const engineMeta = result.engineMeta || result.humanizeMeta?.engineMeta || job?.engineMeta || {};
   const humanizeMeta = result.humanizeMeta || {};
   const usage = humanizeMeta.usage || {};
   const layoutRepair = humanizeMeta.layoutRepair || humanizeMeta.structureLock?.layoutRepair || {};
@@ -664,12 +665,16 @@ function buildArchiveObservability(job) {
     humanizationDepthEnabled: engineMeta.humanizationDepthEnabled === true,
     humanizationDepthApplicable: engineMeta.humanizationDepthApplicable === true,
     humanizationDepthPass: engineMeta.humanizationDepthPass === true,
+    humanizationMinimumEffectPass: engineMeta.humanizationMinimumEffectPass === true,
+    humanizationDepthSoftDelivered: engineMeta.humanizationDepthSoftDelivered === true,
     humanizationPolicyVersion: archiveString(engineMeta.humanizationPolicyVersion, 32),
     humanizationRiskLevel: archiveString(engineMeta.humanizationRiskLevel, 24),
     humanizationMinimumRatio: archiveFinite(engineMeta.humanizationMinimumRatio),
+    humanizationHardMinimumRatio: archiveFinite(engineMeta.humanizationHardMinimumRatio),
     humanizationTargetMinRatio: archiveFinite(engineMeta.humanizationTargetMinRatio),
     humanizationTargetMaxRatio: archiveFinite(engineMeta.humanizationTargetMaxRatio),
     humanizationRequiredSentenceRatio: archiveFinite(engineMeta.humanizationRequiredSentenceRatio),
+    humanizationHardRequiredSentenceCount: archiveFinite(engineMeta.humanizationHardRequiredSentenceCount),
     humanizationMinimumTargetCoverage: archiveFinite(engineMeta.humanizationMinimumTargetCoverage),
     substantiveEditRatio: archiveFinite(engineMeta.substantiveEditRatio),
     substantiveChangedSentenceRatio: archiveFinite(engineMeta.substantiveChangedSentenceRatio),
@@ -2109,6 +2114,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       if (!v2Enabled && softenBlockedFloorReport(out, 'transform.humanize_blocked_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, gates })) {
         job.note = (job.note ? job.note + ' ' : '') + '품질 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
       } else {
+        job.engineMeta = out.engineMeta || out.result?.engineMeta || null;
         logger.warn('transform.humanize_blocked', {
           jobId: job.id,
           uid: job.uid,

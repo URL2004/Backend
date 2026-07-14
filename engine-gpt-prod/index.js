@@ -23,14 +23,14 @@ const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
 
-const VERSION = 'gpt-prod-v2.4';
+const VERSION = 'gpt-prod-v2.4.1';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
   'gpt_all_chunks_fallback',
   'gpt_noop_unchanged',
   'noop_unchanged',
-  'humanization_depth_low'
+  'humanization_depth_no_effect'
 ]);
 const STRICT_DELIVERY_GATES = new Set([
   ...NO_DELIVERY_GATES,
@@ -41,7 +41,7 @@ const STRICT_DELIVERY_GATES = new Set([
   'refusal',
   'polish_unchanged',
   'polish_excessive_change',
-  'humanization_depth_low'
+  'humanization_depth_no_effect'
 ]);
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -55,7 +55,8 @@ const REVIEW_WARNING_GATES = new Set([
   'speaker_drift',
   'register_shift',
   'paragraph_collapse',
-  'number_multiset_changed'
+  'number_multiset_changed',
+  'humanization_depth_below_minimum'
 ]);
 
 function normalizeMode(mode, { allowPolish = false } = {}) {
@@ -340,11 +341,14 @@ async function runEngine({
       const retryDepth = humanizationDepthEnabled
         ? humanizationDepth.evaluateHumanizationDepth(auditSource, retryOutput, humanizationPlan)
         : { pass: true };
-      const safeChangeFound = retried.safeChangeFound === true
-        && retryDepth.pass === true
-        && isSafeGeneralSurfaceCandidate(auditSource, retryOutput, contract, documentProfile, selectedMode)
+      const safeRetryCandidate = isSafeGeneralSurfaceCandidate(auditSource, retryOutput, contract, documentProfile, selectedMode)
         && preservesFinalStructure(auditSource, retryOutput, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
-      if (safeChangeFound) {
+      // 모델의 safeChangeFound 자기보고나 품질 최소선 완전 통과만으로 후보를 버리지 않는다.
+      // 서버 감사가 안전하고 기존 후보보다 실질적으로 좋아졌다면 채택한 뒤, 최종 깊이가
+      // 품질 최소선에 못 미칠 경우 needs_review로 전달한다.
+      const retryWorthUsing = retryDepth.pass === true
+        || humanizationDepth.isBetterHumanizationCandidate(humanizationDepthReport, retryDepth);
+      if (safeRetryCandidate && retryWorthUsing) {
         outputText = retryOutput;
         generalSurfaceRetryCount = 1;
         humanizationDepthRetryApplied = true;
@@ -397,7 +401,11 @@ async function runEngine({
   if (v2Enabled && !polishStrictFailure) {
     const semanticDecision = humanizationDepthRetryApplied
       ? { run: true, reason: 'humanization_depth_retry' }
-      : qualityV2.shouldRunSemanticJudge({
+      : (humanizationDepthReport?.applicable
+          && humanizationDepthReport.pass === false
+          && humanizationDepthReport.minimumEffectPass === true)
+        ? { run: true, reason: 'humanization_depth_soft_delivery' }
+        : qualityV2.shouldRunSemanticJudge({
           requestedMode,
           effectiveMode: selectedMode,
           source: auditSource,
@@ -534,15 +542,30 @@ async function runEngine({
     addFloorCriticals(result.floorReport, [{ gate: polishStrictFailure, detail }], polishStrictFailure);
   } else {
     if (humanizationDepthReport?.applicable && humanizationDepthReport.pass === false) {
-      addFloorCriticals(result.floorReport, [{
-        gate: 'humanization_depth_low',
-        detail: '기본·고급 피하기의 실질 휴머나이징 기준을 충족하지 못했습니다.',
+      const depthDetail = {
+        detail: humanizationDepthReport.minimumEffectPass === false
+          ? '실질 변화가 거의 없어 휴머나이징 결과로 전달하지 않았습니다.'
+          : '보존을 우선해 목표한 휴머나이징 품질 최소선보다 약하게 나왔습니다.',
         reasons: humanizationDepthReport.reasons,
+        blockingReasons: humanizationDepthReport.blockingReasons,
         substantiveEditRatio: humanizationDepthReport.metrics?.substantiveEditRatio,
         minimumSubstantiveEditRatio: humanizationDepthReport.plan?.minSubstantiveEditRatio,
+        hardMinimumSubstantiveEditRatio: humanizationDepthReport.plan?.hardMinimumSubstantiveEditRatio,
         changedSentenceCount: humanizationDepthReport.metrics?.substantiveChangedSentenceCount,
-        requiredChangedSentenceCount: humanizationDepthReport.plan?.requiredChangedSentenceCount
-      }], 'humanization_depth_low');
+        requiredChangedSentenceCount: humanizationDepthReport.plan?.requiredChangedSentenceCount,
+        hardRequiredChangedSentenceCount: humanizationDepthReport.plan?.hardRequiredChangedSentenceCount
+      };
+      if (humanizationDepthReport.minimumEffectPass === false) {
+        addFloorCriticals(result.floorReport, [{
+          ...depthDetail,
+          gate: 'humanization_depth_no_effect'
+        }], 'humanization_depth_no_effect');
+      } else {
+        addFloorWarnings(result.floorReport, [{
+          ...depthDetail,
+          gate: 'humanization_depth_below_minimum'
+        }]);
+      }
     }
     if (finalGate.hardFail) {
       addFloorCriticals(result.floorReport, finalGate.violations, finalGate.reason);
@@ -595,7 +618,12 @@ async function runEngine({
           ? [{ code: 'sentence_distribution_shift', severity: 'warning', message: '원문의 장단문 분포가 결과에서 다소 평탄해졌을 수 있어요.' }]
           : []),
         ...(polishReport?.excessiveChange ? [{ code: 'polish_edit_range', severity: 'warning', message: '보존형 윤문의 권장 편집 범위를 넘었을 수 있어요.' }] : []),
-        ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : [])
+        ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : []),
+        ...(humanizationDepthReport?.applicable
+            && humanizationDepthReport.pass === false
+            && humanizationDepthReport.minimumEffectPass === true
+          ? [{ code: 'humanization_depth_below_minimum', severity: 'warning', message: '원문 보존을 우선해 목표 강도보다 약하게 변환됐어요. 결과를 확인해 주세요.' }]
+          : [])
       ])
     : [];
   const strictBlocked = result.floorReport?.status === 'blocked';
@@ -651,14 +679,20 @@ async function runEngine({
     humanizationDepthEnabled,
     humanizationDepthApplicable: humanizationDepthReport?.applicable === true,
     humanizationDepthPass: humanizationDepthReport?.pass === true,
+    humanizationMinimumEffectPass: humanizationDepthReport?.minimumEffectPass === true,
+    humanizationDepthSoftDelivered: humanizationDepthReport?.applicable === true
+      && humanizationDepthReport?.pass === false
+      && humanizationDepthReport?.minimumEffectPass === true,
     humanizationPolicyVersion: humanizationDepthEnabled
       ? (humanizationDepthReport?.plan?.policyVersion || humanizationDepth.POLICY_VERSION)
       : '',
     humanizationRiskLevel: humanizationDepthReport?.plan?.riskLevel || '',
     humanizationMinimumRatio: Number(humanizationDepthReport?.plan?.minSubstantiveEditRatio || 0),
+    humanizationHardMinimumRatio: Number(humanizationDepthReport?.plan?.hardMinimumSubstantiveEditRatio || 0),
     humanizationTargetMinRatio: Number(humanizationDepthReport?.plan?.targetSubstantiveEditMin || 0),
     humanizationTargetMaxRatio: Number(humanizationDepthReport?.plan?.targetSubstantiveEditMax || 0),
     humanizationRequiredSentenceRatio: Number(humanizationDepthReport?.plan?.minChangedSentenceRatio || 0),
+    humanizationHardRequiredSentenceCount: Number(humanizationDepthReport?.plan?.hardRequiredChangedSentenceCount || 0),
     humanizationMinimumTargetCoverage: Number(humanizationDepthReport?.plan?.minTargetCoverage || 0),
     substantiveEditRatio: Number(humanizationDepthReport?.metrics?.substantiveEditRatio || 0),
     substantiveChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.substantiveChangedSentenceRatio || 0),

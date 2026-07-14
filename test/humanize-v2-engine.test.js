@@ -126,7 +126,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.1');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -391,7 +391,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.1');
   assert.ok(out.engineMeta.humanizationTargetMinRatio > out.engineMeta.humanizationMinimumRatio);
   assert.ok(['minimum', 'target', 'above_target'].includes(out.engineMeta.humanizationDeliveryDepthBand));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
@@ -416,6 +416,27 @@ test('약 3%의 동의어 교체 결과도 그대로 전달하지 않고 실질 
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
   assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+});
+
+test('재시도 결과가 품질 최소선에 못 미쳐도 최소 효과와 안전 감사를 통과하면 needs_review로 전달한다', { concurrency: false }, async t => {
+  const source = '또한 학습 과정은 현대 사회에서 중요한 역할을 할 수 있습니다. 따라서 관련 내용을 체계적으로 살펴볼 필요가 있습니다. 결론적으로 지속적인 관심과 노력이 중요하다고 볼 수 있습니다.';
+  const weak = source.replace('중요한 역할', '핵심적인 역할');
+  const improved = '학습 과정이 현대 사회에서 맡는 역할은 결코 작지 않습니다. 따라서 관련 내용을 체계적으로 살펴볼 필요가 있습니다. 결론적으로 지속적인 관심과 노력이 중요하다고 볼 수 있습니다.';
+  const mock = installEngineMock(t, {
+    humanize: weak,
+    generalRetryOutput: improved,
+    humanizationDepth: true
+  });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'soft-depth-delivery-user', config: config() });
+  assert.equal(out.status, 'needs_review', JSON.stringify(out.floorReport));
+  assert.equal(out.result.outputText, improved);
+  assert.equal(out.engineMeta.humanizationDepthPass, false);
+  assert.equal(out.engineMeta.humanizationMinimumEffectPass, true);
+  assert.equal(out.engineMeta.humanizationDepthSoftDelivered, true);
+  assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
+  assert.equal(out.floorReport.criticals.length, 0);
+  assert.ok(out.qualityWarnings.some(item => item.code === 'humanization_depth_below_minimum'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
 });
 
@@ -579,7 +600,7 @@ test('voice 재시도 실패 후 구두점만 바꾼 결과는 휴머나이징�
   const out = await engine.run({ text: source, mode: 'blog', uid: 'voice-deterministic-surface-user', config: config() });
   assert.equal(out.status, 'blocked');
   assert.equal(out.result.outputText, source);
-  assert.ok(out.floorReport.criticals.some(item => item.gate === 'humanization_depth_low'));
+  assert.ok(out.floorReport.criticals.some(item => item.gate === 'humanization_depth_no_effect'));
   assert.equal(out.engineMeta.repairCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);

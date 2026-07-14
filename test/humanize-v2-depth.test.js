@@ -22,6 +22,7 @@ test('구두점·인용부호·안전 축약은 실질 휴머나이징 변화로
     documentProfile: { profile: 'general' }
   });
   assert.equal(report.pass, false);
+  assert.equal(report.minimumEffectPass, false);
   assert.ok(report.reasons.includes('punctuation_or_surface_only'));
 });
 
@@ -61,7 +62,7 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.1');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
   assert.equal(highPlan.riskLevel, 'high');
   assert.equal(highPlan.minSubstantiveEditRatio, 0.13);
@@ -108,7 +109,7 @@ test('사실·형식 민감 장르는 2%p 완화하되 기본 6%·고급 9% 바�
   assert.ok(advanced.minSubstantiveEditRatio >= 0.09);
 });
 
-test('120자 이하 일반 글은 기본 9%·고급 12%보다 낮게 전달하지 않는다', () => {
+test('120자 이하 일반 글도 기본 9%·고급 12% 품질 최소선을 목표로 한다', () => {
   const source = '오늘 수업에서 친구와 발표 자료를 함께 확인했습니다. 빠진 부분은 둘이 다시 읽었습니다.';
   const basic = depth.buildHumanizationPlan(source, { requestStrength: 'basic', documentProfile: 'general_essay' });
   const advanced = depth.buildHumanizationPlan(source, { requestStrength: 'advanced', documentProfile: 'general_essay' });
@@ -136,8 +137,8 @@ test('최소선 통과와 목표 범위 도달을 별도 관측값으로 구분�
   const source = '가나다라마바사아자차카타파하거너더러머버서어저처커터퍼허.';
   const minimumOutput = '가나다라마바사아자차카타파하고노도로머버서어저처커터퍼허.';
   const plan = {
-    version: 2,
-    policyVersion: 'perceived-v2',
+    version: 3,
+    policyVersion: 'perceived-v2.1',
     applicable: true,
     requestStrength: 'basic',
     targetIndices: [],
@@ -152,6 +153,57 @@ test('최소선 통과와 목표 범위 도달을 별도 관측값으로 구분�
   assert.equal(report.pass, true, JSON.stringify(report));
   assert.equal(report.metrics.targetDepthMet, false);
   assert.equal(report.metrics.deliveryDepthBand, 'minimum');
+});
+
+test('품질 최소선 미달과 사용자 전달 불가 수준을 분리한다', () => {
+  const source = '가나다라마바사아자차카타파하거너더러머버서어저처커터퍼허.';
+  const output = '가나다라마바사아자차카타파하고노도로머버서어저처커터퍼허.';
+  const plan = {
+    version: 3,
+    policyVersion: 'perceived-v2.1',
+    applicable: true,
+    requestStrength: 'basic',
+    targetIndices: [],
+    targetSentenceCount: 0,
+    requiredTargetChangedCount: 0,
+    requiredChangedSentenceCount: 1,
+    hardRequiredChangedSentenceCount: 1,
+    minSubstantiveEditRatio: 0.15,
+    hardMinimumSubstantiveEditRatio: 0.04,
+    targetSubstantiveEditMin: 0.18,
+    targetSubstantiveEditMax: 0.22
+  };
+  const report = depth.evaluateHumanizationDepth(source, output, plan);
+  assert.equal(report.pass, false);
+  assert.equal(report.minimumEffectPass, true, JSON.stringify(report));
+  assert.ok(report.reasons.includes('substantive_edit_ratio_low'));
+  assert.deepEqual(report.blockingReasons, []);
+  assert.equal(report.metrics.deliveryDepthBand, 'below_minimum');
+});
+
+test('안전 재시도 후보가 품질 최소선에 조금 못 미쳐도 기존 후보보다 좋아지면 채택 대상으로 본다', () => {
+  const source = '가나다라마바사아자차카타파하거너더러머버서어저처커터퍼허.';
+  const weak = '가나다라마바사아자차카타파하거너더러머버서어저처커터퍼혀.';
+  const better = '가나다라마바사아자차카타파하고노도로머버서어저처커터퍼허.';
+  const plan = {
+    version: 3,
+    policyVersion: 'perceived-v2.1',
+    applicable: true,
+    requestStrength: 'basic',
+    targetIndices: [],
+    targetSentenceCount: 0,
+    requiredTargetChangedCount: 0,
+    requiredChangedSentenceCount: 1,
+    hardRequiredChangedSentenceCount: 1,
+    minSubstantiveEditRatio: 0.15,
+    hardMinimumSubstantiveEditRatio: 0.04,
+    targetSubstantiveEditMin: 0.18,
+    targetSubstantiveEditMax: 0.22
+  };
+  const weakReport = depth.evaluateHumanizationDepth(source, weak, plan);
+  const betterReport = depth.evaluateHumanizationDepth(source, better, plan);
+  assert.equal(betterReport.pass, false);
+  assert.equal(depth.isBetterHumanizationCandidate(weakReport, betterReport), true);
 });
 
 test('polish는 실질 휴머나이징 깊이 게이트 적용 대상이 아니다', () => {

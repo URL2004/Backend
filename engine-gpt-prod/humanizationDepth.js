@@ -8,8 +8,11 @@ const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 2;
-const POLICY_VERSION = 'perceived-v2';
+const PLAN_VERSION = 3;
+const POLICY_VERSION = 'perceived-v2.1';
+const HARD_DELIVERY_EDIT_FLOOR = 0.04;
+const HARD_DELIVERY_EDIT_FACTOR = 0.40;
+const HARD_DELIVERY_SENTENCE_FACTOR = 0.50;
 
 const CAUTIOUS_PROFILES = new Set([
   'academic_paper',
@@ -21,8 +24,9 @@ const CAUTIOUS_PROFILES = new Set([
   'short_phrase'
 ]);
 
-// 최소선은 전달 게이트, 목표 범위는 모델이 실제로 노리는 체감 강도다.
-// 기본은 눈에 띄는 재구성, 고급은 더 넓은 재구성과 전 문서 의미 검증을 전제로 한다.
+// 최소선은 품질 경고 기준, 목표 범위는 모델이 실제로 노리는 체감 강도다.
+// 별도의 hard delivery floor보다 낮은 무효 수준만 차단하고, 그 이상은 경고와 함께
+// 결과를 전달한다. 기본은 눈에 띄는 재구성, 고급은 더 넓은 재구성을 전제로 한다.
 const PERCEIVED_POLICY = Object.freeze({
   basic: Object.freeze({
     low: Object.freeze({ minEdit: 0.08, targetMin: 0.10, targetMax: 0.13, minSentence: 0.30, minTarget: 0.50 }),
@@ -58,7 +62,9 @@ function buildHumanizationPlan(source, {
       riskLevel: 'polish',
       targetSentenceCount: 0,
       requiredChangedSentenceCount: 0,
+      hardRequiredChangedSentenceCount: 0,
       minSubstantiveEditRatio: 0,
+      hardMinimumSubstantiveEditRatio: 0,
       targetSubstantiveEditMin: 0,
       targetSubstantiveEditMax: 0,
       minTargetCoverage: 0
@@ -132,6 +138,13 @@ function buildHumanizationPlan(source, {
   const requiredTargetChangedCount = target.indices.length
     ? Math.max(1, Math.min(target.indices.length, Math.ceil(target.indices.length * minTargetCoverage)))
     : 0;
+  const hardMinimumSubstantiveEditRatio = Math.min(
+    minSubstantiveEditRatio,
+    Math.max(HARD_DELIVERY_EDIT_FLOOR, minSubstantiveEditRatio * HARD_DELIVERY_EDIT_FACTOR)
+  );
+  const hardRequiredChangedSentenceCount = requiredChangedSentenceCount
+    ? Math.max(1, Math.min(requiredChangedSentenceCount, Math.ceil(requiredChangedSentenceCount * HARD_DELIVERY_SENTENCE_FACTOR)))
+    : 0;
 
   return {
     version: PLAN_VERSION,
@@ -149,9 +162,11 @@ function buildHumanizationPlan(source, {
     targetReasonCounts: target.reasonCounts,
     targetIndices: target.indices,
     requiredChangedSentenceCount,
+    hardRequiredChangedSentenceCount,
     requiredTargetChangedCount,
     minChangedSentenceRatio: round4(minChangedSentenceRatio),
     minSubstantiveEditRatio: round4(minSubstantiveEditRatio),
+    hardMinimumSubstantiveEditRatio: round4(hardMinimumSubstantiveEditRatio),
     targetSubstantiveEditMin: round4(targetSubstantiveEditMin),
     targetSubstantiveEditMax: round4(targetSubstantiveEditMax),
     minTargetCoverage: round4(minTargetCoverage),
@@ -164,7 +179,16 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
     ? planOrOptions
     : buildHumanizationPlan(source, planOrOptions);
   const metrics = measureSubstantiveEdit(source, output);
-  if (!plan.applicable) return { version: PLAN_VERSION, applicable: false, pass: true, reasons: [], plan: publicPlan(plan), metrics };
+  if (!plan.applicable) return {
+    version: PLAN_VERSION,
+    applicable: false,
+    pass: true,
+    minimumEffectPass: true,
+    reasons: [],
+    blockingReasons: [],
+    plan: publicPlan(plan),
+    metrics
+  };
 
   const targetIndices = new Set(plan.targetIndices || []);
   const targetChangedCount = metrics.sentenceEdits.filter(row => targetIndices.has(row.index) && row.substantiveChanged).length;
@@ -174,6 +198,18 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   if (metrics.substantiveChangedSentenceCount < plan.requiredChangedSentenceCount) reasons.push('substantive_sentence_coverage_low');
   if (plan.requiredTargetChangedCount > 0 && targetChangedCount < plan.requiredTargetChangedCount) reasons.push('risk_target_coverage_low');
   if (metrics.trivialOnly) reasons.push('punctuation_or_surface_only');
+  const hardMinimumEdit = Number(plan.hardMinimumSubstantiveEditRatio ?? Math.max(
+    HARD_DELIVERY_EDIT_FLOOR,
+    Number(plan.minSubstantiveEditRatio || 0) * HARD_DELIVERY_EDIT_FACTOR
+  ));
+  const hardRequiredSentences = Number(plan.hardRequiredChangedSentenceCount ?? Math.max(
+    1,
+    Math.ceil(Number(plan.requiredChangedSentenceCount || 1) * HARD_DELIVERY_SENTENCE_FACTOR)
+  ));
+  const blockingReasons = [];
+  if (metrics.substantiveEditRatio + 1e-9 < hardMinimumEdit) blockingReasons.push('substantive_effect_too_low');
+  if (metrics.substantiveChangedSentenceCount < hardRequiredSentences) blockingReasons.push('substantive_sentence_effect_too_low');
+  if (metrics.trivialOnly) blockingReasons.push('punctuation_or_surface_only');
   const targetDepthMet = metrics.substantiveEditRatio + 1e-9 >= Number(plan.targetSubstantiveEditMin || 0);
   const aboveTargetRange = Number(plan.targetSubstantiveEditMax || 0) > 0
     && metrics.substantiveEditRatio > Number(plan.targetSubstantiveEditMax) + 1e-9;
@@ -185,7 +221,9 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
     version: PLAN_VERSION,
     applicable: true,
     pass: reasons.length === 0,
+    minimumEffectPass: blockingReasons.length === 0,
     reasons,
+    blockingReasons,
     plan: publicPlan(plan),
     metrics: {
       ...metrics,
@@ -194,9 +232,36 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       targetCoverage: round4(targetCoverage),
       targetDepthMet,
       aboveTargetRange,
+      minimumEffectPass: blockingReasons.length === 0,
       deliveryDepthBand
     }
   };
+}
+
+function humanizationCandidateScore(report) {
+  if (!report?.applicable) return report?.pass === true ? 1 : 0;
+  if (report.metrics?.trivialOnly) return 0;
+  const plan = report.plan || {};
+  const metrics = report.metrics || {};
+  const editProgress = progress(metrics.substantiveEditRatio, plan.minSubstantiveEditRatio);
+  const sentenceProgress = progress(metrics.substantiveChangedSentenceCount, plan.requiredChangedSentenceCount);
+  const targetProgress = Number(plan.requiredTargetChangedCount || 0) > 0
+    ? progress(metrics.targetChangedCount, plan.requiredTargetChangedCount)
+    : 1;
+  return round4((editProgress * 0.50) + (sentenceProgress * 0.30) + (targetProgress * 0.20));
+}
+
+function isBetterHumanizationCandidate(current, candidate) {
+  if (!candidate?.applicable || candidate.metrics?.trivialOnly) return false;
+  if (candidate.pass === true && current?.pass !== true) return true;
+  const currentScore = humanizationCandidateScore(current);
+  const candidateScore = humanizationCandidateScore(candidate);
+  if (candidateScore >= currentScore + 0.04) return true;
+  const currentEdit = finite(current?.metrics?.substantiveEditRatio);
+  const candidateEdit = finite(candidate?.metrics?.substantiveEditRatio);
+  const currentSentences = finite(current?.metrics?.substantiveChangedSentenceCount);
+  const candidateSentences = finite(candidate?.metrics?.substantiveChangedSentenceCount);
+  return candidateEdit >= currentEdit + 0.015 && candidateSentences >= currentSentences;
 }
 
 function measureSubstantiveEdit(source, output) {
@@ -251,7 +316,7 @@ function buildHumanizationPromptBlock(plan) {
     '[실질 휴머나이징 계약]',
     '이 모드는 교정·다듬기가 아니다. 원문의 뜻과 사실은 그대로 두되, AI식으로 반복되는 어순·상투어·추상명사·접속 방식·균일한 호흡을 사람이 직접 쓴 문장처럼 다시 구성한다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
-    `${strengthLabel} 휴머나이징의 서버 최소선은 실질 변화 ${minPercent}%이고, 실제 작성 목표는 ${targetMinPercent}~${targetMaxPercent}%다. 숫자를 맞추려고 동의어를 흩뿌리지 말고 대상 문장을 충분히 다시 쓴다.`,
+    `${strengthLabel} 휴머나이징의 품질 최소선은 실질 변화 ${minPercent}%이고, 실제 작성 목표는 ${targetMinPercent}~${targetMaxPercent}%다. 숫자를 맞추려고 동의어를 흩뿌리지 말고 대상 문장을 충분히 다시 쓴다.`,
     `원문 위험도=${plan.riskLevel}; 일반 문장 ${plan.sourceSentenceCount}개 중 최소 ${plan.requiredChangedSentenceCount}개는 절·어순·연결·호흡 가운데 하나 이상이 분명히 달라져야 한다.`,
     plan.targetSentenceCount
       ? `우선 개선 대상 ${plan.targetSentenceCount}개 중 최소 ${plan.requiredTargetChangedCount}개를 실질적으로 고친다${reasons ? `: ${reasons}` : '.'}`
@@ -398,6 +463,12 @@ function round4(value) {
   return Math.round(finite(value) * 10000) / 10000;
 }
 
+function progress(value, target) {
+  const denominator = finite(target);
+  if (denominator <= 0) return 1;
+  return Math.min(1.25, finite(value) / denominator);
+}
+
 function formatPercent(value) {
   return Number((finite(value) * 100).toFixed(1));
 }
@@ -406,6 +477,8 @@ module.exports = {
   POLICY_VERSION,
   buildHumanizationPlan,
   evaluateHumanizationDepth,
+  humanizationCandidateScore,
+  isBetterHumanizationCandidate,
   measureSubstantiveEdit,
   buildHumanizationPromptBlock,
   normalizeSubstantive

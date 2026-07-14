@@ -4,6 +4,7 @@ const baseChunk = require('../engine/chunk');
 const freezeBlocks = require('../engine/freezeblocks');
 const { splitSentenceSpans, splitSentences } = require('../engine/koreanText');
 const { paragraphExpansionLimit } = require('./voiceProfile');
+const layoutStructure = require('./layoutStructure');
 
 const VERSION = 'gpt-structure-chunk-v1';
 const UNSAFE_END_RE = /(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한|그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/;
@@ -22,6 +23,7 @@ function splitChunksForGpt(text, {
     currentSection: '',
     lastPiece: null,
     academicSpans,
+    sourceLineRoles: buildSourceLineRoleMap(text),
     questionnaire: formatProfile?.primary === 'questionnaire'
       || formatProfile?.flags?.includes?.('questionnaire') === true
   };
@@ -36,7 +38,10 @@ function splitChunksForGpt(text, {
   }
 
   const plannedChunks = coalesceEditable ? coalesceEditableChunks(chunks) : chunks;
-  if (preserveLineBoundaries) addLineBoundaryMarkers(plannedChunks);
+  const lineBoundaryPolicy = preserveLineBoundaries === true
+    ? 'all'
+    : String(preserveLineBoundaries || 'none');
+  if (lineBoundaryPolicy !== 'none') addLineBoundaryMarkers(plannedChunks, lineBoundaryPolicy);
   if (preserveSentenceBoundaries) addSentenceBoundaryMarkers(plannedChunks, sentenceBoundaryMinimum);
   reindexChunks(plannedChunks);
   return {
@@ -100,6 +105,26 @@ function splitLinePieces(text, offset = 0) {
   return out;
 }
 
+function buildSourceLineRoleMap(text) {
+  const map = new Map();
+  for (const record of layoutStructure.buildLineRecords(text)) {
+    if (record.blank) continue;
+    const key = String(record.text || '');
+    const roles = map.get(key) || [];
+    roles.push(record.role);
+    map.set(key, roles);
+  }
+  return map;
+}
+
+function sourceLineRole(map, value) {
+  const roles = map instanceof Map ? map.get(layoutStructure.visibleTrim(value)) : null;
+  if (!Array.isArray(roles)) return '';
+  if (roles.includes('title')) return 'title';
+  if (roles.includes('label')) return 'label';
+  return roles[0] || '';
+}
+
 function classifyPiece(piece, state) {
   const raw = String(piece?.text || '');
   const s = raw.trim();
@@ -107,6 +132,10 @@ function classifyPiece(piece, state) {
 
   const frozen = freezeBlocks.academicSpanAt(state.academicSpans, piece.start, piece.end);
   if (frozen) return { locked: true, lockType: frozen.type === 'toc' ? 'toc_item' : 'reference_item', sectionLabel: frozen.type === 'toc' ? '목차' : '참고문헌' };
+
+  const sourceRole = sourceLineRole(state.sourceLineRoles, s);
+  if (sourceRole === 'title') return { locked: true, lockType: 'title', sectionLabel: s };
+  if (sourceRole === 'label') return { locked: true, lockType: 'label', sectionLabel: state.currentSection };
 
   // 문답형 문서는 질문/번호를 편집 대상에서 제외하고, 질문 사이의 답변만
   // 독립 청크로 보낸다. 이 경계 때문에 서로 다른 답변의 문장이 이동할 수 없다.
@@ -219,12 +248,13 @@ function restoreBoundaryMarkers(outputText, chunk) {
   const leaked = /\[\[\[V2_(?:BOUNDARY|LINE|SENTENCE)_\d{3,4}\]\]\]/.test(text);
   const sentenceLocked = Array.isArray(chunk?.sentenceBoundaryMarkers) && chunk.sentenceBoundaryMarkers.length > 0;
   const lineLocked = Array.isArray(chunk?.lineBoundaryMarkers) && chunk.lineBoundaryMarkers.length > 0;
+  const exactLineLocked = lineLocked && String(chunk?.lineBoundaryPolicy || 'all') === 'all';
   const expectedSentenceCount = sentenceLocked ? splitSentenceSpans(String(chunk?.text || '')).length : null;
   const actualSentenceCount = sentenceLocked ? splitSentenceSpans(text).length : null;
   const expectedLineCount = lineLocked ? countLines(String(chunk?.text || '')) : null;
   const actualLineCount = lineLocked ? countLines(text) : null;
   const segmentationChanged = (sentenceLocked && expectedSentenceCount !== actualSentenceCount)
-    || (lineLocked && expectedLineCount !== actualLineCount);
+    || (exactLineLocked && expectedLineCount !== actualLineCount);
   return {
     text,
     ok: missing.length === 0 && duplicated.length === 0 && !leaked && !segmentationChanged,
@@ -263,7 +293,9 @@ function restorePostSemanticLayout({ source, outputText, chunks, mode = '', docu
 
 function restoreLockedHeadingLayout(source, outputText, chunks) {
   const headings = (chunks || [])
-    .filter(chunk => chunk?.locked && chunk.lockType === 'heading' && String(chunk.text || '').trim())
+    .filter(chunk => chunk?.locked
+      && ['heading', 'heading_continuation', 'title', 'label'].includes(String(chunk.lockType || ''))
+      && String(chunk.text || '').trim())
     .map(chunk => String(chunk.text).trim());
   let text = normalizeNewlines(outputText);
   const sourceText = normalizeNewlines(source);
@@ -308,30 +340,40 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
   const before = splitParagraphs(outputText);
   const sourceCount = sourceParagraphs.length;
   const beforeCount = before.length;
+  const profileName = typeof documentProfile === 'object'
+    ? String(documentProfile?.profile || documentProfile?.contentGenre || 'unknown')
+    : String(documentProfile || '');
   const sensitiveReport = Number(profileConfidence) >= 0.75
-    && ['academic_paper', 'report_assignment'].includes(String(documentProfile || ''));
-  const creativeLayout = String(documentProfile || '') === 'creative';
+    && ['academic_paper', 'report_assignment'].includes(profileName);
+  const creativeLayout = profileName === 'creative';
+  const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs);
+  const beforeReadability = layoutStructure.measureParagraphReadability(before);
+  const readableMinimum = Math.max(sourceReadability.minimumCount, beforeReadability.minimumCount);
   let targetCount = beforeCount;
   let policy = 'none';
   if (mode === 'polish' && sourceCount > 0) {
-    targetCount = sourceCount;
-    policy = 'exact_polish';
+    targetCount = Math.max(
+      sourceCount,
+      sourceReadability.minimumCount,
+      beforeReadability.overlongCount > 0 ? beforeReadability.targetCount : 0
+    );
+    policy = targetCount > sourceCount ? 'readable_polish' : 'exact_polish';
   } else if (!creativeLayout && sourceCount > 0) {
-    // 일반 글도 원문 문단 분포를 보존한다. 짧은 한 문단 원문은 2개까지,
-    // 장문의 미정리 초안은 약 350자당 한 문단(최대 12개)까지 허용한다.
-    // 여러 문단 원문은 +1 또는 1.5배까지만 허용해, 4→14처럼 의미 수리가
-    // 문장마다 빈 줄을 넣는 결과를 전달 직전에 어휘 변경 없이 되돌린다.
+    // 원문의 문단 분포를 상한으로 삼되, 장문을 다시 벽글로 합치지 않는다.
+    // 제목·완결된 장문 행은 원문의 읽기 단위로 세고, 나머지 과분할만
+    // 1.5배 상한까지 어휘 변경 없이 병합한다.
     const compactSourceLength = bare(source).length;
     const maximum = paragraphExpansionLimit(sourceCount, compactSourceLength);
-    if (beforeCount > maximum) {
-      // 여러 문단으로 이미 구조화된 원문은 gross over-split이 확인되면 원문
-      // 문단 수까지 복원한다. 상한에서 멈추면 비슷한 길이의 문단만 남아 오히려
-      // 대칭성이 커질 수 있다. 한 문단 초안만 길이 기반 가독성 상한을 사용한다.
-      targetCount = sourceCount > 1 ? sourceCount : maximum;
+    const safeMaximum = Math.max(maximum, readableMinimum);
+    if (beforeCount > safeMaximum) {
+      targetCount = safeMaximum;
       policy = sensitiveReport ? 'bounded_sensitive_report' : 'bounded_source_paragraphs';
+    } else if (beforeReadability.overlongCount > 0 && beforeReadability.targetCount > beforeCount) {
+      targetCount = beforeReadability.targetCount;
+      policy = 'readability_cap';
     }
   }
-  if (policy === 'none' || beforeCount === targetCount) {
+  if (policy === 'none' || (beforeCount === targetCount && beforeReadability.overlongCount === 0)) {
     return {
       text: String(outputText || ''),
       applied: false,
@@ -340,7 +382,8 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
       beforeCount,
       targetCount,
       afterCount: beforeCount,
-      pass: true
+      readability: compactReadability(beforeReadability),
+      pass: beforeReadability.overlongCount === 0
     };
   }
 
@@ -365,6 +408,7 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
   }
   const text = normalizeParagraphWhitespace(paragraphs.join('\n\n'));
   const afterCount = splitParagraphs(text).length;
+  const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(text));
   return {
     text,
     applied: text !== normalizeParagraphWhitespace(outputText),
@@ -373,7 +417,17 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
     beforeCount,
     targetCount,
     afterCount,
-    pass: mode === 'polish' ? afterCount === sourceCount : afterCount <= targetCount
+    readability: compactReadability(afterReadability),
+    pass: afterCount === targetCount && afterReadability.overlongCount === 0
+  };
+}
+
+function compactReadability(value) {
+  return {
+    overlongCount: Number(value?.overlongCount) || 0,
+    maxBare: Number(value?.maxBare) || 0,
+    maxSentences: Number(value?.maxSentences) || 0,
+    minimumCount: Number(value?.minimumCount) || 0
   };
 }
 
@@ -396,13 +450,15 @@ function findMergeCandidate(paragraphs, protectedBlocks) {
   for (let index = 0; index < paragraphs.length - 1; index += 1) {
     const protectedPair = touchesProtectedBlock(paragraphs[index], protectedBlocks)
       || touchesProtectedBlock(paragraphs[index + 1], protectedBlocks);
-    // Prefer ordinary body paragraphs. If the target still cannot be reached,
-    // remove only the blank line beside a locked block and retain a single
-    // newline so headings, tables and references remain exact standalone rows.
-    const score = bare(paragraphs[index]).length + bare(paragraphs[index + 1]).length
-      + (protectedPair ? 1000000 : 0);
+    if (protectedPair
+        || layoutStructure.isStructureDominatedParagraph(paragraphs[index])
+        || layoutStructure.isStructureDominatedParagraph(paragraphs[index + 1])) continue;
+    const merged = `${paragraphs[index].trim()} ${paragraphs[index + 1].trim()}`;
+    const mergedReadability = layoutStructure.measureParagraphReadability([merged]);
+    if (mergedReadability.overlongCount > 0) continue;
+    const score = bare(merged).length;
     if (score < selectedLength) {
-      selected = { index, separator: protectedPair ? '\n' : ' ' };
+      selected = { index, separator: ' ' };
       selectedLength = score;
     }
   }
@@ -442,7 +498,7 @@ function touchesProtectedBlock(paragraph, protectedBlocks) {
 }
 
 function splitParagraphs(value) {
-  return normalizeNewlines(value).split(/\n{2,}/u).map(paragraph => paragraph.trim()).filter(Boolean);
+  return layoutStructure.splitReadableParagraphs(value);
 }
 
 function normalizeNewlines(value) {
@@ -453,7 +509,7 @@ function normalizeParagraphWhitespace(value) {
   return normalizeNewlines(value).replace(/[ \t]+\n/gu, '\n').replace(/\n[ \t]+/gu, '\n').replace(/\n{3,}/gu, '\n\n').trim();
 }
 
-function addLineBoundaryMarkers(chunks) {
+function addLineBoundaryMarkers(chunks, policy = 'all') {
   let markerIndex = 1;
   for (const chunk of chunks || []) {
     if (!chunk || chunk.locked) continue;
@@ -462,17 +518,21 @@ function addLineBoundaryMarkers(chunks) {
       .filter(item => Number.isInteger(item.start) && Number.isInteger(item.end))
       .map(item => ({ ...item, kind: 'paragraph' }));
     const lineEvents = [];
-    const lineBreaks = text.matchAll(/\r?\n/gu);
-    for (const match of lineBreaks) {
-      const start = match.index;
-      const end = start + match[0].length;
+    const records = layoutStructure.buildLineRecords(text);
+    for (let index = 0; index < records.length - 1; index += 1) {
+      const left = records[index];
+      const right = records[index + 1];
+      if (!layoutStructure.shouldPreserveLineBoundary(left, right, policy)) continue;
+      const start = left.end;
+      const end = right.start;
       if (paragraphEvents.some(event => rangesOverlap(start, end, event.start, event.end))) continue;
       const marker = `[[[V2_LINE_${String(markerIndex).padStart(4, '0')}]]]`;
       markerIndex += 1;
-      lineEvents.push({ marker, boundary: match[0], start, end, kind: 'line' });
+      lineEvents.push({ marker, boundary: text.slice(start, end) || '\n', start, end, kind: 'line' });
     }
     if (!lineEvents.length) continue;
     chunk.lineBoundaryMarkers = lineEvents.map(({ kind, ...item }) => item);
+    chunk.lineBoundaryPolicy = policy;
     chunk.llmText = renderMarkerEvents(text, [...paragraphEvents, ...lineEvents]);
   }
 }
@@ -623,6 +683,12 @@ function compactLayoutRepair(value) {
       beforeCount: Number(value.paragraphs.beforeCount) || 0,
       targetCount: Number(value.paragraphs.targetCount) || 0,
       afterCount: Number(value.paragraphs.afterCount) || 0,
+      readability: value.paragraphs.readability ? {
+        overlongCount: Number(value.paragraphs.readability.overlongCount) || 0,
+        maxBare: Number(value.paragraphs.readability.maxBare) || 0,
+        maxSentences: Number(value.paragraphs.readability.maxSentences) || 0,
+        minimumCount: Number(value.paragraphs.readability.minimumCount) || 0
+      } : null,
       pass: value.paragraphs.pass !== false
     } : null,
     speakerRestore: value.speakerRestore ? {
@@ -694,6 +760,7 @@ function isMainBodyHeading(s) {
 }
 
 function isHeadingLine(s) {
+  if (layoutStructure.isKnownHeadingLine(s)) return true;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*\S.{0,100}$/.test(s)) return true;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/.test(s) && s.length <= 120) return true;
   if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/.test(s)) return true;

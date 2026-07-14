@@ -163,12 +163,20 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationDeliveryDepthBand: 'below_minimum',
         humanizationDepthRetryCount: 1,
         humanizationDepthRetryApplied: false,
-        polishSpeakerRestoreCount: 0
+        polishSpeakerRestoreCount: 0,
+        lineBoundaryPolicy: 'structural'
       },
       humanizeMeta: {
         estimatedUsd: 0.012345,
         dedupeAudit: { removedBlockCount: 1, removedBlockSentenceCount: 6 },
-        layoutRepair: { paragraphs: { policy: 'bounded_source_paragraphs', beforeCount: 14, afterCount: 6 } }
+        layoutRepair: {
+          paragraphs: {
+            policy: 'bounded_source_paragraphs',
+            beforeCount: 14,
+            afterCount: 6,
+            readability: { overlongCount: 0, maxBare: 824, maxSentences: 9 }
+          }
+        }
       }
     }
   };
@@ -186,6 +194,10 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.dedupeRemovedBlockCount, 1);
   assert.equal(first.paragraphCountBeforeRepair, 14);
   assert.equal(first.paragraphCountAfterRepair, 6);
+  assert.equal(first.lineBoundaryPolicy, 'structural');
+  assert.equal(first.paragraphOverlongCount, 0);
+  assert.equal(first.paragraphMaxBare, 824);
+  assert.equal(first.paragraphMaxSentences, 9);
   assert.equal(first.finalNoopRecoveryAttempted, true);
   assert.equal(first.finalNoopRecoveryReason, 'no_safe_surface_change');
   assert.equal(first.humanizationDepthEnabled, true);

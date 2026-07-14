@@ -37,7 +37,10 @@ const NORM_PATTERNS = [
     category: 'grammar',
     severity: 'S1',
     label: '조사 중복 의심',
-    re: /[가-힣]+(?:은는|이가|을를|와과|으로로|에게에)(?=$|[^가-힣A-Za-z0-9_])/g,
+    // "차이가·깊이가·고양이가"처럼 명사 자체가 '이'로 끝나는 정상 표현을
+    // 일반적인 '이가' 중복으로 세지 않는다. 이/가 중복은 보수적인 명사
+    // 앵커에서만 잡고, 나머지 비모호 중복 조사는 일반 패턴으로 검사한다.
+    re: /(?:[가-힣]+(?:은는|는은|을를|를을|와과|으로로|에게에|에서서|에게게)|(?:학생|사람|사용자|작성자|지원자|참여자|응답자|대상자|연구자|교수|교사|기관|기업|정부|학교|대학|회사|팀|원문|결과|문장|문서|내용|자료|보고서|과제|논문|글|표현|구조|문단|제목|항목|광고|정책|기술|문제|방법|과정|활동|경험|목표|역할|관점|상황|영향|효과|수치|모델|엔진|시스템|서비스|프로그램|제품|브랜드|플랫폼|연구팀)이가)(?=$|[^가-힣A-Za-z0-9_])/g,
     advice: '조사가 겹쳐 붙은 부분은 문장 성분에 맞게 하나만 남긴다.'
   },
   {
@@ -378,7 +381,7 @@ function measureCorpusOutlierRisk(text, sentences) {
   const tooUniform = cv < 0.18 ? (0.18 - cv) * 2.5 : 0;
   const tooLong = lengths.filter(n => n >= 110).length / Math.max(1, lengths.length);
   const tooShortRun = measureShortSentenceRun(list);
-  const paragraphs = String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const paragraphs = String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
   const paragraphOutlier = paragraphs.length <= 1 && String(text || '').length >= 900 ? 0.25 : 0;
   return round3(Math.min(1, tooUniform + tooLong * 0.55 + tooShortRun * 0.12 + paragraphOutlier));
 }

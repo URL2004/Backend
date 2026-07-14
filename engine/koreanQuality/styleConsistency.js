@@ -18,7 +18,7 @@ function analyzeStyle(text) {
   const dominant = dominantRegister(endings);
   const registerMixRisk = measureRegisterMix(endings, totalEndings);
   const rhythm = measureRhythm(lengths);
-  const paragraphs = String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const paragraphs = String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
   const oneSentenceParagraphs = paragraphs.filter(p => splitSentences(p).length <= 1 && p.length >= 20).length;
   const paragraphFragmentRisk = paragraphs.length >= 4
     ? Math.min(1, oneSentenceParagraphs / Math.max(1, paragraphs.length))

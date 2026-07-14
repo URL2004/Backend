@@ -10,6 +10,7 @@ const chunk = require('../engine/chunk');
 const nikl = require('../engine/koreanQuality/niklTest');
 const freeze = require('../engine/freezeblocks');
 const structure = require('../engine-gpt-prod/structureChunk');
+const layoutStructure = require('../engine-gpt-prod/layoutStructure');
 const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
 const { buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift, paragraphExpansionLimit } = require('../engine-gpt-prod/voiceProfile');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
@@ -50,8 +51,14 @@ test('의미 수리 후보가 원문 숫자를 새로 잃으면 안전 후보로
 });
 
 test('한국어 Unicode 경계는 숫자 단위와 실제 조사 중복을 정확히 인식한다', () => {
-  const clean = nikl.analyzeNiklQuality('20명과 35%가 참여했고 2026년에 마쳤다.');
-  assert.equal(clean.normPatterns.some(item => item.id === 'double_particle'), false);
+  for (const value of [
+    '20명과 35%가 참여했고 2026년에 마쳤다.',
+    '유관 학과와 협의했고 두 결과의 차이가 분명했다.',
+    '깊이가 충분하고 고양이가 곁에 있었다.'
+  ]) {
+    const clean = nikl.analyzeNiklQuality(value);
+    assert.equal(clean.normPatterns.some(item => item.id === 'double_particle'), false, value);
+  }
   for (const value of ['사람은는 간다.', '학생이가 왔다.']) {
     const report = nikl.analyzeNiklQuality(value);
     assert.equal(report.normPatterns.some(item => item.id === 'double_particle'), true);
@@ -237,12 +244,125 @@ test('일반 글도 원문 문단 분포의 1.5배를 넘는 과분할을 어휘
   });
   assert.equal(restored.paragraphs.sourceCount, 4);
   assert.equal(restored.paragraphs.beforeCount, 8);
-  assert.equal(restored.paragraphs.targetCount, 4);
-  assert.equal(restored.paragraphs.afterCount, 4);
+  assert.equal(restored.paragraphs.targetCount, 6);
+  assert.equal(restored.paragraphs.afterCount, 6);
   assert.equal(restored.paragraphs.policy, 'bounded_source_paragraphs');
   assert.equal(restored.text.replace(/\s+/gu, ''), output.replace(/\s+/gu, ''));
   assert.equal(paragraphExpansionLimit(1, 900), 2);
   assert.equal(paragraphExpansionLimit(1, 2880), 9, '긴 단일 문단은 읽기 가능한 분할 여지를 남긴다');
+});
+
+test('공백이 든 빈 줄을 실제 문단 경계로 세고 청크 왕복에서 원문을 보존한다', () => {
+  const source = '독립 제목\n \t\n첫 문단은 원문의 의미를 설명합니다.\n\n둘째 문단은 결과를 정리합니다.';
+  const chunks = chunk.splitChunks(source);
+  assert.equal(chunks.length, 3);
+  assert.equal(chunk.mergeChunks(chunks), source);
+  assert.equal(layoutStructure.splitExplicitParagraphs(source).length, 3);
+});
+
+test('제목과 완결된 긴 단일 행을 문단 역할로 인식해 장문을 다시 벽글로 합치지 않는다', () => {
+  const title = '말이 안 된다고 생각하면서도 클릭했다';
+  const bodyLines = Array.from({ length: 8 }, (_, index) => (
+    `${index + 1}번째 단락은 사용자가 관찰한 과정과 판단 근거를 충분한 길이로 설명합니다. `
+    + '이어서 앞 문장의 맥락을 유지하면서 구체적인 확인 내용을 정리합니다.'
+  ));
+  const source = [title, '', ...bodyLines].join('\n');
+  const output = [title, ...bodyLines.flatMap(line => koreanText.splitSentences(line))].join('\n\n');
+  const plan = structure.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    preserveLineBoundaries: 'structural'
+  });
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: output,
+    chunks: plan.chunks,
+    mode: 'assignment',
+    documentProfile: { profile: 'general' },
+    profileConfidence: 0.65
+  });
+  assert.ok(plan.chunks.some(item => item.locked && item.lockType === 'title'));
+  assert.ok(plan.chunks.some(item => item.lineBoundaryPolicy === 'structural'));
+  assert.ok(restored.paragraphs.sourceCount >= 9);
+  assert.ok(restored.paragraphs.afterCount >= 9);
+  assert.equal(restored.paragraphs.readability.overlongCount, 0);
+  assert.match(restored.text, new RegExp(`^${title}\\n`, 'u'));
+});
+
+test('표·항목형 문서는 라벨 행만 역할 기반 경계 토큰으로 보존한다', () => {
+  const source = [
+    'Ⅰ. 운영 개요',
+    '현황:',
+    '현재 운영 상황과 확인된 수치를 설명하는 본문입니다.',
+    '문제점:',
+    '자료 반영 과정에서 확인한 문제와 원인을 설명하는 본문입니다.',
+    '적용 범위: 전체 기관을 대상으로 단계적으로 적용합니다.',
+    '검증 방법: 결과 수치를 같은 기준으로 다시 확인합니다.',
+    '주요 기대 효과  기관  적용 범위  예상 값',
+    '효과 항목  A기관  전체  35%'
+  ].join('\n');
+  const profile = detectDocumentProfile(source);
+  const voice = buildVoiceProfile(source, { documentProfile: profile, mode: 'polish' });
+  const plan = structure.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    preserveLineBoundaries: voice.lineBoundaryPolicy,
+    formatProfile: profile.formatProfile
+  });
+  assert.ok(profile.formatProfile.flags.includes('label_heavy'));
+  assert.equal(voice.lineBoundaryPolicy, 'structural');
+  assert.ok(plan.chunks.some(item => item.locked && item.lockType === 'label'));
+  assert.ok(plan.chunks.some(item => item.lineBoundaryMarkers?.length));
+  const editable = plan.chunks.find(item => item.lineBoundaryMarkers?.length);
+  assert.equal(structure.restoreBoundaryMarkers(editable.llmText, editable).ok, true);
+});
+
+test('긴 단일 문단 polish는 내용 변경 없이 문장 경계에서 읽기 가능한 문단만 만든다', () => {
+  const sentences = Array.from({ length: 14 }, (_, index) => (
+    `${index + 1}번째 문장은 원문에 있는 업무 과정과 판단 근거를 삭제하지 않고 충분한 길이로 설명하며 표현만 안전하게 정리합니다.`
+  ));
+  const source = sentences.join(' ');
+  const output = [
+    sentences.slice(0, 3).join(' '),
+    sentences.slice(3, 6).join(' '),
+    sentences.slice(6, 9).join(' '),
+    sentences.slice(9, 12).join(' '),
+    sentences.slice(12).join(' ')
+  ].join('\n\n');
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: output,
+    chunks: structure.splitChunksForGpt(source, { coalesceEditable: true }).chunks,
+    mode: 'polish',
+    documentProfile: { profile: 'general' },
+    profileConfidence: 0.6
+  });
+  assert.equal(restored.paragraphs.policy, 'readable_polish');
+  assert.equal(restored.paragraphs.afterCount, 2);
+  assert.equal(restored.paragraphs.readability.overlongCount, 0);
+  assert.equal(restored.text.replace(/\s+/gu, ''), source.replace(/\s+/gu, ''));
+  assert.equal(restored.pass, true);
+});
+
+test('최종 화자 감사는 제목 병합·라벨 손실·과대 문단을 사용자 경고로 기록한다', () => {
+  const source = [
+    '운영 결과를 다시 확인했다',
+    '',
+    '현황:',
+    '첫 문단은 확인한 과정과 판단 근거를 충분한 길이로 설명합니다. '.repeat(8).trim(),
+    '문제점:',
+    '둘째 문단은 원문에서 확인한 문제와 이후 조치를 충분한 길이로 설명합니다. '.repeat(8).trim()
+  ].join('\n');
+  const collapsed = source.replace(/\n+/gu, ' ');
+  const profile = { profile: 'report_assignment', formatProfile: { flags: ['sectioned', 'label_heavy'] } };
+  const audit = auditVoice(
+    buildVoiceProfile(source, { documentProfile: profile, mode: 'assignment' }),
+    collapsed,
+    { documentProfile: profile, mode: 'assignment' }
+  );
+  const codes = new Set(audit.warnings.map(item => item.code));
+  assert.ok(codes.has('title_line_merged'));
+  assert.ok(codes.has('structural_line_loss'));
+  assert.ok(codes.has('line_structure_changed'));
+  assert.ok(codes.has('paragraph_readability'));
 });
 
 test('v2 청커는 작은 본문 문단을 묶되 문단 구분과 동결 구조 왕복을 보존한다', () => {
@@ -295,23 +415,26 @@ test('polish용 3문장 문서도 기존 경계를 잠글 수 있다', () => {
   assert.equal(structure.restoreBoundaryMarkers(body.llmText, body).ok, true);
 });
 
-test('세특의 제목·항목 행은 줄바꿈 경계 토큰으로 왕복 보존한다', () => {
+test('세특의 독립 제목 행은 잠금 블록으로 왕복 보존한다', () => {
   const source = '교과 활동 관찰 기록\n학생은 자료를 비교하고 핵심 내용을 정리함. 발표 과정에서 친구의 질문에 답하며 탐구 범위를 넓힘.';
   const plan = structure.splitChunksForGpt(source, {
     coalesceEditable: true,
     preserveLineBoundaries: true
   });
-  const body = plan.chunks.find(item => item.lineBoundaryMarkers?.length);
-  assert.ok(body);
-  assert.equal(body.lineBoundaryMarkers.length, 1);
-  assert.match(body.llmText, /\[\[\[V2_LINE_0001\]\]\]/u);
-  const restored = structure.restoreBoundaryMarkers(body.llmText.replace('핵심 내용을', '중요 내용을'), body);
-  assert.equal(restored.ok, true);
-  assert.equal(restored.text, source.replace('핵심 내용을', '중요 내용을'));
-  const missing = structure.restoreBoundaryMarkers(body.llmText.replace('[[[V2_LINE_0001]]]', ''), body);
-  assert.equal(missing.ok, false);
-  assert.equal(missing.expectedLineCount, 2);
-  assert.equal(missing.actualLineCount, 1);
+  const title = plan.chunks.find(item => item.locked && item.lockType === 'title');
+  assert.ok(title);
+  assert.equal(structure.mergeChunks(plan.chunks), source);
+  const inline = source.replace('\n', ' ').replace('핵심 내용을', '중요 내용을');
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: inline,
+    chunks: plan.chunks,
+    mode: 'assignment',
+    documentProfile: { profile: 'student_record_teacher' },
+    profileConfidence: 0.9
+  });
+  assert.match(restored.text, /^교과 활동 관찰 기록\n/u);
+  assert.match(restored.text, /중요 내용을/u);
 });
 
 test('문서 프로필은 요청 mode와 basicStyle 없이 원문만으로 판정한다', () => {
@@ -504,15 +627,15 @@ test('세특의 제목 행과 줄바꿈은 voice 구조로 기록하고 변경�
   const source = '교과 활동 관찰 기록\n학생은 자료를 비교하고 발표 과정에서 질문에 답하며 탐구 범위를 넓힘.';
   const voice = buildVoiceProfile(source, { documentProfile: 'student_record_teacher' });
   assert.equal(voice.lineStructureSensitive, true);
-  assert.match(voicePromptBlock(voice), /원문의 행 수=2/);
+  assert.match(voicePromptBlock(voice), /제목·항목 라벨·표·목록/u);
   const audit = auditVoice(voice, source.replace('\n', ' '), { documentProfile: 'student_record_teacher' });
-  assert.ok(audit.warnings.some(item => item.code === 'line_structure_changed'));
+  assert.ok(audit.warnings.some(item => item.code === 'title_line_merged'));
 });
 
 test('polish voice 감사는 새 문단과 제목 구조 변경을 경고한다', () => {
   const source = '제 1장 연구\n본문은 한 문단으로 이어집니다.';
   const voice = buildVoiceProfile(source, { documentProfile: 'report_assignment' });
-  const audit = auditVoice(voice, '본문이 바뀝니다.\n\n새 문단이 생깁니다.', { documentProfile: 'report_assignment', mode: 'polish' });
+  const audit = auditVoice(voice, '본문이 바뀝니다.\n\n새 문단이 생깁니다.\n\n세 번째 문단도 생깁니다.', { documentProfile: 'report_assignment', mode: 'polish' });
   assert.ok(audit.warnings.some(item => item.code === 'paragraph_structure_changed'));
   assert.ok(audit.warnings.some(item => item.code === 'heading_structure_changed'));
 });

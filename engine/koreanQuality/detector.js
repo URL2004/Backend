@@ -126,7 +126,7 @@ function measureRhythmPatterns(text, sentences) {
       score: patternScore({ severity: 'S2' }, commaHeavy)
     });
   }
-  const paragraphs = String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const paragraphs = String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
   let consecutiveOneSentence = 0;
   let maxConsecutive = 0;
   for (const p of paragraphs) {

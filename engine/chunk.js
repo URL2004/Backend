@@ -86,11 +86,12 @@ function looksUnsafeCutHead(right) {
 //   블로그 문단이 본래 짧아(30~250자) "합칠 조각"과 "의도된 짧은 문단"을 가를 임계가 없어, coalesce는 구조를
 //   파괴한다. 대신 청크 길이 유연성은 length_short를 청크레벨에서 제외(floor.collectFloorViolations chunkLevel)로 해결.
 
-// 문단 경계(\n{2,})로 분할. 각 청크는 원본 charRange[start,end)와 뒤따르는 구분자(sep)를 보존.
+// 문단 경계(빈 줄에 공백·탭만 있어도 포함)로 분할. 각 청크는 원본
+// charRange[start,end)와 뒤따르는 구분자(sep)를 그대로 보존한다.
 // position: intro(첫) / conclusion(끝) / body(중간) / single(1개뿐).
 function splitChunks(text) {
   const t = text || '';
-  const re = /\n{2,}/g;
+  const re = /\n[ \t]*\n+/g;
   const parts = [];
   let last = 0, m;
   while ((m = re.exec(t)) !== null) {

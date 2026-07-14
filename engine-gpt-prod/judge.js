@@ -413,7 +413,7 @@ function sentenceShapeDistance(sourceText, candidateText) {
 function repairStructureSignature(value) {
   const text = String(value || '');
   return {
-    paragraphs: text.split(/\n{2,}/u).map(item => item.trim()).filter(Boolean).length,
+    paragraphs: text.split(/\n[ \t]*\n+/u).map(item => item.trim()).filter(Boolean).length,
     headings: (text.match(/^\s*(?:#{1,6}\s+|제\s*\d+\s*(?:장|절|항)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){1,3}[.)]?)\s*\S.*$/gmu) || []).length,
     listItems: (text.match(/^\s*(?:[-*•▪◦]|\d+[.)]|[가-하][.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s+/gmu) || []).length,
     quotes: (text.match(/["“”'‘’]/gu) || []).length

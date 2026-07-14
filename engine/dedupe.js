@@ -125,7 +125,7 @@ function _isShortSynEcho(part, prevPart) {
 }
 
 function dedupeSentences(text) {
-  const paras = (text || '').split(/\n{2,}/);
+  const paras = (text || '').split(/\n[ \t]*\n+/);
   let removed = 0;
   const fuzzyWarnings = [];
   let previousSentence = null;
@@ -345,7 +345,7 @@ function isDedupeProtectedParagraph(value) {
 }
 
 function containsDedupeProtectedContent(value) {
-  const paragraphs = String(value || '').split(/\n{2,}/u).map(item => item.trim()).filter(Boolean);
+  const paragraphs = String(value || '').split(/\n[ \t]*\n+/u).map(item => item.trim()).filter(Boolean);
   return paragraphs.some(paragraph => isDedupeProtectedParagraph(paragraph)
     || paragraph.split(/\n/u).some(line => isDedupeProtectedParagraph(line)));
 }

@@ -516,7 +516,7 @@ function buildBlockOffer(job, text) {
   try {
     const sg = require('../engine/surfaceguard');
     const pa = sg.analyzeParagraphs(text || '');
-    const paras = (text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+    const paras = (text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
     abstractParas = (pa.detail || [])
       .map((d, i) => ({ kind: d.kind, snippet: (paras[i] || '').replace(/\s+/g, ' ').slice(0, 70) }))
       .filter(d => d.kind === 'abstract_risk' && d.snippet)
@@ -632,6 +632,7 @@ function buildArchiveObservability(job) {
   const usage = humanizeMeta.usage || {};
   const layoutRepair = humanizeMeta.layoutRepair || humanizeMeta.structureLock?.layoutRepair || {};
   const paragraphRepair = layoutRepair.paragraphs || {};
+  const paragraphReadability = paragraphRepair.readability || engineMeta.paragraphReadability || {};
   const dedupeAudit = humanizeMeta.dedupeAudit || {};
   const warningCodes = uniqueArchiveCodes([
     ...(Array.isArray(result.qualityWarnings) ? result.qualityWarnings : []),
@@ -684,12 +685,16 @@ function buildArchiveObservability(job) {
     humanizationDepthRetryApplied: engineMeta.humanizationDepthRetryApplied === true,
     polishSpeakerRestoreCount: archiveFinite(engineMeta.polishSpeakerRestoreCount),
     polishSpeakerRestoredSentenceCount: archiveFinite(engineMeta.polishSpeakerRestoredSentenceCount),
+    lineBoundaryPolicy: archiveString(engineMeta.lineBoundaryPolicy, 24),
     estimatedUsd: archiveFinite(humanizeMeta.estimatedUsd ?? usage.estimatedUsd),
     dedupeRemovedBlockCount: archiveFinite(dedupeAudit.removedBlockCount),
     dedupeRemovedBlockSentenceCount: archiveFinite(dedupeAudit.removedBlockSentenceCount),
     paragraphRepairPolicy: archiveString(paragraphRepair.policy, 48),
     paragraphCountBeforeRepair: archiveFinite(paragraphRepair.beforeCount),
-    paragraphCountAfterRepair: archiveFinite(paragraphRepair.afterCount)
+    paragraphCountAfterRepair: archiveFinite(paragraphRepair.afterCount),
+    paragraphOverlongCount: archiveFinite(paragraphReadability.overlongCount),
+    paragraphMaxBare: archiveFinite(paragraphReadability.maxBare),
+    paragraphMaxSentences: archiveFinite(paragraphReadability.maxSentences)
   });
 }
 
@@ -1592,7 +1597,7 @@ function compactFloorWarning(warning) {
 }
 
 function splitCompareParagraphs(text) {
-  return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  return String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
 }
 
 function splitCompareSentences(text) {

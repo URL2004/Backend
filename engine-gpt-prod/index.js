@@ -23,7 +23,7 @@ const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
 
-const VERSION = 'gpt-prod-v2.4.1';
+const VERSION = 'gpt-prod-v2.4.2';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -192,13 +192,14 @@ async function runEngine({
         riskFlags: []
       };
   const selectedMode = v2Enabled ? effectiveModeForProfile(requestedMode, normalizedMode, documentProfile) : normalizedMode;
-  const voiceProfile = v2Enabled ? buildVoiceProfile(rawSource, { documentProfile }) : null;
+  const voiceProfile = v2Enabled ? buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode }) : null;
   // v2에서만 UID를 비가역 safety_identifier로 바꾼다. 플래그를 0으로 내려
   // 레거시 경로로 즉시 복귀할 때 OPENAI_SAFETY_SALT가 롤백을 막아서는 안 된다.
   const safetyId = v2Enabled
     ? (safetyIdentifier || (uid ? safetyIdentifierForUid(uid) : ''))
     : (safetyIdentifier || '');
-  const layoutStructureLocked = v2Enabled && voiceProfile?.lineStructureSensitive === true;
+  const lineBoundaryPolicy = v2Enabled ? String(voiceProfile?.lineBoundaryPolicy || 'none') : 'none';
+  const layoutStructureLocked = v2Enabled && lineBoundaryPolicy !== 'none';
   const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !layoutStructureLocked;
   const preLayout = !v2Enabled && layoutNlpEnabled
     ? await safeFormatLayout(rawSource, { mode: selectedMode, phase: 'pre' })
@@ -213,7 +214,7 @@ async function runEngine({
     coalesceEditable: v2Enabled,
     preserveSentenceBoundaries: v2Enabled && shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, selectedMode),
     sentenceBoundaryMinimum: selectedMode === 'polish' ? 3 : 4,
-    preserveLineBoundaries: layoutStructureLocked,
+    preserveLineBoundaries: lineBoundaryPolicy,
     formatProfile: documentProfile.formatProfile
   });
   const chunks = chunkPlan.chunks;
@@ -385,7 +386,9 @@ async function runEngine({
     plan: chunkPlan,
     boundaryRepair
   });
-  const auditVoiceProfile = v2Enabled ? buildVoiceProfile(auditSource, { documentProfile }) : voiceProfile;
+  const auditVoiceProfile = v2Enabled
+    ? buildVoiceProfile(auditSource, { documentProfile, mode: selectedMode })
+    : voiceProfile;
   let deterministicAudit = v2Enabled ? qualityV2.buildDeterministicAudit({
     source: auditSource,
     outputText,
@@ -458,7 +461,7 @@ async function runEngine({
         outputText,
         chunks,
         mode: selectedMode,
-        documentProfile: documentProfile.profile,
+        documentProfile,
         profileConfidence: documentProfile.confidence
       })
     : { text: outputText, applied: false, pass: true };
@@ -468,7 +471,8 @@ async function runEngine({
     polishSpeakerRestore = qualityV2.restoreMissingPolishSpeaker({
       source: rawSource,
       outputText,
-      documentProfile
+      documentProfile,
+      allowLayoutOnlyParagraphChange: layoutRepair?.paragraphs?.policy === 'readable_polish'
     });
     if (polishSpeakerRestore.applied) {
       outputText = polishSpeakerRestore.text;
@@ -651,6 +655,9 @@ async function runEngine({
     safetyProfiles: documentProfile.safetyProfiles || [],
     profileMargin: documentProfile.profileMargin ?? 0,
     formatProfile: documentProfile.formatProfile || { length: 'standard', primary: 'plain', flags: [] },
+    lineBoundaryPolicy,
+    paragraphRepairPolicy: layoutRepair?.paragraphs?.policy || 'none',
+    paragraphReadability: layoutRepair?.paragraphs?.readability || null,
     riskFlags: documentProfile.riskFlags || [],
     tonePolicy: documentProfile.tonePolicy || 'source_preserve',
     basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
@@ -2085,7 +2092,7 @@ function structJoinLocal(text) {
 }
 
 function tidyParagraphsLocal(doc, source = '') {
-  const blocks = String(doc || '').split(/\n{2,}/);
+  const blocks = String(doc || '').split(/\n[ \t]*\n+/);
   const sourceParaCount = paragraphCount(source);
   const outputParaCount = blocks.map(b => b.trim()).filter(Boolean).length;
   return blocks.map((b, i) => {
@@ -2184,7 +2191,7 @@ function dedupeQualityWarnings(items) {
 }
 
 function paragraphCount(text) {
-  return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
+  return String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean).length;
 }
 
 function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false, qualityPatternLab = false, structureAudit = null }) {
@@ -2372,7 +2379,7 @@ function addStructureWarnings(report, audit) {
     additions.push({
       gate: 'post_semantic_layout_incomplete',
       action: 'needs_review',
-      detail: '의미 감사 뒤 원문 문단 구조를 완전히 복원하지 못했습니다.'
+      detail: '의미 감사 뒤 목표 문단 구조와 가독성 기준을 완전히 충족하지 못했습니다.'
     });
   }
   if (!additions.length) return;

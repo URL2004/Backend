@@ -505,7 +505,7 @@ function isTermCandidateSafe(value) {
 }
 
 function splitParagraphs(text) {
-  return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  return String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
 }
 
 function safeAnalyze(text, opts) {

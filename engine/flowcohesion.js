@@ -31,7 +31,7 @@ function joinParas(a, b) {
 }
 
 function flowCohesion(text, options = {}) {
-  const paras = String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const paras = String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
   if (options && options.preserveParagraphs) {
     return { text: paras.join('\n\n'), merged: 0, beforeParas: paras.length, afterParas: paras.length, preserveParagraphs: true };
   }

@@ -67,7 +67,7 @@ function cv(nums) {
 function measureUniformity(text) {
   const s = splitSentences(text);
   const lens = s.map(x => x.replace(/\s+/g, '').length);
-  const paraSentCounts = (text || '').split(/\n{2,}/).map(p => splitSentences(p).length).filter(n => n > 0);
+  const paraSentCounts = (text || '').split(/\n[ \t]*\n+/).map(p => splitSentences(p).length).filter(n => n > 0);
   return {
     avgLength: Number((lens.reduce((a, b) => a + b, 0) / Math.max(1, lens.length)).toFixed(1)),
     lengthCV: Number(cv(lens).toFixed(3)),            // 낮을수록 균일(AI스러움)
@@ -181,7 +181,7 @@ function buildSourceAnchorPool(rawText) {
 
 // ── (B) 카피킬러 영역 크기로 segment 분할(연속 문단을 ~targetChars까지 묶음) ──
 function buildSegments(text, targetChars = 900) {
-  const paras = (text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const paras = (text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
   const segs = [];
   let cur = [];
   let len = 0;
@@ -366,7 +366,7 @@ function isSpecific(s) { return SPECIFIC_RE.test(s); }
 // 문단이 "구체(낮음)"이려면 실제 겪은 장면(lived scene)이 1개 이상 있어야 한다.
 // 그게 없고 일반론 위주면 "추상-위험 문단"(카피킬러가 잡는 그 구간).
 function analyzeParagraphs(text) {
-  const paras = (text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  const paras = (text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
   let abstractRisk = 0, concrete = 0, neutral = 0;
   const detail = [];
   for (const p of paras) {

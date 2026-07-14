@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences } = require('../engine/koreanText');
+const layoutStructure = require('./layoutStructure');
 
 const CONTENT_GENRES = Object.freeze([
   'academic_paper',
@@ -60,6 +61,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
 
   add(scores, 'report_assignment', count(text, /(?:서론|본론|결론|과제|보고서|목차|조사\s*결과|문제점|개선\s*방안|시사점)/gu), 0.85);
   add(scores, 'report_assignment', formatProfile.headingCount, 0.38);
+  if ((formatProfile.labelLineCount || 0) >= 2 || (formatProfile.tableLineCount || 0) >= 2) {
+    scores.report_assignment += 1.25;
+  }
 
   add(scores, 'student_record_teacher', count(text, /(?:세부\s*능력\s*및\s*특기\s*사항|세특|생활\s*기록부|교과\s*활동|수업\s*중|발표함|탐구함|기여함|보여\s*줌|학생은)/gu), 1.35);
   add(scores, 'student_record_teacher', count(text, /(?:함|됨|임|음)\s*[.!?]?\s*(?=$|\n)/gmu), 0.25);
@@ -106,8 +110,13 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
 
   const quoteLines = lines.filter(line => /^(?:[>“"'‘]|[-*]\s)/u.test(line)).length;
   const poemLikeLines = lines.filter(line => line.length <= 34 && !/[.!?。！？]$/u.test(line)).length;
+  const structuredFunctionalFormat = ['table_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'questionnaire']
+    .some(flag => formatProfile.flags.includes(flag));
   add(scores, 'creative', count(text, /(?:시\s*$|시집|운문|소설|등장인물|장면\s*\d+|그날의|바람이|달빛|별빛)/gmu), 0.55);
-  if (lines.length >= 4 && poemLikeLines / lines.length >= 0.65 && median(lines.map(line => line.length)) <= 32) scores.creative += 3.4;
+  if (!structuredFunctionalFormat
+      && lines.length >= 4
+      && poemLikeLines / lines.length >= 0.65
+      && median(lines.map(line => line.length)) <= 32) scores.creative += 3.4;
   if (quoteLines >= 3 && /[“”"']/u.test(text)) scores.creative += 1.1;
 
   const firstPersonSignals = count(text, /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|저는|제가|저의|저에게)(?=$|[^가-힣A-Za-z0-9_])/gu);
@@ -222,24 +231,33 @@ function detectFormatProfile(text, lines, sentences, questionnaire) {
   const compactLength = String(text || '').replace(/\s+/gu, '').length;
   const length = compactLength <= 100 ? 'short' : (compactLength >= 1500 ? 'long' : 'standard');
   const headingCountValue = headingCount(lines.filter(line => !(questionnaire.isQuestionnaire && isQuestionLike(line))));
-  const listItemCount = lines.filter(isListLine).length;
-  const tableLineCount = lines.filter(isTableLikeLine).length;
+  const layout = layoutStructure.analyzeLineStructure(text);
+  const listItemCount = Math.max(lines.filter(isListLine).length, layout.listLineCount || 0);
+  const tableLineCount = Math.max(lines.filter(isTableLikeLine).length, layout.tableLineCount || 0);
+  const labelLineCount = layout.labelLineCount || 0;
   const referenceLineCount = lines.filter(line => /(?:doi\s*:|https?:\/\/|\([12]\d{3}[a-z]?\)|참고\s*문헌|References|Bibliography)/iu.test(line)).length;
   const quoteLineCount = lines.filter(line => /^(?:>|[“"'‘])/u.test(line) || /[“"][^”"\n]{2,}[”"]/u.test(line)).length;
   const appendixPresent = lines.some(line => /^(?:부록|Appendix)(?:\s|$)/iu.test(line));
   const poemLikeLines = lines.filter(line => line.length <= 40 && !/[.!?。！？]$/u.test(line)).length;
   const lineSensitive = questionnaire.isQuestionnaire
-    || (lines.length >= 4 && poemLikeLines / lines.length >= 0.6 && median(lines.map(line => line.length)) <= 36);
+    || (tableLineCount < 2
+      && listItemCount < 3
+      && labelLineCount < 2
+      && headingCountValue < 2
+      && lines.length >= 4
+      && poemLikeLines / lines.length >= 0.6
+      && median(lines.map(line => line.length)) <= 36);
   const flags = [];
   if (headingCountValue >= 2) flags.push('sectioned');
   if (questionnaire.isQuestionnaire) flags.push('questionnaire');
   if (listItemCount >= 3 && listItemCount / Math.max(1, lines.length) >= 0.3) flags.push('list_heavy');
   if (tableLineCount >= 2) flags.push('table_heavy');
+  if (labelLineCount >= 2) flags.push('label_heavy');
   if (referenceLineCount >= 3) flags.push('reference_heavy');
   if (lineSensitive) flags.push('line_sensitive');
   if (quoteLineCount >= 2) flags.push('quote_sensitive');
   if (appendixPresent) flags.push('appendix_present');
-  const primary = ['questionnaire', 'table_heavy', 'reference_heavy', 'list_heavy', 'sectioned', 'line_sensitive']
+  const primary = ['questionnaire', 'table_heavy', 'reference_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'line_sensitive']
     .find(flag => flags.includes(flag)) || 'plain';
   return {
     length,
@@ -251,6 +269,8 @@ function detectFormatProfile(text, lines, sentences, questionnaire) {
     headingCount: headingCountValue,
     listItemCount,
     tableLineCount,
+    labelLineCount,
+    structuralBoundaryCount: layout.preservedBoundaryCount || 0,
     referenceLineCount,
     quoteLineCount,
     appendixPresent

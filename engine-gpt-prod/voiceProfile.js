@@ -2,6 +2,7 @@
 
 const { splitSentences, normalizeCompact, mean, standardDeviation, koreanEnd } = require('../engine/koreanText');
 const { detectRegister } = require('../engine/contract');
+const layoutStructure = require('./layoutStructure');
 
 const POV_PATTERNS = Object.freeze({
   firstSingular: /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|나도|나를|나에게|내게|저는|제가|저의|저도|저를|저에게)(?=$|[^가-힣A-Za-z0-9_])/gu,
@@ -10,12 +11,12 @@ const POV_PATTERNS = Object.freeze({
   firstPlural: /(?:^|[^가-힣A-Za-z0-9_])(?:우리는|우리가|우리의|우리도|우리를|우리에게|우리와|우리로서|저희는|저희가|저희의|저희도|저희를|저희에게|저희와|저희로서|우리|저희)(?=$|[^가-힣A-Za-z0-9_])/gu
 });
 
-function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles = [], formatProfile = null } = {}) {
+function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles = [], formatProfile = null, mode = '' } = {}) {
   const context = normalizeDocumentContext(documentProfile, safetyProfiles, formatProfile);
   const profileName = context.profile;
   const text = String(source || '');
   const sentences = splitSentences(text, { preserveLines: profileName === 'creative' });
-  const paragraphs = text.split(/\n{2,}/u).map(value => value.trim()).filter(Boolean);
+  const paragraphs = layoutStructure.splitReadableParagraphs(text);
   const sentenceLengths = sentences.map(value => normalizeCompact(value).length).filter(value => value >= 3);
   const paragraphLengths = paragraphs.map(value => normalizeCompact(value).length).filter(Boolean);
   const compactLength = normalizeCompact(text).length;
@@ -29,7 +30,9 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
   const firstPlural = safeMatches(text, POV_PATTERNS.firstPlural);
   const endings = endingHistogram(sentences);
   const lineBreakSensitive = profileName === 'creative' && isLineBreakSensitive(text);
-  const lineStructureSensitive = lineBreakSensitive || isStructuredLineSensitive(text, context);
+  const layout = layoutStructure.analyzeLineStructure(text);
+  const lineBoundaryPolicy = linePolicyFor(text, context, layout, { lineBreakSensitive, mode });
+  const lineStructureSensitive = lineBoundaryPolicy !== 'none';
   return {
     version: 1,
     documentProfile: profileName,
@@ -57,7 +60,9 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
     questionnaireQuestionCount: countQuestionnaireQuestions(text),
     lineCount: lineCount(text),
     lineBreakSensitive,
-    lineStructureSensitive
+    lineStructureSensitive,
+    lineBoundaryPolicy,
+    layout
   };
 }
 
@@ -100,18 +105,27 @@ function voicePromptBlock(profile) {
     '원문의 인칭과 종결체를 유지한다. 평균 길이만 맞추지 말고 문장·문단 길이 분포를 보존한다.',
     povAnchorInstruction,
     rhythmInstruction,
-    profile.lineStructureSensitive ? `원문의 행 수=${profile.lineCount || 1}다. 각 행의 역할과 줄바꿈 위치를 그대로 유지한다.` : '',
+    profile.lineBoundaryPolicy === 'all'
+      ? `원문의 행 수=${profile.lineCount || 1}다. 각 행의 역할과 줄바꿈 위치를 그대로 유지한다.`
+      : (profile.lineBoundaryPolicy === 'structural'
+          ? '제목·항목 라벨·표·목록과 완결된 문단 행의 경계를 유지한다. 단순 자동 줄바꿈만 합칠 수 있다.'
+          : ''),
     profile.lineBreakSensitive ? '이 글은 줄바꿈 자체가 구조다. 행을 합치거나 새로 나누지 않는다.' : ''
   ].filter(Boolean).join('\n');
 }
 
-function auditVoice(sourceProfile, output, { documentProfile = 'unknown', mode = '' } = {}) {
+function auditVoice(sourceProfile, output, {
+  documentProfile = 'unknown',
+  mode = '',
+  layoutPolicy = '',
+  layoutTargetCount = 0
+} = {}) {
   const context = normalizeDocumentContext(
     documentProfile,
     sourceProfile?.safetyProfiles || [],
     sourceProfile?.formatProfile || null
   );
-  const current = buildVoiceProfile(output, { documentProfile: context });
+  const current = buildVoiceProfile(output, { documentProfile: context, mode });
   const warnings = [];
   if ((sourceProfile?.pov?.firstSingular || 0) === 0 && current.pov.firstSingular > 0) {
     warnings.push(warning('speaker_injected', '원문에 없던 1인칭 단수 화자가 추가됐을 수 있어요.'));
@@ -157,8 +171,11 @@ function auditVoice(sourceProfile, output, { documentProfile = 'unknown', mode =
   const sourceParagraphs = sourceProfile?.paragraph?.count || 0;
   const currentParagraphs = current.paragraph?.count || 0;
   const paragraphLimit = paragraphExpansionLimit(sourceParagraphs, sourceProfile?.compactLength || 0);
+  const readablePolish = mode === 'polish' && layoutPolicy === 'readable_polish';
   const paragraphChanged = mode === 'polish'
-    ? currentParagraphs !== sourceParagraphs
+    ? (readablePolish
+        ? currentParagraphs < sourceParagraphs || currentParagraphs > Math.max(sourceParagraphs, Number(layoutTargetCount) || sourceParagraphs)
+        : currentParagraphs !== sourceParagraphs)
     : sourceParagraphs === 1
       ? currentParagraphs > paragraphLimit
       : sourceParagraphs >= 2 && (currentParagraphs < sourceParagraphs * 0.6 || currentParagraphs > sourceParagraphs * 1.5);
@@ -176,10 +193,35 @@ function auditVoice(sourceProfile, output, { documentProfile = 'unknown', mode =
   if (sparseDistributionShift || existingDistribution.shift) {
     warnings.push(warning('sentence_distribution_shift', '원문의 짧고 긴 문장 차이가 결과에서 지나치게 평탄해졌을 수 있어요.'));
   }
-  if (sourceProfile?.lineStructureSensitive && lineCount(output) !== sourceProfile.lineCount) {
+  const sourceLayout = sourceProfile?.layout || {};
+  const currentLayout = current.layout || {};
+  if ((sourceLayout.titleLineCount || 0) > (currentLayout.titleLineCount || 0)) {
+    warnings.push(warning('title_line_merged', '원문의 제목 줄이 본문에 붙었을 수 있어요.'));
+  }
+  if ((sourceLayout.labelLineCount || 0) > (currentLayout.labelLineCount || 0)
+      || (sourceLayout.tableLineCount || 0) > (currentLayout.tableLineCount || 0)
+      || (sourceLayout.listLineCount || 0) > (currentLayout.listLineCount || 0)) {
+    warnings.push(warning('structural_line_loss', '원문의 항목 라벨·표·목록 행 일부가 합쳐졌을 수 있어요.'));
+  }
+  const sourceBoundaryCount = Math.max(
+    Number(sourceLayout.semanticBoundaryCount) || 0,
+    Number(sourceLayout.preservedBoundaryCount) || 0
+  );
+  const currentBoundaryCount = Math.max(
+    Number(currentLayout.semanticBoundaryCount) || 0,
+    Number(currentLayout.preservedBoundaryCount) || 0
+  );
+  const boundaryCollapsed = sourceBoundaryCount >= 3
+    && currentBoundaryCount < Math.ceil(sourceBoundaryCount * 0.6);
+  if (sourceProfile?.lineBoundaryPolicy === 'all' && lineCount(output) !== sourceProfile.lineCount) {
     warnings.push(sourceProfile.lineBreakSensitive
       ? warning('creative_line_structure', '창작문의 행 구조를 확인해야 해요.')
       : warning('line_structure_changed', '원문의 제목·항목 행 또는 줄바꿈 구조가 달라졌을 수 있어요.'));
+  } else if (boundaryCollapsed) {
+    warnings.push(warning('line_structure_changed', '원문의 의미 있는 문단·행 경계가 지나치게 합쳐졌을 수 있어요.'));
+  }
+  if ((currentLayout.readability?.overlongCount || 0) > 0) {
+    warnings.push(warning('paragraph_readability', '한 문단이 지나치게 길어 읽기 어려울 수 있어요.'));
   }
   return {
     profile: current,
@@ -293,19 +335,27 @@ function isLineBreakSensitive(text) {
   return short / lines.length >= 0.6;
 }
 
-function isStructuredLineSensitive(text, documentProfile) {
+function linePolicyFor(text, documentProfile, layout, { lineBreakSensitive = false, mode = '' } = {}) {
   const context = normalizeDocumentContext(documentProfile);
+  const flags = new Set(context.formatProfile?.flags || []);
+  if (lineBreakSensitive || flags.has('line_sensitive') || flags.has('questionnaire')) return 'all';
   const profiles = new Set([context.profile, ...context.safetyProfiles]);
   const sensitiveProfile = [...profiles].some(profile => [
+    'academic_paper',
+    'report_assignment',
     'student_record_teacher',
     'student_self_assessment',
     'resume_application',
     'mail_notice'
   ].includes(profile));
-  if (!sensitiveProfile && !context.formatProfile?.flags?.includes?.('questionnaire')) return false;
-  const lines = String(text || '').split(/\r?\n/u).map(value => value.trim()).filter(Boolean);
-  if (lines.length < 2 || lines.length > 30) return false;
-  return lines.some(line => !/[.!?。？！]$/u.test(line));
+  const structuredFormat = ['table_heavy', 'list_heavy', 'sectioned', 'label_heavy']
+    .some(flag => flags.has(flag));
+  const meaningfulBoundaries = Number(layout?.preservedBoundaryCount) || 0;
+  const structuralLines = Number(layout?.structuralLineCount) || 0;
+  const polishStructure = String(mode || '') === 'polish' && (meaningfulBoundaries > 0 || structuralLines > 0);
+  if (meaningfulBoundaries >= 2 || structuredFormat || polishStructure) return 'structural';
+  if (sensitiveProfile && (meaningfulBoundaries > 0 || structuralLines > 0)) return 'structural';
+  return 'none';
 }
 
 function normalizeDocumentContext(documentProfile, safetyProfiles = [], formatProfile = null) {

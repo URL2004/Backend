@@ -30,7 +30,7 @@ function measureNaturalnessShadow(value) {
   // 운영 81건 기준선과 연속 비교하기 위한 shadow 전용 v1 측정 분리기다.
   // 실제 변환·청킹·감사 판정은 engine/koreanText의 통합 분리기를 사용한다.
   const sentences = splitShadowSentences(text);
-  const paragraphs = text.split(/\n{2,}/u).map(item => item.trim()).filter(Boolean);
+  const paragraphs = text.split(/\n[ \t]*\n+/u).map(item => item.trim()).filter(Boolean);
   const compactLength = text.replace(/\s+/gu, '').length;
   const connectorCount = countMany(text, CONNECTOR_PATTERNS);
   const stockCount = countMany(text, STOCK_REPORT_PATTERNS);

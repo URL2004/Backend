@@ -47,6 +47,9 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'list_structure_changed',
   'heading_structure_changed',
   'paragraph_structure_changed',
+  'title_line_merged',
+  'structural_line_loss',
+  'line_structure_changed',
   'questionnaire_structure_changed',
   'creative_line_structure',
   'register_shift',
@@ -92,7 +95,12 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     ));
   }
 
-  const voiceAudit = auditVoice(voiceProfile, outputText, { documentProfile: documentProfile || 'unknown', mode });
+  const voiceAudit = auditVoice(voiceProfile, outputText, {
+    documentProfile: documentProfile || 'unknown',
+    mode,
+    layoutPolicy: structureAudit?.layoutRepair?.paragraphs?.policy || '',
+    layoutTargetCount: structureAudit?.layoutRepair?.paragraphs?.targetCount || 0
+  });
   warnings.push(...voiceAudit.warnings);
   if (structureAudit?.lostLockedCount > 0) {
     warnings.push(warning('structure_lock_loss', '목차·참고문헌·제목 구조 일부가 달라졌을 수 있어요.', { count: structureAudit.lostLockedCount }));
@@ -324,7 +332,12 @@ function polishEditPolicy(source, outputText) {
 // 레이아웃 복원 뒤 1인칭 종류가 완전히 사라졌다면, 문장 수가 그대로이고
 // 대응 문장이 충분히 유사한 경우에만 그 문장을 원문으로 되돌린다. 원문 문장을
 // 복원하는 방식이라 새 사실을 만들지 않으며, 다른 문장의 교정은 유지된다.
-function restoreMissingPolishSpeaker({ source, outputText, documentProfile = 'unknown' } = {}) {
+function restoreMissingPolishSpeaker({
+  source,
+  outputText,
+  documentProfile = 'unknown',
+  allowLayoutOnlyParagraphChange = false
+} = {}) {
   const before = String(outputText || '');
   const sourceProfile = buildVoiceProfile(source, { documentProfile });
   const outputProfile = buildVoiceProfile(before, { documentProfile });
@@ -342,7 +355,8 @@ function restoreMissingPolishSpeaker({ source, outputText, documentProfile = 'un
   if (!sourceSpans.length || sourceSpans.length !== outputSpans.length) {
     return speakerRestoreResult(before, false, missingKinds, 0, 'sentence_alignment_mismatch');
   }
-  if (paragraphCountLocal(source) !== paragraphCountLocal(before)) {
+  const outputParagraphCount = paragraphCountLocal(before);
+  if (!allowLayoutOnlyParagraphChange && paragraphCountLocal(source) !== outputParagraphCount) {
     return speakerRestoreResult(before, false, missingKinds, 0, 'paragraph_alignment_mismatch');
   }
 
@@ -372,7 +386,7 @@ function restoreMissingPolishSpeaker({ source, outputText, documentProfile = 'un
   const numberRiskAfter = numberAfter.addedCount + numberAfter.removedCount;
   if (stillMissing
       || splitSentenceSpans(candidate).length !== sourceSpans.length
-      || paragraphCountLocal(candidate) !== paragraphCountLocal(source)
+      || paragraphCountLocal(candidate) !== outputParagraphCount
       || numberRiskAfter > numberRiskBefore) {
     return speakerRestoreResult(before, false, missingKinds, 0, 'post_repair_validation_failed');
   }
@@ -386,7 +400,7 @@ function patternMatches(pattern, value) {
 }
 
 function paragraphCountLocal(value) {
-  return String(value || '').split(/\n{2,}/u).map(item => item.trim()).filter(Boolean).length;
+  return String(value || '').replace(/\r\n?/gu, '\n').split(/\n[ \t]*\n+/u).map(item => item.trim()).filter(Boolean).length;
 }
 
 function speakerRestoreResult(text, applied, restoredKinds, restoredSentenceCount, reason) {

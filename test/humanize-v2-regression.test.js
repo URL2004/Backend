@@ -18,6 +18,7 @@ const factAudit = require('../engine-gpt-prod/factAudit');
 const { assessRepairCandidate } = require('../engine-gpt-prod/judge');
 const prompts = require('../engine-gpt-prod/prompts');
 const contract = require('../engine/contract');
+const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
 
 test('한국어 문장 분리기는 장·절 번호, 소수점, 약어와 인용부호를 보존한다', () => {
   const value = '제 1장. 연구 개요\n연구 배경\n값은 3.14이다. e.g. 예시는 유지한다. U.S. 자료도 유지한다. “인용문이다.” 다음 문장이다.';
@@ -98,11 +99,17 @@ test('고립 접속어와 조사로 시작하는 장문 청크 경계를 회귀 
 
 test('장 제목의 제는 1인칭으로 세지 않고 새 화자 주입·삭제를 잡는다', () => {
   assert.equal(floor.computePovSeed('제 1장 연구 개요\n제2절 분석').fp_singular, 0);
+  assert.equal(floor.computePovSeed('팀 활동을 돌아보면 나는 설명을 맡았고 나도 끝까지 참여했으며 우리는 함께 마무리했다').fp_singular, 2);
+  assert.equal(floor.computePovSeed('주방에서 냄새 나는 음식을 정리했다.').fp_singular, 0);
   const source = '이 연구는 자료를 분석한다.';
   const injected = floor.measurePovDrift(source, '저는 이 연구에서 자료를 분석한다.');
   assert.equal(injected.introducedAnyFirstPerson, true);
   const dropped = floor.measurePovDrift('저는 자료를 분석했다.', '자료를 분석했다.');
   assert.equal(dropped.droppedFirstPerson, true);
+  const punctuationless = '팀 활동을 돌아보면 나는 설명을 맡았고 나도 끝까지 참여했으며 우리는 함께 마무리했다';
+  const preserved = floor.measurePovDrift(punctuationless, '팀 활동을 돌아봤다. 나는 설명을 맡았고 나도 끝까지 참여했으며, 우리는 함께 마무리했다.');
+  assert.equal(preserved.introducedAnyFirstPerson, false);
+  assert.equal(preserved.droppedAnyFirstPerson, false);
 });
 
 test('dedupe는 인과 방향이 다른 유사 문장을 보존하고 인접 완전 중복만 제거한다', () => {
@@ -638,6 +645,21 @@ test('polish voice 감사는 새 문단과 제목 구조 변경을 경고한다'
   const audit = auditVoice(voice, '본문이 바뀝니다.\n\n새 문단이 생깁니다.\n\n세 번째 문단도 생깁니다.', { documentProfile: 'report_assignment', mode: 'polish' });
   assert.ok(audit.warnings.some(item => item.code === 'paragraph_structure_changed'));
   assert.ok(audit.warnings.some(item => item.code === 'heading_structure_changed'));
+});
+
+test('리듬 shadow는 네 문장 미만 원문과 분할 결과를 악화값으로 비교하지 않는다', () => {
+  const sparse = '첫째 내용을 길게 설명하고 둘째 근거를 이어서 정리하며 셋째 관찰과 마지막 판단까지 구두점 없이 한 흐름으로 기록한다';
+  const split = '첫째 내용을 길게 설명한다. 둘째 근거를 이어서 정리한다. 셋째 관찰을 기록한다. 마지막 판단까지 한 흐름으로 기록한다.';
+  const incomparable = compareNaturalnessShadow(sparse, split);
+  assert.equal(incomparable.rhythmComparable, false);
+  assert.equal(incomparable.rhythmUniformityDelta, null);
+  assert.equal(incomparable.delta.uniformSentenceRhythm, null);
+
+  const varied = '짧게 끝난다. 두 번째 문장은 비교적 긴 설명을 담아 서로 다른 호흡이 자연스럽게 이어지도록 구성한다. 다시 짧다. 마지막 문장은 앞의 관찰을 구체적인 맥락과 함께 충분히 풀어 정리한다.';
+  const uniform = '첫 번째 문장은 내용을 차분하게 정리한다. 두 번째 문장은 근거를 차분하게 정리한다. 세 번째 문장은 관찰을 차분하게 정리한다. 네 번째 문장은 판단을 차분하게 정리한다.';
+  const comparable = compareNaturalnessShadow(varied, uniform);
+  assert.equal(comparable.rhythmComparable, true);
+  assert.ok(comparable.rhythmUniformityDelta > 0);
 });
 
 test('voice 프롬프트는 기존 1인칭을 최소 한 곳 남기고 새 화자는 만들지 않게 한다', () => {

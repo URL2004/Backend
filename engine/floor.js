@@ -10,16 +10,24 @@
 function computePovSeed(rawText) {
   const t = rawText || '';
   // ★ 1인칭 단수 — 명확한 마커만(앞 한글 음절 붙으면 다른 단어로 보고 제외).
-  //   저/제 계열 + 내가/내게/나에게/나의 + 소유격 "내 X".
-  //   '나는/난'은 "냄새 나는" 같은 관형형과 충돌하므로 문장 시작 위치만 별도 카운트한다.
-  const fpRe = /(?<![가-힣])(저는|저의|저도|저를|저에게|저로서|저랑|저와|저한테|제가|제 생각|제 경험|제 친구|제 룸메|내가|내게|나에게|나의|내(?=\s))/g;
-  const fpLooseSentenceStartRe = /(?:^|[.!?…\n]\s*)(나는|난|나도|나를|나에게|나의)(?=\s)/g;
+  //   저/제 계열 + 내가/내게/나에게/나의/나도/나를 + 소유격 "내 X".
+  //   '나는/난'은 "냄새 나는" 같은 관형형과 충돌하므로 기본적으로 문장 시작만
+  //   세되, 같은 글에 나도·나를·저는 같은 명확한 개인 화자가 하나라도 있으면
+  //   문장 중간의 나는/난도 개인 화자로 센다. 구두점 없는 자소서·에세이에서
+  //   voiceProfile은 개인 화자로 보는데 FLOOR만 집단 화자로 보던 불일치를 막는다.
+  const fpRe = /(?<![가-힣])(저는|저의|저도|저를|저에게|저로서|저랑|저와|저한테|제가|제 생각|제 경험|제 친구|제 룸메|내가|내게|나에게|나의|나도|나를|내(?=\s))/g;
+  const fpAmbiguousGlobalRe = /(?<![가-힣A-Za-z0-9_])(나는|난)(?![가-힣A-Za-z0-9_])/g;
+  const fpAmbiguousSentenceStartRe = /(?:^|[.!?…\n]\s*)(나는|난)(?=\s)/g;
   const fpPluralRe = /(?<![가-힣A-Za-z0-9_])(우리는|우리가|우리의|우리도|우리를|우리에게|우리와|우리로서|저희는|저희가|저희의|저희도|저희를|저희에게|저희와|저희로서|우리|저희)(?![가-힣A-Za-z0-9_])/g;
   const orgVoiceRe = /(본\s*보고서|본\s*연구|본\s*글|이\s*글은|이\s*보고서|본고|본\s*논문)/g;
   // 영어 1인칭: 개인(I/me/my/mine) vs 조직(we/us/our/ours) 분리. "I"는 대문자 단독, 나머지는 소문자 단어경계.
   const enSingRe = /\bI\b|\b(?:me|my|mine|myself)\b/g;
   const enPlurRe = /\b(?:we|us|our|ours|ourselves)\b/gi;
-  const ko_fp_singular = (t.match(fpRe) || []).length + (t.match(fpLooseSentenceStartRe) || []).length;
+  const strictSingularCount = (t.match(fpRe) || []).length;
+  const ambiguousSingularCount = strictSingularCount > 0
+    ? (t.match(fpAmbiguousGlobalRe) || []).length
+    : (t.match(fpAmbiguousSentenceStartRe) || []).length;
+  const ko_fp_singular = strictSingularCount + ambiguousSingularCount;
   const ko_fp_plural = (t.match(fpPluralRe) || []).length;
   const en_fp_singular = (t.match(enSingRe) || []).length;
   const en_fp_plural = (t.match(enPlurRe) || []).length;

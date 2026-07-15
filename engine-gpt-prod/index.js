@@ -23,7 +23,7 @@ const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
 
-const VERSION = 'gpt-prod-v2.4.2';
+const VERSION = 'gpt-prod-v2.4.3';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -921,6 +921,23 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     second.record.primaryUsage = first.record.usage || null;
     second.record.usage = addUsage(second.record.usage || emptyUsage(), first.record.usage);
     second.record.warnings = [...(second.record.warnings || []), 'v2_residual:voice_sparse_distribution_failed'];
+    return second.record;
+  }
+
+  if (v2Enabled && isReviewableResidualPovAttempt(second)) {
+    // 화자 보존 위반은 상위 모델로 한 번 수리한 뒤에도 남을 수 있다. 빈 출력·
+    // 손상·숫자/보호어/구조 위반이 함께 없는 후보라면 원문으로 되돌려 no-op
+    // 차단을 만들지 않고, 전체 문서 의미 감사와 voice 감사에서 다시 점검한 뒤
+    // needs_review로 전달한다. 이는 v2의 "수리 후 의미·화자 경고 전달" 정책이다.
+    chunk.outputText = second.outputText;
+    second.record.fallback = false;
+    second.record.error = null;
+    second.record.hardFailReason = '';
+    second.record.escalated = true;
+    second.record.primaryError = first.record?.hardFailReason || first.record?.error || '';
+    second.record.primaryUsage = first.record?.usage || null;
+    second.record.usage = addUsage(second.record.usage || emptyUsage(), first.record?.usage);
+    second.record.warnings = [...(second.record.warnings || []), 'v2_residual:pov'];
     return second.record;
   }
 
@@ -2007,6 +2024,16 @@ function isRecoverableSurfaceFallbackRecord(record) {
   ]).has(gate);
 }
 
+function isReviewableResidualPovAttempt(attempt) {
+  const reason = normalizedViolationGate({ gate: attempt?.record?.hardFailReason });
+  if (!['pov', 'pov_inject'].includes(reason) || !String(attempt?.outputText || '').trim()) return false;
+  const preservation = (attempt.record?.floorViolations || []).filter(isV2ChunkPreservationViolation);
+  return preservation.length > 0 && preservation.every(violation => [
+    'pov',
+    'pov_inject'
+  ].includes(normalizedViolationGate(violation)));
+}
+
 function normalizedViolationGate(v) {
   return String(v?.gate || v?.type || '').trim().toLowerCase().replace(/[^a-z0-9]+/gu, '_');
 }
@@ -2024,6 +2051,9 @@ function buildV2EscalationPatchTargets(patchTargets, record) {
   }
   if (record?.hardFailReason === 'list_structure_changed') {
     targets.push('원문의 목록 항목 수와 목록/본문 구분을 그대로 보존한다. 새 목록을 만들거나 항목을 합치지 않는다.');
+  }
+  if (['pov', 'pov_inject'].includes(normalizedViolationGate({ gate: record?.hardFailReason }))) {
+    targets.push('1차 결과가 원문의 화자 종류를 바꿨다. 원문에 실제로 있는 1인칭 단수·복수만 유지하고, 원문에 없는 나는·저는·제가·우리·저희를 새로 만들거나 기존 화자를 삭제하지 않는다.');
   }
   if (record?.hardFailReason === 'voice_sparse_distribution_failed') {
     const violation = (record.floorViolations || []).find(v => normalizedViolationGate(v) === 'voice_sparse_distribution_failed');

@@ -252,4 +252,35 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   job.status = 'done';
   const completed = transform.buildArchiveDocument(job, {}, 11000);
   assert.equal(completed.terminalAtMs, 11000);
+  assert.deepEqual(completed.gates, [], '완료 작업에는 이전 차단 게이트가 남으면 안 된다');
+  assert.deepEqual(job.gates, []);
+  assert.equal(job.gateDetail, null);
+
+  const fallbackCompleted = transform.buildArchiveDocument({
+    id: 'archive-preservation-fallback',
+    status: 'done',
+    mode: 'blog',
+    text: '아카이브에 저장하면 안 되는 폴백 원문',
+    gates: ['humanization_depth_no_effect'],
+    result: {
+      outputText: '저장하면 안 되는 폴백 결과',
+      preservationFallback: true,
+      qualityStatus: 'needs_review',
+      engineMeta: {
+        engineVersion: 'gpt-prod-v2.4.3',
+        requestedMode: 'blog',
+        effectiveMode: 'polish',
+        requestStrength: 'polish',
+        fallbackFromMode: 'blog'
+      }
+    }
+  }, {}, 12000);
+  assert.deepEqual(fallbackCompleted.gates, []);
+  assert.equal(fallbackCompleted.preservationFallback, true);
+  assert.equal(fallbackCompleted.fallbackFromMode, 'blog');
+  assert.equal(fallbackCompleted.requestedMode, 'blog');
+  assert.equal(fallbackCompleted.effectiveMode, 'polish');
+  assert.equal(fallbackCompleted.engineVersion, 'gpt-prod-v2.4.3');
+  assert.equal(Object.prototype.hasOwnProperty.call(fallbackCompleted, 'text'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(fallbackCompleted, 'result'), false);
 });

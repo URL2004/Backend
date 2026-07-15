@@ -126,7 +126,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.2');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.3');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -305,6 +305,41 @@ test('수리 후 의미 위반이 남으면 done 호환 상태인 needs_review�
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 1);
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_soft_claim_ledger').length, 0);
+});
+
+test('구두점 없는 개인 에세이의 문장 중간 나는·나도를 기존 화자로 보존한다', { concurrency: false }, async t => {
+  const clauses = [
+    '팀 프로젝트를 시작하면서 역할과 일정을 먼저 정리했다',
+    '나는 자료를 읽고 핵심 내용을 친구들이 이해하기 쉬운 순서로 묶었다',
+    '나도 처음에는 설명 방향을 잡기 어려웠지만 질문을 기록하며 차근차근 고쳤다',
+    '우리는 마지막까지 서로의 의견을 확인하고 발표 내용을 함께 마무리했다'
+  ];
+  const source = clauses.join(' ');
+  const output = `${clauses.join('. ')}.`;
+  const mock = installEngineMock(t, { humanize: output });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'punctuationless-personal-voice-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
+  assert.equal(out.result.contract.povSeed.fp_singular, 2);
+  assert.equal(out.result.contract.povSeed.fp_plural, 1);
+  assert.equal(out.result.povDrift.introducedAnyFirstPerson, false);
+  assert.equal(out.result.povDrift.droppedAnyFirstPerson, false);
+  assert.equal(out.fallbackCount, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 1);
+});
+
+test('상위 모델 수리 뒤 화자 경고만 남은 안전 후보는 차단 대신 needs_review로 전달한다', { concurrency: false }, async t => {
+  const source = '자료를 먼저 분류한 뒤 핵심 내용을 순서대로 정리했습니다. 서로 다른 관점을 비교하면서 설명이 겹치는 부분도 줄였습니다. 마지막에는 전체 흐름을 다시 읽고 어색한 연결을 고쳤습니다.';
+  const output = '저는 자료를 먼저 분류한 뒤 핵심 내용을 순서대로 정리했습니다. 서로 다른 관점을 비교하면서 겹치는 설명은 줄였습니다. 마지막에는 전체 흐름을 다시 읽으며 어색한 연결을 고쳤습니다.';
+  const mock = installEngineMock(t, { humanize: output });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'residual-pov-review-user', config: config() });
+  assert.equal(out.status, 'needs_review', JSON.stringify(out.floorReport));
+  assert.equal(out.result.outputText, output);
+  assert.equal(out.fallbackCount, 0);
+  assert.equal(out.floorReport.criticals.length, 0);
+  assert.ok(out.qualityWarnings.some(item => item.code === 'speaker_injected' || item.code === 'pov'));
+  assert.ok(out.chunks[0].warnings.includes('v2_residual:pov'));
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+  assert.ok(mock.calls.some(call => JSON.stringify(call.body.input || '').includes('1차 결과가 원문의 화자 종류를 바꿨다')));
 });
 
 test('청크에 새 사실이 생기면 상위 모델에 제거 항목을 명시해 재시도한다', { concurrency: false }, async t => {

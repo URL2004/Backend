@@ -59,7 +59,7 @@ function measureNaturalnessShadow(value) {
     metrics.concreteAnchorScarcity * 0.08
   ));
   return {
-    version: 2,
+    version: 3,
     shadowOnly: true,
     sentenceCount: sentences.length,
     paragraphCount: paragraphs.length,
@@ -78,28 +78,34 @@ function compareNaturalnessShadow(source, output) {
   const after = measureNaturalnessShadow(output);
   const delta = {};
   for (const key of Object.keys(before.metrics)) delta[key] = round3(after.metrics[key] - before.metrics[key]);
+  const rhythmComparable = before.rhythm.comparable === true && after.rhythm.comparable === true;
+  // 네 문장 미만에서는 변동계수 자체를 계산하지 않는다. 구두점 없는 한 문장을
+  // 정상적인 여러 문장으로 나눈 결과를 "원문 0 → 결과 양수"로 비교하면 리듬이
+  // 악화된 것처럼 기록되므로, 비교 불가능한 쌍은 0이 아니라 null로 명시한다.
+  if (!rhythmComparable) delta.uniformSentenceRhythm = null;
   delta.overallRisk = round3(after.overallRisk - before.overallRisk);
   return {
-    version: 2,
+    version: 3,
     shadowOnly: true,
     before,
     after,
     delta,
     // 운영 81건 기준선(20건)과 같은 정의: 전체 과정돈 위험이 0.03 이상 증가.
     riskIncreased: delta.overallRisk >= 0.03,
-    rhythmUniformityDelta: delta.uniformSentenceRhythm
+    rhythmComparable,
+    rhythmUniformityDelta: rhythmComparable ? delta.uniformSentenceRhythm : null
   };
 }
 
 function measureRhythm(sentences) {
   const lengths = sentences.map(sentence => sentence.replace(/\s+/gu, '').length).filter(Boolean);
-  if (lengths.length < 4) return { sentenceCount: lengths.length, avg: average(lengths), cv: 1, risk: 0 };
+  if (lengths.length < 4) return { sentenceCount: lengths.length, avg: average(lengths), cv: null, risk: 0, comparable: false };
   const avg = average(lengths);
   const sd = Math.sqrt(average(lengths.map(value => (value - avg) ** 2)));
   const cv = avg ? sd / avg : 1;
   const sameBand = lengths.filter(value => Math.abs(value - avg) <= Math.max(8, avg * 0.18)).length / lengths.length;
   const risk = round3(Math.max(0, Math.min(1, (0.42 - cv) * 1.9 + Math.max(0, sameBand - 0.55))));
-  return { sentenceCount: lengths.length, avg: round3(avg), min: Math.min(...lengths), max: Math.max(...lengths), cv: round3(cv), sameBand: round3(sameBand), risk };
+  return { sentenceCount: lengths.length, avg: round3(avg), min: Math.min(...lengths), max: Math.max(...lengths), cv: round3(cv), sameBand: round3(sameBand), risk, comparable: true };
 }
 
 function measureParagraphShape(paragraphs) {

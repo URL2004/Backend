@@ -559,6 +559,7 @@ function pruneUndefinedForFirestore(value) {
 }
 
 function persistJob(job) {
+  normalizeCompletedJobState(job);
   ensureTerminalTimestamp(job);
   if (!db) return;
   const doc = {};
@@ -592,6 +593,7 @@ function archiveJob(job, extra = {}) {
 
 function buildArchiveDocument(job, extra = {}, now = Date.now()) {
   if (!job || !job.id) return {};
+  normalizeCompletedJobState(job);
   ensureTerminalTimestamp(job, now);
   const doc = {};
   for (const k of ARCHIVE_FIELDS) {
@@ -625,6 +627,16 @@ function ensureTerminalTimestamp(job, now = Date.now()) {
   return job.terminalAtMs;
 }
 
+function normalizeCompletedJobState(job) {
+  if (!job || job.status !== 'done') return job;
+  job.gates = [];
+  job.gateDetail = null;
+  job.blockOffer = null;
+  job.error = null;
+  if (!job.stage || /차단|보류|재처리|처리 중/u.test(String(job.stage))) job.stage = '완료';
+  return job;
+}
+
 function buildArchiveObservability(job) {
   const result = job?.result && typeof job.result === 'object' ? job.result : {};
   const engineMeta = result.engineMeta || result.humanizeMeta?.engineMeta || job?.engineMeta || {};
@@ -638,14 +650,18 @@ function buildArchiveObservability(job) {
     ...(Array.isArray(result.qualityWarnings) ? result.qualityWarnings : []),
     ...(Array.isArray(result.floorReport?.warnings) ? result.floorReport.warnings : [])
   ]);
-  const gateCodes = uniqueArchiveCodes([
-    ...(Array.isArray(job.gates) ? job.gates : []),
-    ...(Array.isArray(result.floorReport?.criticals) ? result.floorReport.criticals : [])
-  ]);
+  const gateCodes = job?.status === 'done'
+    ? []
+    : uniqueArchiveCodes([
+        ...(Array.isArray(job.gates) ? job.gates : []),
+        ...(Array.isArray(result.floorReport?.criticals) ? result.floorReport.criticals : [])
+      ]);
   return pruneUndefinedForFirestore({
     gates: gateCodes,
     qualityStatus: archiveString(result.qualityStatus, 32),
     qualityWarningCodes: warningCodes,
+    preservationFallback: result.preservationFallback === true,
+    fallbackFromMode: archiveString(result.engineMeta?.fallbackFromMode || engineMeta.fallbackFromMode, 24),
     engineVersion: archiveString(engineMeta.engineVersion || humanizeMeta.engine, 80),
     requestedMode: archiveString(engineMeta.requestedMode, 24),
     effectiveMode: archiveString(engineMeta.effectiveMode, 24),
@@ -989,6 +1005,16 @@ function preservationFallbackCredit(len) {
   return shortHumanizeCredit(len);
 }
 
+function buildPreservationFallbackMeta(out, job) {
+  const base = out?.engineMeta || out?.result?.engineMeta || {};
+  return {
+    ...base,
+    requestedMode: job?.mode || base.requestedMode || 'formal',
+    fallbackFromMode: job?.mode || '',
+    preservationFallback: true
+  };
+}
+
 // 반환: true = job을 완전히 처리함(호출부는 즉시 return) / false = 폴백 실패(원래대로 blocked 진행)
 async function tryPreservationFallback(job, text) {
   try {
@@ -1051,10 +1077,22 @@ async function tryPreservationFallback(job, text) {
       });
     }
     job.needed = job.billingMode === 'coupon' ? 1 : fbNeeded;   // 표시·영속화가 실제 차감 단위와 일치
+    const fallbackEngineMeta = buildPreservationFallbackMeta(out, job);
+    job.engineMeta = fallbackEngineMeta;
     job.status = 'done';
     job.result = {
       outputText: out.result.outputText,
       preservationFallback: true,   // UI가 "보존형으로 처리됨" 배지를 띄울 수 있게
+      qualityStatus: out.qualityStatus || out.result?.qualityStatus || out.floorReport?.status || 'clean',
+      qualityWarnings: out.qualityWarnings || out.result?.qualityWarnings || [],
+      engineMeta: fallbackEngineMeta,
+      humanizeMeta: out.result?.humanizeMeta || null,
+      naturalnessShadow: out.result?.naturalnessShadow || null,
+      floorReport: {
+        status: out.floorReport?.status || 'clean',
+        criticals: out.floorReport?.criticals || [],
+        warnings: out.floorReport?.warnings || []
+      },
       metrics: {
         novelty: 0, lostFacts: 0, repetition: 0,
         judge: 'pass',
@@ -1151,10 +1189,17 @@ async function tryBlogPreservationFallback(job, text) {
       });
     }
     job.needed = job.billingMode === 'coupon' ? 1 : fbNeeded;
+    const fallbackEngineMeta = buildPreservationFallbackMeta(out, job);
+    job.engineMeta = fallbackEngineMeta;
     job.status = 'done';
     job.result = {
       outputText: out.result.outputText,
       preservationFallback: true,
+      qualityStatus: out.qualityStatus || out.result?.qualityStatus || out.floorReport?.status || 'clean',
+      qualityWarnings: out.qualityWarnings || out.result?.qualityWarnings || [],
+      engineMeta: fallbackEngineMeta,
+      humanizeMeta: out.result?.humanizeMeta || null,
+      naturalnessShadow: out.result?.naturalnessShadow || null,
       metrics: {
         novelty: 0,
         lostFacts: 0,

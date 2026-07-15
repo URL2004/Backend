@@ -303,17 +303,15 @@ function buildHumanizationPromptBlock(plan) {
     .map(([key, count]) => `${labels[key] || key} ${count}곳`)
     .join(', ');
   const strengthLabel = plan.requestStrength === 'advanced' ? '고급' : '기본';
-  const minPercent = formatPercent(plan.minSubstantiveEditRatio);
-  const targetMinPercent = formatPercent(plan.targetSubstantiveEditMin);
-  const targetMaxPercent = formatPercent(plan.targetSubstantiveEditMax);
+  const targetOrdinals = (plan.targetIndices || []).slice(0, 20).map(index => index + 1);
   return [
     '[실질 휴머나이징 계약]',
     '이 모드는 교정·다듬기가 아니다. 원문의 뜻과 사실은 그대로 두되, AI식으로 반복되는 어순·상투어·추상명사·접속 방식·균일한 호흡을 사람이 직접 쓴 문장처럼 다시 구성한다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
-    `${strengthLabel} 휴머나이징의 품질 최소선은 실질 변화 ${minPercent}%이고, 실제 작성 목표는 ${targetMinPercent}~${targetMaxPercent}%다. 숫자를 맞추려고 동의어를 흩뿌리지 말고 대상 문장을 충분히 다시 쓴다.`,
-    `원문 위험도=${plan.riskLevel}; 일반 문장 ${plan.sourceSentenceCount}개 중 최소 ${plan.requiredChangedSentenceCount}개는 절·어순·연결·호흡 가운데 하나 이상이 분명히 달라져야 한다.`,
+    `${strengthLabel} 강도는 서버가 결과에서 별도로 계산한다. 변화량을 맞추기 위해 새 설명·평가·결론을 붙이지 말고, 같은 주장 안의 절·어순·연결·호흡으로 차이를 만든다.`,
+    `원문 위험도=${plan.riskLevel}; 이미 자연스러운 문장은 남기고 아래 우선 대상 문장을 구조적으로 다시 쓴다.`,
     plan.targetSentenceCount
-      ? `우선 개선 대상 ${plan.targetSentenceCount}개 중 최소 ${plan.requiredTargetChangedCount}개를 실질적으로 고친다${reasons ? `: ${reasons}` : '.'}`
+      ? `우선 대상 문장 번호=${targetOrdinals.join(',') || '서버선정'}${reasons ? `; 원인=${reasons}` : ''}. 문장 번호는 편집 위치일 뿐 새 문장을 만들라는 뜻이 아니다.`
       : '특정 위험 표현이 적더라도 일반 문장의 흐름과 어순을 국소적으로 재구성해 다듬기와 구분되는 결과를 만든다.',
     '문장마다 억지로 다른 단어를 끼워 넣지 말고, 바꿀 문장은 충분히 바꾸며 이미 자연스러운 문장은 남긴다.',
     '원문에 없는 경험·감정·수치·기관·인용·주장·예시는 절대 추가하지 않는다.'
@@ -457,10 +455,6 @@ function progress(value, target) {
   const denominator = finite(target);
   if (denominator <= 0) return 1;
   return Math.min(1.25, finite(value) / denominator);
-}
-
-function formatPercent(value) {
-  return Number((finite(value) * 100).toFixed(1));
 }
 
 module.exports = {

@@ -134,6 +134,11 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         documentProfile: 'general',
         profileConfidence: 0.81,
         semanticJudgeRan: true,
+        discourseAuditVersion: 1,
+        discoursePass: false,
+        discourseWarningCodes: ['scope_expansion', '사용자 원문 조각'],
+        discourseSignalCount: 1,
+        discourseRepairRan: true,
         repairCount: 2,
         modelCallCount: 4,
         humanizeCallCount: 2,
@@ -163,6 +168,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationDeliveryDepthBand: 'below_minimum',
         humanizationDepthRetryCount: 1,
         humanizationDepthRetryApplied: false,
+        humanizationDepthRetryTargetSentenceCount: 3,
         humanizationPlanSignalSource: 'deterministic_targets_input_risk',
         humanizationDepthReasonCodes: ['substantive_edit_ratio_low', '사용자 원문 조각'],
         humanizationDepthBlockingReasonCodes: ['substantive_effect_too_low'],
@@ -200,6 +206,11 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.deepEqual(first.qualityWarningCodes, ['paragraph_structure_changed']);
   assert.equal(first.engineVersion, 'gpt-prod-v2.4.1');
   assert.equal(first.documentProfile, 'general');
+  assert.equal(first.discourseAuditVersion, 1);
+  assert.equal(first.discoursePass, false);
+  assert.deepEqual(first.discourseWarningCodes, ['scope_expansion']);
+  assert.equal(first.discourseSignalCount, 1);
+  assert.equal(first.discourseRepairRan, true);
   assert.equal(first.estimatedUsd, 0.012345);
   assert.equal(first.dedupeRemovedBlockCount, 1);
   assert.equal(first.paragraphCountBeforeRepair, 14);
@@ -226,6 +237,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationDeliveryDepthBand, 'below_minimum');
   assert.equal(first.substantiveEditRatio, 0.031);
   assert.equal(first.humanizationDepthRetryCount, 1);
+  assert.equal(first.humanizationDepthRetryTargetSentenceCount, 3);
   assert.equal(first.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(first.humanizationDepthReasonCodes, ['substantive_edit_ratio_low']);
   assert.deepEqual(first.humanizationDepthBlockingReasonCodes, ['substantive_effect_too_low']);

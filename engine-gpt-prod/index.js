@@ -22,8 +22,9 @@ const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile
 const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
+const discourseAudit = require('./discourseAudit');
 
-const VERSION = 'gpt-prod-v2.4.4';
+const VERSION = 'gpt-prod-v2.4.5';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -270,6 +271,7 @@ async function runEngine({
   let finalNoopRecovery = { attempted: false, applied: false, method: '', reason: '' };
   let humanizationDepthRetryCount = 0;
   let humanizationDepthRetryApplied = false;
+  let humanizationDepthRetryTargetSentenceCount = 0;
   let polishStrictFailure = '';
   let polishRetryReason = '';
   let polishPaddingReport = null;
@@ -360,11 +362,13 @@ async function runEngine({
         source: auditSource,
         currentOutput: outputText,
         humanizationPlan,
+        humanizationDepthReport,
         config: cfg,
         signal,
         safetyIdentifier: safetyId
       });
       supplementalUsage = addUsage(supplementalUsage, retried.usage);
+      humanizationDepthRetryTargetSentenceCount = retried.targetSentenceCount || 0;
       const retryOutput = retried.outputText;
       const retryDepth = humanizationDepthEnabled
         ? humanizationDepth.evaluateHumanizationDepth(auditSource, retryOutput, humanizationPlan)
@@ -452,6 +456,7 @@ async function runEngine({
         config: cfg,
         allowedExtra: evidence || userNotes || '',
         mode: selectedMode,
+        discourseSignals: deterministicAudit?.discourseAudit?.codes || [],
         safetyIdentifier: safetyId
       });
       supplementalUsage = addUsage(supplementalUsage, semanticReport.usage);
@@ -698,6 +703,12 @@ async function runEngine({
     tonePolicy: documentProfile.tonePolicy || 'source_preserve',
     basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
     semanticJudgeRan: semanticReport.ran === true,
+    discourseAuditVersion: Number(deliveryAudit?.discourseAudit?.version || 0),
+    discoursePass: v2Enabled ? deliveryAudit?.discourseAudit?.pass !== false : null,
+    discourseWarningCodes: safeFailureCodeList(deliveryAudit?.discourseAudit?.codes),
+    discourseSignalCount: Number(deliveryAudit?.discourseAudit?.violations?.length || 0),
+    discourseRepairRan: (semanticReport.initialViolations || []).some(item => discourseAudit.isDiscourseViolationCode(item?.type))
+      && Number(semanticReport.repairCount || 0) > 0,
     repairCount: (semanticReport.repairCount || 0) + polishRetryCount + generalSurfaceRetryCount + polishSpeakerRestoreCount,
     chunkCount: records.length,
     logicalChunkCount: chunkExecution.logicalChunkCount,
@@ -751,6 +762,7 @@ async function runEngine({
     humanizationDeliveryDepthBand: humanizationDepthReport?.metrics?.deliveryDepthBand || '',
     humanizationDepthRetryCount,
     humanizationDepthRetryApplied,
+    humanizationDepthRetryTargetSentenceCount,
     humanizationDepthReasonCodes: safeFailureCodeList(humanizationDepthReport?.reasons),
     humanizationDepthBlockingReasonCodes: safeFailureCodeList(humanizationDepthReport?.blockingReasons)
   };
@@ -1086,6 +1098,7 @@ async function callHumanize(args) {
       documentProfile,
       inputRisk
     }) : null;
+    const chunkDiscourseProfile = v2Enabled ? discourseAudit.buildDiscourseProfile(original) : null;
     const hp = prompts.buildHumanizePrompt(mode, lang, {
       requestStrength,
       speakerType: contract.speakerType,
@@ -1097,7 +1110,8 @@ async function callHumanize(args) {
       riskProfile,
       documentProfile,
       voiceProfile,
-      humanizationPlan: chunkHumanizationPlan
+      humanizationPlan: chunkHumanizationPlan,
+      discourseProfile: chunkDiscourseProfile
     });
     const retryInstruction = phase === 'escalation' ? prompts.buildEscalationInstruction() : '';
     const response = await completeJson({

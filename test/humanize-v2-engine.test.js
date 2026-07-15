@@ -127,7 +127,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.4');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.5');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -137,6 +137,9 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.ok(Array.isArray(out.engineMeta.riskFlags));
   assert.equal(out.engineMeta.tonePolicy, 'source_preserve');
   assert.equal(out.engineMeta.semanticJudgeRan, true);
+  assert.equal(out.engineMeta.discourseAuditVersion, 1);
+  assert.equal(out.engineMeta.discoursePass, true);
+  assert.deepEqual(out.engineMeta.discourseWarningCodes, []);
   assert.equal(out.engineMeta.logicalChunkCount, out.engineMeta.chunkCount);
   assert.equal(out.engineMeta.lockedChunkCount, 0);
   assert.equal(out.engineMeta.transformedChunkCount, 1);
@@ -490,6 +493,11 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 1);
   assert.ok(mock.calls.some(call => String(call.body.instructions || '').includes('실질 휴머나이징 계약')));
+  const retryCall = mock.calls.find(call => call.name === 'gpt_prod_general_surface_retry');
+  assert.match(String(retryCall?.body?.instructions || ''), /수정 대상 문장 번호/u);
+  assert.match(String(retryCall?.body?.instructions || ''), /문서 전체를 다시 쓰지 않는다/u);
+  assert.doesNotMatch(String(retryCall?.body?.instructions || ''), /\d+(?:\.\d+)?\s*%|SOURCE에서 다시 시작/u);
+  assert.ok(out.engineMeta.humanizationDepthRetryTargetSentenceCount >= 1);
 });
 
 test('약 3%의 동의어 교체 결과도 그대로 전달하지 않고 실질 휴머나이징을 재시도한다', { concurrency: false }, async t => {

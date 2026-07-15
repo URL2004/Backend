@@ -7,6 +7,8 @@ const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnes
 const { judgeAndRepair } = require('./judge');
 const { completeJson } = require('./openaiClient');
 const { compareNumberMultiset } = require('./factAudit');
+const discourse = require('./discourseAudit');
+const humanizationDepth = require('./humanizationDepth');
 
 const POLISH_REPAIR_SCHEMA = {
   type: 'object',
@@ -70,7 +72,8 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'questionnaire_structure_changed',
   'creative_line_structure',
   'register_shift',
-  'number_changed'
+  'number_changed',
+  ...discourse.VIOLATION_CODES
 ]);
 
 function buildDeterministicAudit({ source, outputText, mode, contract, voiceProfile, documentProfile, structureAudit, protectedTerms = [], allowedExtra = '' }) {
@@ -131,6 +134,14 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   if (structureAudit?.unsafeBoundaryCount > 0) {
     warnings.push(warning('unsafe_chunk_boundary', '청크 경계에서 문장이 자연스럽게 이어지지 않을 수 있어요.', { count: structureAudit.unsafeBoundaryCount }));
   }
+  const discourseAudit = discourse.compareDiscourse(source, outputText);
+  for (const violation of discourseAudit.violations || []) {
+    warnings.push(warning(
+      violation.code,
+      discourseWarningMessage(violation.code),
+      { count: violation.count || 1, discourseVersion: discourseAudit.version }
+    ));
+  }
   const naturalnessShadow = compareNaturalnessShadow(source, outputText);
   return {
     version: 2,
@@ -139,6 +150,7 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     floorViolations,
     warnings: dedupeWarnings(warnings),
     naturalnessShadow,
+    discourseAudit,
     repetitionAudit,
     numberAudit,
     protectedFactCount: countProtectedFacts(source),
@@ -202,13 +214,16 @@ function shouldRunSemanticJudge({ requestedMode, effectiveMode, source, document
   return { run: false, reason: 'not_required' };
 }
 
-async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signal, config, allowedExtra = '', mode = '', safetyIdentifier = '' }) {
+async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signal, config, allowedExtra = '', mode = '', discourseSignals = [], safetyIdentifier = '' }) {
   const pairs = buildReviewPairs(source, outputText);
   const outputs = [];
   const reports = [];
   let remainingRepairRounds = 1;
   for (const pair of pairs) {
     try {
+      const pairDiscourseSignals = pairs.length === 1
+        ? discourseSignals
+        : discourse.compareDiscourse(pair.sourceContext, pair.output).codes;
       const report = await judgeAndRepair(pair.sourceContext, pair.output, {
         lang,
         signal,
@@ -216,6 +231,7 @@ async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signa
         maxRounds: remainingRepairRounds,
         allowedExtra,
         mode,
+        discourseSignals: pairDiscourseSignals,
         safetyIdentifier
       });
       outputs.push(report.outputText || pair.output);
@@ -229,6 +245,7 @@ async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signa
         repairRejected: report.repairRejected === true,
         repairRejectReasons: report.repairRejectReasons || [],
         escalated: report.escalated === true,
+        initialViolations: report.initialViolations || [],
         violations: report.violations || [],
         selectedJudgeModel: report.selectedJudgeModel || '',
         usage: report.usage || null
@@ -251,6 +268,7 @@ async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signa
     sectionCount: reports.length,
     reports,
     usage: reports.reduce((acc, report) => addUsageLocal(acc, report.usage), null),
+    initialViolations: reports.flatMap(report => report.initialViolations || []),
     violations: residual.flatMap(report => report.violations || [])
   };
 }
@@ -343,6 +361,21 @@ function polishEditPolicy(source, outputText) {
   const belowRecommendedChange = !noSafeChange && metrics.charEditRatio < limits.minEdit;
   const excessiveChange = metrics.charEditRatio > limits.maxEdit || metrics.lengthRatio < limits.minLength || metrics.lengthRatio > limits.maxLength;
   return { pass: !noSafeChange && !excessiveChange, noSafeChange, belowRecommendedChange, excessiveChange, metrics, limits };
+}
+
+function discourseWarningMessage(code) {
+  const messages = {
+    scope_expansion: '원문보다 주제 범위가 넓어졌을 수 있어요.',
+    new_evaluation: '원문에 없던 교훈이나 평가성 결론이 추가됐을 수 있어요.',
+    intensity_amplification: '원문보다 강한 수식이나 단정이 추가됐을 수 있어요.',
+    duplicate_conclusion: '여러 문단이 비슷한 결론으로 반복 마무리됐을 수 있어요.',
+    repeated_reflection_conclusion: '비슷한 성찰형 결론 표현이 반복됐을 수 있어요.',
+    overstructured_causality: '문단마다 인과와 결론이 지나치게 같은 구조로 정리됐을 수 있어요.',
+    rhetorical_role_shift: '설명·활동 문단이 새 성찰이나 결론 문단으로 바뀌었을 수 있어요.',
+    topic_restart: '결론 뒤에 새로운 글처럼 주제가 다시 시작됐을 수 있어요.',
+    personal_balance_shift: '원문의 실제 활동보다 일반 설명 비중이 커졌을 수 있어요.'
+  };
+  return messages[code] || '원문의 문서 전개 방식과 달라졌을 수 있어요.';
 }
 
 function comparePolishEvaluativePadding(source, outputText) {
@@ -536,27 +569,27 @@ async function retryPolishSurface({ source, currentOutput, policy, reason = '', 
   };
 }
 
-async function retryGeneralSurface({ source, currentOutput, humanizationPlan = null, config, signal, safetyIdentifier = '' }) {
+async function retryGeneralSurface({ source, currentOutput, humanizationPlan = null, humanizationDepthReport = null, config, signal, safetyIdentifier = '' }) {
   const plan = humanizationPlan || {};
   const strengthLabel = plan.requestStrength === 'advanced' ? '고급' : '기본';
-  const percent = value => Number((Number(value || 0) * 100).toFixed(1));
+  const targetOrdinals = buildGeneralRetryTargetOrdinals(source, currentOutput, plan, humanizationDepthReport);
+  const targetText = targetOrdinals.length ? targetOrdinals.join(', ') : '서버가 표시한 현재 문장 중 안전하게 재구성 가능한 한 곳';
   const system = [
-    '너는 한국어 실질 휴머나이징 재작성기다. 교정·다듬기 결과를 만드는 작업이 아니다.',
+    '너는 한국어 실질 휴머나이징 국소 수리기다. 교정·다듬기만 한 결과를 만드는 작업이 아니다.',
     'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단 수와 내용 순서를 보존한다.',
-    'CURRENT는 변화가 너무 적거나 구조·보존 게이트에 실패한 후보이므로 그대로 조금 고치지 말고 SOURCE에서 다시 시작한다.',
+    'CURRENT는 보존 검사를 통과했거나 원문으로 안전 복귀한 후보이므로 CURRENT를 기준으로 작업한다. 문서 전체를 다시 쓰지 않는다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
-    `${strengthLabel} 모드의 실질 변화 최소선은 ${percent(plan.minSubstantiveEditRatio)}%이고 목표 범위는 ${percent(plan.targetSubstantiveEditMin)}~${percent(plan.targetSubstantiveEditMax)}%다. 숫자를 채우기 위한 동의어 치환 대신 대상 문장의 절·어순·연결·호흡을 다시 구성한다.`,
-    `일반 문장 ${plan.sourceSentenceCount || 0}개 중 최소 ${plan.requiredChangedSentenceCount || 1}개에서 절의 순서·어순·연결·호흡 중 하나 이상을 실질적으로 다시 구성한다.`,
-    plan.targetSentenceCount
-      ? `반복·상투어·추상성·균일한 리듬 위험 문장 ${plan.targetSentenceCount}개 중 최소 ${plan.requiredTargetChangedCount || 1}개를 우선 개선한다.`
-      : '반복 위험이 낮더라도 일반 문장의 어순과 연결을 국소적으로 재구성해 다듬기와 구분되는 결과를 만든다.',
-    '문장 수는 의미 단위를 자연스럽게 합치거나 나누는 범위에서만 조정하고, 문단·제목·목록·질문·인용 구조는 바꾸지 않는다.',
+    `${strengthLabel} 모드의 변화량은 서버가 결과에서 계산한다. 숫자를 맞추기 위한 새 설명이나 동의어 나열 대신 지정된 문장의 절 순서·주어 위치·연결·호흡을 다시 구성한다.`,
+    `수정 대상 문장 번호=${targetText}. 번호는 SOURCE와 CURRENT의 일반 문장 순서 기준이다.`,
+    '수정 대상과 의미상 붙어 있는 접속 표현만 함께 손볼 수 있다. 그 밖의 문장·문단은 CURRENT 그대로 유지한다.',
+    '대상 문장의 주장 범위, 문단 역할, 결론 여부는 바꾸지 않는다. 설명을 교훈·감상·결론으로 바꾸거나 주제를 넓혀 변화량을 채우지 않는다.',
+    '문장 수는 지정된 문장 안의 의미 단위를 자연스럽게 합치거나 나누는 경우에만 조정하고, 문단·제목·목록·질문·인용 구조는 바꾸지 않는다.',
     '새 사실·평가·감정·경험·수치·기관·인용·예시를 만들지 않는다.',
     '이 보존 조건 안에서 실질 변화 기준을 만족할 수 없을 때만 safeChangeFound=false로 답한다.'
   ].join('\n');
   const response = await completeJson({
     system,
-    user: `[SOURCE]\n${source}\n\n[CURRENT - 참고용 실패 후보]\n${currentOutput}`,
+    user: `[SOURCE - 의미 확인용]\n${source}\n\n[CURRENT - 여기서 국소 수정]\n${currentOutput}`,
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_general_surface_retry',
     model: config.models.repair,
@@ -573,8 +606,38 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     safeChangeFound: response.json.safeChangeFound === true,
     notes: response.json.notes || [],
     usage: response.usage,
-    model: response.model
+    model: response.model,
+    targetOrdinals,
+    targetSentenceCount: targetOrdinals.length
   };
+}
+
+function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depthReport = null) {
+  const measured = humanizationDepth.measureSubstantiveEdit(source, currentOutput);
+  const rows = measured.sentenceEdits || [];
+  if (!rows.length) return [];
+  const changed = new Set(rows.filter(row => row.substantiveChanged).map(row => row.index));
+  const unchanged = rows.map(row => row.index).filter(index => !changed.has(index));
+  if (!unchanged.length) return [];
+
+  const targetSet = new Set((plan.targetIndices || []).filter(index => Number.isInteger(index)));
+  const unchangedTargets = unchanged.filter(index => targetSet.has(index));
+  const unchangedOthers = unchanged.filter(index => !targetSet.has(index));
+  const currentChangedCount = Number(depthReport?.metrics?.substantiveChangedSentenceCount ?? measured.substantiveChangedSentenceCount) || 0;
+  const currentTargetChangedCount = Number(depthReport?.metrics?.targetChangedCount) || 0;
+  const totalDeficit = Math.max(1, Number(plan.requiredChangedSentenceCount || 1) - currentChangedCount);
+  const targetDeficit = Math.max(0, Number(plan.requiredTargetChangedCount || 0) - currentTargetChangedCount);
+  const sourceChars = Math.max(1, Number(plan.sourceChars) || String(source || '').replace(/\s+/gu, '').length);
+  const averageSentenceChars = sourceChars / Math.max(1, rows.length);
+  const editDeficitChars = Math.max(0,
+    (Number(plan.minSubstantiveEditRatio || 0) * sourceChars) - Number(measured.substantiveDistance || 0));
+  // 지정된 한 문장을 다시 구성하면 평균적으로 그 문장 길이의 약 18%가
+  // 실질 편집된다고 보고, 최소선에 닿는 데 필요한 범위만 보수적으로 고른다.
+  const editDeficitCount = Math.ceil(editDeficitChars / Math.max(6, averageSentenceChars * 0.18));
+  const desiredCount = Math.min(unchanged.length, Math.max(totalDeficit, targetDeficit, editDeficitCount));
+  return [...unchangedTargets, ...unchangedOthers]
+    .slice(0, Math.max(1, desiredCount))
+    .map(index => index + 1);
 }
 
 function warningsFromSemantic(report) {
@@ -586,6 +649,10 @@ function warningsFromSemantic(report) {
   if (codes.has('added_claim')) out.push(warning('semantic_addition', '원문에 없는 내용이 추가됐을 가능성이 있어요.'));
   if (codes.has('distortion')) out.push(warning('semantic_distortion', '원문의 의미 일부가 달라졌을 가능성이 있어요.'));
   if (codes.has('omission')) out.push(warning('semantic_omission', '원문 내용 일부가 축약됐을 수 있어요.'));
+  for (const code of [...codes].filter(value => SEMANTIC_WARNING_TYPES.has(value))) {
+    if (['added_claim', 'distortion', 'omission'].includes(code)) continue;
+    out.push(warning(code, discourseWarningMessage(code)));
+  }
   if (!out.length) out.push(warning('semantic_review_failed', '자동 의미 심사를 완전히 통과하지 못했어요.'));
   return out;
 }
@@ -686,5 +753,6 @@ module.exports = {
   compareRepetitionDelta,
   retryPolishSurface,
   retryGeneralSurface,
+  buildGeneralRetryTargetOrdinals,
   warningsFromSemantic
 };

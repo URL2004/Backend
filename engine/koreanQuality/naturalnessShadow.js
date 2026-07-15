@@ -59,7 +59,7 @@ function measureNaturalnessShadow(value) {
     metrics.concreteAnchorScarcity * 0.08
   ));
   return {
-    version: 3,
+    version: 4,
     shadowOnly: true,
     sentenceCount: sentences.length,
     paragraphCount: paragraphs.length,
@@ -85,7 +85,7 @@ function compareNaturalnessShadow(source, output) {
   if (!rhythmComparable) delta.uniformSentenceRhythm = null;
   delta.overallRisk = round3(after.overallRisk - before.overallRisk);
   return {
-    version: 3,
+    version: 4,
     shadowOnly: true,
     before,
     after,
@@ -104,7 +104,12 @@ function measureRhythm(sentences) {
   const sd = Math.sqrt(average(lengths.map(value => (value - avg) ** 2)));
   const cv = avg ? sd / avg : 1;
   const sameBand = lengths.filter(value => Math.abs(value - avg) <= Math.max(8, avg * 0.18)).length / lengths.length;
-  const risk = round3(Math.max(0, Math.min(1, (0.42 - cv) * 1.9 + Math.max(0, sameBand - 0.55))));
+  // sameBand는 표본이 적을 때 한 문장만 경계 안팎으로 이동해도 0.25씩
+  // 튀는 이산 지표다. CV가 오히려 좋아진 4문장 결과를 큰 리듬 악화로
+  // 기록하지 않도록 보조 가중치만 부여한다. 이 값은 shadow 전용이다.
+  const risk = round3(Math.max(0, Math.min(1,
+    (0.42 - cv) * 1.9 + Math.max(0, sameBand - 0.55) * 0.25
+  )));
   return { sentenceCount: lengths.length, avg: round3(avg), min: Math.min(...lengths), max: Math.max(...lengths), cv: round3(cv), sameBand: round3(sameBand), risk, comparable: true };
 }
 

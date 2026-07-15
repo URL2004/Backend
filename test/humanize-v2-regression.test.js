@@ -662,6 +662,25 @@ test('리듬 shadow는 네 문장 미만 원문과 분할 결과를 악화값으
   assert.ok(comparable.rhythmUniformityDelta > 0);
 });
 
+test('리듬 shadow는 4문장 same-band 한 칸 이동을 큰 악화로 과장하지 않는다', () => {
+  const build = lengths => lengths.map(length => `${'a'.repeat(length - 1)}x.`).join(' ');
+  const source = build([26, 34, 34, 44]);
+  const output = build([20, 20, 22, 32]);
+  const audit = compareNaturalnessShadow(source, output);
+  assert.equal(audit.version, 4);
+  assert.equal(audit.rhythmComparable, true);
+  assert.ok(audit.after.sentenceCv > audit.before.sentenceCv, 'CV 기준 리듬은 더 다양해져야 한다');
+  assert.ok(audit.rhythmUniformityDelta <= 0.03, JSON.stringify(audit));
+});
+
+test('운영 프롬프트는 원문에 없던 보고서식 완충 표현을 새로 만들지 않게 명시한다', () => {
+  const built = prompts.buildHumanizePrompt('blog', 'ko', {
+    documentProfile: { profile: 'general', confidence: 0.6, formatProfile: { flags: [] } }
+  });
+  assert.match(built.stable, /할 수 있다·볼 수 있다·필요가 있다/u);
+  assert.match(built.stable, /다듬기 모드에서도/u);
+});
+
 test('voice 프롬프트는 기존 1인칭을 최소 한 곳 남기고 새 화자는 만들지 않게 한다', () => {
   const personal = voicePromptBlock(buildVoiceProfile('저는 자료를 읽었습니다. 결론을 다시 정리했습니다.', { documentProfile: 'general_essay' }));
   const impersonal = voicePromptBlock(buildVoiceProfile('자료를 읽었습니다. 결론을 다시 정리했습니다.', { documentProfile: 'general_essay' }));

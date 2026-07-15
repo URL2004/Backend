@@ -23,7 +23,7 @@ const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
 
-const VERSION = 'gpt-prod-v2.4.3';
+const VERSION = 'gpt-prod-v2.4.4';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -41,6 +41,7 @@ const STRICT_DELIVERY_GATES = new Set([
   'refusal',
   'polish_unchanged',
   'polish_excessive_change',
+  'polish_evaluative_padding_added',
   'humanization_depth_no_effect'
 ]);
 const REVIEW_WARNING_GATES = new Set([
@@ -270,15 +271,34 @@ async function runEngine({
   let humanizationDepthRetryCount = 0;
   let humanizationDepthRetryApplied = false;
   let polishStrictFailure = '';
+  let polishRetryReason = '';
+  let polishPaddingReport = null;
+  let polishEvaluativePaddingCodes = [];
+  let polishDeterministicPaddingRestoreCount = 0;
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
-    if (polishReport.noSafeChange) {
+    polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
+    polishEvaluativePaddingCodes = safeFailureCodeList(polishPaddingReport.introducedCodes);
+    if (!polishReport.noSafeChange && polishPaddingReport.increased) {
+      const restored = qualityV2.restorePolishEvaluativePaddingSentences(auditSource, outputText);
+      if (restored.applied) {
+        outputText = restored.text;
+        polishRetryReason = 'evaluative_padding';
+        polishRetryCount = 1;
+        polishDeterministicPaddingRestoreCount = restored.restoredSentenceCount || 1;
+        polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
+        polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
+      }
+    }
+    if (polishReport.noSafeChange || polishPaddingReport.increased) {
       try {
+        polishRetryReason ||= polishReport.noSafeChange ? 'unchanged' : 'evaluative_padding';
         polishRetryAttemptCount = 1;
         const retried = await qualityV2.retryPolishSurface({
           source: auditSource,
           currentOutput: outputText,
           policy: polishReport,
+          reason: polishRetryReason,
           config: cfg,
           signal,
           safetyIdentifier: safetyId
@@ -287,10 +307,17 @@ async function runEngine({
         polishRetryCount = 1;
         outputText = retried.outputText || outputText;
         polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
+        polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
+        polishEvaluativePaddingCodes = safeFailureCodeList([
+          ...polishEvaluativePaddingCodes,
+          ...polishPaddingReport.introducedCodes
+        ]);
         if (!retried.safeChangeFound || polishReport.noSafeChange) {
           polishStrictFailure = 'polish_unchanged';
         } else if (polishReport.excessiveChange) {
           polishStrictFailure = 'polish_excessive_change';
+        } else if (polishPaddingReport.increased) {
+          polishStrictFailure = 'polish_evaluative_padding_added';
         } else {
           for (const record of records) {
             if ((record.warnings || []).includes('polish_surface_boundary_pending')) {
@@ -491,8 +518,14 @@ async function runEngine({
   // 복원으로 실질 변화가 사라지면 아래 최종 깊이 게이트가 차단·무차감한다.
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(rawSource, outputText);
+    polishPaddingReport = qualityV2.comparePolishEvaluativePadding(rawSource, outputText);
+    polishEvaluativePaddingCodes = safeFailureCodeList([
+      ...polishEvaluativePaddingCodes,
+      ...polishPaddingReport.introducedCodes
+    ]);
     if (!polishStrictFailure && polishReport.noSafeChange) polishStrictFailure = 'polish_unchanged';
     if (!polishStrictFailure && polishReport.excessiveChange) polishStrictFailure = 'polish_excessive_change';
+    if (!polishStrictFailure && polishPaddingReport.increased) polishStrictFailure = 'polish_evaluative_padding_added';
   }
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
     const finalDepthFrozen = freezeLockedBlocks(rawSource, outputText, chunks);
@@ -542,7 +575,9 @@ async function runEngine({
   if (polishStrictFailure) {
     const detail = polishStrictFailure === 'polish_excessive_change'
       ? '보존형 윤문의 안전 편집 범위를 넘어 결과를 전달하지 않았습니다.'
-      : '안전한 최소 표면 수정을 만들지 못했습니다.';
+      : polishStrictFailure === 'polish_evaluative_padding_added'
+        ? '원문에 없던 평가성 표현을 안전하게 제거하지 못했습니다.'
+        : '안전한 최소 표면 수정을 만들지 못했습니다.';
     addFloorCriticals(result.floorReport, [{ gate: polishStrictFailure, detail }], polishStrictFailure);
   } else {
     if (humanizationDepthReport?.applicable && humanizationDepthReport.pass === false) {
@@ -611,6 +646,7 @@ async function runEngine({
     polishRetryCount: polishRetryAttemptCount,
     generalSurfaceRetryCount: generalSurfaceRetryAttemptCount
   });
+  const chunkFailures = summarizeChunkFailureCodes(records);
   const qualityWarnings = v2Enabled
     ? dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []),
@@ -674,10 +710,17 @@ async function runEngine({
     surfaceRetryCallCount: chunkExecution.surfaceRetryCallCount,
     modelCallCount: chunkExecution.modelCallCount,
     semanticSectionCount: chunkExecution.semanticSectionCount,
+    chunkFailureCodes: chunkFailures.all,
+    chunkPrimaryFailureCodes: chunkFailures.primary,
+    chunkResidualFailureCodes: chunkFailures.residual,
+    chunkFallbackReasonCodes: chunkFailures.fallback,
     fallbackCount,
     lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4)),
     polishSpeakerRestoreCount,
     polishSpeakerRestoredSentenceCount,
+    polishRetryReason,
+    polishEvaluativePaddingCodes,
+    polishDeterministicPaddingRestoreCount,
     finalNoopRecoveryCount,
     finalNoopRecoveryAttempted: finalNoopRecovery.attempted === true,
     finalNoopRecoveryApplied: finalNoopRecovery.applied === true,
@@ -693,6 +736,7 @@ async function runEngine({
     humanizationPolicyVersion: humanizationDepthEnabled
       ? (humanizationDepthReport?.plan?.policyVersion || humanizationDepth.POLICY_VERSION)
       : '',
+    humanizationPlanSignalSource: humanizationDepthReport?.plan?.signalSource || '',
     humanizationRiskLevel: humanizationDepthReport?.plan?.riskLevel || '',
     humanizationMinimumRatio: Number(humanizationDepthReport?.plan?.minSubstantiveEditRatio || 0),
     humanizationHardMinimumRatio: Number(humanizationDepthReport?.plan?.hardMinimumSubstantiveEditRatio || 0),
@@ -706,7 +750,9 @@ async function runEngine({
     humanizationTargetDepthMet: humanizationDepthReport?.metrics?.targetDepthMet === true,
     humanizationDeliveryDepthBand: humanizationDepthReport?.metrics?.deliveryDepthBand || '',
     humanizationDepthRetryCount,
-    humanizationDepthRetryApplied
+    humanizationDepthRetryApplied,
+    humanizationDepthReasonCodes: safeFailureCodeList(humanizationDepthReport?.reasons),
+    humanizationDepthBlockingReasonCodes: safeFailureCodeList(humanizationDepthReport?.blockingReasons)
   };
   result.humanizeMeta = {
     provider: 'openai',
@@ -870,6 +916,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     safetyIdentifier,
     signal
   });
+  second.record.primaryFailureCodes = safeFailureCodesFromRecord(first.record);
   if (!second.hardFail) {
     chunk.outputText = second.outputText;
     second.record.escalated = true;
@@ -1000,6 +1047,10 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
       'gpt_primary_and_escalation_failed',
       ...(safeFallbackSurfaceRetry ? ['general_surface_retry_pending', 'general_surface_retry_safe_fallback'] : [])
     ],
+    primaryFailureCodes: safeFailureCodeList([
+      ...safeFailureCodesFromRecord(first.record),
+      ...safeFailureCodesFromRecord(second.record)
+    ]),
     floorViolations: [...(first.record.floorViolations || []), ...(second.record.floorViolations || [])],
     usage: addUsage(first.record.usage || emptyUsage(), second.record.usage),
     elapsedMs: (first.record.elapsedMs || 0) + (second.record.elapsedMs || 0)
@@ -2552,6 +2603,7 @@ function chunkRecord({
   escalated = false,
   error = null,
   hardFailReason = '',
+  primaryFailureCodes = [],
   warnings = [],
   floorViolations = [],
   usage = null,
@@ -2580,6 +2632,7 @@ function chunkRecord({
     escalated,
     error,
     hardFailReason,
+    primaryFailureCodes: safeFailureCodeList(primaryFailureCodes),
     warnings: Array.isArray(warnings) ? warnings : [],
     floorViolations,
     usage,
@@ -3110,6 +3163,86 @@ function looksLikeMeta(text) {
 
 function looksLikePromptLeak(text) {
   return /(재작성할\s*텍스트|작업\s*위치|본문이다\.\s*이\s*청크만\s*(?:다듬는다|선택한\s*강도에\s*맞게\s*변환한다)|앞\s*문맥\s*-\s*참고만|뒤\s*문맥\s*-\s*참고만)/.test(String(text || ''));
+}
+
+function summarizeChunkFailureCodes(records) {
+  const primary = [];
+  const residual = [];
+  const fallback = [];
+  const rows = Array.isArray(records) ? records : [];
+  for (const record of rows) {
+    addSafeFailureCode(primary, record?.primaryError);
+    for (const code of record?.primaryFailureCodes || []) addSafeFailureCode(primary, code);
+    addSafeFailureCode(residual, record?.hardFailReason);
+    if (record?.hardFailReason || record?.fallback === true) addSafeFailureCode(residual, record?.error);
+    for (const violation of record?.floorViolations || []) {
+      addSafeFailureCode(residual, violation?.gate || violation?.type);
+    }
+    for (const warning of record?.warnings || []) {
+      const value = String(warning || '').trim();
+      if (/^v2_retry:/iu.test(value)) addSafeFailureCode(primary, value.slice(value.indexOf(':') + 1));
+      else if (/^v2_residual:/iu.test(value)) addSafeFailureCode(residual, value.slice(value.indexOf(':') + 1));
+      else if (/^(?:gpt_primary_and_escalation_failed|general_surface_retry_safe_fallback)$/iu.test(value)) {
+        addSafeFailureCode(record?.fallback === true ? fallback : residual, value);
+      }
+    }
+    if (record?.fallback === true) {
+      addSafeFailureCode(fallback, record?.hardFailReason);
+      addSafeFailureCode(fallback, record?.error);
+      for (const violation of record?.floorViolations || []) {
+        addSafeFailureCode(fallback, violation?.gate || violation?.type);
+      }
+    }
+  }
+  const all = safeFailureCodeList([...primary, ...residual, ...fallback]);
+  return {
+    all,
+    primary: safeFailureCodeList(primary),
+    residual: safeFailureCodeList(residual),
+    fallback: safeFailureCodeList(fallback)
+  };
+}
+
+function safeFailureCodesFromRecord(record) {
+  return safeFailureCodeList([
+    record?.hardFailReason,
+    record?.error,
+    ...(record?.floorViolations || []).map(violation => violation?.gate || violation?.type)
+  ]);
+}
+
+function safeFailureCodeList(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const code = safeFailureCode(value);
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+    if (out.length >= 24) break;
+  }
+  return out;
+}
+
+function addSafeFailureCode(target, value) {
+  const code = safeFailureCode(value);
+  if (code) target.push(code);
+}
+
+function safeFailureCode(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^[A-Za-z][A-Za-z0-9_.:-]{1,79}$/u.test(raw)) {
+    return raw.toLowerCase().replace(/[^a-z0-9]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 80);
+  }
+  const lower = raw.toLowerCase();
+  if (/\b429\b|rate.?limit|too many requests/u.test(lower)) return 'openai_rate_limited';
+  if (/timeout|timed out|deadline/u.test(lower)) return 'openai_timeout';
+  if (/abort(?:ed|error)?/u.test(lower)) return 'request_aborted';
+  if (/refusal|content.?filter|safety.?refusal/u.test(lower)) return 'openai_refusal';
+  if (/schema|invalid json|malformed json|json parse/u.test(lower)) return 'openai_schema_error';
+  if (/network|fetch failed|econnreset|enotfound|socket hang up/u.test(lower)) return 'openai_network_error';
+  return '';
 }
 
 function looksEncodingCorrupted(original, outputText) {

@@ -163,6 +163,16 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationDeliveryDepthBand: 'below_minimum',
         humanizationDepthRetryCount: 1,
         humanizationDepthRetryApplied: false,
+        humanizationPlanSignalSource: 'deterministic_targets_input_risk',
+        humanizationDepthReasonCodes: ['substantive_edit_ratio_low', '사용자 원문 조각'],
+        humanizationDepthBlockingReasonCodes: ['substantive_effect_too_low'],
+        chunkFailureCodes: ['novelty', 'network error with user text'],
+        chunkPrimaryFailureCodes: ['novelty'],
+        chunkResidualFailureCodes: ['pov'],
+        chunkFallbackReasonCodes: ['gpt_primary_and_escalation_failed'],
+        polishRetryReason: 'evaluative_padding',
+        polishEvaluativePaddingCodes: ['efficiency_label', '사용자 원문 조각'],
+        polishDeterministicPaddingRestoreCount: 1,
         polishSpeakerRestoreCount: 0,
         lineBoundaryPolicy: 'structural'
       },
@@ -216,6 +226,16 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationDeliveryDepthBand, 'below_minimum');
   assert.equal(first.substantiveEditRatio, 0.031);
   assert.equal(first.humanizationDepthRetryCount, 1);
+  assert.equal(first.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
+  assert.deepEqual(first.humanizationDepthReasonCodes, ['substantive_edit_ratio_low']);
+  assert.deepEqual(first.humanizationDepthBlockingReasonCodes, ['substantive_effect_too_low']);
+  assert.deepEqual(first.chunkFailureCodes, ['novelty']);
+  assert.deepEqual(first.chunkPrimaryFailureCodes, ['novelty']);
+  assert.deepEqual(first.chunkResidualFailureCodes, ['pov']);
+  assert.deepEqual(first.chunkFallbackReasonCodes, ['gpt_primary_and_escalation_failed']);
+  assert.equal(first.polishRetryReason, 'evaluative_padding');
+  assert.deepEqual(first.polishEvaluativePaddingCodes, ['efficiency_label']);
+  assert.equal(first.polishDeterministicPaddingRestoreCount, 1);
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'text'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'result'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'gateDetail'), false);

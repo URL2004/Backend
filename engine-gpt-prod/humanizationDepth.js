@@ -1,7 +1,6 @@
 'use strict';
 
 const { computeEditMetrics, levenshteinDistance, splitSentences } = require('../engine/koreanText');
-const { measureNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
 
 const CONNECTOR_START = /^(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|즉|첫째|둘째|셋째|하지만|그러나|반면|결국)(?=$|[\s,])/u;
 const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|습니다)|필요가\s*있(?:다|습니다)|중요(?:하|한)\s*(?:의미|역할|요인)?|의미를\s*가진(?:다|다고)|긍정적인\s*영향|체계적으로\s*(?:정리|분석|관리|운영)|기반으로\s*(?:한|하여|한다|합니다)|핵심\s*인프라|전략적\s*이점)/u;
@@ -10,6 +9,7 @@ const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|�
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
 const PLAN_VERSION = 3;
 const POLICY_VERSION = 'perceived-v2.1';
+const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
 const HARD_DELIVERY_SENTENCE_FACTOR = 0.50;
@@ -60,6 +60,7 @@ function buildHumanizationPlan(source, {
       applicable: false,
       requestStrength: strength,
       riskLevel: 'polish',
+      signalSource: PLAN_SIGNAL_SOURCE,
       targetSentenceCount: 0,
       requiredChangedSentenceCount: 0,
       hardRequiredChangedSentenceCount: 0,
@@ -74,20 +75,13 @@ function buildHumanizationPlan(source, {
   const text = stripLockTokens(source);
   const sentences = meaningfulSentences(text);
   const target = detectTargetSentences(sentences);
-  const shadow = safeNaturalness(text);
   const sentenceCount = sentences.length;
   const targetRatio = sentenceCount ? target.indices.length / sentenceCount : 0;
   const abstractRiskRatio = finite(inputRisk?.abstractRiskRatio);
-  const overallRisk = finite(shadow?.overallRisk);
-  const rhythmRisk = finite(shadow?.metrics?.uniformSentenceRhythm);
-  const stockRisk = finite(shadow?.metrics?.stockReportPhrase);
-  const connectorRisk = finite(shadow?.metrics?.connectorRepetition);
+  // 자연성 shadow는 결과 선택·재시도·차단에 관여하면 안 된다. 깊이 강도는
+  // 운영용 결정론 대상 문장과 원문 입력 위험 신호만으로 정한다.
   const riskScore = clamp(Math.max(
-    overallRisk,
     targetRatio * 0.64,
-    rhythmRisk * 0.78,
-    stockRisk * 0.72,
-    connectorRisk * 0.68,
     abstractRiskRatio * 0.34
   ));
   const riskLevel = riskScore >= 0.36 || targetRatio >= 0.62
@@ -156,6 +150,7 @@ function buildHumanizationPlan(source, {
     creative,
     riskLevel,
     riskScore: round4(riskScore),
+    signalSource: PLAN_SIGNAL_SOURCE,
     sourceChars,
     sourceSentenceCount: sentenceCount,
     targetSentenceCount: target.indices.length,
@@ -169,8 +164,7 @@ function buildHumanizationPlan(source, {
     hardMinimumSubstantiveEditRatio: round4(hardMinimumSubstantiveEditRatio),
     targetSubstantiveEditMin: round4(targetSubstantiveEditMin),
     targetSubstantiveEditMax: round4(targetSubstantiveEditMax),
-    minTargetCoverage: round4(minTargetCoverage),
-    sourceNaturalnessRisk: round4(overallRisk)
+    minTargetCoverage: round4(minTargetCoverage)
   };
 }
 
@@ -435,10 +429,6 @@ function publicPlan(plan) {
   return safe;
 }
 
-function safeNaturalness(value) {
-  try { return measureNaturalnessShadow(value); } catch { return null; }
-}
-
 function coefficientOfVariation(values) {
   if (!values.length) return 1;
   const avg = mean(values);
@@ -475,6 +465,7 @@ function formatPercent(value) {
 
 module.exports = {
   POLICY_VERSION,
+  PLAN_SIGNAL_SOURCE,
   buildHumanizationPlan,
   evaluateHumanizationDepth,
   humanizationCandidateScore,

@@ -10,6 +10,7 @@ const { buildVoiceProfile } = require('../engine-gpt-prod/voiceProfile');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 const SAFE_POLISH = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지 않습니다.';
+const EVALUATIVE_POLISH = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 효율적이지 않습니다.';
 
 function config() {
   return runtime.publicConfig(runtime.DEFAULT_CONFIG, 'test');
@@ -126,7 +127,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.3');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.4');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -201,6 +202,56 @@ test('polish 무변환은 표면 수정 재시도 정확히 1회 후 안전 결�
   assert.equal(out.engineMeta.repairCount, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
+});
+
+test('polish에 새 평가어가 붙으면 자연성 점수와 무관하게 보존형 표면 수리로 제거한다', { concurrency: false }, async t => {
+  const before = qualityV2.comparePolishEvaluativePadding(SOURCE, EVALUATIVE_POLISH);
+  assert.equal(before.increased, true);
+  assert.deepEqual(before.introducedCodes, ['efficiency_label']);
+
+  const mock = installEngineMock(t, {
+    humanize: EVALUATIVE_POLISH,
+    retryOutput: SAFE_POLISH,
+    safeChangeFound: true
+  });
+  const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'polish-padding-repair-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
+  assert.equal(out.result.outputText, SAFE_POLISH);
+  assert.equal(out.engineMeta.polishRetryReason, 'evaluative_padding');
+  assert.deepEqual(out.engineMeta.polishEvaluativePaddingCodes, ['efficiency_label']);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
+  const retry = mock.calls.find(call => call.name === 'gpt_prod_polish_surface_retry');
+  assert.match(String(retry?.body?.instructions || ''), /효율성 평가/u);
+});
+
+test('polish의 평가어가 특정 문장에만 추가되면 그 문장만 원문으로 복원해 다른 안전 교정을 유지한다', { concurrency: false }, async t => {
+  const mixed = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 효율적이지 않습니다.';
+  const expected = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
+  const restored = qualityV2.restorePolishEvaluativePaddingSentences(SOURCE, mixed);
+  assert.equal(restored.applied, true);
+  assert.equal(restored.text, expected);
+
+  const mock = installEngineMock(t, { humanize: mixed });
+  const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'polish-padding-local-restore-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
+  assert.equal(out.result.outputText, expected);
+  assert.equal(out.engineMeta.polishRetryReason, 'evaluative_padding');
+  assert.equal(out.engineMeta.polishDeterministicPaddingRestoreCount, 1);
+  assert.equal(out.engineMeta.surfaceRetryCallCount, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 0);
+});
+
+test('polish 평가어가 전용 수리 후에도 남으면 새 판단을 전달하지 않고 차단한다', { concurrency: false }, async t => {
+  const mock = installEngineMock(t, {
+    humanize: EVALUATIVE_POLISH,
+    retryOutput: EVALUATIVE_POLISH,
+    safeChangeFound: true
+  });
+  const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'polish-padding-block-user', config: config() });
+  assert.equal(out.status, 'blocked');
+  assert.ok(out.floorReport.criticals.some(item => item.gate === 'polish_evaluative_padding_added'));
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 0);
 });
 
 test('장문 polish는 자연스러운 청크의 무변환을 허용하고 문서 한 곳이 수정되면 재시도하지 않는다', { concurrency: false }, async t => {
@@ -353,6 +404,9 @@ test('청크에 새 사실이 생기면 상위 모델에 제거 항목을 명시
   assert.notEqual(out.status, 'blocked');
   assert.equal(out.result.outputText, safe);
   assert.equal(out.fallbackCount, 0);
+  assert.ok(out.engineMeta.chunkFailureCodes.includes('novelty'));
+  assert.ok(out.engineMeta.chunkPrimaryFailureCodes.includes('novelty'));
+  assert.deepEqual(out.engineMeta.chunkFallbackReasonCodes, []);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   const escalation = mock.calls.find(call => JSON.stringify(call.body.input || '').includes('1차 결과에 원문에 없는 사실이 검출됐다'));
   assert.ok(escalation);
@@ -427,6 +481,9 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
   assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.1');
+  assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
+  assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
+  assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);
   assert.ok(out.engineMeta.humanizationTargetMinRatio > out.engineMeta.humanizationMinimumRatio);
   assert.ok(['minimum', 'target', 'above_target'].includes(out.engineMeta.humanizationDeliveryDepthBand));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);

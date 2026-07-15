@@ -63,6 +63,8 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
   assert.equal(lowPlan.policyVersion, 'perceived-v2.1');
+  assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
+  assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
   assert.equal(highPlan.riskLevel, 'high');
   assert.equal(highPlan.minSubstantiveEditRatio, 0.13);

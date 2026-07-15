@@ -19,6 +19,22 @@ const POLISH_REPAIR_SCHEMA = {
   required: ['outputText', 'safeChangeFound', 'notes']
 };
 
+// polish는 오류 교정만 허용하므로 원문에 없던 가능·필요·중요성 같은 평가
+// 어휘가 늘면 단순 문체 변화가 아니라 새로운 태도/판단이 추가된 것이다.
+// naturalness shadow 점수와 분리된 보존 계약이며, 외부로는 문구가 아닌
+// 고정된 범주 코드만 기록한다.
+const POLISH_EVALUATIVE_PADDING_PATTERNS = [
+  { code: 'ability_modal', pattern: /(?:할|볼)\s*수\s*있/gu },
+  { code: 'necessity_label', pattern: /필요/gu },
+  { code: 'importance_label', pattern: /중요/gu },
+  { code: 'meaning_label', pattern: /의미/gu },
+  { code: 'role_label', pattern: /역할/gu },
+  { code: 'positive_evaluation', pattern: /긍정적/gu },
+  { code: 'systematic_label', pattern: /체계/gu },
+  { code: 'strategy_label', pattern: /전략/gu },
+  { code: 'efficiency_label', pattern: /효율/gu }
+];
+
 const STRICT_CODES = new Set([
   'empty_output',
   'refusal',
@@ -26,7 +42,8 @@ const STRICT_CODES = new Set([
   'encoding_corruption',
   'sentence_truncated',
   'polish_unchanged',
-  'polish_excessive_change'
+  'polish_excessive_change',
+  'polish_evaluative_padding_added'
 ]);
 
 const SEMANTIC_WARNING_TYPES = new Set([
@@ -328,6 +345,82 @@ function polishEditPolicy(source, outputText) {
   return { pass: !noSafeChange && !excessiveChange, noSafeChange, belowRecommendedChange, excessiveChange, metrics, limits };
 }
 
+function comparePolishEvaluativePadding(source, outputText) {
+  const introduced = [];
+  for (const item of POLISH_EVALUATIVE_PADDING_PATTERNS) {
+    const beforeCount = countRegex(source, item.pattern);
+    const afterCount = countRegex(outputText, item.pattern);
+    if (afterCount > beforeCount) {
+      introduced.push({
+        code: item.code,
+        addedCount: afterCount - beforeCount
+      });
+    }
+  }
+  return {
+    increased: introduced.length > 0,
+    introducedCount: introduced.reduce((sum, item) => sum + item.addedCount, 0),
+    introducedCodes: introduced.map(item => item.code)
+  };
+}
+
+function countRegex(value, pattern) {
+  return (String(value || '').match(new RegExp(pattern.source, pattern.flags)) || []).length;
+}
+
+function restorePolishEvaluativePaddingSentences(source, outputText) {
+  const before = String(outputText || '');
+  const initialPadding = comparePolishEvaluativePadding(source, before);
+  if (!initialPadding.increased) {
+    return { text: before, applied: false, restoredSentenceCount: 0, reason: 'not_needed' };
+  }
+  const sourceSpans = splitSentenceSpans(source);
+  const outputSpans = splitSentenceSpans(before);
+  if (!sourceSpans.length || sourceSpans.length !== outputSpans.length) {
+    return { text: before, applied: false, restoredSentenceCount: 0, reason: 'sentence_alignment_mismatch' };
+  }
+  if (paragraphCountLocal(source) !== paragraphCountLocal(before)) {
+    return { text: before, applied: false, restoredSentenceCount: 0, reason: 'paragraph_alignment_mismatch' };
+  }
+
+  const replacementIndices = new Set();
+  sourceSpans.forEach((span, index) => {
+    const sentencePadding = comparePolishEvaluativePadding(span.text, outputSpans[index].text);
+    if (!sentencePadding.increased) return;
+    const similarity = computeEditMetrics(span.text, outputSpans[index].text).fiveGramSimilarity;
+    if (similarity >= 0.2) replacementIndices.add(index);
+  });
+  if (!replacementIndices.size) {
+    return { text: before, applied: false, restoredSentenceCount: 0, reason: 'no_safe_alignment' };
+  }
+
+  let candidate = before;
+  for (const index of [...replacementIndices].sort((a, b) => b - a)) {
+    const target = outputSpans[index];
+    candidate = candidate.slice(0, target.start) + sourceSpans[index].text + candidate.slice(target.end);
+  }
+  const policy = polishEditPolicy(source, candidate);
+  const remainingPadding = comparePolishEvaluativePadding(source, candidate);
+  const numberBefore = compareNumberMultiset(source, before);
+  const numberAfter = compareNumberMultiset(source, candidate);
+  const numberRiskBefore = numberBefore.addedCount + numberBefore.removedCount;
+  const numberRiskAfter = numberAfter.addedCount + numberAfter.removedCount;
+  if (remainingPadding.increased
+      || policy.noSafeChange
+      || policy.excessiveChange
+      || splitSentenceSpans(candidate).length !== sourceSpans.length
+      || paragraphCountLocal(candidate) !== paragraphCountLocal(before)
+      || numberRiskAfter > numberRiskBefore) {
+    return { text: before, applied: false, restoredSentenceCount: 0, reason: 'post_repair_validation_failed' };
+  }
+  return {
+    text: candidate,
+    applied: candidate !== before,
+    restoredSentenceCount: replacementIndices.size,
+    reason: 'restored'
+  };
+}
+
 // polish는 화자를 새로 쓰는 대신 원문을 최소 교정해야 한다. 의미 수리나
 // 레이아웃 복원 뒤 1인칭 종류가 완전히 사라졌다면, 문장 수가 그대로이고
 // 대응 문장이 충분히 유사한 경우에만 그 문장을 원문으로 되돌린다. 원문 문장을
@@ -407,13 +500,17 @@ function speakerRestoreResult(text, applied, restoredKinds, restoredSentenceCoun
   return { text, applied, restoredKinds, restoredSentenceCount, reason };
 }
 
-async function retryPolishSurface({ source, currentOutput, policy, config, signal, safetyIdentifier = '' }) {
+async function retryPolishSurface({ source, currentOutput, policy, reason = '', config, signal, safetyIdentifier = '' }) {
+  const taskInstruction = reason === 'evaluative_padding'
+    ? 'CURRENT에 SOURCE에 없던 평가성 표현이 붙었다. 그 평가를 모두 제거하고 SOURCE에 실제로 있는 표면 오류만 최소 한 곳 고친다. 안전한 다른 교정이 없으면 safeChangeFound=false로 답한다.'
+    : 'CURRENT가 SOURCE와 실질적으로 같다. SOURCE에서 실제로 안전하게 고칠 수 있는 표면 오류를 최소 한 곳만 고친다. 고칠 곳이 정말 없으면 safeChangeFound=false로 답한다.';
   const system = [
     '너는 한국어 보존형 윤문 수리기다.',
     '원문의 주장, 예시, 수치, 기관명, 인용, 화자, 문단 수와 순서를 바꾸지 않는다.',
     '비문, 띄어쓰기, 접속, 완전 중복, 말투 혼합 중 실제 오류만 수정한다.',
+    '원문에 없던 가능성·필요성·중요성·의미·역할·긍정성·체계성·전략성·효율성 평가를 새로 붙이지 않는다.',
     '새 문장이나 새 문단을 만들지 않는다.',
-    'CURRENT가 SOURCE와 실질적으로 같다. SOURCE에서 실제로 안전하게 고칠 수 있는 표면 오류를 최소 한 곳만 고친다. 고칠 곳이 정말 없으면 safeChangeFound=false로 답한다.',
+    taskInstruction,
     `허용 범위: 문자 편집률 ${policy?.limits?.minEdit ?? 0.01}~${policy?.limits?.maxEdit ?? 0.25}, 길이비 ${policy?.limits?.minLength ?? 0.9}~${policy?.limits?.maxLength ?? 1.1}.`
   ].join('\n');
   const response = await completeJson({
@@ -583,6 +680,8 @@ module.exports = {
   buildReviewPairs,
   splitIntoSectionCount,
   polishEditPolicy,
+  comparePolishEvaluativePadding,
+  restorePolishEvaluativePaddingSentences,
   restoreMissingPolishSpeaker,
   compareRepetitionDelta,
   retryPolishSurface,

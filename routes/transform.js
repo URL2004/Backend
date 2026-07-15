@@ -673,6 +673,9 @@ function buildArchiveObservability(job) {
     modelCallCount: archiveFinite(engineMeta.modelCallCount),
     humanizeCallCount: archiveFinite(engineMeta.humanizeCallCount),
     surfaceRetryCallCount: archiveFinite(engineMeta.surfaceRetryCallCount),
+    polishRetryReason: archiveString(engineMeta.polishRetryReason, 32),
+    polishEvaluativePaddingCodes: uniqueStrictArchiveCodes(engineMeta.polishEvaluativePaddingCodes),
+    polishDeterministicPaddingRestoreCount: archiveFinite(engineMeta.polishDeterministicPaddingRestoreCount),
     fallbackCount: archiveFinite(engineMeta.fallbackCount ?? result.fallbackCount),
     finalNoopRecoveryCount: archiveFinite(engineMeta.finalNoopRecoveryCount),
     finalNoopRecoveryAttempted: engineMeta.finalNoopRecoveryAttempted === true,
@@ -685,6 +688,7 @@ function buildArchiveObservability(job) {
     humanizationMinimumEffectPass: engineMeta.humanizationMinimumEffectPass === true,
     humanizationDepthSoftDelivered: engineMeta.humanizationDepthSoftDelivered === true,
     humanizationPolicyVersion: archiveString(engineMeta.humanizationPolicyVersion, 32),
+    humanizationPlanSignalSource: archiveString(engineMeta.humanizationPlanSignalSource, 48),
     humanizationRiskLevel: archiveString(engineMeta.humanizationRiskLevel, 24),
     humanizationMinimumRatio: archiveFinite(engineMeta.humanizationMinimumRatio),
     humanizationHardMinimumRatio: archiveFinite(engineMeta.humanizationHardMinimumRatio),
@@ -699,6 +703,12 @@ function buildArchiveObservability(job) {
     humanizationDeliveryDepthBand: archiveString(engineMeta.humanizationDeliveryDepthBand, 24),
     humanizationDepthRetryCount: archiveFinite(engineMeta.humanizationDepthRetryCount),
     humanizationDepthRetryApplied: engineMeta.humanizationDepthRetryApplied === true,
+    humanizationDepthReasonCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthReasonCodes),
+    humanizationDepthBlockingReasonCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthBlockingReasonCodes),
+    chunkFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkFailureCodes),
+    chunkPrimaryFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkPrimaryFailureCodes),
+    chunkResidualFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkResidualFailureCodes),
+    chunkFallbackReasonCodes: uniqueStrictArchiveCodes(engineMeta.chunkFallbackReasonCodes),
     polishSpeakerRestoreCount: archiveFinite(engineMeta.polishSpeakerRestoreCount),
     polishSpeakerRestoredSentenceCount: archiveFinite(engineMeta.polishSpeakerRestoredSentenceCount),
     lineBoundaryPolicy: archiveString(engineMeta.lineBoundaryPolicy, 24),
@@ -720,6 +730,21 @@ function uniqueArchiveCodes(values) {
   for (const value of values || []) {
     const raw = typeof value === 'string' ? value : (value?.code || value?.gate || value?.type || '');
     const code = String(raw || '').trim().replace(/[^A-Za-z0-9_.:-]+/gu, '_').slice(0, 80);
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+    if (out.length >= 24) break;
+  }
+  return out;
+}
+
+function uniqueStrictArchiveCodes(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values || []) {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    if (!/^[A-Za-z][A-Za-z0-9_.:-]{1,79}$/u.test(raw)) continue;
+    const code = raw.toLowerCase().replace(/[^a-z0-9]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 80);
     if (!code || seen.has(code)) continue;
     seen.add(code);
     out.push(code);

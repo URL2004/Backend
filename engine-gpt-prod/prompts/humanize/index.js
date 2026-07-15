@@ -13,6 +13,7 @@ const { buildHumanizeUser } = require('./userBlock');
 const { buildEscalationInstruction } = require('./escalation');
 const { voicePromptBlock } = require('../../voiceProfile');
 const { buildHumanizationPromptBlock } = require('../../humanizationDepth');
+const { discoursePromptBlock } = require('../../discourseAudit');
 
 function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   speakerType = 'individual',
@@ -25,7 +26,8 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   riskProfile = '',
   documentProfile = null,
   voiceProfile = null,
-  humanizationPlan = null
+  humanizationPlan = null,
+  discourseProfile = null
 } = {}) {
   const stable = [
     humanizeStableCore(),
@@ -43,6 +45,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '',
     '[장르 원칙]',
     genreBlock(mode, register, styleProfile, documentProfile),
+    discoursePromptBlock(discourseProfile),
     speakerBlock(speakerType),
     registerBlock(register),
     voicePromptBlock(voiceProfile)

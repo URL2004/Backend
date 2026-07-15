@@ -7,6 +7,14 @@ const floor = require('../engine/floor');
 const { splitSentences, computeEditMetrics } = require('../engine/koreanText');
 const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile');
 const { compareNumberMultiset } = require('./factAudit');
+const discourse = require('./discourseAudit');
+
+const SEMANTIC_VIOLATION_TYPES = [
+  'distortion',
+  'added_claim',
+  'omission',
+  ...discourse.VIOLATION_CODES
+];
 
 const LEDGER_SCHEMA = {
   type: 'object',
@@ -38,7 +46,7 @@ const JUDGE_SCHEMA = {
         type: 'object',
         additionalProperties: false,
         properties: {
-          type: { type: 'string', enum: ['distortion', 'added_claim', 'omission'] },
+          type: { type: 'string', enum: SEMANTIC_VIOLATION_TYPES },
           span: { type: 'string' },
           detail: { type: 'string' }
         },
@@ -95,16 +103,23 @@ async function buildSoftClaimLedger(rawText, { lang = 'ko', signal, config, mode
   };
 }
 
-async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, config, allowedExtra = '', mode = '', model, reasoningEffort, phase = 'semantic', safetyIdentifier = '' } = {}) {
+async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, config, allowedExtra = '', mode = '', discourseSignals = [], model, reasoningEffort, phase = 'semantic', safetyIdentifier = '' } = {}) {
   const cfg = await loadConfig(config);
   const claimsText = ledgerToText(ledger);
   const system = lang === 'en'
     ? 'You are a strict but fair fact checker. SOURCE is the sole ground truth. SOURCE CLAIM LEDGER is a verified, non-exhaustive index of source passages. Compare the entire SOURCE and flag fabricated facts, meaning reversals, and omitted material claims. Return JSON only.'
-    : '너는 엄격하지만 공정한 사실 검수 엔진이다. SOURCE 전체를 유일한 사실 기준으로 삼는다. SOURCE CLAIM LEDGER는 원문 구절을 그대로 뽑은 검증 인덱스이며 완전한 목록은 아니다. SOURCE 전체와 비교해 새 사실 추가, 의미 왜곡, 핵심 주장 누락을 잡는다. 원문에 있던 1인칭 화자·관점이 결과에서 완전히 사라지거나 원문에 없던 화자가 생긴 경우도 의미 왜곡으로 판정한다. JSON만 반환한다.';
+    : [
+        '너는 엄격하지만 공정한 닫힌세계 문서 검수 엔진이다. SOURCE 전체를 유일한 사실·주제·평가·문단 역할 기준으로 삼는다.',
+        'SOURCE CLAIM LEDGER는 원문 구절을 그대로 뽑은 검증 인덱스이며 완전한 목록은 아니다.',
+        '새 사실 추가, 의미 왜곡, 핵심 주장 누락뿐 아니라 원문에 없던 주제 확장(scope_expansion), 교훈·평가(new_evaluation), 강한 수식(intensity_amplification), 반복 결론(duplicate_conclusion/repeated_reflection_conclusion), 문단마다 같은 인과-결론 구조(overstructured_causality), 문단 역할 변화(rhetorical_role_shift), 결론 뒤 새 탐구 시작(topic_restart), 실제 활동 비중 축소(personal_balance_shift)를 판정한다.',
+        '표현을 충분히 바꾼 것 자체는 위반이 아니다. 같은 주장 안의 어순·절·호흡 변화는 허용하고, SOURCE에 없던 담화 기능이나 범위가 생긴 경우만 위반으로 잡는다.',
+        '원문에 있던 1인칭 화자·관점이 결과에서 완전히 사라지거나 원문에 없던 화자가 생긴 경우도 의미 왜곡으로 판정한다. JSON만 반환한다.'
+      ].join('\n');
   const user = [
     `[SOURCE]\n${rawText}`,
     `[SOURCE CLAIM LEDGER]\n${claimsText}`,
     allowedExtra ? `[ALLOWED EXTRA]\n${allowedExtra}` : '',
+    discourseSignals.length ? `[DETERMINISTIC DISCOURSE SIGNALS - 검증 후 판정]\n${discourseSignals.join('\n')}` : '',
     `[MODE]\n${mode || 'assignment'}`,
     `[REWRITE]\n${outputText}`
   ].filter(Boolean).join('\n\n');
@@ -123,7 +138,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     meta: { task: 'judge', phase, mode, profile: 'gpt_prod_judge' }
   });
   const violations = (res.json.violations || [])
-    .filter(v => v && ['distortion', 'added_claim', 'omission'].includes(v.type) && (v.detail || v.span))
+    .filter(v => v && SEMANTIC_VIOLATION_TYPES.includes(v.type) && (v.detail || v.span))
     .map(v => ({
       ...v,
       spanVerified: v.span ? outputText.includes(v.span) : false
@@ -138,7 +153,7 @@ async function repairViolations(rawText, outputText, ledger, violations, {
   const cfg = await loadConfig(config);
   const system = lang === 'en'
     ? 'Repair only the listed violations while preserving the original rewrite as much as possible. Do not add facts.'
-    : '아래 위반 부분만 고치고 나머지 문장은 최대한 유지한다. 새 사실을 추가하지 않는다.';
+    : '위반이 발생한 문장이나 문단만 원문의 같은 위치를 기준으로 고친다. 나머지 문장·문단은 그대로 유지한다. 새 사실·주제·평가·교훈·강한 수식·결론을 추가하지 않으며, 기존의 안전한 문장 구조 변화는 지우지 않는다.';
   const user = [
     `[SOURCE]\n${rawText}`,
     `[SOURCE CLAIM LEDGER]\n${ledgerToText(ledger)}`,
@@ -167,7 +182,7 @@ async function repairViolations(rawText, outputText, ledger, violations, {
   };
 }
 
-async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config, maxRounds = 1, allowedExtra = '', mode = '', safetyIdentifier = '' } = {}) {
+async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config, maxRounds = 1, allowedExtra = '', mode = '', discourseSignals = [], safetyIdentifier = '' } = {}) {
   const cfg = await loadConfig(config);
   const primary = await judgeAndRepairWithModel(rawText, outputText, {
     lang,
@@ -176,6 +191,7 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config
     maxRounds,
     allowedExtra,
     mode,
+    discourseSignals,
     judgeModel: cfg.models.judge,
     judgeReasoning: cfg.reasoning.judge,
     phasePrefix: 'primary',
@@ -193,6 +209,7 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config
     maxRounds: Math.max(0, maxRounds - (primary.rounds || 0)),
     allowedExtra,
     mode,
+    discourseSignals,
     judgeModel: escalationModel,
     judgeReasoning: cfg.reasoning.escalation || cfg.reasoning.judge,
     phasePrefix: 'escalation',
@@ -201,12 +218,26 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config
   return {
     ...escalated,
     escalated: true,
+    initialViolations: dedupeViolations([
+      ...(primary.initialViolations || []),
+      ...(escalated.initialViolations || [])
+    ]),
     rounds: (primary.rounds || 0) + (escalated.rounds || 0),
     repairRejected: primary.repairRejected === true || escalated.repairRejected === true,
     repairRejectReasons: [...new Set([...(primary.repairRejectReasons || []), ...(escalated.repairRejectReasons || [])])],
     primaryJudge: summarizeJudge(primary),
     usage: addUsage(primary.usage || emptyUsage(), escalated.usage)
   };
+}
+
+function dedupeViolations(violations) {
+  const seen = new Set();
+  return (violations || []).filter(item => {
+    const key = `${item?.type || ''}\u0000${item?.span || ''}\u0000${item?.detail || ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function judgeAndRepairWithModel(rawText, outputText, {
@@ -216,6 +247,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   maxRounds,
   allowedExtra,
   mode,
+  discourseSignals,
   judgeModel,
   judgeReasoning,
   phasePrefix,
@@ -234,6 +266,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     config,
     allowedExtra,
     mode,
+    discourseSignals,
     model: judgeModel,
     reasoningEffort: judgeReasoning,
     phase: `${phasePrefix}:semantic`,
@@ -280,6 +313,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       config,
       allowedExtra,
       mode,
+      discourseSignals,
       model: judgeModel,
       reasoningEffort: judgeReasoning,
       phase: `${phasePrefix}:semantic_after_repair`,
@@ -380,6 +414,15 @@ function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', 
   if (!beforeDistributionShift.shift && candidateDistributionShift.shift) {
     reasons.push('sentence_distribution_worsened');
   }
+  const beforeDiscourse = discourse.compareDiscourse(source, before);
+  const candidateDiscourse = discourse.compareDiscourse(source, candidate);
+  const beforeDiscourseCodes = new Set(beforeDiscourse.codes || []);
+  const candidateIntroducedDiscourse = (candidateDiscourse.codes || [])
+    .filter(code => !beforeDiscourseCodes.has(code));
+  if ((candidateDiscourse.violations || []).length > (beforeDiscourse.violations || []).length) {
+    reasons.push('discourse_risk_worsened');
+  }
+  if (candidateIntroducedDiscourse.length) reasons.push('discourse_new_violation');
   return {
     pass: reasons.length === 0,
     reasons: [...new Set(reasons)],
@@ -392,7 +435,10 @@ function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', 
     beforeSentenceShape,
     candidateSentenceShape,
     beforeDistributionShift,
-    candidateDistributionShift
+    candidateDistributionShift,
+    beforeDiscourse,
+    candidateDiscourse,
+    candidateIntroducedDiscourse
   };
 }
 
@@ -488,6 +534,7 @@ function responseMeta(res) {
 }
 
 module.exports = {
+  SEMANTIC_VIOLATION_TYPES,
   buildSoftClaimLedger,
   semanticJudge,
   repairViolations,

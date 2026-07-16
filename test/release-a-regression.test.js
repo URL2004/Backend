@@ -133,6 +133,11 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         requestStrength: 'basic',
         documentProfile: 'general',
         profileConfidence: 0.81,
+        profileDecisionSource: 'user_override',
+        detectedDocumentProfile: 'unknown',
+        detectedProfileConfidence: 0.61,
+        requestedDocumentProfile: 'general',
+        profileOverrideApplied: true,
         semanticJudgeRan: true,
         discourseAuditVersion: 1,
         discoursePass: false,
@@ -164,6 +169,15 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationMinimumTargetCoverage: 0.75,
         substantiveEditRatio: 0.031,
         substantiveChangedSentenceRatio: 0.2,
+        humanizationTargetCoverage: 0.6,
+        humanizationTargetChangedCount: 3,
+        structuralChangedSentenceCount: 2,
+        structuralChangedSentenceRatio: 0.4,
+        humanizationRequiredStructuralSentenceCount: 3,
+        rhetoricalRemediationTargetCount: 4,
+        rhetoricalRemediationAchievedCount: 3,
+        rhetoricalRemediationCoverage: 0.75,
+        lengthRatio: 1.02,
         humanizationTargetDepthMet: false,
         humanizationDeliveryDepthBand: 'below_minimum',
         humanizationDepthRetryCount: 1,
@@ -180,6 +194,13 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         polishEvaluativePaddingCodes: ['efficiency_label', '사용자 원문 조각'],
         polishDeterministicPaddingRestoreCount: 1,
         polishSpeakerRestoreCount: 0,
+        koreanRefinementVersion: 1,
+        koreanRefinementPass: false,
+        koreanRefinementIssueCodes: ['frequency_quantifier_conflict'],
+        koreanDeterministicRepairCount: 1,
+        koreanRefinementRetryCount: 1,
+        sourceReviewWarningCodes: ['deep_understanding_collocation'],
+        sourceReviewWarningCount: 1,
         lineBoundaryPolicy: 'structural'
       },
       humanizeMeta: {
@@ -206,6 +227,9 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.deepEqual(first.qualityWarningCodes, ['paragraph_structure_changed']);
   assert.equal(first.engineVersion, 'gpt-prod-v2.4.1');
   assert.equal(first.documentProfile, 'general');
+  assert.equal(first.detectedDocumentProfile, 'unknown');
+  assert.equal(first.requestedDocumentProfile, 'general');
+  assert.equal(first.profileOverrideApplied, true);
   assert.equal(first.discourseAuditVersion, 1);
   assert.equal(first.discoursePass, false);
   assert.deepEqual(first.discourseWarningCodes, ['scope_expansion']);
@@ -236,6 +260,13 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationTargetDepthMet, false);
   assert.equal(first.humanizationDeliveryDepthBand, 'below_minimum');
   assert.equal(first.substantiveEditRatio, 0.031);
+  assert.equal(first.humanizationTargetCoverage, 0.6);
+  assert.equal(first.structuralChangedSentenceRatio, 0.4);
+  assert.equal(first.rhetoricalRemediationCoverage, 0.75);
+  assert.equal(first.lengthRatio, 1.02);
+  assert.equal(first.koreanRefinementPass, false);
+  assert.deepEqual(first.koreanRefinementIssueCodes, ['frequency_quantifier_conflict']);
+  assert.deepEqual(first.sourceReviewWarningCodes, ['deep_understanding_collocation']);
   assert.equal(first.humanizationDepthRetryCount, 1);
   assert.equal(first.humanizationDepthRetryTargetSentenceCount, 3);
   assert.equal(first.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
@@ -315,4 +346,34 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(fallbackCompleted.engineVersion, 'gpt-prod-v2.4.3');
   assert.equal(Object.prototype.hasOwnProperty.call(fallbackCompleted, 'text'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(fallbackCompleted, 'result'), false);
+});
+
+test('transform 글 종류 입력은 공개 장르와 호환 별칭만 허용한다', () => {
+  assert.equal(transform.normalizeDocumentProfileOverride('resume_application'), 'resume_application');
+  assert.equal(transform.normalizeDocumentProfileOverride('blog_review'), 'review_blog');
+  assert.equal(transform.normalizeDocumentProfileOverride('student_record'), 'student_record_teacher');
+  assert.equal(transform.normalizeDocumentProfileOverride(''), '');
+  assert.equal(transform.normalizeDocumentProfileOverride('unknown'), null);
+  assert.equal(transform.normalizeDocumentProfileOverride('totally_invalid_profile'), null);
+});
+
+test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약한다', () => {
+  const compact = analyze.compactHistoryEngineMeta({
+    engineVersion: 'gpt-prod-v2.4.6', requestedMode: 'blog', documentProfile: 'resume_application',
+    detectedDocumentProfile: 'unknown', detectedProfileConfidence: 0.61,
+    requestedDocumentProfile: 'resume_application', profileOverrideApplied: true,
+    substantiveEditRatio: 0.27, structuralChangedSentenceRatio: 0.4,
+    rhetoricalRemediationCoverage: 0.75, koreanRefinementPass: true,
+    koreanRefinementIssueCodes: [], sourceReviewWarningCodes: ['deep_understanding_collocation'],
+    prompt: '저장 금지', source: '저장 금지', protectedTerms: ['저장 금지']
+  });
+  assert.equal(compact.requestedDocumentProfile, 'resume_application');
+  assert.equal(compact.profileOverrideApplied, true);
+  assert.equal(compact.substantiveEditRatio, 0.27);
+  assert.equal(compact.structuralChangedSentenceRatio, 0.4);
+  assert.equal(compact.rhetoricalRemediationCoverage, 0.75);
+  assert.deepEqual(compact.sourceReviewWarningCodes, ['deep_understanding_collocation']);
+  assert.equal(Object.hasOwn(compact, 'prompt'), false);
+  assert.equal(Object.hasOwn(compact, 'source'), false);
+  assert.equal(Object.hasOwn(compact, 'protectedTerms'), false);
 });

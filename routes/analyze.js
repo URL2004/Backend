@@ -3505,7 +3505,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 //   해결: 단일 호출은 서버가 같은 컬렉션·스키마로 직접 저장(Admin SDK) → "차감↔저장" 원자화.
 //   클라 saveHistory와 동일 스키마라 이용 기록 화면이 그대로 렌더한다.
 //   requestId를 문서 ID로 사용해 재시도·중복 호출에도 1건만 남게(멱등).
-async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result, mode, modeSource, engineMeta, qualityStatus, qualityWarningCodes }) {
+async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result, mode, modeSource, engineMeta, qualityStatus, qualityWarningCodes, sourceReviewWarningCodes }) {
   if (!db) return;
   const isDetect = opType === 'detect';
   const storedMode = isDetect ? 'detect' : normalizeStoredHumanizeMode(mode);
@@ -3522,6 +3522,9 @@ async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result
     if (qualityStatus === 'clean' || qualityStatus === 'needs_review') doc.qualityStatus = qualityStatus;
     if (Array.isArray(qualityWarningCodes)) {
       doc.qualityWarningCodes = [...new Set(qualityWarningCodes.map(value => String(value || '').trim()).filter(Boolean))].slice(0, 30);
+    }
+    if (Array.isArray(sourceReviewWarningCodes)) {
+      doc.sourceReviewWarningCodes = [...new Set(sourceReviewWarningCodes.map(value => String(value || '').trim()).filter(Boolean))].slice(0, 30);
     }
     if (engineMeta && typeof engineMeta === 'object') {
       doc.engineMeta = compactHistoryEngineMeta(engineMeta);
@@ -3560,6 +3563,11 @@ function compactHistoryEngineMeta(meta) {
     documentProfile: String(meta.documentProfile || 'unknown').slice(0, 40),
     profileConfidence: Number.isFinite(Number(meta.profileConfidence)) ? Number(meta.profileConfidence) : null,
     profileDecisionSource: String(meta.profileDecisionSource || '').slice(0, 40),
+    detectedDocumentProfile: String(meta.detectedDocumentProfile || meta.documentProfile || 'unknown').slice(0, 40),
+    detectedProfileConfidence: Number.isFinite(Number(meta.detectedProfileConfidence)) ? Number(meta.detectedProfileConfidence) : null,
+    requestedDocumentProfile: String(meta.requestedDocumentProfile || '').slice(0, 40),
+    profileOverrideApplied: meta.profileOverrideApplied === true,
+    profileOverrideIgnoredReason: String(meta.profileOverrideIgnoredReason || '').slice(0, 48),
     safetyProfiles: [...new Set((Array.isArray(meta.safetyProfiles) ? meta.safetyProfiles : [])
       .map(value => String(value || '').slice(0, 40)).filter(Boolean))].slice(0, 8),
     profileMargin: Number.isFinite(Number(meta.profileMargin)) ? Number(meta.profileMargin) : null,
@@ -3587,7 +3595,25 @@ function compactHistoryEngineMeta(meta) {
     modelCallCount: Math.max(0, Number(meta.modelCallCount) || Number(meta.humanizeCallCount) || 0),
     semanticSectionCount: Math.max(0, Number(meta.semanticSectionCount) || 0),
     fallbackCount: Math.max(0, Number(meta.fallbackCount) || 0),
-    lengthRatio: Number.isFinite(Number(meta.lengthRatio)) ? Number(meta.lengthRatio) : null
+    lengthRatio: Number.isFinite(Number(meta.lengthRatio)) ? Number(meta.lengthRatio) : null,
+    humanizationDepthPass: meta.humanizationDepthPass === true,
+    humanizationDepthSoftDelivered: meta.humanizationDepthSoftDelivered === true,
+    humanizationDeliveryDepthBand: String(meta.humanizationDeliveryDepthBand || '').slice(0, 24),
+    substantiveEditRatio: Number.isFinite(Number(meta.substantiveEditRatio)) ? Number(meta.substantiveEditRatio) : null,
+    substantiveChangedSentenceRatio: Number.isFinite(Number(meta.substantiveChangedSentenceRatio)) ? Number(meta.substantiveChangedSentenceRatio) : null,
+    humanizationTargetCoverage: Number.isFinite(Number(meta.humanizationTargetCoverage)) ? Number(meta.humanizationTargetCoverage) : null,
+    structuralChangedSentenceCount: Math.max(0, Number(meta.structuralChangedSentenceCount) || 0),
+    structuralChangedSentenceRatio: Number.isFinite(Number(meta.structuralChangedSentenceRatio)) ? Number(meta.structuralChangedSentenceRatio) : null,
+    rhetoricalRemediationTargetCount: Math.max(0, Number(meta.rhetoricalRemediationTargetCount) || 0),
+    rhetoricalRemediationAchievedCount: Math.max(0, Number(meta.rhetoricalRemediationAchievedCount) || 0),
+    rhetoricalRemediationCoverage: Number.isFinite(Number(meta.rhetoricalRemediationCoverage)) ? Number(meta.rhetoricalRemediationCoverage) : null,
+    koreanRefinementPass: meta.koreanRefinementPass === true,
+    koreanRefinementIssueCodes: [...new Set((Array.isArray(meta.koreanRefinementIssueCodes) ? meta.koreanRefinementIssueCodes : [])
+      .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
+    koreanDeterministicRepairCount: Math.max(0, Number(meta.koreanDeterministicRepairCount) || 0),
+    koreanRefinementRetryCount: Math.max(0, Number(meta.koreanRefinementRetryCount) || 0),
+    sourceReviewWarningCodes: [...new Set((Array.isArray(meta.sourceReviewWarningCodes) ? meta.sourceReviewWarningCodes : [])
+      .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20)
   };
 }
 
@@ -4505,5 +4531,6 @@ router.commitCouponUsage = commitCouponUsage;
 router.commitCouponRestore = commitCouponRestore;
 router.retryAsync = retryAsync;
 router.saveAnalyzeHistory = saveAnalyzeHistory;   // 테스트·재사용용
+router.compactHistoryEngineMeta = compactHistoryEngineMeta;   // 테스트용
 router.authErrorMessage = authErrorMessage;
 module.exports = router;

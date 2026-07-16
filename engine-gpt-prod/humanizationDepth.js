@@ -1,14 +1,15 @@
 'use strict';
 
 const { computeEditMetrics, levenshteinDistance, splitSentences } = require('../engine/koreanText');
+const { buildRemediationPlan, compareRemediationTargets } = require('./discourseAudit');
 
 const CONNECTOR_START = /^(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|즉|첫째|둘째|셋째|하지만|그러나|반면|결국)(?=$|[\s,])/u;
 const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|습니다)|필요가\s*있(?:다|습니다)|중요(?:하|한)\s*(?:의미|역할|요인)?|의미를\s*가진(?:다|다고)|긍정적인\s*영향|체계적으로\s*(?:정리|분석|관리|운영)|기반으로\s*(?:한|하여|한다|합니다)|핵심\s*인프라|전략적\s*이점)/u;
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 3;
-const POLICY_VERSION = 'perceived-v2.1';
+const PLAN_VERSION = 4;
+const POLICY_VERSION = 'perceived-v2.2';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -68,13 +69,17 @@ function buildHumanizationPlan(source, {
       hardMinimumSubstantiveEditRatio: 0,
       targetSubstantiveEditMin: 0,
       targetSubstantiveEditMax: 0,
-      minTargetCoverage: 0
+      minTargetCoverage: 0,
+      requiredStructuralChangedSentenceCount: 0,
+      minRemediationCoverage: 0,
+      rhetoricalRemediationPlan: { applicable: false, targetCount: 0, categoryCount: 0, categories: [] }
     };
   }
 
   const text = stripLockTokens(source);
   const sentences = meaningfulSentences(text);
-  const target = detectTargetSentences(sentences);
+  const rhetoricalRemediationPlan = buildRemediationPlan(text);
+  const target = mergeRemediationTargets(detectTargetSentences(sentences), rhetoricalRemediationPlan);
   const sentenceCount = sentences.length;
   const targetRatio = sentenceCount ? target.indices.length / sentenceCount : 0;
   const abstractRiskRatio = finite(inputRisk?.abstractRiskRatio);
@@ -99,6 +104,10 @@ function buildHumanizationPlan(source, {
   let targetSubstantiveEditMax = basePolicy.targetMax;
   let minChangedSentenceRatio = basePolicy.minSentence;
   let minTargetCoverage = basePolicy.minTarget;
+  let structuralCoverageFactor = strength === 'advanced' ? 0.60 : 0.48;
+  let minRemediationCoverage = rhetoricalRemediationPlan.targetCount > 0
+    ? (strength === 'advanced' ? 0.65 : 0.50)
+    : 0;
 
   // 사실·형식 민감 장르는 2%p 완화하지만, 기본도 최소 6%, 고급도 최소 9%의
   // 실질 변화를 유지한다. 창작문은 행갈이와 이미지 자체가 구조라 독립 정책을 쓴다.
@@ -108,6 +117,10 @@ function buildHumanizationPlan(source, {
     targetSubstantiveEditMax = Math.max(targetSubstantiveEditMin + 0.02, targetSubstantiveEditMax - 0.02);
     minChangedSentenceRatio = Math.max(strength === 'advanced' ? 0.35 : 0.25, minChangedSentenceRatio - 0.05);
     minTargetCoverage = Math.max(strength === 'advanced' ? 0.50 : 0.40, minTargetCoverage - 0.10);
+    structuralCoverageFactor = strength === 'advanced' ? 0.50 : 0.38;
+    minRemediationCoverage = rhetoricalRemediationPlan.targetCount > 0
+      ? (strength === 'advanced' ? 0.50 : 0.40)
+      : 0;
   }
   if (creative) {
     const creativePolicy = CREATIVE_POLICY[riskLevel];
@@ -116,6 +129,8 @@ function buildHumanizationPlan(source, {
     targetSubstantiveEditMax = creativePolicy.targetMax;
     minChangedSentenceRatio = creativePolicy.minSentence;
     minTargetCoverage = creativePolicy.minTarget;
+    structuralCoverageFactor = 0;
+    minRemediationCoverage = 0;
   }
   if (sourceChars <= 120) {
     const shortMin = creative ? 0.04 : (strength === 'advanced' ? 0.12 : 0.09);
@@ -139,6 +154,9 @@ function buildHumanizationPlan(source, {
   const hardRequiredChangedSentenceCount = requiredChangedSentenceCount
     ? Math.max(1, Math.min(requiredChangedSentenceCount, Math.ceil(requiredChangedSentenceCount * HARD_DELIVERY_SENTENCE_FACTOR)))
     : 0;
+  const requiredStructuralChangedSentenceCount = structuralCoverageFactor > 0 && requiredChangedSentenceCount > 0
+    ? Math.max(1, Math.min(requiredChangedSentenceCount, Math.ceil(requiredChangedSentenceCount * structuralCoverageFactor)))
+    : 0;
 
   return {
     version: PLAN_VERSION,
@@ -159,12 +177,15 @@ function buildHumanizationPlan(source, {
     requiredChangedSentenceCount,
     hardRequiredChangedSentenceCount,
     requiredTargetChangedCount,
+    requiredStructuralChangedSentenceCount,
     minChangedSentenceRatio: round4(minChangedSentenceRatio),
     minSubstantiveEditRatio: round4(minSubstantiveEditRatio),
     hardMinimumSubstantiveEditRatio: round4(hardMinimumSubstantiveEditRatio),
     targetSubstantiveEditMin: round4(targetSubstantiveEditMin),
     targetSubstantiveEditMax: round4(targetSubstantiveEditMax),
-    minTargetCoverage: round4(minTargetCoverage)
+    minTargetCoverage: round4(minTargetCoverage),
+    minRemediationCoverage: round4(minRemediationCoverage),
+    rhetoricalRemediationPlan
   };
 }
 
@@ -191,6 +212,15 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   if (metrics.substantiveEditRatio + 1e-9 < plan.minSubstantiveEditRatio) reasons.push('substantive_edit_ratio_low');
   if (metrics.substantiveChangedSentenceCount < plan.requiredChangedSentenceCount) reasons.push('substantive_sentence_coverage_low');
   if (plan.requiredTargetChangedCount > 0 && targetChangedCount < plan.requiredTargetChangedCount) reasons.push('risk_target_coverage_low');
+  if (Number(plan.requiredStructuralChangedSentenceCount || 0) > 0
+      && metrics.structurallyChangedSentenceCount < Number(plan.requiredStructuralChangedSentenceCount)) {
+    reasons.push('structural_rewrite_coverage_low');
+  }
+  const remediation = compareRemediationTargets(source, output, plan.rhetoricalRemediationPlan || null);
+  if (Number(plan.minRemediationCoverage || 0) > 0
+      && remediation.coverage + 1e-9 < Number(plan.minRemediationCoverage)) {
+    reasons.push('rhetorical_remediation_low');
+  }
   if (metrics.trivialOnly) reasons.push('punctuation_or_surface_only');
   const hardMinimumEdit = Number(plan.hardMinimumSubstantiveEditRatio ?? Math.max(
     HARD_DELIVERY_EDIT_FLOOR,
@@ -224,6 +254,7 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       sentenceEdits: undefined,
       targetChangedCount,
       targetCoverage: round4(targetCoverage),
+      remediation,
       targetDepthMet,
       aboveTargetRange,
       minimumEffectPass: blockingReasons.length === 0,
@@ -242,7 +273,17 @@ function humanizationCandidateScore(report) {
   const targetProgress = Number(plan.requiredTargetChangedCount || 0) > 0
     ? progress(metrics.targetChangedCount, plan.requiredTargetChangedCount)
     : 1;
-  return round4((editProgress * 0.50) + (sentenceProgress * 0.30) + (targetProgress * 0.20));
+  const structuralProgress = Number(plan.requiredStructuralChangedSentenceCount || 0) > 0
+    ? progress(metrics.structurallyChangedSentenceCount, plan.requiredStructuralChangedSentenceCount)
+    : 1;
+  const remediationProgress = Number(plan.minRemediationCoverage || 0) > 0
+    ? progress(metrics.remediation?.coverage, plan.minRemediationCoverage)
+    : 1;
+  return round4((editProgress * 0.40)
+    + (sentenceProgress * 0.24)
+    + (targetProgress * 0.16)
+    + (structuralProgress * 0.12)
+    + (remediationProgress * 0.08));
 }
 
 function isBetterHumanizationCandidate(current, candidate) {
@@ -255,6 +296,12 @@ function isBetterHumanizationCandidate(current, candidate) {
   const candidateEdit = finite(candidate?.metrics?.substantiveEditRatio);
   const currentSentences = finite(current?.metrics?.substantiveChangedSentenceCount);
   const candidateSentences = finite(candidate?.metrics?.substantiveChangedSentenceCount);
+  const currentStructural = finite(current?.metrics?.structurallyChangedSentenceCount);
+  const candidateStructural = finite(candidate?.metrics?.structurallyChangedSentenceCount);
+  const currentRemediation = finite(current?.metrics?.remediation?.coverage);
+  const candidateRemediation = finite(candidate?.metrics?.remediation?.coverage);
+  if (candidateStructural > currentStructural && candidateEdit >= currentEdit - 0.005) return true;
+  if (candidateRemediation >= currentRemediation + 0.25 && candidateEdit >= currentEdit - 0.005) return true;
   return candidateEdit >= currentEdit + 0.015 && candidateSentences >= currentSentences;
 }
 
@@ -274,6 +321,14 @@ function measureSubstantiveEdit(source, output) {
     ? substantiveChangedSentenceCount / sourceSentences.length
     : 0;
   const substantiveEditRatio = substantiveDistance / substantiveBase;
+  const structurallyChangedSentenceCount = sentenceEdits.filter(row => row.structuralChanged).length;
+  const clauseBoundaryChangeCount = sentenceEdits.filter(row => row.clauseBoundaryChanged).length;
+  const contentOrderChangeCount = sentenceEdits.filter(row => row.contentOrderChanged).length;
+  const sentenceBoundaryDelta = Math.abs(sourceSentences.length - outputSentences.length);
+  const structuralChangeCount = Math.max(
+    structurallyChangedSentenceCount,
+    sentenceBoundaryDelta > 0 ? Math.min(sourceSentences.length, sentenceBoundaryDelta) : 0
+  );
   return {
     rawCharEditRatio: round4(raw.charEditRatio),
     substantiveDistance,
@@ -282,6 +337,12 @@ function measureSubstantiveEdit(source, output) {
     substantiveChangedSentenceRatio: round4(substantiveChangedSentenceRatio),
     sourceSentenceCount: sourceSentences.length,
     outputSentenceCount: outputSentences.length,
+    structurallyChangedSentenceCount: structuralChangeCount,
+    structuralChangedSentenceRatio: round4(sourceSentences.length ? structuralChangeCount / sourceSentences.length : 0),
+    clauseBoundaryChangeCount,
+    contentOrderChangeCount,
+    sentenceBoundaryDelta,
+    sentenceBoundaryChanged: sentenceBoundaryDelta > 0,
     trivialOnly: raw.charEditRatio > 0 && substantiveEditRatio < 0.012,
     sentenceEdits
   };
@@ -314,8 +375,14 @@ function buildHumanizationPromptBlock(plan) {
       ? `우선 대상 문장 번호=${targetOrdinals.join(',') || '서버선정'}${reasons ? `; 원인=${reasons}` : ''}. 문장 번호는 편집 위치일 뿐 새 문장을 만들라는 뜻이 아니다.`
       : '특정 위험 표현이 적더라도 일반 문장의 흐름과 어순을 국소적으로 재구성해 다듬기와 구분되는 결과를 만든다.',
     '문장마다 억지로 다른 단어를 끼워 넣지 말고, 바꿀 문장은 충분히 바꾸며 이미 자연스러운 문장은 남긴다.',
+    plan.requiredStructuralChangedSentenceCount > 0
+      ? '대상 문장은 단순 동의어 교체에 머물지 말고, 같은 뜻 안에서 절 배치·주어 위치·연결 방식·문장 경계 중 실제 구조를 바꾼다.'
+      : '',
+    plan.rhetoricalRemediationPlan?.targetCount > 0
+      ? '원문 담화 계약에 표시된 정형 성찰·반복 결론·과도하게 완결된 인과 구조는 그대로 복사하지 말고, 사실을 삭제하지 않는 범위에서 직접적인 문장으로 풀어 쓴다.'
+      : '',
     '원문에 없는 경험·감정·수치·기관·인용·주장·예시는 절대 추가하지 않는다.'
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function alignSentenceEdits(sourceSentences, outputSentences) {
@@ -335,17 +402,119 @@ function alignSentenceEdits(sourceSentences, outputSentences) {
       const distance = levenshteinDistance(sourceNorm, outputNorm);
       const base = Math.max(sourceNorm.length, outputNorm.length, 1);
       const ratio = distance / base;
-      if (!best || ratio < best.ratio) best = { outputIndex, distance, ratio };
+      if (!best || ratio < best.ratio) best = { outputIndex, distance, ratio, outputSentence: outputSentences[outputIndex] };
     }
     const substantiveChanged = best.distance >= 3 && best.ratio >= 0.065;
+    const structure = compareSentenceStructure(sentence, best.outputSentence, {
+      substantiveChanged,
+      editRatio: best.ratio
+    });
     return {
       index,
       outputIndex: best.outputIndex,
       distance: best.distance,
       ratio: round4(best.ratio),
-      substantiveChanged
+      substantiveChanged,
+      ...structure
     };
   });
+}
+
+function mergeRemediationTargets(target, remediationPlan) {
+  const reasonsByIndex = new Map();
+  const reasonCounts = { ...(target?.reasonCounts || {}) };
+  for (const index of target?.indices || []) reasonsByIndex.set(index, new Set());
+  for (const category of remediationPlan?.categories || []) {
+    const reason = `source_rhetoric_${category.code}`;
+    for (const ordinal of category.sentenceOrdinals || []) {
+      const index = Number(ordinal) - 1;
+      if (index < 0 || !Number.isFinite(index)) continue;
+      if (!reasonsByIndex.has(index)) reasonsByIndex.set(index, new Set());
+      reasonsByIndex.get(index).add(reason);
+      reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+    }
+  }
+  return { indices: [...reasonsByIndex.keys()].sort((a, b) => a - b), reasonCounts };
+}
+
+function compareSentenceStructure(source, output, { substantiveChanged = false, editRatio = 0 } = {}) {
+  const before = String(source || '');
+  const after = String(output || '');
+  const beforeClause = clauseSignature(before);
+  const afterClause = clauseSignature(after);
+  const clauseBoundaryChanged = beforeClause.punctuation !== afterClause.punctuation
+    || beforeClause.connectorSequence !== afterClause.connectorSequence
+    || beforeClause.subordinateCount !== afterClause.subordinateCount;
+  const orderChangeRatio = contentTokenOrderChange(before, after);
+  const contentOrderChanged = orderChangeRatio >= 0.18;
+  const beforeTokens = contentTokens(before);
+  const afterTokens = contentTokens(after);
+  const shared = intersectionCount(beforeTokens, afterTokens);
+  const sharedRatio = Math.min(beforeTokens.length, afterTokens.length)
+    ? shared / Math.min(beforeTokens.length, afterTokens.length)
+    : 1;
+  const deepRecast = substantiveChanged
+    && Math.min(beforeTokens.length, afterTokens.length) >= 4
+    && editRatio >= 0.14
+    && sharedRatio < 0.58;
+  return {
+    clauseBoundaryChanged,
+    contentOrderChanged,
+    contentOrderChangeRatio: round4(orderChangeRatio),
+    sharedContentTokenRatio: round4(sharedRatio),
+    structuralChanged: substantiveChanged && (clauseBoundaryChanged || contentOrderChanged || deepRecast)
+  };
+}
+
+function clauseSignature(value) {
+  const text = String(value || '');
+  const punctuation = (text.match(/[,;:，；：]/gu) || []).map(char => char === '，' ? ',' : char).join('');
+  const connectors = text.match(/(?:그럼에도|반면에|따라서|그러므로|하지만|그러나|반면|한편|또한|결국|때문에|덕분에|이를\s*통해|이로\s*인해)/gu) || [];
+  const subordinateCount = (text.match(/(?:지만|는데|면서|므로|기에|더라도|반면|때문에|덕분에|[가-힣]+[은한]\s*(?:뒤|후)|[가-힣]+하기\s*전에)/gu) || []).length;
+  return {
+    punctuation,
+    connectorSequence: connectors.join('|'),
+    subordinateCount
+  };
+}
+
+function contentTokenOrderChange(source, output) {
+  const before = contentTokens(source);
+  const after = contentTokens(output);
+  const afterPositions = new Map();
+  after.forEach((token, index) => {
+    if (!afterPositions.has(token)) afterPositions.set(token, index);
+  });
+  const sequence = before.filter(token => afterPositions.has(token)).map(token => afterPositions.get(token));
+  if (sequence.length < 3) return 0;
+  let inversions = 0;
+  let pairs = 0;
+  for (let left = 0; left < sequence.length; left += 1) {
+    for (let right = left + 1; right < sequence.length; right += 1) {
+      pairs += 1;
+      if (sequence[left] > sequence[right]) inversions += 1;
+    }
+  }
+  return pairs ? inversions / pairs : 0;
+}
+
+function contentTokens(value) {
+  const stop = new Set(['그리고', '그러나', '하지만', '따라서', '또한', '이러한', '그러한', '것이다', '있습니다', '했습니다', '합니다']);
+  return (String(value || '').match(/[가-힣]{2,}|[A-Za-z]{3,}/gu) || [])
+    .map(token => token.toLowerCase().replace(/(?:에서는|으로는|에게는|이라는|으로|에서|에게|보다|처럼|은|는|이|가|을|를|의|에|도|만|와|과|로)$/u, ''))
+    .filter(token => token.length >= 2 && !stop.has(token));
+}
+
+function intersectionCount(left, right) {
+  const available = new Map();
+  for (const token of right) available.set(token, (available.get(token) || 0) + 1);
+  let count = 0;
+  for (const token of left) {
+    if ((available.get(token) || 0) <= 0) continue;
+    count += 1;
+    available.set(token, available.get(token) - 1);
+  }
+  return count;
 }
 
 function detectTargetSentences(sentences) {

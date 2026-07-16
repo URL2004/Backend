@@ -25,6 +25,8 @@ function academicReportBlock(register) {
     '[원문 장르: 학술·보고서·설명문]',
     '논지, 근거의 인과 방향, 학술 용어, 수치, 인용, 내부 참조와 절 구조를 유지한다.',
     '정보를 후기체·광고체로 바꾸거나 원문에 없는 해석과 결론을 덧붙이지 않는다.',
+    '제목·절·표·목록과 논증 단계는 거시 구조로 잠근다. 다만 각 단계 안의 일반 서술은 절 배치·주어 위치·문장 경계를 조정해 기계적인 호흡을 풀어 쓴다.',
+    '학술적 정확성을 낮추는 쉬운 말이나 구어체로 바꾸지 말고, 같은 전문 용어를 불필요하게 되풀이하는 문장만 자연스럽게 재구성한다.',
     `원문 종결체=${register}.`
   ].join('\n');
 }
@@ -51,12 +53,18 @@ function studentSelfAssessmentBlock(register) {
 
 function essayApplicationBlock(register, profile) {
   const label = profile === 'resume_application' ? '자기소개서·지원서' : '개인 에세이';
-  return [
+  const lines = [
     `[원문 장르: ${label}]`,
     '원문에 있는 경험, 감정, 성과, 시간 순서만 사용하고 장면이나 수치를 만들지 않는다.',
     '화자의 태도와 인칭을 유지하고, 없는 동기·교훈·포부를 보태지 않는다.',
     `원문 종결체=${register}.`
-  ].join('\n');
+  ];
+  if (profile === 'resume_application') {
+    lines.splice(3, 0,
+      '지원서의 전문성 하한을 지킨다. 설계·구성·분석·역량·피드백·교류·근무처럼 직무 의미가 있는 말을 단순히 짰다·봤다·힘·준·어울렸다·일했다 같은 가벼운 말로 낮추지 않는다.',
+      '딱딱함은 문장 구조와 호흡으로 줄이되, 성과의 근거·본인의 행동·직무 연결은 명확한 업무 언어로 남긴다.');
+  }
+  return lines.join('\n');
 }
 
 function blogSocialBlock(profile) {

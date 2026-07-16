@@ -20,12 +20,15 @@ async function main() {
   add('diff_check', runGitCheck(root, ['diff', '--check']), 'git diff --check');
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
   const nodeVersionFile = fs.readFileSync(path.join(root, '.node-version'), 'utf8').trim();
   add('node_runtime', process.versions.node.split('.')[0] === '24' && packageJson.engines?.node === '24.x' && nodeVersionFile === '24', `runtime=${process.versions.node}, engines=${packageJson.engines?.node}, file=${nodeVersionFile}`);
   add('python_postinstall_removed', !packageJson.scripts?.postinstall && Boolean(packageJson.scripts?.['setup:layout-nlp']), packageJson.scripts?.['setup:layout-nlp'] || 'missing');
   add('form_data_patched', semverAtLeast(packageJson.dependencies?.['form-data'], 4, 0, 6), packageJson.dependencies?.['form-data'] || 'missing');
   add('multer_2_patched', semverAtLeast(packageJson.dependencies?.multer, 2, 0, 0), packageJson.dependencies?.multer || 'missing');
   add('firebase_admin_14_1', packageJson.dependencies?.['firebase-admin'] === '14.1.0', packageJson.dependencies?.['firebase-admin'] || 'missing');
+  const websocketDriver = packageLock.packages?.['node_modules/websocket-driver']?.version || '';
+  add('websocket_driver_patched', semverAtLeast(websocketDriver, 0, 7, 5), websocketDriver || 'missing');
 
   const base = String(args.base || '').trim();
   const deployDiff = base ? git(root, ['diff', '--name-status', `${base}...HEAD`]).trim() : '';
@@ -51,7 +54,7 @@ async function main() {
       if (args['expect-live-v2'] === '1') {
         add('live_v2', health.humanizeEngineV2 === true && health.activeProvider === 'gpt' && health.openai === true, `v2=${health.humanizeEngineV2}, provider=${health.activeProvider}, openai=${health.openai}`);
         add('live_humanization_depth', health.humanizationDepthGate === true, `depth=${health.humanizationDepthGate}`);
-        add('live_humanization_policy', health.humanizationDepthPolicy === 'perceived-v2.1', `policy=${health.humanizationDepthPolicy}`);
+        add('live_humanization_policy', health.humanizationDepthPolicy === 'perceived-v2.2', `policy=${health.humanizationDepthPolicy}`);
       }
     } catch (error) {
       add('healthz', false, String(error?.message || error).slice(0, 180));

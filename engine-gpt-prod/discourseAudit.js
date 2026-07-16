@@ -2,7 +2,7 @@
 
 const { splitSentences } = require('../engine/koreanText');
 
-const VERSION = 1;
+const VERSION = 2;
 const VIOLATION_CODES = Object.freeze([
   'scope_expansion',
   'new_evaluation',
@@ -82,6 +82,8 @@ function buildDiscourseProfile(value) {
 function compareDiscourse(source, outputText) {
   const before = buildDiscourseProfile(source);
   const after = buildDiscourseProfile(outputText);
+  const remediationPlan = buildRemediationPlan(before);
+  const remediation = compareRemediationTargets(before, after, remediationPlan);
   const violations = [];
   const add = (code, count, detail = '') => {
     if (!(count > 0) || violations.some(item => item.code === code)) return;
@@ -115,9 +117,11 @@ function compareDiscourse(source, outputText) {
     pass: violations.length === 0,
     codes: violations.map(item => item.code),
     violations,
+    remediation,
     metrics: {
       before: compactProfile(before),
       after: compactProfile(after),
+      remediation,
       deltas: {
         reflectionClosureCount: reflectionDelta,
         strongModifierCount: intensityDelta,
@@ -136,12 +140,13 @@ function compareDiscourse(source, outputText) {
 
 function discoursePromptBlock(profile) {
   if (!profile) return '';
+  const remediationPlan = buildRemediationPlan(profile);
   const roles = (profile.paragraphs || [])
     .filter(paragraph => paragraph.primaryRole !== 'heading')
     .slice(0, 16)
     .map((paragraph, index) => `${index + 1}:${paragraph.primaryRole}`)
     .join(', ');
-  return [
+  const lines = [
     '[원문 담화 계약]',
     `본문 문단 수=${profile.bodyParagraphCount}; 문단 역할=${roles || 'single'}.`,
     `원문 성찰형 결론=${profile.reflectionClosureCount}; 강한 수식=${profile.strongModifierCount}; 결론 문단=${profile.conclusionParagraphCount}.`,
@@ -149,7 +154,137 @@ function discoursePromptBlock(profile) {
     '원문에 없는 상위 개념, 사회적 쟁점, 파급 효과, 평가 강도나 새 결론을 만들지 않는다.',
     '개인의 조사·비교·발표 같은 실제 행동이 원문에 있으면 일반 설명보다 뒤로 밀어내지 않는다.',
     '변화량은 같은 주장 안의 절 순서·주어 위치·연결 방식·호흡으로 만들고, 내용 범위를 넓혀 채우지 않는다.'
-  ].join('\n');
+  ];
+  if (remediationPlan.targetCount > 0) {
+    const labels = remediationPlan.categories.map(item => item.label).join(', ');
+    lines.push(
+      '[원문에 이미 있는 AI식 담화 흔적 개선]',
+      `원문에서 다음 개선 대상이 확인됐다: ${labels}.`,
+      '이 표현이 원문에 있었다는 이유로 그대로 복사하지 않는다. 주장·평가 강도·사실은 남기면서 같은 문단 안에서 직접적이고 덜 정형적인 문장으로 다시 쓴다.',
+      '성찰 공식은 실제 행동이나 판단을 직접 서술하고, 반복 결론은 각 문단의 고유한 역할이 드러나게 표현한다. 인과 연결은 근거가 있는 범위만 남기고 모든 문단을 완벽한 원인-결과-교훈 구조로 맞추지 않는다.',
+      '새 주제를 삭제해 수치를 맞추거나 원문의 범위를 줄이지 않는다. 특히 원문에 있던 주제 확장은 보존하며, 개선은 표현 방식에만 적용한다.'
+    );
+  }
+  return lines.join('\n');
+}
+
+function buildRemediationPlan(value) {
+  const profile = value && typeof value === 'object' && Number(value.version) >= 1
+    ? value
+    : buildDiscourseProfile(value);
+  const categories = [];
+  const add = (code, label, sourceCount, requiredReduction, sentenceOrdinals = []) => {
+    if (!(sourceCount > 0) || !(requiredReduction > 0)) return;
+    categories.push({
+      code,
+      label,
+      sourceCount,
+      requiredReduction: Math.min(sourceCount, requiredReduction),
+      sentenceOrdinals: uniqueNumbers(sentenceOrdinals).slice(0, 20)
+    });
+  };
+  const sourceText = (profile.paragraphs || []).map(item => item.text || '').join('\n\n');
+  const sentences = splitSentences(sourceText);
+  const ordinalsFor = predicate => sentences
+    .map((sentence, index) => (predicate(sentence) ? index + 1 : 0))
+    .filter(Boolean);
+
+  add(
+    'reflection_formula',
+    '깊이 이해하게 되었습니다·절감했습니다 같은 정형 성찰 결론',
+    profile.reflectionClosureCount,
+    profile.reflectionClosureCount,
+    ordinalsFor(sentence => REFLECTION_PATTERNS.some(pattern => matchesPattern(sentence, pattern)))
+  );
+  if (profile.strongModifierCount >= 2) {
+    add(
+      'stacked_strong_modifiers',
+      '파멸적·막강한·거대한 같은 강한 수식의 반복',
+      profile.strongModifierCount,
+      Math.max(1, profile.strongModifierCount - 1),
+      ordinalsFor(sentence => STRONG_MODIFIER_PATTERNS.some(pattern => matchesPattern(sentence, pattern)))
+    );
+  }
+  if (profile.conclusionMarkerCount >= 2) {
+    add(
+      'repeated_conclusion_markers',
+      '결국·이처럼·중요한 의미 같은 결론 표지의 반복',
+      profile.conclusionMarkerCount,
+      profile.conclusionMarkerCount - 1,
+      ordinalsFor(sentence => matchesPattern(sentence, CONCLUSION_PATTERN))
+    );
+  }
+  const causalSourceCount = Math.max(profile.causalClosureSentenceCount, profile.perfectCausalParagraphCount);
+  if (causalSourceCount >= 2) {
+    add(
+      'overstructured_causal_closure',
+      '원인-결과-교훈으로 매번 닫히는 문단 구조',
+      causalSourceCount,
+      causalSourceCount - 1,
+      ordinalsFor(sentence => matchesPattern(sentence, CAUSAL_PATTERN)
+        && (REFLECTION_PATTERNS.some(pattern => matchesPattern(sentence, pattern)) || matchesPattern(sentence, CONCLUSION_PATTERN)))
+    );
+  }
+  if (profile.topicRestartCount > 0) {
+    add(
+      'topic_restart_after_conclusion',
+      '결론 직후 새 탐구가 다시 시작되는 연결',
+      profile.topicRestartCount,
+      profile.topicRestartCount,
+      ordinalsFor(sentence => RESTART_OPENING_PATTERN.test(String(sentence || '').trim()))
+    );
+  }
+  return {
+    version: VERSION,
+    applicable: categories.length > 0,
+    targetCount: categories.reduce((sum, item) => sum + item.requiredReduction, 0),
+    categoryCount: categories.length,
+    categories
+  };
+}
+
+function compareRemediationTargets(beforeValue, afterValue, plan = null) {
+  const before = beforeValue && typeof beforeValue === 'object' && Number(beforeValue.version) >= 1
+    ? beforeValue
+    : buildDiscourseProfile(beforeValue);
+  const after = afterValue && typeof afterValue === 'object' && Number(afterValue.version) >= 1
+    ? afterValue
+    : buildDiscourseProfile(afterValue);
+  const selectedPlan = plan || buildRemediationPlan(before);
+  const rows = (selectedPlan.categories || []).map(item => {
+    const afterCount = remediationMetric(after, item.code);
+    const reduction = Math.max(0, item.sourceCount - afterCount);
+    const achievedReduction = Math.min(item.requiredReduction, reduction);
+    return {
+      code: item.code,
+      sourceCount: item.sourceCount,
+      afterCount,
+      requiredReduction: item.requiredReduction,
+      achievedReduction,
+      residualRequiredReduction: Math.max(0, item.requiredReduction - achievedReduction)
+    };
+  });
+  const targetCount = rows.reduce((sum, item) => sum + item.requiredReduction, 0);
+  const achievedReduction = rows.reduce((sum, item) => sum + item.achievedReduction, 0);
+  return {
+    applicable: targetCount > 0,
+    targetCount,
+    achievedReduction,
+    residualTargetCount: Math.max(0, targetCount - achievedReduction),
+    coverage: round4(targetCount ? achievedReduction / targetCount : 1),
+    categories: rows
+  };
+}
+
+function remediationMetric(profile, code) {
+  if (code === 'reflection_formula') return profile.reflectionClosureCount || 0;
+  if (code === 'stacked_strong_modifiers') return profile.strongModifierCount || 0;
+  if (code === 'repeated_conclusion_markers') return profile.conclusionMarkerCount || 0;
+  if (code === 'overstructured_causal_closure') {
+    return Math.max(profile.causalClosureSentenceCount || 0, profile.perfectCausalParagraphCount || 0);
+  }
+  if (code === 'topic_restart_after_conclusion') return profile.topicRestartCount || 0;
+  return 0;
 }
 
 function compactProfile(profile) {
@@ -292,6 +427,10 @@ function round4(value) {
   return Number.isFinite(number) ? Math.round(number * 10000) / 10000 : 0;
 }
 
+function uniqueNumbers(values) {
+  return [...new Set((values || []).map(value => Number(value)).filter(Number.isFinite))];
+}
+
 function isDiscourseViolationCode(value) {
   return VIOLATION_CODES.includes(String(value || ''));
 }
@@ -301,6 +440,8 @@ module.exports = {
   VIOLATION_CODES,
   isDiscourseViolationCode,
   buildDiscourseProfile,
+  buildRemediationPlan,
+  compareRemediationTargets,
   compareDiscourse,
   discoursePromptBlock
 };

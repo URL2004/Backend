@@ -62,7 +62,7 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2.1');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.2');
   assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
   assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
@@ -206,6 +206,28 @@ test('안전 재시도 후보가 품질 최소선에 조금 못 미쳐도 기존
   const betterReport = depth.evaluateHumanizationDepth(source, better, plan);
   assert.equal(betterReport.pass, false);
   assert.equal(depth.isBetterHumanizationCandidate(weakReport, betterReport), true);
+});
+
+test('단순 어휘 교체와 절·내용 순서 재구성을 별도 구조 지표로 구분한다', () => {
+  const source = '자료를 먼저 모은 뒤 기준에 따라 분류하고 핵심 결과를 표로 정리했습니다.';
+  const lexical = '자료를 먼저 수집한 뒤 기준에 따라 분류하고 핵심 결과를 표로 정리했습니다.';
+  const structural = '기준에 따라 자료를 분류하려고 먼저 자료를 모았고, 핵심 결과는 표로 정리했습니다.';
+  const lexicalMetrics = depth.measureSubstantiveEdit(source, lexical);
+  const structuralMetrics = depth.measureSubstantiveEdit(source, structural);
+  assert.equal(lexicalMetrics.structurallyChangedSentenceCount, 0, JSON.stringify(lexicalMetrics));
+  assert.ok(structuralMetrics.structurallyChangedSentenceCount >= 1, JSON.stringify(structuralMetrics));
+  assert.ok(structuralMetrics.contentOrderChangeCount >= 1 || structuralMetrics.clauseBoundaryChangeCount >= 1);
+});
+
+test('원문에 이미 있던 정형 성찰 결론을 남기면 깊이 보고서에 개선 미달을 기록한다', () => {
+  const source = '자료를 조사했습니다. 그 결과 문제의 심각성을 깊이 이해하게 되었습니다. 다른 자료도 비교했습니다. 이를 통해 중요성을 절감했습니다.';
+  const plan = depth.buildHumanizationPlan(source, { requestStrength: 'basic', documentProfile: 'report_assignment' });
+  const output = '조사한 자료를 먼저 정리했습니다. 그 결과 문제의 심각성을 깊이 이해하게 되었습니다. 비교할 다른 자료도 살폈습니다. 이를 통해 중요성을 절감했습니다.';
+  const report = depth.evaluateHumanizationDepth(source, output, plan);
+  assert.ok(plan.rhetoricalRemediationPlan.targetCount >= 2, JSON.stringify(plan.rhetoricalRemediationPlan));
+  assert.equal(report.metrics.remediation.coverage, 0);
+  assert.ok(report.reasons.includes('rhetorical_remediation_low'), JSON.stringify(report));
+  assert.equal(report.blockingReasons.includes('rhetorical_remediation_low'), false);
 });
 
 test('polish는 실질 휴머나이징 깊이 게이트 적용 대상이 아니다', () => {

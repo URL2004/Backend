@@ -15,8 +15,10 @@ if (!inputPath) {
 
 const absolutePath = path.resolve(inputPath);
 const parsed = JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
-const rows = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.pairs) ? parsed.pairs : []);
-if (!rows.length) throw new Error('재생할 행이 없습니다. 배열 또는 { pairs: [] } 형식이어야 합니다.');
+const rows = Array.isArray(parsed)
+  ? parsed
+  : (Array.isArray(parsed?.pairs) ? parsed.pairs : (Array.isArray(parsed?.rows) ? parsed.rows : []));
+if (!rows.length) throw new Error('재생할 행이 없습니다. 배열 또는 { pairs: [] }·{ rows: [] } 형식이어야 합니다.');
 
 const summary = {
   schemaVersion: 1,

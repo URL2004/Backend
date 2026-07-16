@@ -47,7 +47,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     genreBlock(mode, register, styleProfile, documentProfile),
     discoursePromptBlock(discourseProfile),
     speakerBlock(speakerType),
-    registerBlock(register),
+    registerBlock(register, documentProfile),
     voicePromptBlock(voiceProfile)
   ].join('\n');
 

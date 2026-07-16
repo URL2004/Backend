@@ -120,8 +120,7 @@ function isTableLikeLine(value) {
   if (/^\|.+\|$/u.test(text) || /\t/u.test(text)) return true;
   if (/^(?:표|그림)\s*[0-9A-Za-z가-힣.-]+/u.test(text)) return true;
   if (/\S\s{2,}\S\s{2,}\S/u.test(text) && text.length <= 260) return true;
-  const numbers = text.match(/-?\d+(?:\.\d+)?%?/gu) || [];
-  return numbers.length >= 4 && text.length <= 220;
+  return false;
 }
 
 function isQuoteLine(value) {

@@ -574,6 +574,8 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
   const strengthLabel = plan.requestStrength === 'advanced' ? '고급' : '기본';
   const targetOrdinals = buildGeneralRetryTargetOrdinals(source, currentOutput, plan, humanizationDepthReport);
   const targetText = targetOrdinals.length ? targetOrdinals.join(', ') : '서버가 표시한 현재 문장 중 안전하게 재구성 가능한 한 곳';
+  const remediationLow = (humanizationDepthReport?.reasons || []).includes('rhetorical_remediation_low');
+  const structuralLow = (humanizationDepthReport?.reasons || []).includes('structural_rewrite_coverage_low');
   const system = [
     '너는 한국어 실질 휴머나이징 국소 수리기다. 교정·다듬기만 한 결과를 만드는 작업이 아니다.',
     'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단 수와 내용 순서를 보존한다.',
@@ -581,12 +583,18 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
     `${strengthLabel} 모드의 변화량은 서버가 결과에서 계산한다. 숫자를 맞추기 위한 새 설명이나 동의어 나열 대신 지정된 문장의 절 순서·주어 위치·연결·호흡을 다시 구성한다.`,
     `수정 대상 문장 번호=${targetText}. 번호는 SOURCE와 CURRENT의 일반 문장 순서 기준이다.`,
-    '수정 대상과 의미상 붙어 있는 접속 표현만 함께 손볼 수 있다. 그 밖의 문장·문단은 CURRENT 그대로 유지한다.',
+    '수정 대상의 앞뒤 한 문장은 같은 문단 안에서 같은 설명·활동·결론 역할을 공유할 때만 함께 묶어 고칠 수 있다. 다른 역할이나 다른 문단으로 내용은 옮기지 않는다.',
+    structuralLow
+      ? '현재 결과는 단어는 바뀌었지만 문장 구조 변화가 부족하다. 이미 조금 바뀐 대상도 절 배치·주어 위치·연결·문장 경계를 다시 구성해 표면 교체를 넘어선다.'
+      : '',
+    remediationLow
+      ? '현재 결과에는 SOURCE부터 있던 정형 성찰 결론·반복 결론 표지·과도하게 완결된 인과 구조가 충분히 개선되지 않았다. 주장과 사실은 모두 남기고 해당 표현 방식만 직접적이고 덜 정형적으로 바꾼다.'
+      : '',
     '대상 문장의 주장 범위, 문단 역할, 결론 여부는 바꾸지 않는다. 설명을 교훈·감상·결론으로 바꾸거나 주제를 넓혀 변화량을 채우지 않는다.',
     '문장 수는 지정된 문장 안의 의미 단위를 자연스럽게 합치거나 나누는 경우에만 조정하고, 문단·제목·목록·질문·인용 구조는 바꾸지 않는다.',
     '새 사실·평가·감정·경험·수치·기관·인용·예시를 만들지 않는다.',
     '이 보존 조건 안에서 실질 변화 기준을 만족할 수 없을 때만 safeChangeFound=false로 답한다.'
-  ].join('\n');
+  ].filter(Boolean).join('\n');
   const response = await completeJson({
     system,
     user: `[SOURCE - 의미 확인용]\n${source}\n\n[CURRENT - 여기서 국소 수정]\n${currentOutput}`,
@@ -616,17 +624,32 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
   const measured = humanizationDepth.measureSubstantiveEdit(source, currentOutput);
   const rows = measured.sentenceEdits || [];
   if (!rows.length) return [];
-  const changed = new Set(rows.filter(row => row.substantiveChanged).map(row => row.index));
-  const unchanged = rows.map(row => row.index).filter(index => !changed.has(index));
-  if (!unchanged.length) return [];
-
   const targetSet = new Set((plan.targetIndices || []).filter(index => Number.isInteger(index)));
-  const unchangedTargets = unchanged.filter(index => targetSet.has(index));
-  const unchangedOthers = unchanged.filter(index => !targetSet.has(index));
+  const unchanged = rows.filter(row => !row.substantiveChanged);
+  const shallowChanged = rows.filter(row => row.substantiveChanged
+    && (!row.structuralChanged || Number(row.ratio || 0) < 0.12));
+  const deepChangedTargets = rows.filter(row => row.substantiveChanged
+    && row.structuralChanged
+    && targetSet.has(row.index));
+  const remediationLow = (depthReport?.reasons || []).includes('rhetorical_remediation_low');
+  const ordered = uniqueRows([
+    ...unchanged.filter(row => targetSet.has(row.index)),
+    ...shallowChanged.filter(row => targetSet.has(row.index)),
+    ...(remediationLow ? deepChangedTargets : []),
+    ...unchanged.filter(row => !targetSet.has(row.index)),
+    ...shallowChanged.filter(row => !targetSet.has(row.index))
+  ]);
+  if (!ordered.length) return [];
+
   const currentChangedCount = Number(depthReport?.metrics?.substantiveChangedSentenceCount ?? measured.substantiveChangedSentenceCount) || 0;
   const currentTargetChangedCount = Number(depthReport?.metrics?.targetChangedCount) || 0;
+  const currentStructuralCount = Number(depthReport?.metrics?.structurallyChangedSentenceCount ?? measured.structurallyChangedSentenceCount) || 0;
   const totalDeficit = Math.max(1, Number(plan.requiredChangedSentenceCount || 1) - currentChangedCount);
   const targetDeficit = Math.max(0, Number(plan.requiredTargetChangedCount || 0) - currentTargetChangedCount);
+  const structuralDeficit = Math.max(0, Number(plan.requiredStructuralChangedSentenceCount || 0) - currentStructuralCount);
+  const remediationDeficit = remediationLow
+    ? Math.max(1, Number(depthReport?.metrics?.remediation?.residualTargetCount || 1))
+    : 0;
   const sourceChars = Math.max(1, Number(plan.sourceChars) || String(source || '').replace(/\s+/gu, '').length);
   const averageSentenceChars = sourceChars / Math.max(1, rows.length);
   const editDeficitChars = Math.max(0,
@@ -634,10 +657,87 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
   // 지정된 한 문장을 다시 구성하면 평균적으로 그 문장 길이의 약 18%가
   // 실질 편집된다고 보고, 최소선에 닿는 데 필요한 범위만 보수적으로 고른다.
   const editDeficitCount = Math.ceil(editDeficitChars / Math.max(6, averageSentenceChars * 0.18));
-  const desiredCount = Math.min(unchanged.length, Math.max(totalDeficit, targetDeficit, editDeficitCount));
-  return [...unchangedTargets, ...unchangedOthers]
+  const desiredCount = Math.min(ordered.length, Math.max(totalDeficit, targetDeficit, structuralDeficit, remediationDeficit, editDeficitCount));
+  return ordered
     .slice(0, Math.max(1, desiredCount))
-    .map(index => index + 1);
+    .map(row => row.index + 1);
+}
+
+async function retryKoreanRefinement({
+  source,
+  currentOutput,
+  refinementAudit,
+  documentProfile = null,
+  mode = '',
+  config,
+  signal,
+  safetyIdentifier = ''
+}) {
+  const profile = String(documentProfile?.profile || documentProfile || 'unknown');
+  const issues = (refinementAudit?.repairableIssues || [])
+    .filter(item => item.afterCount > 0 && item.deterministicSafe !== true)
+    .slice(0, 8);
+  if (!issues.length) {
+    return {
+      outputText: currentOutput,
+      safeChangeFound: false,
+      notes: [],
+      usage: null,
+      model: '',
+      issueCodes: []
+    };
+  }
+  const issueLines = issues.map(item => {
+    const ordinals = (item.sentenceOrdinals || []).slice(0, 12).join(',');
+    return `- ${item.code}${ordinals ? ` (문장 ${ordinals})` : ''}: ${item.message}`;
+  });
+  const system = [
+    '너는 한국어 문장 국소 수리기다. CURRENT에서 아래에 열거한 한국어 결합·빈도·초점·격식 문제만 최소 범위로 고친다.',
+    'SOURCE는 의미와 사실 확인용이다. SOURCE의 주장, 수치, 기관명, 인용, 화자, 경험, 평가 강도, 제목, 목록, 질문, 문단 수와 내용 순서를 그대로 보존한다.',
+    '과학·법률·게임이론 등 외부 사실의 옳고 그름을 추정해 수정하지 않는다. 원문에 없던 설명이나 예시도 추가하지 않는다.',
+    '문제가 있는 문장과 같은 문단의 바로 인접한 문장만 문법상 꼭 필요할 때 함께 손본다. 나머지는 CURRENT를 그대로 둔다.',
+    profile === 'resume_application'
+      ? '자기소개서의 전문성 하한을 지킨다. 자연스럽게 만든다는 이유로 설계·구성·분석·역량·피드백·교류·근무 같은 말을 짰다·봤다·힘·준·어울렸다·일했다로 낮추지 않는다.'
+      : '',
+    ['academic_paper', 'report_assignment'].includes(profile)
+      ? '학술·보고서의 개념어와 격식을 유지하고 구어체나 감탄형 표현을 새로 넣지 않는다.'
+      : '',
+    '수리할 문제가 실제로 남아 있지 않거나 보존 조건 안에서 안전하게 고칠 수 없으면 safeChangeFound=false로 답한다.',
+    '[수리 대상]',
+    ...issueLines
+  ].filter(Boolean).join('\n');
+  const response = await completeJson({
+    system,
+    user: `[SOURCE - 의미 확인용]\n${source}\n\n[CURRENT - 국소 수리 대상]\n${currentOutput}`,
+    schema: POLISH_REPAIR_SCHEMA,
+    schemaName: 'gpt_prod_korean_refinement_retry',
+    model: config.models.repair,
+    reasoningEffort: config.reasoning.repair,
+    verbosity: 'low',
+    maxOutputTokens: Math.max(1800, Math.min(12000, Math.ceil(String(currentOutput || '').length * 2.2))),
+    config,
+    signal,
+    safetyIdentifier,
+    meta: { task: 'repair', phase: 'korean_refinement_retry', mode: String(mode || ''), profile }
+  });
+  return {
+    outputText: String(response.json.outputText || '').trim() || currentOutput,
+    safeChangeFound: response.json.safeChangeFound === true,
+    notes: response.json.notes || [],
+    usage: response.usage,
+    model: response.model,
+    issueCodes: issues.map(item => item.code)
+  };
+}
+
+function uniqueRows(rows) {
+  const seen = new Set();
+  return (rows || []).filter(row => {
+    const index = Number(row?.index);
+    if (!Number.isInteger(index) || seen.has(index)) return false;
+    seen.add(index);
+    return true;
+  });
 }
 
 function warningsFromSemantic(report) {
@@ -753,6 +853,7 @@ module.exports = {
   compareRepetitionDelta,
   retryPolishSurface,
   retryGeneralSurface,
+  retryKoreanRefinement,
   buildGeneralRetryTargetOrdinals,
   warningsFromSemantic
 };

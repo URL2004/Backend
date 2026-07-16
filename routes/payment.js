@@ -8,6 +8,7 @@ const { getRevenue } = require('../lib/revenue');
 const detectCalibration = require('../lib/detectCalibration');
 const basicHumanizeExperiment = require('../lib/basicHumanizeExperiment');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
+const { buildHumanizeQualityReport } = require('../lib/humanizeQualityReport');
 const gptAnalyze = require('./analyze-gpt');
 
 const router = express.Router();
@@ -897,6 +898,11 @@ const JOB_STATUS_SETS = {
 };
 function serializeAdminJobDoc(docSnap) {
   const j = docSnap.data() || {};
+  const finiteOrNull = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
+  const safeCodes = (value) => [...new Set((Array.isArray(value) ? value : [])
+    .map(item => String(item || '').trim().toLowerCase())
+    .filter(item => /^[a-z][a-z0-9_.:-]{1,79}$/u.test(item)))]
+    .slice(0, 30);
   return {
     id: j.id || docSnap.id,
     uid: j.uid || '',
@@ -910,7 +916,46 @@ function serializeAdminJobDoc(docSnap) {
     textLength: Number(j.textLength) || 0,
     resultLength: Number(j.resultLength) || 0,
     candidatesCount: Number(j.candidatesCount) || 0,
-    error: j.error || ''
+    error: j.error || '',
+    qualityStatus: j.qualityStatus || '',
+    qualityWarningCodes: safeCodes(j.qualityWarningCodes),
+    engineVersion: j.engineVersion || '',
+    requestedMode: j.requestedMode || j.mode || '',
+    effectiveMode: j.effectiveMode || '',
+    requestStrength: j.requestStrength || '',
+    documentProfile: j.documentProfile || '',
+    profileConfidence: finiteOrNull(j.profileConfidence),
+    profileDecisionSource: j.profileDecisionSource || '',
+    profileMargin: finiteOrNull(j.profileMargin),
+    detectedDocumentProfile: j.detectedDocumentProfile || '',
+    detectedProfileConfidence: finiteOrNull(j.detectedProfileConfidence),
+    requestedDocumentProfile: j.requestedDocumentProfile || '',
+    profileOverrideApplied: j.profileOverrideApplied === true,
+    profileOverrideIgnoredReason: j.profileOverrideIgnoredReason || '',
+    semanticJudgeRan: j.semanticJudgeRan === true,
+    humanizationDepthPass: j.humanizationDepthPass === true,
+    humanizationDepthSoftDelivered: j.humanizationDepthSoftDelivered === true,
+    humanizationDeliveryDepthBand: j.humanizationDeliveryDepthBand || '',
+    substantiveEditRatio: finiteOrNull(j.substantiveEditRatio),
+    substantiveChangedSentenceRatio: finiteOrNull(j.substantiveChangedSentenceRatio),
+    humanizationTargetCoverage: finiteOrNull(j.humanizationTargetCoverage),
+    structuralChangedSentenceCount: finiteOrNull(j.structuralChangedSentenceCount),
+    structuralChangedSentenceRatio: finiteOrNull(j.structuralChangedSentenceRatio),
+    rhetoricalRemediationTargetCount: finiteOrNull(j.rhetoricalRemediationTargetCount),
+    rhetoricalRemediationAchievedCount: finiteOrNull(j.rhetoricalRemediationAchievedCount),
+    rhetoricalRemediationCoverage: finiteOrNull(j.rhetoricalRemediationCoverage),
+    humanizationDepthReasonCodes: safeCodes(j.humanizationDepthReasonCodes),
+    koreanRefinementPass: typeof j.koreanRefinementPass === 'boolean' ? j.koreanRefinementPass : null,
+    koreanRefinementIssueCodes: safeCodes(j.koreanRefinementIssueCodes),
+    koreanDeterministicRepairCount: finiteOrNull(j.koreanDeterministicRepairCount),
+    koreanRefinementRetryCount: finiteOrNull(j.koreanRefinementRetryCount),
+    sourceReviewWarningCodes: safeCodes(j.sourceReviewWarningCodes),
+    sourceReviewWarningCount: finiteOrNull(j.sourceReviewWarningCount),
+    naturalnessRiskIncreased: j.naturalnessRiskIncreased === true,
+    naturalnessOverallRiskDelta: finiteOrNull(j.naturalnessOverallRiskDelta),
+    rhythmUniformityDelta: finiteOrNull(j.rhythmUniformityDelta),
+    lengthRatio: finiteOrNull(j.lengthRatio),
+    estimatedUsd: finiteOrNull(j.estimatedUsd)
   };
 }
 router.post('/admin/jobs', async (req, res) => {
@@ -980,6 +1025,48 @@ router.post('/admin/jobs', async (req, res) => {
   } catch (err) {
     logger.error('admin.jobs_failed', { adminUid, err });
     res.status(500).json({ error: '작업 목록을 불러오지 못했습니다. (transformJobArchive 색인 확인)' });
+  }
+});
+
+// 관리자: 휴머나이징 품질 집계. 원문·결과·프롬프트는 읽거나 응답하지 않고
+// transformJobArchive의 축약 관측 필드만 사용한다.
+router.post('/admin/humanize-quality', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  try {
+    const hoursRaw = parseInt(req.body && req.body.hours, 10);
+    const hours = Number.isInteger(hoursRaw) ? Math.min(Math.max(hoursRaw, 1), 2160) : 24;
+    const limitRaw = parseInt(req.body && req.body.limit, 10);
+    const limit = Number.isInteger(limitRaw) ? Math.min(Math.max(limitRaw, 1), 2000) : 1000;
+    const sinceMs = Date.now() - hours * 3600 * 1000;
+    const snap = await db.collection(JOB_ARCHIVE_COLLECTION)
+      .where('createdAt', '>=', sinceMs)
+      .orderBy('createdAt', 'desc')
+      .limit(limit)
+      .get();
+    const rows = snap.docs.map(serializeAdminJobDoc).filter(row => row.createdAtMs >= sinceMs);
+    const report = buildHumanizeQualityReport(rows, {
+      hours,
+      sinceMs,
+      generatedAtMs: Date.now(),
+      recentLimit: Math.min(limit, 200)
+    });
+    logger.info('admin.humanize_quality_loaded', {
+      adminUid,
+      hours,
+      limit,
+      count: rows.length,
+      truncated: snap.docs.length >= limit
+    });
+    res.json({
+      ok: true,
+      source: JOB_ARCHIVE_COLLECTION,
+      truncated: snap.docs.length >= limit,
+      report
+    });
+  } catch (err) {
+    logger.error('admin.humanize_quality_failed', { adminUid, err });
+    res.status(500).json({ error: '휴머나이징 품질 통계를 불러오지 못했습니다. (transformJobArchive 색인 확인)' });
   }
 });
 
@@ -1874,5 +1961,8 @@ router.post('/apply-referral', async (req, res) => {
     res.status(500).json({ error: '추천 처리 실패' });
   }
 });
+
+router.serializeAdminJobDoc = serializeAdminJobDoc;   // 축약 관측 계약 테스트용
+router.buildHumanizeQualityReport = buildHumanizeQualityReport;
 
 module.exports = router;

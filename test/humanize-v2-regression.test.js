@@ -11,7 +11,7 @@ const nikl = require('../engine/koreanQuality/niklTest');
 const freeze = require('../engine/freezeblocks');
 const structure = require('../engine-gpt-prod/structureChunk');
 const layoutStructure = require('../engine-gpt-prod/layoutStructure');
-const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
+const { detectDocumentProfile, applyDocumentProfileOverride } = require('../engine-gpt-prod/documentProfile');
 const { buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift, paragraphExpansionLimit } = require('../engine-gpt-prod/voiceProfile');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const factAudit = require('../engine-gpt-prod/factAudit');
@@ -457,6 +457,85 @@ test('문서 프로필은 요청 mode와 basicStyle 없이 원문만으로 판�
   assert.ok(reportA.confidence >= 0.75);
 });
 
+test('사용자 장르 선택은 저신뢰 판정만 보완하고 고신뢰 원문 판정은 덮지 않는다', () => {
+  const ambiguous = {
+    profile: 'unknown', confidence: 0.51, group: 'unknown', profileDecisionSource: 'low_confidence_preserve',
+    safetyProfiles: [], formatProfile: { flags: [] }
+  };
+  const applied = applyDocumentProfileOverride(ambiguous, 'resume_application');
+  assert.equal(applied.profile, 'resume_application');
+  assert.equal(applied.profileDecisionSource, 'user_override');
+  assert.equal(applied.profileOverrideApplied, true);
+  assert.ok(applied.safetyProfiles.includes('resume_application'));
+  assert.equal(applied.detectedProfile, 'unknown');
+
+  const confident = {
+    profile: 'academic_paper', confidence: 0.91, group: 'academic_report_explainer',
+    profileDecisionSource: 'content_only', safetyProfiles: ['academic_paper'], formatProfile: { flags: [] }
+  };
+  const ignored = applyDocumentProfileOverride(confident, 'review_blog');
+  assert.equal(ignored.profile, 'academic_paper');
+  assert.equal(ignored.profileOverrideApplied, false);
+  assert.equal(ignored.profileOverrideIgnoredReason, 'high_confidence_content');
+  assert.equal(ignored.requestedDocumentProfile, 'review_blog');
+});
+
+test('제목이 없는 경력 서술도 행동·성과·직무 연결이 함께 있으면 지원서로 판정한다', () => {
+  const source = [
+    '국제경제 수업에서 관세 정책을 주제로 발표했습니다.',
+    '여러 자료를 수집하고 핵심을 분석한 뒤 발표 흐름과 화면 구성을 설계했습니다.',
+    '데이터를 시각화하며 전달 역량을 키웠고 자격시험에도 합격해 실무 능력을 다졌습니다.',
+    '이 경험을 교육 운영 지원 업무에 활용하고 조직에 기여하고 싶습니다.'
+  ].join(' ');
+  const report = detectDocumentProfile(source);
+  assert.equal(report.profile, 'resume_application');
+  assert.ok(report.confidence >= 0.75, JSON.stringify(report.candidateProfiles));
+  assert.ok(report.safetyProfiles.includes('resume_application'));
+});
+
+test('숫자가 많은 일반 문장과 구매·가격 연구어를 표·광고로 오인하지 않는다', () => {
+  const source = [
+    '소비자의 구매 단계와 가격 정보가 선택에 미치는 영향을 분석했다.',
+    '표본은 20명, 비교 비율은 35%, 조사 연도는 2026년이며 모형의 계수는 1.25였다.',
+    '구매 가격과 결제 순서를 변수로 두고 연구 결과를 보고서에 정리했다.'
+  ].join('\n');
+  const report = detectDocumentProfile(source);
+  assert.equal(report.formatProfile.flags.includes('table_heavy'), false);
+  assert.notEqual(report.profile, 'marketing');
+  assert.equal(report.riskFlags.includes('commercial_claim'), false);
+  assert.equal(report.riskFlags.includes('experience_claim'), false);
+});
+
+test('게임 모델·소비자 구매를 다루는 학술 구조를 자소서나 광고로 오인하지 않는다', () => {
+  const source = `온라인 선택 설계가 소비자 후생에 미치는 영향 분석
+1. 서론
+본 연구는 정보 비대칭성 관점에서 선택 설계의 발생 원인을 분석하고 순차 게임 모델로 규제의 경제적 정당성을 검토한다.
+2. 이론적 배경
+무료 체험 이후 자동 결제와 구매 전환은 소비자의 제한된 합리성에 영향을 줄 수 있다.
+3. 연구 모형
+플랫폼의 전략과 소비자의 수용·이탈을 변수로 두고 보수 구조를 모형화한다. 연구 가설은 규제 비용이 기만 이익보다 커질 때 정직한 설계가 선택된다는 것이다.
+4. 결론 및 향후 연구
+향후 연구에서는 이용자 설문과 실제 이탈률을 수집해 가설을 실증적으로 분석할 필요가 있다.
+참고문헌
+공정거래위원회. (2023. 7. 31.). 온라인 다크패턴 가이드라인.
+한국소비자원. (2024. 1. 25.). 온라인 거래 소비자 조사.
+정책연구원. (2025. 2. 10.). 플랫폼 규제 연구.`;
+  const report = detectDocumentProfile(source);
+  assert.equal(report.profile, 'academic_paper');
+  assert.equal(report.candidateProfiles[0].profile, 'academic_paper');
+  assert.ok(report.formatProfile.flags.includes('reference_heavy'));
+  assert.ok(!report.riskFlags.includes('commercial_claim'));
+  const marketing = report.candidateProfiles.find(item => item.profile === 'marketing');
+  assert.ok(!marketing || marketing.score <= 0.9);
+});
+
+test('그날의·바람 같은 약한 어휘만으로 창작 보호 프로필을 켜지 않는다', () => {
+  const source = '그날의 가격 변화를 살펴봤다. 바람이 강한 날에는 구매량이 달라졌고 소비자 선택에도 영향을 주었다. 분석 결과는 보고서에 정리했다.';
+  const report = detectDocumentProfile(source);
+  assert.notEqual(report.profile, 'creative');
+  assert.equal(report.safetyProfiles.includes('creative'), false);
+});
+
 test('번호형 학생 자기평가는 basicStyle과 무관하게 장르·형식·위험 축을 분리한다', () => {
   const questions = [
     '이번 수업 활동에서 맡은 역할은 무엇인가요?',
@@ -551,6 +630,30 @@ test('공통 프롬프트는 불변 계약과 요청 강도를 한 번씩만 선
   assert.doesNotMatch(basic, /안전한 한 곳만|이 청크만 다듬는다/u);
   assert.doesNotMatch(basic, /보존에 머무르지|원문과 가깝게 두지|충분히 재서술/u);
   assert.doesNotMatch(advanced, /청소|청결|악취|곰팡|하수구|업체 후기/u);
+});
+
+test('지원서 프롬프트는 거시 구조와 미시 편집을 분리하고 직무 어휘 격식을 지킨다', () => {
+  const source = '저는 자료를 분석해 발표 흐름을 설계했고 이 경험을 운영 지원 업무에 활용하고 싶습니다.';
+  const documentProfile = {
+    profile: 'resume_application',
+    group: 'essay_application',
+    confidence: 0.9,
+    tonePolicy: 'formal',
+    formatProfile: { flags: [] },
+    safetyProfiles: ['resume_application'],
+    riskFlags: ['pov_sensitive', 'experience_claim']
+  };
+  const voiceProfile = buildVoiceProfile(source, { documentProfile });
+  const prompt = prompts.buildHumanizePrompt('blog', 'ko', {
+    requestStrength: 'basic',
+    register: voiceProfile.register,
+    documentProfile,
+    voiceProfile
+  }).stable;
+  assert.match(prompt, /거시 구조는 잠금 대상/u);
+  assert.match(prompt, /미시 문장은 편집 대상/u);
+  assert.match(prompt, /자기소개서의 직무·성과·역량 어휘/u);
+  assert.match(prompt, /짰다·봤다·힘·준·어울렸다·일했다/u);
 });
 
 test('문단 안에서 반복되는 관찰형 명사 종결은 세특 프로필로 판정한다', () => {

@@ -83,6 +83,13 @@ function installEngineMock(t, options = {}) {
         notes: []
       });
     }
+    if (name === 'gpt_prod_korean_refinement_retry') {
+      return apiResponse({
+        outputText: options.koreanRefinementOutput || options.humanize || SAFE_POLISH,
+        safeChangeFound: options.koreanRefinementSafeChangeFound !== false,
+        notes: []
+      });
+    }
     if (name === 'gpt_prod_soft_claim_ledger') {
       const source = String(body.input || '').split('[SOURCE]\n')[1] || SOURCE;
       const normalized = source.replace(/\s+/gu, ' ').trim();
@@ -127,7 +134,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.5');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.6');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -137,7 +144,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.ok(Array.isArray(out.engineMeta.riskFlags));
   assert.equal(out.engineMeta.tonePolicy, 'source_preserve');
   assert.equal(out.engineMeta.semanticJudgeRan, true);
-  assert.equal(out.engineMeta.discourseAuditVersion, 1);
+  assert.equal(out.engineMeta.discourseAuditVersion, 2);
   assert.equal(out.engineMeta.discoursePass, true);
   assert.deepEqual(out.engineMeta.discourseWarningCodes, []);
   assert.equal(out.engineMeta.logicalChunkCount, out.engineMeta.chunkCount);
@@ -177,6 +184,23 @@ test('polish는 의미 심사 뒤 새 문단을 만들지 않고 원문 문단 �
   assert.equal(out.qualityWarnings.some(item => item.code === 'paragraph_structure_changed'), false);
   assert.equal(out.result.structureLock.layoutRepair.paragraphs.policy, 'exact_polish');
   assert.equal(out.result.structureLock.layoutRepair.paragraphs.afterCount, 1);
+});
+
+test('빈도 충돌은 국소 한국어 수리 후 의미 심사를 거치고 원문 알림과 분리한다', { concurrency: false }, async t => {
+  const source = '그때마다 고객에게서 감사 인사를 자주 들었습니다. 이 문장은 표현이 조금 어색합니다.';
+  const humanized = '그때마다 고객에게서 감사 인사를 자주 들었습니다. 이 문장은 표현이 다소 어색합니다.';
+  const repaired = '고객에게서 감사 인사를 자주 들었습니다. 이 문장은 표현이 다소 어색합니다.';
+  const mock = installEngineMock(t, { humanize: humanized, koreanRefinementOutput: repaired });
+  const out = await engine.run({ text: source, mode: 'polish', allowPolish: true, uid: 'korean-refinement-user', config: config() });
+  assert.equal(out.result.outputText, repaired);
+  assert.equal(out.engineMeta.koreanRefinementRetryAttemptCount, 1);
+  assert.equal(out.engineMeta.koreanRefinementRetryApplied, true);
+  assert.equal(out.engineMeta.koreanRefinementPass, true);
+  assert.equal(out.engineMeta.semanticJudgeRan, true);
+  assert.ok(out.sourceReviewWarnings.some(item => item.code === 'frequency_quantifier_conflict'));
+  assert.equal(out.qualityWarnings.some(item => item.code === 'korean_frequency_quantifier_conflict'), false);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_korean_refinement_retry').length, 1);
+  assert.match(String(mock.calls.find(call => call.name === 'gpt_prod_korean_refinement_retry')?.body?.instructions || ''), /과학·법률·게임이론/u);
 });
 
 test('원문부터 있던 비인접 반복은 결과에서 늘지 않으면 needs_review로 올리지 않는다', { concurrency: false }, async t => {
@@ -483,7 +507,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.1');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.2');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);

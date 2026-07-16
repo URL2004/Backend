@@ -70,7 +70,28 @@ test('휴머나이징 프롬프트는 수치 할당량을 숨기고 원문 담�
   assert.match(discourseBlock, /설명 문단을 성찰·교훈·결론 문단으로 바꾸지 않는다/u);
 });
 
-test('깊이 재시도 대상은 이미 바뀐 문장을 피하고 위험 문장을 우선한다', () => {
+test('원문에 이미 있는 AI식 성찰·수식·반복 결론을 삭제가 아닌 재표현 대상으로 만든다', () => {
+  const source = [
+    '자료를 조사한 결과 파멸적인 영향을 깊이 이해하게 되었습니다.',
+    '다른 자료를 비교한 결과 막강한 영향을 절감했습니다.',
+    '결국 이 활동은 중요한 의미가 있다.'
+  ].join(' ');
+  const plan = discourse.buildRemediationPlan(source);
+  const codes = new Set(plan.categories.map(item => item.code));
+  assert.ok(codes.has('reflection_formula'));
+  assert.ok(codes.has('stacked_strong_modifiers'));
+  const prompt = discourse.discoursePromptBlock(discourse.buildDiscourseProfile(source));
+  assert.match(prompt, /원문에 이미 있는 AI식 담화 흔적 개선/u);
+  assert.match(prompt, /주장·평가 강도·사실은 남기면서/u);
+  assert.match(prompt, /원문에 있던 주제 확장은 보존/u);
+
+  const improved = '자료를 조사하면서 영향의 크기를 직접 확인했다. 다른 자료와 비교해도 같은 경향이 뚜렷했다. 이 활동에서 확인한 내용은 조사 기록에 남겼다.';
+  const remediation = discourse.compareRemediationTargets(source, improved, plan);
+  assert.equal(remediation.coverage, 1, JSON.stringify(remediation));
+  assert.equal(remediation.residualTargetCount, 0);
+});
+
+test('깊이 재시도 대상은 충분히 구조가 바뀐 비대상 문장을 피하고 위험 문장을 우선한다', () => {
   const source = '첫 문장을 조사했습니다. 또한 둘째 문장을 정리했습니다. 셋째 문장을 비교했습니다. 넷째 문장을 기록했습니다. 다섯째 문장을 검토했습니다.';
   const current = source.replace('첫 문장을 조사했습니다', '조사한 것은 첫 문장이었습니다');
   const plan = humanizationDepth.buildHumanizationPlan(source, { requestStrength: 'advanced' });
@@ -82,6 +103,19 @@ test('깊이 재시도 대상은 이미 바뀐 문장을 피하고 위험 문장
   assert.equal(ordinals.includes(1), false, ordinals.join(','));
   assert.deepEqual(ordinals.slice(0, 2), [2, 4]);
   assert.ok(ordinals.length >= 2);
+});
+
+test('깊이 재시도는 단어만 조금 바뀐 위험 문장도 구조 개선 대상으로 다시 고른다', () => {
+  const source = '첫 문장을 기록했습니다. 또한 둘째 문장을 체계적으로 정리했습니다. 셋째 문장을 비교했습니다. 넷째 문장을 검토했습니다.';
+  const current = source.replace('체계적으로 정리했습니다', '차분하게 정리했습니다');
+  const plan = humanizationDepth.buildHumanizationPlan(source, { requestStrength: 'advanced' });
+  plan.targetIndices = [1];
+  plan.requiredChangedSentenceCount = 2;
+  plan.requiredTargetChangedCount = 1;
+  plan.requiredStructuralChangedSentenceCount = 2;
+  const report = humanizationDepth.evaluateHumanizationDepth(source, current, plan);
+  const ordinals = qualityV2.buildGeneralRetryTargetOrdinals(source, current, plan, report);
+  assert.ok(ordinals.includes(2), ordinals.join(','));
 });
 
 test('의미 수리 후보가 새 담화 위반을 만들면 안전 수리로 채택하지 않는다', () => {

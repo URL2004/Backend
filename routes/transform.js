@@ -21,6 +21,7 @@ const discord = require('../lib/discord');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const layoutNormalizer = require('../engine/layout');
+const { CONTENT_GENRES } = require('../engine-gpt-prod/documentProfile');
 
 function claudeGenreTransferV2() {
   return require('../engine/genretransfer').genreTransferV2;
@@ -122,6 +123,23 @@ function normalizeBasicStyle(value) {
   const v = String(value || '').trim().toLowerCase();
   if (v === 'report' || v === 'assignment' || v === 'school') return 'report';
   return 'blog';
+}
+
+const DOCUMENT_PROFILE_ALIASES = Object.freeze({
+  student_record: 'student_record_teacher',
+  general_essay: 'personal_essay',
+  long_explainer: 'report_assignment',
+  blog_review: 'review_blog',
+  marketing_ad: 'marketing',
+  social_caption: 'social',
+  short_phrase: 'general'
+});
+
+function normalizeDocumentProfileOverride(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+  const normalized = DOCUMENT_PROFILE_ALIASES[raw] || raw;
+  return CONTENT_GENRES.includes(normalized) && normalized !== 'unknown' ? normalized : null;
 }
 
 function normalizeAdminLabProfile(value) {
@@ -387,6 +405,7 @@ function activeJobPayload(job) {
     startedAt: job.startedAt,
     needed: job.needed
   };
+  if (job.documentProfileOverride) base.documentProfile = job.documentProfileOverride;
   Object.assign(base, queueDetails(job));
   if (job.note) base.note = job.note;
   if (job.status === 'awaiting_approval') base.candidates = job.candidates || [];
@@ -536,9 +555,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest', 'engineMeta'];
+  'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest', 'engineMeta'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'estSec', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -646,6 +665,7 @@ function buildArchiveObservability(job) {
   const paragraphRepair = layoutRepair.paragraphs || {};
   const paragraphReadability = paragraphRepair.readability || engineMeta.paragraphReadability || {};
   const dedupeAudit = humanizeMeta.dedupeAudit || {};
+  const naturalnessShadow = result.naturalnessShadow || humanizeMeta.naturalnessShadow || {};
   const warningCodes = uniqueArchiveCodes([
     ...(Array.isArray(result.qualityWarnings) ? result.qualityWarnings : []),
     ...(Array.isArray(result.floorReport?.warnings) ? result.floorReport.warnings : [])
@@ -668,6 +688,13 @@ function buildArchiveObservability(job) {
     requestStrength: archiveString(engineMeta.requestStrength, 24),
     documentProfile: archiveString(engineMeta.documentProfile, 64),
     profileConfidence: archiveFinite(engineMeta.profileConfidence),
+    profileDecisionSource: archiveString(engineMeta.profileDecisionSource, 48),
+    profileMargin: archiveFinite(engineMeta.profileMargin),
+    detectedDocumentProfile: archiveString(engineMeta.detectedDocumentProfile, 64),
+    detectedProfileConfidence: archiveFinite(engineMeta.detectedProfileConfidence),
+    requestedDocumentProfile: archiveString(engineMeta.requestedDocumentProfile, 64),
+    profileOverrideApplied: engineMeta.profileOverrideApplied === true,
+    profileOverrideIgnoredReason: archiveString(engineMeta.profileOverrideIgnoredReason, 48),
     semanticJudgeRan: engineMeta.semanticJudgeRan === true,
     discourseAuditVersion: archiveFinite(engineMeta.discourseAuditVersion),
     discoursePass: typeof engineMeta.discoursePass === 'boolean' ? engineMeta.discoursePass : undefined,
@@ -704,6 +731,15 @@ function buildArchiveObservability(job) {
     humanizationMinimumTargetCoverage: archiveFinite(engineMeta.humanizationMinimumTargetCoverage),
     substantiveEditRatio: archiveFinite(engineMeta.substantiveEditRatio),
     substantiveChangedSentenceRatio: archiveFinite(engineMeta.substantiveChangedSentenceRatio),
+    humanizationTargetCoverage: archiveFinite(engineMeta.humanizationTargetCoverage),
+    humanizationTargetChangedCount: archiveFinite(engineMeta.humanizationTargetChangedCount),
+    structuralChangedSentenceCount: archiveFinite(engineMeta.structuralChangedSentenceCount),
+    structuralChangedSentenceRatio: archiveFinite(engineMeta.structuralChangedSentenceRatio),
+    humanizationRequiredStructuralSentenceCount: archiveFinite(engineMeta.humanizationRequiredStructuralSentenceCount),
+    rhetoricalRemediationTargetCount: archiveFinite(engineMeta.rhetoricalRemediationTargetCount),
+    rhetoricalRemediationAchievedCount: archiveFinite(engineMeta.rhetoricalRemediationAchievedCount),
+    rhetoricalRemediationCoverage: archiveFinite(engineMeta.rhetoricalRemediationCoverage),
+    lengthRatio: archiveFinite(engineMeta.lengthRatio ?? result.floorReport?.metrics?.lengthRatio),
     humanizationTargetDepthMet: engineMeta.humanizationTargetDepthMet === true,
     humanizationDeliveryDepthBand: archiveString(engineMeta.humanizationDeliveryDepthBand, 24),
     humanizationDepthRetryCount: archiveFinite(engineMeta.humanizationDepthRetryCount),
@@ -711,6 +747,16 @@ function buildArchiveObservability(job) {
     humanizationDepthRetryTargetSentenceCount: archiveFinite(engineMeta.humanizationDepthRetryTargetSentenceCount),
     humanizationDepthReasonCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthReasonCodes),
     humanizationDepthBlockingReasonCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthBlockingReasonCodes),
+    koreanRefinementVersion: archiveFinite(engineMeta.koreanRefinementVersion),
+    koreanRefinementPass: typeof engineMeta.koreanRefinementPass === 'boolean' ? engineMeta.koreanRefinementPass : undefined,
+    koreanRefinementIssueCodes: uniqueStrictArchiveCodes(engineMeta.koreanRefinementIssueCodes),
+    koreanRefinementIntroducedIssueCount: archiveFinite(engineMeta.koreanRefinementIntroducedIssueCount),
+    koreanDeterministicRepairCount: archiveFinite(engineMeta.koreanDeterministicRepairCount),
+    koreanRefinementRetryAttemptCount: archiveFinite(engineMeta.koreanRefinementRetryAttemptCount),
+    koreanRefinementRetryCount: archiveFinite(engineMeta.koreanRefinementRetryCount),
+    koreanRefinementRetryApplied: engineMeta.koreanRefinementRetryApplied === true,
+    sourceReviewWarningCodes: uniqueStrictArchiveCodes(engineMeta.sourceReviewWarningCodes),
+    sourceReviewWarningCount: archiveFinite(engineMeta.sourceReviewWarningCount),
     chunkFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkFailureCodes),
     chunkPrimaryFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkPrimaryFailureCodes),
     chunkResidualFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkResidualFailureCodes),
@@ -718,6 +764,9 @@ function buildArchiveObservability(job) {
     polishSpeakerRestoreCount: archiveFinite(engineMeta.polishSpeakerRestoreCount),
     polishSpeakerRestoredSentenceCount: archiveFinite(engineMeta.polishSpeakerRestoredSentenceCount),
     lineBoundaryPolicy: archiveString(engineMeta.lineBoundaryPolicy, 24),
+    naturalnessRiskIncreased: naturalnessShadow.riskIncreased === true,
+    naturalnessOverallRiskDelta: archiveFinite(naturalnessShadow.delta?.overallRisk),
+    rhythmUniformityDelta: archiveFinite(naturalnessShadow.rhythmUniformityDelta),
     estimatedUsd: archiveFinite(humanizeMeta.estimatedUsd ?? usage.estimatedUsd),
     dedupeRemovedBlockCount: archiveFinite(dedupeAudit.removedBlockCount),
     dedupeRemovedBlockSentenceCount: archiveFinite(dedupeAudit.removedBlockSentenceCount),
@@ -861,6 +910,7 @@ function saveJobHistory(job, text, outputText) {
     modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
     qualityStatus: job.result?.qualityStatus,
     qualityWarningCodes: (job.result?.qualityWarnings || []).map(item => item?.code).filter(Boolean),
+    sourceReviewWarningCodes: (job.result?.sourceReviewWarnings || []).map(item => item?.code).filter(Boolean),
     engineMeta: job.result?.engineMeta || null
   }).catch(e => logger.warn('transform.history_save_failed', { jobId: job.id, uid: job.uid, err: e }));
 }
@@ -1069,6 +1119,7 @@ async function tryPreservationFallback(job, text) {
           userNotes: job.memo || '',
           config: gptCfg,
           styleProfile: 'production_preservation_fallback',
+          documentProfileOverride: job.documentProfileOverride || '',
           uid: humanizeV2Enabled() ? job.uid : ''
         })
       : await analyze.runHumanizeChunked({
@@ -1116,6 +1167,7 @@ async function tryPreservationFallback(job, text) {
       preservationFallback: true,   // UI가 "보존형으로 처리됨" 배지를 띄울 수 있게
       qualityStatus: out.qualityStatus || out.result?.qualityStatus || out.floorReport?.status || 'clean',
       qualityWarnings: out.qualityWarnings || out.result?.qualityWarnings || [],
+      sourceReviewWarnings: out.sourceReviewWarnings || out.result?.sourceReviewWarnings || [],
       engineMeta: fallbackEngineMeta,
       humanizeMeta: out.result?.humanizeMeta || null,
       naturalnessShadow: out.result?.naturalnessShadow || null,
@@ -1174,6 +1226,7 @@ async function tryBlogPreservationFallback(job, text) {
           userNotes: job.memo || '',
           config: gptCfg,
           styleProfile: 'production_blog_preservation_fallback',
+          documentProfileOverride: job.documentProfileOverride || '',
           allowPolish: humanizeV2Enabled(),
           uid: humanizeV2Enabled() ? job.uid : ''
         })
@@ -1228,6 +1281,7 @@ async function tryBlogPreservationFallback(job, text) {
       preservationFallback: true,
       qualityStatus: out.qualityStatus || out.result?.qualityStatus || out.floorReport?.status || 'clean',
       qualityWarnings: out.qualityWarnings || out.result?.qualityWarnings || [],
+      sourceReviewWarnings: out.sourceReviewWarnings || out.result?.sourceReviewWarnings || [],
       engineMeta: fallbackEngineMeta,
       humanizeMeta: out.result?.humanizeMeta || null,
       naturalnessShadow: out.result?.naturalnessShadow || null,
@@ -1467,6 +1521,7 @@ async function runAdminGptLabWithOptionalNiklCompare({
     evidence: evidence || '',
     layoutNlp: layoutNlpTest ? false : null,
     config,
+    documentProfileOverride: job.documentProfileOverride || '',
     allowPolish: humanizeV2Enabled() && mode === 'polish',
     uid: humanizeV2Enabled() ? job.uid : ''
   };
@@ -1995,6 +2050,7 @@ async function runLongThesisChunked(job, text, evidence, pipelinePath = 'product
           evidence: evidence || '',
           config: gptCfg,
           styleProfile: 'production_long_chunk',
+          documentProfileOverride: job.documentProfileOverride || '',
           uid: humanizeV2Enabled() ? job.uid : ''
         })
       : await analyze.runHumanizeChunked({
@@ -2174,6 +2230,7 @@ async function runHumanizeJob(job, text, evidence = '') {
           config: gptCfg,
           styleProfile: styleProfile || 'production_transform_humanize',
           basicStyle: job.basicStyle || '',
+          documentProfileOverride: job.documentProfileOverride || '',
           allowPolish: v2Enabled,
           // 원본 UID는 OpenAI 요청에 직접 전달되지 않는다. v2 엔진 내부에서만
           // OPENAI_SAFETY_SALT 기반 HMAC으로 변환하며, 레거시 롤백에는 넘기지 않는다.
@@ -2284,6 +2341,14 @@ async function runHumanizeJob(job, text, evidence = '') {
       humanizeMeta: out.result.humanizeMeta || null,
       qualityStatus: v2QualityStatus,
       qualityWarnings: v2QualityWarnings,
+      sourceReviewWarnings: out.sourceReviewWarnings || out.result.sourceReviewWarnings || [],
+      koreanRefinement: out.result.koreanRefinement ? {
+        version: Number(out.result.koreanRefinement.version) || 0,
+        pass: out.result.koreanRefinement.pass === true,
+        issueCodes: Array.isArray(out.result.koreanRefinement.issueCodes) ? out.result.koreanRefinement.issueCodes : [],
+        introducedIssueCount: Number(out.result.koreanRefinement.introducedIssueCount) || 0,
+        repairableIssueCount: Number(out.result.koreanRefinement.repairableIssueCount) || 0
+      } : null,
       engineMeta: out.engineMeta || out.result.engineMeta || null,
       naturalnessShadow: out.result.naturalnessShadow || null,
       adminLabProfile: job.adminLabProfile || (adminSafetyLab ? styleProfile : null),
@@ -2327,6 +2392,14 @@ router.post('/transform', async (req, res) => {
   const requestedModeValue = req.body?.mode;
   const mode = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? requestedModeValue : 'formal';
   const modeSource = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? 'provided' : 'defaulted';
+  const requestedDocumentProfileValue = req.body?.documentProfile ?? req.body?.documentGenre;
+  const documentProfileOverride = normalizeDocumentProfileOverride(requestedDocumentProfileValue);
+  if (requestedDocumentProfileValue != null && String(requestedDocumentProfileValue).trim() && documentProfileOverride === null) {
+    return res.status(400).json({
+      error: '지원하지 않는 글 종류예요.',
+      allowedDocumentProfiles: CONTENT_GENRES.filter(profile => profile !== 'unknown')
+    });
+  }
   // 최소 길이: formal은 구조를 다시 짜는 작업이라 200자, short(blog·polish)는 50자(짧은 글 다듬기 허용)
   // 글자수 기준 통일: 표시·과금(needed)과 동일하게 공백 포함 raw length으로 판정.
   const minLen = mode === 'formal' ? 200 : 50;
@@ -2498,6 +2571,7 @@ router.post('/transform', async (req, res) => {
     lang: humanizeV2Enabled() ? 'ko' : (req.body.lang === 'en' ? 'en' : 'ko'),
     lengthMode: req.body.length === 'compact' ? 'compact' : 'keep',   // 분량 옵션(재구성 전용) — 엔진 연결(2026-06-15). 기본 keep(유지)
     basicStyle,
+    documentProfileOverride: documentProfileOverride || '',
     basicExperiment: experimentMeta,
     adminHumanizeLab: !!(adminLabRequested && preserveExperimentEnabled),
     adminLabProfile: adminLabRequested && preserveExperimentEnabled ? (requestedAdminLabProfile || 'preserve_lab') : null,
@@ -2690,6 +2764,7 @@ router.get('/transform/:id', async (req, res) => {
     ...base,
     qualityStatus: job.result?.qualityStatus,
     qualityWarnings: job.result?.qualityWarnings,
+    sourceReviewWarnings: job.result?.sourceReviewWarnings,
     engineMeta: job.result?.engineMeta,
     result: job.result
   });
@@ -2705,5 +2780,6 @@ router.saveJobHistory = saveJobHistory;   // 테스트용
 router.maybeNotifyOrphan = maybeNotifyOrphan;   // 테스트용
 router.buildArchiveDocument = buildArchiveDocument;   // 테스트용(원문·결과 비저장 계약 검증)
 router.ensureTerminalTimestamp = ensureTerminalTimestamp;   // 테스트용
+router.normalizeDocumentProfileOverride = normalizeDocumentProfileOverride;   // 테스트·클라이언트 계약용
 
 module.exports = router;

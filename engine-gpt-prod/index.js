@@ -17,14 +17,15 @@ const { logger } = require('../lib/logger');
 const layoutNormalizer = require('../engine/layout');
 const inputRouting = require('../engine/inputrouting');
 const { computeEditMetrics, splitSentences } = require('../engine/koreanText');
-const { detectDocumentProfile } = require('./documentProfile');
+const { detectDocumentProfile, applyDocumentProfileOverride } = require('./documentProfile');
 const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile');
 const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
 const discourseAudit = require('./discourseAudit');
+const koreanRefinement = require('./koreanRefinement');
 
-const VERSION = 'gpt-prod-v2.4.5';
+const VERSION = 'gpt-prod-v2.4.6';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -129,7 +130,9 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
   if (requestedMode !== 'blog') return 'assignment';
   const profile = documentProfile?.profile || 'unknown';
   const confidence = Number(documentProfile?.confidence) || 0;
-  if (confidence >= 0.75 && [
+  const trustedOverride = documentProfile?.profileDecisionSource === 'user_override'
+    && documentProfile?.profileOverrideApplied === true;
+  if ((confidence >= 0.75 || trustedOverride) && [
     'academic_paper',
     'report_assignment',
     'student_record_teacher',
@@ -155,6 +158,7 @@ async function runEngine({
   config,
   styleProfile = '',
   basicStyle = '',
+  documentProfileOverride = '',
   allowPolish = false,
   safetyIdentifier = '',
   uid = '',
@@ -176,7 +180,7 @@ async function runEngine({
   const requestStrength = requestStrengthForMode(requestedMode);
   const polishAllowed = v2Enabled ? allowPolish === true : allowPolishMode({ styleProfile, config });
   const normalizedMode = normalizeMode(mode, { allowPolish: polishAllowed });
-  const documentProfile = v2Enabled
+  const detectedDocumentProfile = v2Enabled
     ? detectDocumentProfile(rawSource, { basicStyle })
     : {
         profile: 'unknown',
@@ -193,6 +197,9 @@ async function runEngine({
         formatProfile: { length: 'standard', primary: 'plain', flags: [] },
         riskFlags: []
       };
+  const documentProfile = v2Enabled
+    ? applyDocumentProfileOverride(detectedDocumentProfile, documentProfileOverride)
+    : detectedDocumentProfile;
   const selectedMode = v2Enabled ? effectiveModeForProfile(requestedMode, normalizedMode, documentProfile) : normalizedMode;
   const voiceProfile = v2Enabled ? buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode }) : null;
   // v2에서만 UID를 비가역 safety_identifier로 바꾼다. 플래그를 0으로 내려
@@ -277,6 +284,14 @@ async function runEngine({
   let polishPaddingReport = null;
   let polishEvaluativePaddingCodes = [];
   let polishDeterministicPaddingRestoreCount = 0;
+  let koreanRefinementAudit = null;
+  let koreanDeterministicRepairCount = 0;
+  let koreanRefinementRetryAttemptCount = 0;
+  let koreanRefinementRetryCount = 0;
+  let koreanRefinementRetryApplied = false;
+  const sourceReviewWarnings = v2Enabled
+    ? koreanRefinement.buildSourceReviewWarnings(rawSource, documentProfile)
+    : [];
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
     polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
@@ -410,6 +425,103 @@ async function runEngine({
     }
   }
 
+  if (v2Enabled && !polishStrictFailure) {
+    koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
+      source: auditSource,
+      outputText,
+      documentProfile,
+      mode: selectedMode
+    });
+    const deterministicRepair = koreanRefinement.applySafeDeterministicRepairs({
+      source: auditSource,
+      outputText,
+      documentProfile
+    });
+    if (deterministicRepair.applied) {
+      const candidate = deterministicRepair.text;
+      const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
+        ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+        : null;
+      const candidateAudit = koreanRefinement.analyzeKoreanRefinement({
+        source: auditSource,
+        outputText: candidate,
+        documentProfile,
+        mode: selectedMode
+      });
+      const safeCandidate = isSafeLocalizedLanguageCandidate({
+        source: auditSource,
+        before: outputText,
+        candidate,
+        contract,
+        documentProfile,
+        mode: selectedMode,
+        protectedTerms: collectRecordProtectedTerms(records),
+        currentDepth: humanizationDepthReport,
+        candidateDepth
+      }) && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
+      if (safeCandidate && koreanRefinement.isImprovedAudit(koreanRefinementAudit, candidateAudit)) {
+        outputText = candidate;
+        koreanRefinementAudit = candidateAudit;
+        koreanDeterministicRepairCount = deterministicRepair.changeCount || 1;
+        if (candidateDepth) humanizationDepthReport = candidateDepth;
+      }
+    }
+
+    const needsModelRefinement = (koreanRefinementAudit?.repairableIssues || [])
+      .some(item => item.afterCount > 0 && item.deterministicSafe !== true);
+    if (needsModelRefinement) {
+      try {
+        koreanRefinementRetryAttemptCount = 1;
+        const retried = await qualityV2.retryKoreanRefinement({
+          source: auditSource,
+          currentOutput: outputText,
+          refinementAudit: koreanRefinementAudit,
+          documentProfile,
+          mode: selectedMode,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        const candidate = retried.outputText || outputText;
+        const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
+          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          : null;
+        const candidateAudit = koreanRefinement.analyzeKoreanRefinement({
+          source: auditSource,
+          outputText: candidate,
+          documentProfile,
+          mode: selectedMode
+        });
+        const safeCandidate = retried.safeChangeFound === true
+          && isSafeLocalizedLanguageCandidate({
+            source: auditSource,
+            before: outputText,
+            candidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: collectRecordProtectedTerms(records),
+            currentDepth: humanizationDepthReport,
+            candidateDepth
+          })
+          && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
+        if (safeCandidate && koreanRefinement.isImprovedAudit(koreanRefinementAudit, candidateAudit)) {
+          outputText = candidate;
+          koreanRefinementAudit = candidateAudit;
+          koreanRefinementRetryCount = 1;
+          koreanRefinementRetryApplied = true;
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+        }
+      } catch (error) {
+        koreanRefinementAudit = {
+          ...(koreanRefinementAudit || {}),
+          retryError: String(error?.code || error?.message || error).slice(0, 180)
+        };
+      }
+    }
+  }
+
   let preSemanticStructureAudit = structureChunk.buildStructureAudit({
     source: auditSource,
     outputText,
@@ -433,19 +545,21 @@ async function runEngine({
   }) : null;
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
   if (v2Enabled && !polishStrictFailure) {
-    const semanticDecision = humanizationDepthRetryApplied
-      ? { run: true, reason: 'humanization_depth_retry' }
-      : (humanizationDepthReport?.applicable
-          && humanizationDepthReport.pass === false
-          && humanizationDepthReport.minimumEffectPass === true)
-        ? { run: true, reason: 'humanization_depth_soft_delivery' }
-        : qualityV2.shouldRunSemanticJudge({
-          requestedMode,
-          effectiveMode: selectedMode,
-          source: auditSource,
-          documentProfile,
-          audit: deterministicAudit
-        });
+    const semanticDecision = koreanRefinementRetryApplied
+      ? { run: true, reason: 'korean_refinement_retry' }
+      : humanizationDepthRetryApplied
+        ? { run: true, reason: 'humanization_depth_retry' }
+        : (humanizationDepthReport?.applicable
+            && humanizationDepthReport.pass === false
+            && humanizationDepthReport.minimumEffectPass === true)
+          ? { run: true, reason: 'humanization_depth_soft_delivery' }
+          : qualityV2.shouldRunSemanticJudge({
+            requestedMode,
+            effectiveMode: selectedMode,
+            source: auditSource,
+            documentProfile,
+            audit: deterministicAudit
+          });
     semanticReport.decisionReason = semanticDecision.reason;
     if (semanticDecision.run) {
       semanticReport = await qualityV2.runSemanticDocumentAudit({
@@ -541,6 +655,14 @@ async function runEngine({
       finalDepthOutput,
       humanizationPlan
     );
+  }
+  if (v2Enabled) {
+    koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
+      source: rawSource,
+      outputText,
+      documentProfile,
+      mode: selectedMode
+    });
   }
   const structureAudit = structureChunk.buildStructureAudit({
     source: rawSource,
@@ -649,7 +771,8 @@ async function runEngine({
   const finalEditMetrics = computeEditMetrics(rawSource, outputText);
   const chunkExecution = summarizeChunkExecution(records, semanticReport, {
     polishRetryCount: polishRetryAttemptCount,
-    generalSurfaceRetryCount: generalSurfaceRetryAttemptCount
+    generalSurfaceRetryCount: generalSurfaceRetryAttemptCount,
+    koreanRefinementRetryCount: koreanRefinementRetryAttemptCount
   });
   const chunkFailures = summarizeChunkFailureCodes(records);
   const qualityWarnings = v2Enabled
@@ -668,7 +791,8 @@ async function runEngine({
             && humanizationDepthReport.pass === false
             && humanizationDepthReport.minimumEffectPass === true
           ? [{ code: 'humanization_depth_below_minimum', severity: 'warning', message: '원문 보존을 우선해 목표 강도보다 약하게 변환됐어요. 결과를 확인해 주세요.' }]
-          : [])
+          : []),
+        ...(koreanRefinementAudit?.residualWarnings || [])
       ])
     : [];
   const strictBlocked = result.floorReport?.status === 'blocked';
@@ -682,6 +806,8 @@ async function runEngine({
   result.semanticAudit = semanticReport;
   result.editMetrics = finalEditMetrics;
   result.humanizationDepth = humanizationDepthReport;
+  result.koreanRefinement = koreanRefinementAudit;
+  result.sourceReviewWarnings = sourceReviewWarnings;
   result.dedupeAudit = postprocessMeta.dedupe || null;
   result.engineMeta = {
     schemaVersion: 2,
@@ -692,6 +818,11 @@ async function runEngine({
     documentProfile: documentProfile.profile,
     profileConfidence: documentProfile.confidence,
     profileDecisionSource: documentProfile.profileDecisionSource || documentProfile.source || 'unknown',
+    detectedDocumentProfile: documentProfile.detectedProfile || documentProfile.profile,
+    detectedProfileConfidence: documentProfile.detectedProfileConfidence ?? documentProfile.confidence,
+    requestedDocumentProfile: documentProfile.requestedDocumentProfile || '',
+    profileOverrideApplied: documentProfile.profileOverrideApplied === true,
+    profileOverrideIgnoredReason: documentProfile.profileOverrideIgnoredReason || '',
     candidateProfiles: documentProfile.candidateProfiles || documentProfile.candidates || [],
     safetyProfiles: documentProfile.safetyProfiles || [],
     profileMargin: documentProfile.profileMargin ?? 0,
@@ -709,7 +840,12 @@ async function runEngine({
     discourseSignalCount: Number(deliveryAudit?.discourseAudit?.violations?.length || 0),
     discourseRepairRan: (semanticReport.initialViolations || []).some(item => discourseAudit.isDiscourseViolationCode(item?.type))
       && Number(semanticReport.repairCount || 0) > 0,
-    repairCount: (semanticReport.repairCount || 0) + polishRetryCount + generalSurfaceRetryCount + polishSpeakerRestoreCount,
+    repairCount: (semanticReport.repairCount || 0)
+      + polishRetryCount
+      + generalSurfaceRetryCount
+      + polishSpeakerRestoreCount
+      + (koreanDeterministicRepairCount > 0 ? 1 : 0)
+      + koreanRefinementRetryCount,
     chunkCount: records.length,
     logicalChunkCount: chunkExecution.logicalChunkCount,
     editableChunkCount: chunkExecution.editableChunkCount,
@@ -758,13 +894,31 @@ async function runEngine({
     humanizationMinimumTargetCoverage: Number(humanizationDepthReport?.plan?.minTargetCoverage || 0),
     substantiveEditRatio: Number(humanizationDepthReport?.metrics?.substantiveEditRatio || 0),
     substantiveChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.substantiveChangedSentenceRatio || 0),
+    humanizationTargetCoverage: Number(humanizationDepthReport?.metrics?.targetCoverage || 0),
+    humanizationTargetChangedCount: Number(humanizationDepthReport?.metrics?.targetChangedCount || 0),
     humanizationTargetDepthMet: humanizationDepthReport?.metrics?.targetDepthMet === true,
     humanizationDeliveryDepthBand: humanizationDepthReport?.metrics?.deliveryDepthBand || '',
     humanizationDepthRetryCount,
     humanizationDepthRetryApplied,
     humanizationDepthRetryTargetSentenceCount,
     humanizationDepthReasonCodes: safeFailureCodeList(humanizationDepthReport?.reasons),
-    humanizationDepthBlockingReasonCodes: safeFailureCodeList(humanizationDepthReport?.blockingReasons)
+    humanizationDepthBlockingReasonCodes: safeFailureCodeList(humanizationDepthReport?.blockingReasons),
+    structuralChangedSentenceCount: Number(humanizationDepthReport?.metrics?.structurallyChangedSentenceCount || 0),
+    structuralChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.structuralChangedSentenceRatio || 0),
+    humanizationRequiredStructuralSentenceCount: Number(humanizationDepthReport?.plan?.requiredStructuralChangedSentenceCount || 0),
+    rhetoricalRemediationTargetCount: Number(humanizationDepthReport?.metrics?.remediation?.targetCount || 0),
+    rhetoricalRemediationAchievedCount: Number(humanizationDepthReport?.metrics?.remediation?.achievedReduction || 0),
+    rhetoricalRemediationCoverage: Number(humanizationDepthReport?.metrics?.remediation?.coverage || 0),
+    koreanRefinementVersion: Number(koreanRefinementAudit?.version || 0),
+    koreanRefinementPass: koreanRefinementAudit?.pass === true,
+    koreanRefinementIssueCodes: safeFailureCodeList(koreanRefinementAudit?.issueCodes),
+    koreanRefinementIntroducedIssueCount: Number(koreanRefinementAudit?.introducedIssueCount || 0),
+    koreanDeterministicRepairCount,
+    koreanRefinementRetryAttemptCount,
+    koreanRefinementRetryCount,
+    koreanRefinementRetryApplied,
+    sourceReviewWarningCodes: safeFailureCodeList(sourceReviewWarnings.map(item => item.code)),
+    sourceReviewWarningCount: sourceReviewWarnings.length
   };
   result.humanizeMeta = {
     provider: 'openai',
@@ -796,6 +950,8 @@ async function runEngine({
     qualityPatternLab: qualityPatternLabEnabled ? (result.qualityPatternLab || { enabled: true }) : null,
     layoutFormat: layoutNlpEnabled ? (result.layoutFormat || { enabled: true }) : null,
     naturalnessShadow: deliveryAudit?.naturalnessShadow || null,
+    koreanRefinement: koreanRefinementAudit,
+    sourceReviewWarnings,
     layoutRepair: result.structureLock?.layoutRepair || null,
     dedupeAudit: result.dedupeAudit ? {
       removedExactCount: result.dedupeAudit.removedExactCount || 0,
@@ -822,6 +978,7 @@ async function runEngine({
     floorReport: result.floorReport,
     qualityStatus,
     qualityWarnings,
+    sourceReviewWarnings,
     engineMeta: result.engineMeta,
     chunks: records,
     fallbackCount,
@@ -2027,6 +2184,64 @@ function isSafeGeneralSurfaceCandidate(source, candidate, contract, documentProf
   return true;
 }
 
+function isSafeLocalizedLanguageCandidate({
+  source,
+  before,
+  candidate,
+  contract,
+  documentProfile,
+  mode = 'assignment',
+  protectedTerms = [],
+  currentDepth = null,
+  candidateDepth = null
+} = {}) {
+  const original = String(source || '').trim();
+  const current = String(before || '').trim();
+  const after = String(candidate || '').trim();
+  if (!original || !current || !after || normalizeBare(current) === normalizeBare(after)) return false;
+  const localEdit = computeEditMetrics(current, after);
+  if (localEdit.charEditRatio <= 0 || localEdit.charEditRatio > 0.12) return false;
+  if (localEdit.lengthRatio < 0.85 || localEdit.lengthRatio > 1.12) return false;
+  if (paragraphCount(current) !== paragraphCount(after)) return false;
+  if (compareNumberMultiset(original, after).changed) return false;
+  const beforeNovelty = floor.measureNovelty(original, current, '').count || 0;
+  const afterNovelty = floor.measureNovelty(original, after, '').count || 0;
+  const beforeLostFacts = floor.measureLostFacts(original, current).count || 0;
+  const afterLostFacts = floor.measureLostFacts(original, after).count || 0;
+  if (afterNovelty > beforeNovelty || afterLostFacts > beforeLostFacts) return false;
+  const povDrift = floor.measurePovDrift(original, after, contract?.povSeed);
+  if (povDrift.introducedAnyFirstPerson || povDrift.droppedAnyFirstPerson) return false;
+  if ((protectedTerms || []).some(term => !containsNormalizedValue(after, term))) return false;
+
+  const beforeVoice = buildVoiceProfile(current, { documentProfile: documentProfile || 'unknown' });
+  const afterVoice = buildVoiceProfile(after, { documentProfile: documentProfile || 'unknown' });
+  if (beforeVoice.directQuoteCount !== afterVoice.directQuoteCount) return false;
+  if (beforeVoice.listItemCount !== afterVoice.listItemCount) return false;
+  if (beforeVoice.headingCount !== afterVoice.headingCount) return false;
+  if (beforeVoice.lineStructureSensitive && beforeVoice.lineCount !== afterVoice.lineCount) return false;
+
+  const currentDiscourse = discourseAudit.compareDiscourse(original, current);
+  const candidateDiscourse = discourseAudit.compareDiscourse(original, after);
+  const currentCodes = new Set(currentDiscourse.codes || []);
+  if ((candidateDiscourse.codes || []).some(code => !currentCodes.has(code))) return false;
+
+  if (currentDepth?.applicable && candidateDepth?.applicable) {
+    const currentScore = humanizationDepth.humanizationCandidateScore(currentDepth);
+    const candidateScore = humanizationDepth.humanizationCandidateScore(candidateDepth);
+    if (candidateScore + 0.03 < currentScore) return false;
+    if (Number(candidateDepth.metrics?.substantiveEditRatio || 0) + 0.008
+        < Number(currentDepth.metrics?.substantiveEditRatio || 0)) return false;
+    if (Number(candidateDepth.metrics?.structurallyChangedSentenceCount || 0) + 1
+        < Number(currentDepth.metrics?.structurallyChangedSentenceCount || 0)) return false;
+  }
+  if (mode === 'polish') {
+    const policy = qualityV2.polishEditPolicy(original, after);
+    const padding = qualityV2.comparePolishEvaluativePadding(original, after);
+    if (policy.noSafeChange || policy.excessiveChange || padding.increased) return false;
+  }
+  return true;
+}
+
 function preservesFinalStructure(source, candidate, chunks, plan, boundaryRepair) {
   const audit = structureChunk.buildStructureAudit({
     source,
@@ -2572,7 +2787,11 @@ function calibrateV2RepetitionReport(result, source, outputText) {
   return audit;
 }
 
-function summarizeChunkExecution(records, semanticReport, { polishRetryCount = 0, generalSurfaceRetryCount = 0 } = {}) {
+function summarizeChunkExecution(records, semanticReport, {
+  polishRetryCount = 0,
+  generalSurfaceRetryCount = 0,
+  koreanRefinementRetryCount = 0
+} = {}) {
   const rows = Array.isArray(records) ? records : [];
   const lockedChunkCount = rows.filter(record => record.locked === true).length;
   const skippedChunkCount = rows.filter(record => record.skipped === true).length;
@@ -2580,7 +2799,8 @@ function summarizeChunkExecution(records, semanticReport, { polishRetryCount = 0
   const humanizeCallCount = transformed.reduce((sum, record) => sum + 1 + (record.escalated === true ? 1 : 0), 0);
   const semanticModelCallCount = semanticCallCount(semanticReport);
   const surfaceRetryCallCount = Math.max(0, Number(polishRetryCount) || 0)
-    + Math.max(0, Number(generalSurfaceRetryCount) || 0);
+    + Math.max(0, Number(generalSurfaceRetryCount) || 0)
+    + Math.max(0, Number(koreanRefinementRetryCount) || 0);
   return {
     logicalChunkCount: rows.length,
     editableChunkCount: rows.length - lockedChunkCount,

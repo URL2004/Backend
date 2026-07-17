@@ -14,6 +14,7 @@ const analyze = require('./analyze');           // callClaude·detect tool 재�
 const diagnose = require('./diagnose');         // 밴드 테이블 재사용
 const transform = require('./transform');       // restructureCredit 재사용(단가 단일 출처)
 const sg = require('../engine/surfaceguard');
+const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
 const { getDetectSystem } = require('../prompts');
 const crypto = require('crypto');
 const { db, verifyToken, verifyAppCheck } = require('../config');
@@ -164,6 +165,9 @@ router.post('/detect-report', async (req, res) => {
   }
   const grade = ir.grade || 'B';
   const copy = diagnose.COPY[grade] || diagnose.COPY.B;
+  const advancedRouting = resolveAdvancedRouting(text, ir, {
+    v2Enabled: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1'
+  });
 
   // ①·④ LLM 2건 병렬 — 각자 실패 허용
   //   maxOutputTokens 2200: 긴 글에서 detail이 길어지면 1200으론 tool JSON이 max_tokens에 잘려
@@ -275,6 +279,16 @@ router.post('/detect-report', async (req, res) => {
     grade,
     title: copy.title,
     abstractRiskRatio: ir.abstractRiskRatio,
+    restructureUnfit: advancedRouting.effectiveUnfit.unfit === true,
+    restructureUnfitReason: advancedRouting.effectiveUnfit.reason || null,
+    restructureUnfitKind: advancedRouting.effectiveUnfit.kind || null,
+    advancedEligible: advancedRouting.advancedEligible,
+    recommendedMode: advancedRouting.recommendedMode,
+    recommendationCode: advancedRouting.recommendationCode || null,
+    recommendationReason: advancedRouting.recommendationReason || null,
+    documentProfile: advancedRouting.profile,
+    profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
+    routingOverride: advancedRouting.routingOverride || null,
     paragraphs: paras.map((p, i) => {
       const kind = (detail[i] && detail[i].kind) || 'thin';
       return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 90), coach: predictCoach(p) };   // ★문단별 예측태그→메모칸 코칭

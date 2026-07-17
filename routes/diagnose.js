@@ -8,6 +8,7 @@
 const express = require('express');
 const router = express.Router();
 const sg = require('../engine/surfaceguard');
+const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
 const { logger } = require('../lib/logger');
 
 // ★ UI 표기 밴드는 실측보다 보수적으로(2026-06-12 사장님 지시): 약속을 낮게 잡아 실망 방지.
@@ -20,10 +21,8 @@ const BLOG_BAND = { A: '30~45%', B: '35~50%', C: '40~55%' };
 //   넉넉한 보수 표기 35~60%. (UI 헤드라인 "예상 탐지율 35~60%"와 단일 표기로 일치)
 const RESTRUCTURE_BAND = '35~60%';
 
-// ★ 재구성 부적합 사전감지 — engine/inputrouting로 단일화(2026-06-16 탐구/생기부·짧고추상 확장 포함).
-//   /diagnose(프런트 고급 잠금)와 /transform(생성 호출 '전' 차단)이 같은 결정론 판정을 공유한다 →
-//   막다른 재구성(자소서·생기부·탐구문·짧고추상)을 생성 시작 전에 걸러 API 낭비를 0으로. 사유도 같이 노출.
-const { looksLikeResume, factDensity, restructureUnfit, genreAdvisory, FACT_DENSE_THRESHOLD } = require('../engine/inputrouting');
+// 구형 위험 신호는 유지하되, v2에서는 장르·구조 판정과 조정한 최종 적합성을 응답한다.
+const { looksLikeResume, factDensity, genreAdvisory, FACT_DENSE_THRESHOLD } = require('../engine/inputrouting');
 
 const COPY = {
   A: {
@@ -73,10 +72,29 @@ router.post('/diagnose', (req, res) => {
   const resumeLike = looksLikeResume(text);
   const density = factDensity(text);
   const factDense = density >= FACT_DENSE_THRESHOLD;   // 연도·%·인용 빼곡 → 재구성 시 사실오류 위험(권장 안내)
-  const ru = restructureUnfit(text, ir);                // 재구성 부적합(자소서·생기부·탐구문·짧고추상) + 명확한 사유
+  const advancedRouting = resolveAdvancedRouting(text, ir, {
+    v2Enabled: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1'
+  });
+  // v2는 고신뢰 학술/보고서 판정이 격식 구조와 함께 확인되면 구형 "탐구" 오탐을 해제한다.
+  // 영어·짧고 추상적·실제 개인 서사 잠금은 그대로 유지한다.
+  const ru = advancedRouting.effectiveUnfit;
   const recommendationReason = v2BasicRecommendation(ru.kind, ru.reason);
   const adv = genreAdvisory(text);                      // 회피 난이도 사전 안내(STEM 스펙·구조화 보고서) — 소프트(진행 가능)
-  logger.info('diagnose.completed', { grade, abstractRiskRatio: ir.abstractRiskRatio, textLength: text.length, resumeLike, density: Number(density.toFixed(1)), factDense, restructureUnfit: ru.unfit, unfitKind: ru.kind, advisoryKind: adv?.kind });
+  logger.info('diagnose.completed', {
+    grade,
+    abstractRiskRatio: ir.abstractRiskRatio,
+    textLength: text.length,
+    resumeLike,
+    density: Number(density.toFixed(1)),
+    factDense,
+    restructureUnfit: ru.unfit,
+    unfitKind: ru.kind,
+    advisoryKind: adv?.kind,
+    documentProfile: advancedRouting.profile,
+    profileConfidence: Number(advancedRouting.confidence.toFixed(3)),
+    recommendedMode: advancedRouting.recommendedMode,
+    routingOverride: advancedRouting.routingOverride || null
+  });
   res.json({
     ok: true,
     grade,
@@ -87,6 +105,13 @@ router.post('/diagnose', (req, res) => {
     restructureUnfit: ru.unfit,         // 프런트: 고급 시작 자체를 막고 사유 노출
     restructureUnfitReason: recommendationReason,  // 사용자에게 보여줄 '명확한 사유'
     restructureUnfitKind: ru.kind,
+    advancedEligible: advancedRouting.advancedEligible,
+    recommendedMode: advancedRouting.recommendedMode,
+    recommendationCode: advancedRouting.recommendationCode || null,
+    recommendationReason: advancedRouting.recommendationReason || null,
+    documentProfile: advancedRouting.profile,
+    profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
+    routingOverride: advancedRouting.routingOverride || null,
     advisory: adv ? adv.reason : null,  // 회피 난이도 소프트 안내(STEM·구조화 보고서) — 차단 아님
     advisoryKind: adv ? adv.kind : null,
     title: copy.title,

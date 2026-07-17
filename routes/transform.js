@@ -1,6 +1,6 @@
 ﻿// [routes/transform.js] 회피 모드 P3 — 격식 유지 재구성(genreTransferV2) job 백엔드
 // ────────────────────────────────────────────────────────────────
-// 재구성은 5~25분짜리 작업이라 동기 응답이 불가능 → job 방식:
+// 재구성은 문서 구조와 편집 청크 수에 따라 수분~90분이 걸릴 수 있어 동기 응답이 불가능 → job 방식:
 //   POST /transform → 즉시 jobId 반환, 백그라운드에서 genreTransferV2 실행(클라이언트가 끊겨도 계속)
 //   GET  /transform/:id → 상태 폴링(running|done|blocked|error)
 // 과금(v1, 사장님 임시 승인 기본값): ★완료 시 차감(시작 시 precheck만 — "크레딧만 차감" 민원 구조적 방지),
@@ -22,6 +22,7 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const layoutNormalizer = require('../engine/layout');
 const { CONTENT_GENRES } = require('../engine-gpt-prod/documentProfile');
+const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 
 function claudeGenreTransferV2() {
   return require('../engine/genretransfer').genreTransferV2;
@@ -76,6 +77,15 @@ async function activeGptConfig() {
 
 function humanizeV2Enabled() {
   return String(process.env.HUMANIZE_ENGINE_V2_ENABLED || '').trim() === '1';
+}
+
+function safeAdvancedTimeEstimate(text, options) {
+  try {
+    return estimateAdvancedTime(text, options);
+  } catch (error) {
+    logger.warn('transform.time_estimate_failed', { err: error });
+    return null;
+  }
 }
 
 const NO_DELIVERY_GATES = new Set(['gpt_all_chunks_fallback', 'gpt_noop_unchanged', 'noop_unchanged']);
@@ -400,6 +410,12 @@ function activeJobPayload(job) {
     billingMode: job.billingMode === 'coupon' ? 'coupon' : 'credit',
     elapsedSec: Math.max(0, Math.round((Date.now() - elapsedBase) / 1000)),
     estSec: job.estSec,
+    estLowSec: job.estLowSec,
+    estHighSec: job.estHighSec,
+    estimateVersion: job.estimateVersion,
+    estimateBasis: job.estimateBasis,
+    estimatedEditableChunks: job.estimatedEditableChunks,
+    estimatedTotalChunks: job.estimatedTotalChunks,
     createdAt: job.createdAt,
     queuedAt: job.queuedAt,
     startedAt: job.startedAt,
@@ -554,10 +570,10 @@ function buildBlockOffer(job, text) {
 //   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'text', 'estSec', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
+  'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest', 'engineMeta'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -878,6 +894,10 @@ function launchQueuedJob(job) {
     needed: job.needed,
     plan: job.plan,
     estSec: job.estSec,
+    estLowSec: job.estLowSec,
+    estHighSec: job.estHighSec,
+    estimateBasis: job.estimateBasis,
+    estimatedEditableChunks: job.estimatedEditableChunks,
     queuedMs: waitMs
   });
   const hasApprovedEvidence = Object.prototype.hasOwnProperty.call(job, 'approvedEvidence');
@@ -2551,10 +2571,19 @@ router.post('/transform', async (req, res) => {
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
   const isShort = mode !== 'formal';
-  // 예상 시간: formal=슬롯 순차라 길이 선형(상한 90분). short(blog·polish)=청크 병렬이라 짧음(프론트 ticker 공식과 동일).
+  // 고급은 실제 v2 실행 계획의 편집 청크 수로 범위를 산출한다. estSec는 기존
+  // 클라이언트·대기열 호환을 위해 보수적인 상한을 계속 제공한다.
+  const advancedTimeEstimate = !isShort && humanizeV2Enabled()
+    ? safeAdvancedTimeEstimate(text, {
+        evidence: wantEvidence,
+        basicStyle: 'report',
+        documentProfileOverride
+      })
+    : null;
   const estSec = isShort
     ? Math.max(90, Math.min(1200, Math.round(bare / 12)))
-    : Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0)));
+    : (advancedTimeEstimate?.highSec
+      || Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0))));
   const job = {
     id, mode, modeSource, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
     uid: pre.uid,
@@ -2581,6 +2610,12 @@ router.post('/transform', async (req, res) => {
 
     wantEvidence,
     estSec,
+    estLowSec: advancedTimeEstimate?.lowSec || estSec,
+    estHighSec: advancedTimeEstimate?.highSec || estSec,
+    estimateVersion: advancedTimeEstimate?.version || 0,
+    estimateBasis: advancedTimeEstimate?.basis || 'legacy_point_estimate',
+    estimatedEditableChunks: advancedTimeEstimate?.editableChunkCount,
+    estimatedTotalChunks: advancedTimeEstimate?.totalChunkCount,
     ac: new AbortController()   // 명시적 취소용(/cancel)
   };
   jobs.set(id, job);
@@ -2599,12 +2634,30 @@ router.post('/transform', async (req, res) => {
       billingMode: job.billingMode,
       plan: pre.plan,
       estSec,
+      estLowSec: job.estLowSec,
+      estHighSec: job.estHighSec,
+      estimateBasis: job.estimateBasis,
+      estimatedEditableChunks: job.estimatedEditableChunks,
       queuePosition: payload.queuePosition,
       queueSize: payload.queueSize,
       queueEtaSec: payload.queueEtaSec
     });
   }
-  res.json({ ok: true, jobId: id, estSec, mode, status: job.status, queued: job.status === 'queued', job: payload });
+  res.json({
+    ok: true,
+    jobId: id,
+    estSec,
+    estLowSec: job.estLowSec,
+    estHighSec: job.estHighSec,
+    estimateVersion: job.estimateVersion,
+    estimateBasis: job.estimateBasis,
+    estimatedEditableChunks: job.estimatedEditableChunks,
+    estimatedTotalChunks: job.estimatedTotalChunks,
+    mode,
+    status: job.status,
+    queued: job.status === 'queued',
+    job: payload
+  });
 });
 
 // 로컬 jobRef를 잃어도 서버에 남은 진행/승인대기 작업으로 복귀시키는 복구 엔드포인트.
@@ -2759,7 +2812,28 @@ router.get('/transform/:id', async (req, res) => {
     return;
   }
   orphan401.delete(job.id);   // 정상 폴링 1회 = 인증 회복 → 카운터 리셋
-  const base = { ok: true, status: job.status, stage: job.stage, mode: job.mode || 'formal', modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided', elapsedSec: Math.round((Date.now() - (job.status === 'running' ? (job.startedAt || job.createdAt) : job.status === 'queued' ? (job.queuedAt || job.createdAt) : job.createdAt)) / 1000), estSec: job.estSec, ...queueDetails(job), ...(job.note ? { note: job.note } : {}) };
+  const elapsedBase = job.status === 'running'
+    ? (job.startedAt || job.createdAt)
+    : job.status === 'queued'
+      ? (job.queuedAt || job.createdAt)
+      : job.createdAt;
+  const base = {
+    ok: true,
+    status: job.status,
+    stage: job.stage,
+    mode: job.mode || 'formal',
+    modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
+    elapsedSec: Math.round((Date.now() - elapsedBase) / 1000),
+    estSec: job.estSec,
+    estLowSec: job.estLowSec,
+    estHighSec: job.estHighSec,
+    estimateVersion: job.estimateVersion,
+    estimateBasis: job.estimateBasis,
+    estimatedEditableChunks: job.estimatedEditableChunks,
+    estimatedTotalChunks: job.estimatedTotalChunks,
+    ...queueDetails(job),
+    ...(job.note ? { note: job.note } : {})
+  };
   if (job.status === 'done') return res.json({
     ...base,
     qualityStatus: job.result?.qualityStatus,

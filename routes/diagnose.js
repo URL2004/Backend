@@ -9,6 +9,7 @@ const express = require('express');
 const router = express.Router();
 const sg = require('../engine/surfaceguard');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
+const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 const { logger } = require('../lib/logger');
 
 // ★ UI 표기 밴드는 실측보다 보수적으로(2026-06-12 사장님 지시): 약속을 낮게 잡아 실망 방지.
@@ -75,6 +76,14 @@ router.post('/diagnose', (req, res) => {
   const advancedRouting = resolveAdvancedRouting(text, ir, {
     v2Enabled: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1'
   });
+  let advancedTimeEstimate = null;
+  if (process.env.HUMANIZE_ENGINE_V2_ENABLED === '1') {
+    try {
+      advancedTimeEstimate = estimateAdvancedTime(text);
+    } catch (error) {
+      logger.warn('diagnose.time_estimate_failed', { err: error });
+    }
+  }
   // v2는 고신뢰 학술/보고서 판정이 격식 구조와 함께 확인되면 구형 "탐구" 오탐을 해제한다.
   // 영어·짧고 추상적·실제 개인 서사 잠금은 그대로 유지한다.
   const ru = advancedRouting.effectiveUnfit;
@@ -112,6 +121,7 @@ router.post('/diagnose', (req, res) => {
     documentProfile: advancedRouting.profile,
     profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
     routingOverride: advancedRouting.routingOverride || null,
+    advancedTimeEstimate,
     advisory: adv ? adv.reason : null,  // 회피 난이도 소프트 안내(STEM·구조화 보고서) — 차단 아님
     advisoryKind: adv ? adv.kind : null,
     title: copy.title,

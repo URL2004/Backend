@@ -15,6 +15,7 @@ const diagnose = require('./diagnose');         // 밴드 테이블 재사용
 const transform = require('./transform');       // restructureCredit 재사용(단가 단일 출처)
 const sg = require('../engine/surfaceguard');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
+const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 const { getDetectSystem } = require('../prompts');
 const crypto = require('crypto');
 const { db, verifyToken, verifyAppCheck } = require('../config');
@@ -168,6 +169,14 @@ router.post('/detect-report', async (req, res) => {
   const advancedRouting = resolveAdvancedRouting(text, ir, {
     v2Enabled: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1'
   });
+  let advancedTimeEstimate = null;
+  if (process.env.HUMANIZE_ENGINE_V2_ENABLED === '1') {
+    try {
+      advancedTimeEstimate = estimateAdvancedTime(text);
+    } catch (error) {
+      logger.warn('detect_report.time_estimate_failed', { err: error });
+    }
+  }
 
   // ①·④ LLM 2건 병렬 — 각자 실패 허용
   //   maxOutputTokens 2200: 긴 글에서 detail이 길어지면 1200으론 tool JSON이 max_tokens에 잘려
@@ -289,6 +298,7 @@ router.post('/detect-report', async (req, res) => {
     documentProfile: advancedRouting.profile,
     profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
     routingOverride: advancedRouting.routingOverride || null,
+    advancedTimeEstimate,
     paragraphs: paras.map((p, i) => {
       const kind = (detail[i] && detail[i].kind) || 'thin';
       return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 90), coach: predictCoach(p) };   // ★문단별 예측태그→메모칸 코칭

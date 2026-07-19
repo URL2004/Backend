@@ -31,7 +31,7 @@ const resumeCoverage = require('./resumeCoverage');
 const experienceAudit = require('./experienceAudit');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.8';
+const VERSION = 'gpt-prod-v2.4.9';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -50,6 +50,12 @@ const STRICT_DELIVERY_GATES = new Set([
   'polish_unchanged',
   'polish_excessive_change',
   'polish_evaluative_padding_added',
+  'humanization_depth_no_effect'
+]);
+const V2_SAFE_LOW_BENEFIT_GATES = new Set([
+  'gpt_all_chunks_fallback',
+  'gpt_noop_unchanged',
+  'noop_unchanged',
   'humanization_depth_no_effect'
 ]);
 const REVIEW_WARNING_GATES = new Set([
@@ -1069,7 +1075,10 @@ async function runEngine({
     }
   }
   if (qualityPatternLabEnabled) softenQualityPatternLabFloorReport(result.floorReport);
-  if (v2Enabled) softenV2ReviewableCriticals(result.floorReport);
+  if (v2Enabled) softenV2ReviewableCriticals(result.floorReport, {
+    mode: selectedMode,
+    strictFallbackCause: hasStrictRecordDeliveryFailure(records)
+  });
   else softenFloorReport(result.floorReport);
 
   const usage = addUsage(records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage()), supplementalUsage);
@@ -1086,6 +1095,15 @@ async function runEngine({
       + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0)
   });
   const chunkFailures = summarizeChunkFailureCodes(records);
+  const humanizationNoBenefitDelivered = v2Enabled
+    && selectedMode !== 'polish'
+    && result.floorReport?.status !== 'blocked'
+    && ((humanizationDepthReport?.applicable === true
+        && humanizationDepthReport?.minimumEffectPass === false)
+      || (result.floorReport?.warnings || []).some(item => {
+        const gate = String(item?.gate || item?.type || item || '').trim();
+        return V2_SAFE_LOW_BENEFIT_GATES.has(gate);
+      }));
   const qualityWarnings = v2Enabled
     ? dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []),
@@ -1103,6 +1121,9 @@ async function runEngine({
         ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : []),
         ...(humanizationDepthReport?.applicable && humanizationDepthReport.pass === false
           ? depthQualityWarnings(humanizationDepthReport)
+          : []),
+        ...(humanizationNoBenefitDelivered
+          ? [{ code: 'humanization_depth_below_minimum', severity: 'warning', message: '안전한 범위에서 충분한 변화를 만들기 어려워 원문에 가까운 결과를 전달했어요.' }]
           : []),
         ...(fingerprintAudit?.issueCodes?.includes('engine_phrase_fingerprint')
           ? [{ code: 'engine_phrase_fingerprint', severity: 'warning', message: '엔진이 만든 상투 표현이 한 문서에서 반복됐을 수 있어요.' }]
@@ -1207,6 +1228,7 @@ async function runEngine({
     humanizationDepthSoftDelivered: humanizationDepthReport?.applicable === true
       && humanizationDepthReport?.pass === false
       && humanizationDepthReport?.minimumEffectPass === true,
+    humanizationNoBenefitDelivered,
     humanizationPolicyVersion: humanizationDepthEnabled
       ? (humanizationDepthReport?.plan?.policyVersion || humanizationDepth.POLICY_VERSION)
       : '',
@@ -3128,23 +3150,46 @@ function softenFloorReport(report) {
   return report;
 }
 
-function softenV2ReviewableCriticals(report) {
+function softenV2ReviewableCriticals(report, { mode = '', strictFallbackCause = false } = {}) {
   if (!report || report.status !== 'blocked') return report;
   const criticals = Array.isArray(report.criticals) ? report.criticals : [];
   const strict = criticals.filter(critical => {
     const gate = String(critical?.gate || critical?.type || '').trim();
+    if (mode !== 'polish'
+        && V2_SAFE_LOW_BENEFIT_GATES.has(gate)
+        && !(gate === 'gpt_all_chunks_fallback' && strictFallbackCause)) return false;
     return STRICT_DELIVERY_GATES.has(gate) || isBlockingViolation(critical);
   });
   const reviewable = criticals.filter(critical => !strict.includes(critical));
   if (reviewable.length) {
     report.warnings = [
       ...(Array.isArray(report.warnings) ? report.warnings : []),
-      ...reviewable.map(critical => ({ ...critical, softenedFromCritical: true, v2DeliveryPolicy: true }))
+      ...reviewable.map(critical => ({
+        ...critical,
+        softenedFromCritical: true,
+        v2DeliveryPolicy: true,
+        v2LowBenefitDelivery: V2_SAFE_LOW_BENEFIT_GATES.has(String(critical?.gate || critical?.type || '').trim())
+      }))
     ];
   }
   report.criticals = strict;
   report.status = strict.length ? 'blocked' : (reviewable.length ? 'needs_review' : report.status);
   return report;
+}
+
+function hasStrictRecordDeliveryFailure(records = []) {
+  const strictPattern = /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated|refus(?:al|ed)/iu;
+  return (records || []).some(record => {
+    const values = [
+      record?.hardFailReason,
+      record?.error,
+      record?.primaryError,
+      ...(record?.primaryFailureCodes || []),
+      ...(record?.floorViolations || []).map(item => item?.gate || item?.type),
+      ...(record?.warnings || [])
+    ];
+    return values.some(value => strictPattern.test(String(value || '')));
+  });
 }
 
 function hasStrictDeliveryCritical(criticals) {

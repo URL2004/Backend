@@ -262,6 +262,13 @@ v2.4.8 활성화 커밋 이후 네 플래그는 미설정 시 `1`로 간주한�
 
 의미·구조 사고가 있으면 `HUMANIZE_ENGINE_V2_ENABLED=0`으로 전체 복귀한다. 비용·시간만 기준을 넘으면 `HUMANIZE_SECTION_RECOVERY_ENABLED=0`으로 섹션 회복만 끄고 상투구 감사와 과금 보호는 유지한다.
 
+### v2.4.9 저효과 전달 정책
+
+- 기본·고급에서 모든 안전 재시도 뒤에도 원문과 같거나 최소 변화량에 못 미치면 `blocked` 대신 `done + needs_review`로 전달한다.
+- 이 경우 `humanizationNoBenefitDelivered=true`를 기록하고 효과 제한 사전 동의 여부와 관계없이 `waived_quality_shortfall`로 무차감한다.
+- polish 무변환과 빈 출력·refusal·프롬프트 유출·인코딩 손상·문장 절단은 결과를 만들지 못한 상태이므로 계속 안전 중단한다.
+- 사용자 화면에는 품질 경고를 실패나 미통과로 표시하지 않고 `완료 · 확인 권장`으로 안내한다. 관리자 품질 통계의 원인 코드는 유지한다.
+
 ## 최근 정상 배포 예시
 
 - Backend `b6d01a8` → Render `dep-d8ohbhm7r5hc73c30stg` → `live`

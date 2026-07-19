@@ -909,7 +909,7 @@ function warningsFromSemantic(report) {
     if (['added_claim', 'distortion', 'omission'].includes(code)) continue;
     out.push(warning(code, discourseWarningMessage(code)));
   }
-  if (!out.length) out.push(warning('semantic_review_failed', '자동 의미 심사를 완전히 통과하지 못했어요.'));
+  if (!out.length) out.push(warning('semantic_review_failed', '자동 의미 심사가 결론을 확정하지 못해 원문 대조를 권장해요.'));
   return out;
 }
 

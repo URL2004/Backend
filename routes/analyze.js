@@ -3601,6 +3601,7 @@ function compactHistoryEngineMeta(meta) {
     lengthRatio: Number.isFinite(Number(meta.lengthRatio)) ? Number(meta.lengthRatio) : null,
     humanizationDepthPass: meta.humanizationDepthPass === true,
     humanizationDepthSoftDelivered: meta.humanizationDepthSoftDelivered === true,
+    humanizationNoBenefitDelivered: meta.humanizationNoBenefitDelivered === true,
     humanizationDeliveryDepthBand: String(meta.humanizationDeliveryDepthBand || '').slice(0, 24),
     substantiveEditRatio: Number.isFinite(Number(meta.substantiveEditRatio)) ? Number(meta.substantiveEditRatio) : null,
     substantiveChangedSentenceRatio: Number.isFinite(Number(meta.substantiveChangedSentenceRatio)) ? Number(meta.substantiveChangedSentenceRatio) : null,
@@ -3859,10 +3860,10 @@ router.post('/analyze', async (req, res) => {
         if (!softenBlockedFloorReport(out, 'analyze.floor_blocked_soft_delivered', { uid: pre.uid, requestId, billingMode, gates })) {
           logger.warn('analyze.floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
           const blockedHint = gates.includes('lostFacts')
-            ? '원문의 핵심 사실이나 수치가 빠져 차단했어요. 글을 짧게 나누거나 사실·수치가 많은 문단은 원문 표현을 더 유지해 주세요.'
+            ? '원문의 핵심 사실이나 수치 누락 위험이 남아 안전하게 작업을 멈췄어요. 글을 짧게 나누거나 사실·수치가 많은 문단은 원문 표현을 더 유지해 주세요.'
             : gates.includes('novelty') || gates.includes('judge')
-              ? '원문에 없던 내용이 섞여 차단했어요. 경험 메모나 추가 지시를 줄이고, 바로 결과가 필요하면 그대로 다듬기를 사용해 주세요.'
-              : '원문 보존 기준을 통과하지 못해 차단했어요. 같은 글을 반복하기보다 글을 짧게 나누거나 그대로 다듬기를 사용해 주세요.';
+              ? '원문에 없던 내용이 섞인 흔적이 남아 안전하게 작업을 멈췄어요. 경험 메모나 추가 지시를 줄이고, 바로 결과가 필요하면 그대로 다듬기를 사용해 주세요.'
+              : '안전하게 전달할 수 있는 결과를 만들지 못해 작업을 멈췄어요. 같은 글을 반복하기보다 글을 짧게 나누거나 그대로 다듬기를 사용해 주세요.';
           return res.status(422).json({
             error: `${blockedHint} 크레딧은 차감되지 않았어요.`,
             floorStatus: 'blocked',
@@ -3908,7 +3909,7 @@ router.post('/analyze', async (req, res) => {
           if (!softenBlockedFloorReport(out, 'analyze.gpt_floor_blocked_soft_delivered', { uid: pre.uid, requestId, billingMode, gates })) {
             logger.warn('analyze.gpt_floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
             return res.status(422).json({
-              error: '원문 보존 기준을 통과하지 못해 차단했어요. 크레딧은 차감되지 않았어요.',
+              error: '안전하게 전달할 수 있는 결과를 만들지 못해 작업을 멈췄어요. 크레딧은 차감되지 않았어요.',
               floorStatus: 'blocked',
               gates
             });
@@ -4399,7 +4400,7 @@ router.post('/analyze-pdf', upload.single('pdf'), async (req, res) => {
           if (!softenBlockedFloorReport(out, 'analyze_pdf.gpt_floor_blocked_soft_delivered', { uid: pre.uid, requestId, billingMode, gates })) {
             logger.warn('analyze_pdf.gpt_floor_blocked', { uid: pre.uid, requestId, billingMode, gates });
             return res.status(422).json({
-              error: '원문 보존 기준을 통과하지 못해 차단했어요. 크레딧은 차감되지 않았어요.',
+              error: '안전하게 전달할 수 있는 결과를 만들지 못해 작업을 멈췄어요. 크레딧은 차감되지 않았어요.',
               floorStatus: 'blocked',
               gates
             });

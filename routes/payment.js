@@ -948,6 +948,7 @@ function serializeAdminJobDoc(docSnap) {
     humanizationDepthPass: typeof j.humanizationDepthPass === 'boolean' ? j.humanizationDepthPass : null,
     humanizationMinimumEffectPass: typeof j.humanizationMinimumEffectPass === 'boolean' ? j.humanizationMinimumEffectPass : null,
     humanizationDepthSoftDelivered: j.humanizationDepthSoftDelivered === true,
+    humanizationNoBenefitDelivered: j.humanizationNoBenefitDelivered === true,
     humanizationDeliveryDepthBand: j.humanizationDeliveryDepthBand || '',
     substantiveEditRatio: finiteOrNull(j.substantiveEditRatio),
     substantiveChangedSentenceRatio: finiteOrNull(j.substantiveChangedSentenceRatio),

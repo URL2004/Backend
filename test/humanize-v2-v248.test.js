@@ -265,6 +265,7 @@ test('과금 분기는 효과 제한 확인·품질 미달·동일 문서 재결
   const classify = transformRouter.classifyBillingDisposition;
   assert.equal(classify({ adminNoCharge: true }), 'admin_no_charge');
   assert.equal(classify({ plan: 'unlimited' }), 'plan_unlimited');
+  assert.equal(classify({ protectionEnabled: true, noBenefit: true, effectExpectation: 'limited' }), 'waived_quality_shortfall');
   assert.equal(classify({ protectionEnabled: true, depthShortfall: true, effectExpectation: 'normal' }), 'waived_quality_shortfall');
   assert.equal(classify({ protectionEnabled: true, depthShortfall: true, previousLowBenefit: true, effectExpectation: 'limited' }), 'waived_repeat_low_benefit');
   assert.equal(classify({ protectionEnabled: true, depthShortfall: true, effectExpectation: 'limited' }), 'charged');

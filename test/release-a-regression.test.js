@@ -163,6 +163,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationDepthPass: false,
         humanizationMinimumEffectPass: false,
         humanizationDepthSoftDelivered: false,
+        humanizationNoBenefitDelivered: true,
         humanizationPolicyVersion: 'perceived-v2.1',
         humanizationRiskLevel: 'high',
         humanizationMinimumRatio: 0.13,
@@ -280,6 +281,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationDepthPass, false);
   assert.equal(first.humanizationMinimumEffectPass, false);
   assert.equal(first.humanizationDepthSoftDelivered, false);
+  assert.equal(first.humanizationNoBenefitDelivered, true);
   assert.equal(first.humanizationPolicyVersion, 'perceived-v2.1');
   assert.equal(first.humanizationRiskLevel, 'high');
   assert.equal(first.humanizationMinimumRatio, 0.13);

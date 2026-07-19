@@ -26,6 +26,7 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       documentProfile: 'resume_application', qualityStatus: 'needs_review',
       humanizationDeliveryDepthBand: 'minimum', substantiveEditRatio: 0.17,
       humanizationDepthApplicable: true, humanizationDepthPass: false,
+      humanizationNoBenefitDelivered: true,
       substantiveCarryoverRatio: 0.36, substantiveCarryoverMaximum: 0.3,
       structuralChangedSentenceRatio: 0.1, rhetoricalRemediationCoverage: 0.5,
       billingDisposition: 'waived_quality_shortfall', sectionRecoveryAttemptCount: 1,
@@ -51,6 +52,7 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.schemaVersion, 2);
   assert.equal(report.summary.depthBelowMinimumRate, 0.5);
   assert.equal(report.summary.waivedRate, 0.5);
+  assert.equal(report.summary.noBenefitDeliveredCount, 1);
   assert.equal(report.summary.carryoverOverLimitCount, 1);
   assert.equal(report.summary.sectionRecoveryAppliedCount, 1);
   assert.equal(report.summary.fingerprintIssueCount, 1);

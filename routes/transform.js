@@ -376,6 +376,9 @@ async function resolveBillingDisposition(job, out) {
   const engineMeta = out?.engineMeta || out?.result?.engineMeta || {};
   const depthShortfall = engineMeta.humanizationDepthApplicable === true
     && engineMeta.humanizationDepthPass !== true;
+  const noBenefit = engineMeta.humanizationNoBenefitDelivered === true
+    || (engineMeta.humanizationDepthApplicable === true
+      && engineMeta.humanizationMinimumEffectPass !== true);
   const fingerprint = job?.sourceFingerprint || sourceBenefitFingerprint(job?.text || '');
   if (job && fingerprint) job.sourceFingerprint = fingerprint;
   const previousLowBenefit = billingProtectionEnabled() && depthShortfall && job
@@ -386,6 +389,7 @@ async function resolveBillingDisposition(job, out) {
     plan: job?.plan,
     protectionEnabled: billingProtectionEnabled(),
     depthShortfall,
+    noBenefit,
     previousLowBenefit: !!previousLowBenefit,
     effectExpectation: job?.effectExpectation || 'normal'
   });
@@ -405,11 +409,13 @@ function classifyBillingDisposition({
   plan = '',
   protectionEnabled = false,
   depthShortfall = false,
+  noBenefit = false,
   previousLowBenefit = false,
   effectExpectation = 'normal'
 } = {}) {
   if (adminNoCharge) return 'admin_no_charge';
   if (plan === 'unlimited') return 'plan_unlimited';
+  if (protectionEnabled && noBenefit) return 'waived_quality_shortfall';
   if (protectionEnabled && depthShortfall && previousLowBenefit) return 'waived_repeat_low_benefit';
   if (protectionEnabled && depthShortfall && effectExpectation === 'normal') return 'waived_quality_shortfall';
   return 'charged';
@@ -602,27 +608,27 @@ function recordStart(uid) {
 
 function blockedReason(gates, mode) {
   const set = new Set(Array.isArray(gates) ? gates : []);
-  if (set.has('semanticJudge')) return '변환 결과에 원문에 없던 사실이나 주장이 섞여 차단했어요.';
-  if (set.has('lostFacts')) return '변환 결과에서 원문의 핵심 사실이나 수치가 빠져 차단했어요.';
-  if (set.has('novelty')) return '변환 결과에 새 정보가 추가되어 차단했어요.';
-  if (set.has('evidence_pairing')) return '수치와 출처의 짝이 맞지 않아 차단했어요.';
+  if (set.has('semanticJudge')) return '변환 결과에 원문에 없던 사실이나 주장이 남아 안전하게 작업을 멈췄어요.';
+  if (set.has('lostFacts')) return '변환 결과에서 원문의 핵심 사실이나 수치 누락이 확인돼 작업을 멈췄어요.';
+  if (set.has('novelty')) return '변환 결과에 새 정보가 추가된 흔적이 남아 작업을 멈췄어요.';
+  if (set.has('evidence_pairing')) return '수치와 출처의 연결을 안전하게 확인할 수 없어 작업을 멈췄어요.';
   if (set.has('length_collapse')) return '재구성 과정에서 분량이 원문보다 크게 줄어(상당 부분이 빠져) 결과를 그대로 내보내지 않았어요. 아래에서 원문 보존 다듬기로 받으면 분량·사실이 유지돼요.';
   if (set.has('restructure_unfit')) return '이 글은 고급(재구성)에 맞지 않아요. 재구성은 글을 새로 써내는 방식이라, 자소서·생기부·탐구문이나 짧고 추상적인 글은 원문에 없는 내용이 지어내져 차단돼요. 아래에서 「원문 보존 다듬기」로 받으면 그대로 안전하게 처리돼요.';
-  if (mode === 'polish') return '문장을 다듬는 중 원문 보존 기준을 통과하지 못해 차단했어요.';
-  return '품질 게이트를 통과하지 못해 결과를 내보내지 않았어요.';
+  if (mode === 'polish') return '문장을 다듬는 중 원문의 뜻을 안전하게 지킬 결과를 만들지 못해 작업을 멈췄어요.';
+  return '안전하게 전달할 수 있는 결과를 만들지 못해 작업을 멈췄어요.';
 }
 
 // 관리자/사용자 표시용 짧은 차단 단계 라벨 — blocked인데 "재처리 중"으로 멈춰 보이던 표시 버그 해결.
 function blockedStage(gates) {
   const set = new Set(Array.isArray(gates) ? gates : []);
-  if (set.has('lostFacts')) return '차단됨 · 원문 사실 누락';
-  if (set.has('semanticJudge') || set.has('novelty')) return '차단됨 · 원문에 없는 주장 추가';
+  if (set.has('lostFacts')) return '안전 중단 · 원문 사실 누락';
+  if (set.has('semanticJudge') || set.has('novelty')) return '안전 중단 · 원문에 없는 주장 추가';
   if (set.has('restructure_unfit')) return '보류됨 · 고급에 맞지 않는 글(자소서·짧은 글)';
-  if (set.has('length_short')) return '차단됨 · 결과가 너무 짧음';
+  if (set.has('length_short')) return '안전 중단 · 결과가 너무 짧음';
   if (set.has('length_collapse')) return '보류됨 · 분량이 너무 줄어듦';
-  if (set.has('length_overrun')) return '차단됨 · 과도하게 늘어남';
-  if (set.has('evidence_pairing')) return '차단됨 · 수치-출처 불일치';
-  return '차단됨 · 원문 보존 기준 미통과';
+  if (set.has('length_overrun')) return '안전 중단 · 과도하게 늘어남';
+  if (set.has('evidence_pairing')) return '안전 중단 · 수치-출처 불일치';
+  return '안전 중단 · 전달 가능한 결과 없음';
 }
 
 function blockedNextActions(gates, mode) {
@@ -883,6 +889,7 @@ function buildArchiveObservability(job) {
     humanizationDepthPass: engineMeta.humanizationDepthPass === true,
     humanizationMinimumEffectPass: engineMeta.humanizationMinimumEffectPass === true,
     humanizationDepthSoftDelivered: engineMeta.humanizationDepthSoftDelivered === true,
+    humanizationNoBenefitDelivered: engineMeta.humanizationNoBenefitDelivered === true,
     humanizationPolicyVersion: archiveString(engineMeta.humanizationPolicyVersion, 32),
     humanizationPlanSignalSource: archiveString(engineMeta.humanizationPlanSignalSource, 48),
     humanizationRiskLevel: archiveString(engineMeta.humanizationRiskLevel, 24),
@@ -1306,7 +1313,7 @@ async function tryPreservationFallback(job, text) {
     }
     job.stage = '원문 보존형으로 재처리 중';
     job.note = (job.note ? job.note + ' ' : '')
-      + '고급 변환 결과가 원문 보존 기준을 통과하지 못해, 원문을 최대한 보존하는 방식으로 처리했어요.';
+      + '고급 변환 결과에 원문 보존 위험이 남아, 원문을 최대한 보존하는 방식으로 처리했어요.';
     persistJob(job);
 
     // 보존형(=polish) 경로 그대로 재사용 — 이미 운영 중인 검증된 경로.
@@ -1414,7 +1421,7 @@ async function tryBlogPreservationFallback(job, text) {
     }
     job.stage = '원문 보존형으로 재처리 중';
     job.note = (job.note ? job.note + ' ' : '')
-      + '자연화 결과가 원문 보존 기준을 통과하지 못해, 원문을 최대한 보존하는 방식으로 처리했어요.';
+      + '자연화 결과에 원문 보존 위험이 남아, 원문을 최대한 보존하는 방식으로 처리했어요.';
     persistJob(job);
 
     const gptCfg = await activeGptConfig();

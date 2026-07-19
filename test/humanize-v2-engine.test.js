@@ -134,7 +134,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.8');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.9');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -471,14 +471,16 @@ test('OpenAI refusal은 최종 결과로 전달하지 않고 strict 차단한다
   assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 2);
 });
 
-test('v2 청크가 보호 사실을 잃으면 상위 모델 재시도 후 원문으로 복귀한다', { concurrency: false }, async t => {
+test('v2 청크가 보호 사실을 잃으면 원문으로 안전 복귀해 검토용으로 전달한다', { concurrency: false }, async t => {
   const source = '한국대학교 연구팀은 학생 20명을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 정리했습니다.';
   const unsafe = '한 대학 연구팀은 여러 학생을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 자연스럽게 정리했습니다.';
   const mock = installEngineMock(t, { humanize: unsafe });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'fact-loss-user', config: config() });
-  assert.equal(out.status, 'blocked');
+  assert.equal(out.status, 'needs_review');
   assert.equal(out.result.outputText, source);
   assert.equal(out.fallbackCount, 1);
+  assert.equal(out.engineMeta.humanizationNoBenefitDelivered, true);
+  assert.ok(out.floorReport.warnings.some(item => item.gate === 'gpt_all_chunks_fallback'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
 });
 
@@ -529,7 +531,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.8');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.9');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);
@@ -586,7 +588,7 @@ test('재시도 결과가 품질 최소선에 못 미쳐도 최소 효과와 안
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
 });
 
-test('의미 수리 뒤 결과가 원문으로 돌아가면 의미 감사 이후 다시 쓰지 않고 차단한다', { concurrency: false }, async t => {
+test('의미 수리 뒤 결과가 원문으로 돌아가면 재작성 없이 검토용으로 전달한다', { concurrency: false }, async t => {
   const source = '한국대학교 연구팀은 학생 20명을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 정리했습니다.';
   const unsafe = `${source} 미래연구원은 후속 조사를 시작합니다.`;
   const safe = source.replace('함께 분석했고', '함께 살펴봤고');
@@ -597,8 +599,9 @@ test('의미 수리 뒤 결과가 원문으로 돌아가면 의미 감사 이후
     generalRetryOutput: safe
   });
   const out = await engine.run({ text: source, mode: 'formal', uid: 'final-noop-recovery-user', config: config() });
-  assert.equal(out.status, 'blocked');
+  assert.equal(out.status, 'needs_review');
   assert.equal(out.result.outputText, source);
+  assert.equal(out.engineMeta.humanizationNoBenefitDelivered, true);
   assert.equal(out.engineMeta.finalNoopRecoveryAttempted, false);
   assert.equal(out.engineMeta.finalNoopRecoveryApplied, false);
   assert.equal(out.engineMeta.finalNoopRecoveryCount, 0);
@@ -711,7 +714,7 @@ test('두 voice 시도가 모두 실패하면 원문 기반 최소 교정으로 
   assert.equal(out.qualityWarnings.some(item => item.code === 'sentence_distribution_shift'), false);
 });
 
-test('원문 기반 최소 교정도 장단문 분포를 평탄화하면 전달하지 않는다', { concurrency: false }, async t => {
+test('원문 기반 최소 교정도 장단문 분포를 평탄화하면 원문으로 안전 복귀해 전달한다', { concurrency: false }, async t => {
   const source = '짧게 관찰함. 이 문장은 앞 문장보다 조금 더 길게 이어지는 활동 내용을 기록함. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 친구들의 질문에 답하며 탐구 내용을 크게 확장한 매우 긴 관찰 문장을 기록함. 마지막은 다시 짧게 마무리함.';
   const markers = ['[[[V2_SENTENCE_0001]]]', '[[[V2_SENTENCE_0002]]]', '[[[V2_SENTENCE_0003]]]'];
   const uniformSentences = [
@@ -728,11 +731,12 @@ test('원문 기반 최소 교정도 장단문 분포를 평탄화하면 전달�
   const out = await engine.run({ text: source, mode: 'blog', uid: 'voice-retry-reject-user', config: config() });
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
-  assert.equal(out.status, 'blocked');
+  assert.equal(out.status, 'needs_review');
   assert.equal(out.result.outputText, source);
+  assert.equal(out.engineMeta.humanizationNoBenefitDelivered, true);
 });
 
-test('voice 재시도 실패 후 구두점만 바꾼 결과는 휴머나이징으로 전달하지 않는다', { concurrency: false }, async t => {
+test('voice 재시도 실패 후 구두점만 바뀌면 원문을 검토용으로 무리 없이 전달한다', { concurrency: false }, async t => {
   const source = '짧게 관찰함. 이 문장은 앞 문장보다 조금 더 길게 이어지는 활동 내용을 기록함. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 친구들의 질문에 답하며 탐구 내용을 크게 확장한 매우 긴 관찰 문장을 기록함. 그렇다면 마지막은 다시 짧게 마무리함.';
   const markers = ['[[[V2_SENTENCE_0001]]]', '[[[V2_SENTENCE_0002]]]', '[[[V2_SENTENCE_0003]]]'];
   const uniform = [
@@ -744,9 +748,10 @@ test('voice 재시도 실패 후 구두점만 바꾼 결과는 휴머나이징�
   const punctuationOnly = source.replace('그렇다면 마지막은', '그렇다면, 마지막은');
   const mock = installEngineMock(t, { humanize: uniform, generalRetryOutput: punctuationOnly, humanizationDepth: true });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'voice-deterministic-surface-user', config: config() });
-  assert.equal(out.status, 'blocked');
+  assert.equal(out.status, 'needs_review');
   assert.equal(out.result.outputText, source);
-  assert.ok(out.floorReport.criticals.some(item => item.gate === 'humanization_depth_no_effect'));
+  assert.ok(out.floorReport.warnings.some(item => item.gate === 'humanization_depth_no_effect'));
+  assert.equal(out.engineMeta.humanizationNoBenefitDelivered, true);
   assert.equal(out.engineMeta.repairCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);

@@ -317,9 +317,9 @@ test('표·항목형 문서는 라벨 행만 역할 기반 경계 토큰으로 �
   assert.ok(profile.formatProfile.flags.includes('label_heavy'));
   assert.equal(voice.lineBoundaryPolicy, 'structural');
   assert.ok(plan.chunks.some(item => item.locked && item.lockType === 'label'));
-  assert.ok(plan.chunks.some(item => item.lineBoundaryMarkers?.length));
-  const editable = plan.chunks.find(item => item.lineBoundaryMarkers?.length);
-  assert.equal(structure.restoreBoundaryMarkers(editable.llmText, editable).ok, true);
+  assert.ok(plan.chunks.some(item => item.locked && item.lockType === 'label_prefix'));
+  assert.ok(plan.chunks.some(item => !item.locked && /전체 기관을 대상으로/u.test(item.text)));
+  assert.equal(structure.mergeChunks(plan.chunks), source);
 });
 
 test('긴 단일 문단 polish는 내용 변경 없이 문장 경계에서 읽기 가능한 문단만 만든다', () => {

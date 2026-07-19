@@ -10,6 +10,7 @@ const router = express.Router();
 const sg = require('../engine/surfaceguard');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
+const humanizationDepth = require('../engine-gpt-prod/humanizationDepth');
 const { logger } = require('../lib/logger');
 
 // ★ UI 표기 밴드는 실측보다 보수적으로(2026-06-12 사장님 지시): 약속을 낮게 잡아 실망 방지.
@@ -76,6 +77,15 @@ router.post('/diagnose', (req, res) => {
   const advancedRouting = resolveAdvancedRouting(text, ir, {
     v2Enabled: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1'
   });
+  const requestedEffectMode = ['blog', 'formal', 'polish'].includes(req.body?.mode)
+    ? req.body.mode
+    : advancedRouting.recommendedMode;
+  const effectPlan = humanizationDepth.buildHumanizationPlan(text, {
+    requestStrength: requestedEffectMode === 'formal' ? 'advanced' : (requestedEffectMode === 'polish' ? 'polish' : 'basic'),
+    documentProfile: advancedRouting.documentProfile,
+    inputRisk: ir
+  });
+  const effect = humanizationDepth.classifyEffectExpectation(effectPlan);
   let advancedTimeEstimate = null;
   if (process.env.HUMANIZE_ENGINE_V2_ENABLED === '1') {
     try {
@@ -102,7 +112,10 @@ router.post('/diagnose', (req, res) => {
     documentProfile: advancedRouting.profile,
     profileConfidence: Number(advancedRouting.confidence.toFixed(3)),
     recommendedMode: advancedRouting.recommendedMode,
-    routingOverride: advancedRouting.routingOverride || null
+    routingOverride: advancedRouting.routingOverride || null,
+    effectExpectation: effect.effectExpectation,
+    effectNoticeCode: effect.effectNoticeCode,
+    requiresEffectConfirmation: requestedEffectMode === 'polish' ? false : effect.requiresEffectConfirmation
   });
   res.json({
     ok: true,
@@ -121,6 +134,9 @@ router.post('/diagnose', (req, res) => {
     documentProfile: advancedRouting.profile,
     profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
     routingOverride: advancedRouting.routingOverride || null,
+    effectExpectation: effect.effectExpectation,
+    effectNoticeCode: effect.effectNoticeCode,
+    requiresEffectConfirmation: requestedEffectMode === 'polish' ? false : effect.requiresEffectConfirmation,
     advancedTimeEstimate,
     advisory: adv ? adv.reason : null,  // 회피 난이도 소프트 안내(STEM·구조화 보고서) — 차단 아님
     advisoryKind: adv ? adv.kind : null,

@@ -58,7 +58,7 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
     paragraph: distribution(paragraphLengths),
     endings,
     directQuoteCount: (text.match(/[“"][^”"\n]{2,}[”"]/gu) || []).length,
-    listItemCount: (text.match(/^\s*(?:[-*•]|\d+[.)]|[가-힣][.)])\s+.+$/gmu) || []).length,
+    listItemCount: (text.match(/^\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+[.)]|[가-힣][.)]|[①-⑳])\s+.+$/gmu) || []).length,
     headingCount: (text.match(/^\s*(?:(?:제\s*\d+\s*(?:장|절|항))(?:\s+\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*\S.*|\d+(?:\.\d+){0,3}[.)]?\s+\S.*|(?:서론|본론|결론|초록|요약|참고\s*문헌|부록))\s*$/gmu) || []).length,
     questionnaireQuestionCount: countQuestionnaireQuestions(text),
     lineCount: lineCount(text),

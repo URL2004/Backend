@@ -9,6 +9,7 @@
     "start": "node server.js",
     "setup:layout-nlp": "node scripts/install-layout-nlp.js",
     "eval": "node eval/runEval.js",
+    "report:fingerprints": "node scripts/humanize-fingerprint-report.js",
     "eval:profiles": "node scripts/replay-document-profiles.js",
     "eval:judge": "node eval/runJudgeEval.js",
     "test": "node --test test/*.test.js",

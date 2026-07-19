@@ -116,8 +116,13 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
     status: 'blocked',
     stage: '전달 차단',
     createdAt: 100,
+    startedAt: 200,
     uid: 'user-archive',
     mode: 'blog',
+    billingDisposition: 'waived_quality_shortfall',
+    effectExpectation: 'normal',
+    effectNoticeCode: null,
+    sourceFingerprint: '저장하면 안 되는 HMAC 지문',
     text: '저장하면 안 되는 원문',
     gates: ['gpt_noop_unchanged', { gate: 'sentence_truncated', detail: '저장 금지 상세' }],
     gateDetail: { raw: '저장 금지' },
@@ -169,6 +174,10 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationMinimumTargetCoverage: 0.75,
         substantiveEditRatio: 0.031,
         substantiveChangedSentenceRatio: 0.2,
+        substantiveCarryoverCount: 8,
+        substantiveCarryoverRatio: 0.4,
+        substantiveCarryoverEligibleSentenceCount: 20,
+        substantiveCarryoverMaximum: 0.3,
         humanizationTargetCoverage: 0.6,
         humanizationTargetChangedCount: 3,
         structuralChangedSentenceCount: 2,
@@ -183,6 +192,25 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationDepthRetryCount: 1,
         humanizationDepthRetryApplied: false,
         humanizationDepthRetryTargetSentenceCount: 3,
+        sectionRecoveryEnabled: true,
+        sectionRecoveryAttemptCount: 3,
+        sectionRecoveryAppliedCount: 1,
+        sectionRecoveryEscalationCount: 1,
+        fingerprintAuditVersion: 1,
+        fingerprintPass: false,
+        fingerprintIssueCodes: ['engine_phrase_fingerprint'],
+        fingerprintIntroducedCount: 2,
+        fingerprintRepairCount: 1,
+        endingStyleAuditVersion: 1,
+        endingStylePass: false,
+        endingStyleIssueCount: 1,
+        endingStyleIntroducedOtherCount: 2,
+        resumeCoverageAuditVersion: 1,
+        resumeCoverageApplicable: true,
+        resumeCoveragePass: false,
+        resumeClaimCount: 4,
+        resumeCoveredClaimCount: 3,
+        resumeCoverageRatio: 0.75,
         humanizationPlanSignalSource: 'deterministic_targets_input_risk',
         humanizationDepthReasonCodes: ['substantive_edit_ratio_low', '사용자 원문 조각'],
         humanizationDepthBlockingReasonCodes: ['substantive_effect_too_low'],
@@ -222,6 +250,8 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   const later = transform.buildArchiveDocument(job, { expiredAtMs: 9000 }, 9000);
   assert.equal(first.archiveSchemaVersion, 2);
   assert.equal(first.terminalAtMs, 1000);
+  assert.equal(first.processingDurationMs, 800);
+  assert.equal(first.totalDurationMs, 900);
   assert.equal(later.terminalAtMs, 1000, '후속 archive write가 최초 terminal 시각을 덮으면 안 된다');
   assert.deepEqual(first.gates, ['gpt_noop_unchanged', 'sentence_truncated']);
   assert.deepEqual(first.qualityWarningCodes, ['paragraph_structure_changed']);
@@ -260,6 +290,8 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationTargetDepthMet, false);
   assert.equal(first.humanizationDeliveryDepthBand, 'below_minimum');
   assert.equal(first.substantiveEditRatio, 0.031);
+  assert.equal(first.substantiveCarryoverRatio, 0.4);
+  assert.equal(first.substantiveCarryoverMaximum, 0.3);
   assert.equal(first.humanizationTargetCoverage, 0.6);
   assert.equal(first.structuralChangedSentenceRatio, 0.4);
   assert.equal(first.rhetoricalRemediationCoverage, 0.75);
@@ -269,6 +301,14 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.deepEqual(first.sourceReviewWarningCodes, ['deep_understanding_collocation']);
   assert.equal(first.humanizationDepthRetryCount, 1);
   assert.equal(first.humanizationDepthRetryTargetSentenceCount, 3);
+  assert.equal(first.sectionRecoveryAttemptCount, 3);
+  assert.equal(first.sectionRecoveryAppliedCount, 1);
+  assert.equal(first.fingerprintPass, false);
+  assert.deepEqual(first.fingerprintIssueCodes, ['engine_phrase_fingerprint']);
+  assert.equal(first.endingStylePass, false);
+  assert.equal(first.resumeCoverageRatio, 0.75);
+  assert.equal(first.billingDisposition, 'waived_quality_shortfall');
+  assert.equal(first.effectExpectation, 'normal');
   assert.equal(first.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(first.humanizationDepthReasonCodes, ['substantive_edit_ratio_low']);
   assert.deepEqual(first.humanizationDepthBlockingReasonCodes, ['substantive_effect_too_low']);
@@ -282,6 +322,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'text'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'result'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(first, 'gateDetail'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(first, 'sourceFingerprint'), false);
 
   const blockedWithoutResult = transform.buildArchiveDocument({
     id: 'archive-observability-blocked-without-result',
@@ -364,6 +405,13 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     requestedDocumentProfile: 'resume_application', profileOverrideApplied: true,
     substantiveEditRatio: 0.27, structuralChangedSentenceRatio: 0.4,
     rhetoricalRemediationCoverage: 0.75, koreanRefinementPass: true,
+    substantiveCarryoverCount: 3, substantiveCarryoverRatio: 0.18,
+    substantiveCarryoverEligibleSentenceCount: 17, substantiveCarryoverMaximum: 0.25,
+    sectionRecoveryAttemptCount: 4, sectionRecoveryAppliedCount: 2, sectionRecoveryEscalationCount: 1,
+    fingerprintIntroducedCount: 1, fingerprintRepairCount: 1, fingerprintIssueCodes: [],
+    endingStylePass: true, endingStyleIssueCount: 0, resumeCoverageApplicable: true,
+    resumeCoveragePass: true, resumeClaimCount: 4, resumeCoveredClaimCount: 4, resumeCoverageRatio: 1,
+    billingDisposition: 'waived_quality_shortfall', effectExpectation: 'normal',
     koreanRefinementIssueCodes: [], sourceReviewWarningCodes: ['deep_understanding_collocation'],
     prompt: '저장 금지', source: '저장 금지', protectedTerms: ['저장 금지']
   });
@@ -372,6 +420,12 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.substantiveEditRatio, 0.27);
   assert.equal(compact.structuralChangedSentenceRatio, 0.4);
   assert.equal(compact.rhetoricalRemediationCoverage, 0.75);
+  assert.equal(compact.substantiveCarryoverRatio, 0.18);
+  assert.equal(compact.sectionRecoveryAppliedCount, 2);
+  assert.equal(compact.fingerprintRepairCount, 1);
+  assert.equal(compact.endingStylePass, true);
+  assert.equal(compact.resumeCoverageRatio, 1);
+  assert.equal(compact.billingDisposition, 'waived_quality_shortfall');
   assert.deepEqual(compact.sourceReviewWarningCodes, ['deep_understanding_collocation']);
   assert.equal(Object.hasOwn(compact, 'prompt'), false);
   assert.equal(Object.hasOwn(compact, 'source'), false);

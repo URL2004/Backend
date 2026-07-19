@@ -112,7 +112,7 @@ function labelParts(value) {
 }
 
 function isListLine(value) {
-  return /^(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s+\S/u.test(visibleTrim(value));
+  return /^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+\S/u.test(visibleTrim(value));
 }
 
 function isTableLikeLine(value) {

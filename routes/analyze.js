@@ -3505,7 +3505,7 @@ async function runHumanizeChunked({ text, mode = 'assignment', lang = 'ko', sign
 //   해결: 단일 호출은 서버가 같은 컬렉션·스키마로 직접 저장(Admin SDK) → "차감↔저장" 원자화.
 //   클라 saveHistory와 동일 스키마라 이용 기록 화면이 그대로 렌더한다.
 //   requestId를 문서 ID로 사용해 재시도·중복 호출에도 1건만 남게(멱등).
-async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result, mode, modeSource, engineMeta, qualityStatus, qualityWarningCodes, sourceReviewWarningCodes }) {
+async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result, mode, modeSource, engineMeta, qualityStatus, billingDisposition, qualityWarningCodes, sourceReviewWarningCodes }) {
   if (!db) return;
   const isDetect = opType === 'detect';
   const storedMode = isDetect ? 'detect' : normalizeStoredHumanizeMode(mode);
@@ -3520,6 +3520,9 @@ async function saveAnalyzeHistory({ uid, requestId, opType, text, needed, result
   if (!isDetect) {
     doc.modeSource = modeSource === 'defaulted' ? 'defaulted' : 'provided';
     if (qualityStatus === 'clean' || qualityStatus === 'needs_review') doc.qualityStatus = qualityStatus;
+    if (['charged', 'waived_quality_shortfall', 'waived_repeat_low_benefit', 'plan_unlimited', 'admin_no_charge'].includes(billingDisposition)) {
+      doc.billingDisposition = billingDisposition;
+    }
     if (Array.isArray(qualityWarningCodes)) {
       doc.qualityWarningCodes = [...new Set(qualityWarningCodes.map(value => String(value || '').trim()).filter(Boolean))].slice(0, 30);
     }
@@ -3601,12 +3604,34 @@ function compactHistoryEngineMeta(meta) {
     humanizationDeliveryDepthBand: String(meta.humanizationDeliveryDepthBand || '').slice(0, 24),
     substantiveEditRatio: Number.isFinite(Number(meta.substantiveEditRatio)) ? Number(meta.substantiveEditRatio) : null,
     substantiveChangedSentenceRatio: Number.isFinite(Number(meta.substantiveChangedSentenceRatio)) ? Number(meta.substantiveChangedSentenceRatio) : null,
+    substantiveCarryoverCount: Math.max(0, Number(meta.substantiveCarryoverCount) || 0),
+    substantiveCarryoverRatio: Number.isFinite(Number(meta.substantiveCarryoverRatio)) ? Number(meta.substantiveCarryoverRatio) : null,
+    substantiveCarryoverEligibleSentenceCount: Math.max(0, Number(meta.substantiveCarryoverEligibleSentenceCount) || 0),
+    substantiveCarryoverMaximum: Number.isFinite(Number(meta.substantiveCarryoverMaximum)) ? Number(meta.substantiveCarryoverMaximum) : null,
     humanizationTargetCoverage: Number.isFinite(Number(meta.humanizationTargetCoverage)) ? Number(meta.humanizationTargetCoverage) : null,
     structuralChangedSentenceCount: Math.max(0, Number(meta.structuralChangedSentenceCount) || 0),
     structuralChangedSentenceRatio: Number.isFinite(Number(meta.structuralChangedSentenceRatio)) ? Number(meta.structuralChangedSentenceRatio) : null,
     rhetoricalRemediationTargetCount: Math.max(0, Number(meta.rhetoricalRemediationTargetCount) || 0),
     rhetoricalRemediationAchievedCount: Math.max(0, Number(meta.rhetoricalRemediationAchievedCount) || 0),
     rhetoricalRemediationCoverage: Number.isFinite(Number(meta.rhetoricalRemediationCoverage)) ? Number(meta.rhetoricalRemediationCoverage) : null,
+    sectionRecoveryAttemptCount: Math.max(0, Number(meta.sectionRecoveryAttemptCount) || 0),
+    sectionRecoveryAppliedCount: Math.max(0, Number(meta.sectionRecoveryAppliedCount) || 0),
+    sectionRecoveryEscalationCount: Math.max(0, Number(meta.sectionRecoveryEscalationCount) || 0),
+    fingerprintIntroducedCount: Math.max(0, Number(meta.fingerprintIntroducedCount) || 0),
+    fingerprintRepairCount: Math.max(0, Number(meta.fingerprintRepairCount) || 0),
+    fingerprintIssueCodes: [...new Set((Array.isArray(meta.fingerprintIssueCodes) ? meta.fingerprintIssueCodes : [])
+      .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
+    endingStylePass: meta.endingStylePass === true,
+    endingStyleIssueCount: Math.max(0, Number(meta.endingStyleIssueCount) || 0),
+    endingStyleIntroducedOtherCount: Math.max(0, Number(meta.endingStyleIntroducedOtherCount) || 0),
+    resumeCoverageApplicable: meta.resumeCoverageApplicable === true,
+    resumeCoveragePass: meta.resumeCoveragePass === true,
+    resumeClaimCount: Math.max(0, Number(meta.resumeClaimCount) || 0),
+    resumeCoveredClaimCount: Math.max(0, Number(meta.resumeCoveredClaimCount) || 0),
+    resumeCoverageRatio: Number.isFinite(Number(meta.resumeCoverageRatio)) ? Number(meta.resumeCoverageRatio) : null,
+    billingDisposition: String(meta.billingDisposition || '').slice(0, 48),
+    effectExpectation: ['normal', 'limited'].includes(meta.effectExpectation) ? meta.effectExpectation : 'normal',
+    effectNoticeCode: String(meta.effectNoticeCode || '').slice(0, 80),
     koreanRefinementPass: meta.koreanRefinementPass === true,
     koreanRefinementIssueCodes: [...new Set((Array.isArray(meta.koreanRefinementIssueCodes) ? meta.koreanRefinementIssueCodes : [])
       .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),

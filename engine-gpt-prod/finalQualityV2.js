@@ -95,6 +95,9 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     if (!repetitionAudit.increased) {
       floorViolations = floorViolations.filter(violation => String(violation?.type || violation?.gate || '') !== 'repetition');
     }
+    // 결정론 경험 탐지는 의역을 실제 경험 추가로 오인할 수 있다. v2.4.8에서는
+    // 새 화자·시점·행동 결합만 내부 후보로 보내고, 외부 경고는 의미 심사 확인 뒤에만 만든다.
+    floorViolations = floorViolations.filter(violation => String(violation?.type || violation?.gate || '') !== 'experience_novelty');
   } catch (error) {
     warnings.push(warning('audit_error', `결정론적 품질 감사 일부를 실행하지 못했어요: ${safeMessage(error)}`));
   }
@@ -572,7 +575,7 @@ async function retryPolishSurface({ source, currentOutput, policy, reason = '', 
   };
 }
 
-async function retryGeneralSurface({ source, currentOutput, humanizationPlan = null, humanizationDepthReport = null, config, signal, safetyIdentifier = '' }) {
+async function retryGeneralSurface({ source, currentOutput, humanizationPlan = null, humanizationDepthReport = null, config, signal, safetyIdentifier = '', model = '', reasoningEffort = '', phase = 'humanization_depth_retry' }) {
   const plan = humanizationPlan || {};
   const strengthLabel = plan.requestStrength === 'advanced' ? '고급' : '기본';
   const targetOrdinals = buildGeneralRetryTargetOrdinals(source, currentOutput, plan, humanizationDepthReport);
@@ -603,14 +606,14 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     user: `[SOURCE - 의미 확인용]\n${source}\n\n[CURRENT - 여기서 국소 수정]\n${currentOutput}`,
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_general_surface_retry',
-    model: config.models.repair,
-    reasoningEffort: config.reasoning.repair,
+    model: model || config.models.repair,
+    reasoningEffort: reasoningEffort || config.reasoning.repair,
     verbosity: 'low',
     maxOutputTokens: Math.max(2400, Math.min(12000, Math.ceil(String(source || '').length * 3.2))),
     config,
     signal,
     safetyIdentifier,
-    meta: { task: 'repair', phase: 'humanization_depth_retry', mode: 'humanize', profile: 'gpt_prod_v2' }
+    meta: { task: 'repair', phase, mode: 'humanize', profile: 'gpt_prod_v2' }
   });
   return {
     outputText: String(response.json.outputText || '').trim() || currentOutput,
@@ -674,7 +677,9 @@ async function retryKoreanRefinement({
   mode = '',
   config,
   signal,
-  safetyIdentifier = ''
+  safetyIdentifier = '',
+  model = '',
+  reasoningEffort = ''
 }) {
   const profile = String(documentProfile?.profile || documentProfile || 'unknown');
   const issues = (refinementAudit?.repairableIssues || [])
@@ -714,8 +719,8 @@ async function retryKoreanRefinement({
     user: `[SOURCE - 의미 확인용]\n${source}\n\n[CURRENT - 국소 수리 대상]\n${currentOutput}`,
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_korean_refinement_retry',
-    model: config.models.repair,
-    reasoningEffort: config.reasoning.repair,
+    model: model || config.models.repair,
+    reasoningEffort: reasoningEffort || config.reasoning.repair,
     verbosity: 'low',
     maxOutputTokens: Math.max(1800, Math.min(12000, Math.ceil(String(currentOutput || '').length * 2.2))),
     config,
@@ -730,6 +735,154 @@ async function retryKoreanRefinement({
     usage: response.usage,
     model: response.model,
     issueCodes: issues.map(item => item.code)
+  };
+}
+
+async function retryFingerprintAudit({
+  source,
+  currentOutput,
+  fingerprintAudit,
+  documentProfile = null,
+  config,
+  signal,
+  safetyIdentifier = ''
+}) {
+  const issues = (fingerprintAudit?.violations || []).slice(0, 8);
+  if (!issues.length) return { outputText: currentOutput, safeChangeFound: false, notes: [], usage: null, model: '' };
+  const profile = String(documentProfile?.profile || documentProfile || 'unknown');
+  const issueLines = issues.map(item => item.code === 'contrast_relation_shift'
+    ? `- contrast_relation_shift: SOURCE의 부정·배제 관계를 인정·가산 관계로 바꾸지 말고 문장 ${item.sentenceOrdinals?.join(',') || '해당 위치'}의 논리 방향을 복원한다.`
+    : `- engine_phrase_fingerprint/${item.family}: CURRENT에 새로 반복 주입된 상투구를 문서당 1회 이하로 줄인다.`);
+  const system = [
+    '너는 엔진 상투구와 논리 방향만 국소 수리하는 한국어 편집기다.',
+    'SOURCE는 의미와 논리 관계 확인용이고 CURRENT가 편집 대상이다. 표시된 문제 문장과 바로 인접한 문장 외에는 바꾸지 않는다.',
+    'SOURCE의 주장, 부정·배제·대조·인정 관계, 수치, 기관명, 인용, 화자, 문단·제목·목록 순서를 그대로 보존한다.',
+    '새 주장·예시·평가·경험·결론을 만들지 않고, 상투구를 다른 상투구로 치환하지 않는다.',
+    ['academic_paper', 'report_assignment'].includes(profile)
+      ? '학술·보고서의 개념어와 평서문 격식을 유지한다. 구어체·명령형·도구 의인화를 새로 넣지 않는다.'
+      : '',
+    '안전하게 고칠 수 없거나 문제가 이미 없다면 safeChangeFound=false로 답한다.',
+    '[수리 대상]',
+    ...issueLines
+  ].filter(Boolean).join('\n');
+  const response = await completeJson({
+    system,
+    user: `[SOURCE - 논리 확인용]\n${source}\n\n[CURRENT - 국소 수리 대상]\n${currentOutput}`,
+    schema: POLISH_REPAIR_SCHEMA,
+    schemaName: 'gpt_prod_fingerprint_retry',
+    model: config.models.repair,
+    reasoningEffort: config.reasoning.repair,
+    verbosity: 'low',
+    maxOutputTokens: Math.max(1800, Math.min(12000, Math.ceil(String(currentOutput || '').length * 2.2))),
+    config,
+    signal,
+    safetyIdentifier,
+    meta: { task: 'repair', phase: 'fingerprint_retry', mode: 'humanize', profile: 'gpt_prod_v2' }
+  });
+  return {
+    outputText: String(response.json.outputText || '').trim() || currentOutput,
+    safeChangeFound: response.json.safeChangeFound === true,
+    notes: response.json.notes || [],
+    usage: response.usage,
+    model: response.model
+  };
+}
+
+async function retryEndingStyleAudit({
+  source,
+  currentOutput,
+  endingAudit,
+  documentProfile = null,
+  config,
+  signal,
+  safetyIdentifier = ''
+}) {
+  const issues = (endingAudit?.issues || []).slice(0, 8);
+  if (!issues.length) return { outputText: currentOutput, safeChangeFound: false, notes: [], usage: null, model: '' };
+  const profile = String(documentProfile?.profile || documentProfile || 'unknown');
+  const issueLines = issues.map(item => {
+    const styles = (item.introducedStyles || []).map(style => `${style.style} ${style.count}문장`).join(', ');
+    return `- 섹션 ${item.index + 1}${item.heading ? `(${item.heading})` : ''}: 원문 지배 종결체=${item.dominantStyle}, 새 혼용=${styles || item.introducedOtherCount}`;
+  });
+  const system = [
+    '너는 한국어 종결체 혼용만 국소 수리하는 편집기다.',
+    'SOURCE에서 한 종결체가 지배적인 섹션에 CURRENT가 새로 만든 다른 종결체만 원문의 지배 종결체로 되돌린다.',
+    '원래 혼합 문체인 섹션은 통일하지 않는다. 문제 없는 문장과 다른 섹션은 그대로 둔다.',
+    '어미 외의 핵심 어휘·주장·수치·기관명·인용·화자·문장 수·문단·제목·목록 순서는 바꾸지 않는다.',
+    profile === 'student_record_teacher' ? '세특의 관찰형 명사 종결은 평서문으로 바꾸지 않는다.' : '',
+    '안전하게 고칠 수 없거나 문제가 이미 없다면 safeChangeFound=false로 답한다.',
+    '[수리 대상]',
+    ...issueLines
+  ].filter(Boolean).join('\n');
+  const response = await completeJson({
+    system,
+    user: `[SOURCE - 종결체 확인용]\n${source}\n\n[CURRENT - 국소 수리 대상]\n${currentOutput}`,
+    schema: POLISH_REPAIR_SCHEMA,
+    schemaName: 'gpt_prod_ending_style_retry',
+    model: config.models.repair,
+    reasoningEffort: config.reasoning.repair,
+    verbosity: 'low',
+    maxOutputTokens: Math.max(1800, Math.min(12000, Math.ceil(String(currentOutput || '').length * 2.2))),
+    config,
+    signal,
+    safetyIdentifier,
+    meta: { task: 'repair', phase: 'ending_style_retry', mode: 'humanize', profile: 'gpt_prod_v2' }
+  });
+  return {
+    outputText: String(response.json.outputText || '').trim() || currentOutput,
+    safeChangeFound: response.json.safeChangeFound === true,
+    notes: response.json.notes || [],
+    usage: response.usage,
+    model: response.model
+  };
+}
+
+async function retryResumeCoverage({
+  source,
+  currentOutput,
+  coverageAudit,
+  config,
+  signal,
+  safetyIdentifier = ''
+}) {
+  const omissions = (coverageAudit?.omissions || []).slice(0, 8);
+  if (!omissions.length) return { outputText: currentOutput, safeChangeFound: false, notes: [], usage: null, model: '' };
+  const issueLines = omissions.map(item => [
+    `- 원문 문장 ${item.sourceOrdinal}; 유형=${(item.types || []).join(',')}; 회수율=${item.contentRecall}`,
+    item.previousContext ? `  앞 문맥: ${item.previousContext}` : '',
+    `  복원할 원문 주장: ${item.sourceSentence}`,
+    item.nextContext ? `  뒤 문맥: ${item.nextContext}` : ''
+  ].filter(Boolean).join('\n'));
+  const system = [
+    '너는 자기소개서 핵심 주장 누락만 복원하는 한국어 편집기다.',
+    'SOURCE의 행동·역량·성과·직무 연결 문장이 CURRENT에서 빠지거나 핵심 내용어가 사라진 항목만 원래 위치에 복원한다.',
+    '각 항목에 제공된 원문 문장과 앞뒤 문맥만 사용한다. 새 경험·성과·수치·역량·직무 연결을 추정하거나 만들지 않는다.',
+    '문단 순서와 화자·시점을 유지하고, 이미 보존된 다른 문장은 바꾸지 않는다. 별도 요약·결론 문단을 만들지 않는다.',
+    '복원 문장은 원문의 격식과 전문 개념어를 유지하며 지나친 구어체로 낮추지 않는다.',
+    '안전하게 원래 위치를 찾을 수 없거나 누락이 이미 없다면 safeChangeFound=false로 답한다.',
+    '[복원 대상]',
+    ...issueLines
+  ].join('\n');
+  const response = await completeJson({
+    system,
+    user: `[SOURCE - 주장과 위치 확인용]\n${source}\n\n[CURRENT - 누락 복원 대상]\n${currentOutput}`,
+    schema: POLISH_REPAIR_SCHEMA,
+    schemaName: 'gpt_prod_resume_coverage_retry',
+    model: config.models.repair,
+    reasoningEffort: config.reasoning.repair,
+    verbosity: 'low',
+    maxOutputTokens: Math.max(1800, Math.min(12000, Math.ceil(String(currentOutput || '').length * 2.2))),
+    config,
+    signal,
+    safetyIdentifier,
+    meta: { task: 'repair', phase: 'resume_coverage_retry', mode: 'humanize', profile: 'gpt_prod_v2' }
+  });
+  return {
+    outputText: String(response.json.outputText || '').trim() || currentOutput,
+    safeChangeFound: response.json.safeChangeFound === true,
+    notes: response.json.notes || [],
+    usage: response.usage,
+    model: response.model
   };
 }
 
@@ -857,6 +1010,9 @@ module.exports = {
   retryPolishSurface,
   retryGeneralSurface,
   retryKoreanRefinement,
+  retryFingerprintAudit,
+  retryEndingStyleAudit,
+  retryResumeCoverage,
   buildGeneralRetryTargetOrdinals,
   warningsFromSemantic
 };

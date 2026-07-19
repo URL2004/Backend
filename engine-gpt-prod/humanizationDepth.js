@@ -8,8 +8,8 @@ const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 4;
-const POLICY_VERSION = 'perceived-v2.2';
+const PLAN_VERSION = 5;
+const POLICY_VERSION = 'perceived-v2.4.8';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -70,6 +70,8 @@ function buildHumanizationPlan(source, {
       targetSubstantiveEditMin: 0,
       targetSubstantiveEditMax: 0,
       minTargetCoverage: 0,
+      carryoverApplicable: false,
+      maxSubstantiveCarryoverRatio: 1,
       requiredStructuralChangedSentenceCount: 0,
       minRemediationCoverage: 0,
       rhetoricalRemediationPlan: { applicable: false, targetCount: 0, categoryCount: 0, categories: [] }
@@ -97,6 +99,7 @@ function buildHumanizationPlan(source, {
   const creative = profile === 'creative' || documentProfile?.formatProfile?.flags?.includes?.('creative_lines') === true;
   const cautious = CAUTIOUS_PROFILES.has(profile);
   const sourceChars = normalizeSubstantive(text).length;
+  const eligibleCarryoverSentenceCount = eligibleProseSentences(text).length;
 
   const basePolicy = PERCEIVED_POLICY[strength][riskLevel];
   let minSubstantiveEditRatio = basePolicy.minEdit;
@@ -157,6 +160,12 @@ function buildHumanizationPlan(source, {
   const requiredStructuralChangedSentenceCount = structuralCoverageFactor > 0 && requiredChangedSentenceCount > 0
     ? Math.max(1, Math.min(requiredChangedSentenceCount, Math.ceil(requiredChangedSentenceCount * structuralCoverageFactor)))
     : 0;
+  // 제품의 2,000자 기준은 입력창과 과금에서 쓰는 공백 포함 글자 수와 맞춘다.
+  // substantive 길이를 쓰면 2,000~2,400자대 장문이 정책에서 빠질 수 있다.
+  const carryoverApplicable = !creative && text.length >= 2000 && eligibleCarryoverSentenceCount >= 12;
+  const maxSubstantiveCarryoverRatio = carryoverApplicable
+    ? Math.min(1, (strength === 'advanced' ? 0.25 : 0.30) + (cautious ? 0.05 : 0))
+    : 1;
 
   return {
     version: PLAN_VERSION,
@@ -171,6 +180,7 @@ function buildHumanizationPlan(source, {
     signalSource: PLAN_SIGNAL_SOURCE,
     sourceChars,
     sourceSentenceCount: sentenceCount,
+    eligibleCarryoverSentenceCount,
     targetSentenceCount: target.indices.length,
     targetReasonCounts: target.reasonCounts,
     targetIndices: target.indices,
@@ -184,6 +194,8 @@ function buildHumanizationPlan(source, {
     targetSubstantiveEditMin: round4(targetSubstantiveEditMin),
     targetSubstantiveEditMax: round4(targetSubstantiveEditMax),
     minTargetCoverage: round4(minTargetCoverage),
+    carryoverApplicable,
+    maxSubstantiveCarryoverRatio: round4(maxSubstantiveCarryoverRatio),
     minRemediationCoverage: round4(minRemediationCoverage),
     rhetoricalRemediationPlan
   };
@@ -215,6 +227,10 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   if (Number(plan.requiredStructuralChangedSentenceCount || 0) > 0
       && metrics.structurallyChangedSentenceCount < Number(plan.requiredStructuralChangedSentenceCount)) {
     reasons.push('structural_rewrite_coverage_low');
+  }
+  if (plan.carryoverApplicable === true
+      && metrics.substantiveCarryoverRatio > Number(plan.maxSubstantiveCarryoverRatio || 1) + 1e-9) {
+    reasons.push('substantive_carryover_high');
   }
   const remediation = compareRemediationTargets(source, output, plan.rhetoricalRemediationPlan || null);
   if (Number(plan.minRemediationCoverage || 0) > 0
@@ -279,11 +295,15 @@ function humanizationCandidateScore(report) {
   const remediationProgress = Number(plan.minRemediationCoverage || 0) > 0
     ? progress(metrics.remediation?.coverage, plan.minRemediationCoverage)
     : 1;
-  return round4((editProgress * 0.40)
-    + (sentenceProgress * 0.24)
-    + (targetProgress * 0.16)
-    + (structuralProgress * 0.12)
-    + (remediationProgress * 0.08));
+  const carryoverProgress = plan.carryoverApplicable === true
+    ? (finite(metrics.substantiveCarryoverRatio) <= finite(plan.maxSubstantiveCarryoverRatio) ? 1 : 0)
+    : 1;
+  return round4((editProgress * 0.36)
+    + (sentenceProgress * 0.22)
+    + (targetProgress * 0.15)
+    + (structuralProgress * 0.11)
+    + (remediationProgress * 0.08)
+    + (carryoverProgress * 0.08));
 }
 
 function isBetterHumanizationCandidate(current, candidate) {
@@ -329,6 +349,7 @@ function measureSubstantiveEdit(source, output) {
     structurallyChangedSentenceCount,
     sentenceBoundaryDelta > 0 ? Math.min(sourceSentences.length, sentenceBoundaryDelta) : 0
   );
+  const carryover = measureSubstantiveCarryover(fromRaw, toRaw);
   return {
     rawCharEditRatio: round4(raw.charEditRatio),
     substantiveDistance,
@@ -343,6 +364,9 @@ function measureSubstantiveEdit(source, output) {
     contentOrderChangeCount,
     sentenceBoundaryDelta,
     sentenceBoundaryChanged: sentenceBoundaryDelta > 0,
+    substantiveCarryoverCount: carryover.count,
+    substantiveCarryoverRatio: carryover.ratio,
+    substantiveCarryoverEligibleSentenceCount: carryover.eligibleSentenceCount,
     trivialOnly: raw.charEditRatio > 0 && substantiveEditRatio < 0.012,
     sentenceEdits
   };
@@ -383,6 +407,103 @@ function buildHumanizationPromptBlock(plan) {
       : '',
     '원문에 없는 경험·감정·수치·기관·인용·주장·예시는 절대 추가하지 않는다.'
   ].filter(Boolean).join('\n');
+}
+
+function measureSubstantiveCarryover(source, output) {
+  const sourceSentences = eligibleProseSentences(source);
+  const outputSentences = eligibleProseSentences(output);
+  const available = new Map();
+  for (const sentence of outputSentences) {
+    const key = normalizeCarryoverSentence(sentence);
+    if (key) available.set(key, (available.get(key) || 0) + 1);
+  }
+  let count = 0;
+  for (const sentence of sourceSentences) {
+    const key = normalizeCarryoverSentence(sentence);
+    if (!key || (available.get(key) || 0) <= 0) continue;
+    count += 1;
+    available.set(key, available.get(key) - 1);
+  }
+  return {
+    count,
+    ratio: round4(sourceSentences.length ? count / sourceSentences.length : 0),
+    eligibleSentenceCount: sourceSentences.length
+  };
+}
+
+function eligibleProseSentences(value) {
+  const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
+  const prose = [];
+  let references = false;
+  for (const rawLine of lines) {
+    const line = String(rawLine || '').trim();
+    if (!line) continue;
+    if (/^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|References|Bibliography|Works\s+Cited)$/iu.test(line)) {
+      references = true;
+      continue;
+    }
+    if (references && /^(?:부록|Appendix)(?:\s|$)/iu.test(line)) references = false;
+    if (references) continue;
+    const labelBody = editableLabelBody(line);
+    if (labelBody) {
+      prose.push(labelBody);
+      continue;
+    }
+    if (isProtectedCarryoverLine(line)) continue;
+    prose.push(line);
+  }
+  return meaningfulSentences(prose.join('\n'));
+}
+
+function editableLabelBody(line) {
+  const match = String(line || '').match(/^[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}:\s*(\S[\s\S]*)$/u);
+  if (!match || /^(?:https?|ftp|file|mailto):/iu.test(String(line || ''))) return '';
+  return match[1].trim();
+}
+
+function isProtectedCarryoverLine(line) {
+  if (LOCK_TOKEN.test(line)) {
+    LOCK_TOKEN.lastIndex = 0;
+    return true;
+  }
+  LOCK_TOKEN.lastIndex = 0;
+  if (/^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d{1,3}[.)]|[①-⑳]|[A-Za-z][.)])\s+/u.test(line)) return true;
+  if (/^>\s*\S/u.test(line) || /^\|.+\|$/u.test(line) || /\t/u.test(line)) return true;
+  if (/^["'“‘「『《〈].+["'”’」』》〉]$/u.test(line) && line.length <= 180) return true;
+  if (/^#{1,6}\s+/u.test(line)) return true;
+  if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?\s*\S/u.test(line) && line.length <= 140) return true;
+  if (/^제\s*\d{1,3}\s*(?:장|절|항)(?:\s|$)/u.test(line)) return true;
+  if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S/u.test(line) && line.length <= 140) return true;
+  if (/^[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}:\s*\S/u.test(line)) return true;
+  const numericCells = line.match(/-?\d+(?:\.\d+)?%?/gu) || [];
+  return numericCells.length >= 4 && line.length <= 220;
+}
+
+function normalizeCarryoverSentence(value) {
+  return stripLockTokens(value)
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}\s]/gu, '');
+}
+
+function classifyEffectExpectation(planOrSource, options = {}) {
+  const plan = typeof planOrSource === 'string'
+    ? buildHumanizationPlan(planOrSource, options)
+    : (planOrSource || {});
+  const targetRatio = Number(plan.sourceSentenceCount) > 0
+    ? Number(plan.targetSentenceCount || 0) / Number(plan.sourceSentenceCount)
+    : 0;
+  const limited = plan.applicable === true
+    && ['basic', 'advanced'].includes(String(plan.requestStrength || ''))
+    && plan.riskLevel === 'low'
+    && targetRatio <= 0.15 + 1e-9
+    && Number(plan.rhetoricalRemediationPlan?.targetCount || 0) === 0;
+  return {
+    effectExpectation: limited ? 'limited' : 'normal',
+    effectNoticeCode: limited ? 'LOW_RISK_SOURCE_LIMITED_EFFECT' : null,
+    requiresEffectConfirmation: limited,
+    targetSentenceRatio: round4(targetRatio)
+  };
 }
 
 function alignSentenceEdits(sourceSentences, outputSentences) {
@@ -634,6 +755,9 @@ module.exports = {
   humanizationCandidateScore,
   isBetterHumanizationCandidate,
   measureSubstantiveEdit,
+  measureSubstantiveCarryover,
+  eligibleProseSentences,
+  classifyEffectExpectation,
   buildHumanizationPromptBlock,
   normalizeSubstantive
 };

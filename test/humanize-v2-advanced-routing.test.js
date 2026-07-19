@@ -111,6 +111,9 @@ test('/diagnose는 프론트가 사용할 최종 고급 적합성과 추천 메�
   assert.equal(responseBody?.recommendedMode, 'formal');
   assert.equal(responseBody?.recommendationCode, 'complex_academic_document');
   assert.equal(responseBody?.routingOverride, 'legacy_inquiry_false_positive');
+  assert.ok(['normal', 'limited'].includes(responseBody?.effectExpectation));
+  assert.equal(typeof responseBody?.requiresEffectConfirmation, 'boolean');
+  assert.ok(Object.prototype.hasOwnProperty.call(responseBody, 'effectNoticeCode'));
   assert.ok(Number(responseBody?.profileConfidence) >= 0.75);
   assert.equal(responseBody?.advancedTimeEstimate?.basis, 'v2_editable_chunk_range');
   assert.ok(responseBody?.advancedTimeEstimate?.highSec > responseBody?.advancedTimeEstimate?.lowSec);

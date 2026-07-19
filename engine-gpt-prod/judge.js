@@ -13,6 +13,7 @@ const SEMANTIC_VIOLATION_TYPES = [
   'distortion',
   'added_claim',
   'omission',
+  'experience_novelty',
   ...discourse.VIOLATION_CODES
 ];
 
@@ -112,8 +113,9 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         '너는 엄격하지만 공정한 닫힌세계 문서 검수 엔진이다. SOURCE 전체를 유일한 사실·주제·평가·문단 역할 기준으로 삼는다.',
         'SOURCE CLAIM LEDGER는 원문 구절을 그대로 뽑은 검증 인덱스이며 완전한 목록은 아니다.',
         '새 사실 추가, 의미 왜곡, 핵심 주장 누락뿐 아니라 원문에 없던 주제 확장(scope_expansion), 교훈·평가(new_evaluation), 강한 수식(intensity_amplification), 반복 결론(duplicate_conclusion/repeated_reflection_conclusion), 문단마다 같은 인과-결론 구조(overstructured_causality), 문단 역할 변화(rhetorical_role_shift), 결론 뒤 새 탐구 시작(topic_restart), 실제 활동 비중 축소(personal_balance_shift)를 판정한다.',
-        '학술·보고서에서 “~자체보다”가 “~에서 나아가”로, “~에 그치지 않고”가 “~이/가 아니라”로 바뀌 것처럼 대조·부정·제한·가능성의 범위가 달라지면 distortion이다.',
-        '행위 주체와 대상이 뒤바뀌 주어-서술어 오류, 설명 평서문의 명령문 변환, 표·캡션의 개념어를 긴 설명으로 풀어 쓴 변화, 학술 어휘의 과도한 구어화도 의미·장르 정확성을 해치면 distortion으로 판정한다.',
+        '결정론 신호에 experience_novelty_candidate가 있으면 원문·허용 메모에 없는 실제 개인 경험·시점·행동이 새로 생겼는지 확인한다. 단순 의역이나 원문 경험의 자연스러운 재표현은 위반이 아니다. 실제 신규 경험이면 experience_novelty로 판정한다.',
+        '학술·보고서에서 “~자체보다”가 “~에서 나아가”로, “~에 그치지 않고”가 “~이/가 아니라”로 바뀐 것처럼 대조·부정·제한·가능성의 범위가 달라지면 distortion이다.',
+        '행위 주체와 대상이 뒤바뀌는 주어-서술어 오류, 설명 평서문의 명령문 변환, 표·캡션의 개념어를 긴 설명으로 풀어 쓴 변화, 학술 어휘의 과도한 구어화도 의미·장르 정확성을 해치면 distortion으로 판정한다.',
         '표현을 충분히 바꾼 것 자체는 위반이 아니다. 같은 주장 안의 어순·절·호흡 변화는 허용하고, SOURCE에 없던 담화 기능이나 범위가 생긴 경우만 위반으로 잡는다.',
         '원문에 있던 1인칭 화자·관점이 결과에서 완전히 사라지거나 원문에 없던 화자가 생긴 경우도 의미 왜곡으로 판정한다. JSON만 반환한다.'
       ].join('\n');

@@ -22,11 +22,16 @@ const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile
 const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
+const sectionRecovery = require('./sectionRecovery');
 const discourseAudit = require('./discourseAudit');
 const koreanRefinement = require('./koreanRefinement');
+const fingerprint = require('./fingerprintAudit');
+const endingStyle = require('./endingStyleAudit');
+const resumeCoverage = require('./resumeCoverage');
+const experienceAudit = require('./experienceAudit');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.7';
+const VERSION = 'gpt-prod-v2.4.8';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -257,6 +262,58 @@ async function runEngine({
     records.push(record);
   }
 
+  let sectionRecoveryReport = {
+    metrics: {
+      enabled: sectionRecovery.isEnabled(),
+      attempted: 0,
+      applied: 0,
+      escalated: 0,
+      selectedSectionCount: 0,
+      miniAttemptCount: 0,
+      escalationAttemptCount: 0,
+      concurrency: sectionRecovery.RECOVERY_CONCURRENCY,
+      sectionIndices: [],
+      appliedSectionIndices: []
+    },
+    usages: []
+  };
+  if (v2Enabled && humanizationDepthEnabled && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS) {
+    sectionRecoveryReport = await sectionRecovery.recoverSections({
+      chunks,
+      sourceLength: rawSource.length,
+      mode: selectedMode,
+      requestStrength,
+      documentProfile,
+      inputRisk,
+      retrySection: async entry => qualityV2.retryGeneralSurface({
+        source: entry.source,
+        currentOutput: String(chunks[entry.index]?.outputText ?? entry.output),
+        humanizationPlan: entry.plan,
+        humanizationDepthReport: entry.report,
+        config: cfg,
+        signal,
+        safetyIdentifier: safetyId,
+        model: entry.tier === 'escalation' ? cfg.models.humanizeEscalation : cfg.models.repair,
+        reasoningEffort: entry.tier === 'escalation' ? cfg.reasoning.escalation : cfg.reasoning.repair,
+        phase: entry.tier === 'escalation' ? 'section_depth_escalation' : 'section_depth_recovery'
+      }),
+      validateCandidate: ({ entry, candidate }) => isSafeGeneralSurfaceCandidate(
+        entry.source,
+        candidate,
+        contract,
+        documentProfile,
+        selectedMode
+      )
+    });
+    if (sectionRecoveryReport.metrics.applied > 0) {
+      const appliedIndices = new Set(sectionRecoveryReport.metrics.appliedSectionIndices || []);
+      for (const index of appliedIndices) {
+        if (records[index] && chunks[index]) records[index].outputText = chunks[index].outputText;
+      }
+      acceptGeneralSurfaceRecovery(records, appliedIndices);
+    }
+  }
+
   const boundaryRepair = structureChunk.repairUnsafeChunkBoundaries(chunks);
   let outputText = structureChunk.mergeChunks(chunks);
   const frozen = v2Enabled ? freezeLockedBlocks(source, outputText, chunks) : null;
@@ -267,7 +324,8 @@ async function runEngine({
     preserveLineBreaks: layoutStructureLocked
   });
 
-  let supplementalUsage = emptyUsage();
+  let supplementalUsage = (sectionRecoveryReport.usages || [])
+    .reduce((acc, usage) => addUsage(acc, usage), emptyUsage());
   let polishReport = null;
   let polishRetryCount = 0;
   let generalSurfaceRetryCount = 0;
@@ -277,9 +335,11 @@ async function runEngine({
   let polishSpeakerRestoredSentenceCount = 0;
   let finalNoopRecoveryCount = 0;
   let finalNoopRecovery = { attempted: false, applied: false, method: '', reason: '' };
-  let humanizationDepthRetryCount = 0;
-  let humanizationDepthRetryApplied = false;
-  let humanizationDepthRetryTargetSentenceCount = 0;
+  let humanizationDepthRetryCount = Number(sectionRecoveryReport.metrics?.miniAttemptCount || 0)
+    + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0);
+  let humanizationDepthRetryApplied = Number(sectionRecoveryReport.metrics?.applied || 0) > 0;
+  let humanizationDepthRetryTargetSentenceCount = (sectionRecoveryReport.selected || [])
+    .reduce((sum, entry) => sum + Number(entry?.plan?.targetSentenceCount || 0), 0);
   let polishStrictFailure = '';
   let polishRetryReason = '';
   let polishPaddingReport = null;
@@ -290,6 +350,19 @@ async function runEngine({
   let koreanRefinementRetryAttemptCount = 0;
   let koreanRefinementRetryCount = 0;
   let koreanRefinementRetryApplied = false;
+  let fingerprintAudit = null;
+  let fingerprintRetryAttemptCount = 0;
+  let fingerprintRepairCount = 0;
+  let fingerprintRetryApplied = false;
+  let endingStyleAudit = null;
+  let endingStyleRetryAttemptCount = 0;
+  let endingStyleRepairCount = 0;
+  let endingStyleRetryApplied = false;
+  let resumeCoverageAudit = null;
+  let resumeCoverageRetryAttemptCount = 0;
+  let resumeCoverageRepairCount = 0;
+  let resumeCoverageRetryApplied = false;
+  let experienceCandidateAudit = null;
   let finalFormattingRepair = {
     version: 1,
     applied: false,
@@ -379,6 +452,7 @@ async function runEngine({
     && records.every(record => record.fallback !== true || (record.warnings || []).includes('general_surface_retry_safe_fallback'));
   if (v2Enabled
       && selectedMode !== 'polish'
+      && (rawSource.length < sectionRecovery.MIN_DOCUMENT_CHARS || !sectionRecovery.isEnabled())
       && (generalSurfaceRetryPending || humanizationDepthReport?.pass === false)) {
     try {
       const wasEquivalent = normalizeBare(auditSource) === normalizeBare(outputText);
@@ -534,6 +608,172 @@ async function runEngine({
     }
   }
 
+  if (v2Enabled && !polishStrictFailure && selectedMode !== 'polish' && fingerprint.isEnabled()) {
+    fingerprintAudit = fingerprint.auditFingerprint(auditSource, outputText);
+    if (!fingerprintAudit.pass) {
+      try {
+        fingerprintRetryAttemptCount = 1;
+        const retried = await qualityV2.retryFingerprintAudit({
+          source: auditSource,
+          currentOutput: outputText,
+          fingerprintAudit,
+          documentProfile,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        const candidate = retried.outputText || outputText;
+        const candidateFingerprint = fingerprint.auditFingerprint(auditSource, candidate);
+        const candidateDepth = humanizationDepthEnabled
+          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          : null;
+        const safeCandidate = retried.safeChangeFound === true
+          && fingerprint.isImproved(fingerprintAudit, candidateFingerprint)
+          && isSafeLocalizedLanguageCandidate({
+            source: auditSource,
+            before: outputText,
+            candidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: collectRecordProtectedTerms(records),
+            currentDepth: humanizationDepthReport,
+            candidateDepth
+          })
+          && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
+        if (safeCandidate) {
+          outputText = candidate;
+          fingerprintAudit = candidateFingerprint;
+          fingerprintRepairCount = 1;
+          fingerprintRetryApplied = true;
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+        }
+      } catch (error) {
+        fingerprintAudit = {
+          ...(fingerprintAudit || {}),
+          retryError: String(error?.code || error?.message || error).slice(0, 180)
+        };
+      }
+    }
+  }
+
+  if (v2Enabled && !polishStrictFailure) {
+    endingStyleAudit = endingStyle.auditEndingStyle(auditSource, outputText);
+    if (!endingStyleAudit.pass) {
+      try {
+        endingStyleRetryAttemptCount = 1;
+        const retried = await qualityV2.retryEndingStyleAudit({
+          source: auditSource,
+          currentOutput: outputText,
+          endingAudit: endingStyleAudit,
+          documentProfile,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        const candidate = retried.outputText || outputText;
+        const candidateEndingAudit = endingStyle.auditEndingStyle(auditSource, candidate);
+        const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
+          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          : null;
+        const safeCandidate = retried.safeChangeFound === true
+          && endingStyle.isImproved(endingStyleAudit, candidateEndingAudit)
+          && isSafeLocalizedLanguageCandidate({
+            source: auditSource,
+            before: outputText,
+            candidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: collectRecordProtectedTerms(records),
+            currentDepth: humanizationDepthReport,
+            candidateDepth
+          })
+          && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
+        if (safeCandidate) {
+          outputText = candidate;
+          endingStyleAudit = candidateEndingAudit;
+          endingStyleRepairCount = 1;
+          endingStyleRetryApplied = true;
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+        }
+      } catch (error) {
+        endingStyleAudit = {
+          ...(endingStyleAudit || {}),
+          retryError: String(error?.code || error?.message || error).slice(0, 180)
+        };
+      }
+    }
+  }
+
+  if (v2Enabled && !polishStrictFailure) {
+    resumeCoverageAudit = resumeCoverage.auditResumeCoverage(auditSource, outputText, documentProfile);
+    if (resumeCoverageAudit.applicable && !resumeCoverageAudit.pass) {
+      try {
+        resumeCoverageRetryAttemptCount = 1;
+        const retried = await qualityV2.retryResumeCoverage({
+          source: auditSource,
+          currentOutput: outputText,
+          coverageAudit: resumeCoverageAudit,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        const candidate = retried.outputText || outputText;
+        const candidateCoverage = resumeCoverage.auditResumeCoverage(auditSource, candidate, documentProfile);
+        const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
+          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          : null;
+        const safeCandidate = retried.safeChangeFound === true
+          && resumeCoverage.isImproved(resumeCoverageAudit, candidateCoverage)
+          && resumeCoverage.isSafeRestorationShape(
+            auditSource,
+            outputText,
+            candidate,
+            resumeCoverageAudit.omissions?.length || 1
+          )
+          && isSafeLocalizedLanguageCandidate({
+            source: auditSource,
+            before: outputText,
+            candidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: collectRecordProtectedTerms(records),
+            currentDepth: humanizationDepthReport,
+            candidateDepth,
+            maxLocalEditRatio: 0.55,
+            maxLocalLengthRatio: 1.70,
+            allowDepthRegression: true
+          })
+          && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
+        if (safeCandidate) {
+          outputText = candidate;
+          resumeCoverageAudit = candidateCoverage;
+          resumeCoverageRepairCount = 1;
+          resumeCoverageRetryApplied = true;
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+        }
+      } catch (error) {
+        resumeCoverageAudit = {
+          ...(resumeCoverageAudit || {}),
+          retryError: String(error?.code || error?.message || error).slice(0, 180)
+        };
+      }
+    }
+  }
+
+  if (v2Enabled && !polishStrictFailure) {
+    experienceCandidateAudit = experienceAudit.detectExperienceCandidate(
+      auditSource,
+      outputText,
+      evidence || userNotes || ''
+    );
+  }
+
   let preSemanticStructureAudit = structureChunk.buildStructureAudit({
     source: auditSource,
     outputText,
@@ -557,7 +797,15 @@ async function runEngine({
   }) : null;
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
   if (v2Enabled && !polishStrictFailure) {
-    const semanticDecision = koreanRefinementRetryApplied
+    const semanticDecision = experienceCandidateAudit?.candidate === true
+      ? { run: true, reason: 'experience_novelty_candidate' }
+      : resumeCoverageRetryApplied || (resumeCoverageAudit?.applicable && resumeCoverageAudit?.pass === false)
+      ? { run: true, reason: resumeCoverageRetryApplied ? 'resume_coverage_retry' : 'resume_coverage_residual' }
+      : endingStyleRetryApplied || endingStyleAudit?.pass === false
+      ? { run: true, reason: endingStyleRetryApplied ? 'ending_style_retry' : 'ending_style_residual' }
+      : fingerprintRetryApplied || fingerprintAudit?.pass === false
+      ? { run: true, reason: fingerprintRetryApplied ? 'fingerprint_retry' : 'fingerprint_residual' }
+      : koreanRefinementRetryApplied
       ? { run: true, reason: 'korean_refinement_retry' }
       : humanizationDepthRetryApplied
         ? { run: true, reason: 'humanization_depth_retry' }
@@ -582,7 +830,11 @@ async function runEngine({
         config: cfg,
         allowedExtra: evidence || userNotes || '',
         mode: selectedMode,
-        discourseSignals: deterministicAudit?.discourseAudit?.codes || [],
+        discourseSignals: [
+          ...(deterministicAudit?.discourseAudit?.codes || []),
+          ...(fingerprintAudit?.issueCodes || []),
+          ...(experienceCandidateAudit?.candidate ? ['experience_novelty_candidate'] : [])
+        ],
         safetyIdentifier: safetyId
       });
       supplementalUsage = addUsage(supplementalUsage, semanticReport.usage);
@@ -693,6 +945,11 @@ async function runEngine({
       humanizationPlan
     );
   }
+  if (v2Enabled && selectedMode !== 'polish' && fingerprint.isEnabled()) {
+    fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText);
+  }
+  if (v2Enabled) endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText);
+  if (v2Enabled) resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
   if (v2Enabled) {
     koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
       source: rawSource,
@@ -758,16 +1015,15 @@ async function runEngine({
         requiredChangedSentenceCount: humanizationDepthReport.plan?.requiredChangedSentenceCount,
         hardRequiredChangedSentenceCount: humanizationDepthReport.plan?.hardRequiredChangedSentenceCount
       };
-      if (humanizationDepthReport.minimumEffectPass === false) {
+      const longSectionRecoveryDelivery = rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS
+        && sectionRecoveryReport.metrics?.enabled === true;
+      if (humanizationDepthReport.minimumEffectPass === false && !longSectionRecoveryDelivery) {
         addFloorCriticals(result.floorReport, [{
           ...depthDetail,
           gate: 'humanization_depth_no_effect'
         }], 'humanization_depth_no_effect');
       } else {
-        addFloorWarnings(result.floorReport, [{
-          ...depthDetail,
-          gate: 'humanization_depth_below_minimum'
-        }]);
+        addFloorWarnings(result.floorReport, depthWarningDetails(humanizationDepthReport, depthDetail));
       }
     }
     if (finalGate.hardFail) {
@@ -781,7 +1037,20 @@ async function runEngine({
   const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
   if (allFallback || normalizeBare(rawSource) === normalizeBare(outputText)) {
     result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
-    if (!v2Enabled && qualityPatternLabEnabled && !allFallback) {
+    const longRecoveryReview = v2Enabled
+      && selectedMode !== 'polish'
+      && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS
+      && sectionRecoveryReport.metrics?.enabled === true;
+    if (longRecoveryReview) {
+      result.floorReport.status = 'needs_review';
+      result.floorReport.warnings = [
+        ...(result.floorReport.warnings || []),
+        {
+          gate: 'humanization_depth_below_minimum',
+          detail: '장문 섹션 회복 후에도 실질 변화가 부족해 결과를 검토용으로 전달합니다.'
+        }
+      ];
+    } else if (!v2Enabled && qualityPatternLabEnabled && !allFallback) {
       result.floorReport.status = result.floorReport.status === 'clean' ? 'needs_review' : result.floorReport.status;
       result.floorReport.warnings = [
         ...(result.floorReport.warnings || []),
@@ -809,13 +1078,21 @@ async function runEngine({
   const chunkExecution = summarizeChunkExecution(records, semanticReport, {
     polishRetryCount: polishRetryAttemptCount,
     generalSurfaceRetryCount: generalSurfaceRetryAttemptCount,
-    koreanRefinementRetryCount: koreanRefinementRetryAttemptCount
+    koreanRefinementRetryCount: koreanRefinementRetryAttemptCount,
+    fingerprintRetryCount: fingerprintRetryAttemptCount,
+    endingStyleRetryCount: endingStyleRetryAttemptCount,
+    resumeCoverageRetryCount: resumeCoverageRetryAttemptCount,
+    sectionRecoveryCallCount: Number(sectionRecoveryReport.metrics?.miniAttemptCount || 0)
+      + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0)
   });
   const chunkFailures = summarizeChunkFailureCodes(records);
   const qualityWarnings = v2Enabled
     ? dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []),
         ...qualityV2.warningsFromSemantic(semanticReport),
+        ...(experienceCandidateAudit?.candidate && semanticReport?.uncertain
+          ? [{ code: 'experience_novelty', severity: 'warning', message: '새 개인 경험으로 보이는 변화의 의미 심사가 불확실해 원문 대조가 필요해요.' }]
+          : []),
         ...(records.some(record => (record.warnings || []).includes('v2_residual:structure_boundary_marker_failed'))
           ? [{ code: 'sentence_distribution_shift', severity: 'warning', message: '원문의 문장 경계 일부가 결과에서 달라졌을 수 있어요.' }]
           : []),
@@ -824,10 +1101,20 @@ async function runEngine({
           : []),
         ...(polishReport?.excessiveChange ? [{ code: 'polish_edit_range', severity: 'warning', message: '보존형 윤문의 권장 편집 범위를 넘었을 수 있어요.' }] : []),
         ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : []),
-        ...(humanizationDepthReport?.applicable
-            && humanizationDepthReport.pass === false
-            && humanizationDepthReport.minimumEffectPass === true
-          ? [{ code: 'humanization_depth_below_minimum', severity: 'warning', message: '원문 보존을 우선해 목표 강도보다 약하게 변환됐어요. 결과를 확인해 주세요.' }]
+        ...(humanizationDepthReport?.applicable && humanizationDepthReport.pass === false
+          ? depthQualityWarnings(humanizationDepthReport)
+          : []),
+        ...(fingerprintAudit?.issueCodes?.includes('engine_phrase_fingerprint')
+          ? [{ code: 'engine_phrase_fingerprint', severity: 'warning', message: '엔진이 만든 상투 표현이 한 문서에서 반복됐을 수 있어요.' }]
+          : []),
+        ...(fingerprintAudit?.issueCodes?.includes('contrast_relation_shift')
+          ? [{ code: 'contrast_relation_shift', severity: 'warning', message: '부정·배제 관계가 인정·가산 관계로 달라졌을 수 있어 원문 대조가 필요해요.' }]
+          : []),
+        ...(endingStyleAudit?.pass === false
+          ? [{ code: 'ending_style_mixed', severity: 'warning', message: '원문에 없던 종결체가 일부 섹션에 섞였을 수 있어요.' }]
+          : []),
+        ...(resumeCoverageAudit?.applicable && resumeCoverageAudit?.pass === false
+          ? [{ code: 'resume_claim_omission', severity: 'warning', message: '자기소개서의 행동·역량·성과·직무 연결 내용 일부가 누락됐을 수 있어요.' }]
           : []),
         ...(koreanRefinementAudit?.residualWarnings || [])
       ])
@@ -882,7 +1169,10 @@ async function runEngine({
       + generalSurfaceRetryCount
       + polishSpeakerRestoreCount
       + (koreanDeterministicRepairCount > 0 ? 1 : 0)
-      + koreanRefinementRetryCount,
+      + koreanRefinementRetryCount
+      + fingerprintRepairCount
+      + endingStyleRepairCount
+      + resumeCoverageRepairCount,
     chunkCount: records.length,
     logicalChunkCount: chunkExecution.logicalChunkCount,
     editableChunkCount: chunkExecution.editableChunkCount,
@@ -931,6 +1221,10 @@ async function runEngine({
     humanizationMinimumTargetCoverage: Number(humanizationDepthReport?.plan?.minTargetCoverage || 0),
     substantiveEditRatio: Number(humanizationDepthReport?.metrics?.substantiveEditRatio || 0),
     substantiveChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.substantiveChangedSentenceRatio || 0),
+    substantiveCarryoverCount: Number(humanizationDepthReport?.metrics?.substantiveCarryoverCount || 0),
+    substantiveCarryoverRatio: Number(humanizationDepthReport?.metrics?.substantiveCarryoverRatio || 0),
+    substantiveCarryoverEligibleSentenceCount: Number(humanizationDepthReport?.metrics?.substantiveCarryoverEligibleSentenceCount || 0),
+    substantiveCarryoverMaximum: Number(humanizationDepthReport?.plan?.maxSubstantiveCarryoverRatio || 1),
     humanizationTargetCoverage: Number(humanizationDepthReport?.metrics?.targetCoverage || 0),
     humanizationTargetChangedCount: Number(humanizationDepthReport?.metrics?.targetChangedCount || 0),
     humanizationTargetDepthMet: humanizationDepthReport?.metrics?.targetDepthMet === true,
@@ -938,6 +1232,11 @@ async function runEngine({
     humanizationDepthRetryCount,
     humanizationDepthRetryApplied,
     humanizationDepthRetryTargetSentenceCount,
+    sectionRecoveryEnabled: sectionRecoveryReport.metrics?.enabled === true,
+    sectionRecoveryAttemptCount: Number(sectionRecoveryReport.metrics?.attempted || 0),
+    sectionRecoveryAppliedCount: Number(sectionRecoveryReport.metrics?.applied || 0),
+    sectionRecoveryEscalationCount: Number(sectionRecoveryReport.metrics?.escalated || 0),
+    sectionRecoveryConcurrency: Number(sectionRecoveryReport.metrics?.concurrency || 0),
     humanizationDepthReasonCodes: safeFailureCodeList(humanizationDepthReport?.reasons),
     humanizationDepthBlockingReasonCodes: safeFailureCodeList(humanizationDepthReport?.blockingReasons),
     structuralChangedSentenceCount: Number(humanizationDepthReport?.metrics?.structurallyChangedSentenceCount || 0),
@@ -946,6 +1245,37 @@ async function runEngine({
     rhetoricalRemediationTargetCount: Number(humanizationDepthReport?.metrics?.remediation?.targetCount || 0),
     rhetoricalRemediationAchievedCount: Number(humanizationDepthReport?.metrics?.remediation?.achievedReduction || 0),
     rhetoricalRemediationCoverage: Number(humanizationDepthReport?.metrics?.remediation?.coverage || 0),
+    fingerprintAuditVersion: Number(fingerprintAudit?.version || 0),
+    fingerprintPass: fingerprintAudit ? fingerprintAudit.pass === true : null,
+    fingerprintIssueCodes: safeFailureCodeList(fingerprintAudit?.issueCodes),
+    fingerprintIntroducedCount: Number(fingerprintAudit?.introducedCount || 0),
+    fingerprintExcessIntroducedCount: Number(fingerprintAudit?.excessIntroducedCount || 0),
+    fingerprintRetryAttemptCount,
+    fingerprintRepairCount,
+    fingerprintRetryApplied,
+    fingerprintShadow: Array.isArray(fingerprintAudit?.shadow) ? fingerprintAudit.shadow.slice(0, 8) : [],
+    endingStyleAuditVersion: Number(endingStyleAudit?.version || 0),
+    endingStylePass: endingStyleAudit?.pass === true,
+    endingStyleIssueCount: Number(endingStyleAudit?.issueCount || 0),
+    endingStyleIntroducedOtherCount: Number(endingStyleAudit?.introducedOtherCount || 0),
+    endingStyleRetryAttemptCount,
+    endingStyleRepairCount,
+    endingStyleRetryApplied,
+    resumeCoverageAuditVersion: Number(resumeCoverageAudit?.version || 0),
+    resumeCoverageApplicable: resumeCoverageAudit?.applicable === true,
+    resumeCoveragePass: resumeCoverageAudit?.pass === true,
+    resumeClaimCount: Number(resumeCoverageAudit?.claimCount || 0),
+    resumeCoveredClaimCount: Number(resumeCoverageAudit?.coveredClaimCount || 0),
+    resumeCoverageRatio: Number(resumeCoverageAudit?.coverageRatio ?? 1),
+    resumeCoverageMinimumRecall: Number(resumeCoverageAudit?.minimumObservedRecall ?? 1),
+    resumeCoverageRetryAttemptCount,
+    resumeCoverageRepairCount,
+    resumeCoverageRetryApplied,
+    experienceCandidateVersion: Number(experienceCandidateAudit?.version || 0),
+    experienceNoveltyCandidate: experienceCandidateAudit?.candidate === true,
+    experienceNoveltyCandidateCount: Number(experienceCandidateAudit?.candidateCount || 0),
+    experienceNoveltyConfirmed: (semanticReport?.violations || []).some(item => item?.type === 'experience_novelty'),
+    experienceNoveltyUncertain: experienceCandidateAudit?.candidate === true && semanticReport?.uncertain === true,
     koreanRefinementVersion: Number(koreanRefinementAudit?.version || 0),
     koreanRefinementPass: koreanRefinementAudit?.pass === true,
     koreanRefinementIssueCodes: safeFailureCodeList(koreanRefinementAudit?.issueCodes),
@@ -2218,15 +2548,19 @@ function isSafeLocalizedLanguageCandidate({
   mode = 'assignment',
   protectedTerms = [],
   currentDepth = null,
-  candidateDepth = null
+  candidateDepth = null,
+  maxLocalEditRatio = 0.12,
+  minLocalLengthRatio = 0.85,
+  maxLocalLengthRatio = 1.12,
+  allowDepthRegression = false
 } = {}) {
   const original = String(source || '').trim();
   const current = String(before || '').trim();
   const after = String(candidate || '').trim();
   if (!original || !current || !after || normalizeBare(current) === normalizeBare(after)) return false;
   const localEdit = computeEditMetrics(current, after);
-  if (localEdit.charEditRatio <= 0 || localEdit.charEditRatio > 0.12) return false;
-  if (localEdit.lengthRatio < 0.85 || localEdit.lengthRatio > 1.12) return false;
+  if (localEdit.charEditRatio <= 0 || localEdit.charEditRatio > maxLocalEditRatio) return false;
+  if (localEdit.lengthRatio < minLocalLengthRatio || localEdit.lengthRatio > maxLocalLengthRatio) return false;
   if (paragraphCount(current) !== paragraphCount(after)) return false;
   if (compareNumberMultiset(original, after).changed) return false;
   const beforeNovelty = floor.measureNovelty(original, current, '').count || 0;
@@ -2250,7 +2584,7 @@ function isSafeLocalizedLanguageCandidate({
   const currentCodes = new Set(currentDiscourse.codes || []);
   if ((candidateDiscourse.codes || []).some(code => !currentCodes.has(code))) return false;
 
-  if (currentDepth?.applicable && candidateDepth?.applicable) {
+  if (!allowDepthRegression && currentDepth?.applicable && candidateDepth?.applicable) {
     const currentScore = humanizationDepth.humanizationCandidateScore(currentDepth);
     const candidateScore = humanizationDepth.humanizationCandidateScore(candidateDepth);
     if (candidateScore + 0.03 < currentScore) return false;
@@ -2278,8 +2612,9 @@ function preservesFinalStructure(source, candidate, chunks, plan, boundaryRepair
   return (audit.lostLockedCount || 0) === 0 && audit.lockedOrderChanged !== true;
 }
 
-function acceptGeneralSurfaceRecovery(records) {
-  for (const record of records || []) {
+function acceptGeneralSurfaceRecovery(records, selectedIndices = null) {
+  for (const [index, record] of (records || []).entries()) {
+    if (selectedIndices && !selectedIndices.has(index)) continue;
     const pending = (record.warnings || []).some(warning => [
       'general_surface_retry_pending',
       'general_surface_retry_safe_fallback'
@@ -2409,7 +2744,7 @@ function chunkPostprocess(text, original, mode, contract, { preserveLineBreaks =
   return out.trim();
 }
 
-const STRUCT_LINE_RE = /^\s*(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.、)]|\d{1,2}(?!\d)\s*[.)]\s|\d{1,2}\.\d{1,2}|[가-하]\s*[.)]\s|[①②③④⑤⑥⑦⑧⑨⑩]|[-•*▪◦·]\s|\|.*\||제\s?\d{1,3}\s?(?:조|장|절|항))/;
+const STRUCT_LINE_RE = /^\s*(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.、)]|\d{1,2}(?!\d)\s*[.)]\s|\d{1,2}\.\d{1,2}|[가-하]\s*[.)]\s|[①-⑳]|[-•*+▪◦·●○■□◆◇▶▷※]\s|\|.*\||제\s?\d{1,3}\s?(?:조|장|절|항))/u;
 
 function structJoinLocal(text) {
   const ls = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
@@ -2518,6 +2853,51 @@ function dedupeQualityWarnings(items) {
     seen.add(key);
     return true;
   });
+}
+
+function depthQualityWarnings(report) {
+  const reasons = new Set(report?.reasons || []);
+  const warnings = [];
+  if (reasons.has('substantive_carryover_high')) {
+    warnings.push({
+      code: 'humanization_carryover_high',
+      severity: 'warning',
+      message: '원문과 실질적으로 같은 일반 문장이 권장 상한보다 많이 남아 있어요.'
+    });
+  }
+  if (reasons.has('rhetorical_remediation_low')) {
+    warnings.push({
+      code: 'rhetorical_remediation_incomplete',
+      severity: 'warning',
+      message: 'AI식으로 반복되는 담화 골격 일부가 충분히 완화되지 않았을 수 있어요.'
+    });
+  }
+  if ([
+    'substantive_edit_ratio_low',
+    'substantive_sentence_coverage_low',
+    'risk_target_coverage_low',
+    'structural_rewrite_coverage_low',
+    'punctuation_or_surface_only'
+  ].some(code => reasons.has(code))) {
+    warnings.push({
+      code: 'humanization_depth_below_minimum',
+      severity: 'warning',
+      message: '원문 보존을 우선해 목표 강도보다 약하게 변환됐어요. 결과를 확인해 주세요.'
+    });
+  }
+  return warnings.length ? warnings : [{
+    code: 'humanization_depth_below_minimum',
+    severity: 'warning',
+    message: '목표한 휴머나이징 강도에 일부 미달해 결과 확인이 필요해요.'
+  }];
+}
+
+function depthWarningDetails(report, base = {}) {
+  return depthQualityWarnings(report).map(item => ({
+    ...base,
+    gate: item.code,
+    detail: item.message
+  }));
 }
 
 function paragraphCount(text) {
@@ -2810,7 +3190,11 @@ function calibrateV2RepetitionReport(result, source, outputText) {
 function summarizeChunkExecution(records, semanticReport, {
   polishRetryCount = 0,
   generalSurfaceRetryCount = 0,
-  koreanRefinementRetryCount = 0
+  koreanRefinementRetryCount = 0,
+  fingerprintRetryCount = 0,
+  endingStyleRetryCount = 0,
+  resumeCoverageRetryCount = 0,
+  sectionRecoveryCallCount = 0
 } = {}) {
   const rows = Array.isArray(records) ? records : [];
   const lockedChunkCount = rows.filter(record => record.locked === true).length;
@@ -2820,7 +3204,11 @@ function summarizeChunkExecution(records, semanticReport, {
   const semanticModelCallCount = semanticCallCount(semanticReport);
   const surfaceRetryCallCount = Math.max(0, Number(polishRetryCount) || 0)
     + Math.max(0, Number(generalSurfaceRetryCount) || 0)
-    + Math.max(0, Number(koreanRefinementRetryCount) || 0);
+    + Math.max(0, Number(koreanRefinementRetryCount) || 0)
+    + Math.max(0, Number(fingerprintRetryCount) || 0)
+    + Math.max(0, Number(endingStyleRetryCount) || 0)
+    + Math.max(0, Number(resumeCoverageRetryCount) || 0)
+    + Math.max(0, Number(sectionRecoveryCallCount) || 0);
   return {
     logicalChunkCount: rows.length,
     editableChunkCount: rows.length - lockedChunkCount,

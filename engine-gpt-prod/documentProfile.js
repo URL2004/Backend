@@ -464,7 +464,7 @@ function isNumberedLine(line) {
 }
 
 function isListLine(line) {
-  return /^(?:[-*•▪◦]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s+/u.test(String(line || '').trim());
+  return /^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+/u.test(String(line || '').trim());
 }
 
 function isTableLikeLine(line) {

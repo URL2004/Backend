@@ -62,21 +62,23 @@ function expandBaseChunk(chunk, state) {
   const groups = [];
   let current = null;
 
-  for (const piece of pieces) {
-    const info = classifyPiece(piece, state);
-    if (info.sectionLabel) state.currentSection = info.sectionLabel;
-    state.lastPiece = {
-      text: String(piece.text || '').trim(),
-      locked: info.locked,
-      lockType: info.lockType || '',
-      sectionLabel: info.sectionLabel || state.currentSection || ''
-    };
-    const key = info.locked ? `locked:${info.lockType}` : 'body';
-    if (!current || current.key !== key) {
-      flushGroup(groups, current, state);
-      current = { key, locked: info.locked, lockType: info.lockType, pieces: [] };
+  for (const sourcePiece of pieces) {
+    for (const piece of splitEditablePrefixPiece(sourcePiece)) {
+      const info = classifyPiece(piece, state);
+      if (info.sectionLabel) state.currentSection = info.sectionLabel;
+      state.lastPiece = {
+        text: String(piece.text || '').trim(),
+        locked: info.locked,
+        lockType: info.lockType || '',
+        sectionLabel: info.sectionLabel || state.currentSection || ''
+      };
+      const key = info.locked ? `locked:${info.lockType}` : 'body';
+      if (!current || current.key !== key) {
+        flushGroup(groups, current, state);
+        current = { key, locked: info.locked, lockType: info.lockType, pieces: [] };
+      }
+      current.pieces.push(piece);
     }
-    current.pieces.push(piece);
   }
   flushGroup(groups, current, state);
 
@@ -130,12 +132,19 @@ function classifyPiece(piece, state) {
   const s = raw.trim();
   if (!s) return { locked: false, lockType: 'blank' };
 
+  // 목차·참고문헌은 문서 전체 보존 계약이 접두부 편집 규칙보다 우선한다.
+  // 그렇지 않으면 참고문헌 안의 `저자: 서명` 같은 행이 label body로 풀려
+  // 원문 그대로 보존해야 할 블록 일부가 모델 호출에 들어갈 수 있다.
   const frozen = freezeBlocks.academicSpanAt(state.academicSpans, piece.start, piece.end);
   if (frozen) return { locked: true, lockType: frozen.type === 'toc' ? 'toc_item' : 'reference_item', sectionLabel: frozen.type === 'toc' ? '목차' : '참고문헌' };
+
+  if (piece?.forceLockType) return { locked: true, lockType: piece.forceLockType, sectionLabel: state.currentSection };
+  if (piece?.forceEditable) return { locked: false, lockType: '', sectionLabel: state.currentSection };
 
   const sourceRole = sourceLineRole(state.sourceLineRoles, s);
   if (sourceRole === 'title') return { locked: true, lockType: 'title', sectionLabel: s };
   if (sourceRole === 'label') return { locked: true, lockType: 'label', sectionLabel: state.currentSection };
+  if (isStandaloneQuotedTitle(s)) return { locked: true, lockType: 'title', sectionLabel: s };
 
   // 문답형 문서는 질문/번호를 편집 대상에서 제외하고, 질문 사이의 답변만
   // 독립 청크로 보낸다. 이 경계 때문에 서로 다른 답변의 문장이 이동할 수 없다.
@@ -420,6 +429,40 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
     readability: compactReadability(afterReadability),
     pass: afterCount === targetCount && afterReadability.overlongCount === 0
   };
+}
+
+function splitEditablePrefixPiece(piece) {
+  const raw = String(piece?.text || '');
+  const bullet = raw.match(/^(\s*[●○■□◆◇▶▷※]\s*)(\S[\s\S]*)$/u);
+  const label = bullet ? null : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}:\s*)(\S[\s\S]*)$/u);
+  const match = bullet || label;
+  if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
+  const prefix = match[1];
+  const body = match[2];
+  const start = Number(piece?.start) || 0;
+  return [
+    {
+      ...piece,
+      text: prefix,
+      sep: '',
+      start,
+      end: start + prefix.length,
+      forceLockType: bullet ? 'bullet_prefix' : 'label_prefix'
+    },
+    {
+      ...piece,
+      text: body,
+      start: start + prefix.length,
+      end: Number(piece?.end) || (start + raw.length),
+      forceEditable: true
+    }
+  ];
+}
+
+function isStandaloneQuotedTitle(value) {
+  const text = String(value || '').trim();
+  return text.length <= 180
+    && /^(?:["“][^"”\n]{1,176}["”]|['‘][^'’\n]{1,176}['’]|「[^」\n]{1,176}」|『[^』\n]{1,176}』|《[^》\n]{1,176}》|〈[^〉\n]{1,176}〉)$/u.test(text);
 }
 
 function compactReadability(value) {
@@ -833,5 +876,7 @@ module.exports = {
   restorePostSemanticLayout,
   restoreLockedHeadingLayout,
   restoreParagraphLayout,
-  isQuestionnaireQuestionLine
+  isQuestionnaireQuestionLine,
+  splitEditablePrefixPiece,
+  isStandaloneQuotedTitle
 };

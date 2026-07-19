@@ -62,7 +62,7 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2.2');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.8');
   assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
   assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
@@ -237,4 +237,101 @@ test('polish는 실질 휴머나이징 깊이 게이트 적용 대상이 아니�
   });
   assert.equal(report.applicable, false);
   assert.equal(report.pass, true);
+});
+
+test('2,000자 이상 일반 산문은 기본 30%·고급 25% 동일 문장 잔존 상한을 적용한다', () => {
+  const sentences = Array.from({ length: 20 }, (_, index) => (
+    `${index + 1}번째 일반 문장은 운영 과정에서 확인한 자료와 판단 근거를 구체적으로 설명하고, 서로 다른 조건을 비교해 결론에 이르는 과정을 충분한 길이로 기록합니다. 검증 일지와 담당자 메모를 함께 대조한 뒤 기록 순서를 기준으로 확인한 차이도 빠짐없이 표시합니다.`
+  ));
+  const source = sentences.join(' ');
+  assert.ok(source.length >= 2000);
+  const output = sentences.map((sentence, index) => index < 7
+    ? sentence
+    : `${index + 1}번째 기록에서는 운영 자료와 판단 근거를 먼저 살폈습니다. 조건별 차이를 비교한 뒤 그 결과를 문장으로 정리했습니다.`).join(' ');
+  const basic = depth.evaluateHumanizationDepth(source, output, {
+    requestStrength: 'basic',
+    documentProfile: 'long_explainer'
+  });
+  const advanced = depth.evaluateHumanizationDepth(source, output, {
+    requestStrength: 'advanced',
+    documentProfile: 'long_explainer'
+  });
+  assert.equal(basic.plan.carryoverApplicable, true);
+  assert.equal(basic.plan.maxSubstantiveCarryoverRatio, 0.30);
+  assert.equal(advanced.plan.maxSubstantiveCarryoverRatio, 0.25);
+  assert.equal(basic.metrics.substantiveCarryoverCount, 14);
+  assert.equal(basic.metrics.substantiveCarryoverEligibleSentenceCount, 40);
+  assert.equal(basic.metrics.substantiveCarryoverRatio, 0.35);
+  assert.ok(basic.reasons.includes('substantive_carryover_high'));
+  assert.ok(advanced.reasons.includes('substantive_carryover_high'));
+});
+
+test('동일 문장 잔존 정책의 2,000자 기준은 공백 포함 입력 길이를 사용한다', () => {
+  const source = Array.from({ length: 14 }, (_, index) => (
+    `${index + 1}번째 기록은 실제 운영 과정에서 확인한 자료를 같은 기준으로 비교하고 판단 근거를 정리한 문장입니다.`
+  )).join(' '.repeat(100));
+  assert.ok(source.length >= 2000);
+  assert.ok(depth.normalizeSubstantive(source).length < 2000);
+  const plan = depth.buildHumanizationPlan(source, {
+    requestStrength: 'basic',
+    documentProfile: { profile: 'long_explainer' },
+    inputRisk: { abstractRiskRatio: 0 }
+  });
+  assert.equal(plan.carryoverApplicable, true);
+  assert.equal(plan.maxSubstantiveCarryoverRatio, 0.30);
+});
+
+test('보존 민감 프로필은 동일 문장 잔존 상한을 5%p 완화한다', () => {
+  const sentence = index => `${index + 1}번째 문장은 연구 절차와 자료 해석의 근거를 분명히 밝히고 인용된 개념의 적용 범위를 세부적으로 설명하는 학술 서술입니다. 분석 자료의 선정 기준과 검토 순서를 함께 기록하여 후속 연구자가 판단 과정을 확인할 수 있도록 구성했습니다. 동일한 절차를 세 차례 반복해 기록했습니다.`;
+  const source = Array.from({ length: 20 }, (_, index) => sentence(index)).join(' ');
+  const basic = depth.buildHumanizationPlan(source, {
+    requestStrength: 'basic',
+    documentProfile: 'academic_paper'
+  });
+  const advanced = depth.buildHumanizationPlan(source, {
+    requestStrength: 'advanced',
+    documentProfile: 'resume_application'
+  });
+  assert.equal(basic.maxSubstantiveCarryoverRatio, 0.35);
+  assert.equal(advanced.maxSubstantiveCarryoverRatio, 0.30);
+});
+
+test('제목·목록·인용·표·참고문헌은 동일 문장 잔존율 모수에서 제외한다', () => {
+  const prose = Array.from({ length: 12 }, (_, index) => `${index + 1}회차 검토에서는 일반 산문에 포함된 자료와 판단을 별도의 기준으로 확인했습니다.`);
+  const protectedLines = [
+    '# 1. 제목',
+    '● 목록 문장은 그대로 둡니다.',
+    '> 직접 인용 문장은 그대로 둡니다.',
+    '| 항목 | 값 |',
+    '참고문헌',
+    '홍길동. (2026). 참고 자료.'
+  ];
+  const source = [...prose, ...protectedLines].join('\n');
+  const report = depth.measureSubstantiveCarryover(source, source);
+  assert.equal(report.eligibleSentenceCount, 12);
+  assert.equal(report.count, 12);
+  assert.equal(report.ratio, 1);
+});
+
+test('저위험·대상 문장 15% 이하·담화 개선 대상 없음일 때만 효과 제한으로 진단한다', () => {
+  const natural = '비가 왔다. 우산은 가방 안에 넣어 두었다. 학교 앞 오래된 빵집에서는 주인이 아침마다 직접 구운 식빵과 작은 단팥빵을 창가의 나무 선반 위에 차례로 올려놓곤 했다. 버스는 제시간에 도착했다. 집에 돌아와 젖은 운동화를 현관 신문지 위에 놓고 창문을 조금 열어 두었다.';
+  const limited = depth.classifyEffectExpectation(natural, {
+    requestStrength: 'basic',
+    documentProfile: 'personal_essay',
+    inputRisk: { abstractRiskRatio: 0 }
+  });
+  const polish = depth.classifyEffectExpectation(natural, {
+    requestStrength: 'polish',
+    documentProfile: 'personal_essay',
+    inputRisk: { abstractRiskRatio: 0 }
+  });
+  const risky = depth.classifyEffectExpectation(SOURCE, {
+    requestStrength: 'advanced',
+    documentProfile: 'report_assignment',
+    inputRisk: { abstractRiskRatio: 1 }
+  });
+  assert.equal(limited.effectExpectation, 'limited');
+  assert.equal(limited.requiresEffectConfirmation, true);
+  assert.equal(polish.effectExpectation, 'normal');
+  assert.equal(risky.effectExpectation, 'normal');
 });

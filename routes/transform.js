@@ -21,8 +21,10 @@ const discord = require('../lib/discord');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const layoutNormalizer = require('../engine/layout');
-const { CONTENT_GENRES } = require('../engine-gpt-prod/documentProfile');
+const { CONTENT_GENRES, detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
+const humanizationDepth = require('../engine-gpt-prod/humanizationDepth');
+const surfaceguard = require('../engine/surfaceguard');
 
 function claudeGenreTransferV2() {
   return require('../engine/genretransfer').genreTransferV2;
@@ -77,6 +79,50 @@ async function activeGptConfig() {
 
 function humanizeV2Enabled() {
   return String(process.env.HUMANIZE_ENGINE_V2_ENABLED || '').trim() === '1';
+}
+
+function effectConfirmationEnabled() {
+  return humanizeV2Enabled()
+    && String(process.env.HUMANIZE_EFFECT_CONFIRMATION_ENABLED || '0').trim() === '1';
+}
+
+function billingProtectionEnabled() {
+  return humanizeV2Enabled()
+    && String(process.env.HUMANIZE_BILLING_PROTECTION_ENABLED || '0').trim() === '1';
+}
+
+function sourceBenefitFingerprint(text) {
+  const secret = String(process.env.OPENAI_SAFETY_SALT || '').trim();
+  if (!secret) return '';
+  const normalized = String(text || '')
+    .normalize('NFKC')
+    .replace(/\r\n?/gu, '\n')
+    .replace(/[ \t]+/gu, ' ')
+    .trim();
+  return crypto.createHmac('sha256', secret)
+    .update('humanize-source-benefit:v1\0', 'utf8')
+    .update(normalized, 'utf8')
+    .digest('hex');
+}
+
+function assessEffectExpectation(text, mode, basicStyle = '') {
+  const source = String(text || '');
+  const requestStrength = mode === 'formal' ? 'advanced' : (mode === 'polish' ? 'polish' : 'basic');
+  const documentProfile = detectDocumentProfile(source, { basicStyle });
+  let inputRisk = null;
+  try { inputRisk = surfaceguard.classifyInputRisk(source); } catch {}
+  const plan = humanizationDepth.buildHumanizationPlan(source, {
+    requestStrength,
+    documentProfile,
+    inputRisk
+  });
+  const assessment = humanizationDepth.classifyEffectExpectation(plan);
+  return {
+    ...assessment,
+    requiresEffectConfirmation: mode === 'polish' ? false : assessment.requiresEffectConfirmation,
+    documentProfile: documentProfile.profile,
+    profileConfidence: Number(documentProfile.confidence || 0)
+  };
 }
 
 function safeAdvancedTimeEstimate(text, options) {
@@ -322,6 +368,94 @@ async function commitJobBilling(job, {
 }
 router.commitJobBilling = commitJobBilling;   // 회귀 테스트용
 
+const LOW_BENEFIT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const SOURCE_BENEFIT_COLLECTION = 'humanizeSourceBenefit';
+
+async function resolveBillingDisposition(job, out) {
+  const engineMeta = out?.engineMeta || out?.result?.engineMeta || {};
+  const depthShortfall = engineMeta.humanizationDepthApplicable === true
+    && engineMeta.humanizationDepthPass !== true;
+  const fingerprint = job?.sourceFingerprint || sourceBenefitFingerprint(job?.text || '');
+  if (job && fingerprint) job.sourceFingerprint = fingerprint;
+  const previousLowBenefit = billingProtectionEnabled() && depthShortfall && job
+    ? await loadPreviousLowBenefit(job.uid, fingerprint)
+    : null;
+  const disposition = classifyBillingDisposition({
+    adminNoCharge: !job || job.devNoAuth === true || job.adminHumanizeLab === true,
+    plan: job?.plan,
+    protectionEnabled: billingProtectionEnabled(),
+    depthShortfall,
+    previousLowBenefit: !!previousLowBenefit,
+    effectExpectation: job?.effectExpectation || 'normal'
+  });
+  if (disposition !== 'charged') return disposition;
+
+  await commitJobBilling(job, {
+    creditAmount: job.needed,
+    operation: job.mode === 'formal' ? 'restructure' : 'humanize',
+    mode: job.mode || 'formal',
+    textLength: (job.text || '').length
+  });
+  return job.deducted ? 'charged' : (job.plan === 'unlimited' ? 'plan_unlimited' : 'admin_no_charge');
+}
+
+function classifyBillingDisposition({
+  adminNoCharge = false,
+  plan = '',
+  protectionEnabled = false,
+  depthShortfall = false,
+  previousLowBenefit = false,
+  effectExpectation = 'normal'
+} = {}) {
+  if (adminNoCharge) return 'admin_no_charge';
+  if (plan === 'unlimited') return 'plan_unlimited';
+  if (protectionEnabled && depthShortfall && previousLowBenefit) return 'waived_repeat_low_benefit';
+  if (protectionEnabled && depthShortfall && effectExpectation === 'normal') return 'waived_quality_shortfall';
+  return 'charged';
+}
+
+async function loadPreviousLowBenefit(uid, fingerprint, now = Date.now()) {
+  if (!db || !uid || !fingerprint) return null;
+  try {
+    const snap = await db.collection('users').doc(uid).collection(SOURCE_BENEFIT_COLLECTION).doc(fingerprint).get();
+    if (!snap.exists) return null;
+    const data = snap.data() || {};
+    const at = Number(data.lastDepthBelowMinimumAtMs || 0);
+    return data.depthBelowMinimum === true && at > 0 && now - at <= LOW_BENEFIT_WINDOW_MS ? data : null;
+  } catch (error) {
+    logger.warn('transform.low_benefit_lookup_failed', { uid, err: error });
+    return null;
+  }
+}
+
+function recordSourceBenefit(job, out, billingDisposition, now = Date.now()) {
+  const fingerprint = job?.sourceFingerprint || sourceBenefitFingerprint(job?.text || '');
+  if (!db || !job?.uid || !fingerprint || job.devNoAuth || job.adminHumanizeLab) return null;
+  job.sourceFingerprint = fingerprint;
+  const engineMeta = out?.engineMeta || out?.result?.engineMeta || {};
+  const depthBelowMinimum = engineMeta.humanizationDepthApplicable === true
+    && engineMeta.humanizationDepthPass !== true;
+  const doc = {
+    fingerprintVersion: 1,
+    depthBelowMinimum,
+    lastDepthBelowMinimumAtMs: depthBelowMinimum ? now : 0,
+    lastCompletedAtMs: now,
+    expiresAtMs: now + (8 * 24 * 60 * 60 * 1000),
+    lastJobId: String(job.id || '').slice(0, 80),
+    requestedMode: ['blog', 'formal', 'polish'].includes(job.mode) ? job.mode : 'formal',
+    engineVersion: String(engineMeta.engineVersion || '').slice(0, 80),
+    billingDisposition: String(billingDisposition || '').slice(0, 48)
+  };
+  return db.collection('users').doc(job.uid).collection(SOURCE_BENEFIT_COLLECTION).doc(fingerprint)
+    .set(doc, { merge: true })
+    .catch(error => logger.warn('transform.low_benefit_record_failed', { jobId: job.id, uid: job.uid, err: error }));
+}
+
+router.resolveBillingDisposition = resolveBillingDisposition;
+router.classifyBillingDisposition = classifyBillingDisposition;
+router.sourceBenefitFingerprint = sourceBenefitFingerprint;
+router.assessEffectExpectation = assessEffectExpectation;
+
 // 차단 후 사용자가 보존형 재처리를 선택할 때도 최초 작업의 결제 수단을 유지한다.
 // 쿠폰 작업을 크레딧으로 재검사하면 유효한 Pro 사용자가 잔액 부족으로 막히므로,
 // 인증·구독·잔량을 쿠폰 계약으로 다시 확인하고 최신 티어를 job에 반영한다.
@@ -419,7 +553,11 @@ function activeJobPayload(job) {
     createdAt: job.createdAt,
     queuedAt: job.queuedAt,
     startedAt: job.startedAt,
-    needed: job.needed
+    needed: job.needed,
+    effectExpectation: job.effectExpectation || 'normal',
+    effectNoticeCode: job.effectNoticeCode || null,
+    billingDisposition: job.billingDisposition || null,
+    deducted: job.deducted === true
   };
   if (job.documentProfileOverride) base.documentProfile = job.documentProfileOverride;
   Object.assign(base, queueDetails(job));
@@ -571,9 +709,9 @@ function buildBlockOffer(job, text) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'modeSource', 'billingMode', 'billingTier', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest', 'engineMeta'];
+  'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest', 'engineMeta'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
-  'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
+  'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -640,6 +778,13 @@ function buildArchiveDocument(job, extra = {}, now = Date.now()) {
   doc.textLength = typeof job.text === 'string' ? job.text.length : 0;
   doc.resultLength = resultLength(job.result);
   doc.candidatesCount = Array.isArray(job.candidates) ? job.candidates.length : 0;
+  if (Number.isFinite(Number(job.terminalAtMs)) && Number(job.terminalAtMs) > 0) {
+    const terminalAtMs = Number(job.terminalAtMs);
+    const startedAtMs = Number(job.startedAt || job.createdAt || 0);
+    const createdAtMs = Number(job.createdAt || 0);
+    if (startedAtMs > 0) doc.processingDurationMs = Math.max(0, terminalAtMs - startedAtMs);
+    if (createdAtMs > 0) doc.totalDurationMs = Math.max(0, terminalAtMs - createdAtMs);
+  }
   Object.assign(doc, buildArchiveObservability(job));
   for (const [k, v] of Object.entries(extra || {})) {
     const cleaned = pruneUndefinedForFirestore(v);
@@ -696,6 +841,7 @@ function buildArchiveObservability(job) {
   return pruneUndefinedForFirestore({
     gates: gateCodes,
     qualityStatus: archiveString(result.qualityStatus, 32),
+    billingDisposition: archiveString(result.billingDisposition || job?.billingDisposition || engineMeta.billingDisposition, 48),
     qualityWarningCodes: warningCodes,
     preservationFallback: result.preservationFallback === true,
     fallbackFromMode: archiveString(result.engineMeta?.fallbackFromMode || engineMeta.fallbackFromMode, 24),
@@ -748,6 +894,10 @@ function buildArchiveObservability(job) {
     humanizationMinimumTargetCoverage: archiveFinite(engineMeta.humanizationMinimumTargetCoverage),
     substantiveEditRatio: archiveFinite(engineMeta.substantiveEditRatio),
     substantiveChangedSentenceRatio: archiveFinite(engineMeta.substantiveChangedSentenceRatio),
+    substantiveCarryoverCount: archiveFinite(engineMeta.substantiveCarryoverCount),
+    substantiveCarryoverRatio: archiveFinite(engineMeta.substantiveCarryoverRatio),
+    substantiveCarryoverEligibleSentenceCount: archiveFinite(engineMeta.substantiveCarryoverEligibleSentenceCount),
+    substantiveCarryoverMaximum: archiveFinite(engineMeta.substantiveCarryoverMaximum),
     humanizationTargetCoverage: archiveFinite(engineMeta.humanizationTargetCoverage),
     humanizationTargetChangedCount: archiveFinite(engineMeta.humanizationTargetChangedCount),
     structuralChangedSentenceCount: archiveFinite(engineMeta.structuralChangedSentenceCount),
@@ -762,6 +912,27 @@ function buildArchiveObservability(job) {
     humanizationDepthRetryCount: archiveFinite(engineMeta.humanizationDepthRetryCount),
     humanizationDepthRetryApplied: engineMeta.humanizationDepthRetryApplied === true,
     humanizationDepthRetryTargetSentenceCount: archiveFinite(engineMeta.humanizationDepthRetryTargetSentenceCount),
+    sectionRecoveryEnabled: engineMeta.sectionRecoveryEnabled === true,
+    sectionRecoveryAttemptCount: archiveFinite(engineMeta.sectionRecoveryAttemptCount),
+    sectionRecoveryAppliedCount: archiveFinite(engineMeta.sectionRecoveryAppliedCount),
+    sectionRecoveryEscalationCount: archiveFinite(engineMeta.sectionRecoveryEscalationCount),
+    fingerprintAuditVersion: archiveFinite(engineMeta.fingerprintAuditVersion),
+    fingerprintPass: typeof engineMeta.fingerprintPass === 'boolean' ? engineMeta.fingerprintPass : undefined,
+    fingerprintIssueCodes: uniqueStrictArchiveCodes(engineMeta.fingerprintIssueCodes),
+    fingerprintIntroducedCount: archiveFinite(engineMeta.fingerprintIntroducedCount),
+    fingerprintExcessIntroducedCount: archiveFinite(engineMeta.fingerprintExcessIntroducedCount),
+    fingerprintRepairCount: archiveFinite(engineMeta.fingerprintRepairCount),
+    endingStyleAuditVersion: archiveFinite(engineMeta.endingStyleAuditVersion),
+    endingStylePass: typeof engineMeta.endingStylePass === 'boolean' ? engineMeta.endingStylePass : undefined,
+    endingStyleIssueCount: archiveFinite(engineMeta.endingStyleIssueCount),
+    endingStyleIntroducedOtherCount: archiveFinite(engineMeta.endingStyleIntroducedOtherCount),
+    resumeCoverageAuditVersion: archiveFinite(engineMeta.resumeCoverageAuditVersion),
+    resumeCoverageApplicable: engineMeta.resumeCoverageApplicable === true,
+    resumeCoveragePass: typeof engineMeta.resumeCoveragePass === 'boolean' ? engineMeta.resumeCoveragePass : undefined,
+    resumeClaimCount: archiveFinite(engineMeta.resumeClaimCount),
+    resumeCoveredClaimCount: archiveFinite(engineMeta.resumeCoveredClaimCount),
+    resumeCoverageRatio: archiveFinite(engineMeta.resumeCoverageRatio),
+    resumeCoverageMinimumRecall: archiveFinite(engineMeta.resumeCoverageMinimumRecall),
     humanizationDepthReasonCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthReasonCodes),
     humanizationDepthBlockingReasonCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthBlockingReasonCodes),
     koreanRefinementVersion: archiveFinite(engineMeta.koreanRefinementVersion),
@@ -937,6 +1108,7 @@ function saveJobHistory(job, text, outputText) {
     mode: ['blog', 'formal', 'polish'].includes(job.mode) ? job.mode : 'formal',
     modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
     qualityStatus: job.result?.qualityStatus,
+    billingDisposition: job.result?.billingDisposition || job.billingDisposition || null,
     qualityWarningCodes: (job.result?.qualityWarnings || []).map(item => item?.code).filter(Boolean),
     sourceReviewWarningCodes: (job.result?.sourceReviewWarnings || []).map(item => item?.code).filter(Boolean),
     engineMeta: job.result?.engineMeta || null
@@ -2310,14 +2482,18 @@ async function runHumanizeJob(job, text, evidence = '') {
       }
     }
     try {
-      const operation = job.mode === 'formal' ? 'restructure' : 'humanize';
-      await commitJobBilling(job, {
-        creditAmount: job.needed,
-        operation,
-        mode: job.mode || 'formal',
-        textLength: (job.text || '').length
-      });
+      job.billingDisposition = humanizeV2Enabled()
+        ? await resolveBillingDisposition(job, out)
+        : (await commitJobBilling(job, {
+            creditAmount: job.needed,
+            operation: job.mode === 'formal' ? 'restructure' : 'humanize',
+            mode: job.mode || 'formal',
+            textLength: (job.text || '').length
+          }), job.deducted ? 'charged' : (job.plan === 'unlimited' ? 'plan_unlimited' : 'admin_no_charge'));
     } catch (e) {
+      // 기존 호환대로 결과는 전달하되 deducted=false가 실제 미차감을 나타낸다.
+      // disposition은 이 작업의 의도된 과금 경로를 유지해 운영 불일치를 찾게 한다.
+      job.billingDisposition = 'charged';
       logger.error('transform.humanize_billing_failed_manual_action', {
         jobId: job.id,
         uid: job.uid,
@@ -2346,6 +2522,16 @@ async function runHumanizeJob(job, text, evidence = '') {
     if (v2Enabled && v2QualityStatus === 'needs_review') {
       job.note = (job.note ? job.note + ' ' : '') + '자동 품질 점검에서 확인할 항목이 있어요. 경고 내용을 보고 원문과 대조해 주세요.';
     }
+    if (out.engineMeta && typeof out.engineMeta === 'object') {
+      out.engineMeta.billingDisposition = job.billingDisposition;
+      out.engineMeta.effectExpectation = job.effectExpectation || 'normal';
+      out.engineMeta.effectNoticeCode = job.effectNoticeCode || null;
+    }
+    if (out.result?.engineMeta && typeof out.result.engineMeta === 'object') {
+      out.result.engineMeta.billingDisposition = job.billingDisposition;
+      out.result.engineMeta.effectExpectation = job.effectExpectation || 'normal';
+      out.result.engineMeta.effectNoticeCode = job.effectNoticeCode || null;
+    }
     job.status = 'done';
     job.result = {
       outputText: finalText,
@@ -2369,6 +2555,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       humanizeMeta: out.result.humanizeMeta || null,
       qualityStatus: v2QualityStatus,
       qualityWarnings: v2QualityWarnings,
+      billingDisposition: job.billingDisposition,
       sourceReviewWarnings: out.sourceReviewWarnings || out.result.sourceReviewWarnings || [],
       koreanRefinement: out.result.koreanRefinement ? {
         version: Number(out.result.koreanRefinement.version) || 0,
@@ -2386,6 +2573,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       flowCohesion: out.result.flowCohesion || null
     };
     persistJob(job);
+    recordSourceBenefit(job, out, job.billingDisposition);
     if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
     logger.info('transform.humanize_done', {
       jobId: job.id,
@@ -2393,6 +2581,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       mode: job.mode,
       needed: job.needed,
       deducted: job.deducted,
+      billingDisposition: job.billingDisposition,
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount
     });
@@ -2494,6 +2683,30 @@ router.post('/transform', async (req, res) => {
   {
     const sm = inputrouting.stripSubmitterMeta(text);
     if (sm.changed) { logger.info('transform.submitter_meta_stripped', { mode, removed: sm.changed }); text = sm.text; }
+  }
+  const effectBasicStyle = mode === 'blog' ? normalizeBasicStyle(req.body?.basicStyle) : 'report';
+  const effectAssessment = humanizeV2Enabled()
+    ? assessEffectExpectation(text, mode, effectBasicStyle)
+    : { effectExpectation: 'normal', effectNoticeCode: null, requiresEffectConfirmation: false };
+  const effectNoticeAccepted = req.body?.effectNoticeAccepted === true;
+  if (!adminLabUid
+      && effectConfirmationEnabled()
+      && effectAssessment.requiresEffectConfirmation
+      && !effectNoticeAccepted) {
+    logger.info('transform.limited_effect_confirmation_required', {
+      mode,
+      textLength: text.length,
+      effectNoticeCode: effectAssessment.effectNoticeCode,
+      documentProfile: effectAssessment.documentProfile,
+      profileConfidence: effectAssessment.profileConfidence
+    });
+    return res.status(409).json({
+      error: '이미 자연스러운 글이라 휴머나이징 변화가 제한적일 수 있어요. 예상 효과를 확인한 뒤 진행해 주세요.',
+      code: 'LIMITED_EFFECT_CONFIRMATION_REQUIRED',
+      effectExpectation: 'limited',
+      effectNoticeCode: effectAssessment.effectNoticeCode,
+      requiresEffectConfirmation: true
+    });
   }
   if (draining) {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
@@ -2599,9 +2812,14 @@ router.post('/transform', async (req, res) => {
     needed,
     devNoAuth,
     deducted: false,
+    billingDisposition: null,
     billingMode: adminLabUid || devNoAuth ? 'credit' : billingMode,
     billingTier: billingMode === 'coupon' && !adminLabUid && !devNoAuth ? pre.tier : null,
     text,   // 승인 후 재개용(v1 메모리 보관 — TTL로 정리)
+    effectExpectation: effectAssessment.effectExpectation,
+    effectNoticeCode: effectAssessment.effectNoticeCode,
+    effectNoticeAccepted,
+    sourceFingerprint: sourceBenefitFingerprint(text),
     memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',   // 경험·사례 메모 — blog·formal(재구성) 공통 적용(2026-06-15)
     autoCoach: req.body.autoCoach === true && mode === 'formal',   // 자동 코칭(재구성 전용) — 시작 시 입장 자동 도출·적용(2026-06-18)
     // v2는 한국어 전용이다. 한국어 본문에 lang=en만 붙여 영어 프롬프트로 우회하지 못하게 한다.
@@ -2662,6 +2880,9 @@ router.post('/transform', async (req, res) => {
     estimatedEditableChunks: job.estimatedEditableChunks,
     estimatedTotalChunks: job.estimatedTotalChunks,
     mode,
+    effectExpectation: job.effectExpectation,
+    effectNoticeCode: job.effectNoticeCode,
+    requiresEffectConfirmation: effectAssessment.requiresEffectConfirmation,
     status: job.status,
     queued: job.status === 'queued',
     job: payload
@@ -2839,12 +3060,14 @@ router.get('/transform/:id', async (req, res) => {
     estimateBasis: job.estimateBasis,
     estimatedEditableChunks: job.estimatedEditableChunks,
     estimatedTotalChunks: job.estimatedTotalChunks,
+    deducted: job.deducted === true,
     ...queueDetails(job),
     ...(job.note ? { note: job.note } : {})
   };
   if (job.status === 'done') return res.json({
     ...base,
     qualityStatus: job.result?.qualityStatus,
+    billingDisposition: job.result?.billingDisposition || job.billingDisposition || null,
     qualityWarnings: job.result?.qualityWarnings,
     sourceReviewWarnings: job.result?.sourceReviewWarnings,
     engineMeta: job.result?.engineMeta,

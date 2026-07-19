@@ -219,6 +219,10 @@ $r.Content -match 'lavAutoCoach'
 | `OPENAI_API_KEY` | GPT 운영 엔진 키. 관리자 `adminSettings/gptRuntimeConfig` 값이 있으면 모델/추론/캐시 설정은 Firestore가 우선 |
 | `LLM_ACTIVE_PROVIDER` | 단일 운영 provider 설정. v2 운영값 `gpt` |
 | `HUMANIZE_ENGINE_V2_ENABLED` | `1`이면 v2, `0`이면 한 릴리스 동안 보존한 기존 경로로 즉시 복귀 |
+| `HUMANIZE_SECTION_RECOVERY_ENABLED` | v2.4.8 장문 섹션 회복. 백엔드 선배포에서는 `0`, 프런트 배포·관리자 실호출 후 `1` |
+| `HUMANIZE_FINGERPRINT_AUDIT_ENABLED` | v2.4.8 신규 상투구·논리 방향 감사. 백엔드 선배포에서는 `0`, 검증 후 `1` |
+| `HUMANIZE_EFFECT_CONFIRMATION_ENABLED` | 변화가 제한적인 입력의 작업 전 확인 강제. 프런트 확인 UI 배포 전에는 반드시 `0` |
+| `HUMANIZE_BILLING_PROTECTION_ENABLED` | 정상 예상 입력의 depth 미달 및 7일 내 동일 문서 반복 저효과 무차감. 백엔드 선배포에서는 `0`, 검증 후 `1` |
 | `OPENAI_SAFETY_SALT` | UID를 `safety_identifier`용 HMAC-SHA256으로 변환하는 비밀값. 운영 필수 |
 | `OPENAI_MODEL_FAST` | 기본 변환 모델. 예: `gpt-5.4-mini` |
 | `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 예: `gpt-5.4` |
@@ -245,6 +249,16 @@ $r.Content -match 'lavAutoCoach'
 - Firestore 저장 실패나 undefined 필드 오류가 보이면 `transform.persist_failed` 로그를 우선 확인한다.
 - 반복 차단/환불 문의가 늘면 `blocked`, `length_collapse`, `added_claim`, `lostFacts`, `evidence_pairing` 로그를 본다.
 - 배포 후에는 항상 Render `live` 상태와 `/healthz`를 같이 확인한다.
+
+### v2.4.8 활성화 순서
+
+1. 위 네 플래그를 모두 `0`으로 둔 백엔드를 먼저 배포하고 `/healthz`에서 전부 `false`인지 확인한다.
+2. 관리자 실호출로 기존 v2.4.7 경로의 완료·차감·이용 기록을 확인한다.
+3. 프런트의 효과 제한 확인 UI와 `billingDisposition` 표시를 운영 배포한다.
+4. 섹션 회복·상투구 감사·과금 보호를 `1`로 켠 뒤 마지막으로 효과 확인 강제를 `1`로 켠다.
+5. `/healthz`의 네 값이 모두 `true`이고 `activeJobs: 0`인 시점부터 1시간·6시간·24시간·72시간 관측을 시작한다.
+
+의미·구조 사고가 있으면 `HUMANIZE_ENGINE_V2_ENABLED=0`으로 전체 복귀한다. 비용·시간만 기준을 넘으면 `HUMANIZE_SECTION_RECOVERY_ENABLED=0`으로 섹션 회복만 끄고 상투구 감사와 과금 보호는 유지한다.
 
 ## 최근 정상 배포 예시
 

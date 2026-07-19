@@ -1,6 +1,7 @@
 'use strict';
 
 const humanizationDepth = require('./humanizationDepth');
+const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 
 const MIN_DOCUMENT_CHARS = 2000;
 const MIN_SECTION_CHARS = 1200;
@@ -10,7 +11,7 @@ const MAX_ESCALATIONS = 2;
 const RECOVERY_CONCURRENCY = 3;
 
 function isEnabled() {
-  return String(process.env.HUMANIZE_SECTION_RECOVERY_ENABLED || '0').trim() === '1';
+  return isV248FeatureEnabled('sectionRecovery');
 }
 
 function selectRecoverySections(chunks, {

@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences } = require('../engine/koreanText');
+const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 
 const VERSION = 1;
 const GUARDED_FAMILIES = Object.freeze([
@@ -24,7 +25,7 @@ const SHADOW_PATTERNS = Object.freeze([
 ]);
 
 function isEnabled() {
-  return String(process.env.HUMANIZE_FINGERPRINT_AUDIT_ENABLED || '0').trim() === '1';
+  return isV248FeatureEnabled('fingerprintAudit');
 }
 
 function auditFingerprint(source, output) {

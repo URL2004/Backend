@@ -14,6 +14,7 @@ const transformRouter = require('../routes/transform');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const runtime = require('../lib/gptRuntimeConfig');
 const fingerprintReport = require('../scripts/humanize-fingerprint-report');
+const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 
 function withEnv(t, name, value) {
   const previous = process.env[name];
@@ -35,6 +36,31 @@ function rewrittenSection(sectionIndex) {
     `${sectionIndex + 1}-${sentenceIndex + 1}번째 운영 자료부터 실제 기록과 대조했습니다. 조건별 판단 근거는 검토 순서에 맞춰 다시 배치했습니다.`
   )).join(' ');
 }
+
+test('v2.4.8 기능은 운영 릴리스에서 기본 활성화되고 환경변수 0으로 각각 복귀한다', { concurrency: false }, t => {
+  const flags = [
+    ['sectionRecovery', 'HUMANIZE_SECTION_RECOVERY_ENABLED'],
+    ['fingerprintAudit', 'HUMANIZE_FINGERPRINT_AUDIT_ENABLED'],
+    ['effectConfirmation', 'HUMANIZE_EFFECT_CONFIRMATION_ENABLED'],
+    ['billingProtection', 'HUMANIZE_BILLING_PROTECTION_ENABLED']
+  ];
+  for (const [, name] of flags) {
+    const previous = process.env[name];
+    delete process.env[name];
+    t.after(() => {
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    });
+  }
+
+  for (const [key, name] of flags) {
+    assert.equal(isV248FeatureEnabled(key), true);
+    process.env[name] = '0';
+    assert.equal(isV248FeatureEnabled(key), false);
+    process.env[name] = '1';
+    assert.equal(isV248FeatureEnabled(key), true);
+  }
+});
 
 test('장문 섹션 회복은 mini 최대 8개·동시성 3·상위 모델 최대 2개 계약을 지킨다', { concurrency: false }, async t => {
   withEnv(t, 'HUMANIZE_SECTION_RECOVERY_ENABLED', '1');

@@ -25,6 +25,7 @@ const { CONTENT_GENRES, detectDocumentProfile } = require('../engine-gpt-prod/do
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 const humanizationDepth = require('../engine-gpt-prod/humanizationDepth');
 const surfaceguard = require('../engine/surfaceguard');
+const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 
 function claudeGenreTransferV2() {
   return require('../engine/genretransfer').genreTransferV2;
@@ -83,12 +84,12 @@ function humanizeV2Enabled() {
 
 function effectConfirmationEnabled() {
   return humanizeV2Enabled()
-    && String(process.env.HUMANIZE_EFFECT_CONFIRMATION_ENABLED || '0').trim() === '1';
+    && isV248FeatureEnabled('effectConfirmation');
 }
 
 function billingProtectionEnabled() {
   return humanizeV2Enabled()
-    && String(process.env.HUMANIZE_BILLING_PROTECTION_ENABLED || '0').trim() === '1';
+    && isV248FeatureEnabled('billingProtection');
 }
 
 function sourceBenefitFingerprint(text) {

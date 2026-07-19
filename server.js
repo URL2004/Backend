@@ -12,6 +12,7 @@ const maintenanceMode = require('./middleware/maintenanceMode');
 const gptRuntimeConfig = require('./lib/gptRuntimeConfig');
 const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
 const { POLICY_VERSION: HUMANIZATION_DEPTH_POLICY } = require('./engine-gpt-prod/humanizationDepth');
+const { isV248FeatureEnabled } = require('./lib/humanizeV248Flags');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -57,10 +58,10 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       humanizeEngineV2,
       humanizationDepthGate,
       humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
-      sectionRecoveryEnabled: process.env.HUMANIZE_SECTION_RECOVERY_ENABLED === '1',
-      fingerprintAuditEnabled: process.env.HUMANIZE_FINGERPRINT_AUDIT_ENABLED === '1',
-      effectConfirmationEnabled: process.env.HUMANIZE_EFFECT_CONFIRMATION_ENABLED === '1',
-      billingProtectionEnabled: process.env.HUMANIZE_BILLING_PROTECTION_ENABLED === '1',
+      sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
+      fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
+      effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
+      billingProtectionEnabled: isV248FeatureEnabled('billingProtection'),
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
       maintenance: maintenanceMode.isMaintenanceEnabled(),
@@ -75,10 +76,10 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       humanizeEngineV2,
       humanizationDepthGate,
       humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
-      sectionRecoveryEnabled: process.env.HUMANIZE_SECTION_RECOVERY_ENABLED === '1',
-      fingerprintAuditEnabled: process.env.HUMANIZE_FINGERPRINT_AUDIT_ENABLED === '1',
-      effectConfirmationEnabled: process.env.HUMANIZE_EFFECT_CONFIRMATION_ENABLED === '1',
-      billingProtectionEnabled: process.env.HUMANIZE_BILLING_PROTECTION_ENABLED === '1',
+      sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
+      fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
+      effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
+      billingProtectionEnabled: isV248FeatureEnabled('billingProtection'),
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
       maintenance: maintenanceMode.isMaintenanceEnabled(),

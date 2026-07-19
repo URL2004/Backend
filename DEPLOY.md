@@ -219,10 +219,10 @@ $r.Content -match 'lavAutoCoach'
 | `OPENAI_API_KEY` | GPT 운영 엔진 키. 관리자 `adminSettings/gptRuntimeConfig` 값이 있으면 모델/추론/캐시 설정은 Firestore가 우선 |
 | `LLM_ACTIVE_PROVIDER` | 단일 운영 provider 설정. v2 운영값 `gpt` |
 | `HUMANIZE_ENGINE_V2_ENABLED` | `1`이면 v2, `0`이면 한 릴리스 동안 보존한 기존 경로로 즉시 복귀 |
-| `HUMANIZE_SECTION_RECOVERY_ENABLED` | v2.4.8 장문 섹션 회복. 백엔드 선배포에서는 `0`, 프런트 배포·관리자 실호출 후 `1` |
-| `HUMANIZE_FINGERPRINT_AUDIT_ENABLED` | v2.4.8 신규 상투구·논리 방향 감사. 백엔드 선배포에서는 `0`, 검증 후 `1` |
-| `HUMANIZE_EFFECT_CONFIRMATION_ENABLED` | 변화가 제한적인 입력의 작업 전 확인 강제. 프런트 확인 UI 배포 전에는 반드시 `0` |
-| `HUMANIZE_BILLING_PROTECTION_ENABLED` | 정상 예상 입력의 depth 미달 및 7일 내 동일 문서 반복 저효과 무차감. 백엔드 선배포에서는 `0`, 검증 후 `1` |
+| `HUMANIZE_SECTION_RECOVERY_ENABLED` | v2.4.8 장문 섹션 회복. 미설정 시 활성화되며 비용·시간 초과 시 `0`으로 개별 복귀 |
+| `HUMANIZE_FINGERPRINT_AUDIT_ENABLED` | v2.4.8 신규 상투구·논리 방향 감사. 미설정 시 활성화되며 `0`으로 개별 복귀 가능 |
+| `HUMANIZE_EFFECT_CONFIRMATION_ENABLED` | 변화가 제한적인 입력의 작업 전 확인 강제. v2.4.8 프런트 배포 후 활성화하며 `0`으로 해제 가능 |
+| `HUMANIZE_BILLING_PROTECTION_ENABLED` | 정상 예상 입력의 depth 미달 및 7일 내 동일 문서 반복 저효과 무차감. 미설정 시 활성화 |
 | `OPENAI_SAFETY_SALT` | UID를 `safety_identifier`용 HMAC-SHA256으로 변환하는 비밀값. 운영 필수 |
 | `OPENAI_MODEL_FAST` | 기본 변환 모델. 예: `gpt-5.4-mini` |
 | `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 예: `gpt-5.4` |
@@ -257,6 +257,8 @@ $r.Content -match 'lavAutoCoach'
 3. 프런트의 효과 제한 확인 UI와 `billingDisposition` 표시를 운영 배포한다.
 4. 섹션 회복·상투구 감사·과금 보호를 `1`로 켠 뒤 마지막으로 효과 확인 강제를 `1`로 켠다.
 5. `/healthz`의 네 값이 모두 `true`이고 `activeJobs: 0`인 시점부터 1시간·6시간·24시간·72시간 관측을 시작한다.
+
+v2.4.8 활성화 커밋 이후 네 플래그는 미설정 시 `1`로 간주한다. Render 환경변수에 명시적으로 `0`을 넣으면 각 기능을 독립적으로 즉시 해제할 수 있다.
 
 의미·구조 사고가 있으면 `HUMANIZE_ENGINE_V2_ENABLED=0`으로 전체 복귀한다. 비용·시간만 기준을 넘으면 `HUMANIZE_SECTION_RECOVERY_ENABLED=0`으로 섹션 회복만 끄고 상투구 감사와 과금 보호는 유지한다.
 

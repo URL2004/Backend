@@ -58,3 +58,101 @@ test('원문 검토 경고는 결과 품질 경고와 별도 배열로 유지한
   assert.ok(audit.sourceReviewWarnings.some(item => item.code === 'frequency_quantifier_conflict'));
   assert.equal(audit.residualWarnings.some(item => item.code === 'korean_frequency_quantifier_conflict'), false);
 });
+
+test('보고서의 문장 중간 빈 문단을 합치고 과도한 빈 줄을 1개로 줄인다', () => {
+  const source = [
+    '윤리적 소비 탐구 보고서',
+    '',
+    '소비자의 작은 선택 하나가 생산 방식과 기업의 책임 의식을 ',
+    '',
+    '변화시킬 수 있다는 사실은 개인의 행동이 사회 변화와 연결될 수 있음을 보여준다.',
+    '',
+    '',
+    '',
+    '다음 문단은 별도의 완결된 문장이다.'
+  ].join('\n');
+  const repaired = refinement.applySafeFormattingRepairs({
+    source,
+    outputText: source,
+    documentProfile: { profile: 'report_assignment', formatProfile: { flags: ['sectioned'] } }
+  });
+  assert.equal(repaired.applied, true);
+  assert.match(repaired.text, /책임 의식을 변화시킬 수/u);
+  assert.doesNotMatch(repaired.text, /의식을\s*\n\s*\n\s*변화시킬/u);
+  assert.doesNotMatch(repaired.text, /\n{3,}/u);
+  assert.equal(repaired.brokenParagraphBreakRepairCount, 1);
+  assert.equal(repaired.excessiveBlankLineRepairCount, 2);
+});
+
+test('문맥형 띄어쓰기를 고치되 인용된 논문명과 참고문헌은 원문대로 남긴다', () => {
+  const source = [
+    '윤리적 소비와 기업 책임',
+    '',
+    '인간 중심의 시선에서 한걸음 벗어나 사회적 약자를 보여주는 방식을 살폈다.',
+    '수업중에 자료를 재구성 하였고, 가치소비가 지속이용의도에 미치는 영향을 정리했다.',
+    '2026년 연구 「ESG 경영 활동이 대학생 소비자의 지속이용의도에 미치는 영향」을 인용했다.',
+    '',
+    '참고문헌',
+    '홍길동, 「가치소비와 지속이용의도」, 2026.'
+  ].join('\n');
+  const repaired = refinement.applySafeFormattingRepairs({
+    source,
+    outputText: source,
+    documentProfile: { profile: 'report_assignment', formatProfile: { flags: ['reference_heavy'] } }
+  });
+  assert.match(repaired.text, /한 걸음 벗어나/u);
+  assert.match(repaired.text, /보여 주는 방식/u);
+  assert.match(repaired.text, /수업 중에 자료를 재구성하였고/u);
+  assert.match(repaired.text, /가치 소비가 지속 이용 의도에/u);
+  assert.match(repaired.text, /「ESG 경영 활동이 대학생 소비자의 지속이용의도에 미치는 영향」/u);
+  assert.match(repaired.text, /홍길동, 「가치소비와 지속이용의도」, 2026\./u);
+});
+
+test('시·창작문은 행갈이와 의도적 띄어쓰기를 수정하지 않는다', () => {
+  const creative = '한걸음\n멈춘 자리에\n빛을 보여주는\n사람';
+  const repaired = refinement.applySafeFormattingRepairs({
+    source: creative,
+    outputText: creative,
+    documentProfile: { profile: 'creative', formatProfile: { flags: ['creative_lines'] } }
+  });
+  assert.equal(repaired.applied, false);
+  assert.equal(repaired.text, creative);
+  assert.equal(repaired.reason, 'creative_line_structure');
+});
+
+test('워드·PDF에서 복사한 일반 텍스트 표의 셀 경계는 산문처럼 합치지 않는다', () => {
+  const source = [
+    '평가 기준을 다음과 같이 정리하였다.',
+    '표 8. 학습자 산출물과 잠정 평가 준거',
+    '',
+    '평가 영역',
+    '핵심 준거',
+    '원문·문헌 근거의 정확성',
+    '사실과 추론을 구분하였는가',
+    '자료 비판과 출처 투명성',
+    '자료 출처와 한계를 기록하였는가',
+    '',
+    '',
+    '이 표는 평가 항목을 보여주는 자료다.'
+  ].join('\n');
+  const repaired = refinement.applySafeFormattingRepairs({
+    source,
+    outputText: source,
+    documentProfile: { profile: 'report_assignment', formatProfile: { flags: ['table'] } }
+  });
+  assert.match(repaired.text, /사실과 추론을 구분하였는가\n자료 비판과 출처 투명성/u);
+  assert.match(repaired.text, /자료 비판과 출처 투명성\n자료 출처와 한계를 기록하였는가/u);
+  assert.doesNotMatch(repaired.text, /구분하였는가 자료 비판/u);
+  assert.match(repaired.text, /이 표는 평가 항목을 보여 주는 자료다\./u);
+  assert.equal(repaired.brokenLineBreakRepairCount, 0);
+});
+
+test('보여 주다의 활용형 띄어쓰기를 문서 전체에서 같은 기준으로 맞춘다', () => {
+  const source = '이 사례는 변화를 보여준다. 다음 결과도 보여준 자료이며 앞으로의 가능성을 보여줄 수 있다. 이전 사례도 보여줬다.';
+  const repaired = refinement.applySafeFormattingRepairs({ source, outputText: source });
+  assert.equal(
+    repaired.text,
+    '이 사례는 변화를 보여 준다. 다음 결과도 보여 준 자료이며 앞으로의 가능성을 보여 줄 수 있다. 이전 사례도 보여 줬다.'
+  );
+  assert.equal(repaired.changeCounts.show_auxiliary_spacing, 4);
+});

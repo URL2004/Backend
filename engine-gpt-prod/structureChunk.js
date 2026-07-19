@@ -698,6 +698,21 @@ function compactLayoutRepair(value) {
         ? value.speakerRestore.restoredKinds.map(item => String(item || '')).filter(Boolean).slice(0, 2)
         : [],
       reason: String(value.speakerRestore.reason || '')
+    } : null,
+    formatting: value.formatting ? {
+      version: Number(value.formatting.version) || 1,
+      applied: value.formatting.applied === true,
+      changeCount: Number(value.formatting.changeCount) || 0,
+      changeCodes: Array.isArray(value.formatting.changeCodes)
+        ? value.formatting.changeCodes.map(item => String(item || '')).filter(Boolean).slice(0, 12)
+        : [],
+      brokenLineBreakRepairCount: Number(value.formatting.brokenLineBreakRepairCount) || 0,
+      brokenParagraphBreakRepairCount: Number(value.formatting.brokenParagraphBreakRepairCount) || 0,
+      excessiveBlankLineRepairCount: Number(value.formatting.excessiveBlankLineRepairCount) || 0,
+      missingSentenceSpaceRepairCount: Number(value.formatting.missingSentenceSpaceRepairCount) || 0,
+      contextualSpacingRepairCount: Number(value.formatting.contextualSpacingRepairCount) || 0,
+      skipped: value.formatting.skipped === true,
+      reason: String(value.formatting.reason || '')
     } : null
   };
 }

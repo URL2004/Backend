@@ -10,6 +10,9 @@ const POV_PATTERNS = Object.freeze({
   // 붙는 우리나라·우리말 등은 경계 조건으로 제외한다.
   firstPlural: /(?:^|[^가-힣A-Za-z0-9_])(?:우리는|우리가|우리의|우리도|우리를|우리에게|우리와|우리로서|저희는|저희가|저희의|저희도|저희를|저희에게|저희와|저희로서|우리|저희)(?=$|[^가-힣A-Za-z0-9_])/gu
 });
+const OUR_LEXICAL_NOUNS = Object.freeze([
+  '나라', '학교', '사회', '집', '말', '몸', '지역', '동네', '회사', '팀', '반', '가족'
+]);
 
 function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles = [], formatProfile = null, mode = '' } = {}) {
   const context = normalizeDocumentContext(documentProfile, safetyProfiles, formatProfile);
@@ -117,8 +120,11 @@ function voicePromptBlock(profile) {
 function auditVoice(sourceProfile, output, {
   documentProfile = 'unknown',
   mode = '',
+  sourceText = '',
   layoutPolicy = '',
-  layoutTargetCount = 0
+  layoutTargetCount = 0,
+  formattingParagraphRemovalCount = 0,
+  formattingSentenceSpaceRepairCount = 0
 } = {}) {
   const context = normalizeDocumentContext(
     documentProfile,
@@ -130,19 +136,29 @@ function auditVoice(sourceProfile, output, {
   if ((sourceProfile?.pov?.firstSingular || 0) === 0 && current.pov.firstSingular > 0) {
     warnings.push(warning('speaker_injected', '원문에 없던 1인칭 단수 화자가 추가됐을 수 있어요.'));
   }
-  if ((sourceProfile?.pov?.firstPlural || 0) === 0 && current.pov.firstPlural > 0) {
+  const sourcePluralSignature = sourceText ? pluralSpeakerSignature(sourceText) : null;
+  const currentPluralSignature = sourceText ? pluralSpeakerSignature(output) : null;
+  const pluralInjected = sourcePluralSignature && currentPluralSignature
+    ? (currentPluralSignature.explicit > 0 && sourcePluralSignature.explicit === 0)
+      || (signatureTotal(currentPluralSignature) > 0 && signatureTotal(sourcePluralSignature) === 0)
+    : (sourceProfile?.pov?.firstPlural || 0) === 0 && current.pov.firstPlural > 0;
+  const pluralRemoved = sourcePluralSignature && currentPluralSignature
+    ? signatureTotal(sourcePluralSignature) > 0 && signatureTotal(currentPluralSignature) === 0
+    : (sourceProfile?.pov?.firstPlural || 0) > 0 && current.pov.firstPlural === 0;
+  if (pluralInjected) {
     warnings.push(warning('speaker_injected', '원문에 없던 1인칭 복수 화자가 추가됐을 수 있어요.'));
   }
   if ((sourceProfile?.pov?.firstSingular || 0) > 0 && current.pov.firstSingular === 0) {
     warnings.push(warning('speaker_removed', '원문의 1인칭 화자가 결과에서 사라졌을 수 있어요.'));
   }
-  if ((sourceProfile?.pov?.firstPlural || 0) > 0 && current.pov.firstPlural === 0) {
+  if (pluralRemoved) {
     warnings.push(warning('speaker_removed', '원문의 집단 화자가 결과에서 사라졌을 수 있어요.'));
   }
   if (sourceProfile?.register && current.register !== sourceProfile.register && !['mixed'].includes(sourceProfile.register)) {
     warnings.push(warning('register_shift', `원문 종결체(${sourceProfile.register})가 결과(${current.register})에서 달라졌을 수 있어요.`));
   }
-  if ((sourceProfile?.directQuoteCount || 0) !== current.directQuoteCount) {
+  if ((sourceProfile?.directQuoteCount || 0) !== current.directQuoteCount
+      && !isQuotePunctuationOnlyChange(sourceText, output)) {
     warnings.push(warning('quote_count_changed', '직접 인용의 개수가 달라졌을 수 있어요.'));
   }
   const protectedProfiles = new Set([context.profile, ...context.safetyProfiles]);
@@ -172,24 +188,37 @@ function auditVoice(sourceProfile, output, {
   const currentParagraphs = current.paragraph?.count || 0;
   const paragraphLimit = paragraphExpansionLimit(sourceParagraphs, sourceProfile?.compactLength || 0);
   const readablePolish = mode === 'polish' && layoutPolicy === 'readable_polish';
+  const formattingRemovalCount = Math.max(0, Number(formattingParagraphRemovalCount) || 0);
+  const formattingMinimum = sourceParagraphs > 0
+    ? Math.max(1, sourceParagraphs - formattingRemovalCount)
+    : 0;
+  const formattingMaximum = Math.max(
+    formattingMinimum,
+    (Number(layoutTargetCount) || sourceParagraphs) - formattingRemovalCount
+  );
   const paragraphChanged = mode === 'polish'
     ? (readablePolish
-        ? currentParagraphs < sourceParagraphs || currentParagraphs > Math.max(sourceParagraphs, Number(layoutTargetCount) || sourceParagraphs)
-        : currentParagraphs !== sourceParagraphs)
+        ? currentParagraphs < formattingMinimum || currentParagraphs > formattingMaximum
+        : currentParagraphs !== formattingMinimum)
     : sourceParagraphs === 1
       ? currentParagraphs > paragraphLimit
-      : sourceParagraphs >= 2 && (currentParagraphs < sourceParagraphs * 0.6 || currentParagraphs > sourceParagraphs * 1.5);
+      : sourceParagraphs >= 2 && (currentParagraphs < Math.min(formattingMinimum, sourceParagraphs * 0.6)
+        || currentParagraphs > sourceParagraphs * 1.5);
   if (paragraphChanged) {
     warnings.push(warning('paragraph_structure_changed', '문단 수나 문단 구성이 원문과 크게 달라졌을 수 있어요.'));
   }
-  const sparseTarget = sourceProfile?.sentence?.sparseSplitTarget || null;
-  const sparseDistributionShift = sourceProfile?.sentence?.punctuationSparse === true
+  const sentenceSourceProfile = sourceText && Number(formattingSentenceSpaceRepairCount) > 0
+    ? buildVoiceProfile(normalizeSentenceSpacingForAudit(sourceText), { documentProfile: context, mode })
+    : sourceProfile;
+  const sourceSentence = sentenceSourceProfile?.sentence || sourceProfile?.sentence || {};
+  const sparseTarget = sourceSentence.sparseSplitTarget || null;
+  const sparseDistributionShift = sourceSentence.punctuationSparse === true
     && sparseTarget
     && ((current.sentence?.count || 0) < sparseTarget.minCount
       || (current.sentence?.count || 0) > sparseTarget.maxCount
       || (current.sentence?.min || 0) > sparseTarget.shortMax
       || (current.sentence?.max || 0) < sparseTarget.longMin);
-  const existingDistribution = sentenceDistributionShift(sourceProfile?.sentence, current.sentence);
+  const existingDistribution = sentenceDistributionShift(sourceSentence, current.sentence);
   if (sparseDistributionShift || existingDistribution.shift) {
     warnings.push(warning('sentence_distribution_shift', '원문의 짧고 긴 문장 차이가 결과에서 지나치게 평탄해졌을 수 있어요.'));
   }
@@ -393,6 +422,54 @@ function paragraphExpansionLimit(sourceCount, compactLength = 0) {
   const length = Math.max(0, Number(compactLength) || 0);
   if (length <= 1000) return 2;
   return Math.min(12, Math.max(3, Math.ceil(length / 350)));
+}
+
+function pluralSpeakerSignature(value) {
+  const lexical = {};
+  const nounPattern = OUR_LEXICAL_NOUNS.join('|');
+  const particlePattern = '(?:에서는|에게서|으로|부터|까지|한테|에서|에도|에는|에게|은|는|이|가|을|를|의|에|로|와|과|도|만)?';
+  const pattern = new RegExp(
+    `(^|[^가-힣A-Za-z0-9_])우리[ \\t]*(${nounPattern})(?=${particlePattern}(?:$|[^가-힣A-Za-z0-9_]))`,
+    'gu'
+  );
+  const masked = String(value || '').replace(pattern, (_match, prefix, noun) => {
+    lexical[noun] = (lexical[noun] || 0) + 1;
+    return `${prefix}대상`;
+  });
+  return {
+    explicit: safeMatches(masked, POV_PATTERNS.firstPlural),
+    lexical
+  };
+}
+
+function signatureTotal(signature) {
+  return Number(signature?.explicit || 0)
+    + Object.values(signature?.lexical || {}).reduce((sum, count) => sum + Number(count || 0), 0);
+}
+
+function isQuotePunctuationOnlyChange(source, output) {
+  if (!source) return false;
+  const sourceQuotes = directQuoteContents(source);
+  const outputQuotes = directQuoteContents(output);
+  if (!sourceQuotes.length && !outputQuotes.length) return false;
+  const sourceEvidence = normalizeQuoteEvidence(source);
+  const outputEvidence = normalizeQuoteEvidence(output);
+  return sourceQuotes.every(content => outputEvidence.includes(normalizeQuoteEvidence(content)))
+    && outputQuotes.every(content => sourceEvidence.includes(normalizeQuoteEvidence(content)));
+}
+
+function directQuoteContents(value) {
+  const contents = [];
+  for (const match of String(value || '').matchAll(/[“"]([^”"\n]{2,})[”"]/gu)) contents.push(match[1]);
+  return contents;
+}
+
+function normalizeQuoteEvidence(value) {
+  return String(value || '').normalize('NFKC').toLocaleLowerCase('ko-KR').replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+function normalizeSentenceSpacingForAudit(value) {
+  return String(value || '').replace(/([.!?。！？])(?=[가-힣])/gu, '$1 ');
 }
 
 function safeMatches(text, pattern) {

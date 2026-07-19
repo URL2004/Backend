@@ -656,6 +656,33 @@ test('지원서 프롬프트는 거시 구조와 미시 편집을 분리하고 �
   assert.match(prompt, /짰다·봤다·힘·준·어울렸다·일했다/u);
 });
 
+test('학술·보고서 프롬프트는 논리 연산자·행위 주체·표 압축도·격식을 보존한다', () => {
+  const source = '본 연구는 새 도구의 개발 자체보다 자료와 판단의 구조화에 초점을 둔다.';
+  const documentProfile = {
+    profile: 'academic_paper',
+    group: 'academic_report_explainer',
+    confidence: 0.95,
+    tonePolicy: 'formal',
+    formatProfile: { flags: ['sectioned', 'table_heavy'] },
+    safetyProfiles: ['academic_paper'],
+    riskFlags: ['citation_dense']
+  };
+  const voiceProfile = buildVoiceProfile(source, { documentProfile });
+  const prompt = prompts.buildHumanizePrompt('assignment', 'ko', {
+    requestStrength: 'advanced',
+    register: voiceProfile.register,
+    documentProfile,
+    voiceProfile
+  }).stable;
+  assert.match(prompt, /~자체보다.*~에서 나아가/u);
+  assert.match(prompt, /~에 그치지 않고.*~이\/가 아니라/u);
+  assert.match(prompt, /행위 주체와 대상/u);
+  assert.match(prompt, /설명 평서문.*명령문/u);
+  assert.match(prompt, /표·그림 제목·캡션·셀/u);
+  assert.match(prompt, /재다·메우다/u);
+  assert.match(prompt, /의인화하지 않는다/u);
+});
+
 test('문단 안에서 반복되는 관찰형 명사 종결은 세특 프로필로 판정한다', () => {
   const source = '체육 수업과 활동에 꾸준히 참여함. 친구들에게 자세와 방법을 알려 주며 협력하는 태도를 보임. 어려움이 있어도 끝까지 해내는 모습을 보임. 체력과 책임감을 함께 키워 나감. 다양한 방향을 탐색하며 성장하려는 자세를 지님.';
   const report = detectDocumentProfile(source, { basicStyle: 'blog' });
@@ -809,6 +836,41 @@ test('우리 몸의 bare 우리를 집단 화자로 세고 polish의 실제 화�
   assert.match(restored.text, /표현이 다소 어색했습니다\.$/u);
   const repairedAudit = auditVoice(buildVoiceProfile(source), restored.text, { mode: 'polish' });
   assert.equal(repairedAudit.warnings.some(item => item.code === 'speaker_removed'), false);
+});
+
+test('우리학교 띄어쓰기 보정은 새 화자로 오인하지 않되 실제 우리 주입은 경고한다', () => {
+  const source = '물질주의의 예시로는 우리학교의 자판기가 있다. 나도 보상 심리를 느낀다.';
+  const spacingOnly = '물질주의의 예시로는 우리 학교의 자판기가 있다. 나도 보상 심리를 느낀다.';
+  const voice = buildVoiceProfile(source);
+  const spacingAudit = auditVoice(voice, spacingOnly, { mode: 'polish', sourceText: source });
+  assert.equal(spacingAudit.warnings.some(item => item.code === 'speaker_injected'), false);
+
+  const injected = `${spacingOnly} 우리는 이 문제를 해결해야 한다.`;
+  const injectedAudit = auditVoice(voice, injected, { mode: 'polish', sourceText: source });
+  assert.ok(injectedAudit.warnings.some(item => item.code === 'speaker_injected'));
+});
+
+test('원문에 있던 발화 내용에 따옴표만 보완하면 인용 변경으로 경고하지 않는다', () => {
+  const source = '선생님께서 목소리에서 전달력이 느껴져 좋았다라고 칭찬하셨다.';
+  const quoted = '선생님께서 "목소리에서 전달력이 느껴져 좋았다"라고 칭찬하셨다.';
+  const voice = buildVoiceProfile(source);
+  const punctuationAudit = auditVoice(voice, quoted, { sourceText: source });
+  assert.equal(punctuationAudit.warnings.some(item => item.code === 'quote_count_changed'), false);
+
+  const invented = '선생님께서 "발표가 완벽했다"라고 칭찬하셨다.';
+  const inventedAudit = auditVoice(voice, invented, { sourceText: source });
+  assert.ok(inventedAudit.warnings.some(item => item.code === 'quote_count_changed'));
+});
+
+test('원문의 마침표 뒤 누락 공백만 보정한 결과를 리듬 평탄화로 오인하지 않는다', () => {
+  const source = `${'가'.repeat(160)}.${'나'.repeat(60)}. ${'다'.repeat(82)}. ${'라'.repeat(45)}.`;
+  const output = source.replace(/\.(?=나)/u, '. ');
+  const voice = buildVoiceProfile(source);
+  const repairedAudit = auditVoice(voice, output, {
+    sourceText: source,
+    formattingSentenceSpaceRepairCount: 1
+  });
+  assert.equal(repairedAudit.warnings.some(item => item.code === 'sentence_distribution_shift'), false);
 });
 
 test('민감 문서 프로필은 목록의 삭제뿐 아니라 신규 목록 추가도 경고한다', () => {

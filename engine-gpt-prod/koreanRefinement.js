@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences } = require('../engine/koreanText');
+const layoutStructure = require('./layoutStructure');
 
 const VERSION = 1;
 const PROFESSIONAL_PROFILES = new Set([
@@ -62,6 +63,336 @@ const ISSUE_DEFINITIONS = Object.freeze({
 });
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
+const REFERENCE_HEADING_RE = /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/iu;
+const APPENDIX_HEADING_RE = /^(?:부록|Appendix)(?:\s+[A-Za-z0-9가-힣.-]+)?$/iu;
+const NEW_UNIT_START_RE = /^(?:그리고|그러나|하지만|또한|따라서|한편|반면|이러한|이번|다음|첫째|둘째|셋째|마지막으로)(?=$|\s)/u;
+const HADA_NOUNS = [
+  '구성', '재구성', '분석', '탐구', '조사', '연구', '설명', '정리', '확인', '검토',
+  '수행', '제시', '진행', '활용', '비교', '평가', '측정', '고려', '이해', '해석', '관찰',
+  '파악', '적용', '제안', '계획', '실천', '선택', '작성', '참여', '기록', '발표', '발견',
+  '추론', '복원', '판단'
+];
+const DURING_NOUNS = [
+  '수업', '회의', '작업', '사용', '진행', '탐구', '학습', '근무', '운전', '공사', '시험', '준비', '치료', '상담', '통화', '출장', '여행'
+];
+
+/**
+ * 의미 심사 후에도 안전하게 실행할 수 있는 형식 보정이다.
+ * 문자의 순서나 내용은 바꾸지 않고 공백만 추가·삭제한다.
+ * 논문명·인용·참고문헌·표·코드와 창작문 행갈이는 보호한다.
+ */
+function applySafeFormattingRepairs({ source = '', outputText = '', documentProfile = null } = {}) {
+  const before = String(outputText || '');
+  const context = formattingContext(documentProfile);
+  if (!before || context.creative) {
+    return emptyFormattingResult(before, context.creative ? 'creative_line_structure' : 'empty');
+  }
+
+  const boundary = repairBrokenProseBoundaries(before, context);
+  const spacing = repairContextualSpacing(boundary.text, source, context);
+  const changeCounts = mergeChangeCounts(boundary.changeCounts, spacing.changeCounts);
+  const changeCodes = Object.keys(changeCounts).filter(code => changeCounts[code] > 0);
+  return {
+    version: 1,
+    text: spacing.text,
+    applied: spacing.text !== before,
+    changeCount: Object.values(changeCounts).reduce((sum, count) => sum + count, 0),
+    changeCodes,
+    changeCounts,
+    brokenLineBreakRepairCount: Number(changeCounts.broken_prose_linebreak || 0),
+    brokenParagraphBreakRepairCount: Number(changeCounts.broken_prose_paragraph_break || 0),
+    excessiveBlankLineRepairCount: Number(changeCounts.excess_blank_lines || 0),
+    contextualSpacingRepairCount: changeCodes
+      .filter(code => !['broken_prose_linebreak', 'broken_prose_paragraph_break', 'excess_blank_lines'].includes(code))
+      .reduce((sum, code) => sum + Number(changeCounts[code] || 0), 0),
+    skipped: false,
+    reason: '',
+    profile: context.profile
+  };
+}
+
+function repairBrokenProseBoundaries(value, context) {
+  const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
+  const guards = buildLineGuards(lines);
+  const counts = {};
+  let output = '';
+  let index = 0;
+  while (index < lines.length) {
+    const current = lines[index];
+    let next = index + 1;
+    while (next < lines.length && !lines[next].trim()) next += 1;
+    if (next >= lines.length) {
+      output += current;
+      if (index < lines.length - 1) output += '\n'.repeat(lines.length - index - 1);
+      break;
+    }
+
+    const boundarySize = next - index;
+    const join = !guards[index]?.protected
+      && !guards[next]?.protected
+      && isBrokenProseBoundary(current, lines[next]);
+    if (join) {
+      output += `${current.trimEnd()} `;
+      lines[next] = lines[next].trimStart();
+      addCount(counts, boundarySize >= 2 ? 'broken_prose_paragraph_break' : 'broken_prose_linebreak');
+    } else {
+      output += current;
+      const capped = Math.min(boundarySize, 2);
+      output += '\n'.repeat(capped);
+      if (boundarySize > 2 && !guards[index]?.code && !guards[next]?.code) {
+        addCount(counts, 'excess_blank_lines', boundarySize - capped);
+      }
+    }
+    index = next;
+  }
+  return { text: output, changeCounts: counts };
+}
+
+function isBrokenProseBoundary(leftValue, rightValue) {
+  const left = String(leftValue || '').trim();
+  const right = String(rightValue || '').trim();
+  if (!left || !right) return false;
+  if (isStandaloneStructureLine(left) || isStandaloneStructureLine(right)) return false;
+  if (/[.!?。！？…,:;：；]\s*[”’》』〉》"')\]]*$/u.test(left)) return false;
+  if (!/^[A-Za-z가-힣("'“‘]/u.test(right) || NEW_UNIT_START_RE.test(right)) return false;
+  const token = (left.replace(/[”’》』〉》"')\]]+$/u, '').match(/[가-힣]+$/u) || [''])[0];
+  if (!token) return false;
+  if (token.length >= 2 && /(?:을|를)$/u.test(token)) return true;
+  if (token.length >= 3 && /(?:은|는|이|가)$/u.test(token)) return true;
+  if (/(?:하는|되는|된|할|했던|위한|대한|관한|필요한|가능한)$/u.test(token)) return true;
+  return /^(?:수|및|그리고|그러나|하지만|또한|때문에|위해|통해)$/u.test(token);
+}
+
+function repairContextualSpacing(value, source, context) {
+  const lines = String(value || '').split('\n');
+  const guards = buildLineGuards(lines);
+  const sourceTitle = firstDocumentTitle(source);
+  const counts = {};
+  const repaired = lines.map((line, index) => {
+    const guard = guards[index] || {};
+    if (guard.code || guard.reference || guard.table) return line;
+    const protectWholeTitle = guard.title && sourceTitle && normalizeForTitle(line) === normalizeForTitle(sourceTitle);
+    if (protectWholeTitle) return line;
+    return replaceOutsideProtectedRanges(line, segment => {
+      let out = segment;
+      out = replaceTracked(out, /([.!?。！？])(?=[가-힣])/gu, (_match, mark) => `${mark} `, 'missing_sentence_space', counts);
+      out = replaceTracked(out, /(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
+        return PARTICLE_AFTER_PAREN.test(right) ? match : `${left} ${right}`;
+      }, 'numeric_parenthesis_join', counts);
+      out = replaceTracked(
+        out,
+        /보여(?=(?:주(?=$|[가-힣])|(?:준|줄|줬|줘|줍|줌)(?=$|[^A-Za-z0-9_])))/gu,
+        () => '보여 ',
+        'show_auxiliary_spacing',
+        counts
+      );
+      out = replaceTracked(out, /(^|[^가-힣A-Za-z0-9_])한걸음(?=(?:에서|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)?(?:$|[^가-힣A-Za-z0-9_]))/gu, (_match, prefix) => `${prefix}한 걸음`, 'one_step_spacing', counts);
+      out = replaceTracked(out, /지속[ \t]*이용[ \t]*의도/gu, () => '지속 이용 의도', 'continued_use_intent_spacing', counts);
+      out = replaceTracked(out, /(^|[^가-힣A-Za-z0-9_])가치소비(?=(?:에서|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)?(?:$|[^가-힣A-Za-z0-9_]))/gu, (_match, prefix) => `${prefix}가치 소비`, 'value_consumption_spacing', counts);
+      const during = new RegExp(`(^|[^가-힣A-Za-z0-9_])(${DURING_NOUNS.join('|')})중(?=(?:은|는|이|가|을|를|에|에서|에도|에는|의|으로|로|부터|까지|인|이었|이다|$|[^가-힣]))`, 'gu');
+      out = replaceTracked(out, during, (_match, prefix, noun) => `${prefix}${noun} 중`, 'dependent_noun_jung_spacing', counts);
+      const hada = new RegExp(`(^|[^가-힣A-Za-z0-9_])(${HADA_NOUNS.join('|')})[ \\t]+하(?=(?:였|고|며|는|여|도록|기|자|다|려고|려|면|게|지))`, 'gu');
+      out = replaceTracked(out, hada, (_match, prefix, noun) => `${prefix}${noun}하`, 'noun_hada_spacing', counts);
+      return out;
+    });
+  });
+  return { text: repaired.join('\n'), changeCounts: counts };
+}
+
+function buildLineGuards(lines) {
+  const guards = [];
+  const plainTableLines = detectPlainTextTableLines(lines);
+  let code = false;
+  let reference = false;
+  const firstContent = lines.findIndex(line => String(line || '').trim());
+  const nextContentAfter = index => {
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      if (String(lines[cursor] || '').trim()) return { text: String(lines[cursor]).trim() };
+    }
+    return null;
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = String(lines[index] || '').trim();
+    const fence = /^(?:```|~~~)/u.test(text);
+    if (fence) code = !code;
+    if (APPENDIX_HEADING_RE.test(text)) reference = false;
+    if (REFERENCE_HEADING_RE.test(text)) reference = true;
+    const role = text ? layoutStructure.classifyLine(text, {
+      firstContent: index === firstContent,
+      next: nextContentAfter(index),
+      blankBefore: index === 0 || !String(lines[index - 1] || '').trim()
+    }) : 'blank';
+    const nextContent = nextContentAfter(index)?.text || '';
+    const brokenTitleFragment = role === 'title' && isBrokenProseBoundary(text, nextContent);
+    guards.push({
+      code,
+      reference,
+      role,
+      title: role === 'title',
+      table: role === 'table' || plainTableLines.has(index),
+      protected: code || reference || plainTableLines.has(index)
+        || ((!brokenTitleFragment) && ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote'].includes(role))
+    });
+  }
+  return guards;
+}
+
+/**
+ * 워드·PDF에서 복사한 표는 파이프나 탭 없이 `표 N. 제목` 다음에 셀마다
+ * 한 줄씩 놓이는 경우가 많다. 개별 셀을 산문으로 오인해 합치지 않도록,
+ * 표 캡션 다음의 선택적 빈 줄과 표 본문을 첫 문단 경계까지 보호한다.
+ */
+function detectPlainTextTableLines(lines) {
+  const protectedLines = new Set();
+  let inTable = false;
+  let seenBody = false;
+  let pendingBlank = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = String(lines[index] || '').trim();
+    if (!inTable && /^표\s*[0-9A-Za-z가-힣.-]+(?:\s|$)/u.test(text)) {
+      inTable = true;
+      seenBody = false;
+      pendingBlank = [];
+      protectedLines.add(index);
+      continue;
+    }
+    if (!inTable) continue;
+    if (!text) {
+      if (seenBody) {
+        inTable = false;
+        seenBody = false;
+        pendingBlank = [];
+        continue;
+      }
+      pendingBlank.push(index);
+      if (pendingBlank.length >= 2) {
+        inTable = false;
+        seenBody = false;
+        pendingBlank = [];
+      }
+      continue;
+    }
+    for (const blankIndex of pendingBlank) protectedLines.add(blankIndex);
+    pendingBlank = [];
+    protectedLines.add(index);
+    seenBody = true;
+  }
+  return protectedLines;
+}
+
+function isStandaloneStructureLine(value) {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  const role = layoutStructure.classifyLine(text);
+  if (['heading', 'label', 'label_inline', 'list', 'table', 'quote'].includes(role)) return true;
+  return /^(?:\(?\d{1,3}\)?[.)]\s+|[IVXLCDM]+ ?[.)]\s+|[①-⑳]\s*)/iu.test(text);
+}
+
+function replaceOutsideProtectedRanges(line, transform) {
+  const ranges = inlineProtectedRanges(line);
+  if (!ranges.length) return transform(line);
+  let output = '';
+  let cursor = 0;
+  for (const range of ranges) {
+    if (range.start > cursor) output += transform(line.slice(cursor, range.start));
+    output += line.slice(range.start, range.end);
+    cursor = range.end;
+  }
+  if (cursor < line.length) output += transform(line.slice(cursor));
+  return output;
+}
+
+function inlineProtectedRanges(line) {
+  const patterns = [
+    /https?:\/\/[^\s<>()]+/giu,
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu,
+    /`[^`\n]+`/gu,
+    /\[[^\]\n]+\]\([^\n)]+\)/gu,
+    /[「『〈《“‘][^」』〉》”’\n]{1,240}[」』〉》”’]/gu,
+    /"[^"\n]{1,240}"/gu,
+    /'[^'\n]{1,240}'/gu
+  ];
+  const ranges = [];
+  for (const pattern of patterns) {
+    for (const match of String(line || '').matchAll(pattern)) {
+      ranges.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+  const merged = [];
+  for (const range of ranges) {
+    const last = merged.at(-1);
+    if (!last || range.start > last.end) merged.push({ ...range });
+    else last.end = Math.max(last.end, range.end);
+  }
+  return merged;
+}
+
+function firstDocumentTitle(value) {
+  const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
+  const firstIndex = lines.findIndex(line => String(line || '').trim());
+  if (firstIndex < 0) return '';
+  const text = lines[firstIndex].trim();
+  const next = lines.slice(firstIndex + 1).map(line => String(line || '').trim()).find(Boolean);
+  const role = layoutStructure.classifyLine(text, {
+    firstContent: true,
+    next: next ? { text: next } : null,
+    blankBefore: true
+  });
+  return role === 'title' ? text : '';
+}
+
+function formattingContext(documentProfile) {
+  const profile = profileName(documentProfile);
+  const flags = new Set(documentProfile?.formatProfile?.flags || []);
+  return {
+    profile,
+    creative: profile === 'creative' || flags.has('creative_lines') || flags.has('line_sensitive')
+  };
+}
+
+function replaceTracked(text, pattern, replacement, code, counts) {
+  return String(text || '').replace(pattern, (...args) => {
+    const before = args[0];
+    const after = replacement(...args);
+    if (after !== before) addCount(counts, code);
+    return after;
+  });
+}
+
+function addCount(counts, code, amount = 1) {
+  counts[code] = (counts[code] || 0) + Number(amount || 0);
+}
+
+function mergeChangeCounts(...items) {
+  const merged = {};
+  for (const item of items) {
+    for (const [code, count] of Object.entries(item || {})) addCount(merged, code, count);
+  }
+  return merged;
+}
+
+function normalizeForTitle(value) {
+  return String(value || '').replace(/\s+/gu, '');
+}
+
+function emptyFormattingResult(text, reason) {
+  return {
+    version: 1,
+    text: String(text || ''),
+    applied: false,
+    changeCount: 0,
+    changeCodes: [],
+    changeCounts: {},
+    brokenLineBreakRepairCount: 0,
+    brokenParagraphBreakRepairCount: 0,
+    excessiveBlankLineRepairCount: 0,
+    contextualSpacingRepairCount: 0,
+    skipped: true,
+    reason,
+    profile: ''
+  };
+}
 
 function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile = null, mode = '' } = {}) {
   const profile = profileName(documentProfile);
@@ -323,6 +654,7 @@ module.exports = {
   ISSUE_DEFINITIONS,
   analyzeKoreanRefinement,
   applySafeDeterministicRepairs,
+  applySafeFormattingRepairs,
   buildSourceReviewWarnings,
   detectTextIssues,
   detectProfessionalDowngrade,

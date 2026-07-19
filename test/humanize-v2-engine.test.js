@@ -134,7 +134,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.6');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.7');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -157,6 +157,8 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.equal(out.engineMeta.semanticSectionCount, 1);
   const semanticCall = mock.calls.find(call => call.name === 'gpt_prod_semantic_judge');
   assert.match(String(semanticCall?.body?.instructions || ''), /1인칭 화자·관점/u);
+  assert.match(String(semanticCall?.body?.instructions || ''), /~자체보다.*~에서 나아가/u);
+  assert.match(String(semanticCall?.body?.instructions || ''), /행위 주체와 대상이 뒤바뀌/u);
   assert.equal(out.result.records[0].changedSentenceRatio, 1);
   assert.ok(out.result.records[0].charEditRatio > 0);
   const humanizeCall = mock.calls.find(call => call.name === 'gpt_prod_humanize_result');
@@ -184,6 +186,26 @@ test('polish는 의미 심사 뒤 새 문단을 만들지 않고 원문 문단 �
   assert.equal(out.qualityWarnings.some(item => item.code === 'paragraph_structure_changed'), false);
   assert.equal(out.result.structureLock.layoutRepair.paragraphs.policy, 'exact_polish');
   assert.equal(out.result.structureLock.layoutRepair.paragraphs.afterCount, 1);
+});
+
+test('최종 전달 전 문장 중간 줄바꿈과 문맥형 띄어쓰기를 공백만 바꿔 보정한다', { concurrency: false }, async t => {
+  const source = '윤리적 소비는 기업과 소비자의 관계를 함께 살피는 주제다. 소비자의 작은 선택은 생산 방식과 기업의 책임 의식을 \n\n변화시킬 수 있다는 사실을 보여주는 사례이다. 이는 가치소비와 지속이용의도를 함께 살펴야 하는 이유다.';
+  const humanized = '윤리적 소비는 기업과 소비자의 관계를 함께 살피는 주제다. 소비자의 작은 선택은 생산 방식과 기업의 책임 의식을 \n\n바꿀 수 있다는 사실을 보여주는 사례다. 이는 가치소비와 지속이용의도를 함께 살펴야 할 이유다.';
+  installEngineMock(t, {
+    humanize: body => {
+      const marker = String(body.input || '').match(/\[\[\[V2_BOUNDARY_\d{3}\]\]\]/u)?.[0] || '\n\n';
+      return humanized.replace('\n\n', marker);
+    }
+  });
+  const out = await engine.run({ text: source, mode: 'polish', allowPolish: true, uid: 'formatting-final-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
+  assert.match(out.result.outputText, /책임 의식을 바꿀 수/u);
+  assert.doesNotMatch(out.result.outputText, /의식을\s*\n\s*\n\s*바꿀/u);
+  assert.match(out.result.outputText, /보여 주는 사례/u);
+  assert.match(out.result.outputText, /가치 소비와 지속 이용 의도를/u);
+  assert.ok(out.engineMeta.finalFormattingRepairCount >= 4);
+  assert.equal(out.engineMeta.brokenParagraphBreakRepairCount, 1);
+  assert.ok(out.engineMeta.contextualSpacingRepairCount >= 3);
 });
 
 test('빈도 충돌은 국소 한국어 수리 후 의미 심사를 거치고 원문 알림과 분리한다', { concurrency: false }, async t => {

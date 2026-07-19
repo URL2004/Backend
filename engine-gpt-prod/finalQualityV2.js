@@ -118,8 +118,11 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   const voiceAudit = auditVoice(voiceProfile, outputText, {
     documentProfile: documentProfile || 'unknown',
     mode,
+    sourceText: source,
     layoutPolicy: structureAudit?.layoutRepair?.paragraphs?.policy || '',
-    layoutTargetCount: structureAudit?.layoutRepair?.paragraphs?.targetCount || 0
+    layoutTargetCount: structureAudit?.layoutRepair?.paragraphs?.targetCount || 0,
+    formattingParagraphRemovalCount: structureAudit?.layoutRepair?.formatting?.brokenParagraphBreakRepairCount || 0,
+    formattingSentenceSpaceRepairCount: structureAudit?.layoutRepair?.formatting?.missingSentenceSpaceRepairCount || 0
   });
   warnings.push(...voiceAudit.warnings);
   if (structureAudit?.lostLockedCount > 0) {

@@ -680,6 +680,7 @@ function buildArchiveObservability(job) {
   const layoutRepair = humanizeMeta.layoutRepair || humanizeMeta.structureLock?.layoutRepair || {};
   const paragraphRepair = layoutRepair.paragraphs || {};
   const paragraphReadability = paragraphRepair.readability || engineMeta.paragraphReadability || {};
+  const formattingRepair = layoutRepair.formatting || {};
   const dedupeAudit = humanizeMeta.dedupeAudit || {};
   const naturalnessShadow = result.naturalnessShadow || humanizeMeta.naturalnessShadow || {};
   const warningCodes = uniqueArchiveCodes([
@@ -771,6 +772,13 @@ function buildArchiveObservability(job) {
     koreanRefinementRetryAttemptCount: archiveFinite(engineMeta.koreanRefinementRetryAttemptCount),
     koreanRefinementRetryCount: archiveFinite(engineMeta.koreanRefinementRetryCount),
     koreanRefinementRetryApplied: engineMeta.koreanRefinementRetryApplied === true,
+    finalFormattingRepairCount: archiveFinite(engineMeta.finalFormattingRepairCount ?? formattingRepair.changeCount),
+    finalFormattingRepairCodes: uniqueStrictArchiveCodes(engineMeta.finalFormattingRepairCodes || formattingRepair.changeCodes),
+    brokenLineBreakRepairCount: archiveFinite(engineMeta.brokenLineBreakRepairCount ?? formattingRepair.brokenLineBreakRepairCount),
+    brokenParagraphBreakRepairCount: archiveFinite(engineMeta.brokenParagraphBreakRepairCount ?? formattingRepair.brokenParagraphBreakRepairCount),
+    excessiveBlankLineRepairCount: archiveFinite(engineMeta.excessiveBlankLineRepairCount ?? formattingRepair.excessiveBlankLineRepairCount),
+    missingSentenceSpaceRepairCount: archiveFinite(engineMeta.missingSentenceSpaceRepairCount ?? formattingRepair.missingSentenceSpaceRepairCount),
+    contextualSpacingRepairCount: archiveFinite(engineMeta.contextualSpacingRepairCount ?? formattingRepair.contextualSpacingRepairCount),
     sourceReviewWarningCodes: uniqueStrictArchiveCodes(engineMeta.sourceReviewWarningCodes),
     sourceReviewWarningCount: archiveFinite(engineMeta.sourceReviewWarningCount),
     chunkFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkFailureCodes),

@@ -26,7 +26,7 @@ const discourseAudit = require('./discourseAudit');
 const koreanRefinement = require('./koreanRefinement');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.6';
+const VERSION = 'gpt-prod-v2.4.7';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -290,6 +290,17 @@ async function runEngine({
   let koreanRefinementRetryAttemptCount = 0;
   let koreanRefinementRetryCount = 0;
   let koreanRefinementRetryApplied = false;
+  let finalFormattingRepair = {
+    version: 1,
+    applied: false,
+    changeCount: 0,
+    changeCodes: [],
+    brokenLineBreakRepairCount: 0,
+    brokenParagraphBreakRepairCount: 0,
+    excessiveBlankLineRepairCount: 0,
+    missingSentenceSpaceRepairCount: 0,
+    contextualSpacingRepairCount: 0
+  };
   const sourceReviewWarnings = v2Enabled
     ? koreanRefinement.buildSourceReviewWarnings(rawSource, documentProfile)
     : [];
@@ -634,6 +645,31 @@ async function runEngine({
     };
   }
 
+  // 의미 심사·동결 블록 재조립·문단 복원이 끝난 뒤에 공백만 바꾼다.
+  // 원문에 이미 있던 문장 중간 잘못된 줄바꿈도 이 단계에서 합친다.
+  // 논문명·인용·참고문헌·표·창작문 행갈이는 koreanRefinement 내부에서 보호한다.
+  if (v2Enabled) {
+    finalFormattingRepair = koreanRefinement.applySafeFormattingRepairs({
+      source: rawSource,
+      outputText,
+      documentProfile
+    });
+    if (finalFormattingRepair.applied) outputText = finalFormattingRepair.text;
+    layoutRepair.formatting = {
+      version: finalFormattingRepair.version || 1,
+      applied: finalFormattingRepair.applied === true,
+      changeCount: finalFormattingRepair.changeCount || 0,
+      changeCodes: finalFormattingRepair.changeCodes || [],
+      brokenLineBreakRepairCount: finalFormattingRepair.brokenLineBreakRepairCount || 0,
+      brokenParagraphBreakRepairCount: finalFormattingRepair.brokenParagraphBreakRepairCount || 0,
+      excessiveBlankLineRepairCount: finalFormattingRepair.excessiveBlankLineRepairCount || 0,
+      missingSentenceSpaceRepairCount: Number(finalFormattingRepair.changeCounts?.missing_sentence_space || 0),
+      contextualSpacingRepairCount: finalFormattingRepair.contextualSpacingRepairCount || 0,
+      skipped: finalFormattingRepair.skipped === true,
+      reason: finalFormattingRepair.reason || ''
+    };
+  }
+
   // 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 수리·동결 블록 재조립·레이아웃
   // 복원으로 실질 변화가 사라지면 아래 최종 깊이 게이트가 차단·무차감한다.
   if (v2Enabled && selectedMode === 'polish') {
@@ -918,6 +954,13 @@ async function runEngine({
     koreanRefinementRetryAttemptCount,
     koreanRefinementRetryCount,
     koreanRefinementRetryApplied,
+    finalFormattingRepairCount: Number(finalFormattingRepair.changeCount || 0),
+    finalFormattingRepairCodes: safeFailureCodeList(finalFormattingRepair.changeCodes),
+    brokenLineBreakRepairCount: Number(finalFormattingRepair.brokenLineBreakRepairCount || 0),
+    brokenParagraphBreakRepairCount: Number(finalFormattingRepair.brokenParagraphBreakRepairCount || 0),
+    excessiveBlankLineRepairCount: Number(finalFormattingRepair.excessiveBlankLineRepairCount || 0),
+    missingSentenceSpaceRepairCount: Number(finalFormattingRepair.changeCounts?.missing_sentence_space || 0),
+    contextualSpacingRepairCount: Number(finalFormattingRepair.contextualSpacingRepairCount || 0),
     sourceReviewWarningCodes: safeFailureCodeList(sourceReviewWarnings.map(item => item.code)),
     sourceReviewWarningCount: sourceReviewWarnings.length
   };

@@ -31,7 +31,7 @@ const resumeCoverage = require('./resumeCoverage');
 const experienceAudit = require('./experienceAudit');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.9';
+const VERSION = 'gpt-prod-v2.4.10';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -929,7 +929,7 @@ async function runEngine({
   }
 
   // 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 수리·동결 블록 재조립·레이아웃
-  // 복원으로 실질 변화가 사라지면 아래 최종 깊이 게이트가 차단·무차감한다.
+  // 복원으로 실질 변화가 사라지면 아래 최종 깊이 감사가 검토 필요 상태를 기록한다.
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(rawSource, outputText);
     polishPaddingReport = qualityV2.comparePolishEvaluativePadding(rawSource, outputText);

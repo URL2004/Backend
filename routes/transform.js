@@ -87,25 +87,6 @@ function effectConfirmationEnabled() {
     && isV248FeatureEnabled('effectConfirmation');
 }
 
-function billingProtectionEnabled() {
-  return humanizeV2Enabled()
-    && isV248FeatureEnabled('billingProtection');
-}
-
-function sourceBenefitFingerprint(text) {
-  const secret = String(process.env.OPENAI_SAFETY_SALT || '').trim();
-  if (!secret) return '';
-  const normalized = String(text || '')
-    .normalize('NFKC')
-    .replace(/\r\n?/gu, '\n')
-    .replace(/[ \t]+/gu, ' ')
-    .trim();
-  return crypto.createHmac('sha256', secret)
-    .update('humanize-source-benefit:v1\0', 'utf8')
-    .update(normalized, 'utf8')
-    .digest('hex');
-}
-
 function assessEffectExpectation(text, mode, basicStyle = '') {
   const source = String(text || '');
   const requestStrength = mode === 'formal' ? 'advanced' : (mode === 'polish' ? 'polish' : 'basic');
@@ -369,29 +350,10 @@ async function commitJobBilling(job, {
 }
 router.commitJobBilling = commitJobBilling;   // 회귀 테스트용
 
-const LOW_BENEFIT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const SOURCE_BENEFIT_COLLECTION = 'humanizeSourceBenefit';
-
 async function resolveBillingDisposition(job, out) {
-  const engineMeta = out?.engineMeta || out?.result?.engineMeta || {};
-  const depthShortfall = engineMeta.humanizationDepthApplicable === true
-    && engineMeta.humanizationDepthPass !== true;
-  const noBenefit = engineMeta.humanizationNoBenefitDelivered === true
-    || (engineMeta.humanizationDepthApplicable === true
-      && engineMeta.humanizationMinimumEffectPass !== true);
-  const fingerprint = job?.sourceFingerprint || sourceBenefitFingerprint(job?.text || '');
-  if (job && fingerprint) job.sourceFingerprint = fingerprint;
-  const previousLowBenefit = billingProtectionEnabled() && depthShortfall && job
-    ? await loadPreviousLowBenefit(job.uid, fingerprint)
-    : null;
   const disposition = classifyBillingDisposition({
     adminNoCharge: !job || job.devNoAuth === true || job.adminHumanizeLab === true,
-    plan: job?.plan,
-    protectionEnabled: billingProtectionEnabled(),
-    depthShortfall,
-    noBenefit,
-    previousLowBenefit: !!previousLowBenefit,
-    effectExpectation: job?.effectExpectation || 'normal'
+    plan: job?.plan
   });
   if (disposition !== 'charged') return disposition;
 
@@ -406,61 +368,15 @@ async function resolveBillingDisposition(job, out) {
 
 function classifyBillingDisposition({
   adminNoCharge = false,
-  plan = '',
-  protectionEnabled = false,
-  depthShortfall = false,
-  noBenefit = false,
-  previousLowBenefit = false,
-  effectExpectation = 'normal'
+  plan = ''
 } = {}) {
   if (adminNoCharge) return 'admin_no_charge';
   if (plan === 'unlimited') return 'plan_unlimited';
-  if (protectionEnabled && noBenefit) return 'waived_quality_shortfall';
-  if (protectionEnabled && depthShortfall && previousLowBenefit) return 'waived_repeat_low_benefit';
-  if (protectionEnabled && depthShortfall && effectExpectation === 'normal') return 'waived_quality_shortfall';
   return 'charged';
-}
-
-async function loadPreviousLowBenefit(uid, fingerprint, now = Date.now()) {
-  if (!db || !uid || !fingerprint) return null;
-  try {
-    const snap = await db.collection('users').doc(uid).collection(SOURCE_BENEFIT_COLLECTION).doc(fingerprint).get();
-    if (!snap.exists) return null;
-    const data = snap.data() || {};
-    const at = Number(data.lastDepthBelowMinimumAtMs || 0);
-    return data.depthBelowMinimum === true && at > 0 && now - at <= LOW_BENEFIT_WINDOW_MS ? data : null;
-  } catch (error) {
-    logger.warn('transform.low_benefit_lookup_failed', { uid, err: error });
-    return null;
-  }
-}
-
-function recordSourceBenefit(job, out, billingDisposition, now = Date.now()) {
-  const fingerprint = job?.sourceFingerprint || sourceBenefitFingerprint(job?.text || '');
-  if (!db || !job?.uid || !fingerprint || job.devNoAuth || job.adminHumanizeLab) return null;
-  job.sourceFingerprint = fingerprint;
-  const engineMeta = out?.engineMeta || out?.result?.engineMeta || {};
-  const depthBelowMinimum = engineMeta.humanizationDepthApplicable === true
-    && engineMeta.humanizationDepthPass !== true;
-  const doc = {
-    fingerprintVersion: 1,
-    depthBelowMinimum,
-    lastDepthBelowMinimumAtMs: depthBelowMinimum ? now : 0,
-    lastCompletedAtMs: now,
-    expiresAtMs: now + (8 * 24 * 60 * 60 * 1000),
-    lastJobId: String(job.id || '').slice(0, 80),
-    requestedMode: ['blog', 'formal', 'polish'].includes(job.mode) ? job.mode : 'formal',
-    engineVersion: String(engineMeta.engineVersion || '').slice(0, 80),
-    billingDisposition: String(billingDisposition || '').slice(0, 48)
-  };
-  return db.collection('users').doc(job.uid).collection(SOURCE_BENEFIT_COLLECTION).doc(fingerprint)
-    .set(doc, { merge: true })
-    .catch(error => logger.warn('transform.low_benefit_record_failed', { jobId: job.id, uid: job.uid, err: error }));
 }
 
 router.resolveBillingDisposition = resolveBillingDisposition;
 router.classifyBillingDisposition = classifyBillingDisposition;
-router.sourceBenefitFingerprint = sourceBenefitFingerprint;
 router.assessEffectExpectation = assessEffectExpectation;
 
 // 차단 후 사용자가 보존형 재처리를 선택할 때도 최초 작업의 결제 수단을 유지한다.
@@ -2581,7 +2497,6 @@ async function runHumanizeJob(job, text, evidence = '') {
       flowCohesion: out.result.flowCohesion || null
     };
     persistJob(job);
-    recordSourceBenefit(job, out, job.billingDisposition);
     if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
     logger.info('transform.humanize_done', {
       jobId: job.id,
@@ -2827,7 +2742,6 @@ router.post('/transform', async (req, res) => {
     effectExpectation: effectAssessment.effectExpectation,
     effectNoticeCode: effectAssessment.effectNoticeCode,
     effectNoticeAccepted,
-    sourceFingerprint: sourceBenefitFingerprint(text),
     memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',   // 경험·사례 메모 — blog·formal(재구성) 공통 적용(2026-06-15)
     autoCoach: req.body.autoCoach === true && mode === 'formal',   // 자동 코칭(재구성 전용) — 시작 시 입장 자동 도출·적용(2026-06-18)
     // v2는 한국어 전용이다. 한국어 본문에 lang=en만 붙여 영어 프롬프트로 우회하지 못하게 한다.

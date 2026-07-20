@@ -222,7 +222,6 @@ $r.Content -match 'lavAutoCoach'
 | `HUMANIZE_SECTION_RECOVERY_ENABLED` | v2.4.8 장문 섹션 회복. 미설정 시 활성화되며 비용·시간 초과 시 `0`으로 개별 복귀 |
 | `HUMANIZE_FINGERPRINT_AUDIT_ENABLED` | v2.4.8 신규 상투구·논리 방향 감사. 미설정 시 활성화되며 `0`으로 개별 복귀 가능 |
 | `HUMANIZE_EFFECT_CONFIRMATION_ENABLED` | 변화가 제한적인 입력의 작업 전 확인 강제. v2.4.8 프런트 배포 후 활성화하며 `0`으로 해제 가능 |
-| `HUMANIZE_BILLING_PROTECTION_ENABLED` | 정상 예상 입력의 depth 미달 및 7일 내 동일 문서 반복 저효과 무차감. 미설정 시 활성화 |
 | `OPENAI_SAFETY_SALT` | UID를 `safety_identifier`용 HMAC-SHA256으로 변환하는 비밀값. 운영 필수 |
 | `OPENAI_MODEL_FAST` | 기본 변환 모델. 예: `gpt-5.4-mini` |
 | `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 예: `gpt-5.4` |
@@ -252,22 +251,30 @@ $r.Content -match 'lavAutoCoach'
 
 ### v2.4.8 활성화 순서
 
-1. 위 네 플래그를 모두 `0`으로 둔 백엔드를 먼저 배포하고 `/healthz`에서 전부 `false`인지 확인한다.
+1. 위 세 플래그를 모두 `0`으로 둔 백엔드를 먼저 배포하고 `/healthz`에서 전부 `false`인지 확인한다.
 2. 관리자 실호출로 기존 v2.4.7 경로의 완료·차감·이용 기록을 확인한다.
 3. 프런트의 효과 제한 확인 UI와 `billingDisposition` 표시를 운영 배포한다.
-4. 섹션 회복·상투구 감사·과금 보호를 `1`로 켠 뒤 마지막으로 효과 확인 강제를 `1`로 켠다.
-5. `/healthz`의 네 값이 모두 `true`이고 `activeJobs: 0`인 시점부터 1시간·6시간·24시간·72시간 관측을 시작한다.
+4. 섹션 회복·상투구 감사를 `1`로 켠 뒤 마지막으로 효과 확인 강제를 `1`로 켠다.
+5. `/healthz`의 세 값이 모두 `true`이고 `activeJobs: 0`인 시점부터 1시간·6시간·24시간·72시간 관측을 시작한다.
 
-v2.4.8 활성화 커밋 이후 네 플래그는 미설정 시 `1`로 간주한다. Render 환경변수에 명시적으로 `0`을 넣으면 각 기능을 독립적으로 즉시 해제할 수 있다.
+v2.4.8 활성화 커밋 이후 세 플래그는 미설정 시 `1`로 간주한다. Render 환경변수에 명시적으로 `0`을 넣으면 각 기능을 독립적으로 즉시 해제할 수 있다.
 
-의미·구조 사고가 있으면 `HUMANIZE_ENGINE_V2_ENABLED=0`으로 전체 복귀한다. 비용·시간만 기준을 넘으면 `HUMANIZE_SECTION_RECOVERY_ENABLED=0`으로 섹션 회복만 끄고 상투구 감사와 과금 보호는 유지한다.
+의미·구조 사고가 있으면 `HUMANIZE_ENGINE_V2_ENABLED=0`으로 전체 복귀한다. 비용·시간만 기준을 넘으면 `HUMANIZE_SECTION_RECOVERY_ENABLED=0`으로 섹션 회복만 끄고 상투구 감사는 유지한다.
 
 ### v2.4.9 저효과 전달 정책
 
 - 기본·고급에서 모든 안전 재시도 뒤에도 원문과 같거나 최소 변화량에 못 미치면 `blocked` 대신 `done + needs_review`로 전달한다.
-- 이 경우 `humanizationNoBenefitDelivered=true`를 기록하고 효과 제한 사전 동의 여부와 관계없이 `waived_quality_shortfall`로 무차감한다.
+- 이 경우에도 결과가 `done`으로 전달됐으므로 일반 완료 작업과 동일하게 과금한다. `qualityStatus`, 변화량, 동일 문서 반복 여부는 과금 면제 사유로 사용하지 않는다.
 - polish 무변환과 빈 출력·refusal·프롬프트 유출·인코딩 손상·문장 절단은 결과를 만들지 못한 상태이므로 계속 안전 중단한다.
 - 사용자 화면에는 품질 경고를 실패나 미통과로 표시하지 않고 `완료 · 확인 권장`으로 안내한다. 관리자 품질 통계의 원인 코드는 유지한다.
+- 과거 기록의 `waived_quality_shortfall`, `waived_repeat_low_benefit` 값은 통계 호환을 위해 읽기만 유지하며 신규 작업에는 생성하지 않는다.
+
+### v2.4.10 완료 결과 과금 정책
+
+- `done` 결과는 `clean`, `needs_review`, 변화량 부족, 원문에 가까운 안전 복귀, 동일 문서 반복 여부와 관계없이 정상 과금한다.
+- 품질 측정값은 결과 경고와 운영 관측에만 사용하고 과금 면제 조건으로 사용하지 않는다.
+- `blocked`, `error`, `cancelled`처럼 결과가 전달되지 않은 작업만 무차감한다. 관리자 무과금과 무제한 플랜은 기존 정책을 유지한다.
+- `HUMANIZE_BILLING_PROTECTION_ENABLED`는 더 이상 읽지 않으며 원문 재결제 보호 지문도 새로 생성하거나 저장하지 않는다.
 
 ## 최근 정상 배포 예시
 

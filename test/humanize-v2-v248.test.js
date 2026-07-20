@@ -2,7 +2,6 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const sectionRecovery = require('../engine-gpt-prod/sectionRecovery');
 const humanizationDepth = require('../engine-gpt-prod/humanizationDepth');
 const fingerprintAudit = require('../engine-gpt-prod/fingerprintAudit');
@@ -41,8 +40,7 @@ test('v2.4.8 기능은 운영 릴리스에서 기본 활성화되고 환경변�
   const flags = [
     ['sectionRecovery', 'HUMANIZE_SECTION_RECOVERY_ENABLED'],
     ['fingerprintAudit', 'HUMANIZE_FINGERPRINT_AUDIT_ENABLED'],
-    ['effectConfirmation', 'HUMANIZE_EFFECT_CONFIRMATION_ENABLED'],
-    ['billingProtection', 'HUMANIZE_BILLING_PROTECTION_ENABLED']
+    ['effectConfirmation', 'HUMANIZE_EFFECT_CONFIRMATION_ENABLED']
   ];
   for (const [, name] of flags) {
     const previous = process.env[name];
@@ -261,13 +259,13 @@ test('경험 의역은 외부 후보로 만들지 않고 새 1인칭·시점·�
   assert.equal(futureCandidate.candidate, true);
 });
 
-test('과금 분기는 효과 제한 확인·품질 미달·동일 문서 재결제 보호를 구분한다', () => {
+test('완료 작업은 품질·변화량·반복 여부와 관계없이 과금한다', () => {
   const classify = transformRouter.classifyBillingDisposition;
   assert.equal(classify({ adminNoCharge: true }), 'admin_no_charge');
   assert.equal(classify({ plan: 'unlimited' }), 'plan_unlimited');
-  assert.equal(classify({ protectionEnabled: true, noBenefit: true, effectExpectation: 'limited' }), 'waived_quality_shortfall');
-  assert.equal(classify({ protectionEnabled: true, depthShortfall: true, effectExpectation: 'normal' }), 'waived_quality_shortfall');
-  assert.equal(classify({ protectionEnabled: true, depthShortfall: true, previousLowBenefit: true, effectExpectation: 'limited' }), 'waived_repeat_low_benefit');
+  assert.equal(classify({ protectionEnabled: true, noBenefit: true, effectExpectation: 'limited' }), 'charged');
+  assert.equal(classify({ protectionEnabled: true, depthShortfall: true, effectExpectation: 'normal' }), 'charged');
+  assert.equal(classify({ protectionEnabled: true, depthShortfall: true, previousLowBenefit: true, effectExpectation: 'limited' }), 'charged');
   assert.equal(classify({ protectionEnabled: true, depthShortfall: true, effectExpectation: 'limited' }), 'charged');
   assert.equal(classify({ protectionEnabled: false, depthShortfall: true, effectExpectation: 'normal' }), 'charged');
 });
@@ -313,17 +311,6 @@ test('주간 n-gram 보고서는 10문서·2배·순증 8 기준과 사람 승�
   assert.ok(candidate.delta >= 8);
   assert.equal(candidate.approvalStatus, 'candidate_requires_human_approval');
   assert.equal(candidate.runtimeDictionary, false);
-});
-
-test('원문 재결제 보호 지문은 NFKC·도메인 분리 HMAC이며 원문을 노출하지 않는다', { concurrency: false }, t => {
-  withEnv(t, 'OPENAI_SAFETY_SALT', 'v248-test-secret');
-  const first = transformRouter.sourceBenefitFingerprint('ＡＢＣ 연구  결과');
-  const second = transformRouter.sourceBenefitFingerprint('ABC 연구 결과');
-  const plain = crypto.createHmac('sha256', 'v248-test-secret').update('ABC 연구 결과').digest('hex');
-  assert.equal(first, second);
-  assert.match(first, /^[a-f0-9]{64}$/u);
-  assert.notEqual(first, plain);
-  assert.doesNotMatch(first, /연구/u);
 });
 
 test('/transform은 효과 제한 확인 플래그가 켜졌을 때 작업·과금 전에 409를 반환한다', { concurrency: false }, async t => {

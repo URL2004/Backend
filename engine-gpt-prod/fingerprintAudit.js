@@ -21,7 +21,13 @@ const GUARDED_FAMILIES = Object.freeze([
 
 const SHADOW_PATTERNS = Object.freeze([
   { code: 'in_the_process', pattern: /그\s*과정에서/gu },
-  { code: 'can_and', pattern: /수\s*있고/gu }
+  { code: 'can_and', pattern: /수\s*있고/gu },
+  {
+    code: 'experience_transition',
+    pattern: /(?:이런|이러한)\s+경험(?:은|이)?[^.!?。！？\n]{0,80}(?:이어졌|이어지|연결되)/gu
+  },
+  { code: 'review_together', pattern: /함께\s+(?:살펴봤|살펴보|살피|검토하)/gu },
+  { code: 'contribution_cliche', pattern: /보탬이\s+되(?:고자|도록|겠습니다|었다|었|는|길)/gu }
 ]);
 
 function isEnabled() {

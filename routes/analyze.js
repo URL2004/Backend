@@ -3617,6 +3617,7 @@ function compactHistoryEngineMeta(meta) {
     humanizationTargetChangedParagraphCount: Math.max(0, Number(meta.humanizationTargetChangedParagraphCount) || 0),
     humanizationTargetParagraphCoverage: Number.isFinite(Number(meta.humanizationTargetParagraphCoverage)) ? Number(meta.humanizationTargetParagraphCoverage) : null,
     humanizationDepthEscalationAttemptCount: Math.max(0, Number(meta.humanizationDepthEscalationAttemptCount) || 0),
+    humanizationNoEffectRetryAttemptCount: Math.max(0, Number(meta.humanizationNoEffectRetryAttemptCount) || 0),
     rhetoricalRemediationTargetCount: Math.max(0, Number(meta.rhetoricalRemediationTargetCount) || 0),
     rhetoricalRemediationAchievedCount: Math.max(0, Number(meta.rhetoricalRemediationAchievedCount) || 0),
     rhetoricalRemediationCoverage: Number.isFinite(Number(meta.rhetoricalRemediationCoverage)) ? Number(meta.rhetoricalRemediationCoverage) : null,
@@ -3625,6 +3626,9 @@ function compactHistoryEngineMeta(meta) {
     sectionRecoveryEscalationCount: Math.max(0, Number(meta.sectionRecoveryEscalationCount) || 0),
     fingerprintIntroducedCount: Math.max(0, Number(meta.fingerprintIntroducedCount) || 0),
     fingerprintRepairCount: Math.max(0, Number(meta.fingerprintRepairCount) || 0),
+    fingerprintShadowPositiveCodes: [...new Set((Array.isArray(meta.fingerprintShadowPositiveCodes) ? meta.fingerprintShadowPositiveCodes : [])
+      .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
+    fingerprintShadowPositiveCount: Math.max(0, Number(meta.fingerprintShadowPositiveCount) || 0),
     fingerprintIssueCodes: [...new Set((Array.isArray(meta.fingerprintIssueCodes) ? meta.fingerprintIssueCodes : [])
       .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
     endingStylePass: meta.endingStylePass === true,
@@ -3643,6 +3647,15 @@ function compactHistoryEngineMeta(meta) {
       .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
     koreanDeterministicRepairCount: Math.max(0, Number(meta.koreanDeterministicRepairCount) || 0),
     koreanRefinementRetryCount: Math.max(0, Number(meta.koreanRefinementRetryCount) || 0),
+    quoteIntegrityPass: meta.quoteIntegrityPass === true,
+    quoteCountChanged: meta.quoteCountChanged === true,
+    quoteContentChangedCount: Math.max(0, Number(meta.quoteContentChangedCount) || 0),
+    quoteIntegrityRestoreCount: Math.max(0, Number(meta.quoteIntegrityRestoreCount) || 0),
+    sourcePreflightChanged: meta.sourcePreflightChanged === true,
+    sourceArtifactRemovedCount: Math.max(0, Number(meta.sourceArtifactRemovedCount) || 0),
+    sourcePreflightNoticeCount: Math.max(0, Number(meta.sourcePreflightNoticeCount) || 0),
+    sourcePreflightIssueCodes: [...new Set((Array.isArray(meta.sourcePreflightIssueCodes) ? meta.sourcePreflightIssueCodes : [])
+      .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
     sourceReviewWarningCodes: [...new Set((Array.isArray(meta.sourceReviewWarningCodes) ? meta.sourceReviewWarningCodes : [])
       .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20)
   };

@@ -37,6 +37,45 @@ test('빈도 충돌과 어색한 초점 연결을 문맥 수리 대상으로 검
   assert.equal(audit.introducedIssueCount, 0);
 });
 
+test('변환 중 새로 생긴 인용 조사·이중 주제·어미·연어 비문을 문장 단위로 검출한다', () => {
+  const source = [
+    '저희는 “AI는 인간이 될 수 없다.”라는 입장을 주장합니다.',
+    '이번 활동을 하면서 나는 예술 작품을 새롭게 바라보았습니다.',
+    '실험 조건에 따라 성능에 어떤 차이가 생겼는지 확인했습니다.',
+    '가치에 동참하는 행동이며 소비가 확대될수록 영향도 커집니다.'
+  ].join(' ');
+  const output = [
+    '저희는 “AI는 인간이 될 수 없다.”는 입장을 주장합니다.',
+    '이번 활동을 하면서 나는 예술 작품은 새롭게 바라보았습니다.',
+    '실험 조건에 따라 성능에 어떤 차이가 저는지 확인했습니다.',
+    '가치에 함께하는 행동이며 소비가 넓어질수록 영향도 커집니다.'
+  ].join(' ');
+  const audit = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: output,
+    documentProfile: { profile: 'report_assignment' }
+  });
+  const codes = new Set(audit.issueCodes);
+  assert.ok(codes.has('quote_attribution_particle_mismatch'), JSON.stringify(audit));
+  assert.ok(codes.has('double_topic_chain'), JSON.stringify(audit));
+  assert.ok(codes.has('malformed_question_ending'), JSON.stringify(audit));
+  assert.ok(codes.has('value_participation_collocation'), JSON.stringify(audit));
+  assert.ok(codes.has('scope_expansion_collocation'), JSON.stringify(audit));
+  assert.ok(audit.introducedIssueCount >= 5);
+});
+
+test('정상적인 인용 연결·가치와 함께하는 표현·기준 이해는 격식 오류로 오탐하지 않는다', () => {
+  const text = '연구진은 “추가 검토가 필요하다.”는 입장을 밝혔습니다. 사회적 가치와 함께하는 활동이며 업무 기준을 이해했습니다.';
+  const audit = refinement.analyzeKoreanRefinement({
+    source: text,
+    outputText: text,
+    documentProfile: { profile: 'report_assignment' }
+  });
+  assert.equal(audit.issueCodes.includes('quote_attribution_particle_mismatch'), false);
+  assert.equal(audit.issueCodes.includes('value_participation_collocation'), false);
+  assert.equal(audit.issueCodes.includes('professional_register_downgrade'), false);
+});
+
 test('지원서의 전문 개념어가 구어체로 모두 내려간 경우 격식 하락을 기록한다', () => {
   const source = '발표 흐름을 설계하고 자료를 분석해 전달 역량을 키웠습니다. 피드백을 반영했고 학생들과 교류했으며 편의점에서 근무했습니다.';
   const output = '발표 흐름부터 짰고 자료를 함께 봐서 전달하는 힘을 키웠습니다. AI가 준 내용을 반영했고 학생들과 어울렸으며 다시 일한 편의점 아르바이트에서도 배웠습니다.';
@@ -48,6 +87,30 @@ test('지원서의 전문 개념어가 구어체로 모두 내려간 경우 격�
   assert.ok(audit.issueCodes.includes('professional_register_downgrade'), JSON.stringify(audit));
   assert.ok(audit.introducedIssueCount >= 1);
   assert.ok(audit.residualWarnings.some(item => item.code === 'korean_professional_register_downgrade'));
+});
+
+test('지원서의 개선·수행·숙지 표현과 학술 판단 부사의 격식·의미 약화를 잡는다', () => {
+  const source = [
+    '개선이 필요한 부분을 확인한 뒤 주어진 작업을 수행하기보다 원인을 먼저 분석했습니다.',
+    '검사 기준을 숙지하지 못했던 점을 보완했습니다.',
+    '사회가 약자를 어떻게 대하는지를 객관적으로 마주했습니다.'
+  ].join(' ');
+  const output = [
+    '손봐야 할 부분을 확인한 뒤 주어진 작업만 하기보다 원인을 먼저 분석했습니다.',
+    '검사 기준을 익히지 못했던 점을 보완했습니다.',
+    '사회가 약자를 어떻게 대하는지를 직접적으로 마주했습니다.'
+  ].join(' ');
+  const audit = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: output,
+    documentProfile: { profile: 'resume_application', confidence: 0.96 }
+  });
+  const issue = audit.issues.find(item => item.code === 'professional_register_downgrade');
+  assert.ok(issue, JSON.stringify(audit));
+  assert.deepEqual(
+    new Set(issue.details.alignedLosses.map(item => item.concept)),
+    new Set(['improvement_requirement', 'assigned_task_performance', 'standards_familiarity', 'objective_stance'])
+  );
 });
 
 test('연구개발 자소서의 전문용어 약화·연어 오류·자기평가 반복을 같이 검출한다', () => {

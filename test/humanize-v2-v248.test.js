@@ -136,6 +136,19 @@ test('상투구 감사는 같은 신규 계열 1회만 허용하고 일반 표�
   assert.ok(shadow.shadow.some(item => item.code === 'can_and' && item.delta === 1));
 });
 
+test('최근 결과의 반복 전환·검토·포부 문구는 원문 대비 순증만 shadow로 기록한다', () => {
+  const source = '실험 기록을 검토했다. 이 경험은 다음 업무의 기준이 되었다. 조직의 목표에 기여하겠다.';
+  const output = '기록을 함께 살펴봤다. 이러한 경험은 다음 업무로 이어졌고, 조직에 보탬이 되고자 한다.';
+  const report = fingerprintAudit.auditFingerprint(source, output);
+  assert.equal(report.pass, true);
+  assert.ok(report.shadow.some(item => item.code === 'experience_transition' && item.delta === 1));
+  assert.ok(report.shadow.some(item => item.code === 'review_together' && item.delta === 1));
+  assert.ok(report.shadow.some(item => item.code === 'contribution_cliche' && item.delta === 1));
+
+  const alreadyPresent = fingerprintAudit.auditFingerprint(output, output);
+  assert.ok(alreadyPresent.shadow.every(item => item.delta === 0));
+});
+
 test('부정·배제 관계를 인정·가산 관계로 바꾸면 한 번만 발생해도 수리 대상으로 잡는다', () => {
   const source = '이 연구는 새로운 도구 개발이 아니라 기존 자료의 문헌비판과 맥락화를 연구의 중심에 둔다.';
   const output = '이 연구는 새로운 도구 개발에 머무르지 않고 기존 자료의 문헌비판과 맥락화를 연구의 중심에 둔다.';

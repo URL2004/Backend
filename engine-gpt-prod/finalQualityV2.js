@@ -63,6 +63,7 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'speaker_injected',
   'speaker_removed',
   'quote_count_changed',
+  'quote_content_changed',
   'list_structure_changed',
   'heading_structure_changed',
   'paragraph_structure_changed',
@@ -584,6 +585,7 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
   const remediationLow = (humanizationDepthReport?.reasons || []).includes('rhetorical_remediation_low');
   const structuralLow = (humanizationDepthReport?.reasons || []).includes('structural_rewrite_coverage_low');
   const paragraphLow = (humanizationDepthReport?.reasons || []).includes('paragraph_rewrite_coverage_low');
+  const noEffectRecovery = phase === 'humanization_no_effect_retry';
   const untouchedParagraphs = (humanizationDepthReport?.metrics?.untouchedTargetParagraphIndices || [])
     .filter(Number.isInteger)
     .map(index => index + 1);
@@ -593,6 +595,9 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     'CURRENT는 보존 검사를 통과했거나 원문으로 안전 복귀한 후보이므로 CURRENT를 기준으로 작업한다. 문서 전체를 다시 쓰지 않는다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
     `${strengthLabel} 모드의 변화량은 서버가 결과에서 계산한다. 숫자를 맞추기 위한 새 설명이나 동의어 나열 대신 지정된 문장의 절 순서·주어 위치·연결·호흡을 다시 구성한다.`,
+    noEffectRecovery
+      ? '앞선 회복도 공백·구두점·동의어 수준에 머물렀다. 이미 조금 바뀐 한 문장만 다시 만지지 말고, 아직 그대로 남은 지정 문장 가운데 최소 두 곳을 골라 각각 절 배치나 문장 호흡을 실질적으로 다시 구성한다.'
+      : '',
     `수정 대상 문장 번호=${targetText}. 번호는 SOURCE와 CURRENT의 일반 문장 순서 기준이다.`,
     paragraphLow
       ? `현재 한쪽 문단에만 변화가 몰렸다. 아직 대상 문장이 실질적으로 바뀌지 않은 일반 산문 문단=${untouchedParagraphs.join(',') || '서버 표시 문단'}. 이 문단들을 빠뜨리지 말고 각 문단 안의 지정 문장을 고르게 재구성한다.`
@@ -751,6 +756,9 @@ async function retryKoreanRefinement({
     '과학·법률·게임이론 등 외부 사실의 옳고 그름을 추정해 수정하지 않는다. 원문에 없던 설명이나 예시도 추가하지 않는다.',
     '문제가 있는 문장과 같은 문단의 바로 인접한 문장만 문법상 꼭 필요할 때 함께 손본다. 나머지는 CURRENT를 그대로 둔다.',
     '원문의 장르와 전문성 하한을 지킨다. 자연스럽게 만든다는 이유로 전문 개념을 일상적인 말로 낮추지 않는다. 연구개발 문맥의 최적화·상관관계·원인 분석·재현성 검증·수치화·데이터 해석은 같은 주장 안에서 정확도를 유지한다.',
+    '자기소개서·업무 글의 개선 필요·업무 수행·기준 숙지 같은 격식 표현을 손보다·그냥 하다·익히다 같은 가벼운 말로 낮추지 않는다. 객관적으로와 직접적으로처럼 의미 기능이 다른 부사는 서로 바꾸지 않는다.',
+    '직접 인용 내부는 한 글자도 고치지 않는다. 인용 뒤 조사가 어색하면 인용 밖의 “라는 입장·이라고 설명” 같은 연결만 바로잡는다.',
+    '“나는 …은/는”처럼 주제를 겹치거나 “저는지”처럼 성립하지 않는 어미를 만들지 않는다. 가치에는 동참하고, 소비·수요·이용 범위는 확대되거나 늘어난다고 표현한다.',
     '데이터를 보고서나 논문에 “작성”한다고 쓰지 않는다. SOURCE가 데이터의 활용을 뜻하면 “반영”으로, 본인이 문서를 써서 낸 것이 분명하면 “보고서·논문 원고를 작성”으로 주어와 목적어를 바로잡는다. 피드백은 문맥에 맞게 주고받았다고 쓴다.',
     profile === 'resume_application'
       ? '역량을 길렀다·능력을 키웠다·노력했다 계열이 반복되면 실제 행동과 SOURCE에 있는 결과를 직접 서술한다. 새 성과나 수치를 만들어 반복을 피하지 않는다.'
@@ -796,6 +804,11 @@ function refinementIssueInstruction(item) {
     return '데이터 활용이면 보고서·논문에 반영했다고 쓰고, SOURCE에서 문서 집필이 분명한 경우만 원고를 작성했다고 쓴다.';
   }
   if (item?.code === 'feedback_exchange_collocation') return '피드백을 반복했다고 쓰지 말고 주고받은 과정을 서술한다.';
+  if (item?.code === 'quote_attribution_particle_mismatch') return '인용 내부는 그대로 두고 바깥 연결만 “라는 입장·이라고 설명”처럼 문맥에 맞게 고친다.';
+  if (item?.code === 'double_topic_chain') return '원문의 화자를 지우지 말고 겹친 주제 조사 하나만 자연스러운 주어·목적어 관계로 고친다.';
+  if (item?.code === 'malformed_question_ending') return '원문과 앞뒤 문맥을 확인해 “달라졌는지·생겼는지·나타났는지”처럼 실제 서술어에 맞는 간접의문 어미로 복원한다.';
+  if (item?.code === 'value_participation_collocation') return '가치·취지에는 동참한다고 쓰되 원문의 행동과 평가 강도는 바꾸지 않는다.';
+  if (item?.code === 'scope_expansion_collocation') return '소비·수요·이용의 양이나 범위가 확대·증가·늘어나는 원문 의미 중 맞는 표현만 선택한다.';
   if (item?.code === 'self_evaluation_repetition') return '반복된 자기평가 결론을 SOURCE에 있는 행동·결과 서술로 옮기되 새 성과를 만들지 않는다.';
   if (item?.code === 'overloaded_research_action_chain') return '원인 분석·조건 조정·반복 실험·재현성 검증의 순서는 유지하고, 필요하면 두 문장으로 나눈다.';
   return '';

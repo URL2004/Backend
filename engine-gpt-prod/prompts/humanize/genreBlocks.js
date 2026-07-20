@@ -66,6 +66,7 @@ function essayApplicationBlock(register, profile, requestStrength = '') {
   if (profile === 'resume_application') {
     lines.splice(3, 0,
       '지원서의 전문성 하한을 지킨다. 설계·구성·분석·역량·피드백·교류·근무처럼 직무 의미가 있는 말을 단순히 짰다·봤다·힘·준·어울렸다·일했다 같은 가벼운 말로 낮추지 않는다.',
+      '개선이 필요한 부분·주어진 업무를 수행하다·검사 기준을 숙지하다 같은 업무 표현도 손봐야 할 부분·그냥 하다·익히다처럼 가볍게 바꾸지 않는다. 자연스러움은 격식을 낮추는 것이 아니라 문장 구조와 호흡을 조정해 만든다.',
       '딱딱함은 문장 구조와 호흡으로 줄이되, 성과의 근거·본인의 행동·직무 연결은 명확한 업무 언어로 남긴다.');
     if (requestStrength === 'advanced') {
       lines.splice(5, 0,

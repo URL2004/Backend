@@ -238,6 +238,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationTargetDepthMet: false,
         humanizationDeliveryDepthBand: 'below_minimum',
         humanizationDepthRetryCount: 1,
+        humanizationNoEffectRetryAttemptCount: 1,
         humanizationDepthRetryApplied: false,
         humanizationDepthRetryTargetSentenceCount: 3,
         sectionRecoveryEnabled: true,
@@ -249,6 +250,8 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         fingerprintIssueCodes: ['engine_phrase_fingerprint'],
         fingerprintIntroducedCount: 2,
         fingerprintRepairCount: 1,
+        fingerprintShadowPositiveCodes: ['review_together', '사용자 원문 조각'],
+        fingerprintShadowPositiveCount: 2,
         endingStyleAuditVersion: 1,
         endingStylePass: false,
         endingStyleIssueCount: 1,
@@ -275,6 +278,17 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         koreanRefinementIssueCodes: ['frequency_quantifier_conflict'],
         koreanDeterministicRepairCount: 1,
         koreanRefinementRetryCount: 1,
+        quoteIntegrityAuditVersion: 1,
+        quoteIntegrityPass: true,
+        quoteCountChanged: false,
+        quoteContentChangedCount: 0,
+        quoteIntegrityRestoreCount: 1,
+        finalQuoteIntegrityRestoreCount: 1,
+        sourcePreflightVersion: 1,
+        sourcePreflightChanged: true,
+        sourceArtifactRemovedCount: 2,
+        sourcePreflightNoticeCount: 1,
+        sourcePreflightIssueCodes: ['source_ui_artifact', '사용자 원문 조각'],
         sourceReviewWarningCodes: ['deep_understanding_collocation'],
         sourceReviewWarningCount: 1,
         lineBoundaryPolicy: 'structural'
@@ -349,11 +363,19 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.deepEqual(first.koreanRefinementIssueCodes, ['frequency_quantifier_conflict']);
   assert.deepEqual(first.sourceReviewWarningCodes, ['deep_understanding_collocation']);
   assert.equal(first.humanizationDepthRetryCount, 1);
+  assert.equal(first.humanizationNoEffectRetryAttemptCount, 1);
   assert.equal(first.humanizationDepthRetryTargetSentenceCount, 3);
   assert.equal(first.sectionRecoveryAttemptCount, 3);
   assert.equal(first.sectionRecoveryAppliedCount, 1);
   assert.equal(first.fingerprintPass, false);
   assert.deepEqual(first.fingerprintIssueCodes, ['engine_phrase_fingerprint']);
+  assert.deepEqual(first.fingerprintShadowPositiveCodes, ['review_together']);
+  assert.equal(first.fingerprintShadowPositiveCount, 2);
+  assert.equal(first.quoteIntegrityPass, true);
+  assert.equal(first.quoteIntegrityRestoreCount, 1);
+  assert.equal(first.sourcePreflightChanged, true);
+  assert.equal(first.sourceArtifactRemovedCount, 2);
+  assert.deepEqual(first.sourcePreflightIssueCodes, ['source_ui_artifact']);
   assert.equal(first.endingStylePass, false);
   assert.equal(first.resumeCoverageRatio, 0.75);
   assert.equal(first.billingDisposition, 'waived_quality_shortfall');
@@ -457,11 +479,16 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     substantiveCarryoverCount: 3, substantiveCarryoverRatio: 0.18,
     substantiveCarryoverEligibleSentenceCount: 17, substantiveCarryoverMaximum: 0.25,
     sectionRecoveryAttemptCount: 4, sectionRecoveryAppliedCount: 2, sectionRecoveryEscalationCount: 1,
+    humanizationNoEffectRetryAttemptCount: 1,
     fingerprintIntroducedCount: 1, fingerprintRepairCount: 1, fingerprintIssueCodes: [],
+    fingerprintShadowPositiveCodes: ['review_together'], fingerprintShadowPositiveCount: 1,
     endingStylePass: true, endingStyleIssueCount: 0, resumeCoverageApplicable: true,
     resumeCoveragePass: true, resumeClaimCount: 4, resumeCoveredClaimCount: 4, resumeCoverageRatio: 1,
     billingDisposition: 'waived_quality_shortfall', effectExpectation: 'normal',
     koreanRefinementIssueCodes: [], sourceReviewWarningCodes: ['deep_understanding_collocation'],
+    quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
+    sourcePreflightChanged: true, sourceArtifactRemovedCount: 1,
+    sourcePreflightIssueCodes: ['source_ui_artifact'],
     prompt: '저장 금지', source: '저장 금지', protectedTerms: ['저장 금지']
   });
   assert.equal(compact.requestedDocumentProfile, 'resume_application');
@@ -472,6 +499,12 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.substantiveCarryoverRatio, 0.18);
   assert.equal(compact.sectionRecoveryAppliedCount, 2);
   assert.equal(compact.fingerprintRepairCount, 1);
+  assert.deepEqual(compact.fingerprintShadowPositiveCodes, ['review_together']);
+  assert.equal(compact.humanizationNoEffectRetryAttemptCount, 1);
+  assert.equal(compact.quoteIntegrityPass, true);
+  assert.equal(compact.quoteIntegrityRestoreCount, 1);
+  assert.equal(compact.sourcePreflightChanged, true);
+  assert.deepEqual(compact.sourcePreflightIssueCodes, ['source_ui_artifact']);
   assert.equal(compact.endingStylePass, true);
   assert.equal(compact.resumeCoverageRatio, 1);
   assert.equal(compact.billingDisposition, 'waived_quality_shortfall');

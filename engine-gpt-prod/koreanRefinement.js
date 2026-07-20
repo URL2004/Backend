@@ -48,6 +48,36 @@ const ISSUE_DEFINITIONS = Object.freeze({
     deterministicSafe: false,
     message: '“어떻게 …지도 중심에 두고”의 초점 연결이 어색해요.'
   },
+  quote_attribution_particle_mismatch: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '직접 인용 뒤의 조사와 입장·주장 표현이 자연스럽게 연결되지 않아요.'
+  },
+  double_topic_chain: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '한 절에 “나는 …은/는”처럼 주제가 겹쳐 주어와 서술어 관계가 어색해요.'
+  },
+  malformed_question_ending: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '의문·간접의문 어미가 잘못 결합된 것으로 보이는 표현이 있어요.'
+  },
+  value_participation_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '가치·취지에 “함께하다”가 직접 연결돼 연어가 어색해요.'
+  },
+  scope_expansion_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '소비·수요·이용 범위를 “넓어지다”로 표현해 결합이 어색해요.'
+  },
   professional_register_downgrade: {
     weight: 3,
     repairable: true,
@@ -463,6 +493,11 @@ function detectTextIssues(value, { profile = 'unknown', includeSourceNotation = 
   pushPatternIssue(issues, text, 'practice_class_spacing', /실습수업/gu);
   pushSentenceIssue(issues, text, 'frequency_quantifier_conflict', sentence => /(?:그때마다|매번)[^.!?。！？\n]{0,90}(?:자주|종종|가끔)/u.test(sentence));
   pushSentenceIssue(issues, text, 'awkward_focus_attachment', sentence => /어떻게[^.!?。！？\n]{0,70}(?:지도|지를)\s*중심에\s*두고/u.test(sentence));
+  pushSentenceIssue(issues, text, 'quote_attribution_particle_mismatch', hasQuoteAttributionParticleMismatch);
+  pushSentenceIssue(issues, text, 'double_topic_chain', hasDoubleTopicChain);
+  pushPatternIssue(issues, text, 'malformed_question_ending', /저는지/gu);
+  pushSentenceIssue(issues, text, 'value_participation_collocation', hasValueParticipationCollocation);
+  pushSentenceIssue(issues, text, 'scope_expansion_collocation', hasScopeExpansionCollocation);
   pushSentenceIssue(issues, text, 'data_document_collocation', hasDataDocumentCollocation);
   pushSentenceIssue(issues, text, 'feedback_exchange_collocation', sentence => /피드백(?:을|를)?\s*(?:여러\s*차례\s*)?반복(?:하|했|해|하며|해서|하고)/u.test(sentence));
   pushSelfEvaluationRepetition(issues, text);
@@ -567,6 +602,30 @@ function detectProfessionalDowngrade(source, outputText, profile) {
 }
 
 const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
+  {
+    concept: 'improvement_requirement',
+    source: /(?:개선|보완)(?:이|가)?\s*(?:필요(?:하|한|했|했던)|해야\s*할)/u,
+    acceptable: /(?:개선|보완)(?:이|가)?\s*(?:필요(?:하|한|했|했던)|해야\s*할)|(?:개선|보완)할\s*(?:부분|사항|지점)/u,
+    preferred: ['개선이 필요한 부분', '보완할 사항']
+  },
+  {
+    concept: 'assigned_task_performance',
+    source: /(?:주어진|담당한|요구된)[^.!?。！？\n]{0,24}(?:작업|업무|과제)(?:만)?(?:을|를)?\s*(?:수행|이행|완수)/u,
+    acceptable: /(?:주어진|담당한|요구된)[^.!?。！？\n]{0,24}(?:작업|업무|과제)(?:만)?(?:을|를)?\s*(?:수행|이행|완수|처리)/u,
+    preferred: ['주어진 작업을 수행', '담당 업무를 이행']
+  },
+  {
+    concept: 'standards_familiarity',
+    source: /(?:검사|평가|업무|안전|품질)[^.!?。！？\n]{0,12}기준(?:을|를)?\s*(?:숙지|준수|파악|정확히\s*이해)/u,
+    acceptable: /(?:검사|평가|업무|안전|품질)[^.!?。！？\n]{0,12}기준(?:을|를)?\s*(?:숙지|준수|파악|정확히\s*이해)/u,
+    preferred: ['검사 기준을 숙지', '품질 기준을 정확히 이해']
+  },
+  {
+    concept: 'objective_stance',
+    source: /객관적(?:으로|인\s*(?:관점|시선|태도|분석))/u,
+    acceptable: /객관적(?:으로|인\s*(?:관점|시선|태도|분석))/u,
+    preferred: ['객관적으로', '객관적인 관점에서']
+  },
   {
     concept: 'process_optimization',
     source: /(?:공정\s*조건(?:을|를)?\s*최적화|공정\s*최적화|최적\s*조건(?:을|를)?\s*도출)/u,
@@ -675,6 +734,25 @@ function hasDataDocumentCollocation(sentence) {
   const value = String(sentence || '');
   if (/(?:보고서|논문)(?:의\s*)?(?:원고|본문|초안)(?:을|를)?[^.!?。！？\n]{0,18}작성/u.test(value)) return false;
   return /(?:데이터|측정값|실험값|분석\s*결과)(?:은|는|을|를)?[^.!?。！？\n]{0,75}(?:보고서|논문)에\s*(?:직접\s*)?작성/u.test(value);
+}
+
+function hasQuoteAttributionParticleMismatch(sentence) {
+  return /[”"](?:은|는)\s+(?:입장|견해|의견|결론)(?:을|를)?\s+(?:주장|강조)(?:하|했|해|합|했습|했다)/u
+    .test(String(sentence || ''));
+}
+
+function hasDoubleTopicChain(sentence) {
+  const value = String(sentence || '');
+  if (/(?:하면서|하며|통해|후|계기로|과정에서)[^.!?。！？\n]{0,20}(?:나는|저는|우리는|저희는)\s+[^.!?。！？\n]{1,28}(?:은|는)\s/u.test(value)) return true;
+  return /^(?:나는|저는|우리는|저희는)\s+(?:이|그|해당|이번|예술|연구|활동|작품|문제)[^.!?。！？\n]{0,18}(?:은|는)\s/u.test(value);
+}
+
+function hasValueParticipationCollocation(sentence) {
+  return /(?:가치|취지|뜻)에\s*(?:함께\s*하|함께하)/u.test(String(sentence || ''));
+}
+
+function hasScopeExpansionCollocation(sentence) {
+  return /(?:소비|수요|이용|사용)(?:가|는|이)\s*(?:더\s*)?(?:넓어지|넓어질|넓어진)/u.test(String(sentence || ''));
 }
 
 function pushSelfEvaluationRepetition(issues, text) {

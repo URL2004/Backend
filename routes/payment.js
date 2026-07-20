@@ -1638,9 +1638,76 @@ router.post('/admin/direct-refund', async (req, res) => {
   }
 });
 
-const REFUND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const REFUND_POLICY_VERSION = '2026-07-20';
+const REFUND_WINDOW_DAYS = 7;
+const REFUND_WINDOW_MS = REFUND_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+const UNLIMITED_REFUND_SETTLEMENT_USES = 50;
 // 무료 보너스(회원가입 10 + 추천 20×N)는 결제 크레딧보다 먼저 소진된다고 가정.
 // → 지갑에 남은 크레딧은 모두 결제분으로 간주하고 주문 크레딧 수만큼만 cap.
+
+function refundPaidAtMs(order, kind) {
+  if (!order) return 0;
+  return kind === 'subscription'
+    ? timestampMs(order.approvedAt || order.cycleStartedAt || order.requestedAt)
+    : timestampMs(order.createdAt || order.approvedAt || order.requestedAt);
+}
+
+function refundWindowState(order, kind, nowMs = Date.now()) {
+  const paidAtMs = refundPaidAtMs(order, kind);
+  if (!paidAtMs) return { eligible: false, paidAtMs: 0, reason: 'PAYMENT_DATE_MISSING' };
+  const elapsedMs = Math.max(0, Number(nowMs) - paidAtMs);
+  return {
+    eligible: elapsedMs <= REFUND_WINDOW_MS,
+    paidAtMs,
+    elapsedMs,
+    reason: elapsedMs <= REFUND_WINDOW_MS ? null : 'REFUND_WINDOW_EXPIRED'
+  };
+}
+
+function calculateCreditPolicyRefund({ orderAmount, purchasedCredits, currentCredits }) {
+  const amount = Math.max(0, Math.floor(Number(orderAmount) || 0));
+  const purchased = Math.max(0, Math.floor(Number(purchasedCredits) || 0));
+  const balance = Math.max(0, Math.floor(Number(currentCredits) || 0));
+  const refundableCredits = Math.min(balance, purchased);
+  const usedCredits = Math.max(0, purchased - refundableCredits);
+  const refundAmount = purchased > 0
+    ? Math.min(amount, Math.floor(amount * refundableCredits / purchased))
+    : 0;
+  return { refundAmount, refundableCredits, usedCredits, purchasedCredits: purchased };
+}
+
+function calculateSubscriptionPolicyRefund({ orderAmount, tier, coupon }) {
+  const amount = Math.max(0, Math.floor(Number(orderAmount) || 0));
+  const grantedValue = Number(coupon && coupon.granted);
+  const remainingValue = Number(coupon && coupon.remaining);
+  const granted = Number.isFinite(grantedValue) ? Math.floor(grantedValue) : 0;
+  const remaining = Number.isFinite(remainingValue) ? Math.floor(remainingValue) : -1;
+  const recordedUsed = Math.max(0, Math.floor(Number(coupon && coupon.used) || 0));
+  const settlementUses = tier === 'unlimited' || granted <= 0
+    ? UNLIMITED_REFUND_SETTLEMENT_USES
+    : granted;
+  const derivedUsed = granted > 0 && remaining >= 0 ? Math.max(0, granted - remaining) : 0;
+  const usedCount = Math.min(settlementUses, Math.max(recordedUsed, derivedUsed));
+  const refundableUses = Math.max(0, settlementUses - usedCount);
+  const refundAmount = settlementUses > 0
+    ? Math.min(amount, Math.floor(amount * refundableUses / settlementUses))
+    : 0;
+  return { refundAmount, usedCount, refundableUses, settlementUses };
+}
+
+function currentSubscriptionRefundContext(user, order, paidAtMs) {
+  const subscription = user && user.subscription;
+  const coupon = user && user.coupon;
+  const cycleStartedAtMs = timestampMs(subscription && subscription.cycleStartedAt);
+  const sameCycle = !!(
+    subscription && coupon &&
+    subscription.tier === order.tier &&
+    coupon.tier === order.tier &&
+    cycleStartedAtMs &&
+    Math.abs(cycleStartedAtMs - paidAtMs) < 60 * 1000
+  );
+  return { sameCycle, subscription, coupon, cycleStartedAtMs };
+}
 
 // 환불 요청 (사용자용) — kind: 'order' (기본, 크레딧 일회성) | 'subscription' (정기결제)
 router.post('/request-refund', async (req, res) => {
@@ -1667,42 +1734,69 @@ router.post('/request-refund', async (req, res) => {
     if (order.status === 'refunded') return res.status(400).json({ error: '이미 환불 완료된 주문입니다.' });
     if (order.status !== 'paid') return res.status(400).json({ error: '환불할 수 없는 주문 상태입니다.' });
 
-    // 정기결제 환불 자격: 결제일 7일 이내 + 이번 사이클 쿠폰 미사용
+    const windowState = refundWindowState(order, kind);
+    if (!windowState.eligible) {
+      const message = windowState.reason === 'PAYMENT_DATE_MISSING'
+        ? '결제일을 확인할 수 없어 온라인 환불을 요청할 수 없습니다. 고객센터로 문의해주세요.'
+        : `결제일로부터 ${REFUND_WINDOW_DAYS}일이 지나 일반 환불을 요청할 수 없습니다. 중복 결제나 서비스 오류는 고객센터로 문의해주세요.`;
+      return res.status(400).json({ error: message, code: windowState.reason });
+    }
+
+    const userSnap = await db.collection('users').doc(uid).get();
+    const user = userSnap.exists ? userSnap.data() : {};
+    let policySnapshot;
+
+    // 정기결제 환불 자격: 결제일 7일 이내 + 이번 결제주기의 사용분 비례 공제
     if (kind === 'subscription') {
-      const approvedMs = order.approvedAt?.toMillis ? order.approvedAt.toMillis()
-        : (order.requestedAt?.toMillis ? order.requestedAt.toMillis() : 0);
-      if (!approvedMs || Date.now() - approvedMs > REFUND_WINDOW_MS) {
-        return res.status(400).json({ error: '결제일로부터 7일이 지나 환불할 수 없습니다.' });
-      }
-      // 사용자 doc에서 현재 사이클 쿠폰 사용 여부 확인
-      const userSnap = await db.collection('users').doc(uid).get();
-      const coupon = userSnap.exists ? userSnap.data().coupon : null;
-      const sub = userSnap.exists ? userSnap.data().subscription : null;
-      const subCycleMs = sub?.cycleStartedAt?.toMillis ? sub.cycleStartedAt.toMillis() : 0;
-      // 환불하려는 결제가 "현재 사이클"에 해당하는 경우에만 미사용 검증
-      if (subCycleMs && Math.abs(subCycleMs - approvedMs) < 60 * 1000) {
-        const used = coupon?.used || 0;
-        if (used > 0) {
-          return res.status(400).json({ error: '이번 사이클 쿠폰을 이미 사용해 환불할 수 없습니다.' });
-        }
-      } else {
+      const context = currentSubscriptionRefundContext(user, order, windowState.paidAtMs);
+      if (!context.sameCycle) {
         // 과거 사이클 결제는 환불 불가 (해당 사이클 사용 여부를 더 이상 추적할 수 없음)
-        return res.status(400).json({ error: '과거 사이클의 정기결제는 환불할 수 없습니다.' });
+        return res.status(400).json({
+          error: '현재 결제주기의 구독만 온라인 환불을 요청할 수 있습니다. 고객센터로 문의해주세요.',
+          code: 'SUBSCRIPTION_CYCLE_MISMATCH'
+        });
       }
+      const calculation = calculateSubscriptionPolicyRefund({
+        orderAmount: order.amount,
+        tier: order.tier,
+        coupon: context.coupon
+      });
+      if (calculation.refundAmount <= 0) {
+        return res.status(400).json({
+          error: `이번 결제주기의 정산 기준 ${calculation.settlementUses}회를 모두 사용해 일반 환불 가능 금액이 없습니다. 서비스 오류는 고객센터로 문의해주세요.`,
+          code: 'NO_REFUNDABLE_SUBSCRIPTION_AMOUNT'
+        });
+      }
+      policySnapshot = {
+        requestedRefundAmount: calculation.refundAmount,
+        refundUsedCount: calculation.usedCount,
+        refundSettlementUses: calculation.settlementUses
+      };
     } else {
-      // 크레딧 환불: 잔액이 0이면 신청 차단
-      const userSnap = await db.collection('users').doc(uid).get();
-      const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
-      const refundableCredits = Math.min(currentCredits, parseInt(order.safeCredits) || 0);
-      if (refundableCredits <= 0) {
-        return res.status(400).json({ error: '이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다.' });
+      const calculation = calculateCreditPolicyRefund({
+        orderAmount: order.amount,
+        purchasedCredits: order.safeCredits,
+        currentCredits: user.credits
+      });
+      if (calculation.refundAmount <= 0 || calculation.refundableCredits <= 0) {
+        return res.status(400).json({
+          error: '구매한 크레딧을 모두 사용해 일반 환불 가능 금액이 없습니다. 서비스 오류는 고객센터로 문의해주세요.',
+          code: 'NO_REFUNDABLE_CREDITS'
+        });
       }
+      policySnapshot = {
+        requestedRefundAmount: calculation.refundAmount,
+        requestedRefundCredits: calculation.refundableCredits,
+        refundUsedCredits: calculation.usedCredits
+      };
     }
 
     await orderRef.update({
       status: 'refund_requested',
       cancelReason: cancelReason.trim(),
       kind,
+      refundPolicyVersion: REFUND_POLICY_VERSION,
+      ...policySnapshot,
       refundRequestedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
@@ -1713,7 +1807,12 @@ router.post('/request-refund', async (req, res) => {
       reasonLength: cancelReason.trim().length
     });
     discord.refundRequest({ uid, amount: order.amount, credits: order.safeCredits, reason: cancelReason.trim(), name: order.customerEmail });
-    res.json({ ok: true, message: '환불 요청이 접수되었습니다.' });
+    res.json({
+      ok: true,
+      message: '환불 요청이 접수되었습니다.',
+      estimatedRefundAmount: policySnapshot.requestedRefundAmount,
+      refundPolicyVersion: REFUND_POLICY_VERSION
+    });
   } catch (err) {
     logger.error('refund.request_failed', { uid, orderId, kind, err });
     res.status(500).json({ error: '서버 에러 발생' });
@@ -1752,11 +1851,30 @@ router.post('/approve-refund', async (req, res) => {
     const tossUrl = `https://api.tosspayments.com/v1/payments/${paymentKey}/cancel`;
 
     if (kind === 'subscription') {
-      // 정기결제: 전액 취소
+      // 정기결제: 승인 시점의 실제 사용량으로 한 번 더 계산해 전액 또는 부분 취소한다.
+      const userSnap = await userRef.get();
+      const user = userSnap.exists ? userSnap.data() : {};
+      const paidAtMs = refundPaidAtMs(order, kind);
+      const context = currentSubscriptionRefundContext(user, order, paidAtMs);
+      if (!context.sameCycle) {
+        return res.status(400).json({ error: '현재 결제주기와 일치하지 않아 자동 환불할 수 없습니다. 직접 환불 기능을 사용해주세요.' });
+      }
+      const calculation = calculateSubscriptionPolicyRefund({
+        orderAmount: order.amount,
+        tier: order.tier,
+        coupon: context.coupon
+      });
+      if (calculation.refundAmount <= 0) {
+        return res.status(400).json({ error: '승인 전 추가 사용으로 환불 가능 금액이 남지 않았습니다.' });
+      }
+      const orderAmount = Math.max(0, Math.floor(Number(order.amount) || 0));
+      const isFullRefund = calculation.refundAmount >= orderAmount;
+      const cancelBody = { cancelReason: order.cancelReason || '고객 요청 환불' };
+      if (!isFullRefund) cancelBody.cancelAmount = calculation.refundAmount;
       const tossRes = await fetch(tossUrl, {
         method: 'POST',
         headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cancelReason: order.cancelReason || '고객 요청 환불' })
+        body: JSON.stringify(cancelBody)
       });
       const tossResult = await tossRes.json();
       if (!tossRes.ok) {
@@ -1768,7 +1886,11 @@ router.post('/approve-refund', async (req, res) => {
 
       await db.runTransaction(async (t) => {
         t.update(orderRef, {
-          status: 'refunded',
+          status: isFullRefund ? 'refunded' : 'partially_refunded',
+          refundAmount: calculation.refundAmount,
+          refundedAmount: calculation.refundAmount,
+          refundUsedCount: calculation.usedCount,
+          refundSettlementUses: calculation.settlementUses,
           refundedAt: admin.firestore.FieldValue.serverTimestamp(),
           refundedBy: adminUid
         });
@@ -1777,16 +1899,33 @@ router.post('/approve-refund', async (req, res) => {
           'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
           'plan': 'free',
           'coupon.remaining': 0,
-          'coupon.used': 0
+          'coupon.used': calculation.usedCount
         });
         const histRef = userRef.collection('couponHistory').doc();
         t.set(histRef, {
           type: 'refund', tier: order.tier, amount: 0, remaining: 0,
-          orderId, createdAt: admin.firestore.FieldValue.serverTimestamp()
+          orderId,
+          used: calculation.usedCount,
+          refundAmount: calculation.refundAmount,
+          settlementUses: calculation.settlementUses,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
       });
-      logger.info('refund.subscription_approved', { orderId, uid: order.uid, adminUid, tier: order.tier });
-      return res.json({ ok: true, message: '환불이 완료되었습니다.' });
+      logger.info('refund.subscription_approved', {
+        orderId,
+        uid: order.uid,
+        adminUid,
+        tier: order.tier,
+        refundAmount: calculation.refundAmount,
+        usedCount: calculation.usedCount,
+        settlementUses: calculation.settlementUses
+      });
+      return res.json({
+        ok: true,
+        message: '환불이 완료되었습니다.',
+        refundAmount: calculation.refundAmount,
+        partiallyRefunded: !isFullRefund
+      });
     }
 
     // 크레딧 부분환불: 토스 호출 전에 트랜잭션으로 선차감 → 토스 → 확정/보상
@@ -1860,8 +1999,10 @@ router.post('/approve-refund', async (req, res) => {
     await db.runTransaction(async (transaction) => {
       const userSnap = await transaction.get(userRef);
       const remainingCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
+      const fullyRefunded = refundAmount >= orderAmount;
       transaction.update(orderRef, {
-        status: 'refunded',
+        status: fullyRefunded ? 'refunded' : 'partially_refunded',
+        refundedAmount: refundAmount,
         refundedAt: admin.firestore.FieldValue.serverTimestamp(),
         refundedBy: adminUid
       });
@@ -1883,7 +2024,12 @@ router.post('/approve-refund', async (req, res) => {
       refundableCredits,
       refundAmount
     });
-    res.json({ ok: true, message: '환불이 완료되었습니다.' });
+    res.json({
+      ok: true,
+      message: '환불이 완료되었습니다.',
+      refundAmount,
+      partiallyRefunded: refundAmount < orderAmount
+    });
   } catch (err) {
     logger.error('refund.approve_failed', { orderId, kind, adminUid, err });
     res.status(500).json({ error: '서버 에러 발생' });
@@ -1998,5 +2144,16 @@ router.post('/apply-referral', async (req, res) => {
 
 router.serializeAdminJobDoc = serializeAdminJobDoc;   // 축약 관측 계약 테스트용
 router.buildHumanizeQualityReport = buildHumanizeQualityReport;
+router.refundPolicy = {
+  REFUND_POLICY_VERSION,
+  REFUND_WINDOW_DAYS,
+  REFUND_WINDOW_MS,
+  UNLIMITED_REFUND_SETTLEMENT_USES,
+  refundPaidAtMs,
+  refundWindowState,
+  calculateCreditPolicyRefund,
+  calculateSubscriptionPolicyRefund,
+  currentSubscriptionRefundContext
+};
 
 module.exports = router;

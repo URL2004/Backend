@@ -2443,9 +2443,6 @@ async function runHumanizeJob(job, text, evidence = '') {
     const finalText = fb.hasFrozen ? freeze.reassembleAcademic(fb, out.result.outputText) : out.result.outputText;
     const v2QualityStatus = out.qualityStatus || out.result.qualityStatus || 'clean';
     const v2QualityWarnings = out.qualityWarnings || out.result.qualityWarnings || [];
-    if (v2Enabled && v2QualityStatus === 'needs_review') {
-      job.note = (job.note ? job.note + ' ' : '') + '자동 품질 점검에서 확인할 항목이 있어요. 경고 내용을 보고 원문과 대조해 주세요.';
-    }
     if (out.engineMeta && typeof out.engineMeta === 'object') {
       out.engineMeta.billingDisposition = job.billingDisposition;
       out.engineMeta.effectExpectation = job.effectExpectation || 'normal';

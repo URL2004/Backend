@@ -98,6 +98,41 @@ test('transform 완료 과금은 쿠폰과 크레딧을 같은 멱등 job 키로
   assert.deepEqual(calls[3], { type: 'credit_precheck', args: ['credit-token', 10] });
 });
 
+test('저효과·품질 경고가 있는 완료 결과도 정상 과금한다', { concurrency: false }, async t => {
+  const originals = {
+    retryAsync: analyze.retryAsync,
+    commitCreditDeduct: analyze.commitCreditDeduct
+  };
+  t.after(() => Object.assign(analyze, originals));
+
+  analyze.retryAsync = async fn => fn();
+  const calls = [];
+  analyze.commitCreditDeduct = async (...args) => calls.push(args);
+  const job = {
+    id: 'quality-warning-charged-1', uid: 'user-quality', mode: 'blog',
+    billingMode: 'credit', plan: 'free', needed: 18, text: '다'.repeat(900),
+    deducted: false, effectExpectation: 'normal'
+  };
+  const out = {
+    qualityStatus: 'needs_review',
+    engineMeta: {
+      humanizationDepthApplicable: true,
+      humanizationDepthPass: false,
+      humanizationMinimumEffectPass: false,
+      humanizationNoBenefitDelivered: true
+    }
+  };
+
+  const disposition = await transform.resolveBillingDisposition(job, out);
+  assert.equal(disposition, 'charged');
+  assert.equal(job.deducted, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], [
+    'user-quality', 18, 'humanize', 'job_quality-warning-charged-1',
+    { mode: 'blog', textLength: 900 }
+  ]);
+});
+
 test('v2 운영 상태는 GPT만 정상으로 판정하고 다른 provider는 배포 실패 상태다', () => {
   assert.deepEqual(evaluateHumanizeRuntime({ humanizeEngineV2: true, activeProvider: 'gpt' }), {
     ok: true,

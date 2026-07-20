@@ -15,7 +15,11 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       substantiveCarryoverRatio: 0.22, substantiveCarryoverMaximum: 0.3,
       structuralChangedSentenceRatio: 0.42, rhetoricalRemediationCoverage: 1,
       billingDisposition: 'charged', sectionRecoveryAttemptCount: 2,
-      sectionRecoveryAppliedCount: 1, processingDurationMs: 120000,
+      sectionRecoveryAppliedCount: 1, sectionRecoveryRejectedAttemptCount: 1,
+      sectionRecoveryRejectionCodes: ['not_better'], sectionRecoveryMiniAppliedCount: 1,
+      semanticRelationShiftCount: 1, semanticRelationShiftFamilies: ['proof_goal_weakened'],
+      targetRegister: 'professional', formalRegisterResidualCount: 1,
+      processingDurationMs: 120000,
       humanizationNoEffectRetryAttemptCount: 1,
       fingerprintShadowPositiveCodes: ['review_together'], fingerprintShadowPositiveCount: 1,
       quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
@@ -61,7 +65,10 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.summary.noBenefitDeliveredCount, 1);
   assert.equal(report.summary.carryoverOverLimitCount, 1);
   assert.equal(report.summary.sectionRecoveryAppliedCount, 1);
+  assert.equal(report.summary.sectionRecoveryRejectedDocumentCount, 1);
   assert.equal(report.summary.fingerprintIssueCount, 1);
+  assert.equal(report.summary.semanticRelationShiftDocumentCount, 1);
+  assert.equal(report.summary.formalRegisterResidualDocumentCount, 1);
   assert.equal(report.summary.noEffectSecondRecoveryCount, 1);
   assert.equal(report.summary.fingerprintShadowPositiveDocumentCount, 1);
   assert.equal(report.summary.quoteIntegrityIssueCount, 1);
@@ -74,6 +81,9 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.deepEqual(report.sourceReviewWarningCounts, [{ code: 'reflection_formula', count: 2 }]);
   assert.deepEqual(report.sourcePreflightIssueCounts, [{ code: 'source_ui_artifact', count: 1 }]);
   assert.deepEqual(report.fingerprintShadowPositiveCounts, [{ code: 'review_together', count: 1 }]);
+  assert.deepEqual(report.semanticRelationShiftCounts, [{ code: 'proof_goal_weakened', count: 1 }]);
+  assert.deepEqual(report.sectionRecoveryRejectionCounts, [{ code: 'not_better', count: 1 }]);
+  assert.equal(report.recent[0].targetRegister, 'professional');
   assert.equal(report.metrics.substantiveEditRatio.median, 0.24);
   assert.equal(Object.hasOwn(report.recent[0], 'inputText'), false);
   assert.equal(Object.hasOwn(report.recent[0], 'outputText'), false);

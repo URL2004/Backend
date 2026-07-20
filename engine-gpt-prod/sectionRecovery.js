@@ -83,7 +83,12 @@ async function recoverSections({
     escalationAttemptCount: 0,
     concurrency: RECOVERY_CONCURRENCY,
     sectionIndices: selected.map(item => item.index),
-    appliedSectionIndices: []
+    appliedSectionIndices: [],
+    rejectedAttemptCount: 0,
+    rejectionCodes: [],
+    rejectionCodeCounts: {},
+    miniAppliedCount: 0,
+    escalationAppliedCount: 0
   };
   if (!selected.length || typeof retrySection !== 'function') return { metrics, usages: [], selected };
 
@@ -111,9 +116,12 @@ async function recoverSections({
 
 async function safeRetry(retrySection, entry, tier) {
   try {
-    return await retrySection({ ...entry, tier });
+    return { ...(await retrySection({ ...entry, tier })), recoveryTier: tier };
   } catch (error) {
-    return { error: String(error?.code || error?.message || error).slice(0, 120) };
+    return {
+      error: String(error?.code || error?.message || error).slice(0, 120),
+      recoveryTier: tier
+    };
   }
 }
 
@@ -121,20 +129,72 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
   const currentOutput = String(chunks?.[entry.index]?.outputText ?? entry.output ?? '').trim();
   const candidate = String(attempt?.outputText || '').trim();
   const currentReport = humanizationDepth.evaluateHumanizationDepth(entry.source, currentOutput, entry.plan);
-  if (!candidate || candidate === currentOutput) return { ...entry, output: currentOutput, report: currentReport };
+  if (attempt?.error) {
+    recordRejections(metrics, ['model_error']);
+    return { ...entry, output: currentOutput, report: currentReport, rejectionCode: 'model_error' };
+  }
+  if (!candidate) {
+    recordRejections(metrics, ['empty_candidate']);
+    return { ...entry, output: currentOutput, report: currentReport, rejectionCode: 'empty_candidate' };
+  }
+  if (candidate === currentOutput) {
+    recordRejections(metrics, [attempt?.safeChangeFound === false ? 'no_safe_change' : 'candidate_unchanged']);
+    return {
+      ...entry,
+      output: currentOutput,
+      report: currentReport,
+      rejectionCode: attempt?.safeChangeFound === false ? 'no_safe_change' : 'candidate_unchanged'
+    };
+  }
   const candidateReport = humanizationDepth.evaluateHumanizationDepth(entry.source, candidate, entry.plan);
-  const safe = typeof validateCandidate === 'function'
-    ? validateCandidate({ entry, currentOutput, candidate, currentReport, candidateReport, attempt }) === true
+  const validation = typeof validateCandidate === 'function'
+    ? validateCandidate({ entry, currentOutput, candidate, currentReport, candidateReport, attempt })
     : true;
+  const safe = validation === true || validation?.pass === true;
   const better = candidateReport.pass === true
     || humanizationDepth.isBetterHumanizationCandidate(currentReport, candidateReport);
   if (safe && better && chunks?.[entry.index]) {
     chunks[entry.index].outputText = candidate;
     metrics.applied += 1;
+    if (attempt?.recoveryTier === 'escalation') metrics.escalationAppliedCount += 1;
+    else metrics.miniAppliedCount += 1;
     if (!metrics.appliedSectionIndices.includes(entry.index)) metrics.appliedSectionIndices.push(entry.index);
     return { ...entry, output: candidate, report: candidateReport, applied: true };
   }
-  return { ...entry, output: currentOutput, report: currentReport };
+  const rejectionCodes = !safe
+    ? normalizeRejectionCodes(validation?.codes || validation?.reasons || ['safety_audit_failed'])
+    : ['not_better'];
+  recordRejections(metrics, rejectionCodes);
+  return {
+    ...entry,
+    output: currentOutput,
+    report: currentReport,
+    rejectionCode: rejectionCodes[0] || 'safety_audit_failed'
+  };
+}
+
+function normalizeRejectionCodes(values) {
+  const allowed = new Set([
+    'empty_candidate', 'candidate_unchanged', 'no_safe_change', 'model_error', 'not_better',
+    'edit_range_exceeded', 'length_range_failed', 'number_changed', 'semantic_shift',
+    'structure_loss', 'quote_loss', 'pov_shift', 'protected_term_loss', 'voice_shift',
+    'safety_audit_failed'
+  ]);
+  const codes = [...new Set((Array.isArray(values) ? values : [values])
+    .map(value => String(value || '').trim())
+    .filter(value => allowed.has(value)))];
+  return codes.length ? codes : ['safety_audit_failed'];
+}
+
+function recordRejections(metrics, codes) {
+  const safeCodes = normalizeRejectionCodes(codes);
+  metrics.rejectedAttemptCount = Number(metrics.rejectedAttemptCount || 0) + 1;
+  metrics.rejectionCodeCounts = metrics.rejectionCodeCounts || {};
+  metrics.rejectionCodes = Array.isArray(metrics.rejectionCodes) ? metrics.rejectionCodes : [];
+  for (const safeCode of safeCodes) {
+    metrics.rejectionCodeCounts[safeCode] = Number(metrics.rejectionCodeCounts[safeCode] || 0) + 1;
+    if (!metrics.rejectionCodes.includes(safeCode)) metrics.rejectionCodes.push(safeCode);
+  }
 }
 
 function recoveryPriority(report) {

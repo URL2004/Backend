@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = 1;
+const VERSION = 2;
 
 const REMOVABLE_LINE_RULES = Object.freeze([
   {
@@ -12,6 +12,12 @@ const REMOVABLE_LINE_RULES = Object.freeze([
     code: 'source_instruction_artifact',
     pattern: /^(?:[([]|（)?\s*(?:이미\s*작성하신\s*내용에\s*이어\s*)?(?:내용을\s*)?(?:추가|입력|작성)(?:해\s*주세요|하세요|하십시오)\s*(?:[)\]]|）)?$/u,
     message: '본문이 아닌 작성 지시 문구를 변환 대상에서 제외했어요.'
+  },
+  {
+    code: 'source_rewrite_request_artifact',
+    boundaryOnly: true,
+    pattern: /^(?:(?:이런|이\s*|위|아래|앞의|해당)\s*)?(?:내용|글|문장)(?:을|를|으로)?\s*(?:(?:AI|인공지능)\s*(?:티|느낌)(?:가|이)?\s*(?:안\s*)?(?:나게|나도록)\s*)?(?:인간처럼|사람이\s*쓴\s*것처럼|자연스럽게)?\s*(?:다시\s*)?(?:써\s*줘|써\s*주세요|작성해\s*줘|작성해\s*주세요|바꿔\s*줘|바꿔\s*주세요|다듬어\s*줘|다듬어\s*주세요|고쳐\s*줘|고쳐\s*주세요|휴머나이징해\s*줘|휴머나이징해\s*주세요)[.!?。！？~]*$/iu,
+    message: '본문 끝에 함께 붙은 재작성 요청 문구를 변환 대상에서 제외했어요.'
   },
   {
     code: 'source_markdown_artifact',
@@ -45,7 +51,11 @@ function auditAndSanitizeSource(value) {
       inReference = false;
     }
 
-    const removable = text && REMOVABLE_LINE_RULES.find(rule => rule.pattern.test(text));
+    const removable = text && REMOVABLE_LINE_RULES.find(rule => (
+      (!rule.boundaryOnly || isBoundaryContentLine(lines, index))
+      && !isQuotedInstructionLine(text)
+      && rule.pattern.test(text)
+    ));
     if (removable) {
       removals.push(issue(removable.code, index + 1, 'removed', removable.message));
       continue;
@@ -96,6 +106,21 @@ function auditAndSanitizeSource(value) {
     issues,
     warnings: buildWarnings([...removals, ...notices])
   };
+}
+
+function isBoundaryContentLine(lines, index) {
+  const contentIndexes = (lines || [])
+    .map((line, lineIndex) => String(line || '').trim() ? lineIndex : -1)
+    .filter(lineIndex => lineIndex >= 0);
+  if (!contentIndexes.length) return false;
+  const position = contentIndexes.indexOf(index);
+  return position >= 0 && (position <= 1 || position >= contentIndexes.length - 2);
+}
+
+function isQuotedInstructionLine(value) {
+  const text = String(value || '').trim();
+  return /^(?:>|[“"'‘「『《〈])/u.test(text)
+    || /[”"'’」』》〉]\s*$/u.test(text);
 }
 
 function hasUnbalancedMarkdown(value) {

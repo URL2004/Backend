@@ -826,6 +826,14 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'scope_expansion_collocation') return '소비·수요·이용의 양이나 범위가 확대·증가·늘어나는 원문 의미 중 맞는 표현만 선택한다.';
   if (item?.code === 'self_evaluation_repetition') return '반복된 자기평가 결론을 SOURCE에 있는 행동·결과 서술로 옮기되 새 성과를 만들지 않는다.';
   if (item?.code === 'overloaded_research_action_chain') return '원인 분석·조건 조정·반복 실험·재현성 검증의 순서는 유지하고, 필요하면 두 문장으로 나눈다.';
+  if (item?.code === 'formal_register_residual') {
+    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다.';
+  }
+  if (item?.code === 'purpose_modifier_collocation') return '정책·제도가 지향하는 목적이면 “~을 만들기 위한 정책·제도”처럼 목적 관계를 분명히 한다.';
+  if (item?.code === 'metacognitive_predicate_stack') return 'SOURCE의 생각·고민 범위를 유지하면서 “고민할 수 있다고 생각했다” 또는 “더 깊이 고민하게 되었다” 중 실제 의미에 맞는 한 구조만 쓴다.';
+  if (item?.code === 'dialogue_give_collocation') return '말은 건넬 수 있지만 대화는 나누는 상호행위다. SOURCE의 참여 주체와 방향을 유지해 고친다.';
+  if (item?.code === 'sampling_subject_mismatch') return 'SOURCE에서 연구자가 표집한 대상이라면 대상을 목적어로 두고 연구자 생략 주어의 능동문 또는 적절한 피동문으로 고친다.';
+  if (item?.code === 'tool_personification') return '도구의 기능은 “연결한다·제공한다·표시한다”처럼 중립적으로 쓰고 SOURCE의 기능 범위를 넘기지 않는다.';
   return '';
 }
 
@@ -841,13 +849,20 @@ async function retryFingerprintAudit({
   const issues = (fingerprintAudit?.violations || []).slice(0, 8);
   if (!issues.length) return { outputText: currentOutput, safeChangeFound: false, notes: [], usage: null, model: '' };
   const profile = String(documentProfile?.profile || documentProfile || 'unknown');
-  const issueLines = issues.map(item => item.code === 'contrast_relation_shift'
-    ? `- contrast_relation_shift: SOURCE의 부정·배제 관계를 인정·가산 관계로 바꾸지 말고 문장 ${item.sentenceOrdinals?.join(',') || '해당 위치'}의 논리 방향을 복원한다.`
-    : `- engine_phrase_fingerprint/${item.family}: CURRENT에 새로 반복 주입된 상투구를 문서당 1회 이하로 줄인다.`);
+  const issueLines = issues.map(item => {
+    if (item.code === 'contrast_relation_shift') {
+      return `- contrast_relation_shift: SOURCE의 부정·배제 관계를 인정·가산 관계로 바꾸지 말고 문장 ${item.sentenceOrdinals?.join(',') || '해당 위치'}의 논리 방향을 복원한다.`;
+    }
+    if (item.code === 'semantic_relation_shift') {
+      return `- semantic_relation_shift/${item.family}: 문장 ${item.sentenceOrdinals?.join(',') || '해당 위치'}에서 SOURCE의 목적·근거·대조·가능성·행위 방향과 강도를 정확히 복원한다.`;
+    }
+    return `- engine_phrase_fingerprint/${item.family}: CURRENT에 새로 반복 주입된 상투구를 문서당 1회 이하로 줄인다.`;
+  });
   const system = [
     '너는 엔진 상투구와 논리 방향만 국소 수리하는 한국어 편집기다.',
     'SOURCE는 의미와 논리 관계 확인용이고 CURRENT가 편집 대상이다. 표시된 문제 문장과 바로 인접한 문장 외에는 바꾸지 않는다.',
-    'SOURCE의 주장, 부정·배제·대조·인정 관계, 수치, 기관명, 인용, 화자, 문단·제목·목록 순서를 그대로 보존한다.',
+    'SOURCE의 주장, 목적, 근거 틀, 부정·배제·대조·인정·가능성 관계, 행위 방향과 강도, 수치, 기관명, 인용, 화자, 문단·제목·목록 순서를 그대로 보존한다.',
+    '증명을 확인으로, 재발견을 되살리기로, 적극적 태도를 바로·직접으로, 연구를 통해 확인한 내용을 근거 없는 단정으로 바꾸지 않는다. SOURCE에 없던 즉시성도 제거한다.',
     '새 주장·예시·평가·경험·결론을 만들지 않고, 상투구를 다른 상투구로 치환하지 않는다.',
     ['academic_paper', 'report_assignment'].includes(profile)
       ? '학술·보고서의 개념어와 평서문 격식을 유지한다. 구어체·명령형·도구 의인화를 새로 넣지 않는다.'

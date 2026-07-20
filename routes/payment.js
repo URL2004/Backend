@@ -909,6 +909,16 @@ function serializeAdminJobDoc(docSnap) {
     .map(item => String(item || '').trim().toLowerCase())
     .filter(item => /^[a-z][a-z0-9_.:-]{1,79}$/u.test(item)))]
     .slice(0, 30);
+  const safeCodeCountMap = (value) => {
+    const out = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+    for (const [rawCode, rawCount] of Object.entries(value).slice(0, 30)) {
+      const [code] = safeCodes([rawCode]);
+      const count = Math.max(0, Math.trunc(Number(rawCount) || 0));
+      if (code && count > 0) out[code] = count;
+    }
+    return out;
+  };
   return {
     id: j.id || docSnap.id,
     uid: j.uid || '',
@@ -943,6 +953,9 @@ function serializeAdminJobDoc(docSnap) {
     requestedDocumentProfile: j.requestedDocumentProfile || '',
     profileOverrideApplied: j.profileOverrideApplied === true,
     profileOverrideIgnoredReason: j.profileOverrideIgnoredReason || '',
+    tonePolicy: j.tonePolicy || '',
+    targetRegister: j.targetRegister || '',
+    targetRegisterSource: j.targetRegisterSource || '',
     semanticJudgeRan: j.semanticJudgeRan === true,
     humanizationDepthApplicable: j.humanizationDepthApplicable === true,
     humanizationDepthPass: typeof j.humanizationDepthPass === 'boolean' ? j.humanizationDepthPass : null,
@@ -960,6 +973,9 @@ function serializeAdminJobDoc(docSnap) {
     humanizationTargetCoverage: finiteOrNull(j.humanizationTargetCoverage),
     structuralChangedSentenceCount: finiteOrNull(j.structuralChangedSentenceCount),
     structuralChangedSentenceRatio: finiteOrNull(j.structuralChangedSentenceRatio),
+    materiallyRecastSentenceCount: finiteOrNull(j.materiallyRecastSentenceCount),
+    effectiveStructuralChangedSentenceCount: finiteOrNull(j.effectiveStructuralChangedSentenceCount),
+    clauseLevelStructuralAlternative: j.clauseLevelStructuralAlternative === true,
     rhetoricalRemediationTargetCount: finiteOrNull(j.rhetoricalRemediationTargetCount),
     rhetoricalRemediationAchievedCount: finiteOrNull(j.rhetoricalRemediationAchievedCount),
     rhetoricalRemediationCoverage: finiteOrNull(j.rhetoricalRemediationCoverage),
@@ -967,9 +983,16 @@ function serializeAdminJobDoc(docSnap) {
     sectionRecoveryAttemptCount: finiteOrNull(j.sectionRecoveryAttemptCount),
     sectionRecoveryAppliedCount: finiteOrNull(j.sectionRecoveryAppliedCount),
     sectionRecoveryEscalationCount: finiteOrNull(j.sectionRecoveryEscalationCount),
+    sectionRecoveryRejectedAttemptCount: finiteOrNull(j.sectionRecoveryRejectedAttemptCount),
+    sectionRecoveryRejectionCodes: safeCodes(j.sectionRecoveryRejectionCodes),
+    sectionRecoveryRejectionCodeCounts: safeCodeCountMap(j.sectionRecoveryRejectionCodeCounts),
+    sectionRecoveryMiniAppliedCount: finiteOrNull(j.sectionRecoveryMiniAppliedCount),
+    sectionRecoveryEscalationAppliedCount: finiteOrNull(j.sectionRecoveryEscalationAppliedCount),
     fingerprintPass: typeof j.fingerprintPass === 'boolean' ? j.fingerprintPass : null,
     fingerprintIssueCodes: safeCodes(j.fingerprintIssueCodes),
     fingerprintIntroducedCount: finiteOrNull(j.fingerprintIntroducedCount),
+    semanticRelationShiftCount: finiteOrNull(j.semanticRelationShiftCount),
+    semanticRelationShiftFamilies: safeCodes(j.semanticRelationShiftFamilies),
     fingerprintRepairCount: finiteOrNull(j.fingerprintRepairCount),
     fingerprintShadowPositiveCodes: safeCodes(j.fingerprintShadowPositiveCodes),
     fingerprintShadowPositiveCount: finiteOrNull(j.fingerprintShadowPositiveCount),
@@ -984,6 +1007,7 @@ function serializeAdminJobDoc(docSnap) {
     humanizationDepthReasonCodes: safeCodes(j.humanizationDepthReasonCodes),
     koreanRefinementPass: typeof j.koreanRefinementPass === 'boolean' ? j.koreanRefinementPass : null,
     koreanRefinementIssueCodes: safeCodes(j.koreanRefinementIssueCodes),
+    formalRegisterResidualCount: finiteOrNull(j.formalRegisterResidualCount),
     koreanDeterministicRepairCount: finiteOrNull(j.koreanDeterministicRepairCount),
     koreanRefinementRetryCount: finiteOrNull(j.koreanRefinementRetryCount),
     quoteIntegrityPass: typeof j.quoteIntegrityPass === 'boolean' ? j.quoteIntegrityPass : null,

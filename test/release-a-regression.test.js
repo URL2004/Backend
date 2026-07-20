@@ -492,16 +492,24 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     engineVersion: 'gpt-prod-v2.4.6', requestedMode: 'blog', documentProfile: 'resume_application',
     detectedDocumentProfile: 'unknown', detectedProfileConfidence: 0.61,
     requestedDocumentProfile: 'resume_application', profileOverrideApplied: true,
+    tonePolicy: 'formal', targetRegister: 'professional', targetRegisterSource: 'document_profile',
     substantiveEditRatio: 0.27, structuralChangedSentenceRatio: 0.4,
+    materiallyRecastSentenceCount: 5, effectiveStructuralChangedSentenceCount: 5,
+    clauseLevelStructuralAlternative: true,
     rhetoricalRemediationCoverage: 0.75, koreanRefinementPass: true,
     substantiveCarryoverCount: 3, substantiveCarryoverRatio: 0.18,
     substantiveCarryoverEligibleSentenceCount: 17, substantiveCarryoverMaximum: 0.25,
     sectionRecoveryAttemptCount: 4, sectionRecoveryAppliedCount: 2, sectionRecoveryEscalationCount: 1,
+    sectionRecoveryRejectedAttemptCount: 3,
+    sectionRecoveryRejectionCodes: ['number_changed', 'not_better'],
+    sectionRecoveryRejectionCodeCounts: { number_changed: 2, not_better: 1 },
+    sectionRecoveryMiniAppliedCount: 1, sectionRecoveryEscalationAppliedCount: 1,
     humanizationNoEffectRetryAttemptCount: 1,
     humanizationRoleRecoveryAttemptCount: 2,
     humanizationDepthRetryRejectedCount: 2,
     humanizationDepthRetryRejectionCodes: ['depth_not_improved', '사용자 원문 조각'],
     fingerprintIntroducedCount: 1, fingerprintRepairCount: 1, fingerprintIssueCodes: [],
+    semanticRelationShiftCount: 1, semanticRelationShiftFamilies: ['proof_goal_weakened_to_check'],
     fingerprintShadowPositiveCodes: ['review_together'], fingerprintShadowPositiveCount: 1,
     endingStylePass: true, endingStyleIssueCount: 0, resumeCoverageApplicable: true,
     resumeCoveragePass: true, resumeClaimCount: 4, resumeCoveredClaimCount: 4, resumeCoverageRatio: 1,
@@ -510,7 +518,8 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     resumeRepetitionResidualPairCount: 7, resumeRepetitionRequiredReduction: 2,
     resumeRepetitionAchievedReduction: 1, resumeRepetitionCoverage: 0.5,
     billingDisposition: 'waived_quality_shortfall', effectExpectation: 'normal',
-    koreanRefinementIssueCodes: [], sourceReviewWarningCodes: ['deep_understanding_collocation'],
+    koreanRefinementIssueCodes: [], formalRegisterResidualCount: 2,
+    sourceReviewWarningCodes: ['deep_understanding_collocation'],
     quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
     sourcePreflightChanged: true, sourceArtifactRemovedCount: 1,
     sourcePreflightIssueCodes: ['source_ui_artifact'],
@@ -518,11 +527,15 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   });
   assert.equal(compact.requestedDocumentProfile, 'resume_application');
   assert.equal(compact.profileOverrideApplied, true);
+  assert.equal(compact.targetRegister, 'professional');
   assert.equal(compact.substantiveEditRatio, 0.27);
   assert.equal(compact.structuralChangedSentenceRatio, 0.4);
   assert.equal(compact.rhetoricalRemediationCoverage, 0.75);
   assert.equal(compact.substantiveCarryoverRatio, 0.18);
   assert.equal(compact.sectionRecoveryAppliedCount, 2);
+  assert.equal(compact.sectionRecoveryRejectedAttemptCount, 3);
+  assert.deepEqual(compact.sectionRecoveryRejectionCodes, ['number_changed', 'not_better']);
+  assert.deepEqual(compact.sectionRecoveryRejectionCodeCounts, { number_changed: 2, not_better: 1 });
   assert.equal(compact.fingerprintRepairCount, 1);
   assert.deepEqual(compact.fingerprintShadowPositiveCodes, ['review_together']);
   assert.equal(compact.humanizationNoEffectRetryAttemptCount, 1);
@@ -540,6 +553,10 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.resumeRepetitionCoverage, 0.5);
   assert.equal(compact.billingDisposition, 'waived_quality_shortfall');
   assert.deepEqual(compact.sourceReviewWarningCodes, ['deep_understanding_collocation']);
+  assert.equal(compact.clauseLevelStructuralAlternative, true);
+  assert.equal(compact.semanticRelationShiftCount, 1);
+  assert.deepEqual(compact.semanticRelationShiftFamilies, ['proof_goal_weakened_to_check']);
+  assert.equal(compact.formalRegisterResidualCount, 2);
   assert.equal(Object.hasOwn(compact, 'prompt'), false);
   assert.equal(Object.hasOwn(compact, 'source'), false);
   assert.equal(Object.hasOwn(compact, 'protectedTerms'), false);

@@ -27,6 +27,7 @@ const { assessRepairCandidate } = require('../engine-gpt-prod/judge');
 const prompts = require('../engine-gpt-prod/prompts');
 const contract = require('../engine/contract');
 const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
+const { effectiveModeForProfile } = require('../engine-gpt-prod');
 
 test('한국어 문장 분리기는 장·절 번호, 소수점, 약어와 인용부호를 보존한다', () => {
   const value = '제 1장. 연구 개요\n연구 배경\n값은 3.14이다. e.g. 예시는 유지한다. U.S. 자료도 유지한다. “인용문이다.” 다음 문장이다.';
@@ -562,8 +563,10 @@ test('문서 프로필은 요청 mode와 basicStyle 없이 원문만으로 판�
   assert.equal(reportB.profile, 'resume_application');
   assert.equal(reportA.contentGenre, reportB.contentGenre);
   assert.equal(reportA.profileDecisionSource, 'content_only');
-  assert.equal(reportA.tonePolicy, 'conversational');
+  assert.equal(reportA.tonePolicy, 'formal');
   assert.equal(reportB.tonePolicy, 'formal');
+  assert.equal(reportA.targetRegister, 'professional');
+  assert.equal(reportB.targetRegister, 'professional');
   assert.ok(reportA.confidence >= 0.75);
 });
 
@@ -624,6 +627,80 @@ test('제목이 없는 경력 서술도 행동·성과·직무 연결이 함께 
   assert.equal(report.profile, 'resume_application');
   assert.ok(report.confidence >= 0.75, JSON.stringify(report.candidateProfiles));
   assert.ok(report.safetyProfiles.includes('resume_application'));
+});
+
+test('강약점·보완 행동·업무 근거가 결합된 자기소개서는 일반 글로 빠지지 않는다', () => {
+  const source = [
+    '저의 강점은 맡은 업무를 끝까지 정리하는 태도입니다. 현장 근무 경험에서 고객 문의를 분류하고 처리 순서를 개선했습니다.',
+    '반면 제 약점은 처음에 의견을 오래 검토한다는 점입니다. 이를 보완하기 위해 판단 기준을 미리 기록하고 팀원과 확인하는 습관을 만들었습니다.',
+    '이 경험을 지원 직무의 운영 개선에 활용하겠습니다.'
+  ].join('\n\n');
+  const report = detectDocumentProfile(source, { basicStyle: 'blog' });
+  assert.equal(report.profile, 'resume_application', JSON.stringify(report.candidateProfiles));
+  assert.ok(report.confidence >= 0.75, JSON.stringify(report));
+  assert.equal(report.targetRegister, 'professional');
+  assert.equal(report.tonePolicy, 'formal');
+});
+
+test('본 탐구·분석 관점과 마크다운 절 구조는 보고서 그룹으로 라우팅한다', () => {
+  const introduction = [
+    '디지털 격차는 교육과 사회 참여에 영향을 미치는 문제이다.',
+    '기능적 관점에서는 교육 기회를 중심으로 해석하고, 갈등 관점에서는 자원 배분 구조를 중심으로 분석한다.',
+    '이에 본 탐구에서는 두 관점의 개념을 적용하여 발생 원인을 분석하고 사회적 방안을 비교하고자 한다.'
+  ].join(' ');
+  const introProfile = detectDocumentProfile(introduction, { basicStyle: 'report' });
+  assert.equal(introProfile.profile, 'report_assignment', JSON.stringify(introProfile.candidateProfiles));
+  assert.ok(introProfile.confidence >= 0.55);
+  assert.equal(effectiveModeForProfile('blog', 'blog', introProfile), 'assignment');
+
+  const sectioned = [
+    '### 2. 첫 번째 관점에서 본 사회 문제',
+    '첫 번째 관점은 제도의 기능과 교육 기회를 중심으로 현상을 설명한다. 각 요소의 관계와 한계를 자세히 검토한다.',
+    '### 3. 두 번째 관점에서 본 사회 문제',
+    '두 번째 관점은 자원 분배와 구조적 조건을 중심으로 현상을 설명한다. 서로 다른 해석과 정책 대안을 비교한다.',
+    '### 4. 두 관점의 종합적 분석',
+    '두 설명의 장점과 한계를 함께 정리하고 개선 방안을 제시한다.'
+  ].join('\n\n');
+  const sectionedProfile = detectDocumentProfile(sectioned, { basicStyle: 'report' });
+  assert.equal(sectionedProfile.profile, 'report_assignment', JSON.stringify(sectionedProfile.candidateProfiles));
+  assert.ok(sectionedProfile.formatProfile.headingCount >= 3);
+  assert.equal(effectiveModeForProfile('blog', 'blog', sectionedProfile), 'assignment');
+});
+
+test('마크다운 소제목만 있는 후기 글은 보고서로 과잉 라우팅하지 않는다', () => {
+  const source = [
+    '## 방문하게 된 이유',
+    '오늘은 주말에 직접 다녀온 전시 후기를 남겨 보려고 해요. 사진으로 봤을 때보다 공간이 넓어서 첫인상이 좋았어요.',
+    '## 실제로 둘러본 느낌',
+    '전시 동선은 편했지만 사람이 많은 시간에는 조금 답답했어요. 그래도 설명이 친절해서 천천히 보기 좋더라고요.',
+    '## 다시 갈지',
+    '가까운 곳에서 조용히 시간을 보내고 싶다면 추천해요. 다음에는 평일에 다시 방문해 보려고 해요.'
+  ].join('\n\n');
+  const profile = detectDocumentProfile(source, { basicStyle: 'blog' });
+  assert.equal(profile.profile, 'review_blog', JSON.stringify(profile.candidateProfiles));
+  assert.equal(profile.targetRegister, 'conversational');
+});
+
+test('탐구 뒤 배운 점·어려움·후속 계획이 이어지는 글은 학생 자기평가로 판정한다', () => {
+  const source = [
+    '이번 탐구를 하면서 사회 문제가 생활과 가까이 있다는 점을 알게 되었다.',
+    '자료를 찾고 비교하는 과정은 어려웠지만 필요한 내용을 정리하는 방법을 배울 수 있었다.',
+    '두 관점을 적용하면서 같은 현상도 다르게 해석될 수 있다는 점을 깨달았고 그 과정이 인상 깊었다.',
+    '앞으로는 정보의 신뢰성을 판단하는 습관을 기르고 관련 정책 사례를 더 탐구하고자 한다.'
+  ].join(' ');
+  const report = detectDocumentProfile(source, { basicStyle: 'report' });
+  assert.equal(report.profile, 'student_self_assessment', JSON.stringify(report.candidateProfiles));
+  assert.ok(report.confidence >= 0.75, JSON.stringify(report));
+  assert.equal(report.targetRegister, 'student_formal');
+});
+
+test('장르 목표 격식은 basicStyle보다 우선하고 일반 글만 basicStyle을 보조 신호로 쓴다', () => {
+  const resume = detectDocumentProfile('지원 동기\n저는 직무 역량을 바탕으로 귀사에 지원했습니다. 입사 후에는 운영 개선에 기여하겠습니다.', { basicStyle: 'blog' });
+  const report = detectDocumentProfile('1. 서론\n본 연구는 자료를 분석한다.\n2. 결론\n분석 결과와 한계를 정리한다.', { basicStyle: 'blog' });
+  const general = detectDocumentProfile('오늘 읽은 자료에서 기억에 남은 내용을 짧게 정리했다. 다음에는 다른 사례도 살펴볼 생각이다.', { basicStyle: 'blog' });
+  assert.equal(resume.targetRegister, 'professional');
+  assert.equal(report.targetRegister, 'academic_formal');
+  assert.equal(general.targetRegister, 'conversational');
 });
 
 test('논문 어휘가 많은 연구개발 자기소개서도 강점-수행-직업 포부 프레임으로 판정한다', () => {
@@ -706,7 +783,8 @@ test('번호형 학생 자기평가는 basicStyle과 무관하게 장르·형식
     'student_self_assessment',
     'student_self_assessment'
   ]);
-  assert.deepEqual(variants.map(item => item.tonePolicy), ['source_preserve', 'conversational', 'formal']);
+  assert.deepEqual(variants.map(item => item.tonePolicy), ['formal', 'formal', 'formal']);
+  assert.deepEqual(variants.map(item => item.targetRegister), ['student_formal', 'student_formal', 'student_formal']);
   const profile = variants[1];
   assert.equal(profile.formatProfile.primary, 'questionnaire');
   assert.equal(profile.formatProfile.length, 'standard');
@@ -785,8 +863,8 @@ test('공통 프롬프트는 불변 계약과 요청 강도를 한 번씩만 선
     documentProfile: { ...documentProfile, tonePolicy: 'source_preserve' },
     voiceProfile
   }).dynamic;
-  assert.match(advancedDynamic, /tonePolicy=preserve_register_only; rewriteScope=advanced/u);
-  assert.doesNotMatch(advancedDynamic, /tonePolicy=source_preserve/u);
+  assert.match(advancedDynamic, /tonePolicy=target=conversational; preserveSpeakerAndEndings=true; rewriteScope=advanced/u);
+  assert.match(advancedDynamic, /targetRegister=conversational/u);
 });
 
 test('지원서 프롬프트는 거시 구조와 미시 편집을 분리하고 직무 어휘 격식을 지킨다', () => {

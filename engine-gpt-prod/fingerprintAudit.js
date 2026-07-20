@@ -3,7 +3,7 @@
 const { splitSentences } = require('../engine/koreanText');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 
-const VERSION = 1;
+const VERSION = 2;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -50,6 +50,7 @@ function auditFingerprint(source, output) {
     };
   });
   const relationShift = detectContrastRelationShift(before, after);
+  const semanticRelations = detectSemanticRelationShifts(before, after);
   const violations = [];
   for (const family of families) {
     if (family.excessIntroducedCount > 0) {
@@ -68,6 +69,15 @@ function auditFingerprint(source, output) {
       sentenceOrdinals: relationShift.sentenceOrdinals
     });
   }
+  for (const item of semanticRelations.shifts) {
+    violations.push({
+      code: 'semantic_relation_shift',
+      family: item.family,
+      count: Math.max(1, item.sentenceOrdinals.length),
+      sentenceOrdinals: item.sentenceOrdinals,
+      documentLevel: item.documentLevel === true
+    });
+  }
   const shadow = SHADOW_PATTERNS.map(item => {
     const sourceCount = countMatches(before, item.pattern);
     const outputCount = countMatches(after, item.pattern);
@@ -83,8 +93,125 @@ function auditFingerprint(source, output) {
     violations,
     issueCodes: [...new Set(violations.map(item => item.code))],
     relationShift,
+    semanticRelations,
     shadow
   };
+}
+
+const SEMANTIC_RELATION_RULES = Object.freeze([
+  {
+    family: 'proof_goal_weakened_to_check',
+    source: /증명(?:하|해|했|하기|하고|하려)/u,
+    output: /확인(?:하|해|했|하기|하고|하려)/u,
+    retained: /증명/u
+  },
+  {
+    family: 'consideration_weakened_to_seeing',
+    source: /고려(?:하|해|했|해야|하고|하며)/u,
+    output: /(?:함께\s*)?(?:봐야|보아야|봤|보았|보며)/u,
+    retained: /고려/u
+  },
+  {
+    family: 'rediscovery_changed_to_reviving',
+    source: /재발견/u,
+    output: /(?:다시\s*)?(?:살리|살려|살렸|되살리|되살려|부활)/u,
+    retained: /재발견/u
+  },
+  {
+    family: 'active_stance_changed_to_directness',
+    source: /적극적(?:으로|인)/u,
+    output: /(?:바로|직접(?:적으로)?)/u,
+    retained: /적극적/u
+  },
+  {
+    family: 'coercion_direction_reversed',
+    source: /내몰리|내몰린|내몰렸/u,
+    output: /몰려오|몰려온|몰려왔/u,
+    retained: /내몰/u
+  },
+  {
+    family: 'priority_changed_to_progression',
+    source: /자체보다/u,
+    output: /(?:에서|하는\s*데서)\s*나아가/u,
+    retained: /자체보다/u
+  },
+  {
+    family: 'additive_scope_changed_to_exclusion',
+    source: /(?:에|로)\s*그치지\s*않고/u,
+    output: /(?:이|가)\s*아니라/u,
+    retained: /(?:에|로)\s*그치지\s*않고/u
+  }
+]);
+
+function detectSemanticRelationShifts(source, output) {
+  const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const outputSentences = splitSentences(String(output || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const grouped = new Map();
+  const add = (family, ordinal) => {
+    if (!grouped.has(family)) grouped.set(family, new Set());
+    grouped.get(family).add(ordinal);
+  };
+
+  sourceSentences.forEach((sourceSentence, sourceIndex) => {
+    const candidates = alignedOutputCandidates(sourceSentence, sourceIndex, sourceSentences.length, outputSentences);
+    if (!candidates.length) return;
+    for (const rule of SEMANTIC_RELATION_RULES) {
+      if (!matches(rule.source, sourceSentence)) continue;
+      const shifted = candidates.some(item => item.score >= 0.3
+        && matches(rule.output, item.sentence)
+        && !matches(rule.retained, item.sentence));
+      if (shifted) add(rule.family, sourceIndex + 1);
+    }
+
+    if (/(?:었|였|했|됐|였으|했으)지만/u.test(sourceSentence)) {
+      const shifted = candidates.some(item => item.score >= 0.34
+        && /(?:었|였|했|됐)고/u.test(item.sentence)
+        && !/(?:지만|으나|반면|그러나|하지만|그럼에도)/u.test(item.sentence));
+      if (shifted) add('contrast_connector_removed', sourceIndex + 1);
+    }
+
+    if (/(?:연구|분석|조사|검토)(?:를|을)?\s*통해[^.!?。！？\n]{0,45}(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(sourceSentence)) {
+      const shifted = candidates.some(item => item.score >= 0.34
+        && !/(?:연구|분석|조사|검토)(?:를|을)?\s*통해/u.test(item.sentence)
+        && !/(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(item.sentence));
+      if (shifted) add('evidence_frame_removed', sourceIndex + 1);
+    }
+
+    if (hasMainPossibilityClaim(sourceSentence)) {
+      const shifted = candidates.some(item => item.score >= 0.38
+        && !hasPossibilityMarker(item.sentence)
+        && !/(?:이해되|해석되|판단되|볼\s*수\s*있)/u.test(item.sentence)
+        && /(?:한다|된다|이다|있다|확정된다|분명하다)[.!?。！？]?$/u.test(item.sentence));
+      if (shifted) add('possibility_hardened_to_certainty', sourceIndex + 1);
+    }
+  });
+
+  const sourceUrgency = countMatches(source, /(?:바로|즉시|곧바로)\s+(?:움직|착수|시작|실행|대응|신청|지원|결정|나섰)/gu);
+  const outputUrgency = countMatches(output, /(?:바로|즉시|곧바로)\s+(?:움직|착수|시작|실행|대응|신청|지원|결정|나섰)/gu);
+  if (outputUrgency > sourceUrgency) add('unsupported_immediacy', 0);
+
+  const shifts = [...grouped.entries()].map(([family, ordinals]) => ({
+    family,
+    sentenceOrdinals: [...ordinals].filter(value => value > 0).sort((a, b) => a - b),
+    documentLevel: ordinals.has(0)
+  }));
+  return {
+    detected: shifts.length > 0,
+    count: shifts.reduce((sum, item) => sum + Math.max(1, item.sentenceOrdinals.length), 0),
+    shifts
+  };
+}
+
+function hasMainPossibilityClaim(value) {
+  const text = String(value || '').trim();
+  if (/(?:가능성(?:이|은|도)?\s*(?:있|높)|예상(?:된|되|하)|전망(?:된|되|하))/u.test(text)) return true;
+  if (/(?:이해|파악|확인|알)할\s*수\s*있/u.test(text)) return false;
+  if (/수\s*있는\s+[가-힣A-Za-z]/u.test(text) || /수\s*있(?:을)?\s*(?:때|지만|으며|고|도록|기\s*때문)/u.test(text)) return false;
+  return /수\s*있(?:다|습니다|을\s*것이다|다고\s*(?:본다|예상한다|판단한다))\s*[.!?。！？]?$/u.test(text);
+}
+
+function hasPossibilityMarker(value) {
+  return /(?:수\s*있|가능|예상|전망|것으로\s*보|듯하|수도\s*있)/u.test(String(value || ''));
 }
 
 function detectContrastRelationShift(source, output) {
@@ -128,11 +255,39 @@ function contentTokens(value) {
     .filter(token => token.length >= 2 && !['그러나', '하지만', '그리고', '또한', '따라서'].includes(token));
 }
 
+function alignedOutputCandidates(sourceSentence, sourceIndex, sourceCount, outputSentences) {
+  const center = sourceCount <= 1
+    ? 0
+    : Math.round(sourceIndex * Math.max(0, outputSentences.length - 1) / Math.max(1, sourceCount - 1));
+  const sourceTokens = contentTokens(sourceSentence);
+  const candidates = [];
+  for (let delta = -2; delta <= 2; delta += 1) {
+    const index = center + delta;
+    if (index < 0 || index >= outputSentences.length) continue;
+    const sentence = outputSentences[index];
+    const outputTokens = new Set(contentTokens(sentence));
+    const shared = sourceTokens.filter(token => outputTokens.has(token)).length;
+    candidates.push({
+      index,
+      sentence,
+      score: sourceTokens.length ? shared / sourceTokens.length : 0
+    });
+  }
+  return candidates.sort((left, right) => right.score - left.score);
+}
+
+function matches(pattern, value) {
+  if (!(pattern instanceof RegExp)) return false;
+  pattern.lastIndex = 0;
+  return pattern.test(String(value || ''));
+}
+
 function isImproved(before, after) {
   if (!before || !after) return false;
   if (after.violations.length < before.violations.length) return true;
   if (after.excessIntroducedCount < before.excessIntroducedCount) return true;
-  return before.relationShift?.detected === true && after.relationShift?.detected !== true;
+  if (before.relationShift?.detected === true && after.relationShift?.detected !== true) return true;
+  return Number(after.semanticRelations?.count || 0) < Number(before.semanticRelations?.count || 0);
 }
 
 module.exports = {
@@ -142,5 +297,6 @@ module.exports = {
   isEnabled,
   auditFingerprint,
   detectContrastRelationShift,
+  detectSemanticRelationShifts,
   isImproved
 };

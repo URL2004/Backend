@@ -137,7 +137,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.15');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.16');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -413,7 +413,8 @@ test('질문지는 번호·질문을 잠그고 답변별로만 편집하며 기�
   assert.equal(out.engineMeta.documentProfile, 'student_self_assessment');
   assert.equal(out.engineMeta.requestStrength, 'basic');
   assert.equal(out.engineMeta.effectiveMode, 'assignment');
-  assert.equal(out.engineMeta.tonePolicy, 'conversational');
+  assert.equal(out.engineMeta.tonePolicy, 'formal');
+  assert.equal(out.engineMeta.targetRegister, 'student_formal');
   assert.equal(out.engineMeta.formatProfile.primary, 'questionnaire');
   assert.ok(out.engineMeta.riskFlags.includes('questionnaire_answer_boundary'));
   assert.equal(out.result.structureLock.lockedByType.questionnaire_question, 3);
@@ -573,7 +574,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.15');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.16');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);

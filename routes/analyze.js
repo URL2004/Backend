@@ -3583,6 +3583,8 @@ function compactHistoryEngineMeta(meta) {
     riskFlags: [...new Set((Array.isArray(meta.riskFlags) ? meta.riskFlags : [])
       .map(value => String(value || '').slice(0, 50)).filter(Boolean))].slice(0, 16),
     tonePolicy: String(meta.tonePolicy || 'source_preserve').slice(0, 30),
+    targetRegister: String(meta.targetRegister || meta.tonePolicy || 'source_preserve').slice(0, 40),
+    targetRegisterSource: String(meta.targetRegisterSource || '').slice(0, 40),
     basicStyle: String(meta.basicStyle || '').slice(0, 20),
     semanticJudgeRan: meta.semanticJudgeRan === true,
     repairCount: Math.max(0, Number(meta.repairCount) || 0),
@@ -3612,6 +3614,9 @@ function compactHistoryEngineMeta(meta) {
     humanizationTargetCoverage: Number.isFinite(Number(meta.humanizationTargetCoverage)) ? Number(meta.humanizationTargetCoverage) : null,
     structuralChangedSentenceCount: Math.max(0, Number(meta.structuralChangedSentenceCount) || 0),
     structuralChangedSentenceRatio: Number.isFinite(Number(meta.structuralChangedSentenceRatio)) ? Number(meta.structuralChangedSentenceRatio) : null,
+    materiallyRecastSentenceCount: Math.max(0, Number(meta.materiallyRecastSentenceCount) || 0),
+    effectiveStructuralChangedSentenceCount: Math.max(0, Number(meta.effectiveStructuralChangedSentenceCount) || 0),
+    clauseLevelStructuralAlternative: meta.clauseLevelStructuralAlternative === true,
     humanizationParagraphCoverageApplicable: meta.humanizationParagraphCoverageApplicable === true,
     humanizationTargetParagraphCount: Math.max(0, Number(meta.humanizationTargetParagraphCount) || 0),
     humanizationTargetChangedParagraphCount: Math.max(0, Number(meta.humanizationTargetChangedParagraphCount) || 0),
@@ -3638,12 +3643,21 @@ function compactHistoryEngineMeta(meta) {
     sectionRecoveryAttemptCount: Math.max(0, Number(meta.sectionRecoveryAttemptCount) || 0),
     sectionRecoveryAppliedCount: Math.max(0, Number(meta.sectionRecoveryAppliedCount) || 0),
     sectionRecoveryEscalationCount: Math.max(0, Number(meta.sectionRecoveryEscalationCount) || 0),
+    sectionRecoveryRejectedAttemptCount: Math.max(0, Number(meta.sectionRecoveryRejectedAttemptCount) || 0),
+    sectionRecoveryRejectionCodes: [...new Set((Array.isArray(meta.sectionRecoveryRejectionCodes) ? meta.sectionRecoveryRejectionCodes : [])
+      .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
+    sectionRecoveryRejectionCodeCounts: compactCodeCountMap(meta.sectionRecoveryRejectionCodeCounts),
+    sectionRecoveryMiniAppliedCount: Math.max(0, Number(meta.sectionRecoveryMiniAppliedCount) || 0),
+    sectionRecoveryEscalationAppliedCount: Math.max(0, Number(meta.sectionRecoveryEscalationAppliedCount) || 0),
     fingerprintIntroducedCount: Math.max(0, Number(meta.fingerprintIntroducedCount) || 0),
     fingerprintRepairCount: Math.max(0, Number(meta.fingerprintRepairCount) || 0),
     fingerprintShadowPositiveCodes: [...new Set((Array.isArray(meta.fingerprintShadowPositiveCodes) ? meta.fingerprintShadowPositiveCodes : [])
       .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
     fingerprintShadowPositiveCount: Math.max(0, Number(meta.fingerprintShadowPositiveCount) || 0),
     fingerprintIssueCodes: [...new Set((Array.isArray(meta.fingerprintIssueCodes) ? meta.fingerprintIssueCodes : [])
+      .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
+    semanticRelationShiftCount: Math.max(0, Number(meta.semanticRelationShiftCount) || 0),
+    semanticRelationShiftFamilies: [...new Set((Array.isArray(meta.semanticRelationShiftFamilies) ? meta.semanticRelationShiftFamilies : [])
       .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
     endingStylePass: meta.endingStylePass === true,
     endingStyleIssueCount: Math.max(0, Number(meta.endingStyleIssueCount) || 0),
@@ -3661,6 +3675,7 @@ function compactHistoryEngineMeta(meta) {
       .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20),
     koreanDeterministicRepairCount: Math.max(0, Number(meta.koreanDeterministicRepairCount) || 0),
     koreanRefinementRetryCount: Math.max(0, Number(meta.koreanRefinementRetryCount) || 0),
+    formalRegisterResidualCount: Math.max(0, Number(meta.formalRegisterResidualCount) || 0),
     quoteIntegrityPass: meta.quoteIntegrityPass === true,
     quoteCountChanged: meta.quoteCountChanged === true,
     quoteContentChangedCount: Math.max(0, Number(meta.quoteContentChangedCount) || 0),
@@ -3673,6 +3688,14 @@ function compactHistoryEngineMeta(meta) {
     sourceReviewWarningCodes: [...new Set((Array.isArray(meta.sourceReviewWarningCodes) ? meta.sourceReviewWarningCodes : [])
       .map(value => String(value || '').slice(0, 80)).filter(Boolean))].slice(0, 20)
   };
+}
+
+function compactCodeCountMap(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(Object.entries(source).slice(0, 20).map(([code, count]) => [
+    String(code || '').replace(/[^a-z0-9_.:-]/giu, '_').slice(0, 80),
+    Math.max(0, Number(count) || 0)
+  ]).filter(([code, count]) => code && count > 0));
 }
 
 router.post('/analyze', async (req, res) => {

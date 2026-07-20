@@ -115,10 +115,13 @@ test('장문 섹션 회복은 안전 감사에서 거부되거나 더 나쁘지 
     documentProfile: { profile: 'long_explainer', confidence: 0.9 },
     inputRisk: { abstractRiskRatio: 1 },
     retrySection: async () => ({ outputText: rewrittenSection(0), safeChangeFound: true }),
-    validateCandidate: () => false
+    validateCandidate: () => ({ pass: false, codes: ['number_changed'] })
   });
   assert.equal(report.metrics.applied, 0);
   assert.equal(chunks[0].outputText, text);
+  assert.equal(report.metrics.rejectedAttemptCount, 2);
+  assert.deepEqual(report.metrics.rejectionCodes, ['number_changed']);
+  assert.equal(report.metrics.rejectionCodeCounts.number_changed, 2);
 });
 
 test('상투구 감사는 같은 신규 계열 1회만 허용하고 일반 표현은 shadow로만 기록한다', { concurrency: false }, t => {
@@ -155,6 +158,33 @@ test('부정·배제 관계를 인정·가산 관계로 바꾸면 한 번만 발
   const report = fingerprintAudit.auditFingerprint(source, output);
   assert.equal(report.relationShift.detected, true);
   assert.ok(report.issueCodes.includes('contrast_relation_shift'));
+});
+
+test('목적·근거·대조·행위 방향과 새 즉시성의 의미 변화를 원문 상대 감사로 잡는다', () => {
+  const cases = [
+    ['가능성을 증명하기 위해 실험을 설계했다.', '가능성을 확인하기 위해 실험을 설계했다.', 'proof_goal_weakened_to_check'],
+    ['정책 효과도 함께 고려해야 한다.', '정책 효과도 함께 봐야 한다.', 'consideration_weakened_to_seeing'],
+    ['자료의 가치를 재발견해 연구 방향을 정했다.', '자료의 가치를 다시 살려 연구 방향을 정했다.', 'rediscovery_changed_to_reviving'],
+    ['자원이 부족해 외부로 내몰린 학생들을 조사했다.', '자원이 부족해 외부에서 몰려온 학생들을 조사했다.', 'coercion_direction_reversed'],
+    ['조건은 불리했지만 분석은 계속했다.', '조건은 불리했고 분석은 계속했다.', 'contrast_connector_removed'],
+    ['연구를 통해 정책의 적용 결과와 구체적인 효과를 확인할 수 있었다.', '정책의 적용 결과와 구체적인 효과는 분명했다.', 'evidence_frame_removed']
+  ];
+  for (const [source, output, family] of cases) {
+    const report = fingerprintAudit.auditFingerprint(source, output);
+    assert.ok(report.issueCodes.includes('semantic_relation_shift'), `${family}: ${JSON.stringify(report)}`);
+    assert.ok(report.semanticRelations.shifts.some(item => item.family === family), JSON.stringify(report));
+  }
+  const urgency = fingerprintAudit.auditFingerprint(
+    '직무 전문성을 다지기 위해 교육에 참여했습니다.',
+    '직무 전문성을 다지기 위해 바로 움직여 교육에 참여했습니다.'
+  );
+  assert.ok(urgency.semanticRelations.shifts.some(item => item.family === 'unsupported_immediacy'));
+
+  const safe = fingerprintAudit.auditFingerprint(
+    '디지털 기술을 사용할 수 있지만 결과는 활용 방식에 따라 달라진다.',
+    '디지털 기술을 쓰지만 결과는 활용 방식에 따라 달라진다.'
+  );
+  assert.equal(safe.semanticRelations.detected, false, JSON.stringify(safe));
 });
 
 test('섹션별 지배 종결체에 새 종결체가 2문장 이상 섞이면 잡고 원래 혼합 문체는 강제하지 않는다', () => {

@@ -4,6 +4,64 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const refinement = require('../engine-gpt-prod/koreanRefinement');
 
+test('공식 보고서의 구어적 게임·군사 은유 잔존을 잡고 직접 인용은 보호한다', () => {
+  const source = '운영 절차는 부검-표적수술 사이클로 이어졌다. 무휴식 모드와 역타기를 적용했고 서버 탄환 십여 발을 사용했다. 결과는 양날의 검이었다.';
+  const profile = { profile: 'report_assignment', targetRegister: 'academic_formal' };
+  const residual = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: source,
+    documentProfile: profile,
+    mode: 'assignment'
+  });
+  const issue = residual.issues.find(item => item.code === 'formal_register_residual');
+  assert.ok(issue?.afterCount >= 4, JSON.stringify(residual));
+  assert.equal(residual.pass, false);
+
+  const cleaned = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: '운영 절차는 장애 원인 분석과 표적 조치 순서로 이어졌다. 중단 없는 운용 조건과 역방향 전환을 적용했고 서버 요청을 여러 차례 실행했다. 결과에는 이점과 위험이 함께 있었다.',
+    documentProfile: profile,
+    mode: 'assignment'
+  });
+  assert.equal(cleaned.issueCodes.includes('formal_register_residual'), false, JSON.stringify(cleaned));
+
+  const quoted = refinement.analyzeKoreanRefinement({
+    source: '보고서는 “양날의 검”이라는 직접 인용을 분석했다.',
+    outputText: '보고서는 “양날의 검”이라는 직접 인용을 분석했다.',
+    documentProfile: profile,
+    mode: 'assignment'
+  });
+  assert.equal(quoted.issueCodes.includes('formal_register_residual'), false);
+
+  const literalDomains = refinement.analyzeKoreanRefinement({
+    source: '임상 의료 보고서는 환자의 수술과 병변 진단 절차를 설명한다. 군사 훈련에서는 표적 사격과 탄환 관리를 기록한다. 지리 조사는 큰 골짜기의 지형을 측정한다.',
+    outputText: '임상 의료 보고서는 환자의 수술과 병변 진단 절차를 설명한다. 군사 훈련에서는 표적 사격과 탄환 관리를 기록한다. 지리 조사는 큰 골짜기의 지형을 측정한다.',
+    documentProfile: profile,
+    mode: 'assignment'
+  });
+  assert.equal(literalDomains.issueCodes.includes('formal_register_residual'), false);
+});
+
+test('목적 관형어·인지 서술어 중첩·대화 연어와 표집 주체 오류를 검출한다', () => {
+  const text = [
+    '공정한 사회를 만들 정책과 제도를 더 깊이 고민하게 된다고 생각했다.',
+    '참여자에게 대화를 건넸다.',
+    '두보 시는 기준에 따라 목적표집하였다.'
+  ].join(' ');
+  const issues = new Set(refinement.detectTextIssues(text, {
+    profile: 'academic_paper', targetRegister: 'academic_formal'
+  }).map(item => item.code));
+  assert.ok(issues.has('purpose_modifier_collocation'));
+  assert.ok(issues.has('metacognitive_predicate_stack'));
+  assert.ok(issues.has('dialogue_give_collocation'));
+  assert.ok(issues.has('sampling_subject_mismatch'));
+
+  const passive = refinement.detectTextIssues('두보의 시는 같은 기준에 따라 목적 표집되었다.', {
+    profile: 'academic_paper', targetRegister: 'academic_formal'
+  }).map(item => item.code);
+  assert.equal(passive.includes('sampling_subject_mismatch'), false);
+});
+
 test('문장부호·수량 괄호 붙임과 새로 생긴 깊게 이해 결합만 안전하게 고친다', () => {
   const source = '가정을 세웠다. 아버지는 두 사례를 깊이 이해했습니다. 목록(3개)에서 항목을 골랐습니다.';
   const output = '가정을 세웠다.아버지는 2가지)어머니의 사례를 깊게 이해했습니다. 목록(3개)에서 항목을 골랐습니다.';

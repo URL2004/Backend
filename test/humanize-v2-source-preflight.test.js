@@ -54,3 +54,25 @@ test('입력이 전부 UI 문구여도 빈 본문으로 만들지 않는다', ()
   assert.equal(result.removedLineCount, 0);
   assert.ok(result.issueCodes.includes('source_ui_artifact'));
 });
+
+test('본문 끝에 붙은 재작성 요청은 제거하되 본문 속 인용 문구는 보존한다', () => {
+  const source = [
+    '디지털 격차의 원인과 정책 대안을 비교했다.',
+    '이런 내용으로 인간처럼 다시 써줘'
+  ].join('\n');
+  const result = preflight.auditAndSanitizeSource(source);
+  assert.equal(result.version, 2);
+  assert.equal(result.changed, true);
+  assert.equal(result.text, '디지털 격차의 원인과 정책 대안을 비교했다.');
+  assert.ok(result.issueCodes.includes('source_rewrite_request_artifact'));
+
+  const quoted = [
+    '작성 지시가 본문에서 어떻게 쓰이는지 설명한다.',
+    '“이런 내용으로 인간처럼 다시 써줘”라는 문구를 사례로 인용했다.',
+    '이 문구는 분석 대상이므로 그대로 남긴다.'
+  ].join('\n');
+  const preserved = preflight.auditAndSanitizeSource(quoted);
+  assert.equal(preserved.changed, false);
+  assert.equal(preserved.text, quoted);
+  assert.equal(preserved.issueCodes.includes('source_rewrite_request_artifact'), false);
+});

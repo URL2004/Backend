@@ -115,6 +115,8 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         '새 사실 추가, 의미 왜곡, 핵심 주장 누락뿐 아니라 원문에 없던 주제 확장(scope_expansion), 교훈·평가(new_evaluation), 강한 수식(intensity_amplification), 반복 결론(duplicate_conclusion/repeated_reflection_conclusion), 문단마다 같은 인과-결론 구조(overstructured_causality), 문단 역할 변화(rhetorical_role_shift), 결론 뒤 새 탐구 시작(topic_restart), 실제 활동 비중 축소(personal_balance_shift)를 판정한다.',
         '결정론 신호에 experience_novelty_candidate가 있으면 원문·허용 메모에 없는 실제 개인 경험·시점·행동이 새로 생겼는지 확인한다. 단순 의역이나 원문 경험의 자연스러운 재표현은 위반이 아니다. 실제 신규 경험이면 experience_novelty로 판정한다.',
         '학술·보고서에서 “~자체보다”가 “~에서 나아가”로, “~에 그치지 않고”가 “~이/가 아니라”로 바뀐 것처럼 대조·부정·제한·가능성의 범위가 달라지면 distortion이다.',
+        '증명하려는 목적을 확인하려는 목적으로 낮추거나, 재발견을 되살리기로 바꾸거나, 적극적 태도를 바로·직접 행동했다는 즉시성으로 바꾸면 distortion이다.',
+        '“~이었지만”의 대조를 “~이었고”로 지우거나, “연구를 통해 확인할 수 있었다”의 근거·가능성 틀을 빼고 사실처럼 단정하거나, 외부 요인에 내몰린 방향을 대상이 몰려온 방향으로 뒤집으면 distortion이다.',
         '행위 주체와 대상이 뒤바뀌는 주어-서술어 오류, 설명 평서문의 명령문 변환, 표·캡션의 개념어를 긴 설명으로 풀어 쓴 변화, 학술 어휘의 과도한 구어화도 의미·장르 정확성을 해치면 distortion으로 판정한다.',
         '연구개발 지원서에서 SOURCE의 공정 최적화를 단순 조정으로, 상관관계를 일반적 관계로, 원인 분석을 짚기로, 재현성 검증을 확인하는 일로 낮추어 직무 개념의 정확도가 사라지면 distortion이다.',
         '데이터가 보고서·논문을 작성하는 것처럼 행위 주체와 목적어를 바꾼 문장도 distortion이다. 단, SOURCE의 어색한 연어를 의미 범위 안에서 반영·원고 작성으로 바로잡은 것은 위반이 아니다.',
@@ -159,7 +161,7 @@ async function repairViolations(rawText, outputText, ledger, violations, {
   const cfg = await loadConfig(config);
   const system = lang === 'en'
     ? 'Repair only the listed violations while preserving the original rewrite as much as possible. Do not add facts.'
-    : '위반이 발생한 문장이나 문단만 원문의 같은 위치를 기준으로 고친다. 나머지 문장·문단은 그대로 유지한다. 새 사실·주제·평가·교훈·강한 수식·결론을 추가하지 않으며, 기존의 안전한 문장 구조 변화는 지우지 않는다. 대조·부정·제한·가능성의 범위, 행위 주체, 평서문 문체, 표·캡션의 압축도는 원문으로 되돌린다. 연구개발 문맥의 최적화·상관관계·원인 분석·재현성 검증 같은 정확한 개념어도 같은 주장 위치에 복원한다.';
+    : '위반이 발생한 문장이나 문단만 원문의 같은 위치를 기준으로 고친다. 나머지 문장·문단은 그대로 유지한다. 새 사실·주제·평가·교훈·강한 수식·결론을 추가하지 않으며, 기존의 안전한 문장 구조 변화는 지우지 않는다. 목적, 근거 틀, 대조·부정·제한·가능성의 범위, 행위 방향과 강도, 행위 주체, 평서문 문체, 표·캡션의 압축도는 원문으로 되돌린다. 증명·확인, 재발견·되살리기, 적극적·직접적처럼 기능이 다른 말을 섞지 않고 SOURCE에 없던 즉시성은 제거한다. 연구개발 문맥의 최적화·상관관계·원인 분석·재현성 검증 같은 정확한 개념어도 같은 주장 위치에 복원한다.';
   const user = [
     `[SOURCE]\n${rawText}`,
     `[SOURCE CLAIM LEDGER]\n${ledgerToText(ledger)}`,

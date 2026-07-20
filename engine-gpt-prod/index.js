@@ -17,7 +17,7 @@ const { logger } = require('../lib/logger');
 const layoutNormalizer = require('../engine/layout');
 const inputRouting = require('../engine/inputrouting');
 const { computeEditMetrics, splitSentences } = require('../engine/koreanText');
-const { detectDocumentProfile, applyDocumentProfileOverride } = require('./documentProfile');
+const { detectDocumentProfile, applyDocumentProfileOverride, applyTargetRegister } = require('./documentProfile');
 const {
   buildVoiceProfile,
   auditDirectQuoteIntegrity,
@@ -37,7 +37,7 @@ const experienceAudit = require('./experienceAudit');
 const sourcePreflight = require('./sourcePreflight');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.15';
+const VERSION = 'gpt-prod-v2.4.16';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -150,6 +150,10 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
   const confidence = Number(documentProfile?.confidence) || 0;
   const trustedOverride = documentProfile?.profileDecisionSource === 'user_override'
     && documentProfile?.profileOverrideApplied === true;
+  const reportTieBreak = confidence >= 0.55
+    && confidence < 0.75
+    && documentProfile?.basicStyle === 'report'
+    && ['academic_paper', 'report_assignment'].includes(profile);
   if ((confidence >= 0.75 || trustedOverride) && [
     'academic_paper',
     'report_assignment',
@@ -159,6 +163,7 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
     'mail_notice',
     'creative'
   ].includes(profile)) return 'assignment';
+  if (reportTieBreak) return 'assignment';
   return 'blog';
 }
 
@@ -220,7 +225,10 @@ async function runEngine({
         riskFlags: []
       };
   const documentProfile = v2Enabled
-    ? applyDocumentProfileOverride(detectedDocumentProfile, documentProfileOverride)
+    ? applyTargetRegister(
+        applyDocumentProfileOverride(detectedDocumentProfile, documentProfileOverride),
+        { requestStrength, basicStyle }
+      )
     : detectedDocumentProfile;
   const selectedMode = v2Enabled ? effectiveModeForProfile(requestedMode, normalizedMode, documentProfile) : normalizedMode;
   const voiceProfile = v2Enabled ? buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode }) : null;
@@ -289,7 +297,12 @@ async function runEngine({
       escalationAttemptCount: 0,
       concurrency: sectionRecovery.RECOVERY_CONCURRENCY,
       sectionIndices: [],
-      appliedSectionIndices: []
+      appliedSectionIndices: [],
+      rejectedAttemptCount: 0,
+      rejectionCodes: [],
+      rejectionCodeCounts: {},
+      miniAppliedCount: 0,
+      escalationAppliedCount: 0
     },
     usages: []
   };
@@ -313,7 +326,7 @@ async function runEngine({
         reasoningEffort: entry.tier === 'escalation' ? cfg.reasoning.escalation : cfg.reasoning.repair,
         phase: entry.tier === 'escalation' ? 'section_depth_escalation' : 'section_depth_recovery'
       }),
-      validateCandidate: ({ entry, candidate }) => isSafeGeneralSurfaceCandidate(
+      validateCandidate: ({ entry, candidate }) => auditGeneralSurfaceCandidate(
         entry.source,
         candidate,
         contract,
@@ -357,8 +370,8 @@ async function runEngine({
   let humanizationNoEffectRetryAttemptCount = 0;
   let humanizationRoleRecoveryAttemptCount = 0;
   let humanizationDepthRetryApplied = Number(sectionRecoveryReport.metrics?.applied || 0) > 0;
-  let humanizationDepthRetryRejectedCount = 0;
-  const humanizationDepthRetryRejectionCodes = [];
+  let humanizationDepthRetryRejectedCount = Number(sectionRecoveryReport.metrics?.rejectedAttemptCount || 0);
+  const humanizationDepthRetryRejectionCodes = safeFailureCodeList(sectionRecoveryReport.metrics?.rejectionCodes);
   let humanizationDepthRetryTargetSentenceCount = (sectionRecoveryReport.selected || [])
     .reduce((sum, entry) => sum + Number(entry?.plan?.targetSentenceCount || 0), 0);
   let polishStrictFailure = '';
@@ -920,6 +933,8 @@ async function runEngine({
         discourseSignals: [
           ...(deterministicAudit?.discourseAudit?.codes || []),
           ...(fingerprintAudit?.issueCodes || []),
+          ...((fingerprintAudit?.semanticRelations?.shifts || [])
+            .map(item => `semantic_relation_shift:${item.family}`)),
           ...(experienceCandidateAudit?.candidate ? ['experience_novelty_candidate'] : [])
         ],
         safetyIdentifier: safetyId
@@ -1226,6 +1241,9 @@ async function runEngine({
         ...(fingerprintAudit?.issueCodes?.includes('contrast_relation_shift')
           ? [{ code: 'contrast_relation_shift', severity: 'warning', message: '부정·배제 관계가 인정·가산 관계로 달라졌을 수 있어 원문 대조가 필요해요.' }]
           : []),
+        ...(fingerprintAudit?.issueCodes?.includes('semantic_relation_shift')
+          ? [{ code: 'semantic_relation_shift', severity: 'warning', message: '목적·근거·대조·가능성 또는 행위 방향이 원문과 달라졌을 수 있어요.' }]
+          : []),
         ...(endingStyleAudit?.pass === false
           ? [{ code: 'ending_style_mixed', severity: 'warning', message: '원문에 없던 종결체가 일부 섹션에 섞였을 수 있어요.' }]
           : []),
@@ -1280,6 +1298,9 @@ async function runEngine({
     paragraphReadability: layoutRepair?.paragraphs?.readability || null,
     riskFlags: documentProfile.riskFlags || [],
     tonePolicy: documentProfile.tonePolicy || 'source_preserve',
+    targetRegister: documentProfile.targetRegister || documentProfile.tonePolicy || 'source_preserve',
+    targetRegisterSource: documentProfile.targetRegisterSource || 'legacy',
+    targetRegisterStrength: documentProfile.targetRegisterStrength || requestStrength,
     basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
     semanticJudgeRan: semanticReport.ran === true,
     discourseAuditVersion: Number(deliveryAudit?.discourseAudit?.version || 0),
@@ -1368,10 +1389,18 @@ async function runEngine({
     sectionRecoveryAppliedCount: Number(sectionRecoveryReport.metrics?.applied || 0),
     sectionRecoveryEscalationCount: Number(sectionRecoveryReport.metrics?.escalated || 0),
     sectionRecoveryConcurrency: Number(sectionRecoveryReport.metrics?.concurrency || 0),
+    sectionRecoveryRejectedAttemptCount: Number(sectionRecoveryReport.metrics?.rejectedAttemptCount || 0),
+    sectionRecoveryRejectionCodes: safeFailureCodeList(sectionRecoveryReport.metrics?.rejectionCodes),
+    sectionRecoveryRejectionCodeCounts: sanitizeCountMap(sectionRecoveryReport.metrics?.rejectionCodeCounts),
+    sectionRecoveryMiniAppliedCount: Number(sectionRecoveryReport.metrics?.miniAppliedCount || 0),
+    sectionRecoveryEscalationAppliedCount: Number(sectionRecoveryReport.metrics?.escalationAppliedCount || 0),
     humanizationDepthReasonCodes: safeFailureCodeList(humanizationDepthReport?.reasons),
     humanizationDepthBlockingReasonCodes: safeFailureCodeList(humanizationDepthReport?.blockingReasons),
     structuralChangedSentenceCount: Number(humanizationDepthReport?.metrics?.structurallyChangedSentenceCount || 0),
     structuralChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.structuralChangedSentenceRatio || 0),
+    materiallyRecastSentenceCount: Number(humanizationDepthReport?.metrics?.materiallyRecastSentenceCount || 0),
+    effectiveStructuralChangedSentenceCount: Number(humanizationDepthReport?.metrics?.effectiveStructuralChangedSentenceCount || 0),
+    clauseLevelStructuralAlternative: humanizationDepthReport?.metrics?.clauseLevelStructuralAlternative === true,
     humanizationRequiredStructuralSentenceCount: Number(humanizationDepthReport?.plan?.requiredStructuralChangedSentenceCount || 0),
     humanizationParagraphCoverageApplicable: humanizationDepthReport?.plan?.paragraphCoverageApplicable === true,
     humanizationEligibleParagraphCount: Number(humanizationDepthReport?.plan?.eligibleParagraphCount || 0),
@@ -1396,6 +1425,8 @@ async function runEngine({
     fingerprintIssueCodes: safeFailureCodeList(fingerprintAudit?.issueCodes),
     fingerprintIntroducedCount: Number(fingerprintAudit?.introducedCount || 0),
     fingerprintExcessIntroducedCount: Number(fingerprintAudit?.excessIntroducedCount || 0),
+    semanticRelationShiftCount: Number(fingerprintAudit?.semanticRelations?.count || 0),
+    semanticRelationShiftFamilies: safeFailureCodeList((fingerprintAudit?.semanticRelations?.shifts || []).map(item => item.family)),
     fingerprintRetryAttemptCount,
     fingerprintRepairCount,
     fingerprintRetryApplied,
@@ -1431,6 +1462,8 @@ async function runEngine({
     koreanRefinementPass: koreanRefinementAudit?.pass === true,
     koreanRefinementIssueCodes: safeFailureCodeList(koreanRefinementAudit?.issueCodes),
     koreanRefinementIntroducedIssueCount: Number(koreanRefinementAudit?.introducedIssueCount || 0),
+    formalRegisterResidualCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'formal_register_residual')?.afterCount || 0),
     koreanDeterministicRepairCount,
     koreanRefinementRetryAttemptCount,
     koreanRefinementRetryCount,
@@ -2680,43 +2713,52 @@ function existingVoiceDistributionViolation({ original, source, outputText, mode
 }
 
 function isSafeGeneralSurfaceCandidate(source, candidate, contract, documentProfile, mode = 'assignment') {
+  return auditGeneralSurfaceCandidate(source, candidate, contract, documentProfile, mode).pass;
+}
+
+function auditGeneralSurfaceCandidate(source, candidate, contract, documentProfile, mode = 'assignment') {
   const before = String(source || '').trim();
   const after = String(candidate || '').trim();
-  if (!before || !after || normalizeBare(before) === normalizeBare(after)) return false;
+  const codes = [];
+  const add = code => {
+    if (!codes.includes(code)) codes.push(code);
+  };
+  if (!before || !after) return { pass: false, codes: ['empty_candidate'] };
+  if (normalizeBare(before) === normalizeBare(after)) return { pass: false, codes: ['candidate_unchanged'] };
   const metrics = computeEditMetrics(before, after);
-  if (metrics.charEditRatio <= 0 || metrics.charEditRatio > 0.32) return false;
-  if (metrics.lengthRatio < 0.90 || metrics.lengthRatio > 1.12) return false;
-  if (paragraphCount(before) !== paragraphCount(after)) return false;
-  if (floor.measureNovelty(before, after, '').count > 0) return false;
-  if (floor.measureLostFacts(before, after).count > 0) return false;
-  if (compareNumberMultiset(before, after).changed) return false;
+  if (metrics.charEditRatio <= 0 || metrics.charEditRatio > 0.32) add('edit_range_exceeded');
+  if (metrics.lengthRatio < 0.90 || metrics.lengthRatio > 1.12) add('length_range_failed');
+  if (paragraphCount(before) !== paragraphCount(after)) add('structure_loss');
+  if (floor.measureNovelty(before, after, '').count > 0) add('semantic_shift');
+  if (floor.measureLostFacts(before, after).count > 0) add('semantic_shift');
+  if (compareNumberMultiset(before, after).changed) add('number_changed');
   const povDrift = floor.measurePovDrift(before, after, contract?.povSeed);
-  if (povDrift.introducedAnyFirstPerson || povDrift.droppedAnyFirstPerson) return false;
-  if (extractProtectedTerms(before, documentProfile).some(term => !containsNormalizedValue(after, term))) return false;
+  if (povDrift.introducedAnyFirstPerson || povDrift.droppedAnyFirstPerson) add('pov_shift');
+  if (extractProtectedTerms(before, documentProfile).some(term => !containsNormalizedValue(after, term))) add('protected_term_loss');
   const beforeVoice = buildVoiceProfile(before, { documentProfile: documentProfile || 'unknown' });
   const afterVoice = buildVoiceProfile(after, { documentProfile: documentProfile || 'unknown' });
   const beforeSentenceCount = meaningfulSentenceCount(before);
   const afterSentenceCount = meaningfulSentenceCount(after);
   const exactSentenceStructure = beforeVoice.lineStructureSensitive === true
     || documentProfile?.formatProfile?.flags?.some?.(flag => ['questionnaire', 'list_heavy', 'creative_lines'].includes(flag));
-  if (exactSentenceStructure && beforeSentenceCount !== afterSentenceCount) return false;
+  if (exactSentenceStructure && beforeSentenceCount !== afterSentenceCount) add('structure_loss');
   if (!exactSentenceStructure) {
     const sentenceRatio = beforeSentenceCount ? afterSentenceCount / beforeSentenceCount : 1;
     const sentenceDelta = Math.abs(afterSentenceCount - beforeSentenceCount);
-    if (sentenceRatio < 0.75 || sentenceRatio > 1.30 || sentenceDelta > Math.max(2, Math.ceil(beforeSentenceCount * 0.25))) return false;
+    if (sentenceRatio < 0.75 || sentenceRatio > 1.30 || sentenceDelta > Math.max(2, Math.ceil(beforeSentenceCount * 0.25))) add('structure_loss');
   }
-  if (beforeVoice.directQuoteCount !== afterVoice.directQuoteCount) return false;
-  if (beforeVoice.listItemCount !== afterVoice.listItemCount) return false;
-  if (beforeVoice.headingCount !== afterVoice.headingCount) return false;
-  if (beforeVoice.lineStructureSensitive && beforeVoice.lineCount !== afterVoice.lineCount) return false;
+  if (beforeVoice.directQuoteCount !== afterVoice.directQuoteCount) add('quote_loss');
+  if (beforeVoice.listItemCount !== afterVoice.listItemCount) add('structure_loss');
+  if (beforeVoice.headingCount !== afterVoice.headingCount) add('structure_loss');
+  if (beforeVoice.lineStructureSensitive && beforeVoice.lineCount !== afterVoice.lineCount) add('structure_loss');
   if (existingVoiceDistributionViolation({
     original: before,
     source: before,
     outputText: after,
     mode,
     documentProfile
-  })) return false;
-  return true;
+  })) add('voice_shift');
+  return { pass: codes.length === 0, codes, metrics };
 }
 
 function isSafeLocalizedLanguageCandidate({
@@ -4076,6 +4118,17 @@ function safeFailureCodeList(values) {
   return out;
 }
 
+function sanitizeCountMap(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const output = {};
+  for (const [rawCode, rawCount] of Object.entries(source).slice(0, 24)) {
+    const code = safeFailureCode(rawCode);
+    if (!code) continue;
+    output[code] = Math.max(0, Number(rawCount) || 0);
+  }
+  return output;
+}
+
 function addUniqueCode(values, code) {
   if (!Array.isArray(values)) return;
   const normalized = String(code || '').trim();
@@ -4130,5 +4183,6 @@ module.exports = {
   detect,
   rewriteSentence,
   suggestEvidence,
-  normalizeMode
+  normalizeMode,
+  effectiveModeForProfile
 };

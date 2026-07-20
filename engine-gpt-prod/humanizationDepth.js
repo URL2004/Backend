@@ -10,8 +10,8 @@ const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 8;
-const POLICY_VERSION = 'perceived-v2.4.15';
+const PLAN_VERSION = 9;
+const POLICY_VERSION = 'perceived-v2.4.16';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -241,6 +241,9 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   const targetIndices = new Set(plan.targetIndices || []);
   const targetChangedCount = metrics.sentenceEdits.filter(row => targetIndices.has(row.index) && row.substantiveChanged).length;
   const targetCoverage = plan.targetSentenceCount ? targetChangedCount / plan.targetSentenceCount : 1;
+  const materiallyRecastSentenceCount = metrics.sentenceEdits
+    .filter(row => row.substantiveChanged && Number(row.ratio || 0) >= 0.11)
+    .length;
   const targetParagraphIndices = new Set((plan.targetParagraphIndices || []).filter(Number.isInteger));
   const targetChangedParagraphIndices = new Set(metrics.sentenceEdits
     .filter(row => targetIndices.has(row.index)
@@ -257,8 +260,21 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   if (metrics.substantiveEditRatio + 1e-9 < plan.minSubstantiveEditRatio) reasons.push('substantive_edit_ratio_low');
   if (metrics.substantiveChangedSentenceCount < plan.requiredChangedSentenceCount) reasons.push('substantive_sentence_coverage_low');
   if (plan.requiredTargetChangedCount > 0 && targetChangedCount < plan.requiredTargetChangedCount) reasons.push('risk_target_coverage_low');
-  if (Number(plan.requiredStructuralChangedSentenceCount || 0) > 0
-      && metrics.structurallyChangedSentenceCount < Number(plan.requiredStructuralChangedSentenceCount)) {
+  const requiredStructuralCount = Number(plan.requiredStructuralChangedSentenceCount || 0);
+  // 기본 결과가 어순 역전이나 쉼표 변화는 없더라도 여러 문장을 절 단위로
+  // 충분히 다시 썼다면 구조 0건 하나만으로 미달 처리하지 않는다. 고급은
+  // 실제 구조 변화 기준을 그대로 유지한다.
+  const clauseLevelStructuralAlternative = plan.requestStrength === 'basic'
+    && requiredStructuralCount > 0
+    && metrics.substantiveEditRatio + 1e-9 >= Number(plan.minSubstantiveEditRatio || 0)
+    && metrics.substantiveChangedSentenceCount >= Number(plan.requiredChangedSentenceCount || 0)
+    && targetCoverage + 1e-9 >= Number(plan.minTargetCoverage || 0)
+    && materiallyRecastSentenceCount >= requiredStructuralCount;
+  const effectiveStructuralChangedSentenceCount = clauseLevelStructuralAlternative
+    ? Math.max(metrics.structurallyChangedSentenceCount, materiallyRecastSentenceCount)
+    : metrics.structurallyChangedSentenceCount;
+  if (requiredStructuralCount > 0
+      && effectiveStructuralChangedSentenceCount < requiredStructuralCount) {
     reasons.push('structural_rewrite_coverage_low');
   }
   if (plan.paragraphCoverageApplicable === true
@@ -311,6 +327,9 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       sentenceEdits: undefined,
       targetChangedCount,
       targetCoverage: round4(targetCoverage),
+      materiallyRecastSentenceCount,
+      effectiveStructuralChangedSentenceCount,
+      clauseLevelStructuralAlternative,
       targetChangedParagraphCount,
       targetParagraphCoverage: round4(targetParagraphCoverage),
       untouchedTargetParagraphIndices,
@@ -335,7 +354,10 @@ function humanizationCandidateScore(report) {
     ? progress(metrics.targetChangedCount, plan.requiredTargetChangedCount)
     : 1;
   const structuralProgress = Number(plan.requiredStructuralChangedSentenceCount || 0) > 0
-    ? progress(metrics.structurallyChangedSentenceCount, plan.requiredStructuralChangedSentenceCount)
+    ? progress(
+        metrics.effectiveStructuralChangedSentenceCount ?? metrics.structurallyChangedSentenceCount,
+        plan.requiredStructuralChangedSentenceCount
+      )
     : 1;
   const paragraphProgress = plan.paragraphCoverageApplicable === true
     ? progress(metrics.targetChangedParagraphCount, plan.requiredTargetChangedParagraphCount)

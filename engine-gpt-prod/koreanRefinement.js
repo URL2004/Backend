@@ -3,7 +3,7 @@
 const { splitSentences, levenshteinDistance } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 2;
+const VERSION = 3;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -107,6 +107,42 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '한 문장에 연구 행동이 너무 많이 연결돼 주어·서술어 관계와 호흡이 무거워요.'
+  },
+  formal_register_residual: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '공식 문서의 핵심 서술에 구어적 별칭이나 과장된 게임·군사 은유가 남아 있어요.'
+  },
+  purpose_modifier_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '목적을 나타내는 관형 표현이 빠져 정책·제도의 수식 관계가 어색해요.'
+  },
+  metacognitive_predicate_stack: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“고민하게 된다고 생각했다”처럼 인지 서술어가 겹쳐 문장이 부자연스러워요.'
+  },
+  dialogue_give_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '대화를 일방적으로 건넨다고 표현해 상호행위의 연어가 어색해요.'
+  },
+  sampling_subject_mismatch: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '표집 대상이 스스로 표집한 것처럼 주어와 서술어가 연결됐어요.'
+  },
+  tool_personification: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: false,
+    message: '도구·플랫폼의 기능을 사람에게 호의를 베푸는 것처럼 표현했어요.'
   },
   repeated_vague_demonstrative: {
     weight: 1,
@@ -457,8 +493,9 @@ function emptyFormattingResult(text, reason) {
 
 function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile = null, mode = '' } = {}) {
   const profile = profileName(documentProfile);
-  const sourceIssues = detectTextIssues(source, { profile, includeSourceNotation: true });
-  const outputIssues = detectTextIssues(outputText, { profile, includeSourceNotation: false });
+  const targetRegister = String(documentProfile?.targetRegister || documentProfile?.tonePolicy || '');
+  const sourceIssues = detectTextIssues(source, { profile, targetRegister, includeSourceNotation: true });
+  const outputIssues = detectTextIssues(outputText, { profile, targetRegister, includeSourceNotation: false });
   const professional = detectProfessionalDowngrade(source, outputText, profile);
   if (professional) outputIssues.push(professional);
   const rows = mergeIssueComparison(sourceIssues, outputIssues);
@@ -469,6 +506,7 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   return {
     version: VERSION,
     profile,
+    targetRegister,
     mode: String(mode || ''),
     pass: repairableIssues.length === 0,
     issueCount: rows.reduce((sum, item) => sum + item.afterCount, 0),
@@ -484,7 +522,7 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   };
 }
 
-function detectTextIssues(value, { profile = 'unknown', includeSourceNotation = false } = {}) {
+function detectTextIssues(value, { profile = 'unknown', targetRegister = '', includeSourceNotation = false } = {}) {
   const text = String(value || '').replace(/\r\n?/gu, '\n');
   const issues = [];
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
@@ -500,6 +538,12 @@ function detectTextIssues(value, { profile = 'unknown', includeSourceNotation = 
   pushSentenceIssue(issues, text, 'scope_expansion_collocation', hasScopeExpansionCollocation);
   pushSentenceIssue(issues, text, 'data_document_collocation', hasDataDocumentCollocation);
   pushSentenceIssue(issues, text, 'feedback_exchange_collocation', sentence => /피드백(?:을|를)?\s*(?:여러\s*차례\s*)?반복(?:하|했|해|하며|해서|하고)/u.test(sentence));
+  pushSentenceIssue(issues, text, 'purpose_modifier_collocation', hasPurposeModifierCollocation);
+  pushSentenceIssue(issues, text, 'metacognitive_predicate_stack', sentence => /고민(?:을|해|하)?[^.!?。！？\n]{0,24}하게\s*된다고\s*생각(?:하|했|해|합)/u.test(sentence));
+  pushSentenceIssue(issues, text, 'dialogue_give_collocation', sentence => /대화(?:를)?\s*(?:건네|건넸|건넨|건넬)/u.test(sentence));
+  pushSentenceIssue(issues, text, 'sampling_subject_mismatch', sentence => /(?:시|자료|문헌|표본|사례)(?:은|는)\s*(?:기준[^.!?。！？\n]{0,70})?목적\s*표집(?:하|했|해)/u.test(sentence));
+  pushSentenceIssue(issues, text, 'tool_personification', sentence => /(?:플랫폼|시스템|도구|프로그램|모형)(?:이|가)[^.!?。！？\n]{0,70}(?:연결|제공|분석|정리|보여|알려)해\s*주/u.test(sentence));
+  if (isFormalRegisterTarget(targetRegister, profile)) pushFormalRegisterResidual(issues, text);
   pushSelfEvaluationRepetition(issues, text);
   if (/(?:연구|실험|공정|시편|분석\s*장비)/u.test(text)) {
     pushSentenceIssue(issues, text, 'overloaded_research_action_chain', isOverloadedResearchActionChain);
@@ -552,7 +596,11 @@ function isImprovedAudit(before, after) {
 function buildSourceReviewWarnings(sourceOrIssues, documentProfile = null) {
   const issues = Array.isArray(sourceOrIssues)
     ? sourceOrIssues
-    : detectTextIssues(sourceOrIssues, { profile: profileName(documentProfile), includeSourceNotation: true });
+    : detectTextIssues(sourceOrIssues, {
+        profile: profileName(documentProfile),
+        targetRegister: String(documentProfile?.targetRegister || documentProfile?.tonePolicy || ''),
+        includeSourceNotation: true
+      });
   return issues.map(item => ({
     code: item.code,
     severity: 'notice',
@@ -753,6 +801,96 @@ function hasValueParticipationCollocation(sentence) {
 
 function hasScopeExpansionCollocation(sentence) {
   return /(?:소비|수요|이용|사용)(?:가|는|이)\s*(?:더\s*)?(?:넓어지|넓어질|넓어진)/u.test(String(sentence || ''));
+}
+
+function hasPurposeModifierCollocation(sentence) {
+  return /(?:공정한|안전한|건강한|지속\s*가능한|더\s*나은)?\s*(?:사회|환경|공동체|문화|질서)(?:를|을)\s*만들\s+(?:정책|제도|방안|기준)/u
+    .test(String(sentence || ''));
+}
+
+const FORMAL_REGISTER_RULES = Object.freeze([
+  {
+    family: 'operational_slang',
+    test: value => /(?:원복|무\s*휴식\s*(?:모드|운영|상태)|역\s*타기)/u.test(value)
+  },
+  {
+    family: 'projectile_process_metaphor',
+    test: (value, fullText) => /(?:탄환|사격|(?:한|두|세|\d+)\s*발\s*(?:쏘|발사))/u.test(value)
+      && (hasTechnicalProcessContext(value)
+        || (hasFormalMetaphorCluster(fullText) && hasTechnicalProcessContext(fullText)))
+  },
+  {
+    family: 'medical_process_metaphor',
+    test: (value, fullText) => /(?:부검|해부|수술|처치)/u.test(value)
+      && !hasMedicalDomainContext(fullText)
+      && ((/(?:부검|해부)/u.test(value)
+          && /(?:수술|처치)/u.test(value)
+          && /(?:사이클|주기|오류|원인|대상|시스템|절차)/u.test(value))
+        || (hasFormalMetaphorCluster(fullText) && hasTechnicalProcessContext(fullText)))
+  },
+  {
+    family: 'landscape_metric_metaphor',
+    test: (value, fullText) => /(?:큰|거대한)\s*(?:골짜기|절벽)/u.test(value)
+      && (/(?:성능|지연|값|분포|오차|구간|격차|변화|그래프)/u.test(value)
+        || (hasFormalMetaphorCluster(fullText) && hasTechnicalProcessContext(fullText)))
+  },
+  {
+    family: 'stock_blade_metaphor',
+    test: value => /양날의\s*(?:검|칼)/u.test(value)
+  }
+]);
+
+function isFormalRegisterTarget(targetRegister, profile) {
+  if (['academic_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
+    .includes(String(targetRegister || ''))) return true;
+  return ['academic_paper', 'report_assignment', 'student_record_teacher', 'resume_application', 'mail_notice']
+    .includes(String(profile || ''));
+}
+
+function pushFormalRegisterResidual(issues, text) {
+  const sentences = splitSentences(String(text || ''));
+  const ordinals = [];
+  const families = [];
+  sentences.forEach((sentence, index) => {
+    const value = stripProtectedQuotedText(sentence);
+    for (const rule of FORMAL_REGISTER_RULES) {
+      if (typeof rule.test !== 'function' || !rule.test(value, text)) continue;
+      ordinals.push(index + 1);
+      families.push(rule.family);
+    }
+  });
+  if (families.length) {
+    issues.push(makeIssue('formal_register_residual', families.length, ordinals, {
+      families: [...new Set(families)].slice(0, 12)
+    }));
+  }
+}
+
+function hasFormalMetaphorCluster(value) {
+  const text = String(value || '');
+  const categories = [
+    /(?:원복|무\s*휴식\s*(?:모드|운영|상태)|역\s*타기)/u,
+    /(?:탄환|사격|(?:한|두|세|\d+)\s*발\s*(?:쏘|발사))/u,
+    /(?:부검|해부|수술|처치)/u,
+    /(?:(?:큰|거대한)\s*(?:골짜기|절벽)|양날의\s*(?:검|칼))/u
+  ];
+  return categories.filter(pattern => pattern.test(text)).length >= 2;
+}
+
+function hasTechnicalProcessContext(value) {
+  return /(?:서버|데이터|요청|처리|오류|복구|원복|성능|모형|변수|실험|작업|시스템|알고리즘)/u
+    .test(String(value || ''));
+}
+
+function hasMedicalDomainContext(value) {
+  return /(?:환자|질환|병원|임상|의료|종양|병변|수술실|진단|치료|해부학)/u.test(String(value || ''));
+}
+
+function stripProtectedQuotedText(value) {
+  return String(value || '')
+    .replace(/[“「『《〈][^”」』》〉\n]{1,240}[”」』》〉]/gu, ' ')
+    .replace(/"[^"\n]{1,240}"/gu, ' ')
+    .replace(/'[^'\n]{1,240}'/gu, ' ');
 }
 
 function pushSelfEvaluationRepetition(issues, text) {

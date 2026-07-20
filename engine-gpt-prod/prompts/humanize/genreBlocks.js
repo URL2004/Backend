@@ -16,7 +16,10 @@ function genreBlock(_mode, register, _styleProfile = '', documentProfile = null,
   if (documentProfile?.formatProfile?.flags?.includes?.('questionnaire')) {
     blocks.push(questionnaireBlock());
   }
-  blocks.push(tonePolicyBlock(documentProfile?.tonePolicy, requestStrength));
+  blocks.push(tonePolicyBlock(
+    documentProfile?.targetRegister || documentProfile?.tonePolicy,
+    requestStrength
+  ));
   return blocks.filter(Boolean).join('\n');
 }
 
@@ -30,6 +33,8 @@ function academicReportBlock(register) {
     '제목·절·표·목록과 논증 단계는 거시 구조로 잠근다. 다만 각 단계 안의 일반 서술은 절 배치·주어 위치·문장 경계를 조정해 기계적인 호흡을 풀어 쓴다.',
     '표·그림 제목·캡션·셀은 압축된 개념어를 유지하고 본문처럼 길게 풀어 쓰지 않는다.',
     '학술적 정확성을 낮추는 쉬운 말이나 구어체로 바꾸지 말고, 같은 전문 용어를 불필요하게 되풀이하는 문장만 자연스럽게 재구성한다.',
+    '원문 자체에 게임·군사·신체 은유나 구어적 별칭이 남아 있더라도 공식 보고서의 핵심 서술에는 그대로 복사하지 않는다. 실제 행위·상태·절차를 가리키는 중립적 전문 표현으로 바꾸되 사실과 인과는 유지한다.',
+    '게임식 조작 별칭, 시스템을 무기·신체·지형에 빗댄 표현, 익숙한 관용 비유는 직접 인용이나 해당 분야의 정식 용어가 아닌 한 실제 절차·상태·관계를 드러내는 문장으로 풀어 쓴다.',
     '개념을 일상어로 낮출 때도 “재다·메우다”처럼 논문에 어색한 구어를 쓰지 않고, 플랫폼·도구가 사람에게 무엇을 “~해 준다”고 의인화하지 않는다.',
     `원문 종결체=${register}.`
   ].join('\n');
@@ -132,15 +137,19 @@ function questionnaireBlock() {
   ].join('\n');
 }
 
-function tonePolicyBlock(tonePolicy, requestStrength = '') {
+function tonePolicyBlock(targetRegister, requestStrength = '') {
+  const formalTarget = ['academic_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
+    .includes(String(targetRegister || ''));
   if (requestStrength === 'advanced') {
-    return '말투 정책: 원문의 격식·화자·종결체는 유지하되, 이는 원문 어휘와 문장 배열을 보존형으로 복사하라는 뜻이 아니다. 일반 서술은 고급 범위로 실질 재구성한다.';
+    return formalTarget
+      ? '말투 정책: 화자·종결체는 유지하되 목표 격식은 공식·전문 문체다. 원문의 구어·게임식 별칭·과장 은유까지 보존하지 말고 중립적 전문 표현으로 높이면서 일반 서술을 고급 범위로 실질 재구성한다.'
+      : '말투 정책: 원문의 격식·화자·종결체는 유지하되, 이는 원문 어휘와 문장 배열을 보존형으로 복사하라는 뜻이 아니다. 일반 서술은 고급 범위로 실질 재구성한다.';
   }
-  if (tonePolicy === 'conversational') {
+  if (targetRegister === 'conversational') {
     return '말투 정책: 장르·화자·종결체를 바꾸지 않는 범위에서 단어 선택과 연결을 조금 더 친근하게 한다.';
   }
-  if (tonePolicy === 'formal') {
-    return '말투 정책: 장르·화자·종결체를 바꾸지 않는 범위에서 표현의 격식과 정확성을 유지한다.';
+  if (formalTarget) {
+    return '말투 정책: 장르·화자·종결체를 바꾸지 않는 범위에서 공식·전문 문체의 격식과 정확성을 지킨다. 원문에 남은 명백한 구어·과장 은유는 중립적인 장르 표현으로 정리한다.';
   }
   return '말투 정책: 별도 말투를 덧씌우지 않고 원문의 격식과 친밀도를 유지한다.';
 }

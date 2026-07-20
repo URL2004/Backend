@@ -781,6 +781,9 @@ function buildArchiveObservability(job) {
     requestedDocumentProfile: archiveString(engineMeta.requestedDocumentProfile, 64),
     profileOverrideApplied: engineMeta.profileOverrideApplied === true,
     profileOverrideIgnoredReason: archiveString(engineMeta.profileOverrideIgnoredReason, 48),
+    tonePolicy: archiveString(engineMeta.tonePolicy, 32),
+    targetRegister: archiveString(engineMeta.targetRegister || engineMeta.tonePolicy, 40),
+    targetRegisterSource: archiveString(engineMeta.targetRegisterSource, 40),
     semanticJudgeRan: engineMeta.semanticJudgeRan === true,
     discourseAuditVersion: archiveFinite(engineMeta.discourseAuditVersion),
     discoursePass: typeof engineMeta.discoursePass === 'boolean' ? engineMeta.discoursePass : undefined,
@@ -826,6 +829,9 @@ function buildArchiveObservability(job) {
     humanizationTargetChangedCount: archiveFinite(engineMeta.humanizationTargetChangedCount),
     structuralChangedSentenceCount: archiveFinite(engineMeta.structuralChangedSentenceCount),
     structuralChangedSentenceRatio: archiveFinite(engineMeta.structuralChangedSentenceRatio),
+    materiallyRecastSentenceCount: archiveFinite(engineMeta.materiallyRecastSentenceCount),
+    effectiveStructuralChangedSentenceCount: archiveFinite(engineMeta.effectiveStructuralChangedSentenceCount),
+    clauseLevelStructuralAlternative: engineMeta.clauseLevelStructuralAlternative === true,
     humanizationRequiredStructuralSentenceCount: archiveFinite(engineMeta.humanizationRequiredStructuralSentenceCount),
     humanizationParagraphCoverageApplicable: engineMeta.humanizationParagraphCoverageApplicable === true,
     humanizationEligibleParagraphCount: archiveFinite(engineMeta.humanizationEligibleParagraphCount),
@@ -860,11 +866,18 @@ function buildArchiveObservability(job) {
     sectionRecoveryAttemptCount: archiveFinite(engineMeta.sectionRecoveryAttemptCount),
     sectionRecoveryAppliedCount: archiveFinite(engineMeta.sectionRecoveryAppliedCount),
     sectionRecoveryEscalationCount: archiveFinite(engineMeta.sectionRecoveryEscalationCount),
+    sectionRecoveryRejectedAttemptCount: archiveFinite(engineMeta.sectionRecoveryRejectedAttemptCount),
+    sectionRecoveryRejectionCodes: uniqueStrictArchiveCodes(engineMeta.sectionRecoveryRejectionCodes),
+    sectionRecoveryRejectionCodeCounts: compactArchiveCodeCountMap(engineMeta.sectionRecoveryRejectionCodeCounts),
+    sectionRecoveryMiniAppliedCount: archiveFinite(engineMeta.sectionRecoveryMiniAppliedCount),
+    sectionRecoveryEscalationAppliedCount: archiveFinite(engineMeta.sectionRecoveryEscalationAppliedCount),
     fingerprintAuditVersion: archiveFinite(engineMeta.fingerprintAuditVersion),
     fingerprintPass: typeof engineMeta.fingerprintPass === 'boolean' ? engineMeta.fingerprintPass : undefined,
     fingerprintIssueCodes: uniqueStrictArchiveCodes(engineMeta.fingerprintIssueCodes),
     fingerprintIntroducedCount: archiveFinite(engineMeta.fingerprintIntroducedCount),
     fingerprintExcessIntroducedCount: archiveFinite(engineMeta.fingerprintExcessIntroducedCount),
+    semanticRelationShiftCount: archiveFinite(engineMeta.semanticRelationShiftCount),
+    semanticRelationShiftFamilies: uniqueStrictArchiveCodes(engineMeta.semanticRelationShiftFamilies),
     fingerprintRepairCount: archiveFinite(engineMeta.fingerprintRepairCount),
     fingerprintShadowPositiveCodes: uniqueStrictArchiveCodes(engineMeta.fingerprintShadowPositiveCodes),
     fingerprintShadowPositiveCount: archiveFinite(engineMeta.fingerprintShadowPositiveCount),
@@ -885,6 +898,7 @@ function buildArchiveObservability(job) {
     koreanRefinementPass: typeof engineMeta.koreanRefinementPass === 'boolean' ? engineMeta.koreanRefinementPass : undefined,
     koreanRefinementIssueCodes: uniqueStrictArchiveCodes(engineMeta.koreanRefinementIssueCodes),
     koreanRefinementIntroducedIssueCount: archiveFinite(engineMeta.koreanRefinementIntroducedIssueCount),
+    formalRegisterResidualCount: archiveFinite(engineMeta.formalRegisterResidualCount),
     koreanDeterministicRepairCount: archiveFinite(engineMeta.koreanDeterministicRepairCount),
     koreanRefinementRetryAttemptCount: archiveFinite(engineMeta.koreanRefinementRetryAttemptCount),
     koreanRefinementRetryCount: archiveFinite(engineMeta.koreanRefinementRetryCount),
@@ -1231,6 +1245,15 @@ async function runSearchPhase(job, text) {
 function fallbackEnabled() {
   const v = (process.env.TRANSFORM_BLOCK_FALLBACK || '').toLowerCase();
   return v !== '0' && v !== 'off' && v !== 'false';
+}
+
+function compactArchiveCodeCountMap(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(Object.entries(source).slice(0, 20).map(([code, count]) => {
+    const safeCode = String(archiveString(code, 80) || '').replace(/[^a-z0-9_.:-]/giu, '_');
+    const safeCount = archiveFinite(count);
+    return [safeCode, safeCount];
+  }).filter(([code, count]) => code && Number.isFinite(count) && count > 0));
 }
 
 function preservationFallbackAllowed(mode) {

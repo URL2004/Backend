@@ -2,15 +2,17 @@
 
 function dynamicContextBlock({ riskProfile = '', userNotes = '', evidence = '', styleProfile = '', requestStrength = '', documentProfile = null } = {}) {
   const format = documentProfile?.formatProfile;
+  const targetRegister = documentProfile?.targetRegister || documentProfile?.tonePolicy || 'source_preserve';
   const tonePolicy = requestStrength === 'advanced'
-    ? 'preserve_register_only; rewriteScope=advanced'
-    : (documentProfile?.tonePolicy || 'source_preserve');
+    ? `target=${targetRegister}; preserveSpeakerAndEndings=true; rewriteScope=advanced`
+    : targetRegister;
   return [
     styleProfile ? `[profile]\n${styleProfile}` : '',
     documentProfile ? [
       '[document profile]',
       `contentGenre=${documentProfile.profile} (confidence=${documentProfile.confidence}, source=${documentProfile.profileDecisionSource || documentProfile.source})`,
       `tonePolicy=${tonePolicy}`,
+      `targetRegister=${targetRegister} (source=${documentProfile.targetRegisterSource || 'legacy'})`,
       `format=${format?.primary || 'plain'}; length=${format?.length || 'standard'}; flags=${(format?.flags || []).join(',') || 'none'}`,
       `safetyProfiles=${(documentProfile.safetyProfiles || []).join(',') || 'none'}`,
       `riskFlags=${(documentProfile.riskFlags || []).join(',') || 'none'}`

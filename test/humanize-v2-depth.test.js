@@ -62,7 +62,7 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.15');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.16');
   assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
   assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
@@ -280,6 +280,32 @@ test('단순 어휘 교체와 절·내용 순서 재구성을 별도 구조 지�
   assert.equal(lexicalMetrics.structurallyChangedSentenceCount, 0, JSON.stringify(lexicalMetrics));
   assert.ok(structuralMetrics.structurallyChangedSentenceCount >= 1, JSON.stringify(structuralMetrics));
   assert.ok(structuralMetrics.contentOrderChangeCount >= 1 || structuralMetrics.clauseBoundaryChangeCount >= 1);
+});
+
+test('기본은 넓은 절 단위 재서술을 구조 0건 오탐으로 미달 처리하지 않고 고급은 실제 구조 변화를 요구한다', () => {
+  const source = [
+    'We reviewed the detailed project records against the approved operating criteria.',
+    'The manager summarized the important findings in the final internal report.',
+    'The team recorded the verified differences for the later meeting.',
+    'The analyst shared the completed schedule with every participant.'
+  ].join(' ');
+  const output = [
+    'We examined the detailed project records against the approved operating standards.',
+    'The manager outlined the important findings in the final internal document.',
+    'The team documented the verified differences for the later meeting.',
+    'The analyst distributed the completed schedule to every participant.'
+  ].join(' ');
+  const basic = depth.evaluateHumanizationDepth(source, output, {
+    requestStrength: 'basic', documentProfile: 'general', inputRisk: { abstractRiskRatio: 0 }
+  });
+  const advanced = depth.evaluateHumanizationDepth(source, output, {
+    requestStrength: 'advanced', documentProfile: 'general', inputRisk: { abstractRiskRatio: 0 }
+  });
+  assert.equal(basic.metrics.structurallyChangedSentenceCount, 0);
+  assert.equal(basic.metrics.clauseLevelStructuralAlternative, true);
+  assert.equal(basic.pass, true, JSON.stringify(basic));
+  assert.equal(advanced.metrics.clauseLevelStructuralAlternative, false);
+  assert.ok(advanced.reasons.includes('structural_rewrite_coverage_low'));
 });
 
 test('원문에 이미 있던 정형 성찰 결론을 남기면 깊이 보고서에 개선 미달을 기록한다', () => {

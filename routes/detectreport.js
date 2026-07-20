@@ -305,7 +305,8 @@ router.post('/detect-report', async (req, res) => {
     advancedTimeEstimate,
     paragraphs: paras.map((p, i) => {
       const kind = (detail[i] && detail[i].kind) || 'thin';
-      return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 140), coach: predictCoach(p) };   // ★문단별 예측태그→메모칸 코칭 (미리보기 140자 — 90자는 어디 문단인지 알아보기 어려움)
+      // snippet=미리보기(140자), text=문단 전문(프론트 "전체보기" 토글용 — 미리보기보다 길 때만 포함)
+      return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 140), text: p.length > 140 ? p : undefined, coach: predictCoach(p) };   // ★문단별 예측태그→메모칸 코칭
     }),
     coach: predictCoach(text, 0.5),   // ★글 전체 상위 예측태그 + 어느 경험 메모 칸을 채우면 되는지(코칭 요약)
     counts: {

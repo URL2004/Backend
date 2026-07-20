@@ -116,6 +116,8 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         '결정론 신호에 experience_novelty_candidate가 있으면 원문·허용 메모에 없는 실제 개인 경험·시점·행동이 새로 생겼는지 확인한다. 단순 의역이나 원문 경험의 자연스러운 재표현은 위반이 아니다. 실제 신규 경험이면 experience_novelty로 판정한다.',
         '학술·보고서에서 “~자체보다”가 “~에서 나아가”로, “~에 그치지 않고”가 “~이/가 아니라”로 바뀐 것처럼 대조·부정·제한·가능성의 범위가 달라지면 distortion이다.',
         '행위 주체와 대상이 뒤바뀌는 주어-서술어 오류, 설명 평서문의 명령문 변환, 표·캡션의 개념어를 긴 설명으로 풀어 쓴 변화, 학술 어휘의 과도한 구어화도 의미·장르 정확성을 해치면 distortion으로 판정한다.',
+        '연구개발 지원서에서 SOURCE의 공정 최적화를 단순 조정으로, 상관관계를 일반적 관계로, 원인 분석을 짚기로, 재현성 검증을 확인하는 일로 낮추어 직무 개념의 정확도가 사라지면 distortion이다.',
+        '데이터가 보고서·논문을 작성하는 것처럼 행위 주체와 목적어를 바꾼 문장도 distortion이다. 단, SOURCE의 어색한 연어를 의미 범위 안에서 반영·원고 작성으로 바로잡은 것은 위반이 아니다.',
         '표현을 충분히 바꾼 것 자체는 위반이 아니다. 같은 주장 안의 어순·절·호흡 변화는 허용하고, SOURCE에 없던 담화 기능이나 범위가 생긴 경우만 위반으로 잡는다.',
         '원문에 있던 1인칭 화자·관점이 결과에서 완전히 사라지거나 원문에 없던 화자가 생긴 경우도 의미 왜곡으로 판정한다. JSON만 반환한다.'
       ].join('\n');
@@ -157,7 +159,7 @@ async function repairViolations(rawText, outputText, ledger, violations, {
   const cfg = await loadConfig(config);
   const system = lang === 'en'
     ? 'Repair only the listed violations while preserving the original rewrite as much as possible. Do not add facts.'
-    : '위반이 발생한 문장이나 문단만 원문의 같은 위치를 기준으로 고친다. 나머지 문장·문단은 그대로 유지한다. 새 사실·주제·평가·교훈·강한 수식·결론을 추가하지 않으며, 기존의 안전한 문장 구조 변화는 지우지 않는다. 대조·부정·제한·가능성의 범위, 행위 주체, 평서문 문체, 표·캡션의 압축도는 원문으로 되돌린다.';
+    : '위반이 발생한 문장이나 문단만 원문의 같은 위치를 기준으로 고친다. 나머지 문장·문단은 그대로 유지한다. 새 사실·주제·평가·교훈·강한 수식·결론을 추가하지 않으며, 기존의 안전한 문장 구조 변화는 지우지 않는다. 대조·부정·제한·가능성의 범위, 행위 주체, 평서문 문체, 표·캡션의 압축도는 원문으로 되돌린다. 연구개발 문맥의 최적화·상관관계·원인 분석·재현성 검증 같은 정확한 개념어도 같은 주장 위치에 복원한다.';
   const user = [
     `[SOURCE]\n${rawText}`,
     `[SOURCE CLAIM LEDGER]\n${ledgerToText(ledger)}`,

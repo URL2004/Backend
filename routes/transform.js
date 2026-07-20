@@ -899,6 +899,7 @@ function buildArchiveObservability(job) {
     paragraphRepairPolicy: archiveString(paragraphRepair.policy, 48),
     paragraphCountBeforeRepair: archiveFinite(paragraphRepair.beforeCount),
     paragraphCountAfterRepair: archiveFinite(paragraphRepair.afterCount),
+    paragraphRoleBoundaryCount: archiveFinite(paragraphRepair.roleBoundaryCount ?? engineMeta.paragraphRoleBoundaryCount),
     paragraphOverlongCount: archiveFinite(paragraphReadability.overlongCount),
     paragraphMaxBare: archiveFinite(paragraphReadability.maxBare),
     paragraphMaxSentences: archiveFinite(paragraphReadability.maxSentences)

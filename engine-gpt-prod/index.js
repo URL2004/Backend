@@ -31,7 +31,7 @@ const resumeCoverage = require('./resumeCoverage');
 const experienceAudit = require('./experienceAudit');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.12';
+const VERSION = 'gpt-prod-v2.4.13';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -886,6 +886,7 @@ async function runEngine({
         outputText,
         chunks,
         mode: selectedMode,
+        requestStrength,
         documentProfile,
         profileConfidence: documentProfile.confidence
       })
@@ -989,7 +990,7 @@ async function runEngine({
     voiceProfile,
     documentProfile,
     structureAudit,
-    protectedTerms: extractProtectedTerms(rawSource),
+    protectedTerms: extractProtectedTerms(rawSource, documentProfile),
     allowedExtra: evidence || userNotes || ''
   }) : null;
   const result = buildResult({ source: rawSource, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled, structureAudit });
@@ -1183,6 +1184,7 @@ async function runEngine({
     formatProfile: documentProfile.formatProfile || { length: 'standard', primary: 'plain', flags: [] },
     lineBoundaryPolicy,
     paragraphRepairPolicy: layoutRepair?.paragraphs?.policy || 'none',
+    paragraphRoleBoundaryCount: Number(layoutRepair?.paragraphs?.roleBoundaryCount || 0),
     paragraphReadability: layoutRepair?.paragraphs?.readability || null,
     riskFlags: documentProfile.riskFlags || [],
     tonePolicy: documentProfile.tonePolicy || 'source_preserve',
@@ -1415,7 +1417,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     chunk.outputText = original;
     return chunkRecord({ chunk, outputText: original, skipped: true });
   }
-  const protectedTerms = extractProtectedTerms(original);
+  const protectedTerms = extractProtectedTerms(original, documentProfile);
   const patchTargets = buildPatchTargets(original, mode);
   const highRisk = isHighRiskChunk(original, protectedTerms, patchTargets, cfg, inputRisk);
   const primaryReasoning = highRisk ? cfg.reasoning.factDense : cfg.reasoning.humanize;
@@ -2389,7 +2391,7 @@ function isHighRiskChunk(text, protectedTerms, patchTargets, cfg, inputRisk) {
   return false;
 }
 
-function extractProtectedTerms(text) {
+function extractProtectedTerms(text, documentProfile = null) {
   const s = String(text || '');
   const out = new Set();
   const patterns = [
@@ -2406,6 +2408,23 @@ function extractProtectedTerms(text) {
   for (const re of patterns) {
     for (const m of s.matchAll(re)) {
       addProtectedTerm(out, m[0]);
+    }
+  }
+  if (/(?:연구\s*개발|연구실|실험|공정|시편|분석\s*장비|재현성)/u.test(s)) {
+    const professionalPatterns = [
+      /공정\s*조건/gu,
+      /공정\s*변수/gu,
+      /공정\s*최적화/gu,
+      /상관관계/gu,
+      /재현성/gu,
+      /수치화/gu,
+      /정량화/gu,
+      /데이터\s*해석/gu,
+      /결과\s*검증/gu,
+      /반복\s*실험/gu
+    ];
+    for (const re of professionalPatterns) {
+      for (const match of s.matchAll(re)) addProtectedTerm(out, match[0]);
     }
   }
   return [...out].slice(0, 120);
@@ -2550,7 +2569,7 @@ function isSafeGeneralSurfaceCandidate(source, candidate, contract, documentProf
   if (compareNumberMultiset(before, after).changed) return false;
   const povDrift = floor.measurePovDrift(before, after, contract?.povSeed);
   if (povDrift.introducedAnyFirstPerson || povDrift.droppedAnyFirstPerson) return false;
-  if (extractProtectedTerms(before).some(term => !containsNormalizedValue(after, term))) return false;
+  if (extractProtectedTerms(before, documentProfile).some(term => !containsNormalizedValue(after, term))) return false;
   const beforeVoice = buildVoiceProfile(before, { documentProfile: documentProfile || 'unknown' });
   const afterVoice = buildVoiceProfile(after, { documentProfile: documentProfile || 'unknown' });
   const beforeSentenceCount = meaningfulSentenceCount(before);

@@ -6,7 +6,7 @@ const { splitSentenceSpans, splitSentences } = require('../engine/koreanText');
 const { paragraphExpansionLimit } = require('./voiceProfile');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 'gpt-structure-chunk-v1';
+const VERSION = 'gpt-structure-chunk-v2';
 const UNSAFE_END_RE = /(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한|그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/;
 
 function splitChunksForGpt(text, {
@@ -280,14 +280,15 @@ function restoreBoundaryMarkers(outputText, chunk) {
 }
 
 // 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 이 단계는 동결 제목을
-// 독립 행으로 되돌리고, 보존형 윤문/고신뢰 보고서의 문단 경계만 조정한다.
-function restorePostSemanticLayout({ source, outputText, chunks, mode = '', documentProfile = '', profileConfidence = 0 } = {}) {
+// 독립 행으로 되돌리고, 구조가 잠기지 않은 일반 산문의 문단 경계만 조정한다.
+function restorePostSemanticLayout({ source, outputText, chunks, mode = '', requestStrength = '', documentProfile = '', profileConfidence = 0 } = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
   const paragraphs = restoreParagraphLayout({
     source,
     outputText: heading.text,
     chunks,
     mode,
+    requestStrength,
     documentProfile,
     profileConfidence
   });
@@ -344,7 +345,7 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
   };
 }
 
-function restoreParagraphLayout({ source, outputText, chunks, mode = '', documentProfile = '', profileConfidence = 0 } = {}) {
+function restoreParagraphLayout({ source, outputText, chunks, mode = '', requestStrength = '', documentProfile = '', profileConfidence = 0 } = {}) {
   const sourceParagraphs = splitParagraphs(source);
   const before = splitParagraphs(outputText);
   const sourceCount = sourceParagraphs.length;
@@ -352,12 +353,41 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
   const profileName = typeof documentProfile === 'object'
     ? String(documentProfile?.profile || documentProfile?.contentGenre || 'unknown')
     : String(documentProfile || '');
-  const sensitiveReport = Number(profileConfidence) >= 0.75
+  const confidence = Math.max(
+    Number(profileConfidence) || 0,
+    typeof documentProfile === 'object' ? Number(documentProfile?.confidence) || 0 : 0
+  );
+  const sensitiveReport = confidence >= 0.75
     && ['academic_paper', 'report_assignment'].includes(profileName);
   const creativeLayout = profileName === 'creative';
   const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs);
   const beforeReadability = layoutStructure.measureParagraphReadability(before);
   const readableMinimum = Math.max(sourceReadability.minimumCount, beforeReadability.minimumCount);
+  const formatFlags = new Set(typeof documentProfile === 'object' ? (documentProfile?.formatProfile?.flags || []) : []);
+  const semanticProseRoles = ['basic', 'advanced'].includes(String(requestStrength || ''))
+    && mode !== 'polish'
+    && !creativeLayout
+    && !['questionnaire', 'list_heavy', 'table', 'table_heavy', 'sectioned', 'reference_heavy', 'creative_lines']
+      .some(flag => formatFlags.has(flag))
+    && !(chunks || []).some(chunk => chunk?.locked && String(chunk.text || '').trim());
+  if (semanticProseRoles) {
+    const roleLayout = buildSemanticProseRoleLayout(outputText, { profileName });
+    if (roleLayout.applicable) {
+      const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(roleLayout.text));
+      return {
+        text: roleLayout.text,
+        applied: roleLayout.text !== normalizeParagraphWhitespace(outputText),
+        policy: 'semantic_prose_roles',
+        sourceCount,
+        beforeCount,
+        targetCount: roleLayout.paragraphCount,
+        afterCount: roleLayout.paragraphCount,
+        roleBoundaryCount: roleLayout.roleBoundaryCount,
+        readability: compactReadability(afterReadability),
+        pass: roleLayout.contentPreserved && afterReadability.overlongCount === 0
+      };
+    }
+  }
   let targetCount = beforeCount;
   let policy = 'none';
   if (mode === 'polish' && sourceCount > 0) {
@@ -429,6 +459,149 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', documen
     readability: compactReadability(afterReadability),
     pass: afterCount === targetCount && afterReadability.overlongCount === 0
   };
+}
+
+function buildSemanticProseRoleLayout(value, { profileName = '' } = {}) {
+  const normalized = normalizeParagraphWhitespace(value);
+  const paragraphs = splitParagraphs(normalized);
+  const sentences = splitSentences(normalized)
+    .map(sentence => String(sentence || '').replace(/\s+/gu, ' ').trim())
+    .filter(Boolean);
+  const compactLength = bare(normalized).length;
+  if (compactLength < 320 || sentences.length < 7 || layoutStructure.isStructureDominatedParagraph(normalized)) {
+    return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved: true };
+  }
+
+  let targetCount = Math.max(
+    2,
+    Math.min(
+      8,
+      Math.floor(sentences.length / 2),
+      Math.max(Math.ceil(sentences.length / 4), Math.ceil(compactLength / 600))
+    )
+  );
+  if (targetCount < 2) {
+    return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved: true };
+  }
+
+  const candidates = new Map();
+  const addCandidate = (index, priority, kind) => {
+    if (!Number.isInteger(index) || index <= 0 || index >= sentences.length) return;
+    const previous = candidates.get(index);
+    if (!previous || priority > previous.priority) candidates.set(index, { index, priority, kind });
+  };
+
+  let searchFrom = 1;
+  for (const paragraph of paragraphs.slice(1)) {
+    const first = splitSentences(paragraph).map(sentence => String(sentence || '').replace(/\s+/gu, ' ').trim()).find(Boolean);
+    if (!first) continue;
+    const key = sentenceKey(first);
+    const index = sentences.findIndex((sentence, cursor) => cursor >= searchFrom && sentenceKey(sentence) === key);
+    if (index > 0) {
+      addCandidate(index, 8, 'existing');
+      searchFrom = index + 1;
+    }
+  }
+  sentences.forEach((sentence, index) => {
+    const kind = semanticTransitionKind(sentence, profileName);
+    if (kind) addCandidate(index, kind === 'conclusion' ? 10 : 9, kind);
+  });
+  const semanticBoundaryCount = [...candidates.values()]
+    .filter(candidate => candidate.kind !== 'existing' && candidate.index >= 2 && candidate.index <= sentences.length - 2)
+    .sort((a, b) => a.index - b.index)
+    .reduce((state, candidate) => {
+      if (candidate.index - state.lastIndex < 2) return state;
+      return { count: state.count + 1, lastIndex: candidate.index };
+    }, { count: 0, lastIndex: -2 }).count;
+  targetCount = Math.min(
+    8,
+    Math.floor(sentences.length / 2),
+    Math.max(targetCount, Math.min(6, semanticBoundaryCount + 1))
+  );
+  const currentReadability = layoutStructure.measureParagraphReadability(paragraphs);
+  if (paragraphs.length === targetCount && currentReadability.overlongCount === 0) {
+    return {
+      applicable: true,
+      text: normalized,
+      paragraphCount: paragraphs.length,
+      roleBoundaryCount: 0,
+      contentPreserved: true
+    };
+  }
+
+  const selected = [];
+  let previousIndex = 0;
+  for (let slot = 1; slot < targetCount; slot += 1) {
+    const remainingGroups = targetCount - slot;
+    const minimum = previousIndex + 2;
+    const maximum = sentences.length - (remainingGroups * 2);
+    if (minimum > maximum) break;
+    const expected = Math.max(minimum, Math.min(maximum, Math.round(sentences.length * slot / targetCount)));
+    const nearby = [...candidates.values()]
+      .filter(candidate => candidate.index >= minimum && candidate.index <= maximum && !selected.some(item => item.index === candidate.index))
+      .map(candidate => ({
+        ...candidate,
+        distance: Math.abs(candidate.index - expected),
+        score: candidate.priority * 12 - Math.abs(candidate.index - expected) * 7
+      }))
+      .sort((a, b) => b.score - a.score || a.distance - b.distance || a.index - b.index);
+    const chosen = nearby[0]?.score >= 55
+      ? nearby[0]
+      : { index: expected, priority: 0, kind: 'balanced', distance: 0, score: 0 };
+    selected.push(chosen);
+    previousIndex = chosen.index;
+  }
+  if (selected.length !== targetCount - 1) {
+    return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved: true };
+  }
+
+  const boundaries = new Set(selected.map(item => item.index));
+  const groups = [];
+  let current = [];
+  sentences.forEach((sentence, index) => {
+    if (boundaries.has(index) && current.length) {
+      groups.push(current.join(' '));
+      current = [];
+    }
+    current.push(sentence);
+  });
+  if (current.length) groups.push(current.join(' '));
+  const text = normalizeParagraphWhitespace(groups.join('\n\n'));
+  const contentPreserved = bare(text) === bare(normalized);
+  const beforeReadability = layoutStructure.measureParagraphReadability(paragraphs);
+  const afterReadability = layoutStructure.measureParagraphReadability(groups);
+  const beforeDistance = Math.abs(paragraphs.length - targetCount);
+  const afterDistance = Math.abs(groups.length - targetCount);
+  const improved = afterDistance < beforeDistance
+    || afterReadability.overlongCount < beforeReadability.overlongCount;
+  const alreadyOptimal = beforeDistance === 0 && text === normalized;
+  if (!contentPreserved || groups.length !== targetCount || (!improved && !alreadyOptimal)) {
+    return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved };
+  }
+  return {
+    applicable: true,
+    text,
+    paragraphCount: groups.length,
+    roleBoundaryCount: selected.filter(item => !['existing', 'balanced'].includes(item.kind)).length,
+    contentPreserved
+  };
+}
+
+function semanticTransitionKind(value, profileName = '') {
+  const sentence = String(value || '').trim();
+  if (/^(?:(?:이러한|이런|이와\s*같은)\s*(?:경험|과정|논의|분석|결과|역량|노력)(?:을|를)?\s*(?:통해|바탕으로)|이를\s*바탕으로|종합하면|결론적으로|결과적으로|따라서|그러므로|입사\s*후|앞으로(?:도)?)/u.test(sentence)) return 'conclusion';
+  if (/^(?:반면|그러나|하지만|다만|한편|그럼에도|이에\s*반해)/u.test(sentence)) return 'contrast';
+  if (/^(?:예를\s*들어|구체적으로|실제로|대표적으로|사례를\s*보면)/u.test(sentence)) return 'evidence';
+  if (/^(?:첫째|둘째|셋째|넷째|먼저|다음으로|마지막으로|또\s*다른|이와\s*별개로)/u.test(sentence)) return 'topic_shift';
+  if (/^(?:연구실|회사|기관|현장|팀|부서|조직|근무지)(?:에서는|에서)\s/u.test(sentence)) return 'context';
+  if (/^(?:장비|업무|연구|프로젝트|실험)(?:를|을)\s*(?:단순히|그저|사용하는\s+데서|수행하는\s+데서)/u.test(sentence)) return 'development';
+  if (profileName === 'resume_application'
+      && /^(?!연구(?:를|가)\s)(?:[가-힣A-Za-z0-9·-]+\s+){0,5}(?:연구|프로젝트|과제|인턴십?|현장\s*실습)(?:에서는|에서)\s/u.test(sentence)) return 'experience';
+  return '';
+}
+
+function sentenceKey(value) {
+  return String(value || '').normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '');
 }
 
 function splitEditablePrefixPiece(piece) {
@@ -726,6 +899,7 @@ function compactLayoutRepair(value) {
       beforeCount: Number(value.paragraphs.beforeCount) || 0,
       targetCount: Number(value.paragraphs.targetCount) || 0,
       afterCount: Number(value.paragraphs.afterCount) || 0,
+      roleBoundaryCount: Number(value.paragraphs.roleBoundaryCount) || 0,
       readability: value.paragraphs.readability ? {
         overlongCount: Number(value.paragraphs.readability.overlongCount) || 0,
         maxBare: Number(value.paragraphs.readability.maxBare) || 0,

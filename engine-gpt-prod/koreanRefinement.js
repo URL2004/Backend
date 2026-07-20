@@ -1,9 +1,9 @@
 'use strict';
 
-const { splitSentences } = require('../engine/koreanText');
+const { splitSentences, levenshteinDistance } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 1;
+const VERSION = 2;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -30,6 +30,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     deterministicSafe: true,
     message: '“깊게 이해”보다 “깊이 이해”가 자연스러운 문맥이 있어요.'
   },
+  practice_class_spacing: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '“실습 수업”의 띄어쓰기를 확인해 주세요.'
+  },
   frequency_quantifier_conflict: {
     weight: 3,
     repairable: true,
@@ -47,6 +53,30 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '장르에 필요한 전문 어휘가 지나치게 일상적인 말로 낮아졌어요.'
+  },
+  data_document_collocation: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '데이터가 보고서·논문을 작성하는 것처럼 연결된 문장의 주어·목적어 관계가 어색해요.'
+  },
+  feedback_exchange_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '피드백 자체를 반복했다기보다 주고받은 과정이 드러나도록 연결해야 해요.'
+  },
+  self_evaluation_repetition: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '자기평가형 결론과 “노력했습니다”가 반복돼 실제 행동이나 근거가 약해 보여요.'
+  },
+  overloaded_research_action_chain: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: false,
+    message: '한 문장에 연구 행동이 너무 많이 연결돼 주어·서술어 관계와 호흡이 무거워요.'
   },
   repeated_vague_demonstrative: {
     weight: 1,
@@ -187,6 +217,7 @@ function repairContextualSpacing(value, source, context) {
         counts
       );
       out = replaceTracked(out, /(^|[^가-힣A-Za-z0-9_])한걸음(?=(?:에서|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)?(?:$|[^가-힣A-Za-z0-9_]))/gu, (_match, prefix) => `${prefix}한 걸음`, 'one_step_spacing', counts);
+      out = replaceTracked(out, /실습[ \t]*수업/gu, () => '실습 수업', 'practice_class_spacing', counts);
       out = replaceTracked(out, /지속[ \t]*이용[ \t]*의도/gu, () => '지속 이용 의도', 'continued_use_intent_spacing', counts);
       out = replaceTracked(out, /(^|[^가-힣A-Za-z0-9_])가치소비(?=(?:에서|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)?(?:$|[^가-힣A-Za-z0-9_]))/gu, (_match, prefix) => `${prefix}가치 소비`, 'value_consumption_spacing', counts);
       const during = new RegExp(`(^|[^가-힣A-Za-z0-9_])(${DURING_NOUNS.join('|')})중(?=(?:은|는|이|가|을|를|에|에서|에도|에는|의|으로|로|부터|까지|인|이었|이다|$|[^가-힣]))`, 'gu');
@@ -429,8 +460,15 @@ function detectTextIssues(value, { profile = 'unknown', includeSourceNotation = 
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
   pushNumericParenthesisIssue(issues, text);
   pushPatternIssue(issues, text, 'deep_understanding_collocation', /깊게\s+이해(?:하|했|되|할|하려|하고|하며|해서|해)/gu);
+  pushPatternIssue(issues, text, 'practice_class_spacing', /실습수업/gu);
   pushSentenceIssue(issues, text, 'frequency_quantifier_conflict', sentence => /(?:그때마다|매번)[^.!?。！？\n]{0,90}(?:자주|종종|가끔)/u.test(sentence));
   pushSentenceIssue(issues, text, 'awkward_focus_attachment', sentence => /어떻게[^.!?。！？\n]{0,70}(?:지도|지를)\s*중심에\s*두고/u.test(sentence));
+  pushSentenceIssue(issues, text, 'data_document_collocation', hasDataDocumentCollocation);
+  pushSentenceIssue(issues, text, 'feedback_exchange_collocation', sentence => /피드백(?:을|를)?\s*(?:여러\s*차례\s*)?반복(?:하|했|해|하며|해서|하고)/u.test(sentence));
+  pushSelfEvaluationRepetition(issues, text);
+  if (/(?:연구|실험|공정|시편|분석\s*장비)/u.test(text)) {
+    pushSentenceIssue(issues, text, 'overloaded_research_action_chain', isOverloadedResearchActionChain);
+  }
   pushRepeatedVagueDemonstrative(issues, text);
   if (includeSourceNotation) {
     pushPatternIssue(issues, text, 'list_marker_spacing', /^(?:[-*•▪◦]|\d+[.)])(?=\S)/gmu);
@@ -443,6 +481,7 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   let text = before;
   const changes = [];
   text = replaceAndCount(text, /([.!?。！？])(?=[가-힣])/gu, '$1 ', 'missing_sentence_space', changes);
+  text = replaceAndCount(text, /실습수업/gu, '실습 수업', 'practice_class_spacing', changes);
   text = text.replace(/(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
     if (PARTICLE_AFTER_PAREN.test(right)) return match;
     changes.push('numeric_parenthesis_join');
@@ -489,7 +528,6 @@ function buildSourceReviewWarnings(sourceOrIssues, documentProfile = null) {
 }
 
 function detectProfessionalDowngrade(source, outputText, profile) {
-  if (!PROFESSIONAL_PROFILES.has(profile)) return null;
   const before = String(source || '');
   const after = String(outputText || '');
   const mappings = [
@@ -502,18 +540,169 @@ function detectProfessionalDowngrade(source, outputText, profile) {
   ];
   let count = 0;
   const concepts = [];
-  for (const mapping of mappings) {
-    const sourceFormal = countMatches(before, mapping.formal);
-    const outputFormal = countMatches(after, mapping.formal);
-    const sourceCasual = countMatches(before, mapping.casual);
-    const outputCasual = countMatches(after, mapping.casual);
-    if (sourceFormal > 0 && outputFormal === 0 && outputCasual > sourceCasual) {
-      count += outputCasual - sourceCasual;
-      concepts.push(mapping.formal.source);
+  const sentenceOrdinals = [];
+  const alignedLosses = detectAlignedProfessionalLosses(before, after);
+  for (const loss of alignedLosses) {
+    count += 1;
+    concepts.push(loss.concept);
+    sentenceOrdinals.push(loss.sourceOrdinal);
+  }
+  if (PROFESSIONAL_PROFILES.has(profile)) {
+    for (const mapping of mappings) {
+      const sourceFormal = countMatches(before, mapping.formal);
+      const outputFormal = countMatches(after, mapping.formal);
+      const sourceCasual = countMatches(before, mapping.casual);
+      const outputCasual = countMatches(after, mapping.casual);
+      if (sourceFormal > 0 && outputFormal === 0 && outputCasual > sourceCasual) {
+        count += outputCasual - sourceCasual;
+        concepts.push(mapping.formal.source);
+      }
     }
   }
   if (!count) return null;
-  return makeIssue('professional_register_downgrade', count, [], { concepts: concepts.slice(0, 6) });
+  return makeIssue('professional_register_downgrade', count, sentenceOrdinals, {
+    concepts: [...new Set(concepts)].slice(0, 12),
+    alignedLosses: alignedLosses.slice(0, 12)
+  });
+}
+
+const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
+  {
+    concept: 'process_optimization',
+    source: /(?:공정\s*조건(?:을|를)?\s*최적화|공정\s*최적화|최적\s*조건(?:을|를)?\s*도출)/u,
+    acceptable: /(?:공정[^.!?]{0,24}최적화|최적\s*(?:공정|조건)[^.!?]{0,20}(?:도출|찾|선정))/u,
+    preferred: ['공정 조건을 최적화', '최적 조건을 도출']
+  },
+  {
+    concept: 'structure_performance_correlation',
+    source: /(?:구조[^.!?]{0,24}성능[^.!?]{0,16}(?:상관관계|상관성)|(?:상관관계|상관성)[^.!?]{0,24}구조[^.!?]{0,24}성능)/u,
+    acceptable: /(?:구조[^.!?]{0,24}성능[^.!?]{0,16}(?:상관관계|상관성)|(?:상관관계|상관성)[^.!?]{0,24}구조[^.!?]{0,24}성능)/u,
+    preferred: ['구조와 성능 간 상관관계', '구조·성능의 상관성']
+  },
+  {
+    concept: 'cause_analysis',
+    source: /원인(?:을|를)?\s*(?:분석|규명|파악)/u,
+    acceptable: /원인(?:을|를)?\s*(?:분석|규명|파악)/u,
+    preferred: ['원인을 분석', '원인을 규명']
+  },
+  {
+    concept: 'reproducibility_verification',
+    source: /재현성(?:을|를)?\s*(?:검증|평가|확보)/u,
+    acceptable: /재현성(?:을|를)?\s*(?:검증|평가|확보)/u,
+    preferred: ['재현성을 검증', '재현성을 확보']
+  },
+  {
+    concept: 'quantitative_analysis',
+    source: /(?:수치화|정량화|정량\s*분석)/u,
+    acceptable: /(?:수치화|정량화|정량\s*분석)/u,
+    preferred: ['수치화', '정량화']
+  },
+  {
+    concept: 'data_interpretation',
+    source: /데이터\s*해석/u,
+    acceptable: /(?:데이터|측정\s*결과|분석\s*결과)[^.!?]{0,18}해석|해석[^.!?]{0,18}(?:데이터|측정\s*결과|분석\s*결과)/u,
+    preferred: ['데이터 해석', '측정 결과를 해석']
+  }
+]);
+
+function detectAlignedProfessionalLosses(source, outputText) {
+  const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const outputSentences = splitSentences(String(outputText || '')).map(value => String(value || '').trim()).filter(Boolean);
+  if (!sourceSentences.length || !outputSentences.length) return [];
+  const losses = [];
+  sourceSentences.forEach((sentence, sourceIndex) => {
+    for (const rule of PROFESSIONAL_CONCEPT_RULES) {
+      if (!patternMatchesLocal(rule.source, sentence)) continue;
+      const aligned = alignedOutputCandidates(sentence, sourceIndex, sourceSentences.length, outputSentences);
+      const bestScore = Number(aligned[0]?.score || 0);
+      const retained = aligned.some((item, index) => patternMatchesLocal(rule.acceptable, item.sentence)
+        && (index === 0 || (item.score >= 0.35 && item.score >= bestScore - 0.04)));
+      if (retained) continue;
+      const best = aligned[0] || { index: -1, sentence: '', score: 0 };
+      losses.push({
+        concept: rule.concept,
+        sourceOrdinal: sourceIndex + 1,
+        outputOrdinal: best.index >= 0 ? best.index + 1 : 0,
+        preferred: rule.preferred,
+        sourceSentence: sentence.slice(0, 220),
+        outputSentence: best.sentence.slice(0, 220)
+      });
+    }
+  });
+  return losses;
+}
+
+function alignedOutputCandidates(sourceSentence, sourceIndex, sourceCount, outputSentences) {
+  const center = sourceCount <= 1
+    ? 0
+    : Math.round(sourceIndex * Math.max(0, outputSentences.length - 1) / Math.max(1, sourceCount - 1));
+  const candidates = [];
+  for (let delta = -2; delta <= 2; delta += 1) {
+    const index = center + delta;
+    if (index < 0 || index >= outputSentences.length) continue;
+    const sentence = outputSentences[index];
+    candidates.push({ index, sentence, score: sentenceSimilarity(sourceSentence, sentence) });
+  }
+  return candidates.sort((a, b) => b.score - a.score);
+}
+
+function sentenceSimilarity(left, right) {
+  const leftTokens = new Set(contentTokensLocal(left));
+  const rightTokens = new Set(contentTokensLocal(right));
+  const overlap = [...leftTokens].filter(token => rightTokens.has(token)).length / Math.max(1, leftTokens.size);
+  const a = normalizeSentenceLocal(left);
+  const b = normalizeSentenceLocal(right);
+  const edit = 1 - (levenshteinDistance(a, b) / Math.max(1, a.length, b.length));
+  return Math.max(overlap, edit * 0.75);
+}
+
+function contentTokensLocal(value) {
+  return [...new Set((String(value || '').match(/[가-힣]{2,}|[A-Za-z]{3,}|\d+(?:\.\d+)?/gu) || [])
+    .map(token => token.toLowerCase().replace(/(?:하였습니다|했습니다|하였다|했다|에서는|으로는|으로|에서|하고|하며|하여|은|는|이|가|을|를|의|에|도|만|와|과|로)$/u, ''))
+    .filter(token => token.length >= 2))];
+}
+
+function normalizeSentenceLocal(value) {
+  return String(value || '').normalize('NFKC').toLowerCase().replace(/[^가-힣a-z0-9]/gu, '');
+}
+
+function patternMatchesLocal(pattern, value) {
+  pattern.lastIndex = 0;
+  return pattern.test(String(value || ''));
+}
+
+function hasDataDocumentCollocation(sentence) {
+  const value = String(sentence || '');
+  if (/(?:보고서|논문)(?:의\s*)?(?:원고|본문|초안)(?:을|를)?[^.!?。！？\n]{0,18}작성/u.test(value)) return false;
+  return /(?:데이터|측정값|실험값|분석\s*결과)(?:은|는|을|를)?[^.!?。！？\n]{0,75}(?:보고서|논문)에\s*(?:직접\s*)?작성/u.test(value);
+}
+
+function pushSelfEvaluationRepetition(issues, text) {
+  const sentences = splitSentences(String(text || ''));
+  const ordinals = [];
+  const pattern = /(?:(?:역량|능력|사고력|전문성|정확도)(?:을|를|도)?[^.!?。！？\n]{0,28}(?:길렀|키웠|갖추었|향상시켰|높였|발전시켰)|(?:기\s*위해|고자)\s*노력했)/u;
+  sentences.forEach((sentence, index) => {
+    if (pattern.test(String(sentence || ''))) ordinals.push(index + 1);
+  });
+  if (ordinals.length >= 3) {
+    issues.push(makeIssue('self_evaluation_repetition', ordinals.length - 2, ordinals, {
+      totalSelfEvaluationSentenceCount: ordinals.length
+    }));
+  }
+}
+
+function isOverloadedResearchActionChain(sentence) {
+  const value = String(sentence || '');
+  if (normalizeSentenceLocal(value).length < 65) return false;
+  const actions = [
+    /원인(?:을|를)?\s*(?:분석|규명|파악|짚)/u,
+    /(?:실험|공정)\s*조건(?:을|를)?\s*(?:조정|변경|바꾸)/u,
+    /반복\s*실험/u,
+    /재현성(?:을|를)?\s*(?:검증|확인|평가|확보)/u,
+    /(?:비교·분석|비교하고\s*분석|비교\s*분석)/u,
+    /(?:실험|연구|분석)[^.!?]{0,16}(?:수행|진행)/u
+  ];
+  return actions.filter(pattern => patternMatchesLocal(pattern, value)).length >= 4;
 }
 
 function pushPatternIssue(issues, text, code, pattern) {

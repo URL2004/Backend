@@ -137,7 +137,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.12');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.13');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -226,6 +226,31 @@ test('빈도 충돌은 국소 한국어 수리 후 의미 심사를 거치고 �
   assert.equal(out.qualityWarnings.some(item => item.code === 'korean_frequency_quantifier_conflict'), false);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_korean_refinement_retry').length, 1);
   assert.match(String(mock.calls.find(call => call.name === 'gpt_prod_korean_refinement_retry')?.body?.instructions || ''), /과학·법률·게임이론/u);
+});
+
+test('고급 연구개발 자소서의 전문 개념을 구어적 동사로 낮추면 국소 수리한다', { concurrency: false }, async t => {
+  const source = [
+    '저의 가장 큰 경쟁력은 공정 조건을 최적화하고 구조와 성능 간 상관관계를 분석하는 연구개발 역량입니다.',
+    '신축성 전극 연구에서 원인을 분석하고 실험 조건을 조정했습니다.',
+    '반복 실험을 통해 재현성을 검증하고 조건별 결과를 수치화했습니다.',
+    '연구실에서는 분석 장비를 관리하고 측정 결과를 공정 조건과 연결해 데이터 해석을 수행했습니다.',
+    '앞으로도 최적 공정을 도출해 소재 개발에 기여하는 연구원이 되겠습니다.'
+  ].join(' ');
+  const weakened = source.replace('원인을 분석하고', '원인을 짚고');
+  const corrected = weakened.replace('원인을 짚고', '원인을 분석하고');
+  const mock = installEngineMock(t, {
+    humanize: weakened,
+    koreanRefinementOutput: corrected
+  });
+  const out = await engine.run({ text: source, mode: 'formal', uid: 'resume-professional-register-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
+  assert.equal(out.engineMeta.documentProfile, 'resume_application');
+  assert.equal(out.result.outputText, corrected);
+  assert.equal(out.engineMeta.koreanRefinementRetryApplied, true);
+  const repairCall = mock.calls.find(call => call.name === 'gpt_prod_korean_refinement_retry');
+  assert.ok(repairCall);
+  assert.match(String(repairCall.body.instructions || ''), /최적화·상관관계·원인 분석·재현성 검증·수치화·데이터 해석/u);
+  assert.match(String(repairCall.body.instructions || ''), /cause_analysis/u);
 });
 
 test('원문부터 있던 비인접 반복은 결과에서 늘지 않으면 needs_review로 올리지 않는다', { concurrency: false }, async t => {
@@ -534,7 +559,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.12');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.13');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);

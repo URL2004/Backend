@@ -50,6 +50,71 @@ test('지원서의 전문 개념어가 구어체로 모두 내려간 경우 격�
   assert.ok(audit.residualWarnings.some(item => item.code === 'korean_professional_register_downgrade'));
 });
 
+test('연구개발 자소서의 전문용어 약화·연어 오류·자기평가 반복을 같이 검출한다', () => {
+  const source = [
+    '저의 경쟁력은 공정 조건을 최적화하고 소재의 구조와 성능 간 상관관계를 분석하는 역량입니다.',
+    '원인을 분석해 실험 조건을 조정했고, 반복 실험을 통해 재현성을 검증했습니다.',
+    '실습수업을 진행했습니다.',
+    '얻은 데이터를 연구과제 보고서와 투고 논문에 직접 작성해 문서화 능력을 길렀습니다.',
+    '데이터 해석 능력을 키우기 위해 노력했습니다.',
+    '지도교수와 피드백을 반복하며 분석력과 사고력을 발전시키고자 노력했습니다.'
+  ].join(' ');
+  const output = source
+    .replace('공정 조건을 최적화하고', '공정 조건을 조정하고')
+    .replace('구조와 성능 간 상관관계', '구조와 성능 사이의 관계')
+    .replace('원인을 분석해', '원인을 짚고')
+    .replace('재현성을 검증했습니다', '재현성을 확인하는 일도 했습니다');
+  const audit = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: output,
+    documentProfile: { profile: 'resume_application', confidence: 0.95 }
+  });
+  const codes = new Set(audit.issueCodes);
+  assert.ok(codes.has('professional_register_downgrade'), JSON.stringify(audit));
+  assert.ok(codes.has('data_document_collocation'));
+  assert.ok(codes.has('feedback_exchange_collocation'));
+  assert.ok(codes.has('self_evaluation_repetition'));
+  assert.ok(codes.has('practice_class_spacing'));
+  const professional = audit.issues.find(item => item.code === 'professional_register_downgrade');
+  assert.deepEqual(
+    new Set(professional.details.alignedLosses.map(item => item.concept)),
+    new Set(['process_optimization', 'structure_performance_correlation', 'cause_analysis', 'reproducibility_verification'])
+  );
+});
+
+test('전문 개념과 주어·목적어 연어 감사는 자소서가 아닌 일반 글에도 적용한다', () => {
+  const source = [
+    '연구에서는 공정 조건을 최적화하고 구조와 성능 간 상관관계를 분석했습니다.',
+    '측정 데이터를 연구 보고서에 반영했습니다.',
+    '연구진과 여러 차례 피드백을 주고받았습니다.'
+  ].join(' ');
+  const output = [
+    '연구에서는 공정 조건을 조정하고 구조와 성능 사이의 관계를 살폈습니다.',
+    '측정 데이터를 연구 보고서에 직접 작성했습니다.',
+    '연구진과 피드백을 반복했습니다.'
+  ].join(' ');
+  const audit = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: output,
+    documentProfile: { profile: 'general_essay', confidence: 0.82 }
+  });
+  const codes = new Set(audit.issueCodes);
+  assert.ok(codes.has('professional_register_downgrade'), JSON.stringify(audit));
+  assert.ok(codes.has('data_document_collocation'));
+  assert.ok(codes.has('feedback_exchange_collocation'));
+});
+
+test('연구개발 자소서의 실습 수업 띄어쓰기는 최종 형식 보정에서 안전하게 고친다', () => {
+  const text = '연구실 구성원을 대상으로 실습수업을 직접 진행했습니다.';
+  const repaired = refinement.applySafeFormattingRepairs({
+    source: text,
+    outputText: text,
+    documentProfile: { profile: 'resume_application' }
+  });
+  assert.equal(repaired.text, '연구실 구성원을 대상으로 실습 수업을 직접 진행했습니다.');
+  assert.ok(repaired.changeCodes.includes('practice_class_spacing'));
+});
+
 test('원문 검토 경고는 결과 품질 경고와 별도 배열로 유지한다', () => {
   const source = '-항목을 적었습니다.\n그때마다 같은 말을 자주 들었습니다.';
   const output = '- 항목을 적었습니다.\n그 과정에서 같은 말을 여러 번 들었습니다.';

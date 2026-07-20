@@ -259,6 +259,108 @@ test('일반 글도 원문 문단 분포의 1.5배를 넘는 과분할을 어휘
   assert.equal(paragraphExpansionLimit(1, 2880), 9, '긴 단일 문단은 읽기 가능한 분할 여지를 남긴다');
 });
 
+test('고급 자소서는 내용 순서를 유지하고 역할 전환 지점에서만 읽기 좋은 문단으로 나눈다', () => {
+  const intro = [
+    '저의 경쟁력은 공정 조건을 최적화하고 구조와 성능 간 상관관계를 분석하는 역량입니다.',
+    '공정 변수에 따른 차이를 분석한 뒤 최적 조건을 도출해 왔습니다.',
+    '이러한 역량은 소재 개발 연구를 수행하며 쌓았습니다.'
+  ];
+  const project = [
+    '신축성 전극 연구에서는 주름 구조를 최적화하기 위해 공정 조건을 조정했습니다.',
+    '금속 나노 파이버를 semi-embedded 구조로 제작했습니다.',
+    '원인을 분석해 조건을 조정했고 반복 실험으로 재현성을 검증했습니다.'
+  ];
+  const equipment = [
+    '연구실에서는 2년간 SEM과 AFM 장비 담당자로 근무했습니다.',
+    '측정 결과를 공정 조건과 연결해 해석했습니다.'
+  ];
+  const analysis = [
+    '장비를 단순히 운용하는 데 그치지 않고 분석 원리를 학습했습니다.',
+    '데이터 해석의 정확도를 높이고 결과를 연구에 활용했습니다.',
+    '보고서와 논문 원고를 작성하며 실험 결과를 문서화했습니다.'
+  ];
+  const conclusion = [
+    '이러한 경험을 통해 연구개발 전 과정을 수행할 역량을 갖추었습니다.',
+    '앞으로도 최적의 공정을 도출해 소재 개발에 기여하겠습니다.'
+  ];
+  const source = [intro.concat(project).join(' '), equipment.concat(analysis, conclusion).join(' ')].join('\n\n');
+  const profile = { profile: 'resume_application', confidence: 0.95, formatProfile: { primary: 'plain', flags: [] } };
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: source,
+    chunks: structure.splitChunksForGpt(source, { coalesceEditable: true }).chunks,
+    mode: 'assignment',
+    requestStrength: 'advanced',
+    documentProfile: profile,
+    profileConfidence: 0.95
+  });
+  assert.equal(restored.paragraphs.policy, 'semantic_prose_roles');
+  assert.equal(restored.paragraphs.sourceCount, 2);
+  assert.equal(restored.paragraphs.afterCount, 5);
+  assert.equal(restored.paragraphs.roleBoundaryCount, 4);
+  assert.equal(restored.text.replace(/\s+/gu, ''), source.replace(/\s+/gu, ''));
+  assert.match(restored.text, /\n\n신축성 전극 연구에서는/u);
+  assert.match(restored.text, /\n\n연구실에서는/u);
+  assert.match(restored.text, /\n\n장비를 단순히/u);
+  assert.match(restored.text, /\n\n이러한 경험을 통해/u);
+  const alreadyReadable = structure.restorePostSemanticLayout({
+    source,
+    outputText: restored.text,
+    chunks: structure.splitChunksForGpt(source, { coalesceEditable: true }).chunks,
+    mode: 'assignment',
+    requestStrength: 'advanced',
+    documentProfile: profile,
+    profileConfidence: 0.95
+  });
+  assert.equal(alreadyReadable.text, restored.text, '이미 역할별로 잘 나뉜 문단은 다시 합치거나 옮기지 않는다');
+  assert.equal(alreadyReadable.paragraphs.policy, 'semantic_prose_roles');
+  const voiceAudit = auditVoice(
+    buildVoiceProfile(source, { documentProfile: profile, mode: 'assignment' }),
+    restored.text,
+    {
+      documentProfile: profile,
+      mode: 'assignment',
+      layoutPolicy: restored.paragraphs.policy,
+      layoutTargetCount: restored.paragraphs.targetCount
+    }
+  );
+  assert.equal(voiceAudit.warnings.some(item => item.code === 'paragraph_structure_changed'), false);
+});
+
+test('기본·고급 일반 산문도 의미 역할 전환에 맞춰 문단 가독성을 개선한다', () => {
+  const source = [
+    '온라인 서비스가 일상에 깊이 들어오면서 사용자가 접하는 정보의 양도 크게 늘었습니다.',
+    '이 변화는 선택의 폭을 넓혔지만 판단에 필요한 시간과 비용도 함께 키웠습니다.',
+    '특히 화면 구성과 알림 방식은 사용자의 결정을 빠르게 유도합니다.',
+    '기존 연구는 이러한 설계가 구매 행동에 미치는 영향을 주로 설명했습니다.',
+    '하지만 실제 이용 과정에서 어떤 정보가 누락되는지는 충분히 다루지 못했습니다.',
+    '그러나 정보의 제시 순서까지 살펴보면 문제의 성격이 달라집니다.',
+    '사용자는 같은 조건에서도 먼저 본 정보에 더 큰 비중을 둘 수 있습니다.',
+    '사업자는 이 차이를 이용해 유리한 선택지를 앞쪽에 배치할 가능성이 있습니다.',
+    '예를 들어 해지 조건을 마지막 단계에 배치하면 가입 시점의 판단과 이용 후 평가가 달라질 수 있습니다.',
+    '이 사례는 정보량뿐 아니라 정보가 등장하는 시점도 중요하다는 점을 보여 줍니다.',
+    '따라서 이용자 보호를 위해서는 표시 항목의 수만 늘리는 방식에서 벗어날 필요가 있습니다.',
+    '핵심 조건을 결정 전에 이해할 수 있도록 배치하는 기준이 함께 마련되어야 합니다.'
+  ].join(' ');
+  const profile = { profile: 'general_essay', confidence: 0.88, formatProfile: { primary: 'plain', flags: [] } };
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: source,
+    chunks: structure.splitChunksForGpt(source, { coalesceEditable: true }).chunks,
+    mode: 'blog',
+    requestStrength: 'basic',
+    documentProfile: profile,
+    profileConfidence: 0.88
+  });
+  assert.equal(restored.paragraphs.policy, 'semantic_prose_roles');
+  assert.equal(restored.paragraphs.sourceCount, 1);
+  assert.equal(restored.paragraphs.afterCount, 4);
+  assert.equal(restored.text.replace(/\s+/gu, ''), source.replace(/\s+/gu, ''));
+  assert.match(restored.text, /\n\n하지만/u);
+  assert.match(restored.text, /\n\n예를 들어/u);
+  assert.match(restored.text, /\n\n따라서/u);
+});
+
 test('공백이 든 빈 줄을 실제 문단 경계로 세고 청크 왕복에서 원문을 보존한다', () => {
   const source = '독립 제목\n \t\n첫 문단은 원문의 의미를 설명합니다.\n\n둘째 문단은 결과를 정리합니다.';
   const chunks = chunk.splitChunks(source);
@@ -686,6 +788,8 @@ test('지원서 프롬프트는 거시 구조와 미시 편집을 분리하고 �
   }).stable;
   assert.match(advancedPrompt, /역량을 길렀다·능력을 키웠다·노력했다/u);
   assert.match(advancedPrompt, /첫 문단만 재작성하고 뒤 문단을 복사하지 않는다/u);
+  assert.match(advancedPrompt, /공정 최적화·구조\/성능 상관관계/u);
+  assert.match(advancedPrompt, /데이터가 보고서·논문을 작성하는 것처럼/u);
 });
 
 test('학술·보고서 프롬프트는 논리 연산자·행위 주체·표 압축도·격식을 보존한다', () => {

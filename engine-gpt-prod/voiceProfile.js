@@ -188,6 +188,8 @@ function auditVoice(sourceProfile, output, {
   const currentParagraphs = current.paragraph?.count || 0;
   const paragraphLimit = paragraphExpansionLimit(sourceParagraphs, sourceProfile?.compactLength || 0);
   const readablePolish = mode === 'polish' && layoutPolicy === 'readable_polish';
+  const semanticProseRoles = layoutPolicy === 'semantic_prose_roles'
+    && Number(layoutTargetCount) >= 2;
   const formattingRemovalCount = Math.max(0, Number(formattingParagraphRemovalCount) || 0);
   const formattingMinimum = sourceParagraphs > 0
     ? Math.max(1, sourceParagraphs - formattingRemovalCount)
@@ -196,7 +198,9 @@ function auditVoice(sourceProfile, output, {
     formattingMinimum,
     (Number(layoutTargetCount) || sourceParagraphs) - formattingRemovalCount
   );
-  const paragraphChanged = mode === 'polish'
+  const paragraphChanged = semanticProseRoles
+    ? currentParagraphs !== Number(layoutTargetCount)
+    : mode === 'polish'
     ? (readablePolish
         ? currentParagraphs < formattingMinimum || currentParagraphs > formattingMaximum
         : currentParagraphs !== formattingMinimum)

@@ -578,6 +578,7 @@ async function retryPolishSurface({ source, currentOutput, policy, reason = '', 
 async function retryGeneralSurface({ source, currentOutput, humanizationPlan = null, humanizationDepthReport = null, config, signal, safetyIdentifier = '', model = '', reasoningEffort = '', phase = 'humanization_depth_retry' }) {
   const plan = humanizationPlan || {};
   const strengthLabel = plan.requestStrength === 'advanced' ? '고급' : '기본';
+  const resumeProfile = plan.profile === 'resume_application';
   const targetOrdinals = buildGeneralRetryTargetOrdinals(source, currentOutput, plan, humanizationDepthReport);
   const targetText = targetOrdinals.length ? targetOrdinals.join(', ') : '서버가 표시한 현재 문장 중 안전하게 재구성 가능한 한 곳';
   const remediationLow = (humanizationDepthReport?.reasons || []).includes('rhetorical_remediation_low');
@@ -598,6 +599,11 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
       : '',
     plan.requestStrength === 'advanced'
       ? '고급 모드에서 수정 대상이 여러 문단에 걸치면 첫 문단만 고치고 멈추지 않는다. 각 문단의 역할과 순서는 유지하면서 지정된 대상 전체에 절 배치·주어 위치·연결·호흡 변화를 분산한다.'
+      : '',
+    '장르와 무관하게 SOURCE의 전문 개념 정확도를 낮추지 않는다. SOURCE에 공정 최적화·상관관계·원인 분석·재현성 검증·정량/수치화·데이터 해석이 있으면 같은 주장 안에 남기고, 조정·관계·짚기·확인하는 일 같은 더 약하거나 구어적인 말로 낮추지 않는다.',
+    '“데이터를 보고서·논문에 작성하다”, “피드백을 반복하다” 같은 주어·목적어·연어 오류를 만들지 않는다.',
+    resumeProfile
+      ? '역량을 길렀다·능력을 키웠다·노력했다가 반복되면 SOURCE의 실제 행동과 확인 가능한 결과로 직접 서술한다.'
       : '',
     '수정 대상의 앞뒤 한 문장은 같은 문단 안에서 같은 설명·활동·결론 역할을 공유할 때만 함께 묶어 고칠 수 있다. 다른 역할이나 다른 문단으로 내용은 옮기지 않는다.',
     structuralLow
@@ -736,15 +742,18 @@ async function retryKoreanRefinement({
   }
   const issueLines = issues.map(item => {
     const ordinals = (item.sentenceOrdinals || []).slice(0, 12).join(',');
-    return `- ${item.code}${ordinals ? ` (문장 ${ordinals})` : ''}: ${item.message}`;
+    const details = refinementIssueInstruction(item);
+    return `- ${item.code}${ordinals ? ` (문장 ${ordinals})` : ''}: ${item.message}${details ? ` ${details}` : ''}`;
   });
   const system = [
     '너는 한국어 문장 국소 수리기다. CURRENT에서 아래에 열거한 한국어 결합·빈도·초점·격식 문제만 최소 범위로 고친다.',
     'SOURCE는 의미와 사실 확인용이다. SOURCE의 주장, 수치, 기관명, 인용, 화자, 경험, 평가 강도, 제목, 목록, 질문, 문단 수와 내용 순서를 그대로 보존한다.',
     '과학·법률·게임이론 등 외부 사실의 옳고 그름을 추정해 수정하지 않는다. 원문에 없던 설명이나 예시도 추가하지 않는다.',
     '문제가 있는 문장과 같은 문단의 바로 인접한 문장만 문법상 꼭 필요할 때 함께 손본다. 나머지는 CURRENT를 그대로 둔다.',
+    '원문의 장르와 전문성 하한을 지킨다. 자연스럽게 만든다는 이유로 전문 개념을 일상적인 말로 낮추지 않는다. 연구개발 문맥의 최적화·상관관계·원인 분석·재현성 검증·수치화·데이터 해석은 같은 주장 안에서 정확도를 유지한다.',
+    '데이터를 보고서나 논문에 “작성”한다고 쓰지 않는다. SOURCE가 데이터의 활용을 뜻하면 “반영”으로, 본인이 문서를 써서 낸 것이 분명하면 “보고서·논문 원고를 작성”으로 주어와 목적어를 바로잡는다. 피드백은 문맥에 맞게 주고받았다고 쓴다.',
     profile === 'resume_application'
-      ? '자기소개서의 전문성 하한을 지킨다. 자연스럽게 만든다는 이유로 설계·구성·분석·역량·피드백·교류·근무 같은 말을 짰다·봤다·힘·준·어울렸다·일했다로 낮추지 않는다.'
+      ? '역량을 길렀다·능력을 키웠다·노력했다 계열이 반복되면 실제 행동과 SOURCE에 있는 결과를 직접 서술한다. 새 성과나 수치를 만들어 반복을 피하지 않는다.'
       : '',
     ['academic_paper', 'report_assignment'].includes(profile)
       ? '학술·보고서의 개념어와 격식을 유지하고 구어체나 감탄형 표현을 새로 넣지 않는다.'
@@ -775,6 +784,21 @@ async function retryKoreanRefinement({
     model: response.model,
     issueCodes: issues.map(item => item.code)
   };
+}
+
+function refinementIssueInstruction(item) {
+  if (item?.code === 'professional_register_downgrade') {
+    const losses = Array.isArray(item?.details?.alignedLosses) ? item.details.alignedLosses : [];
+    const hints = losses.slice(0, 8).map(loss => `${loss.sourceOrdinal}번 주장의 ${loss.concept}=${(loss.preferred || []).join('/')}`);
+    return hints.length ? `SOURCE의 같은 주장에 남겨야 할 전문 표현: ${hints.join('; ')}.` : '';
+  }
+  if (item?.code === 'data_document_collocation') {
+    return '데이터 활용이면 보고서·논문에 반영했다고 쓰고, SOURCE에서 문서 집필이 분명한 경우만 원고를 작성했다고 쓴다.';
+  }
+  if (item?.code === 'feedback_exchange_collocation') return '피드백을 반복했다고 쓰지 말고 주고받은 과정을 서술한다.';
+  if (item?.code === 'self_evaluation_repetition') return '반복된 자기평가 결론을 SOURCE에 있는 행동·결과 서술로 옮기되 새 성과를 만들지 않는다.';
+  if (item?.code === 'overloaded_research_action_chain') return '원인 분석·조건 조정·반복 실험·재현성 검증의 순서는 유지하고, 필요하면 두 문장으로 나눈다.';
+  return '';
 }
 
 async function retryFingerprintAudit({

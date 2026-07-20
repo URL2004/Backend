@@ -62,7 +62,7 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.9');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.12');
   assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
   assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
@@ -109,6 +109,30 @@ test('사실·형식 민감 장르는 기본만 2%p 완화하고 고급 강도�
   assert.equal(advanced.minSubstantiveEditRatio, 0.17);
   assert.ok(basic.minSubstantiveEditRatio >= 0.06);
   assert.ok(advanced.minSubstantiveEditRatio >= 0.09);
+});
+
+test('고급은 위험 대상이 걸친 일반 산문 문단을 한쪽만 바꾼 결과를 통과시키지 않는다', () => {
+  const source = [
+    '또한 실험 조건을 체계적으로 분석하는 역량은 연구에서 중요한 역할을 할 수 있습니다. 따라서 여러 조건을 비교하고 결과를 정리할 필요가 있습니다. 이러한 과정을 통해 데이터의 의미를 확인할 수 있습니다. 결국 반복 검증은 중요한 역량이 될 수 있습니다.',
+    '또한 분석 장비를 체계적으로 관리하는 역량은 연구에서 중요한 역할을 할 수 있습니다. 따라서 측정 결과를 비교하고 원인을 정리할 필요가 있습니다. 이러한 과정을 통해 공정의 의미를 확인할 수 있습니다. 결국 결과 해석은 중요한 역량이 될 수 있습니다.'
+  ].join('\n\n');
+  const firstParagraphOnly = [
+    '실험에서는 조건별 차이를 먼저 살폈습니다. 비교 결과를 정리한 뒤 필요한 검증 순서를 정했습니다. 데이터가 말하는 범위를 확인하고 반복 실험으로 판단을 점검했습니다. 이 과정에서 조건 분석 역량을 구체화했습니다.',
+    source.split('\n\n')[1]
+  ].join('\n\n');
+  const plan = depth.buildHumanizationPlan(source, {
+    requestStrength: 'advanced',
+    documentProfile: 'resume_application',
+    inputRisk: { abstractRiskRatio: 1 }
+  });
+  const report = depth.evaluateHumanizationDepth(source, firstParagraphOnly, plan);
+  assert.equal(plan.paragraphCoverageApplicable, true);
+  assert.equal(plan.targetParagraphCount, 2);
+  assert.equal(plan.requiredTargetChangedParagraphCount, 2);
+  assert.equal(report.metrics.targetChangedParagraphCount, 1);
+  assert.equal(report.metrics.targetParagraphCoverage, 0.5);
+  assert.deepEqual(report.metrics.untouchedTargetParagraphIndices, [1]);
+  assert.ok(report.reasons.includes('paragraph_rewrite_coverage_low'));
 });
 
 test('120자 이하 일반 글도 기본 9%·고급 12% 품질 최소선을 목표로 한다', () => {

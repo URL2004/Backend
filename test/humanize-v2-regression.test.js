@@ -493,6 +493,21 @@ test('제목이 없는 경력 서술도 행동·성과·직무 연결이 함께 
   assert.ok(report.safetyProfiles.includes('resume_application'));
 });
 
+test('논문 어휘가 많은 연구개발 자기소개서도 강점-수행-직업 포부 프레임으로 판정한다', () => {
+  const source = [
+    '저의 가장 큰 경쟁력은 공정 변수를 조정하고 측정 결과를 해석해 목표 특성을 구현하는 연구개발 역량입니다. 실험 설계부터 조건 최적화와 재현성 검증까지 직접 수행하며 데이터 신뢰성을 높였습니다.',
+    '연구실에서는 분석 장비를 유지 관리하고 여러 시편을 측정했습니다. 결과를 공정 조건과 연결해 해석한 뒤 연구 과제 보고서에 반영했으며, 앞으로도 근거를 바탕으로 소재 개발에 기여하는 연구원이 되겠습니다.'
+  ].join('\n\n');
+  const report = detectDocumentProfile(source);
+  assert.equal(report.profile, 'resume_application', JSON.stringify(report.candidateProfiles));
+  assert.ok(report.confidence >= 0.75, JSON.stringify(report.candidateProfiles));
+  assert.ok(report.safetyProfiles.includes('resume_application'));
+  assert.ok(report.signals.applicationValuePropositionSignals >= 1);
+  assert.ok(report.signals.careerAspirationSignals >= 1);
+  assert.ok(report.candidateProfiles.find(item => item.profile === 'resume_application').score
+    > report.candidateProfiles.find(item => item.profile === 'academic_paper').score);
+});
+
 test('숫자가 많은 일반 문장과 구매·가격 연구어를 표·광고로 오인하지 않는다', () => {
   const source = [
     '소비자의 구매 단계와 가격 정보가 선택에 미치는 영향을 분석했다.',
@@ -663,6 +678,14 @@ test('지원서 프롬프트는 거시 구조와 미시 편집을 분리하고 �
   assert.match(prompt, /미시 문장은 편집 대상/u);
   assert.match(prompt, /자기소개서의 직무·성과·역량 어휘/u);
   assert.match(prompt, /짰다·봤다·힘·준·어울렸다·일했다/u);
+  const advancedPrompt = prompts.buildHumanizePrompt('assignment', 'ko', {
+    requestStrength: 'advanced',
+    register: voiceProfile.register,
+    documentProfile,
+    voiceProfile
+  }).stable;
+  assert.match(advancedPrompt, /역량을 길렀다·능력을 키웠다·노력했다/u);
+  assert.match(advancedPrompt, /첫 문단만 재작성하고 뒤 문단을 복사하지 않는다/u);
 });
 
 test('학술·보고서 프롬프트는 논리 연산자·행위 주체·표 압축도·격식을 보존한다', () => {

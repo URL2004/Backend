@@ -6,7 +6,7 @@ function genreBlock(_mode, register, _styleProfile = '', documentProfile = null,
   if (group === 'academic_report_explainer') blocks.push(academicReportBlock(register));
   else if (group === 'student_record_teacher') blocks.push(studentRecordTeacherBlock(register));
   else if (group === 'student_self_assessment') blocks.push(studentSelfAssessmentBlock(register));
-  else if (group === 'essay_application') blocks.push(essayApplicationBlock(register, documentProfile?.profile));
+  else if (group === 'essay_application') blocks.push(essayApplicationBlock(register, documentProfile?.profile, requestStrength));
   else if (group === 'blog_social') blocks.push(blogSocialBlock(documentProfile?.profile));
   else if (group === 'functional_copy') blocks.push(functionalCopyBlock(documentProfile?.profile));
   else if (group === 'creative') blocks.push(creativeBlock());
@@ -55,7 +55,7 @@ function studentSelfAssessmentBlock(register) {
   ].join('\n');
 }
 
-function essayApplicationBlock(register, profile) {
+function essayApplicationBlock(register, profile, requestStrength = '') {
   const label = profile === 'resume_application' ? '자기소개서·지원서' : '개인 에세이';
   const lines = [
     `[원문 장르: ${label}]`,
@@ -67,6 +67,11 @@ function essayApplicationBlock(register, profile) {
     lines.splice(3, 0,
       '지원서의 전문성 하한을 지킨다. 설계·구성·분석·역량·피드백·교류·근무처럼 직무 의미가 있는 말을 단순히 짰다·봤다·힘·준·어울렸다·일했다 같은 가벼운 말로 낮추지 않는다.',
       '딱딱함은 문장 구조와 호흡으로 줄이되, 성과의 근거·본인의 행동·직무 연결은 명확한 업무 언어로 남긴다.');
+    if (requestStrength === 'advanced') {
+      lines.splice(5, 0,
+        '고급에서는 “역량을 길렀다·능력을 키웠다·노력했다·역량을 갖추었다” 같은 자기평가형 결론이 연속되면 그대로 반복하지 않는다. 원문에 있는 수행과 확인 가능한 결과를 문장 앞에 두고, 그 행동이 보여 주는 역량을 직접 드러낸다.',
+        '첫 문단만 재작성하고 뒤 문단을 복사하지 않는다. 각 경험 문단에서 바꿀 대상이 있으면 원래 경험·성과·순서를 지킨 채 어순과 절 구조를 고르게 재구성한다.');
+    }
   }
   return lines.join('\n');
 }

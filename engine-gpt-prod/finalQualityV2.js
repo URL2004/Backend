@@ -582,6 +582,10 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
   const targetText = targetOrdinals.length ? targetOrdinals.join(', ') : '서버가 표시한 현재 문장 중 안전하게 재구성 가능한 한 곳';
   const remediationLow = (humanizationDepthReport?.reasons || []).includes('rhetorical_remediation_low');
   const structuralLow = (humanizationDepthReport?.reasons || []).includes('structural_rewrite_coverage_low');
+  const paragraphLow = (humanizationDepthReport?.reasons || []).includes('paragraph_rewrite_coverage_low');
+  const untouchedParagraphs = (humanizationDepthReport?.metrics?.untouchedTargetParagraphIndices || [])
+    .filter(Number.isInteger)
+    .map(index => index + 1);
   const system = [
     '너는 한국어 실질 휴머나이징 국소 수리기다. 교정·다듬기만 한 결과를 만드는 작업이 아니다.',
     'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단 수와 내용 순서를 보존한다.',
@@ -589,6 +593,12 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
     `${strengthLabel} 모드의 변화량은 서버가 결과에서 계산한다. 숫자를 맞추기 위한 새 설명이나 동의어 나열 대신 지정된 문장의 절 순서·주어 위치·연결·호흡을 다시 구성한다.`,
     `수정 대상 문장 번호=${targetText}. 번호는 SOURCE와 CURRENT의 일반 문장 순서 기준이다.`,
+    paragraphLow
+      ? `현재 한쪽 문단에만 변화가 몰렸다. 아직 대상 문장이 실질적으로 바뀌지 않은 일반 산문 문단=${untouchedParagraphs.join(',') || '서버 표시 문단'}. 이 문단들을 빠뜨리지 말고 각 문단 안의 지정 문장을 고르게 재구성한다.`
+      : '',
+    plan.requestStrength === 'advanced'
+      ? '고급 모드에서 수정 대상이 여러 문단에 걸치면 첫 문단만 고치고 멈추지 않는다. 각 문단의 역할과 순서는 유지하면서 지정된 대상 전체에 절 배치·주어 위치·연결·호흡 변화를 분산한다.'
+      : '',
     '수정 대상의 앞뒤 한 문장은 같은 문단 안에서 같은 설명·활동·결론 역할을 공유할 때만 함께 묶어 고칠 수 있다. 다른 역할이나 다른 문단으로 내용은 옮기지 않는다.',
     structuralLow
       ? '현재 결과는 단어는 바뀌었지만 문장 구조 변화가 부족하다. 이미 조금 바뀐 대상도 절 배치·주어 위치·연결·문장 경계를 다시 구성해 표면 교체를 넘어선다.'
@@ -631,6 +641,8 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
   const rows = measured.sentenceEdits || [];
   if (!rows.length) return [];
   const targetSet = new Set((plan.targetIndices || []).filter(index => Number.isInteger(index)));
+  const untouchedTargetParagraphs = new Set((depthReport?.metrics?.untouchedTargetParagraphIndices || [])
+    .filter(index => Number.isInteger(index) && index >= 0));
   const unchanged = rows.filter(row => !row.substantiveChanged);
   const shallowChanged = rows.filter(row => row.substantiveChanged
     && (!row.structuralChanged || Number(row.ratio || 0) < 0.12));
@@ -638,7 +650,14 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
     && row.structuralChanged
     && targetSet.has(row.index));
   const remediationLow = (depthReport?.reasons || []).includes('rhetorical_remediation_low');
+  const untouchedParagraphSeeds = firstRowPerParagraph([
+    ...unchanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex)),
+    ...shallowChanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex))
+  ]);
   const ordered = uniqueRows([
+    ...untouchedParagraphSeeds,
+    ...unchanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex)),
+    ...shallowChanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex)),
     ...unchanged.filter(row => targetSet.has(row.index)),
     ...shallowChanged.filter(row => targetSet.has(row.index)),
     ...(remediationLow ? deepChangedTargets : []),
@@ -653,6 +672,9 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
   const totalDeficit = Math.max(1, Number(plan.requiredChangedSentenceCount || 1) - currentChangedCount);
   const targetDeficit = Math.max(0, Number(plan.requiredTargetChangedCount || 0) - currentTargetChangedCount);
   const structuralDeficit = Math.max(0, Number(plan.requiredStructuralChangedSentenceCount || 0) - currentStructuralCount);
+  const paragraphDeficit = Math.max(0,
+    Number(plan.requiredTargetChangedParagraphCount || 0)
+      - Number(depthReport?.metrics?.targetChangedParagraphCount || 0));
   const remediationDeficit = remediationLow
     ? Math.max(1, Number(depthReport?.metrics?.remediation?.residualTargetCount || 1))
     : 0;
@@ -663,10 +685,27 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
   // 지정된 한 문장을 다시 구성하면 평균적으로 그 문장 길이의 약 18%가
   // 실질 편집된다고 보고, 최소선에 닿는 데 필요한 범위만 보수적으로 고른다.
   const editDeficitCount = Math.ceil(editDeficitChars / Math.max(6, averageSentenceChars * 0.18));
-  const desiredCount = Math.min(ordered.length, Math.max(totalDeficit, targetDeficit, structuralDeficit, remediationDeficit, editDeficitCount));
+  const desiredCount = Math.min(ordered.length, Math.max(
+    totalDeficit,
+    targetDeficit,
+    structuralDeficit,
+    remediationDeficit,
+    editDeficitCount,
+    paragraphDeficit
+  ));
   return ordered
     .slice(0, Math.max(1, desiredCount))
     .map(row => row.index + 1);
+}
+
+function firstRowPerParagraph(rows) {
+  const seen = new Set();
+  return (rows || []).filter(row => {
+    const paragraphIndex = Number(row?.sourceParagraphIndex);
+    if (!Number.isInteger(paragraphIndex) || paragraphIndex < 0 || seen.has(paragraphIndex)) return false;
+    seen.add(paragraphIndex);
+    return true;
+  });
 }
 
 async function retryKoreanRefinement({

@@ -8,8 +8,8 @@ const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 5;
-const POLICY_VERSION = 'perceived-v2.4.9';
+const PLAN_VERSION = 6;
+const POLICY_VERSION = 'perceived-v2.4.12';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -70,6 +70,11 @@ function buildHumanizationPlan(source, {
       targetSubstantiveEditMin: 0,
       targetSubstantiveEditMax: 0,
       minTargetCoverage: 0,
+      paragraphCoverageApplicable: false,
+      eligibleParagraphCount: 0,
+      targetParagraphCount: 0,
+      requiredTargetChangedParagraphCount: 0,
+      minTargetParagraphCoverage: 0,
       carryoverApplicable: false,
       maxSubstantiveCarryoverRatio: 1,
       requiredStructuralChangedSentenceCount: 0,
@@ -100,6 +105,11 @@ function buildHumanizationPlan(source, {
   const cautious = CAUTIOUS_PROFILES.has(profile);
   const sourceChars = normalizeSubstantive(text).length;
   const eligibleCarryoverSentenceCount = eligibleProseSentences(text).length;
+  const paragraphCoveragePlan = buildParagraphCoveragePlan(text, target.indices, {
+    strength,
+    creative,
+    riskLevel
+  });
 
   const basePolicy = PERCEIVED_POLICY[strength][riskLevel];
   let minSubstantiveEditRatio = basePolicy.minEdit;
@@ -195,6 +205,7 @@ function buildHumanizationPlan(source, {
     targetSubstantiveEditMin: round4(targetSubstantiveEditMin),
     targetSubstantiveEditMax: round4(targetSubstantiveEditMax),
     minTargetCoverage: round4(minTargetCoverage),
+    ...paragraphCoveragePlan,
     carryoverApplicable,
     maxSubstantiveCarryoverRatio: round4(maxSubstantiveCarryoverRatio),
     minRemediationCoverage: round4(minRemediationCoverage),
@@ -221,6 +232,18 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   const targetIndices = new Set(plan.targetIndices || []);
   const targetChangedCount = metrics.sentenceEdits.filter(row => targetIndices.has(row.index) && row.substantiveChanged).length;
   const targetCoverage = plan.targetSentenceCount ? targetChangedCount / plan.targetSentenceCount : 1;
+  const targetParagraphIndices = new Set((plan.targetParagraphIndices || []).filter(Number.isInteger));
+  const targetChangedParagraphIndices = new Set(metrics.sentenceEdits
+    .filter(row => targetIndices.has(row.index)
+      && row.substantiveChanged
+      && targetParagraphIndices.has(row.sourceParagraphIndex))
+    .map(row => row.sourceParagraphIndex));
+  const targetChangedParagraphCount = targetChangedParagraphIndices.size;
+  const targetParagraphCoverage = Number(plan.targetParagraphCount || 0) > 0
+    ? targetChangedParagraphCount / Number(plan.targetParagraphCount)
+    : 1;
+  const untouchedTargetParagraphIndices = [...targetParagraphIndices]
+    .filter(index => !targetChangedParagraphIndices.has(index));
   const reasons = [];
   if (metrics.substantiveEditRatio + 1e-9 < plan.minSubstantiveEditRatio) reasons.push('substantive_edit_ratio_low');
   if (metrics.substantiveChangedSentenceCount < plan.requiredChangedSentenceCount) reasons.push('substantive_sentence_coverage_low');
@@ -228,6 +251,10 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   if (Number(plan.requiredStructuralChangedSentenceCount || 0) > 0
       && metrics.structurallyChangedSentenceCount < Number(plan.requiredStructuralChangedSentenceCount)) {
     reasons.push('structural_rewrite_coverage_low');
+  }
+  if (plan.paragraphCoverageApplicable === true
+      && targetChangedParagraphCount < Number(plan.requiredTargetChangedParagraphCount || 0)) {
+    reasons.push('paragraph_rewrite_coverage_low');
   }
   if (plan.carryoverApplicable === true
       && metrics.substantiveCarryoverRatio > Number(plan.maxSubstantiveCarryoverRatio || 1) + 1e-9) {
@@ -271,6 +298,9 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       sentenceEdits: undefined,
       targetChangedCount,
       targetCoverage: round4(targetCoverage),
+      targetChangedParagraphCount,
+      targetParagraphCoverage: round4(targetParagraphCoverage),
+      untouchedTargetParagraphIndices,
       remediation,
       targetDepthMet,
       aboveTargetRange,
@@ -293,18 +323,22 @@ function humanizationCandidateScore(report) {
   const structuralProgress = Number(plan.requiredStructuralChangedSentenceCount || 0) > 0
     ? progress(metrics.structurallyChangedSentenceCount, plan.requiredStructuralChangedSentenceCount)
     : 1;
+  const paragraphProgress = plan.paragraphCoverageApplicable === true
+    ? progress(metrics.targetChangedParagraphCount, plan.requiredTargetChangedParagraphCount)
+    : 1;
   const remediationProgress = Number(plan.minRemediationCoverage || 0) > 0
     ? progress(metrics.remediation?.coverage, plan.minRemediationCoverage)
     : 1;
   const carryoverProgress = plan.carryoverApplicable === true
     ? (finite(metrics.substantiveCarryoverRatio) <= finite(plan.maxSubstantiveCarryoverRatio) ? 1 : 0)
     : 1;
-  return round4((editProgress * 0.36)
-    + (sentenceProgress * 0.22)
-    + (targetProgress * 0.15)
-    + (structuralProgress * 0.11)
-    + (remediationProgress * 0.08)
-    + (carryoverProgress * 0.08));
+  return round4((editProgress * 0.32)
+    + (sentenceProgress * 0.20)
+    + (targetProgress * 0.14)
+    + (structuralProgress * 0.10)
+    + (paragraphProgress * 0.10)
+    + (remediationProgress * 0.07)
+    + (carryoverProgress * 0.07));
 }
 
 function isBetterHumanizationCandidate(current, candidate) {
@@ -321,6 +355,9 @@ function isBetterHumanizationCandidate(current, candidate) {
   const candidateStructural = finite(candidate?.metrics?.structurallyChangedSentenceCount);
   const currentRemediation = finite(current?.metrics?.remediation?.coverage);
   const candidateRemediation = finite(candidate?.metrics?.remediation?.coverage);
+  const currentParagraphs = finite(current?.metrics?.targetChangedParagraphCount);
+  const candidateParagraphs = finite(candidate?.metrics?.targetChangedParagraphCount);
+  if (candidateParagraphs > currentParagraphs && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateStructural > currentStructural && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateRemediation >= currentRemediation + 0.25 && candidateEdit >= currentEdit - 0.005) return true;
   return candidateEdit >= currentEdit + 0.015 && candidateSentences >= currentSentences;
@@ -337,6 +374,12 @@ function measureSubstantiveEdit(source, output) {
   const sourceSentences = meaningfulSentences(fromRaw);
   const outputSentences = meaningfulSentences(toRaw);
   const sentenceEdits = alignSentenceEdits(sourceSentences, outputSentences);
+  const paragraphMap = buildSentenceParagraphMap(fromRaw);
+  for (const row of sentenceEdits) {
+    row.sourceParagraphIndex = Number.isInteger(paragraphMap.sentenceParagraphIndices[row.index])
+      ? paragraphMap.sentenceParagraphIndices[row.index]
+      : -1;
+  }
   const substantiveChangedSentenceCount = sentenceEdits.filter(row => row.substantiveChanged).length;
   const substantiveChangedSentenceRatio = sourceSentences.length
     ? substantiveChangedSentenceCount / sourceSentences.length
@@ -351,6 +394,9 @@ function measureSubstantiveEdit(source, output) {
     sentenceBoundaryDelta > 0 ? Math.min(sourceSentences.length, sentenceBoundaryDelta) : 0
   );
   const carryover = measureSubstantiveCarryover(fromRaw, toRaw);
+  const changedParagraphIndices = [...new Set(sentenceEdits
+    .filter(row => row.substantiveChanged && row.sourceParagraphIndex >= 0)
+    .map(row => row.sourceParagraphIndex))];
   return {
     rawCharEditRatio: round4(raw.charEditRatio),
     substantiveDistance,
@@ -368,6 +414,11 @@ function measureSubstantiveEdit(source, output) {
     substantiveCarryoverCount: carryover.count,
     substantiveCarryoverRatio: carryover.ratio,
     substantiveCarryoverEligibleSentenceCount: carryover.eligibleSentenceCount,
+    eligibleParagraphCount: paragraphMap.eligibleParagraphCount,
+    substantiveChangedParagraphCount: changedParagraphIndices.length,
+    substantiveChangedParagraphRatio: round4(paragraphMap.eligibleParagraphCount
+      ? changedParagraphIndices.length / paragraphMap.eligibleParagraphCount
+      : 0),
     trivialOnly: raw.charEditRatio > 0 && substantiveEditRatio < 0.012,
     sentenceEdits
   };
@@ -430,6 +481,74 @@ function measureSubstantiveCarryover(source, output) {
     ratio: round4(sourceSentences.length ? count / sourceSentences.length : 0),
     eligibleSentenceCount: sourceSentences.length
   };
+}
+
+function buildParagraphCoveragePlan(source, targetIndices, {
+  strength = 'basic',
+  creative = false,
+  riskLevel = 'low'
+} = {}) {
+  const mapping = buildSentenceParagraphMap(source);
+  const targetParagraphIndices = [...new Set((targetIndices || [])
+    .map(index => mapping.sentenceParagraphIndices[index])
+    .filter(index => Number.isInteger(index) && index >= 0))]
+    .sort((a, b) => a - b);
+  const paragraphCoverageApplicable = strength === 'advanced'
+    && creative !== true
+    && mapping.eligibleParagraphCount >= 2
+    && targetParagraphIndices.length >= 2;
+  const minTargetParagraphCoverage = paragraphCoverageApplicable
+    ? (riskLevel === 'high' ? 1 : 0.75)
+    : 0;
+  const requiredTargetChangedParagraphCount = paragraphCoverageApplicable
+    ? Math.max(2, Math.ceil(targetParagraphIndices.length * minTargetParagraphCoverage))
+    : 0;
+  return {
+    paragraphCoverageApplicable,
+    eligibleParagraphCount: mapping.eligibleParagraphCount,
+    targetParagraphCount: targetParagraphIndices.length,
+    targetParagraphIndices,
+    requiredTargetChangedParagraphCount,
+    minTargetParagraphCoverage: round4(minTargetParagraphCoverage)
+  };
+}
+
+// 문단 수 자체가 아니라 일반 산문 문단의 편집 분포를 본다. 제목·목록·표·인용처럼
+// 잠긴 단독 블록은 모수에서 제외하고, 라벨 행은 라벨 뒤 본문만 산문으로 센다.
+// 각 문단을 따로 분리해도 splitSentences 순서는 문서 전체 순서와 같으므로 문장
+// 인덱스를 모델 프롬프트의 문장 번호와 그대로 연결할 수 있다.
+function buildSentenceParagraphMap(value) {
+  const blocks = stripLockTokens(value)
+    .replace(/\r\n?/gu, '\n')
+    .split(/\n[ \t]*\n+/u)
+    .map(block => block.trim())
+    .filter(Boolean);
+  const sentenceParagraphIndices = [];
+  let eligibleParagraphCount = 0;
+  let references = false;
+  for (const block of blocks) {
+    const blockSentences = meaningfulSentences(block);
+    const editableLines = [];
+    for (const rawLine of block.split('\n')) {
+      const line = String(rawLine || '').trim();
+      if (!line) continue;
+      if (/^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|References|Bibliography|Works\s+Cited)$/iu.test(line)) {
+        references = true;
+        continue;
+      }
+      if (references && /^(?:부록|Appendix)(?:\s|$)/iu.test(line)) references = false;
+      if (references) continue;
+      const labelBody = editableLabelBody(line);
+      if (labelBody) editableLines.push(labelBody);
+      else if (!isProtectedCarryoverLine(line)) editableLines.push(line);
+    }
+    const eligible = normalizeSubstantive(editableLines.join(' ')).length >= 8;
+    const paragraphIndex = eligible ? eligibleParagraphCount++ : -1;
+    for (let index = 0; index < blockSentences.length; index += 1) {
+      sentenceParagraphIndices.push(paragraphIndex);
+    }
+  }
+  return { sentenceParagraphIndices, eligibleParagraphCount };
 }
 
 function eligibleProseSentences(value) {
@@ -714,7 +833,11 @@ function stripLockTokens(value) {
 }
 
 function publicPlan(plan) {
-  const { targetIndices: _targetIndices, ...safe } = plan || {};
+  const {
+    targetIndices: _targetIndices,
+    targetParagraphIndices: _targetParagraphIndices,
+    ...safe
+  } = plan || {};
   return safe;
 }
 

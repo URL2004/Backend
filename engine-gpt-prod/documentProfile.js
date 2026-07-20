@@ -100,21 +100,45 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.student_self_assessment += 1.35;
   }
 
-  const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|성장\s*과정|직무\s*역량|자기\s*소개서|자소서|저의\s*(?:강점|경험)|귀사|지원하게\s*되었습니다)/gu);
-  const careerActionSignals = count(text, /(?:수집|정리|분석|비교|조사|기획|설계|운영|관리|지원|발표|협업|조율|응대|개선|제작|시각화|학습|연습|근무)/gu);
-  const achievementSignals = count(text, /(?:합격|취득|등급|자격증|성과|역량|능력|강점|목표를\s*(?:달성|이뤄)|키웠|길렀|향상|보완|다졌|갖췄)/gu);
-  const roleFitSignals = count(text, /(?:직무|실무|업무|입사|채용|지원서|지원\s*분야|회사|조직|고객|수강생|교육\s*운영|운영\s*지원|업무에\s*(?:활용|적용)|도움이\s*될|기여할)/gu);
+  const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|성장\s*과정|직무\s*역량|자기\s*소개서|자소서|저의\s*(?:(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|경험)|귀사|지원하게\s*되었습니다|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다)/gu);
+  const careerActionSignals = count(text, /(?:수집|정리|분석|비교|조사|기획|설계|운영|관리|지원|발표|협업|조율|응대|개선|제작|시각화|학습|연습|근무|실험|조정|최적화|도출|검증|측정|해석|문서화|작성|유지)/gu);
+  const achievementSignals = count(text, /(?:합격|취득|등급|자격증|성과|역량|능력|강점|경쟁력|목표를\s*(?:달성|이뤄)|키웠|길렀|향상|보완|다졌|갖췄|갖추었|확보|구현|재현성|신뢰성)/gu);
+  const roleFitSignals = count(text, /(?:직무|실무|업무|입사|채용|지원서|지원\s*분야|회사|조직|고객|수강생|교육\s*운영|운영\s*지원|연구\s*개발|연구원|소재\s*개발|업무에\s*(?:활용|적용)|도움이\s*될|기여(?:할|하는|하고자))/gu);
   const experienceNarrativeSignals = count(text, /(?:당시|그\s*과정에서|이\s*과정에서|이\s*경험(?:은|을|으로|을\s*통해)|경험을\s*바탕으로|준비\s*기간|아르바이트|프로젝트)/gu);
+  const applicationValuePropositionSignals = count(text, /(?:^|\n|[.!?]\s*)(?:저의\s*(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|제가\s*(?:갖춘|보유한)\s*(?:강점|경쟁력|역량)|저는\s+[^.!?\n]{0,70}(?:강점|경쟁력|역량)(?:을|를|이|가|은|는))/gmu);
+  const careerAspirationSignals = count(text, /(?:입사\s*후|귀사|지원(?:하게\s*되었습니다|하고자|했습니다)|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다|(?:직무|업무|연구\s*개발|소재\s*개발)[^.!?\n]{0,45}기여(?:하겠습니다|하고자\s*합니다|하는))/gu);
+  const researchCareerContextSignals = count(text, /(?:연구실|연구\s*개발|실험\s*(?:설계|조건|데이터|결과)|공정\s*(?:조건|변수|최적화)|분석\s*장비|시편|재현성|연구\s*과제|투고\s*논문)/gu);
   add(scores, 'resume_application', explicitApplicationSignals, 1.35);
   add(scores, 'resume_application', firstPersonSignals, 0.22);
   if (careerActionSignals >= 3 && achievementSignals >= 2 && roleFitSignals >= 2
-      && (firstPersonSignals >= 1 || experienceNarrativeSignals >= 1)) {
+      && (explicitApplicationSignals >= 1 || experienceNarrativeSignals >= 1 || careerAspirationSignals >= 1)) {
     scores.resume_application += 2.15
       + Math.min(careerActionSignals - 3, 5) * 0.13
       + Math.min(achievementSignals - 2, 4) * 0.16
       + Math.min(roleFitSignals - 2, 3) * 0.18;
   } else if (explicitApplicationSignals >= 1 && careerActionSignals >= 2 && achievementSignals >= 1) {
     scores.resume_application += 1.15;
+  }
+  // 연구개발 지원서는 논문 어휘가 많아 `연구 결과` 같은 단어만으로 학술문으로
+  // 기울기 쉽다. 자기 강점으로 시작해 실제 수행을 제시하고 특정 직업·기여로
+  // 닫는 지원서 프레임이 함께 있을 때만 강한 장르 증거로 사용한다. 연구·실험
+  // 어휘 하나만으로는 이 가산점이 생기지 않아 실제 논문을 자소서로 오인하지 않는다.
+  if (applicationValuePropositionSignals >= 1
+      && careerAspirationSignals >= 1
+      && firstPersonSignals >= 1
+      && careerActionSignals >= 3
+      && achievementSignals >= 2) {
+    scores.resume_application += 3.35
+      + Math.min(researchCareerContextSignals, 5) * 0.14;
+  } else if (applicationValuePropositionSignals >= 1
+      && firstPersonSignals >= 1
+      && careerActionSignals >= 3
+      && achievementSignals >= 2) {
+    scores.resume_application += 1.65;
+  } else if (careerAspirationSignals >= 1
+      && firstPersonSignals >= 1
+      && careerActionSignals >= 3) {
+    scores.resume_application += 1.45;
   }
 
   add(scores, 'review_blog', count(text, /(?:후기|리뷰|다녀왔|방문했|써봤|사용해\s*보|추천|맛집|내돈내산|오늘은|사진|솔직히)/gu), 0.8);
@@ -228,7 +252,10 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       questionCount: questionnaire.questionCount,
       numberedQuestionCount: questionnaire.numberedQuestionCount,
       answerBlockCount: questionnaire.answerBlockCount,
-      educationQuestionCount: questionnaire.educationQuestionCount
+      educationQuestionCount: questionnaire.educationQuestionCount,
+      applicationValuePropositionSignals,
+      careerAspirationSignals,
+      researchCareerContextSignals
     }
   };
 }

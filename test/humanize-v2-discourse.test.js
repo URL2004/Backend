@@ -118,6 +118,26 @@ test('깊이 재시도는 단어만 조금 바뀐 위험 문장도 구조 개선
   assert.ok(ordinals.includes(2), ordinals.join(','));
 });
 
+test('고급 문단 회복 대상은 앞 문단 문장을 몰아서 고르지 않고 문단별 한 곳을 먼저 고른다', () => {
+  const source = [
+    '또한 첫 문장을 정리했습니다. 따라서 둘째 문장을 분석했습니다.',
+    '또한 셋째 문장을 정리했습니다. 따라서 넷째 문장을 분석했습니다.',
+    '또한 다섯째 문장을 정리했습니다. 따라서 여섯째 문장을 분석했습니다.'
+  ].join('\n\n');
+  const plan = humanizationDepth.buildHumanizationPlan(source, { requestStrength: 'advanced' });
+  plan.targetIndices = [0, 1, 2, 3, 4, 5];
+  plan.targetSentenceCount = 6;
+  plan.requiredChangedSentenceCount = 3;
+  plan.requiredTargetChangedCount = 3;
+  plan.paragraphCoverageApplicable = true;
+  plan.targetParagraphIndices = [0, 1, 2];
+  plan.targetParagraphCount = 3;
+  plan.requiredTargetChangedParagraphCount = 3;
+  const report = humanizationDepth.evaluateHumanizationDepth(source, source, plan);
+  const ordinals = qualityV2.buildGeneralRetryTargetOrdinals(source, source, plan, report);
+  assert.deepEqual(ordinals.slice(0, 3), [1, 3, 5]);
+});
+
 test('의미 수리 후보가 새 담화 위반을 만들면 안전 수리로 채택하지 않는다', () => {
   const source = '학생은 기온 자료를 조사했다. 연도별 수치를 표로 정리했다.';
   const before = '학생은 기온 자료를 살펴봤다. 연도별 수치는 표로 묶어 정리했다.';

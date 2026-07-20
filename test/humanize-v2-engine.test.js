@@ -77,8 +77,11 @@ function installEngineMock(t, options = {}) {
       });
     }
     if (name === 'gpt_prod_general_surface_retry') {
+      const outputText = typeof options.generalRetryOutput === 'function'
+        ? options.generalRetryOutput(body, calls.filter(call => call.name === name).length)
+        : (options.generalRetryOutput || SAFE_POLISH);
       return apiResponse({
-        outputText: options.generalRetryOutput || SAFE_POLISH,
+        outputText,
         safeChangeFound: options.generalSafeChangeFound !== false,
         notes: []
       });
@@ -134,7 +137,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.11');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.12');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -531,7 +534,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.9');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.12');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);
@@ -565,6 +568,41 @@ test('약 3%의 동의어 교체 결과도 그대로 전달하지 않고 실질 
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
   assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+});
+
+test('고급의 첫 깊이 회복이 여전히 약하면 상위 모델이 두 문단을 다시 회복한다', { concurrency: false }, async t => {
+  const source = [
+    '저의 가장 큰 경쟁력은 공정 조건을 분석하고 결과를 정리하는 연구개발 역량입니다. 첫 프로젝트에서는 실험 조건을 여러 차례 조정하며 원하는 구조를 찾았습니다. 결과가 예상과 다를 때에는 원인을 분석하고 조건별 데이터를 비교했습니다. 이 과정을 통해 실험 설계와 검증 역량을 길렀습니다.',
+    '연구실에서는 분석 장비를 관리하며 여러 시편의 측정을 지원했습니다. 측정 결과를 공정 조건과 연결해 해석하고 연구 보고서에 정리했습니다. 구성원들과 결과를 검토하며 데이터 해석 능력을 키웠습니다. 앞으로 소재 개발에 기여하는 연구원이 되겠습니다.'
+  ].join('\n\n');
+  const weak = source.replace('결과를 정리하는', '결과를 체계화하는');
+  const firstRecovery = source
+    .replace('여러 차례 조정하며', '반복해서 조정하며')
+    .replace('원인을 분석하고', '원인을 먼저 분석하고')
+    .replace('능력을 키웠습니다', '능력을 길렀습니다');
+  const strong = [
+    '저의 가장 큰 경쟁력은 공정 조건과 결과의 관계를 분석해 목표에 맞게 조정하는 연구개발 역량입니다. 첫 프로젝트에서는 원하는 구조를 찾기 위해 실험 조건을 여러 차례 달리하고 차이를 확인했습니다. 결과가 예상과 다르면 원인을 먼저 짚은 뒤 조건별 데이터를 비교했습니다. 이 과정에서 실험을 설계하고 검증하는 역량을 길렀습니다.',
+    '연구실에서는 분석 장비를 맡아 관리하면서 여러 시편의 측정을 지원했습니다. 측정 결과는 공정 조건과 연결해 해석한 뒤 연구 보고서로 정리했습니다. 데이터 해석 능력은 구성원들과 결과를 함께 검토하며 키웠습니다. 앞으로 소재 개발에 기여하는 연구원이 되겠습니다.'
+  ].join('\n\n');
+  const mock = installEngineMock(t, {
+    humanize: weak,
+    humanizationDepth: true,
+    generalRetryOutput: (_body, callNumber) => callNumber === 1 ? firstRecovery : strong
+  });
+  const out = await engine.run({ text: source, mode: 'formal', uid: 'advanced-depth-escalation-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
+  assert.equal(out.result.outputText, strong);
+  assert.equal(out.engineMeta.documentProfile, 'resume_application');
+  assert.equal(out.engineMeta.requestStrength, 'advanced');
+  assert.equal(out.engineMeta.humanizationDepthPass, true, JSON.stringify(out.result.humanizationDepth));
+  assert.equal(out.engineMeta.humanizationTargetChangedParagraphCount, 2);
+  assert.equal(out.engineMeta.humanizationTargetParagraphCoverage, 1);
+  assert.equal(out.engineMeta.humanizationDepthEscalationAttemptCount, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
+  const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
+  assert.equal(retryCalls[0].model, 'gpt-5.4-mini');
+  assert.equal(retryCalls[1].model, 'gpt-5.4');
+  assert.match(String(retryCalls[1].body.instructions || ''), /첫 문단만 고치고 멈추지 않는다/u);
 });
 
 test('재시도 결과가 품질 최소선에 못 미쳐도 최소 효과와 안전 감사를 통과하면 needs_review로 전달한다', { concurrency: false }, async t => {

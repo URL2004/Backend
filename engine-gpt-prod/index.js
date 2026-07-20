@@ -31,7 +31,7 @@ const resumeCoverage = require('./resumeCoverage');
 const experienceAudit = require('./experienceAudit');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.11';
+const VERSION = 'gpt-prod-v2.4.12';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -343,6 +343,7 @@ async function runEngine({
   let finalNoopRecovery = { attempted: false, applied: false, method: '', reason: '' };
   let humanizationDepthRetryCount = Number(sectionRecoveryReport.metrics?.miniAttemptCount || 0)
     + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0);
+  let humanizationDepthEscalationAttemptCount = Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0);
   let humanizationDepthRetryApplied = Number(sectionRecoveryReport.metrics?.applied || 0) > 0;
   let humanizationDepthRetryTargetSentenceCount = (sectionRecoveryReport.selected || [])
     .reduce((sum, entry) => sum + Number(entry?.plan?.targetSentenceCount || 0), 0);
@@ -460,60 +461,68 @@ async function runEngine({
       && selectedMode !== 'polish'
       && (rawSource.length < sectionRecovery.MIN_DOCUMENT_CHARS || !sectionRecovery.isEnabled())
       && (generalSurfaceRetryPending || humanizationDepthReport?.pass === false)) {
-    try {
-      const wasEquivalent = normalizeBare(auditSource) === normalizeBare(outputText);
-      generalSurfaceRetryAttemptCount = 1;
-      humanizationDepthRetryCount = 1;
-      if (wasEquivalent) finalNoopRecovery.attempted = true;
-      const retried = await qualityV2.retryGeneralSurface({
-        source: auditSource,
-        currentOutput: outputText,
-        humanizationPlan,
-        humanizationDepthReport,
-        config: cfg,
-        signal,
-        safetyIdentifier: safetyId
-      });
-      supplementalUsage = addUsage(supplementalUsage, retried.usage);
-      humanizationDepthRetryTargetSentenceCount = retried.targetSentenceCount || 0;
-      const retryOutput = retried.outputText;
-      const retryDepth = humanizationDepthEnabled
-        ? humanizationDepth.evaluateHumanizationDepth(auditSource, retryOutput, humanizationPlan)
-        : { pass: true };
-      const safeRetryCandidate = isSafeGeneralSurfaceCandidate(auditSource, retryOutput, contract, documentProfile, selectedMode)
-        && preservesFinalStructure(auditSource, retryOutput, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
-      // 모델의 safeChangeFound 자기보고나 품질 최소선 완전 통과만으로 후보를 버리지 않는다.
-      // 서버 감사가 안전하고 기존 후보보다 실질적으로 좋아졌다면 채택한 뒤, 최종 깊이가
-      // 품질 최소선에 못 미칠 경우 needs_review로 전달한다.
-      const retryWorthUsing = retryDepth.pass === true
-        || humanizationDepth.isBetterHumanizationCandidate(humanizationDepthReport, retryDepth);
-      if (safeRetryCandidate && retryWorthUsing) {
-        outputText = retryOutput;
-        generalSurfaceRetryCount = 1;
-        humanizationDepthRetryApplied = true;
-        humanizationDepthReport = retryDepth;
-        acceptGeneralSurfaceRecovery(records);
-        if (wasEquivalent) {
-          finalNoopRecoveryCount = 1;
-          finalNoopRecovery = { attempted: true, applied: true, method: 'model', reason: 'substantive_humanization' };
+    const wasEquivalent = normalizeBare(auditSource) === normalizeBare(outputText);
+    const maxDepthAttempts = requestStrength === 'advanced' ? 2 : 1;
+    if (wasEquivalent) finalNoopRecovery.attempted = true;
+    let lastRetryError = null;
+    for (let attempt = 0; attempt < maxDepthAttempts; attempt += 1) {
+      if (attempt > 0 && humanizationDepthReport?.pass === true) break;
+      try {
+        generalSurfaceRetryAttemptCount += 1;
+        humanizationDepthRetryCount += 1;
+        const escalation = attempt > 0;
+        if (escalation) humanizationDepthEscalationAttemptCount += 1;
+        const retried = await qualityV2.retryGeneralSurface({
+          source: auditSource,
+          currentOutput: outputText,
+          humanizationPlan,
+          humanizationDepthReport,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId,
+          model: escalation ? cfg.models.humanizeEscalation : '',
+          reasoningEffort: escalation ? cfg.reasoning.escalation : '',
+          phase: escalation ? 'humanization_depth_escalation' : 'humanization_depth_retry'
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        humanizationDepthRetryTargetSentenceCount += retried.targetSentenceCount || 0;
+        const retryOutput = retried.outputText;
+        const retryDepth = humanizationDepthEnabled
+          ? humanizationDepth.evaluateHumanizationDepth(auditSource, retryOutput, humanizationPlan)
+          : { pass: true };
+        const safeRetryCandidate = isSafeGeneralSurfaceCandidate(auditSource, retryOutput, contract, documentProfile, selectedMode)
+          && preservesFinalStructure(auditSource, retryOutput, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
+        // 고급은 mini가 조금만 개선한 후보를 냈다고 멈추지 않는다. 안전한 개선은
+        // 중간 후보로 유지하되 최소선에 못 미치면 상위 모델이 남은 문장·문단만 한 번
+        // 더 회복한다. 결과를 막거나 무차감하는 대신 실제 체감 강도를 만드는 경로다.
+        const retryWorthUsing = retryDepth.pass === true
+          || humanizationDepth.isBetterHumanizationCandidate(humanizationDepthReport, retryDepth);
+        if (safeRetryCandidate && retryWorthUsing) {
+          outputText = retryOutput;
+          generalSurfaceRetryCount += 1;
+          humanizationDepthRetryApplied = true;
+          humanizationDepthReport = retryDepth;
+          acceptGeneralSurfaceRecovery(records);
+          if (wasEquivalent) {
+            finalNoopRecoveryCount = 1;
+            finalNoopRecovery = { attempted: true, applied: true, method: 'model', reason: 'substantive_humanization' };
+          }
+        } else if (humanizationDepthEnabled) {
+          humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(auditSource, outputText, humanizationPlan);
         }
-      } else {
-        humanizationDepthReport = humanizationDepthEnabled
-          ? humanizationDepth.evaluateHumanizationDepth(auditSource, outputText, humanizationPlan)
-          : null;
-        if (wasEquivalent) {
-          finalNoopRecovery = { attempted: true, applied: false, method: 'model', reason: 'no_substantive_change' };
-        }
+      } catch (error) {
+        lastRetryError = error;
       }
-    } catch (error) {
-      if (normalizeBare(auditSource) === normalizeBare(outputText)) {
-        finalNoopRecovery = {
-          attempted: true,
-          applied: false,
-          method: 'model',
-          reason: `retry_error:${String(error?.code || error?.message || 'unknown').slice(0, 80)}`
-        };
-      }
+    }
+    if (wasEquivalent && finalNoopRecovery.applied !== true) {
+      finalNoopRecovery = {
+        attempted: true,
+        applied: false,
+        method: 'model',
+        reason: lastRetryError
+          ? `retry_error:${String(lastRetryError?.code || lastRetryError?.message || 'unknown').slice(0, 80)}`
+          : 'no_substantive_change'
+      };
     }
   }
 
@@ -1252,6 +1261,7 @@ async function runEngine({
     humanizationTargetDepthMet: humanizationDepthReport?.metrics?.targetDepthMet === true,
     humanizationDeliveryDepthBand: humanizationDepthReport?.metrics?.deliveryDepthBand || '',
     humanizationDepthRetryCount,
+    humanizationDepthEscalationAttemptCount,
     humanizationDepthRetryApplied,
     humanizationDepthRetryTargetSentenceCount,
     sectionRecoveryEnabled: sectionRecoveryReport.metrics?.enabled === true,
@@ -1264,6 +1274,12 @@ async function runEngine({
     structuralChangedSentenceCount: Number(humanizationDepthReport?.metrics?.structurallyChangedSentenceCount || 0),
     structuralChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.structuralChangedSentenceRatio || 0),
     humanizationRequiredStructuralSentenceCount: Number(humanizationDepthReport?.plan?.requiredStructuralChangedSentenceCount || 0),
+    humanizationParagraphCoverageApplicable: humanizationDepthReport?.plan?.paragraphCoverageApplicable === true,
+    humanizationEligibleParagraphCount: Number(humanizationDepthReport?.plan?.eligibleParagraphCount || 0),
+    humanizationTargetParagraphCount: Number(humanizationDepthReport?.plan?.targetParagraphCount || 0),
+    humanizationRequiredTargetParagraphCount: Number(humanizationDepthReport?.plan?.requiredTargetChangedParagraphCount || 0),
+    humanizationTargetChangedParagraphCount: Number(humanizationDepthReport?.metrics?.targetChangedParagraphCount || 0),
+    humanizationTargetParagraphCoverage: Number(humanizationDepthReport?.metrics?.targetParagraphCoverage || 0),
     rhetoricalRemediationTargetCount: Number(humanizationDepthReport?.metrics?.remediation?.targetCount || 0),
     rhetoricalRemediationAchievedCount: Number(humanizationDepthReport?.metrics?.remediation?.achievedReduction || 0),
     rhetoricalRemediationCoverage: Number(humanizationDepthReport?.metrics?.remediation?.coverage || 0),

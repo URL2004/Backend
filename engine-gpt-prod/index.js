@@ -31,7 +31,7 @@ const resumeCoverage = require('./resumeCoverage');
 const experienceAudit = require('./experienceAudit');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.10';
+const VERSION = 'gpt-prod-v2.4.11';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([

@@ -1,13 +1,16 @@
 'use strict';
 
-function dynamicContextBlock({ riskProfile = '', userNotes = '', evidence = '', styleProfile = '', documentProfile = null } = {}) {
+function dynamicContextBlock({ riskProfile = '', userNotes = '', evidence = '', styleProfile = '', requestStrength = '', documentProfile = null } = {}) {
   const format = documentProfile?.formatProfile;
+  const tonePolicy = requestStrength === 'advanced'
+    ? 'preserve_register_only; rewriteScope=advanced'
+    : (documentProfile?.tonePolicy || 'source_preserve');
   return [
     styleProfile ? `[profile]\n${styleProfile}` : '',
     documentProfile ? [
       '[document profile]',
       `contentGenre=${documentProfile.profile} (confidence=${documentProfile.confidence}, source=${documentProfile.profileDecisionSource || documentProfile.source})`,
-      `tonePolicy=${documentProfile.tonePolicy || 'source_preserve'}`,
+      `tonePolicy=${tonePolicy}`,
       `format=${format?.primary || 'plain'}; length=${format?.length || 'standard'}; flags=${(format?.flags || []).join(',') || 'none'}`,
       `safetyProfiles=${(documentProfile.safetyProfiles || []).join(',') || 'none'}`,
       `riskFlags=${(documentProfile.riskFlags || []).join(',') || 'none'}`

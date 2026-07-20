@@ -94,8 +94,9 @@ router.post('/diagnose', (req, res) => {
       logger.warn('diagnose.time_estimate_failed', { err: error });
     }
   }
-  // v2는 고신뢰 학술/보고서 판정이 격식 구조와 함께 확인되면 구형 "탐구" 오탐을 해제한다.
-  // 영어·짧고 추상적·실제 개인 서사 잠금은 그대로 유지한다.
+  // v2는 한국어 장르 판정을 고급 선택 잠금으로 사용하지 않는다. 짧거나
+  // 개인적인 글도 장르별 안전 감사를 적용해 고급 처리하며, 지원하지 않는
+  // 영어 입력만 선택 불가로 유지한다.
   const ru = advancedRouting.effectiveUnfit;
   const recommendationReason = v2BasicRecommendation(ru.kind, ru.reason);
   const adv = genreAdvisory(text);                      // 회피 난이도 사전 안내(STEM 스펙·구조화 보고서) — 소프트(진행 가능)

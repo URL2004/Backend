@@ -604,9 +604,9 @@ function blockedResponse(job) {
   };
 }
 
-// ★ 동의 기반 차단 안내 재료(2026-06-15): 자동 폴백+자동 과금을 폐기 → 사용자가 화면에서 고르게 한다.
-//   ① 왜 막혔나(surfaceguard 추상 문단 = "여기에 실제 경험·사례를 더하면 회피가 된다") ② 보존형 받기 단가
-//   ③ 재시도 가능 여부(근거 보강은 formal·미사용 시). polish(보존형 자체)는 폴백 의미 없어 제외.
+// ★ 동의 기반 차단 안내 재료. 고급은 선택 강도를 끝까지 유지하므로
+// 보존형 폴백을 제공하지 않는다. 기본 차단 작업에만 사용자가 원할 때
+// 다듬기 결과를 별도로 받을 수 있다.
 function buildBlockOffer(job, text) {
   let abstractParas = [];
   try {
@@ -619,7 +619,7 @@ function buildBlockOffer(job, text) {
       .slice(0, 5);
   } catch { /* surfaceguard 실패해도 차단 안내는 나가야 함 */ }
   return {
-    fallbackOffer: fallbackEnabled() && job.mode !== 'polish',
+    fallbackOffer: preservationFallbackAllowed(job.mode),
     fallbackCredit: preservationFallbackCredit((text || '').length),
     canEvidence: job.mode === 'formal' && !job.wantEvidence,
     mode: job.mode || 'formal',
@@ -1192,20 +1192,18 @@ async function runSearchPhase(job, text) {
   }
 }
 
-// ── 차단 시 자동 폴백(2026-06-13) ─────────────────────────────────────────────
-//   문제: 재생성(genreTransferV2)은 기준금리·정책 같은 구체 사실이 많은 격식체에서 원문에 없는
-//   주장을 만들어내 semanticJudge에 막힌다. 같은 글·같은 설정으로 재시도하면 결정론적으로 다시 막혀
-//   "그 글은 영원히 변환 불가"인 막다른 길이 된다(차단=결과 0).
-//   해결: 차단되면 원문 보존형 경로(runHumanizeChunked·floorV2 — 재생성이 아니라 보존 재작성이라
-//   날조가 원천적으로 없어 게이트를 통과)로 재처리해 "약하더라도 실제 결과"를 보장한다.
-//   끄려면 env TRANSFORM_BLOCK_FALLBACK=0.
+// 기본 휴머나이징의 명시적 다듬기 폴백만 남긴다. 고급을 선택한 작업은
+// 결과 강도를 보존형으로 낮추지 않는다.
 function fallbackEnabled() {
   const v = (process.env.TRANSFORM_BLOCK_FALLBACK || '').toLowerCase();
   return v !== '0' && v !== 'off' && v !== 'false';
 }
 
-// 보존형 폴백 단가: 고급(재구성) 정액이 아니라 짧은 휴머나이징 공통 단가.
-//   고급 변환을 못 받았으므로 보존형 결과엔 short 가격만 받는다(과금 분쟁 차단).
+function preservationFallbackAllowed(mode) {
+  return fallbackEnabled() && String(mode || '') === 'blog';
+}
+
+// 기본 작업에서 사용자가 별도로 선택한 다듬기 결과의 단가.
 function preservationFallbackCredit(len) {
   return shortHumanizeCredit(len);
 }
@@ -1220,115 +1218,8 @@ function buildPreservationFallbackMeta(out, job) {
   };
 }
 
-// 반환: true = job을 완전히 처리함(호출부는 즉시 return) / false = 폴백 실패(원래대로 blocked 진행)
-async function tryPreservationFallback(job, text) {
-  try {
-    if (job.ac.signal.aborted) {
-      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
-      return true;   // 이미 취소됨 — 차단으로 덮지 않음
-    }
-    job.stage = '원문 보존형으로 재처리 중';
-    job.note = (job.note ? job.note + ' ' : '')
-      + '고급 변환 결과에 원문 보존 위험이 남아, 원문을 최대한 보존하는 방식으로 처리했어요.';
-    persistJob(job);
-
-    // 보존형(=polish) 경로 그대로 재사용 — 이미 운영 중인 검증된 경로.
-    const gptCfg = await activeGptConfig();
-    const out = gptCfg
-      ? await gptAnalyze.runHumanizeChunked({
-          text,
-          mode: 'assignment',
-          lang: job.lang || 'ko',
-          signal: job.ac.signal,
-          userNotes: job.memo || '',
-          config: gptCfg,
-          styleProfile: 'production_preservation_fallback',
-          documentProfileOverride: job.documentProfileOverride || '',
-          uid: humanizeV2Enabled() ? job.uid : ''
-        })
-      : await analyze.runHumanizeChunked({
-          text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
-          floorV2: true, optIn: false, judge: true, grounding: true, userNotes: job.memo || ''   // ★경험 메모 보존형에도 적용(2026-06-17)
-        });
-    const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
-    const fbHardHit = fbCriticals.filter(g => isStrictDeliveryCritical({ gate: g }));
-    if (!out.result || !out.result.outputText || fbHardHit.length) {
-      logger.warn('transform.fallback_blocked', { jobId: job.id, uid: job.uid, mode: job.mode, fbCriticals, fbHardHit });
-      return false;   // 보존형도 사용자에게 보이면 안 되는 치명 출력이면 차단 유지
-    }
-    const fbSoftGates = fbCriticals.filter(g => !isStrictDeliveryCritical({ gate: g }));
-    if (fbSoftGates.length) {
-      logger.info('transform.fallback_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, fbSoftGates });
-      out.floorReport.status = 'needs_review';
-      out.floorReport.warnings = [
-        ...(out.floorReport.warnings || []),
-        ...(out.floorReport.criticals || []).map(c => ({ ...c, softenedFromCritical: true }))
-      ];
-      out.floorReport.criticals = [];
-    }
-
-    // 과금: 보존형 단가로. 멱등 키는 동일(job_<id>)이라 중복 차감 불가.
-    const fbNeeded = preservationFallbackCredit(text.length);
-    try {
-      await commitJobBilling(job, {
-        creditAmount: fbNeeded,
-        operation: 'humanize',
-        mode: 'polish',
-        textLength: text.length,
-        meta: { fallback: true }
-      });
-    } catch (e) {
-      logger.error('transform.fallback_billing_failed_manual_action', {
-        jobId: job.id, uid: job.uid, needed: fbNeeded, billingMode: job.billingMode, opType: 'humanize', err: e
-      });
-    }
-    job.needed = job.billingMode === 'coupon' ? 1 : fbNeeded;   // 표시·영속화가 실제 차감 단위와 일치
-    const fallbackEngineMeta = buildPreservationFallbackMeta(out, job);
-    job.engineMeta = fallbackEngineMeta;
-    job.status = 'done';
-    job.result = {
-      outputText: out.result.outputText,
-      preservationFallback: true,   // UI가 "보존형으로 처리됨" 배지를 띄울 수 있게
-      qualityStatus: out.qualityStatus || out.result?.qualityStatus || out.floorReport?.status || 'clean',
-      qualityWarnings: out.qualityWarnings || out.result?.qualityWarnings || [],
-      sourceReviewWarnings: out.sourceReviewWarnings || out.result?.sourceReviewWarnings || [],
-      engineMeta: fallbackEngineMeta,
-      humanizeMeta: out.result?.humanizeMeta || null,
-      naturalnessShadow: out.result?.naturalnessShadow || null,
-      floorReport: {
-        status: out.floorReport?.status || 'clean',
-        criticals: out.floorReport?.criticals || [],
-        warnings: out.floorReport?.warnings || []
-      },
-      metrics: {
-        novelty: 0, lostFacts: 0, repetition: 0,
-        judge: 'pass',
-        lengthRatio: out.floorReport?.metrics?.lengthRatio,
-        evidenceUsed: 0,
-        pairingClean: true,
-        preservationFallback: true
-      },
-      chunkCount: out.chunkCount,
-      fallbackCount: out.fallbackCount
-    };
-    persistJob(job);
-    saveJobHistory(job, text, out.result.outputText);   // 이용 기록(서버) 노출
-    logger.info('transform.fallback_done', {
-      jobId: job.id, uid: job.uid, mode: job.mode, needed: fbNeeded, deducted: job.deducted
-    });
-    return true;
-  } catch (e) {
-    if (job.ac.signal.aborted) {
-      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
-      return true;   // 취소는 처리 완료로 간주(원래 차단으로 덮지 않음)
-    }
-    logger.error('transform.fallback_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
-    return false;
-  }
-}
-
-// blog 휴머나이즈가 novelty/judge에 막히면, 같은 입력을 더 보수적인 "과제 어투 다듬기" 경로로
-// 자동 재처리한다. 결과가 약해져도 차단 화면보다 낫고, 과금도 보존형 단가로 낮춘다.
+// 기본 휴머나이징이 차단됐을 때 사용자가 명시적으로 선택한 경우에만
+// 같은 입력을 다듬기 경로로 처리한다.
 async function tryBlogPreservationFallback(job, text) {
   try {
     if (job.ac.signal.aborted) {
@@ -2384,7 +2275,8 @@ async function runHumanizeJob(job, text, evidence = '') {
           gates,
           gateDetail
         });
-        // ★ 자동 폴백 폐기(2026-06-15) — 동의 기반(accept-fallback)으로 전환. buildBlockOffer가 안내 재료 첨부.
+        // 기본 작업에만 동의 기반 다듬기 선택지를 붙인다. 고급은 같은
+        // 강도로 다시 시도하며 보존형으로 다운그레이드하지 않는다.
         job.status = 'blocked';
         job.stage = blockedStage(gates);
         job.gates = gates;
@@ -2433,7 +2325,9 @@ async function runHumanizeJob(job, text, evidence = '') {
     if (out.result.weakTransform) {
       job.note = (job.note ? job.note + ' ' : '') + (isPolish
         ? '원문과 거의 동일하게 나왔어요(다듬기는 원문을 최대한 보존하는 모드예요). 더 바꾸려면 「기본 피하기」나 「고급 피하기」를 써 보세요 — 같은 글로 다듬기를 다시 돌려도 결과는 비슷해요.'
-        : '원문과 큰 차이 없이 나왔어요(보존형 수준). 더 바꾸려면 「고급 피하기」를 쓰거나 경험 메모를 더해 다시 시도해 주세요.');
+        : (job.mode === 'formal'
+            ? '고급 변환을 적용했지만 안전하게 바꿀 수 있는 범위가 제한적이었어요.'
+            : '원문과 큰 차이 없이 나왔어요. 더 넓은 재구성이 필요하면 「고급 피하기」를 쓰거나 경험 메모를 더해 다시 시도해 주세요.'));
     }
     // ★ 사실 누락 소프트 안내(2026-06-16): lostFacts가 소프트가 되어 차단 대신 전달되므로, 빠진 사실을 사용자가 대조하게 안내.
     if ((out.floorReport.warnings || []).some(w => w.gate === 'lostFacts')) {
@@ -2843,14 +2737,14 @@ router.post('/transform/:id/cancel', async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── 동의 기반 보존형 받기(2026-06-15): 차단된 회피 작업을, 사용자가 명시적으로 원할 때만 보존형(다듬기)으로
-//   재처리한다(보존형 단가 차감). 자동 폴백을 폐기한 자리 — "회피 산 사람에게 비회피 결과를 몰래 과금" 방지.
+// 기본 휴머나이징 차단 작업만 사용자의 명시적 동의로 다듬기 처리한다.
+// 고급 작업은 이 경로로 강도를 낮출 수 없다.
 router.post('/transform/:id/accept-fallback', async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
   if (!(await requireJobOwner(req, res, job))) return;
   if (job.status !== 'blocked') return res.status(409).json({ error: '차단된 작업만 보존형으로 받을 수 있어요.' });
-  if (!fallbackEnabled() || job.mode === 'polish') return res.status(409).json({ error: '이 작업은 보존형으로 받을 수 없어요.' });
+  if (!preservationFallbackAllowed(job.mode)) return res.status(409).json({ error: '고급 작업은 보존형으로 전환하지 않아요. 고급 설정으로 다시 시도해 주세요.' });
   // ★ 크레딧 사전 검증(2026-06-16): 보존형 받기도 과금 작업이다 — 잔액이 부족하면 작업을 '돌리기 전에' 막는다.
   //   기존엔 precheck 없이 백그라운드로 돌려, 작업이 끝난 뒤 차감이 실패해도(잔액 0) 결과를 전달했다(무상 제공 구멍).
   //   재시도 버튼(POST /transform)은 이미 precheckCredits로 막히는데 이 버튼만 빠져 있어 동작이 불일치했다.
@@ -2877,9 +2771,7 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
   job.ac = new AbortController();     // 차단 시 abort된 컨트롤러 교체
   persistJob(job);
   try {
-    const handled = job.mode === 'blog'
-      ? await tryBlogPreservationFallback(job, job.text || '')
-      : await tryPreservationFallback(job, job.text || '');
+    const handled = await tryBlogPreservationFallback(job, job.text || '');
     if (!handled && job.status !== 'cancelled') {   // 보존형도 치명 출력이면 다시 차단
       job.status = 'blocked';
       job.stage = blockedStage(job.gates || []);
@@ -3005,5 +2897,6 @@ router.maybeNotifyOrphan = maybeNotifyOrphan;   // 테스트용
 router.buildArchiveDocument = buildArchiveDocument;   // 테스트용(원문·결과 비저장 계약 검증)
 router.ensureTerminalTimestamp = ensureTerminalTimestamp;   // 테스트용
 router.normalizeDocumentProfileOverride = normalizeDocumentProfileOverride;   // 테스트·클라이언트 계약용
+router.preservationFallbackAllowed = preservationFallbackAllowed;   // 고급→보존형 다운그레이드 회귀 테스트용
 
 module.exports = router;

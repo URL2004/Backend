@@ -46,7 +46,7 @@ test('학술 논문의 탐구 표현은 구형 자소서 오탐을 해제하고 
   assert.equal(route.formalStructure, true);
 });
 
-test('실제 자소서·개인 경험 문서는 v2에서도 고급 잠금을 유지한다', () => {
+test('실제 자소서·개인 경험 문서도 v2에서는 장르 안전 감사를 유지한 채 고급을 선택할 수 있다', () => {
   const source = [
     '자기소개서',
     '1. 지원 동기',
@@ -57,18 +57,21 @@ test('실제 자소서·개인 경험 문서는 v2에서도 고급 잠금을 유
     '입사 후에는 운영 개선에 기여하고 성장하는 인재가 되겠습니다.'
   ].join('\n');
   const route = resolveAdvancedRouting(source, { grade: 'B', abstractRiskRatio: 0.2 }, { v2Enabled: true });
-  assert.equal(route.effectiveUnfit.unfit, true);
-  assert.equal(route.effectiveUnfit.kind, 'resume');
-  assert.equal(route.advancedEligible, false);
+  assert.equal(route.effectiveUnfit.unfit, false);
+  assert.equal(route.effectiveUnfit.kind, null);
+  assert.equal(route.advancedEligible, true);
   assert.equal(route.recommendedMode, 'blog');
-  assert.equal(route.routingOverride, '');
+  assert.equal(route.routingOverride, 'v2_profile_safe_advanced');
+  assert.equal(route.personalSafety, true);
 });
 
-test('짧고 추상적인 글과 영어 글의 안전 잠금은 유지한다', () => {
+test('짧고 추상적인 한국어 글은 고급을 허용하고 지원하지 않는 영어만 잠근다', () => {
   const thin = '혁신은 중요하며 체계적인 접근이 필요하다. 다양한 관점에서 의미를 살펴보고 바람직한 방향을 찾아야 한다.'.repeat(2);
   const thinRoute = resolveAdvancedRouting(thin, { grade: 'C', abstractRiskRatio: 0.8 }, { v2Enabled: true });
-  assert.equal(thinRoute.effectiveUnfit.kind, 'thin');
-  assert.equal(thinRoute.advancedEligible, false);
+  assert.equal(thinRoute.effectiveUnfit.unfit, false);
+  assert.equal(thinRoute.effectiveUnfit.kind, null);
+  assert.equal(thinRoute.advancedEligible, true);
+  assert.equal(thinRoute.routingOverride, 'v2_profile_safe_advanced');
 
   const english = 'This document explains a research process and presents a structured discussion of the findings in English only.';
   const englishRoute = resolveAdvancedRouting(english, { grade: 'B', abstractRiskRatio: 0 }, { v2Enabled: true });

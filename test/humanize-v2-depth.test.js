@@ -93,7 +93,7 @@ test('고급 피하기는 같은 글에서도 기본보다 편집·문장·위�
   assert.ok(advanced.requiredTargetChangedCount >= basic.requiredTargetChangedCount);
 });
 
-test('사실·형식 민감 장르는 2%p 완화하되 기본 6%·고급 9% 바닥을 지킨다', () => {
+test('사실·형식 민감 장르는 기본만 2%p 완화하고 고급 강도는 낮추지 않는다', () => {
   const source = `${SOURCE} ${SOURCE}`;
   const basic = depth.buildHumanizationPlan(source, {
     requestStrength: 'basic',
@@ -106,7 +106,7 @@ test('사실·형식 민감 장르는 2%p 완화하되 기본 6%·고급 9% 바�
     inputRisk: { abstractRiskRatio: 1 }
   });
   assert.equal(basic.minSubstantiveEditRatio, 0.11);
-  assert.equal(advanced.minSubstantiveEditRatio, 0.15);
+  assert.equal(advanced.minSubstantiveEditRatio, 0.17);
   assert.ok(basic.minSubstantiveEditRatio >= 0.06);
   assert.ok(advanced.minSubstantiveEditRatio >= 0.09);
 });
@@ -281,7 +281,7 @@ test('동일 문장 잔존 정책의 2,000자 기준은 공백 포함 입력 길
   assert.equal(plan.maxSubstantiveCarryoverRatio, 0.30);
 });
 
-test('보존 민감 프로필은 동일 문장 잔존 상한을 5%p 완화한다', () => {
+test('보존 민감 프로필도 고급 선택 시 동일 문장 잔존 상한을 완화하지 않는다', () => {
   const sentence = index => `${index + 1}번째 문장은 연구 절차와 자료 해석의 근거를 분명히 밝히고 인용된 개념의 적용 범위를 세부적으로 설명하는 학술 서술입니다. 분석 자료의 선정 기준과 검토 순서를 함께 기록하여 후속 연구자가 판단 과정을 확인할 수 있도록 구성했습니다. 동일한 절차를 세 차례 반복해 기록했습니다.`;
   const source = Array.from({ length: 20 }, (_, index) => sentence(index)).join(' ');
   const basic = depth.buildHumanizationPlan(source, {
@@ -292,8 +292,14 @@ test('보존 민감 프로필은 동일 문장 잔존 상한을 5%p 완화한다
     requestStrength: 'advanced',
     documentProfile: 'resume_application'
   });
+  const advancedGeneral = depth.buildHumanizationPlan(source, {
+    requestStrength: 'advanced',
+    documentProfile: 'long_explainer'
+  });
   assert.equal(basic.maxSubstantiveCarryoverRatio, 0.35);
-  assert.equal(advanced.maxSubstantiveCarryoverRatio, 0.30);
+  assert.equal(advanced.maxSubstantiveCarryoverRatio, 0.25);
+  assert.equal(advanced.minSubstantiveEditRatio, advancedGeneral.minSubstantiveEditRatio);
+  assert.equal(advanced.requiredChangedSentenceCount, advancedGeneral.requiredChangedSentenceCount);
 });
 
 test('제목·목록·인용·표·참고문헌은 동일 문장 잔존율 모수에서 제외한다', () => {

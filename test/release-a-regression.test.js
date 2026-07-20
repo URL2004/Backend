@@ -7,6 +7,18 @@ const analyze = require('../routes/analyze');
 const transform = require('../routes/transform');
 const { evaluateHumanizeRuntime } = require('../lib/runtimeCompatibility');
 
+test('고급 작업은 보존형 폴백으로 다운그레이드하지 않는다', { concurrency: false }, t => {
+  const previous = process.env.TRANSFORM_BLOCK_FALLBACK;
+  process.env.TRANSFORM_BLOCK_FALLBACK = '1';
+  t.after(() => {
+    if (previous === undefined) delete process.env.TRANSFORM_BLOCK_FALLBACK;
+    else process.env.TRANSFORM_BLOCK_FALLBACK = previous;
+  });
+  assert.equal(transform.preservationFallbackAllowed('blog'), true);
+  assert.equal(transform.preservationFallbackAllowed('formal'), false);
+  assert.equal(transform.preservationFallbackAllowed('polish'), false);
+});
+
 test('/analyze는 감지만 허용하고 휴머나이징 구형 호출에 이동 계약을 반환한다', async t => {
   const app = express();
   app.use(express.json());

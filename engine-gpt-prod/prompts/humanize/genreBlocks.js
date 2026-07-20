@@ -1,6 +1,6 @@
 'use strict';
 
-function genreBlock(_mode, register, _styleProfile = '', documentProfile = null) {
+function genreBlock(_mode, register, _styleProfile = '', documentProfile = null, requestStrength = '') {
   const group = documentProfile?.group || 'unknown';
   const blocks = [];
   if (group === 'academic_report_explainer') blocks.push(academicReportBlock(register));
@@ -16,7 +16,7 @@ function genreBlock(_mode, register, _styleProfile = '', documentProfile = null)
   if (documentProfile?.formatProfile?.flags?.includes?.('questionnaire')) {
     blocks.push(questionnaireBlock());
   }
-  blocks.push(tonePolicyBlock(documentProfile?.tonePolicy));
+  blocks.push(tonePolicyBlock(documentProfile?.tonePolicy, requestStrength));
   return blocks.filter(Boolean).join('\n');
 }
 
@@ -122,7 +122,10 @@ function questionnaireBlock() {
   ].join('\n');
 }
 
-function tonePolicyBlock(tonePolicy) {
+function tonePolicyBlock(tonePolicy, requestStrength = '') {
+  if (requestStrength === 'advanced') {
+    return '말투 정책: 원문의 격식·화자·종결체는 유지하되, 이는 원문 어휘와 문장 배열을 보존형으로 복사하라는 뜻이 아니다. 일반 서술은 고급 범위로 실질 재구성한다.';
+  }
   if (tonePolicy === 'conversational') {
     return '말투 정책: 장르·화자·종결체를 바꾸지 않는 범위에서 단어 선택과 연결을 조금 더 친근하게 한다.';
   }

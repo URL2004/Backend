@@ -112,9 +112,10 @@ function buildHumanizationPlan(source, {
     ? (strength === 'advanced' ? 0.65 : 0.50)
     : 0;
 
-  // 사실·형식 민감 장르는 2%p 완화하지만, 기본도 최소 6%, 고급도 최소 9%의
-  // 실질 변화를 유지한다. 창작문은 행갈이와 이미지 자체가 구조라 독립 정책을 쓴다.
-  if (cautious) {
+  // 사실·형식 민감 장르는 기본에서만 2%p 완화한다. 고급을 선택한 문서는
+  // 장르와 무관하게 고급 변화량을 유지하고, 사실·화자·구조는 별도 감사로
+  // 보호한다. 창작문은 행갈이와 이미지 자체가 구조라 독립 정책을 쓴다.
+  if (cautious && strength !== 'advanced') {
     minSubstantiveEditRatio = Math.max(strength === 'advanced' ? 0.09 : 0.06, minSubstantiveEditRatio - 0.02);
     targetSubstantiveEditMin = Math.max(minSubstantiveEditRatio, targetSubstantiveEditMin - 0.02);
     targetSubstantiveEditMax = Math.max(targetSubstantiveEditMin + 0.02, targetSubstantiveEditMax - 0.02);
@@ -164,7 +165,7 @@ function buildHumanizationPlan(source, {
   // substantive 길이를 쓰면 2,000~2,400자대 장문이 정책에서 빠질 수 있다.
   const carryoverApplicable = !creative && text.length >= 2000 && eligibleCarryoverSentenceCount >= 12;
   const maxSubstantiveCarryoverRatio = carryoverApplicable
-    ? Math.min(1, (strength === 'advanced' ? 0.25 : 0.30) + (cautious ? 0.05 : 0))
+    ? Math.min(1, (strength === 'advanced' ? 0.25 : 0.30) + (cautious && strength !== 'advanced' ? 0.05 : 0))
     : 1;
 
   return {

@@ -1,6 +1,6 @@
-// [routes/detectreport.js] AI 감지 분리(2026-06-12) — 무료 감지 + 사용자 친화 보고서(휴머나이징 전환 퍼널)
+// [routes/detectreport.js] AI 감지 분리(2026-06-12) — 사용자 친화 보고서(휴머나이징 전환 퍼널)
 // ────────────────────────────────────────────────────────────────
-// POST /detect-report { text, idToken? } — 무과금(미끼 상품). 일일 한도(로그인=uid, 비로그인=IP)로 어뷰즈 방어.
+// POST /detect-report { text } — 항상 유료(100자당 1크레딧·로그인 필수, 2026-07-20 무료 제공 제거).
 // 보고서 재료 4종:
 //   ① LLM 판정(probability·summary·detail) — 기존 detect 경로(callClaude·detect tool) 재사용
 //   ② 결정론 문단 지도(surfaceguard.analyzeParagraphs, 무LLM·무비용) — "어느 문단이 왜 위험한지"
@@ -25,16 +25,8 @@ const detectCalibration = require('../lib/detectCalibration');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 
-const DAILY_CAP = Number(process.env.DETECT_DAILY_CAP) || 3;   // 무료 감지 하루 한도(이후 유료 100자당 1크레딧)
-const daily = new Map();   // 'u:uid' | 'ip:addr' → { day, count } — 메모리(재시작 리셋은 사용자에게 유리한 방향)
-setInterval(() => {
-  const d = kstDay();
-  for (const [k, v] of daily) if (v.day !== d) daily.delete(k);
-}, 60 * 60 * 1000).unref();
-
-function kstDay() {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
-}
+// (무료 감지 일일 한도 로직 제거 — 2026-07-20 사장님 결정으로 감지는 항상 유료.
+//  기존 무료 3회/일 캡은 CF 엣지 IP 키 버그로 사실상 무제한이었음. 복원 시 git 이력 참조.)
 
 // ── 코치 후보 어뷰즈 방어(H-05): 무인증 LLM 호출이라 (1) App Check(선택·env게이트), (2) IP별 시간당 캡,
 //   (3) 텍스트 해시 캐시로 봇 반복호출·중복 비용을 막는다. 완전한 분산 캡(Firestore)은 결제·운영 단계.
@@ -46,8 +38,10 @@ setInterval(() => {
   for (const [k, v] of coachIp) if (v.hour !== h) coachIp.delete(k);
 }, 60 * 60 * 1000).unref();
 function coachHour() { return Math.floor(Date.now() / 3600000); }
+// ★ 2026-07-20: req.ip는 CF 엣지 IP(매 요청 변동) — 실제 클라이언트 IP는 cf-connecting-ip 기준(lib/clientip)
+const { realClientIp } = require('../lib/clientip');
 function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+  return realClientIp(req);
 }
 
 // 문단 종류 → 사용자 언어 사유(보고서의 "알아듣기 쉬운 정리" 핵심)
@@ -119,40 +113,30 @@ router.post('/detect-report', async (req, res) => {
   if (text.length > 30000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
 
   // ★ 로컬 개발 전용(이중 게이트 — analyze.js와 동일): Firebase 비활성 + DEV_NO_AUTH=1이면
-  //   일일 한도 미적용(테스트 무제한). 프로덕션은 FIREBASE_SERVICE_ACCOUNT가 항상 있어 이 분기를 안 탐.
+  //   인증·과금 미적용(테스트 무제한). 프로덕션은 FIREBASE_SERVICE_ACCOUNT가 항상 있어 이 분기를 안 탐.
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
 
-  // 일일 한도 — 로그인 uid 우선(IP 공유 환경 오차단 방지), 비로그인은 IP
+  // ★ 무료 제공 제거(사장님 결정 2026-07-20): 항상 유료(100자당 1크레딧·로그인 필수).
+  //   무료 3회/일 캡은 CF 엣지 IP 키 버그로 사실상 무제한이었고(2,2,1,0 실측), 어뷰즈 방어도
+  //   과금이 가장 확실하다. 차감은 기존 유료 경로 그대로: 선검증 → 성공 후 멱등 차감.
   const idToken = bearerToken(req);   // 헤더 우선(body.idToken 폴백)
   const uid = await verifyToken(idToken);
   if (uid) setLogContext({ uid });
-  const key = uid ? `u:${uid}` : `ip:${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`;
-  const day = kstDay();
-  const rec = daily.get(key);
-  const used = (rec && rec.day === day) ? rec.count : 0;
-  // 무료 한도(기본 3회) 소진 후엔 차단 대신 유료 감지(100자당 1크레딧, 기존 감지 단가)로 전환.
-  const overFree = !devNoAuth && used >= DAILY_CAP;
-  const wantPaid = req.body?.paid === true;
   const cost = Math.ceil(text.length / 100);
   const requestId = (typeof req.body?.requestId === 'string' && req.body.requestId.trim())
     ? req.body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '') : null;
 
-  // 무료 소진 + 유료 의사 없음 → 유료 안내(프론트가 확인받고 paid:true로 재요청)
-  if (overFree && !wantPaid) {
-    logger.info('detect_report.free_exhausted', { uid, used, cap: DAILY_CAP, cost });
-    return res.status(402).json({ ok: false, code: 'FREE_EXHAUSTED', cost, freeCap: DAILY_CAP, message: `오늘 무료 ${DAILY_CAP}회를 모두 썼어요. 계속하려면 ${cost}크레딧이 필요해요.` });
-  }
-  // 유료 감지 — 로그인·잔액 선검증(차감은 성공 후)
+  // 로그인·잔액 선검증(차감은 성공 후)
   let paidPre = null;
-  if (overFree && wantPaid) {
-    if (!uid) return res.status(401).json({ error: '유료 감지는 로그인이 필요해요.', code: 'LOGIN_REQUIRED' });
+  if (!devNoAuth) {
+    if (!uid) return res.status(401).json({ error: 'AI 감지는 로그인이 필요해요.', code: 'LOGIN_REQUIRED', cost });
     try {
       paidPre = await analyze.precheckCredits(idToken, cost);
     } catch (e) {
       return res.status(e.status || 402).json({ error: analyze.authErrorMessage(e.message), code: 'INSUFFICIENT_CREDITS', cost });
     }
   }
-  logger.info('detect_report.started', { uid, textLength: text.length, usedToday: used, cap: DAILY_CAP, paid: overFree && wantPaid, devNoAuth });
+  logger.info('detect_report.started', { uid, textLength: text.length, cost, devNoAuth });
 
   // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
   //   ★ 문단 분리(2026-07-20): 빈 줄 없는 붙여넣기에서 전체가 1문단이 되던 실사고 →
@@ -247,19 +231,15 @@ router.post('/detect-report', async (req, res) => {
   });
   const probability = calibration.probability;
 
-  // 과금/카운트는 성공 직전에만 — 서버 오류로 보고서를 못 받았는데 횟수 소진·차감되는 일 방지.
-  const isPaidRun = overFree && wantPaid;
-  if (isPaidRun) {
-    // 유료 감지: 성공 후 차감(실패 시 차감 없음). unlimited 플랜은 제외. 멱등키로 중복 차감 방지.
-    if (paidPre && paidPre.plan !== 'unlimited' && !req.aborted) {
-      try {
-        await analyze.commitCreditDeduct(paidPre.uid, cost, 'detect', requestId, { mode: 'detect', textLength: text.length });
-      } catch (e) {
-        logger.error('detect_report.paid_deduct_failed_manual_action', { uid, cost, requestId, err: e });
-      }
+  // 과금은 성공 직전에만 — 서버 오류로 보고서를 못 받았는데 차감되는 일 방지.
+  // unlimited 플랜은 차감 제외. 멱등키로 중복 차감 방지.
+  const charged = (!devNoAuth && paidPre && paidPre.plan !== 'unlimited') ? cost : 0;
+  if (charged && !req.aborted) {
+    try {
+      await analyze.commitCreditDeduct(paidPre.uid, cost, 'detect', requestId, { mode: 'detect', textLength: text.length });
+    } catch (e) {
+      logger.error('detect_report.paid_deduct_failed_manual_action', { uid, cost, requestId, err: e });
     }
-  } else if (!devNoAuth && !req.aborted) {
-    daily.set(key, { day, count: used + 1 });   // 무료 횟수 소진
   }
   logger.info('detect_report.completed', {
     uid,
@@ -269,7 +249,7 @@ router.post('/detect-report', async (req, res) => {
     calibrated: calibration.applied,
     calibration: calibration.applied ? calibration.meta : undefined,
     probSource: det ? 'llm' : 'engine',
-    remainingToday: devNoAuth ? null : DAILY_CAP - used - 1
+    charged
   });
 
   // ③ 비용 — 실제 과금 공식과 동일 산식(다듬기 1/100자 · 블로그 2/100자 · 재구성 구간 정액)
@@ -277,9 +257,8 @@ router.post('/detect-report', async (req, res) => {
   const B = diagnose.BANDS;
   res.json({
     ok: true,
-    free: !isPaidRun,
-    charged: isPaidRun ? cost : 0,
-    remainingToday: devNoAuth ? null : (overFree ? 0 : Math.max(0, DAILY_CAP - used - 1)),   // null이면 프론트가 잔여 표기 생략(dev 무제한)
+    free: false,          // 무료 제공 제거(2026-07-20) — 항상 유료
+    charged,              // unlimited 플랜·dev는 0
     probability,
     ...(calibration.applied ? {
       rawProbability: calibration.rawProbability,

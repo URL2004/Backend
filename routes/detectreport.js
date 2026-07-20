@@ -155,11 +155,15 @@ router.post('/detect-report', async (req, res) => {
   logger.info('detect_report.started', { uid, textLength: text.length, usedToday: used, cap: DAILY_CAP, paid: overFree && wantPaid, devNoAuth });
 
   // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
+  //   ★ 문단 분리(2026-07-20): 빈 줄 없는 붙여넣기에서 전체가 1문단이 되던 실사고 →
+  //   splitParagraphsForReport(빈줄→줄바꿈→항목머리→문장묶음 폴백)로 나누고,
+  //   등급·문단상세도 같은 경계(joined)로 계산해 인덱스·판정을 정합시킨다.
   let ir, paras, detail;
   try {
-    ir = sg.classifyInputRisk(text);
-    paras = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
-    detail = sg.analyzeParagraphs(text).detail;
+    paras = sg.splitParagraphsForReport(text);
+    const joined = paras.join('\n\n');
+    ir = sg.classifyInputRisk(joined);
+    detail = sg.analyzeParagraphs(joined).detail;
   } catch (e) {
     logger.error('detect_report.surface_failed', { uid, err: e });
     return res.status(500).json({ error: '감지 처리 중 오류가 발생했어요.' });
@@ -301,7 +305,7 @@ router.post('/detect-report', async (req, res) => {
     advancedTimeEstimate,
     paragraphs: paras.map((p, i) => {
       const kind = (detail[i] && detail[i].kind) || 'thin';
-      return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 90), coach: predictCoach(p) };   // ★문단별 예측태그→메모칸 코칭
+      return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 140), coach: predictCoach(p) };   // ★문단별 예측태그→메모칸 코칭 (미리보기 140자 — 90자는 어디 문단인지 알아보기 어려움)
     }),
     coach: predictCoach(text, 0.5),   // ★글 전체 상위 예측태그 + 어느 경험 메모 칸을 채우면 되는지(코칭 요약)
     counts: {

@@ -362,6 +362,43 @@ const SPECIFIC_RE = /(19|20)\d{2}|\d+\s*(명|개|건|배|원|시간|분|초|개�
 const SPECIFIC_RE_G = /(19|20)\d{2}|\d+\s*(명|개|건|배|원|시간|분|초|개월|주|일|차례|번|미터|m|km|kg|살|세|층|위|등)|[一-鿿]{1,}|"[^"]{2,}"|“[^”]{2,}”/g;
 function isSpecific(s) { return SPECIFIC_RE.test(s); }
 
+// ── 보고서용 문단 분리(2026-07-20): 빈 줄 없는 붙여넣기(워드·한글·모바일)에서 전체 글이
+//   1문단으로 뭉쳐 문단 지도가 무의미해지던 실사고(1,418자 자소서 → "총 1문단"·앞 90자만 표시).
+//   ① 빈 줄 → ② 단일 줄바꿈 → ③ 항목 머리("2. 성격의 장단점"·"③ …") → ④ 문장 경계 ~350자 묶음
+//   순서로 가장 자연스러운 경계를 찾는다. 엔진 경로(analyzeParagraphs 직접 호출부)는 기존 분리 유지 —
+//   위험비율·등급 산정 기준이 바뀌면 라우팅 실측 경계(inputGrade)가 흔들리기 때문.
+function splitParagraphsForReport(text) {
+  const t = String(text || '').trim();
+  if (!t) return [];
+  const paras = t.split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
+  if (paras.length > 1) return paras;
+  const byLine = t.split(/\n+/).map(p => p.trim()).filter(Boolean);
+  if (byLine.length > 1) return byLine;
+  const bare = t.replace(/\s/g, '').length;
+  if (bare > 400) {
+    // 문장 종결 뒤에 오는 항목 머리만 경계로(소수·날짜 "7. 1." 오분리 방지: 머리 뒤는 문자만)
+    const marked = t.replace(/([.!?…”"』」\)])\s+(?=(?:\d{1,2}\s*[.)]|[①-⑳])\s*[가-힣A-Za-z])/g, '$1\n\n');
+    const byHead = marked.split(/\n\n/).map(p => p.trim()).filter(Boolean);
+    if (byHead.length > 1) return byHead;
+  }
+  if (bare > 700) {
+    // 경계 단서가 전혀 없는 긴 한 덩어리 — 문단 지도가 최소 해상도를 갖게 문장 경계로 묶음
+    const sents = splitSentences(t);
+    const chunks = [];
+    let cur = '';
+    for (const s of sents) {
+      cur = cur ? cur + ' ' + s : s;
+      if (cur.replace(/\s/g, '').length >= 350) { chunks.push(cur); cur = ''; }
+    }
+    if (cur) {
+      if (chunks.length && cur.replace(/\s/g, '').length < 120) chunks[chunks.length - 1] += ' ' + cur;
+      else chunks.push(cur);
+    }
+    if (chunks.length > 1) return chunks;
+  }
+  return paras;
+}
+
 // ── 문단 단위 분석 (★ 카피킬러는 문단별로 본다 — 문서 평균은 일화 문단이 추상 문단을 희석해 신호를 가린다) ──
 // 문단이 "구체(낮음)"이려면 실제 겪은 장면(lived scene)이 1개 이상 있어야 한다.
 // 그게 없고 일반론 위주면 "추상-위험 문단"(카피킬러가 잡는 그 구간).
@@ -429,7 +466,7 @@ function classifyInputRisk(rawText) {
 }
 
 module.exports = {
-  splitSentences, measureGenericness, measureRealAnchorDensity, measureStance,
+  splitSentences, splitParagraphsForReport, measureGenericness, measureRealAnchorDensity, measureStance,
   measureUniformity, analyzeParagraphs, buildSurfaceReport, classifyInputRisk,
   measurePersonalExperienceNovelty, measureMemoReuse, isLivedScene,
   buildSourceAnchorPool, buildSegments, measureSegmentRisk, buildSegmentReport,

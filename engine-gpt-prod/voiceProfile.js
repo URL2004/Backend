@@ -157,8 +157,16 @@ function auditVoice(sourceProfile, output, {
   if (sourceProfile?.register && current.register !== sourceProfile.register && !['mixed'].includes(sourceProfile.register)) {
     warnings.push(warning('register_shift', `원문 종결체(${sourceProfile.register})가 결과(${current.register})에서 달라졌을 수 있어요.`));
   }
-  if ((sourceProfile?.directQuoteCount || 0) !== current.directQuoteCount
-      && !isQuotePunctuationOnlyChange(sourceText, output)) {
+  const directQuoteIntegrity = sourceText
+    ? auditDirectQuoteIntegrity(sourceText, output)
+    : null;
+  if (directQuoteIntegrity) {
+    if (directQuoteIntegrity.countChanged && !directQuoteIntegrity.punctuationOnlyChange) {
+      warnings.push(warning('quote_count_changed', '직접 인용의 개수가 달라졌을 수 있어요.'));
+    } else if (directQuoteIntegrity.contentChanged) {
+      warnings.push(warning('quote_content_changed', '직접 인용의 내용이나 순서가 원문과 달라졌을 수 있어요.'));
+    }
+  } else if ((sourceProfile?.directQuoteCount || 0) !== current.directQuoteCount) {
     warnings.push(warning('quote_count_changed', '직접 인용의 개수가 달라졌을 수 있어요.'));
   }
   const protectedProfiles = new Set([context.profile, ...context.safetyProfiles]);
@@ -258,6 +266,7 @@ function auditVoice(sourceProfile, output, {
   }
   return {
     profile: current,
+    directQuoteIntegrity,
     distributionDelta: {
       sentenceCountRatio: ratio(current.sentence.count, sourceProfile?.sentence?.count),
       paragraphCountRatio: ratio(current.paragraph.count, sourceProfile?.paragraph?.count),
@@ -462,10 +471,76 @@ function isQuotePunctuationOnlyChange(source, output) {
     && outputQuotes.every(content => sourceEvidence.includes(normalizeQuoteEvidence(content)));
 }
 
+function auditDirectQuoteIntegrity(source, output) {
+  const sourceQuotes = directQuoteContents(source);
+  const outputQuotes = directQuoteContents(output);
+  const countChanged = sourceQuotes.length !== outputQuotes.length;
+  const punctuationOnlyChange = countChanged && isQuotePunctuationOnlyChange(source, output);
+  const changedOrdinals = [];
+  if (!countChanged) {
+    for (let index = 0; index < sourceQuotes.length; index += 1) {
+      if (normalizeExactQuote(sourceQuotes[index]) !== normalizeExactQuote(outputQuotes[index])) {
+        changedOrdinals.push(index + 1);
+      }
+    }
+  }
+  return {
+    version: 1,
+    pass: (!countChanged || punctuationOnlyChange) && changedOrdinals.length === 0,
+    sourceCount: sourceQuotes.length,
+    outputCount: outputQuotes.length,
+    countChanged,
+    punctuationOnlyChange,
+    contentChanged: changedOrdinals.length > 0,
+    changedCount: changedOrdinals.length,
+    changedOrdinals
+  };
+}
+
+/**
+ * 직접 인용의 개수와 위치가 그대로일 때만 인용 내부를 원문으로 복원한다.
+ * 개수가 달라진 결과를 순서대로 끼워 맞추면 주변 문맥과 잘못 결합할 수
+ * 있으므로 그 경우에는 자동 수리하지 않고 감사 경고로 남긴다.
+ */
+function restoreDirectQuoteContents(source, output) {
+  const before = String(output || '');
+  const auditBefore = auditDirectQuoteIntegrity(source, before);
+  if (auditBefore.countChanged || !auditBefore.contentChanged) {
+    return {
+      text: before,
+      applied: false,
+      restoredCount: 0,
+      reason: auditBefore.countChanged ? 'quote_count_changed' : 'quote_content_unchanged',
+      auditBefore,
+      auditAfter: auditBefore
+    };
+  }
+  const sourceQuotes = directQuoteContents(source);
+  let quoteIndex = 0;
+  const text = before.replace(/([“"])([^”"\n]{2,})([”"])/gu, (_match, opening, content, closing) => {
+    const sourceContent = sourceQuotes[quoteIndex] ?? content;
+    quoteIndex += 1;
+    return `${opening}${sourceContent}${closing}`;
+  });
+  const auditAfter = auditDirectQuoteIntegrity(source, text);
+  return {
+    text,
+    applied: text !== before && auditAfter.pass,
+    restoredCount: auditBefore.changedCount,
+    reason: auditAfter.pass ? 'restored' : 'post_restore_validation_failed',
+    auditBefore,
+    auditAfter
+  };
+}
+
 function directQuoteContents(value) {
   const contents = [];
   for (const match of String(value || '').matchAll(/[“"]([^”"\n]{2,})[”"]/gu)) contents.push(match[1]);
   return contents;
+}
+
+function normalizeExactQuote(value) {
+  return String(value || '').normalize('NFKC').replace(/\r\n?/gu, '\n').trim();
 }
 
 function normalizeQuoteEvidence(value) {
@@ -499,4 +574,13 @@ function ratio(current, source) {
   return round(base ? (Number(current) || 0) / base : ((Number(current) || 0) ? 0 : 1), 4);
 }
 
-module.exports = { POV_PATTERNS, buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift, paragraphExpansionLimit };
+module.exports = {
+  POV_PATTERNS,
+  buildVoiceProfile,
+  voicePromptBlock,
+  auditVoice,
+  auditDirectQuoteIntegrity,
+  restoreDirectQuoteContents,
+  sentenceDistributionShift,
+  paragraphExpansionLimit
+};

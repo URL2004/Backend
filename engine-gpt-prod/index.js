@@ -18,7 +18,12 @@ const layoutNormalizer = require('../engine/layout');
 const inputRouting = require('../engine/inputrouting');
 const { computeEditMetrics, splitSentences } = require('../engine/koreanText');
 const { detectDocumentProfile, applyDocumentProfileOverride } = require('./documentProfile');
-const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile');
+const {
+  buildVoiceProfile,
+  auditDirectQuoteIntegrity,
+  restoreDirectQuoteContents,
+  sentenceDistributionShift
+} = require('./voiceProfile');
 const qualityV2 = require('./finalQualityV2');
 const { compareNumberMultiset } = require('./factAudit');
 const humanizationDepth = require('./humanizationDepth');
@@ -29,9 +34,10 @@ const fingerprint = require('./fingerprintAudit');
 const endingStyle = require('./endingStyleAudit');
 const resumeCoverage = require('./resumeCoverage');
 const experienceAudit = require('./experienceAudit');
+const sourcePreflight = require('./sourcePreflight');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.13';
+const VERSION = 'gpt-prod-v2.4.14';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -178,8 +184,12 @@ async function runEngine({
   qualityPatternLab,
   layoutNlp = null
 } = {}, { v2Enabled = true } = {}) {
-  const rawSource = String(text || '').trim();
-  if (!rawSource) throw new Error('engine-gpt-prod: empty text');
+  const submittedSource = String(text || '').trim();
+  if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
+  const sourcePreflightAudit = v2Enabled
+    ? sourcePreflight.auditAndSanitizeSource(submittedSource)
+    : null;
+  const rawSource = sourcePreflightAudit?.text || submittedSource;
   if (v2Enabled && inputRouting.isEnglishInput(rawSource)) {
     const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.');
     error.code = 'HUMANIZE_KOREAN_ONLY';
@@ -344,6 +354,7 @@ async function runEngine({
   let humanizationDepthRetryCount = Number(sectionRecoveryReport.metrics?.miniAttemptCount || 0)
     + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0);
   let humanizationDepthEscalationAttemptCount = Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0);
+  let humanizationNoEffectRetryAttemptCount = 0;
   let humanizationDepthRetryApplied = Number(sectionRecoveryReport.metrics?.applied || 0) > 0;
   let humanizationDepthRetryTargetSentenceCount = (sectionRecoveryReport.selected || [])
     .reduce((sum, entry) => sum + Number(entry?.plan?.targetSentenceCount || 0), 0);
@@ -357,6 +368,9 @@ async function runEngine({
   let koreanRefinementRetryAttemptCount = 0;
   let koreanRefinementRetryCount = 0;
   let koreanRefinementRetryApplied = false;
+  let quoteIntegrityAudit = null;
+  let quoteIntegrityRestoreCount = 0;
+  let finalQuoteIntegrityRestoreCount = 0;
   let fingerprintAudit = null;
   let fingerprintRetryAttemptCount = 0;
   let fingerprintRepairCount = 0;
@@ -382,7 +396,10 @@ async function runEngine({
     contextualSpacingRepairCount: 0
   };
   const sourceReviewWarnings = v2Enabled
-    ? koreanRefinement.buildSourceReviewWarnings(rawSource, documentProfile)
+    ? [
+        ...(sourcePreflightAudit?.warnings || []),
+        ...koreanRefinement.buildSourceReviewWarnings(rawSource, documentProfile)
+      ]
     : [];
   if (v2Enabled && selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
@@ -462,16 +479,23 @@ async function runEngine({
       && (rawSource.length < sectionRecovery.MIN_DOCUMENT_CHARS || !sectionRecovery.isEnabled())
       && (generalSurfaceRetryPending || humanizationDepthReport?.pass === false)) {
     const wasEquivalent = normalizeBare(auditSource) === normalizeBare(outputText);
-    const maxDepthAttempts = requestStrength === 'advanced' ? 2 : 1;
+    // 기본도 첫 회복 뒤 결과가 여전히 문단 재배치·구두점 수준에 머물면 mini로
+    // 한 번 더 회복한다. 최소 효과는 넘었지만 목표 깊이만 부족한 결과에는 추가
+    // 호출하지 않으며, 고급의 두 번째 시도만 상위 모델로 승격한다.
+    const maxDepthAttempts = 2;
     if (wasEquivalent) finalNoopRecovery.attempted = true;
     let lastRetryError = null;
     for (let attempt = 0; attempt < maxDepthAttempts; attempt += 1) {
-      if (attempt > 0 && humanizationDepthReport?.pass === true) break;
+      if (attempt > 0
+          && (humanizationDepthReport?.pass === true
+            || (requestStrength !== 'advanced' && humanizationDepthReport?.minimumEffectPass !== false))) break;
       try {
         generalSurfaceRetryAttemptCount += 1;
         humanizationDepthRetryCount += 1;
-        const escalation = attempt > 0;
+        const escalation = attempt > 0 && requestStrength === 'advanced';
+        const noEffectRetry = attempt > 0 && !escalation;
         if (escalation) humanizationDepthEscalationAttemptCount += 1;
+        if (noEffectRetry) humanizationNoEffectRetryAttemptCount += 1;
         const retried = await qualityV2.retryGeneralSurface({
           source: auditSource,
           currentOutput: outputText,
@@ -482,7 +506,11 @@ async function runEngine({
           safetyIdentifier: safetyId,
           model: escalation ? cfg.models.humanizeEscalation : '',
           reasoningEffort: escalation ? cfg.reasoning.escalation : '',
-          phase: escalation ? 'humanization_depth_escalation' : 'humanization_depth_retry'
+          phase: escalation
+            ? 'humanization_depth_escalation'
+            : noEffectRetry
+              ? 'humanization_no_effect_retry'
+              : 'humanization_depth_retry'
         });
         supplementalUsage = addUsage(supplementalUsage, retried.usage);
         humanizationDepthRetryTargetSentenceCount += retried.targetSentenceCount || 0;
@@ -523,6 +551,24 @@ async function runEngine({
           ? `retry_error:${String(lastRetryError?.code || lastRetryError?.message || 'unknown').slice(0, 80)}`
           : 'no_substantive_change'
       };
+    }
+  }
+
+  if (v2Enabled && !polishStrictFailure) {
+    quoteIntegrityAudit = auditDirectQuoteIntegrity(auditSource, outputText);
+    const restored = restoreDirectQuoteContents(auditSource, outputText);
+    if (restored.applied
+        && preservesFinalStructure(auditSource, restored.text, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair)) {
+      outputText = restored.text;
+      quoteIntegrityAudit = restored.auditAfter;
+      quoteIntegrityRestoreCount = restored.restoredCount || 1;
+      if (humanizationDepthEnabled && selectedMode !== 'polish') {
+        humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(
+          auditSource,
+          outputText,
+          humanizationPlan
+        );
+      }
     }
   }
 
@@ -892,6 +938,18 @@ async function runEngine({
       })
     : { text: outputText, applied: false, pass: true };
   outputText = layoutRepair.text || outputText;
+  // 직접 인용은 의미 심사 이후의 일반 어휘 후처리가 아니라 동결 구조다.
+  // 의미 수리나 레이아웃 복원에서 내부 내용이 달라졌다면 같은 위치의
+  // 원문 인용만 재조립한다.
+  if (v2Enabled) {
+    const restored = restoreDirectQuoteContents(rawSource, outputText);
+    if (restored.applied) {
+      outputText = restored.text;
+      quoteIntegrityRestoreCount += restored.restoredCount || 1;
+      finalQuoteIntegrityRestoreCount = restored.restoredCount || 1;
+    }
+    quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
+  }
   let polishSpeakerRestore = { applied: false, restoredSentenceCount: 0, restoredKinds: [], reason: 'not_applicable' };
   if (v2Enabled && selectedMode === 'polish') {
     polishSpeakerRestore = qualityV2.restoreMissingPolishSpeaker({
@@ -966,6 +1024,7 @@ async function runEngine({
   }
   if (v2Enabled) endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText);
   if (v2Enabled) resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
+  if (v2Enabled) quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   if (v2Enabled) {
     koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
       source: rawSource,
@@ -1163,6 +1222,13 @@ async function runEngine({
   result.humanizationDepth = humanizationDepthReport;
   result.koreanRefinement = koreanRefinementAudit;
   result.sourceReviewWarnings = sourceReviewWarnings;
+  result.sourcePreflight = sourcePreflightAudit ? {
+    version: sourcePreflightAudit.version || 1,
+    changed: sourcePreflightAudit.changed === true,
+    removedLineCount: Number(sourcePreflightAudit.removedLineCount || 0),
+    noticeCount: Number(sourcePreflightAudit.noticeCount || 0),
+    issueCodes: safeFailureCodeList(sourcePreflightAudit.issueCodes)
+  } : null;
   result.dedupeAudit = postprocessMeta.dedupe || null;
   result.engineMeta = {
     schemaVersion: 2,
@@ -1202,6 +1268,7 @@ async function runEngine({
       + polishSpeakerRestoreCount
       + (koreanDeterministicRepairCount > 0 ? 1 : 0)
       + koreanRefinementRetryCount
+      + (quoteIntegrityRestoreCount > 0 ? 1 : 0)
       + fingerprintRepairCount
       + endingStyleRepairCount
       + resumeCoverageRepairCount,
@@ -1264,6 +1331,7 @@ async function runEngine({
     humanizationDeliveryDepthBand: humanizationDepthReport?.metrics?.deliveryDepthBand || '',
     humanizationDepthRetryCount,
     humanizationDepthEscalationAttemptCount,
+    humanizationNoEffectRetryAttemptCount,
     humanizationDepthRetryApplied,
     humanizationDepthRetryTargetSentenceCount,
     sectionRecoveryEnabled: sectionRecoveryReport.metrics?.enabled === true,
@@ -1294,6 +1362,11 @@ async function runEngine({
     fingerprintRepairCount,
     fingerprintRetryApplied,
     fingerprintShadow: Array.isArray(fingerprintAudit?.shadow) ? fingerprintAudit.shadow.slice(0, 8) : [],
+    fingerprintShadowPositiveCodes: safeFailureCodeList((fingerprintAudit?.shadow || [])
+      .filter(item => Number(item?.delta || 0) > 0)
+      .map(item => item.code)),
+    fingerprintShadowPositiveCount: (fingerprintAudit?.shadow || [])
+      .reduce((sum, item) => sum + Math.max(0, Number(item?.delta || 0)), 0),
     endingStyleAuditVersion: Number(endingStyleAudit?.version || 0),
     endingStylePass: endingStyleAudit?.pass === true,
     endingStyleIssueCount: Number(endingStyleAudit?.issueCount || 0),
@@ -1324,6 +1397,12 @@ async function runEngine({
     koreanRefinementRetryAttemptCount,
     koreanRefinementRetryCount,
     koreanRefinementRetryApplied,
+    quoteIntegrityAuditVersion: Number(quoteIntegrityAudit?.version || 0),
+    quoteIntegrityPass: quoteIntegrityAudit?.pass === true,
+    quoteCountChanged: quoteIntegrityAudit?.countChanged === true,
+    quoteContentChangedCount: Number(quoteIntegrityAudit?.changedCount || 0),
+    quoteIntegrityRestoreCount,
+    finalQuoteIntegrityRestoreCount,
     finalFormattingRepairCount: Number(finalFormattingRepair.changeCount || 0),
     finalFormattingRepairCodes: safeFailureCodeList(finalFormattingRepair.changeCodes),
     brokenLineBreakRepairCount: Number(finalFormattingRepair.brokenLineBreakRepairCount || 0),
@@ -1332,7 +1411,12 @@ async function runEngine({
     missingSentenceSpaceRepairCount: Number(finalFormattingRepair.changeCounts?.missing_sentence_space || 0),
     contextualSpacingRepairCount: Number(finalFormattingRepair.contextualSpacingRepairCount || 0),
     sourceReviewWarningCodes: safeFailureCodeList(sourceReviewWarnings.map(item => item.code)),
-    sourceReviewWarningCount: sourceReviewWarnings.length
+    sourceReviewWarningCount: sourceReviewWarnings.length,
+    sourcePreflightVersion: Number(sourcePreflightAudit?.version || 0),
+    sourcePreflightChanged: sourcePreflightAudit?.changed === true,
+    sourceArtifactRemovedCount: Number(sourcePreflightAudit?.removedArtifactCount || 0),
+    sourcePreflightNoticeCount: Number(sourcePreflightAudit?.noticeCount || 0),
+    sourcePreflightIssueCodes: safeFailureCodeList(sourcePreflightAudit?.issueCodes)
   };
   result.humanizeMeta = {
     provider: 'openai',
@@ -1365,6 +1449,7 @@ async function runEngine({
     layoutFormat: layoutNlpEnabled ? (result.layoutFormat || { enabled: true }) : null,
     naturalnessShadow: deliveryAudit?.naturalnessShadow || null,
     koreanRefinement: koreanRefinementAudit,
+    sourcePreflight: result.sourcePreflight,
     sourceReviewWarnings,
     layoutRepair: result.structureLock?.layoutRepair || null,
     dedupeAudit: result.dedupeAudit ? {

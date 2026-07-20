@@ -12,7 +12,15 @@ const freeze = require('../engine/freezeblocks');
 const structure = require('../engine-gpt-prod/structureChunk');
 const layoutStructure = require('../engine-gpt-prod/layoutStructure');
 const { detectDocumentProfile, applyDocumentProfileOverride } = require('../engine-gpt-prod/documentProfile');
-const { buildVoiceProfile, voicePromptBlock, auditVoice, sentenceDistributionShift, paragraphExpansionLimit } = require('../engine-gpt-prod/voiceProfile');
+const {
+  buildVoiceProfile,
+  voicePromptBlock,
+  auditVoice,
+  auditDirectQuoteIntegrity,
+  restoreDirectQuoteContents,
+  sentenceDistributionShift,
+  paragraphExpansionLimit
+} = require('../engine-gpt-prod/voiceProfile');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const factAudit = require('../engine-gpt-prod/factAudit');
 const { assessRepairCandidate } = require('../engine-gpt-prod/judge');
@@ -996,6 +1004,33 @@ test('원문에 있던 발화 내용에 따옴표만 보완하면 인용 변경�
   const invented = '선생님께서 "발표가 완벽했다"라고 칭찬하셨다.';
   const inventedAudit = auditVoice(voice, invented, { sourceText: source });
   assert.ok(inventedAudit.warnings.some(item => item.code === 'quote_count_changed'));
+});
+
+test('직접 인용의 개수가 같아도 내부 내용 변경을 잡고 원문 인용만 복원한다', () => {
+  const source = '저희는 “AI는 인간이 될 수 없다.”라는 입장을 주장합니다. 그는 “보조 기술에 그치지 않는다.”고 설명했습니다.';
+  const output = '저희는 “AI는 인간이 될 수 없습니다.”는 입장을 주장합니다. 그는 “보조 기술이 아니다.”라고 설명했습니다.';
+  const audit = auditDirectQuoteIntegrity(source, output);
+  assert.equal(audit.countChanged, false);
+  assert.equal(audit.contentChanged, true);
+  assert.deepEqual(audit.changedOrdinals, [1, 2]);
+
+  const voiceAudit = auditVoice(buildVoiceProfile(source), output, { sourceText: source });
+  assert.ok(voiceAudit.warnings.some(item => item.code === 'quote_content_changed'));
+
+  const restored = restoreDirectQuoteContents(source, output);
+  assert.equal(restored.applied, true);
+  assert.equal(restored.restoredCount, 2);
+  assert.match(restored.text, /“AI는 인간이 될 수 없다\.”는 입장/u);
+  assert.match(restored.text, /“보조 기술에 그치지 않는다\.”라고 설명/u);
+  assert.equal(auditDirectQuoteIntegrity(source, restored.text).pass, true);
+});
+
+test('직접 인용 개수가 달라진 결과는 잘못 짝지어 자동 복원하지 않는다', () => {
+  const source = '그는 “첫째 원칙”과 “둘째 원칙”을 제시했다.';
+  const output = '그는 “첫째 원칙”을 제시했다.';
+  const restored = restoreDirectQuoteContents(source, output);
+  assert.equal(restored.applied, false);
+  assert.equal(restored.reason, 'quote_count_changed');
 });
 
 test('원문의 마침표 뒤 누락 공백만 보정한 결과를 리듬 평탄화로 오인하지 않는다', () => {

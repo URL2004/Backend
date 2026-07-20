@@ -137,7 +137,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.13');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.14');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -171,6 +171,20 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
     assert.equal(call.body.safety_identifier, expectedSafety);
     assert.equal(JSON.stringify(call.body).includes(uid), false);
   }
+});
+
+test('복사된 UI 행은 모델 입력 전에 제외하고 원문 없는 코드·횟수만 기록한다', { concurrency: false }, async t => {
+  const source = `접기\n${SOURCE}`;
+  const mock = installEngineMock(t, { humanize: SAFE_POLISH });
+  const out = await engine.run({ text: source, mode: 'polish', allowPolish: true, uid: 'source-preflight-user', config: config() });
+  assert.equal(out.result.outputText, SAFE_POLISH);
+  assert.equal(out.engineMeta.sourcePreflightChanged, true);
+  assert.equal(out.engineMeta.sourceArtifactRemovedCount, 1);
+  assert.deepEqual(out.engineMeta.sourcePreflightIssueCodes, ['source_ui_artifact']);
+  assert.equal(out.result.sourcePreflight.removedLineCount, 1);
+  assert.ok(out.result.sourceReviewWarnings.some(item => item.code === 'source_ui_artifact'));
+  const humanizeCall = mock.calls.find(call => call.name === 'gpt_prod_humanize_result');
+  assert.equal(JSON.stringify(humanizeCall?.body?.input || '').includes('접기'), false);
 });
 
 test('polish는 의미 심사 뒤 새 문단을 만들지 않고 원문 문단 수로 전달한다', { concurrency: false }, async t => {
@@ -559,7 +573,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.13');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.14');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);
@@ -574,6 +588,26 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.match(String(retryCall?.body?.instructions || ''), /문서 전체를 다시 쓰지 않는다/u);
   assert.doesNotMatch(String(retryCall?.body?.instructions || ''), /\d+(?:\.\d+)?\s*%|SOURCE에서 다시 시작/u);
   assert.ok(out.engineMeta.humanizationDepthRetryTargetSentenceCount >= 1);
+});
+
+test('기본 첫 회복도 구두점 수준이면 mini로 한 번 더 실질 회복한다', { concurrency: false }, async t => {
+  const source = '조금만 크게 볼 수는 없을까요. 사람마다 살아온 경험과 생각이 다르다는 점을 인정하면 됩니다. 상대를 완전히 이해하기 어렵더라도 서로의 자리와 배경을 존중할 수 있습니다. 유독 정치와 종교 같은 주제 앞에서 이 태도가 흔들리기도 합니다. 서로 다른 생각을 마주할 때에도 먼저 판단하기보다 차분히 듣는 태도가 필요합니다.';
+  const punctuationOnly = source.replace('않을까요.', '않을까요?');
+  const substantive = '조금만 크게 볼 수는 없을까요. 먼저 인정할 것은 사람마다 살아온 경험과 생각이 다르다는 사실입니다. 상대를 완전히 이해하기는 어려워도 서로의 자리와 배경은 존중할 수 있습니다. 이 태도는 정치와 종교 같은 주제 앞에서 유독 흔들리기도 합니다. 서로 다른 생각과 마주할 때에도 판단부터 내리기보다는 차분히 듣는 태도가 필요합니다.';
+  const mock = installEngineMock(t, {
+    humanize: source,
+    generalRetryOutput: (_body, callNumber) => callNumber === 1 ? punctuationOnly : substantive,
+    humanizationDepth: true
+  });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'basic-no-effect-recovery-user', config: config() });
+  assert.equal(out.result.outputText, substantive);
+  assert.equal(out.engineMeta.humanizationNoEffectRetryAttemptCount, 1);
+  assert.equal(out.engineMeta.humanizationDepthEscalationAttemptCount, 0);
+  const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
+  assert.equal(retryCalls.length, 2);
+  assert.equal(retryCalls[0].model, 'gpt-5.4-mini');
+  assert.equal(retryCalls[1].model, 'gpt-5.4-mini');
+  assert.match(String(retryCalls[1].body.instructions || ''), /앞선 회복도 공백·구두점·동의어 수준/u);
 });
 
 test('약 3%의 동의어 교체 결과도 그대로 전달하지 않고 실질 휴머나이징을 재시도한다', { concurrency: false }, async t => {
@@ -817,7 +851,8 @@ test('voice 재시도 실패 후 구두점만 바뀌면 원문을 검토용으�
   assert.equal(out.engineMeta.humanizationNoBenefitDelivered, true);
   assert.equal(out.engineMeta.repairCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
+  assert.equal(out.engineMeta.humanizationNoEffectRetryAttemptCount, 1);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, false);
 });
 

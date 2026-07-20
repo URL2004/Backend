@@ -16,6 +16,11 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       structuralChangedSentenceRatio: 0.42, rhetoricalRemediationCoverage: 1,
       billingDisposition: 'charged', sectionRecoveryAttemptCount: 2,
       sectionRecoveryAppliedCount: 1, processingDurationMs: 120000,
+      humanizationNoEffectRetryAttemptCount: 1,
+      fingerprintShadowPositiveCodes: ['review_together'], fingerprintShadowPositiveCount: 1,
+      quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
+      sourcePreflightChanged: true, sourceArtifactRemovedCount: 1,
+      sourcePreflightIssueCodes: ['source_ui_artifact'],
       qualityWarningCodes: [], sourceReviewWarningCodes: ['reflection_formula'],
       koreanRefinementIssueCodes: [], koreanRefinementPass: true, estimatedUsd: 0.03,
       inputText: '응답에 포함되면 안 되는 원문', outputText: '응답에 포함되면 안 되는 결과'
@@ -31,6 +36,7 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       structuralChangedSentenceRatio: 0.1, rhetoricalRemediationCoverage: 0.5,
       billingDisposition: 'waived_quality_shortfall', sectionRecoveryAttemptCount: 1,
       sectionRecoveryAppliedCount: 0, fingerprintPass: false,
+      quoteIntegrityPass: false, quoteContentChangedCount: 1,
       endingStylePass: false, resumeCoverageApplicable: true, resumeCoveragePass: false,
       processingDurationMs: 240000,
       qualityWarningCodes: ['rhetorical_remediation_low'],
@@ -56,11 +62,18 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.summary.carryoverOverLimitCount, 1);
   assert.equal(report.summary.sectionRecoveryAppliedCount, 1);
   assert.equal(report.summary.fingerprintIssueCount, 1);
+  assert.equal(report.summary.noEffectSecondRecoveryCount, 1);
+  assert.equal(report.summary.fingerprintShadowPositiveDocumentCount, 1);
+  assert.equal(report.summary.quoteIntegrityIssueCount, 1);
+  assert.equal(report.summary.quoteRestoreDocumentCount, 1);
+  assert.equal(report.summary.sourcePreflightChangedCount, 1);
   assert.equal(report.metrics.substantiveCarryoverRatio.median, 0.29);
   assert.equal(report.metrics.processingDurationMs.p95, 234000);
   assert.equal(report.window.sinceMs, 0);
   assert.equal(report.requestedModeDocumentProfileEngineQuality.length, 3);
   assert.deepEqual(report.sourceReviewWarningCounts, [{ code: 'reflection_formula', count: 2 }]);
+  assert.deepEqual(report.sourcePreflightIssueCounts, [{ code: 'source_ui_artifact', count: 1 }]);
+  assert.deepEqual(report.fingerprintShadowPositiveCounts, [{ code: 'review_together', count: 1 }]);
   assert.equal(report.metrics.substantiveEditRatio.median, 0.24);
   assert.equal(Object.hasOwn(report.recent[0], 'inputText'), false);
   assert.equal(Object.hasOwn(report.recent[0], 'outputText'), false);

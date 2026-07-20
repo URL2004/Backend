@@ -101,6 +101,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   }
 
   const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|성장\s*과정|직무\s*역량|자기\s*소개서|자소서|저의\s*(?:(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|경험)|귀사|지원하게\s*되었습니다|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다)/gu);
+  const applicationIntentSignals = count(text, /(?:신청\s*(?:동기|이유)|신청(?:하게\s*되었습니다|했습니다|하고자|하려고|하고\s*싶)|지원(?:하게\s*되었습니다|했습니다|하고자|하려고|하고\s*싶)|참여하게\s*된다면|선발된다면)/gu);
+  const programApplicationSignals = count(text, /(?:(?:캠프|프로그램|교육\s*과정|체험\s*활동|학과\s*탐방|멘토링)[^.!?\n]{0,90}(?:신청|지원|참여|선발|체험)|(?:신청|지원|참여|선발)[^.!?\n]{0,90}(?:캠프|프로그램|교육\s*과정|체험\s*활동|학과\s*탐방|멘토링))/gu);
   const careerActionSignals = count(text, /(?:수집|정리|분석|비교|조사|기획|설계|운영|관리|지원|발표|협업|조율|응대|개선|제작|시각화|학습|연습|근무|실험|조정|최적화|도출|검증|측정|해석|문서화|작성|유지)/gu);
   const achievementSignals = count(text, /(?:합격|취득|등급|자격증|성과|역량|능력|강점|경쟁력|목표를\s*(?:달성|이뤄)|키웠|길렀|향상|보완|다졌|갖췄|갖추었|확보|구현|재현성|신뢰성)/gu);
   const roleFitSignals = count(text, /(?:직무|실무|업무|입사|채용|지원서|지원\s*분야|회사|조직|고객|수강생|교육\s*운영|운영\s*지원|연구\s*개발|연구원|소재\s*개발|업무에\s*(?:활용|적용)|도움이\s*될|기여(?:할|하는|하고자))/gu);
@@ -109,7 +111,17 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const careerAspirationSignals = count(text, /(?:입사\s*후|귀사|지원(?:하게\s*되었습니다|하고자|했습니다)|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다|(?:직무|업무|연구\s*개발|소재\s*개발)[^.!?\n]{0,45}기여(?:하겠습니다|하고자\s*합니다|하는))/gu);
   const researchCareerContextSignals = count(text, /(?:연구실|연구\s*개발|실험\s*(?:설계|조건|데이터|결과)|공정\s*(?:조건|변수|최적화)|분석\s*장비|시편|재현성|연구\s*과제|투고\s*논문)/gu);
   add(scores, 'resume_application', explicitApplicationSignals, 1.35);
+  add(scores, 'resume_application', applicationIntentSignals, 1.35);
+  add(scores, 'resume_application', programApplicationSignals, 0.85);
   add(scores, 'resume_application', firstPersonSignals, 0.22);
+  // 취업 지원서뿐 아니라 대학·기관의 캠프/교육 프로그램 신청서도 지원서다.
+  // 단순한 행사 후기를 오인하지 않도록 1인칭, 명시적 신청 의도, 프로그램
+  // 참여 문맥이 함께 있을 때만 강한 장르 증거로 사용한다.
+  if (firstPersonSignals >= 2 && applicationIntentSignals >= 1 && programApplicationSignals >= 1) {
+    scores.resume_application += 2.2
+      + Math.min(applicationIntentSignals - 1, 2) * 0.25
+      + Math.min(programApplicationSignals - 1, 3) * 0.18;
+  }
   if (careerActionSignals >= 3 && achievementSignals >= 2 && roleFitSignals >= 2
       && (explicitApplicationSignals >= 1 || experienceNarrativeSignals >= 1 || careerAspirationSignals >= 1)) {
     scores.resume_application += 2.15
@@ -247,6 +259,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       observationSignals,
       reflectionSignals,
       educationSignals,
+      applicationIntentSignals,
+      programApplicationSignals,
       instructionalPlanSignals,
       bulletLineCount,
       questionCount: questionnaire.questionCount,

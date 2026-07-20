@@ -234,13 +234,25 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         rhetoricalRemediationTargetCount: 4,
         rhetoricalRemediationAchievedCount: 3,
         rhetoricalRemediationCoverage: 0.75,
+        resumeRepetitionAuditVersion: 1,
+        resumeRepetitionApplicable: true,
+        resumeRepetitionPass: false,
+        resumeRepetitionThemeCount: 3,
+        resumeRepetitionSourcePairCount: 9,
+        resumeRepetitionResidualPairCount: 7,
+        resumeRepetitionRequiredReduction: 3,
+        resumeRepetitionAchievedReduction: 2,
+        resumeRepetitionCoverage: 0.6667,
         lengthRatio: 1.02,
         humanizationTargetDepthMet: false,
         humanizationDeliveryDepthBand: 'below_minimum',
         humanizationDepthRetryCount: 1,
         humanizationNoEffectRetryAttemptCount: 1,
+        humanizationRoleRecoveryAttemptCount: 1,
         humanizationDepthRetryApplied: false,
         humanizationDepthRetryTargetSentenceCount: 3,
+        humanizationDepthRetryRejectedCount: 2,
+        humanizationDepthRetryRejectionCodes: ['candidate_unchanged', '사용자 원문 조각'],
         sectionRecoveryEnabled: true,
         sectionRecoveryAttemptCount: 3,
         sectionRecoveryAppliedCount: 1,
@@ -358,13 +370,19 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationTargetCoverage, 0.6);
   assert.equal(first.structuralChangedSentenceRatio, 0.4);
   assert.equal(first.rhetoricalRemediationCoverage, 0.75);
+  assert.equal(first.resumeRepetitionApplicable, true);
+  assert.equal(first.resumeRepetitionPass, false);
+  assert.equal(first.resumeRepetitionCoverage, 0.6667);
   assert.equal(first.lengthRatio, 1.02);
   assert.equal(first.koreanRefinementPass, false);
   assert.deepEqual(first.koreanRefinementIssueCodes, ['frequency_quantifier_conflict']);
   assert.deepEqual(first.sourceReviewWarningCodes, ['deep_understanding_collocation']);
   assert.equal(first.humanizationDepthRetryCount, 1);
   assert.equal(first.humanizationNoEffectRetryAttemptCount, 1);
+  assert.equal(first.humanizationRoleRecoveryAttemptCount, 1);
   assert.equal(first.humanizationDepthRetryTargetSentenceCount, 3);
+  assert.equal(first.humanizationDepthRetryRejectedCount, 2);
+  assert.deepEqual(first.humanizationDepthRetryRejectionCodes, ['candidate_unchanged']);
   assert.equal(first.sectionRecoveryAttemptCount, 3);
   assert.equal(first.sectionRecoveryAppliedCount, 1);
   assert.equal(first.fingerprintPass, false);
@@ -480,10 +498,17 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     substantiveCarryoverEligibleSentenceCount: 17, substantiveCarryoverMaximum: 0.25,
     sectionRecoveryAttemptCount: 4, sectionRecoveryAppliedCount: 2, sectionRecoveryEscalationCount: 1,
     humanizationNoEffectRetryAttemptCount: 1,
+    humanizationRoleRecoveryAttemptCount: 2,
+    humanizationDepthRetryRejectedCount: 2,
+    humanizationDepthRetryRejectionCodes: ['depth_not_improved', '사용자 원문 조각'],
     fingerprintIntroducedCount: 1, fingerprintRepairCount: 1, fingerprintIssueCodes: [],
     fingerprintShadowPositiveCodes: ['review_together'], fingerprintShadowPositiveCount: 1,
     endingStylePass: true, endingStyleIssueCount: 0, resumeCoverageApplicable: true,
     resumeCoveragePass: true, resumeClaimCount: 4, resumeCoveredClaimCount: 4, resumeCoverageRatio: 1,
+    resumeRepetitionAuditVersion: 1, resumeRepetitionApplicable: true, resumeRepetitionPass: false,
+    resumeRepetitionThemeCount: 2, resumeRepetitionSourcePairCount: 8,
+    resumeRepetitionResidualPairCount: 7, resumeRepetitionRequiredReduction: 2,
+    resumeRepetitionAchievedReduction: 1, resumeRepetitionCoverage: 0.5,
     billingDisposition: 'waived_quality_shortfall', effectExpectation: 'normal',
     koreanRefinementIssueCodes: [], sourceReviewWarningCodes: ['deep_understanding_collocation'],
     quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
@@ -501,12 +526,18 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.fingerprintRepairCount, 1);
   assert.deepEqual(compact.fingerprintShadowPositiveCodes, ['review_together']);
   assert.equal(compact.humanizationNoEffectRetryAttemptCount, 1);
+  assert.equal(compact.humanizationRoleRecoveryAttemptCount, 2);
+  assert.equal(compact.humanizationDepthRetryRejectedCount, 2);
+  assert.deepEqual(compact.humanizationDepthRetryRejectionCodes, ['depth_not_improved']);
   assert.equal(compact.quoteIntegrityPass, true);
   assert.equal(compact.quoteIntegrityRestoreCount, 1);
   assert.equal(compact.sourcePreflightChanged, true);
   assert.deepEqual(compact.sourcePreflightIssueCodes, ['source_ui_artifact']);
   assert.equal(compact.endingStylePass, true);
   assert.equal(compact.resumeCoverageRatio, 1);
+  assert.equal(compact.resumeRepetitionApplicable, true);
+  assert.equal(compact.resumeRepetitionPass, false);
+  assert.equal(compact.resumeRepetitionCoverage, 0.5);
   assert.equal(compact.billingDisposition, 'waived_quality_shortfall');
   assert.deepEqual(compact.sourceReviewWarningCodes, ['deep_understanding_collocation']);
   assert.equal(Object.hasOwn(compact, 'prompt'), false);

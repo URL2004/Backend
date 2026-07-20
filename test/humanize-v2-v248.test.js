@@ -312,6 +312,47 @@ test('섹션 회복 재시도는 mini와 상위 모델 선택을 요청 본문�
   assert.equal(seen[0].reasoning?.effort, 'high');
 });
 
+test('지원서 의미 반복 회복은 문단 역할을 나누되 없는 경험과 프로그램 생성을 금지한다', { concurrency: false }, async t => {
+  withEnv(t, 'OPENAI_API_KEY', 'v2415-resume-repetition-test');
+  const originalFetch = global.fetch;
+  const seen = [];
+  global.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push(body);
+    return new Response(JSON.stringify({
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ outputText: '지원 동기와 참여 계획을 원문 범위에서 나누어 정리했습니다.', safeChangeFound: true, notes: [] }) }] }],
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 }
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+  const config = runtime.publicConfig(runtime.DEFAULT_CONFIG, 'test');
+  await qualityV2.retryGeneralSurface({
+    source: '저는 캠프에 지원하고 싶습니다. 진로를 찾고 싶습니다. 캠프에서 진로를 찾고 싶습니다.',
+    currentOutput: '저는 캠프에 지원하고 싶습니다. 진로를 찾고 싶습니다. 캠프에서 진로를 찾고 싶습니다.',
+    humanizationPlan: {
+      applicable: true,
+      requestStrength: 'basic',
+      profile: 'resume_application',
+      targetIndices: [0, 1, 2],
+      requiredChangedSentenceCount: 2,
+      requiredTargetChangedCount: 2,
+      minSubstantiveEditRatio: 0.1,
+      resumeRepetitionPlan: { applicable: true, requiredReduction: 1 }
+    },
+    humanizationDepthReport: {
+      reasons: ['resume_semantic_repetition_low'],
+      metrics: { resumeRepetition: { requiredReduction: 1, achievedReduction: 0 } }
+    },
+    config
+  });
+  const request = JSON.stringify(seen[0]);
+  assert.match(request, /같은 지원 전제/u);
+  assert.match(request, /문단별 역할/u);
+  assert.match(request, /없는 전공 관심/u);
+  assert.match(request, /학교 프로그램/u);
+});
+
 test('주간 n-gram 보고서는 10문서·2배·순증 8 기준과 사람 승인 대기를 강제한다', () => {
   const pairs = Array.from({ length: 12 }, (_, index) => ({
     source: index < 2 ? '자료에 머무르지 않고 판단을 정리했다.' : '원문 자료를 직접 검토했다.',

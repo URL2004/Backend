@@ -583,6 +583,7 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
   const targetOrdinals = buildGeneralRetryTargetOrdinals(source, currentOutput, plan, humanizationDepthReport);
   const targetText = targetOrdinals.length ? targetOrdinals.join(', ') : '서버가 표시한 현재 문장 중 안전하게 재구성 가능한 한 곳';
   const remediationLow = (humanizationDepthReport?.reasons || []).includes('rhetorical_remediation_low');
+  const resumeRepetitionLow = (humanizationDepthReport?.reasons || []).includes('resume_semantic_repetition_low');
   const structuralLow = (humanizationDepthReport?.reasons || []).includes('structural_rewrite_coverage_low');
   const paragraphLow = (humanizationDepthReport?.reasons || []).includes('paragraph_rewrite_coverage_low');
   const noEffectRecovery = phase === 'humanization_no_effect_retry';
@@ -592,7 +593,9 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
   const system = [
     '너는 한국어 실질 휴머나이징 국소 수리기다. 교정·다듬기만 한 결과를 만드는 작업이 아니다.',
     'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단 수와 내용 순서를 보존한다.',
-    'CURRENT는 보존 검사를 통과했거나 원문으로 안전 복귀한 후보이므로 CURRENT를 기준으로 작업한다. 문서 전체를 다시 쓰지 않는다.',
+    resumeRepetitionLow
+      ? 'CURRENT를 기준으로 하되, 같은 지원 전제가 반복된 표시 문장이 여러 문단에 있으면 그 문장들은 문단별 역할에 맞춰 함께 재구성한다. 표시되지 않은 문장과 문단 순서는 그대로 둔다.'
+      : 'CURRENT는 보존 검사를 통과했거나 원문으로 안전 복귀한 후보이므로 CURRENT를 기준으로 작업한다. 문서 전체를 다시 쓰지 않는다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
     `${strengthLabel} 모드의 변화량은 서버가 결과에서 계산한다. 숫자를 맞추기 위한 새 설명이나 동의어 나열 대신 지정된 문장의 절 순서·주어 위치·연결·호흡을 다시 구성한다.`,
     noEffectRecovery
@@ -609,6 +612,12 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     '“데이터를 보고서·논문에 작성하다”, “피드백을 반복하다” 같은 주어·목적어·연어 오류를 만들지 않는다.',
     resumeProfile
       ? '역량을 길렀다·능력을 키웠다·노력했다가 반복되면 SOURCE의 실제 행동과 확인 가능한 결과로 직접 서술한다.'
+      : '',
+    resumeRepetitionLow
+      ? '현재 지원서는 같은 지원 전제·진로 고민·탐색 의도를 표현만 바꿔 여러 문단에서 되풀이했다. 첫 문단에는 지원 동기를 온전히 남기고, 뒤 문단에서는 그 전제를 짧게 받은 뒤 SOURCE에 원래 있던 어려움, 확인할 항목, 실행 계획을 문단의 중심으로 앞세운다. 같은 뜻의 문장을 단순 삭제하지 말고 고유 정보가 남도록 합치거나 재배치한다.'
+      : '',
+    resumeRepetitionLow
+      ? '구체성을 만든다는 이유로 SOURCE에 없는 전공 관심, 학교 프로그램, 과거 조사·활동, 교수·재학생에게 물을 새 질문을 추가하지 않는다.'
       : '',
     '수정 대상의 앞뒤 한 문장은 같은 문단 안에서 같은 설명·활동·결론 역할을 공유할 때만 함께 묶어 고칠 수 있다. 다른 역할이나 다른 문단으로 내용은 옮기지 않는다.',
     structuralLow
@@ -661,6 +670,7 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
     && row.structuralChanged
     && targetSet.has(row.index));
   const remediationLow = (depthReport?.reasons || []).includes('rhetorical_remediation_low');
+  const resumeRepetitionLow = (depthReport?.reasons || []).includes('resume_semantic_repetition_low');
   const untouchedParagraphSeeds = firstRowPerParagraph([
     ...unchanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex)),
     ...shallowChanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex))
@@ -671,7 +681,7 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
     ...shallowChanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex)),
     ...unchanged.filter(row => targetSet.has(row.index)),
     ...shallowChanged.filter(row => targetSet.has(row.index)),
-    ...(remediationLow ? deepChangedTargets : []),
+    ...((remediationLow || resumeRepetitionLow) ? deepChangedTargets : []),
     ...unchanged.filter(row => !targetSet.has(row.index)),
     ...shallowChanged.filter(row => !targetSet.has(row.index))
   ]);
@@ -689,6 +699,10 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
   const remediationDeficit = remediationLow
     ? Math.max(1, Number(depthReport?.metrics?.remediation?.residualTargetCount || 1))
     : 0;
+  const resumeRepetitionDeficit = resumeRepetitionLow
+    ? Math.max(1, Number(depthReport?.metrics?.resumeRepetition?.requiredReduction || 1)
+      - Number(depthReport?.metrics?.resumeRepetition?.achievedReduction || 0))
+    : 0;
   const sourceChars = Math.max(1, Number(plan.sourceChars) || String(source || '').replace(/\s+/gu, '').length);
   const averageSentenceChars = sourceChars / Math.max(1, rows.length);
   const editDeficitChars = Math.max(0,
@@ -701,6 +715,7 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
     targetDeficit,
     structuralDeficit,
     remediationDeficit,
+    resumeRepetitionDeficit,
     editDeficitCount,
     paragraphDeficit
   ));

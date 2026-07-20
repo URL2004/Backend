@@ -567,6 +567,29 @@ test('문서 프로필은 요청 mode와 basicStyle 없이 원문만으로 판�
   assert.ok(reportA.confidence >= 0.75);
 });
 
+test('대학·기관 캠프 신청서는 개인 에세이가 아니라 지원서로 판정한다', () => {
+  const source = [
+    '저는 아직 뚜렷한 전공을 정하지 못했지만 대학을 직접 경험하는 과정이 필요하다고 생각했습니다. 여러 학문 분야를 살펴 저에게 맞는 방향을 찾고 싶었습니다. 이번 대학 캠프에서 여러 전공을 비교하며 흥미와 적성을 확인하고 싶어 신청하게 되었습니다.',
+    '가장 어려운 점은 진로를 하나로 좁히지 못했다는 것입니다. 인터넷 자료만으로는 학과에서 무엇을 배우고 어떤 역량이 필요한지 비교하기 어려웠습니다. 여러 가능성을 직접 탐색할 기회가 필요했습니다.',
+    '캠프에 참여하게 된다면 각 분야의 공부와 필요한 역량을 살피겠습니다. 교수님과 재학생에게 질문하고 배운 내용을 분야별로 정리하겠습니다. 그 내용을 바탕으로 이후 학습 계획을 세우겠습니다.'
+  ].join('\n');
+  const report = detectDocumentProfile(source);
+  assert.equal(report.profile, 'resume_application', JSON.stringify(report.candidateProfiles));
+  assert.ok(report.confidence >= 0.75, JSON.stringify(report));
+  assert.ok(report.safetyProfiles.includes('resume_application'));
+  assert.ok(report.signals.applicationIntentSignals >= 1);
+  assert.ok(report.signals.programApplicationSignals >= 1);
+});
+
+test('캠프 참여 후기와 프로그램 광고는 신청 의도 없이 지원서로 오인하지 않는다', () => {
+  const review = detectDocumentProfile('저는 지난여름 과학 캠프 프로그램에 참여했습니다. 친구들과 실험 결과를 비교했고 활동이 기억에 남았습니다. 집에 돌아와 사진과 기록을 다시 정리했습니다.');
+  const promotion = detectDocumentProfile('여름 진로 캠프 참가자를 모집합니다. 다양한 체험 프로그램이 준비되어 있습니다. 지금 신청하세요.');
+  assert.notEqual(review.profile, 'resume_application', JSON.stringify(review.candidateProfiles));
+  assert.notEqual(promotion.profile, 'resume_application', JSON.stringify(promotion.candidateProfiles));
+  assert.equal(review.signals.applicationIntentSignals, 0);
+  assert.equal(promotion.signals.applicationIntentSignals, 0);
+});
+
 test('사용자 장르 선택은 저신뢰 판정만 보완하고 고신뢰 원문 판정은 덮지 않는다', () => {
   const ambiguous = {
     profile: 'unknown', confidence: 0.51, group: 'unknown', profileDecisionSource: 'low_confidence_preserve',

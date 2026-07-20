@@ -62,7 +62,7 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.14');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.15');
   assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
   assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
@@ -71,6 +71,45 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   assert.equal(highPlan.targetSubstantiveEditMin, 0.15);
   assert.equal(highPlan.targetSubstantiveEditMax, 0.19);
   assert.ok(highPlan.requiredChangedSentenceCount >= lowPlan.requiredChangedSentenceCount);
+});
+
+test('지원서의 완결된 단일 줄 문단과 문단 간 의미 반복을 별도 깊이 기준으로 본다', () => {
+  const source = [
+    '저는 아직 전공을 정하지 못했지만, 그래서 대학을 직접 경험하는 과정이 필요하다고 생각했습니다. 여러 학문 분야를 살펴 저에게 맞는 방향을 찾고 싶었습니다. 이번 캠프에서 여러 전공을 비교하며 흥미와 적성을 확인하고 싶어 신청했습니다.',
+    '가장 어려운 점은 진로를 하나로 좁히지 못했다는 것입니다. 인터넷 자료로는 각 학과에서 무엇을 배우고 어떤 역량이 필요한지 비교하기 어려웠습니다. 성급히 선택하기보다 여러 가능성을 직접 탐색할 기회가 필요했습니다.',
+    '캠프에 참여하면 진로 고민을 풀어 가는 시간으로 만들겠습니다. 각 분야의 공부와 필요한 역량을 살피고 교수님과 재학생에게 질문하겠습니다. 배운 내용은 분야별로 정리해 비교하고 저에게 맞는 방향을 중심으로 이후 학습 계획을 세우겠습니다.'
+  ].join('\n');
+  const profile = { profile: 'resume_application', safetyProfiles: ['resume_application'] };
+  const plan = depth.buildHumanizationPlan(source, {
+    requestStrength: 'basic',
+    documentProfile: profile,
+    inputRisk: { abstractRiskRatio: 0 }
+  });
+  const weak = source
+    .replace('그래서 대학을 직접 경험하는', '그래서 오히려 대학을 직접 경험하는')
+    .replace('여러 가능성을 직접 탐색할', '여러 가능성을 살펴볼');
+  const weakReport = depth.evaluateHumanizationDepth(source, weak, plan);
+  const focused = [
+    '전공을 아직 정하지 못한 제게는 입시 결과보다 대학을 직접 경험하며 선택 기준을 세우는 일이 먼저였습니다. 여러 학문 분야를 살펴 흥미와 적성을 확인하고 싶어 이번 캠프에 신청했습니다.',
+    '인터넷 자료로 학과 소개를 찾아봤지만 실제로 무엇을 배우고 어떤 역량이 필요한지는 비교하기 어려웠습니다. 직접 접하지 않고 하나를 성급히 고르기에는 판단 근거가 부족했습니다.',
+    '캠프에서는 분야별 공부와 요구 역량을 살피고 교수님과 재학생에게 질문하겠습니다. 얻은 내용은 분야별로 정리해 비교한 뒤 저에게 맞는 쪽을 중심으로 이후 학습 계획을 세우겠습니다.'
+  ].join('\n');
+  const focusedReport = depth.evaluateHumanizationDepth(source, focused, plan);
+
+  assert.equal(depth.buildSentenceParagraphMap(source).eligibleParagraphCount, 3);
+  assert.equal(plan.resumeRepetitionPlan.applicable, true, JSON.stringify(plan.resumeRepetitionPlan));
+  assert.equal(plan.paragraphCoverageApplicable, true);
+  assert.ok(weakReport.reasons.includes('resume_semantic_repetition_low'), JSON.stringify(weakReport));
+  assert.equal(focusedReport.metrics.resumeRepetition.pass, true, JSON.stringify(focusedReport.metrics.resumeRepetition));
+  assert.ok(focusedReport.metrics.resumeRepetition.achievedReduction >= plan.resumeRepetitionPlan.requiredReduction);
+  assert.equal(Object.prototype.hasOwnProperty.call(weakReport.plan.resumeRepetitionPlan, 'targetIndices'), false);
+});
+
+test('짧은 행갈이와 문장 중간 줄바꿈은 논리 문단으로 과대 추정하지 않는다', () => {
+  const hardWrapped = '기업의 책임 의식을\n변화시킬 수 있다는 사실은 소비자의 선택에도 영향을 줍니다.';
+  const poetry = '바람이 분다\n마음이 흔들린다\n저녁이 내려온다';
+  assert.equal(depth.buildSentenceParagraphMap(hardWrapped).eligibleParagraphCount, 1);
+  assert.equal(depth.buildSentenceParagraphMap(poetry).eligibleParagraphCount, 1);
 });
 
 test('고급 피하기는 같은 글에서도 기본보다 편집·문장·위험대상 최소선이 높다', () => {

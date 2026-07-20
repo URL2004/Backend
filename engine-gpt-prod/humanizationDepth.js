@@ -2,14 +2,16 @@
 
 const { computeEditMetrics, levenshteinDistance, splitSentences } = require('../engine/koreanText');
 const { buildRemediationPlan, compareRemediationTargets } = require('./discourseAudit');
+const { splitLogicalProseParagraphs } = require('./proseParagraphs');
+const resumeRepetitionAudit = require('./resumeRepetitionAudit');
 
 const CONNECTOR_START = /^(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|즉|첫째|둘째|셋째|하지만|그러나|반면|결국)(?=$|[\s,])/u;
 const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|습니다)|필요가\s*있(?:다|습니다)|중요(?:하|한)\s*(?:의미|역할|요인)?|의미를\s*가진(?:다|다고)|긍정적인\s*영향|체계적으로\s*(?:정리|분석|관리|운영)|기반으로\s*(?:한|하여|한다|합니다)|핵심\s*인프라|전략적\s*이점)/u;
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 7;
-const POLICY_VERSION = 'perceived-v2.4.14';
+const PLAN_VERSION = 8;
+const POLICY_VERSION = 'perceived-v2.4.15';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -79,14 +81,20 @@ function buildHumanizationPlan(source, {
       maxSubstantiveCarryoverRatio: 1,
       requiredStructuralChangedSentenceCount: 0,
       minRemediationCoverage: 0,
-      rhetoricalRemediationPlan: { applicable: false, targetCount: 0, categoryCount: 0, categories: [] }
+      rhetoricalRemediationPlan: { applicable: false, targetCount: 0, categoryCount: 0, categories: [] },
+      resumeRepetitionPlan: { version: resumeRepetitionAudit.VERSION, applicable: false }
     };
   }
 
   const text = stripLockTokens(source);
   const sentences = meaningfulSentences(text);
+  const profile = String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
   const rhetoricalRemediationPlan = buildRemediationPlan(text);
-  const target = mergeRemediationTargets(detectTargetSentences(sentences), rhetoricalRemediationPlan);
+  const resumeRepetitionPlan = resumeRepetitionAudit.buildResumeRepetitionPlan(text, documentProfile);
+  const target = mergeResumeRepetitionTargets(
+    mergeRemediationTargets(detectTargetSentences(sentences), rhetoricalRemediationPlan),
+    resumeRepetitionPlan
+  );
   const sentenceCount = sentences.length;
   const targetRatio = sentenceCount ? target.indices.length / sentenceCount : 0;
   const abstractRiskRatio = finite(inputRisk?.abstractRiskRatio);
@@ -100,7 +108,6 @@ function buildHumanizationPlan(source, {
     ? 'high'
     : (riskScore >= 0.18 || targetRatio >= 0.30 || target.indices.length >= 2 ? 'medium' : 'low');
 
-  const profile = String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
   const creative = profile === 'creative' || documentProfile?.formatProfile?.flags?.includes?.('creative_lines') === true;
   const cautious = CAUTIOUS_PROFILES.has(profile);
   const sourceChars = normalizeSubstantive(text).length;
@@ -108,7 +115,8 @@ function buildHumanizationPlan(source, {
   const paragraphCoveragePlan = buildParagraphCoveragePlan(text, target.indices, {
     strength,
     creative,
-    riskLevel
+    riskLevel,
+    resumeRepetitionApplicable: resumeRepetitionPlan.applicable === true
   });
 
   const basePolicy = PERCEIVED_POLICY[strength][riskLevel];
@@ -209,7 +217,8 @@ function buildHumanizationPlan(source, {
     carryoverApplicable,
     maxSubstantiveCarryoverRatio: round4(maxSubstantiveCarryoverRatio),
     minRemediationCoverage: round4(minRemediationCoverage),
-    rhetoricalRemediationPlan
+    rhetoricalRemediationPlan,
+    resumeRepetitionPlan
   };
 }
 
@@ -265,6 +274,10 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       && remediation.coverage + 1e-9 < Number(plan.minRemediationCoverage)) {
     reasons.push('rhetorical_remediation_low');
   }
+  const resumeRepetition = resumeRepetitionAudit.compareResumeRepetition(output, plan.resumeRepetitionPlan || null);
+  if (resumeRepetition.applicable === true && resumeRepetition.pass !== true) {
+    reasons.push('resume_semantic_repetition_low');
+  }
   if (metrics.trivialOnly) reasons.push('punctuation_or_surface_only');
   const hardMinimumEdit = Number(plan.hardMinimumSubstantiveEditRatio ?? Math.max(
     HARD_DELIVERY_EDIT_FLOOR,
@@ -302,6 +315,7 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       targetParagraphCoverage: round4(targetParagraphCoverage),
       untouchedTargetParagraphIndices,
       remediation,
+      resumeRepetition,
       targetDepthMet,
       aboveTargetRange,
       minimumEffectPass: blockingReasons.length === 0,
@@ -332,13 +346,19 @@ function humanizationCandidateScore(report) {
   const carryoverProgress = plan.carryoverApplicable === true
     ? (finite(metrics.substantiveCarryoverRatio) <= finite(plan.maxSubstantiveCarryoverRatio) ? 1 : 0)
     : 1;
-  return round4((editProgress * 0.32)
+  const baseScore = (editProgress * 0.32)
     + (sentenceProgress * 0.20)
     + (targetProgress * 0.14)
     + (structuralProgress * 0.10)
     + (paragraphProgress * 0.10)
     + (remediationProgress * 0.07)
-    + (carryoverProgress * 0.07));
+    + (carryoverProgress * 0.07);
+  if (metrics.resumeRepetition?.applicable !== true) return round4(baseScore);
+  const repetitionProgress = progress(
+    metrics.resumeRepetition.achievedReduction,
+    metrics.resumeRepetition.requiredReduction
+  );
+  return round4((baseScore * 0.90) + (repetitionProgress * 0.10));
 }
 
 function isBetterHumanizationCandidate(current, candidate) {
@@ -357,6 +377,9 @@ function isBetterHumanizationCandidate(current, candidate) {
   const candidateRemediation = finite(candidate?.metrics?.remediation?.coverage);
   const currentParagraphs = finite(current?.metrics?.targetChangedParagraphCount);
   const candidateParagraphs = finite(candidate?.metrics?.targetChangedParagraphCount);
+  const currentRepetition = finite(current?.metrics?.resumeRepetition?.achievedReduction);
+  const candidateRepetition = finite(candidate?.metrics?.resumeRepetition?.achievedReduction);
+  if (candidateRepetition > currentRepetition && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateParagraphs > currentParagraphs && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateStructural > currentStructural && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateRemediation >= currentRemediation + 0.25 && candidateEdit >= currentEdit - 0.005) return true;
@@ -457,6 +480,9 @@ function buildHumanizationPromptBlock(plan) {
     plan.rhetoricalRemediationPlan?.targetCount > 0
       ? '원문 담화 계약에 표시된 정형 성찰·반복 결론·과도하게 완결된 인과 구조는 그대로 복사하지 말고, 사실을 삭제하지 않는 범위에서 직접적인 문장으로 풀어 쓴다.'
       : '',
+    plan.resumeRepetitionPlan?.applicable === true
+      ? '지원서에서 같은 지원 전제·진로 고민·탐색 의도가 여러 문단에 반복되면 동의어만 바꾸지 않는다. 첫 문단에는 지원 동기를 온전히 두고, 뒤 문단에서는 같은 전제를 짧게 받으면서 각 문단에 원래 있던 어려움·확인할 내용·실행 계획을 앞세운다. SOURCE에 없는 학교 프로그램, 관심 전공, 과거 경험은 만들지 않는다.'
+      : '',
     '원문에 없는 경험·감정·수치·기관·인용·주장·예시는 절대 추가하지 않는다.'
   ].filter(Boolean).join('\n');
 }
@@ -486,19 +512,22 @@ function measureSubstantiveCarryover(source, output) {
 function buildParagraphCoveragePlan(source, targetIndices, {
   strength = 'basic',
   creative = false,
-  riskLevel = 'low'
+  riskLevel = 'low',
+  resumeRepetitionApplicable = false
 } = {}) {
   const mapping = buildSentenceParagraphMap(source);
   const targetParagraphIndices = [...new Set((targetIndices || [])
     .map(index => mapping.sentenceParagraphIndices[index])
     .filter(index => Number.isInteger(index) && index >= 0))]
     .sort((a, b) => a - b);
-  const paragraphCoverageApplicable = strength === 'advanced'
+  const paragraphCoverageApplicable = (strength === 'advanced' || resumeRepetitionApplicable === true)
     && creative !== true
     && mapping.eligibleParagraphCount >= 2
     && targetParagraphIndices.length >= 2;
   const minTargetParagraphCoverage = paragraphCoverageApplicable
-    ? (riskLevel === 'high' ? 1 : 0.75)
+    ? (strength === 'advanced'
+        ? (riskLevel === 'high' ? 1 : 0.75)
+        : (riskLevel === 'high' ? 0.75 : 0.67))
     : 0;
   const requiredTargetChangedParagraphCount = paragraphCoverageApplicable
     ? Math.max(2, Math.ceil(targetParagraphIndices.length * minTargetParagraphCoverage))
@@ -518,11 +547,7 @@ function buildParagraphCoveragePlan(source, targetIndices, {
 // 각 문단을 따로 분리해도 splitSentences 순서는 문서 전체 순서와 같으므로 문장
 // 인덱스를 모델 프롬프트의 문장 번호와 그대로 연결할 수 있다.
 function buildSentenceParagraphMap(value) {
-  const blocks = stripLockTokens(value)
-    .replace(/\r\n?/gu, '\n')
-    .split(/\n[ \t]*\n+/u)
-    .map(block => block.trim())
-    .filter(Boolean);
+  const blocks = splitLogicalProseParagraphs(stripLockTokens(value));
   const sentenceParagraphIndices = [];
   let eligibleParagraphCount = 0;
   let references = false;
@@ -676,6 +701,20 @@ function mergeRemediationTargets(target, remediationPlan) {
     }
   }
   return { indices: [...reasonsByIndex.keys()].sort((a, b) => a - b), reasonCounts };
+}
+
+function mergeResumeRepetitionTargets(target, repetitionPlan) {
+  if (repetitionPlan?.applicable !== true) return target;
+  const indices = new Set((target?.indices || []).filter(Number.isInteger));
+  let added = 0;
+  for (const index of repetitionPlan.targetIndices || []) {
+    if (!Number.isInteger(index) || index < 0) continue;
+    if (!indices.has(index)) added += 1;
+    indices.add(index);
+  }
+  const reasonCounts = { ...(target?.reasonCounts || {}) };
+  reasonCounts.resume_semantic_repetition = Number(repetitionPlan.targetSentenceCount || added || 0);
+  return { indices: [...indices].sort((a, b) => a - b), reasonCounts };
 }
 
 function compareSentenceStructure(source, output, { substantiveChanged = false, editRatio = 0 } = {}) {
@@ -836,9 +875,13 @@ function publicPlan(plan) {
   const {
     targetIndices: _targetIndices,
     targetParagraphIndices: _targetParagraphIndices,
+    resumeRepetitionPlan,
     ...safe
   } = plan || {};
-  return safe;
+  return {
+    ...safe,
+    resumeRepetitionPlan: resumeRepetitionAudit.publicResumeRepetitionPlan(resumeRepetitionPlan)
+  };
 }
 
 function coefficientOfVariation(values) {
@@ -881,6 +924,7 @@ module.exports = {
   measureSubstantiveEdit,
   measureSubstantiveCarryover,
   eligibleProseSentences,
+  buildSentenceParagraphMap,
   classifyEffectExpectation,
   buildHumanizationPromptBlock,
   normalizeSubstantive

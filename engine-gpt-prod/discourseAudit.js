@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences } = require('../engine/koreanText');
+const { splitLogicalProseParagraphs } = require('./proseParagraphs');
 
 const VERSION = 2;
 const VIOLATION_CODES = Object.freeze([
@@ -410,7 +411,7 @@ function normalizeToken(value) {
 function splitParagraphs(value) {
   const text = String(value || '').trim();
   if (!text) return [];
-  return text.split(/\n[ \t]*\n+/u).map(paragraph => paragraph.trim()).filter(Boolean);
+  return splitLogicalProseParagraphs(text);
 }
 
 function countPattern(value, pattern) {

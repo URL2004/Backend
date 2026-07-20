@@ -37,7 +37,7 @@ const experienceAudit = require('./experienceAudit');
 const sourcePreflight = require('./sourcePreflight');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.14';
+const VERSION = 'gpt-prod-v2.4.15';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -355,7 +355,10 @@ async function runEngine({
     + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0);
   let humanizationDepthEscalationAttemptCount = Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0);
   let humanizationNoEffectRetryAttemptCount = 0;
+  let humanizationRoleRecoveryAttemptCount = 0;
   let humanizationDepthRetryApplied = Number(sectionRecoveryReport.metrics?.applied || 0) > 0;
+  let humanizationDepthRetryRejectedCount = 0;
+  const humanizationDepthRetryRejectionCodes = [];
   let humanizationDepthRetryTargetSentenceCount = (sectionRecoveryReport.selected || [])
     .reduce((sum, entry) => sum + Number(entry?.plan?.targetSentenceCount || 0), 0);
   let polishStrictFailure = '';
@@ -486,16 +489,27 @@ async function runEngine({
     if (wasEquivalent) finalNoopRecovery.attempted = true;
     let lastRetryError = null;
     for (let attempt = 0; attempt < maxDepthAttempts; attempt += 1) {
+      const roleRecoveryPending = (humanizationDepthReport?.reasons || []).some(reason => [
+        'resume_semantic_repetition_low',
+        'paragraph_rewrite_coverage_low'
+      ].includes(reason));
       if (attempt > 0
           && (humanizationDepthReport?.pass === true
-            || (requestStrength !== 'advanced' && humanizationDepthReport?.minimumEffectPass !== false))) break;
+            || (requestStrength !== 'advanced'
+              && humanizationDepthReport?.minimumEffectPass !== false
+              && !roleRecoveryPending))) break;
       try {
         generalSurfaceRetryAttemptCount += 1;
         humanizationDepthRetryCount += 1;
         const escalation = attempt > 0 && requestStrength === 'advanced';
-        const noEffectRetry = attempt > 0 && !escalation;
+        const roleRecovery = attempt > 0
+          && !escalation
+          && roleRecoveryPending
+          && humanizationDepthReport?.minimumEffectPass !== false;
+        const noEffectRetry = attempt > 0 && !escalation && !roleRecovery;
         if (escalation) humanizationDepthEscalationAttemptCount += 1;
         if (noEffectRetry) humanizationNoEffectRetryAttemptCount += 1;
+        if (roleRecovery) humanizationRoleRecoveryAttemptCount += 1;
         const retried = await qualityV2.retryGeneralSurface({
           source: auditSource,
           currentOutput: outputText,
@@ -508,6 +522,8 @@ async function runEngine({
           reasoningEffort: escalation ? cfg.reasoning.escalation : '',
           phase: escalation
             ? 'humanization_depth_escalation'
+            : roleRecovery
+              ? 'humanization_role_recovery'
             : noEffectRetry
               ? 'humanization_no_effect_retry'
               : 'humanization_depth_retry'
@@ -536,10 +552,20 @@ async function runEngine({
             finalNoopRecovery = { attempted: true, applied: true, method: 'model', reason: 'substantive_humanization' };
           }
         } else if (humanizationDepthEnabled) {
+          humanizationDepthRetryRejectedCount += 1;
+          if (!retried.safeChangeFound || !retryOutput || normalizeBare(outputText) === normalizeBare(retryOutput)) {
+            addUniqueCode(humanizationDepthRetryRejectionCodes, 'candidate_unchanged');
+          }
+          if (!safeRetryCandidate) addUniqueCode(humanizationDepthRetryRejectionCodes, 'safety_audit_failed');
+          if (safeRetryCandidate && !retryWorthUsing) {
+            addUniqueCode(humanizationDepthRetryRejectionCodes, 'depth_not_improved');
+          }
           humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(auditSource, outputText, humanizationPlan);
         }
       } catch (error) {
         lastRetryError = error;
+        humanizationDepthRetryRejectedCount += 1;
+        addUniqueCode(humanizationDepthRetryRejectionCodes, 'retry_error');
       }
     }
     if (wasEquivalent && finalNoopRecovery.applied !== true) {
@@ -1332,8 +1358,11 @@ async function runEngine({
     humanizationDepthRetryCount,
     humanizationDepthEscalationAttemptCount,
     humanizationNoEffectRetryAttemptCount,
+    humanizationRoleRecoveryAttemptCount,
     humanizationDepthRetryApplied,
     humanizationDepthRetryTargetSentenceCount,
+    humanizationDepthRetryRejectedCount,
+    humanizationDepthRetryRejectionCodes,
     sectionRecoveryEnabled: sectionRecoveryReport.metrics?.enabled === true,
     sectionRecoveryAttemptCount: Number(sectionRecoveryReport.metrics?.attempted || 0),
     sectionRecoveryAppliedCount: Number(sectionRecoveryReport.metrics?.applied || 0),
@@ -1353,6 +1382,15 @@ async function runEngine({
     rhetoricalRemediationTargetCount: Number(humanizationDepthReport?.metrics?.remediation?.targetCount || 0),
     rhetoricalRemediationAchievedCount: Number(humanizationDepthReport?.metrics?.remediation?.achievedReduction || 0),
     rhetoricalRemediationCoverage: Number(humanizationDepthReport?.metrics?.remediation?.coverage || 0),
+    resumeRepetitionAuditVersion: Number(humanizationDepthReport?.metrics?.resumeRepetition?.version || 0),
+    resumeRepetitionApplicable: humanizationDepthReport?.metrics?.resumeRepetition?.applicable === true,
+    resumeRepetitionPass: humanizationDepthReport?.metrics?.resumeRepetition?.pass === true,
+    resumeRepetitionThemeCount: Number(humanizationDepthReport?.metrics?.resumeRepetition?.themeCount || 0),
+    resumeRepetitionSourcePairCount: Number(humanizationDepthReport?.metrics?.resumeRepetition?.sourcePairCount || 0),
+    resumeRepetitionResidualPairCount: Number(humanizationDepthReport?.metrics?.resumeRepetition?.residualPairCount || 0),
+    resumeRepetitionRequiredReduction: Number(humanizationDepthReport?.metrics?.resumeRepetition?.requiredReduction || 0),
+    resumeRepetitionAchievedReduction: Number(humanizationDepthReport?.metrics?.resumeRepetition?.achievedReduction || 0),
+    resumeRepetitionCoverage: Number(humanizationDepthReport?.metrics?.resumeRepetition?.coverage ?? 1),
     fingerprintAuditVersion: Number(fingerprintAudit?.version || 0),
     fingerprintPass: fingerprintAudit ? fingerprintAudit.pass === true : null,
     fingerprintIssueCodes: safeFailureCodeList(fingerprintAudit?.issueCodes),
@@ -3014,6 +3052,13 @@ function depthQualityWarnings(report) {
       message: 'AI식으로 반복되는 담화 골격 일부가 충분히 완화되지 않았을 수 있어요.'
     });
   }
+  if (reasons.has('resume_semantic_repetition_low')) {
+    warnings.push({
+      code: 'resume_semantic_repetition_remaining',
+      severity: 'warning',
+      message: '지원 이유나 진로 고민이 여러 문단에서 비슷하게 반복돼 결과 확인이 필요해요.'
+    });
+  }
   if ([
     'substantive_edit_ratio_low',
     'substantive_sentence_coverage_low',
@@ -4029,6 +4074,12 @@ function safeFailureCodeList(values) {
     if (out.length >= 24) break;
   }
   return out;
+}
+
+function addUniqueCode(values, code) {
+  if (!Array.isArray(values)) return;
+  const normalized = String(code || '').trim();
+  if (normalized && !values.includes(normalized)) values.push(normalized);
 }
 
 function addSafeFailureCode(target, value) {

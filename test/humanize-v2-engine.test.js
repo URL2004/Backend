@@ -137,7 +137,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.14');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.15');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -573,7 +573,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.engineMeta.humanizationDepthPass, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.14');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.15');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);
@@ -608,6 +608,47 @@ test('기본 첫 회복도 구두점 수준이면 mini로 한 번 더 실질 회
   assert.equal(retryCalls[0].model, 'gpt-5.4-mini');
   assert.equal(retryCalls[1].model, 'gpt-5.4-mini');
   assert.match(String(retryCalls[1].body.instructions || ''), /앞선 회복도 공백·구두점·동의어 수준/u);
+});
+
+test('기본 지원서는 첫 회복이 최소 편집률을 넘어도 의미 반복이 남으면 두 번째 회복을 수행한다', { concurrency: false }, async t => {
+  const source = [
+    '저는 아직 전공을 정하지 못해 대학을 직접 경험하는 과정이 필요하다고 생각했습니다. 이름이나 입시 결과만으로 판단하기보다 여러 학문 분야를 살펴 저에게 맞는 방향을 찾고 싶었습니다. 이번 캠프에서 여러 전공을 비교하며 흥미와 적성을 확인하고 싶어 신청하게 되었습니다.',
+    '저에게 가장 어려운 점은 진로를 하나로 좁히지 못했다는 것입니다. 인터넷 자료로는 학과 소개 정도만 확인할 수 있고 실제로 무엇을 배우며 어떤 역량이 필요한지 비교하기 어려웠습니다. 하나를 성급히 선택하기보다 직접 부딪혀 판단할 기회가 필요했습니다.',
+    '캠프에 참여하게 된다면 각 분야의 공부 내용과 필요한 역량을 살피겠습니다. 교수님과 재학생에게 질문하고 배운 내용을 분야별로 정리해 비교하겠습니다. 그중 저에게 맞는 방향을 중심으로 이후 학습 계획을 세우고 끝까지 성실하게 참여하겠습니다.'
+  ].join('\n');
+  const weak = source.replace('과정이 필요하다고', '과정이 더 필요하다고').replace('정도만', '정도는');
+  const firstRecovery = source
+    .replace('저는 아직 전공을 정하지 못해 대학을 직접 경험하는 과정이 필요하다고 생각했습니다.', '아직 전공을 정하지 못한 저는 대학을 직접 경험하는 과정이 필요하다고 생각했습니다.')
+    .replace('저에게 가장 어려운 점은 진로를 하나로 좁히지 못했다는 것입니다.', '진로를 하나로 좁히지 못했다는 것이 저에게 가장 어려운 점입니다.')
+    .replace('캠프에 참여하게 된다면 각 분야의 공부 내용과 필요한 역량을 살피겠습니다.', '캠프에 참여하면 각 분야의 공부 내용과 필요한 역량부터 살피겠습니다.');
+  const strong = firstRecovery
+    .replace('인터넷 자료로는 학과 소개 정도만 확인할 수 있고 실제로 무엇을 배우며 어떤 역량이 필요한지 비교하기 어려웠습니다.', '인터넷 자료만으로는 학과 소개 정도를 알 수 있었을 뿐, 실제 학습 내용과 요구 역량의 차이는 파악하기 어려웠습니다.')
+    .replace('캠프에 참여하면 각 분야의 공부 내용과 필요한 역량부터 살피겠습니다.', '캠프에 참여하면 각 영역의 공부 내용과 요구되는 역량부터 살피겠습니다.')
+    .replace('교수님과 재학생에게 질문하고 배운 내용을 분야별로 정리해 비교하겠습니다.', '교수님과 재학생에게 질문하고 배운 내용은 항목별로 정리해 서로 대조하겠습니다.');
+  const mock = installEngineMock(t, {
+    humanize: weak,
+    humanizationDepth: true,
+    generalRetryOutput: (_body, callNumber) => callNumber === 1 ? firstRecovery : strong
+  });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'basic-resume-semantic-repetition-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
+  assert.equal(out.engineMeta.documentProfile, 'resume_application');
+  assert.equal(out.engineMeta.effectiveMode, 'assignment');
+  assert.equal(out.result.outputText, strong, JSON.stringify({
+    status: out.status,
+    rejectionCodes: out.engineMeta.humanizationDepthRetryRejectionCodes,
+    rejected: out.engineMeta.humanizationDepthRetryRejectedCount,
+    depth: out.result.humanizationDepth,
+    warnings: out.qualityWarnings
+  }));
+  assert.equal(out.engineMeta.resumeRepetitionApplicable, true);
+  assert.equal(out.engineMeta.resumeRepetitionPass, true, JSON.stringify(out.result.humanizationDepth));
+  assert.equal(out.engineMeta.humanizationRoleRecoveryAttemptCount, 1);
+  assert.equal(out.engineMeta.humanizationNoEffectRetryAttemptCount, 0);
+  const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
+  assert.equal(retryCalls.length, 2);
+  assert.match(String(retryCalls[1].body.instructions || ''), /같은 지원 전제/u);
+  assert.doesNotMatch(String(retryCalls[1].body.instructions || ''), /앞선 회복도 공백·구두점/u);
 });
 
 test('약 3%의 동의어 교체 결과도 그대로 전달하지 않고 실질 휴머나이징을 재시도한다', { concurrency: false }, async t => {

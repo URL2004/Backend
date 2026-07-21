@@ -10,8 +10,8 @@ const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 9;
-const POLICY_VERSION = 'perceived-v2.4.16';
+const PLAN_VERSION = 10;
+const POLICY_VERSION = 'perceived-v2.4.17';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -232,6 +232,10 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
     applicable: false,
     pass: true,
     minimumEffectPass: true,
+    effectStatus: 'not_applicable',
+    userReviewRequired: false,
+    userReviewReasons: [],
+    shadowReasons: [],
     reasons: [],
     blockingReasons: [],
     plan: publicPlan(plan),
@@ -313,12 +317,17 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   const deliveryDepthBand = reasons.length
     ? 'below_minimum'
     : (aboveTargetRange ? 'above_target' : (targetDepthMet ? 'target' : 'minimum'));
+  const reviewAssessment = assessDepthReview(reasons, blockingReasons, plan);
 
   return {
     version: PLAN_VERSION,
     applicable: true,
     pass: reasons.length === 0,
     minimumEffectPass: blockingReasons.length === 0,
+    effectStatus: reviewAssessment.effectStatus,
+    userReviewRequired: reviewAssessment.userReviewRequired,
+    userReviewReasons: reviewAssessment.userReviewReasons,
+    shadowReasons: reviewAssessment.shadowReasons,
     reasons,
     blockingReasons,
     plan: publicPlan(plan),
@@ -507,6 +516,48 @@ function buildHumanizationPromptBlock(plan) {
       : '',
     '원문에 없는 경험·감정·수치·기관·인용·주장·예시는 절대 추가하지 않는다.'
   ].filter(Boolean).join('\n');
+}
+
+// 목표선은 회복 후보 선택과 운영 관측에는 계속 엄격하게 사용하되, 한 가지
+// 세부 지표만 살짝 모자란 안전한 결과까지 모두 사용자 "검토 필요"로 올리지
+// 않는다. 실제 체감 부족 가능성이 큰 복합 미달과 최소 효과 실패만 외부 경고다.
+function assessDepthReview(reasons = [], blockingReasons = [], plan = {}) {
+  const set = new Set(reasons || []);
+  const hard = (blockingReasons || []).length > 0;
+  const coreReasons = [
+    'substantive_edit_ratio_low',
+    'substantive_sentence_coverage_low'
+  ].filter(code => set.has(code));
+  const distributionReasons = [
+    'risk_target_coverage_low',
+    'structural_rewrite_coverage_low',
+    'paragraph_rewrite_coverage_low'
+  ].filter(code => set.has(code));
+  const roleFailure = set.has('resume_semantic_repetition_low');
+  const carryoverWithWeakCoverage = set.has('substantive_carryover_high')
+    && (coreReasons.length > 0 || distributionReasons.length > 0);
+  const combinedDepthFailure = coreReasons.length >= 2
+    || (coreReasons.length >= 1 && distributionReasons.length >= 1)
+    || (String(plan.requestStrength || '') === 'advanced'
+      && distributionReasons.includes('structural_rewrite_coverage_low')
+      && distributionReasons.includes('paragraph_rewrite_coverage_low'));
+  const userReviewRequired = hard || roleFailure || carryoverWithWeakCoverage || combinedDepthFailure;
+  const userReviewReasons = userReviewRequired
+    ? [...new Set([
+        ...(hard ? blockingReasons : []),
+        ...(roleFailure ? ['resume_semantic_repetition_low'] : []),
+        ...(carryoverWithWeakCoverage ? ['substantive_carryover_high'] : []),
+        ...(combinedDepthFailure ? [...coreReasons, ...distributionReasons] : [])
+      ])]
+    : [];
+  return {
+    effectStatus: hard
+      ? 'no_effect'
+      : (reasons.length ? (userReviewRequired ? 'below_target_review' : 'below_target_shadow') : 'effective'),
+    userReviewRequired,
+    userReviewReasons,
+    shadowReasons: (reasons || []).filter(code => !userReviewReasons.includes(code))
+  };
 }
 
 function measureSubstantiveCarryover(source, output) {
@@ -948,6 +999,7 @@ module.exports = {
   eligibleProseSentences,
   buildSentenceParagraphMap,
   classifyEffectExpectation,
+  assessDepthReview,
   buildHumanizationPromptBlock,
   normalizeSubstantive
 };

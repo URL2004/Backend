@@ -78,6 +78,25 @@ test('문장부호·수량 괄호 붙임과 새로 생긴 깊게 이해 결합�
   ]));
 });
 
+test('변환 중 새로 생긴 한글 토큰 중복 오타를 검출하고 원문 어휘로 안전 복원한다', () => {
+  const source = '지역 복지 정책은 주민의 생활 안정에 기여합니다.';
+  const output = '지역 복복지 정책은 주민의 생활 안정에 기여합니다.';
+  const audit = refinement.analyzeKoreanRefinement({ source, outputText: output });
+  const issue = audit.issues.find(item => item.code === 'introduced_token_duplication');
+  assert.equal(issue?.introducedCount, 1, JSON.stringify(audit));
+  assert.equal(issue?.details?.mappings?.[0]?.outputToken, '복복지');
+
+  const repaired = refinement.applySafeDeterministicRepairs({ source, outputText: output });
+  assert.equal(repaired.text, source);
+  assert.ok(repaired.changeCodes.includes('introduced_token_duplication'));
+
+  const quoted = refinement.applySafeDeterministicRepairs({
+    source: '보고서는 “복지”라는 표현을 분석합니다.',
+    outputText: '보고서는 “복복지”라는 표현을 분석합니다.'
+  });
+  assert.match(quoted.text, /“복복지”/u, '직접 인용 내부는 결정론적으로 바꾸지 않아야 한다');
+});
+
 test('원문에 있던 깊게 이해는 자동 변경하지 않고 원문 검토 알림으로 분리한다', () => {
   const source = '원리를 깊게 이해하려고 했습니다.';
   const repaired = refinement.applySafeDeterministicRepairs({ source, outputText: source });
@@ -268,6 +287,38 @@ test('보고서의 문장 중간 빈 문단을 합치고 과도한 빈 줄을 1�
   assert.doesNotMatch(repaired.text, /\n{3,}/u);
   assert.equal(repaired.brokenParagraphBreakRepairCount, 1);
   assert.equal(repaired.excessiveBlankLineRepairCount, 2);
+});
+
+test('일반 산문 문단의 앞뒤 공백만 제거하고 목록 들여쓰기는 보존한다', () => {
+  const source = '첫 문단입니다.\n\n  둘째 문단입니다.  \n  - 목록 항목입니다.';
+  const repaired = refinement.applySafeFormattingRepairs({
+    source,
+    outputText: source,
+    documentProfile: { profile: 'report_assignment' }
+  });
+  assert.match(repaired.text, /\n\n둘째 문단입니다\.\n/u);
+  assert.match(repaired.text, /\n  - 목록 항목입니다\./u);
+  assert.equal(repaired.changeCounts.prose_edge_whitespace, 1);
+});
+
+test('학술·보고서 결과에 새로 남은 진짜와 문장 첫 그래서를 격식 수리 대상으로 잡는다', () => {
+  const source = '이 결과는 매우 중요하다. 따라서 후속 분석이 필요하다.';
+  const output = '이 결과는 진짜 중요하다. 그래서 후속 분석이 필요하다.';
+  const audit = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: output,
+    documentProfile: { profile: 'academic_paper', targetRegister: 'academic_formal' }
+  });
+  const issue = audit.issues.find(item => item.code === 'formal_register_residual');
+  assert.ok(issue?.introducedCount >= 2, JSON.stringify(audit));
+  assert.deepEqual(new Set(issue.details.families), new Set(['casual_emphasis', 'casual_sentence_connector']));
+
+  const general = refinement.analyzeKoreanRefinement({
+    source: '그래서 직접 확인했다.',
+    outputText: '그래서 직접 확인했다.',
+    documentProfile: { profile: 'general_essay', targetRegister: 'conversational' }
+  });
+  assert.equal(general.issueCodes.includes('formal_register_residual'), false);
 });
 
 test('문맥형 띄어쓰기를 고치되 인용된 논문명과 참고문헌은 원문대로 남긴다', () => {

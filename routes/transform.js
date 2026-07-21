@@ -751,10 +751,7 @@ function buildArchiveObservability(job) {
   const formattingRepair = layoutRepair.formatting || {};
   const dedupeAudit = humanizeMeta.dedupeAudit || {};
   const naturalnessShadow = result.naturalnessShadow || humanizeMeta.naturalnessShadow || {};
-  const warningCodes = uniqueArchiveCodes([
-    ...(Array.isArray(result.qualityWarnings) ? result.qualityWarnings : []),
-    ...(Array.isArray(result.floorReport?.warnings) ? result.floorReport.warnings : [])
-  ]);
+  const warningCodes = finalQualityWarningCodes(result);
   const gateCodes = job?.status === 'done'
     ? []
     : uniqueArchiveCodes([
@@ -807,6 +804,10 @@ function buildArchiveObservability(job) {
     humanizationDepthApplicable: engineMeta.humanizationDepthApplicable === true,
     humanizationDepthPass: engineMeta.humanizationDepthPass === true,
     humanizationMinimumEffectPass: engineMeta.humanizationMinimumEffectPass === true,
+    humanizationEffectStatus: archiveString(engineMeta.humanizationEffectStatus, 32),
+    humanizationDepthUserReviewRequired: engineMeta.humanizationDepthUserReviewRequired === true,
+    humanizationDepthUserReviewReasons: uniqueStrictArchiveCodes(engineMeta.humanizationDepthUserReviewReasons),
+    humanizationDepthShadowReasons: uniqueStrictArchiveCodes(engineMeta.humanizationDepthShadowReasons),
     humanizationDepthSoftDelivered: engineMeta.humanizationDepthSoftDelivered === true,
     humanizationNoBenefitDelivered: engineMeta.humanizationNoBenefitDelivered === true,
     humanizationPolicyVersion: archiveString(engineMeta.humanizationPolicyVersion, 32),
@@ -864,6 +865,8 @@ function buildArchiveObservability(job) {
     humanizationDepthRetryRejectionCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthRetryRejectionCodes),
     sectionRecoveryEnabled: engineMeta.sectionRecoveryEnabled === true,
     sectionRecoveryAttemptCount: archiveFinite(engineMeta.sectionRecoveryAttemptCount),
+    sectionRecoveryPreferredSectionCount: archiveFinite(engineMeta.sectionRecoveryPreferredSectionCount),
+    sectionRecoveryFragmentCount: archiveFinite(engineMeta.sectionRecoveryFragmentCount),
     sectionRecoveryAppliedCount: archiveFinite(engineMeta.sectionRecoveryAppliedCount),
     sectionRecoveryEscalationCount: archiveFinite(engineMeta.sectionRecoveryEscalationCount),
     sectionRecoveryRejectedAttemptCount: archiveFinite(engineMeta.sectionRecoveryRejectedAttemptCount),
@@ -958,6 +961,13 @@ function uniqueArchiveCodes(values) {
     if (out.length >= 24) break;
   }
   return out;
+}
+
+function finalQualityWarningCodes(result = {}) {
+  return uniqueArchiveCodes([
+    ...(Array.isArray(result.qualityWarnings) ? result.qualityWarnings : []),
+    ...(Array.isArray(result.floorReport?.warnings) ? result.floorReport.warnings : [])
+  ]);
 }
 
 function uniqueStrictArchiveCodes(values) {
@@ -1081,7 +1091,7 @@ function saveJobHistory(job, text, outputText) {
     modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
     qualityStatus: job.result?.qualityStatus,
     billingDisposition: job.result?.billingDisposition || job.billingDisposition || null,
-    qualityWarningCodes: (job.result?.qualityWarnings || []).map(item => item?.code).filter(Boolean),
+    qualityWarningCodes: finalQualityWarningCodes(job.result),
     sourceReviewWarningCodes: (job.result?.sourceReviewWarnings || []).map(item => item?.code).filter(Boolean),
     engineMeta: job.result?.engineMeta || null
   }).catch(e => logger.warn('transform.history_save_failed', { jobId: job.id, uid: job.uid, err: e }));
@@ -2952,6 +2962,7 @@ router.get('/transform/:id', async (req, res) => {
 router.saveJobHistory = saveJobHistory;   // 테스트용
 router.maybeNotifyOrphan = maybeNotifyOrphan;   // 테스트용
 router.buildArchiveDocument = buildArchiveDocument;   // 테스트용(원문·결과 비저장 계약 검증)
+router.finalQualityWarningCodes = finalQualityWarningCodes;   // 이력·아카이브 경고 코드 단일화 회귀 테스트용
 router.ensureTerminalTimestamp = ensureTerminalTimestamp;   // 테스트용
 router.normalizeDocumentProfileOverride = normalizeDocumentProfileOverride;   // 테스트·클라이언트 계약용
 router.preservationFallbackAllowed = preservationFallbackAllowed;   // 고급→보존형 다운그레이드 회귀 테스트용

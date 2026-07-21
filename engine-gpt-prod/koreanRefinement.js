@@ -3,7 +3,7 @@
 const { splitSentences, levenshteinDistance } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 3;
+const VERSION = 4;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -144,6 +144,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     deterministicSafe: false,
     message: '도구·플랫폼의 기능을 사람에게 호의를 베푸는 것처럼 표현했어요.'
   },
+  introduced_token_duplication: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: true,
+    message: '변환 과정에서 같은 한글 조각이 연달아 붙은 오타가 생겼어요.'
+  },
   repeated_vague_demonstrative: {
     weight: 1,
     repairable: false,
@@ -267,9 +273,15 @@ function repairContextualSpacing(value, source, context) {
   const repaired = lines.map((line, index) => {
     const guard = guards[index] || {};
     if (guard.code || guard.reference || guard.table) return line;
-    const protectWholeTitle = guard.title && sourceTitle && normalizeForTitle(line) === normalizeForTitle(sourceTitle);
+    let workingLine = line;
+    if (guard.role === 'prose') {
+      const trimmed = workingLine.replace(/^[ \t]+|[ \t]+$/gu, '');
+      if (trimmed !== workingLine) addCount(counts, 'prose_edge_whitespace');
+      workingLine = trimmed;
+    }
+    const protectWholeTitle = guard.title && sourceTitle && normalizeForTitle(workingLine) === normalizeForTitle(sourceTitle);
     if (protectWholeTitle) return line;
-    return replaceOutsideProtectedRanges(line, segment => {
+    return replaceOutsideProtectedRanges(workingLine, segment => {
       let out = segment;
       out = replaceTracked(out, /([.!?。！？])(?=[가-힣])/gu, (_match, mark) => `${mark} `, 'missing_sentence_space', counts);
       out = replaceTracked(out, /(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
@@ -496,6 +508,8 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   const targetRegister = String(documentProfile?.targetRegister || documentProfile?.tonePolicy || '');
   const sourceIssues = detectTextIssues(source, { profile, targetRegister, includeSourceNotation: true });
   const outputIssues = detectTextIssues(outputText, { profile, targetRegister, includeSourceNotation: false });
+  const duplicated = detectIntroducedTokenDuplications(source, outputText);
+  if (duplicated) outputIssues.push(duplicated);
   const professional = detectProfessionalDowngrade(source, outputText, profile);
   if (professional) outputIssues.push(professional);
   const rows = mergeIssueComparison(sourceIssues, outputIssues);
@@ -543,7 +557,9 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'dialogue_give_collocation', sentence => /대화(?:를)?\s*(?:건네|건넸|건넨|건넬)/u.test(sentence));
   pushSentenceIssue(issues, text, 'sampling_subject_mismatch', sentence => /(?:시|자료|문헌|표본|사례)(?:은|는)\s*(?:기준[^.!?。！？\n]{0,70})?목적\s*표집(?:하|했|해)/u.test(sentence));
   pushSentenceIssue(issues, text, 'tool_personification', sentence => /(?:플랫폼|시스템|도구|프로그램|모형)(?:이|가)[^.!?。！？\n]{0,70}(?:연결|제공|분석|정리|보여|알려)해\s*주/u.test(sentence));
-  if (isFormalRegisterTarget(targetRegister, profile)) pushFormalRegisterResidual(issues, text);
+  if (isFormalRegisterTarget(targetRegister, profile)) {
+    pushFormalRegisterResidual(issues, text, { profile, targetRegister });
+  }
   pushSelfEvaluationRepetition(issues, text);
   if (/(?:연구|실험|공정|시편|분석\s*장비)/u.test(text)) {
     pushSentenceIssue(issues, text, 'overloaded_research_action_chain', isOverloadedResearchActionChain);
@@ -559,6 +575,11 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   const before = String(outputText || '');
   let text = before;
   const changes = [];
+  const duplicationRepair = repairIntroducedTokenDuplications(source, text);
+  text = duplicationRepair.text;
+  for (let index = 0; index < duplicationRepair.repairCount; index += 1) {
+    changes.push('introduced_token_duplication');
+  }
   text = replaceAndCount(text, /([.!?。！？])(?=[가-힣])/gu, '$1 ', 'missing_sentence_space', changes);
   text = replaceAndCount(text, /실습수업/gu, '실습 수업', 'practice_class_spacing', changes);
   text = text.replace(/(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
@@ -837,6 +858,16 @@ const FORMAL_REGISTER_RULES = Object.freeze([
   {
     family: 'stock_blade_metaphor',
     test: value => /양날의\s*(?:검|칼)/u.test(value)
+  },
+  {
+    family: 'casual_emphasis',
+    test: value => /(?:^|[\s,.;:!?。！？])진짜(?:로|가|는|도|만)?(?=$|[\s,.;:!?。！？])/u.test(value)
+  },
+  {
+    family: 'casual_sentence_connector',
+    test: (value, _fullText, context) => ['academic_paper', 'report_assignment', 'student_record_teacher']
+      .includes(String(context?.profile || ''))
+      && /^\s*그래서(?:는|도)?(?:\s|,)/u.test(value)
   }
 ]);
 
@@ -847,14 +878,14 @@ function isFormalRegisterTarget(targetRegister, profile) {
     .includes(String(profile || ''));
 }
 
-function pushFormalRegisterResidual(issues, text) {
+function pushFormalRegisterResidual(issues, text, context = {}) {
   const sentences = splitSentences(String(text || ''));
   const ordinals = [];
   const families = [];
   sentences.forEach((sentence, index) => {
     const value = stripProtectedQuotedText(sentence);
     for (const rule of FORMAL_REGISTER_RULES) {
-      if (typeof rule.test !== 'function' || !rule.test(value, text)) continue;
+      if (typeof rule.test !== 'function' || !rule.test(value, text, context)) continue;
       ordinals.push(index + 1);
       families.push(rule.family);
     }
@@ -864,6 +895,68 @@ function pushFormalRegisterResidual(issues, text) {
       families: [...new Set(families)].slice(0, 12)
     }));
   }
+}
+
+function detectIntroducedTokenDuplications(source, outputText) {
+  const mappings = findIntroducedTokenDuplicationMappings(source, outputText);
+  if (!mappings.length) return null;
+  return makeIssue(
+    'introduced_token_duplication',
+    mappings.length,
+    mappings.map(item => item.sentenceOrdinal),
+    { mappings: mappings.slice(0, 20) }
+  );
+}
+
+function repairIntroducedTokenDuplications(source, outputText) {
+  const mappings = findIntroducedTokenDuplicationMappings(source, outputText);
+  if (!mappings.length) return { text: String(outputText || ''), repairCount: 0 };
+  const replacements = new Map(mappings.map(item => [item.outputToken, item.repairedToken]));
+  let repairCount = 0;
+  const lines = String(outputText || '').replace(/\r\n?/gu, '\n').split('\n');
+  const text = lines.map(line => replaceOutsideProtectedRanges(line, segment => (
+    segment.replace(/[가-힣]{2,}/gu, token => {
+      const repaired = replacements.get(token);
+      if (!repaired || repaired === token) return token;
+      repairCount += 1;
+      return repaired;
+    })
+  ))).join('\n');
+  return { text, repairCount };
+}
+
+function findIntroducedTokenDuplicationMappings(source, outputText) {
+  const sourceText = String(source || '').normalize('NFKC');
+  const output = String(outputText || '').normalize('NFKC');
+  if (!sourceText || !output) return [];
+  const sourceTokens = new Set(sourceText.match(/[가-힣]{2,}/gu) || []);
+  const mappings = [];
+  for (const match of output.matchAll(/[가-힣]{2,}/gu)) {
+    const token = match[0];
+    if (sourceTokens.has(token)) continue;
+    const repairedToken = removeOneIntroducedRepeatedUnit(token, sourceText, sourceTokens);
+    if (!repairedToken) continue;
+    mappings.push({
+      outputToken: token,
+      repairedToken,
+      sentenceOrdinal: sentenceOrdinalAt(output, match.index)
+    });
+  }
+  return mappings;
+}
+
+function removeOneIntroducedRepeatedUnit(token, sourceText, sourceTokens) {
+  const maxUnit = Math.min(3, Math.floor(token.length / 2));
+  for (let unitLength = 1; unitLength <= maxUnit; unitLength += 1) {
+    for (let index = 0; index + unitLength * 2 <= token.length; index += 1) {
+      const unit = token.slice(index, index + unitLength);
+      if (unit !== token.slice(index + unitLength, index + unitLength * 2)) continue;
+      const candidate = token.slice(0, index) + token.slice(index + unitLength);
+      if (candidate.length < 2) continue;
+      if (sourceTokens.has(candidate) || sourceText.includes(candidate)) return candidate;
+    }
+  }
+  return '';
 }
 
 function hasFormalMetaphorCluster(value) {

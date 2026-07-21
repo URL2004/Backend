@@ -103,6 +103,54 @@ test('장문 섹션 회복은 mini 최대 8개·동시성 3·상위 모델 최�
   assert.ok(maxActive >= 2);
 });
 
+test('제목이 촘촘해 모든 산문 청크가 1200자 미만이어도 짧은 절 조각을 회복 후보로 고른다', { concurrency: false }, async t => {
+  withEnv(t, 'HUMANIZE_SECTION_RECOVERY_ENABLED', '1');
+  const chunks = [];
+  for (let index = 0; index < 12; index += 1) {
+    chunks.push({
+      index: chunks.length,
+      text: `${index + 1}. 세부 절`,
+      outputText: `${index + 1}. 세부 절`,
+      locked: true,
+      sectionPath: `section_${index + 1}`
+    });
+    const text = Array.from({ length: 4 }, (_, sentenceIndex) => (
+      `또한 ${index + 1}-${sentenceIndex + 1}번째 자료는 현대 사회에서 중요한 역할을 할 수 있습니다. 따라서 관련 내용을 체계적으로 살펴볼 필요가 있습니다.`
+    )).join(' ');
+    assert.ok(text.length >= sectionRecovery.MIN_FRAGMENT_CHARS);
+    assert.ok(text.length < sectionRecovery.MIN_SECTION_CHARS);
+    chunks.push({
+      index: chunks.length,
+      text,
+      outputText: text,
+      locked: false,
+      sectionPath: `section_${index + 1}`
+    });
+  }
+  const lockedBefore = chunks.filter(item => item.locked).map(item => item.outputText);
+  const report = await sectionRecovery.recoverSections({
+    chunks,
+    sourceLength: 4500,
+    mode: 'assignment',
+    requestStrength: 'advanced',
+    documentProfile: { profile: 'report_assignment', confidence: 0.94 },
+    inputRisk: { abstractRiskRatio: 1 },
+    retrySection: async entry => ({
+      outputText: entry.source
+        .replaceAll('또한 ', '')
+        .replaceAll('현대 사회에서 중요한 역할을 할 수 있습니다', '자료별 차이를 직접 확인했습니다')
+        .replaceAll('따라서 관련 내용을 체계적으로 살펴볼 필요가 있습니다', '검토 기준에 따라 결과를 다시 정리했습니다'),
+      safeChangeFound: true
+    }),
+    validateCandidate: () => true
+  });
+  assert.equal(report.metrics.selectedPreferredSectionCount, 0);
+  assert.equal(report.metrics.selectedFragmentCount, 8);
+  assert.equal(report.metrics.miniAttemptCount, 8);
+  assert.ok(report.metrics.applied > 0, JSON.stringify(report.metrics));
+  assert.deepEqual(chunks.filter(item => item.locked).map(item => item.outputText), lockedBefore);
+});
+
 test('장문 섹션 회복은 안전 감사에서 거부되거나 더 나쁘지 않은 후보를 채택하지 않는다', { concurrency: false }, async t => {
   withEnv(t, 'HUMANIZE_SECTION_RECOVERY_ENABLED', '1');
   const text = buildSection(0);

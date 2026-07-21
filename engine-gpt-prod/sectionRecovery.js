@@ -5,6 +5,10 @@ const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 
 const MIN_DOCUMENT_CHARS = 2000;
 const MIN_SECTION_CHARS = 1200;
+// 제목이 촘촘한 보고서·논문은 절마다 청크가 1,200자보다 짧아 기존 회복기가
+// 한 번도 실행되지 않았다. 잠긴 제목은 그대로 두고, 의미 있는 산문 조각만
+// 남은 슬롯에 보조 후보로 넣는다.
+const MIN_FRAGMENT_CHARS = 180;
 const MAX_SECTION_CHARS = 2500;
 const MAX_MINI_ATTEMPTS = 8;
 const MAX_ESCALATIONS = 2;
@@ -27,12 +31,12 @@ function selectRecoverySections(chunks, {
       || mode === 'polish'
       || profile === 'creative') return [];
 
-  return (chunks || [])
+  const candidates = (chunks || [])
     .map((chunk, index) => {
       const source = String(chunk?.text || '').trim();
       const output = String(chunk?.outputText ?? chunk?.text ?? '').trim();
       const chars = source.length;
-      if (chunk?.locked || chars < MIN_SECTION_CHARS || chars > MAX_SECTION_CHARS) return null;
+      if (chunk?.locked || chars < MIN_FRAGMENT_CHARS || chars > MAX_SECTION_CHARS) return null;
       const plan = humanizationDepth.buildHumanizationPlan(source, {
         requestStrength,
         documentProfile,
@@ -45,15 +49,21 @@ function selectRecoverySections(chunks, {
         source,
         output,
         chars,
+        selectionKind: chars >= MIN_SECTION_CHARS ? 'section' : 'fragment',
         sectionPath: String(chunk?.sectionPath || ''),
         plan,
         report,
         priority: recoveryPriority(report)
       };
     })
-    .filter(Boolean)
-    .sort((left, right) => right.priority - left.priority || left.index - right.index)
-    .slice(0, MAX_MINI_ATTEMPTS);
+    .filter(Boolean);
+  const byPriority = (left, right) => right.priority - left.priority || left.index - right.index;
+  const preferred = candidates.filter(item => item.selectionKind === 'section').sort(byPriority);
+  const fragments = candidates.filter(item => item.selectionKind === 'fragment').sort(byPriority);
+  return [
+    ...preferred.slice(0, MAX_MINI_ATTEMPTS),
+    ...fragments.slice(0, Math.max(0, MAX_MINI_ATTEMPTS - preferred.length))
+  ];
 }
 
 async function recoverSections({
@@ -79,6 +89,8 @@ async function recoverSections({
     applied: 0,
     escalated: 0,
     selectedSectionCount: selected.length,
+    selectedPreferredSectionCount: selected.filter(item => item.selectionKind === 'section').length,
+    selectedFragmentCount: selected.filter(item => item.selectionKind === 'fragment').length,
     miniAttemptCount: selected.length,
     escalationAttemptCount: 0,
     concurrency: RECOVERY_CONCURRENCY,
@@ -225,6 +237,7 @@ async function mapWithConcurrency(items, limit, worker) {
 module.exports = {
   MIN_DOCUMENT_CHARS,
   MIN_SECTION_CHARS,
+  MIN_FRAGMENT_CHARS,
   MAX_SECTION_CHARS,
   MAX_MINI_ATTEMPTS,
   MAX_ESCALATIONS,

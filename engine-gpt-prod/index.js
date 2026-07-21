@@ -37,7 +37,7 @@ const experienceAudit = require('./experienceAudit');
 const sourcePreflight = require('./sourcePreflight');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.16';
+const VERSION = 'gpt-prod-v2.4.17';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([
@@ -59,9 +59,6 @@ const STRICT_DELIVERY_GATES = new Set([
   'humanization_depth_no_effect'
 ]);
 const V2_SAFE_LOW_BENEFIT_GATES = new Set([
-  'gpt_all_chunks_fallback',
-  'gpt_noop_unchanged',
-  'noop_unchanged',
   'humanization_depth_no_effect'
 ]);
 const REVIEW_WARNING_GATES = new Set([
@@ -514,7 +511,10 @@ async function runEngine({
       try {
         generalSurfaceRetryAttemptCount += 1;
         humanizationDepthRetryCount += 1;
-        const escalation = attempt > 0 && requestStrength === 'advanced';
+        // 원문과 완전히 같은 결과는 일반적인 "깊이 부족"보다 강한 기술 실패다.
+        // 기본 피하기도 첫 회복이 실패하면 상위 모델로 한 번 승격해, 원문 그대로
+        // 전달·과금되는 경우를 최대한 줄인다.
+        const escalation = attempt > 0 && (requestStrength === 'advanced' || wasEquivalent);
         const roleRecovery = attempt > 0
           && !escalation
           && roleRecoveryPending
@@ -962,6 +962,147 @@ async function runEngine({
     }
   }
 
+  // 의미 수리가 추가 주장 등을 제거하는 과정에서 결과 전체가 원문으로 돌아갈
+  // 수 있다. 앞 단계에서 무변환이 아니었다면 기존 회복 루프가 이를 볼 수 없으므로,
+  // 최종 레이아웃 전에 한 번 더 재작성하고 의미 심사까지 다시 통과한 후보만 쓴다.
+  if (v2Enabled
+      && selectedMode !== 'polish'
+      && finalNoopRecovery.attempted !== true
+      && normalizeBare(auditSource) === normalizeBare(outputText)) {
+    finalNoopRecovery.attempted = true;
+    const postNoopPlan = humanizationPlan || humanizationDepth.buildHumanizationPlan(auditSource, {
+      requestStrength,
+      documentProfile,
+      inputRisk
+    });
+    let postNoopDepthReport = humanizationDepth.evaluateHumanizationDepth(
+      auditSource,
+      outputText,
+      postNoopPlan
+    );
+    let lastRecoveryReason = 'no_substantive_change';
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const escalation = attempt > 0;
+      try {
+        generalSurfaceRetryAttemptCount += 1;
+        humanizationDepthRetryCount += 1;
+        if (escalation) humanizationDepthEscalationAttemptCount += 1;
+        const retried = await qualityV2.retryGeneralSurface({
+          source: auditSource,
+          currentOutput: outputText,
+          humanizationPlan: postNoopPlan,
+          humanizationDepthReport: postNoopDepthReport,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId,
+          model: escalation ? cfg.models.humanizeEscalation : '',
+          reasoningEffort: escalation ? cfg.reasoning.escalation : '',
+          phase: escalation ? 'post_semantic_noop_escalation' : 'post_semantic_noop_recovery'
+        });
+        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        humanizationDepthRetryTargetSentenceCount += retried.targetSentenceCount || 0;
+        const candidate = String(retried.outputText || '').trim();
+        const candidateDepth = humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, postNoopPlan);
+        const safeCandidate = isSafeGeneralSurfaceCandidate(
+          auditSource,
+          candidate,
+          contract,
+          documentProfile,
+          selectedMode
+        ) && preservesFinalStructure(
+          auditSource,
+          candidate,
+          frozen ? frozen.auditChunks : chunks,
+          chunkPlan,
+          boundaryRepair
+        );
+        if (!safeCandidate || candidateDepth.minimumEffectPass !== true) {
+          lastRecoveryReason = !candidate || normalizeBare(candidate) === normalizeBare(auditSource)
+            ? 'candidate_unchanged'
+            : (!safeCandidate ? 'safety_audit_failed' : 'minimum_effect_failed');
+          humanizationDepthRetryRejectedCount += 1;
+          addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
+          continue;
+        }
+        const candidateSemantic = await qualityV2.runSemanticDocumentAudit({
+          source: auditSource,
+          outputText: candidate,
+          lang,
+          signal,
+          config: cfg,
+          allowedExtra: evidence || userNotes || '',
+          mode: selectedMode,
+          discourseSignals: ['post_semantic_noop_recovery'],
+          safetyIdentifier: safetyId
+        });
+        supplementalUsage = addUsage(supplementalUsage, candidateSemantic.usage);
+        const auditedCandidate = String(candidateSemantic.outputText || candidate).trim();
+        const auditedDepth = humanizationDepth.evaluateHumanizationDepth(auditSource, auditedCandidate, postNoopPlan);
+        const safeAuditedCandidate = candidateSemantic.pass === true
+          && auditedDepth.minimumEffectPass === true
+          && isSafeGeneralSurfaceCandidate(auditSource, auditedCandidate, contract, documentProfile, selectedMode)
+          && preservesFinalStructure(
+            auditSource,
+            auditedCandidate,
+            frozen ? frozen.auditChunks : chunks,
+            chunkPlan,
+            boundaryRepair
+          );
+        if (!safeAuditedCandidate) {
+          lastRecoveryReason = candidateSemantic.pass === true ? 'post_semantic_safety_failed' : 'semantic_audit_failed';
+          humanizationDepthRetryRejectedCount += 1;
+          addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
+          continue;
+        }
+        outputText = auditedCandidate;
+        postNoopDepthReport = auditedDepth;
+        if (humanizationDepthEnabled) humanizationDepthReport = auditedDepth;
+        semanticReport = { ...candidateSemantic, decisionReason: 'post_semantic_noop_recovery' };
+        preSemanticStructureAudit = structureChunk.buildStructureAudit({
+          source: auditSource,
+          outputText,
+          chunks: frozen ? frozen.auditChunks : chunks,
+          plan: chunkPlan,
+          boundaryRepair
+        });
+        deterministicAudit = qualityV2.buildDeterministicAudit({
+          source: auditSource,
+          outputText,
+          mode: selectedMode,
+          contract,
+          voiceProfile: auditVoiceProfile,
+          documentProfile,
+          structureAudit: preSemanticStructureAudit,
+          protectedTerms: collectRecordProtectedTerms(records),
+          allowedExtra: evidence || userNotes || ''
+        });
+        generalSurfaceRetryCount += 1;
+        humanizationDepthRetryApplied = true;
+        finalNoopRecoveryCount = 1;
+        finalNoopRecovery = {
+          attempted: true,
+          applied: true,
+          method: escalation ? 'post_semantic_escalation' : 'post_semantic_model',
+          reason: 'substantive_humanization'
+        };
+        acceptGeneralSurfaceRecovery(records);
+        break;
+      } catch (error) {
+        lastRecoveryReason = `retry_error:${String(error?.code || error?.message || 'unknown').slice(0, 80)}`;
+        humanizationDepthRetryRejectedCount += 1;
+        addUniqueCode(humanizationDepthRetryRejectionCodes, 'retry_error');
+      }
+    }
+    if (finalNoopRecovery.applied !== true) {
+      finalNoopRecovery = {
+        attempted: true,
+        applied: false,
+        method: 'post_semantic_model',
+        reason: lastRecoveryReason
+      };
+    }
+  }
+
   const postLayout = layoutNlpEnabled
     ? await safeFormatLayout(outputText, { mode: selectedMode, phase: 'post' })
     : null;
@@ -1138,7 +1279,7 @@ async function runEngine({
           ...depthDetail,
           gate: 'humanization_depth_no_effect'
         }], 'humanization_depth_no_effect');
-      } else {
+      } else if (humanizationDepthReport.userReviewRequired !== false) {
         addFloorWarnings(result.floorReport, depthWarningDetails(humanizationDepthReport, depthDetail));
       }
     }
@@ -1151,13 +1292,20 @@ async function runEngine({
   const fallbackCount = records.filter(r => r.fallback).length;
   const effectiveChunks = records.filter(r => !r.skipped).length;
   const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
-  if (allFallback || normalizeBare(rawSource) === normalizeBare(outputText)) {
+  const finalEquivalent = normalizeBare(rawSource) === normalizeBare(outputText);
+  const allFallbackRecovered = allFallback
+    && !finalEquivalent
+    && (humanizationDepthReport?.minimumEffectPass === true || finalNoopRecovery.applied === true)
+    && (finalNoopRecovery.applied === true
+      || humanizationDepthRetryApplied === true
+      || Number(sectionRecoveryReport.metrics?.applied || 0) > 0);
+  if (finalEquivalent || (allFallback && !allFallbackRecovered)) {
     result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
     const longRecoveryReview = v2Enabled
       && selectedMode !== 'polish'
       && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS
       && sectionRecoveryReport.metrics?.enabled === true;
-    if (longRecoveryReview) {
+    if (!finalEquivalent && longRecoveryReview) {
       result.floorReport.status = 'needs_review';
       result.floorReport.warnings = [
         ...(result.floorReport.warnings || []),
@@ -1179,8 +1327,8 @@ async function runEngine({
       result.floorReport.status = 'blocked';
       result.floorReport.criticals = result.floorReport.criticals || [];
       result.floorReport.criticals.push({
-        gate: allFallback ? 'gpt_all_chunks_fallback' : 'gpt_noop_unchanged',
-        detail: allFallback ? 'All GPT chunks failed hard gates and fell back to source.' : 'GPT output is equivalent to source.'
+        gate: finalEquivalent ? 'gpt_noop_unchanged' : 'gpt_all_chunks_fallback',
+        detail: finalEquivalent ? 'GPT output is equivalent to source.' : 'All GPT chunks failed hard gates and fell back to source.'
       });
     }
   }
@@ -1229,7 +1377,9 @@ async function runEngine({
           : []),
         ...(polishReport?.excessiveChange ? [{ code: 'polish_edit_range', severity: 'warning', message: '보존형 윤문의 권장 편집 범위를 넘었을 수 있어요.' }] : []),
         ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : []),
-        ...(humanizationDepthReport?.applicable && humanizationDepthReport.pass === false
+        ...(humanizationDepthReport?.applicable
+          && humanizationDepthReport.pass === false
+          && humanizationDepthReport.userReviewRequired !== false
           ? depthQualityWarnings(humanizationDepthReport)
           : []),
         ...(humanizationNoBenefitDelivered
@@ -1350,6 +1500,10 @@ async function runEngine({
     humanizationDepthApplicable: humanizationDepthReport?.applicable === true,
     humanizationDepthPass: humanizationDepthReport?.pass === true,
     humanizationMinimumEffectPass: humanizationDepthReport?.minimumEffectPass === true,
+    humanizationEffectStatus: humanizationDepthReport?.effectStatus || '',
+    humanizationDepthUserReviewRequired: humanizationDepthReport?.userReviewRequired === true,
+    humanizationDepthUserReviewReasons: safeFailureCodeList(humanizationDepthReport?.userReviewReasons),
+    humanizationDepthShadowReasons: safeFailureCodeList(humanizationDepthReport?.shadowReasons),
     humanizationDepthSoftDelivered: humanizationDepthReport?.applicable === true
       && humanizationDepthReport?.pass === false
       && humanizationDepthReport?.minimumEffectPass === true,
@@ -1386,6 +1540,8 @@ async function runEngine({
     humanizationDepthRetryRejectionCodes,
     sectionRecoveryEnabled: sectionRecoveryReport.metrics?.enabled === true,
     sectionRecoveryAttemptCount: Number(sectionRecoveryReport.metrics?.attempted || 0),
+    sectionRecoveryPreferredSectionCount: Number(sectionRecoveryReport.metrics?.selectedPreferredSectionCount || 0),
+    sectionRecoveryFragmentCount: Number(sectionRecoveryReport.metrics?.selectedFragmentCount || 0),
     sectionRecoveryAppliedCount: Number(sectionRecoveryReport.metrics?.applied || 0),
     sectionRecoveryEscalationCount: Number(sectionRecoveryReport.metrics?.escalated || 0),
     sectionRecoveryConcurrency: Number(sectionRecoveryReport.metrics?.concurrency || 0),

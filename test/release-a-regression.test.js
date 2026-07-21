@@ -478,6 +478,26 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(Object.prototype.hasOwnProperty.call(fallbackCompleted, 'result'), false);
 });
 
+test('작업 이력과 운영 아카이브는 품질 경고와 floor 경고를 같은 코드 집합으로 저장한다', () => {
+  const codes = transform.finalQualityWarningCodes({
+    qualityWarnings: [
+      { code: 'semantic_omission', message: '원문 대조 필요' },
+      { code: 'humanization_depth_below_minimum', message: '강도 확인 필요' }
+    ],
+    floorReport: {
+      warnings: [
+        { gate: 'rhetorical_remediation_incomplete' },
+        'humanization_depth_below_minimum'
+      ]
+    }
+  });
+  assert.deepEqual(codes, [
+    'semantic_omission',
+    'humanization_depth_below_minimum',
+    'rhetorical_remediation_incomplete'
+  ]);
+});
+
 test('transform 글 종류 입력은 공개 장르와 호환 별칭만 허용한다', () => {
   assert.equal(transform.normalizeDocumentProfileOverride('resume_application'), 'resume_application');
   assert.equal(transform.normalizeDocumentProfileOverride('blog_review'), 'review_blog');

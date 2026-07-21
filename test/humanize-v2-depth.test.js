@@ -62,7 +62,7 @@ test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.16');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.17');
   assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
   assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
@@ -244,6 +244,35 @@ test('품질 최소선 미달과 사용자 전달 불가 수준을 분리한다'
   assert.ok(report.reasons.includes('substantive_edit_ratio_low'));
   assert.deepEqual(report.blockingReasons, []);
   assert.equal(report.metrics.deliveryDepthBand, 'below_minimum');
+  assert.equal(report.effectStatus, 'below_target_shadow');
+  assert.equal(report.userReviewRequired, false);
+});
+
+test('깊이 미달은 단일 보조 지표와 복합 체감 부족을 사용자 경고에서 분리한다', () => {
+  const shadow = depth.assessDepthReview(
+    ['structural_rewrite_coverage_low'],
+    [],
+    { requestStrength: 'basic' }
+  );
+  assert.equal(shadow.effectStatus, 'below_target_shadow');
+  assert.equal(shadow.userReviewRequired, false);
+  assert.deepEqual(shadow.shadowReasons, ['structural_rewrite_coverage_low']);
+
+  const review = depth.assessDepthReview(
+    ['substantive_edit_ratio_low', 'substantive_sentence_coverage_low'],
+    [],
+    { requestStrength: 'basic' }
+  );
+  assert.equal(review.effectStatus, 'below_target_review');
+  assert.equal(review.userReviewRequired, true);
+
+  const noEffect = depth.assessDepthReview(
+    ['substantive_edit_ratio_low'],
+    ['substantive_effect_too_low'],
+    { requestStrength: 'basic' }
+  );
+  assert.equal(noEffect.effectStatus, 'no_effect');
+  assert.equal(noEffect.userReviewRequired, true);
 });
 
 test('안전 재시도 후보가 품질 최소선에 조금 못 미쳐도 기존 후보보다 좋아지면 채택 대상으로 본다', () => {

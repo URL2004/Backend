@@ -4,6 +4,77 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const refinement = require('../engine-gpt-prod/koreanRefinement');
 
+test('따옴표로 시작한 자소서 산문의 닫는 부호 경계만 안전하게 띄운다', () => {
+  const source = '‘빨리 먹은 밥은 체한다’어린 시절부터 정해진 과정을 지키는 태도를 배웠습니다.';
+  const profile = { profile: 'resume_application', targetRegister: 'professional' };
+  const audit = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: source,
+    documentProfile: profile,
+    mode: 'assignment'
+  });
+  assert.equal(audit.version, 5);
+  assert.ok(audit.issueCodes.includes('closed_quote_spacing'));
+  assert.ok(audit.sourceReviewWarnings.some(item => item.code === 'quote_terminal_punctuation_review'));
+
+  const repaired = refinement.applySafeDeterministicRepairs({ source, outputText: source, documentProfile: profile });
+  assert.equal(repaired.text, '‘빨리 먹은 밥은 체한다’ 어린 시절부터 정해진 과정을 지키는 태도를 배웠습니다.');
+  assert.ok(repaired.changeCodes.includes('closed_quote_spacing'));
+
+  const attachedParticle = '저의 좌우명은 ‘끝까지 책임진다’라는 문장입니다.';
+  const particleAudit = refinement.analyzeKoreanRefinement({ source: attachedParticle, outputText: attachedParticle, documentProfile: profile });
+  assert.equal(particleAudit.issueCodes.includes('closed_quote_spacing'), false);
+  assert.equal(particleAudit.sourceReviewWarnings.some(item => item.code === 'quote_terminal_punctuation_review'), false);
+  assert.equal(refinement.applySafeDeterministicRepairs({ source: attachedParticle, outputText: attachedParticle }).text, attachedParticle);
+});
+
+test('엔진이 만든 서로 상호작용 중복은 제거하고 도움·비교절 중복은 국소 수리 대상으로 잡는다', () => {
+  const source = '학교는 여러 구성원이 상호작용하며 운영된다. 주민이 필요한 지원을 받을 수 있도록 안내하겠습니다.';
+  const output = '학교는 여러 구성원이 서로 상호작용하며 운영된다. 주민이 실질적인 도움을 받을 수 있게 돕겠습니다. 절차를 꼼꼼히 챙기며 빠른 성과를 내기 위해 서두르기보다 과정에 충실하겠습니다.';
+  const profile = { profile: 'resume_application', targetRegister: 'professional' };
+  const audit = refinement.analyzeKoreanRefinement({ source, outputText: output, documentProfile: profile, mode: 'assignment' });
+  assert.ok(audit.issueCodes.includes('reciprocal_expression_redundancy'));
+  assert.ok(audit.repairableCodes.includes('benefit_help_predicate_redundancy'));
+  assert.ok(audit.repairableCodes.includes('contrast_clause_attachment'));
+
+  const repaired = refinement.applySafeDeterministicRepairs({ source, outputText: output, documentProfile: profile });
+  assert.match(repaired.text, /여러 구성원이 상호작용하며/u);
+  assert.doesNotMatch(repaired.text, /서로\s+상호작용/u);
+});
+
+test('지원 이후 역할의 시제 의심은 원문 검토 알림으로만 남기고 자동 교정하지 않는다', () => {
+  const source = '이런 경험들은 제가 공직에서 마주한 여러 상황을 풀어 내는 밑거름이 될 것입니다. 시간을 효율적으로 관리하려고 마감 기한을 여유 있게 잡았습니다. 이를 위해 입사 후 두 가지 계획을 실천하겠습니다.';
+  const audit = refinement.analyzeKoreanRefinement({
+    source,
+    outputText: source,
+    documentProfile: { profile: 'resume_application', targetRegister: 'professional' },
+    mode: 'assignment'
+  });
+  assert.ok(audit.sourceReviewWarnings.some(item => item.code === 'future_role_tense_review'));
+  assert.ok(audit.sourceReviewWarnings.some(item => item.code === 'resume_weakness_mitigation_review'));
+  assert.ok(audit.sourceReviewWarnings.some(item => item.code === 'public_service_employment_term_review'));
+  assert.equal(audit.issueCodes.includes('future_role_tense_review'), false);
+  const repaired = refinement.applySafeDeterministicRepairs({ source, outputText: source });
+  assert.equal(repaired.text, source);
+});
+
+test('공식 지원서의 장식적 디딤돌·동행자 결론은 직접 인용 밖에서만 수리 대상으로 잡는다', () => {
+  const profile = { profile: 'resume_application', targetRegister: 'professional' };
+  const source = '주민의 이야기를 듣고 절차를 설명하겠습니다.';
+  const output = '끝까지 곁을 지키는 디딤돌이 되겠습니다. 주민의 든든한 동행자이자 따뜻한 조력자가 되겠습니다.';
+  const audit = refinement.analyzeKoreanRefinement({ source, outputText: output, documentProfile: profile, mode: 'assignment' });
+  const issue = audit.issues.find(item => item.code === 'formal_register_residual');
+  assert.ok(issue?.details?.families?.includes('resume_ornamental_closing'));
+
+  const quoted = refinement.analyzeKoreanRefinement({
+    source: '저의 좌우명은 “누군가의 든든한 동행자가 되자”입니다.',
+    outputText: '저의 좌우명은 “누군가의 든든한 동행자가 되자”입니다.',
+    documentProfile: profile,
+    mode: 'assignment'
+  });
+  assert.equal(quoted.issueCodes.includes('formal_register_residual'), false);
+});
+
 test('공식 보고서의 구어적 게임·군사 은유 잔존을 잡고 직접 인용은 보호한다', () => {
   const source = '운영 절차는 부검-표적수술 사이클로 이어졌다. 무휴식 모드와 역타기를 적용했고 서버 탄환 십여 발을 사용했다. 결과는 양날의 검이었다.';
   const profile = { profile: 'report_assignment', targetRegister: 'academic_formal' };
@@ -95,6 +166,12 @@ test('변환 중 새로 생긴 한글 토큰 중복 오타를 검출하고 원�
     outputText: '보고서는 “복복지”라는 표현을 분석합니다.'
   });
   assert.match(quoted.text, /“복복지”/u, '직접 인용 내부는 결정론적으로 바꾸지 않아야 한다');
+
+  const validParticle = refinement.analyzeKoreanRefinement({
+    source: '외부 전문가 의견을 들었습니다.',
+    outputText: '외부 전문가가 검토에 참여했습니다.'
+  });
+  assert.equal(validParticle.issueCodes.includes('introduced_token_duplication'), false, '전문가+가를 중복 오타로 오인하지 않아야 한다');
 });
 
 test('원문에 있던 깊게 이해는 자동 변경하지 않고 원문 검토 알림으로 분리한다', () => {

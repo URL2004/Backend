@@ -364,9 +364,21 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
   const beforeReadability = layoutStructure.measureParagraphReadability(before);
   const readableMinimum = Math.max(sourceReadability.minimumCount, beforeReadability.minimumCount);
   const formatFlags = new Set(typeof documentProfile === 'object' ? (documentProfile?.formatProfile?.flags || []) : []);
+  const sourceLineLayout = layoutStructure.analyzeLineStructure(source);
+  const preserveResumeUnits = profileName === 'resume_application'
+    && sourceCount >= 3
+    // 빈 줄 없이 완결 행이 연속된 붙여넣기 형식만 문항 묶음으로 본다.
+    // 명시적으로 나뉜 소수의 긴 문단은 기존처럼 문단 내부 역할 전환을
+    // 기준으로 읽기 좋게 세분할 수 있다.
+    && Number(sourceLineLayout?.explicitParagraphCount || 0) === 1
+    && Number(sourceLineLayout?.semanticBoundaryCount || 0) >= sourceCount - 2;
   const semanticProseRoles = ['basic', 'advanced'].includes(String(requestStrength || ''))
     && mode !== 'polish'
     && !creativeLayout
+    // 자기소개서는 제목 없이 여러 문항 답변을 완결 행으로 붙여 넣는 경우가
+    // 많다. 이 행들을 일반 산문의 서론·근거·결론 문단으로 재배치하면 서로
+    // 다른 문항이 합쳐지므로, 원문에서 감지한 읽기 단위를 그대로 유지한다.
+    && !preserveResumeUnits
     && !['questionnaire', 'list_heavy', 'table', 'table_heavy', 'sectioned', 'reference_heavy', 'creative_lines']
       .some(flag => formatFlags.has(flag))
     && !(chunks || []).some(chunk => chunk?.locked && String(chunk.text || '').trim());

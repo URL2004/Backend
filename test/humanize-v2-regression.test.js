@@ -336,6 +336,41 @@ test('고급 자소서는 내용 순서를 유지하고 역할 전환 지점에�
   assert.equal(voiceAudit.warnings.some(item => item.code === 'paragraph_structure_changed'), false);
 });
 
+test('빈 줄 없이 이어진 자소서 완결 행은 서로 다른 문항으로 보고 다시 합치지 않는다', () => {
+  const source = [
+    '‘과정을 지키는 태도’ 어린 시절부터 결과보다 문제를 풀어 가는 순서를 중요하게 배웠습니다. 학창 시절에도 계획한 일을 하나씩 점검했습니다.',
+    '공직도 이와 다르지 않다고 생각합니다. 주민에게 필요한 절차를 꼼꼼히 챙기고 맡은 일에 책임을 다하겠습니다. 작은 확인도 빠뜨리지 않겠습니다.',
+    '공공기관 안내대에서 민원인의 이야기를 들은 뒤 현행 규정 안에서 가능한 대안을 설명했습니다. 이 경험으로 정확한 안내의 중요성을 배웠습니다.',
+    '저의 강점은 서류의 이름과 번호를 이중으로 확인하는 습관입니다. 실제로 여러 문서를 검토하며 오류를 사전에 발견했습니다. 확인 결과도 기록했습니다.',
+    '주민의 불편을 살피는 실무자가 되고자 지원했습니다. 현장에서 배운 소통 방식으로 맡은 업무를 정확하게 수행하겠습니다. 처리 절차도 분명히 안내하겠습니다.'
+  ].join('\n');
+  const profile = { profile: 'resume_application', confidence: 0.95, formatProfile: { primary: 'plain', flags: [] } };
+  assert.equal(layoutStructure.classifyLine(source.split('\n')[0]), 'prose', '첫머리 인용은 긴 산문 전체를 인용 블록으로 잠그지 않는다');
+
+  const voice = buildVoiceProfile(source, { documentProfile: profile, mode: 'assignment' });
+  assert.equal(voice.lineBoundaryPolicy, 'structural');
+  const plan = structure.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    preserveLineBoundaries: voice.lineBoundaryPolicy,
+    formatProfile: profile.formatProfile
+  });
+  assert.equal(plan.chunks.reduce((sum, item) => sum + Number(item.lineBoundaryMarkers?.length || 0), 0), 4);
+
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: source,
+    chunks: plan.chunks,
+    mode: 'assignment',
+    requestStrength: 'advanced',
+    documentProfile: profile,
+    profileConfidence: 0.95
+  });
+  assert.equal(restored.paragraphs.sourceCount, 5);
+  assert.equal(restored.paragraphs.afterCount, 5);
+  assert.equal(restored.paragraphs.policy, 'none');
+  assert.equal(restored.text, source);
+});
+
 test('기본·고급 일반 산문도 의미 역할 전환에 맞춰 문단 가독성을 개선한다', () => {
   const source = [
     '온라인 서비스가 일상에 깊이 들어오면서 사용자가 접하는 정보의 양도 크게 늘었습니다.',
@@ -1124,6 +1159,17 @@ test('직접 인용의 개수가 같아도 내부 내용 변경을 잡고 원문
   assert.match(restored.text, /“AI는 인간이 될 수 없다\.”는 입장/u);
   assert.match(restored.text, /“보조 기술에 그치지 않는다\.”라고 설명/u);
   assert.equal(auditDirectQuoteIntegrity(source, restored.text).pass, true);
+});
+
+test('한국어 홑따옴표 직접 인용도 내용 변경 감사와 원문 복원에 포함한다', () => {
+  const source = '부모님은 ‘빨리 먹은 밥은 체한다’고 말씀하셨다.';
+  const output = '부모님은 ‘빠르게 끝내는 일이 중요하다’고 말씀하셨다.';
+  const audit = auditDirectQuoteIntegrity(source, output);
+  assert.equal(audit.sourceCount, 1);
+  assert.equal(audit.contentChanged, true);
+  const restored = restoreDirectQuoteContents(source, output);
+  assert.equal(restored.applied, true);
+  assert.equal(restored.text, source);
 });
 
 test('직접 인용 개수가 달라진 결과는 잘못 짝지어 자동 복원하지 않는다', () => {

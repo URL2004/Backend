@@ -37,7 +37,7 @@ const experienceAudit = require('./experienceAudit');
 const sourcePreflight = require('./sourcePreflight');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 'gpt-prod-v2.4.17';
+const VERSION = 'gpt-prod-v2.4.18';
 const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
 const PROFILE = 'engine-gpt-prod';
 const NO_DELIVERY_GATES = new Set([

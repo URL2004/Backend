@@ -124,7 +124,12 @@ function isTableLikeLine(value) {
 }
 
 function isQuoteLine(value) {
-  return /^(?:>|[“"'‘])\s*\S/u.test(visibleTrim(value));
+  const text = visibleTrim(value);
+  if (/^>\s*\S/u.test(text)) return true;
+  // 따옴표로 시작한다는 이유만으로 뒤에 본문이 이어지는 긴 산문 전체를
+  // 인용 블록으로 잠그지 않는다. 독립 인용 행만 구조로 취급하고, 문장
+  // 첫머리의 속담·좌우명은 일반 산문으로 두어 바깥 띄어쓰기를 교정한다.
+  return /^(?:“[^”\n]{1,500}”|‘[^’\n]{1,500}’|"[^"\n]{1,500}"|'[^'\n]{1,500}')$/u.test(text);
 }
 
 function isSentenceComplete(value) {

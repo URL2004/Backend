@@ -3,7 +3,7 @@
 const { splitSentences, levenshteinDistance } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 4;
+const VERSION = 5;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -17,6 +17,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: true,
     message: '문장부호 뒤 띄어쓰기가 빠진 곳이 있어요.'
+  },
+  closed_quote_spacing: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '닫는 따옴표 뒤에 이어지는 본문과 띄어쓰기가 빠졌어요.'
   },
   numeric_parenthesis_join: {
     weight: 3,
@@ -150,6 +156,48 @@ const ISSUE_DEFINITIONS = Object.freeze({
     deterministicSafe: true,
     message: '변환 과정에서 같은 한글 조각이 연달아 붙은 오타가 생겼어요.'
   },
+  reciprocal_expression_redundancy: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: true,
+    message: '“서로 상호작용”처럼 같은 상호 의미가 겹쳐 있어요.'
+  },
+  benefit_help_predicate_redundancy: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“도움을 받을 수 있게 돕다”처럼 도움 의미가 한 문장에 겹쳐 있어요.'
+  },
+  contrast_clause_attachment: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“~하며 ~하기보다”의 비교 대상과 앞 절이 어색하게 연결됐어요.'
+  },
+  quote_terminal_punctuation_review: {
+    weight: 1,
+    repairable: false,
+    deterministicSafe: false,
+    message: '독립된 인용문 끝의 문장부호가 빠졌는지 확인해 주세요.'
+  },
+  future_role_tense_review: {
+    weight: 1,
+    repairable: false,
+    deterministicSafe: false,
+    message: '지원 이후의 역할을 설명하는 문장에서 과거 시제가 쓰였는지 확인해 주세요.'
+  },
+  resume_weakness_mitigation_review: {
+    weight: 1,
+    repairable: false,
+    deterministicSafe: false,
+    message: '약점 보완책이 단순히 마감 시간을 더 확보하는 방식인지 확인해 주세요.'
+  },
+  public_service_employment_term_review: {
+    weight: 1,
+    repairable: false,
+    deterministicSafe: false,
+    message: '지원기관 유형에 따라 “입사 후”와 “임용 후·입직 후” 중 맞는 용어인지 확인해 주세요.'
+  },
   repeated_vague_demonstrative: {
     weight: 1,
     repairable: false,
@@ -165,6 +213,8 @@ const ISSUE_DEFINITIONS = Object.freeze({
 });
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
+const CLOSED_QUOTE_SPACING_RE = /([”’])(?!(?:(?:이)?라(?:고|는|며)|이다|였다|입니다|임(?:을|이|은|도)?|이며|이고|에서|에게|으로|처럼|보다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)(?=$|[\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])/gu;
+const QUOTE_TERMINAL_REVIEW_RE = /[‘“][^’”\n]{2,120}(?<![.!?。！？…])[’”](?!(?:(?:이)?라(?:고|는|며)|이다|였다|입니다|임(?:을|이|은|도)?|이며|이고|에서|에게|으로|처럼|보다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)(?=$|[\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])/gu;
 const REFERENCE_HEADING_RE = /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/iu;
 const APPENDIX_HEADING_RE = /^(?:부록|Appendix)(?:\s+[A-Za-z0-9가-힣.-]+)?$/iu;
 const NEW_UNIT_START_RE = /^(?:그리고|그러나|하지만|또한|따라서|한편|반면|이러한|이번|다음|첫째|둘째|셋째|마지막으로)(?=$|\s)/u;
@@ -281,6 +331,13 @@ function repairContextualSpacing(value, source, context) {
     }
     const protectWholeTitle = guard.title && sourceTitle && normalizeForTitle(workingLine) === normalizeForTitle(sourceTitle);
     if (protectWholeTitle) return line;
+    workingLine = replaceTracked(
+      workingLine,
+      CLOSED_QUOTE_SPACING_RE,
+      (_match, closing) => `${closing} `,
+      'closed_quote_spacing',
+      counts
+    );
     return replaceOutsideProtectedRanges(workingLine, segment => {
       let out = segment;
       out = replaceTracked(out, /([.!?。！？])(?=[가-힣])/gu, (_match, mark) => `${mark} `, 'missing_sentence_space', counts);
@@ -540,6 +597,7 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   const text = String(value || '').replace(/\r\n?/gu, '\n');
   const issues = [];
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
+  pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SPACING_RE);
   pushNumericParenthesisIssue(issues, text);
   pushPatternIssue(issues, text, 'deep_understanding_collocation', /깊게\s+이해(?:하|했|되|할|하려|하고|하며|해서|해)/gu);
   pushPatternIssue(issues, text, 'practice_class_spacing', /실습수업/gu);
@@ -557,6 +615,9 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'dialogue_give_collocation', sentence => /대화(?:를)?\s*(?:건네|건넸|건넨|건넬)/u.test(sentence));
   pushSentenceIssue(issues, text, 'sampling_subject_mismatch', sentence => /(?:시|자료|문헌|표본|사례)(?:은|는)\s*(?:기준[^.!?。！？\n]{0,70})?목적\s*표집(?:하|했|해)/u.test(sentence));
   pushSentenceIssue(issues, text, 'tool_personification', sentence => /(?:플랫폼|시스템|도구|프로그램|모형)(?:이|가)[^.!?。！？\n]{0,70}(?:연결|제공|분석|정리|보여|알려)해\s*주/u.test(sentence));
+  pushSentenceIssue(issues, text, 'reciprocal_expression_redundancy', sentence => /서로\s+상호(?=(?:작용|교류|소통|협력|의존|영향))/u.test(stripProtectedQuotedText(sentence)));
+  pushSentenceIssue(issues, text, 'benefit_help_predicate_redundancy', hasBenefitHelpPredicateRedundancy);
+  pushSentenceIssue(issues, text, 'contrast_clause_attachment', hasContrastClauseAttachment);
   if (isFormalRegisterTarget(targetRegister, profile)) {
     pushFormalRegisterResidual(issues, text, { profile, targetRegister });
   }
@@ -567,6 +628,14 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushRepeatedVagueDemonstrative(issues, text);
   if (includeSourceNotation) {
     pushPatternIssue(issues, text, 'list_marker_spacing', /^(?:[-*•▪◦]|\d+[.)])(?=\S)/gmu);
+    pushPatternIssue(issues, text, 'quote_terminal_punctuation_review', QUOTE_TERMINAL_REVIEW_RE);
+    pushSentenceIssue(issues, text, 'future_role_tense_review', hasFutureRoleTenseReview);
+    if (profile === 'resume_application') {
+      pushPatternIssue(issues, text, 'resume_weakness_mitigation_review', /마감\s*기한(?:을|은)?\s*여유\s*있게\s*잡/gu);
+      if (/(?:공직|공무원|공공\s*부문)/u.test(text)) {
+        pushPatternIssue(issues, text, 'public_service_employment_term_review', /입사\s*후/gu);
+      }
+    }
   }
   return mergeSameCode(issues).map(item => ({ ...item, profile }));
 }
@@ -580,7 +649,13 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   for (let index = 0; index < duplicationRepair.repairCount; index += 1) {
     changes.push('introduced_token_duplication');
   }
+  const reciprocalRepair = repairReciprocalExpressionRedundancy(text);
+  text = reciprocalRepair.text;
+  for (let index = 0; index < reciprocalRepair.repairCount; index += 1) {
+    changes.push('reciprocal_expression_redundancy');
+  }
   text = replaceAndCount(text, /([.!?。！？])(?=[가-힣])/gu, '$1 ', 'missing_sentence_space', changes);
+  text = replaceAndCount(text, CLOSED_QUOTE_SPACING_RE, '$1 ', 'closed_quote_spacing', changes);
   text = replaceAndCount(text, /실습수업/gu, '실습 수업', 'practice_class_spacing', changes);
   text = text.replace(/(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
     if (PARTICLE_AFTER_PAREN.test(right)) return match;
@@ -829,6 +904,32 @@ function hasPurposeModifierCollocation(sentence) {
     .test(String(sentence || ''));
 }
 
+function hasBenefitHelpPredicateRedundancy(sentence) {
+  return /(?:도움|지원)(?:을|를)\s+(?:받을|얻을)\s+수\s+(?:있도록|있게)[^.!?。！？\n]{0,24}(?:돕|지원하)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function hasContrastClauseAttachment(sentence) {
+  return /(?:하며|기며|하면서)[^.!?。！？\n]{1,70}(?:서두르기보다|앞세우기보다)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function hasFutureRoleTenseReview(sentence) {
+  return /(?:이런|이러한|앞선)\s+경험(?:들)?(?:은|이)[^.!?。！？\n]{0,45}(?:공직|직무|입사\s*후|임용\s*후)에서\s+마주한[^.!?。！？\n]{0,90}(?:밑거름|기반|도움)(?:이|으로)?\s*될/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function repairReciprocalExpressionRedundancy(value) {
+  let repairCount = 0;
+  const text = String(value || '').split('\n').map(line => replaceOutsideProtectedRanges(line, segment => (
+    segment.replace(/서로\s+상호(?=(?:작용|교류|소통|협력|의존|영향))/gu, () => {
+      repairCount += 1;
+      return '상호';
+    })
+  ))).join('\n');
+  return { text, repairCount };
+}
+
 const FORMAL_REGISTER_RULES = Object.freeze([
   {
     family: 'operational_slang',
@@ -868,6 +969,11 @@ const FORMAL_REGISTER_RULES = Object.freeze([
     test: (value, _fullText, context) => ['academic_paper', 'report_assignment', 'student_record_teacher']
       .includes(String(context?.profile || ''))
       && /^\s*그래서(?:는|도)?(?:\s|,)/u.test(value)
+  },
+  {
+    family: 'resume_ornamental_closing',
+    test: (value, _fullText, context) => String(context?.profile || '') === 'resume_application'
+      && /(?:곁을\s*지키는\s*디딤돌|든든한\s*동행자|따뜻한\s*조력자|성장의\s*시간|소중한\s*기회)/u.test(value)
   }
 ]);
 
@@ -951,6 +1057,12 @@ function removeOneIntroducedRepeatedUnit(token, sourceText, sourceTokens) {
     for (let index = 0; index + unitLength * 2 <= token.length; index += 1) {
       const unit = token.slice(index, index + unitLength);
       if (unit !== token.slice(index + unitLength, index + unitLength * 2)) continue;
+      // 전문가가·국가가처럼 명사 자체가 '가'로 끝난 뒤 주격 조사가 붙은
+      // 정상 형태를 가가 중복 오타로 줄이지 않는다. '의의'도 같은 방식의
+      // 정상 어휘/조사 결합일 수 있어 한 글자 접미 반복에서는 보호한다.
+      if (unitLength === 1
+          && index + unitLength * 2 === token.length
+          && ['가', '의'].includes(unit)) continue;
       const candidate = token.slice(0, index) + token.slice(index + unitLength);
       if (candidate.length < 2) continue;
       if (sourceTokens.has(candidate) || sourceText.includes(candidate)) return candidate;

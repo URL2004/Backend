@@ -57,7 +57,7 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
     },
     paragraph: distribution(paragraphLengths),
     endings,
-    directQuoteCount: (text.match(/[“"][^”"\n]{2,}[”"]/gu) || []).length,
+    directQuoteCount: directQuoteContents(text).length,
     listItemCount: (text.match(/^\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+[.)]|[가-힣][.)]|[①-⑳])\s+.+$/gmu) || []).length,
     headingCount: (text.match(/^\s*(?:(?:제\s*\d+\s*(?:장|절|항))(?:\s+\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*\S.*|\d+(?:\.\d+){0,3}[.)]?\s+\S.*|(?:서론|본론|결론|초록|요약|참고\s*문헌|부록))\s*$/gmu) || []).length,
     questionnaireQuestionCount: countQuestionnaireQuestions(text),
@@ -517,10 +517,11 @@ function restoreDirectQuoteContents(source, output) {
   }
   const sourceQuotes = directQuoteContents(source);
   let quoteIndex = 0;
-  const text = before.replace(/([“"])([^”"\n]{2,})([”"])/gu, (_match, opening, content, closing) => {
+  const text = before.replace(/“([^”\n]{2,})”|‘([^’\n]{2,})’|"([^"\n]{2,})"/gu, (match, doubleCurly, singleCurly, asciiDouble) => {
+    const content = doubleCurly ?? singleCurly ?? asciiDouble ?? '';
     const sourceContent = sourceQuotes[quoteIndex] ?? content;
     quoteIndex += 1;
-    return `${opening}${sourceContent}${closing}`;
+    return `${match[0]}${sourceContent}${match.at(-1)}`;
   });
   const auditAfter = auditDirectQuoteIntegrity(source, text);
   return {
@@ -535,7 +536,9 @@ function restoreDirectQuoteContents(source, output) {
 
 function directQuoteContents(value) {
   const contents = [];
-  for (const match of String(value || '').matchAll(/[“"]([^”"\n]{2,})[”"]/gu)) contents.push(match[1]);
+  for (const match of String(value || '').matchAll(/“([^”\n]{2,})”|‘([^’\n]{2,})’|"([^"\n]{2,})"/gu)) {
+    contents.push(match[1] ?? match[2] ?? match[3] ?? '');
+  }
   return contents;
 }
 

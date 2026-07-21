@@ -38,6 +38,8 @@ test('고급 시간은 실제 편집 청크 기반의 5분 단위 범위로 계�
   assert.equal(estimate.version, 2);
   assert.equal(estimate.basis, BASIS);
   assert.ok(estimate.editableChunkCount > 1);
+  assert.equal(estimate.chunkConcurrency, 2);
+  assert.equal(estimate.chunkWaveCount, Math.ceil(estimate.editableChunkCount / 2));
   assert.ok(estimate.totalChunkCount >= estimate.editableChunkCount);
   assert.ok(estimate.editableBareLength <= estimate.sourceBareLength);
   assert.ok(estimate.lowSec >= 300);

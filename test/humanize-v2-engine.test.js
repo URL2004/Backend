@@ -991,6 +991,22 @@ test('일반 청크 worker pool은 동시성 2에서도 결과 순서를 보존�
   assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 2);
 });
 
+test('검증 완료 후 일반 청크 기본 동시성은 2이며 환경변수로 1까지 낮출 수 있다', { concurrency: false }, t => {
+  const previous = process.env.HUMANIZE_CHUNK_CONCURRENCY;
+  t.after(() => {
+    if (previous === undefined) delete process.env.HUMANIZE_CHUNK_CONCURRENCY;
+    else process.env.HUMANIZE_CHUNK_CONCURRENCY = previous;
+  });
+  delete process.env.HUMANIZE_CHUNK_CONCURRENCY;
+  assert.equal(engine.configuredChunkConcurrency(), 2);
+  process.env.HUMANIZE_CHUNK_CONCURRENCY = '1';
+  assert.equal(engine.configuredChunkConcurrency(), 1);
+  process.env.HUMANIZE_CHUNK_CONCURRENCY = '9';
+  assert.equal(engine.configuredChunkConcurrency(), 3);
+  process.env.HUMANIZE_CHUNK_CONCURRENCY = 'invalid';
+  assert.equal(engine.configuredChunkConcurrency(), 2);
+});
+
 test('장문 섹션 심사도 문서 전체 수리는 최대 1회만 수행한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t, { semanticViolation: true, multipleLedgerClaims: true });
   const source = '원문의 핵심 주장과 근거를 보존해야 합니다. '.repeat(650);

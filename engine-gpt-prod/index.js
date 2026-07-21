@@ -3619,8 +3619,10 @@ function summarizeChunkExecution(records, semanticReport, {
 }
 
 function configuredChunkConcurrency() {
-  const value = Number(process.env.HUMANIZE_CHUNK_CONCURRENCY || 1);
-  return Math.max(1, Math.min(3, Number.isFinite(value) ? Math.floor(value) : 1));
+  // v2.5 운영 무차감 실호출 검증을 마친 기본값. 환경변수로 1까지 즉시
+  // 낮출 수 있으며, 잘못된 값도 검증된 기본 동시성 2로 복귀한다.
+  const value = Number(process.env.HUMANIZE_CHUNK_CONCURRENCY || 2);
+  return Math.max(1, Math.min(3, Number.isFinite(value) ? Math.floor(value) : 2));
 }
 
 async function mapWithConcurrency(items, concurrency, worker, signal) {

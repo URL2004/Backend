@@ -39,7 +39,7 @@ function estimateAdvancedTime(source, {
   const editableChunks = plan.chunks.filter(chunk => shouldCallModel(chunk, 'assignment'));
   const editableBareLength = editableChunks.reduce((total, chunk) => total + bareLength(chunk.text), 0);
   const editableKilochars = Math.ceil(editableBareLength / 1000);
-  const chunkConcurrency = Math.max(1, Math.min(3, Number(process.env.HUMANIZE_CHUNK_CONCURRENCY || 1) || 1));
+  const chunkConcurrency = Math.max(1, Math.min(3, Number(process.env.HUMANIZE_CHUNK_CONCURRENCY || 2) || 2));
   const chunkWaveCount = Math.ceil(editableChunks.length / chunkConcurrency);
   const recoveryWaveCount = sourceBareLength >= 2000
     ? Math.ceil(Math.min(8, editableChunks.length) / 3)

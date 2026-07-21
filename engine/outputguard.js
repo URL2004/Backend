@@ -57,12 +57,12 @@ function stripEnglishArtifacts(text) {
 }
 
 // ── ③ register(말투) 감지 — 문장별 종결로 합니다체/해요체/한다체 분류. hap→haeyo→handa 순서로 검사 ──
+const { detectRegister: detectContractRegister } = require('./contract');
 function endRegister(sent) {
-  let s = (sent || '').trim().replace(/["'”’)\]]+$/, '').replace(/[.!?…~]+$/, '').trim();
-  if (!s) return 'other';
-  if (/(니다|세요|십시오|십시요)$/.test(s)) return 'hap';   // 합니다/습니다/입니다/됩니다/갑니다 = 모두 '니다' 종결(자모 ㅂ니다는 합성음절 미매칭이라 '니다'로)
-  if (/(어요|아요|에요|예요|이에요|거든요|더라고요|네요|군요|을게요|ㄹ게요|죠|지요|잖아요|는데요|는걸요|나요|까요|구요)$/.test(s)) return 'haeyo';
-  if (/(다|냐|까|자|라|마|군|네|걸)$/.test(s)) return 'handa';   // 평어(한다체) — hap/haeyo가 먼저 걸러진 뒤의 '~다' 종결
+  const register = detectContractRegister(sent);
+  if (register === 'polite') return 'hap';
+  if (register === 'haeyo') return 'haeyo';
+  if (register === 'plain') return 'handa';
   return 'other';
 }
 function detectRegister(text) {

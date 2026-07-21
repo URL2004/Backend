@@ -4,7 +4,10 @@ const { DEFAULT_THRESHOLDS } = require('./patterns');
 
 function buildPromptHints(analysis, opts = {}) {
   const max = Math.max(1, Math.min(12, Number(opts.max || DEFAULT_THRESHOLDS.promptHintsMax) || DEFAULT_THRESHOLDS.promptHintsMax));
-  const patterns = Array.isArray(analysis?.topPatterns) ? analysis.topPatterns.slice(0, max) : [];
+  const profile = String(opts.documentProfile?.profile || opts.documentProfile || 'unknown');
+  const patterns = (Array.isArray(analysis?.topPatterns) ? analysis.topPatterns : [])
+    .filter(pattern => isPatternAllowedForProfile(pattern, profile))
+    .slice(0, max);
   if (!patterns.length) return '';
   const lines = [
     '[한국어 품질 힌트]',
@@ -15,9 +18,26 @@ function buildPromptHints(analysis, opts = {}) {
     const sample = Array.isArray(pattern.samples) && pattern.samples.length
       ? ` 예: ${pattern.samples.slice(0, 2).join(', ')}`
       : '';
-    lines.push(`- ${pattern.label}(${pattern.severity}, ${pattern.count}회): ${pattern.advice}${sample}`);
+    lines.push(`- ${pattern.label}(${pattern.severity}, ${pattern.count}회): ${profileAdvice(pattern, profile)}${sample}`);
   }
   return lines.join('\n');
+}
+
+function isPatternAllowedForProfile(pattern, profile) {
+  if (profile === 'legal_contract' && ['can_formula', 'three_part_list', 'abstract_modifier'].includes(pattern?.id)) return false;
+  if (['academic_paper', 'report_assignment'].includes(profile)
+      && ['three_part_list'].includes(pattern?.id)) return false;
+  return true;
+}
+
+function profileAdvice(pattern, profile) {
+  if (pattern?.id === 'abstract_modifier' && ['academic_paper', 'report_assignment'].includes(profile)) {
+    return '체계적 문헌고찰 등 정착된 전문 용어는 보존하고, 실제 기능 없이 반복되는 평가 수식어만 줄인다.';
+  }
+  if (pattern?.id === 'can_formula' && profile === 'legal_contract') {
+    return '권리·허용·가능성을 나타내는 표현이므로 원문 그대로 보존한다.';
+  }
+  return pattern?.advice || '';
 }
 
 function compactForLog(analysis, max = 8) {

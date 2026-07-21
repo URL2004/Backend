@@ -11,7 +11,8 @@
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
-const analyze = require('./analyze');   // 과금 헬퍼 재사용(차감 공식 단일 출처)
+const usageBilling = require('../lib/usageBilling');
+const historyService = require('../lib/historyService');
 const { db, verifyToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken 추출 단일 출처(헤더 우선·폴백 deprecated)
@@ -21,19 +22,14 @@ const discord = require('../lib/discord');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const layoutNormalizer = require('../engine/layout');
-const { CONTENT_GENRES, detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
+const { CONTENT_GENRES, detectDocumentProfile, applyDocumentProfileOverride } = require('../engine-gpt-prod/documentProfile');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
+const structureChunk = require('../engine-gpt-prod/structureChunk');
+const { shouldCallModel } = require('../engine-gpt-prod/chunkPolicy');
 const humanizationDepth = require('../engine-gpt-prod/humanizationDepth');
 const surfaceguard = require('../engine/surfaceguard');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
-
-function claudeGenreTransferV2() {
-  return require('../engine/genretransfer').genreTransferV2;
-}
-
-function claudeSuggestEvidence() {
-  return require('../engine/evidence').suggestEvidence;
-}
+const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
@@ -78,13 +74,22 @@ async function activeGptConfig() {
   return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
 }
 
-function humanizeV2Enabled() {
-  return String(process.env.HUMANIZE_ENGINE_V2_ENABLED || '').trim() === '1';
+function technicalProviderError() {
+  const error = new Error('OpenAI 운영 설정을 찾을 수 없습니다.');
+  error.code = 'GPT_PROVIDER_UNAVAILABLE';
+  error.technical = true;
+  return error;
+}
+
+function loadAdminHumanizeEngines() {
+  // Keep the labs boundary out of the server startup and ordinary transform
+  // import graph. This function is reached only for a verified admin lab job.
+  const modulePath = ['..', 'labs', 'adminHumanizeEngines'].join('/');
+  return require(modulePath);
 }
 
 function effectConfirmationEnabled() {
-  return humanizeV2Enabled()
-    && isV248FeatureEnabled('effectConfirmation');
+  return isV248FeatureEnabled('effectConfirmation');
 }
 
 function assessEffectExpectation(text, mode, basicStyle = '') {
@@ -116,18 +121,6 @@ function safeAdvancedTimeEstimate(text, options) {
   }
 }
 
-const NO_DELIVERY_GATES = new Set(['gpt_all_chunks_fallback', 'gpt_noop_unchanged', 'noop_unchanged']);
-const STRICT_DELIVERY_GATES = new Set([
-  ...NO_DELIVERY_GATES,
-  'empty_or_meta_output',
-  'prompt_instruction_leak',
-  'encoding_corruption',
-  'sentence_truncated',
-  'refusal',
-  'polish_unchanged',
-  'humanization_depth_no_effect'
-]);
-
 function softenBlockedFloorReport(out, logName, meta = {}) {
   if (!out || !out.floorReport || out.floorReport.status !== 'blocked') return false;
   if (process.env.STRICT_QUALITY_GATE === '1') return false;
@@ -148,9 +141,24 @@ function softenBlockedFloorReport(out, logName, meta = {}) {
 }
 
 function isStrictDeliveryCritical(c) {
-  const gate = String(c?.gate || c?.type || '').trim();
-  if (STRICT_DELIVERY_GATES.has(gate)) return true;
-  return /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated|refusal|polish_unchanged/i.test(gate);
+  return deliveryPolicy.isTechnicalCritical(c, { mode: c?.mode || '' });
+}
+
+function assessEditableContent(text, { mode = 'formal', basicStyle = '', documentProfileOverride = '' } = {}) {
+  const source = String(text || '');
+  const detected = detectDocumentProfile(source, { basicStyle });
+  const profile = applyDocumentProfileOverride(detected, documentProfileOverride);
+  const engineMode = mode === 'polish' ? 'polish' : (mode === 'blog' ? 'blog' : 'assignment');
+  const plan = structureChunk.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    formatProfile: profile.formatProfile
+  });
+  const editableChunkCount = plan.chunks.filter(chunk => shouldCallModel(chunk, engineMode)).length;
+  return {
+    documentProfile: profile.profile || 'unknown',
+    editableChunkCount,
+    totalChunkCount: plan.chunks.length
+  };
 }
 
 function hasStrictDeliveryGate(gates) {
@@ -324,10 +332,10 @@ async function commitJobBilling(job, {
   if (!job || job.devNoAuth) return false;
   const requestId = 'job_' + job.id;
   if (job.billingMode === 'coupon') {
-    if (typeof analyze.commitCouponUsage !== 'function' || !job.billingTier) {
+    if (!job.billingTier) {
       throw new Error('coupon_billing_unavailable');
     }
-    await analyze.retryAsync(() => analyze.commitCouponUsage(
+    await usageBilling.retryAsync(() => usageBilling.commitCouponUsage(
       job.uid,
       job.billingTier,
       mode,
@@ -338,7 +346,7 @@ async function commitJobBilling(job, {
     return true;
   }
   if (job.plan === 'unlimited') return false;
-  await analyze.retryAsync(() => analyze.commitCreditDeduct(
+  await usageBilling.retryAsync(() => usageBilling.commitCreditDeduct(
     job.uid,
     creditAmount,
     operation,
@@ -385,13 +393,13 @@ router.assessEffectExpectation = assessEffectExpectation;
 async function precheckExistingJobBilling(job, idToken, creditAmount, textLength = (job?.text || '').length) {
   if (!job || job.devNoAuth) return null;
   if (job.billingMode === 'coupon') {
-    const checked = await analyze.precheckCoupon(idToken, textLength);
+    const checked = await usageBilling.precheckCoupon(idToken, textLength);
     if (checked.uid !== job.uid) throw Object.assign(new Error('AUTH_INVALID'), { status: 401 });
     job.billingTier = checked.tier;
     return checked;
   }
   if (job.plan === 'unlimited') return { uid: job.uid, plan: 'unlimited' };
-  return analyze.precheckCredits(idToken, creditAmount);
+  return usageBilling.precheckCredits(idToken, creditAmount);
 }
 router.precheckExistingJobBilling = precheckExistingJobBilling;   // 회귀 테스트용
 
@@ -761,6 +769,8 @@ function buildArchiveObservability(job) {
   return pruneUndefinedForFirestore({
     gates: gateCodes,
     qualityStatus: archiveString(result.qualityStatus, 32),
+    effectStatus: archiveString(result.effectStatus || engineMeta.effectStatus, 32),
+    effectNoticeCodes: uniqueStrictArchiveCodes((result.effectNotices || []).map(item => item?.code)),
     billingDisposition: archiveString(result.billingDisposition || job?.billingDisposition || engineMeta.billingDisposition, 48),
     qualityWarningCodes: warningCodes,
     preservationFallback: result.preservationFallback === true,
@@ -788,6 +798,15 @@ function buildArchiveObservability(job) {
     discourseSignalCount: archiveFinite(engineMeta.discourseSignalCount),
     discourseRepairRan: engineMeta.discourseRepairRan === true,
     repairCount: archiveFinite(engineMeta.repairCount),
+    deliveryDecision: archiveString(engineMeta.deliveryDecision, 32),
+    deliveryReasonCodes: uniqueStrictArchiveCodes(engineMeta.deliveryReasonCodes),
+    editableChunkCount: archiveFinite(engineMeta.editableChunkCount),
+    approvedModelChunkCount: archiveFinite(engineMeta.approvedModelChunkCount),
+    modelFailureChunkCount: archiveFinite(engineMeta.modelFailureChunkCount),
+    retryCounts: compactArchiveCodeCountMap(engineMeta.retryCounts),
+    chunkConcurrency: archiveFinite(engineMeta.chunkConcurrency),
+    structureSignaturePass: typeof engineMeta.structureSignaturePass === 'boolean' ? engineMeta.structureSignaturePass : undefined,
+    sectionPathErrorCount: archiveFinite(engineMeta.sectionPathErrorCount),
     modelCallCount: archiveFinite(engineMeta.modelCallCount),
     humanizeCallCount: archiveFinite(engineMeta.humanizeCallCount),
     surfaceRetryCallCount: archiveFinite(engineMeta.surfaceRetryCallCount),
@@ -1079,8 +1098,8 @@ if (queueDrainInterval.unref) queueDrainInterval.unref();
 //   완료 화면을 못 봐도 결과를 복원할 수 있다. 멱등키 job_<id>(재시작·중복 호출에도 1건).
 //   fire-and-forget — 결과는 이미 transformJobs에 있으므로 저장 실패가 job을 죽이면 안 된다.
 function saveJobHistory(job, text, outputText) {
-  if (!db || job.devNoAuth || typeof analyze.saveAnalyzeHistory !== 'function') return;
-  analyze.saveAnalyzeHistory({
+  if (!db || job.devNoAuth) return;
+  historyService.saveAnalyzeHistory({
     uid: job.uid,
     requestId: 'job_' + job.id,
     opType: 'humanize',
@@ -1198,17 +1217,19 @@ async function runSearchPhase(job, text) {
     job.status = 'running';
     job.stage = '근거 검색';
     const gptCfg = await activeGptConfig();
-    const ev = gptCfg
-      ? await gptAnalyze.suggestEvidence({ query: text, signal: job.ac.signal, config: gptCfg, uid: humanizeV2Enabled() ? job.uid : '' })
-      : await claudeSuggestEvidence()(text, { maxSegments: Number(process.env.EVIDENCE_MAX_SEGMENTS) || 6, signal: job.ac.signal });
-    const candidates = gptCfg
-      ? (ev.candidates || []).map(c => ({
-          fact: c.reason || c.title,
-          sourceTitle: c.title || c.publisher || hostOf(c.url),
-          sourceUrl: c.url,
-          publisher: c.publisher
-        }))
-      : (ev.candidates || []);
+    if (!gptCfg) throw technicalProviderError();
+    const ev = await gptAnalyze.suggestEvidence({
+      query: text,
+      signal: job.ac.signal,
+      config: gptCfg,
+      uid: job.uid
+    });
+    const candidates = (ev.candidates || []).map(c => ({
+      fact: c.reason || c.title,
+      sourceTitle: c.title || c.publisher || hostOf(c.url),
+      sourceUrl: c.url,
+      publisher: c.publisher
+    }));
     const reviewed = reviewCandidates(candidates);
     if (!reviewed.length) {
       logger.warn('transform.evidence_empty', { jobId: job.id, uid: job.uid });
@@ -1299,8 +1320,8 @@ async function tryBlogPreservationFallback(job, text) {
     persistJob(job);
 
     const gptCfg = await activeGptConfig();
-    const out = gptCfg
-      ? await gptAnalyze.runHumanizeChunked({
+    if (!gptCfg) throw technicalProviderError();
+    const out = await gptAnalyze.runHumanizeChunked({
           text,
           mode: 'polish',
           lang: job.lang || 'ko',
@@ -1309,12 +1330,8 @@ async function tryBlogPreservationFallback(job, text) {
           config: gptCfg,
           styleProfile: 'production_blog_preservation_fallback',
           documentProfileOverride: job.documentProfileOverride || '',
-          allowPolish: humanizeV2Enabled(),
-          uid: humanizeV2Enabled() ? job.uid : ''
-        })
-      : await analyze.runHumanizeChunked({
-          text, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
-          floorV2: true, optIn: false, judge: false, grounding: false, userNotes: job.memo || '', tonePolish: true   // ★경험 메모 보존형에도 적용(2026-06-17)
+          allowPolish: true,
+          uid: job.uid
         });
     const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
     const fbHardHit = fbCriticals.filter(g => isStrictDeliveryCritical({ gate: g }));
@@ -1341,21 +1358,28 @@ async function tryBlogPreservationFallback(job, text) {
     }
 
     const fbNeeded = preservationFallbackCredit(text.length);
-    try {
-      await commitJobBilling(job, {
-        creditAmount: fbNeeded,
-        operation: 'humanize',
-        mode: 'polish',
-        textLength: text.length,
-        meta: { fallback: true, fromMode: 'blog' }
-      });
-    } catch (e) {
-      logger.error('transform.blog_fallback_billing_failed_manual_action', {
-        jobId: job.id, uid: job.uid, needed: fbNeeded, billingMode: job.billingMode, opType: 'humanize', err: e
-      });
-    }
     job.needed = job.billingMode === 'coupon' ? 1 : fbNeeded;
+    job.billingDisposition = classifyBillingDisposition({
+      adminNoCharge: job.devNoAuth === true || job.adminHumanizeLab === true,
+      plan: job.plan
+    });
+    if (job.billingDisposition === 'charged') {
+      try {
+        await commitJobBilling(job, {
+          creditAmount: fbNeeded,
+          operation: 'humanize',
+          mode: 'polish',
+          textLength: text.length,
+          meta: { fallback: true, fromMode: 'blog' }
+        });
+      } catch (e) {
+        logger.error('transform.blog_fallback_billing_failed_manual_action', {
+          jobId: job.id, uid: job.uid, needed: fbNeeded, billingMode: job.billingMode, opType: 'humanize', err: e
+        });
+      }
+    }
     const fallbackEngineMeta = buildPreservationFallbackMeta(out, job);
+    fallbackEngineMeta.billingDisposition = job.billingDisposition;
     job.engineMeta = fallbackEngineMeta;
     job.status = 'done';
     job.result = {
@@ -1363,6 +1387,9 @@ async function tryBlogPreservationFallback(job, text) {
       preservationFallback: true,
       qualityStatus: out.qualityStatus || out.result?.qualityStatus || out.floorReport?.status || 'clean',
       qualityWarnings: out.qualityWarnings || out.result?.qualityWarnings || [],
+      effectStatus: out.effectStatus || out.result?.effectStatus || 'normal',
+      effectNotices: out.effectNotices || out.result?.effectNotices || [],
+      billingDisposition: job.billingDisposition,
       sourceReviewWarnings: out.sourceReviewWarnings || out.result?.sourceReviewWarnings || [],
       engineMeta: fallbackEngineMeta,
       humanizeMeta: out.result?.humanizeMeta || null,
@@ -1429,13 +1456,12 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
 
     const runtimeCfg = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
     const activeGpt = gptRuntimeConfig.isGptActive(runtimeCfg) ? runtimeCfg : null;
+    if (!activeGpt) throw technicalProviderError();
     const gptTestCfg = job.gptModel
       ? { ...runtimeCfg, models: { ...(runtimeCfg.models || {}), humanizePrimary: job.gptModel } }
       : runtimeCfg;
-    const labCall = activeGpt
-      ? (opts) => gptAnalyze.callGpt({ ...opts, config: activeGpt })
-      : analyze.callClaude;
-    const labExtract = activeGpt ? gptAnalyze.extractGptResult : analyze.extractClaudeResult;
+    const labCall = opts => gptAnalyze.callGpt({ ...opts, config: activeGpt });
+    const labExtract = gptAnalyze.extractGptResult;
     let baselineOut = null;
 
     const out = isQualityPatternLab
@@ -1467,7 +1493,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
         setBaseline: out => { baselineOut = out; }
       })
       : (isFundamental || isV6)
-      ? await require(isV6 ? '../engine/humanizeV6TestEngine' : '../engine/humanizeLabTestEngine').run({
+      ? await loadAdminHumanizeEngines().run(profile, {
         text,
         mode: isV6 ? (job.mode || engineMode) : engineMode,
         lang: job.lang || 'ko',
@@ -1477,8 +1503,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
         callClaude: labCall,
         extractClaudeResult: labExtract
       })
-      : activeGpt
-      ? await runAdminGptLabWithOptionalNiklCompare({
+      : await runAdminGptLabWithOptionalNiklCompare({
         job,
         text,
         mode: engineMode,
@@ -1488,11 +1513,6 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
         styleProfile: profile,
         label: profile,
         setBaseline: out => { baselineOut = out; }
-      })
-      : await analyze.runHumanizeChunked({
-        text, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
-        floorV2: true, optIn: false, judge: false, grounding: false,
-        userNotes: job.memo || '', evidence: evidence || '', tonePolish, styleProfile: profile
       });
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
@@ -1604,8 +1624,8 @@ async function runAdminGptLabWithOptionalNiklCompare({
     layoutNlp: layoutNlpTest ? false : null,
     config,
     documentProfileOverride: job.documentProfileOverride || '',
-    allowPolish: humanizeV2Enabled() && mode === 'polish',
-    uid: humanizeV2Enabled() ? job.uid : ''
+    allowPolish: mode === 'polish',
+    uid: job.uid
   };
   const baseProfile = baselineStyleProfile || styleProfile;
   const onProfile = testStyleProfile || styleProfile;
@@ -1851,9 +1871,14 @@ async function runJob(job, text, evidence) {
   try {
     job.status = 'running';
     job.stage = '재구성';
-    persistJob(job);   // 승인 재개(awaiting→running) 전이 포함
+    persistJob(job);
 
-    if (isAdminHumanizeLabJob(job) && (job.mode !== 'formal' || isFundamentalEngineJob(job) || isV6EngineJob(job) || isGptEngineJob(job) || isKoQualityPatternLabJob(job))) {
+    if (isAdminHumanizeLabJob(job)
+        && (job.mode !== 'formal'
+          || isFundamentalEngineJob(job)
+          || isV6EngineJob(job)
+          || isGptEngineJob(job)
+          || isKoQualityPatternLabJob(job))) {
       return await runAdminHumanizeLabJob(job, text, evidence);
     }
     if (isAdminHumanizeLabJob(job)) {
@@ -1869,369 +1894,34 @@ async function runJob(job, text, evidence) {
       });
     }
 
-    // v2는 요청 모드와 원문 프로필을 한 엔진에서 분리 판정한다. formal도 동일 파이프라인으로 보낸다.
-    if (humanizeV2Enabled()) {
-      return await runHumanizeJob(job, text, evidence || '');
-    }
-
-    // ★ 재구성 부적합 사전 차단(2026-06-16, API 낭비 0): 자소서·생기부·탐구문이나 짧고 추상적인 글은
-    //   재구성에 넣으면 LLM이 원문에 없는 사실·평가를 지어내(added_claim) 거의 확정 차단된다. ledger·슬롯·
-    //   judge로 수십 번 호출을 태우기 '전에' 결정론으로 걸러 보존형으로 유도한다. 사유를 명확히 노출(무차감).
-    {
-      let ir = {};
-      try { ir = require('../engine/surfaceguard').classifyInputRisk(text); } catch { /* 진단 실패해도 차단 판정은 진행 */ }
-      const ru = inputrouting.restructureUnfit(text, ir);
-      if (ru.unfit) {
-        logger.warn('transform.restructure_unfit_preblock', { jobId: job.id, uid: job.uid, kind: ru.kind, textLength: (text || '').length });
-        job.status = 'blocked';
-        job.gates = ['restructure_unfit'];
-        job.stage = blockedStage(job.gates);
-        job.gateDetail = { kind: ru.kind };
-        job.note = ru.reason;
-        job.blockOffer = buildBlockOffer(job, text);
+    // v2.5 has one production engine. Rollback restores the previous live
+    // deployment; no legacy or secondary-provider route remains here.
+    return await runHumanizeJob(job, text, evidence || '');
+  } catch (error) {
+    if (job.ac.signal.aborted) {
+      if (job.status !== 'error') {
+        job.status = 'cancelled';
+        job.stage = '중단됨';
         persistJob(job);
-        return;   // genreTransferV2 호출 안 함 → 생성 API 0
       }
+      return;
     }
-    // ★ 자동 코칭(2026-06-18): 사용자가 메모를 직접 안 쓰는 채택 문제 → '자동 코칭' ON이면 시작 시 1회 글에서
-    //   입장(관점)을 도출해 userNotes(job.memo)에 자동 합류. 입장은 글 자체 논리의 1인칭화라 무날조(경험은
-    //   자동 적용 안 함 — 안 겪은 경험 자동 주입은 날조). 효과: 비인칭·무견해 신호를 사용자 시각으로 덮어
-    //   탐지율 '인하 확률↑'(확정 아님 — 추상글 변동 큼). 부적합 차단 '뒤'에 둬 차단될 글엔 호출 0.
-    if (job.autoCoach) {
-      try {
-        const { generateCoach } = require('../lib/coachsuggest');
-        const coach = await generateCoach(text, { signal: job.ac.signal });
-        const stanceLines = (coach.stances || []).map(s => s.text).filter(Boolean);
-        if (stanceLines.length) {
-          job.memo = [job.memo, ...stanceLines].filter(Boolean).join('\n').slice(0, 2000);
-          job.autoCoachApplied = stanceLines.length;
-          persistJob(job);
-          logger.info('transform.auto_coach_applied', { jobId: job.id, uid: job.uid, stances: stanceLines.length });
-        }
-      } catch (e) { logger.warn('transform.auto_coach_failed', { jobId: job.id, err: e && e.message }); }
-    }
-    // ★ 장문 논문 라우팅(2026-06-16 실측 zoz040224: 26,934자 논문이 단일패스 재구성에서 요약 collapse 29%·8%로 차단).
-    //   단일 genreTransferV2 대신 '청크 기반 격식 회피'로 보낸다 — 우회(피하기)는 유지하되 문단별이라 접힘이 없다.
-    if (inputrouting.isLongStructuredThesis(text) || inputrouting.isAcademicCited(text) || inputrouting.isFootnoteCited(text)) {
-      return await runLongThesisChunked(job, text, evidence);
-    }
-    // ★ 과제 보고서 구조 보존(2026-07-02): Ⅰ.서론/Ⅱ.본론/Ⅲ.결론 같은 짧은 과제 보고서는 통계가 적으면
-    //   isStructuredReport에 안 걸려 단일 genreTransferV2로 들어가고, 그 결과 칼럼형 문체로 바뀐다.
-    //   명시적 보고서 섹션 구조는 내용보다 형식이 과제 완성도에 중요하므로 문단별 구조보존 고급 경로로 보낸다.
-    if (process.env.SECTIONED_REPORT_CHUNK !== '0' && inputrouting.isSectionedAssignmentReport(text)) {
-      logger.info('transform.sectioned_report_chunk', { jobId: job.id, uid: job.uid, textLength: (text || '').length });
-      job.note = (job.note ? job.note + ' ' : '') + '서론·본론·결론 구조가 있는 과제 보고서라, 칼럼형 재구성 대신 구조를 보존하며 문단별로 고급 처리했어요.';
-      return await runLongThesisChunked(job, text, evidence, 'production_formal_sectioned_report_pipeline');
-    }
-    // ★ 구조화 통계 보고서 라우팅(2026-06-18 실측 사이버불링 보고서: 원문 48% → 단일 재구성이 목차·섹션을 부수고
-    //   줄글로 만들어 "간접화법·비인칭"이 글 전체를 덮음 → 93%·100%로 악화). 구조(목차·번호섹션)·통계가 점수를
-    //   지켜주던 글이라, 구조를 깨는 단일 재구성 대신 구조보존 청크 우회(runLongThesisChunked: 목차·문단 보존 +
-    //   문단별 우회)로 보낸다. isLongStructuredThesis의 단문판(14k 미만 사각지대). 끄려면 STRUCTURED_REPORT_CHUNK=0.
-    if (process.env.STRUCTURED_REPORT_CHUNK !== '0' && inputrouting.isStructuredReport(text)) {
-      logger.info('transform.structured_report_chunk', { jobId: job.id, uid: job.uid, textLength: (text || '').length });
-      job.note = (job.note ? job.note + ' ' : '') + '목차·통계가 있는 구조화 보고서라, 구조를 깨는 재구성 대신 구조를 보존하며 문단별로 우회했어요.';
-      return await runLongThesisChunked(job, text, evidence);
-    }
-    if (await activeGptConfig()) {
-      logger.info('transform.gpt_prod_formal_chunk', { jobId: job.id, uid: job.uid, textLength: (text || '').length });
-      return await runLongThesisChunked(job, text, evidence, 'production_formal_gpt_prod_pipeline');
-    }
-    // 클라이언트 disconnect로는 안 죽는다(job 방식) — 단 명시적 취소(/cancel)의 AbortController만 전달.
-    const out = await claudeGenreTransferV2()(text, { evidence: evidence || '', userNotes: job.memo || '', lengthMode: job.lengthMode || 'keep', signal: job.ac.signal });
-    const gates = [];
-    if (out.novelty?.count) gates.push('novelty');
-    // ★ B(2026-06-15 사장님 결정 "동작은 해야"): 원문 보존 게이트는 기본 소프트 처리한다.
-    //   lostFacts·novelty·judge·evidence_pairing은 결과 전달+경고로 낮추고, 치명 출력만 차단한다.
-    if (out.pairing?.length) gates.push('evidence_pairing');
-    if (out.judge && out.judge.pass === false) gates.push('semanticJudge');
-    if (gates.length) {
-      // 차단 상세를 남긴다 — "왜 막혔는지" 없는 차단은 진단 불가(2753자 글 연속 차단 실사고).
-      const gateDetail = {
-        novelty: (out.novelty?.items || []).slice(0, 5),
-        lostFacts: (out.lostFacts?.items || []).slice(0, 8),
-        pairing: (out.pairing || []).slice(0, 3).map(p => `${p.num}↛${(p.owner || '').slice(0, 40)}`),
-        judge: (out.judge?.violations || []).slice(0, 5).map(v => `[${v.type}] "${(v.span || '').slice(0, 70)}" — ${(v.detail || '').slice(0, 100)}`)
-      };
-      logger.warn('transform.blocked', {
-        jobId: job.id,
-        uid: job.uid,
-        mode: job.mode,
-        gates,
-        gateDetail
-      });
-
-      // ★ 재구성 자동 복구(2026-06-16, 청크 회피): 단일패스 genreTransferV2가 원문을 부풀리며(실측 영화평 151%·
-      //   주거보고서 84%) 원문에 없는 평가·주장을 합성해 semanticJudge·novelty로 막히던 글(영화평·문학비평·
-      //   미래설계 보고서 등)을, 문단별로 충실히 재작성하는 청크 회피로 자동 복구한다. 우회(피하기)는 유지하되
-      //   합성 주장은 생기지 않는다(두 경로 실측: genreTransferV2 차단 vs 청크 clean 통과 97%/102%). 통계 삽입
-      //   placeholder 같은 날조 유발 문단은 청크별 FLOOR가 원문으로 되돌려(raw 폴백) 안전. 청크 경로도 막히면
-      //   거기서 정상 차단·보존형 제안으로 넘어간다(중복 호출 없음 — 막다른 길이 아니라 한 번의 복구).
-      //   끄려면 env RESTRUCTURE_CHUNK_RECOVERY=0.
-      if (process.env.RESTRUCTURE_CHUNK_RECOVERY !== '0') {
-        logger.info('transform.restructure_chunk_recovery', { jobId: job.id, uid: job.uid, fromGates: gates });
-        return await runLongThesisChunked(job, text, evidence);
-      }
-
-      if (hasStrictDeliveryGate(gates)) {
-        job.status = 'blocked';
-        job.stage = blockedStage(gates);
-        job.gates = gates;
-        job.gateDetail = gateDetail;
-        job.blockOffer = buildBlockOffer(job, text);
-        persistJob(job);
-        return;
-      }
-      logger.warn('transform.gates_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, gates, gateDetail });
-      job.note = (job.note ? job.note + ' ' : '') + '원문 보존 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
-    }
-    // ★ 붕괴 보류(2026-06-16): 분량이 원문 30% 미만으로 줄어도 기본은 결과 전달+경고.
-    //   빈 결과·프롬프트 누출·인코딩 깨짐·문장 절단처럼 치명 출력일 때만 차단한다.
-    if ((out.lenRatio || 0) > 0 && out.lenRatio < 0.30) {
-      const gates2 = ['length_collapse'];
-      logger.warn('transform.collapsed_too_short', { jobId: job.id, uid: job.uid, mode: job.mode, lenRatio: out.lenRatio, lostCount: out.lostFacts?.count || 0 });
-      // ★ 붕괴도 청크 회피로 복구(문단별이라 요약 collapse가 구조적으로 없음). 끄려면 RESTRUCTURE_CHUNK_RECOVERY=0.
-      if (process.env.RESTRUCTURE_CHUNK_RECOVERY !== '0') {
-        logger.info('transform.restructure_chunk_recovery', { jobId: job.id, uid: job.uid, fromGates: gates2 });
-        return await runLongThesisChunked(job, text, evidence);
-      }
-      if (hasStrictDeliveryGate(gates2)) {
-        job.status = 'blocked';
-        job.stage = blockedStage(gates2);
-        job.gates = gates2;
-        job.gateDetail = { lenRatio: Math.round((out.lenRatio || 0) * 100), lostFacts: (out.lostFacts?.items || []).slice(0, 8) };
-        job.blockOffer = buildBlockOffer(job, text);
-        persistJob(job);
-        return;
-      }
-      job.note = (job.note ? job.note + ' ' : '') + `결과 분량이 원문보다 많이 줄었을 수 있어요(${Math.round((out.lenRatio || 0) * 100)}%). 원문과 대조해 주세요.`;
-    }
-    // ★ 날조 재수정(2026-06-17, #56·#16·#47): genreTransferV2가 원문에 없던 인용·통계·연도를 지어내도 게이트가
-    //   놓친다 — genreTransferV2 내부 novelty는 자기 생성 ledger에 오염돼 0을 내지만, 원문 대비 신선 측정은
-    //   정확하다(실측 #56=19·#16=15·#47=11 신규 엔티티, 나머지 100건 전부 ≤1 → 깨끗한 분리). 차단 대신 청크
-    //   회피(문단별 충실 재작성, 실측 97%·날조 0)로 다시 만들어 전달한다. 신호: 신규 연도·수치·기관 ≥5 또는
-    //   원문에 없는 학술인용 표지 ≥2(전체 100건 오탐 0). 끄려면 RESTRUCTURE_CHUNK_RECOVERY=0.
-    if (process.env.RESTRUCTURE_CHUNK_RECOVERY !== '0') {
-      const gtOut = out.text || '';   // ★ genreTransferV2는 {text:…} 반환(outputText 아님 — 2026-06-17 버그픽스: 잘못된 필드로 감지 무동작이었음)
-      const fabCount = inputrouting.countFabricatedCitations(text, gtOut);
-      const novCount = require('../engine/floor').measureNovelty(text, gtOut, '').count;
-      const repMax = inputrouting.maxNamedRepeat(text, gtOut);   // 고유명사 과반복(#86)
-      // ★ 과확장(2026-06-17 실측: genreTransferV2가 인용 없이도 263%까지 부풀림 — 정상 윤문은 ≤1.3). 날조든
-      //   과확장이든 충실도 사고이므로 청크 회피로 재수정한다. 임계 1.5(정상 윤문 130% 위로 충분히 떨어짐).
-      const overExpand = (out.lenRatio || 0) > 1.5;
-      if (novCount >= 5 || fabCount >= 2 || repMax >= 5 || overExpand) {
-        logger.warn('transform.fabrication_rerun', { jobId: job.id, uid: job.uid, novCount, fabCount, repMax, lenRatio: out.lenRatio });
-        return await runLongThesisChunked(job, text, evidence);
-      }
-    }
-    // ★ 완료 시 차감 — 실패·차단 경로는 여기 도달하지 않으므로 결과 없는 차감이 구조적으로 불가능.
-    //   멱등 키로 job.id를 넘겨 재시작·재시도 중복 차감까지 차단(job.deducted 플래그 + 이중 안전).
-    try {
-      await commitJobBilling(job, {
-        creditAmount: job.needed,
-        operation: 'restructure',
-        mode: 'formal',
-        textLength: text.length,
-        meta: { evidence: !!job.wantEvidence }
-      });
-    } catch (e) {
-      // 차감 실패(그 사이 잔액 소진 등) — 결과는 이미 만들어졌으니 사용자에겐 전달(고객 우선), 수동 보정 로그.
-      logger.error('transform.billing_failed_manual_action', {
-        jobId: job.id,
-        uid: job.uid,
-        needed: job.needed,
-        billingMode: job.billingMode,
-        opType: 'restructure',
-        err: e
-      });
-    }
-    // 근거 일부 미반영(소프트 — 차단 아님): 승인 근거가 본문에 다 녹지 못한 경우 투명하게 안내.
-    if (out.evidenceLost && out.evidenceLost.count > 0) {
-      job.note = (job.note ? job.note + ' ' : '') + '승인하신 근거 중 일부는 본문에 자연스럽게 들어가지 않아 제외됐어요(반영된 근거만 사용).';
-    }
-    // ★ B: 원문 사실 누락도 소프트 — 차단 대신 결과 전달 + 경고(사용자가 연도·수치·기관명을 원문과 대조하도록).
-    const lostN = out.lostFacts?.count || 0;
-    if (lostN > 0) {
-      logger.warn('transform.lostfacts_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, lostCount: lostN, items: (out.lostFacts?.items || []).slice(0, 12) });
-      job.note = (job.note ? job.note + ' ' : '') + `원문의 사실 ${lostN}건(연도·수치·기관명 등)이 재구성 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 확인해 주세요.`;
-    }
-    job.status = 'done';
-    job.result = attachAdminLabResultMeta(job, {
-      outputText: out.text,
-      metrics: {
-        novelty: 0, lostFacts: lostN, repetition: 0,
-        judge: out.judge?.error ? 'skip' : 'pass',
-        lengthRatio: out.lenRatio,
-        evidenceUsed: job.approvedCount || 0,
-        evidenceUnwoven: out.evidenceLost ? out.evidenceLost.count : 0,
-        pairingClean: true   // 게이트 통과 시점 = 수치-출처 짝 위반 0
-      },
-      genreRisk: out.risk?.score,
-      skeleton: out.skeleton
-    }, 'production_formal_pipeline');
-    persistJob(job);
-    if (!job.adminHumanizeLab) saveJobHistory(job, text, out.text);   // 이용 기록(서버)에도 노출 — 완료 화면을 못 봐도 결과 복원 가능
-    if (job.adminHumanizeLab) {
-      logger.info('transform.admin_humanize_lab_done', {
-        jobId: job.id,
-        uid: job.uid,
-        mode: job.mode,
-        profile: job.adminLabProfile || adminLabProfileOf(job),
-        path: 'production_formal_pipeline',
-        skeleton: out.skeleton,
-        deducted: job.deducted
-      });
-    }
-    logger.info('transform.done', {
+    logger.error('transform.failed', {
       jobId: job.id,
       uid: job.uid,
       mode: job.mode,
-      needed: job.needed,
-      deducted: job.deducted,
-      skeleton: out.skeleton,
-      genreRisk: out.risk?.score
+      code: error?.code,
+      err: error
     });
-  } catch (e) {
-    if (job.ac.signal.aborted) {
-      // shutdown이 이미 error(서버 재시작 안내)로 표시한 job을 "사용자 취소"로 덮어쓰면 안 됨 — abort 출처 구분.
-      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
-      return;
-    }
-    logger.error('transform.failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
     job.status = 'error';
-    job.error = '재구성 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
+    job.error = '재구성 처리 중 기술 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
+    job.deliveryDecision = 'block_technical';
+    job.deliveryReasonCodes = [String(error?.code || 'transform_pipeline_error').toLowerCase()];
     persistJob(job);
   } finally {
     scheduleQueueDrain();
   }
 }
-
-// ── 장문 논문 재구성(2026-06-16): 26,934자 논문이 단일패스 genreTransferV2에서 요약 collapse(29%·8%)로 차단되던 사고.
-//   해결: 단일 재구성 대신 '청크 기반 격식 회피'(runHumanizeChunked mode=assignment, tonePolish=false). 효과 ①우회(피하기)
-//   유지(보존형 polish와 달리 tonePolish=false라 burstiness·grounding·register 우회 적용) ②문단별이라 요약 collapse 없음
-//   ③청크별 lostFacts/novelty 게이트로 사실 보존. 과금은 재구성(formal) 단가 그대로(피하기 결과를 받으므로).
-async function runLongThesisChunked(job, text, evidence, pipelinePath = 'production_formal_chunk_pipeline') {
-  try {
-    job.status = 'running';
-    job.stage = '문단별 안전 재작성 중';   // 장문 논문·학술·재구성 복구 공용(특정 종류 단정 안 함)
-    persistJob(job);
-    // ★ 학술 동결 블록 분리(2026-06-19 #43): 참고문헌·목차는 윤문 대상이 아니라 데이터다. 본문에서 떼어 verbatim
-    //   보존하고 본문만 우회한다(저자명 의역·절번호 붕괴 방지). 동결 없으면 통째 우회(기존과 동일).
-    const freeze = require('../engine/freezeblocks');
-    const fb = freeze.splitAcademicBlocks(text);   // 참고문헌 리스트·목차 동결(verbatim 보존) — 본문만 우회
-    if (fb.hasFrozen) logger.info('transform.academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: fb.refs.length });
-    // ※ 본문 인라인 다저자 인용 박제는 보류: 플레이스홀더를 LLM이 일부 떨어뜨려(2/7) 인용 유실+floor 차단 위험(2026-06-19 실측).
-    //   canonical 참고문헌 리스트는 위 split으로 안전 보존되므로, 본문 인라인 인용은 충실 재작성에 맡긴다(저우선 잔여).
-    const gptCfg = await activeGptConfig();
-    const out = gptCfg
-      ? await gptAnalyze.runHumanizeChunked({
-          text: fb.body,
-          mode: 'assignment',
-          lang: job.lang || 'ko',
-          signal: job.ac.signal,
-          userNotes: job.memo || '',
-          evidence: evidence || '',
-          config: gptCfg,
-          styleProfile: 'production_long_chunk',
-          documentProfileOverride: job.documentProfileOverride || '',
-          uid: humanizeV2Enabled() ? job.uid : ''
-        })
-      : await analyze.runHumanizeChunked({
-          text: fb.body, mode: 'assignment', lang: job.lang || 'ko', signal: job.ac.signal,
-          floorV2: true, optIn: false, judge: true, grounding: true,
-          userNotes: job.memo || '', evidence: evidence || '', tonePolish: false   // ★ tonePolish=false = 우회(피하기) 유지
-        });
-    if (out.floorReport && out.floorReport.status === 'blocked') {
-      const gates = (out.floorReport.criticals || []).map(c => c.gate);
-      if (softenBlockedFloorReport(out, 'transform.long_thesis_blocked_soft_delivered', { jobId: job.id, uid: job.uid, gates, chunkCount: out.chunkCount })) {
-        job.note = (job.note ? job.note + ' ' : '') + '품질 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
-      } else {
-      // ★ semanticJudge 소프트화(2026-06-16, zoz040224 26K 학술논문 실측): 청크 회피는 문단별 grounded 재작성이라
-      //   added_claim이 남아도 대개 해석·평가 표현이다. 장문·학술글이 1~2건의
-      //   added_claim으로 통째 차단되면 결과를 못 받는다. 기본은 전달 + 원문대조 경고이며,
-      //   프롬프트 누출·빈 결과 같은 치명 출력만 차단한다. 끄려면 RESTRUCTURE_JUDGE_SOFT=0.
-      const SOFTABLE = new Set(['semanticJudge', 'repetition']);
-      const judgeCount = (out.result?.judge?.violations || []).length;
-      const softMax = Number(process.env.RESTRUCTURE_JUDGE_SOFT_MAX || 2);
-      const judgeSoftOK = process.env.RESTRUCTURE_JUDGE_SOFT !== '0'
-        && gates.length > 0 && gates.every(g => SOFTABLE.has(g)) && judgeCount <= softMax;
-      if (!judgeSoftOK) {
-        logger.warn('transform.long_thesis_blocked', { jobId: job.id, uid: job.uid, gates, judgeCount, chunkCount: out.chunkCount });
-        job.status = 'blocked';
-        job.gates = gates;
-        job.gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
-        job.stage = blockedStage(gates);
-        job.blockOffer = buildBlockOffer(job, text);
-        persistJob(job);
-        return;
-      }
-      // semanticJudge 소수만 차단 사유 → 전달(아래로 진행) + 원문 대조 경고.
-      logger.info('transform.long_thesis_judge_soft_delivered', { jobId: job.id, uid: job.uid, judgeCount, gates, chunkCount: out.chunkCount });
-      job.note = (job.note ? job.note + ' ' : '') + `원문에 없던 해석·평가 표현이 일부(${judgeCount}건) 섞였을 수 있어요. 결과를 원문과 한 번 대조해 주세요.`;
-      }
-    }
-    if (!out.result || !out.result.outputText) throw new Error('long_thesis_incomplete');
-    // ★ 동결 블록(참고문헌 리스트·목차) 재조립 — 우회된 본문 앞뒤로 verbatim 복원.
-    const finalText = fb.hasFrozen ? freeze.reassembleAcademic(fb, out.result.outputText) : out.result.outputText;
-    // 과금: 재구성(formal) 단가 그대로. 멱등 키 동일(job_<id>) — 재시작·재시도 중복 차감 불가.
-    try {
-      await commitJobBilling(job, {
-        creditAmount: job.needed,
-        operation: 'restructure',
-        mode: 'formal',
-        textLength: text.length,
-        meta: { longThesis: true }
-      });
-    } catch (e) {
-      logger.error('transform.long_thesis_billing_failed_manual_action', {
-        jobId: job.id, uid: job.uid, needed: job.needed, billingMode: job.billingMode, err: e
-      });
-    }
-    if ((out.floorReport.warnings || []).some(w => w.gate === 'lostFacts')) {
-      job.note = (job.note ? job.note + ' ' : '') + '원문의 사실 일부(연도·수치·기관명 등)가 재작성 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 주세요.';
-    }
-    job.status = 'done';
-    job.result = attachAdminLabResultMeta(job, {
-      outputText: finalText,
-      longThesis: true,   // UI가 "장문 논문 안전 재작성" 배지를 띄울 수 있게
-      floorReport: {
-        status: out.floorReport.status,
-        criticals: out.floorReport.criticals,
-        warnings: (out.floorReport.warnings || []).map(w => w.gate),
-        metrics: out.floorReport.metrics
-      },
-      metrics: out.floorReport.metrics,
-      chunkCount: out.chunkCount,
-      fallbackCount: out.fallbackCount
-    }, pipelinePath);
-    persistJob(job);
-    if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);
-    if (job.adminHumanizeLab) {
-      logger.info('transform.admin_humanize_lab_done', {
-        jobId: job.id,
-        uid: job.uid,
-        mode: job.mode,
-        profile: job.adminLabProfile || adminLabProfileOf(job),
-        path: pipelinePath,
-        chunkCount: out.chunkCount,
-        fallbackCount: out.fallbackCount,
-        deducted: job.deducted
-      });
-    }
-    logger.info('transform.long_thesis_done', { jobId: job.id, uid: job.uid, needed: job.needed, deducted: job.deducted, chunkCount: out.chunkCount, fallbackCount: out.fallbackCount, frozen: fb.hasFrozen || undefined, path: pipelinePath });
-  } catch (e) {
-    if (job.ac.signal.aborted) {
-      if (job.status !== 'error') { job.status = 'cancelled'; job.stage = '중단됨'; persistJob(job); }
-      return;
-    }
-    logger.error('transform.long_thesis_failed', { jobId: job.id, uid: job.uid, err: e });
-    job.status = 'error';
-    job.error = '장문 논문 처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
-    persistJob(job);
-  } finally {
-    scheduleQueueDrain();
-  }
-}
-
 // ── short job 러너(2026-06-13): 직접 fetch였던 블로그 변환·다듬기를 job으로 — 새로고침·창닫기 생존.
 //   엔진은 기존 floorV2 청크 경로(analyze.runHumanizeChunked) 그대로(blog→blog, polish→assignment 보존형),
 //   차감·게이트 원칙은 formal과 동일.
@@ -2241,27 +1931,7 @@ async function runHumanizeJob(job, text, evidence = '') {
     job.stage = '문장 다듬는 중';
     persistJob(job);
     const isPolish = job.mode === 'polish';
-    const v2Enabled = humanizeV2Enabled();
-    // ★ 격식 하락 방지(2026-06-19 88건 감사: 하다체/합쇼체 보고서·탐구·과학·논술문이 기본 피하기→blog 해요체로
-    //   변질 38건 "~거든요/~죠"). blog인데 원문이 격식체(handa/hap) 우세면 engine을 assignment로 돌린다 —
-    //   register 보존 우회(blog와 동일하게 judge·grounding=우회 ON, tonePolish=false). 진짜 해요체(캐주얼) 원문만
-    //   blog 유지. isFormalDocument가 못 잡는 탐구·과학·하다체 과제문을 register 신호로 보완. (사용자 의도=우회는 유지,
-    //   제출 품질만 살림.) 끄려면 FORMAL_BLOG_GUARD=0.
-    let engineMode = v2Enabled ? job.mode : (isPolish ? 'assignment' : 'blog');
-    if (!v2Enabled && !isPolish && process.env.FORMAL_BLOG_GUARD !== '0') {
-      const reg = require('../engine/surfaceguard').measureRegisterMix(text).dominant;
-      if (reg === 'handa' || reg === 'hap') {
-        engineMode = 'assignment';
-        job.note = (job.note ? job.note + ' ' : '') + '원문이 격식체(보고서·과제체)라, 해요체로 바꾸지 않고 격식을 살려 우회했어요.';
-        logger.info('transform.formal_blog_guard', { jobId: job.id, uid: job.uid, reg });
-      }
-    }
-    // ★ 학술 동결 블록 보존(2026-06-20 #66: 기본 피하기가 참고문헌을 흡수·손실 "조푸른솔…2025,14-32" 소실).
-    //   레거시·thesis 경로처럼 blog/polish 경로에도 참고문헌·목차를 verbatim 보존(본문만 우회 후 재조립). FREEZE_BLOCKS=0 해제.
-    const freeze = require('../engine/freezeblocks');
-    const fb = (!v2Enabled && process.env.FREEZE_BLOCKS !== '0') ? freeze.splitAcademicBlocks(text) : { hasFrozen: false };
-    const bodyText = fb.hasFrozen ? fb.body : text;
-    if (fb.hasFrozen) logger.info('transform.blog_academic_freeze', { jobId: job.id, uid: job.uid, hasToc: !!fb.toc, refsLen: (fb.refs || '').length });
+    const engineMode = job.mode;
     let styleProfile = '';
     const preserveLab = isPreserveLabJob(job);
     const finalReportLab = isFinalReportEngineJob(job);
@@ -2285,25 +1955,11 @@ async function runHumanizeJob(job, text, evidence = '') {
         appliedAtMs: Date.now()
       };
       logger.info('transform.admin_final_report_engine_profile_applied', { jobId: job.id, uid: job.uid, mode: job.mode, profile: styleProfile });
-    } else if (!v2Enabled && !isPolish && job.mode === 'blog' && job.basicStyle === 'report') {
-      styleProfile = 'basic_report';
-      if (job.basicExperiment) {
-        job.basicExperiment = {
-          ...job.basicExperiment,
-          applied: true,
-          appliedAtMs: Date.now()
-        };
-      }
-      logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle, profile: styleProfile });
-    } else if (!v2Enabled && !isPolish && job.mode === 'blog' && engineMode === 'blog') {
-      styleProfile = 'basic_blog';
-      logger.info('transform.basic_style_profile_applied', { jobId: job.id, uid: job.uid, basicStyle: job.basicStyle || 'blog', profile: styleProfile });
     }
     const gptCfg = await activeGptConfig();
-    if (v2Enabled && !gptCfg) throw new Error('HUMANIZE_ENGINE_V2 requires activeProvider=gpt');
-    const out = gptCfg
-      ? await gptAnalyze.runHumanizeChunked({
-          text: bodyText,
+    if (!gptCfg) throw technicalProviderError();
+    const out = await gptAnalyze.runHumanizeChunked({
+          text,
           mode: engineMode,
           lang: job.lang || 'ko',
           signal: job.ac.signal,
@@ -2313,66 +1969,36 @@ async function runHumanizeJob(job, text, evidence = '') {
           styleProfile: styleProfile || 'production_transform_humanize',
           basicStyle: job.basicStyle || '',
           documentProfileOverride: job.documentProfileOverride || '',
-          allowPolish: v2Enabled,
-          // 원본 UID는 OpenAI 요청에 직접 전달되지 않는다. v2 엔진 내부에서만
-          // OPENAI_SAFETY_SALT 기반 HMAC으로 변환하며, 레거시 롤백에는 넘기지 않는다.
-          uid: v2Enabled ? job.uid : ''
-        })
-      : await analyze.runHumanizeChunked({
-          text: bodyText, mode: engineMode, lang: job.lang || 'ko', signal: job.ac.signal,
-          // 과제 어투 다듬기(polish)는 회피가 목적이 아니므로 의미 게이트(semanticJudge) 분리 → 차단 급감.
-          //   사실 게이트(novelty·lostFacts)는 buildFloorReport가 잡되, 기본은 결과 전달+경고로 처리한다.
-          //   tonePolish: 우회/캐주얼화 블록을 뺀 "보존 우선 + 최소 손질 + 격식 과제체" 프롬프트로 분기(재창작 방지).
-          // ★ P1-5(2026-06-18 감사): polish(그대로 다듬기)는 최소 수정이 목적인데 grounding(추상 문장→선명한 판단문
-          //   교체)이 켜져 기대보다 많이 바뀌었다. polish면 grounding off(보존 우선), 회피 경로(blog)에선 유지.
-          floorV2: true, optIn: false, judge: !isPolish && !adminSafetyLab, grounding: !isPolish && !adminSafetyLab, userNotes: job.memo || '', tonePolish: isPolish, styleProfile
+          allowPolish: true,
+          // 원본 UID는 OpenAI 요청에 직접 전달되지 않는다. 엔진 내부에서
+          // OPENAI_SAFETY_SALT 기반 HMAC으로만 변환한다.
+          uid: job.uid
         });
     // FLOOR 게이트 = 기본은 결과 전달+경고. 치명 출력만 차단한다.
     if (out.floorReport && out.floorReport.status === 'blocked') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
       const gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
-      if (!v2Enabled && softenBlockedFloorReport(out, 'transform.humanize_blocked_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, gates })) {
-        job.note = (job.note ? job.note + ' ' : '') + '품질 게이트 경고가 있었지만 결과를 우선 전달했어요. 업로드 전 원문과 한 번 대조해 주세요.';
-      } else {
-        job.engineMeta = out.engineMeta || out.result?.engineMeta || null;
-        logger.warn('transform.humanize_blocked', {
-          jobId: job.id,
-          uid: job.uid,
-          mode: job.mode,
-          gates,
-          gateDetail
-        });
-        // 기본 작업에만 동의 기반 다듬기 선택지를 붙인다. 고급은 같은
-        // 강도로 다시 시도하며 보존형으로 다운그레이드하지 않는다.
-        job.status = 'blocked';
-        job.stage = blockedStage(gates);
-        job.gates = gates;
-        job.gateDetail = gateDetail;
-        job.blockOffer = buildBlockOffer(job, text);
-        persistJob(job);
-        return;
-      }
+      job.engineMeta = out.engineMeta || out.result?.engineMeta || null;
+      logger.warn('transform.humanize_blocked', {
+        jobId: job.id,
+        uid: job.uid,
+        mode: job.mode,
+        gates,
+        gateDetail
+      });
+      // 기본 작업에만 동의 기반 다듬기 선택지를 붙인다. 고급은 같은
+      // 강도로 다시 시도하며 보존형으로 다운그레이드하지 않는다.
+      job.status = 'blocked';
+      job.stage = blockedStage(gates);
+      job.gates = gates;
+      job.gateDetail = gateDetail;
+      job.blockOffer = buildBlockOffer(job, text);
+      persistJob(job);
+      return;
     }
     if (!out.result || !out.result.outputText) throw new Error('humanize_incomplete');
-    // ★ 블로그 날조 인용 결정론 제거(2026-06-17, #99): blog는 더 깨끗한 재라우팅 경로가 없으니, 원문에 없는
-    //   괄호형 인용/출처만 안전 제거(문장 안 깨짐). 인라인 외부사례는 격식문서 라우팅(고급)으로 처리. polish 제외.
-    if (!v2Enabled && !isPolish) {
-      const sc = inputrouting.stripFabricatedCitations(text, out.result.outputText);
-      if (sc.removed) {
-        out.result.outputText = sc.text;
-        job.note = (job.note ? job.note + ' ' : '') + '원문에 없던 출처·인용 표기를 자동으로 정리했어요.';
-        logger.info('transform.blog_fab_citation_stripped', { jobId: job.id, uid: job.uid, removed: sc.removed });
-      }
-    }
     try {
-      job.billingDisposition = humanizeV2Enabled()
-        ? await resolveBillingDisposition(job, out)
-        : (await commitJobBilling(job, {
-            creditAmount: job.needed,
-            operation: job.mode === 'formal' ? 'restructure' : 'humanize',
-            mode: job.mode || 'formal',
-            textLength: (job.text || '').length
-          }), job.deducted ? 'charged' : (job.plan === 'unlimited' ? 'plan_unlimited' : 'admin_no_charge'));
+      job.billingDisposition = await resolveBillingDisposition(job, out);
     } catch (e) {
       // 기존 호환대로 결과는 전달하되 deducted=false가 실제 미차감을 나타낸다.
       // disposition은 이 작업의 의도된 과금 경로를 유지해 운영 불일치를 찾게 한다.
@@ -2400,10 +2026,11 @@ async function runHumanizeJob(job, text, evidence = '') {
     if ((out.floorReport.warnings || []).some(w => w.gate === 'lostFacts')) {
       job.note = (job.note ? job.note + ' ' : '') + '원문의 사실 일부(연도·수치·기관명 등)가 다듬는 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 주세요.';
     }
-    // ★ 동결 블록(참고문헌·목차) 재조립 — 우회된 본문 앞뒤로 verbatim 복원(#66 참고문헌 손실 방지).
-    const finalText = fb.hasFrozen ? freeze.reassembleAcademic(fb, out.result.outputText) : out.result.outputText;
+    const finalText = out.result.outputText;
     const v2QualityStatus = out.qualityStatus || out.result.qualityStatus || 'clean';
     const v2QualityWarnings = out.qualityWarnings || out.result.qualityWarnings || [];
+    const v2EffectStatus = out.effectStatus || out.result.effectStatus || 'normal';
+    const v2EffectNotices = out.effectNotices || out.result.effectNotices || [];
     if (out.engineMeta && typeof out.engineMeta === 'object') {
       out.engineMeta.billingDisposition = job.billingDisposition;
       out.engineMeta.effectExpectation = job.effectExpectation || 'normal';
@@ -2437,6 +2064,8 @@ async function runHumanizeJob(job, text, evidence = '') {
       humanizeMeta: out.result.humanizeMeta || null,
       qualityStatus: v2QualityStatus,
       qualityWarnings: v2QualityWarnings,
+      effectStatus: v2EffectStatus,
+      effectNotices: v2EffectNotices,
       billingDisposition: job.billingDisposition,
       sourceReviewWarnings: out.sourceReviewWarnings || out.result.sourceReviewWarnings || [],
       koreanRefinement: out.result.koreanRefinement ? {
@@ -2450,9 +2079,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       naturalnessShadow: out.result.naturalnessShadow || null,
       adminLabProfile: job.adminLabProfile || (adminSafetyLab ? styleProfile : null),
       adminHumanizeLab: !!job.adminHumanizeLab,
-      compressionFallback: !!out.result.compressionFallback,
-      basicBlogToneCleanup: out.result.basicBlogToneCleanup || null,
-      flowCohesion: out.result.flowCohesion || null
+      compressionFallback: !!out.result.compressionFallback
     };
     persistJob(job);
     if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
@@ -2512,6 +2139,7 @@ router.post('/transform', async (req, res) => {
   const adminLabRequested = req.body && req.body.adminHumanizeLab === true;
   const requestedAdminLabProfile = adminLabRequested ? normalizeAdminLabProfile(req.body && req.body.adminLabProfile) : null;
   let adminLabUid = null;
+  let authenticatedUser = null;
   if (adminLabRequested) {
     if (devNoAuth) {
       adminLabUid = 'dev-local';
@@ -2519,6 +2147,12 @@ router.post('/transform', async (req, res) => {
       adminLabUid = await verifyToken(idToken);
       if (!adminLabUid) return res.status(401).json({ error: '관리자 테스트는 로그인이 필요해요.' });
       if (!isAdminUid(adminLabUid)) return res.status(403).json({ error: '관리자만 사용할 수 있는 테스트 페이지입니다.' });
+    }
+  } else if (!devNoAuth) {
+    try {
+      authenticatedUser = await usageBilling.authenticate(idToken);
+    } catch (error) {
+      return res.status(error.status || 401).json({ error: usageBilling.authErrorMessage(error.message) });
     }
   }
   // ★ 글자분리(PDF 추출 깨짐) 복원(2026-06-19 실측 #57·#58): 모든 글자가 공백 분리된 입력을 billing·엔진 처리 전에
@@ -2555,10 +2189,6 @@ router.post('/transform', async (req, res) => {
   }
   // ★ 격식문서 → 고급 안내(2026-06-17, #21·#83·#72·#90): 보고서·계약서·논문을 기본 피하기에 넣으면 구어체로
   //   변질된다. 입력 단계에서 고급 피하기로 유도(blog만, 무차감·무API). 다듬기·고급은 그대로 통과.
-  if (!humanizeV2Enabled() && !adminLabUid && mode === 'blog' && inputrouting.isFormalDocument(text)) {
-    logger.warn('transform.formal_doc_to_advanced', { mode, textLength: text.length });
-    return res.status(400).json({ error: inputrouting.FORMAL_GUIDANCE_REASON, route: 'formal' });
-  }
   // ★ 제출자 메타데이터 제거(2026-06-17, #97): "제출자: OO학부 20260423 변정빈" 머리말이 본문에 인용 저자처럼
   //   엮이던 사고 — 돌리기 전에 떼어낸다(본문 내용 불변, 무차감). 차단 아님.
   {
@@ -2566,9 +2196,26 @@ router.post('/transform', async (req, res) => {
     if (sm.changed) { logger.info('transform.submitter_meta_stripped', { mode, removed: sm.changed }); text = sm.text; }
   }
   const effectBasicStyle = mode === 'blog' ? normalizeBasicStyle(req.body?.basicStyle) : 'report';
-  const effectAssessment = humanizeV2Enabled()
-    ? assessEffectExpectation(text, mode, effectBasicStyle)
-    : { effectExpectation: 'normal', effectNoticeCode: null, requiresEffectConfirmation: false };
+  const editable = assessEditableContent(text, {
+    mode,
+    basicStyle: effectBasicStyle,
+    documentProfileOverride
+  });
+  if (editable.editableChunkCount === 0) {
+    logger.info('transform.no_editable_content', {
+      mode,
+      textLength: text.length,
+      documentProfile: editable.documentProfile,
+      totalChunkCount: editable.totalChunkCount
+    });
+    return res.status(422).json({
+      code: 'NO_EDITABLE_CONTENT',
+      error: '표·목차·참고문헌처럼 보존해야 할 구조만 있어 변환할 일반 본문을 찾지 못했어요.',
+      documentProfile: editable.documentProfile,
+      editableChunkCount: 0
+    });
+  }
+  const effectAssessment = assessEffectExpectation(text, mode, effectBasicStyle);
   const effectNoticeAccepted = req.body?.effectNoticeAccepted === true;
   if (!adminLabUid
       && effectConfirmationEnabled()
@@ -2606,12 +2253,12 @@ router.post('/transform', async (req, res) => {
       : (devNoAuth
           ? { uid: 'dev-local', plan: 'unlimited' }
           : billingMode === 'coupon'
-            ? await analyze.precheckCoupon(idToken, text.length)
-            : await analyze.precheckCredits(idToken, needed));
+            ? await usageBilling.precheckCoupon(idToken, text.length, authenticatedUser)
+            : await usageBilling.precheckCredits(idToken, needed, authenticatedUser));
   } catch (e) {
     logger.warn('transform.precheck_failed', { mode, needed, creditNeeded, billingMode, err: e });
     return res.status(e.status || 500).json({
-      error: analyze.authErrorMessage(e.message),
+      error: usageBilling.authErrorMessage(e.message),
       ...(e.charLimit !== undefined ? { charLimit: e.charLimit } : {})
     });
   }
@@ -2675,7 +2322,7 @@ router.post('/transform', async (req, res) => {
   const isShort = mode !== 'formal';
   // 고급은 실제 v2 실행 계획의 편집 청크 수로 범위를 산출한다. estSec는 기존
   // 클라이언트·대기열 호환을 위해 보수적인 상한을 계속 제공한다.
-  const advancedTimeEstimate = !isShort && humanizeV2Enabled()
+  const advancedTimeEstimate = !isShort
     ? safeAdvancedTimeEstimate(text, {
         evidence: wantEvidence,
         basicStyle: 'report',
@@ -2703,8 +2350,7 @@ router.post('/transform', async (req, res) => {
     memo: typeof req.body.memo === 'string' ? req.body.memo.slice(0, 2000) : '',   // 경험·사례 메모 — blog·formal(재구성) 공통 적용(2026-06-15)
     autoCoach: req.body.autoCoach === true && mode === 'formal',   // 자동 코칭(재구성 전용) — 시작 시 입장 자동 도출·적용(2026-06-18)
     // v2는 한국어 전용이다. 한국어 본문에 lang=en만 붙여 영어 프롬프트로 우회하지 못하게 한다.
-    lang: humanizeV2Enabled() ? 'ko' : (req.body.lang === 'en' ? 'en' : 'ko'),
-    lengthMode: req.body.length === 'compact' ? 'compact' : 'keep',   // 분량 옵션(재구성 전용) — 엔진 연결(2026-06-15). 기본 keep(유지)
+    lang: 'ko',
     basicStyle,
     documentProfileOverride: documentProfileOverride || '',
     basicExperiment: experimentMeta,
@@ -2824,7 +2470,7 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
       return res.status(status).json({
         error: status === 402 && job.billingMode !== 'coupon'
           ? `보존형으로 받으려면 ${fbNeeded}크레딧이 필요해요. 크레딧이 부족해 충전 후 다시 시도해 주세요.`
-          : analyze.authErrorMessage(e.message),
+          : usageBilling.authErrorMessage(e.message),
         needed: job.billingMode === 'coupon' ? 1 : fbNeeded,
         billingMode: job.billingMode === 'coupon' ? 'coupon' : 'credit'
       });
@@ -2947,6 +2593,8 @@ router.get('/transform/:id', async (req, res) => {
     qualityStatus: job.result?.qualityStatus,
     billingDisposition: job.result?.billingDisposition || job.billingDisposition || null,
     qualityWarnings: job.result?.qualityWarnings,
+    effectStatus: job.result?.effectStatus || 'normal',
+    effectNotices: job.result?.effectNotices || [],
     sourceReviewWarnings: job.result?.sourceReviewWarnings,
     engineMeta: job.result?.engineMeta,
     result: job.result
@@ -2966,5 +2614,6 @@ router.finalQualityWarningCodes = finalQualityWarningCodes;   // 이력·아카�
 router.ensureTerminalTimestamp = ensureTerminalTimestamp;   // 테스트용
 router.normalizeDocumentProfileOverride = normalizeDocumentProfileOverride;   // 테스트·클라이언트 계약용
 router.preservationFallbackAllowed = preservationFallbackAllowed;   // 고급→보존형 다운그레이드 회귀 테스트용
+router.assessEditableContent = assessEditableContent;
 
 module.exports = router;

@@ -6,6 +6,7 @@
 // ★ 정책: 이 지표가 나쁘다고 "가짜 경험·수치"를 생성하면 FLOOR 위반. 측정·표시·국소수정만 하고,
 //   구체화는 (1)원문에 실제로 있는 것 또는 (2)사용자가 제공한 경험 메모 범위 안에서만.
 const { splitSentences } = require('./koreanText');
+const { detectRegister } = require('./contract');
 
 // ── 1. genericness (추상적·일반적 내용 구성) ──
 const GENERIC_SUBJECT_RE = /^(디지털\s*기술|기술|사회|사람들?|인간관계|관계|현대\s*사회|온라인\s*공간|디지털\s*공간|SNS|익명성|소통|변화|문제|중요한\s*것|핵심은|우리는?)/i;
@@ -80,9 +81,10 @@ function measureUniformity(text) {
 function sentRegister(s) {
   const t = (s || '').trim().replace(/["'”’)\]]+$/, '');
   if (/[?？]$/.test(t)) return 'q';
-  if (/(습니다|ㅂ니다|입니다|입니까|습니까)\.?$/.test(t)) return 'hap';
-  if (/(요|죠|쥬|군요|걸요|는데요|ㄹ게요|ㄹ까요|에요|예요|아요|어요|네요|데요)\.?$/.test(t)) return 'haeyo';
-  if (/(이?다|한다|된다|않다|없다|있다|었다|였다|는다|ㄴ다|린다|진다|온다|난다|간다|싶다|보다)\.?$/.test(t)) return 'handa';
+  const register = detectRegister(t);
+  if (register === 'polite') return 'hap';
+  if (register === 'haeyo') return 'haeyo';
+  if (register === 'plain') return 'handa';
   return 'other';
 }
 function measureRegisterMix(text) {
@@ -90,7 +92,7 @@ function measureRegisterMix(text) {
   const c = { haeyo: 0, handa: 0, hap: 0 };
   for (const r of regs) if (c[r] !== undefined) c[r]++;
   const total = c.haeyo + c.handa + c.hap;
-  if (!total) return { dominant: 'haeyo', offCount: 0, offRatio: 0 };
+  if (!total) return { dominant: 'unknown', offCount: 0, offRatio: 0 };
   const dominant = c.haeyo >= c.handa && c.haeyo >= c.hap ? 'haeyo' : (c.handa >= c.hap ? 'handa' : 'hap');
   const off = total - c[dominant];
   return { dominant, offCount: off, offRatio: Number((off / total).toFixed(3)) };

@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences, koreanEnd } = require('../engine/koreanText');
+const { detectRegister } = require('../engine/contract');
 
 const VERSION = 1;
 const STYLES = Object.freeze(['plain', 'polite', 'haeyo', 'nominal']);
@@ -97,10 +98,11 @@ function endingHistogram(sentences) {
 
 function endingStyle(sentence) {
   const text = String(sentence || '').replace(/[.!?…。！？"'”’」』】)\]]+$/gu, '').trim();
-  if (koreanEnd('(?:습니다|ㅂ니다|습니까|합니다|됩니다)', 'u').test(text)) return 'polite';
-  if (koreanEnd('(?:요|죠|네요|거든요|잖아요)', 'u').test(text)) return 'haeyo';
-  if (koreanEnd('(?:다|한다|된다|였다|었다|있다|없다|않다)', 'u').test(text)) return 'plain';
   if (koreanEnd('(?:함|됨|임|음)', 'u').test(text)) return 'nominal';
+  const register = detectRegister(sentence);
+  if (register === 'polite') return 'polite';
+  if (register === 'haeyo') return 'haeyo';
+  if (register === 'plain') return 'plain';
   return 'other';
 }
 
@@ -116,13 +118,14 @@ function isHeading(line) {
   if (!line) return false;
   if (/^#{1,6}\s+\S/u.test(line)) return true;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?\s*\S/u.test(line) && line.length <= 140) return true;
-  if (/^제\s*\d{1,3}\s*(?:장|절|항)(?:\s|$)/u.test(line)) return true;
+  if (/^제\s*\d{1,3}\s*(?:장|절|항|조)(?:\s|$|[（(])/u.test(line)) return true;
   return /^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S/u.test(line) && line.length <= 140;
 }
 
 function isProtectedLine(line) {
   if (/^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d{1,3}[.)]|[①-⑳])\s+/u.test(line)) return true;
   if (/^>\s*\S/u.test(line) || /^\|.+\|$/u.test(line) || /\t/u.test(line)) return true;
+  if (/^\s*(?:`{3,}|~{3,})/u.test(line) || /(?<!`)`[^`\n]+`(?!`)/u.test(line)) return true;
   return /^["'“‘「『《〈].+["'”’」』》〉]$/u.test(line) && line.length <= 180;
 }
 

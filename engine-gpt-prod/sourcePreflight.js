@@ -21,7 +21,7 @@ const REMOVABLE_LINE_RULES = Object.freeze([
   },
   {
     code: 'source_markdown_artifact',
-    pattern: /^(?:\*\*|__|```|~~~)$/u,
+    pattern: /^(?:\*\*|__)$/u,
     message: '내용 없이 남은 마크다운 기호를 본문에서 제외했어요.'
   }
 ]);
@@ -41,6 +41,7 @@ function auditAndSanitizeSource(value) {
   const notices = [];
   const kept = [];
   let inReference = false;
+  const fenceState = analyzeFences(lines);
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] || '');
@@ -72,6 +73,10 @@ function auditAndSanitizeSource(value) {
     if (inReference && isPossiblyTruncatedReference(text)) {
       notices.push(issue('source_truncated_reference', index + 1, 'notice', NOTICE_MESSAGES.source_truncated_reference));
     }
+  }
+
+  for (const lineIndex of fenceState.unbalancedLineIndexes) {
+    notices.push(issue('source_markdown_artifact', lineIndex + 1, 'notice', NOTICE_MESSAGES.source_markdown_artifact));
   }
 
   const sanitized = kept.join('\n').replace(/\n{3,}/gu, '\n\n').trim();
@@ -126,6 +131,25 @@ function isQuotedInstructionLine(value) {
 function hasUnbalancedMarkdown(value) {
   const text = String(value || '');
   return countLiteral(text, '**') % 2 === 1 || countLiteral(text, '__') % 2 === 1;
+}
+
+function analyzeFences(lines) {
+  let active = null;
+  let openingIndex = -1;
+  const unbalancedLineIndexes = [];
+  for (let index = 0; index < (lines || []).length; index += 1) {
+    const match = String(lines[index] || '').match(/^\s*(`{3,}|~{3,})/u);
+    if (!match) continue;
+    if (!active) {
+      active = { char: match[1][0], length: match[1].length };
+      openingIndex = index;
+    } else if (match[1][0] === active.char && match[1].length >= active.length) {
+      active = null;
+      openingIndex = -1;
+    }
+  }
+  if (active && openingIndex >= 0) unbalancedLineIndexes.push(openingIndex);
+  return { balanced: !active, unbalancedLineIndexes };
 }
 
 function isPossiblyTruncatedReference(value) {

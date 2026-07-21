@@ -3,7 +3,8 @@
 function genreBlock(_mode, register, _styleProfile = '', documentProfile = null, requestStrength = '') {
   const group = documentProfile?.group || 'unknown';
   const blocks = [];
-  if (group === 'academic_report_explainer') blocks.push(academicReportBlock(register));
+  if (group === 'legal_contract') blocks.push(legalContractBlock(register));
+  else if (group === 'academic_report_explainer') blocks.push(academicReportBlock(register));
   else if (group === 'student_record_teacher') blocks.push(studentRecordTeacherBlock(register));
   else if (group === 'student_self_assessment') blocks.push(studentSelfAssessmentBlock(register));
   else if (group === 'essay_application') blocks.push(essayApplicationBlock(register, documentProfile?.profile, requestStrength));
@@ -21,6 +22,19 @@ function genreBlock(_mode, register, _styleProfile = '', documentProfile = null,
     requestStrength
   ));
   return blocks.filter(Boolean).join('\n');
+}
+
+function legalContractBlock(register) {
+  return [
+    '[원문 장르: 계약서·약관]',
+    '제N조의 번호·제목·순서와 조문 사이 경계를 그대로 유지한다. 조문을 다른 조로 옮기거나 합치지 않는다.',
+    '갑·을·당사자·회사·이용자 등 행위 주체와 권리·의무의 귀속을 절대 바꾸지 않는다.',
+    '부정, 예외, 조건, 가능성, 재량, 의무는 법적 의미를 이루는 연산자다. “할 수 있다”를 “한다”로, “하여야 한다”를 권고 표현으로 바꾸지 않는다.',
+    '날짜·기간·금액·비율·통지 방식·해지 요건·관할과 준거법을 원문 그대로 보존한다.',
+    '삼단 나열과 정의된 전문 용어를 반복이나 추상 표현으로 보고 삭제하지 않는다.',
+    '자연스러움은 조문의 법적 효과를 낮추는 구어체가 아니라, 같은 조문 안에서 어색한 연결과 중복만 정리해 만든다.',
+    `원문 종결체=${register}.`
+  ].join('\n');
 }
 
 function academicReportBlock(register) {
@@ -140,7 +154,7 @@ function questionnaireBlock() {
 }
 
 function tonePolicyBlock(targetRegister, requestStrength = '') {
-  const formalTarget = ['academic_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
+  const formalTarget = ['academic_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
     .includes(String(targetRegister || ''));
   if (requestStrength === 'advanced') {
     return formalTarget

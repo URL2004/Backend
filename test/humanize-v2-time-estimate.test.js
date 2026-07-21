@@ -35,7 +35,7 @@ test('고급 시간은 실제 편집 청크 기반의 5분 단위 범위로 계�
   const source = longAcademicDocument();
   const estimate = estimateAdvancedTime(source);
 
-  assert.equal(estimate.version, 1);
+  assert.equal(estimate.version, 2);
   assert.equal(estimate.basis, BASIS);
   assert.ok(estimate.editableChunkCount > 1);
   assert.ok(estimate.totalChunkCount >= estimate.editableChunkCount);

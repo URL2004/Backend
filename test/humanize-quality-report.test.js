@@ -59,7 +59,7 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.summary.needsReviewCount, 1);
   assert.equal(report.summary.needsReviewRate, 0.5);
   assert.equal(report.summary.koreanRefinementFailureCount, 1);
-  assert.equal(report.schemaVersion, 2);
+  assert.equal(report.schemaVersion, 3);
   assert.equal(report.summary.depthBelowMinimumRate, 0.5);
   assert.equal(report.summary.waivedRate, 0.5);
   assert.equal(report.summary.noBenefitDeliveredCount, 1);

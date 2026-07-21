@@ -13,6 +13,7 @@ const POV_PATTERNS = Object.freeze({
 const OUR_LEXICAL_NOUNS = Object.freeze([
   '나라', '학교', '사회', '집', '말', '몸', '지역', '동네', '회사', '팀', '반', '가족'
 ]);
+const QUOTED_SPAN_RE = /“[^”\n]{2,}”|‘[^’\n]{2,}’|"[^"\n]{2,}"|'[^'\n]{2,}'|「[^」\n]{2,}」|『[^』\n]{2,}』|《[^》\n]{2,}》|〈[^〉\n]{2,}〉/gu;
 
 function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles = [], formatProfile = null, mode = '' } = {}) {
   const context = normalizeDocumentContext(documentProfile, safetyProfiles, formatProfile);
@@ -59,7 +60,7 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
     endings,
     directQuoteCount: directQuoteContents(text).length,
     listItemCount: (text.match(/^\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+[.)]|[가-힣][.)]|[①-⑳])\s+.+$/gmu) || []).length,
-    headingCount: (text.match(/^\s*(?:(?:제\s*\d+\s*(?:장|절|항))(?:\s+\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*\S.*|\d+(?:\.\d+){0,3}[.)]?\s+\S.*|(?:서론|본론|결론|초록|요약|참고\s*문헌|부록))\s*$/gmu) || []).length,
+    headingCount: (text.match(/^\s*(?:(?:제\s*\d+\s*(?:장|절|항|조))(?:\s+\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*\S.*|\d+(?:\.\d+){0,3}[.)]?\s+\S.*|(?:서론|본론|결론|초록|요약|참고\s*문헌|부록))\s*$/gmu) || []).length,
     questionnaireQuestionCount: countQuestionnaireQuestions(text),
     lineCount: lineCount(text),
     lineBreakSensitive,
@@ -517,8 +518,8 @@ function restoreDirectQuoteContents(source, output) {
   }
   const sourceQuotes = directQuoteContents(source);
   let quoteIndex = 0;
-  const text = before.replace(/“([^”\n]{2,})”|‘([^’\n]{2,})’|"([^"\n]{2,})"/gu, (match, doubleCurly, singleCurly, asciiDouble) => {
-    const content = doubleCurly ?? singleCurly ?? asciiDouble ?? '';
+  const text = before.replace(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags), match => {
+    const content = match.slice(1, -1);
     const sourceContent = sourceQuotes[quoteIndex] ?? content;
     quoteIndex += 1;
     return `${match[0]}${sourceContent}${match.at(-1)}`;
@@ -536,8 +537,8 @@ function restoreDirectQuoteContents(source, output) {
 
 function directQuoteContents(value) {
   const contents = [];
-  for (const match of String(value || '').matchAll(/“([^”\n]{2,})”|‘([^’\n]{2,})’|"([^"\n]{2,})"/gu)) {
-    contents.push(match[1] ?? match[2] ?? match[3] ?? '');
+  for (const match of String(value || '').matchAll(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags))) {
+    contents.push(match[0].slice(1, -1));
   }
   return contents;
 }

@@ -75,11 +75,73 @@ test('malformed JSON schema 응답은 계약 오류로 실패한다', { concurre
   const originalFetch = global.fetch;
   const originalKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key';
-  global.fetch = async () => responseJson(completed({ wrong: 'field' }));
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return responseJson(completed({ wrong: 'field' }));
+  };
   t.after(() => { global.fetch = originalFetch; process.env.OPENAI_API_KEY = originalKey; });
   await assert.rejects(() => completeJson({
     system: 'test', user: 'test', schema: SIMPLE_SCHEMA, schemaName: 'test_schema', model: 'gpt-5.4-mini'
   }), error => error.code === 'OPENAI_SCHEMA_VALIDATION');
+  assert.equal(calls, 2, '같은 모델의 schema 응답은 한 번만 재시도한다');
+});
+
+test('5xx는 최대 두 번만 재시도하고 재시도 유형을 오류에 남긴다', { concurrency: false }, async t => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return responseJson({ error: { message: 'temporary server failure' } }, 500, { 'retry-after': '0' });
+  };
+  t.after(() => { global.fetch = originalFetch; process.env.OPENAI_API_KEY = originalKey; });
+  await assert.rejects(() => completeJson({
+    system: 'test', user: 'test', schema: SIMPLE_SCHEMA, schemaName: 'test_schema', model: 'gpt-5.4-mini'
+  }), error => error.status === 500 && error.retryCounts?.server === 2);
+  assert.equal(calls, 3);
+});
+
+test('Retry-After 대기 중 AbortSignal을 받으면 추가 호출 없이 즉시 중단한다', { concurrency: false }, async t => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return responseJson({ error: { message: 'rate limited' } }, 429, { 'retry-after': '30' });
+  };
+  t.after(() => { global.fetch = originalFetch; process.env.OPENAI_API_KEY = originalKey; });
+  const controller = new AbortController();
+  const pending = completeJson({
+    system: 'test', user: 'test', schema: SIMPLE_SCHEMA, schemaName: 'test_schema', model: 'gpt-5.4-mini', signal: controller.signal
+  });
+  setTimeout(() => controller.abort(), 10);
+  await assert.rejects(() => pending, error => error.name === 'AbortError' || error.code === 'ABORT_ERR');
+  assert.equal(calls, 1);
+});
+
+test('청크 절대 마감시간은 다음 모델 호출에 새 시간 창을 주지 않는다', { concurrency: false }, async t => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return responseJson(completed({ value: 'late' }));
+  };
+  t.after(() => { global.fetch = originalFetch; process.env.OPENAI_API_KEY = originalKey; });
+
+  await assert.rejects(() => completeJson({
+    system: 'test',
+    user: 'test',
+    schema: SIMPLE_SCHEMA,
+    schemaName: 'test_schema',
+    model: 'gpt-5.4-mini',
+    deadlineMs: Date.now() - 1
+  }), error => error.code === 'OPENAI_CHUNK_TIMEOUT');
+  assert.equal(calls, 0);
 });
 
 test('max_output_tokens로 끝난 구조화 응답은 문장 절단으로 차단한다', { concurrency: false }, async t => {

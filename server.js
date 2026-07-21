@@ -13,6 +13,7 @@ const gptRuntimeConfig = require('./lib/gptRuntimeConfig');
 const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
 const { POLICY_VERSION: HUMANIZATION_DEPTH_POLICY } = require('./engine-gpt-prod/humanizationDepth');
 const { isV248FeatureEnabled } = require('./lib/humanizeV248Flags');
+const { VERSION: HUMANIZE_ENGINE_VERSION } = require('./engine-gpt-prod');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -41,7 +42,9 @@ app.use('/events', limiter);   // 알림 중계 — 인증 전 폭주 방지
 // 헬스체크(배포 플랫폼용 — Render 등은 이 경로로 살아있는지 판단)
 const transformRouter = require('./routes/transform');
 app.get(['/healthz', '/api/health'], async (req, res) => {
-  const humanizeEngineV2 = process.env.HUMANIZE_ENGINE_V2_ENABLED === '1';
+  // v2.5 is the only production engine. Rollback is performed by restoring
+  // the previous Render live deployment, not by enabling legacy code.
+  const humanizeEngineV2 = true;
   const humanizationDepthGate = String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0';
   try {
     const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
@@ -56,6 +59,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       ...(compatibility.code ? { code: compatibility.code } : {}),
       runtimeConfigSource: runtimeConfig.source || 'unknown',
       humanizeEngineV2,
+      humanizeEngineVersion: HUMANIZE_ENGINE_VERSION,
       humanizationDepthGate,
       humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
       sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
@@ -73,6 +77,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       ok: false,
       code: 'RUNTIME_CONFIG_UNAVAILABLE',
       humanizeEngineV2,
+      humanizeEngineVersion: HUMANIZE_ENGINE_VERSION,
       humanizationDepthGate,
       humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
       sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),

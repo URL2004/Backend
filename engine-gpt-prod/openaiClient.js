@@ -47,6 +47,7 @@ async function completeJson({
   toolChoice,
   include,
   signal,
+  deadlineMs,
   safetyIdentifier,
   meta = {}
 } = {}) {
@@ -89,35 +90,57 @@ async function completeJson({
   if (safetyIdentifier) body.safety_identifier = validateSafetyIdentifier(safetyIdentifier);
 
   const startedAt = Date.now();
-  const response = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, {
+  const chunkTotalLimitMs = Math.max(10000, Number(process.env.OPENAI_CHUNK_TOTAL_TIMEOUT_MS) || 180000);
+  const suppliedDeadline = Number(deadlineMs);
+  const chunkDeadlineMs = Number.isFinite(suppliedDeadline) && suppliedDeadline > 0
+    ? suppliedDeadline
+    : startedAt + chunkTotalLimitMs;
+  const request = {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(body)
-  }, signal);
-
-  const raw = await response.json();
+  };
+  const retryCounts = emptyRetryCounts();
+  let raw = null;
+  let parsed = null;
+  let outputText = '';
+  let status = '';
+  let incompleteReason = '';
+  for (let schemaAttempt = 0; schemaAttempt < 2; schemaAttempt += 1) {
+    const fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, chunkDeadlineMs);
+    mergeRetryCounts(retryCounts, fetched.retryCounts);
+    raw = await fetched.response.json();
+    status = raw.status || 'completed';
+    incompleteReason = raw.incomplete_details?.reason || '';
+    if (status !== 'completed') {
+      const error = new Error(`OpenAI response was not completed: ${status}${incompleteReason ? ` (${incompleteReason})` : ''}`);
+      error.code = incompleteReason === 'max_output_tokens' ? 'OPENAI_TRUNCATED_OUTPUT' : 'OPENAI_INCOMPLETE_OUTPUT';
+      error.incompleteReason = incompleteReason;
+      error.retryCounts = { ...retryCounts };
+      throw error;
+    }
+    outputText = extractOutputText(raw);
+    try {
+      parsed = JSON.parse(outputText);
+      validateStructuredOutput(parsed, schema);
+      break;
+    } catch (error) {
+      if (error instanceof SyntaxError && !error.code) error.code = 'OPENAI_SCHEMA_PARSE';
+      if (!String(error?.code || '').startsWith('OPENAI_SCHEMA')) {
+        error.retryCounts = { ...retryCounts };
+        throw error;
+      }
+      if (schemaAttempt >= 1) {
+        error.retryCounts = { ...retryCounts };
+        throw error;
+      }
+      retryCounts.schema += 1;
+    }
+  }
   const elapsedMs = Date.now() - startedAt;
-  const status = raw.status || 'completed';
-  const incompleteReason = raw.incomplete_details?.reason || '';
-  if (status !== 'completed') {
-    const error = new Error(`OpenAI response was not completed: ${status}${incompleteReason ? ` (${incompleteReason})` : ''}`);
-    error.code = incompleteReason === 'max_output_tokens' ? 'OPENAI_TRUNCATED_OUTPUT' : 'OPENAI_INCOMPLETE_OUTPUT';
-    error.incompleteReason = incompleteReason;
-    throw error;
-  }
-  const outputText = extractOutputText(raw);
-  let parsed;
-  try {
-    parsed = JSON.parse(outputText);
-  } catch (e) {
-    const error = new Error(`OpenAI structured JSON parse failed: ${e.message}`);
-    error.code = 'OPENAI_SCHEMA_PARSE';
-    throw error;
-  }
-  validateStructuredOutput(parsed, schema);
 
   const usage = normalizeUsage(raw.usage, model, raw);
   try {
@@ -138,6 +161,7 @@ async function completeJson({
       estimatedUsd: usage.estimatedUsd,
       promptCacheKey: cacheKey,
       promptCacheHitRatio: usage.inputTokens ? Number((usage.cachedInputTokens / usage.inputTokens).toFixed(4)) : 0,
+      retryCounts,
       elapsedMs
     });
   } catch {}
@@ -149,6 +173,7 @@ async function completeJson({
     rawText: outputText,
     raw,
     usage,
+    retryCounts,
     status,
     incompleteReason,
     elapsedMs
@@ -172,36 +197,62 @@ function supportsExtendedPromptCache(model) {
   return false;
 }
 
-async function fetchOpenAIWithRetry(url, init, parentSignal) {
+async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0) {
   const configuredRetries = Number(process.env.OPENAI_API_MAX_RETRIES ?? process.env.OPENAI_API_RETRY_ATTEMPTS);
-  const maxRetries = Math.max(0, Math.min(3, Number.isFinite(configuredRetries) ? configuredRetries : DEFAULT_MAX_RETRIES));
-  const attempts = maxRetries + 1;
+  const retryCap = Math.max(0, Math.min(3, Number.isFinite(configuredRetries) ? configuredRetries : DEFAULT_MAX_RETRIES));
+  const retryLimits = {
+    rateLimit: Math.min(3, retryCap),
+    server: Math.min(2, retryCap),
+    network: Math.min(2, retryCap),
+    timeout: Math.min(1, retryCap)
+  };
+  const retryCounts = emptyRetryCounts();
+  const startedAt = Date.now();
+  if (deadlineMs && deadlineMs <= startedAt) {
+    const error = new Error('OpenAI Responses API request exceeded the chunk time limit');
+    error.code = 'OPENAI_CHUNK_TIMEOUT';
+    error.retryCounts = emptyRetryCounts();
+    throw error;
+  }
+  const totalLimitMs = deadlineMs > startedAt
+    ? deadlineMs - startedAt
+    : Math.max(10000, Number(process.env.OPENAI_CHUNK_TOTAL_TIMEOUT_MS) || 180000);
   let lastError = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    if (parentSignal?.aborted) throw new Error('aborted');
+  while (Date.now() - startedAt < totalLimitMs) {
+    if (parentSignal?.aborted) throw abortError();
     try {
-      const response = await fetchWithTimeout(url, init, parentSignal);
-      if (response.ok) return response;
+      const remainingMs = Math.max(1000, totalLimitMs - (Date.now() - startedAt));
+      const response = await fetchWithTimeout(url, init, parentSignal, remainingMs);
+      if (response.ok) return { response, retryCounts };
       const message = await readErrorMessage(response);
       const err = new Error(`OpenAI Responses API ${response.status}: ${message}`);
       err.status = response.status;
-      err.retryable = response.status === 429 || response.status >= 500;
       err.retryAfterMs = retryAfterMs(response.headers?.get?.('retry-after'));
-      if (!err.retryable || attempt >= attempts) throw err;
-      lastError = err;
+      throw err;
     } catch (err) {
       if (parentSignal?.aborted) throw err;
-      const retryable = err?.retryable === true || err?.name === 'AbortError' || err?.code === 'ETIMEDOUT' || /timeout|network|fetch failed/i.test(err?.message || '');
-      if (!retryable || attempt >= attempts) throw err;
+      const type = retryType(err);
+      if (!type || retryCounts[type] >= retryLimits[type]) {
+        err.retryCounts = { ...retryCounts };
+        throw err;
+      }
+      retryCounts[type] += 1;
       lastError = err;
+      const delay = err?.retryAfterMs ?? backoffMs(retryCounts[type]);
+      const remainingMs = totalLimitMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) break;
+      await sleepWithSignal(Math.min(delay, remainingMs), parentSignal);
     }
-    await sleep(lastError?.retryAfterMs ?? backoffMs(attempt));
   }
-  throw lastError || new Error('OpenAI Responses API request failed');
+  const error = lastError || new Error('OpenAI Responses API request exceeded the chunk time limit');
+  if (!error.code) error.code = 'OPENAI_CHUNK_TIMEOUT';
+  error.retryCounts = { ...retryCounts };
+  throw error;
 }
 
-async function fetchWithTimeout(url, init, parentSignal) {
-  const timeoutMs = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity) {
+  const configured = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+  const timeoutMs = Math.max(1000, Math.min(configured, Number.isFinite(remainingMs) ? remainingMs : configured));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onAbort = () => controller.abort();
@@ -210,8 +261,11 @@ async function fetchWithTimeout(url, init, parentSignal) {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (err) {
     if (controller.signal.aborted && !parentSignal?.aborted) {
-      err.code = err.code || 'ETIMEDOUT';
-      err.retryable = true;
+      const timeoutError = new Error(`OpenAI Responses API request timed out after ${timeoutMs}ms`);
+      timeoutError.code = 'ETIMEDOUT';
+      timeoutError.retryable = true;
+      timeoutError.cause = err;
+      throw timeoutError;
     }
     throw err;
   } finally {
@@ -235,6 +289,23 @@ function backoffMs(attempt) {
   return Math.max(100, base + jitter);
 }
 
+function retryType(error) {
+  if (Number(error?.status) === 429) return 'rateLimit';
+  if (Number(error?.status) >= 500) return 'server';
+  if (error?.code === 'ETIMEDOUT' || error?.code === 'OPENAI_CHUNK_TIMEOUT' || /timed?\s*out|timeout/iu.test(String(error?.message || ''))) return 'timeout';
+  if (/network|fetch failed|econnreset|enotfound|socket hang up/iu.test(String(error?.message || ''))) return 'network';
+  return '';
+}
+
+function emptyRetryCounts() {
+  return { rateLimit: 0, server: 0, network: 0, timeout: 0, schema: 0 };
+}
+
+function mergeRetryCounts(target, source) {
+  for (const key of Object.keys(target || {})) target[key] += Number(source?.[key] || 0);
+  return target;
+}
+
 function retryAfterMs(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -245,8 +316,28 @@ function retryAfterMs(value) {
   return null;
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleepWithSignal(ms, signal) {
+  if (!ms) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      reject(abortError());
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function abortError() {
+  const error = new Error('aborted');
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
 }
 
 function extractOutputText(data) {

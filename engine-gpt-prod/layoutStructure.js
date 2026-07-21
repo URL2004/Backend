@@ -4,7 +4,7 @@ const { splitSentences } = require('../engine/koreanText');
 
 const MAX_PARAGRAPH_BARE = 1100;
 const MAX_PARAGRAPH_SENTENCES = 12;
-const STRUCTURAL_ROLES = new Set(['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote']);
+const STRUCTURAL_ROLES = new Set(['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote', 'code', 'legal_clause']);
 
 function normalizeNewlines(value) {
   return String(value || '').replace(/\r\n?/gu, '\n');
@@ -51,8 +51,14 @@ function buildLineRecords(value) {
     role: 'blank'
   });
   const nonEmpty = records.filter(record => !record.blank);
+  const codeIndices = detectCodeLineIndices(records);
+  const tableIndices = detectContextTableLineIndices(records, codeIndices);
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
   for (const record of nonEmpty) {
+    if (codeIndices.has(record.index)) {
+      record.role = 'code';
+      continue;
+    }
     const position = nonEmpty.findIndex(item => item.index === record.index);
     const previous = position > 0 ? nonEmpty[position - 1] : null;
     const next = position + 1 < nonEmpty.length ? nonEmpty[position + 1] : null;
@@ -61,7 +67,8 @@ function buildLineRecords(value) {
       firstContent: record.index === firstContentIndex,
       previous,
       next,
-      blankBefore: record.index === 0 || previousRaw?.blank === true
+      blankBefore: record.index === 0 || previousRaw?.blank === true,
+      tableLike: tableIndices.has(record.index)
     });
   }
   return records;
@@ -70,8 +77,9 @@ function buildLineRecords(value) {
 function classifyLine(value, context = {}) {
   const text = visibleTrim(value);
   if (!text) return 'blank';
+  if (legalClauseParts(text)) return 'legal_clause';
   if (isKnownHeadingLine(text)) return 'heading';
-  if (isTableLikeLine(text)) return 'table';
+  if (context.tableLike || isExplicitTableLine(text)) return 'table';
   if (isListLine(text)) return 'list';
   if (isQuoteLine(text)) return 'quote';
   const label = labelParts(text);
@@ -88,6 +96,7 @@ function isKnownHeadingLine(value) {
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)．]?\s*\S.{0,100}$/u.test(text)) return true;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/u.test(text)) return true;
   if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/u.test(text)) return true;
+  if (/^제\s?\d{1,3}\s?조(?:의\s?\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?$/u.test(text)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
   return /^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/iu.test(text);
 }
@@ -115,12 +124,69 @@ function isListLine(value) {
   return /^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+\S/u.test(visibleTrim(value));
 }
 
-function isTableLikeLine(value) {
+function isExplicitTableLine(value) {
   const text = visibleTrim(value);
-  if (/^\|.+\|$/u.test(text) || /\t/u.test(text)) return true;
+  if (/^\|.+\|$/u.test(text)) return true;
   if (/^(?:표|그림)\s*[0-9A-Za-z가-힣.-]+/u.test(text)) return true;
-  if (/\S\s{2,}\S\s{2,}\S/u.test(text) && text.length <= 260) return true;
   return false;
+}
+
+function tableColumnCount(value) {
+  const text = String(value || '');
+  if (/\t/u.test(text)) return text.split(/\t+/u).filter(cell => visibleTrim(cell)).length;
+  if (/\S\s{2,}\S/u.test(text)) return text.split(/\s{2,}/u).filter(cell => visibleTrim(cell)).length;
+  return 0;
+}
+
+function detectContextTableLineIndices(records, excluded = new Set()) {
+  const out = new Set();
+  for (const record of records || []) {
+    if (!record.blank && !excluded.has(record.index) && isExplicitTableLine(record.text)) out.add(record.index);
+  }
+  let group = [];
+  const flush = () => {
+    if (group.length >= 2) {
+      const counts = group.map(item => tableColumnCount(item.raw));
+      const dominant = counts.sort((a, b) => a - b)[Math.floor(counts.length / 2)];
+      for (const item of group) {
+        if (tableColumnCount(item.raw) >= 2 && Math.abs(tableColumnCount(item.raw) - dominant) <= 1) out.add(item.index);
+      }
+    }
+    group = [];
+  };
+  for (const record of records || []) {
+    if (record.blank || excluded.has(record.index) || tableColumnCount(record.raw) < 2) {
+      flush();
+      continue;
+    }
+    group.push(record);
+  }
+  flush();
+  return out;
+}
+
+function detectCodeLineIndices(records) {
+  const out = new Set();
+  let fence = null;
+  for (const record of records || []) {
+    const match = String(record.raw || '').match(/^\s*(`{3,}|~{3,})/u);
+    if (!fence) {
+      if (!match) continue;
+      fence = { char: match[1][0], length: match[1].length };
+      out.add(record.index);
+      continue;
+    }
+    out.add(record.index);
+    if (match && match[1][0] === fence.char && match[1].length >= fence.length) fence = null;
+  }
+  return out;
+}
+
+function legalClauseParts(value) {
+  const text = visibleTrim(value);
+  const match = text.match(/^(제\s*\d{1,3}\s*조(?:의\s*\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?)(?:\s+([\s\S]+))?$/u);
+  if (!match) return null;
+  return { prefix: match[1], body: String(match[2] || '').trim() };
 }
 
 function isQuoteLine(value) {
@@ -129,7 +195,7 @@ function isQuoteLine(value) {
   // 따옴표로 시작한다는 이유만으로 뒤에 본문이 이어지는 긴 산문 전체를
   // 인용 블록으로 잠그지 않는다. 독립 인용 행만 구조로 취급하고, 문장
   // 첫머리의 속담·좌우명은 일반 산문으로 두어 바깥 띄어쓰기를 교정한다.
-  return /^(?:“[^”\n]{1,500}”|‘[^’\n]{1,500}’|"[^"\n]{1,500}"|'[^'\n]{1,500}')$/u.test(text);
+  return /^(?:“[^”\n]{1,500}”|‘[^’\n]{1,500}’|"[^"\n]{1,500}"|'[^'\n]{1,500}'|「[^」\n]{1,500}」|『[^』\n]{1,500}』|《[^》\n]{1,500}》|〈[^〉\n]{1,500}〉)$/u.test(text);
 }
 
 function isSentenceComplete(value) {
@@ -314,6 +380,7 @@ module.exports = {
   shouldPreserveLineBoundary,
   isStructuralRole,
   isKnownHeadingLine,
+  legalClauseParts,
   labelParts,
   isSentenceComplete,
   isHardProseBoundary,

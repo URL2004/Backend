@@ -58,6 +58,13 @@ function installEngineMock(t, options = {}) {
     const body = JSON.parse(init.body);
     const name = body.text?.format?.name;
     calls.push({ name, model: body.model, body });
+    if (name === 'gpt_prod_humanize_result' && options.concurrencyProbe) {
+      options.concurrencyProbe.active += 1;
+      options.concurrencyProbe.max = Math.max(options.concurrencyProbe.max, options.concurrencyProbe.active);
+      const callNumber = calls.filter(call => call.name === name).length;
+      await new Promise(resolve => setTimeout(resolve, callNumber % 2 ? 20 : 5));
+      options.concurrencyProbe.active -= 1;
+    }
     if (options.refuseHumanize && name === 'gpt_prod_humanize_result') {
       return new Response(JSON.stringify({
         status: 'completed',
@@ -140,7 +147,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.4.18');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.0');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -518,7 +525,8 @@ test('OpenAI refusal은 최종 결과로 전달하지 않고 strict 차단한다
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'user-4', config: config() });
   assert.equal(out.status, 'blocked');
   assert.equal(out.result.outputText, SOURCE);
-  assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 2);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 1,
+    'refusal은 품질 승격 대상으로 재시도하지 않는다');
 });
 
 test('v2 청크가 보호 사실을 잃고 회복도 실패하면 원문 동일 결과를 전달하지 않는다', { concurrency: false }, async t => {
@@ -951,18 +959,36 @@ test('영어 입력은 세 공개 모드 모두 API 호출 전에 한국어 전�
   assert.equal(mock.calls.length, 0);
 });
 
-test('v2 플래그를 0으로 내리면 safety salt 없이 레거시 엔진으로 즉시 복귀한다', { concurrency: false }, async t => {
+test('운영 엔진은 구형 플래그와 무관하게 v2.5 경로만 사용한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t, { humanize: SAFE_POLISH });
   process.env.HUMANIZE_ENGINE_V2_ENABLED = '0';
-  delete process.env.OPENAI_SAFETY_SALT;
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-operating-engine-v1');
-  assert.equal(out.engineMeta.humanizationPolicyVersion, '');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.0');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
-    assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);
     assert.equal(JSON.stringify(call.body).includes('rollback-user'), false);
   }
+});
+
+test('일반 청크 worker pool은 동시성 2에서도 결과 순서를 보존한다', { concurrency: false }, async t => {
+  const previous = process.env.HUMANIZE_CHUNK_CONCURRENCY;
+  process.env.HUMANIZE_CHUNK_CONCURRENCY = '2';
+  t.after(() => {
+    if (previous === undefined) delete process.env.HUMANIZE_CHUNK_CONCURRENCY;
+    else process.env.HUMANIZE_CHUNK_CONCURRENCY = previous;
+  });
+  const probe = { active: 0, max: 0 };
+  const source = Array.from({ length: 4 }, (_, paragraph) => (
+    Array.from({ length: 16 }, (_, sentence) => `문단 ${paragraph + 1}의 ${sentence + 1}번째 문장은 분석 절차와 관찰 결과를 구체적으로 설명합니다.`).join(' ')
+  )).join('\n\n');
+  const mock = installEngineMock(t, { refuseHumanize: true, concurrencyProbe: probe });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'pool-user', config: config() });
+  assert.equal(out.status, 'blocked');
+  assert.equal(out.engineMeta.chunkConcurrency, 2);
+  assert.ok(probe.max >= 2);
+  assert.deepEqual(out.chunks.map(chunk => chunk.index), out.chunks.map(chunk => chunk.index).slice().sort((a, b) => a - b));
+  assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 2);
 });
 
 test('장문 섹션 심사도 문서 전체 수리는 최대 1회만 수행한다', { concurrency: false }, async t => {

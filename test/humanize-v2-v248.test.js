@@ -448,6 +448,7 @@ test('주간 n-gram 보고서는 10문서·2배·순증 8 기준과 사람 승�
 test('/transform은 효과 제한 확인 플래그가 켜졌을 때 작업·과금 전에 409를 반환한다', { concurrency: false }, async t => {
   withEnv(t, 'HUMANIZE_ENGINE_V2_ENABLED', '1');
   withEnv(t, 'HUMANIZE_EFFECT_CONFIRMATION_ENABLED', '1');
+  withEnv(t, 'DEV_NO_AUTH', '1');
   const handler = transformRouter.stack.find(layer => layer.route?.path === '/transform' && layer.route?.methods?.post)
     .route.stack[0].handle;
   const text = '비가 왔다. 우산은 가방 안에 넣어 두었다. 학교 앞 오래된 빵집에서는 주인이 아침마다 직접 구운 식빵과 작은 단팥빵을 창가의 나무 선반 위에 차례로 올려놓곤 했다. 버스는 제시간에 도착했다. 집에 돌아와 젖은 운동화를 현관 신문지 위에 놓고 창문을 조금 열어 두었다.';

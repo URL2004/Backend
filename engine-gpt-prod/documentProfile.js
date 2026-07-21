@@ -6,6 +6,7 @@ const layoutStructure = require('./layoutStructure');
 const CONTENT_GENRES = Object.freeze([
   'academic_paper',
   'report_assignment',
+  'legal_contract',
   'student_record_teacher',
   'student_self_assessment',
   'resume_application',
@@ -25,6 +26,7 @@ const DOCUMENT_PROFILES = CONTENT_GENRES;
 const PROFILE_GROUPS = Object.freeze({
   academic_paper: 'academic_report_explainer',
   report_assignment: 'academic_report_explainer',
+  legal_contract: 'legal_contract',
   student_record_teacher: 'student_record_teacher',
   student_self_assessment: 'student_self_assessment',
   resume_application: 'essay_application',
@@ -40,6 +42,7 @@ const PROFILE_GROUPS = Object.freeze({
 
 const SENSITIVE_PROFILES = new Set([
   'academic_paper',
+  'legal_contract',
   'student_record_teacher',
   'student_self_assessment',
   'resume_application',
@@ -57,6 +60,17 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const firstPersonSignals = count(text, /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|저는|제가|저의|저에게)(?=$|[^가-힣A-Za-z0-9_])/gu);
   const reviewContentSignals = count(text, /(?:후기|리뷰|다녀왔|방문했|써봤|사용해\s*보|추천|맛집|내돈내산|오늘은|사진|솔직히)/gu);
   const reviewEndingSignals = count(text, /(?:해요|했어요|였어요|더라고요|거든요|네요|죠)[.!?~]?\s*(?=$|\n)/gmu);
+
+  const legalArticleSignals = lines.filter(line => /^제\s*\d{1,3}\s*조(?:의\s*\d{1,3})?(?:\s|$|[（(])/u.test(line)).length;
+  const legalPartySignals = count(text, /(?:^|[^가-힣A-Za-z0-9_])(?:갑|을|병|당사자|계약자|이용자|회사)(?:은|는|이|가|에게|의|와|과)(?=$|[^가-힣A-Za-z0-9_])/gmu);
+  const legalDutySignals = count(text, /(?:계약|약관|해지|해제|권리|의무|손해\s*배상|위약|면책|관할|준거법|효력|유효\s*기간|통지|동의|귀책|채무|이행)/gu);
+  const legalOperatorSignals = count(text, /(?:하여야\s*한다|해서는\s*아니\s*된다|할\s*수\s*있다|할\s*수\s*없다|아니한다|부담한다|귀속된다|효력을\s*(?:갖|발생)|해지할\s*수)/gu);
+  if ((legalArticleSignals >= 2 && legalDutySignals >= 3 && legalOperatorSignals >= 1)
+      || (legalArticleSignals >= 1 && legalPartySignals >= 2 && legalDutySignals >= 4 && legalOperatorSignals >= 2)) {
+    scores.legal_contract += 6.2
+      + Math.min(legalArticleSignals - 1, 5) * 0.42
+      + Math.min(legalDutySignals - 3, 5) * 0.18;
+  }
 
   add(scores, 'academic_paper', count(text, /(?:초록|Abstract|연구\s*(?:목적|방법|결과|가설)|선행\s*연구|방법론|유의확률|참고\s*문헌|doi\s*:|KCI|RISS)/giu), 1.3);
   add(scores, 'academic_paper', count(text, /\([가-힣A-Za-z·,&\s]+,?\s*(?:19|20)\d{2}[a-z]?\)/gu), 0.9);
@@ -328,7 +342,11 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       researchCareerContextSignals,
       applicationSectionSignals,
       strengthWeaknessSignals,
-      qualificationSignals
+      qualificationSignals,
+      legalArticleSignals,
+      legalPartySignals,
+      legalDutySignals,
+      legalOperatorSignals
     }
   };
 }
@@ -424,10 +442,10 @@ function detectFormatProfile(text, lines, sentences, questionnaire) {
   const headingCountValue = headingCount(lines.filter(line => !(questionnaire.isQuestionnaire && isQuestionLike(line))));
   const layout = layoutStructure.analyzeLineStructure(text);
   const listItemCount = Math.max(lines.filter(isListLine).length, layout.listLineCount || 0);
-  const tableLineCount = Math.max(lines.filter(isTableLikeLine).length, layout.tableLineCount || 0);
+  const tableLineCount = layout.tableLineCount || 0;
   const labelLineCount = layout.labelLineCount || 0;
   const referenceLineCount = lines.filter(line => /(?:doi\s*:|https?:\/\/|\((?:19|20)\d{2}(?:[a-z]|\s*\.\s*\d{1,2}(?:\s*\.\s*\d{1,2})?\s*\.?)?\)|참고\s*문헌|References|Bibliography)/iu.test(line)).length;
-  const quoteLineCount = lines.filter(line => /^(?:>|[“"'‘])/u.test(line) || /[“"][^”"\n]{2,}[”"]/u.test(line)).length;
+  const quoteLineCount = lines.filter(line => /^(?:>|[“"'‘「『《〈])/u.test(line) || /(?:[“"][^”"\n]{2,}[”"]|「[^」\n]{2,}」|『[^』\n]{2,}』|《[^》\n]{2,}》|〈[^〉\n]{2,}〉)/u.test(line)).length;
   const appendixPresent = lines.some(line => /^(?:부록|Appendix)(?:\s|$)/iu.test(line));
   const poemLikeLines = lines.filter(line => line.length <= 40 && !/[.!?。！？]$/u.test(line)).length;
   const lineSensitive = questionnaire.isQuestionnaire
@@ -504,6 +522,7 @@ function detectRiskFlags(text, { profile, safetyProfiles, questionnaire, formatP
   if (evaluationCount >= 2 || safetyProfiles.includes('student_record_teacher') || safetyProfiles.includes('student_self_assessment')) flags.push('evaluation_claim');
   if (commercialIntentCount >= 1 || profile === 'marketing') flags.push('commercial_claim');
   if (deadlineActionCount >= 2 || profile === 'mail_notice') flags.push('deadline_action_sensitive');
+  if (profile === 'legal_contract' || safetyProfiles.includes('legal_contract')) flags.push('legal_operator_sensitive');
   if (questionnaire.isQuestionnaire) flags.push('questionnaire_answer_boundary');
   return flags;
 }
@@ -514,6 +533,7 @@ function buildSafetyProfiles({ profile, ranked, questionnaire, nominalObservatio
   const safety = new Set();
   const minimumScore = {
     academic_paper: 1.3,
+    legal_contract: 4.8,
     student_record_teacher: 1.35,
     student_self_assessment: 1.4,
     resume_application: 1.35,
@@ -532,6 +552,7 @@ function buildSafetyProfiles({ profile, ranked, questionnaire, nominalObservatio
     safety.add('student_self_assessment');
   }
   if (formatProfile.flags.includes('line_sensitive') && profile === 'creative') safety.add('creative');
+  if (profile === 'legal_contract') safety.add('legal_contract');
   return [...safety];
 }
 
@@ -562,6 +583,9 @@ function resolveRegisterPolicy({ profile = 'unknown', basicStyle = '', requestSt
   if (['academic_paper', 'report_assignment'].includes(genre)) {
     targetRegister = 'academic_formal';
     targetRegisterSource = 'document_profile';
+  } else if (genre === 'legal_contract') {
+    targetRegister = 'legal_formal';
+    targetRegisterSource = 'document_profile';
   } else if (genre === 'student_record_teacher') {
     targetRegister = 'record_formal';
     targetRegisterSource = 'document_profile';
@@ -589,7 +613,7 @@ function resolveRegisterPolicy({ profile = 'unknown', basicStyle = '', requestSt
   }
 
   const formalTargets = new Set([
-    'academic_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal'
+    'academic_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal'
   ]);
   return {
     targetRegister,
@@ -613,7 +637,7 @@ function calibrateConfidence(top, second, compactLength) {
 }
 
 function headingCount(lines) {
-  return lines.filter(line => /^(?:#{1,6}\s+|제\s*\d+\s*(?:장|절|항)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){0,3}[.)]?\s+|서론$|본론$|결론$|목차$|참고\s*문헌$)/u.test(line)).length;
+  return lines.filter(line => /^(?:#{1,6}\s+|제\s*\d+\s*(?:장|절|항|조)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){0,3}[.)]?\s+|서론$|본론$|결론$|목차$|참고\s*문헌$)/u.test(line)).length;
 }
 
 function isQuestionLike(line) {
@@ -628,13 +652,6 @@ function isNumberedLine(line) {
 
 function isListLine(line) {
   return /^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+/u.test(String(line || '').trim());
-}
-
-function isTableLikeLine(line) {
-  const value = String(line || '').trim();
-  if (/\t|^\|.+\|$/u.test(value)) return true;
-  if (/^(?:표|그림)\s*[0-9A-Za-z가-힣.-]+/u.test(value)) return true;
-  return /\S\s{2,}\S\s{2,}\S/u.test(value) && value.length <= 260;
 }
 
 function count(text, regex) {

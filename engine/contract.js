@@ -28,12 +28,18 @@ const floor = require('./floor');
 //   ★2026-06-16: 해요체와 합니다체를 분리(기존엔 둘 다 'polite'로 뭉쳐, 해요체 입력이 합니다체로 격식화되던 버그).
 //   prompt.js가 register로 말투를 통일하므로, 'haeyo'를 받아야 해요체를 해요체로 보존한다.
 function detectRegister(t) {
-  const s = t || '';
-  const END = '(?=[.!?…\\s"”\'’)]|$)';
-  const hap = (s.match(new RegExp('(니다|니까)' + END, 'g')) || []).length;     // 합니다체(격식): ~습니다/~습니까
-  const haeyo = (s.match(new RegExp('요' + END, 'g')) || []).length;            // 해요체: 문장 끝 ~요(해요/거든요/죠/네요…)
-  const plain = (s.match(new RegExp('(?<![니요])(?:이?다|한다|된다|않다|없다|있다|었다|였다|진다|간다|난다|온다|본다)' + END, 'g')) || []).length;
+  const s = String(t || '').replace(/\r\n?/gu, '\n');
+  // 공백 앞의 모든 `요`를 종결로 세면 `주요 목적·정책 수요·필요 조건` 같은
+  // 명사까지 해요체로 오인한다. 문장부호 직전 또는 실제 행/문서 끝만 센다.
+  const END = '(?=(?:[.!?…。！？]+["”\'’」』)\\]]*\\s*|["”\'’」』)\\]]*(?:\\n|$)))';
+  const hap = (s.match(new RegExp('(니다|니까)' + END, 'gmu')) || []).length;
+  // `주요·수요·필요·개요`처럼 명사 자체가 요로 끝나는 행은 종결 어미가
+  // 아니다. 단순 행 끝만으로 해요체를 판정하지 않도록 그 어휘의 마지막
+  // 음절을 제외하고, 실제 `필요해요`처럼 활용한 표현은 계속 센다.
+  const haeyo = (s.match(new RegExp('(?:(?<![주수필개])요|죠|네요|군요|거든요)' + END, 'gmu')) || []).length;
+  const plain = (s.match(new RegExp('(?<![니요])(?:이?다|한다|된다|않다|없다|있다|었다|였다|진다|간다|난다|온다|본다|했다|됐다)' + END, 'gmu')) || []).length;
   const polite = hap + haeyo;
+  if (plain + polite === 0) return 'unknown';
   if (plain >= polite * 1.5) return 'plain';
   if (polite >= plain * 1.5) return haeyo >= hap ? 'haeyo' : 'polite';          // 존댓말 우세 → 해요체 vs 합니다체 구분
   return 'mixed';

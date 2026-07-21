@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const express = require('express');
 const analyze = require('../routes/analyze');
 const transform = require('../routes/transform');
+const usageBilling = require('../lib/usageBilling');
 const { evaluateHumanizeRuntime } = require('../lib/runtimeCompatibility');
 
 test('고급 작업은 보존형 폴백으로 다운그레이드하지 않는다', { concurrency: false }, t => {
@@ -52,20 +53,53 @@ test('/analyze는 감지만 허용하고 휴머나이징 구형 호출에 이동
   assert.match((await pdfResponse.json()).error, /PDF 직접 분석 API는 종료/u);
 });
 
+test('/transform은 구조 행만 있는 입력을 작업 생성 전에 422로 안내한다', { concurrency: false }, async t => {
+  const previousDevNoAuth = process.env.DEV_NO_AUTH;
+  process.env.DEV_NO_AUTH = '1';
+  t.after(() => {
+    if (previousDevNoAuth === undefined) delete process.env.DEV_NO_AUTH;
+    else process.env.DEV_NO_AUTH = previousDevNoAuth;
+  });
+
+  const app = express();
+  app.use(express.json());
+  app.use('/', transform);
+  const server = await new Promise(resolve => {
+    const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+  });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+
+  const tableOnly = Array.from({ length: 10 }, (_, index) =>
+    `항목 ${index + 1}\t측정값 ${100 + index}\t비고 ${String.fromCharCode(65 + index)} 구간의 구조 보존 자료`
+  ).join('\n');
+  const address = server.address();
+  const response = await fetch(`http://127.0.0.1:${address.port}/transform`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: tableOnly, mode: 'formal' })
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 422);
+  assert.equal(body.code, 'NO_EDITABLE_CONTENT');
+  assert.equal(body.editableChunkCount, 0);
+  assert.equal(typeof body.documentProfile, 'string');
+});
+
 test('transform 완료 과금은 쿠폰과 크레딧을 같은 멱등 job 키로 분기한다', { concurrency: false }, async t => {
   const originals = {
-    retryAsync: analyze.retryAsync,
-    commitCouponUsage: analyze.commitCouponUsage,
-    commitCreditDeduct: analyze.commitCreditDeduct,
-    precheckCoupon: analyze.precheckCoupon,
-    precheckCredits: analyze.precheckCredits
+    retryAsync: usageBilling.retryAsync,
+    commitCouponUsage: usageBilling.commitCouponUsage,
+    commitCreditDeduct: usageBilling.commitCreditDeduct,
+    precheckCoupon: usageBilling.precheckCoupon,
+    precheckCredits: usageBilling.precheckCredits
   };
-  t.after(() => Object.assign(analyze, originals));
+  t.after(() => Object.assign(usageBilling, originals));
 
-  analyze.retryAsync = async fn => fn();
+  usageBilling.retryAsync = async fn => fn();
   const calls = [];
-  analyze.commitCouponUsage = async (...args) => calls.push({ type: 'coupon', args });
-  analyze.commitCreditDeduct = async (...args) => calls.push({ type: 'credit', args });
+  usageBilling.commitCouponUsage = async (...args) => calls.push({ type: 'coupon', args });
+  usageBilling.commitCreditDeduct = async (...args) => calls.push({ type: 'credit', args });
 
   const couponJob = {
     id: 'coupon-1', uid: 'user-1', mode: 'formal', billingMode: 'coupon',
@@ -95,11 +129,11 @@ test('transform 완료 과금은 쿠폰과 크레딧을 같은 멱등 job 키로
     args: ['user-2', 14, 'humanize', 'job_credit-1', { mode: 'blog', textLength: 650 }]
   });
 
-  analyze.precheckCoupon = async (...args) => {
+  usageBilling.precheckCoupon = async (...args) => {
     calls.push({ type: 'coupon_precheck', args });
     return { uid: 'user-1', tier: '10000', billingMode: 'coupon' };
   };
-  analyze.precheckCredits = async (...args) => {
+  usageBilling.precheckCredits = async (...args) => {
     calls.push({ type: 'credit_precheck', args });
     return { uid: 'user-2', plan: 'free' };
   };
@@ -112,14 +146,14 @@ test('transform 완료 과금은 쿠폰과 크레딧을 같은 멱등 job 키로
 
 test('저효과·품질 경고가 있는 완료 결과도 정상 과금한다', { concurrency: false }, async t => {
   const originals = {
-    retryAsync: analyze.retryAsync,
-    commitCreditDeduct: analyze.commitCreditDeduct
+    retryAsync: usageBilling.retryAsync,
+    commitCreditDeduct: usageBilling.commitCreditDeduct
   };
-  t.after(() => Object.assign(analyze, originals));
+  t.after(() => Object.assign(usageBilling, originals));
 
-  analyze.retryAsync = async fn => fn();
+  usageBilling.retryAsync = async fn => fn();
   const calls = [];
-  analyze.commitCreditDeduct = async (...args) => calls.push(args);
+  usageBilling.commitCreditDeduct = async (...args) => calls.push(args);
   const job = {
     id: 'quality-warning-charged-1', uid: 'user-quality', mode: 'blog',
     billingMode: 'credit', plan: 'free', needed: 18, text: '다'.repeat(900),

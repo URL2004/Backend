@@ -10,6 +10,8 @@ function registerBlock(register, documentProfile = null) {
 
   if (profile === 'resume_application') {
     lines.push('어휘 격식: 읽기 쉽게 만들되 자기소개서의 직무·성과·역량 어휘를 일상 대화 수준으로 낮추지 않는다.');
+  } else if (profile === 'legal_contract') {
+    lines.push('어휘 격식: 계약·약관의 정의어와 권리·의무·가능성 표현을 보존하고 구어체나 친근체로 낮추지 않는다.');
   } else if (['academic_paper', 'report_assignment'].includes(profile)) {
     lines.push('어휘 격식: 학술·보고서의 정확한 개념어를 보존하고, 구어적 축약이나 감탄형 표현을 새로 넣지 않는다.');
   } else if (['student_record_teacher', 'student_self_assessment'].includes(profile)) {

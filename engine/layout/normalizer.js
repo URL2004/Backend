@@ -35,7 +35,10 @@ async function formatDocument(text, opts = {}) {
   const phase = opts.phase || 'post';
   const profile = detectLayoutProfile(source, mode);
   const need = formatNeedScore(source);
-  const protectedSource = protectSpans(normalizeRawWhitespace(source));
+  // 구조 행을 원문 상태에서 먼저 토큰화해야 탭·다중 열 구분이 일반 공백
+  // 정규화에 먹히지 않는다.
+  const protectedSource = protectSpans(source);
+  protectedSource.text = normalizeRawWhitespace(protectedSource.text);
   const spacingRepairRequested = opts.forceSpacingRepair === true || opts.userRequestedSpacingRepair === true;
   const needsSpacing = spacingRepairRequested || needsSpacingRepair(protectedSource.text);
   let working = protectedSource.text;
@@ -130,6 +133,7 @@ function protectSpans(text) {
   ];
   for (const rx of patterns) {
     out = out.replace(rx, match => {
+      if (/^ZXQSPAN\d{4}QXZ$/u.test(match)) return match;
       const id = `ZXQSPAN${String(spans.length).padStart(4, '0')}QXZ`;
       spans.push({ id, value: match });
       return id;

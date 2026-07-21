@@ -9,6 +9,7 @@ const { completeJson } = require('./openaiClient');
 const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
 const humanizationDepth = require('./humanizationDepth');
+const legalAudit = require('./legalAudit');
 
 const POLISH_REPAIR_SCHEMA = {
   type: 'object',
@@ -74,6 +75,8 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'creative_line_structure',
   'register_shift',
   'number_changed',
+  'legal_relation_shift',
+  'legal_article_structure_changed',
   ...discourse.VIOLATION_CODES
 ]);
 
@@ -88,7 +91,7 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
       result: { outputText },
       rawText: source,
       povSeed: contract?.povSeed,
-      optIn: false,
+      optIn: contract?.optIn === true,
       mode,
       chunkLevel: false,
       allowedExtra
@@ -129,6 +132,13 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     formattingSentenceSpaceRepairCount: structureAudit?.layoutRepair?.formatting?.missingSentenceSpaceRepairCount || 0
   });
   warnings.push(...voiceAudit.warnings);
+  const legalIntegrity = legalAudit.auditLegalIntegrity(source, outputText, documentProfile);
+  if (legalIntegrity.issueCodes.includes('legal_relation_shift')) {
+    warnings.push(warning('legal_relation_shift', '계약·약관의 권리·의무·부정·가능성 관계가 달라졌을 수 있어요.'));
+  }
+  if (legalIntegrity.issueCodes.includes('legal_article_structure_changed')) {
+    warnings.push(warning('legal_article_structure_changed', '조문 번호나 순서가 원문과 달라졌을 수 있어요.'));
+  }
   if (structureAudit?.lostLockedCount > 0) {
     warnings.push(warning('structure_lock_loss', '목차·참고문헌·제목 구조 일부가 달라졌을 수 있어요.', { count: structureAudit.lostLockedCount }));
   }
@@ -140,6 +150,9 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   }
   if (structureAudit?.unsafeBoundaryCount > 0) {
     warnings.push(warning('unsafe_chunk_boundary', '청크 경계에서 문장이 자연스럽게 이어지지 않을 수 있어요.', { count: structureAudit.unsafeBoundaryCount }));
+  }
+  if (structureAudit?.sectionPathErrorCount > 0) {
+    warnings.push(warning('section_path_mismatch', '본문 일부가 잘못된 절 경로에 연결됐을 수 있어요.', { count: structureAudit.sectionPathErrorCount }));
   }
   const discourseAudit = discourse.compareDiscourse(source, outputText);
   for (const violation of discourseAudit.violations || []) {
@@ -154,6 +167,7 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     version: 2,
     editMetrics,
     voiceAudit,
+    legalIntegrity,
     floorViolations,
     warnings: dedupeWarnings(warnings),
     naturalnessShadow,
@@ -211,6 +225,7 @@ function shouldRunSemanticJudge({ requestedMode, effectiveMode, source, document
   }
   if ([...sensitiveProfiles].some(profile => [
     'academic_paper',
+    'legal_contract',
     'student_record_teacher',
     'student_self_assessment',
     'resume_application',
@@ -778,7 +793,7 @@ async function retryKoreanRefinement({
     profile === 'resume_application'
       ? '역량을 길렀다·능력을 키웠다·노력했다 계열이 반복되면 실제 행동과 SOURCE에 있는 결과를 직접 서술한다. 새 성과나 수치를 만들어 반복을 피하지 않는다.'
       : '',
-    ['academic_paper', 'report_assignment'].includes(profile)
+    ['academic_paper', 'report_assignment', 'legal_contract'].includes(profile)
       ? '학술·보고서의 개념어와 격식을 유지하고 구어체나 감탄형 표현을 새로 넣지 않는다.'
       : '',
     '수리할 문제가 실제로 남아 있지 않거나 보존 조건 안에서 안전하게 고칠 수 없으면 safeChangeFound=false로 답한다.',
@@ -866,7 +881,7 @@ async function retryFingerprintAudit({
     'SOURCE의 주장, 목적, 근거 틀, 부정·배제·대조·인정·가능성 관계, 행위 방향과 강도, 수치, 기관명, 인용, 화자, 문단·제목·목록 순서를 그대로 보존한다.',
     '증명을 확인으로, 재발견을 되살리기로, 적극적 태도를 바로·직접으로, 연구를 통해 확인한 내용을 근거 없는 단정으로 바꾸지 않는다. SOURCE에 없던 즉시성도 제거한다.',
     '새 주장·예시·평가·경험·결론을 만들지 않고, 상투구를 다른 상투구로 치환하지 않는다.',
-    ['academic_paper', 'report_assignment'].includes(profile)
+    ['academic_paper', 'report_assignment', 'legal_contract'].includes(profile)
       ? '학술·보고서의 개념어와 평서문 격식을 유지한다. 구어체·명령형·도구 의인화를 새로 넣지 않는다.'
       : '',
     '안전하게 고칠 수 없거나 문제가 이미 없다면 safeChangeFound=false로 답한다.',

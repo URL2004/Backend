@@ -81,11 +81,13 @@ function pastTenseDaToHaeyo(text) {
 }
 
 // target: 'hap'(존댓말 ~습니다) | 'handa'(한다체 ~다) | 'haeyo'(해요체 ~요). 출력을 target 말투로 종결어미 통일.
-function normalizeRegister(text, target) {
+function normalizeRegister(text, target, { convertPronouns = true } = {}) {
   let out = text, changed = 0;
   if (target === 'hap') {
     const e = applyEndings(out, HANDA_TO_HAP); out = e.out; changed += e.changed;
-    const p = applyPronouns(out, PRONOUN_TO_HAP); out = p.out; changed += p.changed;
+    if (convertPronouns) {
+      const p = applyPronouns(out, PRONOUN_TO_HAP); out = p.out; changed += p.changed;
+    }
   } else if (target === 'handa') {
     const e = applyEndings(out, HAP_TO_HANDA); out = e.out; changed += e.changed;
   } else if (target === 'haeyo') {

@@ -118,7 +118,7 @@ test('/diagnose는 프론트가 사용할 최종 고급 적합성과 추천 메�
   assert.equal(typeof responseBody?.requiresEffectConfirmation, 'boolean');
   assert.ok(Object.prototype.hasOwnProperty.call(responseBody, 'effectNoticeCode'));
   assert.ok(Number(responseBody?.profileConfidence) >= 0.75);
-  assert.equal(responseBody?.advancedTimeEstimate?.basis, 'v2_editable_chunk_range');
+  assert.equal(responseBody?.advancedTimeEstimate?.basis, 'v2_chunk_wave_semantic_recovery_range');
   assert.ok(responseBody?.advancedTimeEstimate?.highSec > responseBody?.advancedTimeEstimate?.lowSec);
   assert.equal(responseBody?.advancedTimeEstimate?.sourceBareLength, academicInquiry.replace(/\s+/gu, '').length);
 });

@@ -35,32 +35,12 @@ const endingStyle = require('./endingStyleAudit');
 const resumeCoverage = require('./resumeCoverage');
 const experienceAudit = require('./experienceAudit');
 const sourcePreflight = require('./sourcePreflight');
+const literalSpans = require('./literalSpans');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
+const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.4.18';
-const LEGACY_VERSION = 'gpt-prod-operating-engine-v1';
+const VERSION = 'gpt-prod-v2.5.0';
 const PROFILE = 'engine-gpt-prod';
-const NO_DELIVERY_GATES = new Set([
-  'gpt_all_chunks_fallback',
-  'gpt_noop_unchanged',
-  'noop_unchanged',
-  'humanization_depth_no_effect'
-]);
-const STRICT_DELIVERY_GATES = new Set([
-  ...NO_DELIVERY_GATES,
-  'empty_or_meta_output',
-  'prompt_instruction_leak',
-  'encoding_corruption',
-  'sentence_truncated',
-  'refusal',
-  'polish_unchanged',
-  'polish_excessive_change',
-  'polish_evaluative_padding_added',
-  'humanization_depth_no_effect'
-]);
-const V2_SAFE_LOW_BENEFIT_GATES = new Set([
-  'humanization_depth_no_effect'
-]);
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
   'length_collapse',
@@ -69,6 +49,7 @@ const REVIEW_WARNING_GATES = new Set([
   'structure_lock_order',
   'questionnaire_structure_changed',
   'unsafe_chunk_boundary',
+  'section_path_mismatch',
   'grammar_hard_error',
   'speaker_drift',
   'register_shift',
@@ -119,10 +100,6 @@ function isLayoutNlpEnabled(value) {
   return true;
 }
 
-function isEngineV2Enabled() {
-  return String(process.env.HUMANIZE_ENGINE_V2_ENABLED || '').trim() === '1';
-}
-
 function isHumanizationDepthEnabled() {
   return String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0';
 }
@@ -154,6 +131,7 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
   if ((confidence >= 0.75 || trustedOverride) && [
     'academic_paper',
     'report_assignment',
+    'legal_contract',
     'student_record_teacher',
     'student_self_assessment',
     'resume_application',
@@ -165,7 +143,9 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
 }
 
 async function run(options = {}) {
-  return runEngine(options, { v2Enabled: isEngineV2Enabled() });
+  // v2.5 is the only production engine. Rollback restores the previous live
+  // deployment instead of entering dormant engine code.
+  return runEngine(options, { v2Enabled: true });
 }
 
 async function runEngine({
@@ -240,9 +220,14 @@ async function runEngine({
   const preLayout = !v2Enabled && layoutNlpEnabled
     ? await safeFormatLayout(rawSource, { mode: selectedMode, phase: 'pre' })
     : null;
-  const source = preLayout?.text || rawSource;
+  const sourceBeforeInlineCode = preLayout?.text || rawSource;
+  const inlineCodeFreeze = v2Enabled
+    ? literalSpans.freezeInlineCode(sourceBeforeInlineCode)
+    : { text: sourceBeforeInlineCode, blocks: [], count: 0 };
+  const source = inlineCodeFreeze.text;
   const qualityPatternLabEnabled = v2Enabled ? false : isQualityPatternLabEnabled(qualityPatternLab, styleProfile);
   const niklQualityEnabled = qualityPatternLabEnabled || isNiklQualityEnabled(niklQualityTest, styleProfile);
+  const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
@@ -254,10 +239,9 @@ async function runEngine({
     formatProfile: documentProfile.formatProfile
   });
   const chunks = chunkPlan.chunks;
-  const records = [];
-
-  for (let i = 0; i < chunks.length; i++) {
-    const record = await processChunk({
+  const chunkConcurrency = configuredChunkConcurrency();
+  const records = await mapWithConcurrency(chunks, chunkConcurrency, async (chunk, i) => {
+    return processChunk({
       chunk: chunks[i],
       chunks,
       index: i,
@@ -280,8 +264,7 @@ async function runEngine({
       v2Enabled,
       signal
     });
-    records.push(record);
-  }
+  }, signal);
 
   let sectionRecoveryReport = {
     metrics: {
@@ -347,7 +330,8 @@ async function runEngine({
   outputText = frozen?.output || outputText;
   const postprocessMeta = {};
   outputText = finalPostprocess(outputText, auditSource, selectedMode, contract, postprocessMeta, {
-    preserveLineBreaks: layoutStructureLocked
+    preserveLineBreaks: layoutStructureLocked,
+    v2Enabled
   });
 
   let supplementalUsage = (sectionRecoveryReport.usages || [])
@@ -382,6 +366,7 @@ async function runEngine({
   let koreanRefinementRetryCount = 0;
   let koreanRefinementRetryApplied = false;
   let quoteIntegrityAudit = null;
+  let inlineCodeIntegrity = { pass: true, restoredCount: 0, missingCount: 0 };
   let quoteIntegrityRestoreCount = 0;
   let finalQuoteIntegrityRestoreCount = 0;
   let fingerprintAudit = null;
@@ -458,6 +443,7 @@ async function runEngine({
         } else if (polishPaddingReport.increased) {
           polishStrictFailure = 'polish_evaluative_padding_added';
         } else {
+          acceptGeneralSurfaceRecovery(records);
           for (const record of records) {
             if ((record.warnings || []).includes('polish_surface_boundary_pending')) {
               record.warnings = (record.warnings || []).filter(warning => ![
@@ -870,7 +856,7 @@ async function runEngine({
     experienceCandidateAudit = experienceAudit.detectExperienceCandidate(
       auditSource,
       outputText,
-      evidence || userNotes || ''
+      allowedExtra
     );
   }
 
@@ -893,7 +879,7 @@ async function runEngine({
     documentProfile,
     structureAudit: preSemanticStructureAudit,
     protectedTerms: collectRecordProtectedTerms(records),
-    allowedExtra: evidence || userNotes || ''
+    allowedExtra
   }) : null;
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
   if (v2Enabled && !polishStrictFailure) {
@@ -928,7 +914,7 @@ async function runEngine({
         lang,
         signal,
         config: cfg,
-        allowedExtra: evidence || userNotes || '',
+        allowedExtra,
         mode: selectedMode,
         discourseSignals: [
           ...(deterministicAudit?.discourseAudit?.codes || []),
@@ -957,7 +943,7 @@ async function runEngine({
         documentProfile,
         structureAudit: preSemanticStructureAudit,
         protectedTerms: collectRecordProtectedTerms(records),
-        allowedExtra: evidence || userNotes || ''
+        allowedExtra
       });
     }
   }
@@ -1030,7 +1016,7 @@ async function runEngine({
           lang,
           signal,
           config: cfg,
-          allowedExtra: evidence || userNotes || '',
+          allowedExtra,
           mode: selectedMode,
           discourseSignals: ['post_semantic_noop_recovery'],
           safetyIdentifier: safetyId
@@ -1074,7 +1060,7 @@ async function runEngine({
           documentProfile,
           structureAudit: preSemanticStructureAudit,
           protectedTerms: collectRecordProtectedTerms(records),
-          allowedExtra: evidence || userNotes || ''
+          allowedExtra
         });
         generalSurfaceRetryCount += 1;
         humanizationDepthRetryApplied = true;
@@ -1108,6 +1094,10 @@ async function runEngine({
     : null;
   if (postLayout?.text) outputText = postLayout.text;
   if (frozen) outputText = restoreLockedBlocks(outputText, frozen.blocks);
+  if (v2Enabled && inlineCodeFreeze.count > 0) {
+    inlineCodeIntegrity = literalSpans.restoreInlineCode(outputText, inlineCodeFreeze);
+    outputText = inlineCodeIntegrity.text;
+  }
   const layoutRepair = v2Enabled
     ? structureChunk.restorePostSemanticLayout({
         source: rawSource,
@@ -1232,9 +1222,20 @@ async function runEngine({
     documentProfile,
     structureAudit,
     protectedTerms: extractProtectedTerms(rawSource, documentProfile),
-    allowedExtra: evidence || userNotes || ''
+    allowedExtra
   }) : null;
-  const result = buildResult({ source: rawSource, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled, structureAudit });
+  const result = buildResult({
+    source: rawSource,
+    outputText,
+    contract,
+    mode: selectedMode,
+    records,
+    inputRisk,
+    allowedExtra,
+    niklQualityTest: niklQualityEnabled,
+    qualityPatternLab: qualityPatternLabEnabled,
+    structureAudit
+  });
   if (v2Enabled) calibrateV2RepetitionReport(result, rawSource, outputText);
   if (layoutNlpEnabled) {
     result.layoutFormat = buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText);
@@ -1248,7 +1249,7 @@ async function runEngine({
     contract,
     mode: selectedMode,
     sourceSurface,
-    allowedExtra: evidence || userNotes || ''
+    allowedExtra
   });
   if (polishStrictFailure) {
     const detail = polishStrictFailure === 'polish_excessive_change'
@@ -1293,28 +1294,15 @@ async function runEngine({
   const effectiveChunks = records.filter(r => !r.skipped).length;
   const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
   const finalEquivalent = normalizeBare(rawSource) === normalizeBare(outputText);
-  const allFallbackRecovered = allFallback
-    && !finalEquivalent
-    && (humanizationDepthReport?.minimumEffectPass === true || finalNoopRecovery.applied === true)
-    && (finalNoopRecovery.applied === true
-      || humanizationDepthRetryApplied === true
-      || Number(sectionRecoveryReport.metrics?.applied || 0) > 0);
-  if (finalEquivalent || (allFallback && !allFallbackRecovered)) {
+  const approvedModelChunkCount = countApprovedModelChunks(records, chunks, {
+    documentRecoveryApplied: finalNoopRecovery.applied === true
+      || generalSurfaceRetryCount > 0
+      || (polishRetryCount > 0 && !polishStrictFailure)
+  });
+  const modelFailureChunkCount = records.filter(record => isModelFailureRecord(record)).length;
+  if (finalEquivalent || approvedModelChunkCount === 0) {
     result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
-    const longRecoveryReview = v2Enabled
-      && selectedMode !== 'polish'
-      && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS
-      && sectionRecoveryReport.metrics?.enabled === true;
-    if (!finalEquivalent && longRecoveryReview) {
-      result.floorReport.status = 'needs_review';
-      result.floorReport.warnings = [
-        ...(result.floorReport.warnings || []),
-        {
-          gate: 'humanization_depth_below_minimum',
-          detail: '장문 섹션 회복 후에도 실질 변화가 부족해 결과를 검토용으로 전달합니다.'
-        }
-      ];
-    } else if (!v2Enabled && qualityPatternLabEnabled && !allFallback) {
+    if (!v2Enabled && qualityPatternLabEnabled && !allFallback) {
       result.floorReport.status = result.floorReport.status === 'clean' ? 'needs_review' : result.floorReport.status;
       result.floorReport.warnings = [
         ...(result.floorReport.warnings || []),
@@ -1327,17 +1315,18 @@ async function runEngine({
       result.floorReport.status = 'blocked';
       result.floorReport.criticals = result.floorReport.criticals || [];
       result.floorReport.criticals.push({
-        gate: finalEquivalent ? 'gpt_noop_unchanged' : 'gpt_all_chunks_fallback',
-        detail: finalEquivalent ? 'GPT output is equivalent to source.' : 'All GPT chunks failed hard gates and fell back to source.'
+        gate: finalEquivalent ? 'gpt_noop_unchanged' : 'no_approved_model_chunks',
+        detail: finalEquivalent
+          ? 'GPT output is equivalent to source.'
+          : 'No model-authored edit passed the required audits.'
       });
     }
   }
   if (qualityPatternLabEnabled) softenQualityPatternLabFloorReport(result.floorReport);
-  if (v2Enabled) softenV2ReviewableCriticals(result.floorReport, {
-    mode: selectedMode,
-    strictFallbackCause: hasStrictRecordDeliveryFailure(records)
-  });
-  else softenFloorReport(result.floorReport);
+  const delivery = v2Enabled
+    ? deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode })
+    : { report: softenFloorReport(result.floorReport), decision: '', reasonCodes: [], effectItems: [] };
+  result.floorReport = delivery.report;
 
   const usage = addUsage(records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage()), supplementalUsage);
   const escalatedCount = records.filter(r => r.escalated).length;
@@ -1353,15 +1342,16 @@ async function runEngine({
       + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0)
   });
   const chunkFailures = summarizeChunkFailureCodes(records);
+  const retryCounts = summarizeRetryCounts(records);
   const humanizationNoBenefitDelivered = v2Enabled
     && selectedMode !== 'polish'
     && result.floorReport?.status !== 'blocked'
-    && ((humanizationDepthReport?.applicable === true
-        && humanizationDepthReport?.minimumEffectPass === false)
-      || (result.floorReport?.warnings || []).some(item => {
-        const gate = String(item?.gate || item?.type || item || '').trim();
-        return V2_SAFE_LOW_BENEFIT_GATES.has(gate);
-      }));
+    && humanizationDepthReport?.applicable === true
+    && humanizationDepthReport?.pass === false;
+  const effectNotices = v2Enabled && humanizationNoBenefitDelivered
+    ? dedupeQualityWarnings(depthEffectNotices(humanizationDepthReport))
+    : [];
+  const effectStatus = effectNotices.length ? 'limited' : 'normal';
   const qualityWarnings = v2Enabled
     ? dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []),
@@ -1377,13 +1367,8 @@ async function runEngine({
           : []),
         ...(polishReport?.excessiveChange ? [{ code: 'polish_edit_range', severity: 'warning', message: '보존형 윤문의 권장 편집 범위를 넘었을 수 있어요.' }] : []),
         ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : []),
-        ...(humanizationDepthReport?.applicable
-          && humanizationDepthReport.pass === false
-          && humanizationDepthReport.userReviewRequired !== false
-          ? depthQualityWarnings(humanizationDepthReport)
-          : []),
-        ...(humanizationNoBenefitDelivered
-          ? [{ code: 'humanization_depth_below_minimum', severity: 'warning', message: '안전한 범위에서 충분한 변화를 만들기 어려워 원문에 가까운 결과를 전달했어요.' }]
+        ...(inlineCodeIntegrity.pass === false
+          ? [{ code: 'inline_code_changed', severity: 'warning', message: '인라인 코드 일부를 원문 그대로 복원하지 못했을 수 있어요.' }]
           : []),
         ...(fingerprintAudit?.issueCodes?.includes('engine_phrase_fingerprint')
           ? [{ code: 'engine_phrase_fingerprint', severity: 'warning', message: '엔진이 만든 상투 표현이 한 문서에서 반복됐을 수 있어요.' }]
@@ -1404,10 +1389,12 @@ async function runEngine({
       ])
     : [];
   const strictBlocked = result.floorReport?.status === 'blocked';
-  const qualityStatus = strictBlocked || qualityWarnings.length || result.floorReport?.status === 'needs_review' ? 'needs_review' : 'clean';
+  const qualityStatus = qualityWarnings.length || result.floorReport?.status === 'needs_review' ? 'needs_review' : 'clean';
   if (!strictBlocked && qualityStatus === 'needs_review' && result.floorReport?.status === 'clean') result.floorReport.status = 'needs_review';
   result.qualityStatus = qualityStatus;
   result.qualityWarnings = qualityWarnings;
+  result.effectStatus = effectStatus;
+  result.effectNotices = effectNotices;
   result.naturalnessShadow = deliveryAudit?.naturalnessShadow || null;
   result.documentProfile = documentProfile;
   result.voiceProfile = voiceProfile;
@@ -1425,8 +1412,8 @@ async function runEngine({
   } : null;
   result.dedupeAudit = postprocessMeta.dedupe || null;
   result.engineMeta = {
-    schemaVersion: 2,
-    engineVersion: v2Enabled ? VERSION : LEGACY_VERSION,
+    schemaVersion: 3,
+    engineVersion: VERSION,
     requestedMode,
     requestStrength,
     effectiveMode: selectedMode,
@@ -1459,6 +1446,10 @@ async function runEngine({
     discourseSignalCount: Number(deliveryAudit?.discourseAudit?.violations?.length || 0),
     discourseRepairRan: (semanticReport.initialViolations || []).some(item => discourseAudit.isDiscourseViolationCode(item?.type))
       && Number(semanticReport.repairCount || 0) > 0,
+    legalIntegrityPass: deliveryAudit?.legalIntegrity?.applicable
+      ? deliveryAudit.legalIntegrity.pass === true
+      : null,
+    legalIntegrityIssueCodes: safeFailureCodeList(deliveryAudit?.legalIntegrity?.issueCodes),
     repairCount: (semanticReport.repairCount || 0)
       + polishRetryCount
       + generalSurfaceRetryCount
@@ -1475,6 +1466,15 @@ async function runEngine({
     lockedChunkCount: chunkExecution.lockedChunkCount,
     skippedChunkCount: chunkExecution.skippedChunkCount,
     transformedChunkCount: chunkExecution.transformedChunkCount,
+    chunkConcurrency,
+    approvedModelChunkCount,
+    modelFailureChunkCount,
+    deliveryDecision: delivery.decision,
+    deliveryReasonCodes: delivery.reasonCodes,
+    effectStatus,
+    effectNoticeCodes: safeFailureCodeList(effectNotices.map(item => item.code)),
+    structureSignaturePass: structureAudit?.pass === true,
+    sectionPathErrorCount: Number(structureAudit?.sectionPathErrorCount || 0),
     humanizeCallCount: chunkExecution.humanizeCallCount,
     semanticModelCallCount: chunkExecution.semanticModelCallCount,
     surfaceRetryCallCount: chunkExecution.surfaceRetryCallCount,
@@ -1484,6 +1484,7 @@ async function runEngine({
     chunkPrimaryFailureCodes: chunkFailures.primary,
     chunkResidualFailureCodes: chunkFailures.residual,
     chunkFallbackReasonCodes: chunkFailures.fallback,
+    retryCounts,
     fallbackCount,
     lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4)),
     polishSpeakerRestoreCount,
@@ -1630,6 +1631,9 @@ async function runEngine({
     quoteContentChangedCount: Number(quoteIntegrityAudit?.changedCount || 0),
     quoteIntegrityRestoreCount,
     finalQuoteIntegrityRestoreCount,
+    inlineCodeSpanCount: Number(inlineCodeFreeze.count || 0),
+    inlineCodeIntegrityPass: inlineCodeIntegrity.pass === true,
+    inlineCodeRestoredCount: Number(inlineCodeIntegrity.restoredCount || 0),
     finalFormattingRepairCount: Number(finalFormattingRepair.changeCount || 0),
     finalFormattingRepairCodes: safeFailureCodeList(finalFormattingRepair.changeCodes),
     brokenLineBreakRepairCount: Number(finalFormattingRepair.brokenLineBreakRepairCount || 0),
@@ -1647,7 +1651,7 @@ async function runEngine({
   };
   result.humanizeMeta = {
     provider: 'openai',
-    engine: v2Enabled ? VERSION : LEGACY_VERSION,
+    engine: VERSION,
     profile: PROFILE,
     selectedModel: cfg.models.humanizePrimary,
     escalationModel: cfg.models.humanizeEscalation,
@@ -1704,6 +1708,8 @@ async function runEngine({
     floorReport: result.floorReport,
     qualityStatus,
     qualityWarnings,
+    effectStatus,
+    effectNotices,
     sourceReviewWarnings,
     engineMeta: result.engineMeta,
     chunks: records,
@@ -1734,6 +1740,10 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
   const highRisk = isHighRiskChunk(original, protectedTerms, patchTargets, cfg, inputRisk);
   const primaryReasoning = highRisk ? cfg.reasoning.factDense : cfg.reasoning.humanize;
   const chunkSurface = safeSurface(original) || sourceSurface;
+  // Primary retries and quality escalation share one absolute budget. A slow
+  // first model call must not grant the escalation model a fresh full window.
+  const chunkDeadlineMs = Date.now()
+    + Math.max(10000, Number(process.env.OPENAI_CHUNK_TOTAL_TIMEOUT_MS) || 180000);
 
   const first = await callHumanize({
     original,
@@ -1763,6 +1773,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     runSemanticJudge: v2Enabled ? false : highRisk,
     v2Enabled,
     safetyIdentifier,
+    chunkDeadlineMs,
     signal
   });
   if (v2Enabled && mode === 'polish' && first.hardFail && first.record?.hardFailReason === 'noop_unchanged') {
@@ -1770,6 +1781,10 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     first.record.fallback = false;
     first.record.error = null;
     first.record.warnings = [...(first.record.warnings || []), 'polish_chunk_unchanged_allowed'];
+    return first.record;
+  }
+  if (v2Enabled && first.hardFail && isNonEscalatableModelFailure(first.record)) {
+    chunk.outputText = original;
     return first.record;
   }
   if (!first.hardFail || cfg.escalation.enabled === false) {
@@ -1809,6 +1824,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     runSemanticJudge: v2Enabled ? false : highRisk,
     v2Enabled,
     safetyIdentifier,
+    chunkDeadlineMs,
     signal
   });
   second.record.primaryFailureCodes = safeFailureCodesFromRecord(first.record);
@@ -1956,14 +1972,15 @@ async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength, lang, userNotes, evidence,
     cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, documentProfile, voiceProfile,
-    niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, v2Enabled = false, safetyIdentifier = '', signal
+    niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, v2Enabled = false, safetyIdentifier = '', chunkDeadlineMs, signal
   } = args;
+  const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
   try {
     const koreanSourceQuality = safeKoreanQualityAnalysis(original, {
       mode,
       register: contract.register
     });
-    const koreanQualityHints = safeKoreanQualityHints(koreanSourceQuality);
+    const koreanQualityHints = safeKoreanQualityHints(koreanSourceQuality, documentProfile);
     const niklSourceQuality = niklQualityTest ? safeNiklQualityAnalysis(original, {
       mode,
       register: contract.register
@@ -2008,6 +2025,7 @@ async function callHumanize(args) {
       maxOutputTokens: maxOutputTokensFor(original),
       config: cfg,
       signal,
+      deadlineMs: chunkDeadlineMs,
       safetyIdentifier,
       meta: {
         task: 'humanize',
@@ -2023,7 +2041,8 @@ async function callHumanize(args) {
     const boundaryAudit = structureChunk.restoreBoundaryMarkers(outputText, chunk);
     outputText = boundaryAudit.text;
     outputText = chunkPostprocess(outputText, original, mode, contract, {
-      preserveLineBreaks: voiceProfile?.lineBreakSensitive === true
+      preserveLineBreaks: voiceProfile?.lineBreakSensitive === true,
+      deterministicPronouns: v2Enabled !== true
     });
     let judgeReport = null;
     let judgeViolations = [];
@@ -2035,7 +2054,7 @@ async function callHumanize(args) {
         signal,
         config: cfg,
         maxRounds: 1,
-        allowedExtra: evidence || userNotes || '',
+        allowedExtra,
         mode,
         safetyIdentifier
       });
@@ -2067,7 +2086,7 @@ async function callHumanize(args) {
       mode,
       protectedTerms,
       sourceSurface,
-      allowedExtra: evidence || userNotes || '',
+      allowedExtra,
       documentProfile
     });
     if (!boundaryAudit.ok) {
@@ -2221,6 +2240,7 @@ async function callHumanize(args) {
         niklQuality: compactNiklQualityGate(niklQualityGate),
         qualityPatternLab: compactQualityPatternAudit(qualityPatternAudit),
         selectedModel: response.model,
+        retryCounts: response.retryCounts,
         escalated: phase === 'escalation'
       })
     };
@@ -2236,6 +2256,7 @@ async function callHumanize(args) {
         err: err && err.message || String(err)
       });
     } catch {}
+    const failureCode = modelCallFailureCode(err);
     return {
       outputText: original,
       hardFail: true,
@@ -2244,9 +2265,10 @@ async function callHumanize(args) {
         outputText: original,
         fallback: true,
         error: err && err.message || String(err),
-        hardFailReason: 'gpt_call_failed',
-        warnings: ['gpt_call_failed'],
+        hardFailReason: failureCode,
+        warnings: [failureCode],
         selectedModel: model,
+        retryCounts: sanitizeRetryCounts(err?.retryCounts),
         escalated: phase === 'escalation'
       })
     };
@@ -2256,7 +2278,7 @@ async function callHumanize(args) {
 async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '' } = {}) {
   const source = String(text || '').trim();
   const cfg = await loadConfig(config);
-  const safetyId = isEngineV2Enabled() && uid
+  const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
   const user = lang === 'en' ? `[TEXT TO ANALYZE]\n${source}` : `[분석할 글]\n${source}`;
@@ -2337,7 +2359,7 @@ async function callDetectModel({ prompt, user, cfg, signal, route, phase, model,
 async function rewriteSentence({ text, lang = 'ko', signal, config, uid = '', safetyIdentifier = '' } = {}) {
   const cfg = await loadConfig(config);
   const source = String(text || '').trim();
-  const safetyId = isEngineV2Enabled() && uid
+  const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
   const res = await completeJson({
@@ -2361,7 +2383,7 @@ async function rewriteSentence({ text, lang = 'ko', signal, config, uid = '', sa
 async function suggestEvidence({ query, signal, config, uid = '', safetyIdentifier = '' } = {}) {
   const cfg = await loadConfig(config);
   const text = String(query || '').trim();
-  const safetyId = isEngineV2Enabled() && uid
+  const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
   if (!text) return { candidates: [], warnings: ['empty_query'] };
@@ -3107,7 +3129,7 @@ function sanitizeOutput(value) {
     .trim();
 }
 
-function chunkPostprocess(text, original, mode, contract, { preserveLineBreaks = false } = {}) {
+function chunkPostprocess(text, original, mode, contract, { preserveLineBreaks = false, deterministicPronouns = true } = {}) {
   let out = String(text || '').trim();
   if (preserveLineBreaks) return out;
   try { out = local.spacing.fixSpacing(out).text; } catch {}
@@ -3117,7 +3139,9 @@ function chunkPostprocess(text, original, mode, contract, { preserveLineBreaks =
     const target = mode === 'blog'
       ? (contract.register === 'polite' ? 'hap' : contract.register === 'haeyo' ? 'haeyo' : null)
       : (contract.register === 'polite' ? 'hap' : contract.register === 'plain' ? 'handa' : contract.register === 'haeyo' ? 'haeyo' : null);
-    if (target) out = local.registernormalize.normalizeRegister(out, target).text;
+    if (target) out = local.registernormalize.normalizeRegister(out, target, {
+      convertPronouns: deterministicPronouns
+    }).text;
   } catch {}
   return out.trim();
 }
@@ -3149,21 +3173,12 @@ function tidyParagraphsLocal(doc, source = '') {
   }).filter(Boolean).join('\n\n');
 }
 
-function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLineBreaks = false } = {}) {
+function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLineBreaks = false, v2Enabled = false } = {}) {
   let out = String(text || '').trim();
   if (!preserveLineBreaks) {
     try { out = tidyParagraphsLocal(out, source); } catch {}
-    try {
-      if (mode === 'blog') {
-        const target = contract.register === 'polite' ? 'hap' : 'haeyo';
-        out = local.basicblogtone.cleanupBasicBlogTone(out, { register: target }).text;
-      }
-    } catch {}
-    // 문서 병합 뒤 흐름을 먼저 보정하고, 그 결과에 한해 제한적 exact dedupe를 적용한다.
-    try {
-      const fc = local.flowcohesion.flowCohesion(out, { preserveParagraphs: true });
-      out = fc.text || out;
-    } catch {}
+    // 문단·레이아웃 결정권은 구조 모듈 하나에 둔다. 업종별 고정 문장을
+    // 주입하던 basicblogtone과 실질 no-op flowCohesion은 운영 경로에서 제외한다.
     try {
       const dedupe = local.dedupe.dedupeSentences(out);
       out = dedupe.text;
@@ -3289,7 +3304,7 @@ function paragraphCount(text) {
   return String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean).length;
 }
 
-function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false, qualityPatternLab = false, structureAudit = null }) {
+function buildResult({ source, outputText, contract, mode, records, inputRisk, allowedExtra = '', niklQualityTest = false, qualityPatternLab = false, structureAudit = null }) {
   const result = {
     outputText,
     styleProfile: PROFILE,
@@ -3319,12 +3334,12 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk, n
       rawText: source,
       mode,
       povSeed: contract.povSeed,
-      optIn: false,
-      allowedExtra: ''
+      optIn: contract.optIn === true,
+      allowedExtra
     });
   } catch (err) {
     result.floorReport = {
-      status: 'error',
+      status: 'blocked',
       criticals: [{ gate: 'floor_report_error', detail: err && err.message || String(err) }],
       warnings: []
     };
@@ -3371,8 +3386,17 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk, n
   }
   attachWeakTransformWarning(result.floorReport, result);
   if (qualityPatternLab) softenQualityPatternLabFloorReport(result.floorReport);
-  softenFloorReport(result.floorReport);
   return result;
+}
+
+function depthEffectNotices(report) {
+  return depthQualityWarnings(report).map(item => ({
+    ...item,
+    severity: 'info',
+    message: String(item.message || '')
+      .replace(/결과를 확인해 주세요\.?$/u, '안전하게 바꿀 수 있는 범위가 제한적이었어요.')
+      .replace(/결과 확인이 필요해요\.?$/u, '안전하게 바꿀 수 있는 범위가 제한적이었어요.')
+  }));
 }
 
 function attachKoreanQualityWarnings(report, quality) {
@@ -3470,6 +3494,14 @@ function addStructureWarnings(report, audit) {
       samples: audit.unsafeBoundaries || []
     });
   }
+  if (audit.sectionPathErrorCount > 0) {
+    additions.push({
+      gate: 'section_path_mismatch',
+      action: 'needs_review',
+      count: audit.sectionPathErrorCount,
+      samples: audit.sectionPathErrors || []
+    });
+  }
   if (audit.layoutRepair?.pass === false) {
     additions.push({
       gate: 'post_semantic_layout_incomplete',
@@ -3513,53 +3545,8 @@ function softenFloorReport(report) {
   return report;
 }
 
-function softenV2ReviewableCriticals(report, { mode = '', strictFallbackCause = false } = {}) {
-  if (!report || report.status !== 'blocked') return report;
-  const criticals = Array.isArray(report.criticals) ? report.criticals : [];
-  const strict = criticals.filter(critical => {
-    const gate = String(critical?.gate || critical?.type || '').trim();
-    if (mode !== 'polish'
-        && V2_SAFE_LOW_BENEFIT_GATES.has(gate)
-        && !(gate === 'gpt_all_chunks_fallback' && strictFallbackCause)) return false;
-    return STRICT_DELIVERY_GATES.has(gate) || isBlockingViolation(critical);
-  });
-  const reviewable = criticals.filter(critical => !strict.includes(critical));
-  if (reviewable.length) {
-    report.warnings = [
-      ...(Array.isArray(report.warnings) ? report.warnings : []),
-      ...reviewable.map(critical => ({
-        ...critical,
-        softenedFromCritical: true,
-        v2DeliveryPolicy: true,
-        v2LowBenefitDelivery: V2_SAFE_LOW_BENEFIT_GATES.has(String(critical?.gate || critical?.type || '').trim())
-      }))
-    ];
-  }
-  report.criticals = strict;
-  report.status = strict.length ? 'blocked' : (reviewable.length ? 'needs_review' : report.status);
-  return report;
-}
-
-function hasStrictRecordDeliveryFailure(records = []) {
-  const strictPattern = /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated|refus(?:al|ed)/iu;
-  return (records || []).some(record => {
-    const values = [
-      record?.hardFailReason,
-      record?.error,
-      record?.primaryError,
-      ...(record?.primaryFailureCodes || []),
-      ...(record?.floorViolations || []).map(item => item?.gate || item?.type),
-      ...(record?.warnings || [])
-    ];
-    return values.some(value => strictPattern.test(String(value || '')));
-  });
-}
-
 function hasStrictDeliveryCritical(criticals) {
-  return (criticals || []).some(c => {
-    const gate = String(c?.gate || c?.type || '').trim();
-    return STRICT_DELIVERY_GATES.has(gate) || isBlockingViolation(c);
-  });
+  return (criticals || []).some(c => deliveryPolicy.isTechnicalCritical(c));
 }
 
 function calibrateV2RepetitionReport(result, source, outputText) {
@@ -3619,7 +3606,7 @@ function summarizeChunkExecution(records, semanticReport, {
     + Math.max(0, Number(sectionRecoveryCallCount) || 0);
   return {
     logicalChunkCount: rows.length,
-    editableChunkCount: rows.length - lockedChunkCount,
+    editableChunkCount: transformed.length,
     lockedChunkCount,
     skippedChunkCount,
     transformedChunkCount: transformed.length,
@@ -3629,6 +3616,93 @@ function summarizeChunkExecution(records, semanticReport, {
     modelCallCount: humanizeCallCount + semanticModelCallCount + surfaceRetryCallCount,
     semanticSectionCount: Number(semanticReport?.sectionCount) || 0
   };
+}
+
+function configuredChunkConcurrency() {
+  const value = Number(process.env.HUMANIZE_CHUNK_CONCURRENCY || 1);
+  return Math.max(1, Math.min(3, Number.isFinite(value) ? Math.floor(value) : 1));
+}
+
+async function mapWithConcurrency(items, concurrency, worker, signal) {
+  const rows = Array.isArray(items) ? items : [];
+  const results = new Array(rows.length);
+  let cursor = 0;
+  const runWorker = async () => {
+    while (true) {
+      if (signal?.aborted) throw abortError();
+      const index = cursor;
+      cursor += 1;
+      if (index >= rows.length) return;
+      results[index] = await worker(rows[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, rows.length)) }, runWorker));
+  return results;
+}
+
+function abortError() {
+  const error = new Error('Operation aborted');
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  return error;
+}
+
+function countApprovedModelChunks(records, chunks, { documentRecoveryApplied = false } = {}) {
+  const chunkByIndex = new Map((chunks || []).map(chunk => [chunk.index, chunk]));
+  let count = 0;
+  for (const record of records || []) {
+    if (record?.locked || record?.skipped || record?.fallback) continue;
+    const chunk = chunkByIndex.get(record.index);
+    if (!chunk) continue;
+    if (normalizeBare(chunk.text) !== normalizeBare(chunk.outputText)) count += 1;
+  }
+  if (count === 0 && documentRecoveryApplied) return 1;
+  return count;
+}
+
+function isModelFailureRecord(record) {
+  if (!record || record.locked || record.skipped) return false;
+  if (record.fallback === true) return true;
+  const values = [
+    record.error,
+    record.hardFailReason,
+    ...(record.primaryFailureCodes || []),
+    ...(record.warnings || [])
+  ];
+  return values.some(value => /gpt_call_failed|openai_(?:timeout|network|schema)|refus(?:al|ed)/iu.test(String(value || '')));
+}
+
+function modelCallFailureCode(error) {
+  const code = safeFailureCode(error?.code || error?.message || error);
+  if (code === 'request_aborted') return code;
+  if (code.startsWith('openai_')) return code;
+  return 'gpt_call_failed';
+}
+
+function isNonEscalatableModelFailure(record) {
+  const code = String(record?.hardFailReason || '');
+  return code === 'gpt_call_failed'
+    || code === 'request_aborted'
+    || /^openai_(?:rate|timeout|network|schema|refusal|chunk)/u.test(code);
+}
+
+function sanitizeRetryCounts(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    rateLimit: Math.max(0, Number(source.rateLimit) || 0),
+    server: Math.max(0, Number(source.server) || 0),
+    network: Math.max(0, Number(source.network) || 0),
+    timeout: Math.max(0, Number(source.timeout) || 0),
+    schema: Math.max(0, Number(source.schema) || 0)
+  };
+}
+
+function summarizeRetryCounts(records) {
+  return (records || []).reduce((total, record) => {
+    const counts = sanitizeRetryCounts(record?.retryCounts);
+    for (const key of Object.keys(total)) total[key] += counts[key];
+    return total;
+  }, sanitizeRetryCounts(null));
 }
 
 function semanticCallCount(report) {
@@ -3667,7 +3741,8 @@ function chunkRecord({
   judgeReport = null,
   koreanQuality = null,
   niklQuality = null,
-  qualityPatternLab = null
+  qualityPatternLab = null,
+  retryCounts = null
 }) {
   return {
     index: chunk.index,
@@ -3696,7 +3771,8 @@ function chunkRecord({
     koreanQuality,
     niklQuality,
     qualityPatternLab,
-    selectedModel
+    selectedModel,
+    retryCounts: sanitizeRetryCounts(retryCounts)
   };
 }
 
@@ -3920,8 +3996,8 @@ function safeKoreanQualityAnalysis(text, opts = {}) {
   try { return koreanQuality.analyzeText(text, opts); } catch { return null; }
 }
 
-function safeKoreanQualityHints(analysis) {
-  try { return analysis ? koreanQuality.buildPromptHints(analysis, { max: 8 }) : ''; } catch { return ''; }
+function safeKoreanQualityHints(analysis, documentProfile = null) {
+  try { return analysis ? koreanQuality.buildPromptHints(analysis, { max: 8, documentProfile }) : ''; } catch { return ''; }
 }
 
 function safeKoreanQualityGate(source, output, opts = {}) {
@@ -4340,5 +4416,7 @@ module.exports = {
   rewriteSentence,
   suggestEvidence,
   normalizeMode,
-  effectiveModeForProfile
+  effectiveModeForProfile,
+  configuredChunkConcurrency,
+  mapWithConcurrency
 };

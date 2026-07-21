@@ -42,7 +42,6 @@ const COPY = {
 };
 
 function v2BasicRecommendation(kind, fallback) {
-  if (process.env.HUMANIZE_ENGINE_V2_ENABLED !== '1') return fallback;
   if (kind === 'resume') {
     return '이 글은 자소서·생활기록부·탐구활동처럼 개인 경험과 관찰을 정확히 지키는 것이 중요해요. 기본 휴머나이징에도 해당 장르의 화자·경험 보존 규칙과 의미 검증이 적용되어, 고급의 추가 비용 대비 차이가 작습니다. 기본 휴머나이징을 권장해요.';
   }
@@ -75,7 +74,7 @@ router.post('/diagnose', (req, res) => {
   const density = factDensity(text);
   const factDense = density >= FACT_DENSE_THRESHOLD;   // 연도·%·인용 빼곡 → 재구성 시 사실오류 위험(권장 안내)
   const advancedRouting = resolveAdvancedRouting(text, ir, {
-    v2Enabled: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1'
+    v2Enabled: true
   });
   const requestedEffectMode = ['blog', 'formal', 'polish'].includes(req.body?.mode)
     ? req.body.mode
@@ -87,12 +86,10 @@ router.post('/diagnose', (req, res) => {
   });
   const effect = humanizationDepth.classifyEffectExpectation(effectPlan);
   let advancedTimeEstimate = null;
-  if (process.env.HUMANIZE_ENGINE_V2_ENABLED === '1') {
-    try {
-      advancedTimeEstimate = estimateAdvancedTime(text);
-    } catch (error) {
-      logger.warn('diagnose.time_estimate_failed', { err: error });
-    }
+  try {
+    advancedTimeEstimate = estimateAdvancedTime(text);
+  } catch (error) {
+    logger.warn('diagnose.time_estimate_failed', { err: error });
   }
   // v2는 한국어 장르 판정을 고급 선택 잠금으로 사용하지 않는다. 짧거나
   // 개인적인 글도 장르별 안전 감사를 적용해 고급 처리하며, 지원하지 않는

@@ -5,8 +5,8 @@ const { buildVoiceProfile } = require('./voiceProfile');
 const { splitChunksForGpt } = require('./structureChunk');
 const { shouldCallModel, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 
-const VERSION = 1;
-const BASIS = 'v2_editable_chunk_range';
+const VERSION = 2;
+const BASIS = 'v2_chunk_wave_semantic_recovery_range';
 const EVIDENCE_EXTRA_SEC = 8 * 60;
 const FIVE_MINUTES_SEC = 5 * 60;
 
@@ -39,12 +39,19 @@ function estimateAdvancedTime(source, {
   const editableChunks = plan.chunks.filter(chunk => shouldCallModel(chunk, 'assignment'));
   const editableBareLength = editableChunks.reduce((total, chunk) => total + bareLength(chunk.text), 0);
   const editableKilochars = Math.ceil(editableBareLength / 1000);
+  const chunkConcurrency = Math.max(1, Math.min(3, Number(process.env.HUMANIZE_CHUNK_CONCURRENCY || 1) || 1));
+  const chunkWaveCount = Math.ceil(editableChunks.length / chunkConcurrency);
+  const recoveryWaveCount = sourceBareLength >= 2000
+    ? Math.ceil(Math.min(8, editableChunks.length) / 3)
+    : 0;
 
   // 하한은 정상 1차 호출, 상한은 느린 호출과 일부 재시도·승격을 포함한다.
   // 문서 전체 의미 감사의 고정 비용은 각각 3분·6분으로 잡는다.
   const evidenceExtra = evidence ? EVIDENCE_EXTRA_SEC : 0;
-  const rawLowSec = (3 * 60) + (editableChunks.length * 30) + (editableKilochars * 10) + evidenceExtra;
-  const rawHighSec = (6 * 60) + (editableChunks.length * 95) + (editableKilochars * 20) + evidenceExtra;
+  const rawLowSec = (3 * 60) + (chunkWaveCount * 30) + (editableKilochars * 10)
+    + (recoveryWaveCount ? recoveryWaveCount * 20 : 0) + evidenceExtra;
+  const rawHighSec = (6 * 60) + (chunkWaveCount * 95) + (editableKilochars * 20)
+    + (recoveryWaveCount * 70) + evidenceExtra;
   const lowSec = roundUpFiveMinutes(clamp(rawLowSec, 4 * 60, 75 * 60));
   const highFloor = Math.max(rawHighSec, lowSec + FIVE_MINUTES_SEC);
   const highSec = roundUpFiveMinutes(clamp(highFloor, 8 * 60, 90 * 60));
@@ -58,7 +65,10 @@ function estimateAdvancedTime(source, {
     sourceBareLength,
     editableBareLength,
     editableChunkCount: editableChunks.length,
-    totalChunkCount: plan.chunks.length
+    totalChunkCount: plan.chunks.length,
+    chunkConcurrency,
+    chunkWaveCount,
+    recoveryWaveCount
   };
 }
 

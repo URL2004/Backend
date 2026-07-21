@@ -966,7 +966,7 @@ const FORMAL_REGISTER_RULES = Object.freeze([
   },
   {
     family: 'casual_sentence_connector',
-    test: (value, _fullText, context) => ['academic_paper', 'report_assignment', 'student_record_teacher']
+    test: (value, _fullText, context) => ['academic_paper', 'report_assignment', 'legal_contract', 'student_record_teacher']
       .includes(String(context?.profile || ''))
       && /^\s*그래서(?:는|도)?(?:\s|,)/u.test(value)
   },
@@ -978,9 +978,9 @@ const FORMAL_REGISTER_RULES = Object.freeze([
 ]);
 
 function isFormalRegisterTarget(targetRegister, profile) {
-  if (['academic_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
+  if (['academic_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
     .includes(String(targetRegister || ''))) return true;
-  return ['academic_paper', 'report_assignment', 'student_record_teacher', 'resume_application', 'mail_notice']
+  return ['academic_paper', 'report_assignment', 'legal_contract', 'student_record_teacher', 'resume_application', 'mail_notice']
     .includes(String(profile || ''));
 }
 

@@ -125,26 +125,32 @@ function _isShortSynEcho(part, prevPart) {
 }
 
 function dedupeSentences(text) {
-  const paras = (text || '').split(/\n[ \t]*\n+/);
+  const source = String(text || '');
+  const paras = paragraphSpans(source);
   let removed = 0;
   const fuzzyWarnings = [];
   let previousSentence = null;
-  const out = paras.map(p => {
-    if (isDedupeProtectedParagraph(p)) {
+  const deletionRanges = [];
+  for (const paragraph of paras) {
+    const p = paragraph.text;
+    if (isDedupeProtectedParagraph(p) || containsDedupeProtectedContent(p)) {
       previousSentence = null;
-      return p;
+      continue;
     }
-    const parts = splitSentences(p);
-    if (!parts.length) return p;
-    const keep = [];
+    const parts = splitSentenceSpans(p);
+    if (!parts.length) continue;
     const seenInParagraph = new Set();
     for (const part of parts) {
-      const key = _normSent(part);
+      const key = _normSent(part.text);
       if (!key) continue;
       const exactInParagraph = seenInParagraph.has(key);
       const exactAdjacent = previousSentence && previousSentence.key === key;
       if (exactInParagraph || exactAdjacent) {
         removed += 1;
+        deletionRanges.push({
+          start: paragraph.start + part.start,
+          end: paragraph.start + part.end
+        });
         continue;
       }
       if (previousSentence && key.length >= _DEDUP_MIN_LEN && previousSentence.key.length >= _DEDUP_MIN_LEN) {
@@ -153,17 +159,52 @@ function dedupeSentences(text) {
           fuzzyWarnings.push({
             similarity: Math.round(similarity * 1000) / 1000,
             previous: previousSentence.text.slice(0, 160),
-            current: part.slice(0, 160)
+            current: part.text.slice(0, 160)
           });
         }
       }
       seenInParagraph.add(key);
-      keep.push(part);
-      previousSentence = { key, text: part };
+      previousSentence = { key, text: part.text };
     }
-    return keep.join(' ').trim();
-  }).filter(p => p.length > 0);
-  return { text: out.join('\n\n'), removed, fuzzyWarnings: fuzzyWarnings.slice(0, 20) };
+  }
+  return {
+    text: deletionRanges.length ? removeSentenceSpans(source, deletionRanges) : source,
+    removed,
+    fuzzyWarnings: fuzzyWarnings.slice(0, 20)
+  };
+}
+
+function paragraphSpans(value) {
+  const text = String(value || '');
+  const out = [];
+  let start = 0;
+  for (const match of text.matchAll(/\n[ \t]*\n+/gu)) {
+    out.push({ start, end: match.index, text: text.slice(start, match.index) });
+    start = match.index + match[0].length;
+  }
+  out.push({ start, end: text.length, text: text.slice(start) });
+  return out;
+}
+
+function removeSentenceSpans(value, ranges) {
+  const text = String(value || '');
+  const normalized = [...ranges]
+    .sort((a, b) => a.start - b.start)
+    .map(range => {
+      let start = range.start;
+      let end = range.end;
+      while (end < text.length && /[ \t]/u.test(text[end])) end += 1;
+      if (end === range.end) while (start > 0 && /[ \t]/u.test(text[start - 1])) start -= 1;
+      return { start, end };
+    });
+  let output = '';
+  let cursor = 0;
+  for (const range of normalized) {
+    if (range.start < cursor) continue;
+    output += text.slice(cursor, range.start);
+    cursor = range.end;
+  }
+  return output + text.slice(cursor);
 }
 
 // 청크 병합이 이미 처리한 앞 구간을 뒤에 다시 붙이는 경우, 문장 하나가 아니라
@@ -336,10 +377,11 @@ function removeSentenceRange(text, start, end) {
 function isDedupeProtectedParagraph(value) {
   const text = String(value || '').trim();
   if (!text) return true;
-  if (/^(?:[>#]|[-*•]\s|\d+[.)]\s|[가-힣][.)]\s)/u.test(text)) return true;
+  if (/^(?:[>#]|[-*+•▪◦·●○■□◆◇▶▷※]\s|\d+[.)]\s|[가-힣][.)]\s|[①-⑳]\s)/u.test(text)) return true;
   if (/^(?:목\s*차|차례|참고\s*문헌|참고\s*자료|References|Bibliography|부록|Appendix)(?=$|[^가-힣A-Za-z0-9_])/iu.test(text)) return true;
-  if (/^[“"'‘].+[”"'’]$/su.test(text)) return true;
-  if (/^(?:제\s*\d+\s*(?:장|절|항)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){0,3}[.)]?\s+)\S/u.test(text) && text.length <= 140) return true;
+  if (/^(?:“.+”|‘.+’|".+"|'.+'|「.+」|『.+』|《.+》|〈.+〉)$/su.test(text)) return true;
+  if (/^\s*(?:`{3,}|~{3,})/u.test(text) || /(?<!`)`[^`\n]+`(?!`)/u.test(text)) return true;
+  if (/^(?:제\s*\d+\s*(?:장|절|항|조)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){0,3}[.)]?\s+)\S/u.test(text) && text.length <= 220) return true;
   if (/https?:\/\/|doi\s*:/iu.test(text) && /(?:19|20)\d{2}/u.test(text)) return true;
   return false;
 }

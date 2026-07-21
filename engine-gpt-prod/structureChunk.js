@@ -63,8 +63,23 @@ function expandBaseChunk(chunk, state) {
   let current = null;
 
   for (const sourcePiece of pieces) {
-    for (const piece of splitEditablePrefixPiece(sourcePiece)) {
+    const expandedPieces = state.questionnaire && isQuestionnaireQuestionLine(String(sourcePiece.text || '').trim())
+      ? [sourcePiece]
+      : splitEditablePrefixPiece(sourcePiece);
+    for (const piece of expandedPieces) {
       const info = classifyPiece(piece, state);
+      const key = info.locked ? `locked:${info.lockType}` : 'body';
+      if (!current || current.key !== key) {
+        flushGroup(groups, current);
+        current = {
+          key,
+          locked: info.locked,
+          lockType: info.lockType,
+          sectionPath: info.sectionLabel || state.currentSection || '',
+          pieces: []
+        };
+      }
+      current.pieces.push(piece);
       if (info.sectionLabel) state.currentSection = info.sectionLabel;
       state.lastPiece = {
         text: String(piece.text || '').trim(),
@@ -72,15 +87,9 @@ function expandBaseChunk(chunk, state) {
         lockType: info.lockType || '',
         sectionLabel: info.sectionLabel || state.currentSection || ''
       };
-      const key = info.locked ? `locked:${info.lockType}` : 'body';
-      if (!current || current.key !== key) {
-        flushGroup(groups, current, state);
-        current = { key, locked: info.locked, lockType: info.lockType, pieces: [] };
-      }
-      current.pieces.push(piece);
     }
   }
-  flushGroup(groups, current, state);
+  flushGroup(groups, current);
 
   if (!groups.length) return [];
   if (chunk._lead) groups[0]._lead = (groups[0]._lead || '') + chunk._lead;
@@ -111,6 +120,7 @@ function buildSourceLineRoleMap(text) {
   const map = new Map();
   for (const record of layoutStructure.buildLineRecords(text)) {
     if (record.blank) continue;
+    map.set(`@${record.start}:${record.end}`, [record.role]);
     const key = String(record.text || '');
     const roles = map.get(key) || [];
     roles.push(record.role);
@@ -119,8 +129,9 @@ function buildSourceLineRoleMap(text) {
   return map;
 }
 
-function sourceLineRole(map, value) {
-  const roles = map instanceof Map ? map.get(layoutStructure.visibleTrim(value)) : null;
+function sourceLineRole(map, value, start, end) {
+  const positional = map instanceof Map ? map.get(`@${start}:${end}`) : null;
+  const roles = positional || (map instanceof Map ? map.get(layoutStructure.visibleTrim(value)) : null);
   if (!Array.isArray(roles)) return '';
   if (roles.includes('title')) return 'title';
   if (roles.includes('label')) return 'label';
@@ -138,12 +149,23 @@ function classifyPiece(piece, state) {
   const frozen = freezeBlocks.academicSpanAt(state.academicSpans, piece.start, piece.end);
   if (frozen) return { locked: true, lockType: frozen.type === 'toc' ? 'toc_item' : 'reference_item', sectionLabel: frozen.type === 'toc' ? '목차' : '참고문헌' };
 
-  if (piece?.forceLockType) return { locked: true, lockType: piece.forceLockType, sectionLabel: state.currentSection };
+  if (piece?.forceLockType) return {
+    locked: true,
+    lockType: piece.forceLockType,
+    sectionLabel: piece.forceSectionLabel || state.currentSection
+  };
   if (piece?.forceEditable) return { locked: false, lockType: '', sectionLabel: state.currentSection };
 
-  const sourceRole = sourceLineRole(state.sourceLineRoles, s);
+  const sourceRole = sourceLineRole(state.sourceLineRoles, s, piece.start, piece.end);
   if (sourceRole === 'title') return { locked: true, lockType: 'title', sectionLabel: s };
   if (sourceRole === 'label') return { locked: true, lockType: 'label', sectionLabel: state.currentSection };
+  if (sourceRole === 'code') return { locked: true, lockType: 'code', sectionLabel: state.currentSection };
+  if (sourceRole === 'table') return { locked: true, lockType: 'table', sectionLabel: state.currentSection };
+  if (sourceRole === 'quote' && isStandaloneQuotedTitle(s)) {
+    return { locked: true, lockType: 'title', sectionLabel: s };
+  }
+  if (sourceRole === 'quote') return { locked: true, lockType: 'quote', sectionLabel: state.currentSection };
+  if (sourceRole === 'legal_clause') return { locked: true, lockType: 'legal_clause', sectionLabel: s };
   if (isStandaloneQuotedTitle(s)) return { locked: true, lockType: 'title', sectionLabel: s };
 
   // 문답형 문서는 질문/번호를 편집 대상에서 제외하고, 질문 사이의 답변만
@@ -164,7 +186,7 @@ function classifyPiece(piece, state) {
   return { locked: false, lockType: '', sectionLabel: state.currentSection };
 }
 
-function flushGroup(groups, group, state) {
+function flushGroup(groups, group) {
   if (!group || !group.pieces.length) return;
   const pieces = group.pieces;
   const last = pieces[pieces.length - 1];
@@ -184,8 +206,8 @@ function flushGroup(groups, group, state) {
     chunk.locked = true;
     chunk.lockType = group.lockType || 'structure';
     chunk.skipReason = `structure_lock:${chunk.lockType}`;
-  } else if (state.currentSection) {
-    chunk.sectionPath = state.currentSection;
+  } else if (group.sectionPath) {
+    chunk.sectionPath = group.sectionPath;
   }
   groups.push(chunk);
 }
@@ -358,7 +380,7 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     typeof documentProfile === 'object' ? Number(documentProfile?.confidence) || 0 : 0
   );
   const sensitiveReport = confidence >= 0.75
-    && ['academic_paper', 'report_assignment'].includes(profileName);
+    && ['academic_paper', 'report_assignment', 'legal_contract'].includes(profileName);
   const creativeLayout = profileName === 'creative';
   const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs);
   const beforeReadability = layoutStructure.measureParagraphReadability(before);
@@ -618,9 +640,10 @@ function sentenceKey(value) {
 
 function splitEditablePrefixPiece(piece) {
   const raw = String(piece?.text || '');
-  const bullet = raw.match(/^(\s*[●○■□◆◇▶▷※]\s*)(\S[\s\S]*)$/u);
-  const label = bullet ? null : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}:\s*)(\S[\s\S]*)$/u);
-  const match = bullet || label;
+  const legal = raw.match(/^(\s*제\s*\d{1,3}\s*조(?:의\s*\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?\s+)(\S[\s\S]*)$/u);
+  const bullet = legal ? null : raw.match(/^(\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+)(\S[\s\S]*)$/u);
+  const label = legal || bullet ? null : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
+  const match = legal || bullet || label;
   if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
   const prefix = match[1];
   const body = match[2];
@@ -632,7 +655,8 @@ function splitEditablePrefixPiece(piece) {
       sep: '',
       start,
       end: start + prefix.length,
-      forceLockType: bullet ? 'bullet_prefix' : 'label_prefix'
+      forceLockType: legal ? 'legal_clause_prefix' : (bullet ? 'bullet_prefix' : 'label_prefix'),
+      forceSectionLabel: legal ? prefix.trim() : ''
     },
     {
       ...piece,
@@ -872,6 +896,7 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair,
     });
   }
   const boundaryWarnings = findUnsafeOutputBoundaries(chunks);
+  const sectionPathErrors = findSectionPathErrors(chunks);
   const counts = plan?.audit?.lockedByType || countLockedByType(locked);
   return {
     version: VERSION,
@@ -889,8 +914,32 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair,
     layoutRepair: compactLayoutRepair(layoutRepair),
     unsafeBoundaryCount: boundaryWarnings.length,
     unsafeBoundaries: boundaryWarnings.slice(0, 20),
-    pass: lost.length === 0 && outOfOrder.length === 0 && boundaryWarnings.length === 0 && layoutRepair?.pass !== false
+    sectionPathErrorCount: sectionPathErrors.length,
+    sectionPathErrors: sectionPathErrors.slice(0, 20),
+    pass: lost.length === 0
+      && outOfOrder.length === 0
+      && boundaryWarnings.length === 0
+      && sectionPathErrors.length === 0
+      && layoutRepair?.pass !== false
   };
+}
+
+function findSectionPathErrors(chunks) {
+  const errors = [];
+  let currentSection = '';
+  for (const chunk of chunks || []) {
+    const lockType = String(chunk?.lockType || '');
+    if (chunk?.locked && ['heading', 'heading_continuation', 'title', 'legal_clause', 'legal_clause_prefix'].includes(lockType)) {
+      currentSection = String(chunk.text || '').trim() || currentSection;
+      continue;
+    }
+    if (chunk?.locked || !String(chunk?.text || '').trim()) continue;
+    const actual = String(chunk.sectionPath || '');
+    if (actual !== currentSection) {
+      errors.push({ index: chunk.index, expected: currentSection, actual });
+    }
+  }
+  return errors;
 }
 
 function compactLayoutRepair(value) {
@@ -1000,7 +1049,7 @@ function isTocHeading(s) {
 
 function isMainBodyHeading(s) {
   return /^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*(?:서론|본론|결론|초록|이론|연구|논의|참고\s*문헌)/.test(s) ||
-    /^제\s?\d{1,3}\s?(?:장|절|항)(?=$|[^가-힣A-Za-z0-9_])/.test(s);
+    /^제\s?\d{1,3}\s?(?:장|절|항|조)(?=$|[^가-힣A-Za-z0-9_])/.test(s);
 }
 
 function isHeadingLine(s) {
@@ -1008,6 +1057,7 @@ function isHeadingLine(s) {
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*\S.{0,100}$/.test(s)) return true;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/.test(s) && s.length <= 120) return true;
   if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/.test(s)) return true;
+  if (/^제\s?\d{1,3}\s?조(?:의\s?\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?$/.test(s)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|참고\s*문헌|결과\s*분석\s*및\s*함의)$/.test(s)) return true;
   if (/^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/i.test(s)) return true;
   return false;
@@ -1036,9 +1086,7 @@ function isHypothesisLine(s) {
 function isTableLine(s) {
   if (/^(?:표|그림)\s*[0-9A-Za-z가-힣.-]+/.test(s)) return true;
   if (/^\|.+\|$/.test(s)) return true;
-  if (/\t/.test(s)) return true;
-  const nums = s.match(/-?\d+(?:\.\d+)?%?/g) || [];
-  return nums.length >= 4 && s.length <= 220;
+  return false;
 }
 
 function isStatLine(s) {

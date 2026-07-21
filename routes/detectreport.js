@@ -2,7 +2,7 @@
 // ────────────────────────────────────────────────────────────────
 // POST /detect-report { text } — 항상 유료(100자당 1크레딧·로그인 필수, 2026-07-20 무료 제공 제거).
 // 보고서 재료 4종:
-//   ① LLM 판정(probability·summary·detail) — 기존 detect 경로(callClaude·detect tool) 재사용
+//   ① LLM 판정(probability·summary·detail) — GPT detect 경로 재사용
 //   ② 결정론 문단 지도(surfaceguard.analyzeParagraphs, 무LLM·무비용) — "어느 문단이 왜 위험한지"
 //   ③ 경로별 예상 밴드(diagnose 테이블) + 이 글 기준 비용(과금 공식과 동일 산식 — 단가 단일 출처)
 //   ④ 실시간 1문장 미리보기(가장 AI스러운 문장 1개 경량 변환) — 전환을 만드는 핵심 장치
@@ -10,13 +10,12 @@
 
 const express = require('express');
 const router = express.Router();
-const analyze = require('./analyze');           // callClaude·detect tool 재사용(LLM 경로 단일 출처)
+const billing = require('../lib/usageBilling');
 const diagnose = require('./diagnose');         // 밴드 테이블 재사용
 const transform = require('./transform');       // restructureCredit 재사용(단가 단일 출처)
 const sg = require('../engine/surfaceguard');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
-const { getDetectSystem } = require('../prompts');
 const crypto = require('crypto');
 const { db, verifyToken, verifyAppCheck } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
@@ -89,18 +88,6 @@ function pickAiSentence(paras, detail) {
   return cands.sort((a, b) => b.length - a.length)[0];
 }
 
-const REWRITE_TOOL = {
-  name: 'return_rewrite',
-  description: '재작성된 문장을 반환한다.',
-  input_schema: {
-    type: 'object',
-    properties: { rewritten: { type: 'string', description: '사람이 쓴 것처럼 자연스럽게 재작성한 한 문장' } },
-    required: ['rewritten']
-  }
-};
-// 무날조 원칙은 미리보기에도 동일 적용 — 새 사실·수치·고유명사 주입 금지.
-const REWRITE_SYSTEM = '너는 한국어 문장 교열가다. 사용자가 준 한 문장을 사람이 직접 쓴 것처럼 자연스럽게 다시 써라. 규칙: 새로운 사실·수치·고유명사·예시 추가 절대 금지, 원문 의미 보존, 길이는 원문의 0.8~1.3배, 균일한 문어체 종결과 기계적 나열을 깨고 자연스러운 리듬으로. 결과는 도구로만 반환한다.';
-
 async function activeGptConfig() {
   const cfg = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
   return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
@@ -131,9 +118,9 @@ router.post('/detect-report', async (req, res) => {
   if (!devNoAuth) {
     if (!uid) return res.status(401).json({ error: 'AI 감지는 로그인이 필요해요.', code: 'LOGIN_REQUIRED', cost });
     try {
-      paidPre = await analyze.precheckCredits(idToken, cost);
+      paidPre = await billing.precheckCredits(idToken, cost);
     } catch (e) {
-      return res.status(e.status || 402).json({ error: analyze.authErrorMessage(e.message), code: 'INSUFFICIENT_CREDITS', cost });
+      return res.status(e.status || 402).json({ error: billing.authErrorMessage(e.message), code: 'INSUFFICIENT_CREDITS', cost });
     }
   }
   logger.info('detect_report.started', { uid, textLength: text.length, cost, devNoAuth });
@@ -155,43 +142,28 @@ router.post('/detect-report', async (req, res) => {
   const grade = ir.grade || 'B';
   const copy = diagnose.COPY[grade] || diagnose.COPY.B;
   const advancedRouting = resolveAdvancedRouting(text, ir, {
-    v2Enabled: process.env.HUMANIZE_ENGINE_V2_ENABLED === '1'
+    v2Enabled: true
   });
   let advancedTimeEstimate = null;
-  if (process.env.HUMANIZE_ENGINE_V2_ENABLED === '1') {
-    try {
-      advancedTimeEstimate = estimateAdvancedTime(text);
-    } catch (error) {
-      logger.warn('detect_report.time_estimate_failed', { err: error });
-    }
+  try {
+    advancedTimeEstimate = estimateAdvancedTime(text);
+  } catch (error) {
+    logger.warn('detect_report.time_estimate_failed', { err: error });
   }
 
   // ①·④ LLM 2건 병렬 — 각자 실패 허용
   //   maxOutputTokens 2200: 긴 글에서 detail이 길어지면 1200으론 tool JSON이 max_tokens에 잘려
   //   probability 누락(detect_incomplete) → "판정 보류" 실사고(2026-06-12). 재시도 2회로 일시 오류도 흡수.
-  const detectP = analyze.retryAsync(async () => {
+  const detectP = billing.retryAsync(async () => {
     const gptCfg = await activeGptConfig();
-    if (gptCfg) {
-      const r = await gptAnalyze.runDetect(text, 'ko', { config: gptCfg, route: 'detect_report', allowLocalFallback: true, uid: uid || '' });
-      if (typeof r?.probability !== 'number') throw new Error('detect_incomplete');
-      return r;
-    }
-    const data = await analyze.callClaude({
-      userText: text,
-      systemText: getDetectSystem('ko'),
-      tool: analyze.buildDetectTool('ko'),
-      temperature: 0,
-      maxOutputTokens: 2200,
-      task: 'detect_report',
-      phase: 'detect:main',
-      mode: 'detect',
-      cacheZeroWarn: true
+    if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
+    const r = await gptAnalyze.runDetect(text, 'ko', {
+      config: gptCfg,
+      route: 'detect_report',
+      allowLocalFallback: false,
+      uid: uid || ''
     });
-    const r = analyze.extractClaudeResult(data, 'return_detection_result');
-    if (typeof r?.probability !== 'number') {
-      logger.warn('detect_report.llm_incomplete', { uid, stopReason: data?.stop_reason, keys: Object.keys(r || {}) });
-      throw new Error('detect_incomplete');
-    }
+    if (typeof r?.probability !== 'number') throw new Error('detect_incomplete');
     return r;
   }, 2).catch(e => { logger.warn('detect_report.llm_failed_fallback_engine', { uid, err: e }); return null; });
 
@@ -199,18 +171,8 @@ router.post('/detect-report', async (req, res) => {
   const exampleP = before
     ? (async () => {
         const gptCfg = await activeGptConfig();
-        if (gptCfg) {
-          const r = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '' });
-          return r?.rewritten ? { before, after: r.rewritten } : null;
-        }
-        const data = await analyze.callClaude({
-          userText: before, systemText: REWRITE_SYSTEM, tool: REWRITE_TOOL,
-          temperature: 0.7, maxOutputTokens: 500,
-          task: 'detect_report',
-          phase: 'preview:rewrite',
-          mode: 'preview'
-        });
-        const r = analyze.extractClaudeResult(data, 'return_rewrite');
+        if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
+        const r = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '' });
         return r?.rewritten ? { before, after: r.rewritten } : null;
       })().catch(e => { logger.warn('detect_report.preview_failed', { uid, err: e }); return null; })
     : Promise.resolve(null);
@@ -236,7 +198,7 @@ router.post('/detect-report', async (req, res) => {
   const charged = (!devNoAuth && paidPre && paidPre.plan !== 'unlimited') ? cost : 0;
   if (charged && !req.aborted) {
     try {
-      await analyze.commitCreditDeduct(paidPre.uid, cost, 'detect', requestId, { mode: 'detect', textLength: text.length });
+      await billing.commitCreditDeduct(paidPre.uid, cost, 'detect', requestId, { mode: 'detect', textLength: text.length });
     } catch (e) {
       logger.error('detect_report.paid_deduct_failed_manual_action', { uid, cost, requestId, err: e });
     }

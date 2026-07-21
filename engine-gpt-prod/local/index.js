@@ -13,8 +13,6 @@ module.exports = {
   spacing: require('../../engine/spacing'),
   registernormalize: require('../../engine/registernormalize'),
   dedupe: require('../../engine/dedupe'),
-  basicblogtone: require('../../engine/basicblogtone'),
-  flowcohesion: require('../../engine/flowcohesion'),
   softguard: require('../../engine/softguard'),
   outputguard: require('../../engine/outputguard'),
   koreanQuality: require('../../engine/koreanQuality')

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { auditRepeatability } = require('../engine-gpt-prod/repeatabilityAudit');
+const { auditRepeatability } = require('../tools/eval/repeatabilityAudit');
 
 test('반복 실행 결과가 달라도 숫자·직접 인용·화자·구조를 모두 보존하면 통과한다', () => {
   const source = [

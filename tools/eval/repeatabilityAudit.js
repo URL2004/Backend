@@ -1,7 +1,8 @@
 'use strict';
 
-const { compareNumberMultiset } = require('./factAudit');
-const { buildVoiceProfile, auditVoice } = require('./voiceProfile');
+// Offline evaluation helper. This must not be imported by the production graph.
+const { compareNumberMultiset } = require('../../engine-gpt-prod/factAudit');
+const { buildVoiceProfile, auditVoice } = require('../../engine-gpt-prod/voiceProfile');
 
 const VERSION = 1;
 const INVARIANT_VOICE_CODES = new Set([
@@ -54,11 +55,7 @@ function auditRun({ index, source, sourceProfile, output, documentProfile, mode 
     };
   }
   const numberAudit = compareNumberMultiset(source, output);
-  const voiceAudit = auditVoice(sourceProfile, output, {
-    documentProfile,
-    mode,
-    sourceText: source
-  });
+  const voiceAudit = auditVoice(sourceProfile, output, { documentProfile, mode, sourceText: source });
   const issueCodes = [
     ...(numberAudit.changed ? ['number_multiset_changed'] : []),
     ...(voiceAudit.warnings || [])
@@ -78,8 +75,4 @@ function auditRun({ index, source, sourceProfile, output, documentProfile, mode 
   };
 }
 
-module.exports = {
-  VERSION,
-  INVARIANT_VOICE_CODES,
-  auditRepeatability
-};
+module.exports = { VERSION, INVARIANT_VOICE_CODES, auditRepeatability };

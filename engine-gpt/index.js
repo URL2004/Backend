@@ -227,13 +227,6 @@ function finalPostprocess(text, source, mode, contract) {
   let out = text;
   try { out = tidyParagraphsLocal(out); } catch {}
   try { out = require('../engine/dedupe').dedupeSentences(out).text; } catch {}
-  try {
-    if (mode === 'blog') {
-      const target = contract.register === 'polite' ? 'hap' : 'haeyo';
-      out = require('../engine/basicblogtone').cleanupBasicBlogTone(out, { register: target }).text;
-    }
-  } catch {}
-  try { out = require('../engine/flowcohesion').flowCohesion(out).text || out; } catch {}
   try { out = require('../engine/spacing').restoreUrls(out, source).text; } catch {}
   return out.trim();
 }

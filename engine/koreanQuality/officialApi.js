@@ -11,6 +11,8 @@ const CACHE_MAX_ENTRIES = 5000;
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 let cache = null;
+let saveTimer = null;
+let saveInFlight = Promise.resolve();
 
 function getApiKey(provider) {
   const aliases = {
@@ -183,7 +185,7 @@ async function cachedFetchJson(provider, query, url, opts = {}) {
     json
   };
   pruneCache(store, now, ttlMs);
-  saveCache(store);
+  scheduleCacheSave(store);
   return json;
 }
 
@@ -223,14 +225,21 @@ function loadCache() {
   return cache;
 }
 
-function saveCache(store) {
-  try {
-    fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
-    pruneCache(store, Date.now(), CACHE_TTL_MS);
-    const tempPath = `${CACHE_PATH}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tempPath, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
-    fs.renameSync(tempPath, CACHE_PATH);
-  } catch {}
+function scheduleCacheSave(store) {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    const snapshot = JSON.parse(JSON.stringify(pruneCache(store, Date.now(), CACHE_TTL_MS)));
+    saveInFlight = saveInFlight.then(() => persistCacheSnapshot(snapshot)).catch(() => {});
+  }, 250);
+  if (saveTimer.unref) saveTimer.unref();
+}
+
+async function persistCacheSnapshot(snapshot) {
+  const tempPath = `${CACHE_PATH}.${process.pid}.${Date.now()}.tmp`;
+  await fs.promises.mkdir(path.dirname(CACHE_PATH), { recursive: true });
+  await fs.promises.writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+  await fs.promises.rename(tempPath, CACHE_PATH);
 }
 
 function hashedCacheKey(provider, query) {

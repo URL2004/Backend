@@ -74,6 +74,15 @@ test('법률 문서는 조 번호·제목만 잠그고 같은 행의 조문 본�
   assert.ok(editable.every(chunk => /^제\s*\d+\s*조/u.test(chunk.text) === false));
 });
 
+test('한 개 조문이라도 당사자·약관·의무 연산자가 결합된 짧은 약관은 법률 프로필로 잡는다', () => {
+  const source = '제1조 본 약관은 서비스 이용에 필요한 사항을 정하는 것을 목적으로 합니다. 이용자는 계정 정보를 다른 사람에게 제공해서는 안되며 회사는 개인정보를 안전하게 보호 하여야 합니다. 계약을 해지 할 수 있는 조건은 별도 안내에 따릅니다.';
+  const profile = detectDocumentProfile(source);
+  assert.equal(profile.profile, 'legal_contract');
+  assert.ok(profile.signals.legalPartySignals >= 2);
+  assert.ok(profile.signals.legalDutySignals >= 3);
+  assert.ok(profile.signals.legalOperatorSignals >= 2);
+});
+
 test('법률 가능성 표현과 조문 순서가 바뀌면 법률 무결성 경고가 생긴다', () => {
   const source = '제1조(해지) 이용자는 계약을 해지할 수 있다.\n제2조(의무) 회사는 통지하여야 한다.';
   const output = '제2조(의무) 회사는 통지하여야 한다.\n제1조(해지) 이용자는 계약을 해지한다.';

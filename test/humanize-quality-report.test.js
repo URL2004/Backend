@@ -52,6 +52,11 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       id: 'c', uid: 'u3', status: 'blocked', deducted: false, createdAtMs: 50,
       engineVersion: 'gpt-prod-v2.4.8', requestedMode: 'formal', effectiveMode: 'assignment',
       documentProfile: 'academic_paper', qualityStatus: '', billingDisposition: ''
+    },
+    {
+      id: 'lab', uid: 'admin', status: 'blocked', deducted: false, createdAtMs: 300,
+      adminHumanizeLab: true, engineVersion: 'gpt-prod-v2.5.0', requestedMode: 'formal',
+      documentProfile: 'legal_contract', deliveryDecision: 'block_technical'
     }
   ];
   const report = buildHumanizeQualityReport(rows, { hours: 24, sinceMs: 0, generatedAtMs: 1000 });
@@ -77,6 +82,8 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.metrics.substantiveCarryoverRatio.median, 0.29);
   assert.equal(report.metrics.processingDurationMs.p95, 234000);
   assert.equal(report.window.sinceMs, 0);
+  assert.equal(report.window.sourceRowCount, 4);
+  assert.equal(report.window.excludedAdminLabCount, 1);
   assert.equal(report.requestedModeDocumentProfileEngineQuality.length, 3);
   assert.deepEqual(report.sourceReviewWarningCounts, [{ code: 'reflection_formula', count: 2 }]);
   assert.deepEqual(report.sourcePreflightIssueCounts, [{ code: 'source_ui_artifact', count: 1 }]);

@@ -64,9 +64,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const legalArticleSignals = lines.filter(line => /^제\s*\d{1,3}\s*조(?:의\s*\d{1,3})?(?:\s|$|[（(])/u.test(line)).length;
   const legalPartySignals = count(text, /(?:^|[^가-힣A-Za-z0-9_])(?:갑|을|병|당사자|계약자|이용자|회사)(?:은|는|이|가|에게|의|와|과)(?=$|[^가-힣A-Za-z0-9_])/gmu);
   const legalDutySignals = count(text, /(?:계약|약관|해지|해제|권리|의무|손해\s*배상|위약|면책|관할|준거법|효력|유효\s*기간|통지|동의|귀책|채무|이행)/gu);
-  const legalOperatorSignals = count(text, /(?:하여야\s*한다|해서는\s*아니\s*된다|할\s*수\s*있다|할\s*수\s*없다|아니한다|부담한다|귀속된다|효력을\s*(?:갖|발생)|해지할\s*수)/gu);
+  const legalOperatorSignals = count(text, /(?:하여야\s*(?:한다|합니다|하며|하고)|해서는\s*(?:아니\s*)?(?:안\s*)?되(?:지|며|어|는|었|겠습니다|다)|할\s*수\s*(?:있다|있습니다|있는|없다|없습니다|없는)|아니한다|부담한다|귀속된다|효력을\s*(?:갖|발생)|해지할\s*수)/gu);
   if ((legalArticleSignals >= 2 && legalDutySignals >= 3 && legalOperatorSignals >= 1)
-      || (legalArticleSignals >= 1 && legalPartySignals >= 2 && legalDutySignals >= 4 && legalOperatorSignals >= 2)) {
+      || (legalArticleSignals >= 1 && legalPartySignals >= 2 && legalDutySignals >= 3 && legalOperatorSignals >= 2)) {
     scores.legal_contract += 6.2
       + Math.min(legalArticleSignals - 1, 5) * 0.42
       + Math.min(legalDutySignals - 3, 5) * 0.18;

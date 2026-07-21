@@ -14,8 +14,8 @@
     "eval:judge": "node eval/runJudgeEval.js",
     "test": "node --test test/*.test.js",
     "test:v2": "node --test test/humanize-v2*.test.js test/openai-client.test.js",
+    "check:production-imports": "node scripts/check-production-imports.js",
     "predeploy:v2": "node scripts/predeploy-v2.js",
-    "cache:logs": "powershell -ExecutionPolicy Bypass -File scripts/claude-cache-logs.ps1",
     "test:rules": "node scripts/firestore-rules.test.mjs",
     "emulator:rules": "powershell -ExecutionPolicy Bypass -File scripts/run-firestore-rules.ps1"
   },
@@ -25,16 +25,16 @@
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
     "firebase-admin": "14.1.0",
-    "form-data": "^4.0.6",
-    "multer": "^2.2.0",
-    "pdf-parse": "^1.1.1"
+    "form-data": "^4.0.6"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.1",
     "firebase": "^12.14.0"
   },
   "overrides": {
+    "body-parser": "1.20.6",
     "form-data": "^4.0.6",
+    "protobufjs": "7.6.5",
     "uuid": "11.1.1"
   }
 }

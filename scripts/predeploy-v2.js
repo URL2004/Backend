@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { POLICY_VERSION: EXPECTED_HUMANIZATION_POLICY } = require('../engine-gpt-prod/humanizationDepth');
+const { scanProductionImports } = require('./check-production-imports');
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -26,8 +27,12 @@ async function main() {
   add('node_runtime', process.versions.node.split('.')[0] === '24' && packageJson.engines?.node === '24.x' && nodeVersionFile === '24', `runtime=${process.versions.node}, engines=${packageJson.engines?.node}, file=${nodeVersionFile}`);
   add('python_postinstall_removed', !packageJson.scripts?.postinstall && Boolean(packageJson.scripts?.['setup:layout-nlp']), packageJson.scripts?.['setup:layout-nlp'] || 'missing');
   add('form_data_patched', semverAtLeast(packageJson.dependencies?.['form-data'], 4, 0, 6), packageJson.dependencies?.['form-data'] || 'missing');
-  add('multer_2_patched', semverAtLeast(packageJson.dependencies?.multer, 2, 0, 0), packageJson.dependencies?.multer || 'missing');
+  add('legacy_pdf_dependencies_removed', !packageJson.dependencies?.multer && !packageJson.dependencies?.['pdf-parse'], 'multer/pdf-parse');
   add('firebase_admin_14_1', packageJson.dependencies?.['firebase-admin'] === '14.1.0', packageJson.dependencies?.['firebase-admin'] || 'missing');
+  const bodyParser = packageLock.packages?.['node_modules/body-parser']?.version || '';
+  const protobuf = packageLock.packages?.['node_modules/protobufjs']?.version || '';
+  add('body_parser_patched', semverAtLeast(bodyParser, 1, 20, 6), bodyParser || 'missing');
+  add('protobufjs_patched', semverAtLeast(protobuf, 7, 6, 5), protobuf || 'missing');
   const websocketDriver = packageLock.packages?.['node_modules/websocket-driver']?.version || '';
   add('websocket_driver_patched', semverAtLeast(websocketDriver, 0, 7, 5), websocketDriver || 'missing');
 
@@ -36,11 +41,13 @@ async function main() {
   const changedNames = deployDiff.split(/\r?\n/u).filter(Boolean).map(line => line.split(/\s+/u).slice(1).join(' '));
   const localApiFiles = changedNames.filter(name => /(?:^|\/)(?:local[-_]?copykiller|copykiller[-_]?test[-_]?api|routes\/copykiller)/iu.test(name.replace(/\\/gu, '/')));
   add('local_copykiller_api_excluded', localApiFiles.length === 0, localApiFiles.join(', '));
+  const importGraph = scanProductionImports({ root });
+  add('production_import_graph', importGraph.pass, JSON.stringify(importGraph.violations));
 
   if (args['skip-env'] !== '1') {
-    add('v2_enabled', process.env.HUMANIZE_ENGINE_V2_ENABLED === '1', process.env.HUMANIZE_ENGINE_V2_ENABLED || 'unset');
+    add('v2_single_production_path', true, 'gpt-prod-v2.5.0');
     add('humanization_depth_enabled', String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0', process.env.HUMANIZATION_DEPTH_GATE_ENABLED || 'default_on');
-    add('active_provider', process.env.LLM_ACTIVE_PROVIDER === 'gpt', process.env.LLM_ACTIVE_PROVIDER || 'unset');
+    add('active_provider', gptOnly(packageJson), 'gpt');
     add('openai_key', Boolean(process.env.OPENAI_API_KEY), process.env.OPENAI_API_KEY ? 'configured' : 'unset');
     add('safety_salt', String(process.env.OPENAI_SAFETY_SALT || '').length >= 32, process.env.OPENAI_SAFETY_SALT ? `${String(process.env.OPENAI_SAFETY_SALT).length} chars` : 'unset');
   }
@@ -88,6 +95,11 @@ function semverAtLeast(value, major, minor, patch) {
   if (!match) return false;
   const current = match.slice(1).map(Number);
   return current[0] > major || (current[0] === major && (current[1] > minor || (current[1] === minor && current[2] >= patch)));
+}
+
+function gptOnly() {
+  const runtime = require('../lib/gptRuntimeConfig');
+  return runtime.sanitizeConfig({ activeProvider: 'claude' }).activeProvider === 'gpt';
 }
 
 function parseArgs(argv) {

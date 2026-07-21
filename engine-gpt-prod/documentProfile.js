@@ -6,6 +6,8 @@ const layoutStructure = require('./layoutStructure');
 const CONTENT_GENRES = Object.freeze([
   'academic_paper',
   'report_assignment',
+  'long_explainer',
+  'clinical_record',
   'legal_contract',
   'student_record_teacher',
   'student_self_assessment',
@@ -26,6 +28,8 @@ const DOCUMENT_PROFILES = CONTENT_GENRES;
 const PROFILE_GROUPS = Object.freeze({
   academic_paper: 'academic_report_explainer',
   report_assignment: 'academic_report_explainer',
+  long_explainer: 'academic_report_explainer',
+  clinical_record: 'clinical_record',
   legal_contract: 'legal_contract',
   student_record_teacher: 'student_record_teacher',
   student_self_assessment: 'student_self_assessment',
@@ -42,6 +46,8 @@ const PROFILE_GROUPS = Object.freeze({
 
 const SENSITIVE_PROFILES = new Set([
   'academic_paper',
+  'report_assignment',
+  'clinical_record',
   'legal_contract',
   'student_record_teacher',
   'student_self_assessment',
@@ -57,8 +63,15 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const questionnaire = detectQuestionnaire(lines);
   const formatProfile = detectFormatProfile(text, lines, sentences, questionnaire);
   const scores = Object.fromEntries(CONTENT_GENRES.map(profile => [profile, 0]));
-  const firstPersonSignals = count(text, /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|저는|제가|저의|저에게)(?=$|[^가-힣A-Za-z0-9_])/gu);
-  const reviewContentSignals = count(text, /(?:후기|리뷰|다녀왔|방문했|써봤|사용해\s*보|추천|맛집|내돈내산|오늘은|사진|솔직히)/gu);
+  const firstPersonSignals = count(text, /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|저는|제가|저의|저에게|저(?=\s+(?:역시|또한|또|개인적으로))|제(?=\s+(?:목표|역할|경험|강점|약점|생각|관점|업무|진로|역량|꿈|일)))(?=$|[^가-힣A-Za-z0-9_])/gu);
+  // `사진`, `오늘은`, `추천`처럼 주제 설명문에도 흔한 낱말 하나만으로 후기 장르를
+  // 만들지 않는다. 후기 판정에는 실제 방문·구매·사용 경험 또는 명시적 후기 표지가
+  // 필요하고, 사진 언급은 그 문맥이 확인된 뒤에만 약한 보조 신호로 쓴다.
+  const reviewExperienceSignals = count(text, /(?:다녀왔|방문(?:했|해\s*보|하고)|써\s*봤|사용해\s*보|먹어\s*봤|구매(?:했|해\s*보)|예약(?:했|하고)|직접\s*(?:가\s*보|먹어\s*보|사용해\s*보))/gu);
+  const explicitReviewSignals = count(text, /(?:후기|리뷰|맛집|내돈내산|솔직\s*후기)/gu);
+  const reviewOpinionSignals = count(text, /(?:추천(?:해요|합니다|드려요)|솔직히|만족했|아쉬웠|재방문|또\s*가고\s*싶)/gu);
+  const reviewPhotoSignals = count(text, /(?:사진|촬영|카메라)/gu);
+  const reviewContentSignals = reviewExperienceSignals + explicitReviewSignals + reviewOpinionSignals;
   const reviewEndingSignals = count(text, /(?:해요|했어요|였어요|더라고요|거든요|네요|죠)[.!?~]?\s*(?=$|\n)/gmu);
 
   const legalArticleSignals = lines.filter(line => /^제\s*\d{1,3}\s*조(?:의\s*\d{1,3})?(?:\s|$|[（(])/u.test(line)).length;
@@ -70,6 +83,17 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.legal_contract += 6.2
       + Math.min(legalArticleSignals - 1, 5) * 0.42
       + Math.min(legalDutySignals - 3, 5) * 0.18;
+  }
+
+  const soapHeadingSignals = lines.filter(line => /^(?:#{1,6}\s*)?(?:SOAP(?:\s*Note)?|[SOAP])(?:\s*[:.-]|\s*$)/iu.test(line)).length;
+  const clinicalLabelSignals = lines.filter(line => /^(?:\*{0,2})?(?:대상자|환자|아동|생년월일|평가일|검사일|평가도구|검사도구|주호소|진단명|치료사|보호자)(?:\*{0,2})?\s*:/u.test(line)).length;
+  const clinicalTermSignals = count(text, /(?:감각\s*프로파일|Denver\s*II|작업\s*치료|물리\s*치료|언어\s*치료|임상\s*관찰|주호소|평가\s*도구|중재\s*계획|치료\s*목표|기능적\s*수행|보호자\s*보고|관찰됨|측정됨)/giu);
+  if ((soapHeadingSignals >= 4 && clinicalLabelSignals >= 2)
+      || (/SOAP(?:\s*Note)?/iu.test(text) && soapHeadingSignals >= 3 && clinicalTermSignals >= 2)) {
+    scores.clinical_record += 6.4
+      + Math.min(soapHeadingSignals - 3, 3) * 0.35
+      + Math.min(clinicalLabelSignals, 5) * 0.22
+      + Math.min(clinicalTermSignals, 6) * 0.16;
   }
 
   add(scores, 'academic_paper', count(text, /(?:초록|Abstract|연구\s*(?:목적|방법|결과|가설)|선행\s*연구|방법론|유의확률|참고\s*문헌|doi\s*:|KCI|RISS)/giu), 1.3);
@@ -85,12 +109,20 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
 
   add(scores, 'report_assignment', count(text, /(?:서론|본론|결론|과제|보고서|목차|조사\s*결과|문제점|개선\s*방안|시사점)/gu), 0.85);
   add(scores, 'report_assignment', formatProfile.headingCount, 0.38);
-  const reportInquirySignals = count(text, /(?:본\s*(?:탐구|조사|과제)|탐구\s*(?:동기|목적|주제|과정|방법|결과|결론)|조사\s*(?:목적|대상|방법|과정|결과)|비교\s*분석|사례\s*분석|이론적\s*(?:분석|검토)|문헌\s*(?:조사|검토)|설문\s*(?:조사|분석)|자료를\s*(?:수집|분석|비교))/gu);
+  const reportInquirySignals = count(text, /(?:본\s*(?:탐구|조사|과제)|이번\s*탐구|탐구\s*(?:동기|목적|주제|과정|방법|결과|결론)|조사\s*(?:목적|대상|방법|과정|결과)|비교\s*분석|사례\s*분석|이론적\s*(?:분석|검토)|문헌\s*(?:조사|검토)|설문\s*(?:조사|분석)|자료를\s*(?:수집|분석|비교)|주제(?:를|로)?\s*선정)/gu);
   const reportMethodSignals = count(text, /(?:연구|탐구|조사|분석)의?\s*(?:목적|대상|범위|방법|절차|과정|결과|한계)|(?:가설|변수|사례|자료|문헌|설문)[^.!?\n]{0,45}(?:분석|비교|검토|수집)/gu);
   const analyticalFrameworkSignals = count(text, /(?:(?:이론|관점|개념|모형)[^.!?\n]{0,55}(?:분석|적용|해석|비교)|(?:분석|적용|해석|비교)[^.!?\n]{0,55}(?:이론|관점|개념|모형))/gu);
   const reportHeadingSignals = lines.filter(line => /^(?:#{1,6}\s*)?(?:\d+(?:\.\d+)*[.)]?\s*)?(?:탐구\s*(?:동기|목적|주제|방법|과정|결과)|조사\s*(?:목적|방법|결과)|이론적\s*(?:배경|분석)|사례\s*분석|비교\s*분석|문제점|개선\s*방안|결론|느낀\s*점)\s*$/u.test(line)).length;
   add(scores, 'report_assignment', reportInquirySignals, 0.58);
   add(scores, 'report_assignment', reportMethodSignals, 0.48);
+  const learningLogSignals = count(text, /(?:이번\s*\d{1,2}\s*회차|학습(?:한|한\s*내용|했다|하였다)|배웠다|이해했다|소감란|학습\s*소감)/gu);
+  if (learningLogSignals >= 3) {
+    scores.report_assignment += 2.25 + Math.min(learningLogSignals - 3, 4) * 0.16;
+  }
+  const topicSelectionSignals = count(text, /(?:이번\s*탐구|주제(?:를|로)?\s*선정|문제에\s*관심을\s*(?:갖|가지)|원인을\s*알아보|해결\s*방안을\s*찾아보)/gu);
+  if (topicSelectionSignals >= 2 && reportInquirySignals >= 1) {
+    scores.report_assignment += 1.85 + Math.min(topicSelectionSignals - 2, 3) * 0.18;
+  }
   if (reportHeadingSignals >= 2 && reportInquirySignals + reportMethodSignals >= 2) {
     scores.report_assignment += 2.1
       + Math.min(reportHeadingSignals - 2, 4) * 0.2
@@ -110,6 +142,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   if ((formatProfile.labelLineCount || 0) >= 2 || (formatProfile.tableLineCount || 0) >= 2) {
     scores.report_assignment += 1.25;
   }
+
+  const researchDesignSignals = count(text, /(?:연구\s*질문|질문지법|문헌\s*연구법|공식\s*통계|법령|판결문|자료의?\s*범위|표집|상관\s*관계|인과\s*관계|분석\s*틀|최종\s*답)/gu);
+  add(scores, 'report_assignment', researchDesignSignals, 0.62);
 
   add(scores, 'student_record_teacher', count(text, /(?:세부\s*능력\s*및\s*특기\s*사항|세특|생활\s*기록부|교과\s*활동|수업\s*중|발표함|탐구함|기여함|보여\s*줌|학생은)/gu), 1.35);
   add(scores, 'student_record_teacher', count(text, /(?:함|됨|임|음)\s*[.!?]?\s*(?=$|\n)/gmu), 0.25);
@@ -149,7 +184,14 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       + Math.min(selfReflectivePredicateSignals - 3, 4) * 0.2;
   }
 
-  const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|성장\s*과정|직무\s*역량|자기\s*소개서|자소서|저의\s*(?:(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|경험)|귀사|지원하게\s*되었습니다|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다)/gu);
+  const selfAssessmentSectionSignals = lines.filter(line => /^(?:느낀\s*점|배운\s*점|본인이\s*잘했던\s*것|잘했던\s*점|어려웠던\s*점|관심이\s*갔던\s*내용|향후\s*계획|기타)\s*[:：]?$/u.test(line)).length;
+  if (selfAssessmentSectionSignals >= 2 && selfReflectivePredicateSignals >= 1) {
+    scores.student_self_assessment += 3.35
+      + Math.min(selfAssessmentSectionSignals - 2, 4) * 0.24
+      + Math.min(selfReflectivePredicateSignals - 1, 3) * 0.16;
+  }
+
+  const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|직무\s*역량|직업\s*윤리(?:관)?|자기\s*소개서|자소서|저의\s*(?:(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|경험|성장\s*과정)|귀사|지원하게\s*되었습니다|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다)/gu);
   const applicationIntentSignals = count(text, /(?:신청\s*(?:동기|이유)|신청(?:하게\s*되었습니다|했습니다|하고자|하려고|하고\s*싶)|지원(?:하게\s*되었습니다|했습니다|하고자|하려고|하고\s*싶)|참여하게\s*된다면|선발된다면)/gu);
   const programApplicationSignals = count(text, /(?:(?:캠프|프로그램|교육\s*과정|체험\s*활동|학과\s*탐방|멘토링)[^.!?\n]{0,90}(?:신청|지원|참여|선발|체험)|(?:신청|지원|참여|선발)[^.!?\n]{0,90}(?:캠프|프로그램|교육\s*과정|체험\s*활동|학과\s*탐방|멘토링))/gu);
   const careerActionSignals = count(text, /(?:수집|정리|분석|비교|조사|기획|설계|운영|관리|지원|발표|협업|조율|응대|개선|제작|시각화|학습|연습|근무|실험|조정|최적화|도출|검증|측정|해석|문서화|작성|유지)/gu);
@@ -157,15 +199,33 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const roleFitSignals = count(text, /(?:직무|실무|업무|입사|채용|지원서|지원\s*분야|회사|조직|고객|수강생|교육\s*운영|운영\s*지원|연구\s*개발|연구원|소재\s*개발|업무에\s*(?:활용|적용)|도움이\s*될|기여(?:할|하는|하고자))/gu);
   const experienceNarrativeSignals = count(text, /(?:당시|그\s*과정에서|이\s*과정에서|이\s*경험(?:은|을|으로|을\s*통해)|경험을\s*바탕으로|준비\s*기간|아르바이트|프로젝트)/gu);
   const applicationValuePropositionSignals = count(text, /(?:^|\n|[.!?]\s*)(?:저의\s*(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|제가\s*(?:갖춘|보유한)\s*(?:강점|경쟁력|역량)|저는\s+[^.!?\n]{0,70}(?:강점|경쟁력|역량)(?:을|를|이|가|은|는))/gmu);
-  const careerAspirationSignals = count(text, /(?:입사\s*후|귀사|지원(?:하게\s*되었습니다|하고자|했습니다)|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다|(?:직무|업무|연구\s*개발|소재\s*개발)[^.!?\n]{0,45}기여(?:하겠습니다|하고자\s*합니다|하는))/gu);
+  const careerAspirationSignals = count(text, /(?:입사\s*후|귀사|지원(?:하게\s*되었습니다|하고자|했습니다)|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다|[가-힣]{2,20}(?:관리사|간호사|공무원|제작자|실무자|전문가|연구원|담당자)(?:이|가|로)?\s*(?:되(?:겠습니다|는\s*것|고\s*싶)|성장(?:하겠습니다|하고\s*싶))|(?:직무|업무|연구\s*개발|소재\s*개발|기관|조직|병원)[^.!?\n]{0,55}기여(?:하겠습니다|하고자\s*합니다|하는))/gu);
   const researchCareerContextSignals = count(text, /(?:연구실|연구\s*개발|실험\s*(?:설계|조건|데이터|결과)|공정\s*(?:조건|변수|최적화)|분석\s*장비|시편|재현성|연구\s*과제|투고\s*논문)/gu);
-  const applicationSectionSignals = lines.filter(line => /^(?:#{1,6}\s*)?(?:\d+(?:\.\d+)*[.)]?\s*)?(?:성격의?\s*(?:장단점|강점|약점)|강점과\s*약점|보유\s*역량|핵심\s*역량|직무\s*경험|경력\s*사항|자격(?:증|\s*및\s*교육)|지원\s*동기|입사\s*후\s*포부)\s*$/u.test(line)).length;
+  const applicationSectionSignals = lines.filter(line => /^(?:#{1,6}\s*)?(?:\d+(?:\.\d+)*[.)]?\s*)?(?:성장\s*과정|성격의?\s*(?:장단점|강점|약점)|강점과\s*약점|보유\s*역량|핵심\s*역량|직무\s*경험|경력\s*사항|자격(?:증|\s*및\s*교육)|협업\s*및\s*문제\s*해결\s*경험|지원\s*동기|입사\s*후\s*포부)\s*$/u.test(line)).length;
   const strengthWeaknessSignals = count(text, /(?:저의|제|제가\s*가진)?\s*(?:강점|장점|약점|단점)|(?:약점|단점|부족한\s*점)[^.!?\n]{0,65}(?:보완|개선|극복)|(?:강점|장점)[^.!?\n]{0,65}(?:활용|발휘)/gu);
   const qualificationSignals = count(text, /(?:자격증|자격을\s*취득|근무\s*경험|업무\s*경험|직무\s*경험|현장\s*경험|교육을\s*이수|과정을\s*수료)/gu);
   add(scores, 'resume_application', explicitApplicationSignals, 1.35);
   add(scores, 'resume_application', applicationIntentSignals, 1.35);
   add(scores, 'resume_application', programApplicationSignals, 0.85);
   add(scores, 'resume_application', firstPersonSignals, 0.22);
+  const professionalPastEndingSignals = sentences.filter(sentence => /(?:했습니다|하였습니다|맡았습니다|기여했습니다|해결했습니다|구현했습니다|개선했습니다)[.!?。！？]?$/u.test(sentence.trim())).length;
+  const fundingPlanSignals = count(text, /(?:지원금|장학금|보조금)[^.!?\n]{0,90}(?:활용|사용|저축|계획)|(?:활용|사용)\s*계획[^.!?\n]{0,60}(?:지원금|장학금|보조금)/gu);
+  if (fundingPlanSignals >= 1 && firstPersonSignals >= 1) {
+    scores.resume_application += 2.35 + Math.min(fundingPlanSignals - 1, 2) * 0.22;
+  }
+  if (professionalPastEndingSignals >= 3
+      && careerActionSignals >= 5
+      && achievementSignals >= 1
+      && (experienceNarrativeSignals >= 1 || formatProfile.headingCount >= 1)) {
+    scores.resume_application += 2.55
+      + Math.min(professionalPastEndingSignals - 3, 4) * 0.15;
+  }
+  if (careerAspirationSignals >= 1
+      && professionalPastEndingSignals >= 2
+      && careerActionSignals >= 3) {
+    scores.resume_application += 3
+      + Math.min(professionalPastEndingSignals - 2, 3) * 0.14;
+  }
   // 취업 지원서뿐 아니라 대학·기관의 캠프/교육 프로그램 신청서도 지원서다.
   // 단순한 행사 후기를 오인하지 않도록 1인칭, 명시적 신청 의도, 프로그램
   // 참여 문맥이 함께 있을 때만 강한 장르 증거로 사용한다.
@@ -202,7 +262,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   } else if (careerAspirationSignals >= 1
       && firstPersonSignals >= 1
       && careerActionSignals >= 3) {
-    scores.resume_application += 1.45;
+    scores.resume_application += 3;
   }
   // 제목이 없는 경력 소개나 문항형 자기소개서도 강점·보완 행동·업무 근거가
   // 함께 있으면 지원서로 본다. 한 가지 자기성찰 표현만으로 개인 에세이를
@@ -215,9 +275,19 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       + Math.min(applicationSectionSignals, 4) * 0.18
       + Math.min(qualificationSignals, 3) * 0.16;
   }
+  if (applicationSectionSignals >= 1
+      && careerAspirationSignals >= 1
+      && careerActionSignals >= 3) {
+    scores.resume_application += 2.65
+      + Math.min(applicationSectionSignals - 1, 3) * 0.2;
+  }
 
   add(scores, 'review_blog', reviewContentSignals, 0.8);
   add(scores, 'review_blog', reviewEndingSignals, 0.24);
+  if ((reviewExperienceSignals >= 1 || explicitReviewSignals >= 1)
+      && (reviewEndingSignals >= 1 || firstPersonSignals >= 1 || reviewOpinionSignals >= 1)) {
+    scores.review_blog += 1.35 + Math.min(reviewPhotoSignals, 3) * 0.12;
+  }
 
   const marketingActionSignals = count(text, /(?:지금\s*(?:바로|신청)|(?:신청|구매|예약|문의)\s*(?:하세요|해\s*주세요|바랍니다)|클릭(?:하세요|해\s*주세요)|놓치지\s*마세요)/gu);
   const promotionSignals = count(text, /(?:무료\s*(?:상담|체험)|한정\s*(?:수량|기간|판매)|특가|할인\s*(?:혜택|행사|쿠폰)|선착순|오늘만|마감\s*임박|\d{1,3}%\s*할인|원\s*할인)/gu);
@@ -237,8 +307,19 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   add(scores, 'social', count(text, /[😀-🙏🌀-🫿❤♥✨🔥✅📌]/gu), 0.42);
   if (compactLength <= 450 && lines.length >= 3 && median(lines.map(line => line.length)) <= 35) scores.social += 1.2;
 
-  add(scores, 'mail_notice', count(text, /(?:안녕하세요[,.]?|수신\s*:|발신\s*:|제목\s*:|귀하|드립니다|안내드립니다|회신|문의\s*사항|감사합니다|올림|드림)/gu), 0.72);
-  if (/(?:안녕하세요|수신\s*:)/u.test(text) && /(?:감사합니다|드림|올림)\s*$/u.test(text)) scores.mail_notice += 2.2;
+  const mailLexicalSignals = count(text, /(?:안녕하세요[,.]?|안녕하십니까[,.]?|학우\s*여러분|수신\s*:|발신\s*:|제목\s*:|귀하|인사드립니다|드립니다|안내드립니다|회신|문의\s*사항|감사합니다|올림|드림)/gu);
+  const officialRoleSignals = count(text, /(?:위원장|회장|대표|담당자|총학생회|운영위원회|비상대책위원회|학생회|사무국)/gu);
+  const signatureDateLines = lines.filter(line => /^(?:(?:19|20)\d{2}[.년]\s*\d{1,2}[.월]\s*\d{1,2}(?:일)?|\d{1,2}월\s*\d{1,2}일)$/u.test(line)).length;
+  const signatureInstitutionLines = lines.filter(line => /(?:대학교|대학|학과|전공|위원회|학생회|협회|기관|재단|회사).*(?:위원장|회장|대표|담당자|드림|올림)?$/u.test(line)).length;
+  add(scores, 'mail_notice', mailLexicalSignals, 0.72);
+  if (/(?:안녕하세요|안녕하십니까|학우\s*여러분|수신\s*:)/u.test(text)
+      && /(?:감사합니다|드림|올림|위원장|회장|대표)\s*[.!]?\s*$/u.test(text)) scores.mail_notice += 2.2;
+  if (mailLexicalSignals >= 2 && officialRoleSignals >= 1
+      && (signatureDateLines >= 1 || signatureInstitutionLines >= 1)) {
+    scores.mail_notice += 3.1
+      + Math.min(officialRoleSignals - 1, 3) * 0.2
+      + Math.min(signatureInstitutionLines, 3) * 0.18;
+  }
 
   const quoteLines = lines.filter(line => /^(?:[>“"'‘]|[-*]\s)/u.test(line)).length;
   const poemLikeLines = lines.filter(line => line.length <= 34 && !/[.!?。！？]$/u.test(line)).length;
@@ -261,6 +342,31 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   add(scores, 'personal_essay', personalReflectionSignals, 0.55);
   add(scores, 'personal_essay', firstPersonSignals, 0.22);
   if (firstPersonSignals >= 2 && personalReflectionSignals >= 1) scores.personal_essay += 0.8;
+
+  const explainerConceptSignals = count(text, /(?:개념|원리|이론|역사적\s*배경|특징|구조|기능|영향|관계|차이|의미|과정|사례|쟁점|메커니즘|제도)/gu);
+  const formalExpositionEndings = sentences.filter(sentence => /(?:한다|했다|하였다|이다|였다|이었다|된다|되었다|있다|없다|보인다|나타난다|나타났다|드러난다|드러났다|의미한다)[.!?。！？]?$/u.test(sentence.trim())).length;
+  const formalExpositionRatio = formalExpositionEndings / Math.max(1, sentences.length);
+  if (compactLength >= 800
+      && sentences.length >= 7
+      && firstPersonSignals <= 2
+      && personalReflectionSignals <= 1
+      && reviewContentSignals === 0
+      && reviewEndingSignals === 0
+      && explainerConceptSignals >= 4
+      && formalExpositionRatio >= 0.45) {
+    scores.long_explainer += 2.45
+      + Math.min(explainerConceptSignals - 4, 6) * 0.16
+      + (compactLength >= 2000 ? 0.45 : 0);
+  }
+  if (compactLength >= 1600
+      && sentences.length >= 15
+      && reviewContentSignals === 0
+      && reviewEndingSignals === 0
+      && explainerConceptSignals >= 7
+      && formalExpositionRatio >= 0.5) {
+    scores.long_explainer += 3.15
+      + Math.min(explainerConceptSignals - 7, 6) * 0.12;
+  }
   if (compactLength > 100 && sentences.length >= 3) scores.general += 1.35;
   if (compactLength >= 1500 && sentences.length >= 10) scores.general += 0.38;
   if (compactLength <= 100 && lines.length <= 2) scores.general += 0.55;
@@ -269,9 +375,16 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     .filter(profile => profile !== 'unknown')
     .map(profile => ({ profile, score: scores[profile] }))
     .sort((a, b) => b.score - a.score || a.profile.localeCompare(b.profile));
-  const top = ranked[0] || { profile: 'unknown', score: 0 };
-  const second = ranked[1] || { profile: 'unknown', score: 0 };
-  const confidence = calibrateConfidence(top.score, second.score, compactLength);
+  const rankedGroups = rankProfileGroups(ranked);
+  const topGroup = rankedGroups[0] || { group: 'unknown', score: 0, profiles: [] };
+  const secondGroup = rankedGroups[1] || { group: 'unknown', score: 0, profiles: [] };
+  const top = topGroup.profiles[0] || ranked[0] || { profile: 'unknown', score: 0 };
+  const second = ranked.find(item => item.profile !== top.profile) || { profile: 'unknown', score: 0 };
+  const groupConfidence = calibrateConfidence(topGroup.score, secondGroup.score, compactLength);
+  const fineConfidence = calibrateConfidence(top.score, second.score, compactLength);
+  const confidence = topGroup.group === 'academic_report_explainer'
+    ? groupConfidence
+    : Math.min(groupConfidence, fineConfidence);
   const profile = confidence < 0.55 ? 'unknown' : top.profile;
   const profileDecisionSource = confidence < 0.55 ? 'low_confidence_preserve' : 'content_only';
   const safetyProfiles = buildSafetyProfiles({
@@ -307,10 +420,16 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     basicStyle: normalizeBasicStyle(basicStyle),
     ...resolveRegisterPolicy({ profile, basicStyle, requestStrength: 'basic' }),
     candidateProfiles,
+    candidateGroups: rankedGroups.slice(0, 5).map(item => ({
+      group: item.group,
+      score: round(item.score, 3),
+      profiles: item.profiles.slice(0, 3).map(profileItem => profileItem.profile)
+    })),
     // v1 소비자와 로컬 분석 스크립트의 호환 필드다.
     candidates: candidateProfiles,
     safetyProfiles,
     profileMargin: round(Math.max(0, top.score - second.score), 3),
+    profileGroupMargin: round(Math.max(0, topGroup.score - secondGroup.score), 3),
     formatProfile,
     riskFlags,
     signals: {
@@ -325,6 +444,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       selfReflectivePredicateSignals,
       reflectiveActivitySignals,
       educationSignals,
+      learningLogSignals,
+      topicSelectionSignals,
+      selfAssessmentSectionSignals,
       reportInquirySignals,
       reportMethodSignals,
       reportHeadingSignals,
@@ -341,14 +463,52 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       careerAspirationSignals,
       researchCareerContextSignals,
       applicationSectionSignals,
+      professionalPastEndingSignals,
+      fundingPlanSignals,
       strengthWeaknessSignals,
       qualificationSignals,
       legalArticleSignals,
       legalPartySignals,
       legalDutySignals,
-      legalOperatorSignals
+      legalOperatorSignals,
+      soapHeadingSignals,
+      clinicalLabelSignals,
+      clinicalTermSignals,
+      researchDesignSignals,
+      reviewExperienceSignals,
+      explicitReviewSignals,
+      reviewOpinionSignals,
+      reviewPhotoSignals,
+      mailLexicalSignals,
+      officialRoleSignals,
+      signatureDateLines,
+      signatureInstitutionLines,
+      explainerConceptSignals,
+      formalExpositionRatio: round(formalExpositionRatio, 4)
     }
   };
+}
+
+function rankProfileGroups(rankedProfiles) {
+  const grouped = new Map();
+  for (const item of rankedProfiles) {
+    const group = PROFILE_GROUPS[item.profile] || item.profile;
+    if (!grouped.has(group)) grouped.set(group, []);
+    grouped.get(group).push(item);
+  }
+  return [...grouped.entries()].map(([group, profiles]) => {
+    const ordered = [...profiles].sort((a, b) => b.score - a.score || a.profile.localeCompare(b.profile));
+    const [primary, ...supporting] = ordered;
+    // 같은 목적의 부분 단서가 academic/report/long-explainer처럼 서로 다른
+    // 세부 프로필에 나뉘어도 일반문 기본점수에 지지 않도록 장르군에서 합친다.
+    const supportingEvidence = supporting.reduce((sum, item) => sum + Math.min(3, Math.max(0, item.score)), 0);
+    const supportWeight = group === 'academic_report_explainer' ? 0.65 : 0;
+    return {
+      group,
+      score: (primary?.score || 0) + supportingEvidence * supportWeight,
+      profiles: ordered
+    };
+  }).sort((a, b) => b.score - a.score || a.group.localeCompare(b.group));
 }
 
 // 명시적 장르 선택은 분류기를 대체하는 정답지가 아니라, 애매한 문서의 동률 해소 신호다.
@@ -439,8 +599,9 @@ function detectQuestionnaire(lines) {
 function detectFormatProfile(text, lines, sentences, questionnaire) {
   const compactLength = String(text || '').replace(/\s+/gu, '').length;
   const length = compactLength <= 100 ? 'short' : (compactLength >= 1500 ? 'long' : 'standard');
-  const headingCountValue = headingCount(lines.filter(line => !(questionnaire.isQuestionnaire && isQuestionLike(line))));
   const layout = layoutStructure.analyzeLineStructure(text);
+  const headingCountValue = lines.filter(line => !(questionnaire.isQuestionnaire && isQuestionLike(line))
+    && layoutStructure.isKnownHeadingLine(line)).length;
   const listItemCount = Math.max(lines.filter(isListLine).length, layout.listLineCount || 0);
   const tableLineCount = layout.tableLineCount || 0;
   const labelLineCount = layout.labelLineCount || 0;
@@ -482,6 +643,7 @@ function detectFormatProfile(text, lines, sentences, questionnaire) {
     structuralBoundaryCount: layout.preservedBoundaryCount || 0,
     referenceLineCount,
     quoteLineCount,
+    signatureLineCount: layout.signatureLineCount || 0,
     appendixPresent
   };
 }
@@ -511,8 +673,8 @@ function detectRiskFlags(text, { profile, safetyProfiles, questionnaire, formatP
   if (institutionCount >= 2) flags.push('institution_dense');
   if (citationCount >= 3 || formatProfile.flags.includes('reference_heavy')) flags.push('citation_dense');
   if (firstPersonSignals > 0
-      || ['student_record_teacher', 'student_self_assessment', 'resume_application', 'creative'].includes(profile)
-      || safetyProfiles.some(item => ['student_record_teacher', 'student_self_assessment', 'resume_application', 'creative'].includes(item))) {
+      || ['student_record_teacher', 'student_self_assessment', 'resume_application', 'clinical_record', 'creative'].includes(profile)
+      || safetyProfiles.some(item => ['student_record_teacher', 'student_self_assessment', 'resume_application', 'clinical_record', 'creative'].includes(item))) {
     flags.push('pov_sensitive');
   }
   if (contextualExperienceCount >= 1
@@ -523,6 +685,7 @@ function detectRiskFlags(text, { profile, safetyProfiles, questionnaire, formatP
   if (commercialIntentCount >= 1 || profile === 'marketing') flags.push('commercial_claim');
   if (deadlineActionCount >= 2 || profile === 'mail_notice') flags.push('deadline_action_sensitive');
   if (profile === 'legal_contract' || safetyProfiles.includes('legal_contract')) flags.push('legal_operator_sensitive');
+  if (profile === 'clinical_record' || safetyProfiles.includes('clinical_record')) flags.push('clinical_fact_sensitive');
   if (questionnaire.isQuestionnaire) flags.push('questionnaire_answer_boundary');
   return flags;
 }
@@ -533,6 +696,8 @@ function buildSafetyProfiles({ profile, ranked, questionnaire, nominalObservatio
   const safety = new Set();
   const minimumScore = {
     academic_paper: 1.3,
+    report_assignment: 1.7,
+    clinical_record: 4.8,
     legal_contract: 4.8,
     student_record_teacher: 1.35,
     student_self_assessment: 1.4,
@@ -553,6 +718,7 @@ function buildSafetyProfiles({ profile, ranked, questionnaire, nominalObservatio
   }
   if (formatProfile.flags.includes('line_sensitive') && profile === 'creative') safety.add('creative');
   if (profile === 'legal_contract') safety.add('legal_contract');
+  if (profile === 'clinical_record') safety.add('clinical_record');
   return [...safety];
 }
 
@@ -580,8 +746,11 @@ function resolveRegisterPolicy({ profile = 'unknown', basicStyle = '', requestSt
   let targetRegister = 'source_preserve';
   let targetRegisterSource = 'source';
 
-  if (['academic_paper', 'report_assignment'].includes(genre)) {
+  if (['academic_paper', 'report_assignment', 'long_explainer'].includes(genre)) {
     targetRegister = 'academic_formal';
+    targetRegisterSource = 'document_profile';
+  } else if (genre === 'clinical_record') {
+    targetRegister = 'clinical_formal';
     targetRegisterSource = 'document_profile';
   } else if (genre === 'legal_contract') {
     targetRegister = 'legal_formal';
@@ -613,7 +782,7 @@ function resolveRegisterPolicy({ profile = 'unknown', basicStyle = '', requestSt
   }
 
   const formalTargets = new Set([
-    'academic_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal'
+    'academic_formal', 'clinical_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal'
   ]);
   return {
     targetRegister,
@@ -634,10 +803,6 @@ function calibrateConfidence(top, second, compactLength) {
   let value = 0.35 + strength * 0.48 + margin * 0.16;
   if (compactLength < 60 && top < 2.5) value -= 0.12;
   return Math.max(0.3, Math.min(0.99, value));
-}
-
-function headingCount(lines) {
-  return lines.filter(line => /^(?:#{1,6}\s+|제\s*\d+\s*(?:장|절|항|조)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){0,3}[.)]?\s+|서론$|본론$|결론$|목차$|참고\s*문헌$)/u.test(line)).length;
 }
 
 function isQuestionLike(line) {

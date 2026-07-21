@@ -161,6 +161,7 @@ function classifyPiece(piece, state) {
   if (sourceRole === 'label') return { locked: true, lockType: 'label', sectionLabel: state.currentSection };
   if (sourceRole === 'code') return { locked: true, lockType: 'code', sectionLabel: state.currentSection };
   if (sourceRole === 'table') return { locked: true, lockType: 'table', sectionLabel: state.currentSection };
+  if (sourceRole === 'signature') return { locked: true, lockType: 'signature', sectionLabel: state.currentSection };
   if (sourceRole === 'quote' && isStandaloneQuotedTitle(s)) {
     return { locked: true, lockType: 'title', sectionLabel: s };
   }
@@ -380,7 +381,7 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     typeof documentProfile === 'object' ? Number(documentProfile?.confidence) || 0 : 0
   );
   const sensitiveReport = confidence >= 0.75
-    && ['academic_paper', 'report_assignment', 'legal_contract'].includes(profileName);
+    && ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract'].includes(profileName);
   const creativeLayout = profileName === 'creative';
   const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs);
   const beforeReadability = layoutStructure.measureParagraphReadability(before);

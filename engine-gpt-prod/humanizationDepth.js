@@ -20,6 +20,7 @@ const HARD_DELIVERY_SENTENCE_FACTOR = 0.50;
 const CAUTIOUS_PROFILES = new Set([
   'academic_paper',
   'report_assignment',
+  'clinical_record',
   'student_record_teacher',
   'student_self_assessment',
   'resume_application',

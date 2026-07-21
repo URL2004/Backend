@@ -39,7 +39,7 @@ const literalSpans = require('./literalSpans');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.0';
+const VERSION = 'gpt-prod-v2.5.1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -128,9 +128,25 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
     && confidence < 0.75
     && documentProfile?.basicStyle === 'report'
     && ['academic_paper', 'report_assignment'].includes(profile);
-  if ((confidence >= 0.75 || trustedOverride) && [
+  const mediumConfidenceDistinctProfile = confidence >= 0.55 && [
+    'long_explainer',
+    'clinical_record',
+    'legal_contract',
+    'student_record_teacher',
+    'student_self_assessment',
+    'resume_application',
+    'mail_notice',
+    'creative'
+  ].includes(profile);
+  // 기본 피하기는 요청 강도를 뜻할 뿐 블로그 문체 강제가 아니다. 임상·지원서·
+  // 세특처럼 형태가 뚜렷한 장르는 중간 신뢰도에서도 장르 프롬프트를 쓰되,
+  // `결론` 같은 일반 낱말만으로 잡힌 학술·보고서 후보는 0.75 또는 report 힌트를
+  // 요구한다. 그래야 짧은 일반 글이 학술 문체로 과교정되지 않는다.
+  if ((confidence >= 0.75 || trustedOverride || mediumConfidenceDistinctProfile) && [
     'academic_paper',
     'report_assignment',
+    'long_explainer',
+    'clinical_record',
     'legal_contract',
     'student_record_teacher',
     'student_self_assessment',
@@ -478,21 +494,24 @@ async function runEngine({
       && (rawSource.length < sectionRecovery.MIN_DOCUMENT_CHARS || !sectionRecovery.isEnabled())
       && (generalSurfaceRetryPending || humanizationDepthReport?.pass === false)) {
     const wasEquivalent = normalizeBare(auditSource) === normalizeBare(outputText);
+    const startedWithSevereNoEffect = wasEquivalent || isSevereHumanizationNoEffect(humanizationDepthReport);
     // 기본도 첫 회복 뒤 결과가 여전히 문단 재배치·구두점 수준에 머물면 mini로
     // 한 번 더 회복한다. 최소 효과는 넘었지만 목표 깊이만 부족한 결과에는 추가
     // 호출하지 않으며, 고급의 두 번째 시도만 상위 모델로 승격한다.
     const maxDepthAttempts = 2;
-    if (wasEquivalent) finalNoopRecovery.attempted = true;
+    if (startedWithSevereNoEffect) finalNoopRecovery.attempted = true;
     let lastRetryError = null;
     for (let attempt = 0; attempt < maxDepthAttempts; attempt += 1) {
       const roleRecoveryPending = (humanizationDepthReport?.reasons || []).some(reason => [
         'resume_semantic_repetition_low',
         'paragraph_rewrite_coverage_low'
       ].includes(reason));
+      const severeNoEffect = isSevereHumanizationNoEffect(humanizationDepthReport);
       if (attempt > 0
           && (humanizationDepthReport?.pass === true
             || (requestStrength !== 'advanced'
               && humanizationDepthReport?.minimumEffectPass !== false
+              && !severeNoEffect
               && !roleRecoveryPending))) break;
       try {
         generalSurfaceRetryAttemptCount += 1;
@@ -500,7 +519,7 @@ async function runEngine({
         // 원문과 완전히 같은 결과는 일반적인 "깊이 부족"보다 강한 기술 실패다.
         // 기본 피하기도 첫 회복이 실패하면 상위 모델로 한 번 승격해, 원문 그대로
         // 전달·과금되는 경우를 최대한 줄인다.
-        const escalation = attempt > 0 && (requestStrength === 'advanced' || wasEquivalent);
+        const escalation = attempt > 0 && (requestStrength === 'advanced' || wasEquivalent || severeNoEffect);
         const roleRecovery = attempt > 0
           && !escalation
           && roleRecoveryPending
@@ -546,7 +565,7 @@ async function runEngine({
           humanizationDepthRetryApplied = true;
           humanizationDepthReport = retryDepth;
           acceptGeneralSurfaceRecovery(records);
-          if (wasEquivalent) {
+          if (startedWithSevereNoEffect && humanizationDepthReport?.minimumEffectPass === true) {
             finalNoopRecoveryCount = 1;
             finalNoopRecovery = { attempted: true, applied: true, method: 'model', reason: 'substantive_humanization' };
           }
@@ -567,7 +586,7 @@ async function runEngine({
         addUniqueCode(humanizationDepthRetryRejectionCodes, 'retry_error');
       }
     }
-    if (wasEquivalent && finalNoopRecovery.applied !== true) {
+    if (startedWithSevereNoEffect && finalNoopRecovery.applied !== true) {
       finalNoopRecovery = {
         attempted: true,
         applied: false,
@@ -954,7 +973,16 @@ async function runEngine({
   if (v2Enabled
       && selectedMode !== 'polish'
       && finalNoopRecovery.attempted !== true
-      && normalizeBare(auditSource) === normalizeBare(outputText)) {
+      && (normalizeBare(auditSource) === normalizeBare(outputText)
+        || isSevereHumanizationNoEffect(humanizationDepth.evaluateHumanizationDepth(
+          auditSource,
+          outputText,
+          humanizationPlan || humanizationDepth.buildHumanizationPlan(auditSource, {
+            requestStrength,
+            documentProfile,
+            inputRisk
+          })
+        )))) {
     finalNoopRecovery.attempted = true;
     const postNoopPlan = humanizationPlan || humanizationDepth.buildHumanizationPlan(auditSource, {
       requestStrength,
@@ -1426,8 +1454,11 @@ async function runEngine({
     profileOverrideApplied: documentProfile.profileOverrideApplied === true,
     profileOverrideIgnoredReason: documentProfile.profileOverrideIgnoredReason || '',
     candidateProfiles: documentProfile.candidateProfiles || documentProfile.candidates || [],
+    candidateGroups: documentProfile.candidateGroups || [],
+    profileGroup: documentProfile.group || 'unknown',
     safetyProfiles: documentProfile.safetyProfiles || [],
     profileMargin: documentProfile.profileMargin ?? 0,
+    profileGroupMargin: documentProfile.profileGroupMargin ?? 0,
     formatProfile: documentProfile.formatProfile || { length: 'standard', primary: 'plain', flags: [] },
     lineBoundaryPolicy,
     paragraphRepairPolicy: layoutRepair?.paragraphs?.policy || 'none',
@@ -1475,6 +1506,9 @@ async function runEngine({
     effectNoticeCodes: safeFailureCodeList(effectNotices.map(item => item.code)),
     structureSignaturePass: structureAudit?.pass === true,
     sectionPathErrorCount: Number(structureAudit?.sectionPathErrorCount || 0),
+    signatureLineCount: Number(documentProfile?.formatProfile?.signatureLineCount || 0),
+    clinicalStructureSignalCount: Number(documentProfile?.signals?.soapHeadingSignals || 0)
+      + Number(documentProfile?.signals?.clinicalLabelSignals || 0),
     humanizeCallCount: chunkExecution.humanizeCallCount,
     semanticModelCallCount: chunkExecution.semanticModelCallCount,
     surfaceRetryCallCount: chunkExecution.surfaceRetryCallCount,
@@ -1593,6 +1627,10 @@ async function runEngine({
       .map(item => item.code)),
     fingerprintShadowPositiveCount: (fingerprintAudit?.shadow || [])
       .reduce((sum, item) => sum + Math.max(0, Number(item?.delta || 0)), 0),
+    lexicalTransitionCodes: safeFailureCodeList((fingerprintAudit?.lexicalTransitions || [])
+      .filter(item => Number(item?.transitionCount || 0) > 0)
+      .map(item => item.code)),
+    lexicalTransitionCount: Number(fingerprintAudit?.lexicalTransitionCount || 0),
     endingStyleAuditVersion: Number(endingStyleAudit?.version || 0),
     endingStylePass: endingStyleAudit?.pass === true,
     endingStyleIssueCount: Number(endingStyleAudit?.issueCount || 0),
@@ -1621,6 +1659,14 @@ async function runEngine({
     koreanRefinementIntroducedIssueCount: Number(koreanRefinementAudit?.introducedIssueCount || 0),
     formalRegisterResidualCount: Number((koreanRefinementAudit?.issues || [])
       .find(item => item.code === 'formal_register_residual')?.afterCount || 0),
+    studentRecordFragmentCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'student_record_fragment')?.afterCount || 0),
+    functionalGreetingDuplicationCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'functional_greeting_duplication')?.afterCount || 0),
+    adjacentSemanticRepetitionCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'adjacent_semantic_repetition')?.afterCount || 0),
+    directionalGrowthCollocationCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'directional_growth_collocation')?.afterCount || 0),
     koreanDeterministicRepairCount,
     koreanRefinementRetryAttemptCount,
     koreanRefinementRetryCount,
@@ -4404,6 +4450,16 @@ function looksTruncated(text) {
   if (!s) return true;
   if (/[,:;，、]$/.test(s)) return true;
   return /(?:그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/.test(s);
+}
+
+function isSevereHumanizationNoEffect(report) {
+  if (!report?.applicable) return false;
+  const metrics = report.metrics || {};
+  return report.minimumEffectPass === false
+    || Number(metrics.substantiveEditRatio || 0) < 0.03
+    || Number(metrics.substantiveChangedSentenceCount || 0) === 0
+    || (Number(metrics.substantiveChangedSentenceRatio || 0) < 0.15
+      && Number(metrics.substantiveEditRatio || 0) < 0.05);
 }
 
 function normalizeBare(text) {

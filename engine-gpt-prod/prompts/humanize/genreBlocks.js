@@ -3,7 +3,8 @@
 function genreBlock(_mode, register, _styleProfile = '', documentProfile = null, requestStrength = '') {
   const group = documentProfile?.group || 'unknown';
   const blocks = [];
-  if (group === 'legal_contract') blocks.push(legalContractBlock(register));
+  if (group === 'clinical_record') blocks.push(clinicalRecordBlock(register));
+  else if (group === 'legal_contract') blocks.push(legalContractBlock(register));
   else if (group === 'academic_report_explainer') blocks.push(academicReportBlock(register));
   else if (group === 'student_record_teacher') blocks.push(studentRecordTeacherBlock(register));
   else if (group === 'student_self_assessment') blocks.push(studentSelfAssessmentBlock(register));
@@ -22,6 +23,18 @@ function genreBlock(_mode, register, _styleProfile = '', documentProfile = null,
     requestStrength
   ));
   return blocks.filter(Boolean).join('\n');
+}
+
+function clinicalRecordBlock(register) {
+  return [
+    '[원문 장르: SOAP·임상 전문 기록]',
+    'SOAP의 S·O·A·P 구획, 대상자·평가일·평가 도구 라벨, 목록과 측정값의 위치를 그대로 유지한다.',
+    'S의 주관적 보고, O의 관찰·측정, A의 임상적 해석, P의 계획을 서로 옮기거나 합치지 않는다.',
+    '대상자, 보호자, 치료사 등 정보의 출처와 행위 주체를 바꾸지 않는다. 원문에 없는 진단·증상·원인·예후·치료 목표를 추가하지 않는다.',
+    '검사명, 약어, 수치, 날짜, 빈도, 기간, 신체 부위와 좌우 방향을 원문 그대로 보존한다.',
+    '임상 기록의 간결한 명사형·관찰형 종결을 일상 대화체로 풀거나 모든 항목을 완전한 설명문으로 늘리지 않는다.',
+    `원문 종결체=${register}.`
+  ].join('\n');
 }
 
 function legalContractBlock(register) {
@@ -112,12 +125,19 @@ function blogSocialBlock(profile) {
 }
 
 function functionalCopyBlock(profile) {
-  return [
+  const lines = [
     `[원문 장르: 광고·메일·기능문 / ${profile || 'unknown'}]`,
     '날짜, 대상, 조건, 연락처, 가격, 행동 요청과 책임 범위를 정확히 유지한다.',
     '원문에 없는 할인, 보장, 긴급성, 성과 주장이나 친근한 체험을 추가하지 않는다.',
     '짧은 문서는 불필요하게 늘리지 않는다.'
-  ].join('\n');
+  ];
+  if (profile === 'mail_notice') {
+    lines.push(
+      '첫머리의 인사는 한 번만 사용한다. “인사드립니다” 뒤에 “안녕하십니까”를 새로 덧붙이는 중복 인사를 만들지 않는다.',
+      '끝부분의 날짜·기관명·부서·직책·이름·드림/올림은 서명 블록이다. 내용을 바꾸거나 본문에 합치지 않고 줄 순서를 그대로 유지한다.'
+    );
+  }
+  return lines.join('\n');
 }
 
 function creativeBlock() {
@@ -154,7 +174,7 @@ function questionnaireBlock() {
 }
 
 function tonePolicyBlock(targetRegister, requestStrength = '') {
-  const formalTarget = ['academic_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
+  const formalTarget = ['academic_formal', 'clinical_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
     .includes(String(targetRegister || ''));
   if (requestStrength === 'advanced') {
     return formalTarget

@@ -793,7 +793,7 @@ async function retryKoreanRefinement({
     profile === 'resume_application'
       ? '역량을 길렀다·능력을 키웠다·노력했다 계열이 반복되면 실제 행동과 SOURCE에 있는 결과를 직접 서술한다. 새 성과나 수치를 만들어 반복을 피하지 않는다.'
       : '',
-    ['academic_paper', 'report_assignment', 'legal_contract'].includes(profile)
+    ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract'].includes(profile)
       ? '학술·보고서의 개념어와 격식을 유지하고 구어체나 감탄형 표현을 새로 넣지 않는다.'
       : '',
     '수리할 문제가 실제로 남아 있지 않거나 보존 조건 안에서 안전하게 고칠 수 없으면 safeChangeFound=false로 답한다.',
@@ -851,6 +851,10 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'tool_personification') return '도구의 기능은 “연결한다·제공한다·표시한다”처럼 중립적으로 쓰고 SOURCE의 기능 범위를 넘기지 않는다.';
   if (item?.code === 'benefit_help_predicate_redundancy') return 'SOURCE의 지원 범위는 유지하고 “도움을 받을 수 있게 돕다”의 겹친 서술어 하나만 자연스럽게 정리한다.';
   if (item?.code === 'contrast_clause_attachment') return 'SOURCE의 비교 방향과 절 순서를 확인해 “~하기보다”가 실제 비교 대상에 바로 연결되도록 고친다.';
+  if (item?.code === 'student_record_fragment') return '짧게 떨어진 명사형 조각을 SOURCE의 같은 관찰 문맥에 다시 연결하되, 세특의 관찰형 종결과 내용 순서는 유지한다.';
+  if (item?.code === 'functional_greeting_duplication') return '첫 인사의 의미는 유지하고 같은 역할의 연속 인사 하나만 제거한다. 날짜·기관·직책·서명 줄은 바꾸지 않는다.';
+  if (item?.code === 'adjacent_semantic_repetition') return '두 문장의 고유 정보는 모두 남기고, 새로 생긴 중복 주장만 한 번 말하도록 절을 재구성한다.';
+  if (item?.code === 'directional_growth_collocation') return '태도·역량의 변화 내용을 유지하면서 “~쪽으로 성장했다” 대신 장르에 맞는 정확한 변화 서술로 고친다.';
   return '';
 }
 
@@ -881,7 +885,7 @@ async function retryFingerprintAudit({
     'SOURCE의 주장, 목적, 근거 틀, 부정·배제·대조·인정·가능성 관계, 행위 방향과 강도, 수치, 기관명, 인용, 화자, 문단·제목·목록 순서를 그대로 보존한다.',
     '증명을 확인으로, 재발견을 되살리기로, 적극적 태도를 바로·직접으로, 연구를 통해 확인한 내용을 근거 없는 단정으로 바꾸지 않는다. SOURCE에 없던 즉시성도 제거한다.',
     '새 주장·예시·평가·경험·결론을 만들지 않고, 상투구를 다른 상투구로 치환하지 않는다.',
-    ['academic_paper', 'report_assignment', 'legal_contract'].includes(profile)
+    ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract'].includes(profile)
       ? '학술·보고서의 개념어와 평서문 격식을 유지한다. 구어체·명령형·도구 의인화를 새로 넣지 않는다.'
       : '',
     '안전하게 고칠 수 없거나 문제가 이미 없다면 safeChangeFound=false로 답한다.',

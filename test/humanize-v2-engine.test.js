@@ -147,7 +147,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.0');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.1');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -296,7 +296,12 @@ test('원문부터 있던 비인접 반복은 결과에서 늘지 않으면 need
   assert.equal(out.qualityWarnings.some(item => item.code === 'repetition'), false);
   assert.equal(out.result.repetitionAudit.increased, false);
   assert.ok(out.result.repetitionAudit.delta.total <= 0);
-  assert.equal(out.qualityStatus, 'clean');
+  assert.equal(out.qualityStatus, 'clean', JSON.stringify({
+    qualityWarnings: out.qualityWarnings,
+    floorStatus: out.floorReport?.status,
+    documentProfile: out.engineMeta?.documentProfile,
+    koreanRefinement: out.result?.koreanRefinement
+  }));
 });
 
 test('polish 무변환은 표면 수정 재시도 정확히 1회 후 안전 결과를 전달한다', { concurrency: false }, async t => {
@@ -963,7 +968,7 @@ test('운영 엔진은 구형 플래그와 무관하게 v2.5 경로만 사용한
   const mock = installEngineMock(t, { humanize: SAFE_POLISH });
   process.env.HUMANIZE_ENGINE_V2_ENABLED = '0';
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.0');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.1');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

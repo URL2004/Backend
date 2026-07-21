@@ -3,7 +3,7 @@
 const { splitSentences } = require('../engine/koreanText');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 
-const VERSION = 2;
+const VERSION = 3;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -28,6 +28,17 @@ const SHADOW_PATTERNS = Object.freeze([
   },
   { code: 'review_together', pattern: /함께\s+(?:살펴봤|살펴보|살피|검토하)/gu },
   { code: 'contribution_cliche', pattern: /보탬이\s+되(?:고자|도록|겠습니다|었다|었|는|길)/gu }
+]);
+
+// 흔한 낱말 자체는 오류가 아니다. 다만 엔진이 여러 장르에서 같은 방향으로
+// 어휘를 반복 치환하는지 원문 대비 shadow 통계로만 관찰한다.
+const LEXICAL_TRANSITIONS = Object.freeze([
+  { code: 'these_to_these_colloquial', from: /이러한/gu, to: /이런/gu },
+  { code: 'various_to_several', from: /다양한/gu, to: /여러/gu },
+  { code: 'therefore_to_so', from: /따라서/gu, to: /그래서/gu },
+  { code: 'however_to_but', from: /그러나/gu, to: /다만/gu },
+  { code: 'occur_to_happen', from: /발생(?:하|했|한|하는|한다|합니다|했다|할)/gu, to: /(?:생기(?:다|고|며|는|면|게|기|었다|었|는다면)|생긴|생겼|생겨)/gu },
+  { code: 'within_to_inside', from: /내에서/gu, to: /안에서/gu }
 ]);
 
 function isEnabled() {
@@ -83,6 +94,22 @@ function auditFingerprint(source, output) {
     const outputCount = countMatches(after, item.pattern);
     return { code: item.code, sourceCount, outputCount, delta: outputCount - sourceCount };
   });
+  const lexicalTransitions = LEXICAL_TRANSITIONS.map(item => {
+    const sourceFromCount = countMatches(before, item.from);
+    const outputFromCount = countMatches(after, item.from);
+    const sourceToCount = countMatches(before, item.to);
+    const outputToCount = countMatches(after, item.to);
+    const fromDecrease = Math.max(0, sourceFromCount - outputFromCount);
+    const toIncrease = Math.max(0, outputToCount - sourceToCount);
+    return {
+      code: item.code,
+      sourceFromCount,
+      outputFromCount,
+      sourceToCount,
+      outputToCount,
+      transitionCount: Math.min(fromDecrease, toIncrease)
+    };
+  });
   return {
     version: VERSION,
     enabled: isEnabled(),
@@ -94,7 +121,9 @@ function auditFingerprint(source, output) {
     issueCodes: [...new Set(violations.map(item => item.code))],
     relationShift,
     semanticRelations,
-    shadow
+    shadow,
+    lexicalTransitions,
+    lexicalTransitionCount: lexicalTransitions.reduce((sum, item) => sum + item.transitionCount, 0)
   };
 }
 
@@ -294,6 +323,7 @@ module.exports = {
   VERSION,
   GUARDED_FAMILIES,
   SHADOW_PATTERNS,
+  LEXICAL_TRANSITIONS,
   isEnabled,
   auditFingerprint,
   detectContrastRelationShift,

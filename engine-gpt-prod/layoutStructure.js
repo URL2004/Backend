@@ -4,7 +4,7 @@ const { splitSentences } = require('../engine/koreanText');
 
 const MAX_PARAGRAPH_BARE = 1100;
 const MAX_PARAGRAPH_SENTENCES = 12;
-const STRUCTURAL_ROLES = new Set(['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote', 'code', 'legal_clause']);
+const STRUCTURAL_ROLES = new Set(['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote', 'code', 'legal_clause', 'signature']);
 
 function normalizeNewlines(value) {
   return String(value || '').replace(/\r\n?/gu, '\n');
@@ -53,6 +53,7 @@ function buildLineRecords(value) {
   const nonEmpty = records.filter(record => !record.blank);
   const codeIndices = detectCodeLineIndices(records);
   const tableIndices = detectContextTableLineIndices(records, codeIndices);
+  const signatureIndices = detectSignatureLineIndices(records, codeIndices);
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
   for (const record of nonEmpty) {
     if (codeIndices.has(record.index)) {
@@ -68,7 +69,8 @@ function buildLineRecords(value) {
       previous,
       next,
       blankBefore: record.index === 0 || previousRaw?.blank === true,
-      tableLike: tableIndices.has(record.index)
+      tableLike: tableIndices.has(record.index),
+      signatureLike: signatureIndices.has(record.index)
     });
   }
   return records;
@@ -78,6 +80,7 @@ function classifyLine(value, context = {}) {
   const text = visibleTrim(value);
   if (!text) return 'blank';
   if (legalClauseParts(text)) return 'legal_clause';
+  if (context.signatureLike) return 'signature';
   if (isKnownHeadingLine(text)) return 'heading';
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
   if (isListLine(text)) return 'list';
@@ -93,8 +96,11 @@ function isKnownHeadingLine(value) {
   if (!text || text.length > 140) return false;
   if (/^#{1,6}\s+\S/u.test(text)) return true;
   if (/^[\[【<][^\]】>\n]{1,80}[\]】>]$/u.test(text)) return true;
+  if (/^[-–—]\s*(?:서론|본론|결론|초록|요약|목\s*차|참고\s*문헌|참고\s*자료|부록)$/u.test(text)) return true;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)．]?\s*\S.{0,100}$/u.test(text)) return true;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/u.test(text)) return true;
+  if (/^\d{1,2}[.)]\s*[가-힣A-Za-z]\S*.{0,100}$/u.test(text)) return true;
+  if (/^\d{1,2}\.(?:19|20)\d{2}년\S*.{0,100}$/u.test(text)) return true;
   if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/u.test(text)) return true;
   if (/^제\s?\d{1,3}\s?조(?:의\s?\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?$/u.test(text)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
@@ -129,6 +135,19 @@ function isExplicitTableLine(value) {
   if (/^\|.+\|$/u.test(text)) return true;
   if (/^(?:표|그림)\s*[0-9A-Za-z가-힣.-]+/u.test(text)) return true;
   return false;
+}
+
+function detectSignatureLineIndices(records, excluded = new Set()) {
+  const nonEmpty = (records || []).filter(record => !record.blank && !excluded.has(record.index));
+  if (nonEmpty.length < 3) return new Set();
+  const tail = nonEmpty.slice(-7);
+  const dateAt = tail.findIndex(record => /^(?:(?:19|20)\d{2}[.년]\s*\d{1,2}[.월]\s*\d{1,2}(?:[.일])?|\d{1,2}월\s*\d{1,2}일)$/u.test(record.text));
+  if (dateAt < 0) return new Set();
+  const afterDate = tail.slice(dateAt);
+  const hasInstitution = afterDate.some(record => /(?:대학교|대학|학과|전공|위원회|학생회|협회|기관|재단|회사|병원)/u.test(record.text));
+  const hasRole = afterDate.some(record => /(?:위원장|회장|대표|담당자|사무국|총장|학장|원장|드림|올림)\s*[.!]?$/u.test(record.text));
+  if (!hasInstitution || !hasRole) return new Set();
+  return new Set(afterDate.map(record => record.index));
 }
 
 function tableColumnCount(value) {
@@ -251,6 +270,7 @@ function analyzeLineStructure(value) {
     listLineCount: roleCounts.list || 0,
     tableLineCount: roleCounts.table || 0,
     quoteLineCount: roleCounts.quote || 0,
+    signatureLineCount: roleCounts.signature || 0,
     structuralLineCount: nonEmpty.filter(record => isStructuralRole(record.role)).length,
     preservedBoundaryCount,
     explicitParagraphCount,

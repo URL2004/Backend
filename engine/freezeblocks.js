@@ -11,8 +11,8 @@
 //   대괄호·꺾쇠·【】 어떤 조합이든, 끝에 콜론(:：)이 붙든, 일괄 허용한다(괄호 변형마다 패턴을 따로 두던 누락 제거).
 // ★ 번호·(option) 머리 허용(2026-06-20 #66: "4.\t(option) 참고문헌"이 미인식돼 참고문헌 "조푸른솔…2025,14-32" 손실).
 //   "N. " 번호 목록 머리 + "(option)" 같은 접두를 헤딩 앞에 허용.
-const REF_HEADING = /(^|\n)[ \t]*(?:\d+[.)][ \t]*)?(?:\(\s*option\s*\)[ \t]*)?[<【\[**]*\s*(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|참고\s*및\s*인용\s*문헌|References|REFERENCES|Bibliography|Works\s+Cited)\s*[>】\]**]*[ \t]*[:：]?[ \t]*(?:\n|$)/;
-const TOC_HEADING = /(^|\n)[ \t]*(?:\d+[.)][ \t]*)?[<【\[**]*\s*(?:목\s*차|차\s*례|Contents|CONTENTS)\s*[>】\]**]*[ \t]*[:：]?[ \t]*(?:\n|$)/;
+const REF_HEADING = /(^|\n)[ \t]*(?:[-–—][ \t]*)?(?:\d+[.)][ \t]*)?(?:\(\s*option\s*\)[ \t]*)?[<【\[**]*\s*(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|참고\s*및\s*인용\s*문헌|References|REFERENCES|Bibliography|Works\s+Cited)\s*[>】\]**]*[ \t]*[:：]?[ \t]*(?:\n|$)/;
+const TOC_HEADING = /(^|\n)[ \t]*(?:[-–—][ \t]*)?(?:\d+[.)][ \t]*)?[<【\[**]*\s*(?:목\s*차|차\s*례|Contents|CONTENTS)\s*[>】\]**]*[ \t]*[:：]?[ \t]*(?:\n|$)/;
 
 // 참고문헌 한 줄 entry: "저자명. (연도). 제목…" — 줄머리에 (선택)번호 + 이름 + 근방 (YYYY).
 const CITE_LINE = /^(?:\d+[.)]\s*)?[가-힣A-Za-z][^\n]{0,60}\(\s*(?:19|20)\d{2}[a-z]?\s*\)/;
@@ -104,11 +104,11 @@ function lineRecords(source) {
 }
 
 function isTocHeadingLine(value) {
-  return /^(?:\s*(?:\d+[.)]\s*)?[<【\[]*\s*)?(?:목\s*차|차\s*례|Contents|Table\s+of\s+Contents)\s*[>】\]]*\s*[:：]?\s*$/iu.test(String(value || ''));
+  return /^(?:\s*(?:[-–—]\s*)?(?:\d+[.)]\s*)?[<【\[]*\s*)?(?:목\s*차|차\s*례|Contents|Table\s+of\s+Contents)\s*[>】\]]*\s*[:：]?\s*$/iu.test(String(value || ''));
 }
 
 function isRefHeadingLine(value) {
-  return /^(?:\s*(?:\d+[.)]\s*)?(?:\(\s*option\s*\)\s*)?[<【\[]*\s*)?(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|References|Bibliography|Works\s+Cited)\s*[>】\]]*\s*[:：]?\s*$/iu.test(String(value || ''));
+  return /^(?:\s*(?:[-–—]\s*)?(?:\d+[.)]\s*)?(?:\(\s*option\s*\)\s*)?[<【\[]*\s*)?(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|References|Bibliography|Works\s+Cited)\s*[>】\]]*\s*[:：]?\s*$/iu.test(String(value || ''));
 }
 
 function isTocEntryLine(value) {

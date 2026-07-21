@@ -3,11 +3,13 @@
 const { splitSentences, levenshteinDistance } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 5;
+const VERSION = 6;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
   'report_assignment',
+  'long_explainer',
+  'clinical_record',
   'student_record_teacher'
 ]);
 
@@ -23,6 +25,18 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: true,
     message: '닫는 따옴표 뒤에 이어지는 본문과 띄어쓰기가 빠졌어요.'
+  },
+  closed_quote_particle_spacing: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: true,
+    message: '닫는 따옴표 뒤의 조사·서술격이 불필요하게 떨어져 있어요.'
+  },
+  message_spelling: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '“메시지”의 표기를 바로잡아야 해요.'
   },
   numeric_parenthesis_join: {
     weight: 3,
@@ -89,6 +103,36 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '장르에 필요한 전문 어휘가 지나치게 일상적인 말로 낮아졌어요.'
+  },
+  directional_growth_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '태도·역량이 특정 “쪽으로 성장했다”는 연결이 어색해요.'
+  },
+  student_record_fragment: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '세특 문장이 짧은 명사형 조각으로 분리돼 맥락이 끊겼어요.'
+  },
+  functional_greeting_duplication: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '공식문 첫머리에 같은 역할의 인사가 연달아 들어갔어요.'
+  },
+  adjacent_semantic_repetition: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: false,
+    message: '서로 이웃한 문장이 같은 내용을 표현만 바꿔 반복해요.'
+  },
+  source_token_repetition_review: {
+    weight: 1,
+    repairable: false,
+    deterministicSafe: false,
+    message: '원문에 같은 한글 조각이 겹쳐 입력된 것으로 보이는 단어가 있어요.'
   },
   data_document_collocation: {
     weight: 4,
@@ -213,8 +257,11 @@ const ISSUE_DEFINITIONS = Object.freeze({
 });
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
-const CLOSED_QUOTE_SPACING_RE = /([”’])(?!(?:(?:이)?라(?:고|는|며)|이다|였다|입니다|임(?:을|이|은|도)?|이며|이고|에서|에게|으로|처럼|보다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)(?=$|[\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])/gu;
-const QUOTE_TERMINAL_REVIEW_RE = /[‘“][^’”\n]{2,120}(?<![.!?。！？…])[’”](?!(?:(?:이)?라(?:고|는|며)|이다|였다|입니다|임(?:을|이|은|도)?|이며|이고|에서|에게|으로|처럼|보다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)(?=$|[\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])/gu;
+const QUOTE_ATTACHED_SUFFIX = '(?:(?:이)?라(?:고|는|며|면)|이라고|이라는|이란|이지(?:만)?|이다|였다|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?|이며|이고|에서|에게|으로|처럼|보다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_TIGHT_SUFFIX = '(?:(?:이)?라(?:고|는|며|면)|이라고|이라는|이란|이지(?:만)?|이다|였다|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?|이며|이고|에서|에게|으로|처럼|보다|은|는|이|가|을|를|의|에|와|과|도|만|로)';
+const CLOSED_QUOTE_SPACING_RE = new RegExp(`([”’])(?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
+const CLOSED_QUOTE_PARTICLE_GAP_RE = new RegExp(`([”’])[ \\t]+(?=${QUOTE_TIGHT_SUFFIX}(?=$|[\\s,.;:!?。！？]))`, 'gu');
+const QUOTE_TERMINAL_REVIEW_RE = new RegExp(`[‘“][^’”\\n]{2,120}(?<![.!?。！？…])[’”](?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
 const REFERENCE_HEADING_RE = /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/iu;
 const APPENDIX_HEADING_RE = /^(?:부록|Appendix)(?:\s+[A-Za-z0-9가-힣.-]+)?$/iu;
 const NEW_UNIT_START_RE = /^(?:그리고|그러나|하지만|또한|따라서|한편|반면|이러한|이번|다음|첫째|둘째|셋째|마지막으로)(?=$|\s)/u;
@@ -336,6 +383,13 @@ function repairContextualSpacing(value, source, context) {
       CLOSED_QUOTE_SPACING_RE,
       (_match, closing) => `${closing} `,
       'closed_quote_spacing',
+      counts
+    );
+    workingLine = replaceTracked(
+      workingLine,
+      CLOSED_QUOTE_PARTICLE_GAP_RE,
+      (_match, closing) => closing,
+      'closed_quote_particle_spacing',
       counts
     );
     return replaceOutsideProtectedRanges(workingLine, segment => {
@@ -567,6 +621,10 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   const outputIssues = detectTextIssues(outputText, { profile, targetRegister, includeSourceNotation: false });
   const duplicated = detectIntroducedTokenDuplications(source, outputText);
   if (duplicated) outputIssues.push(duplicated);
+  const fragment = detectIntroducedStudentRecordFragments(source, outputText, profile);
+  if (fragment) outputIssues.push(fragment);
+  const adjacentRepetition = detectIntroducedAdjacentSemanticRepetition(source, outputText);
+  if (adjacentRepetition) outputIssues.push(adjacentRepetition);
   const professional = detectProfessionalDowngrade(source, outputText, profile);
   if (professional) outputIssues.push(professional);
   const rows = mergeIssueComparison(sourceIssues, outputIssues);
@@ -598,6 +656,8 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   const issues = [];
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
   pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SPACING_RE);
+  pushPatternIssue(issues, text, 'closed_quote_particle_spacing', CLOSED_QUOTE_PARTICLE_GAP_RE);
+  pushPatternIssue(issues, text, 'message_spelling', /메세지/gu);
   pushNumericParenthesisIssue(issues, text);
   pushPatternIssue(issues, text, 'deep_understanding_collocation', /깊게\s+이해(?:하|했|되|할|하려|하고|하며|해서|해)/gu);
   pushPatternIssue(issues, text, 'practice_class_spacing', /실습수업/gu);
@@ -618,6 +678,8 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'reciprocal_expression_redundancy', sentence => /서로\s+상호(?=(?:작용|교류|소통|협력|의존|영향))/u.test(stripProtectedQuotedText(sentence)));
   pushSentenceIssue(issues, text, 'benefit_help_predicate_redundancy', hasBenefitHelpPredicateRedundancy);
   pushSentenceIssue(issues, text, 'contrast_clause_attachment', hasContrastClauseAttachment);
+  pushSentenceIssue(issues, text, 'directional_growth_collocation', sentence => /(?:연구\s*)?(?:태도|역량|관점|시각)(?:은|는|이|가)?[^.!?。！？\n]{0,38}(?:쪽|방향)으로\s*성장(?:하|했|해|합)/u.test(sentence));
+  if (profile === 'mail_notice') pushFunctionalGreetingDuplication(issues, text);
   if (isFormalRegisterTarget(targetRegister, profile)) {
     pushFormalRegisterResidual(issues, text, { profile, targetRegister });
   }
@@ -629,6 +691,7 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   if (includeSourceNotation) {
     pushPatternIssue(issues, text, 'list_marker_spacing', /^(?:[-*•▪◦]|\d+[.)])(?=\S)/gmu);
     pushPatternIssue(issues, text, 'quote_terminal_punctuation_review', QUOTE_TERMINAL_REVIEW_RE);
+    pushSourceTokenRepetitionReview(issues, text);
     pushSentenceIssue(issues, text, 'future_role_tense_review', hasFutureRoleTenseReview);
     if (profile === 'resume_application') {
       pushPatternIssue(issues, text, 'resume_weakness_mitigation_review', /마감\s*기한(?:을|은)?\s*여유\s*있게\s*잡/gu);
@@ -656,6 +719,8 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   }
   text = replaceAndCount(text, /([.!?。！？])(?=[가-힣])/gu, '$1 ', 'missing_sentence_space', changes);
   text = replaceAndCount(text, CLOSED_QUOTE_SPACING_RE, '$1 ', 'closed_quote_spacing', changes);
+  text = replaceAndCount(text, CLOSED_QUOTE_PARTICLE_GAP_RE, (_match, closing) => closing, 'closed_quote_particle_spacing', changes);
+  text = replaceAndCount(text, /메세지/gu, '메시지', 'message_spelling', changes);
   text = replaceAndCount(text, /실습수업/gu, '실습 수업', 'practice_class_spacing', changes);
   text = text.replace(/(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
     if (PARTICLE_AFTER_PAREN.test(right)) return match;
@@ -745,6 +810,100 @@ function detectProfessionalDowngrade(source, outputText, profile) {
   });
 }
 
+function detectIntroducedStudentRecordFragments(source, outputText, profile) {
+  if (String(profile || '') !== 'student_record_teacher') return null;
+  const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const outputSentences = splitSentences(String(outputText || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const ordinals = [];
+  const fragments = [];
+  outputSentences.forEach((sentence, index) => {
+    const visible = sentence.replace(/[.!?。！？]+$/gu, '').trim();
+    const words = visible.split(/\s+/u).filter(Boolean);
+    if (visible.length > 28 || words.length < 1 || words.length > 3) return;
+    if (!/(?:조사|분석|확인|정리|검토|탐구|파악|제시|관찰)함$/u.test(visible)) return;
+    if (sourceSentences.some(item => normalizeSentenceLocal(item) === normalizeSentenceLocal(sentence))) return;
+    const tokens = contentTokensLocal(visible).filter(token => !/(?:조사|분석|확인|정리|검토|탐구|파악|제시|관찰|함)$/u.test(token));
+    const sourceContext = sourceSentences.find(item => item.length >= visible.length + 16
+      && (!tokens.length || tokens.some(token => item.includes(token))));
+    if (!sourceContext) return;
+    ordinals.push(index + 1);
+    fragments.push({ sentence: visible, sourceContext: sourceContext.slice(0, 180) });
+  });
+  return fragments.length
+    ? makeIssue('student_record_fragment', fragments.length, ordinals, { fragments: fragments.slice(0, 10) })
+    : null;
+}
+
+function pushFunctionalGreetingDuplication(issues, text) {
+  const first = splitSentences(String(text || '')).slice(0, 3);
+  const ordinals = [];
+  first.forEach((sentence, index) => {
+    if (/(?:안녕하세요|안녕하십니까|인사드립니다|반갑습니다)/u.test(sentence)) ordinals.push(index + 1);
+  });
+  if (ordinals.length >= 2) {
+    issues.push(makeIssue('functional_greeting_duplication', ordinals.length - 1, ordinals));
+  }
+}
+
+function findAdjacentSemanticRepetitions(text) {
+  const sentences = splitSentences(String(text || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const ordinals = [];
+  for (let index = 0; index < sentences.length - 1; index += 1) {
+    const left = stripProtectedQuotedText(sentences[index]);
+    const right = stripProtectedQuotedText(sentences[index + 1]);
+    if (left.length < 22 || right.length < 22) continue;
+    if (/^(?:#{1,6}|[-*+•▪◦●○■□◆◇▶▷※]|제\s*\d+\s*조)/u.test(left)
+        || /^(?:#{1,6}|[-*+•▪◦●○■□◆◇▶▷※]|제\s*\d+\s*조)/u.test(right)) continue;
+    const leftTokens = new Set(contentTokensLocal(left));
+    const rightTokens = new Set(contentTokensLocal(right));
+    if (leftTokens.size < 4 || rightTokens.size < 4) continue;
+    const intersection = [...leftTokens].filter(token => rightTokens.has(token)).length;
+    const containment = intersection / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
+    const lengthRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
+    if (containment >= 0.8 && lengthRatio >= 0.68) ordinals.push(index + 2);
+  }
+  return ordinals;
+}
+
+function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
+  const before = findAdjacentSemanticRepetitions(source);
+  const after = findAdjacentSemanticRepetitions(outputText);
+  const introducedCount = Math.max(0, after.length - before.length);
+  return introducedCount
+    ? makeIssue('adjacent_semantic_repetition', introducedCount, after.slice(0, introducedCount))
+    : null;
+}
+
+function pushSourceTokenRepetitionReview(issues, text) {
+  const exceptions = new Set(['의의', '하하', '호호', '꼼꼼', '쓸쓸', '똑똑', '든든', '곳곳', '틈틈']);
+  const sourceTokens = [...String(text || '').matchAll(/[가-힣]{2,10}/gu)].map(match => match[0]);
+  const sourceTokenSet = new Set(sourceTokens);
+  const matches = [];
+  for (const match of String(text || '').matchAll(/[가-힣]{2,10}/gu)) {
+    const token = match[0];
+    if (exceptions.has(token)) continue;
+    const repeated = token.match(/^([가-힣]{1,2})\1/u);
+    if (!repeated) continue;
+    // 긴 정상 어휘까지 넓게 경고하지 않고, 앞부분이 우발적으로 한 번 더
+    // 입력된 짧은 토큰만 원문 확인 알림으로 보낸다.
+    if (token.length > repeated[1].length * 2 + 3) continue;
+    // 사사로운·간간이·꼼꼼하게 같은 정상 반복음절을 추측으로 오타 처리하지
+    // 않는다. 중복 접두부를 한 번 덜어낸 형태가 같은 원문에 실제 어절로
+    // 존재할 때만 사용자가 대조할 수 있는 보수적 알림을 만든다.
+    const candidate = token.slice(repeated[1].length);
+    if (candidate.length < 2 || !sourceTokenSet.has(candidate)) continue;
+    matches.push({ token, ordinal: sentenceOrdinalAt(text, match.index) });
+  }
+  if (matches.length) {
+    issues.push(makeIssue(
+      'source_token_repetition_review',
+      matches.length,
+      matches.map(item => item.ordinal),
+      { tokens: [...new Set(matches.map(item => item.token))].slice(0, 12) }
+    ));
+  }
+}
+
 const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
   {
     concept: 'improvement_requirement',
@@ -805,6 +964,30 @@ const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
     source: /데이터\s*해석/u,
     acceptable: /(?:데이터|측정\s*결과|분석\s*결과)[^.!?]{0,18}해석|해석[^.!?]{0,18}(?:데이터|측정\s*결과|분석\s*결과)/u,
     preferred: ['데이터 해석', '측정 결과를 해석']
+  },
+  {
+    concept: 'role_performance',
+    source: /(?:역할|업무)(?:을|를)?\s*(?:수행|이행|담당)/u,
+    acceptable: /(?:역할|업무)(?:을|를)?\s*(?:수행|이행|담당|완수)/u,
+    preferred: ['역할을 수행', '업무를 담당']
+  },
+  {
+    concept: 'conclusion_derivation',
+    source: /(?:결론|결과|시사점)(?:을|를)?\s*도출/u,
+    acceptable: /(?:결론|결과|시사점)(?:을|를)?\s*(?:도출|제시)/u,
+    preferred: ['결론을 도출', '시사점을 제시']
+  },
+  {
+    concept: 'methodological_verification',
+    source: /(?:가설|결과|타당성|효과|성능)(?:을|를)?\s*(?:검증|검정)/u,
+    acceptable: /(?:가설|결과|타당성|효과|성능)(?:을|를)?\s*(?:검증|검정|평가)/u,
+    preferred: ['가설을 검증', '타당성을 평가']
+  },
+  {
+    concept: 'resource_allocation',
+    source: /(?:자원|예산|인력|시간)(?:을|를)?\s*(?:효율적(?:으로)?\s*)?(?:배분|할당)/u,
+    acceptable: /(?:자원|예산|인력|시간)(?:을|를)?\s*(?:효율적(?:으로)?\s*)?(?:배분|할당)/u,
+    preferred: ['자원을 효율적으로 배분', '인력을 할당']
   }
 ]);
 
@@ -966,7 +1149,7 @@ const FORMAL_REGISTER_RULES = Object.freeze([
   },
   {
     family: 'casual_sentence_connector',
-    test: (value, _fullText, context) => ['academic_paper', 'report_assignment', 'legal_contract', 'student_record_teacher']
+    test: (value, _fullText, context) => ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract', 'student_record_teacher']
       .includes(String(context?.profile || ''))
       && /^\s*그래서(?:는|도)?(?:\s|,)/u.test(value)
   },
@@ -978,9 +1161,9 @@ const FORMAL_REGISTER_RULES = Object.freeze([
 ]);
 
 function isFormalRegisterTarget(targetRegister, profile) {
-  if (['academic_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
+  if (['academic_formal', 'clinical_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
     .includes(String(targetRegister || ''))) return true;
-  return ['academic_paper', 'report_assignment', 'legal_contract', 'student_record_teacher', 'resume_application', 'mail_notice']
+  return ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract', 'student_record_teacher', 'resume_application', 'mail_notice']
     .includes(String(profile || ''));
 }
 

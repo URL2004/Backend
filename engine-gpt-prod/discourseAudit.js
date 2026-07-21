@@ -2,6 +2,7 @@
 
 const { splitSentences } = require('../engine/koreanText');
 const { splitLogicalProseParagraphs } = require('./proseParagraphs');
+const layoutStructure = require('./layoutStructure');
 
 const VERSION = 2;
 const VIOLATION_CODES = Object.freeze([
@@ -34,7 +35,6 @@ const CAUSAL_PATTERN = /(?:때문에|따라서|그러므로|그\s*결과|이로\
 const EXPANSION_PATTERN = /(?:뿐만\s*아니라|더\s*나아가|나아가|을\s*넘어|를\s*넘어|까지\s*(?:확장|연결)|여러\s*(?:영역|차원|문제)|다양한\s*(?:영역|차원|관점|문제)|전반으로\s*확장|포괄(?:하|하는)|아우르)/gu;
 const ACTIVITY_PATTERN = /(?:조사|탐구|분석|비교|검색|찾아보|살펴보|정리|기록|발표|토론|실험|관찰|측정|제작|작성|수집|검토|질문|답변|참여|수행|맡아|계획)/gu;
 const RESTART_OPENING_PATTERN = /^(?:또\s*다른|다음으로|한편|별도로|이번에는|추가로|이어서|새롭게)?\s*[^.!?\n]{0,32}(?:조사|탐구|분석|살펴보|알아보|검토)(?:했|하였|하게|한다|하였다|했습니다)/u;
-const HEADING_PATTERN = /^(?:#{1,6}\s+|제\s*\d+\s*(?:장|절|항)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|\d+(?:\.\d+){0,3}[.)]?\s+|서론$|본론$|결론$|목\s*차$|참고\s*문헌$)/u;
 
 const STOP_TOKENS = new Set([
   '그리고', '그러나', '하지만', '따라서', '또한', '이러한', '그러한', '것이다', '있다', '없다',
@@ -310,7 +310,7 @@ function compactProfile(profile) {
 
 function analyzeParagraph(text, index) {
   const clean = String(text || '').trim();
-  if (HEADING_PATTERN.test(clean) && clean.length <= 100) {
+  if (layoutStructure.isKnownHeadingLine(clean) && clean.length <= 140) {
     return paragraphProfile(index, clean, ['heading'], 'heading');
   }
   const reflectionCount = REFLECTION_PATTERNS.reduce((sum, pattern) => sum + countPattern(clean, pattern), 0);

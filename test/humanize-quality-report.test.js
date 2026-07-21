@@ -3,6 +3,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildHumanizeQualityReport, summarizeMetric } = require('../lib/humanizeQualityReport');
+const paymentRoute = require('../routes/payment');
+
+test('관리자 작업 축약 직렬화는 실험실 표지를 품질 집계까지 전달한다', () => {
+  const row = paymentRoute.serializeAdminJobDoc({
+    id: 'lab-job',
+    data: () => ({
+      status: 'done',
+      createdAt: 100,
+      adminHumanizeLab: true,
+      engineVersion: 'gpt-prod-v2.5.0'
+    })
+  });
+  assert.equal(row.adminHumanizeLab, true);
+});
 
 test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 원문 없이 집계한다', () => {
   const rows = [

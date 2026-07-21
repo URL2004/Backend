@@ -925,6 +925,7 @@ function serializeAdminJobDoc(docSnap) {
     status: j.status || '',
     stage: j.stage || '',
     mode: j.mode || '',
+    adminHumanizeLab: j.adminHumanizeLab === true,
     needed: Number(j.needed) || 0,
     deducted: !!j.deducted,
     billingDisposition: j.billingDisposition || '',

@@ -405,6 +405,62 @@ test('기본·고급 일반 산문도 의미 역할 전환에 맞춰 문단 가�
   assert.match(restored.text, /\n\n따라서/u);
 });
 
+test('읽기 좋은 다문단 현장실습 글은 일반 휴머나이징 후처리가 문단을 8개로 강제 합치지 않는다', () => {
+  const paragraphs = Array.from({ length: 9 }, (_, index) => [
+    `${index + 1}단계에서는 현장에서 확인한 업무와 당시의 판단 근거를 구체적으로 설명했습니다.`,
+    `담당자와 함께 움직이며 해당 단계의 절차와 실제 적용 방식을 살펴보았습니다.`,
+    `예상하지 못한 상황에서는 기준을 확인한 뒤 관계자들과 대응 방향을 조율했습니다.`,
+    `이 경험을 통해 ${index + 1}단계에서 요구되는 역할과 책임을 분명하게 이해했습니다.`
+  ].join(' '));
+  // 실제 운영 입력처럼 일부 역할 경계는 빈 줄, 일부는 완결 문장 뒤 한 줄
+  // 개행으로 들어온다. 두 형식 모두 원문의 논리 문단으로 보존해야 한다.
+  const source = [
+    paragraphs[0],
+    paragraphs[1],
+    paragraphs[2],
+    `${paragraphs[3]}\n${paragraphs[4]}`,
+    ...paragraphs.slice(5)
+  ].join('\n\n');
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: source,
+    chunks: structure.splitChunksForGpt(source, { coalesceEditable: true }).chunks,
+    mode: 'blog',
+    requestStrength: 'basic',
+    documentProfile: { profile: 'resume_application', confidence: 0.94, formatProfile: { primary: 'plain', flags: [] } },
+    profileConfidence: 0.94
+  });
+  assert.equal(restored.paragraphs.policy, 'source_paragraph_roles');
+  assert.equal(restored.paragraphs.sourceCount, 9);
+  assert.equal(restored.paragraphs.afterCount, 9);
+  assert.equal(restored.text, source);
+});
+
+test('현장 사례의 국소 결론은 다음 활동 문단이 아니라 근거가 있는 원래 문단에 다시 붙인다', () => {
+  const intro = '실습 초기에는 안전교육을 이수하고 현장 조직도를 보며 부서별 업무를 파악했습니다. 이후 설계보고서를 읽으면서 학교에서 배운 이론이 실제 설계 근거로 쓰이는 과정도 확인했습니다.';
+  const environment = '해상 공사에서는 풍랑 뒤 오탁방지망이 유실되는 상황과 관계기관의 확인 절차를 지켜보았습니다. 관계기관과 협의해 설치 범위를 조정하고 주 2회 해수를 채취해 탁도를 검사하는 방식도 확인했습니다. 현장에서는 원칙을 지키면서도 상황에 맞는 과학적인 대안을 마련하는 역량이 중요하다는 점을 배웠습니다.';
+  const contract = '부상토 개량 확인을 위한 보링 시추와 레벨 측량에서는 공무와 계약 관리의 중요성을 이해했습니다. 추가 조사 결과를 객관적인 데이터로 제시해 정당한 공사비를 청구하는 절차를 살펴보았습니다.';
+  const source = [intro, environment, contract].join('\n\n');
+  const misplaced = [
+    intro,
+    environment.split(' 현장에서는')[0] + '.',
+    `현장에서는${environment.split(' 현장에서는')[1]} ${contract}`
+  ].join('\n\n').replace('확인했습니다..', '확인했습니다.');
+  const restored = structure.restorePostSemanticLayout({
+    source,
+    outputText: misplaced,
+    chunks: structure.splitChunksForGpt(source, { coalesceEditable: true }).chunks,
+    mode: 'blog',
+    requestStrength: 'basic',
+    documentProfile: { profile: 'resume_application', confidence: 0.94, formatProfile: { primary: 'plain', flags: [] } },
+    profileConfidence: 0.94
+  });
+  assert.equal(restored.paragraphs.policy, 'source_paragraph_roles');
+  assert.equal(restored.paragraphs.sourceBoundaryRepairCount, 1);
+  assert.match(restored.text, /탁도를 검사하는 방식도 확인했습니다\. 현장에서는 원칙을 지키면서도[\s\S]*배웠습니다\.\n\n부상토 개량 확인을 위한/u);
+  assert.equal(restored.text.replace(/\s+/gu, ''), misplaced.replace(/\s+/gu, ''));
+});
+
 test('공백이 든 빈 줄을 실제 문단 경계로 세고 청크 왕복에서 원문을 보존한다', () => {
   const source = '독립 제목\n \t\n첫 문단은 원문의 의미를 설명합니다.\n\n둘째 문단은 결과를 정리합니다.';
   const chunks = chunk.splitChunks(source);

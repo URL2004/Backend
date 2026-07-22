@@ -2,7 +2,7 @@
 
 const baseChunk = require('../engine/chunk');
 const freezeBlocks = require('../engine/freezeblocks');
-const { splitSentenceSpans, splitSentences } = require('../engine/koreanText');
+const { splitSentenceSpans, splitSentences, ngramJaccard } = require('../engine/koreanText');
 const { paragraphExpansionLimit } = require('./voiceProfile');
 const layoutStructure = require('./layoutStructure');
 
@@ -405,6 +405,30 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     && !['questionnaire', 'list_heavy', 'table', 'table_heavy', 'sectioned', 'reference_heavy', 'creative_lines']
       .some(flag => formatFlags.has(flag))
     && !(chunks || []).some(chunk => chunk?.locked && String(chunk.text || '').trim());
+  const sourceParagraphRolesAreAuthoritative = semanticProseRoles
+    && sourceCount >= 3
+    // 빈 줄 문단뿐 아니라 워드·입력창에서 한 줄만 내려 쓴 완결 산문도
+    // layoutStructure가 판정한 원문 역할 경계로 존중한다.
+    && sourceParagraphs.every(paragraph => !layoutStructure.isStructureDominatedParagraph(paragraph));
+  if (sourceParagraphRolesAreAuthoritative) {
+    const anchored = buildSourceAnchoredParagraphLayout(source, outputText);
+    const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(anchored.text));
+    return {
+      text: anchored.text,
+      applied: anchored.applied,
+      policy: 'source_paragraph_roles',
+      sourceCount,
+      beforeCount,
+      targetCount: anchored.paragraphCount,
+      afterCount: anchored.paragraphCount,
+      roleBoundaryCount: 0,
+      sourceBoundaryRepairCount: anchored.sourceBoundaryRepairCount,
+      backwardConclusionRepairCount: anchored.backwardConclusionRepairCount,
+      paragraphAlignmentConfidence: anchored.alignmentConfidence,
+      readability: compactReadability(afterReadability),
+      pass: anchored.contentPreserved && afterReadability.overlongCount === 0
+    };
+  }
   if (semanticProseRoles) {
     const roleLayout = buildSemanticProseRoleLayout(outputText, { profileName });
     if (roleLayout.applicable) {
@@ -539,7 +563,8 @@ function buildSemanticProseRoleLayout(value, { profileName = '' } = {}) {
   }
   sentences.forEach((sentence, index) => {
     const kind = semanticTransitionKind(sentence, profileName);
-    if (kind) addCandidate(index, kind === 'conclusion' ? 10 : 9, kind);
+    if (kind === 'backward_takeaway') addCandidate(index + 1, 10, 'after_takeaway');
+    else if (kind) addCandidate(index, kind === 'conclusion' ? 10 : 9, kind);
   });
   const semanticBoundaryCount = [...candidates.values()]
     .filter(candidate => candidate.kind !== 'existing' && candidate.index >= 2 && candidate.index <= sentences.length - 2)
@@ -624,6 +649,7 @@ function buildSemanticProseRoleLayout(value, { profileName = '' } = {}) {
 
 function semanticTransitionKind(value, profileName = '') {
   const sentence = String(value || '').trim();
+  if (/^(?:(?:이를\s*통해|이\s*과정에서|이\s*경험(?:을\s*통해|에서)?|이\s*모습에서|그\s*과정에서|그\s*결과|여기서)|현장에서는)[^.!?。！？]{0,180}(?:배웠|알게\s*되었|깨달|확인할\s*수\s*있었|느꼈|체감했|중요하다는|필요하다는|의미한다)/u.test(sentence)) return 'backward_takeaway';
   if (/^(?:(?:이러한|이런|이와\s*같은)\s*(?:경험|과정|논의|분석|결과|역량|노력)(?:을|를)?\s*(?:통해|바탕으로)|이를\s*바탕으로|종합하면|결론적으로|결과적으로|따라서|그러므로|입사\s*후|앞으로(?:도)?)/u.test(sentence)) return 'conclusion';
   if (/^(?:반면|그러나|하지만|다만|한편|그럼에도|이에\s*반해)/u.test(sentence)) return 'contrast';
   if (/^(?:예를\s*들어|구체적으로|실제로|대표적으로|사례를\s*보면)/u.test(sentence)) return 'evidence';
@@ -633,6 +659,261 @@ function semanticTransitionKind(value, profileName = '') {
   if (profileName === 'resume_application'
       && /^(?!연구(?:를|가)\s)(?:[가-힣A-Za-z0-9·-]+\s+){0,5}(?:연구|프로젝트|과제|인턴십?|현장\s*실습)(?:에서는|에서)\s/u.test(sentence)) return 'experience';
   return '';
+}
+
+/**
+ * 이미 여러 문단으로 정리된 일반 산문은 문단 수가 아니라 각 문단의 역할이
+ * 원문 계약이다. 모델·의미 수리 단계에서 빈 줄이 이동하더라도 결과 문장은
+ * 옮기지 않고, 원문 문단과 가장 잘 대응하는 문장 경계만 복원한다.
+ */
+function buildSourceAnchoredParagraphLayout(source, value) {
+  const normalized = normalizeParagraphWhitespace(value);
+  const sourceParagraphs = splitParagraphs(source);
+  const currentParagraphs = splitParagraphs(normalized);
+  const outputSentences = splitSentences(normalized)
+    .map(sentence => String(sentence || '').replace(/\s+/gu, ' ').trim())
+    .filter(Boolean);
+  const sourceCount = sourceParagraphs.length;
+  if (sourceCount < 3 || outputSentences.length < sourceCount) {
+    return unchangedSourceAnchoredLayout(normalized, currentParagraphs, 0);
+  }
+
+  const alignment = alignSentencesToSourceParagraphs(sourceParagraphs, outputSentences);
+  if (!alignment) return unchangedSourceAnchoredLayout(normalized, currentParagraphs, 0);
+
+  const sourceRoleGroups = [];
+  let start = 0;
+  for (const end of alignment.boundaries) {
+    sourceRoleGroups.push(outputSentences.slice(start, end).join(' '));
+    start = end;
+  }
+  sourceRoleGroups.push(outputSentences.slice(start).join(' '));
+  const groups = sourceRoleGroups.flatMap(splitSourceRoleForReadability);
+  const proposed = normalizeParagraphWhitespace(groups.join('\n\n'));
+  const contentPreserved = bare(proposed) === bare(normalized);
+  if (!contentPreserved || sourceRoleGroups.length !== sourceCount) {
+    return unchangedSourceAnchoredLayout(normalized, currentParagraphs, alignment.confidence);
+  }
+
+  const currentBoundaries = sentenceBoundariesForParagraphs(currentParagraphs);
+  const proposedBoundaries = alignment.boundaries;
+  const currentComparable = currentParagraphs.length === sourceCount
+    && currentBoundaries.length === proposedBoundaries.length;
+  const currentAlignment = currentComparable
+    ? paragraphAlignmentScore(sourceParagraphs, currentParagraphs)
+    : -1;
+  const currentOverlongCount = layoutStructure.measureParagraphReadability(currentParagraphs).overlongCount;
+  const proposedOverlongCount = layoutStructure.measureParagraphReadability(groups).overlongCount;
+  const shouldApply = !currentComparable
+    || alignment.score > currentAlignment + 0.015
+    || hasMisplacedBackwardTakeaway(outputSentences, currentBoundaries, proposedBoundaries)
+    || proposedOverlongCount < currentOverlongCount;
+  if (!shouldApply) {
+    return {
+      text: normalized,
+      applied: false,
+      paragraphCount: currentParagraphs.length,
+      sourceBoundaryRepairCount: 0,
+      backwardConclusionRepairCount: 0,
+      alignmentConfidence: roundAlignment(Math.max(currentAlignment, alignment.confidence)),
+      contentPreserved: true
+    };
+  }
+
+  const sourceBoundaryRepairCount = countMovedBoundaries(currentBoundaries, proposedBoundaries);
+  const backwardConclusionRepairCount = countBackwardTakeawayRepairs(
+    outputSentences,
+    currentBoundaries,
+    proposedBoundaries
+  );
+  return {
+    text: proposed,
+    applied: proposed !== normalized,
+    paragraphCount: groups.length,
+    sourceBoundaryRepairCount,
+    backwardConclusionRepairCount,
+    alignmentConfidence: roundAlignment(alignment.confidence),
+    contentPreserved: true
+  };
+}
+
+function alignSentencesToSourceParagraphs(sourceParagraphs, outputSentences) {
+  const paragraphCount = sourceParagraphs.length;
+  const sentenceCount = outputSentences.length;
+  // 통상적인 지원서·보고서를 넘는 초대형 문서는 청크 경계가 이미 원문 문단을
+  // 보존한다. 여기서 O(P*S²) 정렬을 반복하지 않고 현재 경계를 유지한다.
+  if (paragraphCount > 30 || sentenceCount > 180) return null;
+  const sourceLengths = sourceParagraphs.map(paragraph => Math.max(1, bare(paragraph).length));
+  const totalSourceLength = sourceLengths.reduce((sum, length) => sum + length, 0);
+  const expectedEnds = [];
+  let cumulativeLength = 0;
+  for (const length of sourceLengths) {
+    cumulativeLength += length;
+    expectedEnds.push(Math.round(sentenceCount * cumulativeLength / totalSourceLength));
+  }
+
+  const scores = Array.from({ length: paragraphCount + 1 }, () => Array(sentenceCount + 1).fill(-Infinity));
+  const previous = Array.from({ length: paragraphCount + 1 }, () => Array(sentenceCount + 1).fill(-1));
+  scores[0][0] = 0;
+  for (let paragraphIndex = 1; paragraphIndex <= paragraphCount; paragraphIndex += 1) {
+    const minimumEnd = paragraphIndex;
+    const maximumEnd = sentenceCount - (paragraphCount - paragraphIndex);
+    for (let end = minimumEnd; end <= maximumEnd; end += 1) {
+      const minimumStart = paragraphIndex - 1;
+      const maximumStart = end - 1;
+      for (let candidateStart = minimumStart; candidateStart <= maximumStart; candidateStart += 1) {
+        const prior = scores[paragraphIndex - 1][candidateStart];
+        if (!Number.isFinite(prior)) continue;
+        const segment = outputSentences.slice(candidateStart, end).join(' ');
+        const segmentScore = sourceParagraphSegmentScore(
+          sourceParagraphs[paragraphIndex - 1],
+          segment,
+          outputSentences[candidateStart],
+          outputSentences[end - 1]
+        );
+        const expectedEnd = expectedEnds[paragraphIndex - 1];
+        const positionPenalty = paragraphIndex === paragraphCount
+          ? 0
+          : Math.abs(end - expectedEnd) / Math.max(sentenceCount, 1) * 0.35;
+        const score = prior + segmentScore - positionPenalty;
+        if (score > scores[paragraphIndex][end]) {
+          scores[paragraphIndex][end] = score;
+          previous[paragraphIndex][end] = candidateStart;
+        }
+      }
+    }
+  }
+  if (!Number.isFinite(scores[paragraphCount][sentenceCount])) return null;
+  const boundaries = [];
+  let end = sentenceCount;
+  for (let paragraphIndex = paragraphCount; paragraphIndex > 0; paragraphIndex -= 1) {
+    const start = previous[paragraphIndex][end];
+    if (start < 0) return null;
+    if (paragraphIndex > 1) boundaries.unshift(start);
+    end = start;
+  }
+  const score = scores[paragraphCount][sentenceCount] / paragraphCount;
+  return {
+    boundaries,
+    score,
+    confidence: Math.max(0, Math.min(1, score))
+  };
+}
+
+function sourceParagraphSegmentScore(sourceParagraph, segment, firstOutputSentence, lastOutputSentence) {
+  const sourceSentences = splitSentences(sourceParagraph).filter(Boolean);
+  const firstSourceSentence = sourceSentences[0] || sourceParagraph;
+  const lastSourceSentence = sourceSentences[sourceSentences.length - 1] || sourceParagraph;
+  const content = ngramJaccard(sourceParagraph, segment, 3);
+  const first = ngramJaccard(firstSourceSentence, firstOutputSentence, 2);
+  const last = ngramJaccard(lastSourceSentence, lastOutputSentence, 2);
+  const sourceLength = Math.max(1, bare(sourceParagraph).length);
+  const segmentLength = Math.max(1, bare(segment).length);
+  const lengthFit = Math.min(sourceLength, segmentLength) / Math.max(sourceLength, segmentLength);
+  return (content * 0.58) + (first * 0.2) + (last * 0.12) + (lengthFit * 0.1);
+}
+
+function paragraphAlignmentScore(sourceParagraphs, outputParagraphs) {
+  if (sourceParagraphs.length !== outputParagraphs.length || !sourceParagraphs.length) return -1;
+  const scores = sourceParagraphs.map((sourceParagraph, index) => {
+    const outputParagraph = outputParagraphs[index];
+    const outputSentences = splitSentences(outputParagraph).filter(Boolean);
+    return sourceParagraphSegmentScore(
+      sourceParagraph,
+      outputParagraph,
+      outputSentences[0] || outputParagraph,
+      outputSentences[outputSentences.length - 1] || outputParagraph
+    );
+  });
+  return scores.reduce((sum, score) => sum + score, 0) / scores.length;
+}
+
+function sentenceBoundariesForParagraphs(paragraphs) {
+  const boundaries = [];
+  let sentenceCount = 0;
+  for (let index = 0; index < paragraphs.length - 1; index += 1) {
+    sentenceCount += splitSentences(paragraphs[index]).filter(Boolean).length;
+    boundaries.push(sentenceCount);
+  }
+  return boundaries;
+}
+
+function countMovedBoundaries(before, after) {
+  const current = new Set(before);
+  return after.filter(boundary => !current.has(boundary)).length;
+}
+
+function splitSourceRoleForReadability(paragraph) {
+  const pending = [String(paragraph || '').trim()];
+  const out = [];
+  while (pending.length) {
+    const current = pending.shift();
+    if (layoutStructure.measureParagraphReadability([current]).overlongCount === 0) {
+      if (current) out.push(current);
+      continue;
+    }
+    const sentences = splitSentences(current).map(sentence => String(sentence || '').trim()).filter(Boolean);
+    if (sentences.length < 2) {
+      if (current) out.push(current);
+      continue;
+    }
+    const total = sentences.reduce((sum, sentence) => sum + bare(sentence).length, 0);
+    let running = 0;
+    let selected = 1;
+    let selectedScore = Infinity;
+    for (let index = 1; index < sentences.length; index += 1) {
+      running += bare(sentences[index - 1]).length;
+      const nextIsTakeaway = semanticTransitionKind(sentences[index]) === 'backward_takeaway';
+      const previousIsTakeaway = semanticTransitionKind(sentences[index - 1]) === 'backward_takeaway';
+      const score = Math.abs(running - (total / 2))
+        + (nextIsTakeaway ? total : 0)
+        - (previousIsTakeaway ? Math.min(total * 0.15, running * 0.15) : 0);
+      if (score < selectedScore) {
+        selected = index;
+        selectedScore = score;
+      }
+    }
+    const left = sentences.slice(0, selected).join(' ').trim();
+    const right = sentences.slice(selected).join(' ').trim();
+    if (!left || !right) {
+      out.push(current);
+      continue;
+    }
+    pending.unshift(right);
+    pending.unshift(left);
+  }
+  return out;
+}
+
+function hasMisplacedBackwardTakeaway(sentences, currentBoundaries, proposedBoundaries) {
+  return countBackwardTakeawayRepairs(sentences, currentBoundaries, proposedBoundaries) > 0;
+}
+
+function countBackwardTakeawayRepairs(sentences, currentBoundaries, proposedBoundaries) {
+  const current = new Set(currentBoundaries);
+  const proposed = new Set(proposedBoundaries);
+  let count = 0;
+  sentences.forEach((sentence, index) => {
+    if (semanticTransitionKind(sentence) !== 'backward_takeaway') return;
+    if (current.has(index) && !proposed.has(index)) count += 1;
+  });
+  return count;
+}
+
+function unchangedSourceAnchoredLayout(text, paragraphs, alignmentConfidence) {
+  return {
+    text,
+    applied: false,
+    paragraphCount: paragraphs.length,
+    sourceBoundaryRepairCount: 0,
+    backwardConclusionRepairCount: 0,
+    alignmentConfidence: roundAlignment(alignmentConfidence),
+    contentPreserved: true
+  };
+}
+
+function roundAlignment(value) {
+  return Math.round(Math.max(0, Math.min(1, Number(value) || 0)) * 1000) / 1000;
 }
 
 function sentenceKey(value) {
@@ -962,6 +1243,9 @@ function compactLayoutRepair(value) {
       targetCount: Number(value.paragraphs.targetCount) || 0,
       afterCount: Number(value.paragraphs.afterCount) || 0,
       roleBoundaryCount: Number(value.paragraphs.roleBoundaryCount) || 0,
+      sourceBoundaryRepairCount: Number(value.paragraphs.sourceBoundaryRepairCount) || 0,
+      backwardConclusionRepairCount: Number(value.paragraphs.backwardConclusionRepairCount) || 0,
+      paragraphAlignmentConfidence: Number(value.paragraphs.paragraphAlignmentConfidence) || 0,
       readability: value.paragraphs.readability ? {
         overlongCount: Number(value.paragraphs.readability.overlongCount) || 0,
         maxBare: Number(value.paragraphs.readability.maxBare) || 0,

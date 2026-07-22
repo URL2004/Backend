@@ -22,6 +22,7 @@ const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 const detectCalibration = require('../lib/detectCalibration');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
+const history = require('../lib/historyService');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 
@@ -209,6 +210,34 @@ router.post('/detect-report', async (req, res) => {
       logger.error('detect_report.paid_deduct_failed_manual_action', { uid, cost, requestId, err: e });
     }
   }
+
+  // 감지 보고서도 /analyze와 같은 users/{uid}/history 스키마에 저장한다.
+  // requestId를 문서 ID로 사용해 재시도·중복 클릭이 관리자 작업 기록을 중복 생성하지 않게 한다.
+  let historySaved = false;
+  if (!devNoAuth && uid && !req.aborted) {
+    const historyResult = {
+      ...narrated,
+      ...(calibration.applied ? {
+        rawProbability: calibration.rawProbability,
+        probabilityCalibration: calibration.meta
+      } : {})
+    };
+    try {
+      await history.saveAnalyzeHistory({
+        uid,
+        requestId,
+        opType: 'detect',
+        text,
+        needed: cost,
+        result: historyResult,
+        mode: 'detect'
+      });
+      historySaved = true;
+    } catch (e) {
+      // 감지 결과 전달·과금은 성공했으므로 이력 저장 장애만 격리한다.
+      logger.warn('detect_report.history_persist_failed', { uid, requestId, err: e });
+    }
+  }
   logger.info('detect_report.completed', {
     uid,
     grade,
@@ -220,7 +249,8 @@ router.post('/detect-report', async (req, res) => {
     riskLevel: narrated.riskLevel,
     riskLabel: narrated.riskLabel,
     narrativeConsistencyAdjusted: narrated.narrativeConsistencyAdjusted,
-    charged
+    charged,
+    historySaved
   });
 
   // ③ 비용 — 실제 과금 공식과 동일 산식(다듬기 1/100자 · 블로그 2/100자 · 재구성 구간 정액)
@@ -230,6 +260,7 @@ router.post('/detect-report', async (req, res) => {
     ok: true,
     free: false,          // 무료 제공 제거(2026-07-20) — 항상 유료
     charged,              // unlimited 플랜·dev는 0
+    historySaved,
     probability,
     ...(calibration.applied ? {
       rawProbability: calibration.rawProbability,

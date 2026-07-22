@@ -3,10 +3,12 @@
 const { splitSentences, koreanEnd } = require('../engine/koreanText');
 const { detectRegister } = require('../engine/contract');
 
-const VERSION = 1;
+const VERSION = 2;
 const STYLES = Object.freeze(['plain', 'polite', 'haeyo', 'nominal']);
 
-function auditEndingStyle(source, output) {
+function auditEndingStyle(source, output, documentProfile = null) {
+  const profile = profileName(documentProfile);
+  const compactRecordStyle = ['clinical_record', 'student_record_teacher'].includes(profile);
   const sourceSections = splitSections(source);
   const outputSections = splitSections(output);
   const sections = [];
@@ -14,8 +16,8 @@ function auditEndingStyle(source, output) {
   for (let index = 0; index < sourceSections.length; index += 1) {
     const before = sourceSections[index];
     const after = outputSections[index] || { heading: '', body: '' };
-    const sourceSentences = eligibleSentences(before.body);
-    const outputSentences = eligibleSentences(after.body);
+    const sourceSentences = eligibleSentences(before.body, { includeListBodies: compactRecordStyle });
+    const outputSentences = eligibleSentences(after.body, { includeListBodies: compactRecordStyle });
     const sourceHistogram = endingHistogram(sourceSentences);
     const outputHistogram = endingHistogram(outputSentences);
     const sourceRecognized = styleTotal(sourceHistogram);
@@ -23,7 +25,10 @@ function auditEndingStyle(source, output) {
     const dominantRatio = sourceRecognized ? sourceHistogram[dominant] / sourceRecognized : 0;
     let introducedOtherCount = 0;
     const introducedStyles = [];
-    if (sourceSentences.length >= 6 && sourceRecognized >= 6 && dominantRatio >= 0.75) {
+    const enoughEvidence = compactRecordStyle
+      ? sourceSentences.length >= 3 && sourceRecognized >= 2 && dominantRatio >= 0.66
+      : sourceSentences.length >= 6 && sourceRecognized >= 6 && dominantRatio >= 0.75;
+    if (enoughEvidence) {
       for (const style of STYLES) {
         if (style === dominant) continue;
         const introduced = Math.max(0, Number(outputHistogram[style] || 0) - Number(sourceHistogram[style] || 0));
@@ -32,10 +37,11 @@ function auditEndingStyle(source, output) {
         introducedStyles.push({ style, count: introduced });
       }
     }
-    const issue = introducedOtherCount >= 2;
+    const issue = introducedOtherCount >= (compactRecordStyle ? 1 : 2);
     const record = {
       index,
       heading: before.heading || `section_${index + 1}`,
+      profile,
       sourceSentenceCount: sourceSentences.length,
       outputSentenceCount: outputSentences.length,
       sourceHistogram,
@@ -51,6 +57,7 @@ function auditEndingStyle(source, output) {
   }
   return {
     version: VERSION,
+    profile,
     pass: issues.length === 0,
     issueCodes: issues.length ? ['ending_style_mixed'] : [],
     issueCount: issues.length,
@@ -81,13 +88,25 @@ function splitSections(value) {
   return sections.length ? sections : [{ heading: '', body: String(value || '').trim() }];
 }
 
-function eligibleSentences(value) {
+function eligibleSentences(value, { includeListBodies = false } = {}) {
   const proseLines = String(value || '').split(/\r?\n/u)
     .map(line => line.trim())
+    .map(line => includeListBodies ? stripListPrefix(line) : line)
     .filter(line => line && !isProtectedLine(line));
   return splitSentences(proseLines.join('\n'))
     .map(sentence => String(sentence || '').trim())
     .filter(sentence => sentence.replace(/[^가-힣A-Za-z0-9]/gu, '').length >= 3);
+}
+
+function stripListPrefix(line) {
+  return String(line || '')
+    .replace(/^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d{1,3}[.)]|[①-⑳])\s+/u, '')
+    .replace(/^[A-Za-z가-힣][.)]\s+/u, '')
+    .trim();
+}
+
+function profileName(documentProfile) {
+  return String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
 }
 
 function endingHistogram(sentences) {

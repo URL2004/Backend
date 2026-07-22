@@ -45,7 +45,7 @@ async function main() {
   add('production_import_graph', importGraph.pass, JSON.stringify(importGraph.violations));
 
   if (args['skip-env'] !== '1') {
-    add('v2_single_production_path', true, 'gpt-prod-v2.5.2');
+    add('v2_single_production_path', true, 'gpt-prod-v2.5.3');
     add('humanization_depth_enabled', String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0', process.env.HUMANIZATION_DEPTH_GATE_ENABLED || 'default_on');
     add('active_provider', gptOnly(packageJson), 'gpt');
     add('openai_key', Boolean(process.env.OPENAI_API_KEY), process.env.OPENAI_API_KEY ? 'configured' : 'unset');

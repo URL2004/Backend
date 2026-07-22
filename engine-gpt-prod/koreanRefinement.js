@@ -2,15 +2,18 @@
 
 const { splitSentences, levenshteinDistance } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
+const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 
-const VERSION = 6;
+const VERSION = 7;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
   'report_assignment',
   'long_explainer',
   'clinical_record',
-  'student_record_teacher'
+  'legal_contract',
+  'student_record_teacher',
+  'student_self_assessment'
 ]);
 
 const ISSUE_DEFINITIONS = Object.freeze({
@@ -109,6 +112,48 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '태도·역량이 특정 “쪽으로 성장했다”는 연결이 어색해요.'
+  },
+  causal_predicate_stack: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '결과와 원인을 한 서술어에 겹쳐 연결해 주어·서술어 관계가 어색해요.'
+  },
+  nominal_predicate_collocation: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '분석·입지 같은 명사와 서술어의 결합이 문맥에 맞지 않아요.'
+  },
+  case_frame_corruption: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '조사와 서술어가 요구하는 논항 구조가 어긋났어요.'
+  },
+  meta_nominalization_injection: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '직접적인 문장을 “~한 것은 ~하는 점” 구조로 불필요하게 늘였어요.'
+  },
+  role_predicate_redundancy: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '맡다·담당하다처럼 같은 역할 서술어가 한 문장에 겹쳐요.'
+  },
+  analytic_object_recast: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '분석 대상을 비슷한 “내용·자료”로 다시 받아 목적어 관계가 흐려졌어요.'
+  },
+  enumeration_parallelism: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: false,
+    message: '첫째·둘째 항목의 문법 역할과 서술 형식이 서로 맞지 않아요.'
   },
   student_record_fragment: {
     weight: 4,
@@ -288,8 +333,9 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
   }
 
   const boundary = repairBrokenProseBoundaries(before, context);
-  const spacing = repairContextualSpacing(boundary.text, source, context);
-  const changeCounts = mergeChangeCounts(boundary.changeCounts, spacing.changeCounts);
+  const siblingLabels = repairSiblingLabelSpacing(boundary.text, source);
+  const spacing = repairContextualSpacing(siblingLabels.text, source, context);
+  const changeCounts = mergeChangeCounts(boundary.changeCounts, siblingLabels.changeCounts, spacing.changeCounts);
   const changeCodes = Object.keys(changeCounts).filter(code => changeCounts[code] > 0);
   return {
     version: 1,
@@ -679,6 +725,13 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'benefit_help_predicate_redundancy', hasBenefitHelpPredicateRedundancy);
   pushSentenceIssue(issues, text, 'contrast_clause_attachment', hasContrastClauseAttachment);
   pushSentenceIssue(issues, text, 'directional_growth_collocation', sentence => /(?:연구\s*)?(?:태도|역량|관점|시각)(?:은|는|이|가)?[^.!?。！？\n]{0,38}(?:쪽|방향)으로\s*성장(?:하|했|해|합)/u.test(sentence));
+  pushSentenceIssue(issues, text, 'causal_predicate_stack', hasCausalPredicateStack);
+  pushSentenceIssue(issues, text, 'nominal_predicate_collocation', hasNominalPredicateCollocation);
+  pushSentenceIssue(issues, text, 'case_frame_corruption', hasCaseFrameCorruption);
+  pushSentenceIssue(issues, text, 'meta_nominalization_injection', hasMetaNominalizationInjection);
+  pushSentenceIssue(issues, text, 'role_predicate_redundancy', hasRolePredicateRedundancy);
+  pushSentenceIssue(issues, text, 'analytic_object_recast', hasAnalyticObjectRecast);
+  pushEnumerationParallelismIssue(issues, text);
   if (profile === 'mail_notice') pushFunctionalGreetingDuplication(issues, text);
   if (isFormalRegisterTarget(targetRegister, profile)) {
     pushFormalRegisterResidual(issues, text, { profile, targetRegister });
@@ -754,6 +807,74 @@ function isImprovedAudit(before, after) {
   return false;
 }
 
+function repairSiblingLabelSpacing(value, source) {
+  const counts = {};
+  const sourceStyles = String(source || '').split(/\r?\n/u)
+    .map(parseParentheticalLabelLine)
+    .filter(Boolean);
+  if (sourceStyles.length < 3) return { text: String(value || ''), changeCounts: counts };
+  const spacedCount = sourceStyles.filter(item => item.spaceBeforeParenthesis).length;
+  const useSpaceBeforeParenthesis = spacedCount * 2 >= sourceStyles.length;
+  const lines = String(value || '').split('\n').map(line => {
+    const parsed = parseParentheticalLabelLine(line);
+    if (!parsed) return line;
+    const rebuilt = `${parsed.prefix}${parsed.label}${useSpaceBeforeParenthesis ? ' ' : ''}(${parsed.parenthetical})${parsed.colon}${parsed.body ? ` ${parsed.body}` : ''}`;
+    if (rebuilt !== line) addCount(counts, 'sibling_label_spacing');
+    return rebuilt;
+  });
+  return { text: lines.join('\n'), changeCounts: counts };
+}
+
+function parseParentheticalLabelLine(value) {
+  const line = String(value || '');
+  const match = line.match(/^(\s*(?:(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d{1,3}[.)]|[①-⑳])\s*)?)([^:\n()]{1,80}?)(\s*)\(([^()\n]{1,80})\)\s*([:：])\s*(.*)$/u);
+  if (!match) return null;
+  const label = match[2].trimEnd();
+  if (!label || !match[4].trim()) return null;
+  return {
+    prefix: match[1],
+    label,
+    spaceBeforeParenthesis: match[3].length > 0,
+    parenthetical: match[4].trim(),
+    colon: match[5],
+    body: match[6].trimStart()
+  };
+}
+
+const SOURCE_RESTORABLE_ISSUES = new Set([
+  'causal_predicate_stack',
+  'nominal_predicate_collocation',
+  'case_frame_corruption',
+  'meta_nominalization_injection',
+  'role_predicate_redundancy',
+  'analytic_object_recast',
+  'professional_register_downgrade'
+]);
+
+function restoreIntroducedIntegritySentences({ source = '', outputText = '', audit = null } = {}) {
+  const ordinals = [];
+  const restoredCodes = [];
+  for (const issue of audit?.issues || []) {
+    if (!SOURCE_RESTORABLE_ISSUES.has(issue.code) || Number(issue.introducedCount || 0) <= 0) continue;
+    restoredCodes.push(issue.code);
+    if (issue.code === 'professional_register_downgrade') {
+      for (const loss of issue.details?.alignedLosses || []) {
+        if (Number(loss.outputOrdinal) > 0) ordinals.push(Number(loss.outputOrdinal));
+      }
+      continue;
+    }
+    ordinals.push(...(issue.sentenceOrdinals || []));
+  }
+  const restored = restoreSourceSentenceOrdinals(source, outputText, ordinals, {
+    maxRestoreCount: 8,
+    minSimilarity: 0.24
+  });
+  return {
+    ...restored,
+    restoredCodes: [...new Set(restoredCodes)]
+  };
+}
+
 function buildSourceReviewWarnings(sourceOrIssues, documentProfile = null) {
   const issues = Array.isArray(sourceOrIssues)
     ? sourceOrIssues
@@ -785,9 +906,9 @@ function detectProfessionalDowngrade(source, outputText, profile) {
   let count = 0;
   const concepts = [];
   const sentenceOrdinals = [];
-  const alignedLosses = detectAlignedProfessionalLosses(before, after);
+  const alignedLosses = detectAlignedProfessionalLosses(before, after, profile);
   for (const loss of alignedLosses) {
-    count += 1;
+    count += Math.max(1, Number(loss.missingCount || 0));
     concepts.push(loss.concept);
     sentenceOrdinals.push(loss.sourceOrdinal);
   }
@@ -944,7 +1065,7 @@ const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
   {
     concept: 'cause_analysis',
     source: /원인(?:을|를)?\s*(?:분석|규명|파악)/u,
-    acceptable: /원인(?:을|를)?\s*(?:분석|규명|파악)/u,
+    acceptable: /원인(?:을|를)?\s*(?:(?:먼저|구체적으로|면밀히|정확히|체계적으로)\s*)?(?:분석|규명|파악)/u,
     preferred: ['원인을 분석', '원인을 규명']
   },
   {
@@ -988,25 +1109,81 @@ const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
     source: /(?:자원|예산|인력|시간)(?:을|를)?\s*(?:효율적(?:으로)?\s*)?(?:배분|할당)/u,
     acceptable: /(?:자원|예산|인력|시간)(?:을|를)?\s*(?:효율적(?:으로)?\s*)?(?:배분|할당)/u,
     preferred: ['자원을 효율적으로 배분', '인력을 할당']
+  },
+  {
+    concept: 'formal_market_scope',
+    professionalOnly: true,
+    source: /시장\s*내(?:에서|의|에)?/u,
+    acceptable: /시장\s*내(?:에서|의|에)?/u,
+    preferred: ['시장 내에서', '시장 내의']
+  },
+  {
+    concept: 'formal_analysis_action',
+    professionalOnly: true,
+    source: /(?:활동|관계|영향|효과|요인|과정)(?:을|를)?[^.!?。！？\n]{0,24}(?:분석|규명)(?:하|해|했|하여|하고|하며|한다|했다)/u,
+    acceptable: /(?:활동|관계|영향|효과|요인|과정)(?:을|를)?[^.!?。！？\n]{0,24}(?:분석|규명)(?:하|해|했|하여|하고|하며|한다|했다)/u,
+    preferred: ['활동을 분석하다', '영향을 규명하다']
+  },
+  {
+    concept: 'normative_integrity',
+    professionalOnly: true,
+    source: /(?:권리|존엄성|정의|공정성|안전)(?:을|를|가|이)?[^.!?。！？\n]{0,28}(?:침해|훼손|보호)(?:하|해|했|되|한다|해서)/u,
+    acceptable: /(?:권리|존엄성|정의|공정성|안전)(?:을|를|가|이)?[^.!?。！？\n]{0,28}(?:침해|훼손|보호)(?:하|해|했|되|한다|해서)/u,
+    preferred: ['권리를 보호하다', '존엄성을 침해하지 않다']
+  },
+  {
+    concept: 'policy_maintenance',
+    professionalOnly: true,
+    source: /(?:규제|기준|원칙|제도)(?:을|를)?[^.!?。！？\n]{0,20}(?:유지|준수)(?:하|해|했|해야|한다|하며)/u,
+    acceptable: /(?:규제|기준|원칙|제도)(?:을|를)?[^.!?。！？\n]{0,20}(?:유지|준수)(?:하|해|했|해야|한다|하며)/u,
+    preferred: ['규제를 유지하다', '기준을 준수하다']
+  },
+  {
+    concept: 'value_creation',
+    professionalOnly: true,
+    source: /(?:가치|부가가치)(?:가|를|를\s*)?[^.!?。！？\n]{0,20}창출(?:되|하|해|했|되는|한다)/u,
+    acceptable: /(?:가치|부가가치)(?:가|를|를\s*)?[^.!?。！？\n]{0,20}창출(?:되|하|해|했|되는|한다)/u,
+    preferred: ['가치를 창출하다', '부가가치가 창출되다']
+  },
+  {
+    concept: 'technical_signal_transfer',
+    source: /(?:신호|데이터|패킷|정보)(?:를|가)?[^.!?。！？\n]{0,20}(?:전송|송신|수신)(?:하|되|해|했|한다|되면)/u,
+    acceptable: /(?:신호|데이터|패킷|정보)(?:를|가)?[^.!?。！？\n]{0,20}(?:전송|송신|수신)(?:하|되|해|했|한다|되면)/u,
+    preferred: ['신호를 전송하다', '데이터를 송수신하다']
+  },
+  {
+    concept: 'configured_output_state',
+    source: /(?:지정|설정)된\s+(?:음성|안내|값|시간|조건|신호|출력|동작)/u,
+    acceptable: /(?:지정|설정)된\s+(?:음성|안내|값|시간|조건|신호|출력|동작)/u,
+    preferred: ['지정된 음성 안내', '설정된 조건']
   }
 ]);
 
-function detectAlignedProfessionalLosses(source, outputText) {
+function detectAlignedProfessionalLosses(source, outputText, profile = 'unknown') {
   const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
   const outputSentences = splitSentences(String(outputText || '')).map(value => String(value || '').trim()).filter(Boolean);
   if (!sourceSentences.length || !outputSentences.length) return [];
   const losses = [];
   sourceSentences.forEach((sentence, sourceIndex) => {
     for (const rule of PROFESSIONAL_CONCEPT_RULES) {
-      if (!patternMatchesLocal(rule.source, sentence)) continue;
+      if (rule.professionalOnly === true && !PROFESSIONAL_PROFILES.has(String(profile || ''))) continue;
+      const sourceMatchCount = countPatternMatchesLocal(rule.source, sentence);
+      if (!sourceMatchCount) continue;
       const aligned = alignedOutputCandidates(sentence, sourceIndex, sourceSentences.length, outputSentences);
       const bestScore = Number(aligned[0]?.score || 0);
-      const retained = aligned.some((item, index) => patternMatchesLocal(rule.acceptable, item.sentence)
-        && (index === 0 || (item.score >= 0.35 && item.score >= bestScore - 0.04)));
-      if (retained) continue;
+      const eligible = aligned.filter((item, index) => index === 0
+        || (item.score >= 0.35 && item.score >= bestScore - 0.04));
+      const retainedCount = eligible.reduce(
+        (sum, item) => sum + countPatternMatchesLocal(rule.acceptable, item.sentence),
+        0
+      );
+      if (retainedCount >= sourceMatchCount) continue;
       const best = aligned[0] || { index: -1, sentence: '', score: 0 };
       losses.push({
         concept: rule.concept,
+        sourceMatchCount,
+        retainedCount,
+        missingCount: sourceMatchCount - retainedCount,
         sourceOrdinal: sourceIndex + 1,
         outputOrdinal: best.index >= 0 ? best.index + 1 : 0,
         preferred: rule.preferred,
@@ -1057,6 +1234,12 @@ function patternMatchesLocal(pattern, value) {
   return pattern.test(String(value || ''));
 }
 
+function countPatternMatchesLocal(pattern, value) {
+  if (!(pattern instanceof RegExp)) return 0;
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  return (String(value || '').match(new RegExp(pattern.source, flags)) || []).length;
+}
+
 function hasDataDocumentCollocation(sentence) {
   const value = String(sentence || '');
   if (/(?:보고서|논문)(?:의\s*)?(?:원고|본문|초안)(?:을|를)?[^.!?。！？\n]{0,18}작성/u.test(value)) return false;
@@ -1100,6 +1283,85 @@ function hasContrastClauseAttachment(sentence) {
 function hasFutureRoleTenseReview(sentence) {
   return /(?:이런|이러한|앞선)\s+경험(?:들)?(?:은|이)[^.!?。！？\n]{0,45}(?:공직|직무|입사\s*후|임용\s*후)에서\s+마주한[^.!?。！？\n]{0,90}(?:밑거름|기반|도움)(?:이|으로)?\s*될/u
     .test(stripProtectedQuotedText(sentence));
+}
+
+function hasCausalPredicateStack(sentence) {
+  const value = stripProtectedQuotedText(sentence);
+  return /(?:은|는|이|가)\s+[^.!?。！？\n]{4,120}(?:에서|데서|때문에|으로부터)\s*비롯된\s+(?:가장\s*(?:큰|주된)\s*)?원인(?:이었|이었다|입니다|이다|으로)/u.test(value)
+    || /원인(?:은|이|으로)?[^.!?。！？\n]{0,70}(?:데서|때문에)\s*비롯된[^.!?。！？\n]{0,28}원인/u.test(value);
+}
+
+function hasNominalPredicateCollocation(sentence) {
+  const value = stripProtectedQuotedText(sentence);
+  if (/(?:^|[^가-힣A-Za-z0-9_])(?:분석|검토|조사|연구)(?:을|를)?\s+(?:살펴보|살펴봤|살펴본|살펴보면)/u.test(value)) return true;
+  return /(?:독보적|선도적|우월한|확고한|시장\s*(?:내|안)의?)[^.!?。！？\n]{0,28}(?:위치|입지)(?:를|을)?[^.!?。！？\n]{0,20}(?:더욱\s*)?(?:분명히|명확히)\s*(?:하|할)/u.test(value);
+}
+
+function hasCaseFrameCorruption(sentence) {
+  return /(?:^|[^가-힣A-Za-z0-9_])[^.!?。！？\n]{0,24}에서[^.!?。！？\n]{1,80}이르기까지를\s*(?:포괄|아우르|포함)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function hasMetaNominalizationInjection(sentence) {
+  return /(?:느낀|깨달은|알게\s*된|확인한)\s+것(?:은|이)[^.!?。！？\n]{6,120}(?:하|되|이|있)(?:는|다는)\s+점(?:이었|이었다|이다|입니다)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function hasRolePredicateRedundancy(sentence) {
+  const value = stripProtectedQuotedText(sentence);
+  return /맡(?:고|아|으며|아서|은|았습니다|고\s*있)[^.!?。！？\n]{0,120}담당(?:하|하고|했|합|하고\s*있)/u.test(value)
+    || /담당(?:하|하고|했|합|하고\s*있)[^.!?。！？\n]{0,120}맡(?:고|아|으며|아서|은|았습니다)/u.test(value);
+}
+
+function hasAnalyticObjectRecast(sentence) {
+  return /(?:요구\s*사항|의견|자료|정보|요청)(?:은|는)[^.!?。！？\n]{0,70}(?:접수|수집|전달|공유|제공)된\s+(?:내용|자료|사항)(?:을|를)?\s*(?:바탕으로|기반으로)\s*(?:분석|검토)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function pushEnumerationParallelismIssue(issues, text) {
+  const sentences = splitSentences(String(text || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const groups = [];
+  let current = [];
+  sentences.forEach((sentence, index) => {
+    const marker = enumerationMarker(sentence);
+    if (!marker) {
+      if (current.length >= 2) groups.push(current);
+      current = [];
+      return;
+    }
+    if (current.length && marker.order !== current.at(-1).order + 1) {
+      if (current.length >= 2) groups.push(current);
+      current = [];
+    }
+    current.push({ index, order: marker.order, shape: enumerationPredicateShape(sentence) });
+  });
+  if (current.length >= 2) groups.push(current);
+  const ordinals = [];
+  for (const group of groups) {
+    const shapes = new Set(group.map(item => item.shape).filter(Boolean));
+    if (shapes.size <= 1) continue;
+    ordinals.push(...group.map(item => item.index + 1));
+  }
+  if (ordinals.length) issues.push(makeIssue('enumeration_parallelism', 1, ordinals));
+}
+
+function enumerationMarker(sentence) {
+  const match = String(sentence || '').match(/^\s*(첫째|둘째|셋째|넷째|다섯째|첫\s*번째|두\s*번째|세\s*번째|네\s*번째|다섯\s*번째)(?:는|로|,|\s)/u);
+  if (!match) return null;
+  const normalized = match[1].replace(/\s+/gu, '');
+  const order = ['첫째', '첫번째'].includes(normalized) ? 1
+    : (['둘째', '두번째'].includes(normalized) ? 2
+      : (['셋째', '세번째'].includes(normalized) ? 3
+        : (['넷째', '네번째'].includes(normalized) ? 4 : 5)));
+  return { order };
+}
+
+function enumerationPredicateShape(sentence) {
+  const value = String(sentence || '').replace(/[.!?…。！？"'”’」』】)\]]+$/gu, '').trim();
+  if (/(?:것|점|방법|방식|과정)(?:이었|이었다|이다|입니다|임)$/u.test(value)) return 'nominalized';
+  if (/(?:한다|된다|이다|있다|없다|하였다|했다|준다|줄인다|높인다|낮춘다|합니다|됩니다|입니다|있습니다|없습니다)$/u.test(value)) return 'finite';
+  if (/(?:함|됨|임|음)$/u.test(value)) return 'record_nominal';
+  return '';
 }
 
 function repairReciprocalExpressionRedundancy(value) {
@@ -1451,5 +1713,6 @@ module.exports = {
   buildSourceReviewWarnings,
   detectTextIssues,
   detectProfessionalDowngrade,
+  restoreIntroducedIntegritySentences,
   isImprovedAudit
 };

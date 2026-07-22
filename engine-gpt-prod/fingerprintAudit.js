@@ -2,8 +2,9 @@
 
 const { splitSentences } = require('../engine/koreanText');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
+const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 
-const VERSION = 3;
+const VERSION = 4;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -45,19 +46,45 @@ function isEnabled() {
   return isV248FeatureEnabled('fingerprintAudit');
 }
 
-function auditFingerprint(source, output) {
+const ZERO_NEW_FINGERPRINT_PROFILES = new Set([
+  'academic_paper',
+  'report_assignment',
+  'long_explainer',
+  'resume_application',
+  'clinical_record',
+  'legal_contract',
+  'student_record_teacher',
+  'student_self_assessment'
+]);
+
+function profileName(documentProfile) {
+  return String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
+}
+
+function guardedFamilyAllowance(profile) {
+  return ZERO_NEW_FINGERPRINT_PROFILES.has(String(profile || '')) ? 0 : 1;
+}
+
+function auditFingerprint(source, output, documentProfile = null) {
   const before = String(source || '');
   const after = String(output || '');
+  const profile = profileName(documentProfile);
+  const allowedIntroducedCount = guardedFamilyAllowance(profile);
   const families = GUARDED_FAMILIES.map(family => {
     const sourceCount = countFamily(before, family);
     const outputCount = countFamily(after, family);
     const introducedCount = Math.max(0, outputCount - sourceCount);
+    const introducedSentenceOrdinals = sourceCount === 0 && introducedCount > 0
+      ? familySentenceOrdinals(after, family)
+      : [];
     return {
       code: family.code,
       sourceCount,
       outputCount,
       introducedCount,
-      excessIntroducedCount: Math.max(0, introducedCount - 1)
+      allowedIntroducedCount,
+      excessIntroducedCount: Math.max(0, introducedCount - allowedIntroducedCount),
+      introducedSentenceOrdinals
     };
   });
   const relationShift = detectContrastRelationShift(before, after);
@@ -68,7 +95,9 @@ function auditFingerprint(source, output) {
       violations.push({
         code: 'engine_phrase_fingerprint',
         family: family.code,
-        count: family.excessIntroducedCount
+        count: family.excessIntroducedCount,
+        allowedIntroducedCount,
+        sentenceOrdinals: family.introducedSentenceOrdinals
       });
     }
   }
@@ -113,6 +142,7 @@ function auditFingerprint(source, output) {
   return {
     version: VERSION,
     enabled: isEnabled(),
+    profile,
     pass: violations.length === 0,
     families,
     introducedCount: families.reduce((sum, item) => sum + item.introducedCount, 0),
@@ -169,6 +199,36 @@ const SEMANTIC_RELATION_RULES = Object.freeze([
     source: /(?:에|로)\s*그치지\s*않고/u,
     output: /(?:이|가)\s*아니라/u,
     retained: /(?:에|로)\s*그치지\s*않고/u
+  },
+  {
+    family: 'question_scope_changed_from_whether_to_degree',
+    source: /여부/u,
+    output: /얼마나[^.!?。！？\n]{0,45}(?:는지|인지|했는지|됐는지|큰지|작은지|높은지|낮은지|강한지|약한지)/u,
+    retained: /여부/u
+  },
+  {
+    family: 'configured_state_changed_to_actor',
+    source: /(?:지정|설정|선정)된\s+(?:음성|안내|값|시간|조건|신호|출력|동작|부품|대상)/u,
+    output: /(?:지정|설정|선정)한\s+(?:음성|안내|값|시간|조건|신호|출력|동작|부품|대상)/u,
+    retained: /(?:지정|설정|선정)된\s+(?:음성|안내|값|시간|조건|신호|출력|동작|부품|대상)/u
+  },
+  {
+    family: 'applied_change_changed_to_direct_action',
+    source: /(?:교체|변경|개편|도입)(?:이|가)\s*(?:적용|반영|완료|진행)된/u,
+    output: /(?:을|를)\s*(?:교체|변경|개편|도입)(?:하|해|했|한|하고)/u,
+    retained: /(?:교체|변경|개편|도입)(?:이|가)\s*(?:적용|반영|완료|진행)된|(?:변경|교체|도입)에\s*(?:맞춰|따라|대응)/u
+  },
+  {
+    family: 'participation_changed_to_ownership',
+    source: /(?:참여|지원|협업|보조)(?:하|해|했|하여|하고|했다)/u,
+    output: /(?:주도|총괄|전담|완료)(?:하|해|했|하여|하고|했다)/u,
+    retained: /(?:참여|지원|협업|보조)(?:하|해|했|하여|하고|했다)/u
+  },
+  {
+    family: 'team_context_changed_to_contrast',
+    source: /(?:\d+\s*인\s*)?팀에서(?!는)/u,
+    output: /(?:\d+\s*인\s*)?팀에서는/u,
+    retained: /(?:\d+\s*인\s*)?팀에서(?!는)/u
   }
 ]);
 
@@ -213,6 +273,26 @@ function detectSemanticRelationShifts(source, output) {
         && /(?:한다|된다|이다|있다|확정된다|분명하다)[.!?。！？]?$/u.test(item.sentence));
       if (shifted) add('possibility_hardened_to_certainty', sourceIndex + 1);
     }
+
+    if (hasNecessityClaim(sourceSentence) && !hasImpossibilityClaim(sourceSentence)) {
+      const shifted = candidates.some(item => item.score >= 0.34
+        && hasImpossibilityClaim(item.sentence));
+      if (shifted) add('necessity_strengthened_to_impossibility', sourceIndex + 1);
+    }
+
+    if (hasTentativeNormativeClaim(sourceSentence)) {
+      const shifted = candidates.some(item => item.score >= 0.34
+        && hasFirmNormativeClaim(item.sentence)
+        && !hasTentativeNormativeClaim(item.sentence));
+      if (shifted) add('tentative_norm_hardened', sourceIndex + 1);
+    }
+
+    if (hasCollaborativeRoleQualifier(sourceSentence)) {
+      const shifted = candidates.some(item => item.score >= 0.38
+        && hasDirectCompletionClaim(item.sentence)
+        && !hasCollaborativeRoleQualifier(item.sentence));
+      if (shifted) add('collaborative_role_scope_removed', sourceIndex + 1);
+    }
   });
 
   const sourceUrgency = countMatches(source, /(?:바로|즉시|곧바로)\s+(?:움직|착수|시작|실행|대응|신청|지원|결정|나섰)/gu);
@@ -243,6 +323,32 @@ function hasPossibilityMarker(value) {
   return /(?:수\s*있|가능|예상|전망|것으로\s*보|듯하|수도\s*있)/u.test(String(value || ''));
 }
 
+function hasNecessityClaim(value) {
+  return /(?:필요(?:하|하다|하며|한|하다)|해야\s*(?:한다|할|하며)|요구(?:되|하))/u.test(String(value || ''));
+}
+
+function hasImpossibilityClaim(value) {
+  const text = String(value || '');
+  if (/(?:불가능하|할\s*수\s*없)/u.test(text)) return true;
+  return /(?:하지\s*않으면|하지\s*않고서는|없이는|머물러서는|그대로는)[^.!?。！？\n]{0,70}(?:불가능|어렵)/u.test(text);
+}
+
+function hasTentativeNormativeClaim(value) {
+  return /(?:해야\s*할\s*것이다|필요할\s*것이다|필요하다고\s*(?:본다|판단한다)|바람직할\s*것이다)/u.test(String(value || ''));
+}
+
+function hasFirmNormativeClaim(value) {
+  return /(?:해야\s*한다|필요하다|필수적이다|의무이다)\s*[.!?。！？]?$/u.test(String(value || '').trim());
+}
+
+function hasCollaborativeRoleQualifier(value) {
+  return /(?:참여|지원|협업|보조|공동으로|함께)(?:하|해|했|하여|하고|했다|진행)/u.test(String(value || ''));
+}
+
+function hasDirectCompletionClaim(value) {
+  return /(?:완료|달성|확보|구축|개발|설계|도출|수행)(?:하|해|했|하여|하고|했다)/u.test(String(value || ''));
+}
+
 function detectContrastRelationShift(source, output) {
   const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
   const outputSentences = splitSentences(String(output || '')).map(value => String(value || '').trim()).filter(Boolean);
@@ -271,6 +377,14 @@ function detectContrastRelationShift(source, output) {
 
 function countFamily(text, family) {
   return (family.patterns || []).reduce((sum, pattern) => sum + countMatches(text, pattern), 0);
+}
+
+function familySentenceOrdinals(text, family) {
+  const ordinals = [];
+  splitSentences(String(text || '')).forEach((sentence, index) => {
+    if ((family.patterns || []).some(pattern => countMatches(sentence, pattern) > 0)) ordinals.push(index + 1);
+  });
+  return ordinals;
 }
 
 function countMatches(text, pattern) {
@@ -319,6 +433,18 @@ function isImproved(before, after) {
   return Number(after.semanticRelations?.count || 0) < Number(before.semanticRelations?.count || 0);
 }
 
+function restoreUnsafeRelationSentences(source, output, audit) {
+  const ordinals = [];
+  for (const violation of audit?.violations || []) {
+    if (!['contrast_relation_shift', 'semantic_relation_shift', 'engine_phrase_fingerprint'].includes(violation.code)) continue;
+    ordinals.push(...(violation.sentenceOrdinals || []));
+  }
+  return restoreSourceSentenceOrdinals(source, output, ordinals, {
+    maxRestoreCount: 8,
+    minSimilarity: 0.24
+  });
+}
+
 module.exports = {
   VERSION,
   GUARDED_FAMILIES,
@@ -328,5 +454,7 @@ module.exports = {
   auditFingerprint,
   detectContrastRelationShift,
   detectSemanticRelationShifts,
+  guardedFamilyAllowance,
+  restoreUnsafeRelationSentences,
   isImproved
 };

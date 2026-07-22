@@ -855,6 +855,13 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'functional_greeting_duplication') return '첫 인사의 의미는 유지하고 같은 역할의 연속 인사 하나만 제거한다. 날짜·기관·직책·서명 줄은 바꾸지 않는다.';
   if (item?.code === 'adjacent_semantic_repetition') return '두 문장의 고유 정보는 모두 남기고, 새로 생긴 중복 주장만 한 번 말하도록 절을 재구성한다.';
   if (item?.code === 'directional_growth_collocation') return '태도·역량의 변화 내용을 유지하면서 “~쪽으로 성장했다” 대신 장르에 맞는 정확한 변화 서술로 고친다.';
+  if (item?.code === 'causal_predicate_stack') return '결과를 주제로 두면 “~에서 비롯됐다”로, 원인을 주제로 두면 “가장 큰 원인은 ~이다”로 한 인과 서술만 사용한다.';
+  if (item?.code === 'nominal_predicate_collocation') return '분석·조사·검토는 수행하거나 그 결과를 제시하고, 추상적 지위·입지는 확립·강화·공고화하는 등 SOURCE의 개념에 맞는 서술어로 연결한다.';
+  if (item?.code === 'case_frame_corruption') return 'SOURCE의 범위 시작·끝과 목적어 조사를 유지하면서 “A에서 B에 이르는 범위·과정”처럼 서술어가 요구하는 논항을 복원한다.';
+  if (item?.code === 'meta_nominalization_injection') return '“느낀 것은 ~하는 점이었다”로 늘이지 말고 SOURCE의 직접적인 깨달음·판단 문장을 자연스럽게 유지한다.';
+  if (item?.code === 'role_predicate_redundancy') return '맡다·담당하다 중 문맥에 맞는 서술어 하나만 남기고 업무 범위는 줄이거나 넓히지 않는다.';
+  if (item?.code === 'analytic_object_recast') return '접수·수집된 요구사항·자료 자체를 분석 대상으로 두고, 같은 대상을 “내용”으로 다시 받아 모호하게 만들지 않는다.';
+  if (item?.code === 'enumeration_parallelism') return '첫째·둘째·셋째 항목의 명사구/서술문 역할과 종결 형식을 맞추되 각 항목의 사실과 순서는 유지한다.';
   return '';
 }
 
@@ -877,7 +884,7 @@ async function retryFingerprintAudit({
     if (item.code === 'semantic_relation_shift') {
       return `- semantic_relation_shift/${item.family}: 문장 ${item.sentenceOrdinals?.join(',') || '해당 위치'}에서 SOURCE의 목적·근거·대조·가능성·행위 방향과 강도를 정확히 복원한다.`;
     }
-    return `- engine_phrase_fingerprint/${item.family}: CURRENT에 새로 반복 주입된 상투구를 문서당 1회 이하로 줄인다.`;
+    return `- engine_phrase_fingerprint/${item.family}: CURRENT에 새로 주입된 상투구를 허용 횟수 ${Number(item.allowedIntroducedCount ?? 1)}회 이하로 줄인다.`;
   });
   const system = [
     '너는 엔진 상투구와 논리 방향만 국소 수리하는 한국어 편집기다.',

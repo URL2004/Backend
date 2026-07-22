@@ -87,13 +87,27 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
 
   const soapHeadingSignals = lines.filter(line => /^(?:#{1,6}\s*)?(?:SOAP(?:\s*Note)?|[SOAP])(?:\s*[:.-]|\s*$)/iu.test(line)).length;
   const clinicalLabelSignals = lines.filter(line => /^(?:\*{0,2})?(?:대상자|환자|아동|생년월일|평가일|검사일|평가도구|검사도구|주호소|진단명|치료사|보호자)(?:\*{0,2})?\s*:/u.test(line)).length;
-  const clinicalTermSignals = count(text, /(?:감각\s*프로파일|Denver\s*II|작업\s*치료|물리\s*치료|언어\s*치료|임상\s*관찰|주호소|평가\s*도구|중재\s*계획|치료\s*목표|기능적\s*수행|보호자\s*보고|관찰됨|측정됨)/giu);
+  const clinicalAssessmentSignals = count(text, /(?:Denver\s*II|Sensory\s*Profile|BOT-?2|PDMS-?2|COPM|WeeFIM|M-ABC|VMI|PEDI|MMSE|K-MMSE|MoCA|BBS|FIM)/giu);
+  const clinicalDomainSignals = count(text, /(?:감각\s*(?:프로파일|처리|조절|추구|회피)|고유\s*수용성|전정\s*감각|촉각\s*(?:방어|과민)|시지각|운동\s*계획|미세\s*운동|소근육|대근육|양측\s*협응|자세\s*조절|기능적\s*수행|독립\s*수행|일상생활동작|보호자\s*보고|임상\s*관찰)/giu);
+  const clinicalObservationEndingSignals = sentences.filter(sentence => /(?:관찰됨|측정됨|확인됨|나타남|보임|어려움|저하됨|양호함|도움\s*필요|중재\s*필요|고려해야\s*함)[.!?。！？]?$/u.test(String(sentence || '').trim())).length;
+  const clinicalTermSignals = count(text, /(?:감각\s*프로파일|Denver\s*II|작업\s*치료|물리\s*치료|언어\s*치료|임상\s*관찰|주호소|평가\s*도구|중재\s*계획|치료\s*목표|기능적\s*수행|보호자\s*보고|관찰됨|측정됨)/giu)
+    + clinicalAssessmentSignals
+    + clinicalDomainSignals;
   if ((soapHeadingSignals >= 4 && clinicalLabelSignals >= 2)
       || (/SOAP(?:\s*Note)?/iu.test(text) && soapHeadingSignals >= 3 && clinicalTermSignals >= 2)) {
     scores.clinical_record += 6.4
       + Math.min(soapHeadingSignals - 3, 3) * 0.35
       + Math.min(clinicalLabelSignals, 5) * 0.22
       + Math.min(clinicalTermSignals, 6) * 0.16;
+  }
+  // 제목이 잘린 임상 관찰 단편도 검사명·임상 영역·관찰형 종결이 함께
+  // 남는다. 단일 의학 낱말만으로 일반 설명문을 임상 기록으로 올리지 않는다.
+  if ((clinicalAssessmentSignals >= 1 && clinicalDomainSignals >= 2 && clinicalObservationEndingSignals >= 2)
+      || (clinicalDomainSignals >= 4 && clinicalObservationEndingSignals >= 3)) {
+    scores.clinical_record += 5.4
+      + Math.min(clinicalAssessmentSignals, 3) * 0.28
+      + Math.min(clinicalDomainSignals - 2, 5) * 0.2
+      + Math.min(clinicalObservationEndingSignals - 2, 4) * 0.18;
   }
 
   add(scores, 'academic_paper', count(text, /(?:초록|Abstract|연구\s*(?:목적|방법|결과|가설)|선행\s*연구|방법론|유의확률|참고\s*문헌|doi\s*:|KCI|RISS)/giu), 1.3);
@@ -145,6 +159,25 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
 
   const researchDesignSignals = count(text, /(?:연구\s*질문|질문지법|문헌\s*연구법|공식\s*통계|법령|판결문|자료의?\s*범위|표집|상관\s*관계|인과\s*관계|분석\s*틀|최종\s*답)/gu);
   add(scores, 'report_assignment', researchDesignSignals, 0.62);
+
+  const formalNormativeConceptSignals = count(text, /(?:생명\s*윤리|인간\s*(?:생명|존엄성)|미래\s*세대|사회적\s*(?:정의|합의)|국제\s*사회|윤리적\s*기준|과학적\s*검증|공공성|기본권|권리\s*보호|규제|제도)/gu);
+  const formalNormativeOperatorSignals = count(text, /(?:해서는\s*안\s*된다|하여서는\s*안\s*된다|해야\s*(?:한다|할\s*것이다)|유지해야|보호해야|우선해야|마련해야|필요하다)/gu);
+  const shortFormalEndingSignals = sentences.filter(sentence => /(?:한다|이다|된다|있다|없다|해야\s*한다|해야\s*할\s*것이다)[.!?。！？]?$/u.test(String(sentence || '').trim())).length;
+  const shortFormalArgumentSignals = formalNormativeConceptSignals + formalNormativeOperatorSignals;
+  if (compactLength >= 90
+      && compactLength <= 1200
+      && sentences.length >= 2
+      && sentences.length <= 8
+      && firstPersonSignals === 0
+      && formalNormativeConceptSignals >= 3
+      && formalNormativeOperatorSignals >= 2
+      && shortFormalEndingSignals / Math.max(1, sentences.length) >= 0.66
+      && legalArticleSignals === 0
+      && legalPartySignals < 2) {
+    scores.report_assignment += 3.7
+      + Math.min(formalNormativeConceptSignals - 3, 4) * 0.18
+      + Math.min(formalNormativeOperatorSignals - 2, 3) * 0.16;
+  }
 
   add(scores, 'student_record_teacher', count(text, /(?:세부\s*능력\s*및\s*특기\s*사항|세특|생활\s*기록부|교과\s*활동|수업\s*중|발표함|탐구함|기여함|보여\s*줌|학생은)/gu), 1.35);
   add(scores, 'student_record_teacher', count(text, /(?:함|됨|임|음)\s*[.!?]?\s*(?=$|\n)/gmu), 0.25);
@@ -204,10 +237,23 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const applicationSectionSignals = lines.filter(line => /^(?:#{1,6}\s*)?(?:\d+(?:\.\d+)*[.)]?\s*)?(?:성장\s*과정|성격의?\s*(?:장단점|강점|약점)|강점과\s*약점|보유\s*역량|핵심\s*역량|직무\s*경험|경력\s*사항|자격(?:증|\s*및\s*교육)|협업\s*및\s*문제\s*해결\s*경험|지원\s*동기|입사\s*후\s*포부)\s*$/u.test(line)).length;
   const strengthWeaknessSignals = count(text, /(?:저의|제|제가\s*가진)?\s*(?:강점|장점|약점|단점)|(?:약점|단점|부족한\s*점)[^.!?\n]{0,65}(?:보완|개선|극복)|(?:강점|장점)[^.!?\n]{0,65}(?:활용|발휘)/gu);
   const qualificationSignals = count(text, /(?:자격증|자격을\s*취득|근무\s*경험|업무\s*경험|직무\s*경험|현장\s*경험|교육을\s*이수|과정을\s*수료)/gu);
+  const researchPlacementSignals = count(text, /(?:현장\s*실습|인턴(?:십)?|연구\s*인턴|연구실|연구\s*기관|연구소|산학\s*협력|실험실)/gu);
+  const applicationEvidenceSignals = count(text, /(?:그\s*결과|상위\s*\d+(?:\.\d+)?%|성적(?:을|이)?\s*(?:높|향상)|성과(?:를|가)?\s*(?:달성|창출)|문제(?:를|가)?\s*(?:해결|개선)|재현성(?:을|이)?\s*(?:확보|검증))/gu);
+  const futureContributionSignals = count(text, /(?:기여하겠습니다|기여하고자\s*합니다|활용하겠습니다|적용하겠습니다|수행하겠습니다|익히겠습니다|배우겠습니다|갖추겠습니다)/gu);
   add(scores, 'resume_application', explicitApplicationSignals, 1.35);
   add(scores, 'resume_application', applicationIntentSignals, 1.35);
   add(scores, 'resume_application', programApplicationSignals, 0.85);
   add(scores, 'resume_application', firstPersonSignals, 0.22);
+  if (compactLength <= 1600
+      && firstPersonSignals >= 1
+      && researchPlacementSignals >= 1
+      && futureContributionSignals >= 1
+      && careerActionSignals >= 4
+      && (achievementSignals >= 1 || applicationEvidenceSignals >= 1)) {
+    scores.resume_application += 3.2
+      + Math.min(researchPlacementSignals - 1, 2) * 0.18
+      + Math.min(applicationEvidenceSignals, 3) * 0.2;
+  }
   const professionalPastEndingSignals = sentences.filter(sentence => /(?:했습니다|하였습니다|맡았습니다|기여했습니다|해결했습니다|구현했습니다|개선했습니다)[.!?。！？]?$/u.test(sentence.trim())).length;
   const fundingPlanSignals = count(text, /(?:지원금|장학금|보조금)[^.!?\n]{0,90}(?:활용|사용|저축|계획)|(?:활용|사용)\s*계획[^.!?\n]{0,60}(?:지원금|장학금|보조금)/gu);
   if (fundingPlanSignals >= 1 && firstPersonSignals >= 1) {
@@ -467,6 +513,12 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       fundingPlanSignals,
       strengthWeaknessSignals,
       qualificationSignals,
+      researchPlacementSignals,
+      applicationEvidenceSignals,
+      futureContributionSignals,
+      formalNormativeConceptSignals,
+      formalNormativeOperatorSignals,
+      shortFormalArgumentSignals,
       legalArticleSignals,
       legalPartySignals,
       legalDutySignals,
@@ -474,6 +526,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       soapHeadingSignals,
       clinicalLabelSignals,
       clinicalTermSignals,
+      clinicalAssessmentSignals,
+      clinicalDomainSignals,
+      clinicalObservationEndingSignals,
       researchDesignSignals,
       reviewExperienceSignals,
       explicitReviewSignals,

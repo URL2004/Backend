@@ -147,7 +147,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.2');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.3');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -702,7 +702,7 @@ test('고급의 첫 깊이 회복이 여전히 약하면 상위 모델이 두 �
     .replace('원인을 분석하고', '원인을 먼저 분석하고')
     .replace('능력을 키웠습니다', '능력을 길렀습니다');
   const strong = [
-    '저의 가장 큰 경쟁력은 공정 조건과 결과의 관계를 분석해 목표에 맞게 조정하는 연구개발 역량입니다. 첫 프로젝트에서는 원하는 구조를 찾기 위해 실험 조건을 여러 차례 달리하고 차이를 확인했습니다. 결과가 예상과 다르면 원인을 먼저 짚은 뒤 조건별 데이터를 비교했습니다. 이 과정에서 실험을 설계하고 검증하는 역량을 길렀습니다.',
+    '저의 가장 큰 경쟁력은 공정 조건과 결과의 관계를 분석해 목표에 맞게 조정하는 연구개발 역량입니다. 첫 프로젝트에서는 원하는 구조를 찾기 위해 실험 조건을 여러 차례 달리하고 차이를 확인했습니다. 결과가 예상과 다르면 원인을 먼저 분석한 뒤 조건별 데이터를 비교했습니다. 이 과정에서 실험을 설계하고 검증하는 역량을 길렀습니다.',
     '연구실에서는 분석 장비를 맡아 관리하면서 여러 시편의 측정을 지원했습니다. 측정 결과는 공정 조건과 연결해 해석한 뒤 연구 보고서로 정리했습니다. 데이터 해석 능력은 구성원들과 결과를 함께 검토하며 키웠습니다. 앞으로 소재 개발에 기여하는 연구원이 되겠습니다.'
   ].join('\n\n');
   const mock = installEngineMock(t, {
@@ -968,7 +968,7 @@ test('운영 엔진은 구형 플래그와 무관하게 v2.5 경로만 사용한
   const mock = installEngineMock(t, { humanize: SAFE_POLISH });
   process.env.HUMANIZE_ENGINE_V2_ENABLED = '0';
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.2');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.3');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

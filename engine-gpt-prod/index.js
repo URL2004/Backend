@@ -40,7 +40,7 @@ const literalSpans = require('./literalSpans');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.2';
+const VERSION = 'gpt-prod-v2.5.3';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -382,6 +382,7 @@ async function runEngine({
   let koreanRefinementRetryAttemptCount = 0;
   let koreanRefinementRetryCount = 0;
   let koreanRefinementRetryApplied = false;
+  let koreanSourceRestoreCount = 0;
   let quoteIntegrityAudit = null;
   let inlineCodeIntegrity = { pass: true, restoredCount: 0, missingCount: 0 };
   let quoteIntegrityRestoreCount = 0;
@@ -390,6 +391,7 @@ async function runEngine({
   let fingerprintRetryAttemptCount = 0;
   let fingerprintRepairCount = 0;
   let fingerprintRetryApplied = false;
+  let fingerprintSourceRestoreCount = 0;
   let endingStyleAudit = null;
   let endingStyleRetryAttemptCount = 0;
   let endingStyleRepairCount = 0;
@@ -712,10 +714,50 @@ async function runEngine({
         };
       }
     }
+    if (koreanRefinementAudit?.pass === false) {
+      const restored = koreanRefinement.restoreIntroducedIntegritySentences({
+        source: auditSource,
+        outputText,
+        audit: koreanRefinementAudit
+      });
+      if (restored.applied) {
+        const candidate = restored.text;
+        const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
+          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          : null;
+        const candidateAudit = koreanRefinement.analyzeKoreanRefinement({
+          source: auditSource,
+          outputText: candidate,
+          documentProfile,
+          mode: selectedMode
+        });
+        const safeCandidate = isSafeLocalizedLanguageCandidate({
+          source: auditSource,
+          before: outputText,
+          candidate,
+          contract,
+          documentProfile,
+          mode: selectedMode,
+          protectedTerms: collectRecordProtectedTerms(records),
+          currentDepth: humanizationDepthReport,
+          candidateDepth,
+          maxLocalEditRatio: 0.4,
+          minLocalLengthRatio: 0.78,
+          maxLocalLengthRatio: 1.22,
+          allowDepthRegression: true
+        }) && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
+        if (safeCandidate && koreanRefinement.isImprovedAudit(koreanRefinementAudit, candidateAudit)) {
+          outputText = candidate;
+          koreanRefinementAudit = candidateAudit;
+          koreanSourceRestoreCount += restored.restoredSentenceCount || 1;
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+        }
+      }
+    }
   }
 
   if (v2Enabled && !polishStrictFailure && selectedMode !== 'polish' && fingerprint.isEnabled()) {
-    fingerprintAudit = fingerprint.auditFingerprint(auditSource, outputText);
+    fingerprintAudit = fingerprint.auditFingerprint(auditSource, outputText, documentProfile);
     if (!fingerprintAudit.pass) {
       try {
         fingerprintRetryAttemptCount = 1;
@@ -730,7 +772,7 @@ async function runEngine({
         });
         supplementalUsage = addUsage(supplementalUsage, retried.usage);
         const candidate = retried.outputText || outputText;
-        const candidateFingerprint = fingerprint.auditFingerprint(auditSource, candidate);
+        const candidateFingerprint = fingerprint.auditFingerprint(auditSource, candidate, documentProfile);
         const candidateDepth = humanizationDepthEnabled
           ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
           : null;
@@ -761,11 +803,44 @@ async function runEngine({
           retryError: String(error?.code || error?.message || error).slice(0, 180)
         };
       }
+      if (fingerprintAudit?.pass === false) {
+        const restored = fingerprint.restoreUnsafeRelationSentences(auditSource, outputText, fingerprintAudit);
+        if (restored.applied) {
+          const candidate = restored.text;
+          const candidateFingerprint = fingerprint.auditFingerprint(auditSource, candidate, documentProfile);
+          const candidateDepth = humanizationDepthEnabled
+            ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+            : null;
+          const safeCandidate = fingerprint.isImproved(fingerprintAudit, candidateFingerprint)
+            && isSafeLocalizedLanguageCandidate({
+              source: auditSource,
+              before: outputText,
+              candidate,
+              contract,
+              documentProfile,
+              mode: selectedMode,
+              protectedTerms: collectRecordProtectedTerms(records),
+              currentDepth: humanizationDepthReport,
+              candidateDepth,
+              maxLocalEditRatio: 0.4,
+              minLocalLengthRatio: 0.78,
+              maxLocalLengthRatio: 1.22,
+              allowDepthRegression: true
+            })
+            && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
+          if (safeCandidate) {
+            outputText = candidate;
+            fingerprintAudit = candidateFingerprint;
+            fingerprintSourceRestoreCount += restored.restoredSentenceCount || 1;
+            if (candidateDepth) humanizationDepthReport = candidateDepth;
+          }
+        }
+      }
     }
   }
 
   if (v2Enabled && !polishStrictFailure) {
-    endingStyleAudit = endingStyle.auditEndingStyle(auditSource, outputText);
+    endingStyleAudit = endingStyle.auditEndingStyle(auditSource, outputText, documentProfile);
     if (!endingStyleAudit.pass) {
       try {
         endingStyleRetryAttemptCount = 1;
@@ -780,7 +855,7 @@ async function runEngine({
         });
         supplementalUsage = addUsage(supplementalUsage, retried.usage);
         const candidate = retried.outputText || outputText;
-        const candidateEndingAudit = endingStyle.auditEndingStyle(auditSource, candidate);
+        const candidateEndingAudit = endingStyle.auditEndingStyle(auditSource, candidate, documentProfile);
         const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
           ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
           : null;
@@ -1221,9 +1296,9 @@ async function runEngine({
     );
   }
   if (v2Enabled && selectedMode !== 'polish' && fingerprint.isEnabled()) {
-    fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText);
+    fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
   }
-  if (v2Enabled) endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText);
+  if (v2Enabled) endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
   if (v2Enabled) resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
   if (v2Enabled) quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   if (v2Enabled) {
@@ -1625,6 +1700,7 @@ async function runEngine({
     fingerprintRetryAttemptCount,
     fingerprintRepairCount,
     fingerprintRetryApplied,
+    fingerprintSourceRestoreCount,
     fingerprintShadow: Array.isArray(fingerprintAudit?.shadow) ? fingerprintAudit.shadow.slice(0, 8) : [],
     fingerprintShadowPositiveCodes: safeFailureCodeList((fingerprintAudit?.shadow || [])
       .filter(item => Number(item?.delta || 0) > 0)
@@ -1675,6 +1751,7 @@ async function runEngine({
     koreanRefinementRetryAttemptCount,
     koreanRefinementRetryCount,
     koreanRefinementRetryApplied,
+    koreanSourceRestoreCount,
     quoteIntegrityAuditVersion: Number(quoteIntegrityAudit?.version || 0),
     quoteIntegrityPass: quoteIntegrityAudit?.pass === true,
     quoteCountChanged: quoteIntegrityAudit?.countChanged === true,
@@ -2986,6 +3063,19 @@ function auditGeneralSurfaceCandidate(source, candidate, contract, documentProfi
     mode,
     documentProfile
   })) add('voice_shift');
+  const languageAudit = koreanRefinement.analyzeKoreanRefinement({
+    source: before,
+    outputText: after,
+    documentProfile,
+    mode
+  });
+  if ((languageAudit.repairableIssues || []).some(item => Number(item.introducedCount || 0) > 0)) {
+    add('korean_integrity');
+  }
+  const relationAudit = fingerprint.auditFingerprint(before, after, documentProfile);
+  if (relationAudit.enabled !== false && relationAudit.pass === false) add('semantic_relation_shift');
+  const sectionEndingAudit = endingStyle.auditEndingStyle(before, after, documentProfile);
+  if (sectionEndingAudit.pass === false) add('ending_style_shift');
   return { pass: codes.length === 0, codes, metrics };
 }
 

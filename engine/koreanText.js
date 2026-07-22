@@ -41,14 +41,22 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
   while (i < text.length) {
     const ch = text[i];
     if (ch === '\r' || ch === '\n') {
-      let end = i;
-      while (i + 1 < text.length && /[\r\n]/.test(text[i + 1])) i += 1;
-      const isBoundary = preserveLines || i - end >= 1 || looksCompleteWithoutPunctuation(text.slice(start, end));
+      const end = i;
+      let lineBreakCount = 0;
+      // CRLF는 줄바꿈 한 번이다. 이전 구현은 두 문자라는 이유로 빈 줄로
+      // 계산해 Windows 입력만 모든 행을 문장 경계로 잘못 잘랐다.
+      while (i < text.length && /[\r\n]/u.test(text[i])) {
+        if (text[i] === '\r' && text[i + 1] === '\n') i += 2;
+        else i += 1;
+        lineBreakCount += 1;
+      }
+      const isBoundary = preserveLines
+        || lineBreakCount >= 2
+        || looksCompleteWithoutPunctuation(text.slice(start, end));
       if (isBoundary) {
         pushSpan(out, text, start, end);
-        start = i + 1;
+        start = i;
       }
-      i += 1;
       continue;
     }
     if (!isSentencePunctuation(text, i)) {

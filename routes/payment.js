@@ -219,9 +219,9 @@ function serializeOrderDoc(docSnap, kind) {
     uid: o.uid || '',
     status: o.status || '',
     amount: Number(o.amount) || 0,
-    safeCredits: Number(o.safeCredits) || 0,
+    safeCredits: Number(o.safeCredits ?? o.credits) || 0,
     tier: o.tier || null,
-    paymentKey: o.paymentKey ? 'present' : null,
+    paymentKey: (o.paymentKey || o.paymentKeyPresent) ? 'present' : null,
     cancelReason: o.cancelReason || '',
     rejectReason: o.rejectReason || '',
     refundAmount: Number(o.refundAmount) || 0,
@@ -270,6 +270,15 @@ function serializeSavedHistoryDoc(docSnap) {
     createdAtMs: timestampMs(h.createdAt),
     inputLength: typeof h.inputText === 'string' ? h.inputText.length : 0,
     outputLength: typeof h.outputText === 'string' ? h.outputText.length : 0
+  };
+}
+
+function splitAdminCreditHistory(creditHistory, orders) {
+  const ledgerRows = Array.isArray(creditHistory) ? creditHistory : [];
+  const chargeRows = Array.isArray(orders) ? orders : [];
+  return {
+    creditUsageHistory: ledgerRows.filter(row => row && row.type !== 'charge'),
+    chargeHistory: chargeRows
   };
 }
 
@@ -527,8 +536,8 @@ async function loadAdminUserBundle(uid) {
   if (!userSnap.exists) return null;
 
   const [creditSnap, subSnap, histSnap, savedHistSnap] = await Promise.all([
-    db.collection('orders').where('uid', '==', uid).orderBy('createdAt', 'desc').limit(30).get(),
-    db.collection('subscriptionOrders').where('uid', '==', uid).limit(30).get(),
+    db.collection('orders').where('uid', '==', uid).orderBy('createdAt', 'desc').limit(100).get(),
+    db.collection('subscriptionOrders').where('uid', '==', uid).limit(100).get(),
     userRef.collection('creditHistory').orderBy('createdAt', 'desc').get(),
     userRef.collection('history').orderBy('createdAt', 'desc').get()
   ]);
@@ -541,6 +550,9 @@ async function loadAdminUserBundle(uid) {
 
   const userByUid = { [uid]: userSnap.data() || {} };
   const creditHistory = histSnap.docs.map(d => serializeCreditHistoryDoc(d, userByUid));
+  // 관리자 화면에서는 실제 사용·조정 원장과 결제 주문을 서로 다른 목록으로 보여준다.
+  // charge 원장은 orders와 같은 충전을 중복 표현하므로 사용 내역에서는 제외한다.
+  const { creditUsageHistory, chargeHistory } = splitAdminCreditHistory(creditHistory, orders);
   const savedHistory = savedHistSnap.docs.map(serializeSavedHistoryDoc);
   const user = serializeUserDoc(userSnap);
   const creditAudit = buildCreditAudit({ user, orders, creditHistory, savedHistory });
@@ -548,7 +560,9 @@ async function loadAdminUserBundle(uid) {
   return {
     user,
     orders,
+    chargeHistory,
     creditHistory,
+    creditUsageHistory,
     creditAudit
   };
 }
@@ -2180,6 +2194,10 @@ router.post('/apply-referral', async (req, res) => {
 
 router.serializeAdminJobDoc = serializeAdminJobDoc;   // 축약 관측 계약 테스트용
 router.buildHumanizeQualityReport = buildHumanizeQualityReport;
+router.adminHistoryPolicy = {
+  serializeOrderDoc,
+  splitAdminCreditHistory
+};
 router.refundPolicy = {
   REFUND_POLICY_VERSION,
   REFUND_WINDOW_DAYS,

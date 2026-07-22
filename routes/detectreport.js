@@ -21,6 +21,7 @@ const { db, verifyToken, verifyAppCheck } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 const detectCalibration = require('../lib/detectCalibration');
+const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 
@@ -192,6 +193,11 @@ router.post('/detect-report', async (req, res) => {
     route: 'detect_report'
   });
   const probability = calibration.probability;
+  const narrated = applyDetectNarrativePolicy(det || {
+    probability,
+    signals: [],
+    confidence: 'low'
+  }, probability);
 
   // 과금은 성공 직전에만 — 서버 오류로 보고서를 못 받았는데 차감되는 일 방지.
   // unlimited 플랜은 차감 제외. 멱등키로 중복 차감 방지.
@@ -211,6 +217,9 @@ router.post('/detect-report', async (req, res) => {
     calibrated: calibration.applied,
     calibration: calibration.applied ? calibration.meta : undefined,
     probSource: det ? 'llm' : 'engine',
+    riskLevel: narrated.riskLevel,
+    riskLabel: narrated.riskLabel,
+    narrativeConsistencyAdjusted: narrated.narrativeConsistencyAdjusted,
     charged
   });
 
@@ -228,8 +237,10 @@ router.post('/detect-report', async (req, res) => {
       probabilityCalibration: calibration.meta
     } : {}),
     probSource: det ? 'llm' : 'engine',
-    summary: det ? det.summary : copy.desc,
-    detail: det ? det.detail : null,
+    riskLevel: narrated.riskLevel,
+    riskLabel: narrated.riskLabel,
+    summary: narrated.summary,
+    detail: narrated.detail,
     grade,
     title: copy.title,
     abstractRiskRatio: ir.abstractRiskRatio,

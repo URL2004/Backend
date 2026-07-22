@@ -9,6 +9,7 @@ const { db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');
 const detectCalibration = require('../lib/detectCalibration');
+const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const billing = require('../lib/usageBilling');
@@ -158,9 +159,9 @@ router.post('/analyze', async (req, res) => {
     });
     if (calibration.applied) {
       result.rawProbability = calibration.rawProbability;
-      result.probability = calibration.probability;
       result.probabilityCalibration = calibration.meta;
     }
+    result = applyDetectNarrativePolicy(result, calibration.probability);
   } catch (error) {
     clearDedup();
     if (abortController.signal.aborted) return;

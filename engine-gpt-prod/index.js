@@ -4,6 +4,7 @@ const net = require('net');
 const dns = require('dns').promises;
 const { completeJson, webSearchTool, safetyIdentifierForUid } = require('./openaiClient');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
+const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const prompts = require('./prompts');
 const { addUsage, emptyUsage } = require('./usageCost');
 const local = require('./local');
@@ -3828,7 +3829,7 @@ function deterministicDetectFallback(text, err) {
   const ir = safeInputRisk(text);
   const ratio = Number(ir?.abstractRiskRatio) || 0;
   const probability = Math.round(Math.min(92, Math.max(15, 22 + 70 * ratio)));
-  return {
+  return applyDetectNarrativePolicy({
     probability,
     summary: 'LLM 판정이 실패해 로컬 표면 지표 기준으로 임시 추정했습니다.',
     detail: '문단의 추상성, 균일한 문장 구조, 구체 정보 밀도를 기준으로 계산한 내부 fallback 값입니다.',
@@ -3840,18 +3841,18 @@ function deterministicDetectFallback(text, err) {
       fallback: true,
       error: err && err.message || String(err)
     }
-  };
+  });
 }
 
 function normalizeDetectResult(json) {
   const probability = Math.max(0, Math.min(100, Math.round(Number(json.probability) || 0)));
-  return {
+  return applyDetectNarrativePolicy({
     probability,
     summary: String(json.summary || '').trim() || '분석 결과를 생성했습니다.',
     detail: String(json.detail || '').trim(),
     signals: Array.isArray(json.signals) ? json.signals.slice(0, 12) : [],
     confidence: ['low', 'medium', 'high'].includes(json.confidence) ? json.confidence : 'medium'
-  };
+  });
 }
 
 function shouldEscalateDetect(out, source, cfg) {

@@ -14,6 +14,8 @@
     "eval:judge": "node eval/runJudgeEval.js",
     "test": "node --test test/*.test.js",
     "test:v2": "node --test test/humanize-v2*.test.js test/openai-client.test.js",
+    "cache:gpt": "powershell -ExecutionPolicy Bypass -File scripts/openai-cache-logs.ps1",
+    "test:cache": "node --test test/openai-cache.test.js",
     "check:production-imports": "node scripts/check-production-imports.js",
     "predeploy:v2": "node scripts/predeploy-v2.js",
     "test:rules": "node scripts/firestore-rules.test.mjs",

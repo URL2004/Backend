@@ -229,6 +229,7 @@ $r.Content -match 'lavAutoCoach'
 | `OPENAI_REASONING_HUMANIZE` / `OPENAI_REASONING_FACT_DENSE` / `OPENAI_REASONING_ESCALATION` | 변환·고위험·승격 reasoning fallback |
 | `OPENAI_REASONING_JUDGE` / `OPENAI_REASONING_REPAIR` / `OPENAI_REASONING_DETECT` / `OPENAI_REASONING_EVIDENCE` | 판정·수리·감지·근거검색 reasoning fallback. 판정/수리 기본 `medium` |
 | `OPENAI_PROMPT_CACHE_ENABLED` / `OPENAI_PROMPT_CACHE_KEY_PREFIX` | GPT prompt caching 설정. 기본 prefix `gp-v9-cksafe-ko-p20260704` |
+| `OPENAI_PROMPT_CACHE_KEY_INCLUDE_MODE` / `OPENAI_PROMPT_CACHE_KEY_INCLUDE_PHASE` | 기본 `0`. 같은 고정 프롬프트 코어의 캐시 재사용을 위해 mode/phase를 키에서 제외한다. 특정 키가 약 15 RPM을 넘거나 프롬프트 계열을 강제로 격리해야 할 때만 `1` |
 | `OPENAI_WEB_SEARCH_TOOL_TYPE` | 기본 `web_search` |
 | `GPT_ESCALATION_*` | mini-first 승격 기준 fallback. 기본 긴 글 `9000`, 보호표현 `35`, 패치 대상 `24`. 관리자 페이지에서 조정 가능 |
 | `FIREBASE_SERVICE_ACCOUNT` | 서비스 계정 JSON 전체 |
@@ -240,6 +241,17 @@ $r.Content -match 'lavAutoCoach'
 | `RESTRUCTURE_MAX_ACTIVE` | 전역 동시 작업 수. 현재 운영 헬스체크 기준 `8` |
 | `RESTRUCTURE_DAILY_CAP` | 사용자당 일일 재구성 시작 제한 |
 | `DEV_NO_AUTH` | 운영 설정 금지 |
+
+GPT 캐시 운영 집계:
+
+```powershell
+npm run cache:gpt -- -Limit 1000
+npm run cache:gpt -- -Limit 1000 -Json
+```
+
+`promptCacheHitRatio` 외에도 1,024토큰 이상인데 캐시 읽기가 없었던
+`promptCacheSizedMiss`를 task/phase/model/cache key별로 확인한다. mode/phase를
+키에 다시 포함해야 하는 경우에는 먼저 cache key별 `peakRpm`이 15를 넘는지 확인한다.
 
 ## 운영 주의
 

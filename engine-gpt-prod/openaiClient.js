@@ -7,6 +7,11 @@ const { estimateUsd } = require('./usageCost');
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 60000;
 const DEFAULT_MAX_RETRIES = 3;
+const PROMPT_CACHE_MIN_TOKENS = 1024;
+
+function envFlag(name) {
+  return /^(1|true|yes|on)$/i.test(String(process.env[name] || '').trim());
+}
 
 function sanitizeEffort(value, fallback = 'low') {
   const v = String(value || '').trim().toLowerCase();
@@ -18,8 +23,13 @@ function promptCacheKey(config, { task, mode, profile, schemaName, phase, model 
   const prefix = String(config?.cache?.keyPrefix || process.env.OPENAI_PROMPT_CACHE_KEY_PREFIX || 'gp-prod')
     .replace(/[^\w.-]+/g, '_')
     .slice(0, 48);
-  const includePhase = String(process.env.OPENAI_PROMPT_CACHE_KEY_INCLUDE_PHASE || '').trim() === '1';
-  const parts = [prefix, model || 'model', task || 'task', mode || 'default', profile || 'prod', schemaName || 'json'];
+  const includeMode = envFlag('OPENAI_PROMPT_CACHE_KEY_INCLUDE_MODE');
+  const includePhase = envFlag('OPENAI_PROMPT_CACHE_KEY_INCLUDE_PHASE');
+  // OpenAI also matches the exact prompt prefix. Keep mode out of routing by
+  // default so modes sharing the same long static core can reuse warm routes.
+  const parts = [prefix, model || 'model', task || 'task'];
+  if (includeMode) parts.push(mode || 'default');
+  parts.push(profile || 'prod', schemaName || 'json');
   if (includePhase) parts.push(phase || 'main');
   const raw = parts
     .map(v => String(v || '').replace(/[^\w.-]+/g, '_'))
@@ -143,6 +153,7 @@ async function completeJson({
   const elapsedMs = Date.now() - startedAt;
 
   const usage = normalizeUsage(raw.usage, model, raw);
+  const cacheDiagnostics = promptCacheDiagnostics(usage, cacheKey);
   try {
     logger.info('gpt_prod.usage', {
       provider: 'openai',
@@ -155,12 +166,17 @@ async function completeJson({
       escalated: meta.escalated === true,
       inputTokens: usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
+      cacheWriteTokens: usage.cacheWriteTokens,
+      uncachedInputTokens: cacheDiagnostics.uncachedInputTokens,
       outputTokens: usage.outputTokens,
       reasoningTokens: usage.reasoningTokens,
       totalTokens: usage.totalTokens,
       estimatedUsd: usage.estimatedUsd,
       promptCacheKey: cacheKey,
-      promptCacheHitRatio: usage.inputTokens ? Number((usage.cachedInputTokens / usage.inputTokens).toFixed(4)) : 0,
+      promptCacheHitRatio: cacheDiagnostics.hitRatio,
+      promptCacheSizeEligible: cacheDiagnostics.sizeEligible,
+      promptCacheRead: cacheDiagnostics.read,
+      promptCacheSizedMiss: cacheDiagnostics.sizedMiss,
       retryCounts,
       elapsedMs
     });
@@ -374,10 +390,12 @@ function extractOutputText(data) {
 
 function normalizeUsage(usage = {}, model, rawResponse = null) {
   const webSearchRequests = countWebSearchCalls(rawResponse, usage);
+  const inputDetails = usage.input_tokens_details || usage.prompt_tokens_details || {};
   const u = {
-    inputTokens: usage.input_tokens || 0,
-    cachedInputTokens: usage.input_tokens_details?.cached_tokens || usage.prompt_tokens_details?.cached_tokens || 0,
-    outputTokens: usage.output_tokens || 0,
+    inputTokens: usage.input_tokens || usage.prompt_tokens || 0,
+    cachedInputTokens: inputDetails.cached_tokens || 0,
+    cacheWriteTokens: inputDetails.cache_write_tokens || 0,
+    outputTokens: usage.output_tokens || usage.completion_tokens || 0,
     reasoningTokens: usage.output_tokens_details?.reasoning_tokens || 0,
     totalTokens: usage.total_tokens || 0,
     webSearchRequests,
@@ -388,6 +406,23 @@ function normalizeUsage(usage = {}, model, rawResponse = null) {
   u.webSearchEstimatedUsd = Math.round(webSearchRequests * perCall * 1000000) / 1000000;
   u.estimatedUsd = Math.round((estimateUsd(model, u) + u.webSearchEstimatedUsd) * 1000000) / 1000000;
   return u;
+}
+
+function promptCacheDiagnostics(usage = {}, cacheKey) {
+  const inputTokens = Math.max(0, Number(usage.inputTokens) || 0);
+  const cachedInputTokens = Math.max(0, Math.min(inputTokens, Number(usage.cachedInputTokens) || 0));
+  const cacheWriteTokens = Math.max(0, Math.min(inputTokens, Number(usage.cacheWriteTokens) || 0));
+  const sizeEligible = inputTokens >= PROMPT_CACHE_MIN_TOKENS;
+  return {
+    enabled: Boolean(cacheKey),
+    sizeEligible,
+    read: cachedInputTokens > 0,
+    sizedMiss: Boolean(cacheKey) && sizeEligible && cachedInputTokens === 0,
+    hitRatio: inputTokens ? Number((cachedInputTokens / inputTokens).toFixed(4)) : 0,
+    cachedInputTokens,
+    cacheWriteTokens,
+    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens)
+  };
 }
 
 function countWebSearchCalls(rawResponse, usage = {}) {
@@ -463,6 +498,7 @@ module.exports = {
   completeJson,
   normalizeUsage,
   promptCacheKey,
+  promptCacheDiagnostics,
   webSearchTool,
   safetyIdentifierForUid,
   extractOutputText,

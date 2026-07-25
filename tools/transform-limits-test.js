@@ -1,11 +1,9 @@
 ﻿// [tools/transform-limits-test.js] /transform 비용 방어·드레인 검증
-// 엔진·analyze를 require.cache로 스텁해 LLM 호출 없이(비용 0) 라우트 로직만 검사한다.
+// GPT 호환 엔진·과금을 require.cache로 스텁해 비용 없이 라우트 로직만 검사한다.
 // 실행: node tools/transform-limits-test.js  (서버 구동 불필요 — 자체 포트에 라우터만 마운트)
 process.env.RESTRUCTURE_MAX_ACTIVE = '2';
 process.env.TRANSFORM_SAFE_ACTIVE_CAP = '2';
 process.env.RESTRUCTURE_DAILY_CAP = '3';
-process.env.LLM_ACTIVE_PROVIDER = 'claude';
-process.env.HUMANIZE_ENGINE_V2_ENABLED = '0';
 delete process.env.DEV_NO_AUTH;
 delete process.env.FIREBASE_SERVICE_ACCOUNT;
 
@@ -17,42 +15,40 @@ function stub(p, exports) {
   require.cache[full] = { id: full, filename: full, loaded: true, exports };
 }
 
-// 스텁 엔진: 2.5초 뒤 게이트 전부 통과로 완료. abort 시 즉시 reject(취소·shutdown 경로 검증용).
-stub(path.join(base, 'engine', 'genretransfer.js'), {
-  genreTransferV2: (text, opts) => new Promise((resolve, reject) => {
-    const t = setTimeout(() => resolve({
-      text: '재구성 결과', novelty: { count: 0 }, lostFacts: { count: 0 },
-      pairing: [], judge: { pass: true }, lenRatio: 1, risk: { score: 1 }, skeleton: ''
-    }), 2500);
-    if (opts && opts.signal) opts.signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')); });
-  })
-});
-stub(path.join(base, 'engine', 'evidence.js'), {
-  suggestEvidence: async (text) => text.includes('근거테스트')
-    ? { candidates: [{ fact: '검증된 사실', sourceTitle: '공식 자료', sourceUrl: 'https://example.com/source', grade: 'A' }] }
-    : { candidates: [] }
-});
 stub(path.join(base, 'engine', 'evidencereview.js'), { reviewCandidates: c => c, hostOf: () => '' });
 // 소유자 검증(requireJobOwner)용 config 스텁: 토큰 문자열 = uid (멀티 유저 시뮬과 일관)
 stub(path.join(base, 'config.js'), { admin: null, db: null, ADMIN_UIDS: [], verifyToken: async (t) => t || null });
 // 스텁 인증·과금: idToken을 그대로 uid로 — 멀티 유저 시뮬레이션
-stub(path.join(base, 'routes', 'analyze.js'), {
+stub(path.join(base, 'lib', 'usageBilling.js'), {
+  authenticate: async (idToken) => {
+    if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 });
+    return { uid: idToken };
+  },
   precheckCredits: async (idToken) => { if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 }); return { uid: idToken, plan: 'free' }; },
+  precheckCoupon: async (idToken) => { if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 }); return { uid: idToken, plan: 'free', tier: 'test' }; },
   commitCreditDeduct: async () => {},
+  commitCouponUsage: async () => {},
   retryAsync: async (fn) => fn(),
-  authErrorMessage: (m) => String(m),
-  // blog job 러너용 스텁 엔진: 1.2초 뒤 클린 통과
-  runHumanizeChunked: ({ signal }) => new Promise((resolve, reject) => {
+  authErrorMessage: (m) => String(m)
+});
+stub(path.join(base, 'routes', 'analyze-gpt.js'), {
+  suggestEvidence: async ({ query }) => String(query || '').includes('근거테스트')
+    ? { candidates: [{ reason: '검증된 사실', title: '공식 자료', url: 'https://example.com/source', publisher: '공식 기관' }] }
+    : { candidates: [] },
+  runHumanizeChunked: ({ signal, mode }) => new Promise((resolve, reject) => {
+    const formal = mode === 'formal' || mode === 'assignment';
     const t = setTimeout(() => resolve({
-      result: { outputText: '블로그 결과' },
+      result: { outputText: formal ? '재구성 결과' : '블로그 결과' },
       floorReport: { status: 'clean', criticals: [], warnings: [], metrics: { novelty: 0, judge: 'pass' } },
       qualityStatus: 'needs_review',
       qualityWarnings: [{ code: 'semantic_omission', severity: 'warning', message: '원문 내용 일부가 축약됐을 수 있어요.' }],
-      engineMeta: { schemaVersion: 2, engineVersion: 'gpt-prod-v2', requestedMode: 'blog' },
+      engineMeta: { schemaVersion: 3, engineVersion: 'gpt-prod-v2.5.5', requestedMode: mode },
       chunkCount: 1, fallbackCount: 0
-    }), 1200);
+    }), formal ? 2500 : 1200);
     if (signal) signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')); });
-  })
+  }),
+  callGpt: async () => ({ content: [] }),
+  extractGptResult: () => ({})
 });
 
 const express = require('express');
@@ -71,7 +67,16 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const srv = app.listen(0, async () => {
   const url = `http://127.0.0.1:${srv.address().port}`;
-  const post = (p, body) => fetch(url + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then(async r => ({ status: r.status, body: await r.json() }));
+  const post = (p, body) => {
+    const payload = p === '/transform'
+      ? { ...(body || {}), effectNoticeAccepted: true }
+      : (body || {});
+    return fetch(url + p, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(async r => ({ status: r.status, body: await r.json() }));
+  };
   // 소유자 검증(requireJobOwner) 때문에 GET·cancel에도 토큰(=uid) 전달
   const get = (p, uid) => fetch(url + p, { headers: uid ? { authorization: 'Bearer ' + uid } : {} }).then(async r => ({ status: r.status, body: await r.json() }));
 
@@ -119,7 +124,7 @@ const srv = app.listen(0, async () => {
     check('blog GET: running + mode=blog', g1.body.status === 'running' && g1.body.mode === 'blog', g1.body);
     await sleep(1800);
     const g2 = await get(`/transform/${b4.body.jobId}`, 'u1');
-    check('blog done + needs_review 호환 응답 수신', g2.body.status === 'done' && g2.body.mode === 'blog' && g2.body.result.outputText === '블로그 결과' && g2.body.result.floorReport.status === 'clean' && g2.body.qualityStatus === 'needs_review' && g2.body.qualityWarnings?.[0]?.code === 'semantic_omission' && g2.body.engineMeta?.schemaVersion === 2, g2.body);
+    check('blog done + needs_review 호환 응답 수신', g2.body.status === 'done' && g2.body.mode === 'blog' && g2.body.result.outputText === '블로그 결과' && g2.body.result.floorReport.status === 'clean' && g2.body.qualityStatus === 'needs_review' && g2.body.qualityWarnings?.[0]?.code === 'semantic_omission' && g2.body.engineMeta?.schemaVersion === 3, g2.body);
 
     // 4.6) polish job(그대로 다듬기): 같은 short 풀 — 50자부터 허용·일일 한도 미적용
     const p1 = await post('/transform', { text: '가'.repeat(80), idToken: 'u2', mode: 'polish' });

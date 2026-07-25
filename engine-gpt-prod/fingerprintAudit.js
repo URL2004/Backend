@@ -3,8 +3,13 @@
 const { splitSentences } = require('../engine/koreanText');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
+const {
+  alignSourceSentence,
+  alignedOutputCandidates,
+  contentTokens
+} = require('./sentenceAlignment');
 
-const VERSION = 4;
+const VERSION = 5;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -242,55 +247,54 @@ function detectSemanticRelationShifts(source, output) {
   };
 
   sourceSentences.forEach((sourceSentence, sourceIndex) => {
-    const candidates = alignedOutputCandidates(sourceSentence, sourceIndex, sourceSentences.length, outputSentences);
-    if (!candidates.length) return;
+    const alignment = alignSourceSentence(
+      sourceSentence,
+      sourceIndex,
+      sourceSentences.length,
+      outputSentences
+    );
+    if (!alignment || alignment.score < 0.24) return;
+    const alignedText = alignment.text;
     for (const rule of SEMANTIC_RELATION_RULES) {
       if (!matches(rule.source, sourceSentence)) continue;
-      const shifted = candidates.some(item => item.score >= 0.3
-        && matches(rule.output, item.sentence)
-        && !matches(rule.retained, item.sentence));
+      const shifted = matches(rule.output, alignedText)
+        && !matches(rule.retained, alignedText);
       if (shifted) add(rule.family, sourceIndex + 1);
     }
 
     if (/(?:었|였|했|됐|였으|했으)지만/u.test(sourceSentence)) {
-      const shifted = candidates.some(item => item.score >= 0.34
-        && /(?:었|였|했|됐)고/u.test(item.sentence)
-        && !/(?:지만|으나|반면|그러나|하지만|그럼에도)/u.test(item.sentence));
+      const shifted = /(?:었|였|했|됐)고/u.test(alignedText)
+        && !/(?:지만|으나|반면|그러나|하지만|그럼에도)/u.test(alignedText);
       if (shifted) add('contrast_connector_removed', sourceIndex + 1);
     }
 
     if (/(?:연구|분석|조사|검토)(?:를|을)?\s*통해[^.!?。！？\n]{0,45}(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(sourceSentence)) {
-      const shifted = candidates.some(item => item.score >= 0.34
-        && !/(?:연구|분석|조사|검토)(?:를|을)?\s*통해/u.test(item.sentence)
-        && !/(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(item.sentence));
+      const shifted = !/(?:연구|분석|조사|검토)(?:를|을)?\s*통해/u.test(alignedText)
+        && !/(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(alignedText);
       if (shifted) add('evidence_frame_removed', sourceIndex + 1);
     }
 
     if (hasMainPossibilityClaim(sourceSentence)) {
-      const shifted = candidates.some(item => item.score >= 0.38
-        && !hasPossibilityMarker(item.sentence)
-        && !/(?:이해되|해석되|판단되|볼\s*수\s*있)/u.test(item.sentence)
-        && /(?:한다|된다|이다|있다|확정된다|분명하다)[.!?。！？]?$/u.test(item.sentence));
+      const shifted = !hasPossibilityMarker(alignedText)
+        && !/(?:이해되|해석되|판단되|볼\s*수\s*있)/u.test(alignedText)
+        && /(?:한다|된다|이다|있다|확정된다|분명하다)[.!?。！？]?(?:\s|$)/u.test(alignedText);
       if (shifted) add('possibility_hardened_to_certainty', sourceIndex + 1);
     }
 
     if (hasNecessityClaim(sourceSentence) && !hasImpossibilityClaim(sourceSentence)) {
-      const shifted = candidates.some(item => item.score >= 0.34
-        && hasImpossibilityClaim(item.sentence));
+      const shifted = hasImpossibilityClaim(alignedText);
       if (shifted) add('necessity_strengthened_to_impossibility', sourceIndex + 1);
     }
 
     if (hasTentativeNormativeClaim(sourceSentence)) {
-      const shifted = candidates.some(item => item.score >= 0.34
-        && hasFirmNormativeClaim(item.sentence)
-        && !hasTentativeNormativeClaim(item.sentence));
+      const shifted = hasFirmNormativeClaim(alignedText)
+        && !hasTentativeNormativeClaim(alignedText);
       if (shifted) add('tentative_norm_hardened', sourceIndex + 1);
     }
 
     if (hasCollaborativeRoleQualifier(sourceSentence)) {
-      const shifted = candidates.some(item => item.score >= 0.38
-        && hasDirectCompletionClaim(item.sentence)
-        && !hasCollaborativeRoleQualifier(item.sentence));
+      const shifted = hasDirectCompletionClaim(alignedText)
+        && !hasCollaborativeRoleQualifier(alignedText);
       if (shifted) add('collaborative_role_scope_removed', sourceIndex + 1);
     }
   });
@@ -338,7 +342,7 @@ function hasTentativeNormativeClaim(value) {
 }
 
 function hasFirmNormativeClaim(value) {
-  return /(?:해야\s*한다|필요하다|필수적이다|의무이다)\s*[.!?。！？]?$/u.test(String(value || '').trim());
+  return /(?:해야\s*한다|필요하다|필수적이다|의무이다)\s*[.!?。！？]?(?=\s|$)/u.test(String(value || '').trim());
 }
 
 function hasCollaborativeRoleQualifier(value) {
@@ -356,17 +360,17 @@ function detectContrastRelationShift(source, output) {
   for (let index = 0; index < sourceSentences.length; index += 1) {
     const sourceSentence = sourceSentences[index];
     if (!/(?:아니라|아닌\s+것이(?:라|고)|아님을)/u.test(sourceSentence)) continue;
-    const center = sourceSentences.length <= 1
-      ? 0
-      : Math.round(index * Math.max(0, outputSentences.length - 1) / Math.max(1, sourceSentences.length - 1));
-    const candidates = [center - 1, center, center + 1]
-      .filter(value => value >= 0 && value < outputSentences.length)
-      .map(value => outputSentences[value]);
+    const candidates = alignedOutputCandidates(
+      sourceSentence,
+      index,
+      sourceSentences.length,
+      outputSentences
+    ).filter(item => item.score >= 0.24).slice(0, 4);
     const sourceTokens = contentTokens(sourceSentence);
     const shifted = candidates.some(candidate => {
-      if (!/(?:데서\s*(?:그치지|멈추지)\s*않고|에\s*머무르지\s*않고)/u.test(candidate)) return false;
-      if (/(?:아니라|아닌\s+것이(?:라|고)|아님을)/u.test(candidate)) return false;
-      const candidateTokens = new Set(contentTokens(candidate));
+      if (!/(?:데서\s*(?:그치지|멈추지)\s*않고|에\s*머무르지\s*않고)/u.test(candidate.text)) return false;
+      if (/(?:아니라|아닌\s+것이(?:라|고)|아님을)/u.test(candidate.text)) return false;
+      const candidateTokens = new Set(contentTokens(candidate.text));
       const shared = sourceTokens.filter(token => candidateTokens.has(token)).length;
       return sourceTokens.length >= 2 && shared / sourceTokens.length >= 0.35;
     });
@@ -390,33 +394,6 @@ function familySentenceOrdinals(text, family) {
 function countMatches(text, pattern) {
   const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
   return (String(text || '').match(new RegExp(pattern.source, flags)) || []).length;
-}
-
-function contentTokens(value) {
-  return (String(value || '').match(/[가-힣]{2,}|[A-Za-z]{3,}/gu) || [])
-    .map(token => token.toLowerCase().replace(/(?:에서는|으로는|에게는|이라는|으로|에서|에게|보다|처럼|은|는|이|가|을|를|의|에|도|만|와|과|로)$/u, ''))
-    .filter(token => token.length >= 2 && !['그러나', '하지만', '그리고', '또한', '따라서'].includes(token));
-}
-
-function alignedOutputCandidates(sourceSentence, sourceIndex, sourceCount, outputSentences) {
-  const center = sourceCount <= 1
-    ? 0
-    : Math.round(sourceIndex * Math.max(0, outputSentences.length - 1) / Math.max(1, sourceCount - 1));
-  const sourceTokens = contentTokens(sourceSentence);
-  const candidates = [];
-  for (let delta = -2; delta <= 2; delta += 1) {
-    const index = center + delta;
-    if (index < 0 || index >= outputSentences.length) continue;
-    const sentence = outputSentences[index];
-    const outputTokens = new Set(contentTokens(sentence));
-    const shared = sourceTokens.filter(token => outputTokens.has(token)).length;
-    candidates.push({
-      index,
-      sentence,
-      score: sourceTokens.length ? shared / sourceTokens.length : 0
-    });
-  }
-  return candidates.sort((left, right) => right.score - left.score);
 }
 
 function matches(pattern, value) {

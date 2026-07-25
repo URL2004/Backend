@@ -8,6 +8,7 @@ const { splitSentences, computeEditMetrics } = require('../engine/koreanText');
 const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile');
 const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
+const candidateIntegrity = require('./candidateIntegrity');
 
 const SEMANTIC_VIOLATION_TYPES = [
   'distortion',
@@ -145,8 +146,13 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     safetyIdentifier,
     meta: { task: 'judge', phase, mode, profile: 'gpt_prod_judge' }
   });
+  const allowedWorld = [rawText, allowedExtra].filter(Boolean).join('\n');
   const violations = (res.json.violations || [])
     .filter(v => v && SEMANTIC_VIOLATION_TYPES.includes(v.type) && (v.detail || v.span))
+    // The ledger is deliberately non-exhaustive. A span that is already
+    // materially present in SOURCE/allowed material is not an added claim;
+    // another violation type (for example distortion) can still remain.
+    .filter(v => v.type !== 'added_claim' || !spanInSource(v.span, allowedWorld))
     .map(v => ({
       ...v,
       spanVerified: v.span ? outputText.includes(v.span) : false
@@ -190,7 +196,17 @@ async function repairViolations(rawText, outputText, ledger, violations, {
   };
 }
 
-async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config, maxRounds = 1, allowedExtra = '', mode = '', discourseSignals = [], safetyIdentifier = '' } = {}) {
+async function judgeAndRepair(rawText, outputText, {
+  lang = 'ko',
+  signal,
+  config,
+  maxRounds = 1,
+  allowedExtra = '',
+  mode = '',
+  discourseSignals = [],
+  safetyIdentifier = '',
+  documentProfile = null
+} = {}) {
   const cfg = await loadConfig(config);
   const primary = await judgeAndRepairWithModel(rawText, outputText, {
     lang,
@@ -203,7 +219,8 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config
     judgeModel: cfg.models.judge,
     judgeReasoning: cfg.reasoning.judge,
     phasePrefix: 'primary',
-    safetyIdentifier
+    safetyIdentifier,
+    documentProfile
   });
   if (primary.pass === true) return primary;
 
@@ -221,7 +238,8 @@ async function judgeAndRepair(rawText, outputText, { lang = 'ko', signal, config
     judgeModel: escalationModel,
     judgeReasoning: cfg.reasoning.escalation || cfg.reasoning.judge,
     phasePrefix: 'escalation',
-    safetyIdentifier
+    safetyIdentifier,
+    documentProfile
   });
   return {
     ...escalated,
@@ -259,7 +277,8 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   judgeModel,
   judgeReasoning,
   phasePrefix,
-  safetyIdentifier
+  safetyIdentifier,
+  documentProfile
 }) {
   // 원문 구절을 그대로 균등 추출한 결정론 원장을 mini와 상위 판정기가
   // 공통 사용한다. 판정 모델은 SOURCE 전체를 함께 받으므로 원장은 단지
@@ -298,7 +317,11 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     });
     usage = addUsage(usage, repaired?.gptMeta?.usage);
     const candidate = repaired.outputText || current;
-    const repairSafety = assessRepairCandidate(rawText, current, candidate, { mode, allowedExtra });
+    const repairSafety = assessRepairCandidate(rawText, current, candidate, {
+      mode,
+      allowedExtra,
+      documentProfile
+    });
     if (!repairSafety.pass) {
       return {
         outputText: current,
@@ -364,7 +387,11 @@ function validateLedgerHealth(ledger, rawText) {
   return { healthy: true, reason: 'ok' };
 }
 
-function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', allowedExtra = '' } = {}) {
+function assessRepairCandidate(rawText, beforeText, candidateText, {
+  mode = '',
+  allowedExtra = '',
+  documentProfile = null
+} = {}) {
   const source = String(rawText || '');
   const before = String(beforeText || '');
   const candidate = String(candidateText || '');
@@ -431,6 +458,14 @@ function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', 
     reasons.push('discourse_risk_worsened');
   }
   if (candidateIntroducedDiscourse.length) reasons.push('discourse_new_violation');
+  const sharedIntegrity = candidateIntegrity.auditCandidateIntegrity({
+    source,
+    before,
+    candidate,
+    documentProfile,
+    mode
+  });
+  reasons.push(...sharedIntegrity.reasons);
   return {
     pass: reasons.length === 0,
     reasons: [...new Set(reasons)],
@@ -446,8 +481,59 @@ function assessRepairCandidate(rawText, beforeText, candidateText, { mode = '', 
     candidateDistributionShift,
     beforeDiscourse,
     candidateDiscourse,
-    candidateIntroducedDiscourse
+    candidateIntroducedDiscourse,
+    sharedIntegrity
   };
+}
+
+const SPAN_STOP_WORDS = new Set([
+  '그', '이', '저', '것', '수', '등', '및', '더', '좀', '꽤', '또',
+  '그리고', '하지만', '그러나', '그런데', '때문', '위해', '통해',
+  '대한', '하는', '있는', '되는', '같은', '경우', '정도', '가장',
+  '훨씬', '이런', '저런', '그런'
+]);
+
+function spanInSource(span, source) {
+  const content = spanContentTokens(span);
+  if (content.length < 3) return false;
+  const world = String(source || '');
+  const compactSpan = String(span || '').normalize('NFKC').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+  const compactWorld = world.normalize('NFKC').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+  if (compactSpan.length >= 12 && compactWorld.includes(compactSpan)) return true;
+
+  const units = splitSentences(world)
+    .flatMap(sentence => String(sentence || '').split(/\n[ \t]*\n+/u))
+    .map(value => spanContentTokens(value))
+    .filter(tokens => tokens.length >= 3);
+  return units.some(unitTokens => {
+    const unitSet = new Set(unitTokens);
+    const matched = content.filter(token => unitSet.has(token)).length;
+    if (matched < 3 || matched / content.length < 0.75) return false;
+    return longestOrderedTokenMatch(content, unitTokens) / content.length >= 0.6;
+  });
+}
+
+function spanContentTokens(value) {
+  return (String(value || '').match(/[가-힣]{2,}|[A-Za-z]{2,}|\d+%?/gu) || [])
+    .map(token => token.toLowerCase())
+    .filter(token => !SPAN_STOP_WORDS.has(token));
+}
+
+function longestOrderedTokenMatch(left, right) {
+  const previous = new Array(right.length + 1).fill(0);
+  for (const leftToken of left) {
+    let diagonal = 0;
+    for (let index = 1; index <= right.length; index += 1) {
+      const saved = previous[index];
+      if (leftToken === right[index - 1]) {
+        previous[index] = diagonal + 1;
+      } else {
+        previous[index] = Math.max(previous[index], previous[index - 1]);
+      }
+      diagonal = saved;
+    }
+  }
+  return previous[right.length] || 0;
 }
 
 function sentenceShapeDistance(sourceText, candidateText) {
@@ -549,5 +635,6 @@ module.exports = {
   judgeAndRepair,
   assessRepairCandidate,
   validateLedgerHealth,
+  spanInSource,
   evidenceMatches
 };

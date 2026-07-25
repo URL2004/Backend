@@ -48,10 +48,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
   const humanizationDepthGate = String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0';
   try {
     const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
-    const compatibility = evaluateHumanizeRuntime({
-      humanizeEngineV2,
-      activeProvider: runtimeConfig.activeProvider
-    });
+    const compatibility = evaluateHumanizeRuntime({ activeProvider: runtimeConfig.activeProvider });
     res.status(compatibility.ok ? 200 : 503).json({
       ok: compatibility.ok,
       activeProvider: compatibility.activeProvider,

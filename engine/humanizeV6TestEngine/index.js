@@ -94,11 +94,11 @@ function serializeStructuredToolResult(parsed) {
   return JSON.stringify(payload);
 }
 
-function createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode = 'assignment' }) {
+function createModelAdapter({ callModel, extractModelResult, signal, mode = 'assignment' }) {
   return {
     async complete({ system, user, temperature, maxOutputTokens }) {
       const tool = buildStructuredTool();
-      const data = await callClaude({
+      const data = await callModel({
         userText: user,
         systemText: [
           system,
@@ -116,7 +116,7 @@ function createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode 
         phase: 'v9:main',
         mode
       });
-      const parsed = extractClaudeResult(data, tool.name) || {};
+      const parsed = extractModelResult(data, tool.name) || {};
       return serializeStructuredToolResult(parsed);
     }
   };
@@ -229,14 +229,14 @@ function riskNumber(risk) {
   return null;
 }
 
-async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, callClaude, extractClaudeResult } = {}) {
-  if (typeof callClaude !== 'function') throw new Error('humanizeV6TestEngine requires callClaude');
-  if (typeof extractClaudeResult !== 'function') throw new Error('humanizeV6TestEngine requires extractClaudeResult');
+async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, callModel, extractModelResult } = {}) {
+  if (typeof callModel !== 'function') throw new Error('humanizeV6TestEngine requires callModel');
+  if (typeof extractModelResult !== 'function') throw new Error('humanizeV6TestEngine requires extractModelResult');
 
   const policy = policyForMode(mode);
   const engine = createCopykillerSafeHumanizer({
     policy,
-    llm: createAnthropicAdapter({ callClaude, extractClaudeResult, signal, mode })
+    llm: createModelAdapter({ callModel, extractModelResult, signal, mode })
   });
   const result = await engine.transform({
     text,

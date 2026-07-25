@@ -34,7 +34,7 @@ const academicInquiry = [
 
 test('학술 논문의 탐구 표현은 구형 자소서 오탐을 해제하고 고급을 추천한다', () => {
   assert.equal(inputRouting.looksLikeResume(academicInquiry), true, '회귀 표본은 구형 탐구 휴리스틱의 오탐을 재현해야 한다');
-  const route = resolveAdvancedRouting(academicInquiry, { grade: 'A', abstractRiskRatio: 0 }, { v2Enabled: true });
+  const route = resolveAdvancedRouting(academicInquiry, { grade: 'A', abstractRiskRatio: 0 });
   assert.equal(route.legacyUnfit.kind, 'resume');
   assert.equal(route.effectiveUnfit.unfit, false);
   assert.equal(route.advancedEligible, true);
@@ -56,7 +56,7 @@ test('실제 자소서·개인 경험 문서도 v2에서는 장르 안전 감사
     '저의 강점은 자료를 정리하고 발표 흐름을 설계하는 능력입니다.',
     '입사 후에는 운영 개선에 기여하고 성장하는 인재가 되겠습니다.'
   ].join('\n');
-  const route = resolveAdvancedRouting(source, { grade: 'B', abstractRiskRatio: 0.2 }, { v2Enabled: true });
+  const route = resolveAdvancedRouting(source, { grade: 'B', abstractRiskRatio: 0.2 });
   assert.equal(route.effectiveUnfit.unfit, false);
   assert.equal(route.effectiveUnfit.kind, null);
   assert.equal(route.advancedEligible, true);
@@ -67,46 +67,39 @@ test('실제 자소서·개인 경험 문서도 v2에서는 장르 안전 감사
 
 test('짧고 추상적인 한국어 글은 고급을 허용하고 지원하지 않는 영어만 잠근다', () => {
   const thin = '혁신은 중요하며 체계적인 접근이 필요하다. 다양한 관점에서 의미를 살펴보고 바람직한 방향을 찾아야 한다.'.repeat(2);
-  const thinRoute = resolveAdvancedRouting(thin, { grade: 'C', abstractRiskRatio: 0.8 }, { v2Enabled: true });
+  const thinRoute = resolveAdvancedRouting(thin, { grade: 'C', abstractRiskRatio: 0.8 });
   assert.equal(thinRoute.effectiveUnfit.unfit, false);
   assert.equal(thinRoute.effectiveUnfit.kind, null);
   assert.equal(thinRoute.advancedEligible, true);
   assert.equal(thinRoute.routingOverride, 'v2_profile_safe_advanced');
 
   const english = 'This document explains a research process and presents a structured discussion of the findings in English only.';
-  const englishRoute = resolveAdvancedRouting(english, { grade: 'B', abstractRiskRatio: 0 }, { v2Enabled: true });
+  const englishRoute = resolveAdvancedRouting(english, { grade: 'B', abstractRiskRatio: 0 });
   assert.equal(englishRoute.effectiveUnfit.kind, 'english');
   assert.equal(englishRoute.advancedEligible, false);
 });
 
-test('v2가 꺼지면 구형 재구성 부적합 판정을 그대로 유지한다', () => {
+test('폐기된 구형 스위치를 넘겨도 운영 장르 라우팅을 하향하지 않는다', () => {
   const route = resolveAdvancedRouting(academicInquiry, { grade: 'A', abstractRiskRatio: 0 }, { v2Enabled: false });
-  assert.equal(route.effectiveUnfit.unfit, true);
-  assert.equal(route.effectiveUnfit.kind, 'resume');
-  assert.equal(route.routingOverride, '');
-  assert.equal(route.documentProfile, null);
+  assert.equal(route.effectiveUnfit.unfit, false);
+  assert.equal(route.advancedEligible, true);
+  assert.equal(route.routingOverride, 'legacy_inquiry_false_positive');
+  assert.ok(route.documentProfile);
 });
 
 test('/diagnose는 프론트가 사용할 최종 고급 적합성과 추천 메타를 반환한다', () => {
   const layer = diagnoseRouter.stack.find(item => item.route?.path === '/diagnose');
   const handler = layer?.route?.stack?.[0]?.handle;
   assert.equal(typeof handler, 'function');
-  const previous = process.env.HUMANIZE_ENGINE_V2_ENABLED;
-  process.env.HUMANIZE_ENGINE_V2_ENABLED = '1';
   let statusCode = 200;
   let responseBody = null;
-  try {
-    handler(
-      { body: { text: academicInquiry } },
-      {
-        status(code) { statusCode = code; return this; },
-        json(value) { responseBody = value; return this; }
-      }
-    );
-  } finally {
-    if (previous === undefined) delete process.env.HUMANIZE_ENGINE_V2_ENABLED;
-    else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
-  }
+  handler(
+    { body: { text: academicInquiry } },
+    {
+      status(code) { statusCode = code; return this; },
+      json(value) { responseBody = value; return this; }
+    }
+  );
   assert.equal(statusCode, 200);
   assert.equal(responseBody?.resumeLike, true, '구형 관측값은 호환을 위해 남긴다');
   assert.equal(responseBody?.restructureUnfit, false, '프론트 잠금은 조정된 최종 판정을 사용한다');

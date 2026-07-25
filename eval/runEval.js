@@ -9,7 +9,7 @@
 
 const floor = require('../engine/floor');
 const chunk = require('../engine/chunk');
-const softguard = require('../engine/softguard');
+const softguard = require('../tools/eval/softDriftAudit');
 const { buildContract } = require('../engine/contract');
 const cases = require('./guard-cases');
 
@@ -172,13 +172,14 @@ const cOrgKo = buildContract('본 연구는 다음을 분석한다. 우리는 �
 check('contract/speakerType 조직(한국어 우리/본연구)', cOrgKo.speakerType === 'organization', `type=${cOrgKo.speakerType} seed=${JSON.stringify(cOrgKo.povSeed)}`);
 
 // ── Soft Claim Ledger health gate(#6) 결정론 테스트 ──
-const { validateLedgerHealth } = require('../engine/judge');
+const { validateLedgerHealth } = require('../engine-gpt-prod/judge');
 check('ledger/0건 → no_claims', validateLedgerHealth({ claims: [], total: 0, dropped: 0 }, '짧은 글').reason === 'no_claims', 'health 분류 오류');
 check('ledger/과다폐기 → high_drop', validateLedgerHealth({ claims: [{}], total: 5, dropped: 4 }, '글').reason === 'high_drop', 'health 분류 오류');
 check('ledger/장문 과소표집 → undercovered', validateLedgerHealth({ claims: [{}, {}], total: 2, dropped: 0 }, '가'.repeat(1600)).reason === 'undercovered', 'health 분류 오류');
 check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {}, {}], total: 5, dropped: 0 }, '짧은 글').healthy === true, 'health 분류 오류');
 
-// ── conclusion_drift 강등(§우회): 결론부 불확실만 추가되고 나머지 깨끗하면 status=clean(경고)로 노출, 차단 아님 ──
+// ── 레거시 conclusion_drift는 운영 floor 판정에서 제거한다. 개별 shadow
+// 측정 회귀는 위 softguard 사례로만 유지하고 전달 상태에는 합치지 않는다. ──
 {
   const raw = '기술은 사회를 바꾼다. 방향은 다양하다. 사람들은 적응한다. 변화는 빠르다. 결국 우리는 나아진다.';
   const out = '기술은 사회를 바꾼다. 방향은 다양하다. 사람들은 적응해 간다. 변화는 빠르게 일어난다. 앞으로 어떻게 될지 모르겠다.';
@@ -186,8 +187,8 @@ check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {
     result: { outputText: out, judge: { ran: true, pass: true, ledgerHealth: { healthy: true } } },
     rawText: raw, mode: 'blog', povSeed: floor.computePovSeed(raw), optIn: false
   });
-  check('floorReport/conclusion_drift는 경고(차단 아님)',
-    rep.status === 'clean' && rep.warnings.some(w => w.gate === 'conclusion_drift') && !rep.criticals.some(c => c.gate === 'conclusion_drift'),
+  check('floorReport/conclusion_drift는 운영 판정에서 제외',
+    rep.status === 'clean' && !rep.warnings.some(w => w.gate === 'conclusion_drift') && !rep.criticals.some(c => c.gate === 'conclusion_drift'),
     `status=${rep.status} warns=${JSON.stringify(rep.warnings)} crits=${JSON.stringify(rep.criticals)}`);
 }
 
@@ -222,7 +223,7 @@ check('ledger/정상 → healthy', validateLedgerHealth({ claims: [{}, {}, {}, {
 
 // ── added_claim 오탐 방지(spanInSource): 보존된 원문 내용은 위반 아님, 진짜 날조는 위반 ──
 {
-  const { spanInSource } = require('../engine/judge');
+  const { spanInSource } = require('../engine-gpt-prod/judge');
   const raw = '미래에는 인공지능부터 메타버스까지 다양한 기술이 인간관계의 방식을 크게 바꿔놓을 것입니다. 가상공간에서 함께 활동하게 될지도 모릅니다.';
   const preserved = '미래에는 인공지능부터 메타버스까지 다양한 기술이 인간관계의 방식을 지금보다 훨씬 크게 바꿔';
   check('judge/spanInSource 보존 원문 인식', spanInSource(preserved, raw) === true, '보존 내용을 원문으로 인식 못함');

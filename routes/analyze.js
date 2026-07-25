@@ -257,15 +257,5 @@ router.runDetect = async function runDetect(text, lang = 'ko') {
   });
 };
 router.gpt = gptAnalyze;
-router.precheckCredits = billing.precheckCredits;
-router.commitCreditDeduct = billing.commitCreditDeduct;
-router.commitCreditRestore = billing.commitCreditRestore;
-router.precheckCoupon = billing.precheckCoupon;
-router.commitCouponUsage = billing.commitCouponUsage;
-router.commitCouponRestore = billing.commitCouponRestore;
-router.retryAsync = billing.retryAsync;
-router.authErrorMessage = billing.authErrorMessage;
-router.saveAnalyzeHistory = history.saveAnalyzeHistory;
-router.compactHistoryEngineMeta = history.compactHistoryEngineMeta;
 
 module.exports = router;

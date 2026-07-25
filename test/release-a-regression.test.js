@@ -6,6 +6,7 @@ const express = require('express');
 const analyze = require('../routes/analyze');
 const transform = require('../routes/transform');
 const usageBilling = require('../lib/usageBilling');
+const historyService = require('../lib/historyService');
 const { evaluateHumanizeRuntime } = require('../lib/runtimeCompatibility');
 
 test('고급 작업은 보존형 폴백으로 다운그레이드하지 않는다', { concurrency: false }, t => {
@@ -179,16 +180,16 @@ test('저효과·품질 경고가 있는 완료 결과도 정상 과금한다', 
   ]);
 });
 
-test('v2 운영 상태는 GPT만 정상으로 판정하고 다른 provider는 배포 실패 상태다', () => {
-  assert.deepEqual(evaluateHumanizeRuntime({ humanizeEngineV2: true, activeProvider: 'gpt' }), {
+test('단일 운영 엔진은 GPT만 정상으로 판정하고 다른 provider는 배포 실패 상태다', () => {
+  assert.deepEqual(evaluateHumanizeRuntime({ activeProvider: 'gpt' }), {
     ok: true,
     providerCompatible: true,
     activeProvider: 'gpt'
   });
-  const mismatch = evaluateHumanizeRuntime({ humanizeEngineV2: true, activeProvider: 'claude' });
+  const mismatch = evaluateHumanizeRuntime({ activeProvider: 'claude' });
   assert.equal(mismatch.ok, false);
   assert.equal(mismatch.providerCompatible, false);
-  assert.equal(mismatch.code, 'HUMANIZE_V2_PROVIDER_MISMATCH');
+  assert.equal(mismatch.code, 'HUMANIZE_PROVIDER_MISMATCH');
 });
 
 test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관측 축약값을 보존한다', () => {
@@ -558,7 +559,7 @@ test('transform 글 종류 입력은 공개 장르와 호환 별칭만 허용한
 });
 
 test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약한다', () => {
-  const compact = analyze.compactHistoryEngineMeta({
+  const compact = historyService.compactHistoryEngineMeta({
     engineVersion: 'gpt-prod-v2.4.6', requestedMode: 'blog', documentProfile: 'resume_application',
     detectedDocumentProfile: 'unknown', detectedProfileConfidence: 0.61,
     requestedDocumentProfile: 'resume_application', profileOverrideApplied: true,

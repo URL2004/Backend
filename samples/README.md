@@ -1,6 +1,16 @@
 # 엔진 테스트 샘플
 
-`node engine-test.js samples/<파일> <mode>` 로 돌립니다.
+운영 엔진의 자동 검증은 아래 명령으로 실행합니다.
+
+```powershell
+npm test
+npm run eval
+npm run check:production-imports
+```
+
+실제 OpenAI 호출 재생은 `scripts/humanize-v2-eval.js`의 manifest 기반 명령을 사용하고,
+원문·결과·UID가 포함된 산출물은 저장소 밖에 둡니다. 삭제된 단일 파일용
+`engine-test.js` 러너는 운영 엔진과 다른 경로를 실행하던 도구라 더 이상 사용하지 않습니다.
 
 실제 검증용으로는 보고서 §10 fixture 4종을 권장합니다:
 - **PMF형**: 공식문서/조직 화자 글 → 개인 화자로 안 바뀌는지 (pov 가드)

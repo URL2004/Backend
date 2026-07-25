@@ -1,6 +1,6 @@
 // [tools/_detect_vs_ck.js] 제품 detect(LLM) vs 실제 카피킬러 AI% 상관 검증.
 //   목적: detect가 TF-IDF 프록시(r=0.30)보다 카피킬러와 잘 맞으면 입력 게이트 신호로 우선.
-//   비용 방어: 기본 stratified 샘플 N개만 호출(전수는 --all). .env의 ANTHROPIC_API_KEY 사용.
+//   비용 방어: 기본 stratified 샘플 N개만 호출(전수는 --all). .env의 OPENAI_API_KEY 사용.
 //   usage: node tools/_detect_vs_ck.js [N]   (기본 40)  |  node tools/_detect_vs_ck.js --all
 require('dotenv').config();
 const fs = require('fs');

@@ -401,7 +401,7 @@ function measureRepetition(text) {
 }
 
 // 1차 결과에서 FLOOR critical 위반만 추출 (surface는 제외 — regression report로 §11).
-// ── LLM 산출물 누출 가드(genretransfer에서 이식, 2026-06-11) ──────────
+// ── LLM 산출물 누출 가드 ─────────────────────────────────────────
 // 메타 메모 누출(실측: "미삽입 항목 처리 메모…밝힙니다"가 본문 끝에 붙어 측정됨)
 // ★ 판정 스캐폴딩 누출 추가(2026-06-15 실측): 수리/판정 LLM이 "교정 본문" 대신 판정 마크다운
 //   ("# 판정: added_claim 확인됨 … ## 수정 문장: …")을 통째로 반환해 본문에 박히는 사고.
@@ -420,7 +420,7 @@ const META_NOTE_RE = /(메모\s*:|(?:본문만?|출력|원문대로|지시대로
 //   ("…쓰지 말라고 교육한다")와 일반 "표현 금지"는 통과.
 const WINK_RE = /(?:이런?|그런?|위(?:의)?)\s*(?:표현|단어|문장|말투|어투)[^.”"\n]{0,14}(?:쓰지\s*)?(?:말라고|말랬)\s*했?(?:지|잖아?|네|어)/;
 // ★ 메인 엔진은 임의 원문을 받으므로 "원문∪허용재료에 없는 경우만" 누출로 판정(원문이 원래 "밝힙니다"를
-//   쓰는 격식문·메타 글쓰기 에세이 오탐 방지 — genretransfer의 무조건 폐기와 다른 점).
+//   쓰는 격식문·메타 글쓰기 에세이의 오탐을 방지한다.
 function findMetaLeaks(text, allowedWorld) {
   const world = (allowedWorld || '').replace(/\s+/g, '');
   const bad = [];
@@ -509,7 +509,7 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
     v.push({ type: 'repetition', detail: `완전중복 ${rep.count}건·근접중복 ${rep.fuzzyCount}건·짧은조각 ${rep.shortFragCount || 0}건`,
       fix: `같은 결론·문장이 (어미·표현만 바꿔) 반복된다. 의미가 겹치는 문장을 하나로 합치고, 같은 짧은 조각·체언종결("…방패다" 등)을 여러 번 재사용하지 말고 한 번만 써라.` });
   }
-  // ★ LLM 산출물 누출 3종(genretransfer 이식): 메타 메모·지시문 윙크 / 용어귀속 날조 / 앵커 소재 번짐.
+  // LLM 산출물 누출 3종: 메타 메모·지시문 윙크 / 용어귀속 날조 / 앵커 소재 번짐.
   //   기존 refine→재검증→raw폴백 기계에 그대로 태운다(fix 지시문 포함).
   const allowedWorld = allowedExtra ? rawText + '\n' + allowedExtra : rawText;
   const metaLeaks = findMetaLeaks(out, allowedWorld);
@@ -523,7 +523,7 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
       fix: `원문에 없는 용어를 만들어 학문·분야에 귀속시켰다: ${coined.join(', ')}. 그 용어와 귀속문("~라고 부른다")을 삭제하고 원문 표현으로 되돌려라.` });
   }
   if (anchors) {
-    const anchorLeaks = require('./prompt').findAnchorLeaks(out, allowedWorld);
+    const anchorLeaks = require('./anchorLeakAudit').findAnchorLeaks(out, allowedWorld);
     if (anchorLeaks.length) {
       v.push({ type: 'anchor_leak', detail: anchorLeaks.join(', '),
         fix: `원문에 없는 부동산·도시 소재 어휘가 비유로 끼어들었다: ${anchorLeaks.join(', ')}. 해당 비유·문장을 삭제하고 글의 실제 소재로만 써라.` });
@@ -543,7 +543,6 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   const len = result.floorLength || measureLength(rawText, out, mode);
   const rep = result.repetition || measureRepetition(out);
   const drift = result.povDrift || measurePovDrift(rawText, out, povSeed);
-  const concl = require('./softguard').measureConclusionDrift(rawText, out);
   // ★ 영어 입력 FLOOR 세이프(2026-06-16): 한국어용 novelty/experience 추출기가 영어 Title-Case 다단어 런
   //   ("Company Primary Leaders Leadership Style Core Mechanism" 같은 표 헤더 등)을 재배열 후 못 맞춰 대량 오탐
   //   → 영어 글이 다듬기/blog에서 매번 차단(실측 차단 10건 중 6건). 영어는 한국어 게이트로 내용검증이 불가하므로
@@ -575,8 +574,6 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
     if (rep.count >= 2 || rep.fuzzyCount >= 3) criticals.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
     else warnings.push({ gate: 'repetition', detail: `exact ${rep.count}·fuzzy ${rep.fuzzyCount}` });
   }
-  // 결론부 drift는 critical 아님(§우회: 열린 마무리 허용) — 경고로만 노출하고, 의도 역전은 semanticJudge가 차단.
-  if (concl.flagged) warnings.push({ gate: 'conclusion_drift', detail: concl.markers.join(', ') });
   if (mode === 'thesis') { const fake = measureFakeInternalRefs(rawText, out); if (fake.count) criticals.push({ gate: 'fake_ref', detail: fake.fabricated.join(', ') }); }
   if (result.judge && result.judge.ran && result.judge.pass === false) criticals.push({ gate: 'semanticJudge', detail: (result.judge.violations || []).length + '건' });
   // ★ LLM 산출물 누출 3종(이식): 조용한 누출 → 차단(노출 게이트 원칙).
@@ -587,7 +584,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
     const coined = findCoinedTerms(out, allowedWorld);
     if (coined.length) criticals.push({ gate: 'coined_term', detail: coined.join(', ') });
     if (anchors) {
-      const anchorLeaks = require('./prompt').findAnchorLeaks(out, allowedWorld);
+      const anchorLeaks = require('./anchorLeakAudit').findAnchorLeaks(out, allowedWorld);
       if (anchorLeaks.length) criticals.push({ gate: 'anchor_leak', detail: anchorLeaks.join(', ') });
     }
   }
@@ -609,7 +606,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   return {
     status, criticals, warnings,
     metrics: { lengthRatio: len.ratio, novelty: nov.count, lostFacts: lost.count, repetition: rep.total,
-      povInject: !!(drift.introducedAnyFirstPerson && isSpeakerGateClosed(povSeed, optIn)), conclusionDrift: concl.flagged,
+      povInject: !!(drift.introducedAnyFirstPerson && isSpeakerGateClosed(povSeed, optIn)),
       judge: result.judge ? (result.judge.ran ? (result.judge.pass ? 'pass' : 'fail') : 'skip') : null }
   };
 }

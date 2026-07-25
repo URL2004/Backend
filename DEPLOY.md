@@ -1,6 +1,6 @@
 # 배포 가이드
 
-2026-06-16 기준 운영 배포 절차. 실제 운영 브랜치는 백엔드/프론트 모두 `release/prod-maintenance-test`다.
+2026-07-25 기준 운영 배포 절차. 실제 운영 브랜치는 백엔드/프론트 모두 `release/prod-maintenance-test`다.
 
 ## 배포 대상
 
@@ -66,22 +66,25 @@ git stash pop
 node --check routes\transform.js
 node --check routes\analyze.js
 node --check engine\inputrouting.js
-node --check engine\judge.js
-node --check engine\prompt.js
+node --check engine-gpt-prod\index.js
+node --check engine-gpt-prod\judge.js
+node --check engine-gpt-prod\prompts\index.js
+npm run check:production-imports
+npm test
+npm run eval
 git diff --check
 ```
 
-자주 쓰는 스모크 테스트:
+운영 전 통합 검사:
 
 ```powershell
-node tools\_port-sanity.js
-node tools\_test-dup-input.js
-node tools\_test-restructure-unfit.js
-node tools\_test-long-thesis.js
-node tools\_test-register-normalize.js
+npm run predeploy:v2 -- --skip-env=1
+node tools\transform-limits-test.js
+node tools\detectreport-test.js
+npm audit --omit=dev
 ```
 
-존재하지 않는 테스트 파일은 건너뛴다.
+삭제된 구형 엔진의 개별 실행 스크립트는 사용하지 않는다.
 
 4. 운영 헬스체크
 
@@ -215,13 +218,11 @@ $r.Content -match 'lavAutoCoach'
 
 | 변수 | 운영 값/주의 |
 |---|---|
-| `ANTHROPIC_API_KEY` | 운영 키 |
 | `OPENAI_API_KEY` | GPT 운영 엔진 키. 관리자 `adminSettings/gptRuntimeConfig` 값이 있으면 모델/추론/캐시 설정은 Firestore가 우선 |
-| `LLM_ACTIVE_PROVIDER` | 단일 운영 provider 설정. v2 운영값 `gpt` |
-| `HUMANIZE_ENGINE_V2_ENABLED` | `1`이면 v2, `0`이면 한 릴리스 동안 보존한 기존 경로로 즉시 복귀 |
 | `HUMANIZE_SECTION_RECOVERY_ENABLED` | v2.4.8 장문 섹션 회복. 미설정 시 활성화되며 비용·시간 초과 시 `0`으로 개별 복귀 |
 | `HUMANIZE_FINGERPRINT_AUDIT_ENABLED` | v2.4.8 신규 상투구·논리 방향 감사. 미설정 시 활성화되며 `0`으로 개별 복귀 가능 |
 | `HUMANIZE_EFFECT_CONFIRMATION_ENABLED` | 변화가 제한적인 입력의 작업 전 확인 강제. v2.4.8 프런트 배포 후 활성화하며 `0`으로 해제 가능 |
+| `HUMANIZE_CHUNK_CONCURRENCY` | 일반 편집 청크 동시성. 허용 범위 `1~3`; 배포 직후 `1`, 검증 후 `2` 권장 |
 | `OPENAI_SAFETY_SALT` | UID를 `safety_identifier`용 HMAC-SHA256으로 변환하는 비밀값. 운영 필수 |
 | `OPENAI_MODEL_FAST` | 기본 변환 모델. 예: `gpt-5.4-mini` |
 | `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 예: `gpt-5.4` |
@@ -271,7 +272,7 @@ npm run cache:gpt -- -Limit 1000 -Json
 
 v2.4.8 활성화 커밋 이후 세 플래그는 미설정 시 `1`로 간주한다. Render 환경변수에 명시적으로 `0`을 넣으면 각 기능을 독립적으로 즉시 해제할 수 있다.
 
-의미·구조 사고가 있으면 `HUMANIZE_ENGINE_V2_ENABLED=0`으로 전체 복귀한다. 비용·시간만 기준을 넘으면 `HUMANIZE_SECTION_RECOVERY_ENABLED=0`으로 섹션 회복만 끄고 상투구 감사는 유지한다.
+의미·구조 사고가 있으면 Render의 직전 정상 `live` 배포로 전체 복귀한다. 런타임 구형 엔진 전환은 지원하지 않는다. 비용·시간만 기준을 넘으면 `HUMANIZE_SECTION_RECOVERY_ENABLED=0`으로 섹션 회복만 끄고 상투구 감사는 유지한다.
 
 ### v2.4.9 저효과 전달 정책
 

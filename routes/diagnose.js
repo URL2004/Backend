@@ -12,34 +12,19 @@ const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting')
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 const humanizationDepth = require('../engine-gpt-prod/humanizationDepth');
 const { logger } = require('../lib/logger');
+const {
+  POLISH_BAND,
+  BLOG_BAND,
+  RESTRUCTURE_BAND,
+  BANDS,
+  COPY
+} = require('../lib/detectPresentation');
 
 // ★ UI 표기 밴드는 실측보다 보수적으로(2026-06-12 사장님 지시): 약속을 낮게 잡아 실망 방지.
 //   실측은 분포의 한 샘플이고 짧은 글은 ±15%p 출렁이므로, 표기는 실측 상단을 넉넉히 잡는다.
 // 보존형(그대로 다듬기) 실측: A=ESG 18·개인정보 35 / B=EV 73~81 / C=도시 87·보고서 94~100.
-const POLISH_BAND = { A: '30~55%', B: '60~85%', C: '85%+' };
-// 블로그 회피 실측: 숏폼 C가 27~54 분포. 보수 표기로 상단을 넉넉히.
-const BLOG_BAND = { A: '30~45%', B: '35~50%', C: '40~55%' };
-// 재구성 풀레시피(근거 분산) 실측 누적 36·37·40·41·47·48 → 외부 검사기 편차(카피킬러 등) 흡수 위해
-//   넉넉한 보수 표기 35~60%. (UI 헤드라인 "예상 탐지율 35~60%"와 단일 표기로 일치)
-const RESTRUCTURE_BAND = '35~60%';
-
 // 구형 위험 신호는 유지하되, v2에서는 장르·구조 판정과 조정한 최종 적합성을 응답한다.
 const { looksLikeResume, factDensity, genreAdvisory, FACT_DENSE_THRESHOLD } = require('../engine/inputrouting');
-
-const COPY = {
-  A: {
-    title: '구체적 정보가 풍부한 글이에요',
-    desc: '실제 수치·사례·이름이 충분해서, 다듬기만으로도 탐지 위험이 낮은 편이에요.'
-  },
-  B: {
-    title: '추상과 구체가 섞인 글이에요',
-    desc: '일부 문단이 일반론에 가까워요. AI 티 줄이기로 더 사람이 쓴 글에 가깝게 만들 수 있어요.'
-  },
-  C: {
-    title: '추상적 일반론 비중이 높은 글이에요',
-    desc: '구체적 사례·수치가 적어, 그대로 제출하면 AI 탐지 위험이 높아요. 어떻게 할지 골라주세요.'
-  }
-};
 
 function v2BasicRecommendation(kind, fallback) {
   if (kind === 'resume') {
@@ -73,9 +58,7 @@ router.post('/diagnose', (req, res) => {
   const resumeLike = looksLikeResume(text);
   const density = factDensity(text);
   const factDense = density >= FACT_DENSE_THRESHOLD;   // 연도·%·인용 빼곡 → 재구성 시 사실오류 위험(권장 안내)
-  const advancedRouting = resolveAdvancedRouting(text, ir, {
-    v2Enabled: true
-  });
+  const advancedRouting = resolveAdvancedRouting(text, ir);
   const requestedEffectMode = ['blog', 'formal', 'polish'].includes(req.body?.mode)
     ? req.body.mode
     : advancedRouting.recommendedMode;
@@ -149,6 +132,6 @@ router.post('/diagnose', (req, res) => {
 });
 
 // ★ 밴드 테이블 재사용(routes/detectreport.js — 감지 보고서의 경로별 예상 밴드를 한 곳에 유지)
-router.BANDS = { POLISH_BAND, BLOG_BAND, RESTRUCTURE_BAND };
+router.BANDS = BANDS;
 router.COPY = COPY;
 module.exports = router;

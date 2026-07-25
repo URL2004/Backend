@@ -3,11 +3,10 @@
 // ────────────────────────────────────────────────────────────────
 // 라벨 세트(judge-cases.js)로 judge를 돌려 recall(날조 검출) + FP(충실한데 오탐)를 수치화.
 // 과적합 측정용 — judge를 바꿀 때마다 돌려 한 곳 고치다 다른 곳 깨지는지 확인.
-// 케이스마다 LLM 호출(ledger+judge 2콜)이라 비용·시간이 든다. claudecode flakiness는 case별 격리.
+// 케이스마다 OpenAI 호출(ledger+judge 2콜)이라 비용·시간이 든다.
 //
 // 실행:  node eval/runJudgeEval.js   (또는 npm run eval:judge)
-if (!process.env.LLM_BACKEND) process.env.LLM_BACKEND = 'claudecode';
-const judge = require('../engine/judge');
+const judge = require('../engine-gpt-prod/judge');
 const cases = require('./judge-cases');
 
 (async () => {

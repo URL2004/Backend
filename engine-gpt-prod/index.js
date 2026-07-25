@@ -7,12 +7,12 @@ const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = requ
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const prompts = require('./prompts');
 const { addUsage, emptyUsage } = require('./usageCost');
-const local = require('./local');
-const { buildContract } = local.contract;
+const { buildContract } = require('../engine/contract');
 const structureChunk = require('./structureChunk');
-const floor = local.floor;
-const surfaceguard = local.surfaceguard;
-const koreanQuality = local.koreanQuality;
+const floor = require('../engine/floor');
+const surfaceguard = require('../engine/surfaceguard');
+const spacing = require('../engine/spacing');
+const dedupe = require('../engine/dedupe');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { logger } = require('../lib/logger');
 const layoutNormalizer = require('../engine/layout');
@@ -37,10 +37,15 @@ const resumeCoverage = require('./resumeCoverage');
 const experienceAudit = require('./experienceAudit');
 const sourcePreflight = require('./sourcePreflight');
 const literalSpans = require('./literalSpans');
+const candidateIntegrity = require('./candidateIntegrity');
+const {
+  classifyModelFailure,
+  isNonEscalatableModelFailureCode
+} = require('./modelFailure');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.4';
+const VERSION = 'gpt-prod-v2.5.5';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -70,28 +75,17 @@ async function loadConfig(config) {
   return config ? gptRuntimeConfig.publicConfig(config, config.source || 'inline') : gptRuntimeConfig.getRuntimeConfig({ force: false });
 }
 
-function allowPolishMode({ styleProfile = '', config } = {}) {
-  if (config && (config.allowPolishMode === true || config.allowPolish === true)) return true;
-  const profile = String(styleProfile || '').toLowerCase();
-  return profile.includes('admin') || profile.includes('lab');
-}
-
 function isAdminNiklProfile(styleProfile = '') {
   const profile = String(styleProfile || '').toLowerCase();
   return profile.includes('admin') || profile.includes('lab') || profile.includes('test');
 }
 
 function isNiklQualityEnabled(value, styleProfile = '') {
-  if (process.env.GPT_NIKL_QUALITY_ENABLED === '0') return false;
-  if (isAdminNiklProfile(styleProfile)) return value === true;
-  return true;
-}
-
-function isQualityPatternLabEnabled(value, styleProfile = '') {
-  if (process.env.GPT_QUALITY_PATTERN_ENABLED === '0' || process.env.GPT_QUALITY_PATTERN_LAB_ENABLED === '0') return false;
-  if (value === true) return true;
-  if (value === false) return false;
-  return !isAdminNiklProfile(styleProfile);
+  // NIKL 리소스는 관리자 검증용으로 유지하되 운영 변환 경로에는 명시적으로
+  // 켜지 않는 한 로드하지 않는다. 한국어 판정의 단일 소유자는
+  // koreanRefinement이며, NIKL은 delivery/후보 선택에 관여하지 않는다.
+  if (process.env.GPT_NIKL_QUALITY_ENABLED !== '1') return false;
+  return value === true && isAdminNiklProfile(styleProfile);
 }
 
 function isLayoutNlpEnabled(value) {
@@ -160,9 +154,7 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
 }
 
 async function run(options = {}) {
-  // v2.5 is the only production engine. Rollback restores the previous live
-  // deployment instead of entering dormant engine code.
-  return runEngine(options, { v2Enabled: true });
+  return runEngine(options);
 }
 
 async function runEngine({
@@ -180,77 +172,46 @@ async function runEngine({
   safetyIdentifier = '',
   uid = '',
   niklQualityTest = false,
-  qualityPatternLab,
   layoutNlp = null
-} = {}, { v2Enabled = true } = {}) {
+} = {}) {
   const submittedSource = String(text || '').trim();
   if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
-  const sourcePreflightAudit = v2Enabled
-    ? sourcePreflight.auditAndSanitizeSource(submittedSource)
-    : null;
+  const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   const rawSource = sourcePreflightAudit?.text || submittedSource;
-  if (v2Enabled && inputRouting.isEnglishInput(rawSource)) {
+  if (inputRouting.isEnglishInput(rawSource)) {
     const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.');
     error.code = 'HUMANIZE_KOREAN_ONLY';
     error.noCharge = true;
     throw error;
   }
   const cfg = await loadConfig(config);
-  const humanizationDepthEnabled = v2Enabled && isHumanizationDepthEnabled();
+  const humanizationDepthEnabled = isHumanizationDepthEnabled();
   const requestedMode = normalizeRequestedMode(mode);
   const requestStrength = requestStrengthForMode(requestedMode);
-  const polishAllowed = v2Enabled ? allowPolish === true : allowPolishMode({ styleProfile, config });
+  const polishAllowed = allowPolish === true;
   const normalizedMode = normalizeMode(mode, { allowPolish: polishAllowed });
-  const detectedDocumentProfile = v2Enabled
-    ? detectDocumentProfile(rawSource, { basicStyle })
-    : {
-        profile: 'unknown',
-        contentGenre: 'unknown',
-        confidence: 0,
-        group: 'unknown',
-        source: 'legacy',
-        profileDecisionSource: 'legacy',
-        basicStyle: String(basicStyle || ''),
-        tonePolicy: 'source_preserve',
-        candidateProfiles: [],
-        safetyProfiles: [],
-        profileMargin: 0,
-        formatProfile: { length: 'standard', primary: 'plain', flags: [] },
-        riskFlags: []
-      };
-  const documentProfile = v2Enabled
-    ? applyTargetRegister(
-        applyDocumentProfileOverride(detectedDocumentProfile, documentProfileOverride),
-        { requestStrength, basicStyle }
-      )
-    : detectedDocumentProfile;
-  const selectedMode = v2Enabled ? effectiveModeForProfile(requestedMode, normalizedMode, documentProfile) : normalizedMode;
-  const voiceProfile = v2Enabled ? buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode }) : null;
-  // v2에서만 UID를 비가역 safety_identifier로 바꾼다. 플래그를 0으로 내려
-  // 레거시 경로로 즉시 복귀할 때 OPENAI_SAFETY_SALT가 롤백을 막아서는 안 된다.
-  const safetyId = v2Enabled
-    ? (safetyIdentifier || (uid ? safetyIdentifierForUid(uid) : ''))
-    : (safetyIdentifier || '');
-  const lineBoundaryPolicy = v2Enabled ? String(voiceProfile?.lineBoundaryPolicy || 'none') : 'none';
-  const layoutStructureLocked = v2Enabled && lineBoundaryPolicy !== 'none';
+  const detectedDocumentProfile = detectDocumentProfile(rawSource, { basicStyle });
+  const documentProfile = applyTargetRegister(
+    applyDocumentProfileOverride(detectedDocumentProfile, documentProfileOverride),
+    { requestStrength, basicStyle }
+  );
+  const selectedMode = effectiveModeForProfile(requestedMode, normalizedMode, documentProfile);
+  const voiceProfile = buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode });
+  const safetyId = safetyIdentifier || (uid ? safetyIdentifierForUid(uid) : '');
+  const lineBoundaryPolicy = String(voiceProfile?.lineBoundaryPolicy || 'none');
+  const layoutStructureLocked = lineBoundaryPolicy !== 'none';
   const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !layoutStructureLocked;
-  const preLayout = !v2Enabled && layoutNlpEnabled
-    ? await safeFormatLayout(rawSource, { mode: selectedMode, phase: 'pre' })
-    : null;
-  const sourceBeforeInlineCode = preLayout?.text || rawSource;
-  const inlineCodeFreeze = v2Enabled
-    ? literalSpans.freezeInlineCode(sourceBeforeInlineCode)
-    : { text: sourceBeforeInlineCode, blocks: [], count: 0 };
+  const preLayout = null;
+  const inlineCodeFreeze = literalSpans.freezeInlineCode(rawSource);
   const source = inlineCodeFreeze.text;
-  const qualityPatternLabEnabled = v2Enabled ? false : isQualityPatternLabEnabled(qualityPatternLab, styleProfile);
-  const niklQualityEnabled = qualityPatternLabEnabled || isNiklQualityEnabled(niklQualityTest, styleProfile);
+  const niklQualityEnabled = isNiklQualityEnabled(niklQualityTest, styleProfile);
   const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
   const sourceSurface = safeSurface(source);
   const chunkPlan = structureChunk.splitChunksForGpt(source, {
-    coalesceEditable: v2Enabled,
-    preserveSentenceBoundaries: v2Enabled && shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, selectedMode),
+    coalesceEditable: true,
+    preserveSentenceBoundaries: shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, selectedMode),
     sentenceBoundaryMinimum: selectedMode === 'polish' ? 3 : 4,
     preserveLineBoundaries: lineBoundaryPolicy,
     formatProfile: documentProfile.formatProfile
@@ -276,9 +237,7 @@ async function runEngine({
       documentProfile,
       voiceProfile,
       niklQualityTest: niklQualityEnabled,
-      qualityPatternLab: qualityPatternLabEnabled,
       safetyIdentifier: safetyId,
-      v2Enabled,
       signal
     });
   }, signal);
@@ -303,7 +262,7 @@ async function runEngine({
     },
     usages: []
   };
-  if (v2Enabled && humanizationDepthEnabled && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS) {
+  if (humanizationDepthEnabled && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS) {
     sectionRecoveryReport = await sectionRecovery.recoverSections({
       chunks,
       sourceLength: rawSource.length,
@@ -342,13 +301,12 @@ async function runEngine({
 
   const boundaryRepair = structureChunk.repairUnsafeChunkBoundaries(chunks);
   let outputText = structureChunk.mergeChunks(chunks);
-  const frozen = v2Enabled ? freezeLockedBlocks(source, outputText, chunks) : null;
+  const frozen = freezeLockedBlocks(source, outputText, chunks);
   const auditSource = frozen?.source || source;
   outputText = frozen?.output || outputText;
   const postprocessMeta = {};
   outputText = finalPostprocess(outputText, auditSource, selectedMode, contract, postprocessMeta, {
-    preserveLineBreaks: layoutStructureLocked,
-    v2Enabled
+    preserveLineBreaks: layoutStructureLocked
   });
 
   let supplementalUsage = (sectionRecoveryReport.usages || [])
@@ -412,14 +370,12 @@ async function runEngine({
     missingSentenceSpaceRepairCount: 0,
     contextualSpacingRepairCount: 0
   };
-  const sourceReviewWarnings = v2Enabled
-    ? [
-        ...(sourcePreflightAudit?.warnings || []),
-        ...koreanRefinement.buildSourceReviewWarnings(rawSource, documentProfile)
-      ]
-    : [];
-  if (v2Enabled && selectedMode === 'polish') {
-    polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
+  const sourceReviewWarnings = [
+    ...(sourcePreflightAudit?.warnings || []),
+    ...koreanRefinement.buildSourceReviewWarnings(rawSource, documentProfile)
+  ];
+  if (selectedMode === 'polish') {
+    polishReport = qualityV2.polishEditPolicy(auditSource, outputText, { documentProfile });
     polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
     polishEvaluativePaddingCodes = safeFailureCodeList(polishPaddingReport.introducedCodes);
     if (!polishReport.noSafeChange && polishPaddingReport.increased) {
@@ -429,13 +385,19 @@ async function runEngine({
         polishRetryReason = 'evaluative_padding';
         polishRetryCount = 1;
         polishDeterministicPaddingRestoreCount = restored.restoredSentenceCount || 1;
-        polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
+        polishReport = qualityV2.polishEditPolicy(auditSource, outputText, { documentProfile });
         polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
       }
     }
+    // 원문 교정 항목 잔존은 아래 공통 koreanRefinement 경로가 결정론 수리 후
+    // 문제 문장만 모델로 고친다. 여기서 별도 surface 재시도를 먼저 실행하면
+    // 두 수리기가 같은 오류를 놓고 경쟁하고, 편집률만 맞는 무관한 후보가
+    // 한국어 수리보다 먼저 채택될 수 있다.
     if (polishReport.noSafeChange || polishPaddingReport.increased) {
       try {
-        polishRetryReason ||= polishReport.noSafeChange ? 'unchanged' : 'evaluative_padding';
+        polishRetryReason ||= polishReport.noSafeChange
+          ? 'unchanged'
+          : 'evaluative_padding';
         polishRetryAttemptCount = 1;
         const retried = await qualityV2.retryPolishSurface({
           source: auditSource,
@@ -448,19 +410,56 @@ async function runEngine({
         });
         supplementalUsage = addUsage(supplementalUsage, retried.usage);
         polishRetryCount = 1;
-        outputText = retried.outputText || outputText;
-        polishReport = qualityV2.polishEditPolicy(auditSource, outputText);
-        polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
+        const retryCandidate = String(retried.outputText || '').trim();
+        const candidateReport = qualityV2.polishEditPolicy(auditSource, retryCandidate, { documentProfile });
+        const candidatePadding = qualityV2.comparePolishEvaluativePadding(auditSource, retryCandidate);
+        const retryContentUnsafe = compareNumberMultiset(auditSource, retryCandidate).changed
+          || floor.measureLostFacts(auditSource, retryCandidate).count > 0
+          || floor.measureNovelty(auditSource, retryCandidate, allowedExtra).count > 0;
+        const safeRetryCandidate = retried.safeChangeFound === true
+          && isSafeLocalizedLanguageCandidate({
+            source: auditSource,
+            before: outputText,
+            candidate: retryCandidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: collectRecordProtectedTerms(records),
+            maxLocalEditRatio: 0.45,
+            minLocalLengthRatio: 0.85,
+            maxLocalLengthRatio: 1.15
+          })
+          && preservesFinalStructure(
+            auditSource,
+            retryCandidate,
+            frozen ? frozen.auditChunks : chunks,
+            chunkPlan,
+            boundaryRepair
+          );
+        if (safeRetryCandidate) {
+          outputText = retryCandidate;
+          polishReport = candidateReport;
+          polishPaddingReport = candidatePadding;
+        }
         polishEvaluativePaddingCodes = safeFailureCodeList([
           ...polishEvaluativePaddingCodes,
-          ...polishPaddingReport.introducedCodes
+          ...candidatePadding.introducedCodes
         ]);
-        if (!retried.safeChangeFound || polishReport.noSafeChange) {
+        // 가장 구체적인 실패 원인을 먼저 보존한다. 공통 후보 감사가 평가성
+        // 주장 추가도 함께 거부하므로 안전 후보가 아니란 이유만으로 이를
+        // 단순 무변환으로 덮으면 운영 원인과 사용자 안내가 어긋난다.
+        if (retryContentUnsafe) {
+          // The retry is not the delivered result: preserve the original and
+          // report that no safe polish change was produced. Labeling an
+          // unrelated, fact-losing draft as excessive/evaluative would hide
+          // the actual outcome (the source remained unchanged).
           polishStrictFailure = 'polish_unchanged';
-        } else if (polishReport.excessiveChange) {
-          polishStrictFailure = 'polish_excessive_change';
-        } else if (polishPaddingReport.increased) {
+        } else if (candidatePadding.increased) {
           polishStrictFailure = 'polish_evaluative_padding_added';
+        } else if (candidateReport.excessiveChange) {
+          polishStrictFailure = 'polish_excessive_change';
+        } else if (!safeRetryCandidate || candidateReport.noSafeChange) {
+          polishStrictFailure = 'polish_unchanged';
         } else {
           acceptGeneralSurfaceRecovery(records);
           for (const record of records) {
@@ -492,8 +491,7 @@ async function runEngine({
     : null;
   const generalSurfaceRetryPending = records.some(record => (record.warnings || []).includes('general_surface_retry_pending'))
     && records.every(record => record.fallback !== true || (record.warnings || []).includes('general_surface_retry_safe_fallback'));
-  if (v2Enabled
-      && selectedMode !== 'polish'
+  if (selectedMode !== 'polish'
       && (rawSource.length < sectionRecovery.MIN_DOCUMENT_CHARS || !sectionRecovery.isEnabled())
       && (generalSurfaceRetryPending || humanizationDepthReport?.pass === false)) {
     const wasEquivalent = normalizeBare(auditSource) === normalizeBare(outputText);
@@ -585,8 +583,12 @@ async function runEngine({
         }
       } catch (error) {
         lastRetryError = error;
+        const failureCode = modelCallFailureCode(error);
         humanizationDepthRetryRejectedCount += 1;
-        addUniqueCode(humanizationDepthRetryRejectionCodes, 'retry_error');
+        addUniqueCode(humanizationDepthRetryRejectionCodes, failureCode);
+        // 클라이언트가 오류별 허용 재시도를 이미 소진했다. 전송·refusal·
+        // schema 실패를 "mini 품질 부족"으로 오인해 상위 모델로 승격하지 않는다.
+        break;
       }
     }
     if (startedWithSevereNoEffect && finalNoopRecovery.applied !== true) {
@@ -595,13 +597,13 @@ async function runEngine({
         applied: false,
         method: 'model',
         reason: lastRetryError
-          ? `retry_error:${String(lastRetryError?.code || lastRetryError?.message || 'unknown').slice(0, 80)}`
+          ? modelCallFailureCode(lastRetryError)
           : 'no_substantive_change'
       };
     }
   }
 
-  if (v2Enabled && !polishStrictFailure) {
+  if (!polishStrictFailure) {
     quoteIntegrityAudit = auditDirectQuoteIntegrity(auditSource, outputText);
     const restored = restoreDirectQuoteContents(auditSource, outputText);
     if (restored.applied
@@ -619,7 +621,7 @@ async function runEngine({
     }
   }
 
-  if (v2Enabled && !polishStrictFailure) {
+  if (!polishStrictFailure) {
     koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
       source: auditSource,
       outputText,
@@ -756,7 +758,7 @@ async function runEngine({
     }
   }
 
-  if (v2Enabled && !polishStrictFailure && selectedMode !== 'polish' && fingerprint.isEnabled()) {
+  if (!polishStrictFailure && selectedMode !== 'polish' && fingerprint.isEnabled()) {
     fingerprintAudit = fingerprint.auditFingerprint(auditSource, outputText, documentProfile);
     if (!fingerprintAudit.pass) {
       try {
@@ -839,7 +841,7 @@ async function runEngine({
     }
   }
 
-  if (v2Enabled && !polishStrictFailure) {
+  if (!polishStrictFailure) {
     endingStyleAudit = endingStyle.auditEndingStyle(auditSource, outputText, documentProfile);
     if (!endingStyleAudit.pass) {
       try {
@@ -889,7 +891,7 @@ async function runEngine({
     }
   }
 
-  if (v2Enabled && !polishStrictFailure) {
+  if (!polishStrictFailure) {
     resumeCoverageAudit = resumeCoverage.auditResumeCoverage(auditSource, outputText, documentProfile);
     if (resumeCoverageAudit.applicable && !resumeCoverageAudit.pass) {
       try {
@@ -947,7 +949,7 @@ async function runEngine({
     }
   }
 
-  if (v2Enabled && !polishStrictFailure) {
+  if (!polishStrictFailure) {
     experienceCandidateAudit = experienceAudit.detectExperienceCandidate(
       auditSource,
       outputText,
@@ -962,10 +964,8 @@ async function runEngine({
     plan: chunkPlan,
     boundaryRepair
   });
-  const auditVoiceProfile = v2Enabled
-    ? buildVoiceProfile(auditSource, { documentProfile, mode: selectedMode })
-    : voiceProfile;
-  let deterministicAudit = v2Enabled ? qualityV2.buildDeterministicAudit({
+  const auditVoiceProfile = buildVoiceProfile(auditSource, { documentProfile, mode: selectedMode });
+  let deterministicAudit = qualityV2.buildDeterministicAudit({
     source: auditSource,
     outputText,
     mode: selectedMode,
@@ -975,9 +975,9 @@ async function runEngine({
     structureAudit: preSemanticStructureAudit,
     protectedTerms: collectRecordProtectedTerms(records),
     allowedExtra
-  }) : null;
+  });
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
-  if (v2Enabled && !polishStrictFailure) {
+  if (!polishStrictFailure) {
     const semanticDecision = experienceCandidateAudit?.candidate === true
       ? { run: true, reason: 'experience_novelty_candidate' }
       : resumeCoverageRetryApplied || (resumeCoverageAudit?.applicable && resumeCoverageAudit?.pass === false)
@@ -1018,7 +1018,8 @@ async function runEngine({
             .map(item => `semantic_relation_shift:${item.family}`)),
           ...(experienceCandidateAudit?.candidate ? ['experience_novelty_candidate'] : [])
         ],
-        safetyIdentifier: safetyId
+        safetyIdentifier: safetyId,
+        documentProfile
       });
       supplementalUsage = addUsage(supplementalUsage, semanticReport.usage);
       outputText = semanticReport.outputText || outputText;
@@ -1046,8 +1047,7 @@ async function runEngine({
   // 의미 수리가 추가 주장 등을 제거하는 과정에서 결과 전체가 원문으로 돌아갈
   // 수 있다. 앞 단계에서 무변환이 아니었다면 기존 회복 루프가 이를 볼 수 없으므로,
   // 최종 레이아웃 전에 한 번 더 재작성하고 의미 심사까지 다시 통과한 후보만 쓴다.
-  if (v2Enabled
-      && selectedMode !== 'polish'
+  if (selectedMode !== 'polish'
       && finalNoopRecovery.attempted !== true
       && (normalizeBare(auditSource) === normalizeBare(outputText)
         || isSevereHumanizationNoEffect(humanizationDepth.evaluateHumanizationDepth(
@@ -1123,7 +1123,8 @@ async function runEngine({
           allowedExtra,
           mode: selectedMode,
           discourseSignals: ['post_semantic_noop_recovery'],
-          safetyIdentifier: safetyId
+          safetyIdentifier: safetyId,
+          documentProfile
         });
         supplementalUsage = addUsage(supplementalUsage, candidateSemantic.usage);
         const auditedCandidate = String(candidateSemantic.outputText || candidate).trim();
@@ -1178,9 +1179,11 @@ async function runEngine({
         acceptGeneralSurfaceRecovery(records);
         break;
       } catch (error) {
-        lastRecoveryReason = `retry_error:${String(error?.code || error?.message || 'unknown').slice(0, 80)}`;
+        const failureCode = modelCallFailureCode(error);
+        lastRecoveryReason = failureCode;
         humanizationDepthRetryRejectedCount += 1;
-        addUniqueCode(humanizationDepthRetryRejectionCodes, 'retry_error');
+        addUniqueCode(humanizationDepthRetryRejectionCodes, failureCode);
+        break;
       }
     }
     if (finalNoopRecovery.applied !== true) {
@@ -1198,26 +1201,24 @@ async function runEngine({
     : null;
   if (postLayout?.text) outputText = postLayout.text;
   if (frozen) outputText = restoreLockedBlocks(outputText, frozen.blocks);
-  if (v2Enabled && inlineCodeFreeze.count > 0) {
+  if (inlineCodeFreeze.count > 0) {
     inlineCodeIntegrity = literalSpans.restoreInlineCode(outputText, inlineCodeFreeze);
     outputText = inlineCodeIntegrity.text;
   }
-  const layoutRepair = v2Enabled
-    ? structureChunk.restorePostSemanticLayout({
-        source: rawSource,
-        outputText,
-        chunks,
-        mode: selectedMode,
-        requestStrength,
-        documentProfile,
-        profileConfidence: documentProfile.confidence
-      })
-    : { text: outputText, applied: false, pass: true };
+  const layoutRepair = structureChunk.restorePostSemanticLayout({
+    source: rawSource,
+    outputText,
+    chunks,
+    mode: selectedMode,
+    requestStrength,
+    documentProfile,
+    profileConfidence: documentProfile.confidence
+  });
   outputText = layoutRepair.text || outputText;
   // 직접 인용은 의미 심사 이후의 일반 어휘 후처리가 아니라 동결 구조다.
   // 의미 수리나 레이아웃 복원에서 내부 내용이 달라졌다면 같은 위치의
   // 원문 인용만 재조립한다.
-  if (v2Enabled) {
+  {
     const restored = restoreDirectQuoteContents(rawSource, outputText);
     if (restored.applied) {
       outputText = restored.text;
@@ -1227,7 +1228,7 @@ async function runEngine({
     quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   }
   let polishSpeakerRestore = { applied: false, restoredSentenceCount: 0, restoredKinds: [], reason: 'not_applicable' };
-  if (v2Enabled && selectedMode === 'polish') {
+  if (selectedMode === 'polish') {
     polishSpeakerRestore = qualityV2.restoreMissingPolishSpeaker({
       source: rawSource,
       outputText,
@@ -1250,7 +1251,7 @@ async function runEngine({
   // 의미 심사·동결 블록 재조립·문단 복원이 끝난 뒤에 공백만 바꾼다.
   // 원문에 이미 있던 문장 중간 잘못된 줄바꿈도 이 단계에서 합친다.
   // 논문명·인용·참고문헌·표·창작문 행갈이는 koreanRefinement 내부에서 보호한다.
-  if (v2Enabled) {
+  {
     finalFormattingRepair = koreanRefinement.applySafeFormattingRepairs({
       source: rawSource,
       outputText,
@@ -1270,12 +1271,13 @@ async function runEngine({
       skipped: finalFormattingRepair.skipped === true,
       reason: finalFormattingRepair.reason || ''
     };
+
   }
 
   // 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 수리·동결 블록 재조립·레이아웃
   // 복원으로 실질 변화가 사라지면 아래 최종 깊이 감사가 검토 필요 상태를 기록한다.
-  if (v2Enabled && selectedMode === 'polish') {
-    polishReport = qualityV2.polishEditPolicy(rawSource, outputText);
+  if (selectedMode === 'polish') {
+    polishReport = qualityV2.polishEditPolicy(rawSource, outputText, { documentProfile });
     polishPaddingReport = qualityV2.comparePolishEvaluativePadding(rawSource, outputText);
     polishEvaluativePaddingCodes = safeFailureCodeList([
       ...polishEvaluativePaddingCodes,
@@ -1295,13 +1297,13 @@ async function runEngine({
       humanizationPlan
     );
   }
-  if (v2Enabled && selectedMode !== 'polish' && fingerprint.isEnabled()) {
+  if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
     fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
   }
-  if (v2Enabled) endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
-  if (v2Enabled) resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
-  if (v2Enabled) quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
-  if (v2Enabled) {
+  endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
+  resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
+  quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
+  {
     koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
       source: rawSource,
       outputText,
@@ -1317,7 +1319,7 @@ async function runEngine({
     boundaryRepair,
     layoutRepair
   });
-  const deliveryAudit = v2Enabled ? qualityV2.buildDeterministicAudit({
+  const deliveryAudit = qualityV2.buildDeterministicAudit({
     source: rawSource,
     outputText,
     mode: selectedMode,
@@ -1327,7 +1329,7 @@ async function runEngine({
     structureAudit,
     protectedTerms: extractProtectedTerms(rawSource, documentProfile),
     allowedExtra
-  }) : null;
+  });
   const result = buildResult({
     source: rawSource,
     outputText,
@@ -1337,10 +1339,9 @@ async function runEngine({
     inputRisk,
     allowedExtra,
     niklQualityTest: niklQualityEnabled,
-    qualityPatternLab: qualityPatternLabEnabled,
     structureAudit
   });
-  if (v2Enabled) calibrateV2RepetitionReport(result, rawSource, outputText);
+  calibrateV2RepetitionReport(result, rawSource, outputText);
   if (layoutNlpEnabled) {
     result.layoutFormat = buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText);
   }
@@ -1395,8 +1396,6 @@ async function runEngine({
     }
   }
   const fallbackCount = records.filter(r => r.fallback).length;
-  const effectiveChunks = records.filter(r => !r.skipped).length;
-  const allFallback = effectiveChunks > 0 && fallbackCount >= effectiveChunks;
   const finalEquivalent = normalizeBare(rawSource) === normalizeBare(outputText);
   const approvedModelChunkCount = countApprovedModelChunks(records, chunks, {
     documentRecoveryApplied: finalNoopRecovery.applied === true
@@ -1406,30 +1405,16 @@ async function runEngine({
   const modelFailureChunkCount = records.filter(record => isModelFailureRecord(record)).length;
   if (finalEquivalent || approvedModelChunkCount === 0) {
     result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
-    if (!v2Enabled && qualityPatternLabEnabled && !allFallback) {
-      result.floorReport.status = result.floorReport.status === 'clean' ? 'needs_review' : result.floorReport.status;
-      result.floorReport.warnings = [
-        ...(result.floorReport.warnings || []),
-        {
-          gate: 'quality_pattern_low_effect',
-          detail: 'quality pattern lab output is equivalent to source; delivered for audit comparison'
-        }
-      ];
-    } else {
-      result.floorReport.status = 'blocked';
-      result.floorReport.criticals = result.floorReport.criticals || [];
-      result.floorReport.criticals.push({
-        gate: finalEquivalent ? 'gpt_noop_unchanged' : 'no_approved_model_chunks',
-        detail: finalEquivalent
-          ? 'GPT output is equivalent to source.'
-          : 'No model-authored edit passed the required audits.'
-      });
-    }
+    result.floorReport.status = 'blocked';
+    result.floorReport.criticals = result.floorReport.criticals || [];
+    result.floorReport.criticals.push({
+      gate: finalEquivalent ? 'gpt_noop_unchanged' : 'no_approved_model_chunks',
+      detail: finalEquivalent
+        ? 'GPT output is equivalent to source.'
+        : 'No model-authored edit passed the required audits.'
+    });
   }
-  if (qualityPatternLabEnabled) softenQualityPatternLabFloorReport(result.floorReport);
-  const delivery = v2Enabled
-    ? deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode })
-    : { report: softenFloorReport(result.floorReport), decision: '', reasonCodes: [], effectItems: [] };
+  const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
   result.floorReport = delivery.report;
 
   const usage = addUsage(records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage()), supplementalUsage);
@@ -1447,17 +1432,15 @@ async function runEngine({
   });
   const chunkFailures = summarizeChunkFailureCodes(records);
   const retryCounts = summarizeRetryCounts(records);
-  const humanizationNoBenefitDelivered = v2Enabled
-    && selectedMode !== 'polish'
+  const humanizationNoBenefitDelivered = selectedMode !== 'polish'
     && result.floorReport?.status !== 'blocked'
     && humanizationDepthReport?.applicable === true
     && humanizationDepthReport?.pass === false;
-  const effectNotices = v2Enabled && humanizationNoBenefitDelivered
+  const effectNotices = humanizationNoBenefitDelivered
     ? dedupeQualityWarnings(depthEffectNotices(humanizationDepthReport))
     : [];
   const effectStatus = effectNotices.length ? 'limited' : 'normal';
-  const qualityWarnings = v2Enabled
-    ? dedupeQualityWarnings([
+  const qualityWarnings = dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []),
         ...qualityV2.warningsFromSemantic(semanticReport),
         ...(experienceCandidateAudit?.candidate && semanticReport?.uncertain
@@ -1470,6 +1453,13 @@ async function runEngine({
           ? [{ code: 'sentence_distribution_shift', severity: 'warning', message: '원문의 장단문 분포가 결과에서 다소 평탄해졌을 수 있어요.' }]
           : []),
         ...(polishReport?.excessiveChange ? [{ code: 'polish_edit_range', severity: 'warning', message: '보존형 윤문의 권장 편집 범위를 넘었을 수 있어요.' }] : []),
+        ...(polishReport?.needsIssueRecovery
+          ? [{
+              code: 'polish_source_issue_remaining',
+              severity: 'warning',
+              message: '원문에서 확인된 비문·띄어쓰기·말투 혼합 일부가 결과에도 남아 있을 수 있어요.'
+            }]
+          : []),
         ...(structureAudit?.lostLockedCount > 0 ? [{ code: 'structure_lock_loss', severity: 'warning', message: '동결 구조 일부가 달라졌을 수 있어요.' }] : []),
         ...(inlineCodeIntegrity.pass === false
           ? [{ code: 'inline_code_changed', severity: 'warning', message: '인라인 코드 일부를 원문 그대로 복원하지 못했을 수 있어요.' }]
@@ -1490,8 +1480,7 @@ async function runEngine({
           ? [{ code: 'resume_claim_omission', severity: 'warning', message: '자기소개서의 행동·역량·성과·직무 연결 내용 일부가 누락됐을 수 있어요.' }]
           : []),
         ...(koreanRefinementAudit?.residualWarnings || [])
-      ])
-    : [];
+      ]);
   const strictBlocked = result.floorReport?.status === 'blocked';
   const qualityStatus = qualityWarnings.length || result.floorReport?.status === 'needs_review' ? 'needs_review' : 'clean';
   if (!strictBlocked && qualityStatus === 'needs_review' && result.floorReport?.status === 'clean') result.floorReport.status = 'needs_review';
@@ -1499,6 +1488,11 @@ async function runEngine({
   result.qualityWarnings = qualityWarnings;
   result.effectStatus = effectStatus;
   result.effectNotices = effectNotices;
+  // 구형 클라이언트 호환 필드일 뿐 전달·과금·후보 선택에는 사용하지 않는다.
+  result.weakTransform = effectStatus === 'limited';
+  result.noOpScore = humanizationDepthReport?.applicable
+    ? Number(Math.max(0, 1 - Number(humanizationDepthReport.metrics?.substantiveEditRatio || 0)).toFixed(4))
+    : null;
   result.naturalnessShadow = deliveryAudit?.naturalnessShadow || null;
   result.documentProfile = documentProfile;
   result.voiceProfile = voiceProfile;
@@ -1555,7 +1549,7 @@ async function runEngine({
     basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
     semanticJudgeRan: semanticReport.ran === true,
     discourseAuditVersion: Number(deliveryAudit?.discourseAudit?.version || 0),
-    discoursePass: v2Enabled ? deliveryAudit?.discourseAudit?.pass !== false : null,
+    discoursePass: deliveryAudit?.discourseAudit?.pass !== false,
     discourseWarningCodes: safeFailureCodeList(deliveryAudit?.discourseAudit?.codes),
     discourseSignalCount: Number(deliveryAudit?.discourseAudit?.violations?.length || 0),
     discourseRepairRan: (semanticReport.initialViolations || []).some(item => discourseAudit.isDiscourseViolationCode(item?.type))
@@ -1607,6 +1601,10 @@ async function runEngine({
     polishSpeakerRestoreCount,
     polishSpeakerRestoredSentenceCount,
     polishRetryReason,
+    polishSourceIssueCount: Number(polishReport?.sourceIssueCount || 0),
+    polishFixedSourceIssueCount: Number(polishReport?.fixedSourceIssueCount || 0),
+    polishRemainingSourceIssueCount: Number(polishReport?.remainingSourceIssueCount || 0),
+    polishUnresolvedSourceIssueCodes: safeFailureCodeList(polishReport?.unresolvedSourceIssueCodes),
     polishEvaluativePaddingCodes,
     polishDeterministicPaddingRestoreCount,
     finalNoopRecoveryCount,
@@ -1804,10 +1802,8 @@ async function runEngine({
     estimatedUsd: usage.estimatedUsd,
     usage,
     structureLock: result.structureLock || null,
-    koreanQuality: result.koreanQuality || null,
     niklQuality: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     niklQualityTest: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
-    qualityPatternLab: qualityPatternLabEnabled ? (result.qualityPatternLab || { enabled: true }) : null,
     layoutFormat: layoutNlpEnabled ? (result.layoutFormat || { enabled: true }) : null,
     naturalnessShadow: deliveryAudit?.naturalnessShadow || null,
     koreanRefinement: koreanRefinementAudit,
@@ -1849,7 +1845,7 @@ async function runEngine({
   };
 }
 
-async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength = '', lang, userNotes, evidence, cfg, styleProfile, documentProfile, voiceProfile, niklQualityTest = false, qualityPatternLab = false, safetyIdentifier = '', v2Enabled = false, signal }) {
+async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength = '', lang, userNotes, evidence, cfg, styleProfile, documentProfile, voiceProfile, niklQualityTest = false, safetyIdentifier = '', signal }) {
   const original = chunk.text;
   if (chunk.locked) {
     chunk.outputText = original;
@@ -1900,21 +1896,18 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     documentProfile,
     voiceProfile,
     niklQualityTest,
-    qualityPatternLab,
-    runSemanticJudge: v2Enabled ? false : highRisk,
-    v2Enabled,
     safetyIdentifier,
     chunkDeadlineMs,
     signal
   });
-  if (v2Enabled && mode === 'polish' && first.hardFail && first.record?.hardFailReason === 'noop_unchanged') {
+  if (mode === 'polish' && first.hardFail && first.record?.hardFailReason === 'noop_unchanged') {
     chunk.outputText = first.outputText;
     first.record.fallback = false;
     first.record.error = null;
     first.record.warnings = [...(first.record.warnings || []), 'polish_chunk_unchanged_allowed'];
     return first.record;
   }
-  if (v2Enabled && first.hardFail && isNonEscalatableModelFailure(first.record)) {
+  if (first.hardFail && isNonEscalatableModelFailure(first.record)) {
     chunk.outputText = original;
     return first.record;
   }
@@ -1923,9 +1916,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return first.record;
   }
 
-  const escalationPatchTargets = v2Enabled
-    ? buildV2EscalationPatchTargets(patchTargets, first.record)
-    : patchTargets;
+  const escalationPatchTargets = buildV2EscalationPatchTargets(patchTargets, first.record);
 
   const second = await callHumanize({
     original,
@@ -1951,9 +1942,6 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     documentProfile,
     voiceProfile,
     niklQualityTest,
-    qualityPatternLab,
-    runSemanticJudge: v2Enabled ? false : highRisk,
-    v2Enabled,
     safetyIdentifier,
     chunkDeadlineMs,
     signal
@@ -1970,8 +1958,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
 
   const reviewableBoundaryReasons = new Set(['structure_boundary_marker_failed', 'noop_unchanged']);
   const boundaryFailureReasons = [first.record?.hardFailReason, second.record?.hardFailReason];
-  if (v2Enabled
-      && boundaryFailureReasons.includes('structure_boundary_marker_failed')
+  if (boundaryFailureReasons.includes('structure_boundary_marker_failed')
       && boundaryFailureReasons.every(reason => reviewableBoundaryReasons.has(reason))) {
     // 두 모델이 원문 경계 토큰을 지키지 못한 결과는 그대로 전달하지 않는다.
     // polish는 뒤의 1회 표면 수정 단계가 원문에서 다시 시작하고, 일반 모드는
@@ -1995,8 +1982,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return second.record;
   }
 
-  if (v2Enabled
-      && first.record?.hardFailReason === 'voice_sparse_distribution_failed'
+  if (first.record?.hardFailReason === 'voice_sparse_distribution_failed'
       && second.record?.hardFailReason === 'voice_sparse_distribution_failed') {
     // 구두점 없는 장문은 원문 그대로 되돌리면 다시 거대한 한 문장이 된다.
     // 상위 모델도 길이 분포 계약을 완전히 맞추지 못한 경우, 사실·구조 게이트를
@@ -2013,7 +1999,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return second.record;
   }
 
-  if (v2Enabled && isReviewableResidualPovAttempt(second)) {
+  if (isReviewableResidualPovAttempt(second)) {
     // 화자 보존 위반은 상위 모델로 한 번 수리한 뒤에도 남을 수 있다. 빈 출력·
     // 손상·숫자/보호어/구조 위반이 함께 없는 후보라면 원문으로 되돌려 no-op
     // 차단을 만들지 않고, 전체 문서 의미 감사와 voice 감사에서 다시 점검한 뒤
@@ -2032,8 +2018,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
 
   const voiceReviewAttempts = [first, second]
     .filter(attempt => attempt.record?.hardFailReason === 'voice_existing_distribution_failed');
-  if (v2Enabled
-      && voiceReviewAttempts.length > 0
+  if (voiceReviewAttempts.length > 0
       && [first.record, second.record].every(isRecoverableSurfaceFallbackRecord)) {
     // 두 모델이 원문의 장단문 분포를 지키지 못했으면 그중 덜 나쁜 결과를
     // 임의로 전달하지 않는다. 원문으로 되돌린 뒤 사실·구조·voice를 보존한
@@ -2060,8 +2045,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return second.record;
   }
 
-  if (v2Enabled
-      && mode !== 'polish'
+  if (mode !== 'polish'
       && first.record?.hardFailReason === 'noop_unchanged'
       && second.record?.hardFailReason === 'noop_unchanged') {
     chunk.outputText = second.outputText;
@@ -2075,8 +2059,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return second.record;
   }
 
-  const safeFallbackSurfaceRetry = v2Enabled
-    && mode !== 'polish'
+  const safeFallbackSurfaceRetry = mode !== 'polish'
     && [first.record, second.record].every(isRecoverableSurfaceFallbackRecord);
   chunk.outputText = original;
   return chunkRecord({
@@ -2103,33 +2086,31 @@ async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength, lang, userNotes, evidence,
     cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, documentProfile, voiceProfile,
-    niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, v2Enabled = false, safetyIdentifier = '', chunkDeadlineMs, signal
+    niklQualityTest = false, safetyIdentifier = '', chunkDeadlineMs, signal
   } = args;
   const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
   try {
-    const koreanSourceQuality = safeKoreanQualityAnalysis(original, {
+    const koreanQualityHints = koreanRefinement.buildSourcePromptHints(original, {
       mode,
-      register: contract.register
+      documentProfile
     });
-    const koreanQualityHints = safeKoreanQualityHints(koreanSourceQuality, documentProfile);
     const niklSourceQuality = niklQualityTest ? safeNiklQualityAnalysis(original, {
       mode,
       register: contract.register
     }) : null;
     const niklQualityHints = niklQualityTest ? safeNiklQualityHints(niklSourceQuality) : '';
     const niklExternalApiHints = niklQualityTest ? await safeNiklExternalApiHints(original, protectedTerms) : '';
-    const qualityPatternProfile = qualityPatternLab ? safeQualityPatternProfile(original, {
-      mode,
-      register: contract.register
-    }) : null;
-    const qualityPatternHints = qualityPatternLab ? safeQualityPatternHints(qualityPatternProfile) : '';
-    const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints, [niklQualityHints, niklExternalApiHints, qualityPatternHints].filter(Boolean).join('\n\n'));
-    const chunkHumanizationPlan = v2Enabled && isHumanizationDepthEnabled() ? humanizationDepth.buildHumanizationPlan(original, {
+    const riskProfile = composeRiskProfile(
+      inputRisk,
+      koreanQualityHints,
+      [niklQualityHints, niklExternalApiHints].filter(Boolean).join('\n\n')
+    );
+    const chunkHumanizationPlan = isHumanizationDepthEnabled() ? humanizationDepth.buildHumanizationPlan(original, {
       requestStrength,
       documentProfile,
       inputRisk
     }) : null;
-    const chunkDiscourseProfile = v2Enabled ? discourseAudit.buildDiscourseProfile(original) : null;
+    const chunkDiscourseProfile = discourseAudit.buildDiscourseProfile(original);
     const hp = prompts.buildHumanizePrompt(mode, lang, {
       requestStrength,
       speakerType: contract.speakerType,
@@ -2144,6 +2125,12 @@ async function callHumanize(args) {
       humanizationPlan: chunkHumanizationPlan,
       discourseProfile: chunkDiscourseProfile
     });
+    const promptIntegrity = prompts.validateHumanizePrompt(hp.stable);
+    if (!promptIntegrity.pass) {
+      const error = new Error(`humanize_prompt_integrity_failed:${promptIntegrity.errors.join(',')}`);
+      error.code = 'HUMANIZE_PROMPT_INTEGRITY_FAILED';
+      throw error;
+    }
     const retryInstruction = phase === 'escalation' ? prompts.buildEscalationInstruction() : '';
     const response = await completeJson({
       system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
@@ -2171,44 +2158,9 @@ async function callHumanize(args) {
     let outputText = sanitizeOutput(response.json.outputText);
     const boundaryAudit = structureChunk.restoreBoundaryMarkers(outputText, chunk);
     outputText = boundaryAudit.text;
-    outputText = chunkPostprocess(outputText, original, mode, contract, {
-      preserveLineBreaks: voiceProfile?.lineBreakSensitive === true,
-      deterministicPronouns: v2Enabled !== true
+    outputText = chunkPostprocess(outputText, original, {
+      preserveLineBreaks: voiceProfile?.lineBreakSensitive === true
     });
-    let judgeReport = null;
-    let judgeViolations = [];
-    let judgeHardFail = false;
-    let judgeHardFailReason = '';
-    if (runSemanticJudge) {
-      judgeReport = await require('./judge').judgeAndRepair(original, outputText, {
-        lang,
-        signal,
-        config: cfg,
-        maxRounds: 1,
-        allowedExtra,
-        mode,
-        safetyIdentifier
-      });
-      outputText = judgeReport.outputText || outputText;
-      if (judgeReport.pass === false) {
-        judgeHardFail = true;
-        judgeHardFailReason = 'semantic_judge_failed';
-        judgeViolations = (judgeReport.violations || []).map(v => ({
-          gate: 'semantic_judge_failed',
-          type: v.type,
-          span: v.span,
-          detail: v.detail
-        }));
-      } else if (judgeReport.skipped) {
-        judgeHardFail = true;
-        judgeHardFailReason = 'semantic_judge_skipped';
-        judgeViolations = [{
-          gate: 'semantic_judge_skipped',
-          reason: judgeReport.reason || 'judge_skipped',
-          detail: 'semantic judge did not have enough verified source claims'
-        }];
-      }
-    }
     const gate = evaluateChunkGate({
       outputText,
       original,
@@ -2233,7 +2185,7 @@ async function callHumanize(args) {
           : '병합 청크의 원문 경계 토큰이 누락되거나 중복되었습니다.'
       });
     }
-    if (v2Enabled && !gate.hardFail) {
+    if (!gate.hardFail) {
       const preservationViolations = gate.violations.filter(isV2ChunkPreservationViolation);
       const hardPreservationViolation = preservationViolations.find(v => normalizedViolationGate(v) !== 'novelty');
       const preservationViolation = hardPreservationViolation || preservationViolations[0];
@@ -2255,7 +2207,7 @@ async function callHumanize(args) {
         }
       }
     }
-    if (v2Enabled && !gate.hardFail) {
+    if (!gate.hardFail) {
       const voiceDistributionViolation = sparseVoiceDistributionViolation({
         original,
         source,
@@ -2270,7 +2222,7 @@ async function callHumanize(args) {
         gate.violations.push(voiceDistributionViolation);
       }
     }
-    if (v2Enabled && !gate.hardFail) {
+    if (!gate.hardFail) {
       const existingDistributionViolation = existingVoiceDistributionViolation({
         original,
         source,
@@ -2285,62 +2237,13 @@ async function callHumanize(args) {
         gate.violations.push(existingDistributionViolation);
       }
     }
-    const qualityGate = safeKoreanQualityGate(original, outputText, {
-      mode,
-      register: contract.register,
-      beforeAnalysis: koreanSourceQuality
-    });
     const niklQualityGate = niklQualityTest ? safeNiklQualityGate(original, outputText, {
       mode,
       register: contract.register,
       beforeAnalysis: niklSourceQuality
     }) : null;
-    const qualityPatternAudit = qualityPatternLab ? safeQualityPatternAudit(original, outputText, {
-      mode,
-      register: contract.register,
-      beforeProfile: qualityPatternProfile,
-      protectedTerms,
-      externalApiHintsUsed: Boolean(niklExternalApiHints)
-    }) : null;
-    if (qualityGate) {
-      if (Array.isArray(qualityGate.warnings) && qualityGate.warnings.length) {
-        gate.warnings.push(...qualityGate.warnings);
-      }
-      if (Array.isArray(qualityGate.violations) && qualityGate.violations.length) {
-        gate.violations.push(...qualityGate.violations);
-      }
-      if (qualityGate.blocking && process.env.STRICT_QUALITY_GATE === '1') {
-        gate.hardFail = true;
-        gate.reason = qualityGate.reason || 'korean_quality_regression';
-      }
-    }
-    if (niklQualityGate) {
-      if (Array.isArray(niklQualityGate.warnings) && niklQualityGate.warnings.length) {
-        gate.warnings.push(...niklQualityGate.warnings);
-      }
-      if (Array.isArray(niklQualityGate.violations) && niklQualityGate.violations.length) {
-        gate.violations.push(...niklQualityGate.violations.map(v => ({ ...v, niklQuality: true })));
-      }
-    }
-    if (judgeHardFail && process.env.STRICT_QUALITY_GATE === '1') {
-      gate.hardFail = true;
-      gate.reason = judgeHardFailReason;
-      gate.warnings.push(judgeHardFailReason);
-      gate.violations.push(...judgeViolations);
-    } else if (judgeHardFail) {
-      gate.warnings.push(judgeHardFailReason);
-      gate.violations.push(...judgeViolations);
-    }
-    if (qualityPatternLab && gate.hardFail && gate.reason === 'noop_unchanged') {
-      gate.hardFail = false;
-      gate.reason = '';
-      gate.warnings.push('quality_pattern_low_effect');
-      gate.violations.push({ gate: 'quality_pattern_low_effect', detail: 'output equivalent to source; delivered for lab audit' });
-    }
-    if (qualityPatternAudit?.auditTrail?.warnings?.length) {
-      gate.warnings.push(...qualityPatternAudit.auditTrail.warnings.map(w => `quality_pattern:${w}`));
-      gate.violations.push(...qualityPatternAudit.auditTrail.warnings.map(w => ({ gate: w, qualityPatternLab: true })));
-    }
+    // NIKL은 관리자 shadow 관측값이다. 서로 다른 한국어 판정기가 같은
+    // 후보를 차단하거나 다시 검토 상태로 바꾸지 않도록 gate에는 합치지 않는다.
     const serverEditMetrics = computeEditMetrics(original, outputText);
     return {
       outputText,
@@ -2355,7 +2258,6 @@ async function callHumanize(args) {
           ...(response.json.warnings || []),
           ...(response.json.riskFlags || []).map(v => `risk:${v}`),
           ...(response.json.factualRiskNotes || []).map(v => `fact_note:${v}`),
-          ...(judgeViolations.length ? [judgeHardFailReason || 'gpt_semantic_judge_warning'] : []),
           ...gate.warnings
         ],
         floorViolations: gate.violations,
@@ -2366,10 +2268,7 @@ async function callHumanize(args) {
         changedSentenceRatio: serverEditMetrics.changedSentenceRatio,
         charEditRatio: serverEditMetrics.charEditRatio,
         lengthRatio: serverEditMetrics.lengthRatio,
-        judgeReport,
-        koreanQuality: compactKoreanQualityGate(qualityGate),
         niklQuality: compactNiklQualityGate(niklQualityGate),
-        qualityPatternLab: compactQualityPatternAudit(qualityPatternAudit),
         selectedModel: response.model,
         retryCounts: response.retryCounts,
         escalated: phase === 'escalation'
@@ -2680,15 +2579,6 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
     violations.push({ gate: 'noop_unchanged', detail: 'output equivalent to source' });
     return { hardFail: true, reason: 'noop_unchanged', warnings, violations };
   }
-  try {
-    const outSurface = surfaceguard.buildSurfaceReport(outputText);
-    const srcRatio = sourceSurface?.paragraphs?.abstractRiskRatio || 0;
-    const outRatio = outSurface?.paragraphs?.abstractRiskRatio || 0;
-    if (outRatio > srcRatio + 0.22 && outRatio >= 0.55) {
-      warnings.push('surface_risk_regression');
-      violations.push({ gate: 'surface_risk_regression', sourceRatio: srcRatio, outputRatio: outRatio });
-    }
-  } catch {}
   return { hardFail: false, reason: '', warnings, violations };
 }
 
@@ -2743,15 +2633,6 @@ function evaluateWholeDocumentGate({ outputText, source, contract, mode, sourceS
     violations.push({ gate: 'noop_unchanged', detail: 'final output equivalent to source' });
     return { hardFail: true, reason: 'noop_unchanged', warnings, violations };
   }
-  try {
-    const outSurface = surfaceguard.buildSurfaceReport(outputText);
-    const srcRatio = sourceSurface?.paragraphs?.abstractRiskRatio || 0;
-    const outRatio = outSurface?.paragraphs?.abstractRiskRatio || 0;
-    if (outRatio > srcRatio + 0.22 && outRatio >= 0.55) {
-      warnings.push('surface_risk_regression');
-      violations.push({ gate: 'surface_risk_regression', sourceRatio: srcRatio, outputRatio: outRatio });
-    }
-  } catch {}
   return { hardFail: false, reason: '', warnings, violations };
 }
 
@@ -3127,6 +3008,14 @@ function isSafeLocalizedLanguageCandidate({
   const candidateDiscourse = discourseAudit.compareDiscourse(original, after);
   const currentCodes = new Set(currentDiscourse.codes || []);
   if ((candidateDiscourse.codes || []).some(code => !currentCodes.has(code))) return false;
+  const integrity = candidateIntegrity.auditCandidateIntegrity({
+    source: original,
+    before: current,
+    candidate: after,
+    documentProfile,
+    mode
+  });
+  if (!integrity.pass) return false;
 
   if (!allowDepthRegression && currentDepth?.applicable && candidateDepth?.applicable) {
     const currentScore = humanizationDepth.humanizationCandidateScore(currentDepth);
@@ -3138,9 +3027,9 @@ function isSafeLocalizedLanguageCandidate({
         < Number(currentDepth.metrics?.structurallyChangedSentenceCount || 0)) return false;
   }
   if (mode === 'polish') {
-    const policy = qualityV2.polishEditPolicy(original, after);
+    const policy = qualityV2.polishEditPolicy(original, after, { documentProfile });
     const padding = qualityV2.comparePolishEvaluativePadding(original, after);
-    if (policy.noSafeChange || policy.excessiveChange || padding.increased) return false;
+    if (policy.noSafeChange || policy.excessiveChange || policy.needsIssueRecovery || padding.increased) return false;
   }
   return true;
 }
@@ -3273,20 +3162,12 @@ function sanitizeOutput(value) {
     .trim();
 }
 
-function chunkPostprocess(text, original, mode, contract, { preserveLineBreaks = false, deterministicPronouns = true } = {}) {
+function chunkPostprocess(text, original, { preserveLineBreaks = false } = {}) {
   let out = String(text || '').trim();
   if (preserveLineBreaks) return out;
-  try { out = local.spacing.fixSpacing(out).text; } catch {}
-  try { out = local.spacing.restoreUrls(out, original).text; } catch {}
-  try { out = local.spacing.stripAiUrlParams(out).text; } catch {}
-  try {
-    const target = mode === 'blog'
-      ? (contract.register === 'polite' ? 'hap' : contract.register === 'haeyo' ? 'haeyo' : null)
-      : (contract.register === 'polite' ? 'hap' : contract.register === 'plain' ? 'handa' : contract.register === 'haeyo' ? 'haeyo' : null);
-    if (target) out = local.registernormalize.normalizeRegister(out, target, {
-      convertPronouns: deterministicPronouns
-    }).text;
-  } catch {}
+  try { out = spacing.fixSpacing(out).text; } catch {}
+  try { out = spacing.restoreUrls(out, original).text; } catch {}
+  try { out = spacing.stripAiUrlParams(out).text; } catch {}
   return out.trim();
 }
 
@@ -3317,29 +3198,29 @@ function tidyParagraphsLocal(doc, source = '') {
   }).filter(Boolean).join('\n\n');
 }
 
-function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLineBreaks = false, v2Enabled = false } = {}) {
+function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLineBreaks = false } = {}) {
   let out = String(text || '').trim();
   if (!preserveLineBreaks) {
     try { out = tidyParagraphsLocal(out, source); } catch {}
     // 문단·레이아웃 결정권은 구조 모듈 하나에 둔다. 업종별 고정 문장을
     // 주입하던 basicblogtone과 실질 no-op flowCohesion은 운영 경로에서 제외한다.
     try {
-      const dedupe = local.dedupe.dedupeSentences(out);
-      out = dedupe.text;
-      const blockDedupe = local.dedupe.removeNewExactDuplicateBlocks(source, out);
+      const dedupeResult = dedupe.dedupeSentences(out);
+      out = dedupeResult.text;
+      const blockDedupe = dedupe.removeNewExactDuplicateBlocks(source, out);
       out = blockDedupe.text;
       meta.dedupe = {
-        removedExactCount: (dedupe.removed || 0) + (blockDedupe.removedSentenceCount || 0),
+        removedExactCount: (dedupeResult.removed || 0) + (blockDedupe.removedSentenceCount || 0),
         removedBlockCount: blockDedupe.removedBlockCount || 0,
         removedBlockSentenceCount: blockDedupe.removedSentenceCount || 0,
-        fuzzyWarningCount: dedupe.fuzzyWarnings?.length || 0,
-        fuzzyWarnings: dedupe.fuzzyWarnings || []
+        fuzzyWarningCount: dedupeResult.fuzzyWarnings?.length || 0,
+        fuzzyWarnings: dedupeResult.fuzzyWarnings || []
       };
     } catch {}
   } else {
     meta.dedupe = { skipped: true, reason: 'creative_line_structure' };
   }
-  try { out = local.spacing.restoreUrls(out, source).text; } catch {}
+  try { out = spacing.restoreUrls(out, source).text; } catch {}
   return out.trim();
 }
 
@@ -3448,7 +3329,7 @@ function paragraphCount(text) {
   return String(text || '').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean).length;
 }
 
-function buildResult({ source, outputText, contract, mode, records, inputRisk, allowedExtra = '', niklQualityTest = false, qualityPatternLab = false, structureAudit = null }) {
+function buildResult({ source, outputText, contract, mode, records, inputRisk, allowedExtra = '', niklQualityTest = false, structureAudit = null }) {
   const result = {
     outputText,
     styleProfile: PROFILE,
@@ -3460,35 +3341,16 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk, a
     structureLock: structureAudit || null
   };
   try { result.povDrift = floor.measurePovDrift(source, outputText, contract.povSeed); } catch {}
-  try { result.floorNovelty = floor.measureNovelty(source, outputText, ''); } catch {}
+  try { result.floorNovelty = floor.measureNovelty(source, outputText, allowedExtra); } catch {}
   try { result.floorLength = floor.measureLength(source, outputText, mode); } catch {}
   try { result.repetition = floor.measureRepetition(outputText); } catch {}
   try { result.lostFacts = floor.measureLostFacts(source, outputText); } catch {}
-  try { result.softDrift = local.softguard.measureSoftDrift(source, outputText); } catch {}
-  try { result.conclusionDrift = local.softguard.measureConclusionDrift(source, outputText); } catch {}
   try { result.surface = surfaceguard.buildSurfaceReport(outputText); } catch {}
-  try {
-    result.noOpScore = local.outputguard.noOpScore(source, outputText);
-    result.weakTransform = mode === 'polish' ? result.noOpScore >= 0.97 : result.noOpScore >= 0.88;
-  } catch {}
-  try { result.koreanQuality = compactKoreanQualityGate(koreanQuality.evaluateKoreanQuality(source, outputText, { mode, register: contract.register })); } catch {}
-  try {
-    result.floorReport = floor.buildFloorReport({
-      result,
-      rawText: source,
-      mode,
-      povSeed: contract.povSeed,
-      optIn: contract.optIn === true,
-      allowedExtra
-    });
-  } catch (err) {
-    result.floorReport = {
-      status: 'blocked',
-      criticals: [{ gate: 'floor_report_error', detail: err && err.message || String(err) }],
-      warnings: []
-    };
-  }
-  attachKoreanQualityWarnings(result.floorReport, result.koreanQuality);
+  // v2의 전달 상태는 deliveryPolicy와 finalQualityV2만 소유한다. 레거시
+  // buildFloorReport를 다시 호출하면 conclusion_drift·experience_novelty
+  // 같은 구형 휴리스틱이 새 의미 감사와 중복되어 clean 결과를 review로
+  // 뒤집는다. 호환 측정값은 남기되 판정 배열은 비어 있는 단일 기준으로 시작한다.
+  result.floorReport = buildV2BaseFloorReport(result, contract);
   if (niklQualityTest) {
     try {
       result.niklQualityTest = compactNiklQualityGate(safeNiklQualityGate(source, outputText, {
@@ -3497,40 +3359,26 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk, a
       }));
     } catch {}
     result.niklQuality = result.niklQualityTest || null;
-    attachNiklQualityWarnings(result.floorReport, result.niklQualityTest);
   }
-  if (qualityPatternLab) {
-    try {
-      const protectedTerms = collectRecordProtectedTerms(records);
-      const externalApiHintsUsed = records.some(r => r?.qualityPatternLab?.auditTrail?.externalApiHintsUsed === true);
-      const audit = safeQualityPatternAudit(source, outputText, {
-        mode,
-        register: contract.register,
-        protectedTerms,
-        externalApiHintsUsed
-      });
-      const compact = compactQualityPatternAudit(audit);
-      result.qualityPatternLab = {
-        enabled: true,
-        version: compact?.version || 'ko-quality-pattern-lab-v1',
-        action: compact?.auditTrail?.action || 'pass',
-        externalApiHintsUsed
-      };
-      result.qualityProfileBefore = compact?.qualityProfileBefore || null;
-      result.qualityProfileAfter = compact?.qualityProfileAfter || null;
-      result.patternDelta = compact?.patternDelta || null;
-      result.auditTrail = compact?.auditTrail || null;
-      result.protectedTermReport = compact?.protectedTermReport || null;
-      result.claimStrengthDrift = compact?.claimStrengthDrift || null;
-      result.rhetoricalInsertion = compact?.rhetoricalInsertion || null;
-      result.grammarHardError = compact?.grammarHardError || null;
-      result.externalApiHintsUsed = externalApiHintsUsed;
-      attachQualityPatternWarnings(result.floorReport, compact);
-    } catch {}
-  }
-  attachWeakTransformWarning(result.floorReport, result);
-  if (qualityPatternLab) softenQualityPatternLabFloorReport(result.floorReport);
   return result;
+}
+
+function buildV2BaseFloorReport(result, contract) {
+  const length = result?.floorLength || {};
+  const pov = result?.povDrift || {};
+  return {
+    status: 'clean',
+    criticals: [],
+    warnings: [],
+    metrics: {
+      lengthRatio: Number(length.ratio) || 0,
+      novelty: Number(result?.floorNovelty?.count) || 0,
+      lostFacts: Number(result?.lostFacts?.count) || 0,
+      repetition: Number(result?.repetition?.total) || 0,
+      povInject: Boolean(pov.introducedAnyFirstPerson && contract?.optIn !== true),
+      judge: null
+    }
+  };
 }
 
 function depthEffectNotices(report) {
@@ -3541,65 +3389,6 @@ function depthEffectNotices(report) {
       .replace(/결과를 확인해 주세요\.?$/u, '안전하게 바꿀 수 있는 범위가 제한적이었어요.')
       .replace(/결과 확인이 필요해요\.?$/u, '안전하게 바꿀 수 있는 범위가 제한적이었어요.')
   }));
-}
-
-function attachKoreanQualityWarnings(report, quality) {
-  if (!report || !quality || quality.action === 'pass') return;
-  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
-  report.warnings = [
-    ...warnings,
-    {
-      gate: 'korean_quality_final',
-      action: quality.action,
-      reason: quality.reason || '',
-      riskDelta: quality.riskDelta
-    }
-  ];
-}
-
-function attachNiklQualityWarnings(report, quality) {
-  if (!report || !quality || quality.action === 'pass') return;
-  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
-  report.warnings = [
-    ...warnings,
-    {
-      gate: 'nikl_quality',
-      niklQuality: true,
-      action: quality.action,
-      reason: quality.reason,
-      niklRiskDelta: quality.niklRiskDelta,
-      beforeRisk: quality.beforeRisk,
-      afterRisk: quality.afterRisk,
-      missingTerms: quality.missingTerms || []
-    }
-  ];
-}
-
-function attachQualityPatternWarnings(report, audit) {
-  if (!report || !audit || !audit.auditTrail) return;
-  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
-  const action = audit.auditTrail.action || 'pass';
-  if (action === 'pass') return;
-  const warningList = audit.auditTrail.warnings || [];
-  report.warnings = [
-    ...warnings,
-    {
-      gate: 'quality_pattern_lab',
-      action,
-      warnings: warningList,
-      blockers: audit.auditTrail.blockers || [],
-      riskDelta: audit.patternDelta?.riskDelta,
-      protectedTermLossCount: audit.protectedTermReport?.lossCount || 0,
-      grammarHardError: audit.grammarHardError?.introduced === true
-    }
-  ];
-  if (report.status === 'clean') {
-    report.status = action === 'blocked'
-      ? 'blocked'
-      : shouldPromoteWarningsToNeedsReview(warningList)
-        ? 'needs_review'
-        : report.status;
-  }
 }
 
 function addStructureWarnings(report, audit) {
@@ -3658,39 +3447,6 @@ function addStructureWarnings(report, audit) {
   if (report.status === 'clean' && additions.some(v => v.action === 'needs_review')) {
     report.status = 'needs_review';
   }
-}
-
-function attachWeakTransformWarning(report, result) {
-  if (!report || !result || !result.weakTransform) return;
-  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
-  report.warnings = [
-    ...warnings,
-    {
-      gate: 'weak_transform',
-      noOpScore: Number(Number(result.noOpScore || 0).toFixed(3)),
-      detail: 'output is close to source; delivered but should be monitored'
-    }
-  ];
-}
-
-function softenFloorReport(report) {
-  if (!report || process.env.STRICT_QUALITY_GATE === '1') return report;
-  if (report.status !== 'blocked') return report;
-  const criticals = Array.isArray(report.criticals) ? report.criticals : [];
-  if (process.env.GPT_SOFTEN_FLOOR_REPORT === '0') return report;
-  if (hasStrictDeliveryCritical(criticals)) return report;
-  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
-  report.status = 'needs_review';
-  report.warnings = [
-    ...warnings,
-    ...criticals.map(c => ({ ...c, softenedFromCritical: true }))
-  ];
-  report.criticals = [];
-  return report;
-}
-
-function hasStrictDeliveryCritical(criticals) {
-  return (criticals || []).some(c => deliveryPolicy.isTechnicalCritical(c));
 }
 
 function calibrateV2RepetitionReport(result, source, outputText) {
@@ -3819,17 +3575,11 @@ function isModelFailureRecord(record) {
 }
 
 function modelCallFailureCode(error) {
-  const code = safeFailureCode(error?.code || error?.message || error);
-  if (code === 'request_aborted') return code;
-  if (code.startsWith('openai_')) return code;
-  return 'gpt_call_failed';
+  return classifyModelFailure(error);
 }
 
 function isNonEscalatableModelFailure(record) {
-  const code = String(record?.hardFailReason || '');
-  return code === 'gpt_call_failed'
-    || code === 'request_aborted'
-    || /^openai_(?:rate|timeout|network|schema|refusal|chunk)/u.test(code);
+  return isNonEscalatableModelFailureCode(record?.hardFailReason);
 }
 
 function sanitizeRetryCounts(value) {
@@ -3884,10 +3634,7 @@ function chunkRecord({
   lengthRatio = null,
   protectedTerms = [],
   selectedModel = '',
-  judgeReport = null,
-  koreanQuality = null,
   niklQuality = null,
-  qualityPatternLab = null,
   retryCounts = null
 }) {
   return {
@@ -3913,10 +3660,7 @@ function chunkRecord({
     charEditRatio,
     lengthRatio,
     protectedTerms,
-    judgeReport,
-    koreanQuality,
     niklQuality,
-    qualityPatternLab,
     selectedModel,
     retryCounts: sanitizeRetryCounts(retryCounts)
   };
@@ -4138,30 +3882,19 @@ function safeInputRisk(text) {
   try { return surfaceguard.classifyInputRisk(text); } catch { return null; }
 }
 
-function safeKoreanQualityAnalysis(text, opts = {}) {
-  try { return koreanQuality.analyzeText(text, opts); } catch { return null; }
-}
-
-function safeKoreanQualityHints(analysis, documentProfile = null) {
-  try { return analysis ? koreanQuality.buildPromptHints(analysis, { max: 8, documentProfile }) : ''; } catch { return ''; }
-}
-
-function safeKoreanQualityGate(source, output, opts = {}) {
-  try { return koreanQuality.evaluateKoreanQuality(source, output, opts); } catch { return null; }
-}
-
 function safeNiklQualityAnalysis(text, opts = {}) {
-  try { return koreanQuality.niklTest.analyzeNiklQuality(text, opts); } catch { return null; }
+  try { return optionalNiklLab()?.niklTest?.analyzeNiklQuality(text, opts) || null; } catch { return null; }
 }
 
 function safeNiklQualityHints(analysis) {
-  try { return analysis ? koreanQuality.niklTest.buildNiklPromptHints(analysis, { max: 6 }) : ''; } catch { return ''; }
+  try { return analysis ? optionalNiklLab()?.niklTest?.buildNiklPromptHints(analysis, { max: 6 }) || '' : ''; } catch { return ''; }
 }
 
 async function safeNiklExternalApiHints(text, protectedTerms = []) {
   try {
     if (process.env.GPT_NIKL_EXTERNAL_API_ENABLED !== '1') return '';
-    const api = koreanQuality.officialApi;
+    const api = optionalNiklLab()?.officialApi;
+    if (!api) return '';
     const status = api.getApiStatus();
     const providers = selectedNiklApiProviders(status);
     if (!providers.length) return '';
@@ -4192,43 +3925,23 @@ async function safeNiklExternalApiHints(text, protectedTerms = []) {
 }
 
 function safeNiklQualityGate(source, output, opts = {}) {
-  try { return koreanQuality.niklTest.evaluateNiklQuality(source, output, opts); } catch { return null; }
-}
-
-function safeQualityPatternProfile(text, opts = {}) {
-  try { return koreanQuality.qualityPatternLab.buildQualityProfile(text, opts); } catch { return null; }
-}
-
-function safeQualityPatternHints(profile) {
-  try { return profile ? koreanQuality.qualityPatternLab.buildPromptHints(profile, { max: 8 }) : ''; } catch { return ''; }
-}
-
-function safeQualityPatternAudit(source, output, opts = {}) {
-  try { return koreanQuality.qualityPatternLab.buildAudit(source, output, opts); } catch { return null; }
-}
-
-function compactQualityPatternAudit(audit) {
-  try { return koreanQuality.qualityPatternLab.compactAudit(audit); } catch { return null; }
-}
-
-function compactKoreanQualityGate(gate) {
-  if (!gate) return null;
-  return {
-    action: gate.action,
-    reason: gate.reason || '',
-    koreanRiskDelta: gate.riskDelta,
-    grammarHardDelta: gate.grammarHardDelta || 0,
-    koreanSkillRisk: gate.output?.koreanSkillRisk,
-    translationeseRisk: gate.output?.translationeseRisk,
-    grammarRisk: gate.output?.grammarRisk,
-    styleConsistencyRisk: gate.output?.styleConsistencyRisk,
-    grade: gate.output?.grade,
-    topKoreanPatterns: (gate.output?.topPatterns || []).slice(0, 8)
-  };
+  try { return optionalNiklLab()?.niklTest?.evaluateNiklQuality(source, output, opts) || null; } catch { return null; }
 }
 
 function compactNiklQualityGate(gate) {
-  try { return koreanQuality.niklTest.compactNiklReport(gate); } catch { return null; }
+  try { return optionalNiklLab()?.niklTest?.compactNiklReport(gate) || null; } catch { return null; }
+}
+
+let optionalNiklLabModule = null;
+function optionalNiklLab() {
+  if (optionalNiklLabModule) return optionalNiklLabModule;
+  // 관리자 shadow 도구는 명시적으로 켠 요청에서만 로드한다. 런타임 경로를
+  // 조합해 production import graph와 일반 서버 시작 경로에서도 격리한다.
+  optionalNiklLabModule = {
+    niklTest: module.require(['..', 'engine', 'koreanQuality', 'niklTest'].join('/')),
+    officialApi: module.require(['..', 'engine', 'koreanQuality', 'officialApi'].join('/'))
+  };
+  return optionalNiklLabModule;
 }
 
 function collectRecordProtectedTerms(records = []) {
@@ -4245,36 +3958,6 @@ function collectRecordProtectedTerms(records = []) {
     }
   }
   return out;
-}
-
-function softenQualityPatternLabFloorReport(report) {
-  if (!report || report.status !== 'blocked') return report;
-  const criticals = Array.isArray(report.criticals) ? report.criticals : [];
-  if (!criticals.length) return report;
-  const strict = criticals.filter(isQualityPatternStrictCritical);
-  const soft = criticals.filter(c => !isQualityPatternStrictCritical(c));
-  if (strict.length) {
-    report.criticals = strict;
-    if (soft.length) {
-      report.warnings = [
-        ...(Array.isArray(report.warnings) ? report.warnings : []),
-        ...soft.map(c => ({ ...c, softenedFromCritical: true, qualityPatternLab: true }))
-      ];
-    }
-    return report;
-  }
-  report.status = 'needs_review';
-  report.warnings = [
-    ...(Array.isArray(report.warnings) ? report.warnings : []),
-    ...soft.map(c => ({ ...c, softenedFromCritical: true, qualityPatternLab: true }))
-  ];
-  report.criticals = [];
-  return report;
-}
-
-function isQualityPatternStrictCritical(c) {
-  const gate = String(c?.gate || c?.type || '').trim();
-  return /empty|meta_output|prompt_instruction_leak|encoding_corruption|sentence_truncated/i.test(gate);
 }
 
 function compactRisk(inputRisk) {

@@ -67,6 +67,58 @@ function auditEndingStyle(source, output, documentProfile = null) {
   };
 }
 
+function auditPolishEndingConsistency(source, output, documentProfile = null) {
+  const profile = profileName(documentProfile);
+  const compactRecordStyle = ['clinical_record', 'student_record_teacher'].includes(profile);
+  const sourceSections = splitSections(source);
+  const outputSections = splitSections(output);
+  const sections = [];
+  for (let index = 0; index < sourceSections.length; index += 1) {
+    const sourceSentences = eligibleSentences(sourceSections[index].body, {
+      includeListBodies: compactRecordStyle
+    });
+    const sourceHistogram = endingHistogram(sourceSentences);
+    const recognized = styleTotal(sourceHistogram);
+    const dominant = dominantStyle(sourceHistogram);
+    const dominantCount = Number(sourceHistogram[dominant] || 0);
+    const dominantRatio = recognized ? dominantCount / recognized : 0;
+    const sourceOutlierCount = recognized - dominantCount;
+    const minimumEvidence = compactRecordStyle ? 3 : 6;
+    if (sourceSentences.length < minimumEvidence
+        || recognized < minimumEvidence
+        || dominantRatio < 0.75
+        || sourceOutlierCount < 1) continue;
+    const outputSection = outputSections[index] || { body: '' };
+    const outputHistogram = endingHistogram(eligibleSentences(outputSection.body, {
+      includeListBodies: compactRecordStyle
+    }));
+    const remainingOutlierCount = STYLES
+      .filter(style => style !== dominant)
+      .reduce((sum, style) => sum + Number(outputHistogram[style] || 0), 0);
+    sections.push({
+      index,
+      heading: sourceSections[index].heading || `section_${index + 1}`,
+      dominantStyle: dominant,
+      dominantRatio: round4(dominantRatio),
+      sourceOutlierCount,
+      remainingOutlierCount,
+      sourceHistogram,
+      outputHistogram
+    });
+  }
+  const sourceIssueCount = sections.reduce((sum, item) => sum + item.sourceOutlierCount, 0);
+  const remainingIssueCount = sections.reduce((sum, item) => sum + item.remainingOutlierCount, 0);
+  return {
+    version: VERSION,
+    applicable: sections.length > 0,
+    pass: remainingIssueCount === 0,
+    sourceIssueCount,
+    remainingIssueCount,
+    fixedIssueCount: Math.max(0, sourceIssueCount - remainingIssueCount),
+    sections
+  };
+}
+
 function splitSections(value) {
   const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
   const sections = [];
@@ -162,6 +214,7 @@ module.exports = {
   VERSION,
   STYLES,
   auditEndingStyle,
+  auditPolishEndingConsistency,
   splitSections,
   eligibleSentences,
   endingHistogram,

@@ -230,7 +230,6 @@ async function replay(args) {
   if (args.execute !== '1' && args.execute !== true) throw new Error('실제 API 비용이 발생합니다. --execute=1을 명시하세요.');
   if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY가 필요합니다.');
   if (!process.env.OPENAI_SAFETY_SALT) throw new Error('OPENAI_SAFETY_SALT가 필요합니다.');
-  process.env.HUMANIZE_ENGINE_V2_ENABLED = '1';
   const engine = require('../engine-gpt-prod');
   const runtime = require('../lib/gptRuntimeConfig');
   const manifest = loadManifest(args.manifest);

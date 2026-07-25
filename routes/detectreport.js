@@ -11,8 +11,8 @@
 const express = require('express');
 const router = express.Router();
 const billing = require('../lib/usageBilling');
-const diagnose = require('./diagnose');         // 밴드 테이블 재사용
-const transform = require('./transform');       // restructureCredit 재사용(단가 단일 출처)
+const { BANDS, COPY } = require('../lib/detectPresentation');
+const { restructureCredit, shortHumanizeCredit } = require('../lib/humanizePricing');
 const sg = require('../engine/surfaceguard');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
@@ -142,10 +142,8 @@ router.post('/detect-report', async (req, res) => {
     return res.status(500).json({ error: '감지 처리 중 오류가 발생했어요.' });
   }
   const grade = ir.grade || 'B';
-  const copy = diagnose.COPY[grade] || diagnose.COPY.B;
-  const advancedRouting = resolveAdvancedRouting(text, ir, {
-    v2Enabled: true
-  });
+  const copy = COPY[grade] || COPY.B;
+  const advancedRouting = resolveAdvancedRouting(text, ir);
   let advancedTimeEstimate = null;
   try {
     advancedTimeEstimate = estimateAdvancedTime(text);
@@ -255,7 +253,7 @@ router.post('/detect-report', async (req, res) => {
 
   // ③ 비용 — 실제 과금 공식과 동일 산식(다듬기 1/100자 · 블로그 2/100자 · 재구성 구간 정액)
   const len = text.length;
-  const B = diagnose.BANDS;
+  const B = BANDS;
   res.json({
     ok: true,
     free: false,          // 무료 제공 제거(2026-07-20) — 항상 유료
@@ -300,12 +298,12 @@ router.post('/detect-report', async (req, res) => {
     },
     example,   // { before, after } | null — null이면 프론트가 블록 자체를 숨김
     solutions: {
-      polish: { band: B.POLISH_BAND[grade], credits: transform.shortHumanizeCredit(len) },
-      blog: { band: B.BLOG_BAND[grade], credits: transform.shortHumanizeCredit(len) },
+      polish: { band: B.POLISH_BAND[grade], credits: shortHumanizeCredit(len) },
+      blog: { band: B.BLOG_BAND[grade], credits: shortHumanizeCredit(len) },
       restructure: {
         band: B.RESTRUCTURE_BAND,
-        credits: transform.restructureCredit(len, false),
-        creditsEvidence: transform.restructureCredit(len, true)
+        credits: restructureCredit(len, false),
+        creditsEvidence: restructureCredit(len, true)
       }
     }
   });

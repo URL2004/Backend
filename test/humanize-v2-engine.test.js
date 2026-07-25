@@ -36,10 +36,8 @@ function installEngineMock(t, options = {}) {
   const originalEnv = {
     key: process.env.OPENAI_API_KEY,
     salt: process.env.OPENAI_SAFETY_SALT,
-    v2: process.env.HUMANIZE_ENGINE_V2_ENABLED,
     layout: process.env.GPT_LAYOUT_NLP_ENABLED,
     nikl: process.env.GPT_NIKL_QUALITY_ENABLED,
-    qualityPattern: process.env.GPT_QUALITY_PATTERN_ENABLED,
     humanizationDepth: process.env.HUMANIZATION_DEPTH_GATE_ENABLED
   };
   const restoreEnv = (name, value) => {
@@ -48,10 +46,8 @@ function installEngineMock(t, options = {}) {
   };
   process.env.OPENAI_API_KEY = 'test-key';
   process.env.OPENAI_SAFETY_SALT = 'engine-test-salt';
-  process.env.HUMANIZE_ENGINE_V2_ENABLED = '1';
   process.env.GPT_LAYOUT_NLP_ENABLED = '0';
   process.env.GPT_NIKL_QUALITY_ENABLED = '0';
-  process.env.GPT_QUALITY_PATTERN_ENABLED = '0';
   process.env.HUMANIZATION_DEPTH_GATE_ENABLED = options.humanizationDepth === true ? '1' : '0';
   const calls = [];
   let semanticCalls = 0;
@@ -133,10 +129,8 @@ function installEngineMock(t, options = {}) {
     global.fetch = originalFetch;
     restoreEnv('OPENAI_API_KEY', originalEnv.key);
     restoreEnv('OPENAI_SAFETY_SALT', originalEnv.salt);
-    restoreEnv('HUMANIZE_ENGINE_V2_ENABLED', originalEnv.v2);
     restoreEnv('GPT_LAYOUT_NLP_ENABLED', originalEnv.layout);
     restoreEnv('GPT_NIKL_QUALITY_ENABLED', originalEnv.nikl);
-    restoreEnv('GPT_QUALITY_PATTERN_ENABLED', originalEnv.qualityPattern);
     restoreEnv('HUMANIZATION_DEPTH_GATE_ENABLED', originalEnv.humanizationDepth);
   });
   return { calls, semanticCalls: () => semanticCalls };
@@ -148,7 +142,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.4');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.5');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -158,7 +152,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.ok(Array.isArray(out.engineMeta.riskFlags));
   assert.equal(out.engineMeta.tonePolicy, 'source_preserve');
   assert.equal(out.engineMeta.semanticJudgeRan, true);
-  assert.equal(out.engineMeta.discourseAuditVersion, 2);
+  assert.equal(out.engineMeta.discourseAuditVersion, 3);
   assert.equal(out.engineMeta.discoursePass, true);
   assert.deepEqual(out.engineMeta.discourseWarningCodes, []);
   assert.equal(out.engineMeta.logicalChunkCount, out.engineMeta.chunkCount);
@@ -313,6 +307,29 @@ test('polish 무변환은 표면 수정 재시도 정확히 1회 후 안전 결�
   assert.equal(out.engineMeta.repairCount, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
+});
+
+test('polish 무변환 재시도가 원문 숫자·내용을 잃은 무관한 후보를 반환하면 채택하지 않는다', { concurrency: false }, async t => {
+  const source = '2026년 설문에는 학생 20명이 참여했습니다. 결과 문장은 이미 자연스럽게 작성되었습니다.';
+  const unrelated = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지 않습니다.';
+  const mock = installEngineMock(t, {
+    humanize: source,
+    retryOutput: unrelated,
+    safeChangeFound: true
+  });
+  const out = await engine.run({
+    text: source,
+    mode: 'polish',
+    allowPolish: true,
+    uid: 'polish-unrelated-retry-user',
+    config: config()
+  });
+  assert.equal(out.status, 'blocked');
+  assert.equal(out.result.outputText.includes('2026년'), true);
+  assert.equal(out.result.outputText.includes('학생 20명'), true);
+  assert.ok(out.floorReport.criticals.some(item => item.gate === 'polish_unchanged'));
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 0);
 });
 
 test('polish에 새 평가어가 붙으면 자연성 점수와 무관하게 보존형 표면 수리로 제거한다', { concurrency: false }, async t => {
@@ -966,11 +983,16 @@ test('영어 입력은 세 공개 모드 모두 API 호출 전에 한국어 전�
   assert.equal(mock.calls.length, 0);
 });
 
-test('운영 엔진은 구형 플래그와 무관하게 v2.5 경로만 사용한다', { concurrency: false }, async t => {
+test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만 사용한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t, { humanize: SAFE_POLISH });
+  const previous = process.env.HUMANIZE_ENGINE_V2_ENABLED;
   process.env.HUMANIZE_ENGINE_V2_ENABLED = '0';
+  t.after(() => {
+    if (previous === undefined) delete process.env.HUMANIZE_ENGINE_V2_ENABLED;
+    else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
+  });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.4');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.5');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

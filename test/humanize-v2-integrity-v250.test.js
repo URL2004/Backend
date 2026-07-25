@@ -11,7 +11,6 @@ const legalAudit = require('../engine-gpt-prod/legalAudit');
 const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
 const { detectRegister } = require('../engine/contract');
 const surfaceguard = require('../engine/surfaceguard');
-const outputguard = require('../engine/outputguard');
 const endingStyleAudit = require('../engine-gpt-prod/endingStyleAudit');
 const dedupe = require('../engine/dedupe');
 const transform = require('../routes/transform');
@@ -159,7 +158,6 @@ test('명사 끝 요는 해요체가 아니며 종결 증거가 없으면 unknow
   const nounOnly = '주요 목적\n정책 수요\n필요 조건\n연구 개요';
   assert.equal(detectRegister(nounOnly), 'unknown');
   assert.equal(surfaceguard.measureRegisterMix(nounOnly).dominant, 'unknown');
-  assert.equal(outputguard.detectRegister(nounOnly).dominant, 'other');
   assert.equal(endingStyleAudit.endingHistogram(['주요.', '수요.', '필요.', '개요.']).other, 4);
   assert.equal(detectRegister('이 결과는 중요해요. 다음 단계도 확인해요.'), 'haeyo');
 });

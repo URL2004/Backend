@@ -1,9 +1,9 @@
-// [engine/evidenceguard.js] 승인 사실(evidence) 무결성 결정론 가드 — genretransfer에서 이식(2026-06-11)
+// [engine/evidenceguard.js] 승인 사실(evidence) 무결성 결정론 가드
 // ────────────────────────────────────────────────────────────────
 // ★ 범용 교훈(§메모리): 외부 evidence를 쓰는 모든 경로에는 "수치-출처 짝" 독립 가드가 필수다.
 //   novelty는 토큰만 보므로 "666명 중 45.9%"(두 조사 융합)·"-0.68 → 향상폭 0.68"(부호 탈락) 같은
 //   *의미 재조합 날조*를 통과시키고, semanticJudge는 확률적이라 가끔 놓친다(각 1회 실측).
-//   여기 가드들은 전부 결정론·무비용 — 메인 엔진(analyze.js)과 genretransfer가 공용.
+//   여기 가드들은 전부 결정론·무비용이며 현재 GPT 운영 엔진이 사용한다.
 
 const sg = require('./surfaceguard');
 const floor = require('./floor');

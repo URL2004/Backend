@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = 2;
+const VERSION = 3;
 
 const REMOVABLE_LINE_RULES = Object.freeze([
   {
@@ -30,7 +30,9 @@ const NOTICE_MESSAGES = Object.freeze({
   source_markdown_artifact: '짝이 맞지 않는 마크다운 기호가 원문에 남아 있을 수 있어요.',
   source_draft_note: '작성 중 메모로 보이는 괄호 문구가 원문에 남아 있어요.',
   source_truncated_reference: '끝이 잘렸을 수 있는 참고문헌 표기가 있어요.',
-  source_incomplete_sentence: '마지막 문장이 조사나 연결 표현에서 끝나 미완성일 수 있어요.'
+  source_incomplete_sentence: '마지막 문장이 조사나 연결 표현에서 끝나 미완성일 수 있어요.',
+  source_unclosed_delimiter: '괄호나 인용부호의 짝이 닫히지 않은 곳이 있어요.',
+  source_missing_terminal_punctuation: '마지막 완결 문장의 문장부호가 빠졌을 수 있어요.'
 });
 
 function auditAndSanitizeSource(value) {
@@ -97,6 +99,22 @@ function auditAndSanitizeSource(value) {
   const lastContentIndex = findLastContentLine(kept);
   if (lastContentIndex >= 0 && isPossiblyIncompleteSentence(kept[lastContentIndex])) {
     notices.push(issue('source_incomplete_sentence', lastContentIndex + 1, 'notice', NOTICE_MESSAGES.source_incomplete_sentence));
+  } else if (lastContentIndex >= 0 && isPossiblyMissingTerminalPunctuation(kept[lastContentIndex])) {
+    notices.push(issue(
+      'source_missing_terminal_punctuation',
+      lastContentIndex + 1,
+      'notice',
+      NOTICE_MESSAGES.source_missing_terminal_punctuation
+    ));
+  }
+  if (hasUnclosedPairs(usable)
+      && !notices.some(item => item.code === 'source_unclosed_delimiter')) {
+    notices.push(issue(
+      'source_unclosed_delimiter',
+      Math.max(1, lastContentIndex + 1),
+      'notice',
+      NOTICE_MESSAGES.source_unclosed_delimiter
+    ));
   }
   const issues = aggregateIssues([...removals, ...notices]);
   return {
@@ -164,6 +182,14 @@ function isPossiblyIncompleteSentence(value) {
   if (text.length < 8 || /[.!?。！？…"'”’」』】)\]]\s*$/u.test(text)) return false;
   if (/^(?:참고\s*문헌|참고\s*자료|부록|Appendix|\d+(?:\.\d+)*[.)]?\s+\S+)/iu.test(text)) return false;
   return /(?:은|는|이|가|을|를|의|에|와|과|및|그리고|그러나|하지만|통해|위해|때문에|따라|대한|관한)$/u.test(text);
+}
+
+function isPossiblyMissingTerminalPunctuation(value) {
+  const text = String(value || '').trim();
+  if (text.length < 12 || /[.!?。！？…"'”’」』】)\]]\s*$/u.test(text)) return false;
+  if (/^(?:#{1,6}\s+|참고\s*문헌|참고\s*자료|부록|Appendix|제\s*\d+\s*(?:장|절|항|조)|\d+(?:\.\d+)*[.)]?\s+\S+$)/iu.test(text)) return false;
+  if (/^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d{1,3}[.)]|[①-⑳])\s+/u.test(text)) return false;
+  return /(?:다|요|죠|까|니다|했다|하였다|되었다|있다|없다|함|됨|임)$/u.test(text);
 }
 
 function hasUnclosedPairs(value) {
@@ -250,5 +276,7 @@ module.exports = {
   auditAndSanitizeSource,
   hasUnbalancedMarkdown,
   isPossiblyTruncatedReference,
-  isPossiblyIncompleteSentence
+  isPossiblyIncompleteSentence,
+  isPossiblyMissingTerminalPunctuation,
+  hasUnclosedPairs
 };

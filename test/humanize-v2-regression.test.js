@@ -1136,7 +1136,7 @@ test('리듬 shadow는 4문장 same-band 한 칸 이동을 큰 악화로 과장�
   const source = build([26, 34, 34, 44]);
   const output = build([20, 20, 22, 32]);
   const audit = compareNaturalnessShadow(source, output);
-  assert.equal(audit.version, 4);
+  assert.equal(audit.version, 5);
   assert.equal(audit.rhythmComparable, true);
   assert.ok(audit.after.sentenceCv > audit.before.sentenceCv, 'CV 기준 리듬은 더 다양해져야 한다');
   assert.ok(audit.rhythmUniformityDelta <= 0.03, JSON.stringify(audit));

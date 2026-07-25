@@ -34,12 +34,10 @@ const COMPLEX_FORMAT_FLAGS = new Set([
  * 보호하되, 사용자가 고급을 선택하는 것 자체는 막지 않는다. v2 고급은
  * 장르별 안전 감사와 변환 강도를 분리해 처리한다.
  */
-function resolveAdvancedRouting(text, inputRisk = {}, { v2Enabled = false } = {}) {
+function resolveAdvancedRouting(text, inputRisk = {}) {
   const source = String(text || '');
   const legacyUnfit = inputRouting.restructureUnfit(source, inputRisk);
-  const documentProfile = v2Enabled
-    ? detectDocumentProfile(source, { basicStyle: 'report' })
-    : null;
+  const documentProfile = detectDocumentProfile(source, { basicStyle: 'report' });
   const profile = String(documentProfile?.profile || 'unknown');
   const confidence = Number(documentProfile?.confidence) || 0;
   const formatFlags = Array.isArray(documentProfile?.formatProfile?.flags)
@@ -50,8 +48,7 @@ function resolveAdvancedRouting(text, inputRisk = {}, { v2Enabled = false } = {}
     ...(Array.isArray(documentProfile?.safetyProfiles) ? documentProfile.safetyProfiles : [])
   ].map(value => String(value || '')));
 
-  const highConfidenceAcademic = v2Enabled
-    && confidence >= 0.75
+  const highConfidenceAcademic = confidence >= 0.75
     && ADVANCED_DOCUMENT_PROFILES.has(profile);
   const personalSafety = [...safetyProfiles].some(value => PERSONAL_SAFETY_PROFILES.has(value));
   const complexFormat = documentProfile?.formatProfile?.length === 'long'
@@ -71,11 +68,10 @@ function resolveAdvancedRouting(text, inputRisk = {}, { v2Enabled = false } = {}
   // v2 한국어 엔진은 민감 장르도 장르별 안전 감사 안에서 고급 변환할 수 있다.
   // 구형 unfit은 추천 강도를 정하는 관측값으로만 남기며, 영어처럼 엔진이
   // 지원하지 않는 입력만 고급 선택을 막는다.
-  const v2ProfileSafeAdvancedOverride = v2Enabled
-    && legacyUnfit.unfit === true
+  const profileSafeAdvancedOverride = legacyUnfit.unfit === true
     && legacyUnfit.kind !== 'english';
 
-  const effectiveUnfit = academicOverride || v2ProfileSafeAdvancedOverride
+  const effectiveUnfit = academicOverride || profileSafeAdvancedOverride
     ? { unfit: false, kind: null, reason: '' }
     : legacyUnfit;
   const recommendAdvanced = effectiveUnfit.unfit !== true
@@ -93,7 +89,7 @@ function resolveAdvancedRouting(text, inputRisk = {}, { v2Enabled = false } = {}
       : '',
     routingOverride: academicOverride
       ? 'legacy_inquiry_false_positive'
-      : (v2ProfileSafeAdvancedOverride ? 'v2_profile_safe_advanced' : ''),
+      : (profileSafeAdvancedOverride ? 'v2_profile_safe_advanced' : ''),
     documentProfile,
     profile,
     confidence,

@@ -1,5 +1,7 @@
 'use strict';
 
+const { splitSentences } = require('../koreanText');
+
 const CONNECTOR_PATTERNS = [
   /또한/gu, /따라서/gu, /이에\s*따라/gu, /이러한/gu, /이를\s*통해/gu,
   /나아가/gu, /한편/gu, /결론적으로/gu, /즉[, ]/gu, /첫째/gu, /둘째/gu, /셋째/gu
@@ -59,7 +61,7 @@ function measureNaturalnessShadow(value) {
     metrics.concreteAnchorScarcity * 0.08
   ));
   return {
-    version: 4,
+    version: 5,
     shadowOnly: true,
     sentenceCount: sentences.length,
     paragraphCount: paragraphs.length,
@@ -85,7 +87,7 @@ function compareNaturalnessShadow(source, output) {
   if (!rhythmComparable) delta.uniformSentenceRhythm = null;
   delta.overallRisk = round3(after.overallRisk - before.overallRisk);
   return {
-    version: 4,
+    version: 5,
     shadowOnly: true,
     before,
     after,
@@ -141,7 +143,9 @@ function countMany(text, patterns) {
 }
 
 function splitShadowSentences(text) {
-  return (String(text || '').replace(/\r\n/gu, '\n').match(/[^.!?。？！\n]+[.!?。？！]?/gu) || [])
+  // 운영 변환기와 같은 Node 문장 분리기를 사용한다. 화면 폭 때문에 생긴
+  // 단일 줄바꿈은 문장 경계가 아니며, 빈 줄·완결 종결·문장부호만 경계다.
+  return splitSentences(String(text || '').replace(/\r\n?/gu, '\n'))
     .map(value => value.trim())
     .filter(value => value.replace(/\s+/gu, '').length >= 3);
 }

@@ -10,6 +10,32 @@ const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
 const humanizationDepth = require('./humanizationDepth');
 const legalAudit = require('./legalAudit');
+const koreanRefinement = require('./koreanRefinement');
+const endingStyle = require('./endingStyleAudit');
+
+const POLISH_REQUIRED_ISSUE_CODES = new Set([
+  'missing_sentence_space',
+  'closed_quote_spacing',
+  'closed_quote_particle_spacing',
+  'message_spelling',
+  'numeric_parenthesis_join',
+  'deep_understanding_collocation',
+  'practice_class_spacing',
+  'frequency_quantifier_conflict',
+  'double_topic_chain',
+  'malformed_question_ending',
+  'causal_predicate_stack',
+  'nominal_predicate_collocation',
+  'case_frame_corruption',
+  'role_predicate_redundancy',
+  'sampling_subject_mismatch',
+  'functional_greeting_duplication',
+  'introduced_token_duplication',
+  'reciprocal_expression_redundancy',
+  'missing_subject_particle',
+  'repeated_clause_anchor',
+  'purpose_case_frame'
+]);
 
 const POLISH_REPAIR_SCHEMA = {
   type: 'object',
@@ -236,7 +262,18 @@ function shouldRunSemanticJudge({ requestedMode, effectiveMode, source, document
   return { run: false, reason: 'not_required' };
 }
 
-async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signal, config, allowedExtra = '', mode = '', discourseSignals = [], safetyIdentifier = '' }) {
+async function runSemanticDocumentAudit({
+  source,
+  outputText,
+  lang = 'ko',
+  signal,
+  config,
+  allowedExtra = '',
+  mode = '',
+  discourseSignals = [],
+  safetyIdentifier = '',
+  documentProfile = null
+}) {
   const pairs = buildReviewPairs(source, outputText);
   const outputs = [];
   const reports = [];
@@ -254,7 +291,8 @@ async function runSemanticDocumentAudit({ source, outputText, lang = 'ko', signa
         allowedExtra,
         mode,
         discourseSignals: pairDiscourseSignals,
-        safetyIdentifier
+        safetyIdentifier,
+        documentProfile
       });
       outputs.push(report.outputText || pair.output);
       remainingRepairRounds = Math.max(0, remainingRepairRounds - (report.rounds || 0));
@@ -351,26 +389,7 @@ function nearestSectionBoundary(text, target, min, max) {
   return candidates.sort((a, b) => Math.abs(a - target) - Math.abs(b - target))[0];
 }
 
-function splitByParagraphBudget(value, maxChars) {
-  const text = String(value || '');
-  if (text.length <= maxChars) return [{ start: 0, end: text.length, text }];
-  const out = [];
-  let start = 0;
-  while (start < text.length) {
-    let end = Math.min(text.length, start + maxChars);
-    if (end < text.length) {
-      const paragraph = text.lastIndexOf('\n\n', end);
-      const sentence = text.lastIndexOf('. ', end);
-      const candidate = Math.max(paragraph >= start + maxChars * 0.55 ? paragraph + 2 : -1, sentence >= start + maxChars * 0.7 ? sentence + 2 : -1);
-      if (candidate > start) end = candidate;
-    }
-    out.push({ start, end, text: text.slice(start, end) });
-    start = end;
-  }
-  return out;
-}
-
-function polishEditPolicy(source, outputText) {
+function polishEditPolicy(source, outputText, { documentProfile = null } = {}) {
   const metrics = computeEditMetrics(source, outputText);
   const short = String(source || '').length <= 120;
   const lengthPolicy = floor.polishLengthPolicy(source);
@@ -382,7 +401,56 @@ function polishEditPolicy(source, outputText) {
   const noSafeChange = metrics.charEditRatio <= 0;
   const belowRecommendedChange = !noSafeChange && metrics.charEditRatio < limits.minEdit;
   const excessiveChange = metrics.charEditRatio > limits.maxEdit || metrics.lengthRatio < limits.minLength || metrics.lengthRatio > limits.maxLength;
-  return { pass: !noSafeChange && !excessiveChange, noSafeChange, belowRecommendedChange, excessiveChange, metrics, limits };
+  const profile = String(documentProfile?.profile || documentProfile || 'unknown');
+  const targetRegister = String(documentProfile?.targetRegister || documentProfile?.tonePolicy || '');
+  const sourceIssues = koreanRefinement.detectTextIssues(source, {
+    profile,
+    targetRegister,
+    includeSourceNotation: true
+  }).filter(item => POLISH_REQUIRED_ISSUE_CODES.has(item.code));
+  const outputIssues = new Map(koreanRefinement.detectTextIssues(outputText, {
+    profile,
+    targetRegister,
+    includeSourceNotation: false
+  }).map(item => [item.code, item]));
+  const issueCoverage = sourceIssues.map(item => {
+    const remainingCount = Math.min(
+      Number(item.count || 0),
+      Number(outputIssues.get(item.code)?.count || 0)
+    );
+    return {
+      code: item.code,
+      sourceCount: Number(item.count || 0),
+      remainingCount,
+      fixedCount: Math.max(0, Number(item.count || 0) - remainingCount)
+    };
+  });
+  const endingCoverage = endingStyle.auditPolishEndingConsistency(source, outputText, documentProfile);
+  const sourceIssueCount = issueCoverage.reduce((sum, item) => sum + item.sourceCount, 0)
+    + Number(endingCoverage.sourceIssueCount || 0);
+  const remainingSourceIssueCount = issueCoverage.reduce((sum, item) => sum + item.remainingCount, 0)
+    + Number(endingCoverage.remainingIssueCount || 0);
+  const fixedSourceIssueCount = Math.max(0, sourceIssueCount - remainingSourceIssueCount);
+  const unresolvedSourceIssueCodes = [
+    ...issueCoverage.filter(item => item.remainingCount > 0).map(item => item.code),
+    ...(endingCoverage.remainingIssueCount > 0 ? ['ending_style_mixed'] : [])
+  ];
+  const needsIssueRecovery = sourceIssueCount > 0 && remainingSourceIssueCount > 0;
+  return {
+    pass: !noSafeChange && !excessiveChange && !needsIssueRecovery,
+    noSafeChange,
+    belowRecommendedChange,
+    excessiveChange,
+    needsIssueRecovery,
+    sourceIssueCount,
+    fixedSourceIssueCount,
+    remainingSourceIssueCount,
+    unresolvedSourceIssueCodes,
+    issueCoverage,
+    endingCoverage,
+    metrics,
+    limits
+  };
 }
 
 function discourseWarningMessage(code) {
@@ -1130,6 +1198,7 @@ function addUsageLocal(acc, usage) {
 
 module.exports = {
   STRICT_CODES,
+  POLISH_REQUIRED_ISSUE_CODES,
   SEMANTIC_WARNING_TYPES,
   buildDeterministicAudit,
   shouldRunSemanticJudge,

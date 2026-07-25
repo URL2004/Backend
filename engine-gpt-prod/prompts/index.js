@@ -7,6 +7,7 @@ const evidence = require('./evidence');
 
 module.exports = {
   buildHumanizePrompt: humanize.buildHumanizePrompt,
+  validateHumanizePrompt: humanize.validateHumanizePrompt,
   buildHumanizeUser: humanize.buildHumanizeUser,
   buildEscalationInstruction: humanize.buildEscalationInstruction,
   buildDetectPrompt: detect.buildDetectPrompt,

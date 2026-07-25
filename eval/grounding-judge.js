@@ -1,14 +1,12 @@
 // [eval/grounding-judge.js] FLOOR 경계 — judge층 검증 (LLM 필요, deterministic eval과 분리).
-// 사용:  node eval/grounding-judge.js        (claudecode 기본)
-//        $env:LLM_BACKEND="api"; node eval/grounding-judge.js   (API)
+// 사용: node eval/grounding-judge.js (OpenAI 운영/로컬 설정 필요)
 //
 // grounding-cases.js 의 catcher:'judge' 케이스에 대해:
 //   - allowed   는 semanticJudge 통과(pass=true) 해야 하고,
 //   - forbidden 은 added_claim/distortion으로 잡혀야(pass=false) 한다.
 // catcher:'novelty' 케이스는 결정론 measureNovelty가 잡으므로 runEval(데이터)에서 확인.
 
-if (!process.env.LLM_BACKEND) process.env.LLM_BACKEND = 'claudecode';
-const judge = require('../engine/judge');
+const judge = require('../engine-gpt-prod/judge');
 const cases = require('./grounding-cases').filter(c => c.catcher === 'judge');
 
 (async () => {

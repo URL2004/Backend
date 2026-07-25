@@ -1,12 +1,10 @@
-﻿// [routes/transform.js] 회피 모드 P3 — 격식 유지 재구성(genreTransferV2) job 백엔드
+﻿// [routes/transform.js] 단일 GPT 운영 엔진의 비동기 작업·과금 라우트
 // ────────────────────────────────────────────────────────────────
-// 재구성은 문서 구조와 편집 청크 수에 따라 수분~90분이 걸릴 수 있어 동기 응답이 불가능 → job 방식:
-//   POST /transform → 즉시 jobId 반환, 백그라운드에서 genreTransferV2 실행(클라이언트가 끊겨도 계속)
-//   GET  /transform/:id → 상태 폴링(running|done|blocked|error)
-// 과금(v1, 사장님 임시 승인 기본값): ★완료 시 차감(시작 시 precheck만 — "크레딧만 차감" 민원 구조적 방지),
-//   단가는 확정 전이라 기존 휴머나이즈와 동일 글자수 공식(ceil(len/100)) 임시 적용.
-// job 저장(v1): 서버 메모리 — 재시작 시 유실(완료 차감이라 돈 사고는 없음). Firebase 영속화는 후속(P5).
-// FLOOR 게이트: 보존/의미 게이트는 기본 경고 전달, 빈 결과·프롬프트 누출·인코딩 깨짐·문장 절단만 미노출.
+// 긴 문서도 처리하므로 POST는 jobId를 반환하고 백그라운드 작업을 수행한다.
+// GET /transform/:id는 running|done|blocked|error 상태를 반환한다.
+// 과금은 시작 전 잔액만 확인하고 결과 전달이 확정된 완료 시점에 멱등 차감한다.
+// 작업 아카이브에는 원문·결과를 복제하지 않고 운영 관측용 축약값만 저장한다.
+// 의미·사실·구조 경고는 결과와 함께 전달하고, 기술적 전달 오류만 차단한다.
 
 const express = require('express');
 const crypto = require('crypto');
@@ -30,6 +28,10 @@ const humanizationDepth = require('../engine-gpt-prod/humanizationDepth');
 const surfaceguard = require('../engine/surfaceguard');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
+const {
+  restructureCredit,
+  shortHumanizeCredit
+} = require('../lib/humanizePricing');
 
 const jobs = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
@@ -121,27 +123,22 @@ function safeAdvancedTimeEstimate(text, options) {
   }
 }
 
-function softenBlockedFloorReport(out, logName, meta = {}) {
-  if (!out || !out.floorReport || out.floorReport.status !== 'blocked') return false;
-  if (process.env.STRICT_QUALITY_GATE === '1') return false;
-  const outputText = out.result?.outputText || out.text || '';
-  if (!String(outputText || '').trim()) return false;
-  const criticals = Array.isArray(out.floorReport.criticals) ? out.floorReport.criticals : [];
-  const warnings = Array.isArray(out.floorReport.warnings) ? out.floorReport.warnings : [];
-  if (criticals.some(isStrictDeliveryCritical)) return false;
-  const gates = criticals.map(c => c.gate || c.type || 'quality_gate');
-  out.floorReport.status = 'needs_review';
-  out.floorReport.criticals = [];
-  out.floorReport.warnings = [
-    ...warnings,
-    ...criticals.map(c => ({ ...c, softenedFromCritical: true }))
-  ];
-  logger.warn(logName, { ...meta, gates, softened: true });
-  return true;
-}
-
-function isStrictDeliveryCritical(c) {
-  return deliveryPolicy.isTechnicalCritical(c, { mode: c?.mode || '' });
+function applyRouteDeliveryPolicy(out, { mode = '', logName = '', meta = {} } = {}) {
+  const previousStatus = out?.floorReport?.status || '';
+  const previousGates = (out?.floorReport?.criticals || [])
+    .map(deliveryPolicy.gateOf)
+    .filter(Boolean);
+  const applied = deliveryPolicy.applyDeliveryPolicy(out?.floorReport, { mode });
+  if (out && typeof out === 'object') out.floorReport = applied.report;
+  if (logName && previousStatus === 'blocked' && applied.decision !== 'block_technical') {
+    logger.info(logName, {
+      ...meta,
+      gates: previousGates,
+      decision: applied.decision,
+      policy: 'humanizeDeliveryPolicy'
+    });
+  }
+  return applied;
 }
 
 function assessEditableContent(text, { mode = 'formal', basicStyle = '', documentProfileOverride = '' } = {}) {
@@ -159,10 +156,6 @@ function assessEditableContent(text, { mode = 'formal', basicStyle = '', documen
     editableChunkCount,
     totalChunkCount: plan.chunks.length
   };
-}
-
-function hasStrictDeliveryGate(gates) {
-  return (Array.isArray(gates) ? gates : []).some(gate => isStrictDeliveryCritical({ gate }));
 }
 
 function normalizeBasicStyle(value) {
@@ -254,32 +247,6 @@ function markAdminLabPipeline(job, path) {
   return profile;
 }
 
-function adminLabRuntimeMeta(job, path) {
-  const profile = job.adminLabProfile || adminLabProfileOf(job);
-  return {
-    version: 'admin-humanize-lab-v1',
-    profile,
-    path,
-    billing: 'admin_test_no_credit',
-    mode: job.mode || 'formal'
-  };
-}
-
-function attachAdminLabResultMeta(job, result, path) {
-  if (!isAdminHumanizeLabJob(job)) return result;
-  const meta = adminLabRuntimeMeta(job, path);
-  return {
-    ...result,
-    adminHumanizeLab: true,
-    adminLabProfile: meta.profile,
-    basicExperiment: job.basicExperiment || null,
-    humanizeMeta: {
-      ...(result && result.humanizeMeta ? result.humanizeMeta : {}),
-      ...meta
-    }
-  };
-}
-
 async function requireJobOwner(req, res, job) {
   if (job.devNoAuth && !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1') {
     return job.uid || 'dev-local';
@@ -300,24 +267,6 @@ async function requireJobOwner(req, res, job) {
 function kstDay() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
 }
-
-// ★ 과금 정책(2026-06-12 길이 구간 정액): 재구성은 슬롯·위빙이 글자수에 비례해 원가가 길수록 큼($2.5~7) →
-//   만 자 구간별 정액. 원가의 ~1.5배 마진. (~1만 200/300 · ~2만 400/500 · ~3만 600/700)
-//   감지 보고서(detectreport.js)의 비용 안내도 이 함수를 재사용 — 단가 단일 출처.
-function restructureCredit(len, ev) {
-  var tier = len <= 10000 ? 0 : (len <= 20000 ? 1 : 2);
-  var base = [200, 400, 600][tier];
-  return base + (ev ? 100 : 0);
-}
-router.restructureCredit = restructureCredit;
-
-// 짧은 휴머나이징 계열(blog·polish·보존형 폴백) 공통 단가.
-// 신규 가입 10크레딧 체험권과 맞춰 최소 10크레딧, 이후 100자당 2크레딧.
-const SHORT_HUMANIZE_MIN_CREDITS = 10;
-function shortHumanizeCredit(len) {
-  return Math.max(SHORT_HUMANIZE_MIN_CREDITS, Math.ceil((Number(len) || 0) / 100) * 2);
-}
-router.shortHumanizeCredit = shortHumanizeCredit;
 
 // 완료된 transform job의 결제 단일 진입점. 크레딧과 구독 쿠폰이 같은 큐·엔진·게이트를
 // 공유하되 결제 수단만 달라지도록 한다. requestId는 job_<id>로 고정해 재시작·재시도에도
@@ -1354,28 +1303,24 @@ async function tryBlogPreservationFallback(job, text) {
           allowPolish: true,
           uid: job.uid
         });
-    const fbCriticals = ((out.floorReport && out.floorReport.criticals) || []).map(c => c.gate);
-    const fbHardHit = fbCriticals.filter(g => isStrictDeliveryCritical({ gate: g }));
-    if (!out.result || !out.result.outputText || fbHardHit.length) {
+    const fallbackDelivery = applyRouteDeliveryPolicy(out, {
+      mode: 'polish',
+      logName: 'transform.blog_fallback_review_delivered',
+      meta: { jobId: job.id, uid: job.uid, fromMode: job.mode }
+    });
+    const fbCriticals = (out.floorReport?.criticals || [])
+      .map(deliveryPolicy.gateOf)
+      .filter(Boolean);
+    if (!out.result || !out.result.outputText || fallbackDelivery.decision === 'block_technical') {
       logger.warn('transform.blog_fallback_blocked', {
         jobId: job.id,
         uid: job.uid,
         mode: job.mode,
         fbCriticals,
-        fbHardHit,
+        deliveryReasonCodes: fallbackDelivery.reasonCodes,
         gateDetail: { criticals: (out.floorReport?.criticals || []).slice(0, 8) }
       });
       return false;
-    }
-    const fbSoftGates = fbCriticals.filter(g => !isStrictDeliveryCritical({ gate: g }));
-    if (fbSoftGates.length && out.floorReport) {
-      logger.info('transform.blog_fallback_soft_delivered', { jobId: job.id, uid: job.uid, mode: job.mode, fbSoftGates });
-      out.floorReport.status = 'needs_review';
-      out.floorReport.warnings = [
-        ...(out.floorReport.warnings || []),
-        ...(out.floorReport.criticals || []).map(c => ({ ...c, softenedFromCritical: true }))
-      ];
-      out.floorReport.criticals = [];
     }
 
     const fbNeeded = preservationFallbackCredit(text.length);
@@ -1462,7 +1407,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     const engineMode = job.mode === 'blog' ? 'blog' : 'assignment';
     const tonePolish = job.mode === 'polish';
     job.status = 'running';
-    job.stage = isQualityPatternLab ? '관리자 테스트 · 한국어 품질 패턴 엔진 v1'
+    job.stage = isQualityPatternLab ? '관리자 테스트 · 한국어 품질 패턴 shadow 감사'
       : isGpt ? '관리자 테스트 · GPT 전용 엔진'
       : isV6 ? '관리자 테스트 · V9 카피킬러 안전 엔진'
       : isFundamental ? '관리자 테스트 · 근본개선 엔진'
@@ -1486,20 +1431,14 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     let baselineOut = null;
 
     const out = isQualityPatternLab
-      ? await runAdminGptLabWithOptionalNiklCompare({
+      ? await runAdminQualityPatternAudit({
         job,
         text,
         mode: tonePolish ? 'polish' : engineMode,
         lang: job.lang || 'ko',
         evidence,
         config: gptTestCfg,
-        styleProfile: 'ko_quality_pattern_lab',
-        baselineStyleProfile: 'admin_gpt_engine',
-        testStyleProfile: 'ko_quality_pattern_lab',
-        label: '한국어 품질 패턴 엔진 v1',
-        forceCompare: true,
-        qualityPatternLab: true,
-        setBaseline: out => { baselineOut = out; }
+        styleProfile: 'admin_gpt_engine'
       })
       : isGpt
       ? await runAdminGptLabWithOptionalNiklCompare({
@@ -1521,8 +1460,8 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
         signal: job.ac.signal,
         userNotes: job.memo || '',
         evidence: evidence || '',
-        callClaude: labCall,
-        extractClaudeResult: labExtract
+        callModel: labCall,
+        extractModelResult: labExtract
       })
       : await runAdminGptLabWithOptionalNiklCompare({
         job,
@@ -1535,9 +1474,16 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
         label: profile,
         setBaseline: out => { baselineOut = out; }
       });
-    if (out.floorReport && out.floorReport.status === 'blocked') {
-      const gates = (out.floorReport.criticals || []).map(c => c.gate);
-      if (!softenBlockedFloorReport(out, 'transform.admin_humanize_lab_blocked_soft_delivered', { jobId: job.id, uid: job.uid, profile })) {
+    if (out.floorReport) {
+      const adminDelivery = applyRouteDeliveryPolicy(out, {
+        mode: tonePolish ? 'polish' : engineMode,
+        logName: 'transform.admin_humanize_lab_review_delivered',
+        meta: { jobId: job.id, uid: job.uid, profile }
+      });
+      if (adminDelivery.decision === 'block_technical') {
+        const gates = (out.floorReport.criticals || [])
+          .map(deliveryPolicy.gateOf)
+          .filter(Boolean);
         logger.warn('transform.admin_humanize_lab_blocked', { jobId: job.id, uid: job.uid, profile, gates });
         job.status = 'blocked';
         job.gates = gates;
@@ -1573,7 +1519,7 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       niklQualityTest: out.result.niklQualityTest || out.result.humanizeMeta?.niklQualityTest || null,
       niklQualityCompare: baselineOut ? buildAdminLabNiklCompare(baselineOut, out) : null,
       qualityPatternLab: out.result.qualityPatternLab || null,
-      qualityPatternCompare: baselineOut ? buildAdminLabQualityPatternCompare(baselineOut, out) : null,
+      qualityPatternCompare: buildAdminLabQualityPatternAuditSummary(out),
       qualityProfileBefore: out.result.qualityProfileBefore || null,
       qualityProfileAfter: out.result.qualityProfileAfter || null,
       patternDelta: out.result.patternDelta || null,
@@ -1619,6 +1565,36 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
   }
 }
 
+async function runAdminQualityPatternAudit({
+  job,
+  text,
+  mode,
+  lang,
+  evidence,
+  config,
+  styleProfile
+}) {
+  job.stage = '관리자 테스트 · 운영 GPT 결과 생성 중';
+  persistJob(job);
+  const out = await gptAnalyze.runHumanizeChunked({
+    text,
+    mode,
+    lang,
+    signal: job.ac.signal,
+    userNotes: job.memo || '',
+    evidence: evidence || '',
+    config,
+    documentProfileOverride: job.documentProfileOverride || '',
+    allowPolish: mode === 'polish',
+    uid: job.uid,
+    styleProfile,
+    niklQualityTest: job.niklQualityTest === true
+  });
+  job.stage = '관리자 테스트 · 한국어 품질 패턴 shadow 감사 중';
+  persistJob(job);
+  return loadAdminHumanizeEngines().attachQualityPatternAudit(out, text, { mode });
+}
+
 async function runAdminGptLabWithOptionalNiklCompare({
   job,
   text,
@@ -1627,11 +1603,7 @@ async function runAdminGptLabWithOptionalNiklCompare({
   evidence,
   config,
   styleProfile,
-  baselineStyleProfile,
-  testStyleProfile,
   label,
-  forceCompare = false,
-  qualityPatternLab = false,
   setBaseline
 }) {
   const layoutNlpTest = job.layoutNlpTest === true;
@@ -1648,16 +1620,14 @@ async function runAdminGptLabWithOptionalNiklCompare({
     allowPolish: mode === 'polish',
     uid: job.uid
   };
-  const baseProfile = baselineStyleProfile || styleProfile;
-  const onProfile = testStyleProfile || styleProfile;
-  const shouldCompare = forceCompare === true || qualityPatternLab === true || job.niklQualityTest === true || layoutNlpTest;
+  const shouldCompare = job.niklQualityTest === true || layoutNlpTest;
   if (!shouldCompare) {
-    return await gptAnalyze.runHumanizeChunked({ ...common, styleProfile: baseProfile, niklQualityTest: false, qualityPatternLab: false });
+    return await gptAnalyze.runHumanizeChunked({ ...common, styleProfile, niklQualityTest: false });
   }
 
   job.stage = `관리자 테스트 · ${label || 'GPT'} · 기준 결과 생성 중`;
   persistJob(job);
-  const baseline = await gptAnalyze.runHumanizeChunked({ ...common, styleProfile: baseProfile, niklQualityTest: false, qualityPatternLab: false });
+  const baseline = await gptAnalyze.runHumanizeChunked({ ...common, styleProfile, niklQualityTest: false });
   if (typeof setBaseline === 'function') setBaseline(baseline);
 
   let testText = text;
@@ -1676,16 +1646,13 @@ async function runAdminGptLabWithOptionalNiklCompare({
 
   job.stage = layoutNlpTest
     ? `관리자 테스트 · ${label || 'GPT'} · 레이아웃 NLP 결과 생성 중`
-    : qualityPatternLab
-    ? `관리자 테스트 · ${label || 'GPT'} · 품질 패턴 v1 결과 생성 중`
     : `관리자 테스트 · ${label || 'GPT'} · 국어원식 품질 테스트 결과 생성 중`;
   persistJob(job);
   const testOut = await gptAnalyze.runHumanizeChunked({
     ...common,
     text: testText,
-    styleProfile: onProfile,
-    niklQualityTest: true,
-    qualityPatternLab: qualityPatternLab === true
+    styleProfile,
+    niklQualityTest: job.niklQualityTest === true
   });
   if (layoutNlpTest && testOut?.result?.outputText) {
     job.stage = `관리자 테스트 · ${label || 'GPT'} · 문서 형태 출력 후처리 중`;
@@ -1751,9 +1718,9 @@ function buildAdminLabNiklCompare(baselineOut, testOut) {
   };
 }
 
-function buildAdminLabQualityPatternCompare(baselineOut, testOut) {
-  const base = buildAdminLabNiklCompare(baselineOut, testOut);
-  const result = testOut?.result || {};
+function buildAdminLabQualityPatternAuditSummary(out) {
+  const result = out?.result || {};
+  if (!result.qualityPatternLab) return null;
   const delta = result.patternDelta || {};
   const audit = result.auditTrail || {};
   const protectedReport = result.protectedTermReport || {};
@@ -1761,14 +1728,16 @@ function buildAdminLabQualityPatternCompare(baselineOut, testOut) {
   const rhetoric = result.rhetoricalInsertion || {};
   const claim = result.claimStrengthDrift || {};
   return {
-    ...base,
-    compareType: 'quality_pattern_lab',
+    enabled: true,
+    auditOnly: true,
+    compareType: 'quality_pattern_shadow_audit',
     labels: {
-      baseline: '현재 GPT',
-      test: '품질 패턴 v1'
+      source: '원문',
+      output: '운영 GPT 결과'
     },
     qualityPattern: {
       enabled: true,
+      auditOnly: true,
       action: audit.action || result.qualityPatternLab?.action || '',
       warnings: audit.warnings || [],
       blockers: audit.blockers || [],
@@ -1943,9 +1912,8 @@ async function runJob(job, text, evidence) {
     scheduleQueueDrain();
   }
 }
-// ── short job 러너(2026-06-13): 직접 fetch였던 블로그 변환·다듬기를 job으로 — 새로고침·창닫기 생존.
-//   엔진은 기존 floorV2 청크 경로(analyze.runHumanizeChunked) 그대로(blog→blog, polish→assignment 보존형),
-//   차감·게이트 원칙은 formal과 동일.
+// ── short job 러너: 블로그 변환·다듬기를 영속 job으로 처리해 새로고침·창닫기에도 이어간다.
+//   blog·polish·formal 모두 동일한 GPT 운영 엔진과 전달 정책을 사용한다.
 async function runHumanizeJob(job, text, evidence = '') {
   try {
     job.status = 'running';
@@ -2036,7 +2004,7 @@ async function runHumanizeJob(job, text, evidence = '') {
     // ★ no-op(약한 변환) 안내(2026-06-16 품질리포트): 결과가 원문과 거의 같으면 강도 상향 추천.
     //   ★polish(다듬기)는 보존이 목적이라 일반 약변환은 제외하지만, 내용이 거의 100% 동일(공백만)이면 안내
     //   (2026-06-22 #40/#47: 다듬기 무변환·재시도 동일출력·이중과금 — 같은 결과 재시도 낭비 방지 안내).
-    if (out.result.weakTransform) {
+    if ((out.effectStatus || out.result.effectStatus) === 'limited') {
       job.note = (job.note ? job.note + ' ' : '') + (isPolish
         ? '원문과 거의 동일하게 나왔어요(다듬기는 원문을 최대한 보존하는 모드예요). 더 바꾸려면 「기본 피하기」나 「고급 피하기」를 써 보세요 — 같은 글로 다듬기를 다시 돌려도 결과는 비슷해요.'
         : (job.mode === 'formal'
@@ -2304,13 +2272,20 @@ router.post('/transform', async (req, res) => {
   const adminOrDev = adminLabUid || isAdminUid(pre.uid) || (devNoAuth && pre.uid === 'dev-local');
   const preserveExperimentRequested = adminLabRequested || (req.body && req.body.humanizeExperiment === true);
   const preserveExperimentEnabled = preserveExperimentRequested && !!adminOrDev;
-  const legacyBasicExperimentRequested = mode === 'blog' && req.body && req.body.basicExperiment === true && !preserveExperimentRequested;
-  const legacyBasicExperimentEnabled = legacyBasicExperimentRequested && !!adminOrDev;
-  if ((preserveExperimentRequested || legacyBasicExperimentRequested) && !adminOrDev) {
-    logger.warn('transform.humanize_experiment_ignored_non_admin', { uid: pre.uid, mode, adminLabRequested, preserveExperimentRequested, legacyBasicExperimentRequested });
+  const retiredBasicExperimentRequested = req.body && req.body.basicExperiment === true && !preserveExperimentRequested;
+  if ((preserveExperimentRequested || retiredBasicExperimentRequested) && !adminOrDev) {
+    logger.warn('transform.humanize_experiment_ignored_non_admin', {
+      uid: pre.uid,
+      mode,
+      adminLabRequested,
+      preserveExperimentRequested,
+      retiredBasicExperimentRequested
+    });
+  } else if (retiredBasicExperimentRequested) {
+    logger.info('transform.retired_basic_experiment_ignored', { uid: pre.uid, mode });
   }
   const basicStyle = mode === 'blog'
-    ? (legacyBasicExperimentEnabled ? 'report' : normalizeBasicStyle(req.body && req.body.basicStyle))
+    ? normalizeBasicStyle(req.body && req.body.basicStyle)
     : null;
   const adminLabVersion = requestedAdminLabProfile === 'v6_engine'
     ? 'humanizing-engine-v9-cksafe'
@@ -2329,14 +2304,7 @@ router.post('/transform', async (req, res) => {
     profile: requestedAdminLabProfile || 'preserve_lab',
     source: adminLabRequested ? 'admin_humanize_lab_page' : 'admin_job_toggle',
     niklQualityTest: !!(adminLabRequested && req.body && req.body.niklQualityTest === true)
-  } : (legacyBasicExperimentEnabled ? {
-    enabled: true,
-    requested: true,
-    applied: false,
-    version: 'basic-report-style-v1',
-    profile: 'basic_report',
-    source: 'admin_job_toggle_legacy'
-  } : null);
+  } : null;
 
   const id = crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;

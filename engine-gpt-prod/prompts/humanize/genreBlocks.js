@@ -183,7 +183,7 @@ function tonePolicyBlock(targetRegister, requestStrength = '') {
     .includes(String(targetRegister || ''));
   if (requestStrength === 'advanced') {
     return formalTarget
-      ? '말투 정책: 화자·종결체는 유지하되 목표 격식은 공식·전문 문체다. 원문의 구어·게임식 별칭·과장 은유까지 보존하지 말고 중립적 전문 표현으로 높이면서 일반 서술을 고급 범위로 실질 재구성한다.'
+      ? '말투 정책: 고급 강도와 격식 변경은 별개다. 화자·종결체와 원문의 공식·전문 격식을 유지하면서 일반 서술의 절 배치·연결·호흡을 넓게 재구성한다. 장르 하한보다 명백히 낮은 구어·게임식 별칭·과장 은유만 같은 의미의 중립적 전문 표현으로 바로잡고, 이미 적절한 어휘를 더 딱딱하게 올리지 않는다.'
       : '말투 정책: 원문의 격식·화자·종결체는 유지하되, 이는 원문 어휘와 문장 배열을 보존형으로 복사하라는 뜻이 아니다. 일반 서술은 고급 범위로 실질 재구성한다.';
   }
   if (targetRegister === 'conversational') {

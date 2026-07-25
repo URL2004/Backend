@@ -63,13 +63,33 @@ function expandBaseChunk(chunk, state) {
   let current = null;
 
   for (const sourcePiece of pieces) {
-    const expandedPieces = state.questionnaire && isQuestionnaireQuestionLine(String(sourcePiece.text || '').trim())
+    const sourceText = String(sourcePiece.text || '').trim();
+    const wholeLineRole = sourceLineRole(
+      state.sourceLineRoles,
+      sourceText,
+      sourcePiece.start,
+      sourcePiece.end
+    );
+    // 번호형 소제목을 불릿 접두부와 본문으로 먼저 분해하면 `1. 연구 배경`의
+    // 제목성이 사라지고 뒤 본문이 상위 절 경로에 남는다. 구조 판정을 접두부
+    // 편집 규칙보다 먼저 적용해 제목 행 전체를 하나의 잠금 단위로 유지한다.
+    const preserveWholeStructuralLine = wholeLineRole === 'title'
+      || isHeadingLine(sourceText)
+      || isStandaloneQuotedTitle(sourceText);
+    const expandedPieces = preserveWholeStructuralLine
+      || (state.questionnaire && isQuestionnaireQuestionLine(sourceText))
       ? [sourcePiece]
       : splitEditablePrefixPiece(sourcePiece);
     for (const piece of expandedPieces) {
       const info = classifyPiece(piece, state);
       const key = info.locked ? `locked:${info.lockType}` : 'body';
-      if (!current || current.key !== key) {
+      const sectionChanged = Boolean(
+        current
+        && info.locked
+        && info.sectionLabel
+        && String(current.sectionPath || '') !== String(info.sectionLabel)
+      );
+      if (!current || current.key !== key || sectionChanged) {
         flushGroup(groups, current);
         current = {
           key,
@@ -207,9 +227,8 @@ function flushGroup(groups, group) {
     chunk.locked = true;
     chunk.lockType = group.lockType || 'structure';
     chunk.skipReason = `structure_lock:${chunk.lockType}`;
-  } else if (group.sectionPath) {
-    chunk.sectionPath = group.sectionPath;
   }
+  if (group.sectionPath) chunk.sectionPath = group.sectionPath;
   groups.push(chunk);
 }
 
@@ -1445,7 +1464,9 @@ function findSectionPathErrors(chunks) {
   for (const chunk of chunks || []) {
     const lockType = String(chunk?.lockType || '');
     if (chunk?.locked && ['heading', 'heading_continuation', 'title', 'legal_clause', 'legal_clause_prefix'].includes(lockType)) {
-      currentSection = String(chunk.text || '').trim() || currentSection;
+      currentSection = String(chunk.sectionPath || '').trim()
+        || lastStructuralLabel(chunk.text)
+        || currentSection;
       continue;
     }
     if (chunk?.locked || !String(chunk?.text || '').trim()) continue;
@@ -1455,6 +1476,11 @@ function findSectionPathErrors(chunks) {
     }
   }
   return errors;
+}
+
+function lastStructuralLabel(value) {
+  const lines = String(value || '').split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : '';
 }
 
 function compactLayoutRepair(value) {
@@ -1561,19 +1587,6 @@ function findUnsafeOutputBoundaries(chunks) {
 function looksUnsafeChunkEnd(text) {
   const s = String(text || '').trim().replace(/[.,;:，、]$/, '');
   return UNSAFE_END_RE.test(s);
-}
-
-function isReferenceHeading(s) {
-  return /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/i.test(s);
-}
-
-function isTocHeading(s) {
-  return /^(?:목\s*차|차례|Table\s+of\s+Contents)$/i.test(s);
-}
-
-function isMainBodyHeading(s) {
-  return /^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*(?:서론|본론|결론|초록|이론|연구|논의|참고\s*문헌)/.test(s) ||
-    /^제\s?\d{1,3}\s?(?:장|절|항|조)(?=$|[^가-힣A-Za-z0-9_])/.test(s);
 }
 
 function isHeadingLine(s) {

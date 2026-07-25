@@ -9,4 +9,8 @@ function run(profile, options) {
   return engine.run(options);
 }
 
-module.exports = { run };
+function attachQualityPatternAudit(out, source, options) {
+  return require('./qualityPatternAudit').attachQualityPatternAudit(out, source, options);
+}
+
+module.exports = { run, attachQualityPatternAudit };

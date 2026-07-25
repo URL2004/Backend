@@ -2,6 +2,10 @@
 
 const humanizationDepth = require('./humanizationDepth');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
+const {
+  classifyModelFailure,
+  isNonEscalatableModelFailureCode
+} = require('./modelFailure');
 
 const MIN_DOCUMENT_CHARS = 2000;
 const MIN_SECTION_CHARS = 1200;
@@ -99,6 +103,9 @@ async function recoverSections({
     rejectedAttemptCount: 0,
     rejectionCodes: [],
     rejectionCodeCounts: {},
+    modelFailureCount: 0,
+    modelFailureCodes: [],
+    modelFailureCodeCounts: {},
     miniAppliedCount: 0,
     escalationAppliedCount: 0
   };
@@ -112,7 +119,7 @@ async function recoverSections({
   });
 
   const escalationTargets = afterMini
-    .filter(item => item.report?.pass !== true)
+    .filter(item => item.report?.pass !== true && item.nonEscalatableFailure !== true)
     .sort((left, right) => recoveryPriority(right.report) - recoveryPriority(left.report))
     .slice(0, MAX_ESCALATIONS);
   metrics.escalationAttemptCount = escalationTargets.length;
@@ -130,8 +137,11 @@ async function safeRetry(retrySection, entry, tier) {
   try {
     return { ...(await retrySection({ ...entry, tier })), recoveryTier: tier };
   } catch (error) {
+    const failureCode = classifyModelFailure(error);
     return {
-      error: String(error?.code || error?.message || error).slice(0, 120),
+      error: failureCode,
+      failureCode,
+      nonEscalatableFailure: isNonEscalatableModelFailureCode(failureCode),
       recoveryTier: tier
     };
   }
@@ -142,8 +152,18 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
   const candidate = String(attempt?.outputText || '').trim();
   const currentReport = humanizationDepth.evaluateHumanizationDepth(entry.source, currentOutput, entry.plan);
   if (attempt?.error) {
-    recordRejections(metrics, ['model_error']);
-    return { ...entry, output: currentOutput, report: currentReport, rejectionCode: 'model_error' };
+    const failureCode = String(attempt.failureCode || classifyModelFailure(attempt.error));
+    recordRejections(metrics, [failureCode]);
+    recordModelFailure(metrics, failureCode);
+    return {
+      ...entry,
+      output: currentOutput,
+      report: currentReport,
+      rejectionCode: failureCode,
+      failureCode,
+      nonEscalatableFailure: attempt.nonEscalatableFailure === true
+        || isNonEscalatableModelFailureCode(failureCode)
+    };
   }
   if (!candidate) {
     recordRejections(metrics, ['empty_candidate']);
@@ -190,12 +210,24 @@ function normalizeRejectionCodes(values) {
     'empty_candidate', 'candidate_unchanged', 'no_safe_change', 'model_error', 'not_better',
     'edit_range_exceeded', 'length_range_failed', 'number_changed', 'semantic_shift',
     'structure_loss', 'quote_loss', 'pov_shift', 'protected_term_loss', 'voice_shift',
-    'safety_audit_failed'
+    'safety_audit_failed', 'gpt_call_failed', 'request_aborted',
+    'openai_rate_limited', 'openai_server_error', 'openai_timeout',
+    'openai_network_error', 'openai_schema_error', 'openai_refusal',
+    'openai_truncated_output', 'openai_incomplete_output', 'openai_empty_output'
   ]);
   const codes = [...new Set((Array.isArray(values) ? values : [values])
     .map(value => String(value || '').trim())
     .filter(value => allowed.has(value)))];
   return codes.length ? codes : ['safety_audit_failed'];
+}
+
+function recordModelFailure(metrics, code) {
+  const safeCode = normalizeRejectionCodes([code])[0];
+  metrics.modelFailureCount = Number(metrics.modelFailureCount || 0) + 1;
+  metrics.modelFailureCodes = Array.isArray(metrics.modelFailureCodes) ? metrics.modelFailureCodes : [];
+  metrics.modelFailureCodeCounts = metrics.modelFailureCodeCounts || {};
+  metrics.modelFailureCodeCounts[safeCode] = Number(metrics.modelFailureCodeCounts[safeCode] || 0) + 1;
+  if (!metrics.modelFailureCodes.includes(safeCode)) metrics.modelFailureCodes.push(safeCode);
 }
 
 function recordRejections(metrics, codes) {

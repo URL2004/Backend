@@ -1,10 +1,15 @@
 'use strict';
 
-const { splitSentences, levenshteinDistance } = require('../engine/koreanText');
+const { splitSentences, koreanStart } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
 const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
+const {
+  alignedOutputCandidates,
+  contentTokens: contentTokensLocal,
+  normalizeSentence: normalizeSentenceLocal
+} = require('./sentenceAlignment');
 
-const VERSION = 7;
+const VERSION = 8;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -262,6 +267,24 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '“~하며 ~하기보다”의 비교 대상과 앞 절이 어색하게 연결됐어요.'
+  },
+  missing_subject_particle: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: true,
+    message: '핵심 명사 뒤의 주격 조사가 빠져 주어와 서술어 연결이 어색해요.'
+  },
+  repeated_clause_anchor: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '같은 시간·과정 절이 한 문장 안에서 불필요하게 되풀이돼요.'
+  },
+  purpose_case_frame: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: true,
+    message: '“목적에 두다”의 조사 틀이 어색해 목적 관계가 분명하지 않아요.'
   },
   quote_terminal_punctuation_review: {
     weight: 1,
@@ -724,6 +747,11 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'reciprocal_expression_redundancy', sentence => /서로\s+상호(?=(?:작용|교류|소통|협력|의존|영향))/u.test(stripProtectedQuotedText(sentence)));
   pushSentenceIssue(issues, text, 'benefit_help_predicate_redundancy', hasBenefitHelpPredicateRedundancy);
   pushSentenceIssue(issues, text, 'contrast_clause_attachment', hasContrastClauseAttachment);
+  if (!['clinical_record', 'student_record_teacher', 'creative', 'legal_contract'].includes(profile)) {
+    pushSentenceIssue(issues, text, 'missing_subject_particle', hasMissingSubjectParticle);
+  }
+  pushSentenceIssue(issues, text, 'repeated_clause_anchor', hasRepeatedClauseAnchor);
+  pushSentenceIssue(issues, text, 'purpose_case_frame', hasPurposeCaseFrame);
   pushSentenceIssue(issues, text, 'directional_growth_collocation', sentence => /(?:연구\s*)?(?:태도|역량|관점|시각)(?:은|는|이|가)?[^.!?。！？\n]{0,38}(?:쪽|방향)으로\s*성장(?:하|했|해|합)/u.test(sentence));
   pushSentenceIssue(issues, text, 'causal_predicate_stack', hasCausalPredicateStack);
   pushSentenceIssue(issues, text, 'nominal_predicate_collocation', hasNominalPredicateCollocation);
@@ -790,6 +818,20 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
       changes
     );
   }
+  text = replaceOutsideProtectedQuotes(
+    text,
+    /(^|[^가-힣A-Za-z0-9_])(태도|자세|역할|기준|과정|방법|판단|책임|원칙)\s+(?=(?:매우\s+)?(?:중요|필요)하(?:다|다고|며|므로|지만|게|지|였|했|합|면))/gu,
+    (_match, prefix, noun) => `${prefix}${noun}${subjectParticleFor(noun)} `,
+    'missing_subject_particle',
+    changes
+  );
+  text = replaceOutsideProtectedQuotes(
+    text,
+    /목적에(?=\s*두(?:다|고|며|어|었|는|기|지만|는데|도록|려|려고|었다|었습니다|었다고|었다는))/gu,
+    () => '목적으로',
+    'purpose_case_frame',
+    changes
+  );
   return {
     version: VERSION,
     text,
@@ -848,6 +890,7 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'meta_nominalization_injection',
   'role_predicate_redundancy',
   'analytic_object_recast',
+  'repeated_clause_anchor',
   'professional_register_downgrade'
 ]);
 
@@ -890,6 +933,25 @@ function buildSourceReviewWarnings(sourceOrIssues, documentProfile = null) {
     count: item.count,
     sentenceOrdinals: item.sentenceOrdinals || []
   }));
+}
+
+function buildSourcePromptHints(source, { documentProfile = null, mode = '' } = {}) {
+  const issues = detectTextIssues(source, {
+    profile: profileName(documentProfile),
+    targetRegister: String(documentProfile?.targetRegister || documentProfile?.tonePolicy || ''),
+    includeSourceNotation: true
+  }).filter(item => item.repairable === true);
+  if (!issues.length) return '';
+  const rows = issues.slice(0, 8).map(item => {
+    const ordinals = (item.sentenceOrdinals || []).slice(0, 6);
+    return `- ${item.code}${ordinals.length ? ` (문장 ${ordinals.join(', ')})` : ''}: ${item.message}`;
+  });
+  return [
+    '[원문 한국어 교정 대상 — 의미·장르 규칙보다 우선하지 않음]',
+    `요청 모드=${String(mode || 'assignment')}. 아래 결함만 의미·화자·격식·구조를 유지하며 고친다.`,
+    ...rows,
+    '목록에 없는 표현을 억지로 바꾸거나 새 주장·예시·평가를 추가하지 않는다.'
+  ].join('\n');
 }
 
 function detectProfessionalDowngrade(source, outputText, profile) {
@@ -1195,40 +1257,6 @@ function detectAlignedProfessionalLosses(source, outputText, profile = 'unknown'
   return losses;
 }
 
-function alignedOutputCandidates(sourceSentence, sourceIndex, sourceCount, outputSentences) {
-  const center = sourceCount <= 1
-    ? 0
-    : Math.round(sourceIndex * Math.max(0, outputSentences.length - 1) / Math.max(1, sourceCount - 1));
-  const candidates = [];
-  for (let delta = -2; delta <= 2; delta += 1) {
-    const index = center + delta;
-    if (index < 0 || index >= outputSentences.length) continue;
-    const sentence = outputSentences[index];
-    candidates.push({ index, sentence, score: sentenceSimilarity(sourceSentence, sentence) });
-  }
-  return candidates.sort((a, b) => b.score - a.score);
-}
-
-function sentenceSimilarity(left, right) {
-  const leftTokens = new Set(contentTokensLocal(left));
-  const rightTokens = new Set(contentTokensLocal(right));
-  const overlap = [...leftTokens].filter(token => rightTokens.has(token)).length / Math.max(1, leftTokens.size);
-  const a = normalizeSentenceLocal(left);
-  const b = normalizeSentenceLocal(right);
-  const edit = 1 - (levenshteinDistance(a, b) / Math.max(1, a.length, b.length));
-  return Math.max(overlap, edit * 0.75);
-}
-
-function contentTokensLocal(value) {
-  return [...new Set((String(value || '').match(/[가-힣]{2,}|[A-Za-z]{3,}|\d+(?:\.\d+)?/gu) || [])
-    .map(token => token.toLowerCase().replace(/(?:하였습니다|했습니다|하였다|했다|에서는|으로는|으로|에서|하고|하며|하여|은|는|이|가|을|를|의|에|도|만|와|과|로)$/u, ''))
-    .filter(token => token.length >= 2))];
-}
-
-function normalizeSentenceLocal(value) {
-  return String(value || '').normalize('NFKC').toLowerCase().replace(/[^가-힣a-z0-9]/gu, '');
-}
-
 function patternMatchesLocal(pattern, value) {
   pattern.lastIndex = 0;
   return pattern.test(String(value || ''));
@@ -1253,8 +1281,10 @@ function hasQuoteAttributionParticleMismatch(sentence) {
 
 function hasDoubleTopicChain(sentence) {
   const value = String(sentence || '');
-  if (/(?:하면서|하며|통해|후|계기로|과정에서)[^.!?。！？\n]{0,20}(?:나는|저는|우리는|저희는)\s+[^.!?。！？\n]{1,28}(?:은|는)\s/u.test(value)) return true;
-  return /^(?:나는|저는|우리는|저희는)\s+(?:이|그|해당|이번|예술|연구|활동|작품|문제)[^.!?。！？\n]{0,18}(?:은|는)\s/u.test(value);
+  const firstPersonTopic = '(?:나는|저는|우리는|저희는)';
+  const boundedFirstPerson = koreanStart(firstPersonTopic, 'u').source;
+  if (new RegExp(`(?:하면서|하며|통해|후|계기로|과정에서)[^.!?。！？\\n]{0,20}${boundedFirstPerson}\\s+[^.!?。！？\\n]{1,28}(?:은|는)\\s`, 'u').test(value)) return true;
+  return new RegExp(`^${firstPersonTopic}\\s+(?:이|그|해당|이번|예술|연구|활동|작품|문제)[^.!?。！？\\n]{0,18}(?:은|는)\\s`, 'u').test(value);
 }
 
 function hasValueParticipationCollocation(sentence) {
@@ -1277,6 +1307,22 @@ function hasBenefitHelpPredicateRedundancy(sentence) {
 
 function hasContrastClauseAttachment(sentence) {
   return /(?:하며|기며|하면서)[^.!?。！？\n]{1,70}(?:서두르기보다|앞세우기보다)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function hasMissingSubjectParticle(sentence) {
+  return /(^|[^가-힣A-Za-z0-9_])(?:태도|자세|역할|기준|과정|방법|판단|책임|원칙)\s+(?:매우\s+)?(?:중요|필요)하(?:다|다고|며|므로|지만|게|지|였|했|합|면)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function hasRepeatedClauseAnchor(sentence) {
+  const value = stripProtectedQuotedText(sentence);
+  return /(?:그때부터|그\s*과정에서|이\s*과정에서|그\s*이후|그때마다)[^.!?。！？\n]{3,120}(?:그때부터|그\s*과정에서|이\s*과정에서|그\s*이후|그때마다)/u
+    .test(value);
+}
+
+function hasPurposeCaseFrame(sentence) {
+  return /(?:생식|성장|수익|안전|교육|연구|보호|예방|달성)(?:을|를)?\s*(?:주된\s*)?목적에\s*두/u
     .test(stripProtectedQuotedText(sentence));
 }
 
@@ -1686,6 +1732,22 @@ function replaceAndCount(text, pattern, replacement, code, changes) {
   });
 }
 
+const PROTECTED_QUOTED_SPAN_RE = /([“][^”\n]{0,600}[”]|[‘][^’\n]{0,600}[’]|「[^」\n]{0,600}」|『[^』\n]{0,600}』|《[^》\n]{0,600}》|〈[^〉\n]{0,600}〉|"[^"\n]{0,600}"|'[^'\n]{0,600}')/gu;
+
+function replaceOutsideProtectedQuotes(text, pattern, replacement, code, changes) {
+  return String(text || '').split(PROTECTED_QUOTED_SPAN_RE).map((part, index) => {
+    if (index % 2 === 1) return part;
+    return replaceAndCount(part, pattern, replacement, code, changes);
+  }).join('');
+}
+
+function subjectParticleFor(noun) {
+  const value = String(noun || '');
+  const last = value.codePointAt(value.length - 1);
+  if (!Number.isFinite(last) || last < 0xAC00 || last > 0xD7A3) return '이';
+  return (last - 0xAC00) % 28 === 0 ? '가' : '이';
+}
+
 function sentenceOrdinalAt(text, offset) {
   const before = String(text || '').slice(0, Math.max(0, Number(offset) || 0));
   return Math.max(1, splitSentences(before).length || 1);
@@ -1710,6 +1772,7 @@ module.exports = {
   analyzeKoreanRefinement,
   applySafeDeterministicRepairs,
   applySafeFormattingRepairs,
+  buildSourcePromptHints,
   buildSourceReviewWarnings,
   detectTextIssues,
   detectProfessionalDowngrade,

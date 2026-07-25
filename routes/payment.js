@@ -6,13 +6,18 @@ const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const { getRevenue } = require('../lib/revenue');
 const detectCalibration = require('../lib/detectCalibration');
-const basicHumanizeExperiment = require('../lib/basicHumanizeExperiment');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { buildHumanizeQualityReport } = require('../lib/humanizeQualityReport');
 const gptAnalyze = require('./analyze-gpt');
 
 const router = express.Router();
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
+const RETIRED_BASIC_EXPERIMENT_CONFIG = Object.freeze({
+  enabled: false,
+  retired: true,
+  source: 'retired',
+  version: 'single-engine-v2.5.5'
+});
 
 function tossBasicToken(res) {
   const secretKey = process.env.TOSS_SECRET_KEY;
@@ -1203,47 +1208,30 @@ router.post('/admin/update-detect-calibration', async (req, res) => {
   }
 });
 
-// 관리자: 기본 피하기 개발테스트 토글.
-// Firestore 설정이 있으면 env보다 우선 적용되고, 없으면 env 기본값이 사용된다.
+// 구형 관리자 화면 호환. 이 토글은 값을 저장해도 운영 변환 경로가 읽지 않아
+// "켜짐"으로 보이기만 하던 죽은 설정이었다. 단일 엔진 전환 뒤에는 항상
+// retired/disabled를 반환하고 Firestore를 더 이상 쓰지 않는다.
 router.post('/admin/basic-humanize-experiment', async (req, res) => {
   const adminUid = await requireAdmin(req, res);
   if (!adminUid) return;
-  try {
-    const config = await basicHumanizeExperiment.getRuntimeConfig({ db, logger, force: true });
-    res.json({
-      ok: true,
-      config,
-      envConfig: basicHumanizeExperiment.publicConfig(basicHumanizeExperiment.config(), 'env')
-    });
-  } catch (err) {
-    logger.error('admin.basic_humanize_experiment_load_failed', { adminUid, err });
-    res.status(500).json({ error: '기본 피하기 개발테스트 설정을 불러오지 못했습니다.' });
-  }
+  res.json({
+    ok: true,
+    retired: true,
+    config: RETIRED_BASIC_EXPERIMENT_CONFIG,
+    envConfig: RETIRED_BASIC_EXPERIMENT_CONFIG
+  });
 });
 
 router.post('/admin/update-basic-humanize-experiment', async (req, res) => {
   const adminUid = await requireAdmin(req, res);
   if (!adminUid) return;
-  try {
-    const patch = basicHumanizeExperiment.sanitizeConfig(req.body && req.body.config);
-    await db.collection(basicHumanizeExperiment.SETTINGS_COLLECTION).doc(basicHumanizeExperiment.SETTINGS_DOC).set({
-      ...patch,
-      version: basicHumanizeExperiment.VERSION,
-      updatedBy: adminUid,
-      updatedAtMs: Date.now(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-    basicHumanizeExperiment.clearRuntimeConfigCache();
-    const config = await basicHumanizeExperiment.getRuntimeConfig({ db, logger, force: true });
-    logger.info('admin.basic_humanize_experiment_updated', {
-      adminUid,
-      enabled: config.enabled
-    });
-    res.json({ ok: true, config });
-  } catch (err) {
-    logger.error('admin.basic_humanize_experiment_update_failed', { adminUid, err });
-    res.status(500).json({ error: '기본 피하기 개발테스트 설정 저장에 실패했습니다.' });
-  }
+  logger.info('admin.basic_humanize_experiment_retired_request_ignored', { adminUid });
+  res.json({
+    ok: true,
+    retired: true,
+    config: RETIRED_BASIC_EXPERIMENT_CONFIG,
+    notice: '운영 휴머나이징 엔진이 단일화되어 이 개발테스트 토글은 종료되었습니다.'
+  });
 });
 
 // 관리자: 운영 LLM 런타임 설정. Firestore 값이 env보다 우선하고 15초 캐시된다.

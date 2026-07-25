@@ -354,10 +354,19 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   if (compactLength <= 450 && lines.length >= 3 && median(lines.map(line => line.length)) <= 35) scores.social += 1.2;
 
   const mailLexicalSignals = count(text, /(?:안녕하세요[,.]?|안녕하십니까[,.]?|학우\s*여러분|수신\s*:|발신\s*:|제목\s*:|귀하|인사드립니다|드립니다|안내드립니다|회신|문의\s*사항|감사합니다|올림|드림)/gu);
+  const mailApologyRequestSignals = count(text, /(?:죄송합니다|송구합니다|양해(?:를)?\s*(?:부탁|구|바라)|부탁드립니다|확인\s*부탁|회신\s*부탁|가능하실까요|괜찮으실까요|문의드립니다|여쭙습니다|답변\s*부탁)/gu);
+  const mailRecipientSignals = count(text, /(?:교수님|선생님|담당자님|조교님|팀장님|원장님|위원장님|안녕하세요)[,.!]?/gu);
   const officialRoleSignals = count(text, /(?:위원장|회장|대표|담당자|총학생회|운영위원회|비상대책위원회|학생회|사무국)/gu);
   const signatureDateLines = lines.filter(line => /^(?:(?:19|20)\d{2}[.년]\s*\d{1,2}[.월]\s*\d{1,2}(?:일)?|\d{1,2}월\s*\d{1,2}일)$/u.test(line)).length;
   const signatureInstitutionLines = lines.filter(line => /(?:대학교|대학|학과|전공|위원회|학생회|협회|기관|재단|회사).*(?:위원장|회장|대표|담당자|드림|올림)?$/u.test(line)).length;
   add(scores, 'mail_notice', mailLexicalSignals, 0.72);
+  add(scores, 'mail_notice', mailApologyRequestSignals, 1.05);
+  if (mailRecipientSignals >= 1 && mailApologyRequestSignals >= 1) {
+    scores.mail_notice += 2.45
+      + Math.min(mailApologyRequestSignals - 1, 3) * 0.22;
+    // 짧은 사과·요청 메일의 줄바꿈을 SNS 신호로 중복 계산하지 않는다.
+    scores.social = Math.max(0, scores.social - 1.2);
+  }
   if (/(?:안녕하세요|안녕하십니까|학우\s*여러분|수신\s*:)/u.test(text)
       && /(?:감사합니다|드림|올림|위원장|회장|대표)\s*[.!]?\s*$/u.test(text)) scores.mail_notice += 2.2;
   if (mailLexicalSignals >= 2 && officialRoleSignals >= 1
@@ -373,6 +382,12 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     .some(flag => formatProfile.flags.includes(flag));
   const strongCreativeSignals = count(text, /(?:시\s*$|시집|운문|소설|등장인물|장면\s*\d+|단편\s*소설|화자\s*:)/gmu);
   const weakCreativeSignals = count(text, /(?:그날의|바람이|달빛|별빛|노을|그림자|고요(?:가|는|를)|계절의)/gu);
+  const proseNarrativeSignals = count(text, /(?:그는|그녀는|소년은|소녀는|노인은|남자는|여자는|아이는|아이의|문을\s*열(?:었|고)|걸어갔|돌아섰|바라보았|중얼거렸|속삭였|말했|물었|대답했|웃었|울었)/gu);
+  const proseDialogueSignals = count(
+    text,
+    /[“"][^”"\n]{2,120}[”"]\s*(?:(?:라고|하고|라며|라면서|하고\s*말|라고\s*말)|(?:[가-힣]{2,8})(?:이|가|은|는)\s*(?:묻|말하|대답하|속삭이|중얼거리|외치))/gu
+  );
+  const proseSceneSignals = count(text, /(?:골목|창문|방\s*안|문틈|발자국|숨소리|빗소리|햇빛|달빛|어둠|냄새|바람|비가|눈이|밤(?:은|이|의)|새벽)/gu);
   add(scores, 'creative', strongCreativeSignals, 1.05);
   if (!structuredFunctionalFormat
       && lines.length >= 4
@@ -382,6 +397,14 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   if ((formatProfile.flags.includes('line_sensitive') || quoteLines >= 3 || strongCreativeSignals >= 1)
       && weakCreativeSignals >= 1) {
     scores.creative += Math.min(weakCreativeSignals, 4) * 0.18;
+  }
+  if (!structuredFunctionalFormat
+      && ((proseDialogueSignals >= 2 && proseNarrativeSignals >= 2)
+        || (proseDialogueSignals >= 1 && proseNarrativeSignals >= 2 && proseSceneSignals >= 2)
+        || (proseNarrativeSignals >= 4 && proseSceneSignals >= 2))) {
+    scores.creative += 4
+      + Math.min(proseDialogueSignals, 4) * 0.22
+      + Math.min(proseSceneSignals, 5) * 0.12;
   }
 
   const personalReflectionSignals = count(text, /(?:생각한다|느꼈다|깨달았다|경험을\s*통해|돌이켜\s*보면|기억에\s*남|배우게\s*되었다)/gu);
@@ -785,13 +808,6 @@ function hasStudentRecordEnding(sentence) {
 function normalizeBasicStyle(value) {
   const style = String(value || '').trim().toLowerCase();
   return style === 'blog' || style === 'report' ? style : '';
-}
-
-function tonePolicyForBasicStyle(value) {
-  const style = normalizeBasicStyle(value);
-  if (style === 'blog') return 'conversational';
-  if (style === 'report') return 'formal';
-  return 'source_preserve';
 }
 
 function resolveRegisterPolicy({ profile = 'unknown', basicStyle = '', requestStrength = 'basic' } = {}) {

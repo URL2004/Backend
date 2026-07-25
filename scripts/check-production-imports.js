@@ -13,7 +13,29 @@ const FORBIDDEN_PATHS = [
   '/engine/claudecode.js',
   '/engine/genretransfer.js',
   '/engine/evidence.js',
-  '/engine/judge.js'
+  '/engine/judge.js',
+  '/engine/softguard.js',
+  '/engine/outputguard.js',
+  '/engine/registernormalize.js',
+  '/engine/prompt.js',
+  '/engine/antidetect.js',
+  '/engine/b7polish.js',
+  '/engine/burstiness.js',
+  '/engine/columncleanup.js',
+  '/engine/formalbudget.js',
+  '/engine/genreframes.js',
+  '/engine/grounding.js',
+  '/engine/optimizer.js',
+  '/engine/phrasebudget.js',
+  '/engine/polish.js',
+  '/engine/registerrepair.js',
+  '/engine/registerscore.js',
+  '/engine/basicblogtone.js',
+  '/engine/flowcohesion.js',
+  '/engine/koreanquality/qualitypatternlab.js',
+  '/engine/koreanquality/index.js',
+  '/lib/basichumanizeexperiment.js',
+  '/engine-gpt-prod/local/'
 ];
 
 function scanProductionImports({ root = ROOT, entries = DEFAULT_ROOTS } = {}) {
@@ -49,6 +71,8 @@ function scanProductionImports({ root = ROOT, entries = DEFAULT_ROOTS } = {}) {
     roots: entries,
     visitedFileCount: visited.size,
     edgeCount: edges.length,
+    visitedFiles: [...visited].map(file => relative(root, file)).sort(),
+    edges,
     violations
   };
 }

@@ -230,7 +230,6 @@ function buildPlan(text, opts = {}) {
 function minimalCleanupText(text) {
   let out = String(text || '').trim();
   try { out = require('../spacing').fixSpacing(out).text; } catch {}
-  try { out = require('../genretransfer').tidyParagraphs(out); } catch {}
   return out;
 }
 
@@ -482,9 +481,9 @@ function floorReportFromGate(gate) {
   };
 }
 
-async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, callClaude, extractClaudeResult } = {}) {
-  if (typeof callClaude !== 'function') throw new Error('humanizeLabTestEngine requires callClaude');
-  if (typeof extractClaudeResult !== 'function') throw new Error('humanizeLabTestEngine requires extractClaudeResult');
+async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, callModel, extractModelResult } = {}) {
+  if (typeof callModel !== 'function') throw new Error('humanizeLabTestEngine requires callModel');
+  if (typeof extractModelResult !== 'function') throw new Error('humanizeLabTestEngine requires extractModelResult');
 
   const source = String(text || '');
   const plan = buildPlan(source, { mode, userNotes, evidence });
@@ -526,7 +525,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
 
   const extra = [userNotes && `[관리자 메모]\n${userNotes}`, evidence && `[승인 근거]\n${evidence}`].filter(Boolean).join('\n\n');
   const tool = buildTool(lang);
-  const data = await callClaude({
+  const data = await callModel({
     userText: `${extra ? extra + '\n\n' : ''}[원문]\n${source}`,
     systemText: prompt.text,
     tool,
@@ -537,7 +536,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     phase: 'fundamental:main',
     mode
   });
-  const parsed = extractClaudeResult(data, tool.name);
+  const parsed = extractModelResult(data, tool.name);
   let outputText = minimalCleanupText(parsed.outputText || '');
   if (!outputText) outputText = baseline;
 

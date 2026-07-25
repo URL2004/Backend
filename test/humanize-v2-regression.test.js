@@ -367,8 +367,10 @@ test('빈 줄 없이 이어진 자소서 완결 행은 서로 다른 문항으�
   });
   assert.equal(restored.paragraphs.sourceCount, 5);
   assert.equal(restored.paragraphs.afterCount, 5);
-  assert.equal(restored.paragraphs.policy, 'none');
-  assert.equal(restored.text, source);
+  assert.equal(restored.paragraphs.policy, 'source_readable_units');
+  assert.equal(restored.text.replace(/\s+/gu, ''), source.replace(/\s+/gu, ''));
+  assert.equal(layoutStructure.splitExplicitParagraphs(restored.text).length, 5);
+  assert.equal(restored.paragraphs.visualGapRepairCount, 4);
 });
 
 test('기본·고급 일반 산문도 의미 역할 전환에 맞춰 문단 가독성을 개선한다', () => {
@@ -433,7 +435,8 @@ test('읽기 좋은 다문단 현장실습 글은 일반 휴머나이징 후처�
   assert.equal(restored.paragraphs.policy, 'source_paragraph_roles');
   assert.equal(restored.paragraphs.sourceCount, 9);
   assert.equal(restored.paragraphs.afterCount, 9);
-  assert.equal(restored.text, source);
+  assert.equal(restored.text.replace(/\s+/gu, ''), source.replace(/\s+/gu, ''));
+  assert.equal(layoutStructure.splitExplicitParagraphs(restored.text).length, 9);
 });
 
 test('현장 사례의 국소 결론은 다음 활동 문단이 아니라 근거가 있는 원래 문단에 다시 붙인다', () => {

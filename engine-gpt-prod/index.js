@@ -40,7 +40,7 @@ const literalSpans = require('./literalSpans');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.3';
+const VERSION = 'gpt-prod-v2.5.4';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -1542,6 +1542,10 @@ async function runEngine({
     paragraphSourceBoundaryRepairCount: Number(layoutRepair?.paragraphs?.sourceBoundaryRepairCount || 0),
     paragraphBackwardConclusionRepairCount: Number(layoutRepair?.paragraphs?.backwardConclusionRepairCount || 0),
     paragraphAlignmentConfidence: Number(layoutRepair?.paragraphs?.paragraphAlignmentConfidence || 0),
+    paragraphProseSplitCount: Number(layoutRepair?.paragraphs?.proseSplitCount || 0),
+    paragraphVisualGapRepairCount: Number(layoutRepair?.paragraphs?.visualGapRepairCount || 0),
+    explicitParagraphCountBefore: Number(layoutRepair?.paragraphs?.explicitParagraphCountBefore || 0),
+    explicitParagraphCountAfter: Number(layoutRepair?.paragraphs?.explicitParagraphCountAfter || 0),
     paragraphReadability: layoutRepair?.paragraphs?.readability || null,
     riskFlags: documentProfile.riskFlags || [],
     tonePolicy: documentProfile.tonePolicy || 'source_preserve',

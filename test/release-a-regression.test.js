@@ -347,7 +347,17 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
             policy: 'bounded_source_paragraphs',
             beforeCount: 14,
             afterCount: 6,
-            readability: { overlongCount: 0, maxBare: 824, maxSentences: 9 }
+            proseSplitCount: 2,
+            visualGapRepairCount: 3,
+            explicitParagraphCountBefore: 4,
+            explicitParagraphCountAfter: 9,
+            readability: {
+              overlongCount: 0,
+              maxBare: 824,
+              maxSentences: 9,
+              maxBareLimit: 700,
+              maxSentenceLimit: 8
+            }
           }
         }
       }
@@ -381,6 +391,12 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.paragraphOverlongCount, 0);
   assert.equal(first.paragraphMaxBare, 824);
   assert.equal(first.paragraphMaxSentences, 9);
+  assert.equal(first.paragraphProseSplitCount, 2);
+  assert.equal(first.paragraphVisualGapRepairCount, 3);
+  assert.equal(first.explicitParagraphCountBefore, 4);
+  assert.equal(first.explicitParagraphCountAfter, 9);
+  assert.equal(first.paragraphMaxBareLimit, 700);
+  assert.equal(first.paragraphMaxSentenceLimit, 8);
   assert.equal(first.finalNoopRecoveryAttempted, true);
   assert.equal(first.finalNoopRecoveryReason, 'no_safe_surface_change');
   assert.equal(first.humanizationDepthEnabled, true);

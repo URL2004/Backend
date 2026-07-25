@@ -5,6 +5,28 @@ const { splitSentences } = require('../engine/koreanText');
 const MAX_PARAGRAPH_BARE = 1100;
 const MAX_PARAGRAPH_SENTENCES = 12;
 const STRUCTURAL_ROLES = new Set(['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote', 'code', 'legal_clause', 'signature']);
+const PROFILE_READABILITY_LIMITS = Object.freeze({
+  resume_application: Object.freeze({ maxBare: 420, maxSentences: 5 }),
+  student_record: Object.freeze({ maxBare: 480, maxSentences: 6 }),
+  student_record_teacher: Object.freeze({ maxBare: 480, maxSentences: 6 }),
+  student_self_assessment: Object.freeze({ maxBare: 500, maxSentences: 6 }),
+  academic_paper: Object.freeze({ maxBare: 700, maxSentences: 8 }),
+  report_assignment: Object.freeze({ maxBare: 650, maxSentences: 7 }),
+  long_explainer: Object.freeze({ maxBare: 650, maxSentences: 7 }),
+  clinical_record: Object.freeze({ maxBare: 700, maxSentences: 8 }),
+  legal_contract: Object.freeze({ maxBare: 700, maxSentences: 8 }),
+  general_essay: Object.freeze({ maxBare: 540, maxSentences: 7 }),
+  personal_essay: Object.freeze({ maxBare: 540, maxSentences: 7 }),
+  blog_review: Object.freeze({ maxBare: 560, maxSentences: 7 }),
+  review_blog: Object.freeze({ maxBare: 560, maxSentences: 7 }),
+  marketing_ad: Object.freeze({ maxBare: 520, maxSentences: 7 }),
+  marketing: Object.freeze({ maxBare: 520, maxSentences: 7 }),
+  social_caption: Object.freeze({ maxBare: 520, maxSentences: 7 }),
+  social: Object.freeze({ maxBare: 520, maxSentences: 7 }),
+  mail_notice: Object.freeze({ maxBare: 560, maxSentences: 7 }),
+  general: Object.freeze({ maxBare: 600, maxSentences: 7 }),
+  unknown: Object.freeze({ maxBare: 600, maxSentences: 7 })
+});
 
 function normalizeNewlines(value) {
   return String(value || '').replace(/\r\n?/gu, '\n');
@@ -309,44 +331,72 @@ function splitReadableParagraphs(value, options = {}) {
   return paragraphs;
 }
 
-function paragraphSplitNeed(paragraph) {
+function profileNameFromOptions(options = {}) {
+  const profile = options?.documentProfile;
+  if (profile && typeof profile === 'object') {
+    return String(profile.profile || profile.contentGenre || options.profileName || 'unknown');
+  }
+  return String(options?.profileName || profile || 'unknown');
+}
+
+function resolveParagraphReadabilityLimits(options = {}) {
+  const profileName = profileNameFromOptions(options);
+  const mode = String(options?.mode || '');
+  if (mode === 'polish' || profileName === 'creative') {
+    return {
+      profileName,
+      maxBare: MAX_PARAGRAPH_BARE,
+      maxSentences: MAX_PARAGRAPH_SENTENCES
+    };
+  }
+  const limits = PROFILE_READABILITY_LIMITS[profileName]
+    || PROFILE_READABILITY_LIMITS.unknown;
+  return { profileName, ...limits };
+}
+
+function paragraphSplitNeed(paragraph, options = {}) {
   if (isStructureDominatedParagraph(paragraph)) return 1;
+  const limits = resolveParagraphReadabilityLimits(options);
   const compact = bare(paragraph).length;
   const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
   return Math.max(
     1,
-    Math.ceil(compact / MAX_PARAGRAPH_BARE),
-    Math.ceil(sentenceCount / MAX_PARAGRAPH_SENTENCES)
+    Math.ceil(compact / limits.maxBare),
+    Math.ceil(sentenceCount / limits.maxSentences)
   );
 }
 
-function measureParagraphReadability(paragraphsOrText) {
+function measureParagraphReadability(paragraphsOrText, options = {}) {
   const paragraphs = Array.isArray(paragraphsOrText)
     ? paragraphsOrText
     : splitReadableParagraphs(paragraphsOrText);
+  const limits = resolveParagraphReadabilityLimits(options);
   const details = paragraphs.map((paragraph, index) => {
     const compact = bare(paragraph).length;
     const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
     const structureDominated = isStructureDominatedParagraph(paragraph);
-    const splitNeed = structureDominated ? 1 : paragraphSplitNeed(paragraph);
+    const splitNeed = structureDominated ? 1 : paragraphSplitNeed(paragraph, options);
     return { index, compact, sentenceCount, structureDominated, splitNeed, overlong: splitNeed > 1 };
   });
   return {
     paragraphCount: paragraphs.length,
     targetCount: details.reduce((sum, item) => sum + item.splitNeed, 0),
-    minimumCount: minimumReadableParagraphCount(details),
+    minimumCount: minimumReadableParagraphCount(details, options),
     overlongCount: details.filter(item => item.overlong).length,
     maxBare: details.length ? Math.max(...details.map(item => item.compact)) : 0,
     maxSentences: details.length ? Math.max(...details.map(item => item.sentenceCount)) : 0,
+    maxBareLimit: limits.maxBare,
+    maxSentenceLimit: limits.maxSentences,
     details
   };
 }
 
-function minimumReadableParagraphCount(detailsOrParagraphs) {
+function minimumReadableParagraphCount(detailsOrParagraphs, options = {}) {
+  const limits = resolveParagraphReadabilityLimits(options);
   const details = Array.isArray(detailsOrParagraphs)
     && detailsOrParagraphs.every(item => item && typeof item === 'object' && Number.isFinite(item.compact))
     ? detailsOrParagraphs
-    : measureParagraphReadabilityDetails(detailsOrParagraphs);
+    : measureParagraphReadabilityDetails(detailsOrParagraphs, options);
   const structuralCount = details.filter(item => item.structureDominated).length;
   const prose = details.filter(item => !item.structureDominated);
   if (!prose.length) return structuralCount;
@@ -354,12 +404,12 @@ function minimumReadableParagraphCount(detailsOrParagraphs) {
   const totalSentences = prose.reduce((sum, item) => sum + item.sentenceCount, 0);
   return structuralCount + Math.max(
     1,
-    Math.ceil(totalBare / MAX_PARAGRAPH_BARE),
-    Math.ceil(totalSentences / MAX_PARAGRAPH_SENTENCES)
+    Math.ceil(totalBare / limits.maxBare),
+    Math.ceil(totalSentences / limits.maxSentences)
   );
 }
 
-function measureParagraphReadabilityDetails(paragraphsOrText) {
+function measureParagraphReadabilityDetails(paragraphsOrText, options = {}) {
   const paragraphs = Array.isArray(paragraphsOrText)
     ? paragraphsOrText
     : splitReadableParagraphs(paragraphsOrText);
@@ -374,10 +424,24 @@ function measureParagraphReadabilityDetails(paragraphsOrText) {
 function isStructureDominatedParagraph(value) {
   const records = buildLineRecords(value).filter(record => !record.blank);
   if (!records.length) return false;
-  if (records.some(record => record.role === 'table')) return true;
-  if (records.length < 2) return false;
-  const structural = records.filter(record => isStructuralRole(record.role)).length;
-  return structural / records.length >= 0.5;
+  // 표나 목록 한 줄이 섞였다는 이유로 그 뒤의 긴 산문까지 구조 블록으로
+  // 면제하지 않는다. 문단의 모든 비어 있지 않은 행이 구조 행일 때만
+  // 재배치 금지 대상으로 본다.
+  return records.every(isPureStructuralRecord);
+}
+
+function isPureStructuralRecord(record) {
+  const role = String(record?.role || '');
+  if (!isStructuralRole(role)) return false;
+  if (['table', 'quote', 'code', 'legal_clause', 'signature', 'label'].includes(role)) return true;
+  // "라벨: 긴 본문"이나 "1. 제목 + 여러 설명 문장"은 접두부만
+  // 구조이고 나머지는 일반 산문이다. 행 전체를 구조로 면제하지 않는다.
+  if (role === 'label_inline') return false;
+  if (['title', 'heading', 'list'].includes(role)) {
+    const sentenceCount = splitSentences(String(record?.text || '')).filter(Boolean).length;
+    return sentenceCount <= 1;
+  }
+  return false;
 }
 
 function bare(value) {
@@ -397,6 +461,7 @@ module.exports = {
   measureParagraphReadability,
   minimumReadableParagraphCount,
   paragraphSplitNeed,
+  resolveParagraphReadabilityLimits,
   shouldPreserveLineBoundary,
   isStructuralRole,
   isKnownHeadingLine,

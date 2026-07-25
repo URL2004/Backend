@@ -338,16 +338,22 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
   let missingCount = 0;
   for (const heading of headings) {
     const sourceIndex = sourceText.indexOf(heading, sourceCursor);
-    const outputIndex = text.indexOf(heading, outputCursor);
+    let outputIndex = text.indexOf(heading, outputCursor);
+    let outputHeadingLength = heading.length;
     if (outputIndex < 0) {
-      missingCount += 1;
-      continue;
+      const equivalent = findWhitespaceEquivalentLine(text, heading, outputCursor);
+      if (!equivalent) {
+        missingCount += 1;
+        continue;
+      }
+      outputIndex = equivalent.start;
+      outputHeadingLength = equivalent.end - equivalent.start;
     }
     const hasSourceBefore = sourceIndex > 0 && sourceText.slice(0, sourceIndex).trim().length > 0;
     const hasSourceAfter = sourceIndex >= 0
       && sourceText.slice(sourceIndex + heading.length).trim().length > 0;
     let left = outputIndex;
-    let right = outputIndex + heading.length;
+    let right = outputIndex + outputHeadingLength;
     while (left > 0 && /\s/u.test(text[left - 1])) left -= 1;
     while (right < text.length && /\s/u.test(text[right])) right += 1;
     const sourceBefore = hasSourceBefore ? sourceLineSeparator(sourceText, sourceIndex, 'before') : '';
@@ -368,11 +374,121 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
   };
 }
 
+function findWhitespaceEquivalentLine(value, expected, cursor = 0) {
+  const text = normalizeNewlines(value);
+  const key = bare(expected);
+  if (!key) return null;
+  const expectedLineCount = normalizeNewlines(expected).split('\n').length;
+  const lines = [];
+  let start = 0;
+  for (const line of text.split('\n')) {
+    const end = start + line.length;
+    lines.push({ line, start, end });
+    start = end + 1;
+  }
+  for (let index = 0; index + expectedLineCount <= lines.length; index += 1) {
+    const first = lines[index];
+    const last = lines[index + expectedLineCount - 1];
+    if (last.end < cursor) continue;
+    const candidate = text.slice(first.start, last.end);
+    if (bare(candidate) === key) return { start: first.start, end: last.end };
+  }
+  return null;
+}
+
+function restoreStructuralVisualGaps(value, { excludedBlocks = new Set() } = {}) {
+  const normalized = normalizeNewlines(value);
+  const records = layoutStructure.buildLineRecords(normalized);
+  const nonEmpty = records.filter(record => !record.blank);
+  if (nonEmpty.length < 2) {
+    return { text: normalizeParagraphWhitespace(normalized), repairCount: 0 };
+  }
+
+  const lines = normalized.split('\n');
+  let repairCount = 0;
+  for (let index = 0; index < nonEmpty.length - 1; index += 1) {
+    const left = nonEmpty[index];
+    const right = nonEmpty[index + 1];
+    const blankLineCount = Math.max(0, right.index - left.index - 1);
+    if (isVisualGapExcluded(left, excludedBlocks) || isVisualGapExcluded(right, excludedBlocks)) continue;
+    if (blankLineCount > 0 || !needsVisualParagraphGap(left, right)) continue;
+    // 뒤에서부터 삽입하면 앞서 계산한 원문 행 인덱스가 흔들리지 않는다.
+    lines.splice(right.index + repairCount, 0, '');
+    repairCount += 1;
+  }
+  return {
+    text: normalizeParagraphWhitespace(lines.join('\n')),
+    repairCount
+  };
+}
+
+function isVisualGapExcluded(record, excludedBlocks) {
+  const normalized = bare(record?.raw);
+  if (!normalized) return false;
+  for (const block of excludedBlocks || []) {
+    if (normalized === block
+        || normalized.startsWith(block)
+        || block.startsWith(normalized)
+        || block.includes(normalized)) return true;
+  }
+  return false;
+}
+
+function buildVisualGapExcludedBlocks(chunks) {
+  const excludedTypes = new Set([
+    'toc_item',
+    'reference_item',
+    'table',
+    'code',
+    'quote',
+    'signature',
+    'legal_clause',
+    'legal_clause_prefix'
+  ]);
+  return new Set((chunks || [])
+    .filter(chunk => {
+      if (!chunk?.locked) return false;
+      if (excludedTypes.has(String(chunk?.lockType || ''))) return true;
+      return ['heading', 'heading_continuation'].includes(String(chunk?.lockType || ''))
+        && /(?:목\s*차|참고\s*(?:문헌|자료)|References)/iu.test(String(chunk?.text || ''));
+    })
+    .map(chunk => bare(chunk?.text))
+    .filter(Boolean));
+}
+
+function needsVisualParagraphGap(left, right) {
+  const leftRole = String(left?.role || '');
+  const rightRole = String(right?.role || '');
+  if (leftRole === 'prose' && rightRole === 'prose'
+      && layoutStructure.isHardProseBoundary(left, right)) return true;
+  if (['title', 'heading'].includes(leftRole) || ['title', 'heading'].includes(rightRole)) return true;
+
+  const leftList = leftRole === 'list';
+  const rightList = rightRole === 'list';
+  if (leftList && rightList) return false;
+  if (leftList || rightList) {
+    // 번호 절은 뒤 산문을 해당 절의 설명으로 이어 붙일 수 있게 두되,
+    // 새 번호 절 앞에는 실제 빈 줄을 둔다.
+    const leftOrdered = isOrderedSectionRecord(left);
+    const rightOrdered = isOrderedSectionRecord(right);
+    if (rightOrdered) return true;
+    if (leftOrdered && rightRole === 'prose') return false;
+    return leftRole === 'prose' || rightRole === 'prose';
+  }
+
+  const blockRoles = new Set(['table', 'quote', 'code', 'legal_clause', 'signature']);
+  const leftBlock = blockRoles.has(leftRole);
+  const rightBlock = blockRoles.has(rightRole);
+  if (leftBlock && rightBlock) return false;
+  return (leftRole === 'prose' && rightBlock) || (leftBlock && rightRole === 'prose');
+}
+
+function isOrderedSectionRecord(record) {
+  return String(record?.role || '') === 'list'
+    && /^\s*(?:\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+\S/u.test(String(record?.text || ''));
+}
+
 function restoreParagraphLayout({ source, outputText, chunks, mode = '', requestStrength = '', documentProfile = '', profileConfidence = 0 } = {}) {
-  const sourceParagraphs = splitParagraphs(source);
-  const before = splitParagraphs(outputText);
-  const sourceCount = sourceParagraphs.length;
-  const beforeCount = before.length;
   const profileName = typeof documentProfile === 'object'
     ? String(documentProfile?.profile || documentProfile?.contentGenre || 'unknown')
     : String(documentProfile || '');
@@ -383,18 +499,80 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
   const sensitiveReport = confidence >= 0.75
     && ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract'].includes(profileName);
   const creativeLayout = profileName === 'creative';
-  const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs);
-  const beforeReadability = layoutStructure.measureParagraphReadability(before);
-  const readableMinimum = Math.max(sourceReadability.minimumCount, beforeReadability.minimumCount);
+  const readabilityOptions = {
+    mode,
+    requestStrength,
+    documentProfile,
+    profileName
+  };
+  const rawOutputText = normalizeParagraphWhitespace(outputText);
+  const explicitParagraphCountBefore = layoutStructure.splitExplicitParagraphs(rawOutputText).length;
+  const canRepairVisualGaps = mode !== 'polish' && !creativeLayout;
+  const visualGapExcludedBlocks = buildVisualGapExcludedBlocks(chunks);
+  const sourceVisualLayout = canRepairVisualGaps
+    ? restoreStructuralVisualGaps(source, { excludedBlocks: visualGapExcludedBlocks })
+    : { text: normalizeParagraphWhitespace(source), repairCount: 0 };
+  const outputVisualLayout = canRepairVisualGaps
+    ? restoreStructuralVisualGaps(rawOutputText, { excludedBlocks: visualGapExcludedBlocks })
+    : { text: rawOutputText, repairCount: 0 };
+  const layoutSourceText = sourceVisualLayout.text;
+  const layoutOutputText = outputVisualLayout.text;
+  const detectedSourceParagraphs = splitParagraphs(layoutSourceText);
+  const before = splitParagraphs(layoutOutputText);
+  const beforeCount = before.length;
   const formatFlags = new Set(typeof documentProfile === 'object' ? (documentProfile?.formatProfile?.flags || []) : []);
   const sourceLineLayout = layoutStructure.analyzeLineStructure(source);
+  const resumeReadableUnits = profileName === 'resume_application'
+    ? layoutStructure.buildLineRecords(source)
+      .filter(record => !record.blank)
+      .filter(record => record.role === 'prose' && layoutStructure.isSentenceComplete(record.text))
+      .map(record => String(record.raw || '').trim())
+      .filter(Boolean)
+    : [];
   const preserveResumeUnits = profileName === 'resume_application'
-    && sourceCount >= 3
+    && resumeReadableUnits.length >= 3
     // 빈 줄 없이 완결 행이 연속된 붙여넣기 형식만 문항 묶음으로 본다.
     // 명시적으로 나뉜 소수의 긴 문단은 기존처럼 문단 내부 역할 전환을
     // 기준으로 읽기 좋게 세분할 수 있다.
     && Number(sourceLineLayout?.explicitParagraphCount || 0) === 1
-    && Number(sourceLineLayout?.semanticBoundaryCount || 0) >= sourceCount - 2;
+    && resumeReadableUnits.length === Number(sourceLineLayout?.nonEmptyLineCount || 0);
+  const sourceParagraphs = preserveResumeUnits ? resumeReadableUnits : detectedSourceParagraphs;
+  const sourceCount = sourceParagraphs.length;
+  const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs, readabilityOptions);
+  const beforeReadability = layoutStructure.measureParagraphReadability(before, readabilityOptions);
+  const readableMinimum = Math.max(sourceReadability.minimumCount, beforeReadability.minimumCount);
+  if (preserveResumeUnits) {
+    const anchored = buildSourceAnchoredParagraphLayout(layoutSourceText, layoutOutputText, {
+      readabilityOptions,
+      forceParagraphSeparators: true,
+      sourceParagraphsOverride: sourceParagraphs
+    });
+    const afterParagraphs = splitParagraphs(anchored.text);
+    const afterReadability = layoutStructure.measureParagraphReadability(afterParagraphs, readabilityOptions);
+    const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(anchored.text).length;
+    return {
+      text: anchored.text,
+      applied: anchored.applied || outputVisualLayout.repairCount > 0,
+      policy: 'source_readable_units',
+      sourceCount,
+      beforeCount,
+      targetCount: anchored.paragraphCount,
+      afterCount: anchored.paragraphCount,
+      roleBoundaryCount: 0,
+      sourceBoundaryRepairCount: anchored.sourceBoundaryRepairCount,
+      backwardConclusionRepairCount: anchored.backwardConclusionRepairCount,
+      paragraphAlignmentConfidence: anchored.alignmentConfidence,
+      proseSplitCount: anchored.proseSplitCount,
+      visualGapRepairCount: Math.max(
+        outputVisualLayout.repairCount,
+        explicitParagraphCountAfter - explicitParagraphCountBefore - anchored.proseSplitCount
+      ),
+      explicitParagraphCountBefore,
+      explicitParagraphCountAfter,
+      readability: compactReadability(afterReadability),
+      pass: anchored.contentPreserved && afterReadability.overlongCount === 0
+    };
+  }
   const semanticProseRoles = ['basic', 'advanced'].includes(String(requestStrength || ''))
     && mode !== 'polish'
     && !creativeLayout
@@ -411,11 +589,14 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     // layoutStructure가 판정한 원문 역할 경계로 존중한다.
     && sourceParagraphs.every(paragraph => !layoutStructure.isStructureDominatedParagraph(paragraph));
   if (sourceParagraphRolesAreAuthoritative) {
-    const anchored = buildSourceAnchoredParagraphLayout(source, outputText);
-    const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(anchored.text));
+    const anchored = buildSourceAnchoredParagraphLayout(layoutSourceText, layoutOutputText, {
+      readabilityOptions
+    });
+    const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(anchored.text), readabilityOptions);
+    const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(anchored.text).length;
     return {
       text: anchored.text,
-      applied: anchored.applied,
+      applied: anchored.applied || outputVisualLayout.repairCount > 0,
       policy: 'source_paragraph_roles',
       sourceCount,
       beforeCount,
@@ -425,23 +606,35 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
       sourceBoundaryRepairCount: anchored.sourceBoundaryRepairCount,
       backwardConclusionRepairCount: anchored.backwardConclusionRepairCount,
       paragraphAlignmentConfidence: anchored.alignmentConfidence,
+      proseSplitCount: anchored.proseSplitCount,
+      visualGapRepairCount: outputVisualLayout.repairCount,
+      explicitParagraphCountBefore,
+      explicitParagraphCountAfter,
       readability: compactReadability(afterReadability),
       pass: anchored.contentPreserved && afterReadability.overlongCount === 0
     };
   }
   if (semanticProseRoles) {
-    const roleLayout = buildSemanticProseRoleLayout(outputText, { profileName });
+    const roleLayout = buildSemanticProseRoleLayout(layoutOutputText, {
+      profileName,
+      readabilityOptions
+    });
     if (roleLayout.applicable) {
-      const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(roleLayout.text));
+      const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(roleLayout.text), readabilityOptions);
+      const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(roleLayout.text).length;
       return {
         text: roleLayout.text,
-        applied: roleLayout.text !== normalizeParagraphWhitespace(outputText),
+        applied: roleLayout.text !== rawOutputText,
         policy: 'semantic_prose_roles',
         sourceCount,
         beforeCount,
         targetCount: roleLayout.paragraphCount,
         afterCount: roleLayout.paragraphCount,
         roleBoundaryCount: roleLayout.roleBoundaryCount,
+        proseSplitCount: 0,
+        visualGapRepairCount: outputVisualLayout.repairCount,
+        explicitParagraphCountBefore,
+        explicitParagraphCountAfter,
         readability: compactReadability(afterReadability),
         pass: roleLayout.contentPreserved && afterReadability.overlongCount === 0
       };
@@ -472,14 +665,19 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     }
   }
   if (policy === 'none' || (beforeCount === targetCount && beforeReadability.overlongCount === 0)) {
+    const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(layoutOutputText).length;
     return {
-      text: String(outputText || ''),
-      applied: false,
-      policy,
+      text: layoutOutputText,
+      applied: layoutOutputText !== rawOutputText,
+      policy: outputVisualLayout.repairCount > 0 ? 'structural_visual_gaps' : policy,
       sourceCount,
       beforeCount,
       targetCount,
       afterCount: beforeCount,
+      proseSplitCount: 0,
+      visualGapRepairCount: outputVisualLayout.repairCount,
+      explicitParagraphCountBefore,
+      explicitParagraphCountAfter,
       readability: compactReadability(beforeReadability),
       pass: beforeReadability.overlongCount === 0
     };
@@ -490,8 +688,9 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     .map(chunk => bare(chunk.text))
     .filter(Boolean));
   const paragraphs = [...before];
+  let proseSplitCount = 0;
   while (paragraphs.length > targetCount) {
-    const candidate = findMergeCandidate(paragraphs, protectedBlocks);
+    const candidate = findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions);
     if (!candidate) break;
     paragraphs.splice(
       candidate.index,
@@ -503,24 +702,33 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     const candidate = findSplitCandidate(paragraphs, protectedBlocks);
     if (!candidate) break;
     paragraphs.splice(candidate.index, 1, candidate.left, candidate.right);
+    proseSplitCount += 1;
   }
   const text = normalizeParagraphWhitespace(paragraphs.join('\n\n'));
   const afterCount = splitParagraphs(text).length;
-  const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(text));
+  const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(text), readabilityOptions);
+  const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(text).length;
   return {
     text,
-    applied: text !== normalizeParagraphWhitespace(outputText),
+    applied: text !== rawOutputText,
     policy,
     sourceCount,
     beforeCount,
     targetCount,
     afterCount,
+    proseSplitCount,
+    visualGapRepairCount: Math.max(
+      outputVisualLayout.repairCount,
+      explicitParagraphCountAfter - explicitParagraphCountBefore - proseSplitCount
+    ),
+    explicitParagraphCountBefore,
+    explicitParagraphCountAfter,
     readability: compactReadability(afterReadability),
     pass: afterCount === targetCount && afterReadability.overlongCount === 0
   };
 }
 
-function buildSemanticProseRoleLayout(value, { profileName = '' } = {}) {
+function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOptions = {} } = {}) {
   const normalized = normalizeParagraphWhitespace(value);
   const paragraphs = splitParagraphs(normalized);
   const sentences = splitSentences(normalized)
@@ -578,7 +786,7 @@ function buildSemanticProseRoleLayout(value, { profileName = '' } = {}) {
     Math.floor(sentences.length / 2),
     Math.max(targetCount, Math.min(6, semanticBoundaryCount + 1))
   );
-  const currentReadability = layoutStructure.measureParagraphReadability(paragraphs);
+  const currentReadability = layoutStructure.measureParagraphReadability(paragraphs, readabilityOptions);
   if (paragraphs.length === targetCount && currentReadability.overlongCount === 0) {
     return {
       applicable: true,
@@ -628,8 +836,8 @@ function buildSemanticProseRoleLayout(value, { profileName = '' } = {}) {
   if (current.length) groups.push(current.join(' '));
   const text = normalizeParagraphWhitespace(groups.join('\n\n'));
   const contentPreserved = bare(text) === bare(normalized);
-  const beforeReadability = layoutStructure.measureParagraphReadability(paragraphs);
-  const afterReadability = layoutStructure.measureParagraphReadability(groups);
+  const beforeReadability = layoutStructure.measureParagraphReadability(paragraphs, readabilityOptions);
+  const afterReadability = layoutStructure.measureParagraphReadability(groups, readabilityOptions);
   const beforeDistance = Math.abs(paragraphs.length - targetCount);
   const afterDistance = Math.abs(groups.length - targetCount);
   const improved = afterDistance < beforeDistance
@@ -666,9 +874,15 @@ function semanticTransitionKind(value, profileName = '') {
  * 원문 계약이다. 모델·의미 수리 단계에서 빈 줄이 이동하더라도 결과 문장은
  * 옮기지 않고, 원문 문단과 가장 잘 대응하는 문장 경계만 복원한다.
  */
-function buildSourceAnchoredParagraphLayout(source, value) {
+function buildSourceAnchoredParagraphLayout(source, value, {
+  readabilityOptions = {},
+  forceParagraphSeparators = false,
+  sourceParagraphsOverride = null
+} = {}) {
   const normalized = normalizeParagraphWhitespace(value);
-  const sourceParagraphs = splitParagraphs(source);
+  const sourceParagraphs = Array.isArray(sourceParagraphsOverride) && sourceParagraphsOverride.length
+    ? sourceParagraphsOverride.map(paragraph => String(paragraph || '').trim()).filter(Boolean)
+    : splitParagraphs(source);
   const currentParagraphs = splitParagraphs(normalized);
   const outputSentences = splitSentences(normalized)
     .map(sentence => String(sentence || '').replace(/\s+/gu, ' ').trim())
@@ -688,7 +902,8 @@ function buildSourceAnchoredParagraphLayout(source, value) {
     start = end;
   }
   sourceRoleGroups.push(outputSentences.slice(start).join(' '));
-  const groups = sourceRoleGroups.flatMap(splitSourceRoleForReadability);
+  const groups = sourceRoleGroups.flatMap(paragraph => splitSourceRoleForReadability(paragraph, readabilityOptions));
+  const proseSplitCount = Math.max(0, groups.length - sourceRoleGroups.length);
   const proposed = normalizeParagraphWhitespace(groups.join('\n\n'));
   const contentPreserved = bare(proposed) === bare(normalized);
   if (!contentPreserved || sourceRoleGroups.length !== sourceCount) {
@@ -702,12 +917,14 @@ function buildSourceAnchoredParagraphLayout(source, value) {
   const currentAlignment = currentComparable
     ? paragraphAlignmentScore(sourceParagraphs, currentParagraphs)
     : -1;
-  const currentOverlongCount = layoutStructure.measureParagraphReadability(currentParagraphs).overlongCount;
-  const proposedOverlongCount = layoutStructure.measureParagraphReadability(groups).overlongCount;
+  const currentOverlongCount = layoutStructure.measureParagraphReadability(currentParagraphs, readabilityOptions).overlongCount;
+  const proposedOverlongCount = layoutStructure.measureParagraphReadability(groups, readabilityOptions).overlongCount;
+  const currentExplicitCount = layoutStructure.splitExplicitParagraphs(normalized).length;
   const shouldApply = !currentComparable
     || alignment.score > currentAlignment + 0.015
     || hasMisplacedBackwardTakeaway(outputSentences, currentBoundaries, proposedBoundaries)
-    || proposedOverlongCount < currentOverlongCount;
+    || proposedOverlongCount < currentOverlongCount
+    || (forceParagraphSeparators && currentExplicitCount < groups.length);
   if (!shouldApply) {
     return {
       text: normalized,
@@ -716,6 +933,7 @@ function buildSourceAnchoredParagraphLayout(source, value) {
       sourceBoundaryRepairCount: 0,
       backwardConclusionRepairCount: 0,
       alignmentConfidence: roundAlignment(Math.max(currentAlignment, alignment.confidence)),
+      proseSplitCount,
       contentPreserved: true
     };
   }
@@ -733,6 +951,7 @@ function buildSourceAnchoredParagraphLayout(source, value) {
     sourceBoundaryRepairCount,
     backwardConclusionRepairCount,
     alignmentConfidence: roundAlignment(alignment.confidence),
+    proseSplitCount,
     contentPreserved: true
   };
 }
@@ -843,12 +1062,12 @@ function countMovedBoundaries(before, after) {
   return after.filter(boundary => !current.has(boundary)).length;
 }
 
-function splitSourceRoleForReadability(paragraph) {
+function splitSourceRoleForReadability(paragraph, readabilityOptions = {}) {
   const pending = [String(paragraph || '').trim()];
   const out = [];
   while (pending.length) {
     const current = pending.shift();
-    if (layoutStructure.measureParagraphReadability([current]).overlongCount === 0) {
+    if (layoutStructure.measureParagraphReadability([current], readabilityOptions).overlongCount === 0) {
       if (current) out.push(current);
       continue;
     }
@@ -908,6 +1127,7 @@ function unchangedSourceAnchoredLayout(text, paragraphs, alignmentConfidence) {
     sourceBoundaryRepairCount: 0,
     backwardConclusionRepairCount: 0,
     alignmentConfidence: roundAlignment(alignmentConfidence),
+    proseSplitCount: 0,
     contentPreserved: true
   };
 }
@@ -961,7 +1181,9 @@ function compactReadability(value) {
     overlongCount: Number(value?.overlongCount) || 0,
     maxBare: Number(value?.maxBare) || 0,
     maxSentences: Number(value?.maxSentences) || 0,
-    minimumCount: Number(value?.minimumCount) || 0
+    minimumCount: Number(value?.minimumCount) || 0,
+    maxBareLimit: Number(value?.maxBareLimit) || 0,
+    maxSentenceLimit: Number(value?.maxSentenceLimit) || 0
   };
 }
 
@@ -978,7 +1200,7 @@ function sourceLineSeparator(text, boundary, direction) {
   return newlineCount >= 2 ? '\n\n' : '\n';
 }
 
-function findMergeCandidate(paragraphs, protectedBlocks) {
+function findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions = {}) {
   let selected = null;
   let selectedLength = Infinity;
   for (let index = 0; index < paragraphs.length - 1; index += 1) {
@@ -988,7 +1210,7 @@ function findMergeCandidate(paragraphs, protectedBlocks) {
         || layoutStructure.isStructureDominatedParagraph(paragraphs[index])
         || layoutStructure.isStructureDominatedParagraph(paragraphs[index + 1])) continue;
     const merged = `${paragraphs[index].trim()} ${paragraphs[index + 1].trim()}`;
-    const mergedReadability = layoutStructure.measureParagraphReadability([merged]);
+    const mergedReadability = layoutStructure.measureParagraphReadability([merged], readabilityOptions);
     if (mergedReadability.overlongCount > 0) continue;
     const score = bare(merged).length;
     if (score < selectedLength) {
@@ -1002,7 +1224,9 @@ function findMergeCandidate(paragraphs, protectedBlocks) {
 function findSplitCandidate(paragraphs, protectedBlocks) {
   const ranked = paragraphs
     .map((paragraph, index) => ({ paragraph, index, length: bare(paragraph).length }))
-    .filter(item => !touchesProtectedBlock(item.paragraph, protectedBlocks))
+    // 문단 전체가 보호 블록인 경우에만 제외한다. 문장 안 인용처럼 보호
+    // 문자열을 포함했다는 이유만으로 문단 전체의 가독성 분할을 막지 않는다.
+    .filter(item => !equalsProtectedBlock(item.paragraph, protectedBlocks))
     .sort((a, b) => b.length - a.length);
   for (const item of ranked) {
     const sentences = splitSentences(item.paragraph);
@@ -1027,6 +1251,15 @@ function touchesProtectedBlock(paragraph, protectedBlocks) {
   if (!normalized) return false;
   for (const block of protectedBlocks || []) {
     if (normalized === block || normalized.includes(block)) return true;
+  }
+  return false;
+}
+
+function equalsProtectedBlock(paragraph, protectedBlocks) {
+  const normalized = bare(paragraph);
+  if (!normalized) return false;
+  for (const block of protectedBlocks || []) {
+    if (normalized === block) return true;
   }
   return false;
 }
@@ -1246,11 +1479,17 @@ function compactLayoutRepair(value) {
       sourceBoundaryRepairCount: Number(value.paragraphs.sourceBoundaryRepairCount) || 0,
       backwardConclusionRepairCount: Number(value.paragraphs.backwardConclusionRepairCount) || 0,
       paragraphAlignmentConfidence: Number(value.paragraphs.paragraphAlignmentConfidence) || 0,
+      proseSplitCount: Number(value.paragraphs.proseSplitCount) || 0,
+      visualGapRepairCount: Number(value.paragraphs.visualGapRepairCount) || 0,
+      explicitParagraphCountBefore: Number(value.paragraphs.explicitParagraphCountBefore) || 0,
+      explicitParagraphCountAfter: Number(value.paragraphs.explicitParagraphCountAfter) || 0,
       readability: value.paragraphs.readability ? {
         overlongCount: Number(value.paragraphs.readability.overlongCount) || 0,
         maxBare: Number(value.paragraphs.readability.maxBare) || 0,
         maxSentences: Number(value.paragraphs.readability.maxSentences) || 0,
-        minimumCount: Number(value.paragraphs.readability.minimumCount) || 0
+        minimumCount: Number(value.paragraphs.readability.minimumCount) || 0,
+        maxBareLimit: Number(value.paragraphs.readability.maxBareLimit) || 0,
+        maxSentenceLimit: Number(value.paragraphs.readability.maxSentenceLimit) || 0
       } : null,
       pass: value.paragraphs.pass !== false
     } : null,

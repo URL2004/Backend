@@ -66,7 +66,10 @@ function detectAcademicSpans(text) {
 
   let refHeadingIndex = -1;
   for (let i = 0; i < lines.length; i += 1) {
-    if (lines[i].start > source.length * 0.35 && isRefHeadingLine(lines[i].text)) {
+    // 독립 행의 참고문헌 표제는 문서 길이나 등장 비율과 무관하게 강한
+    // 구조 신호다. 짧은 보고서에서 35% 이전에 나온다는 이유로 인용 목록을
+    // 일반 본문으로 보내지 않는다.
+    if (isRefHeadingLine(lines[i].text)) {
       refHeadingIndex = i;
       break;
     }

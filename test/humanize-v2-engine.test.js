@@ -7,6 +7,7 @@ const runtime = require('../lib/gptRuntimeConfig');
 const { safetyIdentifierForUid } = require('../engine-gpt-prod/openaiClient');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const { buildVoiceProfile } = require('../engine-gpt-prod/voiceProfile');
+const layoutStructure = require('../engine-gpt-prod/layoutStructure');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 const SAFE_POLISH = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지 않습니다.';
@@ -147,7 +148,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.3');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.4');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -654,13 +655,14 @@ test('기본 지원서는 첫 회복이 최소 편집률을 넘어도 의미 반
   assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
   assert.equal(out.engineMeta.documentProfile, 'resume_application');
   assert.equal(out.engineMeta.effectiveMode, 'assignment');
-  assert.equal(out.result.outputText, strong, JSON.stringify({
+  assert.equal(out.result.outputText.replace(/\s+/gu, ''), strong.replace(/\s+/gu, ''), JSON.stringify({
     status: out.status,
     rejectionCodes: out.engineMeta.humanizationDepthRetryRejectionCodes,
     rejected: out.engineMeta.humanizationDepthRetryRejectedCount,
     depth: out.result.humanizationDepth,
     warnings: out.qualityWarnings
   }));
+  assert.equal(layoutStructure.splitExplicitParagraphs(out.result.outputText).length, 3);
   assert.equal(out.engineMeta.resumeRepetitionApplicable, true);
   assert.equal(out.engineMeta.resumeRepetitionPass, true, JSON.stringify(out.result.humanizationDepth));
   assert.equal(out.engineMeta.humanizationRoleRecoveryAttemptCount, 0);
@@ -968,7 +970,7 @@ test('운영 엔진은 구형 플래그와 무관하게 v2.5 경로만 사용한
   const mock = installEngineMock(t, { humanize: SAFE_POLISH });
   process.env.HUMANIZE_ENGINE_V2_ENABLED = '0';
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.3');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.4');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

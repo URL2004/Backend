@@ -977,9 +977,15 @@ function buildArchiveObservability(job) {
     paragraphSourceBoundaryRepairCount: archiveFinite(paragraphRepair.sourceBoundaryRepairCount ?? engineMeta.paragraphSourceBoundaryRepairCount),
     paragraphBackwardConclusionRepairCount: archiveFinite(paragraphRepair.backwardConclusionRepairCount ?? engineMeta.paragraphBackwardConclusionRepairCount),
     paragraphAlignmentConfidence: archiveFinite(paragraphRepair.paragraphAlignmentConfidence ?? engineMeta.paragraphAlignmentConfidence),
+    paragraphProseSplitCount: archiveFinite(paragraphRepair.proseSplitCount ?? engineMeta.paragraphProseSplitCount),
+    paragraphVisualGapRepairCount: archiveFinite(paragraphRepair.visualGapRepairCount ?? engineMeta.paragraphVisualGapRepairCount),
+    explicitParagraphCountBefore: archiveFinite(paragraphRepair.explicitParagraphCountBefore ?? engineMeta.explicitParagraphCountBefore),
+    explicitParagraphCountAfter: archiveFinite(paragraphRepair.explicitParagraphCountAfter ?? engineMeta.explicitParagraphCountAfter),
     paragraphOverlongCount: archiveFinite(paragraphReadability.overlongCount),
     paragraphMaxBare: archiveFinite(paragraphReadability.maxBare),
-    paragraphMaxSentences: archiveFinite(paragraphReadability.maxSentences)
+    paragraphMaxSentences: archiveFinite(paragraphReadability.maxSentences),
+    paragraphMaxBareLimit: archiveFinite(paragraphReadability.maxBareLimit),
+    paragraphMaxSentenceLimit: archiveFinite(paragraphReadability.maxSentenceLimit)
   });
 }
 

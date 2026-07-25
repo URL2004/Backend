@@ -1,15 +1,10 @@
 'use strict';
 
-const { splitSentences, normalizeCompact, mean, standardDeviation, koreanEnd } = require('../engine/koreanText');
-const { detectRegister } = require('../engine/contract');
+const { splitSentences, normalizeCompact, mean, standardDeviation } = require('../engine/koreanText');
+const { detectRegister, endingHistogram: sharedEndingHistogram } = require('../engine/endingStyle');
+const { computePovSeed, countPovKind } = require('../engine/pov');
 const layoutStructure = require('./layoutStructure');
 
-const POV_PATTERNS = Object.freeze({
-  firstSingular: /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|나도|나를|나에게|내게|저는|제가|저의|저도|저를|저에게)(?=$|[^가-힣A-Za-z0-9_])/gu,
-  // "우리 몸"처럼 조사가 생략된 관형형도 집단 화자다. 뒤에 한글이 바로
-  // 붙는 우리나라·우리말 등은 경계 조건으로 제외한다.
-  firstPlural: /(?:^|[^가-힣A-Za-z0-9_])(?:우리는|우리가|우리의|우리도|우리를|우리에게|우리와|우리로서|저희는|저희가|저희의|저희도|저희를|저희에게|저희와|저희로서|우리|저희)(?=$|[^가-힣A-Za-z0-9_])/gu
-});
 const OUR_LEXICAL_NOUNS = Object.freeze([
   '나라', '학교', '사회', '집', '말', '몸', '지역', '동네', '회사', '팀', '반', '가족'
 ]);
@@ -30,8 +25,9 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
     && sentenceLengths.length <= 2
     && punctuationCount <= 2;
   const sparseSplitTarget = punctuationSparse ? sparseSentenceTargets(compactLength) : null;
-  const firstSingular = safeMatches(text, POV_PATTERNS.firstSingular);
-  const firstPlural = safeMatches(text, POV_PATTERNS.firstPlural);
+  const povSeed = computePovSeed(text);
+  const firstSingular = povSeed.fp_singular;
+  const firstPlural = povSeed.fp_plural;
   const endings = endingHistogram(sentences);
   const lineBreakSensitive = profileName === 'creative' && isLineBreakSensitive(text);
   const layout = layoutStructure.analyzeLineStructure(text);
@@ -197,8 +193,17 @@ function auditVoice(sourceProfile, output, {
   const currentParagraphs = current.paragraph?.count || 0;
   const paragraphLimit = paragraphExpansionLimit(sourceParagraphs, sourceProfile?.compactLength || 0);
   const readablePolish = mode === 'polish' && layoutPolicy === 'readable_polish';
-  const semanticProseRoles = layoutPolicy === 'semantic_prose_roles'
-    && Number(layoutTargetCount) >= 2;
+  const layoutAuthorizedParagraphs = [
+    'semantic_prose_roles',
+    'source_paragraph_roles',
+    'source_readable_units',
+    'readability_cap',
+    'bounded_sensitive_report',
+    'bounded_source_paragraphs',
+    'structural_visual_gaps',
+    'creative_preserve'
+  ].includes(layoutPolicy)
+    && Number(layoutTargetCount) >= 1;
   const formattingRemovalCount = Math.max(0, Number(formattingParagraphRemovalCount) || 0);
   const formattingMinimum = sourceParagraphs > 0
     ? Math.max(1, sourceParagraphs - formattingRemovalCount)
@@ -207,7 +212,7 @@ function auditVoice(sourceProfile, output, {
     formattingMinimum,
     (Number(layoutTargetCount) || sourceParagraphs) - formattingRemovalCount
   );
-  const paragraphChanged = semanticProseRoles
+  const paragraphChanged = layoutAuthorizedParagraphs
     ? currentParagraphs !== Number(layoutTargetCount)
     : mode === 'polish'
     ? (readablePolish
@@ -262,7 +267,7 @@ function auditVoice(sourceProfile, output, {
   } else if (boundaryCollapsed) {
     warnings.push(warning('line_structure_changed', '원문의 의미 있는 문단·행 경계가 지나치게 합쳐졌을 수 있어요.'));
   }
-  if ((currentLayout.readability?.overlongCount || 0) > 0) {
+  if (context.profile !== 'creative' && (currentLayout.readability?.overlongCount || 0) > 0) {
     warnings.push(warning('paragraph_readability', '한 문단이 지나치게 길어 읽기 어려울 수 있어요.'));
   }
   return {
@@ -335,16 +340,7 @@ function relativeSentenceSpread(sentence) {
 }
 
 function endingHistogram(sentences) {
-  const out = { plain: 0, polite: 0, haeyo: 0, nominal: 0, other: 0 };
-  for (const sentence of sentences) {
-    const s = sentence.replace(/[.!?…。！？"'”’」』】)\]]+$/gu, '').trim();
-    if (koreanEnd('(?:습니다|ㅂ니다|습니까|합니다|됩니다)', 'u').test(s)) out.polite += 1;
-    else if (koreanEnd('(?:요|죠|네요|거든요|잖아요)', 'u').test(s)) out.haeyo += 1;
-    else if (koreanEnd('(?:다|한다|된다|였다|었다|있다|없다|않다)', 'u').test(s)) out.plain += 1;
-    else if (koreanEnd('(?:함|됨|임|음)', 'u').test(s)) out.nominal += 1;
-    else out.other += 1;
-  }
-  return out;
+  return sharedEndingHistogram(sentences);
 }
 
 function distribution(values) {
@@ -451,7 +447,7 @@ function pluralSpeakerSignature(value) {
     return `${prefix}대상`;
   });
   return {
-    explicit: safeMatches(masked, POV_PATTERNS.firstPlural),
+    explicit: countPovKind(masked, 'firstPlural'),
     lexical
   };
 }
@@ -518,17 +514,21 @@ function restoreDirectQuoteContents(source, output) {
   }
   const sourceQuotes = directQuoteContents(source);
   let quoteIndex = 0;
-  const text = before.replace(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags), match => {
+  const repairedText = before.replace(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags), match => {
     const content = match.slice(1, -1);
     const sourceContent = sourceQuotes[quoteIndex] ?? content;
     quoteIndex += 1;
-    return `${match[0]}${sourceContent}${match.at(-1)}`;
+    return `${match.slice(0, 1)}${sourceContent}${match.at(-1)}`;
   });
-  const auditAfter = auditDirectQuoteIntegrity(source, text);
+  const auditAfter = auditDirectQuoteIntegrity(source, repairedText);
+  const applied = repairedText !== before && auditAfter.pass;
   return {
-    text,
-    applied: text !== before && auditAfter.pass,
-    restoredCount: auditBefore.changedCount,
+    // 검증에 실패한 중간 문자열은 절대 호출자에게 돌려주지 않는다.
+    // 과거 구현은 applied=false여도 잘못 조립한 문자열을 함께 반환해,
+    // 호출자가 필드를 잘못 사용하면 인용문이 중복될 여지가 있었다.
+    text: applied ? repairedText : before,
+    applied,
+    restoredCount: applied ? auditBefore.changedCount : 0,
     reason: auditAfter.pass ? 'restored' : 'post_restore_validation_failed',
     auditBefore,
     auditAfter
@@ -579,7 +579,6 @@ function ratio(current, source) {
 }
 
 module.exports = {
-  POV_PATTERNS,
   buildVoiceProfile,
   voicePromptBlock,
   auditVoice,

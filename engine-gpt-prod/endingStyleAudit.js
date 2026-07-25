@@ -1,7 +1,10 @@
 'use strict';
 
-const { splitSentences, koreanEnd } = require('../engine/koreanText');
-const { detectRegister } = require('../engine/contract');
+const { splitSentences } = require('../engine/koreanText');
+const {
+  classifySentenceEnding,
+  endingHistogram: sharedEndingHistogram
+} = require('../engine/endingStyle');
 
 const VERSION = 2;
 const STYLES = Object.freeze(['plain', 'polite', 'haeyo', 'nominal']);
@@ -162,19 +165,12 @@ function profileName(documentProfile) {
 }
 
 function endingHistogram(sentences) {
-  const out = { plain: 0, polite: 0, haeyo: 0, nominal: 0, other: 0 };
-  for (const sentence of sentences || []) out[endingStyle(sentence)] += 1;
-  return out;
+  return sharedEndingHistogram(sentences);
 }
 
 function endingStyle(sentence) {
-  const text = String(sentence || '').replace(/[.!?…。！？"'”’」』】)\]]+$/gu, '').trim();
-  if (koreanEnd('(?:함|됨|임|음)', 'u').test(text)) return 'nominal';
-  const register = detectRegister(sentence);
-  if (register === 'polite') return 'polite';
-  if (register === 'haeyo') return 'haeyo';
-  if (register === 'plain') return 'plain';
-  return 'other';
+  const style = classifySentenceEnding(sentence);
+  return style === 'unknown' ? 'other' : style;
 }
 
 function dominantStyle(histogram) {

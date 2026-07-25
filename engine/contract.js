@@ -4,11 +4,12 @@
 // rawText에서 1회 구성한 하나의 객체로 모은다. rawText는 불변이며 모든 검증의 기준.
 
 const floor = require('./floor');
+const { detectRegister } = require('./endingStyle');
 
 /**
  * @typedef {Object} Contract
  * @property {string}  rawText            불변 원문 (모든 검증의 기준)
- * @property {('assignment'|'blog'|'thesis'|'resume')} mode
+ * @property {('assignment'|'blog'|'polish')} mode
  * @property {('ko'|'en')} lang
  * @property {boolean} optIn              "내 경험 추가" 허용 여부
  * @property {{fp_singular:number, fp_plural:number, org_voice_likely:boolean}} povSeed  화자 시드(정규식 실측)
@@ -24,27 +25,6 @@ const floor = require('./floor');
  * rawText에서 Contract를 1회 구성. 가드/파이프라인은 이 객체를 단일 소스로 참조한다.
  * @returns {Contract}
  */
-// 원문 종결 문체 감지: 평어체(plain ~다/~한다) vs 합니다체(polite ~습니다) vs 해요체(haeyo ~요/~죠/~거든요).
-//   ★2026-06-16: 해요체와 합니다체를 분리(기존엔 둘 다 'polite'로 뭉쳐, 해요체 입력이 합니다체로 격식화되던 버그).
-//   prompt.js가 register로 말투를 통일하므로, 'haeyo'를 받아야 해요체를 해요체로 보존한다.
-function detectRegister(t) {
-  const s = String(t || '').replace(/\r\n?/gu, '\n');
-  // 공백 앞의 모든 `요`를 종결로 세면 `주요 목적·정책 수요·필요 조건` 같은
-  // 명사까지 해요체로 오인한다. 문장부호 직전 또는 실제 행/문서 끝만 센다.
-  const END = '(?=(?:[.!?…。！？]+["”\'’」』)\\]]*\\s*|["”\'’」』)\\]]*(?:\\n|$)))';
-  const hap = (s.match(new RegExp('(니다|니까)' + END, 'gmu')) || []).length;
-  // `주요·수요·필요·개요`처럼 명사 자체가 요로 끝나는 행은 종결 어미가
-  // 아니다. 단순 행 끝만으로 해요체를 판정하지 않도록 그 어휘의 마지막
-  // 음절을 제외하고, 실제 `필요해요`처럼 활용한 표현은 계속 센다.
-  const haeyo = (s.match(new RegExp('(?:(?<![주수필개])요|죠|네요|군요|거든요)' + END, 'gmu')) || []).length;
-  const plain = (s.match(new RegExp('(?<![니요])(?:이?다|한다|된다|않다|없다|있다|었다|였다|진다|간다|난다|온다|본다|했다|됐다)' + END, 'gmu')) || []).length;
-  const polite = hap + haeyo;
-  if (plain + polite === 0) return 'unknown';
-  if (plain >= polite * 1.5) return 'plain';
-  if (polite >= plain * 1.5) return haeyo >= hap ? 'haeyo' : 'polite';          // 존댓말 우세 → 해요체 vs 합니다체 구분
-  return 'mixed';
-}
-
 function buildContract(rawText, { mode = 'assignment', lang = 'ko', optIn = false } = {}) {
   const povSeed = floor.computePovSeed(rawText);
   const register = detectRegister(rawText);

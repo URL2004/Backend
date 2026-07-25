@@ -411,15 +411,54 @@ function isImproved(before, after) {
 }
 
 function restoreUnsafeRelationSentences(source, output, audit) {
-  const ordinals = [];
+  const sourceOrdinals = [];
+  const outputOrdinals = [];
   for (const violation of audit?.violations || []) {
     if (!['contrast_relation_shift', 'semantic_relation_shift', 'engine_phrase_fingerprint'].includes(violation.code)) continue;
-    ordinals.push(...(violation.sentenceOrdinals || []));
+    const target = violation.code === 'engine_phrase_fingerprint'
+      ? outputOrdinals
+      : sourceOrdinals;
+    target.push(...(violation.sentenceOrdinals || []));
   }
-  return restoreSourceSentenceOrdinals(source, output, ordinals, {
-    maxRestoreCount: 8,
-    minSimilarity: 0.24
-  });
+  const restoredOutput = restoreSourceSentenceOrdinals(
+    source,
+    output,
+    outputOrdinals,
+    {
+      maxRestoreCount: 8,
+      minSimilarity: 0.24,
+      ordinalSpace: 'output'
+    }
+  );
+  // output ordinal은 감사 당시 결과 문장 번호다. source 기반 복원을 먼저
+  // 수행해 1:N 문장이 합쳐지면 뒤 output 번호가 밀릴 수 있으므로 반드시
+  // 원래 결과 번호 기반 복원을 먼저 끝낸다. source ordinal은 이후에도
+  // 공통 정렬기로 현재 결과에 다시 대응시킬 수 있다.
+  const restoredSource = restoreSourceSentenceOrdinals(
+    source,
+    restoredOutput.text,
+    sourceOrdinals,
+    {
+      maxRestoreCount: Math.max(0, 8 - restoredOutput.restoredSentenceCount),
+      minSimilarity: 0.24,
+      ordinalSpace: 'source'
+    }
+  );
+  return {
+    ...restoredSource,
+    applied: restoredSource.applied || restoredOutput.applied,
+    restoredSentenceCount:
+      restoredSource.restoredSentenceCount + restoredOutput.restoredSentenceCount,
+    restoredSentenceOrdinals: [
+      ...(restoredOutput.restoredSentenceOrdinals || []),
+      ...(restoredSource.restoredSentenceOrdinals || [])
+    ],
+    restoredSourceSentenceOrdinals: [
+      ...(restoredOutput.restoredSourceSentenceOrdinals || []),
+      ...(restoredSource.restoredSourceSentenceOrdinals || [])
+    ],
+    reason: restoredSource.applied || restoredOutput.applied ? 'restored' : restoredOutput.reason
+  };
 }
 
 module.exports = {

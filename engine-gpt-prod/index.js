@@ -350,6 +350,8 @@ async function runEngine({
   let fingerprintRepairCount = 0;
   let fingerprintRetryApplied = false;
   let fingerprintSourceRestoreCount = 0;
+  let finalSourceIntegrityRestoreCount = 0;
+  const finalSourceIntegrityRestoreCodes = [];
   let endingStyleAudit = null;
   let endingStyleRetryAttemptCount = 0;
   let endingStyleRepairCount = 0;
@@ -1227,6 +1229,52 @@ async function runEngine({
     }
     quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   }
+  // 의미 판정기의 수리도 드물게 엔진 상투구를 새로 만들 수 있다. 의미 감사
+  // 뒤에는 모델을 다시 부르거나 자유 어휘 수리를 하지 않고, 원문 대응이
+  // 확실한 문제 문장만 그대로 복원한다. 원문 복원 후보도 공통 비퇴행·구조
+  // 감사를 다시 통과해야 하므로 다른 문장의 휴머나이징은 유지된다.
+  if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
+    const finalFingerprintBefore = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+    if (finalFingerprintBefore.pass === false) {
+      const restored = fingerprint.restoreUnsafeRelationSentences(
+        rawSource,
+        outputText,
+        finalFingerprintBefore
+      );
+      if (restored.applied) {
+        const candidate = restored.text;
+        const candidateFingerprint = fingerprint.auditFingerprint(rawSource, candidate, documentProfile);
+        const candidateDepth = humanizationDepthEnabled
+          ? humanizationDepth.evaluateHumanizationDepth(rawSource, candidate, humanizationPlan)
+          : null;
+        const safeCandidate = fingerprint.isImproved(finalFingerprintBefore, candidateFingerprint)
+          && isSafeLocalizedLanguageCandidate({
+            source: rawSource,
+            before: outputText,
+            candidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: extractProtectedTerms(rawSource, documentProfile),
+            currentDepth: humanizationDepthReport,
+            candidateDepth,
+            maxLocalEditRatio: 0.4,
+            minLocalLengthRatio: 0.78,
+            maxLocalLengthRatio: 1.22,
+            allowDepthRegression: true
+          })
+          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
+        if (safeCandidate) {
+          outputText = candidate;
+          fingerprintAudit = candidateFingerprint;
+          fingerprintSourceRestoreCount += restored.restoredSentenceCount || 1;
+          finalSourceIntegrityRestoreCount += restored.restoredSentenceCount || 1;
+          finalSourceIntegrityRestoreCodes.push('fingerprint_source_restore');
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+        }
+      }
+    }
+  }
   let polishSpeakerRestore = { applied: false, restoredSentenceCount: 0, restoredKinds: [], reason: 'not_applicable' };
   if (selectedMode === 'polish') {
     polishSpeakerRestore = qualityV2.restoreMissingPolishSpeaker({
@@ -1436,21 +1484,28 @@ async function runEngine({
     && result.floorReport?.status !== 'blocked'
     && humanizationDepthReport?.applicable === true
     && humanizationDepthReport?.pass === false;
-  const effectNotices = humanizationNoBenefitDelivered
-    ? dedupeQualityWarnings(depthEffectNotices(humanizationDepthReport))
-    : [];
+  const deterministicEffectNotices = (deliveryAudit?.warnings || [])
+    .filter(item => isEffectObservationCode(item?.code))
+    .map(toEffectNotice);
+  if (records.some(record => (record.warnings || []).includes('v2_residual:voice_existing_distribution_failed'))) {
+    deterministicEffectNotices.push(toEffectNotice({
+      code: 'sentence_distribution_shift',
+      message: '원문의 장단문 분포가 결과에서 다소 평탄해졌을 수 있어요.'
+    }));
+  }
+  const effectNotices = dedupeQualityWarnings([
+    ...(humanizationNoBenefitDelivered ? depthEffectNotices(humanizationDepthReport) : []),
+    ...deterministicEffectNotices
+  ]);
   const effectStatus = effectNotices.length ? 'limited' : 'normal';
   const qualityWarnings = dedupeQualityWarnings([
-        ...(deliveryAudit?.warnings || []),
+        ...(deliveryAudit?.warnings || []).filter(item => !isEffectObservationCode(item?.code)),
         ...qualityV2.warningsFromSemantic(semanticReport),
         ...(experienceCandidateAudit?.candidate && semanticReport?.uncertain
           ? [{ code: 'experience_novelty', severity: 'warning', message: '새 개인 경험으로 보이는 변화의 의미 심사가 불확실해 원문 대조가 필요해요.' }]
           : []),
         ...(records.some(record => (record.warnings || []).includes('v2_residual:structure_boundary_marker_failed'))
-          ? [{ code: 'sentence_distribution_shift', severity: 'warning', message: '원문의 문장 경계 일부가 결과에서 달라졌을 수 있어요.' }]
-          : []),
-        ...(records.some(record => (record.warnings || []).includes('v2_residual:voice_existing_distribution_failed'))
-          ? [{ code: 'sentence_distribution_shift', severity: 'warning', message: '원문의 장단문 분포가 결과에서 다소 평탄해졌을 수 있어요.' }]
+          ? [{ code: 'unsafe_chunk_boundary', severity: 'warning', message: '원문의 문장 경계 일부가 결과에서 달라졌을 수 있어요.' }]
           : []),
         ...(polishReport?.excessiveChange ? [{ code: 'polish_edit_range', severity: 'warning', message: '보존형 윤문의 권장 편집 범위를 넘었을 수 있어요.' }] : []),
         ...(polishReport?.needsIssueRecovery
@@ -1484,6 +1539,13 @@ async function runEngine({
   const strictBlocked = result.floorReport?.status === 'blocked';
   const qualityStatus = qualityWarnings.length || result.floorReport?.status === 'needs_review' ? 'needs_review' : 'clean';
   if (!strictBlocked && qualityStatus === 'needs_review' && result.floorReport?.status === 'clean') result.floorReport.status = 'needs_review';
+  const finalDelivery = deliveryPolicy.reconcileFinalDelivery({
+    blocked: strictBlocked,
+    baseReasonCodes: delivery.reasonCodes,
+    qualityWarnings
+  });
+  const finalDeliveryReasonCodes = safeFailureCodeList(finalDelivery.reasonCodes);
+  const finalDeliveryDecision = finalDelivery.decision;
   result.qualityStatus = qualityStatus;
   result.qualityWarnings = qualityWarnings;
   result.effectStatus = effectStatus;
@@ -1532,6 +1594,10 @@ async function runEngine({
     formatProfile: documentProfile.formatProfile || { length: 'standard', primary: 'plain', flags: [] },
     lineBoundaryPolicy,
     paragraphRepairPolicy: layoutRepair?.paragraphs?.policy || 'none',
+    paragraphRepairSourceCount: Number(layoutRepair?.paragraphs?.sourceCount || 0),
+    paragraphRepairBeforeCount: Number(layoutRepair?.paragraphs?.beforeCount || 0),
+    paragraphRepairTargetCount: Number(layoutRepair?.paragraphs?.targetCount || 0),
+    paragraphRepairAfterCount: Number(layoutRepair?.paragraphs?.afterCount || 0),
     paragraphRoleBoundaryCount: Number(layoutRepair?.paragraphs?.roleBoundaryCount || 0),
     paragraphSourceBoundaryRepairCount: Number(layoutRepair?.paragraphs?.sourceBoundaryRepairCount || 0),
     paragraphBackwardConclusionRepairCount: Number(layoutRepair?.paragraphs?.backwardConclusionRepairCount || 0),
@@ -1566,6 +1632,7 @@ async function runEngine({
       + koreanRefinementRetryCount
       + (quoteIntegrityRestoreCount > 0 ? 1 : 0)
       + fingerprintRepairCount
+      + (fingerprintSourceRestoreCount > 0 ? 1 : 0)
       + endingStyleRepairCount
       + resumeCoverageRepairCount,
     chunkCount: records.length,
@@ -1577,8 +1644,8 @@ async function runEngine({
     chunkConcurrency,
     approvedModelChunkCount,
     modelFailureChunkCount,
-    deliveryDecision: delivery.decision,
-    deliveryReasonCodes: delivery.reasonCodes,
+    deliveryDecision: finalDeliveryDecision,
+    deliveryReasonCodes: finalDeliveryReasonCodes,
     effectStatus,
     effectNoticeCodes: safeFailureCodeList(effectNotices.map(item => item.code)),
     structureSignaturePass: structureAudit?.pass === true,
@@ -1703,6 +1770,8 @@ async function runEngine({
     fingerprintRepairCount,
     fingerprintRetryApplied,
     fingerprintSourceRestoreCount,
+    finalSourceIntegrityRestoreCount,
+    finalSourceIntegrityRestoreCodes: safeFailureCodeList(finalSourceIntegrityRestoreCodes),
     fingerprintShadow: Array.isArray(fingerprintAudit?.shadow) ? fingerprintAudit.shadow.slice(0, 8) : [],
     fingerprintShadowPositiveCodes: safeFailureCodeList((fingerprintAudit?.shadow || [])
       .filter(item => Number(item?.delta || 0) > 0)
@@ -2844,11 +2913,12 @@ function buildPatchTargets(text) {
 
 function maxOutputTokensFor(text) {
   const chars = String(text || '').length;
-  // Korean rewrites can consume close to one output token per character, and
-  // Responses reasoning tokens share this same ceiling. A low ceiling caused
-  // otherwise valid long paragraphs to end as incomplete and then repeat on
-  // the escalation model. The API bills actual usage, not this allowance.
-  return Math.max(2400, Math.min(12000, Math.ceil(chars * 3.2)));
+  // Korean rewrites can consume close to one output token per character.
+  // Responses reasoning tokens and the structured JSON body share this same
+  // ceiling, so a text-only multiplier can still truncate medium documents.
+  // Keep a fixed reasoning/JSON reserve in addition to the source-size budget.
+  // The API bills actual usage, not this allowance.
+  return Math.max(4000, Math.min(12000, Math.ceil(2400 + (chars * 3.2))));
 }
 
 function isV2ChunkPreservationViolation(v) {
@@ -3271,6 +3341,28 @@ function dedupeQualityWarnings(items) {
     seen.add(key);
     return true;
   });
+}
+
+const EFFECT_OBSERVATION_CODES = new Set([
+  // 문장 길이 분포 변화는 의미·사실·구조 손상이 아니라 자연성/효과
+  // 관측이다. 최종 전달 검토 상태와 분리해 관리자에게는 계속 남긴다.
+  'sentence_distribution_shift',
+  // 문단 내용·순서·구조 토큰이 보존된 상태에서 남은 길이 경고는 전달
+  // 안전 문제가 아니라 읽기 효과 관측이다. 실제 문단 구조 변화는 별도의
+  // paragraph_structure_changed가 계속 품질 경고를 소유한다.
+  'paragraph_readability'
+]);
+
+function isEffectObservationCode(code) {
+  return EFFECT_OBSERVATION_CODES.has(String(code || ''));
+}
+
+function toEffectNotice(item) {
+  return {
+    code: String(item?.code || 'effect_observation'),
+    severity: 'info',
+    message: String(item?.message || '결과의 문장 리듬을 확인해 주세요.')
+  };
 }
 
 function depthQualityWarnings(report) {

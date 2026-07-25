@@ -69,3 +69,17 @@ test('retired provider and duplicate engine executables are physically absent', 
     assert.equal(fs.existsSync(path.join(__dirname, '..', retired)), false, retired);
   }
 });
+
+test('운영 설정 예시는 제거된 provider·엔진·무차감 스위치를 다시 노출하지 않는다', () => {
+  const example = fs.readFileSync(path.join(__dirname, '..', '.env.example'), 'utf8');
+  for (const retiredSetting of [
+    'ANTHROPIC_API_KEY',
+    'LLM_ACTIVE_PROVIDER',
+    'ENABLE_LEGACY_ANALYZE_PDF',
+    'HUMANIZE_ENGINE_V2_ENABLED',
+    'HUMANIZE_BILLING_PROTECTION_ENABLED',
+    'OPENAI_TEXT_VERBOSITY'
+  ]) {
+    assert.equal(example.includes(retiredSetting), false, retiredSetting);
+  }
+});

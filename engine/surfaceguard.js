@@ -6,7 +6,8 @@
 // ★ 정책: 이 지표가 나쁘다고 "가짜 경험·수치"를 생성하면 FLOOR 위반. 측정·표시·국소수정만 하고,
 //   구체화는 (1)원문에 실제로 있는 것 또는 (2)사용자가 제공한 경험 메모 범위 안에서만.
 const { splitSentences } = require('./koreanText');
-const { detectRegister } = require('./contract');
+const { detectRegister } = require('./endingStyle');
+const { computePovSeed } = require('./pov');
 
 // ── 1. genericness (추상적·일반적 내용 구성) ──
 const GENERIC_SUBJECT_RE = /^(디지털\s*기술|기술|사회|사람들?|인간관계|관계|현대\s*사회|온라인\s*공간|디지털\s*공간|SNS|익명성|소통|변화|문제|중요한\s*것|핵심은|우리는?)/i;
@@ -205,13 +206,12 @@ function buildSegments(text, targetChars = 900) {
 //   진짜 구체 = ①진성 1인칭 과거 장면 ②연도·수치+단위·한자2+ ③고유 영문 ④사례 프레임 ⑤실제 대화 인용.
 //   제외(카피킬러가 안 속는 것): 일반 과거("그때 있었"), buzzword 나열(AI·ESG), 수사적 진술 인용.
 const SEG_ACRONYM = new Set(['AI', 'ESG', 'SNS', 'IT', 'MVP', 'CEO', 'KPI', 'ROI', 'DX']);
-const SEG_FIRST_PERSON = /(저는|저도|제가|내가|나는|우리가|우리는)/;
 const SEG_PAST = /(았|었|였|했|갔|왔|봤|뒀|났|렸|췄|쳤)(다|다는|는데|던|고|으며|지만|어요|네요|거든요|습니다|죠)/;
 const SEG_SPECIFIC = /(19|20)\d{2}|\d+\s*(명|개|건|배|원|시간|분|초|개월|차례|미터|km|kg|살|세|층|위|％|%|억|조)|[一-鿿]{2,}/;
 const SEG_EXAMPLE = /(예를\s*들|예컨대|가령|이를테면)/;
 const SEG_DIALOG = /["“”][^"“”]*[?？!][^"“”]*["“”]|["“”][^"“”]{0,20}(야|냐|니|어|지|해|줘|봐)[?？!]?["“”]/;
 function isSegmentConcrete(s) {
-  if (SEG_FIRST_PERSON.test(s) && SEG_PAST.test(s)) return true;     // 진성 1인칭 과거 장면
+  if (hasFirstPersonSpeaker(s) && SEG_PAST.test(s)) return true;    // 진성 1인칭 과거 장면
   if (SEG_SPECIFIC.test(s)) return true;                            // 연도·수치+단위·한자
   const eng = (s.match(/[A-Za-z]{3,}/g) || []).filter(w => !SEG_ACRONYM.has(w.toUpperCase()));
   if (eng.length) return true;                                      // 고유 영문(흔한 약어 제외)
@@ -339,23 +339,26 @@ function buildSegmentReport(text, rawText = '', targetChars = 350) {
 
 // "실제 겪은 장면"(lived scene): 1인칭/과거시점 맥락 + 과거시제 행동. 단순 명사 언급(친구·SNS)은 제외.
 //   카피킬러가 '낮음'으로 통과시키는 건 바로 이런 1인칭 과거 경험 문장이다.
-const PERSONAL_CTX_RE = /(저는|저도|제가|제\s|내가|나는|우리\s|지난\s*(학기|주|달|해|명절|방학)|그날|그때|작년|재작년|며칠\s*전|예전에|한때|어릴\s*때|고등학교\s*때|중학교\s*때|대학\s*때)/;
+const PERSONAL_TIME_CTX_RE = /(지난\s*(학기|주|달|해|명절|방학)|그날|그때|작년|재작년|며칠\s*전|예전에|한때|어릴\s*때|고등학교\s*때|중학교\s*때|대학\s*때)/;
 // 과거시제 형태소(일반화): ~았/었/였/갔/왔/봤/했... + 종결/연결어미. 특정 동사 나열 대신 과거형 자체를 잡는다.
 const PAST_ACTION_RE = /(았|었|였|했|갔|왔|봤|뒀|났|렸|췄|쳤|다툰)(다|다는|는데|던|던\s|고|으며|지만|음|어요|네요|거든요|습니다|기도)/;
 // 경험 표지: "~적이 있다", "~던 적", "~곤 했다" 자체가 구체적 과거 경험 진술.
 const EXPERIENCE_RE = /(적이\s*있|던\s*적|곤\s*했|적\s*있)/;
-// 1인칭 *대명사*(화자 자신)만 — PERSONAL_CTX_RE의 시점어(그때/작년/지난 학기)는 줄거리·역사서술에도 흔해 제외.
-const FIRST_PERSON_SPEAKER_RE = /(저는|저도|저의|제가|제\s|내가|나는|나도|우리\s)/;
 function isLivedScene(s) {
   // ★ P0(2026-06-18 실데이터: 자소서 #50 "저도 ~ 가르쳐본 적이 있어요" 날조가 게이트 통과): "~한 적이 있다/있어요/있습니다"는
   //   경험 표현 자체인데 가르쳐'본'(관형형)·있'어요/있다'(현재형)엔 과거어미(았/었)가 없어 PAST_ACTION_RE가 탈락 →
   //   해요체·관형형 경험을 통째로 놓쳤다. EXPERIENCE_RE(적이 있/던 적/곤 했) + 1인칭 화자면 과거어미 없이도 경험으로 본다.
   //   ★1인칭 '대명사'에 한함(시점어 그때/작년 제외): #4 "그때만 이 약은 작동했다"·#78 "1995년 도입 이후" 같은 줄거리·사실
   //   서술 오탐 방지. (실제 날조 여부는 groundedIn이 최종 판정 — isLivedScene은 검사 대상만 넓힘.)
-  if (EXPERIENCE_RE.test(s) && FIRST_PERSON_SPEAKER_RE.test(s)) return true; // 저/제가/나 + ~한 적이 있다(해요체·관형형 포함)
+  if (EXPERIENCE_RE.test(s) && hasFirstPersonSpeaker(s)) return true;        // 저/제가/나 + ~한 적이 있다(해요체·관형형 포함)
   if (EXPERIENCE_RE.test(s) && PAST_ACTION_RE.test(s)) return true;          // ~한 적이 있다 + 과거행동(기존)
-  if (PERSONAL_CTX_RE.test(s) && PAST_ACTION_RE.test(s)) return true;        // 1인칭/특정시점 + 과거행동(기존)
+  if ((hasFirstPersonSpeaker(s) || PERSONAL_TIME_CTX_RE.test(s)) && PAST_ACTION_RE.test(s)) return true; // 1인칭/특정시점 + 과거행동
   return false;
+}
+
+function hasFirstPersonSpeaker(value) {
+  const seed = computePovSeed(value);
+  return seed.fp_singular > 0 || seed.fp_plural > 0;
 }
 
 // "구체 사실"(specificity): 연도·숫자+단위·한자·인용어구 등. 일반적 약어(SNS/AI)는 제외(너무 흔해 신호 아님).

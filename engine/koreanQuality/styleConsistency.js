@@ -1,6 +1,8 @@
 'use strict';
 
 const { splitSentences } = require('../koreanText');
+const { computePovSeed } = require('../pov');
+const { classifySentenceEnding } = require('../endingStyle');
 
 function analyzeStyle(text) {
   const sentences = splitSentences(text);
@@ -33,15 +35,23 @@ function analyzeStyle(text) {
     rhythm,
     oneSentenceParagraphs,
     paragraphFragmentRisk,
-    firstPersonCount: countRe(text, /(?:저는|제가|저희|우리|나는|내가|나의|제\s|필자|본인)/g),
+    firstPersonCount: firstPersonCount(text),
     thirdPersonCueCount: countRe(text, /(?:교사는|작성자는|글쓴이는|연구자는|기업은|사용자는|소비자는|보호자는)/g)
   };
 }
 
+function firstPersonCount(value) {
+  const seed = computePovSeed(value);
+  return seed.fp_singular
+    + seed.fp_plural
+    + countRe(value, /(?<![가-힣A-Za-z0-9_])(?:필자|본인)(?![가-힣A-Za-z0-9_])/gu);
+}
+
 function classifyEnding(compactSentence) {
-  if (/(?:습니다|습니까|합니다|합니까|됩니다|됩니까|입니다|입니까|했습니다|였습니다|됩니다|립니다|봅니다)$/.test(compactSentence)) return 'hap';
-  if (/(?:어요|아요|해요|돼요|예요|이에요|네요|죠|지요|군요|나요)$/.test(compactSentence)) return 'haeyo';
-  if (/(?:다|였다|했다|한다|된다|이다|아니다|있다|없다|었다|였다|한다)$/.test(compactSentence)) return 'plain';
+  const style = classifySentenceEnding(compactSentence, { includeNominal: false });
+  if (style === 'polite') return 'hap';
+  if (style === 'haeyo') return 'haeyo';
+  if (style === 'plain') return 'plain';
   return 'other';
 }
 

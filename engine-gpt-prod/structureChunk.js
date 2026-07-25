@@ -688,7 +688,9 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     return {
       text: layoutOutputText,
       applied: layoutOutputText !== rawOutputText,
-      policy: outputVisualLayout.repairCount > 0 ? 'structural_visual_gaps' : policy,
+      policy: creativeLayout
+        ? 'creative_preserve'
+        : (outputVisualLayout.repairCount > 0 ? 'structural_visual_gaps' : policy),
       sourceCount,
       beforeCount,
       targetCount,
@@ -698,7 +700,9 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
       explicitParagraphCountBefore,
       explicitParagraphCountAfter,
       readability: compactReadability(beforeReadability),
-      pass: beforeReadability.overlongCount === 0
+      // 창작문은 행갈이와 긴 문단 자체가 장르 구조일 수 있다. 의도적으로
+      // 레이아웃 정규화를 건너뛴 결과를 “복원 실패”로 뒤집지 않는다.
+      pass: creativeLayout || beforeReadability.overlongCount === 0
     };
   }
 
@@ -1246,6 +1250,10 @@ function findSplitCandidate(paragraphs, protectedBlocks) {
     // 문단 전체가 보호 블록인 경우에만 제외한다. 문장 안 인용처럼 보호
     // 문자열을 포함했다는 이유만으로 문단 전체의 가독성 분할을 막지 않는다.
     .filter(item => !equalsProtectedBlock(item.paragraph, protectedBlocks))
+    // 여러 목록 행·표·조문이 한 읽기 단위에 들어 있으면 문장 분리기가
+    // 행 구분자를 공백으로 다시 조립할 수 있다. 구조 단위는 레이아웃
+    // 가독성 목표를 채우는 재료로 사용하지 않는다.
+    .filter(item => !layoutStructure.isStructureDominatedParagraph(item.paragraph))
     .sort((a, b) => b.length - a.length);
   for (const item of ranked) {
     const sentences = splitSentences(item.paragraph);

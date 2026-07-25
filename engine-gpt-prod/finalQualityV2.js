@@ -2,7 +2,8 @@
 
 const floor = require('../engine/floor');
 const { computeEditMetrics, splitSentenceSpans } = require('../engine/koreanText');
-const { auditVoice, buildVoiceProfile, POV_PATTERNS } = require('./voiceProfile');
+const { hasPovKind } = require('../engine/pov');
+const { auditVoice, buildVoiceProfile } = require('./voiceProfile');
 const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
 const { judgeAndRepair } = require('./judge');
 const { completeJson } = require('./openaiClient');
@@ -578,9 +579,8 @@ function restoreMissingPolishSpeaker({
 
   const replacementIndices = new Set();
   for (const kind of missingKinds) {
-    const pattern = POV_PATTERNS[kind];
     sourceSpans.forEach((span, index) => {
-      if (!patternMatches(pattern, span.text)) return;
+      if (!hasPovKind(span.text, kind)) return;
       const similarity = computeEditMetrics(span.text, outputSpans[index].text).fiveGramSimilarity;
       if (similarity >= 0.25) replacementIndices.add(index);
     });
@@ -607,12 +607,6 @@ function restoreMissingPolishSpeaker({
     return speakerRestoreResult(before, false, missingKinds, 0, 'post_repair_validation_failed');
   }
   return speakerRestoreResult(candidate, candidate !== before, missingKinds, replacementIndices.size, 'restored');
-}
-
-function patternMatches(pattern, value) {
-  if (!pattern) return false;
-  pattern.lastIndex = 0;
-  return pattern.test(String(value || ''));
 }
 
 function paragraphCountLocal(value) {

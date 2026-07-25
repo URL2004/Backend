@@ -437,7 +437,11 @@ function isPureStructuralRecord(record) {
   // "라벨: 긴 본문"이나 "1. 제목 + 여러 설명 문장"은 접두부만
   // 구조이고 나머지는 일반 산문이다. 행 전체를 구조로 면제하지 않는다.
   if (role === 'label_inline') return false;
-  if (['title', 'heading', 'list'].includes(role)) {
+  // 목록 한 항목 안에 설명 문장이 여러 개 있어도 다음 항목과의 행 경계는
+  // 의미 구조다. 문장 수 때문에 일반 산문으로 낮추면 가독성 분할 단계가
+  // `4. ...\n5. ...`를 한 줄로 다시 붙일 수 있다.
+  if (role === 'list') return true;
+  if (['title', 'heading'].includes(role)) {
     const sentenceCount = splitSentences(String(record?.text || '')).filter(Boolean).length;
     return sentenceCount <= 1;
   }

@@ -325,10 +325,23 @@ const ISSUE_DEFINITIONS = Object.freeze({
 });
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
-const QUOTE_ATTACHED_SUFFIX = '(?:(?:이)?라(?:고|는|며|면)|이라고|이라는|이란|이지(?:만)?|이다|였다|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?|이며|이고|에서|에게|으로|처럼|보다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
-const QUOTE_TIGHT_SUFFIX = '(?:(?:이)?라(?:고|는|며|면)|이라고|이라는|이란|이지(?:만)?|이다|였다|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?|이며|이고|에서|에게|으로|처럼|보다|은|는|이|가|을|를|의|에|와|과|도|만|로)';
-const CLOSED_QUOTE_SPACING_RE = new RegExp(`([”’])(?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
-const CLOSED_QUOTE_PARTICLE_GAP_RE = new RegExp(`([”’])[ \\t]+(?=${QUOTE_TIGHT_SUFFIX}(?=$|[\\s,.;:!?。！？]))`, 'gu');
+const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|지(?:만)?|다|고|며|어서|므로|었(?:다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:다|던|고|지만|으면|다면|다는|을|는데|으며)?|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
+const QUOTE_PARTICLE_SUFFIX = '(?:에서|에게|으로|처럼|보다|부터|까지|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서|에게|으로|처럼|보다|부터|까지|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
+const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
+const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
+const CLOSE_QUOTE_CLASS = '[”’」』》〉]';
+const QUOTE_SUFFIX_BOUNDARY = '(?=$|[\\s,.;:!?。！？])';
+const CLOSED_QUOTE_SPACING_RE = new RegExp(`([”’」』》〉])(?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
+// 완결된 직접 발화 뒤의 “... .” 하고/하며는 인용 뒤 독립 용언이므로
+// 띄어쓰기를 유지한다. 명사 인용의 ‘학생’하고와 서술격 ‘전환점’이었다는
+// 계속 붙여 쓰도록 두 문법을 분리한다.
+const CLOSED_QUOTE_PARTICLE_GAP_RE = new RegExp(
+  `(?:(${CLOSE_QUOTE_CLASS})[ \\t]+(?=${QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX}${QUOTE_SUFFIX_BOUNDARY})`
+  + `|(${CLOSE_QUOTE_CLASS})(?<![.!?。！？…]${CLOSE_QUOTE_CLASS})[ \\t]+(?=(?:하고|하며)${QUOTE_SUFFIX_BOUNDARY}))`,
+  'gu'
+);
 const QUOTE_TERMINAL_REVIEW_RE = new RegExp(`[‘“][^’”\\n]{2,120}(?<![.!?。！？…])[’”](?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
 const REFERENCE_HEADING_RE = /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/iu;
 const APPENDIX_HEADING_RE = /^(?:부록|Appendix)(?:\s+[A-Za-z0-9가-힣.-]+)?$/iu;
@@ -800,7 +813,13 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   }
   text = replaceAndCount(text, /([.!?。！？])(?=[가-힣])/gu, '$1 ', 'missing_sentence_space', changes);
   text = replaceAndCount(text, CLOSED_QUOTE_SPACING_RE, '$1 ', 'closed_quote_spacing', changes);
-  text = replaceAndCount(text, CLOSED_QUOTE_PARTICLE_GAP_RE, (_match, closing) => closing, 'closed_quote_particle_spacing', changes);
+  text = replaceAndCount(
+    text,
+    CLOSED_QUOTE_PARTICLE_GAP_RE,
+    (_match, closing, attributionClosing) => closing || attributionClosing,
+    'closed_quote_particle_spacing',
+    changes
+  );
   text = replaceAndCount(text, /메세지/gu, '메시지', 'message_spelling', changes);
   text = replaceAndCount(text, /실습수업/gu, '실습 수업', 'practice_class_spacing', changes);
   text = text.replace(/(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
@@ -910,7 +929,8 @@ function restoreIntroducedIntegritySentences({ source = '', outputText = '', aud
   }
   const restored = restoreSourceSentenceOrdinals(source, outputText, ordinals, {
     maxRestoreCount: 8,
-    minSimilarity: 0.24
+    minSimilarity: 0.24,
+    ordinalSpace: 'output'
   });
   return {
     ...restored,
@@ -1339,7 +1359,10 @@ function hasCausalPredicateStack(sentence) {
 
 function hasNominalPredicateCollocation(sentence) {
   const value = stripProtectedQuotedText(sentence);
-  if (/(?:^|[^가-힣A-Za-z0-9_])(?:분석|검토|조사|연구)(?:을|를)?\s+(?:살펴보|살펴봤|살펴본|살펴보면)/u.test(value)) return true;
+  // “이 연구를 살펴보면”은 연구 문헌 자체를 검토한다는 정상 표현이다.
+  // 분석·검토·조사처럼 이미 행위성을 가진 명사를 다시 “살펴보다”의
+  // 목적으로 둔 중첩만 잡아 정상 학술 문장을 엔진 오류로 오인하지 않는다.
+  if (/(?:^|[^가-힣A-Za-z0-9_])(?:분석|검토|조사)(?:을|를)?\s+(?:살펴보|살펴봤|살펴본|살펴보면)/u.test(value)) return true;
   return /(?:독보적|선도적|우월한|확고한|시장\s*(?:내|안)의?)[^.!?。！？\n]{0,28}(?:위치|입지)(?:를|을)?[^.!?。！？\n]{0,20}(?:더욱\s*)?(?:분명히|명확히)\s*(?:하|할)/u.test(value);
 }
 

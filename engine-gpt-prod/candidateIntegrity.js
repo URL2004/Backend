@@ -4,7 +4,21 @@ const koreanRefinement = require('./koreanRefinement');
 const fingerprint = require('./fingerprintAudit');
 const endingStyle = require('./endingStyleAudit');
 const legalAudit = require('./legalAudit');
-const { auditDirectQuoteIntegrity } = require('./voiceProfile');
+const {
+  auditDirectQuoteIntegrity,
+  auditVoice,
+  buildVoiceProfile
+} = require('./voiceProfile');
+
+const STRUCTURE_WARNING_CODES = new Set([
+  'list_structure_changed',
+  'heading_structure_changed',
+  'questionnaire_structure_changed',
+  'title_line_merged',
+  'structural_line_loss',
+  'line_structure_changed',
+  'creative_line_structure'
+]);
 
 /**
  * 모델·결정론·의미 수리 등 생성 주체와 무관하게 모든 늦은 후보가 통과해야
@@ -39,9 +53,13 @@ function auditCandidateIntegrity({
     documentProfile,
     mode
   });
+  const beforeKoreanIssueCounts = koreanIssueCounts(beforeKorean);
+  const candidateKoreanIssueCounts = koreanIssueCounts(candidateKorean);
   if (candidateKorean.weightedRisk > beforeKorean.weightedRisk
       || candidateKorean.repairableIssueCount > beforeKorean.repairableIssueCount
-      || candidateKorean.introducedIssueCount > beforeKorean.introducedIssueCount) {
+      || candidateKorean.introducedIssueCount > beforeKorean.introducedIssueCount
+      || [...candidateKoreanIssueCounts.entries()]
+        .some(([code, count]) => count > Number(beforeKoreanIssueCounts.get(code) || 0))) {
     add('korean_integrity_worsened');
   }
 
@@ -76,6 +94,19 @@ function auditCandidateIntegrity({
     add('legal_integrity_worsened');
   }
 
+  const sourceVoice = buildVoiceProfile(source, { documentProfile, mode });
+  const beforeStructureIssues = voiceStructureIssues(sourceVoice, source, current, documentProfile, mode);
+  const candidateStructureIssues = voiceStructureIssues(sourceVoice, source, after, documentProfile, mode);
+  const beforeStructureRisk = structureIssueRisk(beforeStructureIssues);
+  const candidateStructureRisk = structureIssueRisk(candidateStructureIssues);
+  const beforeTokenBoundaryRisk = lockedTokenBoundaryRisk(source, current);
+  const candidateTokenBoundaryRisk = lockedTokenBoundaryRisk(source, after);
+  if ([...candidateStructureIssues.entries()]
+    .some(([code, count]) => count > Number(beforeStructureIssues.get(code) || 0))
+      || candidateTokenBoundaryRisk > beforeTokenBoundaryRisk) {
+    add('structure_integrity_worsened');
+  }
+
   return {
     version: 1,
     pass: reasons.length === 0,
@@ -85,14 +116,18 @@ function auditCandidateIntegrity({
       fingerprintRisk: beforeFingerprintRisk,
       endingIssueCount: Number(beforeEnding.issueCount || 0),
       quoteRisk: quoteRisk(beforeQuote),
-      legalRisk: legalRisk(beforeLegal)
+      legalRisk: legalRisk(beforeLegal),
+      structureRisk: beforeStructureRisk,
+      tokenBoundaryRisk: beforeTokenBoundaryRisk
     },
     candidate: {
       korean: compactKorean(candidateKorean),
       fingerprintRisk: candidateFingerprintRisk,
       endingIssueCount: Number(candidateEnding.issueCount || 0),
       quoteRisk: quoteRisk(candidateQuote),
-      legalRisk: legalRisk(candidateLegal)
+      legalRisk: legalRisk(candidateLegal),
+      structureRisk: candidateStructureRisk,
+      tokenBoundaryRisk: candidateTokenBoundaryRisk
     }
   };
 }
@@ -115,6 +150,70 @@ function legalRisk(value) {
     + Number(value?.articleOrderPass === false);
 }
 
+function voiceStructureIssues(sourceVoice, source, output, documentProfile, mode) {
+  const audit = auditVoice(sourceVoice, output, {
+    documentProfile,
+    mode,
+    sourceText: source
+  });
+  const counts = new Map();
+  for (const item of audit.warnings || []) {
+    const code = String(item?.code || '');
+    if (!STRUCTURE_WARNING_CODES.has(code)) continue;
+    counts.set(code, Number(counts.get(code) || 0) + 1);
+  }
+  return counts;
+}
+
+function structureIssueRisk(issues) {
+  let risk = 0;
+  for (const count of issues.values()) risk += Number(count || 0);
+  return risk;
+}
+
+function lockedTokenBoundaryRisk(reference, value) {
+  const source = String(reference || '');
+  const output = String(value || '');
+  const tokens = [...new Set(source.match(/ZXQLOCK\d{4}QXZ/gu) || [])];
+  let risk = 0;
+  for (const token of tokens) {
+    const expectedCount = source.split(token).length - 1;
+    const actualCount = output.split(token).length - 1;
+    if (actualCount !== expectedCount) {
+      risk += Math.abs(actualCount - expectedCount) || 1;
+      continue;
+    }
+    let sourceCursor = 0;
+    let outputCursor = 0;
+    for (let index = 0; index < expectedCount; index += 1) {
+      const sourceIndex = source.indexOf(token, sourceCursor);
+      const outputIndex = output.indexOf(token, outputCursor);
+      if (sourceIndex < 0 || outputIndex < 0) {
+        risk += 1;
+        break;
+      }
+      const sourceLineStart = isLineStart(source, sourceIndex);
+      const sourceLineEnd = isLineEnd(source, sourceIndex + token.length);
+      if (sourceLineStart && !isLineStart(output, outputIndex)) risk += 1;
+      if (sourceLineEnd && !isLineEnd(output, outputIndex + token.length)) risk += 1;
+      sourceCursor = sourceIndex + token.length;
+      outputCursor = outputIndex + token.length;
+    }
+  }
+  return risk;
+}
+
+function isLineStart(value, index) {
+  const lineStart = String(value || '').lastIndexOf('\n', Math.max(0, index - 1)) + 1;
+  return /^[ \t]*$/u.test(String(value || '').slice(lineStart, index));
+}
+
+function isLineEnd(value, index) {
+  const text = String(value || '');
+  const lineEnd = text.indexOf('\n', index);
+  return /^[ \t]*$/u.test(text.slice(index, lineEnd < 0 ? text.length : lineEnd));
+}
+
 function compactKorean(value) {
   return {
     weightedRisk: Number(value?.weightedRisk || 0),
@@ -122,6 +221,20 @@ function compactKorean(value) {
     introducedIssueCount: Number(value?.introducedIssueCount || 0),
     issueCodes: value?.issueCodes || []
   };
+}
+
+function koreanIssueCounts(value) {
+  const counts = new Map();
+  for (const issue of value?.issues || []) {
+    const code = String(issue?.code || '');
+    if (!code) continue;
+    const count = Number(issue?.introducedCount ?? issue?.afterCount ?? issue?.count ?? 0);
+    counts.set(code, Math.max(
+      Number(counts.get(code) || 0),
+      Number.isFinite(count) ? count : 0
+    ));
+  }
+  return counts;
 }
 
 module.exports = {

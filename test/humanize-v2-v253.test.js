@@ -177,6 +177,38 @@ test('전문 장르는 엔진 상투구 한 번의 신규 주입도 수리하고
   assert.equal(general.families[0].allowedIntroducedCount, 1);
 });
 
+test('원문 번호 수리와 결과 번호 수리가 함께 있어도 문장 번호가 밀리지 않는다', () => {
+  const source = [
+    '연구의 초점은 새로운 도구 개발 자체보다 자료와 인간 판단을 구조화하는 데 있다.',
+    '자료를 검토하고 적용 범위를 확인했다.',
+    '마지막 문장은 그대로 둔다.'
+  ].join(' ');
+  const output = [
+    '연구는 새로운 도구를 개발하는 데서 나아간다.',
+    '자료와 인간 판단을 구조화하는 데 초점을 둔다.',
+    '자료 검토에 머무르지 않고 적용 범위까지 확인했다.',
+    '마지막 문장은 조금 다듬어 둔다.'
+  ].join(' ');
+  const audit = fingerprint.auditFingerprint(source, output, 'report_assignment');
+  assert.ok(audit.issueCodes.includes('engine_phrase_fingerprint'), JSON.stringify(audit));
+  const mixedOrdinalAudit = {
+    ...audit,
+    violations: [
+      ...audit.violations,
+      // 의미 관계 감사는 원문 문장 번호, 상투구 감사는 결과 문장 번호를
+      // 사용한다. 두 번호 공간이 한 수리 요청에 함께 오는 상황을 고정한다.
+      { code: 'semantic_relation_shift', sentenceOrdinals: [1] }
+    ]
+  };
+
+  const restored = fingerprint.restoreUnsafeRelationSentences(source, output, mixedOrdinalAudit);
+  assert.equal(restored.applied, true, JSON.stringify(restored));
+  assert.match(restored.text, /개발 자체보다 자료와 인간 판단을 구조화/u);
+  assert.match(restored.text, /자료를 검토하고 적용 범위를 확인했다/u);
+  assert.match(restored.text, /마지막 문장은 조금 다듬어 둔다/u);
+  assert.equal(fingerprint.auditFingerprint(source, restored.text, 'report_assignment').pass, true);
+});
+
 test('임상 기록은 짧은 명사형 기록 중 한 문장의 설명체 변환도 감지한다', () => {
   const source = '감각 처리 저하가 관찰됨. 미세 운동의 어려움이 확인됨. 일상생활동작에는 도움 필요함.';
   const output = '감각 처리 저하가 관찰됐습니다. 미세 운동의 어려움이 확인됨. 일상생활동작에는 도움 필요함.';
@@ -214,6 +246,48 @@ test('문장 복원은 대응 가능한 대상 문장만 바꾸고 기존 줄 �
   assert.match(restored.text, /첫 문장은 자연스럽게 다듬었다/u);
   assert.match(restored.text, /둘째 문장은 역할 범위를 제한한다/u);
   assert.match(restored.text, /셋째 문장은 조금 바꾸었다/u);
+});
+
+test('문장 복원은 모델이 한 원문 문장을 둘로 나눈 경우에도 공통 1:N 정렬을 사용한다', () => {
+  const source = [
+    '첫 문장은 그대로 둔다.',
+    '연구의 초점은 새로운 도구 개발 자체보다 자료와 인간 판단을 함께 구조화하는 데 있다.',
+    '마지막 문장은 그대로 둔다.'
+  ].join(' ');
+  const output = [
+    '첫 문장은 조금 다듬어 둔다.',
+    '연구는 새로운 도구를 개발하는 데서 나아간다.',
+    '자료와 인간 판단을 함께 구조화하는 데 초점을 둔다.',
+    '마지막 문장은 조금 다듬어 둔다.'
+  ].join(' ');
+  const restored = restoreSourceSentenceOrdinals(source, output, [2], {
+    ordinalSpace: 'source'
+  });
+  assert.equal(restored.applied, true, JSON.stringify(restored));
+  assert.match(restored.text, /개발 자체보다 자료와 인간 판단을 함께 구조화/u);
+  assert.doesNotMatch(restored.text, /개발하는 데서 나아간다/u);
+  assert.match(restored.text, /첫 문장은 조금 다듬어 둔다/u);
+  assert.match(restored.text, /마지막 문장은 조금 다듬어 둔다/u);
+});
+
+test('출력 문장 번호 기반 한국어 복원도 문장 분할 뒤 원문 문장에 역정렬한다', () => {
+  const source = [
+    '첫 문장은 그대로 둔다.',
+    '가치사슬을 분석하면 기업의 경쟁력이 드러난다.',
+    '마지막 문장은 그대로 둔다.'
+  ].join(' ');
+  const output = [
+    '첫 문장은 조금 다듬어 둔다.',
+    '가치사슬 분석을 살펴본다.',
+    '그러면 기업의 경쟁력이 드러난다.',
+    '마지막 문장은 조금 다듬어 둔다.'
+  ].join(' ');
+  const restored = restoreSourceSentenceOrdinals(source, output, [2], {
+    ordinalSpace: 'output'
+  });
+  assert.equal(restored.applied, true, JSON.stringify(restored));
+  assert.match(restored.text, /가치사슬을 분석하면 기업의 경쟁력이 드러난다/u);
+  assert.doesNotMatch(restored.text, /가치사슬 분석을 살펴본다/u);
 });
 
 test('장르 프롬프트는 기술 경력의 역할 범위와 전문 기능어를 명시적으로 보호한다', () => {

@@ -14,6 +14,12 @@ const structure = require('../engine-gpt-prod/structureChunk');
 const discourse = require('../engine-gpt-prod/discourseAudit');
 const preflight = require('../engine-gpt-prod/sourcePreflight');
 const {
+  buildVoiceProfile,
+  auditVoice,
+  auditDirectQuoteIntegrity,
+  restoreDirectQuoteContents
+} = require('../engine-gpt-prod/voiceProfile');
+const {
   CONTENT_GENRES,
   PROFILE_GROUPS,
   detectDocumentProfile,
@@ -21,9 +27,14 @@ const {
 } = require('../engine-gpt-prod/documentProfile');
 const prompts = require('../engine-gpt-prod/prompts');
 const naturalness = require('../engine/koreanQuality/naturalnessShadow');
+const styleConsistency = require('../engine/koreanQuality/styleConsistency');
+const floor = require('../engine/floor');
+const surfaceguard = require('../engine/surfaceguard');
 const sectionRecovery = require('../engine-gpt-prod/sectionRecovery');
+const experienceAudit = require('../engine-gpt-prod/experienceAudit');
 const qualityPatternShadow = require('../labs/qualityPatternAudit');
 const { findAnchorLeaks } = require('../engine/anchorLeakAudit');
+const pov = require('../engine/pov');
 const { spanInSource } = require('../engine-gpt-prod/judge');
 const {
   classifyModelFailure,
@@ -35,7 +46,8 @@ test('과거 한국어·표면·shadow 게이트는 품질 경고가 아니라 �
     'surface_risk_regression',
     'korean_quality_final',
     'nikl_quality',
-    'quality_pattern_lab'
+    'quality_pattern_lab',
+    'sentence_distribution_shift'
   ]) {
     const result = deliveryPolicy.applyDeliveryPolicy({
       status: 'blocked',
@@ -47,6 +59,31 @@ test('과거 한국어·표면·shadow 게이트는 품질 경고가 아니라 �
     assert.deepEqual(result.reasonCodes, [], gate);
     assert.equal(result.effectItems[0].gate, gate);
   }
+});
+
+test('최종 품질 경고와 engineMeta 전달 결정은 한 정책에서 같은 상태로 확정된다', () => {
+  const clean = deliveryPolicy.reconcileFinalDelivery({
+    blocked: false,
+    baseReasonCodes: [],
+    qualityWarnings: []
+  });
+  assert.deepEqual(clean, { decision: 'deliver_clean', reasonCodes: [] });
+
+  const review = deliveryPolicy.reconcileFinalDelivery({
+    blocked: false,
+    baseReasonCodes: [],
+    qualityWarnings: [{ code: 'structural_line_loss' }]
+  });
+  assert.equal(review.decision, 'deliver_review');
+  assert.deepEqual(review.reasonCodes, ['structural_line_loss']);
+
+  const blocked = deliveryPolicy.reconcileFinalDelivery({
+    blocked: true,
+    baseReasonCodes: ['openai_schema_error'],
+    qualityWarnings: [{ code: 'semantic_omission' }]
+  });
+  assert.equal(blocked.decision, 'block_technical');
+  assert.deepEqual(blocked.reasonCodes, ['openai_schema_error']);
 });
 
 test('공통 문장 정렬은 한 문장을 두 문장으로 나눈 후보를 함께 비교한다', () => {
@@ -88,6 +125,80 @@ test('늘어나는 같은 동사 내부의 나는을 이중 주제로 오인하�
     documentProfile: { profile: 'report_assignment', targetRegister: 'academic_formal' }
   });
   assert.equal(audit.issueCodes.includes('double_topic_chain'), false);
+});
+
+test('향이 나는·냄새 나는의 동사형 나는을 1인칭 화자로 세지 않는다', () => {
+  const source = '비를 피해 들어선 곳은 고서점 같은 향이 나는 아늑한 공간이었다.';
+  const output = '비를 피해 들어선 곳은 고서점 같은 향이 감도는 아늑한 공간이었다.';
+  assert.equal(pov.computePovSeed(source).fp_singular, 0);
+  assert.equal(experienceAudit.signalCounts(source).firstPerson, 0);
+  assert.equal(styleConsistency.analyzeStyle(source).firstPersonCount, 0);
+  assert.equal(surfaceguard.isLivedScene('향이 나는 공간을 방문했었다.'), false);
+  assert.equal(detectDocumentProfile(source).riskFlags.includes('pov_sensitive'), false);
+  const profile = buildVoiceProfile(source, { documentProfile: 'report_assignment' });
+  assert.equal(profile.pov.firstSingular, 0);
+  assert.equal(
+    auditVoice(profile, output, {
+      documentProfile: 'report_assignment',
+      sourceText: source
+    }).warnings.some(item => item.code === 'speaker_removed'),
+    false
+  );
+  assert.equal(pov.computePovSeed('나는 자료를 검토했다.').fp_singular, 1);
+  assert.equal(pov.computePovSeed('어제 나는 자료를 검토했다.').fp_singular, 1);
+  assert.equal(surfaceguard.isLivedScene('어제 나는 자료를 검토했었다.'), true);
+  assert.ok(pov.computePovSeed('팀 활동을 돌아보면 나는 설명을 맡았고 나도 끝까지 참여했다.').fp_singular >= 2);
+});
+
+test('사회 내·시장 내의 범위 명사 내를 1인칭 소유격으로 세지 않는다', () => {
+  const source = '사회 내 안전망과 시장 내 경쟁 구조를 함께 분석한다.';
+  const output = '사회 내 안전망과 시장 내 경쟁 구조를 차례로 분석한다.';
+  assert.equal(pov.computePovSeed(source).fp_singular, 0);
+  assert.equal(pov.computePovSeed('내 목표와 내 경험을 정리했다.').fp_singular, 2);
+  const profile = buildVoiceProfile(source, { documentProfile: 'report_assignment' });
+  assert.equal(
+    auditVoice(profile, output, {
+      documentProfile: 'report_assignment',
+      sourceText: source
+    }).warnings.some(item => item.code === 'speaker_injected'),
+    false
+  );
+});
+
+test('구형 격식 환경변수가 켜져도 원문에 없는 1인칭 화자를 허용하지 않는다', () => {
+  const previousFormal = process.env.FORMAL_HUMAN;
+  const previousAssignment = process.env.ASSIGNMENT_B7;
+  process.env.FORMAL_HUMAN = '1';
+  process.env.ASSIGNMENT_B7 = '1';
+  try {
+    const source = '이 연구는 자료를 비교하고 결과를 설명한다.';
+    const output = '저는 이 연구에서 자료를 비교하고 결과를 설명한다고 본다.';
+    const violations = floor.collectFloorViolations({
+      result: { outputText: output },
+      rawText: source,
+      povSeed: floor.computePovSeed(source),
+      optIn: false,
+      mode: 'assignment',
+      chunkLevel: true
+    });
+    assert.ok(violations.some(item => item.type === 'pov'), JSON.stringify(violations));
+  } finally {
+    if (previousFormal == null) delete process.env.FORMAL_HUMAN;
+    else process.env.FORMAL_HUMAN = previousFormal;
+    if (previousAssignment == null) delete process.env.ASSIGNMENT_B7;
+    else process.env.ASSIGNMENT_B7 = previousAssignment;
+  }
+});
+
+test('문서·voice·shadow 종결체 판정은 명사 끝 요를 해요체로 세지 않는다', () => {
+  const source = '주요.\n수요.\n필요.\n개요.';
+  const profile = buildVoiceProfile(source, { documentProfile: 'report_assignment' });
+  const shadow = styleConsistency.analyzeStyle(source);
+  assert.equal(profile.register, 'unknown');
+  assert.equal(profile.endings.haeyo, 0);
+  assert.equal(profile.endings.other, 4);
+  assert.equal(shadow.endings.haeyo, 0);
+  assert.equal(shadow.dominantRegister, 'unknown');
 });
 
 test('누락 조사·반복 절 표지·목적 조사 틀을 공통 한국어 감사가 잡고 안전 항목을 고친다', () => {
@@ -147,12 +258,76 @@ test('화면 폭 때문에 생긴 단일 줄바꿈은 자연성 문장·리듬 �
   assert.equal(before.metrics.uniformSentenceRhythm, after.metrics.uniformSentenceRhythm);
 });
 
+test('구조 모듈이 승인한 원문 역할·읽기 단위 문단 수를 voice 감사가 다시 오류로 뒤집지 않는다', () => {
+  const source = [
+    '첫 문단은 문제를 설명한다. 이어서 배경을 덧붙인다.',
+    '둘째 문단은 자료를 설명한다. 이어서 방법을 밝힌다.',
+    '셋째 문단은 결과를 설명한다. 이어서 한계를 밝힌다.',
+    '마지막 문단은 결론을 정리한다. 이어서 후속 방향을 제시한다.'
+  ].join('\n\n');
+  const output = [
+    '첫 문단은 문제를 설명한다.',
+    '이어서 배경을 덧붙인다.',
+    '둘째 문단은 자료를 설명한다.',
+    '이어서 방법을 밝힌다.',
+    '셋째 문단은 결과를 설명하고 한계도 밝힌다.',
+    '마지막 문단은 결론을 정리한다.',
+    '이어서 후속 방향을 제시한다.'
+  ].join('\n\n');
+  const profile = { profile: 'report_assignment', group: 'academic_report_explainer' };
+  const voice = buildVoiceProfile(source, { documentProfile: profile, mode: 'assignment' });
+  const unmarked = auditVoice(voice, output, {
+    documentProfile: profile,
+    mode: 'assignment',
+    sourceText: source
+  });
+  assert.ok(unmarked.warnings.some(item => item.code === 'paragraph_structure_changed'));
+  for (const policy of [
+    'source_paragraph_roles',
+    'source_readable_units',
+    'readability_cap',
+    'bounded_sensitive_report',
+    'bounded_source_paragraphs',
+    'structural_visual_gaps'
+  ]) {
+    const audited = auditVoice(voice, output, {
+      documentProfile: profile,
+      mode: 'assignment',
+      sourceText: source,
+      layoutPolicy: policy,
+      layoutTargetCount: 7
+    });
+    assert.equal(
+      audited.warnings.some(item => item.code === 'paragraph_structure_changed'),
+      false,
+      `${policy}: ${JSON.stringify(audited.warnings)}`
+    );
+  }
+});
+
 test('사과·자료 전달 메일과 서사형 창작 산문을 각각 올바른 장르로 분리한다', () => {
   const mail = '안녕하세요, 담당자님. 답장이 늦어 죄송합니다. 요청하신 자료를 첨부하오니 확인 부탁드립니다. 감사합니다.';
   assert.equal(detectDocumentProfile(mail, { basicStyle: 'blog' }).profile, 'mail_notice');
 
   const creative = '비가 그친 골목에서 민수는 젖은 우산을 접었다. “이제 돌아갈까?” 지연이 묻자 그는 가로등 아래 고인 물만 바라보았다. 오래전 떠난 사람의 발자국이 거기 남아 있는 듯했다.';
   assert.equal(detectDocumentProfile(creative, { basicStyle: 'report' }).profile, 'creative');
+});
+
+test('등장인물과 장면을 설명하는 문학 분석문을 창작문으로 오인하지 않는다', () => {
+  const literaryAnalysis = [
+    '이 작품은 한 소년이 두 세계를 오가며 자아를 형성하는 과정을 다룬 소설이다.',
+    '소설에서 주인공은 가족이 상징하는 밝은 세계와 골목의 어두운 세계를 차례로 경험한다.',
+    '작가는 등장인물의 선택을 통해 선과 악을 단순히 나누는 관점의 한계를 보여 준다.',
+    '작품 속 인물의 갈등은 외부 사건의 요약에 그치지 않고 내면 변화의 계기로 기능한다.',
+    '주인공이 친구를 다시 만나는 장면은 기존 질서에서 벗어나는 전환을 상징한다.',
+    '이 구절의 의미는 인물이 두려움을 없앴다는 데 있지 않고 두려움을 자기 일부로 받아들였다는 데 있다.',
+    '따라서 작품의 서사는 성장 과정을 영웅의 승리로 정리하기보다 모순된 자아를 통합하는 과정으로 제시한다.',
+    '이러한 해석은 소설의 결말과 앞선 장면을 함께 대조할 때 더 분명하게 드러난다.'
+  ].join(' ');
+  const detected = detectDocumentProfile(literaryAnalysis, { basicStyle: 'blog' });
+  assert.notEqual(detected.profile, 'creative', JSON.stringify(detected.candidateProfiles));
+  assert.equal(detected.profile, 'report_assignment', JSON.stringify(detected.candidateProfiles));
+  assert.equal(detected.signals.literaryAnalysisFrame, true);
 });
 
 test('고급 강도는 격식 상승과 분리되고 프롬프트 우선순위가 한 방향으로 조립된다', () => {
@@ -290,6 +465,148 @@ test('늦은 수리 후보가 새 한국어 비문을 만들면 다른 개선이
   assert.ok(audit.reasons.includes('korean_integrity_worsened'));
 });
 
+test('늦은 수리가 같은 개수의 다른 한국어 오류로 바꿔치기해도 공통 감사가 거부한다', () => {
+  const source = [
+    '실점의 가장 큰 원인은 수비 조직력 부족이었다.',
+    '가치사슬을 분석하면 기업의 경쟁력이 드러난다.'
+  ].join(' ');
+  const before = [
+    '실점은 수비 조직력 부족에서 비롯된 가장 큰 원인이었다.',
+    '가치사슬을 분석하면 기업의 경쟁력이 드러난다.'
+  ].join(' ');
+  const candidate = [
+    '실점의 가장 큰 원인은 수비 조직력 부족이었다.',
+    '가치사슬 분석을 살펴보면 기업의 경쟁력이 드러난다.'
+  ].join(' ');
+  const audit = candidateIntegrity.auditCandidateIntegrity({
+    source,
+    before,
+    candidate,
+    documentProfile: { profile: 'report_assignment', targetRegister: 'academic_formal' },
+    mode: 'assignment'
+  });
+  assert.equal(audit.pass, false, JSON.stringify(audit));
+  assert.ok(audit.reasons.includes('korean_integrity_worsened'), JSON.stringify(audit));
+});
+
+test('늦은 수리가 목록·잠금 토큰의 행 경계를 합치면 공통 감사가 거부한다', () => {
+  const source = [
+    '결론',
+    '● 첫 번째 결과는 수치 변화와 관련된다.',
+    '● 두 번째 결과는 조건 간 차이와 관련된다.'
+  ].join('\n');
+  const mergedList = '결론\n● 첫 번째 결과는 수치 변화와 관련된다. ● 두 번째 결과는 조건 간 차이와 관련된다.';
+  const listAudit = candidateIntegrity.auditCandidateIntegrity({
+    source,
+    before: source,
+    candidate: mergedList,
+    documentProfile: {
+      profile: 'report_assignment',
+      formatProfile: { flags: ['list_heavy'] }
+    },
+    mode: 'assignment'
+  });
+  assert.equal(listAudit.pass, false, JSON.stringify(listAudit));
+  assert.ok(listAudit.reasons.includes('structure_integrity_worsened'));
+
+  const frozenSource = '첫 설명이다.\nZXQLOCK0000QXZ둘째 설명이다.';
+  const tokenAudit = candidateIntegrity.auditCandidateIntegrity({
+    source: frozenSource,
+    before: frozenSource,
+    candidate: '첫 설명이다. ZXQLOCK0000QXZ둘째 설명이다.',
+    documentProfile: {
+      profile: 'report_assignment',
+      formatProfile: { flags: ['sectioned'] }
+    },
+    mode: 'assignment'
+  });
+  assert.equal(tokenAudit.pass, false, JSON.stringify(tokenAudit));
+  assert.ok(tokenAudit.reasons.includes('structure_integrity_worsened'));
+  assert.ok(tokenAudit.candidate.tokenBoundaryRisk > tokenAudit.before.tokenBoundaryRisk);
+});
+
+test('목록 여러 행은 가독성 문단 분할 과정에서도 한 줄로 합쳐지지 않는다', () => {
+  const longBody = '검사값의 평균과 표준편차를 함께 비교했다. 조건별 신뢰구간도 확인했다. ';
+  const source = [
+    `4. ${longBody.repeat(4)}`,
+    `5. ${longBody.repeat(4)}`,
+    `6. ${longBody.repeat(4)}`
+  ].join('\n');
+  const plan = structure.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    preserveLineBoundaries: 'structural'
+  });
+  const repaired = structure.restorePostSemanticLayout({
+    source,
+    outputText: source,
+    chunks: plan.chunks,
+    mode: 'assignment',
+    requestStrength: 'advanced',
+    documentProfile: {
+      profile: 'report_assignment',
+      confidence: 0.95,
+      formatProfile: { flags: ['list_heavy'] }
+    },
+    profileConfidence: 0.95
+  });
+  assert.equal(repaired.pass, true, JSON.stringify(repaired.paragraphs));
+  assert.match(repaired.text, /^4\.[^\n]+\n+5\.[^\n]+\n+6\./mu);
+});
+
+test('창작문 레이아웃을 의도적으로 보존한 결과는 긴 문단 때문에 구조 실패가 되지 않는다', () => {
+  const source = Array.from(
+    { length: 14 },
+    (_, index) => `장면 ${index + 1}에서 인물은 창밖을 바라보며 오래된 기억을 떠올렸다.`
+  ).join(' ');
+  const repaired = structure.restorePostSemanticLayout({
+    source,
+    outputText: source,
+    chunks: [],
+    mode: 'assignment',
+    requestStrength: 'basic',
+    documentProfile: { profile: 'creative', confidence: 0.95 },
+    profileConfidence: 0.95
+  });
+  assert.equal(repaired.paragraphs.policy, 'creative_preserve');
+  assert.equal(repaired.pass, true, JSON.stringify(repaired.paragraphs));
+});
+
+test('직접 인용 복원은 따옴표 내용을 중복하지 않고 검증 실패 시 원문 후보를 버린다', () => {
+  const source = '그는 ‘밝은 세계’를 떠나며 “새는 알에서 나오려고 투쟁한다.”라고 말했다.';
+  const output = '그는 ‘안전한 세계’를 떠나며 “새는 껍질을 깨고 나온다.”라고 말했다.';
+  const restored = restoreDirectQuoteContents(source, output);
+  assert.equal(restored.applied, true, JSON.stringify(restored));
+  assert.equal(restored.text, source);
+  assert.equal(auditDirectQuoteIntegrity(source, restored.text).pass, true);
+  assert.equal((restored.text.match(/밝은 세계/gu) || []).length, 1);
+  assert.equal((restored.text.match(/새는 알에서 나오려고 투쟁한다/gu) || []).length, 1);
+
+  const mismatched = restoreDirectQuoteContents(
+    '그는 ‘첫 인용’과 ‘둘째 인용’을 말했다.',
+    '그는 ‘바뀐 인용’을 말했다.'
+  );
+  assert.equal(mismatched.applied, false);
+  assert.equal(mismatched.text, '그는 ‘바뀐 인용’을 말했다.');
+});
+
+test('닫는 따옴표 뒤의 인·였다면·였다는·이었던은 정상 조사·서술 결합이다', () => {
+  const text = [
+    '흔히 ‘골목대장’인 인물을 만났다.',
+    '그가 ‘악마’였다면 친구는 조력자였다.',
+    '그 선택이 ‘전환점’이었다는 해석도 가능하다.',
+    '그는 결국 ‘완성된 자기 자신’이었던 셈이다.',
+    '그는 「밝은 세계」에서 벗어났다.'
+  ].join(' ');
+  const audit = korean.analyzeKoreanRefinement({
+    source: text,
+    outputText: text,
+    documentProfile: { profile: 'report_assignment', targetRegister: 'academic_formal' },
+    mode: 'assignment'
+  });
+  assert.equal(audit.issueCodes.includes('closed_quote_spacing'), false, JSON.stringify(audit));
+  assert.equal(audit.issueCodes.includes('closed_quote_particle_spacing'), false, JSON.stringify(audit));
+});
+
 test('기능이 같은 확장 표현과 원래 한계 표현은 범위 확장으로 오인하지 않는다', () => {
   const equivalent = discourse.compareDiscourse(
     '자료 검토에 그치지 않고 적용 범위도 확인했다.',
@@ -302,6 +619,57 @@ test('기능이 같은 확장 표현과 원래 한계 표현은 범위 확장으
     '기존 한계를 넘어선 해결책을 구체적으로 살펴봤다.'
   );
   assert.equal(limit.codes.includes('scope_expansion'), false, limit.codes.join(','));
+
+  const dimension = discourse.compareDiscourse(
+    '가격 경쟁력을 확보하는 차원을 넘어 고유 역량을 극대화해야 한다.',
+    '가격 경쟁력을 확보하는 데 그치지 않고 고유 역량을 극대화해야 한다.'
+  );
+  assert.equal(dimension.codes.includes('scope_expansion'), false, dimension.codes.join(','));
+
+  const tool = discourse.compareDiscourse(
+    '이 기술은 더 이상 검색 도구가 아니라 관계적 상호작용을 제공하는 매체로 확장되고 있다.',
+    '이 기술은 검색 도구에 그치지 않고 관계적 상호작용을 제공하는 매체로 확장되고 있다.'
+  );
+  assert.equal(tool.codes.includes('scope_expansion'), false, tool.codes.join(','));
+
+  const character = discourse.compareDiscourse(
+    '이 제도는 임시적 성격을 벗어나 보편적 성격을 띠어야 한다.',
+    '이 제도는 임시적 성격에 머무르지 않고 보편적 성격을 띠어야 한다.'
+  );
+  assert.equal(character.codes.includes('scope_expansion'), false, character.codes.join(','));
+
+  const pairedTransitions = discourse.compareDiscourse(
+    [
+      '생성형 AI는 더 이상 단순한 검색 도구가 아니라 대화형 응답을 통해 관계적 상호작용을 제공하는 매체로 확장되고 있다.',
+      '생성형 AI는 단순히 결과물을 생성하는 도구를 넘어 사용자의 인지적 부담을 줄이고 즉각적인 반응을 제공한다.'
+    ].join(' '),
+    [
+      '생성형 AI는 이제 단순한 검색 도구를 넘어 대화형 응답을 매개로 관계적 상호작용을 제공하는 매체로까지 확장되고 있다.',
+      '생성형 AI는 결과물을 생성하는 도구에 그치지 않고 사용자의 인지적 부담을 줄이며 즉각적인 반응을 제공한다.'
+    ].join(' ')
+  );
+  assert.equal(
+    pairedTransitions.codes.includes('scope_expansion'),
+    false,
+    pairedTransitions.codes.join(',')
+  );
+
+  const realExpansion = discourse.compareDiscourse(
+    '기후 자료에서 연도별 평균 기온 변화를 비교했다.',
+    '기후 자료에서 연도별 평균 기온 변화를 비교했다. 나아가 세계 시민, 기후 난민, 식량 안보와 인권 문제로까지 범위를 확장했다.'
+  );
+  assert.equal(realExpansion.codes.includes('scope_expansion'), true, JSON.stringify(realExpansion.metrics));
+});
+
+test('연구 문헌을 살펴본다는 정상 표현은 명사·서술어 오류로 오인하지 않는다', () => {
+  const source = '국내 연구를 살펴보면 청소년의 생성형 AI 사용은 빠르게 확산되고 있다.';
+  const audit = korean.analyzeKoreanRefinement({
+    source,
+    outputText: source,
+    documentProfile: { profile: 'report_assignment', targetRegister: 'academic_formal' },
+    mode: 'assignment'
+  });
+  assert.equal(audit.issueCodes.includes('nominal_predicate_collocation'), false, JSON.stringify(audit));
 });
 
 test('모델 호출 실패를 원인별로 기록하고 전송·refusal·schema 오류는 품질 승격에 쓰지 않는다', () => {

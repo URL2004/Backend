@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences } = require('../engine/koreanText');
+const { computePovSeed } = require('../engine/pov');
 const layoutStructure = require('./layoutStructure');
 
 const CONTENT_GENRES = Object.freeze([
@@ -63,7 +64,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const questionnaire = detectQuestionnaire(lines);
   const formatProfile = detectFormatProfile(text, lines, sentences, questionnaire);
   const scores = Object.fromEntries(CONTENT_GENRES.map(profile => [profile, 0]));
-  const firstPersonSignals = count(text, /(?:^|[^가-힣A-Za-z0-9_])(?:나는|내가|나의|저는|제가|저의|저에게|저(?=\s+(?:역시|또한|또|개인적으로))|제(?=\s+(?:목표|역할|경험|강점|약점|생각|관점|업무|진로|역량|꿈|일)))(?=$|[^가-힣A-Za-z0-9_])/gu);
+  const firstPersonSignals = computePovSeed(text).fp_singular;
   // `사진`, `오늘은`, `추천`처럼 주제 설명문에도 흔한 낱말 하나만으로 후기 장르를
   // 만들지 않는다. 후기 판정에는 실제 방문·구매·사용 경험 또는 명시적 후기 표지가
   // 필요하고, 사진 언급은 그 문맥이 확인된 뒤에만 약한 보조 신호로 쓴다.
@@ -380,6 +381,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const poemLikeLines = lines.filter(line => line.length <= 34 && !/[.!?。！？]$/u.test(line)).length;
   const structuredFunctionalFormat = ['table_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'questionnaire']
     .some(flag => formatProfile.flags.includes(flag));
+  const explainerConceptSignals = count(text, /(?:개념|원리|이론|역사적\s*배경|특징|구조|기능|영향|관계|차이|의미|과정|사례|쟁점|메커니즘|제도)/gu);
+  const formalExpositionEndings = sentences.filter(sentence => /(?:한다|했다|하였다|이다|였다|이었다|된다|되었다|있다|없다|보인다|나타난다|나타났다|드러난다|드러났다|의미한다)[.!?。！？]?$/u.test(sentence.trim())).length;
+  const formalExpositionRatio = formalExpositionEndings / Math.max(1, sentences.length);
   const strongCreativeSignals = count(text, /(?:시\s*$|시집|운문|소설|등장인물|장면\s*\d+|단편\s*소설|화자\s*:)/gmu);
   const weakCreativeSignals = count(text, /(?:그날의|바람이|달빛|별빛|노을|그림자|고요(?:가|는|를)|계절의)/gu);
   const proseNarrativeSignals = count(text, /(?:그는|그녀는|소년은|소녀는|노인은|남자는|여자는|아이는|아이의|문을\s*열(?:었|고)|걸어갔|돌아섰|바라보았|중얼거렸|속삭였|말했|물었|대답했|웃었|울었)/gu);
@@ -406,15 +410,37 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       + Math.min(proseDialogueSignals, 4) * 0.22
       + Math.min(proseSceneSignals, 5) * 0.12;
   }
+  const literaryAnalysisSignals = count(
+    text,
+    /(?:이\s*작품|작품에서|작품은|소설에서|소설은|작가가|작가는|주인공|등장인물|인물의|서사|문학적|상징(?:하|은|을|적)|텍스트|구절|작품\s*속)/gu
+  );
+  const literaryInterpretationSignals = count(
+    text,
+    /(?:의미(?:하|를\s*가진)|보여\s*준다|드러낸다|나타낸다|상징한다|해석할\s*수|해석된다|분석하면|대조(?:된|한다)|시사한다|점이다|역할을\s*한다)/gu
+  );
+  const literaryAnalysisFrame = compactLength >= 240
+    && literaryAnalysisSignals >= 4
+    && (literaryInterpretationSignals >= 2
+      || (literaryAnalysisSignals >= 6 && explainerConceptSignals >= 3))
+    && formalExpositionRatio >= 0.32;
+  if (literaryAnalysisFrame) {
+    // 작품 속 인물의 행동을 요약한 비평·독후 분석은 서사 동사와 장면
+    // 어휘가 많아도 창작문이 아니다. 메타 분석 표지와 평서형 설명이 함께
+    // 반복될 때 보고서/설명문으로 라우팅해 구어적 창작 프롬프트를 막는다.
+    scores.report_assignment += 3.25
+      + Math.min(literaryAnalysisSignals - 4, 6) * 0.12;
+    scores.long_explainer += 2.9
+      + Math.min(literaryInterpretationSignals - 2, 5) * 0.14;
+    if (!formatProfile.flags.includes('line_sensitive')) {
+      scores.creative = Math.max(0, scores.creative - 4.3);
+    }
+  }
 
   const personalReflectionSignals = count(text, /(?:생각한다|느꼈다|깨달았다|경험을\s*통해|돌이켜\s*보면|기억에\s*남|배우게\s*되었다)/gu);
   add(scores, 'personal_essay', personalReflectionSignals, 0.55);
   add(scores, 'personal_essay', firstPersonSignals, 0.22);
   if (firstPersonSignals >= 2 && personalReflectionSignals >= 1) scores.personal_essay += 0.8;
 
-  const explainerConceptSignals = count(text, /(?:개념|원리|이론|역사적\s*배경|특징|구조|기능|영향|관계|차이|의미|과정|사례|쟁점|메커니즘|제도)/gu);
-  const formalExpositionEndings = sentences.filter(sentence => /(?:한다|했다|하였다|이다|였다|이었다|된다|되었다|있다|없다|보인다|나타난다|나타났다|드러난다|드러났다|의미한다)[.!?。！？]?$/u.test(sentence.trim())).length;
-  const formalExpositionRatio = formalExpositionEndings / Math.max(1, sentences.length);
   if (compactLength >= 800
       && sentences.length >= 7
       && firstPersonSignals <= 2
@@ -561,6 +587,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       officialRoleSignals,
       signatureDateLines,
       signatureInstitutionLines,
+      literaryAnalysisSignals,
+      literaryInterpretationSignals,
+      literaryAnalysisFrame,
       explainerConceptSignals,
       formalExpositionRatio: round(formalExpositionRatio, 4)
     }
@@ -736,7 +765,14 @@ function detectRiskFlags(text, { profile, safetyProfiles, questionnaire, formatP
   const institutionCount = count(text, /[가-힣A-Za-z0-9·&()]{2,30}(?:대학교|대학|학교|연구원|연구소|기관|협회|공사|재단|위원회|병원|기업|회사)/gu);
   const citationCount = count(text, /(?:\([가-힣A-Za-z·,&\s]+,?\s*(?:19|20)\d{2}[a-z]?\)|\((?:19|20)\d{2}(?:\s*\.\s*\d{1,2}(?:\s*\.\s*\d{1,2})?\s*\.?)?\)|doi\s*:|https?:\/\/|참고\s*문헌|References)/giu);
   const experienceActionCount = count(text, /(?:참여|방문|사용해\s*보|다녀왔|맡은\s*역할|느꼈|배웠|깨달|근무|프로젝트|직접\s*(?:조사|분석|제작|작성|수행))/gu);
-  const contextualExperienceCount = count(text, /(?:나는|내가|저는|제가|당시|직접|경험을\s*통해|아르바이트)[^.!?\n]{0,90}(?:참여|방문|사용|수행|조사|분석|제작|발표|근무|느꼈|배웠|깨달|맡)/gu);
+  const contextualExperienceCount = splitSentences(text, { preserveLines: false }).filter(sentence => {
+    const value = String(sentence || '');
+    const pov = computePovSeed(value);
+    const hasContext = pov.fp_singular > 0
+      || /(?:당시|직접|경험을\s*통해|아르바이트)/u.test(value);
+    return hasContext
+      && /(?:참여|방문|사용|수행|조사|분석|제작|발표|근무|느꼈|배웠|깨달|맡)/u.test(value);
+  }).length;
   const evaluationCount = count(text, /(?:평가|성취|역량|우수|뛰어|돋보|부족|개선|성장|기여|책임감)/gu);
   const directCommercialActionCount = count(text, /(?:지금\s*(?:바로|신청)|(?:신청|구매|예약|문의)\s*(?:하세요|해\s*주세요|바랍니다)|클릭(?:하세요|해\s*주세요)|놓치지\s*마세요)/gu);
   const promotionalOfferCount = count(text, /(?:무료\s*(?:상담|체험)|한정\s*(?:수량|기간|판매)|특가|할인\s*(?:혜택|행사|쿠폰)|선착순|오늘만|마감\s*임박)/gu);

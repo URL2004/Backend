@@ -170,7 +170,11 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.equal(out.result.records[0].changedSentenceRatio, 1);
   assert.ok(out.result.records[0].charEditRatio > 0);
   const humanizeCall = mock.calls.find(call => call.name === 'gpt_prod_humanize_result');
-  assert.ok(humanizeCall.body.max_output_tokens >= 2400, '한국어 출력과 추론 토큰을 함께 수용해야 한다');
+  assert.ok(humanizeCall.body.max_output_tokens >= 4000, '한국어 출력·구조화 JSON·추론 토큰을 함께 수용해야 한다');
+  assert.ok(
+    humanizeCall.body.max_output_tokens >= 2400 + Math.ceil(SOURCE.length * 3.2),
+    '원문 길이 예산과 추론·JSON 고정 예산을 함께 확보해야 한다'
+  );
   const expectedSafety = safetyIdentifierForUid(uid, 'engine-test-salt');
   for (const call of mock.calls) {
     assert.equal(call.body.safety_identifier, expectedSafety);

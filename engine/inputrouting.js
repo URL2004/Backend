@@ -8,6 +8,8 @@
 // 자소서·생기부·탐구 유형 감지. '저/제' 1인칭이 드물어도(존댓말 자기서술) 강한 신호어가 있으면 자소서류로 본다.
 //   기존엔 1인칭 밀도 + '지원/면접/역량' 어휘를 동시에 요구해, "주제를 선정했습니다"식 생기부·탐구문(1인칭
 //   대명사·취업 어휘 없음)이 안 걸려 재구성까지 가 added_claim 폭발(실측 junnny1004 2026-06-16).
+const { computePovSeed } = require('./pov');
+
 function looksLikeResume(text) {
   const t = text || '';
   const bare = t.replace(/\s+/g, '').length || 1;
@@ -88,7 +90,9 @@ function looksLikeReflection(text) {
   const t = text || '';
   if (/【\s*줄거리\s*】|【\s*시사점\s*】|독후감|서평|감상문/.test(t)) return true;
   const book = (t.match(/이\s*책(은|이|을|에서|의|을\s*통해|을\s*읽)|저자는|글쓴이는|작가는|책을\s*읽/g) || []).length;
-  const reflect = (t.match(/나는|내가|느꼈|깨달았|깨닫게|생각이\s*들|마음에\s*남|위안이\s*되|돌아보게/g) || []).length;
+  const pov = computePovSeed(t);
+  const reflect = pov.fp_singular
+    + ((t.match(/느꼈|깨달았|깨닫게|생각이\s*들|마음에\s*남|위안이\s*되|돌아보게/g) || []).length);
   return book >= 1 && reflect >= 3;   // 책 언급 + 1인칭 성찰 3개+ = 독후감/감상문(정상 시사·논증 글엔 이 조합 드묾)
 }
 

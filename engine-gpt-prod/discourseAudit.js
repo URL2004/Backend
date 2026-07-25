@@ -3,6 +3,7 @@
 const { splitSentences } = require('../engine/koreanText');
 const { splitLogicalProseParagraphs } = require('./proseParagraphs');
 const layoutStructure = require('./layoutStructure');
+const { alignSourceSentence } = require('./sentenceAlignment');
 
 const VERSION = 3;
 const VIOLATION_CODES = Object.freeze([
@@ -32,7 +33,12 @@ const STRONG_MODIFIER_PATTERNS = [
 
 const CONCLUSION_PATTERN = /(?:^|[.!?]\s*)(?:결론적으로|종합하면|종합적으로|결국|이처럼)|(?:의미를\s*가진다|의미가\s*있다|중요하다고\s*(?:볼|생각할)\s*수\s*있다|교훈을\s*(?:얻|주))/gu;
 const CAUSAL_PATTERN = /(?:때문에|따라서|그러므로|그\s*결과|이로\s*인해|덕분에|결과적으로|이어졌|연결되었|영향을\s*미쳤)/gu;
-const EXPANSION_PATTERN = /(?:뿐만\s*아니라|더\s*나아가|나아가|(?:데|데서|에)\s*(?:그치지|멈추지|머무르지)\s*않고|(?:을|를)\s*넘어\s+(?:사회|세계|국가|인권|기후|문화|경제|정치|환경|산업|공동체|차원|영역|문제)|까지\s*(?:확장|연결)|여러\s*(?:영역|차원|문제)|다양한\s*(?:영역|차원|관점|문제)|전반으로\s*확장|포괄(?:하|하는)|아우르)/gu;
+const EXPANSION_PATTERN = /(?:뿐만\s*아니라|더\s*나아가|나아가|(?:데|데서|에)\s*(?:그치지|멈추지|머무르지)\s*않고|(?:을|를)\s*넘어\s+(?:사회|세계|국가|인권|기후|문화|경제|정치|환경|산업|공동체|차원|영역|문제)|(?:차원|수준|범위|영역|대상|도구|성격|한계|단계|수습|관점|틀|접근)(?:을|를|에|에서)?\s*(?:넘어|벗어나|나아가)|더\s*이상[^.!?。！？\n]{0,45}(?:이|가)\s*아니라|까지\s*(?:확장|연결)|여러\s*(?:영역|차원|문제)|다양한\s*(?:영역|차원|관점|문제)|전반으로\s*확장|포괄(?:하|하는)|아우르)/gu;
+const SCOPE_TOPIC_TOKENS = new Set([
+  '사회', '세계', '국가', '국제', '시민', '세계시민', '인권', '기후', '난민',
+  '식량', '안보', '문화', '경제', '정치', '환경', '산업', '공동체', '윤리',
+  '법률', '교육', '보건', '주거', '고용', '불평등'
+]);
 const ACTIVITY_PATTERN = /(?:조사|탐구|분석|비교|검색|찾아보|살펴보|정리|기록|발표|토론|실험|관찰|측정|제작|작성|수집|검토|질문|답변|참여|수행|맡아|계획)/gu;
 const RESTART_OPENING_PATTERN = /^(?:또\s*다른|다음으로|한편|별도로|이번에는|추가로|이어서|새롭게)?\s*[^.!?\n]{0,32}(?:조사|탐구|분석|살펴보|알아보|검토)(?:했|하였|하게|한다|하였다|했습니다)/u;
 
@@ -99,7 +105,7 @@ function compareDiscourse(source, outputText) {
   const causalClosureDelta = after.causalClosureSentenceCount - before.causalClosureSentenceCount;
   const topicRestartDelta = after.topicRestartCount - before.topicRestartCount;
   const roleShiftCount = countRoleShifts(before.paragraphs, after.paragraphs);
-  const scopeExpansionCount = countScopeExpansionSignals(before, after);
+  const scopeExpansionCount = countScopeExpansionSignals(source, outputText, before, after);
   const personalBalanceShift = before.actionSentenceCount >= 2
     && after.actionSentenceRatio < before.actionSentenceRatio - 0.12;
 
@@ -365,13 +371,42 @@ function countRoleShifts(beforeParagraphs, afterParagraphs) {
   return count;
 }
 
-function countScopeExpansionSignals(before, after) {
+function countScopeExpansionSignals(source, outputText, before, after) {
   const expansionDelta = after.expansionConstructionCount - before.expansionConstructionCount;
   if (expansionDelta <= 0) return 0;
-  const novelTokens = [...after.contentTokens].filter(token => !before.contentTokens.has(token));
-  // 문단 재배치만으로 신호가 생기지 않게 문서 전체 기준으로 비교한다.
-  // 확장 담화 표지가 실제로 늘고 새 내용어 묶음이 동반될 때만 범위 확장으로 본다.
-  return novelTokens.length >= 4 ? expansionDelta : 0;
+  const sourceSentences = splitSentences(source);
+  const outputSentences = splitSentences(outputText);
+  let detected = 0;
+  for (let index = 0; index < outputSentences.length; index += 1) {
+    const outputSentence = outputSentences[index];
+    const outputExpansionCount = countPattern(outputSentence, EXPANSION_PATTERN);
+    if (outputExpansionCount <= 0) continue;
+    // “더 이상 X가 아니라”→“X를 넘어”, “도구를 넘어”→“도구에
+    // 그치지 않고”처럼 기능이 같은 관계 표지의 치환은 문서 전체 빈도만
+    // 세면 범위 확장으로 오인된다. 결과 문장을 대응 원문(최대 1:N)과
+    // 비교해 관계 표지와 실제 새 주제 묶음이 함께 늘어난 경우만 잡는다.
+    const alignment = alignSourceSentence(
+      outputSentence,
+      index,
+      outputSentences.length,
+      sourceSentences,
+      { window: 8, maxOutputGroup: 3 }
+    );
+    const alignedSource = alignment?.score >= 0.2 ? String(alignment.text || '') : '';
+    const sourceExpansionCount = countPattern(alignedSource, EXPANSION_PATTERN);
+    const excess = Math.max(0, outputExpansionCount - sourceExpansionCount);
+    if (!excess) continue;
+    const sourceTokens = extractContentTokens(alignedSource);
+    const outputTokens = extractContentTokens(outputSentence);
+    const novelTokens = [...outputTokens].filter(token => !sourceTokens.has(token));
+    const novelScopeTopics = novelTokens.filter(token => SCOPE_TOPIC_TOKENS.has(token));
+    const lowAlignmentWithNewCluster = Number(alignment?.score || 0) < 0.24
+      && novelTokens.length >= 4
+      && novelScopeTopics.length >= 1;
+    const alignedNewCluster = novelTokens.length >= 4 && novelScopeTopics.length >= 2;
+    if (lowAlignmentWithNewCluster || alignedNewCluster) detected += excess;
+  }
+  return Math.min(expansionDelta, detected);
 }
 
 function countTopicRestarts(sentences) {

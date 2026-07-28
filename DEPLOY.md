@@ -232,6 +232,7 @@ $r.Content -match 'lavAutoCoach'
 | `OPENAI_PROMPT_CACHE_ENABLED` / `OPENAI_PROMPT_CACHE_KEY_PREFIX` | GPT prompt caching 설정. 기본 prefix `gp-v9-cksafe-ko-p20260704` |
 | `OPENAI_PROMPT_CACHE_KEY_INCLUDE_MODE` / `OPENAI_PROMPT_CACHE_KEY_INCLUDE_PHASE` | 기본 `0`. 같은 고정 프롬프트 코어의 캐시 재사용을 위해 mode/phase를 키에서 제외한다. 특정 키가 약 15 RPM을 넘거나 프롬프트 계열을 강제로 격리해야 할 때만 `1` |
 | `OPENAI_WEB_SEARCH_TOOL_TYPE` | 기본 `web_search` |
+| `DETECT_HISTORY_CALIBRATION_*` | 같은 사용자의 최근 휴머나이징 결과를 다시 감지할 때만 점수를 보정한다. 장문 유사 일치는 기본 5-gram `0.88` 이상, 길이 차이 `3%` 이내, 최소 `500자`이며 원점수와 매칭 메타를 관리자 기록에 남긴다. |
 | `GPT_ESCALATION_*` | mini-first 승격 기준 fallback. 기본 긴 글 `9000`, 보호표현 `35`, 패치 대상 `24`. 관리자 페이지에서 조정 가능 |
 | `FIREBASE_SERVICE_ACCOUNT` | 서비스 계정 JSON 전체 |
 | `TOSS_SECRET_KEY` | `live_` 키 |

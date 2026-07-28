@@ -33,6 +33,9 @@ function buildBoundaryMarkerInstructions(chunk = {}) {
   }
   if (chunk.lineBoundaryMarkers?.length) {
     lines.push('[[[V2_LINE_####]]]는 보존할 행 경계다. 토큰의 철자·개수·순서를 유지하고 양쪽 행을 합치거나 새 행을 만들지 않는다.');
+    if (String(chunk.lineBoundaryPolicy || '') === 'structural') {
+      lines.push('V2_LINE 왼쪽이 제목·항목명이면 그 행은 독립 구조다. 제목을 다음 본문의 주어·목적어로 재사용하거나, 오른쪽 행을 “은·는·이·가·을·를·에서는” 같은 조사로 시작해 문법적으로 이어 붙이지 않는다.');
+    }
   }
   if (chunk.sentenceBoundaryMarkers?.length) {
     lines.push('[[[V2_SENTENCE_####]]]는 이 입력에서만 보존할 문장 경계다. 토큰의 철자·개수·순서를 유지하고 양쪽 문장을 합치거나 새 마침표로 다시 나누지 않는다.');

@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 6;
+const VERSION = 7;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -298,6 +298,18 @@ function detectSemanticRelationShifts(source, output) {
       if (shifted) add('collaborative_role_scope_removed', sourceIndex + 1);
     }
 
+    if (hasExternalResponsibilityRejection(sourceSentence)) {
+      const shifted = hasResponsibilityTransferToPerson(alignedText)
+        && !hasExternalResponsibilityRejection(alignedText);
+      if (shifted) add('responsibility_attribution_shifted_to_person', sourceIndex + 1);
+    }
+
+    if (hasResponsibilityForChoice(sourceSentence)) {
+      const shifted = hasResponsibilityForOutcome(alignedText)
+        && !hasResponsibilityForChoice(alignedText);
+      if (shifted) add('responsibility_object_changed_to_outcome', sourceIndex + 1);
+    }
+
     const sourceConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(sourceSentence);
     const sourceSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(sourceSentence);
     const outputSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(alignedText);
@@ -359,6 +371,52 @@ function hasCollaborativeRoleQualifier(value) {
 
 function hasDirectCompletionClaim(value) {
   return /(?:완료|달성|확보|구축|개발|설계|도출|수행)(?:하|해|했|하여|하고|했다)/u.test(String(value || ''));
+}
+
+function hasExternalResponsibilityRejection(value) {
+  const text = String(value || '');
+  const external = /(?:외부\s*요인|환경|상황|타인|남|주변|사회)(?:에|에게|으로|탓으로)?/u;
+  const attribution = /(?:책임(?:을)?\s*(?:돌리|전가)|탓(?:으로)?\s*(?:돌리|하))/u;
+  const limiting = /(?:벗어나|않|말|그치지|머무르지|만으로\s*보지|만의\s*문제로\s*보지)/u;
+  if (!external.test(text) || !attribution.test(text) || !limiting.test(text)) return false;
+  const externalIndex = text.search(external);
+  const attributionIndex = text.search(attribution);
+  const limitingIndex = text.slice(Math.max(0, attributionIndex)).search(limiting);
+  return externalIndex >= 0
+    && attributionIndex >= externalIndex
+    && attributionIndex - externalIndex <= 70
+    && limitingIndex >= 0
+    && limitingIndex <= 45;
+}
+
+function hasResponsibilityTransferToPerson(value) {
+  const text = String(value || '');
+  const person = /(?:내담자|상담\s*대상자|당사자|개인|본인|자기|자신)(?:의)?/u;
+  const transfer = /(?:옮기|돌리|귀속|지우|부과|전환)/u;
+  const responsibility = /책임(?:의\s*(?:방향|소재|주체|초점))?/u;
+  if (!responsibility.test(text) || !person.test(text) || !transfer.test(text)) return false;
+  const responsibilityIndex = text.search(responsibility);
+  const personIndex = text.search(person);
+  const transferIndex = text.search(transfer);
+  const transferTail = transferIndex >= 0 ? text.slice(transferIndex, transferIndex + 18) : '';
+  if (/(?:옮기|돌리|귀속|지우|부과|전환)[^.!?。！？\n]{0,8}(?:지\s*않|지\s*말|지\s*못)/u.test(transferTail)) {
+    return false;
+  }
+  return responsibilityIndex >= 0
+    && personIndex >= responsibilityIndex
+    && personIndex - responsibilityIndex <= 100
+    && transferIndex >= personIndex
+    && transferIndex - personIndex <= 55;
+}
+
+function hasResponsibilityForChoice(value) {
+  return /(?:선택|결정|행동)(?:(?:에|에는|에\s*대해)\s*책임|(?:을|를)\s*책임)(?:을\s*)?(?:지|지게|지는|져|져야)/u
+    .test(String(value || ''));
+}
+
+function hasResponsibilityForOutcome(value) {
+  return /(?:결과|귀결|성과|영향)(?:(?:에|에는|에\s*대해)\s*책임|(?:을|를)\s*책임)(?:을\s*)?(?:지|지게|지는|져|져야)/u
+    .test(String(value || ''));
 }
 
 function detectContrastRelationShift(source, output) {

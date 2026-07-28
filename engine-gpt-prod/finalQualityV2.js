@@ -918,6 +918,7 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'passive_causative_stack') return '피동과 사동을 겹치지 말고 SOURCE의 행위 주체와 작용 방향에 맞는 서술어 하나로 고친다.';
   if (item?.code === 'double_object_time_expenditure') return '매체·콘텐츠를 접하거나 이용한 시간 관계가 드러나도록 목적어를 하나로 정리하되 SOURCE의 시간량과 행동은 유지한다.';
   if (item?.code === 'persistent_state_tense_regression') return '아직도·여전히·지금도 이어지는 SOURCE의 상태를 과거에 끝난 상태로 바꾸지 말고 현재 지속 시제를 복원한다.';
+  if (item?.code === 'orphan_structural_particle') return '제목·항목명은 독립 구조다. 제목을 본문의 주어나 목적어로 재사용하지 말고, 다음 행 첫머리에 “은·는·이·가·을·를·에서는” 같은 조사만 남기지 않는다.';
   if (item?.code === 'benefit_help_predicate_redundancy') return 'SOURCE의 지원 범위는 유지하고 “도움을 받을 수 있게 돕다”의 겹친 서술어 하나만 자연스럽게 정리한다.';
   if (item?.code === 'contrast_clause_attachment') return 'SOURCE의 비교 방향과 절 순서를 확인해 “~하기보다”가 실제 비교 대상에 바로 연결되도록 고친다.';
   if (item?.code === 'student_record_fragment') return '짧게 떨어진 명사형 조각을 SOURCE의 같은 관찰 문맥에 다시 연결하되, 세특의 관찰형 종결과 내용 순서는 유지한다.';
@@ -951,7 +952,7 @@ async function retryFingerprintAudit({
       return `- contrast_relation_shift: SOURCE의 부정·배제 관계를 인정·가산 관계로 바꾸지 말고 문장 ${item.sentenceOrdinals?.join(',') || '해당 위치'}의 논리 방향을 복원한다.`;
     }
     if (item.code === 'semantic_relation_shift') {
-      return `- semantic_relation_shift/${item.family}: 문장 ${item.sentenceOrdinals?.join(',') || '해당 위치'}에서 SOURCE의 목적·근거·대조·가능성·행위 방향과 강도를 정확히 복원한다.`;
+      return `- semantic_relation_shift/${item.family}: 문장 ${item.sentenceOrdinals?.join(',') || '해당 위치'}에서 SOURCE의 목적·근거·대조·가능성·행위 방향·책임 범위와 강도를 정확히 복원한다.`;
     }
     return `- engine_phrase_fingerprint/${item.family}: CURRENT에 새로 주입된 상투구를 허용 횟수 ${Number(item.allowedIntroducedCount ?? 1)}회 이하로 줄인다.`;
   });

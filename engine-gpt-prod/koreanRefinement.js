@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 10;
+const VERSION = 11;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -261,6 +261,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '현재까지 이어지는 상태가 변환 과정에서 과거에 끝난 상태처럼 바뀌었어요.'
+  },
+  orphan_structural_particle: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: true,
+    message: '제목·항목명과 본문 사이에서 조사가 홀로 떨어져 문장이 깨졌어요.'
   },
   introduced_token_duplication: {
     weight: 5,
@@ -759,6 +765,7 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
 function detectTextIssues(value, { profile = 'unknown', targetRegister = '', includeSourceNotation = false } = {}) {
   const text = String(value || '').replace(/\r\n?/gu, '\n');
   const issues = [];
+  pushOrphanStructuralParticleIssue(issues, text);
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
   pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SPACING_RE);
   pushPatternIssue(issues, text, 'closed_quote_particle_spacing', CLOSED_QUOTE_PARTICLE_GAP_RE);
@@ -837,6 +844,11 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   const before = String(outputText || '');
   let text = before;
   const changes = [];
+  const orphanParticleRepair = repairIntroducedOrphanStructuralParticles(source, text);
+  text = orphanParticleRepair.text;
+  for (let index = 0; index < orphanParticleRepair.repairCount; index += 1) {
+    changes.push('orphan_structural_particle');
+  }
   const duplicationRepair = repairIntroducedTokenDuplications(source, text);
   text = duplicationRepair.text;
   for (let index = 0; index < duplicationRepair.repairCount; index += 1) {
@@ -949,7 +961,8 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'professional_register_downgrade',
   'passive_causative_stack',
   'double_object_time_expenditure',
-  'persistent_state_tense_regression'
+  'persistent_state_tense_regression',
+  'orphan_structural_particle'
 ]);
 
 function restoreIntroducedIntegritySentences({ source = '', outputText = '', audit = null } = {}) {
@@ -1806,6 +1819,125 @@ function qualityWarning(item) {
     introducedCount: item.introducedCount,
     sentenceOrdinals: item.sentenceOrdinals || []
   };
+}
+
+const ORPHAN_STRUCTURAL_PARTICLE_RE = /^(\s*)(에서는|에게는|으로는|로는|부터는|까지는|에는|에서|에게|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)\s+(?=\S)/u;
+
+function pushOrphanStructuralParticleIssue(issues, text) {
+  const occurrences = orphanStructuralParticleOccurrences(text);
+  if (!occurrences.length) return;
+  issues.push(makeIssue(
+    'orphan_structural_particle',
+    occurrences.length,
+    occurrences.map(item => item.sentenceOrdinal),
+    {
+      lineNumbers: occurrences.map(item => item.lineNumber),
+      particles: occurrences.map(item => item.particle)
+    }
+  ));
+}
+
+function orphanStructuralParticleOccurrences(value) {
+  const text = String(value || '').replace(/\r\n?/gu, '\n');
+  const lines = text.split('\n');
+  const occurrences = [];
+  let offset = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = String(lines[index] || '');
+    const match = line.match(ORPHAN_STRUCTURAL_PARTICLE_RE);
+    if (match) {
+      const previousIndex = previousNonEmptyLineIndex(lines, index);
+      const previous = previousIndex >= 0 ? String(lines[previousIndex] || '').trim() : '';
+      const role = previous ? layoutStructure.classifyLine(previous) : '';
+      const structuralPrevious = ['title', 'heading', 'label', 'label_inline', 'list'].includes(role)
+        || /^(?:\d{1,3}(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳]|[●○■□◆◇▶▷※])\s*\S/u.test(previous);
+      if (structuralPrevious) {
+        occurrences.push({
+          lineIndex: index,
+          lineNumber: index + 1,
+          particle: match[2],
+          prefixLength: match[0].length,
+          previousLine: previous,
+          bodyText: line.slice(match[0].length).trim(),
+          sentenceOrdinal: sentenceOrdinalAt(text, offset + match[1].length)
+        });
+      }
+    }
+    offset += line.length + 1;
+  }
+  return occurrences;
+}
+
+function repairIntroducedOrphanStructuralParticles(source, outputText) {
+  const sourceOccurrences = orphanStructuralParticleOccurrences(source);
+  const outputOccurrences = orphanStructuralParticleOccurrences(outputText);
+  let remainingIntroduced = Math.max(0, outputOccurrences.length - sourceOccurrences.length);
+  if (remainingIntroduced === 0) {
+    return { text: String(outputText || ''), repairCount: 0 };
+  }
+  const carriedOutputIndexes = matchCarriedOrphanOccurrences(sourceOccurrences, outputOccurrences);
+  const targetLines = new Set(
+    outputOccurrences
+      .filter((_item, index) => !carriedOutputIndexes.has(index))
+      .slice(0, remainingIntroduced)
+      .map(item => item.lineIndex)
+  );
+  let repairCount = 0;
+  const lines = String(outputText || '').replace(/\r\n?/gu, '\n').split('\n').map((line, index) => {
+    if (!targetLines.has(index) || remainingIntroduced <= 0) return line;
+    const repaired = String(line || '').replace(
+      ORPHAN_STRUCTURAL_PARTICLE_RE,
+      (_match, indentation) => indentation
+    );
+    if (repaired !== line) {
+      repairCount += 1;
+      remainingIntroduced -= 1;
+    }
+    return repaired;
+  });
+  return { text: lines.join('\n'), repairCount };
+}
+
+function matchCarriedOrphanOccurrences(sourceOccurrences, outputOccurrences) {
+  const usedOutputIndexes = new Set();
+  for (const sourceItem of sourceOccurrences || []) {
+    const candidates = (outputOccurrences || [])
+      .map((outputItem, index) => ({
+        index,
+        score: orphanOccurrenceSimilarity(sourceItem, outputItem)
+      }))
+      .filter(item => !usedOutputIndexes.has(item.index) && item.score >= 0)
+      .sort((left, right) => right.score - left.score || left.index - right.index);
+    if (candidates.length) usedOutputIndexes.add(candidates[0].index);
+  }
+  return usedOutputIndexes;
+}
+
+function orphanOccurrenceSimilarity(sourceItem, outputItem) {
+  if (String(sourceItem?.particle || '') !== String(outputItem?.particle || '')) return -1;
+  const sourceHeading = new Set(contentTokensLocal(sourceItem?.previousLine || ''));
+  const outputHeading = new Set(contentTokensLocal(outputItem?.previousLine || ''));
+  const sourceBody = new Set(contentTokensLocal(sourceItem?.bodyText || '').slice(0, 8));
+  const outputBody = new Set(contentTokensLocal(outputItem?.bodyText || '').slice(0, 8));
+  return (setOverlap(sourceHeading, outputHeading) * 0.7)
+    + (setOverlap(sourceBody, outputBody) * 0.3);
+}
+
+function setOverlap(left, right) {
+  if (!left.size && !right.size) return 1;
+  const denominator = Math.max(left.size, right.size, 1);
+  let shared = 0;
+  for (const value of left) {
+    if (right.has(value)) shared += 1;
+  }
+  return shared / denominator;
+}
+
+function previousNonEmptyLineIndex(lines, index) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (String(lines[cursor] || '').trim()) return cursor;
+  }
+  return -1;
 }
 
 function sourceReviewMessage(code) {

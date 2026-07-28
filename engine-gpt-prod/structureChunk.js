@@ -602,14 +602,16 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     && !['questionnaire', 'list_heavy', 'table', 'table_heavy', 'sectioned', 'reference_heavy', 'creative_lines']
       .some(flag => formatFlags.has(flag))
     && !(chunks || []).some(chunk => chunk?.locked && String(chunk.text || '').trim());
+  const sequentialEnumeratedParagraphRoles = hasSequentialEnumeratedParagraphRoles(sourceParagraphs);
   const sourceParagraphRolesAreAuthoritative = semanticProseRoles
-    && sourceCount >= 3
+    && (sourceCount >= 3 || sequentialEnumeratedParagraphRoles)
     // 빈 줄 문단뿐 아니라 워드·입력창에서 한 줄만 내려 쓴 완결 산문도
     // layoutStructure가 판정한 원문 역할 경계로 존중한다.
     && sourceParagraphs.every(paragraph => !layoutStructure.isStructureDominatedParagraph(paragraph));
   if (sourceParagraphRolesAreAuthoritative) {
     const anchored = buildSourceAnchoredParagraphLayout(layoutSourceText, layoutOutputText, {
-      readabilityOptions
+      readabilityOptions,
+      minimumSourceCount: sequentialEnumeratedParagraphRoles ? 2 : 3
     });
     const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(anchored.text), readabilityOptions);
     const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(anchored.text).length;
@@ -884,7 +886,7 @@ function semanticTransitionKind(value, profileName = '') {
   if (/^(?:(?:이러한|이런|이와\s*같은)\s*(?:경험|과정|논의|분석|결과|역량|노력)(?:을|를)?\s*(?:통해|바탕으로)|이를\s*바탕으로|종합하면|결론적으로|결과적으로|따라서|그러므로|입사\s*후|앞으로(?:도)?)/u.test(sentence)) return 'conclusion';
   if (/^(?:반면|그러나|하지만|다만|한편|그럼에도|이에\s*반해)/u.test(sentence)) return 'contrast';
   if (/^(?:예를\s*들어|구체적으로|실제로|대표적으로|사례를\s*보면)/u.test(sentence)) return 'evidence';
-  if (/^(?:첫째|둘째|셋째|넷째|먼저|다음으로|마지막으로|또\s*다른|이와\s*별개로)/u.test(sentence)) return 'topic_shift';
+  if (/^(?:(?:첫|두|세|네)\s*번째(?:\s+(?:이유|근거|요인|특징|관점|문제|장점|단점|목표|과제|단계|측면))?(?:은|는|이|가)?|첫째|둘째|셋째|넷째|먼저|다음으로|마지막으로|또\s*다른|이와\s*별개로)/u.test(sentence)) return 'topic_shift';
   if (/^(?:연구실|회사|기관|현장|팀|부서|조직|근무지)(?:에서는|에서)\s/u.test(sentence)) return 'context';
   if (/^(?:장비|업무|연구|프로젝트|실험)(?:를|을)\s*(?:단순히|그저|사용하는\s+데서|수행하는\s+데서)/u.test(sentence)) return 'development';
   if (profileName === 'resume_application'
@@ -900,7 +902,8 @@ function semanticTransitionKind(value, profileName = '') {
 function buildSourceAnchoredParagraphLayout(source, value, {
   readabilityOptions = {},
   forceParagraphSeparators = false,
-  sourceParagraphsOverride = null
+  sourceParagraphsOverride = null,
+  minimumSourceCount = 3
 } = {}) {
   const normalized = normalizeParagraphWhitespace(value);
   const sourceParagraphs = Array.isArray(sourceParagraphsOverride) && sourceParagraphsOverride.length
@@ -911,7 +914,8 @@ function buildSourceAnchoredParagraphLayout(source, value, {
     .map(sentence => String(sentence || '').replace(/\s+/gu, ' ').trim())
     .filter(Boolean);
   const sourceCount = sourceParagraphs.length;
-  if (sourceCount < 3 || outputSentences.length < sourceCount) {
+  if (sourceCount < Math.max(2, Number(minimumSourceCount) || 3)
+      || outputSentences.length < sourceCount) {
     return unchangedSourceAnchoredLayout(normalized, currentParagraphs, 0);
   }
 
@@ -977,6 +981,26 @@ function buildSourceAnchoredParagraphLayout(source, value, {
     proseSplitCount,
     contentPreserved: true
   };
+}
+
+function hasSequentialEnumeratedParagraphRoles(paragraphs) {
+  const values = (paragraphs || [])
+    .map(paragraph => splitSentences(String(paragraph || ''))[0] || String(paragraph || ''))
+    .map(sentence => String(sentence || '').replace(/\s+/gu, ' ').trim())
+    .filter(Boolean);
+  if (values.length < 2) return false;
+  const ordinalFamilies = [
+    /(?:^|[\s,])(?:첫\s*번째|첫째)(?:\s+(?:이유|근거|요인|특징|관점|문제|장점|단점|목표|과제|단계|측면))?(?:은|는|이|가)?(?=$|[\s,])/u,
+    /(?:^|[\s,])(?:두\s*번째|둘째)(?:\s+(?:이유|근거|요인|특징|관점|문제|장점|단점|목표|과제|단계|측면))?(?:은|는|이|가)?(?=$|[\s,])/u,
+    /(?:^|[\s,])(?:세\s*번째|셋째)(?:\s+(?:이유|근거|요인|특징|관점|문제|장점|단점|목표|과제|단계|측면))?(?:은|는|이|가)?(?=$|[\s,])/u,
+    /(?:^|[\s,])(?:네\s*번째|넷째)(?:\s+(?:이유|근거|요인|특징|관점|문제|장점|단점|목표|과제|단계|측면))?(?:은|는|이|가)?(?=$|[\s,])/u
+  ];
+  const comparableCount = Math.min(values.length, ordinalFamilies.length);
+  if (comparableCount < 2) return false;
+  for (let index = 0; index < comparableCount; index += 1) {
+    if (!ordinalFamilies[index].test(values[index])) return false;
+  }
+  return true;
 }
 
 function alignSentencesToSourceParagraphs(sourceParagraphs, outputSentences) {

@@ -47,7 +47,7 @@ const {
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.6';
+const VERSION = 'gpt-prod-v2.5.7';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -1769,7 +1769,7 @@ async function runEngine({
           ? [{ code: 'contrast_relation_shift', severity: 'warning', message: '부정·배제 관계가 인정·가산 관계로 달라졌을 수 있어 원문 대조가 필요해요.' }]
           : []),
         ...(fingerprintAudit?.issueCodes?.includes('semantic_relation_shift')
-          ? [{ code: 'semantic_relation_shift', severity: 'warning', message: '목적·근거·대조·가능성 또는 행위 방향이 원문과 달라졌을 수 있어요.' }]
+          ? [{ code: 'semantic_relation_shift', severity: 'warning', message: '목적·근거·대조·가능성·행위 방향 또는 책임 범위가 원문과 달라졌을 수 있어요.' }]
           : []),
         ...(endingStyleAudit?.pass === false
           ? [{ code: 'ending_style_mixed', severity: 'warning', message: '원문에 없던 종결체가 일부 섹션에 섞였을 수 있어요.' }]

@@ -76,6 +76,10 @@ function buildLineRecords(value) {
   const codeIndices = detectCodeLineIndices(records);
   const tableIndices = detectContextTableLineIndices(records, codeIndices);
   const signatureIndices = detectSignatureLineIndices(records, codeIndices);
+  const parallelSloganTitleIndices = detectParallelSloganTitleIndices(
+    records,
+    new Set([...codeIndices, ...tableIndices, ...signatureIndices])
+  );
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
   for (const record of nonEmpty) {
     if (codeIndices.has(record.index)) {
@@ -92,7 +96,8 @@ function buildLineRecords(value) {
       next,
       blankBefore: record.index === 0 || previousRaw?.blank === true,
       tableLike: tableIndices.has(record.index),
-      signatureLike: signatureIndices.has(record.index)
+      signatureLike: signatureIndices.has(record.index),
+      parallelSloganTitle: parallelSloganTitleIndices.has(record.index)
     });
   }
   return records;
@@ -103,6 +108,7 @@ function classifyLine(value, context = {}) {
   if (!text) return 'blank';
   if (legalClauseParts(text)) return 'legal_clause';
   if (context.signatureLike) return 'signature';
+  if (context.parallelSloganTitle) return 'title';
   if (isKnownHeadingLine(text)) return 'heading';
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
   if (isListLine(text)) return 'list';
@@ -137,6 +143,32 @@ function isGenericTitle(text, context = {}) {
   const nextLength = context.next.text.length;
   return context.blankBefore
     && (text.length <= 45 || nextLength >= Math.max(70, Math.ceil(text.length * 1.45)));
+}
+
+/**
+ * 자기소개서·직무계획서에는 마침표가 붙은 짧은 다짐을 소제목으로 쓰고
+ * 바로 다음 행에 긴 근거 문단을 두는 형식이 흔하다. 첫 행만 제목으로 보는
+ * 일반 규칙은 이 반복 구조를 놓쳐, 모델이 소제목을 앞뒤 문단에 합쳐 버렸다.
+ * 문서 안에서 같은 패턴이 세 번 이상 반복될 때만 구조로 확정해 일반 산문의
+ * 짧은 문장을 과보호하지 않는다.
+ */
+function detectParallelSloganTitleIndices(records, excluded = new Set()) {
+  const source = Array.isArray(records) ? records : [];
+  const nonEmpty = source.filter(record => !record.blank && !excluded.has(record.index));
+  const candidates = [];
+  for (let position = 0; position < nonEmpty.length; position += 1) {
+    const record = nonEmpty[position];
+    const next = nonEmpty[position + 1];
+    const text = String(record?.text || '').trim();
+    const nextText = String(next?.text || '').trim();
+    if (!next || text.length < 12 || text.length > 82) continue;
+    if (!/겠습니다[.!。！？]?$/u.test(text)) continue;
+    if (splitSentences(text).filter(Boolean).length !== 1) continue;
+    if (isListLine(text) || labelParts(text) || isKnownHeadingLine(text) || isQuoteLine(text)) continue;
+    if (nextText.length < 65 || nextText.length < Math.ceil(text.length * 1.45)) continue;
+    candidates.push(record.index);
+  }
+  return candidates.length >= 3 ? new Set(candidates) : new Set();
 }
 
 function labelParts(value) {
@@ -469,6 +501,7 @@ module.exports = {
   shouldPreserveLineBoundary,
   isStructuralRole,
   isKnownHeadingLine,
+  detectParallelSloganTitleIndices,
   legalClauseParts,
   labelParts,
   isSentenceComplete,

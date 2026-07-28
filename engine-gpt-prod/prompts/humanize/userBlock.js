@@ -3,6 +3,7 @@
 function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTargets = [], dynamicContext = '', mode = 'assignment' }) {
   const prev = index > 0 ? chunks[index - 1].text : '';
   const next = index < chunks.length - 1 ? chunks[index + 1].text : '';
+  const markerInstructions = buildBoundaryMarkerInstructions(chunk);
   const position = chunk.position === 'intro'
     ? '도입부다. 원문의 시작 역할과 흐름을 유지한다.'
     : chunk.position === 'conclusion'
@@ -13,9 +14,7 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
     '아래 텍스트만 편집하고 앞·뒤 문맥의 문장을 출력에 복사하지 않는다.',
     '[구조 힌트]',
     '제목·질문·번호 줄과 각 항목의 본문 경계를 유지한다.',
-    chunk.boundaryMarkers?.length || chunk.lineBoundaryMarkers?.length || chunk.sentenceBoundaryMarkers?.length
-      ? '[[[V2_BOUNDARY_###]]], [[[V2_LINE_####]]], [[[V2_SENTENCE_####]]] 토큰은 원문의 문단·행·문장 경계를 잠근 표시다. 존재하는 각 토큰을 철자와 개수까지 그대로 같은 순서로 출력한다. V2_LINE 양쪽의 행을 합치거나 새 행을 만들지 않고, V2_SENTENCE 양쪽의 문장을 합치거나 새 마침표로 다시 나누지 않는다.'
-      : '',
+    markerInstructions,
     `[작업 위치]\n${position}`,
     prev ? `[앞 문맥 - 참고만 하고 다시 쓰지 말 것]\n...${tail(prev, 220)}` : '',
     next ? `[뒤 문맥 - 참고만 하고 손대지 말 것]\n${head(next, 180)}...` : '',
@@ -27,7 +26,22 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
   ].filter(Boolean).join('\n\n');
 }
 
+function buildBoundaryMarkerInstructions(chunk = {}) {
+  const lines = [];
+  if (chunk.boundaryMarkers?.length) {
+    lines.push('[[[V2_BOUNDARY_###]]]는 원문 문단 경계다. 토큰의 철자·개수·순서를 유지하고 서로 다른 문단을 합치거나 내용을 옮기지 않는다.');
+  }
+  if (chunk.lineBoundaryMarkers?.length) {
+    lines.push('[[[V2_LINE_####]]]는 보존할 행 경계다. 토큰의 철자·개수·순서를 유지하고 양쪽 행을 합치거나 새 행을 만들지 않는다.');
+  }
+  if (chunk.sentenceBoundaryMarkers?.length) {
+    lines.push('[[[V2_SENTENCE_####]]]는 이 입력에서만 보존할 문장 경계다. 토큰의 철자·개수·순서를 유지하고 양쪽 문장을 합치거나 새 마침표로 다시 나누지 않는다.');
+    lines.push('문장 경계 보존은 문장 내부를 원문대로 복사하라는 뜻이 아니다. 선택 강도에 맞춰 같은 문장 안의 절 배치·주어 위치·연결·호흡은 실질적으로 재구성한다.');
+  }
+  return lines.join('\n');
+}
+
 const head = (s, n) => String(s || '').slice(0, n);
 const tail = (s, n) => String(s || '').slice(-n);
 
-module.exports = { buildHumanizeUser };
+module.exports = { buildHumanizeUser, buildBoundaryMarkerInstructions };

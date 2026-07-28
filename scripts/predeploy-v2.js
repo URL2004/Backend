@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { POLICY_VERSION: EXPECTED_HUMANIZATION_POLICY } = require('../engine-gpt-prod/humanizationDepth');
+const { VERSION: EXPECTED_ENGINE_VERSION } = require('../engine-gpt-prod');
 const { scanProductionImports } = require('./check-production-imports');
 
 async function main() {
@@ -45,7 +46,11 @@ async function main() {
   add('production_import_graph', importGraph.pass, JSON.stringify(importGraph.violations));
 
   if (args['skip-env'] !== '1') {
-    add('v2_single_production_path', true, 'gpt-prod-v2.5.5');
+    add(
+      'v2_single_production_path',
+      importGraph.pass && /^gpt-prod-v2\.\d+\.\d+$/u.test(EXPECTED_ENGINE_VERSION),
+      EXPECTED_ENGINE_VERSION
+    );
     add('humanization_depth_enabled', String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0', process.env.HUMANIZATION_DEPTH_GATE_ENABLED || 'default_on');
     add('active_provider', gptOnly(packageJson), 'gpt');
     add('openai_key', Boolean(process.env.OPENAI_API_KEY), process.env.OPENAI_API_KEY ? 'configured' : 'unset');

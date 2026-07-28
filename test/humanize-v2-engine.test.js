@@ -142,7 +142,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.5');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.6');
   assert.equal(out.engineMeta.requestStrength, 'polish');
   assert.equal(out.engineMeta.effectiveMode, 'polish');
   assert.ok(['content_only', 'low_confidence_preserve'].includes(out.engineMeta.profileDecisionSource));
@@ -603,7 +603,7 @@ test('일반 모드 무변환 재시도는 구조를 보존한 실질 재구성 
   assert.equal(mock.calls.some(call => JSON.stringify(call.body.input || '').includes('안전한 한 곳만 자연스럽게 다듬는다')), false);
 });
 
-test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 번 재시도해 기준 충족 결과만 전달한다', { concurrency: false }, async t => {
+test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 재시도해 안전한 최소 효과 결과를 전달한다', { concurrency: false }, async t => {
   const source = '조금만 크게 볼 수는 없을까요. 사람마다 살아온 경험과 생각이 다르다는 점을 인정하면 됩니다. 상대를 완전히 이해하기 어렵더라도 서로의 자리와 배경을 존중할 수 있습니다. 유독 정치와 종교 같은 주제 앞에서 이 태도가 흔들리기도 합니다. 서로 다른 생각을 마주할 때에도 먼저 판단하기보다 차분히 듣는 태도가 필요합니다.';
   const safe = '조금만 크게 볼 수는 없을까요. 사람마다 살아온 경험과 생각은 다르다는 점을 먼저 인정해야 합니다. 상대를 완전히 이해하기는 어려워도 서로의 자리와 배경은 존중할 수 있습니다. 이 태도는 정치와 종교 같은 주제 앞에서 유독 흔들리기도 합니다. 서로 다른 생각을 마주할 때에도 먼저 판단하기보다 차분히 듣는 태도가 필요합니다.';
   const mock = installEngineMock(t, { humanize: source, generalRetryOutput: safe, humanizationDepth: true });
@@ -613,17 +613,18 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 한 
   assert.equal(out.fallbackCount, 0);
   assert.equal(out.engineMeta.repairCount, 1);
   assert.equal(out.engineMeta.humanizationDepthEnabled, true);
-  assert.equal(out.engineMeta.humanizationDepthPass, true);
+  assert.equal(out.engineMeta.humanizationDepthPass, false);
+  assert.equal(out.engineMeta.humanizationMinimumEffectPass, true);
+  assert.equal(out.engineMeta.humanizationDepthSoftDelivered, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
-  assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.4.17');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.5.6');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
-  assert.deepEqual(out.engineMeta.humanizationDepthReasonCodes, []);
+  assert.ok(out.engineMeta.humanizationDepthReasonCodes.length >= 1);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);
   assert.ok(out.engineMeta.humanizationTargetMinRatio > out.engineMeta.humanizationMinimumRatio);
-  assert.ok(['minimum', 'target', 'above_target'].includes(out.engineMeta.humanizationDeliveryDepthBand));
+  assert.equal(out.engineMeta.humanizationDeliveryDepthBand, 'below_minimum');
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 1);
   assert.ok(mock.calls.some(call => String(call.body.instructions || '').includes('실질 휴머나이징 계약')));
   const retryCall = mock.calls.find(call => call.name === 'gpt_prod_general_surface_retry');
@@ -707,11 +708,12 @@ test('약 3%의 동의어 교체 결과도 그대로 전달하지 않고 실질 
   const out = await engine.run({ text: source, mode: 'blog', uid: 'low-depth-retry-user', config: config() });
   assert.notEqual(out.status, 'blocked');
   assert.equal(out.result.outputText, substantive);
-  assert.equal(out.engineMeta.humanizationDepthPass, true);
+  assert.equal(out.engineMeta.humanizationDepthPass, false);
+  assert.equal(out.engineMeta.humanizationMinimumEffectPass, true);
+  assert.equal(out.engineMeta.humanizationDepthSoftDelivered, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
-  assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationMinimumRatio);
   assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length >= 1);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
 });
 
 test('고급의 첫 깊이 회복이 여전히 약하면 상위 모델이 두 문단을 다시 회복한다', { concurrency: false }, async t => {
@@ -769,14 +771,15 @@ test('재시도 결과가 단일 깊이 지표만 약하면 사용자 경고 대
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.equal(out.floorReport.criticals.length, 0);
   assert.equal(out.qualityWarnings.some(item => item.code === 'humanization_depth_below_minimum'), false);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
 });
 
 test('의미 수리 뒤 결과가 원문으로 돌아가면 최종 회복과 재심사를 거쳐 안전 결과를 전달한다', { concurrency: false }, async t => {
   const source = '한국대학교 연구팀은 학생 20명을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 정리했습니다.';
-  const unsafe = `${source} 미래연구원은 후속 조사를 시작합니다.`;
   const safe = '한국대학교 연구팀은 학생 20명을 대상으로 조사하면서 도서관 이용 방식과 학습 환경이 어떻게 연결되는지 살펴봤습니다. 설문 문항과 면담 기록은 함께 분석하되 조사 절차와 관찰 결과를 구분했고, 이를 충분한 분량의 보고서로 정리했습니다.';
+  const unsafe = `${safe} 후속 조사를 시작합니다.`;
   const mock = installEngineMock(t, {
+    humanizationDepth: true,
     humanize: unsafe,
     semanticViolation: (_body, callNumber) => callNumber === 1,
     repairOutput: source,
@@ -788,12 +791,42 @@ test('의미 수리 뒤 결과가 원문으로 돌아가면 최종 회복과 재
     engineMeta: out.engineMeta,
     calls: mock.calls.map(call => ({ name: call.name, model: call.model }))
   }));
-  assert.equal(out.result.outputText, safe);
+  assert.equal(out.result.outputText, safe, JSON.stringify({
+    semanticAudit: out.semanticAudit,
+    engineMeta: out.engineMeta
+  }));
   assert.equal(out.engineMeta.finalNoopRecoveryAttempted, true);
   assert.equal(out.engineMeta.finalNoopRecoveryApplied, true);
   assert.equal(out.engineMeta.finalNoopRecoveryCount, 1);
   assert.equal(out.engineMeta.finalNoopRecoveryMethod, 'post_semantic_model');
+  assert.ok(Array.isArray(out.engineMeta.humanizationDepthStages));
+  const depthStages = out.engineMeta.humanizationDepthStages;
+  assert.ok(depthStages.some(item => item.stage === 'pre_semantic'), JSON.stringify(depthStages));
+  assert.ok(depthStages.some(item => item.stage === 'post_semantic'), JSON.stringify(depthStages));
+  assert.ok(depthStages.some(item => item.stage === 'post_semantic_recovery'), JSON.stringify(depthStages));
+  assert.equal(out.engineMeta.humanizationFinalDepthRegressed, false, JSON.stringify(out.engineMeta.humanizationFinalDepthRegression));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+});
+
+test('잠긴 제목을 재조립한 뒤에도 깊이 단계는 같은 보호 범위로 비교한다', { concurrency: false }, async t => {
+  const sourceBody = '연구팀은 학생 20명의 도서관 이용 방식을 조사했습니다. 설문 문항과 면담 기록을 함께 분석했습니다. 관찰 결과와 조사 절차는 구분해 검토했습니다. 마지막에는 자료의 한계를 보고서에 정리했습니다.';
+  const safeBody = '학생 20명이 도서관을 어떻게 이용하는지 연구팀이 조사했습니다. 분석에는 설문 문항과 면담 기록을 함께 활용했습니다. 검토할 때에는 조사 절차와 관찰 결과를 서로 나누어 살폈습니다. 자료가 지닌 한계는 마지막 보고서에 따로 정리했습니다.';
+  const source = `Ⅰ. 연구 개요\n${sourceBody}`;
+  installEngineMock(t, {
+    humanize: safeBody,
+    generalRetryOutput: safeBody,
+    humanizationDepth: true
+  });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'locked-depth-stage-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
+  assert.match(out.result.outputText, /^Ⅰ\.\s*연구 개요/mu);
+  const postLayout = out.engineMeta.humanizationDepthStages.find(item => item.stage === 'post_layout_restore');
+  const final = out.engineMeta.humanizationDepthStages.find(item => item.stage === 'final');
+  assert.ok(postLayout);
+  assert.ok(final);
+  assert.equal(postLayout.substantiveEditRatio, final.substantiveEditRatio);
+  assert.equal(postLayout.score, final.score);
+  assert.equal(out.engineMeta.humanizationFinalDepthRegressed, false);
 });
 
 test('구두점 없는 장문을 균등 분할하면 상위 모델로 1회 재시도해 장단문 분포를 복구한다', { concurrency: false }, async t => {
@@ -918,7 +951,7 @@ test('원문 기반 최소 교정도 장단문 분포를 평탄화하고 회복�
   const mock = installEngineMock(t, { humanize: uniformMarked, generalRetryOutput: uniform });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'voice-retry-reject-user', config: config() });
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
   assert.equal(out.status, 'blocked');
   assert.equal(out.result.outputText, source);
   assert.equal(out.engineMeta.humanizationNoBenefitDelivered, false);
@@ -996,7 +1029,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.5');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.6');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);
@@ -1096,7 +1129,7 @@ test('의미 수리 후보가 문서를 축약하면 폐기하고 수리 전 결
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
 });
 
-test('사실 감사가 깨끗한 변환을 원문으로 완전히 되돌리는 의미 수리는 폐기한다', { concurrency: false }, async t => {
+test('의미 위반이 확인된 수리는 원문 복귀를 허용해 상위 강도 회복 단계로 넘긴다', { concurrency: false }, async t => {
   const source = SOURCE.repeat(8);
   const beforeRepair = SAFE_POLISH.repeat(8);
   const mock = installEngineMock(t, {
@@ -1105,9 +1138,10 @@ test('사실 감사가 깨끗한 변환을 원문으로 완전히 되돌리는 �
     repairOutput: source
   });
   const report = await qualityV2.runSemanticDocumentAudit({ source, outputText: beforeRepair, mode: 'assignment', config: config() });
-  assert.equal(report.outputText, beforeRepair);
-  assert.equal(report.repairRejected, true);
-  assert.ok(report.reports[0].repairRejectReasons.includes('repair_erased_transform'));
+  assert.equal(report.outputText, source);
+  assert.equal(report.repairCount, 1);
+  assert.equal(report.repairRejected, false);
+  assert.equal(report.reports[0].repairRejectReasons.includes('repair_erased_transform'), false);
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
 });
 

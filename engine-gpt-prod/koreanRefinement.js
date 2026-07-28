@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 8;
+const VERSION = 10;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -243,6 +243,24 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '도구·플랫폼의 기능을 사람에게 호의를 베푸는 것처럼 표현했어요.'
+  },
+  passive_causative_stack: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“재의미화되게 하다”처럼 피동·사동 표현이 겹쳐 학술 문장이 부자연스러워요.'
+  },
+  double_object_time_expenditure: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '매체·콘텐츠와 시간을 동시에 목적어로 둬 서술어의 논항 관계가 어색해요.'
+  },
+  persistent_state_tense_regression: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '현재까지 이어지는 상태가 변환 과정에서 과거에 끝난 상태처럼 바뀌었어요.'
   },
   introduced_token_duplication: {
     weight: 5,
@@ -709,10 +727,15 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   if (adjacentRepetition) outputIssues.push(adjacentRepetition);
   const professional = detectProfessionalDowngrade(source, outputText, profile);
   if (professional) outputIssues.push(professional);
+  const persistentTense = detectIntroducedPersistentStateTenseRegression(source, outputText);
+  if (persistentTense) outputIssues.push(persistentTense);
   const rows = mergeIssueComparison(sourceIssues, outputIssues);
   const repairableIssues = rows.filter(item => item.afterCount > 0 && item.repairable);
   const residualWarnings = rows
-    .filter(item => item.afterCount > 0)
+    // 원문부터 있던 표현은 sourceReviewWarnings에서 안내한다. 변환이 새로
+    // 만들거나 개수를 늘린 오류만 결과 품질 경고로 올려 source-origin
+    // double topic·연어 문제를 엔진 사고로 중복 표시하지 않는다.
+    .filter(item => item.introducedCount > 0)
     .map(item => qualityWarning(item));
   return {
     version: VERSION,
@@ -757,6 +780,19 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'dialogue_give_collocation', sentence => /대화(?:를)?\s*(?:건네|건넸|건넨|건넬)/u.test(sentence));
   pushSentenceIssue(issues, text, 'sampling_subject_mismatch', sentence => /(?:시|자료|문헌|표본|사례)(?:은|는)\s*(?:기준[^.!?。！？\n]{0,70})?목적\s*표집(?:하|했|해)/u.test(sentence));
   pushSentenceIssue(issues, text, 'tool_personification', sentence => /(?:플랫폼|시스템|도구|프로그램|모형)(?:이|가)[^.!?。！？\n]{0,70}(?:연결|제공|분석|정리|보여|알려)해\s*주/u.test(sentence));
+  pushSentenceIssue(
+    issues,
+    text,
+    'passive_causative_stack',
+    sentence => /(?:재의미화|의미화|구조화|체계화|시각화|구체화|명료화|일반화|정당화|객관화|재구성)되게\s*(?:하|한|해|했|합|하고|하며|하도록|만들)/u.test(sentence)
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'double_object_time_expenditure',
+    sentence => /(?:매체|미디어|콘텐츠|플랫폼|서비스)(?:을|를)\s+[^.!?。！？\n]{0,36}시간(?:을|를)\s+(?:들이|들여|들이며|보내며)[^.!?。！？\n]{0,36}(?:접하|이용하|사용하|살아가)/u
+      .test(stripProtectedQuotedText(sentence))
+  );
   pushSentenceIssue(issues, text, 'reciprocal_expression_redundancy', sentence => /서로\s+상호(?=(?:작용|교류|소통|협력|의존|영향))/u.test(stripProtectedQuotedText(sentence)));
   pushSentenceIssue(issues, text, 'benefit_help_predicate_redundancy', hasBenefitHelpPredicateRedundancy);
   pushSentenceIssue(issues, text, 'contrast_clause_attachment', hasContrastClauseAttachment);
@@ -910,7 +946,10 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'role_predicate_redundancy',
   'analytic_object_recast',
   'repeated_clause_anchor',
-  'professional_register_downgrade'
+  'professional_register_downgrade',
+  'passive_causative_stack',
+  'double_object_time_expenditure',
+  'persistent_state_tense_regression'
 ]);
 
 function restoreIntroducedIntegritySentences({ source = '', outputText = '', audit = null } = {}) {
@@ -1275,6 +1314,34 @@ function detectAlignedProfessionalLosses(source, outputText, profile = 'unknown'
     }
   });
   return losses;
+}
+
+function detectIntroducedPersistentStateTenseRegression(source, outputText) {
+  const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const outputSentences = splitSentences(String(outputText || '')).map(value => String(value || '').trim()).filter(Boolean);
+  if (!sourceSentences.length || !outputSentences.length) return null;
+  const presentState = /(?:아직도|여전히|지금도|현재도)[^.!?。！？\n]{0,90}(?:(?:남아|이어져|지속되어|유효하게|기억되어)\s*있(?:다|습니다|어요|죠)|(?:남는다|이어진다|지속된다|유효하다))/u;
+  const pastState = /(?:아직도|여전히|지금도|현재도)[^.!?。！？\n]{0,90}(?:(?:남아|이어져|지속되어|유효하게|기억되어)\s*있었(?:다|습니다|어요)|(?:남아\s*있던|이어졌|지속됐|유효했))/u;
+  const losses = [];
+  sourceSentences.forEach((sentence, sourceIndex) => {
+    if (!presentState.test(stripProtectedQuotedText(sentence))) return;
+    const best = alignedOutputCandidates(sentence, sourceIndex, sourceSentences.length, outputSentences)[0];
+    if (!best || Number(best.score || 0) < 0.30) return;
+    if (!pastState.test(stripProtectedQuotedText(best.sentence))) return;
+    losses.push({
+      sourceOrdinal: sourceIndex + 1,
+      outputOrdinal: best.index + 1,
+      sourceSentence: sentence.slice(0, 220),
+      outputSentence: best.sentence.slice(0, 220)
+    });
+  });
+  if (!losses.length) return null;
+  return makeIssue(
+    'persistent_state_tense_regression',
+    losses.length,
+    losses.map(item => item.outputOrdinal),
+    { alignedLosses: losses }
+  );
 }
 
 function patternMatchesLocal(pattern, value) {
@@ -1735,7 +1802,7 @@ function qualityWarning(item) {
     code: `korean_${item.code}`,
     severity: 'warning',
     message: item.message,
-    count: item.afterCount,
+    count: item.introducedCount,
     introducedCount: item.introducedCount,
     sentenceOrdinals: item.sentenceOrdinals || []
   };

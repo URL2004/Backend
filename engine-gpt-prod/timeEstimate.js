@@ -11,9 +11,10 @@ const EVIDENCE_EXTRA_SEC = 8 * 60;
 const FIVE_MINUTES_SEC = 5 * 60;
 
 /**
- * 고급 휴머나이징은 편집 가능한 청크를 순차 처리하고 마지막에 문서 감사를
- * 수행한다. 글자 수 하나로 완료 시각을 단정하지 않고, 실제 실행 계획에서
- * 모델을 호출할 청크 수와 편집 분량을 이용해 보수적인 범위를 만든다.
+ * 고급 휴머나이징은 편집 가능한 청크를 안정 순서의 worker wave로 처리하고
+ * 마지막에 문서 감사를 수행한다. 글자 수 하나로 완료 시각을 단정하지 않고,
+ * 실제 실행 계획에서 모델을 호출할 청크 수와 편집 분량을 이용해 보수적인
+ * 범위를 만든다.
  *
  * 이 값은 SLA가 아니라 사용자 안내용 범위다. 재시도·상위 모델 승격·OpenAI
  * 응답 시간에 따라 범위를 벗어날 수 있으므로 완료 시각을 보장하지 않는다.
@@ -31,7 +32,12 @@ function estimateAdvancedTime(source, {
   const lineBoundaryPolicy = String(voiceProfile?.lineBoundaryPolicy || 'none');
   const plan = splitChunksForGpt(text, {
     coalesceEditable: true,
-    preserveSentenceBoundaries: shouldPreserveVoiceSentenceBoundaries(text, voiceProfile, 'assignment'),
+    preserveSentenceBoundaries: shouldPreserveVoiceSentenceBoundaries(
+      text,
+      voiceProfile,
+      'assignment',
+      'advanced'
+    ),
     sentenceBoundaryMinimum: 4,
     preserveLineBoundaries: lineBoundaryPolicy,
     formatProfile: documentProfile.formatProfile

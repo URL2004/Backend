@@ -4,14 +4,15 @@ const { computeEditMetrics, levenshteinDistance, splitSentences } = require('../
 const { buildRemediationPlan, compareRemediationTargets } = require('./discourseAudit');
 const { splitLogicalProseParagraphs } = require('./proseParagraphs');
 const resumeRepetitionAudit = require('./resumeRepetitionAudit');
+const commercialSignals = require('./commercialSignals');
 
 const CONNECTOR_START = /^(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|즉|첫째|둘째|셋째|하지만|그러나|반면|결국)(?=$|[\s,])/u;
 const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|습니다)|필요가\s*있(?:다|습니다)|중요(?:하|한)\s*(?:의미|역할|요인)?|의미를\s*가진(?:다|다고)|긍정적인\s*영향|체계적으로\s*(?:정리|분석|관리|운영)|기반으로\s*(?:한|하여|한다|합니다)|핵심\s*인프라|전략적\s*이점)/u;
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 10;
-const POLICY_VERSION = 'perceived-v2.4.17';
+const PLAN_VERSION = 11;
+const POLICY_VERSION = 'perceived-v2.5.6';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -33,14 +34,14 @@ const CAUTIOUS_PROFILES = new Set([
 // 결과를 전달한다. 기본은 눈에 띄는 재구성, 고급은 더 넓은 재구성을 전제로 한다.
 const PERCEIVED_POLICY = Object.freeze({
   basic: Object.freeze({
-    low: Object.freeze({ minEdit: 0.08, targetMin: 0.10, targetMax: 0.13, minSentence: 0.30, minTarget: 0.50 }),
-    medium: Object.freeze({ minEdit: 0.10, targetMin: 0.12, targetMax: 0.16, minSentence: 0.40, minTarget: 0.65 }),
-    high: Object.freeze({ minEdit: 0.13, targetMin: 0.15, targetMax: 0.19, minSentence: 0.50, minTarget: 0.75 })
+    low: Object.freeze({ minEdit: 0.11, targetMin: 0.13, targetMax: 0.17, minSentence: 0.40, minTarget: 0.55 }),
+    medium: Object.freeze({ minEdit: 0.13, targetMin: 0.16, targetMax: 0.20, minSentence: 0.50, minTarget: 0.70 }),
+    high: Object.freeze({ minEdit: 0.15, targetMin: 0.18, targetMax: 0.22, minSentence: 0.60, minTarget: 0.80 })
   }),
   advanced: Object.freeze({
-    low: Object.freeze({ minEdit: 0.11, targetMin: 0.14, targetMax: 0.17, minSentence: 0.40, minTarget: 0.60 }),
-    medium: Object.freeze({ minEdit: 0.14, targetMin: 0.17, targetMax: 0.20, minSentence: 0.50, minTarget: 0.75 }),
-    high: Object.freeze({ minEdit: 0.17, targetMin: 0.20, targetMax: 0.23, minSentence: 0.60, minTarget: 0.85 })
+    low: Object.freeze({ minEdit: 0.15, targetMin: 0.18, targetMax: 0.22, minSentence: 0.55, minTarget: 0.70 }),
+    medium: Object.freeze({ minEdit: 0.18, targetMin: 0.21, targetMax: 0.26, minSentence: 0.65, minTarget: 0.82 }),
+    high: Object.freeze({ minEdit: 0.21, targetMin: 0.24, targetMax: 0.30, minSentence: 0.75, minTarget: 0.90 })
   })
 });
 
@@ -92,9 +93,13 @@ function buildHumanizationPlan(source, {
   const profile = String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
   const rhetoricalRemediationPlan = buildRemediationPlan(text);
   const resumeRepetitionPlan = resumeRepetitionAudit.buildResumeRepetitionPlan(text, documentProfile);
-  const target = mergeResumeRepetitionTargets(
-    mergeRemediationTargets(detectTargetSentences(sentences), rhetoricalRemediationPlan),
-    resumeRepetitionPlan
+  const commercialTargetPlan = commercialSignals.detectCommercialSentenceTargets(sentences, documentProfile);
+  const target = mergeCommercialTargets(
+    mergeResumeRepetitionTargets(
+      mergeRemediationTargets(detectTargetSentences(sentences), rhetoricalRemediationPlan),
+      resumeRepetitionPlan
+    ),
+    commercialTargetPlan
   );
   const sentenceCount = sentences.length;
   const targetRatio = sentenceCount ? target.indices.length / sentenceCount : 0;
@@ -131,18 +136,18 @@ function buildHumanizationPlan(source, {
     ? (strength === 'advanced' ? 0.65 : 0.50)
     : 0;
 
-  // 사실·형식 민감 장르는 기본에서만 2%p 완화한다. 고급을 선택한 문서는
-  // 장르와 무관하게 고급 변화량을 유지하고, 사실·화자·구조는 별도 감사로
-  // 보호한다. 창작문은 행갈이와 이미지 자체가 구조라 독립 정책을 쓴다.
-  if (cautious && strength !== 'advanced') {
-    minSubstantiveEditRatio = Math.max(strength === 'advanced' ? 0.09 : 0.06, minSubstantiveEditRatio - 0.02);
-    targetSubstantiveEditMin = Math.max(minSubstantiveEditRatio, targetSubstantiveEditMin - 0.02);
-    targetSubstantiveEditMax = Math.max(targetSubstantiveEditMin + 0.02, targetSubstantiveEditMax - 0.02);
-    minChangedSentenceRatio = Math.max(strength === 'advanced' ? 0.35 : 0.25, minChangedSentenceRatio - 0.05);
-    minTargetCoverage = Math.max(strength === 'advanced' ? 0.50 : 0.40, minTargetCoverage - 0.10);
-    structuralCoverageFactor = strength === 'advanced' ? 0.50 : 0.38;
+  // 민감 장르는 의미 안전 여유 3%p를 주되 고급 자체를 기본 수준으로
+  // 강등하지 않는다. 구조·수치·화자는 별도 감사로 지키고, 일반 산문에서
+  // 사용자가 느낄 수 있는 문장·절 재구성 범위는 유지한다.
+  if (cautious) {
+    minSubstantiveEditRatio = Math.max(strength === 'advanced' ? 0.12 : 0.08, minSubstantiveEditRatio - 0.03);
+    targetSubstantiveEditMin = Math.max(minSubstantiveEditRatio + 0.02, targetSubstantiveEditMin - 0.03);
+    targetSubstantiveEditMax = Math.max(targetSubstantiveEditMin + 0.03, targetSubstantiveEditMax - 0.03);
+    minChangedSentenceRatio = Math.max(strength === 'advanced' ? 0.47 : 0.32, minChangedSentenceRatio - 0.08);
+    minTargetCoverage = Math.max(strength === 'advanced' ? 0.60 : 0.45, minTargetCoverage - 0.10);
+    structuralCoverageFactor = strength === 'advanced' ? 0.52 : 0.40;
     minRemediationCoverage = rhetoricalRemediationPlan.targetCount > 0
-      ? (strength === 'advanced' ? 0.50 : 0.40)
+      ? (strength === 'advanced' ? 0.55 : 0.42)
       : 0;
   }
   if (creative) {
@@ -184,7 +189,7 @@ function buildHumanizationPlan(source, {
   // substantive 길이를 쓰면 2,000~2,400자대 장문이 정책에서 빠질 수 있다.
   const carryoverApplicable = !creative && text.length >= 2000 && eligibleCarryoverSentenceCount >= 12;
   const maxSubstantiveCarryoverRatio = carryoverApplicable
-    ? Math.min(1, (strength === 'advanced' ? 0.25 : 0.30) + (cautious && strength !== 'advanced' ? 0.05 : 0))
+    ? Math.min(1, (strength === 'advanced' ? 0.20 : 0.30) + (cautious ? 0.05 : 0))
     : 1;
 
   return {
@@ -219,7 +224,9 @@ function buildHumanizationPlan(source, {
     maxSubstantiveCarryoverRatio: round4(maxSubstantiveCarryoverRatio),
     minRemediationCoverage: round4(minRemediationCoverage),
     rhetoricalRemediationPlan,
-    resumeRepetitionPlan
+    resumeRepetitionPlan,
+    commercialTargetSentenceCount: Number(commercialTargetPlan.indices?.length || 0),
+    commercialTargetReasonCounts: commercialTargetPlan.reasonCounts || {}
   };
 }
 
@@ -488,7 +495,12 @@ function buildHumanizationPromptBlock(plan) {
     dense_sentence: '과밀한 장문',
     repeated_ending: '연속된 동일 종결',
     repeated_opening: '반복되는 문장 시작',
-    uniform_rhythm: '균일한 문장 호흡'
+    uniform_rhythm: '균일한 문장 호흡',
+    commercial_promotional_hype: '과도한 추천·감탄 표현',
+    commercial_call_to_action: '반복되는 행동 요청',
+    commercial_absolute_claim: '절대적 서비스 주장',
+    commercial_health_claim: '효능 단정 표현',
+    commercial_offer_frame: '혜택 나열 중심 문장'
   };
   const reasons = Object.entries(plan.targetReasonCounts || {})
     .filter(([, count]) => count > 0)
@@ -505,6 +517,9 @@ function buildHumanizationPromptBlock(plan) {
     plan.targetSentenceCount
       ? `우선 대상 문장 번호=${targetOrdinals.join(',') || '서버선정'}${reasons ? `; 원인=${reasons}` : ''}. 문장 번호는 편집 위치일 뿐 새 문장을 만들라는 뜻이 아니다.`
       : '특정 위험 표현이 적더라도 일반 문장의 흐름과 어순을 국소적으로 재구성해 다듬기와 구분되는 결과를 만든다.',
+    plan.sourceSentenceCount > 0
+      ? `변화 분포 목표: 편집 가능한 일반 문장 ${plan.sourceSentenceCount}개 가운데 최소 ${plan.requiredChangedSentenceCount}개를 한 문단에 몰지 말고 고르게 재구성한다. 우선 대상이 이 수보다 적으면 잠기지 않은 일반 문장 중 기계적인 어순·연결·호흡이 남은 문장을 추가로 고른다.`
+      : '',
     '문장마다 억지로 다른 단어를 끼워 넣지 말고, 바꿀 문장은 충분히 바꾸며 이미 자연스러운 문장은 남긴다.',
     plan.requiredStructuralChangedSentenceCount > 0
       ? '대상 문장은 단순 동의어 교체에 머물지 말고, 같은 뜻 안에서 절 배치·주어 위치·연결 방식·문장 경계 중 실제 구조를 바꾼다.'
@@ -514,6 +529,9 @@ function buildHumanizationPromptBlock(plan) {
       : '',
     plan.resumeRepetitionPlan?.applicable === true
       ? '지원서에서 같은 지원 전제·진로 고민·탐색 의도가 여러 문단에 반복되면 동의어만 바꾸지 않는다. 첫 문단에는 지원 동기를 온전히 두고, 뒤 문단에서는 같은 전제를 짧게 받으면서 각 문단에 원래 있던 어려움·확인할 내용·실행 계획을 앞세운다. SOURCE에 없는 학교 프로그램, 관심 전공, 과거 경험은 만들지 않는다.'
+      : '',
+    Number(plan.commercialTargetSentenceCount || 0) > 0
+      ? '후기·광고 혼합 글에서는 가격·할인·무료 제공·서비스 범위 같은 사실은 그대로 두고, 반복 감탄·과도한 추천·혜택 나열·행동 요청의 문장 구조를 직접적이고 덜 정형적으로 다시 쓴다. 원문 주장 강도를 임의로 보장이나 조건부 주장으로 바꾸지 않는다.'
       : '',
     '원문에 없는 경험·감정·수치·기관·인용·주장·예시는 절대 추가하지 않는다.'
   ].filter(Boolean).join('\n');
@@ -789,6 +807,21 @@ function mergeResumeRepetitionTargets(target, repetitionPlan) {
   const reasonCounts = { ...(target?.reasonCounts || {}) };
   reasonCounts.resume_semantic_repetition = Number(repetitionPlan.targetSentenceCount || added || 0);
   return { indices: [...indices].sort((a, b) => a - b), reasonCounts };
+}
+
+function mergeCommercialTargets(target, commercialPlan) {
+  if (commercialPlan?.applicable !== true) return target;
+  const indices = new Set((target?.indices || []).filter(Number.isInteger));
+  for (const index of commercialPlan.indices || []) {
+    if (Number.isInteger(index) && index >= 0) indices.add(index);
+  }
+  return {
+    indices: [...indices].sort((left, right) => left - right),
+    reasonCounts: {
+      ...(target?.reasonCounts || {}),
+      ...(commercialPlan.reasonCounts || {})
+    }
+  };
 }
 
 function compareSentenceStructure(source, output, { substantiveChanged = false, editRatio = 0 } = {}) {

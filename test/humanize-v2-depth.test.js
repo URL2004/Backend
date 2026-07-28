@@ -57,19 +57,19 @@ test('위험 문장의 절·어순·연결·호흡을 폭넓게 바꾼 결과는
   assert.ok(report.metrics.targetCoverage >= plan.minTargetCoverage);
 });
 
-test('기본 피하기는 저위험 8%·고위험 13% 최소선과 별도 목표 범위를 적용한다', () => {
+test('기본 피하기는 저위험 11%·고위험 15% 최소선과 별도 목표 범위를 적용한다', () => {
   const low = '수업이 끝났습니다. 친구와 도서관으로 걸어가 빌린 책을 펼쳐 보니 지난주에 연필로 적어 둔 긴 메모와 접어 둔 페이지가 한눈에 들어왔습니다. 빠진 내용은 둘이 소리 내어 확인했습니다. 다음 발표 역할도 나눴습니다.';
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2.4.17');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.5.6');
   assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
   assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
-  assert.ok(lowPlan.minSubstantiveEditRatio >= 0.08);
+  assert.ok(lowPlan.minSubstantiveEditRatio >= 0.11);
   assert.equal(highPlan.riskLevel, 'high');
-  assert.equal(highPlan.minSubstantiveEditRatio, 0.13);
-  assert.equal(highPlan.targetSubstantiveEditMin, 0.15);
-  assert.equal(highPlan.targetSubstantiveEditMax, 0.19);
+  assert.equal(highPlan.minSubstantiveEditRatio, 0.15);
+  assert.equal(highPlan.targetSubstantiveEditMin, 0.18);
+  assert.equal(highPlan.targetSubstantiveEditMax, 0.22);
   assert.ok(highPlan.requiredChangedSentenceCount >= lowPlan.requiredChangedSentenceCount);
 });
 
@@ -124,15 +124,15 @@ test('고급 피하기는 같은 글에서도 기본보다 편집·문장·위�
     documentProfile: 'long_explainer',
     inputRisk: { abstractRiskRatio: 1 }
   });
-  assert.equal(basic.minSubstantiveEditRatio, 0.13);
-  assert.equal(advanced.minSubstantiveEditRatio, 0.17);
-  assert.equal(advanced.targetSubstantiveEditMin, 0.20);
-  assert.equal(advanced.targetSubstantiveEditMax, 0.23);
+  assert.equal(basic.minSubstantiveEditRatio, 0.15);
+  assert.equal(advanced.minSubstantiveEditRatio, 0.21);
+  assert.equal(advanced.targetSubstantiveEditMin, 0.24);
+  assert.equal(advanced.targetSubstantiveEditMax, 0.30);
   assert.ok(advanced.requiredChangedSentenceCount > basic.requiredChangedSentenceCount);
   assert.ok(advanced.requiredTargetChangedCount >= basic.requiredTargetChangedCount);
 });
 
-test('사실·형식 민감 장르는 기본만 2%p 완화하고 고급 강도는 낮추지 않는다', () => {
+test('사실·형식 민감 장르는 기본·고급 모두 3%p만 완화하고 강도 차이를 유지한다', () => {
   const source = `${SOURCE} ${SOURCE}`;
   const basic = depth.buildHumanizationPlan(source, {
     requestStrength: 'basic',
@@ -144,10 +144,10 @@ test('사실·형식 민감 장르는 기본만 2%p 완화하고 고급 강도�
     documentProfile: 'academic_paper',
     inputRisk: { abstractRiskRatio: 1 }
   });
-  assert.equal(basic.minSubstantiveEditRatio, 0.11);
-  assert.equal(advanced.minSubstantiveEditRatio, 0.17);
-  assert.ok(basic.minSubstantiveEditRatio >= 0.06);
-  assert.ok(advanced.minSubstantiveEditRatio >= 0.09);
+  assert.equal(basic.minSubstantiveEditRatio, 0.12);
+  assert.equal(advanced.minSubstantiveEditRatio, 0.18);
+  assert.equal(advanced.targetSubstantiveEditMin, 0.21);
+  assert.ok(advanced.minSubstantiveEditRatio > basic.minSubstantiveEditRatio);
 });
 
 test('고급은 위험 대상이 걸친 일반 산문 문단을 한쪽만 바꾼 결과를 통과시키지 않는다', () => {
@@ -174,14 +174,14 @@ test('고급은 위험 대상이 걸친 일반 산문 문단을 한쪽만 바꾼
   assert.ok(report.reasons.includes('paragraph_rewrite_coverage_low'));
 });
 
-test('120자 이하 일반 글도 기본 9%·고급 12% 품질 최소선을 목표로 한다', () => {
+test('120자 이하 일반 글도 기본 11%·고급 15% 품질 최소선을 목표로 한다', () => {
   const source = '오늘 수업에서 친구와 발표 자료를 함께 확인했습니다. 빠진 부분은 둘이 다시 읽었습니다.';
   const basic = depth.buildHumanizationPlan(source, { requestStrength: 'basic', documentProfile: 'general_essay' });
   const advanced = depth.buildHumanizationPlan(source, { requestStrength: 'advanced', documentProfile: 'general_essay' });
-  assert.equal(basic.minSubstantiveEditRatio, 0.09);
-  assert.equal(basic.targetSubstantiveEditMin, 0.11);
-  assert.equal(advanced.minSubstantiveEditRatio, 0.12);
-  assert.equal(advanced.targetSubstantiveEditMin, 0.14);
+  assert.equal(basic.minSubstantiveEditRatio, 0.11);
+  assert.equal(basic.targetSubstantiveEditMin, 0.13);
+  assert.equal(advanced.minSubstantiveEditRatio, 0.15);
+  assert.equal(advanced.targetSubstantiveEditMin, 0.18);
   assert.equal(basic.requiredChangedSentenceCount, 1);
   assert.equal(advanced.requiredChangedSentenceCount, 1);
 });
@@ -357,7 +357,7 @@ test('polish는 실질 휴머나이징 깊이 게이트 적용 대상이 아니�
   assert.equal(report.pass, true);
 });
 
-test('2,000자 이상 일반 산문은 기본 30%·고급 25% 동일 문장 잔존 상한을 적용한다', () => {
+test('2,000자 이상 일반 산문은 기본 30%·고급 20% 동일 문장 잔존 상한을 적용한다', () => {
   const sentences = Array.from({ length: 20 }, (_, index) => (
     `${index + 1}번째 일반 문장은 운영 과정에서 확인한 자료와 판단 근거를 구체적으로 설명하고, 서로 다른 조건을 비교해 결론에 이르는 과정을 충분한 길이로 기록합니다. 검증 일지와 담당자 메모를 함께 대조한 뒤 기록 순서를 기준으로 확인한 차이도 빠짐없이 표시합니다.`
   ));
@@ -376,7 +376,7 @@ test('2,000자 이상 일반 산문은 기본 30%·고급 25% 동일 문장 잔�
   });
   assert.equal(basic.plan.carryoverApplicable, true);
   assert.equal(basic.plan.maxSubstantiveCarryoverRatio, 0.30);
-  assert.equal(advanced.plan.maxSubstantiveCarryoverRatio, 0.25);
+  assert.equal(advanced.plan.maxSubstantiveCarryoverRatio, 0.20);
   assert.equal(basic.metrics.substantiveCarryoverCount, 14);
   assert.equal(basic.metrics.substantiveCarryoverEligibleSentenceCount, 40);
   assert.equal(basic.metrics.substantiveCarryoverRatio, 0.35);
@@ -399,7 +399,7 @@ test('동일 문장 잔존 정책의 2,000자 기준은 공백 포함 입력 길
   assert.equal(plan.maxSubstantiveCarryoverRatio, 0.30);
 });
 
-test('보존 민감 프로필도 고급 선택 시 동일 문장 잔존 상한을 완화하지 않는다', () => {
+test('보존 민감 프로필은 고급 강도를 3%p, 동일 문장 상한을 5%p만 완화한다', () => {
   const sentence = index => `${index + 1}번째 문장은 연구 절차와 자료 해석의 근거를 분명히 밝히고 인용된 개념의 적용 범위를 세부적으로 설명하는 학술 서술입니다. 분석 자료의 선정 기준과 검토 순서를 함께 기록하여 후속 연구자가 판단 과정을 확인할 수 있도록 구성했습니다. 동일한 절차를 세 차례 반복해 기록했습니다.`;
   const source = Array.from({ length: 20 }, (_, index) => sentence(index)).join(' ');
   const basic = depth.buildHumanizationPlan(source, {
@@ -416,8 +416,9 @@ test('보존 민감 프로필도 고급 선택 시 동일 문장 잔존 상한�
   });
   assert.equal(basic.maxSubstantiveCarryoverRatio, 0.35);
   assert.equal(advanced.maxSubstantiveCarryoverRatio, 0.25);
-  assert.equal(advanced.minSubstantiveEditRatio, advancedGeneral.minSubstantiveEditRatio);
-  assert.equal(advanced.requiredChangedSentenceCount, advancedGeneral.requiredChangedSentenceCount);
+  assert.equal(advanced.minSubstantiveEditRatio, advancedGeneral.minSubstantiveEditRatio - 0.03);
+  assert.ok(advanced.requiredChangedSentenceCount <= advancedGeneral.requiredChangedSentenceCount);
+  assert.ok(advanced.requiredChangedSentenceCount > 0);
 });
 
 test('제목·목록·인용·표·참고문헌은 동일 문장 잔존율 모수에서 제외한다', () => {

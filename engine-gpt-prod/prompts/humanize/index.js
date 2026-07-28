@@ -14,6 +14,7 @@ const { buildEscalationInstruction } = require('./escalation');
 const { voicePromptBlock } = require('../../voiceProfile');
 const { buildHumanizationPromptBlock } = require('../../humanizationDepth');
 const { discoursePromptBlock } = require('../../discourseAudit');
+const commercialSignals = require('../../commercialSignals');
 
 function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   speakerType = 'individual',
@@ -38,6 +39,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '',
     '[장르 원칙]',
     genreBlock(mode, register, styleProfile, documentProfile, requestStrength),
+    commercialSignals.promptSafetyBlock(documentProfile),
     discoursePromptBlock(discourseProfile),
     speakerBlock(speakerType),
     registerBlock(register, documentProfile),
@@ -92,6 +94,37 @@ function validateHumanizePrompt(value) {
   if (/^\[원문 장르:\s*시·창작문\]$/mu.test(prompt)
       && !/각 행을 합치거나 설명문으로 풀지 않고/u.test(prompt)) {
     errors.push('creative_line_guard_missing');
+  }
+  if (/^\[혼합 의도 안전:\s*후기·광고·혜택 주장\]$/mu.test(prompt)) {
+    const genreIndex = prompt.indexOf('[장르 원칙]');
+    const commercialIndex = prompt.indexOf('[혼합 의도 안전: 후기·광고·혜택 주장]');
+    const biasIndex = prompt.indexOf('[GPT 성향 보정]');
+    if (commercialIndex <= genreIndex || commercialIndex >= biasIndex) {
+      errors.push('commercial_safety_section_order');
+    }
+    if ((prompt.match(/^\[혼합 의도 안전:\s*후기·광고·혜택 주장\]$/gmu) || []).length !== 1) {
+      errors.push('commercial_safety_section_count');
+    }
+    if (!/협찬·제휴·광고 여부가 원문이나 사용자 메모에 없으면[^.\n]*만들어 내지 않는다/u.test(prompt)) {
+      errors.push('commercial_disclosure_invention_guard_missing');
+    }
+    if (/협찬[^.\n]{0,80}(?:반드시|추가|삽입|표시해야)/u.test(prompt)) {
+      errors.push('commercial_disclosure_instruction_conflict');
+    }
+  }
+  if (/^\[실질 휴머나이징 계약\]$/mu.test(prompt)) {
+    const strengthIndex = prompt.search(/^\[요청 강도:\s*(?:기본|고급)\]$/mu);
+    const depthIndex = prompt.indexOf('[실질 휴머나이징 계약]');
+    const outputIndex = prompt.indexOf('[출력 형식]');
+    if (strengthIndex < 0 || depthIndex <= strengthIndex || depthIndex >= outputIndex) {
+      errors.push('humanization_contract_section_order');
+    }
+    if ((prompt.match(/^\[실질 휴머나이징 계약\]$/gmu) || []).length !== 1) {
+      errors.push('humanization_contract_section_count');
+    }
+    if (!/변화 분포 목표:[^\n]*최소\s+\d+개/u.test(prompt)) {
+      errors.push('humanization_coverage_contract_missing');
+    }
   }
   return { pass: errors.length === 0, errors };
 }

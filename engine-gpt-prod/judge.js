@@ -320,7 +320,11 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     const repairSafety = assessRepairCandidate(rawText, current, candidate, {
       mode,
       allowedExtra,
-      documentProfile
+      documentProfile,
+      // 의미 심사기가 실제 위반을 확인한 뒤 원문으로 복귀시키는 수리는
+      // 강도 보존보다 우선한다. 휴머나이징 강도는 상위 파이프라인의
+      // post-semantic recovery가 다시 채우므로 여기서 안전 복귀를 막지 않는다.
+      allowSourceReset: mode !== 'polish' && (judge.violations || []).length > 0
     });
     if (!repairSafety.pass) {
       return {
@@ -390,7 +394,8 @@ function validateLedgerHealth(ledger, rawText) {
 function assessRepairCandidate(rawText, beforeText, candidateText, {
   mode = '',
   allowedExtra = '',
-  documentProfile = null
+  documentProfile = null,
+  allowSourceReset = false
 } = {}) {
   const source = String(rawText || '');
   const before = String(beforeText || '');
@@ -400,12 +405,15 @@ function assessRepairCandidate(rawText, beforeText, candidateText, {
   const beforeMetrics = computeEditMetrics(source, before);
   const candidateMetrics = computeEditMetrics(source, candidate);
   const relativeLength = before.length ? candidate.length / before.length : 0;
+  const compact = value => String(value || '').normalize('NFC').replace(/\s+/gu, '');
+  const resetsToSource = compact(candidate) === compact(source)
+    && compact(before) !== compact(source);
   const polish = mode === 'polish';
   const minSourceLength = polish ? 0.9 : 0.82;
   const maxSourceLength = polish ? 1.1 : 1.25;
   if (candidateMetrics.lengthRatio < minSourceLength) reasons.push('source_length_short');
   if (candidateMetrics.lengthRatio > maxSourceLength) reasons.push('source_length_overrun');
-  if (relativeLength < 0.82) reasons.push('repair_collapsed');
+  if (relativeLength < 0.82 && !(allowSourceReset && resetsToSource)) reasons.push('repair_collapsed');
   if (relativeLength > 1.2) reasons.push('repair_expanded');
 
   const beforeLost = floor.measureLostFacts(source, before).count;
@@ -420,11 +428,10 @@ function assessRepairCandidate(rawText, beforeText, candidateText, {
       || candidateNumbers.addedCount > beforeNumbers.addedCount) {
     reasons.push('number_facts_worsened');
   }
-  const compact = value => String(value || '').normalize('NFC').replace(/\s+/gu, '');
-  if (compact(candidate) === compact(source)
-      && compact(before) !== compact(source)
+  if (resetsToSource
       && beforeLost === 0
-      && beforeNovelty === 0) {
+      && beforeNovelty === 0
+      && !allowSourceReset) {
     reasons.push('repair_erased_transform');
   }
 

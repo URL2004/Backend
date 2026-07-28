@@ -6,6 +6,7 @@ const {
   classifyModelFailure,
   isNonEscalatableModelFailureCode
 } = require('./modelFailure');
+const safeEditAccumulator = require('./safeEditAccumulator');
 
 const MIN_DOCUMENT_CHARS = 2000;
 const MIN_SECTION_CHARS = 1200;
@@ -107,7 +108,11 @@ async function recoverSections({
     modelFailureCodes: [],
     modelFailureCodeCounts: {},
     miniAppliedCount: 0,
-    escalationAppliedCount: 0
+    escalationAppliedCount: 0,
+    partialAppliedCount: 0,
+    partialAppliedSentenceCount: 0,
+    partialRejectedSentenceCount: 0,
+    partialRejectionCodes: []
   };
   if (!selected.length || typeof retrySection !== 'function') return { metrics, usages: [], selected };
 
@@ -193,6 +198,52 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
     if (!metrics.appliedSectionIndices.includes(entry.index)) metrics.appliedSectionIndices.push(entry.index);
     return { ...entry, output: candidate, report: candidateReport, applied: true };
   }
+  const partial = safeEditAccumulator.accumulateSafeEdits({
+    source: entry.source,
+    current: currentOutput,
+    candidate,
+    plan: entry.plan,
+    currentReport,
+    evaluateDepth: value => humanizationDepth.evaluateHumanizationDepth(entry.source, value, entry.plan),
+    validateCandidate: trial => (
+      typeof validateCandidate === 'function'
+        ? validateCandidate({
+            entry,
+            currentOutput,
+            candidate: trial,
+            currentReport,
+            candidateReport: humanizationDepth.evaluateHumanizationDepth(entry.source, trial, entry.plan),
+            attempt,
+            partial: true
+          })
+        : true
+    )
+  });
+  if (partial.applied && chunks?.[entry.index]) {
+    chunks[entry.index].outputText = partial.outputText;
+    metrics.applied += 1;
+    metrics.partialAppliedCount += 1;
+    metrics.partialAppliedSentenceCount += Number(partial.appliedCount || 0);
+    metrics.partialRejectedSentenceCount += Number(partial.rejectedCount || 0);
+    for (const code of partial.rejectedCodes || []) {
+      if (!metrics.partialRejectionCodes.includes(code)) metrics.partialRejectionCodes.push(code);
+    }
+    if (attempt?.recoveryTier === 'escalation') metrics.escalationAppliedCount += 1;
+    else metrics.miniAppliedCount += 1;
+    if (!metrics.appliedSectionIndices.includes(entry.index)) metrics.appliedSectionIndices.push(entry.index);
+    return {
+      ...entry,
+      output: partial.outputText,
+      report: partial.report,
+      applied: true,
+      partialApplied: true,
+      partialAppliedSentenceCount: partial.appliedCount
+    };
+  }
+  metrics.partialRejectedSentenceCount += Number(partial.rejectedCount || 0);
+  for (const code of partial.rejectedCodes || []) {
+    if (!metrics.partialRejectionCodes.includes(code)) metrics.partialRejectionCodes.push(code);
+  }
   const rejectionCodes = !safe
     ? normalizeRejectionCodes(validation?.codes || validation?.reasons || ['safety_audit_failed'])
     : ['not_better'];
@@ -213,7 +264,9 @@ function normalizeRejectionCodes(values) {
     'safety_audit_failed', 'gpt_call_failed', 'request_aborted',
     'openai_rate_limited', 'openai_server_error', 'openai_timeout',
     'openai_network_error', 'openai_schema_error', 'openai_refusal',
-    'openai_truncated_output', 'openai_incomplete_output', 'openai_empty_output'
+    'openai_truncated_output', 'openai_incomplete_output', 'openai_empty_output',
+    'korean_integrity', 'semantic_relation_shift', 'ending_style_shift',
+    'partial_safety_audit_failed', 'partial_depth_not_improved'
   ]);
   const codes = [...new Set((Array.isArray(values) ? values : [values])
     .map(value => String(value || '').trim())

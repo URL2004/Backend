@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 5;
+const VERSION = 6;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -296,6 +296,14 @@ function detectSemanticRelationShifts(source, output) {
       const shifted = hasDirectCompletionClaim(alignedText)
         && !hasCollaborativeRoleQualifier(alignedText);
       if (shifted) add('collaborative_role_scope_removed', sourceIndex + 1);
+    }
+
+    const sourceConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(sourceSentence);
+    const sourceSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(sourceSentence);
+    const outputSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(alignedText);
+    const outputConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(alignedText);
+    if (sourceConcurrent && !sourceSequential && outputSequential && !outputConcurrent) {
+      add('concurrent_relation_hardened_to_sequence', sourceIndex + 1);
     }
   });
 

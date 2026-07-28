@@ -3,6 +3,7 @@
 const { splitSentences } = require('../engine/koreanText');
 const { computePovSeed } = require('../engine/pov');
 const layoutStructure = require('./layoutStructure');
+const commercialSignalPolicy = require('./commercialSignals');
 
 const CONTENT_GENRES = Object.freeze([
   'academic_paper',
@@ -336,16 +337,24 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.review_blog += 1.35 + Math.min(reviewPhotoSignals, 3) * 0.12;
   }
 
-  const marketingActionSignals = count(text, /(?:지금\s*(?:바로|신청)|(?:신청|구매|예약|문의)\s*(?:하세요|해\s*주세요|바랍니다)|클릭(?:하세요|해\s*주세요)|놓치지\s*마세요)/gu);
-  const promotionSignals = count(text, /(?:무료\s*(?:상담|체험)|한정\s*(?:수량|기간|판매)|특가|할인\s*(?:혜택|행사|쿠폰)|선착순|오늘만|마감\s*임박|\d{1,3}%\s*할인|원\s*할인)/gu);
+  const researchDiscussionContext = (formatProfile.flags.includes('reference_heavy') || formatProfile.flags.includes('sectioned'))
+    && academicFramingSignals >= 2;
+  const commercialSignals = commercialSignalPolicy.measureCommercialSignals(text, {
+    reviewSignalCount: reviewContentSignals,
+    researchDiscussionContext
+  });
+  const marketingActionSignals = commercialSignals.directActionCount;
+  const promotionSignals = commercialSignals.offerCount + commercialSignals.priceCount;
   const commercialNounSignals = count(text, /(?:구매|가격|결제|상품|서비스|혜택|무료|₩|원)/gu);
   add(scores, 'marketing', marketingActionSignals, 1.15);
   add(scores, 'marketing', promotionSignals, 0.85);
   if ((marketingActionSignals >= 1 || promotionSignals >= 1) && commercialNounSignals >= 1) {
     scores.marketing += 1.05;
   }
-  const researchDiscussionContext = (formatProfile.flags.includes('reference_heavy') || formatProfile.flags.includes('sectioned'))
-    && academicFramingSignals >= 2;
+  if (commercialSignals.commercialReview) {
+    scores.review_blog += 1.05;
+    scores.marketing += Math.min(1.25, commercialSignals.commercialIntentCount * 0.12);
+  }
   if (researchDiscussionContext && marketingActionSignals === 0) {
     scores.marketing = Math.min(scores.marketing, 0.9);
   }
@@ -497,7 +506,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     safetyProfiles,
     questionnaire,
     formatProfile,
-    firstPersonSignals
+    firstPersonSignals,
+    commercialSignals
   });
   const candidateProfiles = ranked.slice(0, 5).map(item => ({
     profile: item.profile,
@@ -572,6 +582,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       legalPartySignals,
       legalDutySignals,
       legalOperatorSignals,
+      commercialSignals,
       soapHeadingSignals,
       clinicalLabelSignals,
       clinicalTermSignals,
@@ -755,7 +766,14 @@ function detectFormatProfile(text, lines, sentences, questionnaire) {
   };
 }
 
-function detectRiskFlags(text, { profile, safetyProfiles, questionnaire, formatProfile, firstPersonSignals }) {
+function detectRiskFlags(text, {
+  profile,
+  safetyProfiles,
+  questionnaire,
+  formatProfile,
+  firstPersonSignals,
+  commercialSignals = null
+}) {
   const flags = [];
   // 목록·질문 번호는 사실 수치가 아니므로 위험 밀도에서 제외한다.
   const factualText = String(text || '').split(/\r?\n/u)
@@ -774,12 +792,6 @@ function detectRiskFlags(text, { profile, safetyProfiles, questionnaire, formatP
       && /(?:참여|방문|사용|수행|조사|분석|제작|발표|근무|느꼈|배웠|깨달|맡)/u.test(value);
   }).length;
   const evaluationCount = count(text, /(?:평가|성취|역량|우수|뛰어|돋보|부족|개선|성장|기여|책임감)/gu);
-  const directCommercialActionCount = count(text, /(?:지금\s*(?:바로|신청)|(?:신청|구매|예약|문의)\s*(?:하세요|해\s*주세요|바랍니다)|클릭(?:하세요|해\s*주세요)|놓치지\s*마세요)/gu);
-  const promotionalOfferCount = count(text, /(?:무료\s*(?:상담|체험)|한정\s*(?:수량|기간|판매)|특가|할인\s*(?:혜택|행사|쿠폰)|선착순|오늘만|마감\s*임박)/gu);
-  const researchDiscussionContext = ['academic_paper', 'report_assignment'].includes(profile)
-    && (formatProfile.flags.includes('reference_heavy') || formatProfile.flags.includes('sectioned'));
-  const commercialIntentCount = directCommercialActionCount
-    + (researchDiscussionContext && directCommercialActionCount === 0 ? 0 : promotionalOfferCount);
   const deadlineActionCount = count(text, /(?:마감|기한|까지\s*(?:제출|신청|회신)|신청|제출|회신|문의|참석|입금)/gu);
   const factCount = numberCount + institutionCount + citationCount + (formatProfile.quoteLineCount || 0);
   if (factCount >= 8) flags.push('fact_dense');
@@ -796,7 +808,9 @@ function detectRiskFlags(text, { profile, safetyProfiles, questionnaire, formatP
       || safetyProfiles.includes('student_self_assessment')
       || profile === 'resume_application') flags.push('experience_claim');
   if (evaluationCount >= 2 || safetyProfiles.includes('student_record_teacher') || safetyProfiles.includes('student_self_assessment')) flags.push('evaluation_claim');
-  if (commercialIntentCount >= 1 || profile === 'marketing') flags.push('commercial_claim');
+  for (const flag of commercialSignalPolicy.riskFlagsFromSignals(commercialSignals, { profile })) {
+    if (!flags.includes(flag)) flags.push(flag);
+  }
   if (deadlineActionCount >= 2 || profile === 'mail_notice') flags.push('deadline_action_sensitive');
   if (profile === 'legal_contract' || safetyProfiles.includes('legal_contract')) flags.push('legal_operator_sensitive');
   if (profile === 'clinical_record' || safetyProfiles.includes('clinical_record')) flags.push('clinical_fact_sensitive');

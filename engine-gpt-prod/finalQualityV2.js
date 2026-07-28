@@ -663,6 +663,7 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
   const resumeRepetitionLow = (humanizationDepthReport?.reasons || []).includes('resume_semantic_repetition_low');
   const structuralLow = (humanizationDepthReport?.reasons || []).includes('structural_rewrite_coverage_low');
   const paragraphLow = (humanizationDepthReport?.reasons || []).includes('paragraph_rewrite_coverage_low');
+  const commercialTargets = Number(plan.commercialTargetSentenceCount || 0) > 0;
   const noEffectRecovery = phase === 'humanization_no_effect_retry';
   const untouchedParagraphs = (humanizationDepthReport?.metrics?.untouchedTargetParagraphIndices || [])
     .filter(Number.isInteger)
@@ -702,6 +703,9 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
       : '',
     remediationLow
       ? '현재 결과에는 SOURCE부터 있던 정형 성찰 결론·반복 결론 표지·과도하게 완결된 인과 구조가 충분히 개선되지 않았다. 주장과 사실은 모두 남기고 해당 표현 방식만 직접적이고 덜 정형적으로 바꾼다.'
+      : '',
+    commercialTargets
+      ? '후기·광고 혼합 문장에서는 가격·할인·무료 제공·픽업 범위·응답 시간 같은 사실과 숫자를 그대로 보존한다. 반복 감탄·과도한 추천·혜택 나열·행동 요청은 같은 문장 안에서 덜 정형적인 구조로 다시 쓰되, 협찬 고지·실제 체험·새 조건을 만들거나 원문의 주장 강도를 임의로 바꾸지 않는다.'
       : '',
     '대상 문장의 주장 범위, 문단 역할, 결론 여부는 바꾸지 않는다. 설명을 교훈·감상·결론으로 바꾸거나 주제를 넓혀 변화량을 채우지 않는다.',
     '문장 수는 지정된 문장 안의 의미 단위를 자연스럽게 합치거나 나누는 경우에만 조정하고, 문단·제목·목록·질문·인용 구조는 바꾸지 않는다.',
@@ -911,6 +915,9 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'dialogue_give_collocation') return '말은 건넬 수 있지만 대화는 나누는 상호행위다. SOURCE의 참여 주체와 방향을 유지해 고친다.';
   if (item?.code === 'sampling_subject_mismatch') return 'SOURCE에서 연구자가 표집한 대상이라면 대상을 목적어로 두고 연구자 생략 주어의 능동문 또는 적절한 피동문으로 고친다.';
   if (item?.code === 'tool_personification') return '도구의 기능은 “연결한다·제공한다·표시한다”처럼 중립적으로 쓰고 SOURCE의 기능 범위를 넘기지 않는다.';
+  if (item?.code === 'passive_causative_stack') return '피동과 사동을 겹치지 말고 SOURCE의 행위 주체와 작용 방향에 맞는 서술어 하나로 고친다.';
+  if (item?.code === 'double_object_time_expenditure') return '매체·콘텐츠를 접하거나 이용한 시간 관계가 드러나도록 목적어를 하나로 정리하되 SOURCE의 시간량과 행동은 유지한다.';
+  if (item?.code === 'persistent_state_tense_regression') return '아직도·여전히·지금도 이어지는 SOURCE의 상태를 과거에 끝난 상태로 바꾸지 말고 현재 지속 시제를 복원한다.';
   if (item?.code === 'benefit_help_predicate_redundancy') return 'SOURCE의 지원 범위는 유지하고 “도움을 받을 수 있게 돕다”의 겹친 서술어 하나만 자연스럽게 정리한다.';
   if (item?.code === 'contrast_clause_attachment') return 'SOURCE의 비교 방향과 절 순서를 확인해 “~하기보다”가 실제 비교 대상에 바로 연결되도록 고친다.';
   if (item?.code === 'student_record_fragment') return '짧게 떨어진 명사형 조각을 SOURCE의 같은 관찰 문맥에 다시 연결하되, 세특의 관찰형 종결과 내용 순서는 유지한다.';

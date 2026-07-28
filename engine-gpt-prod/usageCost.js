@@ -36,6 +36,7 @@ function emptyUsage() {
   return {
     inputTokens: 0,
     cachedInputTokens: 0,
+    cacheWriteTokens: 0,
     outputTokens: 0,
     reasoningTokens: 0,
     totalTokens: 0,
@@ -48,6 +49,7 @@ function addUsage(acc, usage) {
   const u = usage || {};
   out.inputTokens += Number(u.inputTokens) || 0;
   out.cachedInputTokens += Number(u.cachedInputTokens) || 0;
+  out.cacheWriteTokens += Number(u.cacheWriteTokens) || 0;
   out.outputTokens += Number(u.outputTokens) || 0;
   out.reasoningTokens += Number(u.reasoningTokens) || 0;
   out.totalTokens += Number(u.totalTokens) || 0;

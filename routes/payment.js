@@ -1,7 +1,7 @@
 // [결제] 토스페이먼츠 결제 확인 + Firebase 크레딧 지급 처리
 
 const express = require('express');
-const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
+const { admin, db, ADMIN_UIDS, verifyFirebaseIdToken, verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const { getRevenue } = require('../lib/revenue');
@@ -39,7 +39,7 @@ router.post('/confirm-payment', async (req, res) => {
   }
   let verifiedUid;
   try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
+    const decoded = await verifyFirebaseIdToken(idToken);
     verifiedUid = decoded.uid;
     setLogContext({ uid: verifiedUid });
   } catch (e) {
@@ -1809,7 +1809,7 @@ router.post('/apply-referral', async (req, res) => {
     if (!idToken || !refCode) return res.status(400).json({ error: '필수 값 누락' });
 
     // 1. 신규 유저 인증 확인
-    const decoded = await admin.auth().verifyIdToken(idToken);
+    const decoded = await verifyFirebaseIdToken(idToken);
     const newUid = decoded.uid;
     setLogContext({ uid: newUid });
 

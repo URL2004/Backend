@@ -4,7 +4,7 @@
 //   Admin SDK는 재인증 없이 삭제 가능하므로 팝업 차단·비밀번호 불일치 환경에서도 동작한다.
 
 const express = require('express');
-const { admin, db } = require('../config');
+const { admin, db, verifyFirebaseIdToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 
@@ -17,7 +17,7 @@ router.post('/delete-account', async (req, res) => {
   if (!idToken) return res.status(401).json({ error: '로그인이 필요해요.' });
 
   let uid;
-  try { uid = (await admin.auth().verifyIdToken(idToken)).uid; }
+  try { uid = (await verifyFirebaseIdToken(idToken)).uid; }
   catch { return res.status(401).json({ error: '인증이 만료됐어요. 다시 로그인 후 시도해주세요.' }); }
   setLogContext({ uid });
 

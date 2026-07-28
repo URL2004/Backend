@@ -3,7 +3,8 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
-      return request.auth != null;
+      return request.auth != null
+        && request.auth.token.get('firebase', {}).get('sign_in_provider', '') != 'password';
     }
 
     function isSelf(uid) {
@@ -20,7 +21,7 @@ service cloud.firestore {
     }
 
     function onlyChanged(keys) {
-      return request.resource.data.diff(resource.data).changedKeys().hasOnly(keys);
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
     }
 
     match /users/{uid} {
@@ -34,9 +35,10 @@ service cloud.firestore {
         && request.resource.data.refCode == (request.auth.uid.size() >= 8 ? request.auth.uid[0:8] : request.auth.uid);
 
       allow update: if isSelf(uid)
-        && onlyChanged(['name', 'refCode', 'kakaoId', 'bookmarks'])
+        // kakaoId/authProvider/kakaoAuthVersion은 인증 서버만 관리한다.
+        && onlyChanged(['name', 'refCode', 'bookmarks'])
         // ★ C-08: refCode를 바꿀 땐 반드시 uid 앞 8자로만(백필 허용·임의변경 차단). 안 바꾸면 통과.
-        && (!request.resource.data.diff(resource.data).changedKeys().hasAny(['refCode'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['refCode'])
             || request.resource.data.refCode == (request.auth.uid.size() >= 8 ? request.auth.uid[0:8] : request.auth.uid));
 
       allow delete: if false;
@@ -140,7 +142,7 @@ service cloud.firestore {
 
       allow update: if isAdmin()
         || (signedIn() && resource.data.authorId == request.auth.uid
-          && !request.resource.data.diff(resource.data).changedKeys().hasAny(['hidden', 'isFeatured']))
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['hidden', 'isFeatured']))
         // ★ H-03: 인기도 카운터 조작 차단 — 조회수 +1, 댓글수 ±1, 좋아요는 본인 uid 1개만 토글.
         || (signedIn() && onlyChanged(['views'])
             && request.resource.data.views == resource.data.get('views', 0) + 1)

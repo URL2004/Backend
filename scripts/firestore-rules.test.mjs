@@ -100,6 +100,10 @@ try {
   const aliceDb = testEnv.authenticatedContext('alice', user('alice')).firestore();
   const bobDb = testEnv.authenticatedContext('bob', user('bob')).firestore();
   const adminDb = testEnv.authenticatedContext(ADMIN_UID, user(ADMIN_UID)).firestore();
+  const passwordSessionDb = testEnv.authenticatedContext('alice', {
+    ...user('alice'),
+    firebase: { sign_in_provider: 'password' }
+  }).firestore();
   const anonDb = testEnv.unauthenticatedContext().firestore();
 
   await run('users: self create with initial free credits allowed', async () => {
@@ -136,8 +140,16 @@ try {
     await assertFails(updateDoc(doc(aliceDb, 'users', 'alice'), { plan: 'unlimited' }));
   });
 
+  await run('users: client cannot change server-owned kakaoId', async () => {
+    await assertFails(updateDoc(doc(aliceDb, 'users', 'alice'), { kakaoId: '123456789' }));
+  });
+
   await run('users: allowed profile fields still update', async () => {
     await assertSucceeds(updateDoc(doc(aliceDb, 'users', 'alice'), { name: 'Alice Updated' }));
+  });
+
+  await run('users: legacy password session cannot read own data', async () => {
+    await assertFails(getDoc(doc(passwordSessionDb, 'users', 'alice')));
   });
 
   await run('users: credit history client write denied', async () => {

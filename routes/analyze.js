@@ -11,7 +11,7 @@ const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const crypto = require('crypto');
 const { getDetectSystem, getHumanizeSystem } = require('../prompts');
-const { admin, db } = require('../config');
+const { admin, db, verifyFirebaseIdToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body/query 폴백(deprecated)
 const detectCalibration = require('../lib/detectCalibration');
@@ -128,7 +128,7 @@ function normalizeHumanizeModeLabel(rawMode, body) {
 async function precheckCredits(idToken, needed) {
   if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 });
   let decoded;
-  try { decoded = await admin.auth().verifyIdToken(idToken); }
+  try { decoded = await verifyFirebaseIdToken(idToken); }
   catch { throw Object.assign(new Error('AUTH_INVALID'), { status: 401 }); }
   const uid = decoded.uid;
   const snap = await db.collection('users').doc(uid).get();
@@ -231,7 +231,7 @@ const SUB_CHAR_LIMITS = { '1000': 1000, '5000': 5000, '10000': 10000, 'unlimited
 async function precheckCoupon(idToken, textLength) {
   if (!idToken) throw Object.assign(new Error('AUTH_REQUIRED'), { status: 401 });
   let decoded;
-  try { decoded = await admin.auth().verifyIdToken(idToken); }
+  try { decoded = await verifyFirebaseIdToken(idToken); }
   catch { throw Object.assign(new Error('AUTH_INVALID'), { status: 401 }); }
   const uid = decoded.uid;
   const snap = await db.collection('users').doc(uid).get();

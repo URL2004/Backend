@@ -15,6 +15,59 @@ test('같은 주장 안의 어순·호흡 변화는 담화 위반으로 오탐�
   assert.deepEqual(audit.codes, []);
 });
 
+test('조사했다를 찾아본으로 의역해도 실제 활동 비중 축소로 오인하지 않는다', () => {
+  const source = '고대 유물의 연대 측정을 주제로 선정함. 관련 자료를 자발적으로 조사해 계산식을 직접 유도함. 실제 수치에 적용해 제작 시기를 계산으로 검증함. 수학적 원리의 활용 가능성을 깨달음.';
+  const output = '고대 유물의 연대 측정을 주제로 선정함. 관련 자료를 스스로 찾아본 뒤 계산식을 직접 유도함. 실제 수치에 적용해 제작 시기를 계산으로 검증함. 수학적 원리의 활용 가능성을 깨달음.';
+  const audit = discourse.compareDiscourse(source, output);
+  assert.equal(audit.codes.includes('personal_balance_shift'), false, JSON.stringify(audit));
+});
+
+test('같은 성찰 문단의 판단을 알게 되었다로 의역해도 새 평가로 오인하지 않는다', () => {
+  const source = [
+    '수업을 들으며 과거의 문제들이 조금씩 보이기 시작했습니다. 결국 문제의 시작은 상대방이 아니라 제 자신에게 있었습니다.',
+    '스스로를 먼저 사랑하지 못하면서 타인을 사랑할 수 있다고 생각했던 점이 큰 오류였다는 것을 깨달았습니다.'
+  ].join('\n\n');
+  const output = [
+    '수업을 들으며 과거의 문제들이 조금씩 보이기 시작했습니다. 끝내 문제의 출발점은 상대방이 아니라 제 자신이라는 걸 알게 되었습니다.',
+    '스스로를 먼저 사랑하지 못한 채 타인을 사랑할 수 있다고 여겼던 점이 큰 오류였음을 깨달았습니다.'
+  ].join('\n\n');
+  const audit = discourse.compareDiscourse(source, output);
+  for (const code of ['new_evaluation', 'repeated_reflection_conclusion', 'rhetorical_role_shift']) {
+    assert.equal(audit.codes.includes(code), false, `${code}: ${JSON.stringify(audit)}`);
+  }
+});
+
+test('알았다를 알게 되었다로 풀어 써도 같은 인지 기능으로 본다', () => {
+  const source = '이후 자세히 알아보니 일본어에는 탁음과 반탁음, 촉음이 있다는걸 알았다.';
+  const output = '이후 자세히 알아보니 일본어에는 탁음과 반탁음, 촉음이 있다는 것을 알게 되었다.';
+  const audit = discourse.compareDiscourse(source, output);
+  assert.equal(audit.codes.includes('new_evaluation'), false, JSON.stringify(audit));
+  assert.equal(audit.codes.includes('rhetorical_role_shift'), false, JSON.stringify(audit));
+});
+
+test('원문에 명시된 통찰과 배움을 자연스럽게 고쳐도 새 평가로 오인하지 않는다', () => {
+  const source = '오감을 자극하며 공간적 제약을 넘어선 경험의 확장으로 나아가야 한다는 통찰을 그 조의 아이디어가 저희 조에게 배움을 주었습니다.';
+  const output = '오감을 자극하고 공간적 제약을 넘어선 경험의 확장으로 나아가야 한다는 통찰을 그 조의 아이디어를 통해 저희 조도 배울 수 있었습니다.';
+  const audit = discourse.compareDiscourse(source, output);
+  assert.equal(audit.codes.includes('new_evaluation'), false, JSON.stringify(audit));
+  assert.equal(audit.codes.includes('rhetorical_role_shift'), false, JSON.stringify(audit));
+});
+
+test('즉을 결국로 의역한 요약 기능을 새 중복 결론으로 오인하지 않는다', () => {
+  const source = [
+    "즉 북중 관계의 의제 자체가 '한반도 문제 해결'에서 '양자 협력의 제도화'로 이동한 것이다.",
+    'III. 결론',
+    '앞선 분석은 향후 연구에서도 중요하다고 볼 수 있다.'
+  ].join('\n\n');
+  const output = [
+    "결국 북중 관계의 의제는 '한반도 문제 해결'에서 '양자 협력의 제도화'로 옮겨갔다.",
+    'III. 결론',
+    '앞선 분석은 향후 연구에서도 중요하다고 볼 수 있다.'
+  ].join('\n\n');
+  const audit = discourse.compareDiscourse(source, output);
+  assert.equal(audit.codes.includes('duplicate_conclusion'), false, JSON.stringify(audit));
+});
+
 test('새 성찰·강한 수식·반복 인과 결론을 원문 대비로 잡는다', () => {
   const source = [
     '기온 자료를 조사하고 연도별 수치를 표로 정리했다.',

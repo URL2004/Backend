@@ -71,6 +71,34 @@ test('일반 문장 안의 정상 조사는 구조 제목 뒤 고립 조사로 �
   assert.equal(issues.some(item => item.code === 'orphan_structural_particle'), false, JSON.stringify(issues));
 });
 
+test('번호 문단 다음의 “이 목표”를 고립 조사로 오인해 지시어를 삭제하지 않는다', () => {
+  const source = [
+    '3. 경영지원 직무에서 이루고 싶은 목표를 설명했습니다. 현장의 몰입이 성과로 이어진다고 생각합니다.',
+    '',
+    '이 목표를 이루기 위해 입사 후에는 3단계의 로드맵을 실행하겠습니다.'
+  ].join('\n');
+  const issues = koreanRefinement.detectTextIssues(source, {
+    profile: 'resume_application',
+    targetRegister: 'professional'
+  });
+  assert.equal(issues.some(item => item.code === 'orphan_structural_particle'), false, JSON.stringify(issues));
+  assert.equal(
+    koreanRefinement.applySafeDeterministicRepairs({ source, outputText: source }).text,
+    source
+  );
+
+  const afterList = [
+    '- 구조적 협상력: 특정 후원국 없이 버틸 수 있는지를 본다.',
+    '',
+    '이 두 측면은 서로 별개로 움직일 수 있다.'
+  ].join('\n');
+  const listIssues = koreanRefinement.detectTextIssues(afterList, {
+    profile: 'report_assignment',
+    targetRegister: 'academic_formal'
+  });
+  assert.equal(listIssues.some(item => item.code === 'orphan_structural_particle'), false, JSON.stringify(listIssues));
+});
+
 test('늦은 후보가 구조 제목 뒤 조사만 남기면 공통 후보 감사가 거부한다', () => {
   const source = '① 설명식 수업\n수업의 대부분은 교사가 주도했다.';
   const candidate = '① 설명식 수업\n에서는 수업의 대부분을 교사가 주도했다.';

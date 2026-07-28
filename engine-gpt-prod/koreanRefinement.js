@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 11;
+const VERSION = 13;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -349,7 +349,7 @@ const ISSUE_DEFINITIONS = Object.freeze({
 });
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
-const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|지(?:만)?|다|고|며|어서|므로|었(?:다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:다|던|고|지만|으면|다면|다는|을|는데|으며)?|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
+const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|지(?:만)?|다|고|며|어서|므로|었(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
 const QUOTE_PARTICLE_SUFFIX = '(?:에서|에게|으로|처럼|보다|부터|까지|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서|에게|으로|처럼|보다|부터|까지|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
@@ -1106,18 +1106,40 @@ function findAdjacentSemanticRepetitions(text) {
   for (let index = 0; index < sentences.length - 1; index += 1) {
     const left = stripProtectedQuotedText(sentences[index]);
     const right = stripProtectedQuotedText(sentences[index + 1]);
-    if (left.length < 22 || right.length < 22) continue;
+    if (left.length < 18 || right.length < 8) continue;
     if (/^(?:#{1,6}|[-*+•▪◦●○■□◆◇▶▷※]|제\s*\d+\s*조)/u.test(left)
         || /^(?:#{1,6}|[-*+•▪◦●○■□◆◇▶▷※]|제\s*\d+\s*조)/u.test(right)) continue;
     const leftTokens = new Set(contentTokensLocal(left));
     const rightTokens = new Set(contentTokensLocal(right));
-    if (leftTokens.size < 4 || rightTokens.size < 4) continue;
+    const shortCognitiveEcho = isShortCognitiveEcho(left, right);
+    if ((leftTokens.size < 4 || rightTokens.size < 4) && !shortCognitiveEcho) continue;
     const intersection = [...leftTokens].filter(token => rightTokens.has(token)).length;
     const containment = intersection / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
     const lengthRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
-    if (containment >= 0.8 && lengthRatio >= 0.68) ordinals.push(index + 2);
+    if ((containment >= 0.8 && lengthRatio >= 0.68) || shortCognitiveEcho) ordinals.push(index + 2);
   }
   return ordinals;
+}
+
+const COGNITIVE_ECHO_PATTERNS = Object.freeze([
+  /(?:질문|의문|궁금|떠올리|생각이\s*들|생각하게\s*되)/u,
+  /(?:알게\s*되|깨닫|이해하게\s*되|파악하게\s*되)/u,
+  /(?:배우게\s*되|배웠|교훈을\s*얻|익히게\s*되)/u,
+  /(?:느끼게\s*되|느꼈|체감하게\s*되|실감하게\s*되)/u,
+  /(?:확인하게\s*되|확인했|분명해졌|알아볼\s*수\s*있었)/u
+]);
+
+function isShortCognitiveEcho(leftValue, rightValue) {
+  const left = String(leftValue || '').trim();
+  const right = String(rightValue || '').trim();
+  if (right.length > 48 || right.length > left.length * 0.72) return false;
+  const family = COGNITIVE_ECHO_PATTERNS.findIndex(pattern => pattern.test(left));
+  if (family < 0 || !COGNITIVE_ECHO_PATTERNS[family].test(right)) return false;
+  const roots = value => new Set(contentTokensLocal(value).map(token => (
+    token.replace(/(?:으로부터|에게서|에서는|으로는|이라는|이라고|은|는|이|가|을|를|의|와|과|도|만|에|로)$/u, '')
+  )).filter(token => token.length >= 2));
+  const leftRoots = roots(left);
+  return [...roots(right)].some(token => leftRoots.has(token));
 }
 
 function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
@@ -1243,13 +1265,6 @@ const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
     source: /(?:자원|예산|인력|시간)(?:을|를)?\s*(?:효율적(?:으로)?\s*)?(?:배분|할당)/u,
     acceptable: /(?:자원|예산|인력|시간)(?:을|를)?\s*(?:효율적(?:으로)?\s*)?(?:배분|할당)/u,
     preferred: ['자원을 효율적으로 배분', '인력을 할당']
-  },
-  {
-    concept: 'formal_market_scope',
-    professionalOnly: true,
-    source: /시장\s*내(?:에서|의|에)?/u,
-    acceptable: /시장\s*내(?:에서|의|에)?/u,
-    preferred: ['시장 내에서', '시장 내의']
   },
   {
     concept: 'formal_analysis_action',
@@ -1384,7 +1399,21 @@ function hasDoubleTopicChain(sentence) {
   const firstPersonTopic = '(?:나는|저는|우리는|저희는)';
   const boundedFirstPerson = koreanStart(firstPersonTopic, 'u').source;
   if (new RegExp(`(?:하면서|하며|통해|후|계기로|과정에서)[^.!?。！？\\n]{0,20}${boundedFirstPerson}\\s+[^.!?。！？\\n]{1,28}(?:은|는)\\s`, 'u').test(value)) return true;
-  return new RegExp(`^${firstPersonTopic}\\s+(?:이|그|해당|이번|예술|연구|활동|작품|문제)[^.!?。！？\\n]{0,18}(?:은|는)\\s`, 'u').test(value);
+  const rest = value.replace(new RegExp(`^${firstPersonTopic}\\s+`, 'u'), '');
+  if (rest === value) return false;
+  const secondTopic = rest.match(
+    /^(?:(?:이|그|해당|이번)\s+)?([가-힣A-Za-z0-9·_-]+(?:\s+[가-힣A-Za-z0-9·_-]+){0,2})(은|는)\s/u
+  );
+  if (!secondTopic) return false;
+  const finalWord = `${String(secondTopic[1] || '').trim().split(/\s+/u).at(-1) || ''}${secondTopic[2]}`;
+  // `저는 이 구절에서 특히 깊은 인상을 받았습니다`의 `깊은`은
+  // 두 번째 주제 조사(깊+은)가 아니라 뒤 명사를 꾸미는 관형형이다.
+  // 단순 음절 정규식으로 이를 주제로 세면 정상 성찰문을 비문으로
+  // 복원하므로 자주 쓰이는 관형형은 제외한다.
+  if (/^(?:깊은|같은|다른|많은|적은|작은|큰|좋은|나쁜|새로운|높은|낮은|넓은|좁은|빠른|느린|중요한|필요한|가능한|어려운|쉬운|이러한|그러한|어떠한)$/u.test(finalWord)) {
+    return false;
+  }
+  return /^(?:이|그|해당|이번|예술|연구|활동|작품|문제)(?:(?:의)?\s|$)/u.test(rest);
 }
 
 function hasValueParticipationCollocation(sentence) {
@@ -1565,6 +1594,21 @@ const FORMAL_REGISTER_RULES = Object.freeze([
       && /^\s*그래서(?:는|도)?(?:\s|,)/u.test(value)
   },
   {
+    family: 'colloquial_competition',
+    test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
+      && /(?:맞붙(?:다|는다|어|게|었|을)|한판\s*(?:붙|겨루))/u.test(value)
+  },
+  {
+    family: 'colloquial_direction_shift',
+    test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
+      && /(?:논의|관심|초점|시선|교재|자료|방향)\s*쪽으로\s*(?:옮겨|옮기|돌려|돌리|가게\s*되)/u.test(value)
+  },
+  {
+    family: 'colloquial_payment_definition',
+    test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
+      && /(?:살|구매할)\s*때\s*(?:직접\s*)?(?:내는|내야\s*하는)\s*(?:돈|금액)/u.test(value)
+  },
+  {
     family: 'resume_ornamental_closing',
     test: (value, _fullText, context) => String(context?.profile || '') === 'resume_application'
       && /(?:곁을\s*지키는\s*디딤돌|든든한\s*동행자|따뜻한\s*조력자|성장의\s*시간|소중한\s*기회)/u.test(value)
@@ -1651,12 +1695,18 @@ function removeOneIntroducedRepeatedUnit(token, sourceText, sourceTokens) {
     for (let index = 0; index + unitLength * 2 <= token.length; index += 1) {
       const unit = token.slice(index, index + unitLength);
       if (unit !== token.slice(index + unitLength, index + unitLength * 2)) continue;
+      // 한 음절 반복이 토큰 끝에 놓이면 명사 말음+조사(전문가가·강도도)뿐
+      // 아니라 용언 활용(이어지지·가지지)일 가능성이 크다. 결정론적 수리는
+      // 오탐 한 건이 실제 문법 훼손으로 이어지므로 이 모양은 모델 문맥
+      // 감사에 맡기고, 어두·어중 중복이나 2음절 이상 반복만 자동 복원한다.
+      if (unitLength === 1 && index + unitLength * 2 === token.length) continue;
       // 전문가가·국가가처럼 명사 자체가 '가'로 끝난 뒤 주격 조사가 붙은
-      // 정상 형태를 가가 중복 오타로 줄이지 않는다. '의의'도 같은 방식의
+      // 형태와 강도도·온도도처럼 명사 끝 '도' 뒤 보조사 '도'가 붙은
+      // 정상 형태를 중복 오타로 줄이지 않는다. '의의'도 같은 방식의
       // 정상 어휘/조사 결합일 수 있어 한 글자 접미 반복에서는 보호한다.
       if (unitLength === 1
           && index + unitLength * 2 === token.length
-          && ['가', '의'].includes(unit)) continue;
+          && ['가', '의', '도'].includes(unit)) continue;
       const candidate = token.slice(0, index) + token.slice(index + unitLength);
       if (candidate.length < 2) continue;
       if (sourceTokens.has(candidate) || sourceText.includes(candidate)) return candidate;
@@ -1822,6 +1872,7 @@ function qualityWarning(item) {
 }
 
 const ORPHAN_STRUCTURAL_PARTICLE_RE = /^(\s*)(에서는|에게는|으로는|로는|부터는|까지는|에는|에서|에게|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)\s+(?=\S)/u;
+const DEMONSTRATIVE_I_NOUN_RE = /^(?:(?:두|세|여러|같은|모든|각)\s+)?(?:목표|측면|과정|경험|결과|내용|문제|이유|점|방법|상황|사실|관점|역할|부분|선택|생각|주장|기준|계획|단계|변화|작업|활동|프로젝트|사례|전략|방식|기회|때|곳|글|문서|연구|수업|조사|분석)(?:[은는이가을를의에도에서와과만]|\s|$)/u;
 
 function pushOrphanStructuralParticleIssue(issues, text) {
   const occurrences = orphanStructuralParticleOccurrences(text);
@@ -1846,11 +1897,23 @@ function orphanStructuralParticleOccurrences(value) {
     const line = String(lines[index] || '');
     const match = line.match(ORPHAN_STRUCTURAL_PARTICLE_RE);
     if (match) {
+      const bodyText = line.slice(match[0].length).trim();
+      // 행 첫머리의 `이 목표·이 과정·이 경험`은 앞 문단을 가리키는 정상
+      // 지시 관형어다. 번호가 붙은 앞 문단을 목록으로 분류했다는 이유만으로
+      // 주격 조사로 오인해 `이`를 삭제하면 문장 의미가 훼손된다.
+      if (match[2] === '이' && DEMONSTRATIVE_I_NOUN_RE.test(bodyText)) {
+        offset += line.length + 1;
+        continue;
+      }
       const previousIndex = previousNonEmptyLineIndex(lines, index);
       const previous = previousIndex >= 0 ? String(lines[previousIndex] || '').trim() : '';
       const role = previous ? layoutStructure.classifyLine(previous) : '';
-      const structuralPrevious = ['title', 'heading', 'label', 'label_inline', 'list'].includes(role)
-        || /^(?:\d{1,3}(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳]|[●○■□◆◇▶▷※])\s*\S/u.test(previous);
+      const conciseListAnchor = previous.length <= 160
+        && splitSentences(previous).length <= 1
+        && (role === 'list'
+          || /^(?:\d{1,3}(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳]|[●○■□◆◇▶▷※])\s*\S/u.test(previous));
+      const structuralPrevious = ['title', 'heading', 'label', 'label_inline'].includes(role)
+        || conciseListAnchor;
       if (structuralPrevious) {
         occurrences.push({
           lineIndex: index,
@@ -1858,7 +1921,7 @@ function orphanStructuralParticleOccurrences(value) {
           particle: match[2],
           prefixLength: match[0].length,
           previousLine: previous,
-          bodyText: line.slice(match[0].length).trim(),
+          bodyText,
           sentenceOrdinal: sentenceOrdinalAt(text, offset + match[1].length)
         });
       }

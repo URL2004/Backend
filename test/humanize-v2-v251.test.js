@@ -57,6 +57,43 @@ test('제목 없는 직무 경험·포부와 항목형 학습 소감은 각각 �
   assert.equal(detectDocumentProfile(reflection).profile, 'student_self_assessment');
 });
 
+test('교육 프로젝트 개인 성찰 질문지는 수행 동사가 많아도 지원서로 오인하지 않는다', () => {
+  const source = [
+    '디지털 교육 기말 프로젝트 개인 성찰일지',
+    '우리 팀의 수업 설계는 어떤 문제의식에서 출발하였는가?',
+    '수업에서 참여하기 어려웠던 학생을 떠올려 팀원들과 문제를 분석했습니다. 자료를 정리하고 수업안을 설계했습니다.',
+    'SAMR 관점에서 우리 팀의 설계를 어떻게 해석할 수 있는가?',
+    '패들렛과 학습 도구를 활용해 과제를 재구성했고 동료 피드백을 반영했습니다.',
+    '다른 팀의 설계는 저의 생각을 어떻게 확장시켰는가?',
+    '다른 조의 발표를 보며 공간적 제약을 줄이는 방법을 배웠습니다.',
+    'AI 시대의 교사의 역할은 무엇인가?',
+    '교사는 학생의 반응을 살피고 적절히 개입해야 한다고 생각했습니다.',
+    'AI 기반 교육의 가능성과 한계는 무엇인가?',
+    '개인화 가능성을 확인했지만 기술이 교사의 판단을 대신하지는 못한다고 느꼈습니다.'
+  ].join('\n');
+  const profile = detectDocumentProfile(source);
+  assert.equal(profile.profile, 'student_self_assessment', JSON.stringify(profile.candidateProfiles));
+  assert.notEqual(profile.profile, 'resume_application');
+});
+
+test('명사형 종결이 반복되는 기술 사례 카탈로그를 세특으로 오인하지 않는다', () => {
+  const source = [
+    '2. 서론',
+    '본 보고서는 국내 스마트 농업 서비스 사례를 분석한다.',
+    '① 농업기술센터: 정밀 생육 관리 시스템',
+    '개요 및 배경: 기후 변화에 대응하기 위해 구축한 데이터 기반 제어 사례임.',
+    '핵심 기술 및 시스템 구성: 환경 데이터와 제어 이력을 결합하여 데이터셋을 구축함.',
+    '운영 효과: 난방 비용을 줄이고 상품 비율을 향상시킴.',
+    '② 농기계 텔레매틱스 서비스',
+    '개요 및 배경: 장비 상태를 원격으로 확인하기 위해 상용화한 서비스임.',
+    '핵심 기술 및 시스템 구성: 위치와 엔진 부하를 실시간으로 관제함.',
+    '운영 효과: 작업 중단 시간을 줄이고 효율성을 높이는 데 기여함.'
+  ].join('\n');
+  const profile = detectDocumentProfile(source);
+  assert.equal(profile.profile, 'report_assignment', JSON.stringify(profile.candidateProfiles));
+  assert.notEqual(profile.profile, 'student_record_teacher');
+});
+
 test('SOAP 기록은 임상 프로필과 전용 보존 프롬프트를 사용한다', () => {
   const source = [
     '## SOAP Note',

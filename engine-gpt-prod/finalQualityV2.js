@@ -247,8 +247,14 @@ function shouldRunSemanticJudge({ requestedMode, effectiveMode, source, document
     ...(documentProfile?.safetyProfiles || []).map(value => String(value || ''))
   ]);
   if (documentProfile?.formatProfile?.flags?.includes?.('questionnaire')
+      || documentProfile?.formatProfile?.flags?.includes?.('assessment_item')
       || documentProfile?.riskFlags?.includes?.('questionnaire_answer_boundary')) {
-    return { run: true, reason: 'questionnaire' };
+    return {
+      run: true,
+      reason: documentProfile?.formatProfile?.flags?.includes?.('assessment_item')
+        ? 'assessment_item'
+        : 'questionnaire'
+    };
   }
   if ([...sensitiveProfiles].some(profile => [
     'academic_paper',
@@ -670,7 +676,8 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     .map(index => index + 1);
   const system = [
     '너는 한국어 실질 휴머나이징 국소 수리기다. 교정·다듬기만 한 결과를 만드는 작업이 아니다.',
-    'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단 수와 내용 순서를 보존한다.',
+    'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단별 역할과 내용 순서를 보존한다.',
+    '같은 문단 역할 안에서 지나치게 긴 산문을 읽기 좋게 나누거나 같은 의미 단위를 자연스럽게 이어 붙이는 것은 허용한다. 서로 다른 활동·근거·결론을 한 문단으로 합치거나 항목을 잘게 쪼개지는 않는다.',
     resumeRepetitionLow
       ? 'CURRENT를 기준으로 하되, 같은 지원 전제가 반복된 표시 문장이 여러 문단에 있으면 그 문장들은 문단별 역할에 맞춰 함께 재구성한다. 표시되지 않은 문장과 문단 순서는 그대로 둔다.'
       : 'CURRENT는 보존 검사를 통과했거나 원문으로 안전 복귀한 후보이므로 CURRENT를 기준으로 작업한다. 문서 전체를 다시 쓰지 않는다.',
@@ -708,7 +715,7 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
       ? '후기·광고 혼합 문장에서는 가격·할인·무료 제공·픽업 범위·응답 시간 같은 사실과 숫자를 그대로 보존한다. 반복 감탄·과도한 추천·혜택 나열·행동 요청은 같은 문장 안에서 덜 정형적인 구조로 다시 쓰되, 협찬 고지·실제 체험·새 조건을 만들거나 원문의 주장 강도를 임의로 바꾸지 않는다.'
       : '',
     '대상 문장의 주장 범위, 문단 역할, 결론 여부는 바꾸지 않는다. 설명을 교훈·감상·결론으로 바꾸거나 주제를 넓혀 변화량을 채우지 않는다.',
-    '문장 수는 지정된 문장 안의 의미 단위를 자연스럽게 합치거나 나누는 경우에만 조정하고, 문단·제목·목록·질문·인용 구조는 바꾸지 않는다.',
+    '문장 수는 지정된 문장 안의 의미 단위를 자연스럽게 합치거나 나누는 경우에만 조정하고, 문단의 역할·제목·목록·질문·인용 구조는 바꾸지 않는다.',
     '새 사실·평가·감정·경험·수치·기관·인용·예시를 만들지 않는다.',
     '이 보존 조건 안에서 실질 변화 기준을 만족할 수 없을 때만 safeChangeFound=false로 답한다.'
   ].filter(Boolean).join('\n');
@@ -786,8 +793,15 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
     : 0;
   const sourceChars = Math.max(1, Number(plan.sourceChars) || String(source || '').replace(/\s+/gu, '').length);
   const averageSentenceChars = sourceChars / Math.max(1, rows.length);
+  // 수리기가 최소선에 간신히 닿는 문장 수만 고르면 사용자는 여전히
+  // 다듬기 수준으로 느낀다. 차단 기준(min)이 아니라 체감 목표(targetMin)에
+  // 필요한 문장까지 지정하되, 새 내용 추가 없이 원래 대상 안에서 해결한다.
+  const retryEditGoal = Math.max(
+    Number(plan.minSubstantiveEditRatio || 0),
+    Number(plan.targetSubstantiveEditMin || 0)
+  );
   const editDeficitChars = Math.max(0,
-    (Number(plan.minSubstantiveEditRatio || 0) * sourceChars) - Number(measured.substantiveDistance || 0));
+    (retryEditGoal * sourceChars) - Number(measured.substantiveDistance || 0));
   // 지정된 한 문장을 다시 구성하면 평균적으로 그 문장 길이의 약 18%가
   // 실질 편집된다고 보고, 최소선에 닿는 데 필요한 범위만 보수적으로 고른다.
   const editDeficitCount = Math.ceil(editDeficitChars / Math.max(6, averageSentenceChars * 0.18));

@@ -71,6 +71,27 @@ test('429는 Retry-After를 우선해 재시도하고 웹 검색 비용을 usage
   assert.ok(result.usage.estimatedUsd >= 0.01);
 });
 
+test('쿼터 소진 429는 일반 속도 제한처럼 재시도하지 않는다', { concurrency: false }, async t => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return responseJson({
+      error: {
+        message: 'You exceeded your current quota, please check your plan and billing details.',
+        code: 'insufficient_quota'
+      }
+    }, 429, { 'retry-after': '0' });
+  };
+  t.after(() => { global.fetch = originalFetch; process.env.OPENAI_API_KEY = originalKey; });
+  await assert.rejects(() => completeJson({
+    system: 'test', user: 'test', schema: SIMPLE_SCHEMA, schemaName: 'test_schema', model: 'gpt-5.4-mini'
+  }), error => error.code === 'OPENAI_QUOTA_EXHAUSTED' && error.retryCounts?.rateLimit === 0);
+  assert.equal(calls, 1);
+});
+
 test('malformed JSON schema 응답은 계약 오류로 실패한다', { concurrency: false }, async t => {
   const originalFetch = global.fetch;
   const originalKey = process.env.OPENAI_API_KEY;

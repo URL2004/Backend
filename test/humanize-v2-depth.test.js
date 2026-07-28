@@ -62,7 +62,7 @@ test('기본 피하기는 저위험 11%·고위험 15% 최소선과 별도 목�
   const high = `${SOURCE} ${SOURCE}`;
   const lowPlan = depth.buildHumanizationPlan(low, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 0 } });
   const highPlan = depth.buildHumanizationPlan(high, { requestStrength: 'basic', documentProfile: { profile: 'general' }, inputRisk: { abstractRiskRatio: 1 } });
-  assert.equal(lowPlan.policyVersion, 'perceived-v2.5.6');
+  assert.equal(lowPlan.policyVersion, 'perceived-v2.5.11');
   assert.equal(lowPlan.signalSource, 'deterministic_targets_input_risk');
   assert.equal(depth.PLAN_SIGNAL_SOURCE, 'deterministic_targets_input_risk');
   assert.ok(lowPlan.minSubstantiveEditRatio >= 0.11);
@@ -132,7 +132,7 @@ test('고급 피하기는 같은 글에서도 기본보다 편집·문장·위�
   assert.ok(advanced.requiredTargetChangedCount >= basic.requiredTargetChangedCount);
 });
 
-test('사실·형식 민감 장르는 기본·고급 모두 3%p만 완화하고 강도 차이를 유지한다', () => {
+test('사실·형식 민감 장르는 최소선만 2%p 완화하고 체감 목표는 거의 유지한다', () => {
   const source = `${SOURCE} ${SOURCE}`;
   const basic = depth.buildHumanizationPlan(source, {
     requestStrength: 'basic',
@@ -144,9 +144,9 @@ test('사실·형식 민감 장르는 기본·고급 모두 3%p만 완화하고 
     documentProfile: 'academic_paper',
     inputRisk: { abstractRiskRatio: 1 }
   });
-  assert.equal(basic.minSubstantiveEditRatio, 0.12);
-  assert.equal(advanced.minSubstantiveEditRatio, 0.18);
-  assert.equal(advanced.targetSubstantiveEditMin, 0.21);
+  assert.equal(basic.minSubstantiveEditRatio, 0.13);
+  assert.equal(advanced.minSubstantiveEditRatio, 0.19);
+  assert.equal(advanced.targetSubstantiveEditMin, 0.23);
   assert.ok(advanced.minSubstantiveEditRatio > basic.minSubstantiveEditRatio);
 });
 
@@ -211,13 +211,21 @@ test('최소선 통과와 목표 범위 도달을 별도 관측값으로 구분�
     requiredTargetChangedCount: 0,
     requiredChangedSentenceCount: 1,
     minSubstantiveEditRatio: 0.05,
-    targetSubstantiveEditMin: 0.15,
+    targetSubstantiveEditMin: 0.20,
     targetSubstantiveEditMax: 0.25
   };
   const report = depth.evaluateHumanizationDepth(source, minimumOutput, plan);
   assert.equal(report.pass, true, JSON.stringify(report));
   assert.equal(report.metrics.targetDepthMet, false);
   assert.equal(report.metrics.deliveryDepthBand, 'minimum');
+  assert.ok(depth.targetDepthGap(report) >= 0.01);
+  assert.equal(depth.needsHumanizationRecovery(report), true);
+  assert.equal(depth.needsHumanizationRecovery({
+    applicable: true,
+    pass: true,
+    plan: { targetSubstantiveEditMin: 0.15 },
+    metrics: { targetDepthMet: false, substantiveEditRatio: 0.145 }
+  }), false);
 });
 
 test('품질 최소선 미달과 사용자 전달 불가 수준을 분리한다', () => {
@@ -399,7 +407,7 @@ test('동일 문장 잔존 정책의 2,000자 기준은 공백 포함 입력 길
   assert.equal(plan.maxSubstantiveCarryoverRatio, 0.30);
 });
 
-test('보존 민감 프로필은 고급 강도를 3%p, 동일 문장 상한을 5%p만 완화한다', () => {
+test('보존 민감 프로필은 고급 최소선을 2%p, 동일 문장 상한을 5%p만 완화한다', () => {
   const sentence = index => `${index + 1}번째 문장은 연구 절차와 자료 해석의 근거를 분명히 밝히고 인용된 개념의 적용 범위를 세부적으로 설명하는 학술 서술입니다. 분석 자료의 선정 기준과 검토 순서를 함께 기록하여 후속 연구자가 판단 과정을 확인할 수 있도록 구성했습니다. 동일한 절차를 세 차례 반복해 기록했습니다.`;
   const source = Array.from({ length: 20 }, (_, index) => sentence(index)).join(' ');
   const basic = depth.buildHumanizationPlan(source, {
@@ -416,7 +424,7 @@ test('보존 민감 프로필은 고급 강도를 3%p, 동일 문장 상한을 5
   });
   assert.equal(basic.maxSubstantiveCarryoverRatio, 0.35);
   assert.equal(advanced.maxSubstantiveCarryoverRatio, 0.25);
-  assert.equal(advanced.minSubstantiveEditRatio, advancedGeneral.minSubstantiveEditRatio - 0.03);
+  assert.equal(advanced.minSubstantiveEditRatio, advancedGeneral.minSubstantiveEditRatio - 0.02);
   assert.ok(advanced.requiredChangedSentenceCount <= advancedGeneral.requiredChangedSentenceCount);
   assert.ok(advanced.requiredChangedSentenceCount > 0);
 });

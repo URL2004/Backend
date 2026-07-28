@@ -23,9 +23,15 @@ function splitChunksForGpt(text, {
     currentSection: '',
     lastPiece: null,
     academicSpans,
+    tocEntryKeys: freezeBlocks.tocEntryKeys(text, academicSpans),
     sourceLineRoles: buildSourceLineRoleMap(text),
     questionnaire: formatProfile?.primary === 'questionnaire'
-      || formatProfile?.flags?.includes?.('questionnaire') === true
+      || formatProfile?.flags?.includes?.('questionnaire') === true,
+    assessment: formatProfile?.primary === 'assessment_item'
+      || formatProfile?.flags?.includes?.('assessment_item') === true,
+    assessmentSection: 'protected',
+    editableBlockquoteWrapper: formatProfile?.editableBlockquoteWrapper === true
+      || formatProfile?.flags?.includes?.('editable_blockquote_wrapper') === true
   };
 
   for (const chunk of base) {
@@ -74,12 +80,23 @@ function expandBaseChunk(chunk, state) {
     // 제목성이 사라지고 뒤 본문이 상위 절 경로에 남는다. 구조 판정을 접두부
     // 편집 규칙보다 먼저 적용해 제목 행 전체를 하나의 잠금 단위로 유지한다.
     const preserveWholeStructuralLine = wholeLineRole === 'title'
+      || wholeLineRole === 'heading'
       || isHeadingLine(sourceText)
+      || isRepeatedTocHeadingLine(sourceText, state)
       || isStandaloneQuotedTitle(sourceText);
-    const expandedPieces = preserveWholeStructuralLine
+    const assessmentExplanationPieces = state.assessment
+      ? splitAssessmentExplanationPiece(sourcePiece, state.assessmentSection)
+      : null;
+    const editableBlockquotePieces = state.editableBlockquoteWrapper
+      ? splitEditablePrefixPiece(sourcePiece, { editableBlockquoteWrapper: true })
+      : null;
+    const expandedPieces = assessmentExplanationPieces
+      || editableBlockquotePieces
+      || (preserveWholeStructuralLine
+      || (state.assessment && shouldKeepAssessmentLineWhole(sourceText, state.assessmentSection))
       || (state.questionnaire && isQuestionnaireQuestionLine(sourceText))
       ? [sourcePiece]
-      : splitEditablePrefixPiece(sourcePiece);
+      : splitEditablePrefixPiece(sourcePiece));
     for (const piece of expandedPieces) {
       const info = classifyPiece(piece, state);
       const key = info.locked ? `locked:${info.lockType}` : 'body';
@@ -167,7 +184,16 @@ function classifyPiece(piece, state) {
   // 그렇지 않으면 참고문헌 안의 `저자: 서명` 같은 행이 label body로 풀려
   // 원문 그대로 보존해야 할 블록 일부가 모델 호출에 들어갈 수 있다.
   const frozen = freezeBlocks.academicSpanAt(state.academicSpans, piece.start, piece.end);
-  if (frozen) return { locked: true, lockType: frozen.type === 'toc' ? 'toc_item' : 'reference_item', sectionLabel: frozen.type === 'toc' ? '목차' : '참고문헌' };
+  if (frozen) {
+    // 목차·참고문헌은 본문 밖의 동결 블록이지 이후 본문의 현재 절이 아니다.
+    // 여기서 `목차`를 sectionLabel로 넣으면 동결 구간이 끝난 뒤 첫 본문
+    // 청크가 목차 문맥으로 모델에 전달된다.
+    return {
+      locked: true,
+      lockType: frozen.type === 'toc' ? 'toc_item' : 'reference_item',
+      sectionLabel: state.currentSection
+    };
+  }
 
   if (piece?.forceLockType) return {
     locked: true,
@@ -175,6 +201,14 @@ function classifyPiece(piece, state) {
     sectionLabel: piece.forceSectionLabel || state.currentSection
   };
   if (piece?.forceEditable) return { locked: false, lockType: '', sectionLabel: state.currentSection };
+
+  // 질문지의 번호형 질문은 일반 번호 제목과 모양이 같아 layoutStructure가
+  // heading으로 먼저 분류할 수 있다. 문서 프로필이 질문지로 확정된 경우에는
+  // 질문/답변 경계 계약이 일반 제목 판정보다 우선해야 답변별 독립 청크와
+  // questionnaire_question 관측값이 유지된다.
+  if (state.questionnaire && isQuestionnaireQuestionLine(s)) {
+    return { locked: true, lockType: 'questionnaire_question', sectionLabel: s };
+  }
 
   const sourceRole = sourceLineRole(state.sourceLineRoles, s, piece.start, piece.end);
   if (sourceRole === 'title') return { locked: true, lockType: 'title', sectionLabel: s };
@@ -189,11 +223,12 @@ function classifyPiece(piece, state) {
   if (sourceRole === 'legal_clause') return { locked: true, lockType: 'legal_clause', sectionLabel: s };
   if (isStandaloneQuotedTitle(s)) return { locked: true, lockType: 'title', sectionLabel: s };
 
-  // 문답형 문서는 질문/번호를 편집 대상에서 제외하고, 질문 사이의 답변만
-  // 독립 청크로 보낸다. 이 경계 때문에 서로 다른 답변의 문장이 이동할 수 없다.
-  if (state.questionnaire && isQuestionnaireQuestionLine(s)) {
-    return { locked: true, lockType: 'questionnaire_question', sectionLabel: s };
+  const assessment = assessmentLineInfo(s, state);
+  if (assessment) return assessment;
+  if (sourceRole === 'heading' || isRepeatedTocHeadingLine(s, state)) {
+    return { locked: true, lockType: 'heading', sectionLabel: s };
   }
+
   if (isHeadingLine(s)) {
     return { locked: true, lockType: 'heading', sectionLabel: s };
   }
@@ -346,16 +381,29 @@ function restorePostSemanticLayout({ source, outputText, chunks, mode = '', requ
 function restoreLockedHeadingLayout(source, outputText, chunks) {
   const headings = (chunks || [])
     .filter(chunk => chunk?.locked
-      && ['heading', 'heading_continuation', 'title', 'label'].includes(String(chunk.lockType || ''))
+      && [
+        'heading',
+        'heading_continuation',
+        'title',
+        'label',
+        'label_prefix',
+        'bullet_prefix',
+        'blockquote_prefix',
+        'legal_clause_prefix'
+      ].includes(String(chunk.lockType || ''))
       && String(chunk.text || '').trim())
-    .map(chunk => String(chunk.text).trim());
+    .map(chunk => ({
+      text: String(chunk.text).trim(),
+      prefix: String(chunk.lockType || '').endsWith('_prefix')
+    }));
   let text = normalizeNewlines(outputText);
   const sourceText = normalizeNewlines(source);
   let sourceCursor = 0;
   let outputCursor = 0;
   let restoredCount = 0;
   let missingCount = 0;
-  for (const heading of headings) {
+  for (const anchor of headings) {
+    const heading = anchor.text;
     const sourceIndex = sourceText.indexOf(heading, sourceCursor);
     let outputIndex = text.indexOf(heading, outputCursor);
     let outputHeadingLength = heading.length;
@@ -376,7 +424,11 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     while (left > 0 && /\s/u.test(text[left - 1])) left -= 1;
     while (right < text.length && /\s/u.test(text[right])) right += 1;
     const sourceBefore = hasSourceBefore ? sourceLineSeparator(sourceText, sourceIndex, 'before') : '';
-    const sourceAfter = hasSourceAfter ? sourceLineSeparator(sourceText, sourceIndex + heading.length, 'after') : '';
+    const sourceAfter = hasSourceAfter
+      ? (anchor.prefix
+          ? sourceInlineSeparator(sourceText, sourceIndex + heading.length, 'after')
+          : sourceLineSeparator(sourceText, sourceIndex + heading.length, 'after'))
+      : '';
     const replacement = `${sourceBefore}${heading}${sourceAfter}`;
     const previous = text.slice(left, right);
     text = text.slice(0, left) + replacement + text.slice(right);
@@ -390,6 +442,17 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     headingCount: headings.length,
     restoredCount,
     missingCount
+  };
+}
+
+// 의미 감사 뒤의 국소 문장 복원은 잠긴 라벨 접두부를 보존하면서도 그 앞의
+// 줄 구분자를 공백으로 재조립할 수 있다. 어휘를 다시 바꾸지 않고 잠긴
+// 제목·라벨·불릿·조문 접두부의 원래 행 위치만 마지막에 한 번 더 복원한다.
+function restoreLockedStructureLayout({ source, outputText, chunks } = {}) {
+  const restored = restoreLockedHeadingLayout(source, outputText, chunks);
+  return {
+    ...restored,
+    pass: restored.missingCount === 0
   };
 }
 
@@ -460,6 +523,7 @@ function buildVisualGapExcludedBlocks(chunks) {
     'table',
     'code',
     'quote',
+    'blockquote_prefix',
     'signature',
     'legal_clause',
     'legal_clause_prefix'
@@ -1187,12 +1251,15 @@ function sentenceKey(value) {
   return String(value || '').normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '');
 }
 
-function splitEditablePrefixPiece(piece) {
+function splitEditablePrefixPiece(piece, options = {}) {
   const raw = String(piece?.text || '');
   const legal = raw.match(/^(\s*제\s*\d{1,3}\s*조(?:의\s*\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?\s+)(\S[\s\S]*)$/u);
-  const bullet = legal ? null : raw.match(/^(\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+)(\S[\s\S]*)$/u);
-  const label = legal || bullet ? null : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
-  const match = legal || bullet || label;
+  const blockquote = legal || options.editableBlockquoteWrapper !== true
+    ? null
+    : raw.match(/^(\s*>\s?)(\S[\s\S]*)$/u);
+  const bullet = legal || blockquote ? null : raw.match(/^(\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+)(\S[\s\S]*)$/u);
+  const label = legal || blockquote || bullet ? null : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
+  const match = legal || blockquote || bullet || label;
   if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
   const prefix = match[1];
   const body = match[2];
@@ -1204,7 +1271,9 @@ function splitEditablePrefixPiece(piece) {
       sep: '',
       start,
       end: start + prefix.length,
-      forceLockType: legal ? 'legal_clause_prefix' : (bullet ? 'bullet_prefix' : 'label_prefix'),
+      forceLockType: legal
+        ? 'legal_clause_prefix'
+        : (blockquote ? 'blockquote_prefix' : (bullet ? 'bullet_prefix' : 'label_prefix')),
       forceSectionLabel: legal ? prefix.trim() : ''
     },
     {
@@ -1464,6 +1533,7 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair,
   const boundaryWarnings = findUnsafeOutputBoundaries(chunks);
   const sectionPathErrors = findSectionPathErrors(chunks);
   const counts = plan?.audit?.lockedByType || countLockedByType(locked);
+  const structuralSignature = compareStructuralRoleSignatures(source, output);
   return {
     version: VERSION,
     enabled: true,
@@ -1482,20 +1552,72 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair,
     unsafeBoundaries: boundaryWarnings.slice(0, 20),
     sectionPathErrorCount: sectionPathErrors.length,
     sectionPathErrors: sectionPathErrors.slice(0, 20),
+    structureSignaturePass: structuralSignature.pass,
+    structuralRoleLossCount: structuralSignature.losses.length,
+    structuralRoleLosses: structuralSignature.losses,
+    sourceStructuralSignature: structuralSignature.source,
+    outputStructuralSignature: structuralSignature.output,
     pass: lost.length === 0
       && outOfOrder.length === 0
       && boundaryWarnings.length === 0
       && sectionPathErrors.length === 0
+      && structuralSignature.pass
       && layoutRepair?.pass !== false
+  };
+}
+
+function compareStructuralRoleSignatures(source, output) {
+  const sourceSignature = structuralRoleSignature(source);
+  const outputSignature = structuralRoleSignature(output);
+  const losses = [];
+  for (const key of Object.keys(sourceSignature)) {
+    const before = Number(sourceSignature[key] || 0);
+    const after = Number(outputSignature[key] || 0);
+    if (after < before) losses.push({ role: key, sourceCount: before, outputCount: after });
+  }
+  return {
+    pass: losses.length === 0,
+    source: sourceSignature,
+    output: outputSignature,
+    losses
+  };
+}
+
+function structuralRoleSignature(value) {
+  const report = layoutStructure.analyzeLineStructure(value);
+  const roles = report.roleCounts || {};
+  return {
+    titleHeading: Number(roles.title || 0) + Number(roles.heading || 0),
+    label: Number(roles.label || 0) + Number(roles.label_inline || 0),
+    list: Number(roles.list || 0),
+    table: Number(roles.table || 0),
+    quote: Number(roles.quote || 0),
+    code: Number(roles.code || 0),
+    legalClause: Number(roles.legal_clause || 0),
+    signature: Number(roles.signature || 0)
   };
 }
 
 function findSectionPathErrors(chunks) {
   const errors = [];
   let currentSection = '';
+  const sectionMarkerTypes = new Set([
+    'heading',
+    'heading_continuation',
+    'title',
+    'legal_clause',
+    'legal_clause_prefix',
+    // 평가 문항은 문제·정답·해설 표제가 자체 sectionPath를 만든다.
+    // 이를 일반 잠금 행으로 건너뛰면 바로 뒤의 해설 본문을 이전 절로
+    // 오인해 모든 정상 평가문에 section_path_mismatch가 생긴다.
+    'assessment_heading',
+    'assessment_answer_heading',
+    'assessment_explanation_heading',
+    'questionnaire_question'
+  ]);
   for (const chunk of chunks || []) {
     const lockType = String(chunk?.lockType || '');
-    if (chunk?.locked && ['heading', 'heading_continuation', 'title', 'legal_clause', 'legal_clause_prefix'].includes(lockType)) {
+    if (chunk?.locked && sectionMarkerTypes.has(lockType)) {
       currentSection = String(chunk.sectionPath || '').trim()
         || lastStructuralLabel(chunk.text)
         || currentSection;
@@ -1525,6 +1647,12 @@ function compactLayoutRepair(value) {
       headingCount: Number(value.heading.headingCount) || 0,
       restoredCount: Number(value.heading.restoredCount) || 0,
       missingCount: Number(value.heading.missingCount) || 0
+    } : null,
+    finalLockedStructure: value.finalLockedStructure ? {
+      applied: value.finalLockedStructure.applied === true,
+      restoredCount: Number(value.finalLockedStructure.restoredCount) || 0,
+      missingCount: Number(value.finalLockedStructure.missingCount) || 0,
+      pass: value.finalLockedStructure.pass !== false
     } : null,
     paragraphs: value.paragraphs ? {
       applied: value.paragraphs.applied === true,
@@ -1624,6 +1752,7 @@ function looksUnsafeChunkEnd(text) {
 function isHeadingLine(s) {
   if (layoutStructure.isKnownHeadingLine(s)) return true;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*\S.{0,100}$/.test(s)) return true;
+  if (/^[IVX]{1,8}[.)．]\s*\S.{0,100}$/.test(s)) return true;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/.test(s) && s.length <= 120) return true;
   if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/.test(s)) return true;
   if (/^제\s?\d{1,3}\s?조(?:의\s?\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?$/.test(s)) return true;
@@ -1637,6 +1766,156 @@ function isQuestionnaireQuestionLine(s) {
   if (/^(?:\d{1,2}[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s+\S/u.test(value)) return true;
   return /[?？]\s*$/u.test(value)
     || /(?:무엇|어떻게|어떠했|왜|어떤|얼마나|서술(?:하시오|하세요)?|작성(?:하시오|하세요)?|설명(?:하시오|하세요)?|적어\s*(?:보세요|주세요)|말해\s*(?:보세요|주세요)|기술(?:하시오|하세요)?)(?:[?.？]|\s*$)/u.test(value);
+}
+
+function sourceInlineSeparator(text, boundary, direction) {
+  let start = boundary;
+  let end = boundary;
+  if (direction === 'before') {
+    while (start > 0 && /\s/u.test(text[start - 1])) start -= 1;
+  } else {
+    while (end < text.length && /\s/u.test(text[end])) end += 1;
+  }
+  const whitespace = direction === 'before' ? text.slice(start, boundary) : text.slice(boundary, end);
+  const newlineCount = (whitespace.match(/\n/gu) || []).length;
+  if (newlineCount >= 2) return '\n\n';
+  if (newlineCount === 1) return '\n';
+  return whitespace ? ' ' : '';
+}
+
+function isRepeatedTocHeadingLine(value, state) {
+  const key = String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\.{2,}\s*\d+\s*$/u, '')
+    .replace(/\s+/gu, ' ')
+    .toLowerCase();
+  return key.length >= 2
+    && key.length <= 180
+    && state?.tocEntryKeys instanceof Set
+    && state.tocEntryKeys.has(key);
+}
+
+function shouldKeepAssessmentLineWhole(value, currentSection = 'protected') {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const header = assessmentHeaderKind(text);
+  if (header) return true;
+  return currentSection !== 'explanation';
+}
+
+function splitAssessmentExplanationPiece(piece, currentSection = 'protected') {
+  const raw = String(piece?.text || '');
+  // 대괄호·겹낫표형 `[해설] 본문`, `[해설]: 본문`과 일반 라벨형
+  // `해설: 본문`만 분리한다. `해설 내용은 ...` 같은 일반 산문은 건드리지 않는다.
+  const explicit = raw.match(/^(\s*(?:(?:\[\s*(?:해설|풀이)\s*\]|【\s*(?:해설|풀이)\s*】)\s*[:：]?|(?:해설|풀이)\s*[:：]))([ \t]*)(\S[\s\S]*)$/u);
+  const inferred = ['answer_key', 'explanation'].includes(String(currentSection || ''))
+    ? raw.match(/^(\s*\d{1,3}[.)])([ \t]+)(\S[\s\S]*)$/u)
+    : null;
+  const match = explicit || inferred;
+  if (!match) return null;
+  const prefix = match[1];
+  const separator = match[2] || '';
+  const body = match[3];
+  const start = Number(piece?.start || 0);
+  const prefixEnd = start + prefix.length;
+  return [
+    {
+      text: prefix,
+      sep: separator,
+      start,
+      end: prefixEnd
+    },
+    {
+      text: body,
+      sep: piece?.sep || '',
+      start: prefixEnd + separator.length,
+      end: Number(piece?.end || (prefixEnd + separator.length + body.length))
+    }
+  ];
+}
+
+function assessmentLineInfo(value, state) {
+  if (!state?.assessment) return null;
+  const text = String(value || '').trim();
+  const header = assessmentHeaderKind(text);
+  if (header === 'explanation') {
+    state.assessmentSection = 'explanation';
+    return {
+      locked: true,
+      lockType: 'assessment_explanation_heading',
+      sectionLabel: text
+    };
+  }
+  if (header === 'answer') {
+    state.assessmentSection = 'answer';
+    return {
+      locked: true,
+      lockType: 'assessment_answer_heading',
+      sectionLabel: text
+    };
+  }
+  if (header === 'protected') {
+    state.assessmentSection = 'protected';
+    return {
+      locked: true,
+      lockType: 'assessment_heading',
+      sectionLabel: text
+    };
+  }
+  if (state.assessmentSection === 'answer' && isAssessmentAnswerKeyLine(text)) {
+    state.assessmentSection = 'answer_key';
+    return {
+      locked: true,
+      lockType: 'assessment_answer_key',
+      sectionLabel: state.currentSection
+    };
+  }
+  if (['answer_key', 'explanation'].includes(state.assessmentSection)
+      && isAssessmentExplanationOrdinal(text)) {
+    state.assessmentSection = 'explanation';
+    return {
+      locked: true,
+      lockType: 'assessment_explanation_heading',
+      sectionLabel: text
+    };
+  }
+  if (state.assessmentSection === 'answer_key' && isAssessmentExplanationProse(text)) {
+    state.assessmentSection = 'explanation';
+    return null;
+  }
+  if (state.assessmentSection !== 'explanation') {
+    return {
+      locked: true,
+      lockType: 'assessment_content',
+      sectionLabel: state.currentSection
+    };
+  }
+  return null;
+}
+
+function assessmentHeaderKind(value) {
+  const text = String(value || '').trim();
+  if (/^(?:[\[【]\s*)?(?:해설|풀이)(?:\s*[\]】])?(?:\s*[:：].*)?$/u.test(text)) return 'explanation';
+  if (/^(?:[\[【]\s*)?(?:듣기|읽기|말하기|쓰기|어휘|문법|수능|모의|평가|시험)?\s*(?:평가\s*)?(?:문항|문제|지문)(?:\s*[\]】])?$/u.test(text)
+      ) return 'protected';
+  if (/^(?:[\[【]\s*)?(?:정답|답)(?:\s*[\]】])?(?:\s*[:：].*)?$/u.test(text)) return 'answer';
+  return '';
+}
+
+function isAssessmentAnswerKeyLine(value) {
+  const text = String(value || '').trim();
+  return /^(?:\d{1,3}[.)]\s*(?:[①-⑳]|[A-E]|[가-마])\s*)+$/u.test(text)
+    || /^(?:[①-⑳]|[A-E]|[가-마])(?:\s*[,/]\s*(?:[①-⑳]|[A-E]|[가-마]))*$/u.test(text);
+}
+
+function isAssessmentExplanationOrdinal(value) {
+  return /^\d{1,3}[.)]$/u.test(String(value || '').trim());
+}
+
+function isAssessmentExplanationProse(value) {
+  const text = String(value || '').trim();
+  return text.length >= 24 && /[.!?。！？]$/u.test(text);
 }
 
 function isHeadingContinuationLine(s, lastPiece) {
@@ -1653,14 +1932,27 @@ function isHypothesisLine(s) {
 }
 
 function isTableLine(s) {
-  if (/^(?:표|그림)\s*[0-9A-Za-z가-힣.-]+/.test(s)) return true;
-  if (/^\|.+\|$/.test(s)) return true;
-  return false;
+  return layoutStructure.isExplicitTableLine(s);
 }
 
 function isStatLine(s) {
-  return /\b(?:p|r|R²|R2|F|t|β|B|SE|M|SD)\s*[<=>]\s*-?\d+(?:\.\d+)?\b/i.test(s) ||
-    /(?:유의확률|표준오차|회귀계수|결정계수|상관계수)\s*[:=]?\s*-?\d+(?:\.\d+)?/.test(s);
+  const text = String(s || '').trim();
+  if (!text || text.length > 180) return false;
+  const statisticalValue = /(?:^|[^가-힣A-Za-z0-9_])(?:p|r|R²|R2|F|t|β|B|SE|M|SD)\s*[<=>]\s*-?(?:\d+(?:\.\d+)?|\.\d+)(?=$|[^가-힣A-Za-z0-9_])/iu.test(text)
+    || /(?:유의확률|표준오차|회귀계수|결정계수|상관계수)\s*[:=]?\s*-?(?:\d+(?:\.\d+)?|\.\d+)/u.test(text);
+  if (!statisticalValue) return false;
+
+  // 통계값을 설명하는 산문은 숫자·사실 감사의 보호를 받으면서 편집돼야
+  // 한다. 통계 출력 한 행 또는 짧은 데이터 라벨처럼 보이는 경우에만
+  // 구조 잠금을 적용한다.
+  const sentenceCount = splitSentences(text).filter(Boolean).length;
+  if (sentenceCount >= 2) return false;
+  const proseEnding = /(?:다|요|니다|했다|하였다|되었다|였다|있다|없다|않다)[.!?。！？]?$/u.test(text);
+  const rowLayout = /\t/u.test(text)
+    || /\S\s{2,}\S/u.test(text)
+    || /^(?:[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()-]{0,32})\s*[:：]\s*/u.test(text);
+  const multipleStatistics = (text.match(/(?:^|[^가-힣A-Za-z0-9_])(?:p|r|R²|R2|F|t|β|B|SE|M|SD)\s*[<=>]/giu) || []).length >= 2;
+  return !proseEnding && (rowLayout || multipleStatistics);
 }
 
 function bare(text) {
@@ -1678,8 +1970,15 @@ module.exports = {
   restoreBoundaryMarkers,
   restorePostSemanticLayout,
   restoreLockedHeadingLayout,
+  restoreLockedStructureLayout,
   restoreParagraphLayout,
+  compareStructuralRoleSignatures,
   isQuestionnaireQuestionLine,
+  assessmentHeaderKind,
+  shouldKeepAssessmentLineWhole,
+  splitAssessmentExplanationPiece,
+  isAssessmentAnswerKeyLine,
+  isAssessmentExplanationOrdinal,
   splitEditablePrefixPiece,
   isStandaloneQuotedTitle
 };

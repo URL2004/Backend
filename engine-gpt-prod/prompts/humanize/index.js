@@ -43,7 +43,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     discoursePromptBlock(discourseProfile),
     speakerBlock(speakerType),
     registerBlock(register, documentProfile),
-    voicePromptBlock(voiceProfile),
+    voicePromptBlock(voiceProfile, { requestStrength, mode }),
     '',
     gptBiasGuardBlock(),
     '',

@@ -13,7 +13,7 @@ test('따옴표로 시작한 자소서 산문의 닫는 부호 경계만 안전�
     documentProfile: profile,
     mode: 'assignment'
   });
-  assert.equal(audit.version, 11);
+  assert.equal(audit.version, 13);
   assert.ok(audit.issueCodes.includes('closed_quote_spacing'));
   assert.ok(audit.sourceReviewWarnings.some(item => item.code === 'quote_terminal_punctuation_review'));
 
@@ -26,6 +26,18 @@ test('따옴표로 시작한 자소서 산문의 닫는 부호 경계만 안전�
   assert.equal(particleAudit.issueCodes.includes('closed_quote_spacing'), false);
   assert.equal(particleAudit.sourceReviewWarnings.some(item => item.code === 'quote_terminal_punctuation_review'), false);
   assert.equal(refinement.applySafeDeterministicRepairs({ source: attachedParticle, outputText: attachedParticle }).text, attachedParticle);
+
+  const formalCopula = 'AI 기반 교육의 가능성은 학습의 ‘개인화’와 ‘사각지대 해소’였습니다.';
+  const formalAudit = refinement.analyzeKoreanRefinement({
+    source: formalCopula,
+    outputText: formalCopula,
+    documentProfile: profile
+  });
+  assert.equal(formalAudit.issueCodes.includes('closed_quote_spacing'), false, JSON.stringify(formalAudit));
+  assert.equal(
+    refinement.applySafeDeterministicRepairs({ source: formalCopula, outputText: formalCopula }).text,
+    formalCopula
+  );
 });
 
 test('엔진이 만든 서로 상호작용 중복은 제거하고 도움·비교절 중복은 국소 수리 대상으로 잡는다', () => {
@@ -172,6 +184,26 @@ test('변환 중 새로 생긴 한글 토큰 중복 오타를 검출하고 원�
     outputText: '외부 전문가가 검토에 참여했습니다.'
   });
   assert.equal(validParticle.issueCodes.includes('introduced_token_duplication'), false, '전문가+가를 중복 오타로 오인하지 않아야 한다');
+
+  const validAuxiliaryParticle = refinement.analyzeKoreanRefinement({
+    source: '분석 강도를 확인했습니다.',
+    outputText: '분석 강도도 함께 확인했습니다.'
+  });
+  assert.equal(
+    validAuxiliaryParticle.issueCodes.includes('introduced_token_duplication'),
+    false,
+    '강도+도처럼 명사 끝과 보조사가 같은 정상 결합을 중복 오타로 오인하지 않아야 한다'
+  );
+
+  const validVerbEnding = refinement.analyzeKoreanRefinement({
+    source: '두 절의 논의가 자연스럽게 이어지는지 살폈습니다.',
+    outputText: '두 절의 논의가 자연스럽게 이어지지 않는 부분을 살폈습니다.'
+  });
+  assert.equal(
+    validVerbEnding.issueCodes.includes('introduced_token_duplication'),
+    false,
+    '이어지지처럼 용언 어간과 부정 연결어미가 만난 정상 활용을 중복 오타로 오인하지 않아야 한다'
+  );
 });
 
 test('원문에 있던 깊게 이해는 자동 변경하지 않고 원문 검토 알림으로 분리한다', () => {
@@ -219,7 +251,7 @@ test('변환 중 새로 생긴 인용 조사·이중 주제·어미·연어 비�
 });
 
 test('정상적인 인용 연결·가치와 함께하는 표현·기준 이해는 격식 오류로 오탐하지 않는다', () => {
-  const text = '연구진은 “추가 검토가 필요하다.”는 입장을 밝혔습니다. 사회적 가치와 함께하는 활동이며 업무 기준을 이해했습니다.';
+  const text = '연구진은 “추가 검토가 필요하다.”는 입장을 밝혔습니다. 사회적 가치와 함께하는 활동이며 업무 기준을 이해했습니다. 저는 이 구절에서 특히 깊은 인상을 받았습니다.';
   const audit = refinement.analyzeKoreanRefinement({
     source: text,
     outputText: text,
@@ -227,6 +259,7 @@ test('정상적인 인용 연결·가치와 함께하는 표현·기준 이해�
   });
   assert.equal(audit.issueCodes.includes('quote_attribution_particle_mismatch'), false);
   assert.equal(audit.issueCodes.includes('value_participation_collocation'), false);
+  assert.equal(audit.issueCodes.includes('double_topic_chain'), false);
   assert.equal(audit.issueCodes.includes('professional_register_downgrade'), false);
 });
 

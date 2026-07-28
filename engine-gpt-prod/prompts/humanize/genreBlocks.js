@@ -15,7 +15,9 @@ function genreBlock(_mode, register, _styleProfile = '', documentProfile = null,
   else if (group === 'general') blocks.push(generalBlock(register));
   else blocks.push(unknownBlock(register));
 
-  if (documentProfile?.formatProfile?.flags?.includes?.('questionnaire')) {
+  if (documentProfile?.formatProfile?.flags?.includes?.('assessment_item')) {
+    blocks.push(assessmentItemBlock());
+  } else if (documentProfile?.formatProfile?.flags?.includes?.('questionnaire')) {
     blocks.push(questionnaireBlock());
   }
   blocks.push(tonePolicyBlock(
@@ -175,6 +177,15 @@ function questionnaireBlock() {
     '질문 문구와 번호는 한 글자도 바꾸지 않는다.',
     '각 질문 아래의 답변만 그 경계 안에서 편집하고, 다른 답변으로 문장을 옮기지 않는다.',
     '답변마다 시제·화자·길이·종결어미를 같게 맞추지 않는다.'
+  ].join('\n');
+}
+
+function assessmentItemBlock() {
+  return [
+    '[형식: 평가 문항·정답·해설]',
+    '문항 안내, 지문, 대화의 화자와 발화, 선택지, 정답은 평가의 정합성을 이루는 보호 구조이므로 한 글자도 바꾸지 않는다.',
+    '해설 제목 뒤의 설명 본문만 편집한다. 해설에서도 정답 번호, 오답 근거, 발화 주체와 시제를 바꾸지 않는다.',
+    '선택지를 자연스럽게 고치거나 문항과 해설을 한 문단으로 합치지 않는다.'
   ].join('\n');
 }
 

@@ -16,11 +16,23 @@ const MIN_SECTION_CHARS = 1200;
 const MIN_FRAGMENT_CHARS = 180;
 const MAX_SECTION_CHARS = 2500;
 const MAX_MINI_ATTEMPTS = 8;
+const MAX_TARGET_ONLY_ATTEMPTS = 4;
+// 절대 상한은 기존 계약대로 2개를 유지하되 운영 기본값은 1개다. mini에서
+// 실질 이득이 확인되거나 충분히 긴 핵심 절이 완전 무변환인 경우만 승격한다.
 const MAX_ESCALATIONS = 2;
+const DEFAULT_MAX_ESCALATIONS = 1;
 const RECOVERY_CONCURRENCY = 3;
+const MIN_ESCALATION_CHARS = 600;
+const MIN_ESCALATION_GAIN = 0.025;
 
 function isEnabled() {
   return isV248FeatureEnabled('sectionRecovery');
+}
+
+function configuredMaxEscalations() {
+  const raw = Number(process.env.HUMANIZE_SECTION_ESCALATION_MAX);
+  if (!Number.isFinite(raw)) return DEFAULT_MAX_ESCALATIONS;
+  return Math.max(0, Math.min(MAX_ESCALATIONS, Math.floor(raw)));
 }
 
 function selectRecoverySections(chunks, {
@@ -48,7 +60,8 @@ function selectRecoverySections(chunks, {
         inputRisk
       });
       const report = humanizationDepth.evaluateHumanizationDepth(source, output, plan);
-      if (!report.applicable || report.pass === true) return null;
+      if (!humanizationDepth.needsHumanizationRecovery(report)) return null;
+      const targetOnly = report.pass === true;
       return {
         index,
         source,
@@ -58,16 +71,28 @@ function selectRecoverySections(chunks, {
         sectionPath: String(chunk?.sectionPath || ''),
         plan,
         report,
+        targetOnly,
+        targetGap: humanizationDepth.targetDepthGap(report),
         priority: recoveryPriority(report)
       };
     })
     .filter(Boolean);
   const byPriority = (left, right) => right.priority - left.priority || left.index - right.index;
-  const preferred = candidates.filter(item => item.selectionKind === 'section').sort(byPriority);
-  const fragments = candidates.filter(item => item.selectionKind === 'fragment').sort(byPriority);
+  const required = candidates.filter(item => item.targetOnly !== true);
+  const targetOnly = candidates.filter(item => item.targetOnly === true);
+  const order = values => [
+    ...values.filter(item => item.selectionKind === 'section').sort(byPriority),
+    ...values.filter(item => item.selectionKind === 'fragment').sort(byPriority)
+  ];
+  const selectedRequired = order(required).slice(0, MAX_MINI_ATTEMPTS);
+  const remaining = Math.max(0, MAX_MINI_ATTEMPTS - selectedRequired.length);
+  const selectedTargetOnly = order(targetOnly).slice(
+    0,
+    Math.min(MAX_TARGET_ONLY_ATTEMPTS, remaining)
+  );
   return [
-    ...preferred.slice(0, MAX_MINI_ATTEMPTS),
-    ...fragments.slice(0, Math.max(0, MAX_MINI_ATTEMPTS - preferred.length))
+    ...selectedRequired,
+    ...selectedTargetOnly
   ];
 }
 
@@ -96,8 +121,14 @@ async function recoverSections({
     selectedSectionCount: selected.length,
     selectedPreferredSectionCount: selected.filter(item => item.selectionKind === 'section').length,
     selectedFragmentCount: selected.filter(item => item.selectionKind === 'fragment').length,
+    selectedTargetOnlyCount: selected.filter(item => item.targetOnly === true).length,
     miniAttemptCount: selected.length,
     escalationAttemptCount: 0,
+    escalationEligibleCount: 0,
+    escalationSkippedCount: 0,
+    escalationSkipCodes: [],
+    escalationSkipCodeCounts: {},
+    escalationMaximum: configuredMaxEscalations(),
     concurrency: RECOVERY_CONCURRENCY,
     sectionIndices: selected.map(item => item.index),
     appliedSectionIndices: [],
@@ -123,13 +154,28 @@ async function recoverSections({
     return applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics });
   });
 
-  const escalationTargets = afterMini
-    .filter(item => item.report?.pass !== true && item.nonEscalatableFailure !== true)
+  const escalationDecisions = afterMini.map(item => ({
+    item,
+    decision: shouldEscalateRecovery(item)
+  }));
+  for (const { decision } of escalationDecisions) {
+    if (decision.eligible) continue;
+    recordEscalationSkip(metrics, decision.code);
+  }
+  const escalationTargets = escalationDecisions
+    .filter(({ decision }) => decision.eligible)
+    .map(({ item }) => item)
     .sort((left, right) => recoveryPriority(right.report) - recoveryPriority(left.report))
-    .slice(0, MAX_ESCALATIONS);
+    .slice(0, metrics.escalationMaximum);
+  metrics.escalationEligibleCount = escalationDecisions
+    .filter(({ decision }) => decision.eligible).length;
+  const eligibleNotSelected = Math.max(0, metrics.escalationEligibleCount - escalationTargets.length);
+  for (let index = 0; index < eligibleNotSelected; index += 1) {
+    recordEscalationSkip(metrics, 'escalation_budget_exhausted');
+  }
   metrics.escalationAttemptCount = escalationTargets.length;
   metrics.escalated = escalationTargets.length;
-  await mapWithConcurrency(escalationTargets, Math.min(RECOVERY_CONCURRENCY, MAX_ESCALATIONS), async entry => {
+  await mapWithConcurrency(escalationTargets, Math.min(RECOVERY_CONCURRENCY, metrics.escalationMaximum || 1), async entry => {
     const attempt = await safeRetry(retrySection, entry, 'escalation');
     if (attempt?.usage) usages.push(attempt.usage);
     return applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics });
@@ -156,6 +202,7 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
   const currentOutput = String(chunks?.[entry.index]?.outputText ?? entry.output ?? '').trim();
   const candidate = String(attempt?.outputText || '').trim();
   const currentReport = humanizationDepth.evaluateHumanizationDepth(entry.source, currentOutput, entry.plan);
+  const currentScore = humanizationDepth.humanizationCandidateScore(currentReport);
   if (attempt?.error) {
     const failureCode = String(attempt.failureCode || classifyModelFailure(attempt.error));
     recordRejections(metrics, [failureCode]);
@@ -166,13 +213,20 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
       report: currentReport,
       rejectionCode: failureCode,
       failureCode,
+      marginalGain: 0,
       nonEscalatableFailure: attempt.nonEscalatableFailure === true
         || isNonEscalatableModelFailureCode(failureCode)
     };
   }
   if (!candidate) {
     recordRejections(metrics, ['empty_candidate']);
-    return { ...entry, output: currentOutput, report: currentReport, rejectionCode: 'empty_candidate' };
+    return {
+      ...entry,
+      output: currentOutput,
+      report: currentReport,
+      rejectionCode: 'empty_candidate',
+      marginalGain: 0
+    };
   }
   if (candidate === currentOutput) {
     recordRejections(metrics, [attempt?.safeChangeFound === false ? 'no_safe_change' : 'candidate_unchanged']);
@@ -180,23 +234,30 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
       ...entry,
       output: currentOutput,
       report: currentReport,
-      rejectionCode: attempt?.safeChangeFound === false ? 'no_safe_change' : 'candidate_unchanged'
+      rejectionCode: attempt?.safeChangeFound === false ? 'no_safe_change' : 'candidate_unchanged',
+      marginalGain: 0
     };
   }
   const candidateReport = humanizationDepth.evaluateHumanizationDepth(entry.source, candidate, entry.plan);
+  const candidateGain = humanizationDepth.humanizationCandidateScore(candidateReport) - currentScore;
   const validation = typeof validateCandidate === 'function'
     ? validateCandidate({ entry, currentOutput, candidate, currentReport, candidateReport, attempt })
     : true;
   const safe = validation === true || validation?.pass === true;
-  const better = candidateReport.pass === true
-    || humanizationDepth.isBetterHumanizationCandidate(currentReport, candidateReport);
+  const better = humanizationDepth.isBetterHumanizationCandidate(currentReport, candidateReport);
   if (safe && better && chunks?.[entry.index]) {
     chunks[entry.index].outputText = candidate;
     metrics.applied += 1;
     if (attempt?.recoveryTier === 'escalation') metrics.escalationAppliedCount += 1;
     else metrics.miniAppliedCount += 1;
     if (!metrics.appliedSectionIndices.includes(entry.index)) metrics.appliedSectionIndices.push(entry.index);
-    return { ...entry, output: candidate, report: candidateReport, applied: true };
+    return {
+      ...entry,
+      output: candidate,
+      report: candidateReport,
+      applied: true,
+      marginalGain: candidateGain
+    };
   }
   const partial = safeEditAccumulator.accumulateSafeEdits({
     source: entry.source,
@@ -237,7 +298,8 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
       report: partial.report,
       applied: true,
       partialApplied: true,
-      partialAppliedSentenceCount: partial.appliedCount
+      partialAppliedSentenceCount: partial.appliedCount,
+      marginalGain: humanizationDepth.humanizationCandidateScore(partial.report) - currentScore
     };
   }
   metrics.partialRejectedSentenceCount += Number(partial.rejectedCount || 0);
@@ -252,8 +314,71 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
     ...entry,
     output: currentOutput,
     report: currentReport,
-    rejectionCode: rejectionCodes[0] || 'safety_audit_failed'
+    rejectionCode: rejectionCodes[0] || 'safety_audit_failed',
+    rejectionCodes,
+    safetyRejected: !safe,
+    marginalGain: 0
   };
+}
+
+function shouldEscalateRecovery(entry) {
+  if (!entry || entry.report?.pass === true) return { eligible: false, code: 'already_passed' };
+  if (entry.nonEscalatableFailure === true) return { eligible: false, code: 'non_escalatable_failure' };
+  if (Number(entry.chars || entry.source?.length || 0) < MIN_ESCALATION_CHARS) {
+    return { eligible: false, code: 'section_too_small' };
+  }
+  if (entry.safetyRejected === true || isSafetyRejectionCode(entry.rejectionCode)) {
+    return { eligible: false, code: 'unsafe_mini_candidate' };
+  }
+  const reasons = new Set(entry.report?.reasons || []);
+  const severe = [
+    'rhetorical_remediation_low',
+    'substantive_carryover_high',
+    'risk_target_coverage_low',
+    'structural_rewrite_coverage_low',
+    'paragraph_rewrite_coverage_low',
+    'resume_semantic_repetition_low'
+  ].some(code => reasons.has(code))
+    || entry.report?.minimumEffectPass === false;
+  if (!severe) return { eligible: false, code: 'non_critical_shortfall' };
+  if (entry.applied === true) {
+    return Number(entry.marginalGain || 0) >= MIN_ESCALATION_GAIN
+      ? { eligible: true, code: 'mini_gain_remaining_shortfall' }
+      : { eligible: false, code: 'mini_gain_too_small' };
+  }
+  if (['candidate_unchanged', 'no_safe_change', 'not_better'].includes(entry.rejectionCode)
+      && Number(entry.chars || entry.source?.length || 0) >= MIN_SECTION_CHARS) {
+    return { eligible: true, code: 'long_section_no_effect' };
+  }
+  return { eligible: false, code: 'mini_not_escalation_worthy' };
+}
+
+function isSafetyRejectionCode(code) {
+  return [
+    'number_changed',
+    'semantic_shift',
+    'structure_loss',
+    'quote_loss',
+    'pov_shift',
+    'protected_term_loss',
+    'voice_shift',
+    'safety_audit_failed',
+    'korean_integrity',
+    'semantic_relation_shift',
+    'ending_style_shift',
+    'partial_safety_audit_failed'
+  ].includes(String(code || ''));
+}
+
+function recordEscalationSkip(metrics, code) {
+  const safeCode = String(code || 'not_eligible');
+  metrics.escalationSkippedCount = Number(metrics.escalationSkippedCount || 0) + 1;
+  metrics.escalationSkipCodes = Array.isArray(metrics.escalationSkipCodes)
+    ? metrics.escalationSkipCodes
+    : [];
+  metrics.escalationSkipCodeCounts = metrics.escalationSkipCodeCounts || {};
+  metrics.escalationSkipCodeCounts[safeCode] = Number(metrics.escalationSkipCodeCounts[safeCode] || 0) + 1;
+  if (!metrics.escalationSkipCodes.includes(safeCode)) metrics.escalationSkipCodes.push(safeCode);
 }
 
 function normalizeRejectionCodes(values) {
@@ -325,10 +450,16 @@ module.exports = {
   MIN_FRAGMENT_CHARS,
   MAX_SECTION_CHARS,
   MAX_MINI_ATTEMPTS,
+  MAX_TARGET_ONLY_ATTEMPTS,
   MAX_ESCALATIONS,
+  DEFAULT_MAX_ESCALATIONS,
   RECOVERY_CONCURRENCY,
+  MIN_ESCALATION_CHARS,
+  MIN_ESCALATION_GAIN,
   isEnabled,
+  configuredMaxEscalations,
   selectRecoverySections,
   recoverSections,
-  mapWithConcurrency
+  mapWithConcurrency,
+  shouldEscalateRecovery
 };

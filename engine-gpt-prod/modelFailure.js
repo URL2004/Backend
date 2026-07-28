@@ -16,6 +16,10 @@ function classifyModelFailure(error) {
   if (rawCode === 'OPENAI_REFUSAL' || error?.refusal === true || /refusal|content.?filter|safety.?refusal/u.test(message)) {
     return 'openai_refusal';
   }
+  if (rawCode === 'OPENAI_QUOTA_EXHAUSTED'
+      || /exceeded\s+your\s+current\s+quota|check\s+your\s+plan\s+and\s+billing|insufficient[_\s-]*quota|billing\s+hard\s+limit/u.test(message)) {
+    return 'openai_quota_exhausted';
+  }
   if (status === 429 || /\b429\b|rate.?limit|too many requests/u.test(message)) {
     return 'openai_rate_limited';
   }
@@ -42,7 +46,7 @@ function classifyModelFailure(error) {
 }
 
 function isTransportFailureCode(value) {
-  return /^(?:request_aborted|openai_(?:rate_limited|server_error|timeout|network_error))$/u
+  return /^(?:request_aborted|openai_(?:quota_exhausted|rate_limited|server_error|timeout|network_error))$/u
     .test(String(value || ''));
 }
 
@@ -50,7 +54,7 @@ function isNonEscalatableModelFailureCode(value) {
   const code = String(value || '');
   return code === 'gpt_call_failed'
     || code === 'request_aborted'
-    || /^openai_(?:rate_limited|server_error|timeout|network_error|schema_error|refusal|truncated_output|incomplete_output|empty_output)/u.test(code);
+    || /^openai_(?:quota_exhausted|rate_limited|server_error|timeout|network_error|schema_error|refusal|truncated_output|incomplete_output|empty_output)/u.test(code);
 }
 
 module.exports = {

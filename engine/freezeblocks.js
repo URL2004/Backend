@@ -42,11 +42,13 @@ function detectAcademicSpans(text) {
   const source = String(text || '');
   const lines = lineRecords(source);
   const spans = [];
+  let tocSpan = null;
 
   const tocHeadingIndex = lines.findIndex(line => isTocHeadingLine(line.text) && line.start < source.length * 0.5);
   if (tocHeadingIndex >= 0) {
     let entries = 0;
     let sawBlankAfterEntries = false;
+    const seenEntries = new Set();
     let end = lines[tocHeadingIndex].endWithNewline;
     for (let i = tocHeadingIndex + 1; i < lines.length; i += 1) {
       const raw = lines[i].text;
@@ -56,24 +58,40 @@ function detectAcademicSpans(text) {
         end = lines[i].endWithNewline;
         continue;
       }
-      if (entries >= 2 && (sawBlankAfterEntries && isBodyHeadingLine(trimmed) || isProseLine(trimmed))) break;
-      if (isTocEntryLine(trimmed)) entries += 1;
-      else if (entries >= 2) break;
+      if (isProseLine(trimmed)) break;
+      const tocLike = isTocEntryLine(trimmed) || isTocSubentryLine(trimmed);
+      const entryKey = normalizeTocEntry(trimmed);
+      // 목차와 본문 사이 빈 줄 뒤의 첫 표제, 또는 목차에서 이미 본 표제가
+      // 다시 나타나면 그 지점부터 실제 본문이다. 중첩된 무번호 목차 항목은
+      // 짧은 명사구인 동안 계속 목차에 포함한다.
+      if (entries >= 2 && (
+        (sawBlankAfterEntries && isBodyHeadingLine(trimmed))
+        || (entryKey && seenEntries.has(entryKey))
+      )) break;
+      if (!tocLike) break;
+      entries += 1;
+      if (entryKey) seenEntries.add(entryKey);
       end = lines[i].endWithNewline;
     }
-    if (entries >= 2) spans.push({ type: 'toc', start: lines[tocHeadingIndex].start, end });
-  }
-
-  let refHeadingIndex = -1;
-  for (let i = 0; i < lines.length; i += 1) {
-    // 독립 행의 참고문헌 표제는 문서 길이나 등장 비율과 무관하게 강한
-    // 구조 신호다. 짧은 보고서에서 35% 이전에 나온다는 이유로 인용 목록을
-    // 일반 본문으로 보내지 않는다.
-    if (isRefHeadingLine(lines[i].text)) {
-      refHeadingIndex = i;
-      break;
+    if (entries >= 2) {
+      tocSpan = { type: 'toc', start: lines[tocHeadingIndex].start, end };
+      spans.push(tocSpan);
     }
   }
+
+  const refHeadingCandidates = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!isRefHeadingLine(lines[i].text)) continue;
+    // 목차의 `4. 참고문헌`은 목차 항목이지 참고문헌 블록의 시작이 아니다.
+    // 같은 행을 두 상태 머신이 동시에 소비하면 서론부터 문서 끝까지가
+    // reference_item으로 잠기는 치명적인 오탐이 생긴다.
+    if (tocSpan && lines[i].start >= tocSpan.start && lines[i].end <= tocSpan.end) continue;
+    refHeadingCandidates.push(i);
+  }
+  // 문서에 참고문헌 표제가 둘 이상 남아 있으면 실제 목록에 가장 가까운
+  // 마지막 독립 표제를 선택한다. 앞쪽의 보고서 개요·샘플 목차 표제를
+  // 본문 시작으로 오인하지 않게 하는 보조 안전장치다.
+  const refHeadingIndex = refHeadingCandidates.at(-1) ?? -1;
   if (refHeadingIndex >= 0) {
     let end = source.length;
     for (let i = refHeadingIndex + 1; i < lines.length; i += 1) {
@@ -92,6 +110,22 @@ function detectAcademicSpans(text) {
 
 function academicSpanAt(spans, start, end) {
   return (spans || []).find(span => start >= span.start && end <= span.end) || null;
+}
+
+function tocEntryKeys(text, spans = null) {
+  const source = String(text || '');
+  const academicSpans = Array.isArray(spans) ? spans : detectAcademicSpans(source);
+  const keys = new Set();
+  for (const span of academicSpans) {
+    if (span?.type !== 'toc') continue;
+    for (const line of lineRecords(source.slice(span.start, span.end))) {
+      const value = line.text.trim();
+      if (!value || isTocHeadingLine(value)) continue;
+      const key = normalizeTocEntry(value);
+      if (key.length >= 2 && key.length <= 180) keys.add(key);
+    }
+  }
+  return keys;
 }
 
 function lineRecords(source) {
@@ -117,12 +151,29 @@ function isRefHeadingLine(value) {
 function isTocEntryLine(value) {
   const s = String(value || '').trim();
   if (!s || s.length > 180) return false;
-  if (/^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|제\s*\d+\s*(?:장|절|항)|\d+(?:\.\d+){0,4}[.)]?|[가-힣][.)])\s*\S/u.test(s)) return true;
+  if (/^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?|[IVX]{1,8}[.)．]|제\s*\d+\s*(?:장|절|항)|\d+(?:\.\d+){0,4}[.)]?|[가-힣][.)])\s*\S/u.test(s)) return true;
   return /\.{2,}\s*\d+\s*$/u.test(s);
 }
 
+function isTocSubentryLine(value) {
+  const s = String(value || '').trim();
+  if (!s || s.length > 180) return false;
+  if (/[.!?。！？]\s*[”’"'」』》〉)\]]*$/u.test(s)) return false;
+  if (/(?:다|요|니다|한다|된다|있다|없다|않다|했다|하였다|되었다)$/u.test(s)) return false;
+  return s.split(/\s+/u).filter(Boolean).length <= 18;
+}
+
+function normalizeTocEntry(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\.{2,}\s*\d+\s*$/u, '')
+    .replace(/\s+/gu, ' ')
+    .toLowerCase();
+}
+
 function isBodyHeadingLine(value) {
-  return /^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*|제\s*\d+\s*(?:장|절|항)\s*|\d+(?:\.\d+){0,3}[.)]?\s+)(?:서론|본론|결론|초록|연구|분석|논의|시사점|\S)/u.test(String(value || '').trim());
+  return /^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*|[IVX]{1,8}[.)．]\s*|제\s*\d+\s*(?:장|절|항)\s*|\d+(?:\.\d+){0,3}[.)]?\s+)(?:서론|본론|결론|초록|연구|분석|논의|시사점|\S)/u.test(String(value || '').trim());
 }
 
 function isProseLine(value) {
@@ -207,6 +258,7 @@ module.exports = {
   protectInlineCites,
   detectAcademicSpans,
   academicSpanAt,
+  tocEntryKeys,
   REF_HEADING,
   TOC_HEADING,
   APPENDIX_HEADING_LINE

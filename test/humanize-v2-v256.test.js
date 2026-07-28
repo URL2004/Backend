@@ -165,6 +165,8 @@ test('후기와 혜택·절대 주장·효능이 섞인 글은 단일 장르와 
   assert.match(built.stable, /협찬·제휴·광고 여부가 원문이나 사용자 메모에 없으면/u);
   assert.match(built.stable, /효능 표현을 새로 만들거나 강화하지 않는다/u);
   assert.match(built.stable, /변화 분포 목표:[^\n]*최소\s+\d+개/u);
+  assert.match(built.stable, /우선 대상 이행 목표:[^\n]*최소\s+\d+개/u);
+  assert.match(built.stable, /구조 변화 목표:[^\n]*최소\s+\d+개/u);
   assert.match(built.stable, /반복 감탄·과도한 추천·혜택 나열·행동 요청/u);
   assert.ok(
     built.stable.indexOf('[혼합 의도 안전: 후기·광고·혜택 주장]')
@@ -267,7 +269,7 @@ test('이중 목적어 연어와 현재 지속 상태의 과거화는 일반화�
   assert.equal(restored.text, source);
 });
 
-test('고급은 문장 경계 토큰이 강도 계약을 가로막지 않고 기본의 기존 리듬 보호는 유지한다', () => {
+test('기본·고급은 문장 경계 토큰 충돌 없이 재구성하고 다듬기만 정확한 경계를 잠근다', () => {
   const source = '짧은 문장입니다. 이 문장은 앞 문장보다 조금 더 길게 이어집니다. 다시 짧습니다. 마지막 문장은 충분한 설명을 포함해 길게 마무리됩니다.';
   const voiceProfile = {
     lineBreakSensitive: false,
@@ -275,11 +277,15 @@ test('고급은 문장 경계 토큰이 강도 계약을 가로막지 않고 기
   };
   assert.equal(
     chunkPolicy.shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, 'assignment', 'basic'),
-    true
+    false
   );
   assert.equal(
     chunkPolicy.shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, 'assignment', 'advanced'),
     false
+  );
+  assert.equal(
+    chunkPolicy.shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, 'polish', 'polish'),
+    true
   );
 });
 

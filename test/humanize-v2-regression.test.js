@@ -1040,11 +1040,15 @@ test('미래형 수업 계획 목록은 명사형 종결만으로 세특이 되�
 
 test('voice 프롬프트는 원문의 문장 길이 범위와 비균일 경계를 명시한다', () => {
   const source = '짧은 문장임. 이 문장은 앞 문장보다 조금 더 길게 이어지는 관찰 내용임. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 친구들의 질문에 답하며 탐구 내용을 확장한 매우 긴 문장임. 마지막 문장은 다시 짧게 마무리함.';
-  const prompt = voicePromptBlock(buildVoiceProfile(source, { documentProfile: 'student_record_teacher' }));
+  const prompt = voicePromptBlock(
+    buildVoiceProfile(source, { documentProfile: 'student_record_teacher' }),
+    { requestStrength: 'basic', mode: 'assignment' }
+  );
   assert.match(prompt, /문장 수≈4/);
   assert.match(prompt, /길이 범위≈\d+~\d+자/);
   assert.match(prompt, /원문 문장별 길이 순서≈\d+→\d+→\d+→\d+자/);
-  assert.match(prompt, /길이를 고르게 만들 목적으로 합치거나 쪼개지 않는다/);
+  assert.match(prompt, /필요한 문장 경계만 제한적으로 조정할 수 있다/);
+  assert.match(prompt, /중간 길이로 맞추지는 않는다/);
 });
 
 test('voice 프롬프트는 20문장 이하의 길이 순서와 구두점 없는 장문의 비균일 분할 목표를 보존한다', () => {

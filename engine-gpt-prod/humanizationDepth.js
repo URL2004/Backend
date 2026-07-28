@@ -3,6 +3,7 @@
 const { computeEditMetrics, levenshteinDistance, splitSentences } = require('../engine/koreanText');
 const { buildRemediationPlan, compareRemediationTargets } = require('./discourseAudit');
 const { splitLogicalProseParagraphs } = require('./proseParagraphs');
+const { alignSourceSentence } = require('./sentenceAlignment');
 const resumeRepetitionAudit = require('./resumeRepetitionAudit');
 const commercialSignals = require('./commercialSignals');
 
@@ -11,8 +12,8 @@ const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 11;
-const POLICY_VERSION = 'perceived-v2.5.6';
+const PLAN_VERSION = 12;
+const POLICY_VERSION = 'perceived-v2.5.11';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -136,18 +137,20 @@ function buildHumanizationPlan(source, {
     ? (strength === 'advanced' ? 0.65 : 0.50)
     : 0;
 
-  // 민감 장르는 의미 안전 여유 3%p를 주되 고급 자체를 기본 수준으로
-  // 강등하지 않는다. 구조·수치·화자는 별도 감사로 지키고, 일반 산문에서
-  // 사용자가 느낄 수 있는 문장·절 재구성 범위는 유지한다.
+  // 민감 장르는 의미 안전 여유를 최소선에만 작게 주고, 모델이 실제로 노리는
+  // 체감 목표는 일반 글과 거의 동일하게 유지한다. 이전의 일괄 3%p 완화는
+  // 학술·지원서 대부분을 다듬기 수준에서 멈추게 했다.
   if (cautious) {
-    minSubstantiveEditRatio = Math.max(strength === 'advanced' ? 0.12 : 0.08, minSubstantiveEditRatio - 0.03);
-    targetSubstantiveEditMin = Math.max(minSubstantiveEditRatio + 0.02, targetSubstantiveEditMin - 0.03);
-    targetSubstantiveEditMax = Math.max(targetSubstantiveEditMin + 0.03, targetSubstantiveEditMax - 0.03);
-    minChangedSentenceRatio = Math.max(strength === 'advanced' ? 0.47 : 0.32, minChangedSentenceRatio - 0.08);
-    minTargetCoverage = Math.max(strength === 'advanced' ? 0.60 : 0.45, minTargetCoverage - 0.10);
-    structuralCoverageFactor = strength === 'advanced' ? 0.52 : 0.40;
+    minSubstantiveEditRatio = Math.max(strength === 'advanced' ? 0.13 : 0.09, minSubstantiveEditRatio - 0.02);
+    targetSubstantiveEditMin = Math.max(minSubstantiveEditRatio + 0.02, targetSubstantiveEditMin - 0.01);
+    targetSubstantiveEditMax = Math.max(targetSubstantiveEditMin + 0.03, targetSubstantiveEditMax - 0.01);
+    minChangedSentenceRatio = Math.max(strength === 'advanced' ? 0.50 : 0.35, minChangedSentenceRatio - 0.05);
+    // 대상 문장이 4개일 때 3개를 충분히 재구성한 강한 후보까지 불필요하게
+    // 미달 처리하지 않도록 75% 경계는 유지한다.
+    minTargetCoverage = Math.max(strength === 'advanced' ? 0.65 : 0.50, minTargetCoverage - 0.07);
+    structuralCoverageFactor = strength === 'advanced' ? 0.56 : 0.44;
     minRemediationCoverage = rhetoricalRemediationPlan.targetCount > 0
-      ? (strength === 'advanced' ? 0.55 : 0.42)
+      ? (strength === 'advanced' ? 0.60 : 0.46)
       : 0;
   }
   if (creative) {
@@ -405,7 +408,10 @@ function isBetterHumanizationCandidate(current, candidate) {
   if (candidate.pass === true && current?.pass !== true) return true;
   const currentScore = humanizationCandidateScore(current);
   const candidateScore = humanizationCandidateScore(candidate);
-  if (candidateScore >= currentScore + 0.04) return true;
+  // 두 번의 국소 회복이 누적될 수 있도록 안전한 2.5%p 개선부터 중간
+  // 후보로 채택한다. 이전 4%p 문턱은 각 후보가 의미 있게 좋아졌어도 둘 다
+  // 버려져 최종 결과가 원문과 거의 같은 상태로 남는 원인이었다.
+  if (candidateScore >= currentScore + 0.025) return true;
   const currentEdit = finite(current?.metrics?.substantiveEditRatio);
   const candidateEdit = finite(candidate?.metrics?.substantiveEditRatio);
   const currentSentences = finite(current?.metrics?.substantiveChangedSentenceCount);
@@ -418,11 +424,29 @@ function isBetterHumanizationCandidate(current, candidate) {
   const candidateParagraphs = finite(candidate?.metrics?.targetChangedParagraphCount);
   const currentRepetition = finite(current?.metrics?.resumeRepetition?.achievedReduction);
   const candidateRepetition = finite(candidate?.metrics?.resumeRepetition?.achievedReduction);
+  if (candidate.metrics?.targetDepthMet === true
+      && current?.metrics?.targetDepthMet !== true
+      && candidateEdit >= currentEdit - 0.002) return true;
   if (candidateRepetition > currentRepetition && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateParagraphs > currentParagraphs && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateStructural > currentStructural && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateRemediation >= currentRemediation + 0.25 && candidateEdit >= currentEdit - 0.005) return true;
   return candidateEdit >= currentEdit + 0.015 && candidateSentences >= currentSentences;
+}
+
+function targetDepthGap(report) {
+  if (!report?.applicable || report.metrics?.targetDepthMet === true) return 0;
+  return round4(Math.max(
+    0,
+    Number(report.plan?.targetSubstantiveEditMin || 0)
+      - Number(report.metrics?.substantiveEditRatio || 0)
+  ));
+}
+
+function needsHumanizationRecovery(report, { targetTolerance = 0.01 } = {}) {
+  if (!report?.applicable) return false;
+  if (report.pass !== true) return true;
+  return targetDepthGap(report) >= Math.max(0, Number(targetTolerance || 0));
 }
 
 function measureSubstantiveEdit(source, output) {
@@ -520,10 +544,16 @@ function buildHumanizationPromptBlock(plan) {
     plan.sourceSentenceCount > 0
       ? `변화 분포 목표: 편집 가능한 일반 문장 ${plan.sourceSentenceCount}개 가운데 최소 ${plan.requiredChangedSentenceCount}개를 한 문단에 몰지 말고 고르게 재구성한다. 우선 대상이 이 수보다 적으면 잠기지 않은 일반 문장 중 기계적인 어순·연결·호흡이 남은 문장을 추가로 고른다.`
       : '',
-    '문장마다 억지로 다른 단어를 끼워 넣지 말고, 바꿀 문장은 충분히 바꾸며 이미 자연스러운 문장은 남긴다.',
-    plan.requiredStructuralChangedSentenceCount > 0
-      ? '대상 문장은 단순 동의어 교체에 머물지 말고, 같은 뜻 안에서 절 배치·주어 위치·연결 방식·문장 경계 중 실제 구조를 바꾼다.'
+    plan.targetSentenceCount > 0
+      ? `우선 대상 이행 목표: 표시된 ${plan.targetSentenceCount}개 가운데 최소 ${plan.requiredTargetChangedCount}개는 단순 교정이 아니라 같은 뜻 안의 절 배치·주어 위치·연결·호흡을 실제로 다시 구성한다.`
       : '',
+    plan.requiredStructuralChangedSentenceCount > 0
+      ? `구조 변화 목표: 전체 수정 문장 중 최소 ${plan.requiredStructuralChangedSentenceCount}개는 동의어 치환에 머물지 않고 절 순서·내용어 순서·문장 경계 중 하나가 분명히 달라져야 한다.`
+      : '',
+    plan.paragraphCoverageApplicable === true
+      ? `문단 분포 목표: 우선 대상이 있는 ${plan.targetParagraphCount}개 일반 산문 문단 가운데 최소 ${plan.requiredTargetChangedParagraphCount}개 문단에서 실질 변화를 만든다. 한 문단만 크게 고치고 나머지를 복사하지 않는다.`
+      : '',
+    '문장마다 억지로 다른 단어를 끼워 넣지 말고, 바꿀 문장은 충분히 바꾸며 이미 자연스러운 문장은 남긴다.',
     plan.rhetoricalRemediationPlan?.targetCount > 0
       ? '원문 담화 계약에 표시된 정형 성찰·반복 결론·과도하게 완결된 인과 구조는 그대로 복사하지 말고, 사실을 삭제하지 않는 범위에서 직접적인 문장으로 풀어 쓴다.'
       : '',
@@ -750,28 +780,47 @@ function alignSentenceEdits(sourceSentences, outputSentences) {
     if (!outputSentences.length) {
       return { index, outputIndex: -1, distance: sourceNorm.length, ratio: 1, substantiveChanged: true };
     }
-    const center = sourceSentences.length <= 1
-      ? 0
-      : Math.round(index * (outputSentences.length - 1) / Math.max(1, sourceSentences.length - 1));
-    const candidates = new Set([center - 1, center, center + 1].filter(value => value >= 0 && value < outputSentences.length));
-    let best = null;
-    for (const outputIndex of candidates) {
-      const outputNorm = normalizeSubstantive(outputSentences[outputIndex]);
-      const distance = levenshteinDistance(sourceNorm, outputNorm);
-      const base = Math.max(sourceNorm.length, outputNorm.length, 1);
-      const ratio = distance / base;
-      if (!best || ratio < best.ratio) best = { outputIndex, distance, ratio, outputSentence: outputSentences[outputIndex] };
+    const sentenceCountChanged = sourceSentences.length !== outputSentences.length;
+    let alignment = alignSourceSentence(
+      sentence,
+      index,
+      sourceSentences.length,
+      outputSentences,
+      {
+        window: sentenceCountChanged ? 3 : 2,
+        maxOutputGroup: sentenceCountChanged ? 2 : 1
+      }
+    );
+    // 문장 수가 같아도 한 곳에서 분리되고 다른 곳에서 결합되면 전체 개수만
+    // 보고는 알 수 없다. 단일 문장 정렬 신뢰도가 낮은 문장에만 1:2 후보를
+    // 추가 탐색해, 모든 문장에 비싼 그룹 정렬을 수행하지 않는다.
+    if (!sentenceCountChanged && Number(alignment?.score || 0) < 0.48) {
+      alignment = alignSourceSentence(
+        sentence,
+        index,
+        sourceSentences.length,
+        outputSentences,
+        { window: 2, maxOutputGroup: 2 }
+      ) || alignment;
     }
-    const substantiveChanged = best.distance >= 3 && best.ratio >= 0.065;
-    const structure = compareSentenceStructure(sentence, best.outputSentence, {
+    const outputSentence = alignment?.text || outputSentences[Math.min(index, outputSentences.length - 1)] || '';
+    const outputNorm = normalizeSubstantive(outputSentence);
+    const distance = levenshteinDistance(sourceNorm, outputNorm);
+    const base = Math.max(sourceNorm.length, outputNorm.length, 1);
+    const ratio = distance / base;
+    const substantiveChanged = distance >= 3 && ratio >= 0.065;
+    const structure = compareSentenceStructure(sentence, outputSentence, {
       substantiveChanged,
-      editRatio: best.ratio
+      editRatio: ratio,
+      outputGroupSize: Number(alignment?.sentences?.length || 1)
     });
     return {
       index,
-      outputIndex: best.outputIndex,
-      distance: best.distance,
-      ratio: round4(best.ratio),
+      outputIndex: Number(alignment?.start ?? 0),
+      outputEndIndex: Number(alignment?.end ?? 1),
+      alignmentScore: round4(alignment?.score || 0),
+      distance,
+      ratio: round4(ratio),
       substantiveChanged,
       ...structure
     };
@@ -824,7 +873,11 @@ function mergeCommercialTargets(target, commercialPlan) {
   };
 }
 
-function compareSentenceStructure(source, output, { substantiveChanged = false, editRatio = 0 } = {}) {
+function compareSentenceStructure(source, output, {
+  substantiveChanged = false,
+  editRatio = 0,
+  outputGroupSize = 1
+} = {}) {
   const before = String(source || '');
   const after = String(output || '');
   const beforeClause = clauseSignature(before);
@@ -844,12 +897,15 @@ function compareSentenceStructure(source, output, { substantiveChanged = false, 
     && Math.min(beforeTokens.length, afterTokens.length) >= 4
     && editRatio >= 0.14
     && sharedRatio < 0.58;
+  const sentenceGroupChanged = substantiveChanged && Number(outputGroupSize || 1) > 1;
   return {
     clauseBoundaryChanged,
     contentOrderChanged,
+    sentenceGroupChanged,
     contentOrderChangeRatio: round4(orderChangeRatio),
     sharedContentTokenRatio: round4(sharedRatio),
-    structuralChanged: substantiveChanged && (clauseBoundaryChanged || contentOrderChanged || deepRecast)
+    structuralChanged: substantiveChanged
+      && (clauseBoundaryChanged || contentOrderChanged || deepRecast || sentenceGroupChanged)
   };
 }
 
@@ -1028,6 +1084,8 @@ module.exports = {
   evaluateHumanizationDepth,
   humanizationCandidateScore,
   isBetterHumanizationCandidate,
+  targetDepthGap,
+  needsHumanizationRecovery,
   measureSubstantiveEdit,
   measureSubstantiveCarryover,
   eligibleProseSentences,

@@ -984,6 +984,10 @@ function serializeAdminJobDoc(docSnap) {
     humanizationNoBenefitDelivered: j.humanizationNoBenefitDelivered === true,
     humanizationNoEffectRetryAttemptCount: finiteOrNull(j.humanizationNoEffectRetryAttemptCount),
     humanizationDeliveryDepthBand: j.humanizationDeliveryDepthBand || '',
+    humanizationTargetDepthMet: typeof j.humanizationTargetDepthMet === 'boolean'
+      ? j.humanizationTargetDepthMet
+      : null,
+    humanizationTargetDepthGap: finiteOrNull(j.humanizationTargetDepthGap),
     substantiveEditRatio: finiteOrNull(j.substantiveEditRatio),
     substantiveChangedSentenceRatio: finiteOrNull(j.substantiveChangedSentenceRatio),
     substantiveCarryoverCount: finiteOrNull(j.substantiveCarryoverCount),
@@ -1001,6 +1005,7 @@ function serializeAdminJobDoc(docSnap) {
     rhetoricalRemediationCoverage: finiteOrNull(j.rhetoricalRemediationCoverage),
     sectionRecoveryEnabled: j.sectionRecoveryEnabled === true,
     sectionRecoveryAttemptCount: finiteOrNull(j.sectionRecoveryAttemptCount),
+    sectionRecoveryTargetOnlyCount: finiteOrNull(j.sectionRecoveryTargetOnlyCount),
     sectionRecoveryAppliedCount: finiteOrNull(j.sectionRecoveryAppliedCount),
     sectionRecoveryEscalationCount: finiteOrNull(j.sectionRecoveryEscalationCount),
     sectionRecoveryRejectedAttemptCount: finiteOrNull(j.sectionRecoveryRejectedAttemptCount),

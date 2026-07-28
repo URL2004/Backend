@@ -63,7 +63,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const lines = text.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
   const sentences = splitSentences(text, { preserveLines: false });
   const questionnaire = detectQuestionnaire(lines);
-  const formatProfile = detectFormatProfile(text, lines, sentences, questionnaire);
+  const assessment = detectAssessmentItem(lines);
+  const formatProfile = detectFormatProfile(text, lines, sentences, questionnaire, assessment);
   const scores = Object.fromEntries(CONTENT_GENRES.map(profile => [profile, 0]));
   const firstPersonSignals = computePovSeed(text).fp_singular;
   // `사진`, `오늘은`, `추천`처럼 주제 설명문에도 흔한 낱말 하나만으로 후기 장르를
@@ -181,7 +182,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       + Math.min(formalNormativeOperatorSignals - 2, 3) * 0.16;
   }
 
-  add(scores, 'student_record_teacher', count(text, /(?:세부\s*능력\s*및\s*특기\s*사항|세특|생활\s*기록부|교과\s*활동|수업\s*중|발표함|탐구함|기여함|보여\s*줌|학생은)/gu), 1.35);
+  const explicitStudentRecordAnchorSignals = count(text, /(?:세부\s*능력\s*및\s*특기\s*사항|세특|생활\s*기록부|교과\s*활동|수업\s*중|학생은)/gu);
+  add(scores, 'student_record_teacher', explicitStudentRecordAnchorSignals, 1.35);
+  add(scores, 'student_record_teacher', count(text, /(?:발표함|탐구함|기여함|보여\s*줌)/gu), 1.35);
   add(scores, 'student_record_teacher', count(text, /(?:함|됨|임|음)\s*[.!?]?\s*(?=$|\n)/gmu), 0.25);
   const nominalObservationEndings = sentences.filter(hasStudentRecordEnding).length;
   const observationSignals = count(text, /(?:수업|활동|탐구|발표|참여|태도|역량|모습|성장|협력|책임감|돋보|뛰어남|보여\s*줌|기여)/gu);
@@ -189,12 +192,24 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const bulletLineCount = lines.filter(line => /^(?:[-*•]|\d+(?:[-.]\d+)*[:.)])\s*/u.test(line)).length;
   const instructionalPlanSignals = count(text, /(?:예정임|계획임|수업을\s*(?:할|진행할)\s*예정|학습\s*목표|차시|교수\s*학습)/gu);
   const likelyInstructionPlan = bulletLineCount >= 2 && instructionalPlanSignals >= 2;
+  const technicalCatalogLabelSignals = lines.filter(line => /^(?:개요\s*및\s*배경|핵심\s*기술(?:\s*및\s*시스템\s*구성)?|운영\s*효과|시스템\s*구성|적용\s*기술|분석\s*결과|기대\s*효과)\s*[:：]/u.test(line)).length;
   if (nominalObservationEndings >= 2 && nominalEndingRatio >= 0.4 && observationSignals >= 2 && !likelyInstructionPlan) {
     scores.student_record_teacher += 1.1
       + Math.min(nominalObservationEndings, 6) * 0.45
       + Math.min(observationSignals, 5) * 0.18;
   }
   if (likelyInstructionPlan) scores.report_assignment += 1.4;
+  // 기술 사례 카탈로그·서비스 분석표도 `구축함·적용함·기여함` 같은
+  // 명사형 종결을 반복한다. 학생 관찰 주체가 전혀 없고 기술 라벨이
+  // 반복되는 문서를 세특으로 분류하면 본문을 관찰 기록처럼 지나치게
+  // 보존하므로, 이 조합에서는 보고서 증거를 우선한다.
+  if (technicalCatalogLabelSignals >= 3
+      && explicitStudentRecordAnchorSignals === 0
+      && observationSignals <= 2) {
+    scores.student_record_teacher = Math.min(scores.student_record_teacher, 1.2);
+    scores.report_assignment += 1.8
+      + Math.min(technicalCatalogLabelSignals - 3, 5) * 0.16;
+  }
 
   const reflectionSignals = count(text, /(?:자기\s*평가|스스로\s*평가|배운\s*점|느낀\s*점|새롭게\s*(?:알게|배우게|깨닫게)\s*된\s*점|어려웠던\s*점|힘들었던\s*점|부족했던\s*점|노력한\s*점|맡은\s*역할|기여한\s*점|향후\s*계획|앞으로의?\s*계획|개선할\s*점)/gu);
   const educationSignals = count(text, /(?:수업|학습|교과|과제|활동|탐구|발표|수행|모둠|진로|역량|협업|학교)/gu);
@@ -220,6 +235,10 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   }
 
   const selfAssessmentSectionSignals = lines.filter(line => /^(?:느낀\s*점|배운\s*점|본인이\s*잘했던\s*것|잘했던\s*점|어려웠던\s*점|관심이\s*갔던\s*내용|향후\s*계획|기타)\s*[:：]?$/u.test(line)).length;
+  const explicitReflectionDocumentSignals = lines.filter(line => (
+    /(?:^|\s)(?:개인\s*)?성찰\s*(?:일지|문|보고서)\s*$/u.test(line)
+    || /^(?:학습|수업|프로젝트)\s*성찰\s*$/u.test(line)
+  )).length;
   if (selfAssessmentSectionSignals >= 2 && selfReflectivePredicateSignals >= 1) {
     scores.student_self_assessment += 3.35
       + Math.min(selfAssessmentSectionSignals - 2, 4) * 0.24
@@ -242,6 +261,16 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const researchPlacementSignals = count(text, /(?:현장\s*실습|인턴(?:십)?|연구\s*인턴|연구실|연구\s*기관|연구소|산학\s*협력|실험실)/gu);
   const applicationEvidenceSignals = count(text, /(?:그\s*결과|상위\s*\d+(?:\.\d+)?%|성적(?:을|이)?\s*(?:높|향상)|성과(?:를|가)?\s*(?:달성|창출)|문제(?:를|가)?\s*(?:해결|개선)|재현성(?:을|이)?\s*(?:확보|검증))/gu);
   const futureContributionSignals = count(text, /(?:기여하겠습니다|기여하고자\s*합니다|활용하겠습니다|적용하겠습니다|수행하겠습니다|익히겠습니다|배우겠습니다|갖추겠습니다)/gu);
+  const educationalReflectionQuestionnaire = questionnaire.isQuestionnaire
+    && questionnaire.educationQuestionCount >= 2
+    && applicationIntentSignals === 0
+    && programApplicationSignals === 0;
+  if (explicitReflectionDocumentSignals >= 1
+      && educationalReflectionQuestionnaire
+      && questionnaire.answerBlockCount >= 2) {
+    scores.student_self_assessment += 2.8
+      + Math.min(questionnaire.answerBlockCount - 2, 4) * 0.18;
+  }
   add(scores, 'resume_application', explicitApplicationSignals, 1.35);
   add(scores, 'resume_application', applicationIntentSignals, 1.35);
   add(scores, 'resume_application', programApplicationSignals, 0.85);
@@ -261,7 +290,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   if (fundingPlanSignals >= 1 && firstPersonSignals >= 1) {
     scores.resume_application += 2.35 + Math.min(fundingPlanSignals - 1, 2) * 0.22;
   }
-  if (professionalPastEndingSignals >= 3
+  if (!educationalReflectionQuestionnaire
+      && professionalPastEndingSignals >= 3
       && careerActionSignals >= 5
       && achievementSignals >= 1
       && (experienceNarrativeSignals >= 1 || formatProfile.headingCount >= 1)) {
@@ -544,6 +574,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       headingCount: formatProfile.headingCount,
       nominalObservationEndings,
       observationSignals,
+      explicitStudentRecordAnchorSignals,
+      technicalCatalogLabelSignals,
       reflectionSignals,
       selfAssessmentActionSignals,
       selfReflectivePredicateSignals,
@@ -552,6 +584,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       learningLogSignals,
       topicSelectionSignals,
       selfAssessmentSectionSignals,
+      explicitReflectionDocumentSignals,
       reportInquirySignals,
       reportMethodSignals,
       reportHeadingSignals,
@@ -564,6 +597,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       numberedQuestionCount: questionnaire.numberedQuestionCount,
       answerBlockCount: questionnaire.answerBlockCount,
       educationQuestionCount: questionnaire.educationQuestionCount,
+      assessmentItem: assessment.isAssessmentItem,
+      assessmentProtectedLineCount: assessment.protectedLineCount,
+      assessmentExplanationLineCount: assessment.explanationLineCount,
       applicationValuePropositionSignals,
       careerAspirationSignals,
       researchCareerContextSignals,
@@ -714,7 +750,99 @@ function detectQuestionnaire(lines) {
   };
 }
 
-function detectFormatProfile(text, lines, sentences, questionnaire) {
+function detectAssessmentItem(lines) {
+  const source = Array.isArray(lines) ? lines.map(line => String(line || '').trim()).filter(Boolean) : [];
+  const headerCount = source.filter(line => /^(?:[\[【]\s*)?(?:듣기|읽기|말하기|쓰기|어휘|문법|수능|모의|평가|시험)?\s*(?:평가\s*)?(?:문항|문제|지문)(?:\s*[\]】])?$/u.test(line)).length;
+  const answerHeaderCount = source.filter(line => /^(?:(?:[\[【]\s*)?(?:정답|답|해설|풀이)(?:\s*[\]】])?)(?:\s*[:：]\s*|\s+|$)/u.test(line)).length;
+  const choiceLineCount = source.filter(line => /^(?:[①-⑳]|[㉠-㉿]|\(?[1-5]\)?[.)])\s*\S/u.test(line)).length;
+  const dialogueLineCount = source.filter(line => /^(?:남자?|여자?|학생|교사|선생님|A|B|M|W)\s*[:：]\s*\S/iu.test(line)).length;
+  const promptLineCount = source.filter(line => /^(?:다음|위|아래)(?:의|\s)[^.!?。！？]{0,80}(?:고르|찾으|답하|쓰시|서술|설명|알맞|옳|적절|일치|틀린)/u.test(line)).length;
+  const isAssessmentItem = (headerCount + answerHeaderCount >= 1)
+    && (choiceLineCount >= 2 || dialogueLineCount >= 2 || promptLineCount >= 1);
+  let inExplanation = false;
+  let afterAnswerHeader = false;
+  let answerKeySeen = false;
+  let protectedLineCount = 0;
+  let explanationLineCount = 0;
+  if (isAssessmentItem) {
+    for (const line of source) {
+      if (assessmentAnswerHeaderLine(line)) {
+        afterAnswerHeader = true;
+        answerKeySeen = false;
+        inExplanation = false;
+        protectedLineCount += 1;
+        continue;
+      }
+      const explanation = assessmentExplanationLineParts(line);
+      if (explanation) {
+        inExplanation = true;
+        afterAnswerHeader = false;
+        protectedLineCount += 1;
+        if (explanation.body) explanationLineCount += 1;
+        continue;
+      }
+      if (afterAnswerHeader && assessmentAnswerKeyLine(line)) {
+        answerKeySeen = true;
+        protectedLineCount += 1;
+        continue;
+      }
+      if (afterAnswerHeader && answerKeySeen && assessmentInferredExplanationParts(line)) {
+        inExplanation = true;
+        afterAnswerHeader = false;
+        protectedLineCount += 1;
+        if (assessmentInferredExplanationParts(line).body) explanationLineCount += 1;
+        continue;
+      }
+      if (afterAnswerHeader && answerKeySeen && isAssessmentExplanationProse(line)) {
+        inExplanation = true;
+        afterAnswerHeader = false;
+      }
+      if (inExplanation) explanationLineCount += 1;
+      else protectedLineCount += 1;
+    }
+  }
+  return {
+    isAssessmentItem,
+    headerCount,
+    answerHeaderCount,
+    choiceLineCount,
+    dialogueLineCount,
+    promptLineCount,
+    protectedLineCount,
+    explanationLineCount
+  };
+}
+
+function assessmentExplanationLineParts(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(?:(?:[\[【]\s*)?(?:해설|풀이)(?:\s*[\]】])?)(?:\s*[:：]\s*|\s+|$)(.*)$/u);
+  if (!match) return null;
+  return { body: String(match[1] || '').trim() };
+}
+
+function assessmentAnswerHeaderLine(value) {
+  return /^(?:(?:[\[【]\s*)?(?:정답|답)(?:\s*[\]】])?)(?:\s*[:：]\s*|\s+|$)/u.test(String(value || '').trim());
+}
+
+function assessmentAnswerKeyLine(value) {
+  const text = String(value || '').trim();
+  return /^(?:\d{1,3}[.)]\s*(?:[①-⑳]|[A-E]|[가-마])\s*)+$/u.test(text)
+    || /^(?:정답\s*)?(?:[①-⑳]|[A-E]|[가-마])(?:\s*[,/]\s*(?:[①-⑳]|[A-E]|[가-마]))*$/u.test(text);
+}
+
+function assessmentInferredExplanationParts(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^(\d{1,3}[.)])(?:\s+([\s\S]+))?$/u);
+  if (!match) return null;
+  return { prefix: match[1], body: String(match[2] || '').trim() };
+}
+
+function isAssessmentExplanationProse(value) {
+  const text = String(value || '').trim();
+  return text.length >= 24 && /[.!?。！？]$/u.test(text);
+}
+
+function detectFormatProfile(text, lines, sentences, questionnaire, assessment = null) {
   const compactLength = String(text || '').replace(/\s+/gu, '').length;
   const length = compactLength <= 100 ? 'short' : (compactLength >= 1500 ? 'long' : 'standard');
   const layout = layoutStructure.analyzeLineStructure(text);
@@ -725,9 +853,23 @@ function detectFormatProfile(text, lines, sentences, questionnaire) {
   const labelLineCount = layout.labelLineCount || 0;
   const referenceLineCount = lines.filter(line => /(?:doi\s*:|https?:\/\/|\((?:19|20)\d{2}(?:[a-z]|\s*\.\s*\d{1,2}(?:\s*\.\s*\d{1,2})?\s*\.?)?\)|참고\s*문헌|References|Bibliography)/iu.test(line)).length;
   const quoteLineCount = lines.filter(line => /^(?:>|[“"'‘「『《〈])/u.test(line) || /(?:[“"][^”"\n]{2,}[”"]|「[^」\n]{2,}」|『[^』\n]{2,}』|《[^》\n]{2,}》|〈[^〉\n]{2,}〉)/u.test(line)).length;
+  const markdownQuoteLines = lines.filter(line => /^>\s*\S/u.test(line));
+  const blockquoteOutsideLines = lines.filter(line => !/^>\s*\S/u.test(line));
+  const blockquoteBody = markdownQuoteLines.map(line => line.replace(/^>\s*/u, '')).join('\n');
+  // ChatGPT·게시판·문서 편집기에서 편지나 자기 서술 전체가 Markdown
+  // blockquote로 감싸져 들어오는 경우다. 문서 바깥 행은 제목뿐이고,
+  // 본문에 실제 작성자 발화 신호가 있을 때만 인용이 아닌 표시 래퍼로
+  // 판단한다. 일반 인용문과 논문 인용 블록은 계속 원문 그대로 잠긴다.
+  const editableBlockquoteWrapper = markdownQuoteLines.length >= 2
+    && compactLength >= 120
+    && blockquoteOutsideLines.every(line => layoutStructure.isKnownHeadingLine(line))
+    && /(?:안녕하세요|드립니다|부탁드|감사합니다|저는|제가|저희|생각합니다|바랍니다|약속드립니다|선생님)/u.test(blockquoteBody);
   const appendixPresent = lines.some(line => /^(?:부록|Appendix)(?:\s|$)/iu.test(line));
   const poemLikeLines = lines.filter(line => line.length <= 40 && !/[.!?。！？]$/u.test(line)).length;
+  const assessmentItem = assessment?.isAssessmentItem === true;
   const lineSensitive = questionnaire.isQuestionnaire
+    || assessmentItem
+    || editableBlockquoteWrapper
     || (tableLineCount < 2
       && listItemCount < 3
       && labelLineCount < 2
@@ -738,14 +880,16 @@ function detectFormatProfile(text, lines, sentences, questionnaire) {
   const flags = [];
   if (headingCountValue >= 2) flags.push('sectioned');
   if (questionnaire.isQuestionnaire) flags.push('questionnaire');
+  if (assessmentItem) flags.push('assessment_item');
   if (listItemCount >= 3 && listItemCount / Math.max(1, lines.length) >= 0.3) flags.push('list_heavy');
   if (tableLineCount >= 2) flags.push('table_heavy');
   if (labelLineCount >= 2) flags.push('label_heavy');
   if (referenceLineCount >= 3) flags.push('reference_heavy');
   if (lineSensitive) flags.push('line_sensitive');
   if (quoteLineCount >= 2) flags.push('quote_sensitive');
+  if (editableBlockquoteWrapper) flags.push('editable_blockquote_wrapper');
   if (appendixPresent) flags.push('appendix_present');
-  const primary = ['questionnaire', 'table_heavy', 'reference_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'line_sensitive']
+  const primary = ['assessment_item', 'questionnaire', 'table_heavy', 'reference_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'line_sensitive']
     .find(flag => flags.includes(flag)) || 'plain';
   return {
     length,
@@ -761,7 +905,10 @@ function detectFormatProfile(text, lines, sentences, questionnaire) {
     structuralBoundaryCount: layout.preservedBoundaryCount || 0,
     referenceLineCount,
     quoteLineCount,
+    editableBlockquoteWrapper,
     signatureLineCount: layout.signatureLineCount || 0,
+    assessmentProtectedLineCount: Number(assessment?.protectedLineCount || 0),
+    assessmentExplanationLineCount: Number(assessment?.explanationLineCount || 0),
     appendixPresent
   };
 }
@@ -969,5 +1116,10 @@ module.exports = {
   applyTargetRegister,
   resolveRegisterPolicy,
   detectQuestionnaire,
+  detectAssessmentItem,
+  assessmentExplanationLineParts,
+  assessmentAnswerHeaderLine,
+  assessmentAnswerKeyLine,
+  assessmentInferredExplanationParts,
   detectFormatProfile
 };

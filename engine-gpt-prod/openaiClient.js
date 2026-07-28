@@ -244,6 +244,10 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0) {
       const err = new Error(`OpenAI Responses API ${response.status}: ${message}`);
       err.status = response.status;
       err.retryAfterMs = retryAfterMs(response.headers?.get?.('retry-after'));
+      if (response.status === 429 && isQuotaExhaustionMessage(message)) {
+        err.code = 'OPENAI_QUOTA_EXHAUSTED';
+        err.retryable = false;
+      }
       throw err;
     } catch (err) {
       if (parentSignal?.aborted) throw err;
@@ -306,11 +310,18 @@ function backoffMs(attempt) {
 }
 
 function retryType(error) {
+  if (String(error?.code || '').toUpperCase() === 'OPENAI_QUOTA_EXHAUSTED'
+      || isQuotaExhaustionMessage(error?.message)) return '';
   if (Number(error?.status) === 429) return 'rateLimit';
   if (Number(error?.status) >= 500) return 'server';
   if (error?.code === 'ETIMEDOUT' || error?.code === 'OPENAI_CHUNK_TIMEOUT' || /timed?\s*out|timeout/iu.test(String(error?.message || ''))) return 'timeout';
   if (/network|fetch failed|econnreset|enotfound|socket hang up/iu.test(String(error?.message || ''))) return 'network';
   return '';
+}
+
+function isQuotaExhaustionMessage(value) {
+  return /(?:exceeded\s+your\s+current\s+quota|check\s+your\s+plan\s+and\s+billing|insufficient[_\s-]*quota|billing\s+hard\s+limit)/iu
+    .test(String(value || ''));
 }
 
 function emptyRetryCounts() {

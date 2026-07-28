@@ -5,7 +5,7 @@ const { splitLogicalProseParagraphs } = require('./proseParagraphs');
 const layoutStructure = require('./layoutStructure');
 const { alignSourceSentence } = require('./sentenceAlignment');
 
-const VERSION = 3;
+const VERSION = 5;
 const VIOLATION_CODES = Object.freeze([
   'scope_expansion',
   'new_evaluation',
@@ -23,15 +23,20 @@ const REFLECTION_PATTERNS = [
   /(?:절감|깨달|통감)했|(?:절감|깨달|통감)하게\s*되/gu,
   /공고히\s*(?:하|하게\s*되)/gu,
   /(?:배우|느끼|알게|확인하게|생각하게)\s*되었|(?:배울|느낄|확인할)\s*수\s*있었/gu,
+  /알았(?:다|습니다|어요)?/gu,
   /뜻깊(?:었|은\s*경험)/gu
 ];
+// 수사적 상투구보다 넓은 “성찰 기능” 판정이다. `조금씩 보이기
+// 시작했다`를 `알게 되었다`로 바꾼 것처럼 같은 문단의 기존 판단을
+// 의역한 경우를 새 교훈·평가 주입으로 오인하지 않기 위해 사용한다.
+const REFLECTION_FUNCTION_PATTERN = /(?:깨달|알았(?:다|습니다|어요)?|알게\s*되|보이기\s*시작|돌아보|되돌아보|생각하게\s*되|느끼게\s*되|확인하게\s*되|인식하게\s*되|이해하게\s*되|통찰|배움(?:을|이)?[^.!?\n]{0,24}(?:주|얻))/gu;
 
 const STRONG_MODIFIER_PATTERNS = [
   /(?:파멸적|막강한|거대한|극심한|압도적|치명적|엄청난|획기적|전례\s*없는|절대적|근원적|심각한)/gu,
   /(?:완전히|엄청나게|압도적으로|극단적으로|결정적으로)\s+(?:바꾸|뒤흔들|무너뜨리|위협|좌우)/gu
 ];
 
-const CONCLUSION_PATTERN = /(?:^|[.!?]\s*)(?:결론적으로|종합하면|종합적으로|결국|이처럼)|(?:의미를\s*가진다|의미가\s*있다|중요하다고\s*(?:볼|생각할)\s*수\s*있다|교훈을\s*(?:얻|주))/gu;
+const CONCLUSION_PATTERN = /(?:^|[.!?]\s*)(?:결론적으로|종합하면|종합적으로|정리하면|요컨대|즉|결국|이처럼)|(?:의미를\s*가진다|의미가\s*있다|중요하다고\s*(?:볼|생각할)\s*수\s*있다|교훈을\s*(?:얻|주))/gu;
 const CAUSAL_PATTERN = /(?:때문에|따라서|그러므로|그\s*결과|이로\s*인해|덕분에|결과적으로|이어졌|연결되었|영향을\s*미쳤)/gu;
 const EXPANSION_PATTERN = /(?:뿐만\s*아니라|더\s*나아가|나아가|(?:데|데서|에)\s*(?:그치지|멈추지|머무르지)\s*않고|(?:을|를)\s*넘어\s+(?:사회|세계|국가|인권|기후|문화|경제|정치|환경|산업|공동체|차원|영역|문제)|(?:차원|수준|범위|영역|대상|도구|성격|한계|단계|수습|관점|틀|접근)(?:을|를|에|에서)?\s*(?:넘어|벗어나|나아가)|더\s*이상[^.!?。！？\n]{0,45}(?:이|가)\s*아니라|까지\s*(?:확장|연결)|여러\s*(?:영역|차원|문제)|다양한\s*(?:영역|차원|관점|문제)|전반으로\s*확장|포괄(?:하|하는)|아우르)/gu;
 const SCOPE_TOPIC_TOKENS = new Set([
@@ -39,7 +44,10 @@ const SCOPE_TOPIC_TOKENS = new Set([
   '식량', '안보', '문화', '경제', '정치', '환경', '산업', '공동체', '윤리',
   '법률', '교육', '보건', '주거', '고용', '불평등'
 ]);
-const ACTIVITY_PATTERN = /(?:조사|탐구|분석|비교|검색|찾아보|살펴보|정리|기록|발표|토론|실험|관찰|측정|제작|작성|수집|검토|질문|답변|참여|수행|맡아|계획)/gu;
+// `찾아보다`의 관형형은 음절 조합상 `찾아본`이 되어 `찾아보` 정규식과
+// 일치하지 않는다. 어간 기능을 포괄해 조사→찾아본 같은 정상 의역이
+// 실제 활동 삭제로 계산되지 않게 한다.
+const ACTIVITY_PATTERN = /(?:조사|탐구|분석|비교|검색|찾아|살펴보|정리|기록|발표|토론|실험|관찰|측정|제작|작성|수집|검토|질문|답변|참여|수행|맡아|계획)/gu;
 const RESTART_OPENING_PATTERN = /^(?:또\s*다른|다음으로|한편|별도로|이번에는|추가로|이어서|새롭게)?\s*[^.!?\n]{0,32}(?:조사|탐구|분석|살펴보|알아보|검토)(?:했|하였|하게|한다|하였다|했습니다)/u;
 
 const STOP_TOKENS = new Set([
@@ -98,6 +106,7 @@ function compareDiscourse(source, outputText) {
   };
 
   const reflectionDelta = after.reflectionClosureCount - before.reflectionClosureCount;
+  const novelReflectionCount = countNovelReflectionFunctions(source, outputText);
   const intensityDelta = after.strongModifierCount - before.strongModifierCount;
   const conclusionDelta = after.conclusionParagraphCount - before.conclusionParagraphCount;
   const conclusionMarkerDelta = after.conclusionMarkerCount - before.conclusionMarkerCount;
@@ -109,10 +118,16 @@ function compareDiscourse(source, outputText) {
   const personalBalanceShift = before.actionSentenceCount >= 2
     && after.actionSentenceRatio < before.actionSentenceRatio - 0.12;
 
-  add('new_evaluation', reflectionDelta, 'source_relative_reflection_closure_increase');
+  add('new_evaluation', novelReflectionCount, 'source_relative_novel_reflection_function');
   add('intensity_amplification', intensityDelta, 'source_relative_modifier_increase');
   add('duplicate_conclusion', conclusionMarkerDelta > 0 && after.conclusionParagraphCount >= 2 ? conclusionMarkerDelta : 0, 'conclusion_marker_increase');
-  add('repeated_reflection_conclusion', repeatedReflectionDelta > 0 && after.maxRepeatedReflectionClosure >= 2 ? repeatedReflectionDelta : 0, 'repeated_reflection_formula');
+  add(
+    'repeated_reflection_conclusion',
+    novelReflectionCount > 0 && repeatedReflectionDelta > 0 && after.maxRepeatedReflectionClosure >= 2
+      ? Math.min(novelReflectionCount, repeatedReflectionDelta)
+      : 0,
+    'new_repeated_reflection_formula'
+  );
   add('overstructured_causality', causalClosureDelta > 0 && after.causalClosureSentenceCount >= 2 ? causalClosureDelta : 0, 'causal_closure_sentence_increase');
   add('rhetorical_role_shift', roleShiftCount, 'paragraph_role_changed_to_reflection_or_conclusion');
   add('scope_expansion', scopeExpansionCount, 'novel_topic_cluster_with_expansion_construction');
@@ -131,6 +146,7 @@ function compareDiscourse(source, outputText) {
       remediation,
       deltas: {
         reflectionClosureCount: reflectionDelta,
+        novelReflectionFunctionCount: novelReflectionCount,
         strongModifierCount: intensityDelta,
         conclusionParagraphCount: conclusionDelta,
         conclusionMarkerCount: conclusionMarkerDelta,
@@ -324,7 +340,7 @@ function analyzeParagraph(text, index) {
   const activityCount = countPattern(clean, ACTIVITY_PATTERN);
   const roles = [];
   if (activityCount > 0) roles.push('activity');
-  if (reflectionCount > 0) roles.push('reflection');
+  if (reflectionCount > 0 || matchesPattern(clean, REFLECTION_FUNCTION_PATTERN)) roles.push('reflection');
   if (conclusionCount > 0) roles.push('conclusion');
   if (!roles.length) roles.push('exposition');
   const primaryRole = roles.includes('conclusion')
@@ -367,6 +383,48 @@ function countRoleShifts(beforeParagraphs, afterParagraphs) {
     const addedReflection = !sourceParagraph.roles.includes('reflection') && outputParagraph.roles.includes('reflection');
     const addedConclusion = !sourceParagraph.roles.includes('conclusion') && outputParagraph.roles.includes('conclusion');
     if (addedReflection || addedConclusion) count += 1;
+  });
+  return count;
+}
+
+function countNovelReflectionFunctions(source, outputText) {
+  const sourceParagraphs = splitParagraphs(source);
+  const outputParagraphs = splitParagraphs(outputText);
+  let count = 0;
+  if (sourceParagraphs.length === outputParagraphs.length && sourceParagraphs.length > 0) {
+    outputParagraphs.forEach((paragraph, index) => {
+      const formulaCount = REFLECTION_PATTERNS
+        .reduce((sum, pattern) => sum + countPattern(paragraph, pattern), 0);
+      if (!formulaCount) return;
+      const sourceParagraph = sourceParagraphs[index] || '';
+      // 해당 원문 문단에 이미 성찰·판단 기능이 있으면 상투 표현 빈도
+      // 증가는 자연성 개선 대상일 수는 있어도 새 평가 사실은 아니다.
+      if (matchesPattern(sourceParagraph, REFLECTION_FUNCTION_PATTERN)
+          || REFLECTION_PATTERNS.some(pattern => matchesPattern(sourceParagraph, pattern))) return;
+      count += formulaCount;
+    });
+    return count;
+  }
+
+  const sourceSentences = splitSentences(source);
+  const outputSentences = splitSentences(outputText);
+  outputSentences.forEach((sentence, index) => {
+    const formulaCount = REFLECTION_PATTERNS
+      .reduce((sum, pattern) => sum + countPattern(sentence, pattern), 0);
+    if (!formulaCount) return;
+    const alignment = alignSourceSentence(
+      sentence,
+      index,
+      outputSentences.length,
+      sourceSentences,
+      { window: 8, maxOutputGroup: 3 }
+    );
+    const alignedSource = Number(alignment?.score || 0) >= 0.2
+      ? String(alignment?.text || '')
+      : '';
+    if (matchesPattern(alignedSource, REFLECTION_FUNCTION_PATTERN)
+        || REFLECTION_PATTERNS.some(pattern => matchesPattern(alignedSource, pattern))) return;
+    count += formulaCount;
   });
   return count;
 }

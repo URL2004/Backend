@@ -47,7 +47,8 @@ test('과거 한국어·표면·shadow 게이트는 품질 경고가 아니라 �
     'korean_quality_final',
     'nikl_quality',
     'quality_pattern_lab',
-    'sentence_distribution_shift'
+    'sentence_distribution_shift',
+    'post_semantic_layout_incomplete'
   ]) {
     const result = deliveryPolicy.applyDeliveryPolicy({
       status: 'blocked',
@@ -675,6 +676,7 @@ test('연구 문헌을 살펴본다는 정상 표현은 명사·서술어 오류
 test('모델 호출 실패를 원인별로 기록하고 전송·refusal·schema 오류는 품질 승격에 쓰지 않는다', () => {
   const cases = [
     [Object.assign(new Error('too many requests'), { status: 429 }), 'openai_rate_limited'],
+    [Object.assign(new Error('You exceeded your current quota, please check your plan and billing details.'), { status: 429, code: 'OPENAI_QUOTA_EXHAUSTED' }), 'openai_quota_exhausted'],
     [Object.assign(new Error('upstream unavailable'), { status: 503 }), 'openai_server_error'],
     [Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }), 'openai_timeout'],
     [Object.assign(new Error('invalid json schema'), { code: 'OPENAI_SCHEMA_VALIDATION' }), 'openai_schema_error'],

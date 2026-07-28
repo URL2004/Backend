@@ -16,16 +16,14 @@ function shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, mode = '', 
   const cv = Number(sentence.cv) || 0;
   const compactLength = String(source || '').replace(/\s+/gu, '').length;
   const strength = String(requestStrength || '').trim().toLowerCase();
-  // 짧은 문서에서 이미 성립하는 장·단문 대비만 구조로 보존한다.
-  // 구두점이 거의 없는 원문, 장문 문서, 창작 행갈이는 모델이 의미 단위로
-  // 고칠 여지를 남겨 두며 naturalness shadow 점수는 이 결정에 사용하지 않는다.
-  // 고급은 문장 분리·결합도 허용하는 모드다. 문장별 토큰으로 경계를 먼저
-  // 잠그면 강도 프롬프트보다 구조 계약이 우선되어 어순·동의어 교정으로
-  // 수렴하므로, 고급에서는 문단·행 구조만 잠그고 문장 리듬은 최종 voice
-  // 감사로 검증한다.
-  if (strength === 'advanced') return false;
-  const minimumCount = mode === 'polish' ? 3 : 4;
-  const maximumCount = mode === 'polish' ? 12 : 20;
+  // 정확한 문장 경계 잠금은 문장 분리·결합을 허용하지 않는 다듬기에만 쓴다.
+  // 기본도 프롬프트에서 제한적 문장 경계 조정을 허용하는데, 과거에는 짧고
+  // 리듬이 다양한 글에 V2_SENTENCE 토큰을 넣어 반대 지시를 동시에 전달했다.
+  // 그 충돌은 결과를 어순·동의어 교정 수준으로 수렴시켰다. 기본·고급은
+  // 문단·행 역할을 잠그고 최종 voice 감사로 장단문 분포를 검증한다.
+  if (mode !== 'polish' && strength !== 'polish') return false;
+  const minimumCount = 3;
+  const maximumCount = 12;
   return voiceProfile?.lineBreakSensitive !== true
     && compactLength <= 1500
     && count >= minimumCount

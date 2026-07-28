@@ -62,6 +62,7 @@ test('v2.4.8 기능은 운영 릴리스에서 기본 활성화되고 환경변�
 
 test('장문 섹션 회복은 mini 최대 8개·동시성 3·상위 모델 최대 2개 계약을 지킨다', { concurrency: false }, async t => {
   withEnv(t, 'HUMANIZE_SECTION_RECOVERY_ENABLED', '1');
+  withEnv(t, 'HUMANIZE_SECTION_ESCALATION_MAX', '2');
   const chunks = Array.from({ length: 10 }, (_, index) => {
     const text = buildSection(index);
     assert.ok(text.length >= sectionRecovery.MIN_SECTION_CHARS && text.length <= sectionRecovery.MAX_SECTION_CHARS);
@@ -167,9 +168,52 @@ test('장문 섹션 회복은 안전 감사에서 거부되거나 더 나쁘지 
   });
   assert.equal(report.metrics.applied, 0);
   assert.equal(chunks[0].outputText, text);
-  assert.equal(report.metrics.rejectedAttemptCount, 2);
+  assert.equal(report.metrics.rejectedAttemptCount, 1);
   assert.deepEqual(report.metrics.rejectionCodes, ['number_changed']);
-  assert.equal(report.metrics.rejectionCodeCounts.number_changed, 2);
+  assert.equal(report.metrics.rejectionCodeCounts.number_changed, 1);
+  assert.equal(report.metrics.escalationAttemptCount, 0);
+  assert.ok(report.metrics.escalationSkipCodes.includes('unsafe_mini_candidate'));
+});
+
+test('최소선만 통과하고 체감 목표가 1%p 이상 남은 장문 절도 최대 4개까지 회복한다', { concurrency: false }, t => {
+  withEnv(t, 'HUMANIZE_SECTION_RECOVERY_ENABLED', '1');
+  const originalBuildPlan = humanizationDepth.buildHumanizationPlan;
+  const originalEvaluate = humanizationDepth.evaluateHumanizationDepth;
+  t.after(() => {
+    humanizationDepth.buildHumanizationPlan = originalBuildPlan;
+    humanizationDepth.evaluateHumanizationDepth = originalEvaluate;
+  });
+  humanizationDepth.buildHumanizationPlan = () => ({
+    version: 99,
+    applicable: true,
+    requestStrength: 'advanced',
+    targetSubstantiveEditMin: 0.24
+  });
+  humanizationDepth.evaluateHumanizationDepth = () => ({
+    applicable: true,
+    pass: true,
+    plan: { targetSubstantiveEditMin: 0.24 },
+    metrics: {
+      targetDepthMet: false,
+      substantiveEditRatio: 0.18
+    },
+    reasons: []
+  });
+  const chunks = Array.from({ length: 7 }, (_, index) => ({
+    index,
+    text: '일반 산문 문장을 충분한 길이로 반복해 회복 대상 절을 구성합니다. '.repeat(30),
+    outputText: '일반 산문 문장을 충분한 길이로 반복해 회복 대상 절을 구성합니다. '.repeat(30),
+    locked: false
+  }));
+  const selected = sectionRecovery.selectRecoverySections(chunks, {
+    sourceLength: 5000,
+    mode: 'assignment',
+    requestStrength: 'advanced',
+    documentProfile: { profile: 'long_explainer' }
+  });
+  assert.equal(selected.length, sectionRecovery.MAX_TARGET_ONLY_ATTEMPTS);
+  assert.equal(selected.every(item => item.targetOnly === true), true);
+  assert.equal(selected.every(item => item.targetGap === 0.06), true);
 });
 
 test('상투구 감사는 같은 신규 계열 1회만 허용하고 일반 표현은 shadow로만 기록한다', { concurrency: false }, t => {

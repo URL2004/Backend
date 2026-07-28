@@ -9,13 +9,12 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 7;
+const VERSION = 9;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
     patterns: [
-      /데서\s*그치지\s*않고/gu,
-      /데서\s*멈추지\s*않고/gu,
+      /(?:데서|데에|것에|선에)\s*(?:그치지|멈추지)\s*않고/gu,
       /에\s*머무르지\s*않고/gu
     ]
   },
@@ -79,8 +78,8 @@ function auditFingerprint(source, output, documentProfile = null) {
     const sourceCount = countFamily(before, family);
     const outputCount = countFamily(after, family);
     const introducedCount = Math.max(0, outputCount - sourceCount);
-    const introducedSentenceOrdinals = sourceCount === 0 && introducedCount > 0
-      ? familySentenceOrdinals(after, family)
+    const introducedSentenceOrdinals = introducedCount > 0
+      ? introducedFamilySentenceOrdinals(before, after, family, introducedCount)
       : [];
     return {
       code: family.code,
@@ -275,10 +274,17 @@ function detectSemanticRelationShifts(source, output) {
     }
 
     if (hasMainPossibilityClaim(sourceSentence)) {
-      const shifted = !hasPossibilityMarker(alignedText)
-        && !/(?:이해되|해석되|판단되|볼\s*수\s*있)/u.test(alignedText)
-        && /(?:한다|된다|이다|있다|확정된다|분명하다)[.!?。！？]?(?:\s|$)/u.test(alignedText);
-      if (shifted) add('possibility_hardened_to_certainty', sourceIndex + 1);
+      const possibilityRemoved = !hasPossibilityMarker(alignedText)
+        && !/(?:이해되|해석되|판단되|볼\s*수\s*있)/u.test(alignedText);
+      if (possibilityRemoved && hasGoalFrame(alignedText)) {
+        add('possibility_changed_to_goal', sourceIndex + 1);
+      } else {
+        const shifted = possibilityRemoved && (
+          /(?:한다|된다|이다|있다|확정된다|분명하다)[.!?。！？]?(?:\s|$)/u.test(alignedText)
+          || /(?:분명히|명확히|확실히)[^.!?。！？\n]{0,40}(?:보여\s*준다|드러낸다|입증한다|확인된다)/u.test(alignedText)
+        );
+        if (shifted) add('possibility_hardened_to_certainty', sourceIndex + 1);
+      }
     }
 
     if (hasNecessityClaim(sourceSentence) && !hasImpossibilityClaim(sourceSentence)) {
@@ -345,6 +351,11 @@ function hasMainPossibilityClaim(value) {
 
 function hasPossibilityMarker(value) {
   return /(?:수\s*있|가능|예상|전망|것으로\s*보|듯하|수도\s*있)/u.test(String(value || ''));
+}
+
+function hasGoalFrame(value) {
+  return /(?:(?:목적|목표|취지|방향|의도)(?:은|는|이|가|를|을|에)?[^.!?。！？\n]{0,28}(?:있|두|삼|향하)|(?:하는|하는\s*데|하기\s*위한)\s*(?:목적|목표|취지))/u
+    .test(String(value || ''));
 }
 
 function hasNecessityClaim(value) {
@@ -455,6 +466,46 @@ function familySentenceOrdinals(text, family) {
     if ((family.patterns || []).some(pattern => countMatches(sentence, pattern) > 0)) ordinals.push(index + 1);
   });
   return ordinals;
+}
+
+function introducedFamilySentenceOrdinals(source, output, family, introducedCount) {
+  const sourceSentences = splitSentences(String(source || ''))
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  const outputSentences = splitSentences(String(output || ''))
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  const outputFamilyOrdinals = familySentenceOrdinals(output, family);
+  const sourceFamilySentences = sourceSentences
+    .map((sentence, index) => ({ sentence, index }))
+    .filter(item => (family.patterns || []).some(pattern => countMatches(item.sentence, pattern) > 0));
+  const introduced = [];
+  for (const ordinal of outputFamilyOrdinals) {
+    const outputIndex = ordinal - 1;
+    const outputSentence = outputSentences[outputIndex] || '';
+    // 1:N 정렬 결과 전체에 같은 계열이 있다는 이유만으로 현재 결과
+    // 문장을 carryover로 보지 않는다. 해당 계열이 실제로 있던 개별 원문
+    // 문장과 현재 결과 문장의 내용 정렬 점수가 충분할 때만 같은 용례다.
+    const carriedFamily = sourceFamilySentences.some(item => {
+      const alignment = alignSourceSentence(
+        item.sentence,
+        item.index,
+        sourceSentences.length,
+        [outputSentence]
+      );
+      return Number(alignment?.rawScore ?? alignment?.score ?? 0) >= 0.3;
+    });
+    if (!carriedFamily) introduced.push(ordinal);
+  }
+  if (introduced.length >= introducedCount) return introduced.slice(0, introducedCount);
+  // 정렬이 불확실해도 복원 대상 번호를 비워 두지는 않는다. 이미 같은
+  // 계열로 대응된 문장을 뒤로 미루고, 남은 결과 문장을 필요한 수만큼 채운다.
+  for (const ordinal of outputFamilyOrdinals) {
+    if (introduced.includes(ordinal)) continue;
+    introduced.push(ordinal);
+    if (introduced.length >= introducedCount) break;
+  }
+  return introduced.slice(0, introducedCount);
 }
 
 function countMatches(text, pattern) {

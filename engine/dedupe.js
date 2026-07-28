@@ -117,6 +117,102 @@ function dedupeSentences(text) {
   };
 }
 
+const ADJACENT_ECHO_FAMILIES = Object.freeze([
+  { family: 'question', pattern: /(?:질문|의문|궁금|떠올리|생각이\s*들|생각하게\s*되)/u },
+  { family: 'understanding', pattern: /(?:알게\s*되|깨닫|이해하게\s*되|파악하게\s*되)/u },
+  { family: 'learning', pattern: /(?:배우게\s*되|배웠|교훈을\s*얻|익히게\s*되)/u },
+  { family: 'feeling', pattern: /(?:느끼게\s*되|느꼈|체감하게\s*되|실감하게\s*되)/u },
+  { family: 'confirmation', pattern: /(?:확인하게\s*되|확인했|분명해졌|알아볼\s*수\s*있었)/u }
+]);
+
+/**
+ * 전역 fuzzy 문장을 지우지 않는 정책은 유지한다. 다만 모델이 한 원문 문장을
+ * 청크 경계에서 긴 문장과 짧은 결론 문장으로 연달아 재진술한 경우에는,
+ * 원문에 없고 보호 사실도 없는 뒤쪽 짧은 echo만 제거한다.
+ */
+function removeGeneratedAdjacentRestatements(source, text) {
+  const original = String(text || '');
+  const sourcePairs = adjacentEchoPairs(source);
+  const spans = splitSentenceSpans(original);
+  const removals = [];
+  for (let index = 0; index < spans.length - 1; index += 1) {
+    const left = String(spans[index]?.text || '').trim();
+    const right = String(spans[index + 1]?.text || '').trim();
+    const echo = adjacentEchoSignature(left, right);
+    if (!echo) continue;
+    if (sourcePairs.has(`${echo.family}:${echo.anchor}`)) continue;
+    if (_normSent(source).includes(_normSent(right))) continue;
+    if (containsProtectedEchoFact(right)) continue;
+    removals.push({
+      start: spans[index + 1].start,
+      end: spans[index + 1].end,
+      family: echo.family,
+      anchor: echo.anchor
+    });
+    index += 1;
+  }
+  return {
+    text: removals.length ? removeSentenceSpans(original, removals) : original,
+    applied: removals.length > 0,
+    removedCount: removals.length,
+    families: [...new Set(removals.map(item => item.family))]
+  };
+}
+
+function adjacentEchoPairs(value) {
+  const spans = splitSentenceSpans(String(value || ''));
+  const out = new Set();
+  for (let index = 0; index < spans.length - 1; index += 1) {
+    const signature = adjacentEchoSignature(spans[index].text, spans[index + 1].text, {
+      requireShortTail: false
+    });
+    if (signature) out.add(`${signature.family}:${signature.anchor}`);
+  }
+  return out;
+}
+
+function adjacentEchoSignature(leftValue, rightValue, { requireShortTail = true } = {}) {
+  const left = String(leftValue || '').trim();
+  const right = String(rightValue || '').trim();
+  if (left.length < 18 || right.length < 8) return null;
+  if (requireShortTail && (right.length > 48 || right.length > left.length * 0.72)) return null;
+  if (isDedupeProtectedParagraph(left) || isDedupeProtectedParagraph(right)) return null;
+  const leftFamily = echoFamily(left);
+  const rightFamily = echoFamily(right);
+  if (!leftFamily || leftFamily !== rightFamily) return null;
+  const leftRoots = semanticRoots(left);
+  const rightRoots = semanticRoots(right);
+  const shared = [...rightRoots].filter(root => leftRoots.has(root) && root.length >= 2);
+  if (!shared.length) return null;
+  const anchor = shared.sort((a, b) => b.length - a.length || a.localeCompare(b))[0];
+  return { family: leftFamily, anchor };
+}
+
+function echoFamily(value) {
+  const text = String(value || '');
+  return ADJACENT_ECHO_FAMILIES.find(item => item.pattern.test(text))?.family || '';
+}
+
+function semanticRoots(value) {
+  const roots = new Set();
+  for (const raw of String(value || '').match(/[가-힣]{2,}|[A-Za-z]{3,}/gu) || []) {
+    let token = raw.toLowerCase();
+    token = token.replace(/(?:으로부터|에게서|에서는|으로는|이라는|이라고|까지는|부터는)$/u, '');
+    token = token.replace(/(?:은|는|이|가|을|를|의|와|과|도|만|에|로)$/u, '');
+    token = token.replace(/(?:하게|되었|됐|합니다|했습니다|하였다|했다|입니다|이었다|였다)$/u, '');
+    if (token.length >= 2 && !STOP.has(token)) roots.add(token);
+  }
+  return roots;
+}
+
+function containsProtectedEchoFact(value) {
+  const text = String(value || '');
+  return /[-+]?\d+(?:[.,]\d+)*(?:%|％|명|개|건|원|년|월|일|점|배)?/u.test(text)
+    || /["“”'‘’「」『』《》〈〉]/u.test(text)
+    || /https?:\/\/|doi\s*:/iu.test(text)
+    || /[가-힣A-Za-z0-9·&()]{2,30}(?:대학교|대학|학교|연구원|연구소|기관|협회|공사|재단|위원회|병원|기업|회사)/u.test(text);
+}
+
 function paragraphSpans(value) {
   const text = String(value || '');
   const out = [];
@@ -340,5 +436,6 @@ module.exports = {
   boundaryLeak,
   contentTokens,
   dedupeSentences,
+  removeGeneratedAdjacentRestatements,
   removeNewExactDuplicateBlocks
 };

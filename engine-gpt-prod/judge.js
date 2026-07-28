@@ -226,6 +226,12 @@ async function judgeAndRepair(rawText, outputText, {
 
   const escalationModel = cfg.models.judgeEscalation || cfg.models.humanizeEscalation || cfg.models.judge;
   if (!escalationModel || escalationModel === cfg.models.judge) return primary;
+  if (!shouldEscalateSemanticReport(primary, rawText)) {
+    return {
+      ...primary,
+      escalationSkippedReason: 'deterministic_omission_restore'
+    };
+  }
 
   const escalated = await judgeAndRepairWithModel(rawText, primary.outputText || outputText, {
     lang,
@@ -264,6 +270,22 @@ function dedupeViolations(violations) {
     seen.add(key);
     return true;
   });
+}
+
+function shouldEscalateSemanticReport(report, rawText) {
+  const violations = Array.isArray(report?.violations) ? report.violations : [];
+  if (!violations.length) return false;
+  const compactSource = compactSemanticText(rawText);
+  const exactOmissionsOnly = violations.every(item => {
+    if (item?.type !== 'omission') return false;
+    const span = compactSemanticText(item?.span);
+    return span.length >= 12 && compactSource.includes(span);
+  });
+  return !exactOmissionsOnly;
+}
+
+function compactSemanticText(value) {
+  return String(value || '').normalize('NFC').replace(/[\s\p{P}\p{S}]+/gu, '').toLowerCase();
 }
 
 async function judgeAndRepairWithModel(rawText, outputText, {
@@ -636,6 +658,7 @@ function responseMeta(res) {
 
 module.exports = {
   SEMANTIC_VIOLATION_TYPES,
+  shouldEscalateSemanticReport,
   buildSoftClaimLedger,
   semanticJudge,
   repairViolations,

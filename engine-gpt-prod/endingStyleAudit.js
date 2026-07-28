@@ -1,12 +1,13 @@
 'use strict';
 
-const { splitSentences } = require('../engine/koreanText');
+const { splitSentences, splitSentenceSpans } = require('../engine/koreanText');
+const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 const {
   classifySentenceEnding,
   endingHistogram: sharedEndingHistogram
 } = require('../engine/endingStyle');
 
-const VERSION = 2;
+const VERSION = 3;
 const STYLES = Object.freeze(['plain', 'polite', 'haeyo', 'nominal']);
 
 function auditEndingStyle(source, output, documentProfile = null) {
@@ -201,6 +202,90 @@ function isImproved(before, after) {
     || Number(after?.introducedOtherCount || 0) < Number(before?.introducedOtherCount || 0);
 }
 
+/**
+ * 종결체 전용 모델 수리가 실패하거나 안전 후보로 채택되지 못한 경우,
+ * 문서 전체를 버리지 않고 새로 섞인 종결체 문장만 대응 원문으로 되돌린다.
+ * 원문에도 정확히 존재하는 대화·선택지·인용은 대상에서 제외하고, 공통
+ * 문장 정렬기가 안전하게 대응시킨 문장만 복원한다.
+ */
+function restoreIntroducedEndingSentences(source, outputText, audit = null, documentProfile = null) {
+  const before = String(outputText || '');
+  const report = audit || auditEndingStyle(source, before, documentProfile);
+  if (report?.pass !== false || !(report?.introducedOtherCount > 0)) {
+    return endingRestoreResult(before, false, [], report, 'not_applicable');
+  }
+
+  const introducedStyles = new Set((report.issues || [])
+    .flatMap(section => section.introducedStyles || [])
+    .filter(item => Number(item?.count || 0) > 0)
+    .map(item => String(item.style || ''))
+    .filter(Boolean));
+  if (!introducedStyles.size) {
+    return endingRestoreResult(before, false, [], report, 'no_introduced_style');
+  }
+
+  const sourceSentenceKeys = new Set(splitSentenceSpans(String(source || ''))
+    .map(span => normalizedSentenceKey(span.text))
+    .filter(Boolean));
+  const maximum = Math.min(8, Math.max(1, Number(report.introducedOtherCount) || 1));
+  const ordinals = [];
+  const outputSpans = splitSentenceSpans(before);
+  for (let index = 0; index < outputSpans.length && ordinals.length < maximum; index += 1) {
+    const span = outputSpans[index];
+    const style = classifySentenceEnding(span.text);
+    if (!introducedStyles.has(style)) continue;
+    if (sourceSentenceKeys.has(normalizedSentenceKey(span.text))) continue;
+    const lineStart = before.lastIndexOf('\n', Math.max(0, span.start - 1)) + 1;
+    const nextBreak = before.indexOf('\n', span.end);
+    const lineEnd = nextBreak >= 0 ? nextBreak : before.length;
+    if (isProtectedLine(before.slice(lineStart, lineEnd).trim())) continue;
+    ordinals.push(index + 1);
+  }
+  if (!ordinals.length) {
+    return endingRestoreResult(before, false, [], report, 'no_safe_target');
+  }
+
+  const restored = restoreSourceSentenceOrdinals(source, before, ordinals, {
+    maxRestoreCount: maximum,
+    minSimilarity: 0.2,
+    ordinalSpace: 'output',
+    maxOutputGroup: 3
+  });
+  if (!restored.applied) {
+    return endingRestoreResult(before, false, [], report, restored.reason || 'no_safe_alignment');
+  }
+  const afterAudit = auditEndingStyle(source, restored.text, documentProfile);
+  if (!isImproved(report, afterAudit)) {
+    return endingRestoreResult(before, false, [], report, 'audit_not_improved');
+  }
+  return endingRestoreResult(
+    restored.text,
+    true,
+    restored.restoredSentenceOrdinals || [],
+    afterAudit,
+    'restored',
+    {
+      restoredSourceSentenceOrdinals: restored.restoredSourceSentenceOrdinals || []
+    }
+  );
+}
+
+function normalizedSentenceKey(value) {
+  return String(value || '').normalize('NFKC').toLowerCase().replace(/[^가-힣a-z0-9]/gu, '');
+}
+
+function endingRestoreResult(text, applied, ordinals, audit, reason, extra = {}) {
+  return {
+    text,
+    applied,
+    restoredSentenceCount: ordinals.length,
+    restoredSentenceOrdinals: ordinals,
+    audit,
+    reason,
+    ...extra
+  };
+}
+
 function round4(value) {
   const number = Number(value) || 0;
   return Math.round(number * 10000) / 10000;
@@ -215,5 +300,6 @@ module.exports = {
   eligibleSentences,
   endingHistogram,
   endingStyle,
-  isImproved
+  isImproved,
+  restoreIntroducedEndingSentences
 };

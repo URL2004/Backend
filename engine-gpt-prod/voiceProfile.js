@@ -8,7 +8,11 @@ const layoutStructure = require('./layoutStructure');
 const OUR_LEXICAL_NOUNS = Object.freeze([
   '나라', '학교', '사회', '집', '말', '몸', '지역', '동네', '회사', '팀', '반', '가족'
 ]);
-const QUOTED_SPAN_RE = /“[^”\n]{2,}”|‘[^’\n]{2,}’|"[^"\n]{2,}"|'[^'\n]{2,}'|「[^」\n]{2,}」|『[^』\n]{2,}』|《[^》\n]{2,}》|〈[^〉\n]{2,}〉/gu;
+// ASCII 작은따옴표는 직접 인용뿐 아니라 미분 기호(I'(t), p'(t))와
+// 영문 apostrophe에도 쓰인다. 문자·숫자에 바로 붙은 기호를 여는/닫는
+// 인용부호로 잡으면 멀리 있는 다음 작은따옴표까지 한 인용으로 삼아,
+// 인용 복원 단계가 그 사이 본문 전체를 삭제할 수 있다.
+const QUOTED_SPAN_RE = /“[^”\n]{2,}”|‘[^’\n]{2,}’|"[^"\n]{2,}"|(?<![\p{L}\p{N}])'[^'\n]{2,}'|「[^」\n]{2,}」|『[^』\n]{2,}』|《[^》\n]{2,}》|〈[^〉\n]{2,}〉/gu;
 
 function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles = [], formatProfile = null, mode = '' } = {}) {
   const context = normalizeDocumentContext(documentProfile, safetyProfiles, formatProfile);
@@ -66,8 +70,9 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
   };
 }
 
-function voicePromptBlock(profile) {
+function voicePromptBlock(profile, { requestStrength = '', mode = '' } = {}) {
   if (!profile) return '';
+  const strength = String(requestStrength || (mode === 'polish' ? 'polish' : '')).toLowerCase();
   const avgSentence = Math.round(profile.sentence?.mean || 0);
   const avgParagraph = Math.round(profile.paragraph?.mean || 0);
   const sentenceCount = profile.sentence?.count || 0;
@@ -90,7 +95,11 @@ function voicePromptBlock(profile) {
       ].join(' ')
     : '';
   const rhythmInstruction = sentenceCount >= 3
-    ? '문법적으로 성립하는 원문 문장은 길이를 고르게 만들 목적으로 합치거나 쪼개지 않는다. 특히 원문의 짧은 문장과 긴 문장 차이를 남긴다.'
+    ? (strength === 'polish'
+        ? '다듬기에서는 문법적으로 성립하는 원문 문장을 합치거나 쪼개지 않고, 기존 장단문 차이를 유지한다.'
+        : strength === 'advanced'
+          ? '고급에서는 같은 문단·같은 주장 안의 의미 단위를 자연스럽게 합치거나 나눌 수 있다. 다만 문장 수를 맞추기 위해 기계적으로 분할하지 말고 원문의 장단문 대비를 중간 길이로 평탄화하지 않는다.'
+          : '기본에서는 같은 문단·같은 주장 안에서 필요한 문장 경계만 제한적으로 조정할 수 있다. 원문의 짧고 긴 문장을 모두 중간 길이로 맞추지는 않는다.')
     : (sparseRunOnInstruction || (maxSentence >= 90
         ? '구두점 누락이나 비문 때문에 긴 문장을 나눠야 한다면 같은 길이로 균등 분할하지 말고, 실제 의미 단위에 따라 짧고 긴 문장이 섞이게 한다.'
         : '원문의 적은 문장 수와 길이 차이를 불필요하게 바꾸지 않는다.'));
@@ -99,7 +108,7 @@ function voicePromptBlock(profile) {
     `화자=${profile.pov?.type || 'impersonal'}, 종결체=${profile.register || 'mixed'}`,
     `문장 수≈${sentenceCount}, 길이 범위≈${minSentence}~${maxSentence}자, 평균≈${avgSentence}자, 변동계수≈${round(profile.sentence?.cv || 0, 2)}; 문단 길이 평균≈${avgParagraph}자`,
     sentenceSequence.length >= 3
-      ? `원문 문장별 길이 순서≈${sentenceSequence.join('→')}자. 짧은 문장을 늘리거나 긴 문장을 줄여 중간 길이로 맞추지 않는다.`
+      ? `원문 문장별 길이 순서≈${sentenceSequence.join('→')}자. 개별 길이를 복제할 필요는 없지만 전체 호흡을 비슷한 중간 길이로 획일화하지 않는다.`
       : '',
     `직접 인용=${profile.directQuoteCount || 0}, 목록=${profile.listItemCount || 0}, 제목=${profile.headingCount || 0}`,
     '원문의 인칭과 종결체를 유지한다. 평균 길이만 맞추지 말고 문장·문단 길이 분포를 보존한다.',
@@ -189,6 +198,8 @@ function auditVoice(sourceProfile, output, {
       && current.questionnaireQuestionCount !== (sourceProfile?.questionnaireQuestionCount || 0)) {
     warnings.push(warning('questionnaire_structure_changed', '질문 번호나 질문·답변 경계가 달라졌을 수 있어요.'));
   }
+  const sourceLayout = sourceProfile?.layout || {};
+  const currentLayout = current.layout || {};
   const sourceParagraphs = sourceProfile?.paragraph?.count || 0;
   const currentParagraphs = current.paragraph?.count || 0;
   const paragraphLimit = paragraphExpansionLimit(sourceParagraphs, sourceProfile?.compactLength || 0);
@@ -213,7 +224,7 @@ function auditVoice(sourceProfile, output, {
     (Number(layoutTargetCount) || sourceParagraphs) - formattingRemovalCount
   );
   const paragraphChanged = layoutAuthorizedParagraphs
-    ? currentParagraphs !== Number(layoutTargetCount)
+    ? Math.abs(currentParagraphs - Number(layoutTargetCount)) > 1
     : mode === 'polish'
     ? (readablePolish
         ? currentParagraphs < formattingMinimum || currentParagraphs > formattingMaximum
@@ -222,7 +233,26 @@ function auditVoice(sourceProfile, output, {
       ? currentParagraphs > paragraphLimit
       : sourceParagraphs >= 2 && (currentParagraphs < Math.min(formattingMinimum, sourceParagraphs * 0.6)
         || currentParagraphs > sourceParagraphs * 1.5);
-  if (paragraphChanged) {
+  const sourceReadability = sourceLayout.readability || {};
+  const currentReadability = currentLayout.readability || {};
+  const minimumReadableCount = Number(sourceReadability.minimumCount || 0);
+  const targetReadableCount = Number(sourceReadability.targetCount || minimumReadableCount);
+  const beneficialReadabilitySplit = mode !== 'polish'
+    && currentParagraphs > sourceParagraphs
+    && Number(sourceReadability.overlongCount || 0) > Number(currentReadability.overlongCount || 0)
+    && minimumReadableCount > sourceParagraphs
+    && currentParagraphs >= minimumReadableCount
+    && currentParagraphs <= Math.max(minimumReadableCount + 2, targetReadableCount + 1);
+  const structuralVisualSeparation = mode !== 'polish'
+    && Number(sourceLayout.structuralLineCount || 0) >= 2
+    && Number(currentLayout.structuralLineCount || 0) >= Number(sourceLayout.structuralLineCount || 0)
+    && Number(currentLayout.nonEmptyLineCount || 0) >= Number(sourceLayout.nonEmptyLineCount || 0)
+    && currentParagraphs >= sourceParagraphs
+    && currentParagraphs <= Math.max(
+      paragraphLimit,
+      Number(sourceLayout.structuralLineCount || 0)
+    );
+  if (paragraphChanged && !beneficialReadabilitySplit && !structuralVisualSeparation) {
     warnings.push(warning('paragraph_structure_changed', '문단 수나 문단 구성이 원문과 크게 달라졌을 수 있어요.'));
   }
   const sentenceSourceProfile = sourceText && Number(formattingSentenceSpaceRepairCount) > 0
@@ -240,8 +270,6 @@ function auditVoice(sourceProfile, output, {
   if (sparseDistributionShift || existingDistribution.shift) {
     warnings.push(warning('sentence_distribution_shift', '원문의 짧고 긴 문장 차이가 결과에서 지나치게 평탄해졌을 수 있어요.'));
   }
-  const sourceLayout = sourceProfile?.layout || {};
-  const currentLayout = current.layout || {};
   if ((sourceLayout.titleLineCount || 0) > (currentLayout.titleLineCount || 0)) {
     warnings.push(warning('title_line_merged', '원문의 제목 줄이 본문에 붙었을 수 있어요.'));
   }
@@ -250,16 +278,18 @@ function auditVoice(sourceProfile, output, {
       || (sourceLayout.listLineCount || 0) > (currentLayout.listLineCount || 0)) {
     warnings.push(warning('structural_line_loss', '원문의 항목 라벨·표·목록 행 일부가 합쳐졌을 수 있어요.'));
   }
-  const sourceBoundaryCount = Math.max(
-    Number(sourceLayout.semanticBoundaryCount) || 0,
-    Number(sourceLayout.preservedBoundaryCount) || 0
-  );
-  const currentBoundaryCount = Math.max(
-    Number(currentLayout.semanticBoundaryCount) || 0,
-    Number(currentLayout.preservedBoundaryCount) || 0
-  );
-  const boundaryCollapsed = sourceBoundaryCount >= 3
-    && currentBoundaryCount < Math.ceil(sourceBoundaryCount * 0.6);
+  const sourcePreservedBoundaryCount = Number(sourceLayout.preservedBoundaryCount) || 0;
+  const currentPreservedBoundaryCount = Number(currentLayout.preservedBoundaryCount) || 0;
+  const nonEmptyLinesCollapsed = Number(sourceLayout.nonEmptyLineCount || 0) >= 3
+    && Number(currentLayout.nonEmptyLineCount || 0)
+      < Math.ceil(Number(sourceLayout.nonEmptyLineCount || 0) * 0.75);
+  // 구조 행 사이에 읽기용 빈 줄을 넣으면 인접 행 경계 수는 줄어들지만
+  // 실제 제목·라벨·목록 행은 그대로 남는다. 이전에는 이 정상적인 문단
+  // 정리도 경계 붕괴로 판정해 강한 회복 후보와 최종 결과를 검토 상태로
+  // 만들었다. 비어 있지 않은 원래 행까지 실제로 합쳐졌을 때만 경고한다.
+  const boundaryCollapsed = sourcePreservedBoundaryCount >= 3
+    && currentPreservedBoundaryCount < Math.ceil(sourcePreservedBoundaryCount * 0.6)
+    && nonEmptyLinesCollapsed;
   if (sourceProfile?.lineBoundaryPolicy === 'all' && lineCount(output) !== sourceProfile.lineCount) {
     warnings.push(sourceProfile.lineBreakSensitive
       ? warning('creative_line_structure', '창작문의 행 구조를 확인해야 해요.')

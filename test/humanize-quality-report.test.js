@@ -26,9 +26,12 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       documentProfile: 'resume_application', qualityStatus: 'clean',
       humanizationDeliveryDepthBand: 'target', substantiveEditRatio: 0.31,
       humanizationDepthApplicable: true, humanizationDepthPass: true,
+      humanizationTargetDepthMet: true,
+      humanizationTargetDepthGap: 0,
       substantiveCarryoverRatio: 0.22, substantiveCarryoverMaximum: 0.3,
       structuralChangedSentenceRatio: 0.42, rhetoricalRemediationCoverage: 1,
       billingDisposition: 'charged', sectionRecoveryAttemptCount: 2,
+      sectionRecoveryTargetOnlyCount: 1,
       sectionRecoveryAppliedCount: 1, sectionRecoveryRejectedAttemptCount: 1,
       sectionRecoveryRejectionCodes: ['not_better'], sectionRecoveryMiniAppliedCount: 1,
       semanticRelationShiftCount: 1, semanticRelationShiftFamilies: ['proof_goal_weakened'],
@@ -49,6 +52,8 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       documentProfile: 'resume_application', qualityStatus: 'needs_review',
       humanizationDeliveryDepthBand: 'minimum', substantiveEditRatio: 0.17,
       humanizationDepthApplicable: true, humanizationDepthPass: false,
+      humanizationTargetDepthMet: false,
+      humanizationTargetDepthGap: 0.04,
       humanizationNoBenefitDelivered: true,
       substantiveCarryoverRatio: 0.36, substantiveCarryoverMaximum: 0.3,
       structuralChangedSentenceRatio: 0.1, rhetoricalRemediationCoverage: 0.5,
@@ -80,10 +85,12 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.summary.koreanRefinementFailureCount, 1);
   assert.equal(report.schemaVersion, 3);
   assert.equal(report.summary.depthBelowMinimumRate, 0.5);
+  assert.equal(report.summary.targetDepthMetRate, 0.5);
   assert.equal(report.summary.waivedRate, 0.5);
   assert.equal(report.summary.noBenefitDeliveredCount, 1);
   assert.equal(report.summary.carryoverOverLimitCount, 1);
   assert.equal(report.summary.sectionRecoveryAppliedCount, 1);
+  assert.equal(report.summary.targetOnlyRecoveryAttemptedCount, 1);
   assert.equal(report.summary.sectionRecoveryRejectedDocumentCount, 1);
   assert.equal(report.summary.fingerprintIssueCount, 1);
   assert.equal(report.summary.semanticRelationShiftDocumentCount, 1);
@@ -94,6 +101,7 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.summary.quoteRestoreDocumentCount, 1);
   assert.equal(report.summary.sourcePreflightChangedCount, 1);
   assert.equal(report.metrics.substantiveCarryoverRatio.median, 0.29);
+  assert.equal(report.metrics.humanizationTargetDepthGap.median, 0.02);
   assert.equal(report.metrics.processingDurationMs.p95, 234000);
   assert.equal(report.window.sinceMs, 0);
   assert.equal(report.window.sourceRowCount, 4);

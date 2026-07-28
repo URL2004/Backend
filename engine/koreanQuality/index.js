@@ -8,6 +8,7 @@ const niklTest = require('./niklTest');
 const officialResources = require('./officialResources');
 const officialApi = require('./officialApi');
 const qualityPatternLab = require('./qualityPatternLab');
+const naturalnessLab = require('./naturalnessLab');
 
 module.exports = {
   DEFAULT_THRESHOLDS,
@@ -18,5 +19,6 @@ module.exports = {
   niklTest,
   officialResources,
   officialApi,
-  qualityPatternLab
+  qualityPatternLab,
+  naturalnessLab
 };

@@ -97,6 +97,8 @@ def split_doc_id_version(doc_name: str | None, pdf_file: str) -> tuple[str, str]
         ("휴머나이징결과", "휴머나이징"),
         ("휴머나이징", "휴머나이징"),
         ("휴머나", "휴머나이징"),
+        ("돌린후", "휴머나이징"),
+        ("변환", "휴머나이징"),
         ("원문", "원문"),
     ]
 
@@ -104,8 +106,12 @@ def split_doc_id_version(doc_name: str | None, pdf_file: str) -> tuple[str, str]
         marker = f"_{suffix}"
         if marker in base:
             return base.rsplit(marker, 1)[0], version
+        if base.endswith(suffix):
+            return base[: -len(suffix)], version
 
     if "휴머" in pdf_file:
+        return base, "휴머나이징"
+    if "변환" in pdf_file:
         return base, "휴머나이징"
     if "원문" in pdf_file:
         return base, "원문"
@@ -223,7 +229,7 @@ def clean_segment_text(lines: list[str]) -> str:
         text = text.replace(tag, " ")
 
     text = re.sub(
-        r"^\s*\d{1,3}[._]\s*.{0,140}?-\s*(?:원문|휴머나이징(?:결과)?)\s*이전\s*문제\s*[:：]\s*",
+        r"^\s*\d{1,3}[._]\s*.{0,140}?-\s*(?:원문|휴머나이징(?:결과)?|돌린후)\s*이전\s*문제\s*[:：]\s*",
         "",
         text,
     )

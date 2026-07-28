@@ -1,6 +1,6 @@
 'use strict';
 
-function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTargets = [], dynamicContext = '' }) {
+function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTargets = [], dynamicContext = '', styleProfile = '' }) {
   const prev = index > 0 ? chunks[index - 1].text : '';
   const next = index < chunks.length - 1 ? chunks[index + 1].text : '';
   const position = chunk.position === 'intro'
@@ -8,11 +8,14 @@ function buildHumanizeUser({ chunk, chunks, index, protectedTerms = [], patchTar
     : chunk.position === 'conclusion'
       ? '결론부다. 새 요약을 만들기보다 원문 결론 흐름 안에서 재서술한다.'
       : '본문이다. 이 청크만 다듬는다.';
+  const naturalnessLab = /copykiller_naturalness_lab|naturalness_lab/i.test(String(styleProfile || ''));
   return [
     '[필수 조건]',
     'outputText는 아래 재작성할 텍스트와 공백 제거 기준으로 동일하면 안 된다.',
     '[변화량 조건]',
-    '제목/번호/고유명사/수치/참고문헌은 보존하되, 일반 본문 문장은 원문 문장틀을 그대로 반복하지 않는다. changedSentenceRatio는 보통 0.45 이상이 되도록 한다.',
+    naturalnessLab
+      ? '제목/번호/고유명사/수치/참고문헌은 보존하되, 일반 본문은 접속과 표현을 바꾼다. 다만 과하게 새 글처럼 갈아엎지 말고 changedSentenceRatio는 보통 0.35~0.65 범위로 둔다.'
+      : '제목/번호/고유명사/수치/참고문헌은 보존하되, 일반 본문 문장은 원문 문장틀을 그대로 반복하지 않는다. changedSentenceRatio는 보통 0.45 이상이 되도록 한다.',
     '[구조 힌트]',
     '제목/번호 줄이 있으면 그 줄은 남기고, 각 항목의 본문 안에서 표현과 연결 방식을 재서술한다.',
     `[작업 위치]\n${position}`,

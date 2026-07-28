@@ -53,6 +53,7 @@ app.use('/', require('./routes/analyze'));
 app.use('/', require('./routes/diagnose'));
 app.use('/', require('./routes/detectreport'));   // AI 감지 분리: 무료 감지 보고서(전환 퍼널)
 app.use('/', transformRouter);   // 회피모드 P3: 재구성 job (POST는 자체 검증, GET 폴링은 limiter 제외)
+app.use('/', require('./routes/localCopykillerTest'));   // 로컬 전용: 운영 OpenAI 설정으로 카피킬러 proxy 테스트
 app.use('/', require('./routes/kakaoLogin'));
 app.use('/', require('./routes/account'));   // 회원 탈퇴(Admin SDK — 클라 재인증 의존 제거)
 app.use('/', require('./routes/payment'));

@@ -23,4 +23,17 @@ function transformStrengthBlock() {
   ].join('\n');
 }
 
-module.exports = { humanizeStableCore, transformStrengthBlock };
+function naturalnessLabStableBlock(styleProfile = '') {
+  const profile = String(styleProfile || '').toLowerCase();
+  if (!profile.includes('copykiller_naturalness_lab') && !profile.includes('naturalness_lab')) return '';
+  return [
+    '[자연성 테스트 프로필]',
+    '이 프로필에서는 "더 깔끔한 글"보다 "덜 기계적으로 정돈된 글"을 우선한다.',
+    '접속어, 추상어, 보고서식 종결이 반복되면 일부를 줄인다.',
+    '문장 길이를 모두 비슷하게 맞추지 않는다. 짧은 문장과 중간 길이 문장을 섞되 문장 절단은 만들지 않는다.',
+    '원문에 없는 1인칭 경험, 사례, 감정, 통계, 근거를 추가하지 않는다.',
+    '제목, 번호, 참고문헌, 수치, 고유명사는 보존한다.'
+  ].join('\n');
+}
+
+module.exports = { humanizeStableCore, transformStrengthBlock, naturalnessLabStableBlock };

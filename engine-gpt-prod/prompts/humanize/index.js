@@ -4,7 +4,7 @@ const { preservationBlock } = require('../common/preservation');
 const { gptBiasGuardBlock } = require('../common/gptBiasGuard');
 const { structuredOutputBlock } = require('../common/output');
 const { gateSummaryBlock } = require('../common/conflictPolicy');
-const { humanizeStableCore, transformStrengthBlock } = require('./stableCore');
+const { humanizeStableCore, transformStrengthBlock, naturalnessLabStableBlock } = require('./stableCore');
 const { genreBlock } = require('./genreBlocks');
 const { speakerBlock } = require('./speakerBlocks');
 const { registerBlock } = require('./registerBlocks');
@@ -21,12 +21,14 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   evidence = '',
   riskProfile = ''
 } = {}) {
+  const naturalnessBlock = naturalnessLabStableBlock(styleProfile);
   const stable = [
     humanizeStableCore(),
     '',
     gptBiasGuardBlock(),
     '',
     transformStrengthBlock(),
+    naturalnessBlock,
     '',
     gateSummaryBlock(),
     '',

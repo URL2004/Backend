@@ -77,6 +77,14 @@ function isQualityPatternLabEnabled(value, styleProfile = '') {
   return !isAdminNiklProfile(styleProfile);
 }
 
+function isNaturalnessLabEnabled(value, styleProfile = '') {
+  if (process.env.GPT_NATURALNESS_LAB_ENABLED === '0') return false;
+  if (value === true) return true;
+  if (value === false) return false;
+  const profile = String(styleProfile || '').toLowerCase();
+  return profile.includes('copykiller_naturalness_lab') || profile.includes('naturalness_lab');
+}
+
 function isLayoutNlpEnabled(value) {
   if (process.env.GPT_LAYOUT_NLP_ENABLED === '0' || process.env.LAYOUT_NLP_PRODUCTION_ENABLED === '0') return false;
   if (value === true) return true;
@@ -84,7 +92,7 @@ function isLayoutNlpEnabled(value) {
   return true;
 }
 
-async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false, qualityPatternLab, layoutNlp = null } = {}) {
+async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evidence = '', signal, config, styleProfile = '', niklQualityTest = false, qualityPatternLab, naturalnessLab = null, layoutNlp = null } = {}) {
   const rawSource = String(text || '').trim();
   if (!rawSource) throw new Error('engine-gpt-prod: empty text');
   const cfg = await loadConfig(config);
@@ -95,6 +103,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     : null;
   const source = preLayout?.text || rawSource;
   const qualityPatternLabEnabled = isQualityPatternLabEnabled(qualityPatternLab, styleProfile);
+  const naturalnessLabEnabled = isNaturalnessLabEnabled(naturalnessLab, styleProfile);
   const niklQualityEnabled = qualityPatternLabEnabled || isNiklQualityEnabled(niklQualityTest, styleProfile);
   const contract = buildContract(source, { mode: selectedMode, lang, optIn: !!String(userNotes || '').trim() });
   const inputRisk = safeInputRisk(source);
@@ -120,6 +129,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
       styleProfile,
       niklQualityTest: niklQualityEnabled,
       qualityPatternLab: qualityPatternLabEnabled,
+      naturalnessLab: naturalnessLabEnabled,
       signal
     });
     records.push(record);
@@ -139,7 +149,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     plan: chunkPlan,
     boundaryRepair
   });
-  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled, structureAudit });
+  const result = buildResult({ source, outputText, contract, mode: selectedMode, records, inputRisk, niklQualityTest: niklQualityEnabled, qualityPatternLab: qualityPatternLabEnabled, naturalnessLab: naturalnessLabEnabled, structureAudit });
   if (layoutNlpEnabled) {
     result.layoutFormat = buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText);
   }
@@ -205,6 +215,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     niklQuality: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     niklQualityTest: niklQualityEnabled ? (result.niklQualityTest || { enabled: true }) : null,
     qualityPatternLab: qualityPatternLabEnabled ? (result.qualityPatternLab || { enabled: true }) : null,
+    naturalnessLab: naturalnessLabEnabled ? (result.naturalnessLab || { enabled: true }) : null,
     layoutFormat: layoutNlpEnabled ? (result.layoutFormat || { enabled: true }) : null,
     runtimeConfigSource: cfg.source,
     styleProfile: styleProfile || PROFILE
@@ -226,7 +237,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
   };
 }
 
-async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, niklQualityTest = false, qualityPatternLab = false, signal }) {
+async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence, cfg, styleProfile, niklQualityTest = false, qualityPatternLab = false, naturalnessLab = false, signal }) {
   const original = chunk.text;
   if (chunk.locked) {
     chunk.outputText = original;
@@ -271,6 +282,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     styleProfile,
     niklQualityTest,
     qualityPatternLab,
+    naturalnessLab,
     runSemanticJudge: highRisk,
     signal
   });
@@ -301,6 +313,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     styleProfile,
     niklQualityTest,
     qualityPatternLab,
+    naturalnessLab,
     runSemanticJudge: highRisk,
     signal
   });
@@ -330,7 +343,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
 async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, lang, userNotes, evidence,
-    cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, niklQualityTest = false, qualityPatternLab = false, runSemanticJudge, signal
+    cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, niklQualityTest = false, qualityPatternLab = false, naturalnessLab = false, runSemanticJudge, signal
   } = args;
   try {
     const koreanSourceQuality = safeKoreanQualityAnalysis(original, {
@@ -349,7 +362,12 @@ async function callHumanize(args) {
       register: contract.register
     }) : null;
     const qualityPatternHints = qualityPatternLab ? safeQualityPatternHints(qualityPatternProfile) : '';
-    const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints, [niklQualityHints, niklExternalApiHints, qualityPatternHints].filter(Boolean).join('\n\n'));
+    const naturalnessProfile = naturalnessLab ? safeNaturalnessProfile(original, {
+      mode,
+      register: contract.register
+    }) : null;
+    const naturalnessHints = naturalnessLab ? safeNaturalnessHints(naturalnessProfile) : '';
+    const riskProfile = composeRiskProfile(inputRisk, koreanQualityHints, [niklQualityHints, niklExternalApiHints, qualityPatternHints, naturalnessHints].filter(Boolean).join('\n\n'));
     const hp = prompts.buildHumanizePrompt(mode, lang, {
       speakerType: contract.speakerType,
       register: contract.register,
@@ -362,7 +380,7 @@ async function callHumanize(args) {
     const retryInstruction = phase === 'escalation' ? prompts.buildEscalationInstruction() : '';
     const response = await completeJson({
       system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
-      user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets, dynamicContext: hp.dynamic }),
+      user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets, dynamicContext: hp.dynamic, styleProfile }),
       schema: HUMANIZE_SCHEMA,
       schemaName: 'gpt_prod_humanize_result',
       model,
@@ -441,6 +459,12 @@ async function callHumanize(args) {
       protectedTerms,
       externalApiHintsUsed: Boolean(niklExternalApiHints)
     }) : null;
+    const naturalnessAudit = naturalnessLab ? safeNaturalnessAudit(original, outputText, {
+      mode,
+      register: contract.register,
+      beforeProfile: naturalnessProfile,
+      protectedTerms
+    }) : null;
     if (qualityGate) {
       if (Array.isArray(qualityGate.warnings) && qualityGate.warnings.length) {
         gate.warnings.push(...qualityGate.warnings);
@@ -476,9 +500,25 @@ async function callHumanize(args) {
       gate.warnings.push('quality_pattern_low_effect');
       gate.violations.push({ gate: 'quality_pattern_low_effect', detail: 'output equivalent to source; delivered for lab audit' });
     }
+    if (naturalnessLab && gate.hardFail && gate.reason === 'noop_unchanged') {
+      gate.hardFail = false;
+      gate.reason = '';
+      gate.warnings.push('naturalness_low_effect');
+      gate.violations.push({ gate: 'naturalness_low_effect', detail: 'output equivalent to source; delivered for naturalness lab audit' });
+    }
     if (qualityPatternAudit?.auditTrail?.warnings?.length) {
       gate.warnings.push(...qualityPatternAudit.auditTrail.warnings.map(w => `quality_pattern:${w}`));
       gate.violations.push(...qualityPatternAudit.auditTrail.warnings.map(w => ({ gate: w, qualityPatternLab: true })));
+    }
+    if (naturalnessAudit?.auditTrail?.warnings?.length) {
+      gate.warnings.push(...naturalnessAudit.auditTrail.warnings.map(w => `naturalness:${w}`));
+      gate.violations.push(...naturalnessAudit.auditTrail.warnings.map(w => ({ gate: w, naturalnessLab: true })));
+    }
+    if (naturalnessAudit?.auditTrail?.blockers?.length) {
+      gate.hardFail = true;
+      gate.reason = naturalnessAudit.auditTrail.blockers[0] || 'naturalness_lab_blocked';
+      gate.warnings.push(...naturalnessAudit.auditTrail.blockers.map(w => `naturalness_blocker:${w}`));
+      gate.violations.push(...naturalnessAudit.auditTrail.blockers.map(w => ({ gate: w, naturalnessLab: true, blocker: true })));
     }
     return {
       outputText,
@@ -506,6 +546,7 @@ async function callHumanize(args) {
         koreanQuality: compactKoreanQualityGate(qualityGate),
         niklQuality: compactNiklQualityGate(niklQualityGate),
         qualityPatternLab: compactQualityPatternAudit(qualityPatternAudit),
+        naturalnessLab: compactNaturalnessAudit(naturalnessAudit),
         selectedModel: response.model,
         escalated: phase === 'escalation'
       })
@@ -1096,7 +1137,7 @@ function paragraphCount(text) {
   return String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean).length;
 }
 
-function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false, qualityPatternLab = false, structureAudit = null }) {
+function buildResult({ source, outputText, contract, mode, records, inputRisk, niklQualityTest = false, qualityPatternLab = false, naturalnessLab = false, structureAudit = null }) {
   const result = {
     outputText,
     styleProfile: PROFILE,
@@ -1176,8 +1217,31 @@ function buildResult({ source, outputText, contract, mode, records, inputRisk, n
       attachQualityPatternWarnings(result.floorReport, compact);
     } catch {}
   }
+  if (naturalnessLab) {
+    try {
+      const protectedTerms = collectRecordProtectedTerms(records);
+      const audit = safeNaturalnessAudit(source, outputText, {
+        mode,
+        register: contract.register,
+        protectedTerms
+      });
+      const compact = compactNaturalnessAudit(audit);
+      result.naturalnessLab = {
+        enabled: true,
+        version: compact?.version || 'copykiller-naturalness-lab-v1',
+        action: compact?.auditTrail?.action || 'pass'
+      };
+      result.naturalnessProfileBefore = compact?.profileBefore || null;
+      result.naturalnessProfileAfter = compact?.profileAfter || null;
+      result.naturalnessDelta = compact?.delta || null;
+      result.naturalnessAuditTrail = compact?.auditTrail || null;
+      result.naturalnessProtectedTermReport = compact?.protectedTermReport || null;
+      attachNaturalnessLabWarnings(result.floorReport, compact);
+    } catch {}
+  }
   attachWeakTransformWarning(result.floorReport, result);
   if (qualityPatternLab) softenQualityPatternLabFloorReport(result.floorReport);
+  if (naturalnessLab) softenQualityPatternLabFloorReport(result.floorReport);
   softenFloorReport(result.floorReport);
   return result;
 }
@@ -1236,6 +1300,32 @@ function attachQualityPatternWarnings(report, audit) {
     report.status = action === 'blocked'
       ? 'blocked'
       : shouldPromoteWarningsToNeedsReview(warningList)
+        ? 'needs_review'
+        : report.status;
+  }
+}
+
+function attachNaturalnessLabWarnings(report, audit) {
+  if (!report || !audit || !audit.auditTrail) return;
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const action = audit.auditTrail.action || 'pass';
+  if (action === 'pass') return;
+  const warningList = audit.auditTrail.warnings || [];
+  report.warnings = [
+    ...warnings,
+    {
+      gate: 'copykiller_naturalness_lab',
+      action,
+      warnings: warningList,
+      blockers: audit.auditTrail.blockers || [],
+      riskDelta: audit.delta?.riskDelta,
+      protectedTermLossCount: audit.protectedTermReport?.lossCount || 0
+    }
+  ];
+  if (report.status === 'clean') {
+    report.status = action === 'blocked'
+      ? 'blocked'
+      : warningList.length
         ? 'needs_review'
         : report.status;
   }
@@ -1650,6 +1740,22 @@ function safeQualityPatternAudit(source, output, opts = {}) {
 
 function compactQualityPatternAudit(audit) {
   try { return koreanQuality.qualityPatternLab.compactAudit(audit); } catch { return null; }
+}
+
+function safeNaturalnessProfile(text, opts = {}) {
+  try { return koreanQuality.naturalnessLab.buildProfile(text, opts); } catch { return null; }
+}
+
+function safeNaturalnessHints(profile) {
+  try { return profile ? koreanQuality.naturalnessLab.buildPromptHints(profile, { max: 8 }) : ''; } catch { return ''; }
+}
+
+function safeNaturalnessAudit(source, output, opts = {}) {
+  try { return koreanQuality.naturalnessLab.buildAudit(source, output, opts); } catch { return null; }
+}
+
+function compactNaturalnessAudit(audit) {
+  try { return koreanQuality.naturalnessLab.compactAudit(audit); } catch { return null; }
 }
 
 function compactKoreanQualityGate(gate) {

@@ -11,6 +11,8 @@ function splitChunksForGpt(text) {
   const state = {
     referenceMode: false,
     tocMode: false,
+    tocFirstMainHeading: '',
+    tocSawTerminal: false,
     currentSection: '',
     lastPiece: null
   };
@@ -91,6 +93,30 @@ function classifyPiece(line, state) {
   const s = raw.trim();
   if (!s) return { locked: false, lockType: 'blank' };
 
+  if (state.tocMode) {
+    const mainHeadingKey = isMainBodyHeading(s) ? bare(s).slice(0, 80) : '';
+    if (
+      mainHeadingKey &&
+      (
+        (state.tocFirstMainHeading && mainHeadingKey === state.tocFirstMainHeading) ||
+        state.tocSawTerminal
+      )
+    ) {
+      state.tocMode = false;
+      state.tocFirstMainHeading = '';
+      state.tocSawTerminal = false;
+    } else {
+      if (mainHeadingKey && !state.tocFirstMainHeading) state.tocFirstMainHeading = mainHeadingKey;
+      if (isReferenceHeading(s) || /^(?:부록|Appendix)$/i.test(s)) state.tocSawTerminal = true;
+      return { locked: true, lockType: 'toc_item', sectionLabel: '목차' };
+    }
+  }
+
+  if (isTocHeading(s)) {
+    state.tocMode = true;
+    return { locked: true, lockType: 'toc_heading', sectionLabel: s };
+  }
+
   if (state.referenceMode) {
     return { locked: true, lockType: 'reference_item', sectionLabel: '참고문헌' };
   }
@@ -98,17 +124,6 @@ function classifyPiece(line, state) {
   if (isReferenceHeading(s)) {
     state.referenceMode = true;
     return { locked: true, lockType: 'reference_heading', sectionLabel: s };
-  }
-
-  if (state.tocMode && isMainBodyHeading(s)) {
-    state.tocMode = false;
-  } else if (state.tocMode) {
-    return { locked: true, lockType: 'toc_item', sectionLabel: '목차' };
-  }
-
-  if (isTocHeading(s)) {
-    state.tocMode = true;
-    return { locked: true, lockType: 'toc_heading', sectionLabel: s };
   }
 
   if (isHeadingLine(s)) {

@@ -124,6 +124,9 @@ function normalizeAdminLabProfile(value) {
   if (v === 'ko_quality_pattern_lab' || v === 'ko-quality-pattern-lab' || v === 'quality_pattern_lab' || v === 'korean_quality_pattern_lab') {
     return 'ko_quality_pattern_lab';
   }
+  if (v === 'copykiller_naturalness_lab' || v === 'copykiller-naturalness-lab' || v === 'ck_naturalness_lab' || v === 'naturalness_lab' || v === 'naturalness-rhythm-lab') {
+    return 'copykiller_naturalness_lab';
+  }
   if (v === 'v6_engine' || v === 'v6-engine' || v === 'humanizing_v6' || v === 'humanizing-engine-v6' || v === 'engine_v6' || v === 'engine-v6') {
     return 'v6_engine';
   }
@@ -162,6 +165,10 @@ function isGptEngineJob(job) {
 
 function isKoQualityPatternLabJob(job) {
   return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'ko_quality_pattern_lab');
+}
+
+function isCopykillerNaturalnessLabJob(job) {
+  return !!(job && job.basicExperiment && adminLabProfileOf(job) === 'copykiller_naturalness_lab');
 }
 
 function isAdminHumanizeLabJob(job) {
@@ -999,10 +1006,12 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     const isV6 = profile === 'v6_engine';
     const isGpt = profile === 'gpt_engine';
     const isQualityPatternLab = profile === 'ko_quality_pattern_lab';
+    const isNaturalnessLab = profile === 'copykiller_naturalness_lab';
     const engineMode = job.mode === 'blog' ? 'blog' : 'assignment';
     const tonePolish = job.mode === 'polish';
     job.status = 'running';
-    job.stage = isQualityPatternLab ? '관리자 테스트 · 한국어 품질 패턴 엔진 v1'
+    job.stage = isNaturalnessLab ? '관리자 테스트 · 카피킬러 자연성 테스트 모드'
+      : isQualityPatternLab ? '관리자 테스트 · 한국어 품질 패턴 엔진 v1'
       : isGpt ? '관리자 테스트 · GPT 전용 엔진'
       : isV6 ? '관리자 테스트 · V9 카피킬러 안전 엔진'
       : isFundamental ? '관리자 테스트 · 근본개선 엔진'
@@ -1026,7 +1035,23 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
     const labExtract = activeGpt ? gptAnalyze.extractGptResult : analyze.extractClaudeResult;
     let baselineOut = null;
 
-    const out = isQualityPatternLab
+    const out = isNaturalnessLab
+      ? await runAdminGptLabWithOptionalNiklCompare({
+        job,
+        text,
+        mode: tonePolish ? 'polish' : engineMode,
+        lang: job.lang || 'ko',
+        evidence,
+        config: gptTestCfg,
+        styleProfile: 'copykiller_naturalness_lab',
+        baselineStyleProfile: 'admin_gpt_engine',
+        testStyleProfile: 'copykiller_naturalness_lab',
+        label: '카피킬러 자연성 테스트 모드',
+        forceCompare: true,
+        naturalnessLab: true,
+        setBaseline: out => { baselineOut = out; }
+      })
+      : isQualityPatternLab
       ? await runAdminGptLabWithOptionalNiklCompare({
         job,
         text,
@@ -1121,6 +1146,13 @@ async function runAdminHumanizeLabJob(job, text, evidence) {
       niklQualityCompare: baselineOut ? buildAdminLabNiklCompare(baselineOut, out) : null,
       qualityPatternLab: out.result.qualityPatternLab || null,
       qualityPatternCompare: baselineOut ? buildAdminLabQualityPatternCompare(baselineOut, out) : null,
+      naturalnessLab: out.result.naturalnessLab || null,
+      naturalnessCompare: baselineOut && isNaturalnessLab ? buildAdminLabNaturalnessCompare(baselineOut, out) : null,
+      naturalnessProfileBefore: out.result.naturalnessProfileBefore || null,
+      naturalnessProfileAfter: out.result.naturalnessProfileAfter || null,
+      naturalnessDelta: out.result.naturalnessDelta || null,
+      naturalnessAuditTrail: out.result.naturalnessAuditTrail || null,
+      naturalnessProtectedTermReport: out.result.naturalnessProtectedTermReport || null,
       qualityProfileBefore: out.result.qualityProfileBefore || null,
       qualityProfileAfter: out.result.qualityProfileAfter || null,
       patternDelta: out.result.patternDelta || null,
@@ -1179,6 +1211,7 @@ async function runAdminGptLabWithOptionalNiklCompare({
   label,
   forceCompare = false,
   qualityPatternLab = false,
+  naturalnessLab = false,
   setBaseline
 }) {
   const layoutNlpTest = job.layoutNlpTest === true;
@@ -1194,9 +1227,10 @@ async function runAdminGptLabWithOptionalNiklCompare({
   };
   const baseProfile = baselineStyleProfile || styleProfile;
   const onProfile = testStyleProfile || styleProfile;
-  const shouldCompare = forceCompare === true || qualityPatternLab === true || job.niklQualityTest === true || layoutNlpTest;
+  const shouldCompare = forceCompare === true || qualityPatternLab === true || naturalnessLab === true || job.niklQualityTest === true || layoutNlpTest;
+  const testNiklQuality = qualityPatternLab === true || job.niklQualityTest === true;
   if (!shouldCompare) {
-    return await gptAnalyze.runHumanizeChunked({ ...common, styleProfile: baseProfile, niklQualityTest: false, qualityPatternLab: false });
+    return await gptAnalyze.runHumanizeChunked({ ...common, styleProfile: baseProfile, niklQualityTest: false, qualityPatternLab: false, naturalnessLab: false });
   }
 
   job.stage = `관리자 테스트 · ${label || 'GPT'} · 기준 결과 생성 중`;
@@ -1220,6 +1254,8 @@ async function runAdminGptLabWithOptionalNiklCompare({
 
   job.stage = layoutNlpTest
     ? `관리자 테스트 · ${label || 'GPT'} · 레이아웃 NLP 결과 생성 중`
+    : naturalnessLab
+    ? `관리자 테스트 · ${label || 'GPT'} · 자연성 테스트 결과 생성 중`
     : qualityPatternLab
     ? `관리자 테스트 · ${label || 'GPT'} · 품질 패턴 v1 결과 생성 중`
     : `관리자 테스트 · ${label || 'GPT'} · 국어원식 품질 테스트 결과 생성 중`;
@@ -1228,8 +1264,9 @@ async function runAdminGptLabWithOptionalNiklCompare({
     ...common,
     text: testText,
     styleProfile: onProfile,
-    niklQualityTest: true,
-    qualityPatternLab: qualityPatternLab === true
+    niklQualityTest: testNiklQuality,
+    qualityPatternLab: qualityPatternLab === true,
+    naturalnessLab: naturalnessLab === true
   });
   if (layoutNlpTest && testOut?.result?.outputText) {
     job.stage = `관리자 테스트 · ${label || 'GPT'} · 문서 형태 출력 후처리 중`;
@@ -1330,6 +1367,38 @@ function buildAdminLabQualityPatternCompare(baselineOut, testOut) {
       rhetoricalInsertion: rhetoric,
       claimStrengthDrift: claim,
       externalApiHintsUsed: result.externalApiHintsUsed === true
+    }
+  };
+}
+
+function buildAdminLabNaturalnessCompare(baselineOut, testOut) {
+  const base = buildAdminLabNiklCompare(baselineOut, testOut);
+  const result = testOut?.result || {};
+  const delta = result.naturalnessDelta || {};
+  const audit = result.naturalnessAuditTrail || {};
+  const protectedReport = result.naturalnessProtectedTermReport || {};
+  return {
+    ...base,
+    compareType: 'copykiller_naturalness_lab',
+    labels: {
+      baseline: '현재 GPT',
+      test: '자연성 테스트'
+    },
+    naturalness: {
+      enabled: true,
+      action: audit.action || result.naturalnessLab?.action || '',
+      warnings: audit.warnings || [],
+      blockers: audit.blockers || [],
+      beforeRisk: delta.beforeRisk,
+      afterRisk: delta.afterRisk,
+      riskDelta: delta.riskDelta,
+      byMetric: delta.byMetric || {},
+      reducedCount: delta.reducedCount || 0,
+      increasedCount: delta.increasedCount || 0,
+      reducedPatterns: (delta.reducedPatterns || []).slice(0, 8),
+      increasedPatterns: (delta.increasedPatterns || []).slice(0, 8),
+      protectedTermLossCount: protectedReport.lossCount || 0,
+      protectedTermLost: (protectedReport.lost || []).slice(0, 12)
     }
   };
 }
@@ -2126,6 +2195,8 @@ router.post('/transform', async (req, res) => {
     ? 'humanizing-engine-v9-cksafe'
     : requestedAdminLabProfile === 'gpt_engine'
       ? 'gpt-openai-humanize-engine-v1'
+      : requestedAdminLabProfile === 'copykiller_naturalness_lab'
+        ? 'copykiller-naturalness-lab-v1'
       : requestedAdminLabProfile === 'ko_quality_pattern_lab'
         ? 'ko-quality-pattern-lab-v1'
         : requestedAdminLabProfile === 'fundamental_engine'

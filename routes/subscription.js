@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { admin, db } = require('../config');
+const { admin, db, verifyFirebaseIdToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 
@@ -111,7 +111,7 @@ async function readBillingKey(uid, fallback) {
 async function verifyToken(idToken) {
   if (!idToken) return null;
   try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
+    const decoded = await verifyFirebaseIdToken(idToken);
     return decoded.uid;
   } catch { return null; }
 }

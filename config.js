@@ -75,12 +75,25 @@ const dailyLimiter = rateLimit({
 // 관리자 UID 화이트리스트 (프론트엔드 ADMIN_ROLES와 동일하게 유지)
 const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2', 'upyxtXMQEgQXfqTUWPrf6QS9EqE2', '9i6YA66mpXSBcpPJqNmJQ5jnJsT2'];
 
+function blockedFirebasePasswordToken(decoded) {
+  return process.env.ALLOW_LEGACY_FIREBASE_PASSWORD_AUTH !== '1'
+    && decoded?.firebase?.sign_in_provider === 'password';
+}
+
+// 폐기된 세션을 검사하고, 보안 전환 후에는 구형 password 로그인을 전면 거부한다.
+async function verifyFirebaseIdToken(idToken) {
+  if (!idToken || !admin) throw Object.assign(new Error('AUTH_REQUIRED'), { code: 'auth/id-token-required' });
+  const decoded = await admin.auth().verifyIdToken(idToken, true);
+  if (blockedFirebasePasswordToken(decoded)) {
+    throw Object.assign(new Error('PASSWORD_AUTH_BLOCKED'), { code: 'auth/password-provider-disabled' });
+  }
+  return decoded;
+}
+
 // Firebase ID Token 검증 헬퍼 (실패 시 null)
 async function verifyToken(idToken) {
-  if (!idToken || !admin) return null;
   try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    return decoded.uid;
+    return (await verifyFirebaseIdToken(idToken)).uid;
   } catch (e) {
     return null;
   }
@@ -94,4 +107,14 @@ async function verifyAppCheck(token) {
   catch (e) { return false; }
 }
 
-module.exports = { admin, db, corsMiddleware, limiter, dailyLimiter, ADMIN_UIDS, verifyToken, verifyAppCheck };
+module.exports = {
+  admin,
+  db,
+  corsMiddleware,
+  limiter,
+  dailyLimiter,
+  ADMIN_UIDS,
+  verifyFirebaseIdToken,
+  verifyToken,
+  verifyAppCheck
+};

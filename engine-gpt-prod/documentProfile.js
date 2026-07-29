@@ -461,7 +461,11 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const explainerConceptSignals = count(text, /(?:개념|원리|이론|역사적\s*배경|특징|구조|기능|영향|관계|차이|의미|과정|사례|쟁점|메커니즘|제도)/gu);
   const formalExpositionEndings = sentences.filter(sentence => /(?:한다|했다|하였다|이다|였다|이었다|된다|되었다|있다|없다|보인다|나타난다|나타났다|드러난다|드러났다|의미한다)[.!?。！？]?$/u.test(sentence.trim())).length;
   const formalExpositionRatio = formalExpositionEndings / Math.max(1, sentences.length);
-  const strongCreativeSignals = count(text, /(?:시\s*$|시집|운문|소설|등장인물|장면\s*\d+|단편\s*소설|화자\s*:)/gmu);
+  // 작품을 분석하는 독후감·비평문도 "소설", "등장인물"을 반복한다.
+  // 이 두 일반 명사를 창작 저작 신호로 직접 가산하면 작품 감상문이
+  // creative로 과대 분류되고, 뒤의 보존형 창작 강도 정책까지 잘못 탄다.
+  // 창작 형식 자체를 나타내는 표지와 실제 서사 장면 조합만 강한 신호로 쓴다.
+  const strongCreativeSignals = count(text, /(?:시\s*$|시집|운문|장면\s*\d+|단편\s*소설|화자\s*:)/gmu);
   const weakCreativeSignals = count(text, /(?:그날의|바람이|달빛|별빛|노을|그림자|고요(?:가|는|를)|계절의)/gu);
   const proseNarrativeSignals = count(text, /(?:그는|그녀는|소년은|소녀는|노인은|남자는|여자는|아이는|아이의|문을\s*열(?:었|고)|걸어갔|돌아섰|바라보았|중얼거렸|속삭였|말했|물었|대답했|웃었|울었)/gu);
   const proseDialogueSignals = count(
@@ -495,11 +499,17 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     text,
     /(?:의미(?:하|를\s*가진)|보여\s*준다|드러낸다|나타낸다|상징한다|해석할\s*수|해석된다|분석하면|대조(?:된|한다)|시사한다|점이다|역할을\s*한다)/gu
   );
+  const personalReflectionSignals = count(text, /(?:생각한다|느꼈다|깨달았다|경험을\s*통해|돌이켜\s*보면|기억에\s*남|배우게\s*되었다)/gu);
   const literaryAnalysisFrame = compactLength >= 240
     && literaryAnalysisSignals >= 4
     && (literaryInterpretationSignals >= 2
-      || (literaryAnalysisSignals >= 6 && explainerConceptSignals >= 3))
-    && formalExpositionRatio >= 0.32;
+      || (literaryAnalysisSignals >= 6 && explainerConceptSignals >= 3)
+      || (literaryAnalysisSignals >= 4
+        && literaryInterpretationSignals >= 1
+        && (firstPersonSignals >= 1 || personalReflectionSignals >= 1)))
+    && (formalExpositionRatio >= 0.32
+      || firstPersonSignals >= 1
+      || personalReflectionSignals >= 1);
   if (literaryAnalysisFrame) {
     // 작품 속 인물의 행동을 요약한 비평·독후 분석은 서사 동사와 장면
     // 어휘가 많아도 창작문이 아니다. 메타 분석 표지와 평서형 설명이 함께
@@ -513,14 +523,27 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     }
   }
 
-  const personalReflectionSignals = count(text, /(?:생각한다|느꼈다|깨달았다|경험을\s*통해|돌이켜\s*보면|기억에\s*남|배우게\s*되었다)/gu);
   add(scores, 'personal_essay', personalReflectionSignals, 0.55);
   add(scores, 'personal_essay', firstPersonSignals, 0.22);
   if (firstPersonSignals >= 2 && personalReflectionSignals >= 1) scores.personal_essay += 0.8;
   const bookReflectionSignals = count(
     text,
-    /(?:독후감|독서\s*(?:감상|기록)|이\s*책(?:은|을|에서|의)|책을\s*(?:읽|선택)|저자(?:는|가)|지은이|지음|부제|인상\s*깊었던\s*(?:내용|구절)|책을\s*선택한\s*이유|읽고\s*난\s*뒤)/gu
+    /(?:독후감|독서\s*(?:감상|기록)|이\s*(?:책|소설|작품)(?:은|을|에서|의)|(?:책|소설|작품)을\s*(?:읽|선택)|읽(?:고|으면서|은)\s*(?:뒤|후|작품|소설)|저자(?:는|가)|작가(?:는|가)|지은이|지음|부제|인상\s*깊었던\s*(?:내용|구절|장면)|(?:책|작품)을\s*선택한\s*이유)/gu
   );
+  const literaryReflectionFrame = compactLength >= 240
+    && literaryAnalysisSignals >= 3
+    && (literaryInterpretationSignals >= 1 || bookReflectionSignals >= 2)
+    && (firstPersonSignals >= 1 || personalReflectionSignals >= 1)
+    && !formatProfile.flags.includes('line_sensitive');
+  if (literaryReflectionFrame) {
+    // 1인칭으로 작품의 질문·인물·의미를 해석하는 글은 창작물이 아니라
+    // 독후감/문학 성찰이다. 개인 화자가 있으면 personal_essay를 우선하고,
+    // 형식적인 분석문 후보도 안전망으로 남긴다.
+    scores.personal_essay += 4.15
+      + Math.min(Math.max(0, literaryAnalysisSignals - 3), 6) * 0.14;
+    scores.report_assignment += 1.45;
+    scores.creative = Math.min(scores.creative, 0.95);
+  }
 
   const structuredProposalHeadingSignals = lines.filter(line => (
     /^(?:#{1,6}\s*)?(?:\d+(?:\.\d+)*[.)]?\s*)?(?:사업\s*(?:배경(?:\s*및\s*목적)?|목적|목표|개요)|문제\s*해결(?:을\s*위한\s*사업\s*목표)?|고객(?:\s*\([^)]{1,40}\))?|가치\s*제안(?:\s*\([^)]{1,40}\))?|가치\s*사슬(?:\s*\([^)]{1,40}\))?|시장\s*(?:현황|상황|분석)[^:：]{0,40}|(?:현재\s*)?마케팅\s*(?:현황|전략|방안)[^:：]{0,40}|제안서\s*(?:목적|개요)|기획의?\s*기대\s*효과|창업\s*(?:배경|과정)[^:：]{0,40}|산업의?\s*(?:특성|역량)|위기\s*극복\s*전략|핵심\s*전략|추진\s*(?:전략|계획|체계)|실행\s*(?:전략|방안|계획)|운영\s*(?:전략|계획)|수익\s*모델|예산\s*계획|기대\s*효과)(?:\s*[:：].*)?$/u.test(line)
@@ -767,6 +790,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       literaryAnalysisSignals,
       literaryInterpretationSignals,
       literaryAnalysisFrame,
+      literaryReflectionFrame,
       structuredProposalHeadingSignals,
       structuredProposalBodySignals,
       structuredProposalFrame,

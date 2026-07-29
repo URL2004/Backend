@@ -6,6 +6,7 @@ const korean = require('../engine-gpt-prod/koreanRefinement');
 const fingerprint = require('../engine-gpt-prod/fingerprintAudit');
 const sourcePreflight = require('../engine-gpt-prod/sourcePreflight');
 const structure = require('../engine-gpt-prod/structureChunk');
+const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
 
 const resumeProfile = {
   profile: 'resume_application',
@@ -121,6 +122,47 @@ test('중요성 판단을 의무로 강화하거나 직무 역량을 추상적 �
     competency.semanticRelations.shifts.some(item => item.family === 'competency_claim_weakened_to_foundation'),
     JSON.stringify(competency.semanticRelations)
   );
+});
+
+test('소설의 인물과 질문을 해석하는 1인칭 감상문을 창작문으로 오인하지 않는다', () => {
+  const source = [
+    '이 소설을 읽으면서 작가가 왜 이런 질문을 던졌는지 오래 생각했다.',
+    '작품 속 주인공은 용서와 고통 사이에서 계속 흔들리고, 등장인물의 선택은 당시 사회의 분위기와도 맞닿아 있다.',
+    '나는 이 장면이 개인의 믿음만 다루는 것이 아니라 타인의 고통을 이해하는 태도를 보여 준다고 생각한다.',
+    '이 작품에서 반복되는 침묵은 인물들이 쉽게 말하지 못한 감정을 드러낸다.',
+    '작품 속 갈등이 해결되지 않은 채 남는 이유도 작가가 독자에게 판단을 넘기기 위한 장치로 해석할 수 있다.',
+    '주인공의 마지막 선택은 앞부분의 행동과 대조되며 이 소설의 질문을 다시 떠올리게 한다.',
+    '다만 한 가지는 분명해진 것 같다. 작가는 정답을 제시하기보다 독자가 자신의 판단을 돌아보게 한다.'
+  ].join(' ');
+  const profile = detectDocumentProfile(source, { basicStyle: 'blog' });
+  assert.equal(profile.profile, 'personal_essay', JSON.stringify(profile.candidateProfiles));
+  assert.equal(profile.signals.literaryReflectionFrame, true);
+  assert.ok((profile.candidateProfiles.find(item => item.profile === 'creative')?.score || 0) <= 0.95);
+});
+
+test('실제 대화와 장면이 이어지는 소설 본문은 계속 창작문으로 판정한다', () => {
+  const source = [
+    '소년은 어두운 골목에서 젖은 발자국을 바라보았다.',
+    '“여기서 기다린 거야?” 소녀가 물었다.',
+    '그는 창문 너머의 달빛을 한 번 보고는 조용히 문을 열었다.',
+    '“아무에게도 말하지 마.” 그가 속삭였다.',
+    '방 안의 숨소리가 가까워지자 두 사람은 서로를 바라보며 천천히 웃었다.'
+  ].join(' ');
+  const profile = detectDocumentProfile(source, { basicStyle: 'blog' });
+  assert.equal(profile.profile, 'creative', JSON.stringify(profile.candidateProfiles));
+});
+
+test('추정 표현을 확정 결론으로 강화하면 원문 문장을 복원한다', () => {
+  const source = '다만 한 가지는 분명해진 것 같다. 이 질문은 독자의 판단을 돌아보게 한다.';
+  const outputText = '다만 한 가지는 분명해졌다. 이 질문은 독자의 판단을 돌아보게 한다.';
+  const audit = fingerprint.auditFingerprint(source, outputText, 'personal_essay');
+  assert.ok(
+    audit.semanticRelations.shifts.some(item => item.family === 'epistemic_hedge_hardened'),
+    JSON.stringify(audit.semanticRelations)
+  );
+  const restored = fingerprint.restoreUnsafeRelationSentences(source, outputText, audit);
+  assert.equal(restored.applied, true);
+  assert.equal(restored.text, source);
 });
 
 test('장르 판정 전에도 시의 짧은 행갈이는 PDF 강제 줄바꿈으로 합치지 않는다', () => {

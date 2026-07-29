@@ -50,7 +50,7 @@ const {
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.16';
+const VERSION = 'gpt-prod-v2.5.17';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -755,14 +755,16 @@ async function runEngine({
     }
   }
 
-  // 문서 전체 후보가 반복해서 보존 감사에 걸리면, 같은 방식의 전체 재호출을
-  // 더 쌓아도 원문 복귀가 반복된다. 이때는 한 번에 한 문장만 모델에 맡기고
-  // 서버가 해당 span만 재조립해 안전한 실질 편집을 누적한다.
+  // 문서 전체 후보가 반복해서 보존 감사에 걸리거나 체감 최소선에 못 미치면,
+  // 같은 방식의 전체 재호출을 더 쌓지 않는다. 한 번에 한 문장만 모델에 맡기고
+  // 서버가 해당 span만 재조립해 안전한 실질 편집을 누적한다. 과거에는 3~9%
+  // 결과가 hard delivery floor만 넘었다는 이유로 이 경로를 타지 않아 기본·
+  // 고급이 다듬기 수준에서 끝날 수 있었다.
   if (humanizationDepthEnabled
       && !allEditableModelCallsFailed
       && selectedMode !== 'polish'
       && humanizationDepthReport?.applicable === true
-      && isSevereHumanizationNoEffect(humanizationDepthReport)) {
+      && needsPerceivedHumanizationRecovery(humanizationDepthReport)) {
     const attemptedOrdinals = new Set();
     const sourceSentenceCount = Math.max(
       0,
@@ -772,14 +774,20 @@ async function runEngine({
       1,
       Number(humanizationPlan?.hardRequiredChangedSentenceCount || 1)
     );
+    const initialPreferredOrdinals = qualityV2.buildGeneralRetryTargetOrdinals(
+      auditSource,
+      outputText,
+      humanizationPlan,
+      humanizationDepthReport
+    );
     const maximumAttempts = Math.min(
       sourceSentenceCount || 1,
-      requestStrength === 'advanced' ? 6 : 5,
-      Math.max(requestStrength === 'advanced' ? 5 : 4, hardRequired + 2)
+      requestStrength === 'advanced' ? 8 : 6,
+      Math.max(initialPreferredOrdinals.length, hardRequired + 2)
     );
 
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-      if (humanizationDepthReport?.minimumEffectPass === true) break;
+      if (!needsPerceivedHumanizationRecovery(humanizationDepthReport)) break;
       const preferredOrdinals = qualityV2.buildGeneralRetryTargetOrdinals(
         auditSource,
         outputText,
@@ -2184,7 +2192,7 @@ async function runEngine({
     ...(humanizationNoBenefitDelivered ? depthEffectNotices(humanizationDepthReport) : []),
     ...deterministicEffectNotices
   ]);
-  const effectStatus = effectNotices.length ? 'limited' : 'normal';
+  const effectStatus = effectStatusForNotices(effectNotices);
   const qualityWarnings = dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []).filter(item => !isEffectObservationCode(item?.code)),
         ...semanticQualityWarnings.filter(item => !isEffectObservationCode(item?.code)),
@@ -4435,8 +4443,23 @@ const EFFECT_OBSERVATION_CODES = new Set([
   'overstructured_causality'
 ]);
 
+const NON_LIMITING_EFFECT_OBSERVATION_CODES = new Set([
+  // 이 둘은 결과의 자연성/레이아웃 관측치다. 의미 보존과 실질 편집 목표를
+  // 통과한 작업까지 관리자 표에서 "효과 제한"으로 만들지는 않는다.
+  'sentence_distribution_shift',
+  'paragraph_readability'
+]);
+
 function isEffectObservationCode(code) {
   return EFFECT_OBSERVATION_CODES.has(String(code || ''));
+}
+
+function effectStatusForNotices(notices) {
+  const limiting = (notices || []).some(item => (
+    item?.code
+    && !NON_LIMITING_EFFECT_OBSERVATION_CODES.has(String(item.code))
+  ));
+  return limiting ? 'limited' : 'normal';
 }
 
 function toEffectNotice(item) {
@@ -5548,6 +5571,11 @@ function isSevereHumanizationNoEffect(report) {
       && Number(metrics.substantiveEditRatio || 0) < 0.05);
 }
 
+function needsPerceivedHumanizationRecovery(report) {
+  return report?.applicable === true
+    && humanizationDepth.needsHumanizationRecovery(report);
+}
+
 function isIncrementalConservativeImprovement(current, candidate) {
   if (!candidate?.applicable || candidate.metrics?.trivialOnly) return false;
   const before = current?.metrics || {};
@@ -5586,7 +5614,7 @@ function shouldSkipWholeDocumentDepthRetryAfterSectionRecovery({
     && generalSurfaceRetryPending !== true
     && sourceEquivalent !== true
     && humanizationDepthReport?.applicable === true
-    && humanizationDepthReport?.minimumEffectPass === true
+    && !needsPerceivedHumanizationRecovery(humanizationDepthReport)
     && humanizationDepthReport?.userReviewRequired !== true
     && !isSevereHumanizationNoEffect(humanizationDepthReport);
 }
@@ -5636,7 +5664,9 @@ module.exports = {
   prepareGeneralSurfaceCandidate,
   isSafeLocalizedLanguageCandidate,
   isMaterialDepthRegression,
+  needsPerceivedHumanizationRecovery,
   shouldSkipWholeDocumentDepthRetryAfterSectionRecovery,
+  effectStatusForNotices,
   classifyPolishEditKind,
   isNoopEquivalent,
   countApprovedModelChunks,

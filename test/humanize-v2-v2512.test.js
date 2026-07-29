@@ -8,6 +8,8 @@ const omission = require('../engine-gpt-prod/omissionRestore');
 const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
 const {
   shouldSkipWholeDocumentDepthRetryAfterSectionRecovery,
+  needsPerceivedHumanizationRecovery,
+  effectStatusForNotices,
   classifyPolishEditKind
 } = require('../engine-gpt-prod');
 
@@ -129,7 +131,7 @@ test('명시적 지원 동기와 직무 기여가 있는 자기소개서는 계�
   assert.ok(profile.signals.directApplicationContextSignals >= 1);
 });
 
-test('안전한 섹션 회복 뒤 shadow 목표만 남으면 문서 전체 중복 재호출을 생략한다', () => {
+test('안전한 섹션 회복 뒤에도 체감 최소선이 남으면 후속 회복을 계속한다', () => {
   const mildReport = {
     applicable: true,
     pass: false,
@@ -145,7 +147,8 @@ test('안전한 섹션 회복 뒤 shadow 목표만 남으면 문서 전체 중�
     longDocument: true,
     sectionRecoveryUniqueAppliedSectionCount: 2,
     humanizationDepthReport: mildReport
-  }), true);
+  }), false);
+  assert.equal(needsPerceivedHumanizationRecovery(mildReport), true);
   assert.equal(shouldSkipWholeDocumentDepthRetryAfterSectionRecovery({
     longDocument: true,
     sectionRecoveryUniqueAppliedSectionCount: 2,
@@ -157,6 +160,37 @@ test('안전한 섹션 회복 뒤 shadow 목표만 남으면 문서 전체 중�
     generalSurfaceRetryPending: true,
     humanizationDepthReport: mildReport
   }), false);
+  const completedReport = {
+    ...mildReport,
+    pass: true,
+    metrics: {
+      ...mildReport.metrics,
+      targetDepthMet: true
+    },
+    plan: {
+      targetSubstantiveEditMin: 0.13
+    }
+  };
+  assert.equal(needsPerceivedHumanizationRecovery(completedReport), false);
+  assert.equal(shouldSkipWholeDocumentDepthRetryAfterSectionRecovery({
+    longDocument: true,
+    sectionRecoveryUniqueAppliedSectionCount: 2,
+    humanizationDepthReport: completedReport
+  }), true);
+});
+
+test('깊이·정형 골격 미달만 효과 제한으로 표시하고 관측성 리듬 알림은 정상으로 둔다', () => {
+  assert.equal(effectStatusForNotices([
+    { code: 'paragraph_readability' },
+    { code: 'sentence_distribution_shift' }
+  ]), 'normal');
+  assert.equal(effectStatusForNotices([
+    { code: 'paragraph_readability' },
+    { code: 'humanization_depth_below_target' }
+  ]), 'limited');
+  assert.equal(effectStatusForNotices([
+    { code: 'repeated_reflection_conclusion' }
+  ]), 'limited');
 });
 
 test('polish의 공백·문장부호 전용 변화와 실제 텍스트 변화를 구분해 기록한다', () => {

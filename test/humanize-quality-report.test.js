@@ -127,3 +127,43 @@ test('품질 수치 요약은 선형 보간 p95와 빈 표본을 안정적으로
   assert.equal(summary.average, 0.5);
   assert.equal(summary.p95, 0.95);
 });
+
+test('완료되지 않은 오류·미측정 행의 0은 완료 품질 평균에 섞지 않는다', () => {
+  const report = buildHumanizeQualityReport([
+    {
+      id: 'done-a',
+      status: 'done',
+      substantiveEditRatio: 0.12,
+      processingDurationMs: 60000,
+      effectStatus: 'limited'
+    },
+    {
+      id: 'done-b',
+      status: 'done',
+      substantiveEditRatio: 0.18,
+      processingDurationMs: 120000,
+      effectStatus: 'normal'
+    },
+    {
+      id: 'api-error',
+      status: 'error',
+      substantiveEditRatio: 0,
+      processingDurationMs: 0,
+      deliveryDecision: 'block_technical'
+    },
+    {
+      id: 'pending-archive',
+      status: 'processing',
+      substantiveEditRatio: 0,
+      processingDurationMs: 0
+    }
+  ], { hours: 24, sinceMs: 0, generatedAtMs: 1000 });
+
+  assert.equal(report.summary.total, 4);
+  assert.equal(report.summary.completedCount, 2);
+  assert.equal(report.metrics.substantiveEditRatio.count, 2);
+  assert.equal(report.metrics.substantiveEditRatio.average, 0.15);
+  assert.equal(report.metrics.processingDurationMs.average, 90000);
+  assert.equal(report.summary.deliveredLimitedEffectCount, 1);
+  assert.equal(report.summary.technicalBlockedCount, 1);
+});

@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 10;
+const VERSION = 11;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -299,6 +299,17 @@ function detectSemanticRelationShifts(source, output) {
       }
     }
 
+    if (hasEpistemicHedge(sourceSentence)) {
+      const hedgeRemoved = !hasEpistemicHedge(alignedText);
+      const shifted = hedgeRemoved
+        && hasDirectDeclarativeEnding(alignedText)
+        && (
+          hasCertaintyMarker(alignedText)
+          || alignedCoreSimilarity(sourceSentence, alignedText) >= 0.34
+        );
+      if (shifted) add('epistemic_hedge_hardened', sourceIndex + 1);
+    }
+
     if (hasNecessityClaim(sourceSentence) && !hasImpossibilityClaim(sourceSentence)) {
       const shifted = hasImpossibilityClaim(alignedText);
       if (shifted) add('necessity_strengthened_to_impossibility', sourceIndex + 1);
@@ -369,6 +380,34 @@ function hasMainPossibilityClaim(value) {
 
 function hasPossibilityMarker(value) {
   return /(?:수\s*있|가능|예상|전망|것으로\s*보|듯하|수도\s*있)/u.test(String(value || ''));
+}
+
+function hasEpistemicHedge(value) {
+  return /(?:것\s*같(?:다|습니다|았다|았다)|듯(?:하|싶)|것으로\s*보(?:인|인다|입니다)|수도\s*있|지도\s*모르|어쩌면|아마(?:도)?|확실하지\s*않)/u
+    .test(String(value || ''));
+}
+
+function hasCertaintyMarker(value) {
+  return /(?:분명(?:하|해졌|해진)|확실(?:하|해졌|해진)|명백(?:하|해졌|해진)|틀림없|단정할\s*수\s*있)/u
+    .test(String(value || ''));
+}
+
+function hasDirectDeclarativeEnding(value) {
+  return /(?:다|습니다|이다|입니다|됐다|되었습니다|해졌다|확인됐다|드러났다|나타났다)[.!?。！？]?\s*$/u
+    .test(String(value || '').trim());
+}
+
+function alignedCoreSimilarity(left, right) {
+  const leftTokens = contentTokens(String(left || ''))
+    .filter(token => !isHedgeToken(token));
+  const rightTokens = new Set(contentTokens(String(right || ''))
+    .filter(token => !isHedgeToken(token)));
+  if (!leftTokens.length) return 0;
+  return leftTokens.filter(token => rightTokens.has(token)).length / leftTokens.length;
+}
+
+function isHedgeToken(token) {
+  return /^(?:같다|같습니다|듯하다|듯싶다|보인다|어쩌면|아마도?|모르다)$/u.test(String(token || ''));
 }
 
 function hasImportanceClaim(value) {

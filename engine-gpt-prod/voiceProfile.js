@@ -59,7 +59,7 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
     paragraph: distribution(paragraphLengths),
     endings,
     directQuoteCount: directQuoteContents(text).length,
-    listItemCount: (text.match(/^\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+[.)]|[가-힣][.)]|[①-⑳])\s+.+$/gmu) || []).length,
+    listItemCount: Number(layout?.roleCounts?.list || 0),
     headingCount: (text.match(/^\s*(?:(?:제\s*\d+\s*(?:장|절|항|조))(?:\s+\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*\S.*|\d+(?:\.\d+){0,3}[.)]?\s+\S.*|(?:서론|본론|결론|초록|요약|참고\s*문헌|부록))\s*$/gmu) || []).length,
     questionnaireQuestionCount: countQuestionnaireQuestions(text),
     lineCount: lineCount(text),
@@ -422,6 +422,7 @@ function linePolicyFor(text, documentProfile, layout, { lineBreakSensitive = fal
   // 분할이 모두 거절되므로 질문지는 구조 행 정책을 사용한다.
   if (questionnaire) return 'structural';
   const profiles = new Set([context.profile, ...context.safetyProfiles]);
+  if (hasDenseStandaloneObservationLayout(text, profiles, layout)) return 'all';
   const sensitiveProfile = [...profiles].some(profile => [
     'academic_paper',
     'report_assignment',
@@ -438,6 +439,29 @@ function linePolicyFor(text, documentProfile, layout, { lineBreakSensitive = fal
   if (meaningfulBoundaries >= 2 || structuredFormat || polishStructure) return 'structural';
   if (sensitiveProfile && (meaningfulBoundaries > 0 || structuralLines > 0)) return 'structural';
   return 'none';
+}
+
+function hasDenseStandaloneObservationLayout(text, profiles, layout) {
+  const profileSet = profiles instanceof Set ? profiles : new Set(profiles || []);
+  if (![...profileSet].some(profile => [
+    'student_record_teacher',
+    'student_self_assessment'
+  ].includes(profile))) return false;
+  const records = layoutStructure.buildLineRecords(text).filter(record => !record.blank);
+  if (records.length < 4) return false;
+  const eligible = records.filter(record => ['prose', 'list', 'label_inline'].includes(record.role));
+  if (eligible.length < 4 || eligible.length / records.length < 0.72) return false;
+  const completeCount = eligible.filter(record => (
+    layoutStructure.isSentenceComplete(record.text)
+    || /(?:함|됨|임|음|남|보임|느낌|답함|작용함|수\s*있음|볼\s*수\s*있음)[.!?。！？]?$/u
+      .test(String(record.text || '').trim())
+  )).length;
+  const lengths = eligible.map(record => String(record.text || '').trim().length).sort((a, b) => a - b);
+  const medianLength = lengths[Math.floor(lengths.length / 2)] || 0;
+  const existingBoundaries = Number(layout?.preservedBoundaryCount || 0);
+  return completeCount / eligible.length >= 0.72
+    && medianLength >= 28
+    && existingBoundaries >= 1;
 }
 
 function normalizeDocumentContext(documentProfile, safetyProfiles = [], formatProfile = null) {

@@ -4,7 +4,19 @@ const { splitSentences } = require('../engine/koreanText');
 
 const MAX_PARAGRAPH_BARE = 1100;
 const MAX_PARAGRAPH_SENTENCES = 12;
-const STRUCTURAL_ROLES = new Set(['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote', 'code', 'legal_clause', 'signature']);
+const STRUCTURAL_ROLES = new Set([
+  'title',
+  'heading',
+  'label',
+  'label_inline',
+  'list',
+  'table',
+  'flow',
+  'quote',
+  'code',
+  'legal_clause',
+  'signature'
+]);
 const PROFILE_READABILITY_LIMITS = Object.freeze({
   resume_application: Object.freeze({ maxBare: 420, maxSentences: 5 }),
   student_record: Object.freeze({ maxBare: 480, maxSentences: 6 }),
@@ -111,6 +123,7 @@ function classifyLine(value, context = {}) {
   if (context.parallelSloganTitle) return 'title';
   if (isKnownHeadingLine(text)) return 'heading';
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
+  if (isFlowSequenceLine(text)) return 'flow';
   if (isListLine(text)) return 'list';
   if (isQuoteLine(text)) return 'quote';
   const label = labelParts(text);
@@ -129,6 +142,7 @@ function isKnownHeadingLine(value) {
   if (/^[IVX]{1,8}[.)．]\s*\S.{0,100}$/u.test(text)) return true;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/u.test(text)) return true;
   if (/^\d{1,2}[.)]\s*[가-힣A-Za-z]\S*.{0,100}$/u.test(text)) return true;
+  if (/^(?:문제|문항)\s*\d{1,3}\s*[.)：:]?\s*\S.{0,100}$/u.test(text)) return true;
   // OCR·웹 복사에서 `① 소제목: "비유"` 뒤 본문이 같은 행에 붙는
   // 형식이 자주 나온다. preflight가 본문 경계를 복원한 뒤에는 콜론을
   // 가진 짧은 원형번호 행만 소제목으로 잠근다. 일반 선택지·목록은
@@ -138,6 +152,7 @@ function isKnownHeadingLine(value) {
   if (/^\d{1,2}\.(?:19|20)\d{2}년\S*.{0,100}$/u.test(text)) return true;
   if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/u.test(text)) return true;
   if (/^제\s?\d{1,3}\s?조(?:의\s?\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?$/u.test(text)) return true;
+  if (/^(?:성장\s*(?:과정|배경)(?:과\s*(?:학교|학창)\s*시절)?|나의\s*성격적\s*강점과\s*약점|성격의\s*장단점|지원\s*동기|직무\s*역량|경력\s*사항|입사\s*후(?:의)?\s*(?:포부|목표)(?:와\s*포부)?)$/u.test(text)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
   return /^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/iu.test(text);
 }
@@ -214,7 +229,27 @@ function labelParts(value) {
 }
 
 function isListLine(value) {
-  return /^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+\S/u.test(visibleTrim(value));
+  const text = visibleTrim(value);
+  return /^(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+\S/u.test(text)
+    || /^[●○■□◆◇▶▷※]\s*\S/u.test(text)
+    // 현장 메모·세특 초안에서 `+특히 ...`처럼 공백 없이 붙은 불릿이
+    // 반복된다. 양수·증감률(+5%, +3건)은 목록이 아니므로 문자로
+    // 시작하는 경우만 구조 접두부로 인정한다.
+    || /^\+(?=[가-힣A-Za-z“"'‘「『《〈])\S/u.test(text);
+}
+
+function isFlowSequenceLine(value) {
+  const text = visibleTrim(value);
+  if (!text || text.length > 1600 || /[.!?。！？]\s*$/u.test(text)) return false;
+  const arrows = text.match(/(?:→|⇒|⇢|⟶|➜|->)/gu) || [];
+  if (arrows.length < 2) return false;
+  const nodes = text
+    .split(/\s*(?:→|⇒|⇢|⟶|➜|->)\s*/u)
+    .map(node => node.trim())
+    .filter(Boolean);
+  return nodes.length >= 3
+    && nodes.length === arrows.length + 1
+    && nodes.every(node => node.length <= 120 && !/[\n\r]/u.test(node));
 }
 
 function isExplicitTableLine(value) {
@@ -372,6 +407,7 @@ function analyzeLineStructure(value) {
     labelLineCount: (roleCounts.label || 0) + (roleCounts.label_inline || 0),
     listLineCount: roleCounts.list || 0,
     tableLineCount: roleCounts.table || 0,
+    flowLineCount: roleCounts.flow || 0,
     quoteLineCount: roleCounts.quote || 0,
     signatureLineCount: roleCounts.signature || 0,
     structuralLineCount: nonEmpty.filter(record => isStructuralRole(record.role)).length,
@@ -514,7 +550,7 @@ function isStructureDominatedParagraph(value) {
 function isPureStructuralRecord(record) {
   const role = String(record?.role || '');
   if (!isStructuralRole(role)) return false;
-  if (['table', 'quote', 'code', 'legal_clause', 'signature', 'label'].includes(role)) return true;
+  if (['table', 'flow', 'quote', 'code', 'legal_clause', 'signature', 'label'].includes(role)) return true;
   // "라벨: 긴 본문"이나 "1. 제목 + 여러 설명 문장"은 접두부만
   // 구조이고 나머지는 일반 산문이다. 행 전체를 구조로 면제하지 않는다.
   if (role === 'label_inline') return false;
@@ -551,6 +587,7 @@ module.exports = {
   isStructuralRole,
   isKnownHeadingLine,
   isExplicitTableLine,
+  isFlowSequenceLine,
   looksLikeUnpunctuatedProse,
   detectParallelSloganTitleIndices,
   legalClauseParts,

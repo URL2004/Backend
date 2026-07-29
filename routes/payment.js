@@ -1014,6 +1014,12 @@ function serializeAdminJobDoc(docSnap) {
     conservativeSentenceRetryAttemptCount: finiteOrNull(j.conservativeSentenceRetryAttemptCount),
     conservativeSentenceRetryModelCallCount: finiteOrNull(j.conservativeSentenceRetryModelCallCount),
     conservativeSentenceRetryAppliedCount: finiteOrNull(j.conservativeSentenceRetryAppliedCount),
+    conservativeSentenceRetryStoppedNoProgress:
+      j.conservativeSentenceRetryStoppedNoProgress === true,
+    conservativeSentenceRetryMarginalGainCount:
+      finiteOrNull(j.conservativeSentenceRetryMarginalGainCount),
+    conservativeSentenceRetrySubstantiveEditGain:
+      finiteOrNull(j.conservativeSentenceRetrySubstantiveEditGain),
     conservativeSentenceRetryRejectionCodes: safeCodes(j.conservativeSentenceRetryRejectionCodes),
     humanizationDeliveryDepthBand: j.humanizationDeliveryDepthBand || '',
     humanizationTargetDepthMet: typeof j.humanizationTargetDepthMet === 'boolean'

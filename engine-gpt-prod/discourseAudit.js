@@ -185,10 +185,110 @@ function discoursePromptBlock(profile) {
       `원문에서 다음 개선 대상이 확인됐다: ${labels}.`,
       '이 표현이 원문에 있었다는 이유로 그대로 복사하지 않는다. 주장·평가 강도·사실은 남기면서 같은 문단 안에서 직접적이고 덜 정형적인 문장으로 다시 쓴다.',
       '성찰 공식은 실제 행동이나 판단을 직접 서술하고, 반복 결론은 각 문단의 고유한 역할이 드러나게 표현한다. 인과 연결은 근거가 있는 범위만 남기고 모든 문단을 완벽한 원인-결과-교훈 구조로 맞추지 않는다.',
-      '새 주제를 삭제해 수치를 맞추거나 원문의 범위를 줄이지 않는다. 특히 원문에 있던 주제 확장은 보존하며, 개선은 표현 방식에만 적용한다.'
+      '새 주제를 삭제해 수치를 맞추거나 원문의 범위를 줄이지 않는다. 특히 원문에 있던 주제 확장은 보존하며, 개선은 표현 방식에만 적용한다.',
+      remediationPromptGuidance(remediationPlan)
     );
   }
   return lines.join('\n');
+}
+
+function remediationPromptGuidance(plan) {
+  const categories = Array.isArray(plan?.categories) ? plan.categories : [];
+  if (!categories.length) return '';
+  const lines = ['[담화 개선 대상별 실행 지시]'];
+  for (const item of categories) {
+    const ordinals = uniqueNumbers(item.sentenceOrdinals || []);
+    const target = ordinals.length ? `대상 일반 문장=${ordinals.join(',')}` : '대상=해당 표현이 있는 문장';
+    if (item.code === 'reflection_formula') {
+      lines.push(`- ${target}: ‘깊이 이해했다·절감했다·알게 되었다’ 같은 결론 공식을 다른 감상 표현으로 치환하지 않는다. 원문에 이미 있는 행동·관찰·판단을 문장의 주어와 서술어로 직접 제시하고, 새 경험이나 교훈은 만들지 않는다.`);
+    } else if (item.code === 'stacked_strong_modifiers') {
+      lines.push(`- ${target}: 강한 수식어를 약한 동의어로 하나씩 바꾸는 방식은 피한다. 핵심 평가 한 곳은 보존하고, 나머지는 같은 문장에 이미 적힌 구체적 대상·영향을 직접 서술해 반복 수식을 걷어낸다. 예를 들어 “심각한 X가 Y를 초래할 수 있다”는 X를 가볍다고 낮추지 말고 “X가 이어지면 Y로 번질 수 있다”처럼 이미 있는 조건과 결과로 강도를 표현한다. 부정, 가능성, 우려, 단정의 강도는 원문과 같아야 한다.`);
+    } else if (item.code === 'repeated_conclusion_markers') {
+      lines.push(`- ${target}: ‘결국·이처럼·종합하면’의 반복을 다른 결론 표지로 교체하지 않는다. 필요한 결론 표지 한 곳만 남기고 나머지는 원래 결론 명제를 바로 시작하되, 결론 자체는 삭제하지 않는다.`);
+    } else if (item.code === 'overstructured_causal_closure') {
+      lines.push(`- ${target}: 매 문단을 ‘원인→결과→이를 통해 배운 점’으로 다시 닫지 않는다. 원문에 있던 인과와 판단은 유지하되, 일부 문장은 관찰·행동·결과를 직접 끝맺어 동일한 교훈형 골격의 반복을 줄인다.`);
+    } else if (item.code === 'topic_restart_after_conclusion') {
+      lines.push(`- ${target}: 앞 결론 뒤에 별개의 글처럼 새 탐구를 시작하지 않는다. 두 주제의 원래 순서와 내용을 보존하면서, SOURCE에 근거가 있는 연결 기준만 짧게 밝혀 다음 문단으로 잇는다.`);
+    }
+  }
+  lines.push('대상 번호 밖의 문장을 억지로 바꾸어 감축 횟수를 채우지 않는다.');
+  return lines.join('\n');
+}
+
+/**
+ * 담화 개선 미달이 남았을 때 실제로 같은 상투 구조가 잔존한 원문 문장
+ * 번호를 돌려준다. 일반 깊이 대상과 한 목록으로만 섞으면 앞쪽의 쉬운
+ * 문장부터 재시도하고 정작 강한 수식·반복 결론 문장은 건드리지 않는
+ * 문제가 생겼다. 원문 문장을 현재 결과의 1:N 정렬 결과와 대조해 우선
+ * 회복 대상을 좁힌다.
+ */
+function unresolvedRemediationSentenceOrdinals(source, outputText, plan = null) {
+  const selectedPlan = plan || buildRemediationPlan(source);
+  const categories = Array.isArray(selectedPlan?.categories) ? selectedPlan.categories : [];
+  if (!categories.length) return [];
+  const sourceSentences = splitSentences(String(source || ''));
+  const outputSentences = splitSentences(String(outputText || ''));
+  const outputProfile = buildDiscourseProfile(outputText);
+  const unresolved = [];
+  for (const category of categories) {
+    if (remediationMetric(outputProfile, category.code) <= 0) continue;
+    const categoryOrdinals = uniqueNumbers(category.sentenceOrdinals || [])
+      .filter(ordinal => ordinal >= 1 && ordinal <= sourceSentences.length);
+    const matched = [];
+    for (const ordinal of categoryOrdinals) {
+      const sourceIndex = ordinal - 1;
+      const alignment = alignSourceSentence(
+        sourceSentences[sourceIndex],
+        sourceIndex,
+        sourceSentences.length,
+        outputSentences,
+        { window: 3, maxOutputGroup: 2 }
+      );
+      if (alignment?.text && sentenceMatchesRemediationCategory(alignment.text, category.code)) {
+        matched.push(ordinal);
+      }
+    }
+    unresolved.push(...(matched.length ? matched : categoryOrdinals));
+  }
+  return uniqueNumbers(unresolved).sort((left, right) => left - right);
+}
+
+function sentenceMatchesRemediationCategory(value, code) {
+  const sentence = String(value || '');
+  if (code === 'reflection_formula') {
+    return REFLECTION_PATTERNS.some(pattern => matchesPattern(sentence, pattern));
+  }
+  if (code === 'stacked_strong_modifiers') {
+    return STRONG_MODIFIER_PATTERNS.some(pattern => matchesPattern(sentence, pattern));
+  }
+  if (code === 'repeated_conclusion_markers') return matchesPattern(sentence, CONCLUSION_PATTERN);
+  if (code === 'overstructured_causal_closure') {
+    return matchesPattern(sentence, CAUSAL_PATTERN)
+      && (
+        REFLECTION_PATTERNS.some(pattern => matchesPattern(sentence, pattern))
+        || matchesPattern(sentence, CONCLUSION_PATTERN)
+      );
+  }
+  if (code === 'topic_restart_after_conclusion') {
+    RESTART_OPENING_PATTERN.lastIndex = 0;
+    return RESTART_OPENING_PATTERN.test(sentence.trim());
+  }
+  return false;
+}
+
+function remediationTargetTerms(value, categories = []) {
+  const codes = new Set((categories || []).map(item => String(item?.code || item || '')));
+  const terms = [];
+  if (codes.has('stacked_strong_modifiers')) {
+    for (const pattern of STRONG_MODIFIER_PATTERNS) {
+      terms.push(...(String(value || '').match(new RegExp(pattern.source, pattern.flags)) || []));
+    }
+  }
+  return [...new Set(terms.map(item => String(item || '').trim()).filter(Boolean))];
+}
+
+function remediationCategoryCount(value, code) {
+  return remediationMetric(buildDiscourseProfile(value), code);
 }
 
 function buildRemediationPlan(value) {
@@ -537,5 +637,9 @@ module.exports = {
   buildRemediationPlan,
   compareRemediationTargets,
   compareDiscourse,
-  discoursePromptBlock
+  discoursePromptBlock,
+  remediationPromptGuidance,
+  unresolvedRemediationSentenceOrdinals,
+  remediationTargetTerms,
+  remediationCategoryCount
 };

@@ -215,6 +215,7 @@ function classifyPiece(piece, state) {
   if (sourceRole === 'label') return { locked: true, lockType: 'label', sectionLabel: state.currentSection };
   if (sourceRole === 'code') return { locked: true, lockType: 'code', sectionLabel: state.currentSection };
   if (sourceRole === 'table') return { locked: true, lockType: 'table', sectionLabel: state.currentSection };
+  if (sourceRole === 'flow') return { locked: true, lockType: 'flow', sectionLabel: state.currentSection };
   if (sourceRole === 'signature') return { locked: true, lockType: 'signature', sectionLabel: state.currentSection };
   if (sourceRole === 'quote' && isStandaloneQuotedTitle(s)) {
     return { locked: true, lockType: 'title', sectionLabel: s };
@@ -389,7 +390,8 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
         'label_prefix',
         'bullet_prefix',
         'blockquote_prefix',
-        'legal_clause_prefix'
+        'legal_clause_prefix',
+        'flow'
       ].includes(String(chunk.lockType || ''))
       && String(chunk.text || '').trim())
     .map(chunk => ({
@@ -469,6 +471,7 @@ const EXACT_LAYOUT_LOCK_TYPES = new Set([
   'reference_item',
   'code',
   'table',
+  'flow',
   'quote',
   'signature',
   'legal_clause'
@@ -599,6 +602,7 @@ function buildVisualGapExcludedBlocks(chunks) {
     'toc_item',
     'reference_item',
     'table',
+    'flow',
     'code',
     'quote',
     'blockquote_prefix',
@@ -637,7 +641,7 @@ function needsVisualParagraphGap(left, right) {
     return leftRole === 'prose' || rightRole === 'prose';
   }
 
-  const blockRoles = new Set(['table', 'quote', 'code', 'legal_clause', 'signature']);
+  const blockRoles = new Set(['table', 'flow', 'quote', 'code', 'legal_clause', 'signature']);
   const leftBlock = blockRoles.has(leftRole);
   const rightBlock = blockRoles.has(rightRole);
   if (leftBlock && rightBlock) return false;
@@ -866,7 +870,7 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     );
   }
   while (paragraphs.length < targetCount) {
-    const candidate = findSplitCandidate(paragraphs, protectedBlocks);
+    const candidate = findSplitCandidate(paragraphs, protectedBlocks, readabilityOptions);
     if (!candidate) break;
     paragraphs.splice(candidate.index, 1, candidate.left, candidate.right);
     proseSplitCount += 1;
@@ -906,17 +910,7 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
     return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved: true };
   }
 
-  let targetCount = Math.max(
-    2,
-    Math.min(
-      8,
-      Math.floor(sentences.length / 2),
-      Math.max(Math.ceil(sentences.length / 4), Math.ceil(compactLength / 600))
-    )
-  );
-  if (targetCount < 2) {
-    return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved: true };
-  }
+  let targetCount = paragraphs.length;
 
   const candidates = new Map();
   const addCandidate = (index, priority, kind) => {
@@ -948,13 +942,21 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
       if (candidate.index - state.lastIndex < 2) return state;
       return { count: state.count + 1, lastIndex: candidate.index };
     }, { count: 0, lastIndex: -2 }).count;
+  const currentReadability = layoutStructure.measureParagraphReadability(paragraphs, readabilityOptions);
+  const semanticTargetCount = semanticBoundaryCount > 0
+    ? Math.min(6, semanticBoundaryCount + 1)
+    : paragraphs.length;
   targetCount = Math.min(
     8,
     Math.floor(sentences.length / 2),
-    Math.max(targetCount, Math.min(6, semanticBoundaryCount + 1))
+    Math.max(
+      paragraphs.length,
+      Number(currentReadability.minimumCount || 0),
+      semanticTargetCount
+    )
   );
-  const currentReadability = layoutStructure.measureParagraphReadability(paragraphs, readabilityOptions);
-  if (paragraphs.length === targetCount && currentReadability.overlongCount === 0) {
+  if (targetCount < 2
+      || (paragraphs.length >= targetCount && currentReadability.overlongCount === 0)) {
     return {
       applicable: true,
       text: normalized,
@@ -980,15 +982,18 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
         score: candidate.priority * 12 - Math.abs(candidate.index - expected) * 7
       }))
       .sort((a, b) => b.score - a.score || a.distance - b.distance || a.index - b.index);
-    const chosen = nearby[0]?.score >= 55
-      ? nearby[0]
-      : { index: expected, priority: 0, kind: 'balanced', distance: 0, score: 0 };
+    const chosen = nearby[0]?.score >= 55 ? nearby[0] : null;
+    if (!chosen) break;
     selected.push(chosen);
     previousIndex = chosen.index;
   }
-  if (selected.length !== targetCount - 1) {
+  // 의미 경계가 부족한데 목표 문단 수를 맞추기 위해 정확히 같은 폭으로
+  // 자르지 않는다. 읽기 한도를 넘는 문단은 뒤의 readability 경로가
+  // 별도로 나누며, 여기서는 실제 담화 전환이 확인된 경계만 사용한다.
+  if (!selected.length) {
     return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved: true };
   }
+  targetCount = selected.length + 1;
 
   const boundaries = new Set(selected.map(item => item.index));
   const groups = [];
@@ -1007,8 +1012,10 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
   const afterReadability = layoutStructure.measureParagraphReadability(groups, readabilityOptions);
   const beforeDistance = Math.abs(paragraphs.length - targetCount);
   const afterDistance = Math.abs(groups.length - targetCount);
+  const roleBoundaryCount = selected.filter(item => item.kind !== 'existing').length;
   const improved = afterDistance < beforeDistance
-    || afterReadability.overlongCount < beforeReadability.overlongCount;
+    || afterReadability.overlongCount < beforeReadability.overlongCount
+    || (roleBoundaryCount > 0 && groups.length > paragraphs.length);
   const alreadyOptimal = beforeDistance === 0 && text === normalized;
   if (!contentPreserved || groups.length !== targetCount || (!improved && !alreadyOptimal)) {
     return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved };
@@ -1017,7 +1024,7 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
     applicable: true,
     text,
     paragraphCount: groups.length,
-    roleBoundaryCount: selected.filter(item => !['existing', 'balanced'].includes(item.kind)).length,
+    roleBoundaryCount,
     contentPreserved
   };
 }
@@ -1265,22 +1272,7 @@ function splitSourceRoleForReadability(paragraph, readabilityOptions = {}) {
       if (current) out.push(current);
       continue;
     }
-    const total = sentences.reduce((sum, sentence) => sum + bare(sentence).length, 0);
-    let running = 0;
-    let selected = 1;
-    let selectedScore = Infinity;
-    for (let index = 1; index < sentences.length; index += 1) {
-      running += bare(sentences[index - 1]).length;
-      const nextIsTakeaway = semanticTransitionKind(sentences[index]) === 'backward_takeaway';
-      const previousIsTakeaway = semanticTransitionKind(sentences[index - 1]) === 'backward_takeaway';
-      const score = Math.abs(running - (total / 2))
-        + (nextIsTakeaway ? total : 0)
-        - (previousIsTakeaway ? Math.min(total * 0.15, running * 0.15) : 0);
-      if (score < selectedScore) {
-        selected = index;
-        selectedScore = score;
-      }
-    }
+    const selected = selectReadableSplitIndex(sentences, readabilityOptions.profileName || '');
     const left = sentences.slice(0, selected).join(' ').trim();
     const right = sentences.slice(selected).join(' ').trim();
     if (!left || !right) {
@@ -1343,7 +1335,9 @@ function splitEditablePrefixPiece(piece, options = {}) {
     : raw.match(/^(\s*[-*+]\s+(?:\*\*|__)[^*\n_]{1,120}(?::|：)(?:\*\*|__)\s*)(\S[\s\S]*)$/u);
   const bullet = legal || blockquote || markdownLabelBullet
     ? null
-    : raw.match(/^(\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+)(\S[\s\S]*)$/u);
+    : raw.match(
+      /^(\s*(?:(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
+    );
   const label = legal || blockquote || markdownLabelBullet || bullet
     ? null
     : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
@@ -1425,7 +1419,7 @@ function findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions = {}
   return selected;
 }
 
-function findSplitCandidate(paragraphs, protectedBlocks) {
+function findSplitCandidate(paragraphs, protectedBlocks, readabilityOptions = {}) {
   const ranked = paragraphs
     .map((paragraph, index) => ({ paragraph, index, length: bare(paragraph).length }))
     // 참고문헌 제목과 인용 항목이 하나의 잠금 청크로 합쳐진 뒤 읽기 문단
@@ -1440,19 +1434,50 @@ function findSplitCandidate(paragraphs, protectedBlocks) {
   for (const item of ranked) {
     const sentences = splitSentences(item.paragraph);
     if (sentences.length < 2) continue;
-    const half = sentences.reduce((sum, sentence) => sum + bare(sentence).length, 0) / 2;
-    let running = 0;
-    let splitIndex = 1;
-    for (let index = 0; index < sentences.length - 1; index += 1) {
-      running += bare(sentences[index]).length;
-      splitIndex = index + 1;
-      if (running >= half) break;
-    }
+    const splitIndex = selectReadableSplitIndex(sentences, readabilityOptions.profileName || '');
     const left = sentences.slice(0, splitIndex).join(' ').trim();
     const right = sentences.slice(splitIndex).join(' ').trim();
     if (left && right) return { index: item.index, left, right };
   }
   return null;
+}
+
+function selectReadableSplitIndex(sentences, profileName = '') {
+  const rows = (sentences || []).map(sentence => String(sentence || '').trim()).filter(Boolean);
+  if (rows.length < 2) return 1;
+  const lengths = rows.map(sentence => Math.max(1, bare(sentence).length));
+  const total = lengths.reduce((sum, length) => sum + length, 0);
+  const minimumSide = Math.max(24, Math.floor(total * 0.16));
+  let running = 0;
+  let best = null;
+  for (let index = 1; index < rows.length; index += 1) {
+    running += lengths[index - 1];
+    const right = total - running;
+    if (running < minimumSide || right < minimumSide) continue;
+    const previousKind = semanticTransitionKind(rows[index - 1], profileName);
+    const nextKind = semanticTransitionKind(rows[index], profileName);
+    let semanticScore = 0;
+    if (previousKind === 'backward_takeaway') semanticScore += 150;
+    if (nextKind === 'backward_takeaway') semanticScore -= 130;
+    if (['topic_shift', 'context', 'experience', 'contrast', 'conclusion'].includes(nextKind)) semanticScore += 125;
+    else if (['evidence', 'development'].includes(nextKind)) semanticScore += 80;
+    const balance = Math.min(running, right) / Math.max(1, total);
+    const score = semanticScore + balance * 24 - (Math.abs(running - right) / Math.max(1, total)) * 8;
+    if (!best || score > best.score) best = { index, score };
+  }
+  if (best) return best.index;
+  let fallback = 1;
+  let fallbackDistance = Infinity;
+  running = 0;
+  for (let index = 1; index < rows.length; index += 1) {
+    running += lengths[index - 1];
+    const distance = Math.abs(running - total / 2);
+    if (distance < fallbackDistance) {
+      fallback = index;
+      fallbackDistance = distance;
+    }
+  }
+  return fallback;
 }
 
 function touchesProtectedBlock(paragraph, protectedBlocks) {
@@ -1730,8 +1755,8 @@ function extractOriginalStructuralMarkers(value) {
       markers.push(structuralMarker('legal_or_section', match[1].replace(/\s+/gu, ''), index));
       return;
     }
-    match = text.match(/^\s*([-*+•▪◦·●○■□◆◇▶▷※])\s+/u);
-    if (match) markers.push(structuralMarker('bullet', match[1], index));
+    match = text.match(/^\s*([-*+•▪◦·])\s+|^\s*([●○■□◆◇▶▷※])\s*|^\s*(\+)(?=[가-힣A-Za-z“"'‘「『《〈])/u);
+    if (match) markers.push(structuralMarker('bullet', match[1] || match[2] || match[3], index));
   });
   return markers;
 }
@@ -1779,6 +1804,7 @@ function structuralRoleSignature(value) {
     label: Number(roles.label || 0) + Number(roles.label_inline || 0),
     list: Number(roles.list || 0),
     table: Number(roles.table || 0),
+    flow: Number(roles.flow || 0),
     quote: Number(roles.quote || 0),
     code: Number(roles.code || 0),
     legalClause: Number(roles.legal_clause || 0),

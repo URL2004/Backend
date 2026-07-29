@@ -855,6 +855,12 @@ function buildArchiveObservability(job) {
     conservativeSentenceRetryAttemptCount: archiveFinite(engineMeta.conservativeSentenceRetryAttemptCount),
     conservativeSentenceRetryModelCallCount: archiveFinite(engineMeta.conservativeSentenceRetryModelCallCount),
     conservativeSentenceRetryAppliedCount: archiveFinite(engineMeta.conservativeSentenceRetryAppliedCount),
+    conservativeSentenceRetryStoppedNoProgress:
+      engineMeta.conservativeSentenceRetryStoppedNoProgress === true,
+    conservativeSentenceRetryMarginalGainCount:
+      archiveFinite(engineMeta.conservativeSentenceRetryMarginalGainCount),
+    conservativeSentenceRetrySubstantiveEditGain:
+      archiveFinite(engineMeta.conservativeSentenceRetrySubstantiveEditGain),
     conservativeSentenceRetryRejectionCodes: uniqueStrictArchiveCodes(
       engineMeta.conservativeSentenceRetryRejectionCodes
     ),
@@ -992,6 +998,8 @@ function buildArchiveObservability(job) {
     studentRecordFragmentCount: archiveFinite(engineMeta.studentRecordFragmentCount),
     functionalGreetingDuplicationCount: archiveFinite(engineMeta.functionalGreetingDuplicationCount),
     adjacentSemanticRepetitionCount: archiveFinite(engineMeta.adjacentSemanticRepetitionCount),
+    removedLocalOverlapCount: archiveFinite(engineMeta.removedLocalOverlapCount),
+    localOverlapReasons: uniqueStrictArchiveCodes(engineMeta.localOverlapReasons),
     removedAdjacentRestatementCount: archiveFinite(engineMeta.removedAdjacentRestatementCount),
     adjacentRestatementFamilies: uniqueStrictArchiveCodes(engineMeta.adjacentRestatementFamilies),
     directionalGrowthCollocationCount: archiveFinite(engineMeta.directionalGrowthCollocationCount),
@@ -1071,6 +1079,9 @@ function buildArchiveObservability(job) {
     estimatedUsd: archiveFinite(humanizeMeta.estimatedUsd ?? usage.estimatedUsd),
     dedupeRemovedBlockCount: archiveFinite(dedupeAudit.removedBlockCount),
     dedupeRemovedBlockSentenceCount: archiveFinite(dedupeAudit.removedBlockSentenceCount),
+    dedupeRemovedLocalOverlapCount: archiveFinite(
+      dedupeAudit.removedLocalOverlapCount ?? engineMeta.removedLocalOverlapCount
+    ),
     dedupeRemovedAdjacentRestatementCount: archiveFinite(
       dedupeAudit.removedAdjacentRestatementCount ?? engineMeta.removedAdjacentRestatementCount
     ),

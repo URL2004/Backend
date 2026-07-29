@@ -5,9 +5,11 @@ const {
   alignedOutputCandidates,
   sentenceSimilarity
 } = require('./sentenceAlignment');
+const layoutStructure = require('./layoutStructure');
 
-const VERSION = 2;
+const VERSION = 3;
 const MIN_CONTENT_RECALL = 0.55;
+const MIN_SEMANTIC_FALLBACK = 0.62;
 const CLAIM_PATTERNS = Object.freeze({
   action: /(?:수행|담당|개발|분석|설계|운영|개선|협업|해결|참여|작성|구축|기획|관리|제작|조사|발표|주도|실행|근무|프로젝트)/u,
   competency: /(?:역량|능력|기술|활용|소통|협업|책임|전문성|문제\s*해결|리더십|성실|강점)/u,
@@ -26,7 +28,7 @@ function auditResumeCoverage(source, output, documentProfile = null) {
     .map((sentence, index) => ({ sentence, index, types: claimTypes(sentence), tokens: contentTokens(sentence) }))
     .filter(item => item.types.length > 0 && item.tokens.length >= 3);
   const rows = claims.map(claim => compareClaim(claim, sourceSentences.length, outputSentences));
-  const omissions = rows.filter(item => !item.aligned || item.contentRecall < MIN_CONTENT_RECALL);
+  const omissions = rows.filter(item => !item.covered);
   return {
     version: VERSION,
     applicable: true,
@@ -42,6 +44,7 @@ function auditResumeCoverage(source, output, documentProfile = null) {
       sourceOrdinal: item.sourceIndex + 1,
       types: item.types,
       contentRecall: item.contentRecall,
+      semanticSimilarity: item.semanticSimilarity,
       aligned: item.aligned,
       sourceSentence: item.sourceSentence,
       previousContext: sourceSentences[item.sourceIndex - 1] || '',
@@ -51,7 +54,7 @@ function auditResumeCoverage(source, output, documentProfile = null) {
 }
 
 function compareClaim(claim, sourceCount, outputSentences) {
-  if (!outputSentences.length) return row(claim, -1, 0, false);
+  if (!outputSentences.length) return row(claim, -1, 0, 0, false);
   const candidates = alignedOutputCandidates(
     claim.sentence,
     claim.index,
@@ -59,28 +62,48 @@ function compareClaim(claim, sourceCount, outputSentences) {
     outputSentences,
     { window: 3, maxOutputGroup: 2 }
   );
-  let best = { index: -1, recall: 0, similarity: 0 };
+  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0 };
   for (const candidate of candidates) {
     const candidateTokens = new Set(contentTokens(candidate.text));
     const recall = claim.tokens.filter(token => candidateTokens.has(token)).length / Math.max(1, claim.tokens.length);
     const sourceNorm = normalize(claim.sentence);
     const outputNorm = normalize(candidate.text);
     const similarity = 1 - (levenshteinDistance(sourceNorm, outputNorm) / Math.max(1, sourceNorm.length, outputNorm.length));
-    if (recall > best.recall || (recall === best.recall && similarity > best.similarity)) {
-      best = { index: candidate.start, recall, similarity };
+    const semanticSimilarity = sentenceSimilarity(claim.sentence, candidate.text);
+    if (recall > best.recall
+        || (recall === best.recall && semanticSimilarity > best.semanticSimilarity)
+        || (recall === best.recall
+          && semanticSimilarity === best.semanticSimilarity
+          && similarity > best.similarity)) {
+      best = { index: candidate.start, recall, similarity, semanticSimilarity };
     }
   }
-  return row(claim, best.index, best.recall, best.recall >= 0.2 || best.similarity >= 0.45);
+  const aligned = best.recall >= 0.2
+    || best.similarity >= 0.45
+    || best.semanticSimilarity >= 0.48;
+  return row(
+    claim,
+    best.index,
+    best.recall,
+    best.semanticSimilarity,
+    aligned
+  );
 }
 
-function row(claim, outputIndex, recall, aligned) {
+function row(claim, outputIndex, recall, semanticSimilarity, aligned) {
+  const covered = aligned && (
+    recall >= MIN_CONTENT_RECALL
+    || (recall >= 0.42 && semanticSimilarity >= MIN_SEMANTIC_FALLBACK)
+  );
   return {
     sourceIndex: claim.index,
     outputIndex,
     sourceSentence: claim.sentence,
     types: claim.types,
     contentRecall: round4(recall),
-    aligned
+    semanticSimilarity: round4(semanticSimilarity),
+    aligned,
+    covered
   };
 }
 
@@ -91,16 +114,72 @@ function claimTypes(sentence) {
 }
 
 function meaningfulSentences(value) {
-  return splitSentences(String(value || ''))
+  const editableLines = layoutStructure.buildLineRecords(String(value || ''))
+    .filter(record => !record.blank)
+    .flatMap(record => {
+      if ([
+        'title',
+        'heading',
+        'label',
+        'table',
+        'flow',
+        'quote',
+        'code',
+        'legal_clause',
+        'signature'
+      ].includes(record.role)) return [];
+      if (record.role === 'label_inline') {
+        const body = layoutStructure.labelParts(record.text)?.rest || '';
+        return body ? [body] : [];
+      }
+      if (record.role === 'list') {
+        const body = String(record.text || '').replace(
+          /^(?:(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈]))/u,
+          ''
+        );
+        return body ? [body] : [];
+      }
+      return [record.text];
+    });
+  return splitSentences(editableLines.join('\n'))
     .map(sentence => String(sentence || '').trim())
     .filter(sentence => normalize(sentence).length >= 5);
 }
 
 function contentTokens(value) {
-  const stop = new Set(['그리고', '그러나', '하지만', '따라서', '또한', '통해', '위해', '대한', '있는', '하는', '했습니다', '합니다', '있습니다', '경험', '과정']);
+  const stop = new Set([
+    '그리고', '그러나', '하지만', '따라서', '또한', '통해', '위해', '대한',
+    '있', '하', '되', '경험', '과정', '이러', '매우', '점'
+  ]);
   return [...new Set((String(value || '').match(/[가-힣]{2,}|[A-Za-z]{3,}|\d+(?:\.\d+)?%?/gu) || [])
-    .map(token => token.toLowerCase().replace(/(?:하였습니다|했습니다|하였다|했다|에서는|으로는|에게는|이라는|으로|에서|에게|보다|처럼|하고|하며|하여|한다|은|는|이|가|을|를|의|에|도|만|와|과|로)$/u, ''))
+    .map(normalizeContentToken)
     .filter(token => token.length >= 2 && !stop.has(token)))];
+}
+
+function normalizeContentToken(value) {
+  let token = String(value || '').normalize('NFKC').toLowerCase();
+  const suffixes = [
+    /(?:으로부터|에게서는|으로서는|에게서|에서는|으로는|에게는|이라는|이라고|까지는|부터는)$/u,
+    /(?:하였습니다|했습니다|되었습니다|하였고|하였으며|했으며|했지만|하였다|되었다|이었다|였습니다|했습니다)$/u,
+    /(?:합니다|됩니다|입니다|이었다|였다|한다|된다|이다)$/u,
+    /(?:으려는|으려고|으려|려는|려고|도록|하면서|했지만|하지만|하는|하며|하여|해서|하고|하면|한)$/u,
+    /(?:되는|되어|되고|되며|되면|된)$/u,
+    /(?:습니다|었습니다|았다|었다|였고|이며|이고)$/u,
+    /(?:까지|부터|에게|에서|보다|처럼|으로|로서|로써|와|과|은|는|이|가|을|를|의|에|도|만|로)$/u,
+    /(?:으면서|면서|으며|며|으니|니|으나|으므로|므로|으려|려|으려고|려고|기)$/u
+  ];
+  for (let pass = 0; pass < 3; pass += 1) {
+    const before = token;
+    for (const pattern of suffixes) {
+      const candidate = token.replace(pattern, '');
+      if (candidate.length >= 2 && candidate !== token) {
+        token = candidate;
+        break;
+      }
+    }
+    if (token === before) break;
+  }
+  return token;
 }
 
 function normalize(value) {
@@ -221,6 +300,7 @@ function round4(value) {
 module.exports = {
   VERSION,
   MIN_CONTENT_RECALL,
+  MIN_SEMANTIC_FALLBACK,
   CLAIM_PATTERNS,
   auditResumeCoverage,
   contentTokens,

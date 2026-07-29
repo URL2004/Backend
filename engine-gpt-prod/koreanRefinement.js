@@ -567,7 +567,10 @@ function repairIntroducedParticleLineBreaks(value, source, context) {
       index += 1;
       continue;
     }
-    const particle = right.match(/^(의|은|는|이|가|을|를|와|과|에|에서|에게|으로|로|도|만|부터|까지|처럼|보다)(?=\s|[‘“"'「『《〈(（\[【가-힣A-Za-z0-9])/u);
+    // 조사가 다음 행으로 밀린 실제 경계만 합친다. 예전 정규식은 조사
+    // 다음에 임의의 한글을 허용해 `이번`, `가장`, `은퇴` 같은 일반 단어의
+    // 첫 음절을 조사로 오인했고, 제목 행과 본문을 `점이번`처럼 붙였다.
+    const particle = right.match(/^(의|은|는|이|가|을|를|와|과|에|에서|에게|으로|로|도|만|부터|까지|처럼|보다)(?=\s|[‘“"'「『《〈(（\[【])/u);
     const eligibleLeft = !/[.!?。！？…,:;：；]\s*[”’」』》〉"')\]]*$/u.test(left)
       && /[가-힣A-Za-z0-9”’」』》〉"')\]]$/u.test(left);
     if (!particle || !eligibleLeft || isStandaloneStructureLine(right)) {
@@ -790,7 +793,7 @@ function buildLineGuards(lines) {
       title: role === 'title',
       table: role === 'table' || plainTableLines.has(index),
       protected: code || reference || plainTableLines.has(index)
-        || ((!brokenTitleFragment) && ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote'].includes(role))
+        || ((!brokenTitleFragment) && ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote'].includes(role))
     });
   }
   return guards;
@@ -843,7 +846,7 @@ function isStandaloneStructureLine(value) {
   const text = String(value || '').trim();
   if (!text) return true;
   const role = layoutStructure.classifyLine(text);
-  if (['heading', 'label', 'label_inline', 'list', 'table', 'quote'].includes(role)) return true;
+  if (['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote'].includes(role)) return true;
   return /^(?:\(?\d{1,3}\)?[.)]\s+|[IVXLCDM]+ ?[.)]\s+|[①-⑳]\s*)/iu.test(text);
 }
 
@@ -2505,6 +2508,7 @@ function qualityWarning(item) {
 
 const ORPHAN_STRUCTURAL_PARTICLE_RE = /^(\s*)(에서는|에게는|으로는|로는|부터는|까지는|에는|에서|에게|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)\s+(?=\S)/u;
 const DEMONSTRATIVE_I_NOUN_RE = /^(?:(?:두|세|여러|같은|모든|각)\s+)?(?:목표|측면|과정|경험|결과|내용|문제|이유|점|방법|상황|사실|관점|역할|부분|선택|생각|주장|기준|계획|단계|변화|작업|활동|프로젝트|사례|전략|방식|기회|때|곳|글|문서|연구|수업|조사|분석)(?:[은는이가을를의에도에서와과만]|\s|$)/u;
+const DEMONSTRATIVE_I_INFLECTED_NOUN_RE = /^[가-힣A-Za-z0-9·_-]{1,40}(?:에서는|에게는|으로는|에는|은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만)(?=$|[\s,.;:!?。！？])/u;
 
 function pushOrphanStructuralParticleIssue(issues, text) {
   const occurrences = orphanStructuralParticleOccurrences(text);
@@ -2533,7 +2537,10 @@ function orphanStructuralParticleOccurrences(value) {
       // 행 첫머리의 `이 목표·이 과정·이 경험`은 앞 문단을 가리키는 정상
       // 지시 관형어다. 번호가 붙은 앞 문단을 목록으로 분류했다는 이유만으로
       // 주격 조사로 오인해 `이`를 삭제하면 문장 의미가 훼손된다.
-      if (match[2] === '이' && DEMONSTRATIVE_I_NOUN_RE.test(bodyText)) {
+      if (match[2] === '이' && (
+        DEMONSTRATIVE_I_NOUN_RE.test(bodyText)
+        || DEMONSTRATIVE_I_INFLECTED_NOUN_RE.test(bodyText)
+      )) {
         offset += line.length + 1;
         continue;
       }

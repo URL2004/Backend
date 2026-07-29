@@ -738,7 +738,10 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
       ? '현재 결과는 단어는 바뀌었지만 문장 구조 변화가 부족하다. 이미 조금 바뀐 대상도 절 배치·주어 위치·연결·문장 경계를 다시 구성해 표면 교체를 넘어선다.'
       : '',
     remediationLow
-      ? '현재 결과에는 SOURCE부터 있던 정형 성찰 결론·반복 결론 표지·과도하게 완결된 인과 구조가 충분히 개선되지 않았다. 주장과 사실은 모두 남기고 해당 표현 방식만 직접적이고 덜 정형적으로 바꾼다.'
+      ? [
+          '현재 결과에는 SOURCE부터 있던 정형 성찰 결론·반복 결론 표지·강한 수식 반복·과도하게 완결된 인과 구조가 충분히 개선되지 않았다. 주장과 사실은 모두 남기고 해당 표현 방식만 직접적이고 덜 정형적으로 바꾼다.',
+          discourse.remediationPromptGuidance(plan.rhetoricalRemediationPlan || null)
+        ].filter(Boolean).join('\n')
       : '',
     commercialTargets
       ? '후기·광고 혼합 문장에서는 가격·할인·무료 제공·픽업 범위·응답 시간 같은 사실과 숫자를 그대로 보존한다. 반복 감탄·과도한 추천·혜택 나열·행동 요청은 같은 문장 안에서 덜 정형적인 구조로 다시 쓰되, 협찬 고지·실제 체험·새 조건을 만들거나 원문의 주장 강도를 임의로 바꾸지 않는다.'
@@ -756,7 +759,13 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     model: model || config.models.repair,
     reasoningEffort: reasoningEffort || config.reasoning.repair,
     verbosity: 'low',
-    maxOutputTokens: Math.max(2400, Math.min(12000, Math.ceil(String(source || '').length * 3.2))),
+    // 짧은 문서라도 구조화 응답과 reasoning 토큰이 같은 예산을 사용한다.
+    // 2,400 하한은 1,500자 안팎의 학술문 회복에서 반복적으로
+    // openai_truncated_output을 만들며 다음 국소 회복까지 약화시켰다.
+    maxOutputTokens: Math.max(
+      5000,
+      Math.min(12000, Math.ceil(2400 + (String(source || '').length * 3.2)))
+    ),
     config,
     signal,
     safetyIdentifier,
@@ -827,6 +836,21 @@ async function retryConservativeSentenceSurface({
   const previous = currentIndex > 0 ? (currentSpans[currentIndex - 1]?.text || '') : '';
   const next = currentSpans[currentIndex + 1]?.text || '';
   const profileRule = conservativeProfileRule(profile);
+  const targetRemediationCategories = (humanizationPlan?.rhetoricalRemediationPlan?.categories || [])
+    .filter(item => (item.sentenceOrdinals || []).includes(ordinal));
+  const remediationRule = targetRemediationCategories.length
+    ? discourse.remediationPromptGuidance({
+        ...humanizationPlan.rhetoricalRemediationPlan,
+        categories: targetRemediationCategories
+      })
+    : '';
+  const selectedStrongModifierTarget = targetRemediationCategories.some(item => (
+    item.code === 'stacked_strong_modifiers'
+  ));
+  const remediationTargetTerms = discourse.remediationTargetTerms(
+    currentSpan.text,
+    targetRemediationCategories
+  );
   const system = [
     '너는 한국어 휴머나이징의 안전한 단일 문장 재구성기다.',
     'CURRENT SENTENCE 한 문장만 다시 쓴다. 앞뒤 문장은 문맥 확인용이며 절대 출력하거나 수정하지 않는다.',
@@ -836,6 +860,13 @@ async function retryConservativeSentenceSurface({
     '문장 수는 한 개로 유지하고 줄바꿈·목록·제목·인용을 새로 만들지 않는다.',
     '원문의 종결체와 격식을 유지한다.',
     profileRule,
+    remediationRule,
+    selectedStrongModifierTarget
+      ? '이 문장은 문서 안에서 반복된 강한 수식의 감축 대상으로 선택됐다. 표시된 강한 수식어를 약한 동의어로만 바꾸거나 그대로 두지 말고, CURRENT와 SOURCE에 이미 있는 대상·행위·영향 관계를 문장의 중심으로 직접 서술한다. 원문의 부정·가능성·우려·평가 강도는 낮추거나 높이지 않는다.'
+      : '',
+    remediationTargetTerms.length
+      ? `이번 문장에서 그대로 남기지 않을 반복 수식=${remediationTargetTerms.join(', ')}. 이 문자열을 출력에 복사하지 않고, SOURCE에 이미 있는 조건·대상·영향 관계로 같은 강도를 표현한다.`
+      : '',
     '위 조건을 모두 지킬 수 없으면 rewrittenSentence에는 CURRENT SENTENCE를 그대로 넣고 safeChangeFound=false로 답한다.'
   ].filter(Boolean).join('\n');
   const response = await completeJson({
@@ -852,7 +883,10 @@ async function retryConservativeSentenceSurface({
     model: model || config.models.repair,
     reasoningEffort: reasoningEffort || config.reasoning.repair,
     verbosity: 'low',
-    maxOutputTokens: Math.max(700, Math.min(1800, Math.ceil(currentSpan.text.length * 5))),
+    // 단문 JSON이라도 reasoning 토큰이 출력 한도를 함께 사용한다. 1,800은
+    // 150~250자 학술문에서 간헐적으로 truncated를 만들었으므로 내용 길이는
+    // 그대로 제한하면서 응답 예산만 넉넉히 둔다.
+    maxOutputTokens: Math.max(1200, Math.min(2800, Math.ceil(currentSpan.text.length * 8))),
     config,
     signal,
     safetyIdentifier,
@@ -865,8 +899,20 @@ async function retryConservativeSentenceSurface({
   const rejectionCodes = validateConservativeSentenceRewrite(
     sourceSpan.text,
     currentSpan.text,
-    rewrittenSentence
+    rewrittenSentence,
+    {
+      maxCharEditRatio: targetRemediationCategories.length ? 0.88 : 0.58,
+      minLengthRatio: targetRemediationCategories.length ? 0.65 : 0.78,
+      maxLengthRatio: targetRemediationCategories.length ? 1.40 : 1.24
+    }
   );
+  if (targetRemediationCategories.length && !rejectionCodes.length) {
+    const remediationImproved = targetRemediationCategories.some(item => (
+      discourse.remediationCategoryCount(rewrittenSentence, item.code)
+        < discourse.remediationCategoryCount(currentSpan.text, item.code)
+    ));
+    if (!remediationImproved) rejectionCodes.push('rhetorical_target_not_improved');
+  }
   const safeChangeFound = response.json.safeChangeFound === true && rejectionCodes.length === 0;
   if (!safeChangeFound) {
     return {
@@ -927,7 +973,16 @@ function isConservativeSentenceTarget(value) {
   return !/^[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}:\s*\S/u.test(sentence);
 }
 
-function validateConservativeSentenceRewrite(sourceSentence, currentSentence, rewrittenSentence) {
+function validateConservativeSentenceRewrite(
+  sourceSentence,
+  currentSentence,
+  rewrittenSentence,
+  {
+    maxCharEditRatio = 0.58,
+    minLengthRatio = 0.78,
+    maxLengthRatio = 1.24
+  } = {}
+) {
   const codes = [];
   const rewritten = String(rewrittenSentence || '').trim();
   if (!rewritten) return ['empty_sentence'];
@@ -939,8 +994,10 @@ function validateConservativeSentenceRewrite(sourceSentence, currentSentence, re
     codes.push('sentence_change_too_shallow');
   }
   const surface = computeEditMetrics(currentSentence, rewritten);
-  if (surface.charEditRatio > 0.58) codes.push('sentence_change_too_large');
-  if (surface.lengthRatio < 0.78 || surface.lengthRatio > 1.24) codes.push('sentence_length_shift');
+  if (surface.charEditRatio > maxCharEditRatio) codes.push('sentence_change_too_large');
+  if (surface.lengthRatio < minLengthRatio || surface.lengthRatio > maxLengthRatio) {
+    codes.push('sentence_length_shift');
+  }
   if (compareNumberMultiset(sourceSentence, rewrittenSentence).changed) codes.push('number_changed');
   if (/[`|]/u.test(rewritten) && !/[`|]/u.test(currentSentence)) codes.push('structure_token_added');
   return [...new Set(codes)];
@@ -993,11 +1050,25 @@ function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depth
     && targetSet.has(row.index));
   const remediationLow = (depthReport?.reasons || []).includes('rhetorical_remediation_low');
   const resumeRepetitionLow = (depthReport?.reasons || []).includes('resume_semantic_repetition_low');
+  const unresolvedRemediationOrdinals = remediationLow
+    ? discourse.unresolvedRemediationSentenceOrdinals(
+        source,
+        currentOutput,
+        plan.rhetoricalRemediationPlan || null
+      )
+    : [];
+  const unresolvedRemediationIndices = new Set(
+    unresolvedRemediationOrdinals.map(ordinal => ordinal - 1)
+  );
+  const unresolvedRemediationRows = rows.filter(row => (
+    unresolvedRemediationIndices.has(row.index)
+  ));
   const untouchedParagraphSeeds = firstRowPerParagraph([
     ...unchanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex)),
     ...shallowChanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex))
   ]);
   const ordered = uniqueRows([
+    ...unresolvedRemediationRows,
     ...untouchedParagraphSeeds,
     ...unchanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex)),
     ...shallowChanged.filter(row => targetSet.has(row.index) && untouchedTargetParagraphs.has(row.sourceParagraphIndex)),

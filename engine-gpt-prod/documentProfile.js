@@ -147,6 +147,21 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const reportMethodSignals = count(text, /(?:연구|탐구|조사|분석)의?\s*(?:목적|대상|범위|방법|절차|과정|결과|한계)|(?:가설|변수|사례|자료|문헌|설문)[^.!?\n]{0,45}(?:분석|비교|검토|수집)/gu);
   const analyticalFrameworkSignals = count(text, /(?:(?:이론|관점|개념|모형)[^.!?\n]{0,55}(?:분석|적용|해석|비교)|(?:분석|적용|해석|비교)[^.!?\n]{0,55}(?:이론|관점|개념|모형))/gu);
   const reportHeadingSignals = lines.filter(line => /^(?:#{1,6}\s*)?(?:\d+(?:\.\d+)*[.)]?\s*)?(?:탐구\s*(?:동기|목적|주제|방법|과정|결과)|조사\s*(?:목적|방법|결과)|이론적\s*(?:배경|분석)|사례\s*분석|비교\s*분석|문제점|개선\s*방안|결론|느낀\s*점)\s*$/u.test(line)).length;
+  const assignmentProblemHeadingSignals = lines.filter(line => (
+    /^(?:문제|문항)\s*\d{1,3}\s*[.)：:]?\s*\S.{1,119}$/u.test(line)
+  )).length;
+  const structuredCareerPlanSignals = count(
+    text,
+    /(?:진로\s*설계|학교\s*생활|학업\s*계획|졸업\s*후|학부\s*연구생|현장\s*실습|1\s*~\s*2학년|[1-4]학년에는|연구실\s*활동|캡스톤\s*디자인)/gu
+  );
+  const orderedArgumentSignals = count(
+    text,
+    /(?:^|[\n.!?]\s*)(?:첫째|둘째|셋째|넷째|먼저|다음으로|마지막으로)(?=$|[\s,])/gmu
+  );
+  const explicitAssignmentWritingFrame = count(
+    text,
+    /(?:이|본)\s*글에서는[^.!?\n]{0,90}(?:서술|설명|정리|살펴보|제시)하고자\s*한다/gu
+  );
   add(scores, 'report_assignment', reportInquirySignals, 0.58);
   add(scores, 'report_assignment', reportMethodSignals, 0.48);
   const learningLogSignals = count(text, /(?:이번\s*\d{1,2}\s*회차|학습(?:한|한\s*내용|했다|하였다)|배웠다|이해했다|소감란|학습\s*소감)/gu);
@@ -175,6 +190,17 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   }
   if ((formatProfile.labelLineCount || 0) >= 2 || (formatProfile.tableLineCount || 0) >= 2) {
     scores.report_assignment += 1.25;
+  }
+  // `문제 1. 진로 설계와 학교생활` 아래에서 첫째·둘째·셋째로
+  // 학업·현장 계획을 논증하는 과제는 1인칭 때문에 에세이로 보이기 쉽다.
+  // 요청 mode나 basicStyle이 아니라 원문 안의 과제 표제·작성 프레임·
+  // 단계형 계획이 함께 있을 때만 보고서/과제 프로필을 확정한다.
+  if (assignmentProblemHeadingSignals >= 1
+      && structuredCareerPlanSignals >= 3
+      && (orderedArgumentSignals >= 2 || explicitAssignmentWritingFrame >= 1)) {
+    scores.report_assignment += 4.2
+      + Math.min(structuredCareerPlanSignals - 3, 5) * 0.18
+      + Math.min(orderedArgumentSignals, 4) * 0.16;
   }
 
   const researchDesignSignals = count(text, /(?:연구\s*질문|질문지법|문헌\s*연구법|공식\s*통계|법령|판결문|자료의?\s*범위|표집|상관\s*관계|인과\s*관계|분석\s*틀|최종\s*답)/gu);
@@ -737,6 +763,10 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       reportInquirySignals,
       reportMethodSignals,
       reportHeadingSignals,
+      assignmentProblemHeadingSignals,
+      structuredCareerPlanSignals,
+      orderedArgumentSignals,
+      explicitAssignmentWritingFrame,
       analyticalFrameworkSignals,
       applicationIntentSignals,
       directApplicationContextSignals,

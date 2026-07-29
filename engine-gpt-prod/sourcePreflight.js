@@ -3,7 +3,7 @@
 const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
 
-const VERSION = 10;
+const VERSION = 11;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -227,7 +227,11 @@ function auditAndSanitizeSource(value) {
  */
 function repairSourceLayoutArtifacts(value) {
   const before = String(value || '').replace(/\r\n?/gu, '\n');
-  const heading = repairInlineHeadingBoundaries(before);
+  const creativeLayout = looksLikeCreativeLineLayout(before);
+  const punctuation = creativeLayout
+    ? { text: before, changes: [] }
+    : repairIsolatedTerminalPunctuationLines(before);
+  const heading = repairInlineHeadingBoundaries(punctuation.text);
   const wrapped = looksLikeCreativeLineLayout(heading.text)
     ? { text: heading.text, changes: [] }
     : repairForcedProseWraps(heading.text);
@@ -235,8 +239,54 @@ function repairSourceLayoutArtifacts(value) {
   return {
     text: sentenceSpacing.text,
     changed: sentenceSpacing.text !== before,
-    changes: [...heading.changes, ...wrapped.changes, ...sentenceSpacing.changes]
+    changes: [
+      ...punctuation.changes,
+      ...heading.changes,
+      ...wrapped.changes,
+      ...sentenceSpacing.changes
+    ]
   };
+}
+
+/**
+ * PDF·OCR 내보내기에서 종결점만 다음 행으로 밀린 입력을 감사 기준 전에
+ * 복구한다. 독립 기호를 임의 삭제하지 않고, 앞 행이 실제 완결 산문이며
+ * 종결부호만 빠진 경우에만 그 행 끝으로 되돌린다.
+ */
+function repairIsolatedTerminalPunctuationLines(value) {
+  const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
+  const output = [];
+  const changes = [];
+  let fence = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = String(lines[index] || '');
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/u);
+    if (fenceMatch) {
+      if (!fence) fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
+      else if (fenceMatch[1][0] === fence.char && fenceMatch[1].length >= fence.length) fence = null;
+      output.push(line);
+      continue;
+    }
+    const punctuation = line.trim();
+    if (!fence && /^(?:[.。]|[!?！？])$/u.test(punctuation)) {
+      let previousIndex = output.length - 1;
+      while (previousIndex >= 0 && !String(output[previousIndex] || '').trim()) previousIndex -= 1;
+      const previous = previousIndex >= 0 ? String(output[previousIndex] || '') : '';
+      const role = layoutStructure.classifyLine(previous);
+      if (['prose', 'list', 'label_inline'].includes(role)
+          && isPossiblyMissingTerminalPunctuation(previous)) {
+        output[previousIndex] = `${previous.trimEnd()}${punctuation}`;
+        changes.push({
+          code: 'source_isolated_terminal_punctuation_repaired',
+          lineOrdinal: index + 1,
+          message: '별도 행으로 밀린 문장 종결부호를 앞 문장 끝에 복원했어요.'
+        });
+        continue;
+      }
+    }
+    output.push(line);
+  }
+  return { text: output.join('\n'), changes };
 }
 
 function looksLikeCreativeLineLayout(value) {
@@ -653,8 +703,8 @@ function shouldJoinForcedWrap(leftValue, rightValue) {
   // 문장의 목적어처럼 붙고 이후 청크·문단 구조까지 연쇄적으로 무너진다.
   const leftRole = layoutStructure.classifyLine(left);
   const rightRole = layoutStructure.classifyLine(right);
-  if (['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole)
-      || ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole)) {
+  if (['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole)
+      || ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole)) {
     return false;
   }
   if (isWholeQuotedLine(left) || isWholeQuotedLine(right)) return false;
@@ -850,6 +900,7 @@ module.exports = {
   extractQuotedRewritePayload,
   extractDocumentQuoteWrapper,
   repairSourceLayoutArtifacts,
+  repairIsolatedTerminalPunctuationLines,
   looksLikeCreativeLineLayout,
   repairInlineHeadingBoundaries,
   splitNumberedDashHeadingBody,

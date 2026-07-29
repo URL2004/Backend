@@ -159,6 +159,139 @@ function removeGeneratedAdjacentRestatements(source, text) {
   };
 }
 
+/**
+ * 모델이 원문의 한 문장을 앞 구간에도 짧게 복제한 뒤 원래 위치에서 다시
+ * 서술하는 국소 중복을 제거한다. 전역 fuzzy 삭제는 하지 않으며, 같은
+ * 문단의 두 문장 이내에서 두 결과 문장이 원문의 동일한 한 문장에 정렬되고
+ * 짧은 쪽 정보가 긴 쪽에 거의 모두 포함될 때만 생성된 짧은 사본을 지운다.
+ */
+function removeGeneratedLocalOverlapDuplicates(source, text, { maxSentenceGap = 2 } = {}) {
+  const original = String(text || '');
+  const sourceSpans = splitSentenceSpans(String(source || ''));
+  const sourceRows = sourceSpans.map((span, index) => ({
+    index,
+    text: String(span.text || '').trim(),
+    roots: semanticRoots(span.text)
+  }));
+  const removals = [];
+  const reasons = [];
+  for (const paragraph of paragraphSpans(original)) {
+    if (isDedupeProtectedParagraph(paragraph.text) || containsDedupeProtectedContent(paragraph.text)) continue;
+    const spans = splitSentenceSpans(paragraph.text);
+    for (let leftIndex = 0; leftIndex < spans.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1;
+        rightIndex < spans.length && rightIndex - leftIndex <= Math.max(1, Number(maxSentenceGap) || 2);
+        rightIndex += 1) {
+        const left = String(spans[leftIndex]?.text || '').trim();
+        const right = String(spans[rightIndex]?.text || '').trim();
+        const fragment = generatedOrphanFragment(left, right, sourceRows);
+        if (fragment) {
+          removals.push({
+            start: paragraph.start + spans[rightIndex].start,
+            end: paragraph.start + spans[rightIndex].end
+          });
+          reasons.push('orphan_suffix_fragment');
+          leftIndex = rightIndex;
+          break;
+        }
+
+        const duplicate = generatedContainedDuplicate(left, right, sourceRows);
+        if (!duplicate) continue;
+        const removeIndex = duplicate.remove === 'left' ? leftIndex : rightIndex;
+        removals.push({
+          start: paragraph.start + spans[removeIndex].start,
+          end: paragraph.start + spans[removeIndex].end
+        });
+        reasons.push('single_source_claim_copied');
+        if (removeIndex === rightIndex) leftIndex = rightIndex;
+        break;
+      }
+    }
+  }
+  const uniqueRanges = dedupeRanges(removals);
+  return {
+    text: uniqueRanges.length ? removeSentenceSpans(original, uniqueRanges) : original,
+    applied: uniqueRanges.length > 0,
+    removedCount: uniqueRanges.length,
+    reasons: [...new Set(reasons)]
+  };
+}
+
+function generatedOrphanFragment(left, right, sourceRows) {
+  if (!/^(?:은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로)\s/u.test(right)) return false;
+  if (right.length > 90 || containsProtectedEchoFact(right)) return false;
+  const rightRoots = semanticRoots(right);
+  const leftRoots = semanticRoots(left);
+  if (rightRoots.size < 2 || overlapRatio(rightRoots, leftRoots) < 0.55) return false;
+  // 원문의 긴 문장 끝에 있던 목적격 조사 절이 청크 병합 뒤 독립 문장으로
+  // 한 번 더 붙는 것이 실제 장애 유형이다. 원문 전체의 부분 문자열이라는
+  // 이유로 보호하면 바로 그 생성 중복을 놓친다. 원문에서도 같은 독립
+  // 문장이었던 경우만 보존한다.
+  if (sourceRows.some(row => _normSent(row.text) === _normSent(right))) return false;
+  const leftSupport = bestSourceRootSupport(leftRoots, sourceRows);
+  const rightSupport = bestSourceRootSupport(rightRoots, sourceRows);
+  return leftSupport.index >= 0
+    && leftSupport.index === rightSupport.index
+    && rightSupport.coverage >= 0.55;
+}
+
+function generatedContainedDuplicate(left, right, sourceRows) {
+  if (left.length < 45 || right.length < 45) return null;
+  if (containsProtectedEchoFact(left) || containsProtectedEchoFact(right)) return null;
+  if (negationSignature(left) !== negationSignature(right)) return null;
+  const leftRoots = semanticRoots(left);
+  const rightRoots = semanticRoots(right);
+  const leftIsShorter = leftRoots.size <= rightRoots.size;
+  const shortText = leftIsShorter ? left : right;
+  const longText = leftIsShorter ? right : left;
+  const shortRoots = leftIsShorter ? leftRoots : rightRoots;
+  const longRoots = leftIsShorter ? rightRoots : leftRoots;
+  if (shortRoots.size < 6 || longRoots.size < 7) return null;
+  if (shortText.length > longText.length * 0.88) return null;
+  if (overlapRatio(shortRoots, longRoots) < 0.80 || jaccard(shortRoots, longRoots) < 0.55) return null;
+
+  const shortSupport = bestSourceRootSupport(shortRoots, sourceRows);
+  const longSupport = bestSourceRootSupport(longRoots, sourceRows);
+  if (shortSupport.index < 0
+      || shortSupport.index !== longSupport.index
+      || shortSupport.coverage < 0.68
+      || longSupport.coverage < 0.55) return null;
+  const supportingSourceCount = sourceRows.filter(row => (
+    row.roots.size >= 5 && overlapRatio(shortRoots, row.roots) >= 0.68
+  )).length;
+  if (supportingSourceCount !== 1) return null;
+  return { remove: leftIsShorter ? 'left' : 'right' };
+}
+
+function bestSourceRootSupport(roots, sourceRows) {
+  let best = { index: -1, coverage: 0, similarity: 0 };
+  for (const row of sourceRows || []) {
+    if (!row.roots?.size) continue;
+    const coverage = overlapRatio(roots, row.roots);
+    const similarity = jaccard(roots, row.roots);
+    if (coverage > best.coverage || (coverage === best.coverage && similarity > best.similarity)) {
+      best = { index: row.index, coverage, similarity };
+    }
+  }
+  return best;
+}
+
+function negationSignature(value) {
+  return /(?:않|아니|없|못|금지|불가|제외|반대)/u.test(String(value || '')) ? 'negative' : 'nonnegative';
+}
+
+function dedupeRanges(ranges) {
+  const sorted = [...(ranges || [])]
+    .filter(range => Number.isFinite(range?.start) && Number.isFinite(range?.end) && range.end > range.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const out = [];
+  for (const range of sorted) {
+    if (out.some(item => range.start < item.end && range.end > item.start)) continue;
+    out.push(range);
+  }
+  return out;
+}
+
 function adjacentEchoPairs(value) {
   const spans = splitSentenceSpans(String(value || ''));
   const out = new Set();
@@ -416,7 +549,8 @@ function removeSentenceRange(text, start, end) {
 function isDedupeProtectedParagraph(value) {
   const text = String(value || '').trim();
   if (!text) return true;
-  if (/^(?:[>#]|[-*+•▪◦·●○■□◆◇▶▷※]\s|\d+[.)]\s|[가-힣][.)]\s|[①-⑳]\s)/u.test(text)) return true;
+  if (/^(?:[>#]|[-*+•▪◦·]\s|\d+[.)]\s|[가-힣][.)]\s|[①-⑳]\s|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈]))/u.test(text)) return true;
+  if ((text.match(/(?:→|⇒|⇢|⟶|➜|->)/gu) || []).length >= 2) return true;
   if (/^(?:목\s*차|차례|참고\s*문헌|참고\s*자료|References|Bibliography|부록|Appendix)(?=$|[^가-힣A-Za-z0-9_])/iu.test(text)) return true;
   if (/^(?:“.+”|‘.+’|".+"|'.+'|「.+」|『.+』|《.+》|〈.+〉)$/su.test(text)) return true;
   if (/^\s*(?:`{3,}|~{3,})/u.test(text) || /(?<!`)`[^`\n]+`(?!`)/u.test(text)) return true;
@@ -437,5 +571,6 @@ module.exports = {
   contentTokens,
   dedupeSentences,
   removeGeneratedAdjacentRestatements,
+  removeGeneratedLocalOverlapDuplicates,
   removeNewExactDuplicateBlocks
 };

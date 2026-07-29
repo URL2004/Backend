@@ -52,7 +52,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.18';
+const VERSION = 'gpt-prod-v2.5.19';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -429,6 +429,10 @@ async function runEngine({
   let conservativeSentenceRetryAttemptCount = 0;
   let conservativeSentenceRetryModelCallCount = 0;
   let conservativeSentenceRetryAppliedCount = 0;
+  let conservativeSentenceRetryNoProgressStreak = 0;
+  let conservativeSentenceRetryStoppedNoProgress = false;
+  let conservativeSentenceRetryMarginalGainCount = 0;
+  let conservativeSentenceRetrySubstantiveEditGain = 0;
   const conservativeSentenceRetryRejectionCodes = [];
   let polishSpeakerRestoreCount = 0;
   let polishSpeakerRestoredSentenceCount = 0;
@@ -833,7 +837,7 @@ async function runEngine({
       && selectedMode !== 'polish'
       && humanizationDepthReport?.applicable === true
       && needsPerceivedHumanizationRecovery(humanizationDepthReport)) {
-    const attemptedOrdinals = new Set();
+    const attemptedOrdinalCounts = new Map();
     const sourceSentenceCount = Math.max(
       0,
       Number(humanizationPlan?.sourceSentenceCount || 0)
@@ -850,8 +854,15 @@ async function runEngine({
     );
     const maximumAttempts = Math.min(
       sourceSentenceCount || 1,
-      requestStrength === 'advanced' ? 8 : 6,
+      requestStrength === 'advanced' ? 8 : 4,
       Math.max(initialPreferredOrdinals.length, hardRequired + 2)
+    );
+    const conservativeNoProgressLimit = requestStrength === 'advanced' ? 3 : 2;
+    const remediationOrdinals = new Set(
+      (humanizationPlan?.rhetoricalRemediationPlan?.categories || [])
+        .flatMap(item => item.sentenceOrdinals || [])
+        .map(value => Number(value))
+        .filter(Number.isInteger)
     );
 
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
@@ -879,9 +890,15 @@ async function runEngine({
         ...preferredOrdinals,
         ...planOrdinals,
         ...allOrdinals
-      ].find(ordinal => !attemptedOrdinals.has(ordinal));
+      ].find(ordinal => {
+        const allowedAttempts = remediationOrdinals.has(ordinal) ? 2 : 1;
+        return Number(attemptedOrdinalCounts.get(ordinal) || 0) < allowedAttempts;
+      });
       if (!targetOrdinal) break;
-      attemptedOrdinals.add(targetOrdinal);
+      attemptedOrdinalCounts.set(
+        targetOrdinal,
+        Number(attemptedOrdinalCounts.get(targetOrdinal) || 0) + 1
+      );
       conservativeSentenceRetryAttemptCount += 1;
       humanizationDepthRetryCount += 1;
       humanizationDepthRetryTargetSentenceCount += 1;
@@ -909,6 +926,13 @@ async function runEngine({
             addUniqueCode(humanizationDepthRetryRejectionCodes, code);
           }
           humanizationDepthRetryRejectedCount += 1;
+          conservativeSentenceRetryNoProgressStreak += 1;
+          if (conservativeSentenceRetryNoProgressStreak >= conservativeNoProgressLimit) {
+            conservativeSentenceRetryStoppedNoProgress = true;
+            addUniqueCode(conservativeSentenceRetryRejectionCodes, 'strategy_no_progress');
+            addUniqueCode(humanizationDepthRetryRejectionCodes, 'strategy_no_progress');
+            break;
+          }
           continue;
         }
 
@@ -939,21 +963,54 @@ async function runEngine({
             addUniqueCode(conservativeSentenceRetryRejectionCodes, code);
             addUniqueCode(humanizationDepthRetryRejectionCodes, code);
           }
+          conservativeSentenceRetryNoProgressStreak += 1;
+          if (conservativeSentenceRetryNoProgressStreak >= conservativeNoProgressLimit) {
+            conservativeSentenceRetryStoppedNoProgress = true;
+            addUniqueCode(conservativeSentenceRetryRejectionCodes, 'strategy_no_progress');
+            addUniqueCode(humanizationDepthRetryRejectionCodes, 'strategy_no_progress');
+            break;
+          }
           continue;
         }
 
+        const progress = measureConservativeRecoveryProgress(
+          humanizationDepthReport,
+          candidateDepth
+        );
         outputText = candidate;
         humanizationDepthReport = candidateDepth;
+        conservativeSentenceRetrySubstantiveEditGain += progress.substantiveEditGain;
+        if (progress.meaningful) {
+          conservativeSentenceRetryNoProgressStreak = 0;
+        } else {
+          conservativeSentenceRetryMarginalGainCount += 1;
+          conservativeSentenceRetryNoProgressStreak += 1;
+        }
         conservativeSentenceRetryAppliedCount += 1;
         generalSurfaceRetryCount += 1;
         humanizationDepthRetryApplied = true;
         acceptGeneralSurfaceRecovery(records);
+        // 0.2%대 표면 증가만 연속해서 얻는 문장 재호출은 실제 체감 효과와
+        // 거의 상관이 없었다. 안전한 소폭 개선은 결과에 남기되 같은 전략을
+        // 세 번째 반복하지 않고 다음 감사 단계로 넘긴다.
+        if (conservativeSentenceRetryNoProgressStreak >= conservativeNoProgressLimit) {
+          conservativeSentenceRetryStoppedNoProgress = true;
+          addUniqueCode(conservativeSentenceRetryRejectionCodes, 'strategy_marginal_gain');
+          addUniqueCode(humanizationDepthRetryRejectionCodes, 'strategy_marginal_gain');
+          break;
+        }
       } catch (error) {
         const failureCode = modelCallFailureCode(error);
         humanizationDepthRetryRejectedCount += 1;
         addUniqueCode(conservativeSentenceRetryRejectionCodes, failureCode);
         addUniqueCode(humanizationDepthRetryRejectionCodes, failureCode);
-        break;
+        conservativeSentenceRetryNoProgressStreak += 1;
+        if (conservativeSentenceRetryNoProgressStreak >= conservativeNoProgressLimit) {
+          conservativeSentenceRetryStoppedNoProgress = true;
+          addUniqueCode(conservativeSentenceRetryRejectionCodes, 'strategy_no_progress');
+          addUniqueCode(humanizationDepthRetryRejectionCodes, 'strategy_no_progress');
+          break;
+        }
       }
     }
 
@@ -2490,6 +2547,11 @@ async function runEngine({
     conservativeSentenceRetryAttemptCount,
     conservativeSentenceRetryModelCallCount,
     conservativeSentenceRetryAppliedCount,
+    conservativeSentenceRetryStoppedNoProgress,
+    conservativeSentenceRetryMarginalGainCount,
+    conservativeSentenceRetrySubstantiveEditGain: Number(
+      conservativeSentenceRetrySubstantiveEditGain.toFixed(4)
+    ),
     conservativeSentenceRetryRejectionCodes: safeFailureCodeList(
       conservativeSentenceRetryRejectionCodes
     ),
@@ -2698,6 +2760,8 @@ async function runEngine({
       .find(item => item.code === 'functional_greeting_duplication')?.afterCount || 0),
     adjacentSemanticRepetitionCount: Number((koreanRefinementAudit?.issues || [])
       .find(item => item.code === 'adjacent_semantic_repetition')?.afterCount || 0),
+    removedLocalOverlapCount: Number(postprocessMeta?.dedupe?.removedLocalOverlapCount || 0),
+    localOverlapReasons: safeFailureCodeList(postprocessMeta?.dedupe?.localOverlapReasons),
     removedAdjacentRestatementCount: Number(postprocessMeta?.dedupe?.removedAdjacentRestatementCount || 0),
     adjacentRestatementFamilies: safeFailureCodeList(postprocessMeta?.dedupe?.adjacentRestatementFamilies),
     directionalGrowthCollocationCount: Number((koreanRefinementAudit?.issues || [])
@@ -2773,6 +2837,8 @@ async function runEngine({
       removedExactCount: result.dedupeAudit.removedExactCount || 0,
       removedBlockCount: result.dedupeAudit.removedBlockCount || 0,
       removedBlockSentenceCount: result.dedupeAudit.removedBlockSentenceCount || 0,
+      removedLocalOverlapCount: result.dedupeAudit.removedLocalOverlapCount || 0,
+      localOverlapReasons: result.dedupeAudit.localOverlapReasons || [],
       removedAdjacentRestatementCount: result.dedupeAudit.removedAdjacentRestatementCount || 0,
       adjacentRestatementFamilies: result.dedupeAudit.adjacentRestatementFamilies || [],
       fuzzyWarningCount: result.dedupeAudit.fuzzyWarningCount || 0,
@@ -4555,8 +4621,6 @@ function chunkPostprocess(text, original, { preserveLineBreaks = false } = {}) {
   return out.trim();
 }
 
-const STRUCT_LINE_RE = /^\s*(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.、)]|\d{1,2}(?!\d)\s*[.)]\s|\d{1,2}\.\d{1,2}|[가-하]\s*[.)]\s|[①-⑳]|[-•*+▪◦·●○■□◆◇▶▷※]\s|\|.*\||제\s?\d{1,3}\s?(?:조|장|절|항))/u;
-
 function structJoinLocal(text) {
   const ls = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
   if (!ls.length) return '';
@@ -4593,12 +4657,16 @@ function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLin
       out = dedupeResult.text;
       const blockDedupe = dedupe.removeNewExactDuplicateBlocks(source, out);
       out = blockDedupe.text;
+      const localOverlapDedupe = dedupe.removeGeneratedLocalOverlapDuplicates(source, out);
+      out = localOverlapDedupe.text;
       const seamDedupe = dedupe.removeGeneratedAdjacentRestatements(source, out);
       out = seamDedupe.text;
       meta.dedupe = {
         removedExactCount: (dedupeResult.removed || 0) + (blockDedupe.removedSentenceCount || 0),
         removedBlockCount: blockDedupe.removedBlockCount || 0,
         removedBlockSentenceCount: blockDedupe.removedSentenceCount || 0,
+        removedLocalOverlapCount: localOverlapDedupe.removedCount || 0,
+        localOverlapReasons: localOverlapDedupe.reasons || [],
         removedAdjacentRestatementCount: seamDedupe.removedCount || 0,
         adjacentRestatementFamilies: seamDedupe.families || [],
         fuzzyWarningCount: dedupeResult.fuzzyWarnings?.length || 0,
@@ -5835,6 +5903,8 @@ function isIncrementalConservativeImprovement(current, candidate) {
   if (!candidate?.applicable || candidate.metrics?.trivialOnly) return false;
   const before = current?.metrics || {};
   const after = candidate.metrics || {};
+  const beforeRemediation = Number(before.remediation?.coverage ?? 1);
+  const afterRemediation = Number(after.remediation?.coverage ?? 1);
   const noCoreRegression = Number(after.substantiveChangedSentenceCount || 0)
       >= Number(before.substantiveChangedSentenceCount || 0)
     && Number(after.targetChangedCount || 0) >= Number(before.targetChangedCount || 0)
@@ -5848,13 +5918,66 @@ function isIncrementalConservativeImprovement(current, candidate) {
         ?? 0
     )
     && Number(after.targetChangedParagraphCount || 0)
-      >= Number(before.targetChangedParagraphCount || 0);
+      >= Number(before.targetChangedParagraphCount || 0)
+    && afterRemediation + 1e-9 >= beforeRemediation;
   if (!noCoreRegression) return false;
   if (candidate.minimumEffectPass === true && current?.minimumEffectPass !== true) return true;
   return Number(after.substantiveEditRatio || 0)
       >= Number(before.substantiveEditRatio || 0) + 0.002
     || Number(after.substantiveChangedSentenceCount || 0)
-      > Number(before.substantiveChangedSentenceCount || 0);
+      > Number(before.substantiveChangedSentenceCount || 0)
+    || afterRemediation > beforeRemediation + 1e-9;
+}
+
+function measureConservativeRecoveryProgress(current, candidate) {
+  const before = current?.metrics || {};
+  const after = candidate?.metrics || {};
+  const substantiveEditGain = Math.max(
+    0,
+    Number(after.substantiveEditRatio || 0) - Number(before.substantiveEditRatio || 0)
+  );
+  const changedSentenceGain = Math.max(
+    0,
+    Number(after.substantiveChangedSentenceCount || 0)
+      - Number(before.substantiveChangedSentenceCount || 0)
+  );
+  const targetGain = Math.max(
+    0,
+    Number(after.targetChangedCount || 0) - Number(before.targetChangedCount || 0)
+  );
+  const structuralGain = Math.max(
+    0,
+    Number(
+      after.effectiveStructuralChangedSentenceCount
+        ?? after.structurallyChangedSentenceCount
+        ?? 0
+    ) - Number(
+      before.effectiveStructuralChangedSentenceCount
+        ?? before.structurallyChangedSentenceCount
+        ?? 0
+    )
+  );
+  const minimumEffectReached = candidate?.minimumEffectPass === true
+    && current?.minimumEffectPass !== true;
+  const remediationGain = Math.max(
+    0,
+    Number(after.remediation?.coverage ?? 1)
+      - Number(before.remediation?.coverage ?? 1)
+  );
+  return {
+    substantiveEditGain: Math.round(substantiveEditGain * 10000) / 10000,
+    changedSentenceGain,
+    targetGain,
+    structuralGain,
+    remediationGain: Math.round(remediationGain * 10000) / 10000,
+    minimumEffectReached,
+    meaningful: minimumEffectReached
+      || substantiveEditGain >= 0.004
+      || changedSentenceGain >= 1
+      || targetGain >= 1
+      || structuralGain >= 1
+      || remediationGain > 0
+  };
 }
 
 function shouldSkipWholeDocumentDepthRetryAfterSectionRecovery({
@@ -5925,6 +6048,7 @@ module.exports = {
   measureLengthCollapse,
   isMaterialDepthRegression,
   needsPerceivedHumanizationRecovery,
+  measureConservativeRecoveryProgress,
   shouldSkipWholeDocumentDepthRetryAfterSectionRecovery,
   effectStatusForNotices,
   classifyPolishEditKind,

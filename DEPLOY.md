@@ -26,12 +26,34 @@
 커밋 전 확인:
 
 ```powershell
+npm run git:check
 git status --short --branch
 git diff --cached --name-only
 rg -n "gemini|Gemini|제미나이|providers/gemini|localRuns|smoke:gemini|start:gemini" -S $(git diff --cached --name-only)
 ```
 
 `rg`가 exit 1/no output이면 제미나이 문자열 없음이다.
+
+## Git 상태 하네스
+
+Backend 저장소에 버전 관리되는 Git 하네스가 있으며 같은 작업공간의 Backend와
+Frontend 저장소 공통 hooks 경로에 설치할 수 있다.
+
+```powershell
+# release/prod-maintenance-test가 반영된 최신 Backend worktree에서 실행
+npm run git:install-hooks
+npm run git:check
+npm run git:check:all
+```
+
+- `pre-commit`: staged 파일 외에 unstaged·untracked 파일이 남은 부분 커밋을 차단한다.
+- `post-commit`: 커밋 직후 남은 변경 파일을 즉시 알린다.
+- `pre-push`: staged·unstaged·untracked 파일이 하나라도 있으면 푸시를 차단한다.
+- `predeploy:v2`: 같은 하네스를 다시 실행하므로 훅을 우회해도 dirty 배포가 진행되지 않는다.
+- `.env`, 서비스 계정, 개인키, 실제 토큰, 로컬 원문·평가 결과, 실험 파일은 커밋을 차단한다.
+
+하네스는 임의 변경을 자동 커밋하지 않는다. 사용자가 만든 파일을 잘못 묶는 대신
+남은 파일명을 보여 주고 커밋 범위를 직접 확인하게 한다.
 
 ## Backend 배포
 

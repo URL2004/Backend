@@ -6,6 +6,7 @@ const { execFileSync } = require('child_process');
 const { POLICY_VERSION: EXPECTED_HUMANIZATION_POLICY } = require('../engine-gpt-prod/humanizationDepth');
 const { VERSION: EXPECTED_ENGINE_VERSION } = require('../engine-gpt-prod');
 const { scanProductionImports } = require('./check-production-imports');
+const { evaluateRepository } = require('./git-harness');
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -21,6 +22,14 @@ async function main() {
   const status = git(root, ['status', '--porcelain=v1', '--untracked-files=all']).trim();
   add('clean_worktree', !status, status ? `${status.split(/\r?\n/u).length}개 변경 파일` : 'clean');
   add('diff_check', runGitCheck(root, ['diff', '--check']), 'git diff --check');
+  const gitHarness = evaluateRepository({ root, mode: 'deploy', allowDetached: false });
+  add(
+    'git_harness',
+    gitHarness.ok,
+    gitHarness.ok
+      ? 'clean · no secrets · no local artifacts'
+      : gitHarness.errors.map(item => item.code).join(', ')
+  );
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));

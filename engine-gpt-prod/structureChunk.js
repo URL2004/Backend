@@ -449,10 +449,88 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
 // 줄 구분자를 공백으로 재조립할 수 있다. 어휘를 다시 바꾸지 않고 잠긴
 // 제목·라벨·불릿·조문 접두부의 원래 행 위치만 마지막에 한 번 더 복원한다.
 function restoreLockedStructureLayout({ source, outputText, chunks } = {}) {
-  const restored = restoreLockedHeadingLayout(source, outputText, chunks);
+  const heading = restoreLockedHeadingLayout(source, outputText, chunks);
+  const blocks = restoreExactLockedBlocks(heading.text, chunks);
   return {
-    ...restored,
-    pass: restored.missingCount === 0
+    text: blocks.text,
+    applied: heading.applied || blocks.applied,
+    headingCount: heading.headingCount,
+    blockCount: blocks.blockCount,
+    restoredCount: heading.restoredCount + blocks.restoredCount,
+    missingCount: heading.missingCount + blocks.missingCount,
+    heading,
+    blocks,
+    pass: heading.missingCount === 0 && blocks.missingCount === 0
+  };
+}
+
+const EXACT_LAYOUT_LOCK_TYPES = new Set([
+  'toc_item',
+  'reference_item',
+  'code',
+  'table',
+  'quote',
+  'signature',
+  'legal_clause'
+]);
+
+function restoreExactLockedBlocks(outputText, chunks) {
+  const blocks = (chunks || [])
+    .filter(chunk => chunk?.locked
+      && EXACT_LAYOUT_LOCK_TYPES.has(String(chunk.lockType || ''))
+      && String(chunk.text || '').trim())
+    .map(chunk => String(chunk.text || '').trim());
+  let text = normalizeNewlines(outputText);
+  let cursor = 0;
+  let restoredCount = 0;
+  let missingCount = 0;
+  for (const expected of blocks) {
+    const equivalent = findWhitespaceEquivalentSpan(text, expected, cursor);
+    if (!equivalent) {
+      missingCount += 1;
+      continue;
+    }
+    const previous = text.slice(equivalent.start, equivalent.end);
+    text = `${text.slice(0, equivalent.start)}${expected}${text.slice(equivalent.end)}`;
+    if (previous !== expected) restoredCount += 1;
+    cursor = equivalent.start + expected.length;
+  }
+  return {
+    text,
+    applied: restoredCount > 0,
+    blockCount: blocks.length,
+    restoredCount,
+    missingCount
+  };
+}
+
+function findWhitespaceEquivalentSpan(value, expected, cursor = 0) {
+  const text = normalizeNewlines(value);
+  const expectedKey = bare(expected);
+  if (expectedKey.length < 2) return null;
+  const compact = [];
+  const starts = [];
+  const ends = [];
+  for (let index = 0; index < text.length;) {
+    const codePoint = text.codePointAt(index);
+    const char = String.fromCodePoint(codePoint);
+    const next = index + char.length;
+    if (!/\s/u.test(char)) {
+      compact.push(char === '“' || char === '”' ? '"' : (char === '‘' || char === '’' ? "'" : char));
+      starts.push(index);
+      ends.push(next);
+    }
+    index = next;
+  }
+  const compactText = compact.join('');
+  let compactCursor = 0;
+  while (compactCursor < starts.length && starts[compactCursor] < cursor) compactCursor += 1;
+  const found = compactText.indexOf(expectedKey, compactCursor);
+  if (found < 0) return null;
+  const last = found + expectedKey.length - 1;
+  return {
+    start: starts[found],
+    end: ends[last]
   };
 }
 
@@ -1350,9 +1428,10 @@ function findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions = {}
 function findSplitCandidate(paragraphs, protectedBlocks) {
   const ranked = paragraphs
     .map((paragraph, index) => ({ paragraph, index, length: bare(paragraph).length }))
-    // 문단 전체가 보호 블록인 경우에만 제외한다. 문장 안 인용처럼 보호
-    // 문자열을 포함했다는 이유만으로 문단 전체의 가독성 분할을 막지 않는다.
-    .filter(item => !equalsProtectedBlock(item.paragraph, protectedBlocks))
+    // 참고문헌 제목과 인용 항목이 하나의 잠금 청크로 합쳐진 뒤 읽기 문단
+    // 단계에서 다시 나뉠 수 있다. 잠금 블록의 일부인 문단도 일반 산문
+    // 가독성 분할 재료로 사용하지 않는다.
+    .filter(item => !touchesProtectedBlock(item.paragraph, protectedBlocks))
     // 여러 목록 행·표·조문이 한 읽기 단위에 들어 있으면 문장 분리기가
     // 행 구분자를 공백으로 다시 조립할 수 있다. 구조 단위는 레이아웃
     // 가독성 목표를 채우는 재료로 사용하지 않는다.
@@ -1380,16 +1459,11 @@ function touchesProtectedBlock(paragraph, protectedBlocks) {
   const normalized = bare(paragraph);
   if (!normalized) return false;
   for (const block of protectedBlocks || []) {
-    if (normalized === block || normalized.includes(block)) return true;
-  }
-  return false;
-}
-
-function equalsProtectedBlock(paragraph, protectedBlocks) {
-  const normalized = bare(paragraph);
-  if (!normalized) return false;
-  for (const block of protectedBlocks || []) {
     if (normalized === block) return true;
+    // 보호 인용이 일반 산문 문장 안에 포함된 경우에는 문단 전체를 잠그지
+    // 않는다. 반대로 큰 참고문헌·표 잠금 청크가 읽기 문단 단계에서 일부로
+    // 나뉜 경우에는 그 부분 문단도 다시 쪼개지 않는다.
+    if (normalized.length >= 12 && String(block || '').includes(normalized)) return true;
   }
   return false;
 }

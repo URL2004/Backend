@@ -49,7 +49,7 @@ const {
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.13';
+const VERSION = 'gpt-prod-v2.5.14';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',

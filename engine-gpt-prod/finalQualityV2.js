@@ -936,8 +936,9 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'self_evaluation_repetition') return '반복된 자기평가 결론을 SOURCE에 있는 행동·결과 서술로 옮기되 새 성과를 만들지 않는다.';
   if (item?.code === 'overloaded_research_action_chain') return '원인 분석·조건 조정·반복 실험·재현성 검증의 순서는 유지하고, 필요하면 두 문장으로 나눈다.';
   if (item?.code === 'formal_register_residual') {
-    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다. 지원서의 디딤돌·든든한 동행자·따뜻한 조력자 같은 장식적 결론은 SOURCE에 있는 실제 행동 계획으로만 정리한다.';
+    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다. “시험해 보니”는 “시험·검증한 결과”로, “함께 놓고 비교”는 “비교 검토”처럼 원문 격식에 맞춘다. 지원서의 디딤돌·든든한 동행자·따뜻한 조력자 같은 장식적 결론은 SOURCE에 있는 실제 행동 계획으로만 정리한다.';
   }
+  if (item?.code === 'role_definition_inversion') return '기관이 역할이라고 쓰지 말고, SOURCE의 기관·직무가 어떤 역할을 하는지 주어와 보어 관계를 복원한다.';
   if (item?.code === 'purpose_modifier_collocation') return '정책·제도가 지향하는 목적이면 “~을 만들기 위한 정책·제도”처럼 목적 관계를 분명히 한다.';
   if (item?.code === 'metacognitive_predicate_stack') return 'SOURCE의 생각·고민 범위를 유지하면서 “고민할 수 있다고 생각했다” 또는 “더 깊이 고민하게 되었다” 중 실제 의미에 맞는 한 구조만 쓴다.';
   if (item?.code === 'dialogue_give_collocation') return '말은 건넬 수 있지만 대화는 나누는 상호행위다. SOURCE의 참여 주체와 방향을 유지해 고친다.';

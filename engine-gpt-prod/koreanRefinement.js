@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 15;
+const VERSION = 16;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -63,6 +63,48 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: true,
     message: '“실습 수업”의 띄어쓰기를 확인해 주세요.'
+  },
+  lactation_mode_spelling: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: true,
+    message: '기술 용어 “착유 모드” 사이에 잘못 들어간 쉼표를 제거해야 해요.'
+  },
+  internal_report_spacing: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '“내부 성적서”의 띄어쓰기를 확인해 주세요.'
+  },
+  percentage_formula_parentheses: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: true,
+    message: '감소율 계산식의 결과와 연산 순서가 맞도록 분자 괄호가 필요해요.'
+  },
+  role_definition_inversion: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '기관·직무와 역할의 주어·보어 관계가 뒤집혀 문장이 어색해요.'
+  },
+  technical_term_consistency_review: {
+    weight: 1,
+    repairable: false,
+    deterministicSafe: false,
+    message: '같은 펌프 사양을 “유속”과 “유량”으로 혼용했는지 실제 사내 용어를 확인해 주세요.'
+  },
+  technical_notation_consistency_review: {
+    weight: 1,
+    repairable: false,
+    deterministicSafe: false,
+    message: '트레이드오프 영문·한글 표기가 문서 안에서 혼용됐는지 확인해 주세요.'
+  },
+  technical_scope_ambiguity_review: {
+    weight: 1,
+    repairable: false,
+    deterministicSafe: false,
+    message: '시험 펌웨어나 신고 연동의 실제 구현 범위가 문장만으로 불분명한 부분이 있어요.'
   },
   frequency_quantifier_conflict: {
     weight: 3,
@@ -969,6 +1011,10 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushNumericParenthesisIssue(issues, text);
   pushPatternIssue(issues, text, 'deep_understanding_collocation', /깊게\s+이해(?:하|했|되|할|하려|하고|하며|해서|해)/gu);
   pushPatternIssue(issues, text, 'practice_class_spacing', /실습수업/gu);
+  pushPatternIssue(issues, text, 'lactation_mode_spelling', /착\s*[,，]\s*유(?=\s*모드)/gu);
+  pushPatternIssue(issues, text, 'internal_report_spacing', /내부성적서/gu);
+  pushPercentageFormulaParenthesesIssue(issues, text);
+  pushSentenceIssue(issues, text, 'role_definition_inversion', hasRoleDefinitionInversion);
   pushSentenceIssue(issues, text, 'frequency_quantifier_conflict', sentence => /(?:그때마다|매번)[^.!?。！？\n]{0,90}(?:자주|종종|가끔)/u.test(sentence));
   pushSentenceIssue(issues, text, 'awkward_focus_attachment', sentence => /어떻게[^.!?。！？\n]{0,70}(?:지도|지를)\s*중심에\s*두고/u.test(sentence));
   pushSentenceIssue(issues, text, 'quote_attribution_particle_mismatch', hasQuoteAttributionParticleMismatch);
@@ -1032,6 +1078,10 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
         pushPatternIssue(issues, text, 'public_service_employment_term_review', /입사\s*후/gu);
       }
     }
+    if (PROFESSIONAL_PROFILES.has(profile)) {
+      pushTechnicalTerminologyReview(issues, text);
+      pushTechnicalScopeAmbiguityReview(issues, text);
+    }
   }
   return mergeSameCode(issues).map(item => ({ ...item, profile }));
 }
@@ -1071,6 +1121,25 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   );
   text = replaceAndCount(text, /메세지/gu, '메시지', 'message_spelling', changes);
   text = replaceAndCount(text, /실습수업/gu, '실습 수업', 'practice_class_spacing', changes);
+  text = replaceOutsideProtectedQuotes(
+    text,
+    /착\s*[,，]\s*유(?=\s*모드)/gu,
+    '착유',
+    'lactation_mode_spelling',
+    changes
+  );
+  text = replaceOutsideProtectedQuotes(
+    text,
+    /내부성적서/gu,
+    '내부 성적서',
+    'internal_report_spacing',
+    changes
+  );
+  const formulaRepair = repairPercentageFormulaParentheses(text);
+  text = formulaRepair.text;
+  for (let index = 0; index < formulaRepair.repairCount; index += 1) {
+    changes.push('percentage_formula_parentheses');
+  }
   text = text.replace(/(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
     if (PARTICLE_AFTER_PAREN.test(right)) return match;
     changes.push('numeric_parenthesis_join');
@@ -1160,6 +1229,8 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'analytic_object_recast',
   'repeated_clause_anchor',
   'professional_register_downgrade',
+  'formal_register_residual',
+  'role_definition_inversion',
   'passive_causative_stack',
   'double_object_time_expenditure',
   'persistent_state_tense_regression',
@@ -1501,6 +1572,27 @@ const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
     source: /(?:신호|데이터|패킷|정보)(?:를|가)?[^.!?。！？\n]{0,20}(?:전송|송신|수신)(?:하|되|해|했|한다|되면)/u,
     acceptable: /(?:신호|데이터|패킷|정보)(?:를|가)?[^.!?。！？\n]{0,20}(?:전송|송신|수신)(?:하|되|해|했|한다|되면)/u,
     preferred: ['신호를 전송하다', '데이터를 송수신하다']
+  },
+  {
+    concept: 'formal_validation_result',
+    professionalOnly: true,
+    source: /(?:시험|검증|평가)(?:하|한|해\s*본)\s*결과/u,
+    acceptable: /(?:시험|검증|평가)(?:하|한|해\s*본)\s*결과|(?:시험|검증|평가)을\s*통해/u,
+    preferred: ['시험한 결과', '검증한 결과']
+  },
+  {
+    concept: 'comparative_review',
+    professionalOnly: true,
+    source: /(?:비교[^.!?。！？\n]{0,45}검토|검토[^.!?。！？\n]{0,45}비교)/u,
+    acceptable: /(?:비교[^.!?。！？\n]{0,45}검토|검토[^.!?。！？\n]{0,45}비교)/u,
+    preferred: ['비교 검토하다', '두 방식을 검토하여 비교하다']
+  },
+  {
+    concept: 'competency_development',
+    professionalOnly: true,
+    source: /(?:역량|능력)(?:을|를)\s*(?:길렀|기르|강화|높였|키웠|갖췄|갖추)/u,
+    acceptable: /(?:역량|능력)(?:(?:을|를)\s*|(?:은|는)[^.!?。！？\n]{0,60})(?:길렀|기르|강화|높였|키웠|갖췄|갖추)/u,
+    preferred: ['역량을 길렀습니다', '능력을 강화했습니다']
   },
   {
     concept: 'configured_output_state',
@@ -1879,6 +1971,12 @@ function hasRolePredicateRedundancy(sentence) {
     || /담당(?:하|하고|했|합|하고\s*있)[^.!?。！？\n]{0,120}맡(?:고|아|으며|아서|은|았습니다)/u.test(value);
 }
 
+function hasRoleDefinitionInversion(sentence) {
+  const value = stripProtectedQuotedText(sentence);
+  return /(?:역할|직무)(?:은|는|이|가)\s+[^.!?。！？\n]{0,45}(?:관리단|지원단|사업단|위원회|기관|부서|본부|센터|공단|공사|재단|협회|연구원|회사)(?:이)?라고\s*(?:생각|판단|보았|봤)/u
+    .test(value);
+}
+
 function hasAnalyticObjectRecast(sentence) {
   return /(?:요구\s*사항|의견|자료|정보|요청)(?:은|는)[^.!?。！？\n]{0,70}(?:접수|수집|전달|공유|제공)된\s+(?:내용|자료|사항)(?:을|를)?\s*(?:바탕으로|기반으로)\s*(?:분석|검토)/u
     .test(stripProtectedQuotedText(sentence));
@@ -2000,6 +2098,21 @@ const FORMAL_REGISTER_RULES = Object.freeze([
     family: 'resume_ornamental_closing',
     test: (value, _fullText, context) => String(context?.profile || '') === 'resume_application'
       && /(?:곁을\s*지키는\s*디딤돌|든든한\s*동행자|따뜻한\s*조력자|성장의\s*시간|소중한\s*기회)/u.test(value)
+  },
+  {
+    family: 'colloquial_validation_result',
+    test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
+      && /(?:시험|검증|평가|테스트)해\s*보니/u.test(value)
+  },
+  {
+    family: 'colloquial_side_by_side_comparison',
+    test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
+      && /함께\s*놓고\s*(?:비교|검토)/u.test(value)
+  },
+  {
+    family: 'casual_self_question',
+    test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
+      && /(?:해서|라서)\s*그런가\s*(?:했|생각했|싶었)/u.test(value)
   }
 ]);
 
@@ -2014,17 +2127,24 @@ function pushFormalRegisterResidual(issues, text, context = {}) {
   const sentences = splitSentences(String(text || ''));
   const ordinals = [];
   const families = [];
+  const familyCounts = {};
+  const familyOrdinals = {};
   sentences.forEach((sentence, index) => {
     const value = stripProtectedQuotedText(sentence);
     for (const rule of FORMAL_REGISTER_RULES) {
       if (typeof rule.test !== 'function' || !rule.test(value, text, context)) continue;
       ordinals.push(index + 1);
       families.push(rule.family);
+      familyCounts[rule.family] = (familyCounts[rule.family] || 0) + 1;
+      if (!familyOrdinals[rule.family]) familyOrdinals[rule.family] = [];
+      familyOrdinals[rule.family].push(index + 1);
     }
   });
   if (families.length) {
     issues.push(makeIssue('formal_register_residual', families.length, ordinals, {
-      families: [...new Set(families)].slice(0, 12)
+      families: [...new Set(families)].slice(0, 12),
+      familyCounts,
+      familyOrdinals
     }));
   }
 }
@@ -2176,6 +2296,92 @@ function pushNumericParenthesisIssue(issues, text) {
   }
 }
 
+function percentageFormulaCandidates(value) {
+  const text = String(value || '');
+  const pattern = /(?<![\d.(])(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*\*\s*100\s*=\s*(\d+(?:\.\d+)?)\s*(퍼센트|%|％)/gu;
+  const candidates = [];
+  let lineOffset = 0;
+  for (const line of text.split('\n')) {
+    const protectedRanges = inlineProtectedRanges(line);
+    for (const match of line.matchAll(pattern)) {
+      const matchEnd = match.index + match[0].length;
+      if (protectedRanges.some(range => match.index < range.end && matchEnd > range.start)) continue;
+      const startValue = Number(match[1]);
+      const endValue = Number(match[2]);
+      const denominator = Number(match[3]);
+      const stated = Number(match[4]);
+      if (![startValue, endValue, denominator, stated].every(Number.isFinite)
+          || denominator === 0
+          || Math.abs(startValue - denominator) > Math.max(0.001, Math.abs(startValue) * 0.000001)) continue;
+      const intended = ((startValue - endValue) / denominator) * 100;
+      const tolerance = Math.max(0.11, Math.abs(intended) * 0.005);
+      if (Math.abs(stated - intended) > tolerance) continue;
+      const precedenceValue = startValue - ((endValue / denominator) * 100);
+      if (Math.abs(stated - precedenceValue) <= tolerance) continue;
+      candidates.push({
+        match: match[0],
+        index: lineOffset + match.index,
+        replacement: `(${match[1]}-${match[2]})/${match[3]}*100=${match[4]}${match[5]}`
+      });
+    }
+    lineOffset += line.length + 1;
+  }
+  return candidates;
+}
+
+function pushPercentageFormulaParenthesesIssue(issues, text) {
+  const matches = percentageFormulaCandidates(text);
+  if (!matches.length) return;
+  issues.push(makeIssue(
+    'percentage_formula_parentheses',
+    matches.length,
+    matches.map(match => sentenceOrdinalAt(text, match.index))
+  ));
+}
+
+function repairPercentageFormulaParentheses(value) {
+  let text = String(value || '');
+  const matches = percentageFormulaCandidates(text);
+  let repairCount = 0;
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    const candidate = matches[index];
+    text = `${text.slice(0, candidate.index)}${candidate.replacement}${text.slice(candidate.index + candidate.match.length)}`;
+    repairCount += 1;
+  }
+  return { text, repairCount };
+}
+
+function pushTechnicalTerminologyReview(issues, text) {
+  const value = String(text || '');
+  if (/(?:펌프|흡입|토출|배관|유체)/u.test(value)
+      && /유속/u.test(value)
+      && /유량/u.test(value)) {
+    issues.push(makeIssue('technical_term_consistency_review', 1, []));
+  }
+  const variants = [
+    /Trade-off/u.test(value) ? 'Trade-off' : '',
+    /trade-off/u.test(value) ? 'trade-off' : '',
+    /트레이드오프/u.test(value) ? '트레이드오프' : ''
+  ].filter(Boolean);
+  if (variants.length > 1) {
+    issues.push(makeIssue('technical_notation_consistency_review', 1, [], { variants }));
+  }
+}
+
+function pushTechnicalScopeAmbiguityReview(issues, text) {
+  const sentences = splitSentences(String(text || ''));
+  const ordinals = [];
+  sentences.forEach((sentence, index) => {
+    const value = stripProtectedQuotedText(sentence);
+    const agingScope = /부품(?:의)?\s*(?:노화|열화)(?:가|를)?\s*가능하도록[^.!?。！？\n]{0,80}(?:시험용\s*)?(?:F\/W|펌웨어)/iu.test(value);
+    const reportScope = /(?:119|긴급\s*신고)[^.!?。！？\n]{0,80}(?:문자|전화)[^.!?。！？\n]{0,80}신고(?:가)?\s*이루어지도록\s*연동/u.test(value);
+    if (agingScope || reportScope) ordinals.push(index + 1);
+  });
+  if (ordinals.length) {
+    issues.push(makeIssue('technical_scope_ambiguity_review', ordinals.length, ordinals));
+  }
+}
+
 function pushSentenceIssue(issues, text, code, predicate) {
   const sentences = splitSentences(text);
   const ordinals = [];
@@ -2204,20 +2410,58 @@ function mergeIssueComparison(sourceIssues, outputIssues) {
     const outputItem = after.get(code);
     const beforeCount = sourceItem?.count || 0;
     const afterCount = outputItem?.count || 0;
+    const familyComparison = code === 'formal_register_residual'
+      ? compareIssueFamilies(sourceItem, outputItem)
+      : null;
     return {
       code,
       beforeCount,
       afterCount,
-      introducedCount: Math.max(0, afterCount - beforeCount),
-      resolvedCount: Math.max(0, beforeCount - afterCount),
+      introducedCount: familyComparison?.introducedCount ?? Math.max(0, afterCount - beforeCount),
+      resolvedCount: familyComparison?.resolvedCount ?? Math.max(0, beforeCount - afterCount),
       weight: definition.weight || 1,
       repairable: definition.repairable === true,
       deterministicSafe: definition.deterministicSafe === true,
       message: definition.message || '한국어 표현을 확인해 주세요.',
-      sentenceOrdinals: outputItem?.sentenceOrdinals || [],
-      details: outputItem?.details || null
+      sentenceOrdinals: familyComparison?.introducedSentenceOrdinals?.length
+        ? familyComparison.introducedSentenceOrdinals
+        : (outputItem?.sentenceOrdinals || []),
+      details: familyComparison
+        ? { ...(outputItem?.details || {}), comparison: familyComparison }
+        : (outputItem?.details || null)
     };
   });
+}
+
+function compareIssueFamilies(sourceItem, outputItem) {
+  const before = sourceItem?.details?.familyCounts || {};
+  const after = outputItem?.details?.familyCounts || {};
+  const families = [...new Set([...Object.keys(before), ...Object.keys(after)])];
+  const introducedFamilies = {};
+  const resolvedFamilies = {};
+  const introducedSentenceOrdinals = [];
+  let introducedCount = 0;
+  let resolvedCount = 0;
+  for (const family of families) {
+    const delta = Number(after[family] || 0) - Number(before[family] || 0);
+    if (delta > 0) {
+      introducedFamilies[family] = delta;
+      introducedCount += delta;
+      introducedSentenceOrdinals.push(
+        ...((outputItem?.details?.familyOrdinals?.[family] || []).slice(0, delta))
+      );
+    } else if (delta < 0) {
+      resolvedFamilies[family] = Math.abs(delta);
+      resolvedCount += Math.abs(delta);
+    }
+  }
+  return {
+    introducedCount,
+    resolvedCount,
+    introducedFamilies,
+    resolvedFamilies,
+    introducedSentenceOrdinals: [...new Set(introducedSentenceOrdinals)].sort((a, b) => a - b)
+  };
 }
 
 function mergeSameCode(items) {

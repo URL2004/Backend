@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 9;
+const VERSION = 10;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -233,6 +233,18 @@ const SEMANTIC_RELATION_RULES = Object.freeze([
     source: /(?:\d+\s*인\s*)?팀에서(?!는)/u,
     output: /(?:\d+\s*인\s*)?팀에서는/u,
     retained: /(?:\d+\s*인\s*)?팀에서(?!는)/u
+  },
+  {
+    family: 'requirement_translation_changed_to_insertion',
+    source: /요구(?:\s*사항)?(?:을|를)[^.!?。！？\n]{0,100}(?:사양|구조|설계|산출물)(?:로|으로)\s*(?:구체화|변환|전환|정의)/u,
+    output: /(?:사양|구조|설계|산출물)[^.!?。！？\n]{0,90}(?:에|에는)\s*[^.!?。！？\n]{0,50}요구(?:\s*사항)?(?:을|를)\s*(?:구체적으로\s*)?(?:반영|적용)/u,
+    retained: /요구(?:\s*사항)?(?:을|를)[^.!?。！？\n]{0,100}(?:사양|구조|설계|산출물)(?:로|으로)\s*(?:구체화|변환|전환|정의)/u
+  },
+  {
+    family: 'competency_claim_weakened_to_foundation',
+    source: /(?:역량|능력)(?:을|를)\s*(?:길렀|기르|강화|높였|키웠|갖췄|갖추)/u,
+    output: /(?:이해|파악)[^.!?。！？\n]{0,70}(?:기반|토대)(?:을|도)?\s*(?:다졌|마련|쌓았)/u,
+    retained: /(?:역량|능력)(?:을|를)\s*(?:길렀|기르|강화|높였|키웠|갖췄|갖추)/u
   }
 ]);
 
@@ -316,6 +328,12 @@ function detectSemanticRelationShifts(source, output) {
       if (shifted) add('responsibility_object_changed_to_outcome', sourceIndex + 1);
     }
 
+    if (hasImportanceClaim(sourceSentence)) {
+      const shifted = hasObligationClaim(alignedText)
+        && !hasImportanceClaim(alignedText);
+      if (shifted) add('importance_hardened_to_obligation', sourceIndex + 1);
+    }
+
     const sourceConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(sourceSentence);
     const sourceSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(sourceSentence);
     const outputSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(alignedText);
@@ -351,6 +369,16 @@ function hasMainPossibilityClaim(value) {
 
 function hasPossibilityMarker(value) {
   return /(?:수\s*있|가능|예상|전망|것으로\s*보|듯하|수도\s*있)/u.test(String(value || ''));
+}
+
+function hasImportanceClaim(value) {
+  return /(?:것|점|태도|과정|방법|역할|기준|원칙)(?:은|는|이|가)?\s*중요(?:하|했|한|함|합|합니다|하다)/u
+    .test(String(value || ''));
+}
+
+function hasObligationClaim(value) {
+  return /(?:해야|하여야|해야만|할\s*필요가\s*있|필수(?:적)?(?:이|이었|입니다|이다))/u
+    .test(String(value || ''));
 }
 
 function hasGoalFrame(value) {

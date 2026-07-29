@@ -3,7 +3,7 @@
 const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
 
-const VERSION = 9;
+const VERSION = 10;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -157,12 +157,18 @@ function auditAndSanitizeSource(value) {
   // UI·작성 지시처럼 본문이 아닌 행만 제외한 상태를 별도로 남긴다.
   // 모델 입력용 레이아웃 복구가 잘못되더라도 최종 감사가 이미 손상된
   // 텍스트를 원문으로 오인하지 않도록 하는 무결성 기준선이다.
-  const integrityText = kept.join('\n').replace(/\n{3,}/gu, '\n\n').trim();
+  const joinedIntegrityText = kept.join('\n').trim();
+  const creativeLineLayout = looksLikeCreativeLineLayout(joinedIntegrityText);
+  const integrityText = creativeLineLayout
+    ? joinedIntegrityText
+    : joinedIntegrityText.replace(/\n{3,}/gu, '\n\n');
   const layoutRepair = repairSourceLayoutArtifacts(integrityText);
   for (const change of layoutRepair.changes) {
     notices.push(issue(change.code, change.lineOrdinal, change.action || 'repaired', change.message));
   }
-  const sanitized = layoutRepair.text.replace(/\n{3,}/gu, '\n\n').trim();
+  const sanitized = (creativeLineLayout
+    ? layoutRepair.text
+    : layoutRepair.text.replace(/\n{3,}/gu, '\n\n')).trim();
   const usable = sanitized || original;
   if (!sanitized) {
     const fallbackNotices = [...removals, ...notices].map(item => ({ ...item, action: 'notice' }));
@@ -222,13 +228,39 @@ function auditAndSanitizeSource(value) {
 function repairSourceLayoutArtifacts(value) {
   const before = String(value || '').replace(/\r\n?/gu, '\n');
   const heading = repairInlineHeadingBoundaries(before);
-  const wrapped = repairForcedProseWraps(heading.text);
+  const wrapped = looksLikeCreativeLineLayout(heading.text)
+    ? { text: heading.text, changes: [] }
+    : repairForcedProseWraps(heading.text);
   const sentenceSpacing = repairMissingSentenceSpacing(wrapped.text);
   return {
     text: sentenceSpacing.text,
     changed: sentenceSpacing.text !== before,
     changes: [...heading.changes, ...wrapped.changes, ...sentenceSpacing.changes]
   };
+}
+
+function looksLikeCreativeLineLayout(value) {
+  const text = String(value || '').replace(/\r\n?/gu, '\n');
+  if (/^\s*(?:`{3,}|~{3,})/mu.test(text)) return false;
+  const lines = text.split('\n');
+  const nonEmpty = lines.map(line => line.trim()).filter(Boolean);
+  const blankCount = lines.length - nonEmpty.length;
+  if (nonEmpty.length < 8 || blankCount < 2) return false;
+  const lengths = nonEmpty.map(line => [...line].length).sort((a, b) => a - b);
+  const medianLength = lengths[Math.floor(lengths.length / 2)] || 0;
+  const shortRatio = lengths.filter(length => length <= 42).length / nonEmpty.length;
+  const longLineCount = lengths.filter(length => length >= 80).length;
+  const terminalRatio = nonEmpty.filter(line => /[.!?。！？][”’"'」』》〉)\]]*$/u.test(line)).length / nonEmpty.length;
+  const structuralRatio = nonEmpty.filter(line => (
+    /^(?:#{1,6}\s+|[-*+•▪◦·●○■□◆◇▶▷※]\s+|\d{1,3}[.)]\s+|[①-⑳]\s+|제\s*\d+\s*(?:장|절|항|조))/u.test(line)
+    || /\t/u.test(line)
+    || /^\|.*\|$/u.test(line)
+  )).length / nonEmpty.length;
+  return shortRatio >= 0.72
+    && medianLength <= 32
+    && terminalRatio <= 0.35
+    && structuralRatio <= 0.2
+    && longLineCount <= 1;
 }
 
 function extractQuotedRewritePayload(value) {
@@ -818,6 +850,7 @@ module.exports = {
   extractQuotedRewritePayload,
   extractDocumentQuoteWrapper,
   repairSourceLayoutArtifacts,
+  looksLikeCreativeLineLayout,
   repairInlineHeadingBoundaries,
   splitNumberedDashHeadingBody,
   splitNumberedFiniteHeadingBody,

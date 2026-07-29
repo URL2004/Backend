@@ -7,12 +7,13 @@ const {
   endingHistogram: sharedEndingHistogram
 } = require('../engine/endingStyle');
 
-const VERSION = 3;
+const VERSION = 4;
 const STYLES = Object.freeze(['plain', 'polite', 'haeyo', 'nominal']);
 
 function auditEndingStyle(source, output, documentProfile = null) {
   const profile = profileName(documentProfile);
   const compactRecordStyle = ['clinical_record', 'student_record_teacher'].includes(profile);
+  const structuredNominalMemo = isStructuredNominalMemo(documentProfile);
   const sourceSections = splitSections(source);
   const outputSections = splitSections(output);
   const sections = [];
@@ -20,8 +21,9 @@ function auditEndingStyle(source, output, documentProfile = null) {
   for (let index = 0; index < sourceSections.length; index += 1) {
     const before = sourceSections[index];
     const after = outputSections[index] || { heading: '', body: '' };
-    const sourceSentences = eligibleSentences(before.body, { includeListBodies: compactRecordStyle });
-    const outputSentences = eligibleSentences(after.body, { includeListBodies: compactRecordStyle });
+    const includeListBodies = compactRecordStyle || structuredNominalMemo;
+    const sourceSentences = eligibleSentences(before.body, { includeListBodies });
+    const outputSentences = eligibleSentences(after.body, { includeListBodies });
     const sourceHistogram = endingHistogram(sourceSentences);
     const outputHistogram = endingHistogram(outputSentences);
     const sourceRecognized = styleTotal(sourceHistogram);
@@ -29,8 +31,11 @@ function auditEndingStyle(source, output, documentProfile = null) {
     const dominantRatio = sourceRecognized ? sourceHistogram[dominant] / sourceRecognized : 0;
     let introducedOtherCount = 0;
     const introducedStyles = [];
+    const nominalMemoSection = structuredNominalMemo && dominant === 'nominal';
     const enoughEvidence = compactRecordStyle
       ? sourceSentences.length >= 3 && sourceRecognized >= 2 && dominantRatio >= 0.66
+      : nominalMemoSection
+        ? sourceSentences.length >= 3 && sourceRecognized >= 2 && dominantRatio >= 0.75
       : sourceSentences.length >= 6 && sourceRecognized >= 6 && dominantRatio >= 0.75;
     if (enoughEvidence) {
       for (const style of STYLES) {
@@ -41,7 +46,7 @@ function auditEndingStyle(source, output, documentProfile = null) {
         introducedStyles.push({ style, count: introduced });
       }
     }
-    const issue = introducedOtherCount >= (compactRecordStyle ? 1 : 2);
+    const issue = introducedOtherCount >= (compactRecordStyle || nominalMemoSection ? 1 : 2);
     const record = {
       index,
       heading: before.heading || `section_${index + 1}`,
@@ -52,6 +57,7 @@ function auditEndingStyle(source, output, documentProfile = null) {
       outputHistogram,
       dominantStyle: dominantRatio >= 0.75 ? dominant : '',
       dominantRatio: round4(dominantRatio),
+      structuredNominalMemo,
       introducedOtherCount,
       introducedStyles,
       issue
@@ -165,6 +171,24 @@ function profileName(documentProfile) {
   return String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
 }
 
+/**
+ * 번호 절과 라벨 행으로 구성된 강의·기획 요약은 일반 보고서보다 문장이
+ * 짧다. 이 형식에서 원문의 `~함` 종결을 일부만 평서문으로 바꾸면 한 절에
+ * 6문장이 되지 않아 기존 감사가 누락했다. 보고서 전체가 아니라 구조
+ * 판정기가 sectioned + label_heavy로 확인한 경우에만 짧은 명사형 기준을
+ * 적용해 일반 산문이나 원래 혼합된 보고서를 건드리지 않는다.
+ */
+function isStructuredNominalMemo(documentProfile) {
+  const profile = profileName(documentProfile);
+  if (profile !== 'report_assignment') return false;
+  const formatProfile = documentProfile && typeof documentProfile === 'object'
+    ? documentProfile.formatProfile
+    : null;
+  const flags = new Set(Array.isArray(formatProfile?.flags) ? formatProfile.flags : []);
+  return flags.has('sectioned')
+    && (flags.has('label_heavy') || String(formatProfile?.primary || '') === 'label_heavy');
+}
+
 function endingHistogram(sentences) {
   return sharedEndingHistogram(sentences);
 }
@@ -215,57 +239,87 @@ function restoreIntroducedEndingSentences(source, outputText, audit = null, docu
     return endingRestoreResult(before, false, [], report, 'not_applicable');
   }
 
-  const introducedStyles = new Set((report.issues || [])
-    .flatMap(section => section.introducedStyles || [])
-    .filter(item => Number(item?.count || 0) > 0)
-    .map(item => String(item.style || ''))
-    .filter(Boolean));
-  if (!introducedStyles.size) {
-    return endingRestoreResult(before, false, [], report, 'no_introduced_style');
-  }
-
   const sourceSentenceKeys = new Set(splitSentenceSpans(String(source || ''))
     .map(span => normalizedSentenceKey(span.text))
     .filter(Boolean));
   const maximum = Math.min(8, Math.max(1, Number(report.introducedOtherCount) || 1));
-  const ordinals = [];
-  const outputSpans = splitSentenceSpans(before);
-  for (let index = 0; index < outputSpans.length && ordinals.length < maximum; index += 1) {
-    const span = outputSpans[index];
-    const style = classifySentenceEnding(span.text);
-    if (!introducedStyles.has(style)) continue;
-    if (sourceSentenceKeys.has(normalizedSentenceKey(span.text))) continue;
-    const lineStart = before.lastIndexOf('\n', Math.max(0, span.start - 1)) + 1;
-    const nextBreak = before.indexOf('\n', span.end);
-    const lineEnd = nextBreak >= 0 ? nextBreak : before.length;
-    if (isProtectedLine(before.slice(lineStart, lineEnd).trim())) continue;
-    ordinals.push(index + 1);
-  }
-  if (!ordinals.length) {
-    return endingRestoreResult(before, false, [], report, 'no_safe_target');
+  let currentText = before;
+  let currentAudit = report;
+  let remainingBudget = maximum;
+  const restoredOutputOrdinals = [];
+  const restoredSourceOrdinals = [];
+  let lastReason = 'no_safe_target';
+
+  // 한 번에 여러 후보를 넘겨도 제목·라벨이 문장 span에 함께 붙어 있으면
+  // 정렬기가 가장 확실한 한 문장만 고를 수 있다. 감사가 실제로 개선된
+  // 동안에만 남은 신규 종결을 다시 계산해 최대 예산 안에서 반복 복원한다.
+  while (remainingBudget > 0 && currentAudit?.pass === false) {
+    const introducedStyles = new Set((currentAudit.issues || [])
+      .flatMap(section => section.introducedStyles || [])
+      .filter(item => Number(item?.count || 0) > 0)
+      .map(item => String(item.style || ''))
+      .filter(Boolean));
+    if (!introducedStyles.size) {
+      lastReason = 'no_introduced_style';
+      break;
+    }
+
+    const ordinals = [];
+    const outputSpans = splitSentenceSpans(currentText);
+    for (let index = 0; index < outputSpans.length && ordinals.length < remainingBudget; index += 1) {
+      const span = outputSpans[index];
+      const style = classifySentenceEnding(span.text);
+      if (!introducedStyles.has(style)) continue;
+      if (sourceSentenceKeys.has(normalizedSentenceKey(span.text))) continue;
+      // 문장 분리기가 번호 제목과 바로 뒤 첫 본문을 한 span으로 반환할 수
+      // 있다. span 시작 행(제목)이 아니라 실제 종결이 있는 마지막 행으로
+      // 보호 여부를 판단해야 편집 가능한 라벨 본문을 놓치지 않는다.
+      const targetLine = String(span.text || '').split(/\r?\n/u)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .at(-1) || '';
+      if (isProtectedLine(targetLine)) continue;
+      ordinals.push(index + 1);
+    }
+    if (!ordinals.length) {
+      lastReason = 'no_safe_target';
+      break;
+    }
+
+    const restored = restoreSourceSentenceOrdinals(source, currentText, ordinals, {
+      maxRestoreCount: remainingBudget,
+      minSimilarity: 0.2,
+      ordinalSpace: 'output',
+      maxOutputGroup: 3
+    });
+    if (!restored.applied) {
+      lastReason = restored.reason || 'no_safe_alignment';
+      break;
+    }
+    const afterAudit = auditEndingStyle(source, restored.text, documentProfile);
+    if (!isImproved(currentAudit, afterAudit)) {
+      lastReason = 'audit_not_improved';
+      break;
+    }
+    currentText = restored.text;
+    currentAudit = afterAudit;
+    restoredOutputOrdinals.push(...(restored.restoredSentenceOrdinals || []));
+    restoredSourceOrdinals.push(...(restored.restoredSourceSentenceOrdinals || []));
+    remainingBudget -= Math.max(1, Number(restored.restoredSentenceCount) || 0);
+    lastReason = currentAudit.pass ? 'restored' : 'restored_with_residual';
   }
 
-  const restored = restoreSourceSentenceOrdinals(source, before, ordinals, {
-    maxRestoreCount: maximum,
-    minSimilarity: 0.2,
-    ordinalSpace: 'output',
-    maxOutputGroup: 3
-  });
-  if (!restored.applied) {
-    return endingRestoreResult(before, false, [], report, restored.reason || 'no_safe_alignment');
-  }
-  const afterAudit = auditEndingStyle(source, restored.text, documentProfile);
-  if (!isImproved(report, afterAudit)) {
-    return endingRestoreResult(before, false, [], report, 'audit_not_improved');
+  if (!restoredOutputOrdinals.length) {
+    return endingRestoreResult(before, false, [], report, lastReason);
   }
   return endingRestoreResult(
-    restored.text,
+    currentText,
     true,
-    restored.restoredSentenceOrdinals || [],
-    afterAudit,
-    'restored',
+    restoredOutputOrdinals,
+    currentAudit,
+    lastReason,
     {
-      restoredSourceSentenceOrdinals: restored.restoredSourceSentenceOrdinals || []
+      restoredSourceSentenceOrdinals: restoredSourceOrdinals
     }
   );
 }
@@ -300,6 +354,7 @@ module.exports = {
   eligibleSentences,
   endingHistogram,
   endingStyle,
+  isStructuredNominalMemo,
   isImproved,
   restoreIntroducedEndingSentences
 };

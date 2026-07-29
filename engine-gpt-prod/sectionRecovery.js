@@ -337,7 +337,8 @@ function shouldEscalateRecovery(entry) {
     'risk_target_coverage_low',
     'structural_rewrite_coverage_low',
     'paragraph_rewrite_coverage_low',
-    'resume_semantic_repetition_low'
+    'resume_semantic_repetition_low',
+    'source_semantic_redundancy_low'
   ].some(code => reasons.has(code))
     || entry.report?.minimumEffectPass === false;
   if (!severe) return { eligible: false, code: 'non_critical_shortfall' };
@@ -426,6 +427,7 @@ function recoveryPriority(report) {
   if (reasons.has('substantive_carryover_high')) value += 0.4;
   if (reasons.has('risk_target_coverage_low')) value += 0.25;
   if (reasons.has('structural_rewrite_coverage_low')) value += 0.2;
+  if (reasons.has('source_semantic_redundancy_low')) value += 0.35;
   return value;
 }
 

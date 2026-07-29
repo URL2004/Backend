@@ -1,8 +1,12 @@
 'use strict';
 
-const { splitSentences, levenshteinDistance } = require('../engine/koreanText');
+const { splitSentences, splitSentenceSpans, levenshteinDistance } = require('../engine/koreanText');
+const {
+  alignedOutputCandidates,
+  sentenceSimilarity
+} = require('./sentenceAlignment');
 
-const VERSION = 1;
+const VERSION = 2;
 const MIN_CONTENT_RECALL = 0.55;
 const CLAIM_PATTERNS = Object.freeze({
   action: /(?:수행|담당|개발|분석|설계|운영|개선|협업|해결|참여|작성|구축|기획|관리|제작|조사|발표|주도|실행|근무|프로젝트)/u,
@@ -48,23 +52,23 @@ function auditResumeCoverage(source, output, documentProfile = null) {
 
 function compareClaim(claim, sourceCount, outputSentences) {
   if (!outputSentences.length) return row(claim, -1, 0, false);
-  const center = sourceCount <= 1
-    ? 0
-    : Math.round(claim.index * Math.max(0, outputSentences.length - 1) / Math.max(1, sourceCount - 1));
-  const candidateIndices = [];
-  for (let delta = -2; delta <= 2; delta += 1) {
-    const index = center + delta;
-    if (index >= 0 && index < outputSentences.length) candidateIndices.push(index);
-  }
+  const candidates = alignedOutputCandidates(
+    claim.sentence,
+    claim.index,
+    sourceCount,
+    outputSentences,
+    { window: 3, maxOutputGroup: 2 }
+  );
   let best = { index: -1, recall: 0, similarity: 0 };
-  for (const index of candidateIndices) {
-    const candidate = outputSentences[index];
-    const candidateTokens = new Set(contentTokens(candidate));
+  for (const candidate of candidates) {
+    const candidateTokens = new Set(contentTokens(candidate.text));
     const recall = claim.tokens.filter(token => candidateTokens.has(token)).length / Math.max(1, claim.tokens.length);
     const sourceNorm = normalize(claim.sentence);
-    const outputNorm = normalize(candidate);
+    const outputNorm = normalize(candidate.text);
     const similarity = 1 - (levenshteinDistance(sourceNorm, outputNorm) / Math.max(1, sourceNorm.length, outputNorm.length));
-    if (recall > best.recall || (recall === best.recall && similarity > best.similarity)) best = { index, recall, similarity };
+    if (recall > best.recall || (recall === best.recall && similarity > best.similarity)) {
+      best = { index: candidate.start, recall, similarity };
+    }
   }
   return row(claim, best.index, best.recall, best.recall >= 0.2 || best.similarity >= 0.45);
 }
@@ -121,7 +125,74 @@ function isSafeRestorationShape(source, current, candidate, omissionCount = 1) {
   if (candidateSentences < currentSentences) return false;
   if (candidateSentences > sourceSentences + 1) return false;
   if (candidateSentences - currentSentences > Math.max(1, Number(omissionCount) || 1) + 1) return false;
-  return paragraphCount(before) === paragraphCount(now) && paragraphCount(now) === paragraphCount(after);
+  // 변환 결과가 가독성을 위해 원문 문단을 이미 나눴더라도, 국소 복원이
+  // 현재 결과의 문단 수를 더 바꾸지만 않으면 허용한다.
+  return paragraphCount(now) === paragraphCount(after);
+}
+
+/**
+ * 모델 수리가 실패해도 앞·뒤 문장이 모두 확실히 정렬되는 핵심 주장만
+ * 원래 위치에 원문 그대로 되돌린다. 새로운 문장을 생성하지 않으며,
+ * 문단 경계를 넘거나 한쪽 앵커만 있는 경우에는 복원하지 않는다.
+ */
+function restoreMissingClaimsLocally({
+  source = '',
+  currentOutput = '',
+  audit = null,
+  maxRestoreCount = 2
+} = {}) {
+  const before = String(currentOutput || '');
+  if (!before || audit?.applicable !== true || audit?.pass === true) {
+    return { text: before, applied: false, restoredCount: 0, restoredSourceOrdinals: [] };
+  }
+  const prioritized = [...(audit.omissions || [])]
+    .filter(item => Array.isArray(item.types)
+      && item.types.some(type => ['job_link', 'competency', 'action'].includes(type)))
+    .filter(item => String(item.sourceSentence || '').trim().length >= 12)
+    .sort((left, right) => claimPriority(right) - claimPriority(left)
+      || Number(left.sourceIndex || 0) - Number(right.sourceIndex || 0))
+    .slice(0, Math.max(1, Number(maxRestoreCount) || 2));
+  let text = before;
+  const restoredSourceOrdinals = [];
+  for (const omission of prioritized) {
+    const sentence = String(omission.sourceSentence || '').trim();
+    if (!sentence || normalize(text).includes(normalize(sentence))) continue;
+    const spans = splitSentenceSpans(text);
+    const previous = bestAnchorSpan(omission.previousContext, spans);
+    const next = bestAnchorSpan(omission.nextContext, spans);
+    if (!previous || !next
+        || previous.score < 0.5
+        || next.score < 0.5
+        || previous.index >= next.index
+        || next.index - previous.index > 3) continue;
+    text = `${text.slice(0, next.span.start)}${sentence} ${text.slice(next.span.start)}`;
+    restoredSourceOrdinals.push(Number(omission.sourceOrdinal || Number(omission.sourceIndex || 0) + 1));
+  }
+  return {
+    text,
+    applied: restoredSourceOrdinals.length > 0,
+    restoredCount: restoredSourceOrdinals.length,
+    restoredSourceOrdinals
+  };
+}
+
+function bestAnchorSpan(value, spans) {
+  const anchor = String(value || '').trim();
+  if (!anchor || !spans.length) return null;
+  let best = null;
+  spans.forEach((span, index) => {
+    const score = sentenceSimilarity(anchor, span.text);
+    if (!best || score > best.score) best = { index, span, score };
+  });
+  return best;
+}
+
+function claimPriority(item) {
+  const types = new Set(item?.types || []);
+  if (types.has('job_link')) return 3;
+  if (types.has('competency')) return 2;
+  if (types.has('action')) return 1;
+  return 0;
 }
 
 function paragraphCount(value) {
@@ -155,5 +226,6 @@ module.exports = {
   contentTokens,
   claimTypes,
   isImproved,
-  isSafeRestorationShape
+  isSafeRestorationShape,
+  restoreMissingClaimsLocally
 };

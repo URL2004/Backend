@@ -6,14 +6,15 @@ const { splitLogicalProseParagraphs } = require('./proseParagraphs');
 const { alignSourceSentence } = require('./sentenceAlignment');
 const resumeRepetitionAudit = require('./resumeRepetitionAudit');
 const commercialSignals = require('./commercialSignals');
+const sourceRedundancy = require('./sourceRedundancy');
 
 const CONNECTOR_START = /^(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|즉|첫째|둘째|셋째|하지만|그러나|반면|결국)(?=$|[\s,])/u;
 const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|습니다)|필요가\s*있(?:다|습니다)|중요(?:하|한)\s*(?:의미|역할|요인)?|의미를\s*가진(?:다|다고)|긍정적인\s*영향|체계적으로\s*(?:정리|분석|관리|운영)|기반으로\s*(?:한|하여|한다|합니다)|핵심\s*인프라|전략적\s*이점)/u;
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 12;
-const POLICY_VERSION = 'perceived-v2.5.11';
+const PLAN_VERSION = 13;
+const POLICY_VERSION = 'perceived-v2.5.13';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -85,7 +86,8 @@ function buildHumanizationPlan(source, {
       requiredStructuralChangedSentenceCount: 0,
       minRemediationCoverage: 0,
       rhetoricalRemediationPlan: { applicable: false, targetCount: 0, categoryCount: 0, categories: [] },
-      resumeRepetitionPlan: { version: resumeRepetitionAudit.VERSION, applicable: false }
+      resumeRepetitionPlan: { version: resumeRepetitionAudit.VERSION, applicable: false },
+      sourceRedundancyPlan: { version: sourceRedundancy.VERSION, applicable: false }
     };
   }
 
@@ -94,11 +96,15 @@ function buildHumanizationPlan(source, {
   const profile = String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
   const rhetoricalRemediationPlan = buildRemediationPlan(text);
   const resumeRepetitionPlan = resumeRepetitionAudit.buildResumeRepetitionPlan(text, documentProfile);
+  const sourceRedundancyPlan = sourceRedundancy.buildSourceRedundancyPlan(text, documentProfile);
   const commercialTargetPlan = commercialSignals.detectCommercialSentenceTargets(sentences, documentProfile);
   const target = mergeCommercialTargets(
-    mergeResumeRepetitionTargets(
-      mergeRemediationTargets(detectTargetSentences(sentences), rhetoricalRemediationPlan),
-      resumeRepetitionPlan
+    mergeSourceRedundancyTargets(
+      mergeResumeRepetitionTargets(
+        mergeRemediationTargets(detectTargetSentences(sentences), rhetoricalRemediationPlan),
+        resumeRepetitionPlan
+      ),
+      sourceRedundancyPlan
     ),
     commercialTargetPlan
   );
@@ -228,6 +234,7 @@ function buildHumanizationPlan(source, {
     minRemediationCoverage: round4(minRemediationCoverage),
     rhetoricalRemediationPlan,
     resumeRepetitionPlan,
+    sourceRedundancyPlan,
     commercialTargetSentenceCount: Number(commercialTargetPlan.indices?.length || 0),
     commercialTargetReasonCounts: commercialTargetPlan.reasonCounts || {}
   };
@@ -309,6 +316,13 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   if (resumeRepetition.applicable === true && resumeRepetition.pass !== true) {
     reasons.push('resume_semantic_repetition_low');
   }
+  const sourceRedundancyReport = sourceRedundancy.compareSourceRedundancy(
+    output,
+    plan.sourceRedundancyPlan || null
+  );
+  if (sourceRedundancyReport.applicable === true && sourceRedundancyReport.pass !== true) {
+    reasons.push('source_semantic_redundancy_low');
+  }
   if (metrics.trivialOnly) reasons.push('punctuation_or_surface_only');
   const hardMinimumEdit = Number(plan.hardMinimumSubstantiveEditRatio ?? Math.max(
     HARD_DELIVERY_EDIT_FLOOR,
@@ -355,6 +369,7 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       untouchedTargetParagraphIndices,
       remediation,
       resumeRepetition,
+      sourceRedundancy: sourceRedundancyReport,
       targetDepthMet,
       aboveTargetRange,
       minimumEffectPass: blockingReasons.length === 0,
@@ -395,12 +410,20 @@ function humanizationCandidateScore(report) {
     + (paragraphProgress * 0.10)
     + (remediationProgress * 0.07)
     + (carryoverProgress * 0.07);
-  if (metrics.resumeRepetition?.applicable !== true) return round4(baseScore);
+  let score = baseScore;
+  if (metrics.sourceRedundancy?.applicable === true) {
+    const redundancyProgress = progress(
+      metrics.sourceRedundancy.achievedReduction,
+      metrics.sourceRedundancy.requiredReduction
+    );
+    score = (score * 0.94) + (redundancyProgress * 0.06);
+  }
+  if (metrics.resumeRepetition?.applicable !== true) return round4(score);
   const repetitionProgress = progress(
     metrics.resumeRepetition.achievedReduction,
     metrics.resumeRepetition.requiredReduction
   );
-  return round4((baseScore * 0.90) + (repetitionProgress * 0.10));
+  return round4((score * 0.90) + (repetitionProgress * 0.10));
 }
 
 function isBetterHumanizationCandidate(current, candidate) {
@@ -408,10 +431,6 @@ function isBetterHumanizationCandidate(current, candidate) {
   if (candidate.pass === true && current?.pass !== true) return true;
   const currentScore = humanizationCandidateScore(current);
   const candidateScore = humanizationCandidateScore(candidate);
-  // 두 번의 국소 회복이 누적될 수 있도록 안전한 2.5%p 개선부터 중간
-  // 후보로 채택한다. 이전 4%p 문턱은 각 후보가 의미 있게 좋아졌어도 둘 다
-  // 버려져 최종 결과가 원문과 거의 같은 상태로 남는 원인이었다.
-  if (candidateScore >= currentScore + 0.025) return true;
   const currentEdit = finite(current?.metrics?.substantiveEditRatio);
   const candidateEdit = finite(candidate?.metrics?.substantiveEditRatio);
   const currentSentences = finite(current?.metrics?.substantiveChangedSentenceCount);
@@ -424,10 +443,24 @@ function isBetterHumanizationCandidate(current, candidate) {
   const candidateParagraphs = finite(candidate?.metrics?.targetChangedParagraphCount);
   const currentRepetition = finite(current?.metrics?.resumeRepetition?.achievedReduction);
   const candidateRepetition = finite(candidate?.metrics?.resumeRepetition?.achievedReduction);
+  const currentSourceRedundancy = finite(current?.metrics?.sourceRedundancy?.achievedReduction);
+  const candidateSourceRedundancy = finite(candidate?.metrics?.sourceRedundancy?.achievedReduction);
+  const currentTargets = finite(current?.metrics?.targetChangedCount);
+  const candidateTargets = finite(candidate?.metrics?.targetChangedCount);
+  // 안전 감사를 통과한 국소 후보가 여러 번 누적될 수 있도록 1.5%p의
+  // 순개선부터 채택한다. 단, 대상·문장·구조·문단 지표를 맞바꾸는 후보는
+  // 허용하지 않아 변화량만 커지고 실제 품질은 떨어지는 회귀를 막는다.
+  const noCoreRegression = candidateSentences >= currentSentences
+    && candidateTargets >= currentTargets
+    && candidateStructural >= currentStructural
+    && candidateParagraphs >= currentParagraphs
+    && candidateRemediation + 1e-9 >= currentRemediation;
+  if (candidateScore >= currentScore + 0.015 && noCoreRegression) return true;
   if (candidate.metrics?.targetDepthMet === true
       && current?.metrics?.targetDepthMet !== true
       && candidateEdit >= currentEdit - 0.002) return true;
   if (candidateRepetition > currentRepetition && candidateEdit >= currentEdit - 0.005) return true;
+  if (candidateSourceRedundancy > currentSourceRedundancy && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateParagraphs > currentParagraphs && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateStructural > currentStructural && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateRemediation >= currentRemediation + 0.25 && candidateEdit >= currentEdit - 0.005) return true;
@@ -524,7 +557,8 @@ function buildHumanizationPromptBlock(plan) {
     commercial_call_to_action: '반복되는 행동 요청',
     commercial_absolute_claim: '절대적 서비스 주장',
     commercial_health_claim: '효능 단정 표현',
-    commercial_offer_frame: '혜택 나열 중심 문장'
+    commercial_offer_frame: '혜택 나열 중심 문장',
+    source_semantic_redundancy: '원문 내 연속 설명 중복'
   };
   const reasons = Object.entries(plan.targetReasonCounts || {})
     .filter(([, count]) => count > 0)
@@ -559,6 +593,9 @@ function buildHumanizationPromptBlock(plan) {
       : '',
     plan.resumeRepetitionPlan?.applicable === true
       ? '지원서에서 같은 지원 전제·진로 고민·탐색 의도가 여러 문단에 반복되면 동의어만 바꾸지 않는다. 첫 문단에는 지원 동기를 온전히 두고, 뒤 문단에서는 같은 전제를 짧게 받으면서 각 문단에 원래 있던 어려움·확인할 내용·실행 계획을 앞세운다. SOURCE에 없는 학교 프로그램, 관심 전공, 과거 경험은 만들지 않는다.'
+      : '',
+    plan.sourceRedundancyPlan?.applicable === true
+      ? `원문에 같은 설명이 연속해서 되풀이된 구간 ${plan.sourceRedundancyPlan.repeatedRunCount}곳이 있다. 후반 반복 구간을 앞 구간과 동의어만 바꿔 다시 쓰지 말고, 원문에 있는 고유 사실·수치·전문 용어는 모두 남기면서 각 문단의 기능이 겹치지 않도록 한 번의 자연스러운 설명 흐름으로 재구성한다. 결정론적으로 문장을 삭제하지 말고 문맥 안에서 중복을 해소한다.`
       : '',
     Number(plan.commercialTargetSentenceCount || 0) > 0
       ? '후기·광고 혼합 글에서는 가격·할인·무료 제공·서비스 범위 같은 사실은 그대로 두고, 반복 감탄·과도한 추천·혜택 나열·행동 요청의 문장 구조를 직접적이고 덜 정형적으로 다시 쓴다. 원문 주장 강도를 임의로 보장이나 조건부 주장으로 바꾸지 않는다.'
@@ -858,6 +895,21 @@ function mergeResumeRepetitionTargets(target, repetitionPlan) {
   return { indices: [...indices].sort((a, b) => a - b), reasonCounts };
 }
 
+function mergeSourceRedundancyTargets(target, redundancyPlan) {
+  if (redundancyPlan?.applicable !== true) return target;
+  const indices = new Set((target?.indices || []).filter(Number.isInteger));
+  for (const index of redundancyPlan.targetIndices || []) {
+    if (Number.isInteger(index) && index >= 0) indices.add(index);
+  }
+  return {
+    indices: [...indices].sort((left, right) => left - right),
+    reasonCounts: {
+      ...(target?.reasonCounts || {}),
+      source_semantic_redundancy: Number(redundancyPlan.targetSentenceCount || 0)
+    }
+  };
+}
+
 function mergeCommercialTargets(target, commercialPlan) {
   if (commercialPlan?.applicable !== true) return target;
   const indices = new Set((target?.indices || []).filter(Number.isInteger));
@@ -1039,11 +1091,13 @@ function publicPlan(plan) {
     targetIndices: _targetIndices,
     targetParagraphIndices: _targetParagraphIndices,
     resumeRepetitionPlan,
+    sourceRedundancyPlan,
     ...safe
   } = plan || {};
   return {
     ...safe,
-    resumeRepetitionPlan: resumeRepetitionAudit.publicResumeRepetitionPlan(resumeRepetitionPlan)
+    resumeRepetitionPlan: resumeRepetitionAudit.publicResumeRepetitionPlan(resumeRepetitionPlan),
+    sourceRedundancyPlan: sourceRedundancy.publicSourceRedundancyPlan(sourceRedundancyPlan)
   };
 }
 

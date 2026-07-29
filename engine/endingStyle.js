@@ -7,13 +7,23 @@
 function detectRegister(value) {
   const text = String(value || '').replace(/\r\n?/gu, '\n');
   const END = `(?=(?:[.!?…。！？]+["”'’」』)\\]]*\\s*|["”'’」』)\\]]*(?:\\n|$)))`;
-  const polite = matchCount(text, new RegExp(`(?:니다|니까)${END}`, 'gmu'));
+  // `아니다·지니다·다니다`의 사전형 `니다`는 존댓말 어미가 아니다.
+  // 공통 `니다` 탐지에서 이 세 사전형을 빼지 않으면 plain과 polite가
+  // 동시에 잡혀 문체가 unknown으로 내려간다.
+  const lexicalPlainNida = matchCount(
+    text,
+    new RegExp(`(?:아니다|지니다|다니다)${END}`, 'gmu')
+  );
+  const polite = Math.max(
+    0,
+    matchCount(text, new RegExp(`(?:니다|니까)${END}`, 'gmu')) - lexicalPlainNida
+  );
   const haeyo = matchCount(text, new RegExp(
     `(?:어요|아요|해요|돼요|예요|이에요|네요|죠|지요|군요|나요|거든요|잖아요)${END}`,
     'gmu'
   ));
   const plain = matchCount(text, new RegExp(
-    `(?<![니요])(?:이?다|한다|된다|않다|없다|있다|었다|였다|진다|간다|난다|온다|본다|했다|됐다)${END}`,
+    `(?:아니다|지니다|다니다|(?<![니요])이?다|한다|된다|않다|없다|있다|었다|였다|진다|간다|난다|온다|본다|했다|됐다)${END}`,
     'gmu'
   ));
   const honorific = polite + haeyo;
@@ -28,7 +38,9 @@ function classifySentenceEnding(value, { includeNominal = true } = {}) {
     .replace(/[.!?…。！？"'”’」』】)\]]+$/gu, '')
     .trim();
   if (!text) return 'unknown';
-  if (includeNominal && /(?:함|됨|임|음)$/u.test(text)) return 'nominal';
+  // `아님`은 부정 판단을 명사형으로 끝내는 메모체 종결이다. 일반적인
+  // 사람 호칭 `~님`까지 명사형으로 세지 않도록 이 어형만 명시한다.
+  if (includeNominal && /(?:함|됨|임|음|아님)$/u.test(text)) return 'nominal';
   const register = detectRegister(text);
   return ['plain', 'polite', 'haeyo'].includes(register) ? register : 'unknown';
 }

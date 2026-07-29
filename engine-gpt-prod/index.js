@@ -49,7 +49,7 @@ const {
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.12';
+const VERSION = 'gpt-prod-v2.5.13';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -390,6 +390,7 @@ async function runEngine({
   let resumeCoverageRetryAttemptCount = 0;
   let resumeCoverageRepairCount = 0;
   let resumeCoverageRetryApplied = false;
+  let resumeCoverageDeterministicRestoreCount = 0;
   let experienceCandidateAudit = null;
   let deterministicOmissionRestoreCount = 0;
   let deterministicOmissionRestoreRejectedCount = 0;
@@ -573,7 +574,8 @@ async function runEngine({
     for (let attempt = 0; attempt < maxDepthAttempts; attempt += 1) {
       const roleRecoveryPending = (humanizationDepthReport?.reasons || []).some(reason => [
         'resume_semantic_repetition_low',
-        'paragraph_rewrite_coverage_low'
+        'paragraph_rewrite_coverage_low',
+        'source_semantic_redundancy_low'
       ].includes(reason));
       const severeNoEffect = isSevereHumanizationNoEffect(humanizationDepthReport);
       if (attempt > 0
@@ -1122,6 +1124,60 @@ async function runEngine({
         };
       }
     }
+    if (resumeCoverageAudit?.applicable === true && resumeCoverageAudit.pass !== true) {
+      const restored = resumeCoverage.restoreMissingClaimsLocally({
+        source: auditSource,
+        currentOutput: outputText,
+        audit: resumeCoverageAudit,
+        maxRestoreCount: 2
+      });
+      if (restored.applied) {
+        const candidate = restored.text;
+        const candidateCoverage = resumeCoverage.auditResumeCoverage(
+          auditSource,
+          candidate,
+          documentProfile
+        );
+        const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
+          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          : null;
+        const safeCandidate = resumeCoverage.isImproved(resumeCoverageAudit, candidateCoverage)
+          && resumeCoverage.isSafeRestorationShape(
+            auditSource,
+            outputText,
+            candidate,
+            restored.restoredCount
+          )
+          && isSafeLocalizedLanguageCandidate({
+            source: auditSource,
+            before: outputText,
+            candidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: collectRecordProtectedTerms(records),
+            currentDepth: humanizationDepthReport,
+            candidateDepth,
+            maxLocalEditRatio: 0.55,
+            maxLocalLengthRatio: 1.7,
+            allowDepthRegression: true
+          })
+          && preservesFinalStructure(
+            auditSource,
+            candidate,
+            frozen ? frozen.auditChunks : chunks,
+            chunkPlan,
+            boundaryRepair
+          );
+        if (safeCandidate) {
+          outputText = candidate;
+          resumeCoverageAudit = candidateCoverage;
+          resumeCoverageDeterministicRestoreCount = restored.restoredCount;
+          resumeCoverageRepairCount += restored.restoredCount;
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+        }
+      }
+    }
   }
 
   if (!polishStrictFailure) {
@@ -1163,8 +1219,17 @@ async function runEngine({
   if (!polishStrictFailure) {
     const semanticDecision = experienceCandidateAudit?.candidate === true
       ? { run: true, reason: 'experience_novelty_candidate' }
-      : resumeCoverageRetryApplied || (resumeCoverageAudit?.applicable && resumeCoverageAudit?.pass === false)
-      ? { run: true, reason: resumeCoverageRetryApplied ? 'resume_coverage_retry' : 'resume_coverage_residual' }
+      : resumeCoverageRetryApplied
+          || resumeCoverageDeterministicRestoreCount > 0
+          || (resumeCoverageAudit?.applicable && resumeCoverageAudit?.pass === false)
+      ? {
+          run: true,
+          reason: resumeCoverageRetryApplied
+            ? 'resume_coverage_retry'
+            : (resumeCoverageDeterministicRestoreCount > 0
+              ? 'resume_coverage_local_restore'
+              : 'resume_coverage_residual')
+        }
       : endingStyleRetryApplied || endingStyleAudit?.pass === false
       ? { run: true, reason: endingStyleRetryApplied ? 'ending_style_retry' : 'ending_style_residual' }
       : fingerprintRetryApplied || fingerprintAudit?.pass === false
@@ -2239,6 +2304,21 @@ async function runEngine({
     resumeRepetitionRequiredReduction: Number(humanizationDepthReport?.metrics?.resumeRepetition?.requiredReduction || 0),
     resumeRepetitionAchievedReduction: Number(humanizationDepthReport?.metrics?.resumeRepetition?.achievedReduction || 0),
     resumeRepetitionCoverage: Number(humanizationDepthReport?.metrics?.resumeRepetition?.coverage ?? 1),
+    sourceRedundancyAuditVersion: Number(humanizationDepthReport?.metrics?.sourceRedundancy?.version || 0),
+    sourceRedundancyApplicable: humanizationDepthReport?.metrics?.sourceRedundancy?.applicable === true,
+    sourceRedundancyPass: humanizationDepthReport?.metrics?.sourceRedundancy?.pass !== false,
+    sourceRedundancySourceSentenceCount: Number(
+      humanizationDepthReport?.metrics?.sourceRedundancy?.sourceDuplicateSentenceCount || 0
+    ),
+    sourceRedundancyOutputSentenceCount: Number(
+      humanizationDepthReport?.metrics?.sourceRedundancy?.outputDuplicateSentenceCount || 0
+    ),
+    sourceRedundancyRequiredReduction: Number(
+      humanizationDepthReport?.metrics?.sourceRedundancy?.requiredReduction || 0
+    ),
+    sourceRedundancyAchievedReduction: Number(
+      humanizationDepthReport?.metrics?.sourceRedundancy?.achievedReduction || 0
+    ),
     fingerprintAuditVersion: Number(fingerprintAudit?.version || 0),
     fingerprintPass: fingerprintAudit ? fingerprintAudit.pass === true : null,
     fingerprintIssueCodes: safeFailureCodeList(fingerprintAudit?.issueCodes),
@@ -2282,6 +2362,7 @@ async function runEngine({
     resumeCoverageRetryAttemptCount,
     resumeCoverageRepairCount,
     resumeCoverageRetryApplied,
+    resumeCoverageDeterministicRestoreCount,
     experienceCandidateVersion: Number(experienceCandidateAudit?.version || 0),
     experienceNoveltyCandidate: experienceCandidateAudit?.candidate === true,
     experienceNoveltyCandidateCount: Number(experienceCandidateAudit?.candidateCount || 0),
@@ -3607,7 +3688,6 @@ function auditGeneralSurfaceCandidate(
   const exactSentenceStructure = beforeVoice.lineBreakSensitive === true
     || beforeVoice.lineBoundaryPolicy === 'all'
     || documentProfile?.formatProfile?.flags?.some?.(flag => [
-      'questionnaire',
       'assessment_item',
       'creative_lines'
     ].includes(flag));
@@ -3724,7 +3804,7 @@ function recoveryParagraphRisk(sourceVoice, baselineVoice, candidateVoice, docum
   const exact = mode === 'polish'
     || sourceVoice?.lineBreakSensitive === true
     || sourceVoice?.lineBoundaryPolicy === 'all'
-    || ['questionnaire', 'assessment_item', 'creative_lines'].some(flag => flags.has(flag));
+    || ['assessment_item', 'creative_lines'].some(flag => flags.has(flag));
   const minimum = exact
     ? sourceCount
     : (sourceCount === 1 ? 1 : Math.max(1, Math.floor(sourceCount * 0.60)));

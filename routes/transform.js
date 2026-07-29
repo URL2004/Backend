@@ -839,6 +839,15 @@ function buildArchiveObservability(job) {
     resumeRepetitionRequiredReduction: archiveFinite(engineMeta.resumeRepetitionRequiredReduction),
     resumeRepetitionAchievedReduction: archiveFinite(engineMeta.resumeRepetitionAchievedReduction),
     resumeRepetitionCoverage: archiveFinite(engineMeta.resumeRepetitionCoverage),
+    sourceRedundancyAuditVersion: archiveFinite(engineMeta.sourceRedundancyAuditVersion),
+    sourceRedundancyApplicable: engineMeta.sourceRedundancyApplicable === true,
+    sourceRedundancyPass: typeof engineMeta.sourceRedundancyPass === 'boolean'
+      ? engineMeta.sourceRedundancyPass
+      : undefined,
+    sourceRedundancySourceSentenceCount: archiveFinite(engineMeta.sourceRedundancySourceSentenceCount),
+    sourceRedundancyOutputSentenceCount: archiveFinite(engineMeta.sourceRedundancyOutputSentenceCount),
+    sourceRedundancyRequiredReduction: archiveFinite(engineMeta.sourceRedundancyRequiredReduction),
+    sourceRedundancyAchievedReduction: archiveFinite(engineMeta.sourceRedundancyAchievedReduction),
     lengthRatio: archiveFinite(engineMeta.lengthRatio ?? result.floorReport?.metrics?.lengthRatio),
     humanizationTargetDepthMet: engineMeta.humanizationTargetDepthMet === true,
     humanizationTargetDepthGap: archiveFinite(engineMeta.humanizationTargetDepthGap),

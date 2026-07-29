@@ -290,10 +290,17 @@ function auditVoice(sourceProfile, output, {
   const boundaryCollapsed = sourcePreservedBoundaryCount >= 3
     && currentPreservedBoundaryCount < Math.ceil(sourcePreservedBoundaryCount * 0.6)
     && nonEmptyLinesCollapsed;
-  if (sourceProfile?.lineBoundaryPolicy === 'all' && lineCount(output) !== sourceProfile.lineCount) {
-    warnings.push(sourceProfile.lineBreakSensitive
-      ? warning('creative_line_structure', '창작문의 행 구조를 확인해야 해요.')
-      : warning('line_structure_changed', '원문의 제목·항목 행 또는 줄바꿈 구조가 달라졌을 수 있어요.'));
+  const exactLineCountChanged = sourceProfile?.lineBoundaryPolicy === 'all'
+    && lineCount(output) !== sourceProfile.lineCount;
+  const nonEmptyLineCountChanged = Number(sourceLayout.nonEmptyLineCount || 0)
+    !== Number(currentLayout.nonEmptyLineCount || 0);
+  if (exactLineCountChanged && sourceProfile.lineBreakSensitive) {
+    warnings.push(warning('creative_line_structure', '창작문의 행 구조를 확인해야 해요.'));
+  } else if (exactLineCountChanged && nonEmptyLineCountChanged) {
+    // 설문·항목형 문서의 비어 있지 않은 행은 구조지만, 항목 사이의 빈 줄은
+    // 읽기 편의를 위한 레이아웃이다. 총 행 수만 달라졌다는 이유로 정상적인
+    // 빈 줄 정리를 구조 훼손으로 올리지 않는다.
+    warnings.push(warning('line_structure_changed', '원문의 제목·항목 행 또는 줄바꿈 구조가 달라졌을 수 있어요.'));
   } else if (boundaryCollapsed) {
     warnings.push(warning('line_structure_changed', '원문의 의미 있는 문단·행 경계가 지나치게 합쳐졌을 수 있어요.'));
   }
@@ -407,7 +414,13 @@ function isLineBreakSensitive(text) {
 function linePolicyFor(text, documentProfile, layout, { lineBreakSensitive = false, mode = '' } = {}) {
   const context = normalizeDocumentContext(documentProfile);
   const flags = new Set(context.formatProfile?.flags || []);
-  if (lineBreakSensitive || flags.has('line_sensitive') || flags.has('questionnaire')) return 'all';
+  const questionnaire = flags.has('questionnaire')
+    || context.formatProfile?.primary === 'questionnaire';
+  if (lineBreakSensitive || (flags.has('line_sensitive') && !questionnaire)) return 'all';
+  // 질문 문구와 번호는 structureChunk가 별도 잠그고 questionnaire 감사가
+  // 개수를 확인한다. 답변 산문까지 전체 행 수로 잠그면 문장 재구성·가독성
+  // 분할이 모두 거절되므로 질문지는 구조 행 정책을 사용한다.
+  if (questionnaire) return 'structural';
   const profiles = new Set([context.profile, ...context.safetyProfiles]);
   const sensitiveProfile = [...profiles].some(profile => [
     'academic_paper',

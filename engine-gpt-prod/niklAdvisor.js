@@ -40,7 +40,7 @@ async function prepareDocumentAdvisor({
     && String(requestStrength || '').trim().toLowerCase() !== 'polish'
     && String(env.GPT_NIKL_LOCAL_RESOURCE_ENABLED || '1').trim() !== '0'
     && LOCAL_PUBLIC_LANGUAGE_PROFILES.has(profile);
-  const externalEnabled = String(env.GPT_NIKL_EXTERNAL_API_ENABLED || '0').trim() === '1'
+  const externalRequested = String(env.GPT_NIKL_EXTERNAL_API_ENABLED || '1').trim() === '1'
     && !EXTERNAL_EXCLUDED_PROFILES.has(profile);
   const context = {
     version: VERSION,
@@ -55,7 +55,7 @@ async function prepareDocumentAdvisor({
       localResourceApplied: false,
       localCandidateCount: 0,
       localErrorCount: 0,
-      externalApiEnabled: externalEnabled,
+      externalApiEnabled: false,
       externalProviderCount: 0,
       externalCandidateCount: 0,
       externalLookupCount: 0,
@@ -80,7 +80,7 @@ async function prepareDocumentAdvisor({
     }
   }
 
-  if (!externalEnabled || !source || signal?.aborted) return context;
+  if (!externalRequested || !source || signal?.aborted) return context;
 
   try {
     const client = api || loadOfficialApi();
@@ -88,6 +88,7 @@ async function prepareDocumentAdvisor({
     const providers = selectedProviders(client.getApiStatus(), env);
     context.meta.externalProviderCount = providers.length;
     if (!providers.length) return context;
+    context.meta.externalApiEnabled = true;
 
     const max = clampInteger(env.GPT_NIKL_API_LOOKUP_MAX, 0, 2, DEFAULT_LOOKUP_MAX);
     const candidates = selectCandidates(source, protectedTerms, { max });

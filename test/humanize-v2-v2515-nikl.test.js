@@ -401,3 +401,20 @@ test('외부 API 실패는 결과 차단 없이 익명 집계만 남긴다', asy
   assert.equal(meta.externalTimeoutCount, 1);
   assert.equal(advisor.buildPromptHints(context, '회로 설계를 검토했다.'), '');
 });
+
+test('외부 API 기본값은 활성 요청이지만 키가 없으면 실제 활성화하지 않는다', async () => {
+  const context = await advisor.prepareDocumentAdvisor({
+    text: '회로 설계를 검토했다.',
+    protectedTerms: ['회로 설계'],
+    documentProfile: { profile: 'resume_application' },
+    includeLocal: false,
+    api: {
+      getApiStatus: () => ({ keys: { stdict: false, opendict: false, term: false } })
+    },
+    env: {}
+  });
+  const meta = advisor.compactMeta(context);
+  assert.equal(meta.externalApiEnabled, false);
+  assert.equal(meta.externalProviderCount, 0);
+  assert.equal(meta.externalLookupCount, 0);
+});

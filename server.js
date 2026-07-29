@@ -104,9 +104,11 @@ function niklHealthMeta() {
   const configured = [...requested]
     .filter(provider => aliases[provider].some(name => Boolean(String(process.env[name] || '').trim())))
     .length;
+  const externalRequested = String(process.env.GPT_NIKL_EXTERNAL_API_ENABLED || '1').trim() === '1';
   return {
     niklLocalResourceEnabled: String(process.env.GPT_NIKL_LOCAL_RESOURCE_ENABLED || '1').trim() !== '0',
-    niklExternalApiEnabled: String(process.env.GPT_NIKL_EXTERNAL_API_ENABLED || '0').trim() === '1',
+    niklExternalApiRequested: externalRequested,
+    niklExternalApiEnabled: externalRequested && configured > 0,
     niklExternalProviderCount: configured
   };
 }

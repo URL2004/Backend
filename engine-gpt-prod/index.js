@@ -49,7 +49,7 @@ const {
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.11';
+const VERSION = 'gpt-prod-v2.5.12';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -183,6 +183,7 @@ async function runEngine({
   if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   const rawSource = sourcePreflightAudit?.text || submittedSource;
+  const integritySource = sourcePreflightAudit?.integrityText || rawSource;
   if (inputRouting.isEnglishInput(rawSource)) {
     const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.');
     error.code = 'HUMANIZE_KOREAN_ONLY';
@@ -538,16 +539,34 @@ async function runEngine({
   recordHumanizationDepthStage('post_merge', humanizationDepthReport);
   const generalSurfaceRetryPending = records.some(record => (record.warnings || []).includes('general_surface_retry_pending'))
     && records.every(record => record.fallback !== true || (record.warnings || []).includes('general_surface_retry_safe_fallback'));
-  if (selectedMode !== 'polish'
+  const sectionRecoveryUniqueAppliedSectionCount = new Set(
+    sectionRecoveryReport.metrics?.appliedSectionIndices || []
+  ).size;
+  let wholeDocumentDepthRetrySkippedAfterSectionRecovery = false;
+  const skipWholeDocumentDepthRetry = shouldSkipWholeDocumentDepthRetryAfterSectionRecovery({
+    longDocument: selectedMode !== 'polish'
+      && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS
+      && sectionRecovery.isEnabled(),
+    sectionRecoveryUniqueAppliedSectionCount,
+    generalSurfaceRetryPending,
+    sourceEquivalent: normalizeBare(auditSource) === normalizeBare(outputText),
+    humanizationDepthReport
+  });
+  if (skipWholeDocumentDepthRetry) {
+    wholeDocumentDepthRetrySkippedAfterSectionRecovery = true;
+  }
+  if (!skipWholeDocumentDepthRetry
+      && selectedMode !== 'polish'
       && (generalSurfaceRetryPending
         || humanizationDepth.needsHumanizationRecovery(humanizationDepthReport))) {
     const wasEquivalent = normalizeBare(auditSource) === normalizeBare(outputText);
     const startedWithSevereNoEffect = wasEquivalent || isSevereHumanizationNoEffect(humanizationDepthReport);
     const longDocumentRecovery = rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS
       && sectionRecovery.isEnabled();
-    // 장문은 이미 최대 8개 절을 병렬 회복했으므로 문서 전체에서 놓친 대상만
-    // mini로 한 번 마감한다. 단문은 두 번까지 시도하되 기본도 최소 효과만
-    // 넘었다는 이유로 목표 미달 상태에서 조기 종료하지 않는다.
+    // 장문의 안전한 섹션 개선으로 최소 체감선까지 통과했고 남은 항목이
+    // shadow 목표뿐이면 위에서 전체 재호출을 생략한다. 최소 효과 실패,
+    // 사용자 검토 수준의 복합 미달, 1차 청크 실패는 이 경로에서 계속
+    // 문서 전체를 한 번 회복한다.
     const maxDepthAttempts = longDocumentRecovery ? 1 : 2;
     if (startedWithSevereNoEffect) finalNoopRecovery.attempted = true;
     let lastRetryError = null;
@@ -1704,7 +1723,16 @@ async function runEngine({
       skipped: finalFormattingRepair.skipped === true,
       reason: finalFormattingRepair.reason || ''
     };
-
+    // 공백 보정은 인용 바깥에서만 작동해야 하지만, 복잡한 중첩 인용의
+    // 경계가 누락되더라도 최종 전달 직전에 원문 인용을 다시 동결한다.
+    // 이 복원 뒤에는 어휘 후처리를 더 실행하지 않는다.
+    const restoredQuotes = restoreDirectQuoteContents(rawSource, outputText);
+    if (restoredQuotes.applied) {
+      outputText = restoredQuotes.text;
+      quoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+      finalQuoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+    }
+    quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   }
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
     const postLayoutDepthFrozen = freezeLockedBlocks(rawSource, outputText, chunks);
@@ -1759,6 +1787,7 @@ async function runEngine({
   }
   const structureAudit = structureChunk.buildStructureAudit({
     source: rawSource,
+    integritySource,
     outputText,
     chunks,
     plan: chunkPlan,
@@ -1797,6 +1826,7 @@ async function runEngine({
   const finalGate = evaluateWholeDocumentGate({
     outputText,
     source: rawSource,
+    integritySource,
     contract,
     mode: selectedMode,
     sourceSurface,
@@ -1867,6 +1897,9 @@ async function runEngine({
   const usage = addUsage(records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage()), supplementalUsage);
   const escalatedCount = records.filter(r => r.escalated).length;
   const finalEditMetrics = computeEditMetrics(rawSource, outputText);
+  const polishEditKind = selectedMode === 'polish'
+    ? classifyPolishEditKind(rawSource, outputText)
+    : '';
   const chunkExecution = summarizeChunkExecution(records, semanticReport, {
     polishRetryCount: polishRetryAttemptCount,
     generalSurfaceRetryCount: generalSurfaceRetryAttemptCount,
@@ -2067,6 +2100,9 @@ async function runEngine({
     effectNoticeCodes: safeFailureCodeList(effectNotices.map(item => item.code)),
     structureSignaturePass: structureAudit?.pass === true,
     sectionPathErrorCount: Number(structureAudit?.sectionPathErrorCount || 0),
+    originalStructurePass: structureAudit?.originalStructurePass !== false,
+    originalStructuralMarkerLossCount: Number(structureAudit?.originalStructuralMarkerLossCount || 0),
+    introducedOrphanParticleBoundaryCount: Number(structureAudit?.introducedOrphanParticleBoundaryCount || 0),
     signatureLineCount: Number(documentProfile?.formatProfile?.signatureLineCount || 0),
     clinicalStructureSignalCount: Number(documentProfile?.signals?.soapHeadingSignals || 0)
       + Number(documentProfile?.signals?.clinicalLabelSignals || 0),
@@ -2084,6 +2120,7 @@ async function runEngine({
     lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4)),
     polishSpeakerRestoreCount,
     polishSpeakerRestoredSentenceCount,
+    polishEditKind,
     polishRetryReason,
     polishSourceIssueCount: Number(polishReport?.sourceIssueCount || 0),
     polishFixedSourceIssueCount: Number(polishReport?.fixedSourceIssueCount || 0),
@@ -2152,7 +2189,10 @@ async function runEngine({
     sectionRecoveryPreferredSectionCount: Number(sectionRecoveryReport.metrics?.selectedPreferredSectionCount || 0),
     sectionRecoveryFragmentCount: Number(sectionRecoveryReport.metrics?.selectedFragmentCount || 0),
     sectionRecoveryTargetOnlyCount: Number(sectionRecoveryReport.metrics?.selectedTargetOnlyCount || 0),
-    sectionRecoveryAppliedCount: Number(sectionRecoveryReport.metrics?.applied || 0),
+    sectionRecoveryAppliedCount: sectionRecoveryUniqueAppliedSectionCount,
+    sectionRecoveryUniqueAppliedSectionCount,
+    sectionRecoveryCandidateAppliedCount: Number(sectionRecoveryReport.metrics?.applied || 0),
+    wholeDocumentDepthRetrySkippedAfterSectionRecovery,
     sectionRecoveryEscalationCount: Number(sectionRecoveryReport.metrics?.escalated || 0),
     sectionRecoveryEscalationEligibleCount: Number(sectionRecoveryReport.metrics?.escalationEligibleCount || 0),
     sectionRecoveryEscalationSkippedCount: Number(sectionRecoveryReport.metrics?.escalationSkippedCount || 0),
@@ -3133,7 +3173,15 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
   return { hardFail: false, reason: '', warnings, violations };
 }
 
-function evaluateWholeDocumentGate({ outputText, source, contract, mode, sourceSurface, allowedExtra = '' }) {
+function evaluateWholeDocumentGate({
+  outputText,
+  source,
+  integritySource,
+  contract,
+  mode,
+  sourceSurface,
+  allowedExtra = ''
+}) {
   const warnings = [];
   const violations = [];
   if (!outputText || looksLikeMeta(outputText)) {
@@ -3170,7 +3218,7 @@ function evaluateWholeDocumentGate({ outputText, source, contract, mode, sourceS
     violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 16) });
     warnings.push('protected_term_loss');
   }
-  const numberAudit = compareNumberMultiset(source, outputText, allowedExtra);
+  const numberAudit = compareNumberMultiset(integritySource || source, outputText, allowedExtra);
   if (numberAudit.changed) {
     violations.push({
       gate: 'number_multiset_changed',
@@ -4286,6 +4334,21 @@ function addStructureWarnings(report, audit) {
       samples: audit.sectionPathErrors || []
     });
   }
+  if (audit.originalStructuralMarkerLossCount > 0) {
+    additions.push({
+      gate: 'original_structure_marker_loss',
+      action: 'needs_review',
+      count: audit.originalStructuralMarkerLossCount,
+      samples: audit.originalStructuralMarkerLosses || []
+    });
+  }
+  if (audit.introducedOrphanParticleBoundaryCount > 0) {
+    additions.push({
+      gate: 'orphan_particle_line_boundary',
+      action: 'needs_review',
+      count: audit.introducedOrphanParticleBoundaryCount
+    });
+  }
   if (audit.layoutRepair?.pass === false) {
     additions.push({
       gate: 'post_semantic_layout_incomplete',
@@ -5200,7 +5263,9 @@ function structureAuditNotWorse(before, candidate) {
     'lostLockedCount',
     'lockedOutOfOrderCount',
     'unsafeBoundaryCount',
-    'sectionPathErrorCount'
+    'sectionPathErrorCount',
+    'originalStructuralMarkerLossCount',
+    'introducedOrphanParticleBoundaryCount'
   ]) {
     if (Number(candidate?.[key] || 0) > Number(before?.[key] || 0)) return false;
   }
@@ -5211,7 +5276,9 @@ function structureContextIssueCount(value) {
   return Number(value?.lostLockedCount || 0)
     + Number(value?.lockedOutOfOrderCount || 0)
     + Number(value?.unsafeBoundaryCount || 0)
-    + Number(value?.sectionPathErrorCount || 0);
+    + Number(value?.sectionPathErrorCount || 0)
+    + Number(value?.originalStructuralMarkerLossCount || 0)
+    + Number(value?.introducedOrphanParticleBoundaryCount || 0);
 }
 
 function countSemanticViolations(report, type) {
@@ -5287,12 +5354,40 @@ function isSevereHumanizationNoEffect(report) {
       && Number(metrics.substantiveEditRatio || 0) < 0.05);
 }
 
+function shouldSkipWholeDocumentDepthRetryAfterSectionRecovery({
+  longDocument = false,
+  sectionRecoveryUniqueAppliedSectionCount = 0,
+  generalSurfaceRetryPending = false,
+  sourceEquivalent = false,
+  humanizationDepthReport = null
+} = {}) {
+  return longDocument === true
+    && Number(sectionRecoveryUniqueAppliedSectionCount || 0) > 0
+    && generalSurfaceRetryPending !== true
+    && sourceEquivalent !== true
+    && humanizationDepthReport?.applicable === true
+    && humanizationDepthReport?.minimumEffectPass === true
+    && humanizationDepthReport?.userReviewRequired !== true
+    && !isSevereHumanizationNoEffect(humanizationDepthReport);
+}
+
 function normalizeBare(text) {
   return String(text || '').replace(/\s+/g, '').trim();
 }
 
 function normalizeLiteralSurface(text) {
   return String(text || '').normalize('NFC').replace(/\r\n?/gu, '\n').trim();
+}
+
+function classifyPolishEditKind(source, outputText) {
+  const before = String(source || '').normalize('NFKC').replace(/\r\n?/gu, '\n').trim();
+  const after = String(outputText || '').normalize('NFKC').replace(/\r\n?/gu, '\n').trim();
+  if (before === after) return 'unchanged';
+  const withoutWhitespace = value => value.replace(/\s+/gu, '');
+  if (withoutWhitespace(before) === withoutWhitespace(after)) return 'spacing_only';
+  const withoutSurfaceMarks = value => value.replace(/[\p{P}\p{S}\s]+/gu, '');
+  if (withoutSurfaceMarks(before) === withoutSurfaceMarks(after)) return 'punctuation_only';
+  return 'textual';
 }
 
 function isNoopEquivalent(source, outputText, mode = '') {
@@ -5321,6 +5416,8 @@ module.exports = {
   prepareGeneralSurfaceCandidate,
   isSafeLocalizedLanguageCandidate,
   isMaterialDepthRegression,
+  shouldSkipWholeDocumentDepthRetryAfterSectionRecovery,
+  classifyPolishEditKind,
   isNoopEquivalent,
   countApprovedModelChunks
 };

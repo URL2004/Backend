@@ -181,6 +181,20 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   if (structureAudit?.sectionPathErrorCount > 0) {
     warnings.push(warning('section_path_mismatch', '본문 일부가 잘못된 절 경로에 연결됐을 수 있어요.', { count: structureAudit.sectionPathErrorCount }));
   }
+  if (structureAudit?.originalStructuralMarkerLossCount > 0) {
+    warnings.push(warning(
+      'original_structure_marker_loss',
+      '원문의 절 번호나 목록 기호 일부가 달라졌을 수 있어요.',
+      { count: structureAudit.originalStructuralMarkerLossCount }
+    ));
+  }
+  if (structureAudit?.introducedOrphanParticleBoundaryCount > 0) {
+    warnings.push(warning(
+      'orphan_particle_line_boundary',
+      '한국어 조사 앞에서 문장이나 행이 잘못 나뉜 곳이 있을 수 있어요.',
+      { count: structureAudit.introducedOrphanParticleBoundaryCount }
+    ));
+  }
   const discourseAudit = discourse.compareDiscourse(source, outputText);
   for (const violation of discourseAudit.violations || []) {
     warnings.push(warning(

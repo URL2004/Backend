@@ -245,7 +245,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       + Math.min(selfReflectivePredicateSignals - 1, 3) * 0.16;
   }
 
-  const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|직무\s*역량|직업\s*윤리(?:관)?|자기\s*소개서|자소서|저의\s*(?:(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|경험|성장\s*과정)|귀사|지원하게\s*되었습니다|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다)/gu);
+  const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|직무\s*역량|직업\s*윤리(?:관)?|자기\s*소개서|자소서|저의\s*(?:(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|성장\s*과정)|귀사|지원하게\s*되었습니다|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다)/gu);
   const applicationIntentSignals = count(text, /(?:신청\s*(?:동기|이유)|신청(?:하게\s*되었습니다|했습니다|하고자|하려고|하고\s*싶)|지원(?:하게\s*되었습니다|했습니다|하고자|하려고|하고\s*싶)|참여하게\s*된다면|선발된다면)/gu);
   const programApplicationSignals = count(text, /(?:(?:캠프|프로그램|교육\s*과정|체험\s*활동|학과\s*탐방|멘토링)[^.!?\n]{0,90}(?:신청|지원|참여|선발|체험)|(?:신청|지원|참여|선발)[^.!?\n]{0,90}(?:캠프|프로그램|교육\s*과정|체험\s*활동|학과\s*탐방|멘토링))/gu);
   const careerActionSignals = count(text, /(?:수집|정리|분석|비교|조사|기획|설계|운영|관리|지원|발표|협업|조율|응대|개선|제작|시각화|학습|연습|근무|실험|조정|최적화|도출|검증|측정|해석|문서화|작성|유지)/gu);
@@ -261,6 +261,15 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const researchPlacementSignals = count(text, /(?:현장\s*실습|인턴(?:십)?|연구\s*인턴|연구실|연구\s*기관|연구소|산학\s*협력|실험실)/gu);
   const applicationEvidenceSignals = count(text, /(?:그\s*결과|상위\s*\d+(?:\.\d+)?%|성적(?:을|이)?\s*(?:높|향상)|성과(?:를|가)?\s*(?:달성|창출)|문제(?:를|가)?\s*(?:해결|개선)|재현성(?:을|이)?\s*(?:확보|검증))/gu);
   const futureContributionSignals = count(text, /(?:기여하겠습니다|기여하고자\s*합니다|활용하겠습니다|적용하겠습니다|수행하겠습니다|익히겠습니다|배우겠습니다|갖추겠습니다)/gu);
+  // 1인칭과 `저의 경험`은 과제 성찰문·학습 에세이에도 흔하다. 실제
+  // 신청·채용·직무 적합성 문맥이 하나라도 있을 때만 1인칭을 지원서
+  // 보조 신호로 사용한다.
+  const directApplicationContextSignals = explicitApplicationSignals
+    + applicationIntentSignals
+    + programApplicationSignals
+    + applicationValuePropositionSignals
+    + careerAspirationSignals
+    + applicationSectionSignals;
   const educationalReflectionQuestionnaire = questionnaire.isQuestionnaire
     && questionnaire.educationQuestionCount >= 2
     && applicationIntentSignals === 0
@@ -274,7 +283,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   add(scores, 'resume_application', explicitApplicationSignals, 1.35);
   add(scores, 'resume_application', applicationIntentSignals, 1.35);
   add(scores, 'resume_application', programApplicationSignals, 0.85);
-  add(scores, 'resume_application', firstPersonSignals, 0.22);
+  if (directApplicationContextSignals >= 1) {
+    add(scores, 'resume_application', Math.min(firstPersonSignals, 3), 0.22);
+  }
   if (compactLength <= 1600
       && firstPersonSignals >= 1
       && researchPlacementSignals >= 1
@@ -590,6 +601,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       reportHeadingSignals,
       analyticalFrameworkSignals,
       applicationIntentSignals,
+      directApplicationContextSignals,
       programApplicationSignals,
       instructionalPlanSignals,
       bulletLineCount,

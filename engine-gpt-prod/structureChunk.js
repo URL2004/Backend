@@ -1257,9 +1257,19 @@ function splitEditablePrefixPiece(piece, options = {}) {
   const blockquote = legal || options.editableBlockquoteWrapper !== true
     ? null
     : raw.match(/^(\s*>\s?)(\S[\s\S]*)$/u);
-  const bullet = legal || blockquote ? null : raw.match(/^(\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+)(\S[\s\S]*)$/u);
-  const label = legal || blockquote || bullet ? null : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
-  const match = legal || blockquote || bullet || label;
+  // 마크다운 목록의 굵은 라벨까지 하나의 접두부로 잠근다. `* `만
+  // 잠그면 모델이 `**전략:**`의 별표나 닫는 콜론을 흩뜨려 목록 기호가
+  // 독립 행으로 남을 수 있다. 라벨 뒤 본문은 계속 편집 가능하다.
+  const markdownLabelBullet = legal || blockquote
+    ? null
+    : raw.match(/^(\s*[-*+]\s+(?:\*\*|__)[^*\n_]{1,120}(?::|：)(?:\*\*|__)\s*)(\S[\s\S]*)$/u);
+  const bullet = legal || blockquote || markdownLabelBullet
+    ? null
+    : raw.match(/^(\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+)(\S[\s\S]*)$/u);
+  const label = legal || blockquote || markdownLabelBullet || bullet
+    ? null
+    : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
+  const match = legal || blockquote || markdownLabelBullet || bullet || label;
   if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
   const prefix = match[1];
   const body = match[2];
@@ -1273,7 +1283,7 @@ function splitEditablePrefixPiece(piece, options = {}) {
       end: start + prefix.length,
       forceLockType: legal
         ? 'legal_clause_prefix'
-        : (blockquote ? 'blockquote_prefix' : (bullet ? 'bullet_prefix' : 'label_prefix')),
+        : (blockquote ? 'blockquote_prefix' : ((markdownLabelBullet || bullet) ? 'bullet_prefix' : 'label_prefix')),
       forceSectionLabel: legal ? prefix.trim() : ''
     },
     {
@@ -1504,9 +1514,18 @@ function repairUnsafeChunkBoundaries(chunks) {
   };
 }
 
-function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair, layoutRepair } = {}) {
+function buildStructureAudit({
+  source,
+  integritySource,
+  outputText,
+  chunks,
+  plan,
+  boundaryRepair,
+  layoutRepair
+} = {}) {
   const locked = (chunks || []).filter(c => c.locked && String(c.text || '').trim());
   const output = String(outputText || '');
+  const original = String(integritySource || source || '');
   const lost = [];
   const outOfOrder = [];
   let orderCursor = 0;
@@ -1534,6 +1553,11 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair,
   const sectionPathErrors = findSectionPathErrors(chunks);
   const counts = plan?.audit?.lockedByType || countLockedByType(locked);
   const structuralSignature = compareStructuralRoleSignatures(source, output);
+  const originalMarkers = compareOriginalStructuralMarkers(original, output);
+  const introducedOrphanParticleBoundaryCount = Math.max(
+    0,
+    countOrphanParticleLineBoundaries(output) - countOrphanParticleLineBoundaries(original)
+  );
   return {
     version: VERSION,
     enabled: true,
@@ -1557,13 +1581,103 @@ function buildStructureAudit({ source, outputText, chunks, plan, boundaryRepair,
     structuralRoleLosses: structuralSignature.losses,
     sourceStructuralSignature: structuralSignature.source,
     outputStructuralSignature: structuralSignature.output,
+    originalStructurePass: originalMarkers.pass && introducedOrphanParticleBoundaryCount === 0,
+    originalStructuralMarkerCount: originalMarkers.sourceCount,
+    originalStructuralMarkerLossCount: originalMarkers.losses.length,
+    originalStructuralMarkerLosses: originalMarkers.losses,
+    introducedOrphanParticleBoundaryCount,
     pass: lost.length === 0
       && outOfOrder.length === 0
       && boundaryWarnings.length === 0
       && sectionPathErrors.length === 0
       && structuralSignature.pass
+      && originalMarkers.pass
+      && introducedOrphanParticleBoundaryCount === 0
       && layoutRepair?.pass !== false
   };
+}
+
+/**
+ * 전처리된 청크가 아니라 사용자가 제출한 구조 행의 번호·기호도 최종본과
+ * 순서대로 대조한다. 역할 개수만 비교하면 `# 14.`가 `# 1.`과 `4.`로
+ * 갈라져도 제목 수가 늘었다는 이유로 통과할 수 있다.
+ */
+function compareOriginalStructuralMarkers(source, output) {
+  const sourceMarkers = extractOriginalStructuralMarkers(source);
+  const outputMarkers = extractOriginalStructuralMarkers(output);
+  const losses = [];
+  let cursor = 0;
+  for (const marker of sourceMarkers) {
+    let found = -1;
+    for (let index = cursor; index < outputMarkers.length; index += 1) {
+      if (outputMarkers[index].key === marker.key) {
+        found = index;
+        break;
+      }
+    }
+    if (found < 0) {
+      losses.push(marker);
+      continue;
+    }
+    cursor = found + 1;
+  }
+  return {
+    pass: losses.length === 0,
+    sourceCount: sourceMarkers.length,
+    outputCount: outputMarkers.length,
+    losses: losses.slice(0, 20),
+    source: sourceMarkers,
+    output: outputMarkers
+  };
+}
+
+function extractOriginalStructuralMarkers(value) {
+  const markers = [];
+  const lines = normalizeNewlines(value).split('\n');
+  lines.forEach((line, index) => {
+    const text = String(line || '');
+    let match = text.match(/^\s*(#{1,6})\s*(\d{1,3}(?:\.\d{1,3}){0,3}[.)]?)\s+/u);
+    if (match) {
+      markers.push(structuralMarker('markdown_number', `${match[1]} ${match[2]}`, index));
+      return;
+    }
+    match = text.match(/^\s*(\d{1,3}(?:\.\d{1,3}){0,3}[.)])\s+/u);
+    if (match) {
+      markers.push(structuralMarker('number', match[1], index));
+      return;
+    }
+    match = text.match(/^\s*([①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?|[IVX]{1,8}[.)．])\s*/u);
+    if (match) {
+      markers.push(structuralMarker('ordinal', match[1], index));
+      return;
+    }
+    match = text.match(/^\s*(제\s*\d{1,3}\s*(?:장|절|항|조)(?:의\s*\d{1,3})?)/u);
+    if (match) {
+      markers.push(structuralMarker('legal_or_section', match[1].replace(/\s+/gu, ''), index));
+      return;
+    }
+    match = text.match(/^\s*([-*+•▪◦·●○■□◆◇▶▷※])\s+/u);
+    if (match) markers.push(structuralMarker('bullet', match[1], index));
+  });
+  return markers;
+}
+
+function structuralMarker(kind, marker, lineIndex) {
+  const normalized = String(marker || '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
+  return {
+    kind,
+    marker: normalized,
+    key: `${kind}:${normalized}`,
+    lineOrdinal: lineIndex + 1
+  };
+}
+
+function countOrphanParticleLineBoundaries(value) {
+  return (
+    normalizeNewlines(value).match(
+      /[가-힣]\s*\n+\s*(?:은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/gu
+    ) || []
+  ).length;
 }
 
 function compareStructuralRoleSignatures(source, output) {
@@ -1973,6 +2087,9 @@ module.exports = {
   restoreLockedStructureLayout,
   restoreParagraphLayout,
   compareStructuralRoleSignatures,
+  compareOriginalStructuralMarkers,
+  extractOriginalStructuralMarkers,
+  countOrphanParticleLineBoundaries,
   isQuestionnaireQuestionLine,
   assessmentHeaderKind,
   shouldKeepAssessmentLineWhole,

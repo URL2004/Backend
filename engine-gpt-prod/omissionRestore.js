@@ -7,7 +7,7 @@ const {
 } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
 
-const MAX_RESTORE_COUNT = 3;
+const MAX_RESTORE_COUNT = 5;
 const MIN_SOURCE_SENTENCE_CHARS = 14;
 
 const STOP_TOKENS = new Set([
@@ -69,9 +69,72 @@ function restoreConfirmedSemanticOmissions({
     });
   }
 
+  // 의미 심사기가 누락을 확정했지만 span·detail이 포괄적이라 개별 문장과
+  // 연결되지 않은 경우가 있다. 문서 마지막의 일반 산문 문단 전체가
+  // 사라졌고 바로 앞 문단은 결과 끝부분에 확실히 대응할 때만, 그 결론
+  // 문단을 원문 그대로 한 번 복원한다.
+  const restoredKeysBeforeTrailing = new Set(restored.map(item => violationKey(item.violation)));
+  const unresolvedOmissions = omissions.filter(item => !restoredKeysBeforeTrailing.has(violationKey(item)));
+  const remainingCapacity = boundedRestoreCount(maxRestoreCount) - restored.length;
+  if (remainingCapacity > 0 && unresolvedOmissions.length) {
+    const trailing = findTrailingParagraphOmission(rawSource, current, unresolvedOmissions[0]);
+    if (trailing) {
+      current = `${current.trimEnd()}\n\n${trailing.paragraph}`.trim();
+      restored.push(trailing);
+      candidates.push(trailing);
+    }
+  }
+
   const restoredViolationKeys = new Set(restored.map(item => violationKey(item.violation)));
   const remainingViolations = violations.filter(item => !restoredViolationKeys.has(violationKey(item)));
   return restoreResult(current, restored, remainingViolations, candidates);
+}
+
+function findTrailingParagraphOmission(source, outputText, violation) {
+  const paragraphs = sourceProseParagraphs(source);
+  if (paragraphs.length < 2) return null;
+  const paragraph = paragraphs.at(-1);
+  const previousParagraph = paragraphs.at(-2);
+  if (paragraph.length < 80 || paragraph.length > 1600) return null;
+  if (layoutStructure.isStructureDominatedParagraph(paragraph)) return null;
+  const finalSentences = splitSentenceSpans(paragraph);
+  if (finalSentences.length < 2) return null;
+  const missingSentences = finalSentences.filter(span => isMateriallyMissing(span.text, outputText));
+  if (missingSentences.length / finalSentences.length < 0.67) return null;
+
+  const previousSentences = splitSentenceSpans(previousParagraph);
+  const outputSentences = splitSentenceSpans(outputText);
+  if (!previousSentences.length || !outputSentences.length) return null;
+  const anchorSentence = previousSentences.at(-1).text;
+  const anchors = outputSentences
+    .map((span, index) => ({ span, index, score: alignmentScore(anchorSentence, span.text) }))
+    .sort((left, right) => right.score - left.score || right.index - left.index);
+  const anchor = anchors[0];
+  if (!anchor || anchor.score < 0.5) return null;
+  if (anchor.index < Math.floor(outputSentences.length * 0.65)) return null;
+
+  return {
+    sourceSentenceIndex: -1,
+    violation,
+    sentence: paragraph,
+    paragraph,
+    paragraphRestore: true,
+    restoredSentenceCount: finalSentences.length,
+    anchorType: 'after_previous_paragraph'
+  };
+}
+
+function sourceProseParagraphs(value) {
+  const source = String(value || '').replace(/\r\n?/gu, '\n').trim();
+  if (!source) return [];
+  const blankSeparated = source.split(/\n[ \t]*\n+/u).map(item => item.trim()).filter(Boolean);
+  const candidates = blankSeparated.length >= 2
+    ? blankSeparated
+    : source.split('\n').map(item => item.trim()).filter(Boolean);
+  return candidates.filter(paragraph => (
+    paragraph.length >= 40
+    && !layoutStructure.isStructureDominatedParagraph(paragraph)
+  ));
 }
 
 function findSourceSentenceForViolation(source, sourceSpans, violation) {
@@ -261,5 +324,7 @@ module.exports = {
   findSourceSentenceForViolation,
   isMateriallyMissing,
   isProtectedSourceSentence,
-  alignmentScore
+  alignmentScore,
+  findTrailingParagraphOmission,
+  sourceProseParagraphs
 };

@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 13;
+const VERSION = 14;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -183,6 +183,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: false,
     deterministicSafe: false,
     message: '원문에 같은 한글 조각이 겹쳐 입력된 것으로 보이는 단어가 있어요.'
+  },
+  reduplicative_root_loss: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“단단하다·꼼꼼하다”처럼 반복되는 한국어 어근이 한 음절로 잘못 줄었어요.'
   },
   data_document_collocation: {
     weight: 4,
@@ -735,6 +741,8 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   if (professional) outputIssues.push(professional);
   const persistentTense = detectIntroducedPersistentStateTenseRegression(source, outputText);
   if (persistentTense) outputIssues.push(persistentTense);
+  const reduplicativeRootLoss = detectReduplicativeRootLoss(source, outputText);
+  if (reduplicativeRootLoss) outputIssues.push(reduplicativeRootLoss);
   const rows = mergeIssueComparison(sourceIssues, outputIssues);
   const repairableIssues = rows.filter(item => item.afterCount > 0 && item.repairable);
   const residualWarnings = rows
@@ -962,6 +970,7 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'passive_causative_stack',
   'double_object_time_expenditure',
   'persistent_state_tense_regression',
+  'reduplicative_root_loss',
   'orphan_structural_particle'
 ]);
 
@@ -1370,6 +1379,77 @@ function detectIntroducedPersistentStateTenseRegression(source, outputText) {
     losses.map(item => item.outputOrdinal),
     { alignedLosses: losses }
   );
+}
+
+/**
+ * 모델이 `단단해서→단해`, `단단하게→단히`처럼 같은 음절이 반복되는
+ * 한국어 어근의 한 음절을 지우며 비표준 활용을 만드는 경우를 찾는다.
+ * 원문 토큰과 정렬된 결과 문장 안의 축약 토큰이 함께 확인될 때만 잡아
+ * 정상적인 의역이나 `간단히` 같은 다른 단어를 오탐하지 않는다.
+ */
+function detectReduplicativeRootLoss(source, outputText) {
+  const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const outputSentences = splitSentences(String(outputText || '')).map(value => String(value || '').trim()).filter(Boolean);
+  if (!sourceSentences.length || !outputSentences.length) return null;
+  const losses = [];
+  sourceSentences.forEach((sentence, sourceIndex) => {
+    const sourceTokens = extractReduplicativeRootTokens(sentence);
+    if (!sourceTokens.length) return;
+    const best = alignedOutputCandidates(sentence, sourceIndex, sourceSentences.length, outputSentences)[0];
+    if (!best || Number(best.score || 0) < 0.2) return;
+    const outputWords = countWordOccurrences(String(best.sentence || '').match(/[가-힣]+/gu) || []);
+    for (const token of sourceTokens) {
+      if (Number(outputWords.get(token.token) || 0) > 0) continue;
+      const corrupted = reduplicativeCorruptionCandidates(token)
+        .find(candidate => Number(outputWords.get(candidate) || 0) > 0);
+      if (!corrupted) continue;
+      outputWords.set(corrupted, Number(outputWords.get(corrupted) || 0) - 1);
+      losses.push({
+        sourceOrdinal: sourceIndex + 1,
+        outputOrdinal: best.index + 1,
+        sourceToken: token.token,
+        outputToken: corrupted,
+        sourceSentence: sentence.slice(0, 220),
+        outputSentence: String(best.sentence || '').slice(0, 220)
+      });
+    }
+  });
+  if (!losses.length) return null;
+  return makeIssue(
+    'reduplicative_root_loss',
+    losses.length,
+    losses.map(item => item.outputOrdinal),
+    { alignedLosses: losses }
+  );
+}
+
+function extractReduplicativeRootTokens(value) {
+  const pattern = /(?<![가-힣])([가-힣])\1((?:하(?:게|여|고|며|면|도록|지만|지|다|기|니|자|세요|십시오|였(?:다|고|으며|지만|던)?)|해(?:서|도|야|지|진|졌다|졌고|졌으며|졌지만|졌던)?|히|한|할|함|했던|합니다|했다))(?=$|[^가-힣])/gu;
+  return [...String(value || '').matchAll(pattern)].map(match => ({
+    token: match[0],
+    root: match[1],
+    suffix: match[2]
+  }));
+}
+
+function reduplicativeCorruptionCandidates(token) {
+  const root = String(token?.root || '');
+  const suffix = String(token?.suffix || '');
+  const values = [`${root}${suffix}`];
+  if (/^해/u.test(suffix)) {
+    values.push(`${root}해`, `${root}히`);
+  }
+  if (/^하/u.test(suffix)) {
+    values.push(`${root}히`, `${root}해`);
+  }
+  if (/^(?:히|한|할|함)/u.test(suffix)) values.push(`${root}${suffix[0]}`);
+  return [...new Set(values)].filter(value => value !== String(token?.token || ''));
+}
+
+function countWordOccurrences(values) {
+  const counts = new Map();
+  for (const value of values || []) counts.set(value, Number(counts.get(value) || 0) + 1);
+  return counts;
 }
 
 function patternMatchesLocal(pattern, value) {

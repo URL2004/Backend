@@ -1,8 +1,9 @@
 'use strict';
 
 const layoutStructure = require('./layoutStructure');
+const { compareNumberMultiset } = require('./factAudit');
 
-const VERSION = 8;
+const VERSION = 9;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -19,7 +20,7 @@ const INLINE_HEADING_SPACED_BODY_RE = new RegExp(
   'u'
 );
 const INLINE_KNOWN_HEADING_ANYWHERE_RE = new RegExp(
-  `(?<=[가-힣A-Za-z0-9)”’」』》〉\\]])(?<![IVX])(?=${INLINE_HEADING_MARKER}\\s*${INLINE_HEADING_LABEL})`,
+  `(?<=[가-힣A-Za-z0-9)”’」』》〉\\]])(?<![0-9IVX])(?=${INLINE_HEADING_MARKER}\\s*${INLINE_HEADING_LABEL})`,
   'gu'
 );
 const INLINE_CIRCLED_QUOTED_HEADING_RE = new RegExp(
@@ -153,9 +154,13 @@ function auditAndSanitizeSource(value) {
     notices.push(issue('source_markdown_artifact', lineIndex + 1, 'notice', NOTICE_MESSAGES.source_markdown_artifact));
   }
 
-  const layoutRepair = repairSourceLayoutArtifacts(kept.join('\n'));
+  // UI·작성 지시처럼 본문이 아닌 행만 제외한 상태를 별도로 남긴다.
+  // 모델 입력용 레이아웃 복구가 잘못되더라도 최종 감사가 이미 손상된
+  // 텍스트를 원문으로 오인하지 않도록 하는 무결성 기준선이다.
+  const integrityText = kept.join('\n').replace(/\n{3,}/gu, '\n\n').trim();
+  const layoutRepair = repairSourceLayoutArtifacts(integrityText);
   for (const change of layoutRepair.changes) {
-    notices.push(issue(change.code, change.lineOrdinal, 'repaired', change.message));
+    notices.push(issue(change.code, change.lineOrdinal, change.action || 'repaired', change.message));
   }
   const sanitized = layoutRepair.text.replace(/\n{3,}/gu, '\n\n').trim();
   const usable = sanitized || original;
@@ -164,6 +169,7 @@ function auditAndSanitizeSource(value) {
     const issues = aggregateIssues(fallbackNotices);
     return {
       ...emptyResult(original),
+      integrityText: integrityText || original,
       noticeCount: fallbackNotices.length,
       issueCount: issues.reduce((sum, item) => sum + item.count, 0),
       issueCodes: issues.map(item => item.code),
@@ -196,6 +202,7 @@ function auditAndSanitizeSource(value) {
   return {
     version: VERSION,
     text: usable,
+    integrityText: integrityText || usable,
     changed: usable !== original,
     removedLineCount: removals.length,
     removedArtifactCount: removals.length,
@@ -330,6 +337,15 @@ function repairInlineHeadingBoundaries(value) {
       }).join('\n');
       if (repaired === previous) break;
     }
+    if (repaired !== line && isUnsafeHeadingRepair(line, repaired)) {
+      repaired = line;
+      changes.push({
+        code: 'source_layout_repair_skipped',
+        lineOrdinal: index + 1,
+        action: 'notice',
+        message: '절 번호나 한국어 어절을 훼손할 수 있는 자동 경계 복구를 적용하지 않았어요.'
+      });
+    }
     if (repaired !== line) {
       changes.push({
         code: 'source_inline_heading_repaired',
@@ -385,11 +401,31 @@ function splitGenericNumberedHeadingBody(value) {
     if (title.length < 2 || title.length > 110) continue;
     // 경계에 공백이 있으면 두 어절은 애초에 붙어 있지 않다.
     if (!/^[가-힣A-Z]/u.test(prose)) continue;
+    if (/^(?:은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/u.test(prose)) continue;
     if (/^(?:적|성|화|론|학|형|별|상|물|값|표)/u.test(prose)) continue;
     if (!looksLikeFusedProse(prose)) continue;
     candidate = { title, prose };
   }
   return candidate ? `${marker}${candidate.title}\n${candidate.prose}` : null;
+}
+
+/**
+ * OCR 경계 복구는 문자 내용을 바꾸면 안 된다. 특히 `11.`을 `1`과
+ * `1.`로 분리하거나, 제목 후보 명사 뒤의 조사를 새 행으로 밀어내는
+ * 경우에는 해당 행의 복구 전체를 취소한다.
+ */
+function isUnsafeHeadingRepair(source, repaired) {
+  const numbers = compareNumberMultiset(source, repaired);
+  if (numbers.changed) return true;
+  return countOrphanParticleBoundaries(repaired) > countOrphanParticleBoundaries(source);
+}
+
+function countOrphanParticleBoundaries(value) {
+  return (
+    String(value || '').match(
+      /[가-힣]\s*\n+\s*(?:은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/gu
+    ) || []
+  ).length;
 }
 
 /**
@@ -763,6 +799,7 @@ function emptyResult(text) {
   return {
     version: VERSION,
     text: String(text || ''),
+    integrityText: String(text || ''),
     changed: false,
     removedLineCount: 0,
     removedArtifactCount: 0,
@@ -786,6 +823,8 @@ module.exports = {
   splitNumberedFiniteHeadingBody,
   repairForcedProseWraps,
   repairMissingSentenceSpacing,
+  isUnsafeHeadingRepair,
+  countOrphanParticleBoundaries,
   transformOutsideWebLiterals,
   hasUnbalancedMarkdown,
   isPossiblyTruncatedReference,

@@ -44,6 +44,27 @@ test('deliveryPolicy는 기술 실패·안전 경고·효과 제한을 서로 �
     warnings: []
   }, { mode: 'polish' });
   assert.equal(polish.decision, 'block_technical');
+
+  const noOp = deliveryPolicy.applyDeliveryPolicy({
+    status: 'blocked',
+    criticals: [{ gate: 'gpt_noop_unchanged' }],
+    warnings: []
+  }, { mode: 'blog' });
+  assert.equal(noOp.decision, 'block_technical');
+  assert.deepEqual(noOp.reasonCodes, ['gpt_noop_unchanged']);
+});
+
+test('안전 감사 폴백은 모델 전송 실패로 오분류하지 않는다', () => {
+  assert.equal(require('../engine-gpt-prod').isModelFailureRecord({
+    fallback: true,
+    hardFailReason: 'number_multiset_changed',
+    warnings: ['general_surface_retry_safe_fallback']
+  }), false);
+  assert.equal(require('../engine-gpt-prod').isModelFailureRecord({
+    fallback: true,
+    error: 'openai_timeout',
+    hardFailReason: 'gpt_call_failed'
+  }), true);
 });
 
 test('근거와 사용자 메모는 라벨을 유지한 채 모두 허용 범위에 들어간다', () => {

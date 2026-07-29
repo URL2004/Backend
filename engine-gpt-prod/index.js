@@ -50,7 +50,7 @@ const {
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.15';
+const VERSION = 'gpt-prod-v2.5.16';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -265,6 +265,9 @@ async function runEngine({
       signal
     });
   }, signal);
+  const editableRecords = records.filter(record => record?.locked !== true && record?.skipped !== true);
+  const allEditableModelCallsFailed = editableRecords.length > 0
+    && editableRecords.every(record => isModelFailureRecord(record));
 
   let sectionRecoveryReport = {
     metrics: {
@@ -296,7 +299,9 @@ async function runEngine({
     },
     usages: []
   };
-  if (humanizationDepthEnabled && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS) {
+  if (humanizationDepthEnabled
+      && !allEditableModelCallsFailed
+      && rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS) {
     sectionRecoveryReport = await sectionRecovery.recoverSections({
       chunks,
       sourceLength: rawSource.length,
@@ -352,6 +357,10 @@ async function runEngine({
   let generalSurfaceRetryCount = 0;
   let polishRetryAttemptCount = 0;
   let generalSurfaceRetryAttemptCount = 0;
+  let conservativeSentenceRetryAttemptCount = 0;
+  let conservativeSentenceRetryModelCallCount = 0;
+  let conservativeSentenceRetryAppliedCount = 0;
+  const conservativeSentenceRetryRejectionCodes = [];
   let polishSpeakerRestoreCount = 0;
   let polishSpeakerRestoredSentenceCount = 0;
   let finalNoopRecoveryCount = 0;
@@ -570,6 +579,7 @@ async function runEngine({
     wholeDocumentDepthRetrySkippedAfterSectionRecovery = true;
   }
   if (!skipWholeDocumentDepthRetry
+      && !allEditableModelCallsFailed
       && selectedMode !== 'polish'
       && (generalSurfaceRetryPending
         || humanizationDepth.needsHumanizationRecovery(humanizationDepthReport))) {
@@ -741,6 +751,141 @@ async function runEngine({
         reason: lastRetryError
           ? modelCallFailureCode(lastRetryError)
           : 'no_substantive_change'
+      };
+    }
+  }
+
+  // 문서 전체 후보가 반복해서 보존 감사에 걸리면, 같은 방식의 전체 재호출을
+  // 더 쌓아도 원문 복귀가 반복된다. 이때는 한 번에 한 문장만 모델에 맡기고
+  // 서버가 해당 span만 재조립해 안전한 실질 편집을 누적한다.
+  if (humanizationDepthEnabled
+      && !allEditableModelCallsFailed
+      && selectedMode !== 'polish'
+      && humanizationDepthReport?.applicable === true
+      && isSevereHumanizationNoEffect(humanizationDepthReport)) {
+    const attemptedOrdinals = new Set();
+    const sourceSentenceCount = Math.max(
+      0,
+      Number(humanizationPlan?.sourceSentenceCount || 0)
+    );
+    const hardRequired = Math.max(
+      1,
+      Number(humanizationPlan?.hardRequiredChangedSentenceCount || 1)
+    );
+    const maximumAttempts = Math.min(
+      sourceSentenceCount || 1,
+      requestStrength === 'advanced' ? 6 : 5,
+      Math.max(requestStrength === 'advanced' ? 5 : 4, hardRequired + 2)
+    );
+
+    for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+      if (humanizationDepthReport?.minimumEffectPass === true) break;
+      const preferredOrdinals = qualityV2.buildGeneralRetryTargetOrdinals(
+        auditSource,
+        outputText,
+        humanizationPlan,
+        humanizationDepthReport
+      );
+      const planOrdinals = (humanizationPlan?.targetIndices || [])
+        .filter(Number.isInteger)
+        .map(index => index + 1);
+      const allOrdinals = Array.from(
+        { length: sourceSentenceCount },
+        (_unused, index) => index + 1
+      );
+      const targetOrdinal = [
+        ...preferredOrdinals,
+        ...planOrdinals,
+        ...allOrdinals
+      ].find(ordinal => !attemptedOrdinals.has(ordinal));
+      if (!targetOrdinal) break;
+      attemptedOrdinals.add(targetOrdinal);
+      conservativeSentenceRetryAttemptCount += 1;
+      humanizationDepthRetryCount += 1;
+      humanizationDepthRetryTargetSentenceCount += 1;
+      try {
+        const retried = await qualityV2.retryConservativeSentenceSurface({
+          source: auditSource,
+          currentOutput: outputText,
+          targetOrdinal,
+          humanizationPlan,
+          documentProfile,
+          mode: selectedMode,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId,
+          phase: 'humanization_conservative_sentence_recovery'
+        });
+        if (retried.model) {
+          conservativeSentenceRetryModelCallCount += 1;
+          supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        }
+        if (retried.safeChangeFound !== true || retried.applied !== true) {
+          for (const code of retried.rejectionCodes || [retried.reason]) {
+            addUniqueCode(conservativeSentenceRetryRejectionCodes, code);
+            addUniqueCode(humanizationDepthRetryRejectionCodes, code);
+          }
+          humanizationDepthRetryRejectedCount += 1;
+          continue;
+        }
+
+        let candidate = String(retried.outputText || '').trim();
+        const candidateValidation = auditGeneralSurfaceCandidateWithStructure({
+          source: auditSource,
+          current: outputText,
+          candidate,
+          contract,
+          documentProfile,
+          mode: selectedMode,
+          chunks: frozen ? frozen.auditChunks : chunks,
+          plan: chunkPlan,
+          boundaryRepair,
+          humanizationPlan
+        });
+        candidate = candidateValidation.candidate || candidate;
+        const candidateDepth = humanizationDepth.evaluateHumanizationDepth(
+          auditSource,
+          candidate,
+          humanizationPlan
+        );
+        const improves = isIncrementalConservativeImprovement(
+          humanizationDepthReport,
+          candidateDepth
+        );
+        if (candidateValidation.pass !== true || !improves) {
+          humanizationDepthRetryRejectedCount += 1;
+          for (const code of candidateValidation.pass === true
+            ? ['depth_not_improved']
+            : candidateValidation.codes || ['safety_audit_failed']) {
+            addUniqueCode(conservativeSentenceRetryRejectionCodes, code);
+            addUniqueCode(humanizationDepthRetryRejectionCodes, code);
+          }
+          continue;
+        }
+
+        outputText = candidate;
+        humanizationDepthReport = candidateDepth;
+        conservativeSentenceRetryAppliedCount += 1;
+        generalSurfaceRetryCount += 1;
+        humanizationDepthRetryApplied = true;
+        acceptGeneralSurfaceRecovery(records);
+      } catch (error) {
+        const failureCode = modelCallFailureCode(error);
+        humanizationDepthRetryRejectedCount += 1;
+        addUniqueCode(conservativeSentenceRetryRejectionCodes, failureCode);
+        addUniqueCode(humanizationDepthRetryRejectionCodes, failureCode);
+        break;
+      }
+    }
+
+    if (conservativeSentenceRetryAppliedCount > 0
+        && humanizationDepthReport?.minimumEffectPass === true) {
+      finalNoopRecoveryCount = 1;
+      finalNoopRecovery = {
+        attempted: true,
+        applied: true,
+        method: 'conservative_sentence_recast',
+        reason: 'substantive_humanization'
       };
     }
   }
@@ -1375,7 +1520,8 @@ async function runEngine({
   // 의미 수리가 추가 주장 등을 제거하는 과정에서 결과 전체가 원문으로 돌아갈
   // 수 있다. 앞 단계에서 무변환이 아니었다면 기존 회복 루프가 이를 볼 수 없으므로,
   // 최종 레이아웃 전에 한 번 더 재작성하고 의미 심사까지 다시 통과한 후보만 쓴다.
-  if (selectedMode !== 'polish'
+  if (!allEditableModelCallsFailed
+      && selectedMode !== 'polish'
       && (postSemanticDepthRegression
         || (finalNoopRecovery.attempted !== true
           && (normalizeBare(auditSource) === normalizeBare(outputText)
@@ -1951,6 +2097,16 @@ async function runEngine({
   }
   const fallbackCount = records.filter(r => r.fallback).length;
   const finalEquivalent = isNoopEquivalent(rawSource, outputText, selectedMode);
+  const finalSubstantiveMetrics = humanizationDepthReport?.metrics
+    || humanizationDepth.measureSubstantiveEdit(rawSource, outputText);
+  const finalSubstantiveNoEffect = selectedMode !== 'polish'
+    && humanizationDepthEnabled
+    && humanizationDepthReport?.applicable === true
+    && (
+      finalSubstantiveMetrics.trivialOnly === true
+      || Number(finalSubstantiveMetrics.substantiveChangedSentenceCount || 0) === 0
+      || Number(finalSubstantiveMetrics.substantiveEditRatio || 0) < 0.01
+    );
   const approvedModelChunkCount = countApprovedModelChunks(records, chunks, {
     mode: selectedMode,
     documentRecoveryApplied: finalNoopRecovery.applied === true
@@ -1958,15 +2114,25 @@ async function runEngine({
       || (polishRetryCount > 0 && !polishStrictFailure)
   });
   const modelFailureChunkCount = records.filter(record => isModelFailureRecord(record)).length;
-  if (finalEquivalent || approvedModelChunkCount === 0) {
+  if (finalEquivalent || finalSubstantiveNoEffect || approvedModelChunkCount === 0) {
     result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
     result.floorReport.status = 'blocked';
     result.floorReport.criticals = result.floorReport.criticals || [];
+    // 모델 전실패는 결과 자체를 만들 수 없는 기술 오류다. 반면 모델 호출은
+    // 성공했지만 안전 수리·복원 뒤 실질 편집이 남지 않은 경우는 효과 부족일
+    // 뿐이므로 deliveryPolicy가 limited 결과로 전달할 수 있게 구분한다.
+    const noApprovedGate = modelFailureChunkCount > 0
+      ? 'no_approved_model_chunks'
+      : ((finalEquivalent || finalSubstantiveNoEffect)
+          ? 'gpt_noop_unchanged'
+          : 'humanization_no_approved_edit');
     result.floorReport.criticals.push({
-      gate: finalEquivalent ? 'gpt_noop_unchanged' : 'no_approved_model_chunks',
-      detail: finalEquivalent
-        ? 'GPT output is equivalent to source.'
-        : 'No model-authored edit passed the required audits.'
+      gate: noApprovedGate,
+      detail: noApprovedGate === 'no_approved_model_chunks'
+        ? 'No model-authored output was available after model failures.'
+        : ((finalEquivalent || finalSubstantiveNoEffect)
+            ? 'Safe recovery did not leave a substantive sentence-level edit.'
+            : 'Model calls completed, but no approved edit remained after safety recovery.')
     });
   }
   const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
@@ -1985,6 +2151,7 @@ async function runEngine({
     fingerprintRetryCount: fingerprintRetryAttemptCount,
     endingStyleRetryCount: endingStyleRetryAttemptCount,
     resumeCoverageRetryCount: resumeCoverageRetryAttemptCount,
+    conservativeSentenceRetryCount: conservativeSentenceRetryModelCallCount,
     sectionRecoveryCallCount: Number(sectionRecoveryReport.metrics?.miniAttemptCount || 0)
       + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0)
   });
@@ -2228,6 +2395,12 @@ async function runEngine({
     finalNoopRecoveryApplied: finalNoopRecovery.applied === true,
     finalNoopRecoveryMethod: finalNoopRecovery.applied ? finalNoopRecovery.method : '',
     finalNoopRecoveryReason: finalNoopRecovery.reason || '',
+    conservativeSentenceRetryAttemptCount,
+    conservativeSentenceRetryModelCallCount,
+    conservativeSentenceRetryAppliedCount,
+    conservativeSentenceRetryRejectionCodes: safeFailureCodeList(
+      conservativeSentenceRetryRejectionCodes
+    ),
     humanizationDepthEnabled,
     humanizationDepthApplicable: humanizationDepthReport?.applicable === true,
     humanizationDepthPass: humanizationDepthReport?.pass === true,
@@ -4511,6 +4684,7 @@ function calibrateV2RepetitionReport(result, source, outputText) {
 function summarizeChunkExecution(records, semanticReport, {
   polishRetryCount = 0,
   generalSurfaceRetryCount = 0,
+  conservativeSentenceRetryCount = 0,
   koreanRefinementRetryCount = 0,
   fingerprintRetryCount = 0,
   endingStyleRetryCount = 0,
@@ -4532,6 +4706,7 @@ function summarizeChunkExecution(records, semanticReport, {
   const semanticModelCallCount = semanticCallCount(semanticReport);
   const surfaceRetryCallCount = Math.max(0, Number(polishRetryCount) || 0)
     + Math.max(0, Number(generalSurfaceRetryCount) || 0)
+    + Math.max(0, Number(conservativeSentenceRetryCount) || 0)
     + Math.max(0, Number(koreanRefinementRetryCount) || 0)
     + Math.max(0, Number(fingerprintRetryCount) || 0)
     + Math.max(0, Number(endingStyleRetryCount) || 0)
@@ -4599,7 +4774,10 @@ function countApprovedModelChunks(records, chunks, { documentRecoveryApplied = f
 
 function isModelFailureRecord(record) {
   if (!record || record.locked || record.skipped) return false;
-  if (record.fallback === true) return true;
+  // fallback은 전송 실패만 뜻하지 않는다. 모델 후보가 수치·화자·구조
+  // 보존 감사에 걸려 원문으로 안전 복귀한 경우도 fallback=true다.
+  // 이를 전부 모델 실패로 세면 정상 응답을 받은 문서까지 "전체 모델
+  // 실패"로 오분류한다. 실제 호출 실패 증거가 있는 레코드만 센다.
   const values = [
     record.error,
     record.hardFailReason,
@@ -5370,6 +5548,32 @@ function isSevereHumanizationNoEffect(report) {
       && Number(metrics.substantiveEditRatio || 0) < 0.05);
 }
 
+function isIncrementalConservativeImprovement(current, candidate) {
+  if (!candidate?.applicable || candidate.metrics?.trivialOnly) return false;
+  const before = current?.metrics || {};
+  const after = candidate.metrics || {};
+  const noCoreRegression = Number(after.substantiveChangedSentenceCount || 0)
+      >= Number(before.substantiveChangedSentenceCount || 0)
+    && Number(after.targetChangedCount || 0) >= Number(before.targetChangedCount || 0)
+    && Number(
+      after.effectiveStructuralChangedSentenceCount
+        ?? after.structurallyChangedSentenceCount
+        ?? 0
+    ) >= Number(
+      before.effectiveStructuralChangedSentenceCount
+        ?? before.structurallyChangedSentenceCount
+        ?? 0
+    )
+    && Number(after.targetChangedParagraphCount || 0)
+      >= Number(before.targetChangedParagraphCount || 0);
+  if (!noCoreRegression) return false;
+  if (candidate.minimumEffectPass === true && current?.minimumEffectPass !== true) return true;
+  return Number(after.substantiveEditRatio || 0)
+      >= Number(before.substantiveEditRatio || 0) + 0.002
+    || Number(after.substantiveChangedSentenceCount || 0)
+      > Number(before.substantiveChangedSentenceCount || 0);
+}
+
 function shouldSkipWholeDocumentDepthRetryAfterSectionRecovery({
   longDocument = false,
   sectionRecoveryUniqueAppliedSectionCount = 0,
@@ -5435,5 +5639,6 @@ module.exports = {
   shouldSkipWholeDocumentDepthRetryAfterSectionRecovery,
   classifyPolishEditKind,
   isNoopEquivalent,
-  countApprovedModelChunks
+  countApprovedModelChunks,
+  isModelFailureRecord
 };

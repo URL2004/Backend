@@ -49,6 +49,17 @@ const POLISH_REPAIR_SCHEMA = {
   required: ['outputText', 'safeChangeFound', 'notes']
 };
 
+const CONSERVATIVE_SENTENCE_REPAIR_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    rewrittenSentence: { type: 'string' },
+    safeChangeFound: { type: 'boolean' },
+    notes: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['rewrittenSentence', 'safeChangeFound', 'notes']
+};
+
 // polish는 오류 교정만 허용하므로 원문에 없던 가능·필요·중요성 같은 평가
 // 어휘가 늘면 단순 문체 변화가 아니라 새로운 태도/판단이 추가된 것이다.
 // naturalness shadow 점수와 분리된 보존 계약이며, 외부로는 문구가 아닌
@@ -758,6 +769,211 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
   };
 }
 
+// 문서 전체 재시도가 안전 감사에서 반복해서 원문으로 복귀할 때 쓰는 마지막
+// 회복 경로다. 모델에는 한 문장만 보내고, 서버가 그 문장 span만 다시 끼워
+// 넣는다. 이 방식은 모델이 다른 문단·수치·화자를 건드릴 여지를 구조적으로
+// 차단하면서도 공백·구두점이 아닌 실제 어순/절 구조 변화를 누적할 수 있다.
+async function retryConservativeSentenceSurface({
+  source,
+  currentOutput,
+  targetOrdinal,
+  humanizationPlan = null,
+  documentProfile = null,
+  mode = '',
+  config,
+  signal,
+  safetyIdentifier = '',
+  model = '',
+  reasoningEffort = '',
+  phase = 'conservative_sentence_recovery'
+}) {
+  const original = String(source || '').trim();
+  const current = String(currentOutput || '').trim();
+  const ordinal = Math.max(1, Number(targetOrdinal) || 1);
+  const sourceSpans = meaningfulSentenceSpans(original);
+  const currentSpans = meaningfulSentenceSpans(current);
+  const measured = humanizationDepth.measureSubstantiveEdit(original, current);
+  const alignment = (measured.sentenceEdits || []).find(row => row.index === ordinal - 1);
+  const sourceSpan = sourceSpans[ordinal - 1];
+  const outputStart = Number(alignment?.outputIndex);
+  const outputEnd = Number(alignment?.outputEndIndex);
+  const alignedOneSentence = Number.isInteger(outputStart)
+    && outputStart >= 0
+    && outputStart < currentSpans.length
+    && (!Number.isInteger(outputEnd) || outputEnd === outputStart + 1);
+  const currentSpan = alignedOneSentence
+    ? currentSpans[outputStart]
+    : (sourceSpans.length === currentSpans.length ? currentSpans[ordinal - 1] : null);
+
+  if (!sourceSpan || !currentSpan) {
+    return conservativeSentenceResult(current, false, ordinal, 'sentence_alignment_unavailable');
+  }
+  if (!isConservativeSentenceTarget(sourceSpan.text)
+      || !isConservativeSentenceTarget(currentSpan.text)) {
+    return conservativeSentenceResult(current, false, ordinal, 'protected_or_structural_sentence');
+  }
+
+  const profile = String(
+    documentProfile?.profile
+      || humanizationPlan?.profile
+      || documentProfile
+      || 'unknown'
+  );
+  const currentIndex = alignedOneSentence ? outputStart : ordinal - 1;
+  const previous = currentIndex > 0 ? (currentSpans[currentIndex - 1]?.text || '') : '';
+  const next = currentSpans[currentIndex + 1]?.text || '';
+  const profileRule = conservativeProfileRule(profile);
+  const system = [
+    '너는 한국어 휴머나이징의 안전한 단일 문장 재구성기다.',
+    'CURRENT SENTENCE 한 문장만 다시 쓴다. 앞뒤 문장은 문맥 확인용이며 절대 출력하거나 수정하지 않는다.',
+    'SOURCE SENTENCE의 주장, 행위 주체, 대상, 인과·대조·부정·가능성·의무, 시제, 수치, 기관명, 고유명사, 전문 용어를 모두 보존한다.',
+    '새 사실·평가·감정·경험·성과·예시·결론을 추가하지 않고, 원래 있던 정보도 요약하거나 삭제하지 않는다.',
+    '단순 동의어 치환, 조사·띄어쓰기·쉼표 한 곳 변경은 실패다. 같은 뜻 안에서 절 순서, 주어 위치, 연결 방식, 문장 호흡 가운데 하나 이상을 실제로 재구성한다.',
+    '문장 수는 한 개로 유지하고 줄바꿈·목록·제목·인용을 새로 만들지 않는다.',
+    '원문의 종결체와 격식을 유지한다.',
+    profileRule,
+    '위 조건을 모두 지킬 수 없으면 rewrittenSentence에는 CURRENT SENTENCE를 그대로 넣고 safeChangeFound=false로 답한다.'
+  ].filter(Boolean).join('\n');
+  const response = await completeJson({
+    system,
+    user: [
+      `[DOCUMENT PROFILE]\n${profile}`,
+      `[SOURCE SENTENCE]\n${sourceSpan.text}`,
+      `[CURRENT SENTENCE]\n${currentSpan.text}`,
+      `[PREVIOUS CONTEXT - 읽기 전용]\n${previous}`,
+      `[NEXT CONTEXT - 읽기 전용]\n${next}`
+    ].join('\n\n'),
+    schema: CONSERVATIVE_SENTENCE_REPAIR_SCHEMA,
+    schemaName: 'gpt_prod_conservative_sentence_retry',
+    model: model || config.models.repair,
+    reasoningEffort: reasoningEffort || config.reasoning.repair,
+    verbosity: 'low',
+    maxOutputTokens: Math.max(700, Math.min(1800, Math.ceil(currentSpan.text.length * 5))),
+    config,
+    signal,
+    safetyIdentifier,
+    meta: { task: 'repair', phase, mode: String(mode || 'humanize'), profile }
+  });
+
+  const rewrittenSentence = String(response.json.rewrittenSentence || '')
+    .replace(/\r\n?/gu, '\n')
+    .trim();
+  const rejectionCodes = validateConservativeSentenceRewrite(
+    sourceSpan.text,
+    currentSpan.text,
+    rewrittenSentence
+  );
+  const safeChangeFound = response.json.safeChangeFound === true && rejectionCodes.length === 0;
+  if (!safeChangeFound) {
+    return {
+      ...conservativeSentenceResult(
+        current,
+        false,
+        ordinal,
+        rejectionCodes[0] || 'model_reported_no_safe_change'
+      ),
+      notes: response.json.notes || [],
+      usage: response.usage,
+      model: response.model,
+      rejectionCodes
+    };
+  }
+
+  const outputText = current.slice(0, currentSpan.start)
+    + rewrittenSentence
+    + current.slice(currentSpan.end);
+  return {
+    outputText,
+    rewrittenSentence,
+    safeChangeFound: true,
+    applied: true,
+    targetOrdinal: ordinal,
+    currentOutputIndex: currentIndex,
+    reason: 'sentence_recast',
+    rejectionCodes: [],
+    notes: response.json.notes || [],
+    usage: response.usage,
+    model: response.model
+  };
+}
+
+function meaningfulSentenceSpans(value) {
+  return splitSentenceSpans(String(value || ''))
+    .filter(span => normalizeSentenceSubstance(
+      String(span.text || '').replace(/ZXQLOCK\d+QXZ/giu, ' ')
+    ).length >= 3);
+}
+
+function normalizeSentenceSubstance(value) {
+  return String(value || '')
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}\s]/gu, '');
+}
+
+function isConservativeSentenceTarget(value) {
+  const sentence = String(value || '').trim();
+  if (sentence.length < 18 || sentence.length > 700 || /[\r\n\t]/u.test(sentence)) return false;
+  if (/ZXQLOCK\d+QXZ|```|~~~|`/iu.test(sentence)) return false;
+  if (/^(?:#{1,6}\s|[-*+•▪◦·●○■□◆◇▶▷※]\s|\d{1,3}[.)]\s|[①-⑳]\s)/u.test(sentence)) return false;
+  if (/^(?:제\s*\d{1,3}\s*조|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?\s)/u.test(sentence)) return false;
+  if (/^\|.+\|$/u.test(sentence)) return false;
+  // 직접 인용과 독립 제목은 마지막 회복 단계에서도 원문 그대로 둔다.
+  if (/["'“”‘’「」『』《》〈〉]/u.test(sentence)) return false;
+  return !/^[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}:\s*\S/u.test(sentence);
+}
+
+function validateConservativeSentenceRewrite(sourceSentence, currentSentence, rewrittenSentence) {
+  const codes = [];
+  const rewritten = String(rewrittenSentence || '').trim();
+  if (!rewritten) return ['empty_sentence'];
+  if (/[\r\n\t]/u.test(rewritten)) codes.push('line_structure_changed');
+  if (meaningfulSentenceSpans(rewritten).length !== 1) codes.push('sentence_count_changed');
+  const substantive = humanizationDepth.measureSubstantiveEdit(currentSentence, rewritten);
+  if (substantive.substantiveChangedSentenceCount < 1
+      || Number(substantive.substantiveEditRatio || 0) < 0.065) {
+    codes.push('sentence_change_too_shallow');
+  }
+  const surface = computeEditMetrics(currentSentence, rewritten);
+  if (surface.charEditRatio > 0.58) codes.push('sentence_change_too_large');
+  if (surface.lengthRatio < 0.78 || surface.lengthRatio > 1.24) codes.push('sentence_length_shift');
+  if (compareNumberMultiset(sourceSentence, rewrittenSentence).changed) codes.push('number_changed');
+  if (/[`|]/u.test(rewritten) && !/[`|]/u.test(currentSentence)) codes.push('structure_token_added');
+  return [...new Set(codes)];
+}
+
+function conservativeProfileRule(profile) {
+  if (profile === 'student_record_teacher') {
+    return '교사가 학생을 관찰해 기록하는 세특 문체를 유지한다. “저는·제가·나는·우리”를 넣지 말고, 원문이 명사형 종결이면 명사형 종결을 유지한다.';
+  }
+  if (profile === 'student_self_assessment') {
+    return '학생 본인의 자기평가 화자와 기존 종결체를 유지하고, 교사 관찰 문체로 바꾸지 않는다.';
+  }
+  if (profile === 'resume_application') {
+    return '지원자의 실제 행동과 담당 범위를 원문보다 과장하거나 약화하지 않고, 직무 문서의 격식을 유지한다.';
+  }
+  if (['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract'].includes(profile)) {
+    return '학술·보고서·임상·법률 문서의 전문 용어와 격식을 유지하며 구어체, 감탄형, 친근한 표현을 새로 넣지 않는다.';
+  }
+  return '원문 화자와 종결체를 그대로 유지한다.';
+}
+
+function conservativeSentenceResult(outputText, applied, targetOrdinal, reason) {
+  return {
+    outputText,
+    rewrittenSentence: '',
+    safeChangeFound: false,
+    applied,
+    targetOrdinal,
+    currentOutputIndex: -1,
+    reason,
+    rejectionCodes: reason ? [reason] : [],
+    notes: [],
+    usage: null,
+    model: ''
+  };
+}
+
 function buildGeneralRetryTargetOrdinals(source, currentOutput, plan = {}, depthReport = null) {
   const measured = humanizationDepth.measureSubstantiveEdit(source, currentOutput);
   const rows = measured.sentenceEdits || [];
@@ -1243,6 +1459,7 @@ module.exports = {
   compareRepetitionDelta,
   retryPolishSurface,
   retryGeneralSurface,
+  retryConservativeSentenceSurface,
   retryKoreanRefinement,
   retryFingerprintAudit,
   retryEndingStyleAudit,

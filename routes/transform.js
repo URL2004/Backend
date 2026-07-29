@@ -802,6 +802,12 @@ function buildArchiveObservability(job) {
     finalNoopRecoveryApplied: engineMeta.finalNoopRecoveryApplied === true,
     finalNoopRecoveryMethod: archiveString(engineMeta.finalNoopRecoveryMethod, 32),
     finalNoopRecoveryReason: archiveString(engineMeta.finalNoopRecoveryReason, 96),
+    conservativeSentenceRetryAttemptCount: archiveFinite(engineMeta.conservativeSentenceRetryAttemptCount),
+    conservativeSentenceRetryModelCallCount: archiveFinite(engineMeta.conservativeSentenceRetryModelCallCount),
+    conservativeSentenceRetryAppliedCount: archiveFinite(engineMeta.conservativeSentenceRetryAppliedCount),
+    conservativeSentenceRetryRejectionCodes: uniqueStrictArchiveCodes(
+      engineMeta.conservativeSentenceRetryRejectionCodes
+    ),
     humanizationDepthEnabled: engineMeta.humanizationDepthEnabled === true,
     humanizationDepthApplicable: engineMeta.humanizationDepthApplicable === true,
     humanizationDepthPass: engineMeta.humanizationDepthPass === true,

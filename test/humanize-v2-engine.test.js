@@ -90,6 +90,25 @@ function installEngineMock(t, options = {}) {
         notes: []
       });
     }
+    if (name === 'gpt_prod_conservative_sentence_retry') {
+      const input = String(body.input || '');
+      const currentSentence = input.match(
+        /\[CURRENT SENTENCE\]\n([\s\S]*?)(?:\n\n\[PREVIOUS CONTEXT)/u
+      )?.[1]?.trim() || '';
+      const rewrittenSentence = typeof options.conservativeSentenceOutput === 'function'
+        ? options.conservativeSentenceOutput(
+            body,
+            calls.filter(call => call.name === name).length,
+            currentSentence
+          )
+        : (options.conservativeSentenceOutput || currentSentence);
+      return apiResponse({
+        rewrittenSentence,
+        safeChangeFound: options.conservativeSentenceSafeChangeFound !== false
+          && rewrittenSentence !== currentSentence,
+        notes: []
+      });
+    }
     if (name === 'gpt_prod_korean_refinement_retry') {
       return apiResponse({
         outputText: options.koreanRefinementOutput || options.humanize || SAFE_POLISH,
@@ -142,7 +161,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.15');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.16');
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -559,6 +578,25 @@ test('OpenAI refusal은 최종 결과로 전달하지 않고 strict 차단한다
     'refusal은 품질 승격 대상으로 재시도하지 않는다');
 });
 
+test('전체 편집 청크의 전송 실패는 깊이·문장 회복으로 오인해 추가 호출하지 않는다', { concurrency: false }, async t => {
+  const mock = installEngineMock(t, {
+    refuseHumanize: true,
+    humanizationDepth: true
+  });
+  const out = await engine.run({
+    text: SOURCE,
+    mode: 'blog',
+    uid: 'all-model-failure-user',
+    config: config()
+  });
+  assert.equal(out.status, 'blocked');
+  assert.equal(out.engineMeta.modelFailureChunkCount, 1);
+  assert.equal(out.engineMeta.approvedModelChunkCount, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_conservative_sentence_retry').length, 0);
+});
+
 test('v2 청크가 보호 사실을 잃고 회복도 실패하면 원문 동일 결과를 전달하지 않는다', { concurrency: false }, async t => {
   const source = '한국대학교 연구팀은 학생 20명을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 정리했습니다.';
   const unsafe = '한 대학 연구팀은 여러 학생을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 자연스럽게 정리했습니다.';
@@ -570,6 +608,55 @@ test('v2 청크가 보호 사실을 잃고 회복도 실패하면 원문 동일 
   assert.equal(out.engineMeta.humanizationNoBenefitDelivered, false);
   assert.ok(out.floorReport.criticals.some(item => item.gate === 'gpt_noop_unchanged'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+});
+
+test('전체 후보가 원문으로 복귀해도 문장 단위 안전 회복으로 0% 결과를 만들지 않는다', { concurrency: false }, async t => {
+  const source = [
+    '학생은 수업에서 여러 자료를 직접 찾아 비교하며 탐구의 출발점을 정함.',
+    '발표에서는 핵심 내용을 순서대로 설명하고 친구들의 질문에 답함.',
+    '질문을 받은 뒤에는 부족한 근거를 다시 확인하며 탐구 내용을 확장함.',
+    '마지막에는 조사 과정과 새롭게 알게 된 내용을 보고서로 정리함.'
+  ].join(' ');
+  const recasts = new Map([
+    [
+      '학생은 수업에서 여러 자료를 직접 찾아 비교하며 탐구의 출발점을 정함.',
+      '탐구의 출발점을 정하기 위해 학생은 수업에서 여러 자료를 직접 찾아 비교함.'
+    ],
+    [
+      '발표에서는 핵심 내용을 순서대로 설명하고 친구들의 질문에 답함.',
+      '핵심 내용을 순서대로 설명한 뒤, 발표에서 친구들의 질문에도 답함.'
+    ],
+    [
+      '질문을 받은 뒤에는 부족한 근거를 다시 확인하며 탐구 내용을 확장함.',
+      '탐구 내용을 확장하는 과정에서 질문을 바탕으로 부족한 근거를 다시 확인함.'
+    ]
+  ]);
+  const mock = installEngineMock(t, {
+    humanizationDepth: true,
+    humanize: source,
+    generalRetryOutput: source,
+    conservativeSentenceOutput: (_body, _callNumber, currentSentence) => (
+      recasts.get(currentSentence) || currentSentence
+    )
+  });
+  const out = await engine.run({
+    text: source,
+    mode: 'blog',
+    uid: 'student-record-conservative-recovery-user',
+    config: config()
+  });
+  assert.notEqual(out.status, 'blocked', JSON.stringify({
+    floorReport: out.floorReport,
+    engineMeta: out.engineMeta,
+    calls: mock.calls.map(call => call.name)
+  }));
+  assert.notEqual(out.result.outputText, source);
+  assert.ok(out.engineMeta.substantiveEditRatio >= out.engineMeta.humanizationHardMinimumRatio);
+  assert.ok(out.engineMeta.conservativeSentenceRetryAttemptCount >= 1);
+  assert.ok(out.engineMeta.conservativeSentenceRetryAppliedCount >= 1);
+  assert.equal(out.engineMeta.finalNoopRecoveryMethod, 'conservative_sentence_recast');
+  assert.equal(out.engineMeta.modelFailureChunkCount, 0);
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_conservative_sentence_retry'));
 });
 
 test('두 모델이 보존 게이트에 실패하면 원문에서 안전한 표면 교정 1회만 허용한다', { concurrency: false }, async t => {
@@ -1033,7 +1120,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.15');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.16');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

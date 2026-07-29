@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const { parseCsv, stringifyCsv } = require('./lib/csv');
 const { rtfToText } = require('./lib/rtfText');
 const { detectDocumentProfile, DOCUMENT_PROFILES } = require('../engine-gpt-prod/documentProfile');
-const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
+const { compareNaturalnessShadow } = require('../engine-gpt-prod/naturalnessShadow');
 const floor = require('../engine/floor');
 const structureChunk = require('../engine-gpt-prod/structureChunk');
 

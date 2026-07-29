@@ -120,11 +120,6 @@ function extractGptResult(data, toolName) {
   return useBlock.input && typeof useBlock.input === 'object' ? useBlock.input : {};
 }
 
-async function runHumanize(opts = {}) {
-  const out = await engine.run(opts);
-  return out.result;
-}
-
 async function runHumanizeChunked(opts = {}) {
   return await engine.run(opts);
 }
@@ -145,39 +140,12 @@ async function judgeAndRepair(...args) {
   return await judge.judgeAndRepair(...args);
 }
 
-function buildDetectTool(lang = 'ko') {
-  const isEn = lang === 'en';
-  return {
-    name: 'return_detection_result',
-    description: 'AI generated probability result.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        probability: { type: 'number' },
-        summary: { type: 'string' },
-        detail: { type: 'string' },
-        signals: { type: 'array', items: { type: 'string' } },
-        confidence: { type: 'string', enum: ['low', 'medium', 'high'] }
-      },
-      required: isEn
-        ? ['probability', 'summary', 'detail', 'signals', 'confidence']
-        : ['probability', 'summary', 'detail', 'signals', 'confidence']
-    }
-  };
-}
-
 module.exports = {
   callGpt,
   extractGptResult,
-  runHumanize,
   runHumanizeChunked,
   runDetect,
   suggestEvidence,
   rewriteSentence,
-  judgeAndRepair,
-  buildSoftClaimLedger: judge.buildSoftClaimLedger,
-  semanticJudge: judge.semanticJudge,
-  repairViolations: judge.repairViolations,
-  buildDetectTool,
-  strictSchema
+  judgeAndRepair
 };

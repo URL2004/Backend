@@ -49,9 +49,7 @@ function buildContract(rawText, { mode = 'assignment', lang = 'ko', optIn = fals
     allowedPronouns,
     forbiddenPronouns,
     register,
-    lengthPolicy: mode === 'polish'
-      ? floor.polishLengthPolicy(rawText)
-      : (floor.LENGTH_POLICY[mode] || floor.LENGTH_POLICY.assignment),
+    lengthPolicy: floor.lengthPolicyFor(rawText, mode),
     softClaimLedger: null
   };
 }

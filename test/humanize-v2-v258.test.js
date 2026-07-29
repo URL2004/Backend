@@ -875,8 +875,7 @@ test('앞 단계의 기존 사실 누락이 무관한 국소 의미 복원을 �
     mode: 'assignment',
     protectedTerms: ['서울대학교'],
     maxLocalEditRatio: 0.4,
-    minLocalLengthRatio: 0.78,
-    maxLocalLengthRatio: 1.22,
+    localLengthPurpose: 'source_restore',
     allowDepthRegression: true
   }), true);
 
@@ -888,8 +887,7 @@ test('앞 단계의 기존 사실 누락이 무관한 국소 의미 복원을 �
     mode: 'assignment',
     protectedTerms: ['서울대학교'],
     maxLocalEditRatio: 0.4,
-    minLocalLengthRatio: 0.78,
-    maxLocalLengthRatio: 1.22,
+    localLengthPurpose: 'source_restore',
     allowDepthRegression: true
   }), false);
 });
@@ -978,11 +976,12 @@ test('라벨이 많은 polish 문서는 대표 본문만 1차 호출하고 잔�
       flags: ['label_heavy']
     }
   };
-  const deferred = chunks.map((chunk, index) => engine.shouldDeferPolishLabelMicroFragment({
+  const deferred = chunks.map((chunk, index) => engine.shouldDeferLabelMicroFragment({
     chunk,
     chunks,
     index,
-    documentProfile
+    documentProfile,
+    mode: 'polish'
   }));
 
   assert.equal(deferred.filter(Boolean).length, 28);

@@ -9,6 +9,10 @@ const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile
 const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
 const candidateIntegrity = require('./candidateIntegrity');
+const {
+  buildPromptDataSections,
+  promptEnvelopeSystemRule
+} = require('./promptEnvelope');
 
 const SEMANTIC_VIOLATION_TYPES = [
   'distortion',
@@ -17,26 +21,6 @@ const SEMANTIC_VIOLATION_TYPES = [
   'experience_novelty',
   ...discourse.VIOLATION_CODES
 ];
-
-const LEDGER_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    claims: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          claim: { type: 'string' },
-          evidence_text: { type: 'string' }
-        },
-        required: ['claim', 'evidence_text']
-      }
-    }
-  },
-  required: ['claims']
-};
 
 const JUDGE_SCHEMA = {
   type: 'object',
@@ -74,44 +58,14 @@ async function loadConfig(config) {
   return config ? gptRuntimeConfig.publicConfig(config, config.source || 'inline') : gptRuntimeConfig.getRuntimeConfig({ force: false });
 }
 
-async function buildSoftClaimLedger(rawText, { lang = 'ko', signal, config, model, reasoningEffort, phase = 'ledger', safetyIdentifier = '' } = {}) {
-  const cfg = await loadConfig(config);
-  const source = String(rawText || '');
-  const cap = Math.min(40, Math.max(12, Math.round(source.replace(/\s+/g, '').length / 300)));
-  const system = lang === 'en'
-    ? `Extract a closed-world claim ledger from SOURCE. evidence_text must be a verbatim substring. Return up to ${cap} claims.`
-    : `SOURCE에서 재작성 검증용 닫힌세계 claim 원장을 추출한다. evidence_text는 SOURCE의 그대로 부분 문자열이어야 한다. 최대 ${cap}개까지 반환한다.`;
-  const res = await completeJson({
-    system,
-    user: `[SOURCE]\n${source}`,
-    schema: LEDGER_SCHEMA,
-    schemaName: 'gpt_prod_soft_claim_ledger',
-    model: model || cfg.models.judge,
-    reasoningEffort: reasoningEffort || cfg.reasoning.judge,
-    verbosity: 'low',
-    maxOutputTokens: Math.min(8192, 2048 + cap * 180),
-    config: cfg,
-    signal,
-    safetyIdentifier,
-    meta: { task: 'judge', phase, mode: 'judge', profile: 'gpt_prod_judge' }
-  });
-  const claims = Array.isArray(res.json.claims) ? res.json.claims : [];
-  const kept = claims.filter(c => evidenceMatches(source, c.evidence_text)).slice(0, cap);
-  return {
-    claims: kept,
-    total: claims.length,
-    dropped: claims.length - kept.length,
-    gptMeta: responseMeta(res)
-  };
-}
-
 async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, config, allowedExtra = '', mode = '', discourseSignals = [], model, reasoningEffort, phase = 'semantic', safetyIdentifier = '' } = {}) {
   const cfg = await loadConfig(config);
   const claimsText = ledgerToText(ledger);
   const system = lang === 'en'
-    ? 'You are a strict but fair fact checker. SOURCE is the sole ground truth. SOURCE CLAIM LEDGER is a verified, non-exhaustive index of source passages. Compare the entire SOURCE and flag fabricated facts, meaning reversals, and omitted material claims. Return JSON only.'
+    ? `You are a strict but fair fact checker. SOURCE is the sole ground truth. SOURCE CLAIM LEDGER is a verified, non-exhaustive index of source passages. Compare the entire SOURCE and flag fabricated facts, meaning reversals, and omitted material claims. Return JSON only. ${promptEnvelopeSystemRule()}`
     : [
         '너는 엄격하지만 공정한 닫힌세계 문서 검수 엔진이다. SOURCE 전체를 유일한 사실·주제·평가·문단 역할 기준으로 삼는다.',
+        promptEnvelopeSystemRule(),
         'SOURCE CLAIM LEDGER는 원문 구절을 그대로 뽑은 검증 인덱스이며 완전한 목록은 아니다.',
         '새 사실 추가, 의미 왜곡, 핵심 주장 누락뿐 아니라 원문에 없던 주제 확장(scope_expansion), 교훈·평가(new_evaluation), 강한 수식(intensity_amplification), 반복 결론(duplicate_conclusion/repeated_reflection_conclusion), 문단마다 같은 인과-결론 구조(overstructured_causality), 문단 역할 변화(rhetorical_role_shift), 결론 뒤 새 탐구 시작(topic_restart), 실제 활동 비중 축소(personal_balance_shift)를 판정한다.',
         '결정론 신호에 experience_novelty_candidate가 있으면 원문·허용 메모에 없는 실제 개인 경험·시점·행동이 새로 생겼는지 확인한다. 단순 의역이나 원문 경험의 자연스러운 재표현은 위반이 아니다. 실제 신규 경험이면 experience_novelty로 판정한다.',
@@ -124,14 +78,17 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         '표현을 충분히 바꾼 것 자체는 위반이 아니다. 같은 주장 안의 어순·절·호흡 변화는 허용하고, SOURCE에 없던 담화 기능이나 범위가 생긴 경우만 위반으로 잡는다.',
         '원문에 있던 1인칭 화자·관점이 결과에서 완전히 사라지거나 원문에 없던 화자가 생긴 경우도 의미 왜곡으로 판정한다. JSON만 반환한다.'
       ].join('\n');
-  const user = [
-    `[SOURCE]\n${rawText}`,
-    `[SOURCE CLAIM LEDGER]\n${claimsText}`,
-    allowedExtra ? `[ALLOWED EXTRA]\n${allowedExtra}` : '',
-    discourseSignals.length ? `[DETERMINISTIC DISCOURSE SIGNALS - 검증 후 판정]\n${discourseSignals.join('\n')}` : '',
-    `[MODE]\n${mode || 'assignment'}`,
-    `[REWRITE]\n${outputText}`
-  ].filter(Boolean).join('\n\n');
+  const user = buildPromptDataSections([
+    { label: 'SOURCE', value: rawText },
+    { label: 'SOURCE_CLAIM_LEDGER', value: claimsText },
+    { label: 'ALLOWED_EXTRA', value: allowedExtra },
+    {
+      label: 'DETERMINISTIC_DISCOURSE_SIGNALS',
+      value: discourseSignals.length ? discourseSignals.join('\n') : ''
+    },
+    { label: 'MODE', value: mode || 'assignment' },
+    { label: 'REWRITE', value: outputText }
+  ]).text;
   const res = await completeJson({
     system,
     user,
@@ -166,14 +123,14 @@ async function repairViolations(rawText, outputText, ledger, violations, {
   if (!violations || !violations.length) return { outputText, repaired: false, notes: [] };
   const cfg = await loadConfig(config);
   const system = lang === 'en'
-    ? 'Repair only the listed violations while preserving the original rewrite as much as possible. Do not add facts.'
-    : '위반이 발생한 문장이나 문단만 원문의 같은 위치를 기준으로 고친다. 나머지 문장·문단은 그대로 유지한다. 새 사실·주제·평가·교훈·강한 수식·결론을 추가하지 않으며, 기존의 안전한 문장 구조 변화는 지우지 않는다. 목적, 근거 틀, 대조·부정·제한·가능성의 범위, 행위 방향과 강도, 행위 주체, 평서문 문체, 표·캡션의 압축도는 원문으로 되돌린다. 증명·확인, 재발견·되살리기, 적극적·직접적처럼 기능이 다른 말을 섞지 않고 SOURCE에 없던 즉시성은 제거한다. 연구개발 문맥의 최적화·상관관계·원인 분석·재현성 검증 같은 정확한 개념어도 같은 주장 위치에 복원한다.';
-  const user = [
-    `[SOURCE]\n${rawText}`,
-    `[SOURCE CLAIM LEDGER]\n${ledgerToText(ledger)}`,
-    `[CURRENT REWRITE]\n${outputText}`,
-    `[VIOLATIONS]\n${JSON.stringify(violations, null, 2)}`
-  ].join('\n\n');
+    ? `Repair only the listed violations while preserving the original rewrite as much as possible. Do not add facts. ${promptEnvelopeSystemRule()}`
+    : `위반이 발생한 문장이나 문단만 원문의 같은 위치를 기준으로 고친다. 나머지 문장·문단은 그대로 유지한다. 새 사실·주제·평가·교훈·강한 수식·결론을 추가하지 않으며, 기존의 안전한 문장 구조 변화는 지우지 않는다. 목적, 근거 틀, 대조·부정·제한·가능성의 범위, 행위 방향과 강도, 행위 주체, 평서문 문체, 표·캡션의 압축도는 원문으로 되돌린다. 증명·확인, 재발견·되살리기, 적극적·직접적처럼 기능이 다른 말을 섞지 않고 SOURCE에 없던 즉시성은 제거한다. 연구개발 문맥의 최적화·상관관계·원인 분석·재현성 검증 같은 정확한 개념어도 같은 주장 위치에 복원한다. ${promptEnvelopeSystemRule()}`;
+  const user = buildPromptDataSections([
+    { label: 'SOURCE', value: rawText },
+    { label: 'SOURCE_CLAIM_LEDGER', value: ledgerToText(ledger) },
+    { label: 'CURRENT_REWRITE', value: outputText },
+    { label: 'VIOLATIONS', value: JSON.stringify(violations, null, 2) }
+  ]).text;
   const res = await completeJson({
     system,
     user,
@@ -402,17 +359,6 @@ function summarizeJudge(report) {
   };
 }
 
-function validateLedgerHealth(ledger, rawText) {
-  const claims = ledger?.claims?.length || 0;
-  const total = ledger?.total || 0;
-  const dropped = ledger?.dropped || 0;
-  const rawLen = String(rawText || '').replace(/\s+/g, '').length;
-  if (claims === 0) return { healthy: false, reason: 'no_claims' };
-  if (total >= 3 && dropped / total > 0.5) return { healthy: false, reason: 'high_drop' };
-  if (rawLen >= 1500 && claims < 3) return { healthy: false, reason: 'undercovered' };
-  return { healthy: true, reason: 'ok' };
-}
-
 function assessRepairCandidate(rawText, beforeText, candidateText, {
   mode = '',
   allowedExtra = '',
@@ -430,13 +376,12 @@ function assessRepairCandidate(rawText, beforeText, candidateText, {
   const compact = value => String(value || '').normalize('NFC').replace(/\s+/gu, '');
   const resetsToSource = compact(candidate) === compact(source)
     && compact(before) !== compact(source);
-  const polish = mode === 'polish';
-  const minSourceLength = polish ? 0.9 : 0.82;
-  const maxSourceLength = polish ? 1.1 : 1.25;
-  if (candidateMetrics.lengthRatio < minSourceLength) reasons.push('source_length_short');
-  if (candidateMetrics.lengthRatio > maxSourceLength) reasons.push('source_length_overrun');
-  if (relativeLength < 0.82 && !(allowSourceReset && resetsToSource)) reasons.push('repair_collapsed');
-  if (relativeLength > 1.2) reasons.push('repair_expanded');
+  const repairLengthPolicy = floor.lengthStagePolicy(source, mode || 'assignment', 'repair');
+  if (candidateMetrics.lengthRatio < repairLengthPolicy.min) reasons.push('source_length_short');
+  if (candidateMetrics.lengthRatio > repairLengthPolicy.max) reasons.push('source_length_overrun');
+  if (relativeLength < repairLengthPolicy.relativeMin
+      && !(allowSourceReset && resetsToSource)) reasons.push('repair_collapsed');
+  if (relativeLength > repairLengthPolicy.relativeMax) reasons.push('repair_expanded');
 
   const beforeLost = floor.measureLostFacts(source, before).count;
   const candidateLost = floor.measureLostFacts(source, candidate).count;
@@ -634,18 +579,6 @@ function ledgerToText(ledger) {
   return claims.map((c, i) => `${i + 1}. ${c.claim}\n   근거(원문): "${String(c.evidence_text || '').trim()}"`).join('\n');
 }
 
-function evidenceMatches(rawText, ev) {
-  const r = normWS(rawText);
-  const e = normWS(ev);
-  if (e.length < 4) return false;
-  if (r.includes(e)) return true;
-  return r.includes(e.slice(0, Math.min(24, e.length)));
-}
-
-function normWS(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
 function responseMeta(res) {
   return {
     selectedModel: res.model,
@@ -659,12 +592,9 @@ function responseMeta(res) {
 module.exports = {
   SEMANTIC_VIOLATION_TYPES,
   shouldEscalateSemanticReport,
-  buildSoftClaimLedger,
   semanticJudge,
   repairViolations,
   judgeAndRepair,
   assessRepairCandidate,
-  validateLedgerHealth,
-  spanInSource,
-  evidenceMatches
+  spanInSource
 };

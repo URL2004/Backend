@@ -8,6 +8,7 @@ const { safetyIdentifierForUid } = require('../engine-gpt-prod/openaiClient');
 const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const { buildVoiceProfile } = require('../engine-gpt-prod/voiceProfile');
 const layoutStructure = require('../engine-gpt-prod/layoutStructure');
+const { extractPromptDataSection } = require('../engine-gpt-prod/promptEnvelope');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 const SAFE_POLISH = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지 않습니다.';
@@ -92,9 +93,7 @@ function installEngineMock(t, options = {}) {
     }
     if (name === 'gpt_prod_conservative_sentence_retry') {
       const input = String(body.input || '');
-      const currentSentence = input.match(
-        /\[CURRENT SENTENCE\]\n([\s\S]*?)(?:\n\n\[PREVIOUS CONTEXT)/u
-      )?.[1]?.trim() || '';
+      const currentSentence = extractPromptDataSection(input, 'CURRENT_SENTENCE').trim();
       const rewrittenSentence = typeof options.conservativeSentenceOutput === 'function'
         ? options.conservativeSentenceOutput(
             body,
@@ -117,7 +116,7 @@ function installEngineMock(t, options = {}) {
       });
     }
     if (name === 'gpt_prod_soft_claim_ledger') {
-      const source = String(body.input || '').split('[SOURCE]\n')[1] || SOURCE;
+      const source = extractPromptDataSection(body.input, 'SOURCE') || SOURCE;
       const normalized = source.replace(/\s+/gu, ' ').trim();
       if (options.invalidLedger) {
         return apiResponse({ claims: [{ claim: '검증되지 않은 주장', evidence_text: '원문에 존재하지 않는 근거' }] });
@@ -161,7 +160,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.17');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.18');
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -419,9 +418,7 @@ test('장문 polish는 자연스러운 청크의 무변환을 허용하고 문�
   const mock = installEngineMock(t, {
     humanize: body => {
       const input = String(body.input || '');
-      const marker = '[편집할 텍스트]\n';
-      const start = input.lastIndexOf(marker);
-      const editable = start >= 0 ? input.slice(start + marker.length).trim() : input;
+      const editable = extractPromptDataSection(input, 'EDITABLE_TEXT').trim() || input;
       return editable.includes('둘째 구간')
         ? editable.replace('자연스럽지가 않습니다', '자연스럽지 않습니다')
         : editable;
@@ -459,9 +456,7 @@ test('질문지는 번호·질문을 잠그고 답변별로만 편집하며 기�
   const mock = installEngineMock(t, {
     humanize: body => {
       const input = String(body.input || '');
-      const marker = '[편집할 텍스트]\n';
-      const start = input.lastIndexOf(marker);
-      const editable = start >= 0 ? input.slice(start + marker.length).trim() : input;
+      const editable = extractPromptDataSection(input, 'EDITABLE_TEXT').trim() || input;
       return replacements.get(editable) || editable;
     }
   });
@@ -720,6 +715,13 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 재�
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
   assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.5.14');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
+  assert.equal(out.engineMeta.humanizationPlanDistributionAligned, true);
+  assert.equal(
+    out.engineMeta.humanizationPlanMappedSentenceCount,
+    out.engineMeta.humanizationPlanDocumentSentenceCount
+  );
+  assert.equal(out.engineMeta.humanizationDepthLockFreezeMissCount, 0);
+  assert.ok(out.engineMeta.chunkResolvedFailureCodes.includes('noop_unchanged'));
   assert.ok(out.engineMeta.humanizationDepthReasonCodes.length >= 1);
   assert.deepEqual(out.engineMeta.humanizationDepthBlockingReasonCodes, []);
   assert.ok(out.engineMeta.humanizationTargetMinRatio > out.engineMeta.humanizationMinimumRatio);
@@ -727,7 +729,9 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 재�
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 1);
-  assert.ok(mock.calls.some(call => String(call.body.instructions || '').includes('실질 휴머나이징 계약')));
+  const humanizeCalls = mock.calls.filter(call => call.name === 'gpt_prod_humanize_result');
+  assert.ok(humanizeCalls.some(call => JSON.stringify(call.body.input || '').includes('[실질 휴머나이징 계약]')));
+  assert.equal(humanizeCalls.some(call => String(call.body.instructions || '').includes('[실질 휴머나이징 계약]')), false);
   const retryCall = mock.calls.find(call => call.name === 'gpt_prod_general_surface_retry');
   assert.match(String(retryCall?.body?.instructions || ''), /수정 대상 문장 번호/u);
   assert.match(String(retryCall?.body?.instructions || ''), /문서 전체를 다시 쓰지 않는다/u);
@@ -1120,7 +1124,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.17');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.18');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);
@@ -1183,8 +1187,8 @@ test('결정론 claim 원장은 원문 구절만 사용하고 실제 의미 심�
   assert.ok(mock.semanticCalls() >= 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_soft_claim_ledger').length, 0);
   const semanticCall = mock.calls.find(call => call.name === 'gpt_prod_semantic_judge');
-  assert.ok(String(semanticCall.body.input || '').includes(`[SOURCE]\n${source}`));
-  assert.ok(String(semanticCall.body.input || '').includes('[SOURCE CLAIM LEDGER]'));
+  assert.equal(extractPromptDataSection(semanticCall.body.input, 'SOURCE'), source);
+  assert.ok(extractPromptDataSection(semanticCall.body.input, 'SOURCE_CLAIM_LEDGER'));
 });
 
 test('괄호형 보호 명칭은 전체 표기나 약어 중 하나가 남으면 같은 규칙으로 보존 판정한다', () => {

@@ -1,6 +1,6 @@
 'use strict';
 
-const { splitSentences } = require('../koreanText');
+const { splitSentences } = require('../engine/koreanText');
 
 const CONNECTOR_PATTERNS = [
   /또한/gu, /따라서/gu, /이에\s*따라/gu, /이러한/gu, /이를\s*통해/gu,

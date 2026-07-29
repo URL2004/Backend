@@ -7,12 +7,13 @@
 // catcher:'novelty' 케이스는 결정론 measureNovelty가 잡으므로 runEval(데이터)에서 확인.
 
 const judge = require('../engine-gpt-prod/judge');
+const { buildSoftClaimLedger } = require('./softClaimLedger');
 const cases = require('./grounding-cases').filter(c => c.catcher === 'judge');
 
 (async () => {
   let fail = 0;
   for (const c of cases) {
-    const ledger = await judge.buildSoftClaimLedger(c.source, { lang: 'ko' });
+    const ledger = await buildSoftClaimLedger(c.source, { lang: 'ko' });
     const okV = await judge.semanticJudge(c.source, c.allowed, ledger, { lang: 'ko' });
     const badV = await judge.semanticJudge(c.source, c.forbidden, ledger, { lang: 'ko' });
     const pass = okV.pass === true && badV.pass === false;

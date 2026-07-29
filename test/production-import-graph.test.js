@@ -51,6 +51,7 @@ test('production engine has one path and cannot re-enable dormant prompt or judg
 
 test('retired provider and duplicate engine executables are physically absent', () => {
   for (const retired of [
+    'prompts.js',
     'engine-gpt',
     'engine/claudecode.js',
     'engine/genretransfer.js',
@@ -60,6 +61,8 @@ test('retired provider and duplicate engine executables are physically absent', 
     'engine/outputguard.js',
     'engine/registernormalize.js',
     'engine/prompt.js',
+    'engine/koreanQuality/index.js',
+    'engine/koreanQuality/gate.js',
     'engine-test.js',
     'engine-sweep.js',
     'genre-test.js',
@@ -68,6 +71,50 @@ test('retired provider and duplicate engine executables are physically absent', 
   ]) {
     assert.equal(fs.existsSync(path.join(__dirname, '..', retired)), false, retired);
   }
+});
+
+test('동적 운영 자산과 관리자 lab 경계를 데드코드로 오인하지 않는다', () => {
+  const liveDynamicFiles = [
+    'engine/copykiller_proxy_model.json',
+    'engine/copykiller_airate_model.json',
+    'engine/koreanQuality/officialApi.js',
+    'engine/koreanQuality/officialResources.js',
+    'engine-gpt-prod/naturalnessShadow.js',
+    'labs/adminHumanizeEngines.js'
+  ];
+  for (const liveFile of liveDynamicFiles) {
+    assert.equal(fs.existsSync(path.join(__dirname, '..', liveFile)), true, liveFile);
+  }
+
+  const proxySource = fs.readFileSync(
+    path.join(__dirname, '..', 'engine', 'copykiller-proxy.js'),
+    'utf8'
+  );
+  assert.match(proxySource, /copykiller_proxy_model\.json/u);
+  assert.match(proxySource, /copykiller_airate_model\.json/u);
+  assert.match(proxySource, /fs\.readFileSync/u);
+
+  const niklSource = fs.readFileSync(
+    path.join(__dirname, '..', 'engine-gpt-prod', 'niklAdvisor.js'),
+    'utf8'
+  );
+  assert.match(niklSource, /function loadOfficialApi\(\)/u);
+  assert.match(niklSource, /function loadOfficialResources\(\)/u);
+  assert.match(niklSource, /module\.require\(\['\.\.', 'engine', 'koreanQuality'/u);
+
+  const finalQualitySource = fs.readFileSync(
+    path.join(__dirname, '..', 'engine-gpt-prod', 'finalQualityV2.js'),
+    'utf8'
+  );
+  assert.match(finalQualitySource, /require\('\.\/naturalnessShadow'\)/u);
+
+  const transformSource = fs.readFileSync(
+    path.join(__dirname, '..', 'routes', 'transform.js'),
+    'utf8'
+  );
+  assert.match(transformSource, /function loadAdminHumanizeEngines\(\)/u);
+  assert.match(transformSource, /if \(!isAdminUid\(adminLabUid\)\) return res\.status\(403\)/u);
+  assert.match(transformSource, /\['\.\.', 'labs', 'adminHumanizeEngines'\]\.join\('\/'\)/u);
 });
 
 test('운영 설정 예시는 제거된 provider·엔진·무차감 스위치를 다시 노출하지 않는다', () => {

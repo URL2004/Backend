@@ -94,6 +94,55 @@ function effectConfirmationEnabled() {
   return isV248FeatureEnabled('effectConfirmation');
 }
 
+function recoveryBudgetUsdForCredits(credits) {
+  if (process.env.HUMANIZE_RECOVERY_BUDGET_ENABLED === '0') return 0;
+  const fixed = Number(process.env.HUMANIZE_RECOVERY_BUDGET_USD);
+  if (Number.isFinite(fixed) && fixed > 0) return Number(fixed.toFixed(6));
+  // 최저 판매 패키지의 크레딧당 매출을 보수적으로 잡아 추가 회복 원가가
+  // 정가 매출의 일정 비율을 넘지 않게 한다. 환율·비율은 운영 env로 즉시
+  // 조정할 수 있고, 핵심 생성·안전/의미 감사에는 이 상한을 적용하지 않는다.
+  const revenueRatio = clampNumber(
+    process.env.HUMANIZE_RECOVERY_BUDGET_REVENUE_RATIO,
+    0.1,
+    1,
+    0.6
+  );
+  const creditFloorKrw = clampNumber(
+    process.env.HUMANIZE_CREDIT_LIST_PRICE_KRW
+      ?? process.env.HUMANIZE_CREDIT_FLOOR_KRW,
+    1,
+    100,
+    21
+  );
+  const usdKrw = clampNumber(
+    process.env.HUMANIZE_RECOVERY_BUDGET_FX_KRW_PER_USD
+      ?? process.env.HUMANIZE_USD_KRW,
+    500,
+    3000,
+    1400
+  );
+  const minimumUsd = clampNumber(
+    process.env.HUMANIZE_RECOVERY_BUDGET_MIN_USD,
+    0.01,
+    1,
+    0.08
+  );
+  const maximumUsd = clampNumber(
+    process.env.HUMANIZE_RECOVERY_BUDGET_MAX_USD,
+    minimumUsd,
+    20,
+    3
+  );
+  const listPriceCredits = Math.max(1, Number(credits) || 1);
+  const calculated = listPriceCredits * creditFloorKrw * revenueRatio / usdKrw;
+  return Number(Math.min(maximumUsd, Math.max(minimumUsd, calculated)).toFixed(6));
+}
+
+function clampNumber(value, minimum, maximum, fallback) {
+  const number = Number(value);
+  return Math.max(minimum, Math.min(maximum, Number.isFinite(number) ? number : fallback));
+}
+
 function assessEffectExpectation(text, mode, basicStyle = '') {
   const source = String(text || '');
   const requestStrength = mode === 'formal' ? 'advanced' : (mode === 'polish' ? 'polish' : 'basic');
@@ -587,10 +636,10 @@ function buildBlockOffer(job, text) {
 // ── job 영속화(2026-06-12): Firestore transformJobs — 재시작에도 결과·승인대기 생존.
 //   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
-const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
+const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest', 'engineMeta'];
-const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'devNoAuth', 'deducted',
+const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'layoutNlpTest'];
 
 function pruneUndefinedForFirestore(value) {
@@ -778,6 +827,7 @@ function buildArchiveObservability(job) {
     editableChunkCount: archiveFinite(engineMeta.editableChunkCount),
     deferredLabelMicroChunkCount: archiveFinite(engineMeta.deferredLabelMicroChunkCount),
     deferredPolishMicroChunkCount: archiveFinite(engineMeta.deferredPolishMicroChunkCount),
+    primaryApprovedModelChunkCount: archiveFinite(engineMeta.primaryApprovedModelChunkCount),
     approvedModelChunkCount: archiveFinite(engineMeta.approvedModelChunkCount),
     modelFailureChunkCount: archiveFinite(engineMeta.modelFailureChunkCount),
     retryCounts: compactArchiveCodeCountMap(engineMeta.retryCounts),
@@ -882,6 +932,7 @@ function buildArchiveObservability(job) {
     humanizationDepthRetryRejectedCount: archiveFinite(engineMeta.humanizationDepthRetryRejectedCount),
     humanizationDepthRetryRejectionCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthRetryRejectionCodes),
     sectionRecoveryEnabled: engineMeta.sectionRecoveryEnabled === true,
+    sectionRecoverySelectedCount: archiveFinite(engineMeta.sectionRecoverySelectedCount),
     sectionRecoveryAttemptCount: archiveFinite(engineMeta.sectionRecoveryAttemptCount),
     sectionRecoveryPreferredSectionCount: archiveFinite(engineMeta.sectionRecoveryPreferredSectionCount),
     sectionRecoveryFragmentCount: archiveFinite(engineMeta.sectionRecoveryFragmentCount),
@@ -977,6 +1028,40 @@ function buildArchiveObservability(job) {
     chunkPrimaryFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkPrimaryFailureCodes),
     chunkResidualFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkResidualFailureCodes),
     chunkFallbackReasonCodes: uniqueStrictArchiveCodes(engineMeta.chunkFallbackReasonCodes),
+    chunkResolvedFailureCodes: uniqueStrictArchiveCodes(engineMeta.chunkResolvedFailureCodes),
+    humanizationPlanDistributionAligned: typeof engineMeta.humanizationPlanDistributionAligned === 'boolean'
+      ? engineMeta.humanizationPlanDistributionAligned
+      : undefined,
+    humanizationPlanDocumentSentenceCount: archiveFinite(engineMeta.humanizationPlanDocumentSentenceCount),
+    humanizationPlanMappedSentenceCount: archiveFinite(engineMeta.humanizationPlanMappedSentenceCount),
+    humanizationDepthLockFreezeAttemptCount: archiveFinite(engineMeta.humanizationDepthLockFreezeAttemptCount),
+    humanizationDepthLockFreezeMissCount: archiveFinite(engineMeta.humanizationDepthLockFreezeMissCount),
+    depthTugOfWar: engineMeta.depthTugOfWar ? {
+      rounds: archiveFinite(engineMeta.depthTugOfWar.rounds),
+      semanticRepairRounds: archiveFinite(engineMeta.depthTugOfWar.semanticRepairRounds),
+      rejudgeCount: archiveFinite(engineMeta.depthTugOfWar.rejudgeCount),
+      finalSide: archiveString(engineMeta.depthTugOfWar.finalSide, 12),
+      usdSpent: archiveFinite(engineMeta.depthTugOfWar.usdSpent)
+    } : undefined,
+    pipelineFixedPoint: engineMeta.pipelineFixedPoint ? {
+      safetyPass: engineMeta.pipelineFixedPoint.safetyPass === true,
+      depthHardMinimumPass: engineMeta.pipelineFixedPoint.depthHardMinimumPass === true,
+      structurePass: engineMeta.pipelineFixedPoint.structurePass === true,
+      quotePass: engineMeta.pipelineFixedPoint.quotePass === true,
+      inlineCodePass: engineMeta.pipelineFixedPoint.inlineCodePass === true,
+      reasonCodes: uniqueStrictArchiveCodes(engineMeta.pipelineFixedPoint.reasonCodes)
+    } : undefined,
+    recoveryBudgetEnabled: engineMeta.recoveryBudgetEnabled === true,
+    recoveryBudgetEnforced: engineMeta.recoveryBudgetEnforced === true,
+    recoveryBudgetLimitUsd: archiveFinite(engineMeta.recoveryBudgetLimitUsd),
+    recoveryBudgetSpentUsd: archiveFinite(engineMeta.recoveryBudgetSpentUsd),
+    recoveryBudgetExhausted: engineMeta.recoveryBudgetExhausted === true,
+    recoveryBudgetAttemptedCallCount: archiveFinite(engineMeta.recoveryBudgetAttemptedCallCount),
+    recoveryBudgetSkippedCallCount: archiveFinite(engineMeta.recoveryBudgetSkippedCallCount),
+    recoveryBudgetSkippedCodes: uniqueStrictArchiveCodes(engineMeta.recoveryBudgetSkippedCodes),
+    recoveryBudgetStageUsageUsd: compactArchiveCodeCountMap(engineMeta.recoveryBudgetStageUsageUsd),
+    sectionRecoveryBudgetSkippedCount: archiveFinite(engineMeta.sectionRecoveryBudgetSkippedCount),
+    sectionRecoveryBudgetSkippedCodes: uniqueStrictArchiveCodes(engineMeta.sectionRecoveryBudgetSkippedCodes),
     polishSpeakerRestoreCount: archiveFinite(engineMeta.polishSpeakerRestoreCount),
     polishSpeakerRestoredSentenceCount: archiveFinite(engineMeta.polishSpeakerRestoredSentenceCount),
     lineBoundaryPolicy: archiveString(engineMeta.lineBoundaryPolicy, 24),
@@ -1411,8 +1496,24 @@ async function tryBlogPreservationFallback(job, text) {
           meta: { fallback: true, fromMode: 'blog' }
         });
       } catch (e) {
+        job.billingDisposition = 'charge_failed';
+        discord.billingFailure({
+          uid: job.uid,
+          jobId: job.id,
+          mode: `polish fallback from ${job.mode || 'blog'}`,
+          credits: fbNeeded,
+          billingMode: job.billingMode,
+          reason: e?.message || String(e)
+        });
         logger.error('transform.blog_fallback_billing_failed_manual_action', {
-          jobId: job.id, uid: job.uid, needed: fbNeeded, billingMode: job.billingMode, opType: 'humanize', err: e
+          jobId: job.id,
+          uid: job.uid,
+          needed: fbNeeded,
+          billingMode: job.billingMode,
+          opType: 'humanize',
+          billingDisposition: job.billingDisposition,
+          noAlert: true,
+          err: e
         });
       }
     }
@@ -1658,6 +1759,8 @@ async function runAdminQualityPatternAudit({
     config,
     documentProfileOverride: job.documentProfileOverride || '',
     allowPolish: mode === 'polish',
+    recoveryBudgetUsd: Number(job.recoveryBudgetUsd)
+      || recoveryBudgetUsdForCredits(job.listPriceCredits || job.needed),
     uid: job.uid,
     styleProfile,
     niklQualityTest: job.niklQualityTest === true
@@ -1690,6 +1793,8 @@ async function runAdminGptLabWithOptionalNiklCompare({
     config,
     documentProfileOverride: job.documentProfileOverride || '',
     allowPolish: mode === 'polish',
+    recoveryBudgetUsd: Number(job.recoveryBudgetUsd)
+      || recoveryBudgetUsdForCredits(job.listPriceCredits || job.needed),
     uid: job.uid
   };
   const shouldCompare = job.niklQualityTest === true || layoutNlpTest;
@@ -2031,6 +2136,8 @@ async function runHumanizeJob(job, text, evidence = '') {
           basicStyle: job.basicStyle || '',
           documentProfileOverride: job.documentProfileOverride || '',
           allowPolish: true,
+          recoveryBudgetUsd: Number(job.recoveryBudgetUsd)
+            || recoveryBudgetUsdForCredits(job.listPriceCredits || job.needed),
           // 원본 UID는 OpenAI 요청에 직접 전달되지 않는다. 엔진 내부에서
           // OPENAI_SAFETY_SALT 기반 HMAC으로만 변환한다.
           uid: job.uid
@@ -2061,15 +2168,25 @@ async function runHumanizeJob(job, text, evidence = '') {
     try {
       job.billingDisposition = await resolveBillingDisposition(job, out);
     } catch (e) {
-      // 기존 호환대로 결과는 전달하되 deducted=false가 실제 미차감을 나타낸다.
-      // disposition은 이 작업의 의도된 과금 경로를 유지해 운영 불일치를 찾게 한다.
-      job.billingDisposition = 'charged';
+      // 기술적으로 안전한 결과는 잃지 않되 실제 미차감을 charged로 위장하지
+      // 않는다. 멱등 job ID와 charge_failed를 남겨 운영자가 재정산할 수 있다.
+      job.billingDisposition = 'charge_failed';
+      discord.billingFailure({
+        uid: job.uid,
+        jobId: job.id,
+        mode: job.mode,
+        credits: job.needed,
+        billingMode: job.billingMode,
+        reason: e?.message || String(e)
+      });
       logger.error('transform.humanize_billing_failed_manual_action', {
         jobId: job.id,
         uid: job.uid,
         mode: job.mode,
         needed: job.needed,
         billingMode: job.billingMode,
+        billingDisposition: job.billingDisposition,
+        noAlert: true,
         err: e
       });
     }
@@ -2399,6 +2516,8 @@ router.post('/transform', async (req, res) => {
     uid: pre.uid,
     plan: pre.plan || (billingMode === 'coupon' ? `subscription:${pre.tier || 'unknown'}` : 'free'),
     needed,
+    listPriceCredits: creditNeeded,
+    recoveryBudgetUsd: recoveryBudgetUsdForCredits(creditNeeded),
     devNoAuth,
     deducted: false,
     billingDisposition: null,
@@ -2676,5 +2795,6 @@ router.ensureTerminalTimestamp = ensureTerminalTimestamp;   // 테스트용
 router.normalizeDocumentProfileOverride = normalizeDocumentProfileOverride;   // 테스트·클라이언트 계약용
 router.preservationFallbackAllowed = preservationFallbackAllowed;   // 고급→보존형 다운그레이드 회귀 테스트용
 router.assessEditableContent = assessEditableContent;
+router.recoveryBudgetUsdForCredits = recoveryBudgetUsdForCredits;
 
 module.exports = router;

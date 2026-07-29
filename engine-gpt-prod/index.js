@@ -49,8 +49,10 @@ const {
 } = require('./modelFailure');
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
+const { createRecoveryBudget } = require('./recoveryBudget');
+const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.17';
+const VERSION = 'gpt-prod-v2.5.18';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -61,10 +63,7 @@ const REVIEW_WARNING_GATES = new Set([
   'questionnaire_structure_changed',
   'unsafe_chunk_boundary',
   'section_path_mismatch',
-  'grammar_hard_error',
-  'speaker_drift',
   'register_shift',
-  'paragraph_collapse',
   'number_multiset_changed',
   // 휴머나이징 강도·동일 문장 잔존은 결과 안전 경고가 아니라
   // effectStatus/effectNotices의 단일 소유 영역이다.
@@ -178,7 +177,8 @@ async function runEngine({
   safetyIdentifier = '',
   uid = '',
   niklQualityTest = false,
-  layoutNlp = null
+  layoutNlp = null,
+  recoveryBudgetUsd = 0
 } = {}) {
   const submittedSource = String(text || '').trim();
   if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
@@ -208,7 +208,6 @@ async function runEngine({
   const lineBoundaryPolicy = String(voiceProfile?.lineBoundaryPolicy || 'none');
   const layoutStructureLocked = lineBoundaryPolicy !== 'none';
   const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !layoutStructureLocked;
-  const preLayout = null;
   const inlineCodeFreeze = literalSpans.freezeInlineCode(rawSource);
   const source = inlineCodeFreeze.text;
   const niklQualityEnabled = isNiklQualityEnabled(niklQualityTest, styleProfile);
@@ -229,6 +228,40 @@ async function runEngine({
     formatProfile: documentProfile.formatProfile
   });
   const chunks = chunkPlan.chunks;
+  // 깊이 계약은 청크마다 독립적으로 만들지 않는다. 잠긴 구조를 제외한 문서
+  // 전체에서 한 번 계산한 뒤 각 청크가 맡을 문장 번호와 최소 개수를 분배한다.
+  // 이 계획을 최종 채점에도 그대로 사용해야 모델 지시와 서버 판정이 일치한다.
+  const initialDepthFrozen = freezeLockedBlocks(source, source, chunks);
+  const depthAuditSource = initialDepthFrozen?.source || source;
+  const humanizationPlan = humanizationDepthEnabled
+    ? humanizationDepth.buildHumanizationPlan(depthAuditSource, {
+      requestStrength,
+      documentProfile,
+      inputRisk
+    })
+    : null;
+  const primaryEditableChunkIndices = new Set(chunks
+    .flatMap((chunk, index) => (
+      chunk?.locked !== true
+      && !shouldDeferLabelMicroFragment({
+        chunk,
+        chunks,
+        index,
+        documentProfile,
+        mode: selectedMode
+      })
+      && !(shouldPassThrough(chunk?.text) && selectedMode !== 'polish')
+        ? [Number.isInteger(chunk?.index) ? chunk.index : index]
+        : []
+    )));
+  const distributedHumanizationPlans = humanizationDepthEnabled
+    ? humanizationDepth.buildDistributedHumanizationPlans(chunks, humanizationPlan, {
+      requestStrength,
+      documentProfile,
+      inputRisk,
+      editableChunkIndices: primaryEditableChunkIndices
+    })
+    : { aligned: true, plans: new Map() };
   // 국립국어원 조회는 문서당 한 번, 최대 2개 안전한 용어 후보에만 수행한다.
   // 외부 API는 기본 OFF이며 활성화되더라도 결과 차단이나 자동 치환에는
   // 관여하지 않고 청크 프롬프트의 표기 보존 힌트로만 사용한다.
@@ -259,6 +292,7 @@ async function runEngine({
       styleProfile,
       documentProfile,
       voiceProfile,
+      chunkHumanizationPlan: distributedHumanizationPlans.plans.get(chunk.index) || null,
       niklQualityTest: niklQualityEnabled,
       niklAdvisorContext,
       safetyIdentifier: safetyId,
@@ -268,6 +302,15 @@ async function runEngine({
   const editableRecords = records.filter(record => record?.locked !== true && record?.skipped !== true);
   const allEditableModelCallsFailed = editableRecords.length > 0
     && editableRecords.every(record => isModelFailureRecord(record));
+  const primaryApprovedModelChunkCount = countApprovedModelChunks(records, chunks, {
+    mode: selectedMode
+  });
+  // 추가 회복 비용 상한은 이미 전달 가능한 모델 편집이 확보된 문서에서만
+  // 작동한다. 0% 또는 승인 편집 0건 문서는 비용 상한 때문에 회복이 생략되어
+  // 기술 차단으로 굳지 않도록 반드시 회복을 계속 시도한다.
+  const recoveryBudget = createRecoveryBudget(recoveryBudgetUsd, {
+    enforced: primaryApprovedModelChunkCount > 0
+  });
 
   let sectionRecoveryReport = {
     metrics: {
@@ -309,6 +352,8 @@ async function runEngine({
       requestStrength,
       documentProfile,
       inputRisk,
+      recoveryBudget,
+      signal,
       retrySection: async entry => qualityV2.retryGeneralSurface({
         source: entry.source,
         currentOutput: String(chunks[entry.index]?.outputText ?? entry.output),
@@ -333,9 +378,6 @@ async function runEngine({
     });
     if (sectionRecoveryReport.metrics.applied > 0) {
       const appliedIndices = new Set(sectionRecoveryReport.metrics.appliedSectionIndices || []);
-      for (const index of appliedIndices) {
-        if (records[index] && chunks[index]) records[index].outputText = chunks[index].outputText;
-      }
       acceptGeneralSurfaceRecovery(records, appliedIndices);
     }
   }
@@ -345,6 +387,28 @@ async function runEngine({
   const frozen = freezeLockedBlocks(source, outputText, chunks);
   const auditSource = frozen?.source || source;
   outputText = frozen?.output || outputText;
+  let depthLockFreezeMissCount = Number(initialDepthFrozen?.missCount || 0);
+  let depthLockFreezeAttemptCount = 1;
+  const buildDocumentDepthPair = value => {
+    // 중간 단계에는 ZXQLOCK 토큰이, 최종 단계에는 복원된 원문 블록이 들어 있다.
+    // 먼저 동일한 표현으로 되돌린 뒤 inline code와 잠긴 블록을 최초 계획 때와
+    // 같은 순서로 다시 토큰화한다. rawSource를 직접 쓰면 잠긴 블록이 분모에
+    // 되살아나 깊이 점수가 단계마다 달라진다.
+    const pair = buildHumanizationDepthPair({
+      source,
+      outputText: value,
+      chunks,
+      primaryFrozen: frozen,
+      canonicalSource: depthAuditSource
+    });
+    depthLockFreezeAttemptCount += 1;
+    depthLockFreezeMissCount += Number(pair?.missCount || 0);
+    return pair;
+  };
+  const evaluateDocumentHumanizationDepth = (value, plan = humanizationPlan) => {
+    const pair = buildDocumentDepthPair(value);
+    return humanizationDepth.evaluateHumanizationDepth(pair.source, pair.output, plan);
+  };
   const postprocessMeta = {};
   outputText = finalPostprocess(outputText, auditSource, selectedMode, contract, postprocessMeta, {
     preserveLineBreaks: layoutStructureLocked
@@ -352,6 +416,11 @@ async function runEngine({
 
   let supplementalUsage = (sectionRecoveryReport.usages || [])
     .reduce((acc, usage) => addUsage(acc, usage), emptyUsage());
+  const addSupplementalUsage = (usage, stage = 'unknown', { recordBudget = true } = {}) => {
+    supplementalUsage = addUsage(supplementalUsage, usage);
+    if (recordBudget) recoveryBudget.recordUsage(usage, stage);
+    return supplementalUsage;
+  };
   let polishReport = null;
   let polishRetryCount = 0;
   let generalSurfaceRetryCount = 0;
@@ -458,6 +527,7 @@ async function runEngine({
           ? 'unchanged'
           : 'evaluative_padding';
         polishRetryAttemptCount = 1;
+        recoveryBudget.recordAttempt();
         const retried = await qualityV2.retryPolishSurface({
           source: auditSource,
           currentOutput: outputText,
@@ -467,7 +537,7 @@ async function runEngine({
           signal,
           safetyIdentifier: safetyId
         });
-        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        addSupplementalUsage(retried.usage, 'polish_surface_retry');
         polishRetryCount = 1;
         const retryCandidate = String(retried.outputText || '').trim();
         const candidateReport = qualityV2.polishEditPolicy(auditSource, retryCandidate, { documentProfile });
@@ -485,8 +555,7 @@ async function runEngine({
             mode: selectedMode,
             protectedTerms: collectRecordProtectedTerms(records),
             maxLocalEditRatio: 0.45,
-            minLocalLengthRatio: 0.85,
-            maxLocalLengthRatio: 1.15
+            localLengthPurpose: 'polish_surface'
           })
           && preservesFinalStructure(
             auditSource,
@@ -543,21 +612,12 @@ async function runEngine({
   const humanizationDepthStages = [];
   const recordHumanizationDepthStage = (stage, report = null, value = outputText) => {
     if (!humanizationDepthEnabled || selectedMode === 'polish') return null;
-    const measured = report || humanizationDepth.evaluateHumanizationDepth(
-      auditSource,
-      value,
-      humanizationPlan
-    );
+    const measured = report || evaluateDocumentHumanizationDepth(value, humanizationPlan);
     humanizationDepthStages.push(buildDepthStageSnapshot(stage, measured));
     return measured;
   };
-  const humanizationPlan = humanizationDepthEnabled ? humanizationDepth.buildHumanizationPlan(auditSource, {
-    requestStrength,
-    documentProfile,
-    inputRisk
-  }) : null;
   let humanizationDepthReport = humanizationDepthEnabled
-    ? humanizationDepth.evaluateHumanizationDepth(auditSource, outputText, humanizationPlan)
+    ? evaluateDocumentHumanizationDepth(outputText, humanizationPlan)
     : null;
   recordHumanizationDepthStage('post_merge', humanizationDepthReport);
   const generalSurfaceRetryPending = records.some(record => (record.warnings || []).includes('general_surface_retry_pending'))
@@ -605,9 +665,15 @@ async function runEngine({
           && (humanizationDepthEnabled
             ? !humanizationDepth.needsHumanizationRecovery(humanizationDepthReport)
             : humanizationDepthReport?.pass === true)) break;
+      if (!recoveryBudget.canStart()) {
+        recoveryBudget.recordSkip('whole_document_depth_recovery');
+        addUniqueCode(humanizationDepthRetryRejectionCodes, 'recovery_budget_exhausted');
+        break;
+      }
       try {
         generalSurfaceRetryAttemptCount += 1;
         humanizationDepthRetryCount += 1;
+        recoveryBudget.recordAttempt();
         // 원문과 완전히 같은 결과는 일반적인 "깊이 부족"보다 강한 기술 실패다.
         // 기본 피하기도 첫 회복이 실패하면 상위 모델로 한 번 승격해, 원문 그대로
         // 전달·과금되는 경우를 최대한 줄인다.
@@ -638,7 +704,13 @@ async function runEngine({
               ? 'humanization_no_effect_retry'
               : 'humanization_depth_retry'
         });
-        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        addSupplementalUsage(retried.usage, escalation
+          ? 'humanization_depth_escalation'
+          : roleRecovery
+            ? 'humanization_role_recovery'
+            : noEffectRetry
+              ? 'humanization_no_effect_retry'
+              : 'humanization_depth_retry');
         humanizationDepthRetryTargetSentenceCount += retried.targetSentenceCount || 0;
         let retryOutput = retried.outputText;
         const retryValidation = auditGeneralSurfaceCandidateWithStructure({
@@ -655,7 +727,7 @@ async function runEngine({
         });
         retryOutput = retryValidation.candidate || retryOutput;
         const retryDepth = humanizationDepthEnabled
-          ? humanizationDepth.evaluateHumanizationDepth(auditSource, retryOutput, humanizationPlan)
+          ? evaluateDocumentHumanizationDepth(retryOutput, humanizationPlan)
           : { pass: true };
         const safeRetryCandidate = retryValidation.pass === true;
         // 고급은 mini가 조금만 개선한 후보를 냈다고 멈추지 않는다. 안전한 개선은
@@ -681,11 +753,7 @@ async function runEngine({
             candidate: retryOutput,
             plan: humanizationPlan,
             currentReport: humanizationDepthReport,
-            evaluateDepth: value => humanizationDepth.evaluateHumanizationDepth(
-              auditSource,
-              value,
-              humanizationPlan
-            ),
+            evaluateDepth: value => evaluateDocumentHumanizationDepth(value, humanizationPlan),
             validateCandidate: trial => auditGeneralSurfaceCandidateWithStructure({
               source: auditSource,
               current: outputText,
@@ -731,7 +799,7 @@ async function runEngine({
           if (safeRetryCandidate && !retryWorthUsing) {
             addUniqueCode(humanizationDepthRetryRejectionCodes, 'depth_not_improved');
           }
-          humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(auditSource, outputText, humanizationPlan);
+          humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
         }
       } catch (error) {
         lastRetryError = error;
@@ -788,6 +856,12 @@ async function runEngine({
 
     for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
       if (!needsPerceivedHumanizationRecovery(humanizationDepthReport)) break;
+      if (!recoveryBudget.canStart()) {
+        recoveryBudget.recordSkip('conservative_sentence_recovery');
+        addUniqueCode(conservativeSentenceRetryRejectionCodes, 'recovery_budget_exhausted');
+        addUniqueCode(humanizationDepthRetryRejectionCodes, 'recovery_budget_exhausted');
+        break;
+      }
       const preferredOrdinals = qualityV2.buildGeneralRetryTargetOrdinals(
         auditSource,
         outputText,
@@ -812,6 +886,7 @@ async function runEngine({
       humanizationDepthRetryCount += 1;
       humanizationDepthRetryTargetSentenceCount += 1;
       try {
+        recoveryBudget.recordAttempt();
         const retried = await qualityV2.retryConservativeSentenceSurface({
           source: auditSource,
           currentOutput: outputText,
@@ -826,7 +901,7 @@ async function runEngine({
         });
         if (retried.model) {
           conservativeSentenceRetryModelCallCount += 1;
-          supplementalUsage = addUsage(supplementalUsage, retried.usage);
+          addSupplementalUsage(retried.usage, 'conservative_sentence_recovery');
         }
         if (retried.safeChangeFound !== true || retried.applied !== true) {
           for (const code of retried.rejectionCodes || [retried.reason]) {
@@ -851,11 +926,7 @@ async function runEngine({
           humanizationPlan
         });
         candidate = candidateValidation.candidate || candidate;
-        const candidateDepth = humanizationDepth.evaluateHumanizationDepth(
-          auditSource,
-          candidate,
-          humanizationPlan
-        );
+        const candidateDepth = evaluateDocumentHumanizationDepth(candidate, humanizationPlan);
         const improves = isIncrementalConservativeImprovement(
           humanizationDepthReport,
           candidateDepth
@@ -908,11 +979,7 @@ async function runEngine({
       quoteIntegrityAudit = restored.auditAfter;
       quoteIntegrityRestoreCount = restored.restoredCount || 1;
       if (humanizationDepthEnabled && selectedMode !== 'polish') {
-        humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(
-          auditSource,
-          outputText,
-          humanizationPlan
-        );
+        humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
       }
     }
   }
@@ -932,7 +999,7 @@ async function runEngine({
     if (deterministicRepair.applied) {
       const candidate = deterministicRepair.text;
       const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
-        ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+        ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
         : null;
       const candidateAudit = koreanRefinement.analyzeKoreanRefinement({
         source: auditSource,
@@ -964,6 +1031,7 @@ async function runEngine({
     if (needsModelRefinement) {
       try {
         koreanRefinementRetryAttemptCount = 1;
+        recoveryBudget.recordAttempt();
         const retried = await qualityV2.retryKoreanRefinement({
           source: auditSource,
           currentOutput: outputText,
@@ -974,10 +1042,10 @@ async function runEngine({
           signal,
           safetyIdentifier: safetyId
         });
-        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        addSupplementalUsage(retried.usage, 'korean_refinement_retry');
         const candidate = retried.outputText || outputText;
         const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
-          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
           : null;
         const candidateAudit = koreanRefinement.analyzeKoreanRefinement({
           source: auditSource,
@@ -1021,7 +1089,7 @@ async function runEngine({
       if (restored.applied) {
         const candidate = restored.text;
         const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
-          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
           : null;
         const candidateAudit = koreanRefinement.analyzeKoreanRefinement({
           source: auditSource,
@@ -1040,8 +1108,7 @@ async function runEngine({
           currentDepth: humanizationDepthReport,
           candidateDepth,
           maxLocalEditRatio: 0.4,
-          minLocalLengthRatio: 0.78,
-          maxLocalLengthRatio: 1.22,
+          localLengthPurpose: 'source_restore',
           allowDepthRegression: true
         }) && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
         if (safeCandidate && koreanRefinement.isImprovedAudit(koreanRefinementAudit, candidateAudit)) {
@@ -1059,6 +1126,7 @@ async function runEngine({
     if (!fingerprintAudit.pass) {
       try {
         fingerprintRetryAttemptCount = 1;
+        recoveryBudget.recordAttempt();
         const retried = await qualityV2.retryFingerprintAudit({
           source: auditSource,
           currentOutput: outputText,
@@ -1068,11 +1136,11 @@ async function runEngine({
           signal,
           safetyIdentifier: safetyId
         });
-        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        addSupplementalUsage(retried.usage, 'fingerprint_retry');
         const candidate = retried.outputText || outputText;
         const candidateFingerprint = fingerprint.auditFingerprint(auditSource, candidate, documentProfile);
         const candidateDepth = humanizationDepthEnabled
-          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
           : null;
         const safeCandidate = retried.safeChangeFound === true
           && fingerprint.isImproved(fingerprintAudit, candidateFingerprint)
@@ -1107,7 +1175,7 @@ async function runEngine({
           const candidate = restored.text;
           const candidateFingerprint = fingerprint.auditFingerprint(auditSource, candidate, documentProfile);
           const candidateDepth = humanizationDepthEnabled
-            ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+            ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
             : null;
           const safeCandidate = fingerprint.isImproved(fingerprintAudit, candidateFingerprint)
             && isSafeLocalizedLanguageCandidate({
@@ -1121,8 +1189,7 @@ async function runEngine({
               currentDepth: humanizationDepthReport,
               candidateDepth,
               maxLocalEditRatio: 0.4,
-              minLocalLengthRatio: 0.78,
-              maxLocalLengthRatio: 1.22,
+              localLengthPurpose: 'source_restore',
               allowDepthRegression: true
             })
             && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
@@ -1142,6 +1209,7 @@ async function runEngine({
     if (!endingStyleAudit.pass) {
       try {
         endingStyleRetryAttemptCount = 1;
+        recoveryBudget.recordAttempt();
         const retried = await qualityV2.retryEndingStyleAudit({
           source: auditSource,
           currentOutput: outputText,
@@ -1151,11 +1219,11 @@ async function runEngine({
           signal,
           safetyIdentifier: safetyId
         });
-        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        addSupplementalUsage(retried.usage, 'ending_style_retry');
         const candidate = retried.outputText || outputText;
         const candidateEndingAudit = endingStyle.auditEndingStyle(auditSource, candidate, documentProfile);
         const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
-          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
           : null;
         const safeCandidate = retried.safeChangeFound === true
           && endingStyle.isImproved(endingStyleAudit, candidateEndingAudit)
@@ -1199,7 +1267,7 @@ async function runEngine({
           const candidateEndingAudit = restored.audit
             || endingStyle.auditEndingStyle(auditSource, candidate, documentProfile);
           const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
-            ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+            ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
             : null;
           const safeCandidate = endingStyle.isImproved(endingStyleAudit, candidateEndingAudit)
             && isSafeLocalizedLanguageCandidate({
@@ -1239,6 +1307,7 @@ async function runEngine({
     if (resumeCoverageAudit.applicable && !resumeCoverageAudit.pass) {
       try {
         resumeCoverageRetryAttemptCount = 1;
+        recoveryBudget.recordAttempt();
         const retried = await qualityV2.retryResumeCoverage({
           source: auditSource,
           currentOutput: outputText,
@@ -1247,11 +1316,11 @@ async function runEngine({
           signal,
           safetyIdentifier: safetyId
         });
-        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        addSupplementalUsage(retried.usage, 'resume_coverage_retry');
         const candidate = retried.outputText || outputText;
         const candidateCoverage = resumeCoverage.auditResumeCoverage(auditSource, candidate, documentProfile);
         const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
-          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
           : null;
         const safeCandidate = retried.safeChangeFound === true
           && resumeCoverage.isImproved(resumeCoverageAudit, candidateCoverage)
@@ -1272,7 +1341,7 @@ async function runEngine({
             currentDepth: humanizationDepthReport,
             candidateDepth,
             maxLocalEditRatio: 0.55,
-            maxLocalLengthRatio: 1.70,
+            localLengthPurpose: 'resume_restore',
             allowDepthRegression: true
           })
           && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
@@ -1305,7 +1374,7 @@ async function runEngine({
           documentProfile
         );
         const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
-          ? humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, humanizationPlan)
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
           : null;
         const safeCandidate = resumeCoverage.isImproved(resumeCoverageAudit, candidateCoverage)
           && resumeCoverage.isSafeRestorationShape(
@@ -1325,7 +1394,7 @@ async function runEngine({
             currentDepth: humanizationDepthReport,
             candidateDepth,
             maxLocalEditRatio: 0.55,
-            maxLocalLengthRatio: 1.7,
+            localLengthPurpose: 'resume_restore',
             allowDepthRegression: true
           })
           && preservesFinalStructure(
@@ -1355,11 +1424,7 @@ async function runEngine({
   }
 
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
-    humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(
-      auditSource,
-      outputText,
-      humanizationPlan
-    );
+    humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     recordHumanizationDepthStage('pre_semantic', humanizationDepthReport);
   }
   let preSemanticStructureAudit = structureChunk.buildStructureAudit({
@@ -1382,6 +1447,10 @@ async function runEngine({
     allowedExtra
   });
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
+  const depthTugUsageStartUsd = Number(supplementalUsage?.estimatedUsd || 0);
+  let depthTugRecoveryRounds = 0;
+  let depthTugSemanticRepairRounds = 0;
+  let depthTugRejudgeCount = 0;
   if (!polishStrictFailure) {
     const semanticDecision = experienceCandidateAudit?.candidate === true
       ? { run: true, reason: 'experience_novelty_candidate' }
@@ -1417,6 +1486,7 @@ async function runEngine({
           });
     semanticReport.decisionReason = semanticDecision.reason;
     if (semanticDecision.run) {
+      recoveryBudget.recordAttempt();
       semanticReport = await qualityV2.runSemanticDocumentAudit({
         source: auditSource,
         outputText,
@@ -1435,7 +1505,8 @@ async function runEngine({
         safetyIdentifier: safetyId,
         documentProfile
       });
-      supplementalUsage = addUsage(supplementalUsage, semanticReport.usage);
+      addSupplementalUsage(semanticReport.usage, 'semantic_document_audit');
+      depthTugSemanticRepairRounds += Number(semanticReport.repairCount || 0);
       const semanticOutput = semanticReport.outputText || outputText;
       const restoredOmissions = omissionRestore.restoreConfirmedSemanticOmissions({
         source: auditSource,
@@ -1515,11 +1586,7 @@ async function runEngine({
   let postSemanticDepthRegression = false;
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
     const beforeSemanticBest = bestDepthStageSnapshot(humanizationDepthStages);
-    humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(
-      auditSource,
-      outputText,
-      humanizationPlan
-    );
+    humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     const postSemanticSnapshot = buildDepthStageSnapshot('post_semantic', humanizationDepthReport);
     postSemanticDepthRegression = isMaterialDepthRegression(beforeSemanticBest, postSemanticSnapshot);
     humanizationDepthStages.push(postSemanticSnapshot);
@@ -1533,33 +1600,38 @@ async function runEngine({
       && (postSemanticDepthRegression
         || (finalNoopRecovery.attempted !== true
           && (normalizeBare(auditSource) === normalizeBare(outputText)
-            || isSevereHumanizationNoEffect(humanizationDepth.evaluateHumanizationDepth(
-              auditSource,
+            || isSevereHumanizationNoEffect(evaluateDocumentHumanizationDepth(
               outputText,
-              humanizationPlan || humanizationDepth.buildHumanizationPlan(auditSource, {
+              humanizationPlan || humanizationDepth.buildHumanizationPlan(depthAuditSource, {
                 requestStrength,
                 documentProfile,
                 inputRisk
               })
             )))))) {
     finalNoopRecovery.attempted = true;
-    const postNoopPlan = humanizationPlan || humanizationDepth.buildHumanizationPlan(auditSource, {
+    const postNoopPlan = humanizationPlan || humanizationDepth.buildHumanizationPlan(depthAuditSource, {
       requestStrength,
       documentProfile,
       inputRisk
     });
-    let postNoopDepthReport = humanizationDepth.evaluateHumanizationDepth(
-      auditSource,
-      outputText,
-      postNoopPlan
-    );
+    let postNoopDepthReport = evaluateDocumentHumanizationDepth(outputText, postNoopPlan);
     let lastRecoveryReason = 'no_substantive_change';
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const escalation = attempt > 0;
+      const technicalNoopRecovery = normalizeBare(auditSource) === normalizeBare(outputText)
+        || isSevereHumanizationNoEffect(postNoopDepthReport);
+      if (!recoveryBudget.canStart({ mandatory: technicalNoopRecovery })) {
+        recoveryBudget.recordSkip('post_semantic_depth_recovery');
+        lastRecoveryReason = 'recovery_budget_exhausted';
+        addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
+        break;
+      }
       try {
+        depthTugRecoveryRounds += 1;
         generalSurfaceRetryAttemptCount += 1;
         humanizationDepthRetryCount += 1;
         if (escalation) humanizationDepthEscalationAttemptCount += 1;
+        recoveryBudget.recordAttempt();
         const retried = await qualityV2.retryGeneralSurface({
           source: auditSource,
           currentOutput: outputText,
@@ -1572,7 +1644,10 @@ async function runEngine({
           reasoningEffort: escalation ? cfg.reasoning.escalation : '',
           phase: escalation ? 'post_semantic_noop_escalation' : 'post_semantic_noop_recovery'
         });
-        supplementalUsage = addUsage(supplementalUsage, retried.usage);
+        addSupplementalUsage(
+          retried.usage,
+          escalation ? 'post_semantic_noop_escalation' : 'post_semantic_noop_recovery'
+        );
         humanizationDepthRetryTargetSentenceCount += retried.targetSentenceCount || 0;
         let candidate = String(retried.outputText || '').trim();
         let candidateValidation = auditGeneralSurfaceCandidateWithStructure({
@@ -1588,7 +1663,7 @@ async function runEngine({
           humanizationPlan: postNoopPlan
         });
         candidate = candidateValidation.candidate || candidate;
-        let candidateDepth = humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, postNoopPlan);
+        let candidateDepth = evaluateDocumentHumanizationDepth(candidate, postNoopPlan);
         let safeCandidate = candidateValidation.pass === true;
         let candidateImprovesRegression = !postSemanticDepthRegression
           || humanizationDepth.isBetterHumanizationCandidate(postNoopDepthReport, candidateDepth);
@@ -1600,11 +1675,7 @@ async function runEngine({
             candidate,
             plan: postNoopPlan,
             currentReport: postNoopDepthReport,
-            evaluateDepth: value => humanizationDepth.evaluateHumanizationDepth(
-              auditSource,
-              value,
-              postNoopPlan
-            ),
+            evaluateDepth: value => evaluateDocumentHumanizationDepth(value, postNoopPlan),
             validateCandidate: trial => auditGeneralSurfaceCandidateWithStructure({
               source: auditSource,
               current: outputText,
@@ -1636,7 +1707,7 @@ async function runEngine({
               humanizationPlan: postNoopPlan
             });
             candidate = candidateValidation.candidate || candidate;
-            candidateDepth = humanizationDepth.evaluateHumanizationDepth(auditSource, candidate, postNoopPlan);
+            candidateDepth = evaluateDocumentHumanizationDepth(candidate, postNoopPlan);
             safeCandidate = candidateValidation.pass === true;
             candidateImprovesRegression = !postSemanticDepthRegression
               || humanizationDepth.isBetterHumanizationCandidate(postNoopDepthReport, candidateDepth);
@@ -1655,6 +1726,7 @@ async function runEngine({
           addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
           continue;
         }
+        recoveryBudget.recordAttempt();
         const candidateSemantic = await qualityV2.runSemanticDocumentAudit({
           source: auditSource,
           outputText: candidate,
@@ -1667,7 +1739,9 @@ async function runEngine({
           safetyIdentifier: safetyId,
           documentProfile
         });
-        supplementalUsage = addUsage(supplementalUsage, candidateSemantic.usage);
+        addSupplementalUsage(candidateSemantic.usage, 'post_semantic_rejudge');
+        depthTugSemanticRepairRounds += Number(candidateSemantic.repairCount || 0);
+        depthTugRejudgeCount += 1;
         let auditedCandidate = String(candidateSemantic.outputText || candidate).trim();
         const auditedCandidateValidation = auditGeneralSurfaceCandidateWithStructure({
           source: auditSource,
@@ -1682,7 +1756,7 @@ async function runEngine({
           humanizationPlan: postNoopPlan
         });
         auditedCandidate = auditedCandidateValidation.candidate || auditedCandidate;
-        const auditedDepth = humanizationDepth.evaluateHumanizationDepth(auditSource, auditedCandidate, postNoopPlan);
+        const auditedDepth = evaluateDocumentHumanizationDepth(auditedCandidate, postNoopPlan);
         const safeAuditedCandidate = candidateSemantic.pass === true
           && auditedDepth.minimumEffectPass === true
           && (!postSemanticDepthRegression
@@ -1749,16 +1823,12 @@ async function runEngine({
     }
   }
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
-    humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(
-      auditSource,
-      outputText,
-      humanizationPlan
-    );
+    humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     recordHumanizationDepthStage('post_semantic_recovery', humanizationDepthReport);
   }
 
   const postLayout = layoutNlpEnabled
-    ? await safeFormatLayout(outputText, { mode: selectedMode, phase: 'post' })
+    ? await safeFormatLayout(outputText, selectedMode)
     : null;
   if (postLayout?.text) outputText = postLayout.text;
   if (frozen) outputText = restoreLockedBlocks(outputText, frozen.blocks);
@@ -1813,7 +1883,7 @@ async function runEngine({
         mode: selectedMode
       });
       const candidateDepth = humanizationDepthEnabled && selectedMode !== 'polish'
-        ? humanizationDepth.evaluateHumanizationDepth(rawSource, candidate, humanizationPlan)
+        ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
         : null;
       const safeCandidate = koreanRefinement.isImprovedAudit(finalKoreanBefore, candidateKorean)
         && isSafeLocalizedLanguageCandidate({
@@ -1827,8 +1897,7 @@ async function runEngine({
           currentDepth: humanizationDepthReport,
           candidateDepth,
           maxLocalEditRatio: 0.4,
-          minLocalLengthRatio: 0.78,
-          maxLocalLengthRatio: 1.22,
+          localLengthPurpose: 'source_restore',
           allowDepthRegression: true
         })
         && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
@@ -1863,7 +1932,7 @@ async function runEngine({
         const candidate = restored.text;
         const candidateFingerprint = fingerprint.auditFingerprint(rawSource, candidate, documentProfile);
         const candidateDepth = humanizationDepthEnabled
-          ? humanizationDepth.evaluateHumanizationDepth(rawSource, candidate, humanizationPlan)
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
           : null;
         const safeCandidate = fingerprint.isImproved(finalFingerprintBefore, candidateFingerprint)
           && isSafeLocalizedLanguageCandidate({
@@ -1877,8 +1946,7 @@ async function runEngine({
             currentDepth: humanizationDepthReport,
             candidateDepth,
             maxLocalEditRatio: 0.4,
-            minLocalLengthRatio: 0.78,
-            maxLocalLengthRatio: 1.22,
+            localLengthPurpose: 'source_restore',
             allowDepthRegression: true
           })
           && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
@@ -1967,14 +2035,7 @@ async function runEngine({
     quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   }
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
-    const postLayoutDepthFrozen = freezeLockedBlocks(rawSource, outputText, chunks);
-    const postLayoutDepthSource = postLayoutDepthFrozen?.source || rawSource;
-    const postLayoutDepthOutput = postLayoutDepthFrozen?.output || outputText;
-    const postLayoutDepth = humanizationDepth.evaluateHumanizationDepth(
-      postLayoutDepthSource,
-      postLayoutDepthOutput,
-      humanizationPlan
-    );
+    const postLayoutDepth = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     humanizationDepthStages.push(buildDepthStageSnapshot('post_layout_restore', postLayoutDepth));
     humanizationDepthReport = postLayoutDepth;
   }
@@ -1993,14 +2054,7 @@ async function runEngine({
     if (!polishStrictFailure && polishPaddingReport.increased) polishStrictFailure = 'polish_evaluative_padding_added';
   }
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
-    const finalDepthFrozen = freezeLockedBlocks(rawSource, outputText, chunks);
-    const finalDepthSource = finalDepthFrozen?.source || rawSource;
-    const finalDepthOutput = finalDepthFrozen?.output || outputText;
-    humanizationDepthReport = humanizationDepth.evaluateHumanizationDepth(
-      finalDepthSource,
-      finalDepthOutput,
-      humanizationPlan
-    );
+    humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     humanizationDepthStages.push(buildDepthStageSnapshot('final', humanizationDepthReport));
   }
   if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
@@ -2050,7 +2104,7 @@ async function runEngine({
   });
   calibrateV2RepetitionReport(result, rawSource, outputText);
   if (layoutNlpEnabled) {
-    result.layoutFormat = buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText);
+    result.layoutFormat = buildLayoutFormatMeta(postLayout, rawSource, outputText);
   }
   if (structureAudit && (!structureAudit.pass || structureAudit.boundaryRepair?.applied)) {
     addStructureWarnings(result.floorReport, structureAudit);
@@ -2061,8 +2115,8 @@ async function runEngine({
     integritySource,
     contract,
     mode: selectedMode,
-    sourceSurface,
-    allowedExtra
+    allowedExtra,
+    documentProfile
   });
   if (polishStrictFailure) {
     const detail = polishStrictFailure === 'polish_excessive_change'
@@ -2075,7 +2129,7 @@ async function runEngine({
     if (humanizationDepthReport?.applicable && humanizationDepthReport.pass === false) {
       const depthDetail = {
         detail: humanizationDepthReport.minimumEffectPass === false
-          ? '실질 변화가 거의 없어 휴머나이징 결과로 전달하지 않았습니다.'
+          ? '안전한 실질 변화가 권장 최소선에 못 미쳐 효과 제한 안내를 표시합니다.'
           : '보존을 우선해 권장 휴머나이징 목표 강도보다 약하게 나왔습니다.',
         reasons: humanizationDepthReport.reasons,
         blockingReasons: humanizationDepthReport.blockingReasons,
@@ -2086,14 +2140,10 @@ async function runEngine({
         requiredChangedSentenceCount: humanizationDepthReport.plan?.requiredChangedSentenceCount,
         hardRequiredChangedSentenceCount: humanizationDepthReport.plan?.hardRequiredChangedSentenceCount
       };
-      const longSectionRecoveryDelivery = rawSource.length >= sectionRecovery.MIN_DOCUMENT_CHARS
-        && sectionRecoveryReport.metrics?.enabled === true;
-      if (humanizationDepthReport.minimumEffectPass === false && !longSectionRecoveryDelivery) {
-        addFloorCriticals(result.floorReport, [{
-          ...depthDetail,
-          gate: 'humanization_depth_no_effect'
-        }], 'humanization_depth_no_effect');
-      } else if (humanizationDepthReport.userReviewRequired !== false) {
+      // 깊이·체감 미달은 안전 사고가 아니며 사용자가 확정한 정상 과금
+      // 전달 정책이다. 문서 길이나 섹션 회복 플래그에 따라 critical을
+      // 만들지 않고 모든 길이에서 동일한 effect 관측으로만 기록한다.
+      if (humanizationDepthReport.userReviewRequired !== false) {
         addFloorWarnings(result.floorReport, depthWarningDetails(humanizationDepthReport, depthDetail));
       }
     }
@@ -2267,6 +2317,38 @@ async function runEngine({
     bestHumanizationDepthStage,
     finalHumanizationDepthStage
   );
+  const postSemanticDepthStage = humanizationDepthStages.find(stage => stage.stage === 'post_semantic') || null;
+  const depthTugOfWar = postSemanticDepthRegression ? {
+    rounds: depthTugRecoveryRounds,
+    semanticRepairRounds: depthTugSemanticRepairRounds,
+    rejudgeCount: depthTugRejudgeCount,
+    finalSide: finalHumanizationDepthStage?.minimumEffectPass === true
+      && Number(finalHumanizationDepthStage?.score || 0) > Number(postSemanticDepthStage?.score || 0) + 0.01
+      ? 'depth'
+      : 'source',
+    usdSpent: roundUsageUsd(
+      Number(supplementalUsage?.estimatedUsd || 0) - depthTugUsageStartUsd
+    )
+  } : null;
+  const recoveryBudgetMeta = recoveryBudget.snapshot();
+  const pipelineFixedPointReasonCodes = [];
+  if (structureAudit?.pass !== true) pipelineFixedPointReasonCodes.push('structure_signature_failed');
+  if (quoteIntegrityAudit?.pass === false) pipelineFixedPointReasonCodes.push('quote_integrity_failed');
+  if (inlineCodeIntegrity?.pass === false) pipelineFixedPointReasonCodes.push('inline_code_integrity_failed');
+  if (finalGate?.hardFail === true) pipelineFixedPointReasonCodes.push('final_delivery_gate_failed');
+  if (humanizationDepthReport?.applicable === true
+      && humanizationDepthReport?.minimumEffectPass !== true) {
+    pipelineFixedPointReasonCodes.push('depth_hard_minimum_not_met');
+  }
+  const pipelineFixedPoint = {
+    safetyPass: pipelineFixedPointReasonCodes.every(code => code === 'depth_hard_minimum_not_met'),
+    depthHardMinimumPass: humanizationDepthReport?.applicable !== true
+      || humanizationDepthReport?.minimumEffectPass === true,
+    structurePass: structureAudit?.pass === true,
+    quotePass: quoteIntegrityAudit?.pass !== false,
+    inlineCodePass: inlineCodeIntegrity?.pass !== false,
+    reasonCodes: safeFailureCodeList(pipelineFixedPointReasonCodes)
+  };
   result.engineMeta = {
     schemaVersion: 3,
     engineVersion: VERSION,
@@ -2362,6 +2444,7 @@ async function runEngine({
     deferredPolishMicroChunkCount: chunkExecution.deferredPolishMicroChunkCount,
     transformedChunkCount: chunkExecution.transformedChunkCount,
     chunkConcurrency,
+    primaryApprovedModelChunkCount,
     approvedModelChunkCount,
     modelFailureChunkCount,
     deliveryDecision: finalDeliveryDecision,
@@ -2385,6 +2468,7 @@ async function runEngine({
     chunkPrimaryFailureCodes: chunkFailures.primary,
     chunkResidualFailureCodes: chunkFailures.residual,
     chunkFallbackReasonCodes: chunkFailures.fallback,
+    chunkResolvedFailureCodes: chunkFailures.resolved,
     retryCounts,
     fallbackCount,
     lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4)),
@@ -2425,6 +2509,15 @@ async function runEngine({
       ? (humanizationDepthReport?.plan?.policyVersion || humanizationDepth.POLICY_VERSION)
       : '',
     humanizationPlanSignalSource: humanizationDepthReport?.plan?.signalSource || '',
+    humanizationPlanDistributionAligned: distributedHumanizationPlans.aligned === true,
+    humanizationPlanDocumentSentenceCount: Number(
+      distributedHumanizationPlans.documentSourceSentenceCount || 0
+    ),
+    humanizationPlanMappedSentenceCount: Number(
+      distributedHumanizationPlans.mappedSourceSentenceCount || 0
+    ),
+    humanizationDepthLockFreezeAttemptCount: depthLockFreezeAttemptCount,
+    humanizationDepthLockFreezeMissCount: depthLockFreezeMissCount,
     humanizationRiskLevel: humanizationDepthReport?.plan?.riskLevel || '',
     humanizationMinimumRatio: Number(humanizationDepthReport?.plan?.minSubstantiveEditRatio || 0),
     humanizationHardMinimumRatio: Number(humanizationDepthReport?.plan?.hardMinimumSubstantiveEditRatio || 0),
@@ -2460,7 +2553,19 @@ async function runEngine({
       bestHumanizationDepthStage,
       finalHumanizationDepthStage
     ),
+    depthTugOfWar,
+    pipelineFixedPoint,
+    recoveryBudgetEnabled: recoveryBudgetMeta.enabled === true,
+    recoveryBudgetEnforced: recoveryBudgetMeta.enforced === true,
+    recoveryBudgetLimitUsd: Number(recoveryBudgetMeta.limitUsd || 0),
+    recoveryBudgetSpentUsd: Number(recoveryBudgetMeta.spentUsd || 0),
+    recoveryBudgetExhausted: recoveryBudgetMeta.exhausted === true,
+    recoveryBudgetAttemptedCallCount: Number(recoveryBudgetMeta.attemptedCallCount || 0),
+    recoveryBudgetSkippedCallCount: Number(recoveryBudgetMeta.skippedCallCount || 0),
+    recoveryBudgetSkippedCodes: safeFailureCodeList(recoveryBudgetMeta.skippedCodes),
+    recoveryBudgetStageUsageUsd: recoveryBudgetMeta.stageUsageUsd,
     sectionRecoveryEnabled: sectionRecoveryReport.metrics?.enabled === true,
+    sectionRecoverySelectedCount: Number(sectionRecoveryReport.metrics?.selectedSectionCount || 0),
     sectionRecoveryAttemptCount: Number(sectionRecoveryReport.metrics?.attempted || 0),
     sectionRecoveryPreferredSectionCount: Number(sectionRecoveryReport.metrics?.selectedPreferredSectionCount || 0),
     sectionRecoveryFragmentCount: Number(sectionRecoveryReport.metrics?.selectedFragmentCount || 0),
@@ -2485,6 +2590,8 @@ async function runEngine({
     sectionRecoveryPartialAppliedSentenceCount: Number(sectionRecoveryReport.metrics?.partialAppliedSentenceCount || 0),
     sectionRecoveryPartialRejectedSentenceCount: Number(sectionRecoveryReport.metrics?.partialRejectedSentenceCount || 0),
     sectionRecoveryPartialRejectionCodes: safeFailureCodeList(sectionRecoveryReport.metrics?.partialRejectionCodes),
+    sectionRecoveryBudgetSkippedCount: Number(sectionRecoveryReport.metrics?.budgetSkippedCount || 0),
+    sectionRecoveryBudgetSkippedCodes: safeFailureCodeList(sectionRecoveryReport.metrics?.budgetSkippedCodes),
     safePartialCandidateAppliedCount,
     safePartialSentenceAppliedCount,
     safePartialSentenceRejectedCount,
@@ -2699,7 +2806,29 @@ async function runEngine({
   };
 }
 
-async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength = '', lang, userNotes, evidence, cfg, styleProfile, documentProfile, voiceProfile, niklQualityTest = false, niklAdvisorContext = null, safetyIdentifier = '', signal }) {
+async function processChunk({
+  chunk,
+  chunks,
+  index,
+  source,
+  contract,
+  inputRisk,
+  sourceSurface,
+  mode,
+  requestStrength = '',
+  lang,
+  userNotes,
+  evidence,
+  cfg,
+  styleProfile,
+  documentProfile,
+  voiceProfile,
+  chunkHumanizationPlan = null,
+  niklQualityTest = false,
+  niklAdvisorContext = null,
+  safetyIdentifier = '',
+  signal
+}) {
   const original = chunk.text;
   if (chunk.locked) {
     chunk.outputText = original;
@@ -2738,8 +2867,15 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     return chunkRecord({ chunk, outputText: original, skipped: true });
   }
   const protectedTerms = extractProtectedTerms(original, documentProfile);
-  const patchTargets = buildPatchTargets(original, mode);
-  const highRisk = isHighRiskChunk(original, protectedTerms, patchTargets, cfg, inputRisk);
+  const patchTargets = buildPatchTargets(original, mode, documentProfile);
+  const highRisk = isHighRiskChunk(
+    original,
+    protectedTerms,
+    patchTargets,
+    cfg,
+    inputRisk,
+    documentProfile
+  );
   const primaryReasoning = highRisk ? cfg.reasoning.factDense : cfg.reasoning.humanize;
   const chunkSurface = safeSurface(original) || sourceSurface;
   // Primary retries and quality escalation share one absolute budget. A slow
@@ -2770,6 +2906,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     styleProfile,
     documentProfile,
     voiceProfile,
+    chunkHumanizationPlan,
     niklQualityTest,
     niklAdvisorContext,
     safetyIdentifier,
@@ -2812,11 +2949,13 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     model: cfg.models.humanizeEscalation,
     reasoningEffort: cfg.reasoning.escalation,
     phase: 'escalation',
+    escalationReason: first.record?.hardFailReason || first.record?.error || '',
     protectedTerms,
     patchTargets: escalationPatchTargets,
     styleProfile,
     documentProfile,
     voiceProfile,
+    chunkHumanizationPlan,
     niklQualityTest,
     niklAdvisorContext,
     safetyIdentifier,
@@ -2963,6 +3102,7 @@ async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength, lang, userNotes, evidence,
     cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, documentProfile, voiceProfile,
+    chunkHumanizationPlan = null, escalationReason = '',
     niklQualityTest = false, niklAdvisorContext = null, safetyIdentifier = '', chunkDeadlineMs, signal
   } = args;
   const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
@@ -2982,11 +3122,12 @@ async function callHumanize(args) {
       koreanQualityHints,
       [niklQualityHints, niklAdvisorHints].filter(Boolean).join('\n\n')
     );
-    const chunkHumanizationPlan = isHumanizationDepthEnabled() ? humanizationDepth.buildHumanizationPlan(original, {
-      requestStrength,
-      documentProfile,
-      inputRisk
-    }) : null;
+    const effectiveChunkHumanizationPlan = chunkHumanizationPlan
+      || (isHumanizationDepthEnabled() ? humanizationDepth.buildHumanizationPlan(original, {
+        requestStrength,
+        documentProfile,
+        inputRisk
+      }) : null);
     const chunkDiscourseProfile = discourseAudit.buildDiscourseProfile(original);
     const hp = prompts.buildHumanizePrompt(mode, lang, {
       requestStrength,
@@ -2999,19 +3140,33 @@ async function callHumanize(args) {
       riskProfile,
       documentProfile,
       voiceProfile,
-      humanizationPlan: chunkHumanizationPlan,
+      humanizationPlan: effectiveChunkHumanizationPlan,
       discourseProfile: chunkDiscourseProfile
     });
-    const promptIntegrity = prompts.validateHumanizePrompt(hp.stable);
+    const promptIntegrity = prompts.validateHumanizePrompt(hp.stable, {
+      taskContract: hp.taskContract,
+      requireHumanizationContract: effectiveChunkHumanizationPlan?.applicable === true
+    });
     if (!promptIntegrity.pass) {
       const error = new Error(`humanize_prompt_integrity_failed:${promptIntegrity.errors.join(',')}`);
       error.code = 'HUMANIZE_PROMPT_INTEGRITY_FAILED';
       throw error;
     }
-    const retryInstruction = phase === 'escalation' ? prompts.buildEscalationInstruction() : '';
+    const retryInstruction = phase === 'escalation'
+      ? prompts.buildEscalationInstruction(escalationReason)
+      : '';
     const response = await completeJson({
       system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
-      user: prompts.buildHumanizeUser({ chunk, chunks, index, protectedTerms, patchTargets, dynamicContext: hp.dynamic, mode }),
+      user: prompts.buildHumanizeUser({
+        chunk,
+        chunks,
+        index,
+        protectedTerms,
+        patchTargets,
+        dynamicContext: hp.dynamic,
+        taskContract: hp.taskContract,
+        mode
+      }),
       schema: HUMANIZE_SCHEMA,
       schemaName: 'gpt_prod_humanize_result',
       model,
@@ -3041,11 +3196,9 @@ async function callHumanize(args) {
     const gate = evaluateChunkGate({
       outputText,
       original,
-      source,
       contract,
       mode,
       protectedTerms,
-      sourceSurface,
       allowedExtra,
       documentProfile
     });
@@ -3361,7 +3514,7 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
   };
 }
 
-function evaluateChunkGate({ outputText, original, source, contract, mode, protectedTerms, sourceSurface, allowedExtra = '', documentProfile = null }) {
+function evaluateChunkGate({ outputText, original, contract, mode, protectedTerms, allowedExtra = '', documentProfile = null }) {
   const warnings = [];
   const violations = [];
   let directPreservationReason = '';
@@ -3388,10 +3541,16 @@ function evaluateChunkGate({ outputText, original, source, contract, mode, prote
       warnings.push('section_anchor_loss');
     }
   }
-  const lengthGate = measureLengthCollapse(original, outputText, sourceAnchors.length);
+  const lengthGate = measureLengthCollapse(
+    original,
+    outputText,
+    sourceAnchors.length,
+    contract?.lengthPolicy,
+    mode
+  );
   if (lengthGate.hardFail) {
     violations.push(lengthGate.violation);
-    warnings.push('length_collapse');
+    warnings.push(lengthGate.violation.gate);
   }
   const lostTerms = protectedTerms.filter(t => protectedTermMissing(t, outputText));
   if (lostTerms.length) {
@@ -3473,8 +3632,8 @@ function evaluateWholeDocumentGate({
   integritySource,
   contract,
   mode,
-  sourceSurface,
-  allowedExtra = ''
+  allowedExtra = '',
+  documentProfile = null
 }) {
   const warnings = [];
   const violations = [];
@@ -3501,12 +3660,18 @@ function evaluateWholeDocumentGate({
       warnings.push('section_anchor_loss');
     }
   }
-  const lengthGate = measureLengthCollapse(source, outputText, sourceAnchors.length);
+  const lengthGate = measureLengthCollapse(
+    source,
+    outputText,
+    sourceAnchors.length,
+    contract?.lengthPolicy,
+    mode
+  );
   if (lengthGate.hardFail) {
     violations.push(lengthGate.violation);
-    warnings.push('length_collapse');
+    warnings.push(lengthGate.violation.gate);
   }
-  const protectedTerms = extractProtectedTerms(source);
+  const protectedTerms = extractProtectedTerms(source, documentProfile);
   const lostTerms = protectedTerms.filter(t => protectedTermMissing(t, outputText));
   if (lostTerms.length) {
     violations.push({ gate: 'protected_term_loss', terms: lostTerms.slice(0, 16) });
@@ -3602,30 +3767,61 @@ function structureAnchorPresent(anchor, outputText) {
   return out.includes(normalizeBare(anchor.raw));
 }
 
-function measureLengthCollapse(original, outputText, anchorCount = 0) {
+function measureLengthCollapse(original, outputText, anchorCount = 0, lengthPolicy = null, mode = 'assignment') {
   const sourceLen = normalizeBare(original).length;
   const outLen = normalizeBare(outputText).length;
   if (sourceLen < 700 || outLen <= 0) return { hardFail: false };
   const ratio = outLen / sourceLen;
-  const minRatio = anchorCount >= 3 ? 0.78 : 0.65;
-  if (ratio >= minRatio) return { hardFail: false };
+  const derived = floor.lengthStagePolicy(original, mode, 'chunk', { anchorCount });
+  const minRatio = Number(lengthPolicy?.min) > 0
+    ? Math.min(
+      Number(lengthPolicy.min),
+      anchorCount >= 3
+        ? Math.max(0.65, Number(lengthPolicy.min) - 0.07)
+        : Math.max(0.65, Number(lengthPolicy.min) - 0.20)
+    )
+    : derived.min;
+  const maxRatio = Number(lengthPolicy?.hardMax) > 0
+    ? Number(lengthPolicy.hardMax)
+    : derived.max;
+  if (ratio >= minRatio && ratio <= maxRatio) return { hardFail: false };
+  const under = ratio < minRatio;
   return {
     hardFail: true,
     violation: {
-      gate: 'length_collapse',
+      gate: under ? 'length_collapse' : 'length_overrun',
       sourceLen,
       outLen,
       ratio: Number(ratio.toFixed(3)),
-      minRatio
+      minRatio,
+      maxRatio
     }
   };
 }
 
-function isHighRiskChunk(text, protectedTerms, patchTargets, cfg, inputRisk) {
-  const len = String(text || '').length;
+function isHighRiskChunk(text, protectedTerms, patchTargets, cfg, inputRisk, documentProfile = null) {
+  const sourceText = String(text || '');
+  const len = sourceText.length;
+  const profile = String(documentProfile?.profile || documentProfile || 'unknown');
+  const sensitiveProfile = new Set([
+    'academic_paper',
+    'report_assignment',
+    'clinical_record',
+    'legal_contract',
+    'resume_application'
+  ]).has(profile);
+  const numericFactCount = (sourceText.match(
+    /(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?(?:\s?(?:%|원|만원|억원|조원|명|개|건|회|년|개월|일|시간|분|초|km|kg|g|cm|m))?/gu
+  ) || []).length;
+  const citationCount = (sourceText.match(
+    /(?:\([A-Za-z가-힣][^()\n]{0,50},?\s*\d{4}[a-z]?\)|\[[0-9,\-–\s]+\]|(?:표|그림|식)\s*\d+)/gu
+  ) || []).length;
+  const quotedSpanCount = (sourceText.match(/[“"][^“”"\n]{4,160}[”"]/gu) || []).length;
   if (len >= (cfg.escalation.longTextChars || 10000)) return true;
   if ((protectedTerms || []).length >= (cfg.escalation.protectedTermThreshold || 40)) return true;
   if ((patchTargets || []).length >= (cfg.escalation.patchTargetThreshold || 12)) return true;
+  if (numericFactCount >= 6 || citationCount >= 2 || quotedSpanCount >= 3) return true;
+  if (sensitiveProfile && ((protectedTerms || []).length >= 8 || numericFactCount >= 4)) return true;
   if (inputRisk && inputRisk.grade === 'C' && len > 2000) return true;
   return false;
 }
@@ -3728,11 +3924,38 @@ function protectedTermMissing(term, outputText) {
   return true;
 }
 
-function buildPatchTargets(text) {
+function buildPatchTargets(text, mode = '', documentProfile = null) {
   const s = String(text || '');
   const targets = [];
-  if ((s.match(/\n{3,}/g) || []).length) targets.push('과도한 빈 줄 정리');
-  return targets;
+  const add = value => {
+    if (value && !targets.includes(value)) targets.push(value);
+  };
+  if ((s.match(/\n{3,}/gu) || []).length) add('과도한 빈 줄을 원문 구조 안에서 정리한다.');
+  if ((s.match(/(?:또한|따라서|이를\s*통해|결론적으로)(?=$|[\s,])/gmu) || []).length >= 3) {
+    add('반복되는 접속어를 문장 관계에 맞는 직접 연결로 바꾼다.');
+  }
+  if ((s.match(/(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|습니다)|중요한\s*(?:의미|역할)|의미를\s*가진(?:다|다고))/gu) || []).length >= 2) {
+    add('반복되는 보고서식 완충 표현을 원문 동작과 판단 중심으로 재구성한다.');
+  }
+  const longDenseSentenceCount = splitSentences(s).filter(sentence => (
+    sentence.replace(/\s+/gu, '').length >= 80
+      && ((sentence.match(/[,，;；:：]/gu) || []).length >= 3
+        || (sentence.match(/(?:하지만|그러나|따라서|때문에|통해|위해)/gu) || []).length >= 2)
+  )).length;
+  if (longDenseSentenceCount > 0) add(`과밀한 장문 ${longDenseSentenceCount}개는 의미를 유지하며 절 배치와 호흡을 다시 구성한다.`);
+  if ((s.match(/(?:강력\s*추천|무조건|절대\s*놓치|완전\s*최고|대박|직방)/gu) || []).length >= 2) {
+    add('반복되는 감탄·추천·효능 단정을 원문의 실제 주장 범위 안에서 완화한다.');
+  }
+  if (String(mode || '').toLowerCase() === 'polish'
+      && /(?:[가-힣]+(?:은는|이가|을를)|\S[,.!?][가-힣A-Za-z])/u.test(s)) {
+    add('조사 중복과 문장부호 뒤 공백 오류를 고친다.');
+  }
+  const profile = String(documentProfile?.profile || documentProfile || '');
+  if (profile === 'resume_application'
+      && (s.match(/(?:배웠습니다|느꼈습니다|성장했습니다|역량을\s*길렀습니다)/gu) || []).length >= 3) {
+    add('지원서의 반복 결론은 원문 행동·판단을 앞세우되 새 경험을 만들지 않는다.');
+  }
+  return targets.slice(0, 12);
 }
 
 function maxOutputTokensFor(text) {
@@ -3756,6 +3979,7 @@ function isV2ChunkPreservationViolation(v) {
     'protected_term_loss',
     'section_anchor_loss',
     'length_collapse',
+    'length_overrun',
     'number_multiset_changed',
     'list_structure_changed'
   ]).has(gate);
@@ -4117,8 +4341,7 @@ function isSafeLocalizedLanguageCandidate({
   currentDepth = null,
   candidateDepth = null,
   maxLocalEditRatio = 0.12,
-  minLocalLengthRatio = 0.85,
-  maxLocalLengthRatio = 1.12,
+  localLengthPurpose = 'standard',
   allowDepthRegression = false
 } = {}) {
   const original = String(source || '').trim();
@@ -4126,8 +4349,12 @@ function isSafeLocalizedLanguageCandidate({
   const after = String(candidate || '').trim();
   if (!original || !current || !after || isNoopEquivalent(current, after, mode)) return false;
   const localEdit = computeEditMetrics(current, after);
+  const localLengthPolicy = floor.lengthStagePolicy(original, mode, 'localized', {
+    purpose: localLengthPurpose
+  });
   if (localEdit.charEditRatio <= 0 || localEdit.charEditRatio > maxLocalEditRatio) return false;
-  if (localEdit.lengthRatio < minLocalLengthRatio || localEdit.lengthRatio > maxLocalLengthRatio) return false;
+  if (localEdit.lengthRatio < localLengthPolicy.relativeMin
+      || localEdit.lengthRatio > localLengthPolicy.relativeMax) return false;
   if (paragraphCount(current) !== paragraphCount(after)) return false;
   const beforeNumberAudit = compareNumberMultiset(original, current);
   const afterNumberAudit = compareNumberMultiset(original, after);
@@ -4204,6 +4431,13 @@ function acceptGeneralSurfaceRecovery(records, selectedIndices = null) {
     ].includes(warning));
     if (record.fallback === true && !pending && !isRecoverableSurfaceFallbackRecord(record)) continue;
     if (pending || record.fallback === true) {
+      // 회복 성공은 현재 실패 상태를 지우되, 어떤 실패가 실제로 회복됐는지는
+      // 별도 원장에 남긴다. 실패 코드를 통째로 삭제하면 주간 통계가 "처음부터
+      // 성공"으로 보이고 같은 결함의 회복 비용과 빈도를 추적할 수 없다.
+      record.resolvedFailureCodes = safeFailureCodeList([
+        ...(record.resolvedFailureCodes || []),
+        ...summarizeChunkFailureCodes([record]).all
+      ]);
       record.fallback = false;
       record.error = null;
       record.hardFailReason = '';
@@ -4382,26 +4616,68 @@ function freezeLockedBlocks(source, outputText, chunks) {
   let frozenSource = String(source || '');
   let frozenOutput = String(outputText || '');
   const blocks = [];
+  const misses = [];
   const tokenByIndex = new Map();
+  let expectedLockedCount = 0;
   for (const chunk of chunks || []) {
     if (!chunk?.locked || !String(chunk.text || '').trim()) continue;
+    const expectedIndex = expectedLockedCount;
+    expectedLockedCount += 1;
     const value = String(chunk.text);
-    const token = `ZXQLOCK${String(blocks.length).padStart(4, '0')}QXZ`;
+    // 성공한 블록 수가 아니라 원문 잠금 순번으로 토큰을 만든다. 한 블록의
+    // literal match가 실패해도 뒤 블록의 토큰 번호가 최초 계획과 달라지지 않는다.
+    const token = `ZXQLOCK${String(expectedIndex).padStart(4, '0')}QXZ`;
     const sourceReplaced = replaceFirstExact(frozenSource, value, token);
     const outputReplaced = replaceFirstExact(frozenOutput, value, token);
-    if (!sourceReplaced.replaced || !outputReplaced.replaced) continue;
+    if (!sourceReplaced.replaced || !outputReplaced.replaced) {
+      misses.push({
+        index: Number.isInteger(chunk.index) ? chunk.index : expectedIndex,
+        lockType: chunk.lockType || 'structure',
+        sourceMatched: sourceReplaced.replaced === true,
+        outputMatched: outputReplaced.replaced === true
+      });
+      continue;
+    }
     frozenSource = sourceReplaced.text;
     frozenOutput = outputReplaced.text;
     blocks.push({ token, value, lockType: chunk.lockType || 'structure', index: chunk.index });
     tokenByIndex.set(chunk.index, token);
   }
-  if (!blocks.length) return null;
+  if (!blocks.length && !misses.length) return null;
   const auditChunks = (chunks || []).map(chunk => {
     const token = tokenByIndex.get(chunk.index);
     if (!token) return chunk;
     return { ...chunk, text: token, outputText: token };
   });
-  return { source: frozenSource, output: frozenOutput, blocks, auditChunks };
+  return {
+    source: frozenSource,
+    output: frozenOutput,
+    blocks,
+    auditChunks,
+    expectedLockedCount,
+    frozenLockedCount: blocks.length,
+    missCount: misses.length,
+    misses
+  };
+}
+
+function buildHumanizationDepthPair({
+  source,
+  outputText,
+  chunks,
+  primaryFrozen = null,
+  canonicalSource = ''
+} = {}) {
+  const withLockedValues = restoreLockedBlocks(String(outputText || ''), primaryFrozen?.blocks);
+  const withInlineCodeTokens = literalSpans.freezeInlineCode(withLockedValues).text;
+  const frozen = freezeLockedBlocks(source, withInlineCodeTokens, chunks);
+  return {
+    source: String(canonicalSource || frozen?.source || source || ''),
+    output: frozen?.output || withInlineCodeTokens,
+    missCount: Number(frozen?.missCount || 0),
+    expectedLockedCount: Number(frozen?.expectedLockedCount || 0),
+    frozenLockedCount: Number(frozen?.frozenLockedCount || 0)
+  };
 }
 
 function restoreLockedBlocks(text, blocks) {
@@ -4414,6 +4690,10 @@ function replaceFirstExact(text, needle, replacement) {
   const index = String(text || '').indexOf(String(needle || ''));
   if (index < 0) return { text, replaced: false };
   return { text: text.slice(0, index) + replacement + text.slice(index + needle.length), replaced: true };
+}
+
+function roundUsageUsd(value) {
+  return Math.max(0, Math.round((Number(value) || 0) * 1000000) / 1000000);
 }
 
 function dedupeQualityWarnings(items) {
@@ -4758,30 +5038,6 @@ function configuredChunkConcurrency() {
   return Math.max(1, Math.min(3, Number.isFinite(value) ? Math.floor(value) : 2));
 }
 
-async function mapWithConcurrency(items, concurrency, worker, signal) {
-  const rows = Array.isArray(items) ? items : [];
-  const results = new Array(rows.length);
-  let cursor = 0;
-  const runWorker = async () => {
-    while (true) {
-      if (signal?.aborted) throw abortError();
-      const index = cursor;
-      cursor += 1;
-      if (index >= rows.length) return;
-      results[index] = await worker(rows[index], index);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, rows.length)) }, runWorker));
-  return results;
-}
-
-function abortError() {
-  const error = new Error('Operation aborted');
-  error.name = 'AbortError';
-  error.code = 'ABORT_ERR';
-  return error;
-}
-
 function countApprovedModelChunks(records, chunks, { documentRecoveryApplied = false, mode = '' } = {}) {
   const chunkByIndex = new Map((chunks || []).map(chunk => [chunk.index, chunk]));
   let count = 0;
@@ -4860,6 +5116,7 @@ function chunkRecord({
   error = null,
   hardFailReason = '',
   primaryFailureCodes = [],
+  resolvedFailureCodes = [],
   warnings = [],
   floorViolations = [],
   usage = null,
@@ -4887,6 +5144,7 @@ function chunkRecord({
     error,
     hardFailReason,
     primaryFailureCodes: safeFailureCodeList(primaryFailureCodes),
+    resolvedFailureCodes: safeFailureCodeList(resolvedFailureCodes),
     warnings: Array.isArray(warnings) ? warnings : [],
     floorViolations,
     usage,
@@ -5180,13 +5438,13 @@ function composeRiskProfile(inputRisk, koreanQualityHints, niklQualityHints = ''
   return parts.join('\n\n');
 }
 
-async function safeFormatLayout(text, opts = {}) {
+async function safeFormatLayout(text, mode = 'assignment') {
   try {
     const source = String(text || '').trim();
     if (!source) return null;
     return await layoutNormalizer.formatDocument(source, {
-      mode: opts.mode || 'assignment',
-      phase: opts.phase || 'post',
+      mode,
+      phase: 'post',
       // Python NLP(kiwipiepy/kss)는 변환마다 서브프로세스로 모델을 새로 로드해 Render 512Mi에서 OOM 크래시 루프를
       // 일으켰다(2026-07-05~09 실사고). 운영은 JS 포맷팅만 쓰고, Python은 메모리 여유 있는 환경에서만 opt-in.
       enableNlp: process.env.LAYOUT_NLP_PYTHON_ENABLED === '1',
@@ -5195,26 +5453,25 @@ async function safeFormatLayout(text, opts = {}) {
     });
   } catch (err) {
     logger.warn('gpt.layout_format_failed', {
-      phase: opts.phase || 'post',
+      phase: 'post',
       err: err && err.message || String(err)
     });
     return null;
   }
 }
 
-function buildLayoutFormatMeta(preLayout, postLayout, rawSource, outputText) {
-  const pre = preLayout?.report || null;
+function buildLayoutFormatMeta(postLayout, rawSource, outputText) {
   const post = postLayout?.report || null;
   return {
     enabled: true,
     version: layoutNormalizer.VERSION,
-    inputChanged: pre?.applied === true,
+    inputChanged: false,
     outputChanged: post?.applied === true,
-    sourceChanged: pre?.applied === true,
+    sourceChanged: false,
     finalOutputChanged: post?.applied === true,
-    pre: compactLayoutReport(pre),
+    pre: null,
     post: compactLayoutReport(post),
-    engines: mergeLayoutEngines(pre, post),
+    engines: postLayoutEngines(post),
     beforeChars: String(rawSource || '').length,
     afterChars: String(outputText || '').length
   };
@@ -5235,18 +5492,17 @@ function compactLayoutReport(report) {
   };
 }
 
-function mergeLayoutEngines(pre, post) {
+function postLayoutEngines(post) {
   const names = ['kss', 'kiwipiepy', 'pykospacing'];
   const out = {};
   for (const name of names) {
-    const p = pre?.nlp?.engines?.[name] || {};
-    const q = post?.nlp?.engines?.[name] || {};
+    const engine = post?.nlp?.engines?.[name] || {};
     out[name] = {
-      ok: p.ok === true || q.ok === true,
-      version: p.version || q.version || '',
-      preOk: p.ok === true,
-      postOk: q.ok === true,
-      error: p.ok === true || q.ok === true ? '' : String(q.error || p.error || '').slice(0, 180)
+      ok: engine.ok === true,
+      version: engine.version || '',
+      preOk: false,
+      postOk: engine.ok === true,
+      error: engine.ok === true ? '' : String(engine.error || '').slice(0, 180)
     };
   }
   return out;
@@ -5264,8 +5520,10 @@ function summarizeChunkFailureCodes(records) {
   const primary = [];
   const residual = [];
   const fallback = [];
+  const resolved = [];
   const rows = Array.isArray(records) ? records : [];
   for (const record of rows) {
+    for (const code of record?.resolvedFailureCodes || []) addSafeFailureCode(resolved, code);
     addSafeFailureCode(primary, record?.primaryError);
     for (const code of record?.primaryFailureCodes || []) addSafeFailureCode(primary, code);
     addSafeFailureCode(residual, record?.hardFailReason);
@@ -5294,7 +5552,8 @@ function summarizeChunkFailureCodes(records) {
     all,
     primary: safeFailureCodeList(primary),
     residual: safeFailureCodeList(residual),
-    fallback: safeFailureCodeList(fallback)
+    fallback: safeFailureCodeList(fallback),
+    resolved: safeFailureCodeList(resolved)
   };
 }
 
@@ -5419,10 +5678,6 @@ function shouldDeferLabelMicroFragment({
       .map(entry => entry.itemIndex)
   );
   return !selected.has(Number(index));
-}
-
-function shouldDeferPolishLabelMicroFragment(options = {}) {
-  return shouldDeferLabelMicroFragment({ ...options, mode: 'polish' });
 }
 
 function reconcileSemanticOmissionRestores(report, restored) {
@@ -5646,29 +5901,35 @@ function isNoopEquivalent(source, outputText, mode = '') {
 }
 
 module.exports = {
+  // 운영 진입면: server/compat가 직접 소비한다.
   VERSION,
   PROFILE,
   run,
   detect,
   rewriteSentence,
   suggestEvidence,
+  // 아래 수출은 결정론 회귀 테스트가 내부 정책을 고정하는 용도다.
+  // 운영 라우트에서 새로 의존하지 말고 공개 동작은 run/detect 계층으로 검증한다.
   normalizeMode,
   effectiveModeForProfile,
   configuredChunkConcurrency,
   mapWithConcurrency,
   depthQualityWarnings,
   shouldDeferLabelMicroFragment,
-  shouldDeferPolishLabelMicroFragment,
   auditGeneralSurfaceCandidate,
   auditGeneralSurfaceCandidateWithStructure,
   prepareGeneralSurfaceCandidate,
   isSafeLocalizedLanguageCandidate,
+  buildPatchTargets,
+  isHighRiskChunk,
+  measureLengthCollapse,
   isMaterialDepthRegression,
   needsPerceivedHumanizationRecovery,
   shouldSkipWholeDocumentDepthRetryAfterSectionRecovery,
   effectStatusForNotices,
   classifyPolishEditKind,
   isNoopEquivalent,
-  countApprovedModelChunks,
-  isModelFailureRecord
+  isModelFailureRecord,
+  freezeLockedBlocks,
+  buildHumanizationDepthPair
 };

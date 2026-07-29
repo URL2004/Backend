@@ -164,19 +164,19 @@ test('후기와 혜택·절대 주장·효능이 섞인 글은 단일 장르와 
   assert.match(built.stable, /\[혼합 의도 안전: 후기·광고·혜택 주장\]/u);
   assert.match(built.stable, /협찬·제휴·광고 여부가 원문이나 사용자 메모에 없으면/u);
   assert.match(built.stable, /효능 표현을 새로 만들거나 강화하지 않는다/u);
-  assert.match(built.stable, /변화 분포 목표:[^\n]*최소\s+\d+개/u);
-  assert.match(built.stable, /우선 대상 이행 목표:[^\n]*최소\s+\d+개/u);
-  assert.match(built.stable, /구조 변화 목표:[^\n]*최소\s+\d+개/u);
-  assert.match(built.stable, /반복 감탄·과도한 추천·혜택 나열·행동 요청/u);
+  assert.doesNotMatch(built.stable, /\[실질 휴머나이징 계약\]/u);
+  assert.match(built.taskContract, /변화 분포 목표:[^\n]*최소\s+\d+개/u);
+  assert.match(built.taskContract, /우선 대상 이행 목표:[^\n]*최소\s+\d+개/u);
+  assert.match(built.taskContract, /구조 변화 목표:[^\n]*최소\s+\d+개/u);
+  assert.match(built.taskContract, /반복 감탄·과도한 추천·혜택 나열·행동 요청/u);
   assert.ok(
     built.stable.indexOf('[혼합 의도 안전: 후기·광고·혜택 주장]')
       < built.stable.indexOf('[GPT 성향 보정]')
   );
-  assert.ok(
-    built.stable.indexOf('[요청 강도: 기본]')
-      < built.stable.indexOf('[실질 휴머나이징 계약]')
-  );
-  assert.equal(humanizePrompts.validateHumanizePrompt(built.stable).pass, true);
+  assert.equal(humanizePrompts.validateHumanizePrompt(built.stable, {
+    taskContract: built.taskContract,
+    requireHumanizationContract: true
+  }).pass, true);
 });
 
 test('할인 제도를 분석하는 학술 글은 실제 광고 의도로 오인하지 않는다', () => {

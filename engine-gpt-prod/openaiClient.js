@@ -105,14 +105,22 @@ async function completeJson({
   const chunkDeadlineMs = Number.isFinite(suppliedDeadline) && suppliedDeadline > 0
     ? suppliedDeadline
     : startedAt + chunkTotalLimitMs;
-  const request = {
+  const requestForSchemaAttempt = schemaAttempt => ({
     method: 'POST',
     headers: {
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(body)
-  };
+    body: JSON.stringify(schemaAttempt > 0
+      ? {
+          ...body,
+          instructions: [
+            body.instructions,
+            '[구조화 출력 재시도] 직전 응답이 JSON Schema 계약을 위반했습니다. 이번 응답은 지정된 필수 필드·자료형·additionalProperties 제한을 정확히 지키고, JSON 밖의 설명을 쓰지 마세요.'
+          ].filter(Boolean).join('\n\n')
+        }
+      : body)
+  });
   const retryCounts = emptyRetryCounts();
   let raw = null;
   let parsed = null;
@@ -120,6 +128,7 @@ async function completeJson({
   let status = '';
   let incompleteReason = '';
   for (let schemaAttempt = 0; schemaAttempt < 2; schemaAttempt += 1) {
+    const request = requestForSchemaAttempt(schemaAttempt);
     const fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, chunkDeadlineMs);
     mergeRetryCounts(retryCounts, fetched.retryCounts);
     raw = await fetched.response.json();
@@ -478,7 +487,23 @@ function validateStructuredOutput(value, schema, path = '$') {
 
 function validateSchemaNode(value, schema, path, errors) {
   if (!schema || typeof schema !== 'object') return;
-  if (schema.type === 'object') {
+  const declaredTypes = Array.isArray(schema.type)
+    ? schema.type.filter(type => typeof type === 'string')
+    : (typeof schema.type === 'string' ? [schema.type] : []);
+  if (declaredTypes.length > 1) {
+    const alternatives = declaredTypes.map(type => {
+      const branchErrors = [];
+      validateSchemaNode(value, { ...schema, type }, path, branchErrors);
+      return branchErrors;
+    });
+    if (alternatives.some(branchErrors => branchErrors.length === 0)) return;
+    errors.push(`${path} must match one of ${declaredTypes.join(',')}`);
+    return;
+  }
+  const type = declaredTypes[0] || schema.type;
+  if (type === 'null') {
+    if (value !== null) errors.push(`${path} must be null`);
+  } else if (type === 'object') {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       errors.push(`${path} must be object`);
       return;
@@ -490,13 +515,13 @@ function validateSchemaNode(value, schema, path, errors) {
     for (const [key, childSchema] of Object.entries(schema.properties || {})) {
       if (Object.prototype.hasOwnProperty.call(value, key)) validateSchemaNode(value[key], childSchema, `${path}.${key}`, errors);
     }
-  } else if (schema.type === 'array') {
+  } else if (type === 'array') {
     if (!Array.isArray(value)) errors.push(`${path} must be array`);
     else value.forEach((item, index) => validateSchemaNode(item, schema.items, `${path}[${index}]`, errors));
-  } else if (schema.type === 'string' && typeof value !== 'string') errors.push(`${path} must be string`);
-  else if (schema.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) errors.push(`${path} must be number`);
-  else if (schema.type === 'integer' && (!Number.isInteger(value))) errors.push(`${path} must be integer`);
-  else if (schema.type === 'boolean' && typeof value !== 'boolean') errors.push(`${path} must be boolean`);
+  } else if (type === 'string' && typeof value !== 'string') errors.push(`${path} must be string`);
+  else if (type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) errors.push(`${path} must be number`);
+  else if (type === 'integer' && (!Number.isInteger(value))) errors.push(`${path} must be integer`);
+  else if (type === 'boolean' && typeof value !== 'boolean') errors.push(`${path} must be boolean`);
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) errors.push(`${path} must be one of ${schema.enum.join(',')}`);
 }
 

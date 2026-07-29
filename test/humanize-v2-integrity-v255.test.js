@@ -26,7 +26,7 @@ const {
   resolveRegisterPolicy
 } = require('../engine-gpt-prod/documentProfile');
 const prompts = require('../engine-gpt-prod/prompts');
-const naturalness = require('../engine/koreanQuality/naturalnessShadow');
+const naturalness = require('../engine-gpt-prod/naturalnessShadow');
 const styleConsistency = require('../engine/koreanQuality/styleConsistency');
 const floor = require('../engine/floor');
 const surfaceguard = require('../engine/surfaceguard');

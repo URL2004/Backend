@@ -4,7 +4,7 @@ const floor = require('../engine/floor');
 const { computeEditMetrics, splitSentenceSpans } = require('../engine/koreanText');
 const { hasPovKind } = require('../engine/pov');
 const { auditVoice, buildVoiceProfile } = require('./voiceProfile');
-const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
+const { compareNaturalnessShadow } = require('./naturalnessShadow');
 const { judgeAndRepair } = require('./judge');
 const { completeJson } = require('./openaiClient');
 const { compareNumberMultiset } = require('./factAudit');
@@ -13,6 +13,10 @@ const humanizationDepth = require('./humanizationDepth');
 const legalAudit = require('./legalAudit');
 const koreanRefinement = require('./koreanRefinement');
 const endingStyle = require('./endingStyleAudit');
+const {
+  buildPromptDataSections,
+  promptEnvelopeSystemRule
+} = require('./promptEnvelope');
 
 const POLISH_REQUIRED_ISSUE_CODES = new Set([
   'missing_sentence_space',
@@ -662,8 +666,8 @@ async function retryPolishSurface({ source, currentOutput, policy, reason = '', 
     `허용 범위: 문자 편집률 ${policy?.limits?.minEdit ?? 0.01}~${policy?.limits?.maxEdit ?? 0.25}, 길이비 ${policy?.limits?.minLength ?? 0.9}~${policy?.limits?.maxLength ?? 1.1}.`
   ].join('\n');
   const response = await completeJson({
-    system,
-    user: `[SOURCE]\n${source}\n\n[CURRENT]\n${currentOutput}`,
+    system: withPromptDataRule(system),
+    user: sourceCurrentPrompt(source, currentOutput),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_polish_surface_retry',
     model: config.models.repair,
@@ -745,8 +749,8 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     '이 보존 조건 안에서 실질 변화 기준을 만족할 수 없을 때만 safeChangeFound=false로 답한다.'
   ].filter(Boolean).join('\n');
   const response = await completeJson({
-    system,
-    user: `[SOURCE - 의미 확인용]\n${source}\n\n[CURRENT - 여기서 국소 수정]\n${currentOutput}`,
+    system: withPromptDataRule(system),
+    user: sourceCurrentPrompt(source, currentOutput),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_general_surface_retry',
     model: model || config.models.repair,
@@ -835,14 +839,14 @@ async function retryConservativeSentenceSurface({
     '위 조건을 모두 지킬 수 없으면 rewrittenSentence에는 CURRENT SENTENCE를 그대로 넣고 safeChangeFound=false로 답한다.'
   ].filter(Boolean).join('\n');
   const response = await completeJson({
-    system,
-    user: [
-      `[DOCUMENT PROFILE]\n${profile}`,
-      `[SOURCE SENTENCE]\n${sourceSpan.text}`,
-      `[CURRENT SENTENCE]\n${currentSpan.text}`,
-      `[PREVIOUS CONTEXT - 읽기 전용]\n${previous}`,
-      `[NEXT CONTEXT - 읽기 전용]\n${next}`
-    ].join('\n\n'),
+    system: withPromptDataRule(system),
+    user: buildPromptDataSections([
+      { label: 'DOCUMENT_PROFILE', value: profile },
+      { label: 'SOURCE_SENTENCE', value: sourceSpan.text },
+      { label: 'CURRENT_SENTENCE', value: currentSpan.text },
+      { label: 'PREVIOUS_CONTEXT', value: previous },
+      { label: 'NEXT_CONTEXT', value: next }
+    ]).text,
     schema: CONSERVATIVE_SENTENCE_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_conservative_sentence_retry',
     model: model || config.models.repair,
@@ -1111,8 +1115,8 @@ async function retryKoreanRefinement({
     ...issueLines
   ].filter(Boolean).join('\n');
   const response = await completeJson({
-    system,
-    user: `[SOURCE - 의미 확인용]\n${source}\n\n[CURRENT - 국소 수리 대상]\n${currentOutput}`,
+    system: withPromptDataRule(system),
+    user: sourceCurrentPrompt(source, currentOutput),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_korean_refinement_retry',
     model: model || config.models.repair,
@@ -1215,8 +1219,8 @@ async function retryFingerprintAudit({
     ...issueLines
   ].filter(Boolean).join('\n');
   const response = await completeJson({
-    system,
-    user: `[SOURCE - 논리 확인용]\n${source}\n\n[CURRENT - 국소 수리 대상]\n${currentOutput}`,
+    system: withPromptDataRule(system),
+    user: sourceCurrentPrompt(source, currentOutput),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_fingerprint_retry',
     model: config.models.repair,
@@ -1264,8 +1268,8 @@ async function retryEndingStyleAudit({
     ...issueLines
   ].filter(Boolean).join('\n');
   const response = await completeJson({
-    system,
-    user: `[SOURCE - 종결체 확인용]\n${source}\n\n[CURRENT - 국소 수리 대상]\n${currentOutput}`,
+    system: withPromptDataRule(system),
+    user: sourceCurrentPrompt(source, currentOutput),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_ending_style_retry',
     model: config.models.repair,
@@ -1313,8 +1317,8 @@ async function retryResumeCoverage({
     ...issueLines
   ].join('\n');
   const response = await completeJson({
-    system,
-    user: `[SOURCE - 주장과 위치 확인용]\n${source}\n\n[CURRENT - 누락 복원 대상]\n${currentOutput}`,
+    system: withPromptDataRule(system),
+    user: sourceCurrentPrompt(source, currentOutput),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_resume_coverage_retry',
     model: config.models.repair,
@@ -1426,6 +1430,17 @@ function dedupeWarnings(items) {
     seen.add(key);
     return true;
   });
+}
+
+function sourceCurrentPrompt(source, currentOutput) {
+  return buildPromptDataSections([
+    { label: 'SOURCE', value: source },
+    { label: 'CURRENT', value: currentOutput }
+  ]).text;
+}
+
+function withPromptDataRule(system) {
+  return [String(system || ''), promptEnvelopeSystemRule()].filter(Boolean).join('\n');
 }
 
 function safeMessage(error) {

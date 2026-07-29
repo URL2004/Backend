@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { logger, runWithLogContext } = require('../lib/logger');
+const { realClientIp } = require('../lib/clientip');
 
 function sanitizeRequestId(value) {
   const id = String(value || '').trim().replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 100);
@@ -9,7 +10,7 @@ function sanitizeRequestId(value) {
 function requestContext(req, res, next) {
   const requestId = sanitizeRequestId(req.get('x-request-id') || req.get('x-correlation-id'));
   const start = process.hrtime.bigint();
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+  const ip = realClientIp(req);
   const context = {
     requestId,
     method: req.method,

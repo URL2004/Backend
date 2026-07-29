@@ -3,6 +3,7 @@
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { logger } = require('./lib/logger');
+const { realClientIp } = require('./lib/clientip');
 
 // 렌더 환경변수에 파이어베이스 키를 넣었다면 이렇게 사용.
 // ★ 로컬 엔진 테스트: FIREBASE_SERVICE_ACCOUNT 미설정 시 Firebase 초기화를 건너뛴다(require 시 crash 방지).
@@ -31,8 +32,8 @@ const allowedOrigins = [
 ];
 const allowedOriginSuffixes = (process.env.CORS_ORIGIN_SUFFIXES || '').split(',').map(s => s.trim()).filter(Boolean);
 
-// 로컬 개발 origin은 포트 무관 전부 허용(localhost/127.0.0.1 — Live Server 5500, http.server 8741 등 어떤 포트든).
-// CORS는 브라우저 보호 장치일 뿐 인증이 아니므로(인증은 idToken) localhost 허용은 보안상 무해.
+// 로컬 개발에서만 localhost/127.0.0.1의 임의 포트를 허용한다.
+// 운영에서는 로컬 origin을 제외해 브라우저 기반 우회 호출 표면을 불필요하게 열지 않는다.
 const LOCAL_DEV_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
 // ★ H-10: 경계 없는 endsWith는 example.com 허용 시 evil-example.com도 통과시킨다.
@@ -45,7 +46,8 @@ const corsMiddleware = cors({
   origin: (origin, callback) => {
     const host = origin ? originHostname(origin) : '';
     const allowedBySuffix = !!host && normalizedSuffixes.some(suffix => host === suffix || host.endsWith('.' + suffix));
-    if (!origin || allowedOrigins.includes(origin) || allowedBySuffix || LOCAL_DEV_ORIGIN.test(origin)) {
+    const localDevelopmentOrigin = process.env.NODE_ENV !== 'production' && LOCAL_DEV_ORIGIN.test(origin || '');
+    if (!origin || allowedOrigins.includes(origin) || allowedBySuffix || localDevelopmentOrigin) {
       callback(null, true);
     } else {
       logger.warn('cors.origin_rejected', { origin });
@@ -64,12 +66,14 @@ const limiter = rateLimit({
   message: { error: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.' },
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: req => realClientIp(req),
 });
 
 const dailyLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   max: 1000,
   message: { error: '일일 사용량을 초과했습니다. 내일 다시 시도해주세요.' },
+  keyGenerator: req => realClientIp(req),
 });
 
 // 관리자 UID 화이트리스트 (프론트엔드 ADMIN_ROLES와 동일하게 유지)

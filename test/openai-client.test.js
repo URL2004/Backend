@@ -48,6 +48,23 @@ test('structured output 계약은 누락·추가 필드를 거부한다', () => 
   assert.throws(() => validateStructuredOutput({ value: 'ok', extra: true }, SIMPLE_SCHEMA), error => error.code === 'OPENAI_SCHEMA_VALIDATION');
 });
 
+test('structured output 계약은 nullable 배열과 null을 모두 실제 검증한다', () => {
+  const nullableArray = {
+    type: ['array', 'null'],
+    items: { type: 'string' }
+  };
+  assert.equal(validateStructuredOutput(['ok'], nullableArray), true);
+  assert.equal(validateStructuredOutput(null, nullableArray), true);
+  assert.throws(
+    () => validateStructuredOutput({ wrong: true }, nullableArray),
+    error => error.code === 'OPENAI_SCHEMA_VALIDATION'
+  );
+  assert.throws(
+    () => validateStructuredOutput([1], nullableArray),
+    error => error.code === 'OPENAI_SCHEMA_VALIDATION'
+  );
+});
+
 test('429는 Retry-After를 우선해 재시도하고 웹 검색 비용을 usage에 포함한다', { concurrency: false }, async t => {
   const originalFetch = global.fetch;
   const originalKey = process.env.OPENAI_API_KEY;
@@ -106,6 +123,30 @@ test('malformed JSON schema 응답은 계약 오류로 실패한다', { concurre
     system: 'test', user: 'test', schema: SIMPLE_SCHEMA, schemaName: 'test_schema', model: 'gpt-5.4-mini'
   }), error => error.code === 'OPENAI_SCHEMA_VALIDATION');
   assert.equal(calls, 2, '같은 모델의 schema 응답은 한 번만 재시도한다');
+});
+
+test('schema 재시도는 같은 실패 프롬프트를 반복하지 않고 계약 교정 지시를 붙인다', { concurrency: false }, async t => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  const instructions = [];
+  global.fetch = async (_url, request) => {
+    instructions.push(JSON.parse(request.body).instructions);
+    return responseJson(completed(instructions.length === 1 ? { wrong: 'field' } : { value: 'ok' }));
+  };
+  t.after(() => { global.fetch = originalFetch; process.env.OPENAI_API_KEY = originalKey; });
+  const result = await completeJson({
+    system: 'stable system',
+    user: 'test',
+    schema: SIMPLE_SCHEMA,
+    schemaName: 'test_schema',
+    model: 'gpt-5.4-mini'
+  });
+  assert.equal(result.json.value, 'ok');
+  assert.equal(instructions.length, 2);
+  assert.equal(instructions[0], 'stable system');
+  assert.match(instructions[1], /구조화 출력 재시도/u);
+  assert.match(instructions[1], /JSON Schema/u);
 });
 
 test('5xx는 최대 두 번만 재시도하고 재시도 유형을 오류에 남긴다', { concurrency: false }, async t => {

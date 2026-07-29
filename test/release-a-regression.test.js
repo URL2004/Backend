@@ -235,6 +235,8 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         modelCallCount: 4,
         humanizeCallCount: 2,
         surfaceRetryCallCount: 1,
+        primaryApprovedModelChunkCount: 2,
+        approvedModelChunkCount: 3,
         deferredLabelMicroChunkCount: 28,
         deferredPolishMicroChunkCount: 28,
         fallbackCount: 1,
@@ -292,10 +294,28 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationDepthRetryRejectedCount: 2,
         humanizationDepthRetryRejectionCodes: ['candidate_unchanged', '사용자 원문 조각'],
         sectionRecoveryEnabled: true,
+        sectionRecoverySelectedCount: 5,
         sectionRecoveryAttemptCount: 3,
         sectionRecoveryTargetOnlyCount: 2,
         sectionRecoveryAppliedCount: 1,
         sectionRecoveryEscalationCount: 1,
+        pipelineFixedPoint: {
+          safetyPass: true,
+          depthHardMinimumPass: false,
+          structurePass: true,
+          quotePass: true,
+          inlineCodePass: true,
+          reasonCodes: ['depth_hard_minimum_not_met']
+        },
+        recoveryBudgetEnabled: true,
+        recoveryBudgetEnforced: true,
+        recoveryBudgetLimitUsd: 0.45,
+        recoveryBudgetSpentUsd: 0.31,
+        recoveryBudgetExhausted: false,
+        recoveryBudgetAttemptedCallCount: 4,
+        recoveryBudgetSkippedCallCount: 1,
+        recoveryBudgetSkippedCodes: ['conservative_sentence_recovery'],
+        recoveryBudgetStageUsageUsd: { section_depth_recovery: 0.31 },
         fingerprintAuditVersion: 1,
         fingerprintPass: false,
         fingerprintIssueCodes: ['engine_phrase_fingerprint'],
@@ -441,9 +461,21 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationDepthRetryTargetSentenceCount, 3);
   assert.equal(first.humanizationDepthRetryRejectedCount, 2);
   assert.deepEqual(first.humanizationDepthRetryRejectionCodes, ['candidate_unchanged']);
+  assert.equal(first.primaryApprovedModelChunkCount, 2);
+  assert.equal(first.approvedModelChunkCount, 3);
+  assert.equal(first.sectionRecoverySelectedCount, 5);
   assert.equal(first.sectionRecoveryAttemptCount, 3);
   assert.equal(first.sectionRecoveryTargetOnlyCount, 2);
   assert.equal(first.sectionRecoveryAppliedCount, 1);
+  assert.equal(first.pipelineFixedPoint.safetyPass, true);
+  assert.equal(first.pipelineFixedPoint.depthHardMinimumPass, false);
+  assert.deepEqual(first.pipelineFixedPoint.reasonCodes, ['depth_hard_minimum_not_met']);
+  assert.equal(first.recoveryBudgetEnabled, true);
+  assert.equal(first.recoveryBudgetEnforced, true);
+  assert.equal(first.recoveryBudgetLimitUsd, 0.45);
+  assert.equal(first.recoveryBudgetSpentUsd, 0.31);
+  assert.deepEqual(first.recoveryBudgetSkippedCodes, ['conservative_sentence_recovery']);
+  assert.deepEqual(first.recoveryBudgetStageUsageUsd, { section_depth_recovery: 0.31 });
   assert.equal(first.fingerprintPass, false);
   assert.deepEqual(first.fingerprintIssueCodes, ['engine_phrase_fingerprint']);
   assert.deepEqual(first.fingerprintShadowPositiveCodes, ['review_together']);
@@ -580,7 +612,9 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     substantiveCarryoverEligibleSentenceCount: 17, substantiveCarryoverMaximum: 0.25,
     humanizationTargetDepthMet: true,
     humanizationTargetDepthGap: 0,
-    sectionRecoveryAttemptCount: 4, sectionRecoveryAppliedCount: 2, sectionRecoveryEscalationCount: 1,
+    primaryApprovedModelChunkCount: 3, approvedModelChunkCount: 4,
+    sectionRecoverySelectedCount: 6, sectionRecoveryAttemptCount: 4,
+    sectionRecoveryAppliedCount: 2, sectionRecoveryEscalationCount: 1,
     sectionRecoveryTargetOnlyCount: 2,
     sectionRecoveryRejectedAttemptCount: 3,
     sectionRecoveryRejectionCodes: ['number_changed', 'not_better'],
@@ -605,6 +639,19 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
     sourcePreflightChanged: true, sourceArtifactRemovedCount: 1,
     sourcePreflightIssueCodes: ['source_ui_artifact'],
+    pipelineFixedPoint: {
+      safetyPass: true,
+      depthHardMinimumPass: true,
+      structurePass: true,
+      quotePass: true,
+      inlineCodePass: true,
+      reasonCodes: []
+    },
+    recoveryBudgetEnabled: true, recoveryBudgetEnforced: true, recoveryBudgetLimitUsd: 0.8,
+    recoveryBudgetSpentUsd: 0.42, recoveryBudgetExhausted: false,
+    recoveryBudgetAttemptedCallCount: 5, recoveryBudgetSkippedCallCount: 1,
+    recoveryBudgetSkippedCodes: ['whole_document_depth_recovery'],
+    recoveryBudgetStageUsageUsd: { semantic_judge: 0.42 },
     niklAdvisorVersion: 'nikl-lexical-advisor-v2',
     niklLocalResourceEnabled: true, niklLocalResourceApplied: true,
     niklLocalCandidateCount: 3, niklLocalAppliedCount: 2, niklLocalErrorCount: 0,
@@ -621,6 +668,9 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.structuralChangedSentenceRatio, 0.4);
   assert.equal(compact.rhetoricalRemediationCoverage, 0.75);
   assert.equal(compact.substantiveCarryoverRatio, 0.18);
+  assert.equal(compact.primaryApprovedModelChunkCount, 3);
+  assert.equal(compact.approvedModelChunkCount, 4);
+  assert.equal(compact.sectionRecoverySelectedCount, 6);
   assert.equal(compact.sectionRecoveryAppliedCount, 2);
   assert.equal(compact.sectionRecoveryTargetOnlyCount, 2);
   assert.equal(compact.humanizationTargetDepthMet, true);
@@ -655,6 +705,17 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.niklLocalCandidateCount, 3);
   assert.equal(compact.niklLocalAppliedCount, 2);
   assert.equal(compact.niklExternalApiEnabled, false);
+  assert.equal(compact.pipelineFixedPoint.safetyPass, true);
+  assert.equal(compact.pipelineFixedPoint.depthHardMinimumPass, true);
+  assert.equal(compact.recoveryBudgetLimitUsd, 0.8);
+  assert.equal(compact.recoveryBudgetEnforced, true);
+  assert.equal(compact.recoveryBudgetSpentUsd, 0.42);
+  assert.deepEqual(compact.recoveryBudgetSkippedCodes, ['whole_document_depth_recovery']);
+  assert.deepEqual(compact.recoveryBudgetStageUsageUsd, { semantic_judge: 0.42 });
+  assert.equal(
+    historyService.compactHistoryEngineMeta({ billingDisposition: 'charge_failed' }).billingDisposition,
+    'charge_failed'
+  );
   assert.equal(Object.hasOwn(compact, 'prompt'), false);
   assert.equal(Object.hasOwn(compact, 'source'), false);
   assert.equal(Object.hasOwn(compact, 'protectedTerms'), false);

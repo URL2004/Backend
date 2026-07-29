@@ -14,6 +14,7 @@ const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const runtime = require('../lib/gptRuntimeConfig');
 const fingerprintReport = require('../scripts/humanize-fingerprint-report');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
+const { createRecoveryBudget } = require('../engine-gpt-prod/recoveryBudget');
 
 function withEnv(t, name, value) {
   const previous = process.env[name];
@@ -102,6 +103,43 @@ test('장문 섹션 회복은 mini 최대 8개·동시성 3·상위 모델 최�
   assert.equal(calls.filter(call => call.tier === 'escalation').length, 2);
   assert.ok(maxActive <= 3);
   assert.ok(maxActive >= 2);
+});
+
+test('장문 섹션 회복은 USD 상한을 넘은 뒤 다음 wave와 승격 호출을 생략한다', { concurrency: false }, async t => {
+  withEnv(t, 'HUMANIZE_SECTION_RECOVERY_ENABLED', '1');
+  withEnv(t, 'HUMANIZE_SECTION_ESCALATION_MAX', '2');
+  const chunks = Array.from({ length: 8 }, (_, index) => {
+    const text = buildSection(index);
+    return { index, text, outputText: text, locked: false, sectionPath: `section_${index + 1}` };
+  });
+  const budget = createRecoveryBudget(0.001);
+  let calls = 0;
+  const report = await sectionRecovery.recoverSections({
+    chunks,
+    sourceLength: chunks.reduce((sum, chunk) => sum + chunk.text.length, 0),
+    mode: 'assignment',
+    requestStrength: 'advanced',
+    documentProfile: { profile: 'long_explainer', confidence: 0.9 },
+    inputRisk: { abstractRiskRatio: 1 },
+    recoveryBudget: budget,
+    retrySection: async entry => {
+      calls += 1;
+      await new Promise(resolve => setTimeout(resolve, 2));
+      return {
+        outputText: entry.output,
+        safeChangeFound: false,
+        usage: { estimatedUsd: 0.002 }
+      };
+    },
+    validateCandidate: () => true
+  });
+
+  assert.ok(calls >= 1 && calls <= sectionRecovery.RECOVERY_CONCURRENCY);
+  assert.equal(report.metrics.miniAttemptCount, calls);
+  assert.equal(report.metrics.escalationAttemptCount, 0);
+  assert.ok(report.metrics.budgetSkippedCount > 0);
+  assert.equal(budget.snapshot().exhausted, true);
+  assert.ok(budget.snapshot().skippedCallCount > 0);
 });
 
 test('제목이 촘촘해 모든 산문 청크가 1200자 미만이어도 짧은 절 조각을 회복 후보로 고른다', { concurrency: false }, async t => {

@@ -7,6 +7,7 @@ const {
   isNonEscalatableModelFailureCode
 } = require('./modelFailure');
 const safeEditAccumulator = require('./safeEditAccumulator');
+const { mapWithConcurrency } = require('./concurrency');
 
 const MIN_DOCUMENT_CHARS = 2000;
 const MIN_SECTION_CHARS = 1200;
@@ -104,7 +105,9 @@ async function recoverSections({
   documentProfile,
   inputRisk,
   retrySection,
-  validateCandidate
+  validateCandidate,
+  recoveryBudget = null,
+  signal
 } = {}) {
   const selected = selectRecoverySections(chunks, {
     sourceLength,
@@ -115,14 +118,17 @@ async function recoverSections({
   });
   const metrics = {
     enabled: isEnabled(),
-    attempted: selected.length,
+    // `selected`는 후보 수이고 `attempted`는 실제 mini 모델 호출 수다.
+    // 비용 상한으로 wave 중 일부가 생략된 경우 두 값을 같게 기록하면
+    // 회복 진입률과 비용 통계가 동시에 부풀려진다.
+    attempted: 0,
     applied: 0,
     escalated: 0,
     selectedSectionCount: selected.length,
     selectedPreferredSectionCount: selected.filter(item => item.selectionKind === 'section').length,
     selectedFragmentCount: selected.filter(item => item.selectionKind === 'fragment').length,
     selectedTargetOnlyCount: selected.filter(item => item.targetOnly === true).length,
-    miniAttemptCount: selected.length,
+    miniAttemptCount: 0,
     escalationAttemptCount: 0,
     escalationEligibleCount: 0,
     escalationSkippedCount: 0,
@@ -143,16 +149,39 @@ async function recoverSections({
     partialAppliedCount: 0,
     partialAppliedSentenceCount: 0,
     partialRejectedSentenceCount: 0,
-    partialRejectionCodes: []
+    partialRejectionCodes: [],
+    budgetSkippedCount: 0,
+    budgetSkippedCodes: []
   };
   if (!selected.length || typeof retrySection !== 'function') return { metrics, usages: [], selected };
 
   const usages = [];
   const afterMini = await mapWithConcurrency(selected, RECOVERY_CONCURRENCY, async entry => {
-    const attempt = await safeRetry(retrySection, entry, 'mini');
-    if (attempt?.usage) usages.push(attempt.usage);
+    if (recoveryBudget && !recoveryBudget.canStart()) {
+      recoveryBudget.recordSkip('section_depth_recovery');
+      metrics.budgetSkippedCount += 1;
+      if (!metrics.budgetSkippedCodes.includes('section_depth_recovery')) {
+        metrics.budgetSkippedCodes.push('section_depth_recovery');
+      }
+      return {
+        ...entry,
+        output: String(chunks?.[entry.index]?.outputText ?? entry.output ?? ''),
+        report: entry.report,
+        rejectionCode: 'recovery_budget_exhausted',
+        budgetSkipped: true,
+        marginalGain: 0
+      };
+    }
+    recoveryBudget?.recordAttempt();
+    metrics.attempted += 1;
+    metrics.miniAttemptCount += 1;
+    const attempt = await safeRetry(retrySection, entry, 'mini', signal);
+    if (attempt?.usage) {
+      usages.push(attempt.usage);
+      recoveryBudget?.recordUsage(attempt.usage, 'section_depth_recovery');
+    }
     return applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics });
-  });
+  }, signal);
 
   const escalationDecisions = afterMini.map(item => ({
     item,
@@ -173,21 +202,39 @@ async function recoverSections({
   for (let index = 0; index < eligibleNotSelected; index += 1) {
     recordEscalationSkip(metrics, 'escalation_budget_exhausted');
   }
-  metrics.escalationAttemptCount = escalationTargets.length;
-  metrics.escalated = escalationTargets.length;
+  metrics.escalationAttemptCount = 0;
+  metrics.escalated = 0;
   await mapWithConcurrency(escalationTargets, Math.min(RECOVERY_CONCURRENCY, metrics.escalationMaximum || 1), async entry => {
-    const attempt = await safeRetry(retrySection, entry, 'escalation');
-    if (attempt?.usage) usages.push(attempt.usage);
+    if (recoveryBudget && !recoveryBudget.canStart()) {
+      recoveryBudget.recordSkip('section_depth_escalation');
+      metrics.budgetSkippedCount += 1;
+      if (!metrics.budgetSkippedCodes.includes('section_depth_escalation')) {
+        metrics.budgetSkippedCodes.push('section_depth_escalation');
+      }
+      recordEscalationSkip(metrics, 'recovery_budget_exhausted');
+      return entry;
+    }
+    recoveryBudget?.recordAttempt();
+    metrics.escalationAttemptCount += 1;
+    metrics.escalated += 1;
+    const attempt = await safeRetry(retrySection, entry, 'escalation', signal);
+    if (attempt?.usage) {
+      usages.push(attempt.usage);
+      recoveryBudget?.recordUsage(attempt.usage, 'section_depth_escalation');
+    }
     return applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics });
-  });
+  }, signal);
 
   return { metrics, usages, selected };
 }
 
-async function safeRetry(retrySection, entry, tier) {
+async function safeRetry(retrySection, entry, tier, signal) {
   try {
     return { ...(await retrySection({ ...entry, tier })), recoveryTier: tier };
   } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+      throw error;
+    }
     const failureCode = classifyModelFailure(error);
     return {
       error: failureCode,
@@ -323,6 +370,7 @@ function applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics }) {
 
 function shouldEscalateRecovery(entry) {
   if (!entry || entry.report?.pass === true) return { eligible: false, code: 'already_passed' };
+  if (entry.budgetSkipped === true) return { eligible: false, code: 'recovery_budget_exhausted' };
   if (entry.nonEscalatableFailure === true) return { eligible: false, code: 'non_escalatable_failure' };
   if (Number(entry.chars || entry.source?.length || 0) < MIN_ESCALATION_CHARS) {
     return { eligible: false, code: 'section_too_small' };
@@ -429,21 +477,6 @@ function recoveryPriority(report) {
   if (reasons.has('structural_rewrite_coverage_low')) value += 0.2;
   if (reasons.has('source_semantic_redundancy_low')) value += 0.35;
   return value;
-}
-
-async function mapWithConcurrency(items, limit, worker) {
-  const source = Array.isArray(items) ? items : [];
-  const results = new Array(source.length);
-  let cursor = 0;
-  async function run() {
-    while (cursor < source.length) {
-      const index = cursor;
-      cursor += 1;
-      results[index] = await worker(source[index], index);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(Math.max(1, Number(limit) || 1), source.length) }, run));
-  return results;
 }
 
 module.exports = {

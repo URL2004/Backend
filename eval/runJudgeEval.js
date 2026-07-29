@@ -7,6 +7,7 @@
 //
 // 실행:  node eval/runJudgeEval.js   (또는 npm run eval:judge)
 const judge = require('../engine-gpt-prod/judge');
+const { buildSoftClaimLedger } = require('./softClaimLedger');
 const cases = require('./judge-cases');
 
 (async () => {
@@ -14,7 +15,7 @@ const cases = require('./judge-cases');
   const rows = [];
   for (const c of cases) {
     try {
-      const ledger = await judge.buildSoftClaimLedger(c.source, { lang: c.lang });
+      const ledger = await buildSoftClaimLedger(c.source, { lang: c.lang });
       const v = await judge.semanticJudge(c.source, c.output, ledger, { lang: c.lang });
       const pass = v.pass;
       let tag;

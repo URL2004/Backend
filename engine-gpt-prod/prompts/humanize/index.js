@@ -30,6 +30,14 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   humanizationPlan = null,
   discourseProfile = null
 } = {}) {
+  // 청크마다 달라지는 담화 진단과 문장 번호 계약은 system prompt에 넣지 않는다.
+  // system prefix를 문서 안에서 고정해야 Responses API의 prompt cache가 같은
+  // 문서의 다음 청크에서도 재사용되고, 재시도 시에도 안전 규칙의 위치가 흔들리지
+  // 않는다. 두 블록은 아래 taskContract로 사용자 메시지 앞부분에 붙인다.
+  const taskContract = [
+    discoursePromptBlock(discourseProfile),
+    buildHumanizationPromptBlock(humanizationPlan)
+  ].filter(Boolean).join('\n\n');
   const stable = [
     humanizeStableCore(),
     '',
@@ -40,7 +48,6 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '[장르 원칙]',
     genreBlock(mode, register, styleProfile, documentProfile, requestStrength),
     commercialSignals.promptSafetyBlock(documentProfile),
-    discoursePromptBlock(discourseProfile),
     speakerBlock(speakerType),
     registerBlock(register, documentProfile),
     voicePromptBlock(voiceProfile, { requestStrength, mode }),
@@ -48,17 +55,20 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     gptBiasGuardBlock(),
     '',
     transformStrengthBlock(mode, documentProfile?.profile, requestStrength),
-    buildHumanizationPromptBlock(humanizationPlan),
     '',
     structuredOutputBlock()
   ].join('\n');
 
   const dynamic = dynamicContextBlock({ riskProfile, userNotes, evidence, styleProfile, requestStrength, documentProfile });
-  return { stable, dynamic };
+  return { stable, dynamic, taskContract };
 }
 
-function validateHumanizePrompt(value) {
+function validateHumanizePrompt(value, {
+  taskContract = '',
+  requireHumanizationContract = false
+} = {}) {
   const prompt = String(value || '');
+  const contract = String(taskContract || '');
   const errors = [];
   const requiredInOrder = [
     '[GPT-PROD-HUMANIZE]',
@@ -83,8 +93,8 @@ function validateHumanizePrompt(value) {
   const genreHeadings = prompt.match(/^\[원문 장르:[^\]\n]+\]$/gmu) || [];
   if (strengthHeadings.length !== 1) errors.push(`request_strength_count:${strengthHeadings.length}`);
   if (genreHeadings.length !== 1) errors.push(`document_genre_count:${genreHeadings.length}`);
-  if (/원문의\s*격식[^.\n]{0,80}유지/u.test(prompt)
-      && /전문\s*표현으로\s*높이면서/u.test(prompt)) {
+  if (/어휘\s*격식:[^.\n]{0,100}(?:보존|유지)[^.\n]*구어/u.test(prompt)
+      && /말투\s*정책:[^.\n]{0,120}(?:구어체로\s*바꾼다|격식을\s*낮춘다)/u.test(prompt)) {
     errors.push('register_strength_conflict');
   }
   if (/^\[원문 장르:\s*계약서·약관\]$/mu.test(prompt)
@@ -113,16 +123,15 @@ function validateHumanizePrompt(value) {
     }
   }
   if (/^\[실질 휴머나이징 계약\]$/mu.test(prompt)) {
-    const strengthIndex = prompt.search(/^\[요청 강도:\s*(?:기본|고급)\]$/mu);
-    const depthIndex = prompt.indexOf('[실질 휴머나이징 계약]');
-    const outputIndex = prompt.indexOf('[출력 형식]');
-    if (strengthIndex < 0 || depthIndex <= strengthIndex || depthIndex >= outputIndex) {
-      errors.push('humanization_contract_section_order');
-    }
-    if ((prompt.match(/^\[실질 휴머나이징 계약\]$/gmu) || []).length !== 1) {
-      errors.push('humanization_contract_section_count');
-    }
-    if (!/변화 분포 목표:[^\n]*최소\s+\d+개/u.test(prompt)) {
+    errors.push('chunk_contract_in_stable_prompt');
+  }
+  const contractCount = (contract.match(/^\[실질 휴머나이징 계약\]$/gmu) || []).length;
+  if (requireHumanizationContract && contractCount !== 1) {
+    errors.push(`humanization_contract_count:${contractCount}`);
+  }
+  if (contractCount > 0) {
+    if (contractCount !== 1) errors.push(`humanization_contract_count:${contractCount}`);
+    if (!/변화 분포 목표:[^\n]*최소\s+\d+개/u.test(contract)) {
       errors.push('humanization_coverage_contract_missing');
     }
   }

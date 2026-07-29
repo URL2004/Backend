@@ -156,9 +156,13 @@ check('chunk/nearestChunkId 본문', chunk.nearestChunkId(nc, '본문 핵심 주
 check('chunk/nearestChunkId 미존재', chunk.nearestChunkId(nc, '없는 문장 xyz') === null, `id=${chunk.nearestChunkId(nc, '없는 문장 xyz')}`);
 
 // ── Contract 결정론 테스트 ──
-const cKo = buildContract('이 글은 비인칭 서술이다. 기술이 사회를 바꾼다.', { mode: 'thesis', lang: 'ko', optIn: false });
-check('contract/thesis 비인칭 게이트 닫힘', cKo.speakerGateClosed === true && cKo.povSeed.fp_singular === 0, `seed=${JSON.stringify(cKo.povSeed)} gate=${cKo.speakerGateClosed}`);
-check('contract/thesis length 정책', cKo.lengthPolicy && cKo.lengthPolicy.hardMax === 1.3, `pol=${JSON.stringify(cKo.lengthPolicy)}`);
+const cKo = buildContract('이 글은 비인칭 서술이다. 기술이 사회를 바꾼다.', { mode: 'assignment', lang: 'ko', optIn: false });
+check('contract/assignment 비인칭 게이트 닫힘', cKo.speakerGateClosed === true && cKo.povSeed.fp_singular === 0, `seed=${JSON.stringify(cKo.povSeed)} gate=${cKo.speakerGateClosed}`);
+check(
+  'contract/assignment length 정책',
+  JSON.stringify(cKo.lengthPolicy) === JSON.stringify(floor.lengthPolicyFor(cKo.rawText, 'assignment')),
+  `pol=${JSON.stringify(cKo.lengthPolicy)}`
+);
 const cFp = buildContract('저는 작년에 그 일을 했습니다.', { mode: 'assignment', lang: 'ko', optIn: false });
 check('contract/1인칭 있으면 게이트 열림', cFp.speakerGateClosed === false && cFp.povSeed.fp_singular >= 1, `seed=${JSON.stringify(cFp.povSeed)} gate=${cFp.speakerGateClosed}`);
 const cOpt = buildContract('비인칭 서술.', { mode: 'assignment', lang: 'ko', optIn: true });
@@ -168,11 +172,11 @@ check('contract/speakerType 개인', cFp.speakerType === 'individual', `type=${c
 check('contract/speakerType 비인칭', cKo.speakerType === 'impersonal', `type=${cKo.speakerType}`);
 const cOrg = buildContract('We backed many companies. We reviewed each deal carefully.', { mode: 'assignment', lang: 'en', optIn: false });
 check('contract/speakerType 조직(영어 we)', cOrg.speakerType === 'organization' && cOrg.forbiddenPronouns.includes('I'), `type=${cOrg.speakerType} forbid=${JSON.stringify(cOrg.forbiddenPronouns)}`);
-const cOrgKo = buildContract('본 연구는 다음을 분석한다. 우리는 데이터를 수집했다.', { mode: 'thesis', lang: 'ko', optIn: false });
+const cOrgKo = buildContract('본 연구는 다음을 분석한다. 우리는 데이터를 수집했다.', { mode: 'assignment', lang: 'ko', optIn: false });
 check('contract/speakerType 조직(한국어 우리/본연구)', cOrgKo.speakerType === 'organization', `type=${cOrgKo.speakerType} seed=${JSON.stringify(cOrgKo.povSeed)}`);
 
 // ── Soft Claim Ledger health gate(#6) 결정론 테스트 ──
-const { validateLedgerHealth } = require('../engine-gpt-prod/judge');
+const { validateLedgerHealth } = require('./softClaimLedger');
 check('ledger/0건 → no_claims', validateLedgerHealth({ claims: [], total: 0, dropped: 0 }, '짧은 글').reason === 'no_claims', 'health 분류 오류');
 check('ledger/과다폐기 → high_drop', validateLedgerHealth({ claims: [{}], total: 5, dropped: 4 }, '글').reason === 'high_drop', 'health 분류 오류');
 check('ledger/장문 과소표집 → undercovered', validateLedgerHealth({ claims: [{}, {}], total: 2, dropped: 0 }, '가'.repeat(1600)).reason === 'undercovered', 'health 분류 오류');

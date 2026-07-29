@@ -5,6 +5,7 @@ const express = require('express');
 const { db, verifyToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
+const { realClientIp } = require('../lib/clientip');
 
 const router = express.Router();
 const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error']);
@@ -57,7 +58,7 @@ router.post('/events', async (req, res) => {
 
   if (type === 'payment_error') {
     if (uid) setLogContext({ uid });
-    const key = uid || `anon:${req.ip || 'unknown'}`;
+    const key = uid || `anon:${realClientIp(req)}`;
     if (rateLimited(key)) return res.json({ ok: true, throttled: true });
     logPaymentError(req, uid);
     return res.json({ ok: true });

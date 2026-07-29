@@ -240,6 +240,233 @@ function buildHumanizationPlan(source, {
   };
 }
 
+/**
+ * 문서 전체에서 계산한 문장 번호와 목표량을 실제 GPT 청크에 나눠 준다.
+ *
+ * 과거에는 각 청크가 자기 텍스트만 보고 low/medium/high와 목표 문장 수를
+ * 독립적으로 정한 뒤, 병합 결과를 별도의 문서 전체 계획으로 채점했다. 문서
+ * 전체에서만 드러나는 반복·균일성 대상이 청크 지시에서 빠지고 정책 band도
+ * 달라져, 각 청크가 지시를 지켜도 최종 문서가 미달하는 구조였다.
+ */
+function buildDistributedHumanizationPlans(chunks, documentPlan, {
+  requestStrength = 'basic',
+  documentProfile = null,
+  inputRisk = null,
+  editableChunkIndices = null
+} = {}) {
+  const constrainedEditableChunks = editableChunkIndices instanceof Set;
+  const rows = [];
+  const targets = new Set((documentPlan?.targetIndices || []).filter(Number.isInteger));
+  let sentenceCursor = 0;
+
+  for (const [arrayIndex, chunk] of (chunks || []).entries()) {
+    const text = String(chunk?.text || '');
+    const locked = chunk?.locked === true;
+    const primaryEditable = !locked && (
+      !constrainedEditableChunks
+      || editableChunkIndices.has(Number.isInteger(chunk?.index) ? chunk.index : arrayIndex)
+    );
+    const localPlan = buildHumanizationPlan(text, {
+      requestStrength,
+      documentProfile,
+      inputRisk
+    });
+    const sourceSentenceCount = locked ? 0 : Number(localPlan.sourceSentenceCount || 0);
+    const globalStart = sentenceCursor;
+    const globalEnd = globalStart + sourceSentenceCount;
+    const localTargetIndices = [];
+    for (const index of targets) {
+      if (index >= globalStart && index < globalEnd) localTargetIndices.push(index - globalStart);
+    }
+    if (!locked) sentenceCursor = globalEnd;
+    const paragraphCoverage = buildParagraphCoveragePlan(text, localTargetIndices, {
+      strength: localPlan.requestStrength,
+      creative: localPlan.creative === true,
+      riskLevel: documentPlan?.riskLevel || localPlan.riskLevel,
+      resumeRepetitionApplicable: localPlan.resumeRepetitionPlan?.applicable === true
+    });
+    rows.push({
+      arrayIndex,
+      chunkIndex: Number.isInteger(chunk?.index) ? chunk.index : arrayIndex,
+      locked,
+      primaryEditable,
+      localPlan,
+      localTargetIndices,
+      paragraphCoverage,
+      sourceSentenceCount,
+      globalStart,
+      globalEnd
+    });
+  }
+
+  const activeRows = rows.filter(row => row.primaryEditable && row.sourceSentenceCount > 0);
+  const aligned = Number(documentPlan?.sourceSentenceCount || 0) === sentenceCursor;
+  const changedMinimumTotal = Math.min(
+    activeRows.reduce((sum, row) => sum + row.sourceSentenceCount, 0),
+    Math.max(
+      Number(documentPlan?.requiredChangedSentenceCount || 0),
+      activeRows.length
+    )
+  );
+  const targetRows = activeRows.filter(row => row.localTargetIndices.length > 0);
+  const targetMinimumTotal = Math.min(
+    targetRows.reduce((sum, row) => sum + row.localTargetIndices.length, 0),
+    Math.max(
+      Number(documentPlan?.requiredTargetChangedCount || 0),
+      targetRows.length
+    )
+  );
+  const paragraphRows = activeRows.filter(row => Number(row.paragraphCoverage.targetParagraphCount || 0) > 0);
+  const paragraphMinimumTotal = Math.min(
+    paragraphRows.reduce((sum, row) => sum + Number(row.paragraphCoverage.targetParagraphCount || 0), 0),
+    Math.max(
+      Number(documentPlan?.requiredTargetChangedParagraphCount || 0),
+      paragraphRows.length
+    )
+  );
+  const structuralTotal = Math.min(
+    changedMinimumTotal,
+    Number(documentPlan?.requiredStructuralChangedSentenceCount || 0)
+  );
+
+  const changedAllocations = distributeIntegerGoal(
+    changedMinimumTotal,
+    activeRows.map(row => row.sourceSentenceCount),
+    activeRows.map(row => row.localTargetIndices.length * 2 + row.sourceSentenceCount)
+  );
+  const targetAllocations = distributeIntegerGoal(
+    targetMinimumTotal,
+    targetRows.map(row => row.localTargetIndices.length),
+    targetRows.map(row => row.localTargetIndices.length)
+  );
+  const paragraphAllocations = distributeIntegerGoal(
+    paragraphMinimumTotal,
+    paragraphRows.map(row => Number(row.paragraphCoverage.targetParagraphCount || 0)),
+    paragraphRows.map(row => Number(row.paragraphCoverage.targetParagraphCount || 0))
+  );
+  const structuralAllocations = distributeIntegerGoal(
+    structuralTotal,
+    activeRows.map(row => row.sourceSentenceCount),
+    activeRows.map((row, index) => changedAllocations[index] || row.sourceSentenceCount)
+  );
+  const changedByChunk = new Map(activeRows.map((row, index) => [row.chunkIndex, changedAllocations[index] || 0]));
+  const targetByChunk = new Map(targetRows.map((row, index) => [row.chunkIndex, targetAllocations[index] || 0]));
+  const paragraphByChunk = new Map(paragraphRows.map((row, index) => [row.chunkIndex, paragraphAllocations[index] || 0]));
+  const structuralByChunk = new Map(activeRows.map((row, index) => [row.chunkIndex, structuralAllocations[index] || 0]));
+  const plans = new Map();
+
+  for (const row of rows) {
+    if (row.locked || row.sourceSentenceCount <= 0) {
+      plans.set(row.chunkIndex, row.localPlan);
+      continue;
+    }
+    if (!row.primaryEditable) {
+      plans.set(row.chunkIndex, {
+        ...row.localPlan,
+        signalSource: `${documentPlan?.signalSource || PLAN_SIGNAL_SOURCE}:document_distributed_deferred`,
+        targetIndices: row.localTargetIndices,
+        targetSentenceCount: row.localTargetIndices.length,
+        requiredChangedSentenceCount: 0,
+        hardRequiredChangedSentenceCount: 0,
+        requiredTargetChangedCount: 0,
+        requiredStructuralChangedSentenceCount: 0,
+        requiredTargetChangedParagraphCount: 0,
+        distribution: {
+          version: 1,
+          aligned,
+          primaryEditable: false,
+          chunkIndex: row.chunkIndex,
+          globalSentenceStart: row.globalStart,
+          globalSentenceEnd: row.globalEnd,
+          documentSourceSentenceCount: Number(documentPlan?.sourceSentenceCount || 0)
+        }
+      });
+      continue;
+    }
+    const localTargetCount = row.localTargetIndices.length;
+    const requiredChangedSentenceCount = changedByChunk.get(row.chunkIndex) || 0;
+    const hardRequiredChangedSentenceCount = requiredChangedSentenceCount
+      ? Math.max(1, Math.min(
+        requiredChangedSentenceCount,
+        Math.ceil(requiredChangedSentenceCount * HARD_DELIVERY_SENTENCE_FACTOR)
+      ))
+      : 0;
+    plans.set(row.chunkIndex, {
+      ...row.localPlan,
+      riskLevel: documentPlan?.riskLevel || row.localPlan.riskLevel,
+      riskScore: documentPlan?.riskScore ?? row.localPlan.riskScore,
+      signalSource: `${documentPlan?.signalSource || PLAN_SIGNAL_SOURCE}:document_distributed`,
+      targetIndices: row.localTargetIndices,
+      targetSentenceCount: localTargetCount,
+      requiredChangedSentenceCount,
+      hardRequiredChangedSentenceCount,
+      requiredTargetChangedCount: targetByChunk.get(row.chunkIndex) || 0,
+      requiredStructuralChangedSentenceCount: structuralByChunk.get(row.chunkIndex) || 0,
+      minChangedSentenceRatio: documentPlan?.minChangedSentenceRatio ?? row.localPlan.minChangedSentenceRatio,
+      minSubstantiveEditRatio: documentPlan?.minSubstantiveEditRatio ?? row.localPlan.minSubstantiveEditRatio,
+      hardMinimumSubstantiveEditRatio: documentPlan?.hardMinimumSubstantiveEditRatio
+        ?? row.localPlan.hardMinimumSubstantiveEditRatio,
+      targetSubstantiveEditMin: documentPlan?.targetSubstantiveEditMin
+        ?? row.localPlan.targetSubstantiveEditMin,
+      targetSubstantiveEditMax: documentPlan?.targetSubstantiveEditMax
+        ?? row.localPlan.targetSubstantiveEditMax,
+      minTargetCoverage: documentPlan?.minTargetCoverage ?? row.localPlan.minTargetCoverage,
+      ...row.paragraphCoverage,
+      requiredTargetChangedParagraphCount: paragraphByChunk.get(row.chunkIndex) || 0,
+      distribution: {
+        version: 1,
+        aligned,
+        primaryEditable: true,
+        chunkIndex: row.chunkIndex,
+        globalSentenceStart: row.globalStart,
+        globalSentenceEnd: row.globalEnd,
+        documentSourceSentenceCount: Number(documentPlan?.sourceSentenceCount || 0),
+        documentRequiredChangedSentenceCount: Number(documentPlan?.requiredChangedSentenceCount || 0),
+        distributedRequiredChangedSentenceCount: changedMinimumTotal,
+        documentTargetSentenceCount: Number(documentPlan?.targetSentenceCount || 0),
+        documentRequiredTargetChangedCount: Number(documentPlan?.requiredTargetChangedCount || 0)
+      }
+    });
+  }
+
+  return {
+    version: 1,
+    aligned,
+    documentSourceSentenceCount: Number(documentPlan?.sourceSentenceCount || 0),
+    mappedSourceSentenceCount: sentenceCursor,
+    primaryEditableChunkCount: activeRows.length,
+    plans
+  };
+}
+
+function distributeIntegerGoal(total, capacities, weights) {
+  const safeCapacities = (capacities || []).map(value => Math.max(0, Math.floor(Number(value) || 0)));
+  const maximum = safeCapacities.reduce((sum, value) => sum + value, 0);
+  let remaining = Math.max(0, Math.min(maximum, Math.floor(Number(total) || 0)));
+  const result = safeCapacities.map(() => 0);
+  if (!remaining || !result.length) return result;
+  const safeWeights = (weights || []).map((value, index) => (
+    safeCapacities[index] > 0 ? Math.max(0, Number(value) || 0) : 0
+  ));
+  while (remaining > 0) {
+    let selected = -1;
+    let selectedScore = -1;
+    for (let index = 0; index < result.length; index += 1) {
+      if (result[index] >= safeCapacities[index]) continue;
+      const weight = safeWeights[index] || safeCapacities[index] || 1;
+      const score = weight / (result[index] + 1);
+      if (score > selectedScore) {
+        selected = index;
+        selectedScore = score;
+      }
+    }
+    if (selected < 0) break;
+    result[selected] += 1;
+    remaining -= 1;
+  }
+  return result;
+}
+
 function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   const plan = Number(planOrOptions?.version) >= 1
     ? planOrOptions
@@ -571,6 +798,9 @@ function buildHumanizationPromptBlock(plan) {
     '이 모드는 교정·다듬기가 아니다. 원문의 뜻과 사실은 그대로 두되, AI식으로 반복되는 어순·상투어·추상명사·접속 방식·균일한 호흡을 사람이 직접 쓴 문장처럼 다시 구성한다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
     `${strengthLabel} 강도는 서버가 결과에서 별도로 계산한다. 변화량을 맞추기 위해 새 설명·평가·결론을 붙이지 말고, 같은 주장 안의 절·어순·연결·호흡으로 차이를 만든다.`,
+    plan.distribution
+      ? `문서 전체 계획을 청크에 분배했다. 이 청크는 전체 ${plan.distribution.documentSourceSentenceCount}문장 중 ${plan.distribution.globalSentenceStart + 1}~${plan.distribution.globalSentenceEnd}번 범위이며, 아래 최소 개수는 이 청크가 맡은 몫이다.`
+      : '',
     `원문 위험도=${plan.riskLevel}; 이미 자연스러운 문장은 남기고 아래 우선 대상 문장을 구조적으로 다시 쓴다.`,
     plan.targetSentenceCount
       ? `우선 대상 문장 번호=${targetOrdinals.join(',') || '서버선정'}${reasons ? `; 원인=${reasons}` : ''}. 문장 번호는 편집 위치일 뿐 새 문장을 만들라는 뜻이 아니다.`
@@ -1135,6 +1365,7 @@ module.exports = {
   POLICY_VERSION,
   PLAN_SIGNAL_SOURCE,
   buildHumanizationPlan,
+  buildDistributedHumanizationPlans,
   evaluateHumanizationDepth,
   humanizationCandidateScore,
   isBetterHumanizationCandidate,

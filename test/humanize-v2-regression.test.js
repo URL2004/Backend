@@ -26,7 +26,7 @@ const factAudit = require('../engine-gpt-prod/factAudit');
 const { assessRepairCandidate } = require('../engine-gpt-prod/judge');
 const prompts = require('../engine-gpt-prod/prompts');
 const contract = require('../engine/contract');
-const { compareNaturalnessShadow } = require('../engine/koreanQuality/naturalnessShadow');
+const { compareNaturalnessShadow } = require('../engine-gpt-prod/naturalnessShadow');
 const { effectiveModeForProfile } = require('../engine-gpt-prod');
 
 test('한국어 문장 분리기는 장·절 번호, 소수점, 약어와 인용부호를 보존한다', () => {

@@ -227,15 +227,71 @@ function polishLengthPolicy(rawText) {
     ? { min: 0.85, max: 1.15, hardMax: 1.15 }
     : { ...LENGTH_POLICY.polish };
 }
+function lengthPolicyFor(rawText, mode = 'assignment') {
+  const selected = mode === 'polish'
+    ? polishLengthPolicy(rawText)
+    : { ...(LENGTH_POLICY[mode] || LENGTH_POLICY.assignment) };
+  const rawLen = String(rawText || '').replace(/\s+/gu, '').length;
+  if (mode !== 'polish' && rawLen < 250) {
+    selected.hardMax = Math.max(selected.hardMax, 2.2);
+  }
+  return selected;
+}
+
+// 모든 생성·수리 단계는 위 공개 모드 정책에서 허용 범위를 파생한다.
+// prompt/floor는 정책 원값, chunk는 늦은 실패를 막는 기술적 외곽선,
+// repair는 기존 후보에서 한 번에 움직일 수 있는 국소 범위를 쓴다.
+function lengthStagePolicy(rawText, mode = 'assignment', stage = 'floor', {
+  anchorCount = 0,
+  purpose = 'standard'
+} = {}) {
+  const base = lengthPolicyFor(rawText, mode);
+  if (stage === 'chunk') {
+    return {
+      ...base,
+      min: Math.min(
+        base.min,
+        anchorCount >= 3
+          ? Math.max(0.65, base.min - 0.07)
+          : Math.max(0.65, base.min - 0.20)
+      ),
+      max: base.hardMax
+    };
+  }
+  if (stage === 'repair') {
+    return {
+      ...base,
+      min: mode === 'polish' ? base.min : Math.max(0.65, base.min - 0.03),
+      max: mode === 'polish' ? base.max : Math.min(base.hardMax, base.max + 0.05),
+      relativeMin: Math.max(0.82, base.min - 0.08),
+      relativeMax: Math.min(1.20, base.hardMax)
+    };
+  }
+  if (stage === 'localized') {
+    // 국소 수리는 문서 전체 길이비가 아니라 직전 후보 대비 길이비를 본다.
+    // 단계마다 숫자를 직접 넘기면 같은 후보가 수리기마다 통과/거절되는
+    // 문제가 생기므로, 허용 목적을 이 레지스트리 하나에서만 관리한다.
+    const relative = purpose === 'source_restore'
+      ? { min: 0.78, max: 1.22 }
+      : purpose === 'resume_restore'
+        ? { min: 0.85, max: 1.70 }
+        : mode === 'polish'
+          ? { min: base.min, max: base.max }
+          : { min: 0.85, max: 1.12 };
+    return {
+      ...base,
+      purpose,
+      relativeMin: relative.min,
+      relativeMax: relative.max
+    };
+  }
+  return base;
+}
 function measureLength(rawText, outputText, mode) {
-  const pol0 = mode === 'polish' ? polishLengthPolicy(rawText) : (LENGTH_POLICY[mode] || LENGTH_POLICY.assignment);
   const rawLen = (rawText || '').replace(/\s+/g, '').length;
   const outLen = (outputText || '').replace(/\s+/g, '').length;
   const ratio = rawLen > 0 ? outLen / rawLen : 1;
-  // ★ 짧은 글 비율 상한 완화(2026-06-19 실측 #8: 140자 글로벌시민교육 성찰이 blog 1.561배로 length_overrun 차단).
-  //   짧은 글은 한 문장만 풀어 써도 비율이 크게 튄다(절대 +수십 자는 사소). 무날조는 novelty/judge가 따로 잡으므로
-  //   여기선 '길이'만 본다 → rawLen<250(공백제외)이면 hardMax를 넉넉히(최소 2.2배) 완화. 긴 글 과확장 차단은 불변.
-  const pol = mode !== 'polish' && rawLen < 250 ? Object.assign({}, pol0, { hardMax: Math.max(pol0.hardMax, 2.2) }) : pol0;
+  const pol = lengthPolicyFor(rawText, mode);
   let status = 'ok';
   if (ratio > pol.hardMax) status = 'overHard';      // FLOOR 위반 → shrink repair
   else if (ratio > pol.max) status = 'overSoft';     // 경고만(report)
@@ -641,6 +697,8 @@ module.exports = {
   measureFakeInternalRefs,
   measureLength,
   polishLengthPolicy,
+  lengthPolicyFor,
+  lengthStagePolicy,
   measureRepetition,
   LENGTH_POLICY,
   collectFloorViolations,

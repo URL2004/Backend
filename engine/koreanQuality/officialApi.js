@@ -6,7 +6,7 @@ const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const CACHE_PATH = path.join(ROOT, 'data', 'nikl-api-cache.json');
-const VERSION = 'nikl-official-api-v1';
+const VERSION = 'nikl-official-api-v2';
 const CACHE_MAX_ENTRIES = 5000;
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
@@ -94,18 +94,24 @@ async function lookupStdDict(query, opts = {}) {
   url.searchParams.set('target', '1');
   url.searchParams.set('method', 'exact');
   url.searchParams.set('num', '10');
-  const json = await cachedFetchJson('stdict', query, url, opts);
+  const fetched = await cachedFetchJson('stdict', query, url, {
+    ...opts,
+    validateJson: throwIfDictionaryError
+  });
+  const json = fetched.json;
+  throwIfDictionaryError(json);
   const channel = json?.channel || {};
   const items = normalizeArray(channel.item).map(item => ({
-    word: clean(item.word),
-    pos: clean(item.pos),
-    type: clean(item.sense?.type || item.type),
-    cat: clean(item.sense?.cat || item.cat)
+    word: cleanHeadword(item.word),
+    pos: clean(item.pos || firstSense(item)?.pos),
+    type: clean(firstSense(item)?.type || item.type),
+    cat: clean(firstSense(item)?.cat || item.cat)
   })).filter(item => item.word);
   return {
     source: 'stdict',
     total: Number(channel.total || 0) || items.length,
-    items: items.slice(0, 5)
+    items: items.slice(0, 5),
+    cacheHit: fetched.cacheHit === true
   };
 }
 
@@ -117,22 +123,31 @@ async function lookupOpenDict(query, opts = {}) {
   url.searchParams.set('q', query);
   url.searchParams.set('req_type', 'json');
   url.searchParams.set('advanced', 'y');
-  url.searchParams.set('target', '15');
-  url.searchParams.set('method', 'include');
-  url.searchParams.set('norm', '0');
+  // 표기 보존용 조회는 규범정보(target=15)가 아니라 표제어(target=1)를
+  // 기준으로 해야 한다. 규범정보 상세 조회는 검색 결과의 target_code가
+  // 확보된 뒤 별도 단계에서만 수행한다.
+  url.searchParams.set('target', '1');
+  url.searchParams.set('method', 'exact');
   url.searchParams.set('num', '10');
-  const json = await cachedFetchJson('opendict', query, url, opts);
+  const fetched = await cachedFetchJson('opendict', query, url, {
+    ...opts,
+    validateJson: throwIfDictionaryError
+  });
+  const json = fetched.json;
+  throwIfDictionaryError(json);
   const channel = json?.channel || {};
   const items = normalizeArray(channel.item).map(item => ({
-    word: clean(item.word),
-    pos: clean(item.sense?.pos || item.pos),
-    type: clean(item.sense?.type || item.type),
-    normInfo: compactNormInfo(item.sense?.norm_info || item.norm_info)
+    word: cleanHeadword(item.word),
+    pos: clean(firstSense(item)?.pos || item.pos),
+    type: clean(firstSense(item)?.type || item.type),
+    targetCode: clean(firstSense(item)?.target_code || item.target_code),
+    normInfo: compactNormInfo(firstSense(item)?.norm_info || item.norm_info)
   })).filter(item => item.word || item.normInfo.length);
   return {
     source: 'opendict',
     total: Number(channel.total || 0) || items.length,
-    items: items.slice(0, 5)
+    items: items.slice(0, 5),
+    cacheHit: fetched.cacheHit === true
   };
 }
 
@@ -143,12 +158,23 @@ async function lookupTerm(query, opts = {}) {
   url.searchParams.set('key', key);
   url.searchParams.set('apiSearchWord', query);
   url.searchParams.set('start', '1');
-  url.searchParams.set('num', '5');
+  // 온용어 공식 허용 범위는 10~100이다.
+  url.searchParams.set('num', '10');
   url.searchParams.set('sort', 'wt');
-  const json = await cachedFetchJson('term', query, url, opts);
+  const fetched = await cachedFetchJson('term', query, url, {
+    ...opts,
+    validateJson: throwIfTermError
+  });
+  const json = fetched.json;
+  throwIfTermError(json);
   const channel = json?.channel || {};
-  const items = normalizeArray(channel.item).map(item => ({
-    word: clean(item.word || item.wordinfo?.word),
+  // 온용어 검색 응답은 channel.return_object[].resultlist[] 구조다.
+  // 구형/예시 응답의 channel.item도 하위 호환으로 읽는다.
+  const resultItems = normalizeArray(channel.return_object)
+    .flatMap(group => normalizeArray(group?.resultlist));
+  const rawItems = resultItems.length ? resultItems : normalizeArray(channel.item);
+  const items = rawItems.map(item => ({
+    word: cleanHeadword(item.word || item.wordinfo?.word),
     categoryMain: clean(item.category_main),
     categorySub: clean(item.category_sub),
     glossary: clean(item.glossary),
@@ -160,24 +186,42 @@ async function lookupTerm(query, opts = {}) {
     source: 'term',
     total: Number(channel.total || 0) || items.length,
     items: items.filter(item => item.usableCommercially).slice(0, 5),
-    filteredNonCommercial: items.filter(item => item.licenseType && item.licenseType !== '1').length
+    filteredNonCommercial: items.filter(item => item.licenseType && item.licenseType !== '1').length,
+    cacheHit: fetched.cacheHit === true
   };
 }
 
 async function cachedFetchJson(provider, query, url, opts = {}) {
+  if (opts.disableCache === true) {
+    const json = await fetchJson(url, opts);
+    validateFetchedJson(json, opts);
+    return {
+      json,
+      cacheHit: false
+    };
+  }
   const requestedTtl = Number(opts.ttlMs || process.env.NIKL_API_CACHE_TTL_MS || CACHE_TTL_MS);
   const ttlMs = Number.isFinite(requestedTtl) && requestedTtl > 0
     ? Math.min(CACHE_TTL_MS, requestedTtl)
     : CACHE_TTL_MS;
   const now = Date.now();
-  const store = loadCache();
+  const store = opts.cacheStore || loadCache();
+  if (!store.entries || typeof store.entries !== 'object') store.entries = {};
   const cacheKey = hashedCacheKey(provider, query);
   const hit = store.entries[cacheKey];
   if (hit && now - Number(hit.fetchedAtMs || 0) <= ttlMs) {
-    hit.accessedAtMs = now;
-    return hit.json;
+    try {
+      validateFetchedJson(hit.json, opts);
+      hit.accessedAtMs = now;
+      return { json: hit.json, cacheHit: true };
+    } catch {
+      // 인증 오류 같은 HTTP 200 오류 응답을 이전 버전이 캐시했더라도
+      // 재사용하지 않고 즉시 정상 응답을 다시 조회한다.
+      delete store.entries[cacheKey];
+    }
   }
   const json = await fetchJson(url, opts);
+  validateFetchedJson(json, opts);
   store.entries[cacheKey] = {
     fetchedAtMs: now,
     accessedAtMs: now,
@@ -185,8 +229,12 @@ async function cachedFetchJson(provider, query, url, opts = {}) {
     json
   };
   pruneCache(store, now, ttlMs);
-  scheduleCacheSave(store);
-  return json;
+  if (!opts.cacheStore) scheduleCacheSave(store);
+  return { json, cacheHit: false };
+}
+
+function validateFetchedJson(json, opts = {}) {
+  if (typeof opts.validateJson === 'function') opts.validateJson(json);
 }
 
 async function fetchJson(url, opts = {}) {
@@ -195,9 +243,11 @@ async function fetchJson(url, opts = {}) {
     ? Math.max(100, Math.min(1200, requestedTimeout))
     : 1200;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new Error('nikl_api_timeout')), timeoutMs);
+  const signal = combineAbortSignals(controller.signal, opts.signal);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const fetchImpl = typeof opts.fetchImpl === 'function' ? opts.fetchImpl : fetch;
+    const response = await fetchImpl(url, { signal });
     const text = await response.text();
     if (!response.ok) throw new Error(`http_${response.status}`);
     try {
@@ -218,6 +268,7 @@ function loadCache() {
   } catch {
     cache = { version: VERSION, entries: {} };
   }
+  if (cache.version !== VERSION) cache = { version: VERSION, entries: {} };
   if (!cache.entries || typeof cache.entries !== 'object') cache.entries = {};
   // v1의 평문 질의 키는 재사용하지 않고 즉시 제거한다.
   cache.entries = Object.fromEntries(Object.entries(cache.entries).filter(([key]) => /^[a-f0-9]{64}$/u.test(key)));
@@ -285,6 +336,59 @@ function compactNormInfo(value) {
   })).filter(item => item.type || item.role || item.desc).slice(0, 5);
 }
 
+function firstSense(item) {
+  return normalizeArray(item?.sense)[0] || null;
+}
+
+function cleanHeadword(value) {
+  return clean(value)
+    .replace(/\^/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function throwIfDictionaryError(json) {
+  const error = json?.error;
+  if (!error) return;
+  const code = clean(error.error_code || error.code || 'unknown');
+  const err = new Error(`api_error_${code}`);
+  err.code = `NIKL_API_${code}`;
+  throw err;
+}
+
+function throwIfTermError(json) {
+  throwIfDictionaryError(json);
+  const groups = normalizeArray(json?.channel?.return_object);
+  const failed = groups.find(group => {
+    const code = String(group?.returnCode ?? '').trim();
+    return code && code !== '1';
+  });
+  if (!failed) return;
+  const code = clean(failed.returnCode || 'unknown');
+  const err = new Error(`api_error_${code}`);
+  err.code = `NIKL_API_${code}`;
+  throw err;
+}
+
+function combineAbortSignals(internalSignal, externalSignal) {
+  if (!externalSignal) return internalSignal;
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([internalSignal, externalSignal]);
+  }
+  const combined = new AbortController();
+  const forward = signal => {
+    if (!combined.signal.aborted) combined.abort(signal.reason);
+  };
+  for (const source of [internalSignal, externalSignal]) {
+    if (source.aborted) {
+      forward(source);
+      break;
+    }
+    source.addEventListener('abort', () => forward(source), { once: true });
+  }
+  return combined.signal;
+}
+
 function normalizeQuery(value) {
   return String(value || '')
     .replace(/[^\u3131-\uD7A3A-Za-z0-9·\s-]/g, '')
@@ -307,5 +411,11 @@ module.exports = {
   lookupOpenDict,
   lookupTerm,
   hashedCacheKey,
-  pruneCache
+  pruneCache,
+  _test: {
+    cleanHeadword,
+    throwIfDictionaryError,
+    throwIfTermError,
+    firstSense
+  }
 };

@@ -605,6 +605,13 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
     sourcePreflightChanged: true, sourceArtifactRemovedCount: 1,
     sourcePreflightIssueCodes: ['source_ui_artifact'],
+    niklAdvisorVersion: 'nikl-lexical-advisor-v2',
+    niklLocalResourceEnabled: true, niklLocalResourceApplied: true,
+    niklLocalCandidateCount: 3, niklLocalAppliedCount: 2, niklLocalErrorCount: 0,
+    niklExternalApiEnabled: false, niklExternalProviderCount: 0,
+    niklExternalCandidateCount: 0, niklExternalLookupCount: 0,
+    niklExternalHitCount: 0, niklExternalAppliedCount: 0,
+    niklExternalCacheHitCount: 0, niklExternalErrorCount: 0, niklExternalTimeoutCount: 0,
     prompt: '저장 금지', source: '저장 금지', protectedTerms: ['저장 금지']
   });
   assert.equal(compact.requestedDocumentProfile, 'resume_application');
@@ -642,6 +649,12 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.semanticRelationShiftCount, 1);
   assert.deepEqual(compact.semanticRelationShiftFamilies, ['proof_goal_weakened_to_check']);
   assert.equal(compact.formalRegisterResidualCount, 2);
+  assert.equal(compact.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
+  assert.equal(compact.niklLocalResourceEnabled, true);
+  assert.equal(compact.niklLocalResourceApplied, true);
+  assert.equal(compact.niklLocalCandidateCount, 3);
+  assert.equal(compact.niklLocalAppliedCount, 2);
+  assert.equal(compact.niklExternalApiEnabled, false);
   assert.equal(Object.hasOwn(compact, 'prompt'), false);
   assert.equal(Object.hasOwn(compact, 'source'), false);
   assert.equal(Object.hasOwn(compact, 'protectedTerms'), false);

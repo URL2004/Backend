@@ -62,6 +62,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
       fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
       effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
+      ...niklHealthMeta(),
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
       maintenance: maintenanceMode.isMaintenanceEnabled(),
@@ -80,6 +81,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
       fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
       effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
+      ...niklHealthMeta(),
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
       maintenance: maintenanceMode.isMaintenanceEnabled(),
@@ -88,6 +90,26 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
     });
   }
 });
+
+function niklHealthMeta() {
+  const aliases = {
+    stdict: ['NIKL_STDICT_API_KEY', 'STDICT_API_KEY', 'STANDARD_KOREAN_DICT_API_KEY'],
+    opendict: ['NIKL_OPENDICT_API_KEY', 'OPENDICT_API_KEY', 'WOORIMALSAEM_API_KEY'],
+    term: ['NIKL_TERM_API_KEY', 'TERM_API_KEY', 'KOREAN_TERM_API_KEY']
+  };
+  const requested = new Set(String(process.env.GPT_NIKL_API_PROVIDERS || 'opendict,stdict,term')
+    .split(',')
+    .map(value => value.trim().toLowerCase())
+    .filter(value => Object.hasOwn(aliases, value)));
+  const configured = [...requested]
+    .filter(provider => aliases[provider].some(name => Boolean(String(process.env[name] || '').trim())))
+    .length;
+  return {
+    niklLocalResourceEnabled: String(process.env.GPT_NIKL_LOCAL_RESOURCE_ENABLED || '1').trim() !== '0',
+    niklExternalApiEnabled: String(process.env.GPT_NIKL_EXTERNAL_API_ENABLED || '0').trim() === '1',
+    niklExternalProviderCount: configured
+  };
+}
 
 // 라우트
 app.use('/', require('./routes/analyze'));

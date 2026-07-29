@@ -42,6 +42,7 @@ const candidateIntegrity = require('./candidateIntegrity');
 const safeEditAccumulator = require('./safeEditAccumulator');
 const commercialSignals = require('./commercialSignals');
 const omissionRestore = require('./omissionRestore');
+const niklAdvisor = require('./niklAdvisor');
 const {
   classifyModelFailure,
   isNonEscalatableModelFailureCode
@@ -49,7 +50,7 @@ const {
 const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 
-const VERSION = 'gpt-prod-v2.5.14';
+const VERSION = 'gpt-prod-v2.5.15';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -228,6 +229,17 @@ async function runEngine({
     formatProfile: documentProfile.formatProfile
   });
   const chunks = chunkPlan.chunks;
+  // 국립국어원 조회는 문서당 한 번, 최대 2개 안전한 용어 후보에만 수행한다.
+  // 외부 API는 기본 OFF이며 활성화되더라도 결과 차단이나 자동 치환에는
+  // 관여하지 않고 청크 프롬프트의 표기 보존 힌트로만 사용한다.
+  const niklAdvisorContext = await niklAdvisor.prepareDocumentAdvisor({
+    text: source,
+    protectedTerms: extractProtectedTerms(source, documentProfile),
+    documentProfile,
+    requestStrength,
+    includeLocal: !niklQualityEnabled && selectedMode !== 'polish',
+    signal
+  });
   const chunkConcurrency = configuredChunkConcurrency();
   const records = await mapWithConcurrency(chunks, chunkConcurrency, async (chunk, i) => {
     return processChunk({
@@ -248,6 +260,7 @@ async function runEngine({
       documentProfile,
       voiceProfile,
       niklQualityTest: niklQualityEnabled,
+      niklAdvisorContext,
       safetyIdentifier: safetyId,
       signal
     });
@@ -2062,6 +2075,8 @@ async function runEngine({
   result.editMetrics = finalEditMetrics;
   result.humanizationDepth = humanizationDepthReport;
   result.koreanRefinement = koreanRefinementAudit;
+  const niklAdvisorMeta = niklAdvisor.compactMeta(niklAdvisorContext);
+  result.niklAdvisor = niklAdvisorMeta;
   result.sourceReviewWarnings = sourceReviewWarnings;
   result.sourcePreflight = sourcePreflightAudit ? {
     version: sourcePreflightAudit.version || 1,
@@ -2119,6 +2134,21 @@ async function runEngine({
     targetRegisterSource: documentProfile.targetRegisterSource || 'legacy',
     targetRegisterStrength: documentProfile.targetRegisterStrength || requestStrength,
     basicStyle: documentProfile.basicStyle || String(basicStyle || ''),
+    niklAdvisorVersion: niklAdvisorMeta.version,
+    niklLocalResourceEnabled: niklAdvisorMeta.localResourceEnabled,
+    niklLocalResourceApplied: niklAdvisorMeta.localResourceApplied,
+    niklLocalCandidateCount: niklAdvisorMeta.localCandidateCount,
+    niklLocalAppliedCount: niklAdvisorMeta.localAppliedCount,
+    niklLocalErrorCount: niklAdvisorMeta.localErrorCount,
+    niklExternalApiEnabled: niklAdvisorMeta.externalApiEnabled,
+    niklExternalProviderCount: niklAdvisorMeta.externalProviderCount,
+    niklExternalCandidateCount: niklAdvisorMeta.externalCandidateCount,
+    niklExternalLookupCount: niklAdvisorMeta.externalLookupCount,
+    niklExternalHitCount: niklAdvisorMeta.externalHitCount,
+    niklExternalAppliedCount: niklAdvisorMeta.externalAppliedCount,
+    niklExternalCacheHitCount: niklAdvisorMeta.externalCacheHitCount,
+    niklExternalErrorCount: niklAdvisorMeta.externalErrorCount,
+    niklExternalTimeoutCount: niklAdvisorMeta.externalTimeoutCount,
     semanticJudgeRan: semanticReport.ran === true,
     semanticViolationCount: Number((semanticReport?.violations || []).length),
     semanticOmissionCount: countSemanticViolations(semanticReport, 'omission'),
@@ -2488,7 +2518,7 @@ async function runEngine({
   };
 }
 
-async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength = '', lang, userNotes, evidence, cfg, styleProfile, documentProfile, voiceProfile, niklQualityTest = false, safetyIdentifier = '', signal }) {
+async function processChunk({ chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength = '', lang, userNotes, evidence, cfg, styleProfile, documentProfile, voiceProfile, niklQualityTest = false, niklAdvisorContext = null, safetyIdentifier = '', signal }) {
   const original = chunk.text;
   if (chunk.locked) {
     chunk.outputText = original;
@@ -2560,6 +2590,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     documentProfile,
     voiceProfile,
     niklQualityTest,
+    niklAdvisorContext,
     safetyIdentifier,
     chunkDeadlineMs,
     signal
@@ -2606,6 +2637,7 @@ async function processChunk({ chunk, chunks, index, source, contract, inputRisk,
     documentProfile,
     voiceProfile,
     niklQualityTest,
+    niklAdvisorContext,
     safetyIdentifier,
     chunkDeadlineMs,
     signal
@@ -2750,7 +2782,7 @@ async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength, lang, userNotes, evidence,
     cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, documentProfile, voiceProfile,
-    niklQualityTest = false, safetyIdentifier = '', chunkDeadlineMs, signal
+    niklQualityTest = false, niklAdvisorContext = null, safetyIdentifier = '', chunkDeadlineMs, signal
   } = args;
   const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
   try {
@@ -2763,11 +2795,11 @@ async function callHumanize(args) {
       register: contract.register
     }) : null;
     const niklQualityHints = niklQualityTest ? safeNiklQualityHints(niklSourceQuality) : '';
-    const niklExternalApiHints = niklQualityTest ? await safeNiklExternalApiHints(original, protectedTerms) : '';
+    const niklAdvisorHints = niklAdvisor.buildPromptHints(niklAdvisorContext, original);
     const riskProfile = composeRiskProfile(
       inputRisk,
       koreanQualityHints,
-      [niklQualityHints, niklExternalApiHints].filter(Boolean).join('\n\n')
+      [niklQualityHints, niklAdvisorHints].filter(Boolean).join('\n\n')
     );
     const chunkHumanizationPlan = isHumanizationDepthEnabled() ? humanizationDepth.buildHumanizationPlan(original, {
       requestStrength,
@@ -4893,40 +4925,6 @@ function safeNiklQualityHints(analysis) {
   try { return analysis ? optionalNiklLab()?.niklTest?.buildNiklPromptHints(analysis, { max: 6 }) || '' : ''; } catch { return ''; }
 }
 
-async function safeNiklExternalApiHints(text, protectedTerms = []) {
-  try {
-    if (process.env.GPT_NIKL_EXTERNAL_API_ENABLED !== '1') return '';
-    const api = optionalNiklLab()?.officialApi;
-    if (!api) return '';
-    const status = api.getApiStatus();
-    const providers = selectedNiklApiProviders(status);
-    if (!providers.length) return '';
-    const max = Math.max(0, Math.min(2, Number(process.env.GPT_NIKL_API_LOOKUP_MAX || 2) || 2));
-    if (!max) return '';
-    const candidates = selectNiklApiCandidates(text, protectedTerms).slice(0, max);
-    if (!candidates.length) return '';
-    const timeoutMs = Math.max(500, Math.min(1200, Number(process.env.NIKL_API_TIMEOUT_MS || 1200) || 1200));
-    const settled = await Promise.allSettled(candidates.map(query =>
-      api.lookupCandidate(query, { providers, timeoutMs })
-    ));
-    const lookups = settled
-      .filter(r => r.status === 'fulfilled' && r.value)
-      .map(r => r.value)
-      .filter(hasNiklLookupHit)
-      .slice(0, max);
-    if (!lookups.length) return '';
-    const lines = [
-      '[국립국어원 외부 API 조회 힌트]',
-      '표준국어대사전/우리말샘/온용어 조회 결과다. 정의문을 복사하지 말고, 용어 표기 보존과 어색한 치환 방지에만 사용한다.',
-      '조회된 용어는 원문 핵심 표기로 보아 임의로 쉬운 말이나 다른 용어로 바꾸지 않는다.'
-    ];
-    for (const item of lookups) lines.push(formatNiklLookupHint(item));
-    return lines.join('\n');
-  } catch {
-    return '';
-  }
-}
-
 function safeNiklQualityGate(source, output, opts = {}) {
   try { return optionalNiklLab()?.niklTest?.evaluateNiklQuality(source, output, opts) || null; } catch { return null; }
 }
@@ -4941,8 +4939,7 @@ function optionalNiklLab() {
   // 관리자 shadow 도구는 명시적으로 켠 요청에서만 로드한다. 런타임 경로를
   // 조합해 production import graph와 일반 서버 시작 경로에서도 격리한다.
   optionalNiklLabModule = {
-    niklTest: module.require(['..', 'engine', 'koreanQuality', 'niklTest'].join('/')),
-    officialApi: module.require(['..', 'engine', 'koreanQuality', 'officialApi'].join('/'))
+    niklTest: module.require(['..', 'engine', 'koreanQuality', 'niklTest'].join('/'))
   };
   return optionalNiklLabModule;
 }
@@ -4980,67 +4977,6 @@ function composeRiskProfile(inputRisk, koreanQualityHints, niklQualityHints = ''
   if (koreanQualityHints) parts.push(koreanQualityHints);
   if (niklQualityHints) parts.push(niklQualityHints);
   return parts.join('\n\n');
-}
-
-function selectedNiklApiProviders(status) {
-  const keys = status?.keys || {};
-  const requested = String(process.env.GPT_NIKL_API_PROVIDERS || 'opendict,stdict,term')
-    .split(',')
-    .map(v => v.trim().toLowerCase())
-    .filter(Boolean);
-  return requested.filter(p => ['opendict', 'stdict', 'term'].includes(p) && keys[p]);
-}
-
-function selectNiklApiCandidates(text, protectedTerms = []) {
-  const out = new Set();
-  const push = value => {
-    const v = String(value || '')
-      .replace(/\([^)]*\)/g, '')
-      .replace(/https?:\/\/\S+/g, '')
-      .replace(/[^가-힣A-Za-z0-9·\s-]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!v || v.length < 2 || v.length > 28) return;
-    if (/^\d/.test(v) || /^[A-Za-z0-9 .-]+$/.test(v)) return;
-    if (!/[가-힣]/.test(v)) return;
-    out.add(v);
-  };
-  for (const term of protectedTerms || []) push(term);
-  const source = String(text || '');
-  const technical = source.match(/[가-힣A-Za-z0-9·-]{2,}(?:시스템|기술|설비|기능|인프라|플랫폼|데이터|과정|정책|이론|분석|서비스|교육|연구|관리|운영)/g) || [];
-  for (const term of technical) push(term);
-  const quoted = source.match(/[“"']([^“"']{2,24})[”"']/g) || [];
-  for (const term of quoted) push(term.replace(/[“”"']/g, ''));
-  return [...out].slice(0, 12);
-}
-
-function hasNiklLookupHit(item) {
-  const providers = item?.providers || {};
-  return Object.entries(providers).some(([name, p]) => {
-    const hasItems = Array.isArray(p?.items) && p.items.length > 0;
-    if (name === 'term') return hasItems;
-    return hasItems || Number(p?.total || 0) > 0;
-  });
-}
-
-function formatNiklLookupHint(item) {
-  const providers = item?.providers || {};
-  const sourceNames = [];
-  const words = new Set();
-  if (providers.opendict) {
-    sourceNames.push('우리말샘');
-    for (const v of providers.opendict.items || []) if (v.word) words.add(v.word);
-  }
-  if (providers.stdict) {
-    sourceNames.push('표준국어대사전');
-    for (const v of providers.stdict.items || []) if (v.word) words.add(v.word);
-  }
-  if (providers.term && Array.isArray(providers.term.items) && providers.term.items.length) {
-    sourceNames.push('온용어');
-    for (const v of providers.term.items || []) if (v.word) words.add(v.word);
-  }
-  const wordList = [...words].slice(0, 4).join(', ');
-  return `- "${item.query}": ${sourceNames.join('/')} 조회됨${wordList ? `, 표기 후보 ${wordList}` : ''}`;
 }
 
 async function safeFormatLayout(text, opts = {}) {

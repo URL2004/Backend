@@ -432,6 +432,16 @@ function assessRepairCandidate(rawText, beforeText, candidateText, {
     reasons.push('discourse_risk_worsened');
   }
   if (candidateIntroducedDiscourse.length) reasons.push('discourse_new_violation');
+  // 긴 문서는 의미 심사를 위해 OUTPUT은 겹치지 않게 나누고 SOURCE 문맥만
+  // 앞뒤로 겹쳐 보낸다. 수리 모델이 그 SOURCE overlap을 CURRENT_REWRITE에
+  // 복사하면 사실·숫자·길이 검사는 모두 통과할 수 있지만, 이미 처리한
+  // 문단이 구간 경계에 다시 삽입된다. 수리 전보다 반복 지표가 하나라도
+  // 늘어난 후보는 채택하지 않아 그 경계 복사를 원천에서 차단한다.
+  const beforeRepetition = compactRepairRepetition(floor.measureRepetition(before));
+  const candidateRepetition = compactRepairRepetition(floor.measureRepetition(candidate));
+  if (repairRepetitionWorsened(beforeRepetition, candidateRepetition)) {
+    reasons.push('repetition_worsened');
+  }
   const sharedIntegrity = candidateIntegrity.auditCandidateIntegrity({
     source,
     before,
@@ -456,8 +466,30 @@ function assessRepairCandidate(rawText, beforeText, candidateText, {
     beforeDiscourse,
     candidateDiscourse,
     candidateIntroducedDiscourse,
+    beforeRepetition,
+    candidateRepetition,
     sharedIntegrity
   };
+}
+
+function compactRepairRepetition(value) {
+  return {
+    exactGroups: Number(value?.count || 0),
+    maxRepeat: Number(value?.maxRepeat || 1),
+    fuzzyPairs: Number(value?.fuzzyCount || 0),
+    shortFragmentGroups: Number(value?.shortFragCount || 0),
+    total: Number(value?.total || 0)
+  };
+}
+
+function repairRepetitionWorsened(before, candidate) {
+  return [
+    'exactGroups',
+    'maxRepeat',
+    'fuzzyPairs',
+    'shortFragmentGroups',
+    'total'
+  ].some(key => Number(candidate?.[key] || 0) > Number(before?.[key] || 0));
 }
 
 const SPAN_STOP_WORDS = new Set([

@@ -1079,6 +1079,20 @@ function buildArchiveObservability(job) {
     estimatedUsd: archiveFinite(humanizeMeta.estimatedUsd ?? usage.estimatedUsd),
     dedupeRemovedBlockCount: archiveFinite(dedupeAudit.removedBlockCount),
     dedupeRemovedBlockSentenceCount: archiveFinite(dedupeAudit.removedBlockSentenceCount),
+    finalGeneratedDedupeApplied:
+      dedupeAudit.finalPass?.applied === true || engineMeta.finalGeneratedDedupeApplied === true,
+    finalGeneratedDedupeRejected:
+      dedupeAudit.finalPass?.rejected === true || engineMeta.finalGeneratedDedupeRejected === true,
+    finalGeneratedDedupeReasonCodes: uniqueStrictArchiveCodes(
+      dedupeAudit.finalPass?.reasonCodes || engineMeta.finalGeneratedDedupeReasonCodes
+    ),
+    finalGeneratedDedupeBlockCount: archiveFinite(
+      dedupeAudit.finalPass?.removedBlockCount ?? engineMeta.finalGeneratedDedupeBlockCount
+    ),
+    finalGeneratedDedupeSentenceCount: archiveFinite(
+      dedupeAudit.finalPass?.removedBlockSentenceCount
+        ?? engineMeta.finalGeneratedDedupeSentenceCount
+    ),
     dedupeRemovedLocalOverlapCount: archiveFinite(
       dedupeAudit.removedLocalOverlapCount ?? engineMeta.removedLocalOverlapCount
     ),

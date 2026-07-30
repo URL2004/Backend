@@ -366,7 +366,17 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
       },
       humanizeMeta: {
         estimatedUsd: 0.012345,
-        dedupeAudit: { removedBlockCount: 1, removedBlockSentenceCount: 6 },
+        dedupeAudit: {
+          removedBlockCount: 1,
+          removedBlockSentenceCount: 6,
+          finalPass: {
+            applied: true,
+            rejected: false,
+            reasonCodes: [],
+            removedBlockCount: 1,
+            removedBlockSentenceCount: 5
+          }
+        },
         layoutRepair: {
           paragraphs: {
             policy: 'bounded_source_paragraphs',
@@ -410,6 +420,10 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.discourseRepairRan, true);
   assert.equal(first.estimatedUsd, 0.012345);
   assert.equal(first.dedupeRemovedBlockCount, 1);
+  assert.equal(first.finalGeneratedDedupeApplied, true);
+  assert.equal(first.finalGeneratedDedupeRejected, false);
+  assert.equal(first.finalGeneratedDedupeBlockCount, 1);
+  assert.equal(first.finalGeneratedDedupeSentenceCount, 5);
   assert.equal(first.paragraphCountBeforeRepair, 14);
   assert.equal(first.paragraphCountAfterRepair, 6);
   assert.equal(first.lineBoundaryPolicy, 'structural');
@@ -639,6 +653,9 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
     sourcePreflightChanged: true, sourceArtifactRemovedCount: 1,
     sourcePreflightIssueCodes: ['source_ui_artifact'],
+    finalGeneratedDedupeApplied: true, finalGeneratedDedupeRejected: false,
+    finalGeneratedDedupeBlockCount: 1, finalGeneratedDedupeSentenceCount: 5,
+    finalGeneratedDedupeReasonCodes: [],
     pipelineFixedPoint: {
       safetyPass: true,
       depthHardMinimumPass: true,
@@ -688,6 +705,10 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.quoteIntegrityRestoreCount, 1);
   assert.equal(compact.sourcePreflightChanged, true);
   assert.deepEqual(compact.sourcePreflightIssueCodes, ['source_ui_artifact']);
+  assert.equal(compact.finalGeneratedDedupeApplied, true);
+  assert.equal(compact.finalGeneratedDedupeRejected, false);
+  assert.equal(compact.finalGeneratedDedupeBlockCount, 1);
+  assert.equal(compact.finalGeneratedDedupeSentenceCount, 5);
   assert.equal(compact.endingStylePass, true);
   assert.equal(compact.resumeCoverageRatio, 1);
   assert.equal(compact.resumeRepetitionApplicable, true);

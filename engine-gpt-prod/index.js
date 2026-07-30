@@ -52,7 +52,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.19';
+const VERSION = 'gpt-prod-v2.5.20';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -2091,6 +2091,29 @@ async function runEngine({
     }
     quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   }
+  // 청크 병합 직후의 중복 제거가 끝난 뒤에도 문서 전체 깊이 회복,
+  // 한국어 국소 수리, 의미 심사 수리가 outputText를 다시 쓸 수 있다.
+  // 모든 모델·레이아웃 단계가 끝난 고정점에서 원문에 없던 생성 중복만
+  // 한 번 더 제거하고, 수치·사실·구조 비퇴행 감사까지 통과한 결과만 쓴다.
+  const finalGeneratedDedupe = applyFinalGeneratedDedupe({
+    source: rawSource,
+    outputText,
+    chunks,
+    plan: chunkPlan,
+    boundaryRepair,
+    documentProfile,
+    mode: selectedMode,
+    // 제목·목록 같은 structural 행 정책은 아래 구조 감사로 보호하면서
+    // 생성 중복을 제거한다. 창작문·문항처럼 모든 행이 의미 단위인 경우만
+    // 자동 삭제를 건너뛴다.
+    preserveLineBreaks: lineBoundaryPolicy === 'all'
+      || voiceProfile?.lineBreakSensitive === true
+  });
+  if (finalGeneratedDedupe.applied) outputText = finalGeneratedDedupe.text;
+  postprocessMeta.dedupe = mergeFinalDedupeAudit(
+    postprocessMeta.dedupe,
+    finalGeneratedDedupe
+  );
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
     const postLayoutDepth = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     humanizationDepthStages.push(buildDepthStageSnapshot('post_layout_restore', postLayoutDepth));
@@ -2760,6 +2783,17 @@ async function runEngine({
       .find(item => item.code === 'functional_greeting_duplication')?.afterCount || 0),
     adjacentSemanticRepetitionCount: Number((koreanRefinementAudit?.issues || [])
       .find(item => item.code === 'adjacent_semantic_repetition')?.afterCount || 0),
+    finalGeneratedDedupeApplied: postprocessMeta?.dedupe?.finalPass?.applied === true,
+    finalGeneratedDedupeRejected: postprocessMeta?.dedupe?.finalPass?.rejected === true,
+    finalGeneratedDedupeReasonCodes: safeFailureCodeList(
+      postprocessMeta?.dedupe?.finalPass?.reasonCodes
+    ),
+    finalGeneratedDedupeBlockCount: Number(
+      postprocessMeta?.dedupe?.finalPass?.removedBlockCount || 0
+    ),
+    finalGeneratedDedupeSentenceCount: Number(
+      postprocessMeta?.dedupe?.finalPass?.removedBlockSentenceCount || 0
+    ),
     removedLocalOverlapCount: Number(postprocessMeta?.dedupe?.removedLocalOverlapCount || 0),
     localOverlapReasons: safeFailureCodeList(postprocessMeta?.dedupe?.localOverlapReasons),
     removedAdjacentRestatementCount: Number(postprocessMeta?.dedupe?.removedAdjacentRestatementCount || 0),
@@ -2843,7 +2877,8 @@ async function runEngine({
       adjacentRestatementFamilies: result.dedupeAudit.adjacentRestatementFamilies || [],
       fuzzyWarningCount: result.dedupeAudit.fuzzyWarningCount || 0,
       skipped: result.dedupeAudit.skipped === true,
-      reason: result.dedupeAudit.reason || ''
+      reason: result.dedupeAudit.reason || '',
+      finalPass: result.dedupeAudit.finalPass || null
     } : null,
     engineMeta: result.engineMeta,
     runtimeConfigSource: cfg.source,
@@ -3718,6 +3753,22 @@ function evaluateWholeDocumentGate({
   if (looksTruncated(outputText)) {
     return { hardFail: true, reason: 'sentence_truncated', warnings, violations };
   }
+  const repetitionAudit = qualityV2.compareRepetitionDelta(source, outputText);
+  if (isBlockingGeneratedRepetition(repetitionAudit)) {
+    const violation = {
+      gate: 'generated_duplicate_block',
+      detail: '원문에 없던 다문장 반복 블록이 최종 결과에서 증가했습니다.',
+      delta: compactRepetitionDelta(repetitionAudit)
+    };
+    violations.push(violation);
+    warnings.push(violation.gate);
+    return {
+      hardFail: true,
+      reason: violation.gate,
+      warnings,
+      violations
+    };
+  }
   const sourceAnchors = collectStructureAnchors(source);
   if (sourceAnchors.length >= 2) {
     const missingAnchors = sourceAnchors.filter(a => !structureAnchorPresent(a, outputText));
@@ -3758,6 +3809,18 @@ function evaluateWholeDocumentGate({
     return { hardFail: true, reason: 'noop_unchanged', warnings, violations };
   }
   return { hardFail: false, reason: '', warnings, violations };
+}
+
+function isBlockingGeneratedRepetition(audit) {
+  const delta = audit?.delta || {};
+  const exactGroups = Math.max(0, Number(delta.exactGroups || 0));
+  const maxRepeat = Math.max(0, Number(delta.maxRepeat || 0));
+  const fuzzyPairs = Math.max(0, Number(delta.fuzzyPairs || 0));
+  const total = Math.max(0, Number(delta.total || 0));
+  return exactGroups >= 3
+    || maxRepeat >= 2
+    || (exactGroups >= 2 && maxRepeat >= 1 && total >= 3)
+    || (fuzzyPairs >= 3 && total >= 4);
 }
 
 function addFloorCriticals(report, violations, fallbackGate = 'gpt_final_gate_failed') {
@@ -4678,6 +4741,211 @@ function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLin
   }
   try { out = spacing.restoreUrls(out, source).text; } catch {}
   return out.trim();
+}
+
+function applyFinalGeneratedDedupe({
+  source = '',
+  outputText = '',
+  chunks = [],
+  plan = null,
+  boundaryRepair = null,
+  documentProfile = null,
+  mode = 'assignment',
+  preserveLineBreaks = false
+} = {}) {
+  const before = String(outputText || '').trim();
+  const report = {
+    version: 1,
+    stage: 'final_fixed_point',
+    text: before,
+    applied: false,
+    skipped: false,
+    rejected: false,
+    reasonCodes: [],
+    removedBlockCount: 0,
+    removedBlockSentenceCount: 0,
+    removedLocalOverlapCount: 0,
+    localOverlapReasons: [],
+    removedAdjacentRestatementCount: 0,
+    adjacentRestatementFamilies: []
+  };
+  if (!before) {
+    return { ...report, skipped: true, reasonCodes: ['empty_output'] };
+  }
+  if (preserveLineBreaks) {
+    return { ...report, skipped: true, reasonCodes: ['creative_line_structure'] };
+  }
+
+  try {
+    const blockDedupe = dedupe.removeNewExactDuplicateBlocks(source, before);
+    const localOverlapDedupe = dedupe.removeGeneratedLocalOverlapDuplicates(
+      source,
+      blockDedupe.text
+    );
+    const seamDedupe = dedupe.removeGeneratedAdjacentRestatements(
+      source,
+      localOverlapDedupe.text
+    );
+    const candidate = String(seamDedupe.text || '').trim();
+    const detectorApplied = candidate !== before;
+    Object.assign(report, {
+      removedBlockCount: Number(blockDedupe.removedBlockCount || 0),
+      removedBlockSentenceCount: Number(blockDedupe.removedSentenceCount || 0),
+      removedLocalOverlapCount: Number(localOverlapDedupe.removedCount || 0),
+      localOverlapReasons: safeFailureCodeList(localOverlapDedupe.reasons),
+      removedAdjacentRestatementCount: Number(seamDedupe.removedCount || 0),
+      adjacentRestatementFamilies: safeFailureCodeList(seamDedupe.families)
+    });
+    if (!detectorApplied) return report;
+
+    const beforeRepetition = qualityV2.compareRepetitionDelta(source, before);
+    const candidateRepetition = qualityV2.compareRepetitionDelta(source, candidate);
+    report.beforeRepetitionDelta = compactRepetitionDelta(beforeRepetition);
+    report.afterRepetitionDelta = compactRepetitionDelta(candidateRepetition);
+    if (!repetitionDeltaNotWorse(beforeRepetition, candidateRepetition)) {
+      report.reasonCodes.push('repetition_not_improved');
+    }
+
+    const beforeNumbers = compareNumberMultiset(source, before);
+    const candidateNumbers = compareNumberMultiset(source, candidate);
+    if (!numberAuditNotWorse(beforeNumbers, candidateNumbers)) {
+      report.reasonCodes.push('number_facts_worsened');
+    }
+
+    const beforeNovelty = floor.measureNovelty(source, before, '');
+    const candidateNovelty = floor.measureNovelty(source, candidate, '');
+    const beforeLostFacts = floor.measureLostFacts(source, before);
+    const candidateLostFacts = floor.measureLostFacts(source, candidate);
+    if (!issueItemsNotWorse(beforeNovelty, candidateNovelty)) {
+      report.reasonCodes.push('novelty_worsened');
+    }
+    if (!issueItemsNotWorse(beforeLostFacts, candidateLostFacts)) {
+      report.reasonCodes.push('lost_facts_worsened');
+    }
+
+    const integrity = candidateIntegrity.auditCandidateIntegrity({
+      source,
+      before,
+      candidate,
+      documentProfile,
+      mode
+    });
+    if (integrity.pass !== true) {
+      report.reasonCodes.push(...(integrity.reasons || ['candidate_integrity_failed']));
+    }
+
+    const beforeStructure = structureChunk.buildStructureAudit({
+      source,
+      outputText: before,
+      chunks,
+      plan,
+      boundaryRepair
+    });
+    const candidateStructure = structureChunk.buildStructureAudit({
+      source,
+      outputText: candidate,
+      chunks,
+      plan,
+      boundaryRepair
+    });
+    if (!structureAuditNotWorse(beforeStructure, candidateStructure)) {
+      report.reasonCodes.push('structure_integrity_worsened');
+    }
+
+    report.reasonCodes = safeFailureCodeList(report.reasonCodes);
+    if (report.reasonCodes.length) {
+      return { ...report, rejected: true };
+    }
+    return {
+      ...report,
+      text: candidate,
+      applied: true
+    };
+  } catch (error) {
+    return {
+      ...report,
+      rejected: true,
+      reasonCodes: ['final_dedupe_audit_error']
+    };
+  }
+}
+
+function repetitionDeltaNotWorse(beforeAudit, candidateAudit) {
+  const before = beforeAudit?.delta || {};
+  const candidate = candidateAudit?.delta || {};
+  return [
+    'exactGroups',
+    'maxRepeat',
+    'fuzzyPairs',
+    'shortFragmentGroups',
+    'total'
+  ].every(key => (
+    Math.max(0, Number(candidate[key] || 0))
+      <= Math.max(0, Number(before[key] || 0))
+  ));
+}
+
+function compactRepetitionDelta(audit) {
+  const delta = audit?.delta || {};
+  return {
+    exactGroups: Number(delta.exactGroups || 0),
+    maxRepeat: Number(delta.maxRepeat || 0),
+    fuzzyPairs: Number(delta.fuzzyPairs || 0),
+    shortFragmentGroups: Number(delta.shortFragmentGroups || 0),
+    total: Number(delta.total || 0)
+  };
+}
+
+function mergeFinalDedupeAudit(initial = null, finalPass = null) {
+  const base = initial && typeof initial === 'object' ? initial : {};
+  const last = finalPass && typeof finalPass === 'object' ? finalPass : {};
+  const acceptedBlockCount = last.applied === true ? Number(last.removedBlockCount || 0) : 0;
+  const acceptedBlockSentenceCount = last.applied === true
+    ? Number(last.removedBlockSentenceCount || 0)
+    : 0;
+  const acceptedLocalOverlapCount = last.applied === true
+    ? Number(last.removedLocalOverlapCount || 0)
+    : 0;
+  const acceptedAdjacentCount = last.applied === true
+    ? Number(last.removedAdjacentRestatementCount || 0)
+    : 0;
+  return {
+    ...base,
+    removedExactCount: Number(base.removedExactCount || 0)
+      + acceptedBlockSentenceCount,
+    removedBlockCount: Number(base.removedBlockCount || 0)
+      + acceptedBlockCount,
+    removedBlockSentenceCount: Number(base.removedBlockSentenceCount || 0)
+      + acceptedBlockSentenceCount,
+    removedLocalOverlapCount: Number(base.removedLocalOverlapCount || 0)
+      + acceptedLocalOverlapCount,
+    localOverlapReasons: safeFailureCodeList([
+      ...(base.localOverlapReasons || []),
+      ...(last.applied === true ? (last.localOverlapReasons || []) : [])
+    ]),
+    removedAdjacentRestatementCount: Number(base.removedAdjacentRestatementCount || 0)
+      + acceptedAdjacentCount,
+    adjacentRestatementFamilies: safeFailureCodeList([
+      ...(base.adjacentRestatementFamilies || []),
+      ...(last.applied === true ? (last.adjacentRestatementFamilies || []) : [])
+    ]),
+    finalPass: {
+      version: Number(last.version || 1),
+      stage: String(last.stage || 'final_fixed_point'),
+      applied: last.applied === true,
+      skipped: last.skipped === true,
+      rejected: last.rejected === true,
+      reasonCodes: safeFailureCodeList(last.reasonCodes),
+      detectedBlockCount: Number(last.removedBlockCount || 0),
+      detectedBlockSentenceCount: Number(last.removedBlockSentenceCount || 0),
+      removedBlockCount: acceptedBlockCount,
+      removedBlockSentenceCount: acceptedBlockSentenceCount,
+      removedLocalOverlapCount: acceptedLocalOverlapCount,
+      removedAdjacentRestatementCount: acceptedAdjacentCount,
+      beforeRepetitionDelta: last.beforeRepetitionDelta || null,
+      afterRepetitionDelta: last.afterRepetitionDelta || null
+    }
+  };
 }
 
 function freezeLockedBlocks(source, outputText, chunks) {
@@ -6046,6 +6314,8 @@ module.exports = {
   buildPatchTargets,
   isHighRiskChunk,
   measureLengthCollapse,
+  applyFinalGeneratedDedupe,
+  isBlockingGeneratedRepetition,
   isMaterialDepthRegression,
   needsPerceivedHumanizationRecovery,
   measureConservativeRecoveryProgress,

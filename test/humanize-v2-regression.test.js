@@ -27,7 +27,11 @@ const { assessRepairCandidate } = require('../engine-gpt-prod/judge');
 const prompts = require('../engine-gpt-prod/prompts');
 const contract = require('../engine/contract');
 const { compareNaturalnessShadow } = require('../engine-gpt-prod/naturalnessShadow');
-const { effectiveModeForProfile } = require('../engine-gpt-prod');
+const {
+  effectiveModeForProfile,
+  applyFinalGeneratedDedupe,
+  isBlockingGeneratedRepetition
+} = require('../engine-gpt-prod');
 
 test('한국어 문장 분리기는 장·절 번호, 소수점, 약어와 인용부호를 보존한다', () => {
   const value = '제 1장. 연구 개요\n연구 배경\n값은 3.14이다. e.g. 예시는 유지한다. U.S. 자료도 유지한다. “인용문이다.” 다음 문장이다.';
@@ -177,6 +181,72 @@ test('반복 경고는 원문에 있던 반복이 아니라 결과에서 증가�
   assert.equal(unchangedAudit.delta.total, 0);
   assert.equal(increasedAudit.increased, true);
   assert.ok(increasedAudit.delta.exactGroups > 0 || increasedAudit.delta.maxRepeat > 0 || increasedAudit.delta.total > 0);
+});
+
+test('의미 수리 후보가 분할 SOURCE 겹침을 결과에 복사하면 채택하지 않는다', () => {
+  const context = Array.from({ length: 18 }, (_, index) => (
+    `배경 ${index + 1}에서는 서로 다른 윤리 관점을 비교하는 수업의 목적과 진행 순서를 구체적으로 설명합니다.`
+  ));
+  const block = [
+    '첫 번째 해설은 인간 본성을 이해하고 도덕 법칙의 근거를 탐구하는 공통 문제의식을 설명합니다.',
+    '두 번째 해설은 서로 다른 사상에 열린 태도를 갖고 융합적으로 사고하는 학습 목표를 제시합니다.',
+    '세 번째 해설은 실제 평가에서 각 사상의 차이와 대립 관점을 구분하는 능력이 요구된다고 설명합니다.',
+    '네 번째 해설은 교육과정의 통합적 이해와 평가의 비교 방식 사이에 긴장이 생긴다고 정리합니다.'
+  ];
+  const tail = '마지막 문장은 앞선 논의를 바탕으로 수업 설계의 개선 방향을 제안합니다.';
+  const source = [...context, ...block, tail].join(' ');
+  const before = source.replace('개선 방향을 제안합니다', '개선 방향을 구체화합니다');
+  const copiedOverlap = [
+    ...context,
+    ...block,
+    '구간 경계 수리 과정에서 원문 비교 문맥이 다시 붙었습니다.',
+    ...block,
+    '마지막 문장은 앞선 논의를 바탕으로 수업 설계의 개선 방향을 구체화합니다.'
+  ].join(' ');
+  const audit = assessRepairCandidate(source, before, copiedOverlap);
+
+  assert.equal(audit.pass, false);
+  assert.ok(audit.reasons.includes('repetition_worsened'));
+  assert.ok(audit.candidateRepetition.exactGroups > audit.beforeRepetition.exactGroups);
+});
+
+test('최종 고정점 중복 감사는 늦게 삽입된 블록을 제거하고 잔존 시 전달을 차단한다', () => {
+  const block = [
+    '첫 번째 근거는 교육과정의 공통 문제의식을 충분한 길이로 설명하는 문장입니다.',
+    '두 번째 근거는 서로 다른 관점을 열린 태도로 이해해야 한다는 목표를 설명합니다.',
+    '세 번째 근거는 평가에서 각 사상의 차이를 구분하는 능력이 요구된다고 설명합니다.',
+    '네 번째 근거는 통합적 이해와 비교 평가 사이의 긴장을 구체적으로 정리합니다.'
+  ];
+  const source = [
+    '도입 문장은 논의의 범위를 제시합니다.',
+    ...block,
+    '마무리 문장은 다음 수업 설계의 방향을 안내합니다.'
+  ].join(' ');
+  const duplicated = [
+    '도입 문장은 논의의 범위를 제시합니다.',
+    ...block,
+    '의미 수리 구간에서 원문 비교 문맥이 잘못 삽입되었습니다.',
+    ...block,
+    '마무리 문장은 다음 수업 설계의 방향을 안내합니다.'
+  ].join(' ');
+  const beforeGate = qualityV2.compareRepetitionDelta(source, duplicated);
+  const repaired = applyFinalGeneratedDedupe({
+    source,
+    outputText: duplicated,
+    mode: 'assignment'
+  });
+
+  assert.equal(isBlockingGeneratedRepetition(beforeGate), true);
+  assert.equal(repaired.applied, true);
+  assert.equal(repaired.removedBlockCount, 1);
+  assert.equal(repaired.removedBlockSentenceCount, 4);
+  assert.equal(qualityV2.compareRepetitionDelta(source, repaired.text).increased, false);
+  assert.equal(isBlockingGeneratedRepetition(
+    qualityV2.compareRepetitionDelta(source, repaired.text)
+  ), false);
+  for (const sentence of block) {
+    assert.equal(repaired.text.split(sentence).length - 1, 1);
+  }
 });
 
 test('목차·참고문헌은 한 판정기로 잠그고 참고문헌 뒤 부록 본문은 변환 대상으로 둔다', () => {

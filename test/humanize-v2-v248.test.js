@@ -364,7 +364,7 @@ test('고신뢰 자소서는 행동·역량·성과·직무 연결 문장의 통
   assert.equal(resumeCoverage.isImproved(before, restored), true);
   assert.equal(resumeCoverage.isSafeRestorationShape(source, omitted, source, before.omissions.length), true);
   assert.equal(resumeCoverage.isSafeRestorationShape(source, omitted, `${source} 원문에 없던 별도 결론을 덧붙였습니다.`, before.omissions.length), false);
-  assert.equal(resumeCoverage.auditResumeCoverage(source, omitted, { profile: 'resume_application', confidence: 0.74 }).applicable, false);
+  assert.equal(resumeCoverage.auditResumeCoverage(source, omitted, { profile: 'resume_application', confidence: 0.74 }).applicable, true);
 });
 
 test('특수 불릿·라벨은 접두부와 행 경계를 잠그고 본문만 편집하며 제목 형식은 회귀 보존한다', () => {

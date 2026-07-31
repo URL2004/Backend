@@ -227,12 +227,22 @@ test('문서 회복 비용 예산은 누적 USD와 생략 사유를 원문 없�
   budget.recordUsage({ estimatedUsd: 0.012345 }, 'depth_retry');
   assert.equal(budget.canStart(), false);
   budget.recordSkip('next_depth_retry');
-  assert.deepEqual(budget.snapshot(), {
+  const snapshot = budget.snapshot();
+  assert.deepEqual({
+    ...snapshot,
+    elapsedMs: 0
+  }, {
     enabled: true,
     enforced: true,
     limitUsd: 0.01,
     spentUsd: 0.012345,
     exhausted: true,
+    absoluteCallLimit: 16,
+    absoluteElapsedLimitMs: 240000,
+    elapsedMs: 0,
+    callLimitExhausted: false,
+    timeLimitExhausted: false,
+    lastDeniedReason: '',
     attemptedCallCount: 1,
     skippedCallCount: 1,
     skippedCodes: ['next_depth_retry'],

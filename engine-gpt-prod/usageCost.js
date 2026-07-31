@@ -2,19 +2,36 @@
 
 const DEFAULT_PRICES = {
   'gpt-5.6-terra': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 },
-  'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 }
+  'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 },
+  'gpt-5.6-sol': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 }
 };
 
 function priceFor(model) {
   const key = String(model || '').trim();
   const envPrefix = key.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-  const base = DEFAULT_PRICES[key] || DEFAULT_PRICES['gpt-5.6-luna'];
+  const canonicalKey = canonicalPriceKey(key);
+  const canonicalEnvPrefix = canonicalKey.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+  // 알 수 없는 모델을 가장 싼 Luna로 계산하면 비용 상한이 무력화된다.
+  // 정확 단가가 없을 때는 보수적으로 현재 최고 운영 단가를 사용한다.
+  const base = DEFAULT_PRICES[canonicalKey] || highestDefaultPrice();
   return {
-    input: envNumber(`OPENAI_PRICE_${envPrefix}_INPUT`, base.input),
-    cachedInput: envNumber(`OPENAI_PRICE_${envPrefix}_CACHED_INPUT`, base.cachedInput),
-    cacheWrite: envNumber(`OPENAI_PRICE_${envPrefix}_CACHE_WRITE`, base.cacheWrite),
-    output: envNumber(`OPENAI_PRICE_${envPrefix}_OUTPUT`, base.output)
+    input: envNumber(`OPENAI_PRICE_${envPrefix}_INPUT`, envNumber(`OPENAI_PRICE_${canonicalEnvPrefix}_INPUT`, base.input)),
+    cachedInput: envNumber(`OPENAI_PRICE_${envPrefix}_CACHED_INPUT`, envNumber(`OPENAI_PRICE_${canonicalEnvPrefix}_CACHED_INPUT`, base.cachedInput)),
+    cacheWrite: envNumber(`OPENAI_PRICE_${envPrefix}_CACHE_WRITE`, envNumber(`OPENAI_PRICE_${canonicalEnvPrefix}_CACHE_WRITE`, base.cacheWrite)),
+    output: envNumber(`OPENAI_PRICE_${envPrefix}_OUTPUT`, envNumber(`OPENAI_PRICE_${canonicalEnvPrefix}_OUTPUT`, base.output))
   };
+}
+
+function canonicalPriceKey(model) {
+  const value = String(model || '').trim().toLowerCase();
+  const matched = value.match(/^(gpt-5\.6-(?:luna|terra|sol))(?:-\d{4}-\d{2}-\d{2})?$/u);
+  return matched ? matched[1] : value;
+}
+
+function highestDefaultPrice() {
+  return Object.values(DEFAULT_PRICES).reduce((highest, current) => (
+    current.output > highest.output ? current : highest
+  ), DEFAULT_PRICES['gpt-5.6-terra']);
 }
 
 function envNumber(name, fallback) {
@@ -73,5 +90,6 @@ module.exports = {
   estimateUsd,
   addUsage,
   emptyUsage,
-  priceFor
+  priceFor,
+  canonicalPriceKey
 };

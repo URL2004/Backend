@@ -15,7 +15,7 @@ function buildHumanizeUser({
   const envelope = createPromptEnvelope();
   const prev = index > 0 ? chunks[index - 1].text : '';
   const next = index < chunks.length - 1 ? chunks[index + 1].text : '';
-  const markerInstructions = buildBoundaryMarkerInstructions(chunk);
+  const markerInstructions = buildBoundaryMarkerInstructions(chunk, { mode });
   const position = chunk.position === 'intro'
     ? '도입부다. 원문의 시작 역할과 흐름을 유지한다.'
     : chunk.position === 'conclusion'
@@ -39,7 +39,7 @@ function buildHumanizeUser({
   ].filter(Boolean).join('\n\n');
 }
 
-function buildBoundaryMarkerInstructions(chunk = {}) {
+function buildBoundaryMarkerInstructions(chunk = {}, { mode = 'assignment' } = {}) {
   const lines = [];
   if (chunk.boundaryMarkers?.length) {
     lines.push('[[[V2_BOUNDARY_###]]]는 원문 문단 경계다. 토큰의 철자·개수·순서를 유지하고 서로 다른 문단을 합치거나 내용을 옮기지 않는다.');
@@ -52,7 +52,9 @@ function buildBoundaryMarkerInstructions(chunk = {}) {
   }
   if (chunk.sentenceBoundaryMarkers?.length) {
     lines.push('[[[V2_SENTENCE_####]]]는 이 입력에서만 보존할 문장 경계다. 토큰의 철자·개수·순서를 유지하고 양쪽 문장을 합치거나 새 마침표로 다시 나누지 않는다.');
-    lines.push('문장 경계 보존은 문장 내부를 원문대로 복사하라는 뜻이 아니다. 선택 강도에 맞춰 같은 문장 안의 절 배치·주어 위치·연결·호흡은 실질적으로 재구성한다.');
+    lines.push(mode === 'polish'
+      ? '다듬기에서는 이 문장 안의 비문·띄어쓰기·조사·접속·실제 중복만 고치고, 실질 재작성을 억지로 수행하지 않는다.'
+      : '문장 경계 보존은 문장 내부를 원문대로 복사하라는 뜻이 아니다. 선택 강도에 맞춰 같은 문장 안의 절 배치·주어 위치·연결·호흡은 실질적으로 재구성한다.');
   }
   return lines.join('\n');
 }

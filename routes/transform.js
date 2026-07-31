@@ -52,7 +52,9 @@ setInterval(() => {
 
 // ── 비용 방어(2026-06-12): 차감이 완료 시점이라 차단·에러·취소 job의 원가(최대 $7)는 회사 부담 →
 //   동시·일일 한도로 최악 비용을 캡. 한도는 "운영자가 감당 가능한 하루 최대 손실" 기준으로 env 조정.
-const TRANSFORM_SAFE_ACTIVE_CAP = Math.max(1, Number(process.env.TRANSFORM_SAFE_ACTIVE_CAP) || 1);
+// Python layout 프로세스 제거와 청크 worker 상한(최대 3) 적용 뒤 검증된 안전
+// 기본값. 운영 env가 유실돼도 두 풀이 1건씩으로 되돌아가 처리량이 잠기지 않는다.
+const TRANSFORM_SAFE_ACTIVE_CAP = Math.max(1, Number(process.env.TRANSFORM_SAFE_ACTIVE_CAP) || 2);
 const MAX_ACTIVE_GLOBAL = Math.min(Number(process.env.RESTRUCTURE_MAX_ACTIVE) || 3, TRANSFORM_SAFE_ACTIVE_CAP);   // 전역 동시 실행(LLM 점유) 상한 — formal(재구성)
 const BLOG_MAX_ACTIVE = Math.min(Number(process.env.BLOG_MAX_ACTIVE) || 4, TRANSFORM_SAFE_ACTIVE_CAP);            // blog(기본 피하기) 전역 동시 — 짧고 저원가라 별도 풀
 const MAX_QUEUE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_QUEUE) || 30;    // formal 대기열 상한 — 무한 접수 방지
@@ -758,6 +760,12 @@ function buildArchiveObservability(job) {
   const dedupeAudit = humanizeMeta.dedupeAudit || {};
   const naturalnessShadow = result.naturalnessShadow || humanizeMeta.naturalnessShadow || {};
   const warningCodes = finalQualityWarningCodes(result);
+  const depthStageMetrics = compactArchiveDepthStages(engineMeta.humanizationDepthStages);
+  const postSemanticDepthStage = depthStageMetrics.find(item => item.stage === 'post_semantic');
+  const finalDepthStage = depthStageMetrics.slice().reverse().find(item => item.stage === 'final');
+  const postSemanticToFinalSubstantiveEditDelta = postSemanticDepthStage && finalDepthStage
+    ? Number((finalDepthStage.substantiveEditRatio - postSemanticDepthStage.substantiveEditRatio).toFixed(4))
+    : undefined;
   const gateCodes = job?.status === 'done'
     ? []
     : uniqueArchiveCodes([
@@ -937,6 +945,10 @@ function buildArchiveObservability(job) {
     humanizationDepthRetryTargetSentenceCount: archiveFinite(engineMeta.humanizationDepthRetryTargetSentenceCount),
     humanizationDepthRetryRejectedCount: archiveFinite(engineMeta.humanizationDepthRetryRejectedCount),
     humanizationDepthRetryRejectionCodes: uniqueStrictArchiveCodes(engineMeta.humanizationDepthRetryRejectionCodes),
+    humanizationDepthStages: depthStageMetrics,
+    postSemanticSubstantiveEditRatio: archiveFinite(postSemanticDepthStage?.substantiveEditRatio),
+    finalStageSubstantiveEditRatio: archiveFinite(finalDepthStage?.substantiveEditRatio),
+    postSemanticToFinalSubstantiveEditDelta: archiveFinite(postSemanticToFinalSubstantiveEditDelta),
     sectionRecoveryEnabled: engineMeta.sectionRecoveryEnabled === true,
     sectionRecoverySelectedCount: archiveFinite(engineMeta.sectionRecoverySelectedCount),
     sectionRecoveryAttemptCount: archiveFinite(engineMeta.sectionRecoveryAttemptCount),
@@ -1045,12 +1057,15 @@ function buildArchiveObservability(job) {
     humanizationDepthLockFreezeAttemptCount: archiveFinite(engineMeta.humanizationDepthLockFreezeAttemptCount),
     humanizationDepthLockFreezeMissCount: archiveFinite(engineMeta.humanizationDepthLockFreezeMissCount),
     depthTugOfWar: engineMeta.depthTugOfWar ? {
+      trigger: archiveString(engineMeta.depthTugOfWar.trigger, 48),
       rounds: archiveFinite(engineMeta.depthTugOfWar.rounds),
       semanticRepairRounds: archiveFinite(engineMeta.depthTugOfWar.semanticRepairRounds),
       rejudgeCount: archiveFinite(engineMeta.depthTugOfWar.rejudgeCount),
       finalSide: archiveString(engineMeta.depthTugOfWar.finalSide, 12),
       usdSpent: archiveFinite(engineMeta.depthTugOfWar.usdSpent)
     } : undefined,
+    depthTugTrigger: archiveString(engineMeta.depthTugOfWar?.trigger, 48),
+    depthTugFinalSide: archiveString(engineMeta.depthTugOfWar?.finalSide, 12),
     pipelineFixedPoint: engineMeta.pipelineFixedPoint ? {
       safetyPass: engineMeta.pipelineFixedPoint.safetyPass === true,
       depthHardMinimumPass: engineMeta.pipelineFixedPoint.depthHardMinimumPass === true,
@@ -1067,6 +1082,12 @@ function buildArchiveObservability(job) {
     recoveryBudgetAttemptedCallCount: archiveFinite(engineMeta.recoveryBudgetAttemptedCallCount),
     recoveryBudgetSkippedCallCount: archiveFinite(engineMeta.recoveryBudgetSkippedCallCount),
     recoveryBudgetSkippedCodes: uniqueStrictArchiveCodes(engineMeta.recoveryBudgetSkippedCodes),
+    recoveryAbsoluteCallLimit: archiveFinite(engineMeta.recoveryAbsoluteCallLimit),
+    recoveryAbsoluteElapsedLimitMs: archiveFinite(engineMeta.recoveryAbsoluteElapsedLimitMs),
+    recoveryElapsedMs: archiveFinite(engineMeta.recoveryElapsedMs),
+    recoveryCallLimitExhausted: engineMeta.recoveryCallLimitExhausted === true,
+    recoveryTimeLimitExhausted: engineMeta.recoveryTimeLimitExhausted === true,
+    recoveryLastDeniedReason: archiveString(engineMeta.recoveryLastDeniedReason, 80),
     recoveryBudgetStageUsageUsd: compactArchiveCodeCountMap(engineMeta.recoveryBudgetStageUsageUsd),
     sectionRecoveryBudgetSkippedCount: archiveFinite(engineMeta.sectionRecoveryBudgetSkippedCount),
     sectionRecoveryBudgetSkippedCodes: uniqueStrictArchiveCodes(engineMeta.sectionRecoveryBudgetSkippedCodes),
@@ -1165,6 +1186,28 @@ function archiveFinite(value) {
   if (value === undefined || value === null || value === '') return undefined;
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function compactArchiveDepthStages(values) {
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const stage = archiveString(value?.stage, 48);
+    if (!stage || !/^[a-z][a-z0-9_]{1,47}$/u.test(stage)) continue;
+    out.push(pruneUndefinedForFirestore({
+      stage,
+      pass: value?.pass === true,
+      minimumEffectPass: value?.minimumEffectPass === true,
+      targetDepthMet: value?.targetDepthMet === true,
+      score: archiveFinite(value?.score),
+      substantiveEditRatio: archiveFinite(value?.substantiveEditRatio),
+      changedSentenceRatio: archiveFinite(value?.changedSentenceRatio),
+      targetCoverage: archiveFinite(value?.targetCoverage),
+      structuralChangedCount: archiveFinite(value?.structuralChangedCount),
+      carryoverRatio: archiveFinite(value?.carryoverRatio)
+    }));
+    if (out.length >= 16) break;
+  }
+  return out;
 }
 
 function deletePersisted(id) {

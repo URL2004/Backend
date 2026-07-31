@@ -214,6 +214,7 @@ function promptCacheRetention(config, model) {
 function supportsExtendedPromptCache(model) {
   const m = String(model || '').toLowerCase();
   if (!m) return false;
+  if (/^gpt-5\.6(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return true;
   if (/^gpt-5\.6-(?:luna|terra|sol)(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return true;
   if (/^gpt-5\.4(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return true;
   if (/^gpt-5\.2(?:-|$)/.test(m)) return true;

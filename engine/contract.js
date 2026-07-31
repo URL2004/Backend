@@ -25,16 +25,35 @@ const { detectRegister } = require('./endingStyle');
  * rawText에서 Contract를 1회 구성. 가드/파이프라인은 이 객체를 단일 소스로 참조한다.
  * @returns {Contract}
  */
-function buildContract(rawText, { mode = 'assignment', lang = 'ko', optIn = false } = {}) {
+function buildContract(rawText, {
+  mode = 'assignment',
+  lang = 'ko',
+  optIn = false,
+  documentProfile = null
+} = {}) {
   const povSeed = floor.computePovSeed(rawText);
   const register = detectRegister(rawText);
+  const compactLength = String(rawText || '').replace(/\s+/gu, '').length;
+  const profile = String(documentProfile?.profile || documentProfile || 'unknown');
+  const firstPersonProfile = new Set([
+    'resume_application',
+    'personal_essay',
+    'student_self_assessment',
+    'review_blog',
+    'social'
+  ]).has(profile);
+  const singularDensityPerK = Number(povSeed.fp_singular || 0) / Math.max(1, compactLength / 1000);
+  const individualVoice = povSeed.fp_singular >= 2
+    || singularDensityPerK >= 0.5
+    || (firstPersonProfile && povSeed.fp_singular > 0);
   // 화자 유형: 개인(I/저) > 조직(we/우리/본 연구) > 비인칭.
   let speakerType, allowedPronouns, forbiddenPronouns;
-  if (povSeed.fp_singular > 0) {
+  if (individualVoice) {
     speakerType = 'individual'; allowedPronouns = ['I', 'my', '저', '제가']; forbiddenPronouns = [];
   } else if (povSeed.fp_plural > 0) {
-    // 조직/집단 화자는 실제 복수대명사(우리/we)로만 판정 — '본 연구/이 글은' 자기참조는 비인칭으로 둔다.
-    speakerType = 'organization'; allowedPronouns = ['we', 'our', '우리']; forbiddenPronouns = ['I', 'my', '저', '제가(개인)'];
+    speakerType = 'organization';
+    allowedPronouns = ['we', 'our', '우리'];
+    forbiddenPronouns = ['I', 'my', '저', '제가(개인)'];
   } else {
     speakerType = 'impersonal'; allowedPronouns = []; forbiddenPronouns = ['I', 'we', '저', '우리(모든 1인칭)'];
   }
@@ -44,6 +63,11 @@ function buildContract(rawText, { mode = 'assignment', lang = 'ko', optIn = fals
     lang,
     optIn,
     povSeed,
+    speakerEvidence: {
+      compactLength,
+      singularDensityPerK: Math.round(singularDensityPerK * 1000) / 1000,
+      profile
+    },
     speakerGateClosed: floor.isSpeakerGateClosed(povSeed, optIn),
     speakerType,
     allowedPronouns,

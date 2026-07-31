@@ -55,11 +55,12 @@ function auditCandidateIntegrity({
   });
   const beforeKoreanIssueCounts = koreanIssueCounts(beforeKorean);
   const candidateKoreanIssueCounts = koreanIssueCounts(candidateKorean);
-  if (candidateKorean.weightedRisk > beforeKorean.weightedRisk
-      || candidateKorean.repairableIssueCount > beforeKorean.repairableIssueCount
-      || candidateKorean.introducedIssueCount > beforeKorean.introducedIssueCount
-      || [...candidateKoreanIssueCounts.entries()]
-        .some(([code, count]) => count > Number(beforeKoreanIssueCounts.get(code) || 0))) {
+  if (koreanIntegrityWorsened({
+    before: beforeKorean,
+    candidate: candidateKorean,
+    beforeCounts: beforeKoreanIssueCounts,
+    candidateCounts: candidateKoreanIssueCounts
+  })) {
     add('korean_integrity_worsened');
   }
 
@@ -108,7 +109,7 @@ function auditCandidateIntegrity({
   }
 
   return {
-    version: 1,
+    version: 2,
     pass: reasons.length === 0,
     reasons,
     before: {
@@ -237,8 +238,29 @@ function koreanIssueCounts(value) {
   return counts;
 }
 
+function koreanIntegrityWorsened({ before, candidate, beforeCounts, candidateCounts }) {
+  if (Number(candidate?.repairableIssueCount || 0) > Number(before?.repairableIssueCount || 0)) return true;
+  const definitionByCode = new Map((candidate?.issues || []).map(item => [String(item?.code || ''), item]));
+  const increased = [];
+  for (const [code, count] of candidateCounts.entries()) {
+    const delta = Number(count || 0) - Number(beforeCounts.get(code) || 0);
+    if (delta > 0) increased.push({ ...(definitionByCode.get(code) || {}), code, delta });
+  }
+  if (!increased.length) {
+    return Number(candidate?.weightedRisk || 0) > Number(before?.weightedRisk || 0)
+      || Number(candidate?.introducedIssueCount || 0) > Number(before?.introducedIssueCount || 0);
+  }
+  const introducedCount = increased.reduce((sum, item) => sum + Number(item.delta || 0), 0);
+  const onlyOneReviewNotice = introducedCount <= 1
+    && increased.every(item => item.repairable !== true && Number(item.weight || 1) <= 1);
+  const materiallyImproved = Number(candidate?.weightedRisk || 0)
+    <= Number(before?.weightedRisk || 0) - 1;
+  return !(onlyOneReviewNotice && materiallyImproved);
+}
+
 module.exports = {
   auditCandidateIntegrity,
+  koreanIntegrityWorsened,
   fingerprintRisk,
   quoteRisk,
   legalRisk

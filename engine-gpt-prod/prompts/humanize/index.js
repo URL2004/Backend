@@ -39,7 +39,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     buildHumanizationPromptBlock(humanizationPlan)
   ].filter(Boolean).join('\n\n');
   const stable = [
-    humanizeStableCore(),
+    humanizeStableCore(documentProfile),
     '',
     gateSummaryBlock(),
     '',
@@ -49,7 +49,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     genreBlock(mode, register, styleProfile, documentProfile, requestStrength),
     commercialSignals.promptSafetyBlock(documentProfile),
     speakerBlock(speakerType),
-    registerBlock(register, documentProfile),
+    registerBlock(register, documentProfile, { mode, requestStrength }),
     voicePromptBlock(voiceProfile, { requestStrength, mode }),
     '',
     gptBiasGuardBlock(),
@@ -93,9 +93,15 @@ function validateHumanizePrompt(value, {
   const genreHeadings = prompt.match(/^\[원문 장르:[^\]\n]+\]$/gmu) || [];
   if (strengthHeadings.length !== 1) errors.push(`request_strength_count:${strengthHeadings.length}`);
   if (genreHeadings.length !== 1) errors.push(`document_genre_count:${genreHeadings.length}`);
-  if (/어휘\s*격식:[^.\n]{0,100}(?:보존|유지)[^.\n]*구어/u.test(prompt)
-      && /말투\s*정책:[^.\n]{0,120}(?:구어체로\s*바꾼다|격식을\s*낮춘다)/u.test(prompt)) {
+  const professionalRegister = /어휘\s*격식:[^.\n]{0,140}(?:학술|계약|임상|직무|공식)[^.\n]{0,80}(?:유지|보존|지킨|낮추지)/u.test(prompt);
+  if (professionalRegister
+      && /말투\s*정책:[^.\n]{0,140}(?:조금\s*더\s*친근|구어체로\s*바꾼다|격식을\s*낮춘다)/u.test(prompt)) {
     errors.push('register_strength_conflict');
+  }
+  if (!/^\[좋은 변환의 기준\]$/mu.test(prompt)
+      || !/실질 재구성 예:/u.test(prompt)
+      || !/안전 경계 예:/u.test(prompt)) {
+    errors.push('positive_rewrite_examples_missing');
   }
   if (/^\[원문 장르:\s*계약서·약관\]$/mu.test(prompt)
       && !/“할 수 있다”를 “한다”로[^.\n]*바꾸지 않는다/u.test(prompt)) {

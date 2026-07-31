@@ -322,7 +322,7 @@ function auditVoice(sourceProfile, output, {
   };
 }
 
-function sentenceDistributionShift(sourceSentence, currentSentence) {
+function sentenceDistributionShift(sourceSentence, currentSentence, { toleranceMultiplier = 1 } = {}) {
   const before = sourceSentence || {};
   const after = currentSentence || {};
   const empty = {
@@ -341,9 +341,10 @@ function sentenceDistributionShift(sourceSentence, currentSentence) {
   const spreadLoss = beforeSpread - afterSpread;
   const shortSequence = before.count <= 6;
   const cvFloor = shortSequence ? 0.10 : 0.15;
-  const cvTolerance = Math.max(shortSequence ? 0.004 : 0.015, (Number(before.cv) || 0) * (shortSequence ? 0.025 : 0.08));
+  const multiplier = Math.max(1, Math.min(2.5, Number(toleranceMultiplier) || 1));
+  const cvTolerance = Math.max(shortSequence ? 0.004 : 0.015, (Number(before.cv) || 0) * (shortSequence ? 0.025 : 0.08)) * multiplier;
   const spreadFloor = shortSequence ? 0.25 : 0.45;
-  const spreadTolerance = Math.max(shortSequence ? 0.02 : 0.06, beforeSpread * (shortSequence ? 0.04 : 0.1));
+  const spreadTolerance = Math.max(shortSequence ? 0.02 : 0.06, beforeSpread * (shortSequence ? 0.04 : 0.1)) * multiplier;
   const shift = ((Number(before.cv) || 0) >= cvFloor && cvLoss > cvTolerance)
     || (beforeSpread >= spreadFloor && spreadLoss > spreadTolerance);
   return {

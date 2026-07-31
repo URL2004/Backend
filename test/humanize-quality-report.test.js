@@ -16,7 +16,14 @@ test('관리자 작업 축약 직렬화는 실험실 표지를 품질 집계까�
       finalGeneratedDedupeApplied: true,
       finalGeneratedDedupeRejected: false,
       finalGeneratedDedupeBlockCount: 1,
-      finalGeneratedDedupeSentenceCount: 5
+      finalGeneratedDedupeSentenceCount: 5,
+      postSemanticSubstantiveEditRatio: 0.21,
+      finalStageSubstantiveEditRatio: 0.18,
+      postSemanticToFinalSubstantiveEditDelta: -0.03,
+      depthTugTrigger: 'depth_regression',
+      depthTugFinalSide: 'source',
+      humanizationDepthRetryRejectionCodes: ['safety_audit_failed'],
+      recoveryBudgetSkippedCodes: ['recovery_call_limit_exhausted']
     })
   });
   assert.equal(row.adminHumanizeLab, true);
@@ -24,6 +31,10 @@ test('관리자 작업 축약 직렬화는 실험실 표지를 품질 집계까�
   assert.equal(row.finalGeneratedDedupeRejected, false);
   assert.equal(row.finalGeneratedDedupeBlockCount, 1);
   assert.equal(row.finalGeneratedDedupeSentenceCount, 5);
+  assert.equal(row.postSemanticToFinalSubstantiveEditDelta, -0.03);
+  assert.equal(row.depthTugFinalSide, 'source');
+  assert.deepEqual(row.humanizationDepthRetryRejectionCodes, ['safety_audit_failed']);
+  assert.deepEqual(row.recoveryBudgetSkippedCodes, ['recovery_call_limit_exhausted']);
 });
 
 test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 원문 없이 집계한다', () => {
@@ -36,6 +47,12 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       humanizationDepthApplicable: true, humanizationDepthPass: true,
       humanizationTargetDepthMet: true,
       humanizationTargetDepthGap: 0,
+      postSemanticSubstantiveEditRatio: 0.33,
+      finalStageSubstantiveEditRatio: 0.31,
+      postSemanticToFinalSubstantiveEditDelta: -0.02,
+      depthTugTrigger: 'depth_regression', depthTugFinalSide: 'source',
+      humanizationDepthRetryRejectionCodes: ['safety_audit_failed'],
+      recoveryBudgetSkippedCodes: ['recovery_call_limit_exhausted'],
       substantiveCarryoverRatio: 0.22, substantiveCarryoverMaximum: 0.3,
       structuralChangedSentenceRatio: 0.42, rhetoricalRemediationCoverage: 1,
       billingDisposition: 'charged', sectionRecoveryAttemptCount: 2,
@@ -62,6 +79,9 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       humanizationDepthApplicable: true, humanizationDepthPass: false,
       humanizationTargetDepthMet: false,
       humanizationTargetDepthGap: 0.04,
+      postSemanticSubstantiveEditRatio: 0.15,
+      finalStageSubstantiveEditRatio: 0.17,
+      postSemanticToFinalSubstantiveEditDelta: 0.02,
       humanizationNoBenefitDelivered: true,
       substantiveCarryoverRatio: 0.36, substantiveCarryoverMaximum: 0.3,
       structuralChangedSentenceRatio: 0.1, rhetoricalRemediationCoverage: 0.5,
@@ -94,6 +114,10 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.schemaVersion, 3);
   assert.equal(report.summary.depthBelowMinimumRate, 0.5);
   assert.equal(report.summary.targetDepthMetRate, 0.5);
+  assert.equal(report.summary.depthTugDocumentCount, 1);
+  assert.equal(report.summary.depthTugSourceCount, 1);
+  assert.equal(report.summary.depthTugSourceRate, 1);
+  assert.equal(report.summary.safetyAuditRecoveryRejectCount, 1);
   assert.equal(report.summary.waivedRate, 0.5);
   assert.equal(report.summary.noBenefitDeliveredCount, 1);
   assert.equal(report.summary.carryoverOverLimitCount, 1);
@@ -120,8 +144,12 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.deepEqual(report.fingerprintShadowPositiveCounts, [{ code: 'review_together', count: 1 }]);
   assert.deepEqual(report.semanticRelationShiftCounts, [{ code: 'proof_goal_weakened', count: 1 }]);
   assert.deepEqual(report.sectionRecoveryRejectionCounts, [{ code: 'not_better', count: 1 }]);
+  assert.deepEqual(report.humanizationDepthRetryRejectionCounts, [{ code: 'safety_audit_failed', count: 1 }]);
+  assert.deepEqual(report.recoveryBudgetSkippedCounts, [{ code: 'recovery_call_limit_exhausted', count: 1 }]);
   assert.equal(report.recent[0].targetRegister, 'professional');
   assert.equal(report.metrics.substantiveEditRatio.median, 0.24);
+  assert.equal(report.metrics.postSemanticToFinalSubstantiveEditDelta.median, 0);
+  assert.equal(report.recent[0].depthTugFinalSide, 'source');
   assert.equal(Object.hasOwn(report.recent[0], 'inputText'), false);
   assert.equal(Object.hasOwn(report.recent[0], 'outputText'), false);
   assert.equal(Object.hasOwn(report.recent[0], 'uid'), false);

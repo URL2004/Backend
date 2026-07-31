@@ -296,14 +296,13 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     });
     usage = addUsage(usage, repaired?.gptMeta?.usage);
     const candidate = repaired.outputText || current;
+    // 위반이 하나 있다는 이유로 문서 전체를 원문으로 되돌리면 앞 단계의
+    // 안전한 편집까지 모두 사라진다. 국소 복원은 다른 보존 감사로 검증하되,
+    // exact full reset은 아래 감사에서 언제나 거부한다.
     const repairSafety = assessRepairCandidate(rawText, current, candidate, {
       mode,
       allowedExtra,
-      documentProfile,
-      // 의미 심사기가 실제 위반을 확인한 뒤 원문으로 복귀시키는 수리는
-      // 강도 보존보다 우선한다. 휴머나이징 강도는 상위 파이프라인의
-      // post-semantic recovery가 다시 채우므로 여기서 안전 복귀를 막지 않는다.
-      allowSourceReset: mode !== 'polish' && (judge.violations || []).length > 0
+      documentProfile
     });
     if (!repairSafety.pass) {
       return {
@@ -362,8 +361,7 @@ function summarizeJudge(report) {
 function assessRepairCandidate(rawText, beforeText, candidateText, {
   mode = '',
   allowedExtra = '',
-  documentProfile = null,
-  allowSourceReset = false
+  documentProfile = null
 } = {}) {
   const source = String(rawText || '');
   const before = String(beforeText || '');
@@ -379,8 +377,7 @@ function assessRepairCandidate(rawText, beforeText, candidateText, {
   const repairLengthPolicy = floor.lengthStagePolicy(source, mode || 'assignment', 'repair');
   if (candidateMetrics.lengthRatio < repairLengthPolicy.min) reasons.push('source_length_short');
   if (candidateMetrics.lengthRatio > repairLengthPolicy.max) reasons.push('source_length_overrun');
-  if (relativeLength < repairLengthPolicy.relativeMin
-      && !(allowSourceReset && resetsToSource)) reasons.push('repair_collapsed');
+  if (relativeLength < repairLengthPolicy.relativeMin) reasons.push('repair_collapsed');
   if (relativeLength > repairLengthPolicy.relativeMax) reasons.push('repair_expanded');
 
   const beforeLost = floor.measureLostFacts(source, before).count;
@@ -395,10 +392,7 @@ function assessRepairCandidate(rawText, beforeText, candidateText, {
       || candidateNumbers.addedCount > beforeNumbers.addedCount) {
     reasons.push('number_facts_worsened');
   }
-  if (resetsToSource
-      && beforeLost === 0
-      && beforeNovelty === 0
-      && !allowSourceReset) {
+  if (resetsToSource && compact(before) !== compact(source)) {
     reasons.push('repair_erased_transform');
   }
 

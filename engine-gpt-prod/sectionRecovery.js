@@ -157,22 +157,22 @@ async function recoverSections({
 
   const usages = [];
   const afterMini = await mapWithConcurrency(selected, RECOVERY_CONCURRENCY, async entry => {
-    if (recoveryBudget && !recoveryBudget.canStart()) {
-      recoveryBudget.recordSkip('section_depth_recovery');
+    if (recoveryBudget && !recoveryBudget.tryStart()) {
+      const denied = recoveryBudget.denialReason() || 'recovery_budget_exhausted';
+      recoveryBudget.recordSkip(denied);
       metrics.budgetSkippedCount += 1;
-      if (!metrics.budgetSkippedCodes.includes('section_depth_recovery')) {
-        metrics.budgetSkippedCodes.push('section_depth_recovery');
+      if (!metrics.budgetSkippedCodes.includes(denied)) {
+        metrics.budgetSkippedCodes.push(denied);
       }
       return {
         ...entry,
         output: String(chunks?.[entry.index]?.outputText ?? entry.output ?? ''),
         report: entry.report,
-        rejectionCode: 'recovery_budget_exhausted',
+        rejectionCode: denied,
         budgetSkipped: true,
         marginalGain: 0
       };
     }
-    recoveryBudget?.recordAttempt();
     metrics.attempted += 1;
     metrics.miniAttemptCount += 1;
     const attempt = await safeRetry(retrySection, entry, 'mini', signal);
@@ -205,16 +205,16 @@ async function recoverSections({
   metrics.escalationAttemptCount = 0;
   metrics.escalated = 0;
   await mapWithConcurrency(escalationTargets, Math.min(RECOVERY_CONCURRENCY, metrics.escalationMaximum || 1), async entry => {
-    if (recoveryBudget && !recoveryBudget.canStart()) {
-      recoveryBudget.recordSkip('section_depth_escalation');
+    if (recoveryBudget && !recoveryBudget.tryStart()) {
+      const denied = recoveryBudget.denialReason() || 'recovery_budget_exhausted';
+      recoveryBudget.recordSkip(denied);
       metrics.budgetSkippedCount += 1;
-      if (!metrics.budgetSkippedCodes.includes('section_depth_escalation')) {
-        metrics.budgetSkippedCodes.push('section_depth_escalation');
+      if (!metrics.budgetSkippedCodes.includes(denied)) {
+        metrics.budgetSkippedCodes.push(denied);
       }
-      recordEscalationSkip(metrics, 'recovery_budget_exhausted');
+      recordEscalationSkip(metrics, denied);
       return entry;
     }
-    recoveryBudget?.recordAttempt();
     metrics.escalationAttemptCount += 1;
     metrics.escalated += 1;
     const attempt = await safeRetry(retrySection, entry, 'escalation', signal);

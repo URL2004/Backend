@@ -40,6 +40,29 @@ function buildEscalationInstruction(reason = '') {
       '화자와 문체를 지킨다는 이유로 원문 문장을 그대로 복사하지 말고, 같은 의미 안의 절 배치와 호흡은 실질적으로 다시 구성한다.'
     ].join('\n');
   }
+  if (normalized.includes('length_collapse') || normalized.includes('truncat')
+      || normalized.includes('empty')) {
+    return [
+      ...header,
+      '원문의 누락된 문장과 끝부분을 모두 복원해 완결된 전체 청크를 출력한다. 축약본·요약본이나 중간에서 끊긴 문장을 내지 않는다.',
+      '복원한 사실·수치·인용의 범위 안에서 일반 문장의 절 배치와 호흡을 선택 강도만큼 다시 구성하되 새 내용을 만들지 않는다.'
+    ].join('\n');
+  }
+  if (normalized.includes('length_overrun') || normalized.includes('expanded')) {
+    return [
+      ...header,
+      '모델이 새로 덧붙인 반복 설명·완충 문장·중복 결론만 제거해 원문과 비슷한 분량으로 되돌린다.',
+      '원문에 있던 사실·근거·예시·인용은 삭제하거나 요약하지 않고, 선택 강도의 문장 재구성은 유지한다.'
+    ].join('\n');
+  }
+  if (normalized.includes('refusal') || normalized.includes('prompt')
+      || normalized.includes('encoding') || normalized.includes('meta')) {
+    return [
+      ...header,
+      '거절문·작업 설명·프롬프트 문구·깨진 문자를 출력하지 말고, 원문의 완결된 본문만 정상 한국어로 다시 작성한다.',
+      '원문의 모든 사실과 구조를 유지하고 메타 설명 없이 최종 본문만 출력한다.'
+    ].join('\n');
+  }
   return [
     ...header,
     '현재 입력의 사실·화자·구조를 지키면서 실패 구간만 고친다. 통과한 문장을 보존형으로 되돌리거나 새 내용을 덧붙이지 않는다.'

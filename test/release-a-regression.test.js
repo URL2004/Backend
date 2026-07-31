@@ -292,7 +292,22 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationDepthRetryApplied: false,
         humanizationDepthRetryTargetSentenceCount: 3,
         humanizationDepthRetryRejectedCount: 2,
-        humanizationDepthRetryRejectionCodes: ['candidate_unchanged', '사용자 원문 조각'],
+        humanizationDepthRetryRejectionCodes: ['candidate_unchanged', 'safety_audit_failed', '사용자 원문 조각'],
+        humanizationDepthStages: [
+          {
+            stage: 'post_semantic', pass: false, minimumEffectPass: true,
+            targetDepthMet: false, score: 0.61, substantiveEditRatio: 0.14,
+            changedSentenceRatio: 0.5, targetCoverage: 0.7,
+            structuralChangedCount: 3, carryoverRatio: 0.25
+          },
+          {
+            stage: 'final', pass: false, minimumEffectPass: false,
+            targetDepthMet: false, score: 0.48, substantiveEditRatio: 0.09,
+            changedSentenceRatio: 0.35, targetCoverage: 0.55,
+            structuralChangedCount: 2, carryoverRatio: 0.35
+          },
+          { stage: '사용자 원문 조각', substantiveEditRatio: 1 }
+        ],
         sectionRecoveryEnabled: true,
         sectionRecoverySelectedCount: 5,
         sectionRecoveryAttemptCount: 3,
@@ -316,6 +331,10 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         recoveryBudgetSkippedCallCount: 1,
         recoveryBudgetSkippedCodes: ['conservative_sentence_recovery'],
         recoveryBudgetStageUsageUsd: { section_depth_recovery: 0.31 },
+        depthTugOfWar: {
+          trigger: 'depth_regression', rounds: 2, semanticRepairRounds: 1,
+          rejudgeCount: 1, finalSide: 'source', usdSpent: 0.03
+        },
         fingerprintAuditVersion: 1,
         fingerprintPass: false,
         fingerprintIssueCodes: ['engine_phrase_fingerprint'],
@@ -474,7 +493,14 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationRoleRecoveryAttemptCount, 1);
   assert.equal(first.humanizationDepthRetryTargetSentenceCount, 3);
   assert.equal(first.humanizationDepthRetryRejectedCount, 2);
-  assert.deepEqual(first.humanizationDepthRetryRejectionCodes, ['candidate_unchanged']);
+  assert.deepEqual(first.humanizationDepthRetryRejectionCodes, ['candidate_unchanged', 'safety_audit_failed']);
+  assert.equal(first.humanizationDepthStages.length, 2);
+  assert.equal(first.postSemanticSubstantiveEditRatio, 0.14);
+  assert.equal(first.finalStageSubstantiveEditRatio, 0.09);
+  assert.equal(first.postSemanticToFinalSubstantiveEditDelta, -0.05);
+  assert.equal(first.depthTugTrigger, 'depth_regression');
+  assert.equal(first.depthTugFinalSide, 'source');
+  assert.equal(first.depthTugOfWar.trigger, 'depth_regression');
   assert.equal(first.primaryApprovedModelChunkCount, 2);
   assert.equal(first.approvedModelChunkCount, 3);
   assert.equal(first.sectionRecoverySelectedCount, 5);

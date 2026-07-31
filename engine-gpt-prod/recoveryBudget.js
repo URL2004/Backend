@@ -7,18 +7,46 @@ function normalizedLimit(value) {
     : 0;
 }
 
-function createRecoveryBudget(maxEstimatedUsd, { enforced = true } = {}) {
+function createRecoveryBudget(maxEstimatedUsd, {
+  enforced = true,
+  maxCalls = Number(process.env.HUMANIZE_RECOVERY_MAX_CALLS) || 16,
+  maxElapsedMs = Number(process.env.HUMANIZE_RECOVERY_MAX_ELAPSED_MS) || 240000,
+  clock = Date.now
+} = {}) {
   const limitUsd = normalizedLimit(maxEstimatedUsd);
   let spentUsd = 0;
   let attemptedCallCount = 0;
   let skippedCallCount = 0;
   const skippedCodes = [];
   const stageUsageUsd = {};
+  const initialNow = Number(clock());
+  const startedAt = Number.isFinite(initialNow) ? initialNow : Date.now();
+  const absoluteCallLimit = Math.max(1, Math.min(64, Math.floor(Number(maxCalls) || 16)));
+  const absoluteElapsedLimitMs = Math.max(30000, Math.min(900000, Math.floor(Number(maxElapsedMs) || 240000)));
+  let lastDeniedReason = '';
 
   const enabled = enforced === true && limitUsd > 0;
-  const canStart = ({ mandatory = false } = {}) => (
-    mandatory === true || !enabled || spentUsd < limitUsd
-  );
+  const elapsedMs = () => {
+    const current = Number(clock());
+    return Math.max(0, (Number.isFinite(current) ? current : Date.now()) - startedAt);
+  };
+  const denialReason = ({ mandatory = false } = {}) => {
+    if (attemptedCallCount >= absoluteCallLimit) return 'recovery_call_limit_exhausted';
+    if (elapsedMs() >= absoluteElapsedLimitMs) return 'recovery_time_limit_exhausted';
+    if (mandatory !== true && enabled && spentUsd >= limitUsd) return 'recovery_budget_exhausted';
+    return '';
+  };
+  const canStart = options => !denialReason(options);
+  const tryStart = (options = {}) => {
+    const denied = denialReason(options);
+    if (denied) {
+      lastDeniedReason = denied;
+      return false;
+    }
+    attemptedCallCount += 1;
+    lastDeniedReason = '';
+    return true;
+  };
   const recordAttempt = () => {
     attemptedCallCount += 1;
   };
@@ -41,6 +69,12 @@ function createRecoveryBudget(maxEstimatedUsd, { enforced = true } = {}) {
     limitUsd,
     spentUsd,
     exhausted: enabled && spentUsd >= limitUsd,
+    absoluteCallLimit,
+    absoluteElapsedLimitMs,
+    elapsedMs: elapsedMs(),
+    callLimitExhausted: attemptedCallCount >= absoluteCallLimit,
+    timeLimitExhausted: elapsedMs() >= absoluteElapsedLimitMs,
+    lastDeniedReason,
     attemptedCallCount,
     skippedCallCount,
     skippedCodes: skippedCodes.slice(),
@@ -49,6 +83,8 @@ function createRecoveryBudget(maxEstimatedUsd, { enforced = true } = {}) {
 
   return {
     canStart,
+    tryStart,
+    denialReason,
     recordAttempt,
     recordUsage,
     recordSkip,

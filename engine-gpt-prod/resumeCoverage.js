@@ -7,7 +7,7 @@ const {
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 3;
+const VERSION = 4;
 const MIN_CONTENT_RECALL = 0.55;
 const MIN_SEMANTIC_FALLBACK = 0.62;
 const CLAIM_PATTERNS = Object.freeze({
@@ -19,8 +19,13 @@ const CLAIM_PATTERNS = Object.freeze({
 
 function auditResumeCoverage(source, output, documentProfile = null) {
   const profile = String(documentProfile?.profile || documentProfile || 'unknown');
-  const confidence = Number(documentProfile?.confidence ?? documentProfile?.profileConfidence ?? 0);
-  const applicable = profile === 'resume_application' && confidence >= 0.75;
+  const safetyProfiles = Array.isArray(documentProfile?.safetyProfiles)
+    ? documentProfile.safetyProfiles.map(value => String(value || ''))
+    : [];
+  // 사용자 지정 프로필과 저신뢰 라우팅에서도 자소서의 행동·성과·직무 연결
+  // 누락은 동일한 사고다. 분류 신뢰도를 안전 감사의 ON/OFF 스위치로 쓰지 않는다.
+  const applicable = profile === 'resume_application'
+    || safetyProfiles.includes('resume_application');
   if (!applicable) return emptyReport(false);
   const sourceSentences = meaningfulSentences(source);
   const outputSentences = meaningfulSentences(output);

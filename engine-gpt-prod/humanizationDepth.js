@@ -98,7 +98,7 @@ function buildHumanizationPlan(source, {
   const resumeRepetitionPlan = resumeRepetitionAudit.buildResumeRepetitionPlan(text, documentProfile);
   const sourceRedundancyPlan = sourceRedundancy.buildSourceRedundancyPlan(text, documentProfile);
   const commercialTargetPlan = commercialSignals.detectCommercialSentenceTargets(sentences, documentProfile);
-  const target = mergeCommercialTargets(
+  let target = mergeCommercialTargets(
     mergeSourceRedundancyTargets(
       mergeResumeRepetitionTargets(
         mergeRemediationTargets(detectTargetSentences(sentences), rhetoricalRemediationPlan),
@@ -125,6 +125,11 @@ function buildHumanizationPlan(source, {
   const cautious = CAUTIOUS_PROFILES.has(profile);
   const sourceChars = normalizeSubstantive(text).length;
   const eligibleCarryoverSentenceCount = eligibleProseSentences(text).length;
+  target = ensureBasicParagraphDistributionTargets(text, target, {
+    strength,
+    riskLevel,
+    creative
+  });
   const paragraphCoveragePlan = buildParagraphCoveragePlan(text, target.indices, {
     strength,
     creative,
@@ -495,8 +500,7 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
     .length;
   const targetParagraphIndices = new Set((plan.targetParagraphIndices || []).filter(Number.isInteger));
   const targetChangedParagraphIndices = new Set(metrics.sentenceEdits
-    .filter(row => targetIndices.has(row.index)
-      && row.substantiveChanged
+    .filter(row => row.substantiveChanged
       && targetParagraphIndices.has(row.sourceParagraphIndex))
     .map(row => row.sourceParagraphIndex));
   const targetChangedParagraphCount = targetChangedParagraphIndices.size;
@@ -905,18 +909,25 @@ function buildParagraphCoveragePlan(source, targetIndices, {
   resumeRepetitionApplicable = false
 } = {}) {
   const mapping = buildSentenceParagraphMap(source);
-  const targetParagraphIndices = [...new Set((targetIndices || [])
+  const detectedTargetParagraphIndices = [...new Set((targetIndices || [])
     .map(index => mapping.sentenceParagraphIndices[index])
     .filter(index => Number.isInteger(index) && index >= 0))]
     .sort((a, b) => a - b);
-  const paragraphCoverageApplicable = (strength === 'advanced' || resumeRepetitionApplicable === true)
+  const targetParagraphIndices = detectedTargetParagraphIndices;
+  const advancedOrResume = strength === 'advanced' || resumeRepetitionApplicable === true;
+  const basicMultiParagraph = strength === 'basic'
+    && mapping.eligibleParagraphCount >= 3
+    && targetParagraphIndices.length >= 2;
+  const paragraphCoverageApplicable = (advancedOrResume || basicMultiParagraph)
     && creative !== true
     && mapping.eligibleParagraphCount >= 2
     && targetParagraphIndices.length >= 2;
   const minTargetParagraphCoverage = paragraphCoverageApplicable
     ? (strength === 'advanced'
         ? (riskLevel === 'high' ? 1 : 0.75)
-        : (riskLevel === 'high' ? 0.75 : 0.67))
+        : (strength === 'basic'
+            ? (riskLevel === 'high' ? 0.67 : 0.50)
+            : (riskLevel === 'high' ? 0.75 : 0.67)))
     : 0;
   const requiredTargetChangedParagraphCount = paragraphCoverageApplicable
     ? Math.max(2, Math.ceil(targetParagraphIndices.length * minTargetParagraphCoverage))
@@ -1123,6 +1134,51 @@ function mergeResumeRepetitionTargets(target, repetitionPlan) {
   const reasonCounts = { ...(target?.reasonCounts || {}) };
   reasonCounts.resume_semantic_repetition = Number(repetitionPlan.targetSentenceCount || added || 0);
   return { indices: [...indices].sort((a, b) => a - b), reasonCounts };
+}
+
+function ensureBasicParagraphDistributionTargets(source, target, {
+  strength = 'basic',
+  riskLevel = 'low',
+  creative = false
+} = {}) {
+  if (strength !== 'basic' || creative === true) return target;
+  const mapping = buildSentenceParagraphMap(source);
+  if (mapping.eligibleParagraphCount < 3) return target;
+  const indices = new Set((target?.indices || []).filter(Number.isInteger));
+  const covered = new Set([...indices]
+    .map(index => mapping.sentenceParagraphIndices[index])
+    .filter(index => Number.isInteger(index) && index >= 0));
+  const desiredParagraphCount = Math.max(
+    2,
+    Math.ceil(mapping.eligibleParagraphCount * (riskLevel === 'high' ? 0.67 : 0.50))
+  );
+  if (covered.size >= desiredParagraphCount) return target;
+
+  const sentences = meaningfulSentences(source);
+  let added = 0;
+  for (let paragraphIndex = 0;
+    paragraphIndex < mapping.eligibleParagraphCount && covered.size < desiredParagraphCount;
+    paragraphIndex += 1) {
+    if (covered.has(paragraphIndex)) continue;
+    const candidates = sentences
+      .map((sentence, sentenceIndex) => ({ sentence, sentenceIndex }))
+      .filter(item => mapping.sentenceParagraphIndices[item.sentenceIndex] === paragraphIndex)
+      .sort((a, b) => normalizeSubstantive(b.sentence).length - normalizeSubstantive(a.sentence).length);
+    const selected = candidates[0];
+    if (!selected) continue;
+    indices.add(selected.sentenceIndex);
+    covered.add(paragraphIndex);
+    added += 1;
+  }
+  if (!added) return target;
+  return {
+    ...target,
+    indices: [...indices].sort((a, b) => a - b),
+    reasonCounts: {
+      ...(target?.reasonCounts || {}),
+      basic_paragraph_distribution: Number(target?.reasonCounts?.basic_paragraph_distribution || 0) + added
+    }
+  };
 }
 
 function mergeSourceRedundancyTargets(target, redundancyPlan) {

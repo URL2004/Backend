@@ -1730,7 +1730,7 @@ const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
     professionalOnly: true,
     source: /(?:역량|능력)(?:을|를)\s*(?:길렀|기르|강화|높였|키웠|갖췄|갖추)/u,
     acceptable: /(?:역량|능력)(?:(?:을|를)\s*|(?:은|는)[^.!?。！？\n]{0,60})(?:길렀|기르|강화|높였|키웠|갖췄|갖추)/u,
-    preferred: ['역량을 길렀습니다', '능력을 강화했습니다']
+    preferred: ['원문에 있는 구체적 행동과 확인 가능한 결과로 표현', '자기평가형 결론 대신 수행·근거를 직접 서술']
   },
   {
     concept: 'configured_output_state',

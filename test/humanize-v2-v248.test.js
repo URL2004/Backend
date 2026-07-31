@@ -464,11 +464,11 @@ test('섹션 회복 재시도는 mini와 상위 모델 선택을 요청 본문�
     humanizationPlan: { applicable: true, requestStrength: 'advanced', requiredChangedSentenceCount: 1, minSubstantiveEditRatio: 0.1 },
     humanizationDepthReport: { reasons: ['substantive_edit_ratio_low'], metrics: {} },
     config,
-    model: 'gpt-5.4',
+    model: 'gpt-5.6-terra',
     reasoningEffort: 'high',
     phase: 'section_depth_escalation'
   });
-  assert.equal(seen[0].model, 'gpt-5.4');
+  assert.equal(seen[0].model, 'gpt-5.6-terra');
   assert.equal(seen[0].reasoning?.effort, 'high');
 });
 

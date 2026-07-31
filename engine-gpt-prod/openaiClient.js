@@ -13,9 +13,9 @@ function envFlag(name) {
   return /^(1|true|yes|on)$/i.test(String(process.env[name] || '').trim());
 }
 
-function sanitizeEffort(value, fallback = 'low') {
+function sanitizeEffort(value, fallback = 'medium') {
   const v = String(value || '').trim().toLowerCase();
-  return ['none', 'low', 'medium', 'high', 'xhigh', 'minimal', 'default'].includes(v) ? v : fallback;
+  return ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'minimal', 'default'].includes(v) ? v : fallback;
 }
 
 function promptCacheKey(config, { task, mode, profile, schemaName, phase, model } = {}) {
@@ -49,7 +49,7 @@ async function completeJson({
   schema,
   schemaName,
   model,
-  reasoningEffort = 'low',
+  reasoningEffort = 'medium',
   verbosity = 'medium',
   maxOutputTokens = 4096,
   config,
@@ -85,7 +85,7 @@ async function completeJson({
     store: false
   };
 
-  const effort = sanitizeEffort(reasoningEffort, 'low');
+  const effort = sanitizeEffort(reasoningEffort, 'medium');
   if (effort && effort !== 'default') {
     body.reasoning = { effort };
   }
@@ -214,6 +214,7 @@ function promptCacheRetention(config, model) {
 function supportsExtendedPromptCache(model) {
   const m = String(model || '').toLowerCase();
   if (!m) return false;
+  if (/^gpt-5\.6-(?:luna|terra|sol)(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return true;
   if (/^gpt-5\.4(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return true;
   if (/^gpt-5\.2(?:-|$)/.test(m)) return true;
   if (/^gpt-5\.1(?:-|$)/.test(m)) return true;

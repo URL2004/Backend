@@ -504,7 +504,7 @@ test('수리 후 의미 위반이 남으면 done 호환 상태인 needs_review�
   assert.equal(out.fallbackCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 1);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_soft_claim_ledger').length, 0);
 });
 
@@ -754,8 +754,8 @@ test('기본 첫 회복도 구두점 수준이면 mini로 한 번 더 실질 회
   assert.equal(out.engineMeta.humanizationDepthEscalationAttemptCount, 1);
   const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
   assert.equal(retryCalls.length, 2);
-  assert.equal(retryCalls[0].model, 'gpt-5.4-mini');
-  assert.equal(retryCalls[1].model, 'gpt-5.4');
+  assert.equal(retryCalls[0].model, 'gpt-5.6-luna');
+  assert.equal(retryCalls[1].model, 'gpt-5.6-terra');
 });
 
 test('기본 지원서는 첫 회복이 최소 편집률을 넘어도 의미 반복이 남으면 두 번째 회복을 수행한다', { concurrency: false }, async t => {
@@ -851,8 +851,8 @@ test('고급의 첫 깊이 회복이 여전히 약하면 상위 모델이 두 �
   assert.equal(out.engineMeta.humanizationDepthEscalationAttemptCount, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
   const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
-  assert.equal(retryCalls[0].model, 'gpt-5.4-mini');
-  assert.equal(retryCalls[1].model, 'gpt-5.4');
+  assert.equal(retryCalls[0].model, 'gpt-5.6-luna');
+  assert.equal(retryCalls[1].model, 'gpt-5.6-terra');
   assert.match(String(retryCalls[1].body.instructions || ''), /첫 문단만 고치고 멈추지 않는다/u);
 });
 
@@ -1221,7 +1221,7 @@ test('의미 수리 후보가 문서를 축약하면 폐기하고 수리 전 결
   assert.equal(report.repairRejected, true);
   assert.equal(report.reports[0].repairRejected, true);
   assert.ok(report.reports[0].repairRejectReasons.includes('repair_collapsed'));
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
 });
 
 test('의미 위반이 확인된 수리는 원문 복귀를 허용해 상위 강도 회복 단계로 넘긴다', { concurrency: false }, async t => {
@@ -1237,7 +1237,7 @@ test('의미 위반이 확인된 수리는 원문 복귀를 허용해 상위 강
   assert.equal(report.repairCount, 1);
   assert.equal(report.repairRejected, false);
   assert.equal(report.reports[0].repairRejectReasons.includes('repair_erased_transform'), false);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
 });
 
 test('의미 수리가 특정 문장만 크게 축약해 원문 리듬을 훼손하면 폐기한다', { concurrency: false }, async t => {
@@ -1265,7 +1265,7 @@ test('의미 수리가 특정 문장만 크게 축약해 원문 리듬을 훼손
   assert.equal(report.outputText, beforeRepair);
   assert.equal(report.repairRejected, true);
   assert.ok(report.reports[0].repairRejectReasons.includes('sentence_shape_worsened'));
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
 });
 
 test('의미 수리가 청크와 같은 장단문 분포 계약을 깨면 폐기한다', { concurrency: false }, async t => {
@@ -1278,5 +1278,5 @@ test('의미 수리가 청크와 같은 장단문 분포 계약을 깨면 폐기
   assert.equal(report.outputText, beforeRepair);
   assert.equal(report.repairRejected, true);
   assert.ok(report.reports[0].repairRejectReasons.includes('sentence_distribution_worsened'));
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.4'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
 });

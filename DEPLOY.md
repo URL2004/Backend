@@ -246,10 +246,10 @@ $r.Content -match 'lavAutoCoach'
 | `HUMANIZE_EFFECT_CONFIRMATION_ENABLED` | 변화가 제한적인 입력의 작업 전 확인 강제. v2.4.8 프런트 배포 후 활성화하며 `0`으로 해제 가능 |
 | `HUMANIZE_CHUNK_CONCURRENCY` | 일반 편집 청크 동시성. 허용 범위 `1~3`; 배포 직후 `1`, 검증 후 `2` 권장 |
 | `OPENAI_SAFETY_SALT` | UID를 `safety_identifier`용 HMAC-SHA256으로 변환하는 비밀값. 운영 필수 |
-| `OPENAI_MODEL_FAST` | 기본 변환 모델. 예: `gpt-5.4-mini` |
-| `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 예: `gpt-5.4` |
+| `OPENAI_MODEL_FAST` | 기본 변환 모델. 기본 `gpt-5.6-luna` |
+| `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 기본 `gpt-5.6-terra` |
 | `OPENAI_MODEL_JUDGE` / `OPENAI_MODEL_REPAIR` / `OPENAI_MODEL_DETECT` / `OPENAI_MODEL_EVIDENCE` | 계층별 GPT 모델 fallback |
-| `OPENAI_REASONING_HUMANIZE` / `OPENAI_REASONING_FACT_DENSE` / `OPENAI_REASONING_ESCALATION` | 변환·고위험·승격 reasoning fallback |
+| `OPENAI_REASONING_HUMANIZE` / `OPENAI_REASONING_FACT_DENSE` / `OPENAI_REASONING_ESCALATION` | 변환·고위험·승격 reasoning fallback. 기본 `medium` / `high` / `high` |
 | `OPENAI_REASONING_JUDGE` / `OPENAI_REASONING_REPAIR` / `OPENAI_REASONING_DETECT` / `OPENAI_REASONING_EVIDENCE` | 판정·수리·감지·근거검색 reasoning fallback. 판정/수리 기본 `medium` |
 | `OPENAI_PROMPT_CACHE_ENABLED` / `OPENAI_PROMPT_CACHE_KEY_PREFIX` | GPT prompt caching 설정. 기본 prefix `gp-v9-cksafe-ko-p20260704` |
 | `OPENAI_PROMPT_CACHE_KEY_INCLUDE_MODE` / `OPENAI_PROMPT_CACHE_KEY_INCLUDE_PHASE` | 기본 `0`. 같은 고정 프롬프트 코어의 캐시 재사용을 위해 mode/phase를 키에서 제외한다. 특정 키가 약 15 RPM을 넘거나 프롬프트 계열을 강제로 격리해야 할 때만 `1` |
@@ -259,7 +259,7 @@ $r.Content -match 'lavAutoCoach'
 | `GPT_NIKL_API_PROVIDERS` / `GPT_NIKL_API_LOOKUP_MAX` / `NIKL_API_TIMEOUT_MS` | 기본 `opendict,stdict,term` / `2` / `1200`. 후보 상한은 2, timeout 상한은 1.2초로 코드에서도 제한한다. |
 | `NIKL_OPENDICT_API_KEY` / `NIKL_STDICT_API_KEY` / `NIKL_TERM_API_KEY` | 국립국어원 API별 인증키. 외부 API가 OFF면 로드하거나 호출하지 않는다. |
 | `DETECT_HISTORY_CALIBRATION_*` | 같은 사용자의 최근 휴머나이징 결과를 다시 감지할 때만 점수를 보정한다. 장문 유사 일치는 기본 5-gram `0.88` 이상, 길이 차이 `3%` 이내, 최소 `500자`이며 원점수와 매칭 메타를 관리자 기록에 남긴다. |
-| `GPT_ESCALATION_*` | mini-first 승격 기준 fallback. 기본 긴 글 `9000`, 보호표현 `35`, 패치 대상 `24`. 관리자 페이지에서 조정 가능 |
+| `GPT_ESCALATION_*` | Luna-first → Terra 승격 기준 fallback. 기본 긴 글 `9000`, 보호표현 `35`, 패치 대상 `24`. 관리자 페이지에서 조정 가능 |
 | `FIREBASE_SERVICE_ACCOUNT` | 서비스 계정 JSON 전체 |
 | `TOSS_SECRET_KEY` | `live_` 키 |
 | `CRON_SECRET` | cron 인증 |

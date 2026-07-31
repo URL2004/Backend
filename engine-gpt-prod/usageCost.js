@@ -1,18 +1,18 @@
 'use strict';
 
 const DEFAULT_PRICES = {
-  'gpt-5.4': { input: 2.5, cachedInput: 0.25, output: 15 },
-  'gpt-5.4-mini': { input: 0.75, cachedInput: 0.075, output: 4.5 },
-  'gpt-5.4-nano': { input: 0.2, cachedInput: 0.02, output: 1.25 }
+  'gpt-5.6-terra': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 },
+  'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 }
 };
 
 function priceFor(model) {
   const key = String(model || '').trim();
   const envPrefix = key.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-  const base = DEFAULT_PRICES[key] || DEFAULT_PRICES['gpt-5.4-mini'];
+  const base = DEFAULT_PRICES[key] || DEFAULT_PRICES['gpt-5.6-luna'];
   return {
     input: envNumber(`OPENAI_PRICE_${envPrefix}_INPUT`, base.input),
     cachedInput: envNumber(`OPENAI_PRICE_${envPrefix}_CACHED_INPUT`, base.cachedInput),
+    cacheWrite: envNumber(`OPENAI_PRICE_${envPrefix}_CACHE_WRITE`, base.cacheWrite),
     output: envNumber(`OPENAI_PRICE_${envPrefix}_OUTPUT`, base.output)
   };
 }
@@ -26,9 +26,15 @@ function estimateUsd(model, usage = {}) {
   const p = priceFor(model);
   const input = Math.max(0, Number(usage.inputTokens) || 0);
   const cached = Math.max(0, Math.min(input, Number(usage.cachedInputTokens) || 0));
-  const uncached = input - cached;
+  const cacheWrite = Math.max(0, Math.min(input - cached, Number(usage.cacheWriteTokens) || 0));
+  const uncached = input - cached - cacheWrite;
   const output = Math.max(0, Number(usage.outputTokens) || 0);
-  const usd = (uncached * p.input + cached * p.cachedInput + output * p.output) / 1000000;
+  const usd = (
+    uncached * p.input
+    + cached * p.cachedInput
+    + cacheWrite * p.cacheWrite
+    + output * p.output
+  ) / 1000000;
   return Math.round(usd * 1000000) / 1000000;
 }
 

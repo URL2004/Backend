@@ -7,7 +7,12 @@ const {
   promptCacheDiagnostics,
   promptCacheKey
 } = require('../engine-gpt-prod/openaiClient');
-const { addUsage, emptyUsage } = require('../engine-gpt-prod/usageCost');
+const {
+  addUsage,
+  emptyUsage,
+  estimateUsd,
+  priceFor
+} = require('../engine-gpt-prod/usageCost');
 
 const CACHE_ENV_KEYS = [
   'OPENAI_PROMPT_CACHE_KEY_PREFIX',
@@ -33,7 +38,7 @@ function withCacheEnv(values, fn) {
 
 function cacheMeta(overrides = {}) {
   return {
-    model: 'gpt-5.4-mini',
+    model: 'gpt-5.6-luna',
     task: 'humanize',
     mode: 'assignment',
     profile: 'gpt_prod_v1',
@@ -98,7 +103,7 @@ test('normalizeUsage records cache reads and writes from Responses usage', () =>
     output_tokens_details: {
       reasoning_tokens: 120
     }
-  }, 'gpt-5.4-mini');
+  }, 'gpt-5.6-luna');
 
   assert.equal(usage.inputTokens, 2006);
   assert.equal(usage.cachedInputTokens, 1920);
@@ -116,12 +121,36 @@ test('normalizeUsage supports Chat Completions token field names', () => {
       cached_tokens: 1024,
       cache_write_tokens: 128
     }
-  }, 'gpt-5.4-mini');
+  }, 'gpt-5.6-luna');
 
   assert.equal(usage.inputTokens, 1600);
   assert.equal(usage.cachedInputTokens, 1024);
   assert.equal(usage.cacheWriteTokens, 128);
   assert.equal(usage.outputTokens, 200);
+});
+
+test('GPT-5.6 표준 단문 요금과 캐시 쓰기 비용을 계산한다', () => {
+  assert.deepEqual(priceFor('gpt-5.6-luna'), {
+    input: 0.2,
+    cachedInput: 0.02,
+    cacheWrite: 0.25,
+    output: 1.2
+  });
+  assert.deepEqual(priceFor('gpt-5.6-terra'), {
+    input: 2,
+    cachedInput: 0.2,
+    cacheWrite: 2.5,
+    output: 12
+  });
+
+  const usage = {
+    inputTokens: 1000,
+    cachedInputTokens: 100,
+    cacheWriteTokens: 200,
+    outputTokens: 50
+  };
+  assert.equal(estimateUsd('gpt-5.6-luna', usage), 0.000252);
+  assert.equal(estimateUsd('gpt-5.6-terra', usage), 0.00252);
 });
 
 test('prompt cache diagnostics distinguish reads from sized misses', () => {

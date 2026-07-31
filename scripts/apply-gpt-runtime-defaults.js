@@ -11,7 +11,7 @@ async function main() {
     version: gptRuntimeConfig.VERSION,
     updatedBy: 'apply-gpt-runtime-defaults',
     updatedAtMs: Date.now(),
-    note: 'default GPT runtime config requested 2026-07-04'
+    note: 'GPT-5.6 Luna/Terra runtime defaults requested 2026-07-31'
   }, { merge: true });
   console.log(JSON.stringify({
     ok: true,

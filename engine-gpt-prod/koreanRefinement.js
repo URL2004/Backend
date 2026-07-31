@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 17;
+const VERSION = 18;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -226,6 +226,18 @@ const ISSUE_DEFINITIONS = Object.freeze({
     deterministicSafe: false,
     message: '분석 대상을 비슷한 “내용·자료”로 다시 받아 목적어 관계가 흐려졌어요.'
   },
+  borrowed_standard_case_frame: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '평가 기준을 “가져와” 자신을 평가한다고 표현해 기준과 평가의 연결이 어색해요.'
+  },
+  goal_direction_reference_mismatch: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '앞에서 정한 목표를 뒤에서 “그 방향”으로 받아 지시 대상이 어긋났어요.'
+  },
   enumeration_parallelism: {
     weight: 2,
     repairable: true,
@@ -291,6 +303,18 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '한 문장에 연구 행동이 너무 많이 연결돼 주어·서술어 관계와 호흡이 무거워요.'
+  },
+  academic_purpose_chain_overloaded: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: false,
+    message: '한 연구 목적문에 목적·핵심 단서·작동 과정·검증 조건이 겹쳐 호흡과 논리 단계가 흐려져요.'
+  },
+  affective_anchor_omission: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '성찰문에 있던 구체적인 감정·내적 질문·인정 욕구가 일반적인 교훈으로 축약됐을 수 있어요.'
   },
   formal_register_residual: {
     weight: 3,
@@ -1006,6 +1030,8 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   if (persistentTense) outputIssues.push(persistentTense);
   const reduplicativeRootLoss = detectReduplicativeRootLoss(source, outputText);
   if (reduplicativeRootLoss) outputIssues.push(reduplicativeRootLoss);
+  const affectiveAnchorOmission = detectAffectiveAnchorOmission(source, outputText, profile);
+  if (affectiveAnchorOmission) outputIssues.push(affectiveAnchorOmission);
   const rows = mergeIssueComparison(sourceIssues, outputIssues);
   const repairableIssues = rows.filter(item => item.afterCount > 0 && item.repairable);
   const residualWarnings = rows
@@ -1125,6 +1151,8 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'meta_nominalization_injection', hasMetaNominalizationInjection);
   pushSentenceIssue(issues, text, 'role_predicate_redundancy', hasRolePredicateRedundancy);
   pushSentenceIssue(issues, text, 'analytic_object_recast', hasAnalyticObjectRecast);
+  pushSentenceIssue(issues, text, 'borrowed_standard_case_frame', hasBorrowedStandardCaseFrame);
+  pushSentenceIssue(issues, text, 'goal_direction_reference_mismatch', hasGoalDirectionReferenceMismatch);
   pushEnumerationParallelismIssue(issues, text);
   if (profile === 'mail_notice') pushFunctionalGreetingDuplication(issues, text);
   if (isFormalRegisterTarget(targetRegister, profile)) {
@@ -1133,6 +1161,9 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSelfEvaluationRepetition(issues, text);
   if (/(?:연구|실험|공정|시편|분석\s*장비)/u.test(text)) {
     pushSentenceIssue(issues, text, 'overloaded_research_action_chain', isOverloadedResearchActionChain);
+  }
+  if (['academic_paper', 'report_assignment', 'long_explainer'].includes(profile)) {
+    pushSentenceIssue(issues, text, 'academic_purpose_chain_overloaded', isOverloadedAcademicPurposeChain);
   }
   pushRepeatedVagueDemonstrative(issues, text);
   if (includeSourceNotation) {
@@ -1300,6 +1331,10 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'meta_nominalization_injection',
   'role_predicate_redundancy',
   'analytic_object_recast',
+  'borrowed_standard_case_frame',
+  'goal_direction_reference_mismatch',
+  'affective_anchor_omission',
+  'academic_purpose_chain_overloaded',
   'repeated_clause_anchor',
   'professional_register_downgrade',
   'formal_register_residual',
@@ -1313,6 +1348,7 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
 
 function restoreIntroducedIntegritySentences({ source = '', outputText = '', audit = null } = {}) {
   const ordinals = [];
+  const affectiveSourceOrdinals = [];
   const restoredCodes = [];
   for (const issue of audit?.issues || []) {
     if (!SOURCE_RESTORABLE_ISSUES.has(issue.code) || Number(issue.introducedCount || 0) <= 0) continue;
@@ -1323,15 +1359,44 @@ function restoreIntroducedIntegritySentences({ source = '', outputText = '', aud
       }
       continue;
     }
+    if (issue.code === 'affective_anchor_omission') {
+      for (const omission of issue.details?.omissions || []) {
+        if (Number(omission.sourceOrdinal) > 0) {
+          affectiveSourceOrdinals.push(Number(omission.sourceOrdinal));
+        }
+      }
+      continue;
+    }
     ordinals.push(...(issue.sentenceOrdinals || []));
   }
-  const restored = restoreSourceSentenceOrdinals(source, outputText, ordinals, {
+  const regularRestore = restoreSourceSentenceOrdinals(source, outputText, ordinals, {
     maxRestoreCount: 8,
     minSimilarity: 0.24,
     ordinalSpace: 'output'
   });
+  const affectiveRestore = restoreSourceSentenceOrdinals(
+    source,
+    regularRestore.text,
+    affectiveSourceOrdinals,
+    {
+      maxRestoreCount: 4,
+      minSimilarity: 0.24,
+      ordinalSpace: 'source',
+      allowStablePositionalFallback: true
+    }
+  );
+  const restoredSentenceOrdinals = [
+    ...(regularRestore.restoredSentenceOrdinals || []),
+    ...(affectiveRestore.restoredSentenceOrdinals || [])
+  ];
   return {
-    ...restored,
+    ...affectiveRestore,
+    applied: regularRestore.applied === true || affectiveRestore.applied === true,
+    restoredSentenceCount: restoredSentenceOrdinals.length,
+    restoredSentenceOrdinals,
+    reason: regularRestore.applied === true || affectiveRestore.applied === true
+      ? 'restored'
+      : (affectiveRestore.reason || regularRestore.reason),
     restoredCodes: [...new Set(restoredCodes)]
   };
 }
@@ -2055,6 +2120,16 @@ function hasAnalyticObjectRecast(sentence) {
     .test(stripProtectedQuotedText(sentence));
 }
 
+function hasBorrowedStandardCaseFrame(sentence) {
+  return /(?:타인|남|다른\s*사람|주변|외부)(?:의)?\s*(?:평가\s*)?기준(?:을|를)\s*(?:가져와|가져와서|끌어와|끌어와서|들여와|들여와서)[^.!?。！？\n]{0,48}(?:나|자신|스스로|상대|대상|성과|결과)(?:을|를)\s*(?:평가|판단|재단)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
+function hasGoalDirectionReferenceMismatch(sentence) {
+  return /목표(?:를|을)\s*(?:정하|세우|설정)[^.!?。！？\n]{0,64}그\s*방향(?:을|으로)\s*(?:향해|따라|좇아|나아가)/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
 function pushEnumerationParallelismIssue(issues, text) {
   const sentences = splitSentences(String(text || '')).map(value => String(value || '').trim()).filter(Boolean);
   const groups = [];
@@ -2183,11 +2258,26 @@ const FORMAL_REGISTER_RULES = Object.freeze([
       && /함께\s*놓고\s*(?:비교|검토)/u.test(value)
   },
   {
+    family: 'academic_hyperbolic_response',
+    test: (value, _fullText, context) => isAcademicRegisterProfile(context?.profile)
+      && /(?:폭발적(?:인|으로)?|엄청난)\s*(?:수준의\s*)?(?:긍정적|부정적)?\s*(?:반응|효과|영향|관심|수요|증가|감소|확산|성장)/u.test(value)
+  },
+  {
+    family: 'academic_colloquial_unexpected_combination',
+    test: (value, _fullText, context) => isAcademicRegisterProfile(context?.profile)
+      && /뜬금없(?:는|게|도록)\s*(?:결합|조합|협업|연결|등장|배치|선택|반응)/u.test(value)
+  },
+  {
     family: 'casual_self_question',
     test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
       && /(?:해서|라서)\s*그런가\s*(?:했|생각했|싶었)/u.test(value)
   }
 ]);
+
+function isAcademicRegisterProfile(profile) {
+  return ['academic_paper', 'report_assignment', 'long_explainer']
+    .includes(String(profile || ''));
+}
 
 function isFormalRegisterTarget(targetRegister, profile) {
   if (['academic_formal', 'clinical_formal', 'legal_formal', 'record_formal', 'student_formal', 'professional', 'functional_formal', 'formal']
@@ -2349,6 +2439,194 @@ function isOverloadedResearchActionChain(sentence) {
     /(?:실험|연구|분석)[^.!?]{0,16}(?:수행|진행)/u
   ];
   return actions.filter(pattern => patternMatchesLocal(pattern, value)).length >= 4;
+}
+
+function isOverloadedAcademicPurposeChain(sentence) {
+  const raw = String(sentence || '');
+  if (normalizeSentenceLocal(raw).length < 105) return false;
+  const value = stripProtectedQuotedText(raw);
+  if (!/(?:본\s*(?:연구|논문|고)|연구\s*(?:목적|목표)|규명(?:하|되)|실증(?:하|되)|검증(?:하|되)|제시(?:하|되))/u.test(value)) {
+    return false;
+  }
+  const actions = [
+    /(?:목적|목표)(?:은|는|이|가)?[^.!?。！？\n]{0,28}(?:규명|검증|분석|고찰|제시)/u,
+    /(?:메커니즘|기제|원리|관계|효과|영향)(?:을|를|이|가)?\s*(?:규명|검증|분석|설명|파악)/u,
+    /(?:단서|요인|변수|모형|가설|기준)(?:을|를)?[^.!?。！？\n]{0,100}(?:제시|도출|설정|검증)/u,
+    /(?:불일치|부조화|갈등|문제|과정)(?:이|가|을|를)?[^.!?。！？\n]{0,34}(?:해소|조절|매개|설명|해석)/u,
+    /(?:실증|검증|분석|비교|고찰|규명)(?:하고자|하려|한다|합니다|하였다|했다|하며)/u
+  ];
+  const actionCount = actions.filter(pattern => patternMatchesLocal(pattern, value)).length;
+  const transitionCount = (value.match(/[,;，；]|(?:특히|나아가|이에|따라|통해|위해|제시하며|해소되는|나타나는지)/gu) || []).length;
+  return actionCount >= 3 && transitionCount >= 2;
+}
+
+const AFFECTIVE_PROFILES = new Set([
+  'personal_essay',
+  'general_essay',
+  'student_self_assessment'
+]);
+
+const AFFECTIVE_ANCHOR_FAMILIES = Object.freeze([
+  {
+    family: 'recognition_desire',
+    patterns: [
+      /인정(?:을\s*)?받(?:고\s*싶|기를\s*(?:바라|원)|고자|으려)/u,
+      /알아주(?:기|길|기를)?\s*(?:바라|원|었으면)/u,
+      /(?:노력|성과|가치)[^.!?。！？\n]{0,28}(?:인정|알아주)[^.!?。！？\n]{0,20}(?:싶|바라|원)/u
+    ]
+  },
+  {
+    family: 'recognition_lack',
+    patterns: [
+      /인정(?:을\s*)?받지\s*못/u,
+      /인정(?:을\s*)?받을\s*수\s*없/u,
+      /알아주지\s*않/u
+    ]
+  },
+  {
+    family: 'self_doubt',
+    patterns: [
+      /스스로(?:를)?\s*(?:의심|부정|탓|책망)/u,
+      /자신(?:을|의\s*가치)?\s*(?:의심|부정|탓)/u
+    ]
+  },
+  {
+    family: 'inferiority',
+    patterns: [
+      /열등감/u,
+      /(?:뒤처|뒤떨어)졌다고\s*(?:느끼|생각)/u,
+      /부족하다고\s*(?:느끼|생각)/u
+    ]
+  },
+  {
+    family: 'hurt_frustration',
+    patterns: [/(?:속상|서운|좌절|실망|상처받|답답|억울)/u]
+  },
+  {
+    family: 'anxiety_fear',
+    patterns: [/(?:불안|두렵|무섭|걱정|긴장)/u]
+  },
+  {
+    family: 'shame_guilt',
+    patterns: [/(?:부끄럽|창피|수치심|죄책감|미안)/u]
+  },
+  {
+    family: 'joy_pride',
+    patterns: [/(?:기쁘|행복|뿌듯|자랑스럽)/u]
+  },
+  {
+    family: 'regret',
+    patterns: [/(?:후회|아쉬웠|아쉬움)/u]
+  },
+  {
+    family: 'isolation',
+    patterns: [/(?:외롭|소외|고립)/u]
+  },
+  {
+    family: 'anger_jealousy',
+    patterns: [/(?:화가\s*났|분노|질투)/u]
+  }
+]);
+
+function detectAffectiveAnchorOmission(source, outputText, profile) {
+  if (!AFFECTIVE_PROFILES.has(String(profile || ''))) return null;
+  const sourceSentences = splitSentences(String(source || ''))
+    .map(item => String(item || '').trim())
+    .filter(Boolean);
+  const outputSentences = splitSentences(String(outputText || ''))
+    .map(item => String(item || '').trim())
+    .filter(Boolean);
+  const anchors = sourceSentences
+    .map((sentence, index) => ({
+      sentence,
+      index,
+      families: affectiveFamilyNames(sentence)
+    }))
+    .filter(item => item.families.length > 0 && isOwnedAffectiveSentence(item.sentence));
+  if (!anchors.length) return null;
+
+  const omissions = anchors.map(anchor => compareAffectiveAnchor(
+    anchor,
+    sourceSentences.length,
+    outputSentences
+  )).filter(item => item.covered !== true);
+  if (!omissions.length) return null;
+  return makeIssue(
+    'affective_anchor_omission',
+    omissions.length,
+    omissions.map(item => item.outputOrdinal).filter(value => Number(value) > 0),
+    {
+      anchorCount: anchors.length,
+      omissions: omissions.slice(0, 8).map(item => ({
+        sourceOrdinal: item.sourceOrdinal,
+        outputOrdinal: item.outputOrdinal,
+        families: item.families,
+        familyRecall: item.familyRecall,
+        semanticSimilarity: item.semanticSimilarity,
+        contentRecall: item.contentRecall,
+        sourceSentence: item.sourceSentence.slice(0, 420),
+        matchedOutput: item.matchedOutput.slice(0, 420)
+      }))
+    }
+  );
+}
+
+function compareAffectiveAnchor(anchor, sourceCount, outputSentences) {
+  const candidates = alignedOutputCandidates(
+    anchor.sentence,
+    anchor.index,
+    sourceCount,
+    outputSentences,
+    { window: 4, maxOutputGroup: 3 }
+  );
+  const sourceTokens = new Set(contentTokensLocal(anchor.sentence));
+  let best = null;
+  for (const candidate of candidates) {
+    const outputFamilies = new Set(affectiveFamilyNames(candidate.text));
+    const retainedFamilies = anchor.families.filter(family => outputFamilies.has(family));
+    const familyRecall = retainedFamilies.length / Math.max(1, anchor.families.length);
+    const outputTokens = new Set(contentTokensLocal(candidate.text));
+    const contentRecall = [...sourceTokens].filter(token => outputTokens.has(token)).length
+      / Math.max(1, sourceTokens.size);
+    const semanticSimilarity = Number(candidate.rawScore ?? candidate.score ?? 0);
+    const score = (familyRecall * 0.62) + (semanticSimilarity * 0.28) + (contentRecall * 0.10);
+    if (!best || score > best.score) {
+      best = { candidate, familyRecall, contentRecall, semanticSimilarity, score };
+    }
+  }
+  const covered = Boolean(best
+    && best.familyRecall >= 0.999
+    && (best.semanticSimilarity >= 0.24 || best.contentRecall >= 0.24));
+  return {
+    sourceOrdinal: anchor.index + 1,
+    outputOrdinal: best ? best.candidate.start + 1 : 0,
+    families: anchor.families,
+    familyRecall: round4(best?.familyRecall || 0),
+    semanticSimilarity: round4(best?.semanticSimilarity || 0),
+    contentRecall: round4(best?.contentRecall || 0),
+    sourceSentence: anchor.sentence,
+    matchedOutput: best?.candidate?.text || '',
+    covered
+  };
+}
+
+function affectiveFamilyNames(value) {
+  const text = String(value || '');
+  return AFFECTIVE_ANCHOR_FAMILIES
+    .filter(item => item.patterns.some(pattern => pattern.test(text)))
+    .map(item => item.family);
+}
+
+function isOwnedAffectiveSentence(value) {
+  const text = String(value || '');
+  const firstPerson = koreanStart(
+    '(?:나는|나를|나에게|나의|나도|나만|내가|내게|저는|저를|저에게|저의|저도|저만|제가|제게|스스로(?:를)?)',
+    'u'
+  );
+  return firstPerson.test(text)
+    || koreanStart('나(?=\\s+(?:역시|또한|또|만큼))', 'u').test(text)
+    || /(?:느낀|느꼈|느껴진)\s*(?:감정|기분|마음)/u.test(text)
+    || /(?:감정|기분|마음)(?:은|는|이|가|을|를)[^.!?。！？\n]{0,28}(?:들|생기|느끼|느꼈|비롯)/u.test(text);
 }
 
 function pushPatternIssue(issues, text, code, pattern) {
@@ -2749,6 +3027,11 @@ function sentenceOrdinalAt(text, offset) {
 
 function countMatches(value, pattern) {
   return (String(value || '').match(cloneGlobal(pattern)) || []).length;
+}
+
+function round4(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number * 10000) / 10000 : 0;
 }
 
 function cloneGlobal(pattern) {

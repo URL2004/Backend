@@ -16,7 +16,8 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
   maxRestoreCount = 8,
   minSimilarity = 0.24,
   ordinalSpace = 'source',
-  maxOutputGroup = 3
+  maxOutputGroup = 3,
+  allowStablePositionalFallback = false
 } = {}) {
   const before = String(outputText || '');
   const sourceSpans = splitSentenceSpans(String(source || ''));
@@ -36,7 +37,11 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
   for (const ordinal of requested) {
     const alignment = ordinalSpace === 'output'
       ? alignOutputOrdinalToSource(ordinal, sourceSpans, outputSpans, { minSimilarity, maxOutputGroup })
-      : alignSourceOrdinalToOutput(ordinal, sourceSpans, outputSpans, { minSimilarity, maxOutputGroup });
+      : alignSourceOrdinalToOutput(ordinal, sourceSpans, outputSpans, {
+          minSimilarity,
+          maxOutputGroup,
+          allowStablePositionalFallback
+        });
     if (!alignment) continue;
     const sourceSpan = sourceSpans[alignment.sourceIndex];
     const firstOutput = outputSpans[alignment.start];
@@ -82,7 +87,8 @@ function sentenceSimilarity(left, right) {
 
 function alignSourceOrdinalToOutput(ordinal, sourceSpans, outputSpans, {
   minSimilarity,
-  maxOutputGroup
+  maxOutputGroup,
+  allowStablePositionalFallback = false
 }) {
   const sourceIndex = ordinal - 1;
   const sourceSpan = sourceSpans[sourceIndex];
@@ -113,6 +119,14 @@ function alignSourceOrdinalToOutput(ordinal, sourceSpans, outputSpans, {
     const outputSpan = outputSpans[sourceIndex];
     const score = sentenceSimilarity(sourceSpan.text, outputSpan?.text || '');
     if (outputSpan && score >= minSimilarity) {
+      return { sourceIndex, start: sourceIndex, end: sourceIndex + 1, score };
+    }
+    // 감정·동기 문장이 일반론으로 완전히 평탄화되면 해당 문장 자체의
+    // 어휘 유사도는 낮아진다. 앞뒤 문장이 제자리에 안정적으로 정렬된
+    // 경우에만 같은 위치를 복원 대상으로 인정해 엉뚱한 문장 교체를 막는다.
+    if (outputSpan
+        && allowStablePositionalFallback
+        && hasStablePositionalNeighbors(sourceIndex, sourceSpans, outputSpans)) {
       return { sourceIndex, start: sourceIndex, end: sourceIndex + 1, score };
     }
   }
@@ -168,6 +182,15 @@ function alignSourceOrdinalToOutput(ordinal, sourceSpans, outputSpans, {
     end: globalAlignment.end,
     score: globalAlignment.score
   };
+}
+
+function hasStablePositionalNeighbors(index, sourceSpans, outputSpans) {
+  const neighbors = [index - 1, index + 1]
+    .filter(value => value >= 0 && value < sourceSpans.length && value < outputSpans.length);
+  if (!neighbors.length) return false;
+  return neighbors.every(value => (
+    sentenceSimilarity(sourceSpans[value]?.text || '', outputSpans[value]?.text || '') >= 0.42
+  ));
 }
 
 function alignOutputOrdinalToSource(ordinal, sourceSpans, outputSpans, {

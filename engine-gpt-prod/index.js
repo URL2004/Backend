@@ -52,7 +52,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.21';
+const VERSION = 'gpt-prod-v2.5.22';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -1087,6 +1087,16 @@ async function runEngine({
     const needsModelRefinement = (koreanRefinementAudit?.repairableIssues || [])
       .some(item => item.afterCount > 0 && item.deterministicSafe !== true);
     if (needsModelRefinement) {
+      const refinementIssueCodes = new Set((koreanRefinementAudit?.repairableIssues || [])
+        .filter(item => item.afterCount > 0 && item.deterministicSafe !== true)
+        .map(item => item.code));
+      const expandedLocalizedRepair = [
+        'academic_purpose_chain_overloaded',
+        'affective_anchor_omission',
+        'borrowed_standard_case_frame',
+        'goal_direction_reference_mismatch'
+      ].some(code => refinementIssueCodes.has(code));
+      const affectiveRepair = refinementIssueCodes.has('affective_anchor_omission');
       try {
         koreanRefinementRetryAttemptCount = 1;
         recoveryBudget.recordAttempt();
@@ -1121,7 +1131,10 @@ async function runEngine({
             mode: selectedMode,
             protectedTerms: collectRecordProtectedTerms(records),
             currentDepth: humanizationDepthReport,
-            candidateDepth
+            candidateDepth,
+            maxLocalEditRatio: expandedLocalizedRepair ? 0.4 : 0.12,
+            localLengthPurpose: affectiveRepair ? 'source_restore' : 'standard',
+            allowDepthRegression: affectiveRepair
           })
           && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
         if (safeCandidate && koreanRefinement.isImprovedAudit(koreanRefinementAudit, candidateAudit)) {
@@ -2803,6 +2816,14 @@ async function runEngine({
     adjacentRestatementFamilies: safeFailureCodeList(postprocessMeta?.dedupe?.adjacentRestatementFamilies),
     directionalGrowthCollocationCount: Number((koreanRefinementAudit?.issues || [])
       .find(item => item.code === 'directional_growth_collocation')?.afterCount || 0),
+    academicPurposeChainOverloadedCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'academic_purpose_chain_overloaded')?.afterCount || 0),
+    affectiveAnchorOmissionCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'affective_anchor_omission')?.afterCount || 0),
+    borrowedStandardCaseFrameCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'borrowed_standard_case_frame')?.afterCount || 0),
+    goalDirectionReferenceMismatchCount: Number((koreanRefinementAudit?.issues || [])
+      .find(item => item.code === 'goal_direction_reference_mismatch')?.afterCount || 0),
     koreanDeterministicRepairCount,
     koreanRefinementRetryAttemptCount,
     koreanRefinementRetryCount,

@@ -1181,6 +1181,9 @@ async function retryKoreanRefinement({
     ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract'].includes(profile)
       ? '학술·보고서의 개념어와 격식을 유지하고 구어체나 감탄형 표현을 새로 넣지 않는다.'
       : '',
+    ['personal_essay', 'general_essay', 'student_self_assessment'].includes(profile)
+      ? '성찰문의 구체적인 감정, 내적 질문, 인정 욕구, 자기 의심을 일반적인 성장 교훈으로 축약하지 않는다. SOURCE에 있는 감정만 같은 강도로 복원하고 새 감정이나 극적인 장면은 만들지 않는다.'
+      : '',
     '수리할 문제가 실제로 남아 있지 않거나 보존 조건 안에서 안전하게 고칠 수 없으면 safeChangeFound=false로 답한다.',
     '[수리 대상]',
     ...issueLines
@@ -1226,8 +1229,9 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'scope_expansion_collocation') return '소비·수요·이용의 양이나 범위가 확대·증가·늘어나는 원문 의미 중 맞는 표현만 선택한다.';
   if (item?.code === 'self_evaluation_repetition') return '반복된 자기평가 결론을 SOURCE에 있는 행동·결과 서술로 옮기되 새 성과를 만들지 않는다.';
   if (item?.code === 'overloaded_research_action_chain') return '원인 분석·조건 조정·반복 실험·재현성 검증의 순서는 유지하고, 필요하면 두 문장으로 나눈다.';
+  if (item?.code === 'academic_purpose_chain_overloaded') return '연구 목적, 핵심 단서·변수, 작동 과정, 검증 조건을 논리 역할별 두세 문장으로 나눈다. 따옴표 속 구성개념과 Fit·Cue 같은 표기, 인과 방향, 평가 강도는 그대로 두고 “해소 과정”을 임의로 “해석 과정” 같은 다른 개념으로 바꾸지 않는다.';
   if (item?.code === 'formal_register_residual') {
-    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다. “시험해 보니”는 “시험·검증한 결과”로, “함께 놓고 비교”는 “비교 검토”처럼 원문 격식에 맞춘다. 지원서의 디딤돌·든든한 동행자·따뜻한 조력자 같은 장식적 결론은 SOURCE에 있는 실제 행동 계획으로만 정리한다.';
+    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다. 학술문의 “뜬금없는 결합”은 원문이 뜻하는 예상 밖·비전형적 관계 범위 안에서만 중립화하고, “폭발적인 반응”은 반응 강도를 낮추지 않는 공식 표현으로 고친다. 이론 구성개념은 추정해 이름을 바꾸지 않는다. “시험해 보니”는 “시험·검증한 결과”로, “함께 놓고 비교”는 “비교 검토”처럼 원문 격식에 맞춘다. 지원서의 디딤돌·든든한 동행자·따뜻한 조력자 같은 장식적 결론은 SOURCE에 있는 실제 행동 계획으로만 정리한다.';
   }
   if (item?.code === 'role_definition_inversion') return '기관이 역할이라고 쓰지 말고, SOURCE의 기관·직무가 어떤 역할을 하는지 주어와 보어 관계를 복원한다.';
   if (item?.code === 'purpose_modifier_collocation') return '정책·제도가 지향하는 목적이면 “~을 만들기 위한 정책·제도”처럼 목적 관계를 분명히 한다.';
@@ -1251,6 +1255,13 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'meta_nominalization_injection') return '“느낀 것은 ~하는 점이었다”로 늘이지 말고 SOURCE의 직접적인 깨달음·판단 문장을 자연스럽게 유지한다.';
   if (item?.code === 'role_predicate_redundancy') return '맡다·담당하다 중 문맥에 맞는 서술어 하나만 남기고 업무 범위는 줄이거나 넓히지 않는다.';
   if (item?.code === 'analytic_object_recast') return '접수·수집된 요구사항·자료 자체를 분석 대상으로 두고, 같은 대상을 “내용”으로 다시 받아 모호하게 만들지 않는다.';
+  if (item?.code === 'borrowed_standard_case_frame') return '“기준을 가져와 평가하다”로 쓰지 말고 SOURCE의 평가 주체와 대상을 유지한 채 “그 기준으로 평가하다”처럼 조사와 서술어의 논항을 바로잡는다.';
+  if (item?.code === 'goal_direction_reference_mismatch') return '앞에서 정한 것이 목표라면 “그 목표를 향해”, 방향이라면 “그 방향으로”처럼 같은 지시 대상을 유지한다.';
+  if (item?.code === 'affective_anchor_omission') {
+    const omissions = Array.isArray(item?.details?.omissions) ? item.details.omissions : [];
+    const anchors = omissions.slice(0, 6).map(value => `${value.sourceOrdinal}번=${value.sourceSentence}`);
+    return `SOURCE의 감정 범위를 일반론으로 바꾸지 말고 같은 위치에 자연스럽게 되살린다.${anchors.length ? ` 보존할 감정 문장: ${anchors.join(' / ')}` : ''}`;
+  }
   if (item?.code === 'enumeration_parallelism') return '첫째·둘째·셋째 항목의 명사구/서술문 역할과 종결 형식을 맞추되 각 항목의 사실과 순서는 유지한다.';
   return '';
 }

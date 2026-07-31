@@ -1338,10 +1338,13 @@ function splitEditablePrefixPiece(piece, options = {}) {
     : raw.match(
       /^(\s*(?:(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
     );
-  const label = legal || blockquote || markdownLabelBullet || bullet
+  const bracketLabel = legal || blockquote || markdownLabelBullet || bullet
+    ? null
+    : raw.match(/^(\s*\[(?=[^\]\n]{0,79}[가-힣A-Za-z])[^\]\n]{1,80}\]\s*)(\S[\s\S]*)$/u);
+  const label = legal || blockquote || markdownLabelBullet || bullet || bracketLabel
     ? null
     : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
-  const match = legal || blockquote || markdownLabelBullet || bullet || label;
+  const match = legal || blockquote || markdownLabelBullet || bullet || bracketLabel || label;
   if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
   const prefix = match[1];
   const body = match[2];
@@ -1355,7 +1358,9 @@ function splitEditablePrefixPiece(piece, options = {}) {
       end: start + prefix.length,
       forceLockType: legal
         ? 'legal_clause_prefix'
-        : (blockquote ? 'blockquote_prefix' : ((markdownLabelBullet || bullet) ? 'bullet_prefix' : 'label_prefix')),
+        : (blockquote
+            ? 'blockquote_prefix'
+            : ((markdownLabelBullet || bullet) ? 'bullet_prefix' : 'label_prefix')),
       forceSectionLabel: legal ? prefix.trim() : ''
     },
     {
@@ -1653,6 +1658,7 @@ function buildStructureAudit({
   const counts = plan?.audit?.lockedByType || countLockedByType(locked);
   const structuralSignature = compareStructuralRoleSignatures(source, output);
   const originalMarkers = compareOriginalStructuralMarkers(original, output);
+  const bracketedLabelLayout = compareBracketedLabelLayout(original, output);
   const introducedOrphanParticleBoundaryCount = Math.max(
     0,
     countOrphanParticleLineBoundaries(output) - countOrphanParticleLineBoundaries(original)
@@ -1684,6 +1690,13 @@ function buildStructureAudit({
     originalStructuralMarkerCount: originalMarkers.sourceCount,
     originalStructuralMarkerLossCount: originalMarkers.losses.length,
     originalStructuralMarkerLosses: originalMarkers.losses,
+    bracketedLabelLayoutPass: bracketedLabelLayout.pass,
+    bracketedLabelSourceCount: bracketedLabelLayout.sourceCount,
+    bracketedLabelOutputCount: bracketedLabelLayout.outputCount,
+    bracketedLabelLossCount: bracketedLabelLayout.losses.length,
+    bracketedLabelBoundaryChangeCount: bracketedLabelLayout.boundaryChanges.length,
+    bracketedLabelLosses: bracketedLabelLayout.losses,
+    bracketedLabelBoundaryChanges: bracketedLabelLayout.boundaryChanges,
     introducedOrphanParticleBoundaryCount,
     pass: lost.length === 0
       && outOfOrder.length === 0
@@ -1691,9 +1704,99 @@ function buildStructureAudit({
       && sectionPathErrors.length === 0
       && structuralSignature.pass
       && originalMarkers.pass
+      && bracketedLabelLayout.pass
       && introducedOrphanParticleBoundaryCount === 0
       && layoutRepair?.pass !== false
   };
+}
+
+/**
+ * 자기소개서의 `[소제목]`, `[지원동기]` 표식은 문자열이 남아 있기만 해서는
+ * 충분하지 않다. 서로 다른 행이 한 행으로 합쳐지면 항목 계층이 무너지므로
+ * 원문 라벨의 순서와 소제목의 독립 행 계약을 함께 검사한다.
+ */
+function compareBracketedLabelLayout(source, output) {
+  const sourceAnchors = extractBracketedLabelAnchors(source);
+  const outputText = normalizeNewlines(output);
+  if (!sourceAnchors.length) {
+    return {
+      pass: true,
+      sourceCount: 0,
+      outputCount: extractBracketedLabelAnchors(outputText).length,
+      losses: [],
+      boundaryChanges: []
+    };
+  }
+
+  const losses = [];
+  const boundaryChanges = [];
+  const matched = [];
+  let cursor = 0;
+  for (const anchor of sourceAnchors) {
+    const index = outputText.indexOf(anchor.anchor, cursor);
+    if (index < 0) {
+      losses.push({
+        label: anchor.label,
+        lineOrdinal: anchor.lineOrdinal,
+        anchor: anchor.anchor.slice(0, 180)
+      });
+      continue;
+    }
+    const lineOrdinal = outputText.slice(0, index).split('\n').length;
+    const lineStart = outputText.lastIndexOf('\n', index - 1) + 1;
+    const lineEndAt = outputText.indexOf('\n', index + anchor.anchor.length);
+    const lineEnd = lineEndAt < 0 ? outputText.length : lineEndAt;
+    const outputLine = outputText.slice(lineStart, lineEnd).trim();
+    matched.push({ ...anchor, outputLineOrdinal: lineOrdinal });
+    if (anchor.standalone && outputLine !== anchor.anchor) {
+      boundaryChanges.push({
+        label: anchor.label,
+        sourceLineOrdinal: anchor.lineOrdinal,
+        outputLineOrdinal: lineOrdinal,
+        reason: 'standalone_heading_merged'
+      });
+    }
+    cursor = index + anchor.anchor.length;
+  }
+
+  for (let index = 1; index < matched.length; index += 1) {
+    const previous = matched[index - 1];
+    const current = matched[index];
+    if (previous.lineOrdinal === current.lineOrdinal) continue;
+    if (previous.outputLineOrdinal === current.outputLineOrdinal) {
+      boundaryChanges.push({
+        label: current.label,
+        sourceLineOrdinal: current.lineOrdinal,
+        outputLineOrdinal: current.outputLineOrdinal,
+        reason: 'separate_labels_merged'
+      });
+    }
+  }
+
+  return {
+    pass: losses.length === 0 && boundaryChanges.length === 0,
+    sourceCount: sourceAnchors.length,
+    outputCount: extractBracketedLabelAnchors(outputText).length,
+    losses: losses.slice(0, 20),
+    boundaryChanges: boundaryChanges.slice(0, 20)
+  };
+}
+
+function extractBracketedLabelAnchors(value) {
+  const anchors = [];
+  normalizeNewlines(value).split('\n').forEach((line, index) => {
+    const text = String(line || '').trim();
+    const parts = layoutStructure.bracketLabelParts(text);
+    if (!parts) return;
+    const standalone = layoutStructure.isBracketHeadingLine(text);
+    anchors.push({
+      label: parts.label,
+      anchor: standalone ? text : parts.prefix.trim(),
+      standalone,
+      lineOrdinal: index + 1
+    });
+  });
+  return anchors;
 }
 
 /**
@@ -2188,6 +2291,7 @@ module.exports = {
   restoreParagraphLayout,
   compareStructuralRoleSignatures,
   compareOriginalStructuralMarkers,
+  compareBracketedLabelLayout,
   extractOriginalStructuralMarkers,
   countOrphanParticleLineBoundaries,
   isQuestionnaireQuestionLine,

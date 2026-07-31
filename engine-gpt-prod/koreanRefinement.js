@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 16;
+const VERSION = 17;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -177,6 +177,36 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '조사와 서술어가 요구하는 논항 구조가 어긋났어요.'
+  },
+  misplaced_clause_connector: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '대조 접속어가 주제·장소 성분 뒤에 끼어 문장 흐름이 어색해요.'
+  },
+  abstract_mass_quantifier: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '셀 수 없는 추상 개념에 “다수의”가 붙어 수량 표현이 어색해요.'
+  },
+  weak_function_predicate: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '기능·역할을 “취약한 수준으로 수행하다”처럼 서술해 목적어와 상태 표현이 맞지 않아요.'
+  },
+  condition_commitment_mismatch: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '성장 조건을 여는 “~하려면”과 막연한 미래 다짐이 느슨하게 연결돼요.'
+  },
+  fear_object_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '경험·배움 자체를 두려워한다고 표현해 목적어와 감정 서술의 결합이 어색해요.'
   },
   meta_nominalization_injection: {
     weight: 3,
@@ -1057,6 +1087,41 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'causal_predicate_stack', hasCausalPredicateStack);
   pushSentenceIssue(issues, text, 'nominal_predicate_collocation', hasNominalPredicateCollocation);
   pushSentenceIssue(issues, text, 'case_frame_corruption', hasCaseFrameCorruption);
+  pushSentenceIssue(
+    issues,
+    text,
+    'misplaced_clause_connector',
+    sentence => /^[^.!?。！？\n]{1,60}(?:에서는|에는|에서도|은|는)\s+(?:그러나|하지만|다만|반면)(?=\s)/u
+      .test(stripProtectedQuotedText(sentence).trim())
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'abstract_mass_quantifier',
+    sentence => /다수의\s+(?:신용|신뢰|존중|협력|전문성|성실함|꼼꼼함|유연성|안전성|책임감)(?:을|를|이|가|은|는|에|으로|과|와)?(?=$|[\s,.;:!?。！？])/u
+      .test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'weak_function_predicate',
+    sentence => /(?:기능|역할|효과|성능|역량)(?:을|를)\s+(?:(?:매우|상당히)\s+)?(?:취약|부족|미흡|불충분)한\s+수준으로\s+(?:수행|발휘|작동|실행)(?:하|되|했|합|하고|하며)/u
+      .test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'condition_commitment_mismatch',
+    sentence => /(?:성장|발전|개선|향상)하려면[^.!?。！？\n]{0,90}(?:도전|노력|보완|학습|배우|키우|참여)[^.!?。！？\n]{0,30}(?:하겠습니다|겠습니다)/u
+      .test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'fear_object_collocation',
+    sentence => /(?:경험|배움|학습|기회)(?:과|와|이나|나)\s*(?:경험|배움|학습|기회)(?:을|를)\s+두려워하지/u
+      .test(stripProtectedQuotedText(sentence))
+  );
   pushSentenceIssue(issues, text, 'meta_nominalization_injection', hasMetaNominalizationInjection);
   pushSentenceIssue(issues, text, 'role_predicate_redundancy', hasRolePredicateRedundancy);
   pushSentenceIssue(issues, text, 'analytic_object_recast', hasAnalyticObjectRecast);
@@ -1227,6 +1292,11 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'causal_predicate_stack',
   'nominal_predicate_collocation',
   'case_frame_corruption',
+  'misplaced_clause_connector',
+  'abstract_mass_quantifier',
+  'weak_function_predicate',
+  'condition_commitment_mismatch',
+  'fear_object_collocation',
   'meta_nominalization_injection',
   'role_predicate_redundancy',
   'analytic_object_recast',

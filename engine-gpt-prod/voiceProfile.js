@@ -287,7 +287,8 @@ function auditVoice(sourceProfile, output, {
   // 실제 제목·라벨·목록 행은 그대로 남는다. 이전에는 이 정상적인 문단
   // 정리도 경계 붕괴로 판정해 강한 회복 후보와 최종 결과를 검토 상태로
   // 만들었다. 비어 있지 않은 원래 행까지 실제로 합쳐졌을 때만 경고한다.
-  const boundaryCollapsed = sourcePreservedBoundaryCount >= 3
+  const boundaryCollapsed = sourceProfile?.lineBoundaryPolicy !== 'none'
+    && sourcePreservedBoundaryCount >= 3
     && currentPreservedBoundaryCount < Math.ceil(sourcePreservedBoundaryCount * 0.6)
     && nonEmptyLinesCollapsed;
   const exactLineCountChanged = sourceProfile?.lineBoundaryPolicy === 'all'
@@ -434,11 +435,30 @@ function linePolicyFor(text, documentProfile, layout, { lineBreakSensitive = fal
   const structuredFormat = ['table_heavy', 'list_heavy', 'sectioned', 'label_heavy']
     .some(flag => flags.has(flag));
   const meaningfulBoundaries = Number(layout?.preservedBoundaryCount) || 0;
+  const structuralBoundaries = Number(layout?.structuralBoundaryCount) || 0;
   const structuralLines = Number(layout?.structuralLineCount) || 0;
   const polishStructure = String(mode || '') === 'polish' && (meaningfulBoundaries > 0 || structuralLines > 0);
-  if (meaningfulBoundaries >= 2 || structuredFormat || polishStructure) return 'structural';
-  if (sensitiveProfile && (meaningfulBoundaries > 0 || structuralLines > 0)) return 'structural';
+  const resumeAnswerUnits = hasStandaloneResumeAnswerUnits(text, profiles, layout);
+  // 문장마다 엔터가 들어간 일반 산문은 PDF·워드 복사에서 흔하다. 완결된
+  // 긴 문장 경계만 여러 개 있다는 이유로 구조 잠금을 걸면 의미 문단
+  // 재구성을 품질 손실로 오인한다. 다만 자소서에서 각 행이 두 문장 이상인
+  // 독립 답변 단위로 반복되면 문항 표지가 빠진 입력일 수 있으므로 보존한다.
+  if (structuralBoundaries >= 1 || structuredFormat || polishStructure || resumeAnswerUnits) return 'structural';
+  if (sensitiveProfile && (structuralBoundaries > 0 || structuralLines > 0)) return 'structural';
   return 'none';
+}
+
+function hasStandaloneResumeAnswerUnits(text, profiles, layout) {
+  const profileSet = profiles instanceof Set ? profiles : new Set(profiles || []);
+  if (!profileSet.has('resume_application')) return false;
+  if (Number(layout?.hardProseBoundaryCount || 0) < 2) return false;
+  const records = layoutStructure.buildLineRecords(text).filter(record => !record.blank);
+  const prose = records.filter(record => record.role === 'prose');
+  if (prose.length < 3 || prose.length / Math.max(1, records.length) < 0.72) return false;
+  const multiSentence = prose.filter(record => (
+    splitSentences(String(record.text || '')).length >= 2
+  )).length;
+  return multiSentence >= 3 && multiSentence / prose.length >= 0.6;
 }
 
 function hasDenseStandaloneObservationLayout(text, profiles, layout) {

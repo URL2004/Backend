@@ -52,7 +52,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.20';
+const VERSION = 'gpt-prod-v2.5.21';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -852,11 +852,12 @@ async function runEngine({
       humanizationPlan,
       humanizationDepthReport
     );
-    const maximumAttempts = Math.min(
-      sourceSentenceCount || 1,
-      requestStrength === 'advanced' ? 8 : 4,
-      Math.max(initialPreferredOrdinals.length, hardRequired + 2)
-    );
+    const maximumAttempts = conservativeRecoveryMaximumAttempts({
+      sourceSentenceCount,
+      requestStrength,
+      preferredOrdinalCount: initialPreferredOrdinals.length,
+      hardRequiredChangedSentenceCount: hardRequired
+    });
     const conservativeNoProgressLimit = requestStrength === 'advanced' ? 3 : 2;
     const remediationOrdinals = new Set(
       (humanizationPlan?.rhetoricalRemediationPlan?.categories || [])
@@ -2322,7 +2323,9 @@ async function runEngine({
     ...(humanizationNoBenefitDelivered ? depthEffectNotices(humanizationDepthReport) : []),
     ...deterministicEffectNotices
   ]);
-  const effectStatus = effectStatusForNotices(effectNotices);
+  const effectStatus = effectStatusForNotices(effectNotices, {
+    humanizationDepthReport
+  });
   const qualityWarnings = dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []).filter(item => !isEffectObservationCode(item?.code)),
         ...semanticQualityWarnings.filter(item => !isEffectObservationCode(item?.code)),
@@ -5070,10 +5073,37 @@ function isEffectObservationCode(code) {
   return EFFECT_OBSERVATION_CODES.has(String(code || ''));
 }
 
-function effectStatusForNotices(notices) {
-  const limiting = (notices || []).some(item => (
-    item?.code
-    && !NON_LIMITING_EFFECT_OBSERVATION_CODES.has(String(item.code))
+function effectStatusForNotices(notices, { humanizationDepthReport = null } = {}) {
+  const codes = new Set((notices || []).map(item => String(item?.code || '')).filter(Boolean));
+  if (codes.has('humanization_depth_below_minimum')
+      || humanizationDepthReport?.minimumEffectPass === false) return 'limited';
+
+  // 실질 편집과 문장 커버리지가 이미 안전 최소선을 충분히 넘은 결과는
+  // 정형 문구 한두 곳이 남았다는 이유만으로 사용자에게 "효과 제한"으로
+  // 보이지 않게 한다. 알림 자체는 그대로 남겨 관리자 관측은 유지한다.
+  const metrics = humanizationDepthReport?.metrics || {};
+  const plan = humanizationDepthReport?.plan || {};
+  const hardEditFloor = Math.max(
+    0.10,
+    Number(plan.hardMinimumSubstantiveEditRatio || 0)
+  );
+  const changedSentenceStrong = Number(metrics.substantiveChangedSentenceRatio || 0) >= 0.35
+    || Number(metrics.substantiveChangedSentenceCount || 0)
+      >= Math.max(1, Number(plan.hardRequiredChangedSentenceCount || 1));
+  const substantiveStrong = humanizationDepthReport?.applicable === true
+    && humanizationDepthReport?.minimumEffectPass === true
+    && Number(metrics.substantiveEditRatio || 0) + 1e-9 >= hardEditFloor
+    && changedSentenceStrong;
+  const softDepthCodes = new Set([
+    'humanization_depth_below_target',
+    'rhetorical_remediation_incomplete',
+    'duplicate_conclusion',
+    'repeated_reflection_conclusion',
+    'overstructured_causality'
+  ]);
+  const limiting = [...codes].some(code => (
+    !NON_LIMITING_EFFECT_OBSERVATION_CODES.has(code)
+      && !(substantiveStrong && softDepthCodes.has(code))
   ));
   return limiting ? 'limited' : 'normal';
 }
@@ -6167,6 +6197,21 @@ function needsPerceivedHumanizationRecovery(report) {
     && humanizationDepth.needsHumanizationRecovery(report);
 }
 
+function conservativeRecoveryMaximumAttempts({
+  sourceSentenceCount = 0,
+  requestStrength = 'basic',
+  preferredOrdinalCount = 0,
+  hardRequiredChangedSentenceCount = 1
+} = {}) {
+  const sentenceCount = Math.max(1, Number(sourceSentenceCount) || 1);
+  const strategyCap = String(requestStrength || '') === 'advanced' ? 4 : 3;
+  const usefulTargets = Math.max(
+    Number(preferredOrdinalCount) || 0,
+    Math.max(1, Number(hardRequiredChangedSentenceCount) || 1) + 2
+  );
+  return Math.max(1, Math.min(sentenceCount, strategyCap, usefulTargets));
+}
+
 function isIncrementalConservativeImprovement(current, candidate) {
   if (!candidate?.applicable || candidate.metrics?.trivialOnly) return false;
   const before = current?.metrics || {};
@@ -6318,6 +6363,7 @@ module.exports = {
   isBlockingGeneratedRepetition,
   isMaterialDepthRegression,
   needsPerceivedHumanizationRecovery,
+  conservativeRecoveryMaximumAttempts,
   measureConservativeRecoveryProgress,
   shouldSkipWholeDocumentDepthRetryAfterSectionRecovery,
   effectStatusForNotices,

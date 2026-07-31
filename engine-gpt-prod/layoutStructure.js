@@ -17,6 +17,13 @@ const STRUCTURAL_ROLES = new Set([
   'legal_clause',
   'signature'
 ]);
+const BRACKET_HEADING_LABELS = new Set([
+  '소제목',
+  '제목',
+  '항목 제목',
+  '문항 제목',
+  '섹션 제목'
+]);
 const PROFILE_READABILITY_LIMITS = Object.freeze({
   resume_application: Object.freeze({ maxBare: 420, maxSentences: 5 }),
   student_record: Object.freeze({ maxBare: 480, maxSentences: 6 }),
@@ -126,7 +133,7 @@ function classifyLine(value, context = {}) {
   if (isFlowSequenceLine(text)) return 'flow';
   if (isListLine(text)) return 'list';
   if (isQuoteLine(text)) return 'quote';
-  const label = labelParts(text);
+  const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
   if (isGenericTitle(text, context)) return 'title';
   return 'prose';
@@ -134,7 +141,9 @@ function classifyLine(value, context = {}) {
 
 function isKnownHeadingLine(value) {
   const text = visibleTrim(value);
-  if (!text || text.length > 140) return false;
+  if (!text) return false;
+  if (isBracketHeadingLine(text)) return true;
+  if (text.length > 140) return false;
   if (/^#{1,6}\s+\S/u.test(text)) return true;
   if (/^[\[【<][^\]】>\n]{1,80}[\]】>]$/u.test(text)) return true;
   if (/^[-–—]\s*(?:서론|본론|결론|초록|요약|목\s*차|참고\s*문헌|참고\s*자료|부록)$/u.test(text)) return true;
@@ -155,6 +164,16 @@ function isKnownHeadingLine(value) {
   if (/^(?:성장\s*(?:과정|배경)(?:과\s*(?:학교|학창)\s*시절)?|나의\s*성격적\s*강점과\s*약점|성격의\s*장단점|지원\s*동기|직무\s*역량|경력\s*사항|입사\s*후(?:의)?\s*(?:포부|목표)(?:와\s*포부)?)$/u.test(text)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
   return /^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/iu.test(text);
+}
+
+function isBracketHeadingLine(value) {
+  const parts = bracketLabelParts(value);
+  if (!parts || !BRACKET_HEADING_LABELS.has(parts.label) || !parts.rest) return false;
+  if (parts.rest.length > 160) return false;
+  // `[소제목] 제목 본문 첫 문장...`처럼 모델이 행을 합친 결과를 다시
+  // 소제목으로 인정하면 구조 손실을 놓친다. 명시적인 소제목 표식이 있어도
+  // 실제 제목처럼 짧고 완결 문장이 둘 이상 붙지 않은 행만 제목으로 본다.
+  return (parts.rest.match(/[.!?。！？]/gu) || []).length <= 1;
 }
 
 function isGenericTitle(text, context = {}) {
@@ -226,6 +245,22 @@ function labelParts(value) {
   const label = match[1].trim();
   if (/^(?:https?|ftp|file)$/iu.test(label) || /[.!?。！？]/u.test(label)) return null;
   return { label, rest: match[2].trim() };
+}
+
+function bracketLabelParts(value) {
+  const text = visibleTrim(value);
+  const match = text.match(/^(\[([^\]\n]{1,80})\]\s*)(.*)$/u);
+  if (!match) return null;
+  const label = match[2].replace(/\s+/gu, ' ').trim();
+  if (!label
+      || /^\d+(?:[-.:]\d+)*$/u.test(label)
+      || /^(?:https?|ftp|file|doi)$/iu.test(label)
+      || !/[가-힣A-Za-z]/u.test(label)) return null;
+  return {
+    prefix: match[1],
+    label,
+    rest: match[3].trim()
+  };
 }
 
 function isListLine(value) {
@@ -392,8 +427,17 @@ function analyzeLineStructure(value) {
   const roleCounts = {};
   for (const record of nonEmpty) roleCounts[record.role] = (roleCounts[record.role] || 0) + 1;
   let preservedBoundaryCount = 0;
+  let structuralBoundaryCount = 0;
+  let hardProseBoundaryCount = 0;
   for (let index = 0; index < records.length - 1; index += 1) {
-    if (shouldPreserveLineBoundary(records[index], records[index + 1], 'structural')) preservedBoundaryCount += 1;
+    const left = records[index];
+    const right = records[index + 1];
+    if (!left || !right || left.blank || right.blank) continue;
+    const structural = isStructuralRole(left.role) || isStructuralRole(right.role);
+    const hardProse = !structural && isHardProseBoundary(left, right);
+    if (structural) structuralBoundaryCount += 1;
+    if (hardProse) hardProseBoundaryCount += 1;
+    if (structural || hardProse) preservedBoundaryCount += 1;
   }
   const explicitParagraphCount = splitExplicitParagraphs(value).length;
   const paragraphs = splitReadableParagraphs(value, { records });
@@ -412,6 +456,8 @@ function analyzeLineStructure(value) {
     signatureLineCount: roleCounts.signature || 0,
     structuralLineCount: nonEmpty.filter(record => isStructuralRole(record.role)).length,
     preservedBoundaryCount,
+    structuralBoundaryCount,
+    hardProseBoundaryCount,
     explicitParagraphCount,
     readableParagraphCount: paragraphs.length,
     semanticBoundaryCount: Math.max(0, paragraphs.length - 1),
@@ -586,12 +632,14 @@ module.exports = {
   shouldPreserveLineBoundary,
   isStructuralRole,
   isKnownHeadingLine,
+  isBracketHeadingLine,
   isExplicitTableLine,
   isFlowSequenceLine,
   looksLikeUnpunctuatedProse,
   detectParallelSloganTitleIndices,
   legalClauseParts,
   labelParts,
+  bracketLabelParts,
   isSentenceComplete,
   isHardProseBoundary,
   isStructureDominatedParagraph

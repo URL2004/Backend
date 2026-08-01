@@ -15,14 +15,16 @@ const structure = require('../engine-gpt-prod/structureChunk');
 const prompts = require('../engine-gpt-prod/prompts/humanize');
 const { sentenceDistributionShift } = require('../engine-gpt-prod/voiceProfile');
 
-test('v2.5.24: 일본어·중국어 위주 본문은 막고 영문 기술어가 섞인 한국어 문서는 허용한다', () => {
+test('v2.5.24: 일본어·중국어 본문은 허용하고 영어 위주 입력만 기존 정책대로 막는다', () => {
   const japanese = 'この授業では文学作品の背景を調べ、登場人物の考え方について自分の意見をまとめました。発表のあとで友人の質問にも答えました。';
   const chinese = '本研究分析数字平台的信息结构和消费者选择之间的关系，并讨论制度设计和用户保护的主要条件。研究结果表明信息顺序会影响判断。';
+  const english = 'This document explains how the research team compared multiple design alternatives and recorded the final findings for review.';
   const koreanTechnical = 'RF PLL 모듈의 PCB artwork와 Gerber file을 대조했습니다. MCU 레지스터 설정을 검증한 뒤 결과를 기술 문서에 기록했습니다.';
 
-  assert.equal(inputRouting.detectUnsupportedLanguageInput(japanese).kind, 'japanese');
-  assert.equal(inputRouting.detectUnsupportedLanguageInput(chinese).kind, 'chinese');
-  assert.equal(inputRouting.isUnsupportedLanguageInput(koreanTechnical), false);
+  assert.equal(inputRouting.isEnglishInput(japanese), false);
+  assert.equal(inputRouting.isEnglishInput(chinese), false);
+  assert.equal(inputRouting.isEnglishInput(english), true);
+  assert.equal(inputRouting.isEnglishInput(koreanTechnical), false);
 });
 
 test('v2.5.24: 1인칭이 생략된 기술 경력 요약도 지원서 전문 문체로 라우팅한다', () => {

@@ -173,7 +173,7 @@ function auditRow(row, index) {
     documentProfile
   });
   const depthAudit = depth.evaluateHumanizationDepth(source, outputText, depthPlan);
-  const unsupported = inputRouting.detectUnsupportedLanguageInput(source);
+  const unsupportedEnglish = inputRouting.isEnglishInput(source);
   const professionalDowngrade = korean.detectProfessionalDowngrade(
     source,
     outputText,
@@ -199,7 +199,7 @@ function auditRow(row, index) {
     currentProfile,
     profileDecisionSource: String(documentProfile.profileDecisionSource || 'content_only'),
     profileChangedFromStored: storedProfile !== currentProfile,
-    languageKind: unsupported?.kind || 'korean_supported',
+    languageKind: unsupportedEnglish ? 'english_blocked' : 'accepted',
     depthApplicable: depthAudit.applicable === true,
     depthPass: depthAudit.pass === true,
     minimumEffectPass: depthAudit.minimumEffectPass !== false,
@@ -282,7 +282,7 @@ function summarize(rows, errors) {
   const depthRows = rows.filter(row => row.depthApplicable);
   return {
     ...summary,
-    unsupportedLanguageDocumentCount: rows.filter(row => row.languageKind !== 'korean_supported').length,
+    unsupportedLanguageDocumentCount: rows.filter(row => row.languageKind === 'english_blocked').length,
     profileChangedFromStoredCount: rows.filter(row => row.profileChangedFromStored).length,
     depthApplicableDocumentCount: depthRows.length,
     depthPassDocumentCount: depthRows.filter(row => row.depthPass).length,
@@ -339,7 +339,7 @@ function main() {
     }
   });
   const notable = rows.filter(row => (
-    row.languageKind !== 'korean_supported'
+    row.languageKind === 'english_blocked'
     || row.profileChangedFromStored
     || !row.minimumEffectPass
     || row.introducedKoreanCount > 0

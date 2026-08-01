@@ -1131,14 +1131,11 @@ test('기본의 얕은 1차 후보는 경계 토큰 없이 문서 회복으로 �
 test('영어 입력은 세 공개 모드 모두 API 호출 전에 한국어 전용 오류로 차단한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t);
   const english = 'This is an English document that should never be sent to the humanizing model because the service is Korean only.';
-  const japanese = 'この授業では文学作品の背景を調べ、登場人物の考え方について自分の意見をまとめました。発表のあとで友人の質問にも答えました。';
-  for (const source of [english, japanese]) {
-    for (const mode of ['blog', 'formal', 'polish']) {
-      await assert.rejects(
-        () => engine.run({ text: source, mode, allowPolish: true, uid: 'unsupported-language-user', config: config() }),
-        error => error.code === 'HUMANIZE_KOREAN_ONLY' && error.noCharge === true
-      );
-    }
+  for (const mode of ['blog', 'formal', 'polish']) {
+    await assert.rejects(
+      () => engine.run({ text: english, mode, allowPolish: true, uid: 'unsupported-language-user', config: config() }),
+      error => error.code === 'HUMANIZE_KOREAN_ONLY' && error.noCharge === true
+    );
   }
   assert.equal(mock.calls.length, 0);
 });

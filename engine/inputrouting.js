@@ -98,8 +98,8 @@ function looksLikeReflection(text) {
 
 // ★ 영어(비한국어) 위주 입력 판정(2026-06-16). 회피(기본 blog·고급 재구성) 엔진은 "한국 시사 칼럼 필자"로
 //   하드코딩된 한국어 전용이라, 영어를 넣으면 한국어로 번역·축약해 원문을 망친다(영어 28,891자 → 한국어
-//   4,081자, 14% 손상). hangul/letters<0.15 = 영어 위주(프런트 evDetectLang과 동일 기준).
-//   현재 공개 blog·formal·polish는 모두 한국어 전용이며 이 함수는 레거시 진단 호환용으로도 유지한다.
+//   4,081자, 14% 손상). hangul/letters<0.15 = 영어 위주(프런트 evDetectLang과 동일 기준). 다듬기(polish)는
+//   영어를 영어 그대로 다듬으므로 이 판정으로 막지 않는다.
 function isEnglishInput(text) {
   const t = text || '';
   const hangul = (t.match(/[가-힣]/g) || []).length;
@@ -110,34 +110,6 @@ function isEnglishInput(text) {
   return letters >= 50 && hangul / letters < 0.15;
 }
 
-// 영어만 검사하던 시기에는 일본어 장문이 한국어 전용 엔진으로 들어가
-// 번역성 재작성까지 수행됐다. 한국어 기술 문서의 영문 약어·참고문헌은
-// 허용하되, 라틴·가나·한자가 본문을 지배하고 한글 근거가 거의 없을 때만
-// 보수적으로 지원하지 않는 언어로 판정한다.
-function detectUnsupportedLanguageInput(text) {
-  const t = String(text || '');
-  const hangul = (t.match(/[가-힣]/gu) || []).length;
-  const latin = (t.match(/[A-Za-z]/gu) || []).length;
-  const kana = (t.match(/[\u3040-\u30ff\u31f0-\u31ff]/gu) || []).length;
-  const han = (t.match(/[\u3400-\u4dbf\u4e00-\u9fff]/gu) || []).length;
-  const letterCount = hangul + latin + kana + han;
-  const hangulRatio = hangul / Math.max(1, letterCount);
-
-  if (latin >= 50 && hangulRatio < 0.15) {
-    return { unsupported: true, kind: 'english', hangulRatio, letterCount };
-  }
-  if (kana >= 12 && hangulRatio < 0.15) {
-    return { unsupported: true, kind: 'japanese', hangulRatio, letterCount };
-  }
-  if (han >= 30 && hangul < 12 && hangulRatio < 0.15) {
-    return { unsupported: true, kind: 'chinese', hangulRatio, letterCount };
-  }
-  return { unsupported: false, kind: null, hangulRatio, letterCount };
-}
-
-function isUnsupportedLanguageInput(text) {
-  return detectUnsupportedLanguageInput(text).unsupported === true;
-}
 // ★메시지 정정(2026-06-17): "다듬기로 하세요"는 잘못된 안내였다 — 영어를 다듬을수록 AI 패턴이 강해져 카피킬러가
 //   더 잘 잡는다(실측 0→100%). 회피 불가를 솔직히 알리고 원문 유지를 권장.
 const ENGLISH_UNFIT_REASON = '영어 글은 AI 검사 회피(피하기)를 지원하지 않아요. 피하기는 한국어 전용이라 영어를 넣으면 번역·변형돼 원문이 손상되고, 영어를 매끄럽게 다듬을수록 오히려 AI 패턴이 강해져 검사에서 더 잘 잡혀요. 영어는 원문 그대로 두시길 권장합니다.';
@@ -234,14 +206,6 @@ function restructureUnfit(text, ir = {}) {
   // 영어 위주 글 → 「그대로 다듬기」로 유도(POST 진입부에서 1차 차단하지만 직접 호출 대비 방어).
   if (isEnglishInput(t)) {
     return { unfit: true, kind: 'english', reason: ENGLISH_UNFIT_REASON };
-  }
-  const unsupportedLanguage = detectUnsupportedLanguageInput(t);
-  if (unsupportedLanguage.unsupported) {
-    return {
-      unfit: true,
-      kind: 'non_korean',
-      reason: '현재 휴머나이징 엔진은 한국어 글만 지원해요. 한국어가 아닌 본문은 원문 보존을 위해 변환하지 않습니다.'
-    };
   }
   if (looksLikeResume(t)) {
     return {
@@ -405,4 +369,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isSectionedAssignmentReport, sciReportMarkers, genreAdvisory, isEnglishInput, detectUnsupportedLanguageInput, isUnsupportedLanguageInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isSectionedAssignmentReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };

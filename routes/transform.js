@@ -2429,16 +2429,11 @@ router.post('/transform', async (req, res) => {
   //   엔진이라 영어를 넣으면 번역·변형으로 원문이 망가지고, '매끈하게' 다듬을수록 오히려 AI 패턴이 강해져
   //   카피킬러 0→100% 참사(실측). '돌리기 전에' 입력 단계에서 막는다. ※ 과거엔 "다듬기로 유도"였으나 다듬기도
   //   영어를 더 검출되게 만들어 잘못된 안내였음 — 메시지는 "영어 회피 불가·원문 유지"로 정정(ENGLISH_UNFIT_REASON).
-  const unsupportedLanguage = inputrouting.detectUnsupportedLanguageInput(text);
-  if (unsupportedLanguage.unsupported) {
-    logger.warn('transform.non_korean_input_blocked', {
-      mode,
-      textLength: text.length,
-      languageKind: unsupportedLanguage.kind
-    });
+  if (inputrouting.isEnglishInput(text)) {
+    logger.warn('transform.english_input_blocked', { mode, textLength: text.length });
     return res.status(400).json({
       code: 'HUMANIZE_KOREAN_ONLY',
-      error: '현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어·일본어 등 한국어가 아닌 본문은 원문 보존을 위해 변환하지 않습니다.'
+      error: '현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.'
     });
   }
   // ★ 격식문서 → 고급 안내(2026-06-17, #21·#83·#72·#90): 보고서·계약서·논문을 기본 피하기에 넣으면 구어체로

@@ -69,7 +69,7 @@ function resolveAdvancedRouting(text, inputRisk = {}) {
   // 구형 unfit은 추천 강도를 정하는 관측값으로만 남기며, 영어처럼 엔진이
   // 지원하지 않는 입력만 고급 선택을 막는다.
   const profileSafeAdvancedOverride = legacyUnfit.unfit === true
-    && !['english', 'non_korean'].includes(legacyUnfit.kind);
+    && legacyUnfit.kind !== 'english';
 
   const effectiveUnfit = academicOverride || profileSafeAdvancedOverride
     ? { unfit: false, kind: null, reason: '' }

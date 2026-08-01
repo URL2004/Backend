@@ -185,8 +185,8 @@ async function runEngine({
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   const rawSource = sourcePreflightAudit?.text || submittedSource;
   const integritySource = sourcePreflightAudit?.integrityText || rawSource;
-  if (inputRouting.isUnsupportedLanguageInput(rawSource)) {
-    const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어·일본어 등 한국어가 아닌 본문은 원문 보존을 위해 변환하지 않습니다.');
+  if (inputRouting.isEnglishInput(rawSource)) {
+    const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.');
     error.code = 'HUMANIZE_KOREAN_ONLY';
     error.noCharge = true;
     throw error;

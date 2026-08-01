@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 20;
+const VERSION = 21;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -541,7 +541,7 @@ const ISSUE_DEFINITIONS = Object.freeze({
 });
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
-const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|지(?:만)?|다|고|며|어서|므로|었(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
+const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|나|라도|든(?:지)?|기(?:도|만|는)|지(?:만)?|다|고|며|어서|므로|었(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
 const QUOTE_PARTICLE_SUFFIX = '(?:에서|에게|으로|처럼|보다|부터|까지|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서|에게|으로|처럼|보다|부터|까지|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
@@ -2378,8 +2378,11 @@ function hasNominalPredicateCollocation(sentence) {
 }
 
 function hasCaseFrameCorruption(sentence) {
+  const value = stripProtectedQuotedText(sentence);
   return /(?:^|[^가-힣A-Za-z0-9_])[^.!?。！？\n]{0,24}에서[^.!?。！？\n]{1,80}이르기까지를\s*(?:포괄|아우르|포함)/u
-    .test(stripProtectedQuotedText(sentence));
+    .test(value)
+    || /(?:에는|에서는)[^.!?。！？\n]{1,120}(?:적용|활용|구현|반영)된\s+예로\s+(?:볼|평가할|해석할)\s+수\s+있(?:다|습니다)[.!?。！？]?$/u
+      .test(value.trim());
 }
 
 function hasMetaNominalizationInjection(sentence) {

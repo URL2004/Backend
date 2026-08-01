@@ -109,11 +109,13 @@ function buildLineRecords(value) {
     const previous = position > 0 ? nonEmpty[position - 1] : null;
     const next = position + 1 < nonEmpty.length ? nonEmpty[position + 1] : null;
     const previousRaw = records[record.index - 1] || null;
+    const nextRaw = records[record.index + 1] || null;
     record.role = classifyLine(record.text, {
       firstContent: record.index === firstContentIndex,
       previous,
       next,
       blankBefore: record.index === 0 || previousRaw?.blank === true,
+      blankAfter: record.index === records.length - 1 || nextRaw?.blank === true,
       tableLike: tableIndices.has(record.index),
       signatureLike: signatureIndices.has(record.index),
       parallelSloganTitle: parallelSloganTitleIndices.has(record.index)
@@ -136,6 +138,7 @@ function classifyLine(value, context = {}) {
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
   if (isGenericTitle(text, context)) return 'title';
+  if (isStandaloneSectionHeading(text, context)) return 'heading';
   return 'prose';
 }
 
@@ -152,6 +155,7 @@ function isKnownHeadingLine(value) {
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/u.test(text)) return true;
   if (/^\d{1,2}[.)]\s*[가-힣A-Za-z]\S*.{0,100}$/u.test(text)) return true;
   if (/^(?:문제|문항)\s*\d{1,3}\s*[.)：:]?\s*\S.{0,100}$/u.test(text)) return true;
+  if (/^쟁점\s*\d{1,3}\s*[.)：:]?\s*\S.{0,100}$/u.test(text)) return true;
   // OCR·웹 복사에서 `① 소제목: "비유"` 뒤 본문이 같은 행에 붙는
   // 형식이 자주 나온다. preflight가 본문 경계를 복원한 뒤에는 콜론을
   // 가진 짧은 원형번호 행만 소제목으로 잠근다. 일반 선택지·목록은
@@ -164,6 +168,24 @@ function isKnownHeadingLine(value) {
   if (/^(?:성장\s*(?:과정|배경)(?:과\s*(?:학교|학창)\s*시절)?|나의\s*성격적\s*강점과\s*약점|성격의\s*장단점|지원\s*동기|직무\s*역량|경력\s*사항|입사\s*후(?:의)?\s*(?:포부|목표)(?:와\s*포부)?)$/u.test(text)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
   return /^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/iu.test(text);
+}
+
+/**
+ * 번호 표식이 없는 중간 소제목도 앞뒤의 명시적 빈 행과 뒤따르는 긴 본문이
+ * 함께 확인될 때만 구조로 본다. 단순히 마침표가 빠진 산문 한 줄을 제목으로
+ * 잠그지 않도록 길이와 다음 본문 비율을 동시에 제한한다.
+ */
+function isStandaloneSectionHeading(text, context = {}) {
+  if (!context.blankBefore || !context.blankAfter || !context.next) return false;
+  if (text.length < 2 || text.length > 70) return false;
+  if (/[.!?。！？]\s*["”’')\]]*$/u.test(text)) return false;
+  if (/^(?:https?:|www\.|[A-Za-z]:\\)/iu.test(text)) return false;
+  if (isListLine(text) || isQuoteLine(text) || isExplicitTableLine(text)) return false;
+  if (bracketLabelParts(text) || labelParts(text)) return false;
+  const nextLength = String(context.next.text || '').length;
+  if (nextLength < Math.max(70, Math.ceil(text.length * 1.45))) return false;
+  if (!looksLikeUnpunctuatedProse(text)) return true;
+  return text.length <= 36 && nextLength >= Math.max(100, text.length * 2);
 }
 
 function isBracketHeadingLine(value) {

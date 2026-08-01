@@ -60,7 +60,9 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
     endings,
     directQuoteCount: directQuoteContents(text).length,
     listItemCount: Number(layout?.roleCounts?.list || 0),
-    headingCount: (text.match(/^\s*(?:(?:제\s*\d+\s*(?:장|절|항|조))(?:\s+\S.*)?|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s*\S.*|\d+(?:\.\d+){0,3}[.)]?\s+\S.*|(?:서론|본론|결론|초록|요약|참고\s*문헌|부록))\s*$/gmu) || []).length,
+    // 별도 정규식으로 제목을 다시 세면 `3.탐구내용`과 `3. 탐구내용`을
+    // 서로 다른 구조로 보게 된다. 청크·레이아웃과 같은 판정기의 값을 쓴다.
+    headingCount: Number(layout?.headingLineCount || 0),
     questionnaireQuestionCount: countQuestionnaireQuestions(text),
     lineCount: lineCount(text),
     lineBreakSensitive,

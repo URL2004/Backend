@@ -6,7 +6,7 @@ const layoutStructure = require('./layoutStructure');
 const { alignSourceSentence } = require('./sentenceAlignment');
 const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 
-const VERSION = 5;
+const VERSION = 6;
 const VIOLATION_CODES = Object.freeze([
   'scope_expansion',
   'new_evaluation',
@@ -21,7 +21,7 @@ const VIOLATION_CODES = Object.freeze([
 
 const REFLECTION_PATTERNS = [
   /깊이\s*(?:이해|인식|생각)하게\s*되/gu,
-  /(?:절감|깨달|통감)했|(?:절감|깨달|통감)하게\s*되/gu,
+  /(?:절감|깨달|깨닫|통감)했|(?:절감|깨달|깨닫|통감)게?\s*되/gu,
   /공고히\s*(?:하|하게\s*되)/gu,
   /(?:배우|느끼|알게|확인하게|생각하게)\s*되었|(?:배울|느낄|확인할)\s*수\s*있었/gu,
   /알았(?:다|습니다|어요)?/gu,
@@ -30,14 +30,17 @@ const REFLECTION_PATTERNS = [
 // 수사적 상투구보다 넓은 “성찰 기능” 판정이다. `조금씩 보이기
 // 시작했다`를 `알게 되었다`로 바꾼 것처럼 같은 문단의 기존 판단을
 // 의역한 경우를 새 교훈·평가 주입으로 오인하지 않기 위해 사용한다.
-const REFLECTION_FUNCTION_PATTERN = /(?:깨달|알았(?:다|습니다|어요)?|알게\s*되|보이기\s*시작|돌아보|되돌아보|생각하게\s*되|느끼게\s*되|확인하게\s*되|인식하게\s*되|이해하게\s*되|통찰|배움(?:을|이)?[^.!?\n]{0,24}(?:주|얻))/gu;
+const REFLECTION_FUNCTION_PATTERN = /(?:깨달|깨닫|알았(?:다|습니다|어요)?|알게\s*되|보이기\s*시작|돌아보|되돌아보|생각하게\s*되|느끼게\s*되|확인하게\s*되|인식하게\s*되|이해하게\s*되|통찰|배움(?:을|이)?[^.!?\n]{0,24}(?:주|얻))/gu;
+// 책·프로그램·기회를 "알게 되었다"는 발견 경로이지 새로운 교훈이나
+// 자기평가가 아니다. 성찰 공식의 넓은 `알게 되다` 패턴에서 따로 뺀다.
+const NON_REFLECTIVE_DISCOVERY_PATTERN = /(?:책|도서|프로그램|기회|공고|캠프|서비스|제품|기관|학교|회사|행사|작품|전시|채용|현장\s*실습)(?:을|를)\s+알게\s*되/gu;
 
 const STRONG_MODIFIER_PATTERNS = [
   /(?:파멸적|막강한|거대한|극심한|압도적|치명적|엄청난|획기적|전례\s*없는|절대적|근원적|심각한)/gu,
   /(?:완전히|엄청나게|압도적으로|극단적으로|결정적으로)\s+(?:바꾸|뒤흔들|무너뜨리|위협|좌우)/gu
 ];
 
-const CONCLUSION_PATTERN = /(?:^|[.!?]\s*)(?:결론적으로|종합하면|종합적으로|정리하면|요컨대|즉|결국|이처럼)|(?:의미를\s*가진다|의미가\s*있다|중요하다고\s*(?:볼|생각할)\s*수\s*있다|교훈을\s*(?:얻|주))/gu;
+const CONCLUSION_PATTERN = /(?:^|[.!?]\s*)(?:결론적으로|종합하면|종합적으로|정리하면|요컨대|즉|결국|이처럼)|(?:의미를\s*가진다|의미가\s*있다|중요하다고\s*(?:볼|생각할)\s*수\s*있다|교훈을\s*(?:얻|주)|(?:점|사실)(?:을|이)\s*(?:보여|드러내|시사|의미))/gu;
 const CAUSAL_PATTERN = /(?:때문에|따라서|그러므로|그\s*결과|이로\s*인해|덕분에|결과적으로|이어졌|연결되었|영향을\s*미쳤)/gu;
 const EXPANSION_PATTERN = /(?:뿐만\s*아니라|더\s*나아가|나아가|(?:데|데서|에)\s*(?:그치지|멈추지|머무르지)\s*않고|(?:을|를)\s*넘어\s+(?:사회|세계|국가|인권|기후|문화|경제|정치|환경|산업|공동체|차원|영역|문제)|(?:차원|수준|범위|영역|대상|도구|성격|한계|단계|수습|관점|틀|접근)(?:을|를|에|에서)?\s*(?:넘어|벗어나|나아가)|더\s*이상[^.!?。！？\n]{0,45}(?:이|가)\s*아니라|까지\s*(?:확장|연결)|여러\s*(?:영역|차원|문제)|다양한\s*(?:영역|차원|관점|문제)|전반으로\s*확장|포괄(?:하|하는)|아우르)/gu;
 const SCOPE_TOPIC_TOKENS = new Set([
@@ -531,9 +534,10 @@ function countRoleShifts(beforeParagraphs, afterParagraphs) {
     if (sourceParagraph.primaryRole === 'heading') return;
     const outputParagraph = afterParagraphs[index];
     if (!outputParagraph || outputParagraph.primaryRole === 'heading') return;
-    const addedReflection = !sourceParagraph.roles.includes('reflection') && outputParagraph.roles.includes('reflection');
-    const addedConclusion = !sourceParagraph.roles.includes('conclusion') && outputParagraph.roles.includes('conclusion');
-    if (addedReflection || addedConclusion) count += 1;
+    // 이미 성찰·결론 기능을 가진 문단 안에서 표현만 바뀐 것은 역할 이동이
+    // 아니다. 설명·활동 문단의 주된 기능 자체가 성찰·결론으로 바뀐 경우만 센다.
+    if (['reflection', 'conclusion'].includes(sourceParagraph.primaryRole)) return;
+    if (['reflection', 'conclusion'].includes(outputParagraph.primaryRole)) count += 1;
   });
   return count;
 }
@@ -544,8 +548,9 @@ function countNovelReflectionFunctions(source, outputText) {
   let count = 0;
   if (sourceParagraphs.length === outputParagraphs.length && sourceParagraphs.length > 0) {
     outputParagraphs.forEach((paragraph, index) => {
-      const formulaCount = REFLECTION_PATTERNS
-        .reduce((sum, pattern) => sum + countPattern(paragraph, pattern), 0);
+      const formulaCount = Math.max(0, REFLECTION_PATTERNS
+        .reduce((sum, pattern) => sum + countPattern(paragraph, pattern), 0)
+        - countPattern(paragraph, NON_REFLECTIVE_DISCOVERY_PATTERN));
       if (!formulaCount) return;
       const sourceParagraph = sourceParagraphs[index] || '';
       // 해당 원문 문단에 이미 성찰·판단 기능이 있으면 상투 표현 빈도
@@ -560,8 +565,9 @@ function countNovelReflectionFunctions(source, outputText) {
   const sourceSentences = splitSentences(source);
   const outputSentences = splitSentences(outputText);
   outputSentences.forEach((sentence, index) => {
-    const formulaCount = REFLECTION_PATTERNS
-      .reduce((sum, pattern) => sum + countPattern(sentence, pattern), 0);
+    const formulaCount = Math.max(0, REFLECTION_PATTERNS
+      .reduce((sum, pattern) => sum + countPattern(sentence, pattern), 0)
+      - countPattern(sentence, NON_REFLECTIVE_DISCOVERY_PATTERN));
     if (!formulaCount) return;
     const alignment = alignSourceSentence(
       sentence,

@@ -387,6 +387,7 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
         'heading_continuation',
         'title',
         'label',
+        'heading_prefix',
         'label_prefix',
         'bullet_prefix',
         'blockquote_prefix',
@@ -410,7 +411,9 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     let outputIndex = text.indexOf(heading, outputCursor);
     let outputHeadingLength = heading.length;
     if (outputIndex < 0) {
-      const equivalent = findWhitespaceEquivalentLine(text, heading, outputCursor);
+      const equivalent = anchor.prefix
+        ? findWhitespaceEquivalentSpan(text, heading, outputCursor)
+        : findWhitespaceEquivalentLine(text, heading, outputCursor);
       if (!equivalent) {
         missingCount += 1;
         continue;
@@ -1352,27 +1355,33 @@ function sentenceKey(value) {
 function splitEditablePrefixPiece(piece, options = {}) {
   const raw = String(piece?.text || '');
   const legal = raw.match(/^(\s*제\s*\d{1,3}\s*조(?:의\s*\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?\s+)(\S[\s\S]*)$/u);
+  // `4. 지원 동기 및 포부 [부제] 본문`처럼 번호·복합 제목·대괄호
+  // 부제가 한 행에 붙은 입력은 제목 전체를 하나의 접두부로 잠근다.
+  // 번호만 잠그면 모델이 `지원 동기 / 및 포부`처럼 명사구를 분절할 수 있다.
+  const numberedInlineHeading = legal
+    ? null
+    : raw.match(/^(\s*\d{1,2}[.)]\s+[^.!?。！？\n]{2,100}?\s+\[[^\]\n]{2,140}\]\s+)(\S[\s\S]*)$/u);
   const blockquote = legal || options.editableBlockquoteWrapper !== true
     ? null
     : raw.match(/^(\s*>\s?)(\S[\s\S]*)$/u);
   // 마크다운 목록의 굵은 라벨까지 하나의 접두부로 잠근다. `* `만
   // 잠그면 모델이 `**전략:**`의 별표나 닫는 콜론을 흩뜨려 목록 기호가
   // 독립 행으로 남을 수 있다. 라벨 뒤 본문은 계속 편집 가능하다.
-  const markdownLabelBullet = legal || blockquote
+  const markdownLabelBullet = legal || numberedInlineHeading || blockquote
     ? null
     : raw.match(/^(\s*[-*+]\s+(?:\*\*|__)[^*\n_]{1,120}(?::|：)(?:\*\*|__)\s*)(\S[\s\S]*)$/u);
-  const bullet = legal || blockquote || markdownLabelBullet
+  const bullet = legal || numberedInlineHeading || blockquote || markdownLabelBullet
     ? null
     : raw.match(
       /^(\s*(?:(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
     );
-  const bracketLabel = legal || blockquote || markdownLabelBullet || bullet
+  const bracketLabel = legal || numberedInlineHeading || blockquote || markdownLabelBullet || bullet
     ? null
     : raw.match(/^(\s*\[(?=[^\]\n]{0,79}[가-힣A-Za-z])[^\]\n]{1,80}\]\s*)(\S[\s\S]*)$/u);
-  const label = legal || blockquote || markdownLabelBullet || bullet || bracketLabel
+  const label = legal || numberedInlineHeading || blockquote || markdownLabelBullet || bullet || bracketLabel
     ? null
     : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
-  const match = legal || blockquote || markdownLabelBullet || bullet || bracketLabel || label;
+  const match = legal || numberedInlineHeading || blockquote || markdownLabelBullet || bullet || bracketLabel || label;
   if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
   const prefix = match[1];
   const body = match[2];
@@ -1386,9 +1395,11 @@ function splitEditablePrefixPiece(piece, options = {}) {
       end: start + prefix.length,
       forceLockType: legal
         ? 'legal_clause_prefix'
-        : (blockquote
-            ? 'blockquote_prefix'
-            : ((markdownLabelBullet || bullet) ? 'bullet_prefix' : 'label_prefix')),
+        : (numberedInlineHeading
+            ? 'heading_prefix'
+            : (blockquote
+                ? 'blockquote_prefix'
+                : ((markdownLabelBullet || bullet) ? 'bullet_prefix' : 'label_prefix'))),
       forceSectionLabel: legal ? prefix.trim() : ''
     },
     {

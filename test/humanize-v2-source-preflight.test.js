@@ -61,7 +61,7 @@ test('본문 끝에 붙은 재작성 요청은 제거하되 본문 속 인용 �
     '이런 내용으로 인간처럼 다시 써줘'
   ].join('\n');
   const result = preflight.auditAndSanitizeSource(source);
-  assert.equal(result.version, 11);
+  assert.equal(result.version, 12);
   assert.equal(result.changed, true);
   assert.equal(result.text, '디지털 격차의 원인과 정책 대안을 비교했다.');
   assert.ok(result.issueCodes.includes('source_rewrite_request_artifact'));

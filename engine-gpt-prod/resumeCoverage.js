@@ -7,8 +7,8 @@ const {
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 4;
-const MIN_CONTENT_RECALL = 0.55;
+const VERSION = 5;
+const MIN_CONTENT_RECALL = 0.50;
 const MIN_SEMANTIC_FALLBACK = 0.62;
 const CLAIM_PATTERNS = Object.freeze({
   action: /(?:수행|담당|개발|분석|설계|운영|개선|협업|해결|참여|작성|구축|기획|관리|제작|조사|발표|주도|실행|근무|프로젝트)/u,
@@ -60,28 +60,20 @@ function auditResumeCoverage(source, output, documentProfile = null) {
 
 function compareClaim(claim, sourceCount, outputSentences) {
   if (!outputSentences.length) return row(claim, -1, 0, 0, false);
-  const candidates = alignedOutputCandidates(
+  const localCandidates = alignedOutputCandidates(
     claim.sentence,
     claim.index,
     sourceCount,
     outputSentences,
-    { window: 3, maxOutputGroup: 2 }
+    { window: 3, maxOutputGroup: 3 }
   );
-  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0 };
-  for (const candidate of candidates) {
-    const candidateTokens = new Set(contentTokens(candidate.text));
-    const recall = claim.tokens.filter(token => candidateTokens.has(token)).length / Math.max(1, claim.tokens.length);
-    const sourceNorm = normalize(claim.sentence);
-    const outputNorm = normalize(candidate.text);
-    const similarity = 1 - (levenshteinDistance(sourceNorm, outputNorm) / Math.max(1, sourceNorm.length, outputNorm.length));
-    const semanticSimilarity = sentenceSimilarity(claim.sentence, candidate.text);
-    if (recall > best.recall
-        || (recall === best.recall && semanticSimilarity > best.semanticSimilarity)
-        || (recall === best.recall
-          && semanticSimilarity === best.semanticSimilarity
-          && similarity > best.similarity)) {
-      best = { index: candidate.start, recall, similarity, semanticSimilarity };
-    }
+  let best = bestCandidate(claim, localCandidates);
+  // 문단 재배치나 제목 인식 변화로 위치 정렬만 흔들린 경우, 실제로 남아
+  // 있는 주장을 누락으로 오인하지 않도록 문서 전체에서 한 번 더 찾는다.
+  // 연속 세 문장까지만 묶고 내용어 회수율과 의미 유사도를 함께 요구한다.
+  if (!candidateCovered(best)) {
+    const globalBest = bestCandidate(claim, globalOutputCandidates(outputSentences, 3));
+    if (isBetterCandidate(globalBest, best)) best = globalBest;
   }
   const aligned = best.recall >= 0.2
     || best.similarity >= 0.45
@@ -95,11 +87,51 @@ function compareClaim(claim, sourceCount, outputSentences) {
   );
 }
 
+function bestCandidate(claim, candidates) {
+  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0 };
+  for (const candidate of candidates) {
+    const candidateTokens = new Set(contentTokens(candidate.text));
+    const recall = claim.tokens.filter(token => candidateTokens.has(token)).length / Math.max(1, claim.tokens.length);
+    const sourceNorm = normalize(claim.sentence);
+    const outputNorm = normalize(candidate.text);
+    const similarity = 1 - (levenshteinDistance(sourceNorm, outputNorm) / Math.max(1, sourceNorm.length, outputNorm.length));
+    const semanticSimilarity = sentenceSimilarity(claim.sentence, candidate.text);
+    const current = { index: candidate.start, recall, similarity, semanticSimilarity };
+    if (isBetterCandidate(current, best)) best = current;
+  }
+  return best;
+}
+
+function isBetterCandidate(candidate, current) {
+  return candidate.recall > current.recall
+    || (candidate.recall === current.recall && candidate.semanticSimilarity > current.semanticSimilarity)
+    || (candidate.recall === current.recall
+      && candidate.semanticSimilarity === current.semanticSimilarity
+      && candidate.similarity > current.similarity);
+}
+
+function globalOutputCandidates(sentences, maxGroup = 3) {
+  const rows = [];
+  for (let start = 0; start < sentences.length; start += 1) {
+    for (let size = 1; size <= maxGroup && start + size <= sentences.length; size += 1) {
+      rows.push({
+        start,
+        end: start + size - 1,
+        text: sentences.slice(start, start + size).join(' ')
+      });
+    }
+  }
+  return rows;
+}
+
+function candidateCovered(candidate) {
+  return candidate.recall >= 0.55
+    || (candidate.recall >= MIN_CONTENT_RECALL && candidate.semanticSimilarity >= 0.40)
+    || (candidate.recall >= 0.42 && candidate.semanticSimilarity >= MIN_SEMANTIC_FALLBACK);
+}
+
 function row(claim, outputIndex, recall, semanticSimilarity, aligned) {
-  const covered = aligned && (
-    recall >= MIN_CONTENT_RECALL
-    || (recall >= 0.42 && semanticSimilarity >= MIN_SEMANTIC_FALLBACK)
-  );
+  const covered = aligned && candidateCovered({ recall, semanticSimilarity });
   return {
     sourceIndex: claim.index,
     outputIndex,
@@ -134,12 +166,18 @@ function meaningfulSentences(value) {
         'signature'
       ].includes(record.role)) return [];
       if (record.role === 'label_inline') {
-        const body = layoutStructure.labelParts(record.text)?.rest || '';
+        const body = layoutStructure.bracketLabelParts(record.text)?.rest
+          || layoutStructure.labelParts(record.text)?.rest
+          || '';
         return body ? [body] : [];
       }
       if (record.role === 'list') {
-        const body = String(record.text || '').replace(
+        const listBody = String(record.text || '').replace(
           /^(?:(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈]))/u,
+          ''
+        );
+        const body = listBody.replace(
+          /^[^.!?。！？\n]{2,100}?\s+\[[^\]\n]{2,140}\]\s+(?=\S)/u,
           ''
         );
         return body ? [body] : [];

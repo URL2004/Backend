@@ -3,7 +3,7 @@
 const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
 
-const VERSION = 11;
+const VERSION = 12;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -75,6 +75,23 @@ const REMOVABLE_LINE_RULES = Object.freeze([
     boundaryOnly: true,
     pattern: /^(?:(?:이|위|앞의|해당)\s*)?(?:내용|글|문장)(?:을|를)?\s*(?:조금\s*)?(?:보완|수정|정리|각색|재구성|확장)(?:해서|하여|한\s*뒤)?\s*(?:자연스럽게\s*)?(?:써\s*줘|써\s*주세요|작성해\s*줘|작성해\s*주세요|다듬어\s*줘|다듬어\s*주세요)(?:[.!?。！？~]+\s*(?:(?:이건|이\s*글은|이\s*내용은)\s*)?(?:보고서|논문|자소서|자기소개서|과제|발표문|블로그|게시물|원고)(?:에|로)\s*(?:들어갈|쓸|사용할|제출할)\s*(?:내용|글|거|것)?(?:이야|입니다|이에요|거야|것입니다)?[.!?。！？~]*)?$/iu,
     message: '본문 끝에 함께 붙은 보완·작성 요청 문구를 변환 대상에서 제외했어요.'
+  },
+  {
+    code: 'source_generation_meta_artifact',
+    boundaryOnly: true,
+    pattern: /^글자\s*수\s*기준[^\n]{0,180}(?:완성본|최종본)(?:입니다|이에요|이다)?[.!?。！？]*$/u,
+    message: '본문 앞에 붙은 생성 결과 안내 문구를 변환 대상에서 제외했어요.'
+  },
+  {
+    code: 'source_generation_meta_artifact',
+    boundaryOnly: true,
+    pattern: /^(?:AI|인공지능)\s*(?:검사기|탐지기|판별기)[^\n]{0,220}(?:예측|감지|탐지|판별|회피|우회)[^\n]*[.!?。！？]*$/iu,
+    message: '본문 앞에 붙은 AI 검사 회피 설명을 변환 대상에서 제외했어요.'
+  },
+  {
+    code: 'source_generation_meta_artifact',
+    pattern: /^#{1,6}\s*[^\n]{0,80}(?:완벽\s*)?(?:AI\s*)?(?:회피|우회)용?[^\n]{0,80}(?:최종\s*)?(?:제출본|완성본)\s*(?:[\]】>])?\s*$/iu,
+    message: '본문이 아닌 생성 결과용 마크다운 제목을 변환 대상에서 제외했어요.'
   },
   {
     code: 'source_markdown_artifact',

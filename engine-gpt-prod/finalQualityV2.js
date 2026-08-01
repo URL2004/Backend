@@ -1251,7 +1251,7 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'directional_growth_collocation') return '태도·역량의 변화 내용을 유지하면서 “~쪽으로 성장했다” 대신 장르에 맞는 정확한 변화 서술로 고친다.';
   if (item?.code === 'causal_predicate_stack') return '결과를 주제로 두면 “~에서 비롯됐다”로, 원인을 주제로 두면 “가장 큰 원인은 ~이다”로 한 인과 서술만 사용한다.';
   if (item?.code === 'nominal_predicate_collocation') return '분석·조사·검토는 수행하거나 그 결과를 제시하고, 추상적 지위·입지는 확립·강화·공고화하는 등 SOURCE의 개념에 맞는 서술어로 연결한다.';
-  if (item?.code === 'case_frame_corruption') return 'SOURCE의 범위 시작·끝과 목적어 조사를 유지하면서 “A에서 B에 이르는 범위·과정”처럼 서술어가 요구하는 논항을 복원한다.';
+  if (item?.code === 'case_frame_corruption') return 'SOURCE의 주제·목적어 조사와 범위 시작·끝을 유지한다. “A에서 B에 이르는 범위·과정” 또는 “A는 B가 적용된 예다”처럼 서술어가 요구하는 논항을 복원한다.';
   if (item?.code === 'meta_nominalization_injection') return '“느낀 것은 ~하는 점이었다”로 늘이지 말고 SOURCE의 직접적인 깨달음·판단 문장을 자연스럽게 유지한다.';
   if (item?.code === 'role_predicate_redundancy') return '맡다·담당하다 중 문맥에 맞는 서술어 하나만 남기고 업무 범위는 줄이거나 넓히지 않는다.';
   if (item?.code === 'analytic_object_recast') return '접수·수집된 요구사항·자료 자체를 분석 대상으로 두고, 같은 대상을 “내용”으로 다시 받아 모호하게 만들지 않는다.';

@@ -52,7 +52,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.24';
+const VERSION = 'gpt-prod-v2.5.25';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -2212,6 +2212,26 @@ async function runEngine({
     postprocessMeta.dedupe,
     finalGeneratedDedupe
   );
+  // 공백 보정과 최종 중복 제거까지 모두 끝난 고정점에서 잠긴 구조를 다시
+  // 복원한다. 앞 단계에서 제목을 복구했더라도 후처리가 제목과 본문을 다시
+  // 합치거나 복합 제목 중간을 나눌 수 있으므로 최종 감사보다 먼저 실행한다.
+  {
+    const fixedPointLockedStructure = structureChunk.restoreLockedStructureLayout({
+      source: rawSource,
+      outputText,
+      chunks
+    });
+    if (fixedPointLockedStructure.applied) outputText = fixedPointLockedStructure.text;
+    const previousLockedStructure = layoutRepair.finalLockedStructure || {};
+    layoutRepair.finalLockedStructure = {
+      applied: previousLockedStructure.applied === true || fixedPointLockedStructure.applied === true,
+      restoredCount: Number(previousLockedStructure.restoredCount || 0)
+        + Number(fixedPointLockedStructure.restoredCount || 0),
+      // 마지막 고정점의 누락 수가 최종 전달 상태를 대표한다.
+      missingCount: Number(fixedPointLockedStructure.missingCount || 0),
+      pass: fixedPointLockedStructure.pass !== false
+    };
+  }
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
     const postLayoutDepth = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     humanizationDepthStages.push(buildDepthStageSnapshot('post_layout_restore', postLayoutDepth));
@@ -2423,9 +2443,11 @@ async function runEngine({
   const effectStatus = effectStatusForNotices(effectNotices, {
     humanizationDepthReport
   });
+  const strictBlocked = result.floorReport?.status === 'blocked';
   const qualityWarnings = dedupeQualityWarnings([
         ...(deliveryAudit?.warnings || []).filter(item => !isEffectObservationCode(item?.code)),
         ...semanticQualityWarnings.filter(item => !isEffectObservationCode(item?.code)),
+        ...(delivery.reasonCodes || []).map(deliveryReasonQualityWarning),
         ...(experienceCandidateAudit?.candidate && semanticReport?.uncertain
           ? [{ code: 'experience_novelty', severity: 'warning', message: '새 개인 경험으로 보이는 변화의 의미 심사가 불확실해 원문 대조가 필요해요.' }]
           : []),
@@ -2454,8 +2476,16 @@ async function runEngine({
           : []),
         ...(koreanRefinementAudit?.residualWarnings || [])
       ]);
-  const strictBlocked = result.floorReport?.status === 'blocked';
-  const qualityStatus = qualityWarnings.length || result.floorReport?.status === 'needs_review' ? 'needs_review' : 'clean';
+  // 내부 floor가 검토 필요인데 사용자 경고가 비어 있으면 상태와 설명이
+  // 불일치한다. 원인 코드가 새로 추가돼도 빈 `needs_review`를 내보내지 않는다.
+  if (!strictBlocked && result.floorReport?.status === 'needs_review' && !qualityWarnings.length) {
+    qualityWarnings.push({
+      code: 'quality_review_required',
+      severity: 'warning',
+      message: '원문 보존 감사에서 확인이 필요한 항목이 남아 있어 결과를 직접 대조해 주세요.'
+    });
+  }
+  const qualityStatus = qualityWarnings.length ? 'needs_review' : 'clean';
   if (!strictBlocked && qualityStatus === 'needs_review' && result.floorReport?.status === 'clean') result.floorReport.status = 'needs_review';
   const finalDelivery = deliveryPolicy.reconcileFinalDelivery({
     blocked: strictBlocked,
@@ -5338,6 +5368,28 @@ function isEffectObservationCode(code) {
   return EFFECT_OBSERVATION_CODES.has(String(code || ''));
 }
 
+function deliveryReasonQualityWarning(value) {
+  const code = String(value || '').trim();
+  if (!REVIEW_WARNING_GATES.has(code)) return null;
+  const messages = {
+    section_anchor_loss: '원문의 절 제목이나 구획 표식 일부가 결과에서 달라졌을 수 있어요.',
+    length_collapse: '원문 내용 일부가 과도하게 축약됐을 수 있어요.',
+    protected_term_loss: '보존해야 할 핵심 용어나 고유 표기 일부가 달라졌을 수 있어요.',
+    structure_lock_loss: '동결한 구조 일부가 결과에서 달라졌을 수 있어요.',
+    structure_lock_order: '제목·표·목록 등 잠긴 구조의 순서가 달라졌을 수 있어요.',
+    questionnaire_structure_changed: '질문 번호나 질문·답변 경계가 달라졌을 수 있어요.',
+    unsafe_chunk_boundary: '청크 경계에서 문장이나 구조가 이어지는 방식이 달라졌을 수 있어요.',
+    section_path_mismatch: '일부 본문이 원문과 다른 절에 배치됐을 수 있어요.',
+    register_shift: '원문에 없던 문체나 격식 수준이 일부 섞였을 수 있어요.',
+    number_multiset_changed: '원문의 수치 일부가 결과에서 달라졌을 수 있어요.'
+  };
+  return {
+    code,
+    severity: 'warning',
+    message: messages[code] || '원문 보존 기준에서 확인이 필요한 항목이 남아 있어요.'
+  };
+}
+
 function effectStatusForNotices(notices, { humanizationDepthReport = null } = {}) {
   const codes = new Set((notices || []).map(item => String(item?.code || '')).filter(Boolean));
   if (codes.has('humanization_depth_below_minimum')
@@ -5361,6 +5413,8 @@ function effectStatusForNotices(notices, { humanizationDepthReport = null } = {}
     && changedSentenceStrong;
   const softDepthCodes = new Set([
     'humanization_depth_below_target',
+    'humanization_structure_depth_below_target',
+    'humanization_paragraph_coverage_below_target',
     'rhetorical_remediation_incomplete',
     'duplicate_conclusion',
     'repeated_reflection_conclusion',
@@ -5391,7 +5445,7 @@ function depthQualityWarnings(report) {
       message: '원문과 실질적으로 같은 일반 문장이 권장 상한보다 많이 남아 있어요.'
     });
   }
-  if (reasons.has('rhetorical_remediation_low')) {
+  if (reasons.has('rhetorical_remediation_low') || reasons.has('source_semantic_redundancy_low')) {
     warnings.push({
       code: 'rhetorical_remediation_incomplete',
       severity: 'warning',
@@ -5409,7 +5463,6 @@ function depthQualityWarnings(report) {
     'substantive_edit_ratio_low',
     'substantive_sentence_coverage_low',
     'risk_target_coverage_low',
-    'structural_rewrite_coverage_low',
     'punctuation_or_surface_only'
   ].some(code => reasons.has(code))) {
     const minimumEffectFailed = report?.minimumEffectPass === false;
@@ -5421,6 +5474,20 @@ function depthQualityWarnings(report) {
       message: minimumEffectFailed
         ? '실질 변화가 안전 최소선보다 약하게 나왔어요. 결과를 확인해 주세요.'
         : '원문 보존을 우선해 권장 목표 강도보다 약하게 변환됐어요. 결과를 확인해 주세요.'
+    });
+  }
+  if (reasons.has('structural_rewrite_coverage_low')) {
+    warnings.push({
+      code: 'humanization_structure_depth_below_target',
+      severity: 'warning',
+      message: '실질 편집량은 확보됐지만 절 구성·어순 변화가 권장 목표보다 적어요.'
+    });
+  }
+  if (reasons.has('paragraph_rewrite_coverage_low')) {
+    warnings.push({
+      code: 'humanization_paragraph_coverage_below_target',
+      severity: 'warning',
+      message: '실질 편집량은 확보됐지만 일부 일반 문단의 재구성 범위가 권장 목표보다 적어요.'
     });
   }
   const minimumEffectFailed = report?.minimumEffectPass === false;

@@ -1231,7 +1231,7 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'overloaded_research_action_chain') return '원인 분석·조건 조정·반복 실험·재현성 검증의 순서는 유지하고, 필요하면 두 문장으로 나눈다.';
   if (item?.code === 'academic_purpose_chain_overloaded') return '연구 목적, 핵심 단서·변수, 작동 과정, 검증 조건을 논리 역할별 두세 문장으로 나눈다. 따옴표 속 구성개념과 Fit·Cue 같은 표기, 인과 방향, 평가 강도는 그대로 두고 “해소 과정”을 임의로 “해석 과정” 같은 다른 개념으로 바꾸지 않는다.';
   if (item?.code === 'formal_register_residual') {
-    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다. 학술문의 “뜬금없는 결합”은 원문이 뜻하는 예상 밖·비전형적 관계 범위 안에서만 중립화하고, “폭발적인 반응”은 반응 강도를 낮추지 않는 공식 표현으로 고친다. 이론 구성개념은 추정해 이름을 바꾸지 않는다. “시험해 보니”는 “시험·검증한 결과”로, “함께 놓고 비교”는 “비교 검토”처럼 원문 격식에 맞춘다. 지원서의 디딤돌·든든한 동행자·따뜻한 조력자 같은 장식적 결론은 SOURCE에 있는 실제 행동 계획으로만 정리한다.';
+    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다. 학술문의 “뜬금없는 결합”은 원문이 뜻하는 예상 밖·비전형적 관계 범위 안에서만 중립화하고, “폭발적인 반응”은 반응 강도를 낮추지 않는 공식 표현으로 고친다. 학술문의 “확대됐다·확인됐다” 같은 축약형은 “확대되었다·확인되었다”로 맞춘다. 이론 구성개념은 추정해 이름을 바꾸지 않는다. “시험해 보니”는 “시험·검증한 결과”로, “함께 놓고 비교”는 “비교 검토”처럼 원문 격식에 맞춘다. 지원서의 디딤돌·든든한 동행자·따뜻한 조력자 같은 장식적 결론은 SOURCE에 있는 실제 행동 계획으로만 정리한다.';
   }
   if (item?.code === 'role_definition_inversion') return '기관이 역할이라고 쓰지 말고, SOURCE의 기관·직무가 어떤 역할을 하는지 주어와 보어 관계를 복원한다.';
   if (item?.code === 'purpose_modifier_collocation') return '정책·제도가 지향하는 목적이면 “~을 만들기 위한 정책·제도”처럼 목적 관계를 분명히 한다.';
@@ -1257,6 +1257,20 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'analytic_object_recast') return '접수·수집된 요구사항·자료 자체를 분석 대상으로 두고, 같은 대상을 “내용”으로 다시 받아 모호하게 만들지 않는다.';
   if (item?.code === 'borrowed_standard_case_frame') return '“기준을 가져와 평가하다”로 쓰지 말고 SOURCE의 평가 주체와 대상을 유지한 채 “그 기준으로 평가하다”처럼 조사와 서술어의 논항을 바로잡는다.';
   if (item?.code === 'goal_direction_reference_mismatch') return '앞에서 정한 것이 목표라면 “그 목표를 향해”, 방향이라면 “그 방향으로”처럼 같은 지시 대상을 유지한다.';
+  if (item?.code === 'priority_first_redundancy') return 'SOURCE의 우선순위 판단은 유지하고 “우선순위를 먼저”의 겹친 순서 표현만 하나로 줄인다.';
+  if (item?.code === 'hands_feet_speed_collocation') return 'SOURCE의 민첩함은 유지하되 “손과 발이 빠르다”를 장르에 맞는 “손발이 빠르다” 또는 정확한 행동 표현으로 고친다.';
+  if (item?.code === 'technical_circuit_action_collocation') return '실제 담당 범위를 추정해 넓히지 않는다. SOURCE가 회로 설계를 뜻하면 “회로를 설계”, 도면 산출물 작성을 뜻하면 “회로도를 작성”으로 구분하고, 불확실하면 주변 문맥의 원래 행위 범위를 유지한다.';
+  if (item?.code === 'role_allocation_collocation') return '과업을 맡을 역할이라고 쓰지 말고 SOURCE의 과업 목록과 담당 주체를 유지해 “과업별로 역할을 나누다”처럼 관계를 바로잡는다.';
+  if (item?.code === 'trust_entrust_subject_collocation') return '누가 무엇을 맡기는지 추정하지 않는다. SOURCE가 신뢰 관계를 말하면 원래 주체를 복원하고, 아이가 의지할 대상을 뜻한 경우에만 “믿고 의지할 수 있는”으로 고친다.';
+  if (item?.code === 'academic_scope_collocation') return 'SOURCE의 “연구 영역”과 “적용 환경을 일부 공유한다”는 범위·조사 관계를 복원하고 새 범위를 만들지 않는다.';
+  if (item?.code === 'domain_stay_collocation') return '질환·현상이 스스로 연구에 머문다고 쓰지 말고 SOURCE의 “연구가 해당 대상에 한정되다”라는 주체와 범위를 복원한다.';
+  if (item?.code === 'exceptional_noteworthy_redundancy') return '예외적이라는 판단과 주목할 근거를 한 번만 표현하되 SOURCE의 평가 강도는 낮추지 않는다.';
+  if (item?.code === 'ambiguous_research_result_reference') return '문장을 나눈 뒤 생긴 “연구 결과”가 본 연구인지 인용 연구인지 SOURCE에 맞게 명시한다. 저자나 연구 주체를 새로 만들지 않는다.';
+  if (item?.code === 'dangling_inference_predicate') return '“~을 시사한다”의 주체를 SOURCE에서 복원한다. 새 결론을 만들지 말고 필요하면 앞 문장과 다시 연결한다.';
+  if (item?.code === 'completion_scope_strengthening') return 'SOURCE의 단순한 “작업 후”를 작업 전체 완료로 강화하지 말고 원래 단계 범위를 복원한다.';
+  if (item?.code === 'analysis_stage_weakened') return 'SOURCE에서 실제로 분석을 수행했다면 “분석 대상으로 삼았다”로 약화하지 말고 분석 행위를 복원한다.';
+  if (item?.code === 'causal_connector_strengthening') return 'SOURCE의 시간·맥락 연결인 “이때”를 인과 결론인 “따라서”로 바꾸지 말고 논리 강도를 복원한다.';
+  if (item?.code === 'sequential_connector_inflation') return '새로 반복된 “뒤·후·다음”을 줄이고 같은 업무 묶음은 자연스럽게 연결한다. 실제 수행 순서는 그대로 유지한다.';
   if (item?.code === 'affective_anchor_omission') {
     const omissions = Array.isArray(item?.details?.omissions) ? item.details.omissions : [];
     const anchors = omissions.slice(0, 6).map(value => `${value.sourceOrdinal}번=${value.sourceSentence}`);

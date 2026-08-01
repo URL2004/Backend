@@ -345,8 +345,19 @@ function sentenceDistributionShift(sourceSentence, currentSentence, { toleranceM
   const cvTolerance = Math.max(shortSequence ? 0.004 : 0.015, (Number(before.cv) || 0) * (shortSequence ? 0.025 : 0.08)) * multiplier;
   const spreadFloor = shortSequence ? 0.25 : 0.45;
   const spreadTolerance = Math.max(shortSequence ? 0.02 : 0.06, beforeSpread * (shortSequence ? 0.04 : 0.1)) * multiplier;
-  const shift = ((Number(before.cv) || 0) >= cvFloor && cvLoss > cvTolerance)
-    || (beforeSpread >= spreadFloor && spreadLoss > spreadTolerance);
+  const beforeCv = Number(before.cv) || 0;
+  const afterCv = Number(after.cv) || 0;
+  const cvRetention = beforeCv > 0 ? afterCv / beforeCv : 1;
+  const spreadRetention = beforeSpread > 0 ? afterSpread / beforeSpread : 1;
+  // 문장 경계가 그대로이거나 일부만 자연스럽게 나뉜 결과에서도 CV가
+  // 0.01~0.05 줄 수 있다. 결과 자체가 여전히 충분히 불균일하고 원문
+  // 분포의 72% 이상을 남긴 경우까지 “평탄화”로 올리면 정상 경력서가
+  // needs_review가 된다. 절대 변화량뿐 아니라 실제로 낮은 분포 또는 큰
+  // 상대 손실이 함께 확인될 때만 경고한다.
+  const cvMateriallyFlattened = afterCv < 0.28 || cvRetention < 0.72;
+  const spreadMateriallyFlattened = afterSpread < 0.8 || spreadRetention < 0.72;
+  const shift = (beforeCv >= cvFloor && cvLoss > cvTolerance && cvMateriallyFlattened)
+    || (beforeSpread >= spreadFloor && spreadLoss > spreadTolerance && spreadMateriallyFlattened);
   return {
     shift,
     cvLoss,

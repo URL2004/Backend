@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 18;
+const VERSION = 20;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -105,6 +105,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: false,
     deterministicSafe: false,
     message: '시험 펌웨어나 신고 연동의 실제 구현 범위가 문장만으로 불분명한 부분이 있어요.'
+  },
+  technical_circuit_action_collocation: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: false,
+    message: '회로 자체를 “작성하다”로 서술해 회로 설계와 회로도 작성의 담당 범위가 모호해요.'
   },
   frequency_quantifier_conflict: {
     weight: 3,
@@ -453,6 +459,84 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: false,
     deterministicSafe: false,
     message: '목록 기호 뒤 띄어쓰기를 확인해 주세요.'
+  },
+  priority_first_redundancy: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: true,
+    message: '“우선순위를 먼저”처럼 순서 의미가 겹쳐 있어요.'
+  },
+  hands_feet_speed_collocation: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '민첩함을 나타내는 “손발이 빠르다”가 부자연스럽게 분리됐어요.'
+  },
+  role_allocation_collocation: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '업무를 “맡을 역할을 나누다”로 연결해 역할과 과업의 관계가 어색해요.'
+  },
+  trust_entrust_subject_collocation: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '사람을 “믿고 맡기다”의 대상으로 둬 누가 무엇을 맡기는지 관계가 모호해졌어요.'
+  },
+  academic_scope_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '연구 범위·환경의 부분 관계가 부자연스러운 조사 결합으로 바뀌었어요.'
+  },
+  domain_stay_collocation: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '연구 대상이 스스로 특정 연구에 “머문다”는 식으로 주어와 범위 관계가 어색해요.'
+  },
+  exceptional_noteworthy_redundancy: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: false,
+    message: '예외성과 주목성을 한 서술어에 겹쳐 학술 문장이 불필요하게 무거워졌어요.'
+  },
+  ambiguous_research_result_reference: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '문장을 나눈 뒤 “연구 결과”가 본 연구인지 인용 연구인지 모호해졌어요.'
+  },
+  dangling_inference_predicate: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '문장 분리 뒤 무엇이 해당 결론을 시사하는지 주체가 사라졌어요.'
+  },
+  completion_scope_strengthening: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '단순한 작업 이후를 작업 전체가 완료된 이후로 바꿔 수행 범위를 강화했어요.'
+  },
+  analysis_stage_weakened: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '실제로 분석했다는 원문을 분석 대상으로 삼았다는 준비 단계로 약화했어요.'
+  },
+  causal_connector_strengthening: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '시간·맥락 연결을 인과 결론 접속어로 바꿔 논리 강도를 높였어요.'
+  },
+  sequential_connector_inflation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“뒤·후·다음”을 새로 반복해 업무 과정이 기계적인 순서 나열처럼 바뀌었어요.'
   }
 });
 
@@ -1032,6 +1116,7 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   if (reduplicativeRootLoss) outputIssues.push(reduplicativeRootLoss);
   const affectiveAnchorOmission = detectAffectiveAnchorOmission(source, outputText, profile);
   if (affectiveAnchorOmission) outputIssues.push(affectiveAnchorOmission);
+  outputIssues.push(...detectIntroducedCrossSentenceIssues(source, outputText, profile));
   const rows = mergeIssueComparison(sourceIssues, outputIssues);
   const repairableIssues = rows.filter(item => item.afterCount > 0 && item.repairable);
   const residualWarnings = rows
@@ -1057,6 +1142,123 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
     residualWarnings,
     sourceReviewWarnings: buildSourceReviewWarnings(sourceIssues)
   };
+}
+
+// 단일 결과 문장만 보면 성립해 보이지만, 원문과 정렬해 보면 단계·논리
+// 강도 또는 문장 분리의 지시 대상이 바뀐 결함을 잡는다. 이 감사는 원문
+// 자체의 표현을 교정하지 않고 변환이 새로 만든 변화만 수리 대상으로 낸다.
+function detectIntroducedCrossSentenceIssues(source, outputText, profile = 'unknown') {
+  const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const outputSentences = splitSentences(String(outputText || '')).map(value => String(value || '').trim()).filter(Boolean);
+  if (!sourceSentences.length || !outputSentences.length) return [];
+  const ordinalsByCode = new Map();
+  const add = (code, ordinals) => {
+    if (!ordinalsByCode.has(code)) ordinalsByCode.set(code, new Set());
+    for (const ordinal of ordinals || []) {
+      if (Number.isInteger(ordinal) && ordinal > 0) ordinalsByCode.get(code).add(ordinal);
+    }
+  };
+
+  sourceSentences.forEach((sourceSentence, sourceIndex) => {
+    const best = alignedOutputCandidates(
+      sourceSentence,
+      sourceIndex,
+      sourceSentences.length,
+      outputSentences,
+      { window: 3, maxOutputGroup: 3 }
+    )[0];
+    if (!best || Number(best.score || 0) < 0.34) return;
+    const candidate = String(best.text || '');
+    const candidateOrdinals = Array.from(
+      { length: Math.max(1, Number(best.end || 0) - Number(best.start || 0)) },
+      (_value, offset) => Number(best.start || 0) + offset + 1
+    );
+    const matchingCandidateOrdinals = predicate => {
+      const rows = best.sentences || [candidate];
+      const matched = rows
+        .map((sentence, offset) => ({
+          sentence: String(sentence || ''),
+          ordinal: Number(best.start || 0) + offset + 1
+        }))
+        .filter(item => predicate(item.sentence))
+        .map(item => item.ordinal);
+      return matched.length ? matched : candidateOrdinals;
+    };
+
+    const completionNouns = ['설계', '검토', '시험', '분석', '작성', '구현', '개발'];
+    for (const noun of completionNouns) {
+      const sourceAfter = new RegExp(`${noun}\\s*(?:을|를)?\\s*(?:한\\s*)?후`, 'u');
+      const outputCompleted = new RegExp(`${noun}(?:이|가)?\\s*완료된\\s*(?:뒤|후)`, 'u');
+      if (sourceAfter.test(sourceSentence)
+          && !new RegExp(`${noun}(?:이|가)?\\s*완료`, 'u').test(sourceSentence)
+          && outputCompleted.test(candidate)) {
+        add(
+          'completion_scope_strengthening',
+          matchingCandidateOrdinals(sentence => outputCompleted.test(sentence))
+        );
+        break;
+      }
+    }
+    if (/분석(?:하였|했|하였다|했다)/u.test(sourceSentence)
+        && !/분석\s*대상(?:으로|에)\s*(?:삼|선정)/u.test(sourceSentence)
+        && /분석\s*대상(?:으로|에)\s*(?:삼|선정)/u.test(candidate)) {
+      add(
+        'analysis_stage_weakened',
+        matchingCandidateOrdinals(sentence => /분석\s*대상(?:으로|에)\s*(?:삼|선정)/u.test(sentence))
+      );
+    }
+    if (/(?:^|[.!?。！？]\s*)이때(?=$|[\s,])/u.test(sourceSentence)
+        && !/(?:^|[.!?。！？]\s*)따라서(?=$|[\s,])/u.test(sourceSentence)
+        && /(?:^|[.!?。！？]\s*)따라서(?=$|[\s,])/u.test(candidate)) {
+      add(
+        'causal_connector_strengthening',
+        matchingCandidateOrdinals(sentence => /(?:^|[.!?。！？]\s*)따라서(?=$|[\s,])/u.test(sentence))
+      );
+    }
+
+    if (['academic_paper', 'report_assignment', 'long_explainer'].includes(profile)) {
+      (best.sentences || [candidate]).forEach((sentence, offset) => {
+        const clean = String(sentence || '').trim();
+        const ordinal = Number(best.start || 0) + offset + 1;
+        const hasInferenceSubject = /(?:이는|이\s*결과(?:는|가)?|이러한\s*결과(?:는|가)?|분석\s*결과(?:는|가)?|연구\s*결과(?:는|가)?|본\s*연구(?:는|가)?)[^.!?。！？]{0,190}시사/u.test(clean);
+        const danglingInference = !hasInferenceSubject
+          && /^(?:전체적으로\s*)?[^.!?。！？]{0,170}(?:해야\s*한다|필요하다|중요하다|가능하다)[^.!?。！？]{0,55}점(?:을|도)\s*시사한다[.!?。！？]?$/u.test(clean);
+        if (danglingInference
+            && /(?:이는|따라서|이\s*결과|본\s*연구)[^.!?。！？]{0,220}시사/u.test(sourceSentence)) {
+          add('dangling_inference_predicate', [ordinal]);
+        }
+      });
+    }
+  });
+
+  const sourceSequence = sequentialConnectorOccurrences(source);
+  const outputSequence = sequentialConnectorOccurrences(outputText);
+  const introducedSequenceCount = Math.max(0, outputSequence.count - sourceSequence.count);
+  if (outputSequence.count >= 3 && introducedSequenceCount >= 2) {
+    add('sequential_connector_inflation', outputSequence.ordinals);
+  }
+
+  return [...ordinalsByCode.entries()].map(([code, ordinals]) => {
+    const rows = [...ordinals].sort((left, right) => left - right);
+    const count = code === 'sequential_connector_inflation'
+      ? introducedSequenceCount
+      : rows.length;
+    return makeIssue(code, count, rows);
+  });
+}
+
+function sequentialConnectorOccurrences(value) {
+  const sentences = splitSentences(String(value || '')).map(item => String(item || '').trim()).filter(Boolean);
+  const ordinals = [];
+  let count = 0;
+  const pattern = /(?:^|[\s,])(?:그\s*다음|다음으로|이후|그\s*뒤|[가-힣A-Za-z0-9·/-]{1,24}(?:한|된|친|운|은)\s*(?:뒤|후))(?=$|[\s,])/gu;
+  sentences.forEach((sentence, index) => {
+    const matches = stripProtectedQuotedText(sentence).match(pattern) || [];
+    if (!matches.length) return;
+    count += matches.length;
+    ordinals.push(index + 1);
+  });
+  return { count, ordinals };
 }
 
 function detectTextIssues(value, { profile = 'unknown', targetRegister = '', includeSourceNotation = false } = {}) {
@@ -1148,6 +1350,55 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
     sentence => /(?:경험|배움|학습|기회)(?:과|와|이나|나)\s*(?:경험|배움|학습|기회)(?:을|를)\s+두려워하지/u
       .test(stripProtectedQuotedText(sentence))
   );
+  pushSentenceIssue(issues, text, 'priority_first_redundancy', sentence => /우선순위(?:를|는|가)?\s+먼저\s+(?:판단|정하|결정|고려)/u.test(stripProtectedQuotedText(sentence)));
+  pushSentenceIssue(issues, text, 'hands_feet_speed_collocation', sentence => /손과\s*발이(?=\s*빠)/u.test(stripProtectedQuotedText(sentence)));
+  pushSentenceIssue(
+    issues,
+    text,
+    'role_allocation_collocation',
+    sentence => /(?:자료|내용|발표|조사|수정|정리|제작|기록)[^.!?。！？\n]{0,90}맡을\s*역할을\s*나누/u.test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'trust_entrust_subject_collocation',
+    sentence => /(?:아이|아동|학생|청소년|이용자|환자)(?:들)?(?:이|가)\s*믿고\s*맡길\s*수\s*있는\s*(?:사람|선생님|교사|상담사|간호사)/u.test(stripProtectedQuotedText(sentence))
+  );
+  if (PROFESSIONAL_PROFILES.has(profile)) {
+    pushSentenceIssue(
+      issues,
+      text,
+      'technical_circuit_action_collocation',
+      sentence => /(?:^|[^가-힣A-Za-z0-9_])(?:[A-Za-z0-9·/-]+\s*)?(?:모듈|전원|제어|신호|RF)?\s*회로(?:를|을)\s*작성(?:하|했|해|하여|하고|한|합니다|했습니다)/u
+        .test(stripProtectedQuotedText(sentence))
+    );
+  }
+  if (['academic_paper', 'report_assignment', 'long_explainer'].includes(profile)) {
+    pushSentenceIssue(
+      issues,
+      text,
+      'academic_scope_collocation',
+      sentence => /(?:연구\s*안에서\s*차지하는\s*역할|환경의\s*일부를\s*공유)/u.test(stripProtectedQuotedText(sentence))
+    );
+    pushSentenceIssue(
+      issues,
+      text,
+      'domain_stay_collocation',
+      sentence => /(?:질환|치매|우울증|불면증|장애|현상|개념)(?:도|은|는|이|가)[^.!?。！？\n]{0,50}(?:연구|분석|논의)에(?:만)?\s*머물/u.test(stripProtectedQuotedText(sentence))
+    );
+    pushSentenceIssue(
+      issues,
+      text,
+      'exceptional_noteworthy_redundancy',
+      sentence => /예외적(?:이|이며|이고)[^.!?。！？\n]{0,24}주목할\s*만/u.test(stripProtectedQuotedText(sentence))
+    );
+    pushSentenceIssue(
+      issues,
+      text,
+      'ambiguous_research_result_reference',
+      sentence => /^연구\s*결과(?:도|는|가|를)(?=$|\s)/u.test(stripProtectedQuotedText(sentence).trim())
+    );
+  }
   pushSentenceIssue(issues, text, 'meta_nominalization_injection', hasMetaNominalizationInjection);
   pushSentenceIssue(issues, text, 'role_predicate_redundancy', hasRolePredicateRedundancy);
   pushSentenceIssue(issues, text, 'analytic_object_recast', hasAnalyticObjectRecast);
@@ -1208,6 +1459,24 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   text = reciprocalRepair.text;
   for (let index = 0; index < reciprocalRepair.repairCount; index += 1) {
     changes.push('reciprocal_expression_redundancy');
+  }
+  if (!/우선순위(?:를|는|가)?\s+먼저\s+(?:판단|정하|결정|고려)/u.test(String(source || ''))) {
+    text = replaceOutsideProtectedQuotes(
+      text,
+      /(우선순위(?:를|는|가)?)\s+먼저\s+(?=(?:판단|정하|결정|고려))/gu,
+      '$1 ',
+      'priority_first_redundancy',
+      changes
+    );
+  }
+  if (!/손과\s*발이(?=\s*빠)/u.test(String(source || ''))) {
+    text = replaceOutsideProtectedQuotes(
+      text,
+      /손과\s*발이(?=\s*빠)/gu,
+      '손발이',
+      'hands_feet_speed_collocation',
+      changes
+    );
   }
   text = replaceAndCount(text, /([.!?。！？])(?=[가-힣])/gu, '$1 ', 'missing_sentence_space', changes);
   text = replaceAndCount(text, CLOSED_QUOTE_SPACING_RE, '$1 ', 'closed_quote_spacing', changes);
@@ -1333,12 +1602,27 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'analytic_object_recast',
   'borrowed_standard_case_frame',
   'goal_direction_reference_mismatch',
+  'contrast_clause_attachment',
   'affective_anchor_omission',
   'academic_purpose_chain_overloaded',
   'repeated_clause_anchor',
   'professional_register_downgrade',
   'formal_register_residual',
   'role_definition_inversion',
+  'priority_first_redundancy',
+  'hands_feet_speed_collocation',
+  'role_allocation_collocation',
+  'trust_entrust_subject_collocation',
+  'academic_scope_collocation',
+  'domain_stay_collocation',
+  'exceptional_noteworthy_redundancy',
+  'ambiguous_research_result_reference',
+  'dangling_inference_predicate',
+  'completion_scope_strengthening',
+  'analysis_stage_weakened',
+  'causal_connector_strengthening',
+  'sequential_connector_inflation',
+  'technical_circuit_action_collocation',
   'passive_causative_stack',
   'double_object_time_expenditure',
   'persistent_state_tense_regression',
@@ -2268,6 +2552,11 @@ const FORMAL_REGISTER_RULES = Object.freeze([
       && /뜬금없(?:는|게|도록)\s*(?:결합|조합|협업|연결|등장|배치|선택|반응)/u.test(value)
   },
   {
+    family: 'academic_contracted_doeda',
+    test: (value, _fullText, context) => isAcademicRegisterProfile(context?.profile)
+      && /됐(?:다|다고|다는|으며|지만|고|던|음을|으나|으면)/u.test(value)
+  },
+  {
     family: 'casual_self_question',
     test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
       && /(?:해서|라서)\s*그런가\s*(?:했|생각했|싶었)/u.test(value)
@@ -3000,7 +3289,10 @@ function replaceAndCount(text, pattern, replacement, code, changes) {
   return String(text || '').replace(pattern, (...args) => {
     changes.push(code);
     if (typeof replacement === 'function') return replacement(...args);
-    return replacement.replace(/\$(\d+)/gu, (_match, index) => args[Number(index) - 1] || '');
+    // String#replace 콜백의 args[0]은 전체 일치, args[1]부터 캡처 그룹이다.
+    // 기존 index-1은 `$1`을 전체 일치로 되돌려 넣어 삭제 대상 표현이 남고
+    // 공백만 늘어나는 오류를 만들었다.
+    return replacement.replace(/\$(\d+)/gu, (_match, index) => args[Number(index)] || '');
   });
 }
 

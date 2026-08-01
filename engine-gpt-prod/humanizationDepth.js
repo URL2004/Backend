@@ -14,7 +14,7 @@ const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가�
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
 const PLAN_VERSION = 13;
-const POLICY_VERSION = 'perceived-v2.5.14';
+const POLICY_VERSION = 'perceived-v2.5.24';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -716,10 +716,14 @@ function needsHumanizationRecovery(report, { targetTolerance = 0.01 } = {}) {
 function measureSubstantiveEdit(source, output) {
   const fromRaw = stripLockTokens(source);
   const toRaw = stripLockTokens(output);
-  const from = normalizeSubstantive(fromRaw);
-  const to = normalizeSubstantive(toRaw);
+  const fromLiteral = normalizeSubstantive(fromRaw);
+  const toLiteral = normalizeSubstantive(toRaw);
+  const from = normalizePerceivedSubstantive(fromRaw);
+  const to = normalizePerceivedSubstantive(toRaw);
   const substantiveDistance = levenshteinDistance(from, to);
   const substantiveBase = Math.max(from.length, to.length, 1);
+  const literalDistance = levenshteinDistance(fromLiteral, toLiteral);
+  const literalBase = Math.max(fromLiteral.length, toLiteral.length, 1);
   const raw = computeEditMetrics(fromRaw, toRaw);
   const sourceSentences = meaningfulSentences(fromRaw);
   const outputSentences = meaningfulSentences(toRaw);
@@ -731,10 +735,14 @@ function measureSubstantiveEdit(source, output) {
       : -1;
   }
   const substantiveChangedSentenceCount = sentenceEdits.filter(row => row.substantiveChanged).length;
+  const surfaceOnlySentenceCount = sentenceEdits.filter(row => row.surfaceOnly).length;
   const substantiveChangedSentenceRatio = sourceSentences.length
     ? substantiveChangedSentenceCount / sourceSentences.length
     : 0;
-  const substantiveEditRatio = substantiveDistance / substantiveBase;
+  const substantiveEditRatio = Math.min(
+    substantiveDistance / substantiveBase,
+    literalDistance / literalBase
+  );
   const structurallyChangedSentenceCount = sentenceEdits.filter(row => row.structuralChanged).length;
   const clauseBoundaryChangeCount = sentenceEdits.filter(row => row.clauseBoundaryChanged).length;
   const contentOrderChangeCount = sentenceEdits.filter(row => row.contentOrderChanged).length;
@@ -751,7 +759,10 @@ function measureSubstantiveEdit(source, output) {
     rawCharEditRatio: round4(raw.charEditRatio),
     substantiveDistance,
     substantiveEditRatio: round4(substantiveEditRatio),
+    literalNormalizedDistance: literalDistance,
+    literalNormalizedEditRatio: round4(literalDistance / literalBase),
     substantiveChangedSentenceCount,
+    surfaceOnlySentenceCount,
     substantiveChangedSentenceRatio: round4(substantiveChangedSentenceRatio),
     sourceSentenceCount: sourceSentences.length,
     outputSentenceCount: outputSentences.length,
@@ -822,6 +833,8 @@ function buildHumanizationPromptBlock(plan) {
       ? `문단 분포 목표: 우선 대상이 있는 ${plan.targetParagraphCount}개 일반 산문 문단 가운데 최소 ${plan.requiredTargetChangedParagraphCount}개 문단에서 실질 변화를 만든다. 한 문단만 크게 고치고 나머지를 복사하지 않는다.`
       : '',
     '문장마다 억지로 다른 단어를 끼워 넣지 말고, 바꿀 문장은 충분히 바꾸며 이미 자연스러운 문장은 남긴다.',
+    '변화량을 채우려고 “뒤·후·다음·이후” 같은 순차 접속 표현만 새로 반복하지 않는다. 같은 과업·근거 묶음은 핵심어 응집을 유지하고 실제 주제·역할이 바뀌는 곳에서만 문단을 나눈다.',
+    '문장을 나누거나 합친 뒤에도 각 문장의 주어, 지시 대상, 연구 주체와 결론의 근거가 독립적으로 분명해야 한다.',
     plan.rhetoricalRemediationPlan?.targetCount > 0
       ? '원문 담화 계약에 표시된 정형 성찰·반복 결론·과도하게 완결된 인과 구조는 그대로 복사하지 말고, 사실을 삭제하지 않는 범위에서 직접적인 문장으로 풀어 쓴다.'
       : '',
@@ -1054,7 +1067,7 @@ function classifyEffectExpectation(planOrSource, options = {}) {
 function alignSentenceEdits(sourceSentences, outputSentences) {
   if (!sourceSentences.length) return [];
   return sourceSentences.map((sentence, index) => {
-    const sourceNorm = normalizeSubstantive(sentence);
+    const sourceNorm = normalizePerceivedSubstantive(sentence);
     if (!outputSentences.length) {
       return { index, outputIndex: -1, distance: sourceNorm.length, ratio: 1, substantiveChanged: true };
     }
@@ -1082,10 +1095,15 @@ function alignSentenceEdits(sourceSentences, outputSentences) {
       ) || alignment;
     }
     const outputSentence = alignment?.text || outputSentences[Math.min(index, outputSentences.length - 1)] || '';
-    const outputNorm = normalizeSubstantive(outputSentence);
+    const outputNorm = normalizePerceivedSubstantive(outputSentence);
+    const sourceLiteral = normalizeSubstantive(sentence);
+    const outputLiteral = normalizeSubstantive(outputSentence);
     const distance = levenshteinDistance(sourceNorm, outputNorm);
     const base = Math.max(sourceNorm.length, outputNorm.length, 1);
-    const ratio = distance / base;
+    const perceivedRatio = distance / base;
+    const literalDistance = levenshteinDistance(sourceLiteral, outputLiteral);
+    const literalRatio = literalDistance / Math.max(sourceLiteral.length, outputLiteral.length, 1);
+    const ratio = Math.min(perceivedRatio, literalRatio);
     const substantiveChanged = distance >= 3 && ratio >= 0.065;
     const structure = compareSentenceStructure(sentence, outputSentence, {
       substantiveChanged,
@@ -1099,6 +1117,9 @@ function alignSentenceEdits(sourceSentences, outputSentences) {
       alignmentScore: round4(alignment?.score || 0),
       distance,
       ratio: round4(ratio),
+      literalDistance,
+      literalRatio: round4(literalRatio),
+      surfaceOnly: literalRatio >= 0.065 && perceivedRatio < 0.065,
       substantiveChanged,
       ...structure
     };
@@ -1368,6 +1389,27 @@ function normalizeSubstantive(value) {
     .replace(/[\p{P}\p{S}\s]/gu, '');
 }
 
+function normalizePerceivedSubstantive(value) {
+  return stripLockTokens(value)
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/통하여/gu, '통해')
+    .replace(/대하여/gu, '대해')
+    .replace(/위하여/gu, '위해')
+    .replace(/(?:그\s*다음|그\s*뒤|이후|그\s*후)/gu, '후')
+    .replace(
+      /(설계|검토|시험|분석|작성|구현|개발|확인|완료)(?:이|가|을|를)?\s*(?:완료된\s*)?(?:뒤|후|다음)/gu,
+      '$1후'
+    )
+    .replace(/(?:그리고|또한|아울러|더불어)(?=$|[\s,])/gu, '연결')
+    .replace(/(?:따라서|그러므로|이에\s*따라)(?=$|[\s,])/gu, '인과')
+    .replace(/(?:하였습니다|했습니다|하였다|했다)/gu, '하다')
+    .replace(/(?:되었습니다|됐습니다|되었다|됐다)/gu, '되다')
+    .replace(/(?:있었습니다|있었다)/gu, '있다')
+    .replace(/(?:없었습니다|없었다)/gu, '없다')
+    .replace(/[\p{P}\p{S}\s]/gu, '');
+}
+
 function stripLockTokens(value) {
   return String(value || '').replace(LOCK_TOKEN, ' ');
 }
@@ -1434,5 +1476,6 @@ module.exports = {
   classifyEffectExpectation,
   assessDepthReview,
   buildHumanizationPromptBlock,
-  normalizeSubstantive
+  normalizeSubstantive,
+  normalizePerceivedSubstantive
 };

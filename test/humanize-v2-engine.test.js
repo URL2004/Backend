@@ -160,7 +160,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.23');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.24');
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -720,7 +720,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 재�
   assert.equal(out.engineMeta.humanizationMinimumEffectPass, true);
   assert.equal(out.engineMeta.humanizationDepthSoftDelivered, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.5.14');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.5.24');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.equal(out.engineMeta.humanizationPlanDistributionAligned, true);
   assert.equal(
@@ -1042,7 +1042,7 @@ test('두 voice 시도가 모두 실패하면 원문 기반 최소 교정으로 
   assert.equal(out.qualityWarnings.some(item => item.code === 'sentence_distribution_shift'), false);
 });
 
-test('원문 기반 최소 교정도 장단문 분포를 평탄화하고 회복에 실패하면 동일 결과를 차단한다', { concurrency: false }, async t => {
+test('전체 후보가 장단문을 평탄화해도 안전한 문장 편집만 살려 차단을 피한다', { concurrency: false }, async t => {
   const source = '짧게 관찰함. 이 문장은 앞 문장보다 조금 더 길게 이어지는 활동 내용을 기록함. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 친구들의 질문에 답하며 탐구 내용을 크게 확장한 매우 긴 관찰 문장을 기록함. 마지막은 다시 짧게 마무리함.';
   const uniformSentences = [
     '학생이 여러 자료를 직접 찾아 비교한 활동 내용을 기록함.',
@@ -1054,13 +1054,16 @@ test('원문 기반 최소 교정도 장단문 분포를 평탄화하고 회복�
   const mock = installEngineMock(t, { humanize: uniform, generalRetryOutput: uniform });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'voice-retry-reject-user', config: config() });
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
-  assert.equal(out.status, 'blocked');
-  assert.equal(out.result.outputText, source);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 0);
+  assert.equal(out.status, 'clean');
+  assert.notEqual(out.result.outputText, source);
+  assert.equal(out.engineMeta.safePartialCandidateAppliedCount, 1);
+  assert.equal(out.engineMeta.safePartialSentenceAppliedCount, 2);
+  assert.ok(out.engineMeta.chunkResolvedFailureCodes.includes('voice_existing_distribution_failed'));
   assert.equal(out.engineMeta.humanizationNoBenefitDelivered, false);
 });
 
-test('voice 재시도 실패 후 구두점만 바뀌면 동일 결과를 차단한다', { concurrency: false }, async t => {
+test('voice 재시도 실패 후에도 구두점 후보 대신 안전한 실질 문장 편집을 전달한다', { concurrency: false }, async t => {
   const source = '짧게 관찰함. 이 문장은 앞 문장보다 조금 더 길게 이어지는 활동 내용을 기록함. 학생이 여러 자료를 직접 찾아 비교하고 발표 과정에서 친구들의 질문에 답하며 탐구 내용을 크게 확장한 매우 긴 관찰 문장을 기록함. 그렇다면 마지막은 다시 짧게 마무리함.';
   const uniform = [
     '학생이 여러 자료를 직접 찾아 비교한 활동 내용을 기록함.',
@@ -1071,16 +1074,31 @@ test('voice 재시도 실패 후 구두점만 바뀌면 동일 결과를 차단�
   const punctuationOnly = source.replace('그렇다면 마지막은', '그렇다면, 마지막은');
   const mock = installEngineMock(t, { humanize: uniform, generalRetryOutput: punctuationOnly, humanizationDepth: true });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'voice-deterministic-surface-user', config: config() });
-  assert.equal(out.status, 'blocked');
-  assert.equal(out.result.outputText, source);
-  assert.ok(out.floorReport.criticals.some(item => item.gate === 'gpt_noop_unchanged'));
+  assert.equal(out.status, 'clean');
+  assert.notEqual(out.result.outputText, source);
+  assert.notEqual(out.result.outputText, punctuationOnly);
   assert.equal(out.engineMeta.humanizationNoBenefitDelivered, false);
   assert.equal(out.engineMeta.repairCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 0);
   assert.equal(out.engineMeta.humanizationNoEffectRetryAttemptCount, 0);
-  assert.equal(out.engineMeta.humanizationDepthEscalationAttemptCount, 1);
+  assert.equal(out.engineMeta.safePartialCandidateAppliedCount, 1);
+  assert.equal(out.engineMeta.safePartialSentenceAppliedCount, 2);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, false);
+});
+
+test('최종 결과에 남은 신규 강한 수식은 해당 문장만 원문으로 복원한다', { concurrency: false }, async t => {
+  const source = '설계 과정에서 전원 노이즈가 기능에 영향을 줄 수 있음을 확인했습니다. 이후 필터 조건을 비교하고 결과를 기록했습니다.';
+  const output = '설계 과정에서 심각한 전원 노이즈가 기능에 영향을 줄 수 있음을 확인했습니다. 이어서 필터별 조건을 대조한 뒤 결과를 문서에 기록했습니다.';
+  installEngineMock(t, { humanize: output });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'intensity-restore-user', config: config() });
+
+  assert.equal(out.status, 'clean');
+  assert.match(out.result.outputText, /^설계 과정에서 전원 노이즈가/u);
+  assert.doesNotMatch(out.result.outputText, /심각한/u);
+  assert.match(out.result.outputText, /필터별 조건을 대조한 뒤/u);
+  assert.ok(out.engineMeta.finalSourceIntegrityRestoreCodes.includes('discourse_intensity_source_restore'));
+  assert.equal(out.engineMeta.discoursePass, true);
 });
 
 test('18문장 polish는 비문·접속 교정을 위해 문장 경계 토큰을 강제하지 않는다', { concurrency: false }, async t => {
@@ -1113,11 +1131,14 @@ test('기본의 얕은 1차 후보는 경계 토큰 없이 문서 회복으로 �
 test('영어 입력은 세 공개 모드 모두 API 호출 전에 한국어 전용 오류로 차단한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t);
   const english = 'This is an English document that should never be sent to the humanizing model because the service is Korean only.';
-  for (const mode of ['blog', 'formal', 'polish']) {
-    await assert.rejects(
-      () => engine.run({ text: english, mode, allowPolish: true, uid: 'english-user', config: config() }),
-      error => error.code === 'HUMANIZE_KOREAN_ONLY' && error.noCharge === true
-    );
+  const japanese = 'この授業では文学作品の背景を調べ、登場人物の考え方について自分の意見をまとめました。発表のあとで友人の質問にも答えました。';
+  for (const source of [english, japanese]) {
+    for (const mode of ['blog', 'formal', 'polish']) {
+      await assert.rejects(
+        () => engine.run({ text: source, mode, allowPolish: true, uid: 'unsupported-language-user', config: config() }),
+        error => error.code === 'HUMANIZE_KOREAN_ONLY' && error.noCharge === true
+      );
+    }
   }
   assert.equal(mock.calls.length, 0);
 });
@@ -1131,7 +1152,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.23');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.24');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

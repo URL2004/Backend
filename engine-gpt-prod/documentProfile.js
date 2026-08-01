@@ -131,7 +131,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   }
 
   add(scores, 'academic_paper', count(text, /(?:초록|Abstract|연구\s*(?:목적|방법|결과|가설)|선행\s*연구|방법론|유의확률|참고\s*문헌|doi\s*:|KCI|RISS)/giu), 1.3);
-  add(scores, 'academic_paper', count(text, /\([가-힣A-Za-z·,&\s]+,?\s*(?:19|20)\d{2}[a-z]?\)/gu), 0.9);
+  const inlineAcademicCitationSignals = count(text, /\([가-힣A-Za-z·,&\s]+,?\s*(?:19|20)\d{2}[a-z]?\)/gu);
+  add(scores, 'academic_paper', inlineAcademicCitationSignals, 0.9);
   add(scores, 'academic_paper', count(text, /(?:p|t|F|β|R²)\s*[<=>]\s*-?\d+(?:\.\d+)?/gu), 1.2);
   const academicFramingSignals = count(text, /(?:본\s*연구(?:는|에서는|의)|이론적\s*배경|연구\s*(?:가설|문제|과제|한계)|향후\s*연구|실증적으로\s*분석|모형화|방법론)/gu);
   const academicSectionSignals = lines.filter(line => /^(?:\d+(?:\.\d+)*[.)]?\s*)?(?:서론|이론적\s*배경|연구\s*(?:방법|결과|모형)|결론(?:\s*및\s*향후\s*연구)?|참고\s*문헌)/u.test(line)).length;
@@ -139,6 +140,28 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.academic_paper += 6.5
       + Math.min(academicFramingSignals - 2, 4) * 0.22
       + Math.min(academicSectionSignals - 3, 4) * 0.18;
+  }
+  const academicMethodEvidenceSignals = count(
+    text,
+    /(?:분석(?:하였|했|한다|대상|방법)|검토(?:하였|했|한다)|고찰(?:하였|했|한다)|연구\s*대상|연구\s*참여자|자료를\s*(?:수집|분석)|결과(?:는|가|를)|논의(?:하였|했|한다)|시사(?:하|점)|가설을\s*검증)/gu
+  );
+  const academicFormalEndingSignals = sentences.filter(sentence => (
+    /(?:하였다|되었다|이다|있다|없다|나타났다|확인되었다|시사한다|제시한다|논의한다)[.!?。！？]?$/u.test(String(sentence || '').trim())
+  )).length;
+  const academicFormalEndingRatio = academicFormalEndingSignals / Math.max(1, sentences.length);
+  const academicAbstractFrame = /(?:^|\n)\s*(?:초록|Abstract)\s*[:：]?/iu.test(text)
+    && /(?:주제어|핵심어|Keywords?)\s*[:：]/iu.test(text)
+    && academicMethodEvidenceSignals >= 2;
+  const academicExcerptFrame = compactLength >= 450
+    && firstPersonSignals === 0
+    && academicFramingSignals >= 2
+    && inlineAcademicCitationSignals >= 2
+    && academicMethodEvidenceSignals >= 3
+    && academicFormalEndingRatio >= 0.45;
+  if (academicAbstractFrame || academicExcerptFrame) {
+    scores.academic_paper += 6.25
+      + Math.min(academicFramingSignals, 5) * 0.2
+      + Math.min(inlineAcademicCitationSignals, 6) * 0.12;
   }
 
   add(scores, 'report_assignment', count(text, /(?:서론|본론|결론|과제|보고서|목차|조사\s*결과|문제점|개선\s*방안|시사점)/gu), 0.85);
@@ -340,6 +363,27 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       + Math.min(applicationEvidenceSignals, 3) * 0.2;
   }
   const professionalPastEndingSignals = sentences.filter(sentence => /(?:했습니다|하였습니다|맡았습니다|기여했습니다|해결했습니다|구현했습니다|개선했습니다)[.!?。！？]?$/u.test(sentence.trim())).length;
+  const technicalCareerDeliverableSignals = count(
+    text,
+    /(?:요구\s*사항|설계\s*검토|기능\s*시험|시험\s*절차|시험\s*문서|회로|PCB|펌웨어|F\/W|레지스터|FPGA|PLL|RF|PIC|MCU|Gerber|BOM|인수인계|양산|시제품|모듈|디버깅|검증값)/giu
+  );
+  const professionalResponsibilitySignals = count(
+    text,
+    /(?:담당(?:하|했)|수행(?:하|했)|작성(?:하|했)|설계(?:하|했)|검토(?:하|했)|시험(?:하|했)|구현(?:하|했)|인수인계(?:하|했)|관리(?:하|했))/gu
+  );
+  const technicalCareerFrame = compactLength >= 180
+    && compactLength <= 2400
+    && professionalPastEndingSignals >= 3
+    && careerActionSignals >= 5
+    && technicalCareerDeliverableSignals >= 4
+    && professionalResponsibilitySignals >= 3
+    && academicFramingSignals <= 1
+    && applicationIntentSignals === 0;
+  if (technicalCareerFrame) {
+    scores.resume_application += 5.35
+      + Math.min(professionalPastEndingSignals - 3, 5) * 0.16
+      + Math.min(technicalCareerDeliverableSignals - 4, 6) * 0.12;
+  }
   const fundingPlanSignals = count(text, /(?:지원금|장학금|보조금)[^.!?\n]{0,90}(?:활용|사용|저축|계획)|(?:활용|사용)\s*계획[^.!?\n]{0,60}(?:지원금|장학금|보조금)/gu);
   if (fundingPlanSignals >= 1 && firstPersonSignals >= 1) {
     scores.resume_application += 2.35 + Math.min(fundingPlanSignals - 1, 2) * 0.22;
@@ -762,6 +806,11 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       explicitReflectionDocumentSignals,
       reportInquirySignals,
       reportMethodSignals,
+      inlineAcademicCitationSignals,
+      academicMethodEvidenceSignals,
+      academicFormalEndingRatio: round(academicFormalEndingRatio, 4),
+      academicAbstractFrame,
+      academicExcerptFrame,
       reportHeadingSignals,
       assignmentProblemHeadingSignals,
       structuredCareerPlanSignals,
@@ -785,6 +834,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       researchCareerContextSignals,
       applicationSectionSignals,
       professionalPastEndingSignals,
+      technicalCareerDeliverableSignals,
+      professionalResponsibilitySignals,
+      technicalCareerFrame,
       fundingPlanSignals,
       strengthWeaknessSignals,
       qualificationSignals,
@@ -878,6 +930,26 @@ function applyDocumentProfileOverride(detected, requestedProfile) {
   };
   if (!requested || !CONTENT_GENRES.includes(requested) || requested === 'unknown') return common;
   if (detectedConfidence >= 0.75) {
+    const detectedGroup = PROFILE_GROUPS[detectedProfile] || detectedProfile;
+    const requestedGroup = PROFILE_GROUPS[requested] || requested;
+    if (detectedGroup === requestedGroup) {
+      const safetyProfiles = [...new Set([
+        ...(Array.isArray(base.safetyProfiles) ? base.safetyProfiles : []),
+        ...(SENSITIVE_PROFILES.has(detectedProfile) ? [detectedProfile] : []),
+        ...(SENSITIVE_PROFILES.has(requested) ? [requested] : [])
+      ])].filter(profile => CONTENT_GENRES.includes(profile));
+      return {
+        ...common,
+        profile: requested,
+        contentGenre: requested,
+        group: requestedGroup,
+        source: 'user_same_group_override',
+        profileDecisionSource: 'user_same_group_override',
+        safetyProfiles,
+        profileOverrideApplied: requested !== detectedProfile,
+        profileOverrideIgnoredReason: ''
+      };
+    }
     return {
       ...common,
       profileDecisionSource: base.profileDecisionSource || base.source || 'content_only',

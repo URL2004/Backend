@@ -71,7 +71,7 @@ test('polish 문장 경계는 교정 범위만 허용하고 실질 재작성을 
   assert.doesNotMatch(instruction, /실질적으로 재구성/u);
 });
 
-test('고급 문장 리듬 감사는 정상적인 절 재배치 허용 폭을 기본보다 넓힌다', () => {
+test('정상적인 절 재배치 수준의 작은 리듬 변화는 기본·고급 모두 평탄화로 오인하지 않는다', () => {
   const before = {
     count: 4,
     mean: 50,
@@ -88,7 +88,7 @@ test('고급 문장 리듬 감사는 정상적인 절 재배치 허용 폭을 �
     max: 89.25,
     lengthSequence: [11, 31, 69, 89]
   };
-  assert.equal(sentenceDistributionShift(before, after).shift, true);
+  assert.equal(sentenceDistributionShift(before, after).shift, false);
   assert.equal(sentenceDistributionShift(before, after, { toleranceMultiplier: 1.75 }).shift, false);
 });
 

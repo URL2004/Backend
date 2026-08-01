@@ -108,6 +108,10 @@ function main() {
       changed: restored.text !== String(row.outputText || '').replace(/\r\n?/gu, '\n').trim(),
       contentPreserved: compact(restored.text) === compact(row.outputText),
       policy: String(restored.paragraphs?.policy || 'none'),
+      sourceParagraphCount: Number(restored.paragraphs?.sourceCount) || 0,
+      beforeParagraphCount: Number(restored.paragraphs?.beforeCount) || 0,
+      targetParagraphCount: Number(restored.paragraphs?.targetCount) || 0,
+      afterParagraphCount: Number(restored.paragraphs?.afterCount) || 0,
       beforeOverlongCount: before.overlongCount,
       afterOverlongCount: after.overlongCount,
       maxSentencesBefore: before.maxSentences,
@@ -116,9 +120,11 @@ function main() {
       explicitAfter: Number(restored.paragraphs?.explicitParagraphCountAfter) || 0,
       visualGapRepairCount: Number(restored.paragraphs?.visualGapRepairCount) || 0,
       proseSplitCount: Number(restored.paragraphs?.proseSplitCount) || 0,
+      targetConstrained: restored.paragraphs?.targetConstrained === true,
       paragraphPass: restored.paragraphs?.pass !== false,
       layoutPass: restored.pass === true,
-      headingMissingCount: Number(restored.heading?.missingCount) || 0
+      headingMissingCount: Number(restored.heading?.missingCount) || 0,
+      formatFlags: Array.isArray(profile.formatProfile?.flags) ? profile.formatProfile.flags : []
     };
   });
   const output = {

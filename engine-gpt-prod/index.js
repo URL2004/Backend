@@ -52,7 +52,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.23';
+const VERSION = 'gpt-prod-v2.5.24';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -185,8 +185,8 @@ async function runEngine({
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   const rawSource = sourcePreflightAudit?.text || submittedSource;
   const integritySource = sourcePreflightAudit?.integrityText || rawSource;
-  if (inputRouting.isEnglishInput(rawSource)) {
-    const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.');
+  if (inputRouting.isUnsupportedLanguageInput(rawSource)) {
+    const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어·일본어 등 한국어가 아닌 본문은 원문 보존을 위해 변환하지 않습니다.');
     error.code = 'HUMANIZE_KOREAN_ONLY';
     error.noCharge = true;
     throw error;
@@ -2066,6 +2066,56 @@ async function runEngine({
       }
     }
   }
+  // 의미 심사 뒤에도 원문에 없던 강한 수식이 남으면 해당 문장만 원문
+  // 대응 문장으로 복원한다. 사용자에게 검토 경고만 넘기거나 문서 전체를
+  // 되돌리지 않고, 나머지 휴머나이징 결과는 유지한다.
+  if (selectedMode !== 'polish') {
+    const finalDiscourseBefore = discourseAudit.compareDiscourse(rawSource, outputText);
+    if (finalDiscourseBefore.codes.includes('intensity_amplification')) {
+      const restored = discourseAudit.restoreIntroducedIntensitySentences(
+        rawSource,
+        outputText,
+        finalDiscourseBefore
+      );
+      if (restored.applied) {
+        const candidate = restored.text;
+        const candidateDiscourse = discourseAudit.compareDiscourse(rawSource, candidate);
+        const candidateDepth = humanizationDepthEnabled
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
+          : null;
+        const beforeIntensity = finalDiscourseBefore.violations.find(
+          item => item.code === 'intensity_amplification'
+        );
+        const afterIntensity = candidateDiscourse.violations.find(
+          item => item.code === 'intensity_amplification'
+        );
+        const discourseImproved = Number(afterIntensity?.count || 0)
+          < Number(beforeIntensity?.count || 0);
+        const safeCandidate = discourseImproved
+          && isSafeLocalizedLanguageCandidate({
+            source: rawSource,
+            before: outputText,
+            candidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: extractProtectedTerms(rawSource, documentProfile),
+            currentDepth: humanizationDepthReport,
+            candidateDepth,
+            maxLocalEditRatio: 0.4,
+            localLengthPurpose: 'source_restore',
+            allowDepthRegression: true
+          })
+          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
+        if (safeCandidate) {
+          outputText = candidate;
+          finalSourceIntegrityRestoreCount += restored.restoredSentenceCount || 1;
+          addUniqueCode(finalSourceIntegrityRestoreCodes, 'discourse_intensity_source_restore');
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+        }
+      }
+    }
+  }
   let polishSpeakerRestore = { applied: false, restoredSentenceCount: 0, restoredKinds: [], reason: 'not_applicable' };
   if (selectedMode === 'polish') {
     polishSpeakerRestore = qualityV2.restoreMissingPolishSpeaker({
@@ -2663,6 +2713,8 @@ async function runEngine({
     humanizationHardRequiredSentenceCount: Number(humanizationDepthReport?.plan?.hardRequiredChangedSentenceCount || 0),
     humanizationMinimumTargetCoverage: Number(humanizationDepthReport?.plan?.minTargetCoverage || 0),
     substantiveEditRatio: Number(humanizationDepthReport?.metrics?.substantiveEditRatio || 0),
+    literalNormalizedEditRatio: Number(humanizationDepthReport?.metrics?.literalNormalizedEditRatio || 0),
+    surfaceOnlyChangedSentenceCount: Number(humanizationDepthReport?.metrics?.surfaceOnlySentenceCount || 0),
     substantiveChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.substantiveChangedSentenceRatio || 0),
     substantiveCarryoverCount: Number(humanizationDepthReport?.metrics?.substantiveCarryoverCount || 0),
     substantiveCarryoverRatio: Number(humanizationDepthReport?.metrics?.substantiveCarryoverRatio || 0),

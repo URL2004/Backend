@@ -11,6 +11,7 @@
     "eval": "node eval/runEval.js",
     "report:fingerprints": "node scripts/humanize-fingerprint-report.js",
     "eval:profiles": "node scripts/replay-document-profiles.js",
+    "audit:humanize-local": "node scripts/audit-local-humanize-pairs.js",
     "eval:judge": "node eval/runJudgeEval.js",
     "test": "node --test test/*.test.js",
     "test:v2": "node --test test/humanize-v2*.test.js test/openai-client.test.js",

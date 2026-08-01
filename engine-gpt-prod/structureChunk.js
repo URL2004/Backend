@@ -860,9 +860,17 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     .filter(Boolean));
   const paragraphs = [...before];
   let proseSplitCount = 0;
+  let targetConstrained = false;
   while (paragraphs.length > targetCount) {
     const candidate = findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions);
-    if (!candidate) break;
+    if (!candidate) {
+      // 원문 문단 수 상한을 맞추려고 제목·라벨 경계를 합치거나, 이미 읽기
+      // 한도 안에 있는 두 문단을 다시 벽글로 만들지 않는다. 이 경우는
+      // 레이아웃 실패가 아니라 구조·가독성 제약 때문에 목표 수가 조정된
+      // 정상 결과다.
+      targetConstrained = true;
+      break;
+    }
     paragraphs.splice(
       candidate.index,
       2,
@@ -895,7 +903,9 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     explicitParagraphCountBefore,
     explicitParagraphCountAfter,
     readability: compactReadability(afterReadability),
-    pass: afterCount === targetCount && afterReadability.overlongCount === 0
+    targetConstrained,
+    pass: afterReadability.overlongCount === 0
+      && (afterCount === targetCount || targetConstrained)
   };
 }
 
@@ -906,7 +916,9 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
     .map(sentence => String(sentence || '').replace(/\s+/gu, ' ').trim())
     .filter(Boolean);
   const compactLength = bare(normalized).length;
-  if (compactLength < 320 || sentences.length < 7 || layoutStructure.isStructureDominatedParagraph(normalized)) {
+  const minimumSemanticSentenceCount = profileName === 'resume_application' ? 6 : 7;
+  const minimumSemanticLength = profileName === 'resume_application' ? 200 : 320;
+  if (compactLength < minimumSemanticLength || sentences.length < minimumSemanticSentenceCount || layoutStructure.isStructureDominatedParagraph(normalized)) {
     return { applicable: false, text: normalized, paragraphCount: paragraphs.length, roleBoundaryCount: 0, contentPreserved: true };
   }
 
@@ -955,6 +967,18 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
       semanticTargetCount
     )
   );
+  const realignedExisting = realignTwoParagraphBoundary(paragraphs, sentences, profileName);
+  if (realignedExisting.applied
+      && targetCount <= paragraphs.length
+      && currentReadability.overlongCount === 0) {
+    return {
+      applicable: true,
+      text: realignedExisting.text,
+      paragraphCount: paragraphs.length,
+      roleBoundaryCount: 1,
+      contentPreserved: bare(realignedExisting.text) === bare(normalized)
+    };
+  }
   if (targetCount < 2
       || (paragraphs.length >= targetCount && currentReadability.overlongCount === 0)) {
     return {
@@ -1035,11 +1059,15 @@ function semanticTransitionKind(value, profileName = '') {
   if (/^(?:(?:이러한|이런|이와\s*같은)\s*(?:경험|과정|논의|분석|결과|역량|노력)(?:을|를)?\s*(?:통해|바탕으로)|이를\s*바탕으로|종합하면|결론적으로|결과적으로|따라서|그러므로|입사\s*후|앞으로(?:도)?)/u.test(sentence)) return 'conclusion';
   if (/^(?:반면|그러나|하지만|다만|한편|그럼에도|이에\s*반해)/u.test(sentence)) return 'contrast';
   if (/^(?:예를\s*들어|구체적으로|실제로|대표적으로|사례를\s*보면)/u.test(sentence)) return 'evidence';
-  if (/^(?:(?:첫|두|세|네)\s*번째(?:\s+(?:이유|근거|요인|특징|관점|문제|장점|단점|목표|과제|단계|측면))?(?:은|는|이|가)?|첫째|둘째|셋째|넷째|먼저|다음으로|마지막으로|또\s*다른|이와\s*별개로)/u.test(sentence)) return 'topic_shift';
+  if (/^(?:(?:첫|두|세|네)\s*번째(?:\s+(?:이유|근거|요인|특징|관점|문제|장점|단점|목표|과제|단계|측면))?(?:은|는|이|가)?|(?:첫째|둘째|셋째|넷째)(?!\s*(?:문장|문단)(?:은|는))|먼저|다음으로|마지막으로|또\s*다른|이와\s*별개로)/u.test(sentence)) return 'topic_shift';
   if (/^(?:연구실|회사|기관|현장|팀|부서|조직|근무지)(?:에서는|에서)\s/u.test(sentence)) return 'context';
   if (/^(?:장비|업무|연구|프로젝트|실험)(?:를|을)\s*(?:단순히|그저|사용하는\s+데서|수행하는\s+데서)/u.test(sentence)) return 'development';
   if (profileName === 'resume_application'
       && /^(?!연구(?:를|가)\s)(?:[가-힣A-Za-z0-9·-]+\s+){0,5}(?:연구|프로젝트|과제|인턴십?|현장\s*실습)(?:에서는|에서)\s/u.test(sentence)) return 'experience';
+  if (profileName === 'resume_application'
+      && /^(?:지정된|별도의|새로운)\s+[^.!?。！？]{0,80}(?:MCU|IC|회로|펌웨어|모듈|장비|프로젝트)[^.!?。！？]{0,100}(?:바탕|활용|설계|작성|구성|검증|시험)/iu.test(sentence)) return 'workstream';
+  if (['academic_paper', 'report_assignment', 'long_explainer'].includes(profileName)
+      && /^[^,.!?。！？\n]{2,42}\s+관련\s+연구(?:는|가|에서는)(?=$|\s)/u.test(sentence)) return 'topic_shift';
   return '';
 }
 
@@ -1464,10 +1492,14 @@ function selectReadableSplitIndex(sentences, profileName = '') {
     let semanticScore = 0;
     if (previousKind === 'backward_takeaway') semanticScore += 150;
     if (nextKind === 'backward_takeaway') semanticScore -= 130;
-    if (['topic_shift', 'context', 'experience', 'contrast', 'conclusion'].includes(nextKind)) semanticScore += 125;
+    if (['topic_shift', 'context', 'experience', 'workstream', 'contrast', 'conclusion'].includes(nextKind)) semanticScore += 125;
     else if (['evidence', 'development'].includes(nextKind)) semanticScore += 80;
     const balance = Math.min(running, right) / Math.max(1, total);
-    const score = semanticScore + balance * 24 - (Math.abs(running - right) / Math.max(1, total)) * 8;
+    const cohesionScore = Math.max(-28, Math.min(28, paragraphBoundaryCohesionScore(rows, index)));
+    const score = semanticScore
+      + cohesionScore
+      + balance * 24
+      - (Math.abs(running - right) / Math.max(1, total)) * 8;
     if (!best || score > best.score) best = { index, score };
   }
   if (best) return best.index;
@@ -1483,6 +1515,70 @@ function selectReadableSplitIndex(sentences, profileName = '') {
     }
   }
   return fallback;
+}
+
+function realignTwoParagraphBoundary(paragraphs, sentences, profileName = '') {
+  if ((paragraphs || []).length !== 2 || (sentences || []).length < 6) {
+    return { applied: false, text: (paragraphs || []).join('\n\n') };
+  }
+  const currentBoundary = splitSentences(paragraphs[0]).map(value => String(value || '').trim()).filter(Boolean).length;
+  const proposedBoundary = selectReadableSplitIndex(sentences, profileName);
+  if (proposedBoundary === currentBoundary
+      || proposedBoundary < 2
+      || proposedBoundary > sentences.length - 2) {
+    return { applied: false, text: paragraphs.join('\n\n') };
+  }
+  const currentKind = semanticTransitionKind(sentences[currentBoundary], profileName);
+  const proposedKind = semanticTransitionKind(sentences[proposedBoundary], profileName);
+  const currentScore = paragraphBoundaryCohesionScore(sentences, currentBoundary)
+    + (currentKind ? 35 : 0);
+  const proposedScore = paragraphBoundaryCohesionScore(sentences, proposedBoundary)
+    + (proposedKind ? 35 : 0);
+  // 모델이 만든 기존 빈 줄도 약한 장르 신호다. 단순 균형 차이가 아니라
+  // 주제 응집도나 명시적 역할 전환이 충분히 나아질 때만 경계를 옮긴다.
+  if (proposedScore < currentScore + 24) {
+    return { applied: false, text: paragraphs.join('\n\n') };
+  }
+  return {
+    applied: true,
+    text: normalizeParagraphWhitespace([
+      sentences.slice(0, proposedBoundary).join(' '),
+      sentences.slice(proposedBoundary).join(' ')
+    ].join('\n\n'))
+  };
+}
+
+function paragraphBoundaryCohesionScore(sentences, index) {
+  const rows = (sentences || []).map(value => String(value || '').trim()).filter(Boolean);
+  if (index <= 0 || index >= rows.length) return -100;
+  const leftWithin = index >= 2 ? lexicalCohesion(rows[index - 2], rows[index - 1]) : 0;
+  const rightWithin = index + 1 < rows.length ? lexicalCohesion(rows[index], rows[index + 1]) : 0;
+  const cross = lexicalCohesion(rows[index - 1], rows[index]);
+  const leftContext = rows.slice(Math.max(0, index - 2), index).join(' ');
+  const rightContext = rows.slice(index, Math.min(rows.length, index + 2)).join(' ');
+  const contextCross = lexicalCohesion(leftContext, rightContext);
+  return (leftWithin + rightWithin) * 52 - cross * 82 - contextCross * 28;
+}
+
+function lexicalCohesion(left, right) {
+  const a = new Set(cohesionTokens(left));
+  const b = new Set(cohesionTokens(right));
+  if (!a.size || !b.size) return 0;
+  const shared = [...a].filter(token => b.has(token)).length;
+  return shared / Math.max(1, Math.min(a.size, b.size));
+}
+
+function cohesionTokens(value) {
+  const stop = new Set([
+    '그리고', '그러나', '하지만', '따라서', '또한', '이후', '다음', '통해',
+    '위해', '대한', '관련', '경우', '과정', '수행', '진행', '했습니다', '하였습니다'
+  ]);
+  return (String(value || '').match(/[가-힣]{2,}|[A-Za-z]{2,}|\d+(?:\.\d+)?/gu) || [])
+    .map(token => token.toLowerCase().replace(
+      /(?:하였습니다|했습니다|하였다|했다|에서는|으로는|에게는|이라는|으로|에서|에게|보다|처럼|하고|하며|하여|된|한|은|는|이|가|을|를|의|에|도|만|와|과|로)$/u,
+      ''
+    ))
+    .filter(token => token.length >= 2 && !stop.has(token));
 }
 
 function touchesProtectedBlock(paragraph, protectedBlocks) {

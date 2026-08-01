@@ -4,6 +4,7 @@ const { splitSentences } = require('../engine/koreanText');
 const { splitLogicalProseParagraphs } = require('./proseParagraphs');
 const layoutStructure = require('./layoutStructure');
 const { alignSourceSentence } = require('./sentenceAlignment');
+const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 
 const VERSION = 5;
 const VIOLATION_CODES = Object.freeze([
@@ -100,9 +101,9 @@ function compareDiscourse(source, outputText) {
   const remediationPlan = buildRemediationPlan(before);
   const remediation = compareRemediationTargets(before, after, remediationPlan);
   const violations = [];
-  const add = (code, count, detail = '') => {
+  const add = (code, count, detail = '', metadata = {}) => {
     if (!(count > 0) || violations.some(item => item.code === code)) return;
-    violations.push({ code, count, detail });
+    violations.push({ code, count, detail, ...metadata });
   };
 
   const reflectionDelta = after.reflectionClosureCount - before.reflectionClosureCount;
@@ -119,7 +120,12 @@ function compareDiscourse(source, outputText) {
     && after.actionSentenceRatio < before.actionSentenceRatio - 0.12;
 
   add('new_evaluation', novelReflectionCount, 'source_relative_novel_reflection_function');
-  add('intensity_amplification', intensityDelta, 'source_relative_modifier_increase');
+  add(
+    'intensity_amplification',
+    intensityDelta,
+    'source_relative_modifier_increase',
+    { sentenceOrdinals: introducedStrongModifierOutputOrdinals(source, outputText) }
+  );
   add('duplicate_conclusion', conclusionMarkerDelta > 0 && after.conclusionParagraphCount >= 2 ? conclusionMarkerDelta : 0, 'conclusion_marker_increase');
   add(
     'repeated_reflection_conclusion',
@@ -159,6 +165,51 @@ function compareDiscourse(source, outputText) {
       }
     }
   };
+}
+
+function introducedStrongModifierOutputOrdinals(source, outputText) {
+  const remaining = new Map();
+  for (const occurrence of strongModifierOccurrences(source)) {
+    remaining.set(occurrence, Number(remaining.get(occurrence) || 0) + 1);
+  }
+  const ordinals = [];
+  splitSentences(String(outputText || '')).forEach((sentence, index) => {
+    let introduced = false;
+    for (const occurrence of strongModifierOccurrences(sentence)) {
+      const count = Number(remaining.get(occurrence) || 0);
+      if (count > 0) remaining.set(occurrence, count - 1);
+      else introduced = true;
+    }
+    if (introduced) ordinals.push(index + 1);
+  });
+  return uniqueNumbers(ordinals);
+}
+
+function strongModifierOccurrences(value) {
+  const occurrences = [];
+  for (const pattern of STRONG_MODIFIER_PATTERNS) {
+    const matches = String(value || '').match(new RegExp(pattern.source, pattern.flags)) || [];
+    occurrences.push(...matches.map(item => String(item || '').replace(/\s+/gu, ' ').trim()));
+  }
+  return occurrences;
+}
+
+// 의미 심사기가 강도 증폭을 고치지 못해도 문서 전체를 버리거나 경고만
+// 남기지 않는다. 원문에 없던 강한 수식이 생긴 결과 문장만 공통 정렬기로
+// 원문 대응 문장에 되돌린다. 후보 채택은 호출부의 수치·화자·구조·깊이
+// 비퇴행 감사를 다시 통과해야 한다.
+function restoreIntroducedIntensitySentences(source, outputText, audit = null) {
+  const report = audit || compareDiscourse(source, outputText);
+  const ordinals = [];
+  for (const violation of report?.violations || []) {
+    if (violation.code !== 'intensity_amplification') continue;
+    ordinals.push(...(violation.sentenceOrdinals || []));
+  }
+  return restoreSourceSentenceOrdinals(source, outputText, ordinals, {
+    maxRestoreCount: 6,
+    minSimilarity: 0.24,
+    ordinalSpace: 'output'
+  });
 }
 
 function discoursePromptBlock(profile) {
@@ -641,5 +692,7 @@ module.exports = {
   remediationPromptGuidance,
   unresolvedRemediationSentenceOrdinals,
   remediationTargetTerms,
-  remediationCategoryCount
+  remediationCategoryCount,
+  introducedStrongModifierOutputOrdinals,
+  restoreIntroducedIntensitySentences
 };

@@ -122,7 +122,8 @@ const ADJACENT_ECHO_FAMILIES = Object.freeze([
   { family: 'understanding', pattern: /(?:알게\s*되|깨닫|이해하게\s*되|파악하게\s*되)/u },
   { family: 'learning', pattern: /(?:배우게\s*되|배웠|교훈을\s*얻|익히게\s*되)/u },
   { family: 'feeling', pattern: /(?:느끼게\s*되|느꼈|체감하게\s*되|실감하게\s*되)/u },
-  { family: 'confirmation', pattern: /(?:확인하게\s*되|확인했|분명해졌|알아볼\s*수\s*있었)/u }
+  { family: 'confirmation', pattern: /(?:확인하게\s*되|확인했|분명해졌|알아볼\s*수\s*있었)/u },
+  { family: 'reflection', pattern: /(?:생각해\s*(?:보|보게)|돌아보|되돌아보|성찰하게\s*되)/u }
 ]);
 
 /**
@@ -133,30 +134,103 @@ const ADJACENT_ECHO_FAMILIES = Object.freeze([
 function removeGeneratedAdjacentRestatements(source, text) {
   const original = String(text || '');
   const sourcePairs = adjacentEchoPairs(source);
+  const sourceRows = splitSentenceSpans(String(source || '')).map((span, index) => ({
+    index,
+    text: String(span.text || '').trim(),
+    roots: semanticRoots(span.text)
+  }));
   const spans = splitSentenceSpans(original);
-  const removals = [];
+  const edits = [];
   for (let index = 0; index < spans.length - 1; index += 1) {
     const left = String(spans[index]?.text || '').trim();
     const right = String(spans[index + 1]?.text || '').trim();
+    const between = original.slice(spans[index].end, spans[index + 1].start);
+    const reflectionRestore = !/\n[ \t]*\n/u.test(between)
+      ? generatedAdjacentReflectionRestore(source, left, right, sourceRows)
+      : null;
+    if (reflectionRestore) {
+      edits.push({
+        start: spans[index].start,
+        end: spans[index + 1].end,
+        replacement: reflectionRestore.text,
+        family: 'reflection',
+        anchor: reflectionRestore.anchor
+      });
+      index += 1;
+      continue;
+    }
     const echo = adjacentEchoSignature(left, right);
     if (!echo) continue;
     if (sourcePairs.has(`${echo.family}:${echo.anchor}`)) continue;
     if (_normSent(source).includes(_normSent(right))) continue;
     if (containsProtectedEchoFact(right)) continue;
-    removals.push({
+    edits.push({
       start: spans[index + 1].start,
       end: spans[index + 1].end,
+      replacement: '',
       family: echo.family,
       anchor: echo.anchor
     });
     index += 1;
   }
   return {
-    text: removals.length ? removeSentenceSpans(original, removals) : original,
-    applied: removals.length > 0,
-    removedCount: removals.length,
-    families: [...new Set(removals.map(item => item.family))]
+    text: edits.length ? applySentenceEdits(original, edits) : original,
+    applied: edits.length > 0,
+    removedCount: edits.length,
+    families: [...new Set(edits.map(item => item.family))]
   };
+}
+
+function generatedAdjacentReflectionRestore(source, left, right, sourceRows) {
+  if (echoFamily(left) !== 'reflection' || echoFamily(right) !== 'reflection') return null;
+  const leftAnchor = reflectionAnchor(left);
+  const rightAnchor = reflectionAnchor(right);
+  if (!leftAnchor || leftAnchor !== rightAnchor) return null;
+  if (!hasMarkedReflectionCadence(left) || !hasMarkedReflectionCadence(right)) return null;
+  if (sourceHasAdjacentReflectionPair(source, leftAnchor)) return null;
+
+  const leftRoots = semanticRoots(left);
+  const rightRoots = semanticRoots(right);
+  const leftSupport = bestSourceRootSupport(leftRoots, sourceRows);
+  const rightSupport = bestSourceRootSupport(rightRoots, sourceRows);
+  if (leftSupport.index < 0 || leftSupport.index !== rightSupport.index) return null;
+  const sourceRow = sourceRows[leftSupport.index];
+  if (!sourceRow || echoFamily(sourceRow.text) !== 'reflection') return null;
+  if (reflectionAnchor(sourceRow.text) !== leftAnchor) return null;
+  const union = new Set([...leftRoots, ...rightRoots]);
+  // 두 결과 문장이 원문의 같은 결론을 공유하면서 원문 핵심의 대부분을
+  // 합쳐 보존할 때만 원문 한 문장으로 되돌린다. 한쪽만 비슷하거나 서로
+  // 다른 주장·인과를 가진 문장은 여기서 절대 삭제하지 않는다.
+  if (leftSupport.coverage < 0.42 || rightSupport.coverage < 0.42) return null;
+  if (overlapRatio(sourceRow.roots, union) < 0.72) return null;
+  return { text: sourceRow.text, anchor: leftAnchor };
+}
+
+function reflectionAnchor(value) {
+  const text = String(value || '');
+  const verb = text.search(/(?:생각해\s*(?:보|보게)|돌아보|되돌아보|성찰하게\s*되)/u);
+  if (verb < 0) return '';
+  const tokens = (text.slice(0, verb).match(/[가-힣A-Za-z]{2,}/gu) || [])
+    .map(token => token.toLowerCase().replace(/(?:으로|에서|에게|에는|에도|은|는|이|가|을|를|의|와|과|에|로)$/u, ''))
+    .filter(token => token.length >= 2 && !/^(?:다시|한번|깊이|새롭게|더욱|통해|계기|대해|관한)$/u.test(token));
+  return tokens.at(-1) || '';
+}
+
+function hasMarkedReflectionCadence(value) {
+  return /(?:다시\s*(?:한\s*번|한번)?|깊이)[^.!?。！？\n]{0,24}(?:생각해\s*(?:보|보게)|돌아보|되돌아보|성찰하게\s*되)/u.test(String(value || ''));
+}
+
+function sourceHasAdjacentReflectionPair(source, anchor) {
+  const spans = splitSentenceSpans(String(source || ''));
+  for (let index = 0; index < spans.length - 1; index += 1) {
+    const between = String(source || '').slice(spans[index].end, spans[index + 1].start);
+    if (/\n[ \t]*\n/u.test(between)) continue;
+    if (echoFamily(spans[index].text) === 'reflection'
+        && echoFamily(spans[index + 1].text) === 'reflection'
+        && reflectionAnchor(spans[index].text) === anchor
+        && reflectionAnchor(spans[index + 1].text) === anchor) return true;
+  }
+  return false;
 }
 
 /**
@@ -375,6 +449,30 @@ function removeSentenceSpans(value, ranges) {
     if (range.start < cursor) continue;
     output += text.slice(cursor, range.start);
     cursor = range.end;
+  }
+  return output + text.slice(cursor);
+}
+
+function applySentenceEdits(value, edits) {
+  const text = String(value || '');
+  const normalized = [...(edits || [])]
+    .filter(edit => Number.isFinite(edit?.start) && Number.isFinite(edit?.end) && edit.end > edit.start)
+    .map(edit => {
+      if (String(edit.replacement || '')) return edit;
+      let start = edit.start;
+      let end = edit.end;
+      while (end < text.length && /[ \t]/u.test(text[end])) end += 1;
+      if (end === edit.end) while (start > 0 && /[ \t]/u.test(text[start - 1])) start -= 1;
+      return { ...edit, start, end };
+    })
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  let output = '';
+  let cursor = 0;
+  for (const edit of normalized) {
+    if (edit.start < cursor) continue;
+    output += text.slice(cursor, edit.start);
+    output += String(edit.replacement || '');
+    cursor = edit.end;
   }
   return output + text.slice(cursor);
 }

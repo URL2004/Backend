@@ -204,6 +204,41 @@ test('변환 중 새로 생긴 한글 토큰 중복 오타를 검출하고 원�
     false,
     '이어지지처럼 용언 어간과 부정 연결어미가 만난 정상 활용을 중복 오타로 오인하지 않아야 한다'
   );
+
+  const normalRepeatedLexemes = [
+    {
+      source: '자기 감정은 스스로 알아차리고 조절할 수 있습니다.',
+      output: '거듭 나타나는 생각과 감정의 패턴을 스스로 알아차립니다.'
+    },
+    {
+      source: '교육을 이수한 부부에게 안내문을 제공합니다.',
+      output: '예비 부부와 교육을 이수한 부부에게 안내합니다.'
+    },
+    {
+      source: '주가 상승이 주주에게 미치는 영향을 분석했습니다.',
+      output: '주주가 의결권을 행사하고 주가도 확인했습니다.'
+    },
+    {
+      source: '표현의 의의를 검토했습니다.',
+      output: '이 연구의 의의와 한계를 함께 검토했습니다.'
+    }
+  ];
+  for (const item of normalRepeatedLexemes) {
+    const audit = refinement.analyzeKoreanRefinement({
+      source: item.source,
+      outputText: item.output
+    });
+    assert.equal(
+      audit.issueCodes.includes('introduced_token_duplication'),
+      false,
+      `${item.output}을 반복 오타로 오인하지 않아야 한다`
+    );
+    const repaired = refinement.applySafeDeterministicRepairs({
+      source: item.source,
+      outputText: item.output
+    });
+    assert.equal(repaired.text, item.output, '정상 반복 음절을 결정론적으로 삭제하지 않아야 한다');
+  }
 });
 
 test('원문에 있던 깊게 이해는 자동 변경하지 않고 원문 검토 알림으로 분리한다', () => {

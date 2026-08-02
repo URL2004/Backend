@@ -23,6 +23,7 @@ const {
   buildVoiceProfile,
   auditDirectQuoteIntegrity,
   restoreDirectQuoteContents,
+  restorePersonalScopeGeneralizations,
   sentenceDistributionShift,
   paragraphExpansionLimit
 } = require('./voiceProfile');
@@ -52,7 +53,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.25';
+const VERSION = 'gpt-prod-v2.5.26';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -418,6 +419,31 @@ async function runEngine({
   outputText = finalPostprocess(outputText, auditSource, selectedMode, contract, postprocessMeta, {
     preserveLineBreaks: layoutStructureLocked
   });
+  // `lineBoundaryPolicy=all` 문서는 모든 후단 모델 수리보다 행 구조가 우선한다.
+  // 청크 단계의 경계 토큰을 통과했더라도 의미 수리·복원 단계가 행을 다시
+  // 합칠 수 있으므로, 원문 잠금과 인라인 코드를 복원한 마지막 안전 후보를
+  // 별도로 보관하고 최종 고정점에서만 사용한다.
+  // 최소 안전 기준선은 항상 원문이다. 모델 후보가 한 번도 행 계약을
+  // 통과하지 못하더라도 깨진 시·항목 행을 전달하지 않는다.
+  let exactLineSafeOutput = lineBoundaryPolicy === 'all' ? String(rawSource || '') : '';
+  let exactLineStructureFallbackCount = 0;
+  const materializeExactLineCandidate = value => {
+    let candidate = frozen ? restoreLockedBlocks(String(value || ''), frozen.blocks) : String(value || '');
+    if (inlineCodeFreeze.count > 0
+        && inlineCodeFreeze.blocks.some(block => candidate.includes(block.token))) {
+      candidate = literalSpans.restoreInlineCode(candidate, inlineCodeFreeze).text;
+    }
+    return candidate;
+  };
+  const rememberExactLineSafeOutput = value => {
+    if (lineBoundaryPolicy !== 'all') return false;
+    const candidate = materializeExactLineCandidate(value);
+    const audit = structureChunk.auditExactLineStructure(rawSource, candidate);
+    if (audit.pass !== true) return false;
+    exactLineSafeOutput = candidate;
+    return true;
+  };
+  rememberExactLineSafeOutput(outputText);
 
   let supplementalUsage = (sectionRecoveryReport.usages || [])
     .reduce((acc, usage) => addUsage(acc, usage), emptyUsage());
@@ -1931,6 +1957,7 @@ async function runEngine({
     humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     recordHumanizationDepthStage('post_semantic_recovery', humanizationDepthReport);
   }
+  rememberExactLineSafeOutput(outputText);
 
   const postLayout = layoutNlpEnabled
     ? await safeFormatLayout(outputText, selectedMode)
@@ -1951,6 +1978,7 @@ async function runEngine({
     profileConfidence: documentProfile.confidence
   });
   outputText = layoutRepair.text || outputText;
+  rememberExactLineSafeOutput(outputText);
   // 직접 인용은 의미 심사 이후의 일반 어휘 후처리가 아니라 동결 구조다.
   // 의미 수리나 레이아웃 복원에서 내부 내용이 달라졌다면 같은 위치의
   // 원문 인용만 재조립한다.
@@ -2116,6 +2144,29 @@ async function runEngine({
       }
     }
   }
+  // 개인 적용·성찰 라벨 안의 경험을 일반 조건문으로 바꾼 경우에는 의미
+  // 심사 결과와 무관하게 해당 원문 행만 복원한다. 라벨의 `내`가 남아 있으면
+  // 문서 전체 POV 개수는 정상으로 보여 기존 화자 감사가 놓치던 유형이다.
+  {
+    const restored = restorePersonalScopeGeneralizations(rawSource, outputText);
+    if (restored.applied) {
+      const candidate = restored.text;
+      const integrity = candidateIntegrity.auditCandidateIntegrity({
+        source: rawSource,
+        before: outputText,
+        candidate,
+        documentProfile,
+        mode: selectedMode
+      });
+      if (integrity.pass
+          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+        outputText = candidate;
+        finalSourceIntegrityRestoreCount += restored.restoredCount || 1;
+        addUniqueCode(finalSourceIntegrityRestoreCodes, 'personal_scope_source_restore');
+        rememberExactLineSafeOutput(outputText);
+      }
+    }
+  }
   let polishSpeakerRestore = { applied: false, restoredSentenceCount: 0, restoredKinds: [], reason: 'not_applicable' };
   if (selectedMode === 'polish') {
     polishSpeakerRestore = qualityV2.restoreMissingPolishSpeaker({
@@ -2231,6 +2282,34 @@ async function runEngine({
       missingCount: Number(fixedPointLockedStructure.missingCount || 0),
       pass: fixedPointLockedStructure.pass !== false
     };
+  }
+  if (lineBoundaryPolicy === 'all') {
+    const exactLineAudit = structureChunk.auditExactLineStructure(rawSource, outputText);
+    if (exactLineAudit.pass !== true && exactLineSafeOutput) {
+      outputText = exactLineSafeOutput;
+      exactLineStructureFallbackCount += 1;
+      const restoredQuotes = restoreDirectQuoteContents(rawSource, outputText);
+      if (restoredQuotes.applied) {
+        outputText = restoredQuotes.text;
+        quoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+        finalQuoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+      }
+      semanticReport = {
+        ...semanticReport,
+        pass: false,
+        repairRejected: true,
+        reason: 'exact_line_structure_reverted',
+        repairRejectReasons: [
+          ...new Set([...(semanticReport?.repairRejectReasons || []), 'line_structure_worsened'])
+        ]
+      };
+      layoutRepair.exactLineFallback = {
+        applied: true,
+        reason: 'final_line_structure_mismatch',
+        sourceLineCount: exactLineAudit.sourceLineCount,
+        rejectedLineCount: exactLineAudit.outputLineCount
+      };
+    }
   }
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
     const postLayoutDepth = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
@@ -2582,6 +2661,7 @@ async function runEngine({
     profileGroupMargin: documentProfile.profileGroupMargin ?? 0,
     formatProfile: documentProfile.formatProfile || { length: 'standard', primary: 'plain', flags: [] },
     lineBoundaryPolicy,
+    exactLineStructureFallbackCount,
     paragraphRepairPolicy: layoutRepair?.paragraphs?.policy || 'none',
     paragraphRepairSourceCount: Number(layoutRepair?.paragraphs?.sourceCount || 0),
     paragraphRepairBeforeCount: Number(layoutRepair?.paragraphs?.beforeCount || 0),
@@ -2666,6 +2746,10 @@ async function runEngine({
     sectionPathErrorCount: Number(structureAudit?.sectionPathErrorCount || 0),
     originalStructurePass: structureAudit?.originalStructurePass !== false,
     originalStructuralMarkerLossCount: Number(structureAudit?.originalStructuralMarkerLossCount || 0),
+    lineAnchorLayoutPass: structureAudit?.lineAnchorLayoutPass !== false,
+    lineAnchorLossCount: Number(structureAudit?.lineAnchorLossCount || 0),
+    lineAnchorBoundaryChangeCount: Number(structureAudit?.lineAnchorBoundaryChangeCount || 0),
+    exactLineStructurePass: structureAudit?.exactLineStructurePass !== false,
     introducedOrphanParticleBoundaryCount: Number(structureAudit?.introducedOrphanParticleBoundaryCount || 0),
     signatureLineCount: Number(documentProfile?.formatProfile?.signatureLineCount || 0),
     clinicalStructureSignalCount: Number(documentProfile?.signals?.soapHeadingSignals || 0)

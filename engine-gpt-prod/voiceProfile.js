@@ -162,6 +162,15 @@ function auditVoice(sourceProfile, output, {
   if (pluralRemoved) {
     warnings.push(warning('speaker_removed', '원문의 집단 화자가 결과에서 사라졌을 수 있어요.'));
   }
+  const personalScopeAudit = sourceText
+    ? auditPersonalScopeGeneralization(sourceText, output)
+    : null;
+  if (personalScopeAudit?.introducedCount > 0) {
+    warnings.push(warning(
+      'personal_scope_generalized',
+      '원문의 개인 경험이나 적용 내용이 일반적인 경우 설명으로 바뀌었을 수 있어요.'
+    ));
+  }
   if (sourceProfile?.register && current.register !== sourceProfile.register && !['mixed'].includes(sourceProfile.register)) {
     warnings.push(warning('register_shift', `원문 종결체(${sourceProfile.register})가 결과(${current.register})에서 달라졌을 수 있어요.`));
   }
@@ -313,6 +322,7 @@ function auditVoice(sourceProfile, output, {
   return {
     profile: current,
     directQuoteIntegrity,
+    personalScopeAudit,
     distributionDelta: {
       sentenceCountRatio: ratio(current.sentence.count, sourceProfile?.sentence?.count),
       paragraphCountRatio: ratio(current.paragraph.count, sourceProfile?.paragraph?.count),
@@ -460,6 +470,117 @@ function linePolicyFor(text, documentProfile, layout, { lineBreakSensitive = fal
   if (structuralBoundaries >= 1 || structuredFormat || polishStructure || resumeAnswerUnits) return 'structural';
   if (sensitiveProfile && (structuralBoundaries > 0 || structuralLines > 0)) return 'structural';
   return 'none';
+}
+
+/**
+ * `내 시합/일상 적용:`처럼 라벨 자체가 1인칭 범위를 고정하는 기록에서
+ * 모델이 `내향적인 성향이 강해`를 `내향적인 성향이 강한 경우`로 바꾸면
+ * 단어 대부분은 남아도 개인 경험이 일반 조건문으로 변한다. 전체 문서의
+ * 1인칭 개수만 세는 기존 감사로는 라벨에 남은 `내` 때문에 이 손실을
+ * 놓친다. 같은 라벨의 같은 순번 본문만 대응시켜 새 일반화 표지를 잡는다.
+ */
+function auditPersonalScopeGeneralization(source, output) {
+  const sourceRows = personalApplicationRows(source);
+  const outputRows = personalApplicationRows(output);
+  const outputByKey = groupRowsByKey(outputRows);
+  const seen = new Map();
+  const details = [];
+  for (const sourceRow of sourceRows) {
+    const ordinal = Number(seen.get(sourceRow.key) || 0);
+    seen.set(sourceRow.key, ordinal + 1);
+    const outputRow = outputByKey.get(sourceRow.key)?.[ordinal];
+    if (!outputRow) continue;
+    if (!personalBodyWasGeneralized(sourceRow.body, outputRow.body)) continue;
+    details.push({
+      label: sourceRow.label,
+      ordinal: ordinal + 1,
+      sourceLine: sourceRow.lineIndex + 1,
+      outputLine: outputRow.lineIndex + 1
+    });
+  }
+  return {
+    version: 1,
+    pass: details.length === 0,
+    introducedCount: details.length,
+    details
+  };
+}
+
+function restorePersonalScopeGeneralizations(source, output) {
+  const before = String(output || '');
+  const sourceLines = String(source || '').replace(/\r\n?/gu, '\n').split('\n');
+  const outputLines = before.replace(/\r\n?/gu, '\n').split('\n');
+  const sourceRows = personalApplicationRows(source);
+  const outputRows = personalApplicationRows(before);
+  const outputByKey = groupRowsByKey(outputRows);
+  const seen = new Map();
+  const restoredLines = [];
+  for (const sourceRow of sourceRows) {
+    const ordinal = Number(seen.get(sourceRow.key) || 0);
+    seen.set(sourceRow.key, ordinal + 1);
+    const outputRow = outputByKey.get(sourceRow.key)?.[ordinal];
+    if (!outputRow || !personalBodyWasGeneralized(sourceRow.body, outputRow.body)) continue;
+    if (sourceRow.lineIndex < 0 || outputRow.lineIndex < 0) continue;
+    outputLines[outputRow.lineIndex] = sourceLines[sourceRow.lineIndex];
+    restoredLines.push(outputRow.lineIndex + 1);
+  }
+  const text = restoredLines.length ? outputLines.join('\n') : before;
+  const auditAfter = auditPersonalScopeGeneralization(source, text);
+  return {
+    version: 1,
+    text: auditAfter.pass ? text : before,
+    applied: restoredLines.length > 0 && auditAfter.pass,
+    restoredCount: auditAfter.pass ? restoredLines.length : 0,
+    restoredLines: auditAfter.pass ? restoredLines : [],
+    auditAfter
+  };
+}
+
+function personalApplicationRows(value) {
+  const records = layoutStructure.buildLineRecords(String(value || ''));
+  const rows = [];
+  for (const record of records) {
+    if (record.blank) continue;
+    const parts = layoutStructure.labelParts(record.text);
+    if (!parts || !isPersonalApplicationLabel(parts.label) || !parts.rest) continue;
+    rows.push({
+      key: normalizeLabelKey(parts.label),
+      label: parts.label,
+      body: parts.rest,
+      lineIndex: record.index
+    });
+  }
+  return rows;
+}
+
+function isPersonalApplicationLabel(value) {
+  const label = String(value || '').replace(/\s+/gu, ' ').trim();
+  return /^(?:내|나의|저의|제)\s*(?:시합|경기|훈련|일상|생활|경험|활동|적용)(?:\s*[/·&]\s*(?:시합|경기|훈련|일상|생활|경험|활동|적용))*$/u.test(label)
+    || /^(?:내|나의|저의|제)\s*(?:시합|경기|훈련|일상|생활|경험|활동)(?:\s*[/·&]\s*(?:시합|경기|훈련|일상|생활|경험|활동))*\s*적용$/u.test(label);
+}
+
+function personalBodyWasGeneralized(sourceBody, outputBody) {
+  const sourceText = String(sourceBody || '');
+  const outputText = String(outputBody || '');
+  if (!sourceText || !outputText) return false;
+  const genericPattern = /(?:^|[\s,，])(?:일반적으로|대체로|보통은?|통상|누구나|사람들은?|개인은?|선수들은?|[^\s,，]{1,24}\s+경우)(?=$|[\s,，])/u;
+  if (!genericPattern.test(outputText) || genericPattern.test(sourceText)) return false;
+  // 결과 본문에 명시적인 1인칭이 살아 있다면 `제 경우에는`처럼 개인
+  // 범위를 유지한 정상 문장일 수 있다. 라벨의 `내`는 여기서 세지 않는다.
+  return computePovSeed(outputText).fp_singular === 0;
+}
+
+function groupRowsByKey(rows) {
+  const grouped = new Map();
+  for (const row of rows || []) {
+    if (!grouped.has(row.key)) grouped.set(row.key, []);
+    grouped.get(row.key).push(row);
+  }
+  return grouped;
+}
+
+function normalizeLabelKey(value) {
+  return String(value || '').normalize('NFKC').toLocaleLowerCase('ko-KR').replace(/[^\p{L}\p{N}]/gu, '');
 }
 
 function hasStandaloneResumeAnswerUnits(text, profiles, layout) {
@@ -683,6 +804,8 @@ module.exports = {
   buildVoiceProfile,
   voicePromptBlock,
   auditVoice,
+  auditPersonalScopeGeneralization,
+  restorePersonalScopeGeneralizations,
   auditDirectQuoteIntegrity,
   restoreDirectQuoteContents,
   sentenceDistributionShift,

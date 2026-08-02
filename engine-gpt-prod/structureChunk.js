@@ -79,8 +79,15 @@ function expandBaseChunk(chunk, state) {
     // 번호형 소제목을 불릿 접두부와 본문으로 먼저 분해하면 `1. 연구 배경`의
     // 제목성이 사라지고 뒤 본문이 상위 절 경로에 남는다. 구조 판정을 접두부
     // 편집 규칙보다 먼저 적용해 제목 행 전체를 하나의 잠금 단위로 유지한다.
-    const preserveWholeStructuralLine = wholeLineRole === 'title'
-      || wholeLineRole === 'heading'
+    const preserveWholeStructuralLine = [
+      'title',
+      'heading',
+      'signature',
+      'code',
+      'table',
+      'flow',
+      'quote'
+    ].includes(wholeLineRole)
       || isHeadingLine(sourceText)
       || isRepeatedTocHeadingLine(sourceText, state)
       || isStandaloneQuotedTitle(sourceText);
@@ -1367,21 +1374,24 @@ function splitEditablePrefixPiece(piece, options = {}) {
   // 마크다운 목록의 굵은 라벨까지 하나의 접두부로 잠근다. `* `만
   // 잠그면 모델이 `**전략:**`의 별표나 닫는 콜론을 흩뜨려 목록 기호가
   // 독립 행으로 남을 수 있다. 라벨 뒤 본문은 계속 편집 가능하다.
-  const markdownLabelBullet = legal || numberedInlineHeading || blockquote
+  const emojiLabel = legal || numberedInlineHeading || blockquote
+    ? null
+    : raw.match(/^(\s*(?:(?:\p{Extended_Pictographic}\uFE0F?)+)\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
+  const markdownLabelBullet = legal || numberedInlineHeading || blockquote || emojiLabel
     ? null
     : raw.match(/^(\s*[-*+]\s+(?:\*\*|__)[^*\n_]{1,120}(?::|：)(?:\*\*|__)\s*)(\S[\s\S]*)$/u);
-  const bullet = legal || numberedInlineHeading || blockquote || markdownLabelBullet
+  const bullet = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet
     ? null
     : raw.match(
       /^(\s*(?:(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
     );
-  const bracketLabel = legal || numberedInlineHeading || blockquote || markdownLabelBullet || bullet
+  const bracketLabel = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet
     ? null
     : raw.match(/^(\s*\[(?=[^\]\n]{0,79}[가-힣A-Za-z])[^\]\n]{1,80}\]\s*)(\S[\s\S]*)$/u);
-  const label = legal || numberedInlineHeading || blockquote || markdownLabelBullet || bullet || bracketLabel
+  const label = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet || bracketLabel
     ? null
     : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
-  const match = legal || numberedInlineHeading || blockquote || markdownLabelBullet || bullet || bracketLabel || label;
+  const match = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet || bracketLabel || label;
   if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
   const prefix = match[1];
   const body = match[2];
@@ -1766,6 +1776,11 @@ function buildStructureAudit({
   const structuralSignature = compareStructuralRoleSignatures(source, output);
   const originalMarkers = compareOriginalStructuralMarkers(original, output);
   const bracketedLabelLayout = compareBracketedLabelLayout(original, output);
+  const lineAnchorLayout = compareLineAnchorLayout(original, output);
+  const exactLinePolicy = (chunks || []).some(chunk => String(chunk?.lineBoundaryPolicy || '') === 'all');
+  const exactLineStructure = exactLinePolicy
+    ? auditExactLineStructure(original, output)
+    : { pass: true, applicable: false };
   const introducedOrphanParticleBoundaryCount = Math.max(
     0,
     countOrphanParticleLineBoundaries(output) - countOrphanParticleLineBoundaries(original)
@@ -1793,7 +1808,10 @@ function buildStructureAudit({
     structuralRoleLosses: structuralSignature.losses,
     sourceStructuralSignature: structuralSignature.source,
     outputStructuralSignature: structuralSignature.output,
-    originalStructurePass: originalMarkers.pass && introducedOrphanParticleBoundaryCount === 0,
+    originalStructurePass: originalMarkers.pass
+      && lineAnchorLayout.pass
+      && exactLineStructure.pass
+      && introducedOrphanParticleBoundaryCount === 0,
     originalStructuralMarkerCount: originalMarkers.sourceCount,
     originalStructuralMarkerLossCount: originalMarkers.losses.length,
     originalStructuralMarkerLosses: originalMarkers.losses,
@@ -1804,6 +1822,19 @@ function buildStructureAudit({
     bracketedLabelBoundaryChangeCount: bracketedLabelLayout.boundaryChanges.length,
     bracketedLabelLosses: bracketedLabelLayout.losses,
     bracketedLabelBoundaryChanges: bracketedLabelLayout.boundaryChanges,
+    lineAnchorLayoutPass: lineAnchorLayout.pass,
+    lineAnchorSourceCount: lineAnchorLayout.sourceCount,
+    lineAnchorOutputCount: lineAnchorLayout.outputCount,
+    lineAnchorLossCount: lineAnchorLayout.losses.length,
+    lineAnchorBoundaryChangeCount: lineAnchorLayout.boundaryChanges.length,
+    lineAnchorLosses: lineAnchorLayout.losses,
+    lineAnchorBoundaryChanges: lineAnchorLayout.boundaryChanges,
+    exactLineStructurePass: exactLineStructure.pass,
+    exactLineStructureApplicable: exactLineStructure.applicable === true,
+    exactLineSourceCount: Number(exactLineStructure.sourceLineCount || 0),
+    exactLineOutputCount: Number(exactLineStructure.outputLineCount || 0),
+    exactNonEmptySourceCount: Number(exactLineStructure.sourceNonEmptyLineCount || 0),
+    exactNonEmptyOutputCount: Number(exactLineStructure.outputNonEmptyLineCount || 0),
     introducedOrphanParticleBoundaryCount,
     pass: lost.length === 0
       && outOfOrder.length === 0
@@ -1812,8 +1843,132 @@ function buildStructureAudit({
       && structuralSignature.pass
       && originalMarkers.pass
       && bracketedLabelLayout.pass
+      && lineAnchorLayout.pass
+      && exactLineStructure.pass
       && introducedOrphanParticleBoundaryCount === 0
       && layoutRepair?.pass !== false
+  };
+}
+
+/**
+ * 제목·부제·날짜·라벨은 문자열이 남는 것뿐 아니라 같은 행에 묶여 있어야
+ * 구조가 보존된다. 역할 개수만 비교하면 제목을 앞 문단에 붙이거나 이모지와
+ * 라벨을 서로 다른 행으로 갈라도 통과하므로 원문 행 앵커를 순서대로 대조한다.
+ */
+function compareLineAnchorLayout(source, output) {
+  const sourceAnchors = extractLineAnchors(source);
+  const outputLines = layoutStructure.buildLineRecords(output).filter(record => !record.blank);
+  const losses = [];
+  const boundaryChanges = [];
+  let cursor = 0;
+  for (const anchor of sourceAnchors) {
+    let found = -1;
+    for (let index = cursor; index < outputLines.length; index += 1) {
+      const outputKey = anchor.standalone
+        ? lineAnchorKey(outputLines[index].text)
+        : lineAnchorPrefixKey(outputLines[index].text);
+      if (anchor.standalone ? outputKey === anchor.key : outputKey.startsWith(anchor.key)) {
+        found = index;
+        break;
+      }
+    }
+    if (found < 0) {
+      const compactOutput = outputLines.map(line => lineAnchorKey(line.text)).join('');
+      if (anchor.standalone && compactOutput.includes(anchor.key)) {
+        boundaryChanges.push({
+          kind: anchor.kind,
+          sourceLineOrdinal: anchor.lineOrdinal,
+          reason: 'standalone_anchor_merged_or_split'
+        });
+      } else {
+        losses.push({
+          kind: anchor.kind,
+          sourceLineOrdinal: anchor.lineOrdinal,
+          anchor: anchor.display.slice(0, 160)
+        });
+      }
+      continue;
+    }
+    const line = outputLines[found];
+    if (!anchor.standalone) {
+      const outputKey = lineAnchorPrefixKey(line.text);
+      if (!outputKey.startsWith(anchor.key) || outputKey.length <= anchor.key.length) {
+        boundaryChanges.push({
+          kind: anchor.kind,
+          sourceLineOrdinal: anchor.lineOrdinal,
+          outputLineOrdinal: line.index + 1,
+          reason: 'inline_anchor_body_detached'
+        });
+      }
+    }
+    cursor = found + 1;
+  }
+  return {
+    pass: losses.length === 0 && boundaryChanges.length === 0,
+    sourceCount: sourceAnchors.length,
+    outputCount: extractLineAnchors(output).length,
+    losses: losses.slice(0, 20),
+    boundaryChanges: boundaryChanges.slice(0, 20)
+  };
+}
+
+function extractLineAnchors(value) {
+  const anchors = [];
+  for (const record of layoutStructure.buildLineRecords(value)) {
+    if (record.blank) continue;
+    const role = String(record.role || '');
+    if (['title', 'heading', 'signature'].includes(role)) {
+      anchors.push({
+        kind: role,
+        key: lineAnchorKey(record.text),
+        display: String(record.text || ''),
+        standalone: true,
+        lineOrdinal: record.index + 1
+      });
+      continue;
+    }
+    if (role !== 'label_inline') continue;
+    const text = String(record.text || '');
+    const colonPositions = [text.indexOf(':'), text.indexOf('：')].filter(index => index >= 0);
+    const colon = colonPositions.length ? Math.min(...colonPositions) : -1;
+    if (colon < 0) continue;
+    const prefix = text.slice(0, colon + 1);
+    anchors.push({
+      kind: 'label_inline',
+      key: lineAnchorKey(prefix),
+      display: prefix,
+      standalone: false,
+      lineOrdinal: record.index + 1
+    });
+  }
+  return anchors.filter(anchor => anchor.key.length >= 2);
+}
+
+function lineAnchorKey(value) {
+  return String(value || '').normalize('NFKC').replace(/[\s\u200B\uFEFF]+/gu, '');
+}
+
+function lineAnchorPrefixKey(value) {
+  return lineAnchorKey(value);
+}
+
+function auditExactLineStructure(source, output) {
+  const sourceRecords = layoutStructure.buildLineRecords(source);
+  const outputRecords = layoutStructure.buildLineRecords(output);
+  const sourceBlankPattern = sourceRecords.map(record => record.blank ? '0' : '1').join('');
+  const outputBlankPattern = outputRecords.map(record => record.blank ? '0' : '1').join('');
+  const sourceNonEmptyLineCount = sourceRecords.filter(record => !record.blank).length;
+  const outputNonEmptyLineCount = outputRecords.filter(record => !record.blank).length;
+  return {
+    applicable: true,
+    pass: sourceRecords.length === outputRecords.length
+      && sourceNonEmptyLineCount === outputNonEmptyLineCount
+      && sourceBlankPattern === outputBlankPattern,
+    sourceLineCount: sourceRecords.length,
+    outputLineCount: outputRecords.length,
+    sourceNonEmptyLineCount,
+    outputNonEmptyLineCount,
+    blankPatternPass: sourceBlankPattern === outputBlankPattern
   };
 }
 
@@ -2399,6 +2554,8 @@ module.exports = {
   compareStructuralRoleSignatures,
   compareOriginalStructuralMarkers,
   compareBracketedLabelLayout,
+  compareLineAnchorLayout,
+  auditExactLineStructure,
   extractOriginalStructuralMarkers,
   countOrphanParticleLineBoundaries,
   isQuestionnaireQuestionLine,

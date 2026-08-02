@@ -105,6 +105,7 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'unsafe_chunk_boundary',
   'speaker_injected',
   'speaker_removed',
+  'personal_scope_generalized',
   'quote_count_changed',
   'quote_content_changed',
   'list_structure_changed',
@@ -113,6 +114,7 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'title_line_merged',
   'structural_line_loss',
   'line_structure_changed',
+  'line_anchor_changed',
   'questionnaire_structure_changed',
   'creative_line_structure',
   'register_shift',
@@ -208,6 +210,26 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
       'orphan_particle_line_boundary',
       '한국어 조사 앞에서 문장이나 행이 잘못 나뉜 곳이 있을 수 있어요.',
       { count: structureAudit.introducedOrphanParticleBoundaryCount }
+    ));
+  }
+  if (structureAudit?.lineAnchorLayoutPass === false) {
+    warnings.push(warning(
+      'line_anchor_changed',
+      '원문의 제목·라벨·날짜가 다른 행과 합쳐지거나 분리됐을 수 있어요.',
+      {
+        count: Number(structureAudit.lineAnchorLossCount || 0)
+          + Number(structureAudit.lineAnchorBoundaryChangeCount || 0)
+      }
+    ));
+  }
+  if (structureAudit?.exactLineStructureApplicable === true
+      && structureAudit?.exactLineStructurePass === false) {
+    const profile = String(documentProfile?.profile || documentProfile || 'unknown');
+    warnings.push(warning(
+      profile === 'creative' ? 'creative_line_structure' : 'line_structure_changed',
+      profile === 'creative'
+        ? '창작문의 행 구조를 확인해야 해요.'
+        : '원문의 보존 대상 행 구조가 달라졌을 수 있어요.'
     ));
   }
   const discourseAudit = discourse.compareDiscourse(source, outputText);

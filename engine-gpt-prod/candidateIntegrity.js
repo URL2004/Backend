@@ -4,6 +4,7 @@ const koreanRefinement = require('./koreanRefinement');
 const fingerprint = require('./fingerprintAudit');
 const endingStyle = require('./endingStyleAudit');
 const legalAudit = require('./legalAudit');
+const structureChunk = require('./structureChunk');
 const {
   auditDirectQuoteIntegrity,
   auditVoice,
@@ -18,6 +19,11 @@ const STRUCTURE_WARNING_CODES = new Set([
   'structural_line_loss',
   'line_structure_changed',
   'creative_line_structure'
+]);
+const VOICE_WARNING_CODES = new Set([
+  'speaker_injected',
+  'speaker_removed',
+  'personal_scope_generalized'
 ]);
 
 /**
@@ -98,14 +104,23 @@ function auditCandidateIntegrity({
   const sourceVoice = buildVoiceProfile(source, { documentProfile, mode });
   const beforeStructureIssues = voiceStructureIssues(sourceVoice, source, current, documentProfile, mode);
   const candidateStructureIssues = voiceStructureIssues(sourceVoice, source, after, documentProfile, mode);
+  const beforeVoiceIssues = voiceIntegrityIssues(sourceVoice, source, current, documentProfile, mode);
+  const candidateVoiceIssues = voiceIntegrityIssues(sourceVoice, source, after, documentProfile, mode);
   const beforeStructureRisk = structureIssueRisk(beforeStructureIssues);
   const candidateStructureRisk = structureIssueRisk(candidateStructureIssues);
   const beforeTokenBoundaryRisk = lockedTokenBoundaryRisk(source, current);
   const candidateTokenBoundaryRisk = lockedTokenBoundaryRisk(source, after);
+  const beforeLineAnchorRisk = lineAnchorRisk(source, current, sourceVoice);
+  const candidateLineAnchorRisk = lineAnchorRisk(source, after, sourceVoice);
   if ([...candidateStructureIssues.entries()]
     .some(([code, count]) => count > Number(beforeStructureIssues.get(code) || 0))
-      || candidateTokenBoundaryRisk > beforeTokenBoundaryRisk) {
+      || candidateTokenBoundaryRisk > beforeTokenBoundaryRisk
+      || candidateLineAnchorRisk > beforeLineAnchorRisk) {
     add('structure_integrity_worsened');
+  }
+  if ([...candidateVoiceIssues.entries()]
+    .some(([code, count]) => count > Number(beforeVoiceIssues.get(code) || 0))) {
+    add('voice_integrity_worsened');
   }
 
   return {
@@ -119,7 +134,9 @@ function auditCandidateIntegrity({
       quoteRisk: quoteRisk(beforeQuote),
       legalRisk: legalRisk(beforeLegal),
       structureRisk: beforeStructureRisk,
-      tokenBoundaryRisk: beforeTokenBoundaryRisk
+      voiceRisk: structureIssueRisk(beforeVoiceIssues),
+      tokenBoundaryRisk: beforeTokenBoundaryRisk,
+      lineAnchorRisk: beforeLineAnchorRisk
     },
     candidate: {
       korean: compactKorean(candidateKorean),
@@ -128,7 +145,9 @@ function auditCandidateIntegrity({
       quoteRisk: quoteRisk(candidateQuote),
       legalRisk: legalRisk(candidateLegal),
       structureRisk: candidateStructureRisk,
-      tokenBoundaryRisk: candidateTokenBoundaryRisk
+      voiceRisk: structureIssueRisk(candidateVoiceIssues),
+      tokenBoundaryRisk: candidateTokenBoundaryRisk,
+      lineAnchorRisk: candidateLineAnchorRisk
     }
   };
 }
@@ -152,6 +171,28 @@ function legalRisk(value) {
 }
 
 function voiceStructureIssues(sourceVoice, source, output, documentProfile, mode) {
+  return voiceIssueCounts(
+    sourceVoice,
+    source,
+    output,
+    documentProfile,
+    mode,
+    STRUCTURE_WARNING_CODES
+  );
+}
+
+function voiceIntegrityIssues(sourceVoice, source, output, documentProfile, mode) {
+  return voiceIssueCounts(
+    sourceVoice,
+    source,
+    output,
+    documentProfile,
+    mode,
+    VOICE_WARNING_CODES
+  );
+}
+
+function voiceIssueCounts(sourceVoice, source, output, documentProfile, mode, acceptedCodes) {
   const audit = auditVoice(sourceVoice, output, {
     documentProfile,
     mode,
@@ -160,7 +201,7 @@ function voiceStructureIssues(sourceVoice, source, output, documentProfile, mode
   const counts = new Map();
   for (const item of audit.warnings || []) {
     const code = String(item?.code || '');
-    if (!STRUCTURE_WARNING_CODES.has(code)) continue;
+    if (!acceptedCodes.has(code)) continue;
     counts.set(code, Number(counts.get(code) || 0) + 1);
   }
   return counts;
@@ -236,6 +277,17 @@ function koreanIssueCounts(value) {
     ));
   }
   return counts;
+}
+
+function lineAnchorRisk(source, output, sourceVoice) {
+  const anchors = structureChunk.compareLineAnchorLayout(source, output);
+  let risk = Number(anchors?.losses?.length || 0)
+    + Number(anchors?.boundaryChanges?.length || 0);
+  if (sourceVoice?.lineBoundaryPolicy === 'all') {
+    const exact = structureChunk.auditExactLineStructure(source, output);
+    if (exact.pass !== true) risk += 1;
+  }
+  return risk;
 }
 
 function koreanIntegrityWorsened({ before, candidate, beforeCounts, candidateCounts }) {

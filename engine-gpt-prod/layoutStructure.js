@@ -99,6 +99,10 @@ function buildLineRecords(value) {
     records,
     new Set([...codeIndices, ...tableIndices, ...signatureIndices])
   );
+  const parallelSectionHeadingIndices = detectParallelSectionHeadingIndices(
+    records,
+    new Set([...codeIndices, ...tableIndices, ...signatureIndices])
+  );
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
   for (const record of nonEmpty) {
     if (codeIndices.has(record.index)) {
@@ -118,7 +122,8 @@ function buildLineRecords(value) {
       blankAfter: record.index === records.length - 1 || nextRaw?.blank === true,
       tableLike: tableIndices.has(record.index),
       signatureLike: signatureIndices.has(record.index),
-      parallelSloganTitle: parallelSloganTitleIndices.has(record.index)
+      parallelSloganTitle: parallelSloganTitleIndices.has(record.index),
+      parallelSectionHeading: parallelSectionHeadingIndices.has(record.index)
     });
   }
   return records;
@@ -128,6 +133,7 @@ function classifyLine(value, context = {}) {
   const text = visibleTrim(value);
   if (!text) return 'blank';
   if (legalClauseParts(text)) return 'legal_clause';
+  if (isExactMetadataLine(text)) return 'signature';
   if (context.signatureLike) return 'signature';
   if (context.parallelSloganTitle) return 'title';
   if (isKnownHeadingLine(text)) return 'heading';
@@ -135,9 +141,12 @@ function classifyLine(value, context = {}) {
   if (isFlowSequenceLine(text)) return 'flow';
   if (isListLine(text)) return 'list';
   if (isQuoteLine(text)) return 'quote';
+  if (isColonTitleLine(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
   if (isGenericTitle(text, context)) return 'title';
+  if (isTitleContinuation(text, context)) return 'title';
+  if (context.parallelSectionHeading) return 'heading';
   if (isStandaloneSectionHeading(text, context)) return 'heading';
   return 'prose';
 }
@@ -165,6 +174,10 @@ function isKnownHeadingLine(value) {
   if (/^\d{1,2}\.(?:19|20)\d{2}년\S*.{0,100}$/u.test(text)) return true;
   if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/u.test(text)) return true;
   if (/^제\s?\d{1,3}\s?조(?:의\s?\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?$/u.test(text)) return true;
+  // 자소서·비교 문서에서 `라벨 — 2. 항목명` 전체가 하나의 제목 행이다.
+  // 번호만 제목으로 인식하면 앞 라벨은 이전 본문에 붙고 항목명은 번호 뒤에서
+  // 다시 갈라질 수 있으므로 짧은 무종결 행 전체를 잠근다.
+  if (/^[^.!?。！？\n]{2,70}\s*[—–-]\s*\d{1,3}[.)]?\s+[^.!?。！？\n]{2,100}$/u.test(text)) return true;
   if (/^(?:성장\s*(?:과정|배경)(?:과\s*(?:학교|학창)\s*시절)?|나의\s*성격적\s*강점과\s*약점|성격의\s*장단점|지원\s*동기|직무\s*역량|경력\s*사항|입사\s*후(?:의)?\s*(?:포부|목표)(?:와\s*포부)?)$/u.test(text)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
   return /^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/iu.test(text);
@@ -176,7 +189,11 @@ function isKnownHeadingLine(value) {
  * 잠그지 않도록 길이와 다음 본문 비율을 동시에 제한한다.
  */
 function isStandaloneSectionHeading(text, context = {}) {
-  if (!context.blankBefore || !context.blankAfter || !context.next) return false;
+  // 제목 바로 다음 행에 본문이 이어지는 워드·웹 입력도 흔하다. 앞뒤 모두
+  // 빈 행이어야 한다는 옛 조건은 이런 정상 소제목을 산문으로 내려 모델이
+  // 이전 문단 끝에 합치게 했다. 앞쪽 단락 경계와 뒤의 충분한 본문을 함께
+  // 확인하므로 blankAfter는 필수로 두지 않는다.
+  if (!context.blankBefore || !context.next) return false;
   if (text.length < 2 || text.length > 70) return false;
   if (/[.!?。！？]\s*["”’')\]]*$/u.test(text)) return false;
   if (/^(?:https?:|www\.|[A-Za-z]:\\)/iu.test(text)) return false;
@@ -186,6 +203,56 @@ function isStandaloneSectionHeading(text, context = {}) {
   if (nextLength < Math.max(70, Math.ceil(text.length * 1.45))) return false;
   if (!looksLikeUnpunctuatedProse(text)) return true;
   return text.length <= 36 && nextLength >= Math.max(100, text.length * 2);
+}
+
+function isColonTitleLine(text, context = {}) {
+  if (!context.firstContent || !context.next) return false;
+  if (text.length < 12 || text.length > 100) return false;
+  const parts = labelParts(text);
+  if (!parts || parts.label.length < 4 || parts.rest.length < 4) return false;
+  if (/^(?:이름|성명|학번|학과|전공|과목|과목명|담당|작성자|제출자|일시|날짜|주소|연락처)$/u.test(parts.label)) return false;
+  const nextText = String(context.next.text || '');
+  return nextText.length >= 4
+    && nextText.length <= 70
+    && !labelParts(nextText)
+    && !/[.!?。！？]\s*$/u.test(nextText)
+    && !looksLikeUnpunctuatedProse(nextText);
+}
+
+/**
+ * 빈 줄 없이 `소제목\n긴 본문`이 반복되는 원고를 문서 패턴으로 판정한다.
+ * 한두 개의 짧은 무종결 문장을 과보호하지 않도록 같은 구조가 세 번 이상
+ * 확인될 때만 제목 인덱스로 승격한다.
+ */
+function detectParallelSectionHeadingIndices(records, excluded = new Set()) {
+  const source = Array.isArray(records) ? records : [];
+  const candidates = [];
+  for (let index = 0; index < source.length - 1; index += 1) {
+    const record = source[index];
+    const next = source[index + 1];
+    if (!record || !next || record.blank || next.blank || excluded.has(record.index)) continue;
+    const text = String(record.text || '').trim();
+    const nextText = String(next.text || '').trim();
+    if (text.length < 4 || text.length > 70 || nextText.length < Math.max(100, text.length * 2)) continue;
+    if (/[.!?。！？]\s*$/u.test(text)) continue;
+    if (isListLine(text) || labelParts(text) || bracketLabelParts(text)
+        || isKnownHeadingLine(text) || isQuoteLine(text) || isExplicitTableLine(text)
+        || looksLikeUnpunctuatedProse(text)) continue;
+    candidates.push(record.index);
+  }
+  return candidates.length >= 3 ? new Set(candidates) : new Set();
+}
+
+function isTitleContinuation(text, context = {}) {
+  const previousRole = String(context.previous?.role || '');
+  if (!['title', 'heading'].includes(previousRole) || !context.next) return false;
+  if (text.length < 2 || text.length > 100) return false;
+  if (/[.!?。！？]\s*["”’')\]]*$/u.test(text)) return false;
+  if (/^(?:https?:|www\.|[A-Za-z]:\\)/iu.test(text)) return false;
+  if (isListLine(text) || isQuoteLine(text) || isExplicitTableLine(text)) return false;
+  if (bracketLabelParts(text) || labelParts(text) || looksLikeUnpunctuatedProse(text)) return false;
+  const nextLength = String(context.next?.text || '').length;
+  return context.blankAfter || nextLength >= Math.max(70, Math.ceil(text.length * 1.45));
 }
 
 function isBracketHeadingLine(value) {
@@ -262,11 +329,16 @@ function detectParallelSloganTitleIndices(records, excluded = new Set()) {
 
 function labelParts(value) {
   const text = visibleTrim(value);
-  const match = text.match(/^(?:[*#]+\s*)?([가-힣A-Za-z][가-힣A-Za-z0-9·/&() _-]{0,48})\s*[:：]\s*(.*)$/u);
+  const match = text.match(/^(?:[*#]+\s*)?(?:(?:\p{Extended_Pictographic}\uFE0F?)+\s*)?([가-힣A-Za-z][가-힣A-Za-z0-9·/&() _-]{0,48})\s*[:：]\s*(.*)$/u);
   if (!match) return null;
   const label = match[1].trim();
   if (/^(?:https?|ftp|file)$/iu.test(label) || /[.!?。！？]/u.test(label)) return null;
   return { label, rest: match[2].trim() };
+}
+
+function isExactMetadataLine(value) {
+  const text = visibleTrim(value);
+  return /^(?:[-*+•▪◦·]\s*)?(?:제출\s*일자|제출일|작성\s*일자|작성일|접수\s*일자|접수일|신청\s*일자|신청일|날짜|일시)\s*[:：]\s*(?:19|20)\d{2}\s*(?:[.\-/년]\s*\d{1,2})\s*(?:[.\-/월]\s*\d{1,2})(?:\s*일)?\s*[.]?$/u.test(text);
 }
 
 function bracketLabelParts(value) {
@@ -654,11 +726,14 @@ module.exports = {
   shouldPreserveLineBoundary,
   isStructuralRole,
   isKnownHeadingLine,
+  isTitleContinuation,
+  isExactMetadataLine,
   isBracketHeadingLine,
   isExplicitTableLine,
   isFlowSequenceLine,
   looksLikeUnpunctuatedProse,
   detectParallelSloganTitleIndices,
+  detectParallelSectionHeadingIndices,
   legalClauseParts,
   labelParts,
   bracketLabelParts,

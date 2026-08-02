@@ -352,6 +352,32 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   if (directApplicationContextSignals >= 1) {
     add(scores, 'resume_application', Math.min(firstPersonSignals, 3), 0.22);
   }
+
+  // 주차별 `수업 내용 요약 / 내 시합·일상 적용 / 활용 방안` 형식은
+  // 명사형 종결을 많이 쓰지만 교사가 학생을 관찰한 세특이 아니라 학생의
+  // 적용 일지다. 종결형만 보면 student_record_teacher가 압도하므로,
+  // 개인 적용 라벨·주차 구조·1인칭 경험이 함께 있을 때 자기평가를 우선한다.
+  const appliedLearningJournalLabelSignals = lines.filter(line => (
+    /^(?:수업\s*내용\s*요약|내\s*(?:시합|경기|훈련|일상)(?:\s*\/\s*(?:시합|경기|훈련|일상))?\s*적용|나의\s*(?:시합|경기|훈련|일상)\s*적용|활용\s*방안)\s*[:：]/u.test(line)
+  )).length;
+  const appliedLearningJournalWeekSignals = lines.filter(line => (
+    /^제\s*\d{1,2}\s*주\s*[:：]/u.test(line)
+  )).length;
+  const firstPersonAppliedLearningSignals = count(
+    text,
+    /(?:내|나의|저의|제)\s*(?:시합|경기|훈련|일상|생활|경험|성향|감정|집중력|마음|루틴|기록|적용)/gu
+  );
+  const appliedLearningJournalFrame = appliedLearningJournalLabelSignals >= 4
+    && appliedLearningJournalWeekSignals >= 2
+    && firstPersonAppliedLearningSignals >= 1;
+  if (appliedLearningJournalFrame) {
+    scores.student_self_assessment += 6.2
+      + Math.min(appliedLearningJournalLabelSignals - 4, 8) * 0.16
+      + Math.min(appliedLearningJournalWeekSignals - 2, 4) * 0.18;
+    if (explicitStudentRecordAnchorSignals === 0) {
+      scores.student_record_teacher = Math.min(scores.student_record_teacher, 1.3);
+    }
+  }
   if (compactLength <= 1600
       && firstPersonSignals >= 1
       && researchPlacementSignals >= 1
@@ -804,6 +830,10 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       topicSelectionSignals,
       selfAssessmentSectionSignals,
       explicitReflectionDocumentSignals,
+      appliedLearningJournalLabelSignals,
+      appliedLearningJournalWeekSignals,
+      firstPersonAppliedLearningSignals,
+      appliedLearningJournalFrame,
       reportInquirySignals,
       reportMethodSignals,
       inlineAcademicCitationSignals,

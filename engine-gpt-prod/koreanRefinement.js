@@ -2641,7 +2641,7 @@ function findIntroducedTokenDuplicationMappings(source, outputText) {
   for (const match of output.matchAll(/[가-힣]{2,}/gu)) {
     const token = match[0];
     if (sourceTokens.has(token)) continue;
-    const repairedToken = removeOneIntroducedRepeatedUnit(token, sourceText, sourceTokens);
+    const repairedToken = removeOneIntroducedRepeatedUnit(token, sourceTokens);
     if (!repairedToken) continue;
     mappings.push({
       outputToken: token,
@@ -2652,27 +2652,32 @@ function findIntroducedTokenDuplicationMappings(source, outputText) {
   return mappings;
 }
 
-function removeOneIntroducedRepeatedUnit(token, sourceText, sourceTokens) {
+function removeOneIntroducedRepeatedUnit(token, sourceTokens) {
   const maxUnit = Math.min(3, Math.floor(token.length / 2));
   for (let unitLength = 1; unitLength <= maxUnit; unitLength += 1) {
     for (let index = 0; index + unitLength * 2 <= token.length; index += 1) {
       const unit = token.slice(index, index + unitLength);
       if (unit !== token.slice(index + unitLength, index + unitLength * 2)) continue;
+      const repeatedLexicalCore = token.slice(0, index + unitLength * 2);
+      // `주주가`처럼 반복 음절 자체가 어휘의 일부이고 원문에는
+      // `주주에게`처럼 다른 조사가 붙어 있을 수 있다. 후보 `주가`가 원문에
+      // 우연히 존재한다는 이유만으로 `주주가`를 줄이면 뜻이 달라진다.
+      // 동일한 반복 코어로 시작하는 원문 어절이 하나라도 있으면 정상 어휘로
+      // 간주해 결정론적 삭제를 하지 않는다.
+      if ([...sourceTokens].some(sourceToken => sourceToken.startsWith(repeatedLexicalCore))) continue;
       // 한 음절 반복이 토큰 끝에 놓이면 명사 말음+조사(전문가가·강도도)뿐
       // 아니라 용언 활용(이어지지·가지지)일 가능성이 크다. 결정론적 수리는
       // 오탐 한 건이 실제 문법 훼손으로 이어지므로 이 모양은 모델 문맥
       // 감사에 맡기고, 어두·어중 중복이나 2음절 이상 반복만 자동 복원한다.
       if (unitLength === 1 && index + unitLength * 2 === token.length) continue;
-      // 전문가가·국가가처럼 명사 자체가 '가'로 끝난 뒤 주격 조사가 붙은
-      // 형태와 강도도·온도도처럼 명사 끝 '도' 뒤 보조사 '도'가 붙은
-      // 정상 형태를 중복 오타로 줄이지 않는다. '의의'도 같은 방식의
-      // 정상 어휘/조사 결합일 수 있어 한 글자 접미 반복에서는 보호한다.
-      if (unitLength === 1
-          && index + unitLength * 2 === token.length
-          && ['가', '의', '도'].includes(unit)) continue;
       const candidate = token.slice(0, index) + token.slice(index + unitLength);
       if (candidate.length < 2) continue;
-      if (sourceTokens.has(candidate) || sourceText.includes(candidate)) return candidate;
+      // 부분 문자열은 안전 근거가 아니다. `스스로` 안에는 잘못 줄인 `스로`가,
+      // `부부에게` 안에는 `부에게`가 연속 부분 문자열로 존재한다. 이전의
+      // sourceText.includes(candidate)는 이런 정상 반복 음절을 실제 오타로
+      // 오인해 결과에서 한 음절을 삭제했다. 원문에 완전한 한글 토큰으로
+      // 존재하는 후보만 복원해야 조사·어미 경계와 어휘 정체성이 보존된다.
+      if (sourceTokens.has(candidate)) return candidate;
     }
   }
   return '';

@@ -618,30 +618,60 @@ function restoreUnsafeRelationSentences(source, output, audit) {
   // 수행해 1:N 문장이 합쳐지면 뒤 output 번호가 밀릴 수 있으므로 반드시
   // 원래 결과 번호 기반 복원을 먼저 끝낸다. source ordinal은 이후에도
   // 공통 정렬기로 현재 결과에 다시 대응시킬 수 있다.
-  const restoredSource = restoreSourceSentenceOrdinals(
+  // 의미 관계 감사의 번호는 source ordinal이다. 같은 주제의 인접 결과
+  // 문장이 많으면 공통 정렬기가 1:N 묶음을 더 높은 점수로 고를 수 있고,
+  // 문단 경계를 건넌 묶음은 안전 복원기에서 거절된다. 먼저 1:1 문장을
+  // 복원해 주변의 정상 휴머나이징을 지키고, 실제 문장 분할 사례만 1:N으로
+  // 한 번 더 시도한다.
+  const restoredSourceSingle = restoreSourceSentenceOrdinals(
     source,
     restoredOutput.text,
     sourceOrdinals,
     {
       maxRestoreCount: Math.max(0, 8 - restoredOutput.restoredSentenceCount),
       minSimilarity: 0.24,
-      ordinalSpace: 'source'
+      ordinalSpace: 'source',
+      maxOutputGroup: 1
     }
   );
+  const restoredSourceOrdinalSet = new Set(restoredSourceSingle.restoredSentenceOrdinals || []);
+  const remainingSourceOrdinals = sourceOrdinals.filter(ordinal => !restoredSourceOrdinalSet.has(ordinal));
+  const restoredSourceGrouped = restoreSourceSentenceOrdinals(
+    source,
+    restoredSourceSingle.text,
+    remainingSourceOrdinals,
+    {
+      maxRestoreCount: Math.max(
+        0,
+        8 - restoredOutput.restoredSentenceCount - restoredSourceSingle.restoredSentenceCount
+      ),
+      minSimilarity: 0.24,
+      ordinalSpace: 'source',
+      maxOutputGroup: 3
+    }
+  );
+  const sourceApplied = restoredSourceSingle.applied || restoredSourceGrouped.applied;
   return {
-    ...restoredSource,
-    applied: restoredSource.applied || restoredOutput.applied,
+    ...restoredSourceGrouped,
+    text: restoredSourceGrouped.text,
+    applied: sourceApplied || restoredOutput.applied,
     restoredSentenceCount:
-      restoredSource.restoredSentenceCount + restoredOutput.restoredSentenceCount,
+      restoredSourceSingle.restoredSentenceCount
+      + restoredSourceGrouped.restoredSentenceCount
+      + restoredOutput.restoredSentenceCount,
     restoredSentenceOrdinals: [
       ...(restoredOutput.restoredSentenceOrdinals || []),
-      ...(restoredSource.restoredSentenceOrdinals || [])
+      ...(restoredSourceSingle.restoredSentenceOrdinals || []),
+      ...(restoredSourceGrouped.restoredSentenceOrdinals || [])
     ],
     restoredSourceSentenceOrdinals: [
       ...(restoredOutput.restoredSourceSentenceOrdinals || []),
-      ...(restoredSource.restoredSourceSentenceOrdinals || [])
+      ...(restoredSourceSingle.restoredSourceSentenceOrdinals || []),
+      ...(restoredSourceGrouped.restoredSourceSentenceOrdinals || [])
     ],
-    reason: restoredSource.applied || restoredOutput.applied ? 'restored' : restoredOutput.reason
+    reason: sourceApplied || restoredOutput.applied
+      ? 'restored'
+      : (restoredSourceGrouped.reason || restoredSourceSingle.reason || restoredOutput.reason)
   };
 }
 

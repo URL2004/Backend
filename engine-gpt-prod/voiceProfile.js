@@ -1,6 +1,6 @@
 'use strict';
 
-const { splitSentences, normalizeCompact, mean, standardDeviation } = require('../engine/koreanText');
+const { splitSentences, normalizeCompact, ngramJaccard, mean, standardDeviation } = require('../engine/koreanText');
 const { detectRegister, endingHistogram: sharedEndingHistogram } = require('../engine/endingStyle');
 const { computePovSeed, countPovKind } = require('../engine/pov');
 const layoutStructure = require('./layoutStructure');
@@ -156,15 +156,27 @@ function auditVoice(sourceProfile, output, {
   if (pluralInjected) {
     warnings.push(warning('speaker_injected', '원문에 없던 1인칭 복수 화자가 추가됐을 수 있어요.'));
   }
-  if ((sourceProfile?.pov?.firstSingular || 0) > 0 && current.pov.firstSingular === 0) {
+  const personalScopeAudit = sourceText
+    ? auditPersonalScopeGeneralization(sourceText, output)
+    : null;
+  const implicitSingularRetained = sourceText
+    ? hasSafeImplicitSingularRetention({
+        source: sourceText,
+        output,
+        sourceFirstSingularCount: sourceProfile?.pov?.firstSingular || 0,
+        documentProfile: context.profile,
+        mode,
+        personalScopeAudit
+      })
+    : false;
+  if ((sourceProfile?.pov?.firstSingular || 0) > 0
+      && current.pov.firstSingular === 0
+      && !implicitSingularRetained) {
     warnings.push(warning('speaker_removed', '원문의 1인칭 화자가 결과에서 사라졌을 수 있어요.'));
   }
   if (pluralRemoved) {
     warnings.push(warning('speaker_removed', '원문의 집단 화자가 결과에서 사라졌을 수 있어요.'));
   }
-  const personalScopeAudit = sourceText
-    ? auditPersonalScopeGeneralization(sourceText, output)
-    : null;
   if (personalScopeAudit?.introducedCount > 0) {
     warnings.push(warning(
       'personal_scope_generalized',
@@ -332,6 +344,34 @@ function auditVoice(sourceProfile, output, {
     warnings,
     pass: warnings.length === 0
   };
+}
+
+// 한국어 자소서·성찰문은 첫 문장에서 화자를 밝힌 뒤 주어를 자연스럽게
+// 생략하는 경우가 많다. 명시 대명사 개수만 비교하면 `저는` 한 번을 덜어낸
+// 정상 재작성도 화자 삭제로 오인한다. 비다듬기 모드에서 내용·개인 범위와
+// 다수의 수행 서술이 유지된 경우에만 제한적으로 한국어 영주어를 인정한다.
+function hasSafeImplicitSingularRetention({
+  source,
+  output,
+  sourceFirstSingularCount = 0,
+  documentProfile = 'unknown',
+  mode = '',
+  personalScopeAudit = null
+} = {}) {
+  if (String(mode || '') === 'polish') return false;
+  if (!['resume_application', 'personal_essay', 'general_essay', 'student_self_assessment']
+    .includes(String(documentProfile || ''))) return false;
+  if (Number(sourceFirstSingularCount || 0) <= 0 || Number(sourceFirstSingularCount || 0) > 2) return false;
+  if (Number(personalScopeAudit?.introducedCount || 0) > 0) return false;
+  const beforeCompact = normalizeCompact(source);
+  const afterCompact = normalizeCompact(output);
+  if (!beforeCompact || !afterCompact) return false;
+  const lengthRatio = afterCompact.length / Math.max(1, beforeCompact.length);
+  if (lengthRatio < 0.72 || lengthRatio > 1.35 || ngramJaccard(source, output, 3) < 0.16) return false;
+  const ownedPredicates = String(output || '').match(
+    /(?:맡았|정했|확인했|살펴보았|살펴봤|공유했|조치했|마쳤|받았|배웠|느꼈|얻었|취득했|진학했|근무했|참여했|지원했|수행했|작성했|정리했|경험했|생각했|깨달았|알게\s*되었|하고자\s*합니다|하겠습니다|했습니다|하였습니다)/gu
+  ) || [];
+  return ownedPredicates.length >= 2;
 }
 
 function sentenceDistributionShift(sourceSentence, currentSentence, { toleranceMultiplier = 1 } = {}) {

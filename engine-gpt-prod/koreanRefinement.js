@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 21;
+const VERSION = 22;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -39,6 +39,24 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: true,
     message: '닫는 따옴표 뒤의 조사·서술격이 불필요하게 떨어져 있어요.'
+  },
+  collapsed_korean_spacing_run: {
+    weight: 6,
+    repairable: true,
+    deterministicSafe: false,
+    message: '한글이 긴 구간 동안 붙어 있어 문맥에 맞는 띄어쓰기와 문장 경계를 복원해야 해요.'
+  },
+  focus_particle_redundancy: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“만의 … 만으로”처럼 같은 초점 조사가 한 구 안에서 겹쳤어요.'
+  },
+  subject_experiencer_case_frame: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '상황·일을 주어로 둔 채 “부담스럽게 느낀 경험”으로 연결해 주어와 서술어 관계가 어색해요.'
   },
   message_spelling: {
     weight: 2,
@@ -542,8 +560,9 @@ const ISSUE_DEFINITIONS = Object.freeze({
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
 const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|나|라도|든(?:지)?|기(?:도|만|는)|지(?:만)?|다|고|며|어서|므로|었(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
-const QUOTE_PARTICLE_SUFFIX = '(?:에서|에게|으로|처럼|보다|부터|까지|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
-const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서|에게|으로|처럼|보다|부터|까지|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|하며)';
 const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
 const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
 const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
@@ -555,7 +574,7 @@ const CLOSED_QUOTE_SPACING_RE = new RegExp(`([”’」』》〉])(?!${QUOTE_ATT
 // 계속 붙여 쓰도록 두 문법을 분리한다.
 const CLOSED_QUOTE_PARTICLE_GAP_RE = new RegExp(
   `(?:(${CLOSE_QUOTE_CLASS})[ \\t]+(?=${QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX}${QUOTE_SUFFIX_BOUNDARY})`
-  + `|(${CLOSE_QUOTE_CLASS})(?<![.!?。！？…]${CLOSE_QUOTE_CLASS})[ \\t]+(?=(?:하고|하며)${QUOTE_SUFFIX_BOUNDARY}))`,
+  + `|(${CLOSE_QUOTE_CLASS})(?<![.!?。！？…]${CLOSE_QUOTE_CLASS})(?<![다요죠자라까니냐]${CLOSE_QUOTE_CLASS})[ \\t]+(?=${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}${QUOTE_SUFFIX_BOUNDARY}))`,
   'gu'
 );
 const QUOTE_TERMINAL_REVIEW_RE = new RegExp(`[‘“][^’”\\n]{2,120}(?<![.!?。！？…])[’”](?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
@@ -834,7 +853,7 @@ function repairContextualSpacing(value, source, context) {
     workingLine = replaceTracked(
       workingLine,
       CLOSED_QUOTE_PARTICLE_GAP_RE,
-      (_match, closing) => closing,
+      (_match, particleClosing, attributionClosing) => particleClosing || attributionClosing || _match,
       'closed_quote_particle_spacing',
       counts
     );
@@ -1268,6 +1287,9 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
   pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SPACING_RE);
   pushPatternIssue(issues, text, 'closed_quote_particle_spacing', CLOSED_QUOTE_PARTICLE_GAP_RE);
+  pushCollapsedKoreanSpacingIssue(issues, text);
+  pushSentenceIssue(issues, text, 'focus_particle_redundancy', hasFocusParticleRedundancy);
+  pushSentenceIssue(issues, text, 'subject_experiencer_case_frame', hasSubjectExperiencerCaseFrame);
   pushPatternIssue(issues, text, 'message_spelling', /메세지/gu);
   pushNumericParenthesisIssue(issues, text);
   pushPatternIssue(issues, text, 'deep_understanding_collocation', /깊게\s+이해(?:하|했|되|할|하려|하고|하며|해서|해)/gu);
@@ -1460,6 +1482,11 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   for (let index = 0; index < reciprocalRepair.repairCount; index += 1) {
     changes.push('reciprocal_expression_redundancy');
   }
+  const focusParticleRepair = repairIntroducedFocusParticleRedundancy(source, text);
+  text = focusParticleRepair.text;
+  for (let index = 0; index < focusParticleRepair.repairCount; index += 1) {
+    changes.push('focus_particle_redundancy');
+  }
   if (!/우선순위(?:를|는|가)?\s+먼저\s+(?:판단|정하|결정|고려)/u.test(String(source || ''))) {
     text = replaceOutsideProtectedQuotes(
       text,
@@ -1622,6 +1649,8 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'analysis_stage_weakened',
   'causal_connector_strengthening',
   'sequential_connector_inflation',
+  'focus_particle_redundancy',
+  'subject_experiencer_case_frame',
   'technical_circuit_action_collocation',
   'passive_causative_stack',
   'double_object_time_expenditure',
@@ -1629,6 +1658,63 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'reduplicative_root_loss',
   'orphan_structural_particle'
 ]);
+
+const POLISH_DISCOURSE_OPENER_RE = /^(이러한\s+내용을\s+종합하면|이상의\s+내용을\s+종합하면|앞선\s+내용을\s+종합하면|이\s+내용을\s+종합하면|이를\s+종합하면|이러한\s+점을\s+종합하면|종합하면|이러한\s+점에서|이런\s+점에서|결론적으로|마지막으로|이에\s+따라|그러므로|따라서|결국|이처럼|요컨대|정리하면|한편|반면|다만|그러나|하지만|즉)([,，]?)[ \t]+/u;
+
+// 다듬기는 원문의 논리 표지를 간결화 대상으로 삼지 않는다. 모델이
+// 문장 첫머리의 결론·대조 표지만 지운 경우, 나머지 문장이 같은 위치에
+// 충분히 대응할 때 그 표지만 원문에서 복원한다. 문장 전체를 되돌리지
+// 않으므로 같은 문장에서 수행한 맞춤법·조사 교정은 유지된다.
+function restorePolishDiscourseOpeners({ source = '', outputText = '' } = {}) {
+  const before = String(outputText || '');
+  const sourceSpans = splitSentenceSpans(String(source || ''));
+  const outputSpans = splitSentenceSpans(before);
+  if (!sourceSpans.length || !outputSpans.length) {
+    return { text: before, applied: false, restoredCount: 0, restoredMarkers: [], reason: 'no_sentences' };
+  }
+
+  const outputSentences = outputSpans.map(span => span.text);
+  const proposals = [];
+  const usedOutputIndexes = new Set();
+  sourceSpans.forEach((sourceSpan, sourceIndex) => {
+    const match = String(sourceSpan.text || '').trim().match(POLISH_DISCOURSE_OPENER_RE);
+    if (!match) return;
+    const body = String(sourceSpan.text || '').trim().slice(match[0].length).trim();
+    if (normalizeSentenceLocal(body).length < 8) return;
+    const candidate = alignedOutputCandidates(
+      body,
+      sourceIndex,
+      sourceSpans.length,
+      outputSentences,
+      { window: 4, maxOutputGroup: 1 }
+    ).find(item => item.end - item.start === 1 && Number(item.rawScore ?? item.score ?? 0) >= 0.58);
+    if (!candidate || usedOutputIndexes.has(candidate.start)) return;
+    const targetSpan = outputSpans[candidate.start];
+    const target = String(targetSpan?.text || '').trim();
+    if (!target || POLISH_DISCOURSE_OPENER_RE.test(target)) return;
+    usedOutputIndexes.add(candidate.start);
+    proposals.push({
+      start: targetSpan.start,
+      prefix: `${match[1]}${match[2] || ''} `,
+      marker: match[1]
+    });
+  });
+
+  if (!proposals.length) {
+    return { text: before, applied: false, restoredCount: 0, restoredMarkers: [], reason: 'no_missing_opener' };
+  }
+  let text = before;
+  for (const proposal of proposals.sort((left, right) => right.start - left.start).slice(0, 16)) {
+    text = `${text.slice(0, proposal.start)}${proposal.prefix}${text.slice(proposal.start)}`;
+  }
+  return {
+    text,
+    applied: text !== before,
+    restoredCount: proposals.length,
+    restoredMarkers: [...new Set(proposals.map(item => item.marker))],
+    reason: text !== before ? 'restored' : 'unchanged'
+  };
+}
 
 function restoreIntroducedIntegritySentences({ source = '', outputText = '', audit = null } = {}) {
   const ordinals = [];
@@ -2926,6 +3012,72 @@ function isOwnedAffectiveSentence(value) {
     || /(?:감정|기분|마음)(?:은|는|이|가|을|를)[^.!?。！？\n]{0,28}(?:들|생기|느끼|느꼈|비롯)/u.test(text);
 }
 
+function pushCollapsedKoreanSpacingIssue(issues, text) {
+  const value = String(text || '').replace(/\r\n?/gu, '\n');
+  const lines = value.split('\n');
+  const guards = buildLineGuards(lines);
+  const ordinals = [];
+  let count = 0;
+  let offset = 0;
+  lines.forEach((line, index) => {
+    const guard = guards[index] || {};
+    if (guard.code || guard.reference || guard.table
+        || ['title', 'heading', 'list', 'quote'].includes(guard.role)) {
+      offset += line.length + 1;
+      return;
+    }
+    const unprotected = stripProtectedQuotedText(
+      replaceInlineProtectedRangesWithSpaces(line)
+    );
+    const matches = unprotected.match(/[가-힣]{36,}/gu) || [];
+    if (matches.length) {
+      count += matches.length;
+      ordinals.push(sentenceOrdinalAt(value, offset));
+    }
+    offset += line.length + 1;
+  });
+  if (count > 0) issues.push(makeIssue('collapsed_korean_spacing_run', count, ordinals));
+}
+
+function replaceInlineProtectedRangesWithSpaces(value) {
+  const line = String(value || '');
+  const ranges = inlineProtectedRanges(line);
+  if (!ranges.length) return line;
+  let text = line;
+  for (const range of [...ranges].sort((left, right) => right.start - left.start)) {
+    text = `${text.slice(0, range.start)}${' '.repeat(Math.max(1, range.end - range.start))}${text.slice(range.end)}`;
+  }
+  return text;
+}
+
+function hasFocusParticleRedundancy(value) {
+  return /[가-힣A-Za-z0-9·_-]{1,40}만의\s+[가-힣A-Za-z0-9·_-]{1,40}만으로(?:는|도|만)?(?=$|[\s,.;:!?。！？])/u
+    .test(stripProtectedQuotedText(value));
+}
+
+function hasSubjectExperiencerCaseFrame(value) {
+  return /(?:일|상황|과정|환경|업무|활동|관계|과제|진로|선택)(?:이|가)\s+(?:부담스럽|어렵|힘들|두렵|낯설|불편|답답|속상|아쉽|기쁘|뿌듯|인상적)게\s+느낀\s+경험/u
+    .test(stripProtectedQuotedText(value));
+}
+
+function repairIntroducedFocusParticleRedundancy(source, outputText) {
+  const sourceCompact = normalizeCompact(source);
+  let repairCount = 0;
+  const text = replaceOutsideProtectedQuotes(
+    String(outputText || ''),
+    /([가-힣A-Za-z0-9·_-]{1,40}만의\s+[가-힣A-Za-z0-9·_-]{1,40})만으로((?:는|도|만)?)(?=$|[\s,.;:!?。！？])/gu,
+    (match, phrase, suffix) => {
+      const candidate = `${phrase}으로${suffix || ''}`;
+      if (!sourceCompact.includes(normalizeCompact(candidate))) return match;
+      repairCount += 1;
+      return candidate;
+    },
+    'focus_particle_redundancy',
+    []
+  );
+  return { text, repairCount };
+}
+
 function pushPatternIssue(issues, text, code, pattern) {
   const matches = [...String(text || '').matchAll(cloneGlobal(pattern))];
   if (!matches.length) return;
@@ -3353,6 +3505,7 @@ module.exports = {
   buildSourceReviewWarnings,
   detectTextIssues,
   detectProfessionalDowngrade,
+  restorePolishDiscourseOpeners,
   restoreIntroducedIntegritySentences,
   isImprovedAudit
 };

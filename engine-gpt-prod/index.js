@@ -53,7 +53,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.26';
+const VERSION = 'gpt-prod-v2.5.27';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -467,6 +467,8 @@ async function runEngine({
   const conservativeSentenceRetryRejectionCodes = [];
   let polishSpeakerRestoreCount = 0;
   let polishSpeakerRestoredSentenceCount = 0;
+  let polishDiscourseRestoreCount = 0;
+  let polishDiscourseRestoredMarkers = [];
   let finalNoopRecoveryCount = 0;
   let finalNoopRecovery = { attempted: false, applied: false, method: '', reason: '' };
   let humanizationDepthRetryCount = Number(sectionRecoveryReport.metrics?.miniAttemptCount || 0)
@@ -1136,9 +1138,11 @@ async function runEngine({
         'academic_purpose_chain_overloaded',
         'affective_anchor_omission',
         'borrowed_standard_case_frame',
-        'goal_direction_reference_mismatch'
+        'goal_direction_reference_mismatch',
+        'collapsed_korean_spacing_run'
       ].some(code => refinementIssueCodes.has(code));
       const affectiveRepair = refinementIssueCodes.has('affective_anchor_omission');
+      const spacingRunRepair = refinementIssueCodes.has('collapsed_korean_spacing_run');
       const retryReserved = recoveryBudget.tryStart();
       if (!retryReserved) {
         recoveryBudget.recordSkip(recoveryBudget.denialReason() || 'recovery_budget_exhausted');
@@ -1177,7 +1181,11 @@ async function runEngine({
             currentDepth: humanizationDepthReport,
             candidateDepth,
             maxLocalEditRatio: expandedLocalizedRepair ? 0.4 : 0.12,
-            localLengthPurpose: affectiveRepair ? 'source_restore' : 'standard',
+            // 무띄어쓰기 원문은 공백 복원만으로도 직전 후보 대비 문자 길이가
+            // 12% 이상 늘 수 있다. 의미·숫자·구조 감사는 그대로 유지하되
+            // 길이비만 원문 복원용 국소 범위에서 평가한다.
+            localLengthPurpose: (affectiveRepair || spacingRunRepair) ? 'source_restore' : 'standard',
+            allowSurfaceOnly: spacingRunRepair,
             allowDepthRegression: affectiveRepair
           })
           && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
@@ -2186,6 +2194,21 @@ async function runEngine({
       restoredKinds: polishSpeakerRestore.restoredKinds || [],
       reason: polishSpeakerRestore.reason || ''
     };
+    const discourseRestore = koreanRefinement.restorePolishDiscourseOpeners({
+      source: rawSource,
+      outputText
+    });
+    if (discourseRestore.applied) {
+      outputText = discourseRestore.text;
+      polishDiscourseRestoreCount = discourseRestore.restoredCount || 1;
+      polishDiscourseRestoredMarkers = discourseRestore.restoredMarkers || [];
+    }
+    layoutRepair.polishDiscourseRestore = {
+      applied: discourseRestore.applied === true,
+      restoredCount: Number(discourseRestore.restoredCount || 0),
+      restoredMarkers: discourseRestore.restoredMarkers || [],
+      reason: discourseRestore.reason || ''
+    };
   }
 
   // 의미 감사 뒤의 결정론적 문장 복원이 라벨·불릿·조문 접두부 앞의
@@ -2719,6 +2742,7 @@ async function runEngine({
       + polishRetryCount
       + generalSurfaceRetryCount
       + polishSpeakerRestoreCount
+      + (polishDiscourseRestoreCount > 0 ? 1 : 0)
       + (koreanDeterministicRepairCount > 0 ? 1 : 0)
       + koreanRefinementRetryCount
       + (quoteIntegrityRestoreCount > 0 ? 1 : 0)
@@ -2769,6 +2793,8 @@ async function runEngine({
     lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4)),
     polishSpeakerRestoreCount,
     polishSpeakerRestoredSentenceCount,
+    polishDiscourseRestoreCount,
+    polishDiscourseRestoredMarkers,
     polishEditKind,
     polishRetryReason,
     polishSourceIssueCount: Number(polishReport?.sourceIssueCount || 0),
@@ -4843,12 +4869,15 @@ function isSafeLocalizedLanguageCandidate({
   candidateDepth = null,
   maxLocalEditRatio = 0.12,
   localLengthPurpose = 'standard',
+  allowSurfaceOnly = false,
   allowDepthRegression = false
 } = {}) {
   const original = String(source || '').trim();
   const current = String(before || '').trim();
   const after = String(candidate || '').trim();
-  if (!original || !current || !after || isNoopEquivalent(current, after, mode)) return false;
+  if (!original || !current || !after) return false;
+  if (!allowSurfaceOnly && isNoopEquivalent(current, after, mode)) return false;
+  if (allowSurfaceOnly && normalizeLiteralSurface(current) === normalizeLiteralSurface(after)) return false;
   const localEdit = computeEditMetrics(current, after);
   const localLengthPolicy = floor.lengthStagePolicy(original, mode, 'localized', {
     purpose: localLengthPurpose

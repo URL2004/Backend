@@ -695,6 +695,36 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
   const detectedSourceParagraphs = splitParagraphs(layoutSourceText);
   const before = splitParagraphs(layoutOutputText);
   const beforeCount = before.length;
+  const polishLineSeparators = mode === 'polish'
+    ? restorePolishLineSeparatorPattern(layoutSourceText, layoutOutputText)
+    : { applicable: false, text: layoutOutputText, applied: false, contentPreserved: true };
+  if (polishLineSeparators.applicable) {
+    const afterParagraphs = splitParagraphs(polishLineSeparators.text);
+    const afterReadability = layoutStructure.measureParagraphReadability(afterParagraphs, readabilityOptions);
+    const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(polishLineSeparators.text).length;
+    return {
+      text: polishLineSeparators.text,
+      applied: polishLineSeparators.applied,
+      policy: 'exact_polish_line_separators',
+      sourceCount: detectedSourceParagraphs.length,
+      beforeCount,
+      targetCount: afterParagraphs.length,
+      afterCount: afterParagraphs.length,
+      roleBoundaryCount: 0,
+      sourceBoundaryRepairCount: polishLineSeparators.repairedBoundaryCount,
+      backwardConclusionRepairCount: 0,
+      paragraphAlignmentConfidence: 1,
+      proseSplitCount: 0,
+      visualGapRepairCount: 0,
+      explicitParagraphCountBefore,
+      explicitParagraphCountAfter,
+      readability: compactReadability(afterReadability),
+      // 다듬기는 새 문단을 만들어 가독성을 높이는 모드가 아니다. 원문에
+      // 여러 행이 있으면 과도하게 긴 행이 남더라도 원래의 단일 줄바꿈과
+      // 빈 줄 경계를 우선하며, 문장 중간 오개행은 마지막 형식 보정이 있다.
+      pass: polishLineSeparators.contentPreserved
+    };
+  }
   const formatFlags = new Set(typeof documentProfile === 'object' ? (documentProfile?.formatProfile?.flags || []) : []);
   const sourceLineLayout = layoutStructure.analyzeLineStructure(source);
   const resumeReadableUnits = profileName === 'resume_application'
@@ -792,28 +822,34 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     };
   }
   if (semanticProseRoles) {
-    const roleLayout = buildSemanticProseRoleLayout(layoutOutputText, {
+    const additiveTailLayout = mergeOrphanAdditiveTailParagraph(layoutOutputText, {
+      sourceParagraphCount: sourceCount,
+      readabilityOptions
+    });
+    const roleLayout = buildSemanticProseRoleLayout(additiveTailLayout.text, {
       profileName,
       readabilityOptions
     });
-    if (roleLayout.applicable) {
-      const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(roleLayout.text), readabilityOptions);
-      const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(roleLayout.text).length;
+    if (roleLayout.applicable || additiveTailLayout.applied) {
+      const roleLayoutText = roleLayout.applicable ? roleLayout.text : additiveTailLayout.text;
+      const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(roleLayoutText), readabilityOptions);
+      const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(roleLayoutText).length;
       return {
-        text: roleLayout.text,
-        applied: roleLayout.text !== rawOutputText,
+        text: roleLayoutText,
+        applied: roleLayoutText !== rawOutputText,
         policy: 'semantic_prose_roles',
         sourceCount,
         beforeCount,
-        targetCount: roleLayout.paragraphCount,
-        afterCount: roleLayout.paragraphCount,
-        roleBoundaryCount: roleLayout.roleBoundaryCount,
+        targetCount: splitParagraphs(roleLayoutText).length,
+        afterCount: splitParagraphs(roleLayoutText).length,
+        roleBoundaryCount: Number(roleLayout.roleBoundaryCount) || 0,
+        additiveTailMergeCount: additiveTailLayout.applied ? 1 : 0,
         proseSplitCount: 0,
         visualGapRepairCount: outputVisualLayout.repairCount,
         explicitParagraphCountBefore,
         explicitParagraphCountAfter,
         readability: compactReadability(afterReadability),
-        pass: roleLayout.contentPreserved && afterReadability.overlongCount === 0
+        pass: bare(roleLayoutText) === bare(layoutOutputText) && afterReadability.overlongCount === 0
       };
     }
   }
@@ -916,6 +952,41 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     targetConstrained,
     pass: afterReadability.overlongCount === 0
       && (afterCount === targetCount || targetConstrained)
+  };
+}
+
+function mergeOrphanAdditiveTailParagraph(value, { sourceParagraphCount = 0, readabilityOptions = {} } = {}) {
+  const normalized = normalizeParagraphWhitespace(value);
+  const paragraphs = splitParagraphs(normalized);
+  const sourceCount = Math.max(1, Number(sourceParagraphCount) || 0);
+  // 의미 있는 결론 문단을 무조건 합치지 않는다. 원문보다 문단이 늘었고,
+  // 세 문단 이상인 결과의 마지막에 앞 문단을 전제로 하는 짧은 부가 문장만
+  // 고립된 경우를 대상으로 한다.
+  if (paragraphs.length < 3 || paragraphs.length <= sourceCount) {
+    return { text: normalized, applied: false };
+  }
+  const tail = String(paragraphs.at(-1) || '').trim();
+  const previous = String(paragraphs.at(-2) || '').trim();
+  const tailSentences = splitSentences(tail).map(sentence => String(sentence || '').trim()).filter(Boolean);
+  if (tailSentences.length !== 1
+      || bare(tail).length > 140
+      || !/^(?:또한|그리고|아울러|더불어|이와\s*함께)(?=$|[\s,，])/u.test(tail)
+      || layoutStructure.isStructureDominatedParagraph(tail)
+      || layoutStructure.isStructureDominatedParagraph(previous)) {
+    return { text: normalized, applied: false };
+  }
+  const merged = `${previous} ${tail}`.trim();
+  if (layoutStructure.measureParagraphReadability([merged], readabilityOptions).overlongCount > 0) {
+    return { text: normalized, applied: false };
+  }
+  const repaired = [
+    ...paragraphs.slice(0, -2),
+    merged
+  ];
+  const text = normalizeParagraphWhitespace(repaired.join('\n\n'));
+  return {
+    text,
+    applied: text !== normalized
   };
 }
 
@@ -1617,6 +1688,66 @@ function touchesProtectedBlock(paragraph, protectedBlocks) {
 
 function splitParagraphs(value) {
   return layoutStructure.splitReadableParagraphs(value);
+}
+
+function restorePolishLineSeparatorPattern(source, outputText) {
+  const sourceLines = normalizeNewlines(source).split('\n');
+  const outputLines = normalizeNewlines(outputText).split('\n');
+  const sourceContentIndexes = sourceLines
+    .map((line, index) => (String(line || '').trim() ? index : -1))
+    .filter(index => index >= 0);
+  const outputContent = outputLines
+    .map(line => String(line || '').trim())
+    .filter(Boolean);
+  if (sourceContentIndexes.length < 2) {
+    return {
+      applicable: false,
+      text: String(outputText || ''),
+      applied: false,
+      contentPreserved: true,
+      repairedBoundaryCount: 0,
+      reason: 'single_source_line'
+    };
+  }
+  if (sourceContentIndexes.length !== outputContent.length) {
+    return {
+      applicable: false,
+      text: String(outputText || ''),
+      applied: false,
+      contentPreserved: true,
+      repairedBoundaryCount: 0,
+      reason: 'line_count_mismatch'
+    };
+  }
+
+  let text = outputContent[0];
+  for (let index = 1; index < outputContent.length; index += 1) {
+    const sourceGap = sourceContentIndexes[index] - sourceContentIndexes[index - 1];
+    text += `${sourceGap >= 2 ? '\n\n' : '\n'}${outputContent[index]}`;
+  }
+  text = normalizeParagraphWhitespace(text);
+  const before = normalizeParagraphWhitespace(outputText);
+  return {
+    applicable: true,
+    text,
+    applied: text !== before,
+    contentPreserved: bare(text) === bare(before),
+    repairedBoundaryCount: countLineSeparatorDifferences(before, text),
+    reason: text !== before ? 'restored' : 'already_exact'
+  };
+}
+
+function countLineSeparatorDifferences(left, right) {
+  const separators = value => (normalizeNewlines(value).match(/\n+/gu) || [])
+    .map(item => Math.min(2, item.length));
+  const before = separators(left);
+  const after = separators(right);
+  const size = Math.max(before.length, after.length);
+  let count = 0;
+  for (let index = 0; index < size; index += 1) {
+    if (before[index] !== after[index]) count += 1;
+  }
+  return count;
 }
 
 function normalizeNewlines(value) {

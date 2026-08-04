@@ -1235,6 +1235,15 @@ async function retryKoreanRefinement({
 }
 
 function refinementIssueInstruction(item) {
+  if (item?.code === 'collapsed_korean_spacing_run') {
+    return '붙어 있는 한글 구간 전체의 의미와 단어 순서는 그대로 두고, 문맥에 맞는 띄어쓰기와 필요한 문장 경계만 복원한다. 앞부분만 고치고 나머지 무공백 구간을 남기지 않는다.';
+  }
+  if (item?.code === 'focus_particle_redundancy') {
+    return '“만의 노력만으로는”처럼 한 구 안에서 겹친 초점 조사 하나만 제거한다. SOURCE의 강조 범위와 주체는 유지한다.';
+  }
+  if (item?.code === 'subject_experiencer_case_frame') {
+    return '일·상황이 주어이면 “부담스럽게 느껴진 경험”, 사람이 느낀 것이면 “부담스럽다고 느낀 경험”처럼 SOURCE의 주체에 맞춰 복원한다.';
+  }
   if (item?.code === 'professional_register_downgrade') {
     const losses = Array.isArray(item?.details?.alignedLosses) ? item.details.alignedLosses : [];
     const hints = losses.slice(0, 8).map(loss => `${loss.sourceOrdinal}번 주장의 ${loss.concept}=${(loss.preferred || []).join('/')}`);

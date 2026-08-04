@@ -22,6 +22,14 @@ test('조사했다를 찾아본으로 의역해도 실제 활동 비중 축소�
   assert.equal(audit.codes.includes('personal_balance_shift'), false, JSON.stringify(audit));
 });
 
+test('문장부호가 무너진 한두 문장 원문을 정상 분리해도 활동 비중 축소로 오인하지 않는다', () => {
+  const source = '탐구는 의미 있는 경험이었다. 처음에는 최저임금 상승을 예상했다 그러나 변수를 정의하고 비용 함수와 이익 함수를 활용해 기업의 선택 과정을 설명했다 공공 데이터를 수집해 변화율을 직접 비교했고 두 경우를 모두 확인했다';
+  const output = '이번 탐구는 의미 있는 경험이었다. 처음에는 최저임금 상승을 예상했다. 그러나 변수를 정의하고 비용 함수와 이익 함수를 활용해 기업의 선택 과정을 설명했다. 공공 데이터를 수집해 변화율을 직접 비교했고 두 경우를 모두 확인했다.';
+  const audit = discourse.compareDiscourse(source, output);
+  assert.equal(audit.metrics.before.sentenceCount, 2);
+  assert.equal(audit.codes.includes('personal_balance_shift'), false, JSON.stringify(audit));
+});
+
 test('같은 성찰 문단의 판단을 알게 되었다로 의역해도 새 평가로 오인하지 않는다', () => {
   const source = [
     '수업을 들으며 과거의 문제들이 조금씩 보이기 시작했습니다. 결국 문제의 시작은 상대방이 아니라 제 자신에게 있었습니다.',

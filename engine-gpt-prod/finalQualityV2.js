@@ -3,7 +3,7 @@
 const floor = require('../engine/floor');
 const { computeEditMetrics, splitSentenceSpans } = require('../engine/koreanText');
 const { hasPovKind } = require('../engine/pov');
-const { auditVoice, buildVoiceProfile } = require('./voiceProfile');
+const { auditVoice, buildVoiceProfile, auditDirectQuoteIntegrity } = require('./voiceProfile');
 const { compareNaturalnessShadow } = require('./naturalnessShadow');
 const { judgeAndRepair } = require('./judge');
 const { completeJson } = require('./openaiClient');
@@ -1156,6 +1156,163 @@ function firstRowPerParagraph(rows) {
   });
 }
 
+async function retryCollapsedKoreanSpacing({
+  source,
+  config,
+  signal,
+  safetyIdentifier = '',
+  model = '',
+  reasoningEffort = '',
+  phase = 'collapsed_korean_spacing_retry'
+}) {
+  const original = String(source || '').trim();
+  if (!original) {
+    return {
+      outputText: original,
+      safeChangeFound: false,
+      applied: false,
+      beforeCount: 0,
+      afterCount: 0,
+      reason: 'empty_source',
+      notes: [],
+      usage: null,
+      model: ''
+    };
+  }
+  const beforeAudit = koreanRefinement.analyzeKoreanRefinement({
+    source: original,
+    outputText: original,
+    documentProfile: 'unknown',
+    mode: 'polish'
+  });
+  const beforeCount = koreanIssueAfterCount(beforeAudit, 'collapsed_korean_spacing_run');
+  if (beforeCount <= 0) {
+    return {
+      outputText: original,
+      safeChangeFound: false,
+      applied: false,
+      beforeCount,
+      afterCount: beforeCount,
+      reason: 'not_applicable',
+      notes: [],
+      usage: null,
+      model: ''
+    };
+  }
+  const system = [
+    '너는 한국어 무띄어쓰기 복원기다. 입력의 문자와 순서를 한 글자도 바꾸지 않고 공백만 삽입한다.',
+    '한글이 36자 이상 붙은 모든 일반 산문 구간을 끝까지 처리한다. 일부 앞부분만 고치고 긴 무공백 구간을 남기지 않는다.',
+    '글자, 숫자, 문장부호, 인용부호, 영문, 기호를 추가·삭제·교체하지 않는다. 문장부호가 빠져 보여도 새로 만들지 않는다.',
+    '기존 공백·줄바꿈·문단 경계는 삭제하거나 이동하지 않는다. 새 줄바꿈도 만들지 않는다.',
+    '직접 인용, 코드, URL, 이메일, 표기 문자열의 내부 공백은 바꾸지 않는다.',
+    '서버가 공백을 제외한 문자열과 기존 경계를 대조하므로, 위 조건을 어긴 결과는 전부 폐기된다.'
+  ].join('\n');
+  const response = await completeJson({
+    system: withPromptDataRule(system),
+    user: buildPromptDataSections([{ label: 'SOURCE', value: original }]).text,
+    schema: POLISH_REPAIR_SCHEMA,
+    schemaName: 'gpt_prod_collapsed_korean_spacing_retry',
+    model: model || config.models.repair,
+    reasoningEffort: reasoningEffort || config.reasoning.repair,
+    verbosity: 'low',
+    maxOutputTokens: Math.max(1800, Math.min(12000, Math.ceil(original.length * 2.2))),
+    config,
+    signal,
+    safetyIdentifier,
+    meta: { task: 'repair', phase }
+  });
+  const candidate = String(response.json.outputText || '').trim() || original;
+  const validation = validateCollapsedKoreanSpacingCandidate(original, candidate);
+  return {
+    outputText: validation.pass ? candidate : original,
+    safeChangeFound: validation.pass,
+    applied: validation.pass,
+    beforeCount,
+    afterCount: validation.afterCount,
+    reason: validation.reason,
+    notes: response.json.notes || [],
+    usage: response.usage,
+    model: response.model
+  };
+}
+
+function validateCollapsedKoreanSpacingCandidate(source, candidate) {
+  const original = String(source || '').normalize('NFC').replace(/\r\n?/gu, '\n').trim();
+  const output = String(candidate || '').normalize('NFC').replace(/\r\n?/gu, '\n').trim();
+  const beforeAudit = koreanRefinement.analyzeKoreanRefinement({
+    source: original,
+    outputText: original,
+    documentProfile: 'unknown',
+    mode: 'polish'
+  });
+  const afterAudit = koreanRefinement.analyzeKoreanRefinement({
+    source: original,
+    outputText: output,
+    documentProfile: 'unknown',
+    mode: 'polish'
+  });
+  const beforeCount = koreanIssueAfterCount(beforeAudit, 'collapsed_korean_spacing_run');
+  const afterCount = koreanIssueAfterCount(afterAudit, 'collapsed_korean_spacing_run');
+  if (!original || !output || original === output) {
+    return { pass: false, reason: 'unchanged', beforeCount, afterCount };
+  }
+  if (beforeCount <= 0) return { pass: false, reason: 'not_applicable', beforeCount, afterCount };
+
+  const originalProjection = whitespaceProjection(original);
+  const outputProjection = whitespaceProjection(output);
+  if (originalProjection.characters.join('') !== outputProjection.characters.join('')) {
+    return { pass: false, reason: 'non_whitespace_changed', beforeCount, afterCount };
+  }
+  if (originalProjection.gaps.length !== outputProjection.gaps.length) {
+    return { pass: false, reason: 'character_alignment_failed', beforeCount, afterCount };
+  }
+  for (let index = 0; index < originalProjection.gaps.length; index += 1) {
+    const beforeGap = originalProjection.gaps[index];
+    const afterGap = outputProjection.gaps[index];
+    const beforeNewlines = (beforeGap.match(/\n/gu) || []).length;
+    const afterNewlines = (afterGap.match(/\n/gu) || []).length;
+    if (beforeNewlines !== afterNewlines) {
+      return { pass: false, reason: 'line_boundary_changed', beforeCount, afterCount };
+    }
+    if (beforeGap && !afterGap) {
+      return { pass: false, reason: 'existing_whitespace_removed', beforeCount, afterCount };
+    }
+    if (!beforeGap && afterGap) {
+      const previous = originalProjection.characters[index - 1] || '';
+      const next = originalProjection.characters[index] || '';
+      if (!/[가-힣]/u.test(previous) || !/[가-힣]/u.test(next) || /\n/u.test(afterGap)) {
+        return { pass: false, reason: 'spacing_outside_korean_run', beforeCount, afterCount };
+      }
+    }
+  }
+  const quoteAudit = auditDirectQuoteIntegrity(original, output);
+  if (quoteAudit?.pass === false) {
+    return { pass: false, reason: 'quote_content_changed', beforeCount, afterCount };
+  }
+  if (afterCount >= beforeCount || afterCount > 0) {
+    return { pass: false, reason: 'collapsed_spacing_remaining', beforeCount, afterCount };
+  }
+  return { pass: true, reason: 'spacing_restored', beforeCount, afterCount };
+}
+
+function whitespaceProjection(value) {
+  const characters = [];
+  const gaps = [''];
+  for (const character of Array.from(String(value || ''))) {
+    if (/\s/u.test(character)) {
+      gaps[gaps.length - 1] += character;
+    } else {
+      characters.push(character);
+      gaps.push('');
+    }
+  }
+  return { characters, gaps };
+}
+
+function koreanIssueAfterCount(audit, code) {
+  return Number((audit?.issues || []).find(item => item?.code === code)?.afterCount || 0);
+}
+
 async function retryKoreanRefinement({
   source,
   currentOutput,
@@ -1602,6 +1759,8 @@ module.exports = {
   retryPolishSurface,
   retryGeneralSurface,
   retryConservativeSentenceSurface,
+  retryCollapsedKoreanSpacing,
+  validateCollapsedKoreanSpacingCandidate,
   retryKoreanRefinement,
   retryFingerprintAudit,
   retryEndingStyleAudit,

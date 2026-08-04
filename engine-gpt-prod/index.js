@@ -53,7 +53,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.27';
+const VERSION = 'gpt-prod-v2.5.28';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -184,8 +184,8 @@ async function runEngine({
   const submittedSource = String(text || '').trim();
   if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
-  const rawSource = sourcePreflightAudit?.text || submittedSource;
-  const integritySource = sourcePreflightAudit?.integrityText || rawSource;
+  let rawSource = sourcePreflightAudit?.text || submittedSource;
+  let integritySource = sourcePreflightAudit?.integrityText || rawSource;
   if (inputRouting.isEnglishInput(rawSource)) {
     const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.');
     error.code = 'HUMANIZE_KOREAN_ONLY';
@@ -198,6 +198,46 @@ async function runEngine({
   const requestStrength = requestStrengthForMode(requestedMode);
   const polishAllowed = allowPolish === true;
   const normalizedMode = normalizeMode(mode, { allowPolish: polishAllowed });
+  const safetyId = safetyIdentifier || (uid ? safetyIdentifierForUid(uid) : '');
+  let sourceSpacingRestoreUsage = null;
+  let sourceSpacingRestoreAttemptCount = 0;
+  let sourceSpacingRestoreApplied = false;
+  let sourceSpacingRestoreBeforeCount = 0;
+  let sourceSpacingRestoreAfterCount = 0;
+  let sourceSpacingRestoreReason = 'not_applicable';
+  const initialSourceKoreanAudit = koreanRefinement.analyzeKoreanRefinement({
+    source: rawSource,
+    outputText: rawSource,
+    documentProfile: 'unknown',
+    mode: normalizedMode
+  });
+  sourceSpacingRestoreBeforeCount = koreanIssueAfterCount(
+    initialSourceKoreanAudit,
+    'collapsed_korean_spacing_run'
+  );
+  sourceSpacingRestoreAfterCount = sourceSpacingRestoreBeforeCount;
+  if (sourceSpacingRestoreBeforeCount > 0) {
+    sourceSpacingRestoreAttemptCount = 1;
+    try {
+      const restored = await qualityV2.retryCollapsedKoreanSpacing({
+        source: rawSource,
+        config: cfg,
+        signal,
+        safetyIdentifier: safetyId,
+        phase: 'source_collapsed_korean_spacing_restore'
+      });
+      sourceSpacingRestoreUsage = restored.usage || null;
+      sourceSpacingRestoreReason = restored.reason || 'candidate_rejected';
+      sourceSpacingRestoreAfterCount = Number(restored.afterCount ?? sourceSpacingRestoreBeforeCount);
+      if (restored.applied === true && restored.outputText) {
+        rawSource = restored.outputText;
+        integritySource = restored.outputText;
+        sourceSpacingRestoreApplied = true;
+      }
+    } catch (error) {
+      sourceSpacingRestoreReason = modelCallFailureCode(error);
+    }
+  }
   const detectedDocumentProfile = detectDocumentProfile(rawSource, { basicStyle });
   const documentProfile = applyTargetRegister(
     applyDocumentProfileOverride(detectedDocumentProfile, documentProfileOverride),
@@ -205,7 +245,6 @@ async function runEngine({
   );
   const selectedMode = effectiveModeForProfile(requestedMode, normalizedMode, documentProfile);
   const voiceProfile = buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode });
-  const safetyId = safetyIdentifier || (uid ? safetyIdentifierForUid(uid) : '');
   const lineBoundaryPolicy = String(voiceProfile?.lineBoundaryPolicy || 'none');
   const layoutStructureLocked = lineBoundaryPolicy !== 'none';
   const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !layoutStructureLocked;
@@ -445,8 +484,10 @@ async function runEngine({
   };
   rememberExactLineSafeOutput(outputText);
 
-  let supplementalUsage = (sectionRecoveryReport.usages || [])
-    .reduce((acc, usage) => addUsage(acc, usage), emptyUsage());
+  let supplementalUsage = addUsage(
+    (sectionRecoveryReport.usages || []).reduce((acc, usage) => addUsage(acc, usage), emptyUsage()),
+    sourceSpacingRestoreUsage
+  );
   const addSupplementalUsage = (usage, stage = 'unknown', { recordBudget = true } = {}) => {
     supplementalUsage = addUsage(supplementalUsage, usage);
     if (recordBudget) recoveryBudget.recordUsage(usage, stage);
@@ -503,6 +544,9 @@ async function runEngine({
   let koreanRefinementRetryCount = 0;
   let koreanRefinementRetryApplied = false;
   let koreanSourceRestoreCount = 0;
+  let finalCollapsedSpacingRetryAttemptCount = 0;
+  let finalCollapsedSpacingRetryApplied = false;
+  let finalCollapsedSpacingRetryReason = 'not_applicable';
   let quoteIntegrityAudit = null;
   let inlineCodeIntegrity = { pass: true, restoredCount: 0, missingCount: 0 };
   let quoteIntegrityRestoreCount = 0;
@@ -2364,6 +2408,37 @@ async function runEngine({
   resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
   quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   {
+    const residualSpacingAudit = koreanRefinement.analyzeKoreanRefinement({
+      source: rawSource,
+      outputText,
+      documentProfile,
+      mode: selectedMode
+    });
+    if (koreanIssueAfterCount(residualSpacingAudit, 'collapsed_korean_spacing_run') > 0) {
+      finalCollapsedSpacingRetryAttemptCount = 1;
+      try {
+        const restored = await qualityV2.retryCollapsedKoreanSpacing({
+          source: outputText,
+          config: cfg,
+          signal,
+          safetyIdentifier: safetyId,
+          phase: 'final_collapsed_korean_spacing_restore'
+        });
+        addSupplementalUsage(restored.usage, 'final_collapsed_korean_spacing_restore', {
+          recordBudget: false
+        });
+        finalCollapsedSpacingRetryReason = restored.reason || 'candidate_rejected';
+        if (restored.applied === true && restored.outputText
+            && preservesFinalStructure(rawSource, restored.outputText, chunks, chunkPlan, boundaryRepair)) {
+          outputText = restored.outputText;
+          finalCollapsedSpacingRetryApplied = true;
+        }
+      } catch (error) {
+        finalCollapsedSpacingRetryReason = modelCallFailureCode(error);
+      }
+    }
+  }
+  {
     koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
       source: rawSource,
       outputText,
@@ -2371,6 +2446,10 @@ async function runEngine({
       mode: selectedMode
     });
   }
+  const finalCollapsedSpacingCount = koreanIssueAfterCount(
+    koreanRefinementAudit,
+    'collapsed_korean_spacing_run'
+  );
   const structureAudit = structureChunk.buildStructureAudit({
     source: rawSource,
     integritySource,
@@ -2503,6 +2582,7 @@ async function runEngine({
     ? classifyPolishEditKind(rawSource, outputText)
     : '';
   const chunkExecution = summarizeChunkExecution(records, semanticReport, {
+    sourceSpacingRestoreCount: sourceSpacingRestoreAttemptCount,
     polishRetryCount: polishRetryAttemptCount,
     generalSurfaceRetryCount: generalSurfaceRetryAttemptCount,
     koreanRefinementRetryCount: koreanRefinementRetryAttemptCount,
@@ -2511,7 +2591,8 @@ async function runEngine({
     resumeCoverageRetryCount: resumeCoverageRetryAttemptCount,
     conservativeSentenceRetryCount: conservativeSentenceRetryModelCallCount,
     sectionRecoveryCallCount: Number(sectionRecoveryReport.metrics?.miniAttemptCount || 0)
-      + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0)
+      + Number(sectionRecoveryReport.metrics?.escalationAttemptCount || 0),
+    finalCollapsedSpacingRetryCount: finalCollapsedSpacingRetryAttemptCount
   });
   const chunkFailures = summarizeChunkFailureCodes(records);
   const retryCounts = summarizeRetryCounts(records);
@@ -2576,6 +2657,13 @@ async function runEngine({
         ...(resumeCoverageAudit?.applicable && resumeCoverageAudit?.pass === false
           ? [{ code: 'resume_claim_omission', severity: 'warning', message: '자기소개서의 행동·역량·성과·직무 연결 내용 일부가 누락됐을 수 있어요.' }]
           : []),
+        ...(finalCollapsedSpacingCount > 0
+          ? [{
+              code: 'collapsed_korean_spacing_run',
+              severity: 'warning',
+              message: '한글이 길게 붙은 구간의 띄어쓰기를 모두 복원하지 못해 원문 대조가 필요해요.'
+            }]
+          : []),
         ...(koreanRefinementAudit?.residualWarnings || [])
       ]);
   // 내부 floor가 검토 필요인데 사용자 경고가 비어 있으면 상태와 설명이
@@ -2620,7 +2708,12 @@ async function runEngine({
     changed: sourcePreflightAudit.changed === true,
     removedLineCount: Number(sourcePreflightAudit.removedLineCount || 0),
     noticeCount: Number(sourcePreflightAudit.noticeCount || 0),
-    issueCodes: safeFailureCodeList(sourcePreflightAudit.issueCodes)
+    issueCodes: safeFailureCodeList(sourcePreflightAudit.issueCodes),
+    spacingRestoreAttempted: sourceSpacingRestoreAttemptCount > 0,
+    spacingRestoreApplied: sourceSpacingRestoreApplied,
+    spacingRestoreBeforeCount: sourceSpacingRestoreBeforeCount,
+    spacingRestoreAfterCount: sourceSpacingRestoreAfterCount,
+    spacingRestoreReason: sourceSpacingRestoreReason
   } : null;
   result.dedupeAudit = postprocessMeta.dedupe || null;
   const bestHumanizationDepthStage = bestDepthStageSnapshot(humanizationDepthStages);
@@ -2649,6 +2742,7 @@ async function runEngine({
   if (quoteIntegrityAudit?.pass === false) pipelineFixedPointReasonCodes.push('quote_integrity_failed');
   if (inlineCodeIntegrity?.pass === false) pipelineFixedPointReasonCodes.push('inline_code_integrity_failed');
   if (finalGate?.hardFail === true) pipelineFixedPointReasonCodes.push('final_delivery_gate_failed');
+  if (finalCollapsedSpacingCount > 0) pipelineFixedPointReasonCodes.push('korean_spacing_integrity_failed');
   if (humanizationDepthReport?.applicable === true
       && humanizationDepthReport?.minimumEffectPass !== true) {
     pipelineFixedPointReasonCodes.push('depth_hard_minimum_not_met');
@@ -2660,6 +2754,7 @@ async function runEngine({
     structurePass: structureAudit?.pass === true,
     quotePass: quoteIntegrityAudit?.pass !== false,
     inlineCodePass: inlineCodeIntegrity?.pass !== false,
+    koreanSpacingPass: finalCollapsedSpacingCount === 0,
     reasonCodes: safeFailureCodeList(pipelineFixedPointReasonCodes)
   };
   result.engineMeta = {
@@ -3062,6 +3157,10 @@ async function runEngine({
     koreanRefinementRetryCount,
     koreanRefinementRetryApplied,
     koreanSourceRestoreCount,
+    finalCollapsedSpacingCount,
+    finalCollapsedSpacingRetryAttemptCount,
+    finalCollapsedSpacingRetryApplied,
+    finalCollapsedSpacingRetryReason,
     quoteIntegrityAuditVersion: Number(quoteIntegrityAudit?.version || 0),
     quoteIntegrityPass: quoteIntegrityAudit?.pass === true,
     quoteCountChanged: quoteIntegrityAudit?.countChanged === true,
@@ -3085,6 +3184,11 @@ async function runEngine({
     sourceArtifactRemovedCount: Number(sourcePreflightAudit?.removedArtifactCount || 0),
     sourcePreflightNoticeCount: Number(sourcePreflightAudit?.noticeCount || 0),
     sourcePreflightIssueCodes: safeFailureCodeList(sourcePreflightAudit?.issueCodes),
+    sourceSpacingRestoreAttemptCount,
+    sourceSpacingRestoreApplied,
+    sourceSpacingRestoreBeforeCount,
+    sourceSpacingRestoreAfterCount,
+    sourceSpacingRestoreReason,
     sourceLayoutRepairCount: Number((sourcePreflightAudit?.issues || [])
       .filter(item => item?.action === 'repaired')
       .reduce((sum, item) => sum + Number(item?.count || 0), 0)),
@@ -5796,6 +5900,7 @@ function calibrateV2RepetitionReport(result, source, outputText) {
 }
 
 function summarizeChunkExecution(records, semanticReport, {
+  sourceSpacingRestoreCount = 0,
   polishRetryCount = 0,
   generalSurfaceRetryCount = 0,
   conservativeSentenceRetryCount = 0,
@@ -5803,7 +5908,8 @@ function summarizeChunkExecution(records, semanticReport, {
   fingerprintRetryCount = 0,
   endingStyleRetryCount = 0,
   resumeCoverageRetryCount = 0,
-  sectionRecoveryCallCount = 0
+  sectionRecoveryCallCount = 0,
+  finalCollapsedSpacingRetryCount = 0
 } = {}) {
   const rows = Array.isArray(records) ? records : [];
   const lockedChunkCount = rows.filter(record => record.locked === true).length;
@@ -5825,7 +5931,9 @@ function summarizeChunkExecution(records, semanticReport, {
     + Math.max(0, Number(fingerprintRetryCount) || 0)
     + Math.max(0, Number(endingStyleRetryCount) || 0)
     + Math.max(0, Number(resumeCoverageRetryCount) || 0)
-    + Math.max(0, Number(sectionRecoveryCallCount) || 0);
+    + Math.max(0, Number(sectionRecoveryCallCount) || 0)
+    + Math.max(0, Number(sourceSpacingRestoreCount) || 0)
+    + Math.max(0, Number(finalCollapsedSpacingRetryCount) || 0);
   return {
     logicalChunkCount: rows.length,
     editableChunkCount: transformed.length,
@@ -6763,6 +6871,10 @@ function shouldSkipWholeDocumentDepthRetryAfterSectionRecovery({
     && !needsPerceivedHumanizationRecovery(humanizationDepthReport)
     && humanizationDepthReport?.userReviewRequired !== true
     && !isSevereHumanizationNoEffect(humanizationDepthReport);
+}
+
+function koreanIssueAfterCount(audit, code) {
+  return Number((audit?.issues || []).find(item => item?.code === code)?.afterCount || 0);
 }
 
 function normalizeBare(text) {

@@ -2038,7 +2038,7 @@ const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
   {
     concept: 'methodological_verification',
     source: /(?:가설|결과|타당성|효과|성능)(?:을|를)?\s*(?:검증|검정)/u,
-    acceptable: /(?:가설|결과|타당성|효과|성능)(?:을|를)?\s*(?:검증|검정|평가)/u,
+    acceptable: /(?:가설|결과|타당성|효과|성능)(?:을|를)?\s*(?:(?:(?:비판적|객관적|실증적|통계적|반복적|체계적|구체적|직접적)(?:으로)?|직접|다시|면밀히|추가로)\s*){0,2}(?:검증|검정|평가)/u,
     preferred: ['가설을 검증', '타당성을 평가']
   },
   {

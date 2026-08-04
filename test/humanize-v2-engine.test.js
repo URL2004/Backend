@@ -115,6 +115,18 @@ function installEngineMock(t, options = {}) {
         notes: []
       });
     }
+    if (name === 'gpt_prod_collapsed_korean_spacing_retry') {
+      const callNumber = calls.filter(call => call.name === name).length;
+      const source = extractPromptDataSection(body.input, 'SOURCE');
+      const outputText = typeof options.collapsedSpacingOutput === 'function'
+        ? options.collapsedSpacingOutput(body, callNumber, source)
+        : (options.collapsedSpacingOutput || source);
+      return apiResponse({
+        outputText,
+        safeChangeFound: outputText !== source,
+        notes: []
+      });
+    }
     if (name === 'gpt_prod_soft_claim_ledger') {
       const source = extractPromptDataSection(body.input, 'SOURCE') || SOURCE;
       const normalized = source.replace(/\s+/gu, ' ').trim();
@@ -160,7 +172,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.27');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.28');
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -203,13 +215,13 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   }
 });
 
-test('긴 무띄어쓰기 원문은 일부만 교정한 결과를 그대로 완료하지 않고 전체 구간을 재수리한다', { concurrency: false }, async t => {
+test('긴 무띄어쓰기 원문은 휴머나이징 전에 문자 불변 공백 복원 계약으로 전체 구간을 수리한다', { concurrency: false }, async t => {
   const source = '처음에는최저임금상승이기업의부담을높인다고예상했다그러나변수를정의하고비용함수를설정하며각조건의차이를비교하는과정에서는충분한검토와반복적인확인이필요하다고판단하였다';
-  const partial = '처음에는 최저임금 상승이 기업의 부담을 높인다고 예상했다. 그러나변수를정의하고비용함수를설정하며각조건의차이를비교하는과정에서는충분한검토와반복적인확인이필요하다고판단하였다.';
+  const spacedSource = '처음에는 최저임금 상승이 기업의 부담을 높인다고 예상했다 그러나 변수를 정의하고 비용 함수를 설정하며 각 조건의 차이를 비교하는 과정에서는 충분한 검토와 반복적인 확인이 필요하다고 판단하였다';
   const repaired = '처음에는 최저임금 상승이 기업의 부담을 높인다고 예상했다. 그러나 변수를 정의하고 비용 함수를 설정하며 각 조건의 차이를 비교하는 과정에서는 충분한 검토와 반복적인 확인이 필요하다고 판단하였다.';
   const mock = installEngineMock(t, {
-    humanize: partial,
-    koreanRefinementOutput: repaired
+    humanize: repaired,
+    collapsedSpacingOutput: spacedSource
   });
   const out = await engine.run({
     text: source,
@@ -231,9 +243,65 @@ test('긴 무띄어쓰기 원문은 일부만 교정한 결과를 그대로 완�
       reason: out.engineMeta.finalNoopRecoveryReason
     }
   }));
-  assert.equal(mock.calls.some(call => call.name === 'gpt_prod_korean_refinement_retry'), true);
-  assert.equal(out.engineMeta.koreanRefinementRetryApplied, true);
+  assert.equal(mock.calls.some(call => call.name === 'gpt_prod_collapsed_korean_spacing_retry'), true);
+  assert.equal(out.engineMeta.sourceSpacingRestoreAttemptCount, 1);
+  assert.equal(out.engineMeta.sourceSpacingRestoreApplied, true);
+  assert.equal(out.engineMeta.sourceSpacingRestoreAfterCount, 0);
+  assert.equal(out.engineMeta.finalCollapsedSpacingRetryAttemptCount, 0);
+  assert.equal(out.engineMeta.finalCollapsedSpacingCount, 0);
+  assert.equal(out.engineMeta.pipelineFixedPoint.koreanSpacingPass, true);
   assert.equal(/[가-힣]{36,}/u.test(out.result.outputText), false);
+});
+
+test('선행 공백 복원이 거절돼도 최종 고정점에서 공백 전용 후보를 다시 적용한다', { concurrency: false }, async t => {
+  const source = '탐구는 의미 있는 경험이었다. 그러나변수를정의하고비용함수를설정하며각조건의차이를비교하는과정에서는충분한검토와반복적인확인이필요하다고판단하였다.';
+  const humanized = '이번 탐구는 의미 있는 경험이었다. 그러나변수를정의하고비용함수를설정하며각조건의차이를비교하는과정에서는충분한검토와반복적인확인이필요하다고판단하였다.';
+  const repaired = '이번 탐구는 의미 있는 경험이었다. 그러나 변수를 정의하고 비용 함수를 설정하며 각 조건의 차이를 비교하는 과정에서는 충분한 검토와 반복적인 확인이 필요하다고 판단하였다.';
+  const mock = installEngineMock(t, {
+    humanize: humanized,
+    koreanRefinementOutput: humanized,
+    collapsedSpacingOutput: (_body, callNumber, current) => callNumber === 1 ? current : repaired
+  });
+  const out = await engine.run({
+    text: source,
+    mode: 'blog',
+    basicStyle: 'report',
+    uid: 'collapsed-spacing-final-repair-user',
+    config: config()
+  });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
+  assert.equal(out.result.outputText, repaired);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_collapsed_korean_spacing_retry').length, 2);
+  assert.equal(out.engineMeta.sourceSpacingRestoreApplied, false);
+  assert.equal(out.engineMeta.finalCollapsedSpacingRetryAttemptCount, 1);
+  assert.equal(out.engineMeta.finalCollapsedSpacingRetryApplied, true);
+  assert.equal(out.engineMeta.finalCollapsedSpacingCount, 0);
+  assert.equal(out.engineMeta.pipelineFixedPoint.koreanSpacingPass, true);
+});
+
+test('최종 무띄어쓰기 복원까지 실패하면 clean이 아니라 검토 필요로 전달한다', { concurrency: false }, async t => {
+  const source = '탐구는 의미 있는 경험이었다. 그러나변수를정의하고비용함수를설정하며각조건의차이를비교하는과정에서는충분한검토와반복적인확인이필요하다고판단하였다.';
+  const humanized = '이번 탐구는 의미 있는 경험이었다. 그러나변수를정의하고비용함수를설정하며각조건의차이를비교하는과정에서는충분한검토와반복적인확인이필요하다고판단하였다.';
+  installEngineMock(t, {
+    humanize: humanized,
+    koreanRefinementOutput: humanized,
+    collapsedSpacingOutput: (_body, _callNumber, current) => current
+  });
+  const out = await engine.run({
+    text: source,
+    mode: 'blog',
+    basicStyle: 'report',
+    uid: 'collapsed-spacing-review-user',
+    config: config()
+  });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
+  assert.equal(out.qualityStatus, 'needs_review');
+  assert.ok(out.qualityWarnings.some(item => item.code === 'collapsed_korean_spacing_run'));
+  assert.equal(out.engineMeta.finalCollapsedSpacingCount, 1);
+  assert.equal(out.engineMeta.pipelineFixedPoint.koreanSpacingPass, false);
+  assert.equal(out.engineMeta.pipelineFixedPoint.safetyPass, false);
+  assert.ok(out.engineMeta.pipelineFixedPoint.reasonCodes.includes('korean_spacing_integrity_failed'));
+  assert.equal(out.engineMeta.deliveryDecision, 'deliver_review');
 });
 
 test('복사된 UI 행은 모델 입력 전에 제외하고 원문 없는 코드·횟수만 기록한다', { concurrency: false }, async t => {
@@ -1182,7 +1250,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.27');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.28');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

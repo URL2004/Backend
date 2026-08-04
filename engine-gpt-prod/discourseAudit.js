@@ -119,7 +119,11 @@ function compareDiscourse(source, outputText) {
   const topicRestartDelta = after.topicRestartCount - before.topicRestartCount;
   const roleShiftCount = countRoleShifts(before.paragraphs, after.paragraphs);
   const scopeExpansionCount = countScopeExpansionSignals(source, outputText, before, after);
-  const personalBalanceShift = before.actionSentenceCount >= 2
+  // 활동 문장 비율은 최소 네 문장 이상에서만 안정적이다. PDF/OCR 입력처럼
+  // 문장부호가 빠져 원문 전체가 한두 문장으로 잡히면, 정상적인 문장 분리만
+  // 해도 분모가 급증해 실제 활동을 모두 보존한 결과를 축소로 오인한다.
+  const personalBalanceShift = before.sentenceCount >= 4
+    && before.actionSentenceCount >= 2
     && after.actionSentenceRatio < before.actionSentenceRatio - 0.12;
 
   add('new_evaluation', novelReflectionCount, 'source_relative_novel_reflection_function');

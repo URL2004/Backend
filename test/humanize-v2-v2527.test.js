@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const koreanRefinement = require('../engine-gpt-prod/koreanRefinement');
+const finalQualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const fingerprintAudit = require('../engine-gpt-prod/fingerprintAudit');
 const structureChunk = require('../engine-gpt-prod/structureChunk');
 const voiceProfile = require('../engine-gpt-prod/voiceProfile');
@@ -71,6 +72,19 @@ test('상황 주어와 느낀 경험의 잘못된 격틀은 검출하고 원문 
   assert.equal(valid.some(item => item.code === 'subject_experiencer_case_frame'), false);
 });
 
+test('가설을 비판적으로 검증한다는 정상 전문 부사를 전문성 저하로 오인하지 않는다', () => {
+  const source = '실증 데이터를 바탕으로 비판적 가설 검증 역량을 기를 수 있었다.';
+  const output = '실증 데이터에 기반해 가설을 비판적으로 검증하는 역량을 기를 수 있었다.';
+  const audit = koreanRefinement.analyzeKoreanRefinement({
+    source,
+    outputText: output,
+    documentProfile: { profile: 'report_assignment' },
+    mode: 'blog'
+  });
+  const issue = audit.issues.find(item => item.code === 'professional_register_downgrade');
+  assert.equal(Number(issue?.introducedCount || 0), 0, JSON.stringify(issue));
+});
+
 test('긴 무띄어쓰기 한글 구간은 원문부터 있더라도 모델 교정 대상으로 올린다', () => {
   const source = '그러나변수를정의하고비용함수를설정하며각조건의차이를비교하는과정에서는충분한검토와반복적인확인이필요하다고판단하였다.';
   const issues = koreanRefinement.detectTextIssues(source, {
@@ -92,6 +106,35 @@ test('긴 무띄어쓰기 한글 구간은 원문부터 있더라도 모델 교�
     }),
     /collapsed_korean_spacing_run/u
   );
+});
+
+test('무띄어쓰기 전처리는 문자·기존 경계를 보존한 공백 전용 후보만 승인한다', () => {
+  const source = '처음에는최저임금상승이기업의부담을높인다고예상했다그러나변수를정의하고비용함수를설정하며각조건의차이를비교하였다';
+  const safe = '처음에는 최저임금 상승이 기업의 부담을 높인다고 예상했다 그러나 변수를 정의하고 비용 함수를 설정하며 각 조건의 차이를 비교하였다';
+  const changedMeaning = safe.replace('부담을', '비용을');
+  const changedBoundary = safe.replace(' 그러나 ', '\n그러나 ');
+
+  assert.deepEqual(
+    finalQualityV2.validateCollapsedKoreanSpacingCandidate(source, safe),
+    { pass: true, reason: 'spacing_restored', beforeCount: 1, afterCount: 0 }
+  );
+  assert.equal(
+    finalQualityV2.validateCollapsedKoreanSpacingCandidate(source, changedMeaning).reason,
+    'non_whitespace_changed'
+  );
+  assert.equal(
+    finalQualityV2.validateCollapsedKoreanSpacingCandidate(source, changedBoundary).reason,
+    'line_boundary_changed'
+  );
+});
+
+test('무띄어쓰기 전처리는 직접 인용 내부 공백 변경을 승인하지 않는다', () => {
+  const longRun = '그러나변수를정의하고비용함수를설정하며각조건의차이를비교하는과정에서는충분한검토와반복적인확인이필요했다';
+  const source = `“나는 나를 돌아본다” ${longRun}`;
+  const candidate = `“나는  나를 돌아본다” 그러나 변수를 정의하고 비용 함수를 설정하며 각 조건의 차이를 비교하는 과정에서는 충분한 검토와 반복적인 확인이 필요했다`;
+  const validation = finalQualityV2.validateCollapsedKoreanSpacingCandidate(source, candidate);
+  assert.equal(validation.pass, false);
+  assert.equal(validation.reason, 'quote_content_changed');
 });
 
 test('다듬기에서 삭제된 결론·논리 연결어만 대응 문장에 복원한다', () => {

@@ -730,11 +730,90 @@ function isQuotePunctuationOnlyChange(source, output) {
     && outputQuotes.every(content => sourceEvidence.includes(normalizeQuoteEvidence(content)));
 }
 
+function quoteDelimiterProfile(value) {
+  const text = String(value || '');
+  let asciiSingle = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== "'") continue;
+    const previous = text[index - 1] || '';
+    const next = text[index + 1] || '';
+    // 영문 contraction/apostrophe는 직접 인용 구분자가 아니다.
+    if (/[A-Za-z0-9]/u.test(previous) && /[A-Za-z0-9]/u.test(next)) continue;
+    asciiSingle += 1;
+  }
+  const count = char => [...text].filter(item => item === char).length;
+  return {
+    asciiSingle,
+    asciiDouble: count('"'),
+    curlySingleOpen: count('‘'),
+    curlySingleClose: count('’'),
+    curlyDoubleOpen: count('“'),
+    curlyDoubleClose: count('”'),
+    cornerOpen: count('「'),
+    cornerClose: count('」'),
+    doubleCornerOpen: count('『'),
+    doubleCornerClose: count('』'),
+    bookOpen: count('《'),
+    bookClose: count('》'),
+    angleOpen: count('〈'),
+    angleClose: count('〉')
+  };
+}
+
+function hasUnbalancedQuoteDelimiters(profile) {
+  return Number(profile?.asciiSingle || 0) % 2 !== 0
+    || Number(profile?.asciiDouble || 0) % 2 !== 0
+    || Number(profile?.curlySingleOpen || 0) !== Number(profile?.curlySingleClose || 0)
+    || Number(profile?.curlyDoubleOpen || 0) !== Number(profile?.curlyDoubleClose || 0)
+    || Number(profile?.cornerOpen || 0) !== Number(profile?.cornerClose || 0)
+    || Number(profile?.doubleCornerOpen || 0) !== Number(profile?.doubleCornerClose || 0)
+    || Number(profile?.bookOpen || 0) !== Number(profile?.bookClose || 0)
+    || Number(profile?.angleOpen || 0) !== Number(profile?.angleClose || 0);
+}
+
+function quoteDelimiterImbalances(profile) {
+  return [
+    Number(profile?.asciiSingle || 0) % 2,
+    Number(profile?.asciiDouble || 0) % 2,
+    Math.abs(Number(profile?.curlySingleOpen || 0) - Number(profile?.curlySingleClose || 0)),
+    Math.abs(Number(profile?.curlyDoubleOpen || 0) - Number(profile?.curlyDoubleClose || 0)),
+    Math.abs(Number(profile?.cornerOpen || 0) - Number(profile?.cornerClose || 0)),
+    Math.abs(Number(profile?.doubleCornerOpen || 0) - Number(profile?.doubleCornerClose || 0)),
+    Math.abs(Number(profile?.bookOpen || 0) - Number(profile?.bookClose || 0)),
+    Math.abs(Number(profile?.angleOpen || 0) - Number(profile?.angleClose || 0))
+  ];
+}
+
+function isSafeMalformedQuoteRepair(source, output, sourceQuotes, outputQuotes) {
+  const before = quoteDelimiterProfile(source);
+  const after = quoteDelimiterProfile(output);
+  if (!hasUnbalancedQuoteDelimiters(before)) return false;
+  const beforeImbalances = quoteDelimiterImbalances(before);
+  const afterImbalances = quoteDelimiterImbalances(after);
+  if (afterImbalances.some((value, index) => value > beforeImbalances[index])) return false;
+  if (afterImbalances.reduce((sum, value) => sum + value, 0)
+      >= beforeImbalances.reduce((sum, value) => sum + value, 0)) return false;
+  const keys = Object.keys(before);
+  const delimiterDistance = keys.reduce(
+    (sum, key) => sum + Math.abs(Number(before[key] || 0) - Number(after[key] || 0)),
+    0
+  );
+  if (delimiterDistance !== 1 || !outputQuotes.length || outputQuotes.length > sourceQuotes.length + 3) return false;
+  const sourceEvidence = normalizeQuoteEvidence(source);
+  return outputQuotes.every(content => {
+    const evidence = normalizeQuoteEvidence(content);
+    return evidence.length >= 2 && sourceEvidence.includes(evidence);
+  });
+}
+
 function auditDirectQuoteIntegrity(source, output) {
   const sourceQuotes = directQuoteContents(source);
   const outputQuotes = directQuoteContents(output);
   const countChanged = sourceQuotes.length !== outputQuotes.length;
-  const punctuationOnlyChange = countChanged && isQuotePunctuationOnlyChange(source, output);
+  const punctuationOnlyChange = countChanged && (
+    isQuotePunctuationOnlyChange(source, output)
+      || isSafeMalformedQuoteRepair(source, output, sourceQuotes, outputQuotes)
+  );
   const changedOrdinals = [];
   if (!countChanged) {
     for (let index = 0; index < sourceQuotes.length; index += 1) {

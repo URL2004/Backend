@@ -418,9 +418,10 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     let outputIndex = text.indexOf(heading, outputCursor);
     let outputHeadingLength = heading.length;
     if (outputIndex < 0) {
-      const equivalent = anchor.prefix
-        ? findWhitespaceEquivalentSpan(text, heading, outputCursor)
-        : findWhitespaceEquivalentLine(text, heading, outputCursor);
+      // 모델이 `1.지원동기및진로계획`을 `1.지원동기\n및진로계획`처럼
+      // 제목 내부에서 갈라도 공백을 제외한 원문 앵커가 같으면 원래 한 행으로
+      // 복원한다. 같은 행 수만 찾던 예전 fallback은 이 경우를 놓쳤다.
+      const equivalent = findWhitespaceEquivalentSpan(text, heading, outputCursor);
       if (!equivalent) {
         missingCount += 1;
         continue;
@@ -545,28 +546,6 @@ function findWhitespaceEquivalentSpan(value, expected, cursor = 0) {
     start: starts[found],
     end: ends[last]
   };
-}
-
-function findWhitespaceEquivalentLine(value, expected, cursor = 0) {
-  const text = normalizeNewlines(value);
-  const key = bare(expected);
-  if (!key) return null;
-  const expectedLineCount = normalizeNewlines(expected).split('\n').length;
-  const lines = [];
-  let start = 0;
-  for (const line of text.split('\n')) {
-    const end = start + line.length;
-    lines.push({ line, start, end });
-    start = end + 1;
-  }
-  for (let index = 0; index + expectedLineCount <= lines.length; index += 1) {
-    const first = lines[index];
-    const last = lines[index + expectedLineCount - 1];
-    if (last.end < cursor) continue;
-    const candidate = text.slice(first.start, last.end);
-    if (bare(candidate) === key) return { start: first.start, end: last.end };
-  }
-  return null;
 }
 
 function restoreStructuralVisualGaps(value, { excludedBlocks = new Set() } = {}) {
@@ -2270,7 +2249,7 @@ function structuralMarker(kind, marker, lineIndex) {
 function countOrphanParticleLineBoundaries(value) {
   return (
     normalizeNewlines(value).match(
-      /[가-힣]\s*\n+\s*(?:은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/gu
+      /[가-힣]\s*\n+\s*(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|부터만|까지는|까지도|까지만|은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/gu
     ) || []
   ).length;
 }

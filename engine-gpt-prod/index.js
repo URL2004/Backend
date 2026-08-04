@@ -53,7 +53,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.28';
+const VERSION = 'gpt-prod-v2.5.29';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -1646,11 +1646,7 @@ async function runEngine({
       ? { run: true, reason: 'korean_refinement_retry' }
       : humanizationDepthRetryApplied
         ? { run: true, reason: 'humanization_depth_retry' }
-        : (humanizationDepthReport?.applicable
-            && humanizationDepthReport.pass === false
-            && humanizationDepthReport.minimumEffectPass === true)
-          ? { run: true, reason: 'humanization_depth_soft_delivery' }
-          : qualityV2.shouldRunSemanticJudge({
+        : qualityV2.shouldRunSemanticJudge({
             requestedMode,
             effectiveMode: selectedMode,
             source: auditSource,
@@ -2330,6 +2326,57 @@ async function runEngine({
     postprocessMeta.dedupe,
     finalGeneratedDedupe
   );
+  // 의미 심사·국소 수리가 뒤에서 자소서의 마지막 학습 결론을 다시 줄이는
+  // 경우가 있다. 모든 어휘 생성 단계가 끝난 고정점에서 원문의 앞뒤 앵커가
+  // 모두 확인되는 핵심 주장만 한 번 더 복원하고 공통 안전 감사를 통과시킨다.
+  if (!polishStrictFailure && selectedMode !== 'polish') {
+    const finalResumeAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
+    if (finalResumeAudit.applicable === true && finalResumeAudit.pass !== true) {
+      const restored = resumeCoverage.restoreMissingClaimsLocally({
+        source: rawSource,
+        currentOutput: outputText,
+        audit: finalResumeAudit,
+        maxRestoreCount: 2
+      });
+      if (restored.applied) {
+        const candidate = restored.text;
+        const candidateCoverage = resumeCoverage.auditResumeCoverage(rawSource, candidate, documentProfile);
+        const candidateDepth = humanizationDepthEnabled
+          ? evaluateDocumentHumanizationDepth(candidate, humanizationPlan)
+          : null;
+        const safeCandidate = resumeCoverage.isImproved(finalResumeAudit, candidateCoverage)
+          && resumeCoverage.isSafeRestorationShape(
+            rawSource,
+            outputText,
+            candidate,
+            restored.restoredCount
+          )
+          && isSafeLocalizedLanguageCandidate({
+            source: rawSource,
+            before: outputText,
+            candidate,
+            contract,
+            documentProfile,
+            mode: selectedMode,
+            protectedTerms: collectRecordProtectedTerms(records),
+            currentDepth: humanizationDepthReport,
+            candidateDepth,
+            maxLocalEditRatio: 0.55,
+            localLengthPurpose: 'resume_restore',
+            allowDepthRegression: true
+          })
+          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
+        if (safeCandidate) {
+          outputText = candidate;
+          resumeCoverageAudit = candidateCoverage;
+          resumeCoverageDeterministicRestoreCount += restored.restoredCount;
+          resumeCoverageRepairCount += restored.restoredCount;
+          if (candidateDepth) humanizationDepthReport = candidateDepth;
+          rememberExactLineSafeOutput(outputText);
+        }
+      }
+    }
+  }
   // 공백 보정과 최종 중복 제거까지 모두 끝난 고정점에서 잠긴 구조를 다시
   // 복원한다. 앞 단계에서 제목을 복구했더라도 후처리가 제목과 본문을 다시
   // 합치거나 복합 제목 중간을 나눌 수 있으므로 최종 감사보다 먼저 실행한다.

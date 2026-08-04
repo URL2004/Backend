@@ -7,14 +7,15 @@ const {
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 5;
+const VERSION = 6;
 const MIN_CONTENT_RECALL = 0.50;
 const MIN_SEMANTIC_FALLBACK = 0.62;
 const CLAIM_PATTERNS = Object.freeze({
   action: /(?:수행|담당|개발|분석|설계|운영|개선|협업|해결|참여|작성|구축|기획|관리|제작|조사|발표|주도|실행|근무|프로젝트)/u,
   competency: /(?:역량|능력|기술|활용|소통|협업|책임|전문성|문제\s*해결|리더십|성실|강점)/u,
   result: /(?:성과|달성|향상|증가|감소|개선|수상|완료|기여|효율|절감|성장|\d+(?:\.\d+)?%)/u,
-  job_link: /(?:직무|지원|입사|귀사|회사|기업|업무|포부|조직|고객|현장|기여하|성장하)/u
+  job_link: /(?:직무|지원|입사|귀사|회사|기업|업무|포부|조직|고객|현장|기여하|성장하)/u,
+  learning: /(?:배웠|깨달|알게\s*되|느꼈|체감|확인할\s*수\s*있었|교훈|판단의\s*기준)/u
 });
 
 function auditResumeCoverage(source, output, documentProfile = null) {
@@ -83,12 +84,13 @@ function compareClaim(claim, sourceCount, outputSentences) {
     best.index,
     best.recall,
     best.semanticSimilarity,
-    aligned
+    aligned,
+    best.learningEquivalent === true
   );
 }
 
 function bestCandidate(claim, candidates) {
-  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0 };
+  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0, learningEquivalent: false };
   for (const candidate of candidates) {
     const candidateTokens = new Set(contentTokens(candidate.text));
     const recall = claim.tokens.filter(token => candidateTokens.has(token)).length / Math.max(1, claim.tokens.length);
@@ -96,18 +98,25 @@ function bestCandidate(claim, candidates) {
     const outputNorm = normalize(candidate.text);
     const similarity = 1 - (levenshteinDistance(sourceNorm, outputNorm) / Math.max(1, sourceNorm.length, outputNorm.length));
     const semanticSimilarity = sentenceSimilarity(claim.sentence, candidate.text);
-    const current = { index: candidate.start, recall, similarity, semanticSimilarity };
+    const learningEquivalent = claim.types.includes('learning')
+      && hasLearningFunction(claim.sentence)
+      && hasLearningFunction(candidate.text)
+      && recall >= 0.28;
+    const current = { index: candidate.start, recall, similarity, semanticSimilarity, learningEquivalent };
     if (isBetterCandidate(current, best)) best = current;
   }
   return best;
 }
 
 function isBetterCandidate(candidate, current) {
-  return candidate.recall > current.recall
-    || (candidate.recall === current.recall && candidate.semanticSimilarity > current.semanticSimilarity)
-    || (candidate.recall === current.recall
-      && candidate.semanticSimilarity === current.semanticSimilarity
-      && candidate.similarity > current.similarity);
+  return (candidate.learningEquivalent === true && current.learningEquivalent !== true)
+    || (candidate.learningEquivalent === current.learningEquivalent
+      && (candidate.recall > current.recall
+        || (candidate.recall === current.recall
+          && candidate.semanticSimilarity > current.semanticSimilarity)
+        || (candidate.recall === current.recall
+          && candidate.semanticSimilarity === current.semanticSimilarity
+          && candidate.similarity > current.similarity)));
 }
 
 function globalOutputCandidates(sentences, maxGroup = 3) {
@@ -125,13 +134,14 @@ function globalOutputCandidates(sentences, maxGroup = 3) {
 }
 
 function candidateCovered(candidate) {
-  return candidate.recall >= 0.55
+  return candidate.learningEquivalent === true
+    || candidate.recall >= 0.55
     || (candidate.recall >= MIN_CONTENT_RECALL && candidate.semanticSimilarity >= 0.40)
     || (candidate.recall >= 0.42 && candidate.semanticSimilarity >= MIN_SEMANTIC_FALLBACK);
 }
 
-function row(claim, outputIndex, recall, semanticSimilarity, aligned) {
-  const covered = aligned && candidateCovered({ recall, semanticSimilarity });
+function row(claim, outputIndex, recall, semanticSimilarity, aligned, learningEquivalent = false) {
+  const covered = aligned && candidateCovered({ recall, semanticSimilarity, learningEquivalent });
   return {
     sourceIndex: claim.index,
     outputIndex,
@@ -139,6 +149,7 @@ function row(claim, outputIndex, recall, semanticSimilarity, aligned) {
     types: claim.types,
     contentRecall: round4(recall),
     semanticSimilarity: round4(semanticSimilarity),
+    learningEquivalent,
     aligned,
     covered
   };
@@ -269,22 +280,32 @@ function restoreMissingClaimsLocally({
   }
   const prioritized = [...(audit.omissions || [])]
     .filter(item => Array.isArray(item.types)
-      && item.types.some(type => ['job_link', 'competency', 'action'].includes(type)))
+      && item.types.some(type => ['learning', 'job_link', 'competency', 'action', 'result'].includes(type)))
     .filter(item => String(item.sourceSentence || '').trim().length >= 12)
     .sort((left, right) => claimPriority(right) - claimPriority(left)
-      || Number(left.sourceIndex || 0) - Number(right.sourceIndex || 0))
-    .slice(0, Math.max(1, Number(maxRestoreCount) || 2));
+      || Number(left.sourceIndex || 0) - Number(right.sourceIndex || 0));
   let text = before;
   const restoredSourceOrdinals = [];
   for (const omission of prioritized) {
+    if (restoredSourceOrdinals.length >= Math.max(1, Number(maxRestoreCount) || 2)) break;
     const sentence = String(omission.sourceSentence || '').trim();
     if (!sentence || normalize(text).includes(normalize(sentence))) continue;
     const spans = splitSentenceSpans(text);
     const previous = bestAnchorSpan(omission.previousContext, spans);
     const next = bestAnchorSpan(omission.nextContext, spans);
+    const learningClaim = Array.isArray(omission.types) && omission.types.includes('learning');
+    const previousMinimum = learningClaim ? 0.42 : 0.5;
+    const nextMinimum = learningClaim ? 0.48 : 0.5;
+    const sourceFinalClaim = !String(omission.nextContext || '').trim();
+    if (sourceFinalClaim && previous && previous.score >= 0.55) {
+      const insertion = previous.span.end;
+      text = `${text.slice(0, insertion)} ${sentence}${text.slice(insertion)}`;
+      restoredSourceOrdinals.push(Number(omission.sourceOrdinal || Number(omission.sourceIndex || 0) + 1));
+      continue;
+    }
     if (!previous || !next
-        || previous.score < 0.5
-        || next.score < 0.5
+        || previous.score < previousMinimum
+        || next.score < nextMinimum
         || previous.index >= next.index
         || next.index - previous.index > 3) continue;
     text = `${text.slice(0, next.span.start)}${sentence} ${text.slice(next.span.start)}`;
@@ -311,10 +332,18 @@ function bestAnchorSpan(value, spans) {
 
 function claimPriority(item) {
   const types = new Set(item?.types || []);
-  if (types.has('job_link')) return 3;
-  if (types.has('competency')) return 2;
-  if (types.has('action')) return 1;
-  return 0;
+  let score = 0;
+  if (types.has('learning')) score += 5;
+  if (types.has('result')) score += 3;
+  if (types.has('job_link')) score += 3;
+  if (types.has('competency')) score += 2;
+  if (types.has('action')) score += 1;
+  return score;
+}
+
+function hasLearningFunction(value) {
+  return /(?:배웠|배우|깨달|알게\s*되|느꼈|느끼|체감|인식|판단|확인할\s*수\s*있었|교훈)/u
+    .test(String(value || ''));
 }
 
 function paragraphCount(value) {

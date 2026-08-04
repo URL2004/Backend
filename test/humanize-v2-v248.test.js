@@ -213,7 +213,7 @@ test('장문 섹션 회복은 안전 감사에서 거부되거나 더 나쁘지 
   assert.ok(report.metrics.escalationSkipCodes.includes('unsafe_mini_candidate'));
 });
 
-test('최소선만 통과하고 체감 목표가 1%p 이상 남은 장문 절도 최대 4개까지 회복한다', { concurrency: false }, t => {
+test('최소선은 통과하고 관측용 체감 목표만 남은 장문 절은 유료 회복하지 않는다', { concurrency: false }, t => {
   withEnv(t, 'HUMANIZE_SECTION_RECOVERY_ENABLED', '1');
   const originalBuildPlan = humanizationDepth.buildHumanizationPlan;
   const originalEvaluate = humanizationDepth.evaluateHumanizationDepth;
@@ -249,9 +249,7 @@ test('최소선만 통과하고 체감 목표가 1%p 이상 남은 장문 절도
     requestStrength: 'advanced',
     documentProfile: { profile: 'long_explainer' }
   });
-  assert.equal(selected.length, sectionRecovery.MAX_TARGET_ONLY_ATTEMPTS);
-  assert.equal(selected.every(item => item.targetOnly === true), true);
-  assert.equal(selected.every(item => item.targetGap === 0.06), true);
+  assert.equal(selected.length, 0);
 });
 
 test('상투구 감사는 같은 신규 계열 1회만 허용하고 일반 표현은 shadow로만 기록한다', { concurrency: false }, t => {

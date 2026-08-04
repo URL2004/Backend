@@ -219,7 +219,8 @@ test('최소선 통과와 목표 범위 도달을 별도 관측값으로 구분�
   assert.equal(report.metrics.targetDepthMet, false);
   assert.equal(report.metrics.deliveryDepthBand, 'minimum');
   assert.ok(depth.targetDepthGap(report) >= 0.01);
-  assert.equal(depth.needsHumanizationRecovery(report), true);
+  assert.equal(depth.needsHumanizationRecovery(report), false);
+  assert.equal(depth.needsHumanizationRecovery(report, { includeTargetOnly: true }), true);
   assert.equal(depth.needsHumanizationRecovery({
     applicable: true,
     pass: true,

@@ -41,7 +41,8 @@ function selectRecoverySections(chunks, {
   mode = '',
   requestStrength = 'basic',
   documentProfile = null,
-  inputRisk = null
+  inputRisk = null,
+  includeTargetOnly = false
 } = {}) {
   const profile = String(documentProfile?.profile || documentProfile || 'unknown');
   if (!isEnabled()
@@ -61,7 +62,7 @@ function selectRecoverySections(chunks, {
         inputRisk
       });
       const report = humanizationDepth.evaluateHumanizationDepth(source, output, plan);
-      if (!humanizationDepth.needsHumanizationRecovery(report)) return null;
+      if (!humanizationDepth.needsHumanizationRecovery(report, { includeTargetOnly })) return null;
       const targetOnly = report.pass === true;
       return {
         index,

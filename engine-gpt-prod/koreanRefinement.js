@@ -9,7 +9,7 @@ const {
   normalizeSentence: normalizeSentenceLocal
 } = require('./sentenceAlignment');
 
-const VERSION = 22;
+const VERSION = 23;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -57,6 +57,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '상황·일을 주어로 둔 채 “부담스럽게 느낀 경험”으로 연결해 주어와 서술어 관계가 어색해요.'
+  },
+  coordinated_birth_role_mismatch: {
+    weight: 6,
+    repairable: true,
+    deterministicSafe: true,
+    message: '출산하는 사람과 아이를 같은 출산 주체로 묶어 서술한 문장을 바로잡아야 해요.'
   },
   message_spelling: {
     weight: 2,
@@ -568,7 +574,10 @@ const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
 const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
 const CLOSE_QUOTE_CLASS = '[”’」』》〉]';
 const QUOTE_SUFFIX_BOUNDARY = '(?=$|[\\s,.;:!?。！？])';
-const CLOSED_QUOTE_SPACING_RE = new RegExp(`([”’」』》〉])(?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
+// U+2019는 한글 닫는 작은따옴표이면서 영문 apostrophe이기도 하다.
+// `Let’s Grow`의 `’s`를 닫는 인용 뒤 본문으로 오인해 `Let’ s`로 만드는
+// 사고를 막고, 뒤가 영문자가 아닌 실제 닫는 따옴표일 때만 간격을 고친다.
+const CLOSED_QUOTE_SPACING_RE = new RegExp(`((?:[”」』》〉]|’(?![A-Za-z])))(?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
 // 완결된 직접 발화 뒤의 “... .” 하고/하며는 인용 뒤 독립 용언이므로
 // 띄어쓰기를 유지한다. 명사 인용의 ‘학생’하고와 서술격 ‘전환점’이었다는
 // 계속 붙여 쓰도록 두 문법을 분리한다.
@@ -603,7 +612,8 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
     return emptyFormattingResult(before, context.creative ? 'creative_line_structure' : 'empty');
   }
 
-  const labelBoundary = repairIntroducedLabelBodyLineBreaks(before, source, context);
+  const leadingPeriod = repairLeadingSentencePeriodArtifacts(before, context);
+  const labelBoundary = repairIntroducedLabelBodyLineBreaks(leadingPeriod.text, source, context);
   const particleBoundary = repairIntroducedParticleLineBreaks(labelBoundary.text, source, context);
   // `line_sensitive`는 설문·항목 행을 함부로 재배치하지 말라는 뜻이지,
   // 창작문처럼 모든 안전 형식 보정을 끄라는 뜻은 아니다. 원문 대조가
@@ -614,6 +624,7 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
   const siblingLabels = repairSiblingLabelSpacing(boundary.text, source);
   const spacing = repairContextualSpacing(siblingLabels.text, source, context);
   const changeCounts = mergeChangeCounts(
+    leadingPeriod.changeCounts,
     labelBoundary.changeCounts,
     particleBoundary.changeCounts,
     boundary.changeCounts,
@@ -727,7 +738,7 @@ function repairIntroducedParticleLineBreaks(value, source, context) {
     // 조사가 다음 행으로 밀린 실제 경계만 합친다. 예전 정규식은 조사
     // 다음에 임의의 한글을 허용해 `이번`, `가장`, `은퇴` 같은 일반 단어의
     // 첫 음절을 조사로 오인했고, 제목 행과 본문을 `점이번`처럼 붙였다.
-    const particle = right.match(/^(의|은|는|이|가|을|를|와|과|에|에서|에게|으로|로|도|만|부터|까지|처럼|보다)(?=\s|[‘“"'「『《〈(（\[【])/u);
+    const particle = right.match(/^(에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|부터만|까지는|까지도|까지만|의|은|는|이|가|을|를|와|과|에|에서|에게|으로|로|도|만|부터|까지|처럼|보다)(?=\s|[‘“"'「『《〈(（\[【])/u);
     const eligibleLeft = !/[.!?。！？…,:;：；]\s*[”’」』》〉"')\]]*$/u.test(left)
       && /[가-힣A-Za-z0-9”’」』》〉"')\]]$/u.test(left);
     if (!particle || !eligibleLeft || isStandaloneStructureLine(right)) {
@@ -1290,6 +1301,7 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushCollapsedKoreanSpacingIssue(issues, text);
   pushSentenceIssue(issues, text, 'focus_particle_redundancy', hasFocusParticleRedundancy);
   pushSentenceIssue(issues, text, 'subject_experiencer_case_frame', hasSubjectExperiencerCaseFrame);
+  pushSentenceIssue(issues, text, 'coordinated_birth_role_mismatch', hasCoordinatedBirthRoleMismatch);
   pushPatternIssue(issues, text, 'message_spelling', /메세지/gu);
   pushNumericParenthesisIssue(issues, text);
   pushPatternIssue(issues, text, 'deep_understanding_collocation', /깊게\s+이해(?:하|했|되|할|하려|하고|하며|해서|해)/gu);
@@ -1481,6 +1493,17 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   text = reciprocalRepair.text;
   for (let index = 0; index < reciprocalRepair.repairCount; index += 1) {
     changes.push('reciprocal_expression_redundancy');
+  }
+  const birthRolePattern = /((?:언니|누나|어머니|엄마|아내|배우자|산모|임신부|며느리|딸))(?:와|과)\s*((?:아이|아기|태아))(?:가|는)\s*건강하게\s*출산(?:을\s*)?맞이하기를/gu;
+  if (!birthRolePattern.test(String(source || ''))) {
+    birthRolePattern.lastIndex = 0;
+    text = replaceOutsideProtectedQuotes(
+      text,
+      birthRolePattern,
+      '$1가 건강하게 출산하고 $2도 건강하기를',
+      'coordinated_birth_role_mismatch',
+      changes
+    );
   }
   const focusParticleRepair = repairIntroducedFocusParticleRedundancy(source, text);
   text = focusParticleRepair.text;
@@ -1716,6 +1739,53 @@ function restorePolishDiscourseOpeners({ source = '', outputText = '' } = {}) {
   };
 }
 
+/**
+ * PDF/OCR 복사에서 문장 끝 마침표가 다음 행의 첫 문자로 밀려 `. 첫째` 또는
+ * 마침표 한 글자 행이 되는 경우가 있다. 행두의 `.` 뒤가 공백 또는 행 끝인
+ * 경우만 다루므로 소수점·목차 번호·코드에는 영향을 주지 않는다.
+ */
+function repairLeadingSentencePeriodArtifacts(value, context) {
+  const before = String(value || '').replace(/\r\n?/gu, '\n');
+  if (!before || context?.creative) return { text: before, changeCounts: {} };
+  const lines = before.split('\n');
+  const counts = {};
+  let index = 0;
+  while (index < lines.length) {
+    const match = String(lines[index] || '').match(/^(\s*)\.(?:[ \t]+(\S.*))?$/u);
+    if (!match) {
+      index += 1;
+      continue;
+    }
+    let previousIndex = index - 1;
+    while (previousIndex >= 0 && !String(lines[previousIndex] || '').trim()) previousIndex -= 1;
+    if (previousIndex < 0) {
+      index += 1;
+      continue;
+    }
+    const previous = String(lines[previousIndex] || '').trimEnd();
+    const previousRole = layoutStructure.classifyLine(previous.trim());
+    if (!previous || ['code', 'table', 'list', 'legal_clause'].includes(previousRole)
+        || (['title', 'heading', 'label'].includes(previousRole) && !match[2])) {
+      index += 1;
+      continue;
+    }
+    const proseLikePrevious = previousRole === 'prose'
+      || previous.length >= 60
+      || /(?:다|요|니다|했다|하였다|되었다|였다|있다|없다|않다)$/u.test(previous);
+    if (proseLikePrevious && !/[.!?。！？…][”’」』》〉"')\]]?$/u.test(previous)) {
+      lines[previousIndex] = `${previous}.`;
+    }
+    if (match[2]) {
+      lines[index] = `${match[1]}${match[2]}`;
+      index += 1;
+    } else {
+      lines.splice(index, 1);
+    }
+    addCount(counts, 'leading_sentence_period_artifact');
+  }
+  return { text: lines.join('\n'), changeCounts: counts };
+}
+
 function restoreIntroducedIntegritySentences({ source = '', outputText = '', audit = null } = {}) {
   const ordinals = [];
   const affectiveSourceOrdinals = [];
@@ -1821,7 +1891,14 @@ function detectProfessionalDowngrade(source, outputText, profile) {
   let count = 0;
   const concepts = [];
   const sentenceOrdinals = [];
-  const alignedLosses = detectAlignedProfessionalLosses(before, after, profile);
+  // 전문 개념이 다른 전문 문장으로 의역된 경우는 의미 보존 감사의 영역이지
+  // 곧바로 구어체 강등은 아니다. 대응 결과에 원문보다 새 구어 표지가 실제로
+  // 늘어난 경우에만 register downgrade로 올린다. 특히 `업무 수행`과
+  // `역량을 갖추다`는 정상 의역 범위가 넓다. 나머지 전문 규칙은 구체적인
+  // 공정·검증·숙지 관계 자체를 보호하므로 기존처럼 손실을 기록한다.
+  const alignedLosses = detectAlignedProfessionalLosses(before, after, profile)
+    .filter(loss => !['role_performance', 'competency_development'].includes(loss.concept)
+      || hasIntroducedCasualRegister(loss.sourceSentence, loss.outputSentence));
   for (const loss of alignedLosses) {
     count += Math.max(1, Number(loss.missingCount || 0));
     concepts.push(loss.concept);
@@ -1844,6 +1921,19 @@ function detectProfessionalDowngrade(source, outputText, profile) {
     concepts: [...new Set(concepts)].slice(0, 12),
     alignedLosses: alignedLosses.slice(0, 12)
   });
+}
+
+function hasIntroducedCasualRegister(sourceSentence, outputSentence) {
+  const patterns = [
+    /(?:흐름|순서|구성안)[^.!?\n]{0,18}(?:짰|짜고|짜며)/gu,
+    /(?:전달|정리|달성|해낼)\s*(?:하는|할)?\s*힘(?:을|이|도)?/gu,
+    /(?:AI|인공지능|도구)(?:가|에서)?\s*(?:준|준다는|준다고)/gu,
+    /(?:학생|사람|동료)들과?\s*(?:어울|놀)/gu,
+    /(?:다시\s*)?일한\s+[^.!?\n]{0,16}(?:아르바이트|매장|회사)/gu,
+    /(?:기사|뉴스|자료|데이터)를?\s*(?:함께\s*)?(?:봤|보며|봐서)/gu,
+    /(?:시험|검증|비교)?해\s*보니|함께\s*놓고\s*비교|바로\s*물었|눈에\s*들어왔/gu
+  ];
+  return patterns.some(pattern => countMatches(outputSentence, pattern) > countMatches(sourceSentence, pattern));
 }
 
 function detectIntroducedStudentRecordFragments(source, outputText, profile) {
@@ -2386,7 +2476,13 @@ function hasDoubleTopicChain(sentence) {
   const value = String(sentence || '');
   const firstPersonTopic = '(?:나는|저는|우리는|저희는)';
   const boundedFirstPerson = koreanStart(firstPersonTopic, 'u').source;
-  if (new RegExp(`(?:하면서|하며|통해|후|계기로|과정에서)[^.!?。！？\\n]{0,20}${boundedFirstPerson}\\s+[^.!?。！？\\n]{1,28}(?:은|는)\\s`, 'u').test(value)) return true;
+  const embedded = value.match(new RegExp(`(?:하면서|하며|통해|후|계기로|과정에서)[^.!?。！？\\n]{0,20}${boundedFirstPerson}\\s+([^.!?。！？\\n]{1,28}?)(은|는)\\s`, 'u'));
+  if (embedded) {
+    const topic = `${String(embedded[1] || '').trim()}${embedded[2]}`;
+    // `운영체제라는 소프트웨어`, `필요한 역량`처럼 관형형 내부의 은/는을
+    // 두 번째 주제 조사로 세지 않는다.
+    if (!/(?:라는|하는|되는|있는|없는|같은|필요한|중요한|가능한|어려운|쉬운)$/u.test(topic)) return true;
+  }
   const rest = value.replace(new RegExp(`^${firstPersonTopic}\\s+`, 'u'), '');
   if (rest === value) return false;
   const secondTopic = rest.match(
@@ -2398,7 +2494,8 @@ function hasDoubleTopicChain(sentence) {
   // 두 번째 주제 조사(깊+은)가 아니라 뒤 명사를 꾸미는 관형형이다.
   // 단순 음절 정규식으로 이를 주제로 세면 정상 성찰문을 비문으로
   // 복원하므로 자주 쓰이는 관형형은 제외한다.
-  if (/^(?:깊은|같은|다른|많은|적은|작은|큰|좋은|나쁜|새로운|높은|낮은|넓은|좁은|빠른|느린|중요한|필요한|가능한|어려운|쉬운|이러한|그러한|어떠한)$/u.test(finalWord)) {
+  if (/^(?:깊은|같은|다른|많은|적은|작은|큰|좋은|나쁜|새로운|높은|낮은|넓은|좁은|빠른|느린|중요한|필요한|가능한|어려운|쉬운|이러한|그러한|어떠한)$/u.test(finalWord)
+      || /(?:라는|하는|되는|있는|없는)$/u.test(finalWord)) {
     return false;
   }
   return /^(?:이|그|해당|이번|예술|연구|활동|작품|문제)(?:(?:의)?\s|$)/u.test(rest);
@@ -3012,6 +3109,11 @@ function isOwnedAffectiveSentence(value) {
     || /(?:감정|기분|마음)(?:은|는|이|가|을|를)[^.!?。！？\n]{0,28}(?:들|생기|느끼|느꼈|비롯)/u.test(text);
 }
 
+function hasCoordinatedBirthRoleMismatch(sentence) {
+  return /(?:언니|누나|어머니|엄마|아내|배우자|산모|임신부|며느리|딸)(?:와|과)\s*(?:아이|아기|태아)(?:가|는)\s*건강하게\s*출산(?:을\s*)?맞이하기를/u
+    .test(stripProtectedQuotedText(sentence));
+}
+
 function pushCollapsedKoreanSpacingIssue(issues, text) {
   const value = String(text || '').replace(/\r\n?/gu, '\n');
   const lines = value.split('\n');
@@ -3303,7 +3405,7 @@ function qualityWarning(item) {
   };
 }
 
-const ORPHAN_STRUCTURAL_PARTICLE_RE = /^(\s*)(에서는|에게는|으로는|로는|부터는|까지는|에는|에서|에게|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)\s+(?=\S)/u;
+const ORPHAN_STRUCTURAL_PARTICLE_RE = /^(\s*)(에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|부터는|부터도|부터만|까지는|까지도|까지만|에는|에도|에만|에서|에게|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)\s+(?=\S)/u;
 const DEMONSTRATIVE_I_NOUN_RE = /^(?:(?:두|세|여러|같은|모든|각)\s+)?(?:목표|측면|과정|경험|결과|내용|문제|이유|점|방법|상황|사실|관점|역할|부분|선택|생각|주장|기준|계획|단계|변화|작업|활동|프로젝트|사례|전략|방식|기회|때|곳|글|문서|연구|수업|조사|분석)(?:[은는이가을를의에도에서와과만]|\s|$)/u;
 const DEMONSTRATIVE_I_INFLECTED_NOUN_RE = /^[가-힣A-Za-z0-9·_-]{1,40}(?:에서는|에게는|으로는|에는|은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만)(?=$|[\s,.;:!?。！？])/u;
 

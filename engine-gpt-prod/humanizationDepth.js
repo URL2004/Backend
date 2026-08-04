@@ -707,10 +707,15 @@ function targetDepthGap(report) {
   ));
 }
 
-function needsHumanizationRecovery(report, { targetTolerance = 0.01 } = {}) {
+function needsHumanizationRecovery(report, { includeTargetOnly = false, targetTolerance = 0.01 } = {}) {
   if (!report?.applicable) return false;
   if (report.pass !== true) return true;
-  return targetDepthGap(report) >= Math.max(0, Number(targetTolerance || 0));
+  // targetSubstantiveEditMin은 사용자에게 약속한 최소선이 아니라 관측용 권장
+  // 구간이다. 모든 실제 계약을 통과한 결과를 이 값 하나만으로 재호출하면
+  // 이미 충분히 바뀐 장문도 섹션 회복과 전문서 재시도를 연달아 타게 된다.
+  // 실험 도구가 명시적으로 요청한 경우에만 target-only 회복을 허용한다.
+  return includeTargetOnly === true
+    && targetDepthGap(report) >= Math.max(0, Number(targetTolerance || 0));
 }
 
 function measureSubstantiveEdit(source, output) {

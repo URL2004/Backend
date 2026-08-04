@@ -57,17 +57,24 @@ function anonymousId(value, index) {
 }
 
 function normalizeMode(row) {
-  return String(row?.engineMeta?.effectiveMode || row?.mode || 'assignment').toLowerCase();
+  return String(
+    row?.engineMeta?.effectiveMode
+    || row?.requestedMode
+    || row?.mode
+    || 'assignment'
+  ).toLowerCase();
 }
 
 function normalizeStrength(row) {
   const value = String(row?.engineMeta?.requestStrength || '').toLowerCase();
   if (value === 'advanced' || value === 'polish') return value;
-  return normalizeMode(row) === 'polish' ? 'polish' : 'basic';
+  const mode = normalizeMode(row);
+  if (mode === 'polish') return 'polish';
+  return mode === 'formal' ? 'advanced' : 'basic';
 }
 
 function auditRow(row, index) {
-  const source = String(row?.inputText ?? row?.source ?? row?.input ?? '').trim();
+  const source = String(row?.inputText ?? row?.sourceText ?? row?.source ?? row?.input ?? '').trim();
   const outputText = String(row?.outputText ?? row?.output ?? '').trim();
   if (!source || !outputText) throw new Error('empty source or output');
   const meta = row?.engineMeta || {};
@@ -186,12 +193,12 @@ function auditRow(row, index) {
   const sourceReviewCodes = [...new Set((koreanAudit.sourceReviewWarnings || []).map(item => item.code))];
   const deterministicWarningCodes = deterministic.warnings.map(item => item.code);
   const currentProfile = String(documentProfile.profile || 'unknown');
-  const storedProfile = String(meta.documentProfile || 'unknown');
+  const storedProfile = String(meta.documentProfile || row?.documentProfile || 'unknown');
   const substantiveEditRatio = Number(depthAudit?.metrics?.substantiveEditRatio || 0);
   const literalEditRatio = Number(depthAudit?.metrics?.literalNormalizedEditRatio || 0);
   return {
-    sampleId: anonymousId(row?.docId, index),
-    engineVersion: String(meta.engineVersion || 'unknown'),
+    sampleId: anonymousId(row?.docId || row?.caseId, index),
+    engineVersion: String(meta.engineVersion || row?.engineVersion || 'unknown'),
     mode,
     requestStrength,
     storedProfile,
@@ -317,13 +324,16 @@ function summarize(rows, errors) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
   const inputPath = path.resolve(options.input);
-  const payload = JSON.parse(fs.readFileSync(inputPath, 'utf8'));
+  const raw = fs.readFileSync(inputPath, 'utf8');
+  const payload = path.extname(inputPath).toLowerCase() === '.jsonl'
+    ? raw.split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line))
+    : JSON.parse(raw);
   const sourceRows = Array.isArray(payload)
     ? payload
     : (Array.isArray(payload?.rows) ? payload.rows : (Array.isArray(payload?.pairs) ? payload.pairs : []));
   const selected = sourceRows.filter(row => (
     !options.engineVersion
-    || String(row?.engineMeta?.engineVersion || '') === options.engineVersion
+    || String(row?.engineMeta?.engineVersion || row?.engineVersion || '') === options.engineVersion
   ));
   if (!selected.length) throw new Error('선택 조건에 맞는 원문·결과 쌍이 없습니다.');
   const rows = [];

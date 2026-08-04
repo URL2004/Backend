@@ -103,6 +103,16 @@ function buildLineRecords(value) {
     records,
     new Set([...codeIndices, ...tableIndices, ...signatureIndices])
   );
+  const plainListIndices = detectPlainListLineIndices(
+    records,
+    new Set([
+      ...codeIndices,
+      ...tableIndices,
+      ...signatureIndices,
+      ...parallelSloganTitleIndices,
+      ...parallelSectionHeadingIndices
+    ])
+  );
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
   for (const record of nonEmpty) {
     if (codeIndices.has(record.index)) {
@@ -122,6 +132,7 @@ function buildLineRecords(value) {
       blankAfter: record.index === records.length - 1 || nextRaw?.blank === true,
       tableLike: tableIndices.has(record.index),
       signatureLike: signatureIndices.has(record.index),
+      plainListLike: plainListIndices.has(record.index),
       parallelSloganTitle: parallelSloganTitleIndices.has(record.index),
       parallelSectionHeading: parallelSectionHeadingIndices.has(record.index)
     });
@@ -139,6 +150,7 @@ function classifyLine(value, context = {}) {
   if (isKnownHeadingLine(text)) return 'heading';
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
   if (isFlowSequenceLine(text)) return 'flow';
+  if (context.plainListLike) return 'list';
   if (isListLine(text)) return 'list';
   if (isQuoteLine(text)) return 'quote';
   if (isColonTitleLine(text, context)) return 'title';
@@ -149,6 +161,51 @@ function classifyLine(value, context = {}) {
   if (context.parallelSectionHeading) return 'heading';
   if (isStandaloneSectionHeading(text, context)) return 'heading';
   return 'prose';
+}
+
+/**
+ * 불릿이 사라진 세로 목록을 문장 행으로 보내면 모델이 첫 항목을 도입문에
+ * 붙이거나 여러 항목을 한 문장으로 합친다. 명시적인 목록 도입문 바로 뒤에
+ * 짧은 명사구가 3행 이상 이어지는 경우만 목록으로 판정한다. 도입문 증거를
+ * 필수로 해 짧은 산문 여러 행을 목록으로 오인하지 않는다.
+ */
+function detectPlainListLineIndices(records, excluded = new Set()) {
+  const selected = new Set();
+  const values = Array.isArray(records) ? records : [];
+  for (let index = 0; index < values.length; index += 1) {
+    const intro = values[index];
+    if (!intro || intro.blank || excluded.has(intro.index) || !isPlainListIntroducer(intro.text)) continue;
+    const candidates = [];
+    let cursor = index + 1;
+    while (cursor < values.length) {
+      const record = values[cursor];
+      if (!record || record.blank || excluded.has(record.index) || !isPlainListCandidate(record.text)) break;
+      candidates.push(record.index);
+      cursor += 1;
+    }
+    if (candidates.length < 3) continue;
+    for (const lineIndex of candidates) selected.add(lineIndex);
+    index = cursor - 1;
+  }
+  return selected;
+}
+
+function isPlainListIntroducer(value) {
+  const text = visibleTrim(value).replace(/[.:：]\s*$/u, '').trim();
+  if (!text || text.length > 100) return false;
+  return /(?:다음(?:과\s*같은|과\s*같다|은)|(?:제시|정리|구성|포함|구분)(?:한|하는|되는)?\s*(?:요소|항목|내용|종류|기준|특징|구성|목록|대상|방법|사항|단계|재료|준비물|변수|조건)(?:은|는|이|가)?|(?:주요\s*)?(?:요소|항목|내용|종류|기준|특징|구성|목록|대상|방법|사항|단계|재료|준비물|변수|조건)(?:은|는|이|가))$/u
+    .test(text);
+}
+
+function isPlainListCandidate(value) {
+  const text = visibleTrim(value);
+  if (!text || text.length > 50) return false;
+  if (/[.!?。！？:：;；]$/u.test(text) || /[,，;；]{2,}/u.test(text)) return false;
+  if (legalClauseParts(text) || isExactMetadataLine(text) || isKnownHeadingLine(text)
+      || isExplicitTableLine(text) || isFlowSequenceLine(text) || isListLine(text)
+      || isQuoteLine(text) || bracketLabelParts(text) || labelParts(text)) return false;
+  if (/(?:합니다|했습니다|됩니다|되었습니다|이다|였다|있다|없다|한다|했다|한다면|하였다|해요|예요|이에요)$/u.test(text)) return false;
+  return /[가-힣A-Za-z0-9]/u.test(text);
 }
 
 function isKnownHeadingLine(value) {

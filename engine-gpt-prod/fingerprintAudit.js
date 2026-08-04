@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 11;
+const VERSION = 12;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -20,7 +20,10 @@ const GUARDED_FAMILIES = Object.freeze([
   },
   {
     code: 'possibility_point',
-    patterns: [/수\s*있다는\s*점도/gu]
+    // `점은/점을`이 `점도`로 바뀐 것은 같은 기능성 표현의 조사 교체다.
+    // 조사별로 서로 다른 지문으로 세면 원문에도 있던 계열을 신규 주입으로
+    // 오인하므로 계열 전체를 하나로 센다.
+    patterns: [/수\s*있다는\s*점(?:도|을|이|은|에서|으로)/gu]
   }
 ]);
 
@@ -65,18 +68,22 @@ function profileName(documentProfile) {
   return String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
 }
 
-function guardedFamilyAllowance(profile) {
-  return ZERO_NEW_FINGERPRINT_PROFILES.has(String(profile || '')) ? 0 : 1;
+function guardedFamilyAllowance(profile, { sourceCount = 0 } = {}) {
+  // 전문 문서에는 없던 기능성 상투구를 새로 만드는 것은 계속 0회 정책을
+  // 유지한다. 다만 원문에 이미 같은 계열이 있으면 조사 교체·동등 의역으로
+  // 한 용례가 갈라지는 것까지 엔진 지문으로 오인하지 않도록 1회를 허용한다.
+  if (!ZERO_NEW_FINGERPRINT_PROFILES.has(String(profile || ''))) return 1;
+  return Number(sourceCount || 0) > 0 ? 1 : 0;
 }
 
 function auditFingerprint(source, output, documentProfile = null) {
   const before = String(source || '');
   const after = String(output || '');
   const profile = profileName(documentProfile);
-  const allowedIntroducedCount = guardedFamilyAllowance(profile);
   const families = GUARDED_FAMILIES.map(family => {
     const sourceCount = countFamily(before, family);
     const outputCount = countFamily(after, family);
+    const allowedIntroducedCount = guardedFamilyAllowance(profile, { sourceCount });
     const introducedCount = Math.max(0, outputCount - sourceCount);
     const introducedSentenceOrdinals = introducedCount > 0
       ? introducedFamilySentenceOrdinals(before, after, family, introducedCount)
@@ -100,7 +107,7 @@ function auditFingerprint(source, output, documentProfile = null) {
         code: 'engine_phrase_fingerprint',
         family: family.code,
         count: family.excessIntroducedCount,
-        allowedIntroducedCount,
+        allowedIntroducedCount: family.allowedIntroducedCount,
         sentenceOrdinals: family.introducedSentenceOrdinals
       });
     }
@@ -504,6 +511,12 @@ function detectContrastRelationShift(source, output) {
   for (let index = 0; index < sourceSentences.length; index += 1) {
     const sourceSentence = sourceSentences[index];
     if (!/(?:아니라|아닌\s+것이(?:라|고)|아님을)/u.test(sourceSentence)) continue;
+    // `단순히/단지 X가 아니라 Y`는 X를 완전히 부정하기보다 X만으로 범위를
+    // 한정하지 않는 관계다. 이 경우 `X에 머무르지 않고 Y`는 같은 제한적
+    // 기능을 유지하므로 부정→가산 반전으로 보지 않는다. `단순한 X가 아니라`는
+    // 명사구 대조이므로 이 예외에 포함하지 않는다.
+    const limitativeSource = /(?:단순히|단지|그저|오직)[^.!?。！？\n]{0,55}(?:아니라|아닌\s+것이(?:라|고))/u
+      .test(sourceSentence);
     const candidates = alignedOutputCandidates(
       sourceSentence,
       index,
@@ -518,7 +531,7 @@ function detectContrastRelationShift(source, output) {
       const shared = sourceTokens.filter(token => candidateTokens.has(token)).length;
       return sourceTokens.length >= 2 && shared / sourceTokens.length >= 0.35;
     });
-    if (shifted) sentenceOrdinals.push(index + 1);
+    if (shifted && !limitativeSource) sentenceOrdinals.push(index + 1);
   }
   return { detected: sentenceOrdinals.length > 0, count: sentenceOrdinals.length, sentenceOrdinals };
 }

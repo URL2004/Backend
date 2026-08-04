@@ -218,6 +218,11 @@ function isKnownHeadingLine(value) {
   if (/^[-–—]\s*(?:서론|본론|결론|초록|요약|목\s*차|참고\s*문헌|참고\s*자료|부록)$/u.test(text)) return true;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)．]?\s*\S.{0,100}$/u.test(text)) return true;
   if (/^[IVX]{1,8}[.)．]\s*\S.{0,100}$/u.test(text)) return true;
+  const numberedBody = text.match(/^\d{1,2}[.)]\s*([\s\S]+)$/u)?.[1] || '';
+  // `1. 소제목`과 `1. 완결된 본문 문장`을 길이만으로 함께 잠그지 않는다.
+  // 번호 뒤에 충분히 긴 완결 서술이 있으면 목록 본문이며, 청커가 번호만
+  // 잠그고 나머지를 편집할 수 있어야 한다.
+  if (numberedBody.length >= 45 && isSentenceComplete(numberedBody)) return false;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/u.test(text)) return true;
   if (/^\d{1,2}[.)]\s*[가-힣A-Za-z]\S*.{0,100}$/u.test(text)) return true;
   if (/^(?:문제|문항)\s*\d{1,3}\s*[.)：:]?\s*\S.{0,100}$/u.test(text)) return true;
@@ -475,7 +480,15 @@ function detectSignatureLineIndices(records, excluded = new Set()) {
 }
 
 function tableColumnCount(value) {
-  const text = String(value || '');
+  // `1.\t본문`, `①\t본문`처럼 목록 표식 뒤에 들여쓰기용 탭 하나가 붙은
+  // 워드·한글 문서는 표가 아니다. 이 탭을 열 구분자로 세면 연속된 번호
+  // 목록 전체가 table로 잠겨 실제 산문이 모델과 깊이 감사에서 빠진다.
+  // 목록 접두부 직후의 탭만 공백으로 낮추고, 본문 안에 추가 열 탭이 있으면
+  // 그대로 남겨 실제 표는 계속 감지한다.
+  const text = String(value || '').replace(
+    /^(\s*(?:(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])))[ \t]*\t+/u,
+    '$1 '
+  );
   if (/\t/u.test(text)) return text.split(/\t+/u).filter(cell => visibleTrim(cell)).length;
   if (/\S\s{2,}\S/u.test(text)) return text.split(/\s{2,}/u).filter(cell => visibleTrim(cell)).length;
   return 0;

@@ -6,10 +6,11 @@ const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 const {
   alignedOutputCandidates,
   contentTokens: contentTokensLocal,
-  normalizeSentence: normalizeSentenceLocal
+  normalizeSentence: normalizeSentenceLocal,
+  sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 23;
+const VERSION = 24;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -297,6 +298,24 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: true,
     message: '수정된 문장 뒤에 원래 문장의 조사·서술 꼬리가 다시 붙어 있어요.'
+  },
+  introduced_rewrite_residue_fragment: {
+    weight: 6,
+    repairable: true,
+    deterministicSafe: true,
+    message: '새 문장으로 고친 자리 앞에 원래 문장의 미완성 앞부분이 남아 있어요.'
+  },
+  introduced_quote_boundary_linebreak: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: true,
+    message: '변환 과정에서 인용 표현이나 인용 뒤 서술 연결이 줄바꿈으로 끊겼어요.'
+  },
+  introduced_case_particle_relation_shift: {
+    weight: 6,
+    repairable: true,
+    deterministicSafe: true,
+    message: '판단 기준·이유의 주격 조사가 주제 조사로 바뀌어 문장 관계가 어색해졌어요.'
   },
   source_token_repetition_review: {
     weight: 1,
@@ -612,7 +631,8 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
     return emptyFormattingResult(before, context.creative ? 'creative_line_structure' : 'empty');
   }
 
-  const leadingPeriod = repairLeadingSentencePeriodArtifacts(before, context);
+  const quoteBoundary = repairIntroducedQuoteBoundaryLineBreaks(before, source, context);
+  const leadingPeriod = repairLeadingSentencePeriodArtifacts(quoteBoundary.text, context);
   const labelBoundary = repairIntroducedLabelBodyLineBreaks(leadingPeriod.text, source, context);
   const particleBoundary = repairIntroducedParticleLineBreaks(labelBoundary.text, source, context);
   // `line_sensitive`는 설문·항목 행을 함부로 재배치하지 말라는 뜻이지,
@@ -624,6 +644,7 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
   const siblingLabels = repairSiblingLabelSpacing(boundary.text, source);
   const spacing = repairContextualSpacing(siblingLabels.text, source, context);
   const changeCounts = mergeChangeCounts(
+    quoteBoundary.changeCounts,
     leadingPeriod.changeCounts,
     labelBoundary.changeCounts,
     particleBoundary.changeCounts,
@@ -641,6 +662,8 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
     changeCounts,
     brokenLineBreakRepairCount: Number(changeCounts.broken_prose_linebreak || 0)
       + Number(changeCounts.particle_linebreak_join || 0)
+      + Number(changeCounts.quote_internal_linebreak_join || 0)
+      + Number(changeCounts.quote_attribution_linebreak_join || 0)
       + Number(changeCounts.label_body_linebreak_join || 0),
     brokenParagraphBreakRepairCount: Number(changeCounts.broken_prose_paragraph_break || 0),
     excessiveBlankLineRepairCount: Number(changeCounts.excess_blank_lines || 0),
@@ -651,6 +674,126 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
     reason: '',
     profile: context.profile
   };
+}
+
+const QUOTE_PAIR_ROWS = Object.freeze([
+  ['“', '”'],
+  ['‘', '’'],
+  ['「', '」'],
+  ['『', '』'],
+  ['《', '》'],
+  ['〈', '〉'],
+  ['"', '"'],
+  ["'", "'"]
+]);
+
+/**
+ * 원문에서는 한 줄이던 인용 내부를 모델이 둘로 자르거나, 닫는 인용부호와
+ * `며/라고/라는` 같은 귀속 표현 사이에 줄바꿈을 넣은 경우만 복원한다.
+ * 인용 내용의 공백 제거값이 원문 인용과 정확히 같을 때만 내부 줄바꿈을
+ * 합치므로 시·독립 인용문과 원문부터 있던 행갈이는 건드리지 않는다.
+ */
+function repairIntroducedQuoteBoundaryLineBreaks(value, source, context = {}) {
+  const before = String(value || '').replace(/\r\n?/gu, '\n');
+  if (!before || context?.creative) return { text: before, changeCounts: {} };
+  const repairs = introducedQuoteInternalLineBreaks(source, before);
+  let text = before;
+  const counts = {};
+  for (const item of [...repairs].sort((left, right) => right.start - left.start)) {
+    const current = text.slice(item.start, item.end);
+    if (current !== item.raw) continue;
+    text = `${text.slice(0, item.start)}${item.replacement}${text.slice(item.end)}`;
+    addCount(counts, 'quote_internal_linebreak_join');
+  }
+  const attribution = repairIntroducedQuoteAttributionLineBreaks(text, source);
+  text = attribution.text;
+  for (const [code, count] of Object.entries(attribution.changeCounts || {})) {
+    addCount(counts, code, count);
+  }
+  return { text, changeCounts: counts };
+}
+
+function repairIntroducedQuoteAttributionLineBreaks(value, source) {
+  const before = String(value || '').replace(/\r\n?/gu, '\n');
+  const sourceCompact = normalizeCompact(source);
+  if (!before || !sourceCompact) return { text: before, changeCounts: {} };
+  const lines = before.split('\n');
+  const guards = buildLineGuards(lines);
+  const counts = {};
+  let index = 0;
+  while (index < lines.length - 1) {
+    const left = String(lines[index] || '').trim();
+    const right = String(lines[index + 1] || '').trim();
+    const attribution = right.match(/^(라고|라며|라는|하며|하고|며|고)(?=\s|[‘“"'「『《〈(（\[【])/u);
+    const quoteEnd = /[”’」』》〉"']$/u.test(left);
+    if (!left || !right || !attribution || !quoteEnd
+        || guards[index]?.code || guards[index + 1]?.code
+        || guards[index]?.reference || guards[index + 1]?.reference
+        || guards[index]?.table || guards[index + 1]?.table
+        || !sourceSupportsQuoteAttributionJoin(source, left, right, attribution[1])) {
+      index += 1;
+      continue;
+    }
+    lines[index] = `${String(lines[index] || '').trimEnd()}${String(lines[index + 1] || '').trimStart()}`;
+    lines.splice(index + 1, 1);
+    guards.splice(index + 1, 1);
+    addCount(counts, 'quote_attribution_linebreak_join');
+  }
+  return { text: lines.join('\n'), changeCounts: counts };
+}
+
+function introducedQuoteInternalLineBreaks(sourceValue, outputValue) {
+  const source = String(sourceValue || '').replace(/\r\n?/gu, '\n');
+  const output = String(outputValue || '').replace(/\r\n?/gu, '\n');
+  const sourceRows = collectQuoteSpans(source);
+  const sourceSingleLineKeys = new Set(
+    sourceRows
+      .filter(item => !item.content.includes('\n'))
+      .map(item => `${item.open}${item.close}:${normalizeQuoteEvidence(item.content)}`)
+  );
+  const repairs = [];
+  for (const item of collectQuoteSpans(output)) {
+    if (!item.content.includes('\n') || item.content.length > 600) continue;
+    const key = `${item.open}${item.close}:${normalizeQuoteEvidence(item.content)}`;
+    if (!sourceSingleLineKeys.has(key)) continue;
+    const replacementContent = item.content.replace(/[ \t]*\n[ \t]*/gu, ' ');
+    const replacement = `${item.open}${replacementContent}${item.close}`;
+    if (replacement === item.raw) continue;
+    repairs.push({ ...item, replacement });
+  }
+  return repairs;
+}
+
+function collectQuoteSpans(value) {
+  const text = String(value || '');
+  const rows = [];
+  for (const [open, close] of QUOTE_PAIR_ROWS) {
+    let cursor = 0;
+    while (cursor < text.length) {
+      const start = text.indexOf(open, cursor);
+      if (start < 0) break;
+      const end = text.indexOf(close, start + open.length);
+      if (end < 0) break;
+      const content = text.slice(start + open.length, end);
+      // 한 쌍이 문서 절반을 삼키는 깨진 ASCII apostrophe 매칭은 버린다.
+      if (content.length <= 800) {
+        rows.push({
+          open,
+          close,
+          start,
+          end: end + close.length,
+          content,
+          raw: text.slice(start, end + close.length)
+        });
+      }
+      cursor = end + close.length;
+    }
+  }
+  return rows.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function normalizeQuoteEvidence(value) {
+  return String(value || '').normalize('NFKC').replace(/\s+/gu, '');
 }
 
 /**
@@ -738,7 +881,7 @@ function repairIntroducedParticleLineBreaks(value, source, context) {
     // 조사가 다음 행으로 밀린 실제 경계만 합친다. 예전 정규식은 조사
     // 다음에 임의의 한글을 허용해 `이번`, `가장`, `은퇴` 같은 일반 단어의
     // 첫 음절을 조사로 오인했고, 제목 행과 본문을 `점이번`처럼 붙였다.
-    const particle = right.match(/^(에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|부터만|까지는|까지도|까지만|의|은|는|이|가|을|를|와|과|에|에서|에게|으로|로|도|만|부터|까지|처럼|보다)(?=\s|[‘“"'「『《〈(（\[【])/u);
+    const particle = right.match(/^(에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|부터만|까지는|까지도|까지만|라고|라며|라는|하며|하고|며|고|의|은|는|이|가|을|를|와|과|에|에서|에게|으로|로|도|만|부터|까지|처럼|보다)(?=\s|[‘“"'「『《〈(（\[【])/u);
     const eligibleLeft = !/[.!?。！？…,:;：；]\s*[”’」』》〉"')\]]*$/u.test(left)
       && /[가-힣A-Za-z0-9”’」』》〉"')\]]$/u.test(left);
     if (!particle || !eligibleLeft || isStandaloneStructureLine(right)) {
@@ -753,7 +896,11 @@ function repairIntroducedParticleLineBreaks(value, source, context) {
     lines[index] = `${String(lines[index] || '').trimEnd()}${String(lines[index + 1] || '').trimStart()}`;
     lines.splice(index + 1, 1);
     guards.splice(index + 1, 1);
-    addCount(counts, 'particle_linebreak_join');
+    const quoteAttribution = /[”’」』》〉"']$/u.test(left)
+      && /^(?:라고|라며|라는|하며|하고|며|고)(?=\s|[‘“"'「『《〈(（\[【])/u.test(right);
+    addCount(counts, quoteAttribution
+      ? 'quote_attribution_linebreak_join'
+      : 'particle_linebreak_join');
   }
   return { text: lines.join('\n'), changeCounts: counts };
 }
@@ -1138,6 +1285,12 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   if (adjacentRepetition) outputIssues.push(adjacentRepetition);
   const residualClauseDuplication = detectIntroducedResidualClauseDuplication(source, outputText);
   if (residualClauseDuplication) outputIssues.push(residualClauseDuplication);
+  const rewriteResidue = detectIntroducedRewriteResidueFragments(source, outputText);
+  if (rewriteResidue) outputIssues.push(rewriteResidue);
+  const quoteBoundary = detectIntroducedQuoteBoundaryLineBreaks(source, outputText);
+  if (quoteBoundary) outputIssues.push(quoteBoundary);
+  const caseParticleShift = detectIntroducedCaseParticleRelationShift(source, outputText);
+  if (caseParticleShift) outputIssues.push(caseParticleShift);
   const professional = detectProfessionalDowngrade(source, outputText, profile);
   if (professional) outputIssues.push(professional);
   const persistentTense = detectIntroducedPersistentStateTenseRegression(source, outputText);
@@ -1489,6 +1642,21 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   for (let index = 0; index < residualClauseRepair.repairCount; index += 1) {
     changes.push('introduced_residual_clause_duplication');
   }
+  const quoteBoundaryRepair = repairIntroducedQuoteBoundaryLineBreaks(text, source, formattingContext(documentProfile));
+  text = quoteBoundaryRepair.text;
+  for (const [code, count] of Object.entries(quoteBoundaryRepair.changeCounts || {})) {
+    for (let index = 0; index < Number(count || 0); index += 1) changes.push(code);
+  }
+  const rewriteResidueRepair = repairIntroducedRewriteResidueFragments(source, text);
+  text = rewriteResidueRepair.text;
+  for (let index = 0; index < rewriteResidueRepair.repairCount; index += 1) {
+    changes.push('introduced_rewrite_residue_fragment');
+  }
+  const caseParticleRepair = repairIntroducedCaseParticleRelationShifts(source, text);
+  text = caseParticleRepair.text;
+  for (let index = 0; index < caseParticleRepair.repairCount; index += 1) {
+    changes.push('introduced_case_particle_relation_shift');
+  }
   const reciprocalRepair = repairReciprocalExpressionRedundancy(text);
   text = reciprocalRepair.text;
   for (let index = 0; index < reciprocalRepair.repairCount; index += 1) {
@@ -1679,7 +1847,10 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'double_object_time_expenditure',
   'persistent_state_tense_regression',
   'reduplicative_root_loss',
-  'orphan_structural_particle'
+  'orphan_structural_particle',
+  'introduced_rewrite_residue_fragment',
+  'introduced_quote_boundary_linebreak',
+  'introduced_case_particle_relation_shift'
 ]);
 
 const POLISH_DISCOURSE_OPENER_RE = /^(이러한\s+내용을\s+종합하면|이상의\s+내용을\s+종합하면|앞선\s+내용을\s+종합하면|이\s+내용을\s+종합하면|이를\s+종합하면|이러한\s+점을\s+종합하면|종합하면|이러한\s+점에서|이런\s+점에서|결론적으로|마지막으로|이에\s+따라|그러므로|따라서|결국|이처럼|요컨대|정리하면|한편|반면|다만|그러나|하지만|즉)([,，]?)[ \t]+/u;
@@ -1737,6 +1908,28 @@ function restorePolishDiscourseOpeners({ source = '', outputText = '' } = {}) {
     restoredMarkers: [...new Set(proposals.map(item => item.marker))],
     reason: text !== before ? 'restored' : 'unchanged'
   };
+}
+
+function sourceSupportsQuoteAttributionJoin(sourceValue, leftValue, rightValue, attribution) {
+  const source = String(sourceValue || '').replace(/\r\n?/gu, '\n');
+  const leftCompact = normalizeCompact(leftValue);
+  const rightCompact = normalizeCompact(rightValue);
+  const sourceLines = source.split('\n');
+  for (let index = 0; index < sourceLines.length - 1; index += 1) {
+    const sourceLeft = normalizeCompact(sourceLines[index]);
+    const sourceRight = normalizeCompact(sourceLines[index + 1]);
+    if (sourceLeft.endsWith(leftCompact.slice(-Math.min(18, leftCompact.length)))
+        && sourceRight.startsWith(rightCompact.slice(0, Math.min(8, rightCompact.length)))) {
+      return false;
+    }
+  }
+  const sourceCompact = normalizeCompact(source);
+  const suffix = normalizeCompact(attribution);
+  for (const leftSize of [32, 24, 16, 10]) {
+    const evidence = `${leftCompact.slice(-leftSize)}${suffix}`;
+    if (evidence.length >= 10 && sourceCompact.includes(evidence)) return true;
+  }
+  return false;
 }
 
 /**
@@ -2296,6 +2489,204 @@ function repairIntroducedResidualClauseDuplications(source, outputText) {
     .replace(/[ \t]+\n/gu, '\n')
     .replace(/\n[ \t]+/gu, '\n');
   return { text, repairCount };
+}
+
+function detectIntroducedQuoteBoundaryLineBreaks(source, outputText) {
+  const internal = introducedQuoteInternalLineBreaks(source, outputText);
+  const attribution = introducedQuoteAttributionLineBreaks(source, outputText);
+  const count = internal.length + attribution.length;
+  if (!count) return null;
+  return makeIssue(
+    'introduced_quote_boundary_linebreak',
+    count,
+    [...internal, ...attribution].map(item => sentenceOrdinalAt(String(outputText || ''), item.start)),
+    {
+      internalCount: internal.length,
+      attributionCount: attribution.length
+    }
+  );
+}
+
+function introducedQuoteAttributionLineBreaks(sourceValue, outputValue) {
+  const source = String(sourceValue || '').replace(/\r\n?/gu, '\n');
+  const output = String(outputValue || '').replace(/\r\n?/gu, '\n');
+  const sourceCompact = normalizeCompact(source);
+  if (!sourceCompact || !output) return [];
+  const records = layoutStructure.buildLineRecords(output);
+  const rows = [];
+  for (let index = 0; index < records.length - 1; index += 1) {
+    const leftRow = records[index];
+    const rightRow = records[index + 1];
+    if (!leftRow || !rightRow || leftRow.blank || rightRow.blank) continue;
+    const left = String(leftRow.text || '');
+    const right = String(rightRow.text || '');
+    const attribution = right.match(/^(라고|라며|라는|하며|하고|며|고)(?=\s|[‘“"'「『《〈(（\[【])/u);
+    if (!/[”’」』》〉"']$/u.test(left) || !attribution) continue;
+    if (!sourceSupportsQuoteAttributionJoin(source, left, right, attribution[1])) continue;
+    rows.push({ start: leftRow.end, end: rightRow.start });
+  }
+  return rows;
+}
+
+function detectIntroducedRewriteResidueFragments(source, outputText) {
+  const rows = introducedRewriteResidueFragments(source, outputText);
+  if (!rows.length) return null;
+  return makeIssue(
+    'introduced_rewrite_residue_fragment',
+    rows.length,
+    rows.map(item => sentenceOrdinalAt(String(outputText || ''), item.start)),
+    {
+      fragments: rows.slice(0, 8).map(item => item.fragment.slice(0, 120))
+    }
+  );
+}
+
+function repairIntroducedRewriteResidueFragments(source, outputText) {
+  const before = String(outputText || '');
+  const rows = introducedRewriteResidueFragments(source, before);
+  if (!rows.length) return { text: before, repairCount: 0 };
+  let text = before;
+  let repairCount = 0;
+  for (const item of [...rows].sort((left, right) => right.start - left.start)) {
+    if (text.slice(item.start, item.end) !== item.raw) continue;
+    text = `${text.slice(0, item.start)}${text.slice(item.end)}`;
+    repairCount += 1;
+  }
+  return { text, repairCount };
+}
+
+function introducedRewriteResidueFragments(sourceValue, outputValue) {
+  const source = String(sourceValue || '').replace(/\r\n?/gu, '\n');
+  const output = String(outputValue || '').replace(/\r\n?/gu, '\n');
+  if (!source || !output) return [];
+  const sourceSentences = splitSentences(source).map(value => String(value || '').trim()).filter(Boolean);
+  const records = layoutStructure.buildLineRecords(output);
+  const rows = [];
+  for (let index = 0; index < records.length - 1; index += 1) {
+    const leftRow = records[index];
+    const rightRow = records[index + 1];
+    if (!leftRow || !rightRow || leftRow.blank || rightRow.blank) continue;
+    const left = String(leftRow.text || '');
+    const right = String(rightRow.text || '');
+    if (!['list', 'label_inline'].includes(String(leftRow.role || ''))
+        || left.length < 24 || right.length < 35
+        || /[.!?。！？…]\s*[”’」』》〉"')\]]*$/u.test(left)
+        || layoutStructure.isKnownHeadingLine(right)) continue;
+    const tokens = [...left.matchAll(/\S+/gu)];
+    let selected = null;
+    for (const token of tokens) {
+      const tokenText = String(token[0] || '').replace(/^["'“‘「『《〈(（\[]+/u, '');
+      if (!/^[가-힣A-Za-z0-9·()/-]{1,24}(?:은|는|이|가)$/u.test(tokenText)) continue;
+      const fragment = left.slice(Number(token.index || 0)).trim();
+      if (fragment.length < 12 || fragment.length > 100 || /[,;:：；]$/u.test(fragment)) continue;
+      const matchedSource = sourceSentences.find(sentence => sentence.includes(fragment));
+      if (!matchedSource) continue;
+      const fragmentAt = matchedSource.indexOf(fragment);
+      const continuation = matchedSource.slice(fragmentAt + fragment.length).trimStart();
+      if (!/^(?:이었|였|이어|인|이란|이라는|이라고|이어서|이므로|이지만|이기에|되었|됐|되어|돼|했|하여|하였)/u.test(continuation)) continue;
+      if (/^(?:이었|였|이어|인|이란|이라는|이라고|이어서|이므로|이지만|이기에)/u.test(right)) continue;
+      if (sentenceSimilarity(matchedSource, right) < 0.26) continue;
+      const sourceBoundary = `${fragment}\n`;
+      if (source.includes(sourceBoundary)) continue;
+      const rawLine = String(leftRow.raw || '');
+      let rawStart = rawLine.indexOf(fragment);
+      if (rawStart < 0) continue;
+      while (rawStart > 0 && /[ \t]/u.test(rawLine[rawStart - 1])) rawStart -= 1;
+      if (!rawLine.slice(0, rawStart).trim()) continue;
+      selected = {
+        start: leftRow.start + rawStart,
+        end: leftRow.end,
+        raw: output.slice(leftRow.start + rawStart, leftRow.end),
+        fragment,
+        sourceSentence: matchedSource,
+        nextLine: right
+      };
+      break;
+    }
+    if (selected) rows.push(selected);
+  }
+  return rows;
+}
+
+function detectIntroducedCaseParticleRelationShift(source, outputText) {
+  const rows = introducedCaseParticleRelationShifts(source, outputText);
+  if (!rows.length) return null;
+  return makeIssue(
+    'introduced_case_particle_relation_shift',
+    rows.length,
+    rows.map(item => item.outputOrdinal),
+    {
+      shifts: rows.slice(0, 8).map(item => ({
+        anchor: item.anchor,
+        from: item.sourceParticle,
+        to: item.outputParticle
+      }))
+    }
+  );
+}
+
+function repairIntroducedCaseParticleRelationShifts(source, outputText) {
+  const before = String(outputText || '');
+  const rows = introducedCaseParticleRelationShifts(source, before);
+  if (!rows.length) return { text: before, repairCount: 0 };
+  let text = before;
+  let repairCount = 0;
+  for (const item of [...rows].sort((left, right) => right.start - left.start)) {
+    if (text.slice(item.start, item.end) !== item.outputParticle) continue;
+    text = `${text.slice(0, item.start)}${item.sourceParticle}${text.slice(item.end)}`;
+    repairCount += 1;
+  }
+  return { text, repairCount };
+}
+
+function introducedCaseParticleRelationShifts(sourceValue, outputValue) {
+  const sourceSpans = splitSentenceSpans(String(sourceValue || ''));
+  const output = String(outputValue || '');
+  const outputSpans = splitSentenceSpans(output);
+  const outputSentences = outputSpans.map(item => item.text);
+  if (!sourceSpans.length || !outputSpans.length) return [];
+  const rows = [];
+  const used = new Set();
+  const anchorPattern = /([가-힣A-Za-z][가-힣A-Za-z0-9·()\/-]{0,24})(이|가)(?=\s*(?:[‘“"'「『《〈]|무엇|어디|어느|어떻게|얼마|어떤))/gu;
+  sourceSpans.forEach((sourceSpan, sourceIndex) => {
+    const sourceSentence = String(sourceSpan.text || '');
+    if (!/(?:에|에게|으로)\s+(?:있|달려|놓여|좌우되|기인하|비롯되)/u.test(sourceSentence)) return;
+    for (const match of sourceSentence.matchAll(anchorPattern)) {
+      const anchor = match[1];
+      const sourceParticle = match[2];
+      const aligned = alignedOutputCandidates(
+        sourceSentence,
+        sourceIndex,
+        sourceSpans.length,
+        outputSentences,
+        { window: 3, maxOutputGroup: 1 }
+      ).find(item => Number(item.score || 0) >= 0.78);
+      if (!aligned || !Number.isInteger(aligned.index)) continue;
+      const outputSpan = outputSpans[aligned.index];
+      const outputSentence = String(outputSpan?.text || '');
+      if (!outputSentence || !/(?:에|에게|으로)\s+(?:있|달려|놓여|좌우되|기인하|비롯되)/u.test(outputSentence)) continue;
+      const targetPattern = new RegExp(`${escapeRegexLiteral(anchor)}(은|는)(?=\\s*(?:[‘“\"'「『《〈]|무엇|어디|어느|어떻게|얼마|어떤))`, 'u');
+      const target = outputSentence.match(targetPattern);
+      if (!target || target.index == null) continue;
+      const particleOffset = Number(outputSpan.start || 0) + Number(target.index) + anchor.length;
+      const key = `${particleOffset}:${anchor}`;
+      if (used.has(key)) continue;
+      used.add(key);
+      rows.push({
+        anchor,
+        sourceParticle,
+        outputParticle: target[1],
+        outputOrdinal: aligned.index + 1,
+        start: particleOffset,
+        end: particleOffset + target[1].length
+      });
+    }
+  });
+  return rows;
+}
+
+function escapeRegexLiteral(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 function introducedResidualClauseDuplications(source, outputText) {

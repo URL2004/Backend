@@ -53,7 +53,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.29';
+const VERSION = 'gpt-prod-v2.5.30';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -757,7 +757,12 @@ async function runEngine({
           && (humanizationDepthEnabled
             ? !humanizationDepth.needsHumanizationRecovery(humanizationDepthReport)
             : humanizationDepthReport?.pass === true)) break;
-      if (!recoveryBudget.tryStart()) {
+      // 섹션 회복이 먼저 비용 풀을 사용했더라도 문서 전체가 여전히 실제
+      // 최소 효과선 아래라면 마지막 문서 회복 1회는 보장한다. 관측 목표만
+      // 미달한 문서는 계속 비용 상한을 따르고, 최소선 미달의 첫 시도만
+      // mandatory로 두어 무제한 추가 호출은 허용하지 않는다.
+      const mandatoryDepthRecovery = attempt === 0 && severeNoEffect;
+      if (!recoveryBudget.tryStart({ mandatory: mandatoryDepthRecovery })) {
         const denied = recoveryBudget.denialReason() || 'recovery_budget_exhausted';
         recoveryBudget.recordSkip(denied);
         addUniqueCode(humanizationDepthRetryRejectionCodes, denied);
@@ -769,7 +774,15 @@ async function runEngine({
         // 원문과 완전히 같은 결과는 일반적인 "깊이 부족"보다 강한 기술 실패다.
         // 기본 피하기도 첫 회복이 실패하면 상위 모델로 한 번 승격해, 원문 그대로
         // 전달·과금되는 경우를 최대한 줄인다.
-        const escalation = attempt > 0 && (requestStrength === 'advanced' || wasEquivalent || severeNoEffect);
+        // 장문은 전체 문서 재시도가 한 번뿐이어서 예전의 `attempt > 0`
+        // 승격 조건에 절대 도달하지 못했다. 고급 장문이 최소 효과선도 못
+        // 넘긴 경우에는 그 한 번을 처음부터 상위 품질 모델로 사용한다.
+        const directLongEscalation = attempt === 0
+          && longDocumentRecovery
+          && requestStrength === 'advanced'
+          && severeNoEffect;
+        const escalation = directLongEscalation
+          || (attempt > 0 && (requestStrength === 'advanced' || wasEquivalent || severeNoEffect));
         const roleRecovery = attempt > 0
           && !escalation
           && roleRecoveryPending
@@ -4717,7 +4730,8 @@ function auditGeneralSurfaceCandidateWithStructure({
   const prepared = prepareGeneralSurfaceCandidate({
     source,
     candidate,
-    chunks
+    chunks,
+    documentProfile
   });
   const preparedCandidate = prepared.text;
   const audit = auditGeneralSurfaceCandidate(
@@ -4871,7 +4885,7 @@ function auditGeneralSurfaceCandidate(
   };
 }
 
-function prepareGeneralSurfaceCandidate({ source, candidate, chunks } = {}) {
+function prepareGeneralSurfaceCandidate({ source, candidate, chunks, documentProfile = null } = {}) {
   const before = String(candidate || '').trim();
   if (!before || !Array.isArray(chunks) || !chunks.length) {
     return { text: before, applied: false, restoredCount: 0 };
@@ -4884,10 +4898,16 @@ function prepareGeneralSurfaceCandidate({ source, candidate, chunks } = {}) {
   if (restored.pass !== true || !String(restored.text || '').trim()) {
     return { text: before, applied: false, restoredCount: 0 };
   }
+  const formatting = koreanRefinement.applySafeFormattingRepairs({
+    source,
+    outputText: String(restored.text).trim(),
+    documentProfile
+  });
   return {
-    text: String(restored.text).trim(),
-    applied: restored.applied === true,
-    restoredCount: Number(restored.restoredCount || 0)
+    text: String(formatting.text || restored.text).trim(),
+    applied: restored.applied === true || formatting.applied === true,
+    restoredCount: Number(restored.restoredCount || 0),
+    formattingRepairCount: Number(formatting.changeCount || 0)
   };
 }
 

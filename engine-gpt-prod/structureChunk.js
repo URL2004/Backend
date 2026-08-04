@@ -2442,7 +2442,10 @@ function isHeadingLine(s) {
   if (layoutStructure.isKnownHeadingLine(s)) return true;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*[.)．]?\s*\S.{0,100}$/.test(s)) return true;
   if (/^[IVX]{1,8}[.)．]\s*\S.{0,100}$/.test(s)) return true;
-  if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/.test(s) && s.length <= 120) return true;
+  const numberedBody = String(s || '').match(/^\d{1,2}[.)]\s*([\s\S]+)$/u)?.[1] || '';
+  if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/u.test(s)
+      && s.length <= 120
+      && !(numberedBody.length >= 45 && layoutStructure.isSentenceComplete(numberedBody))) return true;
   if (/^제\s?\d{1,3}\s?(?:장|절|항)(?:\s+\S.{0,100})?$/.test(s)) return true;
   if (/^제\s?\d{1,3}\s?조(?:의\s?\d{1,3})?(?:\s*[（(][^）)\n]{1,80}[）)])?$/.test(s)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|참고\s*문헌|결과\s*분석\s*및\s*함의)$/.test(s)) return true;

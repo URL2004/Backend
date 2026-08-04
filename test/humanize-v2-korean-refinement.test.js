@@ -13,7 +13,7 @@ test('따옴표로 시작한 자소서 산문의 닫는 부호 경계만 안전�
     documentProfile: profile,
     mode: 'assignment'
   });
-  assert.equal(audit.version, 23);
+  assert.equal(audit.version, 24);
   assert.ok(audit.issueCodes.includes('closed_quote_spacing'));
   assert.ok(audit.sourceReviewWarnings.some(item => item.code === 'quote_terminal_punctuation_review'));
 

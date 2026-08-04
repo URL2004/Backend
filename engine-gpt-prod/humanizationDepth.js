@@ -981,8 +981,8 @@ function buildSentenceParagraphMap(value) {
       }
       if (references && /^(?:부록|Appendix)(?:\s|$)/iu.test(line)) references = false;
       if (references) continue;
-      const labelBody = editableLabelBody(line);
-      if (labelBody) editableLines.push(labelBody);
+      const structuralBody = editableStructuralBody(line);
+      if (structuralBody) editableLines.push(structuralBody);
       else if (!isProtectedCarryoverLine(line)) editableLines.push(line);
     }
     const eligible = normalizeSubstantive(editableLines.join(' ')).length >= 8;
@@ -1007,9 +1007,9 @@ function eligibleProseSentences(value) {
     }
     if (references && /^(?:부록|Appendix)(?:\s|$)/iu.test(line)) references = false;
     if (references) continue;
-    const labelBody = editableLabelBody(line);
-    if (labelBody) {
-      prose.push(labelBody);
+    const structuralBody = editableStructuralBody(line);
+    if (structuralBody) {
+      prose.push(structuralBody);
       continue;
     }
     if (isProtectedCarryoverLine(line)) continue;
@@ -1024,13 +1024,35 @@ function editableLabelBody(line) {
   return match[1].trim();
 }
 
+function editableListBody(line) {
+  const match = String(line || '').match(
+    /^\s*(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+(.+)$/u
+  );
+  if (!match) return '';
+  const body = String(match[1] || '').trim();
+  if (!body || body.length < 24) return '';
+  // 짧은 명사 항목·독립 인용·실제 표 셀은 계속 구조로 보호한다. 반면
+  // 번호 뒤에 완결 문장이나 여러 절이 이어진 과제·보고서 본문은 청커도
+  // 접두부만 잠그므로 깊이·문단·carryover 감사에서도 같은 본문으로 센다.
+  if (/^["'“‘「『《〈].+["'”’」』》〉]$/u.test(body) && body.length <= 180) return '';
+  const sentenceLike = /[.!?。！？](?:\s|$)/u.test(body)
+    || /(?:다|요|니다|했다|된다|였다|있다|없다|않다|함|됨|임|음)(?:[.!?。！？]|$)/u.test(body);
+  return sentenceLike ? body : '';
+}
+
+function editableStructuralBody(line) {
+  return editableLabelBody(line) || editableListBody(line);
+}
+
 function isProtectedCarryoverLine(line) {
   if (LOCK_TOKEN.test(line)) {
     LOCK_TOKEN.lastIndex = 0;
     return true;
   }
   LOCK_TOKEN.lastIndex = 0;
-  if (/^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d{1,3}[.)]|[①-⑳]|[A-Za-z][.)])\s+/u.test(line)) return true;
+  if (/^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d{1,3}[.)]|[①-⑳]|[A-Za-z][.)])\s+/u.test(line)) {
+    return !editableListBody(line);
+  }
   if (/^>\s*\S/u.test(line) || /^\|.+\|$/u.test(line) || /\t/u.test(line)) return true;
   if (/^["'“‘「『《〈].+["'”’」』》〉]$/u.test(line) && line.length <= 180) return true;
   if (/^#{1,6}\s+/u.test(line)) return true;

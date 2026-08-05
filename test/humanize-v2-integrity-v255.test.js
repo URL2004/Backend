@@ -253,7 +253,7 @@ test('화면 폭 때문에 생긴 단일 줄바꿈은 자연성 문장·리듬 �
   const unwrapped = wrapped.replace('\n', ' ');
   const before = naturalness.measureNaturalnessShadow(wrapped);
   const after = naturalness.measureNaturalnessShadow(unwrapped);
-  assert.equal(before.version, 5);
+  assert.equal(before.version, 6);
   assert.equal(before.sentenceCount, after.sentenceCount);
   assert.equal(before.sentenceCv, after.sentenceCv);
   assert.equal(before.metrics.uniformSentenceRhythm, after.metrics.uniformSentenceRhythm);

@@ -1430,11 +1430,10 @@ function splitEditablePrefixPiece(piece, options = {}) {
   const markdownLabelBullet = legal || numberedInlineHeading || blockquote || emojiLabel
     ? null
     : raw.match(/^(\s*[-*+]\s+(?:\*\*|__)[^*\n_]{1,120}(?::|：)(?:\*\*|__)\s*)(\S[\s\S]*)$/u);
-  const bullet = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet
+  const bulletParts = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet
     ? null
-    : raw.match(
-      /^(\s*(?:(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
-    );
+    : layoutStructure.listPrefixParts(raw);
+  const bullet = bulletParts ? [raw, bulletParts.prefix, bulletParts.body] : null;
   const bracketLabel = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet
     ? null
     : raw.match(/^(\s*\[(?=[^\]\n]{0,79}[가-힣A-Za-z])[^\]\n]{1,80}\]\s*)(\S[\s\S]*)$/u);

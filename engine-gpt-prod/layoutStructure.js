@@ -146,12 +146,15 @@ function classifyLine(value, context = {}) {
   if (legalClauseParts(text)) return 'legal_clause';
   if (isExactMetadataLine(text)) return 'signature';
   if (context.signatureLike) return 'signature';
-  if (context.parallelSloganTitle) return 'title';
   if (isKnownHeadingLine(text)) return 'heading';
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
   if (isFlowSequenceLine(text)) return 'flow';
   if (context.plainListLike) return 'list';
+  // 번호·불릿이 명시된 긴 완결 문장은 유사한 행이 반복되더라도 제목
+  // 묶음이 아니라 목록이다. 공백 유무가 달라졌다는 이유로 한 항목만
+  // 목록으로 바뀌면 최종 voice 감사가 구조 손실을 잘못 보고한다.
   if (isListLine(text)) return 'list';
+  if (context.parallelSloganTitle) return 'title';
   if (isQuoteLine(text)) return 'quote';
   if (isColonTitleLine(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
@@ -222,7 +225,7 @@ function isKnownHeadingLine(value) {
   // `1. 소제목`과 `1. 완결된 본문 문장`을 길이만으로 함께 잠그지 않는다.
   // 번호 뒤에 충분히 긴 완결 서술이 있으면 목록 본문이며, 청커가 번호만
   // 잠그고 나머지를 편집할 수 있어야 한다.
-  if (numberedBody.length >= 45 && isSentenceComplete(numberedBody)) return false;
+  if (numberedBody.length >= 30 && isSentenceComplete(numberedBody)) return false;
   if (/^\d{1,2}(?:\.\d{1,2}){0,3}\s*[.)]?\s+\S.{0,100}$/u.test(text)) return true;
   if (/^\d{1,2}[.)]\s*[가-힣A-Za-z]\S*.{0,100}$/u.test(text)) return true;
   if (/^(?:문제|문항)\s*\d{1,3}\s*[.)：:]?\s*\S.{0,100}$/u.test(text)) return true;
@@ -420,13 +423,18 @@ function bracketLabelParts(value) {
 }
 
 function isListLine(value) {
-  const text = visibleTrim(value);
-  return /^(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+\S/u.test(text)
-    || /^[●○■□◆◇▶▷※]\s*\S/u.test(text)
-    // 현장 메모·세특 초안에서 `+특히 ...`처럼 공백 없이 붙은 불릿이
-    // 반복된다. 양수·증감률(+5%, +3건)은 목록이 아니므로 문자로
-    // 시작하는 경우만 구조 접두부로 인정한다.
-    || /^\+(?=[가-힣A-Za-z“"'‘「『《〈])\S/u.test(text);
+  return Boolean(listPrefixParts(value));
+}
+
+function listPrefixParts(value) {
+  const raw = String(value || '');
+  const match = raw.match(
+    /^(\s*(?:[-*+]\s+|[•▪◦·]\s*|(?:\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s*|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
+  );
+  if (!match) return null;
+  // `+특히 ...` 같은 현장 메모는 목록이지만 `+5%`, `+3건`은 수치다.
+  // `*강조*`도 마크다운 강조일 수 있어 ASCII 불릿은 공백을 요구한다.
+  return { prefix: match[1], body: match[2] };
 }
 
 function isFlowSequenceLine(value) {
@@ -807,6 +815,8 @@ module.exports = {
   legalClauseParts,
   labelParts,
   bracketLabelParts,
+  isListLine,
+  listPrefixParts,
   isSentenceComplete,
   isHardProseBoundary,
   isStructureDominatedParagraph

@@ -61,7 +61,7 @@ function measureNaturalnessShadow(value) {
     metrics.concreteAnchorScarcity * 0.08
   ));
   return {
-    version: 5,
+    version: 6,
     shadowOnly: true,
     sentenceCount: sentences.length,
     paragraphCount: paragraphs.length,
@@ -87,7 +87,7 @@ function compareNaturalnessShadow(source, output) {
   if (!rhythmComparable) delta.uniformSentenceRhythm = null;
   delta.overallRisk = round3(after.overallRisk - before.overallRisk);
   return {
-    version: 5,
+    version: 6,
     shadowOnly: true,
     before,
     after,
@@ -106,11 +106,14 @@ function measureRhythm(sentences) {
   const sd = Math.sqrt(average(lengths.map(value => (value - avg) ** 2)));
   const cv = avg ? sd / avg : 1;
   const sameBand = lengths.filter(value => Math.abs(value - avg) <= Math.max(8, avg * 0.18)).length / lengths.length;
-  // sameBand는 표본이 적을 때 한 문장만 경계 안팎으로 이동해도 0.25씩
-  // 튀는 이산 지표다. CV가 오히려 좋아진 4문장 결과를 큰 리듬 악화로
-  // 기록하지 않도록 보조 가중치만 부여한다. 이 값은 shadow 전용이다.
+  // CV 0.25~0.42는 실제 한국어 산문에서 충분히 자연스러운 변동 구간이다.
+  // 기존 식은 긴 원문 문장을 읽기 좋게 나눠 CV가 0.41→0.34가 된 결과도
+  // 균일화 악화로 기록했다. 낮은 CV와 높은 same-band가 함께 나타나는
+  // 경우만 위험으로 보고, 표본 경계에 민감한 sameBand는 보조 신호로 둔다.
+  const uniformityDeficit = Math.max(0, 0.25 - cv);
+  const sameBandExcess = cv < 0.25 ? Math.max(0, sameBand - 0.65) : 0;
   const risk = round3(Math.max(0, Math.min(1,
-    (0.42 - cv) * 1.9 + Math.max(0, sameBand - 0.55) * 0.25
+    uniformityDeficit * 2.8 + sameBandExcess * 0.15
   )));
   return { sentenceCount: lengths.length, avg: round3(avg), min: Math.min(...lengths), max: Math.max(...lengths), cv: round3(cv), sameBand: round3(sameBand), risk, comparable: true };
 }

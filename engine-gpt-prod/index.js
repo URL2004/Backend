@@ -53,7 +53,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.30';
+const VERSION = 'gpt-prod-v2.5.31';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',

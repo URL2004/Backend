@@ -1383,7 +1383,7 @@ function isNumberedLine(line) {
 }
 
 function isListLine(line) {
-  return /^(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+/u.test(String(line || '').trim());
+  return layoutStructure.isListLine(line);
 }
 
 function count(text, regex) {

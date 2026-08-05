@@ -111,7 +111,7 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.summary.needsReviewCount, 1);
   assert.equal(report.summary.needsReviewRate, 0.5);
   assert.equal(report.summary.koreanRefinementFailureCount, 1);
-  assert.equal(report.schemaVersion, 3);
+  assert.equal(report.schemaVersion, 4);
   assert.equal(report.summary.depthBelowMinimumRate, 0.5);
   assert.equal(report.summary.targetDepthMetRate, 0.5);
   assert.equal(report.summary.depthTugDocumentCount, 1);
@@ -153,6 +153,10 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(Object.hasOwn(report.recent[0], 'inputText'), false);
   assert.equal(Object.hasOwn(report.recent[0], 'outputText'), false);
   assert.equal(Object.hasOwn(report.recent[0], 'uid'), false);
+  assert.equal(report.latestEngine.engineVersion, 'gpt-prod-v2.4.6');
+  assert.equal(report.latestEngine.rowCount, 2);
+  assert.equal(report.latestEngine.needsReviewRate, 0.5);
+  assert.equal(report.engineCohorts.length, 1);
 });
 
 test('품질 수치 요약은 선형 보간 p95와 빈 표본을 안정적으로 처리한다', () => {

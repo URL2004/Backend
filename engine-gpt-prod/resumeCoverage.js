@@ -7,7 +7,7 @@ const {
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 6;
+const VERSION = 7;
 const MIN_CONTENT_RECALL = 0.50;
 const MIN_SEMANTIC_FALLBACK = 0.62;
 const CLAIM_PATTERNS = Object.freeze({
@@ -183,10 +183,7 @@ function meaningfulSentences(value) {
         return body ? [body] : [];
       }
       if (record.role === 'list') {
-        const listBody = String(record.text || '').replace(
-          /^(?:(?:[-*+•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈]))/u,
-          ''
-        );
+        const listBody = layoutStructure.listPrefixParts(record.text)?.body || String(record.text || '');
         const body = listBody.replace(
           /^[^.!?。！？\n]{2,100}?\s+\[[^\]\n]{2,140}\]\s+(?=\S)/u,
           ''
@@ -196,8 +193,31 @@ function meaningfulSentences(value) {
       return [record.text];
     });
   return splitSentences(editableLines.join('\n'))
+    .flatMap(splitCoverageRunOn)
     .map(sentence => String(sentence || '').trim())
     .filter(sentence => normalize(sentence).length >= 5);
+}
+
+function splitCoverageRunOn(value) {
+  const sentence = String(value || '').trim();
+  // 붙여넣기·OCR 원문은 마침표 없이 `...했습니다 다음으로 ...했습니다`가
+  // 수백 자 이어지는 경우가 있다. 하나의 거대 주장과 결과의 앞 세 문장만
+  // 비교하면 실제로 보존된 뒤쪽 행동·성과를 누락으로 오인한다. 감사용
+  // 단위만 확실한 격식 종결에서 나누며 사용자 문서 자체는 바꾸지 않는다.
+  if (sentence.length < 180) return [sentence];
+  const boundary = /(?:습니다|입니다)[ \t]+(?=[가-힣A-Za-z0-9“"'‘「『《〈])/gu;
+  const rows = [];
+  let start = 0;
+  for (const match of sentence.matchAll(boundary)) {
+    const endingLength = match[0].length - (match[0].match(/[ \t]+$/u)?.[0].length || 0);
+    const end = Number(match.index || 0) + endingLength;
+    const row = sentence.slice(start, end).trim();
+    if (row) rows.push(row);
+    start = Number(match.index || 0) + match[0].length;
+  }
+  const tail = sentence.slice(start).trim();
+  if (tail) rows.push(tail);
+  return rows.length >= 2 ? rows : [sentence];
 }
 
 function contentTokens(value) {

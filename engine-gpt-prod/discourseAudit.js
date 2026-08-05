@@ -6,7 +6,7 @@ const layoutStructure = require('./layoutStructure');
 const { alignSourceSentence } = require('./sentenceAlignment');
 const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 
-const VERSION = 7;
+const VERSION = 8;
 const VIOLATION_CODES = Object.freeze([
   'scope_expansion',
   'new_evaluation',
@@ -121,12 +121,8 @@ function compareDiscourse(source, outputText) {
   const topicRestartDelta = after.topicRestartCount - before.topicRestartCount;
   const roleShiftCount = countRoleShifts(before.paragraphs, after.paragraphs);
   const scopeExpansionCount = countScopeExpansionSignals(source, outputText, before, after);
-  // 활동 문장 비율은 최소 네 문장 이상에서만 안정적이다. PDF/OCR 입력처럼
-  // 문장부호가 빠져 원문 전체가 한두 문장으로 잡히면, 정상적인 문장 분리만
-  // 해도 분모가 급증해 실제 활동을 모두 보존한 결과를 축소로 오인한다.
-  const personalBalanceShift = before.sentenceCount >= 4
-    && before.actionSentenceCount >= 2
-    && after.actionSentenceRatio < before.actionSentenceRatio - 0.12;
+  const personalBalance = inspectPersonalBalanceShift(source, outputText, before, after);
+  const personalBalanceShift = personalBalance.shift;
 
   add('new_evaluation', novelReflectionCount, 'source_relative_novel_reflection_function');
   add(
@@ -147,7 +143,15 @@ function compareDiscourse(source, outputText) {
   add('rhetorical_role_shift', roleShiftCount, 'paragraph_role_changed_to_reflection_or_conclusion');
   add('scope_expansion', scopeExpansionCount, 'novel_topic_cluster_with_expansion_construction');
   add('topic_restart', topicRestartDelta, 'conclusion_followed_by_new_investigation');
-  add('personal_balance_shift', personalBalanceShift ? 1 : 0, 'source_activity_share_decreased');
+  add(
+    'personal_balance_shift',
+    personalBalanceShift ? 1 : 0,
+    'source_activity_evidence_lost_or_replaced',
+    {
+      lostActionSentenceCount: personalBalance.lostActionSentenceCount,
+      novelNonActivitySentenceCount: personalBalance.novelNonActivitySentenceCount
+    }
+  );
 
   return {
     version: VERSION,
@@ -170,10 +174,59 @@ function compareDiscourse(source, outputText) {
         topicRestartCount: topicRestartDelta,
         rhetoricalRoleShiftCount: roleShiftCount,
         scopeExpansionSignalCount: scopeExpansionCount,
-        actionSentenceRatio: round4(after.actionSentenceRatio - before.actionSentenceRatio)
+        actionSentenceRatio: round4(after.actionSentenceRatio - before.actionSentenceRatio),
+        lostActionSentenceCount: personalBalance.lostActionSentenceCount,
+        novelNonActivitySentenceCount: personalBalance.novelNonActivitySentenceCount
       }
     }
   };
+}
+
+function inspectPersonalBalanceShift(source, outputText, before, after) {
+  const ratioCandidate = before.sentenceCount >= 4
+    && before.actionSentenceCount >= 2
+    && after.actionSentenceRatio < before.actionSentenceRatio - 0.12;
+  if (!ratioCandidate) {
+    return { shift: false, lostActionSentenceCount: 0, novelNonActivitySentenceCount: 0 };
+  }
+
+  const sourceSentences = splitSentences(source);
+  const outputSentences = splitSentences(outputText);
+  const lostActionSentenceCount = sourceSentences.reduce((count, sentence, index) => {
+    if (!matchesPattern(sentence, ACTIVITY_PATTERN)) return count;
+    const alignment = alignSourceSentence(
+      sentence,
+      index,
+      sourceSentences.length,
+      outputSentences,
+      { window: 6, maxOutputGroup: 3 }
+    );
+    const covered = Number(alignment?.rawScore || 0) >= 0.26
+      || Number(alignment?.score || 0) >= 0.22;
+    return count + (covered ? 0 : 1);
+  }, 0);
+
+  const novelNonActivitySentenceCount = outputSentences.reduce((count, sentence, index) => {
+    if (matchesPattern(sentence, ACTIVITY_PATTERN)) return count;
+    const alignment = alignSourceSentence(
+      sentence,
+      index,
+      outputSentences.length,
+      sourceSentences,
+      { window: 8, maxOutputGroup: 3 }
+    );
+    const sourceBacked = Number(alignment?.rawScore || 0) >= 0.24
+      || Number(alignment?.score || 0) >= 0.20;
+    return count + (sourceBacked ? 0 : 1);
+  }, 0);
+
+  // 문장 분리만으로 활동 문장 비율이 낮아진 경우에는 경고하지 않는다.
+  // 실제 활동 근거가 사라졌거나, 활동 대신 원문에 없던 일반론·평가 문장이
+  // 여러 개 생겼다는 정렬 증거가 함께 있을 때만 개인 서사 축소로 본다.
+  const shift = lostActionSentenceCount >= 2
+    || novelNonActivitySentenceCount >= 3
+    || (lostActionSentenceCount >= 1 && novelNonActivitySentenceCount >= 2);
+  return { shift, lostActionSentenceCount, novelNonActivitySentenceCount };
 }
 
 function introducedStrongModifierOutputOrdinals(source, outputText) {

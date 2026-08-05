@@ -10,7 +10,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 24;
+const VERSION = 25;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -499,9 +499,33 @@ const ISSUE_DEFINITIONS = Object.freeze({
   },
   list_marker_spacing: {
     weight: 2,
-    repairable: false,
-    deterministicSafe: false,
+    repairable: true,
+    deterministicSafe: true,
     message: '목록 기호 뒤 띄어쓰기를 확인해 주세요.'
+  },
+  common_orthography_typo: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: true,
+    message: '문맥과 무관하게 판별할 수 있는 명백한 철자 오타가 남아 있어요.'
+  },
+  auxiliary_hago_spacing: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '“~하게 하고”의 보조 연결 표현이 붙어 있어요.'
+  },
+  dependent_noun_dwi_spacing: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '시간 순서를 나타내는 의존 명사 “뒤”를 띄어 써야 해요.'
+  },
+  dependent_noun_de_spacing: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '일·상황을 나타내는 의존 명사 “데”를 띄어 써야 해요.'
   },
   priority_first_redundancy: {
     weight: 3,
@@ -618,6 +642,23 @@ const HADA_NOUNS = [
 const DURING_NOUNS = [
   '수업', '회의', '작업', '사용', '진행', '탐구', '학습', '근무', '운전', '공사', '시험', '준비', '치료', '상담', '통화', '출장', '여행'
 ];
+const COMMON_ORTHOGRAPHY_REPAIRS = Object.freeze([
+  Object.freeze({
+    pattern: /에계(?=(?:는|도|만|서)?(?:$|[\s,.;:!?。！？]))/gu,
+    replacement: '에게'
+  }),
+  Object.freeze({
+    pattern: /체점(?=(?:은|는|이|가|을|를|의|에|도|만|으로|에서)?(?:$|[\s,.;:!?。！？]))/gu,
+    replacement: '채점'
+  }),
+  Object.freeze({
+    pattern: /첼린지(?=(?:는|가|를|의|에|로|와|과|도|만|에서|부터|까지)?(?:$|[\s,.;:!?。！？]))/gu,
+    replacement: '챌린지'
+  })
+]);
+const AUXILIARY_HAGO_SPACING_RE = /하게하고(?=$|[\s,.;:!?。！？])/gu;
+const DEPENDENT_NOUN_DWI_SPACING_RE = /([가-힣]{1,24}(?:한|간|난|된|친|운|은))뒤(?=(?:에|에서|부터|까지|는|도|의|로|를|가)?(?:$|[\s,.;:!?。！？]))/gu;
+const DEPENDENT_NOUN_DE_SPACING_RE = /([가-힣]{1,24}(?:하는|되는|했던|이었던))데에(?=$|[\s,.;:!?。！？])/gu;
 
 /**
  * 의미 심사 후에도 안전하게 실행할 수 있는 형식 보정이다.
@@ -995,6 +1036,14 @@ function repairContextualSpacing(value, source, context) {
       if (trimmed !== workingLine) addCount(counts, 'prose_edge_whitespace');
       workingLine = trimmed;
     }
+    if (guard.role === 'list') {
+      const parts = layoutStructure.listPrefixParts(workingLine);
+      if (parts) {
+        const normalized = `${parts.prefix.trimEnd()} ${parts.body}`;
+        if (normalized !== workingLine) addCount(counts, 'list_marker_spacing');
+        workingLine = normalized;
+      }
+    }
     const protectWholeTitle = guard.title && sourceTitle && normalizeForTitle(workingLine) === normalizeForTitle(sourceTitle);
     if (protectWholeTitle) {
       // 첫 제목은 어휘·순서·인용을 그대로 잠그되, 뜻을 추측하지 않고
@@ -1033,6 +1082,9 @@ function repairContextualSpacing(value, source, context) {
       out = replaceTracked(out, /실습[ \t]*수업/gu, () => '실습 수업', 'practice_class_spacing', counts);
       out = replaceTracked(out, /지속[ \t]*이용[ \t]*의도/gu, () => '지속 이용 의도', 'continued_use_intent_spacing', counts);
       out = replaceTracked(out, /(^|[^가-힣A-Za-z0-9_])가치소비(?=(?:에서|으로|부터|까지|은|는|이|가|을|를|의|에|로|와|과|도|만)?(?:$|[^가-힣A-Za-z0-9_]))/gu, (_match, prefix) => `${prefix}가치 소비`, 'value_consumption_spacing', counts);
+      out = replaceTracked(out, AUXILIARY_HAGO_SPACING_RE, () => '하게 하고', 'auxiliary_hago_spacing', counts);
+      out = replaceTracked(out, DEPENDENT_NOUN_DWI_SPACING_RE, (_match, clause) => `${clause} 뒤`, 'dependent_noun_dwi_spacing', counts);
+      out = replaceTracked(out, DEPENDENT_NOUN_DE_SPACING_RE, (_match, clause) => `${clause} 데에`, 'dependent_noun_de_spacing', counts);
       const during = new RegExp(`(^|[^가-힣A-Za-z0-9_])(${DURING_NOUNS.join('|')})중(?=(?:은|는|이|가|을|를|에|에서|에도|에는|의|으로|로|부터|까지|인|이었|이다|$|[^가-힣]))`, 'gu');
       out = replaceTracked(out, during, (_match, prefix, noun) => `${prefix}${noun} 중`, 'dependent_noun_jung_spacing', counts);
       const hada = new RegExp(`(^|[^가-힣A-Za-z0-9_])(${HADA_NOUNS.join('|')})[ \\t]+하(?=(?:였|고|며|는|여|도록|기|자|다|려고|려|면|게|지))`, 'gu');
@@ -1451,6 +1503,15 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
   pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SPACING_RE);
   pushPatternIssue(issues, text, 'closed_quote_particle_spacing', CLOSED_QUOTE_PARTICLE_GAP_RE);
+  pushSentenceIssue(
+    issues,
+    text,
+    'common_orthography_typo',
+    sentence => COMMON_ORTHOGRAPHY_REPAIRS.some(item => testPattern(stripProtectedQuotedText(sentence), item.pattern))
+  );
+  pushSentenceIssue(issues, text, 'auxiliary_hago_spacing', sentence => testPattern(stripProtectedQuotedText(sentence), AUXILIARY_HAGO_SPACING_RE));
+  pushSentenceIssue(issues, text, 'dependent_noun_dwi_spacing', sentence => testPattern(stripProtectedQuotedText(sentence), DEPENDENT_NOUN_DWI_SPACING_RE));
+  pushSentenceIssue(issues, text, 'dependent_noun_de_spacing', sentence => testPattern(stripProtectedQuotedText(sentence), DEPENDENT_NOUN_DE_SPACING_RE));
   pushCollapsedKoreanSpacingIssue(issues, text);
   pushSentenceIssue(issues, text, 'focus_particle_redundancy', hasFocusParticleRedundancy);
   pushSentenceIssue(issues, text, 'subject_experiencer_case_frame', hasSubjectExperiencerCaseFrame);
@@ -1605,7 +1666,7 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   }
   pushRepeatedVagueDemonstrative(issues, text);
   if (includeSourceNotation) {
-    pushPatternIssue(issues, text, 'list_marker_spacing', /^(?:[-*•▪◦]|\d+[.)])(?=\S)/gmu);
+    pushPatternIssue(issues, text, 'list_marker_spacing', /^(?:[-*•▪◦·]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])(?=\S)/gmu);
     pushPatternIssue(issues, text, 'quote_terminal_punctuation_review', QUOTE_TERMINAL_REVIEW_RE);
     pushSourceTokenRepetitionReview(issues, text);
     pushSentenceIssue(issues, text, 'future_role_tense_review', hasFutureRoleTenseReview);
@@ -1623,10 +1684,52 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   return mergeSameCode(issues).map(item => ({ ...item, profile }));
 }
 
+function repairCommonSourceLanguage(value) {
+  const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
+  const guards = buildLineGuards(lines);
+  const changes = [];
+  const repaired = lines.map((line, index) => {
+    const role = String(guards[index]?.role || '');
+    // 고유명·작품명·표·코드·인용은 사용자가 의도한 표기일 수 있다.
+    // 명백한 철자 교정은 일반 산문과 편집 가능한 라벨 본문에만 적용한다.
+    if (!['prose', 'label_inline'].includes(role)) return line;
+    let out = String(line || '');
+    for (const item of COMMON_ORTHOGRAPHY_REPAIRS) {
+      out = replaceOutsideProtectedQuotes(
+        out,
+        item.pattern,
+        item.replacement,
+        'common_orthography_typo',
+        changes
+      );
+    }
+    out = replaceOutsideProtectedQuotes(out, AUXILIARY_HAGO_SPACING_RE, '하게 하고', 'auxiliary_hago_spacing', changes);
+    out = replaceOutsideProtectedQuotes(
+      out,
+      DEPENDENT_NOUN_DWI_SPACING_RE,
+      '$1 뒤',
+      'dependent_noun_dwi_spacing',
+      changes
+    );
+    out = replaceOutsideProtectedQuotes(
+      out,
+      DEPENDENT_NOUN_DE_SPACING_RE,
+      '$1 데에',
+      'dependent_noun_de_spacing',
+      changes
+    );
+    return out;
+  });
+  return { text: repaired.join('\n'), changes };
+}
+
 function applySafeDeterministicRepairs({ source = '', outputText = '', documentProfile = null } = {}) {
   const before = String(outputText || '');
   let text = before;
   const changes = [];
+  const sourceLanguageRepair = repairCommonSourceLanguage(text);
+  text = sourceLanguageRepair.text;
+  changes.push(...sourceLanguageRepair.changes);
   const orphanParticleRepair = repairIntroducedOrphanStructuralParticles(source, text);
   text = orphanParticleRepair.text;
   for (let index = 0; index < orphanParticleRepair.repairCount; index += 1) {
@@ -3972,6 +4075,10 @@ function sentenceOrdinalAt(text, offset) {
 
 function countMatches(value, pattern) {
   return (String(value || '').match(cloneGlobal(pattern)) || []).length;
+}
+
+function testPattern(value, pattern) {
+  return new RegExp(pattern.source, pattern.flags.replace(/g/gu, '')).test(String(value || ''));
 }
 
 function round4(value) {

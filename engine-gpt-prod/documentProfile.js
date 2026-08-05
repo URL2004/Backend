@@ -555,8 +555,34 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const structuredFunctionalFormat = ['table_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'questionnaire']
     .some(flag => formatProfile.flags.includes(flag));
   const explainerConceptSignals = count(text, /(?:개념|원리|이론|역사적\s*배경|특징|구조|기능|영향|관계|차이|의미|과정|사례|쟁점|메커니즘|제도)/gu);
-  const formalExpositionEndings = sentences.filter(sentence => /(?:한다|했다|하였다|이다|였다|이었다|된다|되었다|있다|없다|보인다|나타난다|나타났다|드러난다|드러났다|의미한다)[.!?。！？]?$/u.test(sentence.trim())).length;
+  const formalExpositionEndings = sentences.filter(sentence => /(?:한다|했다|하였다|시켰다|이다|였다|이었다|된다|됐다|되었다|있다|없다|보인다|나타난다|나타났다|드러난다|드러났다|의미한다|작용했다|기여했다|차지했다|집계되었다|늘어났다|줄어들었다|확대되었다|도움이\s*되었다|보여\s*준다)[.!?。！？]?$/u.test(sentence.trim())).length;
   const formalExpositionRatio = formalExpositionEndings / Math.max(1, sentences.length);
+  const evidenceAttributionSignals = count(
+    text,
+    /(?:에\s*따르면|발표한|발표에\s*따르면|집계(?:되|하)|공식\s*통계|통계\s*(?:자료|보고서)|조사\s*자료|자료에\s*따르면|보고서에\s*따르면)/gu
+  );
+  const quantitativeEvidenceSignals = count(
+    text,
+    /(?:(?:19|20)\d{2}년|\d+(?:[.,]\d+)?\s*(?:%|％|억|조|만\s*명|천\s*명|배|위안|달러|원)(?=$|[^가-힣A-Za-z0-9_]))/gu
+  );
+  const evidenceBasedExplainerFrame = compactLength >= 500
+    && sentences.length >= 8
+    && firstPersonSignals === 0
+    && evidenceAttributionSignals >= 1
+    && quantitativeEvidenceSignals >= 3
+    && formalExpositionRatio >= 0.32
+    && reviewContentSignals === 0
+    && marketingActionSignals === 0
+    && promotionSignals <= 1;
+  if (evidenceBasedExplainerFrame) {
+    // 제목·"본 연구" 표지가 없어도 기관 출처와 시계열 수치를 여러 문단에
+    // 걸쳐 해설하는 글은 일반 잡문이 아니라 근거형 설명문이다. 이 경로를
+    // 놓치면 정확한 인과·시제·전문 동사를 지키는 장르 규칙이 적용되지 않는다.
+    scores.long_explainer += 4.05
+      + Math.min(evidenceAttributionSignals - 1, 3) * 0.18
+      + Math.min(quantitativeEvidenceSignals - 3, 6) * 0.1;
+    scores.report_assignment += 1.65;
+  }
   // 작품을 분석하는 독후감·비평문도 "소설", "등장인물"을 반복한다.
   // 이 두 일반 명사를 창작 저작 신호로 직접 가산하면 작품 감상문이
   // creative로 과대 분류되고, 뒤의 보존형 창작 강도 정책까지 잘못 탄다.
@@ -912,7 +938,10 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       learningPortfolioSignals,
       bookReflectionSignals,
       explainerConceptSignals,
-      formalExpositionRatio: round(formalExpositionRatio, 4)
+      formalExpositionRatio: round(formalExpositionRatio, 4),
+      evidenceAttributionSignals,
+      quantitativeEvidenceSignals,
+      evidenceBasedExplainerFrame
     }
   };
 }

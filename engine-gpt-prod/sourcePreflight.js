@@ -3,7 +3,7 @@
 const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
 
-const VERSION = 12;
+const VERSION = 13;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -106,7 +106,8 @@ const NOTICE_MESSAGES = Object.freeze({
   source_truncated_reference: '끝이 잘렸을 수 있는 참고문헌 표기가 있어요.',
   source_incomplete_sentence: '마지막 문장이 조사나 연결 표현에서 끝나 미완성일 수 있어요.',
   source_unclosed_delimiter: '괄호나 인용부호의 짝이 닫히지 않은 곳이 있어요.',
-  source_missing_terminal_punctuation: '마지막 완결 문장의 문장부호가 빠졌을 수 있어요.'
+  source_missing_terminal_punctuation: '마지막 완결 문장의 문장부호가 빠졌을 수 있어요.',
+  source_math_content_gap: '수식·행렬·행 연산이 복사 과정에서 빠진 흔적이 있어요. 원문 입력에 수식이 실제로 보이는지 확인해 주세요.'
 });
 
 function auditAndSanitizeSource(value) {
@@ -169,6 +170,14 @@ function auditAndSanitizeSource(value) {
 
   for (const lineIndex of fenceState.unbalancedLineIndexes) {
     notices.push(issue('source_markdown_artifact', lineIndex + 1, 'notice', NOTICE_MESSAGES.source_markdown_artifact));
+  }
+  for (const lineOrdinal of detectSourceMathContentGaps(kept.join('\n'))) {
+    notices.push(issue(
+      'source_math_content_gap',
+      lineOrdinal,
+      'notice',
+      NOTICE_MESSAGES.source_math_content_gap
+    ));
   }
 
   // UI·작성 지시처럼 본문이 아닌 행만 제외한 상태를 별도로 남긴다.
@@ -856,6 +865,41 @@ function findLastContentLine(lines) {
   return -1;
 }
 
+// 워드·한글의 수식 개체를 일반 텍스트로 붙여 넣을 때 수식만 사라지고
+// 앞뒤 설명, 빈 괄호, 행 연산 해설만 남는 경우를 찾는다. 원문에 없는 식을
+// 추측 복원하거나 작업을 차단하지 않고 사용자 확인 알림으로만 기록한다.
+function detectSourceMathContentGaps(value) {
+  const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
+  const ordinals = new Set();
+  const mathContext = /(?:수식|방정식|연립방정식|행렬|행렬식|역원|항등원|피벗|기본행\s*연산|미지수|가우스|소거법)/u;
+  const missingInline = /(?:역원인\s*[,，]|\(\s*단\s*[,，]\s*\)|(?:영행렬|음행렬|항등행렬|역행렬|행렬)\s+(?:은|는|이|가|을|를|에|와|과)(?=\s|[,，.。()（）])|(?:따라서|그러므로)\s+이라는\s+해)/u;
+  const missingOperation = /^\s*\d{1,3}[.)]\s*\([^()\n]{1,180}(?:행|원소|피벗|선행)[^()\n]*\)\s*[:：]\s*$/u;
+
+  lines.forEach((raw, index) => {
+    const line = String(raw || '').trim();
+    if (!line || !mathContext.test(line)) return;
+    if (missingInline.test(line) || missingOperation.test(line)) ordinals.add(index + 1);
+  });
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = String(lines[index] || '').trim();
+    if (!/(?:다음과\s*같은|다음)\s+(?:선형\s*)?(?:연립방정식|방정식|수식|첨가행렬|행렬)/u.test(line)) continue;
+    let nextIndex = index + 1;
+    let crossedBlank = false;
+    while (nextIndex < lines.length && !String(lines[nextIndex] || '').trim()) {
+      crossedBlank = true;
+      nextIndex += 1;
+    }
+    if (!crossedBlank || nextIndex >= lines.length) continue;
+    const next = String(lines[nextIndex] || '').trim();
+    if (/^(?:이\s*(?:연립방정식|방정식|수식|첨가행렬|행렬)|이제\s+(?:이\s*)?(?:식|행렬))/u.test(next)) {
+      ordinals.add(index + 1);
+      ordinals.add(nextIndex + 1);
+    }
+  }
+  return [...ordinals].sort((left, right) => left - right);
+}
+
 function issue(code, lineOrdinal, action, message) {
   return { code, lineOrdinal, action, message };
 }
@@ -931,5 +975,6 @@ module.exports = {
   isPossiblyTruncatedReference,
   isPossiblyIncompleteSentence,
   isPossiblyMissingTerminalPunctuation,
-  hasUnclosedPairs
+  hasUnclosedPairs,
+  detectSourceMathContentGaps
 };

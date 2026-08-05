@@ -10,7 +10,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 25;
+const VERSION = 26;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -592,6 +592,24 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '실제로 분석했다는 원문을 분석 대상으로 삼았다는 준비 단계로 약화했어요.'
+  },
+  bureaucratic_growth_aspect_stack: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“성장세를 나타내기 시작하다”처럼 변화와 시작 의미가 겹쳐 문장이 관료적으로 무거워졌어요.'
+  },
+  infrastructure_action_weakened: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '구축·확충·설치한 인프라를 단순히 마련했다고 바꿔 기술적 행위의 정확도가 낮아졌어요.'
+  },
+  temporal_anchor_detachment: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '특정 주체·사건에 붙어 있던 “이후”가 문장 앞으로 이동해 시간 기준이 모호해졌어요.'
   },
   causal_connector_strengthening: {
     weight: 4,
@@ -1450,6 +1468,29 @@ function detectIntroducedCrossSentenceIssues(source, outputText, profile = 'unkn
         matchingCandidateOrdinals(sentence => /(?:^|[.!?。！？]\s*)따라서(?=$|[\s,])/u.test(sentence))
       );
     }
+    const sourceTemporalOnly = /(?:^|[\s,])이때(?=$|[\s,])|(?:된|한|진|난|친|끝난)\s*(?:뒤|후)(?:에는|에)?(?=$|[\s,])/u.test(sourceSentence)
+      && !/(?:따라서|그\s*결과|이에\s*따라|그러므로|때문에|(?:되|하|지|나|치|끝나)자)(?=$|[\s,])/u.test(sourceSentence);
+    const candidateStrongCausal = /(?:^|[.!?。！？]\s*)(?:따라서|그\s*결과|이에\s*따라|그러므로)(?=$|[\s,])|[가-힣]{1,30}(?:되|하|지|나|치|끝나)자(?=$|[\s,])/u.test(candidate);
+    if (sourceTemporalOnly && candidateStrongCausal) {
+      add(
+        'causal_connector_strengthening',
+        matchingCandidateOrdinals(sentence => /(?:^|[.!?。！？]\s*)(?:따라서|그\s*결과|이에\s*따라|그러므로)(?=$|[\s,])|[가-힣]{1,30}(?:되|하|지|나|치|끝나)자(?=$|[\s,])/u.test(sentence))
+      );
+    }
+    if (/^[^.!?。！？\n]{1,80}(?:은|는|이|가)\s+이후(?=$|[\s,])/u.test(sourceSentence)
+        && !/^이후(?=$|[\s,])/u.test(sourceSentence)
+        && /^이후(?=$|[\s,])/u.test(candidate)) {
+      add('temporal_anchor_detachment', matchingCandidateOrdinals(sentence => /^이후(?=$|[\s,])/u.test(sentence.trim())));
+    }
+    const infrastructureNoun = '(?:물류\\s*센터|데이터\\s*센터|연구\\s*시설|생산\\s*설비|정보\\s*시스템|통신망|배송망|네트워크|데이터베이스|인프라)';
+    const sourceInfrastructure = new RegExp(`${infrastructureNoun}(?:를|을)\\s*(?:구축|확충|설치)(?:하|했|해|하여|하고|한)`, 'u');
+    const outputInfrastructure = new RegExp(`${infrastructureNoun}(?:를|을)\\s*마련(?:하|했|해|하여|하고|한)`, 'u');
+    if (sourceInfrastructure.test(sourceSentence) && outputInfrastructure.test(candidate)) {
+      add(
+        'infrastructure_action_weakened',
+        matchingCandidateOrdinals(sentence => outputInfrastructure.test(sentence))
+      );
+    }
 
     if (['academic_paper', 'report_assignment', 'long_explainer'].includes(profile)) {
       (best.sentences || [candidate]).forEach((sentence, offset) => {
@@ -1622,6 +1663,13 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
     );
   }
   if (['academic_paper', 'report_assignment', 'long_explainer'].includes(profile)) {
+    pushSentenceIssue(
+      issues,
+      text,
+      'bureaucratic_growth_aspect_stack',
+      sentence => /(?:성장세|증가세|감소세|확산세)(?:를|가)?\s+(?:나타내|보이)(?:기\s*시작|기\s*시작했)/u
+        .test(stripProtectedQuotedText(sentence))
+    );
     pushSentenceIssue(
       issues,
       text,
@@ -1941,6 +1989,9 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'dangling_inference_predicate',
   'completion_scope_strengthening',
   'analysis_stage_weakened',
+  'bureaucratic_growth_aspect_stack',
+  'infrastructure_action_weakened',
+  'temporal_anchor_detachment',
   'causal_connector_strengthening',
   'sequential_connector_inflation',
   'focus_particle_redundancy',
@@ -3235,6 +3286,11 @@ const FORMAL_REGISTER_RULES = Object.freeze([
     family: 'academic_contracted_doeda',
     test: (value, _fullText, context) => isAcademicRegisterProfile(context?.profile)
       && /됐(?:다|다고|다는|으며|지만|고|던|음을|으나|으면)/u.test(value)
+  },
+  {
+    family: 'academic_transaction_finish',
+    test: (value, _fullText, context) => isAcademicRegisterProfile(context?.profile)
+      && /(?:결제|지불|송금)(?:을|를)\s+(?:끝낼|끝내(?:다|었다|었고|었으며|면서|기|는|려|려고|면|고|며|서|었다고|었습니다))/u.test(value)
   },
   {
     family: 'casual_self_question',

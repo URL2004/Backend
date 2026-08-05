@@ -845,6 +845,20 @@ function buildArchiveObservability(job) {
     originalStructurePass: typeof engineMeta.originalStructurePass === 'boolean' ? engineMeta.originalStructurePass : undefined,
     originalStructuralMarkerLossCount: archiveFinite(engineMeta.originalStructuralMarkerLossCount),
     introducedOrphanParticleBoundaryCount: archiveFinite(engineMeta.introducedOrphanParticleBoundaryCount),
+    inlineCodeSpanCount: archiveFinite(engineMeta.inlineCodeSpanCount),
+    inlineCodeIntegrityPass: typeof engineMeta.inlineCodeIntegrityPass === 'boolean'
+      ? engineMeta.inlineCodeIntegrityPass
+      : undefined,
+    inlineCodeRestoredCount: archiveFinite(engineMeta.inlineCodeRestoredCount),
+    inlineMathSpanCount: archiveFinite(engineMeta.inlineMathSpanCount),
+    inlineMathIntegrityPass: typeof engineMeta.inlineMathIntegrityPass === 'boolean'
+      ? engineMeta.inlineMathIntegrityPass
+      : undefined,
+    inlineMathOrderPass: typeof engineMeta.inlineMathOrderPass === 'boolean'
+      ? engineMeta.inlineMathOrderPass
+      : undefined,
+    inlineMathRestoredCount: archiveFinite(engineMeta.inlineMathRestoredCount),
+    inlineMathFixedPointRestoreCount: archiveFinite(engineMeta.inlineMathFixedPointRestoreCount),
     signatureLineCount: archiveFinite(engineMeta.signatureLineCount),
     clinicalStructureSignalCount: archiveFinite(engineMeta.clinicalStructureSignalCount),
     modelCallCount: archiveFinite(engineMeta.modelCallCount),

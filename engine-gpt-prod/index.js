@@ -53,7 +53,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.31';
+const VERSION = 'gpt-prod-v2.5.32';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -249,7 +249,8 @@ async function runEngine({
   const layoutStructureLocked = lineBoundaryPolicy !== 'none';
   const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !layoutStructureLocked;
   const inlineCodeFreeze = literalSpans.freezeInlineCode(rawSource);
-  const source = inlineCodeFreeze.text;
+  const inlineMathFreeze = literalSpans.freezeMath(inlineCodeFreeze.text);
+  const source = inlineMathFreeze.text;
   const niklQualityEnabled = isNiklQualityEnabled(niklQualityTest, styleProfile);
   const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
   const contract = buildContract(source, {
@@ -468,6 +469,10 @@ async function runEngine({
   let exactLineStructureFallbackCount = 0;
   const materializeExactLineCandidate = value => {
     let candidate = frozen ? restoreLockedBlocks(String(value || ''), frozen.blocks) : String(value || '');
+    if (inlineMathFreeze.count > 0
+        && inlineMathFreeze.blocks.some(block => candidate.includes(block.token))) {
+      candidate = literalSpans.restoreMath(candidate, inlineMathFreeze).text;
+    }
     if (inlineCodeFreeze.count > 0
         && inlineCodeFreeze.blocks.some(block => candidate.includes(block.token))) {
       candidate = literalSpans.restoreInlineCode(candidate, inlineCodeFreeze).text;
@@ -549,6 +554,7 @@ async function runEngine({
   let finalCollapsedSpacingRetryReason = 'not_applicable';
   let quoteIntegrityAudit = null;
   let inlineCodeIntegrity = { pass: true, restoredCount: 0, missingCount: 0 };
+  let inlineMathIntegrity = { pass: true, orderPass: true, restoredCount: 0, missingCount: 0, applied: false };
   let quoteIntegrityRestoreCount = 0;
   let finalQuoteIntegrityRestoreCount = 0;
   let fingerprintAudit = null;
@@ -2025,6 +2031,10 @@ async function runEngine({
     : null;
   if (postLayout?.text) outputText = postLayout.text;
   if (frozen) outputText = restoreLockedBlocks(outputText, frozen.blocks);
+  if (inlineMathFreeze.count > 0) {
+    inlineMathIntegrity = literalSpans.restoreMath(outputText, inlineMathFreeze);
+    outputText = inlineMathIntegrity.text;
+  }
   if (inlineCodeFreeze.count > 0) {
     inlineCodeIntegrity = literalSpans.restoreInlineCode(outputText, inlineCodeFreeze);
     outputText = inlineCodeIntegrity.text;
@@ -2498,6 +2508,22 @@ async function runEngine({
       }
     }
   }
+  if (inlineMathFreeze.count > 0 && inlineMathIntegrity.orderPass !== false) {
+    const fixedPointMath = literalSpans.restoreMathByOrder(outputText, inlineMathFreeze);
+    if (fixedPointMath.applied) outputText = fixedPointMath.text;
+    inlineMathIntegrity = {
+      ...fixedPointMath,
+      pass: inlineMathIntegrity.pass !== false && fixedPointMath.pass !== false,
+      orderPass: inlineMathIntegrity.orderPass !== false && fixedPointMath.orderPass !== false,
+      restoredCount: Math.max(
+        Number(inlineMathIntegrity.restoredCount || 0),
+        Number(fixedPointMath.restoredCount || 0)
+      ),
+      fixedPointRestoreCount: Number(fixedPointMath.restoredCount || 0),
+      missingCount: Number(inlineMathIntegrity.missingCount || 0)
+        + Number(fixedPointMath.missingCount || 0)
+    };
+  }
   {
     koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
       source: rawSource,
@@ -2702,6 +2728,9 @@ async function runEngine({
         ...(inlineCodeIntegrity.pass === false
           ? [{ code: 'inline_code_changed', severity: 'warning', message: '인라인 코드 일부를 원문 그대로 복원하지 못했을 수 있어요.' }]
           : []),
+        ...(inlineMathIntegrity.pass === false
+          ? [{ code: 'inline_math_changed', severity: 'warning', message: '수식·행렬 표기 일부를 원문 그대로 복원하지 못했을 수 있어요.' }]
+          : []),
         ...(fingerprintAudit?.issueCodes?.includes('engine_phrase_fingerprint')
           ? [{ code: 'engine_phrase_fingerprint', severity: 'warning', message: '엔진이 만든 상투 표현이 한 문서에서 반복됐을 수 있어요.' }]
           : []),
@@ -2801,6 +2830,7 @@ async function runEngine({
   if (structureAudit?.pass !== true) pipelineFixedPointReasonCodes.push('structure_signature_failed');
   if (quoteIntegrityAudit?.pass === false) pipelineFixedPointReasonCodes.push('quote_integrity_failed');
   if (inlineCodeIntegrity?.pass === false) pipelineFixedPointReasonCodes.push('inline_code_integrity_failed');
+  if (inlineMathIntegrity?.pass === false) pipelineFixedPointReasonCodes.push('inline_math_integrity_failed');
   if (finalGate?.hardFail === true) pipelineFixedPointReasonCodes.push('final_delivery_gate_failed');
   if (finalCollapsedSpacingCount > 0) pipelineFixedPointReasonCodes.push('korean_spacing_integrity_failed');
   if (humanizationDepthReport?.applicable === true
@@ -2814,6 +2844,7 @@ async function runEngine({
     structurePass: structureAudit?.pass === true,
     quotePass: quoteIntegrityAudit?.pass !== false,
     inlineCodePass: inlineCodeIntegrity?.pass !== false,
+    inlineMathPass: inlineMathIntegrity?.pass !== false,
     koreanSpacingPass: finalCollapsedSpacingCount === 0,
     reasonCodes: safeFailureCodeList(pipelineFixedPointReasonCodes)
   };
@@ -3230,6 +3261,11 @@ async function runEngine({
     inlineCodeSpanCount: Number(inlineCodeFreeze.count || 0),
     inlineCodeIntegrityPass: inlineCodeIntegrity.pass === true,
     inlineCodeRestoredCount: Number(inlineCodeIntegrity.restoredCount || 0),
+    inlineMathSpanCount: Number(inlineMathFreeze.count || 0),
+    inlineMathIntegrityPass: inlineMathIntegrity.pass === true,
+    inlineMathOrderPass: inlineMathIntegrity.orderPass !== false,
+    inlineMathRestoredCount: Number(inlineMathIntegrity.restoredCount || 0),
+    inlineMathFixedPointRestoreCount: Number(inlineMathIntegrity.fixedPointRestoreCount || 0),
     finalFormattingRepairCount: Number(finalFormattingRepair.changeCount || 0),
     finalFormattingRepairCodes: safeFailureCodeList(finalFormattingRepair.changeCodes),
     brokenLineBreakRepairCount: Number(finalFormattingRepair.brokenLineBreakRepairCount || 0),
@@ -4526,7 +4562,9 @@ function extractProtectedTerms(text, documentProfile = null) {
     /[가-힣A-Za-z0-9]{2,}(?:·[가-힣A-Za-z0-9]{2,}){1,}/g,
     /[가-힣A-Za-z0-9][가-힣A-Za-z0-9·\s-]{1,40}\([A-Za-z가-힣0-9][^)）]{1,40}\)/g,
     /[가-힣A-Za-z0-9·-]{2,}(?:시스템|기술|설비|기능|인프라|포털|터미널|플랫폼|데이터|API|AI|AWS)/g,
-    /[가-힣]{2,}\(\d{4}\)/g
+    /[가-힣]{2,}\(\d{4}\)/g,
+    /(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]*\s*=\s*-?\d+(?:\.\d+)?(?:\s*,\s*[A-Za-z][A-Za-z0-9_]*\s*=\s*-?\d+(?:\.\d+)?){0,8}/g,
+    /R_?\d+\s*(?:←|<-|=)\s*R_?\d+(?:\s*[+−-]\s*(?:\d+(?:\.\d+)?\s*)?R_?\d+)?/g
   ];
   for (const re of patterns) {
     for (const m of s.matchAll(re)) {
@@ -5588,10 +5626,11 @@ function buildHumanizationDepthPair({
 } = {}) {
   const withLockedValues = restoreLockedBlocks(String(outputText || ''), primaryFrozen?.blocks);
   const withInlineCodeTokens = literalSpans.freezeInlineCode(withLockedValues).text;
-  const frozen = freezeLockedBlocks(source, withInlineCodeTokens, chunks);
+  const withLiteralTokens = literalSpans.freezeMath(withInlineCodeTokens).text;
+  const frozen = freezeLockedBlocks(source, withLiteralTokens, chunks);
   return {
     source: String(canonicalSource || frozen?.source || source || ''),
-    output: frozen?.output || withInlineCodeTokens,
+    output: frozen?.output || withLiteralTokens,
     missCount: Number(frozen?.missCount || 0),
     expectedLockedCount: Number(frozen?.expectedLockedCount || 0),
     frozenLockedCount: Number(frozen?.frozenLockedCount || 0)

@@ -12,9 +12,13 @@ const KO_PLURAL_RE = /(?<![가-힣A-Za-z0-9_])(우리는|우리가|우리의|우
 const ORG_VOICE_RE = /(본\s*보고서|본\s*연구|본\s*글|이\s*글은|이\s*보고서|본고|본\s*논문)/gu;
 const EN_SINGULAR_RE = /\bI\b|\b(?:me|my|mine|myself)\b/gu;
 const EN_PLURAL_RE = /\b(?:we|us|our|ours|ourselves)\b/giu;
+const POV_EXCLUDED_LITERAL_RE = /`[^`\n]+`|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<![$\\])\$(?!\$)(?:\\.|[^$\n\\]){1,500}(?<!\\)\$(?!\$)|(?<![A-Za-z0-9_])R_?\d+\s*(?:←|<-|=)\s*R_?\d+(?:\s*[+−-]\s*(?:\d+(?:\.\d+)?\s*)?R_?\d+)?|(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]*\s*=\s*[−-]?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?(?:\s*,\s*[A-Za-z][A-Za-z0-9_]*\s*=\s*[−-]?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?){0,8}(?![A-Za-z0-9_])/gu;
 
 function computePovSeed(value) {
-  const text = String(value || '');
+  // 코드 식별자와 수학 기호의 I·we·us는 서술 화자가 아니다. 엔진이
+  // 수식을 토큰화한 원문과 최종 복원한 결과를 비교할 때도 같은 분모를
+  // 쓰도록 리터럴 구간을 화자 판정에서 제외한다.
+  const text = stripPovExcludedLiterals(value);
   const koStrictSingular = countStrictSingular(text);
   const koAmbiguousSingular = countAmbiguousSingular(text);
   const ko_fp_singular = koStrictSingular + koAmbiguousSingular;
@@ -30,6 +34,10 @@ function computePovSeed(value) {
     fp_plural: ko_fp_plural + en_fp_plural,
     org_voice_likely: matchCount(text, ORG_VOICE_RE) > 0 || en_fp_plural >= 2
   };
+}
+
+function stripPovExcludedLiterals(value) {
+  return String(value || '').replace(POV_EXCLUDED_LITERAL_RE, match => ' '.repeat(match.length));
 }
 
 function countStrictSingular(value) {
@@ -89,5 +97,6 @@ function matchCount(value, pattern) {
 module.exports = {
   computePovSeed,
   countPovKind,
-  hasPovKind
+  hasPovKind,
+  stripPovExcludedLiterals
 };

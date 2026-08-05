@@ -172,7 +172,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.31');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.32');
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -213,6 +213,29 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
     assert.equal(call.body.safety_identifier, expectedSafety);
     assert.equal(JSON.stringify(call.body).includes(uid), false);
   }
+});
+
+test('LaTeX 수식은 모델 편집 구간에서 토큰으로 격리되고 최종 결과에 원문 그대로 복원된다', { concurrency: false }, async t => {
+  const source = '계산식 $x=1$은 결과를 보여주고, 행렬 \\[A^{-1}=I\\]는 역행렬 관계를 설명한다.';
+  installEngineMock(t, {
+    humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT')
+      .replace('결과를 보여주고', '결과를 보여 주며')
+  });
+  const out = await engine.run({
+    text: source,
+    mode: 'polish',
+    allowPolish: true,
+    uid: 'math-literal-user',
+    config: config()
+  });
+  assert.equal(out.status, 'clean', JSON.stringify(out.floorReport));
+  assert.match(out.result.outputText, /\$x=1\$/u);
+  assert.equal(out.result.outputText.includes('\\[A^{-1}=I\\]'), true);
+  assert.equal(out.result.outputText.includes('ZXQMATH'), false);
+  assert.equal(out.engineMeta.inlineMathSpanCount, 2);
+  assert.equal(out.engineMeta.inlineMathIntegrityPass, true);
+  assert.equal(out.engineMeta.inlineMathOrderPass, true);
+  assert.equal(out.engineMeta.inlineMathRestoredCount, 2);
 });
 
 test('긴 무띄어쓰기 원문은 휴머나이징 전에 문자 불변 공백 복원 계약으로 전체 구간을 수리한다', { concurrency: false }, async t => {
@@ -1250,7 +1273,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.31');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.32');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

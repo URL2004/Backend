@@ -101,6 +101,8 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'fake_ref',
   'section_anchor_loss',
   'structure_lock_loss',
+  'protected_block_changed',
+  'table_column_ownership_lost',
   'protected_term_loss',
   'unsafe_chunk_boundary',
   'speaker_injected',
@@ -185,6 +187,20 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   }
   if (structureAudit?.lostLockedCount > 0) {
     warnings.push(warning('structure_lock_loss', '목차·참고문헌·제목 구조 일부가 달라졌을 수 있어요.', { count: structureAudit.lostLockedCount }));
+  }
+  if (structureAudit?.protectedBlockChangedCount > 0) {
+    warnings.push(warning(
+      'protected_block_changed',
+      '참고문헌·표·인용처럼 그대로 보존해야 하는 블록 일부를 원문과 대조해 주세요.',
+      { count: structureAudit.protectedBlockChangedCount }
+    ));
+  }
+  if (structureAudit?.tableColumnOwnershipPass === false) {
+    warnings.push(warning(
+      'table_column_ownership_lost',
+      '표의 행별 열 개수나 셀 대응이 원문과 달라졌을 수 있어요.',
+      { count: structureAudit.tableColumnOwnershipLossCount || 1 }
+    ));
   }
   if (structureAudit?.lockedOrderChanged) {
     const questionnaire = documentProfile?.formatProfile?.flags?.includes?.('questionnaire');
@@ -1587,17 +1603,17 @@ async function retryResumeCoverage({
   signal,
   safetyIdentifier = ''
 }) {
-  const omissions = (coverageAudit?.omissions || []).slice(0, 8);
+  const omissions = (coverageAudit?.repairTargets || coverageAudit?.omissions || []).slice(0, 8);
   if (!omissions.length) return { outputText: currentOutput, safeChangeFound: false, notes: [], usage: null, model: '' };
   const issueLines = omissions.map(item => [
-    `- 원문 문장 ${item.sourceOrdinal}; 유형=${(item.types || []).join(',')}; 회수율=${item.contentRecall}`,
+    `- 원문 문장 ${item.sourceOrdinal}; 유형=${(item.types || []).join(',')}; 회수율=${item.contentRecall}${item.strengthShift ? '; 문제=학습을 보유 역량으로 강화함' : ''}`,
     item.previousContext ? `  앞 문맥: ${item.previousContext}` : '',
     `  복원할 원문 주장: ${item.sourceSentence}`,
     item.nextContext ? `  뒤 문맥: ${item.nextContext}` : ''
   ].filter(Boolean).join('\n'));
   const system = [
     '너는 자기소개서 핵심 주장 누락만 복원하는 한국어 편집기다.',
-    'SOURCE의 행동·역량·성과·직무 연결 문장이 CURRENT에서 빠지거나 핵심 내용어가 사라진 항목만 원래 위치에 복원한다.',
+    'SOURCE의 행동·역량·성과·직무 연결 문장이 CURRENT에서 빠지거나, “배웠다” 같은 학습 경험이 “역량을 갖추었다” 같은 보유 주장으로 강해진 항목만 원래 위치에 복원한다.',
     '각 항목에 제공된 원문 문장과 앞뒤 문맥만 사용한다. 새 경험·성과·수치·역량·직무 연결을 추정하거나 만들지 않는다.',
     '문단 순서와 화자·시점을 유지하고, 이미 보존된 다른 문장은 바꾸지 않는다. 별도 요약·결론 문단을 만들지 않는다.',
     '복원 문장은 원문의 격식과 전문 개념어를 유지하며 지나친 구어체로 낮추지 않는다.',

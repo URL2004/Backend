@@ -115,6 +115,10 @@ function buildLineRecords(value) {
   );
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
   for (const record of nonEmpty) {
+    record.cellCount = tableIndices.has(record.index) ? tableColumnCount(record.raw) : 0;
+    record.tabularSeparator = tableIndices.has(record.index) && /\t/u.test(String(record.raw || ''))
+      ? 'tab'
+      : (tableIndices.has(record.index) && /^\s*\|.*\|\s*$/u.test(String(record.raw || '')) ? 'pipe' : 'spacing');
     if (codeIndices.has(record.index)) {
       record.role = 'code';
       continue;
@@ -493,11 +497,19 @@ function tableColumnCount(value) {
   // 목록 전체가 table로 잠겨 실제 산문이 모델과 깊이 감사에서 빠진다.
   // 목록 접두부 직후의 탭만 공백으로 낮추고, 본문 안에 추가 열 탭이 있으면
   // 그대로 남겨 실제 표는 계속 감지한다.
-  const text = String(value || '').replace(
+  const raw = String(value || '')
+    .replace(/^[\u200B\uFEFF]+|[\u200B\uFEFF]+$/gu, '')
+    .replace(/^ +| +$/gu, '');
+  const text = raw.replace(
     /^(\s*(?:(?:[-*+•▪◦·●○■□◆◇▶▷※]|\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])))[ \t]*\t+/u,
     '$1 '
   );
-  if (/\t/u.test(text)) return text.split(/\t+/u).filter(cell => visibleTrim(cell)).length;
+  if (/^\s*\|.*\|\s*$/u.test(text)) {
+    // 빈 셀도 실제 열 소유권이다. Boolean 필터나 \t+ 병합을 쓰면
+    // `A\t\tC`, `| A | | C |`가 2열로 축소되어 붕괴를 놓친다.
+    return text.trim().slice(1, -1).split('|').length;
+  }
+  if (/\t/u.test(text)) return text.split('\t').length;
   if (/\S\s{2,}\S/u.test(text)) return text.split(/\s{2,}/u).filter(cell => visibleTrim(cell)).length;
   return 0;
 }
@@ -505,7 +517,14 @@ function tableColumnCount(value) {
 function detectContextTableLineIndices(records, excluded = new Set()) {
   const out = new Set();
   for (const record of records || []) {
-    if (!record.blank && !excluded.has(record.index) && isExplicitTableLine(record.text)) out.add(record.index);
+    if (record.blank || excluded.has(record.index)) continue;
+    if (isExplicitTableLine(record.text)) out.add(record.index);
+    // 탭은 워드·스프레드시트가 실제 열 경계로 내보내는 강한 구조 신호다.
+    // 목록 들여쓰기용 탭은 tableColumnCount에서 이미 제거되므로, 남은
+    // 2셀 이상 행은 주변 표 행이 하나뿐이어도 독립 표 행으로 잠근다.
+    if (/\t/u.test(String(record.raw || '')) && tableColumnCount(record.raw) >= 2) {
+      out.add(record.index);
+    }
   }
   let group = [];
   const flush = () => {
@@ -614,6 +633,11 @@ function analyzeLineStructure(value) {
   const explicitParagraphCount = splitExplicitParagraphs(value).length;
   const paragraphs = splitReadableParagraphs(value, { records });
   const readability = measureParagraphReadability(paragraphs);
+  const tableRecords = nonEmpty.filter(record => record.role === 'table');
+  const tableCellSequence = tableRecords
+    .map(record => Number(record.cellCount || tableColumnCount(record.raw) || 0));
+  const multiColumnLineCount = tableCellSequence.filter(count => count >= 2).length;
+  const tabularLineCount = tableRecords.filter(record => record.tabularSeparator === 'tab').length;
   return {
     lineCount: records.length,
     nonEmptyLineCount: nonEmpty.length,
@@ -623,6 +647,9 @@ function analyzeLineStructure(value) {
     labelLineCount: (roleCounts.label || 0) + (roleCounts.label_inline || 0),
     listLineCount: roleCounts.list || 0,
     tableLineCount: roleCounts.table || 0,
+    tableCellSequence,
+    multiColumnLineCount,
+    tabularLineCount,
     flowLineCount: roleCounts.flow || 0,
     quoteLineCount: roleCounts.quote || 0,
     signatureLineCount: roleCounts.signature || 0,
@@ -808,6 +835,7 @@ module.exports = {
   isExactMetadataLine,
   isBracketHeadingLine,
   isExplicitTableLine,
+  tableColumnCount,
   isFlowSequenceLine,
   looksLikeUnpunctuatedProse,
   detectParallelSloganTitleIndices,

@@ -173,6 +173,11 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const assignmentProblemHeadingSignals = lines.filter(line => (
     /^(?:문제|문항)\s*\d{1,3}\s*[.)：:]?\s*\S.{1,119}$/u.test(line)
   )).length;
+  const universityApplicationSignals = count(
+    text,
+    /(?:귀\s*(?:대학|학교|교)|지망\s*(?:학과|전공|대학)|대학\s*지원\s*동기|입학\s*후|재학\s*중[^.!?\n]{0,45}(?:수강|이수|연구|활동)|졸업\s*후\s*(?:진로|계획)|학년\s*(?:별)?\s*(?:수강|이수)\s*계획|전공\s*(?:심화|탐색)\s*계획|교수님?(?:의)?\s*(?:연구|지도))/gu
+  );
+  const universityApplicationFrame = universityApplicationSignals >= 2 && firstPersonSignals >= 1;
   const structuredCareerPlanSignals = count(
     text,
     /(?:진로\s*설계|학교\s*생활|학업\s*계획|졸업\s*후|학부\s*연구생|현장\s*실습|1\s*~\s*2학년|[1-4]학년에는|연구실\s*활동|캡스톤\s*디자인)/gu
@@ -220,6 +225,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   // 단계형 계획이 함께 있을 때만 보고서/과제 프로필을 확정한다.
   if (assignmentProblemHeadingSignals >= 1
       && structuredCareerPlanSignals >= 3
+      && !universityApplicationFrame
       && (orderedArgumentSignals >= 2 || explicitAssignmentWritingFrame >= 1)) {
     scores.report_assignment += 4.2
       + Math.min(structuredCareerPlanSignals - 3, 5) * 0.18
@@ -333,6 +339,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const directApplicationContextSignals = explicitApplicationSignals
     + applicationIntentSignals
     + programApplicationSignals
+    + universityApplicationSignals
     + applicationValuePropositionSignals
     + careerAspirationSignals
     + applicationSectionSignals;
@@ -349,6 +356,11 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   add(scores, 'resume_application', explicitApplicationSignals, 1.35);
   add(scores, 'resume_application', applicationIntentSignals, 1.35);
   add(scores, 'resume_application', programApplicationSignals, 0.85);
+  if (universityApplicationFrame) {
+    scores.resume_application += 4.4
+      + Math.min(universityApplicationSignals - 2, 5) * 0.3
+      + Math.min(applicationIntentSignals, 3) * 0.25;
+  }
   if (directApplicationContextSignals >= 1) {
     add(scores, 'resume_application', Math.min(firstPersonSignals, 3), 0.22);
   }
@@ -869,6 +881,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       academicExcerptFrame,
       reportHeadingSignals,
       assignmentProblemHeadingSignals,
+      universityApplicationSignals,
+      universityApplicationFrame,
       structuredCareerPlanSignals,
       orderedArgumentSignals,
       explicitAssignmentWritingFrame,
@@ -1178,6 +1192,8 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
     && layoutStructure.isKnownHeadingLine(line)).length;
   const listItemCount = Math.max(lines.filter(isListLine).length, layout.listLineCount || 0);
   const tableLineCount = layout.tableLineCount || 0;
+  const multiColumnLineCount = Number(layout.multiColumnLineCount || 0);
+  const tabularLineCount = Number(layout.tabularLineCount || 0);
   const labelLineCount = layout.labelLineCount || 0;
   const referenceLineCount = lines.filter(line => /(?:doi\s*:|https?:\/\/|\((?:19|20)\d{2}(?:[a-z]|\s*\.\s*\d{1,2}(?:\s*\.\s*\d{1,2})?\s*\.?)?\)|참고\s*문헌|References|Bibliography)/iu.test(line)).length;
   const quoteLineCount = lines.filter(line => /^(?:>|[“"'‘「『《〈])/u.test(line) || /(?:[“"][^”"\n]{2,}[”"]|「[^」\n]{2,}」|『[^』\n]{2,}』|《[^》\n]{2,}》|〈[^〉\n]{2,}〉)/u.test(line)).length;
@@ -1211,13 +1227,17 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
   if (assessmentItem) flags.push('assessment_item');
   if (listItemCount >= 3 && listItemCount / Math.max(1, lines.length) >= 0.3) flags.push('list_heavy');
   if (tableLineCount >= 2) flags.push('table_heavy');
+  if (multiColumnLineCount >= 1
+      && (tabularLineCount >= 1 || multiColumnLineCount / Math.max(1, lines.length) >= 0.2)) {
+    flags.push('compressed_multicolumn');
+  }
   if (labelLineCount >= 2) flags.push('label_heavy');
   if (referenceLineCount >= 3) flags.push('reference_heavy');
   if (lineSensitive) flags.push('line_sensitive');
   if (quoteLineCount >= 2) flags.push('quote_sensitive');
   if (editableBlockquoteWrapper) flags.push('editable_blockquote_wrapper');
   if (appendixPresent) flags.push('appendix_present');
-  const primary = ['assessment_item', 'questionnaire', 'table_heavy', 'reference_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'line_sensitive']
+  const primary = ['assessment_item', 'questionnaire', 'table_heavy', 'compressed_multicolumn', 'reference_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'line_sensitive']
     .find(flag => flags.includes(flag)) || 'plain';
   return {
     length,
@@ -1229,6 +1249,9 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
     headingCount: headingCountValue,
     listItemCount,
     tableLineCount,
+    tableCellSequence: Array.isArray(layout.tableCellSequence) ? layout.tableCellSequence.slice(0, 80) : [],
+    multiColumnLineCount,
+    tabularLineCount,
     labelLineCount,
     structuralBoundaryCount: layout.preservedBoundaryCount || 0,
     referenceLineCount,

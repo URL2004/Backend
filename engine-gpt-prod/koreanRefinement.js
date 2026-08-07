@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences, splitSentenceSpans, koreanStart, normalizeCompact } = require('../engine/koreanText');
+const freezeBlocks = require('../engine/freezeblocks');
 const layoutStructure = require('./layoutStructure');
 const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 const {
@@ -648,7 +649,6 @@ const CLOSED_QUOTE_PARTICLE_GAP_RE = new RegExp(
   'gu'
 );
 const QUOTE_TERMINAL_REVIEW_RE = new RegExp(`[‘“][^’”\\n]{2,120}(?<![.!?。！？…])[’”](?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
-const REFERENCE_HEADING_RE = /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/iu;
 const APPENDIX_HEADING_RE = /^(?:부록|Appendix)(?:\s+[A-Za-z0-9가-힣.-]+)?$/iu;
 const NEW_UNIT_START_RE = /^(?:그리고|그러나|하지만|또한|따라서|한편|반면|이러한|이번|다음|첫째|둘째|셋째|마지막으로)(?=$|\s)/u;
 const HADA_NOUNS = [
@@ -1162,8 +1162,8 @@ function buildLineGuards(lines) {
     const text = String(lines[index] || '').trim();
     const fence = /^(?:```|~~~)/u.test(text);
     if (fence) code = !code;
-    if (APPENDIX_HEADING_RE.test(text)) reference = false;
-    if (REFERENCE_HEADING_RE.test(text)) reference = true;
+    if (freezeBlocks.isAppendixHeadingLine(text) || APPENDIX_HEADING_RE.test(text)) reference = false;
+    if (freezeBlocks.isRefHeadingLine(text)) reference = true;
     const role = text ? layoutStructure.classifyLine(text, {
       firstContent: index === firstContent,
       next: nextContentAfter(index),

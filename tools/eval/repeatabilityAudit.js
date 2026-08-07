@@ -4,6 +4,8 @@
 const { compareNumberMultiset } = require('../../engine-gpt-prod/factAudit');
 const { buildVoiceProfile, auditVoice } = require('../../engine-gpt-prod/voiceProfile');
 const humanizationDepth = require('../../engine-gpt-prod/humanizationDepth');
+const structureChunk = require('../../engine-gpt-prod/structureChunk');
+const { buildHumanizationDepthPair } = require('../../engine-gpt-prod');
 
 const VERSION = 2;
 const INVARIANT_VOICE_CODES = new Set([
@@ -34,7 +36,13 @@ function auditRepeatability({
   const candidates = Array.isArray(outputs) ? outputs.map(value => String(value || '')) : [];
   const sourceProfile = buildVoiceProfile(sourceText, { documentProfile, mode });
   const strength = requestStrength || (mode === 'blog' ? 'basic' : (mode === 'polish' ? 'polish' : 'advanced'));
-  const depthPlan = humanizationDepth.buildHumanizationPlan(sourceText, {
+  const chunkPlan = structureChunk.splitChunksForGpt(sourceText, { coalesceEditable: true });
+  const canonicalPair = buildHumanizationDepthPair({
+    source: sourceText,
+    outputText: sourceText,
+    chunks: chunkPlan.chunks
+  });
+  const depthPlan = humanizationDepth.buildHumanizationPlan(canonicalPair.source, {
     requestStrength: strength,
     documentProfile
   });
@@ -45,7 +53,8 @@ function auditRepeatability({
     output,
     documentProfile,
     mode,
-    depthPlan
+    depthPlan,
+    chunks: chunkPlan.chunks
   }));
   const variance = summarizeVariance(sourceText, runs, {
     maxEditRatioSpread,
@@ -68,7 +77,7 @@ function auditRepeatability({
   };
 }
 
-function auditRun({ index, source, sourceProfile, output, documentProfile, mode, depthPlan }) {
+function auditRun({ index, source, sourceProfile, output, documentProfile, mode, depthPlan, chunks }) {
   if (!output.trim()) {
     return {
       runOrdinal: index + 1,
@@ -81,7 +90,8 @@ function auditRun({ index, source, sourceProfile, output, documentProfile, mode,
   }
   const numberAudit = compareNumberMultiset(source, output);
   const voiceAudit = auditVoice(sourceProfile, output, { documentProfile, mode, sourceText: source });
-  const depth = humanizationDepth.evaluateHumanizationDepth(source, output, depthPlan);
+  const depthPair = buildHumanizationDepthPair({ source, outputText: output, chunks });
+  const depth = humanizationDepth.evaluateHumanizationDepth(depthPair.source, depthPair.output, depthPlan);
   const issueCodes = [
     ...(numberAudit.changed ? ['number_multiset_changed'] : []),
     ...(voiceAudit.warnings || [])
@@ -101,7 +111,9 @@ function auditRun({ index, source, sourceProfile, output, documentProfile, mode,
     substantiveEditRatio: Number(depth.metrics?.substantiveEditRatio || 0),
     substantiveCarryoverRatio: Number(depth.metrics?.substantiveCarryoverRatio || 0),
     structuralChangedSentenceRatio: Number(depth.metrics?.structuralChangedSentenceRatio || 0),
-    minimumEffectPass: depth.minimumEffectPass === true
+    minimumEffectPass: depth.minimumEffectPass === true,
+    humanizationDenominatorVersion: depthPair.denominatorVersion,
+    depthAuditSourceHash: depthPair.sourceHash
   };
 }
 

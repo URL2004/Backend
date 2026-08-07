@@ -7,6 +7,7 @@ const { alignSourceSentence } = require('./sentenceAlignment');
 const resumeRepetitionAudit = require('./resumeRepetitionAudit');
 const commercialSignals = require('./commercialSignals');
 const sourceRedundancy = require('./sourceRedundancy');
+const freezeBlocks = require('../engine/freezeblocks');
 
 const CONNECTOR_START = /^(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|즉|첫째|둘째|셋째|하지만|그러나|반면|결국)(?=$|[\s,])/u;
 const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|습니다)|필요가\s*있(?:다|습니다)|중요(?:하|한)\s*(?:의미|역할|요인)?|의미를\s*가진(?:다|다고)|긍정적인\s*영향|체계적으로\s*(?:정리|분석|관리|운영)|기반으로\s*(?:한|하여|한다|합니다)|핵심\s*인프라|전략적\s*이점)/u;
@@ -975,11 +976,11 @@ function buildSentenceParagraphMap(value) {
     for (const rawLine of block.split('\n')) {
       const line = String(rawLine || '').trim();
       if (!line) continue;
-      if (/^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|References|Bibliography|Works\s+Cited)$/iu.test(line)) {
+      if (freezeBlocks.isRefHeadingLine(line)) {
         references = true;
         continue;
       }
-      if (references && /^(?:부록|Appendix)(?:\s|$)/iu.test(line)) references = false;
+      if (references && freezeBlocks.isAppendixHeadingLine(line)) references = false;
       if (references) continue;
       const structuralBody = editableStructuralBody(line);
       if (structuralBody) editableLines.push(structuralBody);
@@ -1001,11 +1002,11 @@ function eligibleProseSentences(value) {
   for (const rawLine of lines) {
     const line = String(rawLine || '').trim();
     if (!line) continue;
-    if (/^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|References|Bibliography|Works\s+Cited)$/iu.test(line)) {
+    if (freezeBlocks.isRefHeadingLine(line)) {
       references = true;
       continue;
     }
-    if (references && /^(?:부록|Appendix)(?:\s|$)/iu.test(line)) references = false;
+    if (references && freezeBlocks.isAppendixHeadingLine(line)) references = false;
     if (references) continue;
     const structuralBody = editableStructuralBody(line);
     if (structuralBody) {

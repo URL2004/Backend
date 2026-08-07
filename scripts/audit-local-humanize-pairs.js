@@ -18,6 +18,7 @@ const discourse = require('../engine-gpt-prod/discourseAudit');
 const depth = require('../engine-gpt-prod/humanizationDepth');
 const korean = require('../engine-gpt-prod/koreanRefinement');
 const structure = require('../engine-gpt-prod/structureChunk');
+const { buildHumanizationDepthPair } = require('../engine-gpt-prod');
 const { buildVoiceProfile } = require('../engine-gpt-prod/voiceProfile');
 
 function parseArgs(argv) {
@@ -175,11 +176,16 @@ function auditRow(row, index) {
     protectedTerms: [],
     allowedExtra: ''
   });
-  const depthPlan = depth.buildHumanizationPlan(source, {
+  const depthPair = buildHumanizationDepthPair({
+    source,
+    outputText,
+    chunks: chunkPlan.chunks
+  });
+  const depthPlan = depth.buildHumanizationPlan(depthPair.source, {
     requestStrength,
     documentProfile
   });
-  const depthAudit = depth.evaluateHumanizationDepth(source, outputText, depthPlan);
+  const depthAudit = depth.evaluateHumanizationDepth(depthPair.source, depthPair.output, depthPlan);
   const unsupportedEnglish = inputRouting.isEnglishInput(source);
   const professionalDowngrade = korean.detectProfessionalDowngrade(
     source,
@@ -201,6 +207,8 @@ function auditRow(row, index) {
     engineVersion: String(meta.engineVersion || row?.engineVersion || 'unknown'),
     mode,
     requestStrength,
+    humanizationDenominatorVersion: depthPair.denominatorVersion,
+    depthAuditSourceHash: depthPair.sourceHash,
     storedProfile,
     detectedProfile: String(detected.profile || 'unknown'),
     currentProfile,

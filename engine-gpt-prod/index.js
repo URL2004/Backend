@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const net = require('net');
 const dns = require('dns').promises;
 const { completeJson, webSearchTool, safetyIdentifierForUid } = require('./openaiClient');
@@ -53,7 +54,8 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.32';
+const VERSION = 'gpt-prod-v2.5.33';
+const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
   'section_anchor_loss',
@@ -2287,6 +2289,7 @@ async function runEngine({
     layoutRepair.finalLockedStructure = {
       applied: finalLockedStructure.applied === true,
       restoredCount: Number(finalLockedStructure.restoredCount || 0),
+      approximateRestoredCount: Number(finalLockedStructure.approximateRestoredCount || 0),
       missingCount: Number(finalLockedStructure.missingCount || 0),
       pass: finalLockedStructure.pass !== false
     };
@@ -2415,6 +2418,8 @@ async function runEngine({
       applied: previousLockedStructure.applied === true || fixedPointLockedStructure.applied === true,
       restoredCount: Number(previousLockedStructure.restoredCount || 0)
         + Number(fixedPointLockedStructure.restoredCount || 0),
+      approximateRestoredCount: Number(previousLockedStructure.approximateRestoredCount || 0)
+        + Number(fixedPointLockedStructure.approximateRestoredCount || 0),
       // 마지막 고정점의 누락 수가 최종 전달 상태를 대표한다.
       missingCount: Number(fixedPointLockedStructure.missingCount || 0),
       pass: fixedPointLockedStructure.pass !== false
@@ -2743,8 +2748,11 @@ async function runEngine({
         ...(endingStyleAudit?.pass === false
           ? [{ code: 'ending_style_mixed', severity: 'warning', message: '원문에 없던 종결체가 일부 섹션에 섞였을 수 있어요.' }]
           : []),
-        ...(resumeCoverageAudit?.applicable && resumeCoverageAudit?.pass === false
+        ...(resumeCoverageAudit?.issueCodes?.includes('resume_claim_omission')
           ? [{ code: 'resume_claim_omission', severity: 'warning', message: '자기소개서의 행동·역량·성과·직무 연결 내용 일부가 누락됐을 수 있어요.' }]
+          : []),
+        ...(resumeCoverageAudit?.issueCodes?.includes('resume_claim_strength_shift')
+          ? [{ code: 'resume_claim_strength_shift', severity: 'warning', message: '배운 경험이 이미 갖춘 역량처럼 강해진 문장이 있을 수 있어요.' }]
           : []),
         ...(finalCollapsedSpacingCount > 0
           ? [{
@@ -2953,6 +2961,12 @@ async function runEngine({
     effectStatus,
     effectNoticeCodes: safeFailureCodeList(effectNotices.map(item => item.code)),
     structureSignaturePass: structureAudit?.pass === true,
+    protectedBlockRestoreCount: Number(layoutRepair?.finalLockedStructure?.restoredCount || 0),
+    protectedBlockApproximateRestoreCount: Number(layoutRepair?.finalLockedStructure?.approximateRestoredCount || 0),
+    protectedBlockMissingCount: Number(layoutRepair?.finalLockedStructure?.missingCount || 0),
+    protectedBlockChangedCount: Number(structureAudit?.protectedBlockChangedCount || 0),
+    tableColumnOwnershipPass: structureAudit?.tableColumnOwnershipPass !== false,
+    tableColumnOwnershipLossCount: Number(structureAudit?.tableColumnOwnershipLossCount || 0),
     sectionPathErrorCount: Number(structureAudit?.sectionPathErrorCount || 0),
     originalStructurePass: structureAudit?.originalStructurePass !== false,
     originalStructuralMarkerLossCount: Number(structureAudit?.originalStructuralMarkerLossCount || 0),
@@ -3118,6 +3132,13 @@ async function runEngine({
     safePartialRejectionCodes: safeFailureCodeList(safePartialRejectionCodes),
     humanizationDepthReasonCodes: safeFailureCodeList(humanizationDepthReport?.reasons),
     humanizationDepthBlockingReasonCodes: safeFailureCodeList(humanizationDepthReport?.blockingReasons),
+    humanizationDenominatorVersion: HUMANIZATION_DENOMINATOR_VERSION,
+    depthAuditSourceHash: crypto.createHash('sha1').update(String(depthAuditSource || '')).digest('hex').slice(0, 12),
+    depthAuditSourceLength: String(depthAuditSource || '').length,
+    depthAuditLockedChunkCount: Number(initialDepthFrozen?.frozenLockedCount || 0),
+    depthAuditLockMissCount: Number(initialDepthFrozen?.missCount || 0),
+    humanizationTargetSentenceCount: Number(humanizationPlan?.targetSentenceCount || 0),
+    humanizationRequiredTargetChangedSentenceCount: Number(humanizationPlan?.requiredChangedSentenceCount || 0),
     structuralChangedSentenceCount: Number(humanizationDepthReport?.metrics?.structurallyChangedSentenceCount || 0),
     structuralChangedSentenceRatio: Number(humanizationDepthReport?.metrics?.structuralChangedSentenceRatio || 0),
     materiallyRecastSentenceCount: Number(humanizationDepthReport?.metrics?.materiallyRecastSentenceCount || 0),
@@ -3197,6 +3218,7 @@ async function runEngine({
     resumeCoveredClaimCount: Number(resumeCoverageAudit?.coveredClaimCount || 0),
     resumeCoverageRatio: Number(resumeCoverageAudit?.coverageRatio ?? 1),
     resumeCoverageMinimumRecall: Number(resumeCoverageAudit?.minimumObservedRecall ?? 1),
+    resumeClaimStrengthShiftCount: Number(resumeCoverageAudit?.strengthShiftCount || 0),
     resumeCoverageRetryAttemptCount,
     resumeCoverageRepairCount,
     resumeCoverageRetryApplied,
@@ -5624,13 +5646,41 @@ function buildHumanizationDepthPair({
   primaryFrozen = null,
   canonicalSource = ''
 } = {}) {
+  const resolvedChunks = Array.isArray(chunks) && chunks.length
+    ? chunks
+    : structureChunk.splitChunksForGpt(String(source || ''), { coalesceEditable: true }).chunks;
   const withLockedValues = restoreLockedBlocks(String(outputText || ''), primaryFrozen?.blocks);
-  const withInlineCodeTokens = literalSpans.freezeInlineCode(withLockedValues).text;
-  const withLiteralTokens = literalSpans.freezeMath(withInlineCodeTokens).text;
-  const frozen = freezeLockedBlocks(source, withLiteralTokens, chunks);
+  let frozen;
+  let pairedSource;
+  let pairedOutput;
+  if (primaryFrozen) {
+    const withInlineCodeTokens = literalSpans.freezeInlineCode(withLockedValues).text;
+    const withLiteralTokens = literalSpans.freezeMath(withInlineCodeTokens).text;
+    frozen = freezeLockedBlocks(source, withLiteralTokens, resolvedChunks);
+    pairedSource = String(canonicalSource || frozen?.source || source || '');
+    pairedOutput = frozen?.output || withLiteralTokens;
+  } else {
+    // 오프라인 재감사도 운영과 같은 잠금 분모를 사용한다. 먼저 훼손된
+    // exact 블록을 원문으로 복원하고 쌍으로 토큰화한 뒤, 남은 인라인
+    // 코드·수식만 양쪽에서 동결한다.
+    const restored = structureChunk.restoreLockedStructureLayout({
+      source,
+      outputText: withLockedValues,
+      chunks: resolvedChunks
+    });
+    frozen = freezeLockedBlocks(source, restored.text, resolvedChunks);
+    const sourceWithCode = literalSpans.freezeInlineCode(frozen?.source || String(source || '')).text;
+    const outputWithCode = literalSpans.freezeInlineCode(frozen?.output || restored.text).text;
+    pairedSource = literalSpans.freezeMath(sourceWithCode).text;
+    pairedOutput = literalSpans.freezeMath(outputWithCode).text;
+  }
+  const sourceHash = crypto.createHash('sha1').update(pairedSource).digest('hex').slice(0, 12);
   return {
-    source: String(canonicalSource || frozen?.source || source || ''),
-    output: frozen?.output || withLiteralTokens,
+    source: pairedSource,
+    output: pairedOutput,
+    denominatorVersion: HUMANIZATION_DENOMINATOR_VERSION,
+    sourceHash,
+    sourceLength: pairedSource.length,
     missCount: Number(frozen?.missCount || 0),
     expectedLockedCount: Number(frozen?.expectedLockedCount || 0),
     frozenLockedCount: Number(frozen?.frozenLockedCount || 0)
@@ -6803,6 +6853,11 @@ function buildDepthStageSnapshot(stage, report) {
     substantiveEditRatio: Number(Number(metrics.substantiveEditRatio || 0).toFixed(4)),
     changedSentenceRatio: Number(Number(metrics.substantiveChangedSentenceRatio || 0).toFixed(4)),
     targetCoverage: Number(Number(metrics.targetCoverage || 0).toFixed(4)),
+    targetChangedParagraphCount: Number(metrics.targetChangedParagraphCount || 0),
+    targetParagraphCoverage: Number(Number(metrics.targetParagraphCoverage || 0).toFixed(4)),
+    eligibleParagraphCount: Number(report?.plan?.eligibleParagraphCount || 0),
+    targetParagraphCount: Number(report?.plan?.targetParagraphCount || 0),
+    requiredTargetChangedParagraphCount: Number(report?.plan?.requiredTargetChangedParagraphCount || 0),
     structuralChangedCount: Number(
       metrics.effectiveStructuralChangedSentenceCount
         ?? metrics.structurallyChangedSentenceCount
@@ -7045,5 +7100,6 @@ module.exports = {
   isModelFailureRecord,
   tryAccumulateFailedChunkEdits,
   freezeLockedBlocks,
-  buildHumanizationDepthPair
+  buildHumanizationDepthPair,
+  HUMANIZATION_DENOMINATOR_VERSION
 };

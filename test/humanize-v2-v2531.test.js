@@ -69,7 +69,7 @@ test('v2.5.31: 긴 무구두점 자소서를 감사 단위로만 나눠 보존�
     profile: 'resume_application',
     confidence: 0.95
   });
-  assert.equal(audit.version, 7);
+  assert.equal(audit.version, 8);
   assert.equal(audit.pass, true, JSON.stringify(audit));
 });
 

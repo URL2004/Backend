@@ -234,6 +234,7 @@ function auditVoice(sourceProfile, output, {
     'readability_cap',
     'bounded_sensitive_report',
     'bounded_source_paragraphs',
+    'cohesive_prose_merge',
     'structural_visual_gaps',
     'creative_preserve'
   ].includes(layoutPolicy)
@@ -726,6 +727,14 @@ function isQuotePunctuationOnlyChange(source, output) {
   if (!sourceQuotes.length && !outputQuotes.length) return false;
   const sourceEvidence = normalizeQuoteEvidence(source);
   const outputEvidence = normalizeQuoteEvidence(output);
+  if (sourceQuotes.length !== outputQuotes.length) {
+    // 원문 평문에 이미 있던 발화를 따옴표로 명확히 감싸는 변화는 허용한다.
+    // 반대 방향(원문의 직접 인용 경계를 삭제)은 출처·화자 경계 손실이므로
+    // 구두점 교정으로 완화하지 않고 명시적 복원 경로로만 처리한다.
+    return sourceQuotes.length === 0
+      && outputQuotes.length > 0
+      && outputQuotes.every(content => sourceEvidence.includes(normalizeQuoteEvidence(content)));
+  }
   return sourceQuotes.every(content => outputEvidence.includes(normalizeQuoteEvidence(content)))
     && outputQuotes.every(content => sourceEvidence.includes(normalizeQuoteEvidence(content)));
 }
@@ -843,12 +852,24 @@ function auditDirectQuoteIntegrity(source, output) {
 function restoreDirectQuoteContents(source, output) {
   const before = String(output || '');
   const auditBefore = auditDirectQuoteIntegrity(source, before);
-  if (auditBefore.countChanged || !auditBefore.contentChanged) {
+  if (auditBefore.countChanged) {
+    const countRepair = restoreMissingQuoteDelimiters(source, before);
+    if (countRepair.applied) return countRepair;
     return {
       text: before,
       applied: false,
       restoredCount: 0,
-      reason: auditBefore.countChanged ? 'quote_count_changed' : 'quote_content_unchanged',
+      reason: 'quote_count_changed',
+      auditBefore,
+      auditAfter: auditBefore
+    };
+  }
+  if (!auditBefore.contentChanged) {
+    return {
+      text: before,
+      applied: false,
+      restoredCount: 0,
+      reason: 'quote_content_unchanged',
       auditBefore,
       auditAfter: auditBefore
     };
@@ -874,6 +895,93 @@ function restoreDirectQuoteContents(source, output) {
     auditBefore,
     auditAfter
   };
+}
+
+function restoreMissingQuoteDelimiters(source, output) {
+  const before = String(output || '');
+  const auditBefore = auditDirectQuoteIntegrity(source, before);
+  const sourceSpans = directQuoteSpans(source);
+  if (!sourceSpans.length || sourceSpans.length <= auditBefore.outputCount) {
+    return {
+      text: before,
+      applied: false,
+      restoredCount: 0,
+      reason: 'quote_count_change_not_safely_restorable',
+      auditBefore,
+      auditAfter: auditBefore
+    };
+  }
+  let text = before;
+  let restoredCount = 0;
+  for (const sourceSpan of sourceSpans) {
+    if (text.includes(sourceSpan.full)) continue;
+    const target = findUniqueNormalizedEvidenceSpan(text, sourceSpan.content);
+    if (!target || spanInsideDirectQuote(text, target)) continue;
+    text = `${text.slice(0, target.start)}${sourceSpan.full}${text.slice(target.end)}`;
+    restoredCount += 1;
+  }
+  const auditAfter = auditDirectQuoteIntegrity(source, text);
+  const applied = restoredCount > 0 && auditAfter.pass;
+  return {
+    text: applied ? text : before,
+    applied,
+    restoredCount: applied ? restoredCount : 0,
+    reason: applied ? 'missing_quote_delimiters_restored' : 'post_restore_validation_failed',
+    auditBefore,
+    auditAfter
+  };
+}
+
+function directQuoteSpans(value) {
+  return [...String(value || '').matchAll(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags))]
+    .map(match => ({
+      full: match[0],
+      content: match[0].slice(1, -1),
+      start: Number(match.index || 0),
+      end: Number(match.index || 0) + match[0].length
+    }));
+}
+
+function findUniqueNormalizedEvidenceSpan(value, evidenceValue) {
+  const text = String(value || '');
+  const evidence = normalizeQuoteEvidence(evidenceValue);
+  if (evidence.length < 4) return null;
+  const compact = [];
+  const starts = [];
+  const ends = [];
+  for (let index = 0; index < text.length;) {
+    const codePoint = text.codePointAt(index);
+    const char = String.fromCodePoint(codePoint);
+    const next = index + char.length;
+    if (/[\p{L}\p{N}]/u.test(char)) {
+      const normalized = [...char.normalize('NFKC').toLocaleLowerCase('ko-KR')];
+      for (const normalizedChar of normalized) {
+        if (!/[\p{L}\p{N}]/u.test(normalizedChar)) continue;
+        compact.push(normalizedChar);
+        starts.push(index);
+        ends.push(next);
+      }
+    }
+    index = next;
+  }
+  const compactText = compact.join('');
+  const first = compactText.indexOf(evidence);
+  if (first < 0 || compactText.indexOf(evidence, first + 1) >= 0) return null;
+  const last = first + evidence.length - 1;
+  const start = starts[first];
+  const end = ends[last];
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+  const previous = text[start - 1] || '';
+  const next = text[end] || '';
+  const attributionTail = text.slice(end, end + 10);
+  if (/[\p{L}\p{N}]/u.test(previous)
+      || (/[\p{L}\p{N}]/u.test(next)
+        && !/^(?:라고|라는|라며|라면서|하고|하며|했다|하였다|은|는|이|가|을|를|의|에|도|만)/u.test(attributionTail))) return null;
+  return { start, end };
+}
+
+function spanInsideDirectQuote(value, span) {
+  return directQuoteSpans(value).some(quote => span.start >= quote.start && span.end <= quote.end);
 }
 
 function directQuoteContents(value) {

@@ -470,7 +470,9 @@ function restoreLockedStructureLayout({ source, outputText, chunks } = {}) {
     headingCount: heading.headingCount,
     blockCount: blocks.blockCount,
     restoredCount: heading.restoredCount + blocks.restoredCount,
+    approximateRestoredCount: Number(blocks.approximateRestoredCount || 0),
     missingCount: heading.missingCount + blocks.missingCount,
+    missingBlocks: blocks.missingBlocks || [],
     heading,
     blocks,
     pass: heading.missingCount === 0 && blocks.missingCount === 0
@@ -493,29 +495,118 @@ function restoreExactLockedBlocks(outputText, chunks) {
     .filter(chunk => chunk?.locked
       && EXACT_LAYOUT_LOCK_TYPES.has(String(chunk.lockType || ''))
       && String(chunk.text || '').trim())
-    .map(chunk => String(chunk.text || '').trim());
+    .map(chunk => ({
+      text: String(chunk.text || '').trim(),
+      lockType: String(chunk.lockType || 'structure'),
+      index: Number.isInteger(chunk.index) ? chunk.index : -1
+    }));
   let text = normalizeNewlines(outputText);
   let cursor = 0;
   let restoredCount = 0;
+  let approximateRestoredCount = 0;
   let missingCount = 0;
-  for (const expected of blocks) {
+  const missingBlocks = [];
+  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+    const block = blocks[blockIndex];
+    const expected = block.text;
     const equivalent = findWhitespaceEquivalentSpan(text, expected, cursor);
-    if (!equivalent) {
+    const approximate = equivalent || findDamagedLockedBlockSpan(
+      text,
+      block,
+      cursor,
+      blocks[blockIndex + 1]?.text || ''
+    );
+    if (!approximate) {
       missingCount += 1;
+      missingBlocks.push({ index: block.index, lockType: block.lockType });
       continue;
     }
-    const previous = text.slice(equivalent.start, equivalent.end);
-    text = `${text.slice(0, equivalent.start)}${expected}${text.slice(equivalent.end)}`;
+    const previous = text.slice(approximate.start, approximate.end);
+    text = `${text.slice(0, approximate.start)}${expected}${text.slice(approximate.end)}`;
     if (previous !== expected) restoredCount += 1;
-    cursor = equivalent.start + expected.length;
+    if (!equivalent) approximateRestoredCount += 1;
+    cursor = approximate.start + expected.length;
   }
   return {
     text,
     applied: restoredCount > 0,
     blockCount: blocks.length,
     restoredCount,
-    missingCount
+    approximateRestoredCount,
+    missingCount,
+    missingBlocks
   };
+}
+
+function findDamagedLockedBlockSpan(value, block, cursor = 0, nextExpected = '') {
+  const text = normalizeNewlines(value);
+  const expected = String(block?.text || '').trim();
+  const expectedKey = bare(expected);
+  const minimumKeyLength = String(block?.lockType || '') === 'table' ? 4 : 12;
+  if (expectedKey.length < minimumKeyLength) return null;
+  const next = nextExpected ? findWhitespaceEquivalentSpan(text, nextExpected, cursor) : null;
+  const limit = next?.start ?? text.length;
+  const records = layoutStructure.buildLineRecords(text);
+  const expectedLineCount = Math.max(1, expected.split('\n').filter(line => line.trim()).length);
+  const maxLines = Math.min(48, expectedLineCount + 2);
+  const candidates = [];
+  for (let startIndex = 0; startIndex < records.length; startIndex += 1) {
+    const first = records[startIndex];
+    if (first.blank || first.start < cursor || first.start >= limit) continue;
+    for (let lineCount = 1; lineCount <= maxLines && startIndex + lineCount <= records.length; lineCount += 1) {
+      const last = records[startIndex + lineCount - 1];
+      if (last.end > limit) break;
+      if (last.blank) continue;
+      const candidate = text.slice(first.start, last.end).trim();
+      const candidateKey = bare(candidate);
+      if (!candidateKey || candidateKey.length > expectedKey.length * 1.35) break;
+      if (candidateKey.length < Math.min(8, Math.floor(expectedKey.length * 0.35))) continue;
+      const prefix = commonPrefixLength(expectedKey, candidateKey);
+      const expectedPrefixCoverage = prefix / expectedKey.length;
+      const candidatePrefixCoverage = prefix / candidateKey.length;
+      const similarity = ngramJaccard(expectedKey, candidateKey, 4);
+      const lengthRatio = candidateKey.length / expectedKey.length;
+      const prefixCandidate = expectedPrefixCoverage >= 0.55 && candidatePrefixCoverage >= 0.86;
+      const generalCandidate = similarity >= 0.72 && lengthRatio >= 0.55 && lengthRatio <= 1.2;
+      if (!prefixCandidate && !generalCandidate) continue;
+      if (!isCompatibleDamagedBlockCandidate(block.lockType, expected, candidate, first)) continue;
+      const score = expectedPrefixCoverage * 0.5
+        + candidatePrefixCoverage * 0.2
+        + similarity * 0.3;
+      candidates.push({ start: first.start, end: last.end, score, expectedPrefixCoverage, similarity });
+    }
+  }
+  candidates.sort((left, right) => right.score - left.score || left.start - right.start);
+  const best = candidates[0];
+  const minimumScore = String(block?.lockType || '') === 'table' ? 0.62 : 0.64;
+  if (!best || best.score < minimumScore) return null;
+  const runnerUp = candidates.find(candidate => candidate.start !== best.start || candidate.end !== best.end);
+  if (runnerUp && best.expectedPrefixCoverage < 0.8 && best.score - runnerUp.score < 0.08) return null;
+  return { start: best.start, end: best.end, approximate: true, score: best.score };
+}
+
+function isCompatibleDamagedBlockCandidate(lockType, expected, candidate, firstRecord) {
+  const type = String(lockType || '');
+  if (type === 'table') {
+    return layoutStructure.tableColumnCount(candidate) >= 2
+      || /^\s*\|.*\|\s*$/u.test(candidate);
+  }
+  if (type === 'legal_clause') {
+    const expectedArticle = expected.match(/^\s*(제\s*\d{1,3}\s*조(?:의\s*\d{1,3})?)/u)?.[1] || '';
+    return Boolean(expectedArticle) && bare(candidate).startsWith(bare(expectedArticle));
+  }
+  if (type === 'toc_item') {
+    return ['title', 'heading', 'list'].includes(String(firstRecord?.role || ''));
+  }
+  if (type === 'code') return /^\s*(?:`{3,}|~{3,})/u.test(expected) === /^\s*(?:`{3,}|~{3,})/u.test(candidate);
+  return true;
+}
+
+function commonPrefixLength(left, right) {
+  const maximum = Math.min(String(left || '').length, String(right || '').length);
+  let index = 0;
+  while (index < maximum && left[index] === right[index]) index += 1;
+  return index;
 }
 
 function findWhitespaceEquivalentSpan(value, expected, cursor = 0) {
@@ -764,11 +855,17 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     // 많다. 이 행들을 일반 산문의 서론·근거·결론 문단으로 재배치하면 서로
     // 다른 문항이 합쳐지므로, 원문에서 감지한 읽기 단위를 그대로 유지한다.
     && !preserveResumeUnits
-    && !['questionnaire', 'list_heavy', 'table', 'table_heavy', 'sectioned', 'reference_heavy', 'creative_lines']
+    && !['questionnaire', 'list_heavy', 'table', 'table_heavy', 'compressed_multicolumn', 'sectioned', 'reference_heavy', 'creative_lines']
       .some(flag => formatFlags.has(flag))
     && !(chunks || []).some(chunk => chunk?.locked && String(chunk.text || '').trim());
+  const paragraphMergePlan = buildCohesiveParagraphMergePlan(sourceParagraphs, {
+    enabled: process.env.PARAGRAPH_MERGE_PROSE === '1',
+    semanticProseRoles,
+    readabilityOptions
+  });
   const sequentialEnumeratedParagraphRoles = hasSequentialEnumeratedParagraphRoles(sourceParagraphs);
   const sourceParagraphRolesAreAuthoritative = semanticProseRoles
+    && paragraphMergePlan.applicable !== true
     && (sourceCount >= 3 || sequentialEnumeratedParagraphRoles)
     // 빈 줄 문단뿐 아니라 워드·입력창에서 한 줄만 내려 쓴 완결 산문도
     // layoutStructure가 판정한 원문 역할 경계로 존중한다.
@@ -800,7 +897,7 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
       pass: anchored.contentPreserved && afterReadability.overlongCount === 0
     };
   }
-  if (semanticProseRoles) {
+  if (semanticProseRoles && paragraphMergePlan.applicable !== true) {
     const additiveTailLayout = mergeOrphanAdditiveTailParagraph(layoutOutputText, {
       sourceParagraphCount: sourceCount,
       readabilityOptions
@@ -848,7 +945,10 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     const compactSourceLength = bare(source).length;
     const maximum = paragraphExpansionLimit(sourceCount, compactSourceLength);
     const safeMaximum = Math.max(maximum, readableMinimum);
-    if (beforeCount > safeMaximum) {
+    if (paragraphMergePlan.applicable === true && beforeCount > paragraphMergePlan.targetCount) {
+      targetCount = Math.max(readableMinimum, paragraphMergePlan.targetCount);
+      policy = 'cohesive_prose_merge';
+    } else if (beforeCount > safeMaximum) {
       targetCount = safeMaximum;
       policy = sensitiveReport ? 'bounded_sensitive_report' : 'bounded_source_paragraphs';
     } else if (beforeReadability.overlongCount > 0 && beforeReadability.targetCount > beforeCount) {
@@ -887,7 +987,9 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
   let proseSplitCount = 0;
   let targetConstrained = false;
   while (paragraphs.length > targetCount) {
-    const candidate = findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions);
+    const candidate = policy === 'cohesive_prose_merge'
+      ? findCohesiveMergeCandidate(paragraphs, protectedBlocks, readabilityOptions)
+      : findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions);
     if (!candidate) {
       // 원문 문단 수 상한을 맞추려고 제목·라벨 경계를 합치거나, 이미 읽기
       // 한도 안에 있는 두 문단을 다시 벽글로 만들지 않는다. 이 경우는
@@ -1445,6 +1547,7 @@ function splitEditablePrefixPiece(piece, options = {}) {
   const prefix = match[1];
   const body = match[2];
   const start = Number(piece?.start) || 0;
+  const quotedBody = !legal && isFullyQuotedSpan(body);
   return [
     {
       ...piece,
@@ -1466,7 +1569,8 @@ function splitEditablePrefixPiece(piece, options = {}) {
       text: body,
       start: start + prefix.length,
       end: Number(piece?.end) || (start + raw.length),
-      forceEditable: true
+      forceEditable: quotedBody !== true,
+      forceLockType: quotedBody ? 'quote' : undefined
     }
   ];
 }
@@ -1499,6 +1603,75 @@ function sourceLineSeparator(text, boundary, direction) {
   const whitespace = direction === 'before' ? text.slice(start, boundary) : text.slice(boundary, end);
   const newlineCount = (whitespace.match(/\n/gu) || []).length;
   return newlineCount >= 2 ? '\n\n' : '\n';
+}
+
+function buildCohesiveParagraphMergePlan(paragraphs, { enabled = false, semanticProseRoles = false, readabilityOptions = {} } = {}) {
+  const rows = Array.isArray(paragraphs) ? paragraphs.map(value => String(value || '').trim()).filter(Boolean) : [];
+  if (!enabled || !semanticProseRoles || rows.length < 4) {
+    return { applicable: false, targetCount: rows.length, mergeCount: 0 };
+  }
+  if (rows.some(paragraph => layoutStructure.isStructureDominatedParagraph(paragraph))) {
+    return { applicable: false, targetCount: rows.length, mergeCount: 0 };
+  }
+  const maximumMerges = Math.max(1, Math.floor(rows.length * 0.25));
+  let mergeCount = 0;
+  let previousMerged = false;
+  for (let index = 0; index < rows.length - 1 && mergeCount < maximumMerges; index += 1) {
+    if (previousMerged) {
+      previousMerged = false;
+      continue;
+    }
+    if (!isCohesiveShortParagraphPair(rows[index], rows[index + 1], readabilityOptions)) continue;
+    mergeCount += 1;
+    previousMerged = true;
+  }
+  return {
+    applicable: mergeCount > 0,
+    targetCount: rows.length - mergeCount,
+    mergeCount
+  };
+}
+
+function findCohesiveMergeCandidate(paragraphs, protectedBlocks, readabilityOptions = {}) {
+  let selected = null;
+  for (let index = 0; index < paragraphs.length - 1; index += 1) {
+    if (touchesProtectedBlock(paragraphs[index], protectedBlocks)
+        || touchesProtectedBlock(paragraphs[index + 1], protectedBlocks)
+        || !isCohesiveShortParagraphPair(paragraphs[index], paragraphs[index + 1], readabilityOptions)) continue;
+    const mergedLength = bare(`${paragraphs[index]} ${paragraphs[index + 1]}`).length;
+    if (!selected || mergedLength < selected.length) selected = { index, separator: ' ', length: mergedLength };
+  }
+  return selected;
+}
+
+function isCohesiveShortParagraphPair(leftValue, rightValue, readabilityOptions = {}) {
+  const left = String(leftValue || '').trim();
+  const right = String(rightValue || '').trim();
+  if (!left || !right) return false;
+  const leftSentences = splitSentences(left).filter(Boolean);
+  const rightSentences = splitSentences(right).filter(Boolean);
+  if (!leftSentences.length || !rightSentences.length
+      || leftSentences.length > 2 || rightSentences.length > 2
+      || bare(left).length > 220 || bare(right).length > 220) return false;
+  const merged = `${left} ${right}`;
+  if (layoutStructure.measureParagraphReadability([merged], readabilityOptions).overlongCount > 0) return false;
+  const rightStart = rightSentences[0];
+  const explicitContinuation = /^(?:또한|그리고|이어서|이와\s*함께|이를\s*통해|이\s*과정에서|그\s*결과|이러한|이런|구체적으로|특히|예를\s*들어|따라서)(?=$|[\s,])/u
+    .test(rightStart);
+  return explicitContinuation || paragraphTopicOverlap(leftSentences.at(-1), rightStart) >= 0.18;
+}
+
+function paragraphTopicOverlap(left, right) {
+  const stop = new Set(['그리고', '또한', '하지만', '그러나', '따라서', '통해', '위해', '대한', '있는', '하는', '했다', '합니다']);
+  const tokens = value => new Set((String(value || '').match(/[가-힣]{2,}|[A-Za-z]{3,}/gu) || [])
+    .map(token => token.toLocaleLowerCase('ko-KR').replace(/(?:에서는|으로는|에게는|에서|으로|에게|까지|부터|하는|했다|합니다|은|는|이|가|을|를|의|에|로)$/u, ''))
+    .filter(token => token.length >= 2 && !stop.has(token)));
+  const leftTokens = tokens(left);
+  const rightTokens = tokens(right);
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  let shared = 0;
+  for (const token of leftTokens) if (rightTokens.has(token)) shared += 1;
+  return shared / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
 }
 
 function findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions = {}) {
@@ -1666,6 +1839,13 @@ function touchesProtectedBlock(paragraph, protectedBlocks) {
 
 function splitParagraphs(value) {
   return layoutStructure.splitReadableParagraphs(value);
+}
+
+function isFullyQuotedSpan(value) {
+  const text = String(value || '').trim();
+  return text.length >= 2
+    && text.length <= 2400
+    && /^(?:["“][^"”\n]+["”]|['‘][^'’\n]+['’]|「[^」\n]+」|『[^』\n]+』|《[^》\n]+》|〈[^〉\n]+〉)$/u.test(text);
 }
 
 function restorePolishLineSeparatorPattern(source, outputText) {
@@ -1862,13 +2042,31 @@ function buildStructureAudit({
   for (const chunk of locked) {
     const value = String(chunk.text || '').trim();
     if (!value) continue;
-    const orderedIndex = output.indexOf(value, orderCursor);
+    const exactLayout = EXACT_LAYOUT_LOCK_TYPES.has(String(chunk.lockType || ''));
+    const orderedEquivalent = exactLayout
+      ? findWhitespaceEquivalentSpan(output, value, orderCursor)
+      : null;
+    const orderedIndex = orderedEquivalent?.start ?? output.indexOf(value, orderCursor);
     if (orderedIndex >= 0) {
-      orderCursor = orderedIndex + value.length;
+      orderCursor = orderedEquivalent?.end ?? (orderedIndex + value.length);
       continue;
     }
-    if (output.includes(value)) {
+    const anywhereEquivalent = exactLayout
+      ? findWhitespaceEquivalentSpan(output, value, 0)
+      : null;
+    if (anywhereEquivalent || output.includes(value)) {
       outOfOrder.push({ index: chunk.index, lockType: chunk.lockType || 'structure' });
+      continue;
+    }
+    // 참고문헌·표·인용 등 exact 블록은 전체 내용이 공백·따옴표 등가로
+    // 남아 있어야 한다. 앞 80자만 같으면 긴 레코드의 꼬리 절단을 놓치므로
+    // 접두사 완화는 제목·라벨 같은 비-exact 구조에만 허용한다.
+    if (exactLayout) {
+      lost.push({
+        index: chunk.index,
+        lockType: chunk.lockType || 'structure',
+        text: value.slice(0, 160)
+      });
       continue;
     }
     const key = bare(value).slice(0, 80);
@@ -1894,6 +2092,9 @@ function buildStructureAudit({
     0,
     countOrphanParticleLineBoundaries(output) - countOrphanParticleLineBoundaries(original)
   );
+  const protectedBlockChangedCount = lost
+    .filter(item => EXACT_LAYOUT_LOCK_TYPES.has(String(item.lockType || '')))
+    .length;
   return {
     version: VERSION,
     enabled: true,
@@ -1903,6 +2104,7 @@ function buildStructureAudit({
     lockedByType: counts,
     lostLockedCount: lost.length,
     lostLocked: lost.slice(0, 20),
+    protectedBlockChangedCount,
     lockedOrderChanged: outOfOrder.length > 0,
     lockedOutOfOrderCount: outOfOrder.length,
     lockedOutOfOrder: outOfOrder.slice(0, 20),
@@ -1915,6 +2117,8 @@ function buildStructureAudit({
     structureSignaturePass: structuralSignature.pass,
     structuralRoleLossCount: structuralSignature.losses.length,
     structuralRoleLosses: structuralSignature.losses,
+    tableColumnOwnershipPass: structuralSignature.tableColumnOwnershipPass !== false,
+    tableColumnOwnershipLossCount: Number(structuralSignature.tableColumnOwnershipLossCount || 0),
     sourceStructuralSignature: structuralSignature.source,
     outputStructuralSignature: structuralSignature.output,
     originalStructurePass: originalMarkers.pass
@@ -2258,15 +2462,32 @@ function compareStructuralRoleSignatures(source, output) {
   const outputSignature = structuralRoleSignature(output);
   const losses = [];
   for (const key of Object.keys(sourceSignature)) {
+    if (key === 'tableCellSequence') continue;
     const before = Number(sourceSignature[key] || 0);
     const after = Number(outputSignature[key] || 0);
     if (after < before) losses.push({ role: key, sourceCount: before, outputCount: after });
+  }
+  const sourceCells = sourceSignature.tableCellSequence || [];
+  const outputCells = outputSignature.tableCellSequence || [];
+  const tableColumnOwnershipPass = sourceCells.length === outputCells.length
+    && sourceCells.every((count, index) => count === outputCells[index]);
+  if (!tableColumnOwnershipPass && sourceCells.length > 0) {
+    losses.push({
+      role: 'tableCellSequence',
+      code: 'table_column_ownership_lost',
+      sourceCount: sourceCells.length,
+      outputCount: outputCells.length,
+      sourceSequence: sourceCells.slice(0, 40),
+      outputSequence: outputCells.slice(0, 40)
+    });
   }
   return {
     pass: losses.length === 0,
     source: sourceSignature,
     output: outputSignature,
-    losses
+    losses,
+    tableColumnOwnershipPass,
+    tableColumnOwnershipLossCount: tableColumnOwnershipPass ? 0 : 1
   };
 }
 
@@ -2282,7 +2503,10 @@ function structuralRoleSignature(value) {
     quote: Number(roles.quote || 0),
     code: Number(roles.code || 0),
     legalClause: Number(roles.legal_clause || 0),
-    signature: Number(roles.signature || 0)
+    signature: Number(roles.signature || 0),
+    tableCellSequence: Array.isArray(report.tableCellSequence)
+      ? report.tableCellSequence.slice(0, 80)
+      : []
   };
 }
 
@@ -2339,6 +2563,7 @@ function compactLayoutRepair(value) {
     finalLockedStructure: value.finalLockedStructure ? {
       applied: value.finalLockedStructure.applied === true,
       restoredCount: Number(value.finalLockedStructure.restoredCount) || 0,
+      approximateRestoredCount: Number(value.finalLockedStructure.approximateRestoredCount) || 0,
       missingCount: Number(value.finalLockedStructure.missingCount) || 0,
       pass: value.finalLockedStructure.pass !== false
     } : null,
@@ -2677,5 +2902,7 @@ module.exports = {
   isAssessmentAnswerKeyLine,
   isAssessmentExplanationOrdinal,
   splitEditablePrefixPiece,
-  isStandaloneQuotedTitle
+  isStandaloneQuotedTitle,
+  isFullyQuotedSpan,
+  restoreExactLockedBlocks
 };

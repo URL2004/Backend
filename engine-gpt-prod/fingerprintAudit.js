@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 12;
+const VERSION = 13;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -252,6 +252,12 @@ const SEMANTIC_RELATION_RULES = Object.freeze([
     source: /(?:역량|능력)(?:을|를)\s*(?:길렀|기르|강화|높였|키웠|갖췄|갖추)/u,
     output: /(?:이해|파악)[^.!?。！？\n]{0,70}(?:기반|토대)(?:을|도)?\s*(?:다졌|마련|쌓았)/u,
     retained: /(?:역량|능력)(?:을|를)\s*(?:길렀|기르|강화|높였|키웠|갖췄|갖추)/u
+  },
+  {
+    family: 'learning_changed_to_possession',
+    source: /(?:배웠|배우게\s*되|익혔|익히게\s*되|깨달|알게\s*되|이해하게\s*되|체감|확인할\s*수\s*있었)/u,
+    output: /(?:(?:역량|능력|전문성)(?:을|를)?\s*(?:갖췄|갖추었|보유|확보)|(?:갖춘|보유한)\s*(?:역량|능력|전문성))/u,
+    retained: /(?:배웠|배우게\s*되|익혔|익히게\s*되|깨달|알게\s*되|이해하게\s*되|체감|확인할\s*수\s*있었)/u
   }
 ]);
 
@@ -278,6 +284,13 @@ function detectSemanticRelationShifts(source, output) {
       const shifted = matches(rule.output, alignedText)
         && !matches(rule.retained, alignedText);
       if (shifted) add(rule.family, sourceIndex + 1);
+    }
+
+    if (conceptNarrowedByActionModifier(sourceSentence, alignedText)) {
+      add('concept_narrowed_by_modifier', sourceIndex + 1);
+    }
+    if (explicitSpeakerEvidenceRemoved(sourceSentence, alignedText)) {
+      add('speaker_evidence_removed', sourceIndex + 1);
     }
 
     if (/(?:었|였|했|됐|였으|했으)지만/u.test(sourceSentence)) {
@@ -686,6 +699,29 @@ function restoreUnsafeRelationSentences(source, output, audit) {
       ? 'restored'
       : (restoredSourceGrouped.reason || restoredSourceSingle.reason || restoredOutput.reason)
   };
+}
+
+function conceptNarrowedByActionModifier(source, output) {
+  const before = String(source || '');
+  const after = String(output || '');
+  const concepts = [...before.matchAll(/([가-힣A-Za-z][가-힣A-Za-z0-9· -]{0,24}?)의\s*중요성/gu)]
+    .map(match => String(match[1] || '').trim())
+    .filter(value => value.length >= 1);
+  return concepts.some(concept => {
+    const escaped = concept.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const narrowed = new RegExp(`${escaped}(?:을|를)?\\s*(?:두기|하기|지키기|유지하기|실천하기)의\\s*중요성`, 'u');
+    return narrowed.test(after) && !narrowed.test(before);
+  });
+}
+
+function explicitSpeakerEvidenceRemoved(source, output) {
+  const before = String(source || '');
+  const after = String(output || '');
+  const explicitSpeaker = /(?:^|[^가-힣A-Za-z0-9_])(?:저는|제가|나는|내가)(?=$|[^가-힣A-Za-z0-9_])/u.test(before);
+  if (!explicitSpeaker) return false;
+  const experientialAction = /(?:수행|담당|참여|경험|배웠|익혔|깨달|느꼈|알게\s*되|확인할\s*수\s*있었|생각했|판단했|노력했|해결했|개선했)/u.test(before);
+  if (!experientialAction) return false;
+  return !/(?:^|[^가-힣A-Za-z0-9_])(?:저는|제가|나는|내가)(?=$|[^가-힣A-Za-z0-9_])/u.test(after);
 }
 
 module.exports = {

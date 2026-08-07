@@ -7,7 +7,7 @@ const {
   endingHistogram: sharedEndingHistogram
 } = require('../engine/endingStyle');
 
-const VERSION = 4;
+const VERSION = 5;
 const STYLES = Object.freeze(['plain', 'polite', 'haeyo', 'nominal']);
 
 function auditEndingStyle(source, output, documentProfile = null) {
@@ -65,6 +65,49 @@ function auditEndingStyle(source, output, documentProfile = null) {
     sections.push(record);
     if (issue) issues.push(record);
   }
+  // 지원서처럼 짧은 소제목이 많은 문서는 각 절이 6문장에 못 미쳐도
+  // 문서 전체의 격식은 충분히 명확할 수 있다. 절별 감사가 잡지 못한 경우에만
+  // 전체 일반 문장으로 한 번 더 판정해 분류 실수가 종결체 변환으로 번지는
+  // 것을 막는다. 원래 혼합 문체는 dominantRatio 기준에서 제외된다.
+  let documentFallback = null;
+  if (!issues.length) {
+    const includeListBodies = compactRecordStyle || structuredNominalMemo;
+    const sourceSentences = eligibleSentences(source, { includeListBodies });
+    const outputSentences = eligibleSentences(output, { includeListBodies });
+    const sourceHistogram = endingHistogram(sourceSentences);
+    const outputHistogram = endingHistogram(outputSentences);
+    const sourceRecognized = styleTotal(sourceHistogram);
+    const dominant = dominantStyle(sourceHistogram);
+    const dominantRatio = sourceRecognized ? sourceHistogram[dominant] / sourceRecognized : 0;
+    const introducedStyles = [];
+    let introducedOtherCount = 0;
+    if (sourceSentences.length >= 6 && sourceRecognized >= 6 && dominantRatio >= 0.75) {
+      for (const style of STYLES) {
+        if (style === dominant) continue;
+        const introduced = Math.max(0, Number(outputHistogram[style] || 0) - Number(sourceHistogram[style] || 0));
+        if (introduced <= 0) continue;
+        introducedOtherCount += introduced;
+        introducedStyles.push({ style, count: introduced });
+      }
+    }
+    documentFallback = {
+      index: sourceSections.length,
+      scope: 'document',
+      heading: 'document',
+      profile,
+      sourceSentenceCount: sourceSentences.length,
+      outputSentenceCount: outputSentences.length,
+      sourceHistogram,
+      outputHistogram,
+      dominantStyle: dominantRatio >= 0.75 ? dominant : '',
+      dominantRatio: round4(dominantRatio),
+      structuredNominalMemo,
+      introducedOtherCount,
+      introducedStyles,
+      issue: introducedOtherCount >= 2
+    };
+    if (documentFallback.issue) issues.push(documentFallback);
+  }
   return {
     version: VERSION,
     profile,
@@ -73,6 +116,7 @@ function auditEndingStyle(source, output, documentProfile = null) {
     issueCount: issues.length,
     introducedOtherCount: issues.reduce((sum, item) => sum + item.introducedOtherCount, 0),
     sections,
+    documentFallback,
     issues
   };
 }

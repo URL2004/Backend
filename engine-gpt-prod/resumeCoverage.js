@@ -7,7 +7,7 @@ const {
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 7;
+const VERSION = 8;
 const MIN_CONTENT_RECALL = 0.50;
 const MIN_SEMANTIC_FALLBACK = 0.62;
 const CLAIM_PATTERNS = Object.freeze({
@@ -35,16 +35,23 @@ function auditResumeCoverage(source, output, documentProfile = null) {
     .filter(item => item.types.length > 0 && item.tokens.length >= 3);
   const rows = claims.map(claim => compareClaim(claim, sourceSentences.length, outputSentences));
   const omissions = rows.filter(item => !item.covered);
+  const strengthShifts = rows.filter(item => item.covered && item.strengthShift === true);
+  const repairTargets = [...omissions, ...strengthShifts]
+    .sort((left, right) => left.sourceIndex - right.sourceIndex);
   return {
     version: VERSION,
     applicable: true,
-    pass: omissions.length === 0,
+    pass: omissions.length === 0 && strengthShifts.length === 0,
     minContentRecall: MIN_CONTENT_RECALL,
     claimCount: rows.length,
     coveredClaimCount: rows.length - omissions.length,
     coverageRatio: round4(rows.length ? (rows.length - omissions.length) / rows.length : 1),
     minimumObservedRecall: rows.length ? Math.min(...rows.map(item => item.contentRecall)) : 1,
-    issueCodes: omissions.length ? ['resume_claim_omission'] : [],
+    strengthShiftCount: strengthShifts.length,
+    issueCodes: [
+      ...(omissions.length ? ['resume_claim_omission'] : []),
+      ...(strengthShifts.length ? ['resume_claim_strength_shift'] : [])
+    ],
     omissions: omissions.slice(0, 12).map(item => ({
       sourceIndex: item.sourceIndex,
       sourceOrdinal: item.sourceIndex + 1,
@@ -52,6 +59,30 @@ function auditResumeCoverage(source, output, documentProfile = null) {
       contentRecall: item.contentRecall,
       semanticSimilarity: item.semanticSimilarity,
       aligned: item.aligned,
+      sourceSentence: item.sourceSentence,
+      previousContext: sourceSentences[item.sourceIndex - 1] || '',
+      nextContext: sourceSentences[item.sourceIndex + 1] || ''
+    })),
+    strengthShifts: strengthShifts.slice(0, 12).map(item => ({
+      sourceIndex: item.sourceIndex,
+      sourceOrdinal: item.sourceIndex + 1,
+      types: item.types,
+      contentRecall: item.contentRecall,
+      semanticSimilarity: item.semanticSimilarity,
+      aligned: item.aligned,
+      strengthShift: true,
+      sourceSentence: item.sourceSentence,
+      previousContext: sourceSentences[item.sourceIndex - 1] || '',
+      nextContext: sourceSentences[item.sourceIndex + 1] || ''
+    })),
+    repairTargets: repairTargets.slice(0, 12).map(item => ({
+      sourceIndex: item.sourceIndex,
+      sourceOrdinal: item.sourceIndex + 1,
+      types: item.types,
+      contentRecall: item.contentRecall,
+      semanticSimilarity: item.semanticSimilarity,
+      aligned: item.aligned,
+      strengthShift: item.strengthShift === true,
       sourceSentence: item.sourceSentence,
       previousContext: sourceSentences[item.sourceIndex - 1] || '',
       nextContext: sourceSentences[item.sourceIndex + 1] || ''
@@ -85,12 +116,13 @@ function compareClaim(claim, sourceCount, outputSentences) {
     best.recall,
     best.semanticSimilarity,
     aligned,
-    best.learningEquivalent === true
+    best.learningEquivalent === true,
+    learningChangedToPossession(claim.sentence, best.text)
   );
 }
 
 function bestCandidate(claim, candidates) {
-  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0, learningEquivalent: false };
+  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0, learningEquivalent: false, text: '' };
   for (const candidate of candidates) {
     const candidateTokens = new Set(contentTokens(candidate.text));
     const recall = claim.tokens.filter(token => candidateTokens.has(token)).length / Math.max(1, claim.tokens.length);
@@ -102,7 +134,7 @@ function bestCandidate(claim, candidates) {
       && hasLearningFunction(claim.sentence)
       && hasLearningFunction(candidate.text)
       && recall >= 0.28;
-    const current = { index: candidate.start, recall, similarity, semanticSimilarity, learningEquivalent };
+    const current = { index: candidate.start, recall, similarity, semanticSimilarity, learningEquivalent, text: candidate.text };
     if (isBetterCandidate(current, best)) best = current;
   }
   return best;
@@ -140,7 +172,7 @@ function candidateCovered(candidate) {
     || (candidate.recall >= 0.42 && candidate.semanticSimilarity >= MIN_SEMANTIC_FALLBACK);
 }
 
-function row(claim, outputIndex, recall, semanticSimilarity, aligned, learningEquivalent = false) {
+function row(claim, outputIndex, recall, semanticSimilarity, aligned, learningEquivalent = false, strengthShift = false) {
   const covered = aligned && candidateCovered({ recall, semanticSimilarity, learningEquivalent });
   return {
     sourceIndex: claim.index,
@@ -150,6 +182,7 @@ function row(claim, outputIndex, recall, semanticSimilarity, aligned, learningEq
     contentRecall: round4(recall),
     semanticSimilarity: round4(semanticSimilarity),
     learningEquivalent,
+    strengthShift,
     aligned,
     covered
   };
@@ -261,7 +294,10 @@ function normalize(value) {
 }
 
 function isImproved(before, after) {
-  return Number(after?.coveredClaimCount || 0) > Number(before?.coveredClaimCount || 0)
+  const beforeIssues = Number(before?.omissions?.length || 0) + Number(before?.strengthShiftCount || 0);
+  const afterIssues = Number(after?.omissions?.length || 0) + Number(after?.strengthShiftCount || 0);
+  return afterIssues < beforeIssues
+    || Number(after?.coveredClaimCount || 0) > Number(before?.coveredClaimCount || 0)
     || Number(after?.coverageRatio || 0) > Number(before?.coverageRatio || 0) + 1e-9;
 }
 
@@ -298,7 +334,11 @@ function restoreMissingClaimsLocally({
   if (!before || audit?.applicable !== true || audit?.pass === true) {
     return { text: before, applied: false, restoredCount: 0, restoredSourceOrdinals: [] };
   }
-  const prioritized = [...(audit.omissions || [])]
+  const prioritized = [...(audit.repairTargets || audit.omissions || [])]
+    // 강도 이동은 대응 문장이 이미 존재한다. 누락 복원처럼 원문 문장을
+    // 삽입하면 강해진 문장과 원문 문장이 함께 남아 중복 주장을 만든다.
+    // 이 유형은 위의 국소 모델 수리에서만 교체하고, 실패하면 경고로 남긴다.
+    .filter(item => item.strengthShift !== true)
     .filter(item => Array.isArray(item.types)
       && item.types.some(type => ['learning', 'job_link', 'competency', 'action', 'result'].includes(type)))
     .filter(item => String(item.sourceSentence || '').trim().length >= 12)
@@ -366,6 +406,12 @@ function hasLearningFunction(value) {
     .test(String(value || ''));
 }
 
+function learningChangedToPossession(source, output) {
+  if (!hasLearningFunction(source) || hasLearningFunction(output)) return false;
+  return /(?:(?:역량|능력|전문성)(?:을|를)?\s*(?:갖췄|갖추었|보유|확보)|(?:갖춘|보유한)\s*(?:역량|능력|전문성))/u
+    .test(String(output || ''));
+}
+
 function paragraphCount(value) {
   return String(value || '').split(/\n[ \t]*\n+/u).map(item => item.trim()).filter(Boolean).length;
 }
@@ -381,7 +427,10 @@ function emptyReport(applicable) {
     coverageRatio: 1,
     minimumObservedRecall: 1,
     issueCodes: [],
-    omissions: []
+    omissions: [],
+    strengthShiftCount: 0,
+    strengthShifts: [],
+    repairTargets: []
   };
 }
 

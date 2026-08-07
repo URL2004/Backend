@@ -2,8 +2,9 @@
 
 const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
+const freezeBlocks = require('../engine/freezeblocks');
 
-const VERSION = 13;
+const VERSION = 14;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -77,6 +78,16 @@ const REMOVABLE_LINE_RULES = Object.freeze([
     message: '본문 끝에 함께 붙은 보완·작성 요청 문구를 변환 대상에서 제외했어요.'
   },
   {
+    code: 'source_edit_instruction_artifact',
+    pattern: /^(?:(?:제\s*)?\d+\s*번째\s*문단|\d+\s*번\s*문단|앞(?:의)?\s*문단|뒤(?:의)?\s*문단|마지막\s*문단)(?:을|은|에|에서|뒤에|앞에)?[^\n]{0,100}(?:추가|삭제|이동|합치|나누|분리|교체|수정|바꾸|고치)(?:해\s*주세요|하여\s*주세요|하세요|해줘|해\s*줘|해주세요)[.!?。！？~]*$/iu,
+    message: '본문 사이에 섞인 문단 편집 지시를 변환 대상에서 제외했어요.'
+  },
+  {
+    code: 'source_edit_instruction_artifact',
+    pattern: /^(?:이|위|아래|앞의|뒤의|해당)\s*(?:문장|문단|표현|제목)(?:을|를)?[^\n]{0,100}(?:으로|로)\s*(?:바꿔|수정해|고쳐)\s*(?:주세요|줘|주십시오)[.!?。！？~]*$/iu,
+    message: '본문 사이에 섞인 국소 편집 지시를 변환 대상에서 제외했어요.'
+  },
+  {
     code: 'source_generation_meta_artifact',
     boundaryOnly: true,
     pattern: /^글자\s*수\s*기준[^\n]{0,180}(?:완성본|최종본)(?:입니다|이에요|이다)?[.!?。！？]*$/u,
@@ -139,14 +150,15 @@ function auditAndSanitizeSource(value) {
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] || '');
     const text = line.trim();
-    if (/^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/iu.test(text)) {
+    if (freezeBlocks.isRefHeadingLine(text)) {
       inReference = true;
-    } else if (/^(?:부록|Appendix)(?:\s|$)/iu.test(text)) {
+    } else if (freezeBlocks.isAppendixHeadingLine(text)) {
       inReference = false;
     }
 
     const removable = text && REMOVABLE_LINE_RULES.find(rule => (
       (!rule.boundaryOnly || isBoundaryContentLine(lines, index))
+      && !fenceState.protectedLineIndexes.has(index)
       && !isQuotedInstructionLine(text)
       && rule.pattern.test(text)
     ));
@@ -803,24 +815,27 @@ function analyzeFences(lines) {
   let active = null;
   let openingIndex = -1;
   const unbalancedLineIndexes = [];
+  const protectedLineIndexes = new Set();
   for (let index = 0; index < (lines || []).length; index += 1) {
     const match = String(lines[index] || '').match(/^\s*(`{3,}|~{3,})/u);
+    if (active) protectedLineIndexes.add(index);
     if (!match) continue;
     if (!active) {
       active = { char: match[1][0], length: match[1].length };
       openingIndex = index;
+      protectedLineIndexes.add(index);
     } else if (match[1][0] === active.char && match[1].length >= active.length) {
       active = null;
       openingIndex = -1;
     }
   }
   if (active && openingIndex >= 0) unbalancedLineIndexes.push(openingIndex);
-  return { balanced: !active, unbalancedLineIndexes };
+  return { balanced: !active, unbalancedLineIndexes, protectedLineIndexes };
 }
 
 function isPossiblyTruncatedReference(value) {
   const text = String(value || '').trim();
-  if (!text || /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|출처|References|Bibliography|Works\s+Cited)$/iu.test(text)) return false;
+  if (!text || freezeBlocks.isRefHeadingLine(text)) return false;
   if (/[,;:([{]\s*$/u.test(text)) return true;
   return hasUnclosedPairs(text);
 }

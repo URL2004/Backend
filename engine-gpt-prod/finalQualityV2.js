@@ -1437,7 +1437,7 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'overloaded_research_action_chain') return '원인 분석·조건 조정·반복 실험·재현성 검증의 순서는 유지하고, 필요하면 두 문장으로 나눈다.';
   if (item?.code === 'academic_purpose_chain_overloaded') return '연구 목적, 핵심 단서·변수, 작동 과정, 검증 조건을 논리 역할별 두세 문장으로 나눈다. 따옴표 속 구성개념과 Fit·Cue 같은 표기, 인과 방향, 평가 강도는 그대로 두고 “해소 과정”을 임의로 “해석 과정” 같은 다른 개념으로 바꾸지 않는다.';
   if (item?.code === 'formal_register_residual') {
-    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다. 학술문의 “뜬금없는 결합”은 원문이 뜻하는 예상 밖·비전형적 관계 범위 안에서만 중립화하고, “폭발적인 반응”은 반응 강도를 낮추지 않는 공식 표현으로 고친다. 학술문의 “확대됐다·확인됐다” 같은 축약형은 “확대되었다·확인되었다”로 맞춘다. 이론 구성개념은 추정해 이름을 바꾸지 않는다. “시험해 보니”는 “시험·검증한 결과”로, “함께 놓고 비교”는 “비교 검토”처럼 원문 격식에 맞춘다. 학술·보고서에서 “결제를 끝내다”처럼 가벼운 완료 동사를 새로 만들지 말고 SOURCE의 정확한 기능 동사를 유지한다. 지원서의 디딤돌·든든한 동행자·따뜻한 조력자 같은 장식적 결론은 SOURCE에 있는 실제 행동 계획으로만 정리한다.';
+    return '직접 인용이나 정식 용어는 보존한다. 그 밖의 게임·군사·신체 은유와 구어적 별칭은 같은 행위·상태·절차를 뜻하는 중립적 공식 표현으로 바꾼다. 학술문의 “~라는 건데·~라는 게·이게 바로·나중에 보니까·딱 보고·꿀리다·기가 죽다” 같은 대화형 서술은 주장과 평가 강도를 그대로 둔 공식 문장으로 고친다. 학술문의 “뜬금없는 결합”은 원문이 뜻하는 예상 밖·비전형적 관계 범위 안에서만 중립화하고, “폭발적인 반응”은 반응 강도를 낮추지 않는 공식 표현으로 고친다. 학술문의 “확대됐다·확인됐다” 같은 축약형은 “확대되었다·확인되었다”로 맞춘다. 이론 구성개념은 추정해 이름을 바꾸지 않는다. “시험해 보니”는 “시험·검증한 결과”로, “함께 놓고 비교”는 “비교 검토”처럼 원문 격식에 맞춘다. 학술·보고서에서 “결제를 끝내다”처럼 가벼운 완료 동사를 새로 만들지 말고 SOURCE의 정확한 기능 동사를 유지한다. 지원서의 디딤돌·든든한 동행자·따뜻한 조력자 같은 장식적 결론은 SOURCE에 있는 실제 행동 계획으로만 정리한다.';
   }
   if (item?.code === 'role_definition_inversion') return '기관이 역할이라고 쓰지 말고, SOURCE의 기관·직무가 어떤 역할을 하는지 주어와 보어 관계를 복원한다.';
   if (item?.code === 'purpose_modifier_collocation') return '정책·제도가 지향하는 목적이면 “~을 만들기 위한 정책·제도”처럼 목적 관계를 분명히 한다.';
@@ -1480,6 +1480,7 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'temporal_anchor_detachment') return 'SOURCE에서 특정 주체나 사건 뒤에 붙은 “이후”를 문장 앞으로 옮겨 앞 문장의 연도·사건에 걸리게 하지 말고 원래 시간 기준을 분명히 한다.';
   if (item?.code === 'causal_connector_strengthening') return 'SOURCE의 시간·맥락 연결인 “이때·뒤·후”를 “따라서·그 결과·~자” 같은 인과 결론으로 강화하지 말고 원래 논리 강도를 복원한다.';
   if (item?.code === 'sequential_connector_inflation') return '새로 반복된 “뒤·후·다음”을 줄이고 같은 업무 묶음은 자연스럽게 연결한다. 실제 수행 순서는 그대로 유지한다.';
+  if (item?.code === 'discourse_connector_inflation') return 'SOURCE에 없던 “또한·따라서·이러한·이를 통해·한편” 같은 정형 접속어를 여러 문장에 새로 붙이지 않는다. 논리 관계는 유지하되 주어와 서술어를 직접 연결하고, 필요한 접속어만 남긴다.';
   if (item?.code === 'affective_anchor_omission') {
     const omissions = Array.isArray(item?.details?.omissions) ? item.details.omissions : [];
     const anchors = omissions.slice(0, 6).map(value => `${value.sourceOrdinal}번=${value.sourceSentence}`);

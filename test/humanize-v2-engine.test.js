@@ -172,7 +172,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.33');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.34');
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -697,6 +697,53 @@ test('OpenAI refusal은 최종 결과로 전달하지 않고 strict 차단한다
   assert.equal(out.result.outputText, SOURCE);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 1,
     'refusal은 품질 승격 대상으로 재시도하지 않는다');
+});
+
+test('일반 output_text에 섞인 거절문은 청크에서 재시도해 정상 본문으로 회복한다', { concurrency: false }, async t => {
+  const source = '저는 마감 자료를 확인하며 차이가 생긴 원인을 기록했습니다. 반복되는 오류를 줄이기 위해 확인 순서를 정리했고, 동료와 점검 결과를 공유했습니다. 이후 같은 문제가 생기면 기록부터 다시 대조하는 습관을 갖게 되었습니다.';
+  const recovered = '마감 자료에서 차이가 발견되면 원인을 바로 기록했습니다. 같은 오류가 반복되지 않도록 확인 순서를 정리한 뒤 동료와 점검 결과를 공유했습니다. 이후에는 문제가 생길 때마다 기록을 먼저 대조하는 습관을 들였습니다.';
+  let attempt = 0;
+  const mock = installEngineMock(t, {
+    humanize: () => {
+      attempt += 1;
+      return attempt === 1
+        ? '도와드릴 수 없습니다. 요청을 처리할 수 없는 작업입니다.'
+        : recovered;
+    }
+  });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'textual-refusal-recovery-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
+  assert.equal(out.result.outputText, recovered);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+  assert.equal(out.engineMeta.modelFailureChunkCount, 0);
+  assert.equal(out.engineMeta.textualRefusalAttemptCount, 1);
+  assert.equal(out.engineMeta.textualRefusalChunkCount, 1);
+  assert.equal(out.engineMeta.textualRefusalRecoveredChunkCount, 1);
+  assert.equal(out.engineMeta.textualRefusalUnrecoveredChunkCount, 0);
+  assert.ok(out.engineMeta.chunkPrimaryFailureCodes.includes('textual_refusal'));
+  assert.doesNotMatch(out.result.outputText, /도와드릴 수 없/u);
+});
+
+test('두 청크 시도가 모두 텍스트 거절이어도 원문 기반 문서 회복으로 차단을 피한다', { concurrency: false }, async t => {
+  const source = '저는 마감 자료의 차이를 확인하고 원인을 기록했습니다. 확인 순서를 다시 정리해 동료와 공유했으며, 같은 문제가 생기면 기록부터 대조했습니다. 이 과정을 통해 작은 차이도 끝까지 확인하는 습관을 들였습니다.';
+  const recovered = '마감 자료에 차이가 생기면 원인을 곧바로 기록했습니다. 확인 순서를 다시 세워 동료와 공유했고, 같은 문제가 나타날 때는 기록부터 대조했습니다. 이 과정을 거치며 작은 차이도 끝까지 확인하는 습관을 갖추었습니다.';
+  const mock = installEngineMock(t, {
+    humanizationDepth: true,
+    humanize: '도와드릴 수 없습니다. 요청을 처리할 수 없는 작업입니다.',
+    generalRetryOutput: recovered
+  });
+  const out = await engine.run({ text: source, mode: 'blog', uid: 'textual-refusal-document-recovery-user', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport));
+  assert.notEqual(out.result.outputText, source);
+  assert.match(out.result.outputText, /확인 순서를 다시 세워/u);
+  assert.doesNotMatch(out.result.outputText, /도와드릴 수 없/u);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_general_surface_retry'));
+  assert.equal(out.engineMeta.modelFailureChunkCount, 0);
+  assert.equal(out.engineMeta.approvedModelChunkCount, 1);
+  assert.equal(out.engineMeta.textualRefusalAttemptCount, 2);
+  assert.equal(out.engineMeta.textualRefusalRecoveredChunkCount, 1);
+  assert.ok(out.engineMeta.chunkResolvedFailureCodes.includes('textual_refusal'));
 });
 
 test('전체 편집 청크의 전송 실패는 깊이·문장 회복으로 오인해 추가 호출하지 않는다', { concurrency: false }, async t => {
@@ -1273,7 +1320,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.33');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.34');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

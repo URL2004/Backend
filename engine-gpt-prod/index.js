@@ -54,7 +54,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.33';
+const VERSION = 'gpt-prod-v2.5.34';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -2686,6 +2686,22 @@ async function runEngine({
     finalCollapsedSpacingRetryCount: finalCollapsedSpacingRetryAttemptCount
   });
   const chunkFailures = summarizeChunkFailureCodes(records);
+  const textualRefusalAttemptCount = records.reduce(
+    (sum, record) => sum + Number(record?.textualRefusalAttemptCount || 0),
+    0
+  );
+  const textualRefusalChunkCount = records.filter(
+    record => Number(record?.textualRefusalAttemptCount || 0) > 0
+  ).length;
+  const textualRefusalRecoveredChunkCount = records.filter(record => (
+    Number(record?.textualRefusalAttemptCount || 0) > 0
+      && record?.fallback !== true
+      && !String(record?.hardFailReason || '')
+  )).length;
+  const textualRefusalUnrecoveredChunkCount = Math.max(
+    0,
+    textualRefusalChunkCount - textualRefusalRecoveredChunkCount
+  );
   const retryCounts = summarizeRetryCounts(records);
   const humanizationNoBenefitDelivered = selectedMode !== 'polish'
     && result.floorReport?.status !== 'blocked'
@@ -2988,6 +3004,10 @@ async function runEngine({
     chunkResidualFailureCodes: chunkFailures.residual,
     chunkFallbackReasonCodes: chunkFailures.fallback,
     chunkResolvedFailureCodes: chunkFailures.resolved,
+    textualRefusalAttemptCount,
+    textualRefusalChunkCount,
+    textualRefusalRecoveredChunkCount,
+    textualRefusalUnrecoveredChunkCount,
     retryCounts,
     fallbackCount,
     lengthRatio: Number(finalEditMetrics.lengthRatio.toFixed(4)),
@@ -3542,6 +3562,8 @@ async function processChunk({
     chunkDeadlineMs,
     signal
   });
+  second.record.textualRefusalAttemptCount = Number(first.record?.textualRefusalAttemptCount || 0)
+    + Number(second.record?.textualRefusalAttemptCount || 0);
   second.record.primaryFailureCodes = safeFailureCodesFromRecord(first.record);
   if (!second.hardFail) {
     chunk.outputText = second.outputText;
@@ -3714,7 +3736,8 @@ async function processChunk({
     ]),
     floorViolations: [...(first.record.floorViolations || []), ...(second.record.floorViolations || [])],
     usage: addUsage(first.record.usage || emptyUsage(), second.record.usage),
-    elapsedMs: (first.record.elapsedMs || 0) + (second.record.elapsedMs || 0)
+    elapsedMs: (first.record.elapsedMs || 0) + (second.record.elapsedMs || 0),
+    textualRefusalAttemptCount: Number(second.record?.textualRefusalAttemptCount || 0)
   });
 }
 
@@ -4005,6 +4028,7 @@ async function callHumanize(args) {
         niklQuality: compactNiklQualityGate(niklQualityGate),
         selectedModel: response.model,
         retryCounts: response.retryCounts,
+        textualRefusalAttemptCount: gate.reason === 'textual_refusal' ? 1 : 0,
         escalated: phase === 'escalation'
       })
     };
@@ -4226,6 +4250,16 @@ function evaluateChunkGate({ outputText, original, contract, mode, protectedTerm
   if (!outputText || looksLikeMeta(outputText)) {
     return { hardFail: true, reason: 'empty_or_meta_output', warnings, violations };
   }
+  // Responses API의 정식 refusal 블록은 openaiClient에서 기술 실패로
+  // 분리되지만, 모델이 JSON outputText 안에 거절 설명을 일반 본문처럼
+  // 넣는 경우도 있다. 청크에서 바로 잡아야 해당 문구가 승인 편집으로
+  // 계산되거나 문서 전체를 마지막 단계에서 폐기하지 않는다. 원문 자체가
+  // 거절 사례를 인용·분석하는 글이면 새로 생긴 거절이 아니므로 허용한다.
+  if (isGeneratedTextualRefusal(original, outputText)) {
+    warnings.push('textual_refusal');
+    violations.push({ gate: 'textual_refusal', detail: 'model returned a refusal as output text' });
+    return { hardFail: true, reason: 'textual_refusal', warnings, violations };
+  }
   if (looksLikePromptLeak(outputText)) {
     return { hardFail: true, reason: 'prompt_instruction_leak', warnings, violations };
   }
@@ -4344,7 +4378,7 @@ function evaluateWholeDocumentGate({
   if (!outputText || looksLikeMeta(outputText)) {
     return { hardFail: true, reason: 'empty_or_meta_output', warnings, violations };
   }
-  if (floor.looksLikeRefusal(outputText)) {
+  if (isGeneratedTextualRefusal(source, outputText)) {
     return { hardFail: true, reason: 'refusal', warnings, violations };
   }
   if (looksLikePromptLeak(outputText)) {
@@ -4835,6 +4869,10 @@ function auditGeneralSurfaceCandidate(
     if (!codes.includes(code)) codes.push(code);
   };
   if (!before || !after) return { pass: false, codes: ['empty_candidate'] };
+  if (isGeneratedTextualRefusal(before, after)) add('textual_refusal');
+  if (looksLikePromptLeak(after)) add('prompt_instruction_leak');
+  if (looksEncodingCorrupted(before, after)) add('encoding_corruption');
+  if (looksTruncated(after)) add('sentence_truncated');
   if (isNoopEquivalent(baseline, after, mode)) return { pass: false, codes: ['candidate_unchanged'] };
   const metrics = computeEditMetrics(before, after);
   const editLimits = generalRecoveryEditLimits(humanizationPlan);
@@ -5248,6 +5286,7 @@ function isRecoverableSurfaceFallbackRecord(record) {
     'structure_boundary_marker_failed',
     'voice_sparse_distribution_failed',
     'voice_existing_distribution_failed',
+    'textual_refusal',
     'noop_unchanged'
   ]).has(gate);
 }
@@ -6138,7 +6177,8 @@ function isModelFailureRecord(record) {
     ...(record.primaryFailureCodes || []),
     ...(record.warnings || [])
   ];
-  return values.some(value => /gpt_call_failed|openai_(?:timeout|network|schema)|refus(?:al|ed)/iu.test(String(value || '')));
+  return values.some(value => /gpt_call_failed|openai_(?:timeout|network|schema|refusal|quota|rate|server|truncated|incomplete|empty)/iu
+    .test(String(value || '')));
 }
 
 function modelCallFailureCode(error) {
@@ -6204,6 +6244,7 @@ function chunkRecord({
   selectedModel = '',
   niklQuality = null,
   retryCounts = null,
+  textualRefusalAttemptCount = 0,
   partialRecoveryApplied = false,
   partialRecoveryProposalCount = 0,
   partialRecoveryAppliedCount = 0,
@@ -6237,6 +6278,7 @@ function chunkRecord({
     niklQuality,
     selectedModel,
     retryCounts: sanitizeRetryCounts(retryCounts),
+    textualRefusalAttemptCount: Math.max(0, Number(textualRefusalAttemptCount) || 0),
     partialRecoveryApplied,
     partialRecoveryProposalCount: Number(partialRecoveryProposalCount || 0),
     partialRecoveryAppliedCount: Number(partialRecoveryAppliedCount || 0),
@@ -6595,6 +6637,10 @@ function postLayoutEngines(post) {
 
 function looksLikeMeta(text) {
   return /^(죄송|I'?m sorry|As an AI|정책상|요청하신|변환 결과|재작성 결과)/i.test(String(text || '').trim());
+}
+
+function isGeneratedTextualRefusal(source, outputText) {
+  return floor.looksLikeRefusal(outputText) && !floor.looksLikeRefusal(source);
 }
 
 function looksLikePromptLeak(text) {
@@ -7080,6 +7126,7 @@ module.exports = {
   mapWithConcurrency,
   depthQualityWarnings,
   shouldDeferLabelMicroFragment,
+  evaluateChunkGate,
   auditGeneralSurfaceCandidate,
   auditGeneralSurfaceCandidateWithStructure,
   prepareGeneralSurfaceCandidate,

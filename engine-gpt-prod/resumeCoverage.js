@@ -7,7 +7,7 @@ const {
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 8;
+const VERSION = 9;
 const MIN_CONTENT_RECALL = 0.50;
 const MIN_SEMANTIC_FALLBACK = 0.62;
 const CLAIM_PATTERNS = Object.freeze({
@@ -256,7 +256,10 @@ function splitCoverageRunOn(value) {
 function contentTokens(value) {
   const stop = new Set([
     '그리고', '그러나', '하지만', '따라서', '또한', '통해', '위해', '대한',
-    '있', '하', '되', '경험', '과정', '이러', '매우', '점'
+    '있', '하', '되', '경험', '과정', '이러', '매우', '점',
+    // 화자 표면형이 `저의 장점은`에서 `저는`으로 바뀐 것은 주장 누락이
+    // 아니다. 대명사·지시어가 핵심 내용어 회수율의 분모를 부풀리지 않게 한다.
+    '저의', '저는', '제가', '저를', '저에게', '나의', '나는', '내가', '나를', '나에게'
   ]);
   return [...new Set((String(value || '').match(/[가-힣]{2,}|[A-Za-z]{3,}|\d+(?:\.\d+)?%?/gu) || [])
     .map(normalizeContentToken)
@@ -402,7 +405,7 @@ function claimPriority(item) {
 }
 
 function hasLearningFunction(value) {
-  return /(?:배웠|배우|깨달|알게\s*되|느꼈|느끼|체감|인식|판단|확인할\s*수\s*있었|교훈)/u
+  return /(?:배웠|배우|깨달|알게\s*되|느꼈|느끼|체감|인식|판단|확인할\s*수\s*있었|(?:사실|점|문제|필요|경향|특성|상황)(?:을|를)?\s*확인(?:했|하였|했습니다|했다)|교훈)/u
     .test(String(value || ''));
 }
 

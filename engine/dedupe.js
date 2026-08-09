@@ -276,7 +276,7 @@ function removeGeneratedLocalOverlapDuplicates(source, text, { maxSentenceGap = 
           start: paragraph.start + spans[removeIndex].start,
           end: paragraph.start + spans[removeIndex].end
         });
-        reasons.push('single_source_claim_copied');
+        reasons.push(duplicate.reason || 'single_source_claim_copied');
         if (removeIndex === rightIndex) leftIndex = rightIndex;
         break;
       }
@@ -310,9 +310,13 @@ function generatedOrphanFragment(left, right, sourceRows) {
 }
 
 function generatedContainedDuplicate(left, right, sourceRows) {
-  if (left.length < 45 || right.length < 45) return null;
   if (containsProtectedEchoFact(left) || containsProtectedEchoFact(right)) return null;
   if (negationSignature(left) !== negationSignature(right)) return null;
+  const connectorSubset = left.length >= 45 && right.length >= 32
+    ? generatedConnectorSubsetRestatement(left, right, sourceRows)
+    : null;
+  if (connectorSubset) return connectorSubset;
+  if (left.length < 45 || right.length < 45) return null;
   const leftRoots = semanticRoots(left);
   const rightRoots = semanticRoots(right);
   const leftIsShorter = leftRoots.size <= rightRoots.size;
@@ -334,7 +338,32 @@ function generatedContainedDuplicate(left, right, sourceRows) {
     row.roots.size >= 5 && overlapRatio(shortRoots, row.roots) >= 0.68
   )).length;
   if (supportingSourceCount !== 1) return null;
-  return { remove: leftIsShorter ? 'left' : 'right' };
+  return { remove: leftIsShorter ? 'left' : 'right', reason: 'single_source_claim_copied' };
+}
+
+function generatedConnectorSubsetRestatement(left, right, sourceRows) {
+  const match = String(right || '').trim().match(
+    /^(?:대신|즉|다시\s*말해|말하자면|바꾸어\s*말하면|달리\s*말하면)[,，:]?\s+(.+)$/u
+  );
+  if (!match || right.length > left.length * 0.92) return null;
+  if (sourceRows.some(row => _normSent(row.text) === _normSent(right))) return null;
+
+  const leftRoots = semanticRoots(left);
+  const coreRoots = semanticRoots(match[1]);
+  if (leftRoots.size < 7 || coreRoots.size < 6) return null;
+  if (overlapRatio(coreRoots, leftRoots) < 0.82) return null;
+
+  const leftSupport = bestSourceRootSupport(leftRoots, sourceRows);
+  const coreSupport = bestSourceRootSupport(coreRoots, sourceRows);
+  if (leftSupport.index < 0
+      || leftSupport.index !== coreSupport.index
+      || leftSupport.coverage < 0.55
+      || coreSupport.coverage < 0.68) return null;
+  const supportingSourceCount = sourceRows.filter(row => (
+    row.roots.size >= 5 && overlapRatio(coreRoots, row.roots) >= 0.68
+  )).length;
+  if (supportingSourceCount !== 1) return null;
+  return { remove: 'right', reason: 'connector_subset_restatement' };
 }
 
 function bestSourceRootSupport(roots, sourceRows) {

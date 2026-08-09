@@ -16,7 +16,7 @@ function splitChunksForGpt(text, {
   preserveLineBoundaries = false,
   formatProfile = null
 } = {}) {
-  const base = baseChunk.splitChunks(text);
+  const base = protectStructuralLineChunkBoundaries(baseChunk.splitChunks(text), text);
   const academicSpans = freezeBlocks.detectAcademicSpans(text);
   const chunks = [];
   const state = {
@@ -387,6 +387,9 @@ function restorePostSemanticLayout({ source, outputText, chunks, mode = '', requ
 }
 
 function restoreLockedHeadingLayout(source, outputText, chunks) {
+  // `*`, `-` 같은 ASCII 불릿 접두부는 굵게 표시하는 `**` 내부와 문자
+  // 자체가 같아 literal indexOf로 위치를 찾을 수 없다. 반면 `①`, `●`,
+  // `1.` 같은 식별 가능한 접두부는 의미 감사 뒤 행갈이 복원에 필요하다.
   const headings = (chunks || [])
     .filter(chunk => chunk?.locked
       && [
@@ -402,10 +405,16 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
         'flow'
       ].includes(String(chunk.lockType || ''))
       && String(chunk.text || '').trim())
-    .map(chunk => ({
-      text: String(chunk.text).trim(),
-      prefix: String(chunk.lockType || '').endsWith('_prefix')
-    }));
+    .filter(chunk => String(chunk.lockType || '') !== 'bullet_prefix'
+      || !/^\s*[-*+]\s*$/u.test(String(chunk.text || '')))
+    .map(chunk => {
+      const rawText = String(chunk.text || '').replace(/[ \t]+$/gu, '');
+      return {
+        text: rawText.trim(),
+        replacementText: rawText,
+        prefix: String(chunk.lockType || '').endsWith('_prefix')
+      };
+    });
   let text = normalizeNewlines(outputText);
   const sourceText = normalizeNewlines(source);
   let sourceCursor = 0;
@@ -414,9 +423,19 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
   let missingCount = 0;
   for (const anchor of headings) {
     const heading = anchor.text;
-    const sourceIndex = sourceText.indexOf(heading, sourceCursor);
-    let outputIndex = text.indexOf(heading, outputCursor);
-    let outputHeadingLength = heading.length;
+    const replacementHeading = anchor.replacementText || heading;
+    let sourceIndex = sourceText.indexOf(replacementHeading, sourceCursor);
+    let sourceHeadingLength = replacementHeading.length;
+    if (sourceIndex < 0) {
+      sourceIndex = sourceText.indexOf(heading, sourceCursor);
+      sourceHeadingLength = heading.length;
+    }
+    let outputIndex = text.indexOf(replacementHeading, outputCursor);
+    let outputHeadingLength = replacementHeading.length;
+    if (outputIndex < 0) {
+      outputIndex = text.indexOf(heading, outputCursor);
+      outputHeadingLength = heading.length;
+    }
     if (outputIndex < 0) {
       // 모델이 `1.지원동기및진로계획`을 `1.지원동기\n및진로계획`처럼
       // 제목 내부에서 갈라도 공백을 제외한 원문 앵커가 같으면 원래 한 행으로
@@ -431,7 +450,7 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     }
     const hasSourceBefore = sourceIndex > 0 && sourceText.slice(0, sourceIndex).trim().length > 0;
     const hasSourceAfter = sourceIndex >= 0
-      && sourceText.slice(sourceIndex + heading.length).trim().length > 0;
+      && sourceText.slice(sourceIndex + sourceHeadingLength).trim().length > 0;
     let left = outputIndex;
     let right = outputIndex + outputHeadingLength;
     while (left > 0 && /\s/u.test(text[left - 1])) left -= 1;
@@ -439,14 +458,14 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     const sourceBefore = hasSourceBefore ? sourceLineSeparator(sourceText, sourceIndex, 'before') : '';
     const sourceAfter = hasSourceAfter
       ? (anchor.prefix
-          ? sourceInlineSeparator(sourceText, sourceIndex + heading.length, 'after')
-          : sourceLineSeparator(sourceText, sourceIndex + heading.length, 'after'))
+          ? sourceInlineSeparator(sourceText, sourceIndex + sourceHeadingLength, 'after')
+          : sourceLineSeparator(sourceText, sourceIndex + sourceHeadingLength, 'after'))
       : '';
-    const replacement = `${sourceBefore}${heading}${sourceAfter}`;
+    const replacement = `${sourceBefore}${replacementHeading}${sourceAfter}`;
     const previous = text.slice(left, right);
     text = text.slice(0, left) + replacement + text.slice(right);
     if (previous !== replacement) restoredCount += 1;
-    sourceCursor = sourceIndex >= 0 ? sourceIndex + heading.length : sourceCursor;
+    sourceCursor = sourceIndex >= 0 ? sourceIndex + sourceHeadingLength : sourceCursor;
     outputCursor = left + replacement.length;
   }
   return {
@@ -464,19 +483,72 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
 function restoreLockedStructureLayout({ source, outputText, chunks } = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
   const blocks = restoreExactLockedBlocks(heading.text, chunks);
+  const markdownControls = restoreStandaloneMarkdownControlLines(source, blocks.text);
   return {
-    text: blocks.text,
-    applied: heading.applied || blocks.applied,
+    text: markdownControls.text,
+    applied: heading.applied || blocks.applied || markdownControls.applied,
     headingCount: heading.headingCount,
     blockCount: blocks.blockCount,
-    restoredCount: heading.restoredCount + blocks.restoredCount,
+    restoredCount: heading.restoredCount + blocks.restoredCount + markdownControls.restoredCount,
     approximateRestoredCount: Number(blocks.approximateRestoredCount || 0),
-    missingCount: heading.missingCount + blocks.missingCount,
+    missingCount: heading.missingCount + blocks.missingCount + markdownControls.missingCount,
     missingBlocks: blocks.missingBlocks || [],
     heading,
     blocks,
-    pass: heading.missingCount === 0 && blocks.missingCount === 0
+    markdownControls,
+    pass: heading.missingCount === 0
+      && blocks.missingCount === 0
+      && markdownControls.missingCount === 0
   };
+}
+
+// 길이 기반 base chunk가 `### 5. 목적해석`의 마침표 직후처럼 구조 행
+// 한가운데를 경계로 선택할 수 있다. 뒤 단계는 각 base chunk 내부에서만
+// 행 역할을 찾기 때문에 이 상태를 두면 `### 5.`만 제목으로 잠기고 제목
+// 본문은 편집 산문으로 흘러간다. 경계가 구조 행 안에 있으면 그 행 전체를
+// 다음 청크로 옮겨 원문 행 판정이 항상 완전한 문자열을 보게 한다.
+function protectStructuralLineChunkBoundaries(chunks, source) {
+  const original = Array.isArray(chunks) ? chunks : [];
+  if (original.length < 2) return original;
+  const text = String(source || '');
+  const structuralLines = layoutStructure.buildLineRecords(text)
+    .filter(record => !record.blank && [
+      'title', 'heading', 'label', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'
+    ].includes(record.role));
+  if (!structuralLines.length) return original;
+  const rows = original.map(chunk => ({ ...chunk }));
+  for (let index = 0; index < rows.length - 1; index += 1) {
+    const left = rows[index];
+    const right = rows[index + 1];
+    const line = structuralLines.find(record => (
+      record.start < Number(right.start)
+        && record.end > Number(left.end)
+        && record.start < Number(left.end)
+        && record.end > Number(right.start)
+    ));
+    if (!line) continue;
+    left.text = text.slice(left.start, line.start);
+    left.end = line.start;
+    left.sep = '';
+    right.start = line.start;
+    right.text = text.slice(line.start, right.end);
+  }
+  const compact = [];
+  for (const row of rows) {
+    if (!String(row.text || '').length) {
+      if (compact.length) compact[compact.length - 1].sep += String(row.sep || '');
+      else if (rows[1]) rows[1]._lead = `${row._lead || ''}${row.sep || ''}${rows[1]._lead || ''}`;
+      continue;
+    }
+    compact.push(row);
+  }
+  compact.forEach((chunk, index) => {
+    chunk.index = index;
+    chunk.position = compact.length === 1
+      ? 'single'
+      : (index === 0 ? 'intro' : (index === compact.length - 1 ? 'conclusion' : 'body'));
+  });
+  return baseChunk.mergeChunks(compact) === text ? compact : original;
 }
 
 const EXACT_LAYOUT_LOCK_TYPES = new Set([
@@ -536,6 +608,70 @@ function restoreExactLockedBlocks(outputText, chunks) {
     missingCount,
     missingBlocks
   };
+}
+
+// `**`처럼 한 행을 차지하는 마크다운 제어 표식은 다른 굵은 글씨 안에도
+// 동일 문자열이 반복된다. 일반 substring 복원은 엉뚱한 `**제목**`을
+// 찾고 성공으로 오인하므로, 앞뒤 원문 행 앵커 사이의 독립 행만 확인한 뒤
+// 누락된 표식을 원래 위치에 삽입한다.
+function restoreStandaloneMarkdownControlLines(source, outputText) {
+  const sourceLines = normalizeNewlines(source).split('\n');
+  const controls = sourceLines
+    .map((line, index) => ({ line: String(line || '').trim(), index }))
+    .filter(item => isStandaloneMarkdownControl(item.line));
+  if (!controls.length) {
+    return { text: normalizeNewlines(outputText), applied: false, restoredCount: 0, missingCount: 0 };
+  }
+  const outputLines = normalizeNewlines(outputText).split('\n');
+  let restoredCount = 0;
+  let missingCount = 0;
+  for (const control of controls) {
+    const beforeIndex = findNeighboringOutputAnchor(sourceLines, outputLines, control.index, -1);
+    const afterIndex = findNeighboringOutputAnchor(sourceLines, outputLines, control.index, 1);
+    const regionStart = beforeIndex >= 0 ? beforeIndex + 1 : 0;
+    const regionEnd = afterIndex >= 0 ? afterIndex : outputLines.length;
+    const alreadyPresent = outputLines
+      .slice(regionStart, Math.max(regionStart, regionEnd))
+      .some(line => String(line || '').trim() === control.line);
+    if (alreadyPresent) continue;
+    const insertionIndex = afterIndex >= 0
+      ? afterIndex
+      : (beforeIndex >= 0 ? beforeIndex + 1 : -1);
+    if (insertionIndex < 0) {
+      missingCount += 1;
+      continue;
+    }
+    outputLines.splice(insertionIndex, 0, control.line);
+    restoredCount += 1;
+  }
+  return {
+    text: outputLines.join('\n'),
+    applied: restoredCount > 0,
+    restoredCount,
+    missingCount
+  };
+}
+
+function findNeighboringOutputAnchor(sourceLines, outputLines, sourceIndex, direction) {
+  for (let index = sourceIndex + direction;
+    index >= 0 && index < sourceLines.length;
+    index += direction) {
+    const sourceLine = String(sourceLines[index] || '').trim();
+    if (!sourceLine || isStandaloneMarkdownControl(sourceLine)) continue;
+    const key = lineAnchorKey(sourceLine);
+    if (key.length < 3) continue;
+    const outputIndex = outputLines.findIndex(line => lineAnchorKey(line) === key);
+    if (outputIndex >= 0) return outputIndex;
+  }
+  return -1;
+}
+
+function lineAnchorKey(value) {
+  return String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
+}
+
+function isStandaloneMarkdownControl(value) {
+  return /^(?:\*{1,3}|_{2,3}|~{2}|-{3,})$/u.test(String(value || '').trim());
 }
 
 function findDamagedLockedBlockSpan(value, block, cursor = 0, nextExpected = '') {
@@ -1601,8 +1737,10 @@ function sourceLineSeparator(text, boundary, direction) {
     while (end < text.length && /\s/u.test(text[end])) end += 1;
   }
   const whitespace = direction === 'before' ? text.slice(start, boundary) : text.slice(boundary, end);
-  const newlineCount = (whitespace.match(/\n/gu) || []).length;
-  return newlineCount >= 2 ? '\n\n' : '\n';
+  // 제목 다음의 들여쓰기는 다음 목록 행의 소유다. 줄바꿈 개수만 돌려주면
+  // `\n  * 하위 항목`의 두 칸이 사라져 목록 계층이 평탄화된다. 원문을 이미
+  // LF로 정규화했으므로 실제 구분자와 들여쓰기를 그대로 복원한다.
+  return whitespace || '\n';
 }
 
 function buildCohesiveParagraphMergePlan(paragraphs, { enabled = false, semanticProseRoles = false, readabilityOptions = {} } = {}) {

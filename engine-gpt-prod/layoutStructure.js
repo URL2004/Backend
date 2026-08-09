@@ -147,6 +147,10 @@ function buildLineRecords(value) {
 function classifyLine(value, context = {}) {
   const text = visibleTrim(value);
   if (!text) return 'blank';
+  // 워드·웹 복사 과정에서 굵게 표시 마커만 한 행에 남는 경우가 있다.
+  // 이를 산문으로 보내면 모델이 주변 제목·목록과 합쳐 구조를 바꾸므로
+  // 내용 없는 마크다운 제어 행으로 잠근다.
+  if (isStandaloneMarkdownControlLine(text)) return 'code';
   if (legalClauseParts(text)) return 'legal_clause';
   if (isExactMetadataLine(text)) return 'signature';
   if (context.signatureLike) return 'signature';
@@ -220,11 +224,19 @@ function isKnownHeadingLine(value) {
   if (!text) return false;
   if (isBracketHeadingLine(text)) return true;
   if (text.length > 140) return false;
+  // 중첩 목록에서 본문이 없는 굵은 라벨은 실제로 다음 하위 항목을 묶는
+  // 소제목이다. `* `만 분리해 모델에 보내면 `**`가 불릿으로 오인되어
+  // 독립 별표 행이 생길 수 있으므로 행 전체를 제목으로 보존한다.
+  if (/^\s*[-*+]\s+(?:\*\*[^*\n]{1,120}\*\*|__[^_\n]{1,120}__)\s*$/u.test(text)) return true;
   if (/^#{1,6}\s+\S/u.test(text)) return true;
   if (/^[\[【<][^\]】>\n]{1,80}[\]】>]$/u.test(text)) return true;
   if (/^[-–—]\s*(?:서론|본론|결론|초록|요약|목\s*차|참고\s*문헌|참고\s*자료|부록)$/u.test(text)) return true;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)．]?\s*\S.{0,100}$/u.test(text)) return true;
   if (/^[IVX]{1,8}[.)．]\s*\S.{0,100}$/u.test(text)) return true;
+  // `(1) 개념 및 의의` 같은 짧은 괄호형 소제목은 일반 산문이 아니다.
+  // 이 경계를 놓치면 다음 본문과 합쳐지고 이후 재처리에서도 손상이
+  // 원문처럼 굳어지므로 제목 행으로 잠근다.
+  if (/^[（(]\d{1,2}[）)]\s+[^.!?。！？\n]{2,100}$/u.test(text)) return true;
   const numberedBody = text.match(/^\d{1,2}[.)]\s*([\s\S]+)$/u)?.[1] || '';
   // `1. 소제목`과 `1. 완결된 본문 문장`을 길이만으로 함께 잠그지 않는다.
   // 번호 뒤에 충분히 긴 완결 서술이 있으면 목록 본문이며, 청커가 번호만
@@ -250,6 +262,11 @@ function isKnownHeadingLine(value) {
   if (/^(?:성장\s*(?:과정|배경)(?:과\s*(?:학교|학창)\s*시절)?|나의\s*성격적\s*강점과\s*약점|성격의\s*장단점|지원\s*동기|직무\s*역량|경력\s*사항|입사\s*후(?:의)?\s*(?:포부|목표)(?:와\s*포부)?)$/u.test(text)) return true;
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
   return /^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/iu.test(text);
+}
+
+function isStandaloneMarkdownControlLine(value) {
+  const text = visibleTrim(value);
+  return /^(?:\*{1,3}|_{2,3}|~{2}|-{3,})$/u.test(text);
 }
 
 /**
@@ -398,6 +415,13 @@ function detectParallelSloganTitleIndices(records, excluded = new Set()) {
 
 function labelParts(value) {
   const text = visibleTrim(value);
+  const colonIndex = text.search(/[:：]/u);
+  // `1:1 방문학습`, `08:30 출근`의 콜론은 라벨 구분자가 아니다. 이를
+  // `라벨: 본문`으로 잠그면 정상적인 어순 변경도 line_anchor_changed로
+  // 오인되고, 의미 수리 단계가 문장 앞부분을 원문으로 되돌릴 수 있다.
+  if (colonIndex > 0
+      && /\d/u.test(text[colonIndex - 1] || '')
+      && /^\s*\d/u.test(text.slice(colonIndex + 1))) return null;
   const match = text.match(/^(?:[*#]+\s*)?(?:(?:\p{Extended_Pictographic}\uFE0F?)+\s*)?([가-힣A-Za-z][가-힣A-Za-z0-9·/&() _-]{0,48})\s*[:：]\s*(.*)$/u);
   if (!match) return null;
   const label = match[1].trim();

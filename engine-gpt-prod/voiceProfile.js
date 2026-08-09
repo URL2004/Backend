@@ -705,7 +705,11 @@ function pluralSpeakerSignature(value) {
     `(^|[^가-힣A-Za-z0-9_])우리[ \\t]*(${nounPattern})(?=${particlePattern}(?:$|[^가-힣A-Za-z0-9_]))`,
     'gu'
   );
-  const masked = String(value || '').replace(pattern, (_match, prefix, noun) => {
+  const genericInclusiveMasked = String(value || '').replace(
+    /(^|[^가-힣A-Za-z0-9_])우리는(?=\s+(?:모두(?:가)?\s+)?(?:혼자(?:서)?\s+(?:살|사는|존재|해결|감당)|누구나|서로\s+(?:돕|의지)|사회적\s+(?:존재|동물)))/gu,
+    '$1사람은'
+  );
+  const masked = genericInclusiveMasked.replace(pattern, (_match, prefix, noun) => {
     lexical[noun] = (lexical[noun] || 0) + 1;
     return `${prefix}대상`;
   });
@@ -731,12 +735,29 @@ function isQuotePunctuationOnlyChange(source, output) {
     // 원문 평문에 이미 있던 발화를 따옴표로 명확히 감싸는 변화는 허용한다.
     // 반대 방향(원문의 직접 인용 경계를 삭제)은 출처·화자 경계 손실이므로
     // 구두점 교정으로 완화하지 않고 명시적 복원 경로로만 처리한다.
-    return sourceQuotes.length === 0
-      && outputQuotes.length > 0
-      && outputQuotes.every(content => sourceEvidence.includes(normalizeQuoteEvidence(content)));
+    if (outputQuotes.length <= sourceQuotes.length) return false;
+    return addedQuoteContentsAreSourceBacked(sourceQuotes, outputQuotes, sourceEvidence);
   }
   return sourceQuotes.every(content => outputEvidence.includes(normalizeQuoteEvidence(content)))
     && outputQuotes.every(content => sourceEvidence.includes(normalizeQuoteEvidence(content)));
+}
+
+function addedQuoteContentsAreSourceBacked(sourceQuotes, outputQuotes, sourceEvidence) {
+  let sourceIndex = 0;
+  const added = [];
+  for (const outputQuote of outputQuotes) {
+    if (sourceIndex < sourceQuotes.length
+        && normalizeExactQuote(outputQuote) === normalizeExactQuote(sourceQuotes[sourceIndex])) {
+      sourceIndex += 1;
+    } else {
+      added.push(outputQuote);
+    }
+  }
+  if (sourceIndex !== sourceQuotes.length || !added.length) return false;
+  return added.every(content => {
+    const evidence = normalizeQuoteEvidence(content);
+    return evidence.length >= 2 && sourceEvidence.includes(evidence);
+  });
 }
 
 function quoteDelimiterProfile(value) {

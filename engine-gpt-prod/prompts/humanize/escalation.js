@@ -59,8 +59,8 @@ function buildEscalationInstruction(reason = '') {
       || normalized.includes('encoding') || normalized.includes('meta')) {
     return [
       ...header,
-      '거절문·작업 설명·프롬프트 문구·깨진 문자를 출력하지 말고, 원문의 완결된 본문만 정상 한국어로 다시 작성한다.',
-      '원문의 모든 사실과 구조를 유지하고 메타 설명 없이 최종 본문만 출력한다.'
+      '작업 가능 여부나 처리 과정에 관한 설명을 출력하지 않는다. 제공된 본문의 사실·수치·화자·구조를 그대로 보존하면서 선택한 문체와 강도에 맞게 편집한다.',
+      '새로운 정보나 평가를 덧붙이지 말고, 정상적으로 읽히는 완결된 최종 본문만 출력한다.'
     ].join('\n');
   }
   return [

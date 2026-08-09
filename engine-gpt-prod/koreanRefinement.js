@@ -623,13 +623,19 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '“뒤·후·다음”을 새로 반복해 업무 과정이 기계적인 순서 나열처럼 바뀌었어요.'
+  },
+  discourse_connector_inflation: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: false,
+    message: '원문에 없던 정형 접속어가 여러 번 늘어나 문장 흐름이 기계적으로 바뀌었어요.'
   }
 });
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
 const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|나|라도|든(?:지)?|기(?:도|만|는)|지(?:만)?|다|고|며|어서|므로|었(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
-const QUOTE_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
-const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|조차|마저|밖에|마다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|조차|마저|밖에|마다|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|하며)';
 const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
 const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
@@ -1514,13 +1520,39 @@ function detectIntroducedCrossSentenceIssues(source, outputText, profile = 'unkn
     add('sequential_connector_inflation', outputSequence.ordinals);
   }
 
+  const sourceDiscourseConnectors = discourseConnectorOccurrences(source);
+  const outputDiscourseConnectors = discourseConnectorOccurrences(outputText);
+  const introducedDiscourseConnectorCount = Math.max(
+    0,
+    outputDiscourseConnectors.count - sourceDiscourseConnectors.count
+  );
+  if (outputDiscourseConnectors.count >= 4 && introducedDiscourseConnectorCount >= 3) {
+    add('discourse_connector_inflation', outputDiscourseConnectors.ordinals);
+  }
+
   return [...ordinalsByCode.entries()].map(([code, ordinals]) => {
     const rows = [...ordinals].sort((left, right) => left - right);
     const count = code === 'sequential_connector_inflation'
       ? introducedSequenceCount
-      : rows.length;
+      : (code === 'discourse_connector_inflation'
+          ? introducedDiscourseConnectorCount
+          : rows.length);
     return makeIssue(code, count, rows);
   });
+}
+
+function discourseConnectorOccurrences(value) {
+  const sentences = splitSentences(String(value || '')).map(item => String(item || '').trim()).filter(Boolean);
+  const ordinals = [];
+  let count = 0;
+  const pattern = /(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|즉(?=$|[\s,，])|첫째|둘째|셋째)/gu;
+  sentences.forEach((sentence, index) => {
+    const matches = stripProtectedQuotedText(sentence).match(pattern) || [];
+    if (!matches.length) return;
+    count += matches.length;
+    ordinals.push(index + 1);
+  });
+  return { count, ordinals };
 }
 
 function sequentialConnectorOccurrences(value) {
@@ -1994,6 +2026,7 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'temporal_anchor_detachment',
   'causal_connector_strengthening',
   'sequential_connector_inflation',
+  'discourse_connector_inflation',
   'focus_particle_redundancy',
   'subject_experiencer_case_frame',
   'technical_circuit_action_collocation',
@@ -2334,9 +2367,24 @@ function findAdjacentSemanticRepetitions(text) {
     const intersection = [...leftTokens].filter(token => rightTokens.has(token)).length;
     const containment = intersection / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
     const lengthRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
-    if ((containment >= 0.8 && lengthRatio >= 0.68) || shortCognitiveEcho) ordinals.push(index + 2);
+    const connectorSubsetEcho = isConnectorSubsetEcho(left, right, leftTokens);
+    if ((containment >= 0.8 && lengthRatio >= 0.68)
+        || shortCognitiveEcho
+        || connectorSubsetEcho) ordinals.push(index + 2);
   }
   return ordinals;
+}
+
+function isConnectorSubsetEcho(leftValue, rightValue, leftTokens = null) {
+  const left = String(leftValue || '').trim();
+  const right = String(rightValue || '').trim();
+  const match = right.match(/^(?:대신|즉|다시\s*말해|말하자면|바꾸어\s*말하면|달리\s*말하면)[,，:]?\s+(.+)$/u);
+  if (!match || right.length > left.length * 0.92) return false;
+  const leftSet = leftTokens instanceof Set ? leftTokens : new Set(contentTokensLocal(left));
+  const coreSet = new Set(contentTokensLocal(match[1]));
+  if (leftSet.size < 7 || coreSet.size < 6) return false;
+  const shared = [...coreSet].filter(token => leftSet.has(token)).length;
+  return shared / Math.max(1, coreSet.size) >= 0.82;
 }
 
 const COGNITIVE_ECHO_PATTERNS = Object.freeze([
@@ -3243,6 +3291,11 @@ const FORMAL_REGISTER_RULES = Object.freeze([
       && /^\s*그래서(?:는|도)?(?:\s|,)/u.test(value)
   },
   {
+    family: 'academic_colloquial_narration',
+    test: (value, _fullText, context) => isAcademicRegisterProfile(context?.profile)
+      && /(?:라|다|하)는\s*(?:건데|게)(?:\s|,|\.|$)|(?:^|[\s,])(?:이게|그게)\s+바로|나중에\s+보니까|딱\s+(?:보고|보면|봐도)|꿀리(?:고|지|는|게|면|기)|기가\s*죽(?:고|지|는|게|으면|었다)/u.test(value)
+  },
+  {
     family: 'colloquial_competition',
     test: (value, _fullText, context) => isFormalRegisterTarget(context?.targetRegister, context?.profile)
       && /(?:맞붙(?:다|는다|어|게|었|을)|한판\s*(?:붙|겨루))/u.test(value)
@@ -3543,6 +3596,16 @@ const AFFECTIVE_ANCHOR_FAMILIES = Object.freeze([
   {
     family: 'joy_pride',
     patterns: [/(?:기쁘|행복|뿌듯|자랑스럽)/u]
+  },
+  {
+    // 개인 성찰문의 "나에게 뜻깊었다"는 단순 평가어가 아니라 경험이
+    // 누구에게 어떤 의미였는지를 나타내는 화자 앵커다. 결과에 `뜻깊은`
+    // 같은 평가만 남고 `나에게`가 사라지면 일반 서평으로 바뀐다.
+    family: 'personal_significance',
+    patterns: [
+      /(?:나에게|저에게|내게|제게|나한테|저한테)[^.!?。！？\n]{0,80}(?:뜻깊|의미\s*있|소중|인상\s*깊|기억에\s*남)/u,
+      /(?:뜻깊|의미\s*있|소중|인상\s*깊|기억에\s*남)[^.!?。！？\n]{0,80}(?:나에게|저에게|내게|제게|나한테|저한테)/u
+    ]
   },
   {
     family: 'regret',

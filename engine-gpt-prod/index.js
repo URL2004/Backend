@@ -54,7 +54,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.34';
+const VERSION = 'gpt-prod-v2.5.35';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -66,6 +66,7 @@ const REVIEW_WARNING_GATES = new Set([
   'questionnaire_structure_changed',
   'unsafe_chunk_boundary',
   'section_path_mismatch',
+  'inline_label_body_split',
   'register_shift',
   'number_multiset_changed',
   // 휴머나이징 강도·동일 문장 잔존은 결과 안전 경고가 아니라
@@ -2290,6 +2291,8 @@ async function runEngine({
       applied: finalLockedStructure.applied === true,
       restoredCount: Number(finalLockedStructure.restoredCount || 0),
       approximateRestoredCount: Number(finalLockedStructure.approximateRestoredCount || 0),
+      inlineLabelBodyRepairCount: Number(finalLockedStructure.inlineLabels?.repairCount || 0),
+      inlineLabelBodyApplicableCount: Number(finalLockedStructure.inlineLabels?.applicableCount || 0),
       missingCount: Number(finalLockedStructure.missingCount || 0),
       pass: finalLockedStructure.pass !== false
     };
@@ -2420,6 +2423,12 @@ async function runEngine({
         + Number(fixedPointLockedStructure.restoredCount || 0),
       approximateRestoredCount: Number(previousLockedStructure.approximateRestoredCount || 0)
         + Number(fixedPointLockedStructure.approximateRestoredCount || 0),
+      inlineLabelBodyRepairCount: Number(previousLockedStructure.inlineLabelBodyRepairCount || 0)
+        + Number(fixedPointLockedStructure.inlineLabels?.repairCount || 0),
+      inlineLabelBodyApplicableCount: Math.max(
+        Number(previousLockedStructure.inlineLabelBodyApplicableCount || 0),
+        Number(fixedPointLockedStructure.inlineLabels?.applicableCount || 0)
+      ),
       // 마지막 고정점의 누락 수가 최종 전달 상태를 대표한다.
       missingCount: Number(fixedPointLockedStructure.missingCount || 0),
       pass: fixedPointLockedStructure.pass !== false
@@ -2909,6 +2918,12 @@ async function runEngine({
     explicitParagraphCountBefore: Number(layoutRepair?.paragraphs?.explicitParagraphCountBefore || 0),
     explicitParagraphCountAfter: Number(layoutRepair?.paragraphs?.explicitParagraphCountAfter || 0),
     paragraphReadability: layoutRepair?.paragraphs?.readability || null,
+    inlineLabelBodyRepairCount: Number(layoutRepair?.inlineLabels?.repairCount || 0)
+      + Number(layoutRepair?.finalLockedStructure?.inlineLabelBodyRepairCount || 0),
+    inlineLabelBodyApplicableCount: Math.max(
+      Number(layoutRepair?.inlineLabels?.applicableCount || 0),
+      Number(layoutRepair?.finalLockedStructure?.inlineLabelBodyApplicableCount || 0)
+    ),
     riskFlags: documentProfile.riskFlags || [],
     tonePolicy: documentProfile.tonePolicy || 'source_preserve',
     targetRegister: documentProfile.targetRegister || documentProfile.tonePolicy || 'source_preserve',
@@ -2989,6 +3004,8 @@ async function runEngine({
     lineAnchorLayoutPass: structureAudit?.lineAnchorLayoutPass !== false,
     lineAnchorLossCount: Number(structureAudit?.lineAnchorLossCount || 0),
     lineAnchorBoundaryChangeCount: Number(structureAudit?.lineAnchorBoundaryChangeCount || 0),
+    inlineLabelBodyLayoutPass: structureAudit?.inlineLabelBodyLayoutPass !== false,
+    inlineLabelBodySplitCount: Number(structureAudit?.inlineLabelBodySplitCount || 0),
     exactLineStructurePass: structureAudit?.exactLineStructurePass !== false,
     introducedOrphanParticleBoundaryCount: Number(structureAudit?.introducedOrphanParticleBoundaryCount || 0),
     signatureLineCount: Number(documentProfile?.formatProfile?.signatureLineCount || 0),

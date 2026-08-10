@@ -377,12 +377,14 @@ function restorePostSemanticLayout({ source, outputText, chunks, mode = '', requ
     documentProfile,
     profileConfidence
   });
+  const inlineLabels = restoreInlineLabelBodyLayout(source, paragraphs.text);
   return {
-    text: paragraphs.text,
-    applied: heading.applied || paragraphs.applied,
+    text: inlineLabels.text,
+    applied: heading.applied || paragraphs.applied || inlineLabels.applied,
     heading,
     paragraphs,
-    pass: heading.missingCount === 0 && paragraphs.pass
+    inlineLabels,
+    pass: heading.missingCount === 0 && paragraphs.pass && inlineLabels.pass
   };
 }
 
@@ -484,22 +486,137 @@ function restoreLockedStructureLayout({ source, outputText, chunks } = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
   const blocks = restoreExactLockedBlocks(heading.text, chunks);
   const markdownControls = restoreStandaloneMarkdownControlLines(source, blocks.text);
+  const inlineLabels = restoreInlineLabelBodyLayout(source, markdownControls.text);
   return {
-    text: markdownControls.text,
-    applied: heading.applied || blocks.applied || markdownControls.applied,
+    text: inlineLabels.text,
+    applied: heading.applied || blocks.applied || markdownControls.applied || inlineLabels.applied,
     headingCount: heading.headingCount,
     blockCount: blocks.blockCount,
-    restoredCount: heading.restoredCount + blocks.restoredCount + markdownControls.restoredCount,
+    restoredCount: heading.restoredCount + blocks.restoredCount + markdownControls.restoredCount + inlineLabels.repairCount,
     approximateRestoredCount: Number(blocks.approximateRestoredCount || 0),
-    missingCount: heading.missingCount + blocks.missingCount + markdownControls.missingCount,
+    missingCount: heading.missingCount + blocks.missingCount + markdownControls.missingCount + inlineLabels.missingCount,
     missingBlocks: blocks.missingBlocks || [],
     heading,
     blocks,
     markdownControls,
+    inlineLabels,
     pass: heading.missingCount === 0
       && blocks.missingCount === 0
       && markdownControls.missingCount === 0
+      && inlineLabels.pass
   };
+}
+
+/**
+ * 원문에서 한 행이던 `라벨: 본문`의 본문을 모델이 임의의 빈 줄로 나누면
+ * 라벨 접두부 자체는 남아 기존 line-anchor 감사가 통과했다. 다음 구조 행이
+ * 명확한 라벨만 대상으로, 두 앵커 사이의 개행을 공백으로 되돌린다. 문자와
+ * 순서는 바꾸지 않으며 일반 산문·코드·표·인용에는 적용하지 않는다.
+ */
+function restoreInlineLabelBodyLayout(source, outputText) {
+  const regions = buildInlineLabelBodyRegions(source);
+  let text = normalizeNewlines(outputText);
+  let cursor = 0;
+  let repairCount = 0;
+  let missingCount = 0;
+  for (const region of regions) {
+    const current = findWhitespaceEquivalentSpan(text, region.prefix, cursor);
+    if (!current) {
+      missingCount += 1;
+      continue;
+    }
+    let bodyStart = current.end;
+    while (bodyStart < text.length && /[ \t]/u.test(text[bodyStart])) bodyStart += 1;
+    let nextStart = text.length;
+    if (region.nextAnchor) {
+      const next = findWhitespaceEquivalentSpan(text, region.nextAnchor, bodyStart);
+      if (!next) {
+        missingCount += 1;
+        cursor = current.end;
+        continue;
+      }
+      nextStart = next.start;
+    }
+    let bodyEnd = nextStart;
+    while (bodyEnd > bodyStart && /\s/u.test(text[bodyEnd - 1])) bodyEnd -= 1;
+    const body = text.slice(bodyStart, bodyEnd);
+    const newlineGroups = body.match(/[ \t]*\n+[ \t]*/gu) || [];
+    if (body.trim() && newlineGroups.length > 0) {
+      const joined = body.replace(/[ \t]*\n+[ \t]*/gu, ' ');
+      text = text.slice(0, bodyStart) + joined + text.slice(bodyEnd);
+      const delta = joined.length - body.length;
+      nextStart += delta;
+      repairCount += newlineGroups.length;
+    }
+    cursor = region.nextAnchor ? Math.max(current.end, nextStart) : text.length;
+  }
+  // 이 복원기의 책임은 라벨 본문 안의 잘못된 개행뿐이다. 공통 문단 공백
+  // 정규화를 다시 호출하면 수정 대상이 없는 문서에서도 Markdown 하위 목록의
+  // 들여쓰기가 사라지므로, 나머지 공백과 행 구조는 입력 그대로 둔다.
+  const normalized = text;
+  return {
+    text: normalized,
+    applied: repairCount > 0,
+    applicableCount: regions.length,
+    repairCount,
+    missingCount,
+    contentPreserved: bare(normalized) === bare(outputText),
+    pass: missingCount === 0 && bare(normalized) === bare(outputText)
+  };
+}
+
+function buildInlineLabelBodyRegions(value) {
+  const records = layoutStructure.buildLineRecords(value).filter(record => !record.blank);
+  const regions = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (String(record?.role || '') !== 'label_inline') continue;
+    const match = editableLabelPrefixMatch(String(record.raw || record.text || ''));
+    if (!match) continue;
+    const nextRecord = records[index + 1] || null;
+    // 다음 원문 행이 일반 산문이면 그 산문까지 현재 라벨 본문으로 합칠 수
+    // 있으므로 건드리지 않는다. 다음 구조 앵커가 확정되거나 문서의 마지막
+    // 라벨일 때만 안전하게 복원한다.
+    if (nextRecord && !isInlineLabelRegionBoundary(nextRecord)) continue;
+    const nextAnchor = nextRecord ? structuralLineAnchor(nextRecord) : '';
+    if (nextRecord && !nextAnchor) continue;
+    regions.push({
+      prefix: String(match[1] || '').trimStart().trimEnd(),
+      nextAnchor
+    });
+  }
+  return regions.filter(region => region.prefix.length >= 2);
+}
+
+function isInlineLabelRegionBoundary(record) {
+  return [
+    'label_inline',
+    'label',
+    'title',
+    'heading',
+    'signature',
+    'legal_clause',
+    'flow',
+    'table',
+    'code',
+    'quote'
+  ].includes(String(record?.role || ''));
+}
+
+function structuralLineAnchor(record) {
+  const role = String(record?.role || '');
+  const raw = String(record?.raw || record?.text || '');
+  if (role === 'label_inline') {
+    const match = editableLabelPrefixMatch(raw);
+    return String(match?.[1] || '').trimStart().trimEnd();
+  }
+  if (role === 'legal_clause') {
+    return String(layoutStructure.legalClauseParts(raw)?.prefix || '').trim();
+  }
+  if (['label', 'title', 'heading', 'signature', 'flow', 'table', 'code', 'quote'].includes(role)) {
+    return String(record?.text || '').trim();
+  }
+  return '';
 }
 
 // 길이 기반 base chunk가 `### 5. 목적해석`의 마침표 직후처럼 구조 행
@@ -1677,7 +1794,7 @@ function splitEditablePrefixPiece(piece, options = {}) {
     : raw.match(/^(\s*\[(?=[^\]\n]{0,79}[가-힣A-Za-z])[^\]\n]{1,80}\]\s*)(\S[\s\S]*)$/u);
   const label = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet || bracketLabel
     ? null
-    : raw.match(/^(\s*[가-힣A-Za-z][가-힣A-Za-z0-9 _/·()（）-]{0,30}[:：]\s*)(\S[\s\S]*)$/u);
+    : editableLabelPrefixMatch(raw);
   const match = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet || bracketLabel || label;
   if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
   const prefix = match[1];
@@ -1709,6 +1826,24 @@ function splitEditablePrefixPiece(piece, options = {}) {
       forceLockType: quotedBody ? 'quote' : undefined
     }
   ];
+}
+
+// 행 역할 판정과 접두부 잠금이 서로 다른 정규식을 쓰면, 긴 영문 병기
+// 라벨은 `label_inline`으로 감사되면서도 실제 청크에서는 잠기지 않는다.
+// `피드백 및 통제 (Feedback & Control): ...`가 앞 항목에 합쳐진 원인이
+// 이 기준 불일치였으므로 layoutStructure의 단일 판정 결과를 재사용한다.
+function editableLabelPrefixMatch(value) {
+  const raw = String(value || '');
+  const parts = layoutStructure.labelParts(raw);
+  if (!parts?.rest) return null;
+  const colonIndex = raw.search(/[:：]/u);
+  if (colonIndex < 0) return null;
+  let bodyStart = colonIndex + 1;
+  while (bodyStart < raw.length && /[ \t]/u.test(raw[bodyStart])) bodyStart += 1;
+  const prefix = raw.slice(0, bodyStart);
+  const body = raw.slice(bodyStart);
+  if (!body.trim()) return null;
+  return [raw, prefix, body];
 }
 
 function isStandaloneQuotedTitle(value) {
@@ -2222,6 +2357,7 @@ function buildStructureAudit({
   const originalMarkers = compareOriginalStructuralMarkers(original, output);
   const bracketedLabelLayout = compareBracketedLabelLayout(original, output);
   const lineAnchorLayout = compareLineAnchorLayout(original, output);
+  const inlineLabelBodyLayout = compareInlineLabelBodyLayout(original, output);
   const exactLinePolicy = (chunks || []).some(chunk => String(chunk?.lineBoundaryPolicy || '') === 'all');
   const exactLineStructure = exactLinePolicy
     ? auditExactLineStructure(original, output)
@@ -2261,6 +2397,7 @@ function buildStructureAudit({
     outputStructuralSignature: structuralSignature.output,
     originalStructurePass: originalMarkers.pass
       && lineAnchorLayout.pass
+      && inlineLabelBodyLayout.pass
       && exactLineStructure.pass
       && introducedOrphanParticleBoundaryCount === 0,
     originalStructuralMarkerCount: originalMarkers.sourceCount,
@@ -2280,6 +2417,10 @@ function buildStructureAudit({
     lineAnchorBoundaryChangeCount: lineAnchorLayout.boundaryChanges.length,
     lineAnchorLosses: lineAnchorLayout.losses,
     lineAnchorBoundaryChanges: lineAnchorLayout.boundaryChanges,
+    inlineLabelBodyLayoutPass: inlineLabelBodyLayout.pass,
+    inlineLabelBodyApplicableCount: inlineLabelBodyLayout.applicableCount,
+    inlineLabelBodySplitCount: inlineLabelBodyLayout.violations.length,
+    inlineLabelBodySplits: inlineLabelBodyLayout.violations,
     exactLineStructurePass: exactLineStructure.pass,
     exactLineStructureApplicable: exactLineStructure.applicable === true,
     exactLineSourceCount: Number(exactLineStructure.sourceLineCount || 0),
@@ -2295,6 +2436,7 @@ function buildStructureAudit({
       && originalMarkers.pass
       && bracketedLabelLayout.pass
       && lineAnchorLayout.pass
+      && inlineLabelBodyLayout.pass
       && exactLineStructure.pass
       && introducedOrphanParticleBoundaryCount === 0
       && layoutRepair?.pass !== false
@@ -2360,6 +2502,53 @@ function compareLineAnchorLayout(source, output) {
     outputCount: extractLineAnchors(output).length,
     losses: losses.slice(0, 20),
     boundaryChanges: boundaryChanges.slice(0, 20)
+  };
+}
+
+function compareInlineLabelBodyLayout(source, output) {
+  const regions = buildInlineLabelBodyRegions(source);
+  const outputLines = layoutStructure.buildLineRecords(output).filter(record => !record.blank);
+  const violations = [];
+  let cursor = 0;
+  for (let ordinal = 0; ordinal < regions.length; ordinal += 1) {
+    const region = regions[ordinal];
+    const prefixKey = lineAnchorKey(region.prefix);
+    const current = outputLines.findIndex((line, index) => (
+      index >= cursor && lineAnchorPrefixKey(line.text).startsWith(prefixKey)
+    ));
+    if (current < 0) {
+      violations.push({ ordinal: ordinal + 1, reason: 'label_prefix_missing_or_merged' });
+      continue;
+    }
+    if (!region.nextAnchor) {
+      if (current !== outputLines.length - 1) {
+        violations.push({ ordinal: ordinal + 1, reason: 'label_body_split_before_document_end' });
+      }
+      cursor = current + 1;
+      continue;
+    }
+    const nextKey = lineAnchorKey(region.nextAnchor);
+    const next = outputLines.findIndex((line, index) => (
+      index > current && lineAnchorPrefixKey(line.text).startsWith(nextKey)
+    ));
+    if (next < 0) {
+      violations.push({ ordinal: ordinal + 1, reason: 'next_structure_anchor_missing_or_merged' });
+      cursor = current + 1;
+      continue;
+    }
+    if (next !== current + 1) {
+      violations.push({
+        ordinal: ordinal + 1,
+        reason: 'single_line_label_body_split',
+        extraLineCount: next - current - 1
+      });
+    }
+    cursor = next;
+  }
+  return {
+    pass: violations.length === 0,
+    applicableCount: regions.length,
+    violations: violations.slice(0, 20)
   };
 }
 
@@ -2698,10 +2887,19 @@ function compactLayoutRepair(value) {
       restoredCount: Number(value.heading.restoredCount) || 0,
       missingCount: Number(value.heading.missingCount) || 0
     } : null,
+    inlineLabels: value.inlineLabels ? {
+      applied: value.inlineLabels.applied === true,
+      applicableCount: Number(value.inlineLabels.applicableCount) || 0,
+      repairCount: Number(value.inlineLabels.repairCount) || 0,
+      missingCount: Number(value.inlineLabels.missingCount) || 0,
+      pass: value.inlineLabels.pass !== false
+    } : null,
     finalLockedStructure: value.finalLockedStructure ? {
       applied: value.finalLockedStructure.applied === true,
       restoredCount: Number(value.finalLockedStructure.restoredCount) || 0,
       approximateRestoredCount: Number(value.finalLockedStructure.approximateRestoredCount) || 0,
+      inlineLabelBodyRepairCount: Number(value.finalLockedStructure.inlineLabelBodyRepairCount) || 0,
+      inlineLabelBodyApplicableCount: Number(value.finalLockedStructure.inlineLabelBodyApplicableCount) || 0,
       missingCount: Number(value.finalLockedStructure.missingCount) || 0,
       pass: value.finalLockedStructure.pass !== false
     } : null,
@@ -3025,11 +3223,13 @@ module.exports = {
   restorePostSemanticLayout,
   restoreLockedHeadingLayout,
   restoreLockedStructureLayout,
+  restoreInlineLabelBodyLayout,
   restoreParagraphLayout,
   compareStructuralRoleSignatures,
   compareOriginalStructuralMarkers,
   compareBracketedLabelLayout,
   compareLineAnchorLayout,
+  compareInlineLabelBodyLayout,
   auditExactLineStructure,
   extractOriginalStructuralMarkers,
   countOrphanParticleLineBoundaries,

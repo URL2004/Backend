@@ -117,6 +117,7 @@ const SEMANTIC_WARNING_TYPES = new Set([
   'structural_line_loss',
   'line_structure_changed',
   'line_anchor_changed',
+  'inline_label_body_split',
   'questionnaire_structure_changed',
   'creative_line_structure',
   'register_shift',
@@ -236,6 +237,13 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
         count: Number(structureAudit.lineAnchorLossCount || 0)
           + Number(structureAudit.lineAnchorBoundaryChangeCount || 0)
       }
+    ));
+  }
+  if (structureAudit?.inlineLabelBodyLayoutPass === false) {
+    warnings.push(warning(
+      'inline_label_body_split',
+      '라벨 항목의 본문이 중간에서 다른 행이나 문단으로 나뉘었을 수 있어요.',
+      { count: Number(structureAudit.inlineLabelBodySplitCount || 0) }
     ));
   }
   if (structureAudit?.exactLineStructureApplicable === true

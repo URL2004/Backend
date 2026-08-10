@@ -103,6 +103,10 @@ function buildLineRecords(value) {
     records,
     new Set([...codeIndices, ...tableIndices, ...signatureIndices])
   );
+  const labelGroupHeadingIndices = detectLabelGroupHeadingIndices(
+    records,
+    new Set([...codeIndices, ...tableIndices, ...signatureIndices])
+  );
   const plainListIndices = detectPlainListLineIndices(
     records,
     new Set([
@@ -110,7 +114,8 @@ function buildLineRecords(value) {
       ...tableIndices,
       ...signatureIndices,
       ...parallelSloganTitleIndices,
-      ...parallelSectionHeadingIndices
+      ...parallelSectionHeadingIndices,
+      ...labelGroupHeadingIndices
     ])
   );
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
@@ -138,7 +143,8 @@ function buildLineRecords(value) {
       signatureLike: signatureIndices.has(record.index),
       plainListLike: plainListIndices.has(record.index),
       parallelSloganTitle: parallelSloganTitleIndices.has(record.index),
-      parallelSectionHeading: parallelSectionHeadingIndices.has(record.index)
+      parallelSectionHeading: parallelSectionHeadingIndices.has(record.index),
+      labelGroupHeading: labelGroupHeadingIndices.has(record.index)
     });
   }
   return records;
@@ -167,6 +173,7 @@ function classifyLine(value, context = {}) {
   if (isColonTitleLine(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
+  if (context.labelGroupHeading) return 'heading';
   if (isGenericTitle(text, context)) return 'title';
   if (isTitleContinuation(text, context)) return 'title';
   if (context.parallelSectionHeading) return 'heading';
@@ -329,6 +336,41 @@ function detectParallelSectionHeadingIndices(records, excluded = new Set()) {
   return candidates.length >= 3 ? new Set(candidates) : new Set();
 }
 
+/**
+ * `강점 (Strength - 내부 긍정 요인)\n핵심 역량: ...`처럼 빈 줄이나 번호가
+ * 없는 범주 제목 뒤에 라벨 항목이 이어지는 형식을 구조로 판정한다. 기존
+ * 제목 판정은 다음 행이 긴 산문일 때만 작동해 SWOT·업무 분류표의 범주
+ * 제목을 산문으로 흘렸고, 모델이나 후처리가 이를 앞 라벨 본문에 합쳤다.
+ *
+ * 한 번만 나타나는 짧은 산문을 과보호하지 않도록 같은 문서에서 이 패턴이
+ * 두 번 이상 반복되거나, 영문 병기 괄호가 있는 명시적 범주 제목일 때만
+ * 승격한다.
+ */
+function detectLabelGroupHeadingIndices(records, excluded = new Set()) {
+  const source = Array.isArray(records) ? records : [];
+  const nonEmpty = source.filter(record => !record.blank);
+  const candidates = [];
+  for (let position = 0; position < nonEmpty.length - 1; position += 1) {
+    const record = nonEmpty[position];
+    const next = nonEmpty[position + 1];
+    if (!record || !next || excluded.has(record.index) || excluded.has(next.index)) continue;
+    const text = String(record.text || '').trim();
+    const nextText = String(next.text || '').trim();
+    const nextLabel = labelParts(nextText) || bracketLabelParts(nextText);
+    if (!nextLabel || !nextLabel.rest) continue;
+    if (text.length < 2 || text.length > 80) continue;
+    if (/[.!?。！？:：]\s*["”’')\]）]*$/u.test(text)) continue;
+    if (isListLine(text) || labelParts(text) || bracketLabelParts(text)
+        || isKnownHeadingLine(text) || isQuoteLine(text) || isExplicitTableLine(text)
+        || looksLikeUnpunctuatedProse(text)) continue;
+    const bilingualDescriptor = /[（(][^）)\n]*[A-Za-z][^）)\n]*[）)]\s*$/u.test(text);
+    candidates.push({ index: record.index, bilingualDescriptor });
+  }
+  if (candidates.length >= 2) return new Set(candidates.map(candidate => candidate.index));
+  const explicit = candidates.filter(candidate => candidate.bilingualDescriptor);
+  return new Set(explicit.map(candidate => candidate.index));
+}
+
 function isTitleContinuation(text, context = {}) {
   const previousRole = String(context.previous?.role || '');
   if (!['title', 'heading'].includes(previousRole) || !context.next) return false;
@@ -422,7 +464,7 @@ function labelParts(value) {
   if (colonIndex > 0
       && /\d/u.test(text[colonIndex - 1] || '')
       && /^\s*\d/u.test(text.slice(colonIndex + 1))) return null;
-  const match = text.match(/^(?:[*#]+\s*)?(?:(?:\p{Extended_Pictographic}\uFE0F?)+\s*)?([가-힣A-Za-z][가-힣A-Za-z0-9·/&() _-]{0,48})\s*[:：]\s*(.*)$/u);
+  const match = text.match(/^(?:[*#]+\s*)?(?:(?:\p{Extended_Pictographic}\uFE0F?)+\s*)?([가-힣A-Za-z][가-힣A-Za-z0-9·/&()（） _-]{0,48})\s*[:：]\s*(.*)$/u);
   if (!match) return null;
   const label = match[1].trim();
   if (/^(?:https?|ftp|file)$/iu.test(label) || /[.!?。！？]/u.test(label)) return null;
@@ -864,6 +906,7 @@ module.exports = {
   looksLikeUnpunctuatedProse,
   detectParallelSloganTitleIndices,
   detectParallelSectionHeadingIndices,
+  detectLabelGroupHeadingIndices,
   legalClauseParts,
   labelParts,
   bracketLabelParts,

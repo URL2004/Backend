@@ -848,6 +848,10 @@ function buildArchiveObservability(job) {
     sectionPathErrorCount: archiveFinite(engineMeta.sectionPathErrorCount),
     originalStructurePass: typeof engineMeta.originalStructurePass === 'boolean' ? engineMeta.originalStructurePass : undefined,
     originalStructuralMarkerLossCount: archiveFinite(engineMeta.originalStructuralMarkerLossCount),
+    inlineLabelBodyLayoutPass: typeof engineMeta.inlineLabelBodyLayoutPass === 'boolean'
+      ? engineMeta.inlineLabelBodyLayoutPass
+      : undefined,
+    inlineLabelBodySplitCount: archiveFinite(engineMeta.inlineLabelBodySplitCount),
     introducedOrphanParticleBoundaryCount: archiveFinite(engineMeta.introducedOrphanParticleBoundaryCount),
     inlineCodeSpanCount: archiveFinite(engineMeta.inlineCodeSpanCount),
     inlineCodeIntegrityPass: typeof engineMeta.inlineCodeIntegrityPass === 'boolean'
@@ -1149,6 +1153,8 @@ function buildArchiveObservability(job) {
     paragraphAlignmentConfidence: archiveFinite(paragraphRepair.paragraphAlignmentConfidence ?? engineMeta.paragraphAlignmentConfidence),
     paragraphProseSplitCount: archiveFinite(paragraphRepair.proseSplitCount ?? engineMeta.paragraphProseSplitCount),
     paragraphVisualGapRepairCount: archiveFinite(paragraphRepair.visualGapRepairCount ?? engineMeta.paragraphVisualGapRepairCount),
+    inlineLabelBodyRepairCount: archiveFinite(engineMeta.inlineLabelBodyRepairCount),
+    inlineLabelBodyApplicableCount: archiveFinite(engineMeta.inlineLabelBodyApplicableCount),
     explicitParagraphCountBefore: archiveFinite(paragraphRepair.explicitParagraphCountBefore ?? engineMeta.explicitParagraphCountBefore),
     explicitParagraphCountAfter: archiveFinite(paragraphRepair.explicitParagraphCountAfter ?? engineMeta.explicitParagraphCountAfter),
     paragraphOverlongCount: archiveFinite(paragraphReadability.overlongCount),

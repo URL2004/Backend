@@ -150,6 +150,9 @@ function validateRun(testCase, out) {
   const output = String(out?.result?.outputText || out?.outputText || '');
   const lineAnchors = structure.compareLineAnchorLayout(testCase.source, output);
   const inlineLabels = structure.compareInlineLabelBodyLayout(testCase.source, output);
+  const structuralRoles = structure.compareStructuralRoleSignatures(testCase.source, output);
+  const originalMarkers = structure.compareOriginalStructuralMarkers(testCase.source, output);
+  const bracketedLabels = structure.compareBracketedLabelLayout(testCase.source, output);
   const headings = headingAudit(testCase.headings, output);
   const labelGaps = labelBlockGapAudit(testCase.source, output);
   const maxBlankRun = Math.max(0, ...(output.match(/\n+/gu) || []).map(value => value.length));
@@ -169,6 +172,10 @@ function validateRun(testCase, out) {
     checks,
     lineAnchorChanges: lineAnchors.boundaryChanges || [],
     inlineLabelSplits: inlineLabels.violations || [],
+    structuralRoleLosses: structuralRoles.losses || [],
+    originalMarkerLosses: originalMarkers.losses || [],
+    bracketedLabelLosses: bracketedLabels.losses || [],
+    bracketedLabelBoundaryChanges: bracketedLabels.boundaryChanges || [],
     missingHeadings: headings.failures,
     labelGapFailures: labelGaps.failures,
     maxBlankRun,
@@ -183,11 +190,16 @@ async function main() {
   if (!process.env.OPENAI_SAFETY_SALT) throw new Error('OPENAI_SAFETY_SALT가 필요합니다.');
   const iterations = Math.max(1, Math.min(5, Number.parseInt(args.iterations || '3', 10) || 3));
   const maximumUsd = Math.max(0.1, Number(args['max-usd'] || 2));
+  const requestedCase = String(args.case || '').trim();
+  const selectedCases = requestedCase
+    ? CASES.filter(item => item.id === requestedCase)
+    : CASES;
+  if (!selectedCases.length) throw new Error(`알 수 없는 테스트 케이스: ${requestedCase}`);
   const config = runtime.publicConfig(runtime.DEFAULT_CONFIG, 'live_layout_integrity_v2535');
   const results = [];
   let estimatedUsd = 0;
   for (let iteration = 1; iteration <= iterations; iteration += 1) {
-    for (const testCase of CASES) {
+    for (const testCase of selectedCases) {
       if (estimatedUsd >= maximumUsd) throw new Error(`비용 상한 도달: $${estimatedUsd.toFixed(4)} / $${maximumUsd.toFixed(2)}`);
       const started = Date.now();
       const out = await engine.run({
@@ -199,6 +211,7 @@ async function main() {
         config
       });
       const validation = validateRun(testCase, out);
+      const structureAudit = out?.result?.structureLock || out?.result?.humanizeMeta?.structureLock || {};
       const cost = Number(out?.gptEngine?.usage?.estimatedUsd || out?.result?.humanizeMeta?.usage?.estimatedUsd || 0);
       estimatedUsd += cost;
       const row = {
@@ -214,12 +227,35 @@ async function main() {
         inlineLabelBodyRepairCount: Number(out?.engineMeta?.inlineLabelBodyRepairCount || 0),
         inlineLabelBodySplitCount: Number(out?.engineMeta?.inlineLabelBodySplitCount || 0),
         paragraphVisualGapRepairCount: Number(out?.engineMeta?.paragraphVisualGapRepairCount || 0),
+        protectedBlockMissingCount: Number(out?.engineMeta?.protectedBlockMissingCount || 0),
+        protectedBlockChangedCount: Number(out?.engineMeta?.protectedBlockChangedCount || 0),
+        sectionPathErrorCount: Number(out?.engineMeta?.sectionPathErrorCount || 0),
+        originalStructurePass: out?.engineMeta?.originalStructurePass !== false,
+        tableColumnOwnershipPass: out?.engineMeta?.tableColumnOwnershipPass !== false,
+        lineAnchorLossCount: Number(out?.engineMeta?.lineAnchorLossCount || 0),
+        lineAnchorBoundaryChangeCount: Number(out?.engineMeta?.lineAnchorBoundaryChangeCount || 0),
+        exactLineStructurePass: out?.engineMeta?.exactLineStructurePass !== false,
+        introducedOrphanParticleBoundaryCount: Number(out?.engineMeta?.introducedOrphanParticleBoundaryCount || 0),
+        lostLockedCount: Number(structureAudit.lostLockedCount || 0),
+        lockedOutOfOrderCount: Number(structureAudit.lockedOutOfOrderCount || 0),
+        unsafeBoundaryCount: Number(structureAudit.unsafeBoundaryCount || 0),
+        layoutRepairPass: structureAudit.layoutRepair?.pass !== false,
         maxBlankRun: validation.maxBlankRun,
         estimatedUsd: cost,
         elapsedMs: Date.now() - started,
         failures: {
           lineAnchorChanges: validation.lineAnchorChanges,
           inlineLabelSplits: validation.inlineLabelSplits,
+          structuralRoleLosses: validation.structuralRoleLosses,
+          originalMarkerLosses: validation.originalMarkerLosses,
+          bracketedLabelLosses: validation.bracketedLabelLosses,
+          bracketedLabelBoundaryChanges: validation.bracketedLabelBoundaryChanges,
+          lostLocked: (structureAudit.lostLocked || []).slice(0, 8),
+          lockedOutOfOrder: (structureAudit.lockedOutOfOrder || []).slice(0, 8),
+          unsafeBoundaries: (structureAudit.unsafeBoundaries || []).slice(0, 8),
+          layoutRepair: structureAudit.layoutRepair?.pass === false
+            ? structureAudit.layoutRepair
+            : undefined,
           missingHeadings: validation.missingHeadings,
           labelGapFailures: validation.labelGapFailures
         },
@@ -233,7 +269,7 @@ async function main() {
   const summary = {
     engineVersion: engine.VERSION,
     iterations,
-    caseCount: CASES.length,
+    caseCount: selectedCases.length,
     runCount: results.length,
     passed: results.length - failed.length,
     failed: failed.length,

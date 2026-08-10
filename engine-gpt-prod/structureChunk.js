@@ -482,14 +482,27 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
 // 의미 감사 뒤의 국소 문장 복원은 잠긴 라벨 접두부를 보존하면서도 그 앞의
 // 줄 구분자를 공백으로 재조립할 수 있다. 어휘를 다시 바꾸지 않고 잠긴
 // 제목·라벨·불릿·조문 접두부의 원래 행 위치만 마지막에 한 번 더 복원한다.
-function restoreLockedStructureLayout({ source, outputText, chunks } = {}) {
+function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVisualGaps = false } = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
   const blocks = restoreExactLockedBlocks(heading.text, chunks);
   const markdownControls = restoreStandaloneMarkdownControlLines(source, blocks.text);
   const inlineLabels = restoreInlineLabelBodyLayout(source, markdownControls.text);
+  // 최종 잠금 복원은 원문의 단일 개행을 되살리므로, 앞서 가독성 단계가
+  // 만든 제목·범주 사이의 안전한 빈 줄을 다시 없앨 수 있다. 일반 휴머나이징
+  // 최종 고정점에서만 구조 역할 기반 여백을 재적용한다. 코드·표·인용·조문
+  // 등은 buildVisualGapExcludedBlocks가 제외하며 라벨 행 사이는 벌리지 않는다.
+  const visualGaps = normalizeVisualGaps
+    ? restoreStructuralVisualGaps(inlineLabels.text, {
+        excludedBlocks: buildVisualGapExcludedBlocks(chunks)
+      })
+    : { text: inlineLabels.text, repairCount: 0 };
   return {
-    text: inlineLabels.text,
-    applied: heading.applied || blocks.applied || markdownControls.applied || inlineLabels.applied,
+    text: visualGaps.text,
+    applied: heading.applied
+      || blocks.applied
+      || markdownControls.applied
+      || inlineLabels.applied
+      || visualGaps.repairCount > 0,
     headingCount: heading.headingCount,
     blockCount: blocks.blockCount,
     restoredCount: heading.restoredCount + blocks.restoredCount + markdownControls.restoredCount + inlineLabels.repairCount,
@@ -500,6 +513,7 @@ function restoreLockedStructureLayout({ source, outputText, chunks } = {}) {
     blocks,
     markdownControls,
     inlineLabels,
+    visualGapRepairCount: Number(visualGaps.repairCount || 0),
     pass: heading.missingCount === 0
       && blocks.missingCount === 0
       && markdownControls.missingCount === 0

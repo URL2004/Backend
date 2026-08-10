@@ -2284,7 +2284,9 @@ async function runEngine({
     const finalLockedStructure = structureChunk.restoreLockedStructureLayout({
       source: rawSource,
       outputText,
-      chunks
+      chunks,
+      normalizeVisualGaps: selectedMode !== 'polish'
+        && String(documentProfile?.profile || '') !== 'creative'
     });
     if (finalLockedStructure.applied) outputText = finalLockedStructure.text;
     layoutRepair.finalLockedStructure = {
@@ -2293,6 +2295,7 @@ async function runEngine({
       approximateRestoredCount: Number(finalLockedStructure.approximateRestoredCount || 0),
       inlineLabelBodyRepairCount: Number(finalLockedStructure.inlineLabels?.repairCount || 0),
       inlineLabelBodyApplicableCount: Number(finalLockedStructure.inlineLabels?.applicableCount || 0),
+      visualGapRepairCount: Number(finalLockedStructure.visualGapRepairCount || 0),
       missingCount: Number(finalLockedStructure.missingCount || 0),
       pass: finalLockedStructure.pass !== false
     };
@@ -2413,7 +2416,9 @@ async function runEngine({
     const fixedPointLockedStructure = structureChunk.restoreLockedStructureLayout({
       source: rawSource,
       outputText,
-      chunks
+      chunks,
+      normalizeVisualGaps: selectedMode !== 'polish'
+        && String(documentProfile?.profile || '') !== 'creative'
     });
     if (fixedPointLockedStructure.applied) outputText = fixedPointLockedStructure.text;
     const previousLockedStructure = layoutRepair.finalLockedStructure || {};
@@ -2429,6 +2434,8 @@ async function runEngine({
         Number(previousLockedStructure.inlineLabelBodyApplicableCount || 0),
         Number(fixedPointLockedStructure.inlineLabels?.applicableCount || 0)
       ),
+      visualGapRepairCount: Number(previousLockedStructure.visualGapRepairCount || 0)
+        + Number(fixedPointLockedStructure.visualGapRepairCount || 0),
       // 마지막 고정점의 누락 수가 최종 전달 상태를 대표한다.
       missingCount: Number(fixedPointLockedStructure.missingCount || 0),
       pass: fixedPointLockedStructure.pass !== false

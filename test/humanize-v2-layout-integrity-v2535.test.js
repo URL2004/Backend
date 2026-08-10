@@ -147,6 +147,52 @@ test('라벨 다음에 일반 산문이 오는 문서는 별도 문단을 라벨
   assert.equal(result.text, source);
 });
 
+test('여러 라벨 행은 하나의 과장 산문 문단으로 오인하지 않는다', () => {
+  const labelGroup = [
+    '담당 역할: 임상 요구를 성능 사양으로 구체화했습니다.',
+    '핵심 과제: 원가 절감형 변경과 신제품 개발을 병행했습니다.',
+    '설계 판단: 후보 부품을 비교했습니다. 검토 결과 듀얼 펌프를 채택했습니다.',
+    '전원 구조: 전력 예산을 산정했습니다. USB-C PD 방식도 검토했습니다.',
+    '검증 및 문서화: 수명 시험 조건을 정의했습니다. 결과는 성적서로 남겼습니다.'
+  ].join('\n');
+  const readability = layout.measureParagraphReadability([labelGroup], {
+    mode: 'assignment',
+    requestStrength: 'advanced',
+    documentProfile: { profile: 'resume_application' }
+  });
+
+  assert.equal(readability.overlongCount, 0);
+  assert.equal(readability.targetCount, 1);
+  assert.equal(readability.details[0]?.structureDominated, true);
+});
+
+test('최종 잠금 복원은 라벨 행을 붙여 두고 섹션 제목 사이만 보기 좋게 띄운다', () => {
+  const source = [
+    '[현 직장 – 의료기기 하드웨어 개발]',
+    '담당 역할: 임상 요구를 성능 사양으로 구체화했습니다.',
+    '핵심 과제: 원가 절감형 변경과 신제품 개발을 병행했습니다.',
+    '[이전 직장 – 방산 장비 개발]',
+    '담당 역할: 레이더 장비의 하드웨어 설계를 검토했습니다.',
+    '시험 경험: 기능 시험 결과를 기록했습니다.'
+  ].join('\n');
+  const plan = structure.splitChunksForGpt(source, {
+    coalesceEditable: true,
+    preserveLineBoundaries: 'structural'
+  });
+  const restored = structure.restoreLockedStructureLayout({
+    source,
+    outputText: source,
+    chunks: plan.chunks,
+    normalizeVisualGaps: true
+  });
+
+  assert.match(restored.text, /^\[현 직장[^\n]+\]\n\n담당 역할:/u);
+  assert.match(restored.text, /핵심 과제:[^\n]+\n\n\[이전 직장/u);
+  assert.match(restored.text, /담당 역할:[^\n]+\n시험 경험:/u);
+  assert.equal(restored.visualGapRepairCount >= 3, true);
+  assert.equal(structure.compareInlineLabelBodyLayout(source, restored.text).pass, true);
+});
+
 test('코드·표·인용의 행 구조는 라벨 복원 대상이 아니다', () => {
   const source = [
     '```js',

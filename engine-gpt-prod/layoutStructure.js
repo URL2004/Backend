@@ -802,7 +802,13 @@ function measureParagraphReadability(paragraphsOrText, options = {}) {
   const details = paragraphs.map((paragraph, index) => {
     const compact = bare(paragraph).length;
     const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
-    const structureDominated = isStructureDominatedParagraph(paragraph);
+    // 빈 줄 없이 이어진 `라벨: 본문` 묶음은 각 행 자체가 이미 독립적인
+    // 읽기 단위다. 행 전체를 잠그지는 않되(본문은 계속 편집해야 함), 여러
+    // 라벨 행의 문장 수를 한 산문 문단으로 합산해 과장문으로 판정하지 않는다.
+    // 이전에는 이 묶음을 억지로 분할한 뒤 최종 구조 복원이 다시 합치면서
+    // layoutRepair만 실패로 남고 실제 결과의 시각 여백도 사라졌다.
+    const structureDominated = isStructureDominatedParagraph(paragraph)
+      || isReadableInlineLabelGroup(paragraph);
     const splitNeed = structureDominated ? 1 : paragraphSplitNeed(paragraph, options);
     return { index, compact, sentenceCount, structureDominated, splitNeed, overlong: splitNeed > 1 };
   });
@@ -844,9 +850,16 @@ function measureParagraphReadabilityDetails(paragraphsOrText, options = {}) {
   return paragraphs.map((paragraph, index) => {
     const compact = bare(paragraph).length;
     const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
-    const structureDominated = isStructureDominatedParagraph(paragraph);
+    const structureDominated = isStructureDominatedParagraph(paragraph)
+      || isReadableInlineLabelGroup(paragraph);
     return { index, compact, sentenceCount, structureDominated };
   });
+}
+
+function isReadableInlineLabelGroup(value) {
+  const records = buildLineRecords(value).filter(record => !record.blank);
+  return records.length >= 2
+    && records.every(record => String(record?.role || '') === 'label_inline');
 }
 
 function isStructureDominatedParagraph(value) {

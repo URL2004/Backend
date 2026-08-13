@@ -127,7 +127,9 @@ async function completeJson({
   let outputText = '';
   let status = '';
   let incompleteReason = '';
-  for (let schemaAttempt = 0; schemaAttempt < 2; schemaAttempt += 1) {
+  let schemaAttempt = 0;
+  let truncationRetryUsed = false;
+  while (schemaAttempt < 2) {
     const request = requestForSchemaAttempt(schemaAttempt);
     const fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, chunkDeadlineMs);
     mergeRetryCounts(retryCounts, fetched.retryCounts);
@@ -135,6 +137,15 @@ async function completeJson({
     status = raw.status || 'completed';
     incompleteReason = raw.incomplete_details?.reason || '';
     if (status !== 'completed') {
+      if (incompleteReason === 'max_output_tokens' && !truncationRetryUsed) {
+        // reasoning과 구조화 JSON도 같은 출력 예산을 사용한다. 첫 응답이
+        // max_output_tokens로 끝났다고 원문 fallback/전체 차단으로 보내지 않고,
+        // 같은 모델·같은 절대 마감시간 안에서 출력 여유만 한 번 확장한다.
+        truncationRetryUsed = true;
+        retryCounts.truncation += 1;
+        body.max_output_tokens = expandedMaxOutputTokens(body.max_output_tokens);
+        continue;
+      }
       const error = new Error(`OpenAI response was not completed: ${status}${incompleteReason ? ` (${incompleteReason})` : ''}`);
       error.code = incompleteReason === 'max_output_tokens' ? 'OPENAI_TRUNCATED_OUTPUT' : 'OPENAI_INCOMPLETE_OUTPUT';
       error.incompleteReason = incompleteReason;
@@ -157,6 +168,7 @@ async function completeJson({
         throw error;
       }
       retryCounts.schema += 1;
+      schemaAttempt += 1;
     }
   }
   const elapsedMs = Date.now() - startedAt;
@@ -336,7 +348,14 @@ function isQuotaExhaustionMessage(value) {
 }
 
 function emptyRetryCounts() {
-  return { rateLimit: 0, server: 0, network: 0, timeout: 0, schema: 0 };
+  return { rateLimit: 0, server: 0, network: 0, timeout: 0, schema: 0, truncation: 0 };
+}
+
+function expandedMaxOutputTokens(value) {
+  const current = Math.max(1, Number(value) || 4096);
+  const configuredCap = Number(process.env.OPENAI_TRUNCATION_RETRY_MAX_OUTPUT_TOKENS);
+  const cap = Math.max(8000, Math.min(32000, Number.isFinite(configuredCap) ? configuredCap : 20000));
+  return Math.min(cap, Math.max(4096, current + 2048, Math.ceil(current * 1.75)));
 }
 
 function mergeRetryCounts(target, source) {

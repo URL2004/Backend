@@ -138,8 +138,8 @@ const server = app.listen(process.env.PORT || 3000, async () => {
   });
 });
 
-// ── graceful shutdown: 배포(Render는 SIGTERM)·Ctrl+C 시 새 작업 거부 → 진행 중 LLM 중단(비용 차단) →
-//   job 상태 영속화 후 종료. 영속화 덕에 폴링 클라이언트는 재시작 후에도 404 대신 정확한 상태를 받는다.
+// ── graceful shutdown: 배포(Render는 SIGTERM)·Ctrl+C 시 새 작업 거부 → 진행 중 LLM 중단 →
+//   같은 job ID를 자동 재개 대기로 영속화한다. 다음 인스턴스가 이어받아 사용자가 다시 제출할 필요가 없다.
 let shuttingDown = false;
 async function shutdown(sig) {
   if (shuttingDown) return;

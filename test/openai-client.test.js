@@ -241,17 +241,46 @@ test('청크 절대 마감시간은 다음 모델 호출에 새 시간 창을 �
   assert.equal(calls, 0);
 });
 
-test('max_output_tokens로 끝난 구조화 응답은 문장 절단으로 차단한다', { concurrency: false }, async t => {
+test('max_output_tokens 응답은 같은 모델에서 출력 예산을 늘려 한 번 회복한다', { concurrency: false }, async t => {
   const originalFetch = global.fetch;
   const originalKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key';
-  global.fetch = async () => responseJson({
-    ...completed({ value: '겉보기에는 완성된 JSON' }),
-    status: 'incomplete',
-    incomplete_details: { reason: 'max_output_tokens' }
+  const budgets = [];
+  global.fetch = async (_url, request) => {
+    budgets.push(JSON.parse(request.body).max_output_tokens);
+    if (budgets.length === 1) return responseJson({
+      ...completed({ value: '잘린 응답' }),
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' }
+    });
+    return responseJson(completed({ value: '회복된 응답' }));
+  };
+  t.after(() => { global.fetch = originalFetch; process.env.OPENAI_API_KEY = originalKey; });
+  const result = await completeJson({
+    system: 'test', user: 'test', schema: SIMPLE_SCHEMA, schemaName: 'test_schema', model: 'gpt-5.6-luna', maxOutputTokens: 3000
   });
+  assert.equal(result.json.value, '회복된 응답');
+  assert.equal(budgets.length, 2);
+  assert.ok(budgets[1] > budgets[0]);
+  assert.equal(result.retryCounts.truncation, 1);
+});
+
+test('max_output_tokens가 두 번 연속 발생하면 잘린 출력을 전달하지 않는다', { concurrency: false }, async t => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return responseJson({
+      ...completed({ value: '겉보기에는 완성된 JSON' }),
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' }
+    });
+  };
   t.after(() => { global.fetch = originalFetch; process.env.OPENAI_API_KEY = originalKey; });
   await assert.rejects(() => completeJson({
     system: 'test', user: 'test', schema: SIMPLE_SCHEMA, schemaName: 'test_schema', model: 'gpt-5.6-luna'
-  }), error => error.code === 'OPENAI_TRUNCATED_OUTPUT');
+  }), error => error.code === 'OPENAI_TRUNCATED_OUTPUT' && error.retryCounts?.truncation === 1);
+  assert.equal(calls, 2);
 });

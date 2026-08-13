@@ -54,7 +54,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.35';
+const VERSION = 'gpt-prod-v2.5.36';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -6220,7 +6220,8 @@ function sanitizeRetryCounts(value) {
     server: Math.max(0, Number(source.server) || 0),
     network: Math.max(0, Number(source.network) || 0),
     timeout: Math.max(0, Number(source.timeout) || 0),
-    schema: Math.max(0, Number(source.schema) || 0)
+    schema: Math.max(0, Number(source.schema) || 0),
+    truncation: Math.max(0, Number(source.truncation) || 0)
   };
 }
 

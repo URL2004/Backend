@@ -33,6 +33,50 @@ function restoreInlineCode(value, frozen) {
   };
 }
 
+// 토큰 복원 뒤에 실행되는 모델 기반 공백 수리나 한국어 결정론 수리가
+// 인라인 코드 리터럴까지 건드리지 못하게 최종 출력의 코드 span을 원문
+// 순서대로 다시 고정한다. 개수나 순서가 달라진 경우에는 위치를 추측해
+// 삽입하지 않고 감사 실패로 남긴다.
+function restoreInlineCodeByOrder(value, frozen) {
+  const before = String(value || '');
+  const expected = frozen?.blocks || [];
+  if (!expected.length) {
+    return { text: before, pass: true, orderPass: true, applied: false, restoredCount: 0, missingCount: 0 };
+  }
+  const spans = [...before.matchAll(INLINE_CODE_RE)].map(match => ({
+    start: Number(match.index || 0),
+    end: Number(match.index || 0) + match[0].length,
+    value: match[0]
+  }));
+  if (spans.length !== expected.length) {
+    return {
+      text: before,
+      pass: false,
+      orderPass: false,
+      applied: false,
+      restoredCount: 0,
+      missingCount: Math.abs(expected.length - spans.length) || 1
+    };
+  }
+  let text = before;
+  let restoredCount = 0;
+  for (let index = spans.length - 1; index >= 0; index -= 1) {
+    const span = spans[index];
+    const original = expected[index].value;
+    if (span.value === original) continue;
+    text = `${text.slice(0, span.start)}${original}${text.slice(span.end)}`;
+    restoredCount += 1;
+  }
+  return {
+    text,
+    pass: true,
+    orderPass: true,
+    applied: restoredCount > 0,
+    restoredCount,
+    missingCount: 0
+  };
+}
+
 function freezeMath(value) {
   const source = String(value || '');
   const blocks = [];
@@ -118,6 +162,7 @@ function restoreMathByOrder(value, frozen) {
 module.exports = {
   freezeInlineCode,
   restoreInlineCode,
+  restoreInlineCodeByOrder,
   freezeMath,
   restoreMath,
   restoreMathByOrder

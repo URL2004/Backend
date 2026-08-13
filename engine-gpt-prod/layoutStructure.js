@@ -174,6 +174,7 @@ function classifyLine(value, context = {}) {
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
   if (context.labelGroupHeading) return 'heading';
+  if (isContextualStrongNominalHeading(text, context)) return 'heading';
   if (isGenericTitle(text, context)) return 'title';
   if (isTitleContinuation(text, context)) return 'title';
   if (context.parallelSectionHeading) return 'heading';
@@ -267,8 +268,28 @@ function isKnownHeadingLine(value) {
   // 다시 갈라질 수 있으므로 짧은 무종결 행 전체를 잠근다.
   if (/^[^.!?。！？\n]{2,70}\s*[—–-]\s*\d{1,3}[.)]?\s+[^.!?。！？\n]{2,100}$/u.test(text)) return true;
   if (/^(?:성장\s*(?:과정|배경)(?:과\s*(?:학교|학창)\s*시절)?|나의\s*성격적\s*강점과\s*약점|성격의\s*장단점|지원\s*동기|직무\s*역량|경력\s*사항|입사\s*후(?:의)?\s*(?:포부|목표)(?:와\s*포부)?)$/u.test(text)) return true;
+  // 번호가 없는 자기소개서·기획서 소제목도 독립 행 전체가 짧은 명사구이고
+  // 강한 제목 종결어로 끝나면 구조다. 완결 서술문이나 조사가 붙은 본문은
+  // 제외해 `경험이 중요하다` 같은 일반 문장을 잠그지 않는다.
   if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
   return /^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/iu.test(text);
+}
+
+function isStrongNominalSectionHeading(value) {
+  const text = visibleTrim(value);
+  if (text.length < 4 || text.length > 70 || /[.!?。！？:：;；]$/u.test(text)) return false;
+  if (/(?:합니다|했습니다|됩니다|되었습니다|이다|였다|있다|없다|않다|한다|했다|해요|예요|이에요)$/u.test(text)) return false;
+  return /(?:경험|역량|목표|계획|성과|전략|정체성|문제\s*해결|커뮤니케이션|업무\s*이해|직무\s*이해|지원\s*동기|활동\s*내용|배운\s*점|느낀\s*점)$/u.test(text);
+}
+
+function isContextualStrongNominalHeading(text, context = {}) {
+  if (!isStrongNominalSectionHeading(text) || !context.next) return false;
+  const nextText = String(context.next.text || '').trim();
+  if (nextText.length < Math.max(70, Math.ceil(text.length * 1.45))) return false;
+  if (context.blankBefore) return true;
+  if (['table', 'list', 'flow', 'quote'].includes(String(context.previous?.role || ''))) return true;
+  const previousText = String(context.previous?.text || '').trim();
+  return previousText.length >= 70 && isSentenceComplete(previousText);
 }
 
 function isStandaloneMarkdownControlLine(value) {
@@ -286,7 +307,8 @@ function isStandaloneSectionHeading(text, context = {}) {
   // 빈 행이어야 한다는 옛 조건은 이런 정상 소제목을 산문으로 내려 모델이
   // 이전 문단 끝에 합치게 했다. 앞쪽 단락 경계와 뒤의 충분한 본문을 함께
   // 확인하므로 blankAfter는 필수로 두지 않는다.
-  if (!context.blankBefore || !context.next) return false;
+  const afterStructure = ['table', 'list', 'flow', 'quote'].includes(String(context.previous?.role || ''));
+  if ((!context.blankBefore && !afterStructure) || !context.next) return false;
   if (text.length < 2 || text.length > 70) return false;
   if (/[.!?。！？]\s*["”’')\]]*$/u.test(text)) return false;
   if (/^(?:https?:|www\.|[A-Za-z]:\\)/iu.test(text)) return false;
@@ -644,7 +666,7 @@ function isQuoteLine(value) {
   // 따옴표로 시작한다는 이유만으로 뒤에 본문이 이어지는 긴 산문 전체를
   // 인용 블록으로 잠그지 않는다. 독립 인용 행만 구조로 취급하고, 문장
   // 첫머리의 속담·좌우명은 일반 산문으로 두어 바깥 띄어쓰기를 교정한다.
-  return /^(?:“[^”\n]{1,500}”|‘[^’\n]{1,500}’|"[^"\n]{1,500}"|'[^'\n]{1,500}'|「[^」\n]{1,500}」|『[^』\n]{1,500}』|《[^》\n]{1,500}》|〈[^〉\n]{1,500}〉)$/u.test(text);
+  return /^(?:“[^”\n]{1,500}”|‘[^’\n]{1,500}’|"[^"\n]{1,500}"|'[^'\n]{1,500}'|「[^」\n]{1,500}」|『[^』\n]{1,500}』|《[^》\n]{1,500}》|〈[^〉\n]{1,500}〉)(?:\s*[-–—]\s*\S.{0,120})?$/u.test(text);
 }
 
 function isSentenceComplete(value) {

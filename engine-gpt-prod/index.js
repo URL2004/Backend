@@ -54,7 +54,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.36';
+const VERSION = 'gpt-prod-v2.5.37';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -2545,6 +2545,140 @@ async function runEngine({
         + Number(fixedPointMath.missingCount || 0)
     };
   }
+  // collapsed-spacing 모델 재시도·수식 복원까지 끝난 진짜 마지막 시점에
+  // 전체 레이아웃 고정점을 실행한다. 이전에는 이들 후단 변경 뒤에 잠긴
+  // 구조만 재감사해 표 경계·무번호 소제목·일반 문단이 다시 붙을 수 있었다.
+  {
+    const fixedPointLayout = structureChunk.restoreFinalDocumentLayout({
+      source: rawSource,
+      outputText,
+      chunks,
+      mode: selectedMode,
+      requestStrength,
+      documentProfile,
+      profileConfidence: documentProfile.confidence,
+      normalizeVisualGaps: selectedMode !== 'polish'
+        && String(documentProfile?.profile || '') !== 'creative'
+    });
+    if (fixedPointLayout.applied && fixedPointLayout.contentPreserved) {
+      outputText = fixedPointLayout.text;
+    }
+    layoutRepair.finalFixedPoint = {
+      applied: fixedPointLayout.applied === true,
+      structuralPass: fixedPointLayout.structuralPass !== false,
+      readabilityPass: fixedPointLayout.readabilityPass !== false,
+      contentPreserved: fixedPointLayout.contentPreserved === true,
+      boundaryRestoredCount: Number(fixedPointLayout.finalLocked?.boundaryRestoredCount || 0),
+      missingCount: Number(fixedPointLayout.finalLocked?.missingCount || 0)
+    };
+    layoutRepair.structuralPass = fixedPointLayout.structuralPass !== false;
+    layoutRepair.readabilityPass = fixedPointLayout.readabilityPass !== false;
+    layoutRepair.pass = fixedPointLayout.structuralPass !== false;
+  }
+  // 최종 구조 조립이 인용 경계·조사 공백을 되살린 뒤에도 고신뢰 한국어
+  // 수리가 한 번은 수렴하도록 모델 호출 없는 고정점을 실행한다.
+  {
+    const beforeAudit = koreanRefinement.analyzeKoreanRefinement({
+      source: rawSource,
+      outputText,
+      documentProfile,
+      mode: selectedMode
+    });
+    const deterministic = koreanRefinement.applySafeDeterministicRepairs({
+      source: rawSource,
+      outputText,
+      documentProfile
+    });
+    if (deterministic.applied) {
+      const candidateAudit = koreanRefinement.analyzeKoreanRefinement({
+        source: rawSource,
+        outputText: deterministic.text,
+        documentProfile,
+        mode: selectedMode
+      });
+      if (koreanRefinement.isImprovedAudit(beforeAudit, candidateAudit)
+          && preservesFinalStructure(rawSource, deterministic.text, chunks, chunkPlan, boundaryRepair)) {
+        outputText = deterministic.text;
+        koreanDeterministicRepairCount += Number(deterministic.changeCount || deterministic.changes?.length || 1);
+      }
+    }
+  }
+  // 위 결정론 수리까지 포함한 진짜 최종 문자열에서 리터럴과 레이아웃을
+  // 다시 고정한다. 이전 구현은 모델 공백 재시도 뒤 수식만 복원했고,
+  // 결정론 수리 뒤에는 레이아웃 고정점을 다시 실행하지 않아 인라인 코드나
+  // 표 경계가 최종 결과에서 달라져도 앞 단계 감사값만 남을 수 있었다.
+  if (inlineCodeFreeze.count > 0 && inlineCodeIntegrity.orderPass !== false) {
+    const fixedPointCode = literalSpans.restoreInlineCodeByOrder(outputText, inlineCodeFreeze);
+    if (fixedPointCode.applied) outputText = fixedPointCode.text;
+    inlineCodeIntegrity = {
+      ...fixedPointCode,
+      pass: inlineCodeIntegrity.pass !== false && fixedPointCode.pass !== false,
+      orderPass: inlineCodeIntegrity.orderPass !== false && fixedPointCode.orderPass !== false,
+      restoredCount: Math.max(
+        Number(inlineCodeIntegrity.restoredCount || 0),
+        Number(fixedPointCode.restoredCount || 0)
+      ),
+      fixedPointRestoreCount: Number(fixedPointCode.restoredCount || 0),
+      missingCount: Number(inlineCodeIntegrity.missingCount || 0)
+        + Number(fixedPointCode.missingCount || 0)
+    };
+  }
+  if (inlineMathFreeze.count > 0 && inlineMathIntegrity.orderPass !== false) {
+    const finalFixedPointMath = literalSpans.restoreMathByOrder(outputText, inlineMathFreeze);
+    if (finalFixedPointMath.applied) outputText = finalFixedPointMath.text;
+    inlineMathIntegrity = {
+      ...finalFixedPointMath,
+      pass: inlineMathIntegrity.pass !== false && finalFixedPointMath.pass !== false,
+      orderPass: inlineMathIntegrity.orderPass !== false && finalFixedPointMath.orderPass !== false,
+      restoredCount: Math.max(
+        Number(inlineMathIntegrity.restoredCount || 0),
+        Number(finalFixedPointMath.restoredCount || 0)
+      ),
+      fixedPointRestoreCount: Number(inlineMathIntegrity.fixedPointRestoreCount || 0)
+        + Number(finalFixedPointMath.restoredCount || 0),
+      missingCount: Number(inlineMathIntegrity.missingCount || 0)
+        + Number(finalFixedPointMath.missingCount || 0)
+    };
+  }
+  {
+    const previousFixedPoint = layoutRepair.finalFixedPoint || {};
+    const finalLayout = structureChunk.restoreFinalDocumentLayout({
+      source: rawSource,
+      outputText,
+      chunks,
+      mode: selectedMode,
+      requestStrength,
+      documentProfile,
+      profileConfidence: documentProfile.confidence,
+      normalizeVisualGaps: selectedMode !== 'polish'
+        && String(documentProfile?.profile || '') !== 'creative'
+    });
+    if (finalLayout.applied && finalLayout.contentPreserved) outputText = finalLayout.text;
+    layoutRepair.finalFixedPoint = {
+      applied: previousFixedPoint.applied === true || finalLayout.applied === true,
+      structuralPass: finalLayout.structuralPass !== false,
+      readabilityPass: finalLayout.readabilityPass !== false,
+      contentPreserved: finalLayout.contentPreserved === true,
+      boundaryRestoredCount: Number(previousFixedPoint.boundaryRestoredCount || 0)
+        + Number(finalLayout.finalLocked?.boundaryRestoredCount || 0),
+      missingCount: Number(finalLayout.finalLocked?.missingCount || 0)
+    };
+    layoutRepair.applied = layoutRepair.applied === true || finalLayout.applied === true;
+    layoutRepair.structuralPass = finalLayout.structuralPass !== false;
+    layoutRepair.readabilityPass = finalLayout.readabilityPass !== false;
+    layoutRepair.pass = finalLayout.structuralPass !== false;
+  }
+  // 늦은 모델·한국어·레이아웃 수리까지 끝난 뒤 직접 인용을 다시 감사한다.
+  // 앞서 계산한 quoteIntegrityAudit를 그대로 쓰면 후단 변경을 놓칠 수 있다.
+  {
+    const restoredQuotes = restoreDirectQuoteContents(rawSource, outputText);
+    if (restoredQuotes.applied) {
+      outputText = restoredQuotes.text;
+      quoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+      finalQuoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+    }
+    quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
+  }
   {
     koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
       source: rawSource,
@@ -2552,6 +2686,31 @@ async function runEngine({
       documentProfile,
       mode: selectedMode
     });
+  }
+  // 관리자 지표와 전달 정책은 실제 최종 문자열을 채점해야 한다. 과거에는
+  // `final` 깊이 스냅샷 뒤에 공백·리터럴·레이아웃 수리가 남아 있어 화면의
+  // 실질 편집률과 전달된 본문이 서로 달라질 수 있었다.
+  if (humanizationDepthEnabled && selectedMode !== 'polish') {
+    humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
+    humanizationDepthStages.push(buildDepthStageSnapshot('delivery_final', humanizationDepthReport));
+  }
+  if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
+    fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+  }
+  endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
+  resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
+  if (selectedMode === 'polish') {
+    polishReport = qualityV2.polishEditPolicy(rawSource, outputText, { documentProfile });
+    polishPaddingReport = qualityV2.comparePolishEvaluativePadding(rawSource, outputText);
+    // 중간 단계에서 세운 strict 상태를 최종 문자열에 그대로 끌고 오면, 모델이
+    // 무변환을 반환했더라도 뒤의 안전한 결정론 교정(예: 메세지→메시지)이 실제로
+    // 적용된 작업까지 polish_unchanged로 차단된다. 전달 직전에는 오직 최종
+    // 결과의 정책 위반만으로 strict 상태를 다시 계산한다.
+    polishStrictFailure = polishReport.noSafeChange
+      ? 'polish_unchanged'
+      : (polishReport.excessiveChange
+          ? 'polish_excessive_change'
+          : (polishPaddingReport.increased ? 'polish_evaluative_padding_added' : ''));
   }
   const finalCollapsedSpacingCount = koreanIssueAfterCount(
     koreanRefinementAudit,
@@ -2651,11 +2810,16 @@ async function runEngine({
       || Number(finalSubstantiveMetrics.substantiveChangedSentenceCount || 0) === 0
       || Number(finalSubstantiveMetrics.substantiveEditRatio || 0) < 0.01
     );
+  const finalSafePolishEditApplied = selectedMode === 'polish'
+    && !finalEquivalent
+    && polishStrictFailure === ''
+    && polishReport?.pass === true;
   const approvedModelChunkCount = countApprovedModelChunks(records, chunks, {
     mode: selectedMode,
     documentRecoveryApplied: finalNoopRecovery.applied === true
       || generalSurfaceRetryCount > 0
       || (polishRetryCount > 0 && !polishStrictFailure)
+      || finalSafePolishEditApplied
   });
   const modelFailureChunkCount = records.filter(record => isModelFailureRecord(record)).length;
   if (finalEquivalent || finalSubstantiveNoEffect || approvedModelChunkCount === 0) {
@@ -2925,6 +3089,12 @@ async function runEngine({
     explicitParagraphCountBefore: Number(layoutRepair?.paragraphs?.explicitParagraphCountBefore || 0),
     explicitParagraphCountAfter: Number(layoutRepair?.paragraphs?.explicitParagraphCountAfter || 0),
     paragraphReadability: layoutRepair?.paragraphs?.readability || null,
+    finalLayoutFixedPointApplied: layoutRepair?.finalFixedPoint?.applied === true,
+    finalLayoutStructuralPass: layoutRepair?.finalFixedPoint?.structuralPass !== false,
+    finalLayoutReadabilityPass: layoutRepair?.finalFixedPoint?.readabilityPass !== false,
+    finalLayoutContentPreserved: layoutRepair?.finalFixedPoint?.contentPreserved === true,
+    finalLayoutBoundaryRestoreCount: Number(layoutRepair?.finalFixedPoint?.boundaryRestoredCount || 0),
+    finalLayoutMissingCount: Number(layoutRepair?.finalFixedPoint?.missingCount || 0),
     inlineLabelBodyRepairCount: Number(layoutRepair?.inlineLabels?.repairCount || 0)
       + Number(layoutRepair?.finalLockedStructure?.inlineLabelBodyRepairCount || 0),
     inlineLabelBodyApplicableCount: Math.max(
@@ -2993,6 +3163,7 @@ async function runEngine({
     chunkConcurrency,
     primaryApprovedModelChunkCount,
     approvedModelChunkCount,
+    approvedSafeEditCount: finalSafePolishEditApplied ? 1 : 0,
     modelFailureChunkCount,
     deliveryDecision: finalDeliveryDecision,
     deliveryReasonCodes: finalDeliveryReasonCodes,
@@ -3327,6 +3498,7 @@ async function runEngine({
     inlineCodeSpanCount: Number(inlineCodeFreeze.count || 0),
     inlineCodeIntegrityPass: inlineCodeIntegrity.pass === true,
     inlineCodeRestoredCount: Number(inlineCodeIntegrity.restoredCount || 0),
+    inlineCodeFixedPointRestoreCount: Number(inlineCodeIntegrity.fixedPointRestoreCount || 0),
     inlineMathSpanCount: Number(inlineMathFreeze.count || 0),
     inlineMathIntegrityPass: inlineMathIntegrity.pass === true,
     inlineMathOrderPass: inlineMathIntegrity.orderPass !== false,

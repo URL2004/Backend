@@ -153,7 +153,10 @@ function auditVoice(sourceProfile, output, {
   const pluralRemoved = sourcePluralSignature && currentPluralSignature
     ? signatureTotal(sourcePluralSignature) > 0 && signatureTotal(currentPluralSignature) === 0
     : (sourceProfile?.pov?.firstPlural || 0) > 0 && current.pov.firstPlural === 0;
-  if (pluralInjected) {
+  const implicitJointActorRetained = pluralInjected
+    && /(?:와|과)\s*(?:같이|함께)|(?:같이|함께)\s+(?:가|하|수행|진행|참여)/u.test(String(sourceText || ''))
+    && /우리(?:가|는)?\s+(?:같이|함께)/u.test(String(output || ''));
+  if (pluralInjected && !implicitJointActorRetained) {
     warnings.push(warning('speaker_injected', '원문에 없던 1인칭 복수 화자가 추가됐을 수 있어요.'));
   }
   const personalScopeAudit = sourceText
@@ -705,10 +708,15 @@ function pluralSpeakerSignature(value) {
     `(^|[^가-힣A-Za-z0-9_])우리[ \\t]*(${nounPattern})(?=${particlePattern}(?:$|[^가-힣A-Za-z0-9_]))`,
     'gu'
   );
-  const genericInclusiveMasked = String(value || '').replace(
-    /(^|[^가-힣A-Za-z0-9_])우리는(?=\s+(?:모두(?:가)?\s+)?(?:혼자(?:서)?\s+(?:살|사는|존재|해결|감당)|누구나|서로\s+(?:돕|의지)|사회적\s+(?:존재|동물)))/gu,
-    '$1사람은'
-  );
+  const genericInclusiveMasked = String(value || '')
+    .replace(
+      /(^|[^가-힣A-Za-z0-9_])우리는(?=\s+(?:모두(?:가)?\s+)?(?:혼자(?:서)?\s+(?:살|사는|존재|해결|감당)|누구나|서로\s+(?:돕|의지)|사회적\s+(?:존재|동물)))/gu,
+      '$1사람은'
+    )
+    // `우리 주변`, `우리 눈에`, `우리가 이미 알고 있는`은 특정 조직의
+    // 집단 화자가 아니라 독자를 포함한 보편적 관찰 범위다.
+    .replace(/(^|[^가-힣A-Za-z0-9_])우리\s+(?=(?:주변|눈(?:앞)?)(?:에서|에는|에|으로|의|을|를|이|가|도|만|\s))/gu, '$1')
+    .replace(/(^|[^가-힣A-Za-z0-9_])우리가\s+(?=(?:이미|흔히|잘)\s+(?:알고|아는|보는|접하는))/gu, '$1사람들이 ');
   const masked = genericInclusiveMasked.replace(pattern, (_match, prefix, noun) => {
     lexical[noun] = (lexical[noun] || 0) + 1;
     return `${prefix}대상`;

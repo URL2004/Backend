@@ -21,7 +21,7 @@ function reportProfile() {
 }
 
 test('v2.5.36 엔진 버전을 사용한다', () => {
-  assert.equal(engine.VERSION, 'gpt-prod-v2.5.36');
+  assert.equal(engine.VERSION, 'gpt-prod-v2.5.37');
 });
 
 test('긴 영문 병기 라벨도 구조 판정과 동일한 접두부로 잠근다', () => {

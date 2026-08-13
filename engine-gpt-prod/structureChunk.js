@@ -378,13 +378,22 @@ function restorePostSemanticLayout({ source, outputText, chunks, mode = '', requ
     profileConfidence
   });
   const inlineLabels = restoreInlineLabelBodyLayout(source, paragraphs.text);
+  const structuralPass = heading.missingCount === 0
+    && inlineLabels.pass
+    && bare(paragraphs.text) === bare(heading.text);
+  const readabilityPass = paragraphs.pass !== false;
   return {
     text: inlineLabels.text,
     applied: heading.applied || paragraphs.applied || inlineLabels.applied,
     heading,
     paragraphs,
     inlineLabels,
-    pass: heading.missingCount === 0 && paragraphs.pass && inlineLabels.pass
+    structuralPass,
+    readabilityPass,
+    // 구조 무결성과 읽기 권장치를 한 pass에 섞으면 긴 문단 하나만 남아도
+    // structure_audit_failed가 된다. 전달 안전성은 구조만, 가독성은 별도
+    // effect 관측으로 기록한다.
+    pass: structuralPass
   };
 }
 
@@ -484,7 +493,7 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
 // 제목·라벨·불릿·조문 접두부의 원래 행 위치만 마지막에 한 번 더 복원한다.
 function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVisualGaps = false } = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
-  const blocks = restoreExactLockedBlocks(heading.text, chunks);
+  const blocks = restoreExactLockedBlocks(heading.text, chunks, source);
   const markdownControls = restoreStandaloneMarkdownControlLines(source, blocks.text);
   const inlineLabels = restoreInlineLabelBodyLayout(source, markdownControls.text);
   // 최종 잠금 복원은 원문의 단일 개행을 되살리므로, 앞서 가독성 단계가
@@ -506,6 +515,7 @@ function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVis
     headingCount: heading.headingCount,
     blockCount: blocks.blockCount,
     restoredCount: heading.restoredCount + blocks.restoredCount + markdownControls.restoredCount + inlineLabels.repairCount,
+    boundaryRestoredCount: Number(blocks.boundaryRestoredCount || 0),
     approximateRestoredCount: Number(blocks.approximateRestoredCount || 0),
     missingCount: heading.missingCount + blocks.missingCount + markdownControls.missingCount + inlineLabels.missingCount,
     missingBlocks: blocks.missingBlocks || [],
@@ -519,6 +529,127 @@ function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVis
       && markdownControls.missingCount === 0
       && inlineLabels.pass
   };
+}
+
+// 최종 어휘 수리·중복 제거·자소서 주장 복원은 잠긴 구조 주변의 구분자를
+// 다시 공백으로 만들거나 일반 산문 문단을 합칠 수 있다. 먼저 원문 구조
+// 슬롯(표·제목·인용·코드 등)의 내용과 경계를 복원한 뒤에만 산문 레이아웃을
+// 정리하고, 마지막으로 구조 슬롯을 한 번 더 잠근다. 이 순서를 지키면
+// paragraphizer가 손상된 표를 산문으로 오인해 행을 더 줄이는 일을 막는다.
+function restoreFinalDocumentLayout({
+  source,
+  outputText,
+  chunks,
+  mode = '',
+  requestStrength = '',
+  documentProfile = '',
+  profileConfidence = 0,
+  normalizeVisualGaps = false
+} = {}) {
+  let text = normalizeNewlines(outputText);
+  let initialLocked = null;
+  let paragraphs = null;
+  let finalLocked = null;
+  let iterationCount = 0;
+  let converged = false;
+  let citationTailRepairCount = 0;
+  const maximumIterations = 5;
+  for (let attempt = 0; attempt < maximumIterations; attempt += 1) {
+    iterationCount = attempt + 1;
+    const before = text;
+    initialLocked = restoreLockedStructureLayout({
+      source,
+      outputText: before,
+      chunks,
+      normalizeVisualGaps: false
+    });
+    paragraphs = restorePostSemanticLayout({
+      source,
+      outputText: initialLocked.text,
+      chunks,
+      mode,
+      requestStrength,
+      documentProfile,
+      profileConfidence
+    });
+    finalLocked = restoreLockedStructureLayout({
+      source,
+      outputText: paragraphs.text,
+      chunks,
+      normalizeVisualGaps
+    });
+    const citationTails = restoreCitationOnlyTails(source, finalLocked.text);
+    text = citationTails.text;
+    citationTailRepairCount += Number(citationTails.repairCount || 0);
+    if (text === before) {
+      converged = true;
+      break;
+    }
+  }
+  const contentPreserved = bare(text) === bare(outputText);
+  const transientStructuralPass = initialLocked.pass !== false
+    && paragraphs.structuralPass !== false;
+  // 중간 paragraphizer가 반복 라벨·제목 cursor를 잠시 놓쳐도 마지막 잠금
+  // 복원에서 모든 구조가 회복되고 문자 내용이 보존되면 전달 구조는 정상이다.
+  // transient 실패는 원인 관측으로 남기되 최종 pass에 다시 섞지 않는다.
+  const structuralPass = finalLocked.pass !== false && contentPreserved;
+  return {
+    text,
+    applied: text !== normalizeNewlines(outputText),
+    structuralPass,
+    transientStructuralPass,
+    readabilityPass: paragraphs.readabilityPass !== false,
+    pass: structuralPass,
+    contentPreserved,
+    iterationCount,
+    converged,
+    citationTailRepairCount,
+    initialLocked,
+    paragraphs,
+    finalLocked
+  };
+}
+
+const CITATION_ONLY_TAIL_RE = /^(?:\(\s*\d+(?:\s*[,;]\s*\d+)+\s*\)|\[\s*\d+(?:\s*[,;]\s*\d+)+\s*\])$/u;
+
+// 문장 끝의 복수 출처 표기 `(7, 8)`를 문단 분할기가 독립 행으로 떼면,
+// 다음 고정점에서 짧은 무종결 소제목으로 오인되어 빈 줄이 계속 늘어난다.
+// 바로 앞의 완결 산문에만 다시 붙이며 표·목록·제목 뒤의 독립 번호 행은
+// 건드리지 않는다. 문자 순서는 그대로이고 경계 공백만 복원한다.
+function restoreCitationOnlyTails(source, value) {
+  let text = normalizeNewlines(value);
+  let repairCount = 0;
+  const sourceStandaloneCitations = new Set(
+    layoutStructure.buildLineRecords(source)
+      .filter(record => !record.blank && CITATION_ONLY_TAIL_RE.test(String(record.text || '').trim()))
+      .map(record => bare(record.text))
+  );
+  // 한 문서에 인접 표기가 여러 개 있어도 행 인덱스가 흔들리지 않도록
+  // 매회 마지막 안전 후보 하나만 붙인 뒤 레코드를 다시 계산한다.
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const records = layoutStructure.buildLineRecords(text);
+    const nonEmpty = records.filter(record => !record.blank);
+    let candidate = null;
+    for (let index = nonEmpty.length - 1; index > 0; index -= 1) {
+      const citation = nonEmpty[index];
+      if (!CITATION_ONLY_TAIL_RE.test(String(citation.text || '').trim())) continue;
+      // 원문 자체가 독립 번호 행으로 둔 수식·좌표·각주라면 그 행 소유권을
+      // 존중한다. 원문에는 문장 꼬리였는데 결과에서만 떨어진 경우만 붙인다.
+      if (sourceStandaloneCitations.has(bare(citation.text))) continue;
+      const previous = nonEmpty[index - 1];
+      if (String(previous.role || '') !== 'prose'
+          || !layoutStructure.isSentenceComplete(previous.text)) continue;
+      candidate = { previous, citation };
+      break;
+    }
+    if (!candidate) break;
+    const lines = text.split('\n');
+    lines[candidate.previous.index] = `${String(lines[candidate.previous.index] || '').trimEnd()} ${String(candidate.citation.text || '').trim()}`;
+    lines.splice(candidate.previous.index + 1, candidate.citation.index - candidate.previous.index);
+    text = normalizeParagraphWhitespace(lines.join('\n'));
+    repairCount += 1;
+  }
+  return { text, applied: repairCount > 0, repairCount };
 }
 
 /**
@@ -693,7 +824,7 @@ const EXACT_LAYOUT_LOCK_TYPES = new Set([
   'legal_clause'
 ]);
 
-function restoreExactLockedBlocks(outputText, chunks) {
+function restoreExactLockedBlocks(outputText, chunks, source = '') {
   const blocks = (chunks || [])
     .filter(chunk => chunk?.locked
       && EXACT_LAYOUT_LOCK_TYPES.has(String(chunk.lockType || ''))
@@ -701,18 +832,52 @@ function restoreExactLockedBlocks(outputText, chunks) {
     .map(chunk => ({
       text: String(chunk.text || '').trim(),
       lockType: String(chunk.lockType || 'structure'),
-      index: Number.isInteger(chunk.index) ? chunk.index : -1
-    }));
+      index: Number.isInteger(chunk.index) ? chunk.index : -1,
+      start: Number.isInteger(chunk.start) ? chunk.start : -1,
+      end: Number.isInteger(chunk.end) ? chunk.end : -1
+    }))
+    // `**` 같은 독립 마크다운 제어 행은 일반 문자열 내부에도 반복된다.
+    // exact span 탐색으로 복원하면 `**라벨 :**` 안의 마커를 오인하므로
+    // 아래 전용 행 앵커 복원기에서만 다룬다.
+    .filter(block => !(block.lockType === 'code' && isStandaloneMarkdownControl(block.text)));
   let text = normalizeNewlines(outputText);
+  const sourceText = normalizeNewlines(source);
+  let sourceCursor = 0;
   let cursor = 0;
   let restoredCount = 0;
+  let boundaryRestoredCount = 0;
   let approximateRestoredCount = 0;
   let missingCount = 0;
   const missingBlocks = [];
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
     const block = blocks[blockIndex];
     const expected = block.text;
-    const equivalent = findWhitespaceEquivalentSpan(text, expected, cursor);
+    let sourceIndex = -1;
+    if (block.start >= 0 && block.end >= block.start) {
+      const sourceSlice = sourceText.slice(block.start, block.end);
+      const localIndex = sourceSlice.indexOf(expected);
+      if (localIndex >= 0 && sourceSlice.trim() === expected) {
+        sourceIndex = block.start + localIndex;
+      }
+    }
+    if (sourceIndex < 0) sourceIndex = sourceText.indexOf(expected, sourceCursor);
+    const sourceEnd = sourceIndex >= 0 ? sourceIndex + expected.length : -1;
+    const sourceBefore = sourceIndex > 0
+      ? sourceLineSeparator(sourceText, sourceIndex, 'before')
+      : (sourceIndex === 0 ? '' : null);
+    const sourceAfter = sourceEnd >= 0 && sourceEnd < sourceText.length
+      ? sourceLineSeparator(sourceText, sourceEnd, 'after')
+      : (sourceEnd === sourceText.length && sourceEnd >= 0 ? '' : null);
+    // 동일 인용문이 본문 안과 독립 인용 행에 함께 있으면 단순 첫 substring은
+    // 본문 속 인용을 구조 블록으로 오인한다. 원문 블록의 앞뒤 행 경계와 가장
+    // 잘 맞는 동등 span을 고른 뒤, 후보가 하나뿐일 때만 경계 손상 복구로 쓴다.
+    const equivalent = findBestLockedBlockSpan(
+      text,
+      expected,
+      cursor,
+      sourceBefore,
+      sourceAfter
+    );
     const approximate = equivalent || findDamagedLockedBlockSpan(
       text,
       block,
@@ -724,17 +889,30 @@ function restoreExactLockedBlocks(outputText, chunks) {
       missingBlocks.push({ index: block.index, lockType: block.lockType });
       continue;
     }
-    const previous = text.slice(approximate.start, approximate.end);
-    text = `${text.slice(0, approximate.start)}${expected}${text.slice(approximate.end)}`;
-    if (previous !== expected) restoredCount += 1;
+    let left = approximate.start;
+    let right = approximate.end;
+    while (left > 0 && /\s/u.test(text[left - 1])) left -= 1;
+    while (right < text.length && /\s/u.test(text[right])) right += 1;
+    const currentBefore = text.slice(left, approximate.start);
+    const currentAfter = text.slice(approximate.end, right);
+    const expectedBefore = sourceBefore === null ? currentBefore : sourceBefore;
+    const expectedAfter = sourceAfter === null ? currentAfter : sourceAfter;
+    const previousCore = text.slice(approximate.start, approximate.end);
+    const previous = text.slice(left, right);
+    const replacement = `${expectedBefore}${expected}${expectedAfter}`;
+    text = `${text.slice(0, left)}${replacement}${text.slice(right)}`;
+    if (previousCore !== expected) restoredCount += 1;
+    if (currentBefore !== expectedBefore || currentAfter !== expectedAfter) boundaryRestoredCount += 1;
     if (!equivalent) approximateRestoredCount += 1;
-    cursor = approximate.start + expected.length;
+    cursor = left + replacement.length;
+    if (sourceEnd >= 0) sourceCursor = sourceEnd;
   }
   return {
     text,
-    applied: restoredCount > 0,
+    applied: restoredCount > 0 || boundaryRestoredCount > 0,
     blockCount: blocks.length,
     restoredCount,
+    boundaryRestoredCount,
     approximateRestoredCount,
     missingCount,
     missingBlocks
@@ -877,9 +1055,55 @@ function commonPrefixLength(left, right) {
 }
 
 function findWhitespaceEquivalentSpan(value, expected, cursor = 0) {
+  return findWhitespaceEquivalentSpans(value, expected, cursor, 1)[0] || null;
+}
+
+function findBestLockedBlockSpan(value, expected, cursor = 0, sourceBefore = null, sourceAfter = null) {
+  const spans = findWhitespaceEquivalentSpans(value, expected, cursor, 64);
+  if (spans.length <= 1) return spans[0] || null;
+  const text = normalizeNewlines(value);
+  return spans
+    .map(span => ({
+      ...span,
+      boundaryScore: lockedBoundaryScore(text, span, sourceBefore, sourceAfter)
+    }))
+    .sort((left, right) => right.boundaryScore - left.boundaryScore || left.start - right.start)[0];
+}
+
+function lockedBoundaryScore(text, span, sourceBefore, sourceAfter) {
+  const before = adjacentWhitespace(text, span.start, 'before');
+  const after = adjacentWhitespace(text, span.end, 'after');
+  return boundarySimilarityScore(sourceBefore, before, span.start === 0)
+    + boundarySimilarityScore(sourceAfter, after, span.end === text.length);
+}
+
+function boundarySimilarityScore(expected, actual, atEdge) {
+  if (expected === null) return 0;
+  if (expected === actual) return 6;
+  const expectedNewlines = (String(expected || '').match(/\n/gu) || []).length;
+  const actualNewlines = (String(actual || '').match(/\n/gu) || []).length;
+  if (!expectedNewlines && !actualNewlines && ((expected === '' && atEdge) || (expected !== '' && actual !== ''))) return 4;
+  if (expectedNewlines > 0 && actualNewlines > 0) {
+    return 3 - Math.min(2, Math.abs(Math.min(2, expectedNewlines) - Math.min(2, actualNewlines)));
+  }
+  return 0;
+}
+
+function adjacentWhitespace(text, boundary, direction) {
+  let start = boundary;
+  let end = boundary;
+  if (direction === 'before') {
+    while (start > 0 && /\s/u.test(text[start - 1])) start -= 1;
+  } else {
+    while (end < text.length && /\s/u.test(text[end])) end += 1;
+  }
+  return direction === 'before' ? text.slice(start, boundary) : text.slice(boundary, end);
+}
+
+function findWhitespaceEquivalentSpans(value, expected, cursor = 0, maximum = 64) {
   const text = normalizeNewlines(value);
   const expectedKey = bare(expected);
-  if (expectedKey.length < 2) return null;
+  if (expectedKey.length < 2) return [];
   const compact = [];
   const starts = [];
   const ends = [];
@@ -897,13 +1121,16 @@ function findWhitespaceEquivalentSpan(value, expected, cursor = 0) {
   const compactText = compact.join('');
   let compactCursor = 0;
   while (compactCursor < starts.length && starts[compactCursor] < cursor) compactCursor += 1;
-  const found = compactText.indexOf(expectedKey, compactCursor);
-  if (found < 0) return null;
-  const last = found + expectedKey.length - 1;
-  return {
-    start: starts[found],
-    end: ends[last]
-  };
+  const spans = [];
+  let search = compactCursor;
+  while (spans.length < Math.max(1, Number(maximum) || 1)) {
+    const found = compactText.indexOf(expectedKey, search);
+    if (found < 0) break;
+    const last = found + expectedKey.length - 1;
+    spans.push({ start: starts[found], end: ends[last] });
+    search = found + 1;
+  }
+  return spans;
 }
 
 function restoreStructuralVisualGaps(value, { excludedBlocks = new Set() } = {}) {
@@ -2453,7 +2680,7 @@ function buildStructureAudit({
       && inlineLabelBodyLayout.pass
       && exactLineStructure.pass
       && introducedOrphanParticleBoundaryCount === 0
-      && layoutRepair?.pass !== false
+      && (layoutRepair?.structuralPass ?? layoutRepair?.pass) !== false
   };
 }
 
@@ -2895,6 +3122,8 @@ function compactLayoutRepair(value) {
   return {
     applied: value.applied === true,
     pass: value.pass !== false,
+    structuralPass: (value.structuralPass ?? value.pass) !== false,
+    readabilityPass: value.readabilityPass !== false,
     heading: value.heading ? {
       applied: value.heading.applied === true,
       headingCount: Number(value.heading.headingCount) || 0,
@@ -2916,6 +3145,14 @@ function compactLayoutRepair(value) {
       inlineLabelBodyApplicableCount: Number(value.finalLockedStructure.inlineLabelBodyApplicableCount) || 0,
       missingCount: Number(value.finalLockedStructure.missingCount) || 0,
       pass: value.finalLockedStructure.pass !== false
+    } : null,
+    finalFixedPoint: value.finalFixedPoint ? {
+      applied: value.finalFixedPoint.applied === true,
+      structuralPass: value.finalFixedPoint.structuralPass !== false,
+      readabilityPass: value.finalFixedPoint.readabilityPass !== false,
+      contentPreserved: value.finalFixedPoint.contentPreserved === true,
+      boundaryRestoredCount: Number(value.finalFixedPoint.boundaryRestoredCount) || 0,
+      missingCount: Number(value.finalFixedPoint.missingCount) || 0
     } : null,
     paragraphs: value.paragraphs ? {
       applied: value.paragraphs.applied === true,
@@ -3235,6 +3472,7 @@ module.exports = {
   coalesceEditableChunks,
   restoreBoundaryMarkers,
   restorePostSemanticLayout,
+  restoreFinalDocumentLayout,
   restoreLockedHeadingLayout,
   restoreLockedStructureLayout,
   restoreInlineLabelBodyLayout,

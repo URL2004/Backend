@@ -305,6 +305,24 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.student_self_assessment += 2.45
       + Math.min(selfReflectivePredicateSignals - 3, 4) * 0.2;
   }
+  // 교과·수업에서 출발해 직접 조사·제작·실험하고 마지막에 배움과 성찰을
+  // 적은 학생 활동문은 제목이 없어도 자기평가다. `대칭·건축·수학 원리`
+  // 같은 설명 개념이 많다는 이유로 long_explainer로 보내면 학생 목소리를
+  // 학술 보고서체로 과도하게 높이므로 행위+1인칭+성찰의 결합을 우선한다.
+  const studentProjectCourseSignals = count(text, /(?:수학|과학|국어|영어|사회|미술|음악|정보|기술|교과|수업)(?:\s*시간|\s*활동|\s*과제|\s*시간에|\s*수업에서)?/gu);
+  const studentProjectActionSignals = count(text, /(?:자료를?\s*조사|직접\s*(?:제작|설계|실험|측정|관찰|시각화|좌표화|발표)|(?:포스터|모형|작품|영상|보고서)(?:을|를)?\s*(?:제작|완성|만들)|좌표(?:화|평면)|재해석)/gu);
+  const studentProjectReflectionSignals = count(text, /(?:이번\s*(?:과정|활동)|이\s*활동|활동을\s*계기로|과정을\s*통해)[^.!?\n]{0,160}(?:배[우울웠]|깨달|이해|느끼|알게)|(?:배[우울웠]|깨달|이해|느끼|알게)[^.!?\n]{0,100}(?:이번\s*(?:과정|활동)|이\s*활동)/gu);
+  const studentProjectFirstPersonSignals = count(text, /(?:^|[\s,，])(?:나는|저는|제가|내가|나의|저의)(?=$|[\s,，])/gmu);
+  const studentAppliedProjectFrame = studentProjectCourseSignals >= 1
+    && studentProjectActionSignals >= 3
+    && studentProjectReflectionSignals >= 1
+    && studentProjectFirstPersonSignals >= 1;
+  if (studentAppliedProjectFrame) {
+    scores.student_self_assessment += 4.6
+      + Math.min(studentProjectActionSignals - 3, 5) * 0.16
+      + Math.min(studentProjectReflectionSignals - 1, 3) * 0.18;
+    scores.long_explainer = Math.min(scores.long_explainer, 2.2);
+  }
 
   const selfAssessmentSectionSignals = lines.filter(line => /^(?:느낀\s*점|배운\s*점|본인이\s*잘했던\s*것|잘했던\s*점|어려웠던\s*점|관심이\s*갔던\s*내용|향후\s*계획|기타)\s*[:：]?$/u.test(line)).length;
   const explicitReflectionDocumentSignals = lines.filter(line => (
@@ -864,6 +882,11 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       selfReflectivePredicateSignals,
       reflectiveActivitySignals,
       educationSignals,
+      studentProjectCourseSignals,
+      studentProjectActionSignals,
+      studentProjectReflectionSignals,
+      studentProjectFirstPersonSignals,
+      studentAppliedProjectFrame,
       learningLogSignals,
       topicSelectionSignals,
       selfAssessmentSectionSignals,

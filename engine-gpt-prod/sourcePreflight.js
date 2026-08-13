@@ -4,12 +4,14 @@ const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 
-const VERSION = 14;
+const VERSION = 15;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
 const INLINE_HEADING_BEFORE_RE = new RegExp(
-  `([.!?。！？][”’"'」』》〉)\\]]*)[ \\t]*(?=(${INLINE_HEADING_MARKER})\\s*)`,
+  // 날짜·기간의 `2026. 8. ~ 11. 30.`은 절 제목이 아니다. 번호 표식 뒤에
+  // 실제 제목 어휘가 시작될 때만 한 행에 붙은 새 절 경계를 복원한다.
+  `([.!?。！？][”’"'」』》〉)\\]]*)[ \\t]*(?=(${INLINE_HEADING_MARKER})\\s*(?:[가-힣A-Za-z]|\\d{1,2}차(?=\\s)))`,
   'gu'
 );
 const INLINE_HEADING_AFTER_RE = new RegExp(
@@ -70,6 +72,27 @@ const REMOVABLE_LINE_RULES = Object.freeze([
     boundaryOnly: true,
     pattern: /^(?:(?:이런|이\s*|위|아래|앞의|해당)\s*)?(?:내용|글|문장)(?:을|를|으로)?\s*(?:(?:AI|인공지능)\s*(?:티|느낌)(?:가|이)?\s*(?:안\s*)?(?:나게|나도록)\s*)?(?:인간처럼|사람이\s*쓴\s*것처럼|자연스럽게)?\s*(?:다시\s*)?(?:써\s*줘|써\s*주세요|작성해\s*줘|작성해\s*주세요|바꿔\s*줘|바꿔\s*주세요|다듬어\s*줘|다듬어\s*주세요|고쳐\s*줘|고쳐\s*주세요|휴머나이징해\s*줘|휴머나이징해\s*주세요)[.!?。！？~]*$/iu,
     message: '본문 끝에 함께 붙은 재작성 요청 문구를 변환 대상에서 제외했어요.'
+  },
+  {
+    code: 'source_rewrite_request_artifact',
+    boundaryOnly: true,
+    // 사용자가 실제로 붙이는 짧은 구어형 요청도 본문과 분리한다.
+    // `AI 느낌이 안 나게 해주면 좋을 것 같아`처럼 목적어인 "글"이
+    // 생략된 경우를 기존 규칙이 놓쳤다.
+    pattern: /^(?:(?:AI|인공지능)\s*(?:티|느낌)(?:가|이)?\s*)?(?:전혀\s*)?(?:안\s*|덜\s*)?(?:나게|나도록|느껴지게)\s*(?:해\s*주면|해주면|해\s*줘|해주세요|해\s*주세요|부탁해|부탁합니다)(?:\s*(?:좋을|괜찮을)\s*(?:것|거)\s*같(?:아|아요|습니다))?[.!?。！？~]*$/iu,
+    message: '본문 끝에 함께 붙은 AI 문체 관련 재작성 요청을 변환 대상에서 제외했어요.'
+  },
+  {
+    code: 'source_generation_meta_artifact',
+    boundaryOnly: true,
+    pattern: /^(?=[^\n]{1,280}$)(?=[^\n]*(?:소제목|제목)[^\n]*(?:제외|빼고))(?=[^\n]*(?:완성본|최종본))(?=[^\n]*(?:복사|붙여\s*넣|사용))[^\n]+$/iu,
+    message: '본문이 아닌 완성본·복사용 생성 안내 문구를 변환 대상에서 제외했어요.'
+  },
+  {
+    code: 'source_instruction_artifact',
+    boundaryOnly: true,
+    pattern: /^(?=[^\n]{1,280}$)(?=[^\n]*(?:적으라고|쓰라고|작성하라고))(?=[^\n]*(?:적어|써|작성해)\s*(?:보았|봤)(?:어|어요|습니다))[^\n]+$/u,
+    message: '본문이 아닌 작성 경위·지시 문구를 변환 대상에서 제외했어요.'
   },
   {
     code: 'source_rewrite_request_artifact',
@@ -266,24 +289,87 @@ function auditAndSanitizeSource(value) {
 function repairSourceLayoutArtifacts(value) {
   const before = String(value || '').replace(/\r\n?/gu, '\n');
   const creativeLayout = looksLikeCreativeLineLayout(before);
-  const punctuation = creativeLayout
-    ? { text: before, changes: [] }
-    : repairIsolatedTerminalPunctuationLines(before);
+  // 시·창작문의 행갈이는 문장부호보다 강한 장르 구조다. 일부 시행에
+  // `. 2. 단어`가 있다는 이유로 절 제목 경계를 삽입하면 이후 creative
+  // 감사도 이미 손상된 행을 기준선으로 보게 된다. creative 판정 뒤에는
+  // 개별 복구기를 일부만 건너뛰지 말고 레이아웃 수리 전체를 우회한다.
+  if (creativeLayout) {
+    return { text: before, changed: false, changes: [] };
+  }
+  const punctuation = repairIsolatedTerminalPunctuationLines(before);
   const heading = repairInlineHeadingBoundaries(punctuation.text);
-  const wrapped = looksLikeCreativeLineLayout(heading.text)
-    ? { text: heading.text, changes: [] }
-    : repairForcedProseWraps(heading.text);
+  const wrapped = repairForcedProseWraps(heading.text);
   const sentenceSpacing = repairMissingSentenceSpacing(wrapped.text);
+  const structurallySafe = preservesExistingStructuralLines(before, sentenceSpacing.text);
+  const finalText = structurallySafe ? sentenceSpacing.text : before;
+  const appliedChanges = structurallySafe
+    ? [
+        ...punctuation.changes,
+        ...heading.changes,
+        ...wrapped.changes,
+        ...sentenceSpacing.changes
+      ]
+    : [{
+        code: 'source_layout_repair_skipped',
+        lineOrdinal: 1,
+        action: 'notice',
+        message: '표·제목·인용 등 원문 구조 행을 줄일 수 있는 레이아웃 복구를 적용하지 않았어요.'
+      }];
   return {
-    text: sentenceSpacing.text,
-    changed: sentenceSpacing.text !== before,
-    changes: [
-      ...punctuation.changes,
-      ...heading.changes,
-      ...wrapped.changes,
-      ...sentenceSpacing.changes
-    ]
+    text: finalText,
+    changed: finalText !== before,
+    changes: appliedChanges
   };
+}
+
+function preservesExistingStructuralLines(before, after) {
+  const structuralRoles = new Set(['title', 'heading', 'table', 'quote', 'code', 'legal_clause', 'signature', 'flow']);
+  const sourceRecords = layoutStructure.buildLineRecords(before)
+    .filter(record => {
+      if (record.blank) return false;
+      const role = String(record.role || '');
+      if (role === 'heading' && looksLikeFusedStructuralLine(record.text)) return false;
+      if (role === 'title') {
+        const tail = (String(record.text || '').match(/[가-힣A-Za-z]+$/u) || [''])[0];
+        // 첫 강제개행 조각은 문맥 없는 title 휴리스틱에 자주 걸린다.
+        if (FORCE_WRAP_TAIL_RE.test(tail)) return false;
+      }
+      if (structuralRoles.has(role)) return true;
+      // 명시 불릿은 한 행 소유권을 지키되 번호형 fused heading은 정상적인
+      // 제목 분리 대상이므로 exact ledger에 넣지 않는다.
+      return role === 'list' && /^(?:[-*+•▪◦·●○■□◆◇▶▷※])\s+/u.test(String(record.text || ''));
+    });
+  if (!sourceRecords.length) return true;
+  const outputRecords = layoutStructure.buildLineRecords(after)
+    .filter(record => !record.blank)
+    .map(record => ({ record, key: structuralLineKey(record.raw || record.text) }))
+    .filter(item => item.key);
+  let cursor = 0;
+  for (const record of sourceRecords) {
+    const key = structuralLineKey(record.raw || record.text);
+    const found = outputRecords.findIndex((item, index) => index >= cursor && item.key === key);
+    if (found < 0) return false;
+    const outputRecord = outputRecords[found].record;
+    if (record.role === 'table'
+        && (Number(outputRecord.cellCount || 0) < Number(record.cellCount || 0)
+          || (record.tabularSeparator === 'tab' && outputRecord.tabularSeparator !== 'tab'))) {
+      return false;
+    }
+    cursor = found + 1;
+  }
+  return true;
+}
+
+function looksLikeFusedStructuralLine(value) {
+  const text = String(value || '').trim();
+  if (text.length < 80) return false;
+  const markerCount = (text.match(/(?:^|[.!?。！？]\s*)(?:\d{1,2}(?:\.\d{1,2})*[.)]?|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?|[IVX]{1,8}[.)．])\s*(?:서론|본론|결론|초록|요약|[가-힣A-Za-z])/gu) || []).length;
+  return markerCount >= 2
+    || /^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|[IVX]{1,8})[.)．]\s*(?:서론|본론|결론)(?=[가-힣A-Za-z])/u.test(text);
+}
+
+function structuralLineKey(value) {
+  return String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
 }
 
 /**
@@ -333,7 +419,7 @@ function looksLikeCreativeLineLayout(value) {
   const lines = text.split('\n');
   const nonEmpty = lines.map(line => line.trim()).filter(Boolean);
   const blankCount = lines.length - nonEmpty.length;
-  if (nonEmpty.length < 8 || blankCount < 2) return false;
+  if (nonEmpty.length < 5 || blankCount < 1) return false;
   const lengths = nonEmpty.map(line => [...line].length).sort((a, b) => a - b);
   const medianLength = lengths[Math.floor(lengths.length / 2)] || 0;
   const shortRatio = lengths.filter(length => length <= 42).length / nonEmpty.length;
@@ -344,11 +430,12 @@ function looksLikeCreativeLineLayout(value) {
     || /\t/u.test(line)
     || /^\|.*\|$/u.test(line)
   )).length / nonEmpty.length;
-  return shortRatio >= 0.72
+  const compactPoem = nonEmpty.length < 8;
+  return shortRatio >= (compactPoem ? 0.84 : 0.72)
     && medianLength <= 32
-    && terminalRatio <= 0.35
+    && terminalRatio <= (compactPoem ? 0.2 : 0.35)
     && structuralRatio <= 0.2
-    && longLineCount <= 1;
+    && longLineCount <= (compactPoem ? 0 : 1);
 }
 
 function extractQuotedRewritePayload(value) {
@@ -425,7 +512,7 @@ function repairInlineHeadingBoundaries(value) {
       repaired = transformOutsideWebLiterals(
         repaired,
         text => text
-          .replace(INLINE_HEADING_BEFORE_RE, '$1\n\n')
+          .replace(INLINE_HEADING_BEFORE_RE, replaceInlineHeadingBoundary)
           .replace(INLINE_KNOWN_HEADING_ANYWHERE_RE, '\n\n')
       );
       repaired = repaired.split('\n').map(piece => {
@@ -476,6 +563,23 @@ function repairInlineHeadingBoundaries(value) {
     output.push(repaired);
   });
   return { text: output.join('\n'), changes };
+}
+
+function replaceInlineHeadingBoundary(match, terminal, marker, offset, whole) {
+  const boundary = Number(offset) + String(match || '').length;
+  if (isCalendarDateContinuation(whole, boundary, marker)) return match;
+  return `${terminal}\n\n`;
+}
+
+// `2026. 8. 30.`과 `2026. 8. ~ 11. 30.`의 마지막 일자는 절 번호와
+// 표면형이 같다. 앞쪽에 연·월 또는 연·월~월 맥락이 완성돼 있으면 제목
+// 경계로 분리하지 않는다. `2. 4차 산업혁명`은 이 맥락이 없으므로 기존
+// 절 제목 복구를 그대로 탄다.
+function isCalendarDateContinuation(value, boundary, marker) {
+  if (!/^\d{1,2}[.)]$/u.test(String(marker || '').trim())) return false;
+  const prefix = String(value || '').slice(Math.max(0, Number(boundary) - 48), Number(boundary));
+  return /(?:19|20)\d{2}\.\s*\d{1,2}\.\s*$/u.test(prefix)
+    || /(?:19|20)\d{2}\.\s*\d{1,2}\.\s*(?:~|～|-|–|—)\s*\d{1,2}\.\s*$/u.test(prefix);
 }
 
 /**
@@ -649,6 +753,7 @@ function isCompactAnswerKeyLine(value) {
 
 function repairForcedProseWraps(value) {
   const lines = String(value || '').split('\n');
+  const contextualRecords = layoutStructure.buildLineRecords(value);
   const output = [];
   const changes = [];
   let fence = null;
@@ -669,7 +774,10 @@ function repairForcedProseWraps(value) {
       continue;
     }
     const next = String(lines[index + 1] || '');
-    if (shouldJoinForcedWrap(current, next)) {
+    if (shouldJoinForcedWrap(current, next, {
+      leftRole: contextualRecords[index]?.role,
+      rightRole: contextualRecords[index + 1]?.role
+    })) {
       const left = current.trimEnd();
       const right = next.trimStart();
       const separator = shouldAttachWithoutSpace(left, right) ? '' : ' ';
@@ -731,7 +839,7 @@ function repairMissingSentenceSpacing(value) {
   return { text: output.join('\n'), changes };
 }
 
-function shouldJoinForcedWrap(leftValue, rightValue) {
+function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   const left = String(leftValue || '').trim();
   const right = String(rightValue || '').trim();
   if (!left || !right) return false;
@@ -739,18 +847,20 @@ function shouldJoinForcedWrap(leftValue, rightValue) {
   // `자동 관개 시스템:`처럼 콜론 라벨로 시작하는 다음 행은 앞 문장이
   // 마침표 없이 끝났더라도 독립 구조다. 길이만 보고 합치면 항목명이 앞
   // 문장의 목적어처럼 붙고 이후 청크·문단 구조까지 연쇄적으로 무너진다.
-  const leftRole = layoutStructure.classifyLine(left);
-  const rightRole = layoutStructure.classifyLine(right);
-  if (['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole)
+  const leftRole = String(context.leftRole || layoutStructure.classifyLine(left));
+  const rightRole = String(context.rightRole || layoutStructure.classifyLine(right));
+  const leftToken = (left.match(/[가-힣A-Za-z]+$/u) || [''])[0];
+  const weakTitleFragment = leftRole === 'title' && FORCE_WRAP_TAIL_RE.test(leftToken);
+  if ((!weakTitleFragment && ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole))
       || ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole)) {
     return false;
   }
-  if (isWholeQuotedLine(left) || isWholeQuotedLine(right)) return false;
+  if (isWholeQuotedLine(left) || isWholeQuotedLine(right)
+      || isQuoteAttributionLine(left) || isQuoteAttributionLine(right)) return false;
   if (WEB_LITERAL_TEST_RE.test(left) || WEB_LITERAL_TEST_RE.test(right)) return false;
   if (/^\s*(?:`{3,}|~{3,})/u.test(left) || /^\s*(?:`{3,}|~{3,})/u.test(right)) return false;
   if (/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left)) return false;
   if (!/^[가-힣A-Za-z0-9(“"'‘「『《〈]/u.test(right)) return false;
-  const leftToken = (left.match(/[가-힣A-Za-z]+$/u) || [''])[0];
   if (!leftToken) return false;
   // OCR이 한글 어절과 조사를 서로 다른 행으로 자른 경우다. 다음 행이
   // 조사로 시작하는 것은 독립 문단일 수 없으므로 짧은 왼쪽 어절도 잇는다.
@@ -775,6 +885,11 @@ function shouldAttachWithoutSpace(left, right) {
 function isWholeQuotedLine(value) {
   const text = String(value || '').trim();
   return /^(?:“[^”\n]+”|‘[^’\n]+’|"[^"\n]+"|'[^'\n]+'|「[^」\n]+」|『[^』\n]+』|《[^》\n]+》|〈[^〉\n]+〉)$/u.test(text);
+}
+
+function isQuoteAttributionLine(value) {
+  const text = String(value || '').trim();
+  return /^(?:“[^”\n]+”|‘[^’\n]+’|"[^"\n]+"|'[^'\n]+'|「[^」\n]+」|『[^』\n]+』|《[^》\n]+》|〈[^〉\n]+〉)\s*[-–—]\s*\S.{0,120}$/u.test(text);
 }
 
 function transformOutsideWebLiterals(value, transform) {

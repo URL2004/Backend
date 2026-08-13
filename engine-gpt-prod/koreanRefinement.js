@@ -11,7 +11,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 26;
+const VERSION = 27;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -637,6 +637,7 @@ const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈
 const QUOTE_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|조차|마저|밖에|마다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|조차|마저|밖에|마다|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|하며)';
+const QUOTE_ATTRIBUTION_CONTEXT = `${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}\\s+(?:말|이야기|발언|경고|제안|요청|답변|약속|다짐|인사|주장|설명|대답|강조|외침)`;
 const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
 const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
 const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
@@ -645,13 +646,33 @@ const QUOTE_SUFFIX_BOUNDARY = '(?=$|[\\s,.;:!?。！？])';
 // U+2019는 한글 닫는 작은따옴표이면서 영문 apostrophe이기도 하다.
 // `Let’s Grow`의 `’s`를 닫는 인용 뒤 본문으로 오인해 `Let’ s`로 만드는
 // 사고를 막고, 뒤가 영문자가 아닌 실제 닫는 따옴표일 때만 간격을 고친다.
-const CLOSED_QUOTE_SPACING_RE = new RegExp(`((?:[”」』》〉]|’(?![A-Za-z])))(?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
+const CLOSED_QUOTE_SPACING_RE = new RegExp(
+  `((?:[”」』》〉]|’(?![A-Za-z])))`
+  + `(?!${QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX}${QUOTE_SUFFIX_BOUNDARY})`
+  // 명사 인용 `“와”하는 소리`와 조사 `‘학생’하고`는 붙이고, 완결 발화
+  // `“위험하다.”하고 말했다`는 띄운다. 바로 뒤의 particle-gap 수리와
+  // 같은 문법 조건을 공유해 두 규칙이 서로 되돌리는 비수렴을 없앤다.
+  // 구두점 없는 `바다」하고`의 마지막 음절만으로 발화 종결을 추측하면
+  // 책 제목·명사 인용까지 띄우게 된다. 명시적 종결 구두점이 있는 직접
+  // 발화만 띄우고 나머지 하고/하며 계열은 붙임 형태로 보존한다.
+  + `(?!(?<![.!?。！？…]${CLOSE_QUOTE_CLASS})${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}${QUOTE_SUFFIX_BOUNDARY})`
+  + `(?=[가-힣A-Za-z0-9])`,
+  'gu'
+);
+// 구두점이 없어도 뒤가 `하는 말·하고 말했다`처럼 명시적인 발화 귀속이면
+// 인용구와 독립 용언을 띄운다. 반대로 `“자발적으로 참여”하는 활동`이나
+// `「바다」하고 산`처럼 인용 내용이 뒤 명사를 꾸미거나 조사로 이어지는
+// 정상 붙임은 건드리지 않는다.
+const CLOSED_QUOTE_ATTRIBUTION_SPACING_RE = new RegExp(
+  `(${CLOSE_QUOTE_CLASS})(?<![.!?。！？…]${CLOSE_QUOTE_CLASS})(?=${QUOTE_ATTRIBUTION_CONTEXT})`,
+  'gu'
+);
 // 완결된 직접 발화 뒤의 “... .” 하고/하며는 인용 뒤 독립 용언이므로
 // 띄어쓰기를 유지한다. 명사 인용의 ‘학생’하고와 서술격 ‘전환점’이었다는
 // 계속 붙여 쓰도록 두 문법을 분리한다.
 const CLOSED_QUOTE_PARTICLE_GAP_RE = new RegExp(
   `(?:(${CLOSE_QUOTE_CLASS})[ \\t]+(?=${QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX}${QUOTE_SUFFIX_BOUNDARY})`
-  + `|(${CLOSE_QUOTE_CLASS})(?<![.!?。！？…]${CLOSE_QUOTE_CLASS})(?<![다요죠자라까니냐]${CLOSE_QUOTE_CLASS})[ \\t]+(?=${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}${QUOTE_SUFFIX_BOUNDARY}))`,
+  + `|(${CLOSE_QUOTE_CLASS})(?<![.!?。！？…]${CLOSE_QUOTE_CLASS})(?![ \\t]+${QUOTE_ATTRIBUTION_CONTEXT})[ \\t]+(?=${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}${QUOTE_SUFFIX_BOUNDARY}))`,
   'gu'
 );
 const QUOTE_TERMINAL_REVIEW_RE = new RegExp(`[‘“][^’”\\n]{2,120}(?<![.!?。！？…])[’”](?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
@@ -1074,6 +1095,13 @@ function repairContextualSpacing(value, source, context) {
       // 공백 하나만 추가하는 고신뢰 표기만 허용한다.
       return repairHighConfidenceLockedSpacing(workingLine, counts);
     }
+    workingLine = replaceTracked(
+      workingLine,
+      CLOSED_QUOTE_ATTRIBUTION_SPACING_RE,
+      (_match, closing) => `${closing} `,
+      'closed_quote_spacing',
+      counts
+    );
     workingLine = replaceTracked(
       workingLine,
       CLOSED_QUOTE_SPACING_RE,
@@ -1517,7 +1545,10 @@ function detectIntroducedCrossSentenceIssues(source, outputText, profile = 'unkn
   const outputSequence = sequentialConnectorOccurrences(outputText);
   const introducedSequenceCount = Math.max(0, outputSequence.count - sourceSequence.count);
   if (outputSequence.count >= 3 && introducedSequenceCount >= 2) {
-    add('sequential_connector_inflation', outputSequence.ordinals);
+    add(
+      'sequential_connector_inflation',
+      introducedConnectorSentenceOrdinals(sourceSequence, outputSequence, introducedSequenceCount)
+    );
   }
 
   const sourceDiscourseConnectors = discourseConnectorOccurrences(source);
@@ -1527,7 +1558,14 @@ function detectIntroducedCrossSentenceIssues(source, outputText, profile = 'unkn
     outputDiscourseConnectors.count - sourceDiscourseConnectors.count
   );
   if (outputDiscourseConnectors.count >= 4 && introducedDiscourseConnectorCount >= 3) {
-    add('discourse_connector_inflation', outputDiscourseConnectors.ordinals);
+    add(
+      'discourse_connector_inflation',
+      introducedConnectorSentenceOrdinals(
+        sourceDiscourseConnectors,
+        outputDiscourseConnectors,
+        introducedDiscourseConnectorCount
+      )
+    );
   }
 
   return [...ordinalsByCode.entries()].map(([code, ordinals]) => {
@@ -1544,29 +1582,71 @@ function detectIntroducedCrossSentenceIssues(source, outputText, profile = 'unkn
 function discourseConnectorOccurrences(value) {
   const sentences = splitSentences(String(value || '')).map(item => String(item || '').trim()).filter(Boolean);
   const ordinals = [];
+  const counts = [];
   let count = 0;
   const pattern = /(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|즉(?=$|[\s,，])|첫째|둘째|셋째)/gu;
   sentences.forEach((sentence, index) => {
     const matches = stripProtectedQuotedText(sentence).match(pattern) || [];
+    counts[index] = matches.length;
     if (!matches.length) return;
     count += matches.length;
     ordinals.push(index + 1);
   });
-  return { count, ordinals };
+  return { count, ordinals, counts, sentences };
 }
 
 function sequentialConnectorOccurrences(value) {
   const sentences = splitSentences(String(value || '')).map(item => String(item || '').trim()).filter(Boolean);
   const ordinals = [];
+  const counts = [];
   let count = 0;
   const pattern = /(?:^|[\s,])(?:그\s*다음|다음으로|이후|그\s*뒤|[가-힣A-Za-z0-9·/-]{1,24}(?:한|된|친|운|은)\s*(?:뒤|후))(?=$|[\s,])/gu;
   sentences.forEach((sentence, index) => {
     const matches = stripProtectedQuotedText(sentence).match(pattern) || [];
+    counts[index] = matches.length;
     if (!matches.length) return;
     count += matches.length;
     ordinals.push(index + 1);
   });
-  return { count, ordinals };
+  return { count, ordinals, counts, sentences };
+}
+
+function introducedConnectorSentenceOrdinals(sourceOccurrences, outputOccurrences, introducedCount) {
+  const sourceSentences = sourceOccurrences?.sentences || [];
+  const outputSentences = outputOccurrences?.sentences || [];
+  const sourceCounts = sourceOccurrences?.counts || [];
+  const outputCounts = outputOccurrences?.counts || [];
+  const candidates = [];
+  outputSentences.forEach((sentence, outputIndex) => {
+    const outputCount = Number(outputCounts[outputIndex] || 0);
+    if (outputCount <= 0) return;
+    const aligned = alignedOutputCandidates(
+      sentence,
+      outputIndex,
+      outputSentences.length,
+      sourceSentences,
+      { window: 5, maxOutputGroup: 2 }
+    )[0];
+    const alignedSourceCount = aligned && Number(aligned.rawScore ?? aligned.score ?? 0) >= 0.3
+      ? sourceCounts.slice(aligned.start, aligned.end)
+        .reduce((sum, value) => sum + Number(value || 0), 0)
+      : 0;
+    const extra = Math.max(0, outputCount - alignedSourceCount);
+    for (let index = 0; index < extra; index += 1) candidates.push(outputIndex + 1);
+  });
+  const selected = [...new Set(candidates)].slice(0, Math.max(0, introducedCount));
+  if (selected.length) return selected;
+  // 정렬 신뢰도가 모두 낮더라도 문서 뒤쪽이라는 이유만으로 정상 원문
+  // 접속 문장을 고르지 않는다. 상대 위치의 원문에 같은 표지가 없는 결과
+  // 문장만 제한적으로 fallback한다.
+  return [...new Set((outputOccurrences?.ordinals || []).filter(ordinal => {
+    const outputIndex = Number(ordinal) - 1;
+    const sourceIndex = outputSentences.length <= 1
+      ? 0
+      : Math.round(outputIndex * Math.max(0, sourceSentences.length - 1)
+        / Math.max(1, outputSentences.length - 1));
+    return Number(sourceCounts[sourceIndex] || 0) === 0;
+  }))].slice(0, Math.max(0, introducedCount));
 }
 
 function detectTextIssues(value, { profile = 'unknown', targetRegister = '', includeSourceNotation = false } = {}) {
@@ -1574,6 +1654,7 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   const issues = [];
   pushOrphanStructuralParticleIssue(issues, text);
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
+  pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_ATTRIBUTION_SPACING_RE);
   pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SPACING_RE);
   pushPatternIssue(issues, text, 'closed_quote_particle_spacing', CLOSED_QUOTE_PARTICLE_GAP_RE);
   pushSentenceIssue(
@@ -1636,11 +1717,15 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'causal_predicate_stack', hasCausalPredicateStack);
   pushSentenceIssue(issues, text, 'nominal_predicate_collocation', hasNominalPredicateCollocation);
   pushSentenceIssue(issues, text, 'case_frame_corruption', hasCaseFrameCorruption);
+  // `A에서는 반면 B는 …`는 두 조건·집단을 같은 문장에서 대조하는 정상
+  // 상관 구조다. 반면은 표면 위치만으로 오류 처리하지 않는다. 다만
+  // `현장에서는 그러나 …`처럼 장소·주제 조사 바로 뒤에 역접 부사를 끼운
+  // 고신뢰 어순 오류만 국소 수리 대상으로 남긴다.
   pushSentenceIssue(
     issues,
     text,
     'misplaced_clause_connector',
-    sentence => /^[^.!?。！？\n]{1,60}(?:에서는|에는|에서도|은|는)\s+(?:그러나|하지만|다만|반면)(?=\s)/u
+    sentence => /^[^.!?。！？\n]{1,60}(?:에서는|에는|에서도)\s+(?:그러나|하지만|다만)(?=\s)/u
       .test(stripProtectedQuotedText(sentence).trim())
   );
   pushSentenceIssue(
@@ -1880,6 +1965,7 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
     );
   }
   text = replaceAndCount(text, /([.!?。！？])(?=[가-힣])/gu, '$1 ', 'missing_sentence_space', changes);
+  text = replaceAndCount(text, CLOSED_QUOTE_ATTRIBUTION_SPACING_RE, '$1 ', 'closed_quote_spacing', changes);
   text = replaceAndCount(text, CLOSED_QUOTE_SPACING_RE, '$1 ', 'closed_quote_spacing', changes);
   text = replaceAndCount(
     text,
@@ -2008,6 +2094,7 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'academic_purpose_chain_overloaded',
   'repeated_clause_anchor',
   'professional_register_downgrade',
+  'double_topic_chain',
   'formal_register_residual',
   'role_definition_inversion',
   'priority_first_redundancy',
@@ -2025,8 +2112,6 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'infrastructure_action_weakened',
   'temporal_anchor_detachment',
   'causal_connector_strengthening',
-  'sequential_connector_inflation',
-  'discourse_connector_inflation',
   'focus_particle_redundancy',
   'subject_experiencer_case_frame',
   'technical_circuit_action_collocation',
@@ -2190,7 +2275,7 @@ function restoreIntroducedIntegritySentences({ source = '', outputText = '', aud
     ordinals.push(...(issue.sentenceOrdinals || []));
   }
   const regularRestore = restoreSourceSentenceOrdinals(source, outputText, ordinals, {
-    maxRestoreCount: 8,
+    maxRestoreCount: 16,
     minSimilarity: 0.24,
     ordinalSpace: 'output'
   });
@@ -2282,7 +2367,7 @@ function detectProfessionalDowngrade(source, outputText, profile) {
   for (const loss of alignedLosses) {
     count += Math.max(1, Number(loss.missingCount || 0));
     concepts.push(loss.concept);
-    sentenceOrdinals.push(loss.sourceOrdinal);
+    if (Number(loss.outputOrdinal) > 0) sentenceOrdinals.push(loss.outputOrdinal);
   }
   if (PROFESSIONAL_PROFILES.has(profile)) {
     for (const mapping of mappings) {
@@ -2516,8 +2601,12 @@ const PROFESSIONAL_CONCEPT_RULES = Object.freeze([
   },
   {
     concept: 'conclusion_derivation',
+    professionalOnly: true,
     source: /(?:결론|결과|시사점)(?:을|를)?\s*도출/u,
-    acceptable: /(?:결론|결과|시사점)(?:을|를)?\s*(?:도출|제시)/u,
+    // `결과를 도출했다`를 같은 주장인 `…라는 점을 확인했다`로 푼 것은
+    // 전문성 하락이 아니라 정상적인 결론 표현이다. 구어 표지나 주장
+    // 약화가 없는 한 문장 전체를 원문으로 되돌리지 않는다.
+    acceptable: /(?:(?:결론|결과|시사점)(?:을|를)?\s*(?:도출|제시)|(?:점|사실|경향|결과)(?:을|를|이|가|은|는)?\s*(?:확인|밝히|나타))/u,
     preferred: ['결론을 도출', '시사점을 제시']
   },
   {
@@ -2599,10 +2688,26 @@ function detectAlignedProfessionalLosses(source, outputText, profile = 'unknown'
   const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
   const outputSentences = splitSentences(String(outputText || '')).map(value => String(value || '').trim()).filter(Boolean);
   if (!sourceSentences.length || !outputSentences.length) return [];
+  // 제목·표 분리로 문장 ordinal이 크게 밀려도 문서 안에 전문 개념이 같은
+  // 횟수 이상 남아 있으면 손실이 아니다. 전역 총수가 실제로 감소한 개념만
+  // 아래 문장 정렬로 위치를 찾는다.
+  const globallyMissingByConcept = new Map();
+  for (const rule of PROFESSIONAL_CONCEPT_RULES) {
+    if (rule.professionalOnly === true && !PROFESSIONAL_PROFILES.has(String(profile || ''))) continue;
+    globallyMissingByConcept.set(
+      rule.concept,
+      Math.max(
+        0,
+        countPatternMatchesLocal(rule.source, source)
+          - countPatternMatchesLocal(rule.acceptable, outputText)
+      )
+    );
+  }
   const losses = [];
   sourceSentences.forEach((sentence, sourceIndex) => {
     for (const rule of PROFESSIONAL_CONCEPT_RULES) {
       if (rule.professionalOnly === true && !PROFESSIONAL_PROFILES.has(String(profile || ''))) continue;
+      if (Number(globallyMissingByConcept.get(rule.concept) || 0) <= 0) continue;
       const sourceMatchCount = countPatternMatchesLocal(rule.source, sentence);
       if (!sourceMatchCount) continue;
       const aligned = alignedOutputCandidates(sentence, sourceIndex, sourceSentences.length, outputSentences);
@@ -2626,6 +2731,10 @@ function detectAlignedProfessionalLosses(source, outputText, profile = 'unknown'
         sourceSentence: sentence.slice(0, 220),
         outputSentence: best.sentence.slice(0, 220)
       });
+      globallyMissingByConcept.set(
+        rule.concept,
+        Math.max(0, Number(globallyMissingByConcept.get(rule.concept) || 0) - (sourceMatchCount - retainedCount))
+      );
     }
   });
   return losses;
@@ -3069,29 +3178,18 @@ function hasDoubleTopicChain(sentence) {
   const value = String(sentence || '');
   const firstPersonTopic = '(?:나는|저는|우리는|저희는)';
   const boundedFirstPerson = koreanStart(firstPersonTopic, 'u').source;
-  const embedded = value.match(new RegExp(`(?:하면서|하며|통해|후|계기로|과정에서)[^.!?。！？\\n]{0,20}${boundedFirstPerson}\\s+([^.!?。！？\\n]{1,28}?)(은|는)\\s`, 'u'));
-  if (embedded) {
-    const topic = `${String(embedded[1] || '').trim()}${embedded[2]}`;
-    // `운영체제라는 소프트웨어`, `필요한 역량`처럼 관형형 내부의 은/는을
-    // 두 번째 주제 조사로 세지 않는다.
-    if (!/(?:라는|하는|되는|있는|없는|같은|필요한|중요한|가능한|어려운|쉬운)$/u.test(topic)) return true;
-  }
+  // 관형형은 `살펴보는·만드는·고르는·다루는`처럼 열린 계열이므로
+  // 어미를 나열해 제외하면 정상 관형절을 계속 두 번째 주제로 오인한다.
+  // 실제 사고군에서 확인된 고신뢰 명사 head+주제 조사만 잡는다.
+  const topicPhrase = String.raw`(?:예술\s+작품|연구(?:의\s+(?:범위|대상|목적|결과|방법))?|활동|작품|문제|경험|결과|태도|역할|목표|과정|계획|과제|업무|책임|기준|방식|관점)`;
+  const embedded = new RegExp(
+    `(?:하면서|하며|통해|후|계기로|과정에서)[^.!?。！？\\n]{0,20}${boundedFirstPerson}\\s+(?:(?:이|그|해당|이번)\\s+)?${topicPhrase}(?:은|는)\\s`,
+    'u'
+  );
+  if (embedded.test(value)) return true;
   const rest = value.replace(new RegExp(`^${firstPersonTopic}\\s+`, 'u'), '');
   if (rest === value) return false;
-  const secondTopic = rest.match(
-    /^(?:(?:이|그|해당|이번)\s+)?([가-힣A-Za-z0-9·_-]+(?:\s+[가-힣A-Za-z0-9·_-]+){0,2})(은|는)\s/u
-  );
-  if (!secondTopic) return false;
-  const finalWord = `${String(secondTopic[1] || '').trim().split(/\s+/u).at(-1) || ''}${secondTopic[2]}`;
-  // `저는 이 구절에서 특히 깊은 인상을 받았습니다`의 `깊은`은
-  // 두 번째 주제 조사(깊+은)가 아니라 뒤 명사를 꾸미는 관형형이다.
-  // 단순 음절 정규식으로 이를 주제로 세면 정상 성찰문을 비문으로
-  // 복원하므로 자주 쓰이는 관형형은 제외한다.
-  if (/^(?:깊은|같은|다른|많은|적은|작은|큰|좋은|나쁜|새로운|높은|낮은|넓은|좁은|빠른|느린|중요한|필요한|가능한|어려운|쉬운|이러한|그러한|어떠한)$/u.test(finalWord)
-      || /(?:라는|하는|되는|있는|없는)$/u.test(finalWord)) {
-    return false;
-  }
-  return /^(?:이|그|해당|이번|예술|연구|활동|작품|문제)(?:(?:의)?\s|$)/u.test(rest);
+  return new RegExp(`^(?:(?:이|그|해당|이번)\\s+)?${topicPhrase}(?:은|는)\\s`, 'u').test(rest);
 }
 
 function hasValueParticipationCollocation(sentence) {

@@ -172,7 +172,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.36');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.37');
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -615,6 +615,29 @@ test('polish에서 안전한 수정이 없으면 차단하고 의미 심사 비�
   assert.ok(out.floorReport.criticals.some(item => item.gate === 'polish_unchanged'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 0);
+});
+
+test('polish 모델이 무변환이어도 최종 안전 교정이 남으면 stale unchanged 상태를 지우고 전달한다', { concurrency: false }, async t => {
+  const source = '고객에게 안내 메세지를 전달했고, 확인이 필요한 내용도 함께 정리했습니다.';
+  const mock = installEngineMock(t, {
+    humanize: source,
+    retryOutput: source,
+    safeChangeFound: false
+  });
+  const out = await engine.run({
+    text: source,
+    mode: 'polish',
+    allowPolish: true,
+    uid: 'polish-final-deterministic-edit-user',
+    config: config()
+  });
+
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
+  assert.equal(out.result.outputText.includes('안내 메시지를'), true);
+  assert.equal(out.floorReport.criticals.some(item => item.gate === 'polish_unchanged'), false);
+  assert.equal(out.engineMeta.approvedSafeEditCount, 1);
+  assert.equal(out.engineMeta.approvedModelChunkCount, 1);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
 });
 
 test('수리 후 의미 위반이 남으면 done 호환 상태인 needs_review로 전달하고 상위 모델은 판정만 승격한다', { concurrency: false }, async t => {
@@ -1320,7 +1343,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.36');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.37');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

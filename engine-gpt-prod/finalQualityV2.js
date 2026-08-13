@@ -1352,9 +1352,17 @@ async function retryKoreanRefinement({
   reasoningEffort = ''
 }) {
   const profile = String(documentProfile?.profile || documentProfile || 'unknown');
-  const issues = (refinementAudit?.repairableIssues || [])
-    .filter(item => item.afterCount > 0 && item.deterministicSafe !== true)
-    .slice(0, 8);
+  const candidates = (refinementAudit?.repairableIssues || [])
+    .filter(item => item.afterCount > 0 && item.deterministicSafe !== true);
+  // 전역 분포 문제는 코드 순서상 뒤에 있어도 반드시 수리기에 전달한다.
+  // 앞쪽 국소 오류 8개가 장문 접속어 과주입을 굶기던 문제를 없앤다.
+  const globalCodes = new Set(['sequential_connector_inflation', 'discourse_connector_inflation']);
+  const globalIssues = candidates.filter(item => globalCodes.has(item.code));
+  const localIssues = candidates.filter(item => !globalCodes.has(item.code));
+  const issues = [
+    ...globalIssues.slice(0, 2),
+    ...localIssues.slice(0, Math.max(0, 8 - globalIssues.length))
+  ].slice(0, 8);
   if (!issues.length) {
     return {
       outputText: currentOutput,
@@ -1429,7 +1437,9 @@ function refinementIssueInstruction(item) {
   }
   if (item?.code === 'professional_register_downgrade') {
     const losses = Array.isArray(item?.details?.alignedLosses) ? item.details.alignedLosses : [];
-    const hints = losses.slice(0, 8).map(loss => `${loss.sourceOrdinal}번 주장의 ${loss.concept}=${(loss.preferred || []).join('/')}`);
+    const hints = losses.slice(0, 8).map(loss => (
+      `CURRENT ${loss.outputOrdinal || '?'}번(SOURCE ${loss.sourceOrdinal || '?'}번) 주장의 ${loss.concept}=${(loss.preferred || []).join('/')}`
+    ));
     return hints.length ? `SOURCE의 같은 주장에 남겨야 할 전문 표현: ${hints.join('; ')}.` : '';
   }
   if (item?.code === 'data_document_collocation') {

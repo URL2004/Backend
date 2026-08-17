@@ -134,6 +134,6 @@ test('v2.5.32: 학술 프롬프트는 수식 비추정과 시간·인과·전문
   const genre = genreBlocks.genreBlock('blog', 'plain', '', profile, 'basic');
   assert.match(core, /수식·행렬·변수·연산 기호·코드·의사코드는 문자와 순서를 그대로 보존/u);
   assert.match(core, /비어 있거나 빠진 식은 외부 지식으로 추측해 채우지 않는다/u);
-  assert.match(core, /“뒤·후”를 “그 결과·~자”로 강화하지 않는다/u);
+  assert.match(genre, /“뒤·후”를 “그 결과·~자”로 강화하지 않는다/u);
   assert.match(genre, /“시설을 구축하다”를 “마련하다”로 낮추는/u);
 });

@@ -27,7 +27,9 @@ test('v2.5.38: 고급 개인 에세이는 사실 순서를 지키면서 반복 �
   assert.match(prompt, /사건의 시간 순서와 인과 방향/u);
   assert.match(prompt, /서사·줄거리·감상·제목 해석·결론/u);
   assert.match(prompt, /반복되는 평가나 교훈/u);
-  assert.match(prompt, /같은 담화 역할 안에서는 문단/u);
+  assert.match(prompt, /같은 담화 역할 문단 정리는 검증 가능한 최종 레이아웃 단계/u);
+  assert.match(prompt, /모델 편집 단계에서는 원문 문단 경계를 그대로 유지/u);
+  assert.doesNotMatch(prompt, /문단 나눔과 결합도 실질 재구성/u);
 
   for (const documentProfile of [
     { profile: 'general', group: 'general' },
@@ -38,7 +40,7 @@ test('v2.5.38: 고급 개인 에세이는 사실 순서를 지키면서 반복 �
       register: 'plain',
       documentProfile
     }).stable;
-    assert.match(genrePrompt, /같은 담화 역할의 이웃한 일반 산문/u, documentProfile.profile);
+    assert.match(genrePrompt, /모델 편집 단계에서는 원문 문단 경계를 그대로 유지/u, documentProfile.profile);
   }
 });
 

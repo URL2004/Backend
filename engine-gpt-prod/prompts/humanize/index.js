@@ -15,6 +15,7 @@ const { voicePromptBlock } = require('../../voiceProfile');
 const { buildHumanizationPromptBlock } = require('../../humanizationDepth');
 const { discoursePromptBlock } = require('../../discourseAudit');
 const commercialSignals = require('../../commercialSignals');
+const { resolveHumanizeContract } = require('../../humanizeContract');
 
 function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   speakerType = 'individual',
@@ -28,8 +29,15 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   documentProfile = null,
   voiceProfile = null,
   humanizationPlan = null,
-  discourseProfile = null
+  discourseProfile = null,
+  humanizeContract = null
 } = {}) {
+  const resolvedContract = resolveHumanizeContract({
+    humanizeContract,
+    mode,
+    requestStrength,
+    documentProfile
+  });
   // 청크마다 달라지는 담화 진단과 문장 번호 계약은 system prompt에 넣지 않는다.
   // system prefix를 문서 안에서 고정해야 Responses API의 prompt cache가 같은
   // 문서의 다음 청크에서도 재사용되고, 재시도 시에도 안전 규칙의 위치가 흔들리지
@@ -41,9 +49,9 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   const stable = [
     humanizeStableCore(documentProfile),
     '',
-    gateSummaryBlock(),
+    gateSummaryBlock(resolvedContract),
     '',
-    preservationBlock(lengthPolicy, documentProfile, requestStrength),
+    preservationBlock(lengthPolicy, documentProfile, requestStrength, resolvedContract),
     '',
     '[장르 원칙]',
     genreBlock(mode, register, styleProfile, documentProfile, requestStrength),
@@ -60,7 +68,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   ].join('\n');
 
   const dynamic = dynamicContextBlock({ riskProfile, userNotes, evidence, styleProfile, requestStrength, documentProfile });
-  return { stable, dynamic, taskContract };
+  return { stable, dynamic, taskContract, humanizeContract: resolvedContract };
 }
 
 function validateHumanizePrompt(value, {
@@ -93,6 +101,19 @@ function validateHumanizePrompt(value, {
   const genreHeadings = prompt.match(/^\[원문 장르:[^\]\n]+\]$/gmu) || [];
   if (strengthHeadings.length !== 1) errors.push(`request_strength_count:${strengthHeadings.length}`);
   if (genreHeadings.length !== 1) errors.push(`document_genre_count:${genreHeadings.length}`);
+  const contractVersionCount = (prompt.match(/^계약 버전=humanize-contract-v1\./gmu) || []).length;
+  if (contractVersionCount !== 1) errors.push(`humanize_contract_version_count:${contractVersionCount}`);
+  if (!/충돌 시 1순위→2순위→3순위로 판단한다/u.test(prompt)
+      || !/^1순위 사실·의미·보호 구조·화자를 보존한다\.$/mu.test(prompt)
+      || !/^3순위 .*실질 재구성한다\.$/mu.test(prompt)) {
+    errors.push('priority_tiebreak_missing');
+  }
+  if (!/모델 편집 단계에서는 원문 문단 경계/u.test(prompt)) {
+    errors.push('paragraph_model_authority_missing');
+  }
+  if (/같은 담화 역할[^.\n]{0,100}(?:문단을 나누|문단 나눔|합칠 수 있다|결합도 실질 재구성)/u.test(prompt)) {
+    errors.push('paragraph_authority_conflict');
+  }
   const professionalRegister = /어휘\s*격식:[^.\n]{0,140}(?:학술|계약|임상|직무|공식)[^.\n]{0,80}(?:유지|보존|지킨|낮추지)/u.test(prompt);
   if (professionalRegister
       && /말투\s*정책:[^.\n]{0,140}(?:조금\s*더\s*친근|구어체로\s*바꾼다|격식을\s*낮춘다)/u.test(prompt)) {

@@ -2282,6 +2282,7 @@ function parseParentheticalLabelLine(value) {
 }
 
 const SOURCE_RESTORABLE_ISSUES = new Set([
+  'adjacent_semantic_repetition',
   'causal_predicate_stack',
   'nominal_predicate_collocation',
   'case_frame_corruption',

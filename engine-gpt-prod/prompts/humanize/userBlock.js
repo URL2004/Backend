@@ -1,6 +1,7 @@
 'use strict';
 
 const { createPromptEnvelope } = require('../../promptEnvelope');
+const { paragraphMarkerPromptLine } = require('../../humanizeContract');
 
 function buildHumanizeUser({
   chunk,
@@ -10,12 +11,13 @@ function buildHumanizeUser({
   patchTargets = [],
   dynamicContext = '',
   taskContract = '',
-  mode = 'assignment'
+  mode = 'assignment',
+  humanizeContract = null
 }) {
   const envelope = createPromptEnvelope();
   const prev = index > 0 ? chunks[index - 1].text : '';
   const next = index < chunks.length - 1 ? chunks[index + 1].text : '';
-  const markerInstructions = buildBoundaryMarkerInstructions(chunk, { mode });
+  const markerInstructions = buildBoundaryMarkerInstructions(chunk, { mode, humanizeContract });
   const position = chunk.position === 'intro'
     ? '도입부다. 원문의 시작 역할과 흐름을 유지한다.'
     : chunk.position === 'conclusion'
@@ -39,10 +41,10 @@ function buildHumanizeUser({
   ].filter(Boolean).join('\n\n');
 }
 
-function buildBoundaryMarkerInstructions(chunk = {}, { mode = 'assignment' } = {}) {
+function buildBoundaryMarkerInstructions(chunk = {}, { mode = 'assignment', humanizeContract = null } = {}) {
   const lines = [];
   if (chunk.boundaryMarkers?.length) {
-    lines.push('[[[V2_BOUNDARY_###]]]는 원문 문단 경계다. 토큰의 철자·개수·순서를 유지하고 서로 다른 문단을 합치거나 내용을 옮기지 않는다.');
+    lines.push(paragraphMarkerPromptLine(humanizeContract));
   }
   if (chunk.lineBoundaryMarkers?.length) {
     lines.push('[[[V2_LINE_####]]]는 보존할 행 경계다. 토큰의 철자·개수·순서를 유지하고 양쪽 행을 합치거나 새 행을 만들지 않는다.');

@@ -17,6 +17,11 @@ const {
   buildPromptDataSections,
   promptEnvelopeSystemRule
 } = require('./promptEnvelope');
+const {
+  buildHumanizeContract,
+  localizedRepairPromptLines,
+  assertRepairPrompt
+} = require('./humanizeContract');
 
 const POLISH_REQUIRED_ISSUE_CODES = new Set([
   'missing_sentence_space',
@@ -47,6 +52,8 @@ const POLISH_REPAIR_SCHEMA = {
   additionalProperties: false,
   properties: {
     outputText: { type: 'string' },
+    // 호환 필드다. 성공 여부와 진단은 아래 서버 감사에서 다시 계산하며
+    // 모델이 반환한 값은 후보 선택·전달에 사용하지 않는다.
     safeChangeFound: { type: 'boolean' },
     notes: { type: 'array', items: { type: 'string' } }
   },
@@ -700,8 +707,8 @@ function speakerRestoreResult(text, applied, restoredKinds, restoredSentenceCoun
 
 async function retryPolishSurface({ source, currentOutput, policy, reason = '', config, signal, safetyIdentifier = '' }) {
   const taskInstruction = reason === 'evaluative_padding'
-    ? 'CURRENT에 SOURCE에 없던 평가성 표현이 붙었다. 그 평가를 모두 제거하고 SOURCE에 실제로 있는 표면 오류만 최소 한 곳 고친다. 안전한 다른 교정이 없으면 safeChangeFound=false로 답한다.'
-    : 'CURRENT가 SOURCE와 실질적으로 같다. SOURCE에서 실제로 안전하게 고칠 수 있는 표면 오류를 최소 한 곳만 고친다. 고칠 곳이 정말 없으면 safeChangeFound=false로 답한다.';
+    ? 'CURRENT에 SOURCE에 없던 평가성 표현이 붙었다. 그 평가를 모두 제거하고 SOURCE에 실제로 있는 표면 오류만 최소 한 곳 고친다. 안전한 다른 교정이 없으면 CURRENT를 그대로 반환한다.'
+    : 'CURRENT가 SOURCE와 실질적으로 같다. SOURCE에서 실제로 안전하게 고칠 수 있는 표면 오류를 최소 한 곳만 고친다. 고칠 곳이 정말 없으면 CURRENT를 그대로 반환한다.';
   const system = [
     '너는 한국어 보존형 윤문 수리기다.',
     '원문의 주장, 예시, 수치, 기관명, 인용, 화자, 문단 수와 순서를 바꾸지 않는다.',
@@ -711,6 +718,7 @@ async function retryPolishSurface({ source, currentOutput, policy, reason = '', 
     taskInstruction,
     `허용 범위: 문자 편집률 ${policy?.limits?.minEdit ?? 0.01}~${policy?.limits?.maxEdit ?? 0.25}, 길이비 ${policy?.limits?.minLength ?? 0.9}~${policy?.limits?.maxLength ?? 1.1}.`
   ].join('\n');
+  assertRepairPrompt(system, { family: 'polish' });
   const response = await completeJson({
     system: withPromptDataRule(system),
     user: sourceCurrentPrompt(source, currentOutput),
@@ -725,17 +733,35 @@ async function retryPolishSurface({ source, currentOutput, policy, reason = '', 
     safetyIdentifier,
     meta: { task: 'repair', phase: 'polish_surface_retry', mode: 'polish', profile: 'gpt_prod_v2' }
   });
+  const outputText = String(response.json.outputText || '').trim() || currentOutput;
   return {
-    outputText: String(response.json.outputText || '').trim() || currentOutput,
-    safeChangeFound: response.json.safeChangeFound === true,
-    notes: response.json.notes || [],
+    outputText,
+    safeChangeFound: normalizeRepairText(outputText) !== normalizeRepairText(currentOutput),
+    notes: [],
     usage: response.usage,
     model: response.model
   };
 }
 
-async function retryGeneralSurface({ source, currentOutput, humanizationPlan = null, humanizationDepthReport = null, config, signal, safetyIdentifier = '', model = '', reasoningEffort = '', phase = 'humanization_depth_retry' }) {
+async function retryGeneralSurface({
+  source,
+  currentOutput,
+  humanizationPlan = null,
+  humanizationDepthReport = null,
+  humanizeContract = null,
+  config,
+  signal,
+  safetyIdentifier = '',
+  model = '',
+  reasoningEffort = '',
+  phase = 'humanization_depth_retry'
+}) {
   const plan = humanizationPlan || {};
+  const repairContract = humanizeContract || buildHumanizeContract({
+    mode: 'assignment',
+    requestStrength: plan.requestStrength,
+    documentProfile: { profile: plan.profile || 'unknown' }
+  });
   const strengthLabel = plan.requestStrength === 'advanced' ? '고급' : '기본';
   const resumeProfile = plan.profile === 'resume_application';
   const targetOrdinals = buildGeneralRetryTargetOrdinals(source, currentOutput, plan, humanizationDepthReport);
@@ -751,11 +777,10 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     .map(index => index + 1);
   const system = [
     '너는 한국어 실질 휴머나이징 국소 수리기다. 교정·다듬기만 한 결과를 만드는 작업이 아니다.',
-    'SOURCE의 주장, 예시, 수치, 기관명, 인용, 화자, 제목, 목록, 질문, 문단별 역할과 내용 순서를 보존한다.',
-    '같은 문단 역할 안에서 지나치게 긴 산문을 읽기 좋게 나누거나 같은 의미 단위를 자연스럽게 이어 붙이는 것은 허용한다. 서로 다른 활동·근거·결론을 한 문단으로 합치거나 항목을 잘게 쪼개지는 않는다.',
+    ...localizedRepairPromptLines(repairContract),
     resumeRepetitionLow
       ? 'CURRENT를 기준으로 하되, 같은 지원 전제가 반복된 표시 문장이 여러 문단에 있으면 그 문장들은 문단별 역할에 맞춰 함께 재구성한다. 표시되지 않은 문장과 문단 순서는 그대로 둔다.'
-      : 'CURRENT는 보존 검사를 통과했거나 원문으로 안전 복귀한 후보이므로 CURRENT를 기준으로 작업한다. 문서 전체를 다시 쓰지 않는다.',
+      : 'CURRENT를 기준으로 지정 문장만 고치며 문서 전체를 다시 쓰지 않는다.',
     '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
     `${strengthLabel} 모드의 변화량은 서버가 결과에서 계산한다. 숫자를 맞추기 위한 새 설명이나 동의어 나열 대신 지정된 문장의 절 순서·주어 위치·연결·호흡을 다시 구성한다.`,
     noEffectRecovery
@@ -797,8 +822,9 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     '대상 문장의 주장 범위, 문단 역할, 결론 여부는 바꾸지 않는다. 설명을 교훈·감상·결론으로 바꾸거나 주제를 넓혀 변화량을 채우지 않는다.',
     '문장 수는 지정된 문장 안의 의미 단위를 자연스럽게 합치거나 나누는 경우에만 조정하고, 문단의 역할·제목·목록·질문·인용 구조는 바꾸지 않는다.',
     '새 사실·평가·감정·경험·수치·기관·인용·예시를 만들지 않는다.',
-    '이 보존 조건 안에서 실질 변화 기준을 만족할 수 없을 때만 safeChangeFound=false로 답한다.'
+    '이 보존 조건 안에서 실질 변화 기준을 만족할 수 없으면 CURRENT를 그대로 반환한다.'
   ].filter(Boolean).join('\n');
+  assertRepairPrompt(system, { family: 'general_surface', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
     user: sourceCurrentPrompt(source, currentOutput),
@@ -819,10 +845,11 @@ async function retryGeneralSurface({ source, currentOutput, humanizationPlan = n
     safetyIdentifier,
     meta: { task: 'repair', phase, mode: 'humanize', profile: 'gpt_prod_v2' }
   });
+  const outputText = String(response.json.outputText || '').trim() || currentOutput;
   return {
-    outputText: String(response.json.outputText || '').trim() || currentOutput,
-    safeChangeFound: response.json.safeChangeFound === true,
-    notes: response.json.notes || [],
+    outputText,
+    safeChangeFound: normalizeRepairText(outputText) !== normalizeRepairText(currentOutput),
+    notes: [],
     usage: response.usage,
     model: response.model,
     targetOrdinals,
@@ -915,8 +942,9 @@ async function retryConservativeSentenceSurface({
     remediationTargetTerms.length
       ? `이번 문장에서 그대로 남기지 않을 반복 수식=${remediationTargetTerms.join(', ')}. 이 문자열을 출력에 복사하지 않고, SOURCE에 이미 있는 조건·대상·영향 관계로 같은 강도를 표현한다.`
       : '',
-    '위 조건을 모두 지킬 수 없으면 rewrittenSentence에는 CURRENT SENTENCE를 그대로 넣고 safeChangeFound=false로 답한다.'
+    '위 조건을 모두 지킬 수 없으면 rewrittenSentence에는 CURRENT SENTENCE를 그대로 넣는다.'
   ].filter(Boolean).join('\n');
+  assertRepairPrompt(system, { family: 'conservative_sentence' });
   const response = await completeJson({
     system: withPromptDataRule(system),
     user: buildPromptDataSections([
@@ -961,16 +989,16 @@ async function retryConservativeSentenceSurface({
     ));
     if (!remediationImproved) rejectionCodes.push('rhetorical_target_not_improved');
   }
-  const safeChangeFound = response.json.safeChangeFound === true && rejectionCodes.length === 0;
+  const safeChangeFound = rejectionCodes.length === 0;
   if (!safeChangeFound) {
     return {
       ...conservativeSentenceResult(
         current,
         false,
         ordinal,
-        rejectionCodes[0] || 'model_reported_no_safe_change'
+        rejectionCodes[0] || 'server_rejected_candidate'
       ),
-      notes: response.json.notes || [],
+      notes: [],
       usage: response.usage,
       model: response.model,
       rejectionCodes
@@ -989,7 +1017,7 @@ async function retryConservativeSentenceSurface({
     currentOutputIndex: currentIndex,
     reason: 'sentence_recast',
     rejectionCodes: [],
-    notes: response.json.notes || [],
+    notes: [],
     usage: response.usage,
     model: response.model
   };
@@ -1233,6 +1261,7 @@ async function retryCollapsedKoreanSpacing({
     '직접 인용, 코드, URL, 이메일, 표기 문자열의 내부 공백은 바꾸지 않는다.',
     '서버가 공백을 제외한 문자열과 기존 경계를 대조하므로, 위 조건을 어긴 결과는 전부 폐기된다.'
   ].join('\n');
+  assertRepairPrompt(system, { family: 'collapsed_spacing' });
   const response = await completeJson({
     system: withPromptDataRule(system),
     user: buildPromptDataSections([{ label: 'SOURCE', value: original }]).text,
@@ -1256,7 +1285,7 @@ async function retryCollapsedKoreanSpacing({
     beforeCount,
     afterCount: validation.afterCount,
     reason: validation.reason,
-    notes: response.json.notes || [],
+    notes: [],
     usage: response.usage,
     model: response.model
   };
@@ -1383,6 +1412,7 @@ async function retryKoreanRefinement({
   });
   const system = [
     '너는 한국어 문장 국소 수리기다. CURRENT에서 아래에 열거한 한국어 결합·빈도·초점·격식 문제만 최소 범위로 고친다.',
+    ...localizedRepairPromptLines(buildHumanizeContract({ mode, documentProfile })),
     'SOURCE는 의미와 사실 확인용이다. SOURCE의 주장, 수치, 기관명, 인용, 화자, 경험, 평가 강도, 제목, 목록, 질문, 문단 수와 내용 순서를 그대로 보존한다.',
     '과학·법률·게임이론 등 외부 사실의 옳고 그름을 추정해 수정하지 않는다. 원문에 없던 설명이나 예시도 추가하지 않는다.',
     '문제가 있는 문장과 같은 문단의 바로 인접한 문장만 문법상 꼭 필요할 때 함께 손본다. 나머지는 CURRENT를 그대로 둔다.',
@@ -1400,10 +1430,11 @@ async function retryKoreanRefinement({
     ['personal_essay', 'general_essay', 'student_self_assessment'].includes(profile)
       ? '성찰문의 구체적인 감정, 내적 질문, 인정 욕구, 자기 의심을 일반적인 성장 교훈으로 축약하지 않는다. SOURCE에 있는 감정만 같은 강도로 복원하고 새 감정이나 극적인 장면은 만들지 않는다.'
       : '',
-    '수리할 문제가 실제로 남아 있지 않거나 보존 조건 안에서 안전하게 고칠 수 없으면 safeChangeFound=false로 답한다.',
+    '수리할 문제가 실제로 남아 있지 않거나 보존 조건 안에서 안전하게 고칠 수 없으면 CURRENT를 그대로 반환한다.',
     '[수리 대상]',
     ...issueLines
   ].filter(Boolean).join('\n');
+  assertRepairPrompt(system, { family: 'korean_refinement', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
     user: sourceCurrentPrompt(source, currentOutput),
@@ -1418,13 +1449,15 @@ async function retryKoreanRefinement({
     safetyIdentifier,
     meta: { task: 'repair', phase: 'korean_refinement_retry', mode: String(mode || ''), profile }
   });
+  const outputText = String(response.json.outputText || '').trim() || currentOutput;
   return {
-    outputText: String(response.json.outputText || '').trim() || currentOutput,
-    safeChangeFound: response.json.safeChangeFound === true,
-    notes: response.json.notes || [],
+    outputText,
+    safeChangeFound: normalizeRepairText(outputText) !== normalizeRepairText(currentOutput),
+    notes: [],
     usage: response.usage,
     model: response.model,
-    issueCodes: issues.map(item => item.code)
+    issueCodes: issues.map(item => item.code),
+    repairScope: buildRepairScope(issues)
   };
 }
 
@@ -1539,6 +1572,7 @@ async function retryFingerprintAudit({
   });
   const system = [
     '너는 엔진 상투구와 논리 방향만 국소 수리하는 한국어 편집기다.',
+    ...localizedRepairPromptLines(buildHumanizeContract({ mode: 'assignment', documentProfile })),
     'SOURCE는 의미와 논리 관계 확인용이고 CURRENT가 편집 대상이다. 표시된 문제 문장과 바로 인접한 문장 외에는 바꾸지 않는다.',
     'SOURCE의 주장, 목적, 근거 틀, 부정·배제·대조·인정·가능성 관계, 행위 방향과 강도, 수치, 기관명, 인용, 화자, 문단·제목·목록 순서를 그대로 보존한다.',
     '증명을 확인으로, 재발견을 되살리기로, 적극적 태도를 바로·직접으로, 연구를 통해 확인한 내용을 근거 없는 단정으로 바꾸지 않는다. SOURCE에 없던 즉시성도 제거한다.',
@@ -1546,10 +1580,11 @@ async function retryFingerprintAudit({
     ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract'].includes(profile)
       ? '학술·보고서의 개념어와 평서문 격식을 유지한다. 구어체·명령형·도구 의인화를 새로 넣지 않는다.'
       : '',
-    '안전하게 고칠 수 없거나 문제가 이미 없다면 safeChangeFound=false로 답한다.',
+    '안전하게 고칠 수 없거나 문제가 이미 없다면 CURRENT를 그대로 반환한다.',
     '[수리 대상]',
     ...issueLines
   ].filter(Boolean).join('\n');
+  assertRepairPrompt(system, { family: 'fingerprint', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
     user: sourceCurrentPrompt(source, currentOutput),
@@ -1564,12 +1599,14 @@ async function retryFingerprintAudit({
     safetyIdentifier,
     meta: { task: 'repair', phase: 'fingerprint_retry', mode: 'humanize', profile: 'gpt_prod_v2' }
   });
+  const outputText = String(response.json.outputText || '').trim() || currentOutput;
   return {
-    outputText: String(response.json.outputText || '').trim() || currentOutput,
-    safeChangeFound: response.json.safeChangeFound === true,
-    notes: response.json.notes || [],
+    outputText,
+    safeChangeFound: normalizeRepairText(outputText) !== normalizeRepairText(currentOutput),
+    notes: [],
     usage: response.usage,
-    model: response.model
+    model: response.model,
+    repairScope: buildRepairScope(issues)
   };
 }
 
@@ -1591,14 +1628,16 @@ async function retryEndingStyleAudit({
   });
   const system = [
     '너는 한국어 종결체 혼용만 국소 수리하는 편집기다.',
+    ...localizedRepairPromptLines(buildHumanizeContract({ mode: 'assignment', documentProfile })),
     'SOURCE에서 한 종결체가 지배적인 섹션에 CURRENT가 새로 만든 다른 종결체만 원문의 지배 종결체로 되돌린다.',
     '원래 혼합 문체인 섹션은 통일하지 않는다. 문제 없는 문장과 다른 섹션은 그대로 둔다.',
     '어미 외의 핵심 어휘·주장·수치·기관명·인용·화자·문장 수·문단·제목·목록 순서는 바꾸지 않는다.',
     profile === 'student_record_teacher' ? '세특의 관찰형 명사 종결은 평서문으로 바꾸지 않는다.' : '',
-    '안전하게 고칠 수 없거나 문제가 이미 없다면 safeChangeFound=false로 답한다.',
+    '안전하게 고칠 수 없거나 문제가 이미 없다면 CURRENT를 그대로 반환한다.',
     '[수리 대상]',
     ...issueLines
   ].filter(Boolean).join('\n');
+  assertRepairPrompt(system, { family: 'ending_style', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
     user: sourceCurrentPrompt(source, currentOutput),
@@ -1613,10 +1652,11 @@ async function retryEndingStyleAudit({
     safetyIdentifier,
     meta: { task: 'repair', phase: 'ending_style_retry', mode: 'humanize', profile: 'gpt_prod_v2' }
   });
+  const outputText = String(response.json.outputText || '').trim() || currentOutput;
   return {
-    outputText: String(response.json.outputText || '').trim() || currentOutput,
-    safeChangeFound: response.json.safeChangeFound === true,
-    notes: response.json.notes || [],
+    outputText,
+    safeChangeFound: normalizeRepairText(outputText) !== normalizeRepairText(currentOutput),
+    notes: [],
     usage: response.usage,
     model: response.model
   };
@@ -1640,14 +1680,23 @@ async function retryResumeCoverage({
   ].filter(Boolean).join('\n'));
   const system = [
     '너는 자기소개서 핵심 주장 누락만 복원하는 한국어 편집기다.',
+    ...localizedRepairPromptLines(buildHumanizeContract({
+      mode: 'assignment',
+      documentProfile: { profile: 'resume_application' }
+    }), { allowInsertion: true }),
     'SOURCE의 행동·역량·성과·직무 연결 문장이 CURRENT에서 빠지거나, “배웠다” 같은 학습 경험이 “역량을 갖추었다” 같은 보유 주장으로 강해진 항목만 원래 위치에 복원한다.',
     '각 항목에 제공된 원문 문장과 앞뒤 문맥만 사용한다. 새 경험·성과·수치·역량·직무 연결을 추정하거나 만들지 않는다.',
     '문단 순서와 화자·시점을 유지하고, 이미 보존된 다른 문장은 바꾸지 않는다. 별도 요약·결론 문단을 만들지 않는다.',
     '복원 문장은 원문의 격식과 전문 개념어를 유지하며 지나친 구어체로 낮추지 않는다.',
-    '안전하게 원래 위치를 찾을 수 없거나 누락이 이미 없다면 safeChangeFound=false로 답한다.',
+    '안전하게 원래 위치를 찾을 수 없거나 누락이 이미 없다면 CURRENT를 그대로 반환한다.',
     '[복원 대상]',
     ...issueLines
   ].join('\n');
+  assertRepairPrompt(system, {
+    family: 'resume_coverage',
+    localized: true,
+    allowInsertion: true
+  });
   const response = await completeJson({
     system: withPromptDataRule(system),
     user: sourceCurrentPrompt(source, currentOutput),
@@ -1662,10 +1711,11 @@ async function retryResumeCoverage({
     safetyIdentifier,
     meta: { task: 'repair', phase: 'resume_coverage_retry', mode: 'humanize', profile: 'gpt_prod_v2' }
   });
+  const outputText = String(response.json.outputText || '').trim() || currentOutput;
   return {
-    outputText: String(response.json.outputText || '').trim() || currentOutput,
-    safeChangeFound: response.json.safeChangeFound === true,
-    notes: response.json.notes || [],
+    outputText,
+    safeChangeFound: normalizeRepairText(outputText) !== normalizeRepairText(currentOutput),
+    notes: [],
     usage: response.usage,
     model: response.model
   };
@@ -1679,6 +1729,51 @@ function uniqueRows(rows) {
     seen.add(index);
     return true;
   });
+}
+
+function buildRepairScope(issues = [], { neighborRadius = 1 } = {}) {
+  const targetSentenceOrdinals = [...new Set((issues || [])
+    .flatMap(item => Array.isArray(item?.sentenceOrdinals) ? item.sentenceOrdinals : [])
+    .map(Number)
+    .filter(value => Number.isInteger(value) && value > 0))]
+    .sort((a, b) => a - b);
+  if (!targetSentenceOrdinals.length) return null;
+  return {
+    version: 'localized-repair-scope-v1',
+    targetSentenceOrdinals,
+    neighborRadius: Math.max(0, Math.min(1, Number(neighborRadius) || 0))
+  };
+}
+
+function auditLocalizedRepairScope(before, candidate, repairScope = null) {
+  if (repairScope?.version !== 'localized-repair-scope-v1'
+      || !Array.isArray(repairScope.targetSentenceOrdinals)
+      || repairScope.targetSentenceOrdinals.length === 0) {
+    return { applicable: false, pass: true, changedOrdinals: [], outsideOrdinals: [] };
+  }
+  const measured = humanizationDepth.measureSubstantiveEdit(before, candidate);
+  const changedOrdinals = (measured.sentenceEdits || [])
+    .filter(row => row.substantiveChanged === true
+      || row.surfaceOnly === true
+      || Number(row.literalDistance || 0) > 0)
+    .map(row => Number(row.index) + 1)
+    .filter(value => Number.isInteger(value) && value > 0);
+  const radius = Math.max(0, Math.min(1, Number(repairScope.neighborRadius) || 0));
+  const allowed = new Set();
+  for (const ordinal of repairScope.targetSentenceOrdinals) {
+    for (let delta = -radius; delta <= radius; delta += 1) {
+      if (ordinal + delta > 0) allowed.add(ordinal + delta);
+    }
+  }
+  const outsideOrdinals = [...new Set(changedOrdinals.filter(ordinal => !allowed.has(ordinal)))];
+  return {
+    applicable: true,
+    pass: outsideOrdinals.length === 0,
+    targetSentenceOrdinals: repairScope.targetSentenceOrdinals.slice(),
+    changedOrdinals: [...new Set(changedOrdinals)],
+    outsideOrdinals,
+    sentenceBoundaryDelta: Number(measured.sentenceBoundaryDelta || 0)
+  };
 }
 
 function warningsFromSemantic(report) {
@@ -1771,6 +1866,13 @@ function sourceCurrentPrompt(source, currentOutput) {
   ]).text;
 }
 
+function normalizeRepairText(value) {
+  return String(value || '')
+    .normalize('NFC')
+    .replace(/\r\n?/gu, '\n')
+    .trim();
+}
+
 function withPromptDataRule(system) {
   return [String(system || ''), promptEnvelopeSystemRule()].filter(Boolean).join('\n');
 }
@@ -1794,6 +1896,8 @@ module.exports = {
   STRICT_CODES,
   POLISH_REQUIRED_ISSUE_CODES,
   SEMANTIC_WARNING_TYPES,
+  POLISH_REPAIR_SCHEMA,
+  CONSERVATIVE_SENTENCE_REPAIR_SCHEMA,
   buildDeterministicAudit,
   shouldRunSemanticJudge,
   runSemanticDocumentAudit,
@@ -1813,6 +1917,7 @@ module.exports = {
   retryFingerprintAudit,
   retryEndingStyleAudit,
   retryResumeCoverage,
+  auditLocalizedRepairScope,
   buildGeneralRetryTargetOrdinals,
   warningsFromSemantic
 };

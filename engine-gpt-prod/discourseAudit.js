@@ -131,7 +131,12 @@ function compareDiscourse(source, outputText) {
   const personalBalance = inspectPersonalBalanceShift(source, outputText, before, after);
   const personalBalanceShift = personalBalance.shift;
 
-  add('new_evaluation', novelReflectionCount, 'source_relative_novel_reflection_function');
+  add(
+    'new_evaluation',
+    novelReflectionCount,
+    'source_relative_novel_reflection_function',
+    { sentenceOrdinals: introducedReflectionOutputOrdinals(source, outputText) }
+  );
   add(
     'intensity_amplification',
     intensityDelta,
@@ -406,6 +411,64 @@ function strongModifierOccurrences(value) {
   return occurrences;
 }
 
+function reflectionFormulaCount(value) {
+  return Math.max(0, REFLECTION_PATTERNS
+    .reduce((sum, pattern) => sum + countPattern(value, pattern), 0)
+    - countPattern(value, NON_REFLECTIVE_DISCOVERY_PATTERN));
+}
+
+function hasSourceEvaluationFunction(value) {
+  return matchesPattern(value, SOURCE_EVALUATION_EVIDENCE_PATTERN)
+    || matchesPattern(value, REFLECTION_FUNCTION_PATTERN)
+    || REFLECTION_PATTERNS.some(pattern => matchesPattern(value, pattern));
+}
+
+// `new_evaluation`은 문서 단위 개수만 알면 경고는 만들 수 있지만, 안전하게
+// 되돌리려면 실제로 새 성찰 기능을 만든 결과 문장의 위치가 필요하다. 원문과
+// 결과의 문단 수가 같으면 같은 문단의 기존 평가 기능을 먼저 인정하고, 문단
+// 수가 달라졌을 때만 공통 문장 정렬 결과를 사용한다. 이 함수는 탐지기의
+// 판정 범위를 넓히지 않고 기존 판정에 복원 좌표만 붙인다.
+function introducedReflectionOutputOrdinals(source, outputText) {
+  const sourceParagraphs = splitParagraphs(source);
+  const outputParagraphs = splitParagraphs(outputText);
+  const ordinals = [];
+
+  if (sourceParagraphs.length === outputParagraphs.length && sourceParagraphs.length > 0) {
+    let sentenceOffset = 0;
+    outputParagraphs.forEach((paragraph, paragraphIndex) => {
+      const sentences = splitSentences(paragraph);
+      const sourceParagraph = sourceParagraphs[paragraphIndex] || '';
+      if (!hasSourceEvaluationFunction(sourceParagraph)) {
+        sentences.forEach((sentence, sentenceIndex) => {
+          if (reflectionFormulaCount(sentence) > 0) {
+            ordinals.push(sentenceOffset + sentenceIndex + 1);
+          }
+        });
+      }
+      sentenceOffset += sentences.length;
+    });
+    return uniqueNumbers(ordinals);
+  }
+
+  const sourceSentences = splitSentences(source);
+  const outputSentences = splitSentences(outputText);
+  outputSentences.forEach((sentence, index) => {
+    if (reflectionFormulaCount(sentence) <= 0) return;
+    const alignment = alignSourceSentence(
+      sentence,
+      index,
+      outputSentences.length,
+      sourceSentences,
+      { window: 8, maxOutputGroup: 3 }
+    );
+    const alignedSource = Number(alignment?.score || 0) >= 0.2
+      ? String(alignment?.text || '')
+      : '';
+    if (!hasSourceEvaluationFunction(alignedSource)) ordinals.push(index + 1);
+  });
+  return uniqueNumbers(ordinals);
+}
+
 // 의미 심사기가 강도 증폭을 고치지 못해도 문서 전체를 버리거나 경고만
 // 남기지 않는다. 원문에 없던 강한 수식이 생긴 결과 문장만 공통 정렬기로
 // 원문 대응 문장에 되돌린다. 후보 채택은 호출부의 수치·화자·구조·깊이
@@ -415,6 +478,23 @@ function restoreIntroducedIntensitySentences(source, outputText, audit = null) {
   const ordinals = [];
   for (const violation of report?.violations || []) {
     if (violation.code !== 'intensity_amplification') continue;
+    ordinals.push(...(violation.sentenceOrdinals || []));
+  }
+  return restoreSourceSentenceOrdinals(source, outputText, ordinals, {
+    maxRestoreCount: 6,
+    minSimilarity: 0.24,
+    ordinalSpace: 'output'
+  });
+}
+
+// 의미 심사 수리가 끝난 뒤에도 남은 새 교훈·평가 문장만 원문 대응 문장으로
+// 되돌린다. 문서 전체를 원문으로 복귀시키지 않으며, 호출부가 공통 후보 감사와
+// 구조·깊이 비퇴행 검사를 다시 수행해야만 결과에 반영한다.
+function restoreIntroducedEvaluationSentences(source, outputText, audit = null) {
+  const report = audit || compareDiscourse(source, outputText);
+  const ordinals = [];
+  for (const violation of report?.violations || []) {
+    if (violation.code !== 'new_evaluation') continue;
     ordinals.push(...(violation.sentenceOrdinals || []));
   }
   return restoreSourceSentenceOrdinals(source, outputText, ordinals, {
@@ -770,16 +850,12 @@ function countNovelReflectionFunctions(source, outputText) {
   let count = 0;
   if (sourceParagraphs.length === outputParagraphs.length && sourceParagraphs.length > 0) {
     outputParagraphs.forEach((paragraph, index) => {
-      const formulaCount = Math.max(0, REFLECTION_PATTERNS
-        .reduce((sum, pattern) => sum + countPattern(paragraph, pattern), 0)
-        - countPattern(paragraph, NON_REFLECTIVE_DISCOVERY_PATTERN));
+      const formulaCount = reflectionFormulaCount(paragraph);
       if (!formulaCount) return;
       const sourceParagraph = sourceParagraphs[index] || '';
       // 해당 원문 문단에 이미 성찰·판단 기능이 있으면 상투 표현 빈도
       // 증가는 자연성 개선 대상일 수는 있어도 새 평가 사실은 아니다.
-      if (matchesPattern(sourceParagraph, SOURCE_EVALUATION_EVIDENCE_PATTERN)
-          || matchesPattern(sourceParagraph, REFLECTION_FUNCTION_PATTERN)
-          || REFLECTION_PATTERNS.some(pattern => matchesPattern(sourceParagraph, pattern))) return;
+      if (hasSourceEvaluationFunction(sourceParagraph)) return;
       count += formulaCount;
     });
     return count;
@@ -788,9 +864,7 @@ function countNovelReflectionFunctions(source, outputText) {
   const sourceSentences = splitSentences(source);
   const outputSentences = splitSentences(outputText);
   outputSentences.forEach((sentence, index) => {
-    const formulaCount = Math.max(0, REFLECTION_PATTERNS
-      .reduce((sum, pattern) => sum + countPattern(sentence, pattern), 0)
-      - countPattern(sentence, NON_REFLECTIVE_DISCOVERY_PATTERN));
+    const formulaCount = reflectionFormulaCount(sentence);
     if (!formulaCount) return;
     const alignment = alignSourceSentence(
       sentence,
@@ -802,9 +876,7 @@ function countNovelReflectionFunctions(source, outputText) {
     const alignedSource = Number(alignment?.score || 0) >= 0.2
       ? String(alignment?.text || '')
       : '';
-    if (matchesPattern(alignedSource, SOURCE_EVALUATION_EVIDENCE_PATTERN)
-        || matchesPattern(alignedSource, REFLECTION_FUNCTION_PATTERN)
-        || REFLECTION_PATTERNS.some(pattern => matchesPattern(alignedSource, pattern))) return;
+    if (hasSourceEvaluationFunction(alignedSource)) return;
     count += formulaCount;
   });
   return count;
@@ -925,6 +997,8 @@ module.exports = {
   unresolvedRemediationSentenceOrdinals,
   remediationTargetTerms,
   remediationCategoryCount,
+  introducedReflectionOutputOrdinals,
   introducedStrongModifierOutputOrdinals,
+  restoreIntroducedEvaluationSentences,
   restoreIntroducedIntensitySentences
 };

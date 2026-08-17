@@ -1,9 +1,11 @@
 'use strict';
 
-function gateSummaryBlock() {
+const { priorityPromptLines } = require('../../humanizeContract');
+
+function gateSummaryBlock(humanizeContract = null) {
   return [
     '[작업 우선순위]',
-    '불변 계약, 원문 장르·리듬, 요청 강도는 모두 충족해야 하는 공동 계약이다. 불변 사실을 지키되 그것을 이유로 안전하게 바꿀 일반 문장까지 원문대로 복사하지 않는다.',
+    ...priorityPromptLines(humanizeContract),
     '확실하지 않은 사실·수치·전문 용어만 새로 추정하지 말고 그 표현을 유지한다. 그 주변의 안전한 절 배치·주어 위치·연결·호흡까지 원문대로 복사하지는 않는다.',
     '메타 설명이나 작업 과정 없이 최종 본문만 만든다.'
   ].join('\n');

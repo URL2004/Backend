@@ -182,13 +182,23 @@ test('후보 무결성은 위험 총량이 줄 때 비수리 알림 1건만 허�
 
 test('회복 예산은 USD와 별개로 호출 수와 경과 시간을 원자적으로 제한한다', () => {
   let now = 0;
-  const callBudget = createRecoveryBudget(1, { maxCalls: 2, maxElapsedMs: 30000, clock: () => now });
+  const callBudget = createRecoveryBudget(1, {
+    maxCalls: 2,
+    reservedLateCalls: 0,
+    maxElapsedMs: 30000,
+    clock: () => now
+  });
   assert.equal(callBudget.tryStart(), true);
   assert.equal(callBudget.tryStart(), true);
   assert.equal(callBudget.tryStart(), false);
   assert.equal(callBudget.snapshot().lastDeniedReason, 'recovery_call_limit_exhausted');
 
-  const timeBudget = createRecoveryBudget(1, { maxCalls: 5, maxElapsedMs: 30000, clock: () => now });
+  const timeBudget = createRecoveryBudget(1, {
+    maxCalls: 5,
+    reservedLateCalls: 0,
+    maxElapsedMs: 30000,
+    clock: () => now
+  });
   now = 30000;
   assert.equal(timeBudget.tryStart(), false);
   assert.equal(timeBudget.snapshot().lastDeniedReason, 'recovery_time_limit_exhausted');

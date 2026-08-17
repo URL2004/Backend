@@ -13,9 +13,9 @@ function humanizeStableCore(documentProfile = null) {
     '새 정보·주장·사례를 추가하거나 원문 내용을 요약·삭제하지 않는다.',
     '대조·부정·조건·가능성·필요·권고·의무와 원인·근거의 방향은 의미다. 문장을 재구성해도 그 관계의 종류와 강도를 바꾸지 않는다.',
     '행위 주체·대상·책임·참여 범위를 유지한다. 참여·지원·검토를 직접 수행·주도·완료로 넓히거나 그 반대로 줄이지 않는다.',
+    '외부 요인에 둔 책임을 개인에게 옮긴다거나 선택에 대한 책임을 결과·피해 전체에 대한 책임으로 넓히지 않는다.',
     '전문 용어와 격식은 원문의 정확도 수준을 유지한다. 쉬워 보이게 하려고 다른 개념이나 덜 정확한 일상 동사로 낮추지 않는다.',
     '원문에 실제로 있는 수식·행렬·변수·연산 기호·코드·의사코드는 문자와 순서를 그대로 보존한다. 원문에서 이미 비어 있거나 빠진 식은 외부 지식으로 추측해 채우지 않는다.',
-    ...profileSafetyLines(documentProfile),
     '직접 인용 내부는 그대로 두고, 인용과 본문 연결이 어색하면 인용 밖의 조사·서술어만 고친다.',
     '한 줄이던 인용 내부나 닫는 인용부호와 “며·라고·라는” 사이에 새 줄바꿈을 넣지 않는다.',
     '주어·목적어·조사·서술어의 논항과 연어를 자연스럽게 맞춘다. 단어만 바꿔 “분석을 살펴보다”나 “피드백을 반복하다” 같은 새 결합 오류를 만들지 않는다.',
@@ -36,49 +36,6 @@ function humanizeStableCore(documentProfile = null) {
   ].join('\n');
 }
 
-function profileSafetyLines(documentProfile) {
-  const profile = String(documentProfile?.profile || documentProfile || 'unknown');
-  const group = String(documentProfile?.group || '');
-  if (group === 'academic_report_explainer'
-      || ['academic_paper', 'report_assignment', 'long_explainer'].includes(profile)) {
-    return [
-      '학술·보고서에서는 최적화·상관관계·원인 분석·재현성 검증 같은 개념을 일반 관계나 단순 확인으로 약화하지 않는다.',
-      '연구 목적·검토 가능성·근거의 한정 범위를 유지하고, 요구를 사양으로 구체화한 방향을 이미 정해진 사양에 요구를 반영한 관계로 뒤집지 않는다.',
-      '시간 표지의 기준 사건과 인과 강도를 보존한다. 특정 주체 뒤의 “이후”를 문장 앞으로 옮겨 앞 연도·통계에 걸리게 하거나, “뒤·후”를 “그 결과·~자”로 강화하지 않는다.',
-      '“외부 요인에 책임을 돌리는 데서 벗어난다”를 “책임을 개인에게 옮긴다”로 바꾸거나, 선택에 대한 책임을 결과·피해 전체에 대한 책임으로 넓히지 않는다.'
-    ];
-  }
-  if (profile === 'resume_application') {
-    return [
-      '지원서·경력서에서는 개선 필요·업무 수행·기준 숙지 같은 공식 기능을 가벼운 구어로 낮추지 않는다.',
-      '설계·개발·검증의 실제 담당 범위와 결과를 유지하고, 적용된 변경의 검토를 본인이 변경을 수행한 경력으로 확대하지 않는다.',
-      '“배웠다·알게 되었다·체감했다” 같은 학습 경험을 “역량을 갖추었다·보유했다” 같은 이미 확보한 능력으로 강화하지 않는다.',
-      '원문 대응 문장에 있는 저는·제가 같은 화자 증거를 모두 생략해 누가 수행하고 경험했는지 모호하게 만들지 않는다.',
-      '선택에 대한 책임을 결과·피해 전체에 대한 책임으로 넓히지 않는다.'
-    ];
-  }
-  if (group === 'essay_application' || ['personal_essay', 'general_essay'].includes(profile)) {
-    return [
-      '개인 에세이·독후감은 서사의 사건 순서와 화자의 직접 판단을 유지하고, 지원서·경력서용 역량 표현을 덧씌우지 않는다.',
-      '어설픈 감정을 모두 중립적인 모범답안으로 평탄화하지 않고, 원문에 드러난 강약과 개인적인 판단 방식을 남긴다.',
-      '논리·호응이 명백히 어긋난 원문 문장은 의도가 하나로 확정될 때만 바로잡고, 불확실하면 새 사실로 채우지 않는다.'
-    ];
-  }
-  if (group === 'legal_contract' || group === 'clinical_record'
-      || ['legal_contract', 'clinical_record'].includes(profile)) {
-    return [
-      '법률·임상 문서의 정의어, 관찰·판정 주체, 조건·가능성·의무 표현은 전문 기능을 이루므로 일상어로 치환하지 않는다.'
-    ];
-  }
-  if (group === 'student_record_teacher' || group === 'student_self_assessment') {
-    return ['학생의 실제 행동과 교사의 관찰·평가 범위를 구분하고 성취·감정·책임의 강도를 넓히지 않는다.'];
-  }
-  if (group === 'blog_social') {
-    return ['후기·SNS에서는 업체 정보와 화자의 실제 경험을 구분하고, 제공 조건이나 감정을 더 강한 보장·체험으로 바꾸지 않는다.'];
-  }
-  return [];
-}
-
 function transformStrengthBlock(mode, documentProfile = 'unknown', requestStrength = '') {
   const strength = requestStrength || (mode === 'polish' ? 'polish' : (mode === 'blog' ? 'basic' : 'advanced'));
   if (strength === 'polish') {
@@ -96,7 +53,6 @@ function transformStrengthBlock(mode, documentProfile = 'unknown', requestStreng
       '고급은 기본보다 더 넓은 범위의 일반 문장을 실질적으로 재구성하고, 서버가 모든 문서의 의미·사실·구조를 정밀 검증하는 모드다.',
       '사실·수치·인용 검증과 구조 점검은 서버가 별도로 수행한다. 승인된 근거가 없으면 내용을 보강하지 않는다.',
       '다듬기처럼 조사·동의어만 바꾸지 않는다. 사건의 시간 순서와 인과 방향, 주장과 근거의 소유권은 지키되 대상 문장의 절 순서·연결·호흡은 기본보다 넓게 다시 구성한다.',
-      '서사·감상형 문서에서 같은 담화 역할 안에서는 문단 나눔과 결합도 실질 재구성에 포함한다. 다른 주제·사건·근거를 옮기는 것은 금지한다.',
       '이미 자연스러운 문장은 남기되, 휴머나이징 대상 문장은 사람이 직접 다시 쓴 차이가 분명해야 한다.',
       `원문 문서 프로필=${documentProfile || 'unknown'}.`
     ].join('\n');

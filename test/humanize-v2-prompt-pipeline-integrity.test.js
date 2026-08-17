@@ -238,6 +238,7 @@ test('문서 회복 비용 예산은 누적 USD와 생략 사유를 원문 없�
     spentUsd: 0.012345,
     exhausted: true,
     absoluteCallLimit: 16,
+    lateCallReserve: 6,
     absoluteElapsedLimitMs: 240000,
     elapsedMs: 0,
     callLimitExhausted: false,

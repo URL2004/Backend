@@ -5,6 +5,11 @@ const freezeBlocks = require('../engine/freezeblocks');
 const { splitSentenceSpans, splitSentences, ngramJaccard } = require('../engine/koreanText');
 const { paragraphExpansionLimit } = require('./voiceProfile');
 const layoutStructure = require('./layoutStructure');
+const {
+  resolveHumanizeContract,
+  allowsLayoutRecomposition,
+  canonicalProfileName
+} = require('./humanizeContract');
 
 const VERSION = 'gpt-structure-chunk-v2';
 const UNSAFE_END_RE = /(?:보다|및|과|와|의|을|를|은|는|이|가|에|에서|으로|로|부터|까지|처럼|대한|관한|그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/;
@@ -14,7 +19,8 @@ function splitChunksForGpt(text, {
   preserveSentenceBoundaries = false,
   sentenceBoundaryMinimum = 4,
   preserveLineBoundaries = false,
-  formatProfile = null
+  formatProfile = null,
+  humanizeContract = null
 } = {}) {
   const base = protectStructuralLineChunkBoundaries(baseChunk.splitChunks(text), text);
   const academicSpans = freezeBlocks.detectAcademicSpans(text);
@@ -43,7 +49,10 @@ function splitChunksForGpt(text, {
     chunks.push(...expanded);
   }
 
-  const plannedChunks = coalesceEditable ? coalesceEditableChunks(chunks) : chunks;
+  const resolvedContract = resolveHumanizeContract({ humanizeContract });
+  const plannedChunks = coalesceEditable
+    ? coalesceEditableChunks(chunks, 1600, 2500, { humanizeContract: resolvedContract })
+    : chunks;
   const lineBoundaryPolicy = preserveLineBoundaries === true
     ? 'all'
     : String(preserveLineBoundaries || 'none');
@@ -52,6 +61,8 @@ function splitChunksForGpt(text, {
   reindexChunks(plannedChunks);
   return {
     version: VERSION,
+    humanizeContractVersion: resolvedContract.version,
+    paragraphPolicy: resolvedContract.paragraph,
     chunks: plannedChunks,
     audit: buildPlanAudit(plannedChunks)
   };
@@ -283,7 +294,10 @@ function reindexChunks(chunks) {
   });
 }
 
-function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500) {
+function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500, {
+  humanizeContract = null
+} = {}) {
+  const resolvedContract = resolveHumanizeContract({ humanizeContract });
   const out = [];
   let current = null;
   const flush = () => {
@@ -309,7 +323,14 @@ function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500)
       const marker = `[[[V2_BOUNDARY_${String(existingMarkers.length + 1).padStart(3, '0')}]]]`;
       const start = String(current.text || '').length;
       current.llmText = `${current.llmText || current.text || ''}${marker}${chunk.llmText || chunk.text || ''}`;
-      current.boundaryMarkers = [...existingMarkers, { marker, boundary, start, end: start + boundary.length }];
+      current.boundaryMarkers = [...existingMarkers, {
+        marker,
+        boundary,
+        start,
+        end: start + boundary.length,
+        policy: resolvedContract.paragraph.modelBoundary,
+        policyVersion: resolvedContract.paragraph.version
+      }];
       current.text = joinText;
       current.end = chunk.end;
       current.sep = chunk.sep || '';
@@ -366,7 +387,16 @@ function restoreBoundaryMarkers(outputText, chunk) {
 
 // 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 이 단계는 동결 제목을
 // 독립 행으로 되돌리고, 구조가 잠기지 않은 일반 산문의 문단 경계만 조정한다.
-function restorePostSemanticLayout({ source, outputText, chunks, mode = '', requestStrength = '', documentProfile = '', profileConfidence = 0 } = {}) {
+function restorePostSemanticLayout({
+  source,
+  outputText,
+  chunks,
+  mode = '',
+  requestStrength = '',
+  documentProfile = '',
+  profileConfidence = 0,
+  humanizeContract = null
+} = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
   const paragraphs = restoreParagraphLayout({
     source,
@@ -375,7 +405,8 @@ function restorePostSemanticLayout({ source, outputText, chunks, mode = '', requ
     mode,
     requestStrength,
     documentProfile,
-    profileConfidence
+    profileConfidence,
+    humanizeContract
   });
   const inlineLabels = restoreInlineLabelBodyLayout(source, paragraphs.text);
   const structuralPass = heading.missingCount === 0
@@ -544,7 +575,8 @@ function restoreFinalDocumentLayout({
   requestStrength = '',
   documentProfile = '',
   profileConfidence = 0,
-  normalizeVisualGaps = false
+  normalizeVisualGaps = false,
+  humanizeContract = null
 } = {}) {
   let text = normalizeNewlines(outputText);
   let initialLocked = null;
@@ -570,7 +602,8 @@ function restoreFinalDocumentLayout({
       mode,
       requestStrength,
       documentProfile,
-      profileConfidence
+      profileConfidence,
+      humanizeContract
     });
     finalLocked = restoreLockedStructureLayout({
       source,
@@ -1227,10 +1260,23 @@ function isOrderedSectionRecord(record) {
     && /^\s*(?:\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+\S/u.test(String(record?.text || ''));
 }
 
-function restoreParagraphLayout({ source, outputText, chunks, mode = '', requestStrength = '', documentProfile = '', profileConfidence = 0 } = {}) {
-  const profileName = typeof documentProfile === 'object'
-    ? String(documentProfile?.profile || documentProfile?.contentGenre || 'unknown')
-    : String(documentProfile || '');
+function restoreParagraphLayout({
+  source,
+  outputText,
+  chunks,
+  mode = '',
+  requestStrength = '',
+  documentProfile = '',
+  profileConfidence = 0,
+  humanizeContract = null
+} = {}) {
+  const resolvedContract = resolveHumanizeContract({
+    humanizeContract,
+    mode,
+    requestStrength,
+    documentProfile
+  });
+  const profileName = canonicalProfileName(documentProfile);
   const confidence = Math.max(
     Number(profileConfidence) || 0,
     typeof documentProfile === 'object' ? Number(documentProfile?.confidence) || 0 : 0
@@ -1358,8 +1404,7 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     readabilityOptions
   });
   const sequentialEnumeratedParagraphRoles = hasSequentialEnumeratedParagraphRoles(sourceParagraphs);
-  const advancedNarrativeRecomposition = String(requestStrength || '') === 'advanced'
-    && ['personal_essay', 'general', 'review_blog', 'general_essay', 'blog_review'].includes(profileName)
+  const advancedNarrativeRecomposition = allowsLayoutRecomposition(resolvedContract)
     && !sequentialEnumeratedParagraphRoles;
   const sourceParagraphRolesAreAuthoritative = semanticProseRoles
     // 고급 서사형 글은 사건·근거의 소유권과 순서를 지키는 범위에서 같은

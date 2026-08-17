@@ -193,7 +193,9 @@ function auditVoice(sourceProfile, output, {
     ? auditDirectQuoteIntegrity(sourceText, output)
     : null;
   if (directQuoteIntegrity) {
-    if (directQuoteIntegrity.countChanged && !directQuoteIntegrity.punctuationOnlyChange) {
+    if (directQuoteIntegrity.countChanged
+        && !directQuoteIntegrity.punctuationOnlyChange
+        && !directQuoteIntegrity.benignDuplicateReduction) {
       warnings.push(warning('quote_count_changed', '직접 인용의 개수가 달라졌을 수 있어요.'));
     } else if (directQuoteIntegrity.contentChanged) {
       warnings.push(warning('quote_content_changed', '직접 인용의 내용이나 순서가 원문과 달라졌을 수 있어요.'));
@@ -848,6 +850,7 @@ function auditDirectQuoteIntegrity(source, output) {
   const sourceQuotes = directQuoteContents(source);
   const outputQuotes = directQuoteContents(output);
   const countChanged = sourceQuotes.length !== outputQuotes.length;
+  const multiplicity = compareQuoteMultiplicity(sourceQuotes, outputQuotes, source);
   const punctuationOnlyChange = countChanged && (
     isQuotePunctuationOnlyChange(source, output)
       || isSafeMalformedQuoteRepair(source, output, sourceQuotes, outputQuotes)
@@ -861,16 +864,106 @@ function auditDirectQuoteIntegrity(source, output) {
     }
   }
   return {
-    version: 1,
-    pass: (!countChanged || punctuationOnlyChange) && changedOrdinals.length === 0,
+    version: 2,
+    pass: (!countChanged || punctuationOnlyChange || multiplicity.benignDuplicateReduction)
+      && changedOrdinals.length === 0,
     sourceCount: sourceQuotes.length,
     outputCount: outputQuotes.length,
     countChanged,
     punctuationOnlyChange,
+    benignDuplicateReduction: multiplicity.benignDuplicateReduction,
+    duplicateReductionCount: multiplicity.duplicateReductionCount,
+    missingUniqueCount: multiplicity.missingUniqueCount,
+    introducedQuoteCount: multiplicity.introducedQuoteCount,
     contentChanged: changedOrdinals.length > 0,
     changedCount: changedOrdinals.length,
     changedOrdinals
   };
+}
+
+// 작품명·용어를 여러 번 따옴표로 표시한 원문에서 뒤의 반복 표기만 일반
+// 명사로 받는 것은 직접 인용 내용 손실이 아니다. 개수만 비교하면 이런 정상
+// 중복 축약을 모두 quote_count_changed로 올리므로, 정규화한 인용 내용의
+// 다중집합과 순서를 함께 확인한다. 고유한 인용 하나라도 사라지거나 새 인용이
+// 생기면 기존처럼 실패한다.
+function compareQuoteMultiplicity(sourceQuotes, outputQuotes, sourceText = '') {
+  const sourceKeys = (sourceQuotes || []).map(normalizeExactQuote);
+  const outputKeys = (outputQuotes || []).map(normalizeExactQuote);
+  const sourceCounts = countStrings(sourceKeys);
+  const outputCounts = countStrings(outputKeys);
+  let duplicateReductionCount = 0;
+  let missingUniqueCount = 0;
+  let introducedQuoteCount = 0;
+
+  for (const [key, count] of outputCounts) {
+    introducedQuoteCount += Math.max(0, count - Number(sourceCounts.get(key) || 0));
+  }
+  for (const [key, count] of sourceCounts) {
+    const remaining = Number(outputCounts.get(key) || 0);
+    const missing = Math.max(0, count - remaining);
+    if (!missing) continue;
+    if (count > 1 && remaining >= 1 && isReferenceLikeRepeatedQuote(sourceText, key)) {
+      duplicateReductionCount += missing;
+    }
+    else missingUniqueCount += missing;
+  }
+
+  let cursor = 0;
+  for (const key of outputKeys) {
+    while (cursor < sourceKeys.length && sourceKeys[cursor] !== key) cursor += 1;
+    if (cursor >= sourceKeys.length) break;
+    cursor += 1;
+  }
+  const orderPreserved = cursor <= sourceKeys.length
+    && outputKeys.every((key, index) => {
+      if (!index) return sourceKeys.includes(key);
+      return true;
+    })
+    && isOrderedSubsequence(outputKeys, sourceKeys);
+  return {
+    benignDuplicateReduction: sourceKeys.length !== outputKeys.length
+      && duplicateReductionCount > 0
+      && missingUniqueCount === 0
+      && introducedQuoteCount === 0
+      && orderPreserved,
+    duplicateReductionCount,
+    missingUniqueCount,
+    introducedQuoteCount,
+    orderPreserved
+  };
+}
+
+// 같은 짧은 발화를 두 번 인용한 문서에서 한 번이 사라지는 것은 의미
+// 손실일 수 있다. 작품명·용어처럼 실제로 이름을 붙이거나 뜻을 설명하는
+// 문맥이 SOURCE에 확인될 때만 반복 표기 축약으로 인정한다.
+function isReferenceLikeRepeatedQuote(sourceText, normalizedQuote) {
+  const source = String(sourceText || '').replace(/\r\n?/gu, '\n');
+  const key = String(normalizedQuote || '').trim();
+  if (!source || !key || key.length > 80) return false;
+  const quotePattern = [...key]
+    .map(character => character.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+    .join('\\s*');
+  const quoted = `[‘’“”"「」『』《》〈〉][^‘’“”"「」『』《》〈〉]{0,80}${quotePattern}[^‘’“”"「」『』《》〈〉]{0,80}[‘’“”"「」『』《》〈〉]`;
+  const referenceNoun = '(?:제목|작품명|책명|단어|표현|용어|개념|뜻|의미)';
+  const nounBoundary = '(?=$|[\\s,.;:!?。！？은는이가을를의에도만과와])';
+  const after = new RegExp(`${quoted}\\s*(?:이라는?|라(?:는|고)|은|는|의)?\\s*${referenceNoun}${nounBoundary}`, 'u');
+  const before = new RegExp(`${referenceNoun}(?:은|는|이|가|인)?\\s*${quoted}`, 'u');
+  return after.test(source) || before.test(source);
+}
+
+function countStrings(values) {
+  const counts = new Map();
+  for (const value of values || []) counts.set(value, Number(counts.get(value) || 0) + 1);
+  return counts;
+}
+
+function isOrderedSubsequence(needle, haystack) {
+  let cursor = 0;
+  for (const value of haystack || []) {
+    if (value === needle[cursor]) cursor += 1;
+    if (cursor >= (needle || []).length) return true;
+  }
+  return (needle || []).length === 0;
 }
 
 /**
@@ -881,6 +974,16 @@ function auditDirectQuoteIntegrity(source, output) {
 function restoreDirectQuoteContents(source, output) {
   const before = String(output || '');
   const auditBefore = auditDirectQuoteIntegrity(source, before);
+  if (auditBefore.benignDuplicateReduction) {
+    return {
+      text: before,
+      applied: false,
+      restoredCount: 0,
+      reason: 'quote_duplicate_reduction_benign',
+      auditBefore,
+      auditAfter: auditBefore
+    };
+  }
   if (auditBefore.countChanged) {
     const countRepair = restoreMissingQuoteDelimiters(source, before);
     if (countRepair.applied) return countRepair;

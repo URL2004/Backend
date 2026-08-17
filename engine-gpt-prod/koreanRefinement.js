@@ -11,7 +11,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 27;
+const VERSION = 28;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -41,6 +41,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: true,
     message: '닫는 따옴표 뒤의 조사·서술격이 불필요하게 떨어져 있어요.'
+  },
+  sentence_punctuation_spacing: {
+    weight: 2,
+    repairable: true,
+    deterministicSafe: true,
+    message: '마침표·쉼표 앞에 불필요한 공백이 들어갔어요.'
   },
   collapsed_korean_spacing_run: {
     weight: 6,
@@ -624,6 +630,36 @@ const ISSUE_DEFINITIONS = Object.freeze({
     deterministicSafe: false,
     message: '“뒤·후·다음”을 새로 반복해 업무 과정이 기계적인 순서 나열처럼 바뀌었어요.'
   },
+  content_identity_predicate_mismatch: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '책·작품의 “내용”을 주어로 두고 책·소설 자체라고 서술해 주어와 보어의 범위가 달라요.'
+  },
+  prejudiced_gaze_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: false,
+    message: '“편견과 시선”을 나란히 두어 두 개념의 관계가 모호해요.'
+  },
+  negative_goal_commitment: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '피하거나 줄여야 할 상태를 헌신·기여의 목표로 연결해 논리 방향이 어긋났어요.'
+  },
+  reflexive_subject_attachment: {
+    weight: 4,
+    repairable: true,
+    deterministicSafe: false,
+    message: '소유격 주어 뒤에 “자신도 모르게”가 붙어 누가 자신을 의미하는지 모호해요.'
+  },
+  locative_handpicked_collocation: {
+    weight: 3,
+    repairable: true,
+    deterministicSafe: true,
+    message: '“인생에 손에 꼽다”의 위치·선택 조사가 겹쳤어요.'
+  },
   discourse_connector_inflation: {
     weight: 2,
     repairable: true,
@@ -634,8 +670,8 @@ const ISSUE_DEFINITIONS = Object.freeze({
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
 const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|나|라도|든(?:지)?|기(?:도|만|는)|지(?:만)?|다|고|며|어서|므로|었(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
-const QUOTE_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|조차|마저|밖에|마다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
-const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|조차|마저|밖에|마다|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|이나|나|조차|마저|밖에|마다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
+const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|이나|나|조차|마저|밖에|마다|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|하며)';
 const QUOTE_ATTRIBUTION_CONTEXT = `${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}\\s+(?:말|이야기|발언|경고|제안|요청|답변|약속|다짐|인사|주장|설명|대답|강조|외침)`;
 const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
@@ -721,12 +757,13 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
   const leadingPeriod = repairLeadingSentencePeriodArtifacts(quoteBoundary.text, context);
   const labelBoundary = repairIntroducedLabelBodyLineBreaks(leadingPeriod.text, source, context);
   const particleBoundary = repairIntroducedParticleLineBreaks(labelBoundary.text, source, context);
+  const wordBoundary = repairIntroducedSourceBackedWordLineBreaks(particleBoundary.text, source, context);
   // `line_sensitive`는 설문·항목 행을 함부로 재배치하지 말라는 뜻이지,
   // 창작문처럼 모든 안전 형식 보정을 끄라는 뜻은 아니다. 원문 대조가
   // 가능한 조사 줄바꿈은 먼저 복원하고, 일반 산문 경계 추론만 생략한다.
   const boundary = context.lineSensitive
-    ? { text: particleBoundary.text, changeCounts: {} }
-    : repairBrokenProseBoundaries(particleBoundary.text, context);
+    ? { text: wordBoundary.text, changeCounts: {} }
+    : repairBrokenProseBoundaries(wordBoundary.text, context);
   const siblingLabels = repairSiblingLabelSpacing(boundary.text, source);
   const spacing = repairContextualSpacing(siblingLabels.text, source, context);
   const changeCounts = mergeChangeCounts(
@@ -734,6 +771,7 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
     leadingPeriod.changeCounts,
     labelBoundary.changeCounts,
     particleBoundary.changeCounts,
+    wordBoundary.changeCounts,
     boundary.changeCounts,
     siblingLabels.changeCounts,
     spacing.changeCounts
@@ -750,7 +788,9 @@ function applySafeFormattingRepairs({ source = '', outputText = '', documentProf
       + Number(changeCounts.particle_linebreak_join || 0)
       + Number(changeCounts.quote_internal_linebreak_join || 0)
       + Number(changeCounts.quote_attribution_linebreak_join || 0)
-      + Number(changeCounts.label_body_linebreak_join || 0),
+      + Number(changeCounts.label_body_linebreak_join || 0)
+      + Number(changeCounts.source_backed_word_linebreak_join || 0)
+      + Number(changeCounts.source_backed_phrase_linebreak_join || 0),
     brokenParagraphBreakRepairCount: Number(changeCounts.broken_prose_paragraph_break || 0),
     excessiveBlankLineRepairCount: Number(changeCounts.excess_blank_lines || 0),
     contextualSpacingRepairCount: changeCodes
@@ -1015,6 +1055,118 @@ function sourceSupportsParticleJoin(source, sourceCompact, left, right, joined) 
   return false;
 }
 
+/**
+ * 모델·레이아웃 후처리가 한 어절을 `기\n기에` 처럼 쪼개거나
+ * `단순한\n\n기술` 처럼 구 중간을 문단으로 잘라도 종래 휴리스틱은
+ * 조사·관형형 끝만 보므로 이를 놓쳤다. SOURCE에 같은 왼쪽·오른쪽
+ * 어절이 붙어 있는지/띄어 있는지가 하나로 확인될 때만 경계를 복원한다.
+ * SOURCE부터 줄이 나뉘었거나 표·목록·인용·코드인 경우는 건드리지 않는다.
+ */
+function repairIntroducedSourceBackedWordLineBreaks(value, source, context = {}) {
+  const before = String(value || '').replace(/\r\n?/gu, '\n');
+  const sourceText = String(source || '').replace(/\r\n?/gu, '\n');
+  if (!before || !sourceText || context?.creative) return { text: before, changeCounts: {} };
+  const sourceFlat = sourceText.replace(/[ \t]*\n[ \t]*/gu, ' ').replace(/[ \t]+/gu, ' ');
+  const sourceLexical = lexicalSpacing(sourceText);
+  const sourceBoundaryPairs = sourceLineBoundaryWordPairs(sourceText);
+  const lines = before.split('\n');
+  const counts = {};
+  let guards = buildLineGuards(lines);
+  let index = 0;
+
+  while (index < lines.length - 1) {
+    const next = nextNonEmptyLineIndex(lines, index + 1);
+    if (next < 0) break;
+    const left = String(lines[index] || '').trim();
+    const right = String(lines[next] || '').trim();
+    const leftGuard = guards[index] || {};
+    const rightGuard = guards[next] || {};
+    if (!left || !right
+        || leftGuard.code || rightGuard.code
+        || leftGuard.reference || rightGuard.reference
+        || leftGuard.table || rightGuard.table
+        || leftGuard.role === 'quote' || rightGuard.role === 'quote'
+        || /[.!?。！？…,:;：；][”’」』》〉"')\]]*$/u.test(left)
+        || NEW_UNIT_START_RE.test(right)) {
+      index = next;
+      continue;
+    }
+
+    const leftWord = (left.match(/[\p{L}\p{N}]+$/u) || [''])[0];
+    const rightWord = (right.match(/^[\p{L}\p{N}]+/u) || [''])[0];
+    if (!leftWord || !rightWord || leftWord.length + rightWord.length < 2) {
+      index = next;
+      continue;
+    }
+    const pairKey = `${leftWord}\u0000${rightWord}`;
+    if (sourceBoundaryPairs.has(pairKey)) {
+      index = next;
+      continue;
+    }
+
+    const joinedWord = `${leftWord}${rightWord}`;
+    const spacedWords = `${leftWord} ${rightWord}`;
+    const supportsJoined = sourceFlat.includes(joinedWord);
+    const supportsSpaced = sourceFlat.includes(spacedWords);
+    const separator = supportsJoined ? '' : ' ';
+    if (supportsJoined === supportsSpaced
+        || !sourceSupportsBoundaryContext(sourceLexical, left, right, separator)) {
+      index = next;
+      continue;
+    }
+
+    lines[index] = `${String(lines[index] || '').trimEnd()}${separator}${String(lines[next] || '').trimStart()}`;
+    lines.splice(index + 1, next - index);
+    addCount(counts, supportsJoined
+      ? 'source_backed_word_linebreak_join'
+      : 'source_backed_phrase_linebreak_join');
+    guards = buildLineGuards(lines);
+  }
+  return { text: lines.join('\n'), changeCounts: counts };
+}
+
+function sourceLineBoundaryWordPairs(source) {
+  const lines = String(source || '').replace(/\r\n?/gu, '\n').split('\n');
+  const pairs = new Set();
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const next = nextNonEmptyLineIndex(lines, index + 1);
+    if (next < 0) break;
+    const left = String(lines[index] || '').trim();
+    const right = String(lines[next] || '').trim();
+    const leftWord = (left.match(/[\p{L}\p{N}]+$/u) || [''])[0];
+    const rightWord = (right.match(/^[\p{L}\p{N}]+/u) || [''])[0];
+    if (leftWord && rightWord) pairs.add(`${leftWord}\u0000${rightWord}`);
+    index = next - 1;
+  }
+  return pairs;
+}
+
+function lexicalSpacing(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function sourceSupportsBoundaryContext(sourceLexical, leftValue, rightValue, separator) {
+  const leftWords = String(leftValue || '').match(/[\p{L}\p{N}]+/gu) || [];
+  const rightWords = String(rightValue || '').match(/[\p{L}\p{N}]+/gu) || [];
+  if (!leftWords.length || !rightWords.length) return false;
+  const boundary = `${leftWords.at(-1)}${separator}${rightWords[0]}`;
+  const previous = leftWords.length > 1 ? leftWords.at(-2) : '';
+  const next = rightWords.length > 1 ? rightWords[1] : '';
+  // 우연히 문서의 다른 위치에 같은 두 단어가 있다는 이유만으로 실제
+  // 문단을 합치지 않는다. 경계의 앞 또는 뒤 문맥 하나 이상이 SOURCE의
+  // 같은 위치에서 이어질 때만 원문 근거가 있는 오개행으로 확정한다.
+  const contexts = [
+    previous ? `${previous} ${boundary}` : '',
+    next ? `${boundary} ${next}` : '',
+    previous && next ? `${previous} ${boundary} ${next}` : ''
+  ].filter(Boolean);
+  return contexts.some(candidate => sourceLexical.includes(candidate));
+}
+
 function repairBrokenProseBoundaries(value, context) {
   const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
   const guards = buildLineGuards(lines);
@@ -1119,6 +1271,13 @@ function repairContextualSpacing(value, source, context) {
     return replaceOutsideProtectedRanges(workingLine, segment => {
       let out = segment;
       out = repairHighConfidenceLockedSpacing(out, counts);
+      out = replaceTracked(
+        out,
+        /([\p{L}\p{N}”’」』》〉)\]])[ \t]+([.!?。！？,，;；:：])/gu,
+        (_match, left, mark) => `${left}${mark}`,
+        'sentence_punctuation_spacing',
+        counts
+      );
       out = replaceTracked(out, /([.!?。！？])(?=[가-힣])/gu, (_match, mark) => `${mark} `, 'missing_sentence_space', counts);
       out = replaceTracked(out, /(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
         return PARTICLE_AFTER_PAREN.test(right) ? match : `${left} ${right}`;
@@ -1660,6 +1819,13 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(
     issues,
     text,
+    'sentence_punctuation_spacing',
+    sentence => /[\p{L}\p{N}”’」』》〉)\]][ \t]+[.!?。！？,，;；:：]/u
+      .test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
     'common_orthography_typo',
     sentence => COMMON_ORTHOGRAPHY_REPAIRS.some(item => testPattern(stripProtectedQuotedText(sentence), item.pattern))
   );
@@ -1748,6 +1914,39 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
     'condition_commitment_mismatch',
     sentence => /(?:성장|발전|개선|향상)하려면[^.!?。！？\n]{0,90}(?:도전|노력|보완|학습|배우|키우|참여)[^.!?。！？\n]{0,30}(?:하겠습니다|겠습니다)/u
       .test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'content_identity_predicate_mismatch',
+    sentence => /(?:책|작품)(?:의)?\s*(?:내용|줄거리)(?:은|는)[^.!?。！？\n]{0,100}(?:책|소설|영화|작품)(?:이었|였|이다|입니다)/u
+      .test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'prejudiced_gaze_collocation',
+    sentence => /(?:편견|선입견)(?:과|와)\s*(?:사회적인?\s*)?시선(?=$|[은는이가을를의에도만은\s,.;:!?。！？])/u
+      .test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'negative_goal_commitment',
+    sentence => hasNegativeGoalCommitment(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'reflexive_subject_attachment',
+    sentence => /[\p{L}\p{N}]{1,24}의\s*(?:마음|태도|생각|시선)(?:도|은|는|이|가)?\s*자신도\s*모르게/u
+      .test(stripProtectedQuotedText(sentence))
+  );
+  pushSentenceIssue(
+    issues,
+    text,
+    'locative_handpicked_collocation',
+    sentence => /(?:인생|삶|경험|경력)에\s+손에\s*꼽/u.test(stripProtectedQuotedText(sentence))
   );
   pushSentenceIssue(
     issues,
@@ -1881,6 +2080,13 @@ function repairCommonSourceLanguage(value) {
       DEPENDENT_NOUN_DE_SPACING_RE,
       '$1 데에',
       'dependent_noun_de_spacing',
+      changes
+    );
+    out = replaceOutsideProtectedQuotes(
+      out,
+      /(인생|삶|경험|경력)에\s+손에\s*꼽/gu,
+      '$1에서 손에 꼽',
+      'locative_handpicked_collocation',
       changes
     );
     return out;
@@ -2330,7 +2536,7 @@ function buildSourcePromptHints(source, { documentProfile = null, mode = '' } = 
     includeSourceNotation: true
   }).filter(item => item.repairable === true);
   if (!issues.length) return '';
-  const rows = issues.slice(0, 8).map(item => {
+  const rows = prioritizeRepairIssues(issues, { limit: 10 }).map(item => {
     const ordinals = (item.sentenceOrdinals || []).slice(0, 6);
     return `- ${item.code}${ordinals.length ? ` (문장 ${ordinals.join(', ')})` : ''}: ${item.message}`;
   });
@@ -2340,6 +2546,45 @@ function buildSourcePromptHints(source, { documentProfile = null, mode = '' } = 
     ...rows,
     '목록에 없는 표현을 억지로 바꾸거나 새 주장·예시·평가를 추가하지 않는다.'
   ].join('\n');
+}
+
+const HIGH_PRIORITY_REPAIR_CODES = new Set([
+  'role_definition_inversion',
+  'case_frame_corruption',
+  'contrast_clause_attachment',
+  'purpose_case_frame',
+  'goal_direction_reference_mismatch',
+  'condition_commitment_mismatch',
+  'content_identity_predicate_mismatch',
+  'negative_goal_commitment',
+  'reflexive_subject_attachment',
+  'sampling_subject_mismatch',
+  'missing_subject_particle',
+  'introduced_case_particle_relation_shift'
+]);
+
+// 탐지기 선언 순서는 구현상의 편의일 뿐 사용자 문서에서 고쳐야 할
+// 우선순위가 아니다. 앞쪽의 공백·표기 오류가 슬롯을 모두 차지해 뒤쪽의
+// 논리 방향·주어 호응 결함이 프롬프트와 국소 수리기에서 누락되지 않도록
+// 의미 위험, 가중치, 결정론 수리 가능 여부를 함께 사용해 안정 정렬한다.
+function prioritizeRepairIssues(values, { limit = 8 } = {}) {
+  const issues = Array.isArray(values) ? values : [];
+  return issues
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const leftSemantic = HIGH_PRIORITY_REPAIR_CODES.has(left.item?.code) ? 1 : 0;
+      const rightSemantic = HIGH_PRIORITY_REPAIR_CODES.has(right.item?.code) ? 1 : 0;
+      if (leftSemantic !== rightSemantic) return rightSemantic - leftSemantic;
+      const leftWeight = Number(left.item?.weight || 0);
+      const rightWeight = Number(right.item?.weight || 0);
+      if (leftWeight !== rightWeight) return rightWeight - leftWeight;
+      const leftModelNeeded = left.item?.deterministicSafe === true ? 0 : 1;
+      const rightModelNeeded = right.item?.deterministicSafe === true ? 0 : 1;
+      if (leftModelNeeded !== rightModelNeeded) return rightModelNeeded - leftModelNeeded;
+      return left.index - right.index;
+    })
+    .slice(0, Math.max(0, Number(limit) || 0))
+    .map(entry => entry.item);
 }
 
 function detectProfessionalDowngrade(source, outputText, profile) {
@@ -2448,16 +2693,52 @@ function findAdjacentSemanticRepetitions(text) {
     const leftTokens = new Set(contentTokensLocal(left));
     const rightTokens = new Set(contentTokensLocal(right));
     const shortCognitiveEcho = isShortCognitiveEcho(left, right);
-    if ((leftTokens.size < 4 || rightTokens.size < 4) && !shortCognitiveEcho) continue;
+    const abstractPredicateEcho = isAbstractPredicateEcho(left, right, leftTokens, rightTokens);
+    if ((leftTokens.size < 4 || rightTokens.size < 4)
+        && !shortCognitiveEcho
+        && !abstractPredicateEcho) continue;
     const intersection = [...leftTokens].filter(token => rightTokens.has(token)).length;
     const containment = intersection / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
     const lengthRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
     const connectorSubsetEcho = isConnectorSubsetEcho(left, right, leftTokens);
     if ((containment >= 0.8 && lengthRatio >= 0.68)
         || shortCognitiveEcho
+        || abstractPredicateEcho
         || connectorSubsetEcho) ordinals.push(index + 2);
   }
   return ordinals;
+}
+
+const ABSTRACT_ECHO_SUBJECTS = Object.freeze([
+  '관점', '의미', '역할', '중요성', '필요성', '결론', '깨달음', '인식', '태도', '기준', '방향'
+]);
+const ABSTRACT_ECHO_PREDICATES = Object.freeze([
+  // 같은 서술핵의 활용형을 한 계열로 본다. 예를 들어 `관점이 놓인다`를
+  // 바로 다음 문장에서 `관점은 ... 놓여 있다`로 다시 쓰는 경우는 단어
+  // 집합 유사도만으로는 놓치기 쉽다. 다만 추상 주제가 양쪽에 동일하게
+  // 존재할 때만 이 규칙을 사용하므로 실제 사건 서술은 건드리지 않는다.
+  /(?:놓여|놓인|놓이|놓였|담겨|담긴|담기|담겼|들어)/u,
+  /(?:드러나|보여|나타나|확인)/u,
+  /(?:의미|시사|보여\s*준)/u,
+  /(?:깨닫|알게|이해|인식)/u
+]);
+
+function isAbstractPredicateEcho(leftValue, rightValue, leftTokens = null, rightTokens = null) {
+  const left = String(leftValue || '');
+  const right = String(rightValue || '');
+  const subject = ABSTRACT_ECHO_SUBJECTS.find(value => left.includes(value) && right.includes(value));
+  if (!subject) return false;
+  const samePredicateFamily = ABSTRACT_ECHO_PREDICATES.some(pattern => pattern.test(left) && pattern.test(right));
+  if (!samePredicateFamily) return false;
+  const leftSet = leftTokens instanceof Set ? leftTokens : new Set(contentTokensLocal(left));
+  const rightSet = rightTokens instanceof Set ? rightTokens : new Set(contentTokensLocal(right));
+  const shared = [...rightSet].filter(token => leftSet.has(token)).length;
+  const novel = Math.max(0, rightSet.size - shared);
+  return shared >= 1 && (
+    novel <= 3
+    || shared / Math.max(1, rightSet.size) >= 0.65
+    || right.length <= left.length * 1.4
+  );
 }
 
 function isConnectorSubsetEcho(leftValue, rightValue, leftTokens = null) {
@@ -3594,6 +3875,31 @@ function stripProtectedQuotedText(value) {
     .replace(/'[^'\n]{1,240}'/gu, ' ');
 }
 
+function hasNegativeGoalCommitment(value) {
+  const sentence = String(value || '').replace(/\s+/gu, ' ').trim();
+  if (!sentence) return false;
+  const commitment = sentence.match(
+    /(?:헌신|기여|보탬|일조|조성|지향|목표로\s*삼|만들어\s*가|힘쓰|노력)(?:하|하고|하기|하겠|하고\s*싶|하려)/u
+  );
+  if (!commitment) return false;
+
+  // `X가 없는 사회가 아니라 X가 계속되는 사회에 헌신한다`처럼 같은
+  // 상태를 바람직한 대안과 부정적 현실 양쪽에 놓고, 뒤의 현실 자체를
+  // 실천 목표로 연결한 모순을 X의 실제 단어와 무관하게 잡는다.
+  const mirroredAdverseTarget = /([\p{L}\p{N}]+(?:\s+[\p{L}\p{N}]+){0,3}?)(?:이|가)?\s*없는\s*(사회|환경|공동체|조직|문화|세상|상태)(?:가|를|은|는)?\s*아니라[^.!?。！？\n]{0,120}\1(?:이|가)?\s*(?:있을\s*수밖에\s*없는|사라지지\s*않는|계속되는|반복되는|남아\s*있는)\s*\2[^.!?。！？\n]{0,70}(?:에|을|를|으로)\s*(?:헌신|기여|보탬|일조|조성|지향|목표로\s*삼|만들어\s*가|힘쓰|노력)/u;
+  if (mirroredAdverseTarget.test(sentence)) return true;
+
+  const adverseTarget = sentence.match(
+    /(?:편견|차별|혐오|폭력|배제|불평등|고립|갈등|혼란|위험|피해|불신|상처|부조리|부패|오염)(?:이|가|은|는)?\s*(?:있을\s*수밖에\s*없는|사라지지\s*않는|계속되는|반복되는|만연한|심화되는|남아\s*있는)\s*(?:사회|환경|공동체|조직|문화|세상|상태)/u
+  );
+  if (!adverseTarget || Number(adverseTarget.index) >= Number(commitment.index)) return false;
+  const relation = sentence.slice(Number(adverseTarget.index) + adverseTarget[0].length, Number(commitment.index));
+  // 나쁜 상태 자체가 아니라 그것의 개선·예방에 기여한다는 정상 문장은
+  // 목표 방향 오류가 아니다.
+  if (/(?:개선|해소|완화|줄이|없애|바꾸|극복|예방|해결|저지|대응|벗어나)/u.test(relation)) return false;
+  return /(?:에|을|를|으로)\s*$/u.test(relation);
+}
+
 function pushSelfEvaluationRepetition(issues, text) {
   const sentences = splitSentences(String(text || ''));
   const ordinals = [];
@@ -4322,6 +4628,7 @@ module.exports = {
   buildSourceReviewWarnings,
   detectTextIssues,
   detectProfessionalDowngrade,
+  prioritizeRepairIssues,
   restorePolishDiscourseOpeners,
   restoreIntroducedIntegritySentences,
   isImprovedAudit

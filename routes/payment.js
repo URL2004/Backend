@@ -1007,6 +1007,9 @@ function serializeAdminJobDoc(docSnap) {
     semanticJudgeRan: j.semanticJudgeRan === true,
     humanizationDepthApplicable: j.humanizationDepthApplicable === true,
     humanizationDepthPass: typeof j.humanizationDepthPass === 'boolean' ? j.humanizationDepthPass : null,
+    humanizationOverallDepthPass: typeof j.humanizationOverallDepthPass === 'boolean'
+      ? j.humanizationOverallDepthPass
+      : null,
     humanizationMinimumEffectPass: typeof j.humanizationMinimumEffectPass === 'boolean' ? j.humanizationMinimumEffectPass : null,
     humanizationDepthSoftDelivered: j.humanizationDepthSoftDelivered === true,
     humanizationNoBenefitDelivered: j.humanizationNoBenefitDelivered === true,
@@ -1024,6 +1027,9 @@ function serializeAdminJobDoc(docSnap) {
     humanizationDeliveryDepthBand: j.humanizationDeliveryDepthBand || '',
     humanizationTargetDepthMet: typeof j.humanizationTargetDepthMet === 'boolean'
       ? j.humanizationTargetDepthMet
+      : null,
+    humanizationEditTargetMet: typeof j.humanizationEditTargetMet === 'boolean'
+      ? j.humanizationEditTargetMet
       : null,
     humanizationTargetDepthGap: finiteOrNull(j.humanizationTargetDepthGap),
     substantiveEditRatio: finiteOrNull(j.substantiveEditRatio),
@@ -1048,6 +1054,18 @@ function serializeAdminJobDoc(docSnap) {
     rhetoricalRemediationTargetCount: finiteOrNull(j.rhetoricalRemediationTargetCount),
     rhetoricalRemediationAchievedCount: finiteOrNull(j.rhetoricalRemediationAchievedCount),
     rhetoricalRemediationCoverage: finiteOrNull(j.rhetoricalRemediationCoverage),
+    macroDiscourseApplicable: j.macroDiscourseApplicable === true,
+    macroDiscourseScore: finiteOrNull(j.macroDiscourseScore),
+    macroDiscoursePass: typeof j.macroDiscoursePass === 'boolean' ? j.macroDiscoursePass : null,
+    macroDiscourseOrderPass: typeof j.macroDiscourseOrderPass === 'boolean'
+      ? j.macroDiscourseOrderPass
+      : null,
+    macroDiscourseSourceParagraphCount: finiteOrNull(j.macroDiscourseSourceParagraphCount),
+    macroDiscourseOutputParagraphCount: finiteOrNull(j.macroDiscourseOutputParagraphCount),
+    macroDiscourseRecomposedParagraphCount: finiteOrNull(j.macroDiscourseRecomposedParagraphCount),
+    macroDiscourseRepeatedEvaluationReduction: finiteOrNull(j.macroDiscourseRepeatedEvaluationReduction),
+    macroDiscourseRoleOrderRetention: finiteOrNull(j.macroDiscourseRoleOrderRetention),
+    macroDiscourseIdeaOrderRetention: finiteOrNull(j.macroDiscourseIdeaOrderRetention),
     sourceRedundancyApplicable: j.sourceRedundancyApplicable === true,
     sourceRedundancyPass: typeof j.sourceRedundancyPass === 'boolean' ? j.sourceRedundancyPass : null,
     sourceRedundancySourceSentenceCount: finiteOrNull(j.sourceRedundancySourceSentenceCount),
@@ -1090,6 +1108,9 @@ function serializeAdminJobDoc(docSnap) {
     koreanSourceRestoreCount: finiteOrNull(j.koreanSourceRestoreCount),
     quoteIntegrityPass: typeof j.quoteIntegrityPass === 'boolean' ? j.quoteIntegrityPass : null,
     quoteCountChanged: j.quoteCountChanged === true,
+    quoteDuplicateReductionBenign: j.quoteDuplicateReductionBenign === true,
+    quoteDuplicateReductionCount: finiteOrNull(j.quoteDuplicateReductionCount),
+    quoteMissingUniqueCount: finiteOrNull(j.quoteMissingUniqueCount),
     quoteContentChangedCount: finiteOrNull(j.quoteContentChangedCount),
     quoteIntegrityRestoreCount: finiteOrNull(j.quoteIntegrityRestoreCount),
     finalGeneratedDedupeApplied: j.finalGeneratedDedupeApplied === true,

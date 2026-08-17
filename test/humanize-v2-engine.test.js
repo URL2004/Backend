@@ -172,7 +172,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.37');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.38');
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -185,7 +185,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.ok(Array.isArray(out.engineMeta.riskFlags));
   assert.equal(out.engineMeta.tonePolicy, 'source_preserve');
   assert.equal(out.engineMeta.semanticJudgeRan, true);
-  assert.equal(out.engineMeta.discourseAuditVersion, 8);
+  assert.equal(out.engineMeta.discourseAuditVersion, 9);
   assert.equal(out.engineMeta.discoursePass, true);
   assert.deepEqual(out.engineMeta.discourseWarningCodes, []);
   assert.equal(out.engineMeta.logicalChunkCount, out.engineMeta.chunkCount);
@@ -914,7 +914,7 @@ test('두 일반 모델이 모두 무변환이면 실질 휴머나이징을 재�
   assert.equal(out.engineMeta.humanizationMinimumEffectPass, true);
   assert.equal(out.engineMeta.humanizationDepthSoftDelivered, true);
   assert.equal(out.engineMeta.humanizationDepthRetryApplied, true);
-  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.5.24');
+  assert.equal(out.engineMeta.humanizationPolicyVersion, 'perceived-v2.5.38');
   assert.equal(out.engineMeta.humanizationPlanSignalSource, 'deterministic_targets_input_risk');
   assert.equal(out.engineMeta.humanizationPlanDistributionAligned, true);
   assert.equal(
@@ -1343,7 +1343,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.37');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.38');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

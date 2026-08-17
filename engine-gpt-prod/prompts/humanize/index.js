@@ -43,7 +43,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '',
     gateSummaryBlock(),
     '',
-    preservationBlock(lengthPolicy, documentProfile),
+    preservationBlock(lengthPolicy, documentProfile, requestStrength),
     '',
     '[장르 원칙]',
     genreBlock(mode, register, styleProfile, documentProfile, requestStrength),

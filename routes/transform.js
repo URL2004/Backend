@@ -917,6 +917,7 @@ function buildArchiveObservability(job) {
     humanizationDepthEnabled: engineMeta.humanizationDepthEnabled === true,
     humanizationDepthApplicable: engineMeta.humanizationDepthApplicable === true,
     humanizationDepthPass: engineMeta.humanizationDepthPass === true,
+    humanizationOverallDepthPass: engineMeta.humanizationOverallDepthPass === true,
     humanizationMinimumEffectPass: engineMeta.humanizationMinimumEffectPass === true,
     humanizationEffectStatus: archiveString(engineMeta.humanizationEffectStatus, 32),
     humanizationDepthUserReviewRequired: engineMeta.humanizationDepthUserReviewRequired === true,
@@ -957,6 +958,22 @@ function buildArchiveObservability(job) {
     rhetoricalRemediationTargetCount: archiveFinite(engineMeta.rhetoricalRemediationTargetCount),
     rhetoricalRemediationAchievedCount: archiveFinite(engineMeta.rhetoricalRemediationAchievedCount),
     rhetoricalRemediationCoverage: archiveFinite(engineMeta.rhetoricalRemediationCoverage),
+    macroDiscourseApplicable: engineMeta.macroDiscourseApplicable === true,
+    macroDiscourseScore: archiveFinite(engineMeta.macroDiscourseScore),
+    macroDiscoursePass: typeof engineMeta.macroDiscoursePass === 'boolean'
+      ? engineMeta.macroDiscoursePass
+      : undefined,
+    macroDiscourseOrderPass: typeof engineMeta.macroDiscourseOrderPass === 'boolean'
+      ? engineMeta.macroDiscourseOrderPass
+      : undefined,
+    macroDiscourseSourceParagraphCount: archiveFinite(engineMeta.macroDiscourseSourceParagraphCount),
+    macroDiscourseOutputParagraphCount: archiveFinite(engineMeta.macroDiscourseOutputParagraphCount),
+    macroDiscourseRecomposedParagraphCount: archiveFinite(engineMeta.macroDiscourseRecomposedParagraphCount),
+    macroDiscourseRepeatedEvaluationReduction: archiveFinite(
+      engineMeta.macroDiscourseRepeatedEvaluationReduction
+    ),
+    macroDiscourseRoleOrderRetention: archiveFinite(engineMeta.macroDiscourseRoleOrderRetention),
+    macroDiscourseIdeaOrderRetention: archiveFinite(engineMeta.macroDiscourseIdeaOrderRetention),
     resumeRepetitionAuditVersion: archiveFinite(engineMeta.resumeRepetitionAuditVersion),
     resumeRepetitionApplicable: engineMeta.resumeRepetitionApplicable === true,
     resumeRepetitionPass: typeof engineMeta.resumeRepetitionPass === 'boolean' ? engineMeta.resumeRepetitionPass : undefined,
@@ -977,6 +994,7 @@ function buildArchiveObservability(job) {
     sourceRedundancyAchievedReduction: archiveFinite(engineMeta.sourceRedundancyAchievedReduction),
     lengthRatio: archiveFinite(engineMeta.lengthRatio ?? result.floorReport?.metrics?.lengthRatio),
     humanizationTargetDepthMet: engineMeta.humanizationTargetDepthMet === true,
+    humanizationEditTargetMet: engineMeta.humanizationEditTargetMet === true,
     humanizationTargetDepthGap: archiveFinite(engineMeta.humanizationTargetDepthGap),
     humanizationDeliveryDepthBand: archiveString(engineMeta.humanizationDeliveryDepthBand, 24),
     humanizationDepthRetryCount: archiveFinite(engineMeta.humanizationDepthRetryCount),
@@ -1064,6 +1082,9 @@ function buildArchiveObservability(job) {
     koreanRefinementRetryApplied: engineMeta.koreanRefinementRetryApplied === true,
     quoteIntegrityAuditVersion: archiveFinite(engineMeta.quoteIntegrityAuditVersion),
     quoteIntegrityPass: typeof engineMeta.quoteIntegrityPass === 'boolean' ? engineMeta.quoteIntegrityPass : undefined,
+    quoteDuplicateReductionBenign: engineMeta.quoteDuplicateReductionBenign === true,
+    quoteDuplicateReductionCount: archiveFinite(engineMeta.quoteDuplicateReductionCount),
+    quoteMissingUniqueCount: archiveFinite(engineMeta.quoteMissingUniqueCount),
     quoteCountChanged: engineMeta.quoteCountChanged === true,
     quoteContentChangedCount: archiveFinite(engineMeta.quoteContentChangedCount),
     quoteIntegrityRestoreCount: archiveFinite(engineMeta.quoteIntegrityRestoreCount),

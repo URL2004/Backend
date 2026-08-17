@@ -1358,7 +1358,16 @@ function restoreParagraphLayout({ source, outputText, chunks, mode = '', request
     readabilityOptions
   });
   const sequentialEnumeratedParagraphRoles = hasSequentialEnumeratedParagraphRoles(sourceParagraphs);
+  const advancedNarrativeRecomposition = String(requestStrength || '') === 'advanced'
+    && ['personal_essay', 'general', 'review_blog', 'general_essay', 'blog_review'].includes(profileName)
+    && !sequentialEnumeratedParagraphRoles;
   const sourceParagraphRolesAreAuthoritative = semanticProseRoles
+    // 고급 서사형 글은 사건·근거의 소유권과 순서를 지키는 범위에서 같은
+    // 담화 역할의 인접 문단을 다시 묶거나 나누도록 프롬프트와 깊이 감사가
+    // 요구한다. 여기서 원문 문단 경계를 다시 강제하면 모델이 만든 거시
+    // 개선을 최종 레이아웃 단계가 되돌리는 상충이 생긴다. 번호형 문항이나
+    // 구조 플래그가 있는 문서는 위 조건에서 이미 제외되므로 보호는 유지된다.
+    && !advancedNarrativeRecomposition
     && paragraphMergePlan.applicable !== true
     && (sourceCount >= 3 || sequentialEnumeratedParagraphRoles)
     // 빈 줄 문단뿐 아니라 워드·입력창에서 한 줄만 내려 쓴 완결 산문도

@@ -6,7 +6,7 @@ const layoutStructure = require('./layoutStructure');
 const { alignSourceSentence } = require('./sentenceAlignment');
 const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
 
-const VERSION = 8;
+const VERSION = 9;
 const VIOLATION_CODES = Object.freeze([
   'scope_expansion',
   'new_evaluation',
@@ -34,6 +34,13 @@ const REFLECTION_FUNCTION_PATTERN = /(?:깨달|깨닫|알았(?:다|습니다|어
 // 책·프로그램·기회를 "알게 되었다"는 발견 경로이지 새로운 교훈이나
 // 자기평가가 아니다. 성찰 공식의 넓은 `알게 되다` 패턴에서 따로 뺀다.
 const NON_REFLECTIVE_DISCOVERY_PATTERN = /(?:책|도서|프로그램|기회|공고|캠프|서비스|제품|기관|학교|회사|행사|작품|전시|채용|현장\s*실습)(?:을|를)\s+알게\s*되/gu;
+const EVALUATION_CLOSURE_FAMILIES = Object.freeze([
+  /(?:다시\s*)?느꼈|느낌을?\s*받/gu,
+  /다시\s*생각|생각하게\s*되/gu,
+  /인상\s*깊|기억에\s*남|오래\s*남/gu,
+  /깨달|알게\s*되|이해하게\s*되/gu,
+  /중요(?:성|하다|하다고)|의미를\s*가지/gu
+]);
 
 const STRONG_MODIFIER_PATTERNS = [
   /(?:파멸적|막강한|거대한|극심한|압도적|치명적|엄청난|획기적|전례\s*없는|절대적|근원적|심각한)/gu,
@@ -180,6 +187,149 @@ function compareDiscourse(source, outputText) {
       }
     }
   };
+}
+
+// 문장 편집률과 별개로, 문단 역할·반복 평가·아이디어 순서가
+// 문서 전체에서 어떻게 바뀌었는지를 본다. 자연스러운 재작성을
+// 자의적 문단 이동으로 착각하지 않도록, 순서 보존과 내용 토큰 연결을
+// 먼저 검사하고 반복·담화 개선만 점수로 인정한다.
+function compareMacroDiscourse(source, outputText) {
+  const before = buildDiscourseProfile(source);
+  const after = buildDiscourseProfile(outputText);
+  const beforeBody = before.paragraphs.filter(item => item.primaryRole !== 'heading');
+  const afterBody = after.paragraphs.filter(item => item.primaryRole !== 'heading');
+  const applicable = beforeBody.length >= 3 && afterBody.length >= 1;
+  const sourceRepeatedEvaluationExcess = repeatedEvaluationExcess(source);
+  const outputRepeatedEvaluationExcess = repeatedEvaluationExcess(outputText);
+  const repeatedEvaluationReduction = Math.max(
+    0,
+    sourceRepeatedEvaluationExcess - outputRepeatedEvaluationExcess
+  );
+  const remediation = compareRemediationTargets(before, after, buildRemediationPlan(before));
+  const alignment = alignMacroParagraphs(beforeBody, afterBody);
+  const roleOrderRetention = roleSequenceRetention(
+    beforeBody.map(item => item.primaryRole),
+    afterBody.map(item => item.primaryRole)
+  );
+  const ideaOrderRetention = alignment.ideaOrderRetention;
+  const safeOrder = roleOrderRetention >= 0.72 && ideaOrderRetention >= 0.72;
+  const paragraphBoundaryDelta = Math.abs(afterBody.length - beforeBody.length);
+  const recomposedParagraphCount = alignment.recomposedParagraphCount;
+  const evaluationProgress = sourceRepeatedEvaluationExcess > 0
+    ? Math.min(1, repeatedEvaluationReduction / sourceRepeatedEvaluationExcess)
+    : 0;
+  const remediationProgress = remediation.targetCount > 0 ? remediation.coverage : 0;
+  const recompositionProgress = safeOrder && (paragraphBoundaryDelta > 0 || recomposedParagraphCount > 0)
+    ? 1
+    : 0;
+  const score = applicable && safeOrder
+    ? round4((evaluationProgress * 0.45) + (remediationProgress * 0.40) + (recompositionProgress * 0.15))
+    : 0;
+  return {
+    version: 1,
+    applicable,
+    pass: !applicable || safeOrder,
+    score,
+    sourceBodyParagraphCount: beforeBody.length,
+    outputBodyParagraphCount: afterBody.length,
+    paragraphBoundaryDelta,
+    recomposedParagraphCount,
+    sourceRepeatedEvaluationExcess,
+    outputRepeatedEvaluationExcess,
+    repeatedEvaluationReduction,
+    roleOrderRetention: round4(roleOrderRetention),
+    ideaOrderRetention: round4(ideaOrderRetention),
+    remediation
+  };
+}
+
+function buildMacroDiscoursePlan(source, {
+  requestStrength = 'basic',
+  documentProfile = null,
+  rhetoricalRemediationPlan = null
+} = {}) {
+  const profile = String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
+  const discourseProfile = buildDiscourseProfile(source);
+  const narrativeProfile = [
+    'personal_essay', 'general', 'review_blog',
+    // 과거 관리자·평가 데이터의 호환 별칭
+    'general_essay', 'blog_review'
+  ].includes(profile);
+  const repeatedEvaluationTargetCount = repeatedEvaluationExcess(source);
+  const rhetoricalTargetCount = Number(
+    rhetoricalRemediationPlan?.targetCount
+      ?? buildRemediationPlan(discourseProfile).targetCount
+      ?? 0
+  );
+  const applicable = String(requestStrength || '') === 'advanced'
+    && narrativeProfile
+    && discourseProfile.bodyParagraphCount >= 3
+    && (repeatedEvaluationTargetCount > 0 || rhetoricalTargetCount > 0);
+  return {
+    version: 1,
+    applicable,
+    profile,
+    sourceBodyParagraphCount: discourseProfile.bodyParagraphCount,
+    repeatedEvaluationTargetCount,
+    rhetoricalTargetCount,
+    minScore: applicable ? 0.25 : 0
+  };
+}
+
+function repeatedEvaluationExcess(value) {
+  return EVALUATION_CLOSURE_FAMILIES.reduce((sum, pattern) => {
+    const count = countPattern(value, pattern);
+    return sum + Math.max(0, count - 1);
+  }, 0);
+}
+
+function alignMacroParagraphs(sourceParagraphs, outputParagraphs) {
+  const bestSourceIndices = [];
+  const sourceLinkCounts = sourceParagraphs.map(() => 0);
+  let multiSourceOutputCount = 0;
+  for (const output of outputParagraphs) {
+    const links = sourceParagraphs
+      .map((source, index) => ({ index, score: tokenJaccard(source.contentTokens, output.contentTokens) }))
+      .filter(item => item.score >= 0.16)
+      .sort((left, right) => right.score - left.score);
+    if (links.length > 1) multiSourceOutputCount += 1;
+    for (const link of links) sourceLinkCounts[link.index] += 1;
+    if (links.length) bestSourceIndices.push(links[0].index);
+  }
+  let orderedPairCount = 0;
+  for (let index = 1; index < bestSourceIndices.length; index += 1) {
+    if (bestSourceIndices[index] >= bestSourceIndices[index - 1]) orderedPairCount += 1;
+  }
+  const ideaOrderRetention = bestSourceIndices.length <= 1
+    ? 1
+    : orderedPairCount / (bestSourceIndices.length - 1);
+  return {
+    ideaOrderRetention,
+    recomposedParagraphCount: multiSourceOutputCount
+      + sourceLinkCounts.filter(count => count > 1).length
+  };
+}
+
+function tokenJaccard(left, right) {
+  const leftSet = left instanceof Set ? left : new Set(left || []);
+  const rightSet = right instanceof Set ? right : new Set(right || []);
+  if (!leftSet.size && !rightSet.size) return 1;
+  let overlap = 0;
+  for (const token of leftSet) if (rightSet.has(token)) overlap += 1;
+  return overlap / Math.max(1, leftSet.size + rightSet.size - overlap);
+}
+
+function roleSequenceRetention(left, right) {
+  if (!left.length) return 1;
+  const rows = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
+  for (let i = 1; i <= left.length; i += 1) {
+    for (let j = 1; j <= right.length; j += 1) {
+      rows[i][j] = left[i - 1] === right[j - 1]
+        ? rows[i - 1][j - 1] + 1
+        : Math.max(rows[i - 1][j], rows[i][j - 1]);
+    }
+  }
+  return rows[left.length][right.length] / left.length;
 }
 
 function inspectPersonalBalanceShift(source, outputText, before, after) {
@@ -768,6 +918,8 @@ module.exports = {
   buildRemediationPlan,
   compareRemediationTargets,
   compareDiscourse,
+  compareMacroDiscourse,
+  buildMacroDiscoursePlan,
   discoursePromptBlock,
   remediationPromptGuidance,
   unresolvedRemediationSentenceOrdinals,

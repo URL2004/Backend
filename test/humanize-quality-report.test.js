@@ -55,6 +55,11 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       recoveryBudgetSkippedCodes: ['recovery_call_limit_exhausted'],
       substantiveCarryoverRatio: 0.22, substantiveCarryoverMaximum: 0.3,
       structuralChangedSentenceRatio: 0.42, rhetoricalRemediationCoverage: 1,
+      macroDiscourseApplicable: true, macroDiscourseScore: 0.5,
+      macroDiscoursePass: true, macroDiscourseOrderPass: true,
+      macroDiscourseSourceParagraphCount: 6, macroDiscourseOutputParagraphCount: 5,
+      macroDiscourseRecomposedParagraphCount: 2, macroDiscourseRepeatedEvaluationReduction: 1,
+      macroDiscourseRoleOrderRetention: 0.83, macroDiscourseIdeaOrderRetention: 1,
       billingDisposition: 'charged', sectionRecoveryAttemptCount: 2,
       sectionRecoveryTargetOnlyCount: 1,
       sectionRecoveryAppliedCount: 1, sectionRecoveryRejectedAttemptCount: 1,
@@ -65,6 +70,7 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       humanizationNoEffectRetryAttemptCount: 1,
       fingerprintShadowPositiveCodes: ['review_together'], fingerprintShadowPositiveCount: 1,
       quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
+      quoteDuplicateReductionBenign: true, quoteDuplicateReductionCount: 1, quoteMissingUniqueCount: 0,
       sourcePreflightChanged: true, sourceArtifactRemovedCount: 1,
       sourcePreflightIssueCodes: ['source_ui_artifact'],
       qualityWarningCodes: [], sourceReviewWarningCodes: ['reflection_formula'],
@@ -85,6 +91,11 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
       humanizationNoBenefitDelivered: true,
       substantiveCarryoverRatio: 0.36, substantiveCarryoverMaximum: 0.3,
       structuralChangedSentenceRatio: 0.1, rhetoricalRemediationCoverage: 0.5,
+      macroDiscourseApplicable: true, macroDiscourseScore: 0,
+      macroDiscoursePass: false, macroDiscourseOrderPass: true,
+      macroDiscourseSourceParagraphCount: 6, macroDiscourseOutputParagraphCount: 6,
+      macroDiscourseRecomposedParagraphCount: 0, macroDiscourseRepeatedEvaluationReduction: 0,
+      macroDiscourseRoleOrderRetention: 1, macroDiscourseIdeaOrderRetention: 1,
       billingDisposition: 'waived_quality_shortfall', sectionRecoveryAttemptCount: 1,
       sectionRecoveryAppliedCount: 0, fingerprintPass: false,
       quoteIntegrityPass: false, quoteContentChangedCount: 1,
@@ -134,6 +145,7 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.equal(report.summary.sourcePreflightChangedCount, 1);
   assert.equal(report.metrics.substantiveCarryoverRatio.median, 0.29);
   assert.equal(report.metrics.humanizationTargetDepthGap.median, 0.02);
+  assert.equal(report.metrics.macroDiscourseScore.median, 0.25);
   assert.equal(report.metrics.processingDurationMs.p95, 234000);
   assert.equal(report.window.sinceMs, 0);
   assert.equal(report.window.sourceRowCount, 4);
@@ -147,6 +159,9 @@ test('휴머나이징 품질 보고서는 교차표·경고·깊이 지표를 �
   assert.deepEqual(report.humanizationDepthRetryRejectionCounts, [{ code: 'safety_audit_failed', count: 1 }]);
   assert.deepEqual(report.recoveryBudgetSkippedCounts, [{ code: 'recovery_call_limit_exhausted', count: 1 }]);
   assert.equal(report.recent[0].targetRegister, 'professional');
+  assert.equal(report.recent[0].macroDiscoursePass, true);
+  assert.equal(report.recent[0].macroDiscourseRecomposedParagraphCount, 2);
+  assert.equal(report.recent[0].quoteDuplicateReductionBenign, true);
   assert.equal(report.metrics.substantiveEditRatio.median, 0.24);
   assert.equal(report.metrics.postSemanticToFinalSubstantiveEditDelta.median, 0);
   assert.equal(report.recent[0].depthTugFinalSide, 'source');

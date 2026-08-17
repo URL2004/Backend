@@ -54,7 +54,7 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 
-const VERSION = 'gpt-prod-v2.5.37';
+const VERSION = 'gpt-prod-v2.5.38';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -2578,6 +2578,16 @@ async function runEngine({
   // 최종 구조 조립이 인용 경계·조사 공백을 되살린 뒤에도 고신뢰 한국어
   // 수리가 한 번은 수렴하도록 모델 호출 없는 고정점을 실행한다.
   {
+    const lateFormatting = koreanRefinement.applySafeFormattingRepairs({
+      source: rawSource,
+      outputText,
+      documentProfile
+    });
+    if (lateFormatting.applied
+        && preservesFinalStructure(rawSource, lateFormatting.text, chunks, chunkPlan, boundaryRepair)) {
+      outputText = lateFormatting.text;
+      finalFormattingRepair = mergeFormattingRepairReports(finalFormattingRepair, lateFormatting);
+    }
     const beforeAudit = koreanRefinement.analyzeKoreanRefinement({
       source: rawSource,
       outputText,
@@ -3237,6 +3247,7 @@ async function runEngine({
     humanizationDepthEnabled,
     humanizationDepthApplicable: humanizationDepthReport?.applicable === true,
     humanizationDepthPass: humanizationDepthReport?.pass === true,
+    humanizationOverallDepthPass: humanizationDepthReport?.pass === true,
     humanizationMinimumEffectPass: humanizationDepthReport?.minimumEffectPass === true,
     humanizationEffectStatus: humanizationDepthReport?.effectStatus || '',
     humanizationDepthUserReviewRequired: humanizationDepthReport?.userReviewRequired === true,
@@ -3278,6 +3289,7 @@ async function runEngine({
     humanizationTargetCoverage: Number(humanizationDepthReport?.metrics?.targetCoverage || 0),
     humanizationTargetChangedCount: Number(humanizationDepthReport?.metrics?.targetChangedCount || 0),
     humanizationTargetDepthMet: humanizationDepthReport?.metrics?.targetDepthMet === true,
+    humanizationEditTargetMet: humanizationDepthReport?.metrics?.targetDepthMet === true,
     humanizationTargetDepthGap: humanizationDepth.targetDepthGap(humanizationDepthReport),
     humanizationDeliveryDepthBand: humanizationDepthReport?.metrics?.deliveryDepthBand || '',
     humanizationDepthRetryCount,
@@ -3369,6 +3381,33 @@ async function runEngine({
     rhetoricalRemediationTargetCount: Number(humanizationDepthReport?.metrics?.remediation?.targetCount || 0),
     rhetoricalRemediationAchievedCount: Number(humanizationDepthReport?.metrics?.remediation?.achievedReduction || 0),
     rhetoricalRemediationCoverage: Number(humanizationDepthReport?.metrics?.remediation?.coverage || 0),
+    macroDiscourseApplicable: humanizationDepthReport?.plan?.macroDiscourseApplicable === true,
+    macroDiscourseScore: Number(humanizationDepthReport?.metrics?.macroDiscourse?.score || 0),
+    macroDiscoursePass: humanizationDepthReport?.plan?.macroDiscourseApplicable !== true
+      || (
+        humanizationDepthReport?.metrics?.macroDiscourse?.pass !== false
+        && Number(humanizationDepthReport?.metrics?.macroDiscourse?.score || 0) + 1e-9
+          >= Number(humanizationDepthReport?.plan?.macroDiscourseMinimumScore || 0)
+      ),
+    macroDiscourseOrderPass: humanizationDepthReport?.metrics?.macroDiscourse?.pass !== false,
+    macroDiscourseSourceParagraphCount: Number(
+      humanizationDepthReport?.metrics?.macroDiscourse?.sourceBodyParagraphCount || 0
+    ),
+    macroDiscourseOutputParagraphCount: Number(
+      humanizationDepthReport?.metrics?.macroDiscourse?.outputBodyParagraphCount || 0
+    ),
+    macroDiscourseRecomposedParagraphCount: Number(
+      humanizationDepthReport?.metrics?.macroDiscourse?.recomposedParagraphCount || 0
+    ),
+    macroDiscourseRepeatedEvaluationReduction: Number(
+      humanizationDepthReport?.metrics?.macroDiscourse?.repeatedEvaluationReduction || 0
+    ),
+    macroDiscourseRoleOrderRetention: Number(
+      humanizationDepthReport?.metrics?.macroDiscourse?.roleOrderRetention || 0
+    ),
+    macroDiscourseIdeaOrderRetention: Number(
+      humanizationDepthReport?.metrics?.macroDiscourse?.ideaOrderRetention || 0
+    ),
     resumeRepetitionAuditVersion: Number(humanizationDepthReport?.metrics?.resumeRepetition?.version || 0),
     resumeRepetitionApplicable: humanizationDepthReport?.metrics?.resumeRepetition?.applicable === true,
     resumeRepetitionPass: humanizationDepthReport?.metrics?.resumeRepetition?.pass === true,
@@ -3492,6 +3531,9 @@ async function runEngine({
     quoteIntegrityAuditVersion: Number(quoteIntegrityAudit?.version || 0),
     quoteIntegrityPass: quoteIntegrityAudit?.pass === true,
     quoteCountChanged: quoteIntegrityAudit?.countChanged === true,
+    quoteDuplicateReductionBenign: quoteIntegrityAudit?.benignDuplicateReduction === true,
+    quoteDuplicateReductionCount: Number(quoteIntegrityAudit?.duplicateReductionCount || 0),
+    quoteMissingUniqueCount: Number(quoteIntegrityAudit?.missingUniqueCount || 0),
     quoteContentChangedCount: Number(quoteIntegrityAudit?.changedCount || 0),
     quoteIntegrityRestoreCount,
     finalQuoteIntegrityRestoreCount,
@@ -6891,6 +6933,33 @@ function safeFailureCodesFromRecord(record) {
     record?.error,
     ...(record?.floorViolations || []).map(violation => violation?.gate || violation?.type)
   ]);
+}
+
+function mergeFormattingRepairReports(previous = {}, next = {}) {
+  const changeCounts = { ...(previous.changeCounts || {}) };
+  for (const [code, count] of Object.entries(next.changeCounts || {})) {
+    changeCounts[code] = Number(changeCounts[code] || 0) + Number(count || 0);
+  }
+  const changeCodes = [...new Set([
+    ...(previous.changeCodes || []),
+    ...(next.changeCodes || [])
+  ])];
+  return {
+    ...previous,
+    ...next,
+    applied: previous.applied === true || next.applied === true,
+    changeCounts,
+    changeCodes,
+    changeCount: Object.values(changeCounts).reduce((sum, count) => sum + Number(count || 0), 0),
+    brokenLineBreakRepairCount: Number(previous.brokenLineBreakRepairCount || 0)
+      + Number(next.brokenLineBreakRepairCount || 0),
+    brokenParagraphBreakRepairCount: Number(previous.brokenParagraphBreakRepairCount || 0)
+      + Number(next.brokenParagraphBreakRepairCount || 0),
+    excessiveBlankLineRepairCount: Number(previous.excessiveBlankLineRepairCount || 0)
+      + Number(next.excessiveBlankLineRepairCount || 0),
+    contextualSpacingRepairCount: Number(previous.contextualSpacingRepairCount || 0)
+      + Number(next.contextualSpacingRepairCount || 0)
+  };
 }
 
 function safeFailureCodeList(values) {

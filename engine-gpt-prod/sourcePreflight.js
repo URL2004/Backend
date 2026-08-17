@@ -4,7 +4,7 @@ const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 
-const VERSION = 15;
+const VERSION = 16;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -141,7 +141,8 @@ const NOTICE_MESSAGES = Object.freeze({
   source_incomplete_sentence: '마지막 문장이 조사나 연결 표현에서 끝나 미완성일 수 있어요.',
   source_unclosed_delimiter: '괄호나 인용부호의 짝이 닫히지 않은 곳이 있어요.',
   source_missing_terminal_punctuation: '마지막 완결 문장의 문장부호가 빠졌을 수 있어요.',
-  source_math_content_gap: '수식·행렬·행 연산이 복사 과정에서 빠진 흔적이 있어요. 원문 입력에 수식이 실제로 보이는지 확인해 주세요.'
+  source_math_content_gap: '수식·행렬·행 연산이 복사 과정에서 빠진 흔적이 있어요. 원문 입력에 수식이 실제로 보이는지 확인해 주세요.',
+  source_template_placeholder: '예시·빈칸·작성 지시로 보이는 템플릿 표시가 원문에 남아 있어요. 완성본으로 쓸 내용인지 확인해 주세요.'
 });
 
 function auditAndSanitizeSource(value) {
@@ -197,6 +198,14 @@ function auditAndSanitizeSource(value) {
     }
     if (/\([^)]{0,90}(?:메모|수정|추가|확인\s*필요|검토\s*필요|나옴|임시)[^)]{0,90}\)/u.test(text)) {
       notices.push(issue('source_draft_note', index + 1, 'notice', NOTICE_MESSAGES.source_draft_note));
+    }
+    if (hasTemplatePlaceholder(text)) {
+      notices.push(issue(
+        'source_template_placeholder',
+        index + 1,
+        'notice',
+        NOTICE_MESSAGES.source_template_placeholder
+      ));
     }
     if (inReference && isPossiblyTruncatedReference(text)) {
       notices.push(issue('source_truncated_reference', index + 1, 'notice', NOTICE_MESSAGES.source_truncated_reference));
@@ -320,6 +329,13 @@ function repairSourceLayoutArtifacts(value) {
     changed: finalText !== before,
     changes: appliedChanges
   };
+}
+
+function hasTemplatePlaceholder(value) {
+  const text = String(value || '');
+  return /\[(?=[^\]\n]{1,140}\])(?:\s*(?:예|예시)\s*[:：]|본인(?:의|이)?\s+[^\]\n]{0,80}(?:작성|입력|서술)|[^\]\n]{0,80}(?:작성해\s*주세요|입력해\s*주세요|내용\s*입력))[^\]\n]*\]/iu.test(text)
+    || /<(?:기관명|학교명|회사명|직무명|성명|날짜|내용)>/u.test(text)
+    || /\{\{(?:기관명|학교명|회사명|직무명|성명|날짜|내용)\}\}/u.test(text);
 }
 
 function preservesExistingStructuralLines(before, after) {

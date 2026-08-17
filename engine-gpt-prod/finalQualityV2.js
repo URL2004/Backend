@@ -1358,7 +1358,10 @@ async function retryKoreanRefinement({
   // 앞쪽 국소 오류 8개가 장문 접속어 과주입을 굶기던 문제를 없앤다.
   const globalCodes = new Set(['sequential_connector_inflation', 'discourse_connector_inflation']);
   const globalIssues = candidates.filter(item => globalCodes.has(item.code));
-  const localIssues = candidates.filter(item => !globalCodes.has(item.code));
+  const localIssues = koreanRefinement.prioritizeRepairIssues(
+    candidates.filter(item => !globalCodes.has(item.code)),
+    { limit: 8 }
+  );
   const issues = [
     ...globalIssues.slice(0, 2),
     ...localIssues.slice(0, Math.max(0, 8 - globalIssues.length))
@@ -1476,6 +1479,11 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'causal_predicate_stack') return '결과를 주제로 두면 “~에서 비롯됐다”로, 원인을 주제로 두면 “가장 큰 원인은 ~이다”로 한 인과 서술만 사용한다.';
   if (item?.code === 'nominal_predicate_collocation') return '분석·조사·검토는 수행하거나 그 결과를 제시하고, 추상적 지위·입지는 확립·강화·공고화하는 등 SOURCE의 개념에 맞는 서술어로 연결한다.';
   if (item?.code === 'case_frame_corruption') return 'SOURCE의 주제·목적어 조사와 범위 시작·끝을 유지한다. “A에서 B에 이르는 범위·과정” 또는 “A는 B가 적용된 예다”처럼 서술어가 요구하는 논항을 복원한다.';
+  if (item?.code === 'condition_commitment_mismatch') return '“~하려면”이 연 조건과 뒤의 다짐을 논리적으로 연결하되 SOURCE의 실제 행동·목표만 사용한다.';
+  if (item?.code === 'content_identity_predicate_mismatch') return '책·작품 자체를 설명하는지, 그 내용을 요약하는지 구분해 주어와 서술어의 범위를 맞춘다. SOURCE에 없는 장르·줄거리를 추가하지 않는다.';
+  if (item?.code === 'prejudiced_gaze_collocation') return '편견과 타인의 시선을 별개로 말한 것인지 “편견 어린 시선”인지 SOURCE 문맥에서 확인해 하나의 명확한 관계로 정리한다.';
+  if (item?.code === 'negative_goal_commitment') return '없애고 싶은 편견·상처 자체가 헌신의 대상이 되지 않게 한다. SOURCE의 핵심 대조와 제목 의미를 유지하면서 화자가 바라는 사회·행동의 방향을 성립하게 복원한다.';
+  if (item?.code === 'reflexive_subject_attachment') return '“자신도 모르게”가 누구를 가리키는지 SOURCE에서 확인하고, 그 인물을 주어로 두어 마음·태도의 변화를 자연스럽게 연결한다.';
   if (item?.code === 'meta_nominalization_injection') return '“느낀 것은 ~하는 점이었다”로 늘이지 말고 SOURCE의 직접적인 깨달음·판단 문장을 자연스럽게 유지한다.';
   if (item?.code === 'role_predicate_redundancy') return '맡다·담당하다 중 문맥에 맞는 서술어 하나만 남기고 업무 범위는 줄이거나 넓히지 않는다.';
   if (item?.code === 'analytic_object_recast') return '접수·수집된 요구사항·자료 자체를 분석 대상으로 두고, 같은 대상을 “내용”으로 다시 받아 모호하게 만들지 않는다.';

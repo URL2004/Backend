@@ -87,7 +87,7 @@ test('v2.5.32: 원문부터 사라진 수식·행렬 흔적은 보충하지 않�
     '따라서 이라는 해를 구할 수 있다.'
   ].join('\n');
   const result = sourcePreflight.auditAndSanitizeSource(source);
-  assert.equal(result.version, 15);
+  assert.equal(result.version, 16);
   assert.ok(result.issueCodes.includes('source_math_content_gap'), JSON.stringify(result));
   assert.match(result.text, /역원인 ,/u);
   assert.doesNotMatch(result.text, /x\s*=|R_?\d+\s*(?:←|<-)/u);

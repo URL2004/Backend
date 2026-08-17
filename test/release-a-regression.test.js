@@ -247,6 +247,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         humanizationDepthEnabled: true,
         humanizationDepthApplicable: true,
         humanizationDepthPass: false,
+        humanizationOverallDepthPass: false,
         humanizationMinimumEffectPass: false,
         humanizationDepthSoftDelivered: false,
         humanizationNoBenefitDelivered: true,
@@ -273,6 +274,16 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         rhetoricalRemediationTargetCount: 4,
         rhetoricalRemediationAchievedCount: 3,
         rhetoricalRemediationCoverage: 0.75,
+        macroDiscourseApplicable: true,
+        macroDiscourseScore: 0.3,
+        macroDiscoursePass: true,
+        macroDiscourseOrderPass: true,
+        macroDiscourseSourceParagraphCount: 6,
+        macroDiscourseOutputParagraphCount: 5,
+        macroDiscourseRecomposedParagraphCount: 2,
+        macroDiscourseRepeatedEvaluationReduction: 1,
+        macroDiscourseRoleOrderRetention: 0.83,
+        macroDiscourseIdeaOrderRetention: 1,
         resumeRepetitionAuditVersion: 1,
         resumeRepetitionApplicable: true,
         resumeRepetitionPass: false,
@@ -284,6 +295,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         resumeRepetitionCoverage: 0.6667,
         lengthRatio: 1.02,
         humanizationTargetDepthMet: false,
+        humanizationEditTargetMet: false,
         humanizationTargetDepthGap: 0.119,
         humanizationDeliveryDepthBand: 'below_minimum',
         humanizationDepthRetryCount: 1,
@@ -371,6 +383,9 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         quoteIntegrityAuditVersion: 1,
         quoteIntegrityPass: true,
         quoteCountChanged: false,
+        quoteDuplicateReductionBenign: true,
+        quoteDuplicateReductionCount: 1,
+        quoteMissingUniqueCount: 0,
         quoteContentChangedCount: 0,
         quoteIntegrityRestoreCount: 1,
         finalQuoteIntegrityRestoreCount: 1,
@@ -462,6 +477,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationDepthEnabled, true);
   assert.equal(first.humanizationDepthApplicable, true);
   assert.equal(first.humanizationDepthPass, false);
+  assert.equal(first.humanizationOverallDepthPass, false);
   assert.equal(first.humanizationMinimumEffectPass, false);
   assert.equal(first.humanizationDepthSoftDelivered, false);
   assert.equal(first.humanizationNoBenefitDelivered, true);
@@ -473,6 +489,7 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationTargetMinRatio, 0.15);
   assert.equal(first.humanizationTargetMaxRatio, 0.19);
   assert.equal(first.humanizationTargetDepthMet, false);
+  assert.equal(first.humanizationEditTargetMet, false);
   assert.equal(first.humanizationTargetDepthGap, 0.119);
   assert.equal(first.humanizationDeliveryDepthBand, 'below_minimum');
   assert.equal(first.substantiveEditRatio, 0.031);
@@ -481,6 +498,11 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.humanizationTargetCoverage, 0.6);
   assert.equal(first.structuralChangedSentenceRatio, 0.4);
   assert.equal(first.rhetoricalRemediationCoverage, 0.75);
+  assert.equal(first.macroDiscourseApplicable, true);
+  assert.equal(first.macroDiscourseScore, 0.3);
+  assert.equal(first.macroDiscoursePass, true);
+  assert.equal(first.macroDiscourseOrderPass, true);
+  assert.equal(first.macroDiscourseRecomposedParagraphCount, 2);
   assert.equal(first.resumeRepetitionApplicable, true);
   assert.equal(first.resumeRepetitionPass, false);
   assert.equal(first.resumeRepetitionCoverage, 0.6667);
@@ -521,6 +543,9 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.deepEqual(first.fingerprintShadowPositiveCodes, ['review_together']);
   assert.equal(first.fingerprintShadowPositiveCount, 2);
   assert.equal(first.quoteIntegrityPass, true);
+  assert.equal(first.quoteDuplicateReductionBenign, true);
+  assert.equal(first.quoteDuplicateReductionCount, 1);
+  assert.equal(first.quoteMissingUniqueCount, 0);
   assert.equal(first.quoteIntegrityRestoreCount, 1);
   assert.equal(first.sourcePreflightChanged, true);
   assert.equal(first.sourceArtifactRemovedCount, 2);
@@ -648,9 +673,15 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     materiallyRecastSentenceCount: 5, effectiveStructuralChangedSentenceCount: 5,
     clauseLevelStructuralAlternative: true,
     rhetoricalRemediationCoverage: 0.75, koreanRefinementPass: true,
+    macroDiscourseApplicable: true, macroDiscourseScore: 0.3,
+    macroDiscoursePass: true, macroDiscourseOrderPass: true,
+    macroDiscourseSourceParagraphCount: 6, macroDiscourseOutputParagraphCount: 5,
+    macroDiscourseRecomposedParagraphCount: 2, macroDiscourseRepeatedEvaluationReduction: 1,
+    macroDiscourseRoleOrderRetention: 0.83, macroDiscourseIdeaOrderRetention: 1,
     substantiveCarryoverCount: 3, substantiveCarryoverRatio: 0.18,
     substantiveCarryoverEligibleSentenceCount: 17, substantiveCarryoverMaximum: 0.25,
     humanizationTargetDepthMet: true,
+    humanizationOverallDepthPass: true, humanizationEditTargetMet: true,
     humanizationTargetDepthGap: 0,
     primaryApprovedModelChunkCount: 3, approvedModelChunkCount: 4,
     sectionRecoverySelectedCount: 6, sectionRecoveryAttemptCount: 4,
@@ -677,6 +708,7 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     koreanRefinementIssueCodes: [], formalRegisterResidualCount: 2,
     sourceReviewWarningCodes: ['deep_understanding_collocation'],
     quoteIntegrityPass: true, quoteIntegrityRestoreCount: 1,
+    quoteDuplicateReductionBenign: true, quoteDuplicateReductionCount: 1, quoteMissingUniqueCount: 0,
     sourcePreflightChanged: true, sourceArtifactRemovedCount: 1,
     sourcePreflightIssueCodes: ['source_ui_artifact'],
     finalGeneratedDedupeApplied: true, finalGeneratedDedupeRejected: false,
@@ -710,6 +742,11 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.substantiveEditRatio, 0.27);
   assert.equal(compact.structuralChangedSentenceRatio, 0.4);
   assert.equal(compact.rhetoricalRemediationCoverage, 0.75);
+  assert.equal(compact.macroDiscourseApplicable, true);
+  assert.equal(compact.macroDiscourseScore, 0.3);
+  assert.equal(compact.macroDiscoursePass, true);
+  assert.equal(compact.macroDiscourseOrderPass, true);
+  assert.equal(compact.macroDiscourseRecomposedParagraphCount, 2);
   assert.equal(compact.substantiveCarryoverRatio, 0.18);
   assert.equal(compact.primaryApprovedModelChunkCount, 3);
   assert.equal(compact.approvedModelChunkCount, 4);
@@ -717,6 +754,8 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.sectionRecoveryAppliedCount, 2);
   assert.equal(compact.sectionRecoveryTargetOnlyCount, 2);
   assert.equal(compact.humanizationTargetDepthMet, true);
+  assert.equal(compact.humanizationOverallDepthPass, true);
+  assert.equal(compact.humanizationEditTargetMet, true);
   assert.equal(compact.humanizationTargetDepthGap, 0);
   assert.equal(compact.sectionRecoveryRejectedAttemptCount, 3);
   assert.deepEqual(compact.sectionRecoveryRejectionCodes, ['number_changed', 'not_better']);
@@ -729,6 +768,9 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.deepEqual(compact.humanizationDepthRetryRejectionCodes, ['depth_not_improved']);
   assert.equal(compact.quoteIntegrityPass, true);
   assert.equal(compact.quoteIntegrityRestoreCount, 1);
+  assert.equal(compact.quoteDuplicateReductionBenign, true);
+  assert.equal(compact.quoteDuplicateReductionCount, 1);
+  assert.equal(compact.quoteMissingUniqueCount, 0);
   assert.equal(compact.sourcePreflightChanged, true);
   assert.deepEqual(compact.sourcePreflightIssueCodes, ['source_ui_artifact']);
   assert.equal(compact.finalGeneratedDedupeApplied, true);

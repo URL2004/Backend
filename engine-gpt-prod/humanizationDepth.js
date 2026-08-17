@@ -1,7 +1,12 @@
 'use strict';
 
 const { computeEditMetrics, levenshteinDistance, splitSentences } = require('../engine/koreanText');
-const { buildRemediationPlan, compareRemediationTargets } = require('./discourseAudit');
+const {
+  buildRemediationPlan,
+  compareRemediationTargets,
+  buildMacroDiscoursePlan,
+  compareMacroDiscourse
+} = require('./discourseAudit');
 const { splitLogicalProseParagraphs } = require('./proseParagraphs');
 const { alignSourceSentence } = require('./sentenceAlignment');
 const resumeRepetitionAudit = require('./resumeRepetitionAudit');
@@ -14,8 +19,8 @@ const STOCK_PHRASE = /(?:할\s*수\s*있(?:다|습니다)|볼\s*수\s*있(?:다|
 const ABSTRACT_WORD = /(?:중요|필요|효율|전략|체계|역할|경험|가치|역량|기반|영향|과정|측면|요인|문제|개선|확대|강화|가능성|방향성|의미)/gu;
 const DENSE_CONNECTOR = /(?:또한|따라서|하지만|그러나|반면|결국|때문에|통해|위해|이에\s*따라)/gu;
 const LOCK_TOKEN = /ZXQLOCK\d+QXZ/giu;
-const PLAN_VERSION = 13;
-const POLICY_VERSION = 'perceived-v2.5.24';
+const PLAN_VERSION = 14;
+const POLICY_VERSION = 'perceived-v2.5.38';
 const PLAN_SIGNAL_SOURCE = 'deterministic_targets_input_risk';
 const HARD_DELIVERY_EDIT_FLOOR = 0.04;
 const HARD_DELIVERY_EDIT_FACTOR = 0.40;
@@ -87,6 +92,7 @@ function buildHumanizationPlan(source, {
       requiredStructuralChangedSentenceCount: 0,
       minRemediationCoverage: 0,
       rhetoricalRemediationPlan: { applicable: false, targetCount: 0, categoryCount: 0, categories: [] },
+      macroDiscoursePlan: { version: 1, applicable: false, minScore: 0 },
       resumeRepetitionPlan: { version: resumeRepetitionAudit.VERSION, applicable: false },
       sourceRedundancyPlan: { version: sourceRedundancy.VERSION, applicable: false }
     };
@@ -98,6 +104,11 @@ function buildHumanizationPlan(source, {
   const rhetoricalRemediationPlan = buildRemediationPlan(text);
   const resumeRepetitionPlan = resumeRepetitionAudit.buildResumeRepetitionPlan(text, documentProfile);
   const sourceRedundancyPlan = sourceRedundancy.buildSourceRedundancyPlan(text, documentProfile);
+  const macroDiscoursePlan = buildMacroDiscoursePlan(text, {
+    requestStrength: strength,
+    documentProfile,
+    rhetoricalRemediationPlan
+  });
   const commercialTargetPlan = commercialSignals.detectCommercialSentenceTargets(sentences, documentProfile);
   let target = mergeCommercialTargets(
     mergeSourceRedundancyTargets(
@@ -239,6 +250,7 @@ function buildHumanizationPlan(source, {
     maxSubstantiveCarryoverRatio: round4(maxSubstantiveCarryoverRatio),
     minRemediationCoverage: round4(minRemediationCoverage),
     rhetoricalRemediationPlan,
+    macroDiscoursePlan,
     resumeRepetitionPlan,
     sourceRedundancyPlan,
     commercialTargetSentenceCount: Number(commercialTargetPlan.indices?.length || 0),
@@ -417,6 +429,11 @@ function buildDistributedHumanizationPlans(chunks, documentPlan, {
       targetSubstantiveEditMax: documentPlan?.targetSubstantiveEditMax
         ?? row.localPlan.targetSubstantiveEditMax,
       minTargetCoverage: documentPlan?.minTargetCoverage ?? row.localPlan.minTargetCoverage,
+      // 거시 담화는 문서 전체 후보에서만 채점한다. 문서 계획을 각 청크에
+      // 그대로 복제하면 두 문단짜리 청크가 문서 단위 문단 재구성 목표를
+      // 절대 달성할 수 없어, 모든 청크가 불필요한 깊이 재시도로 들어간다.
+      // 청크 단계에는 해당 청크 자체에서 성립한 지역 계획만 남긴다.
+      macroDiscoursePlan: row.localPlan.macroDiscoursePlan,
       ...row.paragraphCoverage,
       requiredTargetChangedParagraphCount: paragraphByChunk.get(row.chunkIndex) || 0,
       distribution: {
@@ -544,6 +561,13 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       && remediation.coverage + 1e-9 < Number(plan.minRemediationCoverage)) {
     reasons.push('rhetorical_remediation_low');
   }
+  const macroDiscourse = compareMacroDiscourse(source, output);
+  if (plan.macroDiscoursePlan?.applicable === true
+      && macroDiscourse.score + 1e-9 < Number(plan.macroDiscoursePlan.minScore || 0)) {
+    // 거시 담화 미달은 후보 회복과 선택에는 쓰되, 의미·사실
+    // 경고가 아닌 것만으로 needs_review를 올리지 않는다.
+    reasons.push('macro_discourse_remediation_low');
+  }
   const resumeRepetition = resumeRepetitionAudit.compareResumeRepetition(output, plan.resumeRepetitionPlan || null);
   if (resumeRepetition.applicable === true && resumeRepetition.pass !== true) {
     reasons.push('resume_semantic_repetition_low');
@@ -600,6 +624,7 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
       targetParagraphCoverage: round4(targetParagraphCoverage),
       untouchedTargetParagraphIndices,
       remediation,
+      macroDiscourse,
       resumeRepetition,
       sourceRedundancy: sourceRedundancyReport,
       targetDepthMet,
@@ -635,13 +660,24 @@ function humanizationCandidateScore(report) {
   const carryoverProgress = plan.carryoverApplicable === true
     ? (finite(metrics.substantiveCarryoverRatio) <= finite(plan.maxSubstantiveCarryoverRatio) ? 1 : 0)
     : 1;
-  const baseScore = (editProgress * 0.32)
-    + (sentenceProgress * 0.20)
-    + (targetProgress * 0.14)
+  const macroApplicable = plan.macroDiscourseApplicable === true
+    || plan.macroDiscoursePlan?.applicable === true;
+  const macroMinimumScore = Number(
+    plan.macroDiscourseMinimumScore
+      ?? plan.macroDiscoursePlan?.minScore
+      ?? 0
+  );
+  const macroProgress = macroApplicable
+    ? progress(metrics.macroDiscourse?.score, macroMinimumScore)
+    : 1;
+  const baseScore = (editProgress * 0.29)
+    + (sentenceProgress * 0.18)
+    + (targetProgress * 0.13)
     + (structuralProgress * 0.10)
-    + (paragraphProgress * 0.10)
+    + (paragraphProgress * 0.09)
     + (remediationProgress * 0.07)
-    + (carryoverProgress * 0.07);
+    + (macroProgress * 0.08)
+    + (carryoverProgress * 0.06);
   let score = baseScore;
   if (metrics.sourceRedundancy?.applicable === true) {
     const redundancyProgress = progress(
@@ -677,6 +713,12 @@ function isBetterHumanizationCandidate(current, candidate) {
   const candidateRepetition = finite(candidate?.metrics?.resumeRepetition?.achievedReduction);
   const currentSourceRedundancy = finite(current?.metrics?.sourceRedundancy?.achievedReduction);
   const candidateSourceRedundancy = finite(candidate?.metrics?.sourceRedundancy?.achievedReduction);
+  const currentMacro = finite(current?.metrics?.macroDiscourse?.score);
+  const candidateMacro = finite(candidate?.metrics?.macroDiscourse?.score);
+  const macroApplicable = current?.plan?.macroDiscourseApplicable === true
+    || current?.plan?.macroDiscoursePlan?.applicable === true
+    || candidate?.plan?.macroDiscourseApplicable === true
+    || candidate?.plan?.macroDiscoursePlan?.applicable === true;
   const currentTargets = finite(current?.metrics?.targetChangedCount);
   const candidateTargets = finite(candidate?.metrics?.targetChangedCount);
   // 안전 감사를 통과한 국소 후보가 여러 번 누적될 수 있도록 1.5%p의
@@ -686,7 +728,8 @@ function isBetterHumanizationCandidate(current, candidate) {
     && candidateTargets >= currentTargets
     && candidateStructural >= currentStructural
     && candidateParagraphs >= currentParagraphs
-    && candidateRemediation + 1e-9 >= currentRemediation;
+    && candidateRemediation + 1e-9 >= currentRemediation
+    && (!macroApplicable || candidateMacro + 1e-9 >= currentMacro);
   if (candidateScore >= currentScore + 0.015 && noCoreRegression) return true;
   if (candidate.metrics?.targetDepthMet === true
       && current?.metrics?.targetDepthMet !== true
@@ -694,6 +737,9 @@ function isBetterHumanizationCandidate(current, candidate) {
   if (candidateRepetition > currentRepetition && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateSourceRedundancy > currentSourceRedundancy && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateParagraphs > currentParagraphs && candidateEdit >= currentEdit - 0.005) return true;
+  if (macroApplicable
+      && candidateMacro >= currentMacro + 0.20
+      && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateStructural > currentStructural && candidateEdit >= currentEdit - 0.005) return true;
   if (candidateRemediation >= currentRemediation + 0.25 && candidateEdit >= currentEdit - 0.005) return true;
   return candidateEdit >= currentEdit + 0.015 && candidateSentences >= currentSentences;
@@ -843,6 +889,9 @@ function buildHumanizationPromptBlock(plan) {
     '문장을 나누거나 합친 뒤에도 각 문장의 주어, 지시 대상, 연구 주체와 결론의 근거가 독립적으로 분명해야 한다.',
     plan.rhetoricalRemediationPlan?.targetCount > 0
       ? '원문 담화 계약에 표시된 정형 성찰·반복 결론·과도하게 완결된 인과 구조는 그대로 복사하지 말고, 사실을 삭제하지 않는 범위에서 직접적인 문장으로 풀어 쓴다.'
+      : '',
+    plan.macroDiscoursePlan?.applicable === true
+      ? '고급 거시 담화 목표: 서사·줄거리·감상·제목 해석·결론의 역할 순서를 지키면서, 같은 평가를 다른 단어로 반복하지 말고 각 문단의 고유한 기능이 드러나게 재구성한다.'
       : '',
     plan.resumeRepetitionPlan?.applicable === true
       ? '지원서에서 같은 지원 전제·진로 고민·탐색 의도가 여러 문단에 반복되면 동의어만 바꾸지 않는다. 첫 문단에는 지원 동기를 온전히 두고, 뒤 문단에서는 같은 전제를 짧게 받으면서 각 문단에 원래 있던 어려움·확인할 내용·실행 계획을 앞세운다. SOURCE에 없는 학교 프로그램, 관심 전공, 과거 경험은 만들지 않는다.'
@@ -1452,12 +1501,15 @@ function publicPlan(plan) {
   const {
     targetIndices: _targetIndices,
     targetParagraphIndices: _targetParagraphIndices,
+    macroDiscoursePlan,
     resumeRepetitionPlan,
     sourceRedundancyPlan,
     ...safe
   } = plan || {};
   return {
     ...safe,
+    macroDiscourseApplicable: macroDiscoursePlan?.applicable === true,
+    macroDiscourseMinimumScore: Number(macroDiscoursePlan?.minScore || 0),
     resumeRepetitionPlan: resumeRepetitionAudit.publicResumeRepetitionPlan(resumeRepetitionPlan),
     sourceRedundancyPlan: sourceRedundancy.publicSourceRedundancyPlan(sourceRedundancyPlan)
   };

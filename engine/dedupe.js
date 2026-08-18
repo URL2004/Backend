@@ -325,8 +325,23 @@ function generatedContainedDuplicate(left, right, sourceRows) {
   const shortRoots = leftIsShorter ? leftRoots : rightRoots;
   const longRoots = leftIsShorter ? rightRoots : leftRoots;
   if (shortRoots.size < 6 || longRoots.size < 7) return null;
-  if (shortText.length > longText.length * 0.88) return null;
-  if (overlapRatio(shortRoots, longRoots) < 0.80 || jaccard(shortRoots, longRoots) < 0.55) return null;
+  const containedRestatement = shortText.length <= longText.length * 0.88
+    && overlapRatio(shortRoots, longRoots) >= 0.80
+    && jaccard(shortRoots, longRoots) >= 0.55;
+  // 같은 원문 주장 하나를 길이가 비슷한 두 문장으로 연속 의역하는 장애도
+  // 별도로 잡는다. 기존 코드는 한쪽이 12% 이상 짧아야만 작동해
+  // `하나의 개념으로 취급...` / `단일 개념으로 다루며...`처럼 정보량이
+  // 거의 같은 중복을 놓쳤다. 두 결과가 같은 단 하나의 원문 문장에 충분히
+  // 정렬되고 서로의 고유 내용어가 4개 이하일 때만 이 경로를 연다. 한국어
+  // 서술어 활용 둘과 `하나의/단일` 같은 동의 표현이 함께 바뀌는 실제
+  // 사고쌍도 잡되, 아래 단일 원문 주장 정렬 조건은 그대로 유지한다.
+  const equivalentParaphrase = Math.min(left.length, right.length) >= 38
+    && overlapRatio(leftRoots, rightRoots) >= 0.68
+    && overlapRatio(rightRoots, leftRoots) >= 0.65
+    && jaccard(leftRoots, rightRoots) >= 0.50
+    && countSetDifference(leftRoots, rightRoots) <= 4
+    && countSetDifference(rightRoots, leftRoots) <= 4;
+  if (!containedRestatement && !equivalentParaphrase) return null;
 
   const shortSupport = bestSourceRootSupport(shortRoots, sourceRows);
   const longSupport = bestSourceRootSupport(longRoots, sourceRows);
@@ -338,7 +353,31 @@ function generatedContainedDuplicate(left, right, sourceRows) {
     row.roots.size >= 5 && overlapRatio(shortRoots, row.roots) >= 0.68
   )).length;
   if (supportingSourceCount !== 1) return null;
+  if (equivalentParaphrase) {
+    const sourceRoots = sourceRows[shortSupport.index]?.roots || new Set();
+    const leftScore = sourceClaimSupportScore(leftRoots, sourceRoots);
+    const rightScore = sourceClaimSupportScore(rightRoots, sourceRoots);
+    // 원문 주장을 더 충실히 덮는 쪽을 남긴다. 동률이면 문단 흐름을 이미
+    // 시작한 앞 문장을 보존해 뒤 문장만 제거한다.
+    return {
+      remove: rightScore > leftScore + 0.035 ? 'left' : 'right',
+      reason: 'single_source_equivalent_paraphrase'
+    };
+  }
   return { remove: leftIsShorter ? 'left' : 'right', reason: 'single_source_claim_copied' };
+}
+
+function countSetDifference(left, right) {
+  let count = 0;
+  for (const value of left || []) if (!right?.has?.(value)) count += 1;
+  return count;
+}
+
+function sourceClaimSupportScore(candidateRoots, sourceRoots) {
+  if (!candidateRoots?.size || !sourceRoots?.size) return 0;
+  const candidateCoverage = overlapRatio(candidateRoots, sourceRoots);
+  const sourceCoverage = overlapRatio(sourceRoots, candidateRoots);
+  return candidateCoverage * 0.56 + sourceCoverage * 0.44;
 }
 
 function generatedConnectorSubsetRestatement(left, right, sourceRows) {
@@ -540,6 +579,317 @@ function removeNewExactDuplicateBlocks(source, text, { maxBlocks = 4 } = {}) {
   };
 }
 
+/**
+ * 문장 표현이 바뀐 장문 재삽입을 원문 절 순서로 검증한다.
+ *
+ * 완전 일치 anchor만 보던 기존 블록 검사는 청크가 두 번째 사본을 함께
+ * 윤문하면 작동하지 않았다. 여기서는 각 결과 문장을 원문의 고유 주장에
+ * 보수적으로 정렬한 뒤, 이미 지나간 연속 원문 구간으로 네 문장 이상
+ * 역행할 때만 제거한다(절 접합 손상이 함께 증명되면 세 문장). 원문 자체에 반복된 주장은 정렬 margin이 없어
+ * anchor가 되지 않으며, 짧은 회상·정상적 문장 재배치는 건드리지 않는다.
+ */
+function removeGeneratedSourceReplayBlocks(source, text, { maxBlocks = 3 } = {}) {
+  const original = String(text || '');
+  let output = original;
+  const blocks = [];
+  let restoredSpliceCount = 0;
+  const limit = Math.max(1, Math.min(6, Number(maxBlocks) || 3));
+
+  for (let round = 0; round < limit; round += 1) {
+    const candidate = findGeneratedSourceReplay(source, output);
+    if (!candidate) break;
+    output = applySentenceEdits(output, [{
+      start: candidate.start,
+      end: candidate.end,
+      replacement: candidate.replacement || ''
+    }]);
+    blocks.push({
+      sentenceCount: candidate.sentenceCount,
+      anchorCount: candidate.anchorCount,
+      sourceStart: candidate.sourceStart,
+      sourceEnd: candidate.sourceEnd,
+      restoredSplice: Boolean(candidate.replacement)
+    });
+    if (candidate.replacement) restoredSpliceCount += 1;
+  }
+
+  return {
+    text: output,
+    applied: output !== original,
+    removedBlockCount: blocks.length,
+    removedSentenceCount: blocks.reduce((sum, item) => sum + item.sentenceCount, 0),
+    restoredSpliceCount,
+    blocks
+  };
+}
+
+function auditGeneratedSourceReplay(source, text) {
+  const candidate = findGeneratedSourceReplay(source, text);
+  return {
+    pass: !candidate,
+    replayCount: candidate ? 1 : 0,
+    anchorCount: Number(candidate?.anchorCount || 0),
+    sourceStart: Number.isInteger(candidate?.sourceStart) ? candidate.sourceStart : -1,
+    sourceEnd: Number.isInteger(candidate?.sourceEnd) ? candidate.sourceEnd : -1,
+    chunkBoundarySpliceCount: candidate?.replacement ? 1 : 0
+  };
+}
+
+/**
+ * 후보 원장과 공통 후보 감사가 사용하는 읽기 전용 생성 중복 계약이다.
+ * 한 탐지기를 별도로 다시 구현하지 않고 실제 최종 제거기와 같은 경로를
+ * 순서대로 실행해, 그중 하나라도 결과를 바꾸려 한다면 잔존 중복으로 본다.
+ */
+function auditGeneratedDuplicateIntegrity(source, text) {
+  const original = String(text || '');
+  const exact = removeNewExactDuplicateBlocks(source, original);
+  const replay = removeGeneratedSourceReplayBlocks(source, exact.text);
+  const local = removeGeneratedLocalOverlapDuplicates(source, replay.text);
+  const adjacent = removeGeneratedAdjacentRestatements(source, local.text);
+  const repaired = String(adjacent.text || '');
+  return {
+    version: 1,
+    pass: repaired === original,
+    exactBlockCount: Number(exact.removedBlockCount || 0),
+    sourceReplayBlockCount: Number(replay.removedBlockCount || 0),
+    sourceReplaySentenceCount: Number(replay.removedSentenceCount || 0),
+    sourceReplaySpliceRestoreCount: Number(replay.restoredSpliceCount || 0),
+    localOverlapCount: Number(local.removedCount || 0),
+    adjacentRestatementCount: Number(adjacent.removedCount || 0),
+    riskCount: Number(exact.removedBlockCount || 0)
+      + Number(replay.removedBlockCount || 0)
+      + Number(local.removedCount || 0)
+      + Number(adjacent.removedCount || 0)
+  };
+}
+
+function findGeneratedSourceReplay(source, text) {
+  const sourceSpans = splitSentenceSpans(String(source || ''));
+  const outputSpans = splitSentenceSpans(String(text || ''));
+  if (sourceSpans.length < 6 || outputSpans.length < 7) return null;
+  const sourceRows = sourceSpans.map((span, index) => ({
+    index,
+    text: String(span.text || '').trim(),
+    roots: semanticRoots(span.text),
+    key: _normSent(span.text)
+  }));
+  const outputRows = outputSpans.map((span, index) => ({
+    index,
+    span,
+    text: String(span.text || '').trim(),
+    roots: semanticRoots(span.text),
+    key: _normSent(span.text)
+  }));
+  const mapped = outputRows.map(row => bestUniqueSourceMapping(row, sourceRows));
+  const seen = new Set();
+  let priorMax = -1;
+
+  for (let index = 0; index < mapped.length; index += 1) {
+    const sourceIndex = mapped[index]?.sourceIndex;
+    if (!Number.isInteger(sourceIndex)) continue;
+    const isBackwardReplay = sourceIndex <= priorMax - 2 && seen.has(sourceIndex);
+    if (!isBackwardReplay) {
+      seen.add(sourceIndex);
+      priorMax = Math.max(priorMax, sourceIndex);
+      continue;
+    }
+    const run = extendSemanticReplayRun({
+      start: index,
+      mapped,
+      seen,
+      priorMax,
+      outputRows,
+      sourceRows
+    });
+    if (!run) {
+      seen.add(sourceIndex);
+      priorMax = Math.max(priorMax, sourceIndex);
+      continue;
+    }
+    const startRow = outputRows[run.start];
+    if (!startRow?.span) return null;
+    const splice = findReplayBoundarySplice({
+      start: run.start,
+      priorMax,
+      outputRows,
+      sourceRows,
+      replaySourceStart: run.sourceStart
+    });
+    if ((!splice && (run.anchorCount < 4 || run.chars < 150))
+        || (splice && run.chars < 90)) {
+      seen.add(sourceIndex);
+      priorMax = Math.max(priorMax, sourceIndex);
+      continue;
+    }
+    const safeStart = splice ? splice.outputIndex : run.start;
+    // 접합 앞부분을 원문의 현재 절 문장으로 복원하면 replay 블록 안에 있던
+    // 같은 현재 절 문장은 두 번째 사본이 된다. 바로 뒤 유일 정렬 한 건만
+    // 삭제 범위에 포함해 복원 자체가 새 중복을 만들지 않게 한다.
+    let safeEnd = run.end;
+    if (splice && Number.isInteger(splice.sourceIndex)) {
+      for (let index = run.end + 1; index <= Math.min(mapped.length - 1, run.end + 2); index += 1) {
+        if (mapped[index]?.sourceIndex === splice.sourceIndex) {
+          safeEnd = index;
+          break;
+        }
+      }
+    }
+    const safeStartRow = outputRows[safeStart];
+    const endRow = outputRows[safeEnd];
+    if (!safeStartRow?.span || !endRow?.span) return null;
+    return {
+      ...run,
+      start: safeStartRow.span.start,
+      end: endRow.span.end,
+      sentenceCount: safeEnd - safeStart + 1,
+      replacement: splice?.sourceText || ''
+    };
+  }
+  return null;
+}
+
+function bestUniqueSourceMapping(outputRow, sourceRows) {
+  if (!outputRow?.key || outputRow.roots.size < 4) return null;
+  const candidates = [];
+  for (const row of sourceRows || []) {
+    if (!row?.key || row.roots.size < 4) continue;
+    const exact = outputRow.key === row.key;
+    const outputCoverage = overlapRatio(outputRow.roots, row.roots);
+    const sourceCoverage = overlapRatio(row.roots, outputRow.roots);
+    const similarity = jaccard(outputRow.roots, row.roots);
+    const score = exact
+      ? 1
+      : outputCoverage * 0.52 + sourceCoverage * 0.28 + similarity * 0.20;
+    candidates.push({
+      sourceIndex: row.index,
+      score,
+      exact,
+      outputCoverage,
+      sourceCoverage,
+      similarity
+    });
+  }
+  candidates.sort((left, right) => right.score - left.score || left.sourceIndex - right.sourceIndex);
+  const best = candidates[0];
+  const second = candidates[1];
+  if (!best) return null;
+  if (!best.exact && (
+    best.score < 0.54
+      || best.outputCoverage < 0.58
+      || best.sourceCoverage < 0.34
+      || best.similarity < 0.30
+      || (second && best.score - second.score < 0.055)
+  )) return null;
+  return best;
+}
+
+function extendSemanticReplayRun({ start, mapped, seen, priorMax, outputRows, sourceRows }) {
+  const anchors = [];
+  let end = start - 1;
+  let gaps = 0;
+  let lastSource = -1;
+  for (let index = start; index < mapped.length; index += 1) {
+    const sourceIndex = mapped[index]?.sourceIndex;
+    if (Number.isInteger(sourceIndex)
+        && sourceIndex <= priorMax
+        && seen.has(sourceIndex)
+        && (lastSource < 0 || sourceIndex >= lastSource)) {
+      anchors.push({ outputIndex: index, sourceIndex });
+      lastSource = sourceIndex;
+      gaps = 0;
+      end = index;
+      continue;
+    }
+    gaps += 1;
+    if (gaps > 2) break;
+    // 간격 문장은 뒤에 replay anchor가 다시 나올 때만 블록 내부가 된다.
+    // 마지막 anchor 뒤의 정상 다음 절 문장을 trailing gap이라는 이유로
+    // 삭제 범위에 포함하면 실제 내용이 사라진다.
+  }
+  const distinct = [...new Set(anchors.map(item => item.sourceIndex))];
+  if (anchors.length < 3 || distinct.length < 3) return null;
+  const sourceStart = Math.min(...distinct);
+  const sourceEnd = Math.max(...distinct);
+  if (sourceEnd - sourceStart < 2
+      || sourceEnd > priorMax
+      || sourceEnd - sourceStart > distinct.length + 1) return null;
+  const chars = outputRows.slice(start, end + 1)
+    .reduce((sum, row) => sum + String(row?.key || '').length, 0);
+  const sourceChars = sourceRows.slice(sourceStart, sourceEnd + 1)
+    .reduce((sum, row) => sum + String(row?.key || '').length, 0);
+  // 결론에서 앞선 세 결과를 짧게 요약하는 정상 회상과 달리, 청크 replay는
+  // 연속 구간의 문자량이 거의 그대로 되돌아온다. 일반 경로는 네 anchor를,
+  // 절 접합 손상이 함께 증명된 경우만 세 anchor를 허용한다.
+  if (chars < 90 || sourceChars < 1 || chars < sourceChars * 0.70) return null;
+  // 각 anchor가 원문에서 앞서 실제로 소비된 구간이어야 한다. 단지 문서
+  // 일부를 정상적으로 뒤에서 회상한 경우에는 세 개의 고유 anchor를 모두
+  // 만족하기 어렵고 이 조건에서 제외된다.
+  if (!distinct.every(index => seen.has(index) && sourceRows[index]?.roots?.size >= 4)) return null;
+  return {
+    start,
+    end,
+    anchorCount: anchors.length,
+    sourceStart,
+    sourceEnd,
+    chars,
+    sourceChars
+  };
+}
+
+function findReplayBoundarySplice({ start, priorMax, outputRows, sourceRows, replaySourceStart }) {
+  const replayRoots = sourceRows[replaySourceStart]?.roots || new Set();
+  if (replayRoots.size < 4) return null;
+  const min = Math.max(0, priorMax - 1);
+  const max = Math.min(sourceRows.length - 1, priorMax + 3);
+  let best = null;
+  // 경계 접합 문장이 첫 replay anchor 자체로 정렬되는 경우와, 바로 앞
+  // 현재 절 문장으로 정렬되는 경우를 모두 검사한다. 실제 사고의
+  // `...창선행연구...`는 앞부분보다 뒤의 replay 내용어가 많아 첫 경우다.
+  for (const outputIndex of [start, start - 1]) {
+    if (outputIndex < 0) continue;
+    const row = outputRows[outputIndex];
+    if (!row?.key || row.key.length < 20) continue;
+    for (let index = min; index <= max; index += 1) {
+      const sourceRow = sourceRows[index];
+      if (!sourceRow?.key || sourceRow.key.length < 20) continue;
+      const prefix = commonPrefixLength(row.key, sourceRow.key);
+      const coverage = overlapRatio(sourceRow.roots, row.roots);
+      if (prefix < 12 || coverage < 0.32) continue;
+      const truncatedCurrent = prefix < sourceRow.key.length * 0.88;
+      const substantialForeignTail = prefix < row.key.length * 0.72;
+      const earlierTailEvidence = sourceRows.some((earlier, earlierIndex) => (
+        earlierIndex <= priorMax - 2
+          && earlierIndex !== index
+          && earlier?.roots?.size >= 4
+          && overlapRatio(earlier.roots, row.roots) >= 0.30
+      ));
+      const replayTailEvidence = overlapRatio(replayRoots, row.roots) >= 0.30;
+      if (!truncatedCurrent
+          || !substantialForeignTail
+          || (!earlierTailEvidence && !replayTailEvidence)) continue;
+      if (!best
+          || prefix > best.prefix
+          || (prefix === best.prefix && coverage > best.coverage)) {
+        best = {
+          outputIndex,
+          sourceIndex: index,
+          sourceText: sourceRow.text,
+          prefix,
+          coverage
+        };
+      }
+    }
+  }
+  return best;
+}
+
+function commonPrefixLength(left, right) {
+  const limit = Math.min(String(left || '').length, String(right || '').length);
+  let index = 0;
+  while (index < limit && left[index] === right[index]) index += 1;
+  return index;
+}
+
 function findNewExactDuplicateBlock(source, text) {
   const sourceSpans = splitSentenceSpans(source);
   const outputSpans = splitSentenceSpans(text);
@@ -699,5 +1049,8 @@ module.exports = {
   dedupeSentences,
   removeGeneratedAdjacentRestatements,
   removeGeneratedLocalOverlapDuplicates,
-  removeNewExactDuplicateBlocks
+  removeNewExactDuplicateBlocks,
+  removeGeneratedSourceReplayBlocks,
+  auditGeneratedSourceReplay,
+  auditGeneratedDuplicateIntegrity
 };

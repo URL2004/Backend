@@ -383,6 +383,22 @@ function detectSemanticRelationShifts(source, output) {
       if (shifted) add('importance_hardened_to_obligation', sourceIndex + 1);
     }
 
+    // `이에`처럼 중립적인 연결을 `이를 보완하기 위해`로 바꾸면 연구자가
+    // 기존 연구의 결함을 직접 보완하려 했다는 목적 관계가 새로 생긴다.
+    // 문장 유사도만으로는 사실 추가로 보이지 않으므로 관계 감사에서 별도로
+    // 잡고, 원문에 같은 보완 목적이 실제로 있을 때는 허용한다.
+    if (hasExplicitRemediationPurpose(alignedText)
+        && !hasExplicitRemediationPurpose(sourceSentence)) {
+      add('neutral_link_hardened_to_remediation', sourceIndex + 1);
+    }
+
+    // 범위를 넓히거나 예외를 없애는 부사는 짧지만 명제 강도를 바꾼다.
+    // 원문에 없던 `일괄적으로·전면적으로·반드시` 등을 문체 장식으로
+    // 주입하지 못하게 원문 대응 문장 단위로 비교한다.
+    if (introducedScopeQualifier(sourceSentence, alignedText)) {
+      add('unsupported_scope_qualifier', sourceIndex + 1);
+    }
+
     const sourceConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(sourceSentence);
     const sourceSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(sourceSentence);
     const outputSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(alignedText);
@@ -451,6 +467,27 @@ function isHedgeToken(token) {
 function hasImportanceClaim(value) {
   return /(?:것|점|태도|과정|방법|역할|기준|원칙)(?:은|는|이|가)?\s*중요(?:하|했|한|함|합|합니다|하다)/u
     .test(String(value || ''));
+}
+
+function hasExplicitRemediationPurpose(value) {
+  return /(?:이를|이것을|이\s*점(?:을|를)|이러한?\s*(?:문제|한계|공백)(?:을|를)|문제(?:를|을)|한계(?:를|을)|공백(?:을|를))[^.!?。！？\n]{0,28}(?:보완|해결|극복|개선)(?:하|해|하기|하고자|하려)/u
+    .test(String(value || ''));
+}
+
+const SCOPE_QUALIFIER_PATTERNS = Object.freeze([
+  /일괄적으로/u,
+  /전면적으로/u,
+  /전적으로/u,
+  /예외\s*없이/u,
+  /반드시/u,
+  /오직/u,
+  /완전히/u
+]);
+
+function introducedScopeQualifier(source, output) {
+  const before = String(source || '');
+  const after = String(output || '');
+  return SCOPE_QUALIFIER_PATTERNS.some(pattern => matches(pattern, after) && !matches(pattern, before));
 }
 
 function hasObligationClaim(value) {

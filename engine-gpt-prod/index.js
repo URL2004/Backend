@@ -41,6 +41,8 @@ const experienceAudit = require('./experienceAudit');
 const sourcePreflight = require('./sourcePreflight');
 const literalSpans = require('./literalSpans');
 const candidateIntegrity = require('./candidateIntegrity');
+const candidateLedgerPolicy = require('./candidateLedger');
+const statisticalAtoms = require('./statisticalAtoms');
 const safeEditAccumulator = require('./safeEditAccumulator');
 const commercialSignals = require('./commercialSignals');
 const omissionRestore = require('./omissionRestore');
@@ -59,7 +61,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.39';
+const VERSION = 'gpt-prod-v2.5.40';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -592,6 +594,9 @@ async function runEngine({
   let fingerprintSourceRestoreCount = 0;
   let finalSourceIntegrityRestoreCount = 0;
   const finalSourceIntegrityRestoreCodes = [];
+  let statisticalAtomRepairCount = 0;
+  let statisticalAtomIntegrity = null;
+  let finalGeneratedDuplicateAudit = null;
   let finalKoreanSourceRestoreCount = 0;
   const finalKoreanSourceRestoreCodes = [];
   let endingStyleAudit = null;
@@ -2095,6 +2100,128 @@ async function runEngine({
     }
     quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   }
+  // 의미 심사 이후의 각 안전 후보를 원문 기준으로 다시 채점해 보존한다.
+  // 후단 수리 하나가 자기 직전 후보보다 나쁘지 않더라도 여러 패스를 거치며
+  // 사실·구조·화자·한국어 품질이 누적 하락할 수 있으므로, 후보 선택 기준은
+  // 항상 같은 원문과 같은 사전식 우선순위를 사용한다.
+  const candidateLedger = candidateLedgerPolicy.createCandidateLedger({
+    enabled: selectedMode !== 'polish',
+    assess: ({ stage, text, semanticReport: candidateSemanticReport }) => {
+      const candidateStructureAudit = structureChunk.buildStructureAudit({
+        source: rawSource,
+        integritySource,
+        outputText: text,
+        chunks,
+        plan: chunkPlan,
+        boundaryRepair,
+        layoutRepair
+      });
+      const candidateDeterministicAudit = qualityV2.buildDeterministicAudit({
+        source: rawSource,
+        outputText: text,
+        mode: selectedMode,
+        contract,
+        voiceProfile: auditVoiceProfile,
+        documentProfile,
+        structureAudit: candidateStructureAudit,
+        protectedTerms: extractProtectedTerms(rawSource, documentProfile),
+        allowedExtra
+      });
+      const candidateDepthReport = humanizationDepthEnabled && selectedMode !== 'polish'
+        ? evaluateDocumentHumanizationDepth(text, humanizationPlan)
+        : null;
+      const candidateDepthSnapshot = candidateDepthReport
+        ? buildDepthStageSnapshot(stage, candidateDepthReport)
+        : {
+            stage,
+            pass: true,
+            minimumEffectPass: true,
+            targetDepthMet: false,
+            score: 0,
+            substantiveEditRatio: 0
+          };
+      if (candidateDepthReport?.applicable === false) {
+        candidateDepthSnapshot.minimumEffectPass = true;
+      }
+      const candidateCodeAudit = inlineCodeFreeze.count > 0
+        ? literalSpans.restoreInlineCodeByOrder(text, inlineCodeFreeze)
+        : { pass: true, orderPass: true, applied: false };
+      const candidateMathAudit = inlineMathFreeze.count > 0
+        ? literalSpans.restoreMathByOrder(text, inlineMathFreeze)
+        : { pass: true, orderPass: true, applied: false };
+      // A restorable literal is still not the exact candidate that was audited.
+      // Only already-fixed strings enter the rollback pool.
+      const exactCodeAudit = {
+        ...candidateCodeAudit,
+        pass: candidateCodeAudit.pass !== false && candidateCodeAudit.applied !== true
+      };
+      const exactMathAudit = {
+        ...candidateMathAudit,
+        pass: candidateMathAudit.pass !== false && candidateMathAudit.applied !== true
+      };
+      const candidateGate = evaluateWholeDocumentGate({
+        outputText: text,
+        source: rawSource,
+        integritySource,
+        contract,
+        mode: selectedMode,
+        allowedExtra,
+        documentProfile
+      });
+      return candidateLedgerPolicy.buildCandidateAssessment({
+        gate: candidateGate,
+        deterministicAudit: candidateDeterministicAudit,
+        structureAudit: candidateStructureAudit,
+        quoteAudit: auditDirectQuoteIntegrity(rawSource, text),
+        inlineCodeAudit: exactCodeAudit,
+        inlineMathAudit: exactMathAudit,
+        fingerprintAudit: selectedMode !== 'polish' && fingerprint.isEnabled()
+          ? fingerprint.auditFingerprint(rawSource, text, documentProfile)
+          : { pass: true, violations: [] },
+        resumeAudit: resumeCoverage.auditResumeCoverage(rawSource, text, documentProfile),
+        koreanAudit: koreanRefinement.analyzeKoreanRefinement({
+          source: rawSource,
+          outputText: text,
+          documentProfile,
+          mode: selectedMode
+        }),
+        endingAudit: endingStyle.auditEndingStyle(rawSource, text, documentProfile),
+        generatedDuplicateAudit: dedupe.auditGeneratedDuplicateIntegrity(rawSource, text),
+        statisticalAtomAudit: statisticalAtoms.auditStatisticalAtoms(rawSource, text),
+        depthSnapshot: candidateDepthSnapshot,
+        transformed: normalizeBare(rawSource) !== normalizeBare(text),
+        semanticReport: candidateSemanticReport
+      });
+    }
+  });
+  candidateLedger.record({
+    stage: 'source',
+    text: rawSource,
+    semanticReport: { ran: false, pass: true, reason: 'source_baseline' },
+    baseline: true
+  });
+  const recordCandidateCheckpoint = (stage, checkpointSemanticReport = semanticReport) => candidateLedger.record({
+    stage,
+    text: outputText,
+    semanticReport: checkpointSemanticReport,
+    artifacts: {
+      layoutRepair,
+      inlineCodeIntegrity,
+      inlineMathIntegrity,
+      quoteIntegrityAudit,
+      finalFormattingRepair
+    }
+  });
+  let candidateLedgerDecision = {
+    enabled: candidateLedger.enabled,
+    applied: false,
+    currentStage: '',
+    selectedStage: '',
+    reason: candidateLedger.enabled ? 'not_selected' : 'disabled',
+    currentHardViolationCodes: [],
+    currentSemanticStatus: ''
+  };
+  recordCandidateCheckpoint('post_semantic_materialized');
   // 의미 수리·레이아웃 복원도 드물게 새 연어·논항·시제 오류를 만들 수 있다.
   // 최종 단계에서는 자유 재작성을 다시 호출하지 않고, 원문에 없던 것으로
   // 확인된 문제 문장만 같은 위치의 원문 문장으로 되돌린다. 이 후보 역시
@@ -2313,6 +2440,7 @@ async function runEngine({
       reason: discourseRestore.reason || ''
     };
   }
+  recordCandidateCheckpoint('post_localized_repairs');
 
   // 의미 감사 뒤의 결정론적 문장 복원이 라벨·불릿·조문 접두부 앞의
   // 줄바꿈을 공백으로 바꿀 수 있다. 최종 공백 보정 전에 잠긴 구조의
@@ -2511,6 +2639,7 @@ async function runEngine({
     humanizationDepthStages.push(buildDepthStageSnapshot('post_layout_restore', postLayoutDepth));
     humanizationDepthReport = postLayoutDepth;
   }
+  recordCandidateCheckpoint('post_layout_restore');
 
   // 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 수리·동결 블록 재조립·레이아웃
   // 복원으로 실질 변화가 사라지면 아래 최종 깊이 감사가 검토 필요 상태를 기록한다.
@@ -2953,6 +3082,201 @@ async function runEngine({
   }
   endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
   resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
+  // 무띄어쓰기 복원 모델은 서버가 공백을 뺀 모든 문자·순서와 기존 행 경계를
+  // 대조해 통과시킨다. 따라서 실제 의미 재작성과 달리 기존 의미 판정의
+  // provenance를 유지할 수 있다. 일반 후단 모델 후보는 별도 의미 재심사 없이는
+  // 이 지위를 얻지 못한다.
+  const deliverySemanticReport = semanticReport;
+  const deliveryLedgerEntry = recordCandidateCheckpoint('delivery_final', deliverySemanticReport);
+  const ledgerChoice = candidateLedger.chooseFinal(deliveryLedgerEntry?.id);
+  const selectedLedgerEntry = ledgerChoice.entry || null;
+  candidateLedgerDecision = {
+    enabled: ledgerChoice.enabled === true,
+    applied: ledgerChoice.applied === true,
+    currentStage: ledgerChoice.currentStage || '',
+    selectedStage: ledgerChoice.selectedStage || '',
+    reason: ledgerChoice.reason || '',
+    currentHardViolationCodes: safeFailureCodeList(ledgerChoice.currentHardViolationCodes),
+    currentSemanticStatus: ledgerChoice.currentSemanticStatus || ''
+  };
+  if (candidateLedgerDecision.applied === true && selectedLedgerEntry) {
+    outputText = selectedLedgerEntry.text;
+    if (selectedLedgerEntry.semanticReport) {
+      semanticReport = {
+        ...selectedLedgerEntry.semanticReport,
+        outputText,
+        decisionReason: `candidate_ledger:${selectedLedgerEntry.stage}`,
+        candidateLedgerRollback: true,
+        candidateLedgerSelectedStage: selectedLedgerEntry.stage
+      };
+    }
+    const selectedArtifacts = selectedLedgerEntry.artifacts || {};
+    if (selectedArtifacts.layoutRepair && typeof selectedArtifacts.layoutRepair === 'object') {
+      for (const key of Object.keys(layoutRepair)) delete layoutRepair[key];
+      Object.assign(layoutRepair, selectedArtifacts.layoutRepair);
+    }
+    if (selectedArtifacts.inlineCodeIntegrity) inlineCodeIntegrity = selectedArtifacts.inlineCodeIntegrity;
+    if (selectedArtifacts.inlineMathIntegrity) inlineMathIntegrity = selectedArtifacts.inlineMathIntegrity;
+    if (selectedArtifacts.finalFormattingRepair) finalFormattingRepair = selectedArtifacts.finalFormattingRepair;
+    quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
+    koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
+      source: rawSource,
+      outputText,
+      documentProfile,
+      mode: selectedMode
+    });
+    if (humanizationDepthEnabled && selectedMode !== 'polish') {
+      humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
+      humanizationDepthStages.push(buildDepthStageSnapshot(
+        'candidate_ledger_selected',
+        humanizationDepthReport
+      ));
+    }
+    if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
+      fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+    }
+    endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
+    resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
+    rememberExactLineSafeOutput(outputText);
+    finalDepthRecovery = {
+      ...finalDepthRecovery,
+      candidateLedgerRollback: true,
+      candidateLedgerResolved: true,
+      candidateLedgerSelectedStage: selectedLedgerEntry.stage,
+      scoreAfter: Number(selectedLedgerEntry.depthScore || 0)
+    };
+  }
+  // 후보 원장이 더 안전한 과거 후보를 선택한 뒤에도, 그 후보 자체에 모델이
+  // 처음부터 만든 중복이나 목적·범위 강화가 남아 있을 수 있다. 여기부터는
+  // 모델을 다시 부르지 않고 원문에 의해 증명되는 삭제·복원만 수행하며,
+  // 이 단계 뒤에는 어휘를 생성하는 후처리를 두지 않는다.
+  if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
+    const relationBefore = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+    if (relationBefore.pass === false) {
+      const restored = fingerprint.restoreUnsafeRelationSentences(
+        rawSource,
+        outputText,
+        relationBefore
+      );
+      if (restored.applied) {
+        const candidate = restored.text;
+        const relationAfter = fingerprint.auditFingerprint(rawSource, candidate, documentProfile);
+        const integrity = candidateIntegrity.auditCandidateIntegrity({
+          source: rawSource,
+          before: outputText,
+          candidate,
+          documentProfile,
+          mode: selectedMode
+        });
+        if (fingerprint.isImproved(relationBefore, relationAfter)
+            && integrity.pass === true
+            && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+          outputText = candidate;
+          fingerprintAudit = relationAfter;
+          const restoredCount = Number(restored.restoredSentenceCount || 1);
+          fingerprintSourceRestoreCount += restoredCount;
+          finalSourceIntegrityRestoreCount += restoredCount;
+          addUniqueCode(finalSourceIntegrityRestoreCodes, 'delivery_relation_source_restore');
+        }
+      }
+    }
+  }
+
+  const deliveryGeneratedDedupe = applyFinalGeneratedDedupe({
+    source: rawSource,
+    outputText,
+    chunks,
+    plan: chunkPlan,
+    boundaryRepair,
+    documentProfile,
+    mode: selectedMode,
+    preserveLineBreaks: lineBoundaryPolicy === 'all'
+      || voiceProfile?.lineBreakSensitive === true
+  });
+  if (deliveryGeneratedDedupe.applied) outputText = deliveryGeneratedDedupe.text;
+  postprocessMeta.dedupe = mergeFinalDedupeAudit(
+    postprocessMeta.dedupe,
+    deliveryGeneratedDedupe
+  );
+
+  // 중복 삭제·원문 문장 복원이 구조 슬롯 주변의 구분자만 바꾼 경우에는
+  // 문자 내용을 건드리지 않는 레이아웃 고정점을 한 번 적용한다.
+  {
+    const finalIntegrityLayout = structureChunk.restoreFinalDocumentLayout({
+      source: rawSource,
+      outputText,
+      chunks,
+      mode: selectedMode,
+      requestStrength,
+      documentProfile,
+      profileConfidence: documentProfile.confidence,
+      humanizeContract,
+      normalizeVisualGaps: selectedMode !== 'polish'
+        && String(documentProfile?.profile || '') !== 'creative'
+    });
+    if (finalIntegrityLayout.applied && finalIntegrityLayout.contentPreserved) {
+      outputText = finalIntegrityLayout.text;
+    }
+    layoutRepair.deliveryIntegrityFixedPoint = {
+      applied: finalIntegrityLayout.applied === true,
+      structuralPass: finalIntegrityLayout.structuralPass !== false,
+      contentPreserved: finalIntegrityLayout.contentPreserved === true,
+      converged: finalIntegrityLayout.converged === true,
+      iterationCount: Number(finalIntegrityLayout.iterationCount || 0)
+    };
+  }
+
+  // 통계 원자는 숫자 multiset과 별개로 표기 전체를 보존한다. 줄바꿈·공백만
+  // 끼어 `p<.001`이 `p<.0\n01`처럼 갈라진 경우에 한해 원문 표기를 복원한다.
+  {
+    const restored = statisticalAtoms.restoreWhitespaceBrokenStatisticalAtoms(
+      rawSource,
+      outputText
+    );
+    if (restored.applied) {
+      const integrity = candidateIntegrity.auditCandidateIntegrity({
+        source: rawSource,
+        before: outputText,
+        candidate: restored.text,
+        documentProfile,
+        mode: selectedMode
+      });
+      if (integrity.pass === true
+          && preservesFinalStructure(rawSource, restored.text, chunks, chunkPlan, boundaryRepair)) {
+        outputText = restored.text;
+        statisticalAtomRepairCount += Number(restored.repairCount || 0);
+      }
+    }
+  }
+  {
+    const restoredQuotes = restoreDirectQuoteContents(rawSource, outputText);
+    if (restoredQuotes.applied) {
+      outputText = restoredQuotes.text;
+      quoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+      finalQuoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+    }
+  }
+  finalGeneratedDuplicateAudit = dedupe.auditGeneratedDuplicateIntegrity(rawSource, outputText);
+  statisticalAtomIntegrity = statisticalAtoms.auditStatisticalAtoms(rawSource, outputText);
+  quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
+  koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
+    source: rawSource,
+    outputText,
+    documentProfile,
+    mode: selectedMode
+  });
+  if (humanizationDepthEnabled && selectedMode !== 'polish') {
+    humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
+    humanizationDepthStages.push(buildDepthStageSnapshot(
+      'delivery_integrity_fixed_point',
+      humanizationDepthReport
+    ));
+  }
+  if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
+    fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+  }
+  endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
+  resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
   if (selectedMode === 'polish') {
     polishReport = qualityV2.polishEditPolicy(rawSource, outputText, { documentProfile });
     polishPaddingReport = qualityV2.comparePolishEvaluativePadding(rawSource, outputText);
@@ -3217,6 +3541,20 @@ async function runEngine({
               message: '한글이 길게 붙은 구간의 띄어쓰기를 모두 복원하지 못해 원문 대조가 필요해요.'
             }]
           : []),
+        ...(finalGeneratedDuplicateAudit?.pass === false
+          ? [{
+              code: 'source_section_replay',
+              severity: 'warning',
+              message: '원문의 한 주장이나 앞 절이 결과에 다시 삽입됐을 가능성이 있어 원문 대조가 필요해요.'
+            }]
+          : []),
+        ...(statisticalAtomIntegrity?.pass === false
+          ? [{
+              code: 'statistical_atom_integrity',
+              severity: 'warning',
+              message: '통계 기호와 값의 결합 표기 일부가 원문과 달라 원문 대조가 필요해요.'
+            }]
+          : []),
         ...(koreanRefinementAudit?.residualWarnings || [])
       ]);
   // 내부 floor가 검토 필요인데 사용자 경고가 비어 있으면 상태와 설명이
@@ -3304,7 +3642,9 @@ async function runEngine({
       && humanizationDepthReport?.minimumEffectPass !== true) {
     pipelineFixedPointReasonCodes.push('depth_hard_minimum_not_met');
   }
-  if (finalDepthRecovery.triggered && !finalDepthRecovery.applied) {
+  if (finalDepthRecovery.triggered
+      && !finalDepthRecovery.applied
+      && finalDepthRecovery.candidateLedgerResolved !== true) {
     pipelineFixedPointReasonCodes.push('depth_cumulative_regression');
   }
   const pipelineFixedPoint = {
@@ -3314,7 +3654,9 @@ async function runEngine({
     ].includes(code)),
     depthHardMinimumPass: humanizationDepthReport?.applicable !== true
       || humanizationDepthReport?.minimumEffectPass === true,
-    cumulativeDepthPass: !(finalDepthRecovery.triggered && !finalDepthRecovery.applied),
+    cumulativeDepthPass: !(finalDepthRecovery.triggered
+      && !finalDepthRecovery.applied
+      && finalDepthRecovery.candidateLedgerResolved !== true),
     structurePass: structureAudit?.pass === true,
     quotePass: quoteIntegrityAudit?.pass !== false,
     inlineCodePass: inlineCodeIntegrity?.pass !== false,
@@ -3322,9 +3664,21 @@ async function runEngine({
     koreanSpacingPass: finalCollapsedSpacingCount === 0,
     reasonCodes: safeFailureCodeList(pipelineFixedPointReasonCodes)
   };
+  const candidateLedgerMeta = candidateLedger.snapshot();
   result.engineMeta = {
     schemaVersion: 3,
     engineVersion: VERSION,
+    candidateLedgerVersion: candidateLedgerMeta.version,
+    candidateLedgerEnabled: candidateLedgerMeta.enabled === true,
+    candidateLedgerCheckpointCount: Number(candidateLedgerMeta.checkpointCount || 0),
+    candidateLedgerEligibleCount: Number(candidateLedgerMeta.eligibleCount || 0),
+    candidateLedgerRollbackApplied: candidateLedgerDecision.applied === true,
+    candidateLedgerSelectedStage: candidateLedgerDecision.selectedStage || '',
+    candidateLedgerSelectionReason: candidateLedgerDecision.reason || '',
+    candidateLedgerRejectedFinalCodes: safeFailureCodeList(
+      candidateLedgerDecision.currentHardViolationCodes
+    ),
+    candidateLedger: candidateLedgerMeta,
     humanizeContractVersion: humanizeContract.version,
     paragraphAuthorityVersion: humanizeContract.paragraph.version,
     paragraphModelBoundaryPolicy: humanizeContract.paragraph.modelBoundary,
@@ -3771,6 +4125,28 @@ async function runEngine({
     finalGeneratedDedupeSentenceCount: Number(
       postprocessMeta?.dedupe?.finalPass?.removedBlockSentenceCount || 0
     ),
+    sourceReplayAuditVersion: Number(finalGeneratedDuplicateAudit?.version || 0),
+    sourceReplayPass: finalGeneratedDuplicateAudit?.pass !== false,
+    sourceReplayResidualRiskCount: Number(finalGeneratedDuplicateAudit?.riskCount || 0),
+    removedSourceReplayBlockCount: Number(
+      postprocessMeta?.dedupe?.removedSourceReplayBlockCount || 0
+    ),
+    removedSourceReplaySentenceCount: Number(
+      postprocessMeta?.dedupe?.removedSourceReplaySentenceCount || 0
+    ),
+    sourceReplaySpliceRestoreCount: Number(
+      postprocessMeta?.dedupe?.sourceReplaySpliceRestoreCount || 0
+    ),
+    statisticalAtomAuditVersion: Number(statisticalAtomIntegrity?.version || 0),
+    statisticalAtomApplicable: statisticalAtomIntegrity?.applicable === true,
+    statisticalAtomPass: statisticalAtomIntegrity?.pass !== false,
+    statisticalAtomSourceCount: Number(statisticalAtomIntegrity?.sourceAtomCount || 0),
+    statisticalAtomRemovedCount: Number(statisticalAtomIntegrity?.removedCount || 0),
+    statisticalAtomAddedCount: Number(statisticalAtomIntegrity?.addedCount || 0),
+    statisticalAtomWhitespaceBrokenCount: Number(
+      statisticalAtomIntegrity?.whitespaceBrokenCount || 0
+    ),
+    statisticalAtomRepairCount,
     removedLocalOverlapCount: Number(postprocessMeta?.dedupe?.removedLocalOverlapCount || 0),
     localOverlapReasons: safeFailureCodeList(postprocessMeta?.dedupe?.localOverlapReasons),
     removedAdjacentRestatementCount: Number(postprocessMeta?.dedupe?.removedAdjacentRestatementCount || 0),
@@ -5474,7 +5850,9 @@ function auditGeneralSurfaceCandidate(
       ending_style_worsened: 'ending_style_shift',
       direct_quote_worsened: 'quote_loss',
       legal_integrity_worsened: 'semantic_relation_shift',
-      structure_integrity_worsened: 'structure_loss'
+      structure_integrity_worsened: 'structure_loss',
+      source_replay_worsened: 'source_replay',
+      statistical_atom_worsened: 'number_changed'
     }[reason] || 'safety_audit_failed';
     add(mapped);
   }
@@ -5920,6 +6298,9 @@ function finalPostprocess(text, source, mode, contract, meta = {}, { preserveLin
         removedExactCount: (dedupeResult.removed || 0) + (blockDedupe.removedSentenceCount || 0),
         removedBlockCount: blockDedupe.removedBlockCount || 0,
         removedBlockSentenceCount: blockDedupe.removedSentenceCount || 0,
+        removedSourceReplayBlockCount: 0,
+        removedSourceReplaySentenceCount: 0,
+        sourceReplaySpliceRestoreCount: 0,
         removedLocalOverlapCount: localOverlapDedupe.removedCount || 0,
         localOverlapReasons: localOverlapDedupe.reasons || [],
         removedAdjacentRestatementCount: seamDedupe.removedCount || 0,
@@ -5956,6 +6337,9 @@ function applyFinalGeneratedDedupe({
     reasonCodes: [],
     removedBlockCount: 0,
     removedBlockSentenceCount: 0,
+    removedSourceReplayBlockCount: 0,
+    removedSourceReplaySentenceCount: 0,
+    sourceReplaySpliceRestoreCount: 0,
     removedLocalOverlapCount: 0,
     localOverlapReasons: [],
     removedAdjacentRestatementCount: 0,
@@ -5970,9 +6354,13 @@ function applyFinalGeneratedDedupe({
 
   try {
     const blockDedupe = dedupe.removeNewExactDuplicateBlocks(source, before);
-    const localOverlapDedupe = dedupe.removeGeneratedLocalOverlapDuplicates(
+    const sourceReplayDedupe = dedupe.removeGeneratedSourceReplayBlocks(
       source,
       blockDedupe.text
+    );
+    const localOverlapDedupe = dedupe.removeGeneratedLocalOverlapDuplicates(
+      source,
+      sourceReplayDedupe.text
     );
     const seamDedupe = dedupe.removeGeneratedAdjacentRestatements(
       source,
@@ -5983,6 +6371,9 @@ function applyFinalGeneratedDedupe({
     Object.assign(report, {
       removedBlockCount: Number(blockDedupe.removedBlockCount || 0),
       removedBlockSentenceCount: Number(blockDedupe.removedSentenceCount || 0),
+      removedSourceReplayBlockCount: Number(sourceReplayDedupe.removedBlockCount || 0),
+      removedSourceReplaySentenceCount: Number(sourceReplayDedupe.removedSentenceCount || 0),
+      sourceReplaySpliceRestoreCount: Number(sourceReplayDedupe.restoredSpliceCount || 0),
       removedLocalOverlapCount: Number(localOverlapDedupe.removedCount || 0),
       localOverlapReasons: safeFailureCodeList(localOverlapDedupe.reasons),
       removedAdjacentRestatementCount: Number(seamDedupe.removedCount || 0),
@@ -6091,9 +6482,22 @@ function compactRepetitionDelta(audit) {
 function mergeFinalDedupeAudit(initial = null, finalPass = null) {
   const base = initial && typeof initial === 'object' ? initial : {};
   const last = finalPass && typeof finalPass === 'object' ? finalPass : {};
+  const previousFinal = base.finalPass && typeof base.finalPass === 'object'
+    ? base.finalPass
+    : {};
+  const hasPreviousFinal = Boolean(base.finalPass && typeof base.finalPass === 'object');
   const acceptedBlockCount = last.applied === true ? Number(last.removedBlockCount || 0) : 0;
   const acceptedBlockSentenceCount = last.applied === true
     ? Number(last.removedBlockSentenceCount || 0)
+    : 0;
+  const acceptedSourceReplayBlockCount = last.applied === true
+    ? Number(last.removedSourceReplayBlockCount || 0)
+    : 0;
+  const acceptedSourceReplaySentenceCount = last.applied === true
+    ? Number(last.removedSourceReplaySentenceCount || 0)
+    : 0;
+  const acceptedSourceReplaySpliceRestoreCount = last.applied === true
+    ? Number(last.sourceReplaySpliceRestoreCount || 0)
     : 0;
   const acceptedLocalOverlapCount = last.applied === true
     ? Number(last.removedLocalOverlapCount || 0)
@@ -6109,6 +6513,12 @@ function mergeFinalDedupeAudit(initial = null, finalPass = null) {
       + acceptedBlockCount,
     removedBlockSentenceCount: Number(base.removedBlockSentenceCount || 0)
       + acceptedBlockSentenceCount,
+    removedSourceReplayBlockCount: Number(base.removedSourceReplayBlockCount || 0)
+      + acceptedSourceReplayBlockCount,
+    removedSourceReplaySentenceCount: Number(base.removedSourceReplaySentenceCount || 0)
+      + acceptedSourceReplaySentenceCount,
+    sourceReplaySpliceRestoreCount: Number(base.sourceReplaySpliceRestoreCount || 0)
+      + acceptedSourceReplaySpliceRestoreCount,
     removedLocalOverlapCount: Number(base.removedLocalOverlapCount || 0)
       + acceptedLocalOverlapCount,
     localOverlapReasons: safeFailureCodeList([
@@ -6124,18 +6534,39 @@ function mergeFinalDedupeAudit(initial = null, finalPass = null) {
     finalPass: {
       version: Number(last.version || 1),
       stage: String(last.stage || 'final_fixed_point'),
-      applied: last.applied === true,
-      skipped: last.skipped === true,
-      rejected: last.rejected === true,
-      reasonCodes: safeFailureCodeList(last.reasonCodes),
-      detectedBlockCount: Number(last.removedBlockCount || 0),
-      detectedBlockSentenceCount: Number(last.removedBlockSentenceCount || 0),
-      removedBlockCount: acceptedBlockCount,
-      removedBlockSentenceCount: acceptedBlockSentenceCount,
-      removedLocalOverlapCount: acceptedLocalOverlapCount,
-      removedAdjacentRestatementCount: acceptedAdjacentCount,
-      beforeRepetitionDelta: last.beforeRepetitionDelta || null,
-      afterRepetitionDelta: last.afterRepetitionDelta || null
+      applied: previousFinal.applied === true || last.applied === true,
+      skipped: hasPreviousFinal
+        ? previousFinal.skipped === true && last.skipped === true
+        : last.skipped === true,
+      rejected: previousFinal.rejected === true || last.rejected === true,
+      reasonCodes: safeFailureCodeList([
+        ...(previousFinal.reasonCodes || []),
+        ...(last.reasonCodes || [])
+      ]),
+      detectedBlockCount: Number(previousFinal.detectedBlockCount || 0)
+        + Number(last.removedBlockCount || 0),
+      detectedBlockSentenceCount: Number(previousFinal.detectedBlockSentenceCount || 0)
+        + Number(last.removedBlockSentenceCount || 0),
+      detectedSourceReplayBlockCount: Number(previousFinal.detectedSourceReplayBlockCount || 0)
+        + Number(last.removedSourceReplayBlockCount || 0),
+      detectedSourceReplaySentenceCount: Number(previousFinal.detectedSourceReplaySentenceCount || 0)
+        + Number(last.removedSourceReplaySentenceCount || 0),
+      removedBlockCount: Number(previousFinal.removedBlockCount || 0)
+        + acceptedBlockCount,
+      removedBlockSentenceCount: Number(previousFinal.removedBlockSentenceCount || 0)
+        + acceptedBlockSentenceCount,
+      removedSourceReplayBlockCount: Number(previousFinal.removedSourceReplayBlockCount || 0)
+        + acceptedSourceReplayBlockCount,
+      removedSourceReplaySentenceCount: Number(previousFinal.removedSourceReplaySentenceCount || 0)
+        + acceptedSourceReplaySentenceCount,
+      sourceReplaySpliceRestoreCount: Number(previousFinal.sourceReplaySpliceRestoreCount || 0)
+        + acceptedSourceReplaySpliceRestoreCount,
+      removedLocalOverlapCount: Number(previousFinal.removedLocalOverlapCount || 0)
+        + acceptedLocalOverlapCount,
+      removedAdjacentRestatementCount: Number(previousFinal.removedAdjacentRestatementCount || 0)
+        + acceptedAdjacentCount,
+      beforeRepetitionDelta: last.beforeRepetitionDelta || previousFinal.beforeRepetitionDelta || null,
+      afterRepetitionDelta: last.afterRepetitionDelta || previousFinal.afterRepetitionDelta || null
     }
   };
 }

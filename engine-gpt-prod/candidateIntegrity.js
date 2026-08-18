@@ -5,6 +5,8 @@ const fingerprint = require('./fingerprintAudit');
 const endingStyle = require('./endingStyleAudit');
 const legalAudit = require('./legalAudit');
 const structureChunk = require('./structureChunk');
+const statisticalAtoms = require('./statisticalAtoms');
+const dedupe = require('../engine/dedupe');
 const {
   auditDirectQuoteIntegrity,
   auditVoice,
@@ -123,8 +125,20 @@ function auditCandidateIntegrity({
     add('voice_integrity_worsened');
   }
 
+  const beforeGeneratedDuplicates = dedupe.auditGeneratedDuplicateIntegrity(source, current);
+  const candidateGeneratedDuplicates = dedupe.auditGeneratedDuplicateIntegrity(source, after);
+  if (generatedDuplicateWorsened(beforeGeneratedDuplicates, candidateGeneratedDuplicates)) {
+    add('source_replay_worsened');
+  }
+
+  const beforeStatisticalAtoms = statisticalAtoms.auditStatisticalAtoms(source, current);
+  const candidateStatisticalAtoms = statisticalAtoms.auditStatisticalAtoms(source, after);
+  if (statisticalAtomWorsened(beforeStatisticalAtoms, candidateStatisticalAtoms)) {
+    add('statistical_atom_worsened');
+  }
+
   return {
-    version: 2,
+    version: 3,
     pass: reasons.length === 0,
     reasons,
     before: {
@@ -136,7 +150,9 @@ function auditCandidateIntegrity({
       structureRisk: beforeStructureRisk,
       voiceRisk: structureIssueRisk(beforeVoiceIssues),
       tokenBoundaryRisk: beforeTokenBoundaryRisk,
-      lineAnchorRisk: beforeLineAnchorRisk
+      lineAnchorRisk: beforeLineAnchorRisk,
+      generatedDuplicateRisk: Number(beforeGeneratedDuplicates.riskCount || 0),
+      statisticalAtomRisk: statisticalAtomRisk(beforeStatisticalAtoms)
     },
     candidate: {
       korean: compactKorean(candidateKorean),
@@ -147,9 +163,36 @@ function auditCandidateIntegrity({
       structureRisk: candidateStructureRisk,
       voiceRisk: structureIssueRisk(candidateVoiceIssues),
       tokenBoundaryRisk: candidateTokenBoundaryRisk,
-      lineAnchorRisk: candidateLineAnchorRisk
+      lineAnchorRisk: candidateLineAnchorRisk,
+      generatedDuplicateRisk: Number(candidateGeneratedDuplicates.riskCount || 0),
+      statisticalAtomRisk: statisticalAtomRisk(candidateStatisticalAtoms)
     }
   };
+}
+
+function statisticalAtomRisk(value) {
+  if (value?.applicable !== true) return 0;
+  return Number(value?.removedCount || 0)
+    + Number(value?.addedCount || 0)
+    + Number(value?.whitespaceBrokenCount || 0);
+}
+
+function generatedDuplicateWorsened(before, candidate) {
+  return [
+    'exactBlockCount',
+    'sourceReplayBlockCount',
+    'sourceReplaySentenceCount',
+    'localOverlapCount',
+    'adjacentRestatementCount'
+  ].some(key => Number(candidate?.[key] || 0) > Number(before?.[key] || 0));
+}
+
+function statisticalAtomWorsened(before, candidate) {
+  return [
+    'removedCount',
+    'addedCount',
+    'whitespaceBrokenCount'
+  ].some(key => Number(candidate?.[key] || 0) > Number(before?.[key] || 0));
 }
 
 function fingerprintRisk(value) {
@@ -315,5 +358,8 @@ module.exports = {
   koreanIntegrityWorsened,
   fingerprintRisk,
   quoteRisk,
-  legalRisk
+  legalRisk,
+  statisticalAtomRisk,
+  generatedDuplicateWorsened,
+  statisticalAtomWorsened
 };

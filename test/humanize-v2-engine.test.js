@@ -172,7 +172,9 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.39');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.40');
+  assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
+  assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
   assert.equal(out.engineMeta.niklLocalResourceEnabled, false);
   assert.equal(out.engineMeta.niklExternalApiEnabled, false);
@@ -1105,6 +1107,10 @@ test('의미 수리 뒤 결과가 원문으로 돌아가면 최종 회복과 재
   assert.equal(out.engineMeta.finalNoopRecoveryApplied, true);
   assert.equal(out.engineMeta.finalNoopRecoveryCount, 1);
   assert.equal(out.engineMeta.finalNoopRecoveryMethod, 'post_semantic_model');
+  assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
+  assert.equal(out.engineMeta.candidateLedgerEnabled, true);
+  assert.ok(out.engineMeta.candidateLedgerCheckpointCount >= 5);
+  assert.equal(out.engineMeta.candidateLedger.checkpoints.some(item => 'text' in item), false);
   assert.ok(Array.isArray(out.engineMeta.humanizationDepthStages));
   const depthStages = out.engineMeta.humanizationDepthStages;
   assert.ok(depthStages.some(item => item.stage === 'pre_semantic'), JSON.stringify(depthStages));
@@ -1343,7 +1349,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.39');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.40');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

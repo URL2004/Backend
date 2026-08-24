@@ -23,13 +23,43 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).changedKeys().hasOnly(keys);
     }
 
+    function validAttributionTouch(touch) {
+      return touch is map
+        && touch.keys().hasOnly([
+          'version', 'captured_at', 'source', 'medium', 'campaign', 'content', 'term',
+          'napm', 'gclid', 'fbclid', 'landing_path', 'landing_url', 'referrer_host'
+        ])
+        && touch.get('version', 1) == 1
+        && touch.get('captured_at', '') is string && touch.get('captured_at', '').size() <= 40
+        && touch.get('source', '') is string && touch.get('source', '').size() <= 100
+        && touch.get('medium', '') is string && touch.get('medium', '').size() <= 100
+        && touch.get('campaign', '') is string && touch.get('campaign', '').size() <= 250
+        && touch.get('content', '') is string && touch.get('content', '').size() <= 250
+        && touch.get('term', '') is string && touch.get('term', '').size() <= 250
+        && touch.get('napm', '') is string && touch.get('napm', '').size() <= 500
+        && touch.get('gclid', '') is string && touch.get('gclid', '').size() <= 250
+        && touch.get('fbclid', '') is string && touch.get('fbclid', '').size() <= 250
+        && touch.get('landing_path', '') is string && touch.get('landing_path', '').size() <= 250
+        && touch.get('landing_url', '') is string && touch.get('landing_url', '').size() <= 500
+        && touch.get('referrer_host', '') is string && touch.get('referrer_host', '').size() <= 250;
+    }
+
+    function validSignupAttribution(value) {
+      return value is map
+        && value.keys().hasOnly(['first_touch', 'last_touch'])
+        && validAttributionTouch(value.first_touch)
+        && validAttributionTouch(value.last_touch);
+    }
+
     match /users/{uid} {
       allow read: if isSelf(uid) || isAdmin();
 
       allow create: if isSelf(uid)
-        && request.resource.data.keys().hasOnly(['email', 'name', 'credits', 'plan', 'refCode', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['email', 'name', 'credits', 'plan', 'refCode', 'createdAt', 'signupAttribution'])
         && request.resource.data.credits == 10
         && request.resource.data.plan == 'free'
+        && (!request.resource.data.keys().hasAny(['signupAttribution'])
+            || validSignupAttribution(request.resource.data.signupAttribution))
         // ★ C-08: refCode는 uid 앞 8자로 결정. 사용자가 임의 코드를 고르거나 충돌시킬 수 없다.
         && request.resource.data.refCode == (request.auth.uid.size() >= 8 ? request.auth.uid[0:8] : request.auth.uid);
 

@@ -2,10 +2,11 @@
 // 문의/가입/초대는 프론트가 Firestore에 직접 쓰는 구조라 서버를 안 거치므로, 이 얇은 relay로 알림만 보냄.
 // 스푸핑 최소화: idToken 검증(로그인 사용자만) + per-uid 레이트리밋 + 문의는 실제 문서 조회로 본인 확인.
 const express = require('express');
-const { db, verifyToken } = require('../config');
+const { db, verifyFirebaseIdToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const { realClientIp } = require('../lib/clientip');
+const metaConversions = require('../lib/metaConversions');
 
 const router = express.Router();
 const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error']);
@@ -54,7 +55,10 @@ function logPaymentError(req, uid) {
 router.post('/events', async (req, res) => {
   const { idToken, type } = req.body || {};
   if (!ALLOWED.has(type)) return res.status(400).json({ error: 'unknown event' });
-  const uid = await verifyToken(idToken);
+  let decoded = null;
+  try { decoded = idToken ? await verifyFirebaseIdToken(idToken) : null; }
+  catch (_) { decoded = null; }
+  const uid = decoded?.uid || null;
 
   if (type === 'payment_error') {
     if (uid) setLogContext({ uid });
@@ -64,7 +68,6 @@ router.post('/events', async (req, res) => {
     return res.json({ ok: true });
   }
 
-  if (!discord.enabled()) return res.json({ ok: true, skipped: true }); // 알림 미설정 시 즉시 종료(0 비용)
   if (!uid) return res.status(401).json({ error: 'auth required' });
   setLogContext({ uid });
   if (rateLimited(uid)) return res.json({ ok: true, throttled: true });
@@ -79,9 +82,28 @@ router.post('/events', async (req, res) => {
       if (q.authorId !== uid) return res.json({ ok: true }); // 본인 문의만 알림
       discord.inquiry({ id, title: q.title, body: q.body, author: q.isAnon ? '익명' : (q.authorName || '회원'), uid });
     } else if (type === 'signup') {
-      discord.signup({ uid, via: String(req.body.via || '').slice(0, 20) || '직접' });
+      if (!db) return res.json({ ok: true, skipped: 'firebase_disabled' });
+      const userSnap = await db.collection('users').doc(uid).get();
+      if (!userSnap.exists) return res.json({ ok: true, skipped: 'user_not_found' });
+      const user = userSnap.data() || {};
+      const createdAt = typeof user.createdAt === 'string' ? user.createdAt : '';
+      const expectedEventId = createdAt ? metaConversions.stableEventId('sign_up', `${uid}|${createdAt}`) : '';
+      const suppliedEventId = String(req.body.metaEventId || '').slice(0, 180);
+      if (!expectedEventId || suppliedEventId !== expectedEventId) {
+        logger.warn('meta.signup_event_id_rejected', { uid, eventIdPresent: !!suppliedEventId });
+        return res.json({ ok: true, skipped: 'invalid_signup_event' });
+      }
+      void metaConversions.sendCompleteRegistration({
+        eventId: expectedEventId,
+        email: decoded?.email || user.email,
+        externalId: uid,
+        clientIp: realClientIp(req),
+        userAgent: req.get('user-agent'),
+        context: req.body
+      });
+      if (discord.enabled()) discord.signup({ uid, via: String(req.body.via || '').slice(0, 20) || '직접' });
     } else if (type === 'referral') {
-      discord.referral({ inviter: uid, invitee: String(req.body.invitee || '').slice(0, 60) });
+      if (discord.enabled()) discord.referral({ inviter: uid, invitee: String(req.body.invitee || '').slice(0, 60) });
     }
   } catch (e) {
     logger.warn('events.notify_failed', { type, err: e });

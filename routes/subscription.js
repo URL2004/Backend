@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
+const metaConversions = require('../lib/metaConversions');
+const { realClientIp } = require('../lib/clientip');
 
 const router = express.Router();
 
@@ -203,7 +205,7 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
 
 // === 1) 빌링키 발급 + 첫 결제 ===
 router.post('/subscription/issue-billing-key', async (req, res) => {
-  const { idToken, authKey, customerKey, tier, customerEmail, customerName } = req.body;
+  const { idToken, authKey, customerKey, tier, customerEmail, customerName, meta } = req.body;
 
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
@@ -277,6 +279,17 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
   discord.subscription({ uid, tier, action: '시작' });
   discord.paymentDone({ uid, amount: plan.amount, kind: `구독 시작 · ${tier}` });
   res.json({ ok: true, tier, amount: plan.amount, orderId });
+  void metaConversions.sendPurchase({
+    eventId: `purchase_${orderId}`,
+    orderId,
+    value: plan.amount,
+    itemId: `sub_${tier}`,
+    email: userSnap.exists ? userSnap.data()?.email : customerEmail,
+    externalId: uid,
+    clientIp: realClientIp(req),
+    userAgent: req.get('user-agent'),
+    context: meta
+  });
 });
 
 // === 2) 정기결제 1건 처리 (cron 전용) ===

@@ -113,6 +113,52 @@ try {
     }));
   });
 
+  await run('users: self create with bounded signup attribution allowed', async () => {
+    const daveDb = testEnv.authenticatedContext('dave', user('dave')).firestore();
+    const touch = {
+      version: 1,
+      captured_at: '2026-08-24T10:00:00.000Z',
+      source: 'meta',
+      medium: 'paid_social',
+      campaign: 'meta_sales_signup_20260824',
+      content: 'carousel_a',
+      term: 'broad_18_59',
+      napm: '',
+      gclid: '',
+      fbclid: 'test-click',
+      landing_path: '/',
+      landing_url: 'https://gpkorea.ai.kr/',
+      referrer_host: 'instagram.com'
+    };
+    await assertSucceeds(setDoc(doc(daveDb, 'users', 'dave'), {
+      email: 'dave@example.test',
+      name: 'Dave',
+      credits: 10,
+      plan: 'free',
+      refCode: 'dave',
+      createdAt: '2026-08-24T10:00:00.000Z',
+      signupAttribution: { first_touch: touch, last_touch: touch }
+    }));
+  });
+
+  await run('users: oversized signup attribution rejected', async () => {
+    const erinDb = testEnv.authenticatedContext('erin', user('erin')).firestore();
+    const touch = {
+      version: 1,
+      captured_at: '2026-08-24T10:00:00.000Z',
+      source: 'meta',
+      medium: 'paid_social',
+      campaign: 'x'.repeat(251),
+      content: '', term: '', napm: '', gclid: '', fbclid: '',
+      landing_path: '/', landing_url: 'https://gpkorea.ai.kr/', referrer_host: ''
+    };
+    await assertFails(setDoc(doc(erinDb, 'users', 'erin'), {
+      email: 'erin@example.test', name: 'Erin', credits: 10, plan: 'free', refCode: 'erin',
+      createdAt: '2026-08-24T10:00:00.000Z',
+      signupAttribution: { first_touch: touch, last_touch: touch }
+    }));
+  });
+
   await run('users: cannot self-create with attacker-chosen refCode (C-08)', async () => {
     await assertFails(setDoc(doc(testEnv.authenticatedContext('carol', user('carol')).firestore(), 'users', 'carol'), {
       email: 'carol@example.test',

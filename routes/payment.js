@@ -1,9 +1,11 @@
 // [결제] 토스페이먼츠 결제 확인 + Firebase 크레딧 지급 처리
 
 const express = require('express');
-const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
+const { admin, db, ADMIN_UIDS, verifyToken, verifyFirebaseIdToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
+const metaConversions = require('../lib/metaConversions');
+const { realClientIp } = require('../lib/clientip');
 const { getRevenue } = require('../lib/revenue');
 const detectCalibration = require('../lib/detectCalibration');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
@@ -30,7 +32,7 @@ function tossBasicToken(res) {
 }
 
 router.post('/confirm-payment', async (req, res) => {
-  const { paymentKey, orderId, amount, customerEmail, uid, idToken } = req.body;
+  const { paymentKey, orderId, amount, customerEmail, uid, idToken, meta } = req.body;
 
   // 서버에서 금액 기준으로 크레딧 직접 계산
   const CREDIT_MAP = { 2900: 110, 8700: 330, 14500: 600, 29000: 1300, 58000: 2700 };
@@ -44,9 +46,10 @@ router.post('/confirm-payment', async (req, res) => {
     return res.status(401).json({ error: '로그인이 필요합니다.' });
   }
   let verifiedUid;
+  let decodedToken;
   try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    verifiedUid = decoded.uid;
+    decodedToken = await verifyFirebaseIdToken(idToken);
+    verifiedUid = decodedToken.uid;
     setLogContext({ uid: verifiedUid });
   } catch (e) {
     return res.status(401).json({ error: '로그인 정보가 만료됐어요. 다시 로그인 후 결제를 완료해주세요.' });
@@ -130,6 +133,17 @@ router.post('/confirm-payment', async (req, res) => {
         });
         discord.paymentDone({ uid: verifiedUid, amount: parseInt(amount, 10), credits: safeCredits, kind: '크레딧 충전', name: customerEmail });
         res.json({ ok: true, message: "충전 성공", creditAmount: safeCredits });
+        void metaConversions.sendPurchase({
+          eventId: `purchase_${orderId}`,
+          orderId,
+          value: parseInt(amount, 10),
+          itemId: `credits_${safeCredits}`,
+          email: decodedToken?.email,
+          externalId: verifiedUid,
+          clientIp: realClientIp(req),
+          userAgent: req.get('user-agent'),
+          context: meta
+        });
       } catch (e) {
         if (e.message === '이미 처리된 결제입니다.') {
           logger.warn('payment.duplicate_confirm_blocked', { uid: verifiedUid, orderId, amount: parseInt(amount, 10) });

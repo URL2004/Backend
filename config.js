@@ -79,12 +79,18 @@ const dailyLimiter = rateLimit({
 // 관리자 UID 화이트리스트 (프론트엔드 ADMIN_ROLES와 동일하게 유지)
 const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2', 'upyxtXMQEgQXfqTUWPrf6QS9EqE2', '9i6YA66mpXSBcpPJqNmJQ5jnJsT2'];
 
-// Firebase ID Token 검증 헬퍼 (실패 시 null)
+// Firebase ID Token 검증 헬퍼. 인증 필수 라우트는 원본 검증 결과를 사용하고,
+// 기존 선택 인증 라우트는 verifyToken의 null 반환 계약을 유지한다.
+async function verifyFirebaseIdToken(idToken) {
+  if (!idToken || !admin) {
+    throw Object.assign(new Error('AUTH_REQUIRED'), { code: 'auth/id-token-required' });
+  }
+  return admin.auth().verifyIdToken(idToken);
+}
+
 async function verifyToken(idToken) {
-  if (!idToken || !admin) return null;
   try {
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    return decoded.uid;
+    return (await verifyFirebaseIdToken(idToken)).uid;
   } catch (e) {
     return null;
   }
@@ -98,4 +104,14 @@ async function verifyAppCheck(token) {
   catch (e) { return false; }
 }
 
-module.exports = { admin, db, corsMiddleware, limiter, dailyLimiter, ADMIN_UIDS, verifyToken, verifyAppCheck };
+module.exports = {
+  admin,
+  db,
+  corsMiddleware,
+  limiter,
+  dailyLimiter,
+  ADMIN_UIDS,
+  verifyFirebaseIdToken,
+  verifyToken,
+  verifyAppCheck
+};

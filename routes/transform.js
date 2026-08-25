@@ -2779,7 +2779,7 @@ router.post('/transform', async (req, res) => {
     ? normalizeBasicStyle(req.body && req.body.basicStyle)
     : null;
   const adminLabVersion = requestedAdminLabProfile === 'v6_engine'
-    ? 'humanizing-engine-v9-cksafe'
+    ? 'humanizing-engine-v9-registerlock'
     : requestedAdminLabProfile === 'gpt_engine'
       ? 'gpt-openai-humanize-engine-v1'
       : requestedAdminLabProfile === 'ko_quality_pattern_lab'

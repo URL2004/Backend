@@ -18,10 +18,13 @@ const {
 } = require('../lib/conversionOffers');
 const {
   approvedPaymentValidation,
+  cancellationLedgerId,
   confirmIdempotencyKey,
   creditLedgerDelta,
   paymentKeyHash,
   providerResultSummary,
+  refundIdempotencyKey,
+  refundOperationId,
   validateConfirmInput
 } = require('../lib/paymentReconciliation');
 const gptAnalyze = require('./analyze-gpt');
@@ -1002,7 +1005,72 @@ async function readPaymentKey(orderId, order) {
     const s = await db.collection('paymentSecrets').doc(orderId).get();
     if (s.exists && s.data().paymentKey) return s.data().paymentKey;
   } catch (e) { logger.warn('payment.secret_read_failed', { orderId, err: e && e.message }); }
-  return (order && order.paymentKey) || null;
+  if (order && order.paymentKey) return order.paymentKey;
+
+  // Early production orders predate paymentSecrets. Recover the key from the provider by
+  // server-owned orderId so an admin refund does not depend on a client-readable legacy field.
+  const basicToken = tossBasicToken();
+  if (!basicToken) return null;
+  const lookup = await queryTossOrder({ basicToken, orderId });
+  const paymentKey = lookup.response?.ok
+    && lookup.result?.orderId === orderId
+    && typeof lookup.result?.paymentKey === 'string'
+    ? lookup.result.paymentKey
+    : null;
+  if (!paymentKey) {
+    logger.warn('payment.secret_recovery_unavailable', {
+      orderId,
+      providerStatus: lookup.response?.status || null,
+      provider: providerResultSummary(lookup.result),
+      networkError: lookup.networkError || null
+    });
+    return null;
+  }
+  try {
+    await db.collection('paymentSecrets').doc(orderId).set({
+      paymentKey,
+      paymentKeyHash: paymentKeyHash(paymentKey),
+      recoveredFromProvider: true,
+      recoveredAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  } catch (err) {
+    logger.error('payment.secret_recovery_persist_failed', { orderId, err });
+  }
+  return paymentKey;
+}
+
+function resumableCreditRefund(order) {
+  const value = order?.refundProcessing;
+  if (!value || value.kind !== 'credit' || typeof value.operationId !== 'string') return null;
+  const operation = {
+    operationId: value.operationId,
+    priorRefundedAmount: Math.max(0, Math.floor(Number(value.priorRefundedAmount) || 0)),
+    priorRefundedCredits: Math.max(0, Math.floor(Number(value.priorRefundedCredits) || 0)),
+    refundAmount: Math.max(0, Math.floor(Number(value.refundAmount) || 0)),
+    creditsToDeduct: Math.max(0, Math.floor(Number(value.creditsToDeduct) || 0)),
+    targetRefundedAmount: Math.max(0, Math.floor(Number(value.targetRefundedAmount) || 0)),
+    targetRefundedCredits: Math.max(0, Math.floor(Number(value.targetRefundedCredits) || 0))
+  };
+  if (!operation.refundAmount
+      || operation.targetRefundedAmount !== operation.priorRefundedAmount + operation.refundAmount
+      || operation.targetRefundedCredits !== operation.priorRefundedCredits + operation.creditsToDeduct) {
+    return null;
+  }
+  return operation;
+}
+
+function creditRefundProcessing(operation, now) {
+  return {
+    kind: 'credit',
+    operationId: operation.operationId,
+    priorRefundedAmount: operation.priorRefundedAmount,
+    priorRefundedCredits: operation.priorRefundedCredits,
+    refundAmount: operation.refundAmount,
+    creditsToDeduct: operation.creditsToDeduct,
+    targetRefundedAmount: operation.targetRefundedAmount,
+    targetRefundedCredits: operation.targetRefundedCredits,
+    startedAt: now
+  };
 }
 
 async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount }) {
@@ -1024,9 +1092,15 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   const cancelReason = String(reason || order.cancelReason || '관리자 직접 환불').trim();
 
   if (kind === 'subscription') {
+    const subscriptionRefundAmount = Number(order.amount) || 0;
+    const operationId = refundOperationId(orderRef.id, 0, subscriptionRefundAmount, 0);
     const tossRes = await fetch(tossUrl, {
       method: 'POST',
-      headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Basic ${basicToken}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': refundIdempotencyKey(operationId)
+      },
       body: JSON.stringify({ cancelReason })
     });
     const tossResult = await tossRes.json();
@@ -1051,7 +1125,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
         'coupon.remaining': 0,
         'coupon.used': 0
       });
-      t.set(userRef.collection('couponHistory').doc(), {
+      t.set(userRef.collection('couponHistory').doc(cancellationLedgerId(orderRef.id, subscriptionRefundAmount)), {
         type: 'refund',
         tier: order.tier,
         amount: 0,
@@ -1059,10 +1133,10 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
         orderId: orderRef.id,
         detail: '관리자 직접 환불',
         createdAt: admin.firestore.FieldValue.serverTimestamp()
-      });
+      }, { merge: true });
     });
     return {
-      refundAmount: Number(order.amount) || 0,
+      refundAmount: subscriptionRefundAmount,
       refundedCredits: 0,
       message: '정기결제 환불이 완료되었습니다.'
     };
@@ -1078,21 +1152,38 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   // 환불 모드: 'remaining'(미사용분 비례·기본) | 'full'(잔액 전부) | 'custom'(금액 직접 입력)
   // 누적 부분환불 지원: 이미 환불된 금액/크레딧을 빼고 "남은 잔액" 기준으로 계산한다.
   const refundMode = ['remaining', 'full', 'custom'].includes(mode) ? mode : 'remaining';
-  const priorRefundedAmount = Number(order.refundedAmount) || 0;
-  const priorRefundedCredits = Number(order.refundedCredits) || 0;
-  const remainingMoney = orderAmount - priorRefundedAmount;          // 추가로 환불 가능한 결제 잔액
-  const remainingOrderCredits = Math.max(0, safeCreditsTotal - priorRefundedCredits);
-  if (remainingMoney <= 0) {
-    throw Object.assign(new Error('이미 전액 환불된 주문입니다.'), { status: 400 });
-  }
   const reqAmount = parseInt(customAmount, 10);
-  if (refundMode === 'custom' && (!Number.isFinite(reqAmount) || reqAmount <= 0 || reqAmount > remainingMoney)) {
-    throw Object.assign(new Error(`직접 입력 환불 금액은 1원 이상 환불 가능액(${remainingMoney.toLocaleString('ko-KR')}원) 이하여야 합니다.`), { status: 400 });
+  if (refundMode === 'custom' && (!Number.isFinite(reqAmount) || reqAmount <= 0)) {
+    throw Object.assign(new Error('직접 입력 환불 금액은 1원 이상이어야 합니다.'), { status: 400 });
   }
 
   let refundAmount, refundableCredits, willBeFullyRefunded;
+  let priorRefundedAmount, priorRefundedCredits, cumulativeRefundAmount, operationId;
   try {
     const result = await db.runTransaction(async (transaction) => {
+      const latestOrderSnapshot = await transaction.get(orderRef);
+      if (!latestOrderSnapshot.exists) throw new Error('ORDER_NOT_FOUND');
+      const latestOrder = latestOrderSnapshot.data() || {};
+      const resumable = resumableCreditRefund(latestOrder);
+      if (resumable) {
+        return {
+          ...resumable,
+          amount: resumable.refundAmount,
+          creditsToDeduct: resumable.creditsToDeduct,
+          fully: resumable.targetRefundedAmount >= orderAmount,
+          resumed: true
+        };
+      }
+
+      const priorAmount = Math.max(0, Math.floor(Number(latestOrder.refundedAmount ?? latestOrder.refundAmount) || 0));
+      const priorCredits = Math.max(0, Math.floor(Number(latestOrder.refundedCredits) || 0));
+      const remainingMoney = orderAmount - priorAmount;
+      const remainingOrderCredits = Math.max(0, safeCreditsTotal - priorCredits);
+      if (remainingMoney <= 0) throw new Error('ALREADY_REFUNDED');
+      if (refundMode === 'custom' && reqAmount > remainingMoney) {
+        throw Object.assign(new Error('INVALID_CUSTOM_AMOUNT'), { remainingMoney });
+      }
+
       const userSnap = await transaction.get(userRef);
       const currentCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
       const usableCredits = Math.min(currentCredits, remainingOrderCredits); // 음수 방지: 남은 주문 크레딧·현재 잔액 한도
@@ -1114,21 +1205,36 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       }
       if (!Number.isFinite(amount) || amount <= 0) throw new Error('INVALID_AMOUNT');
 
-      const newRefundedAmount = priorRefundedAmount + amount;
-      const newRefundedCredits = priorRefundedCredits + creditsToDeduct;
+      const newRefundedAmount = priorAmount + amount;
+      const newRefundedCredits = priorCredits + creditsToDeduct;
+      const nextOperationId = refundOperationId(orderRef.id, priorAmount, amount, creditsToDeduct);
+      const operation = {
+        operationId: nextOperationId,
+        priorRefundedAmount: priorAmount,
+        priorRefundedCredits: priorCredits,
+        refundAmount: amount,
+        creditsToDeduct,
+        targetRefundedAmount: newRefundedAmount,
+        targetRefundedCredits: newRefundedCredits
+      };
       transaction.update(userRef, { credits: currentCredits - creditsToDeduct });
       transaction.update(orderRef, {
         cancelReason,
         refundMode,
         refundAmount: newRefundedAmount,    // 누적(레거시 표시 호환)
         refundedAmount: newRefundedAmount,  // 누적 환불 금액
-        refundedCredits: newRefundedCredits // 누적 환불 크레딧
+        refundedCredits: newRefundedCredits, // 누적 환불 크레딧
+        refundProcessing: creditRefundProcessing(operation, admin.firestore.FieldValue.serverTimestamp())
       });
-      return { amount, creditsToDeduct, fully: newRefundedAmount >= orderAmount };
+      return { ...operation, amount, creditsToDeduct, fully: newRefundedAmount >= orderAmount, resumed: false };
     });
     refundAmount = result.amount;
     refundableCredits = result.creditsToDeduct;
     willBeFullyRefunded = result.fully;
+    priorRefundedAmount = result.priorRefundedAmount;
+    priorRefundedCredits = result.priorRefundedCredits;
+    cumulativeRefundAmount = result.targetRefundedAmount;
+    operationId = result.operationId;
   } catch (e) {
     if (e.message === 'NO_REFUNDABLE') {
       throw Object.assign(new Error('이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다. (전액/직접입력 모드를 사용하세요)'), { status: 400 });
@@ -1136,26 +1242,44 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
     if (e.message === 'INVALID_AMOUNT') {
       throw Object.assign(new Error('환불 금액 계산 오류'), { status: 400 });
     }
+    if (e.message === 'ALREADY_REFUNDED') {
+      throw Object.assign(new Error('이미 전액 환불된 주문입니다.'), { status: 400 });
+    }
+    if (e.message === 'INVALID_CUSTOM_AMOUNT') {
+      throw Object.assign(new Error(`직접 입력 환불 금액은 환불 가능액(${Number(e.remainingMoney || 0).toLocaleString('ko-KR')}원) 이하여야 합니다.`), { status: 400 });
+    }
     throw e;
   }
 
   const tossRes = await fetch(tossUrl, {
     method: 'POST',
-    headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
+    headers: {
+      'Authorization': `Basic ${basicToken}`,
+      'Content-Type': 'application/json',
+      'Idempotency-Key': refundIdempotencyKey(operationId)
+    },
     body: JSON.stringify({ cancelReason, cancelAmount: refundAmount })
   });
   const tossResult = await tossRes.json();
   if (!tossRes.ok) {
     try {
       await db.runTransaction(async (transaction) => {
+        const latestOrderSnapshot = await transaction.get(orderRef);
+        const latestProcessing = latestOrderSnapshot.exists
+          ? resumableCreditRefund(latestOrderSnapshot.data())
+          : null;
+        if (!latestProcessing || latestProcessing.operationId !== operationId) return;
         const userSnap = await transaction.get(userRef);
         const currentCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
-        transaction.update(userRef, { credits: currentCredits + refundableCredits });
+        if (userSnap.exists && refundableCredits > 0) {
+          transaction.update(userRef, { credits: currentCredits + refundableCredits });
+        }
         // 이번 회차분만 되돌린다 — 이전 누적 부분환불 기록은 보존
         transaction.update(orderRef, {
           refundAmount: priorRefundedAmount > 0 ? priorRefundedAmount : admin.firestore.FieldValue.delete(),
           refundedAmount: priorRefundedAmount > 0 ? priorRefundedAmount : admin.firestore.FieldValue.delete(),
-          refundedCredits: priorRefundedCredits > 0 ? priorRefundedCredits : admin.firestore.FieldValue.delete()
+          refundedCredits: priorRefundedCredits > 0 ? priorRefundedCredits : admin.firestore.FieldValue.delete(),
+          refundProcessing: admin.firestore.FieldValue.delete()
         });
       });
     } catch (compErr) {
@@ -1175,9 +1299,10 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
     transaction.update(orderRef, {
       status: willBeFullyRefunded ? 'refunded' : 'partially_refunded',
       refundedAt: admin.firestore.FieldValue.serverTimestamp(),
-      refundedBy: adminUid
+      refundedBy: adminUid,
+      refundProcessing: admin.firestore.FieldValue.delete()
     });
-    transaction.set(userRef.collection('creditHistory').doc(), {
+    transaction.set(userRef.collection('creditHistory').doc(cancellationLedgerId(orderRef.id, cumulativeRefundAmount)), {
       type: 'refund',
       used: 0,
       amount: -refundableCredits,
@@ -1185,7 +1310,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       orderId: orderRef.id,
       detail: willBeFullyRefunded ? '관리자 직접 환불' : '관리자 부분 환불',
       createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    }, { merge: true });
   });
 
   return {
@@ -2397,11 +2522,16 @@ router.post('/approve-refund', async (req, res) => {
       }
       const orderAmount = Math.max(0, Math.floor(Number(order.amount) || 0));
       const isFullRefund = calculation.refundAmount >= orderAmount;
+      const operationId = refundOperationId(orderId, 0, calculation.refundAmount, 0);
       const cancelBody = { cancelReason: order.cancelReason || '고객 요청 환불' };
       if (!isFullRefund) cancelBody.cancelAmount = calculation.refundAmount;
       const tossRes = await fetch(tossUrl, {
         method: 'POST',
-        headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
+        headers: {
+          'Authorization': `Basic ${basicToken}`,
+          'Content-Type': 'application/json',
+          'Idempotency-Key': refundIdempotencyKey(operationId)
+        },
         body: JSON.stringify(cancelBody)
       });
       const tossResult = await tossRes.json();
@@ -2463,24 +2593,61 @@ router.post('/approve-refund', async (req, res) => {
         !Number.isFinite(safeCreditsTotal) || safeCreditsTotal <= 0) {
       return res.status(400).json({ error: '주문 데이터가 올바르지 않아 환불 계산이 불가합니다.' });
     }
-    let refundAmount, refundableCredits;
+    let refundAmount, refundableCredits, priorRefundedAmount, priorRefundedCredits;
+    let cumulativeRefundAmount, operationId;
     try {
       const result = await db.runTransaction(async (transaction) => {
+        const latestOrderSnapshot = await transaction.get(orderRef);
+        if (!latestOrderSnapshot.exists) throw new Error('ORDER_NOT_FOUND');
+        const latestOrder = latestOrderSnapshot.data() || {};
+        const resumable = resumableCreditRefund(latestOrder);
+        if (resumable) {
+          return {
+            ...resumable,
+            refundAmount: resumable.refundAmount,
+            refundableCredits: resumable.creditsToDeduct,
+            resumed: true
+          };
+        }
+
+        const priorAmount = Math.max(0, Math.floor(Number(latestOrder.refundedAmount ?? latestOrder.refundAmount) || 0));
+        const priorCredits = Math.max(0, Math.floor(Number(latestOrder.refundedCredits) || 0));
+        const remainingMoney = Math.max(0, orderAmount - priorAmount);
+        const remainingOrderCredits = Math.max(0, safeCreditsTotal - priorCredits);
+        if (remainingMoney <= 0) throw new Error('ALREADY_REFUNDED');
         const userSnap = await transaction.get(userRef);
         const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
-        const refundable = Math.min(currentCredits, safeCreditsTotal);
+        const refundable = Math.min(currentCredits, remainingOrderCredits);
         if (refundable <= 0) throw new Error('NO_REFUNDABLE');
-        const amount = Math.floor(orderAmount * refundable / safeCreditsTotal);
+        const amount = Math.min(remainingMoney, Math.floor(orderAmount * refundable / safeCreditsTotal));
         if (!Number.isFinite(amount) || amount <= 0) throw new Error('INVALID_AMOUNT');
+        const targetRefundedAmount = priorAmount + amount;
+        const targetRefundedCredits = priorCredits + refundable;
+        const nextOperationId = refundOperationId(orderId, priorAmount, amount, refundable);
+        const operation = {
+          operationId: nextOperationId,
+          priorRefundedAmount: priorAmount,
+          priorRefundedCredits: priorCredits,
+          refundAmount: amount,
+          creditsToDeduct: refundable,
+          targetRefundedAmount,
+          targetRefundedCredits
+        };
         transaction.update(userRef, { credits: currentCredits - refundable });
         transaction.update(orderRef, {
-          refundAmount: amount,
-          refundedCredits: refundable
+          refundAmount: targetRefundedAmount,
+          refundedAmount: targetRefundedAmount,
+          refundedCredits: targetRefundedCredits,
+          refundProcessing: creditRefundProcessing(operation, admin.firestore.FieldValue.serverTimestamp())
         });
-        return { refundAmount: amount, refundableCredits: refundable };
+        return { ...operation, refundAmount: amount, refundableCredits: refundable, resumed: false };
       });
       refundAmount = result.refundAmount;
       refundableCredits = result.refundableCredits;
+      priorRefundedAmount = result.priorRefundedAmount;
+      priorRefundedCredits = result.priorRefundedCredits;
+      cumulativeRefundAmount = result.targetRefundedAmount;
+      operationId = result.operationId;
     } catch (e) {
       if (e.message === 'NO_REFUNDABLE') {
         return res.status(400).json({ error: '이미 모든 크레딧을 사용해 환불 가능 금액이 없습니다.' });
@@ -2488,12 +2655,19 @@ router.post('/approve-refund', async (req, res) => {
       if (e.message === 'INVALID_AMOUNT') {
         return res.status(400).json({ error: '환불 금액 계산 오류' });
       }
+      if (e.message === 'ALREADY_REFUNDED') {
+        return res.status(400).json({ error: '이미 전액 환불된 주문입니다.' });
+      }
       throw e;
     }
 
     const tossRes = await fetch(tossUrl, {
       method: 'POST',
-      headers: { 'Authorization': `Basic ${basicToken}`, 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Basic ${basicToken}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': refundIdempotencyKey(operationId)
+      },
       body: JSON.stringify({
         cancelReason: order.cancelReason || '고객 요청 환불',
         cancelAmount: refundAmount
@@ -2505,12 +2679,21 @@ router.post('/approve-refund', async (req, res) => {
       // 보상: 선차감한 크레딧 복구 + 임시 필드 제거
       try {
         await db.runTransaction(async (transaction) => {
+          const latestOrderSnapshot = await transaction.get(orderRef);
+          const latestProcessing = latestOrderSnapshot.exists
+            ? resumableCreditRefund(latestOrderSnapshot.data())
+            : null;
+          if (!latestProcessing || latestProcessing.operationId !== operationId) return;
           const userSnap = await transaction.get(userRef);
           const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
-          transaction.update(userRef, { credits: currentCredits + refundableCredits });
+          if (userSnap.exists && refundableCredits > 0) {
+            transaction.update(userRef, { credits: currentCredits + refundableCredits });
+          }
           transaction.update(orderRef, {
-            refundAmount: admin.firestore.FieldValue.delete(),
-            refundedCredits: admin.firestore.FieldValue.delete()
+            refundAmount: priorRefundedAmount > 0 ? priorRefundedAmount : admin.firestore.FieldValue.delete(),
+            refundedAmount: priorRefundedAmount > 0 ? priorRefundedAmount : admin.firestore.FieldValue.delete(),
+            refundedCredits: priorRefundedCredits > 0 ? priorRefundedCredits : admin.firestore.FieldValue.delete(),
+            refundProcessing: admin.firestore.FieldValue.delete()
           });
         });
       } catch (compErr) {
@@ -2527,14 +2710,17 @@ router.post('/approve-refund', async (req, res) => {
     await db.runTransaction(async (transaction) => {
       const userSnap = await transaction.get(userRef);
       const remainingCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
-      const fullyRefunded = refundAmount >= orderAmount;
+      const fullyRefunded = cumulativeRefundAmount >= orderAmount;
       transaction.update(orderRef, {
         status: fullyRefunded ? 'refunded' : 'partially_refunded',
-        refundedAmount: refundAmount,
+        refundAmount: cumulativeRefundAmount,
+        refundedAmount: cumulativeRefundAmount,
         refundedAt: admin.firestore.FieldValue.serverTimestamp(),
-        refundedBy: adminUid
+        refundedBy: adminUid,
+        refundProcessing: admin.firestore.FieldValue.delete()
       });
-      const historyRef = db.collection('users').doc(order.uid).collection('creditHistory').doc();
+      const historyRef = db.collection('users').doc(order.uid).collection('creditHistory')
+        .doc(cancellationLedgerId(orderId, cumulativeRefundAmount));
       transaction.set(historyRef, {
         type: 'refund',
         used: 0,
@@ -2542,7 +2728,7 @@ router.post('/approve-refund', async (req, res) => {
         remaining: remainingCredits,
         orderId,
         createdAt: admin.firestore.FieldValue.serverTimestamp()
-      });
+      }, { merge: true });
     });
 
     logger.info('refund.credit_approved', {
@@ -2556,7 +2742,7 @@ router.post('/approve-refund', async (req, res) => {
       ok: true,
       message: '환불이 완료되었습니다.',
       refundAmount,
-      partiallyRefunded: refundAmount < orderAmount
+      partiallyRefunded: cumulativeRefundAmount < orderAmount
     });
   } catch (err) {
     logger.error('refund.approve_failed', { orderId, kind, adminUid, err });

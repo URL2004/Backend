@@ -133,6 +133,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Provider cancellation reconciliation and any unrecovered-credit balance are server-only.
+    match /systemCreditReconciliations/{reconciliationId} {
+      allow read, write: if false;
+    }
+
     match /couponCodes/{code} {
       allow read, write: if false;
     }

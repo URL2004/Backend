@@ -91,6 +91,11 @@ try {
       amount: 2900,
       status: 'confirming'
     });
+    await setDoc(doc(db, 'systemCreditReconciliations', 'order-alice'), {
+      orderId: 'order-alice',
+      uid: 'alice',
+      unrecoveredCredits: 0
+    });
     await setDoc(doc(db, 'posts', 'post-alice'), {
       title: '앨리스 글',
       body: '본문',
@@ -293,7 +298,7 @@ try {
   });
 
   await run('payment reconciliation: owner and admin cannot access server-only documents', async () => {
-    for (const collectionName of ['paymentSecrets', 'paymentIntents']) {
+    for (const collectionName of ['paymentSecrets', 'paymentIntents', 'systemCreditReconciliations']) {
       await assertFails(getDoc(doc(aliceDb, collectionName, 'order-alice')));
       await assertFails(getDoc(doc(adminDb, collectionName, 'order-alice')));
       await assertFails(setDoc(doc(aliceDb, collectionName, 'forged-order'), { uid: 'alice' }));

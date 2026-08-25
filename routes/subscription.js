@@ -12,6 +12,11 @@ const {
   providerResultSummary,
   webhookPaymentValidation
 } = require('../lib/paymentReconciliation');
+const {
+  reconcileCreditPaymentCancellation,
+  reconcilePendingCreditCancellationInboxes,
+  safeProviderPaymentSnapshot
+} = require('../lib/paymentCancellation');
 
 const router = express.Router();
 
@@ -119,10 +124,8 @@ async function verifyTossWebhookEvent(eventType, reportedData) {
     return {
       ok: true,
       data: {
-        ...data,
-        paymentKey: queried.data.paymentKey,
-        orderId: queried.data.orderId,
-        status: queried.data.status
+        ...queried.data,
+        cancelStatus: typeof data.cancelStatus === 'string' ? data.cancelStatus : null
       }
     };
   }
@@ -435,7 +438,7 @@ router.post('/subscription/charge', async (req, res) => {
 // === 3) 매시간 cron 진입점 핵심 로직 ===
 async function runProcessDue(internalKey) {
   const now = admin.firestore.Timestamp.now();
-  const results = { processed: 0, charged: 0, failed: 0, expired: 0 };
+  const results = { processed: 0, charged: 0, failed: 0, expired: 0, cancellationInbox: null };
 
   // 1) active + nextBillingAt 도래 → 결제 시도
   const dueSnap = await db.collection('users')
@@ -482,6 +485,10 @@ async function runProcessDue(internalKey) {
     results.expired++;
   }
   if (results.expired) await batch.commit();
+
+  // Webhooks are acknowledged after durable inbox persistence. Retry any transient
+  // credit-cancellation handler failure on the existing authenticated cron cycle.
+  results.cancellationInbox = await reconcilePendingCreditCancellationInboxes({ limit: 25 });
 
   logger.info('subscription.cron_process_due_completed', results);
   return results;
@@ -615,6 +622,12 @@ router.post('/toss/webhook', async (req, res) => {
         eventType: eventType || null,
         orderId: data?.orderId || null,
         verified: true,
+        ...(/^order_\d{10,}$/.test(String(data?.orderId || ''))
+          ? {
+              providerPayment: safeProviderPaymentSnapshot(data),
+              creditCancellationCandidate: true
+            }
+          : {}),
         status: 'received',
         receivedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
@@ -639,9 +652,26 @@ router.post('/toss/webhook', async (req, res) => {
   });
 
   const processEvent = async () => {
-    if (eventType === 'PAYMENT_STATUS_CHANGED') {
+    if (eventType === 'PAYMENT_STATUS_CHANGED' || eventType === 'CANCEL_STATUS_CHANGED') {
       const { orderId, status, paymentKey } = data || {};
       if (!orderId) return;
+      if (/^order_\d{10,}$/.test(orderId)) {
+        await reconcileCreditPaymentCancellation(data, { source: `toss_${String(eventType).toLowerCase()}` });
+        return;
+      }
+      if (eventType !== 'PAYMENT_STATUS_CHANGED') {
+        if (!paymentKey) return;
+        await db.collection('webhookLogs').add({
+          eventType,
+          paymentKeyHash: paymentKeyHash(paymentKey),
+          paymentKeyPresent: true,
+          orderId,
+          providerStatus: status || null,
+          cancelStatus: data?.cancelStatus || null,
+          receivedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return;
+      }
       const orderRef = db.collection('subscriptionOrders').doc(orderId);
       const snap = await orderRef.get();
       if (!snap.exists) return;
@@ -671,24 +701,16 @@ router.post('/toss/webhook', async (req, res) => {
         'subscription.billingKeyDeleted': true
       });
       await db.collection('billingSecrets').doc(targetRef.id).delete().catch(() => {});
-    } else if (eventType === 'CANCEL_STATUS_CHANGED') {
-      const { paymentKey, cancelStatus, orderId, status } = data || {};
-      if (!paymentKey) return;
-      await db.collection('webhookLogs').add({
-        eventType,
-        paymentKeyHash: paymentKeyHash(paymentKey),
-        paymentKeyPresent: true,
-        orderId: orderId || null,
-        providerStatus: status || null,
-        cancelStatus: cancelStatus || null,
-        receivedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
     }
   };
 
   try {
     await processEvent();
-    await inboxRef.update({ status: 'processed', processedAt: admin.firestore.FieldValue.serverTimestamp() });
+    await inboxRef.update({
+      status: 'processed',
+      creditCancellationCandidate: false,
+      processedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
   } catch (e) {
     logger.error('toss.webhook_handler_failed', { eventType, err: e });
     await inboxRef.update({ status: 'error', error: String(e?.message || e) }).catch(() => {});

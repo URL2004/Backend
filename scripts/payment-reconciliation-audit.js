@@ -5,7 +5,11 @@
 // Output intentionally contains only aggregate counts and hashed identifiers.
 
 const crypto = require('crypto');
-const { admin, db } = require('../config');
+const { admin, db, ADMIN_UIDS = [] } = require('../config');
+const {
+  providerCanceledAmount,
+  refundedCreditsForCanceledAmount
+} = require('../lib/paymentReconciliation');
 
 const TOSS_ORIGIN = 'https://api.tosspayments.com';
 const PAGE_LIMIT = 5000;
@@ -210,36 +214,40 @@ function matchCreditLedgers(orders, charges) {
   const matches = new Map();
   const keyFor = row => `${row.uid}:${row.id}`;
   const sortedOrders = [...orders].sort((a, b) => orderTime(a) - orderTime(b));
+
+  // Explicit orderId links are authoritative.
   for (const order of sortedOrders) {
-    const expected = numeric(order.safeCredits || order.credits);
     const exact = (exactByOrder.get(order.id) || []).find(row => !used.has(keyFor(row)));
-    let matched = exact || null;
-    let reason = exact ? 'orderId' : '';
-    if (!matched) {
-      const at = orderTime(order);
-      const nearby = (byUid.get(order.uid) || [])
-        .filter(row => !used.has(keyFor(row)))
-        .filter(row => numeric(row.amount) === expected)
-        .map(row => ({ row, distanceMs: Math.abs(timestampMs(row.createdAt) - at) }))
-        .filter(candidate => candidate.distanceMs <= 5 * 60 * 1000)
-        .sort((a, b) => a.distanceMs - b.distanceMs);
-      matched = nearby[0]?.row || null;
-      if (matched) reason = 'uid_amount_time';
-    }
-    if (!matched) {
-      const at = orderTime(order);
-      const nearbyAnyAmount = (byUid.get(order.uid) || [])
-        .filter(row => !used.has(keyFor(row)))
-        .map(row => ({ row, distanceMs: Math.abs(timestampMs(row.createdAt) - at) }))
-        .filter(candidate => candidate.distanceMs <= 5 * 60 * 1000)
-        .sort((a, b) => a.distanceMs - b.distanceMs);
-      matched = nearbyAnyAmount[0]?.row || null;
-      if (matched) reason = 'uid_time_amount_mismatch';
-    }
-    if (!matched) continue;
-    used.add(keyFor(matched));
-    matches.set(order.id, { row: matched, reason });
+    if (!exact) continue;
+    used.add(keyFor(exact));
+    matches.set(order.id, { row: exact, reason: 'orderId' });
   }
+
+  // Legacy rows have no orderId. Assign the globally closest eligible pair instead of
+  // greedily consuming a row that is an even closer match for the following order.
+  function assignNearby({ requireAmount, reason }) {
+    const candidates = [];
+    for (const order of sortedOrders) {
+      if (matches.has(order.id)) continue;
+      const expected = numeric(order.safeCredits || order.credits);
+      const at = orderTime(order);
+      for (const row of byUid.get(order.uid) || []) {
+        if (used.has(keyFor(row))) continue;
+        if (requireAmount && numeric(row.amount) !== expected) continue;
+        const distanceMs = Math.abs(timestampMs(row.createdAt) - at);
+        if (distanceMs <= 5 * 60 * 1000) candidates.push({ order, row, distanceMs });
+      }
+    }
+    candidates.sort((a, b) => a.distanceMs - b.distanceMs || orderTime(a.order) - orderTime(b.order));
+    for (const candidate of candidates) {
+      if (matches.has(candidate.order.id) || used.has(keyFor(candidate.row))) continue;
+      used.add(keyFor(candidate.row));
+      matches.set(candidate.order.id, { row: candidate.row, reason });
+    }
+  }
+  assignNearby({ requireAmount: true, reason: 'uid_amount_time' });
+  assignNearby({ requireAmount: false, reason: 'uid_time_amount_mismatch' });
+
   return {
     matches,
     unusedCharges: charges.filter(row => !used.has(keyFor(row))),
@@ -279,6 +287,57 @@ async function definitiveMissingPayments(candidates) {
       approvedAt: row.payment.approvedAt || null,
       transactionCount: row.transactions.length
     }));
+}
+
+async function definitiveCancellationAudit(candidates, firestoreById, userById, refundLedgersByOrder) {
+  return mapLimit(candidates, 5, async ([orderId]) => {
+    try {
+      const payment = await tossJson(`/v1/payments/orders/${encodeURIComponent(orderId)}`);
+      const order = firestoreById.get(orderId) || null;
+      const canceledAmount = providerCanceledAmount(payment);
+      const purchasedCredits = numeric(order?.safeCredits || order?.credits);
+      const expectedCredits = order?.kind === 'credit'
+        ? refundedCreditsForCanceledAmount({
+          orderAmount: order?.amount,
+          purchasedCredits,
+          canceledAmount
+        })
+        : 0;
+      const ledgerCredits = (refundLedgersByOrder.get(orderId) || [])
+        .filter(row => row.type === 'refund')
+        .reduce((sum, row) => sum + Math.abs(Math.min(0, numeric(row.amount))), 0);
+      const recordedCredits = Math.max(numeric(order?.refundedCredits), ledgerCredits);
+      const uid = String(order?.uid || '');
+      const currentCredits = numeric(userById.get(uid)?.credits);
+      const creditGap = Math.max(0, expectedCredits - recordedCredits);
+      return {
+        fingerprint: fingerprint(orderId),
+        uidFingerprint: uid ? fingerprint(uid) : null,
+        adminLike: uid ? ADMIN_UIDS.includes(uid) : false,
+        kind: order?.kind || orderKind(orderId),
+        providerStatus: String(payment.status || 'unknown'),
+        canceledAmount,
+        firestoreExists: Boolean(order),
+        firestoreStatus: String(order?.status || 'unknown'),
+        orderAmount: numeric(order?.amount),
+        storedRefundedAmount: Math.max(numeric(order?.refundedAmount), numeric(order?.refundAmount)),
+        purchasedCredits,
+        expectedCredits,
+        recordedCredits,
+        creditGap,
+        userExists: uid ? userById.has(uid) : false,
+        currentCredits,
+        recoverableCreditsNow: Math.min(currentCredits, creditGap),
+        unrecoverableCreditsNow: Math.max(0, creditGap - currentCredits),
+        approvedAt: payment.approvedAt || null
+      };
+    } catch (error) {
+      return {
+        fingerprint: fingerprint(orderId),
+        error: String(error?.message || error)
+      };
+    }
+  });
 }
 
 function orderTime(row) {
@@ -338,12 +397,13 @@ async function run() {
   const startDate = requiredDate(args.start, '2026-01-01');
   const endDate = requiredDate(args.end, new Date().toISOString().slice(0, 10), true);
 
-  const [tossResult, orderSnapshot, subscriptionSnapshot, secretSnapshot, intentSnapshot, userSnapshot] = await Promise.all([
+  const [tossResult, orderSnapshot, subscriptionSnapshot, secretSnapshot, intentSnapshot, inboxSnapshot, userSnapshot] = await Promise.all([
     fetchTransactions(startDate, endDate),
     db.collection('orders').get(),
     db.collection('subscriptionOrders').get(),
     db.collection('paymentSecrets').get(),
     db.collection('paymentIntents').get(),
+    db.collection('webhookInbox').get(),
     db.collection('users').get()
   ]);
   const ledgers = await scanUserLedgers(userSnapshot.docs);
@@ -355,8 +415,10 @@ async function run() {
   const userById = new Map(userSnapshot.docs.map(doc => [doc.id, doc.data()]));
   const secretIds = new Set(secretSnapshot.docs.map(doc => doc.id));
   const charges = ledgers.creditHistory.filter(row => row.type === 'charge');
+  const refundLedgers = ledgers.creditHistory.filter(row => row.type === 'refund');
   const couponGrants = ledgers.couponHistory.filter(row => row.type === 'grant');
   const chargesByOrder = indexByOrder(charges);
+  const refundLedgersByOrder = indexByOrder(refundLedgers);
   const grantsByOrder = indexByOrder(couponGrants);
   const creditLedgerMatches = matchCreditLedgers(orders, charges);
   const ledgerByUid = new Map();
@@ -370,12 +432,24 @@ async function run() {
   const tossByOrder = transactionGroups(transactions);
   const ownedTossGroups = [...tossByOrder.entries()].filter(([orderId]) => orderKind(orderId) !== 'other');
   const missingCandidates = ownedTossGroups.filter(([orderId]) => !firestoreById.has(orderId));
-  const approvedMissingFirestore = await definitiveMissingPayments(missingCandidates);
-  const paidOrders = firestoreOrders.filter(row => ['paid', 'partially_refunded'].includes(row.status));
+  const cancellationCandidates = ownedTossGroups.filter(([, rows]) =>
+    rows.some(row => ['CANCELED', 'PARTIAL_CANCELED'].includes(String(row.status || '')))
+  );
+  const [approvedMissingFirestore, cancellationAudit] = await Promise.all([
+    definitiveMissingPayments(missingCandidates),
+    definitiveCancellationAudit(cancellationCandidates, firestoreById, userById, refundLedgersByOrder)
+  ]);
+  const providerBackedOrders = firestoreOrders.filter(row => tossByOrder.has(row.id));
+  const providerBackedCreditOrders = orders.filter(row => tossByOrder.has(row.id));
+  const providerBackedSubscriptions = subscriptions.filter(row => tossByOrder.has(row.id));
+  const firestorePaymentRecords = [
+    ...orders,
+    ...subscriptions.filter(row => !['failed', 'pending'].includes(String(row.status || '')))
+  ];
   const startMs = Date.parse(`${startDate}+09:00`);
   const endMs = Date.parse(`${endDate}+09:00`);
 
-  const paidMissingToss = paidOrders
+  const paidMissingToss = firestorePaymentRecords
     .filter(row => orderTime(row) >= startMs && orderTime(row) <= endMs && !tossByOrder.has(row.id))
     .map(row => ({
       fingerprint: fingerprint(row.id),
@@ -385,8 +459,7 @@ async function run() {
       createdAt: iso(row.createdAt || row.approvedAt || row.requestedAt)
     }));
 
-  const amountMismatches = paidOrders
-    .filter(row => tossByOrder.has(row.id))
+  const amountMismatches = providerBackedOrders
     .filter(row => Math.max(0, ...tossByOrder.get(row.id).map(tx => numeric(tx.amount))) !== numeric(row.amount))
     .map(row => ({
       fingerprint: fingerprint(row.id),
@@ -395,17 +468,18 @@ async function run() {
       tossAmounts: [...new Set(tossByOrder.get(row.id).map(tx => numeric(tx.amount)))].sort((a, b) => a - b)
     }));
 
-  const missingPaymentSecret = paidOrders
+  const missingPaymentSecret = providerBackedOrders
     .filter(row => !secretIds.has(row.id))
     .map(row => ({
       fingerprint: fingerprint(row.id),
       kind: row.kind,
       legacyFallbackPresent: Boolean(row.paymentKey),
+      providerOrderLookupRecoverable: tossByOrder.has(row.id),
       createdAt: iso(row.createdAt || row.approvedAt || row.requestedAt)
     }));
 
-  const creditLedgerMissing = orders
-    .filter(row => row.status === 'paid' && !creditLedgerMatches.matches.has(row.id))
+  const creditLedgerMissing = providerBackedCreditOrders
+    .filter(row => !creditLedgerMatches.matches.has(row.id))
     .map(row => ({
       fingerprint: fingerprint(row.id),
       uidFingerprint: fingerprint(row.uid),
@@ -415,8 +489,8 @@ async function run() {
       createdAt: iso(row.createdAt)
     }));
 
-  const creditLedgerMismatch = orders
-    .filter(row => row.status === 'paid' && creditLedgerMatches.matches.has(row.id))
+  const creditLedgerMismatch = providerBackedCreditOrders
+    .filter(row => creditLedgerMatches.matches.has(row.id))
     .filter(row => numeric(creditLedgerMatches.matches.get(row.id).row.amount) !== numeric(row.safeCredits || row.credits))
     .map(row => ({
       fingerprint: fingerprint(row.id),
@@ -425,8 +499,8 @@ async function run() {
       matchReason: creditLedgerMatches.matches.get(row.id).reason
     }));
 
-  const subscriptionLedgerMissing = subscriptions
-    .filter(row => row.status === 'paid' && !grantsByOrder.has(row.id))
+  const subscriptionLedgerMissing = providerBackedSubscriptions
+    .filter(row => !grantsByOrder.has(row.id))
     .map(row => ({
       fingerprint: fingerprint(row.id),
       uidFingerprint: fingerprint(row.uid),
@@ -436,13 +510,13 @@ async function run() {
     }));
 
   const uidMismatches = [];
-  for (const row of orders.filter(row => row.status === 'paid')) {
+  for (const row of providerBackedCreditOrders) {
     const matched = creditLedgerMatches.matches.get(row.id)?.row;
     if (matched && matched.uid !== row.uid) {
       uidMismatches.push({ fingerprint: fingerprint(row.id), kind: 'credit' });
     }
   }
-  for (const row of subscriptions.filter(row => row.status === 'paid')) {
+  for (const row of providerBackedSubscriptions) {
     if ((grantsByOrder.get(row.id) || []).some(history => history.uid !== row.uid)) {
       uidMismatches.push({ fingerprint: fingerprint(row.id), kind: 'subscription' });
     }
@@ -465,6 +539,37 @@ async function run() {
   const incidentOwnedTransactions = incidentTransactions.filter(row => orderKind(row.orderId) !== 'other');
   const intents = intentSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() || {}) }));
   const unresolvedIntents = intents.filter(row => row.status !== 'applied' && row.status !== 'confirm_failed');
+  const inboxRows = inboxSnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() || {}) }));
+  const unresolvedInboxRows = inboxRows.filter(row => row.status !== 'processed');
+  const completedCancellationAudit = cancellationAudit.filter(row => !row.error);
+  const providerCancellationWithoutFirestore = completedCancellationAudit.filter(row => !row.firestoreExists);
+  const providerCancellationStatusMismatch = completedCancellationAudit.filter(row => {
+    if (!row.firestoreExists) return false;
+    if (row.canceledAmount >= row.orderAmount) {
+      return row.firestoreStatus !== 'refunded';
+    }
+    return !['partially_refunded', 'refunded'].includes(row.firestoreStatus);
+  });
+  const providerCancellationAmountMismatch = completedCancellationAudit
+    .filter(row => row.firestoreExists && row.storedRefundedAmount > 0 && row.storedRefundedAmount !== row.canceledAmount);
+  const unreconciledProviderCancellationCredits = completedCancellationAudit
+    .filter(row => row.kind === 'credit' && row.userExists && row.creditGap > 0);
+  const canceledOrderFingerprints = new Set(completedCancellationAudit.map(row => row.fingerprint));
+  const strandedRefundPreDeductions = orders
+    .filter(order => {
+      const recordedLedgerCredits = (refundLedgersByOrder.get(order.id) || [])
+        .reduce((sum, row) => sum + Math.abs(Math.min(0, numeric(row.amount))), 0);
+      return numeric(order.refundedCredits) > recordedLedgerCredits
+        && !canceledOrderFingerprints.has(fingerprint(order.id));
+    })
+    .map(order => ({
+      fingerprint: fingerprint(order.id),
+      uidFingerprint: fingerprint(order.uid),
+      userExists: userById.has(order.uid),
+      status: String(order.status || 'unknown'),
+      refundedCredits: numeric(order.refundedCredits),
+      createdAt: iso(order.createdAt)
+    }));
 
   return {
     readOnly: true,
@@ -492,10 +597,14 @@ async function run() {
     firestore: {
       users: userSnapshot.size,
       orders: orders.length,
+      providerBackedCreditOrders: providerBackedCreditOrders.length,
+      statuslessProviderBackedCreditOrders: providerBackedCreditOrders.filter(row => !row.status).length,
       subscriptionOrders: subscriptions.length,
       paymentSecrets: secretSnapshot.size,
       paymentIntents: intents.length,
       paymentIntentStatuses: groupedCounts(intents, 'status'),
+      webhookInbox: inboxRows.length,
+      webhookInboxStatuses: groupedCounts(inboxRows, 'status'),
       ledgerScanSource: ledgers.source,
       creditHistoryRows: ledgers.creditHistory.length,
       chargeLedgerRows: charges.length,
@@ -532,7 +641,20 @@ async function run() {
         amount: numeric(row.amount),
         updatedAt: iso(row.updatedAt || row.createdAt)
       }))),
+      unresolvedWebhookInbox: summarizedList(unresolvedInboxRows.map(row => ({
+        fingerprint: fingerprint(row.id),
+        eventType: String(row.eventType || 'unknown'),
+        orderFingerprint: row.orderId ? fingerprint(row.orderId) : null,
+        status: String(row.status || 'unknown'),
+        receivedAt: iso(row.receivedAt),
+        retryAt: iso(row.retryAt)
+      }))),
       orphanChargeLedgers: summarizedList(orphanChargeLedgers),
+      providerCancellationWithoutFirestore: summarizedList(providerCancellationWithoutFirestore),
+      providerCancellationStatusMismatch: summarizedList(providerCancellationStatusMismatch),
+      providerCancellationAmountMismatch: summarizedList(providerCancellationAmountMismatch),
+      unreconciledProviderCancellationCredits: summarizedList(unreconciledProviderCancellationCredits),
+      strandedRefundPreDeductions: summarizedList(strandedRefundPreDeductions),
       creditContinuityViolations: summarizedList(continuity.violations),
       currentBalanceVsLatestLedger: summarizedList(continuity.currentBalanceMismatches)
     }
@@ -556,6 +678,7 @@ module.exports = {
   canonicalCreditDelta,
   fingerprint,
   groupedCounts,
+  matchCreditLedgers,
   orderKind,
   parseArgs,
   requiredDate,

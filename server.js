@@ -125,6 +125,7 @@ app.use('/', require('./routes/subscription'));
 app.use('/', require('./routes/coupon'));
 app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
 app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
+app.use('/', require('./routes/writinglab'));   // 관리자 실험: 자소서 생성 랩(생성→휴머나이징 결합 프로토타입, 관리자 전용·무과금)
 
 app.use(errorHandler);
 

@@ -14,6 +14,7 @@ const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
 const { POLICY_VERSION: HUMANIZATION_DEPTH_POLICY } = require('./engine-gpt-prod/humanizationDepth');
 const { isV248FeatureEnabled } = require('./lib/humanizeV248Flags');
 const { VERSION: HUMANIZE_ENGINE_VERSION } = require('./engine-gpt-prod');
+const { registrySnapshot: writingPolicyRegistrySnapshot } = require('./engine-writing-v1/policy/registry');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -62,6 +63,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
       fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
       effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
+      ...writingLabHealthMeta(),
       ...niklHealthMeta(),
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
@@ -81,6 +83,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
       fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
       effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
+      ...writingLabHealthMeta(),
       ...niklHealthMeta(),
       firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
       openai: !!process.env.OPENAI_API_KEY,
@@ -90,6 +93,22 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
     });
   }
 });
+
+function writingLabHealthMeta() {
+  const registry = writingPolicyRegistrySnapshot();
+  return {
+    writingLabV2: {
+      enabled: process.env.WRITING_LAB_V2_ENABLED !== '0',
+      rolloutPercent: Math.max(0, Math.min(100, Number(process.env.WRITING_LAB_V2_ROLLOUT_PERCENT ?? 100) || 0)),
+      disabledGenres: String(process.env.WRITING_LAB_V2_DISABLED_GENRES || '').split(',').map(value => value.trim()).filter(Boolean),
+      engineVersion: 'gp-writing-engine-v1',
+      policyRegistryVersion: registry.version,
+      policyLaunchEligible: registry.launchEligible,
+      pendingPolicyDomains: registry.pendingDomains,
+      invalidPolicyPackIds: registry.invalidPackIds
+    }
+  };
+}
 
 function niklHealthMeta() {
   const aliases = {

@@ -7,6 +7,7 @@ const { POLICY_VERSION: EXPECTED_HUMANIZATION_POLICY } = require('../engine-gpt-
 const { VERSION: EXPECTED_ENGINE_VERSION } = require('../engine-gpt-prod');
 const { scanProductionImports } = require('./check-production-imports');
 const { evaluateRepository } = require('./git-harness');
+const { registrySnapshot: writingPolicyRegistrySnapshot } = require('../engine-writing-v1/policy/registry');
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -53,6 +54,16 @@ async function main() {
   add('local_copykiller_api_excluded', localApiFiles.length === 0, localApiFiles.join(', '));
   const importGraph = scanProductionImports({ root });
   add('production_import_graph', importGraph.pass, JSON.stringify(importGraph.violations));
+  const writingPolicyRegistry = writingPolicyRegistrySnapshot();
+  add('writing_policy_schema', writingPolicyRegistry.invalidPackIds.length === 0, writingPolicyRegistry.invalidPackIds.join(', ') || writingPolicyRegistry.version);
+  const requireAllWritingPolicies = String(process.env.WRITING_LAB_REQUIRE_ALL_POLICY_APPROVAL || '').trim() === '1';
+  add(
+    'writing_policy_owner_gate',
+    !requireAllWritingPolicies || writingPolicyRegistry.launchEligible,
+    writingPolicyRegistry.launchEligible
+      ? 'all approved'
+      : `${requireAllWritingPolicies ? 'blocked' : 'fail-closed'} · pending=${writingPolicyRegistry.pendingDomains.join(',')}`
+  );
 
   if (args['skip-env'] !== '1') {
     add(
@@ -64,6 +75,7 @@ async function main() {
     add('active_provider', gptOnly(packageJson), 'gpt');
     add('openai_key', Boolean(process.env.OPENAI_API_KEY), process.env.OPENAI_API_KEY ? 'configured' : 'unset');
     add('safety_salt', String(process.env.OPENAI_SAFETY_SALT || '').length >= 32, process.env.OPENAI_SAFETY_SALT ? `${String(process.env.OPENAI_SAFETY_SALT).length} chars` : 'unset');
+    add('writing_context_secret', String(process.env.WRITING_LAB_CONTEXT_SECRET || '').length >= 32, process.env.WRITING_LAB_CONTEXT_SECRET ? `${String(process.env.WRITING_LAB_CONTEXT_SECRET).length} chars` : 'unset');
   }
 
   const healthUrl = String(args['health-url'] || '').trim();
@@ -77,6 +89,8 @@ async function main() {
         add('live_v2', health.humanizeEngineV2 === true && health.activeProvider === 'gpt' && health.openai === true, `v2=${health.humanizeEngineV2}, provider=${health.activeProvider}, openai=${health.openai}`);
         add('live_humanization_depth', health.humanizationDepthGate === true, `depth=${health.humanizationDepthGate}`);
         add('live_humanization_policy', health.humanizationDepthPolicy === EXPECTED_HUMANIZATION_POLICY, `expected=${EXPECTED_HUMANIZATION_POLICY}, policy=${health.humanizationDepthPolicy}`);
+        add('live_writing_lab_v2', health.writingLabV2?.engineVersion === 'gp-writing-engine-v1' && health.writingLabV2?.enabled === true, JSON.stringify(health.writingLabV2 || {}));
+        add('live_writing_policy_schema', Array.isArray(health.writingLabV2?.invalidPolicyPackIds) && health.writingLabV2.invalidPolicyPackIds.length === 0, JSON.stringify(health.writingLabV2?.invalidPolicyPackIds || null));
       }
     } catch (error) {
       add('healthz', false, String(error?.message || error).slice(0, 180));

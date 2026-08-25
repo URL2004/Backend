@@ -1,0 +1,30 @@
+{
+  "id": "advertising.ko.v1",
+  "domain": "advertising",
+  "approved": false,
+  "jurisdiction": "KR",
+  "reviewedAt": "2026-08-25",
+  "sourceCheckedAt": "2026-08-25",
+  "approval": {
+    "status": "PENDING_OWNER_REVIEW",
+    "owner": "UNASSIGNED",
+    "approvedAt": null
+  },
+  "sources": [
+    {
+      "title": "추천·보증 등에 관한 표시·광고 심사지침",
+      "publisher": "공정거래위원회",
+      "url": "https://www.ftc.go.kr/www/selectCmitJrsdLawordList.do?key=302&searchLawordClCd=04"
+    },
+    {
+      "title": "추천·보증 등에 관한 표시·광고 심사지침 개정 안내",
+      "publisher": "공정거래위원회",
+      "url": "https://www.ftc.go.kr/www/selectBbsNttView.do?bordCd=3&key=12&nttSn=43669&pageIndex=25&pageUnit=10&searchCnd=all&searchCtgry=01%2C02"
+    }
+  ],
+  "institutionTerms": ["광고", "협찬", "제공받", "원고료", "제휴"],
+  "treatmentTerms": ["할인", "이벤트", "구매", "신청", "무료 체험"],
+  "claimTerms": ["최고", "1위", "유일", "완벽", "100%", "무조건", "보장"],
+  "blockedClaimTerms": [],
+  "notice": "대가를 받은 글은 제공·협찬 사실을 명확히 표시하고, 최상급·보장 표현에는 확인 가능한 근거가 필요해요."
+}

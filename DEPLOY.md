@@ -248,7 +248,7 @@ $r.Content -match 'lavAutoCoach'
 | `OPENAI_SAFETY_SALT` | UID를 `safety_identifier`용 HMAC-SHA256으로 변환하는 비밀값. 운영 필수 |
 | `OPENAI_MODEL_FAST` | 기본 변환 모델. 기본 `gpt-5.6-luna` |
 | `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 기본 `gpt-5.6-terra` |
-| `OPENAI_MODEL_JUDGE` / `OPENAI_MODEL_REPAIR` / `OPENAI_MODEL_DETECT` / `OPENAI_MODEL_EVIDENCE` | 계층별 GPT 모델 fallback |
+| `OPENAI_MODEL_JUDGE` / `OPENAI_MODEL_JUDGE_ESCALATION` / `OPENAI_MODEL_REPAIR` / `OPENAI_MODEL_DETECT` / `OPENAI_MODEL_EVIDENCE` | 계층별 GPT 모델 fallback |
 | `OPENAI_REASONING_HUMANIZE` / `OPENAI_REASONING_FACT_DENSE` / `OPENAI_REASONING_ESCALATION` | 변환·고위험·승격 reasoning fallback. 기본 `medium` / `high` / `high` |
 | `OPENAI_REASONING_JUDGE` / `OPENAI_REASONING_REPAIR` / `OPENAI_REASONING_DETECT` / `OPENAI_REASONING_EVIDENCE` | 판정·수리·감지·근거검색 reasoning fallback. 판정/수리 기본 `medium` |
 | `OPENAI_PROMPT_CACHE_ENABLED` / `OPENAI_PROMPT_CACHE_KEY_PREFIX` | GPT prompt caching 설정. 기본 prefix `gp-v9-cksafe-ko-p20260704` |
@@ -261,6 +261,12 @@ $r.Content -match 'lavAutoCoach'
 | `DETECT_HISTORY_CALIBRATION_*` | 같은 사용자의 최근 휴머나이징 결과를 다시 감지할 때만 점수를 보정한다. 장문 유사 일치는 기본 5-gram `0.88` 이상, 길이 차이 `3%` 이내, 최소 `500자`이며 원점수와 매칭 메타를 관리자 기록에 남긴다. |
 | `GPT_ESCALATION_*` | Luna-first → Terra 승격 기준 fallback. 기본 긴 글 `9000`, 보호표현 `35`, 패치 대상 `24`. 관리자 페이지에서 조정 가능 |
 | `FIREBASE_SERVICE_ACCOUNT` | 서비스 계정 JSON 전체 |
+| `WRITING_LAB_CONTEXT_SECRET` | 글쓰기 랩 평가·최종 검수 토큰 HMAC 키. 운영 필수, 무작위 32바이트 이상 |
+| `WRITING_LAB_V2_ENABLED` / `WRITING_LAB_V2_ROLLOUT_PERCENT` | 전체 비상 롤백 `0/1`, UID 고정 단계 노출 `0~100` |
+| `WRITING_LAB_V2_DISABLED_GENRES` | 장르 단위 롤백 목록. `resume,review_blog,marketing,general` 중 쉼표 구분 |
+| `WRITING_LAB_DAILY_CAP` / `WRITING_LAB_CHECK_HOURLY_CAP` / `WRITING_LAB_EXTRACT_HOURLY_CAP` | 공개 성공 생성·최종 검사·메모 후보 추출 한도 |
+| `WRITING_LAB_REQUIRE_ALL_POLICY_APPROVAL` | `1`이면 의료·법률·금융·광고 정책 팩의 실제 담당자 승인 전 `predeploy:v2` 실패. 비규제 베타에서는 `0`으로 두고 규제 입력을 `MANUAL_REVIEW`로 차단 |
+| `WRITING_LAB_V1_PUBLIC` | 기본 `0`. 알려진 품질 문제가 있는 v1을 일반 사용자에게 다시 열지 말 것 |
 | `TOSS_SECRET_KEY` | `live_` 키 |
 | `CRON_SECRET` | cron 인증 |
 | `TOSS_WEBHOOK_SECRET` | Toss webhook 인증 |
@@ -288,6 +294,10 @@ npm run cache:gpt -- -Limit 1000 -Json
 - Firestore 저장 실패나 undefined 필드 오류가 보이면 `transform.persist_failed` 로그를 우선 확인한다.
 - 반복 차단/환불 문의가 늘면 `blocked`, `length_collapse`, `added_claim`, `lostFacts`, `evidence_pairing` 로그를 본다.
 - 배포 후에는 항상 Render `live` 상태와 `/healthz`를 같이 확인한다.
+- `writingLabV2Jobs.expiresAt` 필드는 2시간 복구용이므로 Firestore TTL 정책을 설정한다. 완료·실패 원문을 장기 보관하지 않는다.
+- 글쓰기 랩은 관리자 → 5% → 25% → 50% → 100% 순으로 `WRITING_LAB_V2_ROLLOUT_PERCENT`를 올리고, 장르별 장애는 `WRITING_LAB_V2_DISABLED_GENRES`로 분리 롤백한다.
+- 정책 팩 스키마는 `npm run writing-policy:validate`로 항상 검사한다. 규제 분야 자동 출시 전에는 법무·정책 담당자가 공식 출처와 문구를 확인한 뒤 `npm run writing-policy:approve -- <medical|legal|finance|advertising> --owner=<담당자> --approved-at=YYYY-MM-DD`로 승인 파일을 만들고 코드 리뷰를 거친다. 네 팩 모두 승인된 배포는 `WRITING_LAB_REQUIRE_ALL_POLICY_APPROVAL=1`로 predeploy를 강제한다.
+- 휴머나이징 결과는 `/writing-lab/v2/finalize`에서 서명된 사실 원장으로 재검사한다. 제한 수리도 통과하지 못하면 서명 토큰에 포함된 검증 초안으로 서버가 복구하며, 클라이언트는 `delivery.source`가 `humanized`, `humanized_repaired`, `verified_generation_fallback` 중 무엇인지 사용자에게 표시한다.
 
 ### v2.4.8 활성화 순서
 

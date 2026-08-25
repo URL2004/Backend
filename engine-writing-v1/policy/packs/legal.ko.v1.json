@@ -1,0 +1,25 @@
+{
+  "id": "legal.ko.v1",
+  "domain": "legal",
+  "approved": false,
+  "jurisdiction": "KR",
+  "reviewedAt": "2026-08-25",
+  "sourceCheckedAt": "2026-08-25",
+  "approval": {
+    "status": "PENDING_OWNER_REVIEW",
+    "owner": "UNASSIGNED",
+    "approvedAt": null
+  },
+  "sources": [
+    {
+      "title": "변호사법 제23조(광고)",
+      "publisher": "국가법령정보센터",
+      "url": "https://www.law.go.kr/%EB%B2%95%EB%A0%B9/%EB%B3%80%ED%98%B8%EC%82%AC%EB%B2%95/%EC%A0%9C23%EC%A1%B0"
+    }
+  ],
+  "institutionTerms": ["법률사무소", "법무법인", "변호사", "법원", "검찰", "경찰"],
+  "treatmentTerms": ["소송", "고소", "고발", "계약서", "합의서", "내용증명", "법률 상담", "법적 대응"],
+  "claimTerms": ["위법", "합법", "승소", "처벌", "책임", "손해배상", "무죄"],
+  "blockedClaimTerms": ["승소 보장", "무조건 이긴", "처벌을 피할 수", "법적 책임이 없다"],
+  "notice": "법률 관련 글은 사실 정리와 일반 안내만 제공하며 구체 사건의 법적 판단이나 결과를 보장하지 않아요."
+}

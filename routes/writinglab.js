@@ -19,6 +19,14 @@ const { logger, setLogContext } = require('../lib/logger');
 const usageBilling = require('../lib/usageBilling');
 const compat = require('../engine-gpt-prod/compat');
 const experienceAudit = require('../engine-gpt-prod/experienceAudit');
+const writingEngine = require('../engine-writing-v1');
+const writingUsage = require('../engine-writing-v1/usage');
+const { signContext, verifyContext } = require('../engine-writing-v1/contextToken');
+const { compareQuantities } = require('../engine-writing-v1/numberAst');
+const { extractCandidates } = require('../engine-writing-v1/extractor');
+const { registrySnapshot } = require('../engine-writing-v1/policy/registry');
+const writingJobs = require('../engine-writing-v1/jobStore');
+const writingTelemetry = require('../engine-writing-v1/telemetry');
 
 const TOPIC_MAX = 1200;
 const MEMO_FIELD_MAX = 2000;
@@ -27,6 +35,11 @@ const TARGET_CHARS_MIN = 100;
 const TARGET_CHARS_MAX = 3000;
 const DAILY_GENERATE_CAP = Math.max(1, Number(process.env.WRITING_LAB_DAILY_CAP) || 30);   // 일반 사용자 일일 생성 상한(남용 방어)
 const CHECK_HOURLY_CAP = Math.max(10, Number(process.env.WRITING_LAB_CHECK_HOURLY_CAP) || 120);
+const EXTRACT_HOURLY_CAP = Math.max(5, Number(process.env.WRITING_LAB_EXTRACT_HOURLY_CAP) || 30);
+const WRITING_LAB_V2_ENABLED = process.env.WRITING_LAB_V2_ENABLED !== '0';
+const WRITING_LAB_V2_ROLLOUT_PERCENT = Math.max(0, Math.min(100, Number(process.env.WRITING_LAB_V2_ROLLOUT_PERCENT ?? 100) || 0));
+const WRITING_LAB_V2_DISABLED_GENRES = new Set(String(process.env.WRITING_LAB_V2_DISABLED_GENRES || '').split(',').map(value => value.trim()).filter(Boolean));
+const CLIENT_EVENT_HOURLY_CAP = 60;
 
 // 생성 단가(크레딧) — 목표 분량 구간별 정액. 휴머나이징은 기존 /transform 단가가 별도 적용된다.
 const GENERATION_PRICING = Object.freeze([
@@ -110,9 +123,6 @@ const GENRES = Object.freeze({
   }
 });
 
-// 의료광고 가드(후기·소개 장르): 치료경험담·효능 후기는 의료법 56조 규제 영역 — 결정론 차단.
-const MEDICAL_RE = /(시술|성형|보톡스|필러|리프팅|임플란트|치아\s*교정|피부과|성형외과|한의원|의원\s*후기|병원\s*후기|클리닉|도수치료|다이어트\s*(약|주사|한약)|지방\s*흡입|줄기세포|탈모\s*치료|라식|라섹|시력\s*교정)/;
-
 // 엔진 핑거프린트·상투구(7월 주간 리뷰 실측 "그치지 않고" 계열 포함) — 개수만 보고, 판단은 사용자 몫.
 const CLICHE_PATTERNS = [
   { key: '그치지 않고', re: /(?:에|에서)?\s*그치지\s*않(?:고|았)/g },
@@ -134,29 +144,59 @@ function isAdminUid(uid) {
   return ADMIN_UIDS.includes(uid);
 }
 
-// ── 남용 방어: 일반 사용자 일일 생성 캡 + 검사 시간당 캡(메모리 — 재시작 리셋은 사용자에게 유리한 방향) ──
-const dailyGenerates = new Map();   // uid → { day, count }
-const hourlyChecks = new Map();     // uid → { hour, count }
-setInterval(() => {
-  const day = new Date().toISOString().slice(0, 10);
-  const hour = Math.floor(Date.now() / 3600000);
-  for (const [k, v] of dailyGenerates) if (v.day !== day) dailyGenerates.delete(k);
-  for (const [k, v] of hourlyChecks) if (v.hour !== hour) hourlyChecks.delete(k);
-}, 60 * 60 * 1000).unref();
-
-function bumpDailyGenerate(uid) {
-  const day = new Date().toISOString().slice(0, 10);
-  const cur = dailyGenerates.get(uid);
-  const count = cur && cur.day === day ? cur.count + 1 : 1;
-  dailyGenerates.set(uid, { day, count });
-  return count;
+function rolloutBucket(uid) {
+  const hex = crypto.createHash('sha256').update(`writing-lab-v2:${uid}`).digest('hex').slice(0, 8);
+  return Number.parseInt(hex, 16) % 100;
 }
+
+function canUseWritingV2(user, genre) {
+  if (user?.admin) return true;
+  if (!WRITING_LAB_V2_ENABLED || WRITING_LAB_V2_DISABLED_GENRES.has(String(genre || ''))) return false;
+  return rolloutBucket(user?.uid || '') < WRITING_LAB_V2_ROLLOUT_PERCENT;
+}
+
+function enforceWritingV2(user, genre, res) {
+  if (canUseWritingV2(user, genre)) return true;
+  res.status(403).json({
+    ok: false,
+    code: 'WRITING_LAB_V2_NOT_AVAILABLE',
+    error: '새 글쓰기 랩은 단계적으로 열고 있어요. 관리자 또는 현재 베타 대상 계정에서 이용할 수 있습니다.'
+  });
+  return false;
+}
+
+// ── 남용 방어: 일반 사용자 일일 생성 캡 + 검사 시간당 캡(메모리 — 재시작 리셋은 사용자에게 유리한 방향) ──
+const hourlyChecks = new Map();     // uid → { hour, count }
+const hourlyExtracts = new Map();   // uid → { hour, count }
+const hourlyClientEvents = new Map();
+setInterval(() => {
+  const hour = Math.floor(Date.now() / 3600000);
+  for (const [k, v] of hourlyChecks) if (v.hour !== hour) hourlyChecks.delete(k);
+  for (const [k, v] of hourlyExtracts) if (v.hour !== hour) hourlyExtracts.delete(k);
+  for (const [k, v] of hourlyClientEvents) if (v.hour !== hour) hourlyClientEvents.delete(k);
+}, 60 * 60 * 1000).unref();
 
 function bumpHourlyCheck(uid) {
   const hour = Math.floor(Date.now() / 3600000);
   const cur = hourlyChecks.get(uid);
   const count = cur && cur.hour === hour ? cur.count + 1 : 1;
   hourlyChecks.set(uid, { hour, count });
+  return count;
+}
+
+function bumpHourlyExtract(uid) {
+  const hour = Math.floor(Date.now() / 3600000);
+  const cur = hourlyExtracts.get(uid);
+  const count = cur && cur.hour === hour ? cur.count + 1 : 1;
+  hourlyExtracts.set(uid, { hour, count });
+  return count;
+}
+
+function bumpHourlyClientEvent(uid) {
+  const hour = Math.floor(Date.now() / 3600000);
+  const cur = hourlyClientEvents.get(uid);
+  const count = cur && cur.hour === hour ? cur.count + 1 : 1;
+  hourlyClientEvents.set(uid, { hour, count });
   return count;
 }
 
@@ -229,14 +269,20 @@ function charCounts(text) {
 function limitCheck(counts, targetChars, mode) {
   if (!targetChars) return { applicable: false };
   const used = mode === 'no_space' ? counts.noSpace : mode === 'byte2' ? counts.byte2 : counts.withSpace;
+  const ratio = used / targetChars;
+  const status = ratio < 0.88 ? 'under' : ratio > 1 ? 'over' : 'pass';
   return {
     applicable: true,
     mode,
     target: targetChars,
     used,
     over: Math.max(0, used - targetChars),
-    usageRatio: Math.round((used / targetChars) * 1000) / 1000,
-    pass: used <= targetChars
+    minimum: Math.ceil(targetChars * 0.88),
+    maximum: targetChars,
+    under: Math.max(0, Math.ceil(targetChars * 0.88) - used),
+    usageRatio: Math.round(ratio * 1000) / 1000,
+    status,
+    pass: status === 'pass'
   };
 }
 
@@ -247,16 +293,7 @@ function numberTokens(text) {
   return found.map(t => t.replace(/[\s,]/g, ''));
 }
 function fabricatedNumberCandidates(outputText, factsheet) {
-  const allowed = new Set(numberTokens(factsheet));
-  const allowedDigits = new Set([...allowed].map(t => t.replace(/[^\d.]/g, '')));
-  const candidates = [];
-  for (const token of numberTokens(outputText)) {
-    if (allowed.has(token)) continue;
-    const digits = token.replace(/[^\d.]/g, '');
-    if (!digits || allowedDigits.has(digits)) continue;   // 단위만 달라진 같은 숫자는 허용
-    if (!candidates.includes(token)) candidates.push(token);
-  }
-  return candidates.slice(0, 20);
+  return compareQuantities(factsheet, outputText).addedTokens.slice(0, 20);
 }
 
 function clicheReport(text) {
@@ -323,7 +360,8 @@ function writerSystemPrompt(genreKey, { targetChars, charLimitMode, tone }) {
     '',
     '[무날조 계약 — 최우선]',
     '- 본문에 쓸 수 있는 경험·사례·수치·기간·고유명사는 사용자 입력의 [사실 카드]에 적힌 것뿐이다.',
-    '- 사실 카드에 없는 경험·수치·고유명사를 절대 만들어내지 않는다. 구체 정보가 부족한 대목은 수치 없이 과정·일반 서술로 쓰고, 대신 followupQuestions에 사용자에게 확인할 질문을 남긴다.',
+    '- 사실 카드에 없는 경험·수치·고유명사를 절대 만들어내지 않는다. 정보가 부족하면 본문을 짧게 끝내고 followupQuestions에 확인할 질문만 남긴다.',
+    '- 본문에서 정보 부족, 기록 부재, 사실 카드, 추가 확인, 다음에 기록할 내용을 설명하지 않는다.',
     '- 인용문·통계·연구 결과를 지어내지 않는다.',
     '',
     ...g.contract,
@@ -354,6 +392,513 @@ const WRITER_TOOL = {
   }
 };
 
+function v2PreflightError(prepared, shortMode) {
+  const assessment = prepared.assessment;
+  if (!prepared.policy.canGenerate) {
+    return {
+      status: 400,
+      code: assessment.status === 'POLICY_BLOCKED' ? 'POLICY_BLOCKED' : 'POLICY_REVIEW_REQUIRED',
+      error: assessment.summary,
+      assessment,
+      policy: prepared.policy
+    };
+  }
+  if (assessment.status === 'NEEDS_FACTS') {
+    return { status: 409, code: 'MORE_FACTS_REQUIRED', error: assessment.summary, assessment };
+  }
+  if (assessment.status === 'LIMITED' && !shortMode) {
+    return { status: 409, code: 'SHORT_MODE_CONFIRMATION_REQUIRED', error: assessment.summary, assessment };
+  }
+  return null;
+}
+
+function sendWritingEngineError(res, error) {
+  if (error instanceof writingEngine.WritingEngineError) {
+    return res.status(error.status || 400).json({
+      ok: false,
+      code: error.code,
+      error: error.message,
+      ...(error.details || {})
+    });
+  }
+  const code = error?.code ? String(error.code) : 'WRITING_ENGINE_FAILED';
+  const message = code === 'OPENAI_QUOTA_EXHAUSTED'
+    ? 'API 사용량 한도로 생성에 실패했습니다. 크레딧과 생성 한도는 사용되지 않았어요.'
+    : code === 'WRITING_LAB_CONTEXT_SECRET_REQUIRED' || code === 'WRITING_LAB_CONTEXT_SECRET_WEAK'
+      ? '검수 보안 설정이 완료되지 않아 글쓰기를 시작할 수 없어요.'
+      : code === 'BILLING_COMMIT_FAILED'
+        ? '결제 확인을 완료하지 못했어요. 같은 작업을 다시 시도해도 중복 차감되지 않습니다.'
+        : '글을 만드는 중 오류가 발생했어요. 크레딧과 생성 한도는 사용되지 않았어요.';
+  return res.status(502).json({ ok: false, code, error: message });
+}
+
+function publicGenerationResult(result, { verificationToken, billing, usage, requestId }) {
+  return {
+    ok: true,
+    status: 'READY',
+    jobId: requestId,
+    requestId,
+    engineVersion: result.engineVersion,
+    genre: result.genre,
+    subtype: result.subtype,
+    draft: result.draft,
+    usedFacts: result.usedFacts,
+    usedFactIds: result.usedFactIds,
+    followupQuestions: result.followupQuestions,
+    factsheet: result.factsheet,
+    assessment: result.assessment,
+    policy: result.policy,
+    checks: result.checks,
+    semantic: result.semantic,
+    release: result.release,
+    attempts: result.attempts,
+    humanize: result.humanize,
+    verificationToken,
+    billing,
+    usage
+  };
+}
+
+// ── Writing Lab v2: 근거 원장 → 충족도 → 구조화 생성 → 의미 검수 ─────
+router.get('/writing-lab/v2/config', (req, res) => {
+  res.json({
+    ok: true,
+    ...writingEngine.config(),
+    pricing: {
+      generation: GENERATION_PRICING,
+      humanize: { perHundredChars: 2, minCredits: 10 },
+      dailyCap: DAILY_GENERATE_CAP
+    },
+    rollout: {
+      enabled: WRITING_LAB_V2_ENABLED,
+      percent: WRITING_LAB_V2_ROLLOUT_PERCENT,
+      disabledGenres: [...WRITING_LAB_V2_DISABLED_GENRES]
+    }
+  });
+});
+
+router.post('/admin/writing-lab-policies', async (req, res) => {
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (!user.admin) return res.status(403).json({ ok: false, error: '관리자 권한이 필요해요.' });
+    const registry = registrySnapshot();
+    logger.info('writinglab.policy_registry_read', {
+      uid: user.uid,
+      launchEligible: registry.launchEligible,
+      pendingDomains: registry.pendingDomains,
+      invalidPackIds: registry.invalidPackIds
+    });
+    return res.json({ ok: true, registry });
+  } catch (error) {
+    logger.error('writinglab.policy_registry_failed', { err: error });
+    return res.status(500).json({ ok: false, error: '정책 팩 상태를 불러오지 못했어요.' });
+  }
+});
+
+router.post('/admin/writing-lab-metrics', async (req, res) => {
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (!user.admin) return res.status(403).json({ ok: false, error: '관리자 권한이 필요해요.' });
+    const rows = await writingTelemetry.snapshot(req.body?.days);
+    return res.json({ ok: true, version: 'writing-telemetry-v1', rows });
+  } catch (error) {
+    logger.error('writinglab.telemetry_admin_failed', { err: error });
+    return res.status(500).json({ ok: false, error: '글쓰기 랩 운영 지표를 불러오지 못했어요.' });
+  }
+});
+
+router.post('/writing-lab/v2/extract', async (req, res) => {
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (!enforceWritingV2(user, normalizeGenre(req.body?.genre), res)) return;
+    if (!user.admin && bumpHourlyExtract(user.uid) > EXTRACT_HOURLY_CAP) {
+      return res.status(429).json({
+        ok: false,
+        code: 'EXTRACT_RATE_LIMIT',
+        error: '메모 분석 요청이 너무 잦아요. 직접 질문 칸에 입력하거나 잠시 후 다시 시도해 주세요.'
+      });
+    }
+    const result = await extractCandidates({ genre: req.body?.genre, notes: req.body?.notes });
+    logger.info('writinglab.v2.extract', {
+      uid: user.uid,
+      admin: user.admin,
+      genre: result.genre,
+      candidateCount: result.candidates.length
+    });
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    logger.error('writinglab.v2.extract_failed', { err: error });
+    if (error?.code === 'NOTES_REQUIRED') {
+      return res.status(error.status || 400).json({ ok: false, code: error.code, error: error.message });
+    }
+    return res.status(502).json({
+      ok: false,
+      code: 'NOTE_EXTRACTION_FAILED',
+      error: '메모에서 정보 후보를 찾지 못했어요. 질문 칸에 직접 입력해 주세요.'
+    });
+  }
+});
+
+router.post('/writing-lab/v2/prepare', async (req, res) => {
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    const prepared = writingEngine.prepare(req.body || {});
+    if (!enforceWritingV2(user, prepared.input.genre, res)) return;
+    const assessmentToken = signContext({
+      purpose: 'writing_lab_assessment',
+      uid: user.uid,
+      ledgerHash: prepared.ledger.hash,
+      genre: prepared.input.genre,
+      subtype: prepared.input.subtype
+    }, { ttlMs: 30 * 60 * 1000 });
+    logger.info('writinglab.v2.prepare', {
+      uid: user.uid,
+      admin: user.admin,
+      genre: prepared.input.genre,
+      subtype: prepared.input.subtype,
+      readiness: prepared.assessment.status,
+      factCount: prepared.assessment.confirmedFactCount,
+      policyStatus: prepared.policy.status,
+      targetFeasible: prepared.assessment.targetFeasible
+    });
+    void writingTelemetry.record(`PREPARE_${prepared.assessment.status}`, {
+      genre: prepared.input.genre,
+      policyStatus: prepared.policy.status
+    });
+    return res.json({ ok: true, ...prepared, assessmentToken });
+  } catch (error) {
+    logger.error('writinglab.v2.prepare_failed', { err: error });
+    return sendWritingEngineError(res, error);
+  }
+});
+
+router.post('/writing-lab/v2/generate', async (req, res) => {
+  const startedAt = Date.now();
+  let claimedJob = null;
+  let telemetryGenre = '';
+  let telemetryPolicyStatus = '';
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    const shortMode = req.body?.shortMode === true;
+    const prepared = writingEngine.prepare(req.body || {});
+    telemetryGenre = prepared.input.genre;
+    telemetryPolicyStatus = prepared.policy.status;
+    if (!enforceWritingV2(user, prepared.input.genre, res)) return;
+    const assessed = verifyContext(req.body?.assessmentToken);
+    if (!assessed.ok) {
+      return res.status(400).json({
+        ok: false,
+        code: assessed.code || 'ASSESSMENT_TOKEN_REQUIRED',
+        error: '작성 가능 여부 확인이 만료됐어요. 입력과 설정을 다시 확인해 주세요.'
+      });
+    }
+    if (assessed.context?.purpose !== 'writing_lab_assessment' || assessed.context?.uid !== user.uid) {
+      return res.status(403).json({ ok: false, code: 'ASSESSMENT_OWNER_MISMATCH', error: '이 작성 확인 정보는 사용할 수 없어요.' });
+    }
+    if (assessed.context?.ledgerHash !== prepared.ledger.hash) {
+      return res.status(409).json({
+        ok: false,
+        code: 'ASSESSMENT_STALE',
+        error: '작성 확인 뒤 입력이나 설정이 바뀌었어요. 작성 가능 여부를 다시 확인해 주세요.'
+      });
+    }
+    const preflight = v2PreflightError(prepared, shortMode);
+    if (preflight) {
+      return res.status(preflight.status).json({ ok: false, ...preflight });
+    }
+    const effectiveTarget = writingEngine.chooseTarget(prepared, shortMode);
+    const requestId = writingJobs.normalizeRequestId(req.body?.requestId);
+    if (!requestId) {
+      return res.status(400).json({ ok: false, code: 'REQUEST_ID_REQUIRED', error: '작업 번호가 올바르지 않아요. 페이지를 새로고침한 뒤 다시 시도해 주세요.' });
+    }
+    const inputHash = crypto.createHash('sha256')
+      .update(`${prepared.ledger.hash}:${shortMode ? 'short' : 'full'}`)
+      .digest('hex');
+
+    const existingJob = await writingJobs.get(user.uid, requestId);
+    if (existingJob.inputHash && existingJob.inputHash !== inputHash) {
+      return res.status(409).json({ ok: false, code: 'REQUEST_ID_INPUT_MISMATCH', error: '같은 작업 번호에 다른 입력을 사용할 수 없어요. 다시 만들기를 눌러 주세요.' });
+    }
+    if (existingJob.state === 'READY') return res.json(existingJob.result);
+    if (existingJob.state === 'PROCESSING') {
+      return res.status(202).json({ ok: true, status: 'PROCESSING', jobId: requestId, requestId });
+    }
+
+    if (!user.admin) {
+      const successful = await writingUsage.successfulCount(user.uid);
+      if (successful >= DAILY_GENERATE_CAP) {
+        return res.status(429).json({
+          ok: false,
+          code: 'DAILY_CAP',
+          error: `공개 가능한 글 생성은 하루 ${DAILY_GENERATE_CAP}회까지 이용할 수 있어요. 실패하거나 차단된 요청은 포함되지 않아요.`
+        });
+      }
+    }
+
+    const needed = generationCredits(effectiveTarget);
+    let billing = { applied: false, credits: 0, plan: null };
+    if (!user.admin) {
+      try {
+        const pre = await usageBilling.precheckCredits(user.idToken, needed);
+        billing = { applied: pre.plan !== 'unlimited', credits: needed, plan: pre.plan };
+      } catch (error) {
+        const status = error.status || 401;
+        const message = error.message === 'INSUFFICIENT_CREDITS'
+          ? `크레딧이 부족해요. 이 글 생성에는 ${needed}크레딧이 필요합니다.`
+          : usageBilling.authErrorMessage ? usageBilling.authErrorMessage(error.message) : '로그인이 필요해요.';
+        return res.status(status).json({ ok: false, code: error.message, error: message, creditsRequired: needed });
+      }
+    }
+
+    const claim = await writingJobs.begin(user.uid, requestId, inputHash);
+    if (claim.state === 'MISMATCH' || claim.state === 'FORBIDDEN') {
+      return res.status(409).json({ ok: false, code: 'REQUEST_ID_INPUT_MISMATCH', error: '이 작업 번호는 현재 입력에 사용할 수 없어요.' });
+    }
+    if (claim.state === 'READY') return res.json(claim.result);
+    if (claim.state === 'PROCESSING') {
+      return res.status(202).json({ ok: true, status: 'PROCESSING', jobId: requestId, requestId });
+    }
+    if (claim.state !== 'NEW') {
+      return res.status(400).json({ ok: false, code: 'REQUEST_ID_REQUIRED', error: '작업 번호가 올바르지 않아요.' });
+    }
+    claimedJob = { uid: user.uid, requestId, inputHash, completed: false };
+
+    const result = await writingEngine.generate(req.body || {}, { shortMode });
+    const recoveryFallback = result.semantic?.deterministicProjection === true;
+    const verificationToken = signContext({
+      uid: user.uid,
+      input: prepared.input,
+      ledger: result.ledger,
+      usedFactIds: result.usedFactIds,
+      targetChars: result.assessment.effectiveTarget,
+      policy: result.policy,
+      safeDraft: result.draft,
+      safeDraftRelease: result.semantic?.deterministicProjection === true
+        ? 'deterministic_projection_v1'
+        : 'semantic_consensus_v1'
+    });
+
+    if (!user.admin && billing.applied && !recoveryFallback) {
+      try {
+        await usageBilling.retryAsync(() => usageBilling.commitCreditDeduct(
+          user.uid,
+          needed,
+          'writing_lab_v2_generate',
+          requestId,
+          { mode: `wl_v2_${result.genre}`, textLength: result.draft.length, engineVersion: result.engineVersion }
+        ));
+      } catch (error) {
+        logger.error('writinglab.v2.charge_failed', { uid: user.uid, requestId, needed, err: error });
+        throw new writingEngine.WritingEngineError(
+          'BILLING_COMMIT_FAILED',
+          '결제 확인을 완료하지 못했어요. 같은 작업을 다시 시도해도 중복 차감되지 않습니다.',
+          503
+        );
+      }
+    }
+    let usageCommit = user.admin
+      ? { committed: false, admin: true }
+      : recoveryFallback
+        ? { committed: false, recoveryFallback: true }
+        : await writingUsage.commitSuccessful(user.uid, requestId, DAILY_GENERATE_CAP);
+    if (!user.admin && (usageCommit.capReached || usageCommit.unavailable)) {
+      let restored = !billing.applied;
+      if (billing.applied) {
+        try {
+          await usageBilling.retryAsync(() => usageBilling.commitCreditRestore(
+            user.uid,
+            needed,
+            'writing_lab_v2_generate',
+            requestId
+          ));
+          restored = true;
+        } catch (restoreError) {
+          logger.error('writinglab.v2.cap_restore_failed', { uid: user.uid, requestId, needed, err: restoreError });
+        }
+      }
+      if (restored) {
+        throw new writingEngine.WritingEngineError(
+          usageCommit.capReached ? 'DAILY_CAP' : 'WRITING_USAGE_UNAVAILABLE',
+          usageCommit.capReached
+            ? `공개 가능한 글 생성은 하루 ${DAILY_GENERATE_CAP}회까지 이용할 수 있어요. 이번 요청은 차감하지 않았습니다.`
+            : '성공 한도 기록을 안전하게 완료하지 못해 이번 요청을 차감하지 않았어요. 잠시 후 다시 시도해 주세요.',
+          usageCommit.capReached ? 429 : 503
+        );
+      }
+      usageCommit = { ...usageCommit, reconciliationRequired: true };
+    }
+
+    const publicBilling = user.admin
+      ? { applied: false, credits: 0, admin: true }
+      : recoveryFallback
+        ? { applied: false, credits: 0, plan: billing.plan, waivedReason: 'deterministic_recovery_fallback' }
+        : { applied: billing.applied, credits: billing.applied ? needed : 0, plan: billing.plan };
+    const usage = { elapsedMs: Date.now() - startedAt, daily: usageCommit };
+    const payload = publicGenerationResult(result, { verificationToken, billing: publicBilling, usage, requestId });
+    await writingJobs.complete(user.uid, requestId, inputHash, payload);
+    claimedJob.completed = true;
+    void writingTelemetry.record(recoveryFallback ? 'GENERATE_FALLBACK_READY' : 'GENERATE_READY', {
+      genre: result.genre,
+      policyStatus: result.policy.status,
+      elapsedMs: Date.now() - startedAt
+    });
+
+    logger.info('writinglab.v2.generate', {
+      uid: user.uid,
+      admin: user.admin,
+      genre: result.genre,
+      subtype: result.subtype,
+      readiness: result.assessment.status,
+      shortMode,
+      targetChars: result.assessment.effectiveTarget,
+      draftLength: result.draft.length,
+      releaseStatus: result.release.status,
+      policyStatus: result.policy.status,
+      generationSource: recoveryFallback ? 'deterministic_projection' : 'model_verified',
+      chargedCredits: !user.admin && billing.applied && !recoveryFallback ? needed : 0,
+      usageCommitted: usageCommit.committed === true,
+      elapsedMs: Date.now() - startedAt
+    });
+
+    return res.json(payload);
+  } catch (error) {
+    if (claimedJob && !claimedJob.completed) {
+      await writingJobs.fail(claimedJob.uid, claimedJob.requestId, claimedJob.inputHash, error);
+      void writingTelemetry.record('GENERATE_FAILED', {
+        genre: telemetryGenre,
+        policyStatus: telemetryPolicyStatus,
+        elapsedMs: Date.now() - startedAt
+      });
+    }
+    logger.error('writinglab.v2.generate_failed', { elapsedMs: Date.now() - startedAt, err: error });
+    return sendWritingEngineError(res, error);
+  }
+});
+
+router.get('/writing-lab/v2/jobs/:jobId', async (req, res) => {
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    const job = await writingJobs.get(user.uid, req.params.jobId);
+    if (job.state === 'INVALID' || job.state === 'NOT_FOUND') {
+      return res.status(404).json({ ok: false, code: 'WRITING_JOB_NOT_FOUND', error: '복구할 글쓰기 작업을 찾지 못했어요.' });
+    }
+    if (job.state === 'FORBIDDEN') return res.status(403).json({ ok: false, code: 'WRITING_JOB_FORBIDDEN', error: '이 작업을 확인할 수 없어요.' });
+    if (job.state === 'UNAVAILABLE') return res.status(503).json({ ok: false, code: 'WRITING_JOB_UNAVAILABLE', error: '작업 상태를 잠시 확인할 수 없어요.' });
+    if (job.state === 'READY') return res.json(job.result);
+    if (job.state === 'FAILED') {
+      return res.status(job.error?.retryable ? 503 : 422).json({
+        ok: false,
+        status: 'FAILED',
+        code: job.error?.code || 'WRITING_JOB_FAILED',
+        error: job.error?.message || '글 생성에 실패했어요.',
+        retryable: job.error?.retryable === true
+      });
+    }
+    return res.status(202).json({ ok: true, status: 'PROCESSING', jobId: req.params.jobId });
+  } catch (error) {
+    logger.error('writinglab.v2.job_read_failed', { jobId: req.params.jobId, err: error });
+    return res.status(500).json({ ok: false, code: 'WRITING_JOB_READ_FAILED', error: '작업 상태를 불러오지 못했어요.' });
+  }
+});
+
+router.post('/writing-lab/v2/check', async (req, res) => {
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (!user.admin && bumpHourlyCheck(user.uid) > CHECK_HOURLY_CAP) {
+      return res.status(429).json({ ok: false, code: 'CHECK_RATE_LIMIT', error: '검사 요청이 너무 잦아요. 잠시 후 다시 시도해 주세요.' });
+    }
+    const verified = verifyContext(req.body?.verificationToken);
+    if (!verified.ok) {
+      return res.status(400).json({ ok: false, code: verified.code, error: '검수 기준이 만료됐거나 올바르지 않아요. 입력 화면에서 다시 만들어 주세요.' });
+    }
+    if (verified.context.uid !== user.uid) {
+      return res.status(403).json({ ok: false, code: 'CONTEXT_OWNER_MISMATCH', error: '다른 사용자의 검수 기준은 사용할 수 없어요.' });
+    }
+    const report = await writingEngine.verifyExisting(req.body?.text, verified.context);
+    void writingTelemetry.record(report.release.pass ? 'FINAL_CHECK_READY' : 'FINAL_CHECK_BLOCKED', {
+      genre: verified.context.input?.genre,
+      policyStatus: verified.context.policy?.status
+    });
+    logger.info('writinglab.v2.check', {
+      uid: user.uid,
+      genre: verified.context.input?.genre,
+      releaseStatus: report.release.status,
+      reasons: report.release.reasons
+    });
+    return res.json(report);
+  } catch (error) {
+    logger.error('writinglab.v2.check_failed', { err: error });
+    return sendWritingEngineError(res, error);
+  }
+});
+
+router.post('/writing-lab/v2/finalize', async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (!user.admin && bumpHourlyCheck(user.uid) > CHECK_HOURLY_CAP) {
+      return res.status(429).json({ ok: false, code: 'CHECK_RATE_LIMIT', error: '최종 검사 요청이 너무 잦아요. 잠시 후 다시 시도해 주세요.' });
+    }
+    const verified = verifyContext(req.body?.verificationToken);
+    if (!verified.ok) {
+      return res.status(400).json({ ok: false, code: verified.code, error: '검수 기준이 만료됐거나 올바르지 않아요. 입력 화면에서 다시 만들어 주세요.' });
+    }
+    if (verified.context.uid !== user.uid) {
+      return res.status(403).json({ ok: false, code: 'CONTEXT_OWNER_MISMATCH', error: '다른 사용자의 검수 기준은 사용할 수 없어요.' });
+    }
+    const report = await writingEngine.finalizeExisting(req.body?.text, verified.context);
+    const event = report.delivery?.source === 'humanized'
+      ? 'FINALIZE_HUMANIZED'
+      : report.delivery?.source === 'humanized_repaired'
+        ? 'FINALIZE_REPAIRED'
+        : report.delivery?.source === 'verified_generation_fallback'
+          ? 'FINALIZE_FALLBACK'
+          : 'FINALIZE_BLOCKED';
+    void writingTelemetry.record(event, {
+      genre: verified.context.input?.genre,
+      policyStatus: verified.context.policy?.status,
+      elapsedMs: Date.now() - startedAt
+    });
+    logger.info('writinglab.v2.finalize', {
+      uid: user.uid,
+      genre: verified.context.input?.genre,
+      deliverySource: report.delivery?.source,
+      releaseStatus: report.release?.status,
+      repairRounds: report.delivery?.repairRounds,
+      elapsedMs: Date.now() - startedAt
+    });
+    return res.json(report);
+  } catch (error) {
+    logger.error('writinglab.v2.finalize_failed', { elapsedMs: Date.now() - startedAt, err: error });
+    return sendWritingEngineError(res, error);
+  }
+});
+
+router.post('/writing-lab/v2/client-event', async (req, res) => {
+  try {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (!user.admin && bumpHourlyClientEvent(user.uid) > CLIENT_EVENT_HOURLY_CAP) {
+      return res.status(429).json({ ok: false, code: 'CLIENT_EVENT_RATE_LIMIT', error: '운영 이벤트 한도를 초과했어요.' });
+    }
+    const event = String(req.body?.event || '').toUpperCase();
+    const recorded = await writingTelemetry.record(event, { genre: normalizeGenre(req.body?.genre) });
+    if (!recorded.recorded) return res.status(400).json({ ok: false, code: 'INVALID_CLIENT_EVENT', error: '지원하지 않는 운영 이벤트예요.' });
+    return res.json({ ok: true });
+  } catch (error) {
+    logger.warn('writinglab.client_event_failed', { err: error });
+    return res.status(500).json({ ok: false, error: '운영 이벤트를 기록하지 못했어요.' });
+  }
+});
+
 // ── GET /writing-lab/pricing — 프런트 견적의 단일 출처(공개) ──
 router.get('/writing-lab/pricing', (req, res) => {
   res.json({
@@ -373,6 +918,12 @@ router.post('/writing-lab/generate', async (req, res) => {
   try {
     const user = await requireUser(req, res);
     if (!user) return;
+    if (!user.admin && process.env.WRITING_LAB_V1_PUBLIC !== '1') {
+      return res.status(410).json({
+        code: 'WRITING_LAB_V1_RETIRED',
+        error: '이전 글쓰기 방식은 사실 검수 기준이 낮아 종료됐어요. 새 글쓰기 랩을 이용해 주세요.'
+      });
+    }
 
     const genre = normalizeGenre(req.body && req.body.genre);
     const g = GENRES[genre];
@@ -392,11 +943,23 @@ router.post('/writing-lab/generate', async (req, res) => {
       : 0;
     const charLimitMode = normalizeCharLimitMode(req.body && req.body.charLimitMode);
 
-    // 의료 후기·효능 광고 가드(후기·소개 장르) — 의료법 56조 영역은 생성하지 않는다.
-    if ((genre === 'review_blog' || genre === 'marketing') && MEDICAL_RE.test(`${topic}\n${ctx1}\n${ctx2}\n${memo.experience}\n${memo.caseExample}`)) {
+    // v1 호환 경로도 단일 정규식 대신 v2 정책 팩을 사용한다.
+    const legacyPolicy = writingEngine.prepare({
+      genre,
+      topic,
+      context1: ctx1,
+      context2: ctx2,
+      emphasis,
+      tone,
+      targetChars,
+      charLimitMode,
+      memo
+    }).policy;
+    if (!legacyPolicy.canGenerate) {
       return res.status(400).json({
-        code: 'MEDICAL_AD_BLOCKED',
-        error: '의료 시술·치료 경험담과 효능 후기는 의료광고 규제(의료법 56조) 대상이라 생성해 드릴 수 없어요.'
+        code: legacyPolicy.status === 'BLOCK' ? 'POLICY_BLOCKED' : 'POLICY_REVIEW_REQUIRED',
+        error: legacyPolicy.issues[0]?.message || '정책 확인이 필요한 내용이라 자동 생성할 수 없어요.',
+        policy: legacyPolicy
       });
     }
 
@@ -404,8 +967,8 @@ router.post('/writing-lab/generate', async (req, res) => {
     const needed = generationCredits(targetChars);
     let billing = { applied: false, credits: 0, plan: null };
     if (!user.admin) {
-      const capCount = bumpDailyGenerate(user.uid);
-      if (capCount > DAILY_GENERATE_CAP) {
+      const successful = await writingUsage.successfulCount(user.uid);
+      if (successful >= DAILY_GENERATE_CAP) {
         return res.status(429).json({ code: 'DAILY_CAP', error: `글 생성은 하루 ${DAILY_GENERATE_CAP}회까지 이용할 수 있어요. 내일 다시 시도해 주세요.` });
       }
       let pre;
@@ -467,6 +1030,9 @@ router.post('/writing-lab/generate', async (req, res) => {
     }
 
     const checks = runFactChecks(draft, factsheet, { topic, targetChars, charLimitMode });
+    const usageCommit = user.admin
+      ? { committed: false, admin: true }
+      : await writingUsage.commitSuccessful(user.uid, requestId, DAILY_GENERATE_CAP);
     const usage = data.usage || {};
     logger.info('writinglab.generate', {
       uid: user.uid,
@@ -498,7 +1064,8 @@ router.post('/writing-lab/generate', async (req, res) => {
         inputTokens: usage.inputTokens || 0,
         outputTokens: usage.outputTokens || 0,
         estimatedUsd: usage.estimatedUsd || 0,
-        elapsedMs: Date.now() - startedAt
+        elapsedMs: Date.now() - startedAt,
+        daily: usageCommit
       }
     });
   } catch (e) {
@@ -516,6 +1083,9 @@ router.post('/writing-lab/check', async (req, res) => {
   try {
     const user = await requireUser(req, res);
     if (!user) return;
+    if (!user.admin && process.env.WRITING_LAB_V1_PUBLIC !== '1') {
+      return res.status(410).json({ code: 'WRITING_LAB_V1_RETIRED', error: '이전 검수 방식은 종료됐어요. 새 글쓰기 랩에서 다시 확인해 주세요.' });
+    }
     if (!user.admin && bumpHourlyCheck(user.uid) > CHECK_HOURLY_CAP) {
       return res.status(429).json({ error: '검사 요청이 너무 잦아요. 잠시 후 다시 시도해 주세요.' });
     }

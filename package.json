@@ -23,6 +23,8 @@
     "git:check:all": "node scripts/git-harness.js --mode=manual --all-worktrees=1",
     "git:install-hooks": "node scripts/install-git-hooks.js --workspace=1",
     "predeploy:v2": "node scripts/predeploy-v2.js",
+    "writing-policy:validate": "node scripts/writing-lab-policy.js validate",
+    "writing-policy:approve": "node scripts/writing-lab-policy.js approve",
     "test:rules": "node scripts/firestore-rules.test.mjs",
     "emulator:rules": "powershell -ExecutionPolicy Bypass -File scripts/run-firestore-rules.ps1"
   },

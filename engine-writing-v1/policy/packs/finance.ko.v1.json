@@ -1,0 +1,30 @@
+{
+  "id": "finance.ko.v1",
+  "domain": "finance",
+  "approved": false,
+  "jurisdiction": "KR",
+  "reviewedAt": "2026-08-25",
+  "sourceCheckedAt": "2026-08-25",
+  "approval": {
+    "status": "PENDING_OWNER_REVIEW",
+    "owner": "UNASSIGNED",
+    "approvedAt": null
+  },
+  "sources": [
+    {
+      "title": "금융소비자 보호에 관한 법률 제22조(금융상품등에 관한 광고 관련 준수사항)",
+      "publisher": "국가법령정보센터",
+      "url": "https://www.law.go.kr/lsLinkCommonInfo.do?chrClsCd=010202&lsJoLnkSeq=1031294935"
+    },
+    {
+      "title": "금융소비자 보호에 관한 감독규정",
+      "publisher": "국가법령정보센터",
+      "url": "https://www.law.go.kr/LSW/admRulLsInfoP.do?admRulSeq=2100000276850"
+    }
+  ],
+  "institutionTerms": ["증권사", "은행", "보험사", "자산운용", "가상자산 거래소"],
+  "treatmentTerms": ["주식", "코인", "가상자산", "펀드", "ETF", "대출", "보험", "투자", "매수", "매도"],
+  "claimTerms": ["수익", "원금", "상승", "하락", "추천 종목", "목표가"],
+  "blockedClaimTerms": ["수익 보장", "원금 보장", "무조건 오른", "확실한 종목", "손실이 없다"],
+  "notice": "금융 관련 글은 확인된 상품 정보와 개인 경험만 정리하며 투자 판단·수익·원금을 보장하지 않아요."
+}

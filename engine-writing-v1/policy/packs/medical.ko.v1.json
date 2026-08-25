@@ -1,0 +1,25 @@
+{
+  "id": "medical.ko.v1",
+  "domain": "medical",
+  "approved": false,
+  "jurisdiction": "KR",
+  "reviewedAt": "2026-08-25",
+  "sourceCheckedAt": "2026-08-25",
+  "approval": {
+    "status": "PENDING_OWNER_REVIEW",
+    "owner": "UNASSIGNED",
+    "approvedAt": null
+  },
+  "sources": [
+    {
+      "title": "의료법 제56조(의료광고의 금지 등)",
+      "publisher": "국가법령정보센터",
+      "url": "https://www.law.go.kr/lsLinkCommonInfo.do?chrClsCd=010202&lsJoLnkSeq=1032849787"
+    }
+  ],
+  "institutionTerms": ["피부과", "치과", "정신과", "안과", "성형외과", "정형외과", "재활의학과", "한의원", "병원", "의원"],
+  "treatmentTerms": ["보톡스", "필러", "임플란트", "치아교정", "치아 교정", "스케일링", "도수치료", "도수 치료", "물리치료", "물리 치료", "라식", "라섹", "마운자로", "위고비", "탈모약", "처방약", "주사치료", "주사 치료", "진료", "수술"],
+  "claimTerms": ["치료", "완치", "효과", "개선", "통증 감소", "부작용 없음", "안전", "추천"],
+  "blockedClaimTerms": ["완치 보장", "효과 보장", "부작용이 없다", "무조건 낫", "100% 치료"],
+  "notice": "의료 관련 글은 개인이 직접 확인한 이용 사실만 작성하며 치료 효과·진단·보장·추천을 자동으로 만들지 않아요."
+}

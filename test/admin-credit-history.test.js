@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const payment = require('../routes/payment');
 
-const { serializeOrderDoc, splitAdminCreditHistory } = payment.adminHistoryPolicy;
+const { creditLedgerDelta, serializeOrderDoc, splitAdminCreditHistory } = payment.adminHistoryPolicy;
 
 test('관리자 사용자 원장은 사용 내역과 충전 내역을 중복 없이 분리한다', () => {
   const charge = { id: 'charge-1', type: 'charge', amount: 110 };
@@ -35,4 +35,8 @@ test('신규 결제의 paymentKeyPresent와 구형 credits 필드를 관리자 �
 
   assert.equal(row.safeCredits, 110);
   assert.equal(row.paymentKey, 'present');
+});
+
+test('관리자 차감 원장은 실제 잔액 변화량만 감사 합계에 반영한다', () => {
+  assert.equal(creditLedgerDelta({ type: 'admin_adjust', amount: -30, used: 30 }), -30);
 });

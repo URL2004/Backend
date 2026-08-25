@@ -7,6 +7,11 @@ const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const metaConversions = require('../lib/metaConversions');
 const { realClientIp } = require('../lib/clientip');
+const {
+  paymentKeyHash,
+  providerResultSummary,
+  webhookPaymentValidation
+} = require('../lib/paymentReconciliation');
 
 const router = express.Router();
 
@@ -51,22 +56,6 @@ function requireCronSecret(req, res) {
   return secret;
 }
 
-function requireWebhookSecret(req, res) {
-  const secret = (process.env.TOSS_WEBHOOK_SECRET || '').trim();
-  if (!secret) {
-    logger.error('toss.webhook_secret_missing');
-    res.status(503).json({ error: 'webhook disabled: TOSS_WEBHOOK_SECRET is not configured' });
-    return null;
-  }
-  const supplied = req.get('x-gp-webhook-secret') || req.get('x-webhook-secret') || bearerToken(req) || '';
-  if (!supplied || supplied !== secret) {
-    logger.warn('toss.webhook_secret_rejected');
-    res.status(403).json({ error: 'forbidden' });
-    return null;
-  }
-  return secret;
-}
-
 async function tossIssueBillingKey({ authKey, customerKey }) {
   const res = await fetch('https://api.tosspayments.com/v1/billing/authorizations/issue', {
     method: 'POST',
@@ -97,6 +86,58 @@ async function tossDeleteBillingKey(billingKey) {
     });
     return res.ok;
   } catch { return false; }
+}
+
+async function tossQueryPayment(paymentKey) {
+  try {
+    const res = await fetch(`https://api.tosspayments.com/v1/payments/${encodeURIComponent(paymentKey)}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Basic ${tossBasicToken()}` }
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, status: res.status, data };
+  } catch (error) {
+    return { ok: false, status: 0, data: {}, error };
+  }
+}
+
+async function verifyTossWebhookEvent(eventType, reportedData) {
+  const data = reportedData && typeof reportedData === 'object' ? reportedData : {};
+  if (eventType === 'PAYMENT_STATUS_CHANGED' || eventType === 'CANCEL_STATUS_CHANGED') {
+    if (!data.paymentKey) return { ok: false, reason: 'payment_key_missing' };
+    const queried = await tossQueryPayment(data.paymentKey);
+    if (!queried.ok) {
+      throw Object.assign(new Error('TOSS_WEBHOOK_PAYMENT_QUERY_FAILED'), {
+        providerStatus: queried.status,
+        provider: providerResultSummary(queried.data),
+        cause: queried.error
+      });
+    }
+    const validation = webhookPaymentValidation(queried.data, data);
+    if (!validation.ok) return { ok: false, reason: validation.reasons.join(',') };
+    return {
+      ok: true,
+      data: {
+        ...data,
+        paymentKey: queried.data.paymentKey,
+        orderId: queried.data.orderId,
+        status: queried.data.status
+      }
+    };
+  }
+
+  if (eventType === 'BILLING_DELETED') {
+    if (!data.billingKey) return { ok: false, reason: 'billing_key_missing' };
+    const secretSnapshot = await db.collection('billingSecrets')
+      .where('billingKey', '==', data.billingKey)
+      .limit(1)
+      .get();
+    if (secretSnapshot.empty) return { ok: false, reason: 'billing_key_unknown' };
+    return { ok: true, data, billingUid: secretSnapshot.docs[0].id };
+  }
+
+  return { ok: false, reason: 'unsupported_event_type' };
 }
 
 // ★ C-03: 결제 비밀(billingKey)은 서버 전용 billingSecrets/{uid}에서 읽는다.
@@ -538,10 +579,27 @@ router.get('/subscription/status', async (req, res) => {
 // 등록 URL: https://ai-backend-3xtk.onrender.com/toss/webhook
 // 구독 이벤트: PAYMENT_STATUS_CHANGED, BILLING_DELETED, CANCEL_STATUS_CHANGED
 router.post('/toss/webhook', async (req, res) => {
-  if (!requireWebhookSecret(req, res)) return;
-
   const body = req.body || {};
-  const { eventType, data } = body;
+  const { eventType } = body;
+  let verification;
+  try {
+    verification = await verifyTossWebhookEvent(eventType, body.data);
+  } catch (err) {
+    // General payment webhooks have no signature. A provider API re-query is the authenticity check.
+    // A transient query failure must not be acknowledged so Toss retries the event.
+    logger.error('toss.webhook_verification_unavailable', {
+      eventType,
+      providerStatus: err.providerStatus || null,
+      provider: err.provider || null,
+      err
+    });
+    return res.status(503).send('verification unavailable');
+  }
+  if (!verification.ok) {
+    logger.warn('toss.webhook_ignored', { eventType, reason: verification.reason });
+    return res.status(200).send('IGNORED');
+  }
+  const data = verification.data;
 
   // ★ C-07: 이벤트를 먼저 영속화(webhookInbox)한 뒤 200을 응답한다 — 200 후 처리 실패로 인한 이벤트 유실 방지.
   //   같은 이벤트 재전송(최대 7회)은 본문 해시 멱등 키로 한 번만 처리한다(중복 권한 변경 차단).
@@ -556,6 +614,7 @@ router.post('/toss/webhook', async (req, res) => {
       t.set(inboxRef, {
         eventType: eventType || null,
         orderId: data?.orderId || null,
+        verified: true,
         status: 'received',
         receivedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
@@ -588,7 +647,7 @@ router.post('/toss/webhook', async (req, res) => {
       if (!snap.exists) return;
       await orderRef.update({
         webhookStatus: status,
-        webhookPaymentKey: paymentKey || null,
+        webhookPaymentKeyPresent: Boolean(paymentKey),
         webhookUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
       // 외부에서 결제가 취소/만료된 경우 사용자 구독 정리
@@ -603,31 +662,25 @@ router.post('/toss/webhook', async (req, res) => {
         }
       }
     } else if (eventType === 'BILLING_DELETED') {
-      const { billingKey } = data || {};
-      if (!billingKey) return;
-      // ★ C-03: billingKey는 billingSecrets에 있으므로 거기서 uid를 찾는다(없으면 구 users 쿼리 폴백).
-      let targetRef = null;
-      const bs = await db.collection('billingSecrets').where('billingKey', '==', billingKey).limit(1).get();
-      if (!bs.empty) targetRef = db.collection('users').doc(bs.docs[0].id);
-      else {
-        const found = await db.collection('users').where('subscription.billingKey', '==', billingKey).limit(1).get();
-        if (!found.empty) targetRef = found.docs[0].ref;
-      }
-      if (targetRef) {
-        logger.warn('toss.webhook_billing_deleted', { uid: targetRef.id });
-        await targetRef.update({
-          'subscription.status': 'cancelled',
-          'subscription.billingKey': null,
-          'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
-          'subscription.billingKeyDeleted': true
-        });
-        await db.collection('billingSecrets').doc(targetRef.id).delete().catch(() => {});
-      }
+      const targetRef = db.collection('users').doc(verification.billingUid);
+      logger.warn('toss.webhook_billing_deleted', { uid: targetRef.id });
+      await targetRef.update({
+        'subscription.status': 'cancelled',
+        'subscription.billingKey': null,
+        'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
+        'subscription.billingKeyDeleted': true
+      });
+      await db.collection('billingSecrets').doc(targetRef.id).delete().catch(() => {});
     } else if (eventType === 'CANCEL_STATUS_CHANGED') {
-      const { paymentKey, cancelStatus } = data || {};
+      const { paymentKey, cancelStatus, orderId, status } = data || {};
       if (!paymentKey) return;
       await db.collection('webhookLogs').add({
-        eventType, paymentKey, cancelStatus,
+        eventType,
+        paymentKeyHash: paymentKeyHash(paymentKey),
+        paymentKeyPresent: true,
+        orderId: orderId || null,
+        providerStatus: status || null,
+        cancelStatus: cancelStatus || null,
         receivedAt: admin.firestore.FieldValue.serverTimestamp()
       });
     }

@@ -174,10 +174,11 @@ function promptCacheRetention(config, model) {
 function supportsExtendedPromptCache(model) {
   const m = String(model || '').toLowerCase();
   if (!m) return false;
-  if (/^gpt-5\.4(?:-\d{4}-\d{2}-\d{2})?$/.test(m)) return true;
+  if (/^gpt-5\.6(?:-|$)/.test(m)) return true;
+  if (/^gpt-5\.5(?:-|$)/.test(m)) return true;
   if (/^gpt-5\.2(?:-|$)/.test(m)) return true;
   if (/^gpt-5\.1(?:-|$)/.test(m)) return true;
-  if (/^gpt-5(?:-|$)/.test(m) && !/^gpt-5\.4-(mini|nano)(?:-|$)/.test(m)) return true;
+  if (/^gpt-5(?:-|$)/.test(m)) return true;
   if (/^gpt-4\.1(?:-|$)/.test(m)) return true;
   return false;
 }

@@ -4,7 +4,7 @@
 const { createCopykillerSafeHumanizer } = require('./src');
 const { DEFAULT_POLICY } = require('./src/policy');
 
-const VERSION = 'humanizing-engine-v9-cksafe';
+const VERSION = 'humanizing-engine-v9-registerlock';
 const PROFILE = 'v6_engine';
 
 function buildStructuredTool() {
@@ -128,7 +128,13 @@ function policyForMode(mode) {
     // Admin lab should exercise the V9 model path instead of returning a local-only minimal result.
     lowRiskThreshold: -1,
     minimalPreserveThreshold: -1,
-    temperature: mode === 'formal' ? 0.28 : DEFAULT_POLICY.temperature
+    temperature: mode === 'formal' ? 0.42 : DEFAULT_POLICY.temperature,
+    length: {
+      ...DEFAULT_POLICY.length,
+      // Blog bodies above a few paragraphs need block-level accountability.
+      // Full mode tended to edit only the opening paragraphs and copy the rest.
+      fullMaxChars: mode === 'formal' ? 250 : DEFAULT_POLICY.length.fullMaxChars
+    }
   };
 }
 

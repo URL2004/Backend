@@ -4,8 +4,8 @@ const crypto = require('crypto');
 const { logger } = require('../lib/logger');
 
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
-const DEFAULT_MODEL = process.env.OPENAI_MODEL_MAIN || process.env.GPT_MODEL_MAIN || 'gpt-5.4';
-const DEFAULT_FAST_MODEL = process.env.OPENAI_MODEL_FAST || process.env.GPT_MODEL_FAST || 'gpt-5.4-mini';
+const DEFAULT_MODEL = process.env.OPENAI_MODEL_MAIN || process.env.GPT_MODEL_MAIN || 'gpt-5.6-terra';
+const DEFAULT_FAST_MODEL = process.env.OPENAI_MODEL_FAST || process.env.GPT_MODEL_FAST || 'gpt-5.6-luna';
 
 function modelFor(kind = 'main') {
   if (kind === 'fast') return DEFAULT_FAST_MODEL;

@@ -7,7 +7,7 @@ const {
   promptCacheDiagnostics,
   promptCacheKey
 } = require('../engine-gpt-prod/openaiClient');
-const { addUsage, emptyUsage } = require('../engine-gpt-prod/usageCost');
+const { addUsage, emptyUsage, priceFor, estimateUsd } = require('../engine-gpt-prod/usageCost');
 
 const CACHE_ENV_KEYS = [
   'OPENAI_PROMPT_CACHE_KEY_PREFIX',
@@ -33,7 +33,7 @@ function withCacheEnv(values, fn) {
 
 function cacheMeta(overrides = {}) {
   return {
-    model: 'gpt-5.4-mini',
+    model: 'gpt-5.6-luna',
     task: 'humanize',
     mode: 'assignment',
     profile: 'gpt_prod_v1',
@@ -98,7 +98,7 @@ test('normalizeUsage records cache reads and writes from Responses usage', () =>
     output_tokens_details: {
       reasoning_tokens: 120
     }
-  }, 'gpt-5.4-mini');
+  }, 'gpt-5.6-luna');
 
   assert.equal(usage.inputTokens, 2006);
   assert.equal(usage.cachedInputTokens, 1920);
@@ -116,7 +116,7 @@ test('normalizeUsage supports Chat Completions token field names', () => {
       cached_tokens: 1024,
       cache_write_tokens: 128
     }
-  }, 'gpt-5.4-mini');
+  }, 'gpt-5.6-luna');
 
   assert.equal(usage.inputTokens, 1600);
   assert.equal(usage.cachedInputTokens, 1024);
@@ -182,4 +182,23 @@ test('chunk usage aggregation preserves cache write tokens', () => {
   assert.equal(total.cacheWriteTokens, 384);
   assert.equal(total.cachedInputTokens, 1000);
   assert.equal(total.inputTokens, 3200);
+});
+
+test('GPT-5.6 role prices use the current Luna and Terra API rates', () => {
+  assert.deepEqual(priceFor('gpt-5.6-luna'), {
+    input: 1, cachedInput: 0.1, cacheWriteInput: 1.25, output: 6
+  });
+  assert.deepEqual(priceFor('gpt-5.6-terra'), {
+    input: 2.5, cachedInput: 0.25, cacheWriteInput: 3.125, output: 15
+  });
+});
+
+test('GPT-5.6 cache writes use the 1.25x input rate', () => {
+  const usd = estimateUsd('gpt-5.6-luna', {
+    inputTokens: 1000000,
+    cachedInputTokens: 200000,
+    cacheWriteTokens: 300000,
+    outputTokens: 100000
+  });
+  assert.equal(usd, 1.495);
 });

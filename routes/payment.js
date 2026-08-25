@@ -8,6 +8,12 @@ const { getRevenue } = require('../lib/revenue');
 const detectCalibration = require('../lib/detectCalibration');
 const basicHumanizeExperiment = require('../lib/basicHumanizeExperiment');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
+const {
+  CREDIT_PRODUCTS,
+  buildCheckoutContext,
+  isRetainedPaidOrder,
+  resolveFirstPurchaseGrant
+} = require('../lib/conversionOffers');
 const gptAnalyze = require('./analyze-gpt');
 
 const router = express.Router();
@@ -23,13 +29,53 @@ function tossBasicToken(res) {
   return Buffer.from(secretKey + ':').toString('base64');
 }
 
+async function getCreditOrdersForUser(uid, limit = 100) {
+  const snap = await db.collection('orders').where('uid', '==', uid).limit(limit).get();
+  return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+}
+
+router.post('/checkout-context', async (req, res) => {
+  const idToken = req.body && req.body.idToken;
+  if (!idToken) return res.status(401).json({ error: '로그인이 필요합니다.' });
+
+  let uid;
+  try {
+    const decoded = await verifyFirebaseIdToken(idToken);
+    uid = decoded.uid;
+    setLogContext({ uid });
+  } catch (e) {
+    return res.status(401).json({ error: '로그인 정보가 만료됐어요. 다시 로그인해 주세요.' });
+  }
+
+  try {
+    const [userSnap, orders] = await Promise.all([
+      db.collection('users').doc(uid).get(),
+      getCreditOrdersForUser(uid)
+    ]);
+    const user = userSnap.exists ? userSnap.data() : {};
+    return res.json({
+      ok: true,
+      ...buildCheckoutContext({
+        uid,
+        credits: user.credits,
+        orders,
+        conversion: user.conversion || {}
+      })
+    });
+  } catch (err) {
+    logger.error('payment.checkout_context_failed', { uid, err });
+    return res.status(500).json({ error: '결제 혜택을 불러오지 못했어요.' });
+  }
+});
+
 router.post('/confirm-payment', async (req, res) => {
   const { paymentKey, orderId, amount, customerEmail, uid, idToken } = req.body;
 
   // 서버에서 금액 기준으로 크레딧 직접 계산
-  const CREDIT_MAP = { 2900: 110, 8700: 330, 14500: 600, 29000: 1300, 58000: 2700 };
-  const safeCredits = CREDIT_MAP[parseInt(amount)];
-  if (!safeCredits) {
+  const safeAmount = parseInt(amount, 10);
+  const product = CREDIT_PRODUCTS[safeAmount];
+  const baseCredits = product && product.credits;
+  if (!baseCredits) {
     return res.status(400).json({ error: "유효하지 않은 결제 금액입니다." });
   }
 
@@ -69,21 +115,39 @@ router.post('/confirm-payment', async (req, res) => {
       // 단일 트랜잭션으로 orders + credits + creditHistory 원자적 처리
       const orderRef = db.collection('orders').doc(orderId);
       const userRef = db.collection('users').doc(verifiedUid);
+      const priorOrders = await getCreditOrdersForUser(verifiedUid);
+      const hasPriorPaidOrder = priorOrders.some(isRetainedPaidOrder);
 
       try {
-        await db.runTransaction(async (transaction) => {
+        const granted = await db.runTransaction(async (transaction) => {
           // === 모든 READ 먼저 ===
           const orderSnap = await transaction.get(orderRef);
           if (orderSnap.exists) {
             throw new Error('이미 처리된 결제입니다.');
           }
           const userSnap = await transaction.get(userRef);
-          const currentCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
-          const newCredits = currentCredits + safeCredits;
+          const userData = userSnap.exists ? userSnap.data() : {};
+          const currentCredits = userData.credits || 0;
+          const conversion = userData.conversion || {};
+          const firstPurchase = resolveFirstPurchaseGrant({
+            uid: verifiedUid,
+            hasPriorPaidOrder,
+            conversion
+          });
+          const isFirstPurchase = firstPurchase.isFirstPurchase;
+          const bonusCredits = firstPurchase.bonusCredits;
+          const totalCredits = baseCredits + bonusCredits;
+          const newCredits = currentCredits + totalCredits;
 
           // === 모든 WRITE 후 ===
           transaction.set(orderRef, {
-            uid: verifiedUid, amount, safeCredits,
+            uid: verifiedUid,
+            amount: safeAmount,
+            safeCredits: totalCredits,
+            baseCredits,
+            firstPurchaseBonusCredits: bonusCredits,
+            offerExperimentKey: firstPurchase.experimentKey,
+            offerExperimentVariant: firstPurchase.experimentVariant,
             paymentKeyPresent: true,   // ★ C-04: paymentKey 원문은 사용자가 읽는 주문 문서가 아니라 서버전용으로 분리
             customerEmail: typeof customerEmail === 'string' ? customerEmail.slice(0, 160) : '',
             status: 'paid',
@@ -95,35 +159,75 @@ router.post('/confirm-payment', async (req, res) => {
           });
 
           if (userSnap.exists) {
-            transaction.update(userRef, {
+            const userUpdate = {
               credits: newCredits,
               lastPayment: admin.firestore.FieldValue.serverTimestamp()
-            });
+            };
+            if (isFirstPurchase) {
+              userUpdate['conversion.firstPurchaseOrderId'] = orderId;
+              userUpdate['conversion.firstPurchaseOfferVariant'] = firstPurchase.experimentVariant;
+              userUpdate['conversion.firstPurchaseExperimentKey'] = firstPurchase.experimentKey;
+              userUpdate['conversion.firstPurchaseAt'] = admin.firestore.FieldValue.serverTimestamp();
+              if (bonusCredits > 0) {
+                userUpdate['conversion.firstPurchaseBonusCredits'] = bonusCredits;
+              }
+            }
+            transaction.update(userRef, userUpdate);
           } else {
             transaction.set(userRef, {
               credits: newCredits,
-              lastPayment: admin.firestore.FieldValue.serverTimestamp()
+              lastPayment: admin.firestore.FieldValue.serverTimestamp(),
+              conversion: isFirstPurchase ? {
+                firstPurchaseOrderId: orderId,
+                firstPurchaseOfferVariant: firstPurchase.experimentVariant,
+                firstPurchaseExperimentKey: firstPurchase.experimentKey,
+                firstPurchaseAt: admin.firestore.FieldValue.serverTimestamp(),
+                firstPurchaseBonusCredits: bonusCredits
+              } : {}
             });
           }
 
           const historyRef = db.collection('users').doc(verifiedUid)
             .collection('creditHistory').doc();
           transaction.set(historyRef, {
-            type: 'charge', used: 0, amount: safeCredits,
+            type: 'charge', used: 0, amount: totalCredits,
             remaining: newCredits, plan: null,
+            orderId,
+            baseCredits,
+            bonusCredits,
             createdAt: admin.firestore.FieldValue.serverTimestamp()
           });
+          return {
+            baseCredits,
+            bonusCredits,
+            totalCredits,
+            newBalance: newCredits,
+            experimentKey: firstPurchase.experimentKey,
+            experimentVariant: firstPurchase.experimentVariant
+          };
         });
 
         logger.info('payment.confirmed', {
           uid: verifiedUid,
           orderId,
-          amount: parseInt(amount, 10),
-          credits: safeCredits,
+          amount: safeAmount,
+          credits: granted.totalCredits,
+          baseCredits: granted.baseCredits,
+          firstPurchaseBonusCredits: granted.bonusCredits,
+          offerExperimentVariant: granted.experimentVariant,
           customerEmail
         });
-        discord.paymentDone({ uid: verifiedUid, amount: parseInt(amount, 10), credits: safeCredits, kind: '크레딧 충전', name: customerEmail });
-        res.json({ ok: true, message: "충전 성공", creditAmount: safeCredits });
+        discord.paymentDone({ uid: verifiedUid, amount: safeAmount, credits: granted.totalCredits, kind: '크레딧 충전', name: customerEmail });
+        res.json({
+          ok: true,
+          message: '충전 성공',
+          creditAmount: granted.totalCredits,
+          baseCreditAmount: granted.baseCredits,
+          bonusCredits: granted.bonusCredits,
+          newBalance: granted.newBalance,
+          experimentKey: granted.experimentKey,
+          experimentVariant: granted.experimentVariant
+        });
       } catch (e) {
         if (e.message === '이미 처리된 결제입니다.') {
           logger.warn('payment.duplicate_confirm_blocked', { uid: verifiedUid, orderId, amount: parseInt(amount, 10) });

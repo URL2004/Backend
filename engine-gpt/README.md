@@ -19,8 +19,8 @@ GPT/OpenAI Responses API 전용 휴머나이징 엔진입니다.
 ## 환경변수
 
 - `OPENAI_API_KEY`
-- `OPENAI_MODEL_MAIN` 기본 `gpt-5.4`
-- `OPENAI_MODEL_FAST` 기본 `gpt-5.4-mini`
+- `OPENAI_MODEL_MAIN` 기본 `gpt-5.6-terra`
+- `OPENAI_MODEL_FAST` 기본 `gpt-5.6-luna`
 - `OPENAI_REASONING_MAIN` 기본 `low`
 - `OPENAI_REASONING_HUMANIZE` 기본 `low`
 - `OPENAI_TEXT_VERBOSITY` 기본 `medium`

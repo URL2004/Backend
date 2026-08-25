@@ -2,7 +2,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { matchCreditLedgers } = require('../scripts/payment-reconciliation-audit');
+const { firestoreRows, matchCreditLedgers } = require('../scripts/payment-reconciliation-audit');
+
+test('결제 컬렉션 종류가 구형 문서의 kind 필드보다 우선한다', () => {
+  const rows = firestoreRows({
+    docs: [{ id: 'order_1234567890', data: () => ({ kind: 'order', amount: 2900 }) }]
+  }, 'credit');
+  assert.deepEqual(rows, [{ id: 'order_1234567890', kind: 'credit', amount: 2900 }]);
+});
 
 test('구형 orderId 없는 충전 원장은 전역 최단거리로 배정해 다음 주문의 정확한 짝을 빼앗지 않는다', () => {
   const base = Date.parse('2026-04-01T00:00:00Z');

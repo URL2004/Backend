@@ -82,6 +82,15 @@ try {
       amount: 2900,
       status: 'approved'
     });
+    await setDoc(doc(db, 'paymentSecrets', 'order-alice'), {
+      uid: 'alice',
+      paymentKey: 'server-only-payment-key'
+    });
+    await setDoc(doc(db, 'paymentIntents', 'order-alice'), {
+      uid: 'alice',
+      amount: 2900,
+      status: 'confirming'
+    });
     await setDoc(doc(db, 'posts', 'post-alice'), {
       title: '앨리스 글',
       body: '본문',
@@ -281,6 +290,14 @@ try {
   await run('orders: owner can read own order, other user cannot', async () => {
     await assertSucceeds(getDoc(doc(aliceDb, 'orders', 'order-alice')));
     await assertFails(getDoc(doc(bobDb, 'orders', 'order-alice')));
+  });
+
+  await run('payment reconciliation: owner and admin cannot access server-only documents', async () => {
+    for (const collectionName of ['paymentSecrets', 'paymentIntents']) {
+      await assertFails(getDoc(doc(aliceDb, collectionName, 'order-alice')));
+      await assertFails(getDoc(doc(adminDb, collectionName, 'order-alice')));
+      await assertFails(setDoc(doc(aliceDb, collectionName, 'forged-order'), { uid: 'alice' }));
+    }
   });
 
   await run('anonymous: cannot read user document', async () => {

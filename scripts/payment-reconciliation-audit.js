@@ -141,7 +141,9 @@ async function fetchTransactions(startDate, endDate) {
 }
 
 function firestoreRows(snapshot, kind) {
-  return snapshot.docs.map(doc => ({ id: doc.id, kind, ...doc.data() }));
+  // Persisted legacy documents may contain kind="order". The collection being
+  // scanned is authoritative so that cancellation credit math stays consistent.
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), kind }));
 }
 
 async function scanUserLedgers(userDocs) {
@@ -677,6 +679,7 @@ module.exports = {
   auditCreditContinuity,
   canonicalCreditDelta,
   fingerprint,
+  firestoreRows,
   groupedCounts,
   matchCreditLedgers,
   orderKind,

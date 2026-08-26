@@ -988,8 +988,19 @@ function isPossiblyMissingTerminalPunctuation(value) {
 
 function hasUnclosedPairs(value) {
   const text = String(value || '');
-  const pairs = [['(', ')'], ['[', ']'], ['{', '}'], ['“', '”'], ['「', '」'], ['『', '』']];
-  return pairs.some(([opening, closing]) => countLiteral(text, opening) !== countLiteral(text, closing));
+  const pairs = [['(', ')'], ['[', ']'], ['{', '}'], ['「', '」'], ['『', '』']];
+  if (pairs.some(([opening, closing]) => countLiteral(text, opening) !== countLiteral(text, closing))) {
+    return true;
+  }
+  // 모바일·워드 붙여넣기에서는 여는 부호는 ASCII이고 닫는 부호만 곡선형인
+  // `"인용문”`이 자주 생긴다. 시각적으로 닫힌 이 쌍을 미완성 인용으로
+  // 오인하면 모델도 뒤 문단을 인용 내부로 처리해 잘라낼 수 있다.
+  const withoutClosedQuotes = text
+    .replace(/“[^”"\n]{1,}[”"]|"[^"”\n]{1,}["”]/gu, '')
+    .replace(/‘[^’'\n]{1,}[’']|(?<![\p{L}\p{N}])'[^'’\n]{1,}['’]/gu, '');
+  if (/[“”‘’]/u.test(withoutClosedQuotes)) return true;
+  const bareDoubleQuotes = (withoutClosedQuotes.match(/"/gu) || []).length;
+  return bareDoubleQuotes % 2 !== 0;
 }
 
 function countLiteral(value, token) {

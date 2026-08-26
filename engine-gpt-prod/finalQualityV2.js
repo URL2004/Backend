@@ -11,6 +11,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
 const humanizationDepth = require('./humanizationDepth');
 const legalAudit = require('./legalAudit');
+const layoutStructure = require('./layoutStructure');
 const koreanRefinement = require('./koreanRefinement');
 const endingStyle = require('./endingStyleAudit');
 const {
@@ -25,6 +26,7 @@ const {
 
 const POLISH_REQUIRED_ISSUE_CODES = new Set([
   'missing_sentence_space',
+  'hangul_connective_acronym_glue',
   'closed_quote_spacing',
   'closed_quote_particle_spacing',
   'message_spelling',
@@ -366,7 +368,11 @@ async function runSemanticDocumentAudit({
   const pairs = buildReviewPairs(source, outputText);
   const outputs = [];
   const reports = [];
-  let remainingRepairRounds = 1;
+  // 장문을 여러 구간으로 나눠 검사하면서 수리 예산은 문서 전체 1회로
+  // 묶여 있었다. 첫 위반 뒤의 누락·왜곡은 판정만 하고 그대로 전달되는
+  // 구조였으므로, 실제 위반이 있는 구간에 한해 최대 3곳까지 국소 수리한다.
+  const repairRoundBudget = pairs.length <= 1 ? 1 : Math.min(3, pairs.length);
+  let remainingRepairRounds = repairRoundBudget;
   for (const pair of pairs) {
     try {
       const pairDiscourseSignals = pairs.length === 1
@@ -376,14 +382,19 @@ async function runSemanticDocumentAudit({
         lang,
         signal,
         config,
-        maxRounds: remainingRepairRounds,
+        // 한 구간이 문서 전체 예산을 독점하지 않게 각 구간은 1회만 수리한다.
+        // 남은 위반은 상위 판정으로 확인하되 다음 문제 구간에도 예산을 남긴다.
+        maxRounds: remainingRepairRounds > 0 ? 1 : 0,
         allowedExtra,
         mode,
         discourseSignals: pairDiscourseSignals,
         safetyIdentifier,
         documentProfile
       });
-      outputs.push(report.outputText || pair.output);
+      outputs.push(restoreReviewPairBoundaryWhitespace(
+        pair.output,
+        report.outputText || pair.output
+      ));
       remainingRepairRounds = Math.max(0, remainingRepairRounds - (report.rounds || 0));
       reports.push({
         index: pair.index,
@@ -412,6 +423,7 @@ async function runSemanticDocumentAudit({
     pass: residual.length === 0,
     uncertain: residual.some(report => report.uncertain || report.skipped),
     repairCount: reports.reduce((sum, report) => sum + (report.rounds || 0), 0),
+    repairRoundBudget,
     repairRejected: reports.some(report => report.repairRejected),
     escalated: reports.some(report => report.escalated),
     sectionCount: reports.length,
@@ -422,21 +434,125 @@ async function runSemanticDocumentAudit({
   };
 }
 
-function buildReviewPairs(source, outputText, maxChars = 9000, overlap = 600) {
+function restoreReviewPairBoundaryWhitespace(originalPart, candidatePart) {
+  const original = String(originalPart || '');
+  const candidate = String(candidatePart || '');
+  if (!candidate.trim()) return original;
+  const leading = (original.match(/^\s*/u) || [''])[0];
+  const trailing = (original.match(/\s*$/u) || [''])[0];
+  return `${leading}${candidate.trim()}${trailing}`;
+}
+
+function buildReviewPairs(source, outputText, maxChars = 9000) {
   const rawSource = String(source || '');
   const rawOutput = String(outputText || '');
   if (rawSource.length <= 12000 && rawOutput.length <= 12000) {
     return [{ index: 0, sourceContext: rawSource, output: rawOutput }];
   }
+  const headingAligned = buildHeadingAlignedReviewPairs(rawSource, rawOutput, maxChars);
+  if (headingAligned.length >= 2) return headingAligned;
+
+  // 제목이 없는 장문은 양쪽을 각각 같은 개수의 문단·문장 경계에서 나눈다.
+  // 예전처럼 SOURCE만 600자씩 겹치면 한 구간의 수리 모델이 겹친 원문을
+  // 다음 OUTPUT에 다시 복사해 문단·제목이 중복될 수 있다. 모든 원문 문자는
+  // 정확히 한 쌍에만 속하게 해 교차 구간 복사를 구조적으로 없앤다.
   const sectionCount = Math.max(2, Math.ceil(Math.max(rawSource.length, rawOutput.length) / maxChars));
+  const sourceParts = splitIntoSectionCount(rawSource, sectionCount);
   const outputParts = splitIntoSectionCount(rawOutput, sectionCount);
-  return outputParts.map((part, index) => {
-    const relativeStart = rawOutput.length ? part.start / rawOutput.length : 0;
-    const relativeEnd = rawOutput.length ? part.end / rawOutput.length : 1;
-    const start = Math.max(0, Math.floor(rawSource.length * relativeStart) - overlap);
-    const end = Math.min(rawSource.length, Math.ceil(rawSource.length * relativeEnd) + overlap);
-    return { index, sourceContext: rawSource.slice(start, end), output: part.text };
-  });
+  return outputParts.map((part, index) => ({
+    index,
+    sourceContext: sourceParts[index]?.text || '',
+    output: part.text,
+    alignment: 'relative_non_overlapping'
+  }));
+}
+
+function buildHeadingAlignedReviewPairs(source, output, maxChars) {
+  const sourceHeadings = reviewHeadingAnchors(source);
+  const outputHeadings = reviewHeadingAnchors(output);
+  if (!sourceHeadings.length || !outputHeadings.length) return [];
+
+  const matched = [];
+  let outputCursor = 0;
+  for (const sourceHeading of sourceHeadings) {
+    let found = -1;
+    for (let index = outputCursor; index < outputHeadings.length; index += 1) {
+      if (outputHeadings[index].key === sourceHeading.key) {
+        found = index;
+        break;
+      }
+    }
+    if (found < 0) continue;
+    matched.push({ sourceStart: sourceHeading.start, outputStart: outputHeadings[found].start });
+    outputCursor = found + 1;
+  }
+  // 목차 한두 행만 우연히 일치하는 문서는 비례 분할이 더 안정적이다.
+  if (matched.length < 2) return [];
+
+  const boundaries = [{ sourceStart: 0, outputStart: 0 }];
+  for (const item of matched) {
+    const previous = boundaries[boundaries.length - 1];
+    if (item.sourceStart <= previous.sourceStart || item.outputStart <= previous.outputStart) continue;
+    boundaries.push(item);
+  }
+  boundaries.push({ sourceStart: source.length, outputStart: output.length });
+  if (boundaries.length < 4) return [];
+
+  const atoms = [];
+  for (let index = 0; index < boundaries.length - 1; index += 1) {
+    const left = boundaries[index];
+    const right = boundaries[index + 1];
+    const sourceText = source.slice(left.sourceStart, right.sourceStart);
+    const outputText = output.slice(left.outputStart, right.outputStart);
+    if (!sourceText && !outputText) continue;
+    atoms.push({ sourceText, outputText });
+  }
+
+  const pairs = [];
+  let sourceContext = '';
+  let outputText = '';
+  const flush = () => {
+    if (!sourceContext && !outputText) return;
+    pairs.push({ sourceContext, output: outputText, alignment: 'shared_heading' });
+    sourceContext = '';
+    outputText = '';
+  };
+  for (const atom of atoms) {
+    const atomSize = Math.max(atom.sourceText.length, atom.outputText.length);
+    if (atomSize > maxChars) {
+      flush();
+      const count = Math.max(2, Math.ceil(atomSize / maxChars));
+      const sourceParts = splitIntoSectionCount(atom.sourceText, count);
+      const outputParts = splitIntoSectionCount(atom.outputText, count);
+      for (let index = 0; index < count; index += 1) {
+        pairs.push({
+          sourceContext: sourceParts[index]?.text || '',
+          output: outputParts[index]?.text || '',
+          alignment: 'shared_heading_large_section'
+        });
+      }
+      continue;
+    }
+    const combinedSize = Math.max(
+      sourceContext.length + atom.sourceText.length,
+      outputText.length + atom.outputText.length
+    );
+    if ((sourceContext || outputText) && combinedSize > maxChars) flush();
+    sourceContext += atom.sourceText;
+    outputText += atom.outputText;
+  }
+  flush();
+  return pairs.map((pair, index) => ({ index, ...pair }));
+}
+
+function reviewHeadingAnchors(value) {
+  return layoutStructure.buildLineRecords(value)
+    .filter(record => !record.blank && ['title', 'heading', 'legal_clause'].includes(String(record.role || '')))
+    .map(record => ({
+      start: Number(record.start || 0),
+      key: String(record.text || '').normalize('NFKC').replace(/[\s\u200B\uFEFF]+/gu, '').toLowerCase()
+    }))
+    .filter(item => item.key.length >= 2);
 }
 
 function splitIntoSectionCount(value, count) {

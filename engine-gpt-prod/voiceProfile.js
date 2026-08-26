@@ -12,7 +12,7 @@ const OUR_LEXICAL_NOUNS = Object.freeze([
 // 영문 apostrophe에도 쓰인다. 문자·숫자에 바로 붙은 기호를 여는/닫는
 // 인용부호로 잡으면 멀리 있는 다음 작은따옴표까지 한 인용으로 삼아,
 // 인용 복원 단계가 그 사이 본문 전체를 삭제할 수 있다.
-const QUOTED_SPAN_RE = /“[^”\n]{2,}”|‘[^’\n]{2,}’|"[^"\n]{2,}"|(?<![\p{L}\p{N}])'[^'\n]{2,}'|「[^」\n]{2,}」|『[^』\n]{2,}』|《[^》\n]{2,}》|〈[^〉\n]{2,}〉/gu;
+const QUOTED_SPAN_RE = /“[^”"\n]{2,}[”"]|"[^"”\n]{2,}["”]|‘[^’'\n]{2,}[’']|(?<![\p{L}\p{N}])'[^'’\n]{2,}['’]|「[^」\n]{2,}」|『[^』\n]{2,}』|《[^》\n]{2,}》|〈[^〉\n]{2,}〉/gu;
 
 function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles = [], formatProfile = null, mode = '' } = {}) {
   const context = normalizeDocumentContext(documentProfile, safetyProfiles, formatProfile);

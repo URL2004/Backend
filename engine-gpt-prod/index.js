@@ -61,7 +61,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.40';
+const VERSION = 'gpt-prod-v2.5.41';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -497,6 +497,37 @@ async function runEngine({
     }
     return candidate;
   };
+  const finalStructurePlan = structureChunk.splitChunksForGpt(rawSource, {
+    coalesceEditable: true,
+    preserveSentenceBoundaries: shouldPreserveVoiceSentenceBoundaries(
+      rawSource,
+      voiceProfile,
+      selectedMode,
+      requestStrength
+    ),
+    sentenceBoundaryMinimum: selectedMode === 'polish' ? 3 : 4,
+    preserveLineBoundaries: lineBoundaryPolicy,
+    formatProfile: documentProfile.formatProfile,
+    humanizeContract
+  });
+  let lastStructureSafeOutput = '';
+  let lastStructureSafeStage = '';
+  let structureIntegrityRollbackCount = 0;
+  const structureIntegrityRollbackCodes = [];
+  const rememberStructureSafeOutput = (value, stage) => {
+    const candidate = materializeExactLineCandidate(value);
+    if (!candidate.trim() || normalizeBare(candidate) === normalizeBare(rawSource)) return false;
+    const audit = structureChunk.buildStructureAudit({
+      source: rawSource,
+      outputText: candidate,
+      chunks: finalStructurePlan.chunks,
+      plan: finalStructurePlan
+    });
+    if (audit.pass !== true) return false;
+    lastStructureSafeOutput = candidate;
+    lastStructureSafeStage = String(stage || 'unknown');
+    return true;
+  };
   const rememberExactLineSafeOutput = value => {
     if (lineBoundaryPolicy !== 'all') return false;
     const candidate = materializeExactLineCandidate(value);
@@ -506,6 +537,7 @@ async function runEngine({
     return true;
   };
   rememberExactLineSafeOutput(outputText);
+  rememberStructureSafeOutput(outputText, 'post_primary_merge');
 
   let supplementalUsage = addUsage(
     (sectionRecoveryReport.usages || []).reduce((acc, usage) => addUsage(acc, usage), emptyUsage()),
@@ -1710,6 +1742,7 @@ async function runEngine({
           });
     semanticReport.decisionReason = semanticDecision.reason;
     if (semanticDecision.run) {
+      const semanticInputText = outputText;
       semanticReport = await qualityV2.runSemanticDocumentAudit({
         source: auditSource,
         outputText,
@@ -1730,7 +1763,40 @@ async function runEngine({
       });
       addSupplementalUsage(semanticReport.usage, 'semantic_document_audit');
       depthTugSemanticRepairRounds += Number(semanticReport.repairCount || 0);
-      const semanticOutput = semanticReport.outputText || outputText;
+      let semanticOutput = semanticReport.outputText || semanticInputText;
+      if (normalizeBare(semanticOutput) !== normalizeBare(semanticInputText)) {
+        const semanticCandidateValidation = auditGeneralSurfaceCandidateWithStructure({
+          source: auditSource,
+          current: semanticInputText,
+          candidate: semanticOutput,
+          contract,
+          documentProfile,
+          mode: selectedMode,
+          chunks: frozen ? frozen.auditChunks : chunks,
+          plan: chunkPlan,
+          boundaryRepair,
+          humanizationPlan
+        });
+        semanticOutput = semanticCandidateValidation.candidate || semanticOutput;
+        if (semanticCandidateValidation.pass !== true) {
+          const rejectionCodes = safeFailureCodeList([
+            ...(semanticReport.repairRejectReasons || []),
+            ...(semanticCandidateValidation.codes || []).map(code => `full_document_${code}`)
+          ]);
+          semanticReport = {
+            ...semanticReport,
+            outputText: semanticInputText,
+            pass: false,
+            repairRejected: true,
+            repairRejectReasons: rejectionCodes,
+            violations: (semanticReport.initialViolations || []).length
+              ? semanticReport.initialViolations
+              : (semanticReport.violations || []),
+            reason: 'full_document_repair_candidate_rejected'
+          };
+          semanticOutput = semanticInputText;
+        }
+      }
       const restoredOmissions = omissionRestore.restoreConfirmedSemanticOmissions({
         source: auditSource,
         outputText: semanticOutput,
@@ -2062,6 +2128,7 @@ async function runEngine({
     recordHumanizationDepthStage('post_semantic_recovery', humanizationDepthReport);
   }
   rememberExactLineSafeOutput(outputText);
+  rememberStructureSafeOutput(outputText, 'post_semantic_recovery');
 
   const postLayout = layoutNlpEnabled
     ? await safeFormatLayout(outputText, selectedMode)
@@ -2088,6 +2155,7 @@ async function runEngine({
   });
   outputText = layoutRepair.text || outputText;
   rememberExactLineSafeOutput(outputText);
+  rememberStructureSafeOutput(outputText, 'post_layout_materialized');
   // 직접 인용은 의미 심사 이후의 일반 어휘 후처리가 아니라 동결 구조다.
   // 의미 수리나 레이아웃 복원에서 내부 내용이 달라졌다면 같은 위치의
   // 원문 인용만 재조립한다.
@@ -2402,6 +2470,7 @@ async function runEngine({
         finalSourceIntegrityRestoreCount += restored.restoredCount || 1;
         addUniqueCode(finalSourceIntegrityRestoreCodes, 'personal_scope_source_restore');
         rememberExactLineSafeOutput(outputText);
+        rememberStructureSafeOutput(outputText, 'post_localized_repairs');
       }
     }
   }
@@ -2570,6 +2639,7 @@ async function runEngine({
           resumeCoverageRepairCount += restored.restoredCount;
           if (candidateDepth) humanizationDepthReport = candidateDepth;
           rememberExactLineSafeOutput(outputText);
+          rememberStructureSafeOutput(outputText, 'post_layout_restore');
         }
       }
     }
@@ -3038,6 +3108,7 @@ async function runEngine({
                 );
               }
               rememberExactLineSafeOutput(outputText);
+              rememberStructureSafeOutput(outputText, 'post_depth_recovery');
               generalSurfaceRetryCount += 1;
               humanizationDepthRetryApplied = true;
               acceptGeneralSurfaceRecovery(records);
@@ -3138,6 +3209,7 @@ async function runEngine({
     endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
     resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
     rememberExactLineSafeOutput(outputText);
+    rememberStructureSafeOutput(outputText, 'candidate_ledger_selected');
     finalDepthRecovery = {
       ...finalDepthRecovery,
       candidateLedgerRollback: true,
@@ -3254,6 +3326,35 @@ async function runEngine({
       outputText = restoredQuotes.text;
       quoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
       finalQuoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+    }
+  }
+  // 전달 직전의 모든 후처리가 끝난 문자열을 source 기준으로 다시 본다.
+  // 경고만 달고 구조가 깨진 결과를 내보내지 않되, 사용자 요청대로 작업을
+  // 차단하거나 원문 전체로 되돌리지는 않는다. 앞 단계에서 확보한 마지막
+  // 구조 안전 휴머나이징 후보로만 롤백한다.
+  {
+    const finalStructureCandidateAudit = structureChunk.buildStructureAudit({
+      source: rawSource,
+      outputText,
+      chunks: finalStructurePlan.chunks,
+      plan: finalStructurePlan
+    });
+    if (finalStructureCandidateAudit.pass !== true && lastStructureSafeOutput) {
+      outputText = lastStructureSafeOutput;
+      structureIntegrityRollbackCount += 1;
+      addUniqueCode(structureIntegrityRollbackCodes, 'final_structure_safe_candidate_restore');
+      if (Number(finalStructureCandidateAudit.structuralRoleAdditionCount || 0) > 0) {
+        addUniqueCode(structureIntegrityRollbackCodes, 'structural_role_added');
+      }
+      if (Number(finalStructureCandidateAudit.sourceStructuralMarkerAdditionCount || 0) > 0) {
+        addUniqueCode(structureIntegrityRollbackCodes, 'source_structure_marker_added');
+      }
+      if (Number(finalStructureCandidateAudit.sourceLineAnchorAdditionCount || 0) > 0) {
+        addUniqueCode(structureIntegrityRollbackCodes, 'source_line_anchor_added');
+      }
+      if (Number(finalStructureCandidateAudit.sourceLineAnchorLossCount || 0) > 0) {
+        addUniqueCode(structureIntegrityRollbackCodes, 'source_line_anchor_lost');
+      }
     }
   }
   finalGeneratedDuplicateAudit = dedupe.auditGeneratedDuplicateIntegrity(rawSource, outputText);
@@ -3703,6 +3804,9 @@ async function runEngine({
     formatProfile: documentProfile.formatProfile || { length: 'standard', primary: 'plain', flags: [] },
     lineBoundaryPolicy,
     exactLineStructureFallbackCount,
+    structureIntegrityRollbackCount,
+    structureIntegrityRollbackStage: structureIntegrityRollbackCount > 0 ? lastStructureSafeStage : '',
+    structureIntegrityRollbackCodes: safeFailureCodeList(structureIntegrityRollbackCodes),
     paragraphRepairPolicy: layoutRepair?.paragraphs?.policy || 'none',
     paragraphRepairSourceCount: Number(layoutRepair?.paragraphs?.sourceCount || 0),
     paragraphRepairBeforeCount: Number(layoutRepair?.paragraphs?.beforeCount || 0),
@@ -3751,6 +3855,8 @@ async function runEngine({
     niklExternalErrorCount: niklAdvisorMeta.externalErrorCount,
     niklExternalTimeoutCount: niklAdvisorMeta.externalTimeoutCount,
     semanticJudgeRan: semanticReport.ran === true,
+    semanticSectionCount: Number(semanticReport?.sectionCount || 0),
+    semanticRepairRoundBudget: Number(semanticReport?.repairRoundBudget || 0),
     semanticViolationCount: Number((semanticReport?.violations || []).length),
     semanticOmissionCount: countSemanticViolations(semanticReport, 'omission'),
     semanticAdditionCount: countSemanticViolations(semanticReport, 'added_claim'),
@@ -3798,6 +3904,8 @@ async function runEngine({
     effectStatus,
     effectNoticeCodes: safeFailureCodeList(effectNotices.map(item => item.code)),
     structureSignaturePass: structureAudit?.pass === true,
+    sourceStructurePass: structureAudit?.sourceStructurePass !== false,
+    structuralRoleAdditionCount: Number(structureAudit?.structuralRoleAdditionCount || 0),
     protectedBlockRestoreCount: Number(layoutRepair?.finalLockedStructure?.restoredCount || 0),
     protectedBlockApproximateRestoreCount: Number(layoutRepair?.finalLockedStructure?.approximateRestoredCount || 0),
     protectedBlockMissingCount: Number(layoutRepair?.finalLockedStructure?.missingCount || 0),
@@ -3807,9 +3915,15 @@ async function runEngine({
     sectionPathErrorCount: Number(structureAudit?.sectionPathErrorCount || 0),
     originalStructurePass: structureAudit?.originalStructurePass !== false,
     originalStructuralMarkerLossCount: Number(structureAudit?.originalStructuralMarkerLossCount || 0),
+    sourceStructuralMarkerLossCount: Number(structureAudit?.sourceStructuralMarkerLossCount || 0),
+    sourceStructuralMarkerAdditionCount: Number(structureAudit?.sourceStructuralMarkerAdditionCount || 0),
     lineAnchorLayoutPass: structureAudit?.lineAnchorLayoutPass !== false,
     lineAnchorLossCount: Number(structureAudit?.lineAnchorLossCount || 0),
     lineAnchorBoundaryChangeCount: Number(structureAudit?.lineAnchorBoundaryChangeCount || 0),
+    sourceLineAnchorLayoutPass: structureAudit?.sourceLineAnchorLayoutPass !== false,
+    sourceLineAnchorLossCount: Number(structureAudit?.sourceLineAnchorLossCount || 0),
+    sourceLineAnchorAdditionCount: Number(structureAudit?.sourceLineAnchorAdditionCount || 0),
+    sourceLineAnchorBoundaryChangeCount: Number(structureAudit?.sourceLineAnchorBoundaryChangeCount || 0),
     inlineLabelBodyLayoutPass: structureAudit?.inlineLabelBodyLayoutPass !== false,
     inlineLabelBodySplitCount: Number(structureAudit?.inlineLabelBodySplitCount || 0),
     exactLineStructurePass: structureAudit?.exactLineStructurePass !== false,
@@ -4804,6 +4918,19 @@ async function callHumanize(args) {
     outputText = chunkPostprocess(outputText, original, {
       preserveLineBreaks: voiceProfile?.lineBreakSensitive === true
     });
+    // `라벨: 본문`이 원문에서 한 행이었는데 모델이 본문만 새 문단으로
+    // 분리하면, 최종 레이아웃 복원 시점에는 이미 모든 안전 후보가 같은
+    // 결함을 물려받을 수 있다. 문자 순서를 바꾸지 않는 행 복원을 청크
+    // 승인 전에 먼저 적용하고, 그래도 경계가 남으면 아래 게이트가 해당
+    // 청크만 재시도하게 한다.
+    const chunkInlineLabelLayout = structureChunk.restoreInlineLabelBodyLayout(
+      original,
+      outputText
+    );
+    if (chunkInlineLabelLayout.applied === true
+        && chunkInlineLabelLayout.contentPreserved === true) {
+      outputText = chunkInlineLabelLayout.text;
+    }
     const gate = evaluateChunkGate({
       outputText,
       original,
@@ -5146,8 +5273,49 @@ function evaluateChunkGate({ outputText, original, contract, mode, protectedTerm
   if (looksEncodingCorrupted(original, outputText)) {
     return { hardFail: true, reason: 'encoding_corruption', warnings, violations };
   }
-  if (looksTruncated(outputText)) {
+  if (looksGeneratedTruncated(original, outputText)) {
     return { hardFail: true, reason: 'sentence_truncated', warnings, violations };
+  }
+  const directQuoteAudit = auditDirectQuoteIntegrity(original, outputText);
+  if (directQuoteAudit.pass === false && directQuoteAudit.benignDuplicateReduction !== true) {
+    violations.push({
+      gate: 'direct_quote_worsened',
+      sourceCount: directQuoteAudit.sourceCount,
+      outputCount: directQuoteAudit.outputCount,
+      missingUniqueCount: directQuoteAudit.missingUniqueCount,
+      changedCount: directQuoteAudit.changedCount
+    });
+    warnings.push('direct_quote_worsened');
+    return { hardFail: true, reason: 'direct_quote_worsened', warnings, violations };
+  }
+  // 문서 끝에서만 구조를 검사하면 모든 1차 청크가 이미 새 제목·번호 항목을
+  // 만든 경우 되돌아갈 안전 후보가 없다. 각 편집 청크에서 원문에 없던 구조
+  // 행을 즉시 거부해 해당 청크만 재시도하거나 원문 조각으로 안전 복원한다.
+  const chunkMarkerAudit = structureChunk.compareOriginalStructuralMarkers(original, outputText);
+  const chunkLineAnchorAudit = structureChunk.compareLineAnchorLayout(original, outputText);
+  const introducedStructureCount = Number(chunkMarkerAudit?.additions?.length || 0)
+    + Number(chunkLineAnchorAudit?.additions?.length || 0);
+  if (introducedStructureCount > 0) {
+    violations.push({
+      gate: 'generated_structure_added',
+      markerAdditionCount: Number(chunkMarkerAudit?.additions?.length || 0),
+      lineAnchorAdditionCount: Number(chunkLineAnchorAudit?.additions?.length || 0)
+    });
+    warnings.push('generated_structure_added');
+    return { hardFail: true, reason: 'generated_structure_added', warnings, violations };
+  }
+  const inlineLabelBodyAudit = structureChunk.compareInlineLabelBodyLayout(original, outputText);
+  if (inlineLabelBodyAudit.pass === false) {
+    violations.push({
+      gate: 'inline_label_body_split',
+      applicableCount: Number(inlineLabelBodyAudit.applicableCount || 0),
+      violationCount: Number(inlineLabelBodyAudit.violations?.length || 0),
+      reasons: [...new Set((inlineLabelBodyAudit.violations || [])
+        .map(item => String(item?.reason || ''))
+        .filter(Boolean))].slice(0, 8)
+    });
+    warnings.push('inline_label_body_split');
+    return { hardFail: true, reason: 'inline_label_body_split', warnings, violations };
   }
   if (sourceAnchors.length >= 2) {
     const missingAnchors = sourceAnchors.filter(a => !structureAnchorPresent(a, outputText));
@@ -5267,7 +5435,7 @@ function evaluateWholeDocumentGate({
   if (looksEncodingCorrupted(source, outputText)) {
     return { hardFail: true, reason: 'encoding_corruption', warnings, violations };
   }
-  if (looksTruncated(outputText)) {
+  if (looksGeneratedTruncated(source, outputText)) {
     return { hardFail: true, reason: 'sentence_truncated', warnings, violations };
   }
   const repetitionAudit = qualityV2.compareRepetitionDelta(source, outputText);
@@ -5752,7 +5920,7 @@ function auditGeneralSurfaceCandidate(
   if (isGeneratedTextualRefusal(before, after)) add('textual_refusal');
   if (looksLikePromptLeak(after)) add('prompt_instruction_leak');
   if (looksEncodingCorrupted(before, after)) add('encoding_corruption');
-  if (looksTruncated(after)) add('sentence_truncated');
+  if (looksGeneratedTruncated(before, after)) add('sentence_truncated');
   if (isNoopEquivalent(baseline, after, mode)) return { pass: false, codes: ['candidate_unchanged'] };
   const metrics = computeEditMetrics(before, after);
   const editLimits = generalRecoveryEditLimits(humanizationPlan);
@@ -6114,9 +6282,10 @@ function preservesFinalStructure(source, candidate, chunks, plan, boundaryRepair
     plan,
     boundaryRepair
   });
-  return (audit.lostLockedCount || 0) === 0
-    && audit.lockedOrderChanged !== true
-    && audit.structureSignaturePass !== false;
+  // 제목·목록이 사라지지 않았다는 것만으로는 구조 보존이 아니다. 긴 문서
+  // 수리에서 다음 절 제목과 본문이 한 번 더 복사된 사고처럼, 구조가 늘어난
+  // 후보와 라벨·행 경계가 달라진 후보도 모두 거부한다.
+  return audit.pass === true;
 }
 
 function acceptGeneralSurfaceRecovery(records, selectedIndices = null) {
@@ -6982,6 +7151,24 @@ function addStructureWarnings(report, audit) {
       samples: audit.originalStructuralMarkerLosses || []
     });
   }
+  if (audit.structuralRoleAdditionCount > 0
+      || audit.sourceStructuralMarkerAdditionCount > 0
+      || audit.sourceLineAnchorAdditionCount > 0) {
+    additions.push({
+      gate: 'generated_structure_added',
+      action: 'needs_review',
+      count: Math.max(
+        Number(audit.structuralRoleAdditionCount || 0),
+        Number(audit.sourceStructuralMarkerAdditionCount || 0),
+        Number(audit.sourceLineAnchorAdditionCount || 0)
+      ),
+      samples: [
+        ...(audit.structuralRoleAdditions || []),
+        ...(audit.sourceStructuralMarkerAdditions || []),
+        ...(audit.sourceLineAnchorAdditions || [])
+      ].slice(0, 20)
+    });
+  }
   if (audit.introducedOrphanParticleBoundaryCount > 0) {
     additions.push({
       gate: 'orphan_particle_line_boundary',
@@ -7798,6 +7985,14 @@ function looksTruncated(text) {
   if (!s) return true;
   if (/[,:;，、]$/.test(s)) return true;
   return /(?:그리고|그러나|하지만|또한|따라서|때문에|위해|통해|하며|하고)$/.test(s);
+}
+
+function looksGeneratedTruncated(source, outputText) {
+  const before = String(source || '').trim();
+  const after = String(outputText || '').trim();
+  if (looksTruncated(after)) return true;
+  return sourcePreflight.isPossiblyIncompleteSentence(after)
+    && !sourcePreflight.isPossiblyIncompleteSentence(before);
 }
 
 const POLISH_LABEL_FRAGMENT_MODEL_BUDGET = 8;

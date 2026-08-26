@@ -264,12 +264,18 @@ function addStructureViolations(audit, add) {
     ['lostLockedCount', 'structure_lock_loss'],
     ['protectedBlockChangedCount', 'protected_block_changed'],
     ['tableColumnOwnershipLossCount', 'table_column_ownership_lost'],
+    ['structuralRoleAdditionCount', 'structural_role_added'],
     ['lockedOutOfOrderCount', 'structure_lock_order'],
     ['unsafeBoundaryCount', 'unsafe_chunk_boundary'],
     ['sectionPathErrorCount', 'section_path_mismatch'],
     ['originalStructuralMarkerLossCount', 'original_structure_marker_loss'],
+    ['sourceStructuralMarkerLossCount', 'source_structure_marker_loss'],
+    ['sourceStructuralMarkerAdditionCount', 'source_structure_marker_added'],
     ['lineAnchorLossCount', 'line_anchor_loss'],
     ['lineAnchorBoundaryChangeCount', 'line_anchor_changed'],
+    ['sourceLineAnchorLossCount', 'source_line_anchor_loss'],
+    ['sourceLineAnchorAdditionCount', 'source_line_anchor_added'],
+    ['sourceLineAnchorBoundaryChangeCount', 'source_line_anchor_changed'],
     ['inlineLabelBodySplitCount', 'inline_label_body_split'],
     ['introducedOrphanParticleBoundaryCount', 'orphan_particle_line_boundary']
   ];

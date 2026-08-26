@@ -325,7 +325,8 @@ function koreanIssueCounts(value) {
 function lineAnchorRisk(source, output, sourceVoice) {
   const anchors = structureChunk.compareLineAnchorLayout(source, output);
   let risk = Number(anchors?.losses?.length || 0)
-    + Number(anchors?.boundaryChanges?.length || 0);
+    + Number(anchors?.boundaryChanges?.length || 0)
+    + Number(anchors?.additions?.length || 0);
   if (sourceVoice?.lineBoundaryPolicy === 'all') {
     const exact = structureChunk.auditExactLineStructure(source, output);
     if (exact.pass !== true) risk += 1;

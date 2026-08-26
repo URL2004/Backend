@@ -2649,9 +2649,16 @@ function buildStructureAudit({
   const sectionPathErrors = findSectionPathErrors(chunks);
   const counts = plan?.audit?.lockedByType || countLockedByType(locked);
   const structuralSignature = compareStructuralRoleSignatures(source, output);
-  const originalMarkers = compareOriginalStructuralMarkers(original, output);
+  // integritySource는 전처리 전 사용자가 실제로 넣은 행 경계를 보존하는
+  // 기준선이다. source는 안전한 입력 전처리(붙은 제목 분리 등)가 끝난 뒤
+  // 모델이 반드시 유지해야 하는 생성 기준선이다. 전처리가 만든 정당한
+  // 구조 추가를 원문 훼손으로 오인하지 않되, 모델이 source보다 제목·목록을
+  // 새로 늘린 경우는 별도로 잡는다.
+  const originalMarkers = compareOriginalStructuralMarkers(original, output, { allowAdditions: true });
+  const sourceMarkers = compareOriginalStructuralMarkers(source, output);
   const bracketedLabelLayout = compareBracketedLabelLayout(original, output);
-  const lineAnchorLayout = compareLineAnchorLayout(original, output);
+  const lineAnchorLayout = compareLineAnchorLayout(original, output, { allowAdditions: true });
+  const sourceLineAnchorLayout = compareLineAnchorLayout(source, output);
   const inlineLabelBodyLayout = compareInlineLabelBodyLayout(original, output);
   const exactLinePolicy = (chunks || []).some(chunk => String(chunk?.lineBoundaryPolicy || '') === 'all');
   const exactLineStructure = exactLinePolicy
@@ -2686,6 +2693,8 @@ function buildStructureAudit({
     structureSignaturePass: structuralSignature.pass,
     structuralRoleLossCount: structuralSignature.losses.length,
     structuralRoleLosses: structuralSignature.losses,
+    structuralRoleAdditionCount: structuralSignature.additions.length,
+    structuralRoleAdditions: structuralSignature.additions,
     tableColumnOwnershipPass: structuralSignature.tableColumnOwnershipPass !== false,
     tableColumnOwnershipLossCount: Number(structuralSignature.tableColumnOwnershipLossCount || 0),
     sourceStructuralSignature: structuralSignature.source,
@@ -2698,6 +2707,15 @@ function buildStructureAudit({
     originalStructuralMarkerCount: originalMarkers.sourceCount,
     originalStructuralMarkerLossCount: originalMarkers.losses.length,
     originalStructuralMarkerLosses: originalMarkers.losses,
+    sourceStructurePass: sourceMarkers.pass
+      && sourceLineAnchorLayout.pass
+      && structuralSignature.pass,
+    sourceStructuralMarkerCount: sourceMarkers.sourceCount,
+    sourceStructuralMarkerOutputCount: sourceMarkers.outputCount,
+    sourceStructuralMarkerLossCount: sourceMarkers.losses.length,
+    sourceStructuralMarkerAdditionCount: sourceMarkers.additions.length,
+    sourceStructuralMarkerLosses: sourceMarkers.losses,
+    sourceStructuralMarkerAdditions: sourceMarkers.additions,
     bracketedLabelLayoutPass: bracketedLabelLayout.pass,
     bracketedLabelSourceCount: bracketedLabelLayout.sourceCount,
     bracketedLabelOutputCount: bracketedLabelLayout.outputCount,
@@ -2712,6 +2730,15 @@ function buildStructureAudit({
     lineAnchorBoundaryChangeCount: lineAnchorLayout.boundaryChanges.length,
     lineAnchorLosses: lineAnchorLayout.losses,
     lineAnchorBoundaryChanges: lineAnchorLayout.boundaryChanges,
+    sourceLineAnchorLayoutPass: sourceLineAnchorLayout.pass,
+    sourceLineAnchorSourceCount: sourceLineAnchorLayout.sourceCount,
+    sourceLineAnchorOutputCount: sourceLineAnchorLayout.outputCount,
+    sourceLineAnchorLossCount: sourceLineAnchorLayout.losses.length,
+    sourceLineAnchorAdditionCount: sourceLineAnchorLayout.additions.length,
+    sourceLineAnchorBoundaryChangeCount: sourceLineAnchorLayout.boundaryChanges.length,
+    sourceLineAnchorLosses: sourceLineAnchorLayout.losses,
+    sourceLineAnchorAdditions: sourceLineAnchorLayout.additions,
+    sourceLineAnchorBoundaryChanges: sourceLineAnchorLayout.boundaryChanges,
     inlineLabelBodyLayoutPass: inlineLabelBodyLayout.pass,
     inlineLabelBodyApplicableCount: inlineLabelBodyLayout.applicableCount,
     inlineLabelBodySplitCount: inlineLabelBodyLayout.violations.length,
@@ -2728,6 +2755,8 @@ function buildStructureAudit({
       && boundaryWarnings.length === 0
       && sectionPathErrors.length === 0
       && structuralSignature.pass
+      && sourceMarkers.pass
+      && sourceLineAnchorLayout.pass
       && originalMarkers.pass
       && bracketedLabelLayout.pass
       && lineAnchorLayout.pass
@@ -2743,8 +2772,9 @@ function buildStructureAudit({
  * 구조가 보존된다. 역할 개수만 비교하면 제목을 앞 문단에 붙이거나 이모지와
  * 라벨을 서로 다른 행으로 갈라도 통과하므로 원문 행 앵커를 순서대로 대조한다.
  */
-function compareLineAnchorLayout(source, output) {
+function compareLineAnchorLayout(source, output, { allowAdditions = false } = {}) {
   const sourceAnchors = extractLineAnchors(source);
+  const outputAnchors = extractLineAnchors(output);
   const outputLines = layoutStructure.buildLineRecords(output).filter(record => !record.blank);
   const losses = [];
   const boundaryChanges = [];
@@ -2791,13 +2821,46 @@ function compareLineAnchorLayout(source, output) {
     }
     cursor = found + 1;
   }
+  // A short standalone source line can be classified as prose before editing and
+  // as a heading afterwards because the surrounding sentence length changed.
+  // Treat it as an existing anchor when its exact line text already existed,
+  // while still catching true duplicate headings through occurrence counts.
+  const sourceInventory = buildSourceLineAnchorInventory(source, sourceAnchors);
+  const additions = unmatchedStructuralItems(sourceInventory, outputAnchors, item => (
+    lineAnchorInventoryKey(item)
+  ));
   return {
-    pass: losses.length === 0 && boundaryChanges.length === 0,
+    pass: losses.length === 0
+      && boundaryChanges.length === 0
+      && (allowAdditions || additions.length === 0),
     sourceCount: sourceAnchors.length,
-    outputCount: extractLineAnchors(output).length,
+    outputCount: outputAnchors.length,
     losses: losses.slice(0, 20),
-    boundaryChanges: boundaryChanges.slice(0, 20)
+    boundaryChanges: boundaryChanges.slice(0, 20),
+    additions: additions.slice(0, 20),
+    allowAdditions
   };
+}
+
+function buildSourceLineAnchorInventory(source, sourceAnchors) {
+  const items = [];
+  for (const record of layoutStructure.buildLineRecords(source)) {
+    if (record.blank) continue;
+    const key = lineAnchorKey(record.text);
+    if (!key) continue;
+    items.push({ kind: 'standalone', key, display: String(record.text || '') });
+  }
+  for (const anchor of sourceAnchors || []) {
+    if (anchor.standalone) continue;
+    items.push(anchor);
+  }
+  return items;
+}
+
+function lineAnchorInventoryKey(item) {
+  return item?.standalone === false || String(item?.kind || '') === 'label_inline'
+    ? `inline:${String(item?.key || '')}`
+    : `standalone:${String(item?.key || '')}`;
 }
 
 function compareInlineLabelBodyLayout(source, output) {
@@ -3001,7 +3064,7 @@ function extractBracketedLabelAnchors(value) {
  * 순서대로 대조한다. 역할 개수만 비교하면 `# 14.`가 `# 1.`과 `4.`로
  * 갈라져도 제목 수가 늘었다는 이유로 통과할 수 있다.
  */
-function compareOriginalStructuralMarkers(source, output) {
+function compareOriginalStructuralMarkers(source, output, { allowAdditions = false } = {}) {
   const sourceMarkers = extractOriginalStructuralMarkers(source);
   const outputMarkers = extractOriginalStructuralMarkers(output);
   const losses = [];
@@ -3020,14 +3083,38 @@ function compareOriginalStructuralMarkers(source, output) {
     }
     cursor = found + 1;
   }
+  const additions = unmatchedStructuralItems(sourceMarkers, outputMarkers, item => item.key);
   return {
-    pass: losses.length === 0,
+    pass: losses.length === 0 && (allowAdditions || additions.length === 0),
     sourceCount: sourceMarkers.length,
     outputCount: outputMarkers.length,
     losses: losses.slice(0, 20),
+    additions: additions.slice(0, 20),
+    allowAdditions,
     source: sourceMarkers,
     output: outputMarkers
   };
+}
+
+function unmatchedStructuralItems(sourceItems, outputItems, keyOf) {
+  const remaining = new Map();
+  for (const item of sourceItems || []) {
+    const key = String(keyOf(item) || '');
+    if (!key) continue;
+    remaining.set(key, Number(remaining.get(key) || 0) + 1);
+  }
+  const additions = [];
+  for (const item of outputItems || []) {
+    const key = String(keyOf(item) || '');
+    if (!key) continue;
+    const count = Number(remaining.get(key) || 0);
+    if (count > 0) {
+      remaining.set(key, count - 1);
+      continue;
+    }
+    additions.push(item);
+  }
+  return additions;
 }
 
 function extractOriginalStructuralMarkers(value) {
@@ -3040,7 +3127,7 @@ function extractOriginalStructuralMarkers(value) {
       markers.push(structuralMarker('markdown_number', `${match[1]} ${match[2]}`, index));
       return;
     }
-    match = text.match(/^\s*(\d{1,3}(?:\.\d{1,3}){0,3}[.)])\s+/u);
+    match = text.match(/^\s*(\d{1,3}(?:\.\d{1,3}){1,3}[.)]?|\d{1,3}[.)])\s+/u);
     if (match) {
       markers.push(structuralMarker('number', match[1], index));
       return;
@@ -3083,11 +3170,13 @@ function compareStructuralRoleSignatures(source, output) {
   const sourceSignature = structuralRoleSignature(source);
   const outputSignature = structuralRoleSignature(output);
   const losses = [];
+  const additions = [];
   for (const key of Object.keys(sourceSignature)) {
     if (key === 'tableCellSequence') continue;
     const before = Number(sourceSignature[key] || 0);
     const after = Number(outputSignature[key] || 0);
     if (after < before) losses.push({ role: key, sourceCount: before, outputCount: after });
+    if (after > before) additions.push({ role: key, sourceCount: before, outputCount: after });
   }
   const sourceCells = sourceSignature.tableCellSequence || [];
   const outputCells = outputSignature.tableCellSequence || [];
@@ -3104,10 +3193,14 @@ function compareStructuralRoleSignatures(source, output) {
     });
   }
   return {
+    // Role classification is contextual, so an unchanged short line can move
+    // between prose and heading. Exact source marker/line-anchor audits below
+    // own the hard addition check; this signature remains a loss guard.
     pass: losses.length === 0,
     source: sourceSignature,
     output: outputSignature,
     losses,
+    additions,
     tableColumnOwnershipPass,
     tableColumnOwnershipLossCount: tableColumnOwnershipPass ? 0 : 1
   };

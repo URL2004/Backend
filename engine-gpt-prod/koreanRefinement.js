@@ -11,7 +11,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 28;
+const VERSION = 29;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -22,6 +22,7 @@ const PROFESSIONAL_PROFILES = new Set([
   'student_record_teacher',
   'student_self_assessment'
 ]);
+const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
   missing_sentence_space: {
@@ -53,6 +54,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     repairable: true,
     deterministicSafe: false,
     message: '한글이 긴 구간 동안 붙어 있어 문맥에 맞는 띄어쓰기와 문장 경계를 복원해야 해요.'
+  },
+  hangul_connective_acronym_glue: {
+    weight: 6,
+    repairable: true,
+    deterministicSafe: true,
+    message: '한국어 연결 표현과 영문 약어가 붙어 문장 경계가 손상됐어요.'
   },
   focus_particle_redundancy: {
     weight: 4,
@@ -1833,6 +1840,7 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   pushSentenceIssue(issues, text, 'dependent_noun_dwi_spacing', sentence => testPattern(stripProtectedQuotedText(sentence), DEPENDENT_NOUN_DWI_SPACING_RE));
   pushSentenceIssue(issues, text, 'dependent_noun_de_spacing', sentence => testPattern(stripProtectedQuotedText(sentence), DEPENDENT_NOUN_DE_SPACING_RE));
   pushCollapsedKoreanSpacingIssue(issues, text);
+  pushPatternIssue(issues, text, 'hangul_connective_acronym_glue', HANGUL_CONNECTIVE_ACRONYM_GLUE_RE);
   pushSentenceIssue(issues, text, 'focus_particle_redundancy', hasFocusParticleRedundancy);
   pushSentenceIssue(issues, text, 'subject_experiencer_case_frame', hasSubjectExperiencerCaseFrame);
   pushSentenceIssue(issues, text, 'coordinated_birth_role_mismatch', hasCoordinatedBirthRoleMismatch);
@@ -2181,6 +2189,13 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
     changes
   );
   text = replaceAndCount(text, /메세지/gu, '메시지', 'message_spelling', changes);
+  text = replaceOutsideProtectedQuotes(
+    text,
+    HANGUL_CONNECTIVE_ACRONYM_GLUE_RE,
+    '$1 ',
+    'hangul_connective_acronym_glue',
+    changes
+  );
   text = replaceAndCount(text, /실습수업/gu, '실습 수업', 'practice_class_spacing', changes);
   text = replaceOutsideProtectedQuotes(
     text,
@@ -4576,7 +4591,10 @@ function replaceAndCount(text, pattern, replacement, code, changes) {
   });
 }
 
-const PROTECTED_QUOTED_SPAN_RE = /([“][^”\n]{0,600}[”]|[‘][^’\n]{0,600}[’]|「[^」\n]{0,600}」|『[^』\n]{0,600}』|《[^》\n]{0,600}》|〈[^〉\n]{0,600}〉|"[^"\n]{0,600}"|'[^'\n]{0,600}')/gu;
+// 워드·모바일 붙여넣기는 여는 부호와 닫는 부호가 서로 다른 형태인
+// `"인용문”`, `“인용문"`도 만든다. voice/source preflight와 같은 쌍을
+// 보호해야 결정론적 띄어쓰기 수리가 인용 내부의 원문을 바꾸지 않는다.
+const PROTECTED_QUOTED_SPAN_RE = /([“][^”"\n]{0,600}[”"]|"[^"”\n]{0,600}["”]|[‘][^’'\n]{0,600}[’']|(?<![\p{L}\p{N}])'[^'’\n]{0,600}['’]|「[^」\n]{0,600}」|『[^』\n]{0,600}』|《[^》\n]{0,600}》|〈[^〉\n]{0,600}〉)/gu;
 
 function replaceOutsideProtectedQuotes(text, pattern, replacement, code, changes) {
   return String(text || '').split(PROTECTED_QUOTED_SPAN_RE).map((part, index) => {

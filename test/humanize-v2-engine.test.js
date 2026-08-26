@@ -172,7 +172,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.40');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.41');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -198,10 +198,12 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.equal(out.engineMeta.surfaceRetryCallCount, 0);
   assert.equal(out.engineMeta.modelCallCount, 2);
   assert.equal(out.engineMeta.semanticSectionCount, 1);
+  assert.equal(out.engineMeta.semanticRepairRoundBudget, 1);
   const semanticCall = mock.calls.find(call => call.name === 'gpt_prod_semantic_judge');
   assert.match(String(semanticCall?.body?.instructions || ''), /1인칭 화자·관점/u);
   assert.match(String(semanticCall?.body?.instructions || ''), /~자체보다.*~에서 나아가/u);
   assert.match(String(semanticCall?.body?.instructions || ''), /행위 주체와 대상이 뒤바뀌/u);
+  assert.match(String(semanticCall?.body?.instructions || ''), /서로 다른 SOURCE 문장의 앞조각과 뒷조각/u);
   assert.equal(out.result.records[0].changedSentenceRatio, 1);
   assert.ok(out.result.records[0].charEditRatio > 0);
   const humanizeCall = mock.calls.find(call => call.name === 'gpt_prod_humanize_result');
@@ -1349,7 +1351,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.40');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.41');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);
@@ -1393,14 +1395,20 @@ test('검증 완료 후 일반 청크 기본 동시성은 2이며 환경변수�
   assert.equal(engine.configuredChunkConcurrency(), 2);
 });
 
-test('장문 섹션 심사도 문서 전체 수리는 최대 1회만 수행한다', { concurrency: false }, async t => {
+test('장문 섹션 심사는 서로 다른 문제 구간을 최대 3곳까지 국소 수리한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t, { semanticViolation: true, multipleLedgerClaims: true });
   const source = '원문의 핵심 주장과 근거를 보존해야 합니다. '.repeat(650);
   const output = '원문의 핵심 주장과 근거를 자연스럽게 보존해야 합니다. '.repeat(560);
   const report = await qualityV2.runSemanticDocumentAudit({ source, outputText: output, mode: 'assignment', config: config() });
   assert.ok(report.sectionCount >= 2);
-  assert.equal(report.repairCount, 1);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 1);
+  assert.equal(report.repairRoundBudget, Math.min(3, report.sectionCount));
+  assert.equal(report.repairCount, report.repairRoundBudget);
+  assert.equal(
+    mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length,
+    report.repairRoundBudget
+  );
+  const repairCall = mock.calls.find(call => call.name === 'gpt_prod_judge_repair');
+  assert.match(String(repairCall?.body?.instructions || ''), /인접 절·제목을 중복 삽입하지 않는다/u);
 });
 
 test('결정론 claim 원장은 원문 구절만 사용하고 실제 의미 심사를 계속한다', { concurrency: false }, async t => {

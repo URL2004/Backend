@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  CREDIT_PRODUCTS,
   buildCheckoutContext,
   firstPurchaseExperiment,
   isRetainedPaidOrder,
@@ -81,4 +82,14 @@ test('payment grant uses the same eligibility rule and never repeats the bonus',
   assert.equal(marked.bonusCredits, 0);
   assert.equal(marked.experimentVariant, 'ineligible');
   assert.equal(prior.bonusCredits, 0);
+});
+
+test('크레딧 사다리는 라이트 350을 포함해 단가가 단조 감소한다', () => {
+  // 2026-08-26 사장님 승인: 라이트 330→350 — 스타터 3회(=330)와 동일하던 죽은 티어 수리.
+  // 이 값은 지급량의 소스 오브 트루스다(프론트 표기는 참고용). 프론트 PLANS와 함께 바꿔야 한다.
+  assert.equal(CREDIT_PRODUCTS[8700].credits, 350);
+  const perCredit = [2900, 8700, 14500, 29000, 58000].map(a => a / CREDIT_PRODUCTS[a].credits);
+  for (let i = 1; i < perCredit.length; i++) {
+    assert.ok(perCredit[i] < perCredit[i - 1], `${i}번째 티어 단가가 이전보다 싸야 한다`);
+  }
 });

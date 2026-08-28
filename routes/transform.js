@@ -653,12 +653,75 @@ function buildBlockOffer(job, text) {
   };
 }
 
+// ── 사후 문단 보강(refine, 2026-08-27): 완료된 기본(blog·polish) 결과에서 추상-위험 문단을 짚어주고,
+//   사용자의 실제 경험 한 줄(무날조 원칙의 유일한 구체화 통로)로 그 문단만 재생성해 결과에 패치한다.
+//   프레이밍 계약: 추상성은 원문 귀속(엔진 실패가 아님), 상위 2개만, 무변화·실패는 무과금·무료횟수 미소진.
+function refineEnabled() { return process.env.PARAGRAPH_REFINE === '1'; }
+const REFINE_FREE_COUNT = Math.max(0, Number(process.env.REFINE_FREE_COUNT) || 2);
+const REFINE_TIMEOUT_MS = Math.max(30000, Number(process.env.REFINE_TIMEOUT_MS) || 180000);
+const REFINE_TARGET_MIN_LEN = 80;   // 표제·목차·짧은 라벨 오탐 가드
+const REFINE_MEMO_MIN = 5, REFINE_MEMO_MAX = 500;
+
+function attachRefineTargets(job) {
+  if (!refineEnabled()) return;
+  if (job.mode !== 'blog' && job.mode !== 'polish') return;   // 이번 단계는 short 경로만
+  if (!job.result || typeof job.result.outputText !== 'string') return;
+  try {
+    const paras = surfaceguard.splitParagraphsForRefine(job.result.outputText);
+    // 이미 보강한 문단은 다시 타겟으로 내밀지 않는다 — 분류상 여전히 추상이어도 재영업하면
+    // "또 결제하라"로 읽힌다(프레이밍 계약). 재시도 자체는 API에서 refineHistory로 허용.
+    const refinedIdx = new Set((job.refineHistory || []).map(h => h.paragraphIndex));
+    job.result.refineTargets = paras
+      .map((p, i) => ({ index: i, kind: surfaceguard.classifyParagraphKind(p.text), len: p.text.trim().length, text: p.text }))
+      .filter(t => t.kind === 'abstract_risk' && t.len >= REFINE_TARGET_MIN_LEN && !refinedIdx.has(t.index))
+      .slice(0, 2)
+      .map(t => ({ index: t.index, kind: t.kind, snippet: t.text.replace(/\s+/g, ' ').trim().slice(0, 70), credit: shortHumanizeCredit(t.len) }));
+    job.result.refine = {
+      enabled: true,
+      freeLeft: Math.max(0, REFINE_FREE_COUNT - (job.refineCount || 0)),
+      freeTotal: REFINE_FREE_COUNT
+    };
+  } catch (e) {
+    logger.warn('transform.refine_targets_failed', { jobId: job.id, uid: job.uid, err: e && e.message });
+  }
+}
+
+// 클라이언트에 내려보내는 refine 상태(메모 원문은 제외 — 응답 슬림화).
+function publicRefine(job) {
+  const r = job.refine;
+  if (!r) return null;
+  return {
+    status: r.status, paragraphIndex: r.paragraphIndex, n: r.n, needed: r.needed || 0,
+    ...(typeof r.changed === 'boolean' ? { changed: r.changed } : {}),
+    ...(typeof r.deducted === 'boolean' ? { deducted: r.deducted } : {}),
+    ...(r.note ? { note: r.note } : {}),
+    ...(r.error ? { error: r.error } : {})
+  };
+}
+
+// refine 전용 과금 커밋 — 멱등키를 job_<id>_refine<n>으로 분리해 본 작업 차감(job_<id>)과 절대 충돌하지
+// 않고, 같은 n의 재시도는 원장에서 자동 dedupe된다. 결제 수단(쿠폰/크레딧)은 원 작업 계약을 따른다.
+async function commitRefineBilling(job, n, creditAmount, textLength) {
+  if (!job || job.devNoAuth || job.plan === 'unlimited' || !creditAmount) return false;
+  const requestId = 'job_' + job.id + '_refine' + n;
+  if (job.billingMode === 'coupon') {
+    if (!job.billingTier) throw new Error('coupon_billing_unavailable');
+    await usageBilling.retryAsync(() => usageBilling.commitCouponUsage(job.uid, job.billingTier, job.mode, textLength, requestId));
+    return true;
+  }
+  await usageBilling.retryAsync(() => usageBilling.commitCreditDeduct(
+    job.uid, creditAmount, 'humanize_refine', requestId,
+    { mode: job.mode, paragraphLength: textLength, refineN: n }
+  ));
+  return true;
+}
+
 // ── job 영속화(2026-06-12): Firestore transformJobs — 재시작에도 결과·승인대기 생존.
 //   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta'];
+  'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest'];
 
@@ -1526,6 +1589,10 @@ async function restoreJobs() {
       if (!j.createdAt || j.createdAt < cutoff) { expired++; archiveJob({ ...j, id: j.id || d.id }, { expiredAtMs: Date.now() }); deletePersisted(d.id); return; }
       j.id = j.id || d.id;
       j.ac = new AbortController();
+      // 재시작으로 끊긴 문단 보강은 error로 정규화 — 프론트가 무한 폴링하지 않게.
+      if (j.refine && j.refine.status === 'running') {
+        j.refine = { ...j.refine, status: 'error', error: '서버 재시작으로 문단 보강이 중단됐어요. 크레딧은 차감되지 않았어요. 다시 시도해 주세요.' };
+      }
       if (j.status === 'running') {
         restartRecovery.holdRestoredRunningJob(j, { delayMs: RESTORE_RUNNING_RECOVERY_DELAY_MS });
         recovering++;
@@ -2558,6 +2625,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       adminHumanizeLab: !!job.adminHumanizeLab,
       compressionFallback: !!out.result.compressionFallback
     };
+    attachRefineTargets(job);   // 사후 문단 보강 타겟(PARAGRAPH_REFINE=1일 때만 부착)
     persistJob(job);
     if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
     logger.info('transform.humanize_done', {
@@ -2984,6 +3052,154 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
   scheduleQueueDrain();
 });
 
+// ── 사후 문단 보강(2026-08-27): 완료된 기본(blog·polish) 결과의 추상-위험 문단 하나를 사용자의
+//   실제 경험 한 줄(memo)로 재생성해 결과에 패치한다. 문단 하나를 미니 문서로 운영 엔진에 그대로
+//   태우므로 무날조·플로어 게이트가 동일하게 적용된다. 무변화·차단·실패는 무과금·무료횟수 미소진.
+router.post('/transform/:id/refine-paragraph', async (req, res) => {
+  if (!refineEnabled()) return res.status(404).json({ error: '지원하지 않는 기능이에요.' });
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
+  if (!(await requireJobOwner(req, res, job))) return;
+  if (job.status !== 'done') return res.status(409).json({ error: '완료된 작업에서만 문단을 보강할 수 있어요.' });
+  if (job.mode !== 'blog' && job.mode !== 'polish') return res.status(409).json({ error: '기본 휴머나이징·다듬기 결과에서만 쓸 수 있어요.' });
+  const memo = typeof req.body.memo === 'string' ? req.body.memo.trim() : '';
+  if (memo.length < REFINE_MEMO_MIN || memo.length > REFINE_MEMO_MAX) {
+    return res.status(400).json({ error: `실제 경험 메모를 ${REFINE_MEMO_MIN}~${REFINE_MEMO_MAX}자로 적어 주세요.` });
+  }
+  const idx = Number(req.body.paragraphIndex);
+  const targets = (job.result && job.result.refineTargets) || [];
+  // 유효 대상 = 현재 타겟 ∪ 이미 보강한 문단(재시도 허용 — 단 UI는 재영업하지 않음)
+  const idxAllowed = targets.some(t => t.index === idx) || (job.refineHistory || []).some(h => h.paragraphIndex === idx);
+  if (!Number.isInteger(idx) || !idxAllowed) {
+    return res.status(400).json({ error: '보강 대상 문단이 아니에요. 화면의 문단 카드에서 다시 시도해 주세요.' });
+  }
+  const paras = surfaceguard.splitParagraphsForRefine(job.result.outputText || '');
+  if (idx < 0 || idx >= paras.length) return res.status(409).json({ error: '결과가 갱신됐어요. 잠시 후 다시 시도해 주세요.' });
+  const gptCfg = await activeGptConfig();
+  if (!gptCfg) return res.status(503).json({ error: '엔진 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
+  // 동시 보강 방지 — running 검사부터 refine 세팅까지 await 없음(단일 스레드 원자성).
+  if (job.refine && job.refine.status === 'running') {
+    return res.status(409).json({ error: '이미 문단 보강이 진행 중이에요. 끝난 뒤 다시 시도해 주세요.' });
+  }
+  const paraText = paras[idx].text;
+  const paraLen = paraText.trim().length;
+  const n = (job.refineCount || 0) + 1;
+  const freeLeft = Math.max(0, REFINE_FREE_COUNT - (job.refineCount || 0));
+  const needed = freeLeft > 0 ? 0 : shortHumanizeCredit(paraLen);
+  const prevRefine = job.refine || null;
+  job.refine = { status: 'running', paragraphIndex: idx, memo, n, needed, startedAt: Date.now() };
+  if (needed && !job.devNoAuth) {
+    try {
+      await precheckExistingJobBilling(job, tokenFromReq(req), needed, paraLen);
+    } catch (e) {
+      job.refine = prevRefine;
+      const status = e.status || 402;
+      return res.status(status).json({
+        error: status === 402 && job.billingMode !== 'coupon'
+          ? `문단 보강에 ${needed}크레딧이 필요해요. 충전 후 다시 시도해 주세요.`
+          : usageBilling.authErrorMessage(e.message),
+        needed: job.billingMode === 'coupon' ? 1 : needed,
+        billingMode: job.billingMode === 'coupon' ? 'coupon' : 'credit'
+      });
+    }
+  }
+  persistJob(job);
+  logger.info('transform.refine_started', { jobId: job.id, uid: job.uid, mode: job.mode, paragraphIndex: idx, n, needed, memoLength: memo.length });
+  res.json({ ok: true, refine: publicRefine(job) });   // 즉시 응답 — 프론트는 GET /transform/:id 폴링으로 수신
+  const ac = new AbortController();
+  const timer = setTimeout(() => { try { ac.abort(); } catch {} }, REFINE_TIMEOUT_MS);
+  try {
+    // refine 전용 단일 호출: 전체 휴머나이즈 파이프라인(v2.5.x)은 보존 편향 지시 코어가 메모 위빙을
+    // 막는다(실측 2026-08-27: userNotes·evidence 채널 모두 무위빙). 전용 프롬프트로 경험을 녹이고,
+    // 무날조는 아래 결정론 게이트(measureNovelty allowedExtra=memo + 길이 상한)로 강제한다.
+    const refineTool = {
+      name: 'return_refined_paragraph',
+      description: '보강된 문단을 반환한다.',
+      input_schema: {
+        type: 'object',
+        properties: { outputText: { type: 'string', description: '보강된 문단 본문만 (제목·설명·따옴표 없이)' } },
+        required: ['outputText']
+      }
+    };
+    const refineSystem = [
+      '너는 한국어 글의 한 문단을 다듬는 편집자다. 저자가 직접 겪은 실제 경험 한 줄이 제공된다.',
+      '이 경험을 문단에 자연스럽게 녹여, 추상적인 일반론에 실제 장면이 스며든 더 구체적인 문단으로 만들어라.',
+      '',
+      '규칙(절대 준수):',
+      '1. 무날조: 문단과 경험 메모에 없는 새로운 사실·수치·인명·기관명·연도를 만들지 않는다.',
+      '2. 경험 메모를 그대로 복사해 붙이지 않는다 — 문단의 어조와 흐름에 맞게 1~2문장으로 풀어 쓴다.',
+      '3. 문단의 원래 주장·논리 순서·종결체(반말/존댓말)를 유지한다.',
+      '4. 길이는 원래 문단의 0.9~1.8배 사이로 한다.',
+      '5. 결과는 문단 하나의 본문만 출력한다.'
+    ].join('\n');
+    const resp = await gptAnalyze.callGpt({
+      userText: '[문단]\n' + paraText + '\n\n[저자의 실제 경험 메모]\n' + memo,
+      systemText: refineSystem,
+      tool: refineTool,
+      maxOutputTokens: 1500,
+      signal: ac.signal,
+      task: 'humanize',
+      phase: 'main',
+      mode: job.mode,
+      config: gptCfg
+    });
+    const parsed = gptAnalyze.extractGptResult(resp, refineTool.name);
+    // 문단 하나로 정규화 — 모델이 빈 줄을 넣으면 스플라이스 후 문단 수·인덱스가 틀어진다.
+    const refined = String(parsed && parsed.outputText || '').trim().replace(/\n[ \t]*\n+/g, '\n');
+    // 무날조·길이 결정론 게이트 — 허용 세계 = 원 문단 ∪ 메모. 그 밖의 새 사실·과증축은 차단(무과금 유지).
+    const floorGuard = require('../engine/floor');
+    const novelty = refined ? floorGuard.measureNovelty(paraText, refined, memo) : { count: 0, items: [] };
+    const bareLen = (s) => String(s).replace(/\s+/g, '').length;
+    const lenRatio = refined ? bareLen(refined) / Math.max(1, bareLen(paraText)) : 0;
+    const gateBlocked = !!refined && (novelty.count > 0 || lenRatio < 0.6 || lenRatio > 2.0);
+    if (gateBlocked) {
+      logger.warn('transform.refine_gate_blocked', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, novelty: (novelty.items || []).slice(0, 5), lenRatio: Number(lenRatio.toFixed(2)) });
+    }
+    try {
+      const reuse = surfaceguard.measureMemoReuse(refined, memo, paraText);
+      if (reuse.count) logger.warn('transform.refine_memo_reuse', { jobId: job.id, uid: job.uid, n, items: reuse.items });
+    } catch { /* 관측용 — 실패해도 흐름 유지 */ }
+    const changed = !!refined && !gateBlocked && refined.replace(/\s+/g, ' ') !== paraText.trim().replace(/\s+/g, ' ');
+    if (!changed) {
+      job.refine = { status: 'done', changed: false, paragraphIndex: idx, n, needed: 0, deducted: false,
+        note: gateBlocked
+          ? '보강 결과가 안전 검증(무날조·분량)을 통과하지 못해 원래 문단을 유지했어요. 크레딧·무료 횟수는 쓰지 않았어요.'
+          : '적어주신 내용을 반영해도 이 문단이 크게 달라지지 않아 원래 문단을 유지했어요. 크레딧·무료 횟수는 쓰지 않았어요.' };
+      persistJob(job);
+      logger.info('transform.refine_noop', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, gateBlocked });
+      return;
+    }
+    // 패치: sep 보존 스플라이스 — 보강한 문단 외에는 바이트 단위로 그대로 유지.
+    const current = surfaceguard.splitParagraphsForRefine(job.result.outputText || '');
+    current[idx] = { ...current[idx], text: refined };
+    job.result.outputText = current.map(p => p.lead + p.text + p.sep).join('');
+    job.refineCount = n;
+    job.refineHistory = [...(job.refineHistory || []), { n, paragraphIndex: idx, memo, atMs: Date.now(), outLen: refined.length }];
+    let deducted = false;
+    if (needed) {
+      try {
+        deducted = await commitRefineBilling(job, n, needed, paraLen);
+      } catch (e) {
+        // 결과는 이미 전달 — charged 위장 대신 수동 재정산 로그(본 작업 과금 실패와 동일한 계약).
+        logger.error('transform.refine_credit_deduct_failed_manual_action', { jobId: job.id, uid: job.uid, n, needed, noAlert: true, err: e });
+      }
+    }
+    attachRefineTargets(job);   // 구체화된 문단은 타겟에서 빠지고 freeLeft 갱신
+    job.refine = { status: 'done', changed: true, paragraphIndex: idx, n, needed, deducted };
+    persistJob(job);
+    if (!job.adminHumanizeLab) saveJobHistory(job, job.text, job.result.outputText);   // 멱등키 job_<id> → 이력 문서 갱신
+    logger.info('transform.refine_done', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, needed, deducted, outLen: refined.length });
+  } catch (e) {
+    const aborted = ac.signal.aborted;
+    job.refine = { status: 'error', paragraphIndex: idx, n, needed: 0,
+      error: aborted ? '문단 보강이 시간 초과로 중단됐어요. 크레딧은 차감되지 않았어요.' : '문단 보강 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.' };
+    persistJob(job);
+    logger.error('transform.refine_failed', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, aborted, err: e });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 // ── P4: 근거 승인 — 승인된 후보만 evidence로 재구성 재개. "미승인은 엔진이 차단"의 구현부:
 //   엔진에 전달되는 허용 세계 자체가 승인 목록뿐이므로 미승인 사실은 novelty 게이트가 자동 차단.
 router.post('/transform/:id/approve', async (req, res) => {
@@ -3081,7 +3297,8 @@ router.get('/transform/:id', async (req, res) => {
     effectNotices: job.result?.effectNotices || [],
     sourceReviewWarnings: job.result?.sourceReviewWarnings,
     engineMeta: job.result?.engineMeta,
-    result: job.result
+    result: job.result,
+    ...(job.refine ? { refine: publicRefine(job) } : {})   // 사후 문단 보강 진행 상태(additive)
   });
   if (job.status === 'queued') return res.json(base);
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });

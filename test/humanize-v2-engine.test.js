@@ -39,6 +39,7 @@ function installEngineMock(t, options = {}) {
     salt: process.env.OPENAI_SAFETY_SALT,
     layout: process.env.GPT_LAYOUT_NLP_ENABLED,
     nikl: process.env.GPT_NIKL_QUALITY_ENABLED,
+    niklExternal: process.env.GPT_NIKL_EXTERNAL_API_ENABLED,
     humanizationDepth: process.env.HUMANIZATION_DEPTH_GATE_ENABLED
   };
   const restoreEnv = (name, value) => {
@@ -49,6 +50,9 @@ function installEngineMock(t, options = {}) {
   process.env.OPENAI_SAFETY_SALT = 'engine-test-salt';
   process.env.GPT_LAYOUT_NLP_ENABLED = '0';
   process.env.GPT_NIKL_QUALITY_ENABLED = '0';
+  // 개발자 PC나 CI에 국립국어원 키가 설정돼 있어도 단위 테스트가 외부 API를
+  // 호출하거나 engineMeta 기대값이 달라지지 않게 격리한다.
+  process.env.GPT_NIKL_EXTERNAL_API_ENABLED = '0';
   process.env.HUMANIZATION_DEPTH_GATE_ENABLED = options.humanizationDepth === true ? '1' : '0';
   const calls = [];
   let semanticCalls = 0;
@@ -161,6 +165,7 @@ function installEngineMock(t, options = {}) {
     restoreEnv('OPENAI_SAFETY_SALT', originalEnv.salt);
     restoreEnv('GPT_LAYOUT_NLP_ENABLED', originalEnv.layout);
     restoreEnv('GPT_NIKL_QUALITY_ENABLED', originalEnv.nikl);
+    restoreEnv('GPT_NIKL_EXTERNAL_API_ENABLED', originalEnv.niklExternal);
     restoreEnv('HUMANIZATION_DEPTH_GATE_ENABLED', originalEnv.humanizationDepth);
   });
   return { calls, semanticCalls: () => semanticCalls };

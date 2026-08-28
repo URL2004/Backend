@@ -428,6 +428,36 @@ function analyzeParagraphs(text) {
   return { total, abstractRisk, concrete, neutral, abstractRiskRatio: Number((abstractRisk / total).toFixed(3)), detail };
 }
 
+// ── 사후 문단 보강(refine)용 왕복 분할: analyzeParagraphs와 같은 경계(/\n[ \t]*\n+/)를 sep 보존 형태로
+//   반환한다. 타겟 인덱스·요청 검증·스플라이스가 전부 이 함수 하나를 쓰므로 경계 불일치가 원천 차단된다.
+//   불변식: paras.map(p => p.lead + p.text + p.sep).join('') === text (왕복 무손실).
+//   공백뿐인 조각은 analyzeParagraphs의 filter(Boolean)와 동일하게 내용 문단으로 세지 않고 이웃 sep에 흡수.
+function splitParagraphsForRefine(text) {
+  const src = String(text || '');
+  const parts = src.split(/(\n[ \t]*\n+)/);
+  const out = [];
+  let pending = '';
+  for (let i = 0; i < parts.length; i++) {
+    const piece = parts[i];
+    if (i % 2 === 1 || !piece.trim()) {   // 구분자 또는 공백뿐인 내용
+      if (out.length) out[out.length - 1].sep += piece;
+      else pending += piece;
+      continue;
+    }
+    out.push({ lead: pending, text: piece, sep: '' });
+    pending = '';
+  }
+  if (pending && out.length) out[out.length - 1].sep += pending;
+  return out;
+}
+
+// 문단 1개의 kind 분류. analyzeParagraphs를 문단 단위로 호출해, 문장 0개 문단 skip으로 생기는
+// detail↔paras 인덱스 어긋남(전체 문서 zip 방식의 잠재 버그)을 상속하지 않는다.
+function classifyParagraphKind(paraText) {
+  const d = analyzeParagraphs(paraText).detail;
+  return (d && d[0] && d[0].kind) || 'neutral';
+}
+
 // 종합 리포트 + 추천(needs_user_anchor): 추상-위험 문단 비율이 높으면 경험 메모 없이는 강한 휴먼화 불가.
 function buildSurfaceReport(text) {
   const genericness = measureGenericness(text);
@@ -473,6 +503,7 @@ function classifyInputRisk(rawText) {
 module.exports = {
   splitSentences, splitParagraphsForReport, measureGenericness, measureRealAnchorDensity, measureStance,
   measureUniformity, analyzeParagraphs, buildSurfaceReport, classifyInputRisk,
+  splitParagraphsForRefine, classifyParagraphKind,
   measurePersonalExperienceNovelty, measureMemoReuse, isLivedScene,
   buildSourceAnchorPool, buildSegments, measureSegmentRisk, buildSegmentReport,
   measureImpersonal, measureCompression, isCompressedSentence, measureTicDensity,

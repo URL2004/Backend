@@ -657,7 +657,10 @@ function buildBlockOffer(job, text) {
 //   사용자의 실제 경험 한 줄(무날조 원칙의 유일한 구체화 통로)로 그 문단만 재생성해 결과에 패치한다.
 //   프레이밍 계약: 추상성은 원문 귀속(엔진 실패가 아님), 상위 2개만, 무변화·실패는 무과금·무료횟수 미소진.
 function refineEnabled() { return process.env.PARAGRAPH_REFINE === '1'; }
-const REFINE_FREE_COUNT = Math.max(0, Number(process.env.REFINE_FREE_COUNT) || 2);
+const refineFreeCountRaw = Number(process.env.REFINE_FREE_COUNT);
+const REFINE_FREE_COUNT = Number.isFinite(refineFreeCountRaw)
+  ? Math.max(0, Math.floor(refineFreeCountRaw))
+  : 2;
 const REFINE_TIMEOUT_MS = Math.max(30000, Number(process.env.REFINE_TIMEOUT_MS) || 180000);
 const REFINE_TARGET_MIN_LEN = 80;   // 표제·목차·짧은 라벨 오탐 가드
 const REFINE_MEMO_MIN = 5, REFINE_MEMO_MAX = 500;
@@ -3087,7 +3090,9 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
   const freeLeft = Math.max(0, REFINE_FREE_COUNT - (job.refineCount || 0));
   const needed = freeLeft > 0 ? 0 : shortHumanizeCredit(paraLen);
   const prevRefine = job.refine || null;
-  job.refine = { status: 'running', paragraphIndex: idx, memo, n, needed, startedAt: Date.now() };
+  // 경험 메모 원문은 이 요청의 모델 호출에만 사용한다. job/refineHistory에 넣으면
+  // transformJobs 영속화 과정에서 사용자 입력이 불필요하게 한 번 더 복제된다.
+  job.refine = { status: 'running', paragraphIndex: idx, memoLength: memo.length, n, needed, startedAt: Date.now() };
   if (needed && !job.devNoAuth) {
     try {
       await precheckExistingJobBilling(job, tokenFromReq(req), needed, paraLen);
@@ -3174,7 +3179,13 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
     current[idx] = { ...current[idx], text: refined };
     job.result.outputText = current.map(p => p.lead + p.text + p.sep).join('');
     job.refineCount = n;
-    job.refineHistory = [...(job.refineHistory || []), { n, paragraphIndex: idx, memo, atMs: Date.now(), outLen: refined.length }];
+    job.refineHistory = [...(job.refineHistory || []), {
+      n,
+      paragraphIndex: idx,
+      memoLength: memo.length,
+      atMs: Date.now(),
+      outLen: refined.length
+    }];
     let deducted = false;
     if (needed) {
       try {

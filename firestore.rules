@@ -233,6 +233,17 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // 운영 장애 로그·하트비트: 서버(Admin SDK)만 쓰고 읽는다.
+    // 관리자 화면도 Firestore를 직접 읽지 않고 /admin/ops-* API를 거친다 — 클라이언트에
+    // uid·주문번호·스택이 담긴 사건 기록을 절대 직접 노출하지 않기 위해서다.
+    // (아래 catch-all로도 막히지만, 의도를 명시해 나중에 실수로 열리는 것을 방지한다.)
+    match /opsLogs/{docId} {
+      allow read, write: if false;
+    }
+    match /opsHeartbeats/{docId} {
+      allow read, write: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

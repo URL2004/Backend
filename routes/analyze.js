@@ -5,7 +5,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
-const { db } = require('../config');
+const { db, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');
 const detectCalibration = require('../lib/detectCalibration');
@@ -15,6 +15,7 @@ const gptAnalyze = require('./analyze-gpt');
 const billing = require('../lib/usageBilling');
 const history = require('../lib/historyService');
 const inputrouting = require('../engine/inputrouting');
+const publicMetrics = require('../lib/publicMetrics');
 
 const recentSubmits = new Map();
 const SUBMIT_DEDUP_WINDOW_MS = process.env.DEDUP_WINDOW_MS != null
@@ -240,6 +241,14 @@ router.post('/analyze', async (req, res) => {
     deducted,
     historySaved
   });
+  publicMetrics.trackDeliveredMetric(res, {
+    operation: 'detect',
+    eventId: requestId || String(res.getHeader('x-request-id') || crypto.randomUUID()),
+    uid: precheck.uid,
+    processedCharacters: text.length,
+    isAdmin: ADMIN_UIDS.includes(precheck.uid),
+    isTest: devNoAuth
+  }, { db, logger });
   return res.json({
     ok: true,
     result,

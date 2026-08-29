@@ -17,7 +17,7 @@ const sg = require('../engine/surfaceguard');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 const crypto = require('crypto');
-const { db, verifyToken, verifyAppCheck } = require('../config');
+const { db, verifyToken, verifyAppCheck, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 const detectCalibration = require('../lib/detectCalibration');
@@ -26,6 +26,7 @@ const history = require('../lib/historyService');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const inputrouting = require('../engine/inputrouting');
+const publicMetrics = require('../lib/publicMetrics');
 
 // (무료 감지 일일 한도 로직 제거 — 2026-07-20 사장님 결정으로 감지는 항상 유료.
 //  기존 무료 3회/일 캡은 CF 엣지 IP 키 버그로 사실상 무제한이었음. 복원 시 git 이력 참조.)
@@ -260,6 +261,14 @@ router.post('/detect-report', async (req, res) => {
   // ③ 비용 — 실제 과금 공식과 동일 산식(다듬기 1/100자 · 블로그 2/100자 · 재구성 구간 정액)
   const len = text.length;
   const B = BANDS;
+  publicMetrics.trackDeliveredMetric(res, {
+    operation: 'detect',
+    eventId: requestId || String(res.getHeader('x-request-id') || crypto.randomUUID()),
+    uid,
+    processedCharacters: text.length,
+    isAdmin: ADMIN_UIDS.includes(uid),
+    isTest: devNoAuth
+  }, { db, logger });
   res.json({
     ok: true,
     free: false,          // 무료 제공 제거(2026-07-20) — 항상 유료

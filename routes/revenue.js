@@ -9,19 +9,38 @@ const { getRevenue, revenueEmbed, revenueField } = require('../lib/revenue');
 const discord = require('../lib/discord');
 const { logger } = require('../lib/logger');
 
+// 인증 실패를 조용히 넘기지 않는다 — 예전에는 매출 cron이 401로 죽어도 로그가 한 줄도 없어서
+// "리포트가 왜 안 오지"를 추적할 방법이 없었다.
 function checkAdmin(req, res) {
   const token = (process.env.ADMIN_TOKEN || '').trim();
-  if (!token) { res.status(503).json({ error: 'ADMIN_TOKEN이 설정되지 않았습니다.' }); return false; }
+  if (!token) {
+    logger.error('revenue.admin_token_missing', { message: 'ADMIN_TOKEN 미설정 — 관리자 매출 조회 불가' });
+    res.status(503).json({ error: 'ADMIN_TOKEN이 설정되지 않았습니다.' });
+    return false;
+  }
   const given = (req.get('x-admin-token') || req.query.token || '').toString().trim();
-  if (given !== token) { res.status(401).json({ error: '권한이 없습니다.' }); return false; }
+  if (given !== token) {
+    logger.warn('revenue.admin_auth_rejected', { hasToken: !!given });
+    res.status(401).json({ error: '권한이 없습니다.' });
+    return false;
+  }
   return true;
 }
 
 function checkCron(req, res) {
   const secret = (process.env.CRON_SECRET || '').trim();
-  if (!secret) { res.status(503).json({ error: 'CRON_SECRET이 설정되지 않았습니다.' }); return false; }
+  if (!secret) {
+    logger.error('revenue.cron_secret_missing', { message: 'CRON_SECRET 미설정 — 일일 매출 리포트 중단' });
+    res.status(503).json({ error: 'CRON_SECRET이 설정되지 않았습니다.' });
+    return false;
+  }
   const given = (req.get('x-cron-secret') || req.query.key || (req.body && req.body.internalKey) || '').toString().trim();
-  if (given !== secret) { res.status(401).json({ error: '권한이 없습니다.' }); return false; }
+  if (given !== secret) {
+    // 스케줄러 헤더가 틀어지면 리포트가 조용히 끊긴다 — 구독 cron 403 사고와 같은 유형이라 알린다.
+    logger.warn('revenue.cron_auth_rejected', { hasKey: !!given, message: '매출 cron 인증 실패 — 스케줄러 시크릿 확인 필요' });
+    res.status(401).json({ error: '권한이 없습니다.' });
+    return false;
+  }
   return true;
 }
 
@@ -48,6 +67,8 @@ router.post('/cron/daily-revenue', async (req, res) => {
       title: '📊 일일 매출 리포트',
       fields: [revenueField(yesterday), revenueField(month)]
     });
+    // 리포트가 실제로 나갔다는 도장 — 이게 끊기면 워치독이 SEV1로 알린다.
+    try { require('../lib/opsHeartbeat').beat('revenue.daily_report', { total: yesterday.totalPaid }); } catch (_) {}
     logger.info('revenue.daily_report_sent', {
       yesterday: yesterday.totalPaid, yesterdayCount: yesterday.totalCount,
       monthToDate: month.totalPaid, monthCount: month.totalCount

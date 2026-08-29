@@ -29,6 +29,7 @@ const surfaceguard = require('../engine/surfaceguard');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const restartRecovery = require('../lib/transformRestartRecovery');
+const publicMetrics = require('../lib/publicMetrics');
 const {
   restructureCredit,
   shortHumanizeCredit
@@ -3308,18 +3309,30 @@ router.get('/transform/:id', async (req, res) => {
     ...queueDetails(job),
     ...(job.note ? { note: job.note } : {})
   };
-  if (job.status === 'done') return res.json({
-    ...base,
-    qualityStatus: job.result?.qualityStatus,
-    billingDisposition: job.result?.billingDisposition || job.billingDisposition || null,
-    qualityWarnings: job.result?.qualityWarnings,
-    effectStatus: job.result?.effectStatus || 'normal',
-    effectNotices: job.result?.effectNotices || [],
-    sourceReviewWarnings: job.result?.sourceReviewWarnings,
-    engineMeta: job.result?.engineMeta,
-    result: job.result,
-    ...(job.refine ? { refine: publicRefine(job) } : {})   // 사후 문단 보강 진행 상태(additive)
-  });
+  if (job.status === 'done') {
+    if (typeof job.result?.outputText === 'string' && job.result.outputText.length > 0) {
+      publicMetrics.trackDeliveredMetric(res, {
+        operation: 'humanize',
+        eventId: job.id,
+        uid: job.uid,
+        processedCharacters: typeof job.text === 'string' ? job.text.length : 0,
+        isAdmin: isAdminUid(job.uid),
+        isTest: job.devNoAuth === true || job.adminHumanizeLab === true
+      }, { db, logger });
+    }
+    return res.json({
+      ...base,
+      qualityStatus: job.result?.qualityStatus,
+      billingDisposition: job.result?.billingDisposition || job.billingDisposition || null,
+      qualityWarnings: job.result?.qualityWarnings,
+      effectStatus: job.result?.effectStatus || 'normal',
+      effectNotices: job.result?.effectNotices || [],
+      sourceReviewWarnings: job.result?.sourceReviewWarnings,
+      engineMeta: job.result?.engineMeta,
+      result: job.result,
+      ...(job.refine ? { refine: publicRefine(job) } : {})   // 사후 문단 보강 진행 상태(additive)
+    });
+  }
   if (job.status === 'queued') return res.json(base);
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
   if (job.status === 'cancelled') return res.json(base);

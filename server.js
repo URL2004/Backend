@@ -145,18 +145,22 @@ app.use('/', require('./routes/payment'));
 app.use('/', require('./routes/subscription'));
 app.use('/', require('./routes/coupon'));
 app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
+app.use('/', require('./routes/publicMetrics'));   // 검증된 누적 처리량 공개 지표(미검증 시 503)
 app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
 app.use('/', require('./routes/writinglab'));   // 관리자 실험: 자소서 생성 랩(생성→휴머나이징 결합 프로토타입, 관리자 전용·무과금)
+app.use('/', require('./routes/opsLogs'));   // 장애 로그: 관리자 조회·확인(/admin/ops-*) + 부재 감지 워치독·다이제스트 cron
 
 app.use(errorHandler);
 
 const server = app.listen(process.env.PORT || 3000, async () => {
   const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger, force: true });
+  // 재시작은 SEV3로 남긴다 — 배포면 정상이지만, 짧은 간격으로 반복되면 크래시 루프(과거 OOM 사고)다.
   logger.info('server.started', {
     port: Number(process.env.PORT || 3000),
     activeProvider: runtimeConfig.activeProvider,
     runtimeConfigSource: runtimeConfig.source,
-    auth: process.env.FIREBASE_SERVICE_ACCOUNT ? 'firebase' : (process.env.DEV_NO_AUTH === '1' ? 'dev_no_auth' : 'disabled')
+    auth: process.env.FIREBASE_SERVICE_ACCOUNT ? 'firebase' : (process.env.DEV_NO_AUTH === '1' ? 'dev_no_auth' : 'disabled'),
+    message: `서버가 시작됐어요(provider=${runtimeConfig.activeProvider}).`
   });
 });
 

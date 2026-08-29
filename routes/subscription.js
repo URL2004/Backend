@@ -456,7 +456,11 @@ async function runProcessDue(internalKey) {
         body: JSON.stringify({ uid: doc.id, internalKey })
       });
       if (r.ok) results.charged++;
-      else results.failed++;
+      else {
+        // 이전에는 카운터만 올리고 로그가 없어서 "100건 중 80건 실패"의 개별 원인을 알 수 없었다.
+        results.failed++;
+        logger.warn('subscription.cron_charge_rejected', { uid: doc.id, statusCode: r.status });
+      }
     } catch (e) {
       logger.error('subscription.cron_charge_request_failed', { uid: doc.id, err: e });
       results.failed++;
@@ -491,6 +495,19 @@ async function runProcessDue(internalKey) {
   results.cancellationInbox = await reconcilePendingCreditCancellationInboxes({ limit: 25 });
 
   logger.info('subscription.cron_process_due_completed', results);
+
+  // 배치가 "돌긴 했는데 대부분 실패"하는 상황은 info 한 줄로는 절대 안 보인다. 실패율로 승격한다.
+  if (results.processed >= 3 && results.failed / results.processed >= 0.5) {
+    logger.error('subscription.cron_due_failure_rate_high', {
+      processed: results.processed,
+      failed: results.failed,
+      charged: results.charged,
+      failureRate: Math.round((results.failed / results.processed) * 100),
+      message: `구독 갱신 ${results.processed}건 중 ${results.failed}건 실패`
+    });
+  }
+  // 성공적으로 완주했다는 사실 자체를 하트비트로 남긴다 → 크론이 멈추면 워치독이 잡는다.
+  try { require('../lib/opsHeartbeat').beat('subscription.process_due', { processed: results.processed, failed: results.failed }); } catch (_) {}
   return results;
 }
 

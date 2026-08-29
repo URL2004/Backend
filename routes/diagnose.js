@@ -24,7 +24,7 @@ const {
 //   실측은 분포의 한 샘플이고 짧은 글은 ±15%p 출렁이므로, 표기는 실측 상단을 넉넉히 잡는다.
 // 보존형(그대로 다듬기) 실측: A=ESG 18·개인정보 35 / B=EV 73~81 / C=도시 87·보고서 94~100.
 // 구형 위험 신호는 유지하되, v2에서는 장르·구조 판정과 조정한 최종 적합성을 응답한다.
-const { looksLikeResume, factDensity, genreAdvisory, FACT_DENSE_THRESHOLD } = require('../engine/inputrouting');
+const { looksLikeResume, factDensity, genreAdvisory, FACT_DENSE_THRESHOLD, assessInputReadability, UNREADABLE_INPUT_MESSAGE } = require('../engine/inputrouting');
 
 function v2BasicRecommendation(kind, fallback) {
   if (kind === 'resume') {
@@ -44,6 +44,11 @@ router.post('/diagnose', (req, res) => {
   const bare = text.replace(/\s+/g, '');
   if (bare.length < 50) return res.status(400).json({ error: '진단하려면 최소 50자가 필요해요.' });
   if (text.length > 50000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 50,000자)' });
+  const readability = assessInputReadability(text);
+  if (!readability.readable) {
+    logger.warn('diagnose.unreadable_input_blocked', { reason: readability.reason, textLength: text.length });
+    return res.status(422).json({ code: 'UNREADABLE_INPUT', reason: readability.reason, error: UNREADABLE_INPUT_MESSAGE });
+  }
 
   let ir;
   try {

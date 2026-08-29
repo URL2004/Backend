@@ -2683,6 +2683,15 @@ router.post('/transform', async (req, res) => {
   if (text.length > hardMax) {
     return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${hardMax.toLocaleString()}자)` });
   }
+  const readability = inputrouting.assessInputReadability(text);
+  if (!readability.readable) {
+    logger.warn('transform.unreadable_input_blocked', { mode, reason: readability.reason, textLength: text.length });
+    return res.status(422).json({
+      code: 'UNREADABLE_INPUT',
+      reason: readability.reason,
+      error: inputrouting.UNREADABLE_INPUT_MESSAGE
+    });
+  }
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const adminLabRequested = req.body && req.body.adminHumanizeLab === true;
   const requestedAdminLabProfile = adminLabRequested ? normalizeAdminLabProfile(req.body && req.body.adminLabProfile) : null;

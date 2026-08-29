@@ -10,6 +10,47 @@
 //   대명사·취업 어휘 없음)이 안 걸려 재구성까지 가 added_claim 폭발(실측 junnny1004 2026-06-16).
 const { computePovSeed } = require('./pov');
 
+const UNREADABLE_INPUT_MESSAGE = '문장으로 인식하기 어려운 반복 입력이에요. 의미가 있는 문장이나 문단을 붙여넣어 주세요.';
+
+function repeatedInputPattern(signal) {
+  const length = signal.length;
+  if (length < 24) return false;
+  const maxUnit = Math.min(16, Math.floor(length / 4));
+  for (let unit = 1; unit <= maxUnit; unit += 1) {
+    let matches = 0;
+    for (let index = 0; index < length; index += 1) {
+      if (signal[index] === signal[index % unit]) matches += 1;
+    }
+    if (length / unit >= 4 && matches / length >= 0.94) return true;
+  }
+  return false;
+}
+
+// 분석·과금 전에 문장으로 보기 어려운 키보드 난타와 짧은 패턴 반복을 거른다.
+// 정상 문서의 반복 문단은 detectInputDuplication이 별도 안내하므로 여기서는 16자 이하 패턴만 좁게 본다.
+function assessInputReadability(text) {
+  const compact = String(text || '').replace(/\s+/gu, '');
+  if (compact.length < 24) return { readable: true, reason: null };
+
+  const jamo = (compact.match(/[ㄱ-ㅎㅏ-ㅣ]/gu) || []).length;
+  const hangulSyllables = (compact.match(/[가-힣]/gu) || []).length;
+  if (jamo >= 16 && jamo / compact.length >= 0.65 && hangulSyllables < 8) {
+    return { readable: false, reason: 'standalone_hangul_jamo' };
+  }
+
+  const signal = compact.replace(/[^A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ]/gu, '');
+  if (repeatedInputPattern(signal)) return { readable: false, reason: 'repeated_pattern' };
+
+  if (signal.length >= 32) {
+    const uniqueCount = new Set(signal).size;
+    if (uniqueCount <= 5 && uniqueCount / signal.length <= 0.16) {
+      return { readable: false, reason: 'low_character_variety' };
+    }
+  }
+
+  return { readable: true, reason: null };
+}
+
 function looksLikeResume(text) {
   const t = text || '';
   const bare = t.replace(/\s+/g, '').length || 1;
@@ -369,4 +410,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isSectionedAssignmentReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD };
+module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isSectionedAssignmentReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD, assessInputReadability, UNREADABLE_INPUT_MESSAGE };

@@ -25,6 +25,7 @@ const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const history = require('../lib/historyService');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
+const inputrouting = require('../engine/inputrouting');
 
 // (무료 감지 일일 한도 로직 제거 — 2026-07-20 사장님 결정으로 감지는 항상 유료.
 //  기존 무료 3회/일 캡은 CF 엣지 IP 키 버그로 사실상 무제한이었음. 복원 시 git 이력 참조.)
@@ -100,6 +101,11 @@ router.post('/detect-report', async (req, res) => {
   // 글자수 기준 통일: 표시 카운트와 동일하게 공백 포함 raw length으로 최소 길이 판정.
   if (text.length < 100) return res.status(400).json({ error: 'AI 감지를 하려면 최소 100자가 필요해요.' });
   if (text.length > 30000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
+  const readability = inputrouting.assessInputReadability(text);
+  if (!readability.readable) {
+    logger.warn('detect_report.unreadable_input_blocked', { reason: readability.reason, textLength: text.length });
+    return res.status(422).json({ code: 'UNREADABLE_INPUT', reason: readability.reason, error: inputrouting.UNREADABLE_INPUT_MESSAGE });
+  }
 
   // ★ 로컬 개발 전용(이중 게이트 — analyze.js와 동일): Firebase 비활성 + DEV_NO_AUTH=1이면
   //   인증·과금 미적용(테스트 무제한). 프로덕션은 FIREBASE_SERVICE_ACCOUNT가 항상 있어 이 분기를 안 탐.
@@ -316,6 +322,10 @@ router.post('/coach-suggest', async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   if (text.replace(/\s/g, '').length < 80) return res.json({ ok: true, stances: [], experiences: [] });
   if (text.length > 30000) return res.status(400).json({ ok: false, error: '텍스트가 너무 깁니다.' });
+  const readability = inputrouting.assessInputReadability(text);
+  if (!readability.readable) {
+    return res.status(422).json({ ok: false, code: 'UNREADABLE_INPUT', reason: readability.reason, error: inputrouting.UNREADABLE_INPUT_MESSAGE });
+  }
 
   // (1) App Check — 콘솔·프런트 준비 후 APPCHECK_ENFORCE=1로 켜면 정상 앱 외 호출 차단.
   if (process.env.APPCHECK_ENFORCE === '1') {

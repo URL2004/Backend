@@ -14,6 +14,7 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const billing = require('../lib/usageBilling');
 const history = require('../lib/historyService');
+const inputrouting = require('../engine/inputrouting');
 
 const recentSubmits = new Map();
 const SUBMIT_DEDUP_WINDOW_MS = process.env.DEDUP_WINDOW_MS != null
@@ -48,7 +49,7 @@ function normalizeDetectInput(rawText) {
   let text = String(rawText || '');
   if (process.env.INPUT_REJOIN !== '0') {
     try {
-      const joined = require('../engine/inputrouting').rejoinSplitChars(text);
+      const joined = inputrouting.rejoinSplitChars(text);
       if (joined.changed) text = joined.text;
     } catch (error) {
       logger.warn('analyze.input_rejoin_failed', { err: error?.message });
@@ -94,6 +95,11 @@ router.post('/analyze', async (req, res) => {
   const hardMax = billingMode === 'coupon' ? 50000 : 30000;
   if (text.length > hardMax) {
     return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${hardMax.toLocaleString()}자)` });
+  }
+  const readability = inputrouting.assessInputReadability(text);
+  if (!readability.readable) {
+    logger.warn('analyze.unreadable_input_blocked', { reason: readability.reason, textLength: text.length });
+    return res.status(422).json({ code: 'UNREADABLE_INPUT', reason: readability.reason, error: inputrouting.UNREADABLE_INPUT_MESSAGE });
   }
 
   const abortController = new AbortController();

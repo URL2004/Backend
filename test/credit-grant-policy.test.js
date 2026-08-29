@@ -18,8 +18,9 @@ test('new payment grants never create a first-purchase bonus', () => {
   });
   const grant = paymentIntentGrant(null, product);
   assert.equal(grant.paidCredits, 2000);
-  assert.equal(grant.eventBonusCredits, 500);
-  assert.equal(grant.totalCredits, 2500);
+  assert.equal(grant.packageBonusCredits, 900);
+  assert.equal(grant.eventBonusCredits, 100);
+  assert.equal(grant.totalCredits, 3000);
   assert.equal(grant.firstPurchaseBonusCredits, 0);
   assert.equal(grant.grantPolicyVersion, 'credit-grant-base-v1');
 });
@@ -28,12 +29,19 @@ test('a pre-deploy intent keeps its package grant but receives no first-purchase
   const intent = { amount: 58000, baseCredits: 3300, status: 'approved_reconciliation_required' };
   assert.deepEqual(paymentIntentGrant(intent, getCreditProduct(58000)), {
     paidCredits: 3300,
+    packageBonusCredits: 0,
     eventBonusCredits: 0,
+    bonusCredits: 0,
     totalCredits: 3300,
+    packageBonusRate: 0,
     eventBonusRate: 0,
     eventId: null,
     eventEndsAtMs: 0,
     grantPolicyVersion: 'legacy-total-grant-v1',
+    offerPolicyVersion: null,
+    purchaseKind: 'credit_package',
+    sourceOrderId: null,
+    targetAmount: 0,
     firstPurchaseBonusCredits: 0
   });
 });
@@ -64,6 +72,10 @@ test('migrated event intents stay immutable while retired first-purchase amounts
   assert.equal(legacyRetry.totalCredits, 3300);
   assert.equal(
     legacyRetry.paidCredits + legacyRetry.eventBonusCredits + legacyRetry.firstPurchaseBonusCredits,
+    legacyRetry.totalCredits
+  );
+  assert.equal(
+    legacyRetry.paidCredits + legacyRetry.packageBonusCredits + legacyRetry.eventBonusCredits,
     legacyRetry.totalCredits
   );
 });

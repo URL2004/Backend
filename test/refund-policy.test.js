@@ -15,7 +15,8 @@ const {
   calculateCreditPolicyRefund,
   calculateOrderCreditRefund,
   calculateSubscriptionPolicyRefund,
-  currentSubscriptionRefundContext
+  currentSubscriptionRefundContext,
+  activeUpgradeRefundConflict
 } = payment.refundPolicy;
 
 test('진행 중인 직접 환불이 있으면 사용자 환불 요청이 같은 주문 상태를 덮지 않는다', () => {
@@ -28,6 +29,29 @@ test('진행 중인 직접 환불이 있으면 사용자 환불 요청이 같은
     code: 'REFUND_PROCESSING',
     message: '이미 환불 처리가 진행 중입니다. 잠시 후 상태를 다시 확인해 주세요.'
   });
+});
+
+test('활성 업그레이드가 연결된 스타터 주문은 업그레이드 결제를 먼저 환불해야 한다', () => {
+  assert.equal(activeUpgradeRefundConflict({ status: 'paid' }), null);
+  const conflict = activeUpgradeRefundConflict({ activeUpgradeOrderId: 'order_upgrade_1' });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.code, 'UPGRADE_REFUND_ORDER_REQUIRED');
+  assert.equal(conflict.upgradeOrderId, 'order_upgrade_1');
+});
+
+test('상시·이벤트 보너스를 합친 신규 lot도 유료 크레딧 우선 사용 후 전부 회수한다', () => {
+  const result = calculateCreditPolicyRefund({
+    orderAmount: 58000,
+    paidCredits: 2000,
+    grantedCredits: 3000,
+    currentCredits: 2500,
+    remainingPaidCredits: 1500,
+    remainingBonusCredits: 1000
+  });
+  assert.equal(result.refundAmount, 43500);
+  assert.equal(result.refundablePaidCredits, 1500);
+  assert.equal(result.recoveredBonusCredits, 1000);
+  assert.equal(result.refundableCredits, 2500);
 });
 
 test('safeCredits가 없는 과거 주문도 credits 총 지급량으로 환불한다', () => {

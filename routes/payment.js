@@ -11,8 +11,12 @@ const detectCalibration = require('../lib/detectCalibration');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { buildHumanizeQualityReport } = require('../lib/humanizeQualityReport');
 const {
+  STARTER_UPGRADE,
   buildCheckoutContext,
-  getCreditProduct
+  buildStarterUpgradeGrant,
+  getCreditProduct,
+  isRetainedPaidOrder,
+  starterUpgradeEnabled
 } = require('../lib/conversionOffers');
 const {
   approvedPaymentValidation,
@@ -55,8 +59,11 @@ function tossBasicToken(res) {
   return Buffer.from(secretKey + ':').toString('base64');
 }
 
-async function getCreditOrdersForUser(uid, limit = 100) {
-  const snap = await db.collection('orders').where('uid', '==', uid).limit(limit).get();
+async function getCreditOrdersForUser(uid) {
+  // 결제 컨텍스트는 최근 30일 사용량과 반복 구매 순서를 계산한다. 정렬 없는
+  // limit(100)은 어떤 100건이 반환될지 보장하지 않아 고사용자의 최신 주문을
+  // 누락할 수 있으므로 해당 사용자의 주문 스냅샷 전체를 읽고 서버에서 정렬한다.
+  const snap = await db.collection('orders').where('uid', '==', uid).get();
   return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 }
 
@@ -85,23 +92,42 @@ async function bestEffortMarkPaymentIntent(orderId, status, fields = {}) {
 }
 
 function paymentIntentGrant(existing, creditGrant) {
+  const purchaseKind = existing?.purchaseKind || creditGrant?.purchaseKind || 'credit_package';
+  const sourceOrderId = existing?.sourceOrderId || creditGrant?.sourceOrderId || null;
+  const targetAmount = Math.max(0, Math.floor(Number(existing?.targetAmount ?? creditGrant?.targetAmount) || 0));
   const storedPaid = Number(existing && existing.paidCredits);
   const storedTotal = Number(existing && existing.totalGrantedCredits);
   if (storedPaid > 0 && storedTotal >= storedPaid) {
     const paidCredits = Math.floor(storedPaid);
-    const bonusBudget = Math.max(0, Math.floor(storedTotal) - paidCredits);
+    const retiredFirstPurchaseBonus = Math.max(
+      0,
+      Math.floor(Number(existing.firstPurchaseBonusCredits) || 0)
+    );
+    const immutableTotal = Math.max(paidCredits, Math.floor(storedTotal) - retiredFirstPurchaseBonus);
+    const bonusBudget = Math.max(0, immutableTotal - paidCredits);
     const eventBonusCredits = Math.min(
       bonusBudget,
       Math.max(0, Math.floor(Number(existing.eventBonusCredits) || 0))
     );
+    const packageBonusCredits = Math.min(
+      Math.max(0, bonusBudget - eventBonusCredits),
+      Math.max(0, Math.floor(Number(existing.packageBonusCredits) || (bonusBudget - eventBonusCredits)))
+    );
     return {
       paidCredits,
+      packageBonusCredits,
       eventBonusCredits,
-      totalCredits: paidCredits + eventBonusCredits,
+      bonusCredits: bonusBudget,
+      totalCredits: immutableTotal,
+      packageBonusRate: Math.max(0, Math.floor(Number(existing.packageBonusRate) || 0)),
       eventBonusRate: Math.max(0, Math.floor(Number(existing.eventBonusRate) || 0)),
       eventId: existing.eventId || null,
       eventEndsAtMs: Math.max(0, Math.floor(Number(existing.eventEndsAtMs) || 0)),
       grantPolicyVersion: existing.grantPolicyVersion || 'credit-grant-base-v1',
+      offerPolicyVersion: existing.offerPolicyVersion || null,
+      purchaseKind,
+      sourceOrderId,
+      targetAmount,
       firstPurchaseBonusCredits: 0
     };
   }
@@ -111,23 +137,37 @@ function paymentIntentGrant(existing, creditGrant) {
   if (legacyPromisedCredits > 0) {
     return {
       paidCredits: legacyPromisedCredits,
+      packageBonusCredits: 0,
       eventBonusCredits: 0,
+      bonusCredits: 0,
       totalCredits: legacyPromisedCredits,
+      packageBonusRate: 0,
       eventBonusRate: 0,
       eventId: null,
       eventEndsAtMs: 0,
       grantPolicyVersion: 'legacy-total-grant-v1',
+      offerPolicyVersion: null,
+      purchaseKind,
+      sourceOrderId,
+      targetAmount,
       firstPurchaseBonusCredits: 0
     };
   }
   return {
     paidCredits: creditGrant.paidCredits,
+    packageBonusCredits: creditGrant.packageBonusCredits || 0,
     eventBonusCredits: creditGrant.eventBonusCredits,
+    bonusCredits: creditGrant.bonusCredits || Math.max(0, creditGrant.totalCredits - creditGrant.paidCredits),
     totalCredits: creditGrant.totalCredits,
+    packageBonusRate: creditGrant.packageBonusRate || 0,
     eventBonusRate: creditGrant.eventBonusRate,
     eventId: creditGrant.eventId,
     eventEndsAtMs: creditGrant.eventEndsAtMs,
     grantPolicyVersion: creditGrant.grantPolicyVersion,
+    offerPolicyVersion: creditGrant.offerPolicyVersion || null,
+    purchaseKind,
+    sourceOrderId,
+    targetAmount,
     firstPurchaseBonusCredits: 0
   };
 }
@@ -159,6 +199,8 @@ async function preparePaymentIntent({ orderId, paymentKey, uid, amount, creditGr
       existing.uid !== uid ||
       Number(existing.amount) !== amount ||
       existing.paymentKeyHash !== keyHash
+      || String(existing.purchaseKind || 'credit_package') !== String(creditGrant.purchaseKind || 'credit_package')
+      || String(existing.sourceOrderId || '') !== String(creditGrant.sourceOrderId || '')
     )) {
       throw Object.assign(new Error('PAYMENT_INTENT_CONFLICT'), { status: 409 });
     }
@@ -168,12 +210,19 @@ async function preparePaymentIntent({ orderId, paymentKey, uid, amount, creditGr
       amount,
       paidCredits: grant.paidCredits,
       baseCredits: grant.paidCredits,
+      packageBonusCredits: grant.packageBonusCredits,
       eventBonusCredits: grant.eventBonusCredits,
+      bonusCredits: grant.bonusCredits,
       totalGrantedCredits: grant.totalCredits,
+      packageBonusRate: grant.packageBonusRate,
       eventBonusRate: grant.eventBonusRate,
       eventId: grant.eventId,
       eventEndsAtMs: grant.eventEndsAtMs,
       grantPolicyVersion: grant.grantPolicyVersion,
+      offerPolicyVersion: grant.offerPolicyVersion,
+      purchaseKind: grant.purchaseKind,
+      sourceOrderId: grant.sourceOrderId,
+      targetAmount: grant.targetAmount,
       firstPurchaseBonusCredits: grant.firstPurchaseBonusCredits,
       paymentKeyHash: keyHash,
       status: existing && existing.status === 'applied' ? 'applied' : 'confirming',
@@ -222,8 +271,12 @@ function creditPaymentResponse(granted) {
     creditAmount: granted.totalCredits,
     baseCreditAmount: granted.baseCredits,
     bonusCredits: granted.bonusCredits,
+    packageBonusCredits: granted.packageBonusCredits || 0,
     eventBonusCredits: granted.eventBonusCredits || 0,
     creditEventId: granted.eventId || null,
+    offerPolicyVersion: granted.offerPolicyVersion || null,
+    purchaseKind: granted.purchaseKind || 'credit_package',
+    sourceOrderId: granted.sourceOrderId || null,
     newBalance: granted.newBalance,
     experimentKey: granted.experimentKey,
     experimentVariant: granted.experimentVariant
@@ -244,18 +297,24 @@ async function applyCreditPayment({
   const userRef = db.collection('users').doc(verifiedUid);
   const intentRef = db.collection('paymentIntents').doc(orderId);
   const baseCredits = creditGrant.paidCredits;
+  const packageBonusCredits = Math.max(0, Math.floor(Number(creditGrant.packageBonusCredits) || 0));
   const eventBonusCredits = Math.max(0, Math.floor(Number(creditGrant.eventBonusCredits) || 0));
   const firstPurchaseBonusCredits = Math.max(0, Math.floor(Number(creditGrant.firstPurchaseBonusCredits) || 0));
   const totalCredits = creditGrant.totalCredits;
   const bonusCredits = Math.max(0, totalCredits - baseCredits);
   const usesBaseCreditPolicy = creditGrant.grantPolicyVersion === CREDIT_GRANT_POLICY_VERSION;
   const creditLotRef = userRef.collection('creditLots').doc(orderId);
+  const isUpgrade = creditGrant.purchaseKind === STARTER_UPGRADE.kind;
+  const sourceOrderRef = isUpgrade && creditGrant.sourceOrderId
+    ? db.collection('orders').doc(creditGrant.sourceOrderId)
+    : null;
 
   return db.runTransaction(async transaction => {
     // Firestore transactions require every read before the first write.
     const orderSnap = await transaction.get(orderRef);
     const userSnap = await transaction.get(userRef);
     const intentSnap = await transaction.get(intentRef);
+    const sourceOrderSnap = sourceOrderRef ? await transaction.get(sourceOrderRef) : null;
     const userData = userSnap.exists ? userSnap.data() : {};
     const currentCredits = Number(userData.credits) || 0;
 
@@ -276,12 +335,16 @@ async function applyCreditPayment({
         deduped: true,
         baseCredits: Number(order.paidCredits ?? order.baseCredits) || Math.min(baseCredits, totalCredits),
         bonusCredits: Math.max(0, totalCredits - (Number(order.paidCredits ?? order.baseCredits) || totalCredits)),
+        packageBonusCredits: Number(order.packageBonusCredits) || 0,
         eventBonusCredits: Number(order.eventBonusCredits) || 0,
         eventId: order.creditEventId || null,
         totalCredits,
         newBalance: currentCredits,
         experimentKey: order.offerExperimentKey || null,
-        experimentVariant: order.offerExperimentVariant || null
+        experimentVariant: order.offerExperimentVariant || null,
+        purchaseKind: order.purchaseKind || 'credit_package',
+        sourceOrderId: order.sourceOrderId || null,
+        offerPolicyVersion: order.offerPolicyVersion || null
       };
     }
 
@@ -296,6 +359,17 @@ async function applyCreditPayment({
     ) {
       throw Object.assign(new Error('PAYMENT_INTENT_CONFLICT'), { status: 409 });
     }
+    if (isUpgrade) {
+      const sourceOrder = sourceOrderSnap?.exists ? (sourceOrderSnap.data() || {}) : null;
+      if (!sourceOrder
+        || sourceOrder.uid !== verifiedUid
+        || Number(sourceOrder.amount) !== STARTER_UPGRADE.sourceAmount
+        || String(sourceOrder.status || '') !== 'paid'
+        || (sourceOrder.upgradeOrderId && sourceOrder.upgradeOrderId !== orderId)
+        || (sourceOrder.activeUpgradeOrderId && sourceOrder.activeUpgradeOrderId !== orderId)) {
+        throw Object.assign(new Error('UPGRADE_SOURCE_CONFLICT'), { status: 409, code: 'UPGRADE_SOURCE_CONFLICT' });
+      }
+    }
 
     const newCredits = currentCredits + totalCredits;
     const paidAt = providerPayment?.approvedAt || null;
@@ -304,7 +378,8 @@ async function applyCreditPayment({
       creditLotPolicyVersion: CREDIT_LOT_POLICY_VERSION,
       creditLotActive: totalCredits > 0,
       refundPaidCreditsRemaining: baseCredits,
-      refundEventBonusCreditsRemaining: eventBonusCredits
+      // 기존 필드명은 이벤트 보너스였지만 v2부터는 상시+이벤트 보너스 전체를 뜻한다.
+      refundEventBonusCreditsRemaining: bonusCredits
     } : {};
     transaction.set(orderRef, {
       uid: verifiedUid,
@@ -313,13 +388,21 @@ async function applyCreditPayment({
       totalGrantedCredits: totalCredits,
       paidCredits: baseCredits,
       baseCredits,
+      packageBonusCredits,
       eventBonusCredits,
-      promotionalBonusCredits: eventBonusCredits,
+      bonusCredits,
+      promotionalBonusCredits: bonusCredits,
       firstPurchaseBonusCredits,
       creditEventId: creditGrant.eventId,
       creditEventBonusRate: creditGrant.eventBonusRate,
+      creditPackageBonusRate: creditGrant.packageBonusRate || 0,
       creditEventEndsAtMs: creditGrant.eventEndsAtMs,
       creditGrantPolicyVersion: creditGrant.grantPolicyVersion,
+      offerPolicyVersion: creditGrant.offerPolicyVersion || null,
+      purchaseKind: creditGrant.purchaseKind || 'credit_package',
+      sourceOrderId: creditGrant.sourceOrderId || null,
+      targetAmount: creditGrant.targetAmount || null,
+      cumulativeCredits: creditGrant.cumulativeCredits || null,
       refundCreditBasis: usesBaseCreditPolicy ? 'paid_credits_first' : 'legacy_total_grant',
       ...lotFields,
       paymentKeyPresent: true,
@@ -335,6 +418,13 @@ async function applyCreditPayment({
       uid: verifiedUid,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
+    if (sourceOrderRef) {
+      transaction.update(sourceOrderRef, {
+        upgradeOrderId: orderId,
+        activeUpgradeOrderId: orderId,
+        upgradedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
 
     const userUpdate = {
       credits: newCredits,
@@ -347,9 +437,10 @@ async function applyCreditPayment({
         creditGrantPolicyVersion: CREDIT_GRANT_POLICY_VERSION,
         creditLotPolicyVersion: CREDIT_LOT_POLICY_VERSION,
         paidCreditsCap: baseCredits,
-        eventBonusCreditsCap: eventBonusCredits,
+        bonusCreditsCap: bonusCredits,
+        eventBonusCreditsCap: bonusCredits,
         refundPaidCreditsRemaining: baseCredits,
-        refundEventBonusCreditsRemaining: eventBonusCredits,
+        refundEventBonusCreditsRemaining: bonusCredits,
         active: totalCredits > 0,
         createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
@@ -366,9 +457,13 @@ async function applyCreditPayment({
       orderId,
       baseCredits,
       bonusCredits,
+      packageBonusCredits,
       eventBonusCredits,
       creditEventId: creditGrant.eventId,
       creditGrantPolicyVersion: creditGrant.grantPolicyVersion,
+      offerPolicyVersion: creditGrant.offerPolicyVersion || null,
+      purchaseKind: creditGrant.purchaseKind || 'credit_package',
+      sourceOrderId: creditGrant.sourceOrderId || null,
       ...(usesBaseCreditPolicy ? { creditLotPolicyVersion: CREDIT_LOT_POLICY_VERSION } : {}),
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
@@ -384,12 +479,16 @@ async function applyCreditPayment({
       deduped: false,
       baseCredits,
       bonusCredits,
+      packageBonusCredits,
       eventBonusCredits,
       eventId: creditGrant.eventId,
       totalCredits,
       newBalance: newCredits,
       experimentKey: null,
-      experimentVariant: firstPurchaseBonusCredits > 0 ? 'legacy_honored' : 'retired'
+      experimentVariant: firstPurchaseBonusCredits > 0 ? 'legacy_honored' : 'retired',
+      purchaseKind: creditGrant.purchaseKind || 'credit_package',
+      sourceOrderId: creditGrant.sourceOrderId || null,
+      offerPolicyVersion: creditGrant.offerPolicyVersion || null
     };
   });
 }
@@ -397,10 +496,30 @@ async function applyCreditPayment({
 async function handleCreditPaymentConfirmation(req, res) {
   const body = req.body || {};
   const { paymentKey, orderId, amount, customerEmail, uid, idToken, meta } = body;
+  const requestedKind = String(body.purchaseKind || 'credit_package');
+  const sourceOrderId = String(body.sourceOrderId || '').trim();
+  const isUpgradeRequest = requestedKind === STARTER_UPGRADE.kind;
+  if (!['credit_package', STARTER_UPGRADE.kind].includes(requestedKind)) {
+    return res.status(400).json({ error: '지원하지 않는 결제 유형입니다.' });
+  }
+  if (isUpgradeRequest && !starterUpgradeEnabled(process.env)) {
+    return res.status(409).json({
+      error: '스타터 결제금액 인정 업그레이드는 연결 환불 검증 후 제공될 예정입니다.',
+      code: 'UPGRADE_TEMPORARILY_UNAVAILABLE'
+    });
+  }
   const safeAmount = Number(amount);
-  const product = Number.isInteger(safeAmount) ? getCreditProduct(safeAmount) : null;
-  const baseCredits = product && product.paidCredits;
-  if (!product || !baseCredits) return res.status(400).json({ error: '유효하지 않은 결제 금액입니다.' });
+  let product = !isUpgradeRequest && Number.isInteger(safeAmount) ? getCreditProduct(safeAmount) : null;
+  let baseCredits = product && product.paidCredits;
+  if (isUpgradeRequest && (safeAmount !== STARTER_UPGRADE.additionalAmount || !validateConfirmInput({
+    paymentKey: 'upgrade-source',
+    orderId: sourceOrderId
+  }).ok)) {
+    return res.status(400).json({ error: '업그레이드 주문 정보가 올바르지 않습니다.' });
+  }
+  if (!isUpgradeRequest && (!product || !baseCredits)) {
+    return res.status(400).json({ error: '유효하지 않은 결제 금액입니다.' });
+  }
 
   const inputValidation = validateConfirmInput({ paymentKey, orderId });
   if (!inputValidation.ok) return res.status(400).json({ error: inputValidation.error });
@@ -420,12 +539,63 @@ async function handleCreditPaymentConfirmation(req, res) {
     return res.status(403).json({ error: '사용자 정보가 일치하지 않습니다.' });
   }
 
+  let existingOrderPrecheckSnap;
+  try {
+    existingOrderPrecheckSnap = await db.collection('orders').doc(orderId).get();
+  } catch (err) {
+    logger.error('payment.precheck_failed', { uid: verifiedUid, orderId, amount: safeAmount, err });
+    return res.status(503).json({ error: '결제 처리 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+  }
+
+  if (isUpgradeRequest && !existingOrderPrecheckSnap.exists) {
+    try {
+      const [sourceSnap, intentSnap] = await Promise.all([
+        db.collection('orders').doc(sourceOrderId).get(),
+        db.collection('paymentIntents').doc(orderId).get()
+      ]);
+      const sourceOrder = sourceSnap.exists ? { id: sourceSnap.id, ...sourceSnap.data() } : null;
+      if (!sourceOrder || sourceOrder.uid !== verifiedUid || String(sourceOrder.status || '') !== 'paid') {
+        return res.status(409).json({
+          error: '업그레이드할 스타터 주문을 확인할 수 없습니다.',
+          code: 'UPGRADE_SOURCE_UNAVAILABLE'
+        });
+      }
+      if (intentSnap.exists) {
+        const intent = intentSnap.data() || {};
+        if (String(intent.purchaseKind || '') !== STARTER_UPGRADE.kind
+          || String(intent.sourceOrderId || '') !== sourceOrderId) {
+          return res.status(409).json({ error: '기존 결제 시도와 업그레이드 정보가 일치하지 않습니다.' });
+        }
+        product = {
+          ...paymentIntentGrant(intent, getCreditProduct(STARTER_UPGRADE.targetAmount)),
+          amount: STARTER_UPGRADE.additionalAmount,
+          label: '스탠다드 업그레이드'
+        };
+      } else {
+        product = buildStarterUpgradeGrant(sourceOrder);
+      }
+      baseCredits = product && product.paidCredits;
+      if (!product || !baseCredits) {
+        return res.status(409).json({
+          error: '이 스타터 주문의 업그레이드 기간이 끝났거나 이미 사용한 혜택입니다.',
+          code: 'UPGRADE_NOT_ELIGIBLE'
+        });
+      }
+    } catch (err) {
+      logger.error('payment.upgrade_offer_resolve_failed', { uid: verifiedUid, orderId, sourceOrderId, err });
+      return res.status(503).json({ error: '업그레이드 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+    }
+  }
+
   // An already-applied order is a successful idempotent retry. Never call Toss again.
   try {
-    const existingOrderSnap = await db.collection('orders').doc(orderId).get();
+    const existingOrderSnap = existingOrderPrecheckSnap;
     if (existingOrderSnap.exists) {
       const existingOrder = existingOrderSnap.data() || {};
-      if (existingOrder.uid !== verifiedUid || Number(existingOrder.amount) !== safeAmount) {
+      if (existingOrder.uid !== verifiedUid
+        || Number(existingOrder.amount) !== safeAmount
+        || String(existingOrder.purchaseKind || 'credit_package') !== requestedKind
+        || String(existingOrder.sourceOrderId || '') !== (isUpgradeRequest ? sourceOrderId : '')) {
         logger.error('payment.existing_order_conflict', { verifiedUid, orderId, amount: safeAmount });
         return res.status(409).json({ error: '주문 정보가 기존 처리 내역과 일치하지 않습니다.' });
       }
@@ -436,12 +606,15 @@ async function handleCreditPaymentConfirmation(req, res) {
         deduped: true,
         baseCredits: storedBaseCredits,
         bonusCredits: Math.max(0, totalCredits - storedBaseCredits),
+        packageBonusCredits: Number(existingOrder.packageBonusCredits) || 0,
         eventBonusCredits: Number(existingOrder.eventBonusCredits) || 0,
         eventId: existingOrder.creditEventId || null,
         totalCredits,
         newBalance: Number(userSnap.data()?.credits) || 0,
         experimentKey: existingOrder.offerExperimentKey || null,
-        experimentVariant: existingOrder.offerExperimentVariant || null
+        experimentVariant: existingOrder.offerExperimentVariant || null,
+        purchaseKind: existingOrder.purchaseKind || 'credit_package',
+        sourceOrderId: existingOrder.sourceOrderId || null
       };
       logger.info('payment.confirm_deduped', { uid: verifiedUid, orderId, amount: safeAmount });
       return res.json(creditPaymentResponse(existingResult));
@@ -626,6 +799,7 @@ async function handleCreditPaymentConfirmation(req, res) {
     amount: safeAmount,
     credits: granted.totalCredits,
     baseCredits: granted.baseCredits,
+    packageBonusCredits: granted.packageBonusCredits,
     eventBonusCredits: granted.eventBonusCredits,
     creditEventId: granted.eventId,
     reconciliationSource
@@ -643,7 +817,7 @@ async function handleCreditPaymentConfirmation(req, res) {
       eventId: `purchase_${orderId}`,
       orderId,
       value: safeAmount,
-      itemId: `credits_${granted.totalCredits}`,
+      itemId: `credits_${safeAmount}`,
       email: decodedToken?.email,
       externalId: verifiedUid,
       clientIp: realClientIp(req),
@@ -674,12 +848,21 @@ router.post('/checkout-context', async (req, res) => {
       getCreditOrdersForUser(uid)
     ]);
     const user = userSnap.exists ? userSnap.data() : {};
+    const latestOrder = [...orders]
+      .filter(order => isRetainedPaidOrder(order) && getCreditProduct(Number(order.amount)))
+      .sort((a, b) => timestampMs(b.createdAt) - timestampMs(a.createdAt))[0] || null;
+    let creditLots = [];
+    if (latestOrder?.id) {
+      const lotSnap = await db.collection('users').doc(uid).collection('creditLots').doc(latestOrder.id).get();
+      if (lotSnap.exists) creditLots = [{ id: lotSnap.id, ...lotSnap.data() }];
+    }
     return res.json({
       ok: true,
       ...buildCheckoutContext({
         uid,
         credits: user.credits,
         orders,
+        creditLots,
         conversion: user.conversion || {}
       })
     });
@@ -772,9 +955,16 @@ function serializeOrderDoc(docSnap, kind) {
     totalGrantedCredits: Number(o.totalGrantedCredits ?? o.safeCredits ?? o.credits) || 0,
     paidCredits: Number(o.paidCredits) || 0,
     baseCredits: Number(o.baseCredits) || 0,
+    bonusCredits: Number(o.bonusCredits ?? o.promotionalBonusCredits) || 0,
+    packageBonusCredits: Number(o.packageBonusCredits) || 0,
     eventBonusCredits: Number(o.eventBonusCredits) || 0,
     firstPurchaseBonusCredits: Number(o.firstPurchaseBonusCredits) || 0,
     creditGrantPolicyVersion: o.creditGrantPolicyVersion || '',
+    offerPolicyVersion: o.offerPolicyVersion || '',
+    purchaseKind: o.purchaseKind || 'credit_package',
+    sourceOrderId: o.sourceOrderId || null,
+    upgradeOrderId: o.upgradeOrderId || null,
+    activeUpgradeOrderId: o.activeUpgradeOrderId || null,
     creditLotPolicyVersion: o.creditLotPolicyVersion || '',
     refundPaidCreditsRemaining: Number.isFinite(Number(o.refundPaidCreditsRemaining))
       ? Math.max(0, Math.floor(Number(o.refundPaidCreditsRemaining)))
@@ -1242,6 +1432,19 @@ function creditLotMismatchError() {
   return Object.assign(new Error('CREDIT_LOT_INCONSISTENT'), { status: 503, code: 'CREDIT_LOT_INCONSISTENT' });
 }
 
+function activeUpgradeRefundConflict(order) {
+  const upgradeOrderId = String(order?.activeUpgradeOrderId || '');
+  if (!upgradeOrderId) return null;
+  return Object.assign(
+    new Error('스탠다드 업그레이드 결제를 먼저 환불한 뒤 스타터 주문을 환불할 수 있습니다.'),
+    {
+      status: 409,
+      code: 'UPGRADE_REFUND_ORDER_REQUIRED',
+      upgradeOrderId
+    }
+  );
+}
+
 async function reserveCreditRefundCredits({
   transaction,
   orderRef,
@@ -1373,6 +1576,10 @@ async function compensateCreditRefundReservation({ orderRef, userRef, operationI
 
 async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount }) {
   const order = orderSnap.data();
+  if (kind === 'order') {
+    const upgradeConflict = activeUpgradeRefundConflict(order);
+    if (upgradeConflict) throw upgradeConflict;
+  }
   const paymentKey = await readPaymentKey(orderRef.id, order);   // ★ C-04
   if (!['paid', 'refund_requested', 'refund_rejected', 'partially_refunded'].includes(order.status)) {
     throw Object.assign(new Error('환불할 수 없는 주문 상태입니다. 현재: ' + order.status), { status: 400 });
@@ -1479,6 +1686,8 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       if (!['paid', 'refund_requested', 'refund_rejected', 'partially_refunded'].includes(latestOrder.status)) {
         throw Object.assign(new Error('REFUND_STATE_CHANGED'), { latestStatus: latestOrder.status || 'unknown' });
       }
+      const upgradeConflict = activeUpgradeRefundConflict(latestOrder);
+      if (upgradeConflict) throw upgradeConflict;
 
       const priorAmount = Math.max(0, Math.floor(Number(latestOrder.refundedAmount ?? latestOrder.refundAmount) || 0));
       const priorCredits = Math.max(0, Math.floor(Number(latestOrder.refundedCredits) || 0));
@@ -1644,6 +1853,10 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       orderAmount
     });
     const userSnap = await transaction.get(userRef);
+    const sourceOrderRef = latestOrder.purchaseKind === STARTER_UPGRADE.kind && latestOrder.sourceOrderId
+      ? db.collection('orders').doc(latestOrder.sourceOrderId)
+      : null;
+    const sourceOrderSnap = sourceOrderRef ? await transaction.get(sourceOrderRef) : null;
     const remainingCredits = userSnap.exists ? (Number(userSnap.data().credits) || 0) : 0;
     if (!decision.ok) {
       throw Object.assign(new Error('REFUND_FINALIZE_CONFLICT'), { status: 409 });
@@ -1665,6 +1878,13 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       refundedBy: adminUid,
       refundProcessing: admin.firestore.FieldValue.delete()
     });
+    if (fullyRefunded && sourceOrderRef && sourceOrderSnap?.exists
+      && sourceOrderSnap.data()?.activeUpgradeOrderId === orderRef.id) {
+      transaction.update(sourceOrderRef, {
+        activeUpgradeOrderId: admin.firestore.FieldValue.delete(),
+        upgradeRefundedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
     transaction.set(userRef.collection('creditHistory').doc(cancellationLedgerId(orderRef.id, finalRefundedAmount)), {
       type: 'refund',
       used: 0,
@@ -2948,6 +3168,16 @@ router.post('/request-refund', async (req, res) => {
         code: processingConflict.code
       });
     }
+    if (kind === 'order') {
+      const upgradeConflict = activeUpgradeRefundConflict(order);
+      if (upgradeConflict) {
+        return res.status(upgradeConflict.status).json({
+          error: upgradeConflict.message,
+          code: upgradeConflict.code,
+          upgradeOrderId: upgradeConflict.upgradeOrderId
+        });
+      }
+    }
 
     const windowState = refundWindowState(order, kind);
     if (!windowState.eligible) {
@@ -3034,6 +3264,10 @@ router.post('/request-refund', async (req, res) => {
           code: latestProcessingConflict.code
         });
       }
+      if (kind === 'order') {
+        const upgradeConflict = activeUpgradeRefundConflict(latestOrder);
+        if (upgradeConflict) throw upgradeConflict;
+      }
       transaction.update(orderRef, {
         status: 'refund_requested',
         cancelReason: cancelReason.trim(),
@@ -3085,6 +3319,16 @@ router.post('/approve-refund', async (req, res) => {
     if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
 
     const order = orderSnap.data();
+    if (kind === 'order') {
+      const upgradeConflict = activeUpgradeRefundConflict(order);
+      if (upgradeConflict) {
+        return res.status(upgradeConflict.status).json({
+          error: upgradeConflict.message,
+          code: upgradeConflict.code,
+          upgradeOrderId: upgradeConflict.upgradeOrderId
+        });
+      }
+    }
     const paymentKey = await readPaymentKey(orderRef.id, order);   // ★ C-04
     if (order.status !== 'refund_requested') {
       return res.status(400).json({ error: '환불 요청 상태가 아닙니다. 현재: ' + order.status });
@@ -3208,6 +3452,8 @@ router.post('/approve-refund', async (req, res) => {
         if (latestOrder.status !== 'refund_requested') {
           throw Object.assign(new Error('REFUND_STATE_CHANGED'), { latestStatus: latestOrder.status || 'unknown' });
         }
+        const upgradeConflict = activeUpgradeRefundConflict(latestOrder);
+        if (upgradeConflict) throw upgradeConflict;
         const refundGrant = creditRefundGrant(latestOrder);
 
         const priorAmount = Math.max(0, Math.floor(Number(latestOrder.refundedAmount ?? latestOrder.refundAmount) || 0));
@@ -3370,6 +3616,10 @@ router.post('/approve-refund', async (req, res) => {
         orderAmount
       });
       const userSnap = await transaction.get(userRef);
+      const sourceOrderRef = latestOrder.purchaseKind === STARTER_UPGRADE.kind && latestOrder.sourceOrderId
+        ? db.collection('orders').doc(latestOrder.sourceOrderId)
+        : null;
+      const sourceOrderSnap = sourceOrderRef ? await transaction.get(sourceOrderRef) : null;
       const remainingCredits = userSnap.exists ? (userSnap.data().credits || 0) : 0;
       if (!decision.ok) {
         throw Object.assign(new Error('REFUND_FINALIZE_CONFLICT'), { status: 409 });
@@ -3391,6 +3641,13 @@ router.post('/approve-refund', async (req, res) => {
         refundedBy: adminUid,
         refundProcessing: admin.firestore.FieldValue.delete()
       });
+      if (fullyRefunded && sourceOrderRef && sourceOrderSnap?.exists
+        && sourceOrderSnap.data()?.activeUpgradeOrderId === orderRef.id) {
+        transaction.update(sourceOrderRef, {
+          activeUpgradeOrderId: admin.firestore.FieldValue.delete(),
+          upgradeRefundedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
       const historyRef = db.collection('users').doc(order.uid).collection('creditHistory')
         .doc(cancellationLedgerId(orderId, finalRefundedAmount));
       transaction.set(historyRef, {
@@ -3570,7 +3827,8 @@ router.refundPolicy = {
   calculateCreditPolicyRefund,
   calculateOrderCreditRefund,
   calculateSubscriptionPolicyRefund,
-  currentSubscriptionRefundContext
+  currentSubscriptionRefundContext,
+  activeUpgradeRefundConflict
 };
 
 module.exports = router;

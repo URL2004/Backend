@@ -276,6 +276,9 @@ $r.Content -match 'lavAutoCoach'
 | `RESTRUCTURE_DAILY_CAP` | 사용자당 일일 재구성 시작 제한 |
 | `DEV_NO_AUTH` | 운영 설정 금지 |
 
+Render의 `subscription-process-due` Cron Job은 셸 변수 확장에 의존하지 않는다. 운영 Docker Command 정본과
+시크릿 회전·재배포·실행 검증 절차는 [`LOGGING.md`](LOGGING.md#render-구독-cron-정본)를 따른다.
+
 GPT 캐시 운영 집계:
 
 ```powershell

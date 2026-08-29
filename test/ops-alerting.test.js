@@ -58,8 +58,11 @@ test('카탈로그: 결제 실패는 warn이어도 알림 대상이다(개편 �
   assert.equal(opsEvents.classify('payment.cancellation_review_required', 'error').sev, 'SEV1');
   assert.equal(opsEvents.classify('payment.credit_grant_blocked_by_cancellation', 'warn').sev, 'SEV3');
   assert.equal(opsEvents.classify('payment.cancellation_inbox_retry_failed', 'error').sev, 'SEV2');
-  // ★ 과거 실사고(매시간 403으로 구독 갱신이 조용히 멈춤)와 같은 경로
-  assert.equal(opsEvents.classify('subscription.cron_secret_rejected', 'warn').sev, 'SEV1');
+  // 공개 인증 거부는 누구나 만들 수 있으므로 관측만 하고, 실제 중단은 heartbeat가 SEV1로 잡는다.
+  assert.equal(opsEvents.classify('subscription.cron_secret_rejected', 'warn').sev, 'SEV3');
+  assert.equal(opsEvents.classify('subscription.cron_auth_rejected', 'warn').sev, 'SEV3');
+  assert.equal(opsEvents.classify('ops.cron_auth_rejected', 'warn').sev, 'SEV2');
+  assert.equal(opsEvents.classify('ops.watchdog_stale_heartbeat', 'error').sev, 'SEV1');
   assert.equal(opsEvents.classify('subscription.first_charge_failed', 'warn').sev, 'SEV2');
   assert.equal(opsEvents.classify('toss.webhook_ignored', 'warn').sev, 'SEV2');
 });

@@ -8,6 +8,7 @@ const router = express.Router();
 const { getRevenue, revenueEmbed, revenueField } = require('../lib/revenue');
 const discord = require('../lib/discord');
 const { logger } = require('../lib/logger');
+const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
 
 // 인증 실패를 조용히 넘기지 않는다 — 예전에는 매출 cron이 401로 죽어도 로그가 한 줄도 없어서
 // "리포트가 왜 안 오지"를 추적할 방법이 없었다.
@@ -28,16 +29,17 @@ function checkAdmin(req, res) {
 }
 
 function checkCron(req, res) {
-  const secret = (process.env.CRON_SECRET || '').trim();
-  if (!secret) {
+  const auth = verifyCronRequest(req, { allowBearer: true, allowBody: true, allowQuery: true });
+  if (auth.reason === 'secret_missing') {
     logger.error('revenue.cron_secret_missing', { message: 'CRON_SECRET 미설정 — 일일 매출 리포트 중단' });
     res.status(503).json({ error: 'CRON_SECRET이 설정되지 않았습니다.' });
     return false;
   }
-  const given = (req.get('x-cron-secret') || req.query.key || (req.body && req.body.internalKey) || '').toString().trim();
-  if (given !== secret) {
-    // 스케줄러 헤더가 틀어지면 리포트가 조용히 끊긴다 — 구독 cron 403 사고와 같은 유형이라 알린다.
-    logger.warn('revenue.cron_auth_rejected', { hasKey: !!given, message: '매출 cron 인증 실패 — 스케줄러 시크릿 확인 필요' });
+  if (!auth.ok) {
+    logger.warn('revenue.cron_auth_rejected', {
+      ...authLogFields(auth),
+      message: '매출 cron 인증 거부 — 실제 중단 여부는 heartbeat로 판정'
+    });
     res.status(401).json({ error: '권한이 없습니다.' });
     return false;
   }

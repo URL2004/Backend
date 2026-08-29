@@ -4,6 +4,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
 const discord = require('../lib/discord');
 const metaConversions = require('../lib/metaConversions');
 const { realClientIp } = require('../lib/clientip');
@@ -41,26 +42,22 @@ function tossBasicToken() {
   return Buffer.from(secretKey + ':').toString('base64');
 }
 
-function bearerToken(req) {
-  const auth = req.get('authorization') || '';
-  const m = auth.match(/^Bearer\s+(.+)$/i);
-  return m ? m[1].trim() : '';
-}
-
 function requireCronSecret(req, res) {
-  const secret = (process.env.CRON_SECRET || '').trim();
-  if (!secret) {
+  const auth = verifyCronRequest(req, { allowBearer: true, allowBody: true, allowQuery: false });
+  if (auth.reason === 'secret_missing') {
     logger.error('subscription.cron_secret_missing');
     res.status(503).json({ error: 'cron disabled: CRON_SECRET is not configured' });
     return null;
   }
-  const supplied = bearerToken(req) || req.get('x-cron-secret') || (req.body && req.body.internalKey) || '';
-  if (!supplied || supplied !== secret) {
-    logger.warn('subscription.cron_secret_rejected');
+  if (!auth.ok) {
+    // A rejected public request is a security observation, not proof that the
+    // real scheduler stopped.  The successful-run heartbeat is the SEV1
+    // source of truth for an actual cron outage.
+    logger.warn('subscription.cron_auth_rejected', authLogFields(auth));
     res.status(403).json({ error: 'forbidden' });
     return null;
   }
-  return secret;
+  return auth.secret;
 }
 
 async function tossIssueBillingKey({ authKey, customerKey }) {

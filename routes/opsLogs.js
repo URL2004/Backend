@@ -17,6 +17,7 @@ const opsLog = require('../lib/opsLog');
 const opsEvents = require('../lib/opsEvents');
 const opsHeartbeat = require('../lib/opsHeartbeat');
 const discord = require('../lib/discord');
+const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
 
 const MAX_SCAN = 600;
 
@@ -36,15 +37,17 @@ async function requireAdmin(req, res) {
 }
 
 function requireCron(req, res) {
-  const secret = (process.env.CRON_SECRET || '').trim();
-  if (!secret) {
+  const auth = verifyCronRequest(req, { allowBearer: true, allowBody: true, allowQuery: true });
+  if (auth.reason === 'secret_missing') {
     logger.error('ops.cron_secret_missing', { message: 'CRON_SECRET 미설정 — 운영 워치독/다이제스트 중단' });
     res.status(503).json({ ok: false, error: 'CRON_SECRET이 설정되지 않았습니다.' });
     return false;
   }
-  const given = (req.get('x-cron-secret') || req.query.key || (req.body && req.body.internalKey) || '').toString().trim();
-  if (given !== secret) {
-    logger.warn('ops.cron_auth_rejected', { hasKey: !!given, message: '운영 cron 인증 실패 — 스케줄러 시크릿 확인 필요' });
+  if (!auth.ok) {
+    logger.warn('ops.cron_auth_rejected', {
+      ...authLogFields(auth),
+      message: '운영 cron 인증 거부 — 실제 중단 여부는 heartbeat로 판정'
+    });
     res.status(401).json({ ok: false, error: '권한이 없습니다.' });
     return false;
   }

@@ -63,6 +63,24 @@ logger.warn/error(event, fields)
 2. **외부 업타임 모니터** — 앱 밖에서 `/healthz`를 1~5분 간격으로 폴링해야 한다(필수, 아래 운영 설정 참고).
    앱이 통째로 죽거나 OOM으로 재시작 루프에 빠지면 1번도 못 돌기 때문이다.
 
+### Render 구독 cron 정본
+
+Render의 image-backed Cron Job은 Docker Command에서 `${CRON_SECRET}`을 셸처럼 자동 확장하지 않는다.
+따옴표를 이용한 `/bin/sh -c` 우회도 Render의 인수 파서가 따옴표를 보존할 수 있어 사용하지 않는다.
+`curl` 자체의 환경변수 확장 기능을 사용한 아래 명령을 정본으로 유지한다.
+
+```text
+curl --fail-with-body --silent --show-error --variable %CRON_SECRET --expand-header x-cron-secret:{{CRON_SECRET}} -X POST https://ai-backend-3xtk.onrender.com/subscription/process-due -H Content-Type:application/json -d {}
+```
+
+- 웹 서비스와 Cron Job의 `CRON_SECRET`은 같은 64자리 무작위 값을 사용한다.
+- 어느 한쪽 값을 바꿀 때는 양쪽을 함께 갱신하고 **웹 서비스와 Cron Job을 모두 재배포**한다.
+- 변경 후 Render의 `POST /v1/cron-jobs/{id}/runs` 또는 대시보드 `Trigger Run`으로 실제 Cron 실행을 검증한다.
+- 합격 신호는 Cron의 `finished successfully`, 서버의 `subscription.cron_process_due_completed`,
+  `subscription.process_due` heartbeat 갱신 세 가지다.
+- `subscription.cron_auth_rejected` 한 건은 외부 오인증 요청일 수 있으므로 SEV3 관측으로 남긴다.
+  실제 중단은 heartbeat가 150분 이상 갱신되지 않을 때 `ops.watchdog_stale_heartbeat` SEV1로 판단한다.
+
 ## 환경변수
 
 | 변수 | 기본값 | 설명 |

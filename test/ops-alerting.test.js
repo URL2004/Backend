@@ -213,11 +213,12 @@ test('opsLog는 도메인 실패가 임계를 넘으면 급증을 보고한다',
 test('민감정보는 알림 경로에도 실리지 않는다', () => {
   reset();
   const { logger } = require('../lib/logger');
+  const sensitivePaymentKey = 'payment-key-sensitive-sample';
   logger.error('payment.apply_failed_reconciliation_required', {
-    uid: 'u1', orderId: 'o1', paymentKey: 'FAKE_PAYMENT_KEY_FOR_REDACTION_TEST', email: 'someone@example.com'
+    uid: 'u1', orderId: 'o1', paymentKey: sensitivePaymentKey, email: 'someone@example.com'
   });
   const raw = JSON.stringify(sent);
-  assert.ok(!raw.includes('FAKE_PAYMENT_KEY_FOR_REDACTION_TEST'), 'paymentKey 원문이 알림에 실리면 안 된다');
+  assert.ok(!raw.includes(sensitivePaymentKey), 'paymentKey 원문이 알림에 실리면 안 된다');
   assert.ok(!raw.includes('someone@example.com'), '이메일 원문이 알림에 실리면 안 된다');
 });
 

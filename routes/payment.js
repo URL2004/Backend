@@ -207,6 +207,7 @@ async function applyCreditPayment({
     const conversion = userData.conversion || {};
     const firstPurchase = resolveFirstPurchaseGrant({
       uid: verifiedUid,
+      amount: safeAmount,   // 첫 구매 보너스는 상품별 비율(2026-08-29) — 금액이 있어야 지급량이 정해진다
       hasPriorPaidOrder,
       conversion
     });

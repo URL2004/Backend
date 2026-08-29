@@ -53,6 +53,11 @@ test('카탈로그: 결제 실패는 warn이어도 알림 대상이다(개편 �
   assert.equal(opsEvents.classify('client.payment_error', 'warn').sev, 'SEV2');
   assert.equal(opsEvents.classify('payment.toss_confirm_failed', 'warn').sev, 'SEV2');
   assert.equal(opsEvents.classify('payment.uid_mismatch_blocked', 'warn').sev, 'SEV1');
+  assert.equal(opsEvents.classify('refund.toss_cancel_status_unknown', 'error').sev, 'SEV1');
+  assert.equal(opsEvents.classify('payment.cancellation_reconciled_with_unrecovered_credits', 'warn').sev, 'SEV1');
+  assert.equal(opsEvents.classify('payment.cancellation_review_required', 'error').sev, 'SEV1');
+  assert.equal(opsEvents.classify('payment.credit_grant_blocked_by_cancellation', 'warn').sev, 'SEV3');
+  assert.equal(opsEvents.classify('payment.cancellation_inbox_retry_failed', 'error').sev, 'SEV2');
   // ★ 과거 실사고(매시간 403으로 구독 갱신이 조용히 멈춤)와 같은 경로
   assert.equal(opsEvents.classify('subscription.cron_secret_rejected', 'warn').sev, 'SEV1');
   assert.equal(opsEvents.classify('subscription.first_charge_failed', 'warn').sev, 'SEV2');

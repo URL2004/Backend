@@ -18,6 +18,19 @@ const {
   webhookPaymentValidation
 } = require('../lib/paymentReconciliation');
 const { safeProviderPaymentSnapshot } = require('../lib/paymentCancellation');
+const { allocateProviderCancellation } = require('../lib/creditLotAccounting');
+
+function trackedLot(id, paidRemaining, bonusRemaining, createdAt = 1) {
+  return {
+    id,
+    createdAt,
+    creditGrantPolicyVersion: 'credit-grant-base-v1',
+    paidCredits: 2000,
+    eventBonusCredits: 500,
+    refundPaidCreditsRemaining: paidRemaining,
+    refundEventBonusCreditsRemaining: bonusRemaining
+  };
+}
 
 test('결제 확인 멱등 키는 주문·결제키에 결정적이며 원문 결제키를 노출하지 않는다', () => {
   const paymentKey = 'secret-payment-key-123456';
@@ -95,6 +108,7 @@ test('일반 결제 웹훅은 토스 재조회 결과의 결제키와 주문 ID�
 test('관리자 음수 조정 원장은 amount와 used를 이중 차감하지 않는다', () => {
   assert.equal(creditLedgerDelta({ type: 'admin_adjust', amount: -20, used: 20 }), -20);
   assert.equal(creditLedgerDelta({ type: 'admin_adjust', amount: 20, used: 0 }), 20);
+  assert.equal(creditLedgerDelta({ type: 'admin_adjust', amount: 0, used: 20 }), -20);
   assert.equal(creditLedgerDelta({ type: 'humanize', amount: 0, used: 20 }), -20);
   assert.equal(creditLedgerDelta({ type: 'charge', amount: 110, used: 0 }), 110);
 });
@@ -128,6 +142,218 @@ test('외부 전액취소는 가용 잔액만 차감하고 회수 불가 크레�
   assert.equal(plan.balanceDebit, 100);
   assert.equal(plan.ledgerCredits, 100);
   assert.equal(plan.unrecoveredCredits, 10);
+});
+
+test('신규 이벤트 주문도 공급자 취소 재정산에서 총 지급 크레딧을 회수한다', () => {
+  const plan = buildCreditCancellationPlan({
+    payment: { status: 'CANCELED', totalAmount: 58000, balanceAmount: 0 },
+    order: {
+      amount: 58000,
+      paidCredits: 2000,
+      eventBonusCredits: 500,
+      safeCredits: 2500,
+      totalGrantedCredits: 2500,
+      creditGrantPolicyVersion: 'credit-grant-base-v1'
+    },
+    currentCredits: 2500,
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  });
+  assert.equal(plan.applicable, true);
+  assert.equal(plan.orderStatus, 'refunded');
+  assert.equal(plan.refundCreditBasis, 'paid_credits_first');
+  assert.equal(plan.targetPaidCredits, 2000);
+  assert.equal(plan.bonusRevocationTargetCredits, 500);
+  assert.equal(plan.targetCredits, 2500);
+  assert.equal(plan.balanceDebit, 2500);
+  assert.equal(plan.ledgerCredits, 2500);
+  assert.equal(plan.unrecoveredCredits, 0);
+});
+
+test('신규 주문의 외부 부분취소는 환불된 기준 크레딧과 남은 이벤트 보너스를 함께 회수한다', () => {
+  // 맥스 2,000+500에서 500을 사용하면 기준 크레딧부터 사용한 것으로 본다.
+  // 정상 환불액 43,500원은 기준 1,500크레딧에 해당하고, 남은 보너스 500도 함께 회수한다.
+  const plan = buildCreditCancellationPlan({
+    payment: { status: 'PARTIAL_CANCELED', totalAmount: 58000, balanceAmount: 14500 },
+    order: {
+      amount: 58000,
+      paidCredits: 2000,
+      eventBonusCredits: 500,
+      safeCredits: 2500,
+      totalGrantedCredits: 2500,
+      creditGrantPolicyVersion: 'credit-grant-base-v1'
+    },
+    currentCredits: 2000,
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  });
+  assert.equal(plan.applicable, true);
+  assert.equal(plan.orderStatus, 'partially_refunded');
+  assert.equal(plan.canceledAmount, 43500);
+  assert.equal(plan.targetPaidCredits, 1500);
+  assert.equal(plan.bonusRevocationTargetCredits, 500);
+  assert.equal(plan.targetCredits, 2000);
+  assert.equal(plan.balanceDebit, 2000);
+  assert.equal(plan.unrecoveredCredits, 0);
+});
+
+test('이벤트 보너스를 일부 사용해도 외부 취소 회수 목표에서 사라지지 않는다', () => {
+  // 총 2,500 중 2,200을 사용: paid-first라서 기준 2,000과 보너스 200이 소진되었다.
+  const plan = buildCreditCancellationPlan({
+    payment: { status: 'CANCELED', totalAmount: 58000, balanceAmount: 0 },
+    order: {
+      amount: 58000,
+      paidCredits: 2000,
+      eventBonusCredits: 500,
+      safeCredits: 2500,
+      totalGrantedCredits: 2500,
+      creditGrantPolicyVersion: 'credit-grant-base-v1'
+    },
+    currentCredits: 300,
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  });
+  assert.equal(plan.targetPaidCredits, 2000);
+  assert.equal(plan.bonusRevocationTargetCredits, 500);
+  assert.equal(plan.targetCredits, 2500);
+  assert.equal(plan.balanceDebit, 300);
+  assert.equal(plan.unrecoveredCredits, 2200);
+});
+
+test('공급자 부분취소 목표는 취소 주문 lot 회수와 교차해 기준 1,500+보너스 500으로 정산된다', () => {
+  const providerPlan = buildCreditCancellationPlan({
+    payment: { status: 'PARTIAL_CANCELED', totalAmount: 58000, balanceAmount: 14500 },
+    order: {
+      amount: 58000,
+      paidCredits: 2000,
+      eventBonusCredits: 500,
+      totalGrantedCredits: 2500,
+      creditGrantPolicyVersion: 'credit-grant-base-v1'
+    },
+    currentCredits: 2000,
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  });
+  const allocation = allocateProviderCancellation({
+    targetCredits: providerPlan.targetCredits,
+    accountedCredits: providerPlan.accountedCredits,
+    globalBalance: 2000,
+    trackedBalance: 2000,
+    canceledOrderId: 'max',
+    // 사용 500은 paid-first로 기록돼 paid 1,500 + bonus 500이 남아 있다.
+    canceledLot: trackedLot('max', 1500, 500),
+    otherLots: [],
+    usesBaseCreditPolicy: providerPlan.refundCreditBasis === 'paid_credits_first'
+  });
+
+  assert.equal(providerPlan.canceledAmount, 43500);
+  assert.equal(providerPlan.targetPaidCredits, 1500);
+  assert.equal(providerPlan.bonusRevocationTargetCredits, 500);
+  assert.equal(allocation.balanceDebit, 2000);
+  assert.equal(allocation.ownLotCredits, 2000);
+  assert.equal(allocation.unrecoveredCredits, 0);
+  assert.deepEqual(allocation.allocations[0], {
+    orderId: 'max',
+    paidCredits: 1500,
+    bonusCredits: 500,
+    totalCredits: 2000,
+    source: 'canceled_order'
+  });
+});
+
+test('레거시 공급자 취소 계획은 신규 주문 lot 잔액이 섞여 있어도 untracked만 차감한다', () => {
+  const providerPlan = buildCreditCancellationPlan({
+    payment: { status: 'CANCELED', totalAmount: 2900, balanceAmount: 0 },
+    order: { amount: 2900, safeCredits: 110 },
+    currentCredits: 2600,
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  });
+  const allocation = allocateProviderCancellation({
+    targetCredits: providerPlan.targetCredits,
+    accountedCredits: providerPlan.accountedCredits,
+    globalBalance: 2600,
+    trackedBalance: 2500,
+    canceledOrderId: 'legacy',
+    canceledLot: null,
+    otherLots: [trackedLot('new-order', 2000, 500)],
+    usesBaseCreditPolicy: providerPlan.refundCreditBasis === 'paid_credits_first'
+  });
+
+  assert.equal(providerPlan.refundCreditBasis, 'legacy_total_grant');
+  assert.equal(allocation.balanceDebit, 100);
+  assert.equal(allocation.unrecoveredCredits, 10);
+  assert.equal(allocation.trackedCredits, 0);
+  assert.deepEqual(allocation.lotUpdates, []);
+});
+
+test('신규 주문의 회수 목표는 현재 지갑 잔액이 아니라 누적 취소액과 주문 보너스로만 결정된다', () => {
+  const common = {
+    payment: { status: 'PARTIAL_CANCELED', totalAmount: 58000, balanceAmount: 29000 },
+    order: {
+      amount: 58000,
+      paidCredits: 2000,
+      safeCredits: 2500,
+      totalGrantedCredits: 2500,
+      creditGrantPolicyVersion: 'credit-grant-base-v1'
+    },
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  };
+  const funded = buildCreditCancellationPlan({ ...common, currentCredits: 2500 });
+  const depleted = buildCreditCancellationPlan({ ...common, currentCredits: 0 });
+  assert.equal(funded.targetCredits, 1500);
+  assert.equal(depleted.targetCredits, 1500);
+  assert.equal(funded.balanceDebit, 1500);
+  assert.equal(depleted.balanceDebit, 0);
+  assert.equal(depleted.unrecoveredCredits, 1500);
+});
+
+test('레거시 주문의 외부 부분취소는 기존 총 지급량 비례 계산을 유지한다', () => {
+  const plan = buildCreditCancellationPlan({
+    payment: { status: 'PARTIAL_CANCELED', totalAmount: 8700, balanceAmount: 4700 },
+    order: { amount: 8700, safeCredits: 330 },
+    currentCredits: 330,
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  });
+  assert.equal(plan.refundCreditBasis, 'legacy_total_grant');
+  assert.equal(plan.canceledAmount, 4000);
+  assert.equal(plan.targetCredits, 151);
+  assert.equal(plan.balanceDebit, 151);
+  assert.equal(plan.unrecoveredCredits, 0);
+
+  const partiallyMigrated = buildCreditCancellationPlan({
+    payment: { status: 'PARTIAL_CANCELED', totalAmount: 8700, balanceAmount: 4700 },
+    order: { amount: 8700, safeCredits: 330, totalGrantedCredits: 999 },
+    currentCredits: 330,
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  });
+  assert.equal(partiallyMigrated.refundCreditBasis, 'legacy_total_grant');
+  assert.equal(partiallyMigrated.targetCredits, 151, '명시적 v1 표식가 없으면 기존 safeCredits 기준을 유지한다');
+});
+
+test('누적 취소 재조회는 이미 회수한 크레딧보다 목표를 낮추지 않는다', () => {
+  const plan = buildCreditCancellationPlan({
+    payment: { status: 'PARTIAL_CANCELED', totalAmount: 58000, balanceAmount: 29000 },
+    order: {
+      amount: 58000,
+      paidCredits: 2000,
+      safeCredits: 2500,
+      totalGrantedCredits: 2500,
+      refundedCredits: 1500,
+      creditGrantPolicyVersion: 'credit-grant-base-v1'
+    },
+    // 첫 재정산 후 나머지 잔액까지 사용한 경우에도 누적 회수량은 역행하지 않는다.
+    currentCredits: 0,
+    knownRefundLedgerCredits: 1500,
+    userExists: true
+  });
+  assert.equal(plan.targetCredits, 1500);
+  assert.equal(plan.accountedCredits, 1500);
+  assert.equal(plan.balanceDebit, 0);
+  assert.equal(plan.unrecoveredCredits, 0);
 });
 
 test('서버 선차감 또는 구형 환불 원장이 있으면 웹훅이 잔액을 이중 차감하지 않는다', () => {

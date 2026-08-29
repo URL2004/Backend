@@ -13,6 +13,8 @@ const {
   webhookPaymentValidation
 } = require('../lib/paymentReconciliation');
 const {
+  classifyCreditCancellationResult,
+  isTerminalWebhookInboxStatus,
   reconcileCreditPaymentCancellation,
   reconcilePendingCreditCancellationInboxes,
   safeProviderPaymentSnapshot
@@ -634,7 +636,10 @@ router.post('/toss/webhook', async (req, res) => {
   try {
     await db.runTransaction(async (t) => {
       const cur = await t.get(inboxRef);
-      if (cur.exists && cur.data().status === 'processed') { alreadyProcessed = true; return; }
+      if (cur.exists && isTerminalWebhookInboxStatus(cur.data()?.status)) {
+        alreadyProcessed = true;
+        return;
+      }
       t.set(inboxRef, {
         eventType: eventType || null,
         orderId: data?.orderId || null,
@@ -673,8 +678,8 @@ router.post('/toss/webhook', async (req, res) => {
       const { orderId, status, paymentKey } = data || {};
       if (!orderId) return;
       if (/^order_\d{10,}$/.test(orderId)) {
-        await reconcileCreditPaymentCancellation(data, { source: `toss_${String(eventType).toLowerCase()}` });
-        return;
+        const reconciled = await reconcileCreditPaymentCancellation(data, { source: `toss_${String(eventType).toLowerCase()}` });
+        return { creditCancellation: reconciled };
       }
       if (eventType !== 'PAYMENT_STATUS_CHANGED') {
         if (!paymentKey) return;
@@ -722,15 +727,39 @@ router.post('/toss/webhook', async (req, res) => {
   };
 
   try {
-    await processEvent();
-    await inboxRef.update({
-      status: 'processed',
-      creditCancellationCandidate: false,
-      processedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    const processed = await processEvent();
+    if (processed?.creditCancellation) {
+      const reconciled = processed.creditCancellation;
+      const disposition = classifyCreditCancellationResult(reconciled);
+      await inboxRef.update({
+        status: disposition.inboxStatus,
+        creditCancellationCandidate: disposition.creditCancellationCandidate,
+        reconciliationHandled: reconciled.handled === true,
+        reconciliationReason: disposition.reason,
+        ...(disposition.terminal
+          ? { processedAt: admin.firestore.FieldValue.serverTimestamp() }
+          : { retryAt: admin.firestore.FieldValue.serverTimestamp() })
+      });
+    } else {
+      await inboxRef.update({
+        status: 'processed',
+        creditCancellationCandidate: false,
+        processedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
   } catch (e) {
     logger.error('toss.webhook_handler_failed', { eventType, err: e });
-    await inboxRef.update({ status: 'error', error: String(e?.message || e) }).catch(() => {});
+    await inboxRef.update({
+      status: 'error',
+      ...(/^order_\d{10,}$/.test(String(data?.orderId || ''))
+        ? {
+            creditCancellationCandidate: true,
+            reconciliationHandled: false,
+            reconciliationReason: 'reconciliation_error'
+          }
+        : {}),
+      error: String(e?.message || e)
+    }).catch(() => {});
   }
 });
 

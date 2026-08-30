@@ -523,7 +523,11 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     preview: prompt.text.slice(0, 1800)
   };
 
-  const extra = [userNotes && `[관리자 메모]\n${userNotes}`, evidence && `[승인 근거]\n${evidence}`].filter(Boolean).join('\n\n');
+  const extra = [
+    prompt.volatile,
+    userNotes && `[관리자 메모]\n${userNotes}`,
+    evidence && `[승인 근거]\n${evidence}`
+  ].filter(Boolean).join('\n\n');
   const tool = buildTool(lang);
   const data = await callModel({
     userText: `${extra ? extra + '\n\n' : ''}[원문]\n${source}`,

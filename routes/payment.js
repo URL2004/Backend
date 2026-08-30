@@ -5,6 +5,7 @@ const { admin, db, ADMIN_UIDS, verifyToken, verifyFirebaseIdToken } = require('.
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const metaConversions = require('../lib/metaConversions');
+const { outboundFetch } = require('../lib/outboundPolicy');
 const { realClientIp } = require('../lib/clientip');
 const { getRevenue } = require('../lib/revenue');
 const detectCalibration = require('../lib/detectCalibration');
@@ -249,7 +250,7 @@ async function preparePaymentIntent({ orderId, paymentKey, uid, amount, creditGr
 
 async function requestTossConfirm({ basicToken, paymentKey, orderId, amount }) {
   try {
-    const response = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
+    const response = await outboundFetch('toss', 'https://api.tosspayments.com/v1/payments/confirm', {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${basicToken}`,
@@ -266,7 +267,7 @@ async function requestTossConfirm({ basicToken, paymentKey, orderId, amount }) {
 
 async function queryTossOrder({ basicToken, orderId }) {
   try {
-    const response = await fetch(`https://api.tosspayments.com/v1/payments/orders/${encodeURIComponent(orderId)}`, {
+    const response = await outboundFetch('toss', `https://api.tosspayments.com/v1/payments/orders/${encodeURIComponent(orderId)}`, {
       method: 'GET',
       headers: { 'Authorization': `Basic ${basicToken}` }
     });
@@ -1687,7 +1688,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   if (kind === 'subscription') {
     const subscriptionRefundAmount = Number(order.amount) || 0;
     const operationId = refundOperationId(orderRef.id, 0, subscriptionRefundAmount, 0);
-    const tossRes = await fetch(tossUrl, {
+    const tossRes = await outboundFetch('toss', tossUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${basicToken}`,
@@ -3098,7 +3099,7 @@ async function requestTossCancel({ tossUrl, basicToken, operationId, cancelReaso
   try {
     const body = { cancelReason };
     if (Number.isFinite(Number(cancelAmount))) body.cancelAmount = Number(cancelAmount);
-    const response = await fetch(tossUrl, {
+    const response = await outboundFetch('toss', tossUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${basicToken}`,
@@ -3743,7 +3744,7 @@ router.post('/approve-refund', async (req, res) => {
       const operationId = refundOperationId(orderId, 0, calculation.refundAmount, 0);
       const cancelBody = { cancelReason: order.cancelReason || '고객 요청 환불' };
       if (!isFullRefund) cancelBody.cancelAmount = calculation.refundAmount;
-      const tossRes = await fetch(tossUrl, {
+      const tossRes = await outboundFetch('toss', tossUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Basic ${basicToken}`,

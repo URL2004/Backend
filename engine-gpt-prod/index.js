@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const net = require('net');
-const dns = require('dns').promises;
+const secureEvidenceFetch = require('../lib/secureEvidenceFetch');
 const { completeJson, webSearchTool, safetyIdentifierForUid } = require('./openaiClient');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
@@ -55,6 +55,11 @@ const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
+const {
+  appendPromptSecurityRule,
+  assertNoPromptLeak,
+  envelopeUntrustedText
+} = require('./promptSecurity');
 const {
   buildHumanizeContract,
   resolveHumanizeContract,
@@ -5143,9 +5148,10 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
 }
 
 async function callDetectModel({ prompt, user, cfg, signal, route, phase, model, reasoningEffort, escalated, safetyIdentifier = '' }) {
-  return await completeJson({
-      system: prompt,
-      user,
+  const secured = envelopeUntrustedText(user, 'DETECT_INPUT');
+  const result = await completeJson({
+      system: appendPromptSecurityRule(prompt),
+      user: secured.text,
       schema: DETECT_SCHEMA,
       schemaName: 'gpt_prod_detect_result',
       model,
@@ -5157,6 +5163,8 @@ async function callDetectModel({ prompt, user, cfg, signal, route, phase, model,
       safetyIdentifier,
       meta: { task: route, phase, mode: 'detect', profile: PROFILE, escalated }
     });
+  assertNoPromptLeak(result.json);
+  return result;
 }
 
 async function rewriteSentence({ text, lang = 'ko', signal, config, uid = '', safetyIdentifier = '' } = {}) {
@@ -5165,9 +5173,10 @@ async function rewriteSentence({ text, lang = 'ko', signal, config, uid = '', sa
   const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
+  const secured = envelopeUntrustedText(source, 'PREVIEW_SOURCE');
   const res = await completeJson({
-    system: prompts.buildRewritePrompt(lang),
-    user: `[원문]\n${source}`,
+    system: appendPromptSecurityRule(prompts.buildRewritePrompt(lang)),
+    user: secured.text,
     schema: REWRITE_SCHEMA,
     schemaName: 'gpt_prod_rewrite_sentence',
     model: cfg.models.repair,
@@ -5179,6 +5188,7 @@ async function rewriteSentence({ text, lang = 'ko', signal, config, uid = '', sa
     safetyIdentifier: safetyId,
     meta: { task: 'rewrite_sentence', phase: 'repair', mode: 'preview', profile: PROFILE }
   });
+  assertNoPromptLeak(res.json);
   const rewritten = sanitizeOutput(res.json.rewritten);
   return { rewritten: rewritten || source, gptMeta: metaFromResponse(res, cfg, { task: 'rewrite_sentence' }) };
 }
@@ -5206,9 +5216,10 @@ async function suggestEvidence({ query, signal, config, uid = '', safetyIdentifi
 }
 
 async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEffort, safetyIdentifier = '' }) {
+  const secured = envelopeUntrustedText(text, 'EVIDENCE_QUERY');
   const res = await completeJson({
-    system: prompts.buildEvidencePrompt(),
-    user: `[검증할 주장 또는 주제]\n${text}`,
+    system: appendPromptSecurityRule(prompts.buildEvidencePrompt()),
+    user: secured.text,
     schema: EVIDENCE_SCHEMA,
     schemaName: 'gpt_prod_evidence_candidates',
     model,
@@ -5223,6 +5234,7 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
     safetyIdentifier,
     meta: { task: 'evidence_search', phase, mode: 'evidence', profile: PROFILE, escalated: phase.includes('escalation') }
   });
+  assertNoPromptLeak(res.json);
   const verifiedUrls = collectWebSearchUrls(res.raw);
   const warnings = [...(res.json.warnings || [])];
   let candidates = (res.json.candidates || [])
@@ -6397,6 +6409,8 @@ function buildV2EscalationPatchTargets(patchTargets, record) {
   const novelty = (record?.floorViolations || []).find(v => normalizedViolationGate(v) === 'novelty');
   if (novelty) {
     const detail = String(novelty.detail || '').trim().slice(0, 240);
+    // PATCH_TARGETS 전체가 userBlock에서 요청별 nonce 데이터로 감싸진다.
+    // 구체 검출 항목은 품질 회복에 유지하되 신뢰된 system 지시로 승격하지 않는다.
     targets.push([
       '1차 결과에 원문에 없는 사실이 검출됐다. 원문에 없는 수치·연도·기관명·인용·고유명사를 모두 제거하고, 원문에 실제로 있는 내용만으로 다시 작성한다.',
       detail ? `검출 항목: ${detail}` : ''
@@ -7582,7 +7596,7 @@ async function verifyEvidenceCandidates(candidates, parentSignal) {
 }
 
 async function verifyEvidenceUrl(url, parentSignal) {
-  if (await isUnsafeEvidenceFetchTarget(url)) return false;
+  if (isUnsafeEvidenceUrl(url)) return false;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(process.env.GPT_EVIDENCE_URL_VERIFY_TIMEOUT_MS) || 6000);
   const onAbort = () => controller.abort();
@@ -7602,24 +7616,11 @@ async function verifyEvidenceUrl(url, parentSignal) {
 }
 
 async function fetchEvidenceWithRedirects(url, method, signal) {
-  let current = String(url || '').trim();
-  for (let i = 0; i < 4; i += 1) {
-    if (await isUnsafeEvidenceFetchTarget(current)) throw new Error('unsafe_evidence_url');
-    const resp = await fetch(current, {
-      method,
-      redirect: 'manual',
-      signal,
-      headers: method === 'GET' ? { Range: 'bytes=0-2048' } : undefined
-    });
-    if (resp.status >= 300 && resp.status < 400) {
-      const location = resp.headers.get('location');
-      if (!location) return resp;
-      current = new URL(location, current).toString();
-      continue;
-    }
-    return resp;
-  }
-  throw new Error('too_many_evidence_redirects');
+  return await secureEvidenceFetch.requestWithRedirects(url, {
+    method,
+    signal,
+    maxRedirects: 3
+  });
 }
 
 function isUnsafeEvidenceUrl(url) {
@@ -7633,23 +7634,6 @@ function isUnsafeEvidenceUrl(url) {
     const ipType = net.isIP(host);
     if (!ipType) return false;
     return isPrivateIp(host, ipType);
-  } catch {
-    return true;
-  }
-}
-
-async function isUnsafeEvidenceFetchTarget(url) {
-  if (isUnsafeEvidenceUrl(url)) return true;
-  try {
-    const u = new URL(String(url || '').trim());
-    const host = u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
-    if (net.isIP(host)) return false;
-    const records = await dns.lookup(host, { all: true, verbatim: true });
-    if (!records.length) return true;
-    return records.some(r => {
-      const ipType = net.isIP(r.address);
-      return !ipType || isPrivateIp(r.address, ipType);
-    });
   } catch {
     return true;
   }
@@ -8371,6 +8355,7 @@ module.exports = {
   prepareGeneralSurfaceCandidate,
   isSafeLocalizedLanguageCandidate,
   buildPatchTargets,
+  buildV2EscalationPatchTargets,
   isHighRiskChunk,
   measureLengthCollapse,
   applyFinalGeneratedDedupe,

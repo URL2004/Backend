@@ -35,6 +35,41 @@ function verifySignature(rawBody, signatureHex, timestamp, publicKeyHex) {
 const PERIOD_VALUES = new Set(['today', 'yesterday', 'week', 'month', 'all']);
 const SIGNATURE_MAX_AGE_MS = 5 * 60 * 1000;
 const REPLAY_CACHE_MAX_ENTRIES = 2048;
+const DISCORD_ADMINISTRATOR_PERMISSION = 0x8n;
+
+function configuredIdSet(name) {
+  return new Set(String(process.env[name] || '')
+    .split(/[\s,]+/u)
+    .map(value => value.trim())
+    .filter(value => /^\d{5,30}$/u.test(value)));
+}
+
+function hasAdministratorPermission(value) {
+  try {
+    const permissions = BigInt(String(value || '0'));
+    return (permissions & DISCORD_ADMINISTRATOR_PERMISSION) === DISCORD_ADMINISTRATOR_PERMISSION;
+  } catch {
+    return false;
+  }
+}
+
+function isRevenueAuthorized(body = {}) {
+  const userId = String(body?.member?.user?.id || body?.user?.id || '');
+  const roleIds = Array.isArray(body?.member?.roles) ? body.member.roles.map(String) : [];
+  const allowedUsers = configuredIdSet('DISCORD_REVENUE_ALLOWED_USER_IDS');
+  const allowedRoles = configuredIdSet('DISCORD_REVENUE_ALLOWED_ROLE_IDS');
+  const allowedGuilds = configuredIdSet('DISCORD_REVENUE_ALLOWED_GUILD_IDS');
+  for (const guildId of configuredIdSet('DISCORD_GUILD_ID')) allowedGuilds.add(guildId);
+  const trustedGuild = allowedGuilds.has(String(body?.guild_id || ''));
+
+  // 명시 사용자 allowlist는 DM/길드 밖에서도 운영자 본인만 허용할 수 있다.
+  if (userId && allowedUsers.has(userId)) return true;
+  // 관리자 permission과 role은 요청 guild가 운영 guild로 명시된 경우에만 신뢰한다.
+  // 그렇지 않으면 앱이 다른 guild에 설치됐을 때 그곳 관리자가 전체 매출을 볼 수 있다.
+  if (!trustedGuild) return false;
+  if (hasAdministratorPermission(body?.member?.permissions)) return true;
+  return roleIds.some(roleId => allowedRoles.has(roleId));
+}
 
 function isFreshTimestamp(timestamp, nowMs = Date.now(), maxAgeMs = SIGNATURE_MAX_AGE_MS) {
   const text = String(timestamp || '').trim();
@@ -121,6 +156,16 @@ async function handleInteractions(req, res) {
   if (body.type === 2) {
     const name = body.data && body.data.name;
     if (name === '매출') {
+      if (!isRevenueAuthorized(body)) {
+        logger.warn('discordBot.revenue_forbidden', {
+          guildContext: Boolean(body.guild_id),
+          configuredAllowlist: Boolean(
+            String(process.env.DISCORD_REVENUE_ALLOWED_USER_IDS || '').trim()
+            || String(process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS || '').trim()
+          )
+        });
+        return res.json({ type: 4, data: { flags: 64, content: '이 명령을 사용할 권한이 없습니다.' } });
+      }
       const opt = ((body.data.options || []).find((o) => o.name === '기간'));
       let period = opt && opt.value ? String(opt.value) : 'today';
       if (!PERIOD_VALUES.has(period)) period = 'today';
@@ -144,6 +189,8 @@ async function handleInteractions(req, res) {
 module.exports = {
   createReplayGuard,
   handleInteractions,
+  hasAdministratorPermission,
   isFreshTimestamp,
+  isRevenueAuthorized,
   verifySignature
 };

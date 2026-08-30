@@ -7,7 +7,9 @@ const crypto = require('node:crypto');
 const {
   createReplayGuard,
   handleInteractions,
+  hasAdministratorPermission,
   isFreshTimestamp,
+  isRevenueAuthorized,
   verifySignature
 } = require('../routes/discordBot');
 
@@ -69,6 +71,42 @@ test('replay guard rejects duplicates, expires entries, and remains bounded', ()
   now += 101;
   assert.equal(guard.claim('first'), true);
   assert.equal(guard.size(), 1);
+});
+
+test('매출 명령은 guild 관리자 또는 명시 allowlist만 허용하고 설정 부재는 fail-closed다', () => {
+  const oldUsers = process.env.DISCORD_REVENUE_ALLOWED_USER_IDS;
+  const oldRoles = process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS;
+  const oldGuild = process.env.DISCORD_GUILD_ID;
+  const oldRevenueGuilds = process.env.DISCORD_REVENUE_ALLOWED_GUILD_IDS;
+  delete process.env.DISCORD_REVENUE_ALLOWED_USER_IDS;
+  delete process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS;
+  delete process.env.DISCORD_GUILD_ID;
+  delete process.env.DISCORD_REVENUE_ALLOWED_GUILD_IDS;
+  try {
+    assert.equal(hasAdministratorPermission('8'), true);
+    assert.equal(hasAdministratorPermission('0'), false);
+    assert.equal(isRevenueAuthorized({ guild_id: '300001', member: { permissions: '8', user: { id: '100001' } } }), false);
+    assert.equal(isRevenueAuthorized({ member: { permissions: '0', user: { id: '100001' } } }), false);
+
+    process.env.DISCORD_REVENUE_ALLOWED_USER_IDS = '100001, 100002';
+    process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS = '200001';
+    process.env.DISCORD_GUILD_ID = '300001';
+    assert.equal(isRevenueAuthorized({ member: { permissions: '0', user: { id: '100001' } } }), true);
+    assert.equal(isRevenueAuthorized({ guild_id: '300001', member: { permissions: '8', user: { id: '999999' } } }), true);
+    assert.equal(isRevenueAuthorized({ guild_id: '399999', member: { permissions: '8', user: { id: '999999' } } }), false);
+    assert.equal(isRevenueAuthorized({ guild_id: '300001', member: { permissions: '0', user: { id: '999999' }, roles: ['200001'] } }), true);
+    assert.equal(isRevenueAuthorized({ guild_id: '399999', member: { permissions: '0', user: { id: '999999' }, roles: ['200001'] } }), false);
+    assert.equal(isRevenueAuthorized({ guild_id: '300001', member: { permissions: '0', user: { id: '999999' }, roles: ['299999'] } }), false);
+  } finally {
+    if (oldUsers === undefined) delete process.env.DISCORD_REVENUE_ALLOWED_USER_IDS;
+    else process.env.DISCORD_REVENUE_ALLOWED_USER_IDS = oldUsers;
+    if (oldRoles === undefined) delete process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS;
+    else process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS = oldRoles;
+    if (oldGuild === undefined) delete process.env.DISCORD_GUILD_ID;
+    else process.env.DISCORD_GUILD_ID = oldGuild;
+    if (oldRevenueGuilds === undefined) delete process.env.DISCORD_REVENUE_ALLOWED_GUILD_IDS;
+    else process.env.DISCORD_REVENUE_ALLOWED_GUILD_IDS = oldRevenueGuilds;
+  }
 });
 
 test('valid Discord PING contract remains unchanged', async () => {

@@ -20,6 +20,14 @@
 1. `.env` 에 매출 채널 웹훅과 cron 시크릿이 있는지 확인:
    ```
    DISCORD_WEBHOOK_SALES=https://discord.com/api/webhooks/...   # 또는 DISCORD_WEBHOOK_URL
+   # /매출 권한: guild Administrator/role은 아래 운영 guild 안에서만 인정합니다.
+   DISCORD_GUILD_ID=345678901234567890
+   # 여러 운영 guild가 필요할 때만 쉼표로 추가합니다.
+   DISCORD_REVENUE_ALLOWED_GUILD_IDS=
+   # guild 권한과 별개로 운영자 본인을 명시 허용할 수 있습니다.
+   DISCORD_REVENUE_ALLOWED_USER_IDS=123456789012345678
+   # 선택: 여러 운영자가 공유하는 Discord role ID
+   DISCORD_REVENUE_ALLOWED_ROLE_IDS=234567890123456789
    CRON_SECRET=<이미 쓰는 값>
    ```
    (웹훅이 없으면: 디스코드 채널 → 편집 → 연동 → 웹훅 만들기 → URL 복사)
@@ -43,7 +51,7 @@
    - `Application ID` → `DISCORD_APP_ID`
    - `Public Key` → `DISCORD_PUBLIC_KEY`
 3. **Bot** 탭 → **Reset Token** → 토큰 복사 → `.env` `DISCORD_BOT_TOKEN`
-4. (권장) 테스트할 디스코드 서버 ID → `.env` `DISCORD_GUILD_ID`
+4. `/매출`을 허용할 디스코드 서버 ID → `.env` `DISCORD_GUILD_ID`
    - 서버 아이콘 우클릭 → "서버 ID 복사" (개발자 모드 켜야 보임: 설정 → 고급 → 개발자 모드)
 5. **OAuth2 → URL Generator**: scopes에 `applications.commands` 체크 → 생성된 URL로 봇을 서버에 초대
 

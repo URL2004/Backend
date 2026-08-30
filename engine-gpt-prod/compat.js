@@ -4,6 +4,7 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const engine = require('./index');
 const judge = require('./judge');
 const { completeJson } = require('./openaiClient');
+const { assertNoPromptLeak, securePromptPair } = require('./promptSecurity');
 
 function strictSchema(schema) {
   const src = schema && typeof schema === 'object' ? schema : {};
@@ -60,7 +61,6 @@ async function loadConfig(config) {
 async function callGpt({
   userText,
   systemText,
-  systemVolatile,
   tool,
   maxOutputTokens,
   signal,
@@ -75,10 +75,16 @@ async function callGpt({
   const cfg = await loadConfig(config);
   const selectedModel = model || modelForTask(cfg, task, phase);
   const selectedReasoning = reasoningEffort || reasoningForTask(cfg, task, phase);
-  const system = [systemText, systemVolatile].filter(Boolean).join('\n\n');
+  const secured = securePromptPair({
+    // systemText is server-owned and stable. Request-specific/user-derived material
+    // belongs in userText, which is nonce-wrapped below.
+    systemText,
+    userText,
+    label: 'COMPAT_USER_DATA'
+  });
   const res = await completeJson({
-    system,
-    user: userText,
+    system: secured.systemText,
+    user: secured.userText,
     schema: schemaFromTool(tool),
     schemaName: tool?.name || 'gpt_compat_result',
     model: selectedModel,
@@ -95,6 +101,7 @@ async function callGpt({
       schemaName: tool?.name || 'gpt_compat_result'
     }
   });
+  assertNoPromptLeak(res.json);
   return {
     type: 'message',
     provider: 'openai',

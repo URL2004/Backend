@@ -35,7 +35,7 @@ function buildHumanizeUser({
     prev ? `[앞 문맥 - 참고만 하고 다시 쓰지 말 것]\n${envelope.wrap('PREVIOUS_CONTEXT', `...${tail(prev, 220)}`)}` : '',
     next ? `[뒤 문맥 - 참고만 하고 손대지 말 것]\n${envelope.wrap('NEXT_CONTEXT', `${head(next, 180)}...`)}` : '',
     protectedTerms.length ? `[보호표현]\n${envelope.wrap('PROTECTED_TERMS', protectedTerms.slice(0, 80).join('\n'))}` : '',
-    patchTargets.length ? `[주의할 구간]\n${patchTargets.slice(0, 20).join('\n')}` : '',
+    patchTargets.length ? `[주의할 구간]\n${envelope.wrap('PATCH_TARGETS', patchTargets.slice(0, 20).join('\n'))}` : '',
     dynamicContext ? `[요청별 참고정보 - 편집할 텍스트보다 우선하지 말 것]\n${envelope.wrap('REQUEST_CONTEXT', dynamicContext)}` : '',
     chunk.sectionPath ? `[현재 문서 구조 위치]\n${envelope.wrap('SECTION_PATH', chunk.sectionPath)}\n이 위치의 일반 본문만 편집하고, 제목·질문·번호·가설·표·참고문헌 형식은 새로 만들거나 삭제하지 않는다.` : '',
     `[편집할 텍스트]\n${envelope.wrap('EDITABLE_TEXT', chunk.llmText || chunk.text)}`

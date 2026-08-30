@@ -4,6 +4,7 @@ const express = require('express');
 const { logger } = require('../lib/logger');
 const { admin, db } = require('../config');
 const { issueKakaoCustomToken, parseKakaoUserPayload } = require('../lib/kakaoIdentity');
+const { outboundFetch } = require('../lib/outboundPolicy');
 const router = express.Router();
 
 const KAKAO_USER_URL = 'https://kapi.kakao.com/v2/user/me';
@@ -28,7 +29,7 @@ async function fetchKakaoUser(accessToken) {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(new Error('kakao user fetch timeout')), KAKAO_FETCH_TIMEOUT_MS);
     try {
-      const response = await fetch(KAKAO_USER_URL, {
+      const response = await outboundFetch('kakao', KAKAO_USER_URL, {
         headers: { 'Authorization': 'Bearer ' + accessToken },
         signal: ac.signal
       });

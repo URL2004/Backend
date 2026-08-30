@@ -28,9 +28,9 @@ https.request = function stubRequest(options, callback) {
 };
 
 // 채널 URL은 모듈 로드 시점에 읽히므로 require 전에 설정해야 한다.
-process.env.DISCORD_WEBHOOK_ALERT = 'https://discord.test/webhooks/alert';
-process.env.DISCORD_WEBHOOK_SEV1 = 'https://discord.test/webhooks/sev1';
-process.env.DISCORD_WEBHOOK_SEV3 = 'https://discord.test/webhooks/sev3';
+process.env.DISCORD_WEBHOOK_ALERT = 'https://discord.com/api/webhooks/test/alert';
+process.env.DISCORD_WEBHOOK_SEV1 = 'https://discord.com/api/webhooks/test/sev1';
+process.env.DISCORD_WEBHOOK_SEV3 = 'https://discord.com/api/webhooks/test/sev3';
 process.env.LOG_LEVEL = 'debug';
 
 const opsEvents = require('../lib/opsEvents');

@@ -130,7 +130,8 @@ async function handleInteractions(req, res) {
         return res.json({ type: 4, data: { flags: 64, embeds: [revenueEmbed(r)] } });
       } catch (e) {
         logger.error('discordBot.revenue_failed', { err: e });
-        return res.json({ type: 4, data: { flags: 64, content: '매출 조회에 실패했어요: ' + (e.message || '오류') } });
+        // 내부 DB/provider 오류 문구를 Discord 사용자에게 그대로 노출하지 않는다.
+        return res.json({ type: 4, data: { flags: 64, content: '매출 조회에 실패했어요. 잠시 후 다시 시도해 주세요.' } });
       }
     }
     return res.json({ type: 4, data: { flags: 64, content: '알 수 없는 명령입니다.' } });

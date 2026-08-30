@@ -56,7 +56,9 @@ router.post('/kakao-login', async (req, res) => {
     const userData = await userRes.json();
 
     if (!userData.id) {
-      logger.warn('auth.kakao_user_fetch_failed', { status: userRes.status, kakao: userData });
+      // Kakao 오류 본문에는 이메일·닉네임·프로필 URL 같은 개인정보가 섞일 수 있다.
+      // 운영 로그에는 판정에 필요한 HTTP 상태만 남기고 provider 응답 원문은 보관하지 않는다.
+      logger.warn('auth.kakao_user_fetch_failed', { status: userRes.status });
       return res.status(userRes.status >= 400 && userRes.status < 500 ? 401 : 502)
         .json({ error: '카카오 사용자 정보를 가져올 수 없습니다. 다시 로그인해 주세요.' });
     }
@@ -66,7 +68,10 @@ router.post('/kakao-login', async (req, res) => {
     const email = userData.kakao_account?.email || (kakaoId + '@kakao.com');
     const photo = userData.kakao_account?.profile?.profile_image_url || '';
 
-    logger.info('auth.kakao_login_succeeded', { kakaoId, email });
+    logger.info('auth.kakao_login_succeeded', {
+      hasEmail: Boolean(userData.kakao_account?.email),
+      hasProfilePhoto: Boolean(photo)
+    });
     res.json({ ok: true, kakaoId, nickname, email, photo });
   } catch(err) {
     logger.error('auth.kakao_login_failed', { err: errorMeta(err) });

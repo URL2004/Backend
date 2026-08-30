@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const { logger, runWithLogContext } = require('../lib/logger');
 const { realClientIp } = require('../lib/clientip');
+const { userAgentFamily } = require('../lib/cronAuth');
+const { clientHashForLog, originHostnameForLog } = require('../lib/requestLogPrivacy');
 
 function sanitizeRequestId(value) {
   const id = String(value || '').trim().replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 100);
@@ -15,9 +17,9 @@ function requestContext(req, res, next) {
     requestId,
     method: req.method,
     path: req.path,
-    ip,
-    origin: req.get('origin') || undefined,
-    userAgent: req.get('user-agent') || undefined
+    clientHash: clientHashForLog(ip),
+    originHost: originHostnameForLog(req.get('origin')),
+    userAgentFamily: userAgentFamily(req)
   };
 
   res.setHeader('x-request-id', requestId);

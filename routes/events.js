@@ -6,6 +6,7 @@ const { db, verifyFirebaseIdToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const { realClientIp } = require('../lib/clientip');
+const { userAgentFamily } = require('../lib/cronAuth');
 const metaConversions = require('../lib/metaConversions');
 
 const router = express.Router();
@@ -128,7 +129,7 @@ router.post('/events', async (req, res) => {
       stack: text(b.stack, 600),
       page: text(b.page, 120),
       release: text(b.release, 40),
-      userAgent: text(req.get('user-agent'), 200)
+      userAgentFamily: userAgentFamily(req)
     });
     return res.json({ ok: true });
   }

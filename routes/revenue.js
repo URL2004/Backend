@@ -43,6 +43,9 @@ function checkCron(req, res) {
     res.status(401).json({ error: '권한이 없습니다.' });
     return false;
   }
+  if (auth.legacyCredentialPresent) {
+    logger.warn('revenue.cron_legacy_auth_observed', { ...authLogFields(auth), noAlert: true });
+  }
   return true;
 }
 

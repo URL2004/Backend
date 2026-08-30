@@ -112,6 +112,8 @@ npm audit --omit=dev
 
 ```powershell
 Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/healthz' | ConvertTo-Json -Depth 6
+# 상세 상태(activeJobs·엔진·provider)는 비공개 경로에서만 확인한다.
+Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/internal/health' -Headers @{ 'x-health-secret'=$env:HEALTH_CHECK_SECRET } | ConvertTo-Json -Depth 6
 ```
 
 정상 기준:
@@ -152,6 +154,7 @@ for ($i=0; $i -lt 54; $i++) {
 
 ```powershell
 Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/healthz' | ConvertTo-Json -Depth 6
+Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/internal/health' -Headers @{ 'x-health-secret'=$env:HEALTH_CHECK_SECRET } | ConvertTo-Json -Depth 6
 render deploys list srv-d6pl9qlm5p6s73fmh280 --output json | ConvertFrom-Json | Select-Object -First 1 | ConvertTo-Json -Depth 6
 git fetch origin release/prod-maintenance-test
 git status --short --branch

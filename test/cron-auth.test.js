@@ -60,6 +60,27 @@ test('cron auth query compatibility must be explicitly enabled', () => {
   assert.equal(enabled.authSource, 'query');
 });
 
+test('legacy body and query credentials can move from shadow observation to blocking', () => {
+  const bodyReq = request({ body: { internalKey: 'shared-secret' } });
+  const shadow = verifyCronRequest(bodyReq, { secret: 'shared-secret', legacyMode: 'shadow' });
+  assert.equal(shadow.ok, true);
+  assert.equal(shadow.legacyCredentialUsed, true);
+  assert.equal(shadow.legacyMode, 'shadow');
+
+  const blocked = verifyCronRequest(bodyReq, { secret: 'shared-secret', legacyMode: 'block' });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.reason, 'legacy_credential_blocked');
+  assert.equal(blocked.secret, undefined);
+
+  const primary = verifyCronRequest(request({
+    headers: { 'x-cron-secret': 'shared-secret' },
+    body: { internalKey: 'stale-legacy-value' }
+  }), { secret: 'shared-secret', legacyMode: 'block' });
+  assert.equal(primary.ok, true);
+  assert.equal(primary.authSource, 'header');
+  assert.equal(primary.legacyCredentialPresent, true);
+});
+
 test('cron auth diagnostics never expose accepted or rejected secret values', () => {
   const rejected = verifyCronRequest(request({ headers: { 'x-cron-secret': 'do-not-log-me' } }), { secret: 'shared-secret' });
   const fields = authLogFields(rejected);

@@ -70,6 +70,34 @@ const limiter = rateLimit({
   keyGenerator: req => realClientIp(req),
 });
 
+function rateLimitResponse(_req, res) {
+  return res.status(429).json({
+    ok: false,
+    code: 'RATE_LIMITED',
+    error: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.'
+  });
+}
+
+// Login and Discord use dedicated conservative ceilings. This prevents a
+// credential-stuffing/CPU flood without sharing the AI request bucket.
+const kakaoAuthLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: Math.max(5, Number(process.env.KAKAO_LOGIN_RATE_LIMIT || 20) || 20),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: req => realClientIp(req),
+  handler: rateLimitResponse
+});
+
+const discordInteractionLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Math.max(30, Number(process.env.DISCORD_INTERACTION_RATE_LIMIT || 120) || 120),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: req => realClientIp(req),
+  handler: rateLimitResponse
+});
+
 const dailyLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   max: 1000,
@@ -111,6 +139,8 @@ module.exports = {
   corsMiddleware,
   limiter,
   dailyLimiter,
+  kakaoAuthLimiter,
+  discordInteractionLimiter,
   ADMIN_UIDS,
   verifyFirebaseIdToken,
   verifyToken,

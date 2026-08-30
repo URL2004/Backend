@@ -43,6 +43,7 @@ function normalizeSuffix(s) { return (s.includes('://') ? originHostname(s) : s)
 const normalizedSuffixes = allowedOriginSuffixes.map(normalizeSuffix).filter(Boolean);
 
 const corsMiddleware = cors({
+  methods: ['GET', 'POST', 'HEAD', 'OPTIONS'],
   origin: (origin, callback) => {
     const host = origin ? originHostname(origin) : '';
     const allowedBySuffix = !!host && normalizedSuffixes.some(suffix => host === suffix || host.endsWith('.' + suffix));

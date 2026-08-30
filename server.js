@@ -9,6 +9,7 @@ const { corsMiddleware, limiter, db } = require('./config');
 const requestContext = require('./middleware/requestContext');
 const errorHandler = require('./middleware/errorHandler');
 const maintenanceMode = require('./middleware/maintenanceMode');
+const { apiSecurityHeaders, protectPublicHealthPayload } = require('./middleware/httpSecurity');
 const gptRuntimeConfig = require('./lib/gptRuntimeConfig');
 const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
 const { POLICY_VERSION: HUMANIZATION_DEPTH_POLICY } = require('./engine-gpt-prod/humanizationDepth');
@@ -17,11 +18,13 @@ const { VERSION: HUMANIZE_ENGINE_VERSION } = require('./engine-gpt-prod');
 const { registrySnapshot: writingPolicyRegistrySnapshot } = require('./engine-writing-v1/policy/registry');
 
 const app = express();
+app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
 // 미들웨어
 app.use(requestContext);
 app.use(corsMiddleware);
+app.use(apiSecurityHeaders);
 
 // Discord 슬래시 커맨드(Interactions) — Ed25519 서명검증에 raw body가 필요하므로
 // express.json 보다 먼저, 자체 raw 파서로 마운트한다. maintenanceMode보다도 앞이라 점검 모드에도 응답.
@@ -50,7 +53,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
   try {
     const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
     const compatibility = evaluateHumanizeRuntime({ activeProvider: runtimeConfig.activeProvider });
-    res.status(compatibility.ok ? 200 : 503).json({
+    res.status(compatibility.ok ? 200 : 503).json(protectPublicHealthPayload({
       ok: compatibility.ok,
       activeProvider: compatibility.activeProvider,
       providerCompatible: compatibility.providerCompatible,
@@ -71,10 +74,10 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       maintenance: maintenanceMode.isMaintenanceEnabled(),
       uptimeSec: Math.round(process.uptime()),
       ...transformRouter.stats()
-    });
+    }));
   } catch (err) {
     logger.error('server.health_runtime_config_failed', { err });
-    res.status(503).json({
+    res.status(503).json(protectPublicHealthPayload({
       ok: false,
       code: 'RUNTIME_CONFIG_UNAVAILABLE',
       humanizeEngineV2,
@@ -92,7 +95,7 @@ app.get(['/healthz', '/api/health'], async (req, res) => {
       maintenance: maintenanceMode.isMaintenanceEnabled(),
       uptimeSec: Math.round(process.uptime()),
       ...transformRouter.stats()
-    });
+    }));
   }
 });
 

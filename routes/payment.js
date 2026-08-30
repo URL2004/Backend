@@ -39,10 +39,23 @@ const {
   commitCreditDeduct,
   commitCreditRestoreFromHistory
 } = require('../lib/usageBilling');
+const {
+  TERMS_POLICY_VERSION,
+  REFUND_POLICY_VERSION,
+  SUBSCRIPTION_REFUND_POLICY_VERSION,
+  REFUND_WINDOW_DAYS,
+  REFUND_WINDOW_MS,
+  REFUND_WINDOW_BASIS,
+  REFUND_CALCULATION_BASIS,
+  REFUND_BONUS_TREATMENT,
+  refundWindowLegalDeadlineMs,
+  buildRefundPolicyPurchaseSnapshot
+} = require('../lib/refundPolicySnapshot');
 const gptAnalyze = require('./analyze-gpt');
 
 const router = express.Router();
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
+const UNLIMITED_REFUND_SETTLEMENT_USES = 50;
 const RETIRED_BASIC_EXPERIMENT_CONFIG = Object.freeze({
   enabled: false,
   retired: true,
@@ -308,6 +321,9 @@ async function applyCreditPayment({
   const sourceOrderRef = isUpgrade && creditGrant.sourceOrderId
     ? db.collection('orders').doc(creditGrant.sourceOrderId)
     : null;
+  // 크레딧은 결제 확정과 동시에 제공된다. 서버가 당시 약관 버전과 환불 기산점을
+  // 주문에 고정해 두면 향후 정책이 바뀌어도 구매 당시 기준을 재현할 수 있다.
+  const refundPolicyPurchaseSnapshot = buildRefundPolicyPurchaseSnapshot();
 
   return db.runTransaction(async transaction => {
     // Firestore transactions require every read before the first write.
@@ -411,6 +427,7 @@ async function applyCreditPayment({
       providerStatus: providerPayment?.status || 'DONE',
       providerApprovedAt: paidAt,
       reconciliationSource,
+      ...refundPolicyPurchaseSnapshot,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
     transaction.set(db.collection('paymentSecrets').doc(orderId), {
@@ -945,6 +962,7 @@ function serializeCreditHistoryDoc(docSnap, userByUid) {
 
 function serializeOrderDoc(docSnap, kind) {
   const o = docSnap.data() || {};
+  const refundWindow = refundWindowState(o, kind);
   return {
     id: docSnap.id,
     kind,
@@ -974,6 +992,21 @@ function serializeOrderDoc(docSnap, kind) {
       : null,
     refundCreditBasis: o.refundCreditBasis || '',
     refundCreditSettlementClosed: o.refundCreditSettlementClosed === true,
+    refundPolicyVersion: o.refundPolicyVersion || '',
+    refundPolicyVersionAtPurchase: o.refundPolicyVersionAtPurchase || '',
+    refundWindowBasis: o.refundWindowBasis || '',
+    refundWindowStartsAtMs: refundWindow.paidAtMs,
+    refundWindowEndsAtMs: refundWindow.deadlineMs,
+    refundEligibilityReviewRequired: o.refundEligibilityReviewRequired === true,
+    refundEligibilityReviewed: o.refundEligibilityReviewed === true,
+    refundEligibilityExceptionCode: o.refundEligibilityExceptionCode || '',
+    refundEligibilityReviewNote: o.refundEligibilityReviewNote || '',
+    refundEligibilityReviewedBy: o.refundEligibilityReviewedBy || '',
+    refundEligibilityReviewedAtMs: timestampMs(o.refundEligibilityReviewedAt),
+    requestedRefundAmount: Number(o.requestedRefundAmount) || 0,
+    requestedRefundCredits: Number(o.requestedRefundCredits) || 0,
+    refundReservationState: o.refundReservationState || '',
+    refundRequestSequence: Number(o.refundRequestSequence) || 0,
     tier: o.tier || null,
     paymentKey: (o.paymentKey || o.paymentKeyPresent) ? 'present' : null,
     cancelReason: o.cancelReason || '',
@@ -1393,6 +1426,9 @@ function resumableCreditRefund(order) {
     previousRefundPolicyVersion: typeof value.previousRefundPolicyVersion === 'string' ? value.previousRefundPolicyVersion : null,
     previousRefundCreditBasis: typeof value.previousRefundCreditBasis === 'string' ? value.previousRefundCreditBasis : null,
     previousRefundCreditSettlementClosed: value.previousRefundCreditSettlementClosed === true,
+    previousOrderStatus: typeof value.previousOrderStatus === 'string' ? value.previousOrderStatus : null,
+    // phase가 없는 과거 refundProcessing은 이미 결제사 취소 단계에 들어간 상태다.
+    phase: value.phase === 'requested_reserved' ? 'requested_reserved' : 'provider_canceling',
     creditLotPolicyVersion: value.creditLotPolicyVersion === CREDIT_LOT_POLICY_VERSION
       ? CREDIT_LOT_POLICY_VERSION
       : null,
@@ -1407,9 +1443,10 @@ function resumableCreditRefund(order) {
   return operation;
 }
 
-function creditRefundProcessing(operation, now) {
+function creditRefundProcessing(operation, now, phase = 'provider_canceling') {
   return {
     kind: 'credit',
+    phase: phase === 'requested_reserved' ? 'requested_reserved' : 'provider_canceling',
     operationId: operation.operationId,
     priorRefundedAmount: operation.priorRefundedAmount,
     priorRefundedCredits: operation.priorRefundedCredits,
@@ -1420,10 +1457,12 @@ function creditRefundProcessing(operation, now) {
     previousRefundPolicyVersion: operation.previousRefundPolicyVersion || null,
     previousRefundCreditBasis: operation.previousRefundCreditBasis || null,
     previousRefundCreditSettlementClosed: operation.previousRefundCreditSettlementClosed === true,
+    previousOrderStatus: operation.previousOrderStatus || null,
     creditLotPolicyVersion: operation.creditLotPolicyVersion || null,
     reservedPaidCredits: Math.max(0, Math.floor(Number(operation.reservedPaidCredits) || 0)),
     reservedBonusCredits: Math.max(0, Math.floor(Number(operation.reservedBonusCredits) || 0)),
-    startedAt: now
+    startedAt: operation.startedAt || now,
+    ...(phase === 'requested_reserved' ? { reservedAt: now } : { providerStartedAt: now })
   };
 }
 
@@ -1450,7 +1489,8 @@ async function reserveCreditRefundCredits({
   orderRef,
   userRef,
   latestOrder,
-  remainingOrderCredits
+  remainingOrderCredits,
+  fieldValue = admin.firestore.FieldValue
 }) {
   const userSnap = await transaction.get(userRef);
   if (!userSnap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
@@ -1491,7 +1531,7 @@ async function reserveCreditRefundCredits({
         refundPaidCreditsRemaining: 0,
         refundEventBonusCreditsRemaining: 0,
         active: false,
-        creditLotUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+        creditLotUpdatedAt: fieldValue.serverTimestamp()
       });
     }
     transaction.update(userRef, userUpdate);
@@ -1504,7 +1544,7 @@ async function reserveCreditRefundCredits({
       refundPaidCreditsRemaining: 0,
       refundEventBonusCreditsRemaining: 0,
       creditLotActive: false,
-      creditLotUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+      creditLotUpdatedAt: fieldValue.serverTimestamp()
     } : {},
     processingLotFields: grant.usesTrackedLot ? {
       creditLotPolicyVersion: CREDIT_LOT_POLICY_VERSION,
@@ -1514,63 +1554,111 @@ async function reserveCreditRefundCredits({
   };
 }
 
-async function compensateCreditRefundReservation({ orderRef, userRef, operationId }) {
+async function restoreCreditRefundReservationInTransaction({
+  transaction,
+  orderRef,
+  userRef,
+  latestOrder,
+  operationId,
+  restoreReason = 'provider_cancel_failed',
+  orderUpdate = {},
+  fieldValue = admin.firestore.FieldValue
+}) {
+  const processing = resumableCreditRefund(latestOrder);
+  if (!processing || processing.operationId !== operationId) {
+    const alreadyRestored = latestOrder?.refundReservationState === 'restored'
+      && latestOrder?.refundReservationOperationId === operationId;
+    return { restored: false, alreadyRestored };
+  }
+
+  const userSnap = await transaction.get(userRef);
+  if (!userSnap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
+  const user = userSnap.data() || {};
+  const wallet = creditWalletBalances(user);
+  if (!wallet.consistent) throw creditLotMismatchError();
+  const usesTrackedLot = processing.creditLotPolicyVersion === CREDIT_LOT_POLICY_VERSION;
+  const lotRef = usesTrackedLot ? userRef.collection('creditLots').doc(orderRef.id) : null;
+  const lotSnap = lotRef ? await transaction.get(lotRef) : null;
+  if (usesTrackedLot) {
+    const lot = lotSnap?.exists ? (lotSnap.data() || {}) : null;
+    if (!lot
+      || lot.creditLotPolicyVersion !== CREDIT_LOT_POLICY_VERSION
+      || Math.max(0, Math.floor(Number(lot.refundPaidCreditsRemaining) || 0)) !== 0
+      || Math.max(0, Math.floor(Number(lot.refundEventBonusCreditsRemaining) || 0)) !== 0) {
+      throw creditLotMismatchError();
+    }
+  }
+
+  const restoredCredits = processing.creditsToDeduct;
+  const userUpdate = { credits: wallet.credits + restoredCredits };
+  const now = fieldValue.serverTimestamp();
+  if (usesTrackedLot) {
+    const restoredPaid = processing.reservedPaidCredits;
+    const restoredBonus = processing.reservedBonusCredits;
+    if (restoredPaid + restoredBonus !== restoredCredits) throw creditLotMismatchError();
+    userUpdate.creditLotV1Balance = wallet.tracked + restoredCredits;
+    transaction.update(lotRef, {
+      refundPaidCreditsRemaining: restoredPaid,
+      refundEventBonusCreditsRemaining: restoredBonus,
+      active: restoredCredits > 0,
+      creditLotUpdatedAt: now
+    });
+  }
+  transaction.update(userRef, userUpdate);
+  transaction.update(orderRef, {
+    refundAmount: processing.priorRefundedAmount > 0
+      ? processing.priorRefundedAmount
+      : fieldValue.delete(),
+    refundedAmount: processing.priorRefundedAmount > 0
+      ? processing.priorRefundedAmount
+      : fieldValue.delete(),
+    refundedCredits: processing.priorRefundedCredits > 0
+      ? processing.priorRefundedCredits
+      : fieldValue.delete(),
+    refundUsedPaidCredits: fieldValue.delete(),
+    refundablePaidCredits: fieldValue.delete(),
+    recoveredBonusCredits: fieldValue.delete(),
+    refundPolicyVersion: processing.previousRefundPolicyVersion || fieldValue.delete(),
+    refundCreditBasis: processing.previousRefundCreditBasis || fieldValue.delete(),
+    refundCreditSettlementClosed: processing.previousRefundCreditSettlementClosed || fieldValue.delete(),
+    ...(usesTrackedLot ? {
+      refundPaidCreditsRemaining: processing.reservedPaidCredits,
+      refundEventBonusCreditsRemaining: processing.reservedBonusCredits,
+      creditLotActive: restoredCredits > 0,
+      creditLotUpdatedAt: now
+    } : {}),
+    refundReservationState: 'restored',
+    refundReservationOperationId: operationId,
+    refundReservationRestoreReason: restoreReason,
+    refundReservationRestoredAt: now,
+    refundProcessing: fieldValue.delete(),
+    ...(processing.previousOrderStatus && !Object.prototype.hasOwnProperty.call(orderUpdate, 'status')
+      ? { status: processing.previousOrderStatus }
+      : {}),
+    ...orderUpdate
+  });
+  return { restored: true, alreadyRestored: false, restoredCredits };
+}
+
+async function compensateCreditRefundReservation({
+  orderRef,
+  userRef,
+  operationId,
+  restoreReason = 'provider_cancel_failed',
+  orderUpdate = {}
+}) {
   return db.runTransaction(async transaction => {
     const latestOrderSnapshot = await transaction.get(orderRef);
-    if (!latestOrderSnapshot.exists) return false;
-    const latestOrder = latestOrderSnapshot.data() || {};
-    const processing = resumableCreditRefund(latestOrder);
-    if (!processing || processing.operationId !== operationId) return false;
-    const userSnap = await transaction.get(userRef);
-    if (!userSnap.exists) throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404 });
-    const user = userSnap.data() || {};
-    const wallet = creditWalletBalances(user);
-    const usesTrackedLot = processing.creditLotPolicyVersion === CREDIT_LOT_POLICY_VERSION;
-    const lotRef = usesTrackedLot ? userRef.collection('creditLots').doc(orderRef.id) : null;
-    const lotSnap = lotRef ? await transaction.get(lotRef) : null;
-    if (usesTrackedLot && (!lotSnap || !lotSnap.exists)) throw creditLotMismatchError();
-
-    const restoredCredits = processing.creditsToDeduct;
-    const userUpdate = { credits: wallet.credits + restoredCredits };
-    const now = admin.firestore.FieldValue.serverTimestamp();
-    if (usesTrackedLot) {
-      const restoredPaid = processing.reservedPaidCredits;
-      const restoredBonus = processing.reservedBonusCredits;
-      if (restoredPaid + restoredBonus !== restoredCredits) throw creditLotMismatchError();
-      userUpdate.creditLotV1Balance = wallet.tracked + restoredCredits;
-      transaction.update(lotRef, {
-        refundPaidCreditsRemaining: restoredPaid,
-        refundEventBonusCreditsRemaining: restoredBonus,
-        active: restoredCredits > 0,
-        creditLotUpdatedAt: now
-      });
-    }
-    transaction.update(userRef, userUpdate);
-    transaction.update(orderRef, {
-      refundAmount: processing.priorRefundedAmount > 0
-        ? processing.priorRefundedAmount
-        : admin.firestore.FieldValue.delete(),
-      refundedAmount: processing.priorRefundedAmount > 0
-        ? processing.priorRefundedAmount
-        : admin.firestore.FieldValue.delete(),
-      refundedCredits: processing.priorRefundedCredits > 0
-        ? processing.priorRefundedCredits
-        : admin.firestore.FieldValue.delete(),
-      refundUsedPaidCredits: admin.firestore.FieldValue.delete(),
-      refundablePaidCredits: admin.firestore.FieldValue.delete(),
-      recoveredBonusCredits: admin.firestore.FieldValue.delete(),
-      refundPolicyVersion: processing.previousRefundPolicyVersion || admin.firestore.FieldValue.delete(),
-      refundCreditBasis: processing.previousRefundCreditBasis || admin.firestore.FieldValue.delete(),
-      refundCreditSettlementClosed: processing.previousRefundCreditSettlementClosed || admin.firestore.FieldValue.delete(),
-      ...(usesTrackedLot ? {
-        refundPaidCreditsRemaining: processing.reservedPaidCredits,
-        refundEventBonusCreditsRemaining: processing.reservedBonusCredits,
-        creditLotActive: restoredCredits > 0,
-        creditLotUpdatedAt: now
-      } : {}),
-      refundProcessing: admin.firestore.FieldValue.delete()
+    if (!latestOrderSnapshot.exists) return { restored: false, alreadyRestored: false };
+    return restoreCreditRefundReservationInTransaction({
+      transaction,
+      orderRef,
+      userRef,
+      latestOrder: latestOrderSnapshot.data() || {},
+      operationId,
+      restoreReason,
+      orderUpdate
     });
-    return true;
   });
 }
 
@@ -1665,7 +1753,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   }
 
   let refundAmount, refundableCredits;
-  let priorRefundedAmount, priorRefundedCredits, cumulativeRefundAmount, operationId;
+  let priorRefundedAmount, priorRefundedCredits, cumulativeRefundAmount, cumulativeRefundCredits, operationId;
   let previousRefundPolicyVersion, previousRefundCreditBasis, previousRefundCreditSettlementClosed;
   try {
     const result = await db.runTransaction(async (transaction) => {
@@ -1675,6 +1763,13 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       const latestGrant = creditRefundGrant(latestOrder);
       const resumable = resumableCreditRefund(latestOrder);
       if (resumable) {
+        if (resumable.phase === 'requested_reserved') {
+          transaction.update(orderRef, {
+            'refundProcessing.phase': 'provider_canceling',
+            'refundProcessing.providerStartedAt': admin.firestore.FieldValue.serverTimestamp(),
+            refundReservationState: 'provider_canceling'
+          });
+        }
         return {
           ...resumable,
           amount: resumable.refundAmount,
@@ -1719,7 +1814,17 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
 
       const newRefundedAmount = priorAmount + amount;
       const newRefundedCredits = priorCredits + creditsToDeduct;
-      const nextOperationId = refundOperationId(orderRef.id, priorAmount, amount, creditsToDeduct);
+      const directAttemptSequence = Math.max(
+        0,
+        Math.floor(Number(latestOrder.refundDirectAttemptSequence) || 0)
+      ) + 1;
+      const nextOperationId = refundOperationId(
+        orderRef.id,
+        priorAmount,
+        amount,
+        creditsToDeduct,
+        `direct-${directAttemptSequence}`
+      );
       const operation = {
         operationId: nextOperationId,
         priorRefundedAmount: priorAmount,
@@ -1731,6 +1836,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
         previousRefundPolicyVersion: latestOrder.refundPolicyVersion || null,
         previousRefundCreditBasis: latestOrder.refundCreditBasis || null,
         previousRefundCreditSettlementClosed: latestOrder.refundCreditSettlementClosed === true,
+        previousOrderStatus: latestOrder.status || 'paid',
         ...reserved.processingLotFields
       };
       transaction.update(orderRef, {
@@ -1739,12 +1845,13 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
         refundAmount: newRefundedAmount,    // 누적(레거시 표시 호환)
         refundedAmount: newRefundedAmount,  // 누적 환불 금액
         refundedCredits: newRefundedCredits, // 누적 환불 크레딧
-        refundPolicyVersion: latestGrant.usesBaseCreditPolicy ? REFUND_POLICY_VERSION : (latestOrder.refundPolicyVersion || admin.firestore.FieldValue.delete()),
+        refundPolicyVersion: refundPolicyVersionForOrder(latestOrder, latestGrant.usesBaseCreditPolicy),
         refundCreditBasis: latestGrant.refundCreditBasis,
         refundUsedPaidCredits: policyCalculation ? policyCalculation.usedPaidCredits : admin.firestore.FieldValue.delete(),
         refundablePaidCredits: policyCalculation ? policyCalculation.refundablePaidCredits : admin.firestore.FieldValue.delete(),
         recoveredBonusCredits: policyCalculation ? policyCalculation.recoveredBonusCredits : admin.firestore.FieldValue.delete(),
         refundCreditSettlementClosed: policyCalculation ? true : admin.firestore.FieldValue.delete(),
+        refundDirectAttemptSequence: directAttemptSequence,
         ...reserved.orderLotUpdate,
         refundProcessing: creditRefundProcessing(operation, admin.firestore.FieldValue.serverTimestamp())
       });
@@ -1762,6 +1869,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
     priorRefundedAmount = result.priorRefundedAmount;
     priorRefundedCredits = result.priorRefundedCredits;
     cumulativeRefundAmount = result.targetRefundedAmount;
+    cumulativeRefundCredits = result.targetRefundedCredits;
     operationId = result.operationId;
     previousRefundPolicyVersion = result.previousRefundPolicyVersion;
     previousRefundCreditBasis = result.previousRefundCreditBasis;
@@ -1831,7 +1939,15 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   }
   if (!cancellationState.confirmed) {
     try {
-      await compensateCreditRefundReservation({ orderRef, userRef, operationId });
+      await compensateCreditRefundReservation({
+        orderRef,
+        userRef,
+        operationId,
+        restoreReason: 'provider_cancel_failed',
+        orderUpdate: {
+          refundApprovalFailedAt: admin.firestore.FieldValue.serverTimestamp()
+        }
+      });
     } catch (compErr) {
       logger.error('refund.compensation_failed_manual_action', {
         orderId: orderRef.id, uid: order.uid, refundableCredits, refundAmount, compErr
@@ -1862,6 +1978,22 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       throw Object.assign(new Error('REFUND_FINALIZE_CONFLICT'), { status: 409 });
     }
     if (decision.alreadyFinalized) {
+      const finalRefundedCredits = Math.max(
+        0,
+        Math.floor(Number(latestOrder.refundedCredits) || 0),
+        Math.floor(Number(cumulativeRefundCredits) || 0)
+      );
+      if (latestOrder.refundProcessing
+        || latestOrder.refundReservationState !== 'settled'
+        || Number(latestOrder.refundedCredits) !== finalRefundedCredits) {
+        transaction.update(orderRef, {
+          refundedCredits: finalRefundedCredits,
+          refundReservationState: 'settled',
+          refundReservationOperationId: operationId,
+          refundReservationSettledAt: admin.firestore.FieldValue.serverTimestamp(),
+          refundProcessing: admin.firestore.FieldValue.delete()
+        });
+      }
       return {
         alreadyFinalized: true,
         refundedAmount: decision.finalRefundedAmount,
@@ -1874,8 +2006,12 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       status: fullyRefunded ? 'refunded' : 'partially_refunded',
       refundAmount: finalRefundedAmount,
       refundedAmount: finalRefundedAmount,
+      refundedCredits: Math.max(0, Math.floor(Number(cumulativeRefundCredits) || 0)),
       refundedAt: admin.firestore.FieldValue.serverTimestamp(),
       refundedBy: adminUid,
+      refundReservationState: 'settled',
+      refundReservationOperationId: operationId,
+      refundReservationSettledAt: admin.firestore.FieldValue.serverTimestamp(),
       refundProcessing: admin.firestore.FieldValue.delete()
     });
     if (fullyRefunded && sourceOrderRef && sourceOrderSnap?.exists
@@ -2884,12 +3020,6 @@ router.post('/admin/direct-refund', async (req, res) => {
   }
 });
 
-const REFUND_POLICY_VERSION = '2026-08-29-base-credit-v1';
-const SUBSCRIPTION_REFUND_POLICY_VERSION = '2026-08-29-subscription-usage-v1';
-const REFUND_WINDOW_DAYS = 7;
-const REFUND_WINDOW_MS = REFUND_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-const UNLIMITED_REFUND_SETTLEMENT_USES = 50;
-
 function refundRequestProcessingConflict(order) {
   if (!order?.refundProcessing) return null;
   return {
@@ -2927,6 +3057,12 @@ function creditRefundGrant(order) {
       : null,
     refundCreditBasis: usesBaseCreditPolicy ? 'paid_credits_first' : 'legacy_total_grant'
   };
+}
+
+function refundPolicyVersionForOrder(order, usesBaseCreditPolicy) {
+  return order?.refundPolicyVersionAtPurchase
+    || order?.refundPolicyVersion
+    || (usesBaseCreditPolicy ? REFUND_POLICY_VERSION : 'legacy-total-grant-v1');
 }
 
 function creditRefundFinalizeDecision(order, { operationId, targetRefundedAmount, orderAmount }) {
@@ -2995,22 +3131,96 @@ function tossCancellationState({ response, lookup, targetRefundedAmount }) {
   return { confirmed, unknown, lookupCanceledAmount };
 }
 
+function refundWindowSnapshotAnchorMs(order) {
+  if (!order) return 0;
+  // 전자계약 문서를 받은 때와 서비스를 실제 이용할 수 있게 된 때가 다르면
+  // 소비자에게 불리하게 앞선 시각을 택하지 않는다. 저장된 startsAt도 더 늦은
+  // 약정 시각일 수 있으므로 세 값 중 최댓값을 권위 기산점으로 삼는다.
+  return Math.max(
+    timestampMs(order.refundWindowStartsAt),
+    timestampMs(order.serviceAvailableAt),
+    timestampMs(order.contractDocumentDeliveredAt),
+    timestampMs(order.termsSnapshotRecordedAt)
+  );
+}
+
+const REFUND_ELIGIBILITY_EXCEPTION_CODES = new Set([
+  'service_not_provided',
+  'service_not_as_described',
+  'remaining_balance_settlement',
+  'other_statutory_ground'
+]);
+
+function refundEligibilityReviewDecision(order, body = {}) {
+  if (order?.refundEligibilityReviewRequired !== true) {
+    return { required: false, accepted: true, persisted: false };
+  }
+  if (order.refundEligibilityReviewed === true
+    && REFUND_ELIGIBILITY_EXCEPTION_CODES.has(String(order.refundEligibilityExceptionCode || ''))
+    && String(order.refundEligibilityReviewNote || '').trim().length >= 2) {
+    return {
+      required: true,
+      accepted: true,
+      persisted: true,
+      exceptionCode: String(order.refundEligibilityExceptionCode),
+      note: String(order.refundEligibilityReviewNote).trim().slice(0, 500)
+    };
+  }
+  const exceptionCode = String(body?.statutoryExceptionCode || '').trim();
+  const note = String(body?.eligibilityReviewNote || '').trim().slice(0, 500);
+  const accepted = body?.eligibilityReviewed === true
+    && REFUND_ELIGIBILITY_EXCEPTION_CODES.has(exceptionCode)
+    && note.length >= 2;
+  return { required: true, accepted, persisted: false, exceptionCode, note };
+}
+
+function refundEligibilityReviewUpdate(review, adminUid, now) {
+  if (!review?.required || review.persisted || !review.accepted) return {};
+  return {
+    refundEligibilityReviewed: true,
+    refundEligibilityExceptionCode: review.exceptionCode,
+    refundEligibilityReviewNote: review.note,
+    refundEligibilityReviewedBy: adminUid,
+    refundEligibilityReviewedAt: now
+  };
+}
+
 function refundPaidAtMs(order, kind) {
   if (!order) return 0;
+  const explicitStartMs = refundWindowSnapshotAnchorMs(order);
+  if (explicitStartMs > 0) return explicitStartMs;
   return kind === 'subscription'
     ? timestampMs(order.approvedAt || order.cycleStartedAt || order.requestedAt)
     : timestampMs(order.createdAt || order.approvedAt || order.requestedAt);
 }
 
 function refundWindowState(order, kind, nowMs = Date.now()) {
-  const paidAtMs = refundPaidAtMs(order, kind);
-  if (!paidAtMs) return { eligible: false, paidAtMs: 0, reason: 'PAYMENT_DATE_MISSING' };
+  const explicitStartMs = refundWindowSnapshotAnchorMs(order);
+  const explicitDeadlineMs = timestampMs(order?.refundWindowEndsAt);
+  const snapshotDays = Math.max(1, Math.floor(Number(order?.refundWindowDaysAtPurchase) || REFUND_WINDOW_DAYS));
+  const paidAtMs = explicitStartMs || refundPaidAtMs(order, kind);
+  const legalDeadlineMs = refundWindowLegalDeadlineMs(paidAtMs, snapshotDays);
+  // 초기 배포 주문에 168시간 마감이 저장됐더라도 법정 일 단위 말일보다 앞당겨
+  // 닫지 않는다. 명시 기한이 더 길다면 구매 당시 약속을 그대로 존중한다.
+  const deadlineMs = Math.max(explicitDeadlineMs, legalDeadlineMs);
+  if (!paidAtMs || !deadlineMs) {
+    return {
+      eligible: false,
+      paidAtMs: 0,
+      deadlineMs: 0,
+      source: 'legacy_fallback',
+      reason: 'PAYMENT_DATE_MISSING'
+    };
+  }
   const elapsedMs = Math.max(0, Number(nowMs) - paidAtMs);
+  const eligible = Number(nowMs) <= deadlineMs;
   return {
-    eligible: elapsedMs <= REFUND_WINDOW_MS,
+    eligible,
     paidAtMs,
+    deadlineMs,
     elapsedMs,
-    reason: elapsedMs <= REFUND_WINDOW_MS ? null : 'REFUND_WINDOW_EXPIRED'
+    source: explicitStartMs || explicitDeadlineMs ? 'purchase_snapshot' : 'legacy_fallback',
+    reason: eligible ? null : 'REFUND_WINDOW_EXPIRED'
   };
 }
 
@@ -3146,9 +3356,11 @@ router.post('/request-refund', async (req, res) => {
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
   setLogContext({ uid });
   if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
-  if (!cancelReason || cancelReason.trim().length < 2) {
-    return res.status(400).json({ error: '환불 사유를 입력해주세요.' });
-  }
+  // 단순변심 청약철회에서 사용자 사유는 선택 입력이다. 관리자 직접 환불·거절
+  // 사유는 운영 감사상 기존 필수 정책을 그대로 유지한다.
+  const normalizedCancelReason = typeof cancelReason === 'string'
+    ? cancelReason.trim().slice(0, 500)
+    : '';
 
   try {
     const orderRef = getOrderRef(kind, orderId);
@@ -3177,23 +3389,39 @@ router.post('/request-refund', async (req, res) => {
           upgradeOrderId: upgradeConflict.upgradeOrderId
         });
       }
+      // 크레딧을 먼저 예약한 뒤 결제 참조가 없어 승인을 영구히 못 하는 상태를
+      // 만들지 않는다. 서버 전용 보관소/공급자 복구까지 확인한 뒤에만 예약한다.
+      const refundablePaymentKey = await readPaymentKey(orderRef.id, order);
+      if (!refundablePaymentKey) {
+        return res.status(409).json({
+          error: '온라인 환불 처리에 필요한 결제정보를 확인할 수 없습니다. 크레딧은 차감되지 않았으며 고객센터에서 확인해 드립니다.',
+          code: 'REFUND_PAYMENT_REFERENCE_UNAVAILABLE'
+        });
+      }
     }
 
     const windowState = refundWindowState(order, kind);
-    if (!windowState.eligible) {
-      const message = windowState.reason === 'PAYMENT_DATE_MISSING'
-        ? '결제일을 확인할 수 없어 온라인 환불을 요청할 수 없습니다. 고객센터로 문의해주세요.'
-        : `결제일로부터 ${REFUND_WINDOW_DAYS}일이 지나 일반 환불을 요청할 수 없습니다. 중복 결제나 서비스 오류는 고객센터로 문의해주세요.`;
-      return res.status(400).json({ error: message, code: windowState.reason });
+    if (!windowState.eligible && windowState.reason === 'PAYMENT_DATE_MISSING') {
+      return res.status(400).json({
+        error: '환불 신청 기간의 시작일을 확인할 수 없어 온라인으로 접수할 수 없습니다. 고객센터로 문의해 주세요.',
+        code: windowState.reason
+      });
     }
+    // 7일 경과는 단순변심 자동 기준이 지났다는 뜻일 뿐, 표시·광고와 다른 제공이나
+    // 잔액 환급 등 법령상 사유까지 일률적으로 배제하지 않는다. 요청은 접수하되
+    // 관리자가 별도 자격을 확인할 수 있도록 플래그를 남긴다.
+    let requiresEligibilityReview = !windowState.eligible
+      && windowState.reason === 'REFUND_WINDOW_EXPIRED';
 
-    const userSnap = await db.collection('users').doc(uid).get();
-    const user = userSnap.exists ? userSnap.data() : {};
     let policySnapshot;
     let requestRefundPolicyVersion;
+    let reservationOperationId = null;
+    const requestStartedAtMs = Date.now();
 
     // 정기결제 환불 자격: 결제일 7일 이내 + 이번 결제주기의 사용분 비례 공제
     if (kind === 'subscription') {
+      const userSnap = await db.collection('users').doc(uid).get();
+      const user = userSnap.exists ? userSnap.data() : {};
       const context = currentSubscriptionRefundContext(user, order, windowState.paidAtMs);
       if (!context.sameCycle) {
         // 과거 사이클 결제는 환불 불가 (해당 사이클 사용 여부를 더 이상 추적할 수 없음)
@@ -3219,77 +3447,222 @@ router.post('/request-refund', async (req, res) => {
         refundSettlementUses: calculation.settlementUses
       };
       requestRefundPolicyVersion = SUBSCRIPTION_REFUND_POLICY_VERSION;
+      const subscriptionRequest = await db.runTransaction(async (transaction) => {
+        const latestSnap = await transaction.get(orderRef);
+        if (!latestSnap.exists) {
+          throw Object.assign(new Error('주문을 찾을 수 없습니다.'), { status: 404, code: 'ORDER_NOT_FOUND' });
+        }
+        const latestOrder = latestSnap.data() || {};
+        if (latestOrder.uid !== uid) {
+          throw Object.assign(new Error('본인의 주문만 환불 요청할 수 있습니다.'), { status: 403, code: 'ORDER_OWNER_MISMATCH' });
+        }
+        if (latestOrder.status !== 'paid') {
+          throw Object.assign(new Error(`환불 요청 중 주문 상태가 변경됐습니다. 현재: ${latestOrder.status || 'unknown'}`), {
+            status: 409,
+            code: 'REFUND_STATE_CHANGED'
+          });
+        }
+        const latestWindow = refundWindowState(latestOrder, kind, requestStartedAtMs);
+        if (!latestWindow.eligible && latestWindow.reason === 'PAYMENT_DATE_MISSING') {
+          throw Object.assign(new Error('환불 신청 기간의 시작일을 확인할 수 없습니다. 고객센터로 문의해 주세요.'), {
+            status: 400,
+            code: latestWindow.reason
+          });
+        }
+        const latestRequiresEligibilityReview = !latestWindow.eligible
+          && latestWindow.reason === 'REFUND_WINDOW_EXPIRED';
+        transaction.update(orderRef, {
+          status: 'refund_requested',
+          cancelReason: normalizedCancelReason || admin.firestore.FieldValue.delete(),
+          kind,
+          refundPolicyVersion: requestRefundPolicyVersion,
+          refundEligibilityReviewRequired: latestRequiresEligibilityReview,
+          ...policySnapshot,
+          refundRequestSnapshot: {
+            version: requestRefundPolicyVersion,
+            requestedAtMs: requestStartedAtMs,
+            requestedRefundAmount: policySnapshot.requestedRefundAmount,
+            refundUsedCount: policySnapshot.refundUsedCount,
+            refundSettlementUses: policySnapshot.refundSettlementUses
+          },
+          refundRequestedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return { requiresEligibilityReview: latestRequiresEligibilityReview };
+      });
+      requiresEligibilityReview = subscriptionRequest.requiresEligibilityReview;
     } else {
-      const { grant, calculation } = calculateOrderCreditRefund({ order, user });
-      if (calculation.refundAmount <= 0 || calculation.refundableCredits <= 0) {
-        return res.status(400).json({
-          error: '구매한 크레딧을 모두 사용해 일반 환불 가능 금액이 없습니다. 서비스 오류는 고객센터로 문의해주세요.',
-          code: 'NO_REFUNDABLE_CREDITS'
-        });
-      }
-      policySnapshot = {
-        requestedRefundAmount: calculation.refundAmount,
-        requestedRefundCredits: calculation.refundableCredits,
-        refundUsedCredits: calculation.usedCredits,
-        refundUsedPaidCredits: calculation.usedPaidCredits,
-        refundablePaidCredits: calculation.refundablePaidCredits,
-        refundPaidCredits: calculation.paidCredits,
-        refundBonusCredits: calculation.bonusCredits,
-        refundCreditBasis: grant.refundCreditBasis
-      };
-      requestRefundPolicyVersion = grant.usesBaseCreditPolicy
-        ? REFUND_POLICY_VERSION
-        : (order.refundPolicyVersion || null);
-    }
-
-    await db.runTransaction(async (transaction) => {
-      const latestSnap = await transaction.get(orderRef);
-      if (!latestSnap.exists) {
-        throw Object.assign(new Error('주문을 찾을 수 없습니다.'), { status: 404, code: 'ORDER_NOT_FOUND' });
-      }
-      const latestOrder = latestSnap.data() || {};
-      if (latestOrder.uid !== uid) {
-        throw Object.assign(new Error('본인의 주문만 환불 요청할 수 있습니다.'), { status: 403, code: 'ORDER_OWNER_MISMATCH' });
-      }
-      if (latestOrder.status !== 'paid') {
-        throw Object.assign(new Error(`환불 요청 중 주문 상태가 변경됐습니다. 현재: ${latestOrder.status || 'unknown'}`), {
-          status: 409,
-          code: 'REFUND_STATE_CHANGED'
-        });
-      }
-      const latestProcessingConflict = refundRequestProcessingConflict(latestOrder);
-      if (latestProcessingConflict) {
-        throw Object.assign(new Error(latestProcessingConflict.message), {
-          status: latestProcessingConflict.status,
-          code: latestProcessingConflict.code
-        });
-      }
-      if (kind === 'order') {
+      const result = await db.runTransaction(async (transaction) => {
+        const latestSnap = await transaction.get(orderRef);
+        if (!latestSnap.exists) {
+          throw Object.assign(new Error('주문을 찾을 수 없습니다.'), { status: 404, code: 'ORDER_NOT_FOUND' });
+        }
+        const latestOrder = latestSnap.data() || {};
+        if (latestOrder.uid !== uid) {
+          throw Object.assign(new Error('본인의 주문만 환불 요청할 수 있습니다.'), { status: 403, code: 'ORDER_OWNER_MISMATCH' });
+        }
+        if (latestOrder.status !== 'paid') {
+          throw Object.assign(new Error(`환불 요청 중 주문 상태가 변경됐습니다. 현재: ${latestOrder.status || 'unknown'}`), {
+            status: 409,
+            code: 'REFUND_STATE_CHANGED'
+          });
+        }
+        const latestProcessingConflict = refundRequestProcessingConflict(latestOrder);
+        if (latestProcessingConflict) {
+          throw Object.assign(new Error(latestProcessingConflict.message), {
+            status: latestProcessingConflict.status,
+            code: latestProcessingConflict.code
+          });
+        }
+        const latestWindow = refundWindowState(latestOrder, kind, requestStartedAtMs);
+        if (!latestWindow.eligible && latestWindow.reason === 'PAYMENT_DATE_MISSING') {
+          throw Object.assign(new Error('환불 신청 기간의 시작일을 확인할 수 없습니다. 고객센터로 문의해 주세요.'), {
+            status: 400,
+            code: latestWindow.reason
+          });
+        }
+        const latestRequiresEligibilityReview = !latestWindow.eligible
+          && latestWindow.reason === 'REFUND_WINDOW_EXPIRED';
         const upgradeConflict = activeUpgradeRefundConflict(latestOrder);
         if (upgradeConflict) throw upgradeConflict;
-      }
-      transaction.update(orderRef, {
-        status: 'refund_requested',
-        cancelReason: cancelReason.trim(),
-        kind,
-        refundPolicyVersion: requestRefundPolicyVersion || admin.firestore.FieldValue.delete(),
-        ...policySnapshot,
-        refundRequestedAt: admin.firestore.FieldValue.serverTimestamp()
+
+        const orderAmount = Math.max(0, Math.floor(Number(latestOrder.amount) || 0));
+        const grant = creditRefundGrant(latestOrder);
+        const priorRefundedAmount = Math.max(0, Math.floor(Number(latestOrder.refundedAmount ?? latestOrder.refundAmount) || 0));
+        const priorRefundedCredits = Math.max(0, Math.floor(Number(latestOrder.refundedCredits) || 0));
+        const remainingMoney = Math.max(0, orderAmount - priorRefundedAmount);
+        const remainingOrderCredits = Math.max(0, grant.totalCredits - priorRefundedCredits);
+        if (!orderAmount || !grant.totalCredits || !remainingMoney) {
+          throw Object.assign(new Error('주문 데이터가 올바르지 않아 환불 계산이 불가합니다.'), {
+            status: 400,
+            code: 'INVALID_REFUND_ORDER'
+          });
+        }
+        if (grant.usesBaseCreditPolicy
+          && (priorRefundedAmount > 0 || latestOrder.refundCreditSettlementClosed === true)) {
+          throw Object.assign(new Error('이 주문의 기준 크레딧 환불 정산은 이미 완료됐습니다.'), {
+            status: 400,
+            code: 'REFUND_SETTLED'
+          });
+        }
+
+        const reserved = await reserveCreditRefundCredits({
+          transaction,
+          orderRef,
+          userRef: db.collection('users').doc(uid),
+          latestOrder,
+          remainingOrderCredits
+        });
+        const calculation = reserved.calculation;
+        const refundableCredits = reserved.refundableCredits;
+        const refundAmount = Math.min(remainingMoney, calculation.refundAmount);
+        if (refundAmount <= 0 || refundableCredits <= 0) {
+          throw Object.assign(new Error('구매한 기준 크레딧을 모두 사용해 일반 환불 가능 금액이 없습니다. 서비스 오류는 고객센터로 문의해 주세요.'), {
+            status: 400,
+            code: 'NO_REFUNDABLE_CREDITS'
+          });
+        }
+
+        const requestSequence = Math.max(0, Math.floor(Number(latestOrder.refundRequestSequence) || 0)) + 1;
+        const operationId = refundOperationId(
+          orderId,
+          priorRefundedAmount,
+          refundAmount,
+          refundableCredits,
+          `request-${requestSequence}`
+        );
+        // 구매 시 저장한 정책 버전을 요청 시점의 최신 상수로 덮지 않는다.
+        // 구매 스냅샷이 없는 레거시 주문만 기존 문서 값/명시적 호환 버전으로 폴백한다.
+        const requestPolicyVersion = latestOrder.refundPolicyVersionAtPurchase
+          || latestOrder.refundPolicyVersion
+          || (grant.usesBaseCreditPolicy ? REFUND_POLICY_VERSION : 'legacy-total-grant-v1');
+        const snapshot = {
+          requestedRefundAmount: refundAmount,
+          requestedRefundCredits: refundableCredits,
+          refundUsedCredits: calculation.usedCredits,
+          refundUsedPaidCredits: calculation.usedPaidCredits,
+          refundablePaidCredits: calculation.refundablePaidCredits,
+          refundPaidCredits: calculation.paidCredits,
+          refundBonusCredits: calculation.bonusCredits,
+          recoveredBonusCredits: calculation.recoveredBonusCredits,
+          refundCreditBasis: grant.refundCreditBasis,
+          refundCalculationBasis: latestOrder.refundCalculationBasisAtPurchase
+            || (grant.usesBaseCreditPolicy ? REFUND_CALCULATION_BASIS : 'legacy-total-grant-ratio-floor-v1'),
+          refundBonusTreatment: latestOrder.refundBonusTreatmentAtPurchase
+            || (grant.usesBaseCreditPolicy ? REFUND_BONUS_TREATMENT : 'legacy-proportional-total-grant-v1')
+        };
+        const operation = {
+          operationId,
+          priorRefundedAmount,
+          priorRefundedCredits,
+          refundAmount,
+          creditsToDeduct: refundableCredits,
+          targetRefundedAmount: priorRefundedAmount + refundAmount,
+          targetRefundedCredits: priorRefundedCredits + refundableCredits,
+          previousRefundPolicyVersion: latestOrder.refundPolicyVersion || null,
+          previousRefundCreditBasis: latestOrder.refundCreditBasis || null,
+          previousRefundCreditSettlementClosed: latestOrder.refundCreditSettlementClosed === true,
+          previousOrderStatus: latestOrder.status || 'paid',
+          ...reserved.processingLotFields
+        };
+        const now = admin.firestore.FieldValue.serverTimestamp();
+        transaction.update(orderRef, {
+          status: 'refund_requested',
+          cancelReason: normalizedCancelReason || admin.firestore.FieldValue.delete(),
+          kind,
+          refundPolicyVersion: requestPolicyVersion || admin.firestore.FieldValue.delete(),
+          refundEligibilityReviewRequired: latestRequiresEligibilityReview,
+          ...snapshot,
+          refundCreditSettlementClosed: true,
+          ...reserved.orderLotUpdate,
+          refundRequestSequence: requestSequence,
+          refundRequestSnapshot: {
+            version: requestPolicyVersion,
+            sequence: requestSequence,
+            requestedAtMs: requestStartedAtMs,
+            operationId,
+            ...snapshot,
+            reservedPaidCredits: Math.max(0, Math.floor(Number(operation.reservedPaidCredits) || 0)),
+            reservedBonusCredits: Math.max(0, Math.floor(Number(operation.reservedBonusCredits) || 0))
+          },
+          refundReservationState: 'reserved',
+          refundReservationOperationId: operationId,
+          refundRequestedAt: now,
+          refundProcessing: creditRefundProcessing(operation, now, 'requested_reserved')
+        });
+        return {
+          policySnapshot: snapshot,
+          requestPolicyVersion,
+          operationId,
+          requiresEligibilityReview: latestRequiresEligibilityReview
+        };
       });
-    });
+      policySnapshot = result.policySnapshot;
+      requestRefundPolicyVersion = result.requestPolicyVersion;
+      reservationOperationId = result.operationId;
+      requiresEligibilityReview = result.requiresEligibilityReview;
+    }
 
     logger.info('refund.requested', {
       uid,
       orderId,
       kind,
-      reasonLength: cancelReason.trim().length
+      reasonLength: normalizedCancelReason.length,
+      reservationOperationId,
+      requiresEligibilityReview
     });
-    discord.refundRequest({ uid, amount: order.amount, credits: order.safeCredits, reason: cancelReason.trim(), name: order.customerEmail });
+    discord.refundRequest({
+      uid,
+      amount: order.amount,
+      credits: order.safeCredits,
+      reason: normalizedCancelReason || '사유 미입력',
+      name: order.customerEmail
+    });
     res.json({
       ok: true,
       message: '환불 요청이 접수되었습니다.',
       estimatedRefundAmount: policySnapshot.requestedRefundAmount,
-      refundPolicyVersion: requestRefundPolicyVersion
+      refundPolicyVersion: requestRefundPolicyVersion,
+      requiresEligibilityReview
     });
   } catch (err) {
     logger.error('refund.request_failed', { uid, orderId, kind, err });
@@ -3335,6 +3708,12 @@ router.post('/approve-refund', async (req, res) => {
     }
     if (!paymentKey) {
       return res.status(400).json({ error: 'paymentKey가 없어 환불할 수 없습니다. (이전 결제건)' });
+    }
+    const initialEligibilityReview = refundEligibilityReviewDecision(order, req.body || {});
+    if (initialEligibilityReview.required && !initialEligibilityReview.accepted) {
+      // 구형 관리자 화면은 검토 필드를 보내지 않는다. 승인을 새로 차단하지 않고
+      // 미확인 상태를 그대로 보존·관측해 UI 배포 뒤 명시 검토로 전환한다.
+      logger.warn('refund.eligibility_review_not_recorded', { orderId, kind, adminUid });
     }
 
     const userRef = db.collection('users').doc(order.uid);
@@ -3382,6 +3761,7 @@ router.post('/approve-refund', async (req, res) => {
       }
 
       await db.runTransaction(async (t) => {
+        const reviewedAt = admin.firestore.FieldValue.serverTimestamp();
         t.update(orderRef, {
           status: isFullRefund ? 'refunded' : 'partially_refunded',
           refundAmount: calculation.refundAmount,
@@ -3389,7 +3769,8 @@ router.post('/approve-refund', async (req, res) => {
           refundUsedCount: calculation.usedCount,
           refundSettlementUses: calculation.settlementUses,
           refundedAt: admin.firestore.FieldValue.serverTimestamp(),
-          refundedBy: adminUid
+          refundedBy: adminUid,
+          ...refundEligibilityReviewUpdate(initialEligibilityReview, adminUid, reviewedAt)
         });
         t.update(userRef, {
           'subscription.status': 'refunded',
@@ -3433,15 +3814,30 @@ router.post('/approve-refund', async (req, res) => {
       return res.status(400).json({ error: '주문 데이터가 올바르지 않아 환불 계산이 불가합니다.' });
     }
     let refundAmount, refundableCredits, priorRefundedAmount, priorRefundedCredits;
-    let cumulativeRefundAmount, operationId;
+    let cumulativeRefundAmount, cumulativeRefundCredits, operationId;
     let previousRefundPolicyVersion, previousRefundCreditBasis, previousRefundCreditSettlementClosed;
     try {
       const result = await db.runTransaction(async (transaction) => {
         const latestOrderSnapshot = await transaction.get(orderRef);
         if (!latestOrderSnapshot.exists) throw new Error('ORDER_NOT_FOUND');
         const latestOrder = latestOrderSnapshot.data() || {};
+        const latestEligibilityReview = refundEligibilityReviewDecision(latestOrder, req.body || {});
+        const eligibilityReviewUpdate = refundEligibilityReviewUpdate(
+          latestEligibilityReview,
+          adminUid,
+          admin.firestore.FieldValue.serverTimestamp()
+        );
         const resumable = resumableCreditRefund(latestOrder);
         if (resumable) {
+          const resumeUpdate = { ...eligibilityReviewUpdate };
+          if (resumable.phase === 'requested_reserved') {
+            Object.assign(resumeUpdate, {
+              'refundProcessing.phase': 'provider_canceling',
+              'refundProcessing.providerStartedAt': admin.firestore.FieldValue.serverTimestamp(),
+              refundReservationState: 'provider_canceling'
+            });
+          }
+          if (Object.keys(resumeUpdate).length) transaction.update(orderRef, resumeUpdate);
           return {
             ...resumable,
             refundAmount: resumable.refundAmount,
@@ -3490,20 +3886,20 @@ router.post('/approve-refund', async (req, res) => {
           previousRefundPolicyVersion: latestOrder.refundPolicyVersion || null,
           previousRefundCreditBasis: latestOrder.refundCreditBasis || null,
           previousRefundCreditSettlementClosed: latestOrder.refundCreditSettlementClosed === true,
+          previousOrderStatus: latestOrder.status || 'refund_requested',
           ...reserved.processingLotFields
         };
         transaction.update(orderRef, {
           refundAmount: targetRefundedAmount,
           refundedAmount: targetRefundedAmount,
           refundedCredits: targetRefundedCredits,
-          refundPolicyVersion: refundGrant.usesBaseCreditPolicy
-            ? REFUND_POLICY_VERSION
-            : (latestOrder.refundPolicyVersion || admin.firestore.FieldValue.delete()),
+          refundPolicyVersion: refundPolicyVersionForOrder(latestOrder, refundGrant.usesBaseCreditPolicy),
           refundCreditBasis: refundGrant.refundCreditBasis,
           refundUsedPaidCredits: policyCalculation ? policyCalculation.usedPaidCredits : admin.firestore.FieldValue.delete(),
           refundablePaidCredits: policyCalculation ? policyCalculation.refundablePaidCredits : admin.firestore.FieldValue.delete(),
           recoveredBonusCredits: policyCalculation ? policyCalculation.recoveredBonusCredits : admin.firestore.FieldValue.delete(),
           refundCreditSettlementClosed: policyCalculation ? true : admin.firestore.FieldValue.delete(),
+          ...eligibilityReviewUpdate,
           ...reserved.orderLotUpdate,
           refundProcessing: creditRefundProcessing(operation, admin.firestore.FieldValue.serverTimestamp())
         });
@@ -3521,6 +3917,7 @@ router.post('/approve-refund', async (req, res) => {
       priorRefundedAmount = result.priorRefundedAmount;
       priorRefundedCredits = result.priorRefundedCredits;
       cumulativeRefundAmount = result.targetRefundedAmount;
+      cumulativeRefundCredits = result.targetRefundedCredits;
       operationId = result.operationId;
       previousRefundPolicyVersion = result.previousRefundPolicyVersion;
       previousRefundCreditBasis = result.previousRefundCreditBasis;
@@ -3588,7 +3985,16 @@ router.post('/approve-refund', async (req, res) => {
     if (!cancellationState.confirmed) {
       // 보상: 선차감한 크레딧 복구 + 임시 필드 제거
       try {
-        await compensateCreditRefundReservation({ orderRef, userRef, operationId });
+        await compensateCreditRefundReservation({
+          orderRef,
+          userRef,
+          operationId,
+          restoreReason: 'provider_cancel_failed',
+          orderUpdate: {
+            status: 'paid',
+            refundApprovalFailedAt: admin.firestore.FieldValue.serverTimestamp()
+          }
+        });
       } catch (compErr) {
         logger.error('refund.compensation_failed_manual_action', {
           orderId, uid: order.uid, refundableCredits, refundAmount, compErr
@@ -3625,6 +4031,22 @@ router.post('/approve-refund', async (req, res) => {
         throw Object.assign(new Error('REFUND_FINALIZE_CONFLICT'), { status: 409 });
       }
       if (decision.alreadyFinalized) {
+        const finalRefundedCredits = Math.max(
+          0,
+          Math.floor(Number(latestOrder.refundedCredits) || 0),
+          Math.floor(Number(cumulativeRefundCredits) || 0)
+        );
+        if (latestOrder.refundProcessing
+          || latestOrder.refundReservationState !== 'settled'
+          || Number(latestOrder.refundedCredits) !== finalRefundedCredits) {
+          transaction.update(orderRef, {
+            refundedCredits: finalRefundedCredits,
+            refundReservationState: 'settled',
+            refundReservationOperationId: operationId,
+            refundReservationSettledAt: admin.firestore.FieldValue.serverTimestamp(),
+            refundProcessing: admin.firestore.FieldValue.delete()
+          });
+        }
         return {
           alreadyFinalized: true,
           refundedAmount: decision.finalRefundedAmount,
@@ -3637,8 +4059,12 @@ router.post('/approve-refund', async (req, res) => {
         status: fullyRefunded ? 'refunded' : 'partially_refunded',
         refundAmount: finalRefundedAmount,
         refundedAmount: finalRefundedAmount,
+        refundedCredits: Math.max(0, Math.floor(Number(cumulativeRefundCredits) || 0)),
         refundedAt: admin.firestore.FieldValue.serverTimestamp(),
         refundedBy: adminUid,
+        refundReservationState: 'settled',
+        refundReservationOperationId: operationId,
+        refundReservationSettledAt: admin.firestore.FieldValue.serverTimestamp(),
         refundProcessing: admin.firestore.FieldValue.delete()
       });
       if (fullyRefunded && sourceOrderRef && sourceOrderSnap?.exists
@@ -3683,7 +4109,9 @@ router.post('/approve-refund', async (req, res) => {
           ? '환불 상태가 다른 처리와 충돌했습니다. 결제사 누적 취소액을 확인한 뒤 다시 시도해주세요.'
           : err.message)
         : '서버 에러 발생',
-      ...(err.message === 'REFUND_FINALIZE_CONFLICT' ? { code: 'REFUND_FINALIZE_CONFLICT' } : {})
+      ...(err.code
+        ? { code: err.code }
+        : (err.message === 'REFUND_FINALIZE_CONFLICT' ? { code: 'REFUND_FINALIZE_CONFLICT' } : {}))
     });
   }
 });
@@ -3704,33 +4132,65 @@ router.post('/reject-refund', async (req, res) => {
 
   try {
     const orderRef = getOrderRef(kind, orderId);
-    await db.runTransaction(async (transaction) => {
+    const rejection = await db.runTransaction(async (transaction) => {
       const orderSnap = await transaction.get(orderRef);
       if (!orderSnap.exists) {
         throw Object.assign(new Error('주문을 찾을 수 없습니다.'), { status: 404, code: 'ORDER_NOT_FOUND' });
       }
       const order = orderSnap.data() || {};
-      if (order.status !== 'refund_requested' || order.refundProcessing) {
-        throw Object.assign(new Error(`환불 요청 상태가 아니거나 이미 처리가 시작됐습니다. 현재: ${order.status || 'unknown'}`), {
+      if (order.status === 'refund_rejected'
+        && (!order.refundProcessing || order.refundReservationState === 'restored')) {
+        return { alreadyRejected: true, restored: false };
+      }
+      if (order.status !== 'refund_requested') {
+        throw Object.assign(new Error(`환불 요청 상태가 아닙니다. 현재: ${order.status || 'unknown'}`), {
           status: 409,
           code: 'REFUND_STATE_CHANGED'
         });
       }
-      transaction.update(orderRef, {
+      const rejectionUpdate = {
         status: 'refund_rejected',
         rejectReason: rejectReason.trim(),
         rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
         rejectedBy: adminUid
-      });
+      };
+      if (kind === 'order' && order.refundProcessing) {
+        const processing = resumableCreditRefund(order);
+        if (!processing || processing.phase !== 'requested_reserved') {
+          throw Object.assign(new Error('결제사 환불 처리가 이미 시작되어 거절할 수 없습니다.'), {
+            status: 409,
+            code: 'REFUND_PROCESSING'
+          });
+        }
+        const restored = await restoreCreditRefundReservationInTransaction({
+          transaction,
+          orderRef,
+          userRef: db.collection('users').doc(order.uid),
+          latestOrder: order,
+          operationId: processing.operationId,
+          restoreReason: 'admin_rejected',
+          orderUpdate: rejectionUpdate
+        });
+        if (!restored.restored && !restored.alreadyRestored) throw creditLotMismatchError();
+        return { alreadyRejected: false, restored: restored.restored };
+      }
+      transaction.update(orderRef, rejectionUpdate);
+      return { alreadyRejected: false, restored: false };
     });
 
     logger.info('refund.rejected', {
       orderId,
       kind,
       adminUid,
+      restoredReservation: rejection.restored === true,
+      alreadyRejected: rejection.alreadyRejected === true,
       rejectReasonLength: rejectReason.trim().length
     });
-    res.json({ ok: true, message: '환불 요청이 거절되었습니다.' });
+    res.json({
+      ok: true,
+      alreadyRejected: rejection.alreadyRejected === true,
+      message: rejection.alreadyRejected ? '이미 거절 처리된 환불 요청입니다.' : '환불 요청이 거절되었습니다.'
+    });
   } catch (err) {
     logger.error('refund.reject_failed', { orderId, kind, adminUid, err });
     const status = Number(err.status) || 500;
@@ -3814,16 +4274,31 @@ router.creditGrantPolicy = {
   paymentIntentGrant
 };
 router.refundPolicy = {
+  TERMS_POLICY_VERSION,
   REFUND_POLICY_VERSION,
+  SUBSCRIPTION_REFUND_POLICY_VERSION,
   REFUND_WINDOW_DAYS,
   REFUND_WINDOW_MS,
+  REFUND_WINDOW_BASIS,
+  REFUND_CALCULATION_BASIS,
+  REFUND_BONUS_TREATMENT,
   UNLIMITED_REFUND_SETTLEMENT_USES,
+  refundWindowLegalDeadlineMs,
+  buildRefundPolicyPurchaseSnapshot,
+  refundWindowSnapshotAnchorMs,
   refundPaidAtMs,
   refundWindowState,
+  refundEligibilityReviewDecision,
+  refundEligibilityReviewUpdate,
   refundRequestProcessingConflict,
+  resumableCreditRefund,
+  creditRefundProcessing,
+  reserveCreditRefundCredits,
+  restoreCreditRefundReservationInTransaction,
   tossCancellationState,
   creditRefundFinalizeDecision,
   creditRefundGrant,
+  refundPolicyVersionForOrder,
   calculateCreditPolicyRefund,
   calculateOrderCreditRefund,
   calculateSubscriptionPolicyRefund,

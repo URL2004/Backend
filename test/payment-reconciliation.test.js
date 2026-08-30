@@ -117,6 +117,14 @@ test('환불 멱등 키와 원장 ID는 결정적이며 주문 원문 외의 비
   const operation = refundOperationId('order_1234567890', 0, 2900, 110);
   assert.equal(operation, refundOperationId('order_1234567890', 0, 2900, 110));
   assert.notEqual(operation, refundOperationId('order_1234567890', 0, 2900, 100));
+  assert.equal(
+    refundOperationId('order_1234567890', 0, 2900, 110, 'request-1'),
+    refundOperationId('order_1234567890', 0, 2900, 110, 'request-1')
+  );
+  assert.notEqual(
+    refundOperationId('order_1234567890', 0, 2900, 110, 'request-1'),
+    refundOperationId('order_1234567890', 0, 2900, 110, 'request-2')
+  );
   assert.equal(refundIdempotencyKey(operation), refundIdempotencyKey(operation));
   assert.equal(cancellationLedgerId('order_1234567890', 2900), cancellationLedgerId('order_1234567890', 2900));
 });
@@ -382,6 +390,37 @@ test('서버 선차감 또는 구형 환불 원장이 있으면 웹훅이 잔액
 });
 
 test('진행 중 환불은 공급자 누적 취소가 확인된 뒤 같은 작업으로 확정한다', () => {
+  const requestRace = buildCreditCancellationPlan({
+    payment: { status: 'CANCELED', totalAmount: 2900, balanceAmount: 0 },
+    order: {
+      amount: 2900,
+      paidCredits: 100,
+      totalGrantedCredits: 105,
+      creditGrantPolicyVersion: 'credit-grant-base-v1',
+      // 사용자 요청에서 지갑/lot은 이미 예약 차감됐지만 승인 최종화 전이라
+      // refundedCredits/refundedAmount는 아직 기록되지 않은 경합 상태다.
+      refundProcessing: {
+        operationId: 'request-race-op',
+        phase: 'provider_canceling',
+        priorRefundedCredits: 0,
+        targetRefundedAmount: 2900,
+        targetRefundedCredits: 105,
+        creditsToDeduct: 105
+      }
+    },
+    // 다른 주문에서 남은 105크레딧을 예약분 대신 다시 차감하면 안 된다.
+    currentCredits: 105,
+    knownRefundLedgerCredits: 0,
+    userExists: true
+  });
+  assert.equal(requestRace.processingReserved, 105);
+  assert.equal(requestRace.accountedCredits, 105);
+  assert.equal(requestRace.balanceDebit, 0);
+  assert.equal(requestRace.ledgerCredits, 105);
+  assert.equal(requestRace.appliedCredits, 105);
+  assert.equal(requestRace.unrecoveredCredits, 0);
+  assert.equal(requestRace.clearProcessing, true);
+
   const confirmed = buildCreditCancellationPlan({
     payment: { status: 'PARTIAL_CANCELED', totalAmount: 2900, balanceAmount: 264 },
     order: {

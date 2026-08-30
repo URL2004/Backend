@@ -3,15 +3,30 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const payment = require('../routes/payment');
+const {
+  SUBSCRIPTION_REFUND_CALCULATION_BASIS,
+  SUBSCRIPTION_REFUND_BONUS_TREATMENT
+} = require('../lib/refundPolicySnapshot');
 
 const {
+  TERMS_POLICY_VERSION,
   REFUND_POLICY_VERSION,
+  SUBSCRIPTION_REFUND_POLICY_VERSION,
   REFUND_WINDOW_MS,
+  REFUND_WINDOW_BASIS,
+  REFUND_CALCULATION_BASIS,
+  REFUND_BONUS_TREATMENT,
+  refundWindowLegalDeadlineMs,
+  buildRefundPolicyPurchaseSnapshot,
+  refundWindowSnapshotAnchorMs,
   refundWindowState,
+  refundEligibilityReviewDecision,
+  refundEligibilityReviewUpdate,
   refundRequestProcessingConflict,
   tossCancellationState,
   creditRefundFinalizeDecision,
   creditRefundGrant,
+  refundPolicyVersionForOrder,
   calculateCreditPolicyRefund,
   calculateOrderCreditRefund,
   calculateSubscriptionPolicyRefund,
@@ -147,12 +162,161 @@ function timestamp(ms) {
   return { toMillis: () => ms };
 }
 
-test('환불 정책은 결제 후 7일까지 허용하고 그 이후를 차단한다', () => {
-  const now = Date.UTC(2026, 6, 20, 12);
-  assert.equal(REFUND_POLICY_VERSION, '2026-08-29-base-credit-v1');
-  assert.equal(refundWindowState({ createdAt: timestamp(now - REFUND_WINDOW_MS) }, 'order', now).eligible, true);
-  assert.equal(refundWindowState({ createdAt: timestamp(now - REFUND_WINDOW_MS - 1) }, 'order', now).eligible, false);
-  assert.equal(refundWindowState({}, 'order', now).reason, 'PAYMENT_DATE_MISSING');
+test('환불 기산은 신규 주문의 구매시점 스냅샷을 우선하고 레거시는 결제시각으로 폴백한다', () => {
+  // 2026-08-30 15:00 KST 결제 → 초일 불산입 7일째가 일요일이므로
+  // 민법 제161조에 따라 다음 월요일인 09-07 23:59:59.999 KST까지 연장한다.
+  const start = Date.UTC(2026, 7, 30, 6);
+  const deadline = Date.UTC(2026, 8, 7, 14, 59, 59, 999);
+  assert.equal(TERMS_POLICY_VERSION, '2026-08-30-terms-v1');
+  assert.equal(REFUND_POLICY_VERSION, '2026-08-30-base-credit-v2');
+  assert.equal(SUBSCRIPTION_REFUND_POLICY_VERSION, '2026-08-30-subscription-usage-v2');
+  const snapshot = buildRefundPolicyPurchaseSnapshot(start, REFUND_POLICY_VERSION);
+  assert.equal(snapshot.refundWindowBasis, REFUND_WINDOW_BASIS);
+  assert.equal(snapshot.refundCalculationBasisAtPurchase, REFUND_CALCULATION_BASIS);
+  assert.equal(snapshot.refundBonusTreatmentAtPurchase, REFUND_BONUS_TREATMENT);
+  assert.equal(snapshot.termsSnapshotRecordedAt.getTime(), start);
+  assert.equal(Object.hasOwn(snapshot, 'contractDocumentDeliveredAt'), false);
+  assert.equal(refundWindowLegalDeadlineMs(start), deadline);
+  assert.equal(snapshot.refundWindowEndsAt.getTime(), deadline);
+  const saturdayStart = Date.UTC(2026, 7, 29, 6);
+  assert.equal(
+    refundWindowLegalDeadlineMs(saturdayStart),
+    Date.UTC(2026, 8, 7, 14, 59, 59, 999),
+    '7일째가 토요일이어도 다음 월요일 말일까지 연장해야 한다'
+  );
+  assert.deepEqual(
+    refundWindowState({
+      createdAt: timestamp(start - REFUND_WINDOW_MS * 10),
+      ...snapshot
+    }, 'order', deadline),
+    {
+      eligible: true,
+      paidAtMs: start,
+      deadlineMs: deadline,
+      elapsedMs: deadline - start,
+      source: 'purchase_snapshot',
+      reason: null
+    }
+  );
+  // 같은 시각 기준 168시간이 지난 뒤와 일요일 말일에도 접수 가능하고,
+  // 연장된 월요일 말일 다음 순간부터 기간 경과 검토 대상으로 바뀐다.
+  assert.equal(refundWindowState(snapshot, 'order', start + REFUND_WINDOW_MS + 1).eligible, true);
+  assert.equal(
+    refundWindowState(snapshot, 'order', Date.UTC(2026, 8, 6, 14, 59, 59, 999)).eligible,
+    true
+  );
+  const expired = refundWindowState(snapshot, 'order', deadline + 1);
+  assert.equal(expired.eligible, false);
+  assert.equal(expired.reason, 'REFUND_WINDOW_EXPIRED');
+  assert.equal(expired.source, 'purchase_snapshot');
+
+  const laterService = start + 2 * 60 * 60 * 1000;
+  assert.equal(refundWindowSnapshotAnchorMs({
+    refundWindowStartsAt: timestamp(start),
+    contractDocumentDeliveredAt: timestamp(start + 60 * 60 * 1000),
+    serviceAvailableAt: timestamp(laterService)
+  }), laterService);
+  assert.equal(
+    refundWindowState({
+      refundWindowStartsAt: timestamp(start),
+      contractDocumentDeliveredAt: timestamp(start + 60 * 60 * 1000),
+      serviceAvailableAt: timestamp(laterService)
+    }, 'order', refundWindowLegalDeadlineMs(laterService)).eligible,
+    true
+  );
+
+  // 과거 168시간 explicit deadline도 법정 말일보다 앞당겨 적용하지 않는다.
+  const shortExplicit = refundWindowState({
+    refundWindowStartsAt: timestamp(start),
+    refundWindowEndsAt: timestamp(start + REFUND_WINDOW_MS)
+  }, 'order', start + REFUND_WINDOW_MS + 1);
+  assert.equal(shortExplicit.eligible, true);
+  assert.equal(shortExplicit.deadlineMs, deadline);
+
+  const legacyEligible = refundWindowState({ createdAt: timestamp(start) }, 'order', deadline);
+  assert.equal(legacyEligible.eligible, true);
+  assert.equal(legacyEligible.source, 'legacy_fallback');
+  assert.equal(refundWindowState({ createdAt: timestamp(start) }, 'order', deadline + 1).eligible, false);
+  assert.equal(refundWindowState({}, 'order', deadline).reason, 'PAYMENT_DATE_MISSING');
+});
+
+test('구독 구매 스냅샷은 크레딧 보너스 정책이 아니라 회차 정산 기준을 기록한다', () => {
+  const snapshot = buildRefundPolicyPurchaseSnapshot(
+    Date.UTC(2026, 7, 31, 3),
+    SUBSCRIPTION_REFUND_POLICY_VERSION,
+    {
+      calculationBasis: SUBSCRIPTION_REFUND_CALCULATION_BASIS,
+      bonusTreatment: SUBSCRIPTION_REFUND_BONUS_TREATMENT
+    }
+  );
+  assert.equal(snapshot.refundCalculationBasisAtPurchase, 'remaining_cycle_uses_ratio_floor_v1');
+  assert.equal(snapshot.refundBonusTreatmentAtPurchase, 'not_applicable_subscription_v1');
+  assert.notEqual(snapshot.refundCalculationBasisAtPurchase, REFUND_CALCULATION_BASIS);
+  assert.notEqual(snapshot.refundBonusTreatmentAtPurchase, REFUND_BONUS_TREATMENT);
+});
+
+test('환불 처리 정책 버전은 구매 당시 스냅샷을 최우선으로 보존한다', () => {
+  assert.equal(refundPolicyVersionForOrder({
+    refundPolicyVersionAtPurchase: 'purchase-policy-v1',
+    refundPolicyVersion: 'request-policy-v2'
+  }, true), 'purchase-policy-v1');
+  assert.equal(refundPolicyVersionForOrder({ refundPolicyVersion: 'legacy-recorded-v1' }, true), 'legacy-recorded-v1');
+  assert.equal(refundPolicyVersionForOrder({}, true), REFUND_POLICY_VERSION);
+  assert.equal(refundPolicyVersionForOrder({}, false), 'legacy-total-grant-v1');
+});
+
+test('7일 경과 환불은 접수 후 관리자 법정 예외 검토 입력을 선택적으로 감사 기록한다', () => {
+  const order = { refundEligibilityReviewRequired: true };
+  assert.deepEqual(refundEligibilityReviewDecision(order, {}), {
+    required: true,
+    accepted: false,
+    persisted: false,
+    exceptionCode: '',
+    note: ''
+  });
+  const reviewed = refundEligibilityReviewDecision(order, {
+    eligibilityReviewed: true,
+    statutoryExceptionCode: 'remaining_balance_settlement',
+    eligibilityReviewNote: '남은 기준 크레딧 정산 확인'
+  });
+  assert.equal(reviewed.accepted, true);
+  assert.deepEqual(refundEligibilityReviewUpdate(reviewed, 'admin-1', 'NOW'), {
+    refundEligibilityReviewed: true,
+    refundEligibilityExceptionCode: 'remaining_balance_settlement',
+    refundEligibilityReviewNote: '남은 기준 크레딧 정산 확인',
+    refundEligibilityReviewedBy: 'admin-1',
+    refundEligibilityReviewedAt: 'NOW'
+  });
+  assert.equal(refundEligibilityReviewDecision({
+    refundEligibilityReviewRequired: true,
+    refundEligibilityReviewed: true,
+    refundEligibilityExceptionCode: 'service_not_as_described',
+    refundEligibilityReviewNote: '표시 내용과 다름'
+  }, {}).accepted, true);
+});
+
+test('관리자 주문 직렬화는 과거 168시간 값보다 긴 법정 말일과 검토 상태를 노출한다', () => {
+  const start = Date.UTC(2026, 7, 30, 6);
+  const legalEnd = refundWindowLegalDeadlineMs(start);
+  const serialized = payment.adminHistoryPolicy.serializeOrderDoc({
+    id: 'order-review',
+    data: () => ({
+      status: 'refund_requested',
+      createdAt: timestamp(start),
+      refundWindowStartsAt: timestamp(start),
+      refundWindowEndsAt: timestamp(start + REFUND_WINDOW_MS),
+      refundEligibilityReviewRequired: true,
+      refundReservationState: 'reserved',
+      requestedRefundAmount: 1450,
+      requestedRefundCredits: 50
+    })
+  }, 'order');
+  assert.equal(serialized.refundWindowStartsAtMs, start);
+  assert.equal(serialized.refundWindowEndsAtMs, legalEnd);
+  assert.equal(serialized.refundEligibilityReviewRequired, true);
+  assert.equal(serialized.refundReservationState, 'reserved');
+  assert.equal(serialized.requestedRefundAmount, 1450);
+  assert.equal(serialized.requestedRefundCredits, 50);
 });
 
 test('신규 주문은 사용량을 기준 크레딧부터 차감하고 남은 보너스도 함께 회수한다', () => {

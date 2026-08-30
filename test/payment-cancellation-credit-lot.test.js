@@ -284,6 +284,83 @@ test('서버 환불이 lot을 이미 선회수한 주문은 공급자 웹훅에�
   assert.equal(store.row(`users/u2/creditLots/${MAX_ORDER}`).refundPaidCreditsRemaining, 0);
   assert.equal(store.row(`users/u2/creditLots/${MAX_ORDER}`).refundEventBonusCreditsRemaining, 0);
   assert.equal(store.row(`orders/${MAX_ORDER}`).refundProcessing, undefined);
+  assert.equal(store.row(`orders/${MAX_ORDER}`).refundReservationState, 'settled');
+  assert.equal(store.row(`orders/${MAX_ORDER}`).refundReservationOperationId, 'refund-op');
+  assert.deepEqual(store.row(`orders/${MAX_ORDER}`).refundReservationSettledAt, { __serverTimestamp: true });
+});
+
+test('사용자 요청 예약 후 승인 최종화보다 웹훅이 먼저 와도 예약분만 원장화하고 다른 잔액을 다시 차감하지 않는다', async t => {
+  const orderId = 'order_1051051051';
+  const store = fakeFirestore({
+    [`orders/${orderId}`]: {
+      uid: 'u-request-race',
+      status: 'refund_requested',
+      amount: 2900,
+      paidCredits: 100,
+      eventBonusCredits: 5,
+      totalGrantedCredits: 105,
+      creditGrantPolicyVersion: 'credit-grant-base-v1',
+      creditLotPolicyVersion: 'credit-lot-v1',
+      refundPaidCreditsRemaining: 0,
+      refundEventBonusCreditsRemaining: 0,
+      refundReservationState: 'provider_canceling',
+      refundReservationOperationId: 'request-race-op',
+      // refundedCredits/refundedAmount가 없는 것이 실제 request→approve 경합의 핵심이다.
+      refundProcessing: {
+        kind: 'credit',
+        phase: 'provider_canceling',
+        operationId: 'request-race-op',
+        priorRefundedAmount: 0,
+        priorRefundedCredits: 0,
+        refundAmount: 2900,
+        creditsToDeduct: 105,
+        targetRefundedAmount: 2900,
+        targetRefundedCredits: 105,
+        reservedPaidCredits: 100,
+        reservedBonusCredits: 5
+      }
+    },
+    // 예약 대상 105는 이미 빠졌고, 아래 105는 다른 구매에서 남은 잔액이다.
+    'users/u-request-race': { credits: 105, creditLotV1Balance: 0 },
+    [`users/u-request-race/creditLots/${orderId}`]: {
+      orderId,
+      createdAt: '2026-08-30T10:00:00+09:00',
+      creditGrantPolicyVersion: 'credit-grant-base-v1',
+      paidCreditsCap: 100,
+      eventBonusCreditsCap: 5,
+      refundPaidCreditsRemaining: 0,
+      refundEventBonusCreditsRemaining: 0,
+      active: false
+    }
+  });
+  const loaded = loadPaymentCancellationWith(store.db);
+  t.after(loaded.restore);
+
+  const result = await loaded.paymentCancellation.reconcileCreditPaymentCancellation({
+    orderId,
+    status: 'CANCELED',
+    totalAmount: 2900,
+    balanceAmount: 0
+  });
+
+  assert.equal(result.handled, true);
+  assert.equal(result.processingReserved, 105);
+  assert.equal(result.accountedCredits, 105);
+  assert.equal(result.balanceDebit, 0);
+  assert.equal(result.ledgerCredits, 105);
+  assert.equal(result.appliedCredits, 105);
+  assert.equal(store.row('users/u-request-race').credits, 105);
+  assert.equal(store.row('users/u-request-race').creditLotV1Balance, 0);
+  const finalOrder = store.row(`orders/${orderId}`);
+  assert.equal(finalOrder.status, 'refunded');
+  assert.equal(finalOrder.refundedAmount, 2900);
+  assert.equal(finalOrder.refundedCredits, 105);
+  assert.equal(finalOrder.refundProcessing, undefined);
+  assert.equal(finalOrder.refundReservationState, 'settled');
+  const historyPath = store.paths().find(value => value.startsWith('users/u-request-race/creditHistory/'));
+  const history = store.row(historyPath);
+  assert.equal(history.amount, -105);
+  assert.equal(history.remaining, 105);
 });
 
 test('신규 전액취소의 잔여 채무는 자기 lot→untracked→다른 lot FIFO 순서로 회수하고 모든 mirror를 맞춘다', async t => {

@@ -20,6 +20,12 @@ const {
   reconcilePendingCreditCancellationInboxes,
   safeProviderPaymentSnapshot
 } = require('../lib/paymentCancellation');
+const {
+  SUBSCRIPTION_REFUND_POLICY_VERSION,
+  SUBSCRIPTION_REFUND_CALCULATION_BASIS,
+  SUBSCRIPTION_REFUND_BONUS_TREATMENT,
+  buildRefundPolicyPurchaseSnapshot
+} = require('../lib/refundPolicySnapshot');
 
 const router = express.Router();
 
@@ -172,6 +178,14 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
   const userRef = db.collection('users').doc(uid);
   const orderRef = db.collection('subscriptionOrders').doc(orderId);
   const usesPerCycle = plan.usesPerCycle;
+  const refundPolicyPurchaseSnapshot = buildRefundPolicyPurchaseSnapshot(
+    now,
+    SUBSCRIPTION_REFUND_POLICY_VERSION,
+    {
+      calculationBasis: SUBSCRIPTION_REFUND_CALCULATION_BASIS,
+      bonusTreatment: SUBSCRIPTION_REFUND_BONUS_TREATMENT
+    }
+  );
 
   await db.runTransaction(async (t) => {
     const orderSnap = await t.get(orderRef);
@@ -218,7 +232,8 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
       requestedAt: cycleStartedAt,
       approvedAt: cycleStartedAt,
       cycleStartedAt,
-      cycleEndsAt: nextBillingAt
+      cycleEndsAt: nextBillingAt,
+      ...refundPolicyPurchaseSnapshot
     });
 
     const couponHistRef = userRef.collection('couponHistory').doc();

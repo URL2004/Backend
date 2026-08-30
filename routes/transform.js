@@ -1188,6 +1188,21 @@ function buildArchiveObservability(job) {
     semanticRelationShiftFamilies: uniqueStrictArchiveCodes(engineMeta.semanticRelationShiftFamilies),
     fingerprintRepairCount: archiveFinite(engineMeta.fingerprintRepairCount),
     fingerprintSourceRestoreCount: archiveFinite(engineMeta.fingerprintSourceRestoreCount),
+    unsupportedSpecificityAuditVersion: archiveFinite(engineMeta.unsupportedSpecificityAuditVersion),
+    unsupportedSpecificityPass: typeof engineMeta.unsupportedSpecificityPass === 'boolean'
+      ? engineMeta.unsupportedSpecificityPass
+      : undefined,
+    unsupportedSpecificityIssueCount: archiveFinite(engineMeta.unsupportedSpecificityIssueCount),
+    unsupportedSpecificityRestorableCount: archiveFinite(engineMeta.unsupportedSpecificityRestorableCount),
+    unsupportedSpecificityResidualCount: archiveFinite(engineMeta.unsupportedSpecificityResidualCount),
+    unsupportedSpecificityRestoreCount: archiveFinite(engineMeta.unsupportedSpecificityRestoreCount),
+    unsupportedSpecificityRemovalCount: archiveFinite(engineMeta.unsupportedSpecificityRemovalCount),
+    unsupportedSpecificityRestoreRejectedCount: archiveFinite(
+      engineMeta.unsupportedSpecificityRestoreRejectedCount
+    ),
+    unsupportedSpecificityRestoreRejectionCodes: uniqueStrictArchiveCodes(
+      engineMeta.unsupportedSpecificityRestoreRejectionCodes
+    ),
     finalSourceIntegrityRestoreCount: archiveFinite(engineMeta.finalSourceIntegrityRestoreCount),
     finalSourceIntegrityRestoreCodes: uniqueStrictArchiveCodes(engineMeta.finalSourceIntegrityRestoreCodes),
     fingerprintShadowPositiveCodes: uniqueStrictArchiveCodes(engineMeta.fingerprintShadowPositiveCodes),

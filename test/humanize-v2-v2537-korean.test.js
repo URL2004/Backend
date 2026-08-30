@@ -159,7 +159,7 @@ test('v2.5.37: 구두점 없는 제목·명사 인용 뒤 하고를 직접 발�
   }
 });
 
-test('v2.5.37: 장문 접속어 증가는 실제 신규 주입 문장을 가리키되 문장 전체를 원문 복원하지 않는다', () => {
+test('v2.5.42: 장문 접속어 증가는 문장 전체 복원 없이 신규 문두 접속어만 제거한다', () => {
   const source = [
     '장비 요구사항을 검토했다.',
     '전원 예산을 계산했다.',
@@ -188,9 +188,29 @@ test('v2.5.37: 장문 접속어 증가는 실제 신규 주입 문장을 가리�
 
   assert.deepEqual(issue?.sentenceOrdinals, [1, 2], JSON.stringify(issue));
   const restored = korean.restoreIntroducedIntegritySentences({ source, outputText: output, audit });
-  assert.equal(restored.applied, false, JSON.stringify(restored));
-  assert.equal(restored.text, output);
-  assert.equal(restored.restoredCodes.includes('sequential_connector_inflation'), false);
+  assert.equal(restored.applied, true, JSON.stringify(restored));
+  assert.equal(restored.text, source);
+  assert.equal(restored.connectorRepair.removedCount, 2);
+  assert.equal(restored.restoredCodes.includes('sequential_connector_inflation'), true);
+});
+
+test('v2.5.42: 원문에 있는 시간 관계와 목록 표지는 접속어 fallback이 보존한다', () => {
+  const source = '이후, 승인 자료를 정리했다. 첫째, 안전 기준을 확인했다. 검증한 뒤 결과를 문서화했다.';
+  const output = '이후, 승인 자료를 정리했다. 첫째, 안전 기준을 확인했다. 검증한 뒤 결과를 문서화했다.';
+  const audit = {
+    issues: [{
+      code: 'sequential_connector_inflation',
+      introducedCount: 2,
+      sentenceOrdinals: [1, 3]
+    }, {
+      code: 'discourse_connector_inflation',
+      introducedCount: 1,
+      sentenceOrdinals: [2]
+    }]
+  };
+  const repaired = korean.removeIntroducedConnectorOpeners({ source, outputText: output, audit });
+  assert.equal(repaired.applied, false, JSON.stringify(repaired));
+  assert.equal(repaired.text, output);
 });
 
 test('v2.5.37: 문장 첫 순차 접속어 주입은 실질 편집률을 올리지 않는다', () => {

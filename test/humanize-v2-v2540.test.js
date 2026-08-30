@@ -36,7 +36,7 @@ function createScenario(rows) {
 }
 
 test('v2.5.40: 엔진과 후보 원장 버전이 분리되어 노출된다', () => {
-  assert.equal(engine.VERSION, 'gpt-prod-v2.5.41');
+  assert.equal(engine.VERSION, 'gpt-prod-v2.5.42');
   assert.equal(VERSION, 'candidate-ledger-v1');
 });
 

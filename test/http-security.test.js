@@ -59,7 +59,7 @@ test('public health disclosure guard preserves the existing response object and 
     providerCompatible: true,
     runtimeConfigSource: 'environment',
     humanizeEngineV2: true,
-    humanizeEngineVersion: 'gpt-prod-v2.5.41',
+    humanizeEngineVersion: 'gpt-prod-v2.5.42',
     activeJobs: 0,
     firebase: true,
     openai: true,

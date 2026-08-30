@@ -46,6 +46,7 @@ const statisticalAtoms = require('./statisticalAtoms');
 const safeEditAccumulator = require('./safeEditAccumulator');
 const commercialSignals = require('./commercialSignals');
 const omissionRestore = require('./omissionRestore');
+const unsupportedSpecificity = require('./unsupportedSpecificityAudit');
 const niklAdvisor = require('./niklAdvisor');
 const {
   classifyModelFailure,
@@ -66,7 +67,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.41';
+const VERSION = 'gpt-prod-v2.5.42';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -636,6 +637,11 @@ async function runEngine({
   let finalGeneratedDuplicateAudit = null;
   let finalKoreanSourceRestoreCount = 0;
   const finalKoreanSourceRestoreCodes = [];
+  let unsupportedSpecificityAudit = null;
+  let unsupportedSpecificityRestoreCount = 0;
+  let unsupportedSpecificityRemovalCount = 0;
+  let unsupportedSpecificityRestoreRejectedCount = 0;
+  const unsupportedSpecificityRestoreRejectionCodes = [];
   let endingStyleAudit = null;
   let endingStyleRetryAttemptCount = 0;
   let endingStyleRepairCount = 0;
@@ -3254,6 +3260,134 @@ async function runEngine({
           fingerprintSourceRestoreCount += restoredCount;
           finalSourceIntegrityRestoreCount += restoredCount;
           addUniqueCode(finalSourceIntegrityRestoreCodes, 'delivery_relation_source_restore');
+          rememberStructureSafeOutput(outputText, 'delivery_relation_source_restore');
+        }
+      }
+    }
+  }
+
+  // 후보 원장이 과거 후보를 다시 선택한 뒤에도 신규 문두 접속어·인접 결론
+  // 반복이 되살아날 수 있다. 모델을 더 호출하지 않고 원문 정렬로 증명되는
+  // 접속어 토큰 제거와 동일 주장 추가문 삭제만 마지막 고정점에서 재적용한다.
+  {
+    const deliveryKoreanBefore = koreanRefinement.analyzeKoreanRefinement({
+      source: rawSource,
+      outputText,
+      documentProfile,
+      mode: selectedMode
+    });
+    const restored = koreanRefinement.restoreIntroducedIntegritySentences({
+      source: rawSource,
+      outputText,
+      audit: deliveryKoreanBefore
+    });
+    if (restored.applied) {
+      const candidate = restored.text;
+      const deliveryKoreanAfter = koreanRefinement.analyzeKoreanRefinement({
+        source: rawSource,
+        outputText: candidate,
+        documentProfile,
+        mode: selectedMode
+      });
+      const integrity = candidateIntegrity.auditCandidateIntegrity({
+        source: rawSource,
+        before: outputText,
+        candidate,
+        documentProfile,
+        mode: selectedMode
+      });
+      if (koreanRefinement.isImprovedAudit(deliveryKoreanBefore, deliveryKoreanAfter)
+          && integrity.pass === true
+          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+        outputText = candidate;
+        koreanRefinementAudit = deliveryKoreanAfter;
+        const restoredCount = Number(restored.restoredSentenceCount || 1);
+        finalKoreanSourceRestoreCount += restoredCount;
+        finalSourceIntegrityRestoreCount += restoredCount;
+        addUniqueCode(finalSourceIntegrityRestoreCodes, 'delivery_korean_source_restore');
+        for (const code of restored.restoredCodes || []) {
+          addUniqueCode(finalKoreanSourceRestoreCodes, code);
+        }
+        rememberStructureSafeOutput(outputText, 'delivery_korean_source_restore');
+      }
+    }
+  }
+
+  // 모델이 원문의 일반적인 대상·계획을 새 장르명/제품명과 출시·매출·전환
+  // 성과의 결합으로 구체화하면 사실을 새로 만든 셈이다. 후보 원장 롤백 뒤
+  // 마지막 고정점에서 다시 감사하고, 원문 대응이 명확하면 원문 문장으로
+  // 복원한다. 1:N 분할이라 인접 문장이 원문 주장을 이미 보존하는 경우에는
+  // 숫자·인용·부정·양태 및 전 문장 커버리지를 확인한 뒤 날조 문장만 삭제한다.
+  {
+    const specificityBefore = unsupportedSpecificity.auditUnsupportedSpecificity(
+      rawSource,
+      outputText,
+      allowedExtra
+    );
+    unsupportedSpecificityAudit = specificityBefore;
+    if (specificityBefore.pass === false) {
+      const restored = unsupportedSpecificity.restoreUnsupportedSpecificityClaims(
+        rawSource,
+        outputText,
+        specificityBefore
+      );
+      if (restored.applied) {
+        const candidate = restored.text;
+        const specificityAfter = unsupportedSpecificity.auditUnsupportedSpecificity(
+          rawSource,
+          candidate,
+          allowedExtra
+        );
+        const integrity = candidateIntegrity.auditCandidateIntegrity({
+          source: rawSource,
+          before: outputText,
+          candidate,
+          documentProfile,
+          mode: selectedMode
+        });
+        if (Number(specificityAfter.issueCount || 0) < Number(specificityBefore.issueCount || 0)
+            && integrity.pass === true
+            && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+          outputText = candidate;
+          unsupportedSpecificityAudit = specificityAfter;
+          unsupportedSpecificityRestoreCount += Number(restored.restoredCount || 0);
+          unsupportedSpecificityRemovalCount += Number(restored.removedCount || 0);
+          finalSourceIntegrityRestoreCount += Number(restored.restoredCount || 0)
+            + Number(restored.removedCount || 0);
+          addUniqueCode(
+            finalSourceIntegrityRestoreCodes,
+            Number(restored.removedCount || 0) > 0
+              ? 'unsupported_specificity_sentence_removed'
+              : 'unsupported_specificity_source_restore'
+          );
+          rememberStructureSafeOutput(outputText, 'unsupported_specificity_restore');
+        } else {
+          unsupportedSpecificityRestoreRejectedCount += 1;
+          if (Number(specificityAfter.issueCount || 0) >= Number(specificityBefore.issueCount || 0)) {
+            addUniqueCode(unsupportedSpecificityRestoreRejectionCodes, 'not_improved');
+          }
+          if (integrity.pass !== true) {
+            for (const code of integrity.failureCodes || ['candidate_integrity_failed']) {
+              addUniqueCode(unsupportedSpecificityRestoreRejectionCodes, code);
+            }
+          }
+          if (!preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+            addUniqueCode(unsupportedSpecificityRestoreRejectionCodes, 'structure_regression');
+          }
+        }
+      } else {
+        unsupportedSpecificityRestoreRejectedCount += 1;
+        addUniqueCode(
+          unsupportedSpecificityRestoreRejectionCodes,
+          restored.reason || 'no_safe_specificity_repair'
+        );
+        for (const issue of restored.residualIssues || specificityBefore.issues || []) {
+          for (const code of [
+            ...(issue.restoreBlockReasons || []),
+            ...(issue.removalBlockReasons || [])
+          ]) {
+            addUniqueCode(unsupportedSpecificityRestoreRejectionCodes, code);
+          }
         }
       }
     }
@@ -3270,7 +3404,10 @@ async function runEngine({
     preserveLineBreaks: lineBoundaryPolicy === 'all'
       || voiceProfile?.lineBreakSensitive === true
   });
-  if (deliveryGeneratedDedupe.applied) outputText = deliveryGeneratedDedupe.text;
+  if (deliveryGeneratedDedupe.applied) {
+    outputText = deliveryGeneratedDedupe.text;
+    rememberStructureSafeOutput(outputText, 'delivery_generated_dedupe');
+  }
   postprocessMeta.dedupe = mergeFinalDedupeAudit(
     postprocessMeta.dedupe,
     deliveryGeneratedDedupe
@@ -3293,6 +3430,7 @@ async function runEngine({
     });
     if (finalIntegrityLayout.applied && finalIntegrityLayout.contentPreserved) {
       outputText = finalIntegrityLayout.text;
+      rememberStructureSafeOutput(outputText, 'delivery_integrity_layout');
     }
     layoutRepair.deliveryIntegrityFixedPoint = {
       applied: finalIntegrityLayout.applied === true,
@@ -3322,6 +3460,7 @@ async function runEngine({
           && preservesFinalStructure(rawSource, restored.text, chunks, chunkPlan, boundaryRepair)) {
         outputText = restored.text;
         statisticalAtomRepairCount += Number(restored.repairCount || 0);
+        rememberStructureSafeOutput(outputText, 'delivery_statistical_atom_restore');
       }
     }
   }
@@ -3331,6 +3470,7 @@ async function runEngine({
       outputText = restoredQuotes.text;
       quoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
       finalQuoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
+      rememberStructureSafeOutput(outputText, 'delivery_quote_restore');
     }
   }
   // 전달 직전의 모든 후처리가 끝난 문자열을 source 기준으로 다시 본다.
@@ -3364,6 +3504,11 @@ async function runEngine({
   }
   finalGeneratedDuplicateAudit = dedupe.auditGeneratedDuplicateIntegrity(rawSource, outputText);
   statisticalAtomIntegrity = statisticalAtoms.auditStatisticalAtoms(rawSource, outputText);
+  unsupportedSpecificityAudit = unsupportedSpecificity.auditUnsupportedSpecificity(
+    rawSource,
+    outputText,
+    allowedExtra
+  );
   quoteIntegrityAudit = auditDirectQuoteIntegrity(rawSource, outputText);
   koreanRefinementAudit = koreanRefinement.analyzeKoreanRefinement({
     source: rawSource,
@@ -3631,6 +3776,13 @@ async function runEngine({
         ...(fingerprintAudit?.issueCodes?.includes('semantic_relation_shift')
           ? [{ code: 'semantic_relation_shift', severity: 'warning', message: '목적·근거·대조·가능성·행위 방향 또는 책임 범위가 원문과 달라졌을 수 있어요.' }]
           : []),
+        ...(unsupportedSpecificityAudit?.pass === false
+          ? [{
+              code: 'unsupported_specificity_attribution',
+              severity: 'warning',
+              message: '원문에 없던 구체 대상과 성과가 결합된 문장이 남아 원문 대조가 필요해요.'
+            }]
+          : []),
         ...(endingStyleAudit?.pass === false
           ? [{ code: 'ending_style_mixed', severity: 'warning', message: '원문에 없던 종결체가 일부 섹션에 섞였을 수 있어요.' }]
           : []),
@@ -3889,6 +4041,7 @@ async function runEngine({
       + (quoteIntegrityRestoreCount > 0 ? 1 : 0)
       + fingerprintRepairCount
       + (fingerprintSourceRestoreCount > 0 ? 1 : 0)
+      + ((unsupportedSpecificityRestoreCount + unsupportedSpecificityRemovalCount) > 0 ? 1 : 0)
       + endingStyleRepairCount
       + resumeCoverageRepairCount,
     chunkCount: records.length,
@@ -4182,6 +4335,19 @@ async function runEngine({
     fingerprintRepairCount,
     fingerprintRetryApplied,
     fingerprintSourceRestoreCount,
+    unsupportedSpecificityAuditVersion: Number(unsupportedSpecificityAudit?.version || 0),
+    unsupportedSpecificityPass: unsupportedSpecificityAudit
+      ? unsupportedSpecificityAudit.pass === true
+      : null,
+    unsupportedSpecificityIssueCount: Number(unsupportedSpecificityAudit?.issueCount || 0),
+    unsupportedSpecificityRestorableCount: Number(unsupportedSpecificityAudit?.restorableCount || 0),
+    unsupportedSpecificityResidualCount: Number(unsupportedSpecificityAudit?.residualCount || 0),
+    unsupportedSpecificityRestoreCount,
+    unsupportedSpecificityRemovalCount,
+    unsupportedSpecificityRestoreRejectedCount,
+    unsupportedSpecificityRestoreRejectionCodes: safeFailureCodeList(
+      unsupportedSpecificityRestoreRejectionCodes
+    ),
     finalSourceIntegrityRestoreCount,
     finalSourceIntegrityRestoreCodes: safeFailureCodeList(finalSourceIntegrityRestoreCodes),
     finalKoreanSourceRestoreCount,

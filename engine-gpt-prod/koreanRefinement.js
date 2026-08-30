@@ -2474,11 +2474,27 @@ function repairLeadingSentencePeriodArtifacts(value, context) {
 }
 
 function restoreIntroducedIntegritySentences({ source = '', outputText = '', audit = null } = {}) {
+  const connectorRepair = removeIntroducedConnectorOpeners({ source, outputText, audit });
   const ordinals = [];
   const affectiveSourceOrdinals = [];
-  const restoredCodes = [];
+  const restoredCodes = [...(connectorRepair.removedCodes || [])];
   for (const issue of audit?.issues || []) {
     if (!SOURCE_RESTORABLE_ISSUES.has(issue.code) || Number(issue.introducedCount || 0) <= 0) continue;
+    // 두 결과 문장이 같은 원문 주장 하나에 정렬되면 원문 문장 치환이 그
+    // 주장을 두 번 만들 수 있으므로 아래 전용 제거기로 추가문만 걷어낸다.
+    // 반대로 뒤 문장이 다른 원문 행동을 일부 담은 채 결론만 반복한다면
+    // 삭제하지 않고 기존처럼 그 결과 문장을 대응 원문 문장으로 복원한다.
+    if (issue.code === 'adjacent_semantic_repetition') {
+      const safeRemovalSet = new Set(issue.details?.safeRemovalOrdinals || []);
+      const restoreOrdinals = (issue.sentenceOrdinals || [])
+        .map(Number)
+        .filter(ordinal => ordinal > 0 && !safeRemovalSet.has(ordinal));
+      if (restoreOrdinals.length) {
+        restoredCodes.push(issue.code);
+        ordinals.push(...restoreOrdinals);
+      }
+      continue;
+    }
     restoredCodes.push(issue.code);
     if (issue.code === 'professional_register_downgrade') {
       for (const loss of issue.details?.alignedLosses || []) {
@@ -2496,7 +2512,7 @@ function restoreIntroducedIntegritySentences({ source = '', outputText = '', aud
     }
     ordinals.push(...(issue.sentenceOrdinals || []));
   }
-  const regularRestore = restoreSourceSentenceOrdinals(source, outputText, ordinals, {
+  const regularRestore = restoreSourceSentenceOrdinals(source, connectorRepair.text, ordinals, {
     maxRestoreCount: 16,
     minSimilarity: 0.24,
     ordinalSpace: 'output'
@@ -2516,16 +2532,134 @@ function restoreIntroducedIntegritySentences({ source = '', outputText = '', aud
     ...(regularRestore.restoredSentenceOrdinals || []),
     ...(affectiveRestore.restoredSentenceOrdinals || [])
   ];
+  const duplicateRepair = removeIntroducedGroundedDuplicateSentences({
+    source,
+    outputText: affectiveRestore.text
+  });
+  if (duplicateRepair.applied) restoredCodes.push('adjacent_semantic_repetition');
   return {
     ...affectiveRestore,
-    applied: regularRestore.applied === true || affectiveRestore.applied === true,
-    restoredSentenceCount: restoredSentenceOrdinals.length,
+    text: duplicateRepair.text,
+    applied: connectorRepair.applied === true
+      || regularRestore.applied === true
+      || affectiveRestore.applied === true
+      || duplicateRepair.applied === true,
+    restoredSentenceCount: restoredSentenceOrdinals.length
+      + Number(connectorRepair.removedCount || 0)
+      + Number(duplicateRepair.removedCount || 0),
     restoredSentenceOrdinals,
-    reason: regularRestore.applied === true || affectiveRestore.applied === true
+    reason: connectorRepair.applied === true
+      || regularRestore.applied === true
+      || affectiveRestore.applied === true
+      || duplicateRepair.applied === true
       ? 'restored'
       : (affectiveRestore.reason || regularRestore.reason),
-    restoredCodes: [...new Set(restoredCodes)]
+    restoredCodes: [...new Set(restoredCodes)],
+    connectorRepair,
+    duplicateRepair
   };
+}
+
+function removeIntroducedGroundedDuplicateSentences({ source = '', outputText = '' } = {}) {
+  const before = String(outputText || '');
+  const issue = detectIntroducedAdjacentSemanticRepetition(source, before);
+  const ordinals = issue?.details?.safeRemovalOrdinals || [];
+  if (!ordinals.length) {
+    return { text: before, applied: false, removedCount: 0, removedOrdinals: [], reason: 'no_grounded_duplicate' };
+  }
+  const spans = splitSentenceSpans(before);
+  const proposals = ordinals.map(ordinal => {
+    const span = spans[Number(ordinal) - 1];
+    return span ? { start: span.start, end: span.end, ordinal: Number(ordinal) } : null;
+  }).filter(Boolean);
+  const unique = selectNonOverlappingTextRanges(proposals);
+  if (!unique.length) {
+    return { text: before, applied: false, removedCount: 0, removedOrdinals: [], reason: 'missing_sentence_span' };
+  }
+  let text = before;
+  for (const proposal of [...unique].sort((left, right) => right.start - left.start)) {
+    text = text.slice(0, proposal.start) + text.slice(proposal.end);
+  }
+  return {
+    text,
+    applied: text !== before,
+    removedCount: unique.length,
+    removedOrdinals: unique.map(item => item.ordinal),
+    reason: text !== before ? 'grounded_duplicate_removed' : 'unchanged'
+  };
+}
+
+const INTRODUCED_CONNECTOR_OPENERS = Object.freeze({
+  sequential_connector_inflation: /^(?:이후|그\s*다음|다음으로)[,，]?[ \t]+/u,
+  discourse_connector_inflation: /^(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로)[,，]?[ \t]+/u
+});
+const ANY_GROUNDED_CONNECTOR_OPENER_RE = /^(?:이후|그\s*다음|다음으로|또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|그러나|하지만|반면|다만|결국)[,，]?[ \t]+/u;
+
+// 모델 수리 예산이 소진되거나 후보 선택에서 이전 문장이 되살아나도, 원문에
+// 없던 문두 접속어만 안전하게 걷어낸다. `검증한 뒤`처럼 문장 내부의 실제
+// 시간 관계나 첫째·둘째 목록 표지는 건드리지 않으며 문장 전체도 되돌리지 않는다.
+function removeIntroducedConnectorOpeners({ source = '', outputText = '', audit = null } = {}) {
+  const before = String(outputText || '');
+  const sourceSpans = splitSentenceSpans(String(source || ''));
+  const outputSpans = splitSentenceSpans(before);
+  if (!sourceSpans.length || !outputSpans.length) {
+    return { text: before, applied: false, removedCount: 0, removedCodes: [], reason: 'no_sentences' };
+  }
+  const proposals = [];
+  for (const issue of audit?.issues || []) {
+    const code = String(issue?.code || '');
+    const openerPattern = INTRODUCED_CONNECTOR_OPENERS[code];
+    if (!openerPattern || Number(issue?.introducedCount || 0) <= 0) continue;
+    for (const ordinal of issue.sentenceOrdinals || []) {
+      const outputSpan = outputSpans[Number(ordinal) - 1];
+      if (!outputSpan) continue;
+      const outputSentence = String(outputSpan.text || '');
+      const leadingLength = outputSentence.length - outputSentence.trimStart().length;
+      const visible = outputSentence.trimStart();
+      const opener = visible.match(openerPattern);
+      if (!opener) continue;
+      const body = visible.slice(opener[0].length).trimStart();
+      if (normalizeSentenceLocal(body).length < 8) continue;
+      let best = null;
+      sourceSpans.forEach(sourceSpan => {
+        const sourceSentence = String(sourceSpan.text || '').trim();
+        const score = sentenceSimilarity(sourceSentence, body);
+        if (!best || score > best.score) best = { sourceSentence, score };
+      });
+      if (!best || best.score < 0.38 || ANY_GROUNDED_CONNECTOR_OPENER_RE.test(best.sourceSentence)) continue;
+      const fullScore = sentenceSimilarity(best.sourceSentence, visible);
+      if (best.score + 0.03 < fullScore) continue;
+      proposals.push({
+        start: outputSpan.start + leadingLength,
+        end: outputSpan.start + leadingLength + opener[0].length,
+        code
+      });
+    }
+  }
+  const unique = selectNonOverlappingTextRanges(proposals);
+  if (!unique.length) {
+    return { text: before, applied: false, removedCount: 0, removedCodes: [], reason: 'no_safe_introduced_opener' };
+  }
+  let text = before;
+  for (const proposal of [...unique].sort((left, right) => right.start - left.start)) {
+    text = text.slice(0, proposal.start) + text.slice(proposal.end);
+  }
+  return {
+    text,
+    applied: text !== before,
+    removedCount: unique.length,
+    removedCodes: [...new Set(unique.map(item => item.code))],
+    reason: text !== before ? 'introduced_opener_removed' : 'unchanged'
+  };
+}
+
+function selectNonOverlappingTextRanges(items) {
+  const selected = [];
+  for (const item of [...(items || [])].sort((left, right) => left.start - right.start || left.end - right.end)) {
+    if (selected.some(existing => item.start < existing.end && item.end > existing.start)) continue;
+    selected.push(item);
+  }
+  return selected;
 }
 
 function buildSourceReviewWarnings(sourceOrIssues, documentProfile = null) {
@@ -2697,9 +2831,9 @@ function pushFunctionalGreetingDuplication(issues, text) {
   }
 }
 
-function findAdjacentSemanticRepetitions(text) {
+function findAdjacentSemanticRepetitionPairs(text) {
   const sentences = splitSentences(String(text || '')).map(value => String(value || '').trim()).filter(Boolean);
-  const ordinals = [];
+  const pairs = [];
   for (let index = 0; index < sentences.length - 1; index += 1) {
     const left = stripProtectedQuotedText(sentences[index]);
     const right = stripProtectedQuotedText(sentences[index + 1]);
@@ -2717,12 +2851,54 @@ function findAdjacentSemanticRepetitions(text) {
     const containment = intersection / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
     const lengthRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
     const connectorSubsetEcho = isConnectorSubsetEcho(left, right, leftTokens);
+    const conclusionRestatementEcho = isConclusionRestatementEcho(left, right);
     if ((containment >= 0.8 && lengthRatio >= 0.68)
         || shortCognitiveEcho
         || abstractPredicateEcho
-        || connectorSubsetEcho) ordinals.push(index + 2);
+        || connectorSubsetEcho
+        || conclusionRestatementEcho) {
+      pairs.push({
+        ordinal: index + 2,
+        left,
+        right,
+        kind: conclusionRestatementEcho
+          ? 'conclusion_restatement'
+          : (connectorSubsetEcho ? 'connector_subset' : 'semantic_echo')
+      });
+    }
   }
-  return ordinals;
+  return pairs;
+}
+
+function findAdjacentSemanticRepetitions(text) {
+  return findAdjacentSemanticRepetitionPairs(text).map(item => item.ordinal);
+}
+
+const CONCLUSION_COMMITMENT_RE = /(?:하겠습니다|되겠습니다|성장하겠습니다|기여하겠습니다|실천하겠습니다|이어\s*가겠습니다|할\s*것입니다|하고자\s*합니다|다짐합니다)[.!?。！？]?$/u;
+const RELATION_DIRECTION_RE = /(?:않|아니|못|없|금지|제외|반대|대신|그러나|하지만|반면|다만|가능|수\s*있|의무|해야)/gu;
+
+function isConclusionRestatementEcho(leftValue, rightValue) {
+  const left = String(leftValue || '').trim();
+  const right = String(rightValue || '').trim();
+  if (!CONCLUSION_COMMITMENT_RE.test(left) || !CONCLUSION_COMMITMENT_RE.test(right)) return false;
+  if (/^(?:첫째|둘째|셋째|넷째|또한|아울러)[,，]?\s/u.test(right)) return false;
+  if (right.length < 28 || right.length > left.length * 0.92) return false;
+  if (/["“”'‘’「」『』《》〈〉]/u.test(left) || /["“”'‘’「」『』《》〈〉]/u.test(right)) return false;
+  if ((left.match(/\d+(?:[.,]\d+)?%?/gu) || []).join('|') !== (right.match(/\d+(?:[.,]\d+)?%?/gu) || []).join('|')) return false;
+  if ((left.match(RELATION_DIRECTION_RE) || []).join('|') !== (right.match(RELATION_DIRECTION_RE) || []).join('|')) return false;
+  const roots = value => new Set(contentTokensLocal(value).map(repetitionRoot).filter(token => token.length >= 2));
+  const leftRoots = roots(left);
+  const rightRoots = roots(right);
+  const shared = [...rightRoots].filter(token => leftRoots.has(token)).length;
+  const containment = shared / Math.max(1, rightRoots.size);
+  return shared >= 6 && containment >= 0.45;
+}
+
+function repetitionRoot(value) {
+  return String(value || '').replace(
+    /(?:하겠습니다|되겠습니다|겠습니다|했습니다|하였다|했다|합니다|됩니다|한다|된다|하면서|하며|하고|하도록|으로부터|에서는|에게서|으로는|이라는|이라고|까지|부터|처럼|보다|에게|에서|으로|은|는|이|가|을|를|의|와|과|도|만|에|로)$/u,
+    ''
+  );
 }
 
 const ABSTRACT_ECHO_SUBJECTS = Object.freeze([
@@ -2791,12 +2967,48 @@ function isShortCognitiveEcho(leftValue, rightValue) {
 }
 
 function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
-  const before = findAdjacentSemanticRepetitions(source);
-  const after = findAdjacentSemanticRepetitions(outputText);
-  const introducedCount = Math.max(0, after.length - before.length);
-  return introducedCount
-    ? makeIssue('adjacent_semantic_repetition', introducedCount, after.slice(0, introducedCount))
+  const sourcePairs = findAdjacentSemanticRepetitionPairs(source);
+  const outputPairs = findAdjacentSemanticRepetitionPairs(outputText);
+  const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const introduced = outputPairs.filter(pair => !sourcePairs.some(sourcePair => (
+    sentenceSimilarity(sourcePair.left, pair.left) >= 0.62
+      && sentenceSimilarity(sourcePair.right, pair.right) >= 0.62
+  )));
+  const safeRemovalOrdinals = [];
+  const alignmentDetails = [];
+  for (const pair of introduced) {
+    const leftAlignment = bestSourceSentenceAlignment(pair.left, sourceSentences);
+    const rightAlignment = bestSourceSentenceAlignment(pair.right, sourceSentences);
+    const sameGroundedClaim = leftAlignment
+      && rightAlignment
+      && leftAlignment.index === rightAlignment.index
+      && leftAlignment.score >= 0.30
+      && rightAlignment.score >= 0.30
+      && leftAlignment.score >= rightAlignment.score - 0.08;
+    if (sameGroundedClaim) safeRemovalOrdinals.push(pair.ordinal);
+    alignmentDetails.push({
+      ordinal: pair.ordinal,
+      kind: pair.kind,
+      sameSourceSentence: sameGroundedClaim === true
+    });
+  }
+  return introduced.length
+    ? makeIssue(
+        'adjacent_semantic_repetition',
+        introduced.length,
+        introduced.map(item => item.ordinal),
+        { safeRemovalOrdinals, pairs: alignmentDetails }
+      )
     : null;
+}
+
+function bestSourceSentenceAlignment(value, sourceSentences) {
+  let best = null;
+  (sourceSentences || []).forEach((sentence, index) => {
+    const score = sentenceSimilarity(sentence, value);
+    if (!best || score > best.score) best = { index, score };
+  });
+  return best;
 }
 
 function pushSourceTokenRepetitionReview(issues, text) {
@@ -4650,5 +4862,7 @@ module.exports = {
   prioritizeRepairIssues,
   restorePolishDiscourseOpeners,
   restoreIntroducedIntegritySentences,
+  removeIntroducedConnectorOpeners,
+  removeIntroducedGroundedDuplicateSentences,
   isImprovedAudit
 };

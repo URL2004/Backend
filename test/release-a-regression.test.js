@@ -352,6 +352,15 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
         fingerprintIssueCodes: ['engine_phrase_fingerprint'],
         fingerprintIntroducedCount: 2,
         fingerprintRepairCount: 1,
+        unsupportedSpecificityAuditVersion: 1,
+        unsupportedSpecificityPass: false,
+        unsupportedSpecificityIssueCount: 1,
+        unsupportedSpecificityRestorableCount: 0,
+        unsupportedSpecificityResidualCount: 1,
+        unsupportedSpecificityRestoreCount: 0,
+        unsupportedSpecificityRemovalCount: 0,
+        unsupportedSpecificityRestoreRejectedCount: 1,
+        unsupportedSpecificityRestoreRejectionCodes: ['candidate_integrity_failed', '사용자 원문 조각'],
         fingerprintShadowPositiveCodes: ['review_together', '사용자 원문 조각'],
         fingerprintShadowPositiveCount: 2,
         endingStyleAuditVersion: 1,
@@ -509,6 +518,10 @@ test('transform 아카이브는 원문 없이 종료 시각·게이트·v2 관�
   assert.equal(first.lengthRatio, 1.02);
   assert.equal(first.koreanRefinementPass, false);
   assert.deepEqual(first.koreanRefinementIssueCodes, ['frequency_quantifier_conflict']);
+  assert.equal(first.unsupportedSpecificityPass, false);
+  assert.equal(first.unsupportedSpecificityIssueCount, 1);
+  assert.equal(first.unsupportedSpecificityResidualCount, 1);
+  assert.deepEqual(first.unsupportedSpecificityRestoreRejectionCodes, ['candidate_integrity_failed']);
   assert.deepEqual(first.sourceReviewWarningCodes, ['deep_understanding_collocation']);
   assert.equal(first.humanizationDepthRetryCount, 1);
   assert.equal(first.humanizationNoEffectRetryAttemptCount, 1);
@@ -696,6 +709,11 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     humanizationDepthRetryRejectedCount: 2,
     humanizationDepthRetryRejectionCodes: ['depth_not_improved', '사용자 원문 조각'],
     fingerprintIntroducedCount: 1, fingerprintRepairCount: 1, fingerprintIssueCodes: [],
+    unsupportedSpecificityAuditVersion: 1, unsupportedSpecificityPass: true,
+    unsupportedSpecificityIssueCount: 0, unsupportedSpecificityResidualCount: 0,
+    unsupportedSpecificityRestoreCount: 1, unsupportedSpecificityRemovalCount: 0,
+    unsupportedSpecificityRestoreRejectedCount: 0,
+    unsupportedSpecificityRestoreRejectionCodes: [],
     semanticRelationShiftCount: 1, semanticRelationShiftFamilies: ['proof_goal_weakened_to_check'],
     fingerprintShadowPositiveCodes: ['review_together'], fingerprintShadowPositiveCount: 1,
     endingStylePass: true, endingStyleIssueCount: 0, resumeCoverageApplicable: true,
@@ -762,6 +780,9 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.deepEqual(compact.sectionRecoveryRejectionCodeCounts, { number_changed: 2, not_better: 1 });
   assert.equal(compact.fingerprintRepairCount, 1);
   assert.deepEqual(compact.fingerprintShadowPositiveCodes, ['review_together']);
+  assert.equal(compact.unsupportedSpecificityPass, true);
+  assert.equal(compact.unsupportedSpecificityRestoreCount, 1);
+  assert.equal(compact.unsupportedSpecificityResidualCount, 0);
   assert.equal(compact.humanizationNoEffectRetryAttemptCount, 1);
   assert.equal(compact.humanizationRoleRecoveryAttemptCount, 2);
   assert.equal(compact.humanizationDepthRetryRejectedCount, 2);

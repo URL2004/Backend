@@ -4,7 +4,7 @@ const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 
-const VERSION = 16;
+const VERSION = 17;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -138,6 +138,7 @@ const NOTICE_MESSAGES = Object.freeze({
   source_markdown_artifact: '짝이 맞지 않는 마크다운 기호가 원문에 남아 있을 수 있어요.',
   source_draft_note: '작성 중 메모로 보이는 괄호 문구가 원문에 남아 있어요.',
   source_truncated_reference: '끝이 잘렸을 수 있는 참고문헌 표기가 있어요.',
+  source_truncated_word: '원문 마지막 단어가 중간에서 잘린 것으로 보여 확인이 필요해요.',
   source_incomplete_sentence: '마지막 문장이 조사나 연결 표현에서 끝나 미완성일 수 있어요.',
   source_unclosed_delimiter: '괄호나 인용부호의 짝이 닫히지 않은 곳이 있어요.',
   source_missing_terminal_punctuation: '마지막 완결 문장의 문장부호가 빠졌을 수 있어요.',
@@ -255,7 +256,14 @@ function auditAndSanitizeSource(value) {
   }
 
   const lastContentIndex = findLastContentLine(kept);
-  if (lastContentIndex >= 0 && isPossiblyIncompleteSentence(kept[lastContentIndex])) {
+  if (lastContentIndex >= 0 && isPossiblyTruncatedWord(kept[lastContentIndex])) {
+    notices.push(issue(
+      'source_truncated_word',
+      lastContentIndex + 1,
+      'notice',
+      NOTICE_MESSAGES.source_truncated_word
+    ));
+  } else if (lastContentIndex >= 0 && isPossiblyIncompleteSentence(kept[lastContentIndex])) {
     notices.push(issue('source_incomplete_sentence', lastContentIndex + 1, 'notice', NOTICE_MESSAGES.source_incomplete_sentence));
   } else if (lastContentIndex >= 0 && isPossiblyMissingTerminalPunctuation(kept[lastContentIndex])) {
     notices.push(issue(
@@ -631,6 +639,12 @@ function splitGenericNumberedHeadingBody(value) {
   const marker = match[1];
   const rest = match[2];
   if (rest.length < 45) return null;
+  // 과제 문항은 `1. ... 해결 방법에는 무엇이 있는지 기술하시오.`처럼
+  // 제목 후보 명사(방법·목적·과제 등)를 문장 안에 포함한다. 이를 OCR로
+  // 붙은 `제목+본문`으로 해석하면 질문 한 문장이 중간에서 둘로 갈라진다.
+  // 번호와 충분한 길이에 더해 문장 끝의 질문/응답 지시를 확인해, 실제
+  // 번호형 질문은 일반 명사형 제목 복구 대상에서 제외한다.
+  if (looksLikeNumberedQuestionPrompt(source)) return null;
 
   GENERIC_HEADING_END_RE.lastIndex = 0;
   let candidate = null;
@@ -647,6 +661,12 @@ function splitGenericNumberedHeadingBody(value) {
     candidate = { title, prose };
   }
   return candidate ? `${marker}${candidate.title}\n${candidate.prose}` : null;
+}
+
+function looksLikeNumberedQuestionPrompt(value) {
+  const text = String(value || '').trim();
+  if (text.length < 45 || !GENERIC_NUMBERED_HEADING_RE.test(text)) return false;
+  return /(?:[?？]|(?:기술|서술|설명|논의|논하|제시|작성|분석|비교|정리)하(?:시오|세요|라)|답하(?:시오|세요)|무엇(?:인가|인지)?)[.!?。！？]*$/u.test(text);
 }
 
 /**
@@ -978,6 +998,21 @@ function isPossiblyIncompleteSentence(value) {
   return /(?:은|는|이|가|을|를|의|에|와|과|및|그리고|그러나|하지만|통해|위해|때문에|따라|대한|관한)$/u.test(text);
 }
 
+// 복사·붙여넣기 중 마지막 어절의 앞부분만 남은 경우를 보수적으로 찾는다.
+// `연구의 질`, `삶의 폭`처럼 정상적으로 한 음절 명사로 끝나는 문장은
+// 제외하고, 의미 단위가 끝난 뒤 낯선 한 음절 조각만 남은 경우만
+// 알린다. 텍스트를 보정하거나 전달을 차단하지 않는다.
+function isPossiblyTruncatedWord(value) {
+  const text = String(value || '').trim();
+  if (text.length < 20 || /[.!?。！？…"'”’」』】)\]]\s*$/u.test(text)) return false;
+  if (STRUCTURAL_LINE_RE.test(text)) return false;
+  const match = text.match(
+    /(?:것|내용|결과|결론|목표|목적|방향|역할|과제|계획|방법|과정|핵심|의미|기준)(?:은|는|이|가|을|를|의|에|로|도|만)?\s+([가-힣])$/u
+  );
+  if (!match) return false;
+  return !/[글책법점것수등중안밖전후질값힘뜻말몸삶길일곳때셈폭층칸쪽장절항조표식]/u.test(match[1]);
+}
+
 function isPossiblyMissingTerminalPunctuation(value) {
   const text = String(value || '').trim();
   if (text.length < 12 || /[.!?。！？…"'”’」』】)\]]\s*$/u.test(text)) return false;
@@ -1130,6 +1165,7 @@ module.exports = {
   transformOutsideWebLiterals,
   hasUnbalancedMarkdown,
   isPossiblyTruncatedReference,
+  isPossiblyTruncatedWord,
   isPossiblyIncompleteSentence,
   isPossiblyMissingTerminalPunctuation,
   hasUnclosedPairs,

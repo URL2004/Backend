@@ -288,6 +288,6 @@ test('v2.5.41: 완결된 원문을 조사에서 잘라낸 결과는 문장 절�
   assert.equal(gate.reason, 'sentence_truncated');
 });
 
-test('v2.5.41 엔진 버전을 노출한다', () => {
-  assert.equal(engine.VERSION, 'gpt-prod-v2.5.41');
+test('v2.5.42 엔진 버전을 노출한다', () => {
+  assert.equal(engine.VERSION, 'gpt-prod-v2.5.42');
 });

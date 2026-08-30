@@ -177,7 +177,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.41');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.42');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -222,6 +222,35 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
     assert.equal(call.body.safety_identifier, expectedSafety);
     assert.equal(JSON.stringify(call.body).includes(uid), false);
   }
+});
+
+test('v2.5.42 최종 고정점은 일반 계획에 새 대상의 출시·성과를 붙인 문장만 안전 삭제한다', { concurrency: false }, async t => {
+  const source = [
+    '기존 작품은 출시 당일 거래액과 구매 전환율에서 좋은 성과를 기록했습니다.',
+    '시장과 이용자 반응을 살피며 콘텐츠의 소구점을 파악하는 안목을 길렀습니다.',
+    '이 경험을 바탕으로 타 장르의 신규 IP를 검토하고 데이터 기반 마케팅을 연계해 콘텐츠 다양성을 확대했습니다.'
+  ].join(' ');
+  const output = [
+    '기존 작품은 출시 당일 거래액과 구매 전환율에서 좋은 성과를 기록했습니다.',
+    '시장과 이용자 반응을 살피며 콘텐츠의 소구점을 파악하는 안목을 길렀습니다.',
+    '이후 ZX 같은 다른 장르의 작품도 출시했고, 해당 작품 역시 거래액과 전환율에서 우수한 성과를 냈습니다.',
+    '이 경험을 바탕으로 데이터 기반 마케팅을 연계해 콘텐츠 다양성을 확대했습니다.'
+  ].join(' ');
+  installEngineMock(t, { humanize: output, koreanRefinementOutput: output });
+
+  const out = await engine.run({
+    text: source,
+    mode: 'blog',
+    uid: 'unsupported-specificity-engine-user',
+    config: config()
+  });
+
+  assert.doesNotMatch(out.result.outputText, /ZX/u);
+  assert.match(out.result.outputText, /데이터 기반 마케팅을 연계해 콘텐츠 다양성을 확대/u);
+  assert.equal(out.engineMeta.unsupportedSpecificityAuditVersion, 1);
+  assert.equal(out.engineMeta.unsupportedSpecificityPass, true, JSON.stringify(out.engineMeta));
+  assert.equal(out.engineMeta.unsupportedSpecificityIssueCount, 0);
+  assert.ok(out.engineMeta.unsupportedSpecificityRemovalCount >= 0);
 });
 
 test('LaTeX 수식은 모델 편집 구간에서 토큰으로 격리되고 최종 결과에 원문 그대로 복원된다', { concurrency: false }, async t => {
@@ -1357,7 +1386,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.41');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.42');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

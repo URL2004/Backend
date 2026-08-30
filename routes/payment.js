@@ -2800,6 +2800,315 @@ router.post('/admin/credit-history', async (req, res) => {
   }
 });
 
+// detect requestId의 서버 계약은 `:`를 허용한다(analyze/detectreport와 동일).
+// Firestore 경로 구분자인 `/`는 계속 금지해 body 식별자가 다른 문서 경로로
+// 해석될 여지는 없앤다.
+const ADMIN_LEDGER_TASK_ID_RE = /^[A-Za-z0-9_:-]{1,180}$/u;
+const ADMIN_LEDGER_TASK_CODE_RE = /^[a-z][a-z0-9_.:-]{0,79}$/u;
+
+function adminLedgerTaskCodes(value, maxItems = 30) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map(item => String(item || '').trim().toLowerCase())
+    .filter(item => ADMIN_LEDGER_TASK_CODE_RE.test(item)))]
+    .slice(0, maxItems);
+}
+
+function adminLedgerTaskFinite(value) {
+  if (value == null || (typeof value === 'string' && !value.trim())) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function classifyAdminLedgerTask(ledger) {
+  const row = ledger && typeof ledger === 'object' ? ledger : {};
+  const type = String(row.type || '').trim().toLowerCase();
+  const requestId = String(row.requestId || '').trim();
+  if (!requestId) return { available: false, reason: 'legacy_missing_request_id' };
+  if (!ADMIN_LEDGER_TASK_ID_RE.test(requestId)) return { available: false, reason: 'invalid_request_id' };
+  if (type === 'humanize_refine'
+      || (['humanize', 'restructure'].includes(type) && /_refine\d+$/u.test(requestId))) {
+    return { available: false, reason: 'refine_result_not_archived' };
+  }
+  if (type === 'humanize' || type === 'restructure') {
+    const match = /^job_([A-Za-z0-9_-]{1,128})$/u.exec(requestId);
+    return match
+      ? { available: true, kind: 'transform', historyId: requestId, jobId: match[1] }
+      : { available: false, reason: 'transform_request_id_mismatch' };
+  }
+  if (type === 'detect') {
+    if (/^job_/u.test(requestId)) return { available: false, reason: 'detect_request_id_mismatch' };
+    return { available: true, kind: 'detect', historyId: requestId, jobId: null };
+  }
+  return { available: false, reason: 'non_task_ledger' };
+}
+
+function serializeAdminLedgerTaskLedger(id, uid, ledger) {
+  const row = ledger && typeof ledger === 'object' ? ledger : {};
+  return {
+    id,
+    uid,
+    type: row.type || null,
+    mode: row.mode || null,
+    used: Number(row.used) || 0,
+    amount: Number(row.amount) || 0,
+    remaining: Number(row.remaining) || 0,
+    textLength: Number(row.textLength) || null,
+    requestId: row.requestId || null,
+    createdAtMs: timestampMs(row.createdAt)
+  };
+}
+
+function serializeAdminLedgerTaskEngineMeta(value) {
+  const meta = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const out = {
+    schemaVersion: adminLedgerTaskFinite(meta.schemaVersion),
+    engineVersion: typeof meta.engineVersion === 'string' ? meta.engineVersion.slice(0, 80) : '',
+    requestedMode: typeof meta.requestedMode === 'string' ? meta.requestedMode.slice(0, 40) : '',
+    effectiveMode: typeof meta.effectiveMode === 'string' ? meta.effectiveMode.slice(0, 40) : '',
+    documentProfile: typeof meta.documentProfile === 'string' ? meta.documentProfile.slice(0, 80) : '',
+    profileConfidence: adminLedgerTaskFinite(meta.profileConfidence),
+    deliveryDecision: typeof meta.deliveryDecision === 'string' ? meta.deliveryDecision.slice(0, 80) : '',
+    deliveryReasonCodes: adminLedgerTaskCodes(meta.deliveryReasonCodes),
+    effectStatus: typeof meta.effectStatus === 'string' ? meta.effectStatus.slice(0, 40) : '',
+    effectNoticeCodes: adminLedgerTaskCodes(meta.effectNoticeCodes),
+    billingDisposition: typeof meta.billingDisposition === 'string' ? meta.billingDisposition.slice(0, 80) : '',
+    semanticJudgeRan: typeof meta.semanticJudgeRan === 'boolean' ? meta.semanticJudgeRan : null,
+    repairCount: adminLedgerTaskFinite(meta.repairCount),
+    chunkCount: adminLedgerTaskFinite(meta.chunkCount),
+    fallbackCount: adminLedgerTaskFinite(meta.fallbackCount),
+    editableChunkCount: adminLedgerTaskFinite(meta.editableChunkCount),
+    approvedModelChunkCount: adminLedgerTaskFinite(meta.approvedModelChunkCount),
+    modelFailureChunkCount: adminLedgerTaskFinite(meta.modelFailureChunkCount),
+    structureSignaturePass: typeof meta.structureSignaturePass === 'boolean' ? meta.structureSignaturePass : null,
+    sectionPathErrorCount: adminLedgerTaskFinite(meta.sectionPathErrorCount),
+    lengthRatio: adminLedgerTaskFinite(meta.lengthRatio),
+    substantiveEditRatio: adminLedgerTaskFinite(meta.substantiveEditRatio),
+    structuralChangedSentenceRatio: adminLedgerTaskFinite(meta.structuralChangedSentenceRatio),
+    rhetoricalRemediationCoverage: adminLedgerTaskFinite(meta.rhetoricalRemediationCoverage),
+    humanizationDepthPass: typeof meta.humanizationDepthPass === 'boolean' ? meta.humanizationDepthPass : null,
+    koreanRefinementPass: typeof meta.koreanRefinementPass === 'boolean' ? meta.koreanRefinementPass : null,
+    koreanRefinementIssueCodes: adminLedgerTaskCodes(meta.koreanRefinementIssueCodes),
+    sourceReviewWarningCodes: adminLedgerTaskCodes(meta.sourceReviewWarningCodes),
+    finalSourceIntegrityRestoreCodes: adminLedgerTaskCodes(meta.finalSourceIntegrityRestoreCodes),
+    unsupportedSpecificityPass: typeof meta.unsupportedSpecificityPass === 'boolean'
+      ? meta.unsupportedSpecificityPass
+      : null,
+    unsupportedSpecificityIssueCount: adminLedgerTaskFinite(meta.unsupportedSpecificityIssueCount),
+    unsupportedSpecificityResidualCount: adminLedgerTaskFinite(meta.unsupportedSpecificityResidualCount),
+    unsupportedSpecificityRestoreCount: adminLedgerTaskFinite(meta.unsupportedSpecificityRestoreCount),
+    unsupportedSpecificityRemovalCount: adminLedgerTaskFinite(meta.unsupportedSpecificityRemovalCount),
+    estimatedUsd: adminLedgerTaskFinite(meta.estimatedUsd)
+  };
+  return Object.fromEntries(Object.entries(out).filter(([, item]) => item !== '' && item !== null));
+}
+
+function serializeAdminLedgerTaskArchive(value, jobId) {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const createdAtNumber = adminLedgerTaskFinite(row.createdAt);
+  const createdAtTimestamp = row.createdAt == null ? null : timestampMs(row.createdAt);
+  const out = {
+    jobId,
+    status: typeof row.status === 'string' ? row.status.slice(0, 40) : '',
+    stage: typeof row.stage === 'string' ? row.stage.slice(0, 80) : '',
+    engineVersion: typeof row.engineVersion === 'string' ? row.engineVersion.slice(0, 80) : '',
+    requestedMode: typeof row.requestedMode === 'string' ? row.requestedMode.slice(0, 40) : '',
+    effectiveMode: typeof row.effectiveMode === 'string' ? row.effectiveMode.slice(0, 40) : '',
+    documentProfile: typeof row.documentProfile === 'string' ? row.documentProfile.slice(0, 80) : '',
+    billingDisposition: typeof row.billingDisposition === 'string' ? row.billingDisposition.slice(0, 80) : '',
+    qualityStatus: typeof row.qualityStatus === 'string' ? row.qualityStatus.slice(0, 40) : '',
+    qualityWarningCodes: adminLedgerTaskCodes(row.qualityWarningCodes),
+    koreanRefinementIssueCodes: adminLedgerTaskCodes(row.koreanRefinementIssueCodes),
+    sourceReviewWarningCodes: adminLedgerTaskCodes(row.sourceReviewWarningCodes),
+    finalSourceIntegrityRestoreCodes: adminLedgerTaskCodes(row.finalSourceIntegrityRestoreCodes),
+    effectStatus: typeof row.effectStatus === 'string' ? row.effectStatus.slice(0, 40) : '',
+    effectNoticeCodes: adminLedgerTaskCodes(row.effectNoticeCodes),
+    deliveryDecision: typeof row.deliveryDecision === 'string' ? row.deliveryDecision.slice(0, 80) : '',
+    deliveryReasonCodes: adminLedgerTaskCodes(row.deliveryReasonCodes),
+    createdAtMs: createdAtNumber ?? (createdAtTimestamp || null),
+    updatedAtMs: adminLedgerTaskFinite(row.updatedAtMs),
+    processingDurationMs: adminLedgerTaskFinite(row.processingDurationMs),
+    totalDurationMs: adminLedgerTaskFinite(row.totalDurationMs),
+    textLength: adminLedgerTaskFinite(row.textLength),
+    resultLength: adminLedgerTaskFinite(row.resultLength),
+    estimatedUsd: adminLedgerTaskFinite(row.estimatedUsd),
+    substantiveEditRatio: adminLedgerTaskFinite(row.substantiveEditRatio),
+    editableChunkCount: adminLedgerTaskFinite(row.editableChunkCount),
+    approvedModelChunkCount: adminLedgerTaskFinite(row.approvedModelChunkCount),
+    modelFailureChunkCount: adminLedgerTaskFinite(row.modelFailureChunkCount),
+    structureSignaturePass: typeof row.structureSignaturePass === 'boolean' ? row.structureSignaturePass : null,
+    sectionPathErrorCount: adminLedgerTaskFinite(row.sectionPathErrorCount),
+    unsupportedSpecificityPass: typeof row.unsupportedSpecificityPass === 'boolean'
+      ? row.unsupportedSpecificityPass
+      : null,
+    unsupportedSpecificityIssueCount: adminLedgerTaskFinite(row.unsupportedSpecificityIssueCount),
+    unsupportedSpecificityResidualCount: adminLedgerTaskFinite(row.unsupportedSpecificityResidualCount),
+    unsupportedSpecificityRestoreCount: adminLedgerTaskFinite(row.unsupportedSpecificityRestoreCount),
+    unsupportedSpecificityRemovalCount: adminLedgerTaskFinite(row.unsupportedSpecificityRemovalCount)
+  };
+  return Object.fromEntries(Object.entries(out).filter(([, item]) => item !== '' && item !== null));
+}
+
+function serializeAdminLedgerTaskHistory(id, history) {
+  const row = history && typeof history === 'object' ? history : {};
+  const asText = value => (typeof value === 'string' ? value : (value ? JSON.stringify(value) : ''));
+  const calibration = row.probabilityCalibration && typeof row.probabilityCalibration === 'object'
+    ? {
+        applied: row.probabilityCalibration.applied === true,
+        match: typeof row.probabilityCalibration.match === 'string' ? row.probabilityCalibration.match.slice(0, 40) : '',
+        matchSimilarity: adminLedgerTaskFinite(row.probabilityCalibration.matchSimilarity),
+        matchLengthRatio: adminLedgerTaskFinite(row.probabilityCalibration.matchLengthRatio)
+      }
+    : null;
+  return {
+    id,
+    type: row.type || 'unknown',
+    status: typeof row.status === 'string' ? row.status.slice(0, 40) : '',
+    mode: row.mode || null,
+    createdAtMs: timestampMs(row.createdAt),
+    credits: Number(row.credits) || 0,
+    billingDisposition: row.billingDisposition || '',
+    qualityStatus: row.qualityStatus || '',
+    qualityWarningCodes: adminLedgerTaskCodes(row.qualityWarningCodes),
+    effectStatus: typeof row.effectStatus === 'string' ? row.effectStatus.slice(0, 40) : '',
+    effectNoticeCodes: adminLedgerTaskCodes(
+      row.effectNoticeCodes || (Array.isArray(row.effectNotices)
+        ? row.effectNotices.map(item => item && item.code)
+        : [])
+    ),
+    deliveryDecision: typeof row.deliveryDecision === 'string' ? row.deliveryDecision.slice(0, 80) : '',
+    sourceReviewWarningCodes: adminLedgerTaskCodes(row.sourceReviewWarningCodes),
+    probability: typeof row.probability === 'number' ? row.probability : null,
+    rawProbability: typeof row.rawProbability === 'number' ? row.rawProbability : null,
+    ...(calibration ? { probabilityCalibration: Object.fromEntries(Object.entries(calibration).filter(([, item]) => item !== '' && item !== null)) } : {}),
+    summary: asText(row.summary),
+    detail: asText(row.detail),
+    inputText: String(row.inputText || ''),
+    outputText: String(row.outputText || ''),
+    humanSummary: asText(row.humanSummary),
+    humanDetail: asText(row.humanDetail),
+    savedBy: row.savedBy || null
+  };
+}
+
+function serializeAdminLedgerTaskOps(id, value) {
+  const row = value && typeof value === 'object' ? value : {};
+  return {
+    id,
+    event: typeof row.event === 'string' ? row.event.slice(0, 160) : 'operation',
+    severity: typeof row.severity === 'string' ? row.severity.slice(0, 20) : '',
+    domain: typeof row.domain === 'string' ? row.domain.slice(0, 40) : '',
+    message: typeof row.message === 'string' ? row.message.slice(0, 600) : '',
+    code: typeof row.code === 'string' ? row.code.slice(0, 80) : '',
+    stage: typeof row.stage === 'string' ? row.stage.slice(0, 80) : '',
+    reason: typeof row.reason === 'string' ? row.reason.slice(0, 300) : '',
+    createdAtMs: adminLedgerTaskFinite(row.createdMs),
+    count: Math.max(1, Number(row.count) || 1),
+    acked: row.acked === true
+  };
+}
+
+async function loadAdminLedgerTaskOps({ uid, link, firestore = db } = {}) {
+  const lookups = [];
+  if (link?.jobId) lookups.push(['jobId', link.jobId]);
+  if (link?.historyId) lookups.push(['requestId', link.historyId]);
+  if (!lookups.length) return { status: 'empty', items: [] };
+  try {
+    // equality+createdMs orderBy는 별도 복합 인덱스를 요구할 수 있다. 작업별
+    // 로그는 30일 TTL과 1분 병합이 적용되므로 일치 문서를 모두 받은 뒤
+    // 정렬해야, Firestore의 기본 문서 ID 순서에 의해 최신 로그가 잘리는
+    // 문제가 없다.
+    const snapshots = await Promise.all(lookups.map(([field, value]) => (
+      firestore.collection('opsLogs').where(field, '==', value).get()
+    )));
+    const byId = new Map();
+    snapshots.forEach(snapshot => snapshot.forEach(doc => {
+      const row = doc.data() || {};
+      if (row.uid && String(row.uid) !== uid) return;
+      byId.set(doc.id, serializeAdminLedgerTaskOps(doc.id, row));
+    }));
+    const items = [...byId.values()]
+      .sort((left, right) => Number(right.createdAtMs || 0) - Number(left.createdAtMs || 0))
+      .slice(0, 30);
+    return { status: items.length ? 'ok' : 'empty', items };
+  } catch (error) {
+    logger.warn('admin.credit_history_task_ops_failed', {
+      targetUid: uid,
+      jobId: link?.jobId || '',
+      requestId: link?.historyId || '',
+      err: error,
+      noAlert: true
+    });
+    return { status: 'error', items: [] };
+  }
+}
+
+// 관리자 원장 행에서만 진입하는 작업 상세. 클라이언트가 requestId를 직접 지정하지 못하게
+// 원장 문서를 먼저 읽고, 그 문서의 소유 경로와 requestId로 history/archive를 결합한다.
+router.post('/admin/credit-history-item', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  const uid = String(req.body && req.body.uid || '').trim();
+  const creditHistoryId = String(req.body && req.body.creditHistoryId || '').trim();
+  if (!ADMIN_LEDGER_TASK_ID_RE.test(uid) || !ADMIN_LEDGER_TASK_ID_RE.test(creditHistoryId)) {
+    return res.status(400).json({ error: '유효한 uid와 creditHistoryId가 필요합니다.', code: 'INVALID_LEDGER_TASK_REFERENCE' });
+  }
+  try {
+    const ledgerRef = db.collection('users').doc(uid).collection('creditHistory').doc(creditHistoryId);
+    const ledgerSnap = await ledgerRef.get();
+    if (!ledgerSnap.exists) return res.status(404).json({ error: '원장 내역을 찾을 수 없습니다.', code: 'LEDGER_NOT_FOUND' });
+    const ledgerData = ledgerSnap.data() || {};
+    const ledger = serializeAdminLedgerTaskLedger(creditHistoryId, uid, ledgerData);
+    const link = classifyAdminLedgerTask(ledgerData);
+    if (!link.available) {
+      logger.info('admin.credit_history_task_unavailable', { adminUid, targetUid: uid, creditHistoryId, reason: link.reason });
+      return res.json({ ok: true, available: false, reason: link.reason, ledger });
+    }
+
+    const historySnap = await db.collection('users').doc(uid).collection('history').doc(link.historyId).get();
+    if (!historySnap.exists) {
+      return res.json({ ok: true, available: false, reason: 'history_not_found', ledger, link });
+    }
+    const historyData = historySnap.data() || {};
+    const expectedType = link.kind === 'detect' ? 'detect' : 'humanize';
+    if (String(historyData.type || '') !== expectedType) {
+      logger.warn('admin.credit_history_task_type_mismatch', { adminUid, targetUid: uid, creditHistoryId, expectedType });
+      return res.status(409).json({ error: '원장과 작업 기록의 유형이 일치하지 않습니다.', code: 'TASK_TYPE_MISMATCH' });
+    }
+
+    let archive = null;
+    if (link.kind === 'transform' && link.jobId) {
+      const archiveSnap = await db.collection(JOB_ARCHIVE_COLLECTION).doc(link.jobId).get();
+      if (archiveSnap.exists) {
+        const archiveData = archiveSnap.data() || {};
+        if (String(archiveData.uid || '') !== uid) {
+          logger.warn('admin.credit_history_task_owner_mismatch', { adminUid, targetUid: uid, creditHistoryId, jobId: link.jobId });
+          return res.status(409).json({ error: '원장과 작업 기록의 소유자가 일치하지 않습니다.', code: 'TASK_OWNER_MISMATCH' });
+        }
+        archive = serializeAdminLedgerTaskArchive(archiveData, link.jobId);
+      }
+    }
+
+    const opsResult = await loadAdminLedgerTaskOps({ uid, link });
+    logger.info('admin.credit_history_task_loaded', { adminUid, targetUid: uid, creditHistoryId, kind: link.kind });
+    return res.json({
+      ok: true,
+      available: true,
+      ledger,
+      link,
+      history: serializeAdminLedgerTaskHistory(link.historyId, historyData),
+      engine: {
+        engineMeta: serializeAdminLedgerTaskEngineMeta(historyData.engineMeta),
+        archive
+      },
+      ops: opsResult.items,
+      opsStatus: opsResult.status
+    });
+  } catch (err) {
+    logger.error('admin.credit_history_task_failed', { adminUid, targetUid: uid, creditHistoryId, err });
+    return res.status(500).json({ error: '원장 관련 작업을 불러오지 못했습니다.' });
+  }
+});
+
 // 관리자: 특정 사용자의 작업 기록(users/{uid}/history) 목록 — 미리보기 + 커서 페이지네이션
 function historyPreview(s, n) {
   const t = String(s || '').replace(/\s+/g, ' ').trim();
@@ -3069,6 +3378,13 @@ function serializeAdminJobDoc(docSnap) {
     semanticRelationShiftFamilies: safeCodes(j.semanticRelationShiftFamilies),
     fingerprintRepairCount: finiteOrNull(j.fingerprintRepairCount),
     fingerprintSourceRestoreCount: finiteOrNull(j.fingerprintSourceRestoreCount),
+    unsupportedSpecificityPass: typeof j.unsupportedSpecificityPass === 'boolean'
+      ? j.unsupportedSpecificityPass
+      : null,
+    unsupportedSpecificityIssueCount: finiteOrNull(j.unsupportedSpecificityIssueCount),
+    unsupportedSpecificityResidualCount: finiteOrNull(j.unsupportedSpecificityResidualCount),
+    unsupportedSpecificityRestoreCount: finiteOrNull(j.unsupportedSpecificityRestoreCount),
+    unsupportedSpecificityRemovalCount: finiteOrNull(j.unsupportedSpecificityRemovalCount),
     fingerprintShadowPositiveCodes: safeCodes(j.fingerprintShadowPositiveCodes),
     fingerprintShadowPositiveCount: finiteOrNull(j.fingerprintShadowPositiveCount),
     endingStylePass: typeof j.endingStylePass === 'boolean' ? j.endingStylePass : null,
@@ -5616,6 +5932,15 @@ router.adminHistoryPolicy = {
   serializeOrderDoc,
   splitAdminCreditHistory,
   creditLedgerDelta
+};
+router.adminLedgerTaskPolicy = {
+  classifyAdminLedgerTask,
+  serializeAdminLedgerTaskLedger,
+  serializeAdminLedgerTaskHistory,
+  serializeAdminLedgerTaskEngineMeta,
+  serializeAdminLedgerTaskArchive,
+  serializeAdminLedgerTaskOps,
+  loadAdminLedgerTaskOps
 };
 router.creditGrantPolicy = {
   assertPaymentIntentAllowsCreditGrant,

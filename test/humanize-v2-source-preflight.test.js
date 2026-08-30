@@ -45,6 +45,40 @@ test('끝이 잘린 참고문헌과 미완성 마지막 문장을 감지하되 �
   const incompleteResult = preflight.auditAndSanitizeSource(incomplete);
   assert.equal(incompleteResult.text, incomplete);
   assert.ok(incompleteResult.issueCodes.includes('source_incomplete_sentence'));
+
+  const truncatedWord = '이러한 과정을 통해 최종적으로 확인하려는 것이 목';
+  const truncatedWordResult = preflight.auditAndSanitizeSource(truncatedWord);
+  assert.equal(truncatedWordResult.text, truncatedWord);
+  assert.equal(truncatedWordResult.changed, false);
+  assert.equal(truncatedWordResult.removedLineCount, 0);
+  assert.ok(truncatedWordResult.issueCodes.includes('source_truncated_word'));
+  assert.ok(truncatedWordResult.warnings.some(item => (
+    item.code === 'source_truncated_word' && item.severity === 'notice'
+  )));
+
+  for (const complete of [
+    '이번 연구에서 가장 중요하게 확인한 것은 연구의 질',
+    '이번 연구에서 가장 중요하게 확인한 것이 목적이다.'
+  ]) {
+    const completeResult = preflight.auditAndSanitizeSource(complete);
+    assert.equal(completeResult.issueCodes.includes('source_truncated_word'), false);
+  }
+});
+
+test('긴 번호형 질문 안의 방법·목적을 인라인 제목으로 오인해 줄을 나누지 않는다', () => {
+  const questions = [
+    '1. 자신의 삶에서 인간관계가 어려웠던 부분은 무엇이며 이를 극복하기 위한 동기부여 방법에는 무엇이 있을지 세 가지 이상 기술하시오.',
+    '2) 이 활동의 목적과 실행 방법을 비교한 뒤 가장 적절한 대안은 무엇인지 설명하세요.'
+  ];
+  for (const source of questions) {
+    const repaired = preflight.repairInlineHeadingBoundaries(source);
+    assert.equal(repaired.text, source);
+    assert.equal(repaired.changes.length, 0);
+
+    const audited = preflight.auditAndSanitizeSource(source);
+    assert.equal(audited.text, source);
+    assert.equal(audited.issueCodes.includes('source_inline_heading_repaired'), false);
+  }
 });
 
 test('입력이 전부 UI 문구여도 빈 본문으로 만들지 않는다', () => {
@@ -61,7 +95,7 @@ test('본문 끝에 붙은 재작성 요청은 제거하되 본문 속 인용 �
     '이런 내용으로 인간처럼 다시 써줘'
   ].join('\n');
   const result = preflight.auditAndSanitizeSource(source);
-  assert.equal(result.version, 16);
+  assert.equal(result.version, 17);
   assert.equal(result.changed, true);
   assert.equal(result.text, '디지털 격차의 원인과 정책 대안을 비교했다.');
   assert.ok(result.issueCodes.includes('source_rewrite_request_artifact'));

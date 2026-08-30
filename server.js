@@ -49,9 +49,9 @@ app.post(
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 app.use(maintenanceMode);
 
-// High-cost AI mutations require Firebase App Check. The default is shadow mode
-// so an older browser is observed without interruption; APPCHECK_MODE=enforce
-// turns the same boundary into a fail-closed check. Verified admins are exempt.
+// App Check boundary is prepared but disabled by default. It is intentionally
+// activated only through APPCHECK_MODE after the matching web client ships.
+// Verified admins remain exempt when the boundary is explicitly activated.
 const highCostAppCheck = createAppCheckProtection({
   verifyAppCheck,
   verifyFirebaseIdToken,
@@ -142,12 +142,10 @@ async function detailedHealth() {
   }
 }
 
-app.get(['/healthz', '/api/health'], async (_req, res) => {
-  const health = await detailedHealth();
-  res.status(health.status).json({
-    ok: health.payload.ok === true,
-    status: health.payload.ok === true ? 'ready' : 'degraded'
-  });
+app.get(['/healthz', '/api/health'], (_req, res) => {
+  // Public health is liveness-only: if Express can answer, the process is up.
+  // Avoid a public endpoint repeatedly causing Firestore/runtime-config reads.
+  res.status(200).json({ ok: true, status: 'up' });
 });
 
 app.get('/internal/health', async (req, res) => {

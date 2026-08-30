@@ -25,8 +25,8 @@ test('public health response is minimal and detailed runtime fields stay behind 
   const internalStart = source.indexOf("app.get('/internal/health'");
   assert.ok(publicStart > 0 && internalStart > publicStart);
   const publicHandler = source.slice(publicStart, internalStart);
-  assert.match(publicHandler, /ok:\s*health\.payload\.ok/u);
-  assert.match(publicHandler, /status:\s*health\.payload\.ok/u);
+  assert.match(publicHandler, /status\(200\)\.json\(\{\s*ok:\s*true,\s*status:\s*'up'\s*\}\)/u);
+  assert.doesNotMatch(publicHandler, /detailedHealth\(/u);
   assert.doesNotMatch(publicHandler, /activeJobs|activeProvider|openai|firebase|uptimeSec/u);
   assert.match(source.slice(internalStart), /verifyDetailedHealthRequest/u);
 });

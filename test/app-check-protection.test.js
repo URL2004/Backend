@@ -33,11 +33,12 @@ async function invoke(middleware, req) {
 
 const quietLogger = { warn() {} };
 
-test('App Check mode supports explicit off/shadow/enforce and legacy enforcement', () => {
-  assert.equal(appCheckMode({}), 'shadow');
+test('App Check stays off unless APPCHECK_MODE explicitly enables it', () => {
+  assert.equal(appCheckMode({}), 'off');
   assert.equal(appCheckMode({ APPCHECK_MODE: 'off' }), 'off');
+  assert.equal(appCheckMode({ APPCHECK_MODE: 'shadow' }), 'shadow');
   assert.equal(appCheckMode({ APPCHECK_MODE: 'enforce' }), 'enforce');
-  assert.equal(appCheckMode({ APPCHECK_ENFORCE: '1' }), 'enforce');
+  assert.equal(appCheckMode({ APPCHECK_ENFORCE: '1' }), 'off');
 });
 
 test('shadow mode records missing App Check without breaking an old frontend', async () => {

@@ -8,8 +8,9 @@ const MODES = new Set(['off', 'shadow', 'enforce']);
 function appCheckMode(env = process.env) {
   const explicit = String(env.APPCHECK_MODE || '').trim().toLowerCase();
   if (MODES.has(explicit)) return explicit;
-  if (String(env.APPCHECK_ENFORCE || '').trim() === '1') return 'enforce';
-  return 'shadow';
+  // App Check is prepared but intentionally not active in production yet.
+  // Activation must be an explicit environment change after the web client ships.
+  return 'off';
 }
 
 function bearerToken(req) {

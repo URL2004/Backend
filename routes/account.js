@@ -1,25 +1,42 @@
 // [계정] 회원 탈퇴 — Admin SDK로 Firestore 데이터 + Firebase Auth 계정을 서버 권한으로 삭제.
-// ★ 기존 클라이언트 재인증(카카오 비밀번호 패턴 추측) 의존 제거.
-//   추측 패턴이 안 맞는 카카오 계정은 구조적으로 탈퇴 불가했던 민원(#40·#61·#62·#91)을 해결한다.
-//   Admin SDK는 재인증 없이 삭제 가능하므로 팝업 차단·비밀번호 불일치 환경에서도 동작한다.
+// ★ 서버가 auth_time을 확인해 최근 로그인한 사용자만 파괴적 작업을 수행할 수 있다.
+//   Google은 재인증, Kakao는 새 provider token→custom token 로그인으로 auth_time을 갱신한다.
 
 const express = require('express');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
-const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
+const { hasRecentAuthentication } = require('../lib/recentAuth');
 
 const router = express.Router();
 
 router.post('/delete-account', async (req, res) => {
   if (!admin || !db) return res.status(503).json({ error: '인증 서버가 비활성 상태예요. 잠시 후 다시 시도해주세요.' });
 
-  const idToken = bearerToken(req);   // 헤더 우선(body.idToken 폴백)
+  // 파괴적 작업에는 body/query 토큰 호환 경로를 허용하지 않는다. 접근 로그나
+  // 중간 계층에 장기 토큰이 남지 않도록 Authorization 헤더만 받는다.
+  const authorization = (typeof req.get === 'function' ? req.get('authorization') : '')
+    || (req.headers && req.headers.authorization) || '';
+  const match = String(authorization).match(/^Bearer\s+(.+)$/i);
+  const idToken = match ? match[1].trim() : '';
   if (!idToken) return res.status(401).json({ error: '로그인이 필요해요.' });
 
   let uid;
-  try { uid = (await admin.auth().verifyIdToken(idToken)).uid; }
+  let decoded;
+  try {
+    // checkRevoked=true: 이미 로그아웃/강제 만료된 토큰으로 탈퇴를 재시도하지 못하게 한다.
+    decoded = await admin.auth().verifyIdToken(idToken, true);
+    uid = decoded.uid;
+  }
   catch { return res.status(401).json({ error: '인증이 만료됐어요. 다시 로그인 후 시도해주세요.' }); }
   setLogContext({ uid });
+
+  if (!hasRecentAuthentication(decoded)) {
+    logger.warn('account.delete_recent_auth_required', { uid });
+    return res.status(401).json({
+      code: 'ACCOUNT_RECENT_LOGIN_REQUIRED',
+      error: '안전한 탈퇴 처리를 위해 다시 로그인해 주세요.',
+    });
+  }
 
   try {
     const userRef = db.collection('users').doc(uid);

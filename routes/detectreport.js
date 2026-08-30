@@ -17,7 +17,7 @@ const sg = require('../engine/surfaceguard');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 const crypto = require('crypto');
-const { db, verifyToken, verifyAppCheck, ADMIN_UIDS } = require('../config');
+const { db, verifyToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선·body 폴백(deprecated)
 const detectCalibration = require('../lib/detectCalibration');
@@ -336,13 +336,7 @@ router.post('/coach-suggest', async (req, res) => {
     return res.status(422).json({ ok: false, code: 'UNREADABLE_INPUT', reason: readability.reason, error: inputrouting.UNREADABLE_INPUT_MESSAGE });
   }
 
-  // (1) App Check — 콘솔·프런트 준비 후 APPCHECK_ENFORCE=1로 켜면 정상 앱 외 호출 차단.
-  if (!req.appCheck && process.env.APPCHECK_ENFORCE === '1') {
-    const ok = await verifyAppCheck(req.headers['x-firebase-appcheck']);
-    if (!ok) return res.status(401).json({ ok: false, error: '비정상 접근입니다.' });
-  }
-
-  // (2) IP별 시간당 캡 — 봇 반복호출로 인한 LLM 비용·동시성 소진 차단.
+  // (1) IP별 시간당 캡 — 봇 반복호출로 인한 LLM 비용·동시성 소진 차단.
   const ip = clientIp(req);
   const hour = coachHour();
   const rec = coachIp.get(ip);
@@ -352,7 +346,7 @@ router.post('/coach-suggest', async (req, res) => {
     return res.status(429).json({ ok: true, stances: [], experiences: [], capped: true });
   }
 
-  // (3) 텍스트 해시 캐시 — 동일 입력 재호출은 LLM 없이 즉시 응답(중복 클릭·재시도 비용 제거).
+  // (2) 텍스트 해시 캐시 — 동일 입력 재호출은 LLM 없이 즉시 응답(중복 클릭·재시도 비용 제거).
   const hash = crypto.createHash('sha256').update(text).digest('hex');
   const cached = coachCache.get(hash);
   if (cached) return res.json({ ok: true, stances: cached.stances, experiences: cached.experiences });

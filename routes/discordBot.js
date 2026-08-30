@@ -33,6 +33,57 @@ function verifySignature(rawBody, signatureHex, timestamp, publicKeyHex) {
 }
 
 const PERIOD_VALUES = new Set(['today', 'yesterday', 'week', 'month', 'all']);
+const SIGNATURE_MAX_AGE_MS = 5 * 60 * 1000;
+const REPLAY_CACHE_MAX_ENTRIES = 2048;
+
+function isFreshTimestamp(timestamp, nowMs = Date.now(), maxAgeMs = SIGNATURE_MAX_AGE_MS) {
+  const text = String(timestamp || '').trim();
+  if (!/^\d{10,11}$/u.test(text)) return false;
+
+  const timestampMs = Number(text) * 1000;
+  if (!Number.isSafeInteger(timestampMs)) return false;
+  return Math.abs(nowMs - timestampMs) <= maxAgeMs;
+}
+
+function createReplayGuard({
+  maxEntries = REPLAY_CACHE_MAX_ENTRIES,
+  ttlMs = SIGNATURE_MAX_AGE_MS,
+  now = Date.now
+} = {}) {
+  const entries = new Map();
+  const capacity = Math.max(1, Math.floor(Number(maxEntries) || REPLAY_CACHE_MAX_ENTRIES));
+  const lifetimeMs = Math.max(1, Math.floor(Number(ttlMs) || SIGNATURE_MAX_AGE_MS));
+
+  function purgeExpired(nowMs) {
+    for (const [key, expiresAt] of entries) {
+      if (expiresAt <= nowMs) entries.delete(key);
+    }
+  }
+
+  return {
+    claim(value) {
+      const replayIdentity = String(value || '').trim();
+      if (!replayIdentity) return false;
+
+      const nowMs = Number(now());
+      purgeExpired(nowMs);
+      const cacheKey = crypto.createHash('sha256').update(replayIdentity).digest('hex');
+      if ((entries.get(cacheKey) || 0) > nowMs) return false;
+
+      while (entries.size >= capacity) {
+        entries.delete(entries.keys().next().value);
+      }
+      entries.set(cacheKey, nowMs + lifetimeMs);
+      return true;
+    },
+    size() {
+      purgeExpired(Number(now()));
+      return entries.size;
+    }
+  };
+}
+
+const interactionReplayGuard = createReplayGuard();
 
 async function handleInteractions(req, res) {
   const publicKey = (process.env.DISCORD_PUBLIC_KEY || '').trim();
@@ -41,6 +92,9 @@ async function handleInteractions(req, res) {
   const raw = req.body; // express.raw → Buffer
 
   if (!publicKey || !signature || !timestamp || !Buffer.isBuffer(raw)) {
+    return res.status(401).send('invalid request signature');
+  }
+  if (!isFreshTimestamp(timestamp)) {
     return res.status(401).send('invalid request signature');
   }
   if (!verifySignature(raw, signature, timestamp, publicKey)) {
@@ -53,6 +107,15 @@ async function handleInteractions(req, res) {
 
   // 1 = PING
   if (body.type === 1) return res.json({ type: 1 });
+
+  // Discord application commands carry a unique interaction id. PING is deliberately
+  // exempt because it is side-effect free and Discord may repeat endpoint validation.
+  const replayIdentity = body.id
+    ? `interaction:${String(body.id)}`
+    : `signature:${String(timestamp)}:${String(signature).toLowerCase()}`;
+  if (!interactionReplayGuard.claim(replayIdentity)) {
+    return res.status(401).send('invalid request signature');
+  }
 
   // 2 = APPLICATION_COMMAND
   if (body.type === 2) {
@@ -77,4 +140,9 @@ async function handleInteractions(req, res) {
   return res.json({ type: 4, data: { flags: 64, content: '지원하지 않는 요청입니다.' } });
 }
 
-module.exports = { handleInteractions, verifySignature };
+module.exports = {
+  createReplayGuard,
+  handleInteractions,
+  isFreshTimestamp,
+  verifySignature
+};

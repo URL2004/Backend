@@ -1,7 +1,7 @@
 const { coreRules } = require('./common/core');
 const { conflictPolicy } = require('./common/conflictPolicy');
 const { outputRules } = require('./common/output');
-const { protectedTermsBlock } = require('./guards/protectedTerms');
+const { protectedTermsBlock, protectedTermsData } = require('./guards/protectedTerms');
 
 const genres = {
   academic_assignment: require('./genres/academicAssignment'),
@@ -70,7 +70,7 @@ function buildPrompt(ctx = {}) {
 
   return {
     stable: blocks.filter(Boolean).join('\n\n'),
-    volatile: ctx.userNotes ? `[사용자 제공 재료]\n${ctx.userNotes}` : '',
+    volatile: protectedTermsData(ctx.protectedTerms || []),
     text: blocks.filter(Boolean).join('\n\n'),
     modules,
     meta: {

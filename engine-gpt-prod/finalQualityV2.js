@@ -1056,7 +1056,7 @@ async function retryConservativeSentenceSurface({
       ? '이 문장은 문서 안에서 반복된 강한 수식의 감축 대상으로 선택됐다. 표시된 강한 수식어를 약한 동의어로만 바꾸거나 그대로 두지 말고, CURRENT와 SOURCE에 이미 있는 대상·행위·영향 관계를 문장의 중심으로 직접 서술한다. 원문의 부정·가능성·우려·평가 강도는 낮추거나 높이지 않는다.'
       : '',
     remediationTargetTerms.length
-      ? `이번 문장에서 그대로 남기지 않을 반복 수식=${remediationTargetTerms.join(', ')}. 이 문자열을 출력에 복사하지 않고, SOURCE에 이미 있는 조건·대상·영향 관계로 같은 강도를 표현한다.`
+      ? 'REMEDIATION_TARGET_TERMS 데이터에 표시된 반복 수식은 출력에 그대로 복사하지 않고, SOURCE에 이미 있는 조건·대상·영향 관계로 같은 강도를 표현한다.'
       : '',
     '위 조건을 모두 지킬 수 없으면 rewrittenSentence에는 CURRENT SENTENCE를 그대로 넣는다.'
   ].filter(Boolean).join('\n');
@@ -1068,7 +1068,8 @@ async function retryConservativeSentenceSurface({
       { label: 'SOURCE_SENTENCE', value: sourceSpan.text },
       { label: 'CURRENT_SENTENCE', value: currentSpan.text },
       { label: 'PREVIOUS_CONTEXT', value: previous },
-      { label: 'NEXT_CONTEXT', value: next }
+      { label: 'NEXT_CONTEXT', value: next },
+      { label: 'REMEDIATION_TARGET_TERMS', value: remediationTargetTerms.join('\n') }
     ]).text,
     schema: CONSERVATIVE_SENTENCE_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_conservative_sentence_retry',
@@ -1546,14 +1547,16 @@ async function retryKoreanRefinement({
     ['personal_essay', 'general_essay', 'student_self_assessment'].includes(profile)
       ? '성찰문의 구체적인 감정, 내적 질문, 인정 욕구, 자기 의심을 일반적인 성장 교훈으로 축약하지 않는다. SOURCE에 있는 감정만 같은 강도로 복원하고 새 감정이나 극적인 장면은 만들지 않는다.'
       : '',
-    '수리할 문제가 실제로 남아 있지 않거나 보존 조건 안에서 안전하게 고칠 수 없으면 CURRENT를 그대로 반환한다.',
     '[수리 대상]',
-    ...issueLines
+    '수리 대상은 REPAIR_TARGETS 데이터에 표시된 항목으로 한정한다.',
+    '수리할 문제가 실제로 남아 있지 않거나 보존 조건 안에서 안전하게 고칠 수 없으면 CURRENT를 그대로 반환한다.'
   ].filter(Boolean).join('\n');
   assertRepairPrompt(system, { family: 'korean_refinement', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
-    user: sourceCurrentPrompt(source, currentOutput),
+    user: sourceCurrentPrompt(source, currentOutput, [
+      { label: 'REPAIR_TARGETS', value: issueLines.join('\n') }
+    ]),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_korean_refinement_retry',
     model: model || config.models.repair,
@@ -1696,14 +1699,16 @@ async function retryFingerprintAudit({
     ['academic_paper', 'report_assignment', 'long_explainer', 'clinical_record', 'legal_contract'].includes(profile)
       ? '학술·보고서의 개념어와 평서문 격식을 유지한다. 구어체·명령형·도구 의인화를 새로 넣지 않는다.'
       : '',
-    '안전하게 고칠 수 없거나 문제가 이미 없다면 CURRENT를 그대로 반환한다.',
     '[수리 대상]',
-    ...issueLines
+    '수리 대상은 REPAIR_TARGETS 데이터에 표시된 항목으로 한정한다.',
+    '안전하게 고칠 수 없거나 문제가 이미 없다면 CURRENT를 그대로 반환한다.'
   ].filter(Boolean).join('\n');
   assertRepairPrompt(system, { family: 'fingerprint', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
-    user: sourceCurrentPrompt(source, currentOutput),
+    user: sourceCurrentPrompt(source, currentOutput, [
+      { label: 'REPAIR_TARGETS', value: issueLines.join('\n') }
+    ]),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_fingerprint_retry',
     model: config.models.repair,
@@ -1749,14 +1754,16 @@ async function retryEndingStyleAudit({
     '원래 혼합 문체인 섹션은 통일하지 않는다. 문제 없는 문장과 다른 섹션은 그대로 둔다.',
     '어미 외의 핵심 어휘·주장·수치·기관명·인용·화자·문장 수·문단·제목·목록 순서는 바꾸지 않는다.',
     profile === 'student_record_teacher' ? '세특의 관찰형 명사 종결은 평서문으로 바꾸지 않는다.' : '',
-    '안전하게 고칠 수 없거나 문제가 이미 없다면 CURRENT를 그대로 반환한다.',
     '[수리 대상]',
-    ...issueLines
+    '수리 대상은 REPAIR_TARGETS 데이터에 표시된 항목으로 한정한다.',
+    '안전하게 고칠 수 없거나 문제가 이미 없다면 CURRENT를 그대로 반환한다.'
   ].filter(Boolean).join('\n');
   assertRepairPrompt(system, { family: 'ending_style', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
-    user: sourceCurrentPrompt(source, currentOutput),
+    user: sourceCurrentPrompt(source, currentOutput, [
+      { label: 'REPAIR_TARGETS', value: issueLines.join('\n') }
+    ]),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_ending_style_retry',
     model: config.models.repair,
@@ -1804,9 +1811,9 @@ async function retryResumeCoverage({
     '각 항목에 제공된 원문 문장과 앞뒤 문맥만 사용한다. 새 경험·성과·수치·역량·직무 연결을 추정하거나 만들지 않는다.',
     '문단 순서와 화자·시점을 유지하고, 이미 보존된 다른 문장은 바꾸지 않는다. 별도 요약·결론 문단을 만들지 않는다.',
     '복원 문장은 원문의 격식과 전문 개념어를 유지하며 지나친 구어체로 낮추지 않는다.',
-    '안전하게 원래 위치를 찾을 수 없거나 누락이 이미 없다면 CURRENT를 그대로 반환한다.',
     '[복원 대상]',
-    ...issueLines
+    '복원 대상은 REPAIR_TARGETS 데이터에 표시된 항목으로 한정한다.',
+    '안전하게 원래 위치를 찾을 수 없거나 누락이 이미 없다면 CURRENT를 그대로 반환한다.'
   ].join('\n');
   assertRepairPrompt(system, {
     family: 'resume_coverage',
@@ -1815,7 +1822,9 @@ async function retryResumeCoverage({
   });
   const response = await completeJson({
     system: withPromptDataRule(system),
-    user: sourceCurrentPrompt(source, currentOutput),
+    user: sourceCurrentPrompt(source, currentOutput, [
+      { label: 'REPAIR_TARGETS', value: issueLines.join('\n') }
+    ]),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_resume_coverage_retry',
     model: config.models.repair,
@@ -1975,10 +1984,11 @@ function dedupeWarnings(items) {
   });
 }
 
-function sourceCurrentPrompt(source, currentOutput) {
+function sourceCurrentPrompt(source, currentOutput, extraSections = []) {
   return buildPromptDataSections([
     { label: 'SOURCE', value: source },
-    { label: 'CURRENT', value: currentOutput }
+    { label: 'CURRENT', value: currentOutput },
+    ...(Array.isArray(extraSections) ? extraSections : [])
   ]).text;
 }
 

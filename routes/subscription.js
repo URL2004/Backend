@@ -7,6 +7,7 @@ const { logger, setLogContext } = require('../lib/logger');
 const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
 const discord = require('../lib/discord');
 const metaConversions = require('../lib/metaConversions');
+const { outboundFetch } = require('../lib/outboundPolicy');
 const { realClientIp } = require('../lib/clientip');
 const {
   paymentKeyHash,
@@ -67,7 +68,7 @@ function requireCronSecret(req, res) {
 }
 
 async function tossIssueBillingKey({ authKey, customerKey }) {
-  const res = await fetch('https://api.tosspayments.com/v1/billing/authorizations/issue', {
+  const res = await outboundFetch('toss', 'https://api.tosspayments.com/v1/billing/authorizations/issue', {
     method: 'POST',
     headers: { 'Authorization': `Basic ${tossBasicToken()}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ authKey, customerKey })
@@ -80,7 +81,7 @@ async function tossChargeBilling({ billingKey, customerKey, amount, orderId, ord
   // ★ C-04: 같은 결제주기 재시도·다중 워커 동시 호출이 카드를 두 번 긁지 않도록 Idempotency-Key 전송.
   //   Toss는 동일 키에 대해 15일간 같은 응답을 반환한다(중복 승인 방지).
   if (idempotencyKey) headers['Idempotency-Key'] = String(idempotencyKey);
-  const res = await fetch(`https://api.tosspayments.com/v1/billing/${encodeURIComponent(billingKey)}`, {
+  const res = await outboundFetch('toss', `https://api.tosspayments.com/v1/billing/${encodeURIComponent(billingKey)}`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ customerKey, amount, orderId, orderName, customerEmail, customerName })
@@ -90,7 +91,7 @@ async function tossChargeBilling({ billingKey, customerKey, amount, orderId, ord
 
 async function tossDeleteBillingKey(billingKey) {
   try {
-    const res = await fetch(`https://api.tosspayments.com/v1/billing/${encodeURIComponent(billingKey)}`, {
+    const res = await outboundFetch('toss', `https://api.tosspayments.com/v1/billing/${encodeURIComponent(billingKey)}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Basic ${tossBasicToken()}` }
     });
@@ -100,7 +101,7 @@ async function tossDeleteBillingKey(billingKey) {
 
 async function tossQueryPayment(paymentKey) {
   try {
-    const res = await fetch(`https://api.tosspayments.com/v1/payments/${encodeURIComponent(paymentKey)}`, {
+    const res = await outboundFetch('toss', `https://api.tosspayments.com/v1/payments/${encodeURIComponent(paymentKey)}`, {
       method: 'GET',
       headers: { 'Authorization': `Basic ${tossBasicToken()}` }
     });
@@ -464,7 +465,7 @@ async function runProcessDue(internalKey) {
   for (const doc of dueSnap.docs) {
     results.processed++;
     try {
-      const r = await fetch(`http://localhost:${process.env.PORT || 3000}/subscription/charge`, {
+      const r = await outboundFetch('internal_loopback', `http://localhost:${process.env.PORT || 3000}/subscription/charge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid: doc.id, internalKey })

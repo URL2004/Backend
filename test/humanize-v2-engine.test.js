@@ -431,7 +431,8 @@ test('고급 연구개발 자소서의 전문 개념을 구어적 동사로 낮�
   const repairCall = mock.calls.find(call => call.name === 'gpt_prod_korean_refinement_retry');
   assert.ok(repairCall);
   assert.match(String(repairCall.body.instructions || ''), /최적화·상관관계·원인 분석·재현성 검증·수치화·데이터 해석/u);
-  assert.match(String(repairCall.body.instructions || ''), /cause_analysis/u);
+  assert.doesNotMatch(String(repairCall.body.instructions || ''), /cause_analysis/u);
+  assert.match(String(repairCall.body.input || ''), /cause_analysis/u);
 });
 
 test('원문부터 있던 비인접 반복은 결과에서 늘지 않으면 needs_review로 올리지 않는다', { concurrency: false }, async t => {

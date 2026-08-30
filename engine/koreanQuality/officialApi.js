@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { outboundFetch } = require('../../lib/outboundPolicy');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const CACHE_PATH = path.join(ROOT, 'data', 'nikl-api-cache.json');
@@ -247,7 +248,7 @@ async function fetchJson(url, opts = {}) {
   const signal = combineAbortSignals(controller.signal, opts.signal);
   try {
     const fetchImpl = typeof opts.fetchImpl === 'function' ? opts.fetchImpl : fetch;
-    const response = await fetchImpl(url, { signal });
+    const response = await outboundFetch('nikl', url, { signal }, fetchImpl);
     const text = await response.text();
     if (!response.ok) throw new Error(`http_${response.status}`);
     try {

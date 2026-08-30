@@ -246,6 +246,9 @@ $r.Content -match 'lavAutoCoach'
 | `HUMANIZE_EFFECT_CONFIRMATION_ENABLED` | 변화가 제한적인 입력의 작업 전 확인 강제. v2.4.8 프런트 배포 후 활성화하며 `0`으로 해제 가능 |
 | `HUMANIZE_CHUNK_CONCURRENCY` | 일반 편집 청크 동시성. 허용 범위 `1~3`; 배포 직후 `1`, 검증 후 `2` 권장 |
 | `OPENAI_SAFETY_SALT` | UID를 `safety_identifier`용 HMAC-SHA256으로 변환하는 비밀값. 운영 필수 |
+| `DISCORD_REVENUE_ALLOWED_USER_IDS` | Discord `/매출` 명령 허용 사용자 ID 목록(쉼표 구분). guild Administrator 외 운영자를 허용할 때만 설정 |
+| `DISCORD_REVENUE_ALLOWED_ROLE_IDS` | Discord `/매출` 명령 허용 role ID 목록(쉼표 구분, 선택) |
+| `DISCORD_GUILD_ID` / `DISCORD_REVENUE_ALLOWED_GUILD_IDS` | `/매출`에서 Administrator·role 권한을 신뢰할 운영 guild. 미설정 시 명시 사용자 allowlist 외에는 fail-closed |
 | `OPENAI_MODEL_FAST` | 기본 변환 모델. 기본 `gpt-5.6-luna` |
 | `OPENAI_MODEL_MAIN` / `OPENAI_MODEL_ESCALATION` | 승격 모델. 기본 `gpt-5.6-terra` |
 | `OPENAI_MODEL_JUDGE` / `OPENAI_MODEL_JUDGE_ESCALATION` / `OPENAI_MODEL_REPAIR` / `OPENAI_MODEL_DETECT` / `OPENAI_MODEL_EVIDENCE` | 계층별 GPT 모델 fallback |

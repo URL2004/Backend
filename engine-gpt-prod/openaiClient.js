@@ -3,6 +3,8 @@
 const crypto = require('crypto');
 const { logger } = require('../lib/logger');
 const { estimateUsd } = require('./usageCost');
+const { outboundFetch } = require('../lib/outboundPolicy');
+const { assertNoPromptLeak } = require('./promptSecurity');
 
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 60000;
@@ -156,6 +158,9 @@ async function completeJson({
     try {
       parsed = JSON.parse(outputText);
       validateStructuredOutput(parsed, schema);
+      // 모든 Responses API 소비 경로가 같은 출력 경계를 통과한다. 개별 엔진이
+      // 이 검사를 빠뜨려도 nonce marker·안정 프롬프트 조각은 전달되지 않는다.
+      assertNoPromptLeak(parsed);
       break;
     } catch (error) {
       if (error instanceof SyntaxError && !error.code) error.code = 'OPENAI_SCHEMA_PARSE';
@@ -301,7 +306,7 @@ async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity)
   const onAbort = () => controller.abort();
   try {
     if (parentSignal) parentSignal.addEventListener('abort', onAbort, { once: true });
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await outboundFetch('openai', url, { ...init, signal: controller.signal });
   } catch (err) {
     if (controller.signal.aborted && !parentSignal?.aborted) {
       const timeoutError = new Error(`OpenAI Responses API request timed out after ${timeoutMs}ms`);

@@ -3,12 +3,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const calibration = require('../lib/detectCalibration');
+const historyIntegrity = require('../lib/historyLinkIntegrity');
+
+const HISTORY_TEST_SECRET = 'history-test-secret-at-least-32-bytes';
+process.env.OPENAI_SAFETY_SALT = HISTORY_TEST_SECRET;
 
 function historyDoc(id, data) {
+  const secured = data?.type === 'humanize' && data?.outputText
+    ? { ...data, historyLinkIntegrity: historyIntegrity.sign('same-user', data.outputText, HISTORY_TEST_SECRET) }
+    : data;
   return {
     id,
     data() {
-      return data;
+      return secured;
     }
   };
 }
@@ -91,6 +98,25 @@ test('공백·호환문자만 다른 기존 결과는 짧은 글에서도 정확
   assert.equal(state.uid, 'same-user');
   assert.deepEqual(state.orderBy, ['createdAt', 'desc']);
   assert.ok(state.selectedFields.includes('outputText'));
+});
+
+test('서명 없는 과거 기록과 다른 UID로 서명된 기록은 점수 보정 근거로 신뢰하지 않는다', async () => {
+  const output = longDocument('서명 경계');
+  const unsigned = historyDoc('legacy', { type: 'humanize', outputText: output });
+  unsigned.data = () => ({ type: 'humanize', outputText: output });
+  const wrongUid = historyDoc('wrong-uid', { type: 'humanize', outputText: output });
+  wrongUid.data = () => ({
+    type: 'humanize',
+    outputText: output,
+    historyLinkIntegrity: historyIntegrity.sign('different-user', output, HISTORY_TEST_SECRET)
+  });
+  const match = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb([unsigned, wrongUid]),
+    uid: 'same-user',
+    text: output,
+    limit: 50
+  });
+  assert.equal(match, null);
 });
 
 test('같은 사용자의 장문 휴머나이징 결과를 소폭 수정해도 보수적 유사 일치로 찾는다', async () => {

@@ -1,0 +1,12 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // 현재 운영 클라이언트에는 Storage 업로드/다운로드 기능이 없다.
+    // 과거 커뮤니티 첨부 경로를 포함해 모든 직접 접근을 기본 거부한다.
+    // 필요한 서버 작업은 Firebase Admin SDK로 수행하며 Security Rules를 우회한다.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

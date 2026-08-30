@@ -14,4 +14,7 @@ if (($versionOutput -join "`n") -notmatch 'version "2[1-9]\.') {
   throw "Firebase Firestore Emulator requires Java 21+. Current java -version: $($versionOutput -join ' ')"
 }
 
-npx firebase-tools emulators:exec --only firestore --project demo-gp-local "npm run test:rules"
+# A parent shell may set DEBUG for unrelated application logging. firebase-tools
+# interprets any DEBUG value as verbose emulator tracing, which obscures rule failures.
+$env:DEBUG = ''
+npx firebase-tools emulators:exec --only firestore,storage --project demo-gp-local "npm run test:rules"

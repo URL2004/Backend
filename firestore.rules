@@ -20,7 +20,9 @@ service cloud.firestore {
     }
 
     function onlyChanged(keys) {
-      return request.resource.data.diff(resource.data).changedKeys().hasOnly(keys);
+      // changedKeys() excludes newly added and removed fields. affectedKeys()
+      // closes the field-addition bypass while preserving the intended allowlist.
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
     }
 
     function validAttributionTouch(touch) {
@@ -64,9 +66,12 @@ service cloud.firestore {
         && request.resource.data.refCode == (request.auth.uid.size() >= 8 ? request.auth.uid[0:8] : request.auth.uid);
 
       allow update: if isSelf(uid)
-        && onlyChanged(['name', 'refCode', 'kakaoId', 'bookmarks'])
+        // kakaoId is an authentication binding and must only be written by the
+        // backend Admin SDK after Kakao identity verification. bookmarks belonged
+        // to the now-closed community and is no longer a client-writable field.
+        && onlyChanged(['name', 'refCode'])
         // ★ C-08: refCode를 바꿀 땐 반드시 uid 앞 8자로만(백필 허용·임의변경 차단). 안 바꾸면 통과.
-        && (!request.resource.data.diff(resource.data).changedKeys().hasAny(['refCode'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['refCode'])
             || request.resource.data.refCode == (request.auth.uid.size() >= 8 ? request.auth.uid[0:8] : request.auth.uid));
 
       allow delete: if false;
@@ -78,23 +83,11 @@ service cloud.firestore {
 
       match /notifications/{notificationId} {
         allow read, update, delete: if isSelf(uid);
-        // ★ H-01: 임의 교차 사용자 알림(피싱·스팸·괴롭힘) 차단.
-        //   본인에게 보내거나(시스템 알림), 관리자 발송(Q&A 답변)이거나,
-        //   '댓글' 알림은 실제 그 글의 작성자(uid)에게만 + 메시지 길이 제한.
+        // 커뮤니티 폐쇄 후 사용자 간 알림 발송도 함께 닫는다.
+        // 본인 기기의 알림 동기화와 관리자 Q&A 답변 알림만 유지한다.
         allow create: if signedIn()
           && request.resource.data.read == false
-          && (
-            isSelf(uid)
-            || isAdmin()
-            || (
-              request.resource.data.type == 'comment'
-              && request.resource.data.postId is string
-              && request.resource.data.get('message', '') is string
-              && request.resource.data.get('message', '').size() < 300
-              && exists(/databases/$(database)/documents/posts/$(request.resource.data.postId))
-              && get(/databases/$(database)/documents/posts/$(request.resource.data.postId)).data.authorId == uid
-            )
-          );
+          && (isSelf(uid) || isAdmin());
       }
 
       match /creditHistory/{historyId} {
@@ -116,6 +109,13 @@ service cloud.firestore {
     match /subscriptionOrders/{orderId} {
       allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
       allow write: if false;
+    }
+
+    // Verified external-provider identity bindings. The backend Admin SDK owns
+    // creation and resolution; exposing this map would enable account discovery
+    // and client writes would enable identity-binding takeover.
+    match /authIdentities/{identityId} {
+      allow read, write: if false;
     }
 
     // ★ C-03: 결제 비밀(billingKey)은 서버 전용. 본인조차 클라이언트에서 직접 읽을 수 없다.
@@ -168,42 +168,13 @@ service cloud.firestore {
     }
 
     match /posts/{postId} {
-      allow read: if true;
-
-      allow create: if signedIn()
-        && request.resource.data.authorId == request.auth.uid
-        && request.resource.data.keys().hasOnly([
-          'title', 'body', 'category', 'authorId', 'authorName', 'isAnon',
-          'createdAt', 'views', 'likes', 'commentCount', 'imageUrls', 'photos', 'isFeatured'
-        ])
-        && (request.resource.data.get('isFeatured', false) == false || isAdmin());
-
-      allow update: if isAdmin()
-        || (signedIn() && resource.data.authorId == request.auth.uid
-          && !request.resource.data.diff(resource.data).changedKeys().hasAny(['hidden', 'isFeatured']))
-        // ★ H-03: 인기도 카운터 조작 차단 — 조회수 +1, 댓글수 ±1, 좋아요는 본인 uid 1개만 토글.
-        || (signedIn() && onlyChanged(['views'])
-            && request.resource.data.views == resource.data.get('views', 0) + 1)
-        || (signedIn() && onlyChanged(['commentCount'])
-            && (request.resource.data.commentCount == resource.data.get('commentCount', 0) + 1
-                || request.resource.data.commentCount == resource.data.get('commentCount', 0) - 1))
-        || (signedIn() && onlyChanged(['likes']) && request.resource.data.likes is list
-            && (
-              (request.resource.data.likes.toSet().difference(resource.data.get('likes', []).toSet()).hasOnly([request.auth.uid])
-                && resource.data.get('likes', []).toSet().difference(request.resource.data.likes.toSet()).hasOnly([]))
-              || (resource.data.get('likes', []).toSet().difference(request.resource.data.likes.toSet()).hasOnly([request.auth.uid])
-                && request.resource.data.likes.toSet().difference(resource.data.get('likes', []).toSet()).hasOnly([]))
-            ));
-
-      allow delete: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
+      // 커뮤니티는 제품에서 폐쇄됐다. 메뉴/라우트 차단만으로는 SDK 직접 접근을
+      // 막을 수 없으므로 기존 데이터까지 포함해 모든 클라이언트 접근을 거부한다.
+      // 계정 삭제 등 서버 Admin SDK 정리 작업은 Security Rules를 우회하므로 유지된다.
+      allow read, write: if false;
 
       match /comments/{commentId} {
-        allow read: if true;
-        allow create: if signedIn()
-          && request.resource.data.authorId == request.auth.uid
-          && request.resource.data.keys().hasOnly(['body', 'authorId', 'authorName', 'isAnon', 'createdAt', 'parentId', 'parentAuthor', 'parentCommentId', 'isReply']);
-        allow delete: if isAdmin() || (signedIn() && resource.data.authorId == request.auth.uid);
-        allow update: if false;
+        allow read, write: if false;
       }
     }
 

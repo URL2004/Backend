@@ -84,13 +84,27 @@ async function main() {
       const response = await fetch(healthUrl, { signal: AbortSignal.timeout(30000) });
       const health = await response.json();
       add('healthz', response.ok && health.ok === true, `http=${response.status}`);
-      add('active_jobs_zero', Number(health.activeJobs) === 0, `active=${health.activeJobs}, queued=${health.queuedJobs}`);
+      const healthSecret = String(process.env.HEALTH_CHECK_SECRET || '').trim();
+      const detailHealthUrl = String(args['detail-health-url'] || new URL('/internal/health', healthUrl).toString()).trim();
+      let detail = null;
+      if (healthSecret) {
+        const detailResponse = await fetch(detailHealthUrl, {
+          headers: { 'x-health-secret': healthSecret },
+          signal: AbortSignal.timeout(30000)
+        });
+        detail = await detailResponse.json();
+        add('detailed_health', detailResponse.ok && detail.ok === true, `http=${detailResponse.status}`);
+      } else {
+        add('detailed_health', false, 'HEALTH_CHECK_SECRET unset');
+      }
+      const live = detail || {};
+      add('active_jobs_zero', Number(live.activeJobs) === 0, `active=${live.activeJobs}, queued=${live.queuedJobs}`);
       if (args['expect-live-v2'] === '1') {
-        add('live_v2', health.humanizeEngineV2 === true && health.activeProvider === 'gpt' && health.openai === true, `v2=${health.humanizeEngineV2}, provider=${health.activeProvider}, openai=${health.openai}`);
-        add('live_humanization_depth', health.humanizationDepthGate === true, `depth=${health.humanizationDepthGate}`);
-        add('live_humanization_policy', health.humanizationDepthPolicy === EXPECTED_HUMANIZATION_POLICY, `expected=${EXPECTED_HUMANIZATION_POLICY}, policy=${health.humanizationDepthPolicy}`);
-        add('live_writing_lab_v2', health.writingLabV2?.engineVersion === 'gp-writing-engine-v1' && health.writingLabV2?.enabled === true, JSON.stringify(health.writingLabV2 || {}));
-        add('live_writing_policy_schema', Array.isArray(health.writingLabV2?.invalidPolicyPackIds) && health.writingLabV2.invalidPolicyPackIds.length === 0, JSON.stringify(health.writingLabV2?.invalidPolicyPackIds || null));
+        add('live_v2', live.humanizeEngineV2 === true && live.activeProvider === 'gpt' && live.openai === true, `v2=${live.humanizeEngineV2}, provider=${live.activeProvider}, openai=${live.openai}`);
+        add('live_humanization_depth', live.humanizationDepthGate === true, `depth=${live.humanizationDepthGate}`);
+        add('live_humanization_policy', live.humanizationDepthPolicy === EXPECTED_HUMANIZATION_POLICY, `expected=${EXPECTED_HUMANIZATION_POLICY}, policy=${live.humanizationDepthPolicy}`);
+        add('live_writing_lab_v2', live.writingLabV2?.engineVersion === 'gp-writing-engine-v1' && live.writingLabV2?.enabled === true, JSON.stringify(live.writingLabV2 || {}));
+        add('live_writing_policy_schema', Array.isArray(live.writingLabV2?.invalidPolicyPackIds) && live.writingLabV2.invalidPolicyPackIds.length === 0, JSON.stringify(live.writingLabV2?.invalidPolicyPackIds || null));
       }
     } catch (error) {
       add('healthz', false, String(error?.message || error).slice(0, 180));

@@ -5,17 +5,28 @@ require('dotenv').config();
 const express = require('express');
 const { logger, captureProcessErrors } = require('./lib/logger');
 captureProcessErrors();
-const { corsMiddleware, limiter, db } = require('./config');
+const {
+  corsMiddleware,
+  limiter,
+  kakaoAuthLimiter,
+  discordInteractionLimiter,
+  db,
+  verifyAppCheck,
+  verifyFirebaseIdToken,
+  ADMIN_UIDS
+} = require('./config');
 const requestContext = require('./middleware/requestContext');
 const errorHandler = require('./middleware/errorHandler');
 const maintenanceMode = require('./middleware/maintenanceMode');
 const { apiSecurityHeaders, protectPublicHealthPayload } = require('./middleware/httpSecurity');
+const { createAppCheckProtection } = require('./middleware/appCheckProtection');
 const gptRuntimeConfig = require('./lib/gptRuntimeConfig');
 const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
 const { POLICY_VERSION: HUMANIZATION_DEPTH_POLICY } = require('./engine-gpt-prod/humanizationDepth');
 const { isV248FeatureEnabled } = require('./lib/humanizeV248Flags');
 const { VERSION: HUMANIZE_ENGINE_VERSION } = require('./engine-gpt-prod');
 const { registrySnapshot: writingPolicyRegistrySnapshot } = require('./engine-writing-v1/policy/registry');
+const { verifyDetailedHealthRequest } = require('./lib/healthAuth');
 
 const app = express();
 app.disable('x-powered-by');
@@ -28,10 +39,35 @@ app.use(apiSecurityHeaders);
 
 // Discord 슬래시 커맨드(Interactions) — Ed25519 서명검증에 raw body가 필요하므로
 // express.json 보다 먼저, 자체 raw 파서로 마운트한다. maintenanceMode보다도 앞이라 점검 모드에도 응답.
-app.post('/discord/interactions', express.raw({ type: '*/*' }), require('./routes/discordBot').handleInteractions);
+app.post(
+  '/discord/interactions',
+  discordInteractionLimiter,
+  express.raw({ type: '*/*', limit: process.env.DISCORD_BODY_LIMIT || '256kb' }),
+  require('./routes/discordBot').handleInteractions
+);
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 app.use(maintenanceMode);
+
+// High-cost AI mutations require Firebase App Check. The default is shadow mode
+// so an older browser is observed without interruption; APPCHECK_MODE=enforce
+// turns the same boundary into a fail-closed check. Verified admins are exempt.
+const highCostAppCheck = createAppCheckProtection({
+  verifyAppCheck,
+  verifyFirebaseIdToken,
+  adminUids: ADMIN_UIDS,
+  allowAdmin: true,
+  allowCron: false
+});
+app.use([
+  '/analyze',
+  '/analyze-pdf',
+  '/diagnose',
+  '/detect-report',
+  '/coach-suggest',
+  '/transform',
+  '/writing-lab'
+], highCostAppCheck);
 
 // Rate Limiter
 app.use('/analyze', limiter);
@@ -42,61 +78,88 @@ app.use('/coach-suggest', limiter);   // 자동 코칭 후보 — 무인증 LLM 
 // /transform은 POST(시작·취소·승인)만 제한 — GET 폴링은 90분 job 동안 수백 회가 정상이라 제외.
 app.use('/transform', (req, res, next) => (req.method === 'POST' ? limiter(req, res, next) : next()));
 app.use('/events', limiter);   // 알림 중계 — 인증 전 폭주 방지
+app.use('/kakao-login', kakaoAuthLimiter);
 
-// 헬스체크(배포 플랫폼용 — Render 등은 이 경로로 살아있는지 판단)
+// Public liveness exposes no runtime configuration. Detailed readiness is
+// available only with HEALTH_CHECK_SECRET via /internal/health.
 const transformRouter = require('./routes/transform');
-app.get(['/healthz', '/api/health'], async (req, res) => {
-  // v2.5 is the only production engine. Rollback is performed by restoring
-  // the previous Render live deployment, not by enabling legacy code.
+
+async function detailedHealth() {
   const humanizeEngineV2 = true;
   const humanizationDepthGate = String(process.env.HUMANIZATION_DEPTH_GATE_ENABLED || '1').trim() !== '0';
   try {
     const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
     const compatibility = evaluateHumanizeRuntime({ activeProvider: runtimeConfig.activeProvider });
-    res.status(compatibility.ok ? 200 : 503).json(protectPublicHealthPayload({
-      ok: compatibility.ok,
-      activeProvider: compatibility.activeProvider,
-      providerCompatible: compatibility.providerCompatible,
-      ...(compatibility.code ? { code: compatibility.code } : {}),
-      runtimeConfigSource: runtimeConfig.source || 'unknown',
-      humanizeEngineV2,
-      humanizeEngineVersion: HUMANIZE_ENGINE_VERSION,
-      humanizationDepthGate,
-      humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
-      paragraphRefineEnabled: process.env.PARAGRAPH_REFINE === '1',
-      sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
-      fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
-      effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
-      ...writingLabHealthMeta(),
-      ...niklHealthMeta(),
-      firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-      openai: !!process.env.OPENAI_API_KEY,
-      maintenance: maintenanceMode.isMaintenanceEnabled(),
-      uptimeSec: Math.round(process.uptime()),
-      ...transformRouter.stats()
-    }));
+    return {
+      status: compatibility.ok ? 200 : 503,
+      payload: protectPublicHealthPayload({
+        ok: compatibility.ok,
+        activeProvider: compatibility.activeProvider,
+        providerCompatible: compatibility.providerCompatible,
+        ...(compatibility.code ? { code: compatibility.code } : {}),
+        runtimeConfigSource: runtimeConfig.source || 'unknown',
+        humanizeEngineV2,
+        humanizeEngineVersion: HUMANIZE_ENGINE_VERSION,
+        humanizationDepthGate,
+        humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
+        paragraphRefineEnabled: process.env.PARAGRAPH_REFINE === '1',
+        sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
+        fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
+        effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
+        ...writingLabHealthMeta(),
+        ...niklHealthMeta(),
+        firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+        openai: !!process.env.OPENAI_API_KEY,
+        maintenance: maintenanceMode.isMaintenanceEnabled(),
+        uptimeSec: Math.round(process.uptime()),
+        ...transformRouter.stats()
+      })
+    };
   } catch (err) {
     logger.error('server.health_runtime_config_failed', { err });
-    res.status(503).json(protectPublicHealthPayload({
-      ok: false,
-      code: 'RUNTIME_CONFIG_UNAVAILABLE',
-      humanizeEngineV2,
-      humanizeEngineVersion: HUMANIZE_ENGINE_VERSION,
-      humanizationDepthGate,
-      humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
-      paragraphRefineEnabled: process.env.PARAGRAPH_REFINE === '1',
-      sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
-      fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
-      effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
-      ...writingLabHealthMeta(),
-      ...niklHealthMeta(),
-      firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-      openai: !!process.env.OPENAI_API_KEY,
-      maintenance: maintenanceMode.isMaintenanceEnabled(),
-      uptimeSec: Math.round(process.uptime()),
-      ...transformRouter.stats()
-    }));
+    return {
+      status: 503,
+      payload: protectPublicHealthPayload({
+        ok: false,
+        code: 'RUNTIME_CONFIG_UNAVAILABLE',
+        humanizeEngineV2,
+        humanizeEngineVersion: HUMANIZE_ENGINE_VERSION,
+        humanizationDepthGate,
+        humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
+        paragraphRefineEnabled: process.env.PARAGRAPH_REFINE === '1',
+        sectionRecoveryEnabled: isV248FeatureEnabled('sectionRecovery'),
+        fingerprintAuditEnabled: isV248FeatureEnabled('fingerprintAudit'),
+        effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
+        ...writingLabHealthMeta(),
+        ...niklHealthMeta(),
+        firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+        openai: !!process.env.OPENAI_API_KEY,
+        maintenance: maintenanceMode.isMaintenanceEnabled(),
+        uptimeSec: Math.round(process.uptime()),
+        ...transformRouter.stats()
+      })
+    };
   }
+}
+
+app.get(['/healthz', '/api/health'], async (_req, res) => {
+  const health = await detailedHealth();
+  res.status(health.status).json({
+    ok: health.payload.ok === true,
+    status: health.payload.ok === true ? 'ready' : 'degraded'
+  });
+});
+
+app.get('/internal/health', async (req, res) => {
+  const auth = verifyDetailedHealthRequest(req);
+  if (!auth.ok) {
+    return res.status(auth.reason === 'secret_missing' ? 503 : 401).json({
+      ok: false,
+      code: auth.reason === 'secret_missing' ? 'HEALTH_DETAIL_UNAVAILABLE' : 'UNAUTHORIZED'
+    });
+  }
+  const health = await detailedHealth();
+  return res.status(health.status).json(health.payload);
 });
 
 function writingLabHealthMeta() {

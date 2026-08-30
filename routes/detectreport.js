@@ -337,7 +337,7 @@ router.post('/coach-suggest', async (req, res) => {
   }
 
   // (1) App Check — 콘솔·프런트 준비 후 APPCHECK_ENFORCE=1로 켜면 정상 앱 외 호출 차단.
-  if (process.env.APPCHECK_ENFORCE === '1') {
+  if (!req.appCheck && process.env.APPCHECK_ENFORCE === '1') {
     const ok = await verifyAppCheck(req.headers['x-firebase-appcheck']);
     if (!ok) return res.status(401).json({ ok: false, error: '비정상 접근입니다.' });
   }

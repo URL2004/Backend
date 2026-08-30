@@ -63,6 +63,9 @@ function requireCronSecret(req, res) {
     res.status(403).json({ error: 'forbidden' });
     return null;
   }
+  if (auth.legacyCredentialPresent) {
+    logger.warn('subscription.cron_legacy_auth_observed', { ...authLogFields(auth), noAlert: true });
+  }
   return auth.secret;
 }
 

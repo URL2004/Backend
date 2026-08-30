@@ -100,16 +100,18 @@ test('CORS advertises only the HTTP methods used by production API routes', asyn
   assert.doesNotMatch(response.headers.get('access-control-allow-methods') || '', /PUT|PATCH|DELETE/u);
 });
 
-test('production server wires security defaults before public routes and protects both health responses', () => {
+test('production server wires security defaults before routes and separates public and detailed health', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const disableAt = source.indexOf("app.disable('x-powered-by')");
   const headersAt = source.indexOf('app.use(apiSecurityHeaders)');
-  const discordAt = source.indexOf("app.post('/discord/interactions'");
+  const discordAt = source.indexOf("'/discord/interactions'");
   const routeAt = source.indexOf("app.use('/', require('./routes/analyze'))");
 
   assert.ok(disableAt >= 0, 'Express framework disclosure must be disabled');
   assert.ok(headersAt > disableAt, 'security header middleware must be installed after app creation');
   assert.ok(discordAt > headersAt, 'security headers must cover the raw Discord route');
   assert.ok(routeAt > headersAt, 'security headers must cover API routes');
-  assert.equal((source.match(/\.json\(protectPublicHealthPayload\(\{/gu) || []).length, 2);
+  assert.match(source, /app\.get\(\['\/healthz', '\/api\/health'\]/u);
+  assert.match(source, /app\.get\('\/internal\/health'/u);
+  assert.match(source, /protectPublicHealthPayload\(/u);
 });

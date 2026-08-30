@@ -7,13 +7,11 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   addDoc,
-  arrayUnion,
   collection,
   deleteDoc,
   doc,
   getDoc,
   getDocs,
-  increment,
   query,
   serverTimestamp,
   setDoc,
@@ -45,11 +43,17 @@ const testEnv = await initializeTestEnvironment({
     host: '127.0.0.1',
     port: 8080,
     rules: fs.readFileSync('firestore.rules', 'utf8')
+  },
+  storage: {
+    host: '127.0.0.1',
+    port: 9199,
+    rules: fs.readFileSync('storage.rules', 'utf8')
   }
 });
 
 try {
   await testEnv.clearFirestore();
+  await testEnv.clearStorage();
 
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
@@ -82,6 +86,33 @@ try {
       amount: 2900,
       status: 'approved'
     });
+    await setDoc(doc(db, 'subscriptionOrders', 'subscription-alice'), {
+      uid: 'alice',
+      amount: 14900,
+      status: 'paid'
+    });
+    await setDoc(doc(db, 'authIdentities', 'kakao_12345'), {
+      provider: 'kakao',
+      providerUserId: '12345',
+      uid: 'alice'
+    });
+    await setDoc(doc(db, 'users', 'alice', 'history', 'history-alice'), {
+      type: 'humanize',
+      inputText: '원문',
+      outputText: '결과',
+      createdAt: serverTimestamp()
+    });
+    await setDoc(doc(db, 'users', 'alice', 'notifications', 'notice-alice'), {
+      type: 'notice',
+      message: '본인 알림',
+      read: false,
+      createdAt: serverTimestamp()
+    });
+    await setDoc(doc(db, 'notices', 'public-notice'), {
+      title: '운영 공지',
+      body: '공지 본문',
+      createdAt: serverTimestamp()
+    });
     await setDoc(doc(db, 'paymentSecrets', 'order-alice'), {
       uid: 'alice',
       paymentKey: 'server-only-payment-key'
@@ -109,6 +140,19 @@ try {
       likes: [],
       createdAt: serverTimestamp()
     });
+    await setDoc(doc(db, 'posts', 'post-alice', 'comments', 'comment-bob'), {
+      body: '과거 댓글',
+      authorId: 'bob',
+      authorName: 'Bob',
+      isAnon: false,
+      createdAt: serverTimestamp()
+    });
+  });
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.storage('gs://demo-gp-local.appspot.com')
+      .ref('community/alice/legacy-image.png')
+      .putString('legacy object');
   });
 
   const aliceDb = testEnv.authenticatedContext('alice', user('alice')).firestore();
@@ -200,6 +244,22 @@ try {
     await assertSucceeds(updateDoc(doc(aliceDb, 'users', 'alice'), { name: 'Alice Updated' }));
   });
 
+  await run('users: authentication binding kakaoId is server-only', async () => {
+    await assertFails(updateDoc(doc(aliceDb, 'users', 'alice'), { kakaoId: '123456789' }));
+  });
+
+  await run('users: closed-community bookmarks are no longer client-writable', async () => {
+    await assertFails(updateDoc(doc(aliceDb, 'users', 'alice'), { bookmarks: ['post-alice'] }));
+  });
+
+  await run('users: owner and admin can read while other users cannot', async () => {
+    await assertSucceeds(getDoc(doc(aliceDb, 'users', 'alice')));
+    await assertSucceeds(getDoc(doc(adminDb, 'users', 'alice')));
+    await assertSucceeds(getDocs(collection(adminDb, 'users')));
+    await assertFails(getDoc(doc(bobDb, 'users', 'alice')));
+    await assertFails(getDocs(collection(bobDb, 'users')));
+  });
+
   await run('users: credit history client write denied', async () => {
     await assertFails(setDoc(doc(aliceDb, 'users', 'alice', 'creditHistory', 'manual'), {
       type: 'use',
@@ -252,8 +312,21 @@ try {
     }));
   });
 
-  await run('posts: regular user can create post with current frontend shape', async () => {
-    await assertSucceeds(addDoc(collection(aliceDb, 'posts'), {
+  await run('qna: owner can update only views and cannot add fields through a diff bypass', async () => {
+    await assertSucceeds(updateDoc(doc(aliceDb, 'qna', 'alice-q1'), { views: 1 }));
+    await assertFails(updateDoc(doc(aliceDb, 'qna', 'alice-q1'), { moderationOverride: true }));
+    await assertFails(updateDoc(doc(aliceDb, 'qna', 'alice-q1'), { status: 'pending' }));
+  });
+
+  await run('community closed: anonymous, user, and admin cannot read posts', async () => {
+    for (const db of [anonDb, aliceDb, adminDb]) {
+      await assertFails(getDoc(doc(db, 'posts', 'post-alice')));
+      await assertFails(getDocs(collection(db, 'posts')));
+    }
+  });
+
+  await run('community closed: user and admin cannot create, update, or delete posts', async () => {
+    const forgedPost = {
       title: '커뮤니티 글',
       body: '본문',
       authorId: 'alice',
@@ -265,23 +338,24 @@ try {
       views: 0,
       createdAt: serverTimestamp(),
       photos: []
-    }));
+    };
+    await assertFails(addDoc(collection(aliceDb, 'posts'), forgedPost));
+    await assertFails(updateDoc(doc(aliceDb, 'posts', 'post-alice'), { title: '수정 시도' }));
+    await assertFails(deleteDoc(doc(aliceDb, 'posts', 'post-alice')));
+    await assertFails(updateDoc(doc(adminDb, 'posts', 'post-alice'), { hidden: true }));
+    await assertFails(deleteDoc(doc(adminDb, 'posts', 'post-alice')));
   });
 
-  await run('posts: regular user cannot mark featured on create', async () => {
-    await assertFails(addDoc(collection(aliceDb, 'posts'), {
-      title: '추천 글 시도',
-      body: '본문',
-      authorId: 'alice',
-      authorName: 'Alice',
-      isAnon: false,
-      category: '자유',
-      isFeatured: true,
-      commentCount: 0,
-      views: 0,
-      createdAt: serverTimestamp(),
-      photos: []
+  await run('community closed: nested comments are denied to every client role', async () => {
+    for (const db of [anonDb, aliceDb, bobDb, adminDb]) {
+      await assertFails(getDoc(doc(db, 'posts', 'post-alice', 'comments', 'comment-bob')));
+      await assertFails(getDocs(collection(db, 'posts', 'post-alice', 'comments')));
+    }
+    await assertFails(addDoc(collection(bobDb, 'posts', 'post-alice', 'comments'), {
+      body: '새 댓글', authorId: 'bob', createdAt: serverTimestamp()
     }));
+    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice', 'comments', 'comment-bob'), { body: '수정' }));
+    await assertFails(deleteDoc(doc(adminDb, 'posts', 'post-alice', 'comments', 'comment-bob')));
   });
 
   await run('transformJobs: owner can read own job', async () => {
@@ -292,9 +366,35 @@ try {
     await assertFails(getDoc(doc(bobDb, 'transformJobs', 'job-alice')));
   });
 
-  await run('orders: owner can read own order, other user cannot', async () => {
+  await run('orders: owner and admin can read; other users and all client writes are denied', async () => {
     await assertSucceeds(getDoc(doc(aliceDb, 'orders', 'order-alice')));
+    await assertSucceeds(getDoc(doc(adminDb, 'orders', 'order-alice')));
+    await assertSucceeds(getDocs(query(collection(aliceDb, 'orders'), where('uid', '==', 'alice'))));
+    await assertFails(getDocs(collection(aliceDb, 'orders')));
     await assertFails(getDoc(doc(bobDb, 'orders', 'order-alice')));
+    await assertFails(updateDoc(doc(aliceDb, 'orders', 'order-alice'), { amount: 1 }));
+    await assertFails(deleteDoc(doc(adminDb, 'orders', 'order-alice')));
+  });
+
+  await run('subscriptionOrders: owner and admin can read; other users and writes are denied', async () => {
+    await assertSucceeds(getDoc(doc(aliceDb, 'subscriptionOrders', 'subscription-alice')));
+    await assertSucceeds(getDoc(doc(adminDb, 'subscriptionOrders', 'subscription-alice')));
+    await assertSucceeds(getDocs(query(collection(aliceDb, 'subscriptionOrders'), where('uid', '==', 'alice'))));
+    await assertFails(getDocs(collection(aliceDb, 'subscriptionOrders')));
+    await assertFails(getDoc(doc(bobDb, 'subscriptionOrders', 'subscription-alice')));
+    await assertFails(updateDoc(doc(aliceDb, 'subscriptionOrders', 'subscription-alice'), { status: 'refunded' }));
+  });
+
+  await run('authIdentities: provider bindings are opaque and server-only', async () => {
+    for (const db of [anonDb, aliceDb, adminDb]) {
+      await assertFails(getDoc(doc(db, 'authIdentities', 'kakao_12345')));
+      await assertFails(getDocs(collection(db, 'authIdentities')));
+    }
+    await assertFails(setDoc(doc(aliceDb, 'authIdentities', 'kakao_99999'), {
+      provider: 'kakao', providerUserId: '99999', uid: 'alice'
+    }));
+    await assertFails(updateDoc(doc(adminDb, 'authIdentities', 'kakao_12345'), { uid: 'bob' }));
+    await assertFails(deleteDoc(doc(adminDb, 'authIdentities', 'kakao_12345')));
   });
 
   await run('payment reconciliation: owner and admin cannot access server-only documents', async () => {
@@ -309,38 +409,33 @@ try {
     await assertFails(getDoc(doc(anonDb, 'users', 'alice')));
   });
 
-  await run('history: owner can write own history', async () => {
-    await assertSucceeds(addDoc(collection(aliceDb, 'users', 'alice', 'history'), {
+  await run('history: owner can read, create, and delete own history', async () => {
+    await assertSucceeds(getDoc(doc(aliceDb, 'users', 'alice', 'history', 'history-alice')));
+    const created = await addDoc(collection(aliceDb, 'users', 'alice', 'history'), {
       text: '결과',
       createdAt: serverTimestamp()
-    }));
-  });
-
-  await run('notifications: commenter can notify the actual post author (H-01 legit)', async () => {
-    const notifRef = await addDoc(collection(bobDb, 'users', 'alice', 'notifications'), {
-      type: 'comment',
-      title: '새 댓글',
-      message: 'Bob님이 댓글을 달았어요',
-      action: { type: 'post', postId: 'post-alice' },
-      postId: 'post-alice',
-      read: false,
-      createdAt: serverTimestamp(),
-      createdAtMs: 123
     });
-    await assertSucceeds(updateDoc(doc(aliceDb, 'users', 'alice', 'notifications', notifRef.id), { read: true }));
-    await assertSucceeds(deleteDoc(doc(aliceDb, 'users', 'alice', 'notifications', notifRef.id)));
+    await assertSucceeds(deleteDoc(created));
   });
 
-  await run('notifications: cannot notify a user who is not the post author (H-01)', async () => {
-    await assertFails(addDoc(collection(aliceDb, 'users', 'bob', 'notifications'), {
-      type: 'comment', message: '피싱 시도', postId: 'post-alice',
-      read: false, createdAt: serverTimestamp()
-    }));
+  await run('history: cross-user reads and writes plus owner updates are denied', async () => {
+    await assertFails(getDoc(doc(bobDb, 'users', 'alice', 'history', 'history-alice')));
+    await assertFails(getDocs(collection(bobDb, 'users', 'alice', 'history')));
+    await assertFails(addDoc(collection(bobDb, 'users', 'alice', 'history'), { text: '위조' }));
+    await assertFails(updateDoc(doc(aliceDb, 'users', 'alice', 'history', 'history-alice'), { outputText: '변조' }));
   });
 
-  await run('notifications: cannot notify referencing a non-existent post (H-01)', async () => {
+  await run('notifications: owner can read, mark, and delete own notifications', async () => {
+    await assertSucceeds(getDoc(doc(aliceDb, 'users', 'alice', 'notifications', 'notice-alice')));
+    await assertSucceeds(getDocs(collection(aliceDb, 'users', 'alice', 'notifications')));
+    await assertSucceeds(updateDoc(doc(aliceDb, 'users', 'alice', 'notifications', 'notice-alice'), { read: true }));
+    await assertSucceeds(deleteDoc(doc(aliceDb, 'users', 'alice', 'notifications', 'notice-alice')));
+    await assertFails(getDocs(collection(adminDb, 'users', 'alice', 'notifications')));
+  });
+
+  await run('notifications: closed community cannot send cross-user comment notifications', async () => {
     await assertFails(addDoc(collection(bobDb, 'users', 'alice', 'notifications'), {
-      type: 'comment', message: '없는 글 참조', postId: 'no-such-post',
+      type: 'comment', message: '댓글 알림 위조', postId: 'post-alice',
       read: false, createdAt: serverTimestamp()
     }));
   });
@@ -364,28 +459,34 @@ try {
     }));
   });
 
-  await run('posts: viewer can increment views by exactly 1 (H-03 legit)', async () => {
-    await assertSucceeds(updateDoc(doc(bobDb, 'posts', 'post-alice'), { views: increment(1) }));
+  await run('notices: public reads remain available while only admins can mutate', async () => {
+    await assertSucceeds(getDoc(doc(anonDb, 'notices', 'public-notice')));
+    await assertSucceeds(getDocs(collection(anonDb, 'notices')));
+    await assertFails(addDoc(collection(aliceDb, 'notices'), { title: '위조 공지', body: '본문' }));
+    await assertSucceeds(updateDoc(doc(adminDb, 'notices', 'public-notice'), { title: '수정 공지' }));
   });
 
-  await run('posts: cannot set views to an arbitrary value (H-03)', async () => {
-    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice'), { views: 99999 }));
+  await run('storage: anonymous, user, and admin clients cannot read legacy community objects', async () => {
+    for (const ctx of [
+      testEnv.unauthenticatedContext(),
+      testEnv.authenticatedContext('alice', user('alice')),
+      testEnv.authenticatedContext(ADMIN_UID, user(ADMIN_UID))
+    ]) {
+      await assertFails(ctx.storage('gs://demo-gp-local.appspot.com')
+        .ref('community/alice/legacy-image.png')
+        .getMetadata());
+    }
   });
 
-  await run('posts: cannot bump commentCount by more than 1 (H-03)', async () => {
-    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice'), { commentCount: increment(50) }));
-  });
-
-  await run('posts: user can toggle own like (H-03 legit)', async () => {
-    await assertSucceeds(updateDoc(doc(bobDb, 'posts', 'post-alice'), { likes: arrayUnion('bob') }));
-  });
-
-  await run('posts: cannot add another user to likes (H-03)', async () => {
-    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice'), { likes: arrayUnion('carol') }));
-  });
-
-  await run('posts: cannot overwrite likes with arbitrary array (H-03)', async () => {
-    await assertFails(updateDoc(doc(bobDb, 'posts', 'post-alice'), { likes: ['bob', 'x1', 'x2', 'x3'] }));
+  await run('storage: every client write path is denied by default', async () => {
+    const aliceStorage = testEnv.authenticatedContext('alice', user('alice'))
+      .storage('gs://demo-gp-local.appspot.com');
+    const adminStorage = testEnv.authenticatedContext(ADMIN_UID, user(ADMIN_UID))
+      .storage('gs://demo-gp-local.appspot.com');
+    await assertFails(aliceStorage.ref('community/alice/new-image.png').putString('forged'));
+    await assertFails(aliceStorage.ref('users/alice/profile.png').putString('forged'));
+    await assertFails(adminStorage.ref('admin/export.json').putString('forged'));
+    await assertFails(aliceStorage.ref('community/alice/legacy-image.png').delete());
   });
 } finally {
   await testEnv.cleanup();

@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const usageBilling = require('../lib/usageBilling');
 const historyService = require('../lib/historyService');
-const { db, verifyToken, ADMIN_UIDS } = require('../config');
+const { db, verifyToken, verifyAdminToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');   // idToken 추출 단일 출처(헤더 우선·폴백 deprecated)
 const inputrouting = require('../engine/inputrouting');   // 재구성 부적합 사전감지(생성 호출 '전' 차단 → API 낭비 0)
@@ -31,11 +31,20 @@ const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const restartRecovery = require('../lib/transformRestartRecovery');
 const publicMetrics = require('../lib/publicMetrics');
 const {
+  COLLECTION: ACCOUNT_ACTIVITY_COLLECTION,
+  TRANSFORM_CLAIM_TTL_MS,
+  TRANSFORM_LANE,
+  accountDeletionBlocksWrites,
+  laneWithClaim,
+  laneWithoutClaim,
+} = require('../lib/accountActivityClaims');
+const {
   restructureCredit,
   shortHumanizeCredit
 } = require('../lib/humanizePricing');
 
 const jobs = new Map();
+const jobPersistChains = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive'; // 관리자 모니터 장기 보관용(원문·결과 제외)
 const TERMINAL_JOB_STATUSES = new Set(['done', 'blocked', 'error', 'cancelled']);
@@ -747,24 +756,78 @@ function pruneUndefinedForFirestore(value) {
   return value;
 }
 
-function persistJob(job) {
+function persistJob(job, { requireClaim = false } = {}) {
   normalizeCompletedJobState(job);
   ensureTerminalTimestamp(job);
-  if (!db) return Promise.resolve();
+  if (!db) return Promise.resolve({ ok: true, localOnly: true });
   const doc = {};
   for (const k of PERSIST_FIELDS) {
     const cleaned = pruneUndefinedForFirestore(job[k]);
     if (cleaned !== undefined) doc[k] = cleaned;
   }
-  try {
-    const primary = db.collection('transformJobs').doc(job.id).set(doc, { merge: true })
-      .catch(e => logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
-    const archived = archiveJob(job);
-    return Promise.allSettled([primary, archived].filter(Boolean));
-  } catch (e) {
-    logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e });
-    return Promise.resolve();
-  }
+  const archiveDoc = buildArchiveDocument(job);
+  const previous = jobPersistChains.get(job.id) || Promise.resolve();
+  const operation = previous.catch(() => {}).then(async () => {
+    try {
+      const primaryRef = db.collection('transformJobs').doc(job.id);
+      const archiveRef = db.collection(JOB_ARCHIVE_COLLECTION).doc(job.id);
+      const deletionRef = db.collection('accountDeletionJobs').doc(job.uid);
+      const activityRef = db.collection(ACCOUNT_ACTIVITY_COLLECTION).doc(job.uid);
+      if (typeof db.runTransaction !== 'function') {
+        return {
+          ok: false,
+          code: 'TRANSFORM_JOB_PERSIST_UNAVAILABLE',
+          error: new Error('Firestore transaction support is required for transform persistence'),
+        };
+      }
+      return await db.runTransaction(async transaction => {
+        const [deletionSnapshot, activitySnapshot] = await Promise.all([
+          transaction.get(deletionRef),
+          transaction.get(activityRef),
+        ]);
+        const nowMs = Date.now();
+        const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
+        const active = ['queued', 'running'].includes(String(doc.status || ''))
+          || doc.refine?.status === 'running';
+        const nextLane = active
+          ? laneWithClaim(activity, TRANSFORM_LANE, {
+            id: job.id,
+            status: doc.status,
+            ttlMs: TRANSFORM_CLAIM_TTL_MS,
+          }, nowMs)
+          : laneWithoutClaim(activity, TRANSFORM_LANE, job.id, nowMs);
+        if (deletionSnapshot.exists
+          && accountDeletionBlocksWrites(deletionSnapshot.data() || {}, nowMs)) {
+          if (activitySnapshot.exists) {
+            transaction.set(activityRef, {
+              uid: job.uid,
+              [TRANSFORM_LANE]: laneWithoutClaim(activity, TRANSFORM_LANE, job.id, nowMs),
+              updatedAtMs: nowMs,
+            }, { merge: true });
+          }
+          return { ok: false, blocked: true, code: 'ACCOUNT_DELETION_IN_PROGRESS' };
+        }
+        transaction.set(primaryRef, doc, { merge: true });
+        transaction.set(archiveRef, archiveDoc, { merge: true });
+        if (active || activitySnapshot.exists || requireClaim) {
+          transaction.set(activityRef, {
+            uid: job.uid,
+            [TRANSFORM_LANE]: nextLane,
+            updatedAtMs: nowMs,
+          }, { merge: true });
+        }
+        return { ok: true };
+      });
+    } catch (e) {
+      logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e });
+      return { ok: false, error: e };
+    }
+  });
+  jobPersistChains.set(job.id, operation);
+  void operation.finally(() => {
+    if (jobPersistChains.get(job.id) === operation) jobPersistChains.delete(job.id);
+  }).catch(() => {});
+  return operation;
 }
 
 function resultLength(result) {
@@ -778,8 +841,24 @@ function resultLength(result) {
 function archiveJob(job, extra = {}) {
   if (!db || !job || !job.id) return;
   const doc = buildArchiveDocument(job, extra);
-  return db.collection(JOB_ARCHIVE_COLLECTION).doc(job.id).set(doc, { merge: true })
-    .catch(e => logger.warn('transform.archive_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e }));
+  const archiveRef = db.collection(JOB_ARCHIVE_COLLECTION).doc(job.id);
+  if (!job.uid || typeof db.runTransaction !== 'function') {
+    const error = new Error('Transform archive persistence requires an owner UID and Firestore transactions');
+    logger.warn('transform.archive_failed', { jobId: job.id, uid: job.uid, status: job.status, err: error });
+    return Promise.resolve({ ok: false, error });
+  }
+  return db.runTransaction(async transaction => {
+    const deletionRef = db.collection('accountDeletionJobs').doc(job.uid);
+    const deletionSnapshot = await transaction.get(deletionRef);
+    if (deletionSnapshot.exists && accountDeletionBlocksWrites(deletionSnapshot.data() || {})) {
+      return { ok: false, blocked: true };
+    }
+    transaction.set(archiveRef, doc, { merge: true });
+    return { ok: true };
+  }).catch(e => {
+    logger.warn('transform.archive_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e });
+    return { ok: false, error: e };
+  });
 }
 
 function buildArchiveDocument(job, extra = {}, now = Date.now()) {
@@ -1601,6 +1680,10 @@ async function restoreJobs() {
         restartRecovery.holdRestoredRunningJob(j, { delayMs: RESTORE_RUNNING_RECOVERY_DELAY_MS });
         recovering++;
         scheduleRestartRecovery(j.id);
+      } else if (j.status === 'queued') {
+        void persistJob(j, { requireClaim: true }).then(result => {
+          if (result?.blocked) jobs.delete(j.id);
+        });
       } else {
         archiveJob(j);
       }
@@ -1635,14 +1718,9 @@ router.shutdown = async function shutdown() {
     }
     ensureTerminalTimestamp(j);
     if (db) {
-      const doc = {};
-      for (const k of PERSIST_FIELDS) {
-        const cleaned = pruneUndefinedForFirestore(j[k]);
-        if (cleaned !== undefined) doc[k] = cleaned;
-      }
-      writes.push(db.collection('transformJobs').doc(j.id).set(doc, { merge: true }).catch(() => {}));
-      const archiveWrite = archiveJob(j);
-      if (archiveWrite) writes.push(archiveWrite.catch(() => {}));
+      writes.push(persistJob(j, {
+        requireClaim: ['queued', 'running'].includes(String(j.status || '')),
+      }));
     }
   }
   await Promise.race([Promise.allSettled(writes), new Promise(r => setTimeout(r, 4000))]);
@@ -2702,9 +2780,9 @@ router.post('/transform', async (req, res) => {
     if (devNoAuth) {
       adminLabUid = 'dev-local';
     } else {
-      adminLabUid = await verifyToken(idToken);
+      adminLabUid = await verifyAdminToken(idToken);
+      if (adminLabUid === false) return res.status(403).json({ error: '관리자만 사용할 수 있는 테스트 페이지입니다.' });
       if (!adminLabUid) return res.status(401).json({ error: '관리자 테스트는 로그인이 필요해요.' });
-      if (!isAdminUid(adminLabUid)) return res.status(403).json({ error: '관리자만 사용할 수 있는 테스트 페이지입니다.' });
     }
   } else if (!devNoAuth) {
     try {
@@ -2933,8 +3011,20 @@ router.post('/transform', async (req, res) => {
     estimatedTotalChunks: advancedTimeEstimate?.totalChunkCount,
     ac: new AbortController()   // 명시적 취소용(/cancel)
   };
+  const initialPersistence = await persistJob(job, { requireClaim: true });
+  if (!initialPersistence?.ok) {
+    if (initialPersistence?.blocked) {
+      return res.status(409).json({
+        code: 'ACCOUNT_DELETION_IN_PROGRESS',
+        error: '회원 탈퇴 처리가 진행 중이라 새 작업을 시작할 수 없어요.',
+      });
+    }
+    return res.status(503).json({
+      code: 'TRANSFORM_JOB_PERSIST_UNAVAILABLE',
+      error: '작업을 안전하게 저장하지 못했어요. 잠시 후 다시 시도해 주세요.',
+    });
+  }
   jobs.set(id, job);
-  persistJob(job);
   drainQueue();   // 슬롯이 비어 있으면 같은 tick에서 queued→running 승격, 아니면 대기열에 남김.
   const payload = activeJobPayload(job);
   if (job.status === 'queued') {
@@ -3039,13 +3129,26 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
       });
     }
   }
-  res.json({ ok: true });   // 즉시 응답 — 보존형 재처리는 백그라운드, 프론트는 폴링으로 done 수신.
+  const priorStatus = job.status;
+  const priorStage = job.stage;
   job.status = 'running';
   job.stage = '원문 보존형으로 재처리 중';
   job.blockOffer = null;
   job.startedAt = Date.now();        // 새 시작점 — 30초 취소 창이 이 보존형 재처리 기준으로 적용되게.
   job.ac = new AbortController();     // 차단 시 abort된 컨트롤러 교체
-  persistJob(job);
+  const fallbackClaim = await persistJob(job, { requireClaim: true });
+  if (!fallbackClaim?.ok) {
+    job.status = priorStatus;
+    job.stage = priorStage;
+    job.blockOffer = buildBlockOffer(job, job.text || '');
+    return res.status(fallbackClaim?.blocked ? 409 : 503).json({
+      code: fallbackClaim?.blocked ? 'ACCOUNT_DELETION_IN_PROGRESS' : 'TRANSFORM_JOB_PERSIST_UNAVAILABLE',
+      error: fallbackClaim?.blocked
+        ? '회원 탈퇴 처리가 진행 중이라 재처리를 시작할 수 없어요.'
+        : '작업을 안전하게 저장하지 못했어요. 잠시 후 다시 시도해 주세요.',
+    });
+  }
+  res.json({ ok: true });   // 즉시 응답 — 보존형 재처리는 백그라운드, 프론트는 폴링으로 done 수신.
   try {
     const handled = await tryBlogPreservationFallback(job, job.text || '');
     if (!handled && job.status !== 'cancelled') {   // 보존형도 치명 출력이면 다시 차단
@@ -3118,7 +3221,16 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
       });
     }
   }
-  persistJob(job);
+  const refineClaim = await persistJob(job, { requireClaim: true });
+  if (!refineClaim?.ok) {
+    job.refine = prevRefine;
+    return res.status(refineClaim?.blocked ? 409 : 503).json({
+      code: refineClaim?.blocked ? 'ACCOUNT_DELETION_IN_PROGRESS' : 'TRANSFORM_JOB_PERSIST_UNAVAILABLE',
+      error: refineClaim?.blocked
+        ? '회원 탈퇴 처리가 진행 중이라 문단 보강을 시작할 수 없어요.'
+        : '문단 보강 작업을 안전하게 저장하지 못했어요.',
+    });
+  }
   logger.info('transform.refine_started', { jobId: job.id, uid: job.uid, mode: job.mode, paragraphIndex: idx, n, needed, memoLength: memo.length });
   res.json({ ok: true, refine: publicRefine(job) });   // 즉시 응답 — 프론트는 GET /transform/:id 폴링으로 수신
   const ac = new AbortController();
@@ -3258,7 +3370,17 @@ router.post('/transform/:id/approve', async (req, res) => {
     approved: approved.length,
     candidates: (job.candidates || []).length
   });
-  persistJob(job);
+  const approvalClaim = await persistJob(job, { requireClaim: true });
+  if (!approvalClaim?.ok) {
+    job.status = 'awaiting_approval';
+    job.stage = '근거 승인 대기';
+    return res.status(approvalClaim?.blocked ? 409 : 503).json({
+      code: approvalClaim?.blocked ? 'ACCOUNT_DELETION_IN_PROGRESS' : 'TRANSFORM_JOB_PERSIST_UNAVAILABLE',
+      error: approvalClaim?.blocked
+        ? '회원 탈퇴 처리가 진행 중이라 작업을 재개할 수 없어요.'
+        : '승인 작업을 안전하게 저장하지 못했어요.',
+    });
+  }
   drainQueue();
   const payload = activeJobPayload(job);
   if (job.status === 'queued') {

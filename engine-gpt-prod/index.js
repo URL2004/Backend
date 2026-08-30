@@ -5245,7 +5245,17 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
       if (unsafe) warnings.push('unsafe_source_url_filtered');
       return !unsafe;
     })
-    .map(c => ({ ...c, sourceVerified: verifiedUrls.size ? hasVerifiedUrl(c.url, verifiedUrls) : false }));
+    .map(c => {
+      const verifiedUrl = verifiedUrls.size ? matchedVerifiedUrl(c.url, verifiedUrls) : '';
+      return {
+        ...c,
+        // Use the tool-provided canonical URL, not a model-generated variation.
+        // This prevents a same-host path/query (including open redirects) from
+        // inheriting the search tool's trust.
+        url: verifiedUrl || c.url,
+        sourceVerified: Boolean(verifiedUrl)
+      };
+    });
   if (verifiedUrls.size) {
     candidates = candidates.filter(c => c.sourceVerified);
   } else {
@@ -7568,21 +7578,21 @@ function normalizeEvidenceUrl(url) {
   try {
     const u = new URL(String(url || '').trim());
     u.hash = '';
-    u.search = '';
-    return u.toString().replace(/\/+$/, '').toLowerCase();
+    // URL normalizes scheme/host/default ports while preserving path case and
+    // query semantics. Query strings are security-significant for redirect URLs.
+    return u.toString();
   } catch {
     return '';
   }
 }
 
-function hasVerifiedUrl(url, verifiedUrls) {
+function matchedVerifiedUrl(url, verifiedUrls) {
   const norm = normalizeEvidenceUrl(url);
-  if (!norm) return false;
-  if (verifiedUrls.has(norm)) return true;
-  for (const verified of verifiedUrls) {
-    if (norm.startsWith(verified + '/') || verified.startsWith(norm + '/')) return true;
-  }
-  return false;
+  return norm && verifiedUrls.has(norm) ? norm : '';
+}
+
+function hasVerifiedUrl(url, verifiedUrls) {
+  return Boolean(matchedVerifiedUrl(url, verifiedUrls));
 }
 
 async function verifyEvidenceCandidates(candidates, parentSignal) {
@@ -8372,6 +8382,10 @@ module.exports = {
   isModelFailureRecord,
   tryAccumulateFailedChunkEdits,
   freezeLockedBlocks,
+  collectWebSearchUrls,
+  normalizeEvidenceUrl,
+  hasVerifiedUrl,
+  matchedVerifiedUrl,
   buildHumanizationDepthPair,
   HUMANIZATION_DENOMINATOR_VERSION
 };

@@ -37,11 +37,29 @@ test('field allowlists include additions and authentication bindings stay server
   assert.match(helper, /affectedKeys\(\)\.hasOnly\(keys\)/u);
 
   const users = section('match /users/{uid}', 'match /orders/{orderId}');
+  assert.match(users, /allow create:\s*if false;/u);
   assert.match(users, /onlyChanged\(\['name', 'refCode'\]\)/u);
   assert.doesNotMatch(users, /onlyChanged\([^\n]*(?:kakaoId|bookmarks)/u);
+  assert.match(users, /match \/history\/\{historyId\}[\s\S]*allow create, update, delete:\s*if false;/u);
+  assert.match(users, /match \/notifications\/\{notificationId\}[\s\S]*allow create:\s*if false;/u);
 
   const identityBindings = section('match /authIdentities/{identityId}', 'match /billingSecrets/{uid}');
   assert.match(identityBindings, /allow read, write:\s*if false;/u);
+  for (const collectionName of [
+    'paymentAccountClaims', 'subscriptionOperationClaims', 'subscriptionRefundClaims',
+    'accountActivityClaims'
+  ]) {
+    assert.match(firestoreRules, new RegExp(`match /${collectionName}/\\{[^}]+\\}\\s*\\{[\\s\\S]*?allow read, write:\\s*if false;`, 'u'));
+  }
+  assert.match(firestoreRules, /match \/accountSecurity\/\{uid\}\s*\{[\s\S]*?allow read, write:\s*if false;/u);
+});
+
+test('Q&A mutations and durable quota counters are server-only while owner reads remain', () => {
+  const qna = section('match /qna/{questionId}', 'match /notices/{noticeId}');
+  assert.match(qna, /allow create:\s*if false;/u);
+  assert.match(qna, /allow update, delete:\s*if false;/u);
+  assert.match(qna, /allow get:\s*if isAdmin\(\) \|\| \(signedIn\(\)/u);
+  assert.match(qna, /match \/clientWriteQuotas\/\{quotaId\}[\s\S]*allow read, write:\s*if false;/u);
 });
 
 test('Storage is default-deny for every client path', () => {

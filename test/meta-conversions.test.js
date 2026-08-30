@@ -57,6 +57,8 @@ test('CAPI sends one strict event payload when configured', async () => {
     assert.equal(body.data[0].event_source_url, 'https://gpkorea.ai.kr/?utm_source=meta');
     assert.equal(body.data[0].event_source_url.includes('paymentKey'), false);
     assert.equal('input_text' in body.data[0], false);
+    assert.equal(String(captured.url).includes('access_token'), false);
+    assert.equal(captured.options.headers.Authorization, 'Bearer test-token');
   } finally {
     global.fetch = originalFetch;
     if (originalToken === undefined) delete process.env.META_CAPI_ACCESS_TOKEN;

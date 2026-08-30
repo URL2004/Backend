@@ -1,33 +1,31 @@
-// [계정] 회원 탈퇴 — Admin SDK로 Firestore 데이터 + Firebase Auth 계정을 서버 권한으로 삭제.
-// ★ 서버가 auth_time을 확인해 최근 로그인한 사용자만 파괴적 작업을 수행할 수 있다.
-//   Google은 재인증, Kakao는 새 provider token→custom token 로그인으로 auth_time을 갱신한다.
+// [계정] 회원 탈퇴 — 최근 인증 + 서버 전용 재시도 작업표를 거쳐 개인정보를 정리한다.
+
+'use strict';
 
 const express = require('express');
 const { admin, db } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { hasRecentAuthentication } = require('../lib/recentAuth');
+const { executeAccountDeletion } = require('../lib/accountDeletion');
 
 const router = express.Router();
 
-router.post('/delete-account', async (req, res) => {
-  if (!admin || !db) return res.status(503).json({ error: '인증 서버가 비활성 상태예요. 잠시 후 다시 시도해주세요.' });
-
-  // 파괴적 작업에는 body/query 토큰 호환 경로를 허용하지 않는다. 접근 로그나
-  // 중간 계층에 장기 토큰이 남지 않도록 Authorization 헤더만 받는다.
+function authorizationToken(req) {
   const authorization = (typeof req.get === 'function' ? req.get('authorization') : '')
     || (req.headers && req.headers.authorization) || '';
   const match = String(authorization).match(/^Bearer\s+(.+)$/i);
-  const idToken = match ? match[1].trim() : '';
+  return match ? match[1].trim() : '';
+}
+
+router.post('/delete-account', async (req, res) => {
+  if (!admin || !db) return res.status(503).json({ error: '인증 서버가 비활성 상태예요. 잠시 후 다시 시도해주세요.' });
+  const idToken = authorizationToken(req);
   if (!idToken) return res.status(401).json({ error: '로그인이 필요해요.' });
 
-  let uid;
   let decoded;
-  try {
-    // checkRevoked=true: 이미 로그아웃/강제 만료된 토큰으로 탈퇴를 재시도하지 못하게 한다.
-    decoded = await admin.auth().verifyIdToken(idToken, true);
-    uid = decoded.uid;
-  }
+  try { decoded = await admin.auth().verifyIdToken(idToken, true); }
   catch { return res.status(401).json({ error: '인증이 만료됐어요. 다시 로그인 후 시도해주세요.' }); }
+  const uid = decoded.uid;
   setLogContext({ uid });
 
   if (!hasRecentAuthentication(decoded)) {
@@ -37,72 +35,46 @@ router.post('/delete-account', async (req, res) => {
       error: '안전한 탈퇴 처리를 위해 다시 로그인해 주세요.',
     });
   }
+  if (req.body?.confirm !== true) {
+    return res.status(400).json({
+      code: 'ACCOUNT_DELETION_CONFIRMATION_REQUIRED',
+      error: '탈퇴 확인 후 다시 시도해 주세요.',
+    });
+  }
 
   try {
-    const userRef = db.collection('users').doc(uid);
-
-    // 활성/해지예정 구독이 있으면 탈퇴 차단(전자상거래법 청약철회권 + 토스 심사 요건)
-    const snap = await userRef.get();
-    if (snap.exists) {
-      const sub = snap.data().subscription;
-      const nextMs = sub && sub.nextBillingAt && sub.nextBillingAt.toMillis ? sub.nextBillingAt.toMillis() : 0;
-      if (sub && (sub.status === 'active' || (sub.status === 'cancelled' && nextMs > Date.now()))) {
-        logger.warn('account.delete_blocked_active_subscription', { uid, subscriptionStatus: sub.status });
-        return res.status(409).json({
-          error: '진행 중이거나 해지 예정인 구독이 있어 탈퇴할 수 없어요. 마이페이지에서 구독을 먼저 정리해주세요.'
-        });
-      }
+    const result = await executeAccountDeletion({ admin, db, logger, uid });
+    return res.json({
+      ok: true,
+      alreadyCompleted: result.alreadyCompleted === true,
+      deletionState: 'completed',
+    });
+  } catch (error) {
+    if ([
+      'ACCOUNT_ACTIVE_SUBSCRIPTION',
+      'ACCOUNT_SUBSCRIPTION_OPERATION_PENDING',
+      'ACCOUNT_PAYMENT_OPERATION_PENDING',
+      'ACCOUNT_CONTENT_OPERATION_PENDING',
+      'ACCOUNT_REFUND_OPERATION_PENDING',
+      'ACCOUNT_FINANCIAL_REVIEW_REQUIRED',
+      'ACCOUNT_DELETION_IN_PROGRESS',
+    ].includes(error.code)) {
+      logger.warn('account.delete_blocked_active_operation', { uid, code: error.code });
+      return res.status(409).json({ code: error.code, error: error.message });
     }
-
-    // 하위 컬렉션 삭제(배치 — 400건 단위 커밋으로 Firestore 배치 한도 안전)
-    const subcols = ['creditHistory', 'couponHistory', 'history', 'notifications'];
-    for (const name of subcols) {
-      const docs = await userRef.collection(name).get();
-      let batch = db.batch();
-      let n = 0;
-      for (const d of docs.docs) {
-        batch.delete(d.ref);
-        n++;
-        if (n % 400 === 0) { await batch.commit(); batch = db.batch(); }
-      }
-      if (n % 400 !== 0) await batch.commit();
-    }
-
-    // ★ H-10: 결제 비밀·UGC 정리 (재무 기록 orders/subscriptionOrders는 전자상거래법상 보존 위해 유지).
-    //   billingSecrets는 재결제 자격증명이라 반드시 삭제(C-03 분리로 새로 생긴 컬렉션 — 누락돼 있던 갭).
-    await db.collection('billingSecrets').doc(uid).delete().catch(() => {});
-    //   UGC는 best-effort: 인덱스 부재 등으로 실패해도 탈퇴 자체는 진행(개인정보 핵심은 위 user 문서·Auth).
-    const deleteByQuery = async (label, snapPromise, withComments = false) => {
-      try {
-        const docs = (await snapPromise).docs;
-        let batch = db.batch(), n = 0;
-        const flush = async () => { if (n % 400 === 0) { await batch.commit(); batch = db.batch(); } };
-        for (const d of docs) {
-          if (withComments) {
-            const cs = await d.ref.collection('comments').get();
-            for (const c of cs.docs) { batch.delete(c.ref); n++; await flush(); }
-          }
-          batch.delete(d.ref); n++; await flush();
-        }
-        if (n % 400 !== 0) await batch.commit();
-      } catch (e) { logger.warn('account.ugc_cleanup_failed', { uid, label, err: e && e.message }); }
-    };
-    await deleteByQuery('posts', db.collection('posts').where('authorId', '==', uid).get(), true);
-    await deleteByQuery('qna', db.collection('qna').where('authorId', '==', uid).get());
-    await deleteByQuery('comments', db.collectionGroup('comments').where('authorId', '==', uid).get());
-    // 주의: Storage 업로드 이미지는 경로가 UID 네임스페이스가 아니라 일괄삭제 보류 — storage.rules 작업에서 함께 처리.
-
-    await userRef.delete();
-
-    // Auth 계정 삭제 — Admin 권한이라 재인증 불필요. 이미 없으면(중복 호출 등) 성공으로 간주.
-    try { await admin.auth().deleteUser(uid); }
-    catch (e) { if (e.code !== 'auth/user-not-found') throw e; }
-
-    logger.info('account.deleted', { uid, deletedSubcollections: subcols, billingSecrets: true, ugc: ['posts', 'qna', 'comments'] });
-    return res.json({ ok: true });
-  } catch (e) {
-    logger.error('account.delete_failed', { uid, err: e });
-    return res.status(500).json({ error: '탈퇴 처리 중 오류가 발생했어요. 잠시 후 다시 시도하거나 고객센터로 문의해주세요.' });
+    logger.error('account.delete_failed', { uid, code: error.code || 'ACCOUNT_DELETION_FAILED', err: error });
+    const progress = error.deletionProgress && typeof error.deletionProgress === 'object'
+      ? error.deletionProgress
+      : {};
+    return res.status(503).json({
+      code: 'ACCOUNT_DELETION_PENDING',
+      partial: progress.cleanupStarted === true,
+      accountDeleted: progress.authDeleted === true,
+      userDocumentDeleted: progress.userDeleted === true,
+      cleanupPhase: String(progress.phase || 'not_started').slice(0, 40),
+      retryScheduled: progress.cleanupStarted === true,
+      error: '일부 데이터 정리가 지연되고 있어 탈퇴 완료 처리를 보류했어요. 자동으로 다시 처리하며, 계속되면 사이트 내 고객센터로 문의해 주세요.',
+    });
   }
 });
 

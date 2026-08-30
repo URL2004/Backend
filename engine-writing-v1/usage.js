@@ -2,6 +2,7 @@
 
 const { db, admin } = require('../config');
 const { logger } = require('../lib/logger');
+const { accountDeletionBlocksWrites } = require('../lib/accountActivityClaims');
 
 const memory = new Map();
 const committed = new Set();
@@ -33,8 +34,17 @@ async function commitSuccessful(uid, requestId, cap) {
   try {
     const usageRef = db.collection('writingLabDailyUsage').doc(`${day}_${uid}`);
     const requestRef = db.collection('writingLabGenerationCommits').doc(requestId);
+    const deletionRef = db.collection('accountDeletionJobs').doc(uid);
     return await db.runTransaction(async transaction => {
-      const [usageSnap, requestSnap] = await Promise.all([transaction.get(usageRef), transaction.get(requestRef)]);
+      const [usageSnap, requestSnap, deletionSnap] = await Promise.all([
+        transaction.get(usageRef),
+        transaction.get(requestRef),
+        transaction.get(deletionRef),
+      ]);
+      if (deletionSnap.exists
+        && accountDeletionBlocksWrites(deletionSnap.data() || {})) {
+        return { committed: false, unavailable: true, accountDeletion: true, count: null };
+      }
       if (requestSnap.exists) {
         return { committed: false, duplicate: true, count: Number(usageSnap.data()?.successfulGenerations || 0) };
       }

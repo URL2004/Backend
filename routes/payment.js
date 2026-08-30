@@ -1,12 +1,15 @@
 // [결제] 토스페이먼츠 결제 확인 + Firebase 크레딧 지급 처리
 
 const express = require('express');
-const { admin, db, ADMIN_UIDS, verifyToken, verifyFirebaseIdToken } = require('../config');
+const crypto = require('crypto');
+const { admin, db, verifyToken, verifyAdminToken, verifyFirebaseIdToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const metaConversions = require('../lib/metaConversions');
 const { outboundFetch } = require('../lib/outboundPolicy');
 const { realClientIp } = require('../lib/clientip');
+const { bearerToken } = require('../lib/reqtoken');
+const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
 const { getRevenue } = require('../lib/revenue');
 const detectCalibration = require('../lib/detectCalibration');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
@@ -57,6 +60,18 @@ const gptAnalyze = require('./analyze-gpt');
 const router = express.Router();
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
 const UNLIMITED_REFUND_SETTLEMENT_USES = 50;
+const PAYMENT_RECONCILIATION_LEASE_MS = 5 * 60 * 1000;
+const PAYMENT_RECONCILIATION_MAX_ATTEMPTS = 12;
+const PAYMENT_ACCOUNT_CLAIMS_COLLECTION = 'paymentAccountClaims';
+const ACTIVE_PAYMENT_INTENT_STATUSES = new Set([
+  'confirming',
+  'status_unknown',
+  'provider_not_done',
+  'approved_reconciliation_required',
+  'approved_account_unavailable',
+  'manual_review'
+]);
+const PAYMENT_CHECKOUT_PRECLAIM_TTL_MS = 30 * 60 * 1000;
 const RETIRED_BASIC_EXPERIMENT_CONFIG = Object.freeze({
   enabled: false,
   retired: true,
@@ -89,12 +104,48 @@ async function parseProviderJson(response) {
   }
 }
 
+function paymentAccountClaimPatch({ uid, lane, id, status, operationId = null, active = true }) {
+  const nowMs = Date.now();
+  return {
+    uid,
+    [lane]: {
+      [id]: active
+        ? {
+          status,
+          ...(operationId ? { operationId } : {}),
+          updatedAtMs: nowMs
+        }
+        : admin.firestore.FieldValue.delete()
+    },
+    updatedAtMs: nowMs
+  };
+}
+
 async function markPaymentIntent(orderId, status, fields = {}) {
-  await db.collection('paymentIntents').doc(orderId).set({
-    status,
-    ...fields,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-  }, { merge: true });
+  const intentRef = db.collection('paymentIntents').doc(orderId);
+  await db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(intentRef);
+    const existing = snapshot.exists ? snapshot.data() || {} : {};
+    const uid = String(fields.uid || existing.uid || '');
+    transaction.set(intentRef, {
+      status,
+      ...fields,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    if (uid) {
+      transaction.set(
+        db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(uid),
+        paymentAccountClaimPatch({
+          uid,
+          lane: 'activeCreditIntents',
+          id: orderId,
+          status,
+          active: ACTIVE_PAYMENT_INTENT_STATUSES.has(status)
+        }),
+        { merge: true }
+      );
+    }
+  });
 }
 
 async function bestEffortMarkPaymentIntent(orderId, status, fields = {}) {
@@ -103,6 +154,62 @@ async function bestEffortMarkPaymentIntent(orderId, status, fields = {}) {
   } catch (err) {
     logger.error('payment.intent_update_failed', { orderId, status, err });
   }
+}
+
+function paymentCallbackBindingHash({ uid, orderId, amount, paymentKeyDigest }) {
+  return crypto.createHash('sha256')
+    .update([
+      String(uid || ''),
+      String(orderId || ''),
+      String(Math.max(0, Math.floor(Number(amount) || 0))),
+      String(paymentKeyDigest || '')
+    ].join('\u0000'))
+    .digest('hex');
+}
+
+function accountDeletionBlocksPayment(job, nowMs = Date.now()) {
+  const value = job && typeof job === 'object' ? job : {};
+  const status = String(value.status || '');
+  if (['processing', 'retry_pending', 'manual_review'].includes(status)) return true;
+  return status === 'completed' && Number(value.protectUntilMs) > nowMs;
+}
+
+function paymentIntentPreclaimExpired(intent, nowMs = Date.now()) {
+  const value = intent && typeof intent === 'object' ? intent : {};
+  return Number(value.ownerClaimVersion) >= 2
+    && Number(value.checkoutExpiresAtMs) < nowMs;
+}
+
+function paymentAccountUnavailableError(code = 'ACCOUNT_DELETION_IN_PROGRESS') {
+  return Object.assign(new Error(code), {
+    status: 409,
+    code
+  });
+}
+
+function upgradeCheckoutReservationPatch(sourceOrder, { uid, orderId, nowMs = Date.now() }) {
+  const source = sourceOrder && typeof sourceOrder === 'object' ? sourceOrder : null;
+  const reservedOrderId = String(source?.upgradeCheckoutOrderId || '');
+  const reservationActive = reservedOrderId
+    && Number(source?.upgradeCheckoutExpiresAtMs || 0) > nowMs;
+  if (!source
+    || source.uid !== uid
+    || Number(source.amount) !== STARTER_UPGRADE.sourceAmount
+    || String(source.status || '') !== 'paid'
+    || (source.upgradeOrderId && source.upgradeOrderId !== orderId)
+    || (source.activeUpgradeOrderId && source.activeUpgradeOrderId !== orderId)
+    || (reservationActive && reservedOrderId !== orderId)) {
+    throw Object.assign(new Error('UPGRADE_SOURCE_CONFLICT'), {
+      status: 409,
+      code: 'UPGRADE_SOURCE_CONFLICT'
+    });
+  }
+  return {
+    upgradeCheckoutOrderId: orderId,
+    upgradeCheckoutClaimedBy: uid,
+    upgradeCheckoutClaimedAtMs: nowMs,
+    upgradeCheckoutExpiresAtMs: nowMs + PAYMENT_CHECKOUT_PRECLAIM_TTL_MS
+  };
 }
 
 function paymentIntentGrant(existing, creditGrant) {
@@ -202,23 +309,137 @@ function assertPaymentIntentAllowsCreditGrant(intent) {
   return true;
 }
 
+async function preclaimPaymentIntent({ orderId, uid, amount, creditGrant }) {
+  const intentRef = db.collection('paymentIntents').doc(orderId);
+  const userRef = db.collection('users').doc(uid);
+  const deletionJobRef = db.collection('accountDeletionJobs').doc(uid);
+  const sourceOrderRef = creditGrant?.purchaseKind === STARTER_UPGRADE.kind && creditGrant?.sourceOrderId
+    ? db.collection('orders').doc(creditGrant.sourceOrderId)
+    : null;
+  const nowMs = Date.now();
+  return db.runTransaction(async transaction => {
+    const [intentSnapshot, userSnapshot, deletionJobSnapshot, sourceOrderSnapshot] = await Promise.all([
+      transaction.get(intentRef),
+      transaction.get(userRef),
+      transaction.get(deletionJobRef),
+      sourceOrderRef ? transaction.get(sourceOrderRef) : Promise.resolve(null)
+    ]);
+    if (!userSnapshot.exists) throw paymentAccountUnavailableError('PAYMENT_USER_MISSING');
+    if (deletionJobSnapshot.exists && accountDeletionBlocksPayment(deletionJobSnapshot.data(), nowMs)) {
+      throw paymentAccountUnavailableError();
+    }
+    const existing = intentSnapshot.exists ? intentSnapshot.data() || {} : null;
+    assertPaymentIntentAllowsCreditGrant(existing);
+    if (existing && (
+      existing.uid !== uid
+      || Number(existing.amount) !== amount
+      || String(existing.purchaseKind || 'credit_package') !== String(creditGrant.purchaseKind || 'credit_package')
+      || String(existing.sourceOrderId || '') !== String(creditGrant.sourceOrderId || '')
+    )) {
+      throw Object.assign(new Error('PAYMENT_INTENT_CONFLICT'), { status: 409, code: 'PAYMENT_INTENT_CONFLICT' });
+    }
+    if (existing?.paymentKeyHash || existing?.status === 'applied') {
+      throw Object.assign(new Error('PAYMENT_INTENT_ALREADY_CONFIRMED'), {
+        status: 409,
+        code: 'PAYMENT_INTENT_ALREADY_CONFIRMED'
+      });
+    }
+    const grant = paymentIntentGrant(existing, creditGrant);
+    const upgradeReservation = sourceOrderRef
+      ? upgradeCheckoutReservationPatch(
+        sourceOrderSnapshot?.exists ? sourceOrderSnapshot.data() || {} : null,
+        { uid, orderId, nowMs }
+      )
+      : null;
+    transaction.set(intentRef, {
+      uid,
+      amount,
+      paidCredits: grant.paidCredits,
+      baseCredits: grant.paidCredits,
+      packageBonusCredits: grant.packageBonusCredits,
+      eventBonusCredits: grant.eventBonusCredits,
+      bonusCredits: grant.bonusCredits,
+      totalGrantedCredits: grant.totalCredits,
+      packageBonusRate: grant.packageBonusRate,
+      eventBonusRate: grant.eventBonusRate,
+      eventId: grant.eventId,
+      eventEndsAtMs: grant.eventEndsAtMs,
+      grantPolicyVersion: grant.grantPolicyVersion,
+      offerPolicyVersion: grant.offerPolicyVersion,
+      purchaseKind: grant.purchaseKind,
+      sourceOrderId: grant.sourceOrderId,
+      targetAmount: grant.targetAmount,
+      firstPurchaseBonusCredits: grant.firstPurchaseBonusCredits,
+      ownerClaimVersion: 2,
+      ownerClaimedAt: existing?.ownerClaimedAt || admin.firestore.FieldValue.serverTimestamp(),
+      status: 'checkout_prepared',
+      checkoutExpiresAtMs: nowMs + PAYMENT_CHECKOUT_PRECLAIM_TTL_MS,
+      reconciliationCandidate: false,
+      createdAt: existing?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    if (sourceOrderRef) transaction.update(sourceOrderRef, upgradeReservation);
+    return { grant, expiresAtMs: nowMs + PAYMENT_CHECKOUT_PRECLAIM_TTL_MS };
+  });
+}
+
 async function preparePaymentIntent({ orderId, paymentKey, uid, amount, creditGrant }) {
   const intentRef = db.collection('paymentIntents').doc(orderId);
+  const userRef = db.collection('users').doc(uid);
+  const deletionJobRef = db.collection('accountDeletionJobs').doc(uid);
+  const accountClaimRef = db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(uid);
+  const sourceOrderRef = creditGrant?.purchaseKind === STARTER_UPGRADE.kind && creditGrant?.sourceOrderId
+    ? db.collection('orders').doc(creditGrant.sourceOrderId)
+    : null;
   const keyHash = paymentKeyHash(paymentKey);
+  const callbackBindingHash = paymentCallbackBindingHash({
+    uid,
+    orderId,
+    amount,
+    paymentKeyDigest: keyHash
+  });
   return db.runTransaction(async transaction => {
-    const snap = await transaction.get(intentRef);
+    const [snap, userSnap, deletionJobSnap, sourceOrderSnap] = await Promise.all([
+      transaction.get(intentRef),
+      transaction.get(userRef),
+      transaction.get(deletionJobRef),
+      sourceOrderRef ? transaction.get(sourceOrderRef) : Promise.resolve(null)
+    ]);
+    if (!userSnap.exists) throw paymentAccountUnavailableError('PAYMENT_USER_MISSING');
+    if (deletionJobSnap.exists && accountDeletionBlocksPayment(deletionJobSnap.data())) {
+      throw paymentAccountUnavailableError();
+    }
     const existing = snap.exists ? snap.data() : null;
     assertPaymentIntentAllowsCreditGrant(existing);
+    if (!existing && process.env.PAYMENT_PRECLAIM_REQUIRED === '1') {
+      throw Object.assign(new Error('PAYMENT_PRECLAIM_REQUIRED'), {
+        status: 409,
+        code: 'PAYMENT_PRECLAIM_REQUIRED'
+      });
+    }
+    if (paymentIntentPreclaimExpired(existing)) {
+      throw Object.assign(new Error('PAYMENT_PRECLAIM_EXPIRED'), {
+        status: 409,
+        code: 'PAYMENT_PRECLAIM_EXPIRED'
+      });
+    }
     if (existing && (
       existing.uid !== uid ||
       Number(existing.amount) !== amount ||
-      existing.paymentKeyHash !== keyHash
+      (existing.paymentKeyHash && existing.paymentKeyHash !== keyHash)
+      || (existing.callbackBindingHash && existing.callbackBindingHash !== callbackBindingHash)
       || String(existing.purchaseKind || 'credit_package') !== String(creditGrant.purchaseKind || 'credit_package')
       || String(existing.sourceOrderId || '') !== String(creditGrant.sourceOrderId || '')
     )) {
       throw Object.assign(new Error('PAYMENT_INTENT_CONFLICT'), { status: 409 });
     }
     const grant = paymentIntentGrant(existing, creditGrant);
+    const upgradeReservation = sourceOrderRef
+      ? upgradeCheckoutReservationPatch(
+        sourceOrderSnap?.exists ? sourceOrderSnap.data() || {} : null,
+        { uid, orderId }
+      )
+      : null;
     transaction.set(intentRef, {
       uid,
       amount,
@@ -239,11 +460,29 @@ async function preparePaymentIntent({ orderId, paymentKey, uid, amount, creditGr
       targetAmount: grant.targetAmount,
       firstPurchaseBonusCredits: grant.firstPurchaseBonusCredits,
       paymentKeyHash: keyHash,
+      callbackBindingHash,
+      // A callback must not erase the stronger owner claim established before
+      // the Toss window opened. Legacy clients remain version 1 until the
+      // compatibility switch is closed.
+      ownerClaimVersion: Number(existing?.ownerClaimVersion) >= 2 ? 2 : 1,
+      ownerClaimedAt: existing?.ownerClaimedAt || admin.firestore.FieldValue.serverTimestamp(),
       status: existing && existing.status === 'applied' ? 'applied' : 'confirming',
+      reconciliationCandidate: existing?.status === 'applied' ? false : true,
+      reconciliationRetryAtMs: existing?.status === 'applied'
+        ? admin.firestore.FieldValue.delete()
+        : (Number(existing?.reconciliationRetryAtMs) || Date.now() + 5 * 60 * 1000),
       attempts: Number(existing?.attempts || 0) + 1,
       createdAt: existing?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+    transaction.set(accountClaimRef, paymentAccountClaimPatch({
+      uid,
+      lane: 'activeCreditIntents',
+      id: orderId,
+      status: existing?.status === 'applied' ? 'applied' : 'confirming',
+      active: existing?.status !== 'applied'
+    }), { merge: true });
+    if (sourceOrderRef) transaction.update(sourceOrderRef, upgradeReservation);
     return grant;
   });
 }
@@ -310,6 +549,8 @@ async function applyCreditPayment({
   const orderRef = db.collection('orders').doc(orderId);
   const userRef = db.collection('users').doc(verifiedUid);
   const intentRef = db.collection('paymentIntents').doc(orderId);
+  const deletionJobRef = db.collection('accountDeletionJobs').doc(verifiedUid);
+  const accountClaimRef = db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(verifiedUid);
   const baseCredits = creditGrant.paidCredits;
   const packageBonusCredits = Math.max(0, Math.floor(Number(creditGrant.packageBonusCredits) || 0));
   const eventBonusCredits = Math.max(0, Math.floor(Number(creditGrant.eventBonusCredits) || 0));
@@ -331,9 +572,15 @@ async function applyCreditPayment({
     const orderSnap = await transaction.get(orderRef);
     const userSnap = await transaction.get(userRef);
     const intentSnap = await transaction.get(intentRef);
+    const deletionJobSnap = await transaction.get(deletionJobRef);
     const sourceOrderSnap = sourceOrderRef ? await transaction.get(sourceOrderRef) : null;
     const userData = userSnap.exists ? userSnap.data() : {};
     const currentCredits = Number(userData.credits) || 0;
+
+    if (!userSnap.exists) throw paymentAccountUnavailableError('PAYMENT_USER_MISSING');
+    if (deletionJobSnap.exists && accountDeletionBlocksPayment(deletionJobSnap.data())) {
+      throw paymentAccountUnavailableError();
+    }
 
     if (intentSnap.exists) assertPaymentIntentAllowsCreditGrant(intentSnap.data() || {});
 
@@ -348,6 +595,13 @@ async function applyCreditPayment({
         dedupedAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
+      transaction.set(accountClaimRef, paymentAccountClaimPatch({
+        uid: verifiedUid,
+        lane: 'activeCreditIntents',
+        id: orderId,
+        status: 'applied',
+        active: false
+      }), { merge: true });
       return {
         deduped: true,
         baseCredits: Number(order.paidCredits ?? order.baseCredits) || Math.min(baseCredits, totalCredits),
@@ -369,10 +623,17 @@ async function applyCreditPayment({
       throw Object.assign(new Error('PAYMENT_INTENT_MISSING'), { status: 503 });
     }
     const intent = intentSnap.data() || {};
+    const expectedBindingHash = paymentCallbackBindingHash({
+      uid: verifiedUid,
+      orderId,
+      amount: safeAmount,
+      paymentKeyDigest: paymentKeyHash(paymentKey)
+    });
     if (
       intent.uid !== verifiedUid ||
       Number(intent.amount) !== safeAmount ||
-      intent.paymentKeyHash !== paymentKeyHash(paymentKey)
+      intent.paymentKeyHash !== paymentKeyHash(paymentKey) ||
+      (intent.callbackBindingHash && intent.callbackBindingHash !== expectedBindingHash)
     ) {
       throw Object.assign(new Error('PAYMENT_INTENT_CONFLICT'), { status: 409 });
     }
@@ -383,7 +644,8 @@ async function applyCreditPayment({
         || Number(sourceOrder.amount) !== STARTER_UPGRADE.sourceAmount
         || String(sourceOrder.status || '') !== 'paid'
         || (sourceOrder.upgradeOrderId && sourceOrder.upgradeOrderId !== orderId)
-        || (sourceOrder.activeUpgradeOrderId && sourceOrder.activeUpgradeOrderId !== orderId)) {
+        || (sourceOrder.activeUpgradeOrderId && sourceOrder.activeUpgradeOrderId !== orderId)
+        || (sourceOrder.upgradeCheckoutOrderId && sourceOrder.upgradeCheckoutOrderId !== orderId)) {
         throw Object.assign(new Error('UPGRADE_SOURCE_CONFLICT'), { status: 409, code: 'UPGRADE_SOURCE_CONFLICT' });
       }
     }
@@ -440,6 +702,10 @@ async function applyCreditPayment({
       transaction.update(sourceOrderRef, {
         upgradeOrderId: orderId,
         activeUpgradeOrderId: orderId,
+        upgradeCheckoutOrderId: admin.firestore.FieldValue.delete(),
+        upgradeCheckoutClaimedBy: admin.firestore.FieldValue.delete(),
+        upgradeCheckoutClaimedAtMs: admin.firestore.FieldValue.delete(),
+        upgradeCheckoutExpiresAtMs: admin.firestore.FieldValue.delete(),
         upgradedAt: admin.firestore.FieldValue.serverTimestamp()
       });
     }
@@ -487,11 +753,21 @@ async function applyCreditPayment({
     });
     transaction.set(intentRef, {
       status: 'applied',
+      reconciliationCandidate: false,
+      reconciliationLeaseToken: admin.firestore.FieldValue.delete(),
+      reconciliationLeaseUntilMs: admin.firestore.FieldValue.delete(),
       creditedCredits: totalCredits,
       reconciliationSource,
       appliedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+    transaction.set(accountClaimRef, paymentAccountClaimPatch({
+      uid: verifiedUid,
+      lane: 'activeCreditIntents',
+      id: orderId,
+      status: 'applied',
+      active: false
+    }), { merge: true });
 
     return {
       deduped: false,
@@ -511,9 +787,244 @@ async function applyCreditPayment({
   });
 }
 
+function paymentReconciliationClaimable(intent, nowMs = Date.now()) {
+  const value = intent && typeof intent === 'object' ? intent : {};
+  if (value.reconciliationCandidate !== true || value.status === 'applied') return false;
+  if (Number(value.reconciliationRetryAtMs) > nowMs) return false;
+  const leaseUntil = Number(value.reconciliationLeaseUntilMs) || 0;
+  return !value.reconciliationLeaseToken || leaseUntil <= nowMs;
+}
+
+async function claimPaymentReconciliationIntent(doc, nowMs = Date.now()) {
+  const leaseToken = crypto.randomUUID();
+  return db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(doc.ref);
+    if (!snapshot.exists) return null;
+    const intent = snapshot.data() || {};
+    if (!paymentReconciliationClaimable(intent, nowMs)) return null;
+    const attempt = Math.max(0, Math.floor(Number(intent.reconciliationAttempts) || 0)) + 1;
+    if (attempt > PAYMENT_RECONCILIATION_MAX_ATTEMPTS) {
+      transaction.update(doc.ref, {
+        status: 'manual_review',
+        reconciliationCandidate: false,
+        reconciliationAttempts: attempt - 1,
+        reconciliationManualReviewReason: 'retry_exhausted',
+        reconciliationLeaseToken: admin.firestore.FieldValue.delete(),
+        reconciliationLeaseUntilMs: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      if (intent.uid) {
+        transaction.set(
+          db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(intent.uid),
+          paymentAccountClaimPatch({
+            uid: intent.uid,
+            lane: 'activeCreditIntents',
+            id: doc.id,
+            status: 'manual_review',
+            active: true
+          }),
+          { merge: true }
+        );
+      }
+      return { manualReview: true, intent };
+    }
+    transaction.update(doc.ref, {
+      reconciliationLeaseToken: leaseToken,
+      reconciliationLeaseUntilMs: nowMs + PAYMENT_RECONCILIATION_LEASE_MS,
+      reconciliationAttempts: attempt,
+      reconciliationLastAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    return { leaseToken, intent: { ...intent, reconciliationAttempts: attempt } };
+  });
+}
+
+async function transitionPaymentReconciliation(docRef, leaseToken, patch) {
+  return db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(docRef);
+    if (!snapshot.exists || snapshot.data()?.reconciliationLeaseToken !== leaseToken) return false;
+    const existing = snapshot.data() || {};
+    transaction.update(docRef, {
+      ...patch,
+      reconciliationLeaseToken: admin.firestore.FieldValue.delete(),
+      reconciliationLeaseUntilMs: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    if (existing.uid) {
+      const nextStatus = String(patch.status || existing.status || 'approved_reconciliation_required');
+      transaction.set(
+        db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(existing.uid),
+        paymentAccountClaimPatch({
+          uid: existing.uid,
+          lane: 'activeCreditIntents',
+          id: docRef.id,
+          status: nextStatus,
+          active: ACTIVE_PAYMENT_INTENT_STATUSES.has(nextStatus)
+        }),
+        { merge: true }
+      );
+    }
+    return true;
+  });
+}
+
+function paymentIntentProviderMatches(intent, providerPayment, orderId) {
+  const value = intent && typeof intent === 'object' ? intent : {};
+  const payment = providerPayment && typeof providerPayment === 'object' ? providerPayment : {};
+  const approval = approvedPaymentValidation(payment, {
+    paymentKey: payment.paymentKey,
+    orderId,
+    amount: value.amount
+  });
+  if (!approval.ok) return { ok: false, reasons: approval.reasons };
+  if (!payment.paymentKey || paymentKeyHash(payment.paymentKey) !== value.paymentKeyHash) {
+    return { ok: false, reasons: ['payment_key_hash_mismatch'] };
+  }
+  const binding = paymentCallbackBindingHash({
+    uid: value.uid,
+    orderId,
+    amount: value.amount,
+    paymentKeyDigest: value.paymentKeyHash
+  });
+  if (value.callbackBindingHash && value.callbackBindingHash !== binding) {
+    return { ok: false, reasons: ['callback_binding_mismatch'] };
+  }
+  return { ok: true, reasons: [] };
+}
+
+async function reconcilePendingApprovedPayments({ limit = 25 } = {}) {
+  const boundedLimit = Math.min(100, Math.max(1, Number(limit) || 25));
+  const nowMs = Date.now();
+  const snapshot = await db.collection('paymentIntents')
+    .where('reconciliationCandidate', '==', true)
+    .limit(Math.min(300, boundedLimit * 6))
+    .get();
+  const docs = snapshot.docs
+    .filter(doc => paymentReconciliationClaimable(doc.data() || {}, nowMs))
+    .sort((left, right) => {
+      const a = left.data() || {};
+      const b = right.data() || {};
+      return (Number(a.reconciliationRetryAtMs) || 0) - (Number(b.reconciliationRetryAtMs) || 0)
+        || String(left.id).localeCompare(String(right.id));
+    })
+    .slice(0, boundedLimit);
+  const result = { scanned: docs.length, applied: 0, cancelled: 0, retried: 0, manualReview: 0 };
+  const basicToken = tossBasicToken();
+  if (!basicToken) throw Object.assign(new Error('TOSS_SECRET_MISSING'), { code: 'TOSS_SECRET_MISSING' });
+
+  for (const doc of docs) {
+    const claim = await claimPaymentReconciliationIntent(doc, nowMs);
+    if (!claim) continue;
+    if (claim.manualReview) {
+      result.manualReview++;
+      continue;
+    }
+    const { leaseToken, intent } = claim;
+    try {
+      const uid = String(intent.uid || '');
+      const amount = Math.max(0, Math.floor(Number(intent.amount) || 0));
+      if (!uid || !amount) throw Object.assign(new Error('PAYMENT_INTENT_INVALID'), { terminal: true });
+
+      const [providerLookup, userSnap, deletionJobSnap] = await Promise.all([
+        queryTossOrder({ basicToken, orderId: doc.id }),
+        db.collection('users').doc(uid).get(),
+        db.collection('accountDeletionJobs').doc(uid).get()
+      ]);
+      if (!providerLookup.response?.ok) {
+        throw Object.assign(new Error('PROVIDER_LOOKUP_UNAVAILABLE'), {
+          retryable: true,
+          providerStatus: providerLookup.response?.status || 0
+        });
+      }
+      const providerPayment = providerLookup.result || {};
+      const providerMatch = paymentIntentProviderMatches(intent, providerPayment, doc.id);
+      if (!providerMatch.ok) {
+        throw Object.assign(new Error('PAYMENT_RECONCILIATION_MISMATCH'), {
+          terminal: true,
+          reasons: providerMatch.reasons
+        });
+      }
+
+      const accountUnavailable = !userSnap.exists
+        || (deletionJobSnap.exists && accountDeletionBlocksPayment(deletionJobSnap.data()));
+      if (accountUnavailable || intent.providerCancellationRequired === true) {
+        const operationId = refundOperationId(doc.id, 0, amount, 0, 'account-unavailable');
+        const tossUrl = `https://api.tosspayments.com/v1/payments/${encodeURIComponent(providerPayment.paymentKey)}/cancel`;
+        const cancellation = await requestTossCancel({
+          tossUrl,
+          basicToken,
+          operationId,
+          cancelReason: '탈퇴 처리 중 승인 결제 자동 취소'
+        });
+        const cancellationLookup = cancellation.response?.ok
+          ? null
+          : await queryTossOrder({ basicToken, orderId: doc.id });
+        const cancellationState = tossCancellationState({
+          response: cancellation.response,
+          lookup: cancellationLookup,
+          targetRefundedAmount: amount
+        });
+        if (!cancellationState.confirmed) {
+          throw Object.assign(new Error(cancellationState.unknown
+            ? 'PROVIDER_CANCELLATION_STATUS_UNKNOWN'
+            : 'PROVIDER_CANCELLATION_FAILED'), {
+            retryable: cancellationState.unknown,
+            terminal: !cancellationState.unknown
+          });
+        }
+        await transitionPaymentReconciliation(doc.ref, leaseToken, {
+          status: 'provider_cancelled_account_unavailable',
+          reconciliationCandidate: false,
+          providerCancellationRequired: false,
+          providerCancelledAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        result.cancelled++;
+        continue;
+      }
+
+      const creditGrant = paymentIntentGrant(intent, getCreditProduct(amount) || {});
+      await applyCreditPayment({
+        verifiedUid: uid,
+        orderId: doc.id,
+        paymentKey: providerPayment.paymentKey,
+        safeAmount: amount,
+        creditGrant,
+        customerEmail: '',
+        providerPayment,
+        reconciliationSource: 'scheduled_reconciliation'
+      });
+      result.applied++;
+    } catch (error) {
+      const terminal = error.terminal === true;
+      const attempts = Math.max(1, Math.floor(Number(intent.reconciliationAttempts) || 1));
+      const exhausted = attempts >= PAYMENT_RECONCILIATION_MAX_ATTEMPTS;
+      const manualReview = terminal || exhausted;
+      await transitionPaymentReconciliation(doc.ref, leaseToken, {
+        status: manualReview ? 'manual_review' : 'approved_reconciliation_required',
+        reconciliationCandidate: !manualReview,
+        reconciliationRetryAtMs: Date.now() + Math.min(60 * 60 * 1000, 30_000 * (2 ** Math.min(6, attempts - 1))),
+        reconciliationErrorCode: String(error.code || error.message || 'PAYMENT_RECONCILIATION_FAILED').slice(0, 80),
+        ...(manualReview ? { reconciliationManualReviewReason: terminal ? 'terminal_mismatch' : 'retry_exhausted' } : {})
+      });
+      if (manualReview) result.manualReview++;
+      else result.retried++;
+      logger[manualReview ? 'error' : 'warn']('payment.reconciliation_worker_failed', {
+        orderId: doc.id,
+        uid: intent.uid || null,
+        attempts,
+        manualReview,
+        err: error
+      });
+    }
+  }
+  return result;
+}
+
 async function handleCreditPaymentConfirmation(req, res) {
   const body = req.body || {};
-  const { paymentKey, orderId, amount, customerEmail, uid, idToken, meta } = body;
+  const { paymentKey, orderId, amount, meta } = body;
+  const legacyBodyUid = typeof body.uid === 'string' ? body.uid : '';
+  const idToken = bearerToken(req);
   const requestedKind = String(body.purchaseKind || 'credit_package');
   const sourceOrderId = String(body.sourceOrderId || '').trim();
   const isUpgradeRequest = requestedKind === STARTER_UPGRADE.kind;
@@ -545,15 +1056,26 @@ async function handleCreditPaymentConfirmation(req, res) {
 
   let verifiedUid;
   let decodedToken;
+  let verifiedCustomerEmail = '';
   try {
-    decodedToken = await verifyFirebaseIdToken(idToken);
+    decodedToken = await verifyFirebaseIdToken(idToken, { checkRevoked: true });
     verifiedUid = decodedToken.uid;
+    verifiedCustomerEmail = typeof decodedToken.email === 'string'
+      ? decodedToken.email.trim().slice(0, 160)
+      : '';
     setLogContext({ uid: verifiedUid });
   } catch {
     return res.status(401).json({ error: '로그인 정보가 만료됐어요. 다시 로그인 후 결제를 완료해주세요.' });
   }
-  if (uid && uid !== verifiedUid) {
-    logger.warn('payment.uid_mismatch_blocked', { clientUid: uid, verifiedUid, orderId, amount: safeAmount });
+  // Legacy clients may still submit uid. It is never an identity source; keep
+  // only the mismatch guard until those clients age out.
+  if (legacyBodyUid && legacyBodyUid !== verifiedUid) {
+    logger.warn('payment.uid_mismatch_blocked', {
+      verifiedUid,
+      orderId,
+      amount: safeAmount,
+      legacyUidPresent: true
+    });
     return res.status(403).json({ error: '사용자 정보가 일치하지 않습니다.' });
   }
 
@@ -658,17 +1180,27 @@ async function handleCreditPaymentConfirmation(req, res) {
   } catch (err) {
     const status = Number(err.status) || 503;
     const cancellationLocked = err.code === 'PAYMENT_CANCELLATION_LOCKED';
-    logger[cancellationLocked ? 'warn' : 'error'](
-      cancellationLocked ? 'payment.credit_grant_blocked_by_cancellation' : 'payment.intent_prepare_failed',
+    const accountUnavailable = err.code === 'ACCOUNT_DELETION_IN_PROGRESS' || err.code === 'PAYMENT_USER_MISSING';
+    const preclaimError = err.code === 'PAYMENT_PRECLAIM_REQUIRED' || err.code === 'PAYMENT_PRECLAIM_EXPIRED';
+    logger[cancellationLocked || accountUnavailable ? 'warn' : 'error'](
+      cancellationLocked
+        ? 'payment.credit_grant_blocked_by_cancellation'
+        : (accountUnavailable ? 'payment.intent_blocked_account_unavailable' : 'payment.intent_prepare_failed'),
       { uid: verifiedUid, orderId, amount: safeAmount, stage: 'prepare', err }
     );
     return res.status(status).json({
-      error: cancellationLocked
+      error: accountUnavailable
+        ? '탈퇴 처리 중이거나 결제 계정을 확인할 수 없어 새 결제를 시작할 수 없습니다.'
+        : (preclaimError
+          ? '결제 준비 정보가 없거나 만료됐습니다. 충전 화면에서 결제를 다시 시작해 주세요.'
+        : (cancellationLocked
         ? '결제 취소가 먼저 확인된 주문이라 크레딧 지급을 중단했습니다. 결제 내역을 확인해 주세요.'
         : (status === 409
           ? '주문 정보가 기존 결제 시도와 일치하지 않습니다.'
-          : '결제 처리를 준비하지 못했습니다. 잠시 후 다시 시도해주세요.'),
-      ...(cancellationLocked ? { code: 'PAYMENT_CANCELLATION_LOCKED' } : {})
+          : '결제 처리를 준비하지 못했습니다. 잠시 후 다시 시도해주세요.'))),
+      ...(cancellationLocked
+        ? { code: 'PAYMENT_CANCELLATION_LOCKED' }
+        : (accountUnavailable || preclaimError ? { code: err.code } : {}))
     });
   }
 
@@ -707,7 +1239,9 @@ async function handleCreditPaymentConfirmation(req, res) {
     await bestEffortMarkPaymentIntent(orderId, ambiguous ? 'status_unknown' : 'confirm_failed', {
       lastProviderCode: code,
       lastProviderStatus: confirmation.response?.status || null,
-      lookupStatus: lookup?.response?.status || null
+      lookupStatus: lookup?.response?.status || null,
+      reconciliationCandidate: ambiguous,
+      ...(ambiguous ? { reconciliationRetryAtMs: Date.now() } : {})
     });
     if (ambiguous) {
       logger.error('payment.status_unknown', { uid: verifiedUid, orderId, amount: safeAmount, code });
@@ -736,7 +1270,8 @@ async function handleCreditPaymentConfirmation(req, res) {
     await bestEffortMarkPaymentIntent(orderId, status, {
       reconciliationSource,
       providerStatus: approval.status,
-      validationReasons: approval.reasons
+      validationReasons: approval.reasons,
+      reconciliationCandidate: !identityMismatch
     });
     const logFields = {
       uid: verifiedUid,
@@ -763,7 +1298,9 @@ async function handleCreditPaymentConfirmation(req, res) {
   await bestEffortMarkPaymentIntent(orderId, 'approved_reconciliation_required', {
     reconciliationSource,
     providerStatus: approval.status,
-    providerApprovedAt: providerPayment.approvedAt || null
+    providerApprovedAt: providerPayment.approvedAt || null,
+    reconciliationCandidate: true,
+    reconciliationRetryAtMs: Date.now()
   });
 
   let granted;
@@ -774,7 +1311,7 @@ async function handleCreditPaymentConfirmation(req, res) {
       paymentKey,
       safeAmount,
       creditGrant,
-      customerEmail,
+      customerEmail: verifiedCustomerEmail,
       providerPayment,
       reconciliationSource
     });
@@ -794,8 +1331,14 @@ async function handleCreditPaymentConfirmation(req, res) {
         retryable: false
       });
     }
-    await bestEffortMarkPaymentIntent(orderId, 'approved_reconciliation_required', {
-      applyErrorCode: err.message || 'unknown'
+    await bestEffortMarkPaymentIntent(orderId,
+      err.code === 'ACCOUNT_DELETION_IN_PROGRESS' || err.code === 'PAYMENT_USER_MISSING'
+        ? 'approved_account_unavailable'
+        : 'approved_reconciliation_required', {
+      applyErrorCode: err.message || 'unknown',
+      reconciliationCandidate: true,
+      reconciliationRetryAtMs: Date.now(),
+      providerCancellationRequired: err.code === 'ACCOUNT_DELETION_IN_PROGRESS' || err.code === 'PAYMENT_USER_MISSING'
     });
     logger.error('payment.apply_failed_reconciliation_required', {
       uid: verifiedUid,
@@ -829,14 +1372,14 @@ async function handleCreditPaymentConfirmation(req, res) {
       amount: safeAmount,
       credits: granted.totalCredits,
       kind: '크레딧 충전',
-      name: customerEmail
+      name: verifiedCustomerEmail
     });
     void metaConversions.sendPurchase({
       eventId: `purchase_${orderId}`,
       orderId,
       value: safeAmount,
       itemId: `credits_${safeAmount}`,
-      email: decodedToken?.email,
+      email: verifiedCustomerEmail,
       externalId: verifiedUid,
       clientIp: realClientIp(req),
       userAgent: req.get('user-agent'),
@@ -848,12 +1391,12 @@ async function handleCreditPaymentConfirmation(req, res) {
 }
 
 router.post('/checkout-context', async (req, res) => {
-  const idToken = req.body && req.body.idToken;
+  const idToken = bearerToken(req);
   if (!idToken) return res.status(401).json({ error: '로그인이 필요합니다.' });
 
   let uid;
   try {
-    const decoded = await verifyFirebaseIdToken(idToken);
+    const decoded = await verifyFirebaseIdToken(idToken, { checkRevoked: true });
     uid = decoded.uid;
     setLogContext({ uid });
   } catch (e) {
@@ -890,7 +1433,99 @@ router.post('/checkout-context', async (req, res) => {
   }
 });
 
+// 결제창을 열기 전에 orderId를 인증된 UID에 선점한다. 성공 콜백 URL을 다른
+// 계정이 먼저 제출해도 이미 고정된 소유자와 일치하지 않으면 confirm 단계가 409로
+// 끝난다. PAYMENT_PRECLAIM_REQUIRED=1은 프런트 전환 완료 뒤 legacy callback 생성을
+// 완전히 닫는 배포 스위치다.
+router.post('/prepare-payment', async (req, res) => {
+  const idToken = bearerToken(req);
+  if (!idToken) return res.status(401).json({ error: '로그인이 필요합니다.' });
+  let uid;
+  try {
+    uid = (await verifyFirebaseIdToken(idToken, { checkRevoked: true })).uid;
+    setLogContext({ uid });
+  } catch {
+    return res.status(401).json({ error: '로그인 정보가 만료됐어요. 다시 로그인해 주세요.' });
+  }
+  const body = req.body || {};
+  const orderId = String(body.orderId || '');
+  const amount = Number(body.amount);
+  const purchaseKind = String(body.purchaseKind || 'credit_package');
+  const sourceOrderId = String(body.sourceOrderId || '').trim();
+  if (!validateConfirmInput({ paymentKey: 'checkout-preclaim', orderId }).ok || !Number.isInteger(amount)) {
+    return res.status(400).json({ error: '주문 정보가 올바르지 않습니다.' });
+  }
+  let product = null;
+  try {
+    if (purchaseKind === STARTER_UPGRADE.kind) {
+      if (amount !== STARTER_UPGRADE.additionalAmount
+        || !validateConfirmInput({ paymentKey: 'upgrade-source', orderId: sourceOrderId }).ok) {
+        return res.status(400).json({ error: '업그레이드 주문 정보가 올바르지 않습니다.' });
+      }
+      const sourceSnapshot = await db.collection('orders').doc(sourceOrderId).get();
+      const sourceOrder = sourceSnapshot.exists
+        ? { id: sourceSnapshot.id, ...sourceSnapshot.data() }
+        : null;
+      if (!sourceOrder || sourceOrder.uid !== uid) {
+        return res.status(409).json({ error: '업그레이드할 스타터 주문을 확인할 수 없습니다.', code: 'UPGRADE_SOURCE_UNAVAILABLE' });
+      }
+      product = buildStarterUpgradeGrant(sourceOrder);
+    } else if (purchaseKind === 'credit_package') {
+      product = getCreditProduct(amount);
+    }
+    if (!product?.paidCredits) {
+      return res.status(400).json({ error: '유효하지 않은 결제 상품입니다.' });
+    }
+    const prepared = await preclaimPaymentIntent({ orderId, uid, amount, creditGrant: product });
+    return res.json({
+      ok: true,
+      orderId,
+      amount,
+      expiresAtMs: prepared.expiresAtMs,
+      ownerClaimVersion: 2
+    });
+  } catch (error) {
+    const status = Number(error.status) || 503;
+    logger[status < 500 ? 'warn' : 'error']('payment.checkout_preclaim_failed', {
+      uid,
+      orderId,
+      amount,
+      code: error.code || error.message,
+      err: error
+    });
+    return res.status(status).json({
+      error: status === 409
+        ? '이 주문번호는 이미 다른 결제 시도에 연결되어 있습니다.'
+        : '결제를 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+      ...(error.code ? { code: error.code } : {})
+    });
+  }
+});
+
 router.post('/confirm-payment', handleCreditPaymentConfirmation);
+
+// 승인 응답 유실·Firestore 적용 실패는 server-only intent에 남는다. 외부 스케줄러가
+// 이 엔드포인트를 호출하면 결제사 주문을 다시 조회해 중복 지급 없이 적용하거나,
+// 탈퇴 경합으로 지급할 수 없는 승인건은 결제사에서 자동 취소한다.
+router.post('/cron/reconcile-payments', async (req, res) => {
+  const auth = verifyCronRequest(req, { allowBearer: true, allowBody: false, allowQuery: false });
+  if (auth.reason === 'secret_missing') {
+    logger.error('payment.reconciliation_cron_secret_missing');
+    return res.status(503).json({ error: 'cron disabled: CRON_SECRET is not configured' });
+  }
+  if (!auth.ok) {
+    logger.warn('payment.reconciliation_cron_auth_rejected', authLogFields(auth));
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  try {
+    const result = await reconcilePendingApprovedPayments({ limit: req.body?.limit });
+    logger.info('payment.reconciliation_cron_completed', result);
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    logger.error('payment.reconciliation_cron_failed', { err: error });
+    return res.status(500).json({ error: 'payment reconciliation failed' });
+  }
+});
 
 // --- 환불 시스템 ---
 // ADMIN_UIDS / verifyToken은 config.js에서 import (coupon.js와 단일 진실 원천 공유)
@@ -903,17 +1538,17 @@ function getOrderRef(kind, orderId) {
 }
 
 async function requireAdmin(req, res) {
-  const { idToken } = req.body || {};
-  const adminUid = await verifyToken(idToken);
+  const idToken = bearerToken(req);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) {
+    res.status(403).json({ error: '관리자 권한이 없습니다.' });
+    return null;
+  }
   if (!adminUid) {
     res.status(401).json({ error: '로그인이 필요합니다.' });
     return null;
   }
   setLogContext({ uid: adminUid, actorUid: adminUid });
-  if (!ADMIN_UIDS.includes(adminUid)) {
-    res.status(403).json({ error: '관리자 권한이 없습니다.' });
-    return null;
-  }
   return adminUid;
 }
 
@@ -1561,6 +2196,7 @@ async function restoreCreditRefundReservationInTransaction({
   userRef,
   latestOrder,
   operationId,
+  accountClaimRef = null,
   restoreReason = 'provider_cancel_failed',
   orderUpdate = {},
   fieldValue = admin.firestore.FieldValue
@@ -1569,6 +2205,20 @@ async function restoreCreditRefundReservationInTransaction({
   if (!processing || processing.operationId !== operationId) {
     const alreadyRestored = latestOrder?.refundReservationState === 'restored'
       && latestOrder?.refundReservationOperationId === operationId;
+    if (alreadyRestored && accountClaimRef) {
+      transaction.set(
+        accountClaimRef,
+        paymentAccountClaimPatch({
+          uid: userRef.id,
+          lane: 'activeCreditRefunds',
+          id: orderRef.id,
+          status: 'restored',
+          operationId,
+          active: false
+        }),
+        { merge: true }
+      );
+    }
     return { restored: false, alreadyRestored };
   }
 
@@ -1638,6 +2288,20 @@ async function restoreCreditRefundReservationInTransaction({
       : {}),
     ...orderUpdate
   });
+  if (accountClaimRef) {
+    transaction.set(
+      accountClaimRef,
+      paymentAccountClaimPatch({
+        uid: userRef.id,
+        lane: 'activeCreditRefunds',
+        id: orderRef.id,
+        status: 'restored',
+        operationId,
+        active: false
+      }),
+      { merge: true }
+    );
+  }
   return { restored: true, alreadyRestored: false, restoredCredits };
 }
 
@@ -1657,6 +2321,7 @@ async function compensateCreditRefundReservation({
       userRef,
       latestOrder: latestOrderSnapshot.data() || {},
       operationId,
+      accountClaimRef: db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(userRef.id),
       restoreReason,
       orderUpdate
     });
@@ -1678,6 +2343,8 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   }
 
   const userRef = db.collection('users').doc(order.uid);
+  const deletionJobRef = db.collection('accountDeletionJobs').doc(order.uid);
+  const accountClaimRef = db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(order.uid);
   const basicToken = tossBasicToken();
   if (!basicToken) {
     throw Object.assign(new Error('결제 서버 설정이 완료되지 않았습니다.'), { status: 503, code: 'TOSS_SECRET_MISSING' });
@@ -1706,28 +2373,51 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
     }
 
     await db.runTransaction(async (t) => {
+      const [latestOrderSnapshot, latestUserSnapshot] = await Promise.all([
+        t.get(orderRef),
+        t.get(userRef)
+      ]);
+      if (!latestOrderSnapshot.exists) {
+        throw Object.assign(new Error('ORDER_NOT_FOUND'), { status: 404, code: 'ORDER_NOT_FOUND' });
+      }
+      const latestOrder = latestOrderSnapshot.data() || {};
+      const latestUser = latestUserSnapshot.exists ? latestUserSnapshot.data() || {} : {};
+      const generationContext = currentSubscriptionRefundContext(
+        latestUser,
+        latestOrder,
+        refundPaidAtMs(latestOrder, 'subscription'),
+        orderRef.id
+      );
+      const generationClosed = latestUserSnapshot.exists && generationContext.sameCycle;
+      const now = admin.firestore.FieldValue.serverTimestamp();
       t.update(orderRef, {
         status: 'refunded',
         cancelReason,
-        refundedAt: admin.firestore.FieldValue.serverTimestamp(),
-        refundedBy: adminUid
+        refundedAt: now,
+        refundedBy: adminUid,
+        subscriptionGenerationClosed: generationClosed
       });
-      t.update(userRef, {
-        'subscription.status': 'refunded',
-        'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
-        'plan': 'free',
-        'coupon.remaining': 0,
-        'coupon.used': 0
-      });
-      t.set(userRef.collection('couponHistory').doc(cancellationLedgerId(orderRef.id, subscriptionRefundAmount)), {
-        type: 'refund',
-        tier: order.tier,
-        amount: 0,
-        remaining: 0,
-        orderId: orderRef.id,
-        detail: '관리자 직접 환불',
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
+      if (generationClosed) {
+        t.update(userRef, {
+          'subscription.status': 'refunded',
+          'subscription.cancelledAt': now,
+          'plan': 'free',
+          'coupon.remaining': 0,
+          'coupon.used': 0
+        });
+      }
+      if (latestUserSnapshot.exists) {
+        t.set(userRef.collection('couponHistory').doc(cancellationLedgerId(orderRef.id, subscriptionRefundAmount)), {
+          type: 'refund',
+          tier: latestOrder.tier,
+          amount: 0,
+          remaining: generationClosed ? 0 : Math.max(0, Math.floor(Number(latestUser.coupon?.remaining) || 0)),
+          orderId: orderRef.id,
+          detail: '관리자 직접 환불',
+          generationClosed,
+          createdAt: now
+        }, { merge: true });
+      }
     });
     return {
       refundAmount: subscriptionRefundAmount,
@@ -1758,8 +2448,14 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   let previousRefundPolicyVersion, previousRefundCreditBasis, previousRefundCreditSettlementClosed;
   try {
     const result = await db.runTransaction(async (transaction) => {
-      const latestOrderSnapshot = await transaction.get(orderRef);
+      const [latestOrderSnapshot, deletionJobSnapshot] = await Promise.all([
+        transaction.get(orderRef),
+        transaction.get(deletionJobRef)
+      ]);
       if (!latestOrderSnapshot.exists) throw new Error('ORDER_NOT_FOUND');
+      if (deletionJobSnapshot.exists && accountDeletionBlocksPayment(deletionJobSnapshot.data())) {
+        throw paymentAccountUnavailableError();
+      }
       const latestOrder = latestOrderSnapshot.data() || {};
       const latestGrant = creditRefundGrant(latestOrder);
       const resumable = resumableCreditRefund(latestOrder);
@@ -1771,6 +2467,14 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
             refundReservationState: 'provider_canceling'
           });
         }
+        transaction.set(accountClaimRef, paymentAccountClaimPatch({
+          uid: order.uid,
+          lane: 'activeCreditRefunds',
+          id: orderRef.id,
+          status: 'provider_canceling',
+          operationId: resumable.operationId,
+          active: true
+        }), { merge: true });
         return {
           ...resumable,
           amount: resumable.refundAmount,
@@ -1856,6 +2560,14 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
         ...reserved.orderLotUpdate,
         refundProcessing: creditRefundProcessing(operation, admin.firestore.FieldValue.serverTimestamp())
       });
+      transaction.set(accountClaimRef, paymentAccountClaimPatch({
+        uid: order.uid,
+        lane: 'activeCreditRefunds',
+        id: orderRef.id,
+        status: 'provider_canceling',
+        operationId: nextOperationId,
+        active: true
+      }), { merge: true });
       return {
         ...operation,
         amount,
@@ -1995,6 +2707,14 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
           refundProcessing: admin.firestore.FieldValue.delete()
         });
       }
+      transaction.set(accountClaimRef, paymentAccountClaimPatch({
+        uid: order.uid,
+        lane: 'activeCreditRefunds',
+        id: orderRef.id,
+        status: 'settled',
+        operationId,
+        active: false
+      }), { merge: true });
       return {
         alreadyFinalized: true,
         refundedAmount: decision.finalRefundedAmount,
@@ -2015,6 +2735,14 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
       refundReservationSettledAt: admin.firestore.FieldValue.serverTimestamp(),
       refundProcessing: admin.firestore.FieldValue.delete()
     });
+    transaction.set(accountClaimRef, paymentAccountClaimPatch({
+      uid: order.uid,
+      lane: 'activeCreditRefunds',
+      id: orderRef.id,
+      status: 'settled',
+      operationId,
+      active: false
+    }), { merge: true });
     if (fullyRefunded && sourceOrderRef && sourceOrderSnap?.exists
       && sourceOrderSnap.data()?.activeUpgradeOrderId === orderRef.id) {
       transaction.update(sourceOrderRef, {
@@ -3334,26 +4062,427 @@ function calculateSubscriptionPolicyRefund({ orderAmount, tier, coupon }) {
   return { refundAmount, usedCount, refundableUses, settlementUses };
 }
 
-function currentSubscriptionRefundContext(user, order, paidAtMs) {
+function currentSubscriptionRefundContext(user, order, paidAtMs, orderId = '') {
   const subscription = user && user.subscription;
   const coupon = user && user.coupon;
   const cycleStartedAtMs = timestampMs(subscription && subscription.cycleStartedAt);
+  const currentOrderId = String(subscription && subscription.currentOrderId || '');
+  const expectedOrderId = String(orderId || order && order.orderId || '');
+  // New subscription generations have a durable order id. Once it exists it is
+  // the only authoritative generation key; falling back to timestamps here can
+  // make an old refund close a newly purchased subscription of the same tier.
+  const generationMatches = currentOrderId
+    ? Boolean(expectedOrderId && currentOrderId === expectedOrderId)
+    : Boolean(
+      cycleStartedAtMs && paidAtMs
+      && Math.abs(cycleStartedAtMs - paidAtMs) < 60 * 1000
+    );
   const sameCycle = !!(
     subscription && coupon &&
     subscription.tier === order.tier &&
     coupon.tier === order.tier &&
-    cycleStartedAtMs &&
-    Math.abs(cycleStartedAtMs - paidAtMs) < 60 * 1000
+    generationMatches
   );
-  return { sameCycle, subscription, coupon, cycleStartedAtMs };
+  return {
+    sameCycle,
+    subscription,
+    coupon,
+    cycleStartedAtMs,
+    currentOrderId,
+    expectedOrderId,
+    generationKeySource: currentOrderId ? 'current_order_id' : 'legacy_cycle_timestamp'
+  };
+}
+
+function activeSubscriptionRefundClaim(claim, order, orderId) {
+  const value = claim && typeof claim === 'object' ? claim : {};
+  const processing = order && order.subscriptionRefundProcessing;
+  const active = ['provider_canceling', 'provider_status_unknown'].includes(String(value.status || ''));
+  return active
+    && Boolean(value.operationId)
+    && value.operationId === processing?.operationId
+    && value.orderId === String(orderId || '')
+    && value.uid === String(order?.uid || '');
+}
+
+function subscriptionRefundGenerationCanMutateUser(user, claim) {
+  const value = user && typeof user === 'object' ? user : {};
+  const lock = value.subscriptionRefundLock;
+  if (!lock || lock.operationId !== claim?.operationId || lock.orderId !== claim?.orderId) return false;
+  const currentOrderId = String(value.subscription?.currentOrderId || '');
+  return !currentOrderId || currentOrderId === String(claim?.generationOrderId || claim?.orderId || '');
+}
+
+async function claimSubscriptionRefund({ orderRef, userRef, orderId, adminUid, requestBody = {} }) {
+  const claimRef = db.collection('subscriptionRefundClaims').doc(orderId);
+  const accountClaimRef = db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(userRef.id);
+  const deletionJobRef = db.collection('accountDeletionJobs').doc(userRef.id);
+  return db.runTransaction(async transaction => {
+    const [orderSnapshot, userSnapshot, claimSnapshot, deletionJobSnapshot] = await Promise.all([
+      transaction.get(orderRef),
+      transaction.get(userRef),
+      transaction.get(claimRef),
+      transaction.get(deletionJobRef)
+    ]);
+    if (deletionJobSnapshot.exists && accountDeletionBlocksPayment(deletionJobSnapshot.data())) {
+      throw paymentAccountUnavailableError();
+    }
+    if (!orderSnapshot.exists) {
+      throw Object.assign(new Error('ORDER_NOT_FOUND'), { status: 404, code: 'ORDER_NOT_FOUND' });
+    }
+    const latestOrder = orderSnapshot.data() || {};
+    const existingClaim = claimSnapshot.exists ? claimSnapshot.data() || {} : null;
+    if (activeSubscriptionRefundClaim(existingClaim, latestOrder, orderId)) {
+      const review = refundEligibilityReviewDecision(latestOrder, requestBody);
+      const reviewUpdate = refundEligibilityReviewUpdate(
+        review,
+        adminUid,
+        admin.firestore.FieldValue.serverTimestamp()
+      );
+      if (Object.keys(reviewUpdate).length) transaction.update(orderRef, reviewUpdate);
+      transaction.set(accountClaimRef, paymentAccountClaimPatch({
+        uid: userRef.id,
+        lane: 'activeSubscriptionRefunds',
+        id: orderId,
+        status: existingClaim.status,
+        operationId: existingClaim.operationId,
+        active: true
+      }), { merge: true });
+      return { ...existingClaim, resumed: true, claimRef };
+    }
+    if (latestOrder.status !== 'refund_requested') {
+      throw Object.assign(new Error('REFUND_STATE_CHANGED'), {
+        status: 409,
+        code: 'REFUND_STATE_CHANGED',
+        latestStatus: latestOrder.status || 'unknown'
+      });
+    }
+    if (!userSnapshot.exists) {
+      throw Object.assign(new Error('USER_NOT_FOUND'), { status: 404, code: 'USER_NOT_FOUND' });
+    }
+    const latestUser = userSnapshot.data() || {};
+    if (latestOrder.uid !== userRef.id) {
+      throw Object.assign(new Error('ORDER_OWNER_MISMATCH'), { status: 409, code: 'ORDER_OWNER_MISMATCH' });
+    }
+    if (latestUser.subscriptionRefundLock) {
+      throw Object.assign(new Error('SUBSCRIPTION_REFUND_LOCKED'), { status: 409, code: 'SUBSCRIPTION_REFUND_LOCKED' });
+    }
+    const paidAtMs = refundPaidAtMs(latestOrder, 'subscription');
+    const context = currentSubscriptionRefundContext(latestUser, latestOrder, paidAtMs, orderId);
+    if (!context.sameCycle) {
+      throw Object.assign(new Error('SUBSCRIPTION_CYCLE_MISMATCH'), {
+        status: 409,
+        code: 'SUBSCRIPTION_CYCLE_MISMATCH'
+      });
+    }
+    const calculation = calculateSubscriptionPolicyRefund({
+      orderAmount: latestOrder.amount,
+      tier: latestOrder.tier,
+      coupon: context.coupon
+    });
+    if (calculation.refundAmount <= 0) {
+      throw Object.assign(new Error('NO_REFUNDABLE_SUBSCRIPTION_AMOUNT'), {
+        status: 400,
+        code: 'NO_REFUNDABLE_SUBSCRIPTION_AMOUNT'
+      });
+    }
+    const orderAmount = Math.max(0, Math.floor(Number(latestOrder.amount) || 0));
+    const requestSequence = Math.max(1, Math.floor(Number(latestOrder.refundRequestSequence) || 1));
+    const approvalAttempt = existingClaim?.status === 'provider_failed'
+      ? Math.max(1, Math.floor(Number(existingClaim.approvalAttempt) || 1) + 1)
+      : 1;
+    const operationId = refundOperationId(
+      orderId,
+      0,
+      calculation.refundAmount,
+      0,
+      `subscription-${requestSequence}-${approvalAttempt}`
+    );
+    const generationOrderId = context.currentOrderId || orderId;
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    const claim = {
+      operationId,
+      orderId,
+      uid: latestOrder.uid,
+      status: 'provider_canceling',
+      refundAmount: calculation.refundAmount,
+      usedCount: calculation.usedCount,
+      settlementUses: calculation.settlementUses,
+      isFullRefund: calculation.refundAmount >= orderAmount,
+      generationOrderId,
+      generationCycleStartedAtMs: context.cycleStartedAtMs,
+      requestSequence,
+      approvalAttempt,
+      priorPlan: latestUser.plan || 'free',
+      priorSubscription: context.subscription,
+      priorCoupon: context.coupon,
+      claimedBy: adminUid,
+      createdAt: now,
+      updatedAt: now
+    };
+    const review = refundEligibilityReviewDecision(latestOrder, requestBody);
+    transaction.set(claimRef, claim);
+    transaction.set(accountClaimRef, paymentAccountClaimPatch({
+      uid: latestOrder.uid,
+      lane: 'activeSubscriptionRefunds',
+      id: orderId,
+      status: 'provider_canceling',
+      operationId,
+      active: true
+    }), { merge: true });
+    transaction.update(orderRef, {
+      status: 'refund_processing',
+      subscriptionRefundProcessing: {
+        operationId,
+        phase: 'provider_canceling',
+        refundAmount: calculation.refundAmount,
+        usedCount: calculation.usedCount,
+        settlementUses: calculation.settlementUses,
+        generationOrderId,
+        requestSequence,
+        claimedAt: now,
+        claimedBy: adminUid
+      },
+      ...refundEligibilityReviewUpdate(review, adminUid, now)
+    });
+    // Remove the subscription object while the provider cancellation is in flight.
+    // commitCouponUsage reads this same document and fails when it is absent, which
+    // also closes the unlimited-plan race that coupon.remaining alone cannot close.
+    transaction.update(userRef, {
+      plan: 'free',
+      subscription: admin.firestore.FieldValue.delete(),
+      coupon: {
+        ...(context.coupon || {}),
+        remaining: 0,
+        used: calculation.usedCount
+      },
+      subscriptionRefundLock: {
+        operationId,
+        orderId,
+        generationOrderId,
+        lockedAt: now
+      }
+    });
+    return { ...claim, resumed: false, claimRef };
+  });
+}
+
+async function markSubscriptionRefundUnknown({ orderRef, claimRef, operationId, providerStatus }) {
+  return db.runTransaction(async transaction => {
+    const [orderSnapshot, claimSnapshot] = await Promise.all([
+      transaction.get(orderRef),
+      transaction.get(claimRef)
+    ]);
+    if (!orderSnapshot.exists || !claimSnapshot.exists) return false;
+    const order = orderSnapshot.data() || {};
+    const claim = claimSnapshot.data() || {};
+    if (claim.operationId !== operationId || order.subscriptionRefundProcessing?.operationId !== operationId) {
+      return false;
+    }
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    transaction.update(claimRef, {
+      status: 'provider_status_unknown',
+      providerStatus: providerStatus || null,
+      updatedAt: now
+    });
+    transaction.update(orderRef, {
+      'subscriptionRefundProcessing.phase': 'provider_status_unknown',
+      'subscriptionRefundProcessing.providerStatus': providerStatus || null,
+      'subscriptionRefundProcessing.updatedAt': now
+    });
+    transaction.set(
+      db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(claim.uid),
+      paymentAccountClaimPatch({
+        uid: claim.uid,
+        lane: 'activeSubscriptionRefunds',
+        id: orderRef.id,
+        status: 'provider_status_unknown',
+        operationId,
+        active: true
+      }),
+      { merge: true }
+    );
+    return true;
+  });
+}
+
+async function compensateSubscriptionRefundClaim({ orderRef, userRef, claimRef, operationId, failureCode }) {
+  return db.runTransaction(async transaction => {
+    const [orderSnapshot, userSnapshot, claimSnapshot] = await Promise.all([
+      transaction.get(orderRef),
+      transaction.get(userRef),
+      transaction.get(claimRef)
+    ]);
+    if (!orderSnapshot.exists || !claimSnapshot.exists) return { restored: false };
+    const order = orderSnapshot.data() || {};
+    const claim = claimSnapshot.data() || {};
+    if (claim.operationId !== operationId || order.subscriptionRefundProcessing?.operationId !== operationId) {
+      return { restored: false };
+    }
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    let restored = false;
+    if (userSnapshot.exists) {
+      const user = userSnapshot.data() || {};
+      if (subscriptionRefundGenerationCanMutateUser(user, claim)) {
+        transaction.update(userRef, {
+          plan: claim.priorPlan || 'free',
+          subscription: claim.priorSubscription || admin.firestore.FieldValue.delete(),
+          coupon: claim.priorCoupon || admin.firestore.FieldValue.delete(),
+          subscriptionRefundLock: admin.firestore.FieldValue.delete()
+        });
+        restored = true;
+      } else if (user.subscriptionRefundLock?.operationId === operationId) {
+        transaction.update(userRef, {
+          subscriptionRefundLock: admin.firestore.FieldValue.delete()
+        });
+      }
+    }
+    transaction.update(orderRef, {
+      status: 'refund_requested',
+      subscriptionRefundProcessing: admin.firestore.FieldValue.delete(),
+      refundApprovalFailureCode: String(failureCode || 'PROVIDER_CANCEL_FAILED').slice(0, 80),
+      refundApprovalFailedAt: now
+    });
+    transaction.update(claimRef, {
+      status: 'provider_failed',
+      failureCode: String(failureCode || 'PROVIDER_CANCEL_FAILED').slice(0, 80),
+      entitlementRestored: restored,
+      updatedAt: now
+    });
+    transaction.set(
+      db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(claim.uid),
+      paymentAccountClaimPatch({
+        uid: claim.uid,
+        lane: 'activeSubscriptionRefunds',
+        id: orderRef.id,
+        status: 'provider_failed',
+        operationId,
+        active: false
+      }),
+      { merge: true }
+    );
+    return { restored };
+  });
+}
+
+async function finalizeSubscriptionRefund({ orderRef, userRef, claimRef, operationId, adminUid }) {
+  return db.runTransaction(async transaction => {
+    const [orderSnapshot, userSnapshot, claimSnapshot] = await Promise.all([
+      transaction.get(orderRef),
+      transaction.get(userRef),
+      transaction.get(claimRef)
+    ]);
+    if (!orderSnapshot.exists || !claimSnapshot.exists) {
+      throw Object.assign(new Error('SUBSCRIPTION_REFUND_CLAIM_MISSING'), {
+        status: 409,
+        code: 'SUBSCRIPTION_REFUND_CLAIM_MISSING'
+      });
+    }
+    const order = orderSnapshot.data() || {};
+    const claim = claimSnapshot.data() || {};
+    if (claim.operationId !== operationId) {
+      throw Object.assign(new Error('SUBSCRIPTION_REFUND_OPERATION_CONFLICT'), {
+        status: 409,
+        code: 'SUBSCRIPTION_REFUND_OPERATION_CONFLICT'
+      });
+    }
+    if (claim.status === 'finalized' && ['refunded', 'partially_refunded'].includes(order.status)) {
+      return {
+        alreadyFinalized: true,
+        refundAmount: claim.refundAmount,
+        isFullRefund: claim.isFullRefund === true,
+        generationClosed: claim.generationClosed === true
+      };
+    }
+    if (order.subscriptionRefundProcessing?.operationId !== operationId) {
+      throw Object.assign(new Error('SUBSCRIPTION_REFUND_OPERATION_CONFLICT'), {
+        status: 409,
+        code: 'SUBSCRIPTION_REFUND_OPERATION_CONFLICT'
+      });
+    }
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    let generationClosed = false;
+    if (userSnapshot.exists) {
+      const user = userSnapshot.data() || {};
+      if (subscriptionRefundGenerationCanMutateUser(user, claim)) {
+        transaction.update(userRef, {
+          plan: 'free',
+          subscription: {
+            ...(claim.priorSubscription || {}),
+            status: 'refunded',
+            cancelledAt: now
+          },
+          coupon: {
+            ...(claim.priorCoupon || {}),
+            remaining: 0,
+            used: claim.usedCount
+          },
+          subscriptionRefundLock: admin.firestore.FieldValue.delete()
+        });
+        generationClosed = true;
+      } else if (user.subscriptionRefundLock?.operationId === operationId) {
+        transaction.update(userRef, {
+          subscriptionRefundLock: admin.firestore.FieldValue.delete()
+        });
+      }
+      transaction.set(userRef.collection('couponHistory').doc(cancellationLedgerId(orderRef.id, claim.refundAmount)), {
+        type: 'refund',
+        tier: order.tier,
+        amount: 0,
+        remaining: generationClosed ? 0 : Math.max(0, Math.floor(Number(user.coupon?.remaining) || 0)),
+        orderId: orderRef.id,
+        used: claim.usedCount,
+        refundAmount: claim.refundAmount,
+        settlementUses: claim.settlementUses,
+        generationClosed,
+        createdAt: now
+      }, { merge: true });
+    }
+    transaction.update(orderRef, {
+      status: claim.isFullRefund ? 'refunded' : 'partially_refunded',
+      refundAmount: claim.refundAmount,
+      refundedAmount: claim.refundAmount,
+      refundUsedCount: claim.usedCount,
+      refundSettlementUses: claim.settlementUses,
+      refundedAt: now,
+      refundedBy: adminUid,
+      subscriptionGenerationClosed: generationClosed,
+      subscriptionRefundProcessing: admin.firestore.FieldValue.delete()
+    });
+    transaction.update(claimRef, {
+      status: 'finalized',
+      generationClosed,
+      finalizedAt: now,
+      updatedAt: now
+    });
+    transaction.set(
+      db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(claim.uid),
+      paymentAccountClaimPatch({
+        uid: claim.uid,
+        lane: 'activeSubscriptionRefunds',
+        id: orderRef.id,
+        status: 'finalized',
+        operationId,
+        active: false
+      }),
+      { merge: true }
+    );
+    return {
+      alreadyFinalized: false,
+      refundAmount: claim.refundAmount,
+      isFullRefund: claim.isFullRefund === true,
+      generationClosed
+    };
+  });
 }
 
 // 환불 요청 (사용자용) — kind: 'order' (기본, 크레딧 일회성) | 'subscription' (정기결제)
 router.post('/request-refund', async (req, res) => {
-  const { orderId, idToken, cancelReason, kind: rawKind } = req.body;
+  const { orderId, cancelReason, kind: rawKind } = req.body;
+  const idToken = bearerToken(req);
   const kind = rawKind === 'sub' || rawKind === 'subscription' ? 'subscription' : 'order';
 
-  const uid = await verifyToken(idToken);
+  const uid = await verifyToken(idToken, { checkRevoked: true });
   if (!uid) return res.status(401).json({ error: '로그인이 필요합니다.' });
   setLogContext({ uid });
   if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
@@ -3418,42 +4547,27 @@ router.post('/request-refund', async (req, res) => {
     let requestRefundPolicyVersion;
     let reservationOperationId = null;
     const requestStartedAtMs = Date.now();
+    const refundUserRef = db.collection('users').doc(uid);
+    const deletionJobRef = db.collection('accountDeletionJobs').doc(uid);
+    const accountClaimRef = db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(uid);
 
     // 정기결제 환불 자격: 결제일 7일 이내 + 이번 결제주기의 사용분 비례 공제
     if (kind === 'subscription') {
-      const userSnap = await db.collection('users').doc(uid).get();
-      const user = userSnap.exists ? userSnap.data() : {};
-      const context = currentSubscriptionRefundContext(user, order, windowState.paidAtMs);
-      if (!context.sameCycle) {
-        // 과거 사이클 결제는 환불 불가 (해당 사이클 사용 여부를 더 이상 추적할 수 없음)
-        return res.status(400).json({
-          error: '현재 결제주기의 구독만 온라인 환불을 요청할 수 있습니다. 고객센터로 문의해주세요.',
-          code: 'SUBSCRIPTION_CYCLE_MISMATCH'
-        });
-      }
-      const calculation = calculateSubscriptionPolicyRefund({
-        orderAmount: order.amount,
-        tier: order.tier,
-        coupon: context.coupon
-      });
-      if (calculation.refundAmount <= 0) {
-        return res.status(400).json({
-          error: `이번 결제주기의 정산 기준 ${calculation.settlementUses}회를 모두 사용해 일반 환불 가능 금액이 없습니다. 서비스 오류는 고객센터로 문의해주세요.`,
-          code: 'NO_REFUNDABLE_SUBSCRIPTION_AMOUNT'
-        });
-      }
-      policySnapshot = {
-        requestedRefundAmount: calculation.refundAmount,
-        refundUsedCount: calculation.usedCount,
-        refundSettlementUses: calculation.settlementUses
-      };
       requestRefundPolicyVersion = SUBSCRIPTION_REFUND_POLICY_VERSION;
       const subscriptionRequest = await db.runTransaction(async (transaction) => {
-        const latestSnap = await transaction.get(orderRef);
+        const userRef = db.collection('users').doc(uid);
+        const [latestSnap, latestUserSnap] = await Promise.all([
+          transaction.get(orderRef),
+          transaction.get(userRef)
+        ]);
         if (!latestSnap.exists) {
           throw Object.assign(new Error('주문을 찾을 수 없습니다.'), { status: 404, code: 'ORDER_NOT_FOUND' });
         }
+        if (!latestUserSnap.exists) {
+          throw Object.assign(new Error('사용자 계정을 찾을 수 없습니다.'), { status: 404, code: 'USER_NOT_FOUND' });
+        }
         const latestOrder = latestSnap.data() || {};
+        const latestUser = latestUserSnap.data() || {};
         if (latestOrder.uid !== uid) {
           throw Object.assign(new Error('본인의 주문만 환불 요청할 수 있습니다.'), { status: 403, code: 'ORDER_OWNER_MISMATCH' });
         }
@@ -3470,6 +4584,34 @@ router.post('/request-refund', async (req, res) => {
             code: latestWindow.reason
           });
         }
+        const latestContext = currentSubscriptionRefundContext(
+          latestUser,
+          latestOrder,
+          latestWindow.paidAtMs,
+          orderId
+        );
+        if (!latestContext.sameCycle) {
+          throw Object.assign(new Error('현재 결제주기의 구독만 온라인 환불을 요청할 수 있습니다. 고객센터로 문의해주세요.'), {
+            status: 409,
+            code: 'SUBSCRIPTION_CYCLE_MISMATCH'
+          });
+        }
+        const calculation = calculateSubscriptionPolicyRefund({
+          orderAmount: latestOrder.amount,
+          tier: latestOrder.tier,
+          coupon: latestContext.coupon
+        });
+        if (calculation.refundAmount <= 0) {
+          throw Object.assign(new Error(
+            `이번 결제주기의 정산 기준 ${calculation.settlementUses}회를 모두 사용해 일반 환불 가능 금액이 없습니다. 서비스 오류는 고객센터로 문의해주세요.`
+          ), { status: 400, code: 'NO_REFUNDABLE_SUBSCRIPTION_AMOUNT' });
+        }
+        const latestPolicySnapshot = {
+          requestedRefundAmount: calculation.refundAmount,
+          refundUsedCount: calculation.usedCount,
+          refundSettlementUses: calculation.settlementUses
+        };
+        const refundRequestSequence = Math.max(0, Math.floor(Number(latestOrder.refundRequestSequence) || 0)) + 1;
         const latestRequiresEligibilityReview = !latestWindow.eligible
           && latestWindow.reason === 'REFUND_WINDOW_EXPIRED';
         transaction.update(orderRef, {
@@ -3478,28 +4620,41 @@ router.post('/request-refund', async (req, res) => {
           kind,
           refundPolicyVersion: requestRefundPolicyVersion,
           refundEligibilityReviewRequired: latestRequiresEligibilityReview,
-          ...policySnapshot,
+          ...latestPolicySnapshot,
+          refundRequestSequence,
           refundRequestSnapshot: {
             version: requestRefundPolicyVersion,
             requestedAtMs: requestStartedAtMs,
-            requestedRefundAmount: policySnapshot.requestedRefundAmount,
-            refundUsedCount: policySnapshot.refundUsedCount,
-            refundSettlementUses: policySnapshot.refundSettlementUses
+            requestedRefundAmount: latestPolicySnapshot.requestedRefundAmount,
+            refundUsedCount: latestPolicySnapshot.refundUsedCount,
+            refundSettlementUses: latestPolicySnapshot.refundSettlementUses,
+            generationOrderId: orderId,
+            generationCycleStartedAtMs: latestContext.cycleStartedAtMs
           },
           refundRequestedAt: admin.firestore.FieldValue.serverTimestamp()
         });
-        return { requiresEligibilityReview: latestRequiresEligibilityReview };
+        return {
+          requiresEligibilityReview: latestRequiresEligibilityReview,
+          policySnapshot: latestPolicySnapshot
+        };
       });
       requiresEligibilityReview = subscriptionRequest.requiresEligibilityReview;
+      policySnapshot = subscriptionRequest.policySnapshot;
     } else {
       const result = await db.runTransaction(async (transaction) => {
-        const latestSnap = await transaction.get(orderRef);
+        const [latestSnap, deletionJobSnapshot] = await Promise.all([
+          transaction.get(orderRef),
+          transaction.get(deletionJobRef)
+        ]);
         if (!latestSnap.exists) {
           throw Object.assign(new Error('주문을 찾을 수 없습니다.'), { status: 404, code: 'ORDER_NOT_FOUND' });
         }
         const latestOrder = latestSnap.data() || {};
         if (latestOrder.uid !== uid) {
           throw Object.assign(new Error('본인의 주문만 환불 요청할 수 있습니다.'), { status: 403, code: 'ORDER_OWNER_MISMATCH' });
+        }
+        if (deletionJobSnapshot.exists && accountDeletionBlocksPayment(deletionJobSnapshot.data())) {
+          throw paymentAccountUnavailableError();
         }
         if (latestOrder.status !== 'paid') {
           throw Object.assign(new Error(`환불 요청 중 주문 상태가 변경됐습니다. 현재: ${latestOrder.status || 'unknown'}`), {
@@ -3549,7 +4704,7 @@ router.post('/request-refund', async (req, res) => {
         const reserved = await reserveCreditRefundCredits({
           transaction,
           orderRef,
-          userRef: db.collection('users').doc(uid),
+          userRef: refundUserRef,
           latestOrder,
           remainingOrderCredits
         });
@@ -3630,6 +4785,14 @@ router.post('/request-refund', async (req, res) => {
           refundRequestedAt: now,
           refundProcessing: creditRefundProcessing(operation, now, 'requested_reserved')
         });
+        transaction.set(accountClaimRef, paymentAccountClaimPatch({
+          uid,
+          lane: 'activeCreditRefunds',
+          id: orderId,
+          status: 'requested_reserved',
+          operationId,
+          active: true
+        }), { merge: true });
         return {
           policySnapshot: snapshot,
           requestPolicyVersion,
@@ -3677,13 +4840,14 @@ router.post('/request-refund', async (req, res) => {
 
 // 환불 승인 (관리자용)
 router.post('/approve-refund', async (req, res) => {
-  const { orderId, idToken, kind: rawKind } = req.body;
+  const { orderId, kind: rawKind } = req.body;
+  const idToken = bearerToken(req);
   const kind = rawKind === 'sub' || rawKind === 'subscription' ? 'subscription' : 'order';
 
-  const adminUid = await verifyToken(idToken);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) return res.status(403).json({ error: '관리자 권한이 없습니다.' });
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요합니다.' });
   setLogContext({ uid: adminUid, actorUid: adminUid });
-  if (!ADMIN_UIDS.includes(adminUid)) return res.status(403).json({ error: '관리자 권한이 없습니다.' });
   if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
 
   try {
@@ -3704,7 +4868,10 @@ router.post('/approve-refund', async (req, res) => {
       }
     }
     const paymentKey = await readPaymentKey(orderRef.id, order);   // ★ C-04
-    if (order.status !== 'refund_requested') {
+    const resumableSubscriptionApproval = kind === 'subscription'
+      && order.status === 'refund_processing'
+      && Boolean(order.subscriptionRefundProcessing?.operationId);
+    if (order.status !== 'refund_requested' && !resumableSubscriptionApproval) {
       return res.status(400).json({ error: '환불 요청 상태가 아닙니다. 현재: ' + order.status });
     }
     if (!paymentKey) {
@@ -3718,92 +4885,127 @@ router.post('/approve-refund', async (req, res) => {
     }
 
     const userRef = db.collection('users').doc(order.uid);
+    const deletionJobRef = db.collection('accountDeletionJobs').doc(order.uid);
+    const accountClaimRef = db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(order.uid);
     const basicToken = tossBasicToken(res);
     if (!basicToken) return;
     const tossUrl = `https://api.tosspayments.com/v1/payments/${paymentKey}/cancel`;
 
     if (kind === 'subscription') {
-      // 정기결제: 승인 시점의 실제 사용량으로 한 번 더 계산해 전액 또는 부분 취소한다.
-      const userSnap = await userRef.get();
-      const user = userSnap.exists ? userSnap.data() : {};
-      const paidAtMs = refundPaidAtMs(order, kind);
-      const context = currentSubscriptionRefundContext(user, order, paidAtMs);
-      if (!context.sameCycle) {
-        return res.status(400).json({ error: '현재 결제주기와 일치하지 않아 자동 환불할 수 없습니다. 직접 환불 기능을 사용해주세요.' });
+      // 환불 금액 계산과 이용권 동결을 같은 트랜잭션에서 수행한다. 사용 커밋도
+      // users/{uid}를 읽고 쓰므로 동시 실행되면 한쪽이 재시도되고, 환불 계산 뒤
+      // 추가 사용이 끼어들 수 없다. 동일 operationId는 관리자 중복 클릭과 응답
+      // 유실 재시도에서도 결제사 취소를 한 번으로 수렴시킨다.
+      let claim;
+      try {
+        claim = await claimSubscriptionRefund({
+          orderRef,
+          userRef,
+          orderId,
+          adminUid,
+          requestBody: req.body || {}
+        });
+      } catch (claimError) {
+        if (claimError.code === 'NO_REFUNDABLE_SUBSCRIPTION_AMOUNT') {
+          return res.status(400).json({ error: '승인 전 추가 사용으로 환불 가능 금액이 남지 않았습니다.', code: claimError.code });
+        }
+        if (claimError.code === 'SUBSCRIPTION_CYCLE_MISMATCH') {
+          return res.status(409).json({
+            error: '현재 결제주기와 일치하지 않아 자동 환불할 수 없습니다. 과거 주문은 현재 구독에 영향을 주지 않습니다.',
+            code: claimError.code
+          });
+        }
+        if (claimError.code === 'REFUND_STATE_CHANGED') {
+          return res.status(409).json({
+            error: `환불 처리 중 주문 상태가 변경됐습니다. 현재: ${claimError.latestStatus || 'unknown'}`,
+            code: claimError.code
+          });
+        }
+        throw claimError;
       }
-      const calculation = calculateSubscriptionPolicyRefund({
-        orderAmount: order.amount,
-        tier: order.tier,
-        coupon: context.coupon
+      const cancellation = await requestTossCancel({
+        tossUrl,
+        basicToken,
+        operationId: claim.operationId,
+        cancelReason: order.cancelReason || '고객 요청 환불',
+        ...(claim.isFullRefund ? {} : { cancelAmount: claim.refundAmount })
       });
-      if (calculation.refundAmount <= 0) {
-        return res.status(400).json({ error: '승인 전 추가 사용으로 환불 가능 금액이 남지 않았습니다.' });
+      const tossRes = cancellation.response;
+      const tossResult = cancellation.result;
+      const cancellationLookup = tossRes?.ok
+        ? null
+        : await queryTossOrder({ basicToken, orderId });
+      const cancellationState = tossCancellationState({
+        response: tossRes,
+        lookup: cancellationLookup,
+        targetRefundedAmount: claim.refundAmount
+      });
+      if (cancellationState.unknown) {
+        await markSubscriptionRefundUnknown({
+          orderRef,
+          claimRef: claim.claimRef,
+          operationId: claim.operationId,
+          providerStatus: tossRes?.status || null
+        });
+        logger.error('refund.subscription_cancel_status_unknown', {
+          orderId,
+          uid: order.uid,
+          operationId: claim.operationId,
+          status: tossRes?.status || null,
+          networkError: cancellation.networkError?.message || null,
+          lookupStatus: cancellationLookup?.response?.status || null
+        });
+        return res.status(502).json({
+          error: '결제사 환불 결과 확인이 지연되고 있습니다. 다시 승인하면 중복 환불 없이 이어서 확인합니다.',
+          code: 'REFUND_STATUS_UNKNOWN',
+          retryable: true
+        });
       }
-      const orderAmount = Math.max(0, Math.floor(Number(order.amount) || 0));
-      const isFullRefund = calculation.refundAmount >= orderAmount;
-      const operationId = refundOperationId(orderId, 0, calculation.refundAmount, 0);
-      const cancelBody = { cancelReason: order.cancelReason || '고객 요청 환불' };
-      if (!isFullRefund) cancelBody.cancelAmount = calculation.refundAmount;
-      const tossRes = await outboundFetch('toss', tossUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${basicToken}`,
-          'Content-Type': 'application/json',
-          'Idempotency-Key': refundIdempotencyKey(operationId)
-        },
-        body: JSON.stringify(cancelBody)
-      });
-      const tossResult = await tossRes.json();
-      if (!tossRes.ok) {
-        logger.error('refund.toss_cancel_failed', { orderId, kind, uid: order.uid, status: tossRes.status, toss: tossResult });
-        return res.status(tossRes.status).json({
-          error: '토스 환불 처리 실패: ' + (tossResult.message || '알 수 없는 오류')
+      if (!cancellationState.confirmed) {
+        const failureCode = String(tossResult?.code || `TOSS_${tossRes?.status || 0}`);
+        await compensateSubscriptionRefundClaim({
+          orderRef,
+          userRef,
+          claimRef: claim.claimRef,
+          operationId: claim.operationId,
+          failureCode
+        });
+        logger.error('refund.toss_cancel_failed', {
+          orderId,
+          kind,
+          uid: order.uid,
+          status: tossRes?.status || null,
+          operationId: claim.operationId,
+          toss: providerResultSummary(tossResult)
+        });
+        return res.status(tossRes?.status || 502).json({
+          error: '토스 환불 처리 실패: ' + (tossResult?.message || '알 수 없는 오류')
         });
       }
 
-      await db.runTransaction(async (t) => {
-        const reviewedAt = admin.firestore.FieldValue.serverTimestamp();
-        t.update(orderRef, {
-          status: isFullRefund ? 'refunded' : 'partially_refunded',
-          refundAmount: calculation.refundAmount,
-          refundedAmount: calculation.refundAmount,
-          refundUsedCount: calculation.usedCount,
-          refundSettlementUses: calculation.settlementUses,
-          refundedAt: admin.firestore.FieldValue.serverTimestamp(),
-          refundedBy: adminUid,
-          ...refundEligibilityReviewUpdate(initialEligibilityReview, adminUid, reviewedAt)
-        });
-        t.update(userRef, {
-          'subscription.status': 'refunded',
-          'subscription.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
-          'plan': 'free',
-          'coupon.remaining': 0,
-          'coupon.used': calculation.usedCount
-        });
-        const histRef = userRef.collection('couponHistory').doc();
-        t.set(histRef, {
-          type: 'refund', tier: order.tier, amount: 0, remaining: 0,
-          orderId,
-          used: calculation.usedCount,
-          refundAmount: calculation.refundAmount,
-          settlementUses: calculation.settlementUses,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
+      const finalized = await finalizeSubscriptionRefund({
+        orderRef,
+        userRef,
+        claimRef: claim.claimRef,
+        operationId: claim.operationId,
+        adminUid
       });
       logger.info('refund.subscription_approved', {
         orderId,
         uid: order.uid,
         adminUid,
         tier: order.tier,
-        refundAmount: calculation.refundAmount,
-        usedCount: calculation.usedCount,
-        settlementUses: calculation.settlementUses
+        refundAmount: claim.refundAmount,
+        usedCount: claim.usedCount,
+        settlementUses: claim.settlementUses,
+        generationClosed: finalized.generationClosed,
+        resumed: claim.resumed
       });
       return res.json({
         ok: true,
         message: '환불이 완료되었습니다.',
-        refundAmount: calculation.refundAmount,
-        partiallyRefunded: !isFullRefund
+        refundAmount: claim.refundAmount,
+        partiallyRefunded: !claim.isFullRefund
       });
     }
 
@@ -3819,8 +5021,14 @@ router.post('/approve-refund', async (req, res) => {
     let previousRefundPolicyVersion, previousRefundCreditBasis, previousRefundCreditSettlementClosed;
     try {
       const result = await db.runTransaction(async (transaction) => {
-        const latestOrderSnapshot = await transaction.get(orderRef);
+        const [latestOrderSnapshot, deletionJobSnapshot] = await Promise.all([
+          transaction.get(orderRef),
+          transaction.get(deletionJobRef)
+        ]);
         if (!latestOrderSnapshot.exists) throw new Error('ORDER_NOT_FOUND');
+        if (deletionJobSnapshot.exists && accountDeletionBlocksPayment(deletionJobSnapshot.data())) {
+          throw paymentAccountUnavailableError();
+        }
         const latestOrder = latestOrderSnapshot.data() || {};
         const latestEligibilityReview = refundEligibilityReviewDecision(latestOrder, req.body || {});
         const eligibilityReviewUpdate = refundEligibilityReviewUpdate(
@@ -3839,6 +5047,14 @@ router.post('/approve-refund', async (req, res) => {
             });
           }
           if (Object.keys(resumeUpdate).length) transaction.update(orderRef, resumeUpdate);
+          transaction.set(accountClaimRef, paymentAccountClaimPatch({
+            uid: order.uid,
+            lane: 'activeCreditRefunds',
+            id: orderRef.id,
+            status: 'provider_canceling',
+            operationId: resumable.operationId,
+            active: true
+          }), { merge: true });
           return {
             ...resumable,
             refundAmount: resumable.refundAmount,
@@ -3904,6 +5120,14 @@ router.post('/approve-refund', async (req, res) => {
           ...reserved.orderLotUpdate,
           refundProcessing: creditRefundProcessing(operation, admin.firestore.FieldValue.serverTimestamp())
         });
+        transaction.set(accountClaimRef, paymentAccountClaimPatch({
+          uid: order.uid,
+          lane: 'activeCreditRefunds',
+          id: orderRef.id,
+          status: 'provider_canceling',
+          operationId: nextOperationId,
+          active: true
+        }), { merge: true });
         return {
           ...operation,
           refundAmount: amount,
@@ -4048,6 +5272,14 @@ router.post('/approve-refund', async (req, res) => {
             refundProcessing: admin.firestore.FieldValue.delete()
           });
         }
+        transaction.set(accountClaimRef, paymentAccountClaimPatch({
+          uid: order.uid,
+          lane: 'activeCreditRefunds',
+          id: orderRef.id,
+          status: 'settled',
+          operationId,
+          active: false
+        }), { merge: true });
         return {
           alreadyFinalized: true,
           refundedAmount: decision.finalRefundedAmount,
@@ -4068,6 +5300,14 @@ router.post('/approve-refund', async (req, res) => {
         refundReservationSettledAt: admin.firestore.FieldValue.serverTimestamp(),
         refundProcessing: admin.firestore.FieldValue.delete()
       });
+      transaction.set(accountClaimRef, paymentAccountClaimPatch({
+        uid: order.uid,
+        lane: 'activeCreditRefunds',
+        id: orderRef.id,
+        status: 'settled',
+        operationId,
+        active: false
+      }), { merge: true });
       if (fullyRefunded && sourceOrderRef && sourceOrderSnap?.exists
         && sourceOrderSnap.data()?.activeUpgradeOrderId === orderRef.id) {
         transaction.update(sourceOrderRef, {
@@ -4119,13 +5359,14 @@ router.post('/approve-refund', async (req, res) => {
 
 // 환불 거절 (관리자용)
 router.post('/reject-refund', async (req, res) => {
-  const { orderId, idToken, rejectReason, kind: rawKind } = req.body;
+  const { orderId, rejectReason, kind: rawKind } = req.body;
+  const idToken = bearerToken(req);
   const kind = rawKind === 'sub' || rawKind === 'subscription' ? 'subscription' : 'order';
 
-  const adminUid = await verifyToken(idToken);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) return res.status(403).json({ error: '관리자 권한이 없습니다.' });
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요합니다.' });
   setLogContext({ uid: adminUid, actorUid: adminUid });
-  if (!ADMIN_UIDS.includes(adminUid)) return res.status(403).json({ error: '관리자 권한이 없습니다.' });
   if (!orderId) return res.status(400).json({ error: '주문번호가 없습니다.' });
   if (!rejectReason || rejectReason.trim().length < 2) {
     return res.status(400).json({ error: '거절 사유를 입력해주세요.' });
@@ -4169,6 +5410,7 @@ router.post('/reject-refund', async (req, res) => {
           userRef: db.collection('users').doc(order.uid),
           latestOrder: order,
           operationId: processing.operationId,
+          accountClaimRef: db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(order.uid),
           restoreReason: 'admin_rejected',
           orderUpdate: rejectionUpdate
         });
@@ -4203,63 +5445,168 @@ router.post('/reject-refund', async (req, res) => {
 });
 
 // --- 친구 추천 ---
+const REFERRAL_REWARD_CREDITS = 20;
+const REFERRAL_DAILY_INVITER_LIMIT = 50;
+const REFERRAL_CODE_PATTERN = /^[A-Za-z0-9_-]{8}$/u;
+
+function normalizeReferralCode(value) {
+  const code = typeof value === 'string' ? value.trim() : '';
+  return REFERRAL_CODE_PATTERN.test(code) ? code : '';
+}
+
+function referralUtcDay(nowMs = Date.now()) {
+  return new Date(nowMs).toISOString().slice(0, 10);
+}
+
+function sameSignupClientPrincipal(inviteeSecurity, inviterSecurity) {
+  const invitee = typeof inviteeSecurity?.signupClientPrincipal === 'string'
+    ? inviteeSecurity.signupClientPrincipal.trim()
+    : '';
+  const inviter = typeof inviterSecurity?.signupClientPrincipal === 'string'
+    ? inviterSecurity.signupClientPrincipal.trim()
+    : '';
+  // Older accounts do not have accountSecurity. Keep compatibility unless both
+  // server-generated principals exist and conclusively match.
+  return Boolean(invitee && inviter && invitee === inviter);
+}
+
+function referralError(status, code, message) {
+  return Object.assign(new Error(message || code), { status, code });
+}
+
 router.post('/apply-referral', async (req, res) => {
   try {
-    const { idToken, refCode } = req.body;
-    if (!idToken || !refCode) return res.status(400).json({ error: '필수 값 누락' });
+    const refCode = normalizeReferralCode(req.body?.refCode);
+    const idToken = bearerToken(req);
+    if (!idToken) return res.status(401).json({ error: '로그인이 필요합니다.' });
+    if (!refCode) {
+      return res.status(400).json({
+        error: '추천 코드는 영문·숫자·밑줄·하이픈으로 된 8자리여야 합니다.',
+        code: 'REFERRAL_CODE_INVALID'
+      });
+    }
 
-    // 1. 신규 유저 인증 확인
-    const decoded = await admin.auth().verifyIdToken(idToken);
+    const decoded = await verifyFirebaseIdToken(idToken, { checkRevoked: true });
     const newUid = decoded.uid;
     setLogContext({ uid: newUid });
 
-    // 2. 자기 자신 추천 방지
-    const newUserSnap = await db.collection('users').doc(newUid).get();
-    if (!newUserSnap.exists) return res.status(400).json({ error: '유저 없음' });
-    if (newUserSnap.data().refCode === refCode) return res.status(400).json({ error: '본인 추천 불가' });
-
-    // 3. 이미 추천 받은 유저인지 확인
-    if (newUserSnap.data().referredBy) return res.status(400).json({ error: '이미 추천 적용됨' });
-
-    // 4. 추천인 찾기 (쿼리는 트랜잭션 밖. 단, 이중지급 방지의 권위는 트랜잭션 안 newUser.referredBy)
-    const referrerSnap = await db.collection('users').where('refCode', '==', refCode).limit(1).get();
+    // The query only identifies a candidate UID. Every authoritative check is
+    // repeated inside the transaction. Ambiguous 8-character prefixes fail
+    // closed instead of crediting an arbitrary account.
+    const referrerSnap = await db.collection('users').where('refCode', '==', refCode).limit(2).get();
     if (referrerSnap.empty) return res.status(400).json({ error: '유효하지 않은 추천 코드' });
-    const referrerDoc = referrerSnap.docs[0];
-    const referrerUid = referrerDoc.id;
+    if (referrerSnap.size !== 1) {
+      return res.status(409).json({
+        error: '추천 코드를 확인할 수 없습니다. 고객센터로 문의해 주세요.',
+        code: 'REFERRAL_CODE_AMBIGUOUS'
+      });
+    }
+    const referrerUid = referrerSnap.docs[0].id;
     if (referrerUid === newUid) return res.status(400).json({ error: '본인 추천 불가' });
 
-    // 5. ★ C-08: 검증·지급·이력을 하나의 트랜잭션으로. referredBy를 트랜잭션 안에서 다시 읽어
-    //    동시 요청 이중 지급을 차단하고, 결정적 history ID로 재시도 멱등을 보장한다.
+    // All reads precede all writes. This makes referredBy, signup-principal,
+    // account-deletion guards, and the per-inviter UTC-day quota one atomic
+    // award decision under concurrent requests.
     const now = admin.firestore.FieldValue.serverTimestamp();
+    const nowMs = Date.now();
+    const utcDay = referralUtcDay(nowMs);
     const result = await db.runTransaction(async (t) => {
       const newRef = db.collection('users').doc(newUid);
       const refRef = db.collection('users').doc(referrerUid);
-      const newSnap = await t.get(newRef);
-      const refSnap = await t.get(refRef);
-      if (!newSnap.exists || !refSnap.exists) throw new Error('USER_NOT_FOUND');
-      if (newSnap.data().referredBy) return { applied: false };   // 이미 적용 — 멱등 종료
-      const newUserCredits = (newSnap.data().credits || 0) + 20;
-      const referrerCredits = (refSnap.data().credits || 0) + 20;
-      t.update(newRef, { credits: admin.firestore.FieldValue.increment(20), referredBy: refCode });
-      t.update(refRef, { credits: admin.firestore.FieldValue.increment(20) });
+      const inviteeSecurityRef = db.collection('accountSecurity').doc(newUid);
+      const inviterSecurityRef = db.collection('accountSecurity').doc(referrerUid);
+      const inviteeDeletionRef = db.collection('accountDeletionJobs').doc(newUid);
+      const inviterDeletionRef = db.collection('accountDeletionJobs').doc(referrerUid);
+      const dailyRef = db.collection('referralDaily').doc(`${referrerUid}_${utcDay}`);
+      const [
+        newSnap,
+        refSnap,
+        inviteeSecuritySnap,
+        inviterSecuritySnap,
+        inviteeDeletionSnap,
+        inviterDeletionSnap,
+        dailySnap
+      ] = await Promise.all([
+        t.get(newRef),
+        t.get(refRef),
+        t.get(inviteeSecurityRef),
+        t.get(inviterSecurityRef),
+        t.get(inviteeDeletionRef),
+        t.get(inviterDeletionRef),
+        t.get(dailyRef)
+      ]);
+      if (!newSnap.exists || !refSnap.exists) {
+        throw referralError(404, 'REFERRAL_USER_NOT_FOUND', '추천 계정을 확인할 수 없습니다.');
+      }
+      const newUser = newSnap.data() || {};
+      const referrer = refSnap.data() || {};
+      if (newUid === referrerUid || newUser.refCode === refCode) {
+        throw referralError(400, 'REFERRAL_SELF', '본인 추천 불가');
+      }
+      if (referrer.refCode !== refCode) {
+        throw referralError(409, 'REFERRAL_CODE_OWNER_CHANGED', '추천 코드 소유자가 변경됐습니다.');
+      }
+      if (newUser.referredBy) return { applied: false };
+      if ((inviteeDeletionSnap.exists && accountDeletionBlocksPayment(inviteeDeletionSnap.data(), nowMs))
+        || (inviterDeletionSnap.exists && accountDeletionBlocksPayment(inviterDeletionSnap.data(), nowMs))) {
+        throw referralError(409, 'REFERRAL_ACCOUNT_UNAVAILABLE', '탈퇴 처리 중인 계정에는 추천을 적용할 수 없습니다.');
+      }
+      if (sameSignupClientPrincipal(
+        inviteeSecuritySnap.exists ? inviteeSecuritySnap.data() : null,
+        inviterSecuritySnap.exists ? inviterSecuritySnap.data() : null
+      )) {
+        throw referralError(409, 'REFERRAL_SAME_SIGNUP_PRINCIPAL', '동일한 가입 환경의 계정에는 추천을 적용할 수 없습니다.');
+      }
+      const dailyCount = Math.max(0, Math.floor(Number(dailySnap.data()?.count) || 0));
+      if (dailyCount >= REFERRAL_DAILY_INVITER_LIMIT) {
+        throw referralError(429, 'REFERRAL_DAILY_LIMIT', '오늘 적용할 수 있는 추천 보상 한도를 초과했습니다.');
+      }
+
+      const newUserCredits = (Number(newUser.credits) || 0) + REFERRAL_REWARD_CREDITS;
+      const referrerCredits = (Number(referrer.credits) || 0) + REFERRAL_REWARD_CREDITS;
+      t.update(newRef, {
+        credits: admin.firestore.FieldValue.increment(REFERRAL_REWARD_CREDITS),
+        referredBy: refCode,
+        referredByUid: referrerUid
+      });
+      t.update(refRef, { credits: admin.firestore.FieldValue.increment(REFERRAL_REWARD_CREDITS) });
+      t.set(dailyRef, {
+        inviterUid: referrerUid,
+        utcDay,
+        count: dailyCount + 1,
+        updatedAt: now
+      }, { merge: true });
       t.set(newRef.collection('creditHistory').doc('referral_' + newUid), {
-        type: 'referral', used: 0, amount: 20, remaining: newUserCredits,
+        type: 'referral', used: 0, amount: REFERRAL_REWARD_CREDITS, remaining: newUserCredits,
         detail: '친구 추천 보상 (가입)', createdAt: now
       });
       t.set(refRef.collection('creditHistory').doc('referral_from_' + newUid), {
-        type: 'referral', used: 0, amount: 20, remaining: referrerCredits,
+        type: 'referral', used: 0, amount: REFERRAL_REWARD_CREDITS, remaining: referrerCredits,
         detail: '친구 추천 보상 (초대)', createdAt: now
       });
-      return { applied: true };
+      return {
+        applied: true,
+        inviteeName: newUser.name || newUid,
+        inviterName: referrer.name || referrerUid
+      };
     });
 
     if (!result.applied) return res.status(400).json({ error: '이미 추천 적용됨' });
-    logger.info('referral.applied', { referrerUid, newUid, credits: 20 });
-    try { discord.referral({ inviter: referrerDoc.data().name || referrerUid, invitee: newUserSnap.data().name || newUid }); } catch {}
+    logger.info('referral.applied', {
+      referrerUid,
+      newUid,
+      credits: REFERRAL_REWARD_CREDITS,
+      utcDay
+    });
+    try { discord.referral({ inviter: result.inviterName, invitee: result.inviteeName }); } catch {}
     res.json({ ok: true });
   } catch (err) {
     logger.error('referral.failed', { err });
-    res.status(500).json({ error: '추천 처리 실패' });
+    const status = Number(err.status) || (String(err.code || '').startsWith('auth/') ? 401 : 500);
+    res.status(status).json({
+      error: status < 500 ? err.message : '추천 처리 실패',
+      ...(err.code && status < 500 ? { code: err.code } : {})
+    });
   }
 });
 
@@ -4272,7 +5619,20 @@ router.adminHistoryPolicy = {
 };
 router.creditGrantPolicy = {
   assertPaymentIntentAllowsCreditGrant,
-  paymentIntentGrant
+  paymentIntentGrant,
+  paymentCallbackBindingHash,
+  accountDeletionBlocksPayment,
+  paymentIntentPreclaimExpired,
+  upgradeCheckoutReservationPatch,
+  paymentReconciliationClaimable,
+  paymentIntentProviderMatches
+};
+router.referralPolicy = {
+  REFERRAL_REWARD_CREDITS,
+  REFERRAL_DAILY_INVITER_LIMIT,
+  normalizeReferralCode,
+  referralUtcDay,
+  sameSignupClientPrincipal
 };
 router.refundPolicy = {
   TERMS_POLICY_VERSION,
@@ -4304,6 +5664,8 @@ router.refundPolicy = {
   calculateOrderCreditRefund,
   calculateSubscriptionPolicyRefund,
   currentSubscriptionRefundContext,
+  activeSubscriptionRefundClaim,
+  subscriptionRefundGenerationCanMutateUser,
   activeUpgradeRefundConflict
 };
 

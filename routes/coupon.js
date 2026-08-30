@@ -3,8 +3,9 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { admin, db, ADMIN_UIDS, verifyToken } = require('../config');
+const { admin, db, verifyToken, verifyAdminToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
+const { bearerToken } = require('../lib/reqtoken');
 const discord = require('../lib/discord');
 
 const router = express.Router();
@@ -34,16 +35,13 @@ function normalizeCode(input) {
 // 관리자: 쿠폰 일괄 발급
 // ───────────────────────────────────────────
 router.post('/admin/create-coupons', async (req, res) => {
-  const { idToken, credits, count, expiresAt } = req.body || {};
+  const { credits, count, expiresAt } = req.body || {};
+  const idToken = bearerToken(req);
 
-  const adminUid = await verifyToken(idToken);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) return res.status(403).json({ error: '관리자 권한이 없어요.' });
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
   setLogContext({ uid: adminUid, actorUid: adminUid });
-  setLogContext({ uid: adminUid, actorUid: adminUid });
-  setLogContext({ uid: adminUid, actorUid: adminUid });
-  if (!ADMIN_UIDS.includes(adminUid)) {
-    return res.status(403).json({ error: '관리자 권한이 없어요.' });
-  }
 
   const creditsInt = parseInt(credits, 10);
   const countInt = parseInt(count, 10);
@@ -140,7 +138,8 @@ router.post('/admin/create-coupons', async (req, res) => {
 // 사용자: 쿠폰 코드 적용
 // ───────────────────────────────────────────
 router.post('/redeem-coupon', async (req, res) => {
-  const { idToken, code } = req.body || {};
+  const { code } = req.body || {};
+  const idToken = bearerToken(req);
 
   const uid = await verifyToken(idToken);
   if (!uid) return res.status(401).json({ error: '로그인이 필요해요.' });
@@ -218,13 +217,12 @@ router.post('/redeem-coupon', async (req, res) => {
 // 관리자: 발급 이력 목록
 // ───────────────────────────────────────────
 router.post('/admin/list-coupon-batches', async (req, res) => {
-  const { idToken, limit, cursor } = req.body || {};
+  const { limit, cursor } = req.body || {};
+  const idToken = bearerToken(req);
 
-  const adminUid = await verifyToken(idToken);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) return res.status(403).json({ error: '관리자 권한이 없어요.' });
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
-  if (!ADMIN_UIDS.includes(adminUid)) {
-    return res.status(403).json({ error: '관리자 권한이 없어요.' });
-  }
 
   const lim = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
@@ -279,14 +277,13 @@ router.post('/admin/list-coupon-batches', async (req, res) => {
 // 관리자: 배치 상세 (코드 목록 + 사용자 조인)
 // ───────────────────────────────────────────
 router.post('/admin/get-coupon-batch', async (req, res) => {
-  const { idToken, batchId } = req.body || {};
+  const { batchId } = req.body || {};
+  const idToken = bearerToken(req);
 
-  const adminUid = await verifyToken(idToken);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) return res.status(403).json({ error: '관리자 권한이 없어요.' });
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
   setLogContext({ uid: adminUid, actorUid: adminUid });
-  if (!ADMIN_UIDS.includes(adminUid)) {
-    return res.status(403).json({ error: '관리자 권한이 없어요.' });
-  }
   if (!batchId || typeof batchId !== 'string') {
     return res.status(400).json({ error: '배치 ID가 필요해요.' });
   }
@@ -366,14 +363,13 @@ router.post('/admin/get-coupon-batch', async (req, res) => {
 // 관리자: 쿠폰 무효화 (배치 또는 개별)
 // ───────────────────────────────────────────
 router.post('/admin/void-coupons', async (req, res) => {
-  const { idToken, batchId, code } = req.body || {};
+  const { batchId, code } = req.body || {};
+  const idToken = bearerToken(req);
 
-  const adminUid = await verifyToken(idToken);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) return res.status(403).json({ error: '관리자 권한이 없어요.' });
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
   setLogContext({ uid: adminUid, actorUid: adminUid });
-  if (!ADMIN_UIDS.includes(adminUid)) {
-    return res.status(403).json({ error: '관리자 권한이 없어요.' });
-  }
 
   // 개별 모드: code 우선
   if (code) {
@@ -449,13 +445,12 @@ router.post('/admin/void-coupons', async (req, res) => {
 // 관리자: 배치 기록 영구 삭제 (잔여 미사용 0일 때만)
 // ───────────────────────────────────────────
 router.post('/admin/delete-coupon-batch', async (req, res) => {
-  const { idToken, batchId } = req.body || {};
+  const { batchId } = req.body || {};
+  const idToken = bearerToken(req);
 
-  const adminUid = await verifyToken(idToken);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) return res.status(403).json({ error: '관리자 권한이 없어요.' });
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
-  if (!ADMIN_UIDS.includes(adminUid)) {
-    return res.status(403).json({ error: '관리자 권한이 없어요.' });
-  }
   if (!batchId || typeof batchId !== 'string') {
     return res.status(400).json({ error: '배치 ID가 필요해요.' });
   }
@@ -490,14 +485,13 @@ router.post('/admin/delete-coupon-batch', async (req, res) => {
 // 관리자: 배치 만료일 일괄 변경 (부활 / 무기한 전환 허용)
 // ───────────────────────────────────────────
 router.post('/admin/update-batch-expiry', async (req, res) => {
-  const { idToken, batchId, expiresAt } = req.body || {};
+  const { batchId, expiresAt } = req.body || {};
+  const idToken = bearerToken(req);
 
-  const adminUid = await verifyToken(idToken);
+  const adminUid = await verifyAdminToken(idToken);
+  if (adminUid === false) return res.status(403).json({ error: '관리자 권한이 없어요.' });
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
   setLogContext({ uid: adminUid, actorUid: adminUid });
-  if (!ADMIN_UIDS.includes(adminUid)) {
-    return res.status(403).json({ error: '관리자 권한이 없어요.' });
-  }
   if (!batchId || typeof batchId !== 'string') {
     return res.status(400).json({ error: '배치 ID가 필요해요.' });
   }

@@ -11,28 +11,25 @@
 
 const express = require('express');
 const router = express.Router();
-const { db, ADMIN_UIDS, verifyToken } = require('../config');
+const { db, verifyAdminToken } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const opsLog = require('../lib/opsLog');
 const opsEvents = require('../lib/opsEvents');
 const opsHeartbeat = require('../lib/opsHeartbeat');
 const discord = require('../lib/discord');
 const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
+const { bearerToken } = require('../lib/reqtoken');
 
 const MAX_SCAN = 600;
 
-function bearer(req) {
-  const raw = req.get('authorization') || '';
-  return raw.startsWith('Bearer ') ? raw.slice(7).trim() : '';
-}
-
-// 관리자 페이지는 Authorization 헤더, 일부 기존 화면은 body.idToken을 쓴다 — 둘 다 받는다.
+// Authorization 헤더가 정본이며, 구형 캐시 화면의 body 토큰은 공통 helper가
+// deprecation 로그를 남기며 한 릴리스 동안만 호환한다.
 async function requireAdmin(req, res) {
-  const idToken = bearer(req) || (req.body && req.body.idToken) || '';
-  const uid = await verifyToken(idToken);
+  const idToken = bearerToken(req);
+  const uid = await verifyAdminToken(idToken);
+  if (uid === false) { res.status(403).json({ ok: false, error: '관리자 권한이 필요합니다.' }); return null; }
   if (!uid) { res.status(401).json({ ok: false, error: '로그인이 필요합니다.' }); return null; }
   setLogContext({ uid, actorUid: uid });
-  if (!ADMIN_UIDS.includes(uid)) { res.status(403).json({ ok: false, error: '관리자 권한이 필요합니다.' }); return null; }
   return uid;
 }
 

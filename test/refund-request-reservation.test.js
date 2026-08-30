@@ -350,6 +350,8 @@ test('사용자 환불 사유는 선택이고 관리자 거절 사유는 계속 
   assert.match(requestRoute, /readPaymentKey\(orderRef\.id, order\)[\s\S]*REFUND_PAYMENT_REFERENCE_UNAVAILABLE/u);
   assert.match(requestRoute, /const requestSequence[\s\S]*refundOperationId\([\s\S]*`request-\$\{requestSequence\}`/u);
   assert.match(requestRoute, /latestOrder\.refundPolicyVersionAtPurchase[\s\S]*legacy-total-grant-v1/u);
+  assert.match(requestRoute, /transaction\.get\(deletionJobRef\)[\s\S]*accountDeletionBlocksPayment/u);
+  assert.match(requestRoute, /lane:\s*'activeCreditRefunds'[\s\S]*status:\s*'requested_reserved'/u);
 
   const rejectRoute = source.slice(source.indexOf("router.post('/reject-refund'"));
   assert.match(rejectRoute, /if \(!rejectReason \|\| rejectReason\.trim\(\)\.length < 2\)/u);
@@ -374,6 +376,9 @@ test('route 계약은 요청 예약을 승인에서 재사용하고 provider 확
   const freshReserveAt = approveRoute.indexOf('const reserved = await reserveCreditRefundCredits');
   assert.ok(resumableAt >= 0 && freshReserveAt > resumableAt, '기존 신청 reservation을 새 계산보다 먼저 사용해야 한다');
   assert.match(approveRoute, /resumable\.phase === 'requested_reserved'[\s\S]*refundProcessing\.phase': 'provider_canceling'/u);
+  assert.match(approveRoute, /transaction\.get\(deletionJobRef\)[\s\S]*accountDeletionBlocksPayment/u);
+  assert.match(approveRoute, /lane:\s*'activeCreditRefunds'[\s\S]*status:\s*'provider_canceling'/u);
+  assert.match(approveRoute, /lane:\s*'activeCreditRefunds'[\s\S]*status:\s*'settled'/u);
   assert.match(approveRoute, /refundEligibilityReviewDecision\(order, req\.body \|\| \{\}\)[\s\S]*refund\.eligibility_review_not_recorded/u);
   assert.match(approveRoute, /refundEligibilityReviewDecision\(latestOrder, req\.body \|\| \{\}\)[\s\S]*refundEligibilityReviewUpdate/u);
   const unknownAt = approveRoute.indexOf('if (cancellationState.unknown)');

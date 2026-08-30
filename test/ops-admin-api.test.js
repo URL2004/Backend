@@ -45,6 +45,7 @@ require.cache[configPath] = {
     ADMIN_UIDS: ['admin-uid'],
     // 토큰 문자열을 그대로 uid로 취급하는 스텁
     verifyToken: async (token) => (token ? String(token) : null),
+    verifyAdminToken: async (token) => !token ? null : (String(token) === 'admin-uid' ? 'admin-uid' : false),
     verifyFirebaseIdToken: async (token) => ({ uid: String(token) })
   }
 };

@@ -8,6 +8,7 @@ const discord = require('../lib/discord');
 const { realClientIp } = require('../lib/clientip');
 const { userAgentFamily } = require('../lib/cronAuth');
 const metaConversions = require('../lib/metaConversions');
+const { bearerToken } = require('../lib/reqtoken');
 
 const router = express.Router();
 const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error', 'client_error']);
@@ -84,7 +85,8 @@ function logPaymentError(req, uid) {
 }
 
 router.post('/events', async (req, res) => {
-  const { idToken, type } = req.body || {};
+  const { type } = req.body || {};
+  const idToken = bearerToken(req);
   if (!ALLOWED.has(type)) return res.status(400).json({ error: 'unknown event' });
   let decoded = null;
   try { decoded = idToken ? await verifyFirebaseIdToken(idToken) : null; }

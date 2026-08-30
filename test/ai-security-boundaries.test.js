@@ -231,11 +231,28 @@ test('localized repair keeps source-derived headings in REPAIR_TARGETS data, nev
 
 test('history linkage HMAC is domain separated, UID bound, tamper evident, and missing signature fails closed', () => {
   const key = 'history-integrity-unit-test-key-32-bytes';
-  const signed = historyIntegrity.sign('uid-a', '결과 본문', key);
-  assert.equal(historyIntegrity.verify('uid-a', '결과 본문', signed, key), true);
-  assert.equal(historyIntegrity.verify('uid-b', '결과 본문', signed, key), false);
-  assert.equal(historyIntegrity.verify('uid-a', '변조 결과', signed, key), false);
-  assert.equal(historyIntegrity.verify('uid-a', '결과 본문', null, key), false);
+  const record = {
+    mode: 'formal',
+    qualityStatus: 'clean',
+    billingDisposition: 'charged',
+    engineMeta: {
+      deliveryDecision: 'deliver_clean',
+      effectStatus: 'normal',
+      approvedModelChunkCount: 1,
+      modelFailureChunkCount: 0,
+      substantiveEditRatio: 0.12,
+      structureSignaturePass: true
+    }
+  };
+  const signed = historyIntegrity.sign('uid-a', '결과 본문', record, key);
+  assert.equal(historyIntegrity.verify('uid-a', '결과 본문', record, signed, key), true);
+  assert.equal(historyIntegrity.verify('uid-b', '결과 본문', record, signed, key), false);
+  assert.equal(historyIntegrity.verify('uid-a', '변조 결과', record, signed, key), false);
+  assert.equal(historyIntegrity.verify('uid-a', '결과 본문', record, null, key), false);
+  assert.equal(historyIntegrity.sign('uid-a', '결과 본문', {
+    ...record,
+    engineMeta: { ...record.engineMeta, substantiveEditRatio: 0.01 }
+  }, key), null);
   assert.match(historyIntegrity.DOMAIN, /detect-calibration/u);
 });
 

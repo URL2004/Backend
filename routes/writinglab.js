@@ -13,7 +13,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
-const { verifyToken, ADMIN_UIDS } = require('../config');
+const { verifyToken, verifyAdminToken, ADMIN_UIDS } = require('../config');
 const { bearerToken } = require('../lib/reqtoken');
 const { logger, setLogContext } = require('../lib/logger');
 const usageBilling = require('../lib/usageBilling');
@@ -211,7 +211,17 @@ async function requireUser(req, res) {
     return null;
   }
   setLogContext({ uid, actorUid: uid });
-  return { uid, admin: isAdminUid(uid), idToken };
+  let adminAccess = false;
+  if (isAdminUid(uid)) {
+    // 관리자 세션만 revocation을 추가 확인한다. 일반 사용자 요청에는 Auth 조회
+    // 지연을 더하지 않으면서 탈취·강제 로그아웃된 관리자 토큰은 즉시 거부한다.
+    adminAccess = (await verifyAdminToken(idToken)) === uid;
+    if (!adminAccess) {
+      res.status(401).json({ code: 'ADMIN_SESSION_REVOKED', error: '관리자 로그인이 만료됐어요. 다시 로그인해 주세요.' });
+      return null;
+    }
+  }
+  return { uid, admin: adminAccess, idToken };
 }
 
 function cleanText(value, max) {
@@ -656,6 +666,20 @@ router.post('/writing-lab/v2/generate', async (req, res) => {
     }
 
     const claim = await writingJobs.begin(user.uid, requestId, inputHash);
+    if (claim.state === 'ACCOUNT_DELETION') {
+      return res.status(409).json({
+        ok: false,
+        code: 'ACCOUNT_DELETION_IN_PROGRESS',
+        error: '회원 탈퇴 처리가 진행 중이라 새 글 작업을 시작할 수 없어요.',
+      });
+    }
+    if (claim.state === 'UNAVAILABLE') {
+      return res.status(503).json({
+        ok: false,
+        code: 'WRITING_JOB_PERSIST_UNAVAILABLE',
+        error: '작업을 안전하게 저장하지 못했어요. 잠시 후 다시 시도해 주세요.',
+      });
+    }
     if (claim.state === 'MISMATCH' || claim.state === 'FORBIDDEN') {
       return res.status(409).json({ ok: false, code: 'REQUEST_ID_INPUT_MISMATCH', error: '이 작업 번호는 현재 입력에 사용할 수 없어요.' });
     }

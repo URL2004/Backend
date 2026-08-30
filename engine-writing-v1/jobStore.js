@@ -3,6 +3,15 @@
 const crypto = require('crypto');
 const { db, admin } = require('../config');
 const { logger } = require('../lib/logger');
+const {
+  COLLECTION: ACCOUNT_ACTIVITY_COLLECTION,
+  WRITING_CLAIM_TTL_MS,
+  WRITING_LANE,
+  accountDeletionBlocksWrites,
+  deletionInProgressError,
+  laneWithClaim,
+  laneWithoutClaim,
+} = require('../lib/accountActivityClaims');
 
 const memory = new Map();
 const JOB_TTL_MS = 2 * 60 * 60 * 1000;
@@ -25,15 +34,37 @@ async function begin(uid, requestId, inputHash, now = Date.now()) {
   if (!db || !admin) return beginMemory(key, uid, id, inputHash, now);
   try {
     const ref = db.collection('writingLabV2Jobs').doc(key);
+    const deletionRef = db.collection('accountDeletionJobs').doc(uid);
+    const activityRef = db.collection(ACCOUNT_ACTIVITY_COLLECTION).doc(uid);
     return await db.runTransaction(async transaction => {
-      const snap = await transaction.get(ref);
+      const [snap, deletionSnapshot, activitySnapshot] = await Promise.all([
+        transaction.get(ref),
+        transaction.get(deletionRef),
+        transaction.get(activityRef),
+      ]);
+      if (deletionSnapshot.exists
+        && accountDeletionBlocksWrites(deletionSnapshot.data() || {}, now)) {
+        return { state: 'ACCOUNT_DELETION' };
+      }
       const existing = snap.exists ? snap.data() : null;
       if (existing) {
         if (existing.uid !== uid || existing.requestId !== id) return { state: 'FORBIDDEN' };
         if (existing.inputHash !== inputHash) return { state: 'MISMATCH' };
         if (existing.status === 'READY' && existing.result) return { state: 'READY', result: existing.result };
         const updatedAtMs = timestampMs(existing.updatedAtMs || existing.updatedAt);
-        if (existing.status === 'PROCESSING' && now - updatedAtMs < STALE_PROCESSING_MS) return { state: 'PROCESSING' };
+        if (existing.status === 'PROCESSING' && now - updatedAtMs < STALE_PROCESSING_MS) {
+          const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
+          transaction.set(activityRef, {
+            uid,
+            [WRITING_LANE]: laneWithClaim(activity, WRITING_LANE, {
+              id: key,
+              status: 'PROCESSING',
+              ttlMs: WRITING_CLAIM_TTL_MS,
+            }, now),
+            updatedAtMs: now,
+          }, { merge: true });
+          return { state: 'PROCESSING' };
+        }
       }
       transaction.set(ref, {
         uid,
@@ -46,11 +77,21 @@ async function begin(uid, requestId, inputHash, now = Date.now()) {
         error: admin.firestore.FieldValue.delete(),
         result: admin.firestore.FieldValue.delete()
       }, { merge: true });
+      const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
+      transaction.set(activityRef, {
+        uid,
+        [WRITING_LANE]: laneWithClaim(activity, WRITING_LANE, {
+          id: key,
+          status: 'PROCESSING',
+          ttlMs: WRITING_CLAIM_TTL_MS,
+        }, now),
+        updatedAtMs: now,
+      }, { merge: true });
       return { state: 'NEW' };
     });
   } catch (error) {
     logger.error('writinglab.job_begin_failed', { uid, requestId: id, err: error });
-    return beginMemory(key, uid, id, inputHash, now);
+    return { state: 'UNAVAILABLE' };
   }
 }
 
@@ -63,18 +104,50 @@ async function complete(uid, requestId, inputHash, result, now = Date.now()) {
   memory.set(key, row);
   if (!db || !admin) return;
   try {
-    await db.collection('writingLabV2Jobs').doc(key).set({
-      uid,
-      requestId: id,
-      inputHash,
-      status: 'READY',
-      result: safeResult,
-      updatedAtMs: now,
-      expiresAt: admin.firestore.Timestamp.fromMillis(now + JOB_TTL_MS),
-      error: admin.firestore.FieldValue.delete()
-    }, { merge: true });
+    const ref = db.collection('writingLabV2Jobs').doc(key);
+    const deletionRef = db.collection('accountDeletionJobs').doc(uid);
+    const activityRef = db.collection(ACCOUNT_ACTIVITY_COLLECTION).doc(uid);
+    const persisted = await db.runTransaction(async transaction => {
+      const [deletionSnapshot, activitySnapshot] = await Promise.all([
+        transaction.get(deletionRef),
+        transaction.get(activityRef),
+      ]);
+      const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
+      const release = {
+        uid,
+        [WRITING_LANE]: laneWithoutClaim(activity, WRITING_LANE, key, now),
+        updatedAtMs: now,
+      };
+      if (deletionSnapshot.exists
+        && accountDeletionBlocksWrites(deletionSnapshot.data() || {}, now)) {
+        transaction.delete(ref);
+        if (activitySnapshot.exists) transaction.set(activityRef, release, { merge: true });
+        return { blocked: true };
+      }
+      transaction.set(ref, {
+        uid,
+        requestId: id,
+        inputHash,
+        status: 'READY',
+        result: safeResult,
+        updatedAtMs: now,
+        expiresAt: admin.firestore.Timestamp.fromMillis(now + JOB_TTL_MS),
+        error: admin.firestore.FieldValue.delete()
+      }, { merge: true });
+      transaction.set(activityRef, release, { merge: true });
+      return { blocked: false };
+    });
+    if (persisted.blocked) {
+      memory.delete(key);
+      throw deletionInProgressError();
+    }
   } catch (error) {
     logger.error('writinglab.job_complete_persist_failed', { uid, requestId: id, err: error });
+    if (error?.code === 'ACCOUNT_DELETION_IN_PROGRESS') throw error;
+    throw Object.assign(new Error('WRITING_JOB_PERSIST_UNAVAILABLE'), {
+      code: 'WRITING_JOB_PERSIST_UNAVAILABLE',
+      status: 503,
+    });
   }
 }
 
@@ -90,16 +163,38 @@ async function fail(uid, requestId, inputHash, error, now = Date.now()) {
   memory.set(key, { uid, requestId: id, inputHash, status: 'FAILED', error: failure, createdAtMs: now, updatedAtMs: now, expiresAtMs: now + JOB_TTL_MS });
   if (!db || !admin) return;
   try {
-    await db.collection('writingLabV2Jobs').doc(key).set({
-      uid,
-      requestId: id,
-      inputHash,
-      status: 'FAILED',
-      error: failure,
-      updatedAtMs: now,
-      expiresAt: admin.firestore.Timestamp.fromMillis(now + JOB_TTL_MS),
-      result: admin.firestore.FieldValue.delete()
-    }, { merge: true });
+    const ref = db.collection('writingLabV2Jobs').doc(key);
+    const deletionRef = db.collection('accountDeletionJobs').doc(uid);
+    const activityRef = db.collection(ACCOUNT_ACTIVITY_COLLECTION).doc(uid);
+    await db.runTransaction(async transaction => {
+      const [deletionSnapshot, activitySnapshot] = await Promise.all([
+        transaction.get(deletionRef),
+        transaction.get(activityRef),
+      ]);
+      const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
+      const release = {
+        uid,
+        [WRITING_LANE]: laneWithoutClaim(activity, WRITING_LANE, key, now),
+        updatedAtMs: now,
+      };
+      if (deletionSnapshot.exists
+        && accountDeletionBlocksWrites(deletionSnapshot.data() || {}, now)) {
+        transaction.delete(ref);
+        if (activitySnapshot.exists) transaction.set(activityRef, release, { merge: true });
+        return;
+      }
+      transaction.set(ref, {
+        uid,
+        requestId: id,
+        inputHash,
+        status: 'FAILED',
+        error: failure,
+        updatedAtMs: now,
+        expiresAt: admin.firestore.Timestamp.fromMillis(now + JOB_TTL_MS),
+        result: admin.firestore.FieldValue.delete()
+      }, { merge: true });
+      transaction.set(activityRef, release, { merge: true });
+    });
   } catch (storeError) {
     logger.warn('writinglab.job_fail_persist_failed', { uid, requestId: id, err: storeError });
   }

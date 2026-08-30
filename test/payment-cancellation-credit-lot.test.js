@@ -169,7 +169,9 @@ function loadPaymentCancellationWith(fakeDb) {
   };
 }
 
-const MAX_ORDER = 'order_1234567890';
+// Current frontend order IDs include an entropy suffix. All cancellation and
+// inbox retry tests use that live format so a legacy-only regex cannot regress.
+const MAX_ORDER = 'order_1760000000000_a1b2c3d4';
 
 test('신규 주문 외부 부분취소는 자기 lot과 지갑·root mirror를 원자적으로 함께 회수한다', async t => {
   const store = fakeFirestore({

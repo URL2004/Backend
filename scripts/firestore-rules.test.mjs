@@ -106,7 +106,8 @@ try {
       type: 'notice',
       message: '본인 알림',
       read: false,
-      createdAt: serverTimestamp()
+      createdAt: serverTimestamp(),
+      legacyCommunityField: '과거 필드'
     });
     await setDoc(doc(db, 'notices', 'public-notice'), {
       title: '운영 공지',
@@ -160,8 +161,8 @@ try {
   const adminDb = testEnv.authenticatedContext(ADMIN_UID, user(ADMIN_UID)).firestore();
   const anonDb = testEnv.unauthenticatedContext().firestore();
 
-  await run('users: self create with initial free credits allowed', async () => {
-    await assertSucceeds(setDoc(doc(bobDb, 'users', 'bob'), {
+  await run('users: initial free-credit documents are server-only', async () => {
+    await assertFails(setDoc(doc(bobDb, 'users', 'bob'), {
       email: 'bob@example.test',
       name: 'Bob',
       credits: 10,
@@ -171,7 +172,7 @@ try {
     }));
   });
 
-  await run('users: self create with bounded signup attribution allowed', async () => {
+  await run('users: even well-formed attribution cannot bypass server initialization', async () => {
     const daveDb = testEnv.authenticatedContext('dave', user('dave')).firestore();
     const touch = {
       version: 1,
@@ -188,7 +189,7 @@ try {
       landing_url: 'https://gpkorea.ai.kr/',
       referrer_host: 'instagram.com'
     };
-    await assertSucceeds(setDoc(doc(daveDb, 'users', 'dave'), {
+    await assertFails(setDoc(doc(daveDb, 'users', 'dave'), {
       email: 'dave@example.test',
       name: 'Dave',
       credits: 10,
@@ -242,6 +243,7 @@ try {
 
   await run('users: allowed profile fields still update', async () => {
     await assertSucceeds(updateDoc(doc(aliceDb, 'users', 'alice'), { name: 'Alice Updated' }));
+    await assertFails(updateDoc(doc(aliceDb, 'users', 'alice'), { name: 'x'.repeat(81) }));
   });
 
   await run('users: authentication binding kakaoId is server-only', async () => {
@@ -267,8 +269,8 @@ try {
     }));
   });
 
-  await run('qna: author can create question', async () => {
-    await assertSucceeds(addDoc(collection(aliceDb, 'qna'), {
+  await run('qna: client question creation is server-only', async () => {
+    await assertFails(addDoc(collection(aliceDb, 'qna'), {
       title: '새 문의',
       body: '문의 본문',
       authorId: 'alice',
@@ -278,6 +280,17 @@ try {
       answer: null,
       createdAt: serverTimestamp(),
       views: 0
+    }));
+  });
+
+  await run('qna: oversized or malformed questions are rejected', async () => {
+    await assertFails(addDoc(collection(aliceDb, 'qna'), {
+      title: 'x'.repeat(161), body: '본문', authorId: 'alice', authorName: 'Alice',
+      isAnon: false, status: 'pending', answer: null, createdAt: serverTimestamp(), views: 0
+    }));
+    await assertFails(addDoc(collection(aliceDb, 'qna'), {
+      title: '정상 제목', body: '본문', authorId: 'alice', authorName: 'Alice',
+      isAnon: false, status: 'pending', answer: null, createdAt: serverTimestamp(), views: 1
     }));
   });
 
@@ -305,17 +318,19 @@ try {
     await assertFails(getDocs(query(collection(aliceDb, 'qna'), where('authorId', '==', 'bob'))));
   });
 
-  await run('qna: admin can answer', async () => {
-    await assertSucceeds(updateDoc(doc(adminDb, 'qna', 'alice-q1'), {
+  await run('qna: even admin clients must answer through the authenticated API', async () => {
+    await assertFails(updateDoc(doc(adminDb, 'qna', 'alice-q1'), {
       status: 'answered',
       answer: { body: '답변', answeredBy: '운영팀', answeredAt: serverTimestamp() }
     }));
   });
 
-  await run('qna: owner can update only views and cannot add fields through a diff bypass', async () => {
-    await assertSucceeds(updateDoc(doc(aliceDb, 'qna', 'alice-q1'), { views: 1 }));
+  await run('qna: client update and delete paths are fully closed', async () => {
+    await assertFails(updateDoc(doc(aliceDb, 'qna', 'alice-q1'), { views: 1 }));
     await assertFails(updateDoc(doc(aliceDb, 'qna', 'alice-q1'), { moderationOverride: true }));
     await assertFails(updateDoc(doc(aliceDb, 'qna', 'alice-q1'), { status: 'pending' }));
+    await assertFails(deleteDoc(doc(aliceDb, 'qna', 'alice-q1')));
+    await assertFails(deleteDoc(doc(adminDb, 'qna', 'alice-q1')));
   });
 
   await run('community closed: anonymous, user, and admin cannot read posts', async () => {
@@ -409,13 +424,47 @@ try {
     await assertFails(getDoc(doc(anonDb, 'users', 'alice')));
   });
 
-  await run('history: owner can read, create, and delete own history', async () => {
+  await run('history: owner can read but all client writes use the backup API', async () => {
     await assertSucceeds(getDoc(doc(aliceDb, 'users', 'alice', 'history', 'history-alice')));
-    const created = await addDoc(collection(aliceDb, 'users', 'alice', 'history'), {
-      text: '결과',
+    await assertFails(addDoc(collection(aliceDb, 'users', 'alice', 'history'), {
+      type: 'humanize', inputText: '원문', outputText: '결과', credits: 1,
       createdAt: serverTimestamp()
-    });
-    await assertSucceeds(deleteDoc(created));
+    }));
+    await assertFails(deleteDoc(doc(aliceDb, 'users', 'alice', 'history', 'history-alice')));
+  });
+
+  await run('payment and subscription race claims are opaque to owner and admin clients', async () => {
+    for (const collectionName of [
+      'paymentAccountClaims', 'subscriptionOperationClaims', 'subscriptionRefundClaims',
+      'accountActivityClaims'
+    ]) {
+      for (const db of [aliceDb, adminDb]) {
+        await assertFails(getDoc(doc(db, collectionName, 'alice')));
+        await assertFails(setDoc(doc(db, collectionName, 'alice'), { status: 'forged' }));
+        await assertFails(deleteDoc(doc(db, collectionName, 'alice')));
+      }
+    }
+  });
+
+  await run('account signup security fingerprints are opaque to owner and admin clients', async () => {
+    for (const db of [aliceDb, adminDb]) {
+      await assertFails(getDoc(doc(db, 'accountSecurity', 'alice')));
+      await assertFails(setDoc(doc(db, 'accountSecurity', 'alice'), {
+        signupClientPrincipal: 'forged', createdAtMs: Date.now()
+      }));
+      await assertFails(deleteDoc(doc(db, 'accountSecurity', 'alice')));
+    }
+  });
+
+  await run('history: arbitrary fields and oversized text are rejected', async () => {
+    await assertFails(addDoc(collection(aliceDb, 'users', 'alice', 'history'), {
+      type: 'humanize', inputText: '원문', outputText: '결과', credits: 1,
+      createdAt: serverTimestamp(), serverTrusted: true
+    }));
+    await assertFails(addDoc(collection(aliceDb, 'users', 'alice', 'history'), {
+      type: 'humanize', inputText: 'x'.repeat(60001), credits: 1,
+      createdAt: serverTimestamp()
+    }));
   });
 
   await run('history: cross-user reads and writes plus owner updates are denied', async () => {
@@ -429,6 +478,8 @@ try {
     await assertSucceeds(getDoc(doc(aliceDb, 'users', 'alice', 'notifications', 'notice-alice')));
     await assertSucceeds(getDocs(collection(aliceDb, 'users', 'alice', 'notifications')));
     await assertSucceeds(updateDoc(doc(aliceDb, 'users', 'alice', 'notifications', 'notice-alice'), { read: true }));
+    await assertFails(updateDoc(doc(aliceDb, 'users', 'alice', 'notifications', 'notice-alice'), { read: false }));
+    await assertFails(updateDoc(doc(aliceDb, 'users', 'alice', 'notifications', 'notice-alice'), { message: '알림 변조' }));
     await assertSucceeds(deleteDoc(doc(aliceDb, 'users', 'alice', 'notifications', 'notice-alice')));
     await assertFails(getDocs(collection(adminDb, 'users', 'alice', 'notifications')));
   });
@@ -447,16 +498,32 @@ try {
     }));
   });
 
-  await run('notifications: user can create own self-notification', async () => {
-    await assertSucceeds(addDoc(collection(aliceDb, 'users', 'alice', 'notifications'), {
+  await run('notifications: user cannot create own self-notification', async () => {
+    await assertFails(addDoc(collection(aliceDb, 'users', 'alice', 'notifications'), {
       type: 'notice', message: '내 알림', read: false, createdAt: serverTimestamp()
     }));
   });
 
-  await run('notifications: admin can send notification to a user', async () => {
-    await assertSucceeds(addDoc(collection(adminDb, 'users', 'alice', 'notifications'), {
+  await run('notifications: oversized and unknown fields are rejected', async () => {
+    await assertFails(addDoc(collection(aliceDb, 'users', 'alice', 'notifications'), {
+      type: 'notice', message: 'x'.repeat(2001), read: false, createdAt: serverTimestamp()
+    }));
+    await assertFails(addDoc(collection(aliceDb, 'users', 'alice', 'notifications'), {
+      type: 'notice', message: '내 알림', read: false, createdAt: serverTimestamp(), admin: true
+    }));
+  });
+
+  await run('notifications: admin browser writes also use the server API', async () => {
+    await assertFails(addDoc(collection(adminDb, 'users', 'alice', 'notifications'), {
       type: 'qna', message: '문의 답변이 등록됐어요', read: false, createdAt: serverTimestamp()
     }));
+  });
+
+  await run('client write quota counters are unreadable and unwritable by every client role', async () => {
+    for (const db of [anonDb, aliceDb, adminDb]) {
+      await assertFails(getDoc(doc(db, 'clientWriteQuotas', 'quota-row')));
+      await assertFails(setDoc(doc(db, 'clientWriteQuotas', 'quota-row'), { hourCount: 0 }));
+    }
   });
 
   await run('notices: public reads remain available while only admins can mutate', async () => {

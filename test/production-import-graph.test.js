@@ -113,7 +113,8 @@ test('동적 운영 자산과 관리자 lab 경계를 데드코드로 오인하�
     'utf8'
   );
   assert.match(transformSource, /function loadAdminHumanizeEngines\(\)/u);
-  assert.match(transformSource, /if \(!isAdminUid\(adminLabUid\)\) return res\.status\(403\)/u);
+  assert.match(transformSource, /adminLabUid = await verifyAdminToken\(idToken\)/u);
+  assert.match(transformSource, /if \(adminLabUid === false\) return res\.status\(403\)/u);
   assert.match(transformSource, /\['\.\.', 'labs', 'adminHumanizeEngines'\]\.join\('\/'\)/u);
 });
 

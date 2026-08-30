@@ -110,16 +110,31 @@ const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm
 
 // Firebase ID Token 검증 헬퍼. 인증 필수 라우트는 원본 검증 결과를 사용하고,
 // 기존 선택 인증 라우트는 verifyToken의 null 반환 계약을 유지한다.
-async function verifyFirebaseIdToken(idToken) {
+async function verifyFirebaseIdToken(idToken, options = {}) {
   if (!idToken || !admin) {
     throw Object.assign(new Error('AUTH_REQUIRED'), { code: 'auth/id-token-required' });
   }
-  return admin.auth().verifyIdToken(idToken);
+  const checkRevoked = options === true || (options && options.checkRevoked === true);
+  return admin.auth().verifyIdToken(idToken, checkRevoked);
 }
 
-async function verifyToken(idToken) {
+async function verifyToken(idToken, options = {}) {
   try {
-    return (await verifyFirebaseIdToken(idToken)).uid;
+    return (await verifyFirebaseIdToken(idToken, options)).uid;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 관리자 작업은 결제·쿠폰·운영 로그·실험 설정처럼 권한 반경이 크다.
+// Firebase에서 세션을 폐기한 뒤에도 ID token의 남은 수명 동안 접근되는 일을 막기 위해
+// 모든 관리자 라우트가 이 단일 검증기를 사용하고 checkRevoked=true를 강제한다.
+async function verifyAdminToken(idToken) {
+  try {
+    const decoded = await verifyFirebaseIdToken(idToken, { checkRevoked: true });
+    // null = invalid/expired/revoked, false = authenticated but not an admin.
+    // Keeping those states distinct preserves the API's 401/403 contract.
+    return ADMIN_UIDS.includes(decoded.uid) ? decoded.uid : false;
   } catch (e) {
     return null;
   }
@@ -144,5 +159,6 @@ module.exports = {
   ADMIN_UIDS,
   verifyFirebaseIdToken,
   verifyToken,
+  verifyAdminToken,
   verifyAppCheck
 };

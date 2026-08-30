@@ -8,10 +8,27 @@ const historyIntegrity = require('../lib/historyLinkIntegrity');
 const HISTORY_TEST_SECRET = 'history-test-secret-at-least-32-bytes';
 process.env.OPENAI_SAFETY_SALT = HISTORY_TEST_SECRET;
 
+function eligibleHistory(data) {
+  return data?.type === 'humanize' ? {
+    qualityStatus: 'clean',
+    billingDisposition: 'charged',
+    engineMeta: {
+      deliveryDecision: 'deliver_clean',
+      effectStatus: 'normal',
+      approvedModelChunkCount: 1,
+      modelFailureChunkCount: 0,
+      substantiveEditRatio: 0.12,
+      structureSignaturePass: true
+    },
+    ...data
+  } : data;
+}
+
 function historyDoc(id, data) {
-  const secured = data?.type === 'humanize' && data?.outputText
-    ? { ...data, historyLinkIntegrity: historyIntegrity.sign('same-user', data.outputText, HISTORY_TEST_SECRET) }
-    : data;
+  const eligible = eligibleHistory(data);
+  const secured = eligible?.type === 'humanize' && eligible?.outputText
+    ? { ...eligible, historyLinkIntegrity: historyIntegrity.sign('same-user', eligible.outputText, eligible, HISTORY_TEST_SECRET) }
+    : eligible;
   return {
     id,
     data() {
@@ -108,7 +125,12 @@ test('서명 없는 과거 기록과 다른 UID로 서명된 기록은 점수 �
   wrongUid.data = () => ({
     type: 'humanize',
     outputText: output,
-    historyLinkIntegrity: historyIntegrity.sign('different-user', output, HISTORY_TEST_SECRET)
+    historyLinkIntegrity: historyIntegrity.sign(
+      'different-user',
+      output,
+      eligibleHistory({ type: 'humanize', mode: 'blog', outputText: output }),
+      HISTORY_TEST_SECRET
+    )
   });
   const match = await calibration.findOwnHumanizedHistoryMatch({
     db: fakeDb([unsigned, wrongUid]),

@@ -79,6 +79,11 @@ app.use('/coach-suggest', limiter);   // 자동 코칭 후보 — 무인증 LLM 
 app.use('/transform', (req, res, next) => (req.method === 'POST' ? limiter(req, res, next) : next()));
 app.use('/events', limiter);   // 알림 중계 — 인증 전 폭주 방지
 app.use('/kakao-login', kakaoAuthLimiter);
+app.use('/history/backup', limiter); // 클라이언트 이력 폴백 저장(추가로 Firestore UID quota 적용)
+app.use('/qna', limiter);       // 1:1 문의 쓰기는 서버 API에서만 허용
+app.use('/admin/qna', limiter); // 관리자 답변 API도 인증 검증 전 IP 폭주를 제한
+app.use('/account/initialize', limiter); // 초기 무료 크레딧은 UID·접속지 지속 quota를 통과해야 지급
+app.use('/notifications/create-self', limiter); // 작업·결제·환불 본인 알림만 서버 검증 후 저장
 
 // Public liveness exposes no runtime configuration. Detailed readiness is
 // available only with HEALTH_CHECK_SECRET via /internal/health.
@@ -209,6 +214,7 @@ app.use('/', require('./routes/payment'));
 app.use('/', require('./routes/subscription'));
 app.use('/', require('./routes/coupon'));
 app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
+app.use('/', require('./routes/clientData')); // 서버 전용 이력 백업·1:1 문의 쓰기(인증·트랜잭션 quota)
 app.use('/', require('./routes/publicMetrics'));   // 검증된 누적 처리량 공개 지표(미검증 시 503)
 app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
 app.use('/', require('./routes/writinglab'));   // 관리자 실험: 자소서 생성 랩(생성→휴머나이징 결합 프로토타입, 관리자 전용·무과금)

@@ -17,6 +17,8 @@ const {
   deleteUserOperationalData,
   deleteStoragePhotos,
   exclusiveStoragePhotos,
+  requeueIndexBlockedAccountDeletions,
+  safeFailureCode,
   storageObjectFromUrl,
 } = require('../lib/accountDeletion');
 const {
@@ -131,6 +133,24 @@ test('deletion lease records one processing owner only after account operations 
     updatedAt: 'server-ts',
     createdAt: 'server-ts',
   });
+});
+
+test('repeated user clicks cannot consume the retry budget after deletion is pending', async () => {
+  const fixture = deletionLeaseFixture({
+    'users/u1': { credits: 10 },
+    'accountDeletionJobs/u1': { status: 'retry_pending', attempts: 1, leaseUntilMs: 0 },
+  });
+  await assert.rejects(
+    acquireDeletionLease({ ...fixture, uid: 'u1', source: 'request', nowMs: 2_000 }),
+    error => error.code === 'ACCOUNT_DELETION_PENDING' && error.status === 202,
+  );
+  assert.deepEqual(fixture.rows.get('accountDeletionJobs/u1'), {
+    status: 'retry_pending', attempts: 1, leaseUntilMs: 0,
+  });
+  const cronLease = await acquireDeletionLease({ ...fixture, uid: 'u1', source: 'cron_retry', nowMs: 2_000 });
+  assert.equal(cronLease.alreadyCompleted, false);
+  assert.equal(fixture.rows.get('accountDeletionJobs/u1').attempts, 2);
+  assert.equal(fixture.rows.get('accountDeletionJobs/u1').status, 'processing');
 });
 
 test('deletion lease blocks active content work and unresolved refund rows', async () => {
@@ -306,6 +326,9 @@ test('route reports pending cleanup instead of silently completing partial delet
   const route = fs.readFileSync(path.join(__dirname, '..', 'routes', 'account.js'), 'utf8');
   const service = fs.readFileSync(path.join(__dirname, '..', 'lib', 'accountDeletion.js'), 'utf8');
   assert.match(route, /ACCOUNT_DELETION_PENDING/);
+  assert.match(route, /account\.delete_retry_pending/);
+  assert.match(route, /ACCOUNT_DELETION_MANUAL_REVIEW/);
+  assert.match(route, /account\.delete_manual_review_waiting/);
   assert.match(route, /partial:\s*progress\.cleanupStarted === true/);
   assert.match(route, /accountDeleted:\s*progress\.authDeleted === true/);
   assert.match(route, /ACCOUNT_DELETION_CONFIRMATION_REQUIRED/);
@@ -333,6 +356,113 @@ test('route reports pending cleanup instead of silently completing partial delet
   assert.match(service, /safeMessages\.has\(String\(notification\.data\(\)\?\.message/u);
   assert.match(service, /parentCommentId:\s*admin\.firestore\.FieldValue\.delete\(\)/u);
   assert.doesNotMatch(service, /ugc_cleanup_failed/);
+});
+
+test('Firestore missing-index failures are stored with an actionable account-deletion code', () => {
+  assert.equal(safeFailureCode({
+    code: 9,
+    message: 'FAILED_PRECONDITION: The query requires a COLLECTION_GROUP_ASC index for collection comments and field authorId. You can create it here: create_exemption=x',
+  }), 'ACCOUNT_COLLECTION_GROUP_INDEX_REQUIRED');
+  assert.equal(safeFailureCode({
+    code: 'failed-precondition',
+    details: 'The query requires an index. You can create it here.',
+  }), 'ACCOUNT_COLLECTION_GROUP_INDEX_REQUIRED');
+  assert.equal(safeFailureCode({ code: 9, message: 'A different failed precondition' }), '9');
+  assert.equal(safeFailureCode({ code: 'auth/internal-error' }), 'ACCOUNT_DELETION_FAILED');
+});
+
+function indexRecoveryFixture({ probeFailure = false, row = {} } = {}) {
+  const probes = [];
+  const writes = [];
+  const jobRef = { id: 'user-1', path: 'accountDeletionJobs/user-1' };
+  const current = {
+    status: 'manual_review',
+    attempts: 5,
+    lastErrorCode: '9',
+    lastFailurePhase: 'user_generated_content',
+    ...row,
+  };
+  const db = {
+    collectionGroup(collectionGroup) {
+      return {
+        where(fieldPath, operator, value) {
+          return {
+            limit(limit) {
+              probes.push({ collectionGroup, fieldPath, operator, value, limit });
+              return {
+                async get() {
+                  if (probeFailure) throw Object.assign(new Error('index building'), { code: 9 });
+                  return { docs: [] };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+    collection(name) {
+      assert.equal(name, 'accountDeletionJobs');
+      return {
+        where(fieldPath, operator, value) {
+          assert.deepEqual([fieldPath, operator, value], ['status', '==', 'manual_review']);
+          return {
+            limit() {
+              return { get: async () => ({ docs: [{ id: jobRef.id, ref: jobRef, data: () => current }] }) };
+            },
+          };
+        },
+      };
+    },
+    async runTransaction(callback) {
+      return callback({
+        get: async () => ({ exists: true, data: () => current }),
+        set(target, patch, options) { writes.push({ target, patch, options }); },
+      });
+    },
+  };
+  const admin = { firestore: { FieldValue: { serverTimestamp: () => 'server-ts' } } };
+  const events = [];
+  const logger = { info(event, payload) { events.push({ event, payload }); } };
+  return { admin, db, logger, probes, writes, events };
+}
+
+test('ready collection-group indexes requeue only the matching manual-review deletion once', async () => {
+  const fixture = indexRecoveryFixture();
+  const result = await requeueIndexBlockedAccountDeletions(fixture);
+  assert.deepEqual(result, { indexesReady: true, examined: 1, requeued: 1 });
+  assert.deepEqual(fixture.probes.map(probe => [probe.collectionGroup, probe.fieldPath]), [
+    ['comments', 'authorId'],
+    ['notifications', 'actorUid'],
+    ['notifications', 'postId'],
+  ]);
+  assert.equal(fixture.writes.length, 1);
+  assert.deepEqual(fixture.writes[0].patch, {
+    status: 'retry_pending',
+    attempts: 0,
+    leaseUntilMs: 0,
+    indexRecoveryCount: 1,
+    indexRecoveryFromCode: '9',
+    indexRecoveryAt: 'server-ts',
+    updatedAt: 'server-ts',
+  });
+  assert.equal(fixture.events[0].event, 'account.deletion_index_requeued');
+});
+
+test('index recovery fails closed while an index is building and ignores unrelated manual review', async () => {
+  const building = indexRecoveryFixture({ probeFailure: true });
+  assert.deepEqual(
+    await requeueIndexBlockedAccountDeletions(building),
+    { indexesReady: false, examined: 1, requeued: 0 },
+  );
+  assert.equal(building.writes.length, 0);
+
+  const unrelated = indexRecoveryFixture({ row: { lastErrorCode: 'ACCOUNT_STORAGE_BUCKET_UNCONFIGURED' } });
+  assert.deepEqual(
+    await requeueIndexBlockedAccountDeletions(unrelated),
+    { indexesReady: null, examined: 1, requeued: 0 },
+  );
+  assert.equal(unrelated.probes.length, 0);
+  assert.equal(unrelated.writes.length, 0);
 });
 
 test('transform and writing persistence serialize every durable user-content write with deletion tombstones', () => {

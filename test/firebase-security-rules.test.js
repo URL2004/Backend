@@ -9,6 +9,8 @@ const root = path.join(__dirname, '..');
 const firestoreRules = fs.readFileSync(path.join(root, 'firestore.rules'), 'utf8');
 const storageRules = fs.readFileSync(path.join(root, 'storage.rules'), 'utf8');
 const firebaseConfig = JSON.parse(fs.readFileSync(path.join(root, 'firebase.json'), 'utf8'));
+const firestoreIndexes = JSON.parse(fs.readFileSync(path.join(root, 'firestore.indexes.json'), 'utf8'));
+const accountDeletionService = fs.readFileSync(path.join(root, 'lib', 'accountDeletion.js'), 'utf8');
 
 function section(start, end) {
   const startIndex = firestoreRules.indexOf(start);
@@ -20,9 +22,62 @@ function section(start, end) {
 
 test('firebase config deploys and emulates both Firestore and Storage rules', () => {
   assert.equal(firebaseConfig.firestore.rules, 'firestore.rules');
+  assert.equal(firebaseConfig.firestore.indexes, 'firestore.indexes.json');
   assert.equal(firebaseConfig.storage.rules, 'storage.rules');
   assert.equal(firebaseConfig.emulators.firestore.port, 8080);
   assert.equal(firebaseConfig.emulators.storage.port, 9199);
+});
+
+test('account deletion collection-group queries have deployable single-field indexes', () => {
+  const required = [...accountDeletionService.matchAll(
+    /collectionGroup\('([^']+)'\)\s*\.where\('([^']+)',\s*'=='/gu,
+  )].map(match => [match[1], match[2]]);
+  assert.deepEqual(required.sort(), [
+    ['comments', 'authorId'],
+    ['notifications', 'actorUid'],
+    ['notifications', 'postId'],
+  ]);
+  for (const [collectionGroup, fieldPath] of required) {
+    const override = firestoreIndexes.fieldOverrides.find(row => (
+      row.collectionGroup === collectionGroup && row.fieldPath === fieldPath
+    ));
+    assert.ok(override, `missing collection-group index: ${collectionGroup}.${fieldPath}`);
+    assert.ok(override.indexes.some(index => (
+      index.queryScope === 'COLLECTION_GROUP' && index.order === 'ASCENDING'
+    )), `missing COLLECTION_GROUP ASC index: ${collectionGroup}.${fieldPath}`);
+    for (const expected of [
+      { queryScope: 'COLLECTION', order: 'ASCENDING' },
+      { queryScope: 'COLLECTION', order: 'DESCENDING' },
+      { queryScope: 'COLLECTION', arrayConfig: 'CONTAINS' },
+    ]) {
+      assert.ok(override.indexes.some(index => (
+        index.queryScope === expected.queryScope
+        && index.order === expected.order
+        && index.arrayConfig === expected.arrayConfig
+      )), `default collection index must be preserved: ${collectionGroup}.${fieldPath}`);
+    }
+  }
+});
+
+test('versioned index config preserves every pre-existing production index', () => {
+  const compositeSignatures = firestoreIndexes.indexes.map(index => [
+    index.collectionGroup,
+    index.queryScope,
+    index.fields.map(field => `${field.fieldPath}:${field.order || field.arrayConfig}`).join('|'),
+  ].join(':'));
+  assert.deepEqual(compositeSignatures.sort(), [
+    'orders:COLLECTION:status:ASCENDING|createdAt:DESCENDING|__name__:DESCENDING',
+    'orders:COLLECTION:uid:ASCENDING|createdAt:DESCENDING|__name__:DESCENDING',
+    'users:COLLECTION:subscription.status:ASCENDING|subscription.nextBillingAt:ASCENDING|__name__:ASCENDING',
+  ]);
+  assert.ok(firestoreIndexes.fieldOverrides.some(row => (
+    row.collectionGroup === 'analyzeRequests' && row.fieldPath === 'expiresAt' && row.ttl === true
+  )));
+  assert.ok(firestoreIndexes.fieldOverrides.some(row => (
+    row.collectionGroup === 'creditHistory'
+    && row.fieldPath === 'createdAt'
+    && row.indexes.some(index => index.queryScope === 'COLLECTION_GROUP' && index.order === 'DESCENDING')
+  )));
 });
 
 test('closed community has no client read or write exception', () => {

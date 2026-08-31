@@ -50,6 +50,24 @@ router.post('/delete-account', async (req, res) => {
       deletionState: 'completed',
     });
   } catch (error) {
+    if (error.code === 'ACCOUNT_DELETION_PENDING') {
+      logger.info('account.delete_retry_pending', { uid });
+      return res.status(202).json({
+        code: error.code,
+        deletionState: 'pending',
+        retryScheduled: true,
+        error: error.message,
+      });
+    }
+    if (error.code === 'ACCOUNT_DELETION_MANUAL_REVIEW') {
+      logger.warn('account.delete_manual_review_waiting', { uid, noAlert: true });
+      return res.status(503).json({
+        code: error.code,
+        deletionState: 'manual_review',
+        retryScheduled: false,
+        error: error.message,
+      });
+    }
     if ([
       'ACCOUNT_ACTIVE_SUBSCRIPTION',
       'ACCOUNT_SUBSCRIPTION_OPERATION_PENDING',

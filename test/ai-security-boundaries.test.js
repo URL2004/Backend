@@ -232,6 +232,8 @@ test('localized repair keeps source-derived headings in REPAIR_TARGETS data, nev
 test('history linkage HMAC is domain separated, UID bound, tamper evident, and missing signature fails closed', () => {
   const key = 'history-integrity-unit-test-key-32-bytes';
   const record = {
+    type: 'humanize',
+    savedBy: 'server',
     mode: 'formal',
     qualityStatus: 'clean',
     billingDisposition: 'charged',

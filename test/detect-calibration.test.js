@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const calibration = require('../lib/detectCalibration');
 const historyIntegrity = require('../lib/historyLinkIntegrity');
 
@@ -10,6 +11,7 @@ process.env.OPENAI_SAFETY_SALT = HISTORY_TEST_SECRET;
 
 function eligibleHistory(data) {
   return data?.type === 'humanize' ? {
+    savedBy: 'server',
     qualityStatus: 'clean',
     billingDisposition: 'charged',
     engineMeta: {
@@ -22,6 +24,18 @@ function eligibleHistory(data) {
     },
     ...data
   } : data;
+}
+
+function reviewHistory(data) {
+  const eligible = eligibleHistory(data);
+  return {
+    ...eligible,
+    qualityStatus: 'needs_review',
+    engineMeta: {
+      ...eligible.engineMeta,
+      deliveryDecision: 'deliver_review'
+    }
+  };
 }
 
 function historyDoc(id, data) {
@@ -37,7 +51,7 @@ function historyDoc(id, data) {
   };
 }
 
-function fakeDb(historyRows, storedConfig = null, state = {}) {
+function fakeDb(historyRows, storedConfig = null, state = {}, transformJobs = {}) {
   return {
     collection(name) {
       if (name === calibration.SETTINGS_COLLECTION) {
@@ -49,6 +63,21 @@ function fakeDb(historyRows, storedConfig = null, state = {}) {
                 return {
                   exists: !!storedConfig,
                   data: () => storedConfig || {}
+                };
+              }
+            };
+          }
+        };
+      }
+      if (name === 'transformJobs') {
+        return {
+          doc(id) {
+            state.transformJobId = id;
+            return {
+              async get() {
+                return {
+                  exists: Object.hasOwn(transformJobs, id),
+                  data: () => transformJobs[id]
                 };
               }
             };
@@ -139,6 +168,133 @@ test('서명 없는 과거 기록과 다른 UID로 서명된 기록은 점수 �
     limit: 50
   });
   assert.equal(match, null);
+});
+
+test('검토 필요로 전달된 서버 결과도 정확히 같으면 출처 서명으로 보정한다', async () => {
+  const output = longDocument('검토 결과');
+  const record = reviewHistory({
+    type: 'humanize',
+    mode: 'blog',
+    outputText: output
+  });
+  const signed = historyIntegrity.sign('same-user', output, record, HISTORY_TEST_SECRET);
+  assert.equal(signed.version, 'history-link-hmac-v3');
+  assert.equal(historyIntegrity.isEligible(record), false);
+  assert.equal(historyIntegrity.isExactCalibrationEligible(record), true);
+
+  const match = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb([historyDoc('job_review-signed', record)]),
+    uid: 'same-user',
+    text: output,
+    limit: 50
+  });
+
+  assert.equal(match.match, 'exact_normalized');
+  assert.equal(match.trust, 'history_hmac');
+});
+
+test('검토 필요 결과는 서명이 있어도 수정된 유사 본문까지 보정하지 않는다', async () => {
+  const output = longDocument('검토 유사');
+  const input = output.replace('자료 87건', '관련 자료 87건');
+  const match = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb([historyDoc('job_review-near', reviewHistory({
+      type: 'humanize',
+      mode: 'blog',
+      outputText: output
+    }))]),
+    uid: 'same-user',
+    text: input,
+    limit: 50
+  });
+
+  assert.equal(match, null);
+});
+
+test('보안 변경 직후 서명되지 않은 정확 결과는 서버 transform 작업으로 복구한다', async () => {
+  const output = longDocument('운영 복구');
+  const record = reviewHistory({
+    type: 'humanize',
+    mode: 'blog',
+    outputText: output
+  });
+  const unsigned = {
+    id: 'job_live-review',
+    data: () => record
+  };
+  const state = {};
+  const match = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb([unsigned], null, state, {
+      'live-review': {
+        uid: 'same-user',
+        status: 'done',
+        mode: 'blog',
+        billingDisposition: 'charged',
+        result: {
+          outputText: output,
+          qualityStatus: record.qualityStatus,
+          billingDisposition: record.billingDisposition,
+          engineMeta: record.engineMeta
+        }
+      }
+    }),
+    uid: 'same-user',
+    text: output,
+    limit: 50
+  });
+
+  assert.equal(state.transformJobId, 'live-review');
+  assert.equal(match.match, 'exact_normalized');
+  assert.equal(match.trust, 'transform_job_exact');
+});
+
+test('서명 없는 이력은 transform 작업의 UID·완료 상태·최종 출력이 모두 같아야 한다', async () => {
+  const output = longDocument('복구 경계');
+  const record = reviewHistory({ type: 'humanize', mode: 'blog', outputText: output });
+  for (const [name, job] of [
+    ['wrong_uid', { uid: 'other-user', status: 'done', outputText: output }],
+    ['not_done', { uid: 'same-user', status: 'running', outputText: output }],
+    ['wrong_output', { uid: 'same-user', status: 'done', outputText: `${output} 변조` }]
+  ]) {
+    const match = await calibration.findOwnHumanizedHistoryMatch({
+      db: fakeDb([{ id: `job_${name}`, data: () => record }], null, {}, {
+        [name]: {
+          uid: job.uid,
+          status: job.status,
+          mode: 'blog',
+          billingDisposition: 'charged',
+          result: {
+            outputText: job.outputText,
+            qualityStatus: record.qualityStatus,
+            billingDisposition: record.billingDisposition,
+            engineMeta: record.engineMeta
+          }
+        }
+      }),
+      uid: 'same-user',
+      text: output,
+      limit: 50
+    });
+    assert.equal(match, null, name);
+  }
+});
+
+test('기존 v2 clean 서명은 배포 뒤에도 계속 검증한다', () => {
+  const output = longDocument('v2 호환');
+  const record = eligibleHistory({ type: 'humanize', mode: 'formal', outputText: output });
+  const legacy = {
+    version: historyIntegrity.LEGACY_V2_VERSION,
+    signature: crypto.createHmac('sha256', HISTORY_TEST_SECRET)
+      .update(historyIntegrity.message(
+        'same-user',
+        output,
+        record,
+        historyIntegrity.LEGACY_V2_VERSION
+      ))
+      .digest('base64url')
+  };
+
+  assert.equal(historyIntegrity.verify('same-user', output, record, legacy, HISTORY_TEST_SECRET), true);
+  assert.equal(historyIntegrity.verify('other-user', output, record, legacy, HISTORY_TEST_SECRET), false);
 });
 
 test('같은 사용자의 장문 휴머나이징 결과를 소폭 수정해도 보수적 유사 일치로 찾는다', async () => {

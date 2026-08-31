@@ -20,14 +20,8 @@
 1. `.env` 에 매출 채널 웹훅과 cron 시크릿이 있는지 확인:
    ```
    DISCORD_WEBHOOK_SALES=https://discord.com/api/webhooks/...   # 또는 DISCORD_WEBHOOK_URL
-   # /매출 권한: guild Administrator/role은 아래 운영 guild 안에서만 인정합니다.
+   # /매출 명령을 등록할 디스코드 서버 ID
    DISCORD_GUILD_ID=345678901234567890
-   # 여러 운영 guild가 필요할 때만 쉼표로 추가합니다.
-   DISCORD_REVENUE_ALLOWED_GUILD_IDS=
-   # guild 권한과 별개로 운영자 본인을 명시 허용할 수 있습니다.
-   DISCORD_REVENUE_ALLOWED_USER_IDS=123456789012345678
-   # 선택: 여러 운영자가 공유하는 Discord role ID
-   DISCORD_REVENUE_ALLOWED_ROLE_IDS=234567890123456789
    CRON_SECRET=<이미 쓰는 값>
    ```
    (웹훅이 없으면: 디스코드 채널 → 편집 → 연동 → 웹훅 만들기 → URL 복사)
@@ -78,7 +72,8 @@ node scripts/register-discord-commands.mjs
 ---
 
 ## 보안 메모
-- 매출 응답은 `flags: 64`(ephemeral)라 명령 부른 사람에게만 보입니다.
+- `/매출`은 별도 관리자·역할 권한 없이 사용할 수 있습니다. 명령에 접근할 수 있는 사용자는 누구나 매출을 조회할 수 있습니다.
+- 매출 응답은 `flags: 64`(ephemeral)라 명령을 실행한 본인에게만 보입니다.
 - `/admin/revenue` 는 `ADMIN_TOKEN` 으로 보호. 토큰은 길고 무작위하게.
 - `/cron/daily-revenue` 는 `CRON_SECRET` 으로 보호.
 - 서명검증(`DISCORD_PUBLIC_KEY`)이 없으면 Interactions는 전부 401 — 봇 비활성과 동일(안전).

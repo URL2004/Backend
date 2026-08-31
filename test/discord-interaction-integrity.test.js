@@ -7,9 +7,7 @@ const crypto = require('node:crypto');
 const {
   createReplayGuard,
   handleInteractions,
-  hasAdministratorPermission,
   isFreshTimestamp,
-  isRevenueAuthorized,
   verifySignature
 } = require('../routes/discordBot');
 
@@ -73,42 +71,6 @@ test('replay guard rejects duplicates, expires entries, and remains bounded', ()
   assert.equal(guard.size(), 1);
 });
 
-test('매출 명령은 guild 관리자 또는 명시 allowlist만 허용하고 설정 부재는 fail-closed다', () => {
-  const oldUsers = process.env.DISCORD_REVENUE_ALLOWED_USER_IDS;
-  const oldRoles = process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS;
-  const oldGuild = process.env.DISCORD_GUILD_ID;
-  const oldRevenueGuilds = process.env.DISCORD_REVENUE_ALLOWED_GUILD_IDS;
-  delete process.env.DISCORD_REVENUE_ALLOWED_USER_IDS;
-  delete process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS;
-  delete process.env.DISCORD_GUILD_ID;
-  delete process.env.DISCORD_REVENUE_ALLOWED_GUILD_IDS;
-  try {
-    assert.equal(hasAdministratorPermission('8'), true);
-    assert.equal(hasAdministratorPermission('0'), false);
-    assert.equal(isRevenueAuthorized({ guild_id: '300001', member: { permissions: '8', user: { id: '100001' } } }), false);
-    assert.equal(isRevenueAuthorized({ member: { permissions: '0', user: { id: '100001' } } }), false);
-
-    process.env.DISCORD_REVENUE_ALLOWED_USER_IDS = '100001, 100002';
-    process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS = '200001';
-    process.env.DISCORD_GUILD_ID = '300001';
-    assert.equal(isRevenueAuthorized({ member: { permissions: '0', user: { id: '100001' } } }), true);
-    assert.equal(isRevenueAuthorized({ guild_id: '300001', member: { permissions: '8', user: { id: '999999' } } }), true);
-    assert.equal(isRevenueAuthorized({ guild_id: '399999', member: { permissions: '8', user: { id: '999999' } } }), false);
-    assert.equal(isRevenueAuthorized({ guild_id: '300001', member: { permissions: '0', user: { id: '999999' }, roles: ['200001'] } }), true);
-    assert.equal(isRevenueAuthorized({ guild_id: '399999', member: { permissions: '0', user: { id: '999999' }, roles: ['200001'] } }), false);
-    assert.equal(isRevenueAuthorized({ guild_id: '300001', member: { permissions: '0', user: { id: '999999' }, roles: ['299999'] } }), false);
-  } finally {
-    if (oldUsers === undefined) delete process.env.DISCORD_REVENUE_ALLOWED_USER_IDS;
-    else process.env.DISCORD_REVENUE_ALLOWED_USER_IDS = oldUsers;
-    if (oldRoles === undefined) delete process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS;
-    else process.env.DISCORD_REVENUE_ALLOWED_ROLE_IDS = oldRoles;
-    if (oldGuild === undefined) delete process.env.DISCORD_GUILD_ID;
-    else process.env.DISCORD_GUILD_ID = oldGuild;
-    if (oldRevenueGuilds === undefined) delete process.env.DISCORD_REVENUE_ALLOWED_GUILD_IDS;
-    else process.env.DISCORD_REVENUE_ALLOWED_GUILD_IDS = oldRevenueGuilds;
-  }
-});
-
 test('valid Discord PING contract remains unchanged', async () => {
   const fixture = signingFixture({ type: 1 });
   const previousKey = process.env.DISCORD_PUBLIC_KEY;
@@ -133,6 +95,50 @@ test('valid Discord PING contract remains unchanged', async () => {
     assert.deepEqual(first.payload, { type: 1 });
     assert.equal(second.statusCode, 200, 'side-effect-free endpoint validation PING may repeat');
     assert.deepEqual(second.payload, { type: 1 });
+  } finally {
+    if (previousKey === undefined) delete process.env.DISCORD_PUBLIC_KEY;
+    else process.env.DISCORD_PUBLIC_KEY = previousKey;
+  }
+});
+
+test('매출 명령은 별도 Discord 권한 없이 실행된다', async () => {
+  const body = {
+    id: `test-${crypto.randomUUID()}`,
+    type: 2,
+    guild_id: '300001',
+    member: { permissions: '0', roles: [], user: { id: '100001' } },
+    data: { name: '매출', options: [{ name: '기간', value: 'today' }] }
+  };
+  const fixture = signingFixture(body);
+  const previousKey = process.env.DISCORD_PUBLIC_KEY;
+  process.env.DISCORD_PUBLIC_KEY = fixture.publicKey;
+  const req = {
+    body: fixture.rawBody,
+    get(name) {
+      const headers = {
+        'x-signature-ed25519': fixture.signature,
+        'x-signature-timestamp': fixture.timestamp
+      };
+      return headers[String(name).toLowerCase()];
+    }
+  };
+  const revenue = {
+    label: '오늘',
+    totalPaid: 10000,
+    totalCount: 1,
+    refundAmount: 0,
+    refundCount: 0,
+    charge: { paidAmount: 10000, paidCount: 1 },
+    sub: { paidAmount: 0, paidCount: 0 }
+  };
+
+  try {
+    const response = responseRecorder();
+    await handleInteractions(req, response, { getRevenueFn: async () => revenue });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.payload?.type, 4);
+    assert.equal(response.payload?.data?.flags, 64);
+    assert.equal(response.payload?.data?.embeds?.[0]?.title, '📊 매출 · 오늘');
   } finally {
     if (previousKey === undefined) delete process.env.DISCORD_PUBLIC_KEY;
     else process.env.DISCORD_PUBLIC_KEY = previousKey;

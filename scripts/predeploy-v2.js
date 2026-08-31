@@ -81,9 +81,19 @@ async function main() {
   const healthUrl = String(args['health-url'] || '').trim();
   if (healthUrl) {
     try {
-      const response = await fetch(healthUrl, { signal: AbortSignal.timeout(30000) });
+      const healthSecret = String(args['health-secret'] || process.env.HEALTH_DETAIL_SECRET || '').trim();
+      const healthRequest = resolveHealthRequest(healthUrl, healthSecret);
+      const response = await fetch(healthRequest.url, {
+        headers: healthRequest.headers,
+        signal: AbortSignal.timeout(30000)
+      });
       const health = await response.json();
       add('healthz', response.ok && health.ok === true, `http=${response.status}`);
+      add(
+        'health_detail_access',
+        Number.isFinite(Number(health.activeJobs)),
+        Number.isFinite(Number(health.activeJobs)) ? 'available' : 'HEALTH_DETAIL_SECRET 또는 --health-secret 필요'
+      );
       add('active_jobs_zero', Number(health.activeJobs) === 0, `active=${health.activeJobs}, queued=${health.queuedJobs}`);
       if (args['expect-live-v2'] === '1') {
         add('live_v2', health.humanizeEngineV2 === true && health.activeProvider === 'gpt' && health.openai === true, `v2=${health.humanizeEngineV2}, provider=${health.activeProvider}, openai=${health.openai}`);
@@ -140,7 +150,21 @@ function parseArgs(argv) {
   return out;
 }
 
-main().catch(error => {
-  console.error(error?.stack || error);
-  process.exitCode = 1;
-});
+function resolveHealthRequest(rawUrl, secret) {
+  const url = new URL(rawUrl);
+  const cleanSecret = String(secret || '').trim();
+  if (cleanSecret && ['/healthz', '/livez'].includes(url.pathname)) url.pathname = '/api/health';
+  return {
+    url: url.toString(),
+    headers: cleanSecret ? { 'x-health-secret': cleanSecret } : {}
+  };
+}
+
+if (require.main === module) {
+  main().catch(error => {
+    console.error(error?.stack || error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { parseArgs, resolveHealthRequest };

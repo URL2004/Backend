@@ -27,7 +27,7 @@ function hasBypass(req) {
 function isAllowedWithoutBypass(req) {
   if (req.method === 'OPTIONS') return true;
   const path = req.path || req.originalUrl || '';
-  if (path === '/healthz' || path === '/api/health') return true;
+  if (path === '/healthz' || path === '/livez' || path === '/api/health') return true;
   if (path === '/kakao-login') return true;
   if (req.method === 'GET' && path === '/subscription/status') return true;
   return false;

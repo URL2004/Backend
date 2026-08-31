@@ -70,7 +70,8 @@ async function callGpt({
   config,
   model,
   reasoningEffort,
-  verbosity
+  verbosity,
+  safetyIdentifier = ''
 } = {}) {
   const cfg = await loadConfig(config);
   const selectedModel = model || modelForTask(cfg, task, phase);
@@ -87,6 +88,7 @@ async function callGpt({
     maxOutputTokens: maxOutputTokens || 4096,
     config: cfg,
     signal,
+    safetyIdentifier,
     meta: {
       task: task || 'gpt_compat',
       phase: phase || 'main',

@@ -76,6 +76,29 @@ const dailyLimiter = rateLimit({
   keyGenerator: req => realClientIp(req),
 });
 
+// OAuth 교환은 외부 API와 Firebase Admin을 함께 호출한다. IP별 별도 한도로
+// 탈취 토큰 대입·외부 API 비용 소진을 막되 정상 팝업/리다이렉트 재시도 여유는 둔다.
+const authLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: Math.max(5, Math.min(60, Number(process.env.AUTH_RATE_LIMIT_PER_10_MIN) || 20)),
+  message: { error: '로그인 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.', code: 'AUTH_RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: req => realClientIp(req)
+});
+
+// 관리자 화면은 한 번의 새로고침에서 운영 현황·매출·환불·품질·장애 로그를
+// 병렬 조회한다. 일반 변환 한도(30/분)를 재사용하면 정상 관리자 세션이 429로
+// 깨질 수 있으므로 인증 자체와 별개로 넉넉한 폭주 방지 상한을 둔다.
+const adminLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Math.max(60, Math.min(600, Number(process.env.ADMIN_RATE_LIMIT_PER_MIN) || 240)),
+  message: { error: '관리자 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.', code: 'ADMIN_RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: req => realClientIp(req)
+});
+
 // 관리자 UID 화이트리스트 (프론트엔드 ADMIN_ROLES와 동일하게 유지)
 const ADMIN_UIDS = ['nC90IyjgaIZ8Z0JTABMTiyQHF9g1', 'qa0iQAeVmMOxoy6Vg5ENTRKk0Vm2', 'upyxtXMQEgQXfqTUWPrf6QS9EqE2', '9i6YA66mpXSBcpPJqNmJQ5jnJsT2'];
 
@@ -110,6 +133,8 @@ module.exports = {
   corsMiddleware,
   limiter,
   dailyLimiter,
+  authLimiter,
+  adminLimiter,
   ADMIN_UIDS,
   verifyFirebaseIdToken,
   verifyToken,

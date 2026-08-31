@@ -71,6 +71,9 @@ node scripts/register-discord-commands.mjs
 
 ## 보안 메모
 - 매출 응답은 `flags: 64`(ephemeral)라 명령 부른 사람에게만 보입니다.
+- `DISCORD_REVENUE_ALLOWED_USER_IDS` 또는 `DISCORD_REVENUE_ALLOWED_ROLE_IDS`에 실제 조회 담당자를 반드시 등록합니다. 둘 다 비면 `/매출`은 안전하게 거부됩니다.
+- `DISCORD_REVENUE_ALLOWED_GUILD_IDS`(미설정 시 `DISCORD_GUILD_ID`)로 허용 서버를 제한합니다.
+- 서명 timestamp는 5분까지만 받고, 같은 interaction ID의 프로세스 내 재처리를 거부합니다.
 - `/admin/revenue` 는 `ADMIN_TOKEN` 으로 보호. 토큰은 길고 무작위하게.
 - `/cron/daily-revenue` 는 `CRON_SECRET` 으로 보호.
 - 서명검증(`DISCORD_PUBLIC_KEY`)이 없으면 Interactions는 전부 401 — 봇 비활성과 동일(안전).

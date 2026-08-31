@@ -3,12 +3,30 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const calibration = require('../lib/detectCalibration');
+const historyService = require('../lib/historyService');
 
-function historyDoc(id, data) {
+const originalHistorySecret = process.env.HISTORY_PROVENANCE_SECRET;
+process.env.HISTORY_PROVENANCE_SECRET = 'detect-calibration-test-secret';
+test.after(() => {
+  if (originalHistorySecret === undefined) delete process.env.HISTORY_PROVENANCE_SECRET;
+  else process.env.HISTORY_PROVENANCE_SECRET = originalHistorySecret;
+});
+
+function historyDoc(id, data, uid = 'same-user') {
+  const row = { ...data };
+  if (row.type === 'humanize' && row.savedBy === undefined) {
+    row.savedBy = 'server';
+    row.serverProvenance = historyService.buildHistoryProvenance({
+      uid,
+      type: row.type,
+      mode: row.mode,
+      outputText: row.outputText
+    });
+  }
   return {
     id,
     data() {
-      return data;
+      return row;
     }
   };
 }
@@ -209,10 +227,52 @@ test('운영 보정은 유사 매칭 메타와 원점수를 남기고 88점을 5
   assert.equal(result.rawProbability, 88);
   assert.equal(result.probability, 58);
   assert.equal(result.applied, true);
-  assert.equal(result.meta.version, 'history-calibration-v2');
+  assert.equal(result.meta.version, 'history-calibration-v3');
   assert.equal(result.meta.match, 'near_normalized');
   assert.ok(result.meta.matchSimilarity >= 0.88);
   assert.ok(result.meta.matchLengthRatio >= 0.97);
+});
+
+test('클라이언트가 만든 savedBy 문자열 또는 변조된 서버 서명은 보정 근거로 사용하지 않는다', async () => {
+  const output = longDocument('위조 대상');
+  const unsigned = historyDoc('forged-flag', {
+    type: 'humanize',
+    mode: 'blog',
+    outputText: output,
+    savedBy: 'server',
+    serverProvenance: null
+  });
+  const tampered = historyDoc('tampered', {
+    type: 'humanize',
+    mode: 'formal',
+    outputText: output,
+    savedBy: 'server',
+    serverProvenance: { version: 1, signature: '0'.repeat(64) }
+  });
+  const match = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb([unsigned, tampered]),
+    uid: 'same-user',
+    text: output,
+    limit: 50
+  });
+
+  assert.equal(match, null);
+});
+
+test('다른 사용자에게 발급된 서버 출처 서명은 재사용할 수 없다', async () => {
+  const output = longDocument('사용자 경계');
+  const match = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb([historyDoc('other-owner', {
+      type: 'humanize',
+      mode: 'blog',
+      outputText: output
+    }, 'other-user')]),
+    uid: 'same-user',
+    text: output,
+    limit: 50
+  });
+
+  assert.equal(match, null);
 });
 
 test('유사 일치는 명시적으로 끌 수 있고 새 안전 기본값은 누락 설정에도 유지된다', async () => {

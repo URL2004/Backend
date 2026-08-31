@@ -11,6 +11,7 @@ const { blockize, renderBlocks, selectPatchTargets, modeForText } = require('./l
 const { buildPrompt } = require('./prompt/promptBuilder');
 const { parseModelOutput } = require('./prompt/parseModelOutput');
 const { runGates } = require('./gates/gateRunner');
+const { auditLabOutput } = require('../../../lib/labPromptSecurity');
 
 function createCopykillerSafeHumanizer({ llm, policy: policyOverrides = {} } = {}) {
   if (!llm || typeof llm.complete !== 'function') {
@@ -54,7 +55,7 @@ function createCopykillerSafeHumanizer({ llm, policy: policyOverrides = {} } = {
       };
     }
 
-    const { system, user } = buildPrompt({
+    const { system, user, security } = buildPrompt({
       text: sourceText,
       blocks,
       targets,
@@ -82,6 +83,18 @@ function createCopykillerSafeHumanizer({ llm, policy: policyOverrides = {} } = {
         lengthMode,
         outputText: sourceText,
         diagnostics: { error: e.message, sourceRisk, profile }
+      };
+    }
+
+    const promptSecurity = auditLabOutput(raw, security);
+    if (!promptSecurity.pass) {
+      return {
+        status: 'prompt_leak_blocked',
+        operation: policy.operation,
+        ignoredUserInstructions: true,
+        lengthMode,
+        outputText: sourceText,
+        diagnostics: { promptSecurity, sourceRisk, profile }
       };
     }
 
@@ -148,6 +161,7 @@ function createCopykillerSafeHumanizer({ llm, policy: policyOverrides = {} } = {
         afterRisk: gateResult.afterRisk,
         profile,
         speaker,
+        promptSecurity,
         protectedTerms: protectedTerms.slice(0, 60),
         patchTargets: targets.map(t => ({ id: t.id, risk: t.score, priority: t.priority })),
         gates: gateResult.gates,

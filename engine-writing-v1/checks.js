@@ -2,6 +2,7 @@
 
 const { compareQuantities } = require('./numberAst');
 const { postGenerationPolicyCheck } = require('./policy');
+const { auditLabOutput } = require('../lib/labPromptSecurity');
 
 const META_PATTERNS = [
   /기록(?:돼|되어|이)?\s*있지\s*않/gu,
@@ -130,11 +131,14 @@ function deterministicChecks({ text, structured, ledger, targetChars, charLimitM
   const structure = structured ? validateStructuredOutput(structured, ledger) : { pass: true, issues: [], referencedFactIds: [] };
   const numbers = compareQuantities((ledger?.facts || []).map(fact => fact.value).join('\n'), text);
   const meta = metaCheck(text);
+  const promptLeak = auditLabOutput(text, {
+    allowedSource: (ledger?.facts || []).map(fact => fact.value).join('\n')
+  });
   const cliches = clicheCheck(text);
   const length = limitCheck(counts, targetChars, charLimitMode);
   const policyCheck = postGenerationPolicyCheck(text, policy);
-  const hardPass = structure.pass && numbers.pass && meta.pass && length.pass && policyCheck.pass;
-  return { version: 'writing-checks-v1', hardPass, counts, length, structure, numbers, meta, policy: policyCheck, cliches };
+  const hardPass = structure.pass && numbers.pass && meta.pass && promptLeak.pass && length.pass && policyCheck.pass;
+  return { version: 'writing-checks-v1', hardPass, counts, length, structure, numbers, meta, promptLeak, policy: policyCheck, cliches };
 }
 
 function releaseReport(checks, semantic) {
@@ -144,6 +148,7 @@ function releaseReport(checks, semantic) {
   if (!checks?.structure?.pass) reasons.push('claim_structure');
   if (!checks?.numbers?.pass) reasons.push('unsupported_number');
   if (!checks?.meta?.pass) reasons.push('meta_filler');
+  if (!checks?.promptLeak?.pass) reasons.push('prompt_leak');
   if (!checks?.length?.pass) reasons.push(`length_${checks?.length?.status || 'failed'}`);
   if (!checks?.policy?.pass) reasons.push('policy');
   if (!semanticPass) reasons.push('semantic_grounding');

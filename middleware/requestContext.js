@@ -26,7 +26,7 @@ function requestContext(req, res, next) {
     let loggedClose = false;
     res.on('finish', () => {
       const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
-      if ((req.path === '/healthz' || req.path === '/api/health') && process.env.LOG_HTTP_HEALTH !== '1') return;
+      if ((req.path === '/healthz' || req.path === '/livez' || req.path === '/api/health') && process.env.LOG_HTTP_HEALTH !== '1') return;
       const fields = {
         statusCode: res.statusCode,
         durationMs: Math.round(durationMs),

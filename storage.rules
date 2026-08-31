@@ -1,0 +1,12 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // 현재 웹 제품에는 클라이언트가 Storage에 직접 업로드해야 하는 기능이 없다.
+    // 폐쇄한 커뮤니티의 community_photos도 포함해 기본 거부한다. 서버 Admin SDK는
+    // Firebase Security Rules를 우회하므로, 향후 서버 검증 업로드를 추가할 수 있다.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

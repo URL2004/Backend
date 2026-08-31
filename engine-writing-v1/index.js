@@ -9,9 +9,10 @@ const { assessSufficiency, scaleForMode } = require('./sufficiency');
 const {
   WRITER_TOOL,
   buildClaimPlan,
+  buildWriterUserPrompt,
   writerSystemPrompt,
-  writerUserPrompt
 } = require('./prompt');
+const { auditLabOutput } = require('../lib/labPromptSecurity');
 const {
   assembleDraft,
   deterministicChecks,
@@ -232,6 +233,7 @@ function candidatePenalty(evaluated) {
   return (checks.structure?.issues?.length || 0) * 10_000
     + (checks.numbers?.added?.length || 0) * 8_000
     + (checks.meta?.found?.length || 0) * 8_000
+    + (checks.promptLeak?.codes?.length || 0) * 20_000
     + (checks.policy?.violations?.length || 0) * 10_000
     + (evaluated?.semantic?.pass === true ? 0 : 5_000 + (evaluated?.semantic?.violations?.length || 0) * 1_000)
     + lengthGap;
@@ -394,6 +396,9 @@ function finalizationViolations(report) {
   for (const phrase of report?.checks?.meta?.found || []) {
     violations.push({ type: 'meta_filler', span: phrase, detail: '정보 부족을 설명하는 문구를 삭제하고 확인된 사실만 남기세요.' });
   }
+  if (report?.checks?.promptLeak?.pass === false) {
+    violations.push({ type: 'prompt_leak', span: '', detail: '내부 지시·데이터 경계·도구 호출 형식을 모두 제거하고 확인된 사실로만 본문을 작성하세요.' });
+  }
   for (const issue of report?.checks?.structure?.issues || []) {
     violations.push({ type: 'claim_structure', span: '', detail: JSON.stringify(issue) });
   }
@@ -510,8 +515,9 @@ function chooseTarget(prepared, shortMode) {
 }
 
 async function defaultCallWriter({ input, ledger, claimPlan, targetChars, repairContext, attemptIndex = 0 }) {
+  const prompt = buildWriterUserPrompt(input, ledger, claimPlan, targetChars, repairContext);
   const data = await compat.callGpt({
-    userText: writerUserPrompt(input, ledger, claimPlan, targetChars, repairContext),
+    userText: prompt.userText,
     systemText: writerSystemPrompt(input, targetChars, { repair: !!repairContext }),
     tool: WRITER_TOOL,
     maxOutputTokens: 7000,
@@ -520,7 +526,18 @@ async function defaultCallWriter({ input, ledger, claimPlan, targetChars, repair
     mode: `wl_v2_${input.genre}`,
     verbosity: 'medium'
   });
-  return compat.extractGptResult(data, WRITER_TOOL.name);
+  const result = compat.extractGptResult(data, WRITER_TOOL.name);
+  const security = auditLabOutput(result, {
+    nonce: prompt.nonce,
+    allowedSource: prompt.allowedSource
+  });
+  if (!security.pass) {
+    throw Object.assign(new Error('WRITING_PROMPT_LEAK_BLOCKED'), {
+      code: 'WRITING_PROMPT_LEAK_BLOCKED',
+      securityCodes: security.codes
+    });
+  }
+  return result;
 }
 
 async function defaultSemanticVerify({ input, ledger, factIds, text, phase }) {
@@ -562,6 +579,7 @@ function hardIssueSummary(checks) {
   for (const item of checks?.structure?.issues || []) issues.push(item);
   if (!checks?.numbers?.pass) issues.push({ code: 'UNSUPPORTED_NUMBERS', tokens: checks.numbers.addedTokens });
   if (!checks?.meta?.pass) issues.push({ code: 'META_FILLER', phrases: checks.meta.found });
+  if (!checks?.promptLeak?.pass) issues.push({ code: 'PROMPT_LEAK', reasons: checks.promptLeak.codes });
   if (!checks?.length?.pass) issues.push({ code: `LENGTH_${String(checks?.length?.status || 'FAILED').toUpperCase()}`, length: checks.length });
   if (!checks?.policy?.pass) issues.push({ code: 'POLICY', violations: checks.policy.violations });
   return issues.slice(0, 20);

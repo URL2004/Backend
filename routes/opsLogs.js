@@ -17,7 +17,7 @@ const opsLog = require('../lib/opsLog');
 const opsEvents = require('../lib/opsEvents');
 const opsHeartbeat = require('../lib/opsHeartbeat');
 const discord = require('../lib/discord');
-const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
+const { authLogFields, legacyQueryCredentialEnabled, verifyCronRequest } = require('../lib/cronAuth');
 
 const MAX_SCAN = 600;
 
@@ -37,7 +37,7 @@ async function requireAdmin(req, res) {
 }
 
 function requireCron(req, res) {
-  const auth = verifyCronRequest(req, { allowBearer: true, allowBody: true, allowQuery: true });
+  const auth = verifyCronRequest(req, { allowBearer: true, allowBody: true, allowQuery: legacyQueryCredentialEnabled() });
   if (auth.reason === 'secret_missing') {
     logger.error('ops.cron_secret_missing', { message: 'CRON_SECRET 미설정 — 운영 워치독/다이제스트 중단' });
     res.status(503).json({ ok: false, error: 'CRON_SECRET이 설정되지 않았습니다.' });
@@ -50,6 +50,11 @@ function requireCron(req, res) {
     });
     res.status(401).json({ ok: false, error: '권한이 없습니다.' });
     return false;
+  }
+  if (auth.authSource.includes('query')) {
+    logger.warn('ops.cron_query_secret_deprecated', {
+      message: 'query cron secret은 폐기 예정입니다. x-cron-secret 헤더로 전환하세요.'
+    });
   }
   return true;
 }

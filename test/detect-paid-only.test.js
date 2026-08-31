@@ -6,12 +6,20 @@ const path = require('node:path');
 
 const { realClientIp } = require('../lib/clientip');
 
-test('realClientIp는 cf-connecting-ip를 최우선으로 쓴다(CF 엣지 IP 캡 분산 실사고 방지)', () => {
-  assert.equal(realClientIp({ headers: { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '9.9.9.9, 5.5.5.5' }, ip: '172.68.0.1' }), '1.2.3.4');
-  // CF 미경유 폴백: XFF 첫 항목 → req.ip → unknown
-  assert.equal(realClientIp({ headers: { 'x-forwarded-for': '9.9.9.9, 5.5.5.5' }, ip: '172.68.0.1' }), '9.9.9.9');
-  assert.equal(realClientIp({ headers: {}, ip: '10.0.0.7' }), '10.0.0.7');
-  assert.equal(realClientIp({ headers: {}, ip: '' }), 'unknown');
+test('realClientIp는 명시적으로 Cloudflare ingress를 신뢰할 때만 cf-connecting-ip를 쓴다', () => {
+  const previous = process.env.TRUST_CF_CONNECTING_IP;
+  try {
+    delete process.env.TRUST_CF_CONNECTING_IP;
+    assert.equal(realClientIp({ headers: { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '9.9.9.9, 5.5.5.5' }, ip: '172.68.0.1' }), '172.68.0.1');
+    process.env.TRUST_CF_CONNECTING_IP = '1';
+    assert.equal(realClientIp({ headers: { 'cf-connecting-ip': '1.2.3.4' }, ip: '172.68.0.1' }), '1.2.3.4');
+    assert.equal(realClientIp({ headers: { 'cf-connecting-ip': 'not-an-ip' }, ip: '172.68.0.1' }), '172.68.0.1');
+    assert.equal(realClientIp({ headers: {}, ip: '10.0.0.7' }), '10.0.0.7');
+    assert.equal(realClientIp({ headers: {}, ip: '', socket: {} }), 'unknown');
+  } finally {
+    if (previous === undefined) delete process.env.TRUST_CF_CONNECTING_IP;
+    else process.env.TRUST_CF_CONNECTING_IP = previous;
+  }
 });
 
 test('detect-report는 무료 경로 없이 항상 로그인·크레딧 선검증을 요구한다', () => {
@@ -23,8 +31,10 @@ test('detect-report는 무료 경로 없이 항상 로그인·크레딧 선검�
   assert.ok(/LOGIN_REQUIRED/.test(src), '비로그인 401 안내가 있어야 한다');
   assert.ok(/precheckCredits/.test(src), '잔액 선검증이 있어야 한다');
   assert.ok(/commitCreditDeduct/.test(src), '성공 후 차감이 있어야 한다');
-  // 코치 IP 캡은 CF 실제 IP 기준
-  assert.ok(/realClientIp/.test(src), '코치 IP 캡이 realClientIp를 써야 한다');
+  // 코치 LLM은 로그인 + Firestore UID별 영속 한도(프로세스 재시작·다중 인스턴스 안전)
+  assert.match(src, /const uid = await verifyToken\(idToken\)/u, '코치 API가 Firebase 인증을 요구해야 한다');
+  assert.match(src, /consumeCoachQuota\(\{[^}]*\buid\b[^}]*\}/su, '코치 API가 UID별 영속 쿼터를 사용해야 한다');
+  assert.doesNotMatch(src, /coachIp|COACH_IP_HOURLY_CAP/u, '메모리 IP 캡을 비용 방어 본체로 되살리면 안 된다');
 });
 
 test('detect-report 성공 결과는 관리자 사용자 작업 기록에 멱등 저장한다', () => {

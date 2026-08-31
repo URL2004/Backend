@@ -22,12 +22,13 @@ node scripts/humanize-v2-eval.js score-router --manifest="<pair_manifest.csv>" -
 
 1. 검증할 수정 브랜치를 `deploy/staging-backend`에 반영한다.
 2. Render `ai-backend-staging`에 `OPENAI_API_KEY`, 32바이트 이상의 `OPENAI_SAFETY_SALT`를 설정한다. 운영 provider와 엔진 경로는 GPT 단일 경로다.
-3. 헬스에서 `activeJobs: 0`, `activeProvider: gpt`, `humanizeEngineV2: true`, `openai: true`를 확인한다.
+3. Render에 `HEALTH_DETAIL_SECRET`을 설정하고, `x-health-secret` 헤더를 붙인 `/api/health`에서 `activeJobs: 0`, `activeProvider: gpt`, `humanizeEngineV2: true`, `openai: true`를 확인한다. 외부 uptime은 최소 응답인 `/healthz`를 사용한다.
 4. 저장소 밖의 로컬 결과 폴더로 60건, 장문 10건을 재생한다. UID와 원문은 결과 JSON에 넣지 않는다.
 5. 동시에 3개 작업을 실행해 대기열, 오류율, 처리시간과 비용 집계를 확인한다.
 
 ```powershell
-npm run predeploy:v2 -- --expected-branch=deploy/staging-backend --base=origin/deploy/staging-backend --health-url=https://ai-backend-staging.onrender.com/healthz --expect-live-v2=1 --skip-env=1
+$env:HEALTH_DETAIL_SECRET='<Render와 같은 값>'
+npm run predeploy:v2 -- --expected-branch=deploy/staging-backend --base=origin/deploy/staging-backend --health-url=https://ai-backend-staging.onrender.com/api/health --expect-live-v2=1 --skip-env=1
 ```
 
 ## 실제 카피킬러 블라인드 검증
@@ -41,6 +42,6 @@ node scripts/humanize-v2-eval.js copykiller-score --input="<완료된 copykiller
 
 ## 운영 배포와 복귀
 
-스테이징의 자동·수동·카피킬러 기준을 모두 통과한 경우에만 `release/prod-maintenance-test`에 반영한다. 배포 직전 운영 `/healthz`의 `activeJobs`가 0인지 다시 확인한다. 100% 트래픽에 적용하고, 의미·구조 사고나 감사 파이프라인 오류가 발생하면 Render의 직전 정상 `live` 배포로 즉시 복귀한다. 런타임에서 구형 엔진이나 다른 provider로 전환하지 않는다.
+스테이징의 자동·수동·카피킬러 기준을 모두 통과한 경우에만 `release/prod-maintenance-test`에 반영한다. 배포 직전 운영 상세 `/api/health`에 `x-health-secret`을 붙여 `activeJobs: 0`인지 다시 확인한다. 100% 트래픽에 적용하고, 의미·구조 사고나 감사 파이프라인 오류가 발생하면 Render의 직전 정상 `live` 배포로 즉시 복귀한다. 런타임에서 구형 엔진이나 다른 provider로 전환하지 않는다.
 
 점검 시점은 배포 후 1시간, 6시간, 24시간, 72시간이다. 오류율 `+1%p`, strict 차단율 `2%`, 의미·사실 경고율 `10%`, p95 처리시간 `+25%`, 작업당 API 비용 `+30%` 중 하나라도 넘거나 prompt leak·encoding corruption·truncation이 한 건이라도 나오면 복귀한다.

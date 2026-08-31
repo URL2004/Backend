@@ -265,7 +265,7 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     result: output,
     floorReport: floorReportFromMeta(meta),
     chunkCount: 1,
-    fallbackCount: ['reverted_to_policy_safe', 'model_output_parse_failed', 'llm_error'].includes(result.status) ? 1 : 0,
+    fallbackCount: ['reverted_to_policy_safe', 'model_output_parse_failed', 'prompt_leak_blocked', 'llm_error'].includes(result.status) ? 1 : 0,
     gate: meta,
     plan: { version: VERSION, policy }
   };

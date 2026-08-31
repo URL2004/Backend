@@ -26,7 +26,8 @@
     "writing-policy:validate": "node scripts/writing-lab-policy.js validate",
     "writing-policy:approve": "node scripts/writing-lab-policy.js approve",
     "test:rules": "node scripts/firestore-rules.test.mjs",
-    "emulator:rules": "powershell -ExecutionPolicy Bypass -File scripts/run-firestore-rules.ps1"
+    "emulator:rules": "powershell -ExecutionPolicy Bypass -File scripts/run-firestore-rules.ps1",
+    "security:community-storage-tokens": "node scripts/community-storage-tokens.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

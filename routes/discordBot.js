@@ -33,6 +33,52 @@ function verifySignature(rawBody, signatureHex, timestamp, publicKeyHex) {
 }
 
 const PERIOD_VALUES = new Set(['today', 'yesterday', 'week', 'month', 'all']);
+const replayCache = new Map();
+
+function idSet(value) {
+  return new Set(String(value || '').split(',').map((item) => item.trim()).filter(Boolean));
+}
+
+function isFreshTimestamp(timestamp, nowMs = Date.now(), maxAgeSec = 300, futureSkewSec = 60) {
+  if (!/^\d{10,13}$/u.test(String(timestamp || ''))) return false;
+  const raw = Number(timestamp);
+  const timestampMs = raw > 1e12 ? raw : raw * 1000;
+  if (!Number.isFinite(timestampMs)) return false;
+  const ageMs = nowMs - timestampMs;
+  return ageMs >= -(futureSkewSec * 1000) && ageMs <= maxAgeSec * 1000;
+}
+
+function revenueActorDecision(body, env = process.env) {
+  const allowedUsers = idSet(env.DISCORD_REVENUE_ALLOWED_USER_IDS);
+  const allowedRoles = idSet(env.DISCORD_REVENUE_ALLOWED_ROLE_IDS);
+  const allowedGuilds = idSet(env.DISCORD_REVENUE_ALLOWED_GUILD_IDS || env.DISCORD_GUILD_ID);
+  const userId = String(body?.member?.user?.id || body?.user?.id || '');
+  const guildId = String(body?.guild_id || '');
+  const roles = Array.isArray(body?.member?.roles) ? body.member.roles.map(String) : [];
+
+  if (allowedUsers.size === 0 && allowedRoles.size === 0) {
+    return { ok: false, reason: 'actor_allowlist_missing' };
+  }
+  if (allowedGuilds.size > 0 && !allowedGuilds.has(guildId)) {
+    return { ok: false, reason: 'guild_not_allowed' };
+  }
+  if (!allowedUsers.has(userId) && !roles.some((role) => allowedRoles.has(role))) {
+    return { ok: false, reason: 'actor_not_allowed' };
+  }
+  return { ok: true, reason: 'allowed' };
+}
+
+function rememberInteraction(interactionId, nowMs = Date.now(), ttlMs = 10 * 60 * 1000) {
+  const id = String(interactionId || '').trim();
+  if (!id) return false;
+  for (const [key, seenAt] of replayCache) {
+    if (nowMs - seenAt > ttlMs) replayCache.delete(key);
+  }
+  if (replayCache.has(id)) return false;
+  replayCache.set(id, nowMs);
+  if (replayCache.size > 5000) replayCache.delete(replayCache.keys().next().value);
+  return true;
+}
 
 async function handleInteractions(req, res) {
   const publicKey = (process.env.DISCORD_PUBLIC_KEY || '').trim();
@@ -41,6 +87,10 @@ async function handleInteractions(req, res) {
   const raw = req.body; // express.raw → Buffer
 
   if (!publicKey || !signature || !timestamp || !Buffer.isBuffer(raw)) {
+    return res.status(401).send('invalid request signature');
+  }
+  if (!isFreshTimestamp(timestamp)) {
+    logger.warn('discordBot.stale_signature_rejected', { timestampPresent: !!timestamp });
     return res.status(401).send('invalid request signature');
   }
   if (!verifySignature(raw, signature, timestamp, publicKey)) {
@@ -58,6 +108,15 @@ async function handleInteractions(req, res) {
   if (body.type === 2) {
     const name = body.data && body.data.name;
     if (name === '매출') {
+      const access = revenueActorDecision(body);
+      if (!access.ok) {
+        logger.warn('discordBot.revenue_forbidden', { reason: access.reason });
+        return res.json({ type: 4, data: { flags: 64, content: '이 명령을 사용할 권한이 없습니다.' } });
+      }
+      if (!rememberInteraction(body.id)) {
+        logger.warn('discordBot.replay_rejected', { interactionIdPresent: !!body.id });
+        return res.json({ type: 4, data: { flags: 64, content: '이미 처리된 요청입니다.' } });
+      }
       const opt = ((body.data.options || []).find((o) => o.name === '기간'));
       let period = opt && opt.value ? String(opt.value) : 'today';
       if (!PERIOD_VALUES.has(period)) period = 'today';
@@ -77,4 +136,10 @@ async function handleInteractions(req, res) {
   return res.json({ type: 4, data: { flags: 64, content: '지원하지 않는 요청입니다.' } });
 }
 
-module.exports = { handleInteractions, verifySignature };
+module.exports = {
+  handleInteractions,
+  isFreshTimestamp,
+  rememberInteraction,
+  revenueActorDecision,
+  verifySignature
+};

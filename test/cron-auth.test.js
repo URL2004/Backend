@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   authLogFields,
+  legacyQueryCredentialEnabled,
   timingSafeEqualText,
   verifyCronRequest
 } = require('../lib/cronAuth');
@@ -58,6 +59,12 @@ test('cron auth query compatibility must be explicitly enabled', () => {
   const enabled = verifyCronRequest(req, { secret: 'shared-secret', allowQuery: true });
   assert.equal(enabled.ok, true);
   assert.equal(enabled.authSource, 'query');
+});
+
+test('legacy query credential has an explicit header-only migration flag', () => {
+  assert.equal(legacyQueryCredentialEnabled({}), true);
+  assert.equal(legacyQueryCredentialEnabled({ CRON_ALLOW_QUERY_SECRET: '1' }), true);
+  assert.equal(legacyQueryCredentialEnabled({ CRON_ALLOW_QUERY_SECRET: '0' }), false);
 });
 
 test('cron auth diagnostics never expose accepted or rejected secret values', () => {

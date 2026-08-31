@@ -8,7 +8,7 @@ const router = express.Router();
 const { getRevenue, revenueEmbed, revenueField } = require('../lib/revenue');
 const discord = require('../lib/discord');
 const { logger } = require('../lib/logger');
-const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
+const { authLogFields, legacyQueryCredentialEnabled, timingSafeEqualText, verifyCronRequest } = require('../lib/cronAuth');
 
 // 인증 실패를 조용히 넘기지 않는다 — 예전에는 매출 cron이 401로 죽어도 로그가 한 줄도 없어서
 // "리포트가 왜 안 오지"를 추적할 방법이 없었다.
@@ -19,17 +19,25 @@ function checkAdmin(req, res) {
     res.status(503).json({ error: 'ADMIN_TOKEN이 설정되지 않았습니다.' });
     return false;
   }
-  const given = (req.get('x-admin-token') || req.query.token || '').toString().trim();
-  if (given !== token) {
+  const headerToken = (req.get('x-admin-token') || '').toString().trim();
+  const queryEnabled = String(process.env.ADMIN_ALLOW_QUERY_TOKEN ?? '1').trim() !== '0';
+  const queryToken = queryEnabled ? (req.query.token || '').toString().trim() : '';
+  const given = headerToken || queryToken;
+  if (!timingSafeEqualText(given, token)) {
     logger.warn('revenue.admin_auth_rejected', { hasToken: !!given });
     res.status(401).json({ error: '권한이 없습니다.' });
     return false;
+  }
+  if (!headerToken && queryToken) {
+    logger.warn('revenue.admin_query_token_deprecated', {
+      message: 'query 관리자 토큰은 폐기 예정입니다. x-admin-token 헤더로 전환하세요.'
+    });
   }
   return true;
 }
 
 function checkCron(req, res) {
-  const auth = verifyCronRequest(req, { allowBearer: true, allowBody: true, allowQuery: true });
+  const auth = verifyCronRequest(req, { allowBearer: true, allowBody: true, allowQuery: legacyQueryCredentialEnabled() });
   if (auth.reason === 'secret_missing') {
     logger.error('revenue.cron_secret_missing', { message: 'CRON_SECRET 미설정 — 일일 매출 리포트 중단' });
     res.status(503).json({ error: 'CRON_SECRET이 설정되지 않았습니다.' });
@@ -42,6 +50,11 @@ function checkCron(req, res) {
     });
     res.status(401).json({ error: '권한이 없습니다.' });
     return false;
+  }
+  if (auth.authSource.includes('query')) {
+    logger.warn('revenue.cron_query_secret_deprecated', {
+      message: 'query cron secret은 폐기 예정입니다. x-cron-secret 헤더로 전환하세요.'
+    });
   }
   return true;
 }

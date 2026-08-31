@@ -111,16 +111,19 @@ npm audit --omit=dev
 4. 운영 헬스체크
 
 ```powershell
-Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/healthz' | ConvertTo-Json -Depth 6
+$healthHeaders = @{ 'x-health-secret' = $env:HEALTH_DETAIL_SECRET }
+Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/api/health' -Headers $healthHeaders | ConvertTo-Json -Depth 6
+Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/healthz' # 외부 uptime용 최소 readiness
 ```
 
 정상 기준:
 
 - `ok: true`
-- `llm: "api"`
+- `activeProvider: "gpt"`
 - `firebase: true`
+- `openai: true`
 - `maintenance: false`
-- `maxActive`가 운영 의도와 일치
+- `activeJobs: 0`
 
 5. 커밋/푸시
 
@@ -151,7 +154,9 @@ for ($i=0; $i -lt 54; $i++) {
 7. 배포 후 확인
 
 ```powershell
-Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/healthz' | ConvertTo-Json -Depth 6
+$healthHeaders = @{ 'x-health-secret' = $env:HEALTH_DETAIL_SECRET }
+Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/api/health' -Headers $healthHeaders | ConvertTo-Json -Depth 6
+Invoke-RestMethod 'https://ai-backend-3xtk.onrender.com/healthz'
 render deploys list srv-d6pl9qlm5p6s73fmh280 --output json | ConvertFrom-Json | Select-Object -First 1 | ConvertTo-Json -Depth 6
 git fetch origin release/prod-maintenance-test
 git status --short --branch
@@ -296,7 +301,7 @@ npm run cache:gpt -- -Limit 1000 -Json
 - 차감은 완료 시점에 한다. `blocked`, `error`, `cancelled`는 원칙적으로 차감되지 않는다.
 - Firestore 저장 실패나 undefined 필드 오류가 보이면 `transform.persist_failed` 로그를 우선 확인한다.
 - 반복 차단/환불 문의가 늘면 `blocked`, `length_collapse`, `added_claim`, `lostFacts`, `evidence_pairing` 로그를 본다.
-- 배포 후에는 항상 Render `live` 상태와 `/healthz`를 같이 확인한다.
+- 배포 후에는 Render `live`, 공개 `/healthz`, 비밀 헤더를 붙인 상세 `/api/health`를 함께 확인한다.
 - `writingLabV2Jobs.expiresAt` 필드는 2시간 복구용이므로 Firestore TTL 정책을 설정한다. 완료·실패 원문을 장기 보관하지 않는다.
 - 글쓰기 랩은 관리자 → 5% → 25% → 50% → 100% 순으로 `WRITING_LAB_V2_ROLLOUT_PERCENT`를 올리고, 장르별 장애는 `WRITING_LAB_V2_DISABLED_GENRES`로 분리 롤백한다.
 - 정책 팩 스키마는 `npm run writing-policy:validate`로 항상 검사한다. 규제 분야 자동 출시 전에는 법무·정책 담당자가 공식 출처와 문구를 확인한 뒤 `npm run writing-policy:approve -- <medical|legal|finance|advertising> --owner=<담당자> --approved-at=YYYY-MM-DD`로 승인 파일을 만들고 코드 리뷰를 거친다. 네 팩 모두 승인된 배포는 `WRITING_LAB_REQUIRE_ALL_POLICY_APPROVAL=1`로 predeploy를 강제한다.
@@ -304,11 +309,11 @@ npm run cache:gpt -- -Limit 1000 -Json
 
 ### v2.4.8 활성화 순서
 
-1. 위 세 플래그를 모두 `0`으로 둔 백엔드를 먼저 배포하고 `/healthz`에서 전부 `false`인지 확인한다.
+1. 위 세 플래그를 모두 `0`으로 둔 백엔드를 먼저 배포하고 상세 `/api/health`에서 전부 `false`인지 확인한다.
 2. 관리자 실호출로 기존 v2.4.7 경로의 완료·차감·이용 기록을 확인한다.
 3. 프런트의 효과 제한 확인 UI와 `billingDisposition` 표시를 운영 배포한다.
 4. 섹션 회복·상투구 감사를 `1`로 켠 뒤 마지막으로 효과 확인 강제를 `1`로 켠다.
-5. `/healthz`의 세 값이 모두 `true`이고 `activeJobs: 0`인 시점부터 1시간·6시간·24시간·72시간 관측을 시작한다.
+5. 상세 `/api/health`의 세 값이 모두 `true`이고 `activeJobs: 0`인 시점부터 1시간·6시간·24시간·72시간 관측을 시작한다.
 
 v2.4.8 활성화 커밋 이후 세 플래그는 미설정 시 `1`로 간주한다. Render 환경변수에 명시적으로 `0`을 넣으면 각 기능을 독립적으로 즉시 해제할 수 있다.
 

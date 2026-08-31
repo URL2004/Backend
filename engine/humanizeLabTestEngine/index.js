@@ -3,6 +3,11 @@
 
 const surfaceguard = require('../surfaceguard');
 const { buildPrompt } = require('./prompts');
+const {
+  auditLabOutput,
+  buildLabDataSections,
+  labPromptSystemRule
+} = require('../../lib/labPromptSecurity');
 
 const VERSION = 'fundamental-engine-v1';
 
@@ -516,18 +521,27 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
 
   const promptCtx = buildPromptContext(source, { lang, mode, plan });
   const prompt = buildPrompt(promptCtx);
+  const tool = buildTool(lang);
+  const promptData = buildLabDataSections([
+    { label: 'ADMIN_HUMANIZE_SOURCE', value: source, allowEmpty: true },
+    { label: 'ADMIN_HUMANIZE_NOTE', value: userNotes },
+    { label: 'ADMIN_APPROVED_EVIDENCE', value: evidence },
+    {
+      label: 'ADMIN_HUMANIZE_PROTECTED_TERMS',
+      value: JSON.stringify((plan.protectedTerms?.all || []).slice(0, 80))
+    }
+  ]);
+  const systemText = [prompt.text, labPromptSystemRule(tool.name)].join('\n\n');
   plan.promptModules = prompt.modules;
   plan.promptSnapshot = {
     modules: prompt.modules,
-    stableChars: prompt.text.length,
-    preview: prompt.text.slice(0, 1800)
+    stableChars: systemText.length,
+    redacted: true
   };
 
-  const extra = [userNotes && `[관리자 메모]\n${userNotes}`, evidence && `[승인 근거]\n${evidence}`].filter(Boolean).join('\n\n');
-  const tool = buildTool(lang);
   const data = await callModel({
-    userText: `${extra ? extra + '\n\n' : ''}[원문]\n${source}`,
-    systemText: prompt.text,
+    userText: promptData.text,
+    systemText,
     tool,
     temperature: 0.35,
     maxOutputTokens: 8192,
@@ -536,14 +550,18 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     phase: 'fundamental:main',
     mode
   });
-  const parsed = extractModelResult(data, tool.name);
-  let outputText = minimalCleanupText(parsed.outputText || '');
+  const parsed = extractModelResult(data, tool.name) || {};
+  const promptSecurity = auditLabOutput(parsed, {
+    nonce: promptData.nonce,
+    allowedSource: [source, userNotes, evidence, JSON.stringify((plan.protectedTerms?.all || []).slice(0, 80))].filter(Boolean).join('\n')
+  });
+  let outputText = promptSecurity.pass ? minimalCleanupText(parsed.outputText || '') : baseline;
   if (!outputText) outputText = baseline;
 
   const gate = evaluateOutput(source, baseline, outputText, plan);
-  let path = 'llm_genre_risk';
-  let fallbackCount = 0;
-  if (gate.reverted) {
+  let path = promptSecurity.pass ? 'llm_genre_risk' : 'prompt_leak_revert_baseline';
+  let fallbackCount = promptSecurity.pass ? 0 : 1;
+  if (promptSecurity.pass && gate.reverted) {
     outputText = baseline;
     path = 'gate_revert_baseline';
     fallbackCount = 1;
@@ -554,10 +572,11 @@ async function run({ text, mode = 'assignment', lang = 'ko', userNotes = '', evi
     gates: { fundamental: gate },
     status: gate.status
   });
-  if (Array.isArray(parsed.riskFlags) && parsed.riskFlags.length) {
+  meta.promptSecurity = promptSecurity;
+  if (promptSecurity.pass && Array.isArray(parsed.riskFlags) && parsed.riskFlags.length) {
     meta.modelRiskFlags = parsed.riskFlags.slice(0, 12);
   }
-  if (parsed.plan) meta.modelPlan = String(parsed.plan).slice(0, 500);
+  if (promptSecurity.pass && parsed.plan) meta.modelPlan = String(parsed.plan).slice(0, 500);
   const result = {
     outputText,
     styleProfile: 'fundamental_engine',

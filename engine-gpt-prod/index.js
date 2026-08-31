@@ -2,7 +2,6 @@
 
 const crypto = require('node:crypto');
 const net = require('net');
-const dns = require('dns').promises;
 const { completeJson, webSearchTool, safetyIdentifierForUid } = require('./openaiClient');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
@@ -5084,7 +5083,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
-  const user = lang === 'en' ? `[TEXT TO ANALYZE]\n${source}` : `[분석할 글]\n${source}`;
+  const user = prompts.buildUntrustedDetectInput(source, lang);
   try {
     const res = await callDetectModel({
       prompt: prompts.buildDetectPrompt(lang),
@@ -5183,6 +5182,126 @@ async function rewriteSentence({ text, lang = 'ko', signal, config, uid = '', sa
   return { rewritten: rewritten || source, gptMeta: metaFromResponse(res, cfg, { task: 'rewrite_sentence' }) };
 }
 
+const EVIDENCE_QUERY_SOURCE_LIMIT = 24000;
+const EVIDENCE_QUERY_MAX_CHARS = 480;
+const EVIDENCE_QUERY_MAX_CLAIMS = 3;
+const EVIDENCE_CLAIM_MAX_CHARS = 210;
+
+function redactEvidencePii(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200D\u2060\uFEFF]/gu, ' ')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, '[비식별]')
+    .replace(/(?<!\d)(?:\+?82[-.\s]?)?0?1[016789][-.\s]?\d{3,4}[-.\s]?\d{4}(?!\d)/gu, '[비식별]')
+    .replace(/(?<!\d)\d{6}[-.\s]?[1-4]\d{6}(?!\d)/gu, '[비식별]')
+    .replace(/(?<!\d)(?:\d[-.\s]?){12,18}\d(?!\d)/gu, '[비식별]')
+    .replace(/(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/gu, '[비식별]')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu, '[비식별]')
+    .replace(/\b(?:sk|pk|rk|api)[_-][A-Za-z0-9_-]{16,}\b/gu, '[비식별]')
+    .replace(/\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu, '[비식별]')
+    .replace(/((?:성명|이름|작성자|신청인|담당자|학번|사번|회원번호|고객번호))\s*[:：은는이가]*\s*[가-힣A-Za-z0-9][가-힣A-Za-z0-9 ._-]{1,40}/gu, '$1 [비식별]')
+    .replace(/((?:학생|환자|고객|사용자|지원자|신청자|담당자))\s+[가-힣]{2,4}(?=\s|[은는이가을를의께와과,.;:])/gu, '$1 [비식별]')
+    .replace(/[가-힣]{2,4}\s*씨(?=\s|[은는이가을를의께와과,.;:])/gu, '[비식별] 씨')
+    .replace(/(?:서울(?:특별시)?|부산(?:광역시)?|대구(?:광역시)?|인천(?:광역시)?|광주(?:광역시)?|대전(?:광역시)?|울산(?:광역시)?|세종(?:특별자치시)?|제주(?:특별자치도)?|[가-힣]{2,12}(?:도|시))\s+[가-힣0-9]{1,16}(?:구|군|시)\s+[가-힣0-9·._-]{1,30}(?:로|길)\s*\d+(?:-\d+)?/gu, '[비식별]')
+    .replace(/https?:\/\/[^\s<>"'`]+/giu, '[링크]')
+    .replace(/((?:계좌|카드|주민|여권|운전면허|연락처|전화번호|휴대폰|이메일|주소))\s*(?:번호)?\s*[:：]?\s*[^\s,;]{2,80}/gu, '$1 [비식별]')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function looksLikeEvidencePromptInjection(value) {
+  const text = String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/gu, '')
+    .toLowerCase();
+  return /(?:이전|위의|앞선)\s*(?:모든\s*)?(?:지시|지침|명령|규칙).{0,24}(?:무시|잊|따르지|우회)|시스템\s*(?:프롬프트|메시지)|프롬프트.{0,20}(?:출력|공개|노출)|(?:도구|함수)\s*(?:를\s*)?(?:호출|실행)|검색(?:을|은)?\s*(?:하지|중단)|(?:내부|로컬)\s*(?:주소|url)|localhost|127\.0\.0\.1|169\.254\.169\.254|(?:<|&lt;)\/?(?:system|assistant|developer|script)\b|(?:untrusted|end_untrusted)_claims|ignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above)\s+instructions?|system\s+prompt|developer\s+message|(?:reveal|print|show).{0,24}(?:hidden|internal|system).{0,16}(?:instruction|prompt|rule)|do\s+not\s+(?:search|follow)|call\s+(?:the\s+)?(?:tool|function)|exfiltrat/iu.test(text);
+}
+
+function compactEvidenceClaim(value) {
+  let text = redactEvidencePii(value)
+    .replace(/\[(?:UNTRUSTED|END_UNTRUSTED)[^\]]*\]/giu, ' ')
+    .replace(/[<>]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (text.length <= EVIDENCE_CLAIM_MAX_CHARS) return text;
+  const head = text.slice(0, EVIDENCE_CLAIM_MAX_CHARS + 1);
+  const punctuation = Math.max(head.lastIndexOf('.'), head.lastIndexOf(','), head.lastIndexOf(';'), head.lastIndexOf('。'));
+  const whitespace = head.lastIndexOf(' ');
+  const cut = punctuation >= 90 ? punctuation + 1 : whitespace >= 90 ? whitespace : EVIDENCE_CLAIM_MAX_CHARS;
+  return head.slice(0, cut).trim();
+}
+
+function evidenceClaimScore(value) {
+  const text = String(value || '');
+  let score = 0;
+  if (/\d|%|년|월|일/u.test(text)) score += 3;
+  if (/(?:연구|조사|통계|보고서|법률|법령|정책|제도|논문|실험|분석|발표|자료|결과|영향|효과|관계|증가|감소|차이|비율|정의|원인)/u.test(text)) score += 3;
+  if (/(?:에\s*따르면|로\s*나타났|으로\s*확인|라고\s*밝혔|을\s*보여\s*준다|이다|한다|된다|나타났다|증가했다|감소했다)(?:[.!?。！？]|$)/u.test(text)) score += 2;
+  if (/(?:저는|나는|제가|내가|우리|느꼈|생각했|경험했|지원했|신청했)/u.test(text)) score -= 4;
+  if (/\[비식별\]/u.test(text)) score -= 2;
+  return score;
+}
+
+function prepareEvidenceSearchQuery(value) {
+  const raw = String(value || '').normalize('NFKC').slice(0, EVIDENCE_QUERY_SOURCE_LIMIT);
+  const split = splitSentences(raw);
+  const sentences = split.length ? split : raw.split(/(?:\r?\n)+/u);
+  const ranked = [];
+  const seen = new Set();
+  for (let index = 0; index < sentences.length; index += 1) {
+    const original = String(sentences[index] || '').trim();
+    if (!original || looksLikeEvidencePromptInjection(original)) continue;
+    const claim = compactEvidenceClaim(original);
+    const normalized = claim.replace(/[\p{P}\p{S}\s]+/gu, '').toLowerCase();
+    if (claim.length < 10 || normalized.length < 7 || seen.has(normalized)) continue;
+    if (!/[가-힣A-Za-z]/u.test(claim)) continue;
+    seen.add(normalized);
+    ranked.push({ claim, score: evidenceClaimScore(claim), index });
+  }
+  ranked.sort((a, b) => b.score - a.score || a.index - b.index);
+  let selected = ranked.filter(item => item.score >= 2).slice(0, EVIDENCE_QUERY_MAX_CLAIMS);
+  if (!selected.length) {
+    selected = ranked.filter(item => item.score >= 0 && !/\[비식별\]/u.test(item.claim)).slice(0, 1);
+  }
+  const claims = [];
+  let query = '';
+  for (const item of selected) {
+    const next = query ? `${query} / ${item.claim}` : item.claim;
+    if (next.length > EVIDENCE_QUERY_MAX_CHARS) {
+      const remaining = EVIDENCE_QUERY_MAX_CHARS - query.length - (query ? 3 : 0);
+      if (remaining >= 40) claims.push(item.claim.slice(0, remaining).trim());
+      break;
+    }
+    claims.push(item.claim);
+    query = next;
+  }
+  query = claims.join(' / ').slice(0, EVIDENCE_QUERY_MAX_CHARS).trim();
+  const redactedSurface = redactEvidencePii(raw);
+  const redacted = /\[(?:비식별|링크)\]/u.test(redactedSurface);
+  return { query, claims, redacted, sourceChars: raw.length };
+}
+
+function buildEvidenceBoundary(query, nonce = crypto.randomBytes(16).toString('hex')) {
+  const safeNonce = /^[a-f0-9]{32}$/u.test(String(nonce || '')) ? String(nonce) : crypto.randomBytes(16).toString('hex');
+  return {
+    nonce: safeNonce,
+    user: `<UNTRUSTED_CLAIMS nonce="${safeNonce}">\n${String(query || '')}\n<END_UNTRUSTED_CLAIMS nonce="${safeNonce}">`
+  };
+}
+
+function evidenceOutputLeaksBoundary(value, nonce = '') {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
+  const safeNonce = String(nonce || '').toLowerCase();
+  if (safeNonce && text.toLowerCase().includes(safeNonce)) return true;
+  if (/^[a-f0-9]{32}$/u.test(safeNonce)) {
+    const compactHex = text.toLowerCase().replace(/[^a-f0-9]/gu, '');
+    const utf8Base64 = Buffer.from(safeNonce, 'utf8').toString('base64');
+    const binaryBase64 = Buffer.from(safeNonce, 'hex').toString('base64');
+    if (compactHex.includes(safeNonce) || text.includes(utf8Base64) || text.includes(binaryBase64)) return true;
+  }
+  return /UNTRUSTED_CLAIMS|END_UNTRUSTED|GPT-PROD-EVIDENCE-SEARCH|(?:system|developer)\s+(?:prompt|message)|시스템\s*(?:프롬프트|메시지)/iu.test(text);
+}
+
 async function suggestEvidence({ query, signal, config, uid = '', safetyIdentifier = '' } = {}) {
   const cfg = await loadConfig(config);
   const text = String(query || '').trim();
@@ -5190,25 +5309,30 @@ async function suggestEvidence({ query, signal, config, uid = '', safetyIdentifi
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
   if (!text) return { candidates: [], warnings: ['empty_query'] };
+  const prepared = prepareEvidenceSearchQuery(text);
+  if (!prepared.query) return { candidates: [], warnings: ['no_safe_search_query'] };
   try {
-    const out = await callEvidenceSearch({ text, cfg, signal, phase: 'search:primary', model: cfg.models.evidenceSearch, reasoningEffort: cfg.reasoning.evidenceSearch, safetyIdentifier: safetyId });
-    if ((out.warnings || []).includes('source_url_verification_filtered_all')) {
+    const out = await callEvidenceSearch({ text: prepared.query, queryMeta: prepared, cfg, signal, phase: 'search:primary', model: cfg.models.evidenceSearch, reasoningEffort: cfg.reasoning.evidenceSearch, safetyIdentifier: safetyId });
+    if ((out.warnings || []).includes('source_url_verification_filtered_all')
+        && !(out.warnings || []).some(code => /^evidence_boundary_leak/u.test(code))) {
       throw new Error('source_url_verification_filtered_all');
     }
     return out;
   } catch (firstErr) {
     if (signal?.aborted) throw firstErr;
-    const out = await callEvidenceSearch({ text, cfg, signal, phase: 'search:escalation', model: cfg.models.evidenceEscalation, reasoningEffort: cfg.reasoning.escalation, safetyIdentifier: safetyId });
+    const out = await callEvidenceSearch({ text: prepared.query, queryMeta: prepared, cfg, signal, phase: 'search:escalation', model: cfg.models.evidenceEscalation, reasoningEffort: cfg.reasoning.escalation, safetyIdentifier: safetyId });
     out.warnings = [...(out.warnings || []), `primary_failed:${firstErr.message || String(firstErr)}`];
     out.gptMeta = { ...(out.gptMeta || {}), escalated: true, primaryError: firstErr.message || String(firstErr) };
     return out;
   }
 }
 
-async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEffort, safetyIdentifier = '' }) {
+async function callEvidenceSearch({ text, queryMeta = null, cfg, signal, phase, model, reasoningEffort, safetyIdentifier = '' }) {
+  const boundary = buildEvidenceBoundary(text);
   const res = await completeJson({
+    // system prefix는 캐시 가능한 고정 계약으로 유지하고, 요청별 nonce는 user 경계에만 둔다.
     system: prompts.buildEvidencePrompt(),
-    user: `[검증할 주장 또는 주제]\n${text}`,
+    user: boundary.user,
     schema: EVIDENCE_SCHEMA,
     schemaName: 'gpt_prod_evidence_candidates',
     model,
@@ -5224,28 +5348,51 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
     meta: { task: 'evidence_search', phase, mode: 'evidence', profile: PROFILE, escalated: phase.includes('escalation') }
   });
   const verifiedUrls = collectWebSearchUrls(res.raw);
-  const warnings = [...(res.json.warnings || [])];
+  const warnings = (res.json.warnings || [])
+    .map(code => String(code || '').trim().toLowerCase())
+    .filter(code => /^[a-z0-9][a-z0-9_:-]{0,79}$/u.test(code));
+  const responseBoundaryLeak = evidenceOutputLeaksBoundary(res.json, boundary.nonce);
+  if (responseBoundaryLeak) warnings.push('evidence_boundary_leak_filtered');
   let candidates = (res.json.candidates || [])
-    .map(c => ({ ...c, url: String(c.url || '').trim() }))
+    .map(c => ({
+      title: redactEvidencePii(c.title).slice(0, 240),
+      url: String(c.url || '').trim().slice(0, 2048),
+      publisher: redactEvidencePii(c.publisher).slice(0, 160),
+      reason: redactEvidencePii(c.reason).slice(0, 600)
+    }))
     .filter(c => /^https?:\/\//i.test(c.url))
     .filter(c => {
       const unsafe = isUnsafeEvidenceUrl(c.url);
       if (unsafe) warnings.push('unsafe_source_url_filtered');
       return !unsafe;
     })
+    .filter(c => {
+      const leaked = evidenceOutputLeaksBoundary(c, boundary.nonce);
+      if (leaked) warnings.push('evidence_boundary_leak_filtered');
+      return !leaked;
+    })
     .map(c => ({ ...c, sourceVerified: verifiedUrls.size ? hasVerifiedUrl(c.url, verifiedUrls) : false }));
-  if (verifiedUrls.size) {
+  if (responseBoundaryLeak) {
+    candidates = [];
+  } else if (verifiedUrls.size) {
     candidates = candidates.filter(c => c.sourceVerified);
   } else {
-    candidates = await verifyEvidenceCandidates(candidates, signal);
-    warnings.push('source_url_verified_by_fetch');
+    candidates = [];
+    warnings.push('source_url_verification_unavailable');
   }
   candidates = candidates.slice(0, 8);
   if (verifiedUrls.size && !candidates.length) warnings.push('source_url_verification_filtered_all');
   return {
     candidates,
-    warnings,
-    gptMeta: metaFromResponse(res, cfg, { task: 'evidence_search', escalated: phase.includes('escalation'), verifiedSourceUrlCount: verifiedUrls.size })
+    warnings: [...new Set(warnings)].slice(0, 20),
+    gptMeta: metaFromResponse(res, cfg, {
+      task: 'evidence_search',
+      escalated: phase.includes('escalation'),
+      verifiedSourceUrlCount: verifiedUrls.size,
+      evidenceQueryChars: String(text || '').length,
+      evidenceClaimCount: Number(queryMeta?.claims?.length || 0),
+      evidencePiiRedacted: queryMeta?.redacted === true
+    })
   };
 }
 
@@ -7553,9 +7700,23 @@ function collectWebSearchUrls(raw) {
 function normalizeEvidenceUrl(url) {
   try {
     const u = new URL(String(url || '').trim());
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    if (u.username || u.password) return '';
     u.hash = '';
+    const retained = [];
+    for (const [key, value] of u.searchParams.entries()) {
+      const lower = key.toLowerCase();
+      if (/^utm_/u.test(lower)
+          || /^(?:fbclid|gclid|dclid|msclkid|igshid|mc_cid|mc_eid|ref_src|ref_url|ncid|cmpid|campaignid|adgroupid)$/u.test(lower)) {
+        continue;
+      }
+      retained.push([key, value]);
+    }
+    retained.sort(([aKey, aValue], [bKey, bValue]) => aKey.localeCompare(bKey) || aValue.localeCompare(bValue));
     u.search = '';
-    return u.toString().replace(/\/+$/, '').toLowerCase();
+    for (const [key, value] of retained) u.searchParams.append(key, value);
+    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/u, '');
+    return u.toString();
   } catch {
     return '';
   }
@@ -7563,69 +7724,14 @@ function normalizeEvidenceUrl(url) {
 
 function hasVerifiedUrl(url, verifiedUrls) {
   const norm = normalizeEvidenceUrl(url);
-  if (!norm) return false;
-  if (verifiedUrls.has(norm)) return true;
-  for (const verified of verifiedUrls) {
-    if (norm.startsWith(verified + '/') || verified.startsWith(norm + '/')) return true;
-  }
-  return false;
-}
-
-async function verifyEvidenceCandidates(candidates, parentSignal) {
-  const out = [];
-  for (const candidate of candidates.slice(0, 8)) {
-    if (parentSignal?.aborted) throw new Error('aborted');
-    const ok = await verifyEvidenceUrl(candidate.url, parentSignal);
-    if (ok) out.push({ ...candidate, sourceVerified: true });
-  }
-  return out;
-}
-
-async function verifyEvidenceUrl(url, parentSignal) {
-  if (await isUnsafeEvidenceFetchTarget(url)) return false;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(process.env.GPT_EVIDENCE_URL_VERIFY_TIMEOUT_MS) || 6000);
-  const onAbort = () => controller.abort();
-  try {
-    if (parentSignal) parentSignal.addEventListener('abort', onAbort, { once: true });
-    let resp = await fetchEvidenceWithRedirects(url, 'HEAD', controller.signal);
-    if (resp.status === 405 || resp.status === 403) {
-      resp = await fetchEvidenceWithRedirects(url, 'GET', controller.signal);
-    }
-    return resp.status >= 200 && resp.status < 400;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-    if (parentSignal) parentSignal.removeEventListener('abort', onAbort);
-  }
-}
-
-async function fetchEvidenceWithRedirects(url, method, signal) {
-  let current = String(url || '').trim();
-  for (let i = 0; i < 4; i += 1) {
-    if (await isUnsafeEvidenceFetchTarget(current)) throw new Error('unsafe_evidence_url');
-    const resp = await fetch(current, {
-      method,
-      redirect: 'manual',
-      signal,
-      headers: method === 'GET' ? { Range: 'bytes=0-2048' } : undefined
-    });
-    if (resp.status >= 300 && resp.status < 400) {
-      const location = resp.headers.get('location');
-      if (!location) return resp;
-      current = new URL(location, current).toString();
-      continue;
-    }
-    return resp;
-  }
-  throw new Error('too_many_evidence_redirects');
+  return Boolean(norm && verifiedUrls?.has(norm));
 }
 
 function isUnsafeEvidenceUrl(url) {
   try {
     const u = new URL(String(url || '').trim());
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+    if (u.username || u.password) return true;
     const host = u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
     if (!host) return true;
     if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
@@ -7633,23 +7739,6 @@ function isUnsafeEvidenceUrl(url) {
     const ipType = net.isIP(host);
     if (!ipType) return false;
     return isPrivateIp(host, ipType);
-  } catch {
-    return true;
-  }
-}
-
-async function isUnsafeEvidenceFetchTarget(url) {
-  if (isUnsafeEvidenceUrl(url)) return true;
-  try {
-    const u = new URL(String(url || '').trim());
-    const host = u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
-    if (net.isIP(host)) return false;
-    const records = await dns.lookup(host, { all: true, verbatim: true });
-    if (!records.length) return true;
-    return records.some(r => {
-      const ipType = net.isIP(r.address);
-      return !ipType || isPrivateIp(r.address, ipType);
-    });
   } catch {
     return true;
   }
@@ -8384,6 +8473,13 @@ module.exports = {
   effectStatusForNotices,
   classifyPolishEditKind,
   isNoopEquivalent,
+  prepareEvidenceSearchQuery,
+  buildEvidenceBoundary,
+  evidenceOutputLeaksBoundary,
+  collectWebSearchUrls,
+  normalizeEvidenceUrl,
+  hasVerifiedUrl,
+  isUnsafeEvidenceUrl,
   isModelFailureRecord,
   tryAccumulateFailedChunkEdits,
   freezeLockedBlocks,

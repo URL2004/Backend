@@ -30,6 +30,9 @@ const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const restartRecovery = require('../lib/transformRestartRecovery');
 const publicMetrics = require('../lib/publicMetrics');
+const refineParagraphSafety = require('../lib/refineParagraphSafety');
+const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
+const { safetyIdentifierForUid } = require('../engine-gpt-prod/openaiClient');
 const {
   restructureCredit,
   shortHumanizeCredit
@@ -3136,49 +3139,98 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
         required: ['outputText']
       }
     };
-    const refineSystem = [
-      '너는 한국어 글의 한 문단을 다듬는 편집자다. 저자가 직접 겪은 실제 경험 한 줄이 제공된다.',
-      '이 경험을 문단에 자연스럽게 녹여, 추상적인 일반론에 실제 장면이 스며든 더 구체적인 문단으로 만들어라.',
-      '',
-      '규칙(절대 준수):',
-      '1. 무날조: 문단과 경험 메모에 없는 새로운 사실·수치·인명·기관명·연도를 만들지 않는다.',
-      '2. 경험 메모를 그대로 복사해 붙이지 않는다 — 문단의 어조와 흐름에 맞게 1~2문장으로 풀어 쓴다.',
-      '3. 문단의 원래 주장·논리 순서·종결체(반말/존댓말)를 유지한다.',
-      '4. 길이는 원래 문단의 0.9~1.8배 사이로 한다.',
-      '5. 결과는 문단 하나의 본문만 출력한다.'
-    ].join('\n');
+    const refinePrompt = refineParagraphSafety.buildRefinePrompt({ paragraph: paraText, memo });
+    const safetyIdentifier = safetyIdentifierForUid(job.uid);
     const resp = await gptAnalyze.callGpt({
-      userText: '[문단]\n' + paraText + '\n\n[저자의 실제 경험 메모]\n' + memo,
-      systemText: refineSystem,
+      userText: refinePrompt.userText,
+      systemText: refinePrompt.systemText,
       tool: refineTool,
       maxOutputTokens: 1500,
       signal: ac.signal,
       task: 'humanize',
-      phase: 'main',
+      phase: 'refine',
       mode: job.mode,
-      config: gptCfg
+      config: gptCfg,
+      safetyIdentifier
     });
     const parsed = gptAnalyze.extractGptResult(resp, refineTool.name);
     // 문단 하나로 정규화 — 모델이 빈 줄을 넣으면 스플라이스 후 문단 수·인덱스가 틀어진다.
-    const refined = String(parsed && parsed.outputText || '').trim().replace(/\n[ \t]*\n+/g, '\n');
-    // 무날조·길이 결정론 게이트 — 허용 세계 = 원 문단 ∪ 메모. 그 밖의 새 사실·과증축은 차단(무과금 유지).
-    const floorGuard = require('../engine/floor');
-    const novelty = refined ? floorGuard.measureNovelty(paraText, refined, memo) : { count: 0, items: [] };
-    const bareLen = (s) => String(s).replace(/\s+/g, '').length;
-    const lenRatio = refined ? bareLen(refined) / Math.max(1, bareLen(paraText)) : 0;
-    const gateBlocked = !!refined && (novelty.count > 0 || lenRatio < 0.6 || lenRatio > 2.0);
+    let refined = String(parsed && parsed.outputText || '').trim().replace(/\n[ \t]*\n+/g, '\n');
+    let refineAudit = refineParagraphSafety.auditRefinedParagraph({
+      source: paraText,
+      before: paraText,
+      candidate: refined,
+      memo,
+      mode: job.mode,
+      basicStyle: job.basicStyle || '',
+      documentProfileOverride: job.documentProfileOverride || ''
+    });
+    let semanticReport = null;
+    if (refineAudit.pass === true) {
+      const documentProfile = refineParagraphSafety.resolveDocumentProfile(paraText, {
+        mode: job.mode,
+        basicStyle: job.basicStyle || '',
+        documentProfileOverride: job.documentProfileOverride || ''
+      });
+      semanticReport = await qualityV2.runSemanticDocumentAudit({
+        source: paraText,
+        outputText: refined,
+        lang: job.lang || 'ko',
+        signal: ac.signal,
+        config: gptCfg,
+        allowedExtra: memo,
+        mode: job.mode === 'formal' ? 'assignment' : job.mode,
+        safetyIdentifier,
+        documentProfile
+      });
+      const semanticCandidate = String(semanticReport.outputText || refined).trim().replace(/\n[ \t]*\n+/g, '\n');
+      const semanticAudit = refineParagraphSafety.auditRefinedParagraph({
+        source: paraText,
+        before: refined,
+        candidate: semanticCandidate,
+        memo,
+        mode: job.mode,
+        basicStyle: job.basicStyle || '',
+        documentProfileOverride: job.documentProfileOverride || ''
+      });
+      if (semanticReport.pass === true && semanticReport.uncertain !== true && semanticAudit.pass === true) {
+        refined = semanticCandidate;
+        refineAudit = semanticAudit;
+      } else {
+        refineAudit = {
+          ...semanticAudit,
+          pass: false,
+          reasons: [...new Set([
+            ...(semanticAudit.reasons || []),
+            semanticReport.uncertain === true ? 'semantic_audit_uncertain' : 'semantic_audit_failed'
+          ])]
+        };
+      }
+    }
+    const gateBlocked = refineAudit.pass !== true;
     if (gateBlocked) {
-      logger.warn('transform.refine_gate_blocked', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, novelty: (novelty.items || []).slice(0, 5), lenRatio: Number(lenRatio.toFixed(2)) });
+      logger.warn('transform.refine_gate_blocked', {
+        jobId: job.id,
+        uid: job.uid,
+        paragraphIndex: idx,
+        n,
+        reasonCodes: (refineAudit.reasons || []).slice(0, 16),
+        noveltyCount: refineAudit.noveltyCount || 0,
+        lostFactCount: refineAudit.lostFactCount || 0,
+        lengthRatio: refineAudit.lengthRatio
+      });
     }
     try {
       const reuse = surfaceguard.measureMemoReuse(refined, memo, paraText);
-      if (reuse.count) logger.warn('transform.refine_memo_reuse', { jobId: job.id, uid: job.uid, n, items: reuse.items });
+      if (reuse.count) logger.warn('transform.refine_memo_reuse', { jobId: job.id, uid: job.uid, n, count: reuse.count });
     } catch { /* 관측용 — 실패해도 흐름 유지 */ }
     const changed = !!refined && !gateBlocked && refined.replace(/\s+/g, ' ') !== paraText.trim().replace(/\s+/g, ' ');
     if (!changed) {
       job.refine = { status: 'done', changed: false, paragraphIndex: idx, n, needed: 0, deducted: false,
+        auditVersion: refineAudit.version || refineParagraphSafety.VERSION,
+        auditReasonCodes: (refineAudit.reasons || []).slice(0, 16),
         note: gateBlocked
-          ? '보강 결과가 안전 검증(무날조·분량)을 통과하지 못해 원래 문단을 유지했어요. 크레딧·무료 횟수는 쓰지 않았어요.'
+          ? '보강 결과가 의미·사실·화자·구조 안전 검증을 통과하지 못해 원래 문단을 유지했어요. 크레딧·무료 횟수는 쓰지 않았어요.'
           : '적어주신 내용을 반영해도 이 문단이 크게 달라지지 않아 원래 문단을 유지했어요. 크레딧·무료 횟수는 쓰지 않았어요.' };
       persistJob(job);
       logger.info('transform.refine_noop', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, gateBlocked });
@@ -3206,10 +3258,33 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
       }
     }
     attachRefineTargets(job);   // 구체화된 문단은 타겟에서 빠지고 freeLeft 갱신
-    job.refine = { status: 'done', changed: true, paragraphIndex: idx, n, needed, deducted };
+    const estimatedUsd = Number(resp?.gptMeta?.estimatedUsd || 0)
+      + Number(semanticReport?.usage?.estimatedUsd || 0);
+    job.refine = {
+      status: 'done',
+      changed: true,
+      paragraphIndex: idx,
+      n,
+      needed,
+      deducted,
+      auditVersion: refineAudit.version || refineParagraphSafety.VERSION,
+      semanticJudgeRan: semanticReport?.ran === true,
+      estimatedUsd: Number(estimatedUsd.toFixed(6))
+    };
     persistJob(job);
     if (!job.adminHumanizeLab) saveJobHistory(job, job.text, job.result.outputText);   // 멱등키 job_<id> → 이력 문서 갱신
-    logger.info('transform.refine_done', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, needed, deducted, outLen: refined.length });
+    logger.info('transform.refine_done', {
+      jobId: job.id,
+      uid: job.uid,
+      paragraphIndex: idx,
+      n,
+      needed,
+      deducted,
+      outLen: refined.length,
+      auditVersion: refineAudit.version || refineParagraphSafety.VERSION,
+      semanticJudgeRan: semanticReport?.ran === true,
+      estimatedUsd: Number(estimatedUsd.toFixed(6))
+    });
   } catch (e) {
     const aborted = ac.signal.aborted;
     job.refine = { status: 'error', paragraphIndex: idx, n, needed: 0,

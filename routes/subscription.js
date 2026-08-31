@@ -26,6 +26,16 @@ const {
   SUBSCRIPTION_REFUND_BONUS_TREATMENT,
   buildRefundPolicyPurchaseSnapshot
 } = require('../lib/refundPolicySnapshot');
+const { vestPendingReferral, releaseMaturedReferralRewards } = require('../lib/referralService');
+const {
+  findPendingSubscriptionIntentForUid,
+  markSubscriptionIntentApplied,
+  markSubscriptionIntentProviderRejected,
+  markSubscriptionProviderApproved,
+  prepareSubscriptionIntent,
+  providerChargeStatusUncertain,
+  recoverPendingSubscriptionPayments
+} = require('../lib/subscriptionReconciliation');
 
 const router = express.Router();
 
@@ -40,6 +50,30 @@ const SUB_PLANS = {
 
 const CYCLE_DAYS = 30;
 const CYCLE_MS = CYCLE_DAYS * 24 * 60 * 60 * 1000;
+
+async function tryVestSubscriptionReferral(uid, orderId) {
+  try {
+    const result = await vestPendingReferral({
+      admin,
+      db,
+      inviteeUid: uid,
+      orderCollection: 'subscriptionOrders',
+      orderId
+    });
+    if (result.locked) {
+      logger.info('referral.reward_locked', {
+        inviteeUid: uid,
+        orderId,
+        credits: result.rewardCredits,
+        releaseAtMs: result.releaseAtMs
+      });
+    }
+    return result;
+  } catch (err) {
+    logger.error('referral.vesting_deferred', { inviteeUid: uid, orderId, err });
+    return { vested: false, reason: 'deferred' };
+  }
+}
 
 // 토스 빌링 API 헬퍼
 function tossBasicToken() {
@@ -112,6 +146,20 @@ async function tossQueryPayment(paymentKey) {
   }
 }
 
+async function tossQueryOrder(orderId) {
+  try {
+    const res = await fetch(`https://api.tosspayments.com/v1/payments/orders/${encodeURIComponent(orderId)}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Basic ${tossBasicToken()}` }
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, status: res.status, data };
+  } catch (error) {
+    return { ok: false, status: 0, data: {}, error };
+  }
+}
+
 async function verifyTossWebhookEvent(eventType, reportedData) {
   const data = reportedData && typeof reportedData === 'object' ? reportedData : {};
   if (eventType === 'PAYMENT_STATUS_CHANGED' || eventType === 'CANCEL_STATUS_CHANGED') {
@@ -171,7 +219,8 @@ function buildOrderId(uid, ts) { return `sub_${uid}_${ts}`; }
 
 // 구독 + 쿠폰 + 주문 + 히스토리를 atomic하게 기록하는 헬퍼
 async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingKey, cardCompany, cardNumber, customerKey, isFirst }) {
-  const now = Date.now();
+  const approvedAtMs = Date.parse(String(paymentResult?.approvedAt || ''));
+  const now = Number.isFinite(approvedAtMs) ? approvedAtMs : Date.now();
   const cycleStartedAt = admin.firestore.Timestamp.fromMillis(now);
   const nextBillingAt = admin.firestore.Timestamp.fromMillis(now + CYCLE_MS);
   const orderId = paymentResult.orderId;
@@ -187,9 +236,21 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
     }
   );
 
-  await db.runTransaction(async (t) => {
+  return db.runTransaction(async (t) => {
     const orderSnap = await t.get(orderRef);
-    if (orderSnap.exists) throw new Error('DUPLICATE_ORDER');
+    if (orderSnap.exists) {
+      const existing = orderSnap.data() || {};
+      if (existing.uid !== uid
+        || existing.tier !== tier
+        || Number(existing.amount) !== Number(plan.amount)
+        || String(existing.status || '') !== 'paid') {
+        throw Object.assign(new Error('SUBSCRIPTION_ORDER_CONFLICT'), {
+          code: 'SUBSCRIPTION_ORDER_CONFLICT',
+          status: 409
+        });
+      }
+      return { applied: false, deduped: true };
+    }
 
     const userSnap = await t.get(userRef);
     if (!userSnap.exists && !isFirst) throw new Error('USER_NOT_FOUND');
@@ -216,7 +277,12 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
       resetAt: nextBillingAt
     };
 
-    const userPatch = { subscription, coupon };
+    const userPatch = {
+      subscription,
+      coupon,
+      lastPayment: cycleStartedAt,
+      firstSettledPurchaseAt: userSnap.data()?.firstSettledPurchaseAt || cycleStartedAt
+    };
     if (tier === 'unlimited') userPatch.plan = 'unlimited';
     else userPatch.plan = 'pro';
 
@@ -258,6 +324,7 @@ async function applySubscriptionCycle({ uid, tier, plan, paymentResult, billingK
     t.set(db.collection('paymentSecrets').doc(orderId), {
       paymentKey: paymentResult.paymentKey, uid, createdAt: cycleStartedAt
     });
+    return { applied: true, deduped: false };
   });
 }
 
@@ -289,6 +356,17 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
     }
   }
 
+  // 이전 승인 결제의 내부 적용이 남아 있으면 새 카드를 다시 청구하지 않는다.
+  // 시간당 reconciliation이 기존 orderId를 재조회·적용한다.
+  const pendingIntent = await findPendingSubscriptionIntentForUid({ db, uid });
+  if (pendingIntent) {
+    return res.status(409).json({
+      error: '이전 구독 결제를 확인하고 있어요. 새로 결제하지 말고 잠시 후 다시 확인해 주세요.',
+      code: 'SUBSCRIPTION_APPLY_PENDING',
+      retryable: true
+    });
+  }
+
   // 1. 토스 빌링키 발급
   const issued = await tossIssueBillingKey({ authKey, customerKey });
   if (!issued.ok) {
@@ -301,37 +379,135 @@ router.post('/subscription/issue-billing-key', async (req, res) => {
   // 2. 첫 결제 즉시 실행
   const cycleTs = Date.now();
   const orderId = buildOrderId(uid, cycleTs);
-  const charged = await tossChargeBilling({
-    billingKey, customerKey,
-    amount: plan.amount,
-    orderId,
-    orderName: plan.name,
-    customerEmail: customerEmail || null,
-    customerName: customerName || null,
-    idempotencyKey: orderId
-  });
+  try {
+    await prepareSubscriptionIntent({
+      admin,
+      db,
+      orderId,
+      uid,
+      tier,
+      amount: plan.amount,
+      plan,
+      isFirst: !userSnap.exists,
+      cardCompany,
+      cardNumber,
+      billingSecret: { billingKey }
+    });
+  } catch (err) {
+    logger.error('subscription.intent_prepare_failed', { uid, tier, orderId, err });
+    return res.status(Number(err.status) || 503).json({
+      error: '구독 결제를 준비하지 못했어요. 잠시 후 다시 시도해 주세요.',
+      code: err.code || 'SUBSCRIPTION_INTENT_PREPARE_FAILED'
+    });
+  }
+
+  let charged;
+  try {
+    charged = await tossChargeBilling({
+      billingKey, customerKey,
+      amount: plan.amount,
+      orderId,
+      orderName: plan.name,
+      customerEmail: customerEmail || null,
+      customerName: customerName || null,
+      idempotencyKey: orderId
+    });
+  } catch (err) {
+    logger.error('subscription.charge_status_unknown', { uid, tier, orderId, err });
+    return res.status(503).json({
+      error: '결제 결과를 확인하고 있어요. 다시 결제하지 말고 잠시 후 확인해 주세요.',
+      code: 'SUBSCRIPTION_PAYMENT_STATUS_UNKNOWN',
+      retryable: true
+    });
+  }
 
   if (!charged.ok) {
+    if (providerChargeStatusUncertain(charged)) {
+      logger.error('subscription.charge_status_unknown', {
+        uid,
+        tier,
+        orderId,
+        providerStatusCode: charged.status
+      });
+      return res.status(503).json({
+        error: '결제 결과를 확인하고 있어요. 다시 결제하지 말고 잠시 후 확인해 주세요.',
+        code: 'SUBSCRIPTION_PAYMENT_STATUS_UNKNOWN',
+        retryable: true
+      });
+    }
+    await markSubscriptionIntentProviderRejected({
+      admin,
+      db,
+      orderId,
+      providerStatus: charged.data?.status,
+      providerCode: charged.data?.code
+    }).catch(() => {});
     logger.warn('subscription.first_charge_failed', { uid, tier, status: charged.status, toss: charged.data });
     return res.status(charged.status).json({ error: '결제 실패: ' + (charged.data.message || '알 수 없는 오류') });
+  }
+
+  let approval;
+  try {
+    approval = await markSubscriptionProviderApproved({ admin, db, orderId, payment: charged.data });
+  } catch (err) {
+    logger.error('subscription.provider_approval_persist_failed', { uid, tier, orderId, err });
+    return res.status(503).json({
+      error: '결제 승인은 확인됐고 구독 반영을 이어서 처리하고 있어요.',
+      code: 'SUBSCRIPTION_APPLY_PENDING',
+      retryable: true
+    });
+  }
+  if (!approval.approved) {
+    if (!approval.identityMismatch) {
+      logger.error('subscription.charge_status_unknown', {
+        uid,
+        tier,
+        orderId,
+        providerStatus: approval.validation.providerStatus || null
+      });
+      return res.status(503).json({
+        error: '결제 결과를 확인하고 있어요. 다시 결제하지 말고 잠시 후 확인해 주세요.',
+        code: 'SUBSCRIPTION_PAYMENT_STATUS_UNKNOWN',
+        retryable: true
+      });
+    }
+    logger.error('subscription.provider_approval_mismatch', {
+      uid,
+      tier,
+      orderId,
+      reasons: approval.validation.reasons
+    });
+    return res.status(502).json({
+      error: '결제 승인 정보가 주문과 일치하지 않아 자동 적용을 중단했어요.',
+      code: 'SUBSCRIPTION_RECONCILIATION_MISMATCH'
+    });
   }
 
   // 3. 구독/쿠폰/주문 atomic 기록
   try {
     await applySubscriptionCycle({
       uid, tier, plan,
-      paymentResult: { paymentKey: charged.data.paymentKey, orderId },
+      paymentResult: {
+        paymentKey: charged.data.paymentKey,
+        orderId,
+        approvedAt: charged.data.approvedAt || null
+      },
       billingKey, cardCompany, cardNumber,
       customerKey, isFirst: !userSnap.exists
     });
   } catch (e) {
-    if (e.message === 'DUPLICATE_ORDER') {
-      logger.warn('subscription.duplicate_order_blocked', { uid, tier, orderId });
-      return res.status(400).json({ error: '이미 처리된 주문입니다.' });
-    }
-    logger.error('subscription.apply_failed_manual_action', { uid, tier, orderId, err: e });
-    return res.status(500).json({ error: '결제는 됐으나 구독 처리에 실패했습니다. 관리자에 문의해주세요.' });
+    logger.error('subscription.apply_deferred_for_reconciliation', { uid, tier, orderId, err: e });
+    return res.status(503).json({
+      error: '결제는 완료됐고 구독 반영을 자동으로 이어서 처리하고 있어요.',
+      code: 'SUBSCRIPTION_APPLY_PENDING',
+      retryable: true
+    });
   }
+
+  await markSubscriptionIntentApplied({ admin, db, orderId, source: 'first_charge_request' })
+    .catch(err => logger.error('subscription.intent_apply_mark_failed', { uid, tier, orderId, err }));
+
+  await tryVestSubscriptionReferral(uid, orderId);
 
   logger.info('subscription.started', { uid, tier, amount: plan.amount, orderId });
   discord.subscription({ uid, tier, action: '시작' });
@@ -379,7 +555,14 @@ router.post('/subscription/charge', async (req, res) => {
 
   // 멱등성: 같은 결제주기 orderId가 이미 있으면 즉시 반환
   const orderSnap = await db.collection('subscriptionOrders').doc(orderId).get();
-  if (orderSnap.exists) return res.json({ ok: true, deduped: true });
+  if (orderSnap.exists) {
+    // The durable intent marker is secondary to the legal order snapshot.  If an
+    // earlier request committed the order but failed while updating the marker,
+    // repair the marker and never grant the cycle again.
+    await markSubscriptionIntentApplied({ admin, db, orderId, source: 'renewal_order_dedupe' })
+      .catch(err => logger.error('subscription.intent_apply_mark_failed', { uid, tier: sub.tier, orderId, err }));
+    return res.json({ ok: true, deduped: true });
+  }
 
   // ★ C-03: billingKey는 서버 전용 billingSecrets에서(없으면 sub.billingKey 폴백). customerKey는 결정적 계산.
   const billingKey = await readBillingKey(uid, sub.billingKey);
@@ -389,19 +572,32 @@ router.post('/subscription/charge', async (req, res) => {
     return res.status(400).json({ error: '결제 수단 정보가 없습니다.' });
   }
 
-  let charged = await tossChargeBilling({
-    billingKey,
-    customerKey,
-    amount: plan.amount,
-    orderId,
-    orderName: plan.name,
-    idempotencyKey: orderId
-  });
+  // Persist the deterministic order intent before contacting Toss.  A process
+  // crash after provider approval can then be recovered by querying Toss with
+  // this orderId; no new charge is needed.
+  try {
+    await prepareSubscriptionIntent({
+      admin,
+      db,
+      orderId,
+      uid,
+      tier: sub.tier,
+      amount: plan.amount,
+      plan,
+      isFirst: false,
+      cardCompany: sub.cardCompany,
+      cardNumber: sub.cardNumber
+    });
+  } catch (err) {
+    logger.error('subscription.intent_prepare_failed', { uid, tier: sub.tier, orderId, err });
+    return res.status(Number(err.status) || 503).json({
+      error: '정기결제를 준비하지 못했습니다.',
+      code: err.code || 'SUBSCRIPTION_INTENT_PREPARE_FAILED'
+    });
+  }
 
-  // 카드사 일시 오류 대비 1회 재시도 (1.5초 후) — 같은 Idempotency-Key라 중복 승인되지 않음
-  if (!charged.ok) {
-    logger.warn('subscription.charge_retrying', { uid, tier: sub.tier, orderId, code: charged.data?.code });
-    await new Promise(r => setTimeout(r, 1500));
+  let charged;
+  try {
     charged = await tossChargeBilling({
       billingKey,
       customerKey,
@@ -410,9 +606,53 @@ router.post('/subscription/charge', async (req, res) => {
       orderName: plan.name,
       idempotencyKey: orderId
     });
+
+    // 카드사 일시 오류 대비 1회 재시도 (1.5초 후) — 같은 Idempotency-Key라 중복 승인되지 않음
+    if (!charged.ok) {
+      logger.warn('subscription.charge_retrying', { uid, tier: sub.tier, orderId, code: charged.data?.code });
+      await new Promise(r => setTimeout(r, 1500));
+      charged = await tossChargeBilling({
+        billingKey,
+        customerKey,
+        amount: plan.amount,
+        orderId,
+        orderName: plan.name,
+        idempotencyKey: orderId
+      });
+    }
+  } catch (err) {
+    // A network/timeout failure does not prove that Toss declined the charge.
+    // Keep the pre-charge intent in `confirming`; process-due will query Toss by
+    // orderId before deciding whether to apply anything.
+    logger.error('subscription.charge_status_unknown', { uid, tier: sub.tier, orderId, err });
+    return res.status(503).json({
+      error: '정기결제 결과를 확인하고 있습니다.',
+      code: 'SUBSCRIPTION_PAYMENT_STATUS_UNKNOWN',
+      retryable: true
+    });
   }
 
   if (!charged.ok) {
+    if (providerChargeStatusUncertain(charged)) {
+      logger.error('subscription.charge_status_unknown', {
+        uid,
+        tier: sub.tier,
+        orderId,
+        providerStatusCode: charged.status
+      });
+      return res.status(503).json({
+        error: '정기결제 결과를 확인하고 있습니다.',
+        code: 'SUBSCRIPTION_PAYMENT_STATUS_UNKNOWN',
+        retryable: true
+      });
+    }
+    await markSubscriptionIntentProviderRejected({
+      admin,
+      db,
+      orderId,
+      providerStatus: charged.data?.status,
+      providerCode: charged.data?.code
+    }).catch(err => logger.error('subscription.intent_rejection_mark_failed', { uid, tier: sub.tier, orderId, err }));
     logger.error('subscription.charge_failed', { uid, tier: sub.tier, orderId, status: charged.status, toss: charged.data });
     await userRef.update({
       'subscription.status': 'past_due',
@@ -430,19 +670,70 @@ router.post('/subscription/charge', async (req, res) => {
     return res.status(charged.status).json({ error: '정기결제 실패' });
   }
 
+  let approval;
+  try {
+    approval = await markSubscriptionProviderApproved({ admin, db, orderId, payment: charged.data });
+  } catch (err) {
+    // Toss may already have approved.  The pre-charge intent is sufficient for
+    // the hourly reconciliation to query the provider and finish application.
+    logger.error('subscription.provider_approval_persist_failed', { uid, tier: sub.tier, orderId, err });
+    return res.status(503).json({
+      error: '결제 승인을 확인했고 구독 갱신을 이어서 처리하고 있습니다.',
+      code: 'SUBSCRIPTION_APPLY_PENDING',
+      retryable: true
+    });
+  }
+  if (!approval.approved) {
+    if (!approval.identityMismatch) {
+      logger.error('subscription.charge_status_unknown', {
+        uid,
+        tier: sub.tier,
+        orderId,
+        providerStatus: approval.validation.providerStatus || null
+      });
+      return res.status(503).json({
+        error: '정기결제 결과를 확인하고 있습니다.',
+        code: 'SUBSCRIPTION_PAYMENT_STATUS_UNKNOWN',
+        retryable: true
+      });
+    }
+    logger.error('subscription.provider_approval_mismatch', {
+      uid,
+      tier: sub.tier,
+      orderId,
+      reasons: approval.validation.reasons
+    });
+    return res.status(502).json({
+      error: '결제 승인 정보가 주문과 일치하지 않아 자동 적용을 중단했습니다.',
+      code: 'SUBSCRIPTION_RECONCILIATION_MISMATCH'
+    });
+  }
+
   try {
     await applySubscriptionCycle({
       uid, tier: sub.tier, plan,
-      paymentResult: { paymentKey: charged.data.paymentKey, orderId },
+      paymentResult: {
+        paymentKey: charged.data.paymentKey,
+        orderId,
+        approvedAt: charged.data.approvedAt || null
+      },
       billingKey,
       cardCompany: sub.cardCompany, cardNumber: sub.cardNumber,
       customerKey, isFirst: false
     });
   } catch (e) {
-    if (e.message === 'DUPLICATE_ORDER') return res.json({ ok: true, deduped: true });
-    logger.error('subscription.cycle_apply_failed_manual_action', { uid, tier: sub.tier, orderId, err: e });
-    return res.status(500).json({ error: '사이클 적용 실패' });
+    logger.error('subscription.apply_deferred_for_reconciliation', { uid, tier: sub.tier, orderId, err: e });
+    return res.status(503).json({
+      error: '결제는 완료됐고 구독 갱신을 자동으로 이어서 처리하고 있습니다.',
+      code: 'SUBSCRIPTION_APPLY_PENDING',
+      retryable: true
+    });
   }
+
+  await markSubscriptionIntentApplied({ admin, db, orderId, source: 'renewal_request' })
+    .catch(err => logger.error('subscription.intent_apply_mark_failed', { uid, tier: sub.tier, orderId, err }));
+
+  await tryVestSubscriptionReferral(uid, orderId);
 
   logger.info('subscription.charge_succeeded', { uid, tier: sub.tier, orderId });
   discord.paymentDone({ uid, amount: plan.amount, kind: `구독 갱신 · ${sub.tier}` });
@@ -452,7 +743,15 @@ router.post('/subscription/charge', async (req, res) => {
 // === 3) 매시간 cron 진입점 핵심 로직 ===
 async function runProcessDue(internalKey) {
   const now = admin.firestore.Timestamp.now();
-  const results = { processed: 0, charged: 0, failed: 0, expired: 0, cancellationInbox: null };
+  const results = {
+    processed: 0,
+    charged: 0,
+    failed: 0,
+    expired: 0,
+    cancellationInbox: null,
+    referralRewards: null,
+    subscriptionReconciliation: null
+  };
 
   // 1) active + nextBillingAt 도래 → 결제 시도
   const dueSnap = await db.collection('users')
@@ -504,9 +803,49 @@ async function runProcessDue(internalKey) {
   }
   if (results.expired) await batch.commit();
 
+  // A provider-approved subscription is money already collected.  Always try
+  // to apply these durable intents before cancellation inbox replay.  This
+  // ordering lets an already-arrived cancellation find the legal order snapshot
+  // in the same cron run instead of aging toward manual review.
+  try {
+    results.subscriptionReconciliation = await recoverPendingSubscriptionPayments({
+      admin,
+      db,
+      queryProvider: tossQueryOrder,
+      applyCycle: async args => {
+        const applied = await applySubscriptionCycle(args);
+        await tryVestSubscriptionReferral(args.uid, args.paymentResult.orderId);
+        return applied;
+      },
+      readBillingKey,
+      plans: SUB_PLANS,
+      logger,
+      limit: 100
+    });
+  } catch (err) {
+    results.subscriptionReconciliation = {
+      scanned: 0,
+      recovered: 0,
+      deduped: 0,
+      deferred: 0,
+      terminal: 0,
+      manualReview: 0,
+      failed: 1
+    };
+    logger.error('subscription.reconciliation_scan_failed', { err });
+  }
   // Webhooks are acknowledged after durable inbox persistence. Retry any transient
-  // credit-cancellation handler failure on the existing authenticated cron cycle.
+  // credit-cancellation handler failure after approved subscription recovery so a
+  // provider cancellation can reconcile the just-created order immediately.
   results.cancellationInbox = await reconcilePendingCreditCancellationInboxes({ limit: 25 });
+  // 추천 보상은 첫 결제 시 잠그고 법정 환불 가능 기간이 끝난 뒤에만 지급한다.
+  // 기존 시간당 결제 cron을 재사용해 별도 공개 스케줄러 표면을 만들지 않는다.
+  try {
+    results.referralRewards = await releaseMaturedReferralRewards({ admin, db, limit: 100 });
+  } catch (err) {
+    results.referralRewards = { scanned: 0, released: 0, cancelled: 0, deferred: 0, failed: 1 };
+    logger.error('referral.release_cron_failed', { err });
+  }
 
   logger.info('subscription.cron_process_due_completed', results);
 

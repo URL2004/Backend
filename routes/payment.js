@@ -40,6 +40,10 @@ const {
   commitCreditRestoreFromHistory
 } = require('../lib/usageBilling');
 const {
+  registerPendingReferral,
+  vestPendingReferral
+} = require('../lib/referralService');
+const {
   TERMS_POLICY_VERSION,
   REFUND_POLICY_VERSION,
   SUBSCRIPTION_REFUND_POLICY_VERSION,
@@ -62,6 +66,32 @@ const RETIRED_BASIC_EXPERIMENT_CONFIG = Object.freeze({
   source: 'retired',
   version: 'single-engine-v2.5.5'
 });
+
+async function tryVestReferral(inviteeUid, orderId) {
+  try {
+    const result = await vestPendingReferral({
+      admin,
+      db,
+      inviteeUid,
+      orderCollection: 'orders',
+      orderId
+    });
+    if (result.locked) {
+      logger.info('referral.reward_locked', {
+        inviteeUid,
+        orderId,
+        credits: result.rewardCredits,
+        releaseAtMs: result.releaseAtMs
+      });
+    }
+    return result;
+  } catch (err) {
+    // 결제·본 크레딧 지급은 이미 확정됐다. 추천 지급 실패로 결제를 실패 응답하지
+    // 않고 pending 상태를 남겨 같은 주문 재조회/관리 복구에서 멱등 재시도한다.
+    logger.error('referral.vesting_deferred', { inviteeUid, orderId, err });
+    return { vested: false, reason: 'deferred' };
+  }
+}
 function tossBasicToken(res) {
   const secretKey = process.env.TOSS_SECRET_KEY;
   if (!secretKey) {
@@ -634,6 +664,7 @@ async function handleCreditPaymentConfirmation(req, res) {
         sourceOrderId: existingOrder.sourceOrderId || null
       };
       logger.info('payment.confirm_deduped', { uid: verifiedUid, orderId, amount: safeAmount });
+      await tryVestReferral(verifiedUid, orderId);
       return res.json(creditPaymentResponse(existingResult));
     }
   } catch (err) {
@@ -821,6 +852,8 @@ async function handleCreditPaymentConfirmation(req, res) {
     creditEventId: granted.eventId,
     reconciliationSource
   });
+
+  await tryVestReferral(verifiedUid, orderId);
 
   if (!granted.deduped) {
     discord.paymentDone({
@@ -4206,59 +4239,45 @@ router.post('/apply-referral', async (req, res) => {
   try {
     const { idToken, refCode } = req.body;
     if (!idToken || !refCode) return res.status(400).json({ error: '필수 값 누락' });
-
-    // 1. 신규 유저 인증 확인
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    const newUid = decoded.uid;
-    setLogContext({ uid: newUid });
-
-    // 2. 자기 자신 추천 방지
-    const newUserSnap = await db.collection('users').doc(newUid).get();
-    if (!newUserSnap.exists) return res.status(400).json({ error: '유저 없음' });
-    if (newUserSnap.data().refCode === refCode) return res.status(400).json({ error: '본인 추천 불가' });
-
-    // 3. 이미 추천 받은 유저인지 확인
-    if (newUserSnap.data().referredBy) return res.status(400).json({ error: '이미 추천 적용됨' });
-
-    // 4. 추천인 찾기 (쿼리는 트랜잭션 밖. 단, 이중지급 방지의 권위는 트랜잭션 안 newUser.referredBy)
-    const referrerSnap = await db.collection('users').where('refCode', '==', refCode).limit(1).get();
-    if (referrerSnap.empty) return res.status(400).json({ error: '유효하지 않은 추천 코드' });
-    const referrerDoc = referrerSnap.docs[0];
-    const referrerUid = referrerDoc.id;
-    if (referrerUid === newUid) return res.status(400).json({ error: '본인 추천 불가' });
-
-    // 5. ★ C-08: 검증·지급·이력을 하나의 트랜잭션으로. referredBy를 트랜잭션 안에서 다시 읽어
-    //    동시 요청 이중 지급을 차단하고, 결정적 history ID로 재시도 멱등을 보장한다.
-    const now = admin.firestore.FieldValue.serverTimestamp();
-    const result = await db.runTransaction(async (t) => {
-      const newRef = db.collection('users').doc(newUid);
-      const refRef = db.collection('users').doc(referrerUid);
-      const newSnap = await t.get(newRef);
-      const refSnap = await t.get(refRef);
-      if (!newSnap.exists || !refSnap.exists) throw new Error('USER_NOT_FOUND');
-      if (newSnap.data().referredBy) return { applied: false };   // 이미 적용 — 멱등 종료
-      const newUserCredits = (newSnap.data().credits || 0) + 20;
-      const referrerCredits = (refSnap.data().credits || 0) + 20;
-      t.update(newRef, { credits: admin.firestore.FieldValue.increment(20), referredBy: refCode });
-      t.update(refRef, { credits: admin.firestore.FieldValue.increment(20) });
-      t.set(newRef.collection('creditHistory').doc('referral_' + newUid), {
-        type: 'referral', used: 0, amount: 20, remaining: newUserCredits,
-        detail: '친구 추천 보상 (가입)', createdAt: now
+    const decoded = await admin.auth().verifyIdToken(idToken, true);
+    const uid = decoded.uid;
+    setLogContext({ uid });
+    const result = await registerPendingReferral({ admin, db, uid, refCode });
+    logger.info('referral.pending_registered', { uid, credits: result.rewardCredits });
+    try {
+      discord.referral({
+        inviter: result.referrerName || '추천인',
+        invitee: result.inviteeName || '초대 사용자'
       });
-      t.set(refRef.collection('creditHistory').doc('referral_from_' + newUid), {
-        type: 'referral', used: 0, amount: 20, remaining: referrerCredits,
-        detail: '친구 추천 보상 (초대)', createdAt: now
-      });
-      return { applied: true };
+    } catch {}
+    res.json({
+      ok: true,
+      status: 'pending',
+      rewardCredits: result.rewardCredits,
+      message: '추천이 등록됐어요. 초대받은 사용자의 첫 결제 환불 가능 기간이 끝나면 양쪽에 보상이 한 번 지급됩니다.'
     });
-
-    if (!result.applied) return res.status(400).json({ error: '이미 추천 적용됨' });
-    logger.info('referral.applied', { referrerUid, newUid, credits: 20 });
-    try { discord.referral({ inviter: referrerDoc.data().name || referrerUid, invitee: newUserSnap.data().name || newUid }); } catch {}
-    res.json({ ok: true });
   } catch (err) {
-    logger.error('referral.failed', { err });
-    res.status(500).json({ error: '추천 처리 실패' });
+    const code = String(err && err.code || 'REFERRAL_FAILED');
+    const status = Number(err && err.status) || (String(code).startsWith('auth/') ? 401 : 500);
+    const messages = {
+      REFERRAL_CODE_INVALID: '유효하지 않은 추천 코드예요.',
+      REFERRAL_CODE_CONFLICT: '추천 코드를 확인할 수 없어 고객센터 확인이 필요해요.',
+      REFERRAL_SELF_NOT_ALLOWED: '본인의 추천 코드는 사용할 수 없어요.',
+      REFERRAL_ALREADY_APPLIED: '이미 추천이 적용됐어요.',
+      REFERRAL_WINDOW_EXPIRED: '가입 후 추천 코드를 등록할 수 있는 기간이 지났어요.',
+      REFERRAL_PURCHASE_ALREADY_SETTLED: '첫 결제가 끝난 뒤에는 추천 코드를 등록할 수 없어요.',
+      REFERRAL_RATE_LIMITED: '추천 코드 확인을 너무 많이 시도했어요. 잠시 후 다시 시도해 주세요.',
+      REFERRAL_SECRET_MISSING: '추천 기능 설정을 확인하고 있어요. 잠시 후 다시 시도해 주세요.'
+    };
+    logger[status >= 500 ? 'error' : 'warn']('referral.failed', { code, status, err });
+    if (status === 429 && err && err.retryAfterSeconds) {
+      res.set('Retry-After', String(Math.max(1, Math.floor(err.retryAfterSeconds))));
+    }
+    res.status(status).json({
+      error: messages[code] || (status === 401 ? '로그인이 필요해요.' : '추천 처리에 실패했어요.'),
+      code,
+      ...(err && err.retryAfterSeconds ? { retryAfterSeconds: err.retryAfterSeconds } : {})
+    });
   }
 });
 

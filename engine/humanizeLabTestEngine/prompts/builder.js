@@ -70,7 +70,7 @@ function buildPrompt(ctx = {}) {
 
   return {
     stable: blocks.filter(Boolean).join('\n\n'),
-    volatile: ctx.userNotes ? `[사용자 제공 재료]\n${ctx.userNotes}` : '',
+    volatile: '',
     text: blocks.filter(Boolean).join('\n\n'),
     modules,
     meta: {

@@ -12,7 +12,9 @@ function createPublicMetricsRouter({ database = db, routeLogger = logger } = {})
     try {
       const result = await publicMetrics.readPublicMetrics({ db: database });
       res.set('Cache-Control', result.status === 200
-        ? 'public, max-age=60, stale-while-revalidate=300'
+        ? (result.body?.verified
+            ? 'public, max-age=60, stale-while-revalidate=300'
+            : 'public, max-age=15, stale-while-revalidate=60')
         : 'no-store');
       return res.status(result.status).json(result.body);
     } catch (error) {

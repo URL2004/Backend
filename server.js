@@ -20,6 +20,7 @@ const errorHandler = require('./middleware/errorHandler');
 const maintenanceMode = require('./middleware/maintenanceMode');
 const { apiSecurityHeaders, protectPublicHealthPayload } = require('./middleware/httpSecurity');
 const { createAppCheckProtection } = require('./middleware/appCheckProtection');
+const { createDurableRateLimit } = require('./middleware/durableRateLimit');
 const gptRuntimeConfig = require('./lib/gptRuntimeConfig');
 const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
 const { POLICY_VERSION: HUMANIZATION_DEPTH_POLICY } = require('./engine-gpt-prod/humanizationDepth');
@@ -27,6 +28,7 @@ const { isV248FeatureEnabled } = require('./lib/humanizeV248Flags');
 const { VERSION: HUMANIZE_ENGINE_VERSION } = require('./engine-gpt-prod');
 const { registrySnapshot: writingPolicyRegistrySnapshot } = require('./engine-writing-v1/policy/registry');
 const { verifyDetailedHealthRequest } = require('./lib/healthAuth');
+const requestToken = require('./lib/reqtoken');
 
 const app = express();
 app.disable('x-powered-by');
@@ -85,6 +87,11 @@ app.use('/admin/qna', limiter); // 관리자 답변 API도 인증 검증 전 IP 
 app.use('/account/initialize', limiter); // 초기 무료 크레딧은 UID·접속지 지속 quota를 통과해야 지급
 app.use('/notifications/create-self', limiter); // 작업·결제·환불 본인 알림만 서버 검증 후 저장
 
+// 인스턴스 재시작·수평 확장 뒤에도 이어지는 보조 한도. 운영 전환 전까지
+// DURABLE_RATE_LIMIT_MODE=off가 기본이며, shadow 관측 후 enforce한다.
+// Firestore 장애 시 기존 메모리 limiter를 유지한 채 fail-open해 운영 중단을 피한다.
+app.use(createDurableRateLimit({ db, logger }));
+
 // Public liveness exposes no runtime configuration. Detailed readiness is
 // available only with HEALTH_CHECK_SECRET via /internal/health.
 const transformRouter = require('./routes/transform');
@@ -113,6 +120,7 @@ async function detailedHealth() {
         effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
         ...writingLabHealthMeta(),
         ...niklHealthMeta(),
+        authTokenCompatibility: requestToken.deprecationSnapshot(),
         firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
         openai: !!process.env.OPENAI_API_KEY,
         maintenance: maintenanceMode.isMaintenanceEnabled(),
@@ -137,6 +145,7 @@ async function detailedHealth() {
         effectConfirmationEnabled: isV248FeatureEnabled('effectConfirmation'),
         ...writingLabHealthMeta(),
         ...niklHealthMeta(),
+        authTokenCompatibility: requestToken.deprecationSnapshot(),
         firebase: !!process.env.FIREBASE_SERVICE_ACCOUNT,
         openai: !!process.env.OPENAI_API_KEY,
         maintenance: maintenanceMode.isMaintenanceEnabled(),
@@ -215,7 +224,7 @@ app.use('/', require('./routes/subscription'));
 app.use('/', require('./routes/coupon'));
 app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
 app.use('/', require('./routes/clientData')); // 서버 전용 이력 백업·1:1 문의 쓰기(인증·트랜잭션 quota)
-app.use('/', require('./routes/publicMetrics'));   // 검증된 누적 처리량 공개 지표(미검증 시 503)
+app.use('/', require('./routes/publicMetrics'));   // 누적 처리량 공개 지표(미검증은 200 + verified:false, 읽기 장애만 503)
 app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
 app.use('/', require('./routes/writinglab'));   // 관리자 실험: 자소서 생성 랩(생성→휴머나이징 결합 프로토타입, 관리자 전용·무과금)
 app.use('/', require('./routes/opsLogs'));   // 장애 로그: 관리자 조회·확인(/admin/ops-*) + 부재 감지 워치독·다이제스트 cron

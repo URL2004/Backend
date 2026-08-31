@@ -60,6 +60,7 @@ test('Q&A mutations and durable quota counters are server-only while owner reads
   assert.match(qna, /allow update, delete:\s*if false;/u);
   assert.match(qna, /allow get:\s*if isAdmin\(\) \|\| \(signedIn\(\)/u);
   assert.match(qna, /match \/clientWriteQuotas\/\{quotaId\}[\s\S]*allow read, write:\s*if false;/u);
+  assert.match(firestoreRules, /match \/securityRateLimits\/\{quotaId\}[\s\S]*allow read, write:\s*if false;/u);
 });
 
 test('Storage is default-deny for every client path', () => {

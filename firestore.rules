@@ -231,6 +231,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // 결제·AI 고비용 API의 인스턴스 간 공유 카운터. 원본 접속지는 저장하지
+    // 않고 서버 비밀 HMAC 문서 ID만 사용하며 Admin SDK만 접근한다.
+    match /securityRateLimits/{quotaId} {
+      allow read, write: if false;
+    }
+
     match /notices/{noticeId} {
       allow read: if true;
       allow create, update, delete: if isAdmin();

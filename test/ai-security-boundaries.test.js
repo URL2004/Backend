@@ -320,12 +320,14 @@ test('evidence request pins the validated address while preserving Host, SNI, an
       const response = new PassThrough();
       response.statusCode = 204;
       response.headers = {};
+      response.socket = { remoteAddress: '93.184.216.34' };
       queueMicrotask(() => callback(response));
     };
     return req;
   };
   const response = await secureEvidence.requestPinned('https://evidence.example/check', { lookup, requestImpl });
   assert.equal(response.status, 204);
+  assert.equal(response.peerAddress, '93.184.216.34');
   assert.equal(lookupCalls, 1);
   assert.equal(captured.hostname, 'evidence.example');
   assert.equal(captured.headers.Host, 'evidence.example');
@@ -340,6 +342,25 @@ test('evidence request pins the validated address while preserving Host, SNI, an
   }));
 });
 
+test('evidence request rejects a connected peer that differs from the DNS-pinned address', async () => {
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  const requestImpl = (_options, callback) => {
+    const req = new PassThrough();
+    req.end = () => {
+      const response = new PassThrough();
+      response.statusCode = 204;
+      response.headers = {};
+      response.socket = { remoteAddress: '93.184.216.35' };
+      queueMicrotask(() => callback(response));
+    };
+    return req;
+  };
+  await assert.rejects(
+    secureEvidence.requestPinned('https://evidence.example/check', { lookup, requestImpl }),
+    /evidence_peer_address_mismatch/u
+  );
+});
+
 test('every evidence redirect is independently resolved and private redirect targets are rejected', async () => {
   let requests = 0;
   const lookup = async host => host === 'first.example'
@@ -352,6 +373,7 @@ test('every evidence redirect is independently resolved and private redirect tar
       const response = new PassThrough();
       response.statusCode = 302;
       response.headers = { location: 'https://second.example/private' };
+      response.socket = { remoteAddress: '93.184.216.34' };
       queueMicrotask(() => callback(response));
     };
     return req;

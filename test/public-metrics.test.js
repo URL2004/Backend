@@ -138,9 +138,13 @@ test('2xx로 실제 전달된 응답만 집계하고 오류 응답은 집계하�
   });
 });
 
-test('검증 전에는 503과 verified:false를 반환한다', async () => {
+test('검증 전에는 정상 200과 verified:false를 반환해 클라이언트가 조용히 숨길 수 있다', async () => {
+  const unavailable = await readPublicMetrics({ db: null });
+  assert.equal(unavailable.status, 503, '실제 데이터베이스 장애는 계속 실패 신호여야 한다');
+  assert.equal(unavailable.reason, 'db_unavailable');
+
   const missing = await readPublicMetrics({ db: fakeDb() });
-  assert.equal(missing.status, 503);
+  assert.equal(missing.status, 200);
   assert.deepEqual(missing.body, {
     schemaVersion: 1,
     verified: false,
@@ -159,9 +163,22 @@ test('검증 전에는 503과 verified:false를 반환한다', async () => {
     }
   });
   const unverified = await readPublicMetrics({ db: unverifiedDb });
-  assert.equal(unverified.status, 503);
+  assert.equal(unverified.status, 200);
   assert.equal(unverified.body.verified, false);
   assert.deepEqual(unverified.body.totals, { processedCharacters: 900, completedJobs: 3 });
+
+  const app = express();
+  app.use(createPublicMetricsRouter({ database: unverifiedDb, routeLogger: { warn() {} } }));
+  const server = app.listen(0);
+  await new Promise(resolve => server.once('listening', resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/public/metrics`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('cache-control'), /max-age=15/u);
+    assert.equal((await response.json()).verified, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('검증된 집계는 exact public schema와 ISO-8601 날짜로 노출한다', async t => {

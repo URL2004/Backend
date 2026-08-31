@@ -526,6 +526,15 @@ try {
     }
   });
 
+  await run('security rate-limit counters are opaque and server-only', async () => {
+    for (const db of [anonDb, aliceDb, adminDb]) {
+      await assertFails(getDoc(doc(db, 'securityRateLimits', 'hashed-principal')));
+      await assertFails(setDoc(doc(db, 'securityRateLimits', 'hashed-principal'), {
+        scope: 'payment', hourCount: 0, dayCount: 0
+      }));
+    }
+  });
+
   await run('notices: public reads remain available while only admins can mutate', async () => {
     await assertSucceeds(getDoc(doc(anonDb, 'notices', 'public-notice')));
     await assertSucceeds(getDocs(collection(anonDb, 'notices')));

@@ -2,6 +2,7 @@
 
 const { logger: defaultLogger } = require('../lib/logger');
 const { verifyCronRequest } = require('../lib/cronAuth');
+const { bearerToken: firebaseBearerToken } = require('../lib/reqtoken');
 
 const MODES = new Set(['off', 'shadow', 'enforce']);
 
@@ -20,10 +21,7 @@ function bearerToken(req) {
 }
 
 function firebaseIdToken(req) {
-  const headerToken = bearerToken(req);
-  if (headerToken) return headerToken;
-  const compatibilityToken = typeof req?.body?.idToken === 'string' ? req.body.idToken.trim() : '';
-  return compatibilityToken.length <= 8192 ? compatibilityToken : '';
+  return firebaseBearerToken(req);
 }
 
 function createAppCheckProtection({

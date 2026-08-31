@@ -38,6 +38,26 @@ logger.warn/error(event, fields)
 바로 앞에서 `discord.billingFailure()`를 직접 호출한 과금 실패가 여기 해당한다 — 알림은 한 번만 가지만
 관리자 화면과 급증 탐지에는 그대로 반영된다.
 
+## 영속 속도 제한 전환 절차
+
+결제·AI 고비용 POST 요청에는 인스턴스 재시작 뒤에도 이어지는 Firestore 보조 카운터가 준비돼 있다.
+원본 IP나 ID token은 저장하지 않으며, `RATE_LIMIT_HMAC_SECRET`으로 도메인 분리한 HMAC 문서 ID만
+`securityRateLimits`에 기록한다. 이 계층은 Firestore 장애 때 fail-open하고 기존 메모리 제한을 계속 사용하므로
+쿼터 저장소 장애가 서비스 전체 장애로 번지지 않는다.
+
+1. 32바이트 이상 무작위 `RATE_LIMIT_HMAC_SECRET`을 설정한다.
+2. `DURABLE_RATE_LIMIT_MODE=shadow`로 72시간 관측한다. 초과는 기록하되 사용자를 막지 않는다.
+3. 정상 사용자의 초과가 없는지 확인한 뒤에만 `enforce`로 바꾼다.
+4. Firestore TTL 정책을 `securityRateLimits.expiresAt`에 설정해 비활성 카운터를 자동 정리한다.
+
+운영 기본값은 `off`다. 정기결제 워커인 `/subscription/charge`는 브라우저 한도에서 제외돼 대량 갱신을
+막지 않는다. `security.durable_rate_limit_failed_open`은 같은 프로세스에서 분당 한 번만 기록한다.
+
+Firebase ID token의 구형 `body.idToken` 호출은 `ID_TOKEN_BODY_COMPAT_MODE=warn`에서 허용·계측한다.
+`/internal/health`의 프로세스 시작 이후 `authTokenCompatibility.bodyFallbackCount`와 30일 운영 로그의
+`auth.idtoken_in_body_deprecated`가 충분한 기간 모두 0인 것을 확인한 뒤에만 `reject`로 전환한다.
+토큰 값과 호출 본문은 이 통계에 포함되지 않는다.
+
 ## 관리자 화면
 
 관리자 페이지 → **장애 로그** 탭에서 등급·도메인·미확인 여부·검색어(uid/주문번호/requestId)로 조회하고

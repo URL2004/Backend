@@ -65,6 +65,26 @@ test('pre-commit은 unstaged·untracked 잔여 파일이 있는 부분 커밋을
   assert.equal(complete.ok, true);
 });
 
+test('운영 브랜치 직접 커밋을 차단한다', () => {
+  const root = makeRepository();
+  git(root, ['branch', '-M', 'release/prod-maintenance-test']);
+  fs.writeFileSync(path.join(root, 'release.txt'), 'blocked\n');
+  git(root, ['add', 'release.txt']);
+  const report = evaluateRepository({ root, mode: 'pre-commit' });
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.some(item => item.code === 'protected_branch_commit'));
+});
+
+test('worktree 허용 개수를 넘으면 하네스가 정리를 요구한다', () => {
+  const root = makeRepository();
+  const second = `${root}-second`;
+  git(root, ['worktree', 'add', '--detach', second]);
+  const report = evaluateRepository({ root, mode: 'manual', maxWorktrees: 1 });
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.some(item => item.code === 'worktree_limit_exceeded'));
+  git(root, ['worktree', 'remove', second]);
+});
+
 test('환경 비밀·로컬 결과·개인키·실험 파일 경로는 커밋 대상에서 제외한다', () => {
   assert.equal(prohibitedPathReason('.env'), 'environment_secret');
   assert.equal(prohibitedPathReason('.env.production'), 'environment_secret');

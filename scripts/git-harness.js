@@ -4,8 +4,9 @@
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const VERSION = '1.0.0';
+const VERSION = '2.0.0';
 const MODES = new Set(['manual', 'pre-commit', 'post-commit', 'pre-push', 'deploy']);
+const PROTECTED_BRANCHES = new Set(['release/prod-maintenance-test']);
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -16,7 +17,8 @@ function main() {
     expectedBranch: String(args['expected-branch'] || '').trim(),
     remoteRef: String(args['remote-ref'] || '').trim(),
     requireEqual: args['require-equal'] === '1',
-    allowDetached: args['allow-detached'] === '1' || args['all-worktrees'] === '1'
+    allowDetached: args['allow-detached'] === '1' || args['all-worktrees'] === '1',
+    maxWorktrees: positiveInteger(args['max-worktrees'], 0)
   };
 
   const report = args['all-worktrees'] === '1'
@@ -37,7 +39,8 @@ function evaluateRepository({
   expectedBranch = '',
   remoteRef = '',
   requireEqual = false,
-  allowDetached = false
+  allowDetached = false,
+  maxWorktrees = 0
 }) {
   const state = inspectRepository(root);
   const errors = [];
@@ -53,6 +56,12 @@ function evaluateRepository({
     errors.push(issue(
       'unexpected_branch',
       `예상 브랜치 ${expectedBranch}, 현재 ${state.branch || '(detached)'}`
+    ));
+  }
+  if (mode === 'pre-commit' && PROTECTED_BRANCHES.has(state.branch)) {
+    errors.push(issue(
+      'protected_branch_commit',
+      `${state.branch}에는 직접 커밋하지 않습니다. 최신 운영 브랜치에서 작업 브랜치를 만드세요.`
     ));
   }
   if (state.conflicted.length) {
@@ -77,6 +86,15 @@ function evaluateRepository({
       `${state.secretFindings.length}개 staged 파일에서 비밀값 형태를 감지했습니다.`,
       state.secretFindings.map(item => `${item.path} (${item.code})`)
     ));
+  }
+  if (maxWorktrees > 0) {
+    const worktreeCount = parseWorktreeList(git(state.root, ['worktree', 'list', '--porcelain'])).length;
+    if (worktreeCount > maxWorktrees) {
+      errors.push(issue(
+        'worktree_limit_exceeded',
+        `worktree ${worktreeCount}개가 남아 있습니다(허용 ${maxWorktrees}개). npm run git:worktree:clean으로 정리하세요.`
+      ));
+    }
   }
 
   if (mode === 'pre-commit') {
@@ -359,6 +377,11 @@ function parseArgs(argv) {
   return out;
 }
 
+function positiveInteger(value, fallback = 0) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 module.exports = {
   VERSION,
   evaluateRepository,
@@ -368,7 +391,8 @@ module.exports = {
   prohibitedPathReason,
   scanStagedSecrets,
   parseWorktreeList,
-  parseArgs
+  parseArgs,
+  positiveInteger
 };
 
 if (require.main === module) {

@@ -36,19 +36,22 @@ rg -n "gemini|Gemini|제미나이|providers/gemini|localRuns|smoke:gemini|start:
 
 ## Git 상태 하네스
 
-Backend 저장소에 버전 관리되는 Git 하네스가 있으며 같은 작업공간의 Backend와
-Frontend 저장소 공통 hooks 경로에 설치할 수 있다.
+Backend와 Frontend 저장소는 동일한 Git 하네스 v2와 프로젝트 규칙을 사용한다.
 
 ```powershell
 # release/prod-maintenance-test가 반영된 최신 Backend worktree에서 실행
 npm run git:install-hooks
 npm run git:check
 npm run git:check:all
+npm run git:worktree:plan
 ```
 
 - `pre-commit`: staged 파일 외에 unstaged·untracked 파일이 남은 부분 커밋을 차단한다.
 - `post-commit`: 커밋 직후 남은 변경 파일을 즉시 알린다.
 - `pre-push`: staged·unstaged·untracked 파일이 하나라도 있으면 푸시를 차단한다.
+- 운영 브랜치 직접 커밋과 최신 운영 기준보다 뒤처진 작업 브랜치를 차단한다.
+- 저장소당 worktree는 기본 checkout 1개와 활성 작업 3개, 총 4개까지만 허용한다.
+- `git:worktree:clean`은 운영에 병합됐고 깨끗한 보조 worktree만 제거한다. dirty·미병합·현재 worktree는 건드리지 않는다.
 - `predeploy:v2`: 같은 하네스를 다시 실행하므로 훅을 우회해도 dirty 배포가 진행되지 않는다.
 - `.env`, 서비스 계정, 개인키, 실제 토큰, 로컬 원문·평가 결과, 실험 파일은 커밋을 차단한다.
 

@@ -58,6 +58,7 @@ app.use(express.json());
 app.use('/', transform);
 
 const TEXT = '2026년 한국대학교 연구팀은 서울 지역 학생 20명을 대상으로 학습 환경을 조사했다. 참여자 35%는 주 3회 이상 도서관을 이용했고, 평균 학습 시간은 하루 2.5시간이었다. 연구팀은 설문 문항 12개와 면담 기록을 함께 분석했다. 이 결과를 바탕으로 공간 접근성과 학습 지속 시간의 관계를 설명하고, 조사 절차와 한계를 구분해 보고서에 정리한다.'.padEnd(300, ' 연구 내용을 구체적으로 검토한다.');
+const POLISH_TEXT = '수업이 끝난 뒤 도서관에 들러 오늘 배운 내용을 다시 정리했다. 이해가 부족했던 부분은 참고 자료와 강의 노트를 비교했고, 다음 시간에 질문할 내용을 별도로 기록했다.';
 let passed = 0, failed = 0;
 function check(name, cond, extra) {
   if (cond) { passed++; console.log(`  ✓ ${name}`); }
@@ -127,8 +128,8 @@ const srv = app.listen(0, async () => {
     check('blog done + needs_review 호환 응답 수신', g2.body.status === 'done' && g2.body.mode === 'blog' && g2.body.result.outputText === '블로그 결과' && g2.body.result.floorReport.status === 'clean' && g2.body.qualityStatus === 'needs_review' && g2.body.qualityWarnings?.[0]?.code === 'semantic_omission' && g2.body.engineMeta?.schemaVersion === 3, g2.body);
 
     // 4.6) polish job(그대로 다듬기): 같은 short 풀 — 50자부터 허용·일일 한도 미적용
-    const p1 = await post('/transform', { text: '가'.repeat(80), idToken: 'u2', mode: 'polish' });
-    check('u2 polish 시작 200(80자 — short 모드 50자 허용)', p1.status === 200 && p1.body.mode === 'polish', p1);
+    const p1 = await post('/transform', { text: POLISH_TEXT, idToken: 'u2', mode: 'polish' });
+    check('u2 polish 시작 200(읽을 수 있는 50자 이상 입력 허용)', p1.status === 200 && p1.body.mode === 'polish', p1);
     await sleep(1800);
     const p2 = await get(`/transform/${p1.body.jobId}`, 'u2');
     check('polish done + 결과 수신', p2.body.status === 'done' && p2.body.mode === 'polish' && p2.body.result.outputText === '블로그 결과', p2.body);
@@ -156,10 +157,10 @@ const srv = app.listen(0, async () => {
     const c1 = await post('/transform', { text: TEXT, idToken: 'u5' });
     check('완료 후 u5 시작 200(슬롯 회수)', c1.status === 200, c1);
 
-    // 7) shutdown: running job 중단 정정 + 신규 거부(드레인)
+    // 7) shutdown: running job을 같은 ID로 재개 대기 전환 + 신규 거부(드레인)
     await transform.shutdown();
     const s1 = await get(`/transform/${c1.body.jobId}`, 'u5');
-    check('shutdown 후 running job → error(중단 안내)', s1.body.status === 'error' && /재시작/.test(s1.body.error || ''), s1.body);
+    check('shutdown 후 running job → queued(자동 재개)', s1.body.status === 'queued' && s1.body.restartRecoveryCount === 1 && /자동 재개/.test(s1.body.stage || ''), s1.body);
     const s2 = await post('/transform', { text: TEXT, idToken: 'u6' });
     check('드레인 중 신규 시작 503', s2.status === 503, s2);
     check('stats: draining=true·activeJobs=0', transform.stats().draining === true && transform.stats().activeJobs === 0, transform.stats());

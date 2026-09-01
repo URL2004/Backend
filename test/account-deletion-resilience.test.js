@@ -30,8 +30,8 @@ const {
   laneWithoutClaim,
 } = require('../lib/accountActivityClaims');
 
-test('account deletion includes credit lots and retroactive grant markers, and blocks live subscriptions', () => {
-  assert.ok(USER_SUBCOLLECTIONS.includes('creditGrants'));
+test('account deletion includes credit lots and blocks live subscriptions', () => {
+  assert.equal(USER_SUBCOLLECTIONS.includes('creditGrants'), false);
   assert.ok(USER_SUBCOLLECTIONS.includes('creditLots'));
   assert.equal(activeSubscription({ subscription: { status: 'active' } }), true);
   assert.equal(activeSubscription({ subscription: { status: 'expired' } }), false);

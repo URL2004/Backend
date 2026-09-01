@@ -17,6 +17,7 @@ const {
 } = require('../lib/signupCreditMonitoring');
 const { createSignupCreditMonitoringRouter } = require('../routes/signupCreditMonitoring');
 const { main: runReport } = require('../scripts/report-signup-credit-usage');
+const { SIGNUP_GRANT_CREDITS } = require('../lib/clientWriteService');
 
 const NOW_MS = Date.parse('2026-09-01T12:00:00.000Z');
 const TIMESTAMP = Object.freeze({ serverTimestamp: true });
@@ -39,12 +40,12 @@ function event({ type, uid, principal, amount, remaining, accountRemaining = rem
 function signupJourneyEvents() {
   const grantAt = NOW_MS - 2 * 60 * 60 * 1000;
   return [
-    event({ type: 'grant', uid: 'uid-a', principal: 'principal-a', amount: 25, remaining: 25, op: 'account_initialize', mode: 'free', at: grantAt }),
-    event({ type: 'spend', uid: 'uid-a', amount: 8, remaining: 17, op: 'detect', mode: 'detect', at: grantAt + 10 * 60_000 }),
-    event({ type: 'spend', uid: 'uid-a', amount: 16, remaining: 1, op: 'humanize', mode: 'blog', at: grantAt + 20 * 60_000 }),
-    event({ type: 'grant', uid: 'uid-b', principal: 'principal-a', amount: 25, remaining: 25, op: 'account_initialize', mode: 'free', at: NOW_MS - 60 * 60 * 1000 }),
-    event({ type: 'grant', uid: 'uid-c', principal: 'principal-c', amount: 25, remaining: 25, op: 'account_initialize', mode: 'free', at: NOW_MS - 26 * 60 * 60 * 1000 }),
-    event({ type: 'spend', uid: 'uid-c', amount: 25, remaining: 0, op: 'humanize', mode: 'basic', at: NOW_MS - 25 * 60 * 60 * 1000 })
+    event({ type: 'grant', uid: 'uid-a', principal: 'principal-a', amount: 20, remaining: 20, op: 'account_initialize', mode: 'free', at: grantAt }),
+    event({ type: 'spend', uid: 'uid-a', amount: 6, remaining: 14, op: 'detect', mode: 'detect', at: grantAt + 10 * 60_000 }),
+    event({ type: 'spend', uid: 'uid-a', amount: 12, remaining: 2, op: 'humanize', mode: 'blog', at: grantAt + 20 * 60_000 }),
+    event({ type: 'grant', uid: 'uid-b', principal: 'principal-a', amount: 20, remaining: 20, op: 'account_initialize', mode: 'free', at: NOW_MS - 60 * 60 * 1000 }),
+    event({ type: 'grant', uid: 'uid-c', principal: 'principal-c', amount: 20, remaining: 20, op: 'account_initialize', mode: 'free', at: NOW_MS - 26 * 60 * 60 * 1000 }),
+    event({ type: 'spend', uid: 'uid-c', amount: 20, remaining: 0, op: 'humanize', mode: 'basic', at: NOW_MS - 25 * 60 * 60 * 1000 })
   ];
 }
 
@@ -92,10 +93,10 @@ test('7일 cap 초과 시 최신 이벤트를 남겨 최근 24h cohort를 보존
   const oldAt = NOW_MS - 6 * DAY_MS;
   const recentAt = NOW_MS - 60 * 60 * 1000;
   const database = fakeEventDb([
-    event({ type: 'grant', uid: 'old-a', principal: 'old-a', amount: 25, remaining: 25, op: 'account_initialize', mode: 'free', at: oldAt }),
-    event({ type: 'grant', uid: 'old-b', principal: 'old-b', amount: 25, remaining: 25, op: 'account_initialize', mode: 'free', at: oldAt + 1 }),
-    event({ type: 'grant', uid: 'old-c', principal: 'old-c', amount: 25, remaining: 25, op: 'account_initialize', mode: 'free', at: oldAt + 2 }),
-    event({ type: 'grant', uid: 'recent', principal: 'recent', amount: 25, remaining: 25, op: 'account_initialize', mode: 'free', at: recentAt })
+    event({ type: 'grant', uid: 'old-a', principal: 'old-a', amount: 20, remaining: 20, op: 'account_initialize', mode: 'free', at: oldAt }),
+    event({ type: 'grant', uid: 'old-b', principal: 'old-b', amount: 20, remaining: 20, op: 'account_initialize', mode: 'free', at: oldAt + 1 }),
+    event({ type: 'grant', uid: 'old-c', principal: 'old-c', amount: 20, remaining: 20, op: 'account_initialize', mode: 'free', at: oldAt + 2 }),
+    event({ type: 'grant', uid: 'recent', principal: 'recent', amount: 20, remaining: 20, op: 'account_initialize', mode: 'free', at: recentAt })
   ]);
 
   const scan = await scanSignupCreditEvents({
@@ -128,90 +129,90 @@ test('pure cohort 집계는 24h/7d 소진 퍼널·잔액·operation/mode를 계�
     medianMinutes: 10,
     p90Minutes: 10
   });
-  assert.deepEqual(summary.cohorts.hours24.remainingAtOrBelowOne, { accounts: 1, rate: 0.5 });
+  assert.deepEqual(summary.cohorts.hours24.remainingAtOrBelowOne, { accounts: 0, rate: 0 });
   assert.deepEqual(summary.cohorts.hours24.exhausted, { accounts: 0, rate: 0 });
-  assert.deepEqual(summary.cohorts.hours24.detectHumanize24, { accounts: 1, rate: 0.5 });
+  assert.deepEqual(summary.cohorts.hours24.detectHumanize18, { accounts: 1, rate: 0.5 });
   assert.deepEqual(summary.cohorts.hours24.balanceBuckets, {
     zero: 0,
-    one: 1,
-    two_to_five: 0,
+    one: 0,
+    two_to_five: 1,
     six_to_ten: 0,
-    eleven_to_twenty_four: 0,
+    eleven_to_nineteen: 0,
     full: 1
   });
   assert.deepEqual(summary.cohorts.hours24.spend.byOperation, [
-    { key: 'humanize', events: 1, credits: 16 },
-    { key: 'detect', events: 1, credits: 8 }
+    { key: 'humanize', events: 1, credits: 12 },
+    { key: 'detect', events: 1, credits: 6 }
   ]);
   assert.equal(summary.cohorts.days7.accounts, 3);
   assert.deepEqual(summary.cohorts.days7.exhausted, { accounts: 1, rate: 0.3333 });
   assert.doesNotMatch(JSON.stringify(summary), /uid-a|uid-b|uid-c|principal-a/u);
 });
 
-test('감지 8 + 기본 blog 16만 완주로 세고 polish 또는 복구된 blog 사용량은 제외한다', () => {
+test('감지 6 + 기본 blog 12만 완주로 세고 polish 또는 복구된 blog 사용량은 제외한다', () => {
   const grantAt = NOW_MS - 60_000;
   const grant = event({
-    type: 'grant', uid: 'journey-user', principal: 'journey-principal', amount: 25,
-    remaining: 25, op: 'account_initialize', mode: 'free', at: grantAt
+    type: 'grant', uid: 'journey-user', principal: 'journey-principal', amount: 20,
+    remaining: 20, op: 'account_initialize', mode: 'free', at: grantAt
   });
   const detect = event({
-    type: 'spend', uid: 'journey-user', amount: 8, remaining: 17,
+    type: 'spend', uid: 'journey-user', amount: 6, remaining: 14,
     op: 'detect', mode: 'detect', at: grantAt + 1
   });
   const polishOnly = aggregateSignupCreditEvents([
     grant,
     detect,
     event({
-      type: 'spend', uid: 'journey-user', amount: 16, remaining: 1,
+      type: 'spend', uid: 'journey-user', amount: 12, remaining: 2,
       op: 'humanize', mode: 'polish', at: grantAt + 2
     })
   ], { nowMs: NOW_MS });
-  assert.deepEqual(polishOnly.cohorts.hours24.detectHumanize24, { accounts: 0, rate: 0 });
+  assert.deepEqual(polishOnly.cohorts.hours24.detectHumanize18, { accounts: 0, rate: 0 });
 
   const restoredBasic = aggregateSignupCreditEvents([
     grant,
     detect,
     event({
-      type: 'spend', uid: 'journey-user', amount: 16, remaining: 1,
+      type: 'spend', uid: 'journey-user', amount: 12, remaining: 2,
       op: 'humanize', mode: 'blog', at: grantAt + 2
     }),
     event({
-      type: 'restore', uid: 'journey-user', amount: 16, remaining: 17,
+      type: 'restore', uid: 'journey-user', amount: 12, remaining: 14,
       op: 'humanize', mode: 'blog', at: grantAt + 3
     }),
     event({
-      type: 'spend', uid: 'journey-user', amount: 16, remaining: 1,
+      type: 'spend', uid: 'journey-user', amount: 12, remaining: 2,
       op: 'humanize', mode: 'polish', at: grantAt + 4
     })
   ], { nowMs: NOW_MS });
-  assert.deepEqual(restoredBasic.cohorts.hours24.detectHumanize24, { accounts: 0, rate: 0 });
+  assert.deepEqual(restoredBasic.cohorts.hours24.detectHumanize18, { accounts: 0, rate: 0 });
 });
 
-test('동시 distinct 8+8 차감은 timestamp·커밋 순서가 역전돼도 delta 합으로 잔액 9를 재구성한다', () => {
+test('동시 distinct 6+6 차감은 timestamp·커밋 순서가 역전돼도 delta 합으로 잔액 8을 재구성한다', () => {
   const grantAt = NOW_MS - 60_000;
   const sameObservedAt = grantAt + 1_000;
   const grant = event({
-    type: 'grant', uid: 'concurrent-user', principal: 'shared-principal', amount: 25,
-    remaining: 25, op: 'account_initialize', mode: 'free', at: grantAt
+    type: 'grant', uid: 'concurrent-user', principal: 'shared-principal', amount: 20,
+    remaining: 20, op: 'account_initialize', mode: 'free', at: grantAt
   });
-  // remaining=9가 실제 두 번째 커밋이지만 두 이벤트의 occurredAtMs는 같다.
-  // 입력 순서를 뒤집으면 과거 latest-snapshot 방식은 17을 선택했다.
+  // remaining=8이 실제 두 번째 커밋이지만 두 이벤트의 occurredAtMs는 같다.
+  // 입력 순서를 뒤집으면 과거 latest-snapshot 방식은 14를 선택했다.
   const committedSecond = event({
-    type: 'spend', uid: 'concurrent-user', amount: 8, remaining: 9,
-    op: 'humanize', mode: 'basic', at: sameObservedAt
+    type: 'spend', uid: 'concurrent-user', amount: 6, remaining: 8,
+    op: 'detect', mode: 'detect', at: sameObservedAt
   });
   const committedFirst = event({
-    type: 'spend', uid: 'concurrent-user', amount: 8, remaining: 17,
-    op: 'humanize', mode: 'basic', at: sameObservedAt
+    type: 'spend', uid: 'concurrent-user', amount: 6, remaining: 14,
+    op: 'detect', mode: 'detect', at: sameObservedAt
   });
 
   const reversed = aggregateSignupCreditEvents([grant, committedSecond, committedFirst], { nowMs: NOW_MS });
   const forward = aggregateSignupCreditEvents([grant, committedFirst, committedSecond], { nowMs: NOW_MS });
   for (const summary of [reversed, forward]) {
     assert.equal(summary.cohorts.hours24.spend.events, 2, 'distinct request 이벤트 둘을 모두 보존한다');
-    assert.equal(summary.cohorts.hours24.spend.credits, 16);
-    assert.equal(summary.cohorts.hours24.balanceBuckets.six_to_ten, 1, '25 - 8 - 8 = 9');
-    assert.equal(summary.cohorts.hours24.balanceBuckets.eleven_to_twenty_four, 0);
+    assert.equal(summary.cohorts.hours24.spend.credits, 12);
+    assert.equal(summary.cohorts.hours24.balanceBuckets.six_to_ten, 1, '20 - 6 - 6 = 8');
+    assert.equal(summary.cohorts.hours24.balanceBuckets.eleven_to_nineteen, 0);
   }
   assert.deepEqual(reversed.cohorts.hours24.balanceBuckets, forward.cohorts.hours24.balanceBuckets);
 });
@@ -219,8 +220,8 @@ test('동시 distinct 8+8 차감은 timestamp·커밋 순서가 역전돼도 del
 test('delta 잔액 재구성은 손상된 초과 spend/restore도 0과 grant 상한으로 닫는다', () => {
   const grantAt = NOW_MS - 60_000;
   const grant = event({
-    type: 'grant', uid: 'clamped-user', principal: 'clamped-principal', amount: 25,
-    remaining: 25, op: 'account_initialize', mode: 'free', at: grantAt
+    type: 'grant', uid: 'clamped-user', principal: 'clamped-principal', amount: 20,
+    remaining: 20, op: 'account_initialize', mode: 'free', at: grantAt
   });
   const overspent = aggregateSignupCreditEvents([
     grant,
@@ -239,8 +240,8 @@ test('모든 private measurement event는 7일 조회보다 긴 30일 Timestamp 
   assert.equal(EVENT_RETENTION_DAYS, 30);
   for (const type of ['grant', 'spend', 'restore']) {
     const row = event({
-      type, uid: `ttl-${type}`, principal: `ttl-${type}`, amount: type === 'grant' ? 25 : 8,
-      remaining: type === 'spend' ? 17 : 25,
+      type, uid: `ttl-${type}`, principal: `ttl-${type}`, amount: type === 'grant' ? 20 : 6,
+      remaining: type === 'spend' ? 14 : 20,
       op: type === 'grant' ? 'account_initialize' : 'humanize',
       mode: type === 'grant' ? 'free' : 'basic',
       at: NOW_MS
@@ -250,7 +251,7 @@ test('모든 private measurement event는 7일 조회보다 긴 30일 Timestamp 
   }
 });
 
-test('같은 principal의 soft 4/20과 hard 10/50 도달 bucket을 UTC 시간·일 단위로 센다', () => {
+test('같은 principal의 soft 5/25와 hard 10/50 도달 bucket을 UTC 시간·일 단위로 센다', () => {
   const events = [];
   const dayStart = Date.parse('2026-09-01T00:00:00.000Z');
   for (let index = 0; index < 50; index += 1) {
@@ -259,8 +260,8 @@ test('같은 principal의 soft 4/20과 hard 10/50 도달 bucket을 UTC 시간·�
       type: 'grant',
       uid: `quota-uid-${index}`,
       principal: 'shared-principal',
-      amount: 25,
-      remaining: 25,
+      amount: 20,
+      remaining: 20,
       op: 'account_initialize',
       mode: 'free',
       at: dayStart + hour * 60 * 60 * 1000 + index
@@ -268,8 +269,8 @@ test('같은 principal의 soft 4/20과 hard 10/50 도달 bucket을 UTC 시간·�
   }
   const quota = aggregateSignupCreditEvents(events, { nowMs: NOW_MS }).cohorts.hours24.principalQuota;
   assert.deepEqual(quota.maxAccountsPerPrincipal, { hourly: 10, daily: 50 });
-  assert.deepEqual(quota.soft.hourly, { threshold: 4, bucketsAtOrAbove: 5, principalsAtOrAbove: 1 });
-  assert.deepEqual(quota.soft.daily, { threshold: 20, bucketsAtOrAbove: 1, principalsAtOrAbove: 1 });
+  assert.deepEqual(quota.soft.hourly, { threshold: 5, bucketsAtOrAbove: 5, principalsAtOrAbove: 1 });
+  assert.deepEqual(quota.soft.daily, { threshold: 25, bucketsAtOrAbove: 1, principalsAtOrAbove: 1 });
   assert.deepEqual(quota.hard.hourly, { threshold: 10, bucketsAtOrAbove: 5, principalsAtOrAbove: 1 });
   assert.deepEqual(quota.hard.daily, { threshold: 50, bucketsAtOrAbove: 1, principalsAtOrAbove: 1 });
 });
@@ -408,5 +409,10 @@ test('private event rules와 server mount가 직접 클라이언트 접근·누�
   assert.match(deploy, /firebase deploy --only firestore:indexes/u);
   assert.match(deploy, /gcloud firestore fields ttls list[\s\S]*collection-group=signupCreditEvents/u);
   assert.match(deploy, /7일 조회 창보다 23일의 삭제 지연 여유/u);
+  assert.equal(SIGNUP_GRANT_CREDITS, 20);
+  assert.match(deploy, /기존 계정에는 크레딧을 소급 지급하지 않는다/u);
+  assert.doesNotMatch(deploy, /credits:grant-existing|grant-existing-users-credits/u);
+  assert.equal(packageJson.scripts['credits:grant-existing'], undefined);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'scripts', 'grant-existing-users-credits.js')), false);
   assert.equal(packageJson.scripts['report:signup-credits'], 'node scripts/report-signup-credit-usage.js');
 });

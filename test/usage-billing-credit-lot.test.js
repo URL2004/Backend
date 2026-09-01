@@ -317,9 +317,9 @@ test('가입 무료분은 untracked 범위에서만 먼저 소진되고 원 차�
       plan: 'free',
       signupCreditGrant: {
         schemaVersion: 1,
-        grantCredits: 25,
+        grantCredits: 20,
         remainingCredits: 5,
-        netUsedCredits: 20,
+        netUsedCredits: 15,
         spendEventCount: 2,
         restoreEventCount: 0,
         grantedAtMs: 1,

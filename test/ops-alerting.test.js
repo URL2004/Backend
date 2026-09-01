@@ -220,7 +220,7 @@ test('가입 quota 사건은 운영 판단 필드를 보존하되 Discord 알림
     scope: 'hourly',
     count: 10,
     limit: 10,
-    grantCredits: 25,
+    grantCredits: 20,
     noAlert: true
   });
   assert.equal(sent.length, 0);
@@ -231,7 +231,7 @@ test('가입 quota 사건은 운영 판단 필드를 보존하되 Discord 알림
   assert.equal(row.quotaScope, 'hourly');
   assert.equal(row.quotaCount, 10);
   assert.equal(row.quotaLimit, 10);
-  assert.equal(row.grantCredits, 25);
+  assert.equal(row.grantCredits, 20);
   assert.equal(row.uid, undefined);
 
   const daily = opsLog.record({
@@ -241,7 +241,7 @@ test('가입 quota 사건은 운영 판단 필드를 보존하되 Discord 알림
     scope: 'daily',
     count: 50,
     limit: 50,
-    grantCredits: 25
+    grantCredits: 20
   }, opsEvents.classify('account.initialize_quota_exceeded', 'warn'));
   assert.equal(daily.merged, false, '시간당 차단과 일일 차단을 같은 사건 문서로 합치면 안 된다');
   assert.equal(daily.surge, null, '정상 hard-cap 차단은 SEV1 급증 경보를 만들지 않아야 한다');

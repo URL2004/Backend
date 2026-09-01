@@ -42,7 +42,7 @@ function formatCohort(label, cohort) {
     `first_use_p90=${cohort.firstUse.p90Minutes ?? '-'}m`,
     `remaining<=1=${cohort.remainingAtOrBelowOne.accounts} (${(cohort.remainingAtOrBelowOne.rate * 100).toFixed(1)}%)`,
     `zero=${cohort.exhausted.accounts} (${(cohort.exhausted.rate * 100).toFixed(1)}%)`,
-    `detect_humanize_24=${cohort.detectHumanize24.accounts} (${(cohort.detectHumanize24.rate * 100).toFixed(1)}%)`,
+    `detect_humanize_18=${cohort.detectHumanize18.accounts} (${(cohort.detectHumanize18.rate * 100).toFixed(1)}%)`,
     `principal_max=${cohort.principalQuota.maxAccountsPerPrincipal.hourly}/h,${cohort.principalQuota.maxAccountsPerPrincipal.daily}/d`
   ].join(' | ');
 }

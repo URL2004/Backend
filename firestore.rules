@@ -57,7 +57,7 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if isSelf(uid) || isAdmin();
 
-      // 초기 25크레딧 지급은 클라이언트가 임의 계정을 만들어 반복 지급받는 비용 표면이다.
+      // 초기 20크레딧 지급은 클라이언트가 임의 계정을 만들어 반복 지급받는 비용 표면이다.
       // /account/initialize가 Firebase 인증과 UID·접속지 지속 quota를 통과한 뒤 Admin SDK로만 생성한다.
       allow create: if false;
 

@@ -29,7 +29,7 @@ test('가입 quota 오류는 원 principal 없이 독립 구조화 이벤트로 
     quotaScope: 'hourly',
     quotaCount: 10,
     quotaLimit: 10,
-    grantCredits: 25,
+    grantCredits: 20,
     retryAfterSec: 1800
   });
   assert.deepEqual(accountInitializeQuotaLogFields(quotaError), {
@@ -38,7 +38,7 @@ test('가입 quota 오류는 원 principal 없이 독립 구조화 이벤트로 
     scope: 'hourly',
     count: 10,
     limit: 10,
-    grantCredits: 25,
+    grantCredits: 20,
     retryAfterSec: 1800,
     noAlert: true
   });
@@ -73,7 +73,7 @@ test('가입 quota 오류는 원 principal 없이 독립 구조화 이벤트로 
       scope: 'hourly',
       count: 10,
       limit: 10,
-      grantCredits: 25,
+      grantCredits: 20,
       retryAfterSec: 1800,
       noAlert: true
     }

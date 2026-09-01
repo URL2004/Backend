@@ -163,57 +163,29 @@ git fetch origin release/prod-maintenance-test
 git status --short --branch
 ```
 
-## 가입 무료 크레딧 상향 배포·소급 지급
+## 가입 무료 크레딧 20 배포·관측
 
 가입 크레딧과 고급 가격을 먼저 Backend에 배포한 뒤 Frontend 표기와 추천 게이트를 배포한다.
-순서를 바꾸면 Frontend가 100크레딧으로 안내하는 동안 Backend가 200크레딧을 차감할 수 있다.
-소급 지급은 두 배포와 신규 계정 25크레딧 확인이 끝난 뒤 실행한다.
+순서를 바꾸면 Frontend 안내와 Backend 지급·차감 정책이 일시적으로 어긋날 수 있다.
 
-1. Backend 배포 후 신규 테스트 계정에서 잔액 25와 아래 가격 경계를 확인한다.
+1. Backend 배포 후 신규 테스트 계정에서 잔액 20과 아래 가격 경계를 확인한다.
 
 ```powershell
 node -e "const p=require('./lib/humanizePricing');[2999,3000,3001,10000,10001,20000,20001].forEach(n=>console.log(n,p.restructureCredit(n,false),p.restructureCredit(n,true)))"
 ```
 
-2. 운영 서비스 계정이 설정된 Backend 디렉터리에서 전체 dry-run으로 대상 수를 확인한다. 기본값은 읽기만 하며 `--apply=1`이 없으면 Firestore를 변경하지 않는다.
+2. 기존 계정에는 크레딧을 소급 지급하지 않는다. 배포 전후 기존 계정 한 건의 잔액과 크레딧 원장이 바뀌지 않았는지 읽기 전용으로 확인한다. 소급 지급 스크립트나 운영 명령은 이 릴리스에 포함하지 않는다.
 
-```powershell
-npm run credits:grant-existing
-```
+3. 신규 계정 20크레딧으로 600자 AI 감지 6크레딧과 기본 휴머나이징 12크레딧을 이어서 완료하고 잔액 2를 확인한다. 실패 요청은 차감하지 않아야 한다.
 
-출력의 `scanned`, `eligible`, `granted`, `skipped-deletion`, `skipped-already`, `skipped-new-grant`, `failed`를 기록한다. dry-run에서는 `eligible`만 증가하고 `granted`는 0이어야 한다.
-
-3. 운영팀 테스트 UID 한 건에 먼저 적용하고, 잔액 +15·알림 1건·관리자 크레딧 원장 1행을 확인한다.
-
-```powershell
-npm run credits:grant-existing -- --uid=<검증용-uid> --apply=1
-```
-
-4. 확인 후 전체 적용하고 다시 dry-run한다. 마지막 dry-run은 `eligible: 0`, `granted: 0`이고 이미 지급한 계정은 `skipped-already`로 집계되어야 한다.
-
-```powershell
-npm run credits:grant-existing -- --apply=1
-npm run credits:grant-existing
-```
-
-5. 소급 지급 검증이 끝난 뒤 관리자 공지 작성에서 `이벤트` 분류로 공지를 게시하고 상단에 고정한다. 제목과 본문에는 신규 가입 25크레딧, 기존 회원 +15크레딧, 지급 알림 확인 경로를 함께 안내한다.
-
-- 탈퇴 `processing`, `retry_pending`, `manual_review` 및 보호 기간 중인 `completed` 계정은 `skipped-deletion`이다.
-- Backend 배포 후 `signupCreditGrant` v1으로 25크레딧 이상을 받은 신규 계정은 `skipped-new-grant`다. 소급 +15를 더해 잔액 40으로 만들지 않는다.
-- `creditGrants`, `creditHistory`, `notifications`는 동일한 결정론 ID를 사용해 재실행해도 중복 지급되지 않는다.
-- 소급 지급은 `creditLotV1Balance`를 변경하지 않는다. 무료분을 untracked 크레딧으로 유지해 유료 lot의 환불 가능액을 보호한다.
-- 개별 실패가 있으면 OS 임시 디렉터리에 실패 UID만 든 JSON 파일을 저장하고 `failedUidFile`을 출력한다. 오류 메시지·이메일·사용자 문서는 파일에 기록하지 않는다. 제한된 경로가 필요하면 `--failure-file=<path>`를 지정한다.
-- 실패 UID는 원인을 확인한 뒤 `--uid=<uid> --apply=1`로 재실행한다. 일부 실패가 있으면 프로세스 종료 코드는 1이다.
-- 지급분은 롤백 시 회수하지 않는다.
-
-가입 접속 지문 hard cap은 공유 NAT 오탐을 고려해 시간당 10계정·일일 50계정을 유지한다. 25크레딧 상향 전과 같은 노출량인 시간당 4계정·일일 20계정을 soft 관찰선으로 사용한다.
+가입 접속 지문 hard cap은 공유 NAT 오탐을 고려해 시간당 10계정·일일 50계정을 유지한다. 10크레딧 정책과 같은 최대 무료 노출량인 시간당 5계정·일일 25계정을 soft 관찰선으로 사용한다.
 
 ```powershell
 # 기본 24시간·7일 집계
 npm run report:signup-credits
 ```
 
-보고서에서 신규 계정의 최초 사용 시간, 잔액 1 이하·소진 비율, 감지 8 + 기본 휴머나이징 16 완주율, 작업·모드별 소진량, 접속 지문별 soft/hard 도달 버킷을 확인한다. quota hard-cap 차단은 `account.initialize_quota_exceeded` SEV3 사건으로 저장되며 `action`, `scope`, `count`, `limit`, `grantCredits`가 원인 판정에 쓰인다. 이 사건은 개별 Discord 알림을 보내지 않는다.
+보고서에서 신규 계정의 최초 사용 시간, 잔액 1 이하·소진 비율, 감지 6 + 기본 휴머나이징 12 완주율, 작업·모드별 소진량, 접속 지문별 soft/hard 도달 버킷을 확인한다. quota hard-cap 차단은 `account.initialize_quota_exceeded` SEV3 사건으로 저장되며 `action`, `scope`, `count`, `limit`, `grantCredits`가 원인 판정에 쓰인다. 이 사건은 개별 Discord 알림을 보내지 않는다.
 
 ### 가입 크레딧 측정 이벤트 30일 TTL
 

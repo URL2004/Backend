@@ -133,11 +133,11 @@ test('체크아웃 컨텍스트는 이벤트 기간과 기준·보너스·총 �
   });
 });
 
-test('25크레딧 가입 지급액을 기준으로 신규·체험 사용자 세그먼트를 나눈다', () => {
+test('20크레딧 가입 지급액을 기준으로 신규·체험 사용자 세그먼트를 나눈다', () => {
   const unused = buildCheckoutContext({ uid: 'u1', credits: FREE_TRIAL_CREDITS, orders: [] }, {}, DURING_EVENT_MS);
   const engaged = buildCheckoutContext({ uid: 'u2', credits: FREE_TRIAL_CREDITS - 1, orders: [] }, {}, DURING_EVENT_MS);
   const unfunded = buildCheckoutContext({ uid: 'u3', credits: FREE_TRIAL_CREDITS + 1, orders: [] }, {}, DURING_EVENT_MS);
-  assert.equal(FREE_TRIAL_CREDITS, 25);
+  assert.equal(FREE_TRIAL_CREDITS, 20);
   assert.equal(unused.segment, 'trial_unused');
   assert.equal(engaged.segment, 'trial_engaged');
   assert.equal(unfunded.segment, 'new_unfunded');

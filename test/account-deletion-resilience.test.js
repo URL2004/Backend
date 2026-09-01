@@ -30,7 +30,8 @@ const {
   laneWithoutClaim,
 } = require('../lib/accountActivityClaims');
 
-test('account deletion includes tracked credit lots and blocks live subscriptions', () => {
+test('account deletion includes credit lots and retroactive grant markers, and blocks live subscriptions', () => {
+  assert.ok(USER_SUBCOLLECTIONS.includes('creditGrants'));
   assert.ok(USER_SUBCOLLECTIONS.includes('creditLots'));
   assert.equal(activeSubscription({ subscription: { status: 'active' } }), true);
   assert.equal(activeSubscription({ subscription: { status: 'expired' } }), false);
@@ -344,7 +345,7 @@ test('route reports pending cleanup instead of silently completing partial delet
   assert.match(service, /paymentAccountClaims/);
   assert.match(service, /subscriptionOperationClaims/);
   for (const collectionName of [
-    'transformJobs', 'transformJobArchive', 'writingLabV2Jobs',
+    'analyzeRequests', 'transformJobs', 'transformJobArchive', 'writingLabV2Jobs',
     'writingLabDailyUsage', 'writingLabGenerationCommits'
   ]) {
     assert.match(service, new RegExp(`['"]${collectionName}['"]`, 'u'));

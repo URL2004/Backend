@@ -219,6 +219,7 @@ app.use('/', require('./routes/publicMetrics'));   // 검증된 누적 처리량
 app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
 app.use('/', require('./routes/writinglab'));   // 관리자 실험: 자소서 생성 랩(생성→휴머나이징 결합 프로토타입, 관리자 전용·무과금)
 app.use('/', require('./routes/opsLogs'));   // 장애 로그: 관리자 조회·확인(/admin/ops-*) + 부재 감지 워치독·다이제스트 cron
+app.use('/', require('./routes/signupCreditMonitoring')); // 신규 가입 무료 크레딧 소진 코호트(관리자 전용)
 
 app.use(errorHandler);
 

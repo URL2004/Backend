@@ -5,9 +5,12 @@ const assert = require('node:assert/strict');
 const express = require('express');
 const {
   LIMITS,
+  SIGNUP_GRANT_CREDITS,
+  consumeQuota,
   sanitizeHistoryEntry,
   createClientWriteService
 } = require('../lib/clientWriteService');
+const { EVENT_RETENTION_MS, SIGNUP_CREDIT_EVENT_COLLECTION } = require('../lib/signupCreditMonitoring');
 const { createRouter } = require('../routes/clientData');
 
 const SERVER_TIMESTAMP = Object.freeze({ __op: 'serverTimestamp' });
@@ -150,6 +153,35 @@ test('durable hourly and daily quotas reject writes inside the Firestore transac
   assert.equal(blockedStore.paths().some(path => path.includes('/history/')), false, '거절된 요청은 이력을 쓰지 않아야 한다');
 });
 
+test('account principal hard quota error exposes only structured threshold fields', async () => {
+  const nowMs = Date.UTC(2026, 7, 30, 5, 10);
+  const iso = new Date(nowMs).toISOString();
+  await assert.rejects(
+    consumeQuota({ get: async () => null }, { path: 'unused' }, {
+      uid: 'never-return-this-principal',
+      action: 'account_initialize_ip',
+      nowMs,
+      fieldValue: fakeAdmin.firestore.FieldValue,
+      snapshot: {
+        exists: true,
+        data: () => ({
+          hourKey: iso.slice(0, 13),
+          hourCount: LIMITS.account_initialize_ip.hourly,
+          dayKey: iso.slice(0, 10),
+          dayCount: 20
+        })
+      }
+    }),
+    error => error?.status === 429
+      && error.quotaAction === 'account_initialize_ip'
+      && error.quotaScope === 'hourly'
+      && error.quotaCount === 10
+      && error.quotaLimit === 10
+      && error.grantCredits === SIGNUP_GRANT_CREDITS
+      && !JSON.stringify(error).includes('never-return-this-principal')
+  );
+});
+
 test('Q&A creation trusts server profile, owner delete is enforced, and answer creates server notification', async () => {
   const store = createStore({
     'users/owner': { name: '실제 사용자', credits: 10 },
@@ -199,10 +231,21 @@ test('account initialization is server-owned, idempotent, and records both UID a
   const first = await service.initializeAccount(input);
   const second = await service.initializeAccount({ ...input, email: 'attacker@example.test' });
   assert.equal(first.duplicate, false);
-  assert.equal(first.credits, 10);
+  assert.equal(first.credits, SIGNUP_GRANT_CREDITS);
   assert.equal(second.duplicate, true);
   assert.equal(store.row('users/new-user-123').email, 'new@example.test');
   assert.equal(store.row('users/new-user-123').signupAttribution.first_touch.use_case, 'assignment');
+  assert.deepEqual(store.row('users/new-user-123').signupCreditGrant, {
+    schemaVersion: 1,
+    grantCredits: SIGNUP_GRANT_CREDITS,
+    remainingCredits: SIGNUP_GRANT_CREDITS,
+    netUsedCredits: 0,
+    spendEventCount: 0,
+    restoreEventCount: 0,
+    grantedAtMs: Date.UTC(2026, 7, 30, 7),
+    lastEventAtMs: Date.UTC(2026, 7, 30, 7),
+    source: 'account_initialize_v1'
+  });
   assert.deepEqual(store.row('accountSecurity/new-user-123'), {
     signupClientPrincipal: 'client_v1_hash',
     createdAtMs: Date.UTC(2026, 7, 30, 7),
@@ -213,6 +256,16 @@ test('account initialization is server-owned, idempotent, and records both UID a
   assert.equal(quotaRows.length, 2);
   assert.deepEqual(new Set(quotaRows.map(row => row.action)), new Set(['account_initialize', 'account_initialize_ip']));
   assert.ok(quotaRows.every(row => row.hourCount === 1), '멱등 재호출은 추가 quota를 소모하지 않는다');
+  const eventPaths = store.paths().filter(path => path.startsWith(`${SIGNUP_CREDIT_EVENT_COLLECTION}/`));
+  assert.equal(eventPaths.length, 1, '가입 재시도에도 grant 측정 이벤트는 하나여야 한다');
+  const event = store.row(eventPaths[0]);
+  assert.equal(event.eventType, 'grant');
+  assert.equal(event.creditAmount, SIGNUP_GRANT_CREDITS);
+  assert.ok(event.expireAt instanceof Date);
+  assert.equal(event.expireAt.getTime() - event.occurredAtMs, EVENT_RETENTION_MS);
+  assert.match(event.accountKey, /^account_v1_[a-f0-9]{32}$/u);
+  assert.match(event.principalKey, /^principal_v1_[a-f0-9]{32}$/u);
+  assert.doesNotMatch(JSON.stringify(event), /new-user-123|new@example\.test|client_v1_hash/u);
 });
 
 test('account initialization cannot recreate an account while deletion is active or protected', async () => {
@@ -251,7 +304,7 @@ test('account initialization cannot recreate an account while deletion is active
     clientPrincipal: 'client_v1_hash', signupAttribution: null
   });
   assert.equal(created.duplicate, false);
-  assert.equal(expired.row('users/deleting-user').credits, 10);
+  assert.equal(expired.row('users/deleting-user').credits, SIGNUP_GRANT_CREDITS);
 });
 
 test('client-originated history, notification, and Q&A writes cannot race account deletion', async () => {
@@ -374,7 +427,7 @@ test('write routes require Authorization Bearer and enforce user/admin permissio
     saveAnswer: async input => { calls.push(['answer', input]); return { id: input.questionId }; },
     deleteAnswer: async input => { calls.push(['answer-delete', input]); return { id: input.questionId }; },
     createSelfNotification: async input => { calls.push(['notification', input]); return { id: input.clientId, duplicate: false }; },
-    initializeAccount: async input => { calls.push(['account', input]); return { duplicate: false, credits: 10, createdAt: '2026-08-30T00:00:00.000Z' }; }
+    initializeAccount: async input => { calls.push(['account', input]); return { duplicate: false, credits: SIGNUP_GRANT_CREDITS, createdAt: '2026-08-30T00:00:00.000Z' }; }
   };
   const router = createRouter({
     service,

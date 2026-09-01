@@ -65,6 +65,12 @@ test('카탈로그: 결제 실패는 warn이어도 알림 대상이다(개편 �
   assert.equal(opsEvents.classify('ops.watchdog_stale_heartbeat', 'error').sev, 'SEV1');
   assert.equal(opsEvents.classify('subscription.first_charge_failed', 'warn').sev, 'SEV2');
   assert.equal(opsEvents.classify('toss.webhook_ignored', 'warn').sev, 'SEV2');
+  const signupQuota = opsEvents.classify('account.initialize_quota_exceeded', 'warn');
+  assert.equal(signupQuota.sev, 'SEV3');
+  assert.equal(signupQuota.domain, 'account');
+  const scoringUnavailable = opsEvents.classify('detect_report.scoring_unavailable', 'warn');
+  assert.equal(scoringUnavailable.sev, 'SEV3');
+  assert.equal(scoringUnavailable.domain, 'engine');
 });
 
 test('카탈로그: 카드사 거절은 조용히, 미등록 warn은 알리지 않는다(알림 피로 방지)', () => {
@@ -202,6 +208,70 @@ test('opsLog는 사건을 기록하고 같은 사건을 창 안에서 병합한�
   assert.equal(row.severity, 'SEV2');
   assert.equal(row.domain, 'payment');
   assert.equal(row.uid, 'u1');
+});
+
+test('가입 quota 사건은 운영 판단 필드를 보존하되 Discord 알림 없이 기록할 수 있다', () => {
+  reset();
+  const { logger } = require('../lib/logger');
+  const opsLog = require('../lib/opsLog');
+  logger.warn('account.initialize_quota_exceeded', {
+    uid: 'quota-user-must-not-persist',
+    action: 'account_initialize_ip',
+    scope: 'hourly',
+    count: 10,
+    limit: 10,
+    grantCredits: 25,
+    noAlert: true
+  });
+  assert.equal(sent.length, 0);
+  const row = opsLog.recentFromMemory(1)[0];
+  assert.equal(row.event, 'account.initialize_quota_exceeded');
+  assert.equal(row.severity, 'SEV3');
+  assert.equal(row.quotaAction, 'account_initialize_ip');
+  assert.equal(row.quotaScope, 'hourly');
+  assert.equal(row.quotaCount, 10);
+  assert.equal(row.quotaLimit, 10);
+  assert.equal(row.grantCredits, 25);
+  assert.equal(row.uid, undefined);
+
+  const daily = opsLog.record({
+    event: 'account.initialize_quota_exceeded',
+    level: 'warn',
+    action: 'account_initialize_ip',
+    scope: 'daily',
+    count: 50,
+    limit: 50,
+    grantCredits: 25
+  }, opsEvents.classify('account.initialize_quota_exceeded', 'warn'));
+  assert.equal(daily.merged, false, '시간당 차단과 일일 차단을 같은 사건 문서로 합치면 안 된다');
+  assert.equal(daily.surge, null, '정상 hard-cap 차단은 SEV1 급증 경보를 만들지 않아야 한다');
+});
+
+test('감지 모델 장애는 원인·지연·길이 버킷·요청 ID만 보존하고 원문 식별자는 버린다', () => {
+  const opsLog = require('../lib/opsLog');
+  const classification = opsEvents.classify('detect_report.scoring_unavailable', 'warn');
+  opsLog.record({
+    event: 'detect_report.scoring_unavailable',
+    level: 'warn',
+    requestId: 'detect-safe-request-1',
+    upstreamCode: 'OPENAI_UNAVAILABLE',
+    latencyMs: 1842,
+    lengthBucket: '1000-2999',
+    uid: 'raw-user-must-not-persist',
+    actorUid: 'raw-actor-must-not-persist',
+    text: '원문 저장 금지',
+    inputHash: 'raw-hash-must-not-persist',
+    textLength: 1843
+  }, classification);
+
+  const row = opsLog.recentFromMemory(1)[0];
+  assert.equal(row.requestId, 'detect-safe-request-1');
+  assert.equal(row.upstreamCode, 'OPENAI_UNAVAILABLE');
+  assert.equal(row.latencyMs, 1842);
+  assert.equal(row.lengthBucket, '1000-2999');
+  for (const forbidden of ['uid', 'actorUid', 'text', 'inputHash', 'textLength']) {
+    assert.equal(Object.hasOwn(row, forbidden), false, `${forbidden} 보존 금지`);
+  }
 });
 
 test('opsLog는 도메인 실패가 임계를 넘으면 급증을 보고한다', () => {

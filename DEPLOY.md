@@ -163,6 +163,79 @@ git fetch origin release/prod-maintenance-test
 git status --short --branch
 ```
 
+## 가입 무료 크레딧 상향 배포·소급 지급
+
+가입 크레딧과 고급 가격을 먼저 Backend에 배포한 뒤 Frontend 표기와 추천 게이트를 배포한다.
+순서를 바꾸면 Frontend가 100크레딧으로 안내하는 동안 Backend가 200크레딧을 차감할 수 있다.
+소급 지급은 두 배포와 신규 계정 25크레딧 확인이 끝난 뒤 실행한다.
+
+1. Backend 배포 후 신규 테스트 계정에서 잔액 25와 아래 가격 경계를 확인한다.
+
+```powershell
+node -e "const p=require('./lib/humanizePricing');[2999,3000,3001,10000,10001,20000,20001].forEach(n=>console.log(n,p.restructureCredit(n,false),p.restructureCredit(n,true)))"
+```
+
+2. 운영 서비스 계정이 설정된 Backend 디렉터리에서 전체 dry-run으로 대상 수를 확인한다. 기본값은 읽기만 하며 `--apply=1`이 없으면 Firestore를 변경하지 않는다.
+
+```powershell
+npm run credits:grant-existing
+```
+
+출력의 `scanned`, `eligible`, `granted`, `skipped-deletion`, `skipped-already`, `skipped-new-grant`, `failed`를 기록한다. dry-run에서는 `eligible`만 증가하고 `granted`는 0이어야 한다.
+
+3. 운영팀 테스트 UID 한 건에 먼저 적용하고, 잔액 +15·알림 1건·관리자 크레딧 원장 1행을 확인한다.
+
+```powershell
+npm run credits:grant-existing -- --uid=<검증용-uid> --apply=1
+```
+
+4. 확인 후 전체 적용하고 다시 dry-run한다. 마지막 dry-run은 `eligible: 0`, `granted: 0`이고 이미 지급한 계정은 `skipped-already`로 집계되어야 한다.
+
+```powershell
+npm run credits:grant-existing -- --apply=1
+npm run credits:grant-existing
+```
+
+5. 소급 지급 검증이 끝난 뒤 관리자 공지 작성에서 `이벤트` 분류로 공지를 게시하고 상단에 고정한다. 제목과 본문에는 신규 가입 25크레딧, 기존 회원 +15크레딧, 지급 알림 확인 경로를 함께 안내한다.
+
+- 탈퇴 `processing`, `retry_pending`, `manual_review` 및 보호 기간 중인 `completed` 계정은 `skipped-deletion`이다.
+- Backend 배포 후 `signupCreditGrant` v1으로 25크레딧 이상을 받은 신규 계정은 `skipped-new-grant`다. 소급 +15를 더해 잔액 40으로 만들지 않는다.
+- `creditGrants`, `creditHistory`, `notifications`는 동일한 결정론 ID를 사용해 재실행해도 중복 지급되지 않는다.
+- 소급 지급은 `creditLotV1Balance`를 변경하지 않는다. 무료분을 untracked 크레딧으로 유지해 유료 lot의 환불 가능액을 보호한다.
+- 개별 실패가 있으면 OS 임시 디렉터리에 실패 UID만 든 JSON 파일을 저장하고 `failedUidFile`을 출력한다. 오류 메시지·이메일·사용자 문서는 파일에 기록하지 않는다. 제한된 경로가 필요하면 `--failure-file=<path>`를 지정한다.
+- 실패 UID는 원인을 확인한 뒤 `--uid=<uid> --apply=1`로 재실행한다. 일부 실패가 있으면 프로세스 종료 코드는 1이다.
+- 지급분은 롤백 시 회수하지 않는다.
+
+가입 접속 지문 hard cap은 공유 NAT 오탐을 고려해 시간당 10계정·일일 50계정을 유지한다. 25크레딧 상향 전과 같은 노출량인 시간당 4계정·일일 20계정을 soft 관찰선으로 사용한다.
+
+```powershell
+# 기본 24시간·7일 집계
+npm run report:signup-credits
+```
+
+보고서에서 신규 계정의 최초 사용 시간, 잔액 1 이하·소진 비율, 감지 8 + 기본 휴머나이징 16 완주율, 작업·모드별 소진량, 접속 지문별 soft/hard 도달 버킷을 확인한다. quota hard-cap 차단은 `account.initialize_quota_exceeded` SEV3 사건으로 저장되며 `action`, `scope`, `count`, `limit`, `grantCredits`가 원인 판정에 쓰인다. 이 사건은 개별 Discord 알림을 보내지 않는다.
+
+### 가입 크레딧 측정 이벤트 30일 TTL
+
+`signupCreditEvents`는 24시간·7일 코호트 관측에 필요한 최소 필드와 hash key만 저장한다. 각 이벤트의 `expireAt`은 발생 시각에서 30일 뒤인 Firestore Timestamp다. 7일 조회 창보다 23일의 삭제 지연 여유를 두되, 가명 식별자와 이벤트가 불필요하게 장기 보존되거나 컬렉션이 계속 증가하지 않게 한다. 집계 쿼리는 `occurredAtMs`를 사용하므로 `expireAt` 단일 필드 인덱스는 비활성화한다.
+
+Backend 코드 배포와 같은 릴리스에서 `firestore.indexes.json`의 TTL field override를 먼저 배포한다.
+
+```powershell
+firebase deploy --only firestore:indexes --project <firebase-project-id>
+gcloud firestore fields ttls list --project=<firebase-project-id> --database='(default)' --collection-group=signupCreditEvents
+```
+
+두 번째 명령 결과에서 `signupCreditEvents`의 `expireAt` TTL 정책이 표시되는지 확인한다. 운영 이벤트 한 건이 생긴 뒤에는 문서 ID나 hash key를 출력하지 않고 보존 기간만 확인한다.
+
+```powershell
+node -e "const {db}=require('./config');if(!db)throw new Error('Firebase disabled');db.collection('signupCreditEvents').orderBy('occurredAtMs','desc').limit(1).get().then(s=>{const d=s.docs[0]?.data();if(!d)throw new Error('No signup credit event');console.log({retentionDays:(d.expireAt.toMillis()-d.occurredAtMs)/86400000})})"
+```
+
+정상 기준은 `retentionDays: 30`이다. TTL 정책이 목록에 없으면 측정 이벤트를 장기 운영하기 전에 index 설정을 다시 배포하고 권한·프로젝트 ID를 확인한다.
+
+권장 관찰 시점은 배포 후 1시간·6시간·24시간·72시간·7일이다. 공유 NAT에서 정상 가입이 막힌 증거가 없으면 hard cap을 즉시 낮추지 않는다.
+
 ## Frontend 배포
 
 프론트 변경이 있을 때만 배포한다. 프론트는 Vercel 프로젝트 `frontend`, scope `toavoidtheprofessor`, 운영 alias `https://gpkorea.ai.kr` 기준이다.
@@ -305,6 +378,7 @@ npm run cache:gpt -- -Limit 1000 -Json
 - 반복 차단/환불 문의가 늘면 `blocked`, `length_collapse`, `added_claim`, `lostFacts`, `evidence_pairing` 로그를 본다.
 - 배포 후에는 항상 Render `live` 상태와 `/healthz`를 같이 확인한다.
 - `writingLabV2Jobs.expiresAt` 필드는 2시간 복구용이므로 Firestore TTL 정책을 설정한다. 완료·실패 원문을 장기 보관하지 않는다.
+- `analyzeRequests.expiresAt`도 감지 응답 유실 복구에만 쓰는 2시간 TTL이다. 응답 artifact에는 원문 일부가 포함될 수 있으므로 Firestore Rules에서 클라이언트 접근을 차단하고 탈퇴 정리 대상에 포함한다. Backend 배포와 함께 `firebase deploy --only firestore:indexes --project <firebase-project-id>`를 실행한 뒤 `gcloud firestore fields ttls list --project=<firebase-project-id> --database='(default)' --collection-group=analyzeRequests`에서 TTL 정책을 확인한다.
 - 글쓰기 랩은 관리자 → 5% → 25% → 50% → 100% 순으로 `WRITING_LAB_V2_ROLLOUT_PERCENT`를 올리고, 장르별 장애는 `WRITING_LAB_V2_DISABLED_GENRES`로 분리 롤백한다.
 - 정책 팩 스키마는 `npm run writing-policy:validate`로 항상 검사한다. 규제 분야 자동 출시 전에는 법무·정책 담당자가 공식 출처와 문구를 확인한 뒤 `npm run writing-policy:approve -- <medical|legal|finance|advertising> --owner=<담당자> --approved-at=YYYY-MM-DD`로 승인 파일을 만들고 코드 리뷰를 거친다. 네 팩 모두 승인된 배포는 `WRITING_LAB_REQUIRE_ALL_POLICY_APPROVAL=1`로 predeploy를 강제한다.
 - 휴머나이징 결과는 `/writing-lab/v2/finalize`에서 서명된 사실 원장으로 재검사한다. 제한 수리도 통과하지 못하면 서명 토큰에 포함된 검증 초안으로 서버가 복구하며, 클라이언트는 `delivery.source`가 `humanized`, `humanized_repaired`, `verified_generation_fallback` 중 무엇인지 사용자에게 표시한다.

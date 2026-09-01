@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { creditLedgerDelta } = require('../lib/paymentReconciliation');
+const { EVENT_RETENTION_MS, SIGNUP_CREDIT_EVENT_COLLECTION } = require('../lib/signupCreditMonitoring');
 
 function fakeFirestore(initialRows) {
   const rows = new Map(Object.entries(initialRows).map(([path, value]) => [path, { ...value }]));
@@ -16,6 +17,9 @@ function fakeFirestore(initialRows) {
     }
     collection(name) {
       return new Collection(`${this.path}/${name}`);
+    }
+    async get() {
+      return snapshot(this);
     }
   }
 
@@ -140,6 +144,59 @@ function loadUsageBillingWith(fakeDb) {
   };
 }
 
+test('detect 차감 원장은 operation·cost·text fingerprint에 결합되고 동일 payload만 replay한다', async t => {
+  const store = fakeFirestore({
+    'users/detect-bound': { credits: 10, creditLotV1Balance: 0, plan: 'free' }
+  });
+  const loaded = loadUsageBillingWith(store.db);
+  t.after(loaded.restore);
+  const input = { opType: 'detect', needed: 3, text: '같은 감지 입력 원문' };
+  const fingerprint = loaded.billing.creditRequestPayloadFingerprint(input);
+  const otherFingerprint = loaded.billing.creditRequestPayloadFingerprint({ ...input, text: '다른 감지 입력 원문' });
+  assert.match(fingerprint, /^[a-f0-9]{64}$/u);
+  assert.notEqual(fingerprint, otherFingerprint);
+
+  const before = await loaded.billing.precheckCreditDeductIdempotency(
+    'detect-bound', 3, 'detect', 'detect-bound-request', fingerprint
+  );
+  assert.deepEqual(before, { state: 'NEW', remainingCredits: 10 });
+
+  const first = await loaded.billing.commitCreditDeduct(
+    'detect-bound', 3, 'detect', 'detect-bound-request', { requestPayloadFingerprint: fingerprint }
+  );
+  assert.equal(first.next, 7);
+  const ledger = store.row('users/detect-bound/creditHistory/req_detect-bound-request');
+  assert.equal(ledger.type, 'detect');
+  assert.equal(ledger.used, 3);
+  assert.equal(ledger.requestPayloadFingerprintVersion, 'credit-request-v1');
+  assert.equal(ledger.requestPayloadFingerprint, fingerprint);
+
+  const replay = await loaded.billing.precheckCreditDeductIdempotency(
+    'detect-bound', 3, 'detect', 'detect-bound-request', fingerprint
+  );
+  assert.deepEqual(replay, { state: 'DUPLICATE', remainingCredits: 7, chargedCredits: 3 });
+  const duplicateCommit = await loaded.billing.commitCreditDeduct(
+    'detect-bound', 3, 'detect', 'detect-bound-request', { requestPayloadFingerprint: fingerprint }
+  );
+  assert.deepEqual(duplicateCommit, { duplicate: true, current: 7, next: 7 });
+  assert.equal(store.row('users/detect-bound').credits, 7);
+
+  await assert.rejects(
+    loaded.billing.precheckCreditDeductIdempotency(
+      'detect-bound', 3, 'detect', 'detect-bound-request', otherFingerprint
+    ),
+    error => error?.code === 'IDEMPOTENCY_KEY_REUSED' && error?.status === 409
+  );
+  await assert.rejects(
+    loaded.billing.commitCreditDeduct(
+      'detect-bound', 3, 'detect', 'detect-bound-request', { requestPayloadFingerprint: otherFingerprint }
+    ),
+    error => error?.code === 'IDEMPOTENCY_KEY_REUSED' && error?.status === 409
+  );
+  assert.equal(store.row('users/detect-bound').credits, 7, 'payload mismatch는 잔액을 바꾸면 안 된다');
+  assert.equal(store.row('users/detect-bound/creditHistory/req_detect-bound-request').requestPayloadFingerprint, fingerprint);
+});
+
 test('usageBilling은 order lot 차감·복원을 원장에 남기고 동일 requestId를 중복 적용하지 않는다', async t => {
   const store = fakeFirestore({
     'users/u1': { credits: 2500, creditLotV1Balance: 2500, plan: 'free' },
@@ -250,6 +307,82 @@ test('creditLotV1Balance가 0인 기존 사용자는 orders query 없이 기존 
   assert.equal(store.row('users/legacy').credits, 100);
   assert.equal(store.observations.queryCount, 0);
   assert.equal(store.row('users/legacy/creditHistory/restore_req_legacy-job').creditLotUntrackedRestored, 10);
+});
+
+test('가입 무료분은 untracked 범위에서만 먼저 소진되고 원 차감 allocation만 멱등 복구한다', async t => {
+  const store = fakeFirestore({
+    'users/signup-user': {
+      credits: 105,
+      creditLotV1Balance: 100,
+      plan: 'free',
+      signupCreditGrant: {
+        schemaVersion: 1,
+        grantCredits: 25,
+        remainingCredits: 5,
+        netUsedCredits: 20,
+        spendEventCount: 2,
+        restoreEventCount: 0,
+        grantedAtMs: 1,
+        lastEventAtMs: 1,
+        source: 'account_initialize_v1'
+      }
+    },
+    'orders/order_paid': {
+      refundPaidCreditsRemaining: 100,
+      refundEventBonusCreditsRemaining: 0,
+      creditLotActive: true
+    },
+    'users/signup-user/creditLots/order_paid': {
+      orderId: 'order_paid',
+      createdAt: '2026-08-30T00:00:00.000Z',
+      creditGrantPolicyVersion: 'credit-grant-base-v1',
+      paidCreditsCap: 100,
+      eventBonusCreditsCap: 0,
+      refundPaidCreditsRemaining: 100,
+      refundEventBonusCreditsRemaining: 0,
+      active: true
+    }
+  });
+  const loaded = loadUsageBillingWith(store.db);
+  t.after(loaded.restore);
+
+  const deducted = await loaded.billing.commitCreditDeduct('signup-user', 10, 'humanize', 'signup-mixed', {
+    mode: 'basic',
+    textLength: 500
+  });
+  assert.equal(deducted.signupGrantCreditsUsed, 5);
+  assert.equal(store.row('users/signup-user').credits, 95);
+  assert.equal(store.row('users/signup-user').creditLotV1Balance, 95, '나머지 5만 기존 lot 정책으로 차감한다');
+  assert.equal(store.row('users/signup-user').signupCreditGrant.remainingCredits, 0);
+  const deductHistory = store.row('users/signup-user/creditHistory/req_signup-mixed');
+  assert.equal(deductHistory.creditLotUntrackedUsed, 5);
+  assert.equal(deductHistory.creditLotTrackedUsed, 5);
+  assert.equal(deductHistory.signupGrantCreditsUsed, 5);
+
+  await loaded.billing.commitCreditDeduct('signup-user', 10, 'humanize', 'signup-mixed', { mode: 'basic' });
+  let measurementRows = store.entries().filter(([path]) => path.startsWith(`${SIGNUP_CREDIT_EVENT_COLLECTION}/`));
+  assert.equal(measurementRows.length, 1, '중복 차감은 측정 이벤트도 중복 생성하지 않는다');
+  assert.equal(measurementRows[0][1].creditAmount, 5);
+  assert.match(measurementRows[0][1].accountKey, /^account_v1_[a-f0-9]{32}$/u);
+  assert.ok(measurementRows[0][1].expireAt instanceof Date);
+  assert.equal(measurementRows[0][1].expireAt.getTime() - measurementRows[0][1].occurredAtMs, EVENT_RETENTION_MS);
+  assert.equal(measurementRows[0][1].uid, undefined);
+  assert.equal(measurementRows[0][1].requestId, undefined);
+  assert.equal(measurementRows[0][1].textLength, undefined);
+  assert.doesNotMatch(JSON.stringify(measurementRows[0][1]), /signup-user|signup-mixed/u);
+
+  const restored = await loaded.billing.commitCreditRestore('signup-user', 10, 'humanize', 'signup-mixed');
+  assert.equal(restored.signupGrantCreditsRestored, 5);
+  assert.equal(store.row('users/signup-user').credits, 105);
+  assert.equal(store.row('users/signup-user').creditLotV1Balance, 100, 'tracked 5도 원 allocation대로 복구한다');
+  assert.equal(store.row('users/signup-user').signupCreditGrant.remainingCredits, 5);
+  assert.equal(store.row('users/signup-user/creditHistory/req_signup-mixed').signupGrantCreditsRestored, 5);
+  assert.equal(store.row('users/signup-user/creditHistory/restore_req_signup-mixed').signupGrantCreditsRestored, 5);
+
+  await loaded.billing.commitCreditRestore('signup-user', 10, 'humanize', 'signup-mixed');
+  measurementRows = store.entries().filter(([path]) => path.startsWith(`${SIGNUP_CREDIT_EVENT_COLLECTION}/`));
+  assert.equal(measurementRows.length, 2, '중복 복구도 restore 측정 이벤트를 늘리지 않는다');
+  assert.deepEqual(new Set(measurementRows.map(([, row]) => row.eventType)), new Set(['spend', 'restore']));
 });
 
 test('관리자 음수 조정은 unlimited 사용자도 lot 회계를 지키고 응답·감사 메타를 반환한다', async t => {

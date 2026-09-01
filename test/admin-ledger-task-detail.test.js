@@ -82,6 +82,31 @@ test('history 상세은 원문·결과를 제공하되 엔진 내부 비밀 필�
   }
 });
 
+test('감지 history 상세은 허용된 점수 출처와 모델 provenance만 반환한다', () => {
+  const item = serializeAdminLedgerTaskHistory('detect_1', {
+    type: 'detect', mode: 'detect', probability: 72, rawProbability: 72,
+    probSource: 'llm', detectConfidence: 'medium', detectModel: 'gpt-test',
+    detectorVersion: 'detect-v1', detectEscalated: true,
+    providerResponse: { raw: 'secret' }, prompt: 'secret'
+  });
+  assert.equal(item.probSource, 'llm');
+  assert.equal(item.detectConfidence, 'medium');
+  assert.equal(item.detectModel, 'gpt-test');
+  assert.equal(item.detectorVersion, 'detect-v1');
+  assert.equal(item.detectEscalated, true);
+  assert.equal(Object.hasOwn(item, 'providerResponse'), false);
+  assert.equal(Object.hasOwn(item, 'prompt'), false);
+
+  const rejected = serializeAdminLedgerTaskHistory('detect_2', {
+    type: 'detect', probSource: 'engine', detectConfidence: 'certain',
+    detectModel: 'x'.repeat(200), detectorVersion: 'y'.repeat(200)
+  });
+  assert.equal(rejected.probSource, '');
+  assert.equal(rejected.detectConfidence, '');
+  assert.equal(rejected.detectModel.length, 80);
+  assert.equal(rejected.detectorVersion.length, 80);
+});
+
 test('engine/archive 메타는 명시적 allowlist만 반환한다', () => {
   const engine = serializeAdminLedgerTaskEngineMeta({
     engineVersion: 'gpt-prod-v2.5.41', requestedMode: 'formal', semanticJudgeRan: true,

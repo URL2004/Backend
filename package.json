@@ -10,6 +10,8 @@
     "setup:layout-nlp": "node scripts/install-layout-nlp.js",
     "eval": "node eval/runEval.js",
     "report:fingerprints": "node scripts/humanize-fingerprint-report.js",
+    "report:signup-credits": "node scripts/report-signup-credit-usage.js",
+    "credits:grant-existing": "node scripts/grant-existing-users-credits.js",
     "eval:profiles": "node scripts/replay-document-profiles.js",
     "audit:humanize-local": "node scripts/audit-local-humanize-pairs.js",
     "audit:humanize-text-local": "node scripts/audit-local-humanize-text-pairs.js",

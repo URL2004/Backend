@@ -57,7 +57,7 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if isSelf(uid) || isAdmin();
 
-      // 초기 10크레딧 지급은 클라이언트가 임의 계정을 만들어 반복 지급받는 비용 표면이다.
+      // 초기 25크레딧 지급은 클라이언트가 임의 계정을 만들어 반복 지급받는 비용 표면이다.
       // /account/initialize가 Firebase 인증과 UID·접속지 지속 quota를 통과한 뒤 Admin SDK로만 생성한다.
       allow create: if false;
 
@@ -186,6 +186,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // 감지 응답 유실 복구용 서버 전용 캐시. 원문 일부가 응답 artifact에 포함될 수 있어
+    // 인증 사용자에게도 직접 노출하지 않고 API의 payload-bound replay로만 반환한다.
+    match /analyzeRequests/{requestId} {
+      allow read, write: if false;
+    }
+
     match /transformJobArchive/{jobId} {
       allow read: if isAdmin();
       allow write: if false;
@@ -244,6 +250,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /opsHeartbeats/{docId} {
+      allow read, write: if false;
+    }
+
+    // 가입 무료 크레딧 측정 이벤트는 UID·IP 대신 서버 생성 hash key만 담는다.
+    // 관리자 화면도 직접 조회하지 않고 /admin/signup-credit-summary의 집계만 사용한다.
+    match /signupCreditEvents/{eventId} {
       allow read, write: if false;
     }
 

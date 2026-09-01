@@ -29,6 +29,20 @@ function respondError(res, error) {
   });
 }
 
+function accountInitializeQuotaLogFields(error) {
+  return {
+    code: error?.code,
+    action: error?.quotaAction,
+    scope: error?.quotaScope,
+    count: error?.quotaCount,
+    limit: error?.quotaLimit,
+    grantCredits: error?.grantCredits,
+    retryAfterSec: error?.retryAfterSec,
+    // 정상적인 hard-cap 차단은 추세 기록 대상이다. 개별 Discord 알림은 보내지 않는다.
+    noAlert: true
+  };
+}
+
 function createRouter(deps = {}) {
   const db = deps.db ?? config.db;
   const admin = deps.admin ?? config.admin;
@@ -98,7 +112,15 @@ function createRouter(deps = {}) {
         : '';
       return res.status(result.duplicate ? 200 : 201).json({ ok: true, ...result, metaEventId });
     } catch (error) {
-      logger.warn('account.initialize_failed', { uid: decoded.uid, code: error?.code, err: error });
+      if (error?.code === 'WRITE_QUOTA_EXCEEDED') {
+        logger.warn('account.initialize_quota_exceeded', {
+          // 임계값 추세는 계정별 사건이 아니다. 요청 컨텍스트의 UID도 명시적으로 지운다.
+          uid: undefined,
+          ...accountInitializeQuotaLogFields(error)
+        });
+      } else {
+        logger.warn('account.initialize_failed', { uid: decoded.uid, code: error?.code, err: error });
+      }
       return respondError(res, error);
     }
   });
@@ -231,5 +253,6 @@ function createRouter(deps = {}) {
 }
 
 module.exports = createRouter();
+module.exports.accountInitializeQuotaLogFields = accountInitializeQuotaLogFields;
 module.exports.createRouter = createRouter;
 module.exports.strictBearerToken = strictBearerToken;

@@ -107,6 +107,7 @@ test('field allowlists include additions and authentication bindings stay server
     assert.match(firestoreRules, new RegExp(`match /${collectionName}/\\{[^}]+\\}\\s*\\{[\\s\\S]*?allow read, write:\\s*if false;`, 'u'));
   }
   assert.match(firestoreRules, /match \/accountSecurity\/\{uid\}\s*\{[\s\S]*?allow read, write:\s*if false;/u);
+  assert.match(firestoreRules, /match \/analyzeRequests\/\{requestId\}\s*\{[\s\S]*?allow read, write:\s*if false;/u);
 });
 
 test('Q&A mutations and durable quota counters are server-only while owner reads remain', () => {

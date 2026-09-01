@@ -60,6 +60,12 @@
   ],
   "fieldOverrides": [
     {
+      "collectionGroup": "signupCreditEvents",
+      "fieldPath": "expireAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
       "collectionGroup": "analyzeRequests",
       "fieldPath": "expiresAt",
       "ttl": true,

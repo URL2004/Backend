@@ -8,6 +8,7 @@ delete process.env.FIREBASE_SERVICE_ACCOUNT;
 
 const path = require('path');
 const base = path.join(__dirname, '..');
+const detectAttempts = new Map();
 
 function stub(relativePath, exports) {
   const full = require.resolve(path.join(base, relativePath));
@@ -25,6 +26,7 @@ stub('lib/gptRuntimeConfig.js', {
 
 stub('routes/analyze-gpt.js', {
   runDetect: async text => {
+    detectAttempts.set(String(text), (detectAttempts.get(String(text)) || 0) + 1);
     if (String(text).includes('FAILLLM')) throw new Error('stub: GPT unavailable');
     return {
       probability: 88,
@@ -39,11 +41,12 @@ stub('routes/analyze-gpt.js', {
   })
 });
 
-// Keep retry behavior deterministic and fast while preserving the production call shape.
+// Keep retry behavior deterministic and fast while preserving production semantics:
+// attempts is the total call count, not an additional retry count.
 const billing = require(path.join(base, 'lib', 'usageBilling.js'));
-billing.retryAsync = async (fn, retryCount = 0) => {
+billing.retryAsync = async (fn, attempts = 3) => {
   let lastError;
-  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       return await fn();
     } catch (error) {
@@ -110,20 +113,27 @@ const server = app.listen(0, '127.0.0.1', async () => {
     const solutions = result.body.solutions;
     check('휴머나이징 비용 계약 일치', solutions.polish.credits === expectedShortCost
       && solutions.blog.credits === expectedShortCost
-      && solutions.restructure.credits === 200
-      && solutions.restructure.creditsEvidence === 300, solutions);
+      && solutions.restructure.credits === 100
+      && solutions.restructure.creditsEvidence === 150, solutions);
     check('모든 해결 경로에 밴드가 있음', Boolean(
       solutions.polish.band && solutions.blog.band && solutions.restructure.band
     ), solutions);
     check('폐기된 무료 잔여 횟수를 응답하지 않음', !Object.prototype.hasOwnProperty.call(result.body, 'remainingToday'), result.body.remainingToday);
 
-    const fallback = await post({ text: `FAILLLM ${TEXT}` });
-    check('GPT 감지 실패 시 결정론 확률로 격리', fallback.status === 200
-      && typeof fallback.body.probability === 'number'
-      && fallback.body.probSource === 'engine', {
-      status: fallback.status,
-      probability: fallback.body.probability,
-      probSource: fallback.body.probSource
+    const failedText = `FAILLLM ${TEXT}`;
+    const unavailable = await post({ text: failedText });
+    check('GPT 감지 실패 시 503 무차감으로 닫힘', unavailable.status === 503
+      && unavailable.body.code === 'DETECT_MODEL_UNAVAILABLE'
+      && unavailable.body.retryable === true
+      && unavailable.body.charged === 0, {
+      status: unavailable.status,
+      body: unavailable.body
+    });
+    check('실패 응답에 엔진 추정 숫자를 노출하지 않음',
+      !Object.prototype.hasOwnProperty.call(unavailable.body, 'probability')
+      && !Object.prototype.hasOwnProperty.call(unavailable.body, 'probSource'), unavailable.body);
+    check('운영과 같은 총 2회 모델 시도', detectAttempts.get(failedText) === 2, {
+      attempts: detectAttempts.get(failedText)
     });
   } catch (error) {
     failed += 1;

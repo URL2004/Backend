@@ -6,7 +6,8 @@
 //   ② 결정론 문단 지도(surfaceguard.analyzeParagraphs, 무LLM·무비용) — "어느 문단이 왜 위험한지"
 //   ③ 경로별 예상 밴드(diagnose 테이블) + 이 글 기준 비용(과금 공식과 동일 산식 — 단가 단일 출처)
 //   ④ 실시간 1문장 미리보기(가장 AI스러운 문장 1개 경량 변환) — 전환을 만드는 핵심 장치
-// 실패 격리: ①·④는 각자 실패해도 보고서는 나간다(결정론 ②·③만으로 성립). 둘 다 fire 후 Promise.all.
+// 실패 격리: ④ 미리보기 실패는 보고서에서 숨긴다. ① 권위 점수 모델이 최종 실패하거나
+// 불완전하면 결정론 점수로 대체하지 않고 503·무차감으로 종료한다. 둘은 fire 후 Promise.all.
 
 const express = require('express');
 const router = express.Router();
@@ -23,6 +24,7 @@ const { bearerToken } = require('../lib/reqtoken');   // idToken: 헤더 우선�
 const detectCalibration = require('../lib/detectCalibration');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const history = require('../lib/historyService');
+const detectRequests = require('../lib/detectRequestStore');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const inputrouting = require('../engine/inputrouting');
@@ -97,6 +99,121 @@ async function activeGptConfig() {
   return gptRuntimeConfig.isGptActive(cfg) ? cfg : null;
 }
 
+const DETECT_REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{7,79}$/u;
+
+function parseDetectRequestId(value) {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  if (!candidate) return { requestId: null, errorCode: 'REQUEST_ID_REQUIRED' };
+  if (!DETECT_REQUEST_ID_RE.test(candidate)) {
+    return { requestId: null, errorCode: 'INVALID_REQUEST_ID' };
+  }
+  return { requestId: candidate, errorCode: null };
+}
+
+function detectTextLengthBucket(length) {
+  const safeLength = Math.max(0, Math.floor(Number(length) || 0));
+  if (safeLength < 500) return '100-499';
+  if (safeLength < 1000) return '500-999';
+  if (safeLength < 3000) return '1000-2999';
+  if (safeLength < 10000) return '3000-9999';
+  return '10000-30000';
+}
+
+function idempotencyReused(res, cost) {
+  return res.status(409).json({
+    ok: false,
+    code: 'IDEMPOTENCY_KEY_REUSED',
+    error: '같은 작업 번호에 다른 글이나 비용을 사용할 수 없어요. 새 작업 번호로 다시 시도해 주세요.',
+    retryable: false,
+    charged: 0,
+    cost
+  });
+}
+
+function idempotencyUnavailable(res, cost, code = 'IDEMPOTENCY_RESULT_UNAVAILABLE') {
+  return res.status(503).json({
+    ok: false,
+    code,
+    error: '이전 감지 결과를 안전하게 확인하는 중이에요. 잠시 후 같은 작업 번호로 다시 시도해 주세요.',
+    retryable: true,
+    charged: 0,
+    cost
+  });
+}
+
+function processingResponse(res, cost) {
+  return res.status(202).json({
+    ok: false,
+    status: 'PROCESSING',
+    code: 'DETECT_REQUEST_PROCESSING',
+    error: '같은 감지 작업을 처리하고 있어요. 잠시 후 다시 확인해 주세요.',
+    retryable: true,
+    charged: 0,
+    cost
+  });
+}
+
+function cachedPublicResponse(value) {
+  const response = value && typeof value === 'object' ? value : null;
+  if (!response || response.ok !== true || !Number.isFinite(response.probability)) return null;
+  return JSON.parse(JSON.stringify(response));
+}
+
+function replayCachedResponse(res, cached, { charged, remainingCredits }) {
+  const response = cachedPublicResponse(cached);
+  if (!response) return null;
+  response.charged = Math.max(0, Math.floor(Number(charged) || 0));
+  response.idempotentReplay = true;
+  if (Number.isFinite(Number(remainingCredits))) {
+    response.remainingCredits = Math.max(0, Math.floor(Number(remainingCredits)));
+  }
+  res.json(response);
+  return response;
+}
+
+function billingFailureResponse(res, error, cost, remainingCredits) {
+  const code = String(error?.code || error?.message || 'DETECT_BILLING_UNAVAILABLE');
+  const common = {
+    ok: false,
+    charged: 0,
+    cost,
+    ...(Number.isFinite(Number(remainingCredits))
+      ? { remainingCredits: Math.max(0, Math.floor(Number(remainingCredits))) }
+      : {})
+  };
+  if (code === 'IDEMPOTENCY_KEY_REUSED') return idempotencyReused(res, cost);
+  if (code === 'INSUFFICIENT_CREDITS') {
+    return res.status(402).json({
+      ...common,
+      code,
+      error: '크레딧이 부족합니다. 충전 후 같은 작업 번호로 다시 시도해 주세요.',
+      retryable: true
+    });
+  }
+  if (code === 'ACCOUNT_DELETION_IN_PROGRESS') {
+    return res.status(409).json({
+      ...common,
+      code,
+      error: '회원 탈퇴 처리가 진행 중이라 크레딧을 차감할 수 없어요.',
+      retryable: false
+    });
+  }
+  if (['AUTH_REQUIRED', 'AUTH_INVALID', 'USER_NOT_FOUND'].includes(code)) {
+    return res.status(code === 'USER_NOT_FOUND' ? 404 : 401).json({
+      ...common,
+      code,
+      error: code === 'USER_NOT_FOUND' ? '사용자 정보를 찾을 수 없습니다.' : '로그인 정보를 다시 확인해 주세요.',
+      retryable: false
+    });
+  }
+  return res.status(503).json({
+    ...common,
+    code: code === 'CREDIT_LOT_INCONSISTENT' ? code : 'DETECT_BILLING_UNAVAILABLE',
+    error: '크레딧 처리를 완료하지 못했어요. 결과는 전달되지 않았습니다. 잠시 후 같은 작업 번호로 다시 시도해 주세요.',
+    retryable: true
+  });
+}
+
 router.post('/detect-report', async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   // 글자수 기준 통일: 표시 카운트와 동일하게 공백 포함 raw length으로 최소 길이 판정.
@@ -119,148 +236,604 @@ router.post('/detect-report', async (req, res) => {
   const uid = await verifyToken(idToken);
   if (uid) setLogContext({ uid });
   const cost = Math.ceil(text.length / 100);
-  const requestId = (typeof req.body?.requestId === 'string' && req.body.requestId.trim())
-    ? req.body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '') : null;
+  const parsedRequestId = parseDetectRequestId(req.body?.requestId);
+  const requestId = parsedRequestId.requestId;
 
-  // 로그인·잔액 선검증(차감은 성공 후)
+  // 먼저 인증 계정의 플랜만 확인한다. 잔액 검사는 아래 멱등 replay 조회 뒤에 해야
+  // 최초 응답 유실 뒤 잔액이 0이어도 이미 결제된 결과를 회수할 수 있다.
   let paidPre = null;
   if (!devNoAuth) {
     if (!uid) return res.status(401).json({ error: 'AI 감지는 로그인이 필요해요.', code: 'LOGIN_REQUIRED', cost });
     try {
-      paidPre = await billing.precheckCredits(idToken, cost);
+      paidPre = await billing.getCreditAccountState(uid);
     } catch (e) {
-      return res.status(e.status || 402).json({ error: billing.authErrorMessage(e.message), code: 'INSUFFICIENT_CREDITS', cost });
+      return res.status(e.status || 503).json({
+        error: billing.authErrorMessage(e.message),
+        code: e.message === 'USER_NOT_FOUND' ? 'USER_NOT_FOUND' : 'ACCOUNT_STATE_UNAVAILABLE',
+        charged: 0,
+        cost
+      });
+    }
+    // 크레딧 차감 대상은 클라이언트가 같은 키를 재사용해야만 안전하게 멱등 처리할 수 있다.
+    // dev 무인증과 unlimited는 차감 자체가 없으므로 기존 내부 호출 호환성을 유지한다.
+    if (paidPre.plan !== 'unlimited' && parsedRequestId.errorCode) {
+      const missing = parsedRequestId.errorCode === 'REQUEST_ID_REQUIRED';
+      logger.warn('detect_report.request_id_rejected', {
+        uid,
+        reason: missing ? 'missing' : 'invalid',
+        textLength: text.length,
+        cost
+      });
+      return res.status(400).json({
+        ok: false,
+        code: parsedRequestId.errorCode,
+        error: missing
+          ? '안전한 크레딧 처리를 위해 작업 번호가 필요해요. 페이지를 새로고침한 뒤 다시 시도해 주세요.'
+          : '작업 번호 형식이 올바르지 않아요. 페이지를 새로고침한 뒤 다시 시도해 주세요.',
+        retryable: false,
+        charged: 0,
+        cost
+      });
+    }
+  }
+  let chargeEligible = !devNoAuth && paidPre && paidPre.plan !== 'unlimited';
+  const requestPayloadFingerprint = (!devNoAuth && requestId)
+    ? billing.creditRequestPayloadFingerprint({ opType: 'detect', needed: cost, text })
+    : null;
+  const requestBinding = requestPayloadFingerprint ? {
+    uid,
+    requestId,
+    payloadFingerprint: requestPayloadFingerprint,
+    cost
+  } : null;
+  let creditIdempotency = { state: 'NOT_APPLICABLE', remainingCredits: null };
+  let requestClaim = null;
+  let cachedArtifact = null;
+
+  if (requestBinding) {
+    if (chargeEligible) {
+      try {
+        creditIdempotency = await billing.precheckCreditDeductIdempotency(
+          uid,
+          cost,
+          'detect',
+          requestId,
+          requestPayloadFingerprint
+        );
+      } catch (error) {
+        if (error?.code === 'IDEMPOTENCY_KEY_REUSED') return idempotencyReused(res, cost);
+        logger.error('detect_report.idempotency_ledger_check_failed', { uid, requestId, err: error });
+        return idempotencyUnavailable(res, cost, 'IDEMPOTENCY_CHECK_UNAVAILABLE');
+      }
+    }
+
+    const historyIdempotency = await history.getDetectHistoryIdempotency({
+      uid,
+      requestId,
+      needed: cost,
+      requestPayloadFingerprint
+    });
+    if (historyIdempotency.state === 'UNAVAILABLE') {
+      logger.error('detect_report.idempotency_history_check_failed', {
+        uid,
+        requestId,
+        err: historyIdempotency.error
+      });
+      return idempotencyUnavailable(res, cost, 'IDEMPOTENCY_CHECK_UNAVAILABLE');
+    }
+    if (historyIdempotency.state === 'MISMATCH') return idempotencyReused(res, cost);
+
+    if (creditIdempotency.state === 'DUPLICATE' && historyIdempotency.state === 'READY') {
+      const replayed = replayCachedResponse(res, historyIdempotency.response, {
+        charged: 0,
+        remainingCredits: creditIdempotency.remainingCredits
+      });
+      if (replayed) {
+        logger.info('detect_report.idempotent_replay', {
+          uid: undefined,
+          clientRequestId: requestId,
+          scoreSource: 'cached_llm',
+          probability: replayed.probability,
+          charged: replayed.charged,
+          remainingCredits: replayed.remainingCredits,
+          lengthBucket: detectTextLengthBucket(text.length)
+        });
+        return;
+      }
+      return idempotencyUnavailable(res, cost);
+    }
+    if (!chargeEligible && historyIdempotency.state === 'READY') {
+      const replayed = replayCachedResponse(res, historyIdempotency.response, {
+        charged: 0,
+        remainingCredits: null
+      });
+      if (replayed) return;
+      return idempotencyUnavailable(res, cost);
+    }
+    if (creditIdempotency.state === 'NEW' && historyIdempotency.state !== 'NOT_FOUND') {
+      return idempotencyReused(res, cost);
+    }
+    if (!chargeEligible && historyIdempotency.state === 'INCOMPLETE') {
+      return idempotencyUnavailable(res, cost);
+    }
+
+    requestClaim = await detectRequests.begin(requestBinding);
+    if (requestClaim.state === 'MISMATCH') return idempotencyReused(res, cost);
+    if (requestClaim.state === 'ACCOUNT_DELETION') {
+      return res.status(409).json({
+        ok: false,
+        code: 'ACCOUNT_DELETION_IN_PROGRESS',
+        error: '회원 탈퇴 처리가 진행 중이라 감지를 시작할 수 없어요.',
+        retryable: false,
+        charged: 0,
+        cost
+      });
+    }
+    if (['INVALID', 'UNAVAILABLE'].includes(requestClaim.state)) {
+      return idempotencyUnavailable(res, cost, 'IDEMPOTENCY_CHECK_UNAVAILABLE');
+    }
+    if (requestClaim.state === 'PROCESSING') return processingResponse(res, cost);
+    if (['RESULT_READY', 'COMPLETE'].includes(requestClaim.state)) {
+      cachedArtifact = requestClaim.response;
+    }
+    if (creditIdempotency.state === 'DUPLICATE' && requestClaim.state === 'NEW') {
+      await detectRequests.releaseAfterModelFailure(requestBinding);
+      return idempotencyUnavailable(res, cost);
+    }
+    if (chargeEligible && creditIdempotency.state === 'NEW' && requestClaim.state === 'COMPLETE') {
+      return idempotencyReused(res, cost);
+    }
+  }
+
+  // 신규 차감 또는 아직 결제되지 않은 staged 결과에만 현재 잔액을 검사한다.
+  // 이미 원장에 결합된 duplicate replay는 잔액 0이어도 이 검사를 건너뛴다.
+  if (chargeEligible && creditIdempotency.state !== 'DUPLICATE') {
+    try {
+      paidPre = await billing.precheckCredits(idToken, cost);
+      if (paidPre.plan === 'unlimited') chargeEligible = false;
+    } catch (error) {
+      if (requestBinding && requestClaim?.state === 'NEW') {
+        await detectRequests.releaseAfterModelFailure(requestBinding);
+      }
+      return billingFailureResponse(res, error, cost, paidPre?.credits);
     }
   }
   logger.info('detect_report.started', { uid, textLength: text.length, cost, devNoAuth });
 
-  // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
-  //   ★ 문단 분리(2026-07-20): 빈 줄 없는 붙여넣기에서 전체가 1문단이 되던 실사고 →
-  //   splitParagraphsForReport(빈줄→줄바꿈→항목머리→문장묶음 폴백)로 나누고,
-  //   등급·문단상세도 같은 경계(joined)로 계산해 인덱스·판정을 정합시킨다.
-  let ir, paras, detail;
-  try {
-    paras = sg.splitParagraphsForReport(text);
-    const joined = paras.join('\n\n');
-    ir = sg.classifyInputRisk(joined);
-    detail = sg.analyzeParagraphs(joined).detail;
-  } catch (e) {
-    logger.error('detect_report.surface_failed', { uid, err: e });
-    return res.status(500).json({ error: '감지 처리 중 오류가 발생했어요.' });
-  }
-  const grade = ir.grade || 'B';
-  const copy = COPY[grade] || COPY.B;
-  const advancedRouting = resolveAdvancedRouting(text, ir);
-  let advancedTimeEstimate = null;
-  try {
-    advancedTimeEstimate = estimateAdvancedTime(text);
-  } catch (error) {
-    logger.warn('detect_report.time_estimate_failed', { err: error });
-  }
-
-  // ①·④ LLM 2건 병렬 — 각자 실패 허용
-  //   maxOutputTokens 2200: 긴 글에서 detail이 길어지면 1200으론 tool JSON이 max_tokens에 잘려
-  //   probability 누락(detect_incomplete) → "판정 보류" 실사고(2026-06-12). 재시도 2회로 일시 오류도 흡수.
-  const detectP = billing.retryAsync(async () => {
-    const gptCfg = await activeGptConfig();
-    if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
-    const r = await gptAnalyze.runDetect(text, 'ko', {
-      config: gptCfg,
-      route: 'detect_report',
-      allowLocalFallback: false,
-      uid: uid || ''
-    });
-    if (typeof r?.probability !== 'number') throw new Error('detect_incomplete');
-    return r;
-  }, 2).catch(e => { logger.warn('detect_report.llm_failed_fallback_engine', { uid, err: e }); return null; });
-
-  const before = pickAiSentence(paras, detail);
-  const exampleP = before
-    ? (async () => {
-        const gptCfg = await activeGptConfig();
-        if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
-        const r = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '' });
-        return r?.rewritten ? { before, after: r.rewritten } : null;
-      })().catch(e => { logger.warn('detect_report.preview_failed', { uid, err: e }); return null; })
-    : Promise.resolve(null);
-
-  const [det, example] = await Promise.all([detectP, exampleP]);
-
-  // LLM 실패 시 엔진 추정 확률 — "판정 보류" 금지(사장님 지시): 게이지는 항상 숫자를 보여준다.
-  //   추상위험비율(0~1) → 22~92% 선형 매핑. 실측 감각(혼합 글 52·위험 짧은 글 88)과 대략 정합.
-  const engineProb = Math.round(Math.min(92, Math.max(15, 22 + 70 * (ir.abstractRiskRatio || 0))));
-  const rawProbability = det ? Math.round(det.probability) : engineProb;
-  const calibration = await detectCalibration.applyHistoryCalibration({
-    db,
-    uid,
-    text,
-    probability: rawProbability,
-    logger,
-    route: 'detect_report'
-  });
-  const probability = calibration.probability;
-  const narrated = applyDetectNarrativePolicy(det || {
-    probability,
-    signals: [],
-    confidence: 'low'
-  }, probability);
-
-  // 과금은 성공 직전에만 — 서버 오류로 보고서를 못 받았는데 차감되는 일 방지.
-  // unlimited 플랜은 차감 제외. 멱등키로 중복 차감 방지.
-  const charged = (!devNoAuth && paidPre && paidPre.plan !== 'unlimited') ? cost : 0;
-  if (charged && !req.aborted) {
-    try {
-      await billing.commitCreditDeduct(paidPre.uid, cost, 'detect', requestId, { mode: 'detect', textLength: text.length });
-    } catch (e) {
-      logger.error('detect_report.paid_deduct_failed_manual_action', { uid, cost, requestId, err: e });
+  let artifact = null;
+  let usedCachedArtifact = false;
+  if (cachedArtifact) {
+    const publicResponse = cachedPublicResponse(cachedArtifact.publicResponse);
+    if (!publicResponse || !cachedArtifact.historyResult || !cachedArtifact.metric) {
+      return idempotencyUnavailable(res, cost);
     }
-  }
+    artifact = {
+      publicResponse,
+      historyResult: cachedArtifact.historyResult,
+      metric: cachedArtifact.metric
+    };
+    usedCachedArtifact = true;
+  } else {
+    // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
+    let ir, paras, detail;
+    try {
+      paras = sg.splitParagraphsForReport(text);
+      const joined = paras.join('\n\n');
+      ir = sg.classifyInputRisk(joined);
+      detail = sg.analyzeParagraphs(joined).detail;
+    } catch (error) {
+      if (requestBinding) await detectRequests.releaseAfterModelFailure(requestBinding);
+      logger.error('detect_report.surface_failed', { uid, err: error });
+      return res.status(500).json({ error: '감지 처리 중 오류가 발생했어요.', charged: 0, cost });
+    }
+    const grade = ir.grade || 'B';
+    const copy = COPY[grade] || COPY.B;
+    const advancedRouting = resolveAdvancedRouting(text, ir);
+    let advancedTimeEstimate = null;
+    try {
+      advancedTimeEstimate = estimateAdvancedTime(text);
+    } catch (error) {
+      logger.warn('detect_report.time_estimate_failed', { err: error });
+    }
 
-  // 감지 보고서도 /analyze와 같은 users/{uid}/history 스키마에 저장한다.
-  // requestId를 문서 ID로 사용해 재시도·중복 클릭이 관리자 작업 기록을 중복 생성하지 않게 한다.
-  let historySaved = false;
-  if (!devNoAuth && uid && !req.aborted) {
+    // ①·④ LLM 2건 병렬. 미리보기 실패는 격리하지만 점수 모델 실패는
+    // 서로 다른 척도의 로컬 숫자로 바꾸지 않는다.
+    const scoreStartedAt = Date.now();
+    let detectError = null;
+    const detectP = billing.retryAsync(async () => {
+      const gptCfg = await activeGptConfig();
+      if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
+      const result = await gptAnalyze.runDetect(text, 'ko', {
+        config: gptCfg,
+        route: 'detect_report',
+        allowLocalFallback: false,
+        uid: uid || ''
+      });
+      if (!Number.isFinite(result?.probability)) {
+        throw Object.assign(new Error('detect_incomplete'), { code: 'DETECT_INCOMPLETE' });
+      }
+      return result;
+    }, 2).catch(error => {
+      detectError = error;
+      return null;
+    });
+
+    const before = pickAiSentence(paras, detail);
+    const exampleP = before
+      ? (async () => {
+          const gptCfg = await activeGptConfig();
+          if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
+          const result = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '' });
+          return result?.rewritten ? { before, after: result.rewritten } : null;
+        })().catch(error => { logger.warn('detect_report.preview_failed', { uid, err: error }); return null; })
+      : Promise.resolve(null);
+
+    const [det, example] = await Promise.all([detectP, exampleP]);
+    const shadowEngineProbability = Math.round(Math.min(92, Math.max(15, 22 + 70 * (ir.abstractRiskRatio || 0))));
+    const scoreLatencyMs = Date.now() - scoreStartedAt;
+    if (!det) {
+      if (requestBinding) await detectRequests.releaseAfterModelFailure(requestBinding);
+      const upstreamErrorCode = String(detectError?.code || detectError?.name || 'DETECT_FAILED')
+        .replace(/[^A-Za-z0-9_.:-]/g, '')
+        .slice(0, 80) || 'DETECT_FAILED';
+      const blockedMetric = {
+        uid: undefined,
+        requestId: requestId || undefined,
+        outcome: 'blocked',
+        scoreSource: 'none',
+        shadowEngineProbability,
+        upstreamCode: upstreamErrorCode,
+        retryable: true,
+        latencyMs: scoreLatencyMs,
+        lengthBucket: detectTextLengthBucket(text.length)
+      };
+      logger.warn('detect_report.scoring_unavailable', blockedMetric);
+      logger.info('detect_report.score_outcome', blockedMetric);
+      return res.status(503).json({
+        ok: false,
+        error: 'AI 감지 모델 응답을 받지 못했어요. 크레딧은 차감되지 않았어요. 잠시 후 다시 시도해 주세요.',
+        code: 'DETECT_MODEL_UNAVAILABLE',
+        retryable: true,
+        charged: 0,
+        cost
+      });
+    }
+
+    const rawProbability = Math.round(det.probability);
+    let calibration;
+    try {
+      calibration = await detectCalibration.applyHistoryCalibration({
+        db,
+        uid,
+        text,
+        probability: rawProbability,
+        logger,
+        route: 'detect_report'
+      });
+    } catch (error) {
+      if (requestBinding) await detectRequests.releaseAfterModelFailure(requestBinding);
+      logger.error('detect_report.calibration_failed', { uid, requestId, err: error });
+      return res.status(503).json({
+        ok: false,
+        code: 'DETECT_CALIBRATION_UNAVAILABLE',
+        error: '감지 결과를 안전하게 확정하지 못했어요. 크레딧은 차감되지 않았습니다.',
+        retryable: true,
+        charged: 0,
+        cost
+      });
+    }
+    const probability = calibration.probability;
+    const narrated = applyDetectNarrativePolicy(det, probability);
+    const len = text.length;
+    const B = BANDS;
     const historyResult = {
-      ...narrated,
+      probability,
+      riskLevel: narrated.riskLevel,
+      riskLabel: narrated.riskLabel,
+      summary: narrated.summary,
+      detail: narrated.detail,
+      signals: narrated.signals,
+      confidence: det.confidence,
+      gptMeta: {
+        selectedModel: det.gptMeta?.selectedModel,
+        engine: det.gptMeta?.engine,
+        escalated: det.gptMeta?.escalated === true
+      },
+      probSource: 'llm',
       ...(calibration.applied ? {
         rawProbability: calibration.rawProbability,
         probabilityCalibration: calibration.meta
       } : {})
     };
+    const publicResponse = {
+      ok: true,
+      free: false,
+      charged: chargeEligible ? cost : 0,
+      historySaved: false,
+      probability,
+      ...(calibration.applied ? {
+        rawProbability: calibration.rawProbability,
+        calibrated: true,
+        probabilityCalibration: calibration.meta
+      } : {}),
+      probSource: 'llm',
+      riskLevel: narrated.riskLevel,
+      riskLabel: narrated.riskLabel,
+      summary: narrated.summary,
+      detail: narrated.detail,
+      grade,
+      title: copy.title,
+      abstractRiskRatio: ir.abstractRiskRatio,
+      restructureUnfit: advancedRouting.effectiveUnfit.unfit === true,
+      restructureUnfitReason: advancedRouting.effectiveUnfit.reason || null,
+      restructureUnfitKind: advancedRouting.effectiveUnfit.kind || null,
+      advancedEligible: advancedRouting.advancedEligible,
+      recommendedMode: advancedRouting.recommendedMode,
+      recommendationCode: advancedRouting.recommendationCode || null,
+      recommendationReason: advancedRouting.recommendationReason || null,
+      documentProfile: advancedRouting.profile,
+      profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
+      routingOverride: advancedRouting.routingOverride || null,
+      advancedTimeEstimate,
+      paragraphs: paras.map((paragraph, index) => {
+        const kind = (detail[index] && detail[index].kind) || 'thin';
+        return {
+          idx: index,
+          kind,
+          reason: PARA_REASON[kind],
+          snippet: paragraph.slice(0, 140),
+          text: paragraph.length > 140 ? paragraph : undefined,
+          coach: predictCoach(paragraph)
+        };
+      }),
+      coach: predictCoach(text, 0.5),
+      counts: {
+        total: paras.length,
+        risk: detail.filter(item => item.kind === 'abstract_risk').length,
+        thin: detail.filter(item => item.kind === 'thin').length,
+        safe: detail.filter(item => item.kind === 'concrete').length
+      },
+      example,
+      solutions: {
+        polish: { band: B.POLISH_BAND[grade], credits: shortHumanizeCredit(len) },
+        blog: { band: B.BLOG_BAND[grade], credits: shortHumanizeCredit(len) },
+        restructure: {
+          band: B.RESTRUCTURE_BAND,
+          credits: restructureCredit(len, false),
+          creditsEvidence: restructureCredit(len, true)
+        }
+      }
+    };
+    artifact = {
+      publicResponse,
+      historyResult,
+      metric: {
+        grade,
+        probability,
+        rawProbability,
+        calibrated: calibration.applied,
+        calibration: calibration.applied ? calibration.meta : null,
+        riskLevel: narrated.riskLevel,
+        riskLabel: narrated.riskLabel,
+        narrativeConsistencyAdjusted: narrated.narrativeConsistencyAdjusted,
+        shadowEngineProbability,
+        confidence: ['low', 'medium', 'high'].includes(det.confidence) ? det.confidence : null,
+        selectedModel: det.gptMeta?.selectedModel || null,
+        detectorVersion: det.gptMeta?.engine || null,
+        escalated: det.gptMeta?.escalated === true,
+        scoreLatencyMs
+      }
+    };
+
+    // 결과를 과금 전에 durable cache에 고정한다. commit 응답 유실·동시 재시도도
+    // 같은 requestId에서는 이 결과만 재사용하며 모델을 다시 호출하지 않는다.
+    if (requestBinding) {
+      const staged = await detectRequests.stageResult(requestBinding, artifact);
+      if (staged.state === 'MISMATCH') return idempotencyReused(res, cost);
+      if (staged.state === 'ACCOUNT_DELETION') {
+        return billingFailureResponse(res, { code: 'ACCOUNT_DELETION_IN_PROGRESS' }, cost, null);
+      }
+      if (!['RESULT_READY', 'COMPLETE'].includes(staged.state) || !staged.response) {
+        await detectRequests.releaseAfterModelFailure(requestBinding);
+        return idempotencyUnavailable(res, cost, 'IDEMPOTENCY_CACHE_UNAVAILABLE');
+      }
+      if (staged.response !== artifact) {
+        const stagedPublic = cachedPublicResponse(staged.response.publicResponse);
+        if (!stagedPublic || !staged.response.historyResult || !staged.response.metric) {
+          return idempotencyUnavailable(res, cost);
+        }
+        artifact = { ...staged.response, publicResponse: stagedPublic };
+        usedCachedArtifact = true;
+      }
+    }
+  }
+
+  if (req.aborted) return;
+
+  let charged = chargeEligible && creditIdempotency.state !== 'DUPLICATE' ? cost : 0;
+  let remainingCredits = creditIdempotency.remainingCredits;
+  if (chargeEligible && creditIdempotency.state !== 'DUPLICATE') {
+    let deduction = null;
+    let commitError = null;
     try {
-      await history.saveAnalyzeHistory({
+      deduction = await billing.retryAsync(() => billing.commitCreditDeduct(
+        paidPre.uid,
+        cost,
+        'detect',
+        requestId,
+        {
+          mode: 'detect',
+          textLength: text.length,
+          requestPayloadFingerprint
+        }
+      ), 2);
+    } catch (error) {
+      commitError = error;
+    }
+
+    if (deduction) {
+      const deductedAmount = Number(deduction.current) - Number(deduction.next);
+      const confirmed = deduction.duplicate === true
+        || (Number.isFinite(deductedAmount) && Math.round(deductedAmount) === cost);
+      if (!confirmed) {
+        commitError = Object.assign(new Error('DETECT_BILLING_UNCONFIRMED'), {
+          code: 'DETECT_BILLING_UNCONFIRMED',
+          status: 503
+        });
+      } else {
+        remainingCredits = deduction.next;
+        if (deduction.duplicate === true) charged = 0;
+      }
+    } else if (!commitError) {
+      commitError = Object.assign(new Error('DETECT_BILLING_UNCONFIRMED'), {
+        code: 'DETECT_BILLING_UNCONFIRMED',
+        status: 503
+      });
+    }
+
+    if (commitError) {
+      let confirmedAfterError = null;
+      try {
+        confirmedAfterError = await billing.precheckCreditDeductIdempotency(
+          uid,
+          cost,
+          'detect',
+          requestId,
+          requestPayloadFingerprint
+        );
+      } catch (checkError) {
+        if (checkError?.code === 'IDEMPOTENCY_KEY_REUSED') {
+          await detectRequests.recordBillingFailure(requestBinding, checkError);
+          return idempotencyReused(res, cost);
+        }
+      }
+      if (confirmedAfterError?.state === 'DUPLICATE') {
+        remainingCredits = confirmedAfterError.remainingCredits;
+        charged = 0;
+        logger.warn('detect_report.billing_commit_ambiguous_recovered', {
+          uid,
+          requestId,
+          cost,
+          err: commitError
+        });
+      } else {
+        await detectRequests.recordBillingFailure(requestBinding, commitError);
+        const expectedRejection = ['INSUFFICIENT_CREDITS', 'ACCOUNT_DELETION_IN_PROGRESS']
+          .includes(String(commitError?.code || commitError?.message || ''));
+        logger[expectedRejection ? 'warn' : 'error']('detect_report.billing_commit_failed', {
+          uid,
+          requestId,
+          cost,
+          err: commitError
+        });
+        return billingFailureResponse(
+          res,
+          commitError,
+          cost,
+          confirmedAfterError?.remainingCredits
+        );
+      }
+    }
+  }
+
+  if (req.aborted) return;
+
+  let responseBody = {
+    ...artifact.publicResponse,
+    charged,
+    historySaved: false,
+    ...(Number.isFinite(Number(remainingCredits))
+      ? { remainingCredits: Math.max(0, Math.floor(Number(remainingCredits))) }
+      : {}),
+    ...(usedCachedArtifact ? { idempotentReplay: true } : {})
+  };
+  let historySaved = false;
+  if (!devNoAuth && uid) {
+    const responseForCache = { ...responseBody, historySaved: true };
+    try {
+      const saved = await history.saveAnalyzeHistory({
         uid,
         requestId,
         opType: 'detect',
         text,
         needed: cost,
-        result: historyResult,
-        mode: 'detect'
+        result: artifact.historyResult,
+        mode: 'detect',
+        requestPayloadFingerprint,
+        detectResponseCache: responseForCache
       });
-      historySaved = true;
-    } catch (e) {
-      // 감지 결과 전달·과금은 성공했으므로 이력 저장 장애만 격리한다.
-      logger.warn('detect_report.history_persist_failed', { uid, requestId, err: e });
+      historySaved = saved?.saved === true;
+      if (saved?.duplicate && saved.response) {
+        const existing = cachedPublicResponse(saved.response);
+        if (!existing) return idempotencyUnavailable(res, cost);
+        responseBody = {
+          ...existing,
+          charged,
+          historySaved: true,
+          ...(Number.isFinite(Number(remainingCredits))
+            ? { remainingCredits: Math.max(0, Math.floor(Number(remainingCredits))) }
+            : {}),
+          idempotentReplay: true
+        };
+        usedCachedArtifact = true;
+      }
+    } catch (error) {
+      if (error?.code === 'IDEMPOTENCY_KEY_REUSED') return idempotencyReused(res, cost);
+      logger.warn('detect_report.history_persist_failed', { uid, requestId, err: error });
     }
   }
+  responseBody.historySaved = historySaved;
+
+  if (requestBinding) {
+    const completed = await detectRequests.complete(requestBinding, {
+      ...artifact,
+      publicResponse: responseBody
+    });
+    if (!['COMPLETE'].includes(completed.state)) {
+      logger.error('detect_report.idempotency_complete_unconfirmed', {
+        uid,
+        requestId,
+        state: completed.state
+      });
+    }
+  }
+
+  const metric = artifact.metric;
   logger.info('detect_report.completed', {
     uid,
-    grade,
-    probability,
-    rawProbability: calibration.applied ? calibration.rawProbability : undefined,
-    calibrated: calibration.applied,
-    calibration: calibration.applied ? calibration.meta : undefined,
-    probSource: det ? 'llm' : 'engine',
-    riskLevel: narrated.riskLevel,
-    riskLabel: narrated.riskLabel,
-    narrativeConsistencyAdjusted: narrated.narrativeConsistencyAdjusted,
+    grade: metric.grade,
+    probability: metric.probability,
+    rawProbability: metric.calibrated ? metric.rawProbability : undefined,
+    calibrated: metric.calibrated,
+    calibration: metric.calibrated ? metric.calibration : undefined,
+    probSource: 'llm',
+    riskLevel: metric.riskLevel,
+    riskLabel: metric.riskLabel,
+    narrativeConsistencyAdjusted: metric.narrativeConsistencyAdjusted,
     charged,
-    historySaved
+    remainingCredits,
+    historySaved,
+    idempotentReplay: usedCachedArtifact
+  });
+  logger.info('detect_report.score_outcome', {
+    uid: undefined,
+    requestId: requestId || undefined,
+    outcome: 'delivered',
+    scoreSource: usedCachedArtifact ? 'cached_llm' : 'llm',
+    probability: metric.probability,
+    rawProbability: metric.rawProbability,
+    shadowEngineProbability: metric.shadowEngineProbability,
+    scoreDeltaFromShadow: metric.rawProbability - metric.shadowEngineProbability,
+    confidence: metric.confidence || undefined,
+    selectedModel: metric.selectedModel || undefined,
+    detectorVersion: metric.detectorVersion || undefined,
+    escalated: metric.escalated,
+    calibrated: metric.calibrated,
+    charged,
+    latencyMs: metric.scoreLatencyMs,
+    lengthBucket: detectTextLengthBucket(text.length)
   });
 
-  // ③ 비용 — 실제 과금 공식과 동일 산식(다듬기 1/100자 · 블로그 2/100자 · 재구성 구간 정액)
-  const len = text.length;
-  const B = BANDS;
   publicMetrics.trackDeliveredMetric(res, {
     operation: 'detect',
     eventId: requestId || String(res.getHeader('x-request-id') || crypto.randomUUID()),
@@ -269,59 +842,7 @@ router.post('/detect-report', async (req, res) => {
     isAdmin: ADMIN_UIDS.includes(uid),
     isTest: devNoAuth
   }, { db, logger });
-  res.json({
-    ok: true,
-    free: false,          // 무료 제공 제거(2026-07-20) — 항상 유료
-    charged,              // unlimited 플랜·dev는 0
-    historySaved,
-    probability,
-    ...(calibration.applied ? {
-      rawProbability: calibration.rawProbability,
-      calibrated: true,
-      probabilityCalibration: calibration.meta
-    } : {}),
-    probSource: det ? 'llm' : 'engine',
-    riskLevel: narrated.riskLevel,
-    riskLabel: narrated.riskLabel,
-    summary: narrated.summary,
-    detail: narrated.detail,
-    grade,
-    title: copy.title,
-    abstractRiskRatio: ir.abstractRiskRatio,
-    restructureUnfit: advancedRouting.effectiveUnfit.unfit === true,
-    restructureUnfitReason: advancedRouting.effectiveUnfit.reason || null,
-    restructureUnfitKind: advancedRouting.effectiveUnfit.kind || null,
-    advancedEligible: advancedRouting.advancedEligible,
-    recommendedMode: advancedRouting.recommendedMode,
-    recommendationCode: advancedRouting.recommendationCode || null,
-    recommendationReason: advancedRouting.recommendationReason || null,
-    documentProfile: advancedRouting.profile,
-    profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
-    routingOverride: advancedRouting.routingOverride || null,
-    advancedTimeEstimate,
-    paragraphs: paras.map((p, i) => {
-      const kind = (detail[i] && detail[i].kind) || 'thin';
-      // snippet=미리보기(140자), text=문단 전문(프론트 "전체보기" 토글용 — 미리보기보다 길 때만 포함)
-      return { idx: i, kind, reason: PARA_REASON[kind], snippet: p.slice(0, 140), text: p.length > 140 ? p : undefined, coach: predictCoach(p) };   // ★문단별 예측태그→메모칸 코칭
-    }),
-    coach: predictCoach(text, 0.5),   // ★글 전체 상위 예측태그 + 어느 경험 메모 칸을 채우면 되는지(코칭 요약)
-    counts: {
-      total: paras.length,
-      risk: detail.filter(d => d.kind === 'abstract_risk').length,
-      thin: detail.filter(d => d.kind === 'thin').length,
-      safe: detail.filter(d => d.kind === 'concrete').length
-    },
-    example,   // { before, after } | null — null이면 프론트가 블록 자체를 숨김
-    solutions: {
-      polish: { band: B.POLISH_BAND[grade], credits: shortHumanizeCredit(len) },
-      blog: { band: B.BLOG_BAND[grade], credits: shortHumanizeCredit(len) },
-      restructure: {
-        band: B.RESTRUCTURE_BAND,
-        credits: restructureCredit(len, false),
-        creditsEvidence: restructureCredit(len, true)
-      }
-    }
-  });
+  return res.json(responseBody);
 });
 
 // ── 자동 코칭 후보(2026-06-18): 시작 직전 선택 모달용. 글에서 입장·경험 후보를 생성해 반환 →

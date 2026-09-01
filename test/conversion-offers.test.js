@@ -6,6 +6,7 @@ const {
   CREDIT_PRODUCT_BASES,
   CREDIT_PRODUCTS,
   EXTRA_CREDIT_EVENT,
+  FREE_TRIAL_CREDITS,
   STARTER_UPGRADE,
   buildCheckoutContext,
   buildStarterUpgradeGrant,
@@ -132,11 +133,14 @@ test('체크아웃 컨텍스트는 이벤트 기간과 기준·보너스·총 �
   });
 });
 
-test('신규·체험 사용자 세그먼트를 기존대로 유지한다', () => {
-  const unused = buildCheckoutContext({ uid: 'u1', credits: 10, orders: [] }, {}, DURING_EVENT_MS);
-  const engaged = buildCheckoutContext({ uid: 'u2', credits: 4, orders: [] }, {}, DURING_EVENT_MS);
+test('25크레딧 가입 지급액을 기준으로 신규·체험 사용자 세그먼트를 나눈다', () => {
+  const unused = buildCheckoutContext({ uid: 'u1', credits: FREE_TRIAL_CREDITS, orders: [] }, {}, DURING_EVENT_MS);
+  const engaged = buildCheckoutContext({ uid: 'u2', credits: FREE_TRIAL_CREDITS - 1, orders: [] }, {}, DURING_EVENT_MS);
+  const unfunded = buildCheckoutContext({ uid: 'u3', credits: FREE_TRIAL_CREDITS + 1, orders: [] }, {}, DURING_EVENT_MS);
+  assert.equal(FREE_TRIAL_CREDITS, 25);
   assert.equal(unused.segment, 'trial_unused');
   assert.equal(engaged.segment, 'trial_engaged');
+  assert.equal(unfunded.segment, 'new_unfunded');
   assert.equal(unused.starterOffer.totalCredits, 105);
 });
 

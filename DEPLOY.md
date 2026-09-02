@@ -211,7 +211,8 @@ node -e "const {db}=require('./config');if(!db)throw new Error('Firebase disable
 ## 요금제 개편 2026-09-04 배포·관측
 
 2,900·8,700원 결제를 종료하고 5,900원(200크레딧) 스타터로 시작 상품을 바꾼 릴리스. 팀·기관 116,000원은 문의 전용(수동 지급).
-카탈로그 정책 버전은 `credit-offer-v3-202609`이며 Frontend `conversion-flow.js`·`app-main.js`의 미러 값과 같아야 한다.
+카탈로그 정책 버전은 `credit-offer-v4-202609`이며 Frontend `conversion-flow.js`·`app-main.js`의 미러 값과 같아야 한다.
+개강 이벤트는 5,900원 스타터에는 적용하지 않아 200크레딧 그대로 지급하고, 나머지 상품에는 기준 크레딧의 +5%를 지급한다.
 
 배포 순서는 **Backend → Frontend**다. Frontend를 먼저 올리면 5,900원 결제가 서버에서 400으로 거절되고,
 Backend만 올린 동안(목표 10분 이내) 구형 화면의 2,900·8,700원 클릭은 `400 PRODUCT_RETIRED`(새로고침 안내)로 끝난다.
@@ -220,8 +221,8 @@ Backend만 올린 동안(목표 10분 이내) 구형 화면의 2,900·8,700원 �
 
 ```powershell
 $h=@{Authorization="Bearer $token";'Content-Type'='application/json'}
-# 오퍼는 5900/14500/29000/58000 네 종, starterOffer 5900, pricingPolicyVersion credit-offer-v3-202609
-(Invoke-RestMethod -Method Post -Uri 'https://ai-backend-3xtk.onrender.com/checkout-context' -Headers $h -Body '{}') | Select-Object pricingPolicyVersion,@{n='offers';e={($_.creditOffers|%{$_.amount}) -join ','}},@{n='starter';e={$_.starterOffer.amount}}
+# 오퍼는 5900/14500/29000/58000 네 종, starterOffer 5900/200크레딧, pricingPolicyVersion credit-offer-v4-202609
+(Invoke-RestMethod -Method Post -Uri 'https://ai-backend-3xtk.onrender.com/checkout-context' -Headers $h -Body '{}') | Select-Object pricingPolicyVersion,@{n='offers';e={($_.creditOffers|%{"$($_.amount):$($_.eventBonusCredits):$($_.totalCredits)"}) -join ','}},@{n='starter';e={"$($_.starterOffer.amount):$($_.starterOffer.eventBonusCredits):$($_.starterOffer.totalCredits)"}}
 # prepare: 2900 → 400 PRODUCT_RETIRED, 116000 → 400 PRODUCT_RETIRED, 5900 → ok:true (intent는 30분 뒤 만료)
 foreach ($amt in 2900,116000,5900) { try { Invoke-RestMethod -Method Post -Uri 'https://ai-backend-3xtk.onrender.com/prepare-payment' -Headers $h -Body ("{`"orderId`":`"order_$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())_smoke00$($amt % 10)`",`"amount`":$amt,`"purchaseKind`":`"credit_package`"}") } catch { $r=$_.Exception.Response; $s=New-Object IO.StreamReader($r.GetResponseStream()); "$amt -> $([int]$r.StatusCode) $($s.ReadToEnd())" } }
 ```

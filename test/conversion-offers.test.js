@@ -33,9 +33,9 @@ const AMOUNTS = [5900, 14500, 29000, 58000];
 const RETIRED = [2900, 8700];
 const INQUIRY = 116000;
 
-test('상시 패키지 보너스와 전 상품 5% 이벤트 보너스를 분리해 지급한다', () => {
+test('5,900원 스타터는 이벤트 0%, 나머지 상품은 상시 보너스와 이벤트 5%를 분리해 지급한다', () => {
   const expected = [
-    { amount: 5900, baseCredits: 200, packageBonusCredits: 0, eventBonusCredits: 10, totalCredits: 210 },
+    { amount: 5900, baseCredits: 200, packageBonusCredits: 0, eventBonusCredits: 0, totalCredits: 200 },
     { amount: 14500, baseCredits: 500, packageBonusCredits: 125, eventBonusCredits: 25, totalCredits: 650 },
     { amount: 29000, baseCredits: 1000, packageBonusCredits: 350, eventBonusCredits: 50, totalCredits: 1400 },
     { amount: 58000, baseCredits: 2000, packageBonusCredits: 900, eventBonusCredits: 100, totalCredits: 3000 }
@@ -52,7 +52,7 @@ test('상시 패키지 보너스와 전 상품 5% 이벤트 보너스를 분리�
     [116000, 4000, false]
   ]);
   assert.equal(ENTRY_PRODUCT_AMOUNT, 5900);
-  assert.equal(CREDIT_OFFER_POLICY_VERSION, 'credit-offer-v3-202609');
+  assert.equal(CREDIT_OFFER_POLICY_VERSION, 'credit-offer-v4-202609');
   assert.deepEqual(PACKAGE_BONUS_RATES, { 2900: 0, 5900: 0, 8700: 10, 14500: 25, 29000: 35, 58000: 45, 116000: 50 });
   assert.deepEqual(AMOUNTS.map((amount) => {
     const product = getCreditProduct(amount, { nowMs: DURING_EVENT_MS, env: {} });
@@ -66,10 +66,21 @@ test('상시 패키지 보너스와 전 상품 5% 이벤트 보너스를 분리�
   }), expected);
 
   // 정적 카탈로그도 현재 이벤트 표시와 동일해야 한다.
-  assert.deepEqual(AMOUNTS.map((amount) => CREDIT_PRODUCTS[amount].credits), [210, 650, 1400, 3000]);
+  assert.deepEqual(AMOUNTS.map((amount) => CREDIT_PRODUCTS[amount].credits), [200, 650, 1400, 3000]);
   assert.equal(CREDIT_PRODUCTS[2900].credits, 105);
   assert.equal(CREDIT_PRODUCTS[8700].credits, 345);
   assert.equal(CREDIT_PRODUCTS[INQUIRY].credits, 6200);
+
+  const starter = getCreditProduct(5900, { nowMs: DURING_EVENT_MS, env: {} });
+  assert.equal(starter.eventActive, true, '개강 이벤트 기간 자체는 활성 상태다');
+  assert.equal(starter.eventBonusRate, 0);
+  assert.equal(starter.eventBonusCredits, 0);
+  assert.equal(starter.eventId, null, '이벤트 비대상 스타터 주문에는 이벤트 ID를 붙이지 않는다');
+  for (const amount of [2900, 8700, 14500, 29000, 58000, INQUIRY]) {
+    const product = getCreditProduct(amount, { nowMs: DURING_EVENT_MS, env: {} });
+    assert.equal(product.eventBonusRate, 5, `${amount}원은 +5% 유지`);
+    assert.equal(product.eventId, EXTRA_CREDIT_EVENT.id, `${amount}원은 이벤트 ID 유지`);
+  }
 });
 
 test('종료 상품은 해석만 되고 새 결제로는 열리지 않으며, 비상 스위치로만 되돌린다', () => {
@@ -166,7 +177,7 @@ test('첫 구매 보너스는 폐지되어 이벤트 보너스와 중복되지 �
   );
   assert.equal(context.eligibleForFirstPurchaseOffer, false);
   assert.ok(context.firstPurchaseOffers.every((offer) => offer.bonusRate === 0 && offer.bonusCredits === 0));
-  assert.deepEqual(context.firstPurchaseOffers.map((offer) => offer.totalCredits), [210, 650, 1400, 3000]);
+  assert.deepEqual(context.firstPurchaseOffers.map((offer) => offer.totalCredits), [200, 650, 1400, 3000]);
 });
 
 test('체크아웃 컨텍스트는 구매 가능 4종만 내려보내고 종료·문의 전용 상품은 오퍼에 넣지 않는다', () => {
@@ -188,7 +199,7 @@ test('체크아웃 컨텍스트는 구매 가능 4종만 내려보내고 종료�
     offer.eventBonusCredits,
     offer.totalCredits
   ]), [
-    [5900, 200, 0, 10, 210],
+    [5900, 200, 0, 0, 200],
     [14500, 500, 125, 25, 650],
     [29000, 1000, 350, 50, 1400],
     [58000, 2000, 900, 100, 3000]
@@ -199,13 +210,13 @@ test('체크아웃 컨텍스트는 구매 가능 4종만 내려보내고 종료�
   assert.deepEqual(context.starterOffer, {
     amount: 5900,
     baseCredits: 200,
-    bonusCredits: 10,
+    bonusCredits: 0,
     packageBonusCredits: 0,
-    eventBonusCredits: 10,
-    totalCredits: 210
+    eventBonusCredits: 0,
+    totalCredits: 200
   });
-  assert.equal(context.pricingPolicyVersion, 'credit-offer-v3-202609');
-  assert.ok(context.creditOffers.every((offer) => offer.offerPolicyVersion === 'credit-offer-v3-202609'));
+  assert.equal(context.pricingPolicyVersion, 'credit-offer-v4-202609');
+  assert.ok(context.creditOffers.every((offer) => offer.offerPolicyVersion === 'credit-offer-v4-202609'));
 });
 
 test('20크레딧 가입 지급액을 기준으로 신규·체험 사용자 세그먼트를 나눈다', () => {
@@ -216,7 +227,7 @@ test('20크레딧 가입 지급액을 기준으로 신규·체험 사용자 세�
   assert.equal(unused.segment, 'trial_unused');
   assert.equal(engaged.segment, 'trial_engaged');
   assert.equal(unfunded.segment, 'new_unfunded');
-  assert.equal(unused.starterOffer.totalCredits, 210);
+  assert.equal(unused.starterOffer.totalCredits, 200);
 });
 
 test('재구매 저잔액 사용자는 가장 최근의 인식 가능한 상품을 받는다(종료 상품 주문도 계속 인식)', () => {
@@ -256,12 +267,12 @@ test('전액 환불 및 refunded 주문은 유지된 구매로 세지 않는다'
 });
 
 test('상위 상품일수록 이벤트 후 크레딧 당 가격이 낮아진다', () => {
-  const totals = [210, 650, 1400, 3000];
+  const totals = [200, 650, 1400, 3000];
   const unitPrices = AMOUNTS.map((amount, index) => amount / totals[index]);
   for (let i = 1; i < unitPrices.length; i += 1) {
     assert.ok(unitPrices[i] < unitPrices[i - 1], `${AMOUNTS[i]}원 티어는 직전 티어보다 크레딧 당 가격이 낮아야 한다`);
   }
-  assert.deepEqual(unitPrices.map((value) => Number(value.toFixed(2))), [28.1, 22.31, 20.71, 19.33]);
+  assert.deepEqual(unitPrices.map((value) => Number(value.toFixed(2))), [29.5, 22.31, 20.71, 19.33]);
   // 기준 단가: 스타터만 29.5원, 그 외 29원
   assert.equal(5900 / 200, 29.5);
   for (const amount of [14500, 29000, 58000, INQUIRY]) {
@@ -290,12 +301,26 @@ test('스타터→스탠다드 업그레이드 grant는 서버 주문 스냅샷�
   };
   const nowMs = Date.parse('2026-09-20T00:00:00+09:00');
   const grant = buildStarterUpgradeGrant(source, { nowMs, env: {} });
+  // v3에서 이미 210크레딧을 받은 주문은 당시 스냅샷을 빼서 440만 추가한다.
   assert.equal(grant.amount, 8600);
   assert.equal(grant.paidCredits, 300);
   assert.equal(grant.packageBonusCredits, 125);
   assert.equal(grant.eventBonusCredits, 15);
   assert.equal(grant.totalCredits, 440);
   assert.equal(grant.cumulativeCredits, 650);
+
+  // v4에서 200크레딧을 받은 새 스타터는 현재 스탠다드 총량 650까지 450을 추가한다.
+  const currentPolicyGrant = buildStarterUpgradeGrant({
+    ...source,
+    id: 'order_starter_v4',
+    safeCredits: 200,
+    eventBonusCredits: 0
+  }, { nowMs, env: {} });
+  assert.equal(currentPolicyGrant.paidCredits, 300);
+  assert.equal(currentPolicyGrant.packageBonusCredits, 125);
+  assert.equal(currentPolicyGrant.eventBonusCredits, 25);
+  assert.equal(currentPolicyGrant.totalCredits, 450);
+  assert.equal(currentPolicyGrant.cumulativeCredits, 650);
 
   const disabled = buildCheckoutContext({ uid: 'u-upgrade', credits: 210, orders: [source] }, {}, nowMs);
   assert.equal(disabled.starterUpgradeEnabled, false);

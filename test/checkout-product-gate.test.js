@@ -27,6 +27,9 @@ test('구매 가능 상품은 그대로 통과하고 미지 금액은 INVALID_PR
   const starter = resolveCreditPackageCheckout({ amount: 5900, env: ENV });
   assert.equal(starter.reason, null);
   assert.equal(starter.product.paidCredits, 200);
+  assert.equal(starter.product.eventBonusCredits, 0);
+  assert.equal(starter.product.totalCredits, 200);
+  assert.equal(starter.product.offerPolicyVersion, 'credit-offer-v4-202609');
   assert.equal(starter.product.label, '스타터');
   for (const amount of [14500, 29000, 58000]) {
     assert.equal(resolveCreditPackageCheckout({ amount, env: ENV }).reason, null);

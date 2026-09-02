@@ -25,7 +25,7 @@ test('new payment grants never create a first-purchase bonus', () => {
   assert.equal(grant.grantPolicyVersion, 'credit-grant-base-v1');
 });
 
-test('5,900원 스타터(2026-09 개편)의 새 지급은 기준 200·상시 0·이벤트 10으로 정책 v3를 단다', () => {
+test('5,900원 스타터(2026-09 정책 v4)의 새 지급은 기준 200·상시 0·이벤트 0이다', () => {
   const product = getCreditProduct(5900, {
     nowMs: Date.parse('2026-09-15T12:00:00+09:00'),
     env: { EXTRA_CREDIT_EVENT_ENABLED: '1' }
@@ -33,10 +33,37 @@ test('5,900원 스타터(2026-09 개편)의 새 지급은 기준 200·상시 0·
   const grant = paymentIntentGrant(null, product);
   assert.equal(grant.paidCredits, 200);
   assert.equal(grant.packageBonusCredits, 0);
+  assert.equal(grant.eventBonusCredits, 0);
+  assert.equal(grant.eventBonusRate, 0);
+  assert.equal(grant.eventId, null);
+  assert.equal(grant.totalCredits, 200);
+  assert.equal(grant.offerPolicyVersion, 'credit-offer-v4-202609');
+  assert.equal(grant.grantPolicyVersion, 'credit-grant-base-v1');
+});
+
+test('정책 v3에서 선점한 5,900원 intent는 v4 배포 뒤에도 약속한 210크레딧을 보존한다', () => {
+  const existing = {
+    amount: 5900,
+    paidCredits: 200,
+    packageBonusCredits: 0,
+    eventBonusCredits: 10,
+    totalGrantedCredits: 210,
+    packageBonusRate: 0,
+    eventBonusRate: 5,
+    eventId: 'extra-credit-2026-09',
+    eventEndsAtMs: Date.parse('2026-10-01T00:00:00+09:00'),
+    grantPolicyVersion: 'credit-grant-base-v1',
+    offerPolicyVersion: 'credit-offer-v3-202609'
+  };
+  const grant = paymentIntentGrant(existing, getCreditProduct(5900, {
+    nowMs: Date.parse('2026-09-15T12:00:00+09:00'),
+    env: { EXTRA_CREDIT_EVENT_ENABLED: '1' }
+  }));
+  assert.equal(grant.paidCredits, 200);
   assert.equal(grant.eventBonusCredits, 10);
+  assert.equal(grant.eventBonusRate, 5);
   assert.equal(grant.totalCredits, 210);
   assert.equal(grant.offerPolicyVersion, 'credit-offer-v3-202609');
-  assert.equal(grant.grantPolicyVersion, 'credit-grant-base-v1');
 });
 
 test('a pre-deploy intent keeps its package grant but receives no first-purchase bonus', () => {

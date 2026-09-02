@@ -208,9 +208,48 @@ node -e "const {db}=require('./config');if(!db)throw new Error('Firebase disable
 
 권장 관찰 시점은 배포 후 1시간·6시간·24시간·72시간·7일이다. 공유 NAT에서 정상 가입이 막힌 증거가 없으면 hard cap을 즉시 낮추지 않는다.
 
+## 요금제 개편 2026-09-04 배포·관측
+
+2,900·8,700원 결제를 종료하고 5,900원(200크레딧) 스타터로 시작 상품을 바꾼 릴리스. 팀·기관 116,000원은 문의 전용(수동 지급).
+카탈로그 정책 버전은 `credit-offer-v3-202609`이며 Frontend `conversion-flow.js`·`app-main.js`의 미러 값과 같아야 한다.
+
+배포 순서는 **Backend → Frontend**다. Frontend를 먼저 올리면 5,900원 결제가 서버에서 400으로 거절되고,
+Backend만 올린 동안(목표 10분 이내) 구형 화면의 2,900·8,700원 클릭은 `400 PRODUCT_RETIRED`(새로고침 안내)로 끝난다.
+
+1. Backend 배포 직후 스모크(테스트 계정 ID 토큰 필요):
+
+```powershell
+$h=@{Authorization="Bearer $token";'Content-Type'='application/json'}
+# 오퍼는 5900/14500/29000/58000 네 종, starterOffer 5900, pricingPolicyVersion credit-offer-v3-202609
+(Invoke-RestMethod -Method Post -Uri 'https://ai-backend-3xtk.onrender.com/checkout-context' -Headers $h -Body '{}') | Select-Object pricingPolicyVersion,@{n='offers';e={($_.creditOffers|%{$_.amount}) -join ','}},@{n='starter';e={$_.starterOffer.amount}}
+# prepare: 2900 → 400 PRODUCT_RETIRED, 116000 → 400 PRODUCT_RETIRED, 5900 → ok:true (intent는 30분 뒤 만료)
+foreach ($amt in 2900,116000,5900) { try { Invoke-RestMethod -Method Post -Uri 'https://ai-backend-3xtk.onrender.com/prepare-payment' -Headers $h -Body ("{`"orderId`":`"order_$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())_smoke00$($amt % 10)`",`"amount`":$amt,`"purchaseKind`":`"credit_package`"}") } catch { $r=$_.Exception.Response; $s=New-Object IO.StreamReader($r.GetResponseStream()); "$amt -> $([int]$r.StatusCode) $($s.ReadToEnd())" } }
+```
+
+2. Frontend 배포 후 `https://gpkorea.ai.kr/pricing`에 `data-plan-amount="5900"`이 있고 `payToss(2900`이 없는지 확인한다.
+
+3. 관측(1h·6h·24h·72h): 관리자 로그 `payment.product_retired_rejected`가 Frontend 반영 1시간 뒤 0으로 수렴해야 한다.
+   `GET /admin/revenue?period=today`의 `charge.byAmount`에 5,900 주문이 잡히고 2,900·8,700 신규 주문이 없어야 한다.
+   일일 매출 리포트에는 "상품별 …" 줄과 첫 구매 건수가 붙는다.
+
+4. 롤백. 주문이 생긴 금액(5,900 포함)의 카탈로그 행은 절대 지우지 않는다.
+   - 즉시(무배포): Render 환경변수 `CREDIT_LEGACY_CHECKOUT_ENABLED=1`(재시작) → 종료 상품 결제 재허용. 오퍼는 5,900 기준 그대로이므로 **반드시 Frontend를 직전 배포로 되돌린 뒤**(Vercel Promote) 켠다.
+   - 코드: `hotfix/pricing-rollback-20260904` 브랜치를 ff 병합·push.
+   - 이벤트 보너스만 끄려면 `EXTRA_CREDIT_EVENT_ENABLED=0`.
+
+5. 팀·기관 116,000원은 온라인 결제가 없다. 문의 → 입금 확인 → 관리자 `크레딧 조정`(`/admin/adjust-credits`)으로 지급하고
+   사유는 `MO-116000|<입금일>|<qnaId>|<입금자명>|c=<지급량>` 형식으로 남긴다. `orders` 문서가 없어 매출 리포트에 잡히지 않으므로 별도 원장에 기록한다.
+
 ## Frontend 배포
 
 프론트 변경이 있을 때만 배포한다. 프론트는 Vercel 프로젝트 `frontend`, scope `toavoidtheprofessor`, 운영 alias `https://gpkorea.ai.kr` 기준이다.
+
+정적 폴더 배포 관례(2026-07-25 실측, 현행): 리포에서 `vercel --prod`를 직접 실행하면 클라우드 빌드가 큐에서 시작되지 않는다.
+`npm run build`(prebuild가 전체 테스트를 돌린다)로 `dist/`를 만든 뒤 루트의 `deploy-frontend-<작업명>-YYYYMMDD-<sha7>` 폴더에 복사하고,
+그 폴더의 `vercel.json`에서 `buildCommand`·`outputDirectory` 두 키를 지우고 `.vercel/project.json`
+(`{"projectId":"prj_OdZzvdlj29Tqa4kpxFttTdnXOZXA","orgId":"team_HsyF3EebXeXCyYnykyZqCGKW","projectName":"frontend"}`)을 둔 다음
+그 폴더에서 `npx -y vercel --prod --yes --scope toavoidtheprofessor`를 실행한다(사내망 인증서 문제면 `NODE_TLS_REJECT_UNAUTHORIZED=0`).
+검증은 `*.vercel.app`이 아니라 `gpkorea.ai.kr`로 한다(vercel.app URL은 인증 보호 페이지).
 
 중요:
 
@@ -320,6 +359,9 @@ $r.Content -match 'lavAutoCoach'
 | `WRITING_LAB_REQUIRE_ALL_POLICY_APPROVAL` | `1`이면 의료·법률·금융·광고 정책 팩의 실제 담당자 승인 전 `predeploy:v2` 실패. 비규제 베타에서는 `0`으로 두고 규제 입력을 `MANUAL_REVIEW`로 차단 |
 | `WRITING_LAB_V1_PUBLIC` | 기본 `0`. 알려진 품질 문제가 있는 v1을 일반 사용자에게 다시 열지 말 것 |
 | `TOSS_SECRET_KEY` | `live_` 키 |
+| `EXTRA_CREDIT_EVENT_ENABLED` | 기본 `1`. `0`이면 9월 개강 이벤트(+5%) 지급 즉시 중단 — 재배포 없이 지급량을 바꾸는 유일한 레버 |
+| `CREDIT_LEGACY_CHECKOUT_ENABLED` | 기본 `0`. `1`이면 종료 상품(2,900·8,700원) 결제 재허용. Frontend 롤백과 함께만 켠다. 문의 전용 116,000원은 영향 없음 |
+| `STARTER_STANDARD_UPGRADE_ENABLED` / `STARTER_STANDARD_UPGRADE_LINKED_REFUND_ENABLED` | 둘 다 `1`일 때만 스타터→스탠다드 차액 업그레이드(8,600원) 노출. 운영 기본 `0` |
 | `CRON_SECRET` | cron 인증 |
 | `TOSS_WEBHOOK_SECRET` | Toss webhook 인증 |
 | `CORS_ORIGINS` | 추가 도메인 필요 시만 |

@@ -25,6 +25,20 @@ test('new payment grants never create a first-purchase bonus', () => {
   assert.equal(grant.grantPolicyVersion, 'credit-grant-base-v1');
 });
 
+test('5,900원 스타터(2026-09 개편)의 새 지급은 기준 200·상시 0·이벤트 10으로 정책 v3를 단다', () => {
+  const product = getCreditProduct(5900, {
+    nowMs: Date.parse('2026-09-15T12:00:00+09:00'),
+    env: { EXTRA_CREDIT_EVENT_ENABLED: '1' }
+  });
+  const grant = paymentIntentGrant(null, product);
+  assert.equal(grant.paidCredits, 200);
+  assert.equal(grant.packageBonusCredits, 0);
+  assert.equal(grant.eventBonusCredits, 10);
+  assert.equal(grant.totalCredits, 210);
+  assert.equal(grant.offerPolicyVersion, 'credit-offer-v3-202609');
+  assert.equal(grant.grantPolicyVersion, 'credit-grant-base-v1');
+});
+
 test('a pre-deploy intent keeps its package grant but receives no first-purchase bonus', () => {
   const intent = { amount: 58000, baseCredits: 3300, status: 'approved_reconciliation_required' };
   assert.deepEqual(paymentIntentGrant(intent, getCreditProduct(58000)), {

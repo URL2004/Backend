@@ -66,7 +66,7 @@ test('사전 UID 선점은 v2 intent만 만료 판정하며 callback이 강한 c
 });
 
 test('스타터 업그레이드는 provider 호출 전에 source order를 단일 checkout에 선점한다', () => {
-  const source = { uid: 'uid-a', amount: 2900, status: 'paid' };
+  const source = { uid: 'uid-a', amount: 5900, status: 'paid' };
   const patch = upgradeCheckoutReservationPatch(source, {
     uid: 'uid-a', orderId: 'order_1760000000000_a1b2c3d4', nowMs: 1000
   });

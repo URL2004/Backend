@@ -16,7 +16,8 @@ const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error', 'clie
 // 카드사/사용자 사유로 결제가 안 된 경우는 "정상 이탈"이라 깨울 일이 아니다.
 // 반대로 SDK 로드 실패·네트워크·승인 API 오류는 우리 쪽 장애다. 둘을 다른 이벤트로 나눠
 // 카탈로그(lib/opsEvents)가 등급을 다르게 매기게 한다.
-const DECLINE_CODE_RE = /(REJECT|INVALID_CARD|INSUFFICIENT|EXCEED|LIMIT|STOLEN|LOST|EXPIRED|SUSPEND|NOT_SUPPORTED|PASSWORD|CANCEL)/i;
+// PRODUCT_RETIRED: 2026-09 요금제 개편으로 종료된 상품을 구형 화면에서 누른 경우 — 우리 장애가 아니라 정상 이탈.
+const DECLINE_CODE_RE = /(REJECT|INVALID_CARD|INSUFFICIENT|EXCEED|LIMIT|STOLEN|LOST|EXPIRED|SUSPEND|NOT_SUPPORTED|PASSWORD|CANCEL|PRODUCT_RETIRED)/i;
 const DECLINE_STAGE_RE = /(fail_redirect)$/i;
 
 function isDeclineLike(code, stage, status) {

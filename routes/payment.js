@@ -19,6 +19,8 @@ const {
   buildCheckoutContext,
   buildStarterUpgradeGrant,
   getCreditProduct,
+  getPurchasableCreditProduct,
+  isPurchasableCreditAmount,
   isRetainedPaidOrder,
   starterUpgradeEnabled
 } = require('../lib/conversionOffers');
@@ -516,10 +518,31 @@ async function queryTossOrder({ basicToken, orderId }) {
   }
 }
 
+// 2026-09 요금제 개편: 종료 상품(2,900·8,700)과 문의 전용 상품(116,000)은 새 결제를 받지 않는다.
+const RETIRED_PRODUCT_MESSAGE = '요금제가 바뀌어 이 상품은 더 이상 결제할 수 없어요. 페이지를 새로고침한 뒤 다시 선택해 주세요.';
+// 첫 구매 판정에서 "이전 구매가 있었다"로 보는 상태. 전액 환불된 주문도 이전 구매다.
+const PRIOR_PURCHASE_STATUSES = new Set(['paid', 'refund_requested', 'refund_rejected', 'partially_refunded', 'refunded']);
+
+// credit_package 새 결제의 상품 판정(순수 함수 — prepare/confirm 공용, 테스트는 router.creditGrantPolicy로 접근).
+// 종료 상품은 배포 직전 prepare로 선점된 intent(같은 uid·금액)가 있을 때만 통과시켜 약속 지급을 지킨다.
+// 문의 전용 상품은 intent가 있어도 온라인 결제로 열리지 않는다.
+function resolveCreditPackageCheckout({ amount, existingIntent = null, uid = null, env = process.env } = {}) {
+  const safeAmount = Number(amount);
+  const known = Number.isInteger(safeAmount) ? getCreditProduct(safeAmount, { env }) : null;
+  if (!known || !known.paidCredits) return { product: null, reason: 'INVALID_PRODUCT' };
+  if (isPurchasableCreditAmount(safeAmount, env)) return { product: known, reason: null };
+  const intentMatches = !!existingIntent
+    && (!uid || String(existingIntent.uid || '') === String(uid))
+    && Number(existingIntent.amount) === safeAmount;
+  if (intentMatches && known.inquiryOnly !== true) return { product: known, reason: null, viaIntent: true };
+  return { product: null, reason: 'PRODUCT_RETIRED', inquiryOnly: known.inquiryOnly === true };
+}
+
 function creditPaymentResponse(granted) {
   return {
     ok: true,
     deduped: granted.deduped === true,
+    isFirstPurchase: granted.isFirstPurchase === true,
     message: granted.deduped ? '이미 처리된 결제입니다.' : '충전 성공',
     creditAmount: granted.totalCredits,
     baseCreditAmount: granted.baseCredits,
@@ -544,7 +567,8 @@ async function applyCreditPayment({
   creditGrant,
   customerEmail,
   providerPayment,
-  reconciliationSource
+  reconciliationSource,
+  isFirstPurchase = null
 }) {
   const orderRef = db.collection('orders').doc(orderId);
   const userRef = db.collection('users').doc(verifiedUid);
@@ -682,6 +706,8 @@ async function applyCreditPayment({
       sourceOrderId: creditGrant.sourceOrderId || null,
       targetAmount: creditGrant.targetAmount || null,
       cumulativeCredits: creditGrant.cumulativeCredits || null,
+      // 첫 구매 플래그(2026-09 측정). 계산하지 못한 경로(리컨실 재적용)는 null로 남겨 집계에서 구분한다.
+      isFirstPurchase: isFirstPurchase === true ? true : (isFirstPurchase === false ? false : null),
       refundCreditBasis: usesBaseCreditPolicy ? 'paid_credits_first' : 'legacy_total_grant',
       ...lotFields,
       paymentKeyPresent: true,
@@ -771,6 +797,7 @@ async function applyCreditPayment({
 
     return {
       deduped: false,
+      isFirstPurchase: isFirstPurchase === true,
       baseCredits,
       bonusCredits,
       packageBonusCredits,
@@ -1087,6 +1114,29 @@ async function handleCreditPaymentConfirmation(req, res) {
     return res.status(503).json({ error: '결제 처리 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.' });
   }
 
+  // 2026-09 요금제 개편: 종료·문의 전용 상품은 새 결제를 받지 않는다. 배포 직전 prepare로 선점된 주문(intent에 같은
+  // uid·금액)은 약속을 지키려고 통과시키고, 이미 적용된 주문은 아래 멱등 경로가 그대로 처리한다.
+  // PAYMENT_PRECLAIM_REQUIRED=0이라 prepare 없는 callback도 오므로 confirm 쪽 게이트가 반드시 필요하다.
+  if (!isUpgradeRequest && product && !existingOrderPrecheckSnap.exists) {
+    let existingIntent = null;
+    if (!isPurchasableCreditAmount(safeAmount)) {
+      try {
+        const retiredIntentSnap = await db.collection('paymentIntents').doc(orderId).get();
+        existingIntent = retiredIntentSnap.exists ? (retiredIntentSnap.data() || {}) : null;
+      } catch (err) {
+        logger.error('payment.precheck_failed', { uid: verifiedUid, orderId, amount: safeAmount, stage: 'retired_intent', err });
+        return res.status(503).json({ error: '결제 처리 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+      }
+    }
+    const resolved = resolveCreditPackageCheckout({ amount: safeAmount, existingIntent, uid: verifiedUid });
+    if (resolved.reason === 'PRODUCT_RETIRED') {
+      logger.warn('payment.product_retired_rejected', {
+        uid: verifiedUid, orderId, amount: safeAmount, stage: 'confirm', inquiryOnly: resolved.inquiryOnly === true
+      });
+      return res.status(400).json({ error: RETIRED_PRODUCT_MESSAGE, code: 'PRODUCT_RETIRED' });
+    }
+  }
+
   if (isUpgradeRequest && !existingOrderPrecheckSnap.exists) {
     try {
       const [sourceSnap, intentSnap] = await Promise.all([
@@ -1303,6 +1353,17 @@ async function handleCreditPaymentConfirmation(req, res) {
     reconciliationRetryAtMs: Date.now()
   });
 
+  // 첫 구매 플래그(2026-09 측정): 이 주문을 제외한 이전 구매(전액 환불 포함)가 하나도 없으면 첫 구매다.
+  // 조회 실패는 결제를 막지 않고 null(미판정)로 남긴다.
+  let isFirstPurchase = null;
+  try {
+    const priorOrders = await getCreditOrdersForUser(verifiedUid);
+    isFirstPurchase = !priorOrders.some((order) => order.id !== orderId
+      && PRIOR_PURCHASE_STATUSES.has(String(order.status || '').toLowerCase()));
+  } catch (err) {
+    logger.warn('payment.first_purchase_lookup_failed', { uid: verifiedUid, orderId, err });
+  }
+
   let granted;
   try {
     granted = await applyCreditPayment({
@@ -1313,7 +1374,8 @@ async function handleCreditPaymentConfirmation(req, res) {
       creditGrant,
       customerEmail: verifiedCustomerEmail,
       providerPayment,
-      reconciliationSource
+      reconciliationSource,
+      isFirstPurchase
     });
   } catch (err) {
     if (err.code === 'PAYMENT_CANCELLATION_LOCKED') {
@@ -1358,6 +1420,7 @@ async function handleCreditPaymentConfirmation(req, res) {
     uid: verifiedUid,
     orderId,
     amount: safeAmount,
+    isFirstPurchase: granted.isFirstPurchase === true,
     credits: granted.totalCredits,
     baseCredits: granted.baseCredits,
     packageBonusCredits: granted.packageBonusCredits,
@@ -1471,7 +1534,14 @@ router.post('/prepare-payment', async (req, res) => {
       }
       product = buildStarterUpgradeGrant(sourceOrder);
     } else if (purchaseKind === 'credit_package') {
-      product = getCreditProduct(amount);
+      const resolved = resolveCreditPackageCheckout({ amount });
+      if (resolved.reason === 'PRODUCT_RETIRED') {
+        logger.warn('payment.product_retired_rejected', {
+          uid, orderId, amount, stage: 'prepare', inquiryOnly: resolved.inquiryOnly === true
+        });
+        return res.status(400).json({ error: RETIRED_PRODUCT_MESSAGE, code: 'PRODUCT_RETIRED' });
+      }
+      product = resolved.product || getPurchasableCreditProduct(amount);
     }
     if (!product?.paidCredits) {
       return res.status(400).json({ error: '유효하지 않은 결제 상품입니다.' });
@@ -3777,7 +3847,9 @@ router.post('/admin/revenue-summary', async (req, res) => {
       totalPaid: r.totalPaid,
       totalCount: r.totalCount,
       refundAmount: r.refundAmount,
-      refundCount: r.refundCount
+      refundCount: r.refundCount,
+      byAmount: (r.charge && r.charge.byAmount) || null,
+      firstPurchaseCount: Number(r.charge && r.charge.firstPurchaseCount) || 0
     });
     res.json({ ok: true, today: slim(today), month: slim(month) });
   } catch (err) {
@@ -5950,6 +6022,8 @@ router.adminLedgerTaskPolicy = {
 router.creditGrantPolicy = {
   assertPaymentIntentAllowsCreditGrant,
   paymentIntentGrant,
+  resolveCreditPackageCheckout,
+  RETIRED_PRODUCT_MESSAGE,
   paymentCallbackBindingHash,
   accountDeletionBlocksPayment,
   paymentIntentPreclaimExpired,

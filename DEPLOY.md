@@ -226,7 +226,7 @@ $h=@{Authorization="Bearer $token";'Content-Type'='application/json'}
 foreach ($amt in 2900,116000,5900) { try { Invoke-RestMethod -Method Post -Uri 'https://ai-backend-3xtk.onrender.com/prepare-payment' -Headers $h -Body ("{`"orderId`":`"order_$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())_smoke00$($amt % 10)`",`"amount`":$amt,`"purchaseKind`":`"credit_package`"}") } catch { $r=$_.Exception.Response; $s=New-Object IO.StreamReader($r.GetResponseStream()); "$amt -> $([int]$r.StatusCode) $($s.ReadToEnd())" } }
 ```
 
-2. Frontend 배포 후 `https://gpkorea.ai.kr/pricing`에 `data-plan-amount="5900"`이 있고 `payToss(2900`이 없는지 확인한다.
+2. Frontend 배포 후 `https://gpkorea.ai.kr/pricing`에 `data-plan-amount="5900"`이 있고 `payToss(2900,`(쉼표 포함 — `payToss(29000`과 구분)이 없는지 확인한다.
 
 3. 관측(1h·6h·24h·72h): 관리자 로그 `payment.product_retired_rejected`가 Frontend 반영 1시간 뒤 0으로 수렴해야 한다.
    `GET /admin/revenue?period=today`의 `charge.byAmount`에 5,900 주문이 잡히고 2,900·8,700 신규 주문이 없어야 한다.

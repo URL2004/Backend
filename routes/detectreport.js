@@ -29,6 +29,7 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const inputrouting = require('../engine/inputrouting');
 const publicMetrics = require('../lib/publicMetrics');
+const { buildDetectReportView, buildSentenceMap, pickAiSentence } = require('../lib/detectReportView');
 
 // (무료 감지 일일 한도 로직 제거 — 2026-07-20 사장님 결정으로 감지는 항상 유료.
 //  기존 무료 3회/일 캡은 CF 엣지 IP 키 버그로 사실상 무제한이었음. 복원 시 git 이력 참조.)
@@ -51,9 +52,9 @@ function clientIp(req) {
 
 // 문단 종류 → 사용자 언어 사유(보고서의 "알아듣기 쉬운 정리" 핵심)
 const PARA_REASON = {
-  concrete: '실제 경험이나 구체 수치가 있어 사람이 쓴 글로 읽혀요.',
-  abstract_risk: '구체적 사례·경험 없이 일반론으로만 쓰여 있어요 — 탐지기가 가장 의심하는 유형이에요.',
-  thin: '구체적 근거가 부족해요. 경험이나 수치를 더하면 안전해져요.'
+  concrete: '실제 경험처럼 유지할 근거가 관찰돼요. 이 분류는 문체 판정과 별개예요.',
+  abstract_risk: '구체적 사례·경험 없이 일반론 비중이 높아 문체 신호가 커질 수 있어요.',
+  thin: '구체적 근거가 부족해요. 원문에 있는 경험이나 확인 가능한 수치를 보강해 보세요.'
 };
 
 // ★ 카피킬러-risk 프록시 코칭(2026-06-17): 실제 카피킬러 PDF 라벨로 학습한 모델(JS 이식, Python 일치 검증)이
@@ -75,23 +76,6 @@ function predictCoach(text, minP) {
   const top = COACH_TAGS.map(t => ({ tag: t, p: pr['tag:' + t] || 0 }))
     .filter(x => x.p >= (minP || 0.6)).sort((a, b) => b.p - a.p).slice(0, 2);
   return top.length ? top.map(x => ({ tag: x.tag, fields: TAG_COACH[x.tag].fields, why: TAG_COACH[x.tag].why })) : null;
-}
-
-// ④ 미리보기 후보: 위험 문단에서 30~160자, 경험 장면 아닌 문장 중 가장 긴 것
-//   (일반론 문장은 길수록 AI 티가 잘 드러나 before/after 대비가 큼)
-function pickAiSentence(paras, detail) {
-  const cands = [];
-  paras.forEach((p, i) => {
-    const kind = detail[i] && detail[i].kind;
-    if (kind === 'concrete') return;
-    sg.splitSentences(p).forEach(s => {
-      if (s.length < 30 || s.length > 160) return;
-      if (sg.isLivedScene(s)) return;
-      cands.push(s);
-    });
-  });
-  if (!cands.length) return null;
-  return cands.sort((a, b) => b.length - a.length)[0];
 }
 
 async function activeGptConfig() {
@@ -415,12 +399,19 @@ router.post('/detect-report', async (req, res) => {
     usedCachedArtifact = true;
   } else {
     // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
-    let ir, paras, detail;
+    let ir, paras, detail, reportMeasurements;
     try {
       paras = sg.splitParagraphsForReport(text);
       const joined = paras.join('\n\n');
       ir = sg.classifyInputRisk(joined);
       detail = sg.analyzeParagraphs(joined).detail;
+      reportMeasurements = {
+        uniformity: sg.measureUniformity(joined),
+        genericness: sg.measureGenericness(joined),
+        realAnchorDensity: sg.measureRealAnchorDensity(joined),
+        stance: sg.measureStance(joined),
+        detail
+      };
     } catch (error) {
       if (requestBinding) await detectRequests.releaseAfterModelFailure(requestBinding);
       logger.error('detect_report.surface_failed', { uid, err: error });
@@ -524,6 +515,29 @@ router.post('/detect-report', async (req, res) => {
     }
     const probability = calibration.probability;
     const narrated = applyDetectNarrativePolicy(det, probability);
+    // 문장 지도와 보고서 계측은 무LLM·무추가비용이다. 권위 점수 모델이 성공한 뒤에만
+    // 공개 보고서에 결합하고, 지도 생성 실패는 점수·과금 흐름과 분리한다.
+    let sentenceMap = null;
+    try {
+      sentenceMap = buildSentenceMap(paras, detail);
+    } catch (error) {
+      logger.warn('detect_report.sentence_map_failed', { uid, err: error && error.message });
+    }
+    const reportView = buildDetectReportView({
+      probability,
+      probSource: 'llm',
+      riskLevel: narrated.riskLevel,
+      calibrationApplied: calibration.applied,
+      measurements: sentenceMap
+        ? {
+            ...reportMeasurements,
+            uniformity: {
+              ...reportMeasurements.uniformity,
+              maxEndingRun: sentenceMap.maxEndingRun
+            }
+          }
+        : reportMeasurements
+    });
     const len = text.length;
     const B = BANDS;
     const historyResult = {
@@ -532,6 +546,8 @@ router.post('/detect-report', async (req, res) => {
       riskLabel: narrated.riskLabel,
       summary: narrated.summary,
       detail: narrated.detail,
+      reportView,
+      sentenceMap,
       signals: narrated.signals,
       confidence: det.confidence,
       gptMeta: {
@@ -561,6 +577,8 @@ router.post('/detect-report', async (req, res) => {
       riskLabel: narrated.riskLabel,
       summary: narrated.summary,
       detail: narrated.detail,
+      reportView,
+      sentenceMap,
       grade,
       title: copy.title,
       abstractRiskRatio: ir.abstractRiskRatio,
@@ -594,6 +612,8 @@ router.post('/detect-report', async (req, res) => {
         safe: detail.filter(item => item.kind === 'concrete').length
       },
       example,
+      exampleStatus: example ? 'ready' : (before ? 'unavailable' : 'no_candidate'),
+      exampleSource: before || null,
       solutions: {
         polish: { band: B.POLISH_BAND[grade], credits: shortHumanizeCredit(len) },
         blog: { band: B.BLOG_BAND[grade], credits: shortHumanizeCredit(len) },
@@ -616,6 +636,8 @@ router.post('/detect-report', async (req, res) => {
         riskLevel: narrated.riskLevel,
         riskLabel: narrated.riskLabel,
         narrativeConsistencyAdjusted: narrated.narrativeConsistencyAdjusted,
+        reportViewStatus: reportView.status,
+        professorRadarBand: reportView.professorRadar.band,
         shadowEngineProbability,
         confidence: ['low', 'medium', 'high'].includes(det.confidence) ? det.confidence : null,
         selectedModel: det.gptMeta?.selectedModel || null,
@@ -810,6 +832,8 @@ router.post('/detect-report', async (req, res) => {
     riskLevel: metric.riskLevel,
     riskLabel: metric.riskLabel,
     narrativeConsistencyAdjusted: metric.narrativeConsistencyAdjusted,
+    reportViewStatus: metric.reportViewStatus,
+    professorRadarBand: metric.professorRadarBand,
     charged,
     remainingCredits,
     historySaved,

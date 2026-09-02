@@ -424,7 +424,10 @@ test('유사 일치는 명시적으로 끌 수 있고 새 안전 기본값은 �
   assert.equal(defaults.approximateMatchEnabled, true);
   assert.equal(defaults.similarityThreshold, 0.88);
   assert.equal(defaults.maxLengthDeltaRatio, 0.03);
-  assert.equal(defaults.minApproximateChars, 500);
+  // 2026-09-02: 500 → 300 (자소서 한 문항의 수정본도 보정되게). 문장 수 기준과 원점수 상한이 함께 켜진다.
+  assert.equal(defaults.minApproximateChars, 300);
+  assert.equal(defaults.minApproximateSentences, 5);
+  assert.equal(defaults.sourceCapEnabled, true);
 
   const output = longDocument('유사 일치 비활성');
   const input = output.replace('자료 55건', '관련 자료 55건');

@@ -734,9 +734,37 @@ async function commitRefineBilling(job, n, creditAmount, textLength) {
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
-  'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory'];
+  'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
+  'sourceProbability', 'sourceEvidence'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
-  'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest'];
+  'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest',
+  'sourceProbability', 'sourceEvidence'];
+
+// ── 유지할 근거 보존 검사 ─────────────────────────────────────────────────────
+//   감지 보고서가 "실제 경험 문장 N · 구체 사실 문장 N"이라고 센 것을 결과에서 같은 자로 다시 센다.
+//   보고서(detectReportView.resolveContentEvidence)와 같은 계측(surfaceguard.analyzeParagraphs)이라
+//   같은 글이면 같은 수가 나온다. 무날조 약속의 증거를 사용자가 눈으로 세게 하려는 장치.
+function measurePreservation(text) {
+  try {
+    const detail = surfaceguard.analyzeParagraphs(String(text || '')).detail || [];
+    const sum = key => detail.reduce((acc, item) => acc + Math.max(0, Number(item?.[key]) || 0), 0);
+    return { lived: sum('lived'), specific: sum('specific'), total: sum('sents') };
+  } catch {
+    return null;
+  }
+}
+
+// 보고서 → 휴머나이징 핸드오프 값. 없거나 이상하면 조용히 버린다(선택 필드).
+function parseSourceProbability(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : null;
+}
+function parseSourceEvidence(value) {
+  if (!value || typeof value !== 'object') return null;
+  const count = v => Math.max(0, Math.min(100000, Math.round(Number(v) || 0)));
+  const out = { lived: count(value.lived), specific: count(value.specific), total: count(value.total) };
+  return out.total > 0 ? out : null;
+}
 
 function pruneUndefinedForFirestore(value) {
   if (value === undefined) return undefined;
@@ -1538,7 +1566,9 @@ function saveJobHistory(job, text, outputText) {
     billingDisposition: job.result?.billingDisposition || job.billingDisposition || null,
     qualityWarningCodes: finalQualityWarningCodes(job.result),
     sourceReviewWarningCodes: (job.result?.sourceReviewWarnings || []).map(item => item?.code).filter(Boolean),
-    engineMeta: job.result?.engineMeta || null
+    engineMeta: job.result?.engineMeta || null,
+    sourceProbability: job.sourceProbability ?? null,
+    sourceEvidence: job.sourceEvidence || null
   }).catch(e => logger.warn('transform.history_save_failed', { jobId: job.id, uid: job.uid, err: e }));
 }
 
@@ -1989,6 +2019,7 @@ async function tryBlogPreservationFallback(job, text) {
     job.status = 'done';
     job.result = {
       outputText: out.result.outputText,
+      preservationCheck: measurePreservation(out.result.outputText),
       preservationFallback: true,
       qualityStatus: out.qualityStatus || out.result?.qualityStatus || out.floorReport?.status || 'clean',
       qualityWarnings: out.qualityWarnings || out.result?.qualityWarnings || [],
@@ -2720,7 +2751,8 @@ async function runHumanizeJob(job, text, evidence = '') {
       naturalnessShadow: out.result.naturalnessShadow || null,
       adminLabProfile: job.adminLabProfile || (adminSafetyLab ? styleProfile : null),
       adminHumanizeLab: !!job.adminHumanizeLab,
-      compressionFallback: !!out.result.compressionFallback
+      compressionFallback: !!out.result.compressionFallback,
+      preservationCheck: measurePreservation(finalText)
     };
     attachRefineTargets(job);   // 사후 문단 보강 타겟(PARAGRAPH_REFINE=1일 때만 부착)
     persistJob(job);
@@ -2757,6 +2789,8 @@ router.post('/transform', async (req, res) => {
   const idToken = tokenFromReq(req);
   const billingMode = req.body?.billingMode === 'coupon' ? 'coupon' : 'credit';
   const requestedModeValue = req.body?.mode;
+  const sourceProbability = parseSourceProbability(req.body?.sourceProbability);
+  const sourceEvidence = parseSourceEvidence(req.body?.sourceEvidence);
   const mode = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? requestedModeValue : 'formal';
   const modeSource = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? 'provided' : 'defaulted';
   const requestedDocumentProfileValue = req.body?.documentProfile ?? req.body?.documentGenre;
@@ -2989,6 +3023,7 @@ router.post('/transform', async (req, res) => {
       || Math.max(240, Math.min(5400, Math.round(bare / 4) + (wantEvidence ? 480 : 0))));
   const job = {
     id, mode, modeSource, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
+    sourceProbability, sourceEvidence,   // 보고서 → 휴머나이징 핸드오프(선택) — 재검사 상한·유지할 근거 보존 표기용
     uid: pre.uid,
     plan: pre.plan || (billingMode === 'coupon' ? `subscription:${pre.tier || 'unknown'}` : 'free'),
     needed,
@@ -3459,6 +3494,8 @@ router.get('/transform/:id', async (req, res) => {
     }
     return res.json({
       ...base,
+      sourceProbability: job.sourceProbability ?? null,
+      sourceEvidence: job.sourceEvidence || null,
       qualityStatus: job.result?.qualityStatus,
       billingDisposition: job.result?.billingDisposition || job.billingDisposition || null,
       qualityWarnings: job.result?.qualityWarnings,

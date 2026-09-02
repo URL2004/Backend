@@ -2929,7 +2929,8 @@ router.post('/transform', async (req, res) => {
   }
 
   const wantEvidence = mode === 'formal' && req.body.evidence === true;   // 근거 보강은 formal 전용(UI 잠금과 일치)
-  // 과금: 탐지 제외 짧은 기능(blog·polish)은 최소 10크레딧 + 100자당 2크레딧. formal은 길이 구간 정액.
+  // 과금: 탐지 제외 짧은 기능(blog·polish)은 최소 10크레딧 + 100자당 2크레딧.
+  // formal은 lib/humanizePricing의 5크레딧 단위 단계형 요금을 사용한다.
   const creditNeeded = (mode === 'blog' || mode === 'polish')
     ? shortHumanizeCredit(text.length)
     : restructureCredit(text.length, wantEvidence);

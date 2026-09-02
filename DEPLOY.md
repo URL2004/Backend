@@ -171,7 +171,7 @@ git status --short --branch
 1. Backend 배포 후 신규 테스트 계정에서 잔액 20과 아래 가격 경계를 확인한다.
 
 ```powershell
-node -e "const p=require('./lib/humanizePricing');[2999,3000,3001,10000,10001,20000,20001].forEach(n=>console.log(n,p.restructureCredit(n,false),p.restructureCredit(n,true)))"
+node -e "const p=require('./lib/humanizePricing');[3000,3001,3350,3351,3699,3700,10000,10001,20000,20001,30000,50000].forEach(n=>console.log(n,p.restructureCredit(n,false),p.restructureCredit(n,true)))"
 ```
 
 2. 기존 계정에는 크레딧을 소급 지급하지 않는다. 배포 전후 기존 계정 한 건의 잔액과 크레딧 원장이 바뀌지 않았는지 읽기 전용으로 확인한다. 소급 지급 스크립트나 운영 명령은 이 릴리스에 포함하지 않는다.

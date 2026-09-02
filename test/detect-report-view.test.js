@@ -9,7 +9,12 @@ const {
   buildDetectReportView,
   pickAiSentence,
   resolveProfessorRadar,
-  PARA_HOT_RATIO
+  PARA_HOT_RATIO,
+  splitExamplePreview,
+  mostChangedSpan,
+  changedSpans,
+  EXAMPLE_PREVIEW_MIN,
+  EXAMPLE_PREVIEW_MAX
 } = require('../lib/detectReportView');
 
 test('교수님 레이더는 공식 표시 점수와 같은 값으로 20·21·49·50 경계를 나눈다', () => {
@@ -266,4 +271,46 @@ test('다듬기 프롬프트는 종결어미와 문체를 유지하도록 지시
   const src = fs.readFileSync(path.join(__dirname, '..', 'engine-gpt-prod', 'prompts', 'repair.js'), 'utf8');
   assert.match(src, /종결어미와 문체/u);
   assert.match(src, /그대로 유지한다/u);
+});
+
+
+test('미리보기 문장은 가장 많이 바뀐 자리만 공개하고 나머지는 원문이 아닌 가짜 글자로 보낸다', () => {
+  // 감지만 돌려 짧은 글을 다듬어 가는 구멍(사장님 9/2). 원문 나머지는 응답 어디에도 실리지 않는다.
+  const before = '이 경험을 통해 AI의 활용 가치는 답을 대신 생성하는 데 있는 것이 아니라, 목적과 기준을 먼저 정하고 결과를 검증, 조정하는 과정에서 높아진다는 것을 배웠습니다.';
+  const after = '이 경험에서 배운 것은, AI가 답을 대신 만들어 주는 도구가 아니라 목적과 기준을 먼저 정해 두고 나온 결과를 검증하고 조정할 때 비로소 쓸모가 커진다는 사실입니다.';
+  const span = mostChangedSpan(before, after);
+  assert.ok(span && span.len > 0, '새로 쓰인 낱말 구간을 찾는다');
+  const gate = splitExamplePreview(after, before);
+  assert.equal(gate.gated, true);
+  assert.equal(gate.anchor, 'changed', '공개 창은 가장 많이 바뀐 자리');
+  assert.ok(gate.preview.length >= EXAMPLE_PREVIEW_MIN && gate.preview.length <= EXAMPLE_PREVIEW_MAX + 1, `preview=${gate.preview}`);
+  assert.ok(after.includes(gate.preview), '공개 조각은 원문 그대로');
+  const visible = gate.parts.filter(p => p.visible).map(p => p.text).join('');
+  assert.equal(visible, gate.preview);
+  const hidden = gate.parts.filter(p => !p.visible).map(p => p.text).join('');
+  assert.equal(hidden.length, gate.hiddenLength);
+  assert.equal(gate.parts.map(p => p.text.length).reduce((a, b) => a + b, 0), after.length, '길이는 원문과 같아 자리가 유지된다');
+  const original = after.replace(gate.preview, '');
+  assert.notEqual(hidden, original, '가려진 부분은 원문이 아니다');
+  assert.ok(!hidden.includes('도구가 아니라') && !hidden.includes('쓸모가 커진다'), '원문 조각이 새지 않는다');
+  const tiny = splitExamplePreview('짧은 문장입니다.', '짧은 문장이다.');
+  assert.equal(tiny.gated, false);
+  assert.equal(tiny.parts.length, 1);
+
+  const route = fs.readFileSync(path.join(__dirname, '..', 'routes', 'detectreport.js'), 'utf8');
+  assert.match(route, /afterParts: gate\.parts/u, '라우트는 조각 배열을 내려보낸다');
+  assert.ok(!/after: r\.rewritten/u.test(route), '다듬은 문장 원문을 통째로 보내던 경로가 없다');
+});
+
+
+test('미리보기는 원문에서 바뀌는 자리(beforeFocus)도 함께 돌려준다', () => {
+  const before = '이 경험을 통해 AI의 활용 가치는 답을 대신 생성하는 데 있는 것이 아니라, 목적과 기준을 먼저 정하고 결과를 검증, 조정하는 과정에서 높아진다는 것을 배웠습니다.';
+  const after = '이 경험에서 배운 것은, AI가 답을 대신 만들어 주는 도구가 아니라 목적과 기준을 먼저 정해 두고 나온 결과를 검증하고 조정할 때 비로소 쓸모가 커진다는 사실입니다.';
+  const spans = changedSpans(before, after);
+  assert.ok(spans.before && spans.before.len > 0);
+  const gate = splitExamplePreview(after, before);
+  assert.ok(gate.beforeFocus && gate.beforeFocus.end > gate.beforeFocus.start);
+  assert.ok(gate.beforeFocus.end <= before.length);
+  const route = fs.readFileSync(path.join(__dirname, '..', 'routes', 'detectreport.js'), 'utf8');
+  assert.match(route, /beforeFocus: gate\.beforeFocus/u);
 });

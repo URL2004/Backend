@@ -29,7 +29,7 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const inputrouting = require('../engine/inputrouting');
 const publicMetrics = require('../lib/publicMetrics');
-const { buildDetectReportView, buildSentenceMap, pickAiSentence } = require('../lib/detectReportView');
+const { buildDetectReportView, buildSentenceMap, pickAiSentence, splitExamplePreview } = require('../lib/detectReportView');
 
 // (무료 감지 일일 한도 로직 제거 — 2026-07-20 사장님 결정으로 감지는 항상 유료.
 //  기존 무료 3회/일 캡은 CF 엣지 IP 키 버그로 사실상 무제한이었음. 복원 시 git 이력 참조.)
@@ -455,7 +455,19 @@ router.post('/detect-report', async (req, res) => {
           const gptCfg = await activeGptConfig();
           if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
           const result = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '' });
-          return result?.rewritten ? { before, after: result.rewritten } : null;
+          if (!result?.rewritten) return null;
+          // 다듬은 문장은 가장 많이 바뀐 자리만 공개하고 나머지는 휴머나이징으로 보낸다(원문 나머지는 응답에 싣지 않는다).
+          const gate = splitExamplePreview(result.rewritten, before);
+          return gate ? {
+            before,
+            after: gate.preview,
+            afterParts: gate.parts,
+            afterHidden: gate.hiddenLength,
+            afterLength: gate.totalLength,
+            afterAnchor: gate.anchor,
+            beforeFocus: gate.beforeFocus,   // 원문에서 바뀌는 자리 — 사용자 글이라 가릴 것 없다
+            gated: gate.gated
+          } : null;
         })().catch(error => { logger.warn('detect_report.preview_failed', { uid, err: error }); return null; })
       : Promise.resolve(null);
 

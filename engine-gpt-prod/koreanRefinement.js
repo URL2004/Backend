@@ -331,6 +331,12 @@ const ISSUE_DEFINITIONS = Object.freeze({
     deterministicSafe: true,
     message: '판단 기준·이유의 주격 조사가 주제 조사로 바뀌어 문장 관계가 어색해졌어요.'
   },
+  introduced_argument_frame_collision: {
+    weight: 7,
+    repairable: true,
+    deterministicSafe: false,
+    message: '주격·인용 보어 문장을 목적격·부사격 문장으로 바꾸는 과정에서 서로 다른 서술어의 목적격 조사가 연달아 놓였어요.'
+  },
   source_token_repetition_review: {
     weight: 1,
     repairable: false,
@@ -1280,7 +1286,7 @@ function repairContextualSpacing(value, source, context) {
       out = repairHighConfidenceLockedSpacing(out, counts);
       out = replaceTracked(
         out,
-        /([\p{L}\p{N}”’」』》〉)\]])[ \t]+([.!?。！？,，;；:：])/gu,
+        /([\p{L}\p{N}”’」』》〉)\]])[ \t]+([.!?。！？,，;；])/gu,
         (_match, left, mark) => `${left}${mark}`,
         'sentence_punctuation_spacing',
         counts
@@ -1561,6 +1567,8 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   if (quoteBoundary) outputIssues.push(quoteBoundary);
   const caseParticleShift = detectIntroducedCaseParticleRelationShift(source, outputText);
   if (caseParticleShift) outputIssues.push(caseParticleShift);
+  const argumentFrameCollision = detectIntroducedArgumentFrameCollision(source, outputText);
+  if (argumentFrameCollision) outputIssues.push(argumentFrameCollision);
   const professional = detectProfessionalDowngrade(source, outputText, profile);
   if (professional) outputIssues.push(professional);
   const persistentTense = detectIntroducedPersistentStateTenseRegression(source, outputText);
@@ -1827,7 +1835,10 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
     issues,
     text,
     'sentence_punctuation_spacing',
-    sentence => /[\p{L}\p{N}”’」』》〉)\]][ \t]+[.!?。！？,，;；:：]/u
+    // `항목명 : 본문`과 표 머리의 정렬용 콜론은 허용한다. 콜론까지
+    // 일반 문장부호 오류로 세면 행 분리 방식만 달라진 동일 표기가 신규
+    // 오류로 집계되므로, 문장 종결·쉼표·세미콜론 공백만 이 규칙에서 잡는다.
+    sentence => /[\p{L}\p{N}”’」』》〉)\]][ \t]+[.!?。！？,，;；]/u
       .test(stripProtectedQuotedText(sentence))
   );
   pushSentenceIssue(
@@ -2344,7 +2355,8 @@ const SOURCE_RESTORABLE_ISSUES = new Set([
   'orphan_structural_particle',
   'introduced_rewrite_residue_fragment',
   'introduced_quote_boundary_linebreak',
-  'introduced_case_particle_relation_shift'
+  'introduced_case_particle_relation_shift',
+  'introduced_argument_frame_collision'
 ]);
 
 const POLISH_DISCOURSE_OPENER_RE = /^(이러한\s+내용을\s+종합하면|이상의\s+내용을\s+종합하면|앞선\s+내용을\s+종합하면|이\s+내용을\s+종합하면|이를\s+종합하면|이러한\s+점을\s+종합하면|종합하면|이러한\s+점에서|이런\s+점에서|결론적으로|마지막으로|이에\s+따라|그러므로|따라서|결국|이처럼|요컨대|정리하면|한편|반면|다만|그러나|하지만|즉)([,，]?)[ \t]+/u;
@@ -2710,7 +2722,8 @@ const HIGH_PRIORITY_REPAIR_CODES = new Set([
   'reflexive_subject_attachment',
   'sampling_subject_mismatch',
   'missing_subject_particle',
-  'introduced_case_particle_relation_shift'
+  'introduced_case_particle_relation_shift',
+  'introduced_argument_frame_collision'
 ]);
 
 // 탐지기 선언 순서는 구현상의 편의일 뿐 사용자 문서에서 고쳐야 할
@@ -3442,6 +3455,76 @@ function detectIntroducedCaseParticleRelationShift(source, outputText) {
         to: item.outputParticle
       }))
     }
+  );
+}
+
+// 원문의 `A가 B를 …하는 X라고 이해했다`를 결과가
+// `A를 B를 …하는 X로 이해했다`로 바꾸면 두 목적격은 각기 다른
+// 서술어에 걸려 문법적으로 해석될 여지가 있더라도 읽는 순간 조사 연쇄로
+// 받아들여진다. 단순 `을/를` 두 개를 금지하면 정상적인 내포문까지 훼손하므로,
+// 원문에서 주격+인용 보어였던 논항 틀이 같은 정렬 문장에서 목적격+부사격으로
+// 함께 바뀐 경우만 잡는다. 이 결함은 조사 하나만 되돌리면 보어 틀이 다시
+// 어긋나므로 문장 전체를 국소 수리·원문 복원 대상으로 보낸다.
+function detectIntroducedArgumentFrameCollision(sourceValue, outputValue) {
+  const sourceSpans = splitSentenceSpans(String(sourceValue || ''));
+  const outputSpans = splitSentenceSpans(String(outputValue || ''));
+  const outputSentences = outputSpans.map(item => item.text);
+  if (!sourceSpans.length || !outputSpans.length) return null;
+
+  const predicateStem = '(?:이해|인식|간주|판단|생각|평가|해석|규정|정의|받아들)';
+  const sourcePattern = new RegExp(
+    `([가-힣A-Za-z][가-힣A-Za-z0-9·()\\/-]{1,29})(이|가)`
+      + `([^.!?。！？\\n]{0,90}?)`
+      + `([가-힣A-Za-z][가-힣A-Za-z0-9·()\\/-]{0,24})(을|를)`
+      + `([^.!?。！？\\n]{0,150}?)(?:이라고|라고)\\s*(${predicateStem})`,
+    'u'
+  );
+  const rows = [];
+  const usedOutputOrdinals = new Set();
+
+  sourceSpans.forEach((sourceSpan, sourceIndex) => {
+    const sourceSentence = stripProtectedQuotedText(String(sourceSpan.text || ''));
+    const sourceMatch = sourceSentence.match(sourcePattern);
+    if (!sourceMatch) return;
+    const anchor = sourceMatch[1];
+    const nestedObject = sourceMatch[4];
+    const predicate = sourceMatch[7];
+    if (!anchor || !nestedObject || !predicate || anchor === nestedObject) return;
+
+    const aligned = alignedOutputCandidates(
+      String(sourceSpan.text || ''),
+      sourceIndex,
+      sourceSpans.length,
+      outputSentences,
+      { window: 3, maxOutputGroup: 1 }
+    ).find(item => Number(item.score || 0) >= 0.64);
+    if (!aligned || !Number.isInteger(aligned.index) || usedOutputOrdinals.has(aligned.index)) return;
+
+    const outputSentence = stripProtectedQuotedText(String(outputSpans[aligned.index]?.text || ''));
+    const outputPattern = new RegExp(
+      `${escapeRegexLiteral(anchor)}(을|를)`
+        + `[^.!?。！？\\n]{0,45}?${escapeRegexLiteral(nestedObject)}(을|를)`
+        + `[^.!?。！？\\n]{0,180}?(?:으?로)\\s*${escapeRegexLiteral(predicate)}`,
+      'u'
+    );
+    if (!outputPattern.test(outputSentence)) return;
+    usedOutputOrdinals.add(aligned.index);
+    rows.push({
+      anchor,
+      nestedObject,
+      predicate,
+      from: `${sourceMatch[2]}…${sourceMatch[5]}…라고`,
+      to: '을/를…을/를…(으)로',
+      outputOrdinal: aligned.index + 1
+    });
+  });
+
+  if (!rows.length) return null;
+  return makeIssue(
+    'introduced_argument_frame_collision',
+    rows.length,
+    rows.map(item => item.outputOrdinal),
+    { collisions: rows.slice(0, 8) }
   );
 }
 

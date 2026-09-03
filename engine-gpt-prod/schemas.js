@@ -17,12 +17,30 @@ const DETECT_SCHEMA = {
   additionalProperties: false,
   properties: {
     probability: { type: 'number' },
-    summary: { type: 'string' },
-    detail: { type: 'string' },
-    signals: { type: 'array', items: { type: 'string' } },
+    signals: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          category: {
+            type: 'string',
+            enum: [
+              'sentence_uniformity', 'ending_repetition', 'formulaic_transition',
+              'generic_abstraction', 'insufficient_grounding', 'overstructured_progression',
+              'voice_instability', 'unsupported_assertion', 'lexical_template',
+              'other_observed_style'
+            ]
+          },
+          strength: { type: 'string', enum: ['weak', 'moderate', 'strong'] },
+          scope: { type: 'string', enum: ['isolated', 'recurring', 'pervasive'] }
+        },
+        required: ['category', 'strength', 'scope']
+      }
+    },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] }
   },
-  required: ['probability', 'summary', 'detail', 'signals', 'confidence']
+  required: ['probability', 'signals', 'confidence']
 };
 
 const REWRITE_SCHEMA = {

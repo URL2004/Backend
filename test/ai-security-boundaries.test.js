@@ -55,6 +55,7 @@ test('structured output leak gate rejects real internal boundaries and stable pr
   for (const marker of [
     '[GPT-PROD-HUMANIZE]',
     '[GPT-PROD-DETECT]',
+    '[GPT-PROD-DETECT:detect-prompt-v3-cause-aligned]',
     '[GPT-PROD-EVIDENCE-SEARCH]',
     '[GPT-PROD-REWRITE-SENTENCE]'
   ]) {
@@ -65,6 +66,10 @@ test('structured output leak gate rejects real internal boundaries and stable pr
   }
   assert.throws(
     () => promptSecurity.assertNoPromptLeak({ summary: '[GPT-PROD-', detail: 'DETECT] internal rules' }),
+    error => error?.code === 'PROMPT_INSTRUCTION_LEAK' && error?.path === '$.[aggregate]'
+  );
+  assert.throws(
+    () => promptSecurity.assertNoPromptLeak({ summary: '[GPT-PROD-DETECT:detect-', detail: 'prompt-v3-cause-aligned] rules' }),
     error => error?.code === 'PROMPT_INSTRUCTION_LEAK' && error?.path === '$.[aggregate]'
   );
   assert.throws(

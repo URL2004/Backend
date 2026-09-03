@@ -40,6 +40,10 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
     probability: 72,
     probSource: 'llm',
     riskLevel: 'high',
+    signalEvidence: [
+      { category: 'sentence_uniformity', strength: 'strong', scope: 'recurring', description: '비슷한 문장 호흡이 여러 문단에서 반복됨' },
+      { category: 'formulaic_transition', strength: 'moderate', scope: 'recurring', description: '정형적인 결론 연결이 반복됨' }
+    ],
     measurements: {
       uniformity: { maxEndingRun: 5, avgLength: 57.0, lengthCV: 0.188, paragraphCountCV: 0 },
       genericness: { ratio: 0.375, count: 3, total: 8 },
@@ -48,7 +52,7 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
     }
   });
 
-  assert.equal(reportView.version, 'evidence-v2');
+  assert.equal(reportView.version, 'evidence-v3-cause-aligned');
   assert.equal(reportView.status, 'ready');
   assert.equal(reportView.styleSignal.score, 72);
   assert.equal(reportView.professorRadar.score, 72, '교수님 레이더 점수는 표시 점수와 달라지면 안 된다');
@@ -65,7 +69,47 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
   assert.equal(reportView.measuredEvidence.livedCount, 1);
   assert.equal(reportView.measuredEvidence.specificCount, 0);
   assert.equal(reportView.synthesis.headline, '문장 패턴은 정형적이고, 구체적인 근거는 일부만 확인됐어요.');
+  assert.equal(reportView.causeAnalysis.status, 'aligned');
+  assert.equal(reportView.causeAnalysis.qualifyingIndependentSignals, 2);
   assert.match(reportView.synthesis.limitation, /작성 주체나 외부 검사 결과를 확정하지 않아요/u);
+});
+
+test('높은 점수를 기존 문자열 원인만으로 설명하면 부분 설명으로 제한한다', () => {
+  const view = buildDetectReportView({
+    probability: 72,
+    probSource: 'llm',
+    riskLevel: 'high',
+    signals: ['문장이 정돈되어 있음'],
+    measurements: {
+      uniformity: { maxEndingRun: 2, lengthCV: 0.4 },
+      genericness: { count: 0, total: 8, ratio: 0 },
+      detail: [{ lived: 2, specific: 2, sents: 8 }]
+    }
+  });
+  assert.equal(view.status, 'partial');
+  assert.equal(view.alignment.status, 'partial');
+  assert.equal(view.causeAnalysis.status, 'partial');
+  assert.equal(view.conversion.eligible, false);
+  assert.match(view.synthesis.headline, /원인 설명은 일부/u);
+});
+
+test('확인된 휴머나이징 이력 보정은 강한 원인과 낮은 표시 점수가 함께 보이는 이유를 밝힌다', () => {
+  const view = buildDetectReportView({
+    probability: 18,
+    preCalibrationProbability: 70,
+    calibrationApplied: true,
+    probSource: 'llm',
+    riskLevel: 'low',
+    signalEvidence: [
+      { category: 'sentence_uniformity', strength: 'strong', scope: 'recurring', description: '문장 호흡이 반복됨' },
+      { category: 'formulaic_transition', strength: 'moderate', scope: 'recurring', description: '정형 연결이 반복됨' }
+    ],
+    measurements: { genericness: { count: 1, total: 8 }, detail: [{ lived: 2, specific: 1, sents: 8 }] }
+  });
+  assert.equal(view.status, 'ready');
+  assert.equal(view.causeAnalysis.scoreBasis, 'calibrated_display_score');
+  assert.equal(view.causeAnalysis.preCalibrationScore, 70);
+  assert.match(view.synthesis.headline, /변환 이력/u);
 });
 
 test('점수나 문장 근거가 불완전하면 판정을 제한하고 전환 CTA 대상에서 제외한다', () => {
@@ -287,6 +331,10 @@ test('미리보기 문장은 가장 많이 바뀐 자리만 공개하고 나머�
   assert.ok(after.includes(gate.preview), '공개 조각은 원문 그대로');
   const visible = gate.parts.filter(p => p.visible).map(p => p.text).join('');
   assert.equal(visible, gate.preview);
+  const visibleStart = gate.parts[0].visible ? 0 : gate.parts[0].text.length;
+  const visibleEnd = visibleStart + gate.preview.length;
+  assert.ok(gate.afterFocus.start >= visibleStart && gate.afterFocus.end <= visibleEnd,
+    '긴 변경 범위는 공개된 조각과 겹치는 좌표만 내려준다');
   const hidden = gate.parts.filter(p => !p.visible).map(p => p.text).join('');
   assert.equal(hidden.length, gate.hiddenLength);
   assert.equal(gate.parts.map(p => p.text.length).reduce((a, b) => a + b, 0), after.length, '길이는 원문과 같아 자리가 유지된다');
@@ -299,7 +347,33 @@ test('미리보기 문장은 가장 많이 바뀐 자리만 공개하고 나머�
 
   const route = fs.readFileSync(path.join(__dirname, '..', 'routes', 'detectreport.js'), 'utf8');
   assert.match(route, /afterParts: gate\.parts/u, '라우트는 조각 배열을 내려보낸다');
+  assert.match(route, /meaningfulChange: gate\.meaningfulChange === true/u);
   assert.ok(!/after: r\.rewritten/u.test(route), '다듬은 문장 원문을 통째로 보내던 경로가 없다');
+});
+
+test('같은 문장과 공백·구두점만 고친 결과는 전후 예시로 내보내지 않는다', () => {
+  assert.equal(splitExamplePreview('같은 문장입니다.', '같은 문장입니다.'), null);
+  assert.equal(splitExamplePreview('같은   문장입니다 !', '같은 문장입니다.'), null);
+  assert.equal(splitExamplePreview('「같은 문장입니다」', '"같은 문장입니다"'), null);
+  const changed = splitExamplePreview('이 문장은 실제로 다시 썼습니다.', '이 문장은 그대로 두었습니다.');
+  assert.equal(changed.meaningfulChange, true);
+  assert.equal(changed.changeKind, 'replacement');
+  assert.equal(changed.anchor, 'changed');
+  assert.ok(changed.beforeFocus.end > changed.beforeFocus.start);
+  assert.ok(changed.afterFocus.end > changed.afterFocus.start);
+});
+
+test('삽입·삭제만 있는 실제 변화는 반대편 길이 0 위치까지 정확히 돌려준다', () => {
+  const inserted = splitExamplePreview('이 문장은 매우 자연스럽습니다.', '이 문장은 자연스럽습니다.');
+  assert.equal(inserted.changeKind, 'insertion');
+  assert.equal(inserted.beforeFocus.start, inserted.beforeFocus.end);
+  assert.ok(inserted.afterFocus.end > inserted.afterFocus.start);
+
+  const deleted = splitExamplePreview('이 문장은 자연스럽습니다.', '이 문장은 매우 자연스럽습니다.');
+  assert.equal(deleted.changeKind, 'deletion');
+  assert.ok(deleted.beforeFocus.end > deleted.beforeFocus.start);
+  assert.equal(deleted.afterFocus.start, deleted.afterFocus.end);
+  assert.ok(deleted.preview.length >= EXAMPLE_PREVIEW_MIN, '삭제 지점 주변의 결과 문맥을 보여준다');
 });
 
 
@@ -313,4 +387,5 @@ test('미리보기는 원문에서 바뀌는 자리(beforeFocus)도 함께 돌�
   assert.ok(gate.beforeFocus.end <= before.length);
   const route = fs.readFileSync(path.join(__dirname, '..', 'routes', 'detectreport.js'), 'utf8');
   assert.match(route, /beforeFocus: gate\.beforeFocus/u);
+  assert.match(route, /afterFocus: gate\.afterFocus/u);
 });

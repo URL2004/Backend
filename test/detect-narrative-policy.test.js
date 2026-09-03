@@ -18,8 +18,9 @@ test('1% 결과에 AI 작성 가능성이 높다는 설명을 노출하지 않�
 
   assert.equal(result.probability, 1);
   assert.equal(result.riskLevel, 'low');
-  assert.equal(result.riskLabel, 'AI 의심 낮음');
-  assert.match(result.summary, /낮게 감지/);
+  assert.equal(result.riskLabel, 'AI식 문체 신호 · 낮음');
+  assert.match(result.summary, /낮게 관찰/);
+  assert.match(result.detail, /문체 신호 1\/100/);
   assert.equal(narrativeContradictsRisk(`${result.summary}\n${result.detail}`, 'low'), false);
   assert.equal(result.narrativeConsistencyAdjusted, true);
 });
@@ -47,7 +48,7 @@ test('중간 구간은 높음이나 낮음으로 단정하지 않는다', () => 
   });
 
   assert.equal(result.riskLevel, 'moderate');
-  assert.match(result.summary, /일부 감지/);
+  assert.match(result.summary, /일부 관찰/);
   assert.equal(narrativeContradictsRisk(`${result.summary}\n${result.detail}`, 'moderate'), false);
 });
 
@@ -56,4 +57,19 @@ test('위험 구간 경계는 모든 감지 화면에서 재사용할 수 있다
   assert.equal(riskBand(21).level, 'moderate');
   assert.equal(riskBand(49).level, 'moderate');
   assert.equal(riskBand(50).level, 'high');
+});
+
+test('구조화 원인 설명도 작성 주체 단정 문구는 공개 응답에서 제거한다', () => {
+  const result = applyDetectNarrativePolicy({
+    probability: 70,
+    signalEvidence: [
+      { category: 'sentence_uniformity', strength: 'strong', scope: 'recurring', description: '비슷한 문장 호흡이 반복됨' },
+      { category: 'lexical_template', strength: 'strong', scope: 'pervasive', description: 'AI가 작성한 글일 가능성이 매우 높음' }
+    ]
+  });
+  assert.equal(result.signals.length, 2, '자유 서술 대신 닫힌 category로 안전한 설명을 다시 만든다');
+  assert.equal(result.signalEvidence.length, 2);
+  assert.equal(result.signalEvidence[0].category, 'sentence_uniformity');
+  assert.doesNotMatch(result.signals.join(' '), /AI가 작성|가능성이 매우 높/u);
+  assert.doesNotMatch(result.detail, /가능성이 매우 높/u);
 });

@@ -16,6 +16,7 @@ const billing = require('../lib/usageBilling');
 const history = require('../lib/historyService');
 const inputrouting = require('../engine/inputrouting');
 const publicMetrics = require('../lib/publicMetrics');
+const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
 
 const recentSubmits = new Map();
 const SUBMIT_DEDUP_WINDOW_MS = process.env.DEDUP_WINDOW_MS != null
@@ -141,6 +142,7 @@ router.post('/analyze', async (req, res) => {
   let result;
   try {
     const config = await activeGptConfig();
+    const routing = resolveAdvancedRouting(text);
     const detectInput = previousContext
       ? `[앞 청크의 마지막 일부 — 문맥 참고용, 점수에서 제외]\n${previousContext}\n\n[분석할 글]\n${text}`
       : text;
@@ -151,7 +153,12 @@ router.post('/analyze', async (req, res) => {
       config,
       route: 'analyze',
       uid: precheck.uid,
-      allowLocalFallback: false
+      allowLocalFallback: false,
+      documentProfile: {
+        profile: routing.profile,
+        confidence: routing.confidence,
+        profileMargin: routing.profileMargin
+      }
     });
     if (typeof result?.probability !== 'number' || !result.summary || !result.detail) {
       throw Object.assign(new Error('detect_incomplete'), { code: 'DETECT_INCOMPLETE' });
@@ -169,6 +176,10 @@ router.post('/analyze', async (req, res) => {
       result.probabilityCalibration = calibration.meta;
     }
     result = applyDetectNarrativePolicy(result, calibration.probability);
+    result.documentProfile = routing.profile;
+    result.profileConfidence = routing.confidence;
+    result.profileMargin = routing.profileMargin;
+    result.profileAmbiguous = Number.isFinite(Number(routing.profileMargin)) && Number(routing.profileMargin) < 0.5;
   } catch (error) {
     clearDedup();
     if (abortController.signal.aborted) return;
@@ -263,12 +274,18 @@ router.post('/analyze-pdf', (_req, res) => res.status(410).json({
 
 router.runDetect = async function runDetect(text, lang = 'ko') {
   const config = await activeGptConfig();
+  const routing = resolveAdvancedRouting(text);
   return gptAnalyze.runDetect(text, lang, {
     text,
     lang,
     config,
     route: 'analyze_validate',
-    allowLocalFallback: false
+    allowLocalFallback: false,
+    documentProfile: {
+      profile: routing.profile,
+      confidence: routing.confidence,
+      profileMargin: routing.profileMargin
+    }
   });
 };
 router.gpt = gptAnalyze;

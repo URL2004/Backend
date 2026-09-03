@@ -14,6 +14,7 @@ const {
   activeSubscription,
   activeSubscriptionOperation,
   acquireDeletionLease,
+  deleteDetectStabilityRowsForUid,
   deleteUserOperationalData,
   deleteStoragePhotos,
   exclusiveStoragePhotos,
@@ -29,6 +30,7 @@ const {
   laneWithClaim,
   laneWithoutClaim,
 } = require('../lib/accountActivityClaims');
+const detectStability = require('../lib/detectResultStability');
 
 test('account deletion includes credit lots and blocks live subscriptions', () => {
   assert.equal(USER_SUBCOLLECTIONS.includes('creditGrants'), false);
@@ -241,6 +243,22 @@ test('operational user content and counters are deleted while financial ledgers 
   for (const collectionName of ['orders', 'subscriptionOrders', 'paymentSecrets', 'paymentIntents']) {
     assert.equal(RETAINED_FINANCIAL_COLLECTIONS.includes(collectionName), true);
   }
+});
+
+test('계정 삭제는 원문 UID를 저장하지 않은 감지 안정화 행도 키로 찾아 지운다', async () => {
+  const secret = 'account-deletion-detect-cache-secret-minimum-32';
+  const deletionKey = detectStability.deletionKeyForUid('u1', { hmacSecret: secret });
+  const fixture = deletionLeaseFixture({
+    'analyzeRequests/stable-owned': { stabilityDeletionKey: deletionKey, purpose: detectStability.PURPOSE },
+    'analyzeRequests/stable-other': {
+      stabilityDeletionKey: detectStability.deletionKeyForUid('u2', { hmacSecret: secret }),
+      purpose: detectStability.PURPOSE
+    }
+  });
+  const deleted = await deleteDetectStabilityRowsForUid(fixture.db, 'u1', { hmacSecret: secret });
+  assert.equal(deleted, 1);
+  assert.equal(fixture.rows.has('analyzeRequests/stable-owned'), false);
+  assert.equal(fixture.rows.has('analyzeRequests/stable-other'), true);
 });
 
 test('storage cleanup accepts only exact Firebase Storage object URLs and expected bucket', () => {

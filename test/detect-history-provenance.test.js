@@ -87,8 +87,31 @@ test('감지 이력은 공개 점수 provenance만 allowlist로 저장한다', a
         selectedModel: 'gpt-test',
         engine: 'detect-test-v1',
         escalated: true,
+        detectPromptVersion: 'detect-prompt-v2',
+        detectCacheVariant: 'detect-result-stability-v1:abc',
+        detectCacheHit: true,
+        detectCacheSource: 'firestore',
         usage: { raw: '저장 금지' },
         providerResponse: '저장 금지'
+      },
+      rawProbability: 77,
+      modelProbability: 81,
+      causeScoreAdjusted: true,
+      causeScoreCeiling: 74,
+      causeScoreAdjustmentCode: 'score_capped_by_cause_evidence',
+      documentProfile: 'report_assignment',
+      profileConfidence: 0.91,
+      profileMargin: 0.32,
+      profileAmbiguous: true,
+      signalEvidence: [{
+        category: 'sentence_uniformity', strength: 'strong', scope: 'recurring',
+        description: '저장하지 않을 공개 설명'
+      }],
+      reportView: {
+        causeAnalysis: {
+          version: 'cause-coverage-v1', status: 'aligned', coverage: 1,
+          codes: []
+        }
       },
       summary: '요약',
       detail: '상세'
@@ -101,6 +124,24 @@ test('감지 이력은 공개 점수 provenance만 allowlist로 저장한다', a
   assert.equal(stored.value.detectModel, 'gpt-test');
   assert.equal(stored.value.detectorVersion, 'detect-test-v1');
   assert.equal(stored.value.detectEscalated, true);
+  assert.equal(stored.value.detectPromptVersion, 'detect-prompt-v2');
+  assert.equal(stored.value.detectCacheVariant, 'detect-result-stability-v1:abc');
+  assert.equal(stored.value.detectCacheHit, true);
+  assert.equal(stored.value.detectCacheSource, 'firestore');
+  assert.equal(stored.value.rawProbability, 77);
+  assert.equal(stored.value.modelProbability, 81);
+  assert.equal(stored.value.detectCauseScoreAdjusted, true);
+  assert.equal(stored.value.detectCauseScoreCeiling, 74);
+  assert.equal(stored.value.detectDocumentProfile, 'report_assignment');
+  assert.equal(stored.value.detectProfileMargin, 0.32);
+  assert.equal(stored.value.detectProfileAmbiguous, true);
+  assert.deepEqual(stored.value.detectCauseEvidence, [{
+    category: 'sentence_uniformity', strength: 'strong', scope: 'recurring'
+  }]);
+  assert.deepEqual(stored.value.detectCauseAlignment, {
+    version: 'cause-coverage-v1', status: 'aligned', coverage: 1, codes: []
+  });
+  assert.equal(JSON.stringify(stored.value).includes('저장하지 않을 공개 설명'), false);
   assert.equal(Object.hasOwn(stored.value, 'gptMeta'), false);
   assert.equal(Object.hasOwn(stored.value, 'usage'), false);
   assert.equal(Object.hasOwn(stored.value, 'providerResponse'), false);
@@ -119,6 +160,7 @@ test('엔진 폴백 출처와 유효하지 않은 confidence는 감지 이력에
       probability: 22,
       probSource: 'engine',
       confidence: 'certain',
+      gptMeta: { detectCacheSource: 'untrusted' },
       summary: '요약',
       detail: '상세'
     }
@@ -126,6 +168,7 @@ test('엔진 폴백 출처와 유효하지 않은 confidence는 감지 이력에
 
   assert.equal(Object.hasOwn(stored.value, 'probSource'), false);
   assert.equal(Object.hasOwn(stored.value, 'detectConfidence'), false);
+  assert.equal(Object.hasOwn(stored.value, 'detectCacheSource'), false);
 });
 
 test('감지 이력 requestId는 payload fingerprint와 비용에 결합되고 최초 응답을 덮어쓰지 않는다', async () => {

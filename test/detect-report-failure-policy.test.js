@@ -23,6 +23,7 @@ const state = {
   creditBindings: new Map(),
   historyDocs: new Map(),
   requestJobs: new Map(),
+  stabilityResult: null,
   logs: []
 };
 
@@ -221,6 +222,20 @@ stub('lib/detectRequestStore.js', {
   }
 });
 
+stub('lib/detectResultStability.js', {
+  variantForConfig: () => 'detect-result-stability-v1:test',
+  getOrCompute: async (_input, compute) => {
+    if (state.stabilityResult) {
+      return {
+        result: state.stabilityResult,
+        cacheHit: true,
+        source: 'firestore'
+      };
+    }
+    return { result: await compute(), cacheHit: false, source: 'live' };
+  }
+});
+
 stub('lib/gptRuntimeConfig.js', {
   getRuntimeConfig: async () => ({
     activeProvider: 'gpt',
@@ -231,6 +246,8 @@ stub('lib/gptRuntimeConfig.js', {
 });
 
 stub('routes/analyze-gpt.js', {
+  DETECT_VERSION: 'detect-test-v1',
+  DETECT_PROMPT_VERSION: 'detect-prompt-test-v1',
   runDetect: async text => {
     state.modelCalls += 1;
     if (state.forceModelFailure || String(text).startsWith('FAIL ')) {
@@ -326,7 +343,7 @@ test('모델 실패와 불완전 응답은 엔진 숫자 없이 503 무차감으
   assert.equal(failed.body.charged, 0);
   assert.equal(Object.hasOwn(failed.body, 'probability'), false);
   assert.equal(Object.hasOwn(failed.body, 'probSource'), false);
-  assert.equal(state.modelCalls, 2, 'route retryAsync의 attempts=2는 총 두 번이어야 한다');
+  assert.equal(state.modelCalls, 1, '라우트는 엔진 전체를 중첩 재시도하지 않아야 한다');
   assert.equal(state.deductCalls, 0);
   assert.equal(state.historyCalls.length, 0);
   assert.equal(state.metricRegistrations, 0);
@@ -335,7 +352,7 @@ test('모델 실패와 불완전 응답은 엔진 숫자 없이 503 무차감으
   assert.equal(incomplete.status, 503);
   assert.equal(incomplete.body.code, 'DETECT_MODEL_UNAVAILABLE');
   assert.equal(Object.hasOwn(incomplete.body, 'probability'), false);
-  assert.equal(state.modelCalls, 4, '불완전 응답도 두 번 재시도해야 한다');
+  assert.equal(state.modelCalls, 2, '불완전 응답도 라우트에서 한 번만 실행해야 한다');
   assert.equal(state.deductCalls, 0);
   assert.equal(state.historyCalls.length, 0);
 
@@ -374,6 +391,9 @@ test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤�
   assert.equal(state.actualDeducts, 1);
   assert.equal(state.historyCalls.length, 1);
   assert.equal(state.historyCalls[0].result.probSource, 'llm');
+  assert.equal(state.historyCalls[0].result.rawProbability, 72);
+  assert.equal(state.historyCalls[0].result.gptMeta.detectPromptVersion, 'detect-prompt-test-v1');
+  assert.equal(state.historyCalls[0].result.gptMeta.detectCacheHit, false);
   assert.equal(state.metricRegistrations, 1);
 
   const delivered = state.logs.find(item => item.event === 'detect_report.score_outcome'
@@ -385,6 +405,47 @@ test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤�
   assert.equal(delivered.fields.detectorVersion, 'detect-test-v1');
   assert.equal(delivered.fields.uid, undefined);
   assert.equal(Object.hasOwn(delivered.fields, 'text'), false);
+});
+
+test('새 requestId의 동일 입력은 안정화 캐시 원점수를 재사용하고 캐시 출처를 기록한다', { concurrency: false }, async () => {
+  const modelCallsBefore = state.modelCalls;
+  const historyCallsBefore = state.historyCalls.length;
+  state.billingPlan = 'unlimited';
+  state.stabilityResult = {
+    probability: 61,
+    summary: '캐시된 문체 신호',
+    detail: '캐시된 상세',
+    signals: ['반복되는 문장 구조'],
+    confidence: 'high',
+    gptMeta: {
+      selectedModel: 'gpt-test',
+      engine: 'detect-test-v1',
+      detectPromptVersion: 'detect-prompt-test-v1',
+      escalated: false
+    }
+  };
+  let result;
+  try {
+    result = await post(BASE_TEXT, 'detect-stability-hit-1');
+  } finally {
+    state.stabilityResult = null;
+    state.billingPlan = 'free';
+  }
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.probability, 61);
+  assert.equal(result.body.probSource, 'llm');
+  assert.equal(result.body.charged, 0);
+  assert.equal(state.modelCalls, modelCallsBefore);
+  assert.equal(state.historyCalls.length, historyCallsBefore + 1);
+  assert.equal(state.historyCalls.at(-1).result.rawProbability, 61);
+  assert.equal(state.historyCalls.at(-1).result.gptMeta.detectCacheHit, true);
+  assert.equal(state.historyCalls.at(-1).result.gptMeta.detectCacheSource, 'firestore');
+  const delivered = [...state.logs].reverse().find(item => item.event === 'detect_report.score_outcome'
+    && item.fields.outcome === 'delivered');
+  assert.equal(delivered.fields.scoreSource, 'cached_llm');
+  assert.equal(delivered.fields.detectCacheHit, true);
+  assert.equal(delivered.fields.detectCacheSource, 'firestore');
 });
 
 test('동일 payload 재요청은 모델·원장·이력을 다시 호출하지 않고 권위 잔액을 재전송한다', { concurrency: false }, async () => {

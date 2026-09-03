@@ -15,27 +15,28 @@ const {
 
 const AXES = ['uniform', 'ending', 'generic', 'anchor', 'stance'];
 
-test('보고서·논문은 화자 입장 축을 끄고 앵커 축만 종류별 기준으로 본다', () => {
+test('보고서·논문은 화자 입장 축을 끄고 구체 사실·경험 근거를 종류별 기준으로 본다', () => {
   const report = resolveRadarAxisPolicy({ profile: 'report_assignment', confidence: 0.96, sentenceTotal: 40 });
   assert.equal(report.version, RADAR_AXIS_POLICY_VERSION);
   assert.equal(report.mode, 'axes');
   assert.equal(report.profileLabel, '보고서·과제');
   assert.equal(report.axes.stance.status, 'off');
   assert.match(report.axes.stance.reason, /화자 입장/u);
-  assert.deepEqual(report.axes.anchor, { status: 'on', metric: 'anchor', target: 0.10, reason: null });
+  assert.deepEqual(report.axes.anchor, { status: 'on', metric: 'grounded', target: 0.20, reason: null });
   for (const axis of ['uniform', 'ending', 'generic']) assert.equal(report.axes[axis].status, 'on');
 
   const paper = resolveRadarAxisPolicy({ profile: 'academic_paper', confidence: 0.9, sentenceTotal: 90 });
   assert.equal(paper.axes.stance.status, 'off');
-  assert.equal(paper.axes.anchor.target, 0.12);
+  assert.equal(paper.axes.anchor.metric, 'grounded');
+  assert.equal(paper.axes.anchor.target, 0.20);
 });
 
 test('자소서·에세이는 화자 입장을 보고, 앵커 대신 실제 경험 문장 비율을 쓴다', () => {
   const resume = resolveRadarAxisPolicy({ profile: 'resume_application', confidence: 0.84, sentenceTotal: 12 });
-  assert.deepEqual(resume.axes.stance, { status: 'on', metric: 'stance', target: 0.30, reason: null });
-  assert.deepEqual(resume.axes.anchor, { status: 'on', metric: 'lived', target: 0.30, reason: null });
+  assert.deepEqual(resume.axes.stance, { status: 'on', metric: 'stance', target: 0.20, reason: null });
+  assert.deepEqual(resume.axes.anchor, { status: 'on', metric: 'lived', target: 0.15, reason: null });
   const essay = resolveRadarAxisPolicy({ profile: 'personal_essay', confidence: 0.86, sentenceTotal: 20 });
-  assert.equal(essay.axes.stance.target, 0.25);
+  assert.equal(essay.axes.stance.target, 0.18);
   assert.equal(essay.axes.anchor.metric, 'lived');
 });
 
@@ -54,6 +55,18 @@ test('글 종류가 불확실하면 두 축을 아예 비활성(off)으로 두�
   // off는 신뢰도와 무관하게 off
   const paperShaky = resolveRadarAxisPolicy({ profile: 'academic_paper', confidence: 0.2, sentenceTotal: 15 });
   assert.equal(paperShaky.axes.stance.status, 'off');
+});
+
+test('전체 confidence가 높아도 세부 글 종류 점수 차가 작으면 종류 의존 축을 끈다', () => {
+  const ambiguous = resolveRadarAxisPolicy({
+    profile: 'report_assignment', confidence: 0.91, profileMargin: 0.3, sentenceTotal: 20
+  });
+  assert.equal(ambiguous.lowConfidence, false);
+  assert.equal(ambiguous.ambiguousProfile, true);
+  assert.equal(ambiguous.profileMargin, 0.3);
+  assert.equal(ambiguous.axes.anchor.status, 'off');
+  assert.match(ambiguous.axes.anchor.reason, /비슷한 글 종류/u);
+  assert.equal(ambiguous.axes.stance.status, 'off', '장르상 해당 없는 축은 모호성 때문에 다시 켜지지 않는다');
 });
 
 test('문장이 적으면 축별 최소 문장 수 아래의 축은 sparse가 되고, 전부 sparse면 안내 한 줄로 바뀐다', () => {
@@ -107,6 +120,9 @@ test('보고서 뷰는 글 종류를 받아 measuredEvidence.axisPolicy로 내�
   assert.equal(withProfile.measuredEvidence.axisPolicy.profile, 'report_assignment');
   assert.equal(withProfile.measuredEvidence.axisPolicy.sentenceTotal, 10);
   assert.equal(withProfile.measuredEvidence.axisPolicy.axes.stance.status, 'off');
+  assert.equal(withProfile.measuredEvidence.axisPolicy.axes.anchor.metric, 'grounded');
+  assert.equal(withProfile.measuredEvidence.groundedCount, 1);
+  assert.equal(withProfile.measuredEvidence.groundedRatio, 0.1);
   assert.equal(withProfile.measuredEvidence.stanceRatio, 0, '원값은 그대로 남긴다(사실 표기용)');
 
   const without = buildDetectReportView({ probability: 70, probSource: 'llm', riskLevel: 'high', measurements });
@@ -116,5 +132,5 @@ test('보고서 뷰는 글 종류를 받아 measuredEvidence.axisPolicy로 내�
 
 test('감지 보고서 라우트는 이미 계산한 문서 프로필을 뷰에 넘긴다', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'routes', 'detectreport.js'), 'utf8');
-  assert.match(source, /documentProfile: \{ profile: advancedRouting\.profile, confidence: advancedRouting\.confidence \}/u);
+  assert.match(source, /profile:\s*advancedRouting\.profile,[\s\S]*confidence:\s*advancedRouting\.confidence,[\s\S]*profileMargin:\s*advancedRouting\.profileMargin/u);
 });

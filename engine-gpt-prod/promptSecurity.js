@@ -7,7 +7,7 @@ const {
 
 const INTERNAL_PROMPT_PATTERNS = Object.freeze([
   /<<<(?:END_)?GPT_PROD_DATA:[A-Z0-9_]+:[a-f0-9]{16,64}>>>/iu,
-  /\[GPT-PROD-[A-Z0-9_-]+\]/iu,
+  /\[GPT-PROD-[A-Z0-9_-]+(?::[A-Z0-9_.:-]+)?\]/iu,
   /\[서비스\s*어댑터\s*규칙\]/u,
   /(?:재작성할\s*텍스트|작업\s*위치|앞\s*문맥\s*-\s*참고만|뒤\s*문맥\s*-\s*참고만)/u,
   /본문이다\.\s*이\s*청크만\s*(?:다듬는다|선택한\s*강도에\s*맞게\s*변환한다)/u,

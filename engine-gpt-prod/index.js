@@ -6,6 +6,7 @@ const secureEvidenceFetch = require('../lib/secureEvidenceFetch');
 const { completeJson, webSearchTool, safetyIdentifierForUid } = require('./openaiClient');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
+const { alignScoreToCauseEvidence, assessCauseCoverage } = require('../lib/detectSignalPolicy');
 const prompts = require('./prompts');
 const { addUsage, emptyUsage } = require('./usageCost');
 const { buildContract } = require('../engine/contract');
@@ -68,6 +69,7 @@ const {
 } = require('./humanizeContract');
 
 const VERSION = 'gpt-prod-v2.5.43';
+const DETECT_VERSION = 'gpt-detect-v1.25';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -5249,15 +5251,21 @@ async function callHumanize(args) {
   }
 }
 
-async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '' } = {}) {
+async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '', documentProfile = null } = {}) {
   const source = String(text || '').trim();
   const cfg = await loadConfig(config);
+  // Primary and escalation share one absolute request budget. Provider-level
+  // retries remain error-aware inside completeJson; the route must not retry
+  // the whole detect chain again after this budget is consumed.
+  const detectDeadlineMs = Date.now() + detectTotalTimeoutMs();
   const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
   const user = lang === 'en' ? `[TEXT TO ANALYZE]\n${source}` : `[분석할 글]\n${source}`;
+  let primary = null;
+  let primaryError = null;
   try {
-    const res = await callDetectModel({
+    primary = await callDetectModel({
       prompt: prompts.buildDetectPrompt(lang),
       user,
       cfg,
@@ -5267,12 +5275,28 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       model: cfg.models.detect,
       reasoningEffort: cfg.reasoning.detect,
       safetyIdentifier: safetyId,
-      escalated: false
+      escalated: false,
+      deadlineMs: detectDeadlineMs,
+      documentProfile
     });
-    let out = normalizeDetectResult(res.json);
-    out.gptMeta = metaFromResponse(res, cfg, { task: route, escalated: false });
-    if (shouldEscalateDetect(out, source, cfg)) {
-      const esc = await callDetectModel({
+  } catch (error) {
+    primaryError = error;
+  }
+
+  if (primary) {
+    let out = normalizeDetectResult(primary.json);
+    out.gptMeta = metaFromResponse(primary, cfg, {
+      task: route,
+      escalated: false,
+      engine: DETECT_VERSION,
+      detectPromptVersion: prompts.DETECT_PROMPT_VERSION
+    });
+    if (!shouldEscalateDetect(out, source, cfg)) {
+      return applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+    }
+
+    try {
+      const escalated = await callDetectModel({
         prompt: prompts.buildDetectPrompt(lang),
         user,
         cfg,
@@ -5282,42 +5306,93 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
         model: cfg.models.detectEscalation,
         reasoningEffort: cfg.reasoning.escalation,
         safetyIdentifier: safetyId,
-        escalated: true
+        escalated: true,
+        deadlineMs: detectDeadlineMs,
+        documentProfile
       });
-      out = normalizeDetectResult(esc.json);
-      out.gptMeta = metaFromResponse(esc, cfg, { task: route, escalated: true, primaryConfidence: res.json.confidence || '' });
-    }
-    return out;
-  } catch (firstErr) {
-    try {
-      const res = await callDetectModel({
-        prompt: prompts.buildDetectPrompt(lang),
-        user,
-        cfg,
-        signal,
-        route,
-        phase: 'detect:escalation',
-        model: cfg.models.detectEscalation,
-        reasoningEffort: cfg.reasoning.escalation,
-        safetyIdentifier: safetyId,
-        escalated: true
+      out = normalizeDetectResult(escalated.json);
+      out.gptMeta = metaFromDetectResponses(primary, escalated, cfg, {
+        task: route,
+        escalated: true,
+        primaryConfidence: primary.json.confidence || '',
+        engine: DETECT_VERSION,
+        detectPromptVersion: prompts.DETECT_PROMPT_VERSION
       });
-      const out = normalizeDetectResult(res.json);
-      out.gptMeta = metaFromResponse(res, cfg, { task: route, escalated: true, primaryError: firstErr.message });
-      return out;
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      if (!allowLocalFallback) throw err;
-      return deterministicDetectFallback(source, firstErr || err);
+      return applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+    } catch (escalationError) {
+      if (signal?.aborted) throw escalationError;
+      // A valid primary result is safer than making the same escalation call a
+      // second time through the outer failure path.  Keep it, align its score
+      // to the causes, and expose only a bounded diagnostic flag.
+      out.gptMeta = {
+        ...out.gptMeta,
+        escalationFailed: true,
+        escalationFailureCode: modelCallFailureCode(escalationError)
+      };
+      return applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
     }
+  }
+
+  try {
+    const escalated = await callDetectModel({
+      prompt: prompts.buildDetectPrompt(lang),
+      user,
+      cfg,
+      signal,
+      route,
+      phase: 'detect:escalation',
+      model: cfg.models.detectEscalation,
+      reasoningEffort: cfg.reasoning.escalation,
+      safetyIdentifier: safetyId,
+      escalated: true,
+      deadlineMs: detectDeadlineMs,
+      documentProfile
+    });
+    const out = normalizeDetectResult(escalated.json);
+    out.gptMeta = metaFromResponse(escalated, cfg, {
+      task: route,
+      escalated: true,
+      primaryError: primaryError?.message || '',
+      engine: DETECT_VERSION,
+      detectPromptVersion: prompts.DETECT_PROMPT_VERSION
+    });
+    return applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (!allowLocalFallback) throw error;
+    return deterministicDetectFallback(source, primaryError || error);
   }
 }
 
-async function callDetectModel({ prompt, user, cfg, signal, route, phase, model, reasoningEffort, escalated, safetyIdentifier = '' }) {
+function detectTotalTimeoutMs(value = process.env.OPENAI_DETECT_TOTAL_TIMEOUT_MS) {
+  const parsed = Number(value);
+  const selected = Number.isFinite(parsed) ? parsed : 120000;
+  return Math.max(30000, Math.min(240000, Math.floor(selected)));
+}
+
+function trustedDetectProfile(value) {
+  const profile = String(value?.profile || '').replace(/[^a-z_]/gu, '').slice(0, 40);
+  const confidence = Number(value?.confidence);
+  const margin = Number(value?.profileMargin);
+  // A broad/unknown label or an unresolved fine-profile tie must not become a
+  // model prior. Only a classifier decision with both sufficient absolute
+  // confidence and separation from the runner-up is useful for discounting
+  // genre conventions.
+  if (!profile
+      || ['unknown', 'general'].includes(profile)
+      || !Number.isFinite(confidence)
+      || confidence < 0.55
+      || !Number.isFinite(margin)
+      || margin < 0.5) return '';
+  return `[TRUSTED DOCUMENT PROFILE]\nprofile=${profile}\nconfidence=${Math.max(0, Math.min(1, confidence)).toFixed(2)}\nprofile_margin=${Math.max(0, margin).toFixed(2)}\nUse this only to discount normal genre conventions. Never treat the profile itself as AI evidence.`;
+}
+
+async function callDetectModel({ prompt, user, cfg, signal, route, phase, model, reasoningEffort, escalated, deadlineMs, safetyIdentifier = '', documentProfile = null }) {
   const secured = envelopeUntrustedText(user, 'DETECT_INPUT');
+  const trustedProfile = trustedDetectProfile(documentProfile);
   const result = await completeJson({
       system: appendPromptSecurityRule(prompt),
-      user: secured.text,
+      user: trustedProfile ? `${trustedProfile}\n\n${secured.text}` : secured.text,
       schema: DETECT_SCHEMA,
       schemaName: 'gpt_prod_detect_result',
       model,
@@ -5326,6 +5401,7 @@ async function callDetectModel({ prompt, user, cfg, signal, route, phase, model,
       maxOutputTokens: 2200,
       config: cfg,
       signal,
+      deadlineMs,
       safetyIdentifier,
       meta: { task: route, phase, mode: 'detect', profile: PROFILE, escalated }
     });
@@ -7697,9 +7773,12 @@ function normalizeDetectResult(json) {
   const probability = Math.max(0, Math.min(100, Math.round(Number(json.probability) || 0)));
   return applyDetectNarrativePolicy({
     probability,
-    summary: String(json.summary || '').trim() || '분석 결과를 생성했습니다.',
-    detail: String(json.detail || '').trim(),
-    signals: Array.isArray(json.signals) ? json.signals.slice(0, 12) : [],
+    // Public verdict prose is derived from the final server-aligned score.
+    // The model no longer spends output tokens generating unused free text.
+    summary: '',
+    detail: '',
+    signalEvidence: Array.isArray(json.signals) ? json.signals.slice(0, 12) : [],
+    signalContractVersion: 'model-signals-v1',
     confidence: ['low', 'medium', 'high'].includes(json.confidence) ? json.confidence : 'medium'
   });
 }
@@ -7707,9 +7786,12 @@ function normalizeDetectResult(json) {
 function shouldEscalateDetect(out, source, cfg) {
   if (!cfg?.models?.detectEscalation || cfg.models.detectEscalation === cfg.models.detect) return false;
   const probability = Number(out?.probability);
-  const signals = Array.isArray(out?.signals) ? out.signals.length : 0;
+  // The public `signals` array is derived presentation copy and can be filtered
+  // by the narrative policy. Escalation must use the canonical evidence that
+  // actually supports the score, otherwise a cache/narrative change can alter
+  // model routing without any change in evidence.
   if (out?.confidence === 'low') return true;
-  if (Number.isFinite(probability) && probability >= 45 && probability <= 65 && signals < 3) return true;
+  if (assessCauseCoverage(probability, out?.signalEvidence, { source: 'llm' }).status === 'partial') return true;
   if (String(source || '').length >= 6000 && out?.confidence !== 'high') return true;
   return false;
 }
@@ -7849,6 +7931,21 @@ function metaFromResponse(res, cfg, extra = {}) {
     estimatedUsd: res.usage?.estimatedUsd || 0,
     usage: res.usage,
     ...extra
+  };
+}
+
+function metaFromDetectResponses(primary, final, cfg, extra = {}) {
+  const usage = addUsage(
+    addUsage(emptyUsage(), primary?.usage),
+    final?.usage
+  );
+  return {
+    ...metaFromResponse(final, cfg, extra),
+    primarySelectedModel: String(primary?.model || ''),
+    cachedInputTokens: usage.cachedInputTokens,
+    reasoningTokens: usage.reasoningTokens,
+    estimatedUsd: usage.estimatedUsd,
+    usage
   };
 }
 
@@ -8512,6 +8609,8 @@ function isNoopEquivalent(source, outputText, mode = '') {
 module.exports = {
   // 운영 진입면: server/compat가 직접 소비한다.
   VERSION,
+  DETECT_VERSION,
+  DETECT_PROMPT_VERSION: prompts.DETECT_PROMPT_VERSION,
   PROFILE,
   run,
   detect,
@@ -8542,6 +8641,8 @@ module.exports = {
   conservativeRecoveryMaximumAttempts,
   measureConservativeRecoveryProgress,
   shouldSkipWholeDocumentDepthRetryAfterSectionRecovery,
+  trustedDetectProfile,
+  detectTotalTimeoutMs,
   effectStatusForNotices,
   classifyPolishEditKind,
   isNoopEquivalent,

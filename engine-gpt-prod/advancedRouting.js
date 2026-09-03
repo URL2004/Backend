@@ -40,6 +40,9 @@ function resolveAdvancedRouting(text, inputRisk = {}) {
   const documentProfile = detectDocumentProfile(source, { basicStyle: 'report' });
   const profile = String(documentProfile?.profile || 'unknown');
   const confidence = Number(documentProfile?.confidence) || 0;
+  const profileMargin = Number.isFinite(Number(documentProfile?.profileMargin))
+    ? Math.max(0, Number(documentProfile.profileMargin))
+    : null;
   const formatFlags = Array.isArray(documentProfile?.formatProfile?.flags)
     ? documentProfile.formatProfile.flags.map(value => String(value || ''))
     : [];
@@ -93,6 +96,7 @@ function resolveAdvancedRouting(text, inputRisk = {}) {
     documentProfile,
     profile,
     confidence,
+    profileMargin,
     formatFlags,
     highConfidenceAcademic,
     complexFormat,

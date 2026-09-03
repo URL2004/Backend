@@ -148,6 +148,8 @@ async function judgeAndRepair(...args) {
 }
 
 module.exports = {
+  DETECT_VERSION: engine.DETECT_VERSION,
+  DETECT_PROMPT_VERSION: engine.DETECT_PROMPT_VERSION,
   callGpt,
   extractGptResult,
   runHumanizeChunked,

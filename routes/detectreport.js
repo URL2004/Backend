@@ -25,6 +25,7 @@ const detectCalibration = require('../lib/detectCalibration');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const history = require('../lib/historyService');
 const detectRequests = require('../lib/detectRequestStore');
+const detectStability = require('../lib/detectResultStability');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const inputrouting = require('../engine/inputrouting');
@@ -264,6 +265,12 @@ router.post('/detect-report', async (req, res) => {
   const requestPayloadFingerprint = (!devNoAuth && requestId)
     ? billing.creditRequestPayloadFingerprint({ opType: 'detect', needed: cost, text })
     : null;
+  // requestId가 없는 무제한 플랜도 동일 글 재검사 점수는 안정화한다. 지문은
+  // 기존 과금 결합 함수만 재사용하며 원문이나 지문을 로그에 남기지 않는다.
+  const stabilityPayloadFingerprint = (!devNoAuth && uid)
+    ? (requestPayloadFingerprint
+      || billing.creditRequestPayloadFingerprint({ opType: 'detect', needed: cost, text }))
+    : null;
   const requestBinding = requestPayloadFingerprint ? {
     uid,
     requestId,
@@ -431,20 +438,55 @@ router.post('/detect-report', async (req, res) => {
     // 서로 다른 척도의 로컬 숫자로 바꾸지 않는다.
     const scoreStartedAt = Date.now();
     let detectError = null;
-    const detectP = billing.retryAsync(async () => {
+    let stabilityMeta = {
+      cacheHit: false,
+      source: 'live',
+      cacheVariant: '',
+      promptVersion: String(gptAnalyze.DETECT_PROMPT_VERSION || '')
+    };
+    const detectP = (async () => {
       const gptCfg = await activeGptConfig();
       if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
-      const result = await gptAnalyze.runDetect(text, 'ko', {
-        config: gptCfg,
-        route: 'detect_report',
-        allowLocalFallback: false,
-        uid: uid || ''
+      const cacheVariant = detectStability.variantForConfig(gptCfg, {
+        detectorVersion: gptAnalyze.DETECT_VERSION,
+        promptVersion: gptAnalyze.DETECT_PROMPT_VERSION,
+        documentProfile: `${advancedRouting.profile}:${Number(advancedRouting.confidence).toFixed(2)}:${advancedRouting.profileMargin ?? 'na'}`
       });
+      const stable = await detectStability.getOrCompute({
+        uid,
+        payloadFingerprint: stabilityPayloadFingerprint,
+        cacheVariant
+      }, async () => {
+        const detected = await gptAnalyze.runDetect(text, 'ko', {
+          config: gptCfg,
+          route: 'detect_report',
+          allowLocalFallback: false,
+          uid: uid || '',
+          documentProfile: {
+            profile: advancedRouting.profile,
+            confidence: advancedRouting.confidence,
+            profileMargin: advancedRouting.profileMargin
+          }
+        });
+        if (!Number.isFinite(detected?.probability)) {
+          throw Object.assign(new Error('detect_incomplete'), { code: 'DETECT_INCOMPLETE' });
+        }
+        return detected;
+      });
+      const result = stable.result;
       if (!Number.isFinite(result?.probability)) {
         throw Object.assign(new Error('detect_incomplete'), { code: 'DETECT_INCOMPLETE' });
       }
+      stabilityMeta = {
+        cacheHit: stable.cacheHit === true,
+        source: String(stable.source || 'live').slice(0, 20),
+        cacheVariant,
+        promptVersion: String(result.gptMeta?.detectPromptVersion
+          || gptAnalyze.DETECT_PROMPT_VERSION
+          || '').slice(0, 80)
+      };
       return result;
-    }, 2).catch(error => {
+    })().catch(error => {
       detectError = error;
       return null;
     });
@@ -465,7 +507,10 @@ router.post('/detect-report', async (req, res) => {
             afterHidden: gate.hiddenLength,
             afterLength: gate.totalLength,
             afterAnchor: gate.anchor,
+            meaningfulChange: gate.meaningfulChange === true,
+            changeKind: gate.changeKind,
             beforeFocus: gate.beforeFocus,   // 원문에서 바뀌는 자리 — 사용자 글이라 가릴 것 없다
+            afterFocus: gate.afterFocus,     // 전체 rewrite 좌표 안의 공개 변경 교집합 — 삭제는 길이 0 위치
             gated: gate.gated
           } : null;
         })().catch(error => { logger.warn('detect_report.preview_failed', { uid, err: error }); return null; })
@@ -540,8 +585,15 @@ router.post('/detect-report', async (req, res) => {
       probSource: 'llm',
       riskLevel: narrated.riskLevel,
       calibrationApplied: calibration.applied,
+      preCalibrationProbability: rawProbability,
       // 원인 레이더 축 정책용 — 글 종류·신뢰도(이미 계산된 값, 추가 비용 없음)
-      documentProfile: { profile: advancedRouting.profile, confidence: advancedRouting.confidence },
+      documentProfile: {
+        profile: advancedRouting.profile,
+        confidence: advancedRouting.confidence,
+        profileMargin: advancedRouting.profileMargin
+      },
+      signalEvidence: narrated.signalEvidence,
+      signals: narrated.signals,
       measurements: sentenceMap
         ? {
             ...reportMeasurements,
@@ -563,15 +615,28 @@ router.post('/detect-report', async (req, res) => {
       reportView,
       sentenceMap,
       signals: narrated.signals,
+      signalEvidence: narrated.signalEvidence,
       confidence: det.confidence,
       gptMeta: {
         selectedModel: det.gptMeta?.selectedModel,
         engine: det.gptMeta?.engine,
-        escalated: det.gptMeta?.escalated === true
+        escalated: det.gptMeta?.escalated === true,
+        detectPromptVersion: stabilityMeta.promptVersion,
+        detectCacheVariant: stabilityMeta.cacheVariant,
+        detectCacheHit: stabilityMeta.cacheHit,
+        detectCacheSource: stabilityMeta.source
       },
       probSource: 'llm',
+      rawProbability,
+      modelProbability: Number.isFinite(Number(det.modelProbability)) ? det.modelProbability : rawProbability,
+      causeScoreAdjusted: det.causeScoreAdjusted === true,
+      causeScoreCeiling: Number.isFinite(Number(det.causeScoreCeiling)) ? det.causeScoreCeiling : null,
+      causeScoreAdjustmentCode: det.causeScoreAdjustmentCode || null,
+      documentProfile: advancedRouting.profile,
+      profileConfidence: advancedRouting.confidence,
+      profileMargin: advancedRouting.profileMargin,
+      profileAmbiguous: reportView.measuredEvidence?.axisPolicy?.ambiguousProfile === true,
       ...(calibration.applied ? {
-        rawProbability: calibration.rawProbability,
         probabilityCalibration: calibration.meta
       } : {})
     };
@@ -605,6 +670,7 @@ router.post('/detect-report', async (req, res) => {
       recommendationReason: advancedRouting.recommendationReason || null,
       documentProfile: advancedRouting.profile,
       profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
+      profileMargin: advancedRouting.profileMargin,
       routingOverride: advancedRouting.routingOverride || null,
       advancedTimeEstimate,
       paragraphs: paras.map((paragraph, index) => {
@@ -645,18 +711,35 @@ router.post('/detect-report', async (req, res) => {
         grade,
         probability,
         rawProbability,
+        modelProbability: Number.isFinite(Number(det.modelProbability)) ? det.modelProbability : rawProbability,
+        causeScoreAdjusted: det.causeScoreAdjusted === true,
+        causeScoreCeiling: Number.isFinite(Number(det.causeScoreCeiling)) ? det.causeScoreCeiling : null,
+        causeScoreAdjustmentCode: det.causeScoreAdjustmentCode || null,
         calibrated: calibration.applied,
         calibration: calibration.applied ? calibration.meta : null,
         riskLevel: narrated.riskLevel,
         riskLabel: narrated.riskLabel,
         narrativeConsistencyAdjusted: narrated.narrativeConsistencyAdjusted,
         reportViewStatus: reportView.status,
+        causeCoverageStatus: reportView.causeAnalysis.status,
+        causeCoverage: reportView.causeAnalysis.coverage,
+        causeRequiredCount: reportView.causeAnalysis.requiredIndependentSignals,
+        causeQualifyingCount: reportView.causeAnalysis.qualifyingIndependentSignals,
+        causeCoverageCodes: reportView.causeAnalysis.codes,
+        documentProfile: advancedRouting.profile,
+        profileConfidence: advancedRouting.confidence,
+        profileMargin: advancedRouting.profileMargin,
+        profileAmbiguous: reportView.measuredEvidence?.axisPolicy?.ambiguousProfile === true,
         professorRadarBand: reportView.professorRadar.band,
         shadowEngineProbability,
         confidence: ['low', 'medium', 'high'].includes(det.confidence) ? det.confidence : null,
         selectedModel: det.gptMeta?.selectedModel || null,
         detectorVersion: det.gptMeta?.engine || null,
         escalated: det.gptMeta?.escalated === true,
+        detectPromptVersion: stabilityMeta.promptVersion,
+        detectCacheVariant: stabilityMeta.cacheVariant,
+        detectCacheHit: stabilityMeta.cacheHit,
+        detectCacheSource: stabilityMeta.source,
         scoreLatencyMs
       }
     };
@@ -847,25 +930,54 @@ router.post('/detect-report', async (req, res) => {
     riskLabel: metric.riskLabel,
     narrativeConsistencyAdjusted: metric.narrativeConsistencyAdjusted,
     reportViewStatus: metric.reportViewStatus,
+    causeCoverageStatus: metric.causeCoverageStatus,
+    causeCoverage: metric.causeCoverage,
+    causeRequiredCount: metric.causeRequiredCount,
+    causeQualifyingCount: metric.causeQualifyingCount,
+    causeCoverageCodes: metric.causeCoverageCodes,
+    causeScoreAdjusted: metric.causeScoreAdjusted,
+    modelProbability: metric.causeScoreAdjusted ? metric.modelProbability : undefined,
+    documentProfile: metric.documentProfile,
+    profileConfidence: metric.profileConfidence,
+    profileMargin: metric.profileMargin,
+    profileAmbiguous: metric.profileAmbiguous,
     professorRadarBand: metric.professorRadarBand,
     charged,
     remainingCredits,
     historySaved,
-    idempotentReplay: usedCachedArtifact
+    idempotentReplay: usedCachedArtifact,
+    detectCacheHit: metric.detectCacheHit,
+    detectCacheSource: metric.detectCacheSource
   });
   logger.info('detect_report.score_outcome', {
     uid: undefined,
     requestId: requestId || undefined,
     outcome: 'delivered',
-    scoreSource: usedCachedArtifact ? 'cached_llm' : 'llm',
+    scoreSource: usedCachedArtifact || metric.detectCacheHit ? 'cached_llm' : 'llm',
     probability: metric.probability,
     rawProbability: metric.rawProbability,
+    modelProbability: metric.modelProbability,
+    causeScoreAdjusted: metric.causeScoreAdjusted,
+    causeScoreCeiling: metric.causeScoreCeiling,
+    causeScoreAdjustmentCode: metric.causeScoreAdjustmentCode || undefined,
+    causeCoverageStatus: metric.causeCoverageStatus,
+    causeCoverage: metric.causeCoverage,
+    causeRequiredCount: metric.causeRequiredCount,
+    causeQualifyingCount: metric.causeQualifyingCount,
+    causeCoverageCodes: metric.causeCoverageCodes,
+    documentProfile: metric.documentProfile,
+    profileConfidence: metric.profileConfidence,
+    profileMargin: metric.profileMargin,
+    profileAmbiguous: metric.profileAmbiguous,
     shadowEngineProbability: metric.shadowEngineProbability,
     scoreDeltaFromShadow: metric.rawProbability - metric.shadowEngineProbability,
     confidence: metric.confidence || undefined,
     selectedModel: metric.selectedModel || undefined,
     detectorVersion: metric.detectorVersion || undefined,
     escalated: metric.escalated,
+    detectPromptVersion: metric.detectPromptVersion || undefined,
+    detectCacheHit: metric.detectCacheHit,
+    detectCacheSource: metric.detectCacheSource,
     calibrated: metric.calibrated,
     charged,
     latencyMs: metric.scoreLatencyMs,

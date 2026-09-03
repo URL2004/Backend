@@ -10,6 +10,7 @@ module.exports = {
   validateHumanizePrompt: humanize.validateHumanizePrompt,
   buildHumanizeUser: humanize.buildHumanizeUser,
   buildEscalationInstruction: humanize.buildEscalationInstruction,
+  DETECT_PROMPT_VERSION: detect.DETECT_PROMPT_VERSION,
   buildDetectPrompt: detect.buildDetectPrompt,
   buildRewritePrompt: repair.buildRewritePrompt,
   buildEvidencePrompt: evidence.buildEvidencePrompt

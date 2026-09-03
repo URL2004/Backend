@@ -85,6 +85,29 @@ test('근거 계약은 점수를 올리지 않고 약함·고립 신호를 고�
   assert.deepEqual(coverage.codes, ['cause_count_below_score_band']);
 });
 
+test('혼합 점수 구간은 적격 중간 강도 반복 신호가 있어야만 유지된다', () => {
+  for (const probability of [21, 49]) {
+    const aligned = alignScoreToCauseEvidence({
+      probability,
+      signalEvidence: [recurring('sentence_uniformity', 'moderate', 'recurring')]
+    });
+    assert.equal(aligned.probability, probability);
+    assert.equal(aligned.causeScoreAdjusted, false);
+  }
+
+  const weak = alignScoreToCauseEvidence({
+    probability: 35,
+    signalEvidence: [recurring('sentence_uniformity', 'weak', 'recurring')]
+  });
+  assert.equal(weak.probability, 20, '약한 반복 신호는 21~49점의 근거가 아니다');
+
+  const other = alignScoreToCauseEvidence({
+    probability: 35,
+    signalEvidence: [recurring('other_observed_style', 'moderate', 'recurring')]
+  });
+  assert.equal(other.probability, 20, '기타 문체 신호는 강도·범위와 무관하게 20점을 넘길 수 없다');
+});
+
 test('공개 원인 항목은 원문 인용 없이 정해진 필드만 정규화한다', () => {
   const evidence = normalizeSignalEvidence([
     { ...recurring('ending_repetition'), unexpected: 'drop me' },

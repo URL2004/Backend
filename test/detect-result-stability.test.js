@@ -33,7 +33,7 @@ function modelResult(probability = 42) {
     gptMeta: {
       selectedModel: 'gpt-5.6-luna',
       engine: 'gpt-detect-v1.25',
-      detectPromptVersion: 'detect-prompt-v4-cause-aligned',
+      detectPromptVersion: 'detect-prompt-v5-cause-aligned',
       escalated: false,
       usage: { inputTokens: 999 },
       providerResponse: '저장 금지'
@@ -53,7 +53,7 @@ function variantFor(overrides = {}) {
     reasoning: { ...CONFIG.reasoning, ...(overrides.reasoning || {}) }
   }, {
     detectorVersion: 'gpt-detect-v1.25',
-    promptVersion: 'detect-prompt-v4-cause-aligned'
+    promptVersion: 'detect-prompt-v5-cause-aligned'
   });
 }
 

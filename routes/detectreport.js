@@ -540,6 +540,8 @@ router.post('/detect-report', async (req, res) => {
       probSource: 'llm',
       riskLevel: narrated.riskLevel,
       calibrationApplied: calibration.applied,
+      // 원인 레이더 축 정책용 — 글 종류·신뢰도(이미 계산된 값, 추가 비용 없음)
+      documentProfile: { profile: advancedRouting.profile, confidence: advancedRouting.confidence },
       measurements: sentenceMap
         ? {
             ...reportMeasurements,

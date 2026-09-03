@@ -177,7 +177,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.42');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.43');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -222,6 +222,36 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
     assert.equal(call.body.safety_identifier, expectedSafety);
     assert.equal(JSON.stringify(call.body).includes(uid), false);
   }
+});
+
+test('v2.5.43 전달 고정점은 모델이 만든 목적격 연쇄를 원문 논항 문장으로 복원한다', { concurrency: false }, async t => {
+  const source = [
+    '그러던 중 그는 관련 기록을 읽으며 신앙의 의미를 살펴보았다.',
+    '신석구는 이 말씀을 통해 기독교가 유교를 단순히 폐기하는 종교가 아니라 자신이 유교를 통해 추구해 온 도덕적 이상을 완성할 수 있는 신앙이라고 이해했다.',
+    '이러한 판단은 이후의 결단으로 이어졌다.'
+  ].join(' ');
+  const unsafe = [
+    '그러던 중 그는 관련 기록을 읽으며 신앙의 의미를 확인했다.',
+    '이 말씀을 바탕으로 신석구는 기독교를 유교를 단순히 폐기하는 종교가 아니라, 자신이 유교를 통해 추구해 온 도덕적 이상을 완성할 수 있는 신앙으로 이해했다.',
+    '이 판단은 이후의 결단으로 이어졌다.'
+  ].join(' ');
+  const mock = installEngineMock(t, {
+    humanize: unsafe,
+    koreanRefinementOutput: unsafe,
+    humanizationDepth: false
+  });
+  const out = await engine.run({
+    text: source,
+    mode: 'blog',
+    uid: 'argument-frame-regression-user',
+    config: config()
+  });
+  assert.doesNotMatch(out.result.outputText, /기독교를\s+유교를/u);
+  assert.match(out.result.outputText, /기독교가 유교를[^.]+신앙이라고 이해했다/u);
+  assert.ok(
+    mock.calls.some(call => call.name === 'gpt_prod_korean_refinement_retry'),
+    '국소 수리를 먼저 시도한 뒤 안전하지 않으면 원문 문장 복원으로 수렴해야 한다'
+  );
 });
 
 test('v2.5.42 최종 고정점은 일반 계획에 새 대상의 출시·성과를 붙인 문장만 안전 삭제한다', { concurrency: false }, async t => {
@@ -1386,7 +1416,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.42');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.43');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

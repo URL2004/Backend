@@ -36,6 +36,7 @@ const {
   refundOperationId,
   validateConfirmInput
 } = require('../lib/paymentReconciliation');
+const paymentFailures = require('../lib/paymentFailureTaxonomy');
 const {
   CREDIT_GRANT_POLICY_VERSION,
   CREDIT_LOT_POLICY_VERSION,
@@ -935,7 +936,7 @@ async function reconcilePendingApprovedPayments({ limit = 25 } = {}) {
         || String(left.id).localeCompare(String(right.id));
     })
     .slice(0, boundedLimit);
-  const result = { scanned: docs.length, applied: 0, cancelled: 0, retried: 0, manualReview: 0 };
+  const result = { scanned: docs.length, applied: 0, cancelled: 0, abandoned: 0, retried: 0, manualReview: 0 };
   const basicToken = tossBasicToken();
   if (!basicToken) throw Object.assign(new Error('TOSS_SECRET_MISSING'), { code: 'TOSS_SECRET_MISSING' });
 
@@ -966,6 +967,34 @@ async function reconcilePendingApprovedPayments({ limit = 25 } = {}) {
       const providerPayment = providerLookup.result || {};
       const providerMatch = paymentIntentProviderMatches(intent, providerPayment, doc.id);
       if (!providerMatch.ok) {
+        // 거절로 끝난 주문(ABORTED·EXPIRED)은 불일치가 아니라 "결제가 없었던 것"이다.
+        // 예전에는 이것도 수동검토 SEV1으로 올라가, 잔액부족 이탈 하나가 매시간 알림을 만들었다.
+        const onlyNotDone = providerMatch.reasons.every(reason => reason === 'status_not_done');
+        if (onlyNotDone && paymentFailures.isTerminalAbandonedStatus(providerPayment.status)) {
+          await transitionPaymentReconciliation(doc.ref, leaseToken, {
+            status: 'abandoned',
+            reconciliationCandidate: false,
+            abandonedAt: admin.firestore.FieldValue.serverTimestamp(),
+            providerStatus: String(providerPayment.status || ''),
+            lastProviderCode: providerPayment.failure?.code || null
+          });
+          result.abandoned++;
+          logger.warn('payment.reconciliation_abandoned_closed', {
+            orderId: doc.id,
+            uid: intent.uid || null,
+            amount: Number(intent.amount) || null,
+            providerStatus: String(providerPayment.status || ''),
+            code: providerPayment.failure?.code || null,
+            providerMessage: providerPayment.failure?.message || null,
+            outcome: paymentFailures.OUTCOME_CUSTOMER_DECLINED,
+            moneyAtRisk: false,
+            creditsGranted: 0,
+            actionRequired: 'none',
+            attempts: Math.max(1, Math.floor(Number(intent.reconciliationAttempts) || 1)),
+            message: `거절로 끝난 주문을 정산 대상에서 종결(${providerPayment.status}${providerPayment.failure?.code ? ` · ${providerPayment.failure.code}` : ''}).`
+          });
+          continue;
+        }
         throw Object.assign(new Error('PAYMENT_RECONCILIATION_MISMATCH'), {
           terminal: true,
           reasons: providerMatch.reasons
@@ -1047,7 +1076,100 @@ async function reconcilePendingApprovedPayments({ limit = 25 } = {}) {
   return result;
 }
 
+// 승인 실패 한 건을 "사람이 그 자리에서 판단할 수 있는 한 줄"로 남긴다.
+//
+// 2026-09-04 이전 로그의 문제:
+//   · 같은 실패가 toss_confirm_failed + provider_not_done 두 줄로 갈려 건수가 두 배로 보였다.
+//   · 조회 요약이 code:null·message:null이라 "왜 ABORTED인지"를 Toss 콘솔에서 따로 봐야 했다.
+//   · 한 사람이 되풀이한 것인지 여러 사람이 겪는 장애인지 로그만으로 구분할 수 없었다.
+// 이제 한 줄에 원인 분류·결제사 원문·재시도 이력·소요시간·돈 위험 여부를 함께 싣는다.
+function logPaymentConfirmFailure({
+  failure,
+  uid,
+  orderId,
+  amount,
+  credits,
+  purchaseKind,
+  resolvedByLookup,
+  confirmSummary,
+  orderSummary,
+  confirmLatencyMs,
+  lookupLatencyMs,
+  elapsedMs
+}) {
+  const retry = paymentFailures.trackFailure({
+    uid,
+    orderId,
+    category: failure.category,
+    outcome: failure.outcome
+  });
+  const won = Number.isFinite(Number(amount)) ? `${Number(amount).toLocaleString('ko-KR')}원` : '금액미상';
+  const repeat = retry.uidFailures5m > 1
+    ? ` · 이 회원 5분 내 ${retry.uidFailures5m}번째(주문 ${retry.uidDistinctOrders5m}건)`
+    : '';
+  const fields = {
+    uid,
+    orderId,
+    amount,
+    credits: credits ?? undefined,
+    purchaseKind,
+    // 분류 — 이 세 필드만 봐도 "깨울 일인지"가 결정된다.
+    outcome: failure.outcome,
+    failureCategory: failure.category,
+    actionRequired: failure.actionRequired,
+    moneyAtRisk: failure.moneyAtRisk,
+    creditsGranted: 0,
+    resolvedByLookup: Boolean(resolvedByLookup),
+    // 결제사 원문 — 고객 문의가 오면 이 값을 그대로 인용한다.
+    code: failure.providerFailureCode || failure.providerCode || null,
+    status: failure.providerHttpStatus,
+    providerStatus: failure.providerStatus,
+    providerMessage: failure.providerFailureMessage || failure.providerMessage || null,
+    providerMethod: orderSummary?.method || null,
+    providerEasyPay: orderSummary?.easyPayProvider || null,
+    toss: confirmSummary,
+    tossOrder: orderSummary || undefined,
+    networkError: failure.networkError || undefined,
+    lookupStatus: failure.lookupHttpStatus,
+    ambiguousSignals: failure.ambiguousSignals?.length ? failure.ambiguousSignals : undefined,
+    // 타이밍 — 결제사 지연과 우리 지연을 분리해서 본다.
+    confirmLatencyMs,
+    lookupLatencyMs,
+    elapsedMs,
+    // 재시도 상관관계 — "한 사람의 반복"과 "여러 사람의 장애"를 로그 한 줄에서 구분한다.
+    retryUidFailures5m: retry.uidFailures5m,
+    retryUidDistinctOrders5m: retry.uidDistinctOrders5m,
+    retryOrderAttempt: retry.orderAttempt,
+    repeatedDecline: retry.repeatedDecline,
+    message: `${failure.reason} — ${won} 결제 실패${repeat}`
+  };
+
+  if (failure.customerDecline) {
+    // 카드사·계좌 사유. 돈 안 나갔고 크레딧도 없다. 기록만 하고 깨우지 않는다(SEV3).
+    logger.warn('payment.customer_declined', fields);
+    return retry;
+  }
+  if (failure.category === 'operator_config') {
+    // 시크릿 키·가맹점 설정 오류는 전 사용자 결제 불능으로 번진다(SEV1).
+    logger.error('payment.provider_rejected_request', fields);
+    return retry;
+  }
+  if (resolvedByLookup) {
+    // 승인 응답만 놓쳤고 주문 조회로 실제 상태를 확인했다. 뒤 단계에서 정상 처리된다.
+    logger.warn('payment.confirm_recovered_by_lookup', fields);
+    return retry;
+  }
+  if (failure.moneyAtRisk) {
+    // 바로 뒤에 payment.status_unknown(SEV1)이 같은 사건을 알린다. 여기서는 기록만 남긴다.
+    logger.warn('payment.toss_confirm_failed', { ...fields, noAlert: true });
+    return retry;
+  }
+  logger.warn('payment.toss_confirm_failed', fields);
+  return retry;
+}
+
 async function handleCreditPaymentConfirmation(req, res) {
+  const handlerStartedMs = Date.now();
   const body = req.body || {};
   const { paymentKey, orderId, amount, meta } = body;
   const legacyBodyUid = typeof body.uid === 'string' ? body.uid : '';
@@ -1254,47 +1376,83 @@ async function handleCreditPaymentConfirmation(req, res) {
     });
   }
 
+  const confirmStartedMs = Date.now();
   const confirmation = await requestTossConfirm({ basicToken, paymentKey, orderId, amount: safeAmount });
+  const confirmLatencyMs = Date.now() - confirmStartedMs;
   let providerPayment = confirmation.response?.ok ? confirmation.result : null;
   let reconciliationSource = 'confirm_response';
   let lookup = null;
+  let lookupLatencyMs = null;
+  // 승인 실패 분류 결과. 뒤쪽 검증 단계에서 "이미 한 줄 남겼는지"를 판단하는 데도 쓴다.
+  let failure = null;
 
   if (!providerPayment) {
-    logger.warn('payment.toss_confirm_failed', {
-      uid: verifiedUid,
-      orderId,
-      amount: safeAmount,
-      status: confirmation.response?.status || null,
-      toss: providerResultSummary(confirmation.result),
-      networkError: confirmation.networkError ? confirmation.networkError.message : null
-    });
     // A lost response and ALREADY_PROCESSED_PAYMENT are reconciled from Toss's order state.
+    // 조회를 먼저 끝내고 한 번만 분류한다 — 예전에는 승인 실패와 조회 결과를 각각 한 줄씩
+    // 남겨 같은 실패가 알림 2건으로 불어났다(2026-09-04).
+    const lookupStartedMs = Date.now();
     lookup = await queryTossOrder({ basicToken, orderId });
+    lookupLatencyMs = Date.now() - lookupStartedMs;
     if (lookup.response?.ok) {
       providerPayment = lookup.result;
       reconciliationSource = 'order_lookup';
     }
+    const orderSummary = lookup.response?.ok ? providerResultSummary(lookup.result) : null;
+    failure = paymentFailures.classifyPaymentFailure({
+      providerCode: confirmation.result?.code,
+      providerMessage: confirmation.result?.message,
+      httpStatus: confirmation.response?.status ?? null,
+      networkError: confirmation.networkError ? confirmation.networkError.message : null,
+      providerStatus: orderSummary?.status,
+      providerFailureCode: orderSummary?.failureCode,
+      providerFailureMessage: orderSummary?.failureMessage,
+      lookupHttpStatus: lookup.response?.status ?? null,
+      lookupNetworkError: lookup.networkError ? lookup.networkError.message : null
+    });
+    logPaymentConfirmFailure({
+      failure,
+      uid: verifiedUid,
+      orderId,
+      amount: safeAmount,
+      credits: creditGrant?.paidCredits ?? null,
+      purchaseKind: requestedKind,
+      resolvedByLookup: Boolean(providerPayment),
+      confirmSummary: providerResultSummary(confirmation.result),
+      orderSummary,
+      confirmLatencyMs,
+      lookupLatencyMs,
+      elapsedMs: Date.now() - handlerStartedMs
+    });
   }
 
   if (!providerPayment) {
     const code = confirmation.result?.code || null;
-    const ambiguous = Boolean(
-      confirmation.networkError ||
-      !confirmation.response ||
-      confirmation.response.status >= 500 ||
-      code === 'ALREADY_PROCESSED_PAYMENT' ||
-      lookup?.networkError ||
-      (lookup?.response && lookup.response.status >= 500)
-    );
-    await bestEffortMarkPaymentIntent(orderId, ambiguous ? 'status_unknown' : 'confirm_failed', {
-      lastProviderCode: code,
+    const ambiguous = failure.moneyAtRisk === true;
+    const declined = failure.customerDecline === true;
+    // 단말 거절(잔액부족·한도초과·세션 만료)은 재시도해도 DONE이 되지 않는다.
+    // 정산 후보로 남기면 매시간 워커가 다시 집어 "불일치=수동검토" 알림을 만든다.
+    const intentStatus = ambiguous ? 'status_unknown' : (declined ? 'declined' : 'confirm_failed');
+    await bestEffortMarkPaymentIntent(orderId, intentStatus, {
+      lastProviderCode: failure.providerFailureCode || code,
       lastProviderStatus: confirmation.response?.status || null,
+      lastProviderOrderStatus: failure.providerStatus || null,
+      lastFailureCategory: failure.category,
+      lastFailureOutcome: failure.outcome,
       lookupStatus: lookup?.response?.status || null,
       reconciliationCandidate: ambiguous,
-      ...(ambiguous ? { reconciliationRetryAtMs: Date.now() } : {})
+      ...(ambiguous ? { reconciliationRetryAtMs: Date.now() } : {}),
+      ...(declined ? { declinedAt: admin.firestore.FieldValue.serverTimestamp() } : {})
     });
     if (ambiguous) {
-      logger.error('payment.status_unknown', { uid: verifiedUid, orderId, amount: safeAmount, code });
+      logger.error('payment.status_unknown', {
+        uid: verifiedUid,
+        orderId,
+        amount: safeAmount,
+        code,
+        failureCategory: failure.category,
+        ambiguousSignals: failure.ambiguousSignals,
+        message: `${failure.reason} — 승인 여부 미확정. 결제됐는데 크레딧이 없을 수 있다.`
+      });
       return res.status(502).json({
         error: '결제 상태 확인이 지연되고 있습니다. 잠시 후 다시 시도하면 자동으로 복구됩니다.',
         code: 'PAYMENT_STATUS_UNKNOWN',
@@ -1304,8 +1462,10 @@ async function handleCreditPaymentConfirmation(req, res) {
     const providerStatus = confirmation.response?.status;
     const responseStatus = providerStatus >= 400 && providerStatus < 500 ? providerStatus : 502;
     return res.status(responseStatus).json({
-      error: confirmation.result?.message || '결제가 승인되지 않았습니다.',
-      code: code || 'PAYMENT_CONFIRM_FAILED'
+      // 거절 사유는 결제사 원문이 가장 정확하다. 설정 오류 계열은 taxonomy가 일반 문구로 바꿔 준다.
+      error: failure.userMessage || confirmation.result?.message || '결제가 승인되지 않았습니다.',
+      code: failure.providerFailureCode || code || 'PAYMENT_CONFIRM_FAILED',
+      ...(declined ? { declined: true, declineCategory: failure.category, retryable: true } : {})
     });
   }
 
@@ -1316,12 +1476,23 @@ async function handleCreditPaymentConfirmation(req, res) {
   });
   if (!approval.ok) {
     const identityMismatch = approval.reasons.some(reason => reason !== 'status_not_done');
-    const status = identityMismatch ? 'manual_review' : 'provider_not_done';
+    // ABORTED·EXPIRED는 재시도해도 절대 DONE이 되지 않는 종료 상태다. 정산 후보로 남겨 두면
+    // 매시간 워커가 다시 집어 "불일치=수동검토" SEV1을 만들어 냈다(2026-09-04).
+    const abandoned = !identityMismatch && paymentFailures.isTerminalAbandonedStatus(approval.status);
+    const status = identityMismatch ? 'manual_review' : (abandoned ? 'abandoned' : 'provider_not_done');
+    const providerSummary = providerResultSummary(providerPayment);
     await bestEffortMarkPaymentIntent(orderId, status, {
       reconciliationSource,
       providerStatus: approval.status,
       validationReasons: approval.reasons,
-      reconciliationCandidate: !identityMismatch
+      reconciliationCandidate: !identityMismatch && !abandoned,
+      ...(abandoned
+        ? {
+          abandonedAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastProviderCode: providerSummary.failureCode || null,
+          lastFailureCategory: 'checkout_aborted'
+        }
+        : {})
     });
     const logFields = {
       uid: verifiedUid,
@@ -1329,16 +1500,60 @@ async function handleCreditPaymentConfirmation(req, res) {
       amount: safeAmount,
       reconciliationSource,
       validationReasons: approval.reasons,
-      provider: providerResultSummary(providerPayment)
+      providerStatus: approval.status,
+      provider: providerSummary
     };
     if (identityMismatch) {
-      logger.error('payment.reconciliation_mismatch', logFields);
+      logger.error('payment.reconciliation_mismatch', {
+        ...logFields,
+        moneyAtRisk: true,
+        actionRequired: 'manual',
+        message: `승인 정보 불일치(${approval.reasons.join(',')}) — 지급 보류. Toss 콘솔에서 실제 결제 대조 필요.`
+      });
       return res.status(502).json({
         error: '결제 승인 정보가 주문 정보와 일치하지 않아 자동 지급을 중단했습니다.',
         code: 'PAYMENT_RECONCILIATION_MISMATCH'
       });
     }
-    logger.warn('payment.provider_not_done', logFields);
+    if (abandoned) {
+      // 승인 실패 단계에서 이미 payment.customer_declined로 한 줄 남겼으면 중복 기록하지 않는다.
+      // 승인이 200으로 돌아왔는데 상태만 ABORTED인 드문 경우에만 여기서 처음 남긴다.
+      const abandonedFailure = failure || paymentFailures.classifyPaymentFailure({
+        providerStatus: approval.status,
+        providerFailureCode: providerSummary.failureCode,
+        providerFailureMessage: providerSummary.failureMessage,
+        httpStatus: 200,
+        lookupHttpStatus: 200
+      });
+      if (!failure) {
+        logPaymentConfirmFailure({
+          failure: abandonedFailure,
+          uid: verifiedUid,
+          orderId,
+          amount: safeAmount,
+          credits: creditGrant?.paidCredits ?? null,
+          purchaseKind: requestedKind,
+          resolvedByLookup: reconciliationSource === 'order_lookup',
+          confirmSummary: providerResultSummary(confirmation.result),
+          orderSummary: providerSummary,
+          confirmLatencyMs,
+          lookupLatencyMs,
+          elapsedMs: Date.now() - handlerStartedMs
+        });
+      }
+      return res.status(409).json({
+        error: abandonedFailure.userMessage || '결제가 완료되지 않았어요. 충전 화면에서 다시 시도해 주세요.',
+        code: `PAYMENT_${approval.status || 'NOT_DONE'}`,
+        declined: true,
+        declineCategory: abandonedFailure.category,
+        retryable: true
+      });
+    }
+    logger.warn('payment.provider_not_done', {
+      ...logFields,
+      actionRequired: 'monitor',
+      message: `승인 응답이 DONE이 아님(${approval.status || 'UNKNOWN'}) — 지급 보류, 정산 대상으로 남김.`
+    });
     return res.status(409).json({
       error: '결제가 완료 상태가 아닙니다.',
       code: `PAYMENT_${approval.status || 'NOT_DONE'}`
@@ -1556,13 +1771,26 @@ router.post('/prepare-payment', async (req, res) => {
     });
   } catch (error) {
     const status = Number(error.status) || 503;
-    logger[status < 500 ? 'warn' : 'error']('payment.checkout_preclaim_failed', {
-      uid,
-      orderId,
-      amount,
-      code: error.code || error.message,
-      err: error
-    });
+    // 주문번호 충돌(4xx)은 중복 클릭 수준의 정상 경합이고, 5xx만 우리 쪽 장애다.
+    // 한 이름으로 묶어 두면 경합이 장애와 같은 등급으로 알림돼 노이즈가 된다.
+    const conflict = status >= 400 && status < 500;
+    logger[conflict ? 'warn' : 'error'](
+      conflict ? 'payment.checkout_preclaim_conflict' : 'payment.checkout_preclaim_failed',
+      {
+        uid,
+        orderId,
+        amount,
+        purchaseKind,
+        status,
+        code: error.code || error.message,
+        actionRequired: conflict ? 'none' : 'monitor',
+        moneyAtRisk: false,
+        message: conflict
+          ? `결제 시작 선점 경합(${error.code || status}) — 사용자는 재시도로 진행 가능.`
+          : `결제 시작 준비 실패(${error.code || status}) — 사용자가 결제창에 들어가지 못한다.`,
+        err: error
+      }
+    );
     return res.status(status).json({
       error: status === 409
         ? '이 주문번호는 이미 다른 결제 시도에 연결되어 있습니다.'
@@ -6029,7 +6257,9 @@ router.creditGrantPolicy = {
   paymentIntentPreclaimExpired,
   upgradeCheckoutReservationPatch,
   paymentReconciliationClaimable,
-  paymentIntentProviderMatches
+  paymentIntentProviderMatches,
+  // 실패 로그 계약 테스트용 — 실제로 나가는 필드를 문자열 매칭이 아니라 값으로 잠근다.
+  logPaymentConfirmFailure
 };
 router.referralPolicy = {
   REFERRAL_REWARD_CREDITS,

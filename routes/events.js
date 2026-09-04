@@ -9,6 +9,7 @@ const { realClientIp } = require('../lib/clientip');
 const { userAgentFamily } = require('../lib/cronAuth');
 const metaConversions = require('../lib/metaConversions');
 const { bearerToken } = require('../lib/reqtoken');
+const paymentFailures = require('../lib/paymentFailureTaxonomy');
 
 const router = express.Router();
 const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error', 'client_error']);
@@ -16,16 +17,20 @@ const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error', 'clie
 // 카드사/사용자 사유로 결제가 안 된 경우는 "정상 이탈"이라 깨울 일이 아니다.
 // 반대로 SDK 로드 실패·네트워크·승인 API 오류는 우리 쪽 장애다. 둘을 다른 이벤트로 나눠
 // 카탈로그(lib/opsEvents)가 등급을 다르게 매기게 한다.
-// PRODUCT_RETIRED: 2026-09 요금제 개편으로 종료된 상품을 구형 화면에서 누른 경우 — 우리 장애가 아니라 정상 이탈.
-const DECLINE_CODE_RE = /(REJECT|INVALID_CARD|INSUFFICIENT|EXCEED|LIMIT|STOLEN|LOST|EXPIRED|SUSPEND|NOT_SUPPORTED|PASSWORD|CANCEL|PRODUCT_RETIRED)/i;
+//
+// 판정 규칙은 서버 승인 경로와 같은 표(lib/paymentFailureTaxonomy)를 쓴다. 2026-09-04에는
+// 여기 규칙만 따로 있어서, 서버가 내려보낸 PAYMENT_ABORTED가 목록에 없다는 이유로
+// 잔액부족 이탈이 client.payment_error(SEV2)로 올라왔다.
 const DECLINE_STAGE_RE = /(fail_redirect)$/i;
 
-function isDeclineLike(code, stage, status) {
-  if (code && DECLINE_CODE_RE.test(String(code))) return true;
+// 반환값은 거절 카테고리(잔액부족·한도초과 등) 또는 null. null이면 우리 쪽 장애로 본다.
+function declineCategory(code, stage, status) {
+  const mapped = paymentFailures.declineCategoryForCode(code);
+  if (mapped) return mapped;
   // fail_redirect는 대부분 카드사 거절이지만, 코드가 없으면 판단 불가라 우리 쪽으로 본다(놓치는 것보다 낫다).
-  if (DECLINE_STAGE_RE.test(String(stage || '')) && code) return true;
-  if (Number(status) === 402) return true;
-  return false;
+  if (DECLINE_STAGE_RE.test(String(stage || '')) && code) return 'provider_declined';
+  if (Number(status) === 402) return 'provider_declined';
+  return null;
 }
 
 const hits = new Map(); // uid -> [timestamps]
@@ -63,25 +68,48 @@ function logPaymentError(req, uid) {
   const code = text(b.code, 80);
   const stage = text(b.stage, 60);
   const status = int(b.status);
-  const decline = isDeclineLike(code, stage, status);
+  const orderId = text(b.orderId, 120);
+  const serverCategory = declineCategory(code, stage, status);
+  // 프런트가 보낸 분류는 우리 서버 응답에서 온 값이지만 위조될 수 있다. 등급을 낮추는 데는
+  // 쓰지 않고, 우리 판정이 이미 "거절"일 때 사유를 더 정확히 적는 용도로만 쓴다.
+  const reportedCategory = text(b.declineCategory, 40);
+  const category = serverCategory
+    ? (reportedCategory && paymentFailures.CATEGORY_LABEL[reportedCategory] ? reportedCategory : serverCategory)
+    : null;
+  const decline = !!category;
+  const amount = int(b.amount);
+  // 같은 실패는 서버 승인 경로가 이미 셌다. 여기서 또 기록하면 두 번 세어지므로 읽기만 한다.
+  const retry = paymentFailures.peekFailures({ uid, orderId });
+  const label = category ? (paymentFailures.CATEGORY_LABEL[category] || category) : '우리 쪽 장애 추정';
+  const won = Number.isFinite(amount) ? `${amount.toLocaleString('ko-KR')}원` : '금액미상';
   // 우리 쪽 장애면 client.payment_error(SEV2 — 알림), 카드사 거절이면 client.payment_declined(SEV3 — 기록만).
   logger.warn(decline ? 'client.payment_declined' : 'client.payment_error', {
     uid: uid || undefined,
     authenticated: !!uid,
-    stage: text(b.stage, 60),
+    stage,
     checkoutType: text(b.checkoutType || b.checkout_type, 40),
-    code: text(b.code, 80),
-    message: text(b.message, 300),
-    status: int(b.status),
-    orderId: text(b.orderId, 120),
-    amount: int(b.amount),
+    code,
+    clientMessage: text(b.message, 300),
+    status,
+    orderId,
+    amount,
     credits: int(b.credits),
     plan: text(b.plan, 80),
     tier: text(b.tier, 80),
     endpoint: text(b.endpoint, 120),
     page: text(b.page, 120),
     userUidPresent: !!b.uid,
-    trafficSource: text(b.trafficSource || b.traffic_source, 60)
+    trafficSource: text(b.trafficSource || b.traffic_source, 60),
+    // 분류 — 서버 승인 경로와 같은 어휘를 쓴다. 두 로그를 orderId로 이어 붙여 볼 수 있다.
+    outcome: decline ? paymentFailures.OUTCOME_CUSTOMER_DECLINED : 'client_side_failure',
+    failureCategory: category || 'client_reported',
+    actionRequired: decline ? 'none' : 'monitor',
+    moneyAtRisk: false,
+    reportedBy: 'client',
+    retryUidFailures5m: retry.uidFailures5m || undefined,
+    retryUidDistinctOrders5m: retry.uidDistinctOrders5m || undefined,
+    retryOrderAttempt: retry.orderAttempt || undefined,
+    message: `[프런트 보고] ${label}${code ? `(${code})` : ''} — ${won}, 단계 ${stage || '미상'}${text(b.message, 200) ? ` · "${text(b.message, 200)}"` : ''}`
   });
 }
 

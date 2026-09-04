@@ -32,11 +32,71 @@ logger.warn/error(event, fields)
        └→ opsLog.record()   → Firestore `opsLogs` (관리자 페이지·사후 분석·급증 탐지)
        └→ discord.opsAlert() → 등급별 채널 (noAlert면 생략 — 아래 참고)
        └→ 도메인 실패가 5분 임계 초과 시 `ops.rate_threshold_exceeded`(SEV1) 자동 생성
+         (임계는 **서로 다른 주체 수**로 센다 — 아래 급증 판정 참고)
 ```
 
 `noAlert: true`의 의미는 **"디스코드 중복 발송 금지"**이지 "기록 금지"가 아니다. 접근 로그(`http.request` 5xx)나
 바로 앞에서 `discord.billingFailure()`를 직접 호출한 과금 실패가 여기 해당한다 — 알림은 한 번만 가지만
 관리자 화면과 급증 탐지에는 그대로 반영된다.
+
+## 결제 실패는 세 갈래다 (2026-09-04 개편)
+
+결제 실패를 성공/실패 한 축으로만 보면 "돈이 없어서 되돌아간 사람"과 "전 사용자 결제 불능"이
+같은 🚨로 나간다. 실제로 2026-09-04에 한 사용자의 잔액부족 거절 3건이 알림 10건으로 증폭됐다.
+
+분류는 [`lib/paymentFailureTaxonomy.js`](lib/paymentFailureTaxonomy.js)가 하고, 등급은 카탈로그가 정한다.
+
+| outcome | 뜻 | 돈 | 이벤트 | 등급 |
+|---|---|---|---|---|
+| `customer_declined` | 잔액부족·한도초과·사용자 취소·세션 만료 | 안 나감 | `payment.customer_declined` | SEV3 |
+| `provider_ambiguous` | 응답 유실·5xx·ALREADY_PROCESSED | **나갔을 수 있음** | `payment.status_unknown` | SEV1 |
+| `operator_fault` | 시크릿 키·가맹점 설정·요청 형식 | 안 나감 | `payment.provider_rejected_request` | SEV1 |
+| `provider_pending` | READY·IN_PROGRESS | 안 나감 | `payment.provider_not_done` | SEV2 |
+
+**판정 철칙: 애매하면 우리 잘못 쪽으로 기운다.** 거절은 화이트리스트로만 인정하고, 모르는 코드는
+절대 SEV3으로 내리지 않는다. `INVALID_API_KEY`처럼 문자열에 `INVALID`이 들어 있어도
+`OPERATOR_FAULT_CODES`가 항상 먼저 걸러진다 — 이걸 거절로 분류하면 전 사용자 결제 불능이 조용히 묻힌다.
+
+세 가지 규칙이 따라온다.
+
+1. **한 실패는 한 줄.** 승인 호출과 주문 조회를 모두 끝낸 뒤 `logPaymentConfirmFailure`가 한 번만 기록한다.
+   예전에는 `payment.toss_confirm_failed` + `payment.provider_not_done`으로 갈려 건수가 두 배로 보였다.
+2. **종료 상태는 정산 대상이 아니다.** `ABORTED`·`EXPIRED`는 재시도해도 `DONE`이 되지 않으므로
+   intent를 `abandoned`로 닫고 `reconciliationCandidate=false`로 만든다. 이 처리가 없던 때는
+   거절 주문 하나가 매시간 정산 워커에 다시 잡혀 "불일치=수동검토" 알림을 만들어 냈다.
+3. **거절 사유는 사용자에게 그대로 간다.** 응답에 `declined: true`와 결제사 원문이 실린다.
+   화면에 "결제가 됐는데 크레딧이 안 보이면 문의해 주세요"만 띄우면 사용자가 같은 결제를 되풀이한다.
+   단 `operator_fault`의 원문은 키·가맹점 정보가 실릴 수 있어 일반 문구로 바꿔 내보낸다.
+
+### 급증 판정은 "몇 건"이 아니라 "몇 명"
+
+`RATE_THRESHOLDS`의 값은 **창 안에서 서로 다른 주체(uid 우선, 없으면 orderId) 수**와 비교한다.
+같은 사람이 5번 재시도해도 주체는 1이라 급증이 아니고, 서로 다른 5명이 실패하면 급증이다.
+`uid`도 `orderId`도 없는 사건(인프라 등)은 종전처럼 건별로 센다.
+**SEV3은 급증 판정에서 아예 빠진다** — 정상 이탈이 모여 SEV1을 만들면 알림이 스스로를 깨운다.
+
+### 결제 실패 로그에 항상 실리는 필드
+
+| 필드 | 쓰임 |
+|---|---|
+| `outcome` · `failureCategory` | 위 표의 분류. 이 두 개만 봐도 깨울 일인지 결정된다 |
+| `moneyAtRisk` | `false`면 돈이 안 나갔다는 뜻. 새벽 판단의 핵심 |
+| `actionRequired` | `none` / `monitor` / `manual` |
+| `code` · `providerMessage` | 결제사 원문. 고객 문의에 그대로 인용한다 |
+| `providerStatus` · `providerMethod` | 주문 상태(ABORTED 등)와 결제수단 |
+| `retryUidFailures5m` · `retryUidDistinctOrders5m` | **한 사람의 반복인지 여러 사람의 장애인지** |
+| `repeatedDecline` | 같은 사람이 같은 사유로 되풀이 중 |
+| `confirmLatencyMs` · `lookupLatencyMs` · `elapsedMs` | 결제사 지연과 우리 지연 분리 |
+
+주문 조회가 실패로 끝난 경우 top-level `code`/`message`는 비어 있고 진짜 사유는 `failure` 안에 있다.
+`providerResultSummary`가 이를 `failureCode`/`failureMessage`로 꺼내므로 Toss 콘솔을 따로 열 필요가 없다.
+
+### 돈 관련 이벤트는 반드시 카탈로그에 등록한다
+
+카탈로그에 없는 `warn`은 디스코드는 물론 **관리자 장애 로그에도 남지 않는다**. 2026-09-04 감사에서
+`billing.secret_read_failed`를 비롯한 36건이 이렇게 조용히 묻히고 있었다. 지금은
+`test/payment-failure-taxonomy.test.js`가 payment·refund·subscription·webhook·billing 도메인 이벤트를
+전수 조사해 미등록이 하나라도 있으면 실패시킨다.
 
 ## 관리자 화면
 

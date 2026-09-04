@@ -84,13 +84,18 @@ test('prepare/confirm 라우트는 공용 게이트를 쓰고 사용자 안내 �
 });
 
 test('결제 오류 분류는 PRODUCT_RETIRED를 정상 이탈(SEV3)로 본다', () => {
+  // 2026-09-04: 판정 규칙이 routes/events.js의 정규식에서 lib/paymentFailureTaxonomy로 옮겼다.
+  // 정규식 문자열이 아니라 판정 결과를 잠근다 — 규칙이 어디에 있든 계약은 같아야 한다.
+  const taxonomy = require('../lib/paymentFailureTaxonomy');
+  assert.ok(taxonomy.declineCategoryForCode('PRODUCT_RETIRED'), 'PRODUCT_RETIRED는 정상 이탈');
+  // PAY_PROCESS_ABORTED는 코드만으로 원인을 알 수 없다 → 우리 쪽 장애로 본다(놓치는 것보다 낫다).
+  assert.equal(taxonomy.declineCategoryForCode('PAY_PROCESS_ABORTED'), null);
+  // 프런트가 되돌려 보내는 우리 코드(주문 상태가 ABORTED로 확정된 뒤에만 나간다)는 정상 이탈이다.
+  assert.equal(taxonomy.declineCategoryForCode('PAYMENT_ABORTED'), 'checkout_aborted');
+  // 설정 오류는 문자열에 INVALID이 있어도 절대 정상 이탈로 내리지 않는다.
+  assert.equal(taxonomy.declineCategoryForCode('INVALID_API_KEY'), null);
   const events = fs.readFileSync(path.join(__dirname, '..', 'routes', 'events.js'), 'utf8');
-  const declineRe = events.match(/const DECLINE_CODE_RE = (\/.+\/i);/u);
-  assert.ok(declineRe, 'DECLINE_CODE_RE 정의 부재');
-  // eslint-disable-next-line no-new-func
-  const re = new Function(`return ${declineRe[1]};`)();
-  assert.equal(re.test('PRODUCT_RETIRED'), true);
-  assert.equal(re.test('PAY_PROCESS_ABORTED'), false);
+  assert.match(events, /paymentFailures\.declineCategoryForCode/u, '프런트 보고도 같은 표를 써야 한다');
   const catalog = require('../lib/opsEvents');
   const entry = (catalog.CATALOG || catalog.catalog || catalog)['payment.product_retired_rejected'];
   assert.ok(entry, 'opsEvents 카탈로그에 payment.product_retired_rejected 등록');

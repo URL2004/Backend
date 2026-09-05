@@ -9,6 +9,7 @@ const { buildVoiceProfile, sentenceDistributionShift } = require('./voiceProfile
 const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
 const candidateIntegrity = require('./candidateIntegrity');
+const { assessSemanticRepairPriority } = require('./semanticRepairPolicy');
 const {
   buildPromptDataSections,
   promptEnvelopeSystemRule
@@ -220,6 +221,8 @@ async function judgeAndRepair(rawText, outputText, {
     rounds: (primary.rounds || 0) + (escalated.rounds || 0),
     repairRejected: primary.repairRejected === true || escalated.repairRejected === true,
     repairRejectReasons: [...new Set([...(primary.repairRejectReasons || []), ...(escalated.repairRejectReasons || [])])],
+    repairStyleWarnings: [...new Set([...(primary.repairStyleWarnings || []), ...(escalated.repairStyleWarnings || [])])],
+    unchangedRepairCount: (primary.unchangedRepairCount || 0) + (escalated.unchangedRepairCount || 0),
     primaryJudge: summarizeJudge(primary),
     usage: addUsage(primary.usage || emptyUsage(), escalated.usage)
   };
@@ -288,6 +291,8 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   usage = addUsage(usage, judge?.gptMeta?.usage);
   const initialViolations = [...(judge.violations || [])];
   let rounds = 0;
+  const repairStyleWarnings = [];
+  let unchangedRepairCount = 0;
   while (!judge.pass && rounds < maxRounds) {
     if (reserveRepair && !reserveRepair()) break;
     rounds++;
@@ -305,6 +310,13 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     });
     usage = addUsage(usage, repaired?.gptMeta?.usage);
     const candidate = repaired.outputText || current;
+    if (candidate.trim() === String(current || '').trim()) {
+      // The same text has already been checked by this exact judge/config.
+      // Spending another call cannot validate a repair that did not happen.
+      // A distinct escalation judge remains available to resolve uncertainty.
+      unchangedRepairCount++;
+      break;
+    }
     // 위반이 하나 있다는 이유로 문서 전체를 원문으로 되돌리면 앞 단계의
     // 안전한 편집까지 모두 사라진다. 국소 복원은 다른 보존 감사로 검증하되,
     // exact full reset은 아래 감사에서 언제나 거부한다.
@@ -313,23 +325,25 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       allowedExtra,
       documentProfile
     });
-    if (!repairSafety.pass) {
+    const priority = assessSemanticRepairPriority(current, candidate, judge.violations, repairSafety);
+    if (!repairSafety.pass && !priority.eligible) {
       return {
         outputText: current,
         pass: false,
-        violations: initialViolations,
+        violations: judge.violations || [],
         initialViolations,
         ledger,
         rounds,
         repairRejected: true,
         repairRejectReasons: repairSafety.reasons,
+        repairStyleWarnings,
+        unchangedRepairCount,
         reason: 'repair_candidate_rejected',
         selectedJudgeModel: judgeModel,
         usage
       };
     }
-    current = candidate;
-    judge = await semanticJudge(rawText, current, ledger, {
+    const candidateJudge = await semanticJudge(rawText, candidate, ledger, {
       lang,
       signal,
       config,
@@ -341,7 +355,27 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       phase: `${phasePrefix}:semantic_after_repair`,
       safetyIdentifier
     });
-    usage = addUsage(usage, judge?.gptMeta?.usage);
+    usage = addUsage(usage, candidateJudge?.gptMeta?.usage);
+    if (priority.eligible && !candidateJudge.pass) {
+      return {
+        outputText: current,
+        pass: false,
+        violations: judge.violations || [],
+        initialViolations,
+        ledger,
+        rounds,
+        repairRejected: true,
+        repairRejectReasons: [...repairSafety.reasons, 'semantic_repair_not_verified'],
+        repairStyleWarnings,
+        unchangedRepairCount,
+        reason: 'repair_candidate_rejected',
+        selectedJudgeModel: judgeModel,
+        usage
+      };
+    }
+    if (priority.eligible) repairStyleWarnings.push(...priority.warnings);
+    current = candidate;
+    judge = candidateJudge;
   }
   return {
     outputText: current,
@@ -350,6 +384,8 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     initialViolations,
     ledger,
     rounds,
+    repairStyleWarnings: [...new Set(repairStyleWarnings)],
+    unchangedRepairCount,
     selectedJudgeModel: judgeModel,
     usage
   };

@@ -68,7 +68,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.45';
+const VERSION = 'gpt-prod-v2.5.46';
 const DETECT_VERSION = 'gpt-detect-v1.26';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -1820,7 +1820,8 @@ async function runEngine({
           chunks: frozen ? frozen.auditChunks : chunks,
           plan: chunkPlan,
           boundaryRepair,
-          humanizationPlan
+          humanizationPlan,
+          verifiedSemanticRepair: semanticReport
         });
         semanticOutput = semanticCandidateValidation.candidate || semanticOutput;
         if (semanticCandidateValidation.pass !== true) {
@@ -4046,6 +4047,8 @@ async function runEngine({
     niklExternalErrorCount: niklAdvisorMeta.externalErrorCount,
     niklExternalTimeoutCount: niklAdvisorMeta.externalTimeoutCount,
     semanticJudgeRan: semanticReport.ran === true,
+    semanticRepairStyleWarnings: semanticReport.repairStyleWarnings || [],
+    semanticUnchangedRepairCount: semanticReport.unchangedRepairCount || 0,
     semanticSectionCount: Number(semanticReport?.sectionCount || 0),
     semanticRepairRoundBudget: Number(semanticReport?.repairRoundBudget || 0),
     semanticViolationCount: Number((semanticReport?.violations || []).length),
@@ -6182,7 +6185,8 @@ function auditGeneralSurfaceCandidateWithStructure({
   chunks,
   plan,
   boundaryRepair,
-  humanizationPlan = null
+  humanizationPlan = null,
+  verifiedSemanticRepair = null
 } = {}) {
   const prepared = prepareGeneralSurfaceCandidate({
     source,
@@ -6198,7 +6202,8 @@ function auditGeneralSurfaceCandidateWithStructure({
     documentProfile,
     mode,
     current,
-    humanizationPlan
+    humanizationPlan,
+    verifiedSemanticRepair
   );
   const codes = [...(audit.codes || [])];
   if (!preservesFinalStructure(source, preparedCandidate, chunks, plan, boundaryRepair)
@@ -6222,7 +6227,8 @@ function auditGeneralSurfaceCandidate(
   documentProfile,
   mode = 'assignment',
   current = '',
-  humanizationPlan = null
+  humanizationPlan = null,
+  verifiedSemanticRepair = null
 ) {
   const before = String(source || '').trim();
   const baseline = String(current || before).trim() || before;
@@ -6316,7 +6322,14 @@ function auditGeneralSurfaceCandidate(
   }
 
   if (structuralRoleRiskWorsened(before, baseline, after)) add('structure_loss');
-  if (voiceDistributionWorsened(beforeVoice, baselineVoice, afterVoice, mode)) add('voice_shift');
+  // A verified local factual repair can change sentence rhythm. Keep every
+  // source/number/quote/structure check above and below, and waive rhythm only
+  // for the exact candidate that the semantic judge actually approved.
+  const verifiedRhythmRepair = verifiedSemanticRepair?.ran === true
+    && verifiedSemanticRepair?.pass === true
+    && (verifiedSemanticRepair.repairStyleWarnings || []).includes('sentence_distribution_worsened')
+    && String(verifiedSemanticRepair.outputText || '').trim() === after;
+  if (!verifiedRhythmRepair && voiceDistributionWorsened(beforeVoice, baselineVoice, afterVoice, mode)) add('voice_shift');
 
   const integrity = candidateIntegrity.auditCandidateIntegrity({
     source: before,

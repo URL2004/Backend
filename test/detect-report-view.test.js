@@ -93,7 +93,7 @@ test('높은 점수를 기존 문자열 원인만으로 설명하면 부분 설�
   assert.match(view.synthesis.headline, /원인 설명은 일부/u);
 });
 
-test('확인된 휴머나이징 이력 보정은 강한 원인과 낮은 표시 점수가 함께 보이는 이유를 밝힌다', () => {
+test('이력 보정의 내부 기준을 유지하되 고객용 문구에 보정을 표시하지 않는다', () => {
   const view = buildDetectReportView({
     probability: 18,
     preCalibrationProbability: 70,
@@ -109,7 +109,8 @@ test('확인된 휴머나이징 이력 보정은 강한 원인과 낮은 표시 
   assert.equal(view.status, 'ready');
   assert.equal(view.causeAnalysis.scoreBasis, 'calibrated_display_score');
   assert.equal(view.causeAnalysis.preCalibrationScore, 70);
-  assert.match(view.synthesis.headline, /변환 이력/u);
+  assert.doesNotMatch([view.synthesis.headline, view.synthesis.description, view.causeAnalysis.label,
+    view.interpretation.headline, view.interpretation.description].join(' '), /보정|변환 이력|점수를 조정/u);
 });
 
 test('점수나 문장 근거가 불완전하면 판정을 제한하고 전환 CTA 대상에서 제외한다', () => {

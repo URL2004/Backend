@@ -72,6 +72,40 @@ require.cache[configPath] = {
 
 const history = require('../lib/historyService');
 
+test('server history readback retains the exact analysis interpretation and bounded model evidence', async () => {
+  const { buildDetectInterpretation } = require('../lib/detectInterpretation');
+  const { locatePublicEvidence } = require('../lib/detectInputDocument');
+  const { groundSignals, sourceSentences } = require('../lib/detectGrounding');
+  const text = '합성 연구 자료는 검증 방법과 관찰 결과를 구분하여 기록했고 이후 분석에서 확인해야 할 한계를 함께 설명했다. '.repeat(12).trim();
+  const signalEvidence = locatePublicEvidence(groundSignals([{ category: 'ending_repetition', strength: 'strong', scope: 'recurring', evidenceSentences: [1, 3] }], text), text);
+  const interpretation = buildDetectInterpretation({ probability: 32, probSource: 'llm', confidence: 'high', textLength: text.length, sentenceTotal: sourceSentences(text).length, causeCoverageStatus: 'aligned', signalEvidence });
+  assert.equal(interpretation.evidence.level, 'sufficient');
+  assert.equal(interpretation.pattern.locationCount, 2);
+  const result = { probability: 32, probSource: 'llm', confidence: 'high', interpretation, signalEvidence, summary: interpretation.headline };
+  await history.saveAnalyzeHistory({ uid: 'history-user', requestId: 'interpretation-readback', opType: 'detect', text, needed: 3, result });
+  const readback = (await ref('users/history-user/history/interpretation-readback').get()).data();
+  assert.deepEqual(readback.interpretation, interpretation);
+  assert.equal(readback.interpretation.score, readback.probability);
+  assert.equal(readback.interpretation.sample.characters, text.length);
+  assert.ok(Buffer.byteLength(JSON.stringify(readback.interpretation), 'utf8') < 16000);
+});
+
+test('history does not preserve malformed or oversized interpretation descriptors', async () => {
+  await history.saveAnalyzeHistory({ uid: 'history-user', requestId: 'interpretation-invalid', opType: 'detect', text: '합성 입력 원문이다.', needed: 3,
+    result: { probability: 32, probSource: 'llm', interpretation: { version: 'detect-interpretation-v1', score: 32, headline: 'x'.repeat(17000), extra: 'arbitrary prose' } } });
+  const readback = (await ref('users/history-user/history/interpretation-invalid').get()).data();
+  assert.equal(readback.interpretation.score, 32);
+  assert.equal(readback.interpretation.evidence.level, 'limited');
+  assert.equal(Object.hasOwn(readback.interpretation, 'extra'), false);
+  assert.ok(readback.interpretation.headline.length < 1000);
+});
+
+test('humanization history retains bounded semantic repair diagnostics', () => {
+  const compact = history.compactHistoryEngineMeta({ semanticUnchangedRepairCount: 2, semanticRepairStyleWarnings: ['sentence_distribution_worsened', 'sentence_distribution_worsened'] });
+  assert.equal(compact.semanticUnchangedRepairCount, 2);
+  assert.deepEqual(compact.semanticRepairStyleWarnings, ['sentence_distribution_worsened']);
+});
+
 test('휴머나이징 이력 저장은 누락 원점수를 0으로 만들지 않는다', async () => {
   for (const sourceProbability of [null, undefined, '', false, [], 0]) {
     await history.saveAnalyzeHistory({

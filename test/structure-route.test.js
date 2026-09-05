@@ -17,6 +17,14 @@ test('preview and structure costs remain observable after archiving without sour
  const job=router.buildArchiveDocument({id:'main',uid:'owner',status:'done',structureCredits:0,result:{structureImprovement:{applied:false},humanizeMeta:{usage:{estimatedUsd:.04}},engineMeta:{structurePlanningUsd:.006,structureFallback:true,structureAttemptModelCalls:4}}});
  assert.equal(job.structureFallback,true);assert.equal(job.structureAttemptModelCalls,4);assert.equal(job.estimatedUsd,.04);assert.equal(job.structureCredits,0);
 });
+test('semantic repair counters survive terminal archiving without copying raw text',()=>{
+ const archive=router.buildArchiveDocument({id:'semantic',uid:'owner',status:'done',text:source,
+  result:{outputText:source,engineMeta:{semanticUnchangedRepairCount:2,
+   semanticRepairStyleWarnings:['sentence_distribution_worsened','sentence_distribution_worsened',source]}}});
+ assert.equal(archive.semanticUnchangedRepairCount,2);
+ assert.deepEqual(archive.semanticRepairStyleWarnings,['sentence_distribution_worsened']);
+ assert(!JSON.stringify(archive).includes(source));
+});
 test('real structure HTTP admission, free preview, stale/owner rejection, pricing and replay',async()=>{
  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base='http://127.0.0.1:'+server.address().port;
  const request=async(p,body,uid='owner')=>{const r=await fetch(base+p,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+uid,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {http:r.status,...await r.json()};};

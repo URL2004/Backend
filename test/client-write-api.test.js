@@ -127,6 +127,48 @@ test('history validation rejects oversized fields and non-finite numeric values'
   );
 });
 
+test('signed detection backup preserves analysis interpretation while forged descriptors remain untrusted', async t => {
+  const { buildDetectInterpretation } = require('../lib/detectInterpretation');
+  const { signDetectInterpretation } = require('../lib/detectHistoryPresentation');
+  const previous = process.env.OPENAI_SAFETY_SALT;
+  process.env.OPENAI_SAFETY_SALT = 'backup-proof-test-secret-at-least-thirty-two-characters';
+  t.after(() => { if (previous === undefined) delete process.env.OPENAI_SAFETY_SALT; else process.env.OPENAI_SAFETY_SALT = previous; });
+  const inputText = '합성 자료의 관찰 결과와 검토 절차를 구분하여 기록했다. '.repeat(20);
+  const interpretation = buildDetectInterpretation({ probability: 32, probSource: 'llm', confidence: 'high', textLength: inputText.length, sentenceTotal: 20, causeCoverageStatus: 'aligned', signalEvidence: [{ category: 'ending_repetition', strength: 'strong', scope: 'recurring', locationStatus: 'source_range_verified', locations: [{ sentenceIndex: 0, start: 0, end: 28 }, { sentenceIndex: 1, start: 29, end: 57 }] }] });
+  const interpretationProof = signDetectInterpretation('user-a', inputText, interpretation);
+  assert.ok(interpretationProof);
+  assert.equal(typeof interpretationProof, 'string', 'the public API and browser backup forward one opaque string');
+  assert.match(interpretationProof, /^detect-interpretation-proof-v1\.[A-Za-z0-9_-]{43}$/u);
+  const original = { type: 'detect', inputText, probability: 32, interpretation, interpretationProof, credits: 3 };
+  const store = createStore({ 'users/user-a': { credits: 10 }, 'users/user-b': { credits: 10 } });
+  const service = createClientWriteService({ db: store.db, admin: fakeAdmin });
+  const saved = await service.backupHistory({ uid: 'user-a', requestId: 'signed-history-001', entry: original });
+  const readback = store.row(`users/user-a/history/${saved.id}`);
+  assert.deepEqual(readback.interpretation, interpretation);
+  assert.equal(readback.serverTrusted, false, 'presentation proof does not promote unrelated billing/history provenance');
+  assert.equal(readback.interpretationProof, undefined);
+  for (const [name, uid, entry] of [
+    ['unsigned', 'user-a', { ...original, interpretationProof: undefined }],
+    ['tampered', 'user-a', { ...original, interpretation: { ...interpretation, headline: 'AI 작성 확률 100%' } }],
+    ['other-owner', 'user-b', original],
+    ['changed-source', 'user-a', { ...original, inputText: inputText.replace('합성', '수정') }],
+    ['changed-score', 'user-a', { ...original, probability: 90 }],
+    ['wrong-version', 'user-a', { ...original, interpretationProof: interpretationProof.replace('-v1.', '-v2.') }],
+    ['object-proof', 'user-a', { ...original, interpretationProof: { version: 'detect-interpretation-proof-v1', signature: interpretationProof.split('.')[1] } }],
+    ['trailing-proof', 'user-a', { ...original, interpretationProof: `${interpretationProof}.extra` }]
+  ]) {
+    const result = await service.backupHistory({ uid, requestId: `signed-history-${name}`, entry });
+    const row = store.row(`users/${uid}/history/${result.id}`);
+    assert.equal(row.interpretation.status, 'unavailable', name);
+    assert.equal(row.interpretation.evidence.level, 'limited', name);
+    assert.equal(row.interpretation.pattern, null, name);
+    assert.equal(row.inputText, entry.inputText);
+    assert.doesNotMatch(row.interpretation.headline, /작성 확률/);
+  }
+  delete process.env.OPENAI_SAFETY_SALT;
+  assert.equal(signDetectInterpretation('user-a', inputText, interpretation), null, 'missing optional key must not block a result');
+});
+
 test('durable hourly and daily quotas reject writes inside the Firestore transaction', async () => {
   const nowMs = Date.UTC(2026, 7, 30, 5, 10);
   const hourKey = new Date(nowMs).toISOString().slice(0, 13);

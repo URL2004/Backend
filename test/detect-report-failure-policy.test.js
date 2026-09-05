@@ -378,7 +378,10 @@ test('모델 실패와 불완전 응답은 엔진 숫자 없이 503 무차감으
   }
 });
 
-test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤트를 남긴다', { concurrency: false }, async () => {
+test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤트를 남긴다', { concurrency: false }, async t => {
+  const previousSalt = process.env.OPENAI_SAFETY_SALT;
+  process.env.OPENAI_SAFETY_SALT = 'detect-public-proof-test-secret-at-least-thirty-two-characters';
+  t.after(() => { if (previousSalt === undefined) delete process.env.OPENAI_SAFETY_SALT; else process.env.OPENAI_SAFETY_SALT = previousSalt; });
   const requestId = 'detect-success-1';
   const result = await post(BASE_TEXT, requestId);
   const cost = Math.ceil(BASE_TEXT.length / 100);
@@ -386,6 +389,13 @@ test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤�
   assert.equal(result.status, 200);
   assert.equal(result.body.probability, 72);
   assert.equal(result.body.probSource, 'llm');
+  assert.equal(typeof result.body.interpretationProof, 'string');
+  assert.match(result.body.interpretationProof, /^detect-interpretation-proof-v1\.[A-Za-z0-9_-]{43}$/u);
+  // The browser forwards only string proofs; exercise that actual wire
+  // contract before validating the server-produced payload for backup.
+  const browserBackup = { inputText: BASE_TEXT, probability: result.body.probability, interpretation: result.body.interpretation };
+  if (typeof result.body.interpretationProof === 'string') browserBackup.interpretationProof = result.body.interpretationProof;
+  assert.deepEqual(require('../lib/detectHistoryPresentation').verifiedBackupInterpretation('detect-policy-user', browserBackup), result.body.interpretation);
   assert.equal(result.body.charged, cost);
   assert.equal(result.body.remainingCredits, 100 - cost);
   assert.equal(state.actualDeducts, 1);

@@ -31,6 +31,8 @@ const gptAnalyze = require('./analyze-gpt');
 const inputrouting = require('../engine/inputrouting');
 const publicMetrics = require('../lib/publicMetrics');
 const { buildDetectReportView, buildSentenceMap, pickAiSentence, splitExamplePreview } = require('../lib/detectReportView');
+const { locatePublicEvidence } = require('../lib/detectInputDocument');
+const { signDetectInterpretation } = require('../lib/detectHistoryPresentation');
 
 // (무료 감지 일일 한도 로직 제거 — 2026-07-20 사장님 결정으로 감지는 항상 유료.
 //  기존 무료 3회/일 캡은 CF 엣지 IP 키 버그로 사실상 무제한이었음. 복원 시 git 이력 참조.)
@@ -579,6 +581,7 @@ router.post('/detect-report', async (req, res) => {
     }
     const probability = calibration.probability;
     const narrated = applyDetectNarrativePolicy(det, probability);
+    narrated.signalEvidence = locatePublicEvidence(narrated.signalEvidence, text);
     // 문장 지도와 보고서 계측은 무LLM·무추가비용이다. 권위 점수 모델이 성공한 뒤에만
     // 공개 보고서에 결합하고, 지도 생성 실패는 점수·과금 흐름과 분리한다.
     let sentenceMap = null;
@@ -590,6 +593,8 @@ router.post('/detect-report', async (req, res) => {
     const reportView = buildDetectReportView({
       probability,
       probSource: 'llm',
+      confidence: det.confidence,
+      textLength: text.length,
       riskLevel: narrated.riskLevel,
       calibrationApplied: calibration.applied,
       preCalibrationProbability: rawProbability,
@@ -611,14 +616,19 @@ router.post('/detect-report', async (req, res) => {
           }
         : reportMeasurements
     });
+    const interpretation = reportView.interpretation;
+    const publicSummary = interpretation.headline;
+    const publicDetail = [interpretation.description, interpretation.evidence.reason,
+      ...interpretation.nextSteps, ...interpretation.limitations].join('\n\n');
     const len = text.length;
     const B = BANDS;
     const historyResult = {
       probability,
       riskLevel: narrated.riskLevel,
       riskLabel: narrated.riskLabel,
-      summary: narrated.summary,
-      detail: narrated.detail,
+      summary: publicSummary,
+      detail: publicDetail,
+      interpretation,
       reportView,
       sentenceMap,
       signals: narrated.signals,
@@ -661,8 +671,10 @@ router.post('/detect-report', async (req, res) => {
       probSource: 'llm',
       riskLevel: narrated.riskLevel,
       riskLabel: narrated.riskLabel,
-      summary: narrated.summary,
-      detail: narrated.detail,
+      summary: publicSummary,
+      detail: publicDetail,
+      interpretation,
+      interpretationProof: signDetectInterpretation(uid, text, interpretation),
       reportView,
       sentenceMap,
       grade,

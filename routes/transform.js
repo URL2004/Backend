@@ -1150,6 +1150,8 @@ function buildArchiveObservability(job) {
     niklExternalErrorCount: archiveFinite(engineMeta.niklExternalErrorCount),
     niklExternalTimeoutCount: archiveFinite(engineMeta.niklExternalTimeoutCount),
     semanticJudgeRan: engineMeta.semanticJudgeRan === true,
+    semanticUnchangedRepairCount: archiveFinite(engineMeta.semanticUnchangedRepairCount),
+    semanticRepairStyleWarnings: uniqueStrictArchiveCodes(engineMeta.semanticRepairStyleWarnings),
     semanticViolationCount: archiveFinite(engineMeta.semanticViolationCount),
     semanticOmissionCount: archiveFinite(engineMeta.semanticOmissionCount),
     semanticAdditionCount: archiveFinite(engineMeta.semanticAdditionCount),

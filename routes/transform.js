@@ -925,11 +925,12 @@ function persistJob(job, { requireClaim = false } = {}) {
       }
       return await db.runTransaction(async transaction => {
         const leaseRef = db.collection(executionPolicy.COLLECTION).doc(executionPolicy.DOCUMENT);
-        const [deletionSnapshot, activitySnapshot, executionSnapshot] = await Promise.all([
-          transaction.get(deletionRef),
-          transaction.get(activityRef),
-          transaction.get(leaseRef),
-        ]);
+        // Keep the shared lock order consistent with execution acquisition.
+        // Parallel reads can take the lease before the deletion lock and form
+        // a cycle with another transaction updating this same job.
+        const deletionSnapshot = await transaction.get(deletionRef);
+        const activitySnapshot = await transaction.get(activityRef);
+        const executionSnapshot = await transaction.get(leaseRef);
         const nowMs = Date.now();
         const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
         const lease = executionSnapshot.exists ? executionSnapshot.data()?.slots?.[executionPolicy.keyOf(job.id)] : null;

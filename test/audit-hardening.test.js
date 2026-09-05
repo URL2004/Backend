@@ -203,3 +203,81 @@ test('real admission persistence rejects simultaneous same-owner jobs and stale 
   const stale = await context.persistJob({ ...jobs[0], status: 'done', executionToken: 'old-owner' });
   assert.equal(stale.ok, false); assert.equal(db.rows.get('transformJobs/first').status, 'queued');
 });
+
+// Pessimistic document locks expose cycles hidden by the serial transaction
+// fixture above. A write is committed only after all required locks are held.
+function lockingDatabase() {
+  const rows = new Map(), owners = new Map(), waitsFor = new Map(), waiters = new Map(), writes = [];
+  let sequence = 0;
+  async function lock(id, ref) {
+    while (owners.has(ref) && owners.get(ref) !== id) {
+      let other = owners.get(ref);
+      waitsFor.set(id, other);
+      const visited = new Set([id]);
+      while (other !== undefined) {
+        if (visited.has(other)) throw Object.assign(new Error('document lock cycle'), { code: 10 });
+        visited.add(other); other = waitsFor.get(other);
+      }
+      await new Promise(resolve => { const queue = waiters.get(ref) || []; queue.push(resolve); waiters.set(ref, queue); });
+    }
+    waitsFor.delete(id); owners.set(ref, id);
+  }
+  return { rows, writes, collection: name => ({ doc: id => `${name}/${id}` }),
+    async runTransaction(fn) {
+      const id = ++sequence, pending = [];
+      try {
+        const result = await fn({
+          get: async ref => { await lock(id, ref); await new Promise(setImmediate); return { exists: rows.has(ref), data: () => structuredClone(rows.get(ref)) }; },
+          set: (ref, value, options) => pending.push({ ref, value: structuredClone(value), options })
+        });
+        for (const change of pending) await lock(id, change.ref);
+        for (const change of pending) { rows.set(change.ref, change.options?.merge ? { ...rows.get(change.ref), ...change.value } : change.value); writes.push(change.ref); }
+        return result;
+      } finally {
+        waitsFor.delete(id);
+        for (const [ref, owner] of owners) if (owner === id) { owners.delete(ref); const queue = waiters.get(ref) || []; waiters.delete(ref); queue.forEach(resolve => resolve()); }
+      }
+    }
+  };
+}
+
+test('execution acquisition and actual route persistence finish without a document lock cycle', async () => {
+  const db = lockingDatabase();
+  const job = { id: 'lock-race', uid: 'synthetic-owner', status: 'queued', mode: 'formal' };
+  db.rows.set('transformJobs/lock-race', job);
+  const claims = require('../lib/accountActivityClaims');
+  const context = { db, normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
+    PERSIST_FIELDS: ['id', 'uid', 'status', 'executionToken'], pruneUndefinedForFirestore: value => value,
+    buildArchiveDocument: () => ({}), jobPersistChains: new Map(), JOB_ARCHIVE_COLLECTION: 'archive',
+    ACCOUNT_ACTIVITY_COLLECTION: claims.COLLECTION, TRANSFORM_LANE: claims.TRANSFORM_LANE,
+    TRANSFORM_CLAIM_TTL_MS: claims.TRANSFORM_CLAIM_TTL_MS,
+    activeLane: claims.activeLane, laneWithClaim: claims.laneWithClaim, laneWithoutClaim: claims.laneWithoutClaim,
+    accountDeletionBlocksWrites: claims.accountDeletionBlocksWrites,
+    executionPolicy: require('../lib/transformExecution'), logger: { warn() {} } };
+  const source = fs.readFileSync(path.join(__dirname, '../routes/transform.js'), 'utf8');
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function persistJob('), source.indexOf('function resultLength(')), context);
+  const coordinator = createExecutionCoordinator({ db, caps: { formal: 1, short: 1 } });
+  const [acquired, persisted] = await Promise.allSettled([coordinator.acquire(job, 'main'), context.persistJob(job)]);
+  assert.equal(acquired.status, 'fulfilled', acquired.reason?.message);
+  assert.equal(persisted.status, 'fulfilled');
+  assert.ok(acquired.value);
+  assert.ok(persisted.value.ok || persisted.value.code === 'EXECUTION_OWNED_ELSEWHERE', persisted.value.error?.message);
+  assert.equal(db.rows.get('transformJobs/lock-race').executionToken, acquired.value.token);
+});
+
+test('rejected acquisition and stale lease maintenance do not write the shared coordinator document', async () => {
+  const db = lockingDatabase();
+  const job = { id: 'no-op', uid: 'synthetic-owner', status: 'queued', mode: 'formal' };
+  db.rows.set('transformJobs/no-op', job);
+  const coordinator = createExecutionCoordinator({ db, caps: { formal: 1, short: 1 } });
+  const lease = await coordinator.acquire(job, 'main');
+  const before = db.writes.length;
+  assert.equal(await coordinator.acquire(job, 'main'), null);
+  assert.equal(await coordinator.renew({ ...lease, token: 'stale' }), false);
+  await coordinator.release({ ...lease, token: 'stale' });
+  assert.equal(db.writes.length, before);
+  assert.equal(await coordinator.renew(lease), true);
+  await coordinator.release(lease);
+  assert.equal(Object.keys(db.rows.get('transformExecutionLeases/active').slots).length, 0);
+});

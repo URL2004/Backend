@@ -169,6 +169,48 @@ test('signed detection backup preserves analysis interpretation while forged des
   assert.equal(signDetectInterpretation('user-a', inputText, interpretation), null, 'missing optional key must not block a result');
 });
 
+test('HTTP signed backup preserves exact CRLF source bytes and analysis locations through storage', async t => {
+  const { buildDetectInterpretation } = require('../lib/detectInterpretation');
+  const { signDetectInterpretation, verifiedBackupInterpretation } = require('../lib/detectHistoryPresentation');
+  const { groundSignals, sourceSentences } = require('../lib/detectGrounding');
+  const { locatePublicEvidence } = require('../lib/detectInputDocument');
+  const previous = process.env.OPENAI_SAFETY_SALT;
+  process.env.OPENAI_SAFETY_SALT = 'http-crlf-backup-proof-secret-at-least-thirty-two-characters';
+  t.after(() => { if (previous === undefined) delete process.env.OPENAI_SAFETY_SALT; else process.env.OPENAI_SAFETY_SALT = previous; });
+  const paragraph = '합성 검증 자료의 관찰 결과와 검토 절차를 구분하여 기록했다. '.repeat(10);
+  const inputText = `\r\n  ${paragraph}\r\n\r\n${paragraph}  \r\n`;
+  const signalEvidence = locatePublicEvidence(groundSignals([{ category: 'ending_repetition', strength: 'strong', scope: 'recurring', evidenceSentences: [0, 12] }], inputText.trim()), inputText);
+  const interpretation = buildDetectInterpretation({ probability: 32, probSource: 'llm', confidence: 'high', textLength: inputText.length, sentenceTotal: sourceSentences(inputText).length, causeCoverageStatus: 'aligned', signalEvidence });
+  const interpretationProof = signDetectInterpretation('user-crlf', inputText, interpretation);
+  const entry = { type: 'detect', inputText, probability: 32, interpretation, interpretationProof, credits: 3 };
+  assert.ok(sanitizeHistoryEntry(entry).inputText.length < inputText.length, 'fixture exercises normalization before the signed override');
+  const store = createStore({ 'users/user-crlf': { credits: 100 } });
+  const service = createClientWriteService({ db: store.db, admin: fakeAdmin });
+  const router = createRouter({ service, verifyFirebaseIdToken: async () => ({ uid: 'user-crlf' }) });
+  const { server, baseUrl } = await listen(router, '1mb');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  async function postBackup(requestId, value) {
+    const response = await fetch(`${baseUrl}/history/backup`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer crlf-token' }, body: JSON.stringify({ requestId, entry: value }) });
+    return { status: response.status, body: await response.json() };
+  }
+  const response = await postBackup('http-crlf-signed-001', entry);
+  assert.equal(response.status, 201);
+  const readback = store.row(`users/user-crlf/history/${response.body.id}`);
+  assert.equal(readback.inputText, inputText);
+  assert.equal(Buffer.compare(Buffer.from(readback.inputText), Buffer.from(inputText)), 0);
+  assert.equal(readback.inputText.length, interpretation.sample.characters);
+  assert.deepEqual(readback.interpretation, interpretation);
+  assert.deepEqual(verifiedBackupInterpretation('user-crlf', { ...readback, interpretationProof }), interpretation);
+  for (const loc of signalEvidence[0].locations) assert.equal(readback.inputText.slice(loc.start, loc.end), inputText.slice(loc.start, loc.end));
+  const changed = await postBackup('http-crlf-tampered-001', { ...entry, inputText: inputText.replace('합성', '수정') });
+  assert.equal(changed.status, 201);
+  assert.equal(store.row(`users/user-crlf/history/${changed.body.id}`).interpretation.status, 'unavailable');
+  const oversized = await postBackup('http-crlf-too-long-001', { ...entry, inputText: '\r\n'.repeat(30001) });
+  assert.equal(oversized.status, 413, 'raw chars remain bounded even if normalization would halve their length');
+  const invalid = await postBackup('http-crlf-invalid-001', { ...entry, inputText: ['not a string'] });
+  assert.equal(invalid.status, 400);
+});
+
 test('durable hourly and daily quotas reject writes inside the Firestore transaction', async () => {
   const nowMs = Date.UTC(2026, 7, 30, 5, 10);
   const hourKey = new Date(nowMs).toISOString().slice(0, 13);
@@ -449,9 +491,9 @@ test('self notifications enforce type-bound IDs and tabs, stay idempotent, and u
   assert.equal(store.row('users/user-a/notifications/payment_order-654321'), undefined);
 });
 
-async function listen(router) {
+async function listen(router, jsonLimit = '100kb') {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: jsonLimit }));
   app.use(router);
   return new Promise(resolve => {
     const server = app.listen(0, '127.0.0.1', () => resolve({

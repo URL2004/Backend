@@ -11,6 +11,12 @@ structure.createPlan=async({text})=>{plans++;const doc=structure.buildDocument(t
 require('../routes/analyze-gpt').runHumanizeChunked=async opts=>{calls++;return {floorReport:{status:'pass',criticals:[],warnings:[],metrics:{}},qualityStatus:'clean',engineMeta:{},result:{outputText:opts.text+'\n\n검증 결과를 정리하였다.',structureImprovement:{requested:!!opts.approvedStructure,applied:!!opts.approvedStructure&&applyDelivery},engineMeta:{}}};};
 const express=require('express'),app=express();app.use(express.json());const router=require('../routes/transform');app.use(router);
 const source='I. 서론\n\n지역 도서관의 이용 현황을 확인했다. 신청 과정에서 생긴 불편을 정리했다.\n\nII. 본론\n\n첫 번째 방안은 안내문을 고치는 것이다. 이용자가 필요한 정보를 찾을 수 있게 해야 한다.\n\n조사에서는 안내가 어렵다는 의견이 있었다. 신청서 항목이 많아 작성 시간이 길었다.\n\nIII. 결론\n\n이용 과정의 개선을 위해 설명을 정리할 필요가 있다. 실행 이후에는 다시 의견을 받아 확인한다.';
+test('preview and structure costs remain observable after archiving without source text',()=>{
+ const preview=router.buildArchiveDocument({id:'preview',uid:'owner',status:'done',structurePreview:true,text:source,result:{structurePlan:{applied:true,usage:{estimatedUsd:.006},groups:[{text:source}]}}});
+ assert.equal(preview.structurePreview,true);assert.equal(preview.estimatedUsd,.006);assert.equal(preview.structurePlanningUsd,.006);assert.equal(preview.structureApplied,true);assert.equal(preview.text,undefined);assert.equal(preview.result,undefined);assert(!JSON.stringify(preview).includes(source));
+ const job=router.buildArchiveDocument({id:'main',uid:'owner',status:'done',structureCredits:0,result:{structureImprovement:{applied:false},humanizeMeta:{usage:{estimatedUsd:.04}},engineMeta:{structurePlanningUsd:.006,structureFallback:true,structureAttemptModelCalls:4}}});
+ assert.equal(job.structureFallback,true);assert.equal(job.structureAttemptModelCalls,4);assert.equal(job.estimatedUsd,.04);assert.equal(job.structureCredits,0);
+});
 test('real structure HTTP admission, free preview, stale/owner rejection, pricing and replay',async()=>{
  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base='http://127.0.0.1:'+server.address().port;
  const request=async(p,body,uid='owner')=>{const r=await fetch(base+p,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+uid,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {http:r.status,...await r.json()};};

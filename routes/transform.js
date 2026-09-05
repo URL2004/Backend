@@ -1081,7 +1081,7 @@ function buildArchiveObservability(job) {
   const result = job?.result && typeof job.result === 'object' ? job.result : {};
   const engineMeta = result.engineMeta || result.humanizeMeta?.engineMeta || job?.engineMeta || {};
   const humanizeMeta = result.humanizeMeta || {};
-  const usage = humanizeMeta.usage || {};
+  const usage = humanizeMeta.usage || result.structurePlan?.usage || {};
   const layoutRepair = humanizeMeta.layoutRepair || humanizeMeta.structureLock?.layoutRepair || {};
   const paragraphRepair = layoutRepair.paragraphs || {};
   const paragraphReadability = paragraphRepair.readability || engineMeta.paragraphReadability || {};
@@ -1103,6 +1103,12 @@ function buildArchiveObservability(job) {
       ]);
   return pruneUndefinedForFirestore({
     gates: gateCodes,
+    structurePreview: job?.structurePreview === true,
+    structureApplied: result.structureImprovement?.applied === true || result.structurePlan?.applied === true,
+    structureCredits: archiveFinite(job?.structureCredits || 0),
+    structurePlanningUsd: archiveFinite(result.structurePlan?.usage?.estimatedUsd ?? engineMeta.structurePlanningUsd),
+    structureFallback: engineMeta.structureFallback === true,
+    structureAttemptModelCalls: archiveFinite(engineMeta.structureAttemptModelCalls),
     qualityStatus: archiveString(result.qualityStatus, 32),
     effectStatus: archiveString(result.effectStatus || engineMeta.effectStatus, 32),
     effectNoticeCodes: uniqueStrictArchiveCodes((result.effectNotices || []).map(item => item?.code)),

@@ -189,6 +189,12 @@ async function run(options = {}) {
     fallback.result.engineMeta.structureAttemptModelCalls = first.engineMeta?.modelCallCount || 0;
     if (fallback.result.humanizeMeta) fallback.result.humanizeMeta.usage = addUsage(
       fallback.result.humanizeMeta.usage, first.result?.humanizeMeta?.usage);
+    const meta = fallback.result.humanizeMeta;
+    if (meta) Object.assign(meta, { estimatedUsd: meta.usage.estimatedUsd,
+      cachedInputTokens: meta.usage.cachedInputTokens, reasoningTokens: meta.usage.reasoningTokens,
+      modelCallCount: (meta.modelCallCount || 0) + (first.result?.humanizeMeta?.modelCallCount || 0) });
+    fallback.result.engineMeta.modelCallCount = (fallback.result.engineMeta.modelCallCount || 0)
+      + (first.engineMeta?.modelCallCount || 0);
     return fallback;
   }
   return first;

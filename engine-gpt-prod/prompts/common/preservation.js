@@ -18,7 +18,7 @@ function preservationBlock(lengthPolicy, documentProfile = null, requestStrength
       ? '탭·파이프로 구분된 표와 다열 행은 각 행의 셀 개수·열 구분·셀 소유권을 그대로 유지하고 산문으로 합치지 않는다.'
       : '',
     `출력 분량은 원문 공백 제외 길이의 ${lp.min}~${lp.max}배 범위를 우선한다.`,
-    '원문에 없는 경험·감정·성과·평가·인과관계를 만들지 않는다.'
+    '경험·감정·성과·평가·인과를 만들거나 불확실성을 확정 사실로 바꾸지 않는다.'
   ].filter(Boolean).join('\n');
 }
 

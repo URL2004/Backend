@@ -1,6 +1,7 @@
 'use strict';
 
 const INLINE_CODE_RE = /(?<!`)`([^`\n]+)`(?!`)/gu;
+const URL_LITERAL_RE = /https?:\/\/[^\s<>"'“”‘’]+|www\.[^\s<>"'“”‘’]+/giu;
 const MATH_LITERAL_RE = /\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<![$\\])\$(?!\$)(?:\\.|[^$\n\\]){1,500}(?<!\\)\$(?!\$)|(?<![A-Za-z0-9_])R_?\d+\s*(?:←|<-|=)\s*R_?\d+(?:\s*[+−-]\s*(?:\d+(?:\.\d+)?\s*)?R_?\d+)?|(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]*\s*=\s*[−-]?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?(?:\s*,\s*[A-Za-z][A-Za-z0-9_]*\s*=\s*[−-]?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?){0,8}(?![A-Za-z0-9_])/gu;
 
 function freezeInlineCode(value) {
@@ -79,13 +80,29 @@ function restoreInlineCodeByOrder(value, frozen) {
 
 function freezeMath(value) {
   const source = String(value || '');
-  const blocks = [];
-  const text = source.replace(MATH_LITERAL_RE, match => {
-    const token = `ZXQMATH${String(blocks.length).padStart(4, '0')}QXZ`;
-    blocks.push({ token, value: match });
-    return token;
-  });
+  const spans = mathSpans(source);
+  const blocks = spans.map((span, index) => ({ token: `ZXQMATH${String(index).padStart(4, '0')}QXZ`, value: span.value }));
+  let text = source;
+  for (let index = spans.length - 1; index >= 0; index -= 1) {
+    const span = spans[index];
+    text = text.slice(0, span.start) + blocks[index].token + text.slice(span.end);
+  }
   return { text, blocks, count: blocks.length };
+}
+
+// URL query parameters and inline code are literals with their own owners.
+// Use the same exclusions before tokenization and after literal restoration;
+// otherwise a preserved URL such as ?v=2 looks like a new or missing equation.
+function mathSpans(value) {
+  const source = String(value || '');
+  const excluded = [...source.matchAll(URL_LITERAL_RE), ...source.matchAll(INLINE_CODE_RE)]
+    .map(match => ({ start: match.index, end: match.index + match[0].length }))
+    .sort((left, right) => left.start - right.start);
+  let cursor = 0;
+  return [...source.matchAll(MATH_LITERAL_RE)].filter(match => {
+    while (cursor < excluded.length && excluded[cursor].end <= match.index) cursor += 1;
+    return !excluded[cursor] || match.index < excluded[cursor].start;
+  }).map(match => ({ start: match.index, end: match.index + match[0].length, value: match[0] }));
 }
 
 function restoreMath(value, frozen) {
@@ -125,11 +142,7 @@ function restoreMathByOrder(value, frozen) {
   if (!expected.length) {
     return { text: before, pass: true, orderPass: true, applied: false, restoredCount: 0, missingCount: 0 };
   }
-  const spans = [...before.matchAll(MATH_LITERAL_RE)].map(match => ({
-    start: Number(match.index || 0),
-    end: Number(match.index || 0) + match[0].length,
-    value: match[0]
-  }));
+  const spans = mathSpans(before);
   if (spans.length !== expected.length) {
     return {
       text: before,

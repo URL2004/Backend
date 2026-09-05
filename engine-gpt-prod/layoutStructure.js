@@ -495,6 +495,10 @@ function labelParts(value) {
 
 function isExactMetadataLine(value) {
   const text = visibleTrim(value);
+  // A flattened cover-sheet row is identity metadata, not editable prose.
+  if (text.length <= 240 && /^(?:이름|성명)\s*[:：]?\s*\S+/u.test(text)
+      && /(?:^|\s)학번\s*[:：]?\s*\d{5,14}(?=\s|$)/u.test(text)
+      && !/[.!?。！？]/u.test(text)) return true;
   return /^(?:[-*+•▪◦·]\s*)?(?:제출\s*일자|제출일|작성\s*일자|작성일|접수\s*일자|접수일|신청\s*일자|신청일|날짜|일시)\s*[:：]\s*(?:19|20)\d{2}\s*(?:[.\-/년]\s*\d{1,2})\s*(?:[.\-/월]\s*\d{1,2})(?:\s*일)?\s*[.]?$/u.test(text);
 }
 

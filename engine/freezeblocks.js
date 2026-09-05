@@ -145,7 +145,8 @@ function isTocHeadingLine(value) {
 }
 
 function isRefHeadingLine(value) {
-  return /^(?:\s*(?:[-–—]\s*)?(?:\d+[.)]\s*)?(?:\(\s*option\s*\)\s*)?[<【\[]*\s*)?(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|참고\s*및\s*인용\s*문헌|출처|References|Bibliography|Works\s+Cited)\s*[>】\]]*\s*[:：]?\s*$/iu.test(String(value || ''));
+  const text = String(value || '').replace(/^\s*(?:[IVX]{1,8}|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)[.)．]\s*/u, '');
+  return /^(?:\s*(?:[-–—]\s*)?(?:\d+[.)]\s*)?(?:\(\s*option\s*\)\s*)?[<【\[]*\s*)?(?:참고\s*문헌|참고\s*자료|인용\s*문헌|참고\s*및\s*인용\s*자료|참고\s*및\s*인용\s*문헌|출처|References|Bibliography|Works\s+Cited)\s*[>】\]]*\s*[:：]?\s*$/iu.test(text);
 }
 
 function isAppendixHeadingLine(value) {

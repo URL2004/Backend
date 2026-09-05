@@ -312,6 +312,8 @@ function generatedOrphanFragment(left, right, sourceRows) {
 function generatedContainedDuplicate(left, right, sourceRows) {
   if (containsProtectedEchoFact(left) || containsProtectedEchoFact(right)) return null;
   if (negationSignature(left) !== negationSignature(right)) return null;
+  const necessityEcho = generatedNecessityRestatement(left, right, sourceRows);
+  if (necessityEcho) return necessityEcho;
   const connectorSubset = left.length >= 45 && right.length >= 32
     ? generatedConnectorSubsetRestatement(left, right, sourceRows)
     : null;
@@ -365,6 +367,22 @@ function generatedContainedDuplicate(left, right, sourceRows) {
     };
   }
   return { remove: leftIsShorter ? 'left' : 'right', reason: 'single_source_claim_copied' };
+}
+
+// Short report conclusions often fall below the general 45-character gate.
+// Match the same explicit necessity claim, not merely a similar topic, and
+// require exactly one supporting source sentence before removing its new copy.
+function generatedNecessityRestatement(left, right, sourceRows) {
+  const core = value => String(value || '').trim().match(
+    /^(?:(?:이에\s*따라|따라서)[,，]?\s+|(?:본|이|이번)\s*(?:사건|사례|분석|연구|결과)(?:은|는)\s+)?(.{10,140}?)(?:해야\s*할|할|해야\s*한다는)\s+필요성(?:을|이|은)\s+(?:보여\s*준다|보여\s*주었다|제기되었다|제기됐다|드러났다|확인되었다|확인됐다)[.!?。！？]?$/u
+  )?.[1];
+  const a = core(left); const b = core(right);
+  if (!a || !b || _normSent(a) !== _normSent(b)) return null;
+  const roots = semanticRoots(a);
+  if (roots.size < 4 || sourceRows.some(row => _normSent(row.text) === _normSent(right))) return null;
+  const supporting = sourceRows.filter(row => /필요성/u.test(row.text)
+    && overlapRatio(roots, row.roots) >= 0.9);
+  return supporting.length === 1 ? { remove: 'right', reason: 'single_source_necessity_restatement' } : null;
 }
 
 function countSetDifference(left, right) {

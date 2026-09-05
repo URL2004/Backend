@@ -32,7 +32,7 @@ test('v2.5.39: 우선순위와 문단 권위는 하나의 불변 계약에서 �
     documentProfile: ESSAY
   });
 
-  assert.equal(engine.VERSION, 'gpt-prod-v2.5.43');
+  assert.equal(engine.VERSION, 'gpt-prod-v2.5.44');
   assert.deepEqual(contract.priorities.map(item => item.rank), [1, 2, 3]);
   assert.equal(contract.paragraph.modelBoundary, 'source_locked');
   assert.equal(contract.paragraph.localizedRepairBoundary, 'source_locked');

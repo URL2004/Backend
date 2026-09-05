@@ -3,8 +3,9 @@
 const layoutStructure = require('./layoutStructure');
 const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
+const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 17;
+const VERSION = 18;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -156,7 +157,8 @@ function auditAndSanitizeSource(value) {
   const documentQuoteWrapper = rewriteWrapper ? null : extractDocumentQuoteWrapper(original);
   const wrapper = rewriteWrapper || documentQuoteWrapper;
   const workingSource = wrapper?.payload || original;
-  const lines = workingSource.split('\n');
+  const extractedLayout = repairExtractedPageLayout(workingSource);
+  const lines = extractedLayout.text.split('\n');
   const removals = wrapper
     ? [issue(
         rewriteWrapper ? 'source_rewrite_request_artifact' : 'source_document_quote_wrapper_removed',
@@ -167,7 +169,11 @@ function auditAndSanitizeSource(value) {
           : '입력 전체를 감싼 작성용 따옴표를 본문에서 분리했어요.'
       )]
     : [];
-  const notices = [];
+  for (const lineOrdinal of extractedLayout.removedPages) {
+    removals.push(issue('source_pdf_page_marker_removed', lineOrdinal, 'removed',
+      '연속된 페이지 번호를 본문에서 분리했어요. 문서의 절 번호와 수치는 유지했어요.'));
+  }
+  const notices = extractedLayout.changes.map(item => issue(item.code, item.lineOrdinal, item.action, item.message));
   const kept = [];
   let inReference = false;
   const fenceState = analyzeFences(lines);
@@ -194,6 +200,17 @@ function auditAndSanitizeSource(value) {
 
     kept.push(line);
     if (!text) continue;
+    if (!inReference && !fenceState.protectedLineIndexes.has(index)) {
+      if (/체중\s*(?:기준(?:으로)?|에|당)?\s*\d+(?:\.\d+)?\s*(?:mg|mcg|μg|g|mL)(?![A-Za-z/]|\s*(?:\/|퍼|매|당)\s*(?:kg|킬로그램))/u.test(text)) {
+        notices.push(issue('source_weight_dose_unit_review', index + 1, 'notice',
+          '체중에 따른 용량의 단위·조건이 불명확할 수 있어요. 원문 출처를 확인하고 임의로 보충하지 마세요.'));
+      }
+      const disposition = text.match(/실형[^.!?\n]{0,80}(?:지만|으나)[^.!?\n]{0,70}(?:벌금|선고유예)[^.!?\n]*/u)?.[0];
+      if (disposition && !/(?:다른|각각|일부|나머지|별도|항소심|상고심)/u.test(disposition)) {
+        notices.push(issue('source_disposition_subject_review', index + 1, 'notice',
+          '서로 다른 처분이 이어지는 문장의 대상·시점이 불명확할 수 있어요. 출처에서 각각 확인해 주세요.'));
+      }
+    }
     if (hasUnbalancedMarkdown(text)) {
       notices.push(issue('source_markdown_artifact', index + 1, 'notice', NOTICE_MESSAGES.source_markdown_artifact));
     }

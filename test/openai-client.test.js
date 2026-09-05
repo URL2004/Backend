@@ -28,6 +28,28 @@ function completed(value) {
   };
 }
 
+test('body consumption remains abortable after response headers arrive', { concurrency: false }, async t => {
+  const previousFetch = global.fetch, previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  const controller = new AbortController(); let calls = 0;
+  global.fetch = async () => { calls++; return { ok: true, status: 200, json: () => new Promise(() => {}) }; };
+  t.after(() => { global.fetch = previousFetch; if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey; });
+  const pending = completeJson({ system: 'synthetic', user: 'synthetic', schema: SIMPLE_SCHEMA, model: 'gpt-5.6-luna', signal: controller.signal });
+  const timer = setTimeout(() => controller.abort(), 15);
+  try { await assert.rejects(pending, error => error.name === 'AbortError' || error.code === 'ABORT_ERR'); }
+  finally { clearTimeout(timer); }
+  assert.equal(calls, 1);
+});
+
+test('schema retries include usage from every billed model response', { concurrency: false }, async t => {
+  const previousFetch = global.fetch, previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key'; let calls = 0;
+  global.fetch = async () => responseJson(completed(++calls === 1 ? { wrong: true } : { value: 'ok' }));
+  t.after(() => { global.fetch = previousFetch; if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey; });
+  const result = await completeJson({ system: 'synthetic', user: 'synthetic', schema: SIMPLE_SCHEMA, model: 'gpt-5.6-luna' });
+  assert.equal(calls, 2); assert.equal(result.usage.inputTokens, 20); assert.equal(result.usage.outputTokens, 10);
+});
+
 test('refusal content는 일반 출력으로 파싱하지 않는다', () => {
   assert.throws(() => extractOutputText({
     output: [{ type: 'message', content: [{ type: 'refusal', refusal: '요청을 처리할 수 없습니다.' }] }]

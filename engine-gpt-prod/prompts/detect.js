@@ -1,6 +1,6 @@
 'use strict';
 
-const DETECT_PROMPT_VERSION = 'detect-prompt-v5-cause-aligned';
+const DETECT_PROMPT_VERSION = 'detect-prompt-v5-cause-aligned-grounded-v2';
 
 function buildDetectPrompt(lang = 'ko') {
   if (lang === 'en') {
@@ -15,7 +15,7 @@ function buildDetectPrompt(lang = 'ko') {
       'Return one signals item per independent observed cause using only the schema categories.',
       'Every signal needs an honest strength and scope. A score of 21-49 requires at least one eligible category other than other_observed_style with moderate or strong strength and recurring or pervasive scope. A score of 50-74 requires at least two recurring independent signals; 75-100 requires at least three, including two strong or pervasive signals.',
       'other_observed_style is supplementary context only and can never support a score above 20.',
-      'Signals contain category, strength, and scope only. Do not quote or copy submitted text and never use a signal as an authorship verdict. Return an empty signals array when no style cause is supported.',
+      'Each signal includes evidenceSentences: up to 8 exact zero-based sentence indices from the supplied array, or [] if unlocated. Recurring signals require multiple sentences. Do not quote submitted text or assert authorship. Return [] signals when unsupported.',
       'Confidence describes evidence sufficiency, not score certainty: low only for fewer than four editable prose sentences or input dominated by protected/corrupted content; medium for a small or mixed sample; high for at least eight editable prose sentences with consistently observable evidence. Do not choose low merely because the score is near a band boundary.',
       'Return a structured response only.'
     ].join('\n');
@@ -33,7 +33,7 @@ function buildDetectPrompt(lang = 'ko') {
     'signals에는 서로 독립된 실제 원인만 스키마의 고정 category로 한 항목씩 쓴다.',
     '각 signal의 strength와 scope를 근거에 맞게 표시한다. 21~49점에는 other_observed_style이 아닌 적격 category가 최소 1개 필요하고, 그 신호는 moderate 또는 strong이면서 recurring 또는 pervasive여야 한다. 50~74점에는 반복되는 독립 신호가 최소 2개, 75~100점에는 최소 3개가 필요하고 그중 2개 이상은 strong 또는 pervasive여야 한다.',
     'other_observed_style은 보조 관찰 정보일 뿐이며 20점을 넘는 점수의 근거로 사용할 수 없다.',
-    'signals에는 category·strength·scope만 넣는다. 원문 문장을 인용·복사하지 않고, 근거가 없는 category는 만들지 않으며 원인이 확인되지 않으면 빈 배열로 반환한다.',
+    '각 signal의 evidenceSentences에는 제공된 배열에서 원인이 보이는 문장 번호(0부터 시작)를 최대 8개 적고 위치가 없으면 []로 둔다. recurring은 여러 문장이 필요하다. 원문은 인용·복사하지 않고 근거 없는 category는 만들지 않는다.',
     'confidence는 점수 확신이 아니라 분석 근거의 충분성을 뜻한다. 편집 가능한 일반 산문이 4문장 미만이거나 보호·손상된 입력이 대부분일 때만 low, 표본이 작거나 혼합됐으면 medium, 일반 산문이 8문장 이상이고 근거를 일관되게 관찰할 수 있으면 high로 둔다. 점수가 구간 경계에 가깝다는 이유만으로 low를 선택하지 않는다.',
     '구조화된 응답만 반환한다.'
   ].join('\n');

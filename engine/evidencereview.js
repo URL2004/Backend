@@ -9,7 +9,13 @@ const { _numToks, evidenceAnchorMap } = require('./evidenceguard');
 
 // ── 출처 신뢰 등급(도메인 휴리스틱) ──
 //   A = 공식(정부·대학·공공기관·학회·국제기구) + 주요 언론 / B = 실재 일반 매체·기업·단체 / C = 개인 블로그·위키·SNS·UGC(보류)
-const GRADE_A_RE = /\.(go\.kr|ac\.kr|or\.kr|re\.kr|edu|gov|int)$|(^|\.)(yna|yonhapnews|chosun|joongang|donga|hani|khan|hankyung|hankookilbo|mk|kbs|mbc|sbs|ytn|news1|newsis|edaily|seoul|kyunghyang|nature|science|oecd|un|who|worldbank)\.(co\.kr|com|org|kr)$/;
+const GRADE_A_RE = /\.(go\.kr|ac\.kr|edu|gov|int)$/;
+// Exact registrable domains prevent a brand name paired with a different TLD
+// (for example who.com) from inheriting the original organization's rating.
+const GRADE_A_HOSTS = new Set(['yna.co.kr', 'yonhapnews.co.kr', 'chosun.com', 'joongang.co.kr',
+  'donga.com', 'hani.co.kr', 'khan.co.kr', 'hankyung.com', 'hankookilbo.com', 'mk.co.kr',
+  'kbs.co.kr', 'imbc.com', 'sbs.co.kr', 'ytn.co.kr', 'news1.kr', 'newsis.com',
+  'edaily.co.kr', 'seoul.co.kr', 'nature.com', 'science.org', 'oecd.org', 'un.org', 'who.int', 'worldbank.org']);
 const GRADE_C_RE = /(^|\.)(blog|tistory|brunch|cafe|post|velog|medium|youtube|youtu|wiki[a-z]*|namu|reddit|facebook|instagram|x|twitter|threads|dcinside|fmkorea|clien|ppomppu)\./;
 
 function hostOf(url) {
@@ -20,7 +26,7 @@ function gradeSource(url) {
   const host = hostOf(url);
   if (!host) return 'C';
   if (GRADE_C_RE.test(host)) return 'C';
-  if (GRADE_A_RE.test(host) || /(^|\.)(news|ilbo)\./.test(host)) return 'A';
+  if (GRADE_A_RE.test(host) || [...GRADE_A_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))) return 'A';
   return 'B';
 }
 

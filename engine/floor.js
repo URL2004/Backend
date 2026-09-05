@@ -490,7 +490,7 @@ function collectFloorViolations({ result, rawText, povSeed, optIn, mode, positio
   if (allowedExtra) {
     const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra, rawText);
     if (reuse.count >= 1) {
-      v.push({ type: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', '),
+      v.push({ type: 'memo_reuse', detail: reuse.items.map(r => `memo#${r.memoIndex + 1}×${r.count}`).join(', '),
         fix: `같은 경험 메모가 여러 문단에 반복됐다. 각 경험은 가장 잘 맞는 한 문단에만 한 번 쓰고 나머지는 제거하라.` });
     }
   }
@@ -550,7 +550,7 @@ function buildFloorReport({ result, rawText, mode, povSeed, optIn, allowedExtra 
   if (lost.count) warnings.push({ gate: 'lostFacts', detail: lost.items.join(', ') });
   const expNov = require('./surfaceguard').measurePersonalExperienceNovelty(rawText, out, allowedExtra);
   if (expNov.count) (englishInput ? warnings : criticals).push({ gate: 'experience_novelty', detail: expNov.items.join(' | ') });
-  if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra, rawText); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `${r.memo}×${r.count}`).join(', ') }); }
+  if (allowedExtra) { const reuse = require('./surfaceguard').measureMemoReuse(out, allowedExtra, rawText); if (reuse.count) criticals.push({ gate: 'memo_reuse', detail: reuse.items.map(r => `memo#${r.memoIndex + 1}×${r.count}`).join(', ') }); }
   // length_short 단독(사실 손실 없음)은 차단하지 않고 경고로만 노출 — 진짜 정보손실은 lostFacts가 잡는다.
   //   "결과가 줄어들면서 막힘"이 환불 민원이 되던 케이스를 완화(요약처럼 짧아져도 사실 보존이면 전달).
   // length_short는 lostFacts가 소프트가 됐으므로 항상 경고(사실 보존 우선 — 짧아져도 전달, 누락은 lostFacts 경고로 노출).

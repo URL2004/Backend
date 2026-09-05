@@ -33,9 +33,10 @@ const DETECT_SCHEMA = {
             ]
           },
           strength: { type: 'string', enum: ['weak', 'moderate', 'strong'] },
+          evidenceSentences: { type: 'array', items: { type: 'integer' } },
           scope: { type: 'string', enum: ['isolated', 'recurring', 'pervasive'] }
         },
-        required: ['category', 'strength', 'scope']
+        required: ['category', 'strength', 'scope', 'evidenceSentences']
       }
     },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] }

@@ -151,6 +151,14 @@ function isEnglishInput(text) {
   return letters >= 50 && hangul / letters < 0.15;
 }
 
+function isUnsupportedHumanizeInput(text) {
+  const letters = String(text || '').match(/\p{L}/gu) || [];
+  const hangul = letters.filter(letter => /\p{Script=Hangul}/u.test(letter)).length;
+  return letters.length >= 20 && hangul / letters.length < 0.15;
+}
+
+
+
 // ★메시지 정정(2026-06-17): "다듬기로 하세요"는 잘못된 안내였다 — 영어를 다듬을수록 AI 패턴이 강해져 카피킬러가
 //   더 잘 잡는다(실측 0→100%). 회피 불가를 솔직히 알리고 원문 유지를 권장.
 const ENGLISH_UNFIT_REASON = '영어 글은 AI 검사 회피(피하기)를 지원하지 않아요. 피하기는 한국어 전용이라 영어를 넣으면 번역·변형돼 원문이 손상되고, 영어를 매끄럽게 다듬을수록 오히려 AI 패턴이 강해져 검사에서 더 잘 잡혀요. 영어는 원문 그대로 두시길 권장합니다.';
@@ -410,4 +418,4 @@ function detectInputDuplication(text) {
   return { duplicated: false, ratio: 0 };
 }
 
-module.exports = { looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isSectionedAssignmentReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD, assessInputReadability, UNREADABLE_INPUT_MESSAGE };
+module.exports = { isUnsupportedHumanizeInput, looksLikeResume, looksLikeReflection, factDensity, isLongStructuredThesis, isAcademicCited, isFootnoteCited, isStructuredReport, isSectionedAssignmentReport, sciReportMarkers, genreAdvisory, isEnglishInput, ENGLISH_UNFIT_REASON, restructureUnfit, detectInputDuplication, rejoinSplitChars, stripSubmitterMeta, countFabricatedCitations, stripFabricatedCitations, maxNamedRepeat, isFormalDocument, FORMAL_GUIDANCE_REASON, FACT_DENSE_THRESHOLD, assessInputReadability, UNREADABLE_INPUT_MESSAGE };

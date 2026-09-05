@@ -373,7 +373,7 @@ async function runSemanticDocumentAudit({
   // 구조였으므로, 실제 위반이 있는 구간에 한해 최대 3곳까지 국소 수리한다.
   const repairRoundBudget = pairs.length <= 1 ? 1 : Math.min(3, pairs.length);
   let remainingRepairRounds = repairRoundBudget;
-  for (const pair of pairs) {
+  await require('./concurrency').mapWithConcurrency(pairs, 2, async (pair, index) => {
     try {
       const pairDiscourseSignals = pairs.length === 1
         ? discourseSignals
@@ -384,19 +384,19 @@ async function runSemanticDocumentAudit({
         config,
         // 한 구간이 문서 전체 예산을 독점하지 않게 각 구간은 1회만 수리한다.
         // 남은 위반은 상위 판정으로 확인하되 다음 문제 구간에도 예산을 남긴다.
-        maxRounds: remainingRepairRounds > 0 ? 1 : 0,
+        maxRounds: 1,
+        reserveRepair: () => { if (remainingRepairRounds <= 0) return false; remainingRepairRounds--; return true; },
         allowedExtra,
         mode,
         discourseSignals: pairDiscourseSignals,
         safetyIdentifier,
         documentProfile
       });
-      outputs.push(restoreReviewPairBoundaryWhitespace(
+      outputs[index] = restoreReviewPairBoundaryWhitespace(
         pair.output,
         report.outputText || pair.output
-      ));
-      remainingRepairRounds = Math.max(0, remainingRepairRounds - (report.rounds || 0));
-      reports.push({
+      );
+      reports[index] = {
         index: pair.index,
         pass: report.pass === true,
         skipped: report.skipped === true,
@@ -409,12 +409,12 @@ async function runSemanticDocumentAudit({
         violations: report.violations || [],
         selectedJudgeModel: report.selectedJudgeModel || '',
         usage: report.usage || null
-      });
+      };
     } catch (error) {
-      outputs.push(pair.output);
-      reports.push({ index: pair.index, pass: false, uncertain: true, reason: safeMessage(error), rounds: 0, violations: [] });
+      outputs[index] = pair.output;
+      reports[index] = { index: pair.index, pass: false, uncertain: true, reason: safeMessage(error), rounds: 0, violations: [], usage: error.usage || null };
     }
-  }
+  }, signal);
   const repairedText = outputs.join('');
   const residual = reports.filter(report => report.pass !== true);
   return {

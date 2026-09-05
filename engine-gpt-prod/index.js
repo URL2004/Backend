@@ -204,8 +204,8 @@ async function runEngine({
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   let rawSource = sourcePreflightAudit?.text || submittedSource;
   let integritySource = sourcePreflightAudit?.integrityText || rawSource;
-  if (inputRouting.isEnglishInput(rawSource)) {
-    const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.');
+  if (inputRouting.isUnsupportedHumanizeInput(rawSource)) {
+    const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 외국어 중심 입력은 원문 보존을 위해 변환하지 않습니다.');
     error.code = 'HUMANIZE_KOREAN_ONLY';
     error.noCharge = true;
     throw error;
@@ -5261,7 +5261,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
-  const user = lang === 'en' ? `[TEXT TO ANALYZE]\n${source}` : `[분석할 글]\n${source}`;
+  const user = JSON.stringify(require('../lib/detectGrounding').sourceSentences(source).map((sentence, index) => ({ index, text: sentence.text })));
   let primary = null;
   let primaryError = null;
   try {
@@ -5284,7 +5284,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   }
 
   if (primary) {
-    let out = normalizeDetectResult(primary.json);
+    let out = normalizeDetectResult(primary.json, source);
     out.gptMeta = metaFromResponse(primary, cfg, {
       task: route,
       escalated: false,
@@ -5310,7 +5310,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
         deadlineMs: detectDeadlineMs,
         documentProfile
       });
-      out = normalizeDetectResult(escalated.json);
+      out = normalizeDetectResult(escalated.json, source);
       out.gptMeta = metaFromDetectResponses(primary, escalated, cfg, {
         task: route,
         escalated: true,
@@ -5348,7 +5348,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       deadlineMs: detectDeadlineMs,
       documentProfile
     });
-    const out = normalizeDetectResult(escalated.json);
+    const out = normalizeDetectResult(escalated.json, source);
     out.gptMeta = metaFromResponse(escalated, cfg, {
       task: route,
       escalated: true,
@@ -5432,6 +5432,16 @@ async function rewriteSentence({ text, lang = 'ko', signal, config, uid = '', sa
   });
   assertNoPromptLeak(res.json);
   const rewritten = sanitizeOutput(res.json.rewritten);
+  if (rewritten && rewritten !== source) {
+    const integrity = candidateIntegrity.auditCandidateIntegrity({ source, before: source, candidate: rewritten });
+    if (floor.measureNovelty(source, rewritten).count || floor.measureLostFacts(source, rewritten).count || !integrity.pass) {
+      return { rewritten: '', rejected: 'preservation' };
+    }
+    const review = await require('./judge').semanticJudge(source, rewritten, null, {
+      lang, signal, config: cfg, mode: 'preview', phase: 'preview:semantic', safetyIdentifier: safetyId
+    });
+    if (!review.pass) return { rewritten: '', rejected: 'semantic' };
+  }
   return { rewritten: rewritten || source, gptMeta: metaFromResponse(res, cfg, { task: 'rewrite_sentence' }) };
 }
 
@@ -7769,7 +7779,7 @@ function deterministicDetectFallback(text, err) {
   });
 }
 
-function normalizeDetectResult(json) {
+function normalizeDetectResult(json, source) {
   const probability = Math.max(0, Math.min(100, Math.round(Number(json.probability) || 0)));
   return applyDetectNarrativePolicy({
     probability,
@@ -7777,8 +7787,8 @@ function normalizeDetectResult(json) {
     // The model no longer spends output tokens generating unused free text.
     summary: '',
     detail: '',
-    signalEvidence: Array.isArray(json.signals) ? json.signals.slice(0, 12) : [],
-    signalContractVersion: 'model-signals-v1',
+    signalEvidence: require('../lib/detectGrounding').groundSignals(Array.isArray(json.signals) ? json.signals.slice(0, 12) : [], source),
+    signalContractVersion: 'model-signals-v2-grounded',
     confidence: ['low', 'medium', 'high'].includes(json.confidence) ? json.confidence : 'medium'
   });
 }

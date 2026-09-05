@@ -492,11 +492,14 @@ router.post('/detect-report', async (req, res) => {
     });
 
     const before = pickAiSentence(paras, detail);
+    const previewController = new AbortController();
+    const previewTimer = setTimeout(() => previewController.abort(), 6000);
+    let completedExample = null;
     const exampleP = before
       ? (async () => {
           const gptCfg = await activeGptConfig();
           if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
-          const result = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '' });
+          const result = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '', signal: previewController.signal });
           if (!result?.rewritten) return null;
           // 다듬은 문장은 가장 많이 바뀐 자리만 공개하고 나머지는 휴머나이징으로 보낸다(원문 나머지는 응답에 싣지 않는다).
           const gate = splitExamplePreview(result.rewritten, before);
@@ -516,7 +519,11 @@ router.post('/detect-report', async (req, res) => {
         })().catch(error => { logger.warn('detect_report.preview_failed', { uid, err: error }); return null; })
       : Promise.resolve(null);
 
-    const [det, example] = await Promise.all([detectP, exampleP]);
+    void exampleP.then(value => { completedExample = value; }).finally(() => clearTimeout(previewTimer));
+    const det = await detectP;
+    const example = completedExample;
+    previewController.abort();
+    clearTimeout(previewTimer);
     const shadowEngineProbability = Math.round(Math.min(92, Math.max(15, 22 + 70 * (ir.abstractRiskRatio || 0))));
     const scoreLatencyMs = Date.now() - scoreStartedAt;
     if (!det) {

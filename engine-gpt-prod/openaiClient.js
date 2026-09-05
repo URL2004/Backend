@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { logger } = require('../lib/logger');
-const { estimateUsd } = require('./usageCost');
+const { estimateUsd, addUsage, emptyUsage } = require('./usageCost');
 const { outboundFetch } = require('../lib/outboundPolicy');
 const { assertNoPromptLeak } = require('./promptSecurity');
 
@@ -131,11 +131,14 @@ async function completeJson({
   let incompleteReason = '';
   let schemaAttempt = 0;
   let truncationRetryUsed = false;
+  let usage = emptyUsage();
+  try {
   while (schemaAttempt < 2) {
     const request = requestForSchemaAttempt(schemaAttempt);
     const fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, chunkDeadlineMs);
     mergeRetryCounts(retryCounts, fetched.retryCounts);
     raw = await fetched.response.json();
+    usage = addUsage(usage, normalizeUsage(raw.usage, model, raw));
     status = raw.status || 'completed';
     incompleteReason = raw.incomplete_details?.reason || '';
     if (status !== 'completed') {
@@ -176,9 +179,14 @@ async function completeJson({
       schemaAttempt += 1;
     }
   }
+  } catch (error) {
+    error.usage = usage;
+    logger.info('gpt_prod.usage', { ...meta, provider: 'openai', model, ...usage,
+      failed: true, retryCounts, elapsedMs: Date.now() - startedAt });
+    throw error;
+  }
   const elapsedMs = Date.now() - startedAt;
 
-  const usage = normalizeUsage(raw.usage, model, raw);
   const cacheDiagnostics = promptCacheDiagnostics(usage, cacheKey);
   try {
     logger.info('gpt_prod.usage', {
@@ -304,9 +312,22 @@ async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onAbort = () => controller.abort();
+  let rejectAbort;
+  const aborted = new Promise((_, reject) => { rejectAbort = () => reject(abortError()); });
+  controller.signal.addEventListener('abort', rejectAbort, { once: true });
   try {
+    if (parentSignal?.aborted) throw abortError();
     if (parentSignal) parentSignal.addEventListener('abort', onAbort, { once: true });
-    return await outboundFetch('openai', url, { ...init, signal: controller.signal });
+    return await Promise.race([aborted, (async () => {
+      const response = await outboundFetch('openai', url, { ...init, signal: controller.signal });
+      // Keep the deadline and transport signal alive until the body is consumed.
+      let payload;
+      try { payload = await response.json(); }
+      catch (error) { if (response.ok) throw error; payload = null; }
+      if (controller.signal.aborted) throw abortError();
+      return { ok: response.ok, status: response.status, statusText: response.statusText,
+        headers: response.headers, json: async () => payload };
+    })()]);
   } catch (err) {
     if (controller.signal.aborted && !parentSignal?.aborted) {
       const timeoutError = new Error(`OpenAI Responses API request timed out after ${timeoutMs}ms`);
@@ -318,6 +339,7 @@ async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity)
     throw err;
   } finally {
     clearTimeout(timer);
+    controller.signal.removeEventListener('abort', rejectAbort);
     if (parentSignal) parentSignal.removeEventListener('abort', onAbort);
   }
 }

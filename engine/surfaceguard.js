@@ -137,9 +137,9 @@ function measureMemoReuse(outputText, memo = '', rawText = '') {
     .filter(ln => !(rawText && groundedIn(ln, rawText)));   // 원문에 이미 있는 내용(주제)은 메모 재사용 아님
   const scenes = splitSentences(outputText).filter(isLivedScene);
   const reused = [];
-  for (const ln of lines) {
+  for (const [memoIndex, ln] of lines.entries()) {
     const cnt = scenes.filter(s => groundedIn(s, ln) && groundedIn(ln, s)).length;  // 양방향 겹침 = 같은 경험
-    if (cnt >= 2) reused.push({ memo: ln.slice(0, 30), count: cnt });
+    if (cnt >= 2) reused.push({ memoIndex, count: cnt });
   }
   return { items: reused, count: reused.length };
 }

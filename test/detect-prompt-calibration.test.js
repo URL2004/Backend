@@ -8,7 +8,7 @@ const { DETECT_SCHEMA } = require('../engine-gpt-prod/schemas');
 
 test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 근거와 점수 앵커를 요구한다', () => {
   const ko = prompt.buildDetectPrompt('ko');
-  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v5-cause-aligned');
+  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v5-cause-aligned-grounded-v2');
   assert.match(ko, /실제 작성 주체를 판정하는 확률이 아니다/u);
   assert.match(ko, /학술문·보고서·자소서·SEO 글/u);
   assert.match(ko, /만으로 점수를 올리지 않는다/u);
@@ -21,7 +21,7 @@ test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 
   assert.match(ko, /moderate 또는 strong이면서 recurring 또는 pervasive/u);
   assert.match(ko, /other_observed_style은 보조 관찰 정보일 뿐이며 20점을 넘는 점수의 근거로 사용할 수 없다/u);
   assert.match(ko, /strength와 scope/u);
-  assert.match(ko, /category·strength·scope만/u);
+  assert.match(ko, /evidenceSentences/u);
   assert.match(ko, /4문장 미만/u);
   assert.match(ko, /8문장 이상/u);
 });
@@ -41,7 +41,8 @@ test('감지 스키마는 자유 서술·원문 인용 없이 닫힌 원인 범�
   const signal = DETECT_SCHEMA.properties.signals.items;
   assert.equal(Object.hasOwn(DETECT_SCHEMA.properties, 'summary'), false);
   assert.equal(Object.hasOwn(DETECT_SCHEMA.properties, 'detail'), false);
-  assert.deepEqual(signal.required, ['category', 'strength', 'scope']);
+  assert.deepEqual(signal.required, ['category', 'strength', 'scope', 'evidenceSentences']);
+  assert.equal(signal.properties.evidenceSentences.items.type, 'integer');
   assert.equal(signal.additionalProperties, false);
   assert.equal(signal.properties.description, undefined);
   assert.ok(signal.properties.category.enum.includes('insufficient_grounding'));
@@ -90,7 +91,7 @@ test('유효한 primary 뒤 승격 실패는 모델 선택 호출 두 번에서 
     }
     const structured = {
       probability: 72,
-      signals: [{ category: 'sentence_uniformity', strength: 'moderate', scope: 'recurring' }],
+      signals: [{ category: 'sentence_uniformity', strength: 'moderate', scope: 'recurring', evidenceSentences: [0, 1] }],
       confidence: 'low'
     };
     return new Response(JSON.stringify({

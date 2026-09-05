@@ -128,7 +128,7 @@ function extractGptResult(data, toolName) {
 }
 
 async function runHumanizeChunked(opts = {}) {
-  return await engine.run(opts);
+  return await require('../lib/humanizeWorkerPool').runHumanize(opts);
 }
 
 async function runDetect(text, lang = 'ko', opts = {}) {

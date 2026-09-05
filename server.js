@@ -46,6 +46,10 @@ app.post(
   require('./routes/discordBot').handleInteractions
 );
 
+app.post('/csp-report', limiter, express.json({ type: ['application/csp-report', 'application/json'], limit: '16kb' }), (req, res) => {
+  logger.info('security.csp_violation', require('./lib/cspReport').summarizeReport(req.body));
+  res.status(204).end();
+});
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 app.use(maintenanceMode);
 
@@ -147,10 +151,19 @@ async function detailedHealth() {
   }
 }
 
-app.get(['/healthz', '/api/health'], (_req, res) => {
-  // Public health is liveness-only: if Express can answer, the process is up.
-  // Avoid a public endpoint repeatedly causing Firestore/runtime-config reads.
-  res.status(200).json({ ok: true, status: 'up' });
+const readiness = require('./lib/readiness').createReadiness({
+  configured: () => !!db && !!process.env.OPENAI_API_KEY && !!process.env.OPENAI_SAFETY_SALT,
+  probe: async () => {
+    await db.collection('runtimeConfig').doc('readiness').get();
+    const config = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
+    if (!evaluateHumanizeRuntime({ activeProvider: config.activeProvider }).ok) throw new Error('provider');
+  }
+});
+app.get('/livez', (_req, res) => res.status(200).json({ ok: true, status: 'up' }));
+app.get(['/healthz', '/api/health'], async (_req, res) => {
+  const state = transformRouter.stats();
+  const health = state.draining || !state.restorationReady ? { ok: false, status: 'unavailable' } : await readiness();
+  res.set('Cache-Control', 'no-store').status(health.ok ? 200 : 503).json(health);
 });
 
 app.get('/internal/health', async (req, res) => {
@@ -169,6 +182,7 @@ function writingLabHealthMeta() {
   const registry = writingPolicyRegistrySnapshot();
   return {
     writingLabV2: {
+      accessMode: 'public_paid',
       enabled: process.env.WRITING_LAB_V2_ENABLED !== '0',
       rolloutPercent: Math.max(0, Math.min(100, Number(process.env.WRITING_LAB_V2_ROLLOUT_PERCENT ?? 100) || 0)),
       disabledGenres: String(process.env.WRITING_LAB_V2_DISABLED_GENRES || '').split(',').map(value => value.trim()).filter(Boolean),
@@ -177,7 +191,8 @@ function writingLabHealthMeta() {
       policyLaunchEligible: registry.launchEligible,
       pendingPolicyDomains: registry.pendingDomains,
       invalidPolicyPackIds: registry.invalidPackIds
-    }
+    },
+    appCheckMode: require('./middleware/appCheckProtection').appCheckMode()
   };
 }
 
@@ -217,7 +232,7 @@ app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문�
 app.use('/', require('./routes/clientData')); // 서버 전용 이력 백업·1:1 문의 쓰기(인증·트랜잭션 quota)
 app.use('/', require('./routes/publicMetrics'));   // 검증된 누적 처리량 공개 지표(미검증 시 503)
 app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디맨드(/admin/revenue) + 일일 리포트 cron(/cron/daily-revenue)
-app.use('/', require('./routes/writinglab'));   // 관리자 실험: 자소서 생성 랩(생성→휴머나이징 결합 프로토타입, 관리자 전용·무과금)
+app.use('/', require('./routes/writinglab'));   // Public paid writing feature; authentication, quotas and billing are enforced in the router.
 app.use('/', require('./routes/opsLogs'));   // 장애 로그: 관리자 조회·확인(/admin/ops-*) + 부재 감지 워치독·다이제스트 cron
 app.use('/', require('./routes/signupCreditMonitoring')); // 신규 가입 무료 크레딧 소진 코호트(관리자 전용)
 

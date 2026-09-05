@@ -37,6 +37,7 @@ const {
   accountDeletionBlocksWrites,
   laneWithClaim,
   laneWithoutClaim,
+  activeLane,
 } = require('../lib/accountActivityClaims');
 const {
   restructureCredit,
@@ -44,15 +45,21 @@ const {
 } = require('../lib/humanizePricing');
 
 const jobs = new Map();
+const pendingAdmissions = new Set();
+const auxiliaryUsers = new Set();
+const executionPolicy = require('../lib/transformExecution');
 const jobPersistChains = new Map();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;   // 완료 후 6시간 보관
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive'; // 관리자 모니터 장기 보관용(원문·결과 제외)
 const TERMINAL_JOB_STATUSES = new Set(['done', 'blocked', 'error', 'cancelled']);
 let draining = false;
+let restorationReady = !db;
 setInterval(() => {
   const now = Date.now();
   for (const [id, j] of jobs) {
-    if (now - j.createdAt > JOB_TTL_MS) {
+    if (TERMINAL_JOB_STATUSES.has(j.status) && j.refine?.status !== 'running'
+        && !j.pendingCompletion && !j.pendingRefinement
+        && now - (j.terminalAtMs || j.createdAt) > JOB_TTL_MS) {
       archiveJob(j, { expiredAtMs: now });
       jobs.delete(id); deletePersisted(id); orphan401.delete(id);
     }
@@ -68,6 +75,61 @@ setInterval(() => {
 const TRANSFORM_SAFE_ACTIVE_CAP = Math.max(1, Number(process.env.TRANSFORM_SAFE_ACTIVE_CAP) || 2);
 const MAX_ACTIVE_GLOBAL = Math.min(Number(process.env.RESTRUCTURE_MAX_ACTIVE) || 3, TRANSFORM_SAFE_ACTIVE_CAP);   // 전역 동시 실행(LLM 점유) 상한 — formal(재구성)
 const BLOG_MAX_ACTIVE = Math.min(Number(process.env.BLOG_MAX_ACTIVE) || 4, TRANSFORM_SAFE_ACTIVE_CAP);            // blog(기본 피하기) 전역 동시 — 짧고 저원가라 별도 풀
+const executionCoordinator = executionPolicy.createExecutionCoordinator({ db, caps: { formal: MAX_ACTIVE_GLOBAL, short: BLOG_MAX_ACTIVE } });
+
+async function executeOwned(job, feature, run) {
+  const lease = await executionCoordinator.acquire(job, feature);
+  if (!lease) return false;
+  if (lease.persisted) Object.assign(job, lease.persisted);
+  job.executionToken = lease.token;
+  if (feature === 'main' && job.ac?.signal.aborted) job.ac = new AbortController();
+  if (feature === 'refine' && job.refine?.status === 'running') {
+    // A fresh lease proves the previous execution no longer owns this job.
+    job.refine = { ...job.refine, status: 'error', error: '이전 보강의 저장 상태를 확인한 뒤 다시 처리해요.' };
+  }
+  const controller = feature === 'main' ? job.ac : new AbortController();
+  if (feature !== 'main') job.auxAc = controller;
+  const limit = Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000));
+  const timer = setTimeout(() => controller.abort(Object.assign(new Error('Job deadline exceeded'), { code: 'JOB_DEADLINE' })), limit);
+  const heartbeat = setInterval(() => {
+    const lost = () => controller.abort(Object.assign(new Error('Execution lease lost'), { code: 'EXECUTION_LEASE_LOST' }));
+    void executionCoordinator.renew(lease).then(ok => { if (!ok) lost(); }, lost);
+  }, 20000);
+  try { await run(controller.signal); return true; }
+  finally {
+    clearTimeout(timer); clearInterval(heartbeat);
+    if (jobPersistChains.has(job.id)) await jobPersistChains.get(job.id);
+    await executionCoordinator.release(lease).catch(error => logger.warn('transform.lease_release_failed', { jobId: job.id, error }));
+    delete job.executionToken;
+    delete job.auxAc;
+  }
+}
+
+function auxiliaryRoute(feature, handler) {
+  return async (req, res, next) => {
+    const job = jobs.get(req.params.id);
+    if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
+    if (!(await requireJobOwner(req, res, job))) return;
+    if (draining || !restorationReady) return res.status(503).json({ error: '서버 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
+    if (auxiliaryUsers.has(job.uid) || activeJobFor(job.uid)) return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
+    auxiliaryUsers.add(job.uid);
+    try {
+      const ran = await executeOwned(job, feature, async () => {
+        if (feature === 'fallback' && job.pendingCompletion) {
+          await recoverCompletion(job);
+          return res.json({ ok: true, status: job.status });
+        }
+        if (feature === 'refine' && job.pendingRefinement) {
+          await finishRefinement(job);
+          return res.json({ ok: true, refine: publicRefine(job) });
+        }
+        return handler(req, res);
+      });
+      if (!ran && !res.headersSent) res.status(409).json({ error: '다른 작업이 처리 중이에요. 잠시 후 다시 시도해 주세요.' });
+    } catch (error) { next(error); }
+    finally { auxiliaryUsers.delete(job.uid); scheduleQueueDrain(); }
+  };
+}
 const MAX_QUEUE_GLOBAL = Number(process.env.RESTRUCTURE_MAX_QUEUE) || 30;    // formal 대기열 상한 — 무한 접수 방지
 const BLOG_MAX_QUEUE = Number(process.env.BLOG_MAX_QUEUE) || 50;             // short 대기열 상한
 const QUEUE_DRAIN_INTERVAL_MS = Number(process.env.TRANSFORM_QUEUE_TICK_MS) || 3000;
@@ -526,6 +588,7 @@ function activeJobPayload(job) {
 }
 
 function checkLimits(uid, mode) {
+  if (pendingAdmissions.has(uid) || auxiliaryUsers.has(uid)) return { status: 409, error: '이미 진행 중인 작업이 있어요.' };
   const { running, queued, mine } = countActive(uid, mode);
   if (mine >= 1) {
     const active = activeJobFor(uid);
@@ -712,6 +775,56 @@ function publicRefine(job) {
   };
 }
 
+async function finishRefinement(job) {
+  const pending = job.pendingRefinement;
+  if (!pending) return;
+  const { n, needed, paraLen, paragraphIndex, memoLength, outputText } = pending;
+  const deducted = needed ? await commitRefineBilling(job, n, needed, paraLen) : false;
+  const outputVersion = pending.outputVersion || (Number(job.outputVersion) || 1) + 1;
+  const draft = { ...job, outputVersion, terminalAtMs: Date.now(), engineMeta: null };
+  const review = { code: 'refined_document_review', message: '추가한 경험이 글 전체의 주장과 맞는지 확인해 주세요.' };
+  draft.result = { ...job.result, outputText, outputVersion,
+    qualityStatus: 'needs_review', qualityWarnings: [...(job.result.qualityWarnings || []), review],
+    metrics: null, floorReport: { status: 'needs_review', criticals: [], warnings: ['refined_document_review'], metrics: null }, koreanRefinement: null, naturalnessShadow: null,
+    engineMeta: null, humanizeMeta: null, registerLeak: null, preserveLab: null, finalReportEngine: null,
+    effectStatus: 'normal', effectNotices: [],
+    noOpScore: null, weakTransform: false, preservationCheck: measurePreservation(outputText),
+    auditScope: 'refined_paragraph', auditVersion: outputVersion };
+  draft.refineCount = n;
+  draft.refineHistory = [...(job.refineHistory || []).filter(item => item.n !== n),
+    { n, paragraphIndex, memoLength, atMs: Date.now(), outLen: outputText.length }];
+  draft.refine = { status: 'done', changed: true, paragraphIndex, n, needed, deducted };
+  draft.pendingRefinement = null;
+  attachRefineTargets(draft);
+  const committed = await persistJob(draft);
+  if (!committed.ok) throw new Error('REFINE_COMPLETION_PERSIST_UNAVAILABLE');
+  Object.assign(job, draft);
+  if (!job.adminHumanizeLab) await saveJobHistory(job, job.text, outputText);
+}
+
+async function stageCompletion(job, result, mode = job.mode) {
+  job.pendingCompletion = { result, mode, creditAmount: job.needed, createdAtMs: Date.now() };
+  job.status = 'running';
+  const staged = await persistJob(job, { requireClaim: true });
+  if (!staged.ok) throw new Error('COMPLETION_PERSIST_UNAVAILABLE');
+  return recoverCompletion(job);
+}
+
+async function recoverCompletion(job) {
+  const pending = job.pendingCompletion;
+  if (!pending) return;
+  const disposition = classifyBillingDisposition({ adminNoCharge: job.devNoAuth === true || job.adminHumanizeLab === true, plan: job.plan });
+  if (disposition === 'charged') await commitJobBilling(job, { creditAmount: pending.creditAmount,
+    mode: pending.mode, operation: pending.mode === 'formal' ? 'restructure' : 'humanize' });
+  const draft = { ...job, billingDisposition: disposition, status: 'done', pendingCompletion: null,
+    result: { ...pending.result, billingDisposition: disposition, outputVersion: (job.outputVersion || 1) } };
+  if (draft.result.engineMeta) draft.result.engineMeta = { ...draft.result.engineMeta, billingDisposition: disposition };
+  const committed = await persistJob(draft);
+  if (!committed.ok) throw new Error('COMPLETION_COMMIT_UNAVAILABLE');
+  Object.assign(job, draft);
+  if (!job.adminHumanizeLab) await saveJobHistory(job, job.text, job.result.outputText);
+}
+
 // refine 전용 과금 커밋 — 멱등키를 job_<id>_refine<n>으로 분리해 본 작업 차감(job_<id>)과 절대 충돌하지
 // 않고, 같은 n의 재시도는 원장에서 자동 dedupe된다. 결제 수단(쿠폰/크레딧)은 원 작업 계약을 따른다.
 async function commitRefineBilling(job, n, creditAmount, textLength) {
@@ -735,7 +848,7 @@ async function commitRefineBilling(job, n, creditAmount, textLength) {
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
-  'sourceProbability', 'sourceEvidence'];
+  'sourceProbability', 'sourceEvidence', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest',
   'sourceProbability', 'sourceEvidence'];
@@ -809,14 +922,26 @@ function persistJob(job, { requireClaim = false } = {}) {
         };
       }
       return await db.runTransaction(async transaction => {
-        const [deletionSnapshot, activitySnapshot] = await Promise.all([
+        const leaseRef = db.collection(executionPolicy.COLLECTION).doc(executionPolicy.DOCUMENT);
+        const [deletionSnapshot, activitySnapshot, executionSnapshot] = await Promise.all([
           transaction.get(deletionRef),
           transaction.get(activityRef),
+          transaction.get(leaseRef),
         ]);
         const nowMs = Date.now();
         const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
-        const active = ['queued', 'running'].includes(String(doc.status || ''))
+        const lease = executionSnapshot.exists ? executionSnapshot.data()?.slots?.[executionPolicy.keyOf(job.id)] : null;
+        if (lease && lease.expiresAtMs > nowMs && lease.token !== job.executionToken) return { ok: false, code: 'EXECUTION_OWNED_ELSEWHERE' };
+        if (job.executionToken && (!lease || lease.token !== job.executionToken || lease.expiresAtMs <= nowMs)) return { ok: false, code: 'EXECUTION_LEASE_LOST' };
+        const active = ['queued', 'running', 'awaiting_approval'].includes(String(doc.status || ''))
           || doc.refine?.status === 'running';
+        if (active && requireClaim && Object.values(executionSnapshot.exists ? executionSnapshot.data()?.slots || {} : {})
+          .some(slot => slot.uid === job.uid && slot.jobId !== job.id && slot.expiresAtMs > nowMs)) {
+          return { ok: false, code: 'USER_TRANSFORM_ACTIVE' };
+        }
+        if (active && requireClaim && Object.values(activeLane(activity, TRANSFORM_LANE, nowMs)).some(claim => claim.id !== job.id)) {
+          return { ok: false, code: 'USER_TRANSFORM_ACTIVE' };
+        }
         const nextLane = active
           ? laneWithClaim(activity, TRANSFORM_LANE, {
             id: job.id,
@@ -1517,7 +1642,6 @@ function launchQueuedJob(job) {
   job.status = 'running';
   job.startedAt = Date.now();
   job.stage = isShort ? '문장 다듬는 중' : (job.wantEvidence ? '근거 검색' : '구조 계획');
-  persistJob(job);
   logger.info('transform.started', {
     jobId: job.id,
     uid: job.uid,
@@ -1535,10 +1659,26 @@ function launchQueuedJob(job) {
     queuedMs: waitMs
   });
   const hasApprovedEvidence = Object.prototype.hasOwnProperty.call(job, 'approvedEvidence');
-  if (isShort) runHumanizeJob(job, job.text || '');
-  else if (hasApprovedEvidence) runJob(job, job.text || '', job.approvedEvidence || '');
-  else if (job.wantEvidence) runSearchPhase(job, job.text || '');
-  else runJob(job, job.text || '', '');
+  void executeOwned(job, 'main', async () => {
+    if (job.pendingCompletion) return recoverCompletion(job);
+    if (isShort) return runHumanizeJob(job, job.text || '');
+    if (hasApprovedEvidence) return runJob(job, job.text || '', job.approvedEvidence || '');
+    if (job.wantEvidence) return runSearchPhase(job, job.text || '');
+    return runJob(job, job.text || '', '');
+  }).then(async ran => {
+    if (ran || job.status !== 'running') return;
+    job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 30000;
+    if (db) {
+      const snapshot = await db.collection('transformJobs').doc(job.id).get();
+      if (snapshot.exists && TERMINAL_JOB_STATUSES.has(snapshot.data().status)) {
+        const persisted = snapshot.data(); delete persisted.executionToken;
+        Object.assign(job, persisted);
+      }
+    }
+  }).catch(error => {
+    job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
+    logger.warn('transform.execution_unavailable', { jobId: job.id, error });
+  });
   return true;
 }
 
@@ -1553,7 +1693,7 @@ if (queueDrainInterval.unref) queueDrainInterval.unref();
 //   fire-and-forget — 결과는 이미 transformJobs에 있으므로 저장 실패가 job을 죽이면 안 된다.
 function saveJobHistory(job, text, outputText) {
   if (!db || job.devNoAuth) return;
-  historyService.saveAnalyzeHistory({
+  return historyService.saveAnalyzeHistory({
     uid: job.uid,
     requestId: 'job_' + job.id,
     opType: 'humanize',
@@ -1595,6 +1735,23 @@ function maybeNotifyOrphan(job) {
 
 function handleAbortedJob(job) {
   if (!job) return 'missing';
+  if (job.pendingCompletion) {
+    job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
+    job.stage = '저장된 결과의 완료 상태를 확인하고 있어요.';
+    job.ac = new AbortController();
+    persistJob(job);
+    return 'completion_recovery';
+  }
+  if (job.ac?.signal.reason?.code === 'JOB_DEADLINE') {
+    job.status = 'error'; job.stage = '처리 시간 초과';
+    job.error = '서버 처리 시간 제한을 넘었어요. 완료 결과가 없어 크레딧은 차감하지 않았어요.';
+    persistJob(job); return 'deadline';
+  }
+  if (job.ac?.signal.reason?.code === 'EXECUTION_LEASE_LOST') {
+    job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
+    job.stage = '작업 실행 상태를 확인하고 있어요.';
+    return 'ownership_recovery';
+  }
   if (job._restartRecoveryPending === true
       || (draining && job.status === 'queued' && /자동 재개|서버 교체/u.test(String(job.stage || '')))) {
     persistJob(job);
@@ -1645,6 +1802,7 @@ async function reconcileRestartRecovery(jobId) {
   }
 
   const persisted = { ...(snap.data() || {}), id: (snap.data() || {}).id || jobId };
+  delete persisted.executionToken;
   const persistedStatus = String(persisted.status || '');
   if (TERMINAL_JOB_STATUSES.has(persistedStatus) || persistedStatus === 'awaiting_approval') {
     persisted.ac = new AbortController();
@@ -1709,17 +1867,32 @@ async function reconcileRestartRecovery(jobId) {
 async function restoreJobs() {
   if (!db) return;
   try {
-    const snap = await db.collection('transformJobs').limit(500).get();
+    const documents = [];
+    let cursor = null;
+    do {
+      let query = db.collection('transformJobs').orderBy('__name__').limit(500);
+      if (cursor) query = query.startAfter(cursor);
+      const page = await query.get();
+      documents.push(...page.docs);
+      cursor = page.docs.length === 500 ? page.docs[page.docs.length - 1] : null;
+    } while (cursor);
+    const snap = { forEach: fn => documents.forEach(fn) };
     const cutoff = Date.now() - JOB_TTL_MS;
     let kept = 0, recovering = 0, expired = 0;
     snap.forEach(d => {
       const j = d.data();
-      if (!j.createdAt || j.createdAt < cutoff) { expired++; archiveJob({ ...j, id: j.id || d.id }, { expiredAtMs: Date.now() }); deletePersisted(d.id); return; }
+      delete j.executionToken;
+      if (TERMINAL_JOB_STATUSES.has(j.status) && !j.pendingCompletion && !j.pendingRefinement
+          && j.refine?.status !== 'running' && (j.terminalAtMs || j.createdAt || 0) < cutoff) {
+        expired++; archiveJob({ ...j, id: j.id || d.id }, { expiredAtMs: Date.now() }); deletePersisted(d.id); return;
+      }
+      if (!j.createdAt) j.createdAt = Date.now();
+      if (j.pendingCompletion) { j.status = 'queued'; j.terminalAtMs = null; }
       j.id = j.id || d.id;
       j.ac = new AbortController();
       // 재시작으로 끊긴 문단 보강은 error로 정규화 — 프론트가 무한 폴링하지 않게.
       if (j.refine && j.refine.status === 'running') {
-        j.refine = { ...j.refine, status: 'error', error: '서버 재시작으로 문단 보강이 중단됐어요. 크레딧은 차감되지 않았어요. 다시 시도해 주세요.' };
+        j.refine = { ...j.refine, status: 'error', error: '서버 재시작으로 보강이 중단됐어요. 다시 시도하면 저장된 완료 상태부터 확인합니다.' };
       }
       if (j.status === 'running') {
         restartRecovery.holdRestoredRunningJob(j, { delayMs: RESTORE_RUNNING_RECOVERY_DELAY_MS });
@@ -1738,9 +1911,12 @@ async function restoreJobs() {
     if (kept || expired) {
       logger.info('transform.jobs_restored', { kept, recovering, interrupted: 0, expired });
     }
+    restorationReady = true;
     scheduleQueueDrain(RESTORE_QUEUE_DRAIN_DELAY_MS);
   } catch (e) {
     logger.warn('transform.jobs_restore_failed', { err: e });
+    const retry = setTimeout(() => { if (!draining) void restoreJobs(); }, 60000);
+    retry.unref();
   }
 }
 restoreJobs();
@@ -1753,6 +1929,7 @@ router.shutdown = async function shutdown() {
   for (const jobId of restartRecoveryTimers.keys()) clearRestartRecoveryTimer(jobId);
   const writes = [];
   for (const j of jobs.values()) {
+    if (j.auxAc) j.auxAc.abort();
     if (j.status === 'running') {
       const prepared = restartRecovery.prepareRunningJobForRestart(j, {
         maxRecoveries: RESTART_RECOVERY_MAX,
@@ -1775,9 +1952,12 @@ router.stats = () => {
   const short = countActive('', 'blog');
   return {
     activeJobs: formal.running + short.running,
+    auxiliaryJobs: auxiliaryUsers.size,
+    pendingAdmissions: pendingAdmissions.size,
     queuedJobs: formal.queued + short.queued,
     totalJobs: jobs.size,
     draining,
+    restorationReady,
     maxActive: MAX_ACTIVE_GLOBAL
   };
 };
@@ -1917,7 +2097,7 @@ function queueTechnicalRecovery(job, out) {
   job.technicalRecoveryAtMs = now;
   job.technicalRecoveryReason = reason;
   job.retryNotBeforeMs = now + (TECHNICAL_BLOCK_AUTO_RETRY_DELAY_MS * job.technicalRecoveryCount);
-  job.ac = new AbortController();
+  job.ac = job.auxAc || new AbortController();
   persistJob(job);
   logger.warn('transform.humanize_technical_recovery_queued', {
     jobId: job.id,
@@ -1982,42 +2162,10 @@ async function tryBlogPreservationFallback(job, text) {
       adminNoCharge: job.devNoAuth === true || job.adminHumanizeLab === true,
       plan: job.plan
     });
-    if (job.billingDisposition === 'charged') {
-      try {
-        await commitJobBilling(job, {
-          creditAmount: fbNeeded,
-          operation: 'humanize',
-          mode: 'polish',
-          textLength: text.length,
-          meta: { fallback: true, fromMode: 'blog' }
-        });
-      } catch (e) {
-        job.billingDisposition = 'charge_failed';
-        discord.billingFailure({
-          uid: job.uid,
-          jobId: job.id,
-          mode: `polish fallback from ${job.mode || 'blog'}`,
-          credits: fbNeeded,
-          billingMode: job.billingMode,
-          reason: e?.message || String(e)
-        });
-        logger.error('transform.blog_fallback_billing_failed_manual_action', {
-          jobId: job.id,
-          uid: job.uid,
-          needed: fbNeeded,
-          billingMode: job.billingMode,
-          opType: 'humanize',
-          billingDisposition: job.billingDisposition,
-          noAlert: true,
-          err: e
-        });
-      }
-    }
     const fallbackEngineMeta = buildPreservationFallbackMeta(out, job);
     fallbackEngineMeta.billingDisposition = job.billingDisposition;
     job.engineMeta = fallbackEngineMeta;
-    job.status = 'done';
-    job.result = {
+    const completionResult = {
       outputText: out.result.outputText,
       preservationCheck: measurePreservation(out.result.outputText),
       preservationFallback: true,
@@ -2031,10 +2179,10 @@ async function tryBlogPreservationFallback(job, text) {
       humanizeMeta: out.result?.humanizeMeta || null,
       naturalnessShadow: out.result?.naturalnessShadow || null,
       metrics: {
-        novelty: 0,
-        lostFacts: 0,
-        repetition: 0,
-        judge: 'skip',
+        novelty: out.floorReport?.metrics?.novelty ?? null,
+        lostFacts: out.floorReport?.metrics?.lostFacts ?? null,
+        repetition: out.floorReport?.metrics?.repetition ?? null,
+        judge: out.engineMeta?.semanticJudgeRan ? 'evaluated' : 'not_evaluated',
         lengthRatio: out.floorReport?.metrics?.lengthRatio,
         preservationFallback: true
       },
@@ -2046,6 +2194,7 @@ async function tryBlogPreservationFallback(job, text) {
       chunkCount: out.chunkCount,
       fallbackCount: out.fallbackCount
     };
+    await stageCompletion(job, completionResult, 'polish');
     persistJob(job);
     saveJobHistory(job, text, out.result.outputText);
     logger.info('transform.blog_fallback_done', {
@@ -2062,6 +2211,12 @@ async function tryBlogPreservationFallback(job, text) {
       return true;
     }
     logger.error('transform.blog_fallback_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
+    if (job.pendingCompletion) {
+      job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
+      job.stage = '저장된 결과의 완료 상태를 확인하고 있어요.';
+      persistJob(job);
+      return true;
+    }
     return false;
   }
 }
@@ -2659,34 +2814,6 @@ async function runHumanizeJob(job, text, evidence = '') {
       return;
     }
     if (!out.result || !out.result.outputText) throw new Error('humanize_incomplete');
-    try {
-      job.billingDisposition = await resolveBillingDisposition(job, out);
-    } catch (e) {
-      // 기술적으로 안전한 결과는 잃지 않되 실제 미차감을 charged로 위장하지
-      // 않는다. 멱등 job ID와 charge_failed를 남겨 운영자가 재정산할 수 있다.
-      job.billingDisposition = 'charge_failed';
-      discord.billingFailure({
-        uid: job.uid,
-        jobId: job.id,
-        mode: job.mode,
-        credits: job.needed,
-        billingMode: job.billingMode,
-        reason: e?.message || String(e)
-      });
-      logger.error('transform.humanize_billing_failed_manual_action', {
-        jobId: job.id,
-        uid: job.uid,
-        mode: job.mode,
-        needed: job.needed,
-        billingMode: job.billingMode,
-        billingDisposition: job.billingDisposition,
-        noAlert: true,
-        err: e
-      });
-    }
-    // ★ no-op(약한 변환) 안내(2026-06-16 품질리포트): 결과가 원문과 거의 같으면 강도 상향 추천.
-    //   ★polish(다듬기)는 보존이 목적이라 일반 약변환은 제외하지만, 내용이 거의 100% 동일(공백만)이면 안내
-    //   (2026-06-22 #40/#47: 다듬기 무변환·재시도 동일출력·이중과금 — 같은 결과 재시도 낭비 방지 안내).
     if ((out.effectStatus || out.result.effectStatus) === 'limited') {
       job.note = (job.note ? job.note + ' ' : '') + (isPolish
         ? '원문과 거의 동일하게 나왔어요(다듬기는 원문을 최대한 보존하는 모드예요). 더 바꾸려면 「기본 피하기」나 「고급 피하기」를 써 보세요 — 같은 글로 다듬기를 다시 돌려도 결과는 비슷해요.'
@@ -2713,8 +2840,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       out.result.engineMeta.effectExpectation = job.effectExpectation || 'normal';
       out.result.engineMeta.effectNoticeCode = job.effectNoticeCode || null;
     }
-    job.status = 'done';
-    job.result = {
+    const completionResult = {
       outputText: finalText,
       floorReport: {
         status: out.floorReport.status,
@@ -2754,6 +2880,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       compressionFallback: !!out.result.compressionFallback,
       preservationCheck: measurePreservation(finalText)
     };
+    await stageCompletion(job, completionResult);
     attachRefineTargets(job);   // 사후 문단 보강 타겟(PARAGRAPH_REFINE=1일 때만 부착)
     persistJob(job);
     if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
@@ -2775,6 +2902,10 @@ async function runHumanizeJob(job, text, evidence = '') {
     logger.error('transform.humanize_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
     job.status = 'error';
     job.error = '처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
+    if (job.pendingCompletion) {
+      job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
+      job.error = '완료 상태를 확인하고 있어요. 저장된 결과로 다시 처리합니다.';
+    }
     persistJob(job);
   } finally {
     scheduleQueueDrain();
@@ -2868,11 +2999,11 @@ router.post('/transform', async (req, res) => {
   //   엔진이라 영어를 넣으면 번역·변형으로 원문이 망가지고, '매끈하게' 다듬을수록 오히려 AI 패턴이 강해져
   //   카피킬러 0→100% 참사(실측). '돌리기 전에' 입력 단계에서 막는다. ※ 과거엔 "다듬기로 유도"였으나 다듬기도
   //   영어를 더 검출되게 만들어 잘못된 안내였음 — 메시지는 "영어 회피 불가·원문 유지"로 정정(ENGLISH_UNFIT_REASON).
-  if (inputrouting.isEnglishInput(text)) {
+  if (inputrouting.isUnsupportedHumanizeInput(text)) {
     logger.warn('transform.english_input_blocked', { mode, textLength: text.length });
     return res.status(400).json({
       code: 'HUMANIZE_KOREAN_ONLY',
-      error: '현재 휴머나이징 엔진은 한국어 글만 지원해요. 영어 입력은 원문 보존을 위해 변환하지 않습니다.'
+      error: '현재 휴머나이징 엔진은 한국어 글만 지원해요. 외국어 중심 입력은 원문 보존을 위해 변환하지 않습니다.'
     });
   }
   // ★ 격식문서 → 고급 안내(2026-06-17, #21·#83·#72·#90): 보고서·계약서·논문을 기본 피하기에 넣으면 구어체로
@@ -2924,7 +3055,7 @@ router.post('/transform', async (req, res) => {
       requiresEffectConfirmation: true
     });
   }
-  if (draining) {
+  if (draining || !restorationReady) {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
   }
 
@@ -3062,8 +3193,12 @@ router.post('/transform', async (req, res) => {
     estimatedTotalChunks: advancedTimeEstimate?.totalChunkCount,
     ac: new AbortController()   // 명시적 취소용(/cancel)
   };
+  if (pendingAdmissions.has(job.uid) || activeJobFor(job.uid) || auxiliaryUsers.has(job.uid)) return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
+  pendingAdmissions.add(job.uid);
   const initialPersistence = await persistJob(job, { requireClaim: true });
+  pendingAdmissions.delete(job.uid);
   if (!initialPersistence?.ok) {
+    if (initialPersistence?.code === 'USER_TRANSFORM_ACTIVE') return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
     if (initialPersistence?.blocked) {
       return res.status(409).json({
         code: 'ACCOUNT_DELETION_IN_PROGRESS',
@@ -3120,12 +3255,25 @@ router.post('/transform', async (req, res) => {
 });
 
 // 로컬 jobRef를 잃어도 서버에 남은 진행/승인대기 작업으로 복귀시키는 복구 엔드포인트.
-router.get('/transform/active', async (req, res) => {
+router.get('/transform/active', async (req, res, next) => {
+  try {
   const uid = await verifyToken(tokenFromReq(req));
   if (!uid) return res.status(401).json({ error: '로그인이 필요해요.' });
   setLogContext({ uid });
-  const job = activeJobFor(uid);
+  let job = activeJobFor(uid);
+  if (!job && db) {
+    const snapshot = await db.collection(ACCOUNT_ACTIVITY_COLLECTION).doc(uid).get();
+    const claims = Object.values(activeLane(snapshot.exists ? snapshot.data() : {}, TRANSFORM_LANE));
+    for (const claim of claims) {
+      const persisted = await db.collection('transformJobs').doc(claim.id).get();
+      if (persisted.exists && persisted.data().uid === uid
+          && ['queued', 'running', 'awaiting_approval'].includes(persisted.data().status)) {
+        job = persisted.data(); break;
+      }
+    }
+  }
   res.json({ ok: true, job: activeJobPayload(job) });
+  } catch (error) { next(error); }
 });
 
 // ── 명시적 취소: 진행 중 LLM 호출을 abort — 차감은 완료 시에만 일어나므로 취소=항상 무과금.
@@ -3156,7 +3304,7 @@ router.post('/transform/:id/cancel', async (req, res) => {
 
 // 기본 휴머나이징 차단 작업만 사용자의 명시적 동의로 다듬기 처리한다.
 // 고급 작업은 이 경로로 강도를 낮출 수 없다.
-router.post('/transform/:id/accept-fallback', async (req, res) => {
+router.post('/transform/:id/accept-fallback', auxiliaryRoute('fallback', async (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
   if (!(await requireJobOwner(req, res, job))) return;
@@ -3186,7 +3334,7 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
   job.stage = '원문 보존형으로 재처리 중';
   job.blockOffer = null;
   job.startedAt = Date.now();        // 새 시작점 — 30초 취소 창이 이 보존형 재처리 기준으로 적용되게.
-  job.ac = new AbortController();     // 차단 시 abort된 컨트롤러 교체
+  job.ac = job.auxAc || new AbortController();
   const fallbackClaim = await persistJob(job, { requireClaim: true });
   if (!fallbackClaim?.ok) {
     job.status = priorStatus;
@@ -3217,12 +3365,12 @@ router.post('/transform/:id/accept-fallback', async (req, res) => {
     }
   }
   scheduleQueueDrain();
-});
+}));
 
 // ── 사후 문단 보강(2026-08-27): 완료된 기본(blog·polish) 결과의 추상-위험 문단 하나를 사용자의
 //   실제 경험 한 줄(memo)로 재생성해 결과에 패치한다. 문단 하나를 미니 문서로 운영 엔진에 그대로
 //   태우므로 무날조·플로어 게이트가 동일하게 적용된다. 무변화·차단·실패는 무과금·무료횟수 미소진.
-router.post('/transform/:id/refine-paragraph', async (req, res) => {
+router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (req, res) => {
   if (!refineEnabled()) return res.status(404).json({ error: '지원하지 않는 기능이에요.' });
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
@@ -3251,6 +3399,10 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
   const paraText = paras[idx].text;
   const paraLen = paraText.trim().length;
   const n = (job.refineCount || 0) + 1;
+  if ((job.refineAttempts || 0) >= Math.max(2, Number(process.env.REFINE_MAX_ATTEMPTS) || 8)) {
+    return res.status(429).json({ error: '이 결과의 보강 시도 한도에 도달했어요.' });
+  }
+  job.refineAttempts = (job.refineAttempts || 0) + 1;
   const freeLeft = Math.max(0, REFINE_FREE_COUNT - (job.refineCount || 0));
   const needed = freeLeft > 0 ? 0 : shortHumanizeCredit(paraLen);
   const prevRefine = job.refine || null;
@@ -3284,7 +3436,7 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
   }
   logger.info('transform.refine_started', { jobId: job.id, uid: job.uid, mode: job.mode, paragraphIndex: idx, n, needed, memoLength: memo.length });
   res.json({ ok: true, refine: publicRefine(job) });   // 즉시 응답 — 프론트는 GET /transform/:id 폴링으로 수신
-  const ac = new AbortController();
+  const ac = job.auxAc || new AbortController();
   const timer = setTimeout(() => { try { ac.abort(); } catch {} }, REFINE_TIMEOUT_MS);
   try {
     // refine 전용 단일 호출: 전체 휴머나이즈 파이프라인(v2.5.x)은 보존 편향 지시 코어가 메모 위빙을
@@ -3329,13 +3481,24 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
     const novelty = refined ? floorGuard.measureNovelty(paraText, refined, memo) : { count: 0, items: [] };
     const bareLen = (s) => String(s).replace(/\s+/g, '').length;
     const lenRatio = refined ? bareLen(refined) / Math.max(1, bareLen(paraText)) : 0;
-    const gateBlocked = !!refined && (novelty.count > 0 || lenRatio < 0.6 || lenRatio > 2.0);
+    const lost = floorGuard.measureLostFacts(paraText, refined);
+    const integrity = require('../engine-gpt-prod/candidateIntegrity').auditCandidateIntegrity({
+      source: paraText, before: paraText, candidate: refined, mode: 'blog',
+      documentProfile: detectDocumentProfile(paraText)
+    });
+    let gateBlocked = !!refined && (novelty.count > 0 || lost.count > 0 || !integrity.pass || lenRatio < 0.9 || lenRatio > 1.8);
+    if (refined && !gateBlocked) {
+      const verified = await require('../lib/refinementValidation').validateRefinement({
+        source: paraText, candidate: refined, memo, signal: ac.signal, config: gptCfg
+      });
+      gateBlocked = !verified.pass;
+    }
     if (gateBlocked) {
-      logger.warn('transform.refine_gate_blocked', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, novelty: (novelty.items || []).slice(0, 5), lenRatio: Number(lenRatio.toFixed(2)) });
+      logger.warn('transform.refine_gate_blocked', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, noveltyCount: novelty.count, lostFactCount: lost.count, lenRatio: Number(lenRatio.toFixed(2)) });
     }
     try {
       const reuse = surfaceguard.measureMemoReuse(refined, memo, paraText);
-      if (reuse.count) logger.warn('transform.refine_memo_reuse', { jobId: job.id, uid: job.uid, n, items: reuse.items });
+      if (reuse.count) logger.warn('transform.refine_memo_reuse', { jobId: job.id, uid: job.uid, n, count: reuse.count });
     } catch { /* 관측용 — 실패해도 흐름 유지 */ }
     const changed = !!refined && !gateBlocked && refined.replace(/\s+/g, ' ') !== paraText.trim().replace(/\s+/g, ' ');
     if (!changed) {
@@ -3350,39 +3513,24 @@ router.post('/transform/:id/refine-paragraph', async (req, res) => {
     // 패치: sep 보존 스플라이스 — 보강한 문단 외에는 바이트 단위로 그대로 유지.
     const current = surfaceguard.splitParagraphsForRefine(job.result.outputText || '');
     current[idx] = { ...current[idx], text: refined };
-    job.result.outputText = current.map(p => p.lead + p.text + p.sep).join('');
-    job.refineCount = n;
-    job.refineHistory = [...(job.refineHistory || []), {
-      n,
-      paragraphIndex: idx,
-      memoLength: memo.length,
-      atMs: Date.now(),
-      outLen: refined.length
-    }];
-    let deducted = false;
-    if (needed) {
-      try {
-        deducted = await commitRefineBilling(job, n, needed, paraLen);
-      } catch (e) {
-        // 결과는 이미 전달 — charged 위장 대신 수동 재정산 로그(본 작업 과금 실패와 동일한 계약).
-        logger.error('transform.refine_credit_deduct_failed_manual_action', { jobId: job.id, uid: job.uid, n, needed, noAlert: true, err: e });
-      }
-    }
-    attachRefineTargets(job);   // 구체화된 문단은 타겟에서 빠지고 freeLeft 갱신
-    job.refine = { status: 'done', changed: true, paragraphIndex: idx, n, needed, deducted };
-    persistJob(job);
-    if (!job.adminHumanizeLab) saveJobHistory(job, job.text, job.result.outputText);   // 멱등키 job_<id> → 이력 문서 갱신
-    logger.info('transform.refine_done', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, needed, deducted, outLen: refined.length });
+    const nextOutput = current.map(p => p.lead + p.text + p.sep).join('');
+    job.pendingRefinement = { outputText: nextOutput, n, needed, paraLen, paragraphIndex: idx, memoLength: memo.length, outputVersion: (job.outputVersion || 1) + 1 };
+    const staged = await persistJob(job, { requireClaim: true });
+    if (!staged.ok) throw new Error('REFINE_RESULT_PERSIST_UNAVAILABLE');
+    await finishRefinement(job);
+    return;
+
   } catch (e) {
     const aborted = ac.signal.aborted;
     job.refine = { status: 'error', paragraphIndex: idx, n, needed: 0,
-      error: aborted ? '문단 보강이 시간 초과로 중단됐어요. 크레딧은 차감되지 않았어요.' : '문단 보강 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.' };
+      error: job.pendingRefinement ? '보강 완료 상태를 확인하고 있어요. 다시 시도하면 저장된 결과를 복구해요.'
+        : aborted ? '문단 보강이 시간 초과로 중단됐어요. 크레딧은 차감되지 않았어요.' : '문단 보강 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.' };
     persistJob(job);
     logger.error('transform.refine_failed', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, aborted, err: e });
   } finally {
     clearTimeout(timer);
   }
-});
+}));
 
 // ── P4: 근거 승인 — 승인된 후보만 evidence로 재구성 재개. "미승인은 엔진이 차단"의 구현부:
 //   엔진에 전달되는 허용 세계 자체가 승인 목록뿐이므로 미승인 사실은 novelty 게이트가 자동 차단.
@@ -3448,8 +3596,20 @@ router.post('/transform/:id/approve', async (req, res) => {
   res.json({ ok: true, approved: approved.length, job: payload });
 });
 
-router.get('/transform/:id', async (req, res) => {
-  const job = jobs.get(req.params.id);
+router.get('/transform/:id', async (req, res, next) => {
+  try {
+  let job = jobs.get(req.params.id);
+  if (db && !job?.executionToken && /^[a-f0-9]{16}$/u.test(req.params.id)) {
+    const snapshot = await db.collection('transformJobs').doc(req.params.id).get();
+    if (snapshot.exists) {
+      const restored = snapshot.data();
+      if (!TERMINAL_JOB_STATUSES.has(restored.status) || restored.pendingCompletion || restored.pendingRefinement
+          || Date.now() - (restored.terminalAtMs || restored.createdAt) < JOB_TTL_MS) {
+        job = { ...restored, ac: new AbortController() };
+        delete job.executionToken;
+      } else job = null;
+    }
+  }
   if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
   if (!(await requireJobOwner(req, res, job))) {
     // 인증 실패(주로 토큰 만료)로 폴링이 401을 받은 경우 — 진행/완료된 유료 작업이면 결과 유실 의심 알림.
@@ -3514,6 +3674,7 @@ router.get('/transform/:id', async (req, res) => {
   if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, blockOffer: job.blockOffer || null, ...blockedResponse(job) });
   if (job.status === 'error') return res.json({ ...base, error: job.error });
   res.json(base);
+  } catch (error) { next(error); }
 });
 
 router.saveJobHistory = saveJobHistory;   // 테스트용

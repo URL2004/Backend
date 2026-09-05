@@ -130,6 +130,19 @@ test('failed refinement billing/persistence preserves the old result and recover
   assert.equal(job.result.metrics, null); assert.equal(job.result.qualityStatus, 'needs_review');
 });
 
+test('structure completion recovery retains the staged amount and unlimited actual charge is zero', async () => {
+  const paid=[];const ctx=completionContext({commitJobBilling:async(job,options)=>{paid.push({id:job.id,amount:options.creditAmount});}});
+  const job={id:'structure-priced',mode:'formal',needed:130,plan:'free'};
+  await ctx.stageCompletion(job,{outputText:'verified output',creditBreakdown:{base:100,structure:30,total:130}});
+  assert.equal(job.result.creditBreakdown.charged,130);
+  assert.deepEqual(paid,[{id:'structure-priced',amount:130}]);
+  const restored={id:'structure-restart',mode:'formal',needed:999,pendingCompletion:{result:{outputText:'durable result',creditBreakdown:{base:100,structure:0,total:100}},mode:'formal',creditAmount:100}};
+  await ctx.recoverCompletion(restored);assert.equal(paid.at(-1).amount,100);assert.equal(restored.result.creditBreakdown.charged,100);
+  const free=completionContext({classifyBillingDisposition:()=> 'plan_unlimited',commitJobBilling:async()=>{throw Error('must not bill');}});
+  const unlimited={id:'unlimited-structure',mode:'formal',needed:130,plan:'unlimited'};
+  await free.stageCompletion(unlimited,{outputText:'verified output',creditBreakdown:{base:100,structure:30,total:130}});assert.equal(unlimited.result.creditBreakdown.charged,0);
+});
+
 test('CSP reports cannot log paths, queries or script samples', () => {
   const report = require('../lib/cspReport').summarizeReport({ 'csp-report': {
     'blocked-uri': 'https://example.test/private?token=secret', 'document-uri': 'https://app.test/user/private',

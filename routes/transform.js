@@ -23,6 +23,8 @@ const layoutNormalizer = require('../engine/layout');
 const { CONTENT_GENRES, detectDocumentProfile, applyDocumentProfileOverride } = require('../engine-gpt-prod/documentProfile');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 const structureChunk = require('../engine-gpt-prod/structureChunk');
+const documentStructure = require('../engine-gpt-prod/documentStructure');
+const { restructureStructureCredit } = require('../lib/humanizePricing');
 const { shouldCallModel } = require('../engine-gpt-prod/chunkPolicy');
 const humanizationDepth = require('../engine-gpt-prod/humanizationDepth');
 const surfaceguard = require('../engine/surfaceguard');
@@ -66,6 +68,7 @@ setInterval(() => {
   }
   const today = kstDay();
   for (const [uid, d] of dailyStarts) if (d.day !== today) dailyStarts.delete(uid);
+  for (const [uid, d] of dailyStructurePreviews) if (d.day !== today) dailyStructurePreviews.delete(uid);
 }, 30 * 60 * 1000).unref();
 
 // ── 비용 방어(2026-06-12): 차감이 완료 시점이라 차단·에러·취소 job의 원가(최대 $7)는 회사 부담 →
@@ -151,6 +154,7 @@ const TECHNICAL_BLOCK_AUTO_RETRY_DELAY_MS = Math.max(
 const DAILY_CAP_PER_UID = Number(process.env.RESTRUCTURE_DAILY_CAP) || 8;    // 사용자당 일일 시작 횟수(취소·차단 포함) — formal만
 const CANCEL_WINDOW_SEC = Number(process.env.CANCEL_WINDOW_SEC) || 45;       // 시작 후 이 시간 안에서만 사용자 취소 허용(원가 거의 안 쓴 구간). UI 버튼은 30초, 서버는 시계·네트워크 지연 여유로 45초.
 const dailyStarts = new Map();   // uid → { day, count } — 메모리 보관(재시작 시 리셋은 사용자에게 유리한 방향이라 허용)
+const dailyStructurePreviews = new Map();
 const orphan401 = new Map();   // jobId → 폴링 GET 401 연속 횟수(결과 유실 의심 감지용)
 const restartRecoveryTimers = new Map();
 
@@ -457,6 +461,7 @@ async function resolveBillingDisposition(job, out) {
     creditAmount: job.needed,
     operation: job.mode === 'formal' ? 'restructure' : 'humanize',
     mode: job.mode || 'formal',
+    structurePreview: job.structurePreview === true,
     textLength: (job.text || '').length
   });
   return job.deducted ? 'charged' : (job.plan === 'unlimited' ? 'plan_unlimited' : 'admin_no_charge');
@@ -589,7 +594,7 @@ function activeJobPayload(job) {
   return base;
 }
 
-function checkLimits(uid, mode) {
+function checkLimits(uid, mode, preview = false) {
   if (pendingAdmissions.has(uid) || auxiliaryUsers.has(uid)) return { status: 409, error: '이미 진행 중인 작업이 있어요.' };
   const { running, queued, mine } = countActive(uid, mode);
   if (mine >= 1) {
@@ -604,7 +609,7 @@ function checkLimits(uid, mode) {
   // 일일 시작 한도는 formal(고원가)만 — short 모드는 저원가라 레이트리밋·동시 1개로 충분.
   if (mode === 'formal') {
     const day = kstDay();
-    const d = dailyStarts.get(uid);
+    const d = (preview ? dailyStructurePreviews : dailyStarts).get(uid);
     if (d && d.day === day && d.count >= DAILY_CAP_PER_UID) {
       return { status: 429, error: `재구성은 하루 ${DAILY_CAP_PER_UID}회까지 시작할 수 있어요. 내일 다시 시도해 주세요.` };
     }
@@ -820,6 +825,8 @@ async function recoverCompletion(job) {
     mode: pending.mode, operation: pending.mode === 'formal' ? 'restructure' : 'humanize' });
   const draft = { ...job, billingDisposition: disposition, status: 'done', pendingCompletion: null,
     result: { ...pending.result, billingDisposition: disposition, outputVersion: (job.outputVersion || 1) } };
+  if (draft.result.creditBreakdown) draft.result.creditBreakdown = { ...draft.result.creditBreakdown,
+    charged: disposition === 'charged' ? pending.creditAmount : 0 };
   if (draft.result.engineMeta) draft.result.engineMeta = { ...draft.result.engineMeta, billingDisposition: disposition };
   const committed = await persistJob(draft);
   if (!committed.ok) throw new Error('COMPLETION_COMMIT_UNAVAILABLE');
@@ -850,7 +857,8 @@ async function commitRefineBilling(job, n, creditAmount, textLength) {
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
-  'sourceProbability', 'sourceEvidence', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts'];
+  'sourceProbability', 'sourceEvidence', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts',
+  'structurePreview', 'approvedStructure', 'structurePlanId', 'structureMode', 'basePriceCredits', 'structureCredits'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest',
   'sourceProbability', 'sourceEvidence'];
@@ -1663,6 +1671,7 @@ function launchQueuedJob(job) {
   const hasApprovedEvidence = Object.prototype.hasOwnProperty.call(job, 'approvedEvidence');
   void executeOwned(job, 'main', async () => {
     if (job.pendingCompletion) return recoverCompletion(job);
+    if (job.structurePreview) return runStructurePreview(job);
     if (isShort) return runHumanizeJob(job, job.text || '');
     if (hasApprovedEvidence) return runJob(job, job.text || '', job.approvedEvidence || '');
     if (job.wantEvidence) return runSearchPhase(job, job.text || '');
@@ -2783,6 +2792,7 @@ async function runHumanizeJob(job, text, evidence = '') {
           evidence: evidence || '',
           config: gptCfg,
           styleProfile: styleProfile || 'production_transform_humanize',
+          approvedStructure: job.approvedStructure || null,
           basicStyle: job.basicStyle || '',
           documentProfileOverride: job.documentProfileOverride || '',
           allowPolish: true,
@@ -2828,6 +2838,16 @@ async function runHumanizeJob(job, text, evidence = '') {
       job.note = (job.note ? job.note + ' ' : '') + '원문의 사실 일부(연도·수치·기관명 등)가 다듬는 과정에서 빠졌을 수 있어요. 결과를 원문과 한 번 대조해 주세요.';
     }
     const finalText = out.result.outputText;
+    if (job.structureMode === 'improve') {
+      const improvement = out.result.structureImprovement || { requested: true, applied: false, changes: [] };
+      job.structureCredits = improvement.applied ? restructureStructureCredit(text.length) : 0;
+      job.needed = job.basePriceCredits + job.structureCredits;
+      if (out.result.engineMeta) Object.assign(out.result.engineMeta, { structureCredits: job.structureCredits, structureApplied: improvement.applied,
+        structurePlanningUsd: Number(job.approvedStructure?.usage?.estimatedUsd) || 0 });
+      job.note = (job.note ? job.note + ' ' : '') + (improvement.applied
+        ? '확인한 구조 변경안을 적용했습니다.'
+        : '구조 변경은 적용하지 않았으며 구조 추가요금은 차감하지 않습니다.');
+    }
     const v2QualityStatus = out.qualityStatus || out.result.qualityStatus || 'clean';
     const v2QualityWarnings = out.qualityWarnings || out.result.qualityWarnings || [];
     const v2EffectStatus = out.effectStatus || out.result.effectStatus || 'normal';
@@ -2868,6 +2888,8 @@ async function runHumanizeJob(job, text, evidence = '') {
       effectNotices: v2EffectNotices,
       billingDisposition: job.billingDisposition,
       sourceReviewWarnings: out.sourceReviewWarnings || out.result.sourceReviewWarnings || [],
+      structureImprovement: out.result.structureImprovement || null,
+      creditBreakdown: { base: job.basePriceCredits ?? job.listPriceCredits ?? job.needed, structure: job.structureCredits || 0, total: job.needed },
       koreanRefinement: out.result.koreanRefinement ? {
         version: Number(out.result.koreanRefinement.version) || 0,
         pass: out.result.koreanRefinement.pass === true,
@@ -2914,7 +2936,39 @@ async function runHumanizeJob(job, text, evidence = '') {
   }
 }
 
-router.post('/transform', async (req, res) => {
+async function runStructurePreview(job) {
+  try {
+    job.stage = '목차와 문단 변경안 만드는 중';
+    await persistJob(job);
+    const config = await activeGptConfig();
+    if (!config) throw technicalProviderError();
+    let plan;
+    try {
+      plan = await documentStructure.createPlan({ text: job.text, config, uid: job.uid, signal: job.ac.signal });
+    } catch (error) {
+      if (job.ac.signal.aborted) throw error;
+      plan = { version: documentStructure.VERSION, sourceHash: documentStructure.buildDocument(job.text).sourceHash,
+        groups: [], applicable: false, applied: false, changes: [], reason: '안전한 변경안을 만들지 못했습니다. 원문 구조로 다듬을 수 있어요.' };
+      logger.warn('transform.structure_plan_rejected', { jobId: job.id, code: error.code || 'STRUCTURE_PLAN_UNAVAILABLE' });
+    }
+    job.result = { structurePlan: { ...plan, id: job.id, expiresAtMs: job.createdAt + 60 * 60 * 1000,
+      inputChars: job.text.length, additionalCredits: plan.applied ? restructureStructureCredit(job.text.length) : 0 } };
+    job.needed = 0;
+    job.status = 'done'; job.stage = '구조 변경안 준비 완료'; job.terminalAtMs = Date.now();
+    if (!(await persistJob(job)).ok) throw new Error('STRUCTURE_PLAN_PERSIST_FAILED');
+  } catch (error) {
+    if (job.ac.signal.aborted) return handleAbortedJob(job);
+    job.status = 'error'; job.error = '구조 변경안을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+    await persistJob(job);
+  }
+}
+
+router.get('/transform/structure-config', (_req, res) => res.json({ enabled: process.env.HUMANIZE_STRUCTURE_ENABLED === '1', version: documentStructure.VERSION }));
+
+const startTransform = async (req, res) => {
+  const structurePreview = req.path === '/transform/structure-plan';
+  const structureMode = req.body?.structureMode || 'preserve';
+  if (!['preserve', 'improve'].includes(structureMode)) return res.status(400).json({ error: '지원하지 않는 구조 옵션입니다.' });
   let { text } = req.body || {};
   // idToken은 Authorization 헤더 우선(헤더 미전환 구버전 클라이언트는 body/query 폴백) — 다른 라우트와 동일하게 단일화.
   // ★버그 수정(2026-06-19): A2 보안 마이그레이션 때 이 시작 핸들러만 body 직접 추출이 남아, FE가 body 토큰 전송을
@@ -2926,6 +2980,9 @@ router.post('/transform', async (req, res) => {
   const sourceEvidence = parseSourceEvidence(req.body?.sourceEvidence);
   const mode = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? requestedModeValue : 'formal';
   const modeSource = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? 'provided' : 'defaulted';
+  if ((structurePreview || structureMode === 'improve') && (mode !== 'formal' || billingMode !== 'credit' || req.body?.adminHumanizeLab)) {
+    return res.status(400).json({ code: 'STRUCTURE_MODE_UNSUPPORTED', error: '구조 개선은 크레딧 결제의 고급 휴머나이징에서 사용할 수 있어요.' });
+  }
   const requestedDocumentProfileValue = req.body?.documentProfile ?? req.body?.documentGenre;
   const documentProfileOverride = normalizeDocumentProfileOverride(requestedDocumentProfileValue);
   if (requestedDocumentProfileValue != null && String(requestedDocumentProfileValue).trim() && documentProfileOverride === null) {
@@ -2974,6 +3031,10 @@ router.post('/transform', async (req, res) => {
     }
   }
   // ★ 글자분리(PDF 추출 깨짐) 복원(2026-06-19 실측 #57·#58): 모든 글자가 공백 분리된 입력을 billing·엔진 처리 전에
+  const structureUid = authenticatedUser?.uid || adminLabUid || (devNoAuth ? 'dev-local' : '');
+  if ((structurePreview || structureMode === 'improve') && process.env.HUMANIZE_STRUCTURE_ENABLED !== '1' && !isAdminUid(structureUid) && !devNoAuth) {
+    return res.status(503).json({ code: 'STRUCTURE_DISABLED', error: '구조 개선 옵션을 준비 중입니다.' });
+  }
   //   재결합 — 공정 과금·URL 보존. 정상 글은 무동작. INPUT_REJOIN=0으로 해제.
   if (process.env.INPUT_REJOIN !== '0') {
     try {
@@ -3038,7 +3099,7 @@ router.post('/transform', async (req, res) => {
   }
   const effectAssessment = assessEffectExpectation(text, mode, effectBasicStyle);
   const effectNoticeAccepted = req.body?.effectNoticeAccepted === true;
-  if (!adminLabUid
+  if (!structurePreview && !adminLabUid
       && effectConfirmationEnabled()
       && effectAssessment.requiresEffectConfirmation
       && !effectNoticeAccepted) {
@@ -3061,12 +3122,22 @@ router.post('/transform', async (req, res) => {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
   }
 
-  const wantEvidence = mode === 'formal' && req.body.evidence === true;   // 근거 보강은 formal 전용(UI 잠금과 일치)
+  const wantEvidence = !structurePreview && mode === 'formal' && req.body.evidence === true;
+  let approvedStructure = null;
+  if (!structurePreview && structureMode === 'improve') {
+    const planId = String(req.body?.structurePlanId || '');
+    if (!/^[a-f0-9]{16}$/u.test(planId)) return res.status(409).json({ code: 'STRUCTURE_PLAN_REQUIRED', error: '구조 변경안을 먼저 확인해 주세요.' });
+    let sourceJob = jobs.get(planId);
+    try { if (db) { const snap = await db.collection('transformJobs').doc(planId).get(); sourceJob = snap.exists ? snap.data() : null; } }
+    catch (_) { return res.status(503).json({ code: 'STRUCTURE_PLAN_UNAVAILABLE', error: '변경안을 확인하지 못했어요. 잠시 후 다시 시도해 주세요.' }); }
+    try { approvedStructure = documentStructure.validateStoredPlan(sourceJob, { uid: structureUid, text }); }
+    catch (_) { return res.status(409).json({ code: 'STRUCTURE_PLAN_STALE', error: '변경안이 만료되었거나 원문이 바뀌었습니다. 구조 변경안을 다시 확인해 주세요.' }); }
+  }
   // 과금: 탐지 제외 짧은 기능(blog·polish)은 최소 10크레딧 + 100자당 2크레딧.
   // formal은 lib/humanizePricing의 5크레딧 단위 단계형 요금을 사용한다.
   const creditNeeded = (mode === 'blog' || mode === 'polish')
     ? shortHumanizeCredit(text.length)
-    : restructureCredit(text.length, wantEvidence);
+    : restructureCredit(text.length, wantEvidence, structurePreview || !!approvedStructure);
   const needed = billingMode === 'coupon' ? 1 : creditNeeded;
   let pre;
   try {
@@ -3085,8 +3156,22 @@ router.post('/transform', async (req, res) => {
     });
   }
   setLogContext({ uid: pre.uid });
+  const previewId = structurePreview ? crypto.createHash('sha256').update([documentStructure.VERSION, pre.uid, text, Math.floor(Date.now() / 1800000)].join('\0')).digest('hex').slice(0, 16) : null;
+  const structureExecutionId = approvedStructure ? crypto.createHash('sha256').update(JSON.stringify([
+    'structure-execution-v1', pre.uid, approvedStructure.id, wantEvidence, documentProfileOverride,
+    String(req.body.memo || '').slice(0, 2000), req.body.autoCoach === true
+  ])).digest('hex').slice(0, 16) : null;
+  const reusableId = previewId || structureExecutionId;
+  if (reusableId) {
+    let cached = jobs.get(reusableId);
+    try { if (db) { const snap = await db.collection('transformJobs').doc(reusableId).get(); if (snap.exists) cached = snap.data(); } }
+    catch (_) { return res.status(503).json({ code: 'STRUCTURE_PLAN_UNAVAILABLE', error: '변경안을 확인하지 못했어요. 잠시 후 다시 시도해 주세요.' }); }
+    if (cached && cached.uid === pre.uid && ['queued', 'running', 'awaiting_approval', 'done'].includes(cached.status)) {
+      return res.json({ ok: true, jobId: cached.id, job: activeJobPayload(cached), structurePreview: cached.structurePreview === true });
+    }
+  }
   // 한도는 인증 후(uid 확정) 검사 — 비용 방어의 본체. 시작 성공 시에만 일일 카운트(formal만).
-  const limited = adminLabUid ? null : checkLimits(pre.uid, mode);
+  const limited = adminLabUid ? null : checkLimits(pre.uid, mode, structurePreview);
   if (limited) {
     logger.warn('transform.limit_blocked', {
       uid: pre.uid,
@@ -3101,7 +3186,12 @@ router.post('/transform', async (req, res) => {
       activeStatus: limited.activeStatus || null
     });
   }
-  if (!adminLabUid && mode === 'formal') recordStart(pre.uid);
+  if (!adminLabUid && mode === 'formal') {
+    if (structurePreview) {
+      const day = kstDay(), prior = dailyStructurePreviews.get(pre.uid);
+      dailyStructurePreviews.set(pre.uid, { day, count: prior?.day === day ? prior.count + 1 : 1 });
+    } else recordStart(pre.uid);
+  }
   const adminOrDev = adminLabUid || isAdminUid(pre.uid) || (devNoAuth && pre.uid === 'dev-local');
   const preserveExperimentRequested = adminLabRequested || (req.body && req.body.humanizeExperiment === true);
   const preserveExperimentEnabled = preserveExperimentRequested && !!adminOrDev;
@@ -3139,7 +3229,7 @@ router.post('/transform', async (req, res) => {
     niklQualityTest: !!(adminLabRequested && req.body && req.body.niklQualityTest === true)
   } : null;
 
-  const id = crypto.randomBytes(8).toString('hex');
+  const id = reusableId || crypto.randomBytes(8).toString('hex');
   const bare = text.replace(/\s+/g, '').length;
   const isShort = mode !== 'formal';
   // 고급은 실제 v2 실행 계획의 편집 청크 수로 범위를 산출한다. estSec는 기존
@@ -3159,6 +3249,12 @@ router.post('/transform', async (req, res) => {
     id, mode, modeSource, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
     sourceProbability, sourceEvidence,   // 보고서 → 휴머나이징 핸드오프(선택) — 재검사 상한·유지할 근거 보존 표기용
     uid: pre.uid,
+    structurePreview,
+    structureMode,
+    structurePlanId: approvedStructure?.id || null,
+    approvedStructure,
+    structureCredits: approvedStructure ? restructureStructureCredit(text.length) : 0,
+    basePriceCredits: mode === 'formal' ? restructureCredit(text.length, wantEvidence) : creditNeeded,
     plan: pre.plan || (billingMode === 'coupon' ? `subscription:${pre.tier || 'unknown'}` : 'free'),
     needed,
     listPriceCredits: creditNeeded,
@@ -3254,7 +3350,9 @@ router.post('/transform', async (req, res) => {
     queued: job.status === 'queued',
     job: payload
   });
-});
+};
+router.post('/transform', startTransform);
+router.post('/transform/structure-plan', startTransform);
 
 // 로컬 jobRef를 잃어도 서버에 남은 진행/승인대기 작업으로 복귀시키는 복구 엔드포인트.
 router.get('/transform/active', async (req, res, next) => {

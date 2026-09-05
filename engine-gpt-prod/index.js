@@ -68,7 +68,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.44';
+const VERSION = 'gpt-prod-v2.5.45';
 const DETECT_VERSION = 'gpt-detect-v1.26';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -178,7 +178,20 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
 }
 
 async function run(options = {}) {
-  return runEngine(options);
+  const first = await runEngine(options);
+  if (options.approvedStructure && first.result?.structureImprovement?.deliveryVerified === false) {
+    const fallback = await runEngine({ ...options, approvedStructure: null });
+    fallback.result.structureImprovement = { requested: true, applied: false, changes: [],
+      reason: '변경한 구조를 최종 결과에서 확인하지 못해 원문 구조로 다시 다듬었습니다.', code: 'STRUCTURE_DELIVERY_UNVERIFIED' };
+    fallback.result.engineMeta.structureApplied = false;
+    fallback.result.engineMeta.structureFallback = true;
+    fallback.result.engineMeta.structureAttemptUsage = first.result?.humanizeMeta?.usage || null;
+    fallback.result.engineMeta.structureAttemptModelCalls = first.engineMeta?.modelCallCount || 0;
+    if (fallback.result.humanizeMeta) fallback.result.humanizeMeta.usage = addUsage(
+      fallback.result.humanizeMeta.usage, first.result?.humanizeMeta?.usage);
+    return fallback;
+  }
+  return first;
 }
 
 async function runEngine({
@@ -197,13 +210,25 @@ async function runEngine({
   uid = '',
   niklQualityTest = false,
   layoutNlp = null,
-  recoveryBudgetUsd = 0
+  recoveryBudgetUsd = 0,
+  approvedStructure = null
 } = {}) {
   const submittedSource = String(text || '').trim();
   if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   let rawSource = sourcePreflightAudit?.text || submittedSource;
   let integritySource = sourcePreflightAudit?.integrityText || rawSource;
+  let structureImprovement = { requested: !!approvedStructure, applied: false, changes: [] };
+  if (approvedStructure) {
+    try {
+      const structure = require('./documentStructure');
+      const applied = structure.applyPlan(structure.buildDocument(submittedSource), approvedStructure);
+      rawSource = applied.text;
+      structureImprovement = { requested: true, applied: applied.applied, changes: applied.changes, version: applied.version };
+    } catch (error) {
+      structureImprovement = { requested: true, applied: false, changes: [], reason: '구조 변경안을 적용하지 못해 원문 구조로 다듬었습니다.', code: error.code || 'STRUCTURE_PLAN_INVALID' };
+    }
+  }
   if (inputRouting.isUnsupportedHumanizeInput(rawSource)) {
     const error = new Error('현재 휴머나이징 엔진은 한국어 글만 지원해요. 외국어 중심 입력은 원문 보존을 위해 변환하지 않습니다.');
     error.code = 'HUMANIZE_KOREAN_ONLY';
@@ -249,7 +274,7 @@ async function runEngine({
       sourceSpacingRestoreAfterCount = Number(restored.afterCount ?? sourceSpacingRestoreBeforeCount);
       if (restored.applied === true && restored.outputText) {
         rawSource = restored.outputText;
-        integritySource = restored.outputText;
+        if (!structureImprovement.applied) integritySource = restored.outputText;
         sourceSpacingRestoreApplied = true;
       }
     } catch (error) {
@@ -265,7 +290,8 @@ async function runEngine({
   const humanizeContract = buildHumanizeContract({
     mode: selectedMode,
     requestStrength,
-    documentProfile
+    documentProfile,
+    approvedStructure: structureImprovement.applied
   });
   const voiceProfile = buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode });
   const lineBoundaryPolicy = String(voiceProfile?.lineBoundaryPolicy || 'none');
@@ -2190,7 +2216,7 @@ async function runEngine({
     assess: ({ stage, text, semanticReport: candidateSemanticReport }) => {
       const candidateStructureAudit = structureChunk.buildStructureAudit({
         source: rawSource,
-        integritySource,
+        integritySource: structureImprovement.applied ? rawSource : integritySource,
         outputText: text,
         chunks,
         plan: chunkPlan,
@@ -3549,7 +3575,7 @@ async function runEngine({
   );
   const structureAudit = structureChunk.buildStructureAudit({
     source: rawSource,
-    integritySource,
+    integritySource: structureImprovement.applied ? rawSource : integritySource,
     outputText,
     chunks,
     plan: chunkPlan,
@@ -4501,6 +4527,12 @@ async function runEngine({
     assessmentExplanationLineCount: Number(documentProfile?.formatProfile?.assessmentExplanationLineCount || 0),
     structuralContextIssueCount: structureContextIssueCount(structureAudit)
   };
+  if (structureImprovement.applied) {
+    structureImprovement.deliveryVerified = structureAudit.pass === true
+      && require('./documentStructure').auditDelivery(rawSource, outputText).pass;
+  }
+  result.structureImprovement = structureImprovement;
+  result.engineMeta.structureApplied = structureImprovement.applied;
   result.humanizeMeta = {
     provider: 'openai',
     engine: VERSION,

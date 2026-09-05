@@ -19,12 +19,12 @@ const {
 
 test('교수님 레이더는 공식 표시 점수와 같은 값으로 20·21·49·50 경계를 나눈다', () => {
   const cases = [
-    [0, 'low', '피하기에 유리한 편'],
-    [20, 'low', '피하기에 유리한 편'],
-    [21, 'revise', '보완 후 제출 권장'],
-    [49, 'revise', '보완 후 제출 권장'],
-    [50, 'hard', '지금은 피하기 어려운 편'],
-    [100, 'hard', '지금은 피하기 어려운 편']
+    [0, 'low', 'AI식 문체 신호 낮음'],
+    [20, 'low', 'AI식 문체 신호 낮음'],
+    [21, 'revise', 'AI식 문체 신호 중간'],
+    [49, 'revise', 'AI식 문체 신호 중간'],
+    [50, 'hard', 'AI식 문체 신호 높음'],
+    [100, 'hard', 'AI식 문체 신호 높음']
   ];
   for (const [score, band, label] of cases) {
     const radar = resolveProfessorRadar(score);
@@ -57,7 +57,7 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
   assert.equal(reportView.styleSignal.score, 72);
   assert.equal(reportView.professorRadar.score, 72, '교수님 레이더 점수는 표시 점수와 달라지면 안 된다');
   assert.equal(reportView.professorRadar.band, 'hard');
-  assert.equal(reportView.professorRadar.label, '지금은 피하기 어려운 편');
+  assert.equal(reportView.professorRadar.label, 'AI식 문체 신호 높음');
   assert.deepEqual(reportView.contentEvidence, {
     status: 'mixed', label: '구체 근거 일부', lived: 1, specific: 0,
     generic: 3, total: 8, groundedRatio: 0.125

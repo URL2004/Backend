@@ -28,12 +28,13 @@ const STRUCTURE_LOCK_FLAGS = new Set([
 function buildHumanizeContract({
   mode = 'assignment',
   requestStrength = '',
-  documentProfile = null
+  documentProfile = null,
+  approvedStructure = false
 } = {}) {
   const strength = normalizeStrength(mode, requestStrength);
   const profile = canonicalProfileName(documentProfile);
   const formatFlags = new Set(documentProfile?.formatProfile?.flags || []);
-  const advancedNarrativeLayout = strength === 'advanced'
+  const advancedNarrativeLayout = !approvedStructure && strength === 'advanced'
     && NARRATIVE_PROFILES.has(profile)
     && ![...formatFlags].some(flag => STRUCTURE_LOCK_FLAGS.has(flag));
 

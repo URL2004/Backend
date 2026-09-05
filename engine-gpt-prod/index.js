@@ -69,7 +69,7 @@ const {
 } = require('./humanizeContract');
 
 const VERSION = 'gpt-prod-v2.5.44';
-const DETECT_VERSION = 'gpt-detect-v1.25';
+const DETECT_VERSION = 'gpt-detect-v1.26';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -5406,6 +5406,9 @@ async function callDetectModel({ prompt, user, cfg, signal, route, phase, model,
       meta: { task: route, phase, mode: 'detect', profile: PROFILE, escalated }
     });
   assertNoPromptLeak(result.json);
+  if (typeof result.json?.probability !== 'number' || !Number.isFinite(result.json.probability)) {
+    throw Object.assign(new Error('DETECT_INCOMPLETE'), { code: 'DETECT_INCOMPLETE' });
+  }
   return result;
 }
 

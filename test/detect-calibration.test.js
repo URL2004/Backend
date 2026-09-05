@@ -413,7 +413,7 @@ test('운영 보정은 유사 매칭 메타와 원점수를 남기고 88점을 5
   assert.equal(result.rawProbability, 88);
   assert.equal(result.probability, 58);
   assert.equal(result.applied, true);
-  assert.equal(result.meta.version, 'history-calibration-v2');
+  assert.equal(result.meta.version, 'history-calibration-v3-source-verified');
   assert.equal(result.meta.match, 'near_normalized');
   assert.ok(result.meta.matchSimilarity >= 0.88);
   assert.ok(result.meta.matchLengthRatio >= 0.97);

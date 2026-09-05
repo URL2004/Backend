@@ -871,8 +871,7 @@ function measurePreservation(text) {
 
 // 보고서 → 휴머나이징 핸드오프 값. 없거나 이상하면 조용히 버린다(선택 필드).
 function parseSourceProbability(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : null;
+  return require('../lib/detectSourceScore').optionalScore(value);
 }
 function parseSourceEvidence(value) {
   if (!value || typeof value !== 'object') return null;

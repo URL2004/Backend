@@ -13,6 +13,7 @@ process.env.DETECT_HISTORY_CALIBRATION = '1';
 
 const calibration = require('../lib/detectCalibration');
 const integrity = require('../lib/historyLinkIntegrity');
+const sourceScores = require('../lib/detectSourceScore');
 const sg = require('../engine/surfaceguard');
 const {
   buildDetectReportView,
@@ -23,7 +24,7 @@ const {
 
 const logger = { info() {}, warn() {} };
 
-function humanizeRecord(uid, outputText, extra = {}) {
+function humanizeRecord(uid, outputText, extra = {}, verifiedScore = false) {
   const base = {
     type: 'humanize', savedBy: 'server', mode: 'blog', qualityStatus: 'clean',
     billingDisposition: 'charged', outputText, createdAt: 1,
@@ -33,6 +34,7 @@ function humanizeRecord(uid, outputText, extra = {}) {
     },
     ...extra
   };
+  if (verifiedScore) base.historySourceScoreIntegrity = sourceScores.signSourceScore(uid, outputText, base.sourceProbability);
   return { ...base, historyLinkIntegrity: integrity.sign(uid, outputText, base) };
 }
 
@@ -79,11 +81,11 @@ test('문장 수 기준은 절대 하한(200자)을 지켜 짧은 반복문에�
   assert.equal(calibration.approximateEligible(sixSentences, cfg), true, '200자 이상 5문장 이상은 근사 일치 대상');
 });
 
-test('이력에 원점수가 남아 있으면 재검사 점수가 그 값을 넘지 않는다', async () => {
+test('서버 확인과 서명이 있는 원점수만 재검사 상한으로 사용한다', async () => {
   const uid = 'u1';
   // 원글 55점 → 휴머나이징 → 재검사 원점수 72: 비율 보정(61)보다 원점수(55)가 낮으므로 55로 자른다.
   const r = await calibration.applyHistoryCalibration({
-    db: stubDb([humanizeRecord(uid, SHORT, { sourceProbability: 55 })]), uid, text: SHORT, probability: 72, logger, route: 't'
+    db: stubDb([humanizeRecord(uid, SHORT, { sourceProbability: 55 }, true)]), uid, text: SHORT, probability: 72, logger, route: 't'
   });
   assert.equal(r.probability, 55);
   assert.equal(r.meta.sourceCapApplied, true);
@@ -91,7 +93,7 @@ test('이력에 원점수가 남아 있으면 재검사 점수가 그 값을 넘
 
   // 원점수가 더 높으면(80) 비율 보정 결과(61)를 그대로 둔다 — 상한은 올리는 장치가 아니다.
   const r2 = await calibration.applyHistoryCalibration({
-    db: stubDb([humanizeRecord(uid, SHORT, { sourceProbability: 80 })]), uid, text: SHORT, probability: 72, logger, route: 't'
+    db: stubDb([humanizeRecord(uid, SHORT, { sourceProbability: 80 }, true)]), uid, text: SHORT, probability: 72, logger, route: 't'
   });
   assert.equal(r2.probability, 61);
   assert.equal(r2.meta.sourceCapApplied, false);
@@ -108,6 +110,32 @@ test('원점수 상한은 설정으로 끌 수 있고 이력에 값이 없으면
   assert.equal(cfg.sourceCapEnabled, false);
   assert.equal(calibration.sourceProbabilityOf({ sourceProbability: '48.6' }), 49);
   assert.equal(calibration.sourceProbabilityOf({}), null);
+  for (const value of [null, undefined, '', ' ', false, true, [], {}, NaN]) {
+    assert.equal(calibration.sourceProbabilityOf({ sourceProbability: value }), null);
+  }
+});
+
+test('구형 이력의 0점이나 미확인 점수는 HMAC 휴머나이징 이력이어도 상한으로 쓰지 않는다', async () => {
+  for (const sourceProbability of [null, 0, 12, 55]) {
+    calibration.clearRuntimeConfigCache();
+    const result = await calibration.applyHistoryCalibration({
+      db: stubDb([humanizeRecord('u1', SHORT, { sourceProbability })]),
+      uid: 'u1', text: SHORT, probability: 72, logger, route: 't'
+    });
+    assert.equal(result.probability, 61);
+    assert.equal(result.meta.sourceCapApplied, false);
+    assert.equal(result.meta.sourceProbability, null);
+  }
+});
+
+test('실제로 확인·서명된 0점은 결측치와 구분하여 보존한다', async () => {
+  calibration.clearRuntimeConfigCache();
+  const result = await calibration.applyHistoryCalibration({
+    db: stubDb([humanizeRecord('u1', SHORT, { sourceProbability: 0 }, true)]),
+    uid: 'u1', text: SHORT, probability: 72, logger, route: 't'
+  });
+  assert.equal(result.probability, 0);
+  assert.equal(result.meta.sourceCapApplied, true);
 });
 
 test('결과의 유지할 근거 보존 검사는 보고서와 같은 계측으로 같은 수를 낸다', () => {

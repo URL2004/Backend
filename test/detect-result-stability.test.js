@@ -284,3 +284,33 @@ test('원문 지문·사용자·정책 결합이 불완전하면 캐시 없이 �
   assert.equal(invalid.source, 'live');
   assert.equal(calls, 1);
 });
+
+test('신규 근거 좌표와 계약 버전은 최초 응답·메모리·Firestore 캐시에서 보존한다', async () => {
+  const firestore = fakeFirestore();
+  const firebaseAdmin = { firestore: { Timestamp: { fromMillis: value => value } } };
+  const locations = [{ sentenceIndex: 0, start: 0, end: 12 }, { sentenceIndex: 1, start: 13, end: 25 }];
+  const result = modelResult(42);
+  result.signalContractVersion = 'model-signals-v2-grounded';
+  result.signalEvidence[0].locations = locations.map(location => ({ ...location, text: '캐시에 저장하지 않을 본문' }));
+  result.signalEvidence[0].locationStatus = 'source_range_verified';
+  const opts = { firestore, firebaseAdmin, hmacSecret: PERSISTENT_SECRET, now: 10000 };
+  const first = await stability.getOrCompute(input(), async () => result, opts);
+  const memory = await stability.getOrCompute(input(), async () => assert.fail('cache missed'), { ...opts, now: 11000 });
+  stability.resetForTests();
+  const persisted = await stability.getOrCompute(input(), async () => assert.fail('cache missed'), { ...opts, now: 12000 });
+  for (const response of [first, memory, persisted]) {
+    assert.equal(response.result.signalContractVersion, 'model-signals-v2-grounded');
+    assert.deepEqual(response.result.signalEvidence[0].locations, locations);
+    assert.equal(response.result.signalEvidence[0].locationStatus, 'source_range_verified');
+    assert.equal(response.result.probability, 42);
+  }
+  assert.equal(persisted.source, 'firestore');
+});
+
+test('누락·빈 점수는 0점 결과로 캐시하지 않고 유효한 0점은 보존한다', () => {
+  for (const probability of [null, undefined, '', ' ', false, [], {}, NaN]) {
+    assert.equal(stability.cleanResult({ probability }), null);
+  }
+  assert.equal(stability.cleanResult({ probability: 0 }).probability, 0);
+  assert.equal(Object.hasOwn(stability.cleanResult({ probability: 4, modelProbability: null }), 'modelProbability'), false);
+});

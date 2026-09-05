@@ -26,7 +26,11 @@ function ref(pathname) {
     },
     collection(name) {
       return {
-        doc: id => ref(`${pathname}/${name}/${id || 'auto'}`)
+        doc: id => ref(`${pathname}/${name}/${id || 'auto'}`),
+        orderBy: () => ({ limit: () => ({ select: () => ({ get: async () => ({
+          docs: [...rows.entries()].filter(([key]) => key.startsWith(`${pathname}/${name}/`))
+            .map(([, value]) => ({ data: () => value }))
+        }) }) }) })
       };
     }
   };
@@ -67,6 +71,45 @@ require.cache[configPath] = {
 };
 
 const history = require('../lib/historyService');
+
+test('휴머나이징 이력 저장은 누락 원점수를 0으로 만들지 않는다', async () => {
+  for (const sourceProbability of [null, undefined, '', false, [], 0]) {
+    await history.saveAnalyzeHistory({
+      uid: 'history-user', requestId: 'missing-source-score', opType: 'humanize',
+      text: '감지 이력이 없는 합성 원문', needed: 0, mode: 'blog',
+      result: { outputText: '합성 변환 결과' }, sourceProbability
+    });
+    assert.equal(stored.value.sourceProbability, null);
+    assert.equal(stored.value.historySourceScoreIntegrity, null);
+  }
+});
+
+test('휴머나이징 이력은 같은 원문의 서버 감지 점수를 확인한 뒤 출력과 서명한다', async t => {
+  const previous = process.env.OPENAI_SAFETY_SALT;
+  process.env.OPENAI_SAFETY_SALT = 'history-source-score-test-secret-longer-than-32-bytes';
+  t.after(() => {
+    if (previous === undefined) delete process.env.OPENAI_SAFETY_SALT;
+    else process.env.OPENAI_SAFETY_SALT = previous;
+  });
+  rows.set('users/history-user/history/verified-source-detect', {
+    type: 'detect', savedBy: 'server', probSource: 'llm',
+    inputText: '서버 감지 점수 검증용 합성 원문', probability: 38
+  });
+  await history.saveAnalyzeHistory({
+    uid: 'history-user', requestId: 'verified-source-humanize', opType: 'humanize',
+    text: '서버 감지 점수 검증용 합성 원문', needed: 0, mode: 'blog',
+    result: { outputText: '검증을 위한 합성 변환 결과' }, sourceProbability: 38
+  });
+  assert.equal(stored.value.sourceProbability, 38);
+  assert.equal(require('../lib/detectSourceScore').verifiedSourceScore('history-user', stored.value), 38);
+  await history.saveAnalyzeHistory({
+    uid: 'history-user', requestId: 'verified-source-humanize', opType: 'humanize',
+    text: '서버 감지 점수 검증용 합성 원문', needed: 0, mode: 'blog',
+    result: { outputText: '재저장한 합성 결과' }, sourceProbability: null
+  });
+  assert.equal(rows.get('users/history-user/history/verified-source-humanize').sourceProbability, null);
+  assert.equal(rows.get('users/history-user/history/verified-source-humanize').historySourceScoreIntegrity, null);
+});
 
 test('감지 이력은 공개 점수 provenance만 allowlist로 저장한다', async () => {
   stored = null;

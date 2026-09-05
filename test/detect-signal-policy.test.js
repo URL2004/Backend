@@ -23,6 +23,14 @@ const recurring = (category, strength = 'moderate', scope = 'recurring') => ({
   description: `${category} 문체 특징이 여러 문장에서 반복됨`
 });
 
+test('grounded v2의 빈 근거도 현재 계약으로 해석하고 낮은 원점수를 메타데이터에 남긴다', () => {
+  const result = alignScoreToCauseEvidence({ probability: 6, signalContractVersion: 'model-signals-v2-grounded', signalEvidence: [] });
+  assert.equal(result.probability, 6);
+  assert.equal(result.modelProbability, 6);
+  assert.equal(result.causeScoreAdjusted, false);
+  assert.equal(alignScoreToCauseEvidence({ probability: 82, signalContractVersion: 'model-signals-v2-grounded', signalEvidence: [] }).probability, 20);
+});
+
 test('고득점은 독립적인 구조화 원인 수·강도보다 높게 유지되지 않는다', () => {
   const none = alignScoreToCauseEvidence({ probability: 82, signalEvidence: [] });
   assert.equal(none.probability, 82, '구형 결과는 근거를 지어내거나 소급 변경하지 않는다');

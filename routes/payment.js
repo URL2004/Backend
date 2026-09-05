@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { admin, db, verifyToken, verifyAdminToken, verifyFirebaseIdToken } = require('../config');
+const { admin, db, verifyToken, verifyAdminToken, verifyFirebaseIdToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
 const metaConversions = require('../lib/metaConversions');
@@ -312,7 +312,7 @@ function assertPaymentIntentAllowsCreditGrant(intent) {
   return true;
 }
 
-async function preclaimPaymentIntent({ orderId, uid, amount, creditGrant }) {
+async function preclaimPaymentIntent({ orderId, uid, amount, creditGrant, metaContext = null }) {
   const intentRef = db.collection('paymentIntents').doc(orderId);
   const userRef = db.collection('users').doc(uid);
   const deletionJobRef = db.collection('accountDeletionJobs').doc(uid);
@@ -354,6 +354,13 @@ async function preclaimPaymentIntent({ orderId, uid, amount, creditGrant }) {
         { uid, orderId, nowMs }
       )
       : null;
+    if (!existing && metaConversions.enabled() && !(ADMIN_UIDS || []).includes(uid)) {
+      require('../lib/metaOutbox').stageInTransaction(transaction, db, metaConversions.buildCheckout({
+        eventId: `checkout_${orderId}`, orderId, value: amount, itemId: `credits_${amount}`,
+        email: userSnapshot.data()?.email, externalId: uid, context: metaContext,
+        clientIp: metaContext?.clientIp, userAgent: metaContext?.userAgent
+      }), uid, nowMs);
+    }
     transaction.set(intentRef, {
       uid,
       amount,
@@ -569,6 +576,7 @@ async function applyCreditPayment({
   customerEmail,
   providerPayment,
   reconciliationSource,
+  metaContext = null,
   isFirstPurchase = null
 }) {
   const orderRef = db.collection('orders').doc(orderId);
@@ -677,6 +685,17 @@ async function applyCreditPayment({
 
     const newCredits = currentCredits + totalCredits;
     const paidAt = providerPayment?.approvedAt || null;
+
+    if (metaConversions.enabled() && !(ADMIN_UIDS || []).includes(verifiedUid)) {
+      const event = metaConversions.buildPurchase({
+        eventId: `purchase_${orderId}`, orderId, value: safeAmount, itemId: `credits_${safeAmount}`,
+        eventTime: Math.floor((Date.parse(paidAt || '') || Date.now()) / 1000),
+        email: customerEmail || userData.email, externalId: verifiedUid,
+        context: metaContext || intent.metaContext || {},
+        clientIp: metaContext?.clientIp, userAgent: metaContext?.userAgent
+      });
+      require('../lib/metaOutbox').stageInTransaction(transaction, db, event, verifiedUid);
+    }
 
     const lotFields = usesBaseCreditPolicy ? {
       creditLotPolicyVersion: CREDIT_LOT_POLICY_VERSION,
@@ -1590,7 +1609,8 @@ async function handleCreditPaymentConfirmation(req, res) {
       customerEmail: verifiedCustomerEmail,
       providerPayment,
       reconciliationSource,
-      isFirstPurchase
+      isFirstPurchase,
+      metaContext: { ...metaConversions.normalizeContext(meta), clientIp: realClientIp(req), userAgent: req.get('user-agent') }
     });
   } catch (err) {
     if (err.code === 'PAYMENT_CANCELLATION_LOCKED') {
@@ -1651,17 +1671,6 @@ async function handleCreditPaymentConfirmation(req, res) {
       credits: granted.totalCredits,
       kind: '크레딧 충전',
       name: verifiedCustomerEmail
-    });
-    void metaConversions.sendPurchase({
-      eventId: `purchase_${orderId}`,
-      orderId,
-      value: safeAmount,
-      itemId: `credits_${safeAmount}`,
-      email: verifiedCustomerEmail,
-      externalId: verifiedUid,
-      clientIp: realClientIp(req),
-      userAgent: req.get('user-agent'),
-      context: meta
     });
   }
 
@@ -1761,7 +1770,9 @@ router.post('/prepare-payment', async (req, res) => {
     if (!product?.paidCredits) {
       return res.status(400).json({ error: '유효하지 않은 결제 상품입니다.' });
     }
-    const prepared = await preclaimPaymentIntent({ orderId, uid, amount, creditGrant: product });
+    const prepared = await preclaimPaymentIntent({ orderId, uid, amount, creditGrant: product,
+      metaContext: { ...metaConversions.normalizeContext(body.meta), clientIp: realClientIp(req), userAgent: req.get('user-agent') }
+    });
     return res.json({
       ok: true,
       orderId,

@@ -239,6 +239,8 @@ app.use('/', require('./routes/signupCreditMonitoring')); // 신규 가입 무�
 app.use(errorHandler);
 
 const server = app.listen(process.env.PORT || 3000, async () => {
+  const metaConversions = require('./lib/metaConversions');
+  if (metaConversions.enabled()) metaConversions.outbox().start();
   const runtimeConfig = await gptRuntimeConfig.getRuntimeConfig({ db, logger, force: true });
   // 재시작은 SEV3로 남긴다 — 배포면 정상이지만, 짧은 간격으로 반복되면 크래시 루프(과거 OOM 사고)다.
   logger.info('server.started', {
@@ -256,6 +258,7 @@ let shuttingDown = false;
 async function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
+  require('./lib/metaConversions').outbox().stop();
   logger.warn('server.shutdown_started', { signal: sig });
   try { await transformRouter.shutdown(); } catch (e) { logger.error('server.shutdown_persist_failed', { err: e }); }
   server.close(() => process.exit(0));

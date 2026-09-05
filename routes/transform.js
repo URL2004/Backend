@@ -557,6 +557,8 @@ function activeJobPayload(job) {
   const base = {
     id: job.id,
     status: job.status,
+    inputChars: typeof job.text === 'string' ? job.text.length : 0,
+    durationMs: Math.max(0, (job.terminalAtMs || Date.now()) - job.createdAt),
     stage: job.stage,
     mode: job.mode || 'formal',
     modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
@@ -3625,6 +3627,8 @@ router.get('/transform/:id', async (req, res, next) => {
   const base = {
     ok: true,
     status: job.status,
+    inputChars: typeof job.text === 'string' ? job.text.length : 0,
+    durationMs: Math.max(0, (job.terminalAtMs || Date.now()) - job.createdAt),
     stage: job.stage,
     mode: job.mode || 'formal',
     modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',
@@ -3644,6 +3648,14 @@ router.get('/transform/:id', async (req, res, next) => {
   };
   if (job.status === 'done') {
     if (typeof job.result?.outputText === 'string' && job.result.outputText.length > 0) {
+      try {
+        base.activation = await require('../lib/featureActivation').recordFirstSuccess({
+          db, uid: job.uid, runId: job.id, feature: 'humanize', chars: job.text?.length, mode: job.mode,
+          isInternal: isAdminUid(job.uid) || job.devNoAuth === true || job.adminHumanizeLab === true,
+          context: { sourceUrl: 'https://gpkorea.ai.kr/', userAgent: req.get('user-agent') },
+          nowMs: Date.now()
+        });
+      } catch (error) { logger.warn('marketing.activation_record_failed', { code: error?.code || 'storage_error' }); }
       publicMetrics.trackDeliveredMetric(res, {
         operation: 'humanize',
         eventId: job.id,

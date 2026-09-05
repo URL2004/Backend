@@ -105,6 +105,7 @@ function createRouter(deps = {}) {
         email: decoded.email ?? null,
         name: decoded.name ?? null,
         signupAttribution: req.body?.signupAttribution,
+        metaContext: { ...metaConversions.normalizeContext(req.body?.meta), clientIp: realClientIp(req), userAgent: req.get('user-agent') },
         clientPrincipal: clientPrincipal(req)
       });
       const metaEventId = result.createdAt

@@ -873,6 +873,14 @@ router.post('/detect-report', async (req, res) => {
       : {}),
     ...(usedCachedArtifact ? { idempotentReplay: true } : {})
   };
+  try {
+    const meta = require('../lib/metaConversions');
+    responseBody.activation = await require('../lib/featureActivation').recordFirstSuccess({
+      db, uid, runId: requestId, feature: 'detect', chars: text.length,
+      isInternal: devNoAuth || ADMIN_UIDS.includes(uid),
+      context: { ...meta.normalizeContext(req.body?.meta), userAgent: req.get('user-agent') }
+    });
+  } catch (error) { logger.warn('marketing.activation_record_failed', { code: error?.code || 'storage_error' }); }
   let historySaved = false;
   if (!devNoAuth && uid) {
     const responseForCache = { ...responseBody, historySaved: true };

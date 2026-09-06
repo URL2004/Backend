@@ -1,0 +1,15 @@
+'use strict';
+const fs = require('node:fs');
+const { assertManifest } = require('../lib/detectBenchmark');
+const { train } = require('../lib/detectStyleClassifier');
+const [corpusPath, manifestPath, modelPath, policyPath] = process.argv.slice(2);
+if (!policyPath) throw Error('Usage: node scripts/train-detect-style-classifier.js corpus.json manifest.json model.json thresholds.json');
+const read = p => JSON.parse(fs.readFileSync(p, 'utf8'));
+const rows = read(corpusPath), manifest = read(manifestPath); assertManifest(manifest, rows);
+if (fs.existsSync(modelPath) || fs.existsSync(policyPath)) throw Error('training_outputs_already_exist');
+const byId = new Map(rows.map(r => [r.id, r]));
+const development = manifest.records.filter(r => r.split === 'development' && ['ai', 'human_reference'].includes(r.authorship));
+const result = train(development.map(r => ({ ...byId.get(r.id), ...r })));
+fs.writeFileSync(modelPath, JSON.stringify(result.model, null, 2), { flag: 'wx' });
+fs.writeFileSync(policyPath, JSON.stringify(result.thresholdPolicy, null, 2), { flag: 'wx' });
+console.log(JSON.stringify({ counts: result.model.counts, modelVersion: result.model.version, status: 'research_only' }));

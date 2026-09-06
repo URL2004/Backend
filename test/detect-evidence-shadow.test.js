@@ -28,3 +28,17 @@ test('scope and model corruption fail closed without a scoring fallback', () => 
   assert.equal(shadow.evaluateShadow(source, metric(), { enabled: true, model: {} }).status, 'features_only');
   assert.equal(shadow.evaluateShadow(source, {}, { enabled: true, model: model() }).status, 'missing_diagnostics');
 });
+
+test('LLM-free classifier shadow is separately enabled and strips source and user identity', () => {
+  const old = process.env.DETECT_STYLE_SHADOW_ENABLED;
+  try {
+    delete process.env.DETECT_STYLE_SHADOW_ENABLED;
+    assert.equal(shadow.evaluateShadow(source, metric(), { enabled: true }).classifier, undefined);
+    process.env.DETECT_STYLE_SHADOW_ENABLED = '1';
+    const before = metric(), snapshot = structuredClone(before);
+    const result = shadow.evaluateShadow(source, before, { enabled: true });
+    assert.equal(result.classifier.applied, false); assert.equal(result.classifier.status, 'scored');
+    assert(Number.isFinite(result.classifier.score)); assert.deepEqual(before, snapshot);
+    assert(!JSON.stringify(result).includes('DO_NOT_LOG')); assert(!JSON.stringify(result).includes('물은'));
+  } finally { if (old === undefined) delete process.env.DETECT_STYLE_SHADOW_ENABLED; else process.env.DETECT_STYLE_SHADOW_ENABLED = old; }
+});

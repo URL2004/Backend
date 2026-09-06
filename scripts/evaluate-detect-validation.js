@@ -1,0 +1,23 @@
+'use strict';
+const fs = require('node:fs'), path = require('node:path');
+const { sha, consumeHoldout } = require('../lib/detectBenchmark');
+const { assertNoTrainingLeakage } = require('../lib/detectDatasetRegistry');
+const { evaluateValidation, evaluateRecheck } = require('../lib/detectValidation');
+const [scoresPath, manifestPath, modelPath, thresholdsPath, outputPath] = process.argv.slice(2);
+if (!outputPath) throw Error('Usage: node scripts/evaluate-detect-validation.js scores.json manifest.json model.json thresholds.json output.json');
+const read = p => JSON.parse(fs.readFileSync(p, 'utf8'));
+const manifest = read(manifestPath), model = read(modelPath), scores = read(scoresPath), policy = read(thresholdsPath);
+if (sha(JSON.stringify(manifest.records)) !== manifest.digest) throw Error('benchmark_manifest_changed');
+const expected = manifest.records.filter(r => r.split === 'holdout' && r.permissions.evaluate && ['human_reference', 'ai'].includes(r.authorship));
+const byId = new Map(expected.map(r => [r.id, r]));
+if (scores.length !== expected.length || new Set(scores.map(r => r.id)).size !== expected.length || fs.existsSync(outputPath)) throw Error('evaluation_incomplete_or_existing_output');
+const candidateHash = sha(fs.readFileSync(modelPath));
+const rows = scores.map(s => {
+  const r = byId.get(s.id); if (!r || r.sha256 !== s.sha256 || s.candidateHash !== candidateHash) throw Error('evaluation_source_or_model_mismatch');
+  return { ...s, ...r };
+});
+assertNoTrainingLeakage(model, expected);
+const report = evaluateValidation(rows, { thresholdPolicy: policy });
+const receipt = consumeHoldout(path.join(path.dirname(manifestPath), manifest.digest + '.holdout-consumed.json'), { manifest, candidateHash });
+fs.writeFileSync(outputPath, JSON.stringify({ ...report, receipt, recheck: evaluateRecheck(rows) }, null, 2), { flag: 'wx' });
+console.log(JSON.stringify({ n: rows.length, releaseEligible: false, reasons: report.reasons }));

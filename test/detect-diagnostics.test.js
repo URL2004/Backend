@@ -25,6 +25,16 @@ test('diagnostic projection strips untrusted fields and preserves missing score 
   assert.equal(diagnostics.sanitizeDiagnostics({ attempts: [] }), null);
 });
 
+test('unrounded provider scores and delivered score stages survive only the closed projection', () => {
+  const attempt = diagnostics.summarizeAttempt({ probability: 20.49, confidence: 'low', signals: [] }, text, 'primary');
+  assert.equal(attempt.providerScore, 20.49); assert.equal(attempt.modelScore, 20);
+  const clean = diagnostics.withDisplayedScore({ version: diagnostics.VERSION, stageVersion: diagnostics.STAGE_VERSION,
+    attempts: [attempt], selectedPhase: 'primary', selectedModelScore: 20, evidenceAlignedScore: 20, statisticalScore: 52, engineFinalScore: 52, text: 'secret' }, 40);
+  assert.equal(clean.engineFinalScore, 52); assert.equal(clean.displayedScore, 40); assert.equal(clean.attempts[0].providerScore, 20.49);
+  assert.equal(JSON.stringify(clean).includes('secret'), false);
+  assert.equal(diagnostics.withDisplayedScore({ version: diagnostics.VERSION, attempts: [attempt] }, 40).displayedScore, undefined, 'legacy cache has no fabricated stages');
+});
+
 test('actual detect chain records both model scores and final cap; cache retains only safe diagnostics', async () => {
   const client = require('../engine-gpt-prod/openaiClient');
   const original = client.completeJson;

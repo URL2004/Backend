@@ -79,3 +79,23 @@ test('report view passes final score and sample facts without leaking calibratio
   assert.equal(r.interpretation.score,18); assert.equal(r.interpretation.sample.characters,1200);
   assert.doesNotMatch(JSON.stringify(r.interpretation), /calibrat|보정|이력|75/);
 });
+
+test('interpretation backup supports old signatures and validates new assessability', () => {
+  const crypto = require('node:crypto');
+  const { signDetectInterpretation, verifiedBackupInterpretation } = require('../lib/detectHistoryPresentation');
+  const inputText = 'A synthetic source. '.repeat(20), uid = 'test-reader', key = 'local-test-key-'.repeat(4);
+  const current = build({ ...standard, probability: 16, textLength: inputText.length });
+  const proof = signDetectInterpretation(uid, inputText, current, key);
+  assert.equal(typeof proof, 'string');
+  assert.deepEqual(verifiedBackupInterpretation(uid, { inputText, probability: 16, interpretation: current, interpretationProof: proof }, key), current);
+  const legacy = { ...current, version: 'detect-interpretation-v1' }; delete legacy.assessability;
+  const ordered = v => Array.isArray(v) ? v.map(ordered) : v && typeof v === 'object'
+    ? Object.fromEntries(Object.keys(v).sort().map(k => [k, ordered(v[k])])) : v;
+  const oldProof = 'detect-interpretation-proof-v1.' + crypto.createHmac('sha256', key).update(JSON.stringify([
+    'detect-interpretation-proof-v1', uid, crypto.createHash('sha256').update(inputText).digest('hex'), 16, ordered(legacy)
+  ])).digest('base64url');
+  assert.deepEqual(verifiedBackupInterpretation(uid, { inputText, probability: 16, interpretation: legacy, interpretationProof: oldProof }, key), legacy);
+  for (const assessability of [undefined, { status: 'human', meaning: 'confirmed' }, { ...current.assessability, extra: 'untrusted' }, { ...current.assessability, meaning: 'x'.repeat(1001) }]) {
+    assert.equal(signDetectInterpretation(uid, inputText, { ...current, assessability }, key), null);
+  }
+});

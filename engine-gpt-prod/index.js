@@ -5309,7 +5309,9 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
     result.detectDiagnostics = diagnostics.sanitizeDiagnostics({
       version: diagnostics.VERSION, attempts, recheckReason,
       recheckFailed: out.gptMeta?.escalationFailed === true,
-      selectedModelScore: out.probability, evidenceAlignedScore: aligned.probability
+      selectedModelScore: out.probability, evidenceAlignedScore: aligned.probability,
+      stageVersion: diagnostics.STAGE_VERSION, selectedPhase: attempts.at(-1)?.phase,
+      statisticalScore: assisted.probability, engineFinalScore: result.probability
     });
     return result;
   };

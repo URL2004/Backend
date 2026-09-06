@@ -42,3 +42,24 @@ test('LLM-free classifier shadow is separately enabled and strips source and use
     assert(!JSON.stringify(result).includes('DO_NOT_LOG')); assert(!JSON.stringify(result).includes('물은'));
   } finally { if (old === undefined) delete process.env.DETECT_STYLE_SHADOW_ENABLED; else process.env.DETECT_STYLE_SHADOW_ENABLED = old; }
 });
+
+test('calibrated research scores require their own flag and never alter the paid result', () => {
+  const beforeFlags = [process.env.DETECT_STYLE_SHADOW_ENABLED, process.env.DETECT_RISK_SHADOW_ENABLED];
+  try {
+    process.env.DETECT_STYLE_SHADOW_ENABLED = '1'; delete process.env.DETECT_RISK_SHADOW_ENABLED;
+    assert.equal(shadow.evaluateShadow(source, metric(), { enabled: true }).classifier.calibrated, undefined);
+    process.env.DETECT_RISK_SHADOW_ENABLED = '1';
+    const m = metric(), snapshot = structuredClone(m), out = shadow.evaluateShadow(source, m, { enabled: true });
+    assert.equal(out.classifier.calibrated.status, 'scored'); assert.equal(out.classifier.calibrated.applied, false);
+    assert(Number.isInteger(out.classifier.calibrated.score)); assert.deepEqual(m, snapshot);
+    assert(!JSON.stringify(out.classifier.calibrated).includes('calibrationLineageKeys'));
+    assert(!JSON.stringify(out).includes('물은')); assert(!JSON.stringify(out).includes('DO_NOT_LOG'));
+    delete process.env.DETECT_STYLE_SHADOW_ENABLED;
+    assert.equal(shadow.evaluateShadow(source, m, { enabled: true }).classifier, undefined);
+    assert.equal(shadow.evaluateShadow(source, m, { enabled: false }), null);
+  } finally {
+    ['DETECT_STYLE_SHADOW_ENABLED', 'DETECT_RISK_SHADOW_ENABLED'].forEach((key, i) => {
+      if (beforeFlags[i] === undefined) delete process.env[key]; else process.env[key] = beforeFlags[i];
+    });
+  }
+});

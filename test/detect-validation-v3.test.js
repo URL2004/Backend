@@ -71,8 +71,16 @@ test('unknown coverage and missing core controls block validation, frozen thresh
   const rows = Array.from({ length: 20 }, (_, i) => ({ id: String(i), group: String(i), split: 'holdout', genre: 'explainer', authorship: i < 10 ? 'human_reference' : 'ai', baselineScore: i < 10 ? 5 : 15, candidateScore: i < 10 ? 4 : 65 }));
   const report = v.evaluateValidation(rows, { iterations: 100 });
   assert(report.reasons.includes('candidate_coverage_unknown')); assert(report.reasons.includes('verified_human_process_missing:report_assignment'));
+  assert(!report.reasons.includes('genre_fpr_increased:report_assignment'));
   assert.equal(report.releaseEligible, false);
   const policy = { selectedOn: 'development_calibration', byGenre: { explainer: { '0.05': 60 } }, calibrationGroups: [] };
   policy.digest = b.sha(JSON.stringify(policy)); policy.byGenre.explainer['0.05'] = 50;
   assert.throws(() => v.evaluateValidation(rows, { thresholdPolicy: policy, iterations: 100 }), /threshold_policy_changed/);
+});
+
+test('observed core-genre false-positive increases still block promotion', () => {
+  const rows = Array.from({ length: 20 }, (_, i) => ({ id: String(i), group: String(i), split: 'holdout', genre: 'report_assignment',
+    authorship: i < 10 ? 'human_reference' : 'ai', baselineScore: 5, candidateScore: i === 0 || i >= 10 ? 65 : 5 }));
+  const report = v.evaluateValidation(rows, { iterations: 100 });
+  assert(report.reasons.includes('genre_fpr_increased:report_assignment')); assert.equal(report.releaseEligible, false);
 });

@@ -267,7 +267,7 @@ stub('routes/analyze-gpt.js', {
       }
     };
   },
-  rewriteSentence: async () => ({ rewritten: '' })
+  rewriteSentence: async opts => state.rewritePreview ? state.rewritePreview(opts) : ({ rewritten: '' })
 });
 
 stub('lib/publicMetrics.js', {
@@ -657,4 +657,14 @@ test('차감이 없는 unlimited 내부 호환 요청은 requestId 없이도 처
   }
   assert.equal(state.deductCalls, deductCallsBefore);
   assert.equal(state.historyCalls.length, historiesBefore + 1);
+});
+
+test('fast scoring does not drop a slower valid before/after conversion preview', { concurrency: false }, async () => {
+  state.rewritePreview=async ({text})=>{await new Promise(resolve=>setTimeout(resolve,30));return {rewritten:text.replace('핵심 요소라고 할 수 있습니다','핵심 요소로 꼽힙니다')};};
+  try {
+    const response=await post('현대 사회에서 협업의 중요성은 조직의 지속적인 성장과 안정적인 운영을 위해 반드시 고려해야 하는 핵심 요소라고 할 수 있습니다. '+BASE_TEXT,'detect-preview-after-fast-score');
+    assert.equal(response.status,200);assert.equal(response.body.exampleStatus,'ready');
+    assert.equal(response.body.example.meaningfulChange,true);
+    assert.equal(response.body.example.afterAnchor,'changed');
+  } finally {delete state.rewritePreview;}
 });

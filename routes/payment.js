@@ -11,6 +11,7 @@ const { realClientIp } = require('../lib/clientip');
 const { bearerToken } = require('../lib/reqtoken');
 const { authLogFields, verifyCronRequest } = require('../lib/cronAuth');
 const { getRevenue } = require('../lib/revenue');
+const refundAccounting = require('../lib/refundAccounting');
 const detectCalibration = require('../lib/detectCalibration');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const { buildHumanizeQualityReport } = require('../lib/humanizeQualityReport');
@@ -1929,10 +1930,10 @@ function serializeOrderDoc(docSnap, kind) {
     upgradeOrderId: o.upgradeOrderId || null,
     activeUpgradeOrderId: o.activeUpgradeOrderId || null,
     creditLotPolicyVersion: o.creditLotPolicyVersion || '',
-    refundPaidCreditsRemaining: Number.isFinite(Number(o.refundPaidCreditsRemaining))
+    refundPaidCreditsRemaining: typeof o.refundPaidCreditsRemaining === 'number' && Number.isFinite(o.refundPaidCreditsRemaining)
       ? Math.max(0, Math.floor(Number(o.refundPaidCreditsRemaining)))
       : null,
-    refundEventBonusCreditsRemaining: Number.isFinite(Number(o.refundEventBonusCreditsRemaining))
+    refundEventBonusCreditsRemaining: typeof o.refundEventBonusCreditsRemaining === 'number' && Number.isFinite(o.refundEventBonusCreditsRemaining)
       ? Math.max(0, Math.floor(Number(o.refundEventBonusCreditsRemaining)))
       : null,
     refundCreditBasis: o.refundCreditBasis || '',
@@ -1948,8 +1949,10 @@ function serializeOrderDoc(docSnap, kind) {
     refundEligibilityReviewNote: o.refundEligibilityReviewNote || '',
     refundEligibilityReviewedBy: o.refundEligibilityReviewedBy || '',
     refundEligibilityReviewedAtMs: timestampMs(o.refundEligibilityReviewedAt),
-    requestedRefundAmount: Number(o.requestedRefundAmount) || 0,
-    requestedRefundCredits: Number(o.requestedRefundCredits) || 0,
+    requestedRefundAmount: refundAccounting.amount(o.requestedRefundAmount),
+    requestedRefundCredits: refundAccounting.amount(o.requestedRefundCredits),
+    refundPresentation: refundAccounting.pendingRefund(o, kind),
+    confirmedRefundAmount: refundAccounting.confirmedRefundAmount(o),
     refundReservationState: o.refundReservationState || '',
     refundRequestSequence: Number(o.refundRequestSequence) || 0,
     tier: o.tier || null,
@@ -1975,6 +1978,7 @@ function serializeUserDoc(userSnap) {
     email: u.email || '',
     name: u.name || '',
     credits: Number(u.credits) || 0,
+    creditLotV1Balance: Math.max(0, Number(u.creditLotV1Balance) || 0),
     plan: u.plan || 'free',
     createdAtMs: timestampMs(u.createdAt),
     subscription: sub ? {

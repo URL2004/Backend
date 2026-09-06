@@ -33,6 +33,7 @@ const publicMetrics = require('../lib/publicMetrics');
 const { buildDetectReportView, buildSentenceMap, pickAiSentence, splitExamplePreview } = require('../lib/detectReportView');
 const { locatePublicEvidence } = require('../lib/detectInputDocument');
 const { signDetectInterpretation } = require('../lib/detectHistoryPresentation');
+const { startDetectPreview } = require('../lib/detectPreviewTask');
 
 // (무료 감지 일일 한도 로직 제거 — 2026-07-20 사장님 결정으로 감지는 항상 유료.
 //  기존 무료 3회/일 캡은 CF 엣지 IP 키 버그로 사실상 무제한이었음. 복원 시 git 이력 참조.)
@@ -494,14 +495,11 @@ router.post('/detect-report', async (req, res) => {
     });
 
     const before = pickAiSentence(paras, detail);
-    const previewController = new AbortController();
-    const previewTimer = setTimeout(() => previewController.abort(), 6000);
-    let completedExample = null;
-    const exampleP = before
-      ? (async () => {
+    const previewTask = startDetectPreview(async signal => {
+          if (!before) return null;
           const gptCfg = await activeGptConfig();
           if (!gptCfg) throw Object.assign(new Error('GPT_PROVIDER_UNAVAILABLE'), { code: 'GPT_PROVIDER_UNAVAILABLE' });
-          const result = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '', signal: previewController.signal });
+          const result = await gptAnalyze.rewriteSentence({ text: before, lang: 'ko', config: gptCfg, uid: uid || '', signal });
           if (!result?.rewritten) return null;
           // 다듬은 문장은 가장 많이 바뀐 자리만 공개하고 나머지는 휴머나이징으로 보낸다(원문 나머지는 응답에 싣지 않는다).
           const gate = splitExamplePreview(result.rewritten, before);
@@ -518,14 +516,10 @@ router.post('/detect-report', async (req, res) => {
             afterFocus: gate.afterFocus,     // 전체 rewrite 좌표 안의 공개 변경 교집합 — 삭제는 길이 0 위치
             gated: gate.gated
           } : null;
-        })().catch(error => { logger.warn('detect_report.preview_failed', { uid, err: error }); return null; })
-      : Promise.resolve(null);
-
-    void exampleP.then(value => { completedExample = value; }).finally(() => clearTimeout(previewTimer));
+        }, { onError: error => logger.warn('detect_report.preview_failed', { uid, err: error }) });
     const det = await detectP;
-    const example = completedExample;
-    previewController.abort();
-    clearTimeout(previewTimer);
+    if (!det) previewTask.cancel();
+    const example = await previewTask.result;
     const shadowEngineProbability = Math.round(Math.min(92, Math.max(15, 22 + 70 * (ir.abstractRiskRatio || 0))));
     const scoreLatencyMs = Date.now() - scoreStartedAt;
     if (!det) {

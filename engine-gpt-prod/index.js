@@ -68,8 +68,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.46';
-const DETECT_VERSION = 'gpt-detect-v1.27';
+const VERSION = 'gpt-prod-v2.5.47';
+const DETECT_VERSION = 'gpt-detect-v1.28';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -5303,7 +5303,9 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
     const assisted = require('../lib/detectStatisticalAssist').applyAssist(aligned, source, {
       profile: documentProfile?.profile
     });
-    const result = assisted === aligned ? aligned : applyDetectNarrativePolicy(assisted);
+    const result = require('../lib/detectConfidence').limitConfidenceToSample(
+      assisted === aligned ? aligned : applyDetectNarrativePolicy(assisted), source
+    );
     result.detectDiagnostics = diagnostics.sanitizeDiagnostics({
       version: diagnostics.VERSION, attempts, recheckReason,
       recheckFailed: out.gptMeta?.escalationFailed === true,

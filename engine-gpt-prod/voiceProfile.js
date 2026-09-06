@@ -114,6 +114,9 @@ function voicePromptBlock(profile, { requestStrength = '', mode = '' } = {}) {
       : '',
     `직접 인용=${profile.directQuoteCount || 0}, 목록=${profile.listItemCount || 0}, 제목=${profile.headingCount || 0}`,
     '원문의 인칭과 종결체를 유지한다. 평균 길이만 맞추지 말고 문장·문단 길이 분포를 보존한다.',
+    profile.register === 'unknown' && profile.compactLength <= 240
+      ? '짧은 원문의 종결체 판정이 불확실하다. 별도로 요청한 목표 문체가 없다면 구어체·명사형 끝맺음·감탄과 평가의 강도를 원문에 맞춰 유지한다. 문법을 고치더라도 모든 문장을 차분한 설명문으로 통일하거나 원문에 없는 설명을 덧붙이지 않는다.'
+      : '',
     povAnchorInstruction,
     rhythmInstruction,
     profile.lineBoundaryPolicy === 'all'
@@ -186,7 +189,9 @@ function auditVoice(sourceProfile, output, {
       '원문의 개인 경험이나 적용 내용이 일반적인 경우 설명으로 바뀌었을 수 있어요.'
     ));
   }
-  if (sourceProfile?.register && current.register !== sourceProfile.register && !['mixed'].includes(sourceProfile.register)) {
+  // An unrecognized ending is missing evidence, not an established register.
+  // Keep checking identifiable source styles, including when output loses them.
+  if (['plain', 'polite', 'haeyo'].includes(sourceProfile?.register) && current.register !== sourceProfile.register) {
     warnings.push(warning('register_shift', `원문 종결체(${sourceProfile.register})가 결과(${current.register})에서 달라졌을 수 있어요.`));
   }
   const directQuoteIntegrity = sourceText

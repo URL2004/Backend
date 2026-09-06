@@ -173,6 +173,10 @@ test('감지 이력은 공개 점수 provenance만 allowlist로 저장한다', a
       },
       rawProbability: 77,
       modelProbability: 81,
+      statisticalSupport: {
+        version: 'statistical-assist-v1', applied: true, originalScore: 32, score: 62,
+        margin: 0.5, features: 400, profile: 'general', rawText: 'statistics-private-sentinel'
+      },
       detectDiagnostics: {
         version: 'detect-score-diagnostics-v1',
         attempts: [{ phase: 'primary', modelScore: 81, confidence: 'medium', rawText: 'diagnostic-private-sentinel' }],
@@ -212,6 +216,8 @@ test('감지 이력은 공개 점수 provenance만 allowlist로 저장한다', a
   assert.equal(stored.value.detectCacheSource, 'firestore');
   assert.equal(stored.value.rawProbability, 77);
   assert.equal(stored.value.modelProbability, 81);
+  assert.equal(stored.value.detectStatisticalSupport.originalScore, 32);
+  assert.equal(JSON.stringify(stored.value.detectStatisticalSupport).includes('statistics-private-sentinel'), false);
   assert.equal(stored.value.detectDiagnostics.attempts[0].modelScore, 81);
   assert.equal(JSON.stringify(stored.value.detectDiagnostics).includes('diagnostic-private-sentinel'), false);
   assert.equal(stored.value.detectCauseScoreAdjusted, true);

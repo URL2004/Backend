@@ -69,7 +69,7 @@ const {
 } = require('./humanizeContract');
 
 const VERSION = 'gpt-prod-v2.5.46';
-const DETECT_VERSION = 'gpt-detect-v1.26';
+const DETECT_VERSION = 'gpt-detect-v1.27';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -5299,11 +5299,15 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   const attempts = [];
   let recheckReason = 'none';
   const finish = out => {
-    const result = applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+    const aligned = applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+    const assisted = require('../lib/detectStatisticalAssist').applyAssist(aligned, source, {
+      profile: documentProfile?.profile
+    });
+    const result = assisted === aligned ? aligned : applyDetectNarrativePolicy(assisted);
     result.detectDiagnostics = diagnostics.sanitizeDiagnostics({
       version: diagnostics.VERSION, attempts, recheckReason,
       recheckFailed: out.gptMeta?.escalationFailed === true,
-      selectedModelScore: out.probability, evidenceAlignedScore: result.probability
+      selectedModelScore: out.probability, evidenceAlignedScore: aligned.probability
     });
     return result;
   };

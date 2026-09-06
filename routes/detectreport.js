@@ -592,6 +592,7 @@ router.post('/detect-report', async (req, res) => {
       riskLevel: narrated.riskLevel,
       calibrationApplied: calibration.applied,
       preCalibrationProbability: rawProbability,
+      statisticalSupport: det.statisticalSupport,
       // 원인 레이더 축 정책용 — 글 종류·신뢰도(이미 계산된 값, 추가 비용 없음)
       documentProfile: {
         profile: advancedRouting.profile,
@@ -641,6 +642,7 @@ router.post('/detect-report', async (req, res) => {
       rawProbability,
       modelProbability: Number.isFinite(Number(det.modelProbability)) ? det.modelProbability : rawProbability,
       detectDiagnostics: require('../lib/detectDiagnostics').sanitizeDiagnostics(det.detectDiagnostics),
+      statisticalSupport: require('../lib/detectStatisticalAssist').sanitizeSupport(det.statisticalSupport),
       causeScoreAdjusted: det.causeScoreAdjusted === true,
       causeScoreCeiling: Number.isFinite(Number(det.causeScoreCeiling)) ? det.causeScoreCeiling : null,
       causeScoreAdjustmentCode: det.causeScoreAdjustmentCode || null,
@@ -727,6 +729,7 @@ router.post('/detect-report', async (req, res) => {
         rawProbability,
         modelProbability: Number.isFinite(Number(det.modelProbability)) ? det.modelProbability : rawProbability,
         detectDiagnostics: require('../lib/detectDiagnostics').sanitizeDiagnostics(det.detectDiagnostics),
+        statisticalSupport: require('../lib/detectStatisticalAssist').sanitizeSupport(det.statisticalSupport),
         causeScoreAdjusted: det.causeScoreAdjusted === true,
         causeScoreCeiling: Number.isFinite(Number(det.causeScoreCeiling)) ? det.causeScoreCeiling : null,
         causeScoreAdjustmentCode: det.causeScoreAdjustmentCode || null,
@@ -981,6 +984,7 @@ router.post('/detect-report', async (req, res) => {
     rawProbability: metric.rawProbability,
     modelProbability: metric.modelProbability,
     detectDiagnostics: metric.detectDiagnostics,
+    statisticalSupport: metric.statisticalSupport,
     causeScoreAdjusted: metric.causeScoreAdjusted,
     causeScoreCeiling: metric.causeScoreCeiling,
     causeScoreAdjustmentCode: metric.causeScoreAdjustmentCode || undefined,

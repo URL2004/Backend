@@ -433,6 +433,10 @@ test('새 requestId의 동일 입력은 안정화 캐시 원점수를 재사용�
   state.billingPlan = 'unlimited';
   state.stabilityResult = {
     probability: 61,
+    statisticalSupport: {
+      version: 'statistical-assist-v1', applied: true, originalScore: 32, score: 61,
+      margin: 0.45, features: 300, profile: 'general', rawText: 'statistics-private-sentinel'
+    },
     summary: '캐시된 문체 신호',
     detail: '캐시된 상세',
     signals: ['반복되는 문장 구조'],
@@ -454,6 +458,10 @@ test('새 requestId의 동일 입력은 안정화 캐시 원점수를 재사용�
 
   assert.equal(result.status, 200);
   assert.equal(result.body.probability, 61);
+  assert.equal(Object.hasOwn(result.body, 'statisticalSupport'), false);
+  assert.match(result.body.reportView.styleSignal.sourceLabel, /문체 통계/);
+  assert.equal(state.historyCalls.at(-1).result.statisticalSupport.originalScore, 32);
+  assert.equal(JSON.stringify(state.historyCalls.at(-1).result.statisticalSupport).includes('statistics-private-sentinel'), false);
   assert.equal(result.body.probSource, 'llm');
   assert.equal(result.body.charged, 0);
   assert.equal(state.modelCalls, modelCallsBefore);
@@ -464,6 +472,7 @@ test('새 requestId의 동일 입력은 안정화 캐시 원점수를 재사용�
   const delivered = [...state.logs].reverse().find(item => item.event === 'detect_report.score_outcome'
     && item.fields.outcome === 'delivered');
   assert.equal(delivered.fields.scoreSource, 'cached_llm');
+  assert.equal(delivered.fields.statisticalSupport.originalScore, 32);
   assert.equal(delivered.fields.detectCacheHit, true);
   assert.equal(delivered.fields.detectCacheSource, 'firestore');
 });

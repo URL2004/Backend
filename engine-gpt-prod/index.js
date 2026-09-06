@@ -69,7 +69,7 @@ const {
 } = require('./humanizeContract');
 
 const VERSION = 'gpt-prod-v2.5.47';
-const DETECT_VERSION = 'gpt-detect-v1.28';
+const DETECT_VERSION = 'gpt-detect-v1.29';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([

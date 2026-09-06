@@ -69,6 +69,8 @@ test('같은 payload는 처리 상태와 최초 결과를 replay하고 다른 pa
   };
   const staged = await store.stageResult(input, firstArtifact, 1100);
   assert.equal(staged.state, 'RESULT_READY');
+  assert.equal(staged.reused, false, 'serialization of a fresh result is not replay');
+  assert.notEqual(staged.response, firstArtifact);
   assert.deepEqual(staged.response, firstArtifact);
 
   const secondArtifact = {
@@ -78,6 +80,7 @@ test('같은 payload는 처리 상태와 최초 결과를 replay하고 다른 pa
   };
   const firstWins = await store.stageResult(input, secondArtifact, 1200);
   assert.equal(firstWins.state, 'RESULT_READY');
+  assert.equal(firstWins.reused, true, 'an older staged result winning is replay');
   assert.deepEqual(firstWins.response, firstArtifact, '동일 키의 최초 모델 결과를 덮어쓰면 안 된다');
   assert.deepEqual(await store.begin(input, 1201), { state: 'RESULT_READY', response: firstArtifact });
 

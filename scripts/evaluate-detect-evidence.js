@@ -1,0 +1,24 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const { evaluateEvidenceScores } = require('../lib/detectEvaluation');
+const { consumeHoldout, sha } = require('../lib/detectBenchmark');
+const [scoresPath, manifestPath, candidatePath, outputPath, split = 'development'] = process.argv.slice(2);
+if (!outputPath || !['development', 'holdout'].includes(split)) throw Error('Usage: node scripts/evaluate-detect-evidence.js scores.json manifest.json candidate.json output.json development|holdout');
+const read = p => JSON.parse(fs.readFileSync(p, 'utf8'));
+const manifest = read(manifestPath), scores = read(scoresPath), byId = new Map(manifest.records.map(r => [r.id, r]));
+if (sha(JSON.stringify(manifest.records)) !== manifest.digest) throw Error('benchmark_manifest_changed');
+const expected = manifest.records.filter(r => r.split === split && ['human_reference', 'ai'].includes(r.authorship) && r.permissions.evaluate);
+if (scores.length !== expected.length || new Set(scores.map(r => r.id)).size !== expected.length || scores.some(r => !expected.some(e => e.id === r.id))) throw Error('evaluation_incomplete_scores');
+const candidateBytes = fs.readFileSync(candidatePath), candidateHash = sha(candidateBytes);
+const candidate = JSON.parse(candidateBytes);
+const records = scores.map(s => {
+  const r = byId.get(s.id);
+  if (s.candidateHash !== candidateHash || s.sha256 !== r.sha256) throw Error('evaluation_candidate_or_source_mismatch');
+  if ((candidate.trainingGroups || []).includes(r.group) && split === 'holdout') throw Error('evaluation_training_leakage');
+  return { ...s, id: r.id, group: r.group, authorship: r.authorship, split: r.split, genre: r.genre, lengthBucket: r.lengthBucket };
+});
+const report = evaluateEvidenceScores(records, { split });
+const receipt = split === 'holdout' ? consumeHoldout(path.join(path.dirname(manifestPath), manifest.digest + '.holdout-consumed.json'), { manifest, candidateHash }) : null;
+fs.writeFileSync(outputPath, JSON.stringify({ ...report, candidateHash, manifestDigest: manifest.digest, receipt, coverage: manifest.coverage }, null, 2), { flag: 'wx' });
+console.log(JSON.stringify({ outputPath, pointCriteriaPassed: report.pointCriteriaPassed, reasons: report.reasons, releaseEligible: false }));

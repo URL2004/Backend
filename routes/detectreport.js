@@ -326,7 +326,8 @@ router.post('/detect-report', async (req, res) => {
         logger.info('detect_report.idempotent_replay', {
           uid: undefined,
           clientRequestId: requestId,
-          scoreSource: 'cached_llm',
+          scoreSource: 'request_replay',
+          idempotentReplay: true,
           probability: replayed.probability,
           charged: replayed.charged,
           remainingCredits: replayed.remainingCredits,
@@ -780,7 +781,9 @@ router.post('/detect-report', async (req, res) => {
           return idempotencyUnavailable(res, cost);
         }
         artifact = { ...staged.response, publicResponse: stagedPublic };
-        usedCachedArtifact = true;
+        // Serialization clones even a newly staged result. Object identity is
+        // not evidence of replay; the transaction tells us if an older result won.
+        usedCachedArtifact = usedCachedArtifact || staged.reused === true;
       }
     }
   }
@@ -979,7 +982,8 @@ router.post('/detect-report', async (req, res) => {
     uid: undefined,
     requestId: requestId || undefined,
     outcome: 'delivered',
-    scoreSource: usedCachedArtifact || metric.detectCacheHit ? 'cached_llm' : 'llm',
+    scoreSource: usedCachedArtifact ? 'request_replay' : metric.detectCacheHit ? 'cached_llm' : 'llm',
+    idempotentReplay: usedCachedArtifact,
     probability: metric.probability,
     rawProbability: metric.rawProbability,
     modelProbability: metric.modelProbability,
@@ -1011,6 +1015,16 @@ router.post('/detect-report', async (req, res) => {
     latencyMs: metric.scoreLatencyMs,
     lengthBucket: detectTextLengthBucket(text.length)
   });
+
+  // CPU-only comparison after the successful billing/history path. It never
+  // replaces the public score and is not stored in a user-visible result.
+  if (!usedCachedArtifact) {
+    const evidenceShadow = require('../lib/detectEvidenceShadow').evaluateShadow(text, metric, { sampleKey: requestId || '' });
+    if (evidenceShadow) logger.info('detect_report.evidence_shadow', {
+      requestId: requestId || undefined, detectorVersion: metric.detectorVersion,
+      detectCacheHit: metric.detectCacheHit === true, ...evidenceShadow
+    });
+  }
 
   publicMetrics.trackDeliveredMetric(res, {
     operation: 'detect',

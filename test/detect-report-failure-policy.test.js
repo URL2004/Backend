@@ -200,11 +200,11 @@ stub('lib/detectRequestStore.js', {
       return { state: 'MISMATCH' };
     }
     if (['RESULT_READY', 'COMPLETE'].includes(existing.state) && existing.response) {
-      return { state: existing.state, response: existing.response };
+      return { state: existing.state, response: structuredClone(existing.response), reused: true };
     }
     existing.state = 'RESULT_READY';
-    existing.response = response;
-    return { state: 'RESULT_READY', response };
+    existing.response = structuredClone(response);
+    return { state: 'RESULT_READY', response: structuredClone(response), reused: false };
   },
   complete: async (binding, response) => {
     const existing = state.requestJobs.get(binding.requestId);
@@ -394,6 +394,7 @@ test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤�
 
   assert.equal(result.status, 200);
   assert.equal(result.body.probability, 72);
+  assert.notEqual(result.body.idempotentReplay, true, 'fresh serialized result must not masquerade as replay');
   assert.equal(result.body.probSource, 'llm');
   assert.equal(typeof result.body.interpretationProof, 'string');
   assert.match(result.body.interpretationProof, /^detect-interpretation-proof-v1\.[A-Za-z0-9_-]{43}$/u);

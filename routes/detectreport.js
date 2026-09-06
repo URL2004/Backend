@@ -1021,6 +1021,7 @@ router.post('/detect-report', async (req, res) => {
   if (!usedCachedArtifact) {
     const evidenceShadow = require('../lib/detectEvidenceShadow').evaluateShadow(text, metric, { sampleKey: requestId || '' });
     if (evidenceShadow) logger.info('detect_report.evidence_shadow', {
+      uid: undefined,
       requestId: requestId || undefined, detectorVersion: metric.detectorVersion,
       detectCacheHit: metric.detectCacheHit === true, ...evidenceShadow
     });

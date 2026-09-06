@@ -256,6 +256,12 @@ stub('routes/analyze-gpt.js', {
     if (String(text).startsWith('INCOMPLETE ')) return { summary: 'missing probability' };
     return {
       probability: state.modelProbability,
+      detectDiagnostics: {
+        version: 'detect-score-diagnostics-v1',
+        attempts: [{ phase: 'primary', modelScore: state.modelProbability, confidence: 'medium' }],
+        recheckReason: 'none', selectedModelScore: state.modelProbability,
+        evidenceAlignedScore: state.modelProbability, forbiddenText: 'diagnostic-private-sentinel'
+      },
       summary: '문체 신호가 관찰됐습니다.',
       detail: '정형적인 문장 구조가 관찰됐습니다.',
       signals: ['정형적인 문장 구조'],
@@ -402,6 +408,9 @@ test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤�
   assert.equal(state.historyCalls.length, 1);
   assert.equal(state.historyCalls[0].result.probSource, 'llm');
   assert.equal(state.historyCalls[0].result.rawProbability, 72);
+  assert.equal(state.historyCalls[0].result.detectDiagnostics.attempts[0].modelScore, 72);
+  assert.equal(JSON.stringify(state.historyCalls[0].result.detectDiagnostics).includes('diagnostic-private-sentinel'), false);
+  assert.equal(Object.hasOwn(result.body, 'detectDiagnostics'), false);
   assert.equal(state.historyCalls[0].result.gptMeta.detectPromptVersion, 'detect-prompt-test-v1');
   assert.equal(state.historyCalls[0].result.gptMeta.detectCacheHit, false);
   assert.equal(state.metricRegistrations, 1);
@@ -411,6 +420,7 @@ test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤�
   assert.ok(delivered);
   assert.equal(delivered.fields.scoreSource, 'llm');
   assert.equal(delivered.fields.probability, 72);
+  assert.equal(delivered.fields.detectDiagnostics.attempts[0].modelScore, 72);
   assert.equal(delivered.fields.selectedModel, 'gpt-test');
   assert.equal(delivered.fields.detectorVersion, 'detect-test-v1');
   assert.equal(delivered.fields.uid, undefined);

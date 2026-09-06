@@ -5295,6 +5295,18 @@ async function callHumanize(args) {
 async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '', documentProfile = null } = {}) {
   const source = String(text || '').trim();
   const cfg = await loadConfig(config);
+  const diagnostics = require('../lib/detectDiagnostics');
+  const attempts = [];
+  let recheckReason = 'none';
+  const finish = out => {
+    const result = applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+    result.detectDiagnostics = diagnostics.sanitizeDiagnostics({
+      version: diagnostics.VERSION, attempts, recheckReason,
+      recheckFailed: out.gptMeta?.escalationFailed === true,
+      selectedModelScore: out.probability, evidenceAlignedScore: result.probability
+    });
+    return result;
+  };
   // Primary and escalation share one absolute request budget. Provider-level
   // retries remain error-aware inside completeJson; the route must not retry
   // the whole detect chain again after this budget is consumed.
@@ -5325,6 +5337,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   }
 
   if (primary) {
+    attempts.push(diagnostics.summarizeAttempt(primary.json, source, 'primary'));
     let out = normalizeDetectResult(primary.json, source);
     out.gptMeta = metaFromResponse(primary, cfg, {
       task: route,
@@ -5332,8 +5345,9 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       engine: DETECT_VERSION,
       detectPromptVersion: prompts.DETECT_PROMPT_VERSION
     });
+    recheckReason = diagnostics.recheckReason(out, source, cfg);
     if (!shouldEscalateDetect(out, source, cfg)) {
-      return applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+      return finish(out);
     }
 
     try {
@@ -5351,6 +5365,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
         deadlineMs: detectDeadlineMs,
         documentProfile
       });
+      attempts.push(diagnostics.summarizeAttempt(escalated.json, source, 'recheck'));
       out = normalizeDetectResult(escalated.json, source);
       out.gptMeta = metaFromDetectResponses(primary, escalated, cfg, {
         task: route,
@@ -5359,7 +5374,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
         engine: DETECT_VERSION,
         detectPromptVersion: prompts.DETECT_PROMPT_VERSION
       });
-      return applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+      return finish(out);
     } catch (escalationError) {
       if (signal?.aborted) throw escalationError;
       // A valid primary result is safer than making the same escalation call a
@@ -5370,10 +5385,11 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
         escalationFailed: true,
         escalationFailureCode: modelCallFailureCode(escalationError)
       };
-      return applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+      return finish(out);
     }
   }
 
+  recheckReason = 'primary_failed';
   try {
     const escalated = await callDetectModel({
       prompt: prompts.buildDetectPrompt(lang),
@@ -5389,6 +5405,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       deadlineMs: detectDeadlineMs,
       documentProfile
     });
+    attempts.push(diagnostics.summarizeAttempt(escalated.json, source, 'recheck'));
     const out = normalizeDetectResult(escalated.json, source);
     out.gptMeta = metaFromResponse(escalated, cfg, {
       task: route,
@@ -5397,7 +5414,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       engine: DETECT_VERSION,
       detectPromptVersion: prompts.DETECT_PROMPT_VERSION
     });
-    return applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
+    return finish(out);
   } catch (error) {
     if (signal?.aborted) throw error;
     if (!allowLocalFallback) throw error;

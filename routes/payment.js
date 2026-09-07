@@ -2641,8 +2641,9 @@ async function compensateCreditRefundReservation({
   });
 }
 
-async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount }) {
+async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount, requestBody = {} }) {
   const order = orderSnap.data();
+  requireRefundApprovalReview(order, kind, requestBody, { direct: true });
   if (kind === 'order') {
     const upgradeConflict = activeUpgradeRefundConflict(order);
     if (upgradeConflict) throw upgradeConflict;
@@ -2666,6 +2667,15 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
   const cancelReason = String(reason || order.cancelReason || '관리자 직접 환불').trim();
 
   if (kind === 'subscription') {
+    await db.runTransaction(async transaction => {
+      const latest = await transaction.get(orderRef);
+      if (!latest.exists || !['paid', 'refund_requested', 'refund_rejected', 'partially_refunded'].includes(latest.data().status)) {
+        throw Object.assign(new Error('환불 처리 중 주문 상태가 변경됐습니다.'), { status: 409, code: 'REFUND_STATE_CHANGED' });
+      }
+      const review = requireRefundApprovalReview(latest.data(), kind, requestBody, { direct: true });
+      const update = refundEligibilityReviewUpdate(review, adminUid, admin.firestore.FieldValue.serverTimestamp());
+      if (Object.keys(update).length) transaction.update(orderRef, update);
+    });
     const subscriptionRefundAmount = Number(order.amount) || 0;
     const operationId = refundOperationId(orderRef.id, 0, subscriptionRefundAmount, 0);
     const tossRes = await outboundFetch('toss', tossUrl, {
@@ -2770,11 +2780,14 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
         throw paymentAccountUnavailableError();
       }
       const latestOrder = latestOrderSnapshot.data() || {};
+      const review = requireRefundApprovalReview(latestOrder, kind, requestBody, { direct: true });
+      const reviewUpdate = refundEligibilityReviewUpdate(review, adminUid, admin.firestore.FieldValue.serverTimestamp());
       const latestGrant = creditRefundGrant(latestOrder);
       const resumable = resumableCreditRefund(latestOrder);
       if (resumable) {
         if (resumable.phase === 'requested_reserved') {
           transaction.update(orderRef, {
+            ...reviewUpdate,
             'refundProcessing.phase': 'provider_canceling',
             'refundProcessing.providerStartedAt': admin.firestore.FieldValue.serverTimestamp(),
             refundReservationState: 'provider_canceling'
@@ -2858,6 +2871,7 @@ async function processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode
         ...reserved.processingLotFields
       };
       transaction.update(orderRef, {
+        ...reviewUpdate,
         cancelReason,
         refundMode,
         refundAmount: newRefundedAmount,    // 누적(레거시 표시 호환)
@@ -4365,7 +4379,7 @@ router.post('/admin/direct-refund', async (req, res) => {
     const orderRef = getOrderRef(kind, orderId);
     const orderSnap = await orderRef.get();
     if (!orderSnap.exists) return res.status(404).json({ error: '주문을 찾을 수 없습니다.' });
-    const result = await processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount });
+    const result = await processRefund({ orderRef, orderSnap, kind, adminUid, reason, mode, customAmount, requestBody: req.body || {} });
     logger.info('admin.direct_refund_approved', {
       adminUid, orderId, kind, uid: orderSnap.data().uid,
       refundAmount: result.refundAmount, refundedCredits: result.refundedCredits
@@ -4537,6 +4551,47 @@ function refundEligibilityReviewDecision(order, body = {}) {
     && REFUND_ELIGIBILITY_EXCEPTION_CODES.has(exceptionCode)
     && note.length >= 2;
   return { required: true, accepted, persisted: false, exceptionCode, note };
+}
+
+// Requests are judged at receipt, direct refunds at execution. A missing receipt
+// on a pending legacy request cannot be treated as an ordinary eligible refund.
+function refundApprovalEligibility(order, kind, { direct = false, nowMs = Date.now() } = {}) {
+  const creditResume = kind === 'order' ? resumableCreditRefund(order) : null;
+  const providerStarted = creditResume?.phase === 'provider_canceling'
+    || (kind === 'subscription' && order?.status === 'refund_processing'
+      && Boolean(order.subscriptionRefundProcessing?.operationId));
+  if (providerStarted) return { required: false, providerStarted: true };
+  const pending = order?.status === 'refund_requested';
+  const receiptMs = Number(order?.refundRequestSnapshot?.requestedAtMs)
+    || timestampMs(order?.refundRequestedAt);
+  const basisMs = pending ? receiptMs : (direct ? nowMs : 0);
+  const window = refundWindowState(order, kind, basisMs || nowMs);
+  return {
+    required: !basisMs || !window.eligible || order?.refundEligibilityReviewRequired === true
+      // The legacy direct subscription route cancels the full payment; it is an
+      // exception operation, not the normal remaining-uses refund.
+      || (direct && kind === 'subscription'),
+    providerStarted: false
+  };
+}
+
+function requireRefundApprovalReview(order, kind, body = {}, options = {}) {
+  const eligibility = refundApprovalEligibility(order, kind, options);
+  const receiptMs = Number(order?.refundRequestSnapshot?.requestedAtMs) || timestampMs(order?.refundRequestedAt);
+  const reviewMs = timestampMs(order?.refundEligibilityReviewedAt);
+  const reusableReview = !options.direct && receiptMs > 0 && reviewMs >= receiptMs
+    && Boolean(order?.refundEligibilityReviewedBy);
+  const review = refundEligibilityReviewDecision({
+    ...order,
+    refundEligibilityReviewed: reusableReview && order?.refundEligibilityReviewed === true,
+    refundEligibilityReviewRequired: eligibility.required
+  }, body);
+  if (review.required && !review.accepted) {
+    throw Object.assign(new Error('일반 환불 요건을 벗어난 주문입니다. 예외 유형과 검토 사유를 기록하고 확인한 뒤 승인해 주세요.'), {
+      status: 409, code: 'REFUND_ELIGIBILITY_REVIEW_REQUIRED'
+    });
+  }
+  return review;
 }
 
 function refundEligibilityReviewUpdate(review, adminUid, now) {
@@ -4769,7 +4824,7 @@ async function claimSubscriptionRefund({ orderRef, userRef, orderId, adminUid, r
     const latestOrder = orderSnapshot.data() || {};
     const existingClaim = claimSnapshot.exists ? claimSnapshot.data() || {} : null;
     if (activeSubscriptionRefundClaim(existingClaim, latestOrder, orderId)) {
-      const review = refundEligibilityReviewDecision(latestOrder, requestBody);
+      const review = requireRefundApprovalReview(latestOrder, 'subscription', requestBody);
       const reviewUpdate = refundEligibilityReviewUpdate(
         review,
         adminUid,
@@ -4856,7 +4911,7 @@ async function claimSubscriptionRefund({ orderRef, userRef, orderId, adminUid, r
       createdAt: now,
       updatedAt: now
     };
-    const review = refundEligibilityReviewDecision(latestOrder, requestBody);
+    const review = requireRefundApprovalReview(latestOrder, 'subscription', requestBody);
     transaction.set(claimRef, claim);
     transaction.set(accountClaimRef, paymentAccountClaimPatch({
       uid: latestOrder.uid,
@@ -5115,6 +5170,7 @@ async function finalizeSubscriptionRefund({ orderRef, userRef, claimRef, operati
 // 환불 요청 (사용자용) — kind: 'order' (기본, 크레딧 일회성) | 'subscription' (정기결제)
 router.post('/request-refund', async (req, res) => {
   const { orderId, cancelReason, kind: rawKind } = req.body;
+  const requestStartedAtMs = Date.now();
   const idToken = bearerToken(req);
   const kind = rawKind === 'sub' || rawKind === 'subscription' ? 'subscription' : 'order';
 
@@ -5146,6 +5202,17 @@ router.post('/request-refund', async (req, res) => {
         code: processingConflict.code
       });
     }
+    const windowState = refundWindowState(order, kind, requestStartedAtMs);
+    if (!windowState.eligible) {
+      return res.status(400).json({
+        error: windowState.reason === 'REFUND_WINDOW_EXPIRED'
+          ? '일반 환불 신청 기간이 지났습니다. 예외 사유는 고객센터로 문의해 주세요.'
+          : '환불 신청 기간의 시작일을 확인할 수 없습니다. 고객센터로 문의해 주세요.',
+        code: windowState.reason
+      });
+    }
+    let requiresEligibilityReview = false;
+
     if (kind === 'order') {
       const upgradeConflict = activeUpgradeRefundConflict(order);
       if (upgradeConflict) {
@@ -5166,23 +5233,9 @@ router.post('/request-refund', async (req, res) => {
       }
     }
 
-    const windowState = refundWindowState(order, kind);
-    if (!windowState.eligible && windowState.reason === 'PAYMENT_DATE_MISSING') {
-      return res.status(400).json({
-        error: '환불 신청 기간의 시작일을 확인할 수 없어 온라인으로 접수할 수 없습니다. 고객센터로 문의해 주세요.',
-        code: windowState.reason
-      });
-    }
-    // 7일 경과는 단순변심 자동 기준이 지났다는 뜻일 뿐, 표시·광고와 다른 제공이나
-    // 잔액 환급 등 법령상 사유까지 일률적으로 배제하지 않는다. 요청은 접수하되
-    // 관리자가 별도 자격을 확인할 수 있도록 플래그를 남긴다.
-    let requiresEligibilityReview = !windowState.eligible
-      && windowState.reason === 'REFUND_WINDOW_EXPIRED';
-
     let policySnapshot;
     let requestRefundPolicyVersion;
     let reservationOperationId = null;
-    const requestStartedAtMs = Date.now();
     const refundUserRef = db.collection('users').doc(uid);
     const deletionJobRef = db.collection('accountDeletionJobs').doc(uid);
     const accountClaimRef = db.collection(PAYMENT_ACCOUNT_CLAIMS_COLLECTION).doc(uid);
@@ -5214,8 +5267,8 @@ router.post('/request-refund', async (req, res) => {
           });
         }
         const latestWindow = refundWindowState(latestOrder, kind, requestStartedAtMs);
-        if (!latestWindow.eligible && latestWindow.reason === 'PAYMENT_DATE_MISSING') {
-          throw Object.assign(new Error('환불 신청 기간의 시작일을 확인할 수 없습니다. 고객센터로 문의해 주세요.'), {
+        if (!latestWindow.eligible) {
+          throw Object.assign(new Error(latestWindow.reason === 'REFUND_WINDOW_EXPIRED' ? '일반 환불 신청 기간이 지났습니다. 예외 사유는 고객센터로 문의해 주세요.' : '환불 신청 기간의 시작일을 확인할 수 없습니다. 고객센터로 문의해 주세요.'), {
             status: 400,
             code: latestWindow.reason
           });
@@ -5306,8 +5359,8 @@ router.post('/request-refund', async (req, res) => {
           });
         }
         const latestWindow = refundWindowState(latestOrder, kind, requestStartedAtMs);
-        if (!latestWindow.eligible && latestWindow.reason === 'PAYMENT_DATE_MISSING') {
-          throw Object.assign(new Error('환불 신청 기간의 시작일을 확인할 수 없습니다. 고객센터로 문의해 주세요.'), {
+        if (!latestWindow.eligible) {
+          throw Object.assign(new Error(latestWindow.reason === 'REFUND_WINDOW_EXPIRED' ? '일반 환불 신청 기간이 지났습니다. 예외 사유는 고객센터로 문의해 주세요.' : '환불 신청 기간의 시작일을 확인할 수 없습니다. 고객센터로 문의해 주세요.'), {
             status: 400,
             code: latestWindow.reason
           });
@@ -5513,12 +5566,7 @@ router.post('/approve-refund', async (req, res) => {
     if (!paymentKey) {
       return res.status(400).json({ error: 'paymentKey가 없어 환불할 수 없습니다. (이전 결제건)' });
     }
-    const initialEligibilityReview = refundEligibilityReviewDecision(order, req.body || {});
-    if (initialEligibilityReview.required && !initialEligibilityReview.accepted) {
-      // 구형 관리자 화면은 검토 필드를 보내지 않는다. 승인을 새로 차단하지 않고
-      // 미확인 상태를 그대로 보존·관측해 UI 배포 뒤 명시 검토로 전환한다.
-      logger.warn('refund.eligibility_review_not_recorded', { orderId, kind, adminUid });
-    }
+    requireRefundApprovalReview(order, kind, req.body || {});
 
     const userRef = db.collection('users').doc(order.uid);
     const deletionJobRef = db.collection('accountDeletionJobs').doc(order.uid);
@@ -5666,7 +5714,7 @@ router.post('/approve-refund', async (req, res) => {
           throw paymentAccountUnavailableError();
         }
         const latestOrder = latestOrderSnapshot.data() || {};
-        const latestEligibilityReview = refundEligibilityReviewDecision(latestOrder, req.body || {});
+        const latestEligibilityReview = requireRefundApprovalReview(latestOrder, kind, req.body || {});
         const eligibilityReviewUpdate = refundEligibilityReviewUpdate(
           latestEligibilityReview,
           adminUid,
@@ -5979,6 +6027,7 @@ router.post('/approve-refund', async (req, res) => {
     });
   } catch (err) {
     logger.error('refund.approve_failed', { orderId, kind, adminUid, err });
+    if (err.code === 'REFUND_ELIGIBILITY_REVIEW_REQUIRED') return res.status(409).json({ error: err.message, code: err.code });
     const status = Number(err.status) || 500;
     res.status(status).json({
       error: status < 500
@@ -6299,6 +6348,8 @@ router.refundPolicy = {
   refundPaidAtMs,
   refundWindowState,
   refundEligibilityReviewDecision,
+  refundApprovalEligibility,
+  requireRefundApprovalReview,
   refundEligibilityReviewUpdate,
   refundRequestProcessingConflict,
   resumableCreditRefund,

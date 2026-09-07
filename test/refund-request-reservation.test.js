@@ -337,7 +337,7 @@ test('신청 예약 phase만 거절 가능하고 provider 단계로 넘어가면
   });
 });
 
-test('사용자 환불 사유는 선택이고 관리자 거절 사유는 계속 필수이며 7일 경과 요청은 검토 플래그로 접수한다', () => {
+test('사용자 환불 사유는 선택이고 관리자 거절 사유는 계속 필수이며 7일 경과 요청은 차단한다', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'routes', 'payment.js'), 'utf8');
   const requestRoute = source.slice(
     source.indexOf("router.post('/request-refund'"),
@@ -379,8 +379,8 @@ test('route 계약은 요청 예약을 승인에서 재사용하고 provider 확
   assert.match(approveRoute, /transaction\.get\(deletionJobRef\)[\s\S]*accountDeletionBlocksPayment/u);
   assert.match(approveRoute, /lane:\s*'activeCreditRefunds'[\s\S]*status:\s*'provider_canceling'/u);
   assert.match(approveRoute, /lane:\s*'activeCreditRefunds'[\s\S]*status:\s*'settled'/u);
-  assert.match(approveRoute, /refundEligibilityReviewDecision\(order, req\.body \|\| \{\}\)[\s\S]*refund\.eligibility_review_not_recorded/u);
-  assert.match(approveRoute, /refundEligibilityReviewDecision\(latestOrder, req\.body \|\| \{\}\)[\s\S]*refundEligibilityReviewUpdate/u);
+  assert.match(approveRoute, /requireRefundApprovalReview\(order, kind, req\.body \|\| \{\}\)/u);
+  assert.match(approveRoute, /requireRefundApprovalReview\(latestOrder, kind, req\.body \|\| \{\}\)[\s\S]*refundEligibilityReviewUpdate/u);
   const unknownAt = approveRoute.indexOf('if (cancellationState.unknown)');
   const compensateAt = approveRoute.indexOf('await compensateCreditRefundReservation');
   assert.ok(unknownAt >= 0 && compensateAt > unknownAt, '결과 불명 상태는 보상 복원 전에 retryable로 남아야 한다');

@@ -265,7 +265,7 @@ test('환불 처리 정책 버전은 구매 당시 스냅샷을 최우선으로 
   assert.equal(refundPolicyVersionForOrder({}, false), 'legacy-total-grant-v1');
 });
 
-test('7일 경과 환불은 접수 후 관리자 법정 예외 검토 입력을 선택적으로 감사 기록한다', () => {
+test('관리자 법정 예외 검토는 유형·사유·확인을 요구하고 감사 기록한다', () => {
   const order = { refundEligibilityReviewRequired: true };
   assert.deepEqual(refundEligibilityReviewDecision(order, {}), {
     required: true,

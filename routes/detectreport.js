@@ -602,6 +602,8 @@ router.post('/detect-report', async (req, res) => {
       },
       signalEvidence: narrated.signalEvidence,
       signals: narrated.signals,
+      // 다듬을 대상(위치 검증 문장) 계산용 — 계측이 문장 단위로 잡은 일반 표현·종결 반복도 근거로 센다.
+      sentenceMap,
       measurements: sentenceMap
         ? {
             ...reportMeasurements,
@@ -678,6 +680,8 @@ router.post('/detect-report', async (req, res) => {
       interpretationProof: signDetectInterpretation(uid, text, interpretation),
       reportView,
       sentenceMap,
+      // 퍼널 계측용 — 화면에 표시하지 않고 휴머나이징 요청·이벤트에 최초 감지기 버전으로 실린다.
+      detectorVersion: det.gptMeta?.engine || null,
       grade,
       title: copy.title,
       abstractRiskRatio: ir.abstractRiskRatio,
@@ -753,6 +757,10 @@ router.post('/detect-report', async (req, res) => {
         profileMargin: advancedRouting.profileMargin,
         profileAmbiguous: reportView.measuredEvidence?.axisPolicy?.ambiguousProfile === true,
         professorRadarBand: reportView.professorRadar.band,
+        // 유도 계약(접근/추천) — 밴드별로 유도가 얼마나 열렸는지 로그로 센다. 본문·문장 내용은 없다.
+        conversionAccess: reportView.conversion.access,
+        conversionRecommend: reportView.conversion.recommend,
+        conversionCandidates: reportView.conversion.candidateSentences,
         shadowEngineProbability,
         confidence: ['low', 'medium', 'high'].includes(det.confidence) ? det.confidence : null,
         selectedModel: det.gptMeta?.selectedModel || null,

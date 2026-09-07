@@ -857,11 +857,11 @@ async function commitRefineBilling(job, n, creditAmount, textLength) {
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
-  'sourceProbability', 'sourceEvidence', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts',
+  'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts',
   'structurePreview', 'approvedStructure', 'structurePlanId', 'structureMode', 'basePriceCredits', 'structureCredits'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest',
-  'sourceProbability', 'sourceEvidence'];
+  'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion'];
 
 // ── 유지할 근거 보존 검사 ─────────────────────────────────────────────────────
 //   감지 보고서가 "실제 경험 문장 N · 구체 사실 문장 N"이라고 센 것을 결과에서 같은 자로 다시 센다.
@@ -880,6 +880,17 @@ function measurePreservation(text) {
 // 보고서 → 휴머나이징 핸드오프 값. 없거나 이상하면 조용히 버린다(선택 필드).
 function parseSourceProbability(value) {
   return require('../lib/detectSourceScore').optionalScore(value);
+}
+// 퍼널 계측용 최초 감지 밴드·감지기 버전(사장님 2026-09-07: 노출→실행→완료→결제·환불을 최초 밴드로 이어 본다).
+//   점수·요금·보정에는 쓰지 않는다. 화면이 보내는 값이라 열거형·길이만 검증한다.
+const SOURCE_BANDS = new Set(['low', 'moderate', 'high']);
+function parseSourceBand(value) {
+  return SOURCE_BANDS.has(value) ? value : null;
+}
+function parseSourceDetectorVersion(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9._-]{1,40}$/u.test(trimmed) ? trimmed : null;
 }
 function parseSourceEvidence(value) {
   if (!value || typeof value !== 'object') return null;
@@ -1727,7 +1738,9 @@ function saveJobHistory(job, text, outputText) {
     sourceReviewWarningCodes: (job.result?.sourceReviewWarnings || []).map(item => item?.code).filter(Boolean),
     engineMeta: job.result?.engineMeta || null,
     sourceProbability: job.sourceProbability ?? null,
-    sourceEvidence: job.sourceEvidence || null
+    sourceEvidence: job.sourceEvidence || null,
+    sourceBand: job.sourceBand ?? null,
+    sourceDetectorVersion: job.sourceDetectorVersion ?? null
   }).catch(e => logger.warn('transform.history_save_failed', { jobId: job.id, uid: job.uid, err: e }));
 }
 
@@ -2986,6 +2999,8 @@ const startTransform = async (req, res) => {
   const requestedModeValue = req.body?.mode;
   const sourceProbability = parseSourceProbability(req.body?.sourceProbability);
   const sourceEvidence = parseSourceEvidence(req.body?.sourceEvidence);
+  const sourceBand = parseSourceBand(req.body?.sourceBand);
+  const sourceDetectorVersion = parseSourceDetectorVersion(req.body?.sourceDetectorVersion);
   const mode = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? requestedModeValue : 'formal';
   const modeSource = ['blog', 'polish', 'formal'].includes(requestedModeValue) ? 'provided' : 'defaulted';
   if ((structurePreview || structureMode === 'improve') && (mode !== 'formal' || billingMode !== 'credit' || req.body?.adminHumanizeLab)) {
@@ -3256,6 +3271,7 @@ const startTransform = async (req, res) => {
   const job = {
     id, mode, modeSource, status: 'queued', stage: '대기 중', createdAt: Date.now(), queuedAt: Date.now(),
     sourceProbability, sourceEvidence,   // 보고서 → 휴머나이징 핸드오프(선택) — 재검사 상한·유지할 근거 보존 표기용
+    sourceBand, sourceDetectorVersion,   // 퍼널 계측용 최초 밴드·감지기 버전(점수·요금과 무관)
     uid: pre.uid,
     structurePreview,
     structureMode,

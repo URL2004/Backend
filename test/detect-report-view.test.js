@@ -89,8 +89,63 @@ test('높은 점수를 기존 문자열 원인만으로 설명하면 부분 설�
   assert.equal(view.status, 'partial');
   assert.equal(view.alignment.status, 'partial');
   assert.equal(view.causeAnalysis.status, 'partial');
-  assert.equal(view.conversion.eligible, false);
+  // 접근은 열되(점수 밴드·커버리지와 무관), 위치가 확인된 문장이 없으니 추천은 하지 않는다.
+  assert.equal(view.conversion.access, true);
+  assert.equal(view.conversion.recommend, false);
+  assert.equal(view.conversion.eligible, true);
+  assert.equal(view.conversion.candidateSentences, 0);
+  assert.equal(view.conversion.action, 'optional_review');
   assert.match(view.synthesis.headline, /원인 설명은 일부/u);
+  assert.match(view.synthesis.description, /단정적인 수정 권고는 하지 않아요/u);
+});
+
+test('낮은 점수라도 위치가 확인된 문장이 있으면 접근과 추천을 모두 연다 (사장님 2026-09-07: 접근≠추천)', () => {
+  const view = buildDetectReportView({
+    probability: 14,
+    probSource: 'llm',
+    riskLevel: 'low',
+    textLength: 900,
+    signalEvidence: [
+      { category: 'generic_abstraction', strength: 'moderate', scope: 'recurring', locationStatus: 'source_range_verified',
+        locations: [{ sentenceIndex: 2, start: 120, end: 180 }, { sentenceIndex: 5, start: 400, end: 470 }] },
+      // 위치가 없는 신호는 추천 근거가 아니다.
+      { category: 'sentence_uniformity', strength: 'strong', scope: 'pervasive', locationStatus: 'unlocated', locations: [] }
+    ],
+    sentenceMap: { sentences: [
+      { index: 5, kind: 'generic', endingRun: 0 },          // 모델 근거와 같은 문장 — 중복 계산 금지
+      { index: 7, kind: 'plain', endingRun: 4 },            // 종결 반복 묶음(문턱 4)
+      { index: 8, kind: 'plain', endingRun: 3 }             // 문턱 미만
+    ] },
+    measurements: { genericness: { count: 2, total: 9 }, detail: [{ lived: 2, specific: 1, sents: 9 }] }
+  });
+  assert.equal(view.professorRadar.band, 'low');
+  assert.equal(view.conversion.access, true);
+  assert.equal(view.conversion.recommend, true);
+  assert.equal(view.conversion.candidateSentences, 3, '2·5(모델)·7(종결 반복) — 5는 한 번만 센다');
+  assert.deepEqual(view.conversion.reasons.map(r => [r.category, r.sentenceIndexes]),
+    [['generic_abstraction', [2, 5]], ['ending_repetition', [7]]]);
+  assert.equal(view.conversion.action, 'review_recommendation');
+  // 낮은 점수인데 적격 원인이 있으면 커버리지는 partial — 그래도 위치가 확인된 문장 수로 말한다.
+  assert.equal(view.causeAnalysis.status, 'partial');
+  assert.match(view.synthesis.description, /위치가 확인된 3문장부터 다듬을 수 있어요/u);
+  assert.doesNotMatch(view.synthesis.description, /유지해도 좋아요/u);
+});
+
+test('낮은 점수에 지목할 문장이 없으면 접근만 열고 추천하지 않으며 유지 안내로 닫는다', () => {
+  const view = buildDetectReportView({
+    probability: 9,
+    probSource: 'llm',
+    riskLevel: 'low',
+    textLength: 900,
+    signalEvidence: [],
+    measurements: { genericness: { count: 0, total: 9 }, detail: [{ lived: 3, specific: 2, sents: 9 }] }
+  });
+  assert.equal(view.status, 'ready');
+  assert.equal(view.conversion.access, true);
+  assert.equal(view.conversion.recommend, false);
+  assert.equal(view.conversion.candidateSentences, 0);
+  assert.equal(view.conversion.action, 'optional_review');
+  assert.match(view.synthesis.description, /유지해도 좋아요/u);
 });
 
 test('이력 보정의 내부 기준을 유지하되 고객용 문구에 보정을 표시하지 않는다', () => {
@@ -119,6 +174,8 @@ test('점수나 문장 근거가 불완전하면 판정을 제한하고 전환 C
   assert.equal(reportView.alignment.status, 'limited');
   assert.equal(reportView.professorRadar.band, 'unknown');
   assert.equal(reportView.conversion.eligible, false);
+  assert.equal(reportView.conversion.access, false);
+  assert.equal(reportView.conversion.recommend, false);
   assert.match(reportView.synthesis.description, /유료 수정을 권하지 않고/u);
 });
 
@@ -143,6 +200,8 @@ test('AI 모델 실패로 엔진 간이 추정을 쓴 결과는 출처를 밝히
   assert.equal(reportView.professorRadar.label, '간이 추정 기준');
   assert.ok(!/판정 보류/u.test(reportView.professorRadar.label), '금지 표현이 화면 값에 들어가지 않는다');
   assert.equal(reportView.conversion.eligible, false);
+  assert.equal(reportView.conversion.access, false);
+  assert.equal(reportView.conversion.action, "keep_or_review_input");
   assert.match(reportView.synthesis.headline, /간이 추정/u);
 });
 

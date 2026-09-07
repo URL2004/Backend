@@ -20,4 +20,12 @@ Policy and base-model digests are bound together. `assertIndependentValidation` 
 
 Public detector version, prompts, billing, cache identities, history correction and humanization teaser are unaffected. Do not connect this research score to the public result merely because an environment flag is enabled. Full independent validation and representative verified-process report/resume controls are still required for a release decision.
 
+## Runtime comparison and monitoring
+
+The runtime prepares a private immutable model/policy snapshot once. One classifier inference produces both the raw research score and its human-reference calibration. Caller mutations cannot alter that prepared snapshot; the general-purpose `predict` API continues to validate mutable inputs on each call. Preparation failure leaves the existing raw classifier shadow available and never changes a paid result.
+
+Fusion scope exclusions keep the bounded current score, known genre and available score stages. They must not discard a valid independent-classifier comparison just because the older fusion model cannot score that genre. Unknown stages stay absent; out-of-scope scores stay null.
+
+Monitoring v2 reports fusion, raw classifier and calibrated-classifier distributions separately, partitioned by model and policy digest. Its directional 50-point comparison uses the engine score before history correction when that stage exists. Exact duplicate events are removed within the same model/policy group; a different policy is a distinct comparison. The diagnostic denominator accepts both the score-outcome event's nested diagnostics and the shadow event's closed flattened stages. No unlabelled disagreement is described as a false positive or false negative.
+
 The bundled policy was selected from the previously consumed v3 sample, reclassified as development: 259 computable human-reference documents in 219 recorded families. Sources are KLUE (CC BY-SA 4.0), NSMC (CC0) and the Apache-2.0 student evaluation repository documented in `detect-validation-v3.md`. Only numeric parameters and irreversible record/family digests are bundled, with no text. Source-backed references are not forensically authenticated human authors.

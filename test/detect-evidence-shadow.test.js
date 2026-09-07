@@ -63,3 +63,37 @@ test('calibrated research scores require their own flag and never alter the paid
     });
   }
 });
+
+test('paired production shadow evaluates the classifier once and retains policy scope identity', t => {
+  const classifier = require('../lib/detectStyleClassifier');
+  const oldStyle = process.env.DETECT_STYLE_SHADOW_ENABLED, oldRisk = process.env.DETECT_RISK_SHADOW_ENABLED;
+  t.after(() => {
+    for (const [key, value] of [['DETECT_STYLE_SHADOW_ENABLED', oldStyle], ['DETECT_RISK_SHADOW_ENABLED', oldRisk]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  process.env.DETECT_STYLE_SHADOW_ENABLED = '1'; process.env.DETECT_RISK_SHADOW_ENABLED = '1';
+  let calls = 0; const original = classifier.predict;
+  t.mock.method(classifier, 'predict', (...args) => { calls++; return original(...args); });
+  const out = shadow.evaluateShadow(source, metric(), { enabled: true });
+  assert.equal(calls, 1);
+  const limited = shadow.evaluateShadow('short', metric(), { enabled: true });
+  assert.equal(limited.classifier.calibrated.status, 'out_of_scope');
+  assert.equal(limited.classifier.calibrated.score, null);
+  assert.equal(limited.classifier.calibrated.policyDigest, out.classifier.calibrated.policyDigest);
+});
+
+test('fusion scope exclusions retain numeric baseline stages without logging text or arbitrary profiles', () => {
+  const m = { ...metric(), documentProfile: 'creative', detectDiagnostics: { ...metric().detectDiagnostics,
+    stageVersion: 'detect-score-stages-v2', selectedPhase: 'primary', statisticalScore: 10, engineFinalScore: 10, displayedScore: 8 } };
+  const result = shadow.evaluateShadow(source, m, { enabled: true });
+  assert.equal(result.status, 'out_of_scope'); assert.equal(result.applied, false);
+  assert.equal(result.profile, 'creative'); assert.equal(result.currentScore, 10);
+  assert.equal(result.selectedModelScore, 10); assert.equal(result.stageScores.engineFinal, 10);
+  assert(Number.isFinite(result.computeMs)); assert.equal(result.candidateScore, undefined);
+  const missing = shadow.evaluateShadow(source, { probability: 7, documentProfile: 'DO_NOT_LOG' }, { enabled: true });
+  assert.equal(missing.status, 'missing_diagnostics'); assert.equal(missing.currentScore, 7);
+  assert.equal(missing.profile, 'unknown'); assert.equal(missing.stageScores, undefined);
+  assert(!JSON.stringify([result, missing]).includes('DO_NOT_LOG'));
+  assert(!JSON.stringify([result, missing]).includes('물은'));
+});

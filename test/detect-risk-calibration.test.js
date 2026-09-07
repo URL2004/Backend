@@ -52,3 +52,22 @@ test('strict tie policy and integer display preserve the selected operating poin
   assert.equal(risk.predict('short', model, p), null);
   assert.equal(risk.predict(text, model, { ...p, digest: 'tampered' }), null);
 });
+
+test('prepared predictor reuses one inference and isolates later caller mutations', t => {
+  const text = '한국어 자료의 문장과 표현을 살펴보며 관찰한 내용을 비교한다. '.repeat(12);
+  const inputModel = structuredClone(model), policy = risk.fitCalibration(rows, inputModel);
+  const expectedRaw = classifier.predict(text, inputModel), expected = risk.predict(text, inputModel, policy);
+  const prepared = risk.createPredictor(inputModel, policy);
+  inputModel.weights.fill(0); inputModel.intercept = 999; policy.cutoffMargin = 999;
+  let calls = 0;
+  const original = classifier.predict;
+  t.mock.method(classifier, 'predict', (...args) => { calls++; return original(...args); });
+  const actual = prepared.predict(text);
+  assert.equal(calls, 1);
+  assert.deepEqual(actual.raw, expectedRaw);
+  assert.deepEqual(actual.calibrated, expected);
+  assert.equal(prepared.policyDigest, expected.policyDigest);
+  assert.equal(prepared.modelDigest, sha(JSON.stringify(model)));
+  assert.deepEqual(prepared.predict('short'), { raw: null, calibrated: null });
+  assert.throws(() => risk.createPredictor(model, { ...policy, digest: 'tampered' }), /invalid_policy/);
+});

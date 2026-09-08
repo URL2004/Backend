@@ -1383,12 +1383,17 @@ test('voice 재시도 실패 후에도 구두점 후보 대신 안전한 실질 
 test('최종 결과에 남은 신규 강한 수식은 해당 문장만 원문으로 복원한다', { concurrency: false }, async t => {
   const source = '설계 과정에서 전원 노이즈가 기능에 영향을 줄 수 있음을 확인했습니다. 이후 필터 조건을 비교하고 결과를 기록했습니다.';
   const output = '설계 과정에서 심각한 전원 노이즈가 기능에 영향을 줄 수 있음을 확인했습니다. 이어서 필터별 조건을 대조한 뒤 결과를 문서에 기록했습니다.';
-  installEngineMock(t, { humanize: output });
+  const mock = installEngineMock(t, { humanize: output });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'intensity-restore-user', config: config() });
 
-  assert.equal(out.status, 'needs_review');
-  assert.equal(out.engineMeta.semanticValidationStatus, 'stale');
-  assert.ok(out.qualityWarnings.some(item => item.code === 'semantic_validation_stale'));
+  // 늦은 원문 복원으로 본문이 심사한 후보와 달라졌으므로 옛 pass를 재사용하지
+  // 않고 최종 본문을 판정만 다시 한다. 통과하면 stale 검토 없이 clean이다.
+  assert.equal(out.status, 'clean');
+  assert.equal(out.engineMeta.semanticValidationStatus, 'pass');
+  assert.equal(out.engineMeta.finalSemanticRevalidationPriorStatus, 'stale');
+  assert.equal(out.engineMeta.finalSemanticRevalidationApplied, true);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 2);
+  assert.equal(out.qualityWarnings.some(item => item.code === 'semantic_validation_stale'), false);
   assert.match(out.result.outputText, /^설계 과정에서 전원 노이즈가/u);
   assert.doesNotMatch(out.result.outputText, /심각한/u);
   assert.match(out.result.outputText, /필터별 조건을 대조한 뒤/u);

@@ -179,6 +179,9 @@ async function judgeAndRepair(rawText, outputText, {
   config,
   maxRounds = 1,
   reserveRepair,
+  // Optional gate for the escalation judge call. When it returns false the
+  // primary verdict stands (for example the late recovery budget is spent).
+  reserveEscalation,
   allowedExtra = '',
   mode = '',
   discourseSignals = [],
@@ -209,6 +212,12 @@ async function judgeAndRepair(rawText, outputText, {
     return {
       ...primary,
       escalationSkippedReason: 'deterministic_omission_restore'
+    };
+  }
+  if (typeof reserveEscalation === 'function' && !reserveEscalation()) {
+    return {
+      ...primary,
+      escalationSkippedReason: 'escalation_reserve_denied'
     };
   }
 

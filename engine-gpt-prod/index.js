@@ -3741,6 +3741,88 @@ async function runEngine({
   const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
   result.floorReport = delivery.report;
 
+  // 최종 의미 재검증. 의미 심사 뒤의 늦은 단계(원문 문장 복원·중복 삭제·
+  // 구체성 제거·늦은 깊이 회복 등)가 본문을 실제로 바꾸면 검증 digest가
+  // 달라진다. 공백 배치만 바뀐 경우는 provenance의 결정론 투영이 같은 판정을
+  // 유지하므로 여기서 모델을 부르지 않는다. 그 밖의 변경은 옛 pass를 재사용하지
+  // 않고 최종 문자열 자체를 판정만 다시 한다(수리 없음). 늦은 회복 예산이
+  // 없으면 지금처럼 stale·검토 상태로 남긴다. 건너뛴 심사는 그대로 건너뛴다.
+  let finalSemanticRevalidation = {
+    attempted: false,
+    applied: false,
+    reason: 'not_needed',
+    judgeCallCount: 0,
+    priorStatus: ''
+  };
+  if (semanticReport?.ran === true) {
+    const preliminary = semanticProvenance.verifySemanticValidation(
+      semanticReportForCandidate(semanticReport),
+      { source: rawSource, candidate: outputText, requireDigest: true }
+    );
+    finalSemanticRevalidation.priorStatus = preliminary.status;
+    if (preliminary.status === 'stale') {
+      const latePriority = { priority: 'late' };
+      if (!recoveryBudget.tryStart(latePriority)) {
+        const denied = recoveryBudget.denialReason(latePriority) || 'recovery_budget_exhausted';
+        recoveryBudget.recordSkip(denied);
+        finalSemanticRevalidation.reason = denied;
+      } else {
+        finalSemanticRevalidation.attempted = true;
+        const priorReport = semanticReport;
+        try {
+          const recheck = await qualityV2.runSemanticDocumentAudit({
+            source: rawSource,
+            outputText,
+            lang,
+            signal,
+            config: cfg,
+            allowedExtra,
+            mode: selectedMode,
+            discourseSignals: ['final_semantic_revalidation'],
+            safetyIdentifier: safetyId,
+            documentProfile,
+            allowRepair: false,
+            reserveEscalation: () => {
+              if (recoveryBudget.tryStart(latePriority)) return true;
+              recoveryBudget.recordSkip(recoveryBudget.denialReason(latePriority) || 'recovery_budget_exhausted');
+              return false;
+            }
+          });
+          addSupplementalUsage(recheck.usage, 'final_semantic_revalidation');
+          const recheckCallCount = semanticCallCount(recheck);
+          finalSemanticRevalidation.judgeCallCount = recheckCallCount;
+          // 판정 전용 호출은 본문을 바꾸지 않는다. 만약 바뀌었다면 그 판정은
+          // 최종 문자열에 대한 것이 아니므로 사용하지 않는다.
+          if (normalizeBare(String(recheck.outputText ?? outputText)) !== normalizeBare(outputText)) {
+            finalSemanticRevalidation.reason = 'recheck_text_mismatch';
+          } else {
+            semanticReport = {
+              ...recheck,
+              outputText,
+              repairCount: Number(priorReport.repairCount || 0),
+              repairRoundBudget: Number(priorReport.repairRoundBudget || 0),
+              repairStyleWarnings: priorReport.repairStyleWarnings || [],
+              unchangedRepairCount: Number(priorReport.unchangedRepairCount || 0),
+              decisionReason: 'final_semantic_revalidation',
+              finalRevalidation: {
+                priorDecisionReason: String(priorReport.decisionReason || ''),
+                priorCandidateDigest: String(priorReport.validation?.candidateDigest || ''),
+                priorJudgeCallCount: semanticCallCount(priorReport),
+                judgeCallCount: recheckCallCount
+              }
+            };
+            finalSemanticRevalidation.applied = true;
+            finalSemanticRevalidation.reason = recheck.pass === true
+              ? 'revalidated_pass'
+              : (recheck.uncertain === true ? 'revalidated_uncertain' : 'revalidated_fail');
+          }
+        } catch (error) {
+          finalSemanticRevalidation.reason = modelCallFailureCode(error);
+        }
+      }
+    }
+  }
+
   const usage = addUsage(records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage()), supplementalUsage);
   const escalatedCount = records.filter(r => r.escalated).length;
   const finalEditMetrics = computeEditMetrics(rawSource, outputText);
@@ -4092,6 +4174,12 @@ async function runEngine({
     semanticValidationStatus: result.semanticValidation.status,
     semanticValidationVersion: semanticProvenance.VERSION,
     finalCandidateDigest: result.semanticValidation.finalCandidateDigest,
+    semanticValidationMaterialization: String(result.semanticValidation.materialization || ''),
+    finalSemanticRevalidationAttempted: finalSemanticRevalidation.attempted === true,
+    finalSemanticRevalidationApplied: finalSemanticRevalidation.applied === true,
+    finalSemanticRevalidationReason: String(finalSemanticRevalidation.reason || ''),
+    finalSemanticRevalidationPriorStatus: String(finalSemanticRevalidation.priorStatus || ''),
+    finalSemanticRevalidationJudgeCallCount: Number(finalSemanticRevalidation.judgeCallCount || 0),
     semanticRepairStyleWarnings: semanticReport.repairStyleWarnings || [],
     semanticUnchangedRepairCount: semanticReport.unchangedRepairCount || 0,
     semanticSectionCount: Number(semanticReport?.sectionCount || 0),
@@ -7807,9 +7895,11 @@ function summarizeRetryCounts(records) {
 
 function semanticCallCount(report) {
   if (report?.ran !== true) return 0;
+  // 최종 재검증 보고서는 앞선 문서 심사 호출 수를 함께 기록한다.
+  const priorCalls = Math.max(0, Number(report.finalRevalidation?.priorJudgeCallCount) || 0);
   const sections = Array.isArray(report.reports) ? report.reports : [];
-  if (!sections.length) return Math.max(1, Number(report.sectionCount) || 1);
-  return sections.reduce((sum, section) => {
+  if (!sections.length) return priorCalls + Math.max(1, Number(report.sectionCount) || 1);
+  return priorCalls + sections.reduce((sum, section) => {
     const baseJudges = section?.escalated === true ? 2 : 1;
     const rounds = Math.max(0, Number(section?.rounds) || 0);
     const rejectedRecheck = section?.repairRejected === true && rounds > 0 ? 1 : 0;

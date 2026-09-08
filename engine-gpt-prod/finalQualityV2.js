@@ -368,7 +368,12 @@ async function runSemanticDocumentAudit({
   mode = '',
   discourseSignals = [],
   safetyIdentifier = '',
-  documentProfile = null
+  documentProfile = null,
+  // allowRepair=false runs a judge-only verdict on the exact text. It is used
+  // for the final re-validation after late deterministic edits, where no
+  // vocabulary-producing post-processing may follow.
+  allowRepair = true,
+  reserveEscalation
 }) {
   const pairs = buildReviewPairs(source, outputText);
   const outputs = [];
@@ -376,7 +381,7 @@ async function runSemanticDocumentAudit({
   // 장문을 여러 구간으로 나눠 검사하면서 수리 예산은 문서 전체 1회로
   // 묶여 있었다. 첫 위반 뒤의 누락·왜곡은 판정만 하고 그대로 전달되는
   // 구조였으므로, 실제 위반이 있는 구간에 한해 최대 3곳까지 국소 수리한다.
-  const repairRoundBudget = pairs.length <= 1 ? 1 : Math.min(3, pairs.length);
+  const repairRoundBudget = allowRepair === false ? 0 : (pairs.length <= 1 ? 1 : Math.min(3, pairs.length));
   let remainingRepairRounds = repairRoundBudget;
   await require('./concurrency').mapWithConcurrency(pairs, 2, async (pair, index) => {
     try {
@@ -392,8 +397,9 @@ async function runSemanticDocumentAudit({
         config,
         // 한 구간이 문서 전체 예산을 독점하지 않게 각 구간은 1회만 수리한다.
         // 남은 위반은 상위 판정으로 확인하되 다음 문제 구간에도 예산을 남긴다.
-        maxRounds: 1,
+        maxRounds: allowRepair === false ? 0 : 1,
         reserveRepair: () => { if (remainingRepairRounds <= 0) return false; remainingRepairRounds--; return true; },
+        reserveEscalation,
         allowedExtra,
         mode,
         discourseSignals: pairDiscourseSignals,

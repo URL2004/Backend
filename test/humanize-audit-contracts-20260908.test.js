@@ -137,10 +137,17 @@ test('intentional review delivery policy remains unchanged', () => {
 
 test('ablation matrix isolates compression and edit pressure without changing delivery or calibration', () => {
   const matrix = require('../lib/humanizeQualityEvaluation').humanizeAblationMatrix();
-  assert.equal(matrix.length, 4);
-  assert.equal(new Set(matrix.map(row => JSON.stringify(row.environment))).size, 4);
+  assert.equal(matrix.length, 5);
+  assert.equal(new Set(matrix.map(row => JSON.stringify(row.environment))).size, 5);
   assert.deepEqual(matrix[0].changedFactors, []);
+  assert.deepEqual(matrix[0].environment, { HUMANIZE_PROMPT_VARIANT: 'full', HUMANIZE_EDIT_OBJECTIVE: 'perceived' });
   assert.deepEqual(matrix[1].changedFactors, ['prompt_compression']);
   assert.deepEqual(matrix[2].changedFactors, ['edit_objective']);
+  // The 2x2 arms never carry the relation-guard key, so their environments and
+  // stored outputs are unchanged by the fifth arm.
+  assert.ok(matrix.slice(0, 4).every(row => !('HUMANIZE_RELATION_GUARD' in row.environment) && !row.changedFactors.includes('relation_guard')));
+  assert.equal(matrix[4].id, 'relation_guard');
+  assert.deepEqual(matrix[4].environment, { HUMANIZE_PROMPT_VARIANT: 'compact_v1', HUMANIZE_EDIT_OBJECTIVE: 'perceived', HUMANIZE_RELATION_GUARD: 'clear_relations_v1' });
+  assert.deepEqual(matrix[4].changedFactors, ['prompt_compression', 'relation_guard']);
   assert.ok(matrix.every(row => row.releaseEligible === false && row.unchangedPolicies.includes('source_score_calibration')));
 });

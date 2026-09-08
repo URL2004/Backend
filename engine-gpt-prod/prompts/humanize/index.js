@@ -15,7 +15,9 @@ const { voicePromptBlock } = require('../../voiceProfile');
 const { buildHumanizationPromptBlock } = require('../../humanizationDepth');
 const { discoursePromptBlock } = require('../../discourseAudit');
 const commercialSignals = require('../../commercialSignals');
-const { resolveHumanizeContract, validateTrustedPromptContract } = require('../../humanizeContract');
+const { resolveHumanizeContract, validateTrustedPromptContract, resolveRelationGuard, RELATION_GUARD_VERSION, meaningPreservationLines } = require('../../humanizeContract');
+
+const escapeRegExp = value => String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 
 function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   speakerType = 'individual',
@@ -31,8 +33,10 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   humanizationPlan = null,
   discourseProfile = null,
   humanizeContract = null,
-  promptVariant = process.env.HUMANIZE_PROMPT_VARIANT || 'full'
+  promptVariant = process.env.HUMANIZE_PROMPT_VARIANT || 'full',
+  relationGuard = process.env.HUMANIZE_RELATION_GUARD || 'off'
 } = {}) {
+  const resolvedRelationGuard = resolveRelationGuard(relationGuard);
   const resolvedContract = resolveHumanizeContract({
     humanizeContract,
     mode,
@@ -48,7 +52,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     buildHumanizationPromptBlock(humanizationPlan)
   ].filter(Boolean).join('\n\n');
   const stable = [
-    humanizeStableCore(documentProfile, { promptVariant }),
+    humanizeStableCore(documentProfile, { promptVariant, relationGuard: resolvedRelationGuard }),
     '',
     gateSummaryBlock(resolvedContract),
     '',
@@ -70,7 +74,8 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
 
   const dynamic = dynamicContextBlock({ riskProfile, userNotes, evidence, styleProfile, requestStrength, documentProfile });
   return { stable, dynamic, taskContract, humanizeContract: resolvedContract,
-    promptVariant: promptVariant === 'compact_v1' ? 'compact_v1' : 'full', editObjective: humanizationPlan?.editObjective || 'perceived' };
+    promptVariant: promptVariant === 'compact_v1' ? 'compact_v1' : 'full', editObjective: humanizationPlan?.editObjective || 'perceived',
+    relationGuard: resolvedRelationGuard };
 }
 
 function validateHumanizePrompt(value, {
@@ -107,6 +112,15 @@ function validateHumanizePrompt(value, {
   if (genreHeadings.length !== 1) errors.push(`document_genre_count:${genreHeadings.length}`);
   const contractVersionCount = (prompt.match(/^계약 버전=humanize-contract-v1\./gmu) || []).length;
   if (contractVersionCount !== 1) errors.push(`humanize_contract_version_count:${contractVersionCount}`);
+  // The opt-in relation guard is absent (flag off) or present exactly once, and
+  // only directly after the shared meaning-preservation lines it extends.
+  const relationGuardHead = `관계 유지 규칙=${RELATION_GUARD_VERSION}.`;
+  const relationGuardCount = (prompt.match(new RegExp(`^${escapeRegExp(relationGuardHead)}`, 'gmu')) || []).length;
+  if (relationGuardCount > 1) errors.push(`relation_guard_rule_count:${relationGuardCount}`);
+  if (relationGuardCount === 1
+      && !prompt.includes(meaningPreservationLines().at(-1) + '\n' + relationGuardHead)) {
+    errors.push('relation_guard_rule_position');
+  }
   if (!/충돌 시 1순위→2순위→3순위로 판단한다/u.test(prompt)
       || !/^1순위 사실·의미·보호 구조·화자를 보존한다\.$/mu.test(prompt)
       || !/^3순위 .*실질 재구성한다\.$/mu.test(prompt)) {

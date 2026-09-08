@@ -117,6 +117,28 @@ function meaningPreservationLines() {
   ];
 }
 
+// Opt-in ablation candidate (HUMANIZE_RELATION_GUARD=clear_relations_v1). It is
+// not a default. The 2026-09-08 live ablation traced the consistent naturalness
+// regressions to local rewrites that re-linked particles, clause connectors and
+// modifier scope in sentences whose relations were already clear. These lines
+// extend meaningPreservationLines(): they do not restate which relations must be
+// preserved, only that already-clear relation wiring is not a naturalness lever.
+// Any other value (absent, 'off', unknown) leaves every prompt byte-identical.
+const RELATION_GUARD_VERSION = 'clear-relations-v1';
+
+function resolveRelationGuard(value) {
+  return String(value ?? '').trim() === 'clear_relations_v1' ? 'clear_relations_v1' : 'off';
+}
+
+function relationGuardLines(relationGuard = 'off') {
+  if (resolveRelationGuard(relationGuard) !== 'clear_relations_v1') return [];
+  return [
+    `관계 유지 규칙=${RELATION_GUARD_VERSION}. 위 보존 규칙에 더해, 주어–서술어·원인–결과·병렬·수식 관계가 이미 분명한 문장은 조사, 연결어미(-고/-며/-아서/-니까/-지만/-한 뒤 등), 수식 범위를 그대로 둔다.`,
+    '그런 문장의 자연스러움은 어휘 선택, 문장 길이·호흡, 종결 방식으로 바꾸고, 관계를 다시 잇는 방식(다른 조사·연결어미로 관계 유형을 바꾸거나 수식 범위를 옮기는 것)으로는 바꾸지 않는다.',
+    '연결어미와 조사는 원문 관계 자체가 불분명하거나 틀린 경우에만 고치며, 원문이 말하지 않은 순서(-한 뒤/-고 나서)·인과·확실성을 더하지 않는다.'
+  ];
+}
+
 // Only server-owned control blocks belong here. SOURCE, memo, quoted examples
 // from user data and complete user messages must never be supplied as controls.
 function validateTrustedPromptContract({ system = '', taskContract = '', retryInstruction = '', humanizeContract = null } = {}) {
@@ -244,11 +266,14 @@ function deepFreeze(value) {
 
 module.exports = {
   VERSION,
+  RELATION_GUARD_VERSION,
   buildHumanizeContract,
   resolveHumanizeContract,
   priorityPromptLines,
   paragraphPromptLine,
   meaningPreservationLines,
+  resolveRelationGuard,
+  relationGuardLines,
   paragraphMarkerPromptLine,
   validateTrustedPromptContract,
   localizedRepairPromptLines,

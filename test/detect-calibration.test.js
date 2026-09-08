@@ -197,6 +197,42 @@ test('공백·호환문자만 다른 기존 결과는 짧은 글에서도 정확
   assert.ok(state.selectedFields.includes('outputText'));
 });
 
+test('원문 100자면 내부 공백 제거 후 100자 미만이어도 검증된 정확 이력을 보정한다', async () => {
+  const output = '관찰 기록을 차례로 확인하고 다음 활동을 준비했다. '.repeat(4).slice(0, 100);
+  assert.equal(output.trim().length, 100);
+  assert(calibration.normalizeText(output).length < 100);
+  assert.equal(calibration.approximateEligible(calibration.normalizeText(output), calibration.sanitizeConfig({})), false);
+  const signed = historyDoc('short-exact', { type: 'humanize', mode: 'blog', outputText: output });
+  calibration.clearRuntimeConfigCache();
+  const result = await calibration.applyHistoryCalibration({
+    db: fakeDb([signed], { enabled: true }), uid: 'same-user', text: ` \n${output}\n `, probability: 80
+  });
+  assert.equal(result.applied, true);
+  assert.equal(result.rawProbability, 80);
+  assert.equal(result.probability, 68);
+  assert.equal(result.meta.match, 'exact_normalized');
+  calibration.clearRuntimeConfigCache();
+
+  const forged = { ...signed.data(), historyLinkIntegrity: { version: historyIntegrity.VERSION, signature: 'forged' } };
+  const rejected = await calibration.applyHistoryCalibration({
+    db: fakeDb([{ id: 'short-forged', data: () => forged }], { enabled: true }), uid: 'same-user', text: output, probability: 80
+  });
+  assert.equal(rejected.applied, false);
+  assert.equal(rejected.probability, 80);
+  calibration.clearRuntimeConfigCache();
+});
+
+test('실제 100자 미만·빈 정규화 본문·비문자열은 서명 여부와 관계없이 조회하지 않는다', async () => {
+  const output = '관찰 기록을 차례로 확인하고 다음 활동을 준비했다. '.repeat(4).slice(0, 99);
+  const state = {};
+  const signed = historyDoc('too-short-exact', { type: 'humanize', mode: 'blog', outputText: output });
+  const db = fakeDb([signed], null, state);
+  for (const text of [output, `   ${output}   `, '', ' '.repeat(120), '\u200B'.repeat(120), null, undefined, 100, [], { toString: () => 'x'.repeat(120) }]) {
+    assert.equal(await calibration.findOwnHumanizedHistoryMatch({ db, uid: 'same-user', text }), null);
+  }
+  assert.equal(state.uid, undefined, 'ineligible input must return before history lookup');
+});
+
 test('서명 없는 과거 기록과 다른 UID로 서명된 기록은 점수 보정 근거로 신뢰하지 않는다', async () => {
   const output = longDocument('서명 경계');
   const unsigned = historyDoc('legacy', { type: 'humanize', outputText: output });

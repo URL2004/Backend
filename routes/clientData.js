@@ -179,13 +179,18 @@ function createRouter(deps = {}) {
         fallbackName: decoded.name || ''
       });
       if (!result.duplicate) {
+        logger.info('qna.created', { uid: decoded.uid, questionId: result.id });
         try {
-          notifyInquiry({
+          Promise.resolve(notifyInquiry({
             id: result.id,
             title: String(req.body?.title || '').slice(0, 160),
             body: String(req.body?.body || '').slice(0, 10_000),
             author: req.body?.isAnon ? '익명' : (decoded.name || '회원'),
             uid: decoded.uid
+          })).then(sent => {
+            if (sent === false) logger.warn('qna.discord_notify_failed', { uid: decoded.uid, questionId: result.id });
+          }).catch(error => {
+            logger.warn('qna.discord_notify_failed', { uid: decoded.uid, questionId: result.id, err: error });
           });
         } catch (error) {
           logger.warn('qna.discord_notify_failed', { uid: decoded.uid, questionId: result.id, err: error });
@@ -210,6 +215,7 @@ function createRouter(deps = {}) {
         questionId: req.body?.id,
         isAdmin: adminUid === decoded.uid
       });
+      logger.info('qna.deleted', { uid: decoded.uid, questionId: result.id, actorUid: decoded.uid });
       return res.json({ ok: true, ...result });
     } catch (error) {
       logger.warn('qna.delete_failed', { uid: decoded.uid, code: error?.code, err: error });

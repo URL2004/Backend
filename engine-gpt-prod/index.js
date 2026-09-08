@@ -5171,6 +5171,7 @@ async function callHumanize(args) {
         promptDigest: promptIntegrity.promptDigest,
         promptVariant: hp.promptVariant,
         editObjective: hp.editObjective,
+        relationGuard: hp.relationGuard,
         profile: PROFILE,
         chunkIndex: index,
         escalated: phase === 'escalation'

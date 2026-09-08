@@ -733,16 +733,14 @@ function buildBlockOffer(job, text) {
   };
 }
 
-// ── 사후 문단 보강(refine, 2026-08-27): 완료된 기본(blog·polish) 결과에서 추상-위험 문단을 짚어주고,
-//   사용자의 실제 경험 한 줄(무날조 원칙의 유일한 구체화 통로)로 그 문단만 재생성해 결과에 패치한다.
-//   프레이밍 계약: 추상성은 원문 귀속(엔진 실패가 아님), 상위 2개만, 무변화·실패는 무과금·무료횟수 미소진.
+// Optional follow-up on an existing experience; definitions and purposes need no personal anecdote.
+// One contextual question at a time. Unchanged/failed refinements do not consume credits or free uses.
 function refineEnabled() { return process.env.PARAGRAPH_REFINE === '1'; }
 const refineFreeCountRaw = Number(process.env.REFINE_FREE_COUNT);
 const REFINE_FREE_COUNT = Number.isFinite(refineFreeCountRaw)
   ? Math.max(0, Math.floor(refineFreeCountRaw))
   : 2;
 const REFINE_TIMEOUT_MS = Math.max(30000, Number(process.env.REFINE_TIMEOUT_MS) || 180000);
-const REFINE_TARGET_MIN_LEN = 80;   // 표제·목차·짧은 라벨 오탐 가드
 const REFINE_MEMO_MIN = 5, REFINE_MEMO_MAX = 500;
 
 function attachRefineTargets(job) {
@@ -750,15 +748,10 @@ function attachRefineTargets(job) {
   if (job.mode !== 'blog' && job.mode !== 'polish') return;   // 이번 단계는 short 경로만
   if (!job.result || typeof job.result.outputText !== 'string') return;
   try {
-    const paras = surfaceguard.splitParagraphsForRefine(job.result.outputText);
-    // 이미 보강한 문단은 다시 타겟으로 내밀지 않는다 — 분류상 여전히 추상이어도 재영업하면
-    // "또 결제하라"로 읽힌다(프레이밍 계약). 재시도 자체는 API에서 refineHistory로 허용.
-    const refinedIdx = new Set((job.refineHistory || []).map(h => h.paragraphIndex));
-    job.result.refineTargets = paras
-      .map((p, i) => ({ index: i, kind: surfaceguard.classifyParagraphKind(p.text), len: p.text.trim().length, text: p.text }))
-      .filter(t => t.kind === 'abstract_risk' && t.len >= REFINE_TARGET_MIN_LEN && !refinedIdx.has(t.index))
-      .slice(0, 2)
-      .map(t => ({ index: t.index, kind: t.kind, snippet: t.text.replace(/\s+/g, ' ').trim().slice(0, 70), credit: shortHumanizeCredit(t.len) }));
+    job.result.refineTargets = require('../lib/refineCoaching').selectRefineTargets(job.result.outputText, {
+      refinedIndices: (job.refineHistory || []).map(h => h.paragraphIndex),
+      creditForLength: shortHumanizeCredit
+    });
     job.result.refine = {
       enabled: true,
       freeLeft: Math.max(0, REFINE_FREE_COUNT - (job.refineCount || 0)),
@@ -3506,6 +3499,7 @@ router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (r
     return res.status(400).json({ error: `실제 경험 메모를 ${REFINE_MEMO_MIN}~${REFINE_MEMO_MAX}자로 적어 주세요.` });
   }
   const idx = Number(req.body.paragraphIndex);
+  attachRefineTargets(job); // Re-evaluate older saved jobs with the current section-aware policy.
   const targets = (job.result && job.result.refineTargets) || [];
   // 유효 대상 = 현재 타겟 ∪ 이미 보강한 문단(재시도 허용 — 단 UI는 재영업하지 않음)
   const idxAllowed = targets.some(t => t.index === idx) || (job.refineHistory || []).some(h => h.paragraphIndex === idx);
@@ -3577,14 +3571,16 @@ router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (r
     };
     const refineSystem = [
       '너는 한국어 글의 한 문단을 다듬는 편집자다. 저자가 직접 겪은 실제 경험 한 줄이 제공된다.',
-      '이 경험을 문단에 자연스럽게 녹여, 추상적인 일반론에 실제 장면이 스며든 더 구체적인 문단으로 만들어라.',
+      '메모에 적힌 관찰·행동·판단을 해당 문단의 맥락에 맞게 반영하라. 이미 있는 경험을 구체화하되 새로운 일화를 요구하거나 만들지 마라.',
       '',
       '규칙(절대 준수):',
       '1. 무날조: 문단과 경험 메모에 없는 새로운 사실·수치·인명·기관명·연도를 만들지 않는다.',
       '2. 경험 메모를 그대로 복사해 붙이지 않는다 — 문단의 어조와 흐름에 맞게 1~2문장으로 풀어 쓴다.',
       '3. 문단의 원래 주장·논리 순서·종결체(반말/존댓말)를 유지한다.',
       '4. 길이는 원래 문단의 0.9~1.8배 사이로 한다.',
-      '5. 결과는 문단 하나의 본문만 출력한다.'
+      '5. 결과는 문단 하나의 본문만 출력한다.',
+      '6. 실험·연구 보고서는 객관적인 보고 문체와 기술 용어를 유지한다. 감상문이나 자기소개서로 바꾸지 않는다.',
+      '7. 메모에 수치·원인·해결 결과가 없으면 추가하지 않는다. 기억의 불확실성을 단정으로 바꾸지 않는다.'
     ].join('\n');
     const resp = await gptAnalyze.callGpt({
       userText: '[문단]\n' + paraText + '\n\n[저자의 실제 경험 메모]\n' + memo,

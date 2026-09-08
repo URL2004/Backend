@@ -33,6 +33,7 @@ const publicMetrics = require('../lib/publicMetrics');
 const { buildDetectReportView, buildSentenceMap, pickAiSentence, splitExamplePreview } = require('../lib/detectReportView');
 const { locatePublicEvidence } = require('../lib/detectInputDocument');
 const { signDetectInterpretation } = require('../lib/detectHistoryPresentation');
+const { signHistoryComparison } = require('../lib/detectHistoryComparison');
 const { startDetectPreview } = require('../lib/detectPreviewTask');
 
 // (무료 감지 일일 한도 로직 제거 — 2026-07-20 사장님 결정으로 감지는 항상 유료.
@@ -268,11 +269,10 @@ router.post('/detect-report', async (req, res) => {
   const requestPayloadFingerprint = (!devNoAuth && requestId)
     ? billing.creditRequestPayloadFingerprint({ opType: 'detect', needed: cost, text })
     : null;
-  // requestId가 없는 무제한 플랜도 동일 글 재검사 점수는 안정화한다. 지문은
-  // 기존 과금 결합 함수만 재사용하며 원문이나 지문을 로그에 남기지 않는다.
+  // Share raw detector results with /analyze regardless of route or billing.
+  // The request/charge binding above remains separate and unchanged.
   const stabilityPayloadFingerprint = (!devNoAuth && uid)
-    ? (requestPayloadFingerprint
-      || billing.creditRequestPayloadFingerprint({ opType: 'detect', needed: cost, text }))
+    ? detectStability.payloadFingerprint({ text, lang: 'ko' })
     : null;
   const requestBinding = requestPayloadFingerprint ? {
     uid,
@@ -620,6 +620,7 @@ router.post('/detect-report', async (req, res) => {
     const B = BANDS;
     const historyResult = {
       probability,
+      historyComparison: calibration.comparison || null,
       riskLevel: narrated.riskLevel,
       riskLabel: narrated.riskLabel,
       summary: publicSummary,
@@ -661,6 +662,8 @@ router.post('/detect-report', async (req, res) => {
       charged: chargeEligible ? cost : 0,
       historySaved: false,
       probability,
+      historyComparison: calibration.comparison || null,
+      historyComparisonProof: signHistoryComparison(uid, text, probability, calibration.comparison),
       ...(calibration.applied ? {
         rawProbability: calibration.rawProbability,
         calibrated: true,

@@ -32,7 +32,7 @@ test('punctuation-free fragments retain a spanning sentence instead of renumberi
   assert.equal(result.sentences.length, canonical.length);
   assert.equal(result.sentences[0].paragraphIndex, 0);
   assert.equal(result.sentences[0].paragraphEndIndex, 1);
-  assert.deepEqual(modelSentences(text)[0], { index: 0, paragraphIndex: 0, paragraphEndIndex: 1, text: canonical[0].text });
+  assert.deepEqual(modelSentences(text)[0], { index: 0, paragraphIndex: 0, sampleUnitIndex: 0, spanType: 'prose', eligibleForDetection: true, paragraphEndIndex: 1, text: canonical[0].text });
 });
 
 test('empty input and repeated text have stable, source-bound paragraph locations', () => {

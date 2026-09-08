@@ -14,6 +14,7 @@ const {
   buildHumanizeContract,
   allowsLayoutRecomposition,
   localizedRepairPromptLines,
+  meaningPreservationLines,
   validateRepairPrompt
 } = require('../engine-gpt-prod/humanizeContract');
 const { createRecoveryBudget } = require('../engine-gpt-prod/recoveryBudget');
@@ -32,7 +33,7 @@ test('v2.5.39: 우선순위와 문단 권위는 하나의 불변 계약에서 �
     documentProfile: ESSAY
   });
 
-  assert.equal(engine.VERSION, 'gpt-prod-v2.5.47');
+  assert.equal(engine.VERSION, 'gpt-prod-v2.5.48');
   assert.deepEqual(contract.priorities.map(item => item.rank), [1, 2, 3]);
   assert.equal(contract.paragraph.modelBoundary, 'source_locked');
   assert.equal(contract.paragraph.localizedRepairBoundary, 'source_locked');
@@ -167,8 +168,11 @@ test('v2.5.39: 상시 system 프롬프트는 장르별 상한 안에서 조립�
       register: 'plain',
       documentProfile
     }).stable;
-    assert.ok(stable.length <= maxChars, `${documentProfile.profile}: ${stable.length} chars`);
-    assert.ok(stable.split(/\n/u).length <= maxLines, `${documentProfile.profile}: line budget`);
+    // Keep the legacy budget intact and account explicitly for the new shared
+    // preservation contract, rather than silently relaxing every prompt cap.
+    const sharedContract = meaningPreservationLines().join('\n') + '\n';
+    assert.ok(stable.length <= maxChars + sharedContract.length, `${documentProfile.profile}: ${stable.length} chars`);
+    assert.ok(stable.split(/\n/u).length <= maxLines + meaningPreservationLines().length, `${documentProfile.profile}: line budget`);
   }
 });
 

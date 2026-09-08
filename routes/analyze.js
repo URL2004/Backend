@@ -9,7 +9,9 @@ const { db, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const { bearerToken } = require('../lib/reqtoken');
 const detectCalibration = require('../lib/detectCalibration');
+const detectStability = require('../lib/detectResultStability');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
+const { signHistoryComparison } = require('../lib/detectHistoryComparison');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const billing = require('../lib/usageBilling');
@@ -143,39 +145,62 @@ router.post('/analyze', async (req, res) => {
   try {
     const config = await activeGptConfig();
     const routing = resolveAdvancedRouting(text);
-    const detectInput = previousContext
-      ? `[앞 청크의 마지막 일부 — 문맥 참고용, 점수에서 제외]\n${previousContext}\n\n[분석할 글]\n${text}`
-      : text;
-    result = await gptAnalyze.runDetect(detectInput, lang, {
-      text: detectInput,
-      lang,
-      signal: abortController.signal,
-      config,
-      route: 'analyze',
-      uid: precheck.uid,
-      allowLocalFallback: false,
-      documentProfile: {
-        profile: routing.profile,
-        confidence: routing.confidence,
-        profileMargin: routing.profileMargin
-      }
+    const detectInput = text;
+    const cacheVariant = detectStability.variantForConfig(config, {
+      detectorVersion: gptAnalyze.DETECT_VERSION,
+      promptVersion: gptAnalyze.DETECT_PROMPT_VERSION,
+      documentProfile: `${routing.profile}:${Number(routing.confidence).toFixed(2)}:${routing.profileMargin ?? 'na'}`
     });
+    const payloadFingerprint = detectStability.payloadFingerprint({ text: detectInput, lang, referenceContext: previousContext });
+    let liveResult = null;
+    const stable = await detectStability.getOrCompute({ uid: precheck.uid, payloadFingerprint, cacheVariant }, async () => {
+      liveResult = await gptAnalyze.runDetect(detectInput, lang, {
+        text: detectInput,
+        referenceContext: previousContext,
+        lang,
+        signal: abortController.signal,
+        config,
+        route: 'analyze',
+        uid: precheck.uid,
+        allowLocalFallback: false,
+        documentProfile: {
+          profile: routing.profile,
+          confidence: routing.confidence,
+          profileMargin: routing.profileMargin
+        }
+      });
+      return liveResult;
+    });
+    // The cache contains only the detector stage. History-dependent adjustment
+    // runs on every request and is never fed back into this cache.
+    result = stable.result;
+    result.gptMeta = { ...result.gptMeta, detectCacheHit: stable.cacheHit, detectCacheSource: stable.source,
+      ...(liveResult?.gptMeta?.usage ? { usage: liveResult.gptMeta.usage } : {}) };
     if (typeof result?.probability !== 'number' || !result.summary || !result.detail) {
       throw Object.assign(new Error('detect_incomplete'), { code: 'DETECT_INCOMPLETE' });
     }
-    const calibration = await detectCalibration.applyHistoryCalibration({
-      db,
-      uid: precheck.uid,
-      text,
-      probability: result.probability,
-      logger,
-      route: 'analyze'
-    });
+    let calibration;
+    try {
+      calibration = await detectCalibration.applyHistoryCalibration({
+        db, uid: precheck.uid, text, probability: result.probability, logger, route: 'analyze'
+      });
+    } catch (error) {
+      throw Object.assign(new Error('감지 결과를 안전하게 확정하지 못했어요.'), {
+        code: 'DETECT_CALIBRATION_UNAVAILABLE', status: 503, cause: error
+      });
+    }
     if (calibration.applied) {
       result.rawProbability = calibration.rawProbability;
       result.probabilityCalibration = calibration.meta;
     }
     result = applyDetectNarrativePolicy(result, calibration.probability);
+    if (calibration.comparison) {
+      result.historyComparison = calibration.comparison;
+      // Backup resubmits the browser's exact request source, before this legacy
+      // route's deterministic input normalization.
+      const backupText = typeof req.body?.text === 'string' ? req.body.text : text;
+      result.historyComparisonProof = signHistoryComparison(precheck.uid, backupText, result.probability, calibration.comparison);
+    }
     result.documentProfile = routing.profile;
     result.profileConfidence = routing.confidence;
     result.profileMargin = routing.profileMargin;
@@ -184,9 +209,10 @@ router.post('/analyze', async (req, res) => {
     clearDedup();
     if (abortController.signal.aborted) return;
     logger.error('analyze.detect_failed', { uid: precheck.uid, requestId, err: error });
-    return res.status(500).json({
+    return res.status(error?.status === 503 ? 503 : 500).json({
       error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.',
-      code: error?.code || 'DETECT_TECHNICAL_ERROR'
+      code: error?.code || 'DETECT_TECHNICAL_ERROR',
+      ...(error?.status === 503 ? { retryable: true, charged: 0 } : {})
     });
   }
 

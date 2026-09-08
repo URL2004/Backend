@@ -172,6 +172,8 @@ test('semantic sections run with bounded concurrency, preserve order and share o
   const end = source.indexOf('function restoreReviewPairBoundaryWhitespace', start);
   let active = 0, maximum = 0, repaired = 0;
   const context = { require, buildReviewPairs: () => Array.from({ length: 6 }, (_, index) => ({ index, output: `${index}`, sourceContext: 'source' })),
+    auditRelationCandidates: require('../engine-gpt-prod/relationAudit').auditRelationCandidates,
+    bindSemanticValidation: require('../engine-gpt-prod/semanticProvenance').bindSemanticValidation,
     discourse: { compareDiscourse: () => ({ codes: [] }) }, restoreReviewPairBoundaryWhitespace: (_before, after) => after,
     addUsageLocal: () => null, safeMessage: error => error.message,
     judgeAndRepair: async (_source, output, options) => {
@@ -184,6 +186,7 @@ test('semantic sections run with bounded concurrency, preserve order and share o
   vm.createContext(context); vm.runInContext(source.slice(start, end), context);
   const result = await context.runSemanticDocumentAudit({ source: 'source', outputText: 'output' });
   assert.equal(maximum, 2); assert.equal(repaired, 3); assert.equal(result.outputText, '012345');
+  assert.equal(result.validation.candidateDigest, require('../engine-gpt-prod/semanticProvenance').textDigest(result.outputText));
 });
 
 test('engine worker propagates Korean-only errors before any model call', async () => {

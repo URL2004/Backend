@@ -1,6 +1,7 @@
 'use strict';
 
 const VERSION = 'humanize-contract-v1';
+const { textDigest } = require('./semanticProvenance');
 
 const PROFILE_ALIASES = Object.freeze({
   general: 'general_essay',
@@ -108,12 +109,39 @@ function paragraphMarkerPromptLine(contract) {
   return `[[[V2_BOUNDARY_###]]]는 ${resolved.paragraph.version}이 잠근 원문 문단 경계다. 토큰의 철자·개수·순서를 유지하고 양쪽 문단을 합치거나 내용을 옮기지 않는다.`;
 }
 
+function meaningPreservationLines() {
+  return [
+    '주체·행위·대상·수치의 귀속·시점·조건·부정·가능성·의무·주장 강도를 같은 관계로 보존한다. 숫자와 명칭이 남아 있어도 그 귀속을 서로 바꾸면 안 된다.',
+    '정의문의 정의 대상과 설명을 뒤집지 않는다. “이후” 같은 시간 관계를 “그 결과” 같은 인과로 바꾸지 않고, “할 수 없다”를 “어렵다”로 약화하지 않는다.',
+    '주어가 생략된 문장에도 원문에 없는 관람·방문·사용 경험을 만들지 않는다. “보고 나서야·써 보니”처럼 실제 경험과 시점을 전제하는 표현은 원문의 근거가 있을 때만 쓴다.'
+  ];
+}
+
+// Only server-owned control blocks belong here. SOURCE, memo, quoted examples
+// from user data and complete user messages must never be supplied as controls.
+function validateTrustedPromptContract({ system = '', taskContract = '', retryInstruction = '', humanizeContract = null } = {}) {
+  const resolved = resolveHumanizeContract({ humanizeContract });
+  const controls = [system, taskContract, retryInstruction].map(value => String(value || ''));
+  const errors = [];
+  if (resolved.paragraph.modelBoundary === 'source_locked') {
+    for (const [index, block] of controls.entries()) {
+      if (/문단(?:을|은|도)\s+[^.\n]{0,60}(?:나눈다|나눌 수 있다|합친다|합칠 수 있다|새로 만든다)/u.test(block)
+          || /\b(?:split|merge|reorder) paragraphs\b(?![^.\n]{0,20}(?:not allowed|forbidden))/iu.test(block)) {
+        errors.push(`paragraph_authority_conflict:${['system', 'task', 'retry'][index]}`);
+      }
+    }
+  }
+  return { pass: errors.length === 0, errors, version: 'trusted-prompt-contract-v1',
+    promptDigest: textDigest(JSON.stringify(controls)), contractVersion: resolved.version };
+}
+
 function localizedRepairPromptLines(contract, { allowInsertion = false } = {}) {
   const resolved = resolveHumanizeContract({ humanizeContract: contract });
   return [
     '수리 계약=localized-repair-v1. CURRENT가 편집 기준이며 SOURCE는 사실·의미 대조용이다.',
     '표시된 문제 문장과 문법상 필요한 바로 이웃 문장만 고치고, 그 밖의 CURRENT 문장은 이미 승인된 편집을 포함해 그대로 둔다.',
     '사실·수치·고유명사·전문 개념·인용·화자·시점·평가 강도·제목·목록 순서를 바꾸지 않는다.',
+    ...meaningPreservationLines(),
     paragraphPromptLine(resolved),
     '원문의 종결체와 격식, 짧고 긴 문장의 대비를 유지한다. 국소 오류를 고치면서 다른 문장을 같은 길이·어조로 평탄화하지 않는다.',
     allowInsertion
@@ -220,7 +248,9 @@ module.exports = {
   resolveHumanizeContract,
   priorityPromptLines,
   paragraphPromptLine,
+  meaningPreservationLines,
   paragraphMarkerPromptLine,
+  validateTrustedPromptContract,
   localizedRepairPromptLines,
   validateRepairPrompt,
   assertRepairPrompt,

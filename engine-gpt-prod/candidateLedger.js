@@ -1,6 +1,7 @@
 'use strict';
 
 const VERSION = 'candidate-ledger-v1';
+const semanticProvenance = require('./semanticProvenance');
 
 // Priority 2 owns language, register and readability. Every other deterministic
 // warning is conservatively treated as priority 1 until it is explicitly
@@ -16,7 +17,7 @@ const LANGUAGE_WARNING_CODES = new Set([
   'sentence_distribution_shift'
 ]);
 
-function createCandidateLedger({ enabled = true, assess } = {}) {
+function createCandidateLedger({ enabled = true, assess, source = null, requireSemanticDigest = source != null } = {}) {
   if (enabled && typeof assess !== 'function') {
     throw new TypeError('candidate ledger requires an assess function');
   }
@@ -33,7 +34,9 @@ function createCandidateLedger({ enabled = true, assess } = {}) {
   } = {}) {
     if (!enabled) return null;
     const value = String(text || '');
-    const semantic = semanticStatus(semanticReport, { baseline });
+    const semantic = semanticStatus(semanticReport, {
+      baseline, source, candidate: value, requireDigest: requireSemanticDigest
+    });
     let assessment;
     let assessmentError = '';
     if (baseline) {
@@ -70,6 +73,7 @@ function createCandidateLedger({ enabled = true, assess } = {}) {
       sequence: ++sequence,
       stage: String(stage || 'candidate').slice(0, 48),
       text: value,
+      candidateDigest: semanticProvenance.textDigest(value),
       semanticStatus: semantic.status,
       semanticRank: semantic.rank,
       semanticReport: cloneSerializable(semanticReport),
@@ -142,6 +146,7 @@ function createCandidateLedger({ enabled = true, assess } = {}) {
   function snapshot() {
     return {
       version: VERSION,
+      provenanceVersion: semanticProvenance.VERSION,
       enabled,
       checkpointCount: entries.length,
       eligibleCount: entries.filter(entry => entry.eligible).length,
@@ -320,12 +325,9 @@ function selectionReason(selected, current) {
   return 'priority_3_deepest_safe_candidate';
 }
 
-function semanticStatus(report, { baseline = false } = {}) {
+function semanticStatus(report, { baseline = false, ...options } = {}) {
   if (baseline) return { status: 'baseline', rank: 0 };
-  if (!report || typeof report !== 'object') return { status: 'unknown', rank: 1 };
-  if (report.pass === true && report.repairRejected !== true) return { status: 'pass', rank: 2 };
-  if (report.pass === false || report.repairRejected === true) return { status: 'fail', rank: 0 };
-  return { status: 'unknown', rank: 1 };
+  return semanticProvenance.verifySemanticValidation(report, options);
 }
 
 function normalizeAssessment(value = {}) {
@@ -342,6 +344,8 @@ function normalizeAssessment(value = {}) {
 function compactEntry(entry) {
   return {
     stage: entry.stage,
+    candidateDigest: entry.candidateDigest,
+    validation: cloneSerializable(entry.semanticReport?.validation || null),
     semanticStatus: entry.semanticStatus,
     hardRisk: entry.hardRisk,
     hardViolationCodes: [...entry.hardViolationCodes],

@@ -17,7 +17,7 @@ test('statistical assistance requires enabled scope plus independent grounded mo
   assert.equal(applied.statisticalSupport.originalScore, 32);
   assert.equal(assist.applyAssist(result, source, { ...options, active: false }), result);
   for (const profile of ['resume_application', 'personal_essay', 'unknown']) assert.equal(assist.applyAssist(result, source, { ...options, profile }), result);
-  for (const probability of [null, '32', NaN, 20, 50, 90]) {
+  for (const probability of [null, '32', NaN, 20, 74, 90]) {
     const input = { ...result, probability }; assert.equal(assist.applyAssist(input, source, options), input);
   }
   for (const text of ['짧은 글', source.repeat(5), 'english prose '.repeat(60)]) assert.equal(assist.applyAssist(result, text, options), result);
@@ -119,4 +119,27 @@ test('actual detect finish preserves model and cause-stage scores when support c
   assert.equal(output.statisticalSupport.originalScore, 32);
   assert.equal(output.signalEvidence.length, 1);
   assert.equal(output.gptMeta.escalated, false);
+});
+
+test('fixed statistical evidence yields monotone scores across 49/50 and the entire score range', () => {
+  const prose = source.match(/.{1,65}/gu).join('. ') + '.';
+  for (const independentActive of [false, true]) {
+    const values = Array.from({ length: 101 }, (_, probability) => assist.applyAssist({ probability, confidence: 'high', signalEvidence: evidence }, prose,
+      { profile: 'general', active: true, independentActive, modelValue: positiveModel }).probability);
+    assert.equal(values[49], 74); assert.equal(values[50], 74); assert.equal(values[74], 74); assert.equal(values[75], 75);
+    assert(values.every((value, index) => !index || value >= values[index - 1]));
+  }
+  const supported = assist.applyAssist({ ...result, probability: 60 }, prose, { profile: 'general', active: true, modelValue: positiveModel });
+  assert.equal(assist.sanitizeSupport(supported.statisticalSupport).originalScore, 60);
+  assert.equal(assist.sanitizeSupport({ ...supported.statisticalSupport, version: 'statistical-assist-v2' }), null, 'legacy support cannot claim a new policy');
+});
+
+test('both statistical branches reject protected input rather than treating model locations as permission', () => {
+  const prose = source.match(/.{1,65}/gu).join('. ') + '.';
+  for (const text of ['> ' + prose, '| ' + prose, '# 제목\n' + prose, '참고문헌\n' + prose, '```\n' + prose + '\n```', '“' + prose + '”']) {
+    for (const signalEvidence of [[], evidence]) {
+      const original = { probability: 32, confidence: 'high', signalEvidence };
+      assert.equal(assist.applyAssist(original, text, { profile: 'general', active: true, independentActive: true, modelValue: positiveModel }), original);
+    }
+  }
 });

@@ -9,6 +9,7 @@ const qualityV2 = require('../engine-gpt-prod/finalQualityV2');
 const { buildVoiceProfile } = require('../engine-gpt-prod/voiceProfile');
 const layoutStructure = require('../engine-gpt-prod/layoutStructure');
 const { extractPromptDataSection } = require('../engine-gpt-prod/promptEnvelope');
+const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 const SAFE_POLISH = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지 않습니다.';
@@ -149,8 +150,12 @@ function installEngineMock(t, options = {}) {
       const semanticViolation = typeof options.semanticViolation === 'function'
         ? options.semanticViolation(body, semanticCalls)
         : options.semanticViolation;
+      const rewrite = extractPromptDataSection(body.input, 'REWRITE');
+      // Repair guards are exercised with a real, unique quotation. A made-up
+      // quotation is now an uncertain finding and cannot authorize repair.
+      const span = options.semanticViolationSpan || (rewrite.includes('미래연구원') ? '미래연구원' : rewrite);
       const violations = semanticViolation
-        ? [{ type: 'added_claim', span: '미래연구원', detail: '원문에 없는 기관과 주장' }]
+        ? [{ type: 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정' }]
         : [];
       return apiResponse({ violations });
     }
@@ -177,7 +182,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.47');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.48');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -192,6 +197,10 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.ok(Array.isArray(out.engineMeta.riskFlags));
   assert.equal(out.engineMeta.tonePolicy, 'source_preserve');
   assert.equal(out.engineMeta.semanticJudgeRan, true);
+  assert.equal(out.engineMeta.semanticValidationStatus, 'pass');
+  assert.equal(out.engineMeta.semanticValidationVersion, 'semantic-provenance-v1');
+  assert.equal(out.engineMeta.finalCandidateDigest, textDigest(out.result.outputText));
+  assert.equal(out.result.semanticValidation.finalCandidateDigest, out.engineMeta.finalCandidateDigest);
   assert.equal(out.engineMeta.discourseAuditVersion, 9);
   assert.equal(out.engineMeta.discoursePass, true);
   assert.deepEqual(out.engineMeta.discourseWarningCodes, []);
@@ -684,6 +693,22 @@ test('polish에서 안전한 수정이 없으면 차단하고 의미 심사 비�
   assert.ok(out.floorReport.criticals.some(item => item.gate === 'polish_unchanged'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 0);
+  assert.equal(out.engineMeta.semanticValidationStatus, 'skipped');
+  assert.equal(out.result.semanticValidation.status, 'skipped');
+});
+
+test('실제 위치 없는 의미 지적은 수리를 승인하지 않고 최종 메타에 미확정으로 남긴다', { concurrency: false }, async t => {
+  const mock = installEngineMock(t, {
+    humanize: SAFE_POLISH,
+    semanticViolation: true,
+    semanticViolationSpan: '실제 본문에 존재하지 않는 인용'
+  });
+  const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'ungrounded-judge-user', config: config() });
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 0);
+  assert.equal(out.engineMeta.semanticValidationStatus, 'unknown');
+  assert.equal(out.result.semanticAudit.uncertain, true);
+  assert.equal(out.engineMeta.finalCandidateDigest, textDigest(out.result.outputText));
+  assert.notEqual(out.status, 'blocked');
 });
 
 test('polish 모델이 무변환이어도 최종 안전 교정이 남으면 stale unchanged 상태를 지우고 전달한다', { concurrency: false }, async t => {
@@ -1157,6 +1182,7 @@ test('의미 수리 뒤 결과가 원문으로 돌아가면 최종 회복과 재
     humanizationDepth: true,
     humanize: unsafe,
     semanticViolation: (_body, callNumber) => callNumber === 1,
+    semanticViolationSpan: '후속 조사를 시작합니다.',
     repairOutput: source,
     generalRetryOutput: safe
   });
@@ -1360,7 +1386,9 @@ test('최종 결과에 남은 신규 강한 수식은 해당 문장만 원문으
   installEngineMock(t, { humanize: output });
   const out = await engine.run({ text: source, mode: 'blog', uid: 'intensity-restore-user', config: config() });
 
-  assert.equal(out.status, 'clean');
+  assert.equal(out.status, 'needs_review');
+  assert.equal(out.engineMeta.semanticValidationStatus, 'stale');
+  assert.ok(out.qualityWarnings.some(item => item.code === 'semantic_validation_stale'));
   assert.match(out.result.outputText, /^설계 과정에서 전원 노이즈가/u);
   assert.doesNotMatch(out.result.outputText, /심각한/u);
   assert.match(out.result.outputText, /필터별 조건을 대조한 뒤/u);
@@ -1416,7 +1444,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.47');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.48');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

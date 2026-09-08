@@ -43,6 +43,7 @@ const sourcePreflight = require('./sourcePreflight');
 const literalSpans = require('./literalSpans');
 const candidateIntegrity = require('./candidateIntegrity');
 const candidateLedgerPolicy = require('./candidateLedger');
+const semanticProvenance = require('./semanticProvenance');
 const statisticalAtoms = require('./statisticalAtoms');
 const safeEditAccumulator = require('./safeEditAccumulator');
 const commercialSignals = require('./commercialSignals');
@@ -68,8 +69,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.47';
-const DETECT_VERSION = 'gpt-detect-v1.29';
+const VERSION = 'gpt-prod-v2.5.48';
+const DETECT_VERSION = 'gpt-detect-v1.30';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -2218,8 +2219,27 @@ async function runEngine({
   // 후단 수리 하나가 자기 직전 후보보다 나쁘지 않더라도 여러 패스를 거치며
   // 사실·구조·화자·한국어 품질이 누적 하락할 수 있으므로, 후보 선택 기준은
   // 항상 같은 원문과 같은 사전식 우선순위를 사용한다.
+  const projectSemanticText = value => {
+    let text = String(value || '');
+    if (frozen) text = restoreLockedBlocks(text, frozen.blocks);
+    if (inlineMathFreeze.count > 0) text = literalSpans.restoreMath(text, inlineMathFreeze).text;
+    if (inlineCodeFreeze.count > 0) text = literalSpans.restoreInlineCode(text, inlineCodeFreeze).text;
+    return text;
+  };
+  const semanticReportForCandidate = report => {
+    const validatedSource = [auditSource, source, rawSource].find(value => (
+      report?.validation?.sourceDigest === semanticProvenance.textDigest(value)
+    ));
+    if (validatedSource == null) return report;
+    return semanticProvenance.projectSemanticValidation(report, {
+      source: validatedSource,
+      candidate: report.outputText,
+      project: projectSemanticText
+    });
+  };
   const candidateLedger = candidateLedgerPolicy.createCandidateLedger({
     enabled: selectedMode !== 'polish',
+    source: rawSource,
     assess: ({ stage, text, semanticReport: candidateSemanticReport }) => {
       const candidateStructureAudit = structureChunk.buildStructureAudit({
         source: rawSource,
@@ -2317,7 +2337,7 @@ async function runEngine({
   const recordCandidateCheckpoint = (stage, checkpointSemanticReport = semanticReport) => candidateLedger.record({
     stage,
     text: outputText,
-    semanticReport: checkpointSemanticReport,
+    semanticReport: semanticReportForCandidate(checkpointSemanticReport),
     artifacts: {
       layoutRepair,
       inlineCodeIntegrity,
@@ -2335,6 +2355,17 @@ async function runEngine({
     currentHardViolationCodes: [],
     currentSemanticStatus: ''
   };
+  const validatedMaterializedReport = semanticReportForCandidate(semanticReport);
+  const validatedMaterializedText = projectSemanticText(semanticReport?.outputText);
+  if (semanticProvenance.verifySemanticValidation(validatedMaterializedReport, {
+    source: rawSource, candidate: validatedMaterializedText, requireDigest: true
+  }).status === 'pass') {
+    candidateLedger.record({
+      stage: 'semantic_validated_materialized',
+      text: validatedMaterializedText,
+      semanticReport: validatedMaterializedReport
+    });
+  }
   recordCandidateCheckpoint('post_semantic_materialized');
   // 의미 수리·레이아웃 복원도 드물게 새 연어·논항·시제 오류를 만들 수 있다.
   // 최종 단계에서는 자유 재작성을 다시 호출하지 않고, 원문에 없던 것으로
@@ -3751,7 +3782,17 @@ async function runEngine({
     && result.floorReport?.status !== 'blocked'
     && humanizationDepthReport?.applicable === true
     && humanizationDepthReport?.pass === false;
-  const semanticQualityWarnings = qualityV2.warningsFromSemantic(semanticReport);
+  const finalSemanticValidation = {
+    ...semanticProvenance.verifySemanticValidation(semanticReportForCandidate(semanticReport), {
+      source: rawSource, candidate: outputText, requireDigest: true
+    }),
+    version: semanticProvenance.VERSION,
+    finalCandidateDigest: semanticProvenance.textDigest(outputText)
+  };
+  const semanticQualityWarnings = [
+    ...qualityV2.warningsFromSemantic(semanticReport),
+    ...semanticProvenance.finalValidationWarnings(semanticReport, finalSemanticValidation)
+  ];
   const deterministicEffectNotices = [
     ...(deliveryAudit?.warnings || []),
     ...semanticQualityWarnings
@@ -3881,6 +3922,7 @@ async function runEngine({
   result.documentProfile = documentProfile;
   result.voiceProfile = voiceProfile;
   result.semanticAudit = semanticReport;
+  result.semanticValidation = finalSemanticValidation;
   result.editMetrics = finalEditMetrics;
   result.humanizationDepth = humanizationDepthReport;
   result.koreanRefinement = koreanRefinementAudit;
@@ -4047,6 +4089,9 @@ async function runEngine({
     niklExternalErrorCount: niklAdvisorMeta.externalErrorCount,
     niklExternalTimeoutCount: niklAdvisorMeta.externalTimeoutCount,
     semanticJudgeRan: semanticReport.ran === true,
+    semanticValidationStatus: result.semanticValidation.status,
+    semanticValidationVersion: semanticProvenance.VERSION,
+    finalCandidateDigest: result.semanticValidation.finalCandidateDigest,
     semanticRepairStyleWarnings: semanticReport.repairStyleWarnings || [],
     semanticUnchangedRepairCount: semanticReport.unchangedRepairCount || 0,
     semanticSectionCount: Number(semanticReport?.sectionCount || 0),
@@ -5081,8 +5126,13 @@ async function callHumanize(args) {
       humanizationPlan: effectiveChunkHumanizationPlan,
       discourseProfile: chunkDiscourseProfile
     });
+    const retryInstruction = phase === 'escalation'
+      ? prompts.buildEscalationInstruction(escalationReason)
+      : '';
     const promptIntegrity = prompts.validateHumanizePrompt(hp.stable, {
       taskContract: hp.taskContract,
+      retryInstruction,
+      humanizeContract: hp.humanizeContract,
       requireHumanizationContract: effectiveChunkHumanizationPlan?.applicable === true
     });
     if (!promptIntegrity.pass) {
@@ -5090,9 +5140,6 @@ async function callHumanize(args) {
       error.code = 'HUMANIZE_PROMPT_INTEGRITY_FAILED';
       throw error;
     }
-    const retryInstruction = phase === 'escalation'
-      ? prompts.buildEscalationInstruction(escalationReason)
-      : '';
     const response = await completeJson({
       system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
       user: prompts.buildHumanizeUser({
@@ -5121,6 +5168,9 @@ async function callHumanize(args) {
         phase,
         mode,
         requestStrength,
+        promptDigest: promptIntegrity.promptDigest,
+        promptVariant: hp.promptVariant,
+        editObjective: hp.editObjective,
         profile: PROFILE,
         chunkIndex: index,
         escalated: phase === 'escalation'
@@ -5292,7 +5342,7 @@ async function callHumanize(args) {
   }
 }
 
-async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '', documentProfile = null } = {}) {
+async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '', documentProfile = null, referenceContext = '' } = {}) {
   const source = String(text || '').trim();
   const cfg = await loadConfig(config);
   const diagnostics = require('../lib/detectDiagnostics');
@@ -5322,7 +5372,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
-  const user = JSON.stringify(require('../lib/detectGrounding').sourceSentences(source).map((sentence, index) => ({ index, text: sentence.text })));
+  const user = JSON.stringify(require('../lib/detectInputDocument').buildDetectModelInput(source, { referenceContext }));
   let primary = null;
   let primaryError = null;
   try {
@@ -5574,7 +5624,10 @@ async function callEvidenceSearch({ text, cfg, signal, phase, model, reasoningEf
         // This prevents a same-host path/query (including open redirects) from
         // inheriting the search tool's trust.
         url: verifiedUrl || c.url,
-        sourceVerified: Boolean(verifiedUrl)
+        sourceVerified: Boolean(verifiedUrl),
+        urlVerified: Boolean(verifiedUrl),
+        claimSupported: false,
+        approvedForInsertion: false
       };
     });
   if (verifiedUrls.size) {
@@ -7879,8 +7932,9 @@ function shouldEscalateDetect(out, source, cfg) {
   // by the narrative policy. Escalation must use the canonical evidence that
   // actually supports the score, otherwise a cache/narrative change can alter
   // model routing without any change in evidence.
-  if (out?.confidence === 'low') return true;
+  if (out?.confidence === 'low' && !require('../lib/detectConfidence').insufficientSample(source)) return true;
   if (assessCauseCoverage(probability, out?.signalEvidence, { source: 'llm' }).status === 'partial') return true;
+  if (out?.confidence === 'low') return false;
   if (String(source || '').length >= 6000 && out?.confidence !== 'high') return true;
   return false;
 }
@@ -7937,7 +7991,7 @@ async function verifyEvidenceCandidates(candidates, parentSignal) {
   for (const candidate of candidates.slice(0, 8)) {
     if (parentSignal?.aborted) throw new Error('aborted');
     const ok = await verifyEvidenceUrl(candidate.url, parentSignal);
-    if (ok) out.push({ ...candidate, sourceVerified: true });
+    if (ok) out.push({ ...candidate, sourceVerified: true, urlVerified: true, claimSupported: false, approvedForInsertion: false });
   }
   return out;
 }

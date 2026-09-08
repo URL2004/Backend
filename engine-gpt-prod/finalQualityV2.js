@@ -14,6 +14,8 @@ const legalAudit = require('./legalAudit');
 const layoutStructure = require('./layoutStructure');
 const koreanRefinement = require('./koreanRefinement');
 const endingStyle = require('./endingStyleAudit');
+const { auditRelationCandidates } = require('./relationAudit');
+const { bindSemanticValidation } = require('./semanticProvenance');
 const {
   buildPromptDataSections,
   promptEnvelopeSystemRule
@@ -141,6 +143,7 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   const editMetrics = computeEditMetrics(source, outputText);
   const repetitionAudit = compareRepetitionDelta(source, outputText);
   const numberAudit = compareNumberMultiset(source, outputText, allowedExtra);
+  const relationAudit = auditRelationCandidates(source, outputText);
   let floorViolations = [];
   try {
     floorViolations = floor.collectFloorViolations({
@@ -285,6 +288,7 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     discourseAudit,
     repetitionAudit,
     numberAudit,
+    relationAudit,
     protectedFactCount: countProtectedFacts(source),
     structureSignals: detectStructureSignals(source)
   };
@@ -319,6 +323,7 @@ function compactRepetition(value) {
 }
 
 function shouldRunSemanticJudge({ requestedMode, effectiveMode, source, documentProfile, audit }) {
+  if (audit?.relationAudit?.semanticRequired === true) return { run: true, reason: 'relation_candidate' };
   const requested = String(requestedMode || '').toLowerCase();
   if (requested === 'formal' || requested === 'polish' || effectiveMode === 'polish') return { run: true, reason: 'mode' };
   if (String(source || '').length >= 1500 && requested === 'blog') return { run: true, reason: 'long_blog' };
@@ -375,9 +380,12 @@ async function runSemanticDocumentAudit({
   let remainingRepairRounds = repairRoundBudget;
   await require('./concurrency').mapWithConcurrency(pairs, 2, async (pair, index) => {
     try {
-      const pairDiscourseSignals = pairs.length === 1
+      const baseDiscourseSignals = pairs.length === 1
         ? discourseSignals
         : discourse.compareDiscourse(pair.sourceContext, pair.output).codes;
+      const relationSignals = auditRelationCandidates(pair.sourceContext, pair.output);
+      const pairDiscourseSignals = [...baseDiscourseSignals, ...relationSignals.codes,
+        ...(relationSignals.candidates || []).map(item => JSON.stringify(item))];
       const report = await judgeAndRepair(pair.sourceContext, pair.output, {
         lang,
         signal,
@@ -399,6 +407,7 @@ async function runSemanticDocumentAudit({
       reports[index] = {
         index: pair.index,
         pass: report.pass === true,
+        uncertain: report.uncertain === true,
         skipped: report.skipped === true,
         reason: report.reason || '',
         rounds: report.rounds || 0,
@@ -419,7 +428,7 @@ async function runSemanticDocumentAudit({
   }, signal);
   const repairedText = outputs.join('');
   const residual = reports.filter(report => report.pass !== true);
-  return {
+  return bindSemanticValidation({
     outputText: repairedText,
     ran: true,
     pass: residual.length === 0,
@@ -435,7 +444,7 @@ async function runSemanticDocumentAudit({
     usage: reports.reduce((acc, report) => addUsageLocal(acc, report.usage), null),
     initialViolations: reports.flatMap(report => report.initialViolations || []),
     violations: residual.flatMap(report => report.violations || [])
-  };
+  }, source, repairedText, { phase: 'semantic_document', model: [...new Set(reports.map(r => r.selectedJudgeModel).filter(Boolean))].join(',') });
 }
 
 function restoreReviewPairBoundaryWhitespace(originalPart, candidatePart) {

@@ -62,7 +62,8 @@ const CREATIVE_POLICY = Object.freeze({
 function buildHumanizationPlan(source, {
   requestStrength = 'basic',
   documentProfile = null,
-  inputRisk = null
+  inputRisk = null,
+  editObjective = process.env.HUMANIZE_EDIT_OBJECTIVE || 'perceived'
 } = {}) {
   const rawStrength = String(requestStrength || 'basic');
   const strength = rawStrength === 'advanced' ? 'advanced' : (rawStrength === 'polish' ? 'polish' : 'basic');
@@ -218,7 +219,7 @@ function buildHumanizationPlan(source, {
     ? Math.min(1, (strength === 'advanced' ? 0.20 : 0.30) + (cautious ? 0.05 : 0))
     : 1;
 
-  return {
+  const result = {
     version: PLAN_VERSION,
     policyVersion: POLICY_VERSION,
     applicable: sourceChars >= 30 && sentenceCount > 0,
@@ -256,6 +257,18 @@ function buildHumanizationPlan(source, {
     commercialTargetSentenceCount: Number(commercialTargetPlan.indices?.length || 0),
     commercialTargetReasonCounts: commercialTargetPlan.reasonCounts || {}
   };
+  return editObjective === 'issue_focused_v1' ? issueFocusedPlan(result) : result;
+}
+
+function issueFocusedPlan(plan) {
+  const count = Number(plan.targetSentenceCount || 0);
+  return { ...plan, editObjective: 'issue_focused_v1', policyVersion: 'issue-focused-candidate-v1',
+    noIssueCandidate: count === 0, requiredChangedSentenceCount: count ? Math.min(count, plan.requiredTargetChangedCount || 1) : 0,
+    hardRequiredChangedSentenceCount: 0, requiredStructuralChangedSentenceCount: 0,
+    minChangedSentenceRatio: 0, minSubstantiveEditRatio: 0, hardMinimumSubstantiveEditRatio: 0,
+    targetSubstantiveEditMin: 0, targetSubstantiveEditMax: 0,
+    paragraphCoverageApplicable: false, requiredTargetChangedParagraphCount: 0,
+    carryoverApplicable: false, maxSubstantiveCarryoverRatio: 1 };
 }
 
 /**
@@ -287,7 +300,8 @@ function buildDistributedHumanizationPlans(chunks, documentPlan, {
     const localPlan = buildHumanizationPlan(text, {
       requestStrength,
       documentProfile,
-      inputRisk
+      inputRisk,
+      editObjective: documentPlan?.editObjective || 'perceived'
     });
     const sourceSentenceCount = locked ? 0 : Number(localPlan.sourceSentenceCount || 0);
     const globalStart = sentenceCursor;
@@ -323,7 +337,7 @@ function buildDistributedHumanizationPlans(chunks, documentPlan, {
     activeRows.reduce((sum, row) => sum + row.sourceSentenceCount, 0),
     Math.max(
       Number(documentPlan?.requiredChangedSentenceCount || 0),
-      activeRows.length
+      documentPlan?.editObjective === 'issue_focused_v1' ? 0 : activeRows.length
     )
   );
   const targetRows = activeRows.filter(row => row.localTargetIndices.length > 0);
@@ -412,6 +426,8 @@ function buildDistributedHumanizationPlans(chunks, documentPlan, {
     plans.set(row.chunkIndex, {
       ...row.localPlan,
       riskLevel: documentPlan?.riskLevel || row.localPlan.riskLevel,
+      editObjective: documentPlan?.editObjective,
+      noIssueCandidate: documentPlan?.editObjective === 'issue_focused_v1' && localTargetCount === 0,
       riskScore: documentPlan?.riskScore ?? row.localPlan.riskScore,
       signalSource: `${documentPlan?.signalSource || PLAN_SIGNAL_SOURCE}:document_distributed`,
       targetIndices: row.localTargetIndices,
@@ -579,7 +595,8 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   if (sourceRedundancyReport.applicable === true && sourceRedundancyReport.pass !== true) {
     reasons.push('source_semantic_redundancy_low');
   }
-  if (metrics.trivialOnly) reasons.push('punctuation_or_surface_only');
+  const noIssueCandidate = plan.editObjective === 'issue_focused_v1' && plan.noIssueCandidate === true;
+  if (metrics.trivialOnly && !noIssueCandidate) reasons.push('punctuation_or_surface_only');
   const hardMinimumEdit = Number(plan.hardMinimumSubstantiveEditRatio ?? Math.max(
     HARD_DELIVERY_EDIT_FLOOR,
     Number(plan.minSubstantiveEditRatio || 0) * HARD_DELIVERY_EDIT_FACTOR
@@ -591,7 +608,7 @@ function evaluateHumanizationDepth(source, output, planOrOptions = {}) {
   const blockingReasons = [];
   if (metrics.substantiveEditRatio + 1e-9 < hardMinimumEdit) blockingReasons.push('substantive_effect_too_low');
   if (metrics.substantiveChangedSentenceCount < hardRequiredSentences) blockingReasons.push('substantive_sentence_effect_too_low');
-  if (metrics.trivialOnly) blockingReasons.push('punctuation_or_surface_only');
+  if (metrics.trivialOnly && !noIssueCandidate) blockingReasons.push('punctuation_or_surface_only');
   const targetDepthMet = metrics.substantiveEditRatio + 1e-9 >= Number(plan.targetSubstantiveEditMin || 0);
   const aboveTargetRange = Number(plan.targetSubstantiveEditMax || 0) > 0
     && metrics.substantiveEditRatio > Number(plan.targetSubstantiveEditMax) + 1e-9;
@@ -839,6 +856,15 @@ function measureSubstantiveEdit(source, output) {
 
 function buildHumanizationPromptBlock(plan) {
   if (!plan?.applicable) return '';
+  if (plan.editObjective === 'issue_focused_v1') return [
+    '[실질 휴머나이징 계약]',
+    '실험 계약=issue-focused-candidate-v1. 원문의 뜻과 화자를 지키면서 확인된 문제 구간을 편집한다.',
+    `변화 분포 목표: 확인된 대상 ${plan.targetSentenceCount || 0}개 가운데 최소 ${plan.requiredTargetChangedCount || 0}개를 검토한다. 검토가 수정 의무는 아니다.`,
+    `우선 대상 문장 번호=${(plan.targetIndices || []).map(index => index + 1).join(',') || '없음'}.`,
+    '문단 경계와 주장·사실·인과·시점은 보존한다. 같은 문단 안에서 필요한 문장 분리·결합은 허용하되 잠긴 문장 경계는 유지한다.',
+    '변경률이나 어순 이동 횟수를 채우려고 도치·수식어 이동을 하지 않는다. 문제를 안전하게 개선할 수 없거나 이미 자연스러운 문장은 유지한다.',
+    '새 경험·평가·근거·결론을 추가하지 않는다.'
+  ].join('\n');
   const labels = {
     connector: '기계적으로 반복되는 접속어',
     stock_phrase: '상투적인 보고서 표현',
@@ -885,7 +911,7 @@ function buildHumanizationPromptBlock(plan) {
       ? `문단 분포 목표: 우선 대상이 있는 ${plan.targetParagraphCount}개 일반 산문 문단 가운데 최소 ${plan.requiredTargetChangedParagraphCount}개 문단에서 실질 변화를 만든다. 한 문단만 크게 고치고 나머지를 복사하지 않는다.`
       : '',
     '문장마다 억지로 다른 단어를 끼워 넣지 말고, 바꿀 문장은 충분히 바꾸며 이미 자연스러운 문장은 남긴다.',
-    '변화량을 채우려고 “뒤·후·다음·이후” 같은 순차 접속 표현만 새로 반복하지 않는다. 같은 과업·근거 묶음은 핵심어 응집을 유지하고 실제 주제·역할이 바뀌는 곳에서만 문단을 나눈다.',
+    '변화량을 채우려고 “뒤·후·다음·이후” 같은 순차 접속 표현만 새로 반복하지 않는다. 같은 과업·근거 묶음의 응집과 원문 문단 경계를 유지한다. 주제·역할 경계의 레이아웃 정리는 서버 전용 단계가 담당한다.',
     '문장을 나누거나 합친 뒤에도 각 문장의 주어, 지시 대상, 연구 주체와 결론의 근거가 독립적으로 분명해야 한다.',
     plan.rhetoricalRemediationPlan?.targetCount > 0
       ? '원문 담화 계약에 표시된 정형 성찰·반복 결론·과도하게 완결된 인과 구조는 그대로 복사하지 말고, 사실을 삭제하지 않는 범위에서 직접적인 문장으로 풀어 쓴다.'

@@ -91,6 +91,21 @@ function fakeFirestore() {
 
 test.beforeEach(() => stability.resetForTests());
 
+test('raw detector identity shares Korean empty-context results across routes without sharing billing identity', async () => {
+  const text = '같은 본문의 근거 위치를 그대로 보존한다.';
+  const analyze = stability.payloadFingerprint({ text, lang: 'ko', referenceContext: '', route: 'analyze', needed: 1 });
+  const report = stability.payloadFingerprint({ text, route: 'detect_report', needed: 10 });
+  assert.equal(analyze, report);
+  assert.notEqual(analyze, stability.payloadFingerprint({ text, lang: 'en' }));
+  assert.notEqual(analyze, stability.payloadFingerprint({ text, referenceContext: '앞 문맥이다.' }));
+  assert.notEqual(analyze, stability.payloadFingerprint({ text: ' ' + text }));
+  const options = { firestore: null, hmacSecret: '', now: 10000 };
+  const first = await stability.getOrCompute(input(analyze), async () => modelResult(44), options);
+  const second = await stability.getOrCompute(input(report), async () => assert.fail('second route recomputed raw score'), options);
+  assert.equal(first.cacheHit, false); assert.equal(second.cacheHit, true);
+  assert.equal(second.result.probability, 44);
+});
+
 test('같은 사용자·입력·모델 정책은 24시간 동안 원점수를 재사용한다', async () => {
   let calls = 0;
   const options = { firestore: null, now: 10_000 };

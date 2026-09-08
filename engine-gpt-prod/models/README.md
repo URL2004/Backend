@@ -1,11 +1,16 @@
 # Korean style statistics v1
 
-This optional local classifier supports existing grounded detector evidence. It is
-not an authorship probability or a standalone author classifier. Enable with
+This optional local classifier contributes a bounded writing-style index. It is
+not an authorship probability or proof of the author's identity. Enable with
 `DETECT_STATISTICAL_ASSIST_ENABLED=1`; the default is off. Disable the flag and
 restart to revert new requests to the existing detector. The cache variant
 includes the flag and model version; completed idempotent requests keep their
 original result and charge.
+
+The current public policy is `statistical-assist-v3-monotone`. Independent support
+also requires `DETECT_INDEPENDENT_STATISTICS_ENABLED=1`. Without that second flag,
+at least one recurring, located model cause is still required. Both flags and
+the policy version participate in the cache variant.
 
 ## Construction and attribution
 
@@ -28,7 +33,7 @@ identifiers are included. This notice concerns the model asset, not unrelated
 application code. Preserve attribution and the same license when redistributing
 adaptations of this asset.
 
-## Frozen support rule
+## Frozen model construction and historical v1 rule
 
 A separate development set of 40 source groups (40 reference, 40 rewrite and 40
 topic-only AI texts) sets the decision threshold to the maximum reference-human
@@ -37,7 +42,7 @@ held-out source groups. All groups are disjoint from training and earlier
 evaluation groups. AI generation alternates Luna and Terra; length is matched
 to 85–115% of reference length before detector evaluation.
 
-The support rule requires 500–2600 input characters, Korean-majority letters,
+The original v1 support rule required 500–2600 input characters, Korean-majority letters,
 general/report_assignment/long_explainer routing, an existing score of 21–49,
 and a moderate/strong, recurring/pervasive cause with at least two distinct
 grounded sentence locations. The classifier must match at least 100 features
@@ -46,10 +51,54 @@ and exceed the frozen threshold. The resulting style index is
 This transform is an index, not a calibrated probability. Other scores stay
 unchanged. Missing or corrupt optional weights preserve the completed result.
 
+## Current public policy (2026-09-08)
+
+The weights, normalization and threshold remain unchanged. Supported inputs have
+500–2600 characters, Korean-majority letters and a general/report_assignment/
+long_explainer profile. Explicit protected syntax is identified by the canonical
+detect input document. If it includes quotations, headings, tables, reference
+sections or code, the optional statistical stage abstains in **both** branches;
+the completed LLM result remains available. Numbered/bulleted prose remains
+eligible. Unmarked quotations and implicit headings cannot all be identified by
+these deterministic syntax guards.
+
+For grounded support, a score at least 21 and a moderate/strong recurring or
+pervasive cause with at least two distinct located sentences is required. For
+independent support, the selected model confidence must not be low, at least four
+editable sentence units are required, and threshold-adjusted margin must be at
+least 0.05. Both branches require at least 100 matching features and positive
+threshold-adjusted margin.
+
+Support can now apply below 74, including scores 50–73. The result is
+`max(originalScore, min(74, round(100 * sigmoid(thresholdAdjustedMargin))))`.
+No support metadata is added if the result does not increase. This removes the
+old discontinuity in which identical support could raise 49 above an unchanged
+50. It never lowers a model score or lifts a score into the 75–100 band. Length
+and profile boundaries still define model applicability; they are not validated
+as universal authorship boundaries. Legacy v1/v2 cached support metadata remains
+readable under its original score limits.
+
+A local replay of the already-exposed 900-document 2026-09-07 collection recovered
+the previous statistical stage exactly for 900/900 records using the saved
+selected confidence and qualifying-cause counts. The new stage changed five
+scores: four already-positive AI explanations increased within the 50–74 band,
+and one quoted human reference lost an inapplicable support adjustment. At 50,
+human positives changed 18/600 to 17/600; AI positives stayed 130/300. At 21 and
+75 the classifications were unchanged. These are regression/development counts,
+not a new independent holdout or a validation of the new prompt/grounding chain.
+The original raw model causes were not retained in that dataset, so the replay
+reconstructs the statistical branch predicate only, not semantic evidence.
+
+The separate `detect-evidence-fusion-v1.json`, `detect-style-classifier-v1.json`
+and `detect-risk-calibration-v1.json` assets remain research/shadow candidates.
+Their scores do not replace the public detector and their validation numbers
+must not be attributed to this public statistical model.
+
 No causal categories are invented to explain the statistical contribution.
 The report describes the combined method and may still mark sentence-level
 explanation coverage as partial. Private diagnostics retain model, grounded
-and statistical stages separately. Existing history calibration is unchanged.
+and statistical stages separately. History calibration is a separate downstream
+policy; this statistical-stage rule does not define its settings or discounts.
 
 ## Held-out results and limits (2026-09-06)
 

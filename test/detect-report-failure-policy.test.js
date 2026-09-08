@@ -149,7 +149,7 @@ stub('lib/usageBilling.js', {
 });
 
 stub('lib/detectCalibration.js', {
-  applyHistoryCalibration: async ({ probability }) => ({
+  applyHistoryCalibration: async ({ probability }) => state.comparisonCalibration || ({
     probability: Math.round(probability),
     rawProbability: Math.round(probability),
     applied: false,
@@ -222,9 +222,12 @@ stub('lib/detectRequestStore.js', {
   }
 });
 
+const rawPayloadFingerprint = require('../lib/detectResultStability').payloadFingerprint;
 stub('lib/detectResultStability.js', {
+  payloadFingerprint: rawPayloadFingerprint,
   variantForConfig: () => 'detect-result-stability-v1:test',
   getOrCompute: async (_input, compute) => {
+    state.lastStabilityInput = _input;
     if (state.stabilityResult) {
       return {
         result: state.stabilityResult,
@@ -394,6 +397,8 @@ test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤�
 
   assert.equal(result.status, 200);
   assert.equal(result.body.probability, 72);
+  assert.equal(state.lastStabilityInput.payloadFingerprint, rawPayloadFingerprint({ text: BASE_TEXT, lang: 'ko', referenceContext: '' }));
+  assert.notEqual(state.lastStabilityInput.payloadFingerprint, fingerprint({ opType: 'detect', needed: cost, text: BASE_TEXT }));
   assert.notEqual(result.body.idempotentReplay, true, 'fresh serialized result must not masquerade as replay');
   assert.equal(result.body.probSource, 'llm');
   assert.equal(typeof result.body.interpretationProof, 'string');
@@ -687,4 +692,33 @@ test('fast scoring does not drop a slower valid before/after conversion preview'
     assert.equal(response.body.example.meaningfulChange,true);
     assert.equal(response.body.example.afterAnchor,'changed');
   } finally {delete state.rewritePreview;}
+});
+
+test('report HTTP response signs the final comparison for exact-source backup and replay', { concurrency: false }, async t => {
+  const previousSalt = process.env.OPENAI_SAFETY_SALT, previousPlan = state.billingPlan;
+  process.env.OPENAI_SAFETY_SALT = 'synthetic-report-comparison-proof-key-long-enough';
+  const comparison = { version: 'humanize-comparison-v1', basis: 'history_adjusted_style', sourceProbability: 70,
+    rawProbability: 72, probability: 61, rawDelta: 2, adjustedDelta: -9, adjustment: -11,
+    calibrationApplied: true, match: 'exact_normalized', status: 'improved' };
+  state.comparisonCalibration = { probability: 61, rawProbability: 72, applied: true,
+    meta: { applied: true, sourceProbability: 70, sourceCapApplied: false }, comparison };
+  state.billingPlan = 'unlimited';
+  t.after(() => {
+    delete state.comparisonCalibration; state.billingPlan = previousPlan;
+    if (previousSalt === undefined) delete process.env.OPENAI_SAFETY_SALT; else process.env.OPENAI_SAFETY_SALT = previousSalt;
+  });
+  const inputText = `\r\n ${BASE_TEXT} \r\n`, requestId = 'detect-signed-comparison-report';
+  const response = await post(inputText, requestId);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.probability, 61);
+  assert.deepEqual(response.body.historyComparison, comparison);
+  const { verifiedBackupHistoryComparison } = require('../lib/detectHistoryComparison');
+  const backup = { inputText, probability: response.body.probability,
+    historyComparison: response.body.historyComparison, historyComparisonProof: response.body.historyComparisonProof };
+  assert.deepEqual(verifiedBackupHistoryComparison('detect-policy-user', backup), comparison);
+  assert.equal(verifiedBackupHistoryComparison('other-user', backup), null);
+  assert.equal(verifiedBackupHistoryComparison('detect-policy-user', { ...backup, inputText: inputText.trim() }), null);
+  const replay = await post(inputText, requestId);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.historyComparisonProof, response.body.historyComparisonProof);
 });

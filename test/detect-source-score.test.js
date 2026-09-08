@@ -50,10 +50,12 @@ test('클라이언트 점수 위조·다른 입력·백업·보정된 감지 이
   }
 });
 
-test('원점수가 없으면 데이터베이스 조회도 발생하지 않는다', async () => {
+test('화면에서 점수를 보내지 않아도 같은 원글의 서버 검사 점수를 연결한다', async () => {
   const observe = {};
   assert.equal(await source.resolveSourceScore({ db: database([], observe), uid: 'u1', text: '원문', claimedScore: null }), null);
-  assert.equal(observe.reads, undefined);
+  assert.equal(observe.reads, 1);
+  assert.equal(await source.resolveSourceScore({ db: database([record()]), uid: 'u1', text: '검증용 원문입니다.' }), 38);
+  assert.equal(await source.resolveSourceScore({ db: database([record({ probability: 0, probSource: 'cached_llm' })]), uid: 'u1', text: '검증용 원문입니다.' }), 0);
 });
 
 test('원점수 증명은 사용자·출력·점수에 결합되고 구형 서명과 위조를 거절한다', () => {
@@ -66,4 +68,16 @@ test('원점수 증명은 사용자·출력·점수에 결합되고 구형 서�
   assert.equal(source.verifiedSourceScore('u1', { ...saved, sourceProbability: 1 }, KEY), null);
   assert.equal(source.verifiedSourceScore('u1', { ...saved, historySourceScoreIntegrity: null }, KEY), null);
   assert.equal(source.signSourceScore('u1', outputText, null, KEY), null);
+});
+
+test('해시로 직접 조회하면 최신 50건 밖의 원문 감지와도 연결된다', async () => {
+  const query = {
+    where(field, op, hash) { assert.deepEqual([field, op, hash], ['detectInputHash', '==', source.inputHash('검증용 원문입니다.')]); return this; },
+    orderBy(field, direction) { assert.deepEqual([field, direction], ['createdAt', 'desc']); return this; },
+    limit(count) { this.count = count; return this; },
+    select() { return this; },
+    async get() { assert.equal(this.count, 1); return { docs: [{ data: () => record() }] }; }
+  };
+  const db = { collection: () => ({ doc: () => ({ collection: () => query }) }) };
+  assert.equal(await source.resolveSourceScore({ db, uid: 'u1', text: '검증용 원문입니다.' }), 38);
 });

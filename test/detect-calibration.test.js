@@ -126,6 +126,57 @@ function longDocument(prefix = '원문') {
   )).join('\n');
 }
 
+test('숫자·부정·직접 인용이 바뀌거나 긴 문장 순서를 바꾸면 유사도만으로 보정하지 않는다', () => {
+  const original = longDocument('근거') + '최종 인원은 30명이며 실패하지 않았다. “원문 보존”을 확인했다.';
+  for (const changed of [
+    original.replace('30명', '31명'),
+    original.replace('실패하지 않았다', '실패했다'),
+    original.replace('“원문 보존”', '“결과 보존”'),
+    original.split('\n').reverse().join('\n')
+  ]) {
+    assert.equal(calibration.approximateMatchMetrics(calibration.normalizeText(original), calibration.normalizeText(changed), calibration.sanitizeConfig({})).matched, false);
+  }
+});
+
+test('보정 전후 비교는 원점수 상승과 서비스 조정을 나눠 보존하고 0점·동률을 개선으로 꾸미지 않는다', () => {
+  const base = { reason: 'own_humanized_history_match', match: 'exact_normalized', sourceProbability: 72, rawProbability: 80, calibratedProbability: 68, applied: true };
+  const comparison = calibration.buildHistoryComparison(base);
+  assert.equal(comparison.rawDelta, 8);
+  assert.equal(comparison.adjustedDelta, -4);
+  assert.equal(comparison.adjustment, -12);
+  assert.equal(comparison.status, 'improved');
+  assert.equal(calibration.buildHistoryComparison({ ...base, calibratedProbability: 72 }).status, 'unchanged');
+  assert.equal(calibration.buildHistoryComparison({ ...base, sourceProbability: 0, calibratedProbability: 0 }).status, 'unchanged');
+  assert.equal(calibration.buildHistoryComparison({ ...base, sourceProbability: null }).status, 'unavailable');
+});
+
+test('보정 설정 캐시를 다른 데이터베이스에 공유하지 않으며 조회 장애는 무보정 성공으로 숨기지 않는다', async () => {
+  calibration.clearRuntimeConfigCache();
+  assert.equal((await calibration.getRuntimeConfig({ db: fakeDb([], { enabled: true }) })).enabled, true);
+  assert.equal((await calibration.getRuntimeConfig({ db: fakeDb([], { enabled: false }) })).enabled, false);
+  const unavailable = { collection() { throw new Error('synthetic unavailable'); } };
+  await assert.rejects(calibration.applyHistoryCalibration({ db: unavailable, uid: 'same-user', text: longDocument(), probability: 80 }), { code: 'DETECT_CALIBRATION_UNAVAILABLE' });
+  calibration.clearRuntimeConfigCache();
+});
+
+test('색인으로 오래된 결과를 찾되 해시는 출처 서명을 대체하지 않는다', async () => {
+  const output = longDocument('색인');
+  const signed = historyDoc('older-than-200', { type: 'humanize', mode: 'blog', outputText: output });
+  const db = fakeDb([]);
+  const originalCollection = db.collection.bind(db);
+  db.collection = name => name !== 'users' ? originalCollection(name) : { doc: () => ({ collection: () => {
+    const query = {
+      where(field, op, hash) { assert.deepEqual([field, op, hash], ['calibrationTextHash', '==', calibration.lookupHash(output)]); this.indexed = true; return this; },
+      orderBy() { return this; }, limit() { return this; }, select() { return this; },
+      async get() { assert.equal(this.indexed, true); return { docs: [signed] }; }
+    };
+    return query;
+  } }) };
+  const match = await calibration.findOwnHumanizedHistoryMatch({ db, uid: 'same-user', text: output });
+  assert.equal(match.id, 'older-than-200');
+  assert.equal(match.trust, 'history_hmac');
+});
+
 test('공백·호환문자만 다른 기존 결과는 짧은 글에서도 정확 일치로 보정한다', async () => {
   const output = (`Ａ 과정에서는 학생의 관찰 기록을 차례로 확인했습니다. `
     + `그 결과를 바탕으로 다음 활동의 순서를 조정했습니다. `).repeat(3);
@@ -413,7 +464,7 @@ test('운영 보정은 유사 매칭 메타와 원점수를 남기고 88점을 5
   assert.equal(result.rawProbability, 88);
   assert.equal(result.probability, 58);
   assert.equal(result.applied, true);
-  assert.equal(result.meta.version, 'history-calibration-v3-source-verified');
+  assert.equal(result.meta.version, calibration.VERSION);
   assert.equal(result.meta.match, 'near_normalized');
   assert.ok(result.meta.matchSimilarity >= 0.88);
   assert.ok(result.meta.matchLengthRatio >= 0.97);

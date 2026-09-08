@@ -15,7 +15,7 @@ const { voicePromptBlock } = require('../../voiceProfile');
 const { buildHumanizationPromptBlock } = require('../../humanizationDepth');
 const { discoursePromptBlock } = require('../../discourseAudit');
 const commercialSignals = require('../../commercialSignals');
-const { resolveHumanizeContract } = require('../../humanizeContract');
+const { resolveHumanizeContract, validateTrustedPromptContract } = require('../../humanizeContract');
 
 function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   speakerType = 'individual',
@@ -30,7 +30,8 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   voiceProfile = null,
   humanizationPlan = null,
   discourseProfile = null,
-  humanizeContract = null
+  humanizeContract = null,
+  promptVariant = process.env.HUMANIZE_PROMPT_VARIANT || 'full'
 } = {}) {
   const resolvedContract = resolveHumanizeContract({
     humanizeContract,
@@ -47,7 +48,7 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     buildHumanizationPromptBlock(humanizationPlan)
   ].filter(Boolean).join('\n\n');
   const stable = [
-    humanizeStableCore(documentProfile),
+    humanizeStableCore(documentProfile, { promptVariant }),
     '',
     gateSummaryBlock(resolvedContract),
     '',
@@ -62,17 +63,20 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
     '',
     gptBiasGuardBlock(),
     '',
-    transformStrengthBlock(mode, documentProfile?.profile, requestStrength),
+    transformStrengthBlock(mode, documentProfile?.profile, requestStrength, { editObjective: humanizationPlan?.editObjective }),
     '',
     structuredOutputBlock()
   ].join('\n');
 
   const dynamic = dynamicContextBlock({ riskProfile, userNotes, evidence, styleProfile, requestStrength, documentProfile });
-  return { stable, dynamic, taskContract, humanizeContract: resolvedContract };
+  return { stable, dynamic, taskContract, humanizeContract: resolvedContract,
+    promptVariant: promptVariant === 'compact_v1' ? 'compact_v1' : 'full', editObjective: humanizationPlan?.editObjective || 'perceived' };
 }
 
 function validateHumanizePrompt(value, {
   taskContract = '',
+  retryInstruction = '',
+  humanizeContract = null,
   requireHumanizationContract = false
 } = {}) {
   const prompt = String(value || '');
@@ -162,7 +166,9 @@ function validateHumanizePrompt(value, {
       errors.push('humanization_coverage_contract_missing');
     }
   }
-  return { pass: errors.length === 0, errors };
+  const trusted = validateTrustedPromptContract({ system: prompt, taskContract: contract, retryInstruction, humanizeContract });
+  errors.push(...trusted.errors);
+  return { pass: errors.length === 0, errors, promptDigest: trusted.promptDigest, contractVersion: trusted.contractVersion };
 }
 
 module.exports = {

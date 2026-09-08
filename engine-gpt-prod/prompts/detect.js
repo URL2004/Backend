@@ -1,6 +1,6 @@
 'use strict';
 
-const DETECT_PROMPT_VERSION = 'detect-prompt-v5-cause-aligned-grounded-v2';
+const DETECT_PROMPT_VERSION = 'detect-prompt-v6-document-scope';
 
 function buildDetectPrompt(lang = 'ko') {
   if (lang === 'en') {
@@ -8,6 +8,7 @@ function buildDetectPrompt(lang = 'ko') {
       `[GPT-PROD-DETECT:${DETECT_PROMPT_VERSION}]`,
       'You analyze observable AI-like writing signals. The score is not a claim about who actually wrote the text.',
       'Judge the breadth, independence, and persistence of signals across editable prose. Ignore quotations, references, tables, and headings as authorship evidence.',
+      'The input is a document with sentences, paragraphIndex, sampleUnitIndex, spanType and eligibleForDetection. Score and locate evidence only in eligibleForDetection=true sentences. referenceContext is context only: never score it or count it as evidence. Editable prose inside numbered or bulleted items is eligible; the list format itself is not evidence.',
       'Formal, academic, SEO, application, or templated genre conventions and clean grammar alone are not AI evidence.',
       'Actively weigh counterevidence such as specific lived detail, coherent irregular rhythm, and idiosyncratic but context-fitting choices.',
       'Calibrate the score: 0-20 weak or isolated evidence; 21-49 mixed evidence; 50-74 several independent recurring signals; 75-100 pervasive strong signals with little counterevidence.',
@@ -15,7 +16,7 @@ function buildDetectPrompt(lang = 'ko') {
       'Return one signals item per independent observed cause using only the schema categories.',
       'Every signal needs an honest strength and scope. A score of 21-49 requires at least one eligible category other than other_observed_style with moderate or strong strength and recurring or pervasive scope. A score of 50-74 requires at least two recurring independent signals; 75-100 requires at least three, including two strong or pervasive signals.',
       'other_observed_style is supplementary context only and can never support a score above 20.',
-      'Each signal includes evidenceSentences: up to 8 exact zero-based sentence indices from the supplied array, or [] if unlocated. Recurring signals require multiple sentences. Do not quote submitted text or assert authorship. Return [] signals when unsupported.',
+      'Each signal includes evidenceSentences: up to 8 exact zero-based sentence indices from the supplied array, or [] if unlocated. Recurring signals require different sampleUnitIndex values. Pervasive signals need examples spread across the editable document and multiple paragraphs when present. Do not quote submitted text or assert authorship. Return [] signals when unsupported.',
       'Confidence describes evidence sufficiency, not score certainty: low only for fewer than four editable prose sentences or input dominated by protected/corrupted content; medium for a small or mixed sample; high for at least eight editable prose sentences with consistently observable evidence. Do not choose low merely because the score is near a band boundary.',
       'Return a structured response only.'
     ].join('\n');
@@ -23,7 +24,8 @@ function buildDetectPrompt(lang = 'ko') {
   return [
     `[GPT-PROD-DETECT:${DETECT_PROMPT_VERSION}]`,
     '너는 글에서 관찰되는 AI식 문체 신호를 분석한다. 점수는 실제 작성 주체를 판정하는 확률이 아니다.',
-    '편집 가능한 일반 산문에서 신호의 범위·독립성·반복성을 함께 본다. 제목·표·목록·직접 인용·참고문헌은 작성 주체의 근거로 사용하지 않는다.',
+    '편집 가능한 일반 산문에서 신호의 범위·독립성·반복성을 함께 본다. 제목·표·목록 표지·직접 인용·참고문헌은 작성 주체의 근거로 사용하지 않는다.',
+    '입력 문서는 sentences와 paragraphIndex·sampleUnitIndex·spanType·eligibleForDetection을 제공한다. eligibleForDetection=true인 문장만 점수와 근거에 사용한다. referenceContext는 문맥 참고 자료이며 점수·근거·분석 문장 수에서 제외한다. 번호·글머리 항목 안의 실제 산문은 분석하되 목록 형식 자체를 신호로 세지 않는다.',
     '학술문·보고서·자소서·SEO 글처럼 원래 정돈된 장르라는 사실, 문법이 정확하다는 사실, 계획이나 목표를 설명한다는 사실만으로 점수를 올리지 않는다.',
     '서버가 제공한 신뢰된 글 종류는 장르 관습을 오탐하지 않는 데만 사용하고, 그 종류 자체를 점수 근거로 사용하지 않는다.',
     '문장 리듬의 지나친 균일성, 추상 표현, 반복 결론, 과한 정리감, 화자 흔들림, 근거 없는 단정처럼 서로 독립된 신호가 글 전반에 얼마나 지속되는지 평가한다.',
@@ -33,7 +35,7 @@ function buildDetectPrompt(lang = 'ko') {
     'signals에는 서로 독립된 실제 원인만 스키마의 고정 category로 한 항목씩 쓴다.',
     '각 signal의 strength와 scope를 근거에 맞게 표시한다. 21~49점에는 other_observed_style이 아닌 적격 category가 최소 1개 필요하고, 그 신호는 moderate 또는 strong이면서 recurring 또는 pervasive여야 한다. 50~74점에는 반복되는 독립 신호가 최소 2개, 75~100점에는 최소 3개가 필요하고 그중 2개 이상은 strong 또는 pervasive여야 한다.',
     'other_observed_style은 보조 관찰 정보일 뿐이며 20점을 넘는 점수의 근거로 사용할 수 없다.',
-    '각 signal의 evidenceSentences에는 제공된 배열에서 원인이 보이는 문장 번호(0부터 시작)를 최대 8개 적고 위치가 없으면 []로 둔다. recurring은 여러 문장이 필요하다. 원문은 인용·복사하지 않고 근거 없는 category는 만들지 않는다.',
+    '각 signal의 evidenceSentences에는 제공된 배열에서 원인이 보이는 문장 번호(0부터 시작)를 최대 8개 적고 위치가 없으면 []로 둔다. recurring은 서로 다른 sampleUnitIndex의 문장이 필요하다. pervasive는 분석 가능한 본문 전반에 퍼진 위치가 필요하며 문단이 여럿이면 여러 문단의 예시를 포함한다. 원문은 인용·복사하지 않고 근거 없는 category는 만들지 않는다.',
     'confidence는 점수 확신이 아니라 분석 근거의 충분성을 뜻한다. 편집 가능한 일반 산문이 4문장 미만이거나 보호·손상된 입력이 대부분일 때만 low, 표본이 작거나 혼합됐으면 medium, 일반 산문이 8문장 이상이고 근거를 일관되게 관찰할 수 있으면 high로 둔다. 점수가 구간 경계에 가깝다는 이유만으로 low를 선택하지 않는다.',
     '구조화된 응답만 반환한다.'
   ].join('\n');

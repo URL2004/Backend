@@ -141,8 +141,10 @@ test('휴머나이징 이력은 같은 원문의 서버 감지 점수를 확인�
     text: '서버 감지 점수 검증용 합성 원문', needed: 0, mode: 'blog',
     result: { outputText: '재저장한 합성 결과' }, sourceProbability: null
   });
-  assert.equal(rows.get('users/history-user/history/verified-source-humanize').sourceProbability, null);
-  assert.equal(rows.get('users/history-user/history/verified-source-humanize').historySourceScoreIntegrity, null);
+  const autoLinked = rows.get('users/history-user/history/verified-source-humanize');
+  assert.equal(autoLinked.sourceProbability, 38);
+  assert.equal(require('../lib/detectSourceScore').verifiedSourceScore('history-user', autoLinked), 38);
+  assert.equal(require('../lib/detectSourceScore').verifiedSourceScore('history-user', { ...autoLinked, outputText: '이전 출력으로 바꾼 위조' }), null);
 });
 
 test('감지 이력은 공개 점수 provenance만 allowlist로 저장한다', async () => {

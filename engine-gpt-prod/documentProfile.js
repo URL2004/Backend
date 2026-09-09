@@ -802,6 +802,26 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.long_explainer += 3.15
       + Math.min(explainerConceptSignals - 7, 6) * 0.12;
   }
+  const aiToolReflectionSignals = count(
+    text,
+    /(?:생성형\s*AI|인공지능|ChatGPT|챗GPT|AI(?:의|가|를|로|에게|와|와의|\s*도구|\s*답변))/giu
+  );
+  const multiSectionToolUseReflection = aiToolReflectionSignals >= 3
+    && formatProfile.headingCount >= 2
+    && firstPersonSignals >= 1
+    && (educationSignals >= 2 || reportInquirySignals >= 1 || selfAssessmentActionSignals >= 2)
+    && applicationSectionSignals === 0
+    && careerAspirationSignals === 0
+    && roleFitSignals <= 1;
+  if (multiSectionToolUseReflection) {
+    // 한 보고서 안에서 시험 공부·면접 연습·계산처럼 여러 AI 활용 사례를
+    // 1인칭으로 평가하는 글은 특정 지원서가 아니다. 일부 절에 `지원 동기`나
+    // `면접`이 있어도 문서 전체의 도구 활용·성찰 프레임을 우선한다.
+    scores.report_assignment += 4.6
+      + Math.min(aiToolReflectionSignals - 3, 6) * 0.12;
+    scores.student_self_assessment += 3.15;
+    scores.resume_application = Math.min(scores.resume_application, 1.8);
+  }
   if (compactLength > 100 && sentences.length >= 3) scores.general += 1.35;
   if (compactLength >= 1500 && sentences.length >= 10) scores.general += 0.38;
   if (compactLength <= 100 && lines.length <= 2) scores.general += 0.55;

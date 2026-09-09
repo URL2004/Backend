@@ -16,6 +16,22 @@ function paragraphSentenceCounts(value) {
     .map(paragraph => splitSentences(paragraph).filter(Boolean).length);
 }
 
+test('후단 수리가 쉼표 뒤에 새 빈 문단을 만들면 최종 레이아웃에서 다시 잇는다', () => {
+  const source = '근로조건과 법적 기준에 따라 계산 방식이 달라질 수 있으므로, AI 답변은 참고 자료로 활용해야 한다.';
+  const output = '근로조건과 법적 기준에 따라 계산 방식이 달라질 수 있으므로,\n\nAI 답변은 참고 자료로 활용해야 한다.';
+  const repaired = structure.repairIntroducedMidSentenceParagraphBreaks(source, output);
+  assert.equal(repaired.text, source);
+  assert.equal(repaired.repairCount, 1);
+
+  const singleLineBreak = '근로조건과 법적 기준에 따라 계산 방식이 달라질 수 있으므로,\nAI 답변은 참고 자료로 활용해야 한다.';
+  const singleLineRepaired = structure.repairIntroducedMidSentenceParagraphBreaks(source, singleLineBreak);
+  assert.equal(singleLineRepaired.text, source);
+  assert.equal(singleLineRepaired.repairCount, 1);
+
+  const intentional = '첫째,\n\n다음 항목을 검토한다.';
+  assert.equal(structure.repairIntroducedMidSentenceParagraphBreaks(intentional, intentional).text, intentional);
+});
+
 test('번호 절과 산문이 섞인 장문도 구조 블록이라는 이유로 가독성 검사를 면제하지 않는다', () => {
   const source = [
     '현대사회에서 복지는 개인의 문제를 넘어 공동체가 함께 다루어야 할 과제가 되었다. 제도적 복지는 이러한 변화에 대응하는 관점을 제공한다.',

@@ -585,6 +585,7 @@ function restoreFinalDocumentLayout({
   let iterationCount = 0;
   let converged = false;
   let citationTailRepairCount = 0;
+  let midSentenceParagraphRepairCount = 0;
   const maximumIterations = 5;
   for (let attempt = 0; attempt < maximumIterations; attempt += 1) {
     iterationCount = attempt + 1;
@@ -611,7 +612,12 @@ function restoreFinalDocumentLayout({
       chunks,
       normalizeVisualGaps
     });
-    const citationTails = restoreCitationOnlyTails(source, finalLocked.text);
+    const midSentenceParagraphs = repairIntroducedMidSentenceParagraphBreaks(
+      source,
+      finalLocked.text
+    );
+    midSentenceParagraphRepairCount += Number(midSentenceParagraphs.repairCount || 0);
+    const citationTails = restoreCitationOnlyTails(source, midSentenceParagraphs.text);
     text = citationTails.text;
     citationTailRepairCount += Number(citationTails.repairCount || 0);
     if (text === before) {
@@ -637,10 +643,69 @@ function restoreFinalDocumentLayout({
     iterationCount,
     converged,
     citationTailRepairCount,
+    midSentenceParagraphRepairCount,
     initialLocked,
     paragraphs,
     finalLocked
   };
+}
+
+/**
+ * 모델 수리나 원문 문장 복원 뒤 쉼표·세미콜론 바로 다음에 빈 행이 생기면
+ * 문장 하나가 두 문단으로 갈라진다. 다음 행이 제목·목록·표·인용 같은
+ * 구조가 아닌 일반 산문일 때만 빈 행을 단일 공백으로 되돌린다. 원문에
+ * 동일한 경계가 있던 경우에는 작성자의 구조를 존중한다.
+ */
+function repairIntroducedMidSentenceParagraphBreaks(source, value) {
+  const original = normalizeNewlines(value);
+  const sourceText = normalizeNewlines(source);
+  const lines = original.split('\n');
+  const output = [];
+  let repairCount = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = String(lines[index] || '');
+    if (line.trim()) {
+      const leftIndex = output.length - 1;
+      const left = leftIndex >= 0 ? String(output[leftIndex] || '') : '';
+      const leftTrimmed = left.trimEnd();
+      const rightTrimmed = line.trimStart();
+      const rightRole = layoutStructure.classifyLine(rightTrimmed);
+      const structuralRight = ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole);
+      const boundaryPattern = /[,;，；]\s*[”’"'」』》〉)\]]*$/u;
+      const sourceHasEquivalentBoundary = leftTrimmed && rightTrimmed
+        && sourceText.includes(`${leftTrimmed}\n${rightTrimmed}`);
+      if (leftTrimmed && rightTrimmed && boundaryPattern.test(leftTrimmed)
+          && !structuralRight && !sourceHasEquivalentBoundary) {
+        output[leftIndex] = `${leftTrimmed} ${rightTrimmed}`;
+        repairCount += 1;
+        continue;
+      }
+      output.push(line);
+      continue;
+    }
+    let nextIndex = index;
+    while (nextIndex < lines.length && !String(lines[nextIndex] || '').trim()) nextIndex += 1;
+    const leftIndex = output.length - 1;
+    const left = leftIndex >= 0 ? String(output[leftIndex] || '') : '';
+    const right = nextIndex < lines.length ? String(lines[nextIndex] || '') : '';
+    const leftTrimmed = left.trimEnd();
+    const rightTrimmed = right.trimStart();
+    const rightRole = rightTrimmed ? layoutStructure.classifyLine(rightTrimmed) : '';
+    const structuralRight = ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole);
+    const boundaryPattern = /[,;，；]\s*[”’"'」』》〉)\]]*$/u;
+    const sourceHasEquivalentBoundary = leftTrimmed && rightTrimmed
+      && sourceText.includes(`${leftTrimmed}\n\n${rightTrimmed}`);
+    if (leftTrimmed && rightTrimmed && boundaryPattern.test(leftTrimmed)
+        && !structuralRight && !sourceHasEquivalentBoundary) {
+      output[leftIndex] = `${leftTrimmed} ${rightTrimmed}`;
+      lines[nextIndex] = '';
+      index = nextIndex;
+      repairCount += 1;
+      continue;
+    }
+    output.push(line);
+  }
+  return { text: output.join('\n'), repairCount, applied: repairCount > 0 };
 }
 
 const CITATION_ONLY_TAIL_RE = /^(?:\(\s*\d+(?:\s*[,;]\s*\d+)+\s*\)|\[\s*\d+(?:\s*[,;]\s*\d+)+\s*\])$/u;
@@ -3620,6 +3685,7 @@ module.exports = {
   restoreBoundaryMarkers,
   restorePostSemanticLayout,
   restoreFinalDocumentLayout,
+  repairIntroducedMidSentenceParagraphBreaks,
   restoreLockedHeadingLayout,
   restoreLockedStructureLayout,
   restoreInlineLabelBodyLayout,

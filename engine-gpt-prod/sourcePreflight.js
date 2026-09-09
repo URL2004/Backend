@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 18;
+const VERSION = 19;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -54,6 +54,7 @@ const FORCE_WRAP_TAIL_RE = /(?:보다|및|과|와|의|을|를|은|는|이|가|�
 // 조사가 붙은 흔한 접미 명사, 용언화 접미부만 별도로 인정한다.
 const RIGHT_STANDALONE_PARTICLE_RE = /^(?:은|는|이|가|을|를|의|와|과|도|만|에서|에게|께서|으로|로|까지|부터|보다)(?=$|[\s,.;:!?。！？])/u;
 const RIGHT_WORD_CONTINUATION_RE = /^(?:(?:자|성|화|률|율)(?:은|는|이|가|을|를|의|와|과|도|만|에게|에서)?|하(?:는|여|고|게|도록|였다|였다가|면서|지만|므로|기)|되(?:는|어|고|게|도록|었다|면서|지만|므로|기)|적(?:인|으로|이다|이며))(?=$|[\s,.;:!?。！？])/u;
+const RIGHT_SHORT_PREDICATE_CONTINUATION_RE = /^(?:보았|봤|주었|줬|두었|뒀|왔|갔|냈|했|되었|됐|있었|없었)(?:다|습니다|어요)[.!?。！？]?$/u;
 const WEB_LITERAL_RE = /(?:https?:\/\/[^\s<>"'「」]+|www\.[^\s<>"'「」]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|doi\s*:\s*[^\s<>"'「」]+)/giu;
 const WEB_LITERAL_TEST_RE = /(?:https?:\/\/|www\.|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|doi\s*:)/iu;
 
@@ -332,7 +333,8 @@ function repairSourceLayoutArtifacts(value) {
   }
   const punctuation = repairIsolatedTerminalPunctuationLines(before);
   const heading = repairInlineHeadingBoundaries(punctuation.text);
-  const wrapped = repairForcedProseWraps(heading.text);
+  const blankWrapped = repairBrokenBlankLineProseContinuations(heading.text);
+  const wrapped = repairForcedProseWraps(blankWrapped.text);
   const sentenceSpacing = repairMissingSentenceSpacing(wrapped.text);
   const structurallySafe = preservesExistingStructuralLines(before, sentenceSpacing.text);
   const finalText = structurallySafe ? sentenceSpacing.text : before;
@@ -340,6 +342,7 @@ function repairSourceLayoutArtifacts(value) {
     ? [
         ...punctuation.changes,
         ...heading.changes,
+        ...blankWrapped.changes,
         ...wrapped.changes,
         ...sentenceSpacing.changes
       ]
@@ -356,6 +359,74 @@ function repairSourceLayoutArtifacts(value) {
   };
 }
 
+/**
+ * PDF/OCR 복사본은 한 어절을 페이지 경계에서 자르면서 빈 행까지 끼울 수
+ * 있다(`사운드\n\n는`). 이 경계를 문단으로 인정하면 모델과 후단 레이아웃이
+ * 조사로 시작하는 문단을 그대로 보존하게 된다. 오른쪽이 독립 조사 또는
+ * 명백한 어절 접미부이고 왼쪽이 미완결 산문일 때만 빈 행을 제거한다.
+ */
+function repairBrokenBlankLineProseContinuations(value) {
+  const lines = String(value || '').split('\n');
+  const output = [];
+  const changes = [];
+  let fence = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const current = String(lines[index] || '');
+    const fenceMatch = current.match(/^\s*(`{3,}|~{3,})/u);
+    if (fenceMatch) {
+      if (!fence) fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
+      else if (fenceMatch[1][0] === fence.char && fenceMatch[1].length >= fence.length) fence = null;
+      output.push(current);
+      continue;
+    }
+    if (fence || current.trim()) {
+      output.push(current);
+      continue;
+    }
+    let nextIndex = index;
+    while (nextIndex < lines.length && !String(lines[nextIndex] || '').trim()) nextIndex += 1;
+    const leftIndex = output.length - 1;
+    const left = leftIndex >= 0 ? String(output[leftIndex] || '') : '';
+    const right = nextIndex < lines.length ? String(lines[nextIndex] || '') : '';
+    if (!left.trim() || !right.trim()) {
+      output.push(current);
+      continue;
+    }
+    const leftRole = layoutStructure.classifyLine(left);
+    const rightRole = layoutStructure.classifyLine(right);
+    const leftToken = (left.trim().match(/[가-힣A-Za-z]+$/u) || [''])[0];
+    const rightText = right.trimStart();
+    const contextualFusedProse = left.length >= 60
+      && /[.!?。！？]/u.test(left)
+      && ['title', 'heading', 'list'].includes(leftRole)
+      && RIGHT_STANDALONE_PARTICLE_RE.test(rightText);
+    const safeRole = (!['heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole)
+        || contextualFusedProse)
+      && !['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole);
+    const continuation = safeRole
+      && leftToken
+      && !/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left.trim())
+      && ((/[가-힣]$/u.test(leftToken) && RIGHT_STANDALONE_PARTICLE_RE.test(rightText))
+        || (/[가-힣]$/u.test(leftToken)
+          && !/(?:은|는|이|가|을|를|의|와|과|도|만|에|로)$/u.test(leftToken)
+          && RIGHT_WORD_CONTINUATION_RE.test(rightText)));
+    if (!continuation) {
+      output.push(current);
+      continue;
+    }
+    const separator = shouldAttachWithoutSpace(left.trimEnd(), rightText) ? '' : ' ';
+    output[leftIndex] = `${left.trimEnd()}${separator}${rightText}`;
+    lines[nextIndex] = '';
+    index = nextIndex;
+    changes.push({
+      code: 'source_blankline_word_split_repaired',
+      lineOrdinal: index + 1,
+      message: 'PDF나 OCR 페이지 경계에서 빈 행과 함께 갈라진 어절을 다시 이었어요.'
+    });
+  }
+  return { text: output.join('\n'), changes };
+}
+
 function hasTemplatePlaceholder(value) {
   const text = String(value || '');
   return /\[(?=[^\]\n]{1,140}\])(?:\s*(?:예|예시)\s*[:：]|본인(?:의|이)?\s+[^\]\n]{0,80}(?:작성|입력|서술)|[^\]\n]{0,80}(?:작성해\s*주세요|입력해\s*주세요|내용\s*입력))[^\]\n]*\]/iu.test(text)
@@ -365,15 +436,25 @@ function hasTemplatePlaceholder(value) {
 
 function preservesExistingStructuralLines(before, after) {
   const structuralRoles = new Set(['title', 'heading', 'table', 'quote', 'code', 'legal_clause', 'signature', 'flow']);
-  const sourceRecords = layoutStructure.buildLineRecords(before)
-    .filter(record => {
+  const allSourceRecords = layoutStructure.buildLineRecords(before);
+  const sourceRecords = allSourceRecords
+    .filter((record, recordIndex) => {
       if (record.blank) return false;
       const role = String(record.role || '');
+      const next = allSourceRecords.slice(recordIndex + 1).find(item => !item.blank);
+      const contextualSplitWordContinuation = ['title', 'heading', 'list'].includes(role)
+        && String(record.text || '').length >= 60
+        && /[.!?。！？]/u.test(String(record.text || ''))
+        && RIGHT_STANDALONE_PARTICLE_RE.test(String(next?.text || '').trimStart());
+      if (contextualSplitWordContinuation) return false;
       if (role === 'heading' && looksLikeFusedStructuralLine(record.text)) return false;
       if (role === 'title') {
         const tail = (String(record.text || '').match(/[가-힣A-Za-z]+$/u) || [''])[0];
+        const splitWordContinuation = !/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(String(record.text || '').trim())
+          && (RIGHT_STANDALONE_PARTICLE_RE.test(String(next?.text || '').trimStart())
+            || RIGHT_WORD_CONTINUATION_RE.test(String(next?.text || '').trimStart()));
         // 첫 강제개행 조각은 문맥 없는 title 휴리스틱에 자주 걸린다.
-        if (FORCE_WRAP_TAIL_RE.test(tail)) return false;
+        if (FORCE_WRAP_TAIL_RE.test(tail) || splitWordContinuation) return false;
       }
       if (structuralRoles.has(role)) return true;
       // 명시 불릿은 한 행 소유권을 지키되 번호형 fused heading은 정상적인
@@ -921,6 +1002,11 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   if (/[가-힣]$/u.test(leftToken)
       && !/(?:은|는|이|가|을|를|의|와|과|도|만|에|로)$/u.test(leftToken)
       && RIGHT_WORD_CONTINUATION_RE.test(right)) return true;
+  // 고정 폭 PDF는 `만들어\n보았다.`처럼 연결 어미 뒤의 짧은 서술부만
+  // 다음 행으로 밀기도 한다. 오른쪽이 닫힌 짧은 용언일 때만 잇는다.
+  if (left.length >= 24
+      && /[가-힣]{2,}(?:아|어|여|해)$/u.test(leftToken)
+      && RIGHT_SHORT_PREDICATE_CONTINUATION_RE.test(right)) return true;
   if (FORCE_WRAP_TAIL_RE.test(leftToken)) return true;
   // PDF의 고정 폭 줄바꿈은 대체로 긴 행 여러 개가 문장부호 없이 이어진다.
   // 매우 짧은 독립 행은 시·제목일 수 있으므로 이 일반 규칙에서 제외한다.
@@ -1176,6 +1262,7 @@ module.exports = {
   splitNumberedDashHeadingBody,
   splitNumberedFiniteHeadingBody,
   repairForcedProseWraps,
+  repairBrokenBlankLineProseContinuations,
   repairMissingSentenceSpacing,
   isUnsafeHeadingRepair,
   countOrphanParticleBoundaries,

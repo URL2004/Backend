@@ -1,6 +1,6 @@
 # Detection and humanization audit implementation
 
-The upgrade preserves own-humanized-history calibration while making its provenance, score stages and final validation state explicit. Detection is `gpt-detect-v1.30` / `detect-prompt-v6-document-scope`; humanization is `gpt-prod-v2.5.48`.
+The upgrade preserves own-humanized-history calibration while making its provenance, score stages and final validation state explicit. Detection is `gpt-detect-v1.31` / `detect-prompt-v6-document-scope`; humanization is `gpt-prod-v2.5.49`.
 
 ## Request and score flow
 

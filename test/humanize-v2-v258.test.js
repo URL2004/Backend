@@ -30,6 +30,51 @@ test('붙어 들어온 번호 제목과 본문 경계를 모델 호출 전에 �
   assert.ok(result.issueCodes.includes('source_inline_heading_repaired'));
 });
 
+test('PDF 페이지 경계가 한글 어절과 조사 사이에 빈 행을 끼워도 원문 기준선에서 복원한다', () => {
+  const source = [
+    '초기 영화에서 이 시기의 사운드',
+    '',
+    '는 단일 스피커로 재생되었다. 이후 기술이 발전했다.',
+    '',
+    '다음 문단은 독립된 결론이다.'
+  ].join('\n');
+  const result = preflight.auditAndSanitizeSource(source);
+  assert.match(result.text, /이 시기의 사운드는 단일 스피커/u);
+  assert.match(result.text, /발전했다\.\n\n다음 문단/u);
+  assert.ok(result.issueCodes.includes('source_blankline_word_split_repaired'));
+
+  const numberedLongSection = [
+    '2. 추가 학습 내용 영화 기술의 변화를 살펴보았다. 초기 방식은 여러 제약이 있었다. 다만 이 시기의 사운드',
+    '',
+    '는 단일 스피커로 재생되는 것이 기본이었고 녹음 장비에도 한계가 있었다.',
+    '',
+    '3. 결론',
+    '기술 변화의 의미를 정리했다.'
+  ].join('\n');
+  const numberedResult = preflight.auditAndSanitizeSource(numberedLongSection);
+  assert.match(numberedResult.text, /이 시기의 사운드는 단일 스피커/u);
+  assert.match(numberedResult.text, /한계가 있었다\.\n\n3\. 결론/u);
+  assert.ok(numberedResult.issueCodes.includes('source_blankline_word_split_repaired'));
+
+  const valid = '앞 문단은 여기에서 끝난다.\n\n이 과정은 다음 논의를 시작한다.';
+  assert.equal(preflight.auditAndSanitizeSource(valid).text, valid);
+});
+
+test('여러 절에서 AI 활용 사례를 평가하는 학습 보고서를 지원서로 오인하지 않는다', () => {
+  const source = [
+    '1. 시험공부를 위한 퀴즈 제작 및 복습',
+    '수업에서 배운 범위를 정리하기 위해 ChatGPT로 퀴즈를 만들었다. 틀린 문제는 교재와 비교하며 다시 학습했다.',
+    '2. 학생회 면접 예상 질문을 통한 준비',
+    '학생회 지원 동기와 활동 계획을 입력해 예상 질문을 받았다. 정해진 답변을 외우기보다 내 경험을 연결해 답하는 연습을 했다.',
+    '3. 근무 시간과 수당 계산',
+    '생성형 AI에 근무 시간을 입력해 계산 과정을 확인했다. 실제 금액은 법적 기준과 원자료를 다시 검증해야 한다고 느꼈다.',
+    '이처럼 AI의 답변을 그대로 믿기보다 수업 자료와 사실을 확인하는 보조 도구로 활용했다.'
+  ].join('\n');
+  const profile = documentProfile.detectDocumentProfile(source);
+  assert.equal(profile.profile, 'report_assignment', JSON.stringify(profile.candidateProfiles));
+  assert.notEqual(profile.profile, 'resume_application');
+});
+
 test('정상 다단계 제목과 콜론 부제는 보존하고 다음 본문과 합치지 않는다', () => {
   const source = [
     '1. 서론: 문학, 도시, 그리고 개인의 삶이 만나는 지점',
@@ -1291,4 +1336,41 @@ test('잠긴 라벨 행이 공백으로 합쳐진 강한 후보는 구조만 복
   assert.match(prepared.text, /^확실성하의 의사결정:/mu);
   assert.match(prepared.text, /^위험하의 의사결정:/mu);
   assert.match(prepared.text, /^불확실성하의 의사결정:/mu);
+});
+
+test('한 원문 주장을 짧은 요약과 긴 설명으로 연속 복제한 결과는 짧은 사본만 제거한다', () => {
+  const source = [
+    '면접 전에는 지원동기 정도만 준비하면 될 것으로 생각했지만, 실제 면접에서는 지원 직무와 관련한 구체적인 경험과 판단 근거를 함께 설명해야 했다.',
+    '이후에는 질문 의도를 먼저 파악한 뒤 경험을 근거로 답변하는 연습을 반복하였다.'
+  ].join(' ');
+  const output = [
+    '면접 전에는 지원동기만 준비하면 된다고 생각했다.',
+    '면접 전에는 지원동기 정도만 준비하면 충분하다고 여겼지만, 실제로는 지원 직무와 연결된 구체적인 경험과 판단 근거까지 설명해야 했다.',
+    '그 뒤 질문의 의도를 먼저 짚고 경험을 근거로 답하는 연습을 거듭했다.'
+  ].join(' ');
+  const result = dedupe.removeGeneratedLocalOverlapDuplicates(source, output);
+
+  assert.equal(result.applied, true, JSON.stringify(result));
+  assert.ok(result.reasons.includes('single_source_short_summary_copy'), JSON.stringify(result));
+  assert.doesNotMatch(result.text, /지원동기만 준비하면 된다고 생각했다/u);
+  assert.match(result.text, /구체적인 경험과 판단 근거까지 설명해야 했다/u);
+});
+
+test('강제개행 문장의 서술부만 다른 문장 뒤에 남은 경우 짧은 고아 문장을 제거한다', () => {
+  const source = [
+    '시험기간에는 어느 부분을 제대로 이해했는지 점검하는 과정이 필요했다.',
+    '시험공부를 효율적으로 하기 위해 ChatGPT를 활용해 복습용 퀴즈를 만들어',
+    '보았다.',
+    '먼저 시험 과목과 학습 범위를 정했다.'
+  ].join('\n');
+  const output = [
+    '시험기간에는 어느 부분을 제대로 이해했는지 점검하는 과정이 필요했다.',
+    '보았다.',
+    '먼저 시험 과목과 학습 범위를 정했다.'
+  ].join(' ');
+  const result = dedupe.removeGeneratedLocalOverlapDuplicates(source, output);
+
+  assert.equal(result.applied, true, JSON.stringify(result));
+  assert.ok(result.reasons.includes('orphan_predicate_fragment'), JSON.stringify(result));
+  assert.doesNotMatch(result.text, /필요했다\.\s+보았다\./u);
 });

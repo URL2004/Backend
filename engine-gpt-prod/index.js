@@ -69,8 +69,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.48';
-const DETECT_VERSION = 'gpt-detect-v1.30';
+const VERSION = 'gpt-prod-v2.5.49';
+const DETECT_VERSION = 'gpt-detect-v1.31';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -3503,7 +3503,8 @@ async function runEngine({
       structuralPass: finalIntegrityLayout.structuralPass !== false,
       contentPreserved: finalIntegrityLayout.contentPreserved === true,
       converged: finalIntegrityLayout.converged === true,
-      iterationCount: Number(finalIntegrityLayout.iterationCount || 0)
+      iterationCount: Number(finalIntegrityLayout.iterationCount || 0),
+      midSentenceParagraphRepairCount: Number(finalIntegrityLayout.midSentenceParagraphRepairCount || 0)
     };
   }
 
@@ -4142,6 +4143,9 @@ async function runEngine({
     finalLayoutReadabilityPass: layoutRepair?.finalFixedPoint?.readabilityPass !== false,
     finalLayoutContentPreserved: layoutRepair?.finalFixedPoint?.contentPreserved === true,
     finalLayoutBoundaryRestoreCount: Number(layoutRepair?.finalFixedPoint?.boundaryRestoredCount || 0),
+    finalLayoutMidSentenceParagraphRepairCount: Number(
+      layoutRepair?.deliveryIntegrityFixedPoint?.midSentenceParagraphRepairCount || 0
+    ),
     finalLayoutMissingCount: Number(layoutRepair?.finalFixedPoint?.missingCount || 0),
     inlineLabelBodyRepairCount: Number(layoutRepair?.inlineLabels?.repairCount || 0)
       + Number(layoutRepair?.finalLockedStructure?.inlineLabelBodyRepairCount || 0),

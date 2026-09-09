@@ -250,8 +250,9 @@ function removeGeneratedLocalOverlapDuplicates(source, text, { maxSentenceGap = 
   const removals = [];
   const reasons = [];
   for (const paragraph of paragraphSpans(original)) {
-    if (isDedupeProtectedParagraph(paragraph.text) || containsDedupeProtectedContent(paragraph.text)) continue;
-    const spans = splitSentenceSpans(paragraph.text);
+    const editable = editableProseWithinProtectedParagraph(paragraph.text);
+    if (!editable) continue;
+    const spans = splitSentenceSpans(editable.text);
     for (let leftIndex = 0; leftIndex < spans.length; leftIndex += 1) {
       for (let rightIndex = leftIndex + 1;
         rightIndex < spans.length && rightIndex - leftIndex <= Math.max(1, Number(maxSentenceGap) || 2);
@@ -259,12 +260,13 @@ function removeGeneratedLocalOverlapDuplicates(source, text, { maxSentenceGap = 
         const left = String(spans[leftIndex]?.text || '').trim();
         const right = String(spans[rightIndex]?.text || '').trim();
         const fragment = generatedOrphanFragment(left, right, sourceRows);
-        if (fragment) {
+        const predicateFragment = generatedOrphanPredicateFragment(left, right, sourceRows);
+        if (fragment || predicateFragment) {
           removals.push({
-            start: paragraph.start + spans[rightIndex].start,
-            end: paragraph.start + spans[rightIndex].end
+            start: paragraph.start + editable.offset + spans[rightIndex].start,
+            end: paragraph.start + editable.offset + spans[rightIndex].end
           });
-          reasons.push('orphan_suffix_fragment');
+          reasons.push(fragment ? 'orphan_suffix_fragment' : 'orphan_predicate_fragment');
           leftIndex = rightIndex;
           break;
         }
@@ -273,8 +275,8 @@ function removeGeneratedLocalOverlapDuplicates(source, text, { maxSentenceGap = 
         if (!duplicate) continue;
         const removeIndex = duplicate.remove === 'left' ? leftIndex : rightIndex;
         removals.push({
-          start: paragraph.start + spans[removeIndex].start,
-          end: paragraph.start + spans[removeIndex].end
+          start: paragraph.start + editable.offset + spans[removeIndex].start,
+          end: paragraph.start + editable.offset + spans[removeIndex].end
         });
         reasons.push(duplicate.reason || 'single_source_claim_copied');
         if (removeIndex === rightIndex) leftIndex = rightIndex;
@@ -289,6 +291,51 @@ function removeGeneratedLocalOverlapDuplicates(source, text, { maxSentenceGap = 
     removedCount: uniqueRanges.length,
     reasons: [...new Set(reasons)]
   };
+}
+
+function generatedOrphanPredicateFragment(left, right, sourceRows) {
+  if (!/^(?:보았|봤|주었|줬|두었|뒀|왔|갔|냈|했|되었|됐|있었|없었)(?:다|습니다|어요)[.!?。！？]?$/u.test(String(right || '').trim())) return false;
+  const rightKey = _normSent(right);
+  if (!rightKey) return false;
+  const exactSourceIndex = sourceRows.findIndex(row => _normSent(row.text) === rightKey);
+  const sourceForcedWrap = exactSourceIndex > 0
+    && /[가-힣]{2,}(?:아|어|여|해)\s*$/u.test(String(sourceRows[exactSourceIndex - 1]?.text || '').trim());
+  if (exactSourceIndex >= 0 && !sourceForcedWrap) return false;
+  const sourceIndex = sourceForcedWrap ? exactSourceIndex : sourceRows.findIndex(row => {
+    const key = _normSent(row.text);
+    return key.length >= rightKey.length + 16 && key.endsWith(rightKey);
+  });
+  if (sourceIndex < 0) return false;
+  // `퀴즈를 만들어. 보았다.`처럼 직전 행이 연결 어미에서 잘못 끊긴
+  // 경우는 삭제 대신 별도 문장 경계 복원에 맡긴다. 완결 문장 뒤에 원문
+  // 서술부 한 단어만 남은 경우에는 독립 문장으로 성립할 수 없으므로
+  // 청크/강제개행 잔재로 제거한다.
+  return !/[가-힣]{2,}(?:아|어|여|해)[.!?。！？]?$/u.test(String(left || '').trim());
+}
+
+function editableProseWithinProtectedParagraph(value) {
+  const text = String(value || '');
+  if (!isDedupeProtectedParagraph(text) && !containsDedupeProtectedContent(text)) {
+    return { text, offset: 0 };
+  }
+  // 제목 접두행과 본문이 단일 개행으로 붙은 OCR/모델 결과에서는 제목 한
+  // 행만 잠그고 나머지 산문은 중복 감사한다. 본문 안에 표·인용·목록 등
+  // 다른 보호 행이 섞이면 범위를 추측하지 않고 기존처럼 건너뛴다.
+  const lines = text.split('\n');
+  let firstEditable = 0;
+  while (firstEditable < lines.length) {
+    const line = String(lines[firstEditable] || '');
+    if (!line.trim() || isDedupeProtectedParagraph(line)) {
+      firstEditable += 1;
+      continue;
+    }
+    break;
+  }
+  if (firstEditable <= 0 || firstEditable >= lines.length) return null;
+  const body = lines.slice(firstEditable).join('\n');
+  if (!body.trim() || containsDedupeProtectedContent(body)) return null;
+  const offset = lines.slice(0, firstEditable).join('\n').length + 1;
+  return { text: body, offset };
 }
 
 function generatedOrphanFragment(left, right, sourceRows) {
@@ -318,7 +365,6 @@ function generatedContainedDuplicate(left, right, sourceRows) {
     ? generatedConnectorSubsetRestatement(left, right, sourceRows)
     : null;
   if (connectorSubset) return connectorSubset;
-  if (left.length < 45 || right.length < 45) return null;
   const leftRoots = semanticRoots(left);
   const rightRoots = semanticRoots(right);
   const leftIsShorter = leftRoots.size <= rightRoots.size;
@@ -326,6 +372,35 @@ function generatedContainedDuplicate(left, right, sourceRows) {
   const longText = leftIsShorter ? right : left;
   const shortRoots = leftIsShorter ? leftRoots : rightRoots;
   const longRoots = leftIsShorter ? rightRoots : leftRoots;
+  // 모델이 원문 한 문장을 `짧은 요약 + 거의 같은 긴 설명`으로 연속
+  // 복제하는 경우 짧은 쪽은 45자 미만일 수 있다. 두 문장이 원문의 같은
+  // 단 하나의 문장에 정렬되고 짧은 쪽 내용어가 긴 쪽에 대부분 포함될
+  // 때만 짧은 사본을 제거한다. 정상적인 주제문+근거 문단은 서로 다른
+  // 원문 문장에 대응하므로 이 경로에 들어오지 않는다.
+  if (Math.min(left.length, right.length) >= 22
+      && shortText.length <= 38
+      && Math.max(left.length, right.length) >= 60
+      && shortRoots.size >= 4
+      && longRoots.size >= 7
+      && overlapRatio(shortRoots, longRoots) >= 0.64) {
+    const shortSupport = bestSourceRootSupport(shortRoots, sourceRows);
+    const longSupport = bestSourceRootSupport(longRoots, sourceRows);
+    const supportingSourceCount = sourceRows.filter(row => (
+      row.roots.size >= 5 && overlapRatio(shortRoots, row.roots) >= 0.64
+    )).length;
+    if (shortSupport.index >= 0
+        && shortSupport.index === longSupport.index
+        && shortSupport.coverage >= 0.64
+        && longSupport.coverage >= 0.45
+        && supportingSourceCount === 1
+        && !sourceRows.some(row => _normSent(row.text) === _normSent(shortText))) {
+      return {
+        remove: leftIsShorter ? 'left' : 'right',
+        reason: 'single_source_short_summary_copy'
+      };
+    }
+  }
+  if (left.length < 45 || right.length < 45) return null;
   if (shortRoots.size < 6 || longRoots.size < 7) return null;
   const containedRestatement = shortText.length <= longText.length * 0.88
     && overlapRatio(shortRoots, longRoots) >= 0.80

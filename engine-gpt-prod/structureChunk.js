@@ -659,6 +659,9 @@ function restoreFinalDocumentLayout({
 function repairIntroducedMidSentenceParagraphBreaks(source, value) {
   const original = normalizeNewlines(value);
   const sourceText = normalizeNewlines(source);
+  const isConnectedClause = (left, right) => layoutStructure.isProseContinuation(left)
+    && bare(right).length >= 12
+    && bare(sourceText).includes(bare(left) + bare(right).slice(0, 12));
   const lines = original.split('\n');
   const output = [];
   let repairCount = 0;
@@ -674,7 +677,7 @@ function repairIntroducedMidSentenceParagraphBreaks(source, value) {
       const boundaryPattern = /[,;，；]\s*[”’"'」』》〉)\]]*$/u;
       const sourceHasEquivalentBoundary = leftTrimmed && rightTrimmed
         && sourceText.includes(`${leftTrimmed}\n${rightTrimmed}`);
-      if (leftTrimmed && rightTrimmed && boundaryPattern.test(leftTrimmed)
+      if (leftTrimmed && rightTrimmed && (boundaryPattern.test(leftTrimmed) || isConnectedClause(leftTrimmed, rightTrimmed))
           && !structuralRight && !sourceHasEquivalentBoundary) {
         output[leftIndex] = `${leftTrimmed} ${rightTrimmed}`;
         repairCount += 1;
@@ -695,7 +698,7 @@ function repairIntroducedMidSentenceParagraphBreaks(source, value) {
     const boundaryPattern = /[,;，；]\s*[”’"'」』》〉)\]]*$/u;
     const sourceHasEquivalentBoundary = leftTrimmed && rightTrimmed
       && sourceText.includes(`${leftTrimmed}\n\n${rightTrimmed}`);
-    if (leftTrimmed && rightTrimmed && boundaryPattern.test(leftTrimmed)
+    if (leftTrimmed && rightTrimmed && (boundaryPattern.test(leftTrimmed) || isConnectedClause(leftTrimmed, rightTrimmed))
         && !structuralRight && !sourceHasEquivalentBoundary) {
       output[leftIndex] = `${leftTrimmed} ${rightTrimmed}`;
       lines[nextIndex] = '';
@@ -706,6 +709,21 @@ function repairIntroducedMidSentenceParagraphBreaks(source, value) {
     output.push(line);
   }
   return { text: output.join('\n'), repairCount, applied: repairCount > 0 };
+}
+
+function measureDeliveredParagraphBoundaries(source, value) {
+  const paragraphs = layoutStructure.splitExplicitParagraphs(normalizeNewlines(value));
+  const sourceParagraphs = layoutStructure.splitExplicitParagraphs(normalizeNewlines(source));
+  const sourceTails = new Set(sourceParagraphs.map(p => bare(p).slice(-40)));
+  const incomplete = paragraphs.filter(p => {
+    const last = p.split('\n').filter(line => line.trim()).at(-1) || '';
+    return layoutStructure.classifyLine(last) === 'prose' && layoutStructure.isProseContinuation(last);
+  });
+  return {
+    incompleteParagraphCount: incomplete.length,
+    newIncompleteParagraphCount: incomplete.filter(p => !sourceTails.has(bare(p).slice(-40))).length,
+    maxParagraphChars: Math.max(0, ...paragraphs.map(p => bare(p).length))
+  };
 }
 
 const CITATION_ONLY_TAIL_RE = /^(?:\(\s*\d+(?:\s*[,;]\s*\d+)+\s*\)|\[\s*\d+(?:\s*[,;]\s*\d+)+\s*\])$/u;
@@ -1416,12 +1434,23 @@ function restoreParagraphLayout({
     // 기준으로 읽기 좋게 세분할 수 있다.
     && Number(sourceLineLayout?.explicitParagraphCount || 0) === 1
     && resumeReadableUnits.length === Number(sourceLineLayout?.nonEmptyLineCount || 0);
-  const sourceParagraphs = preserveResumeUnits ? resumeReadableUnits : detectedSourceParagraphs;
+  // A heading must not disable the complete-line ownership contract beneath it.
+  // Include headings as independent anchors, so unrelated experience lines are
+  // never merged merely to satisfy a whole-document paragraph count.
+  const titledResumeRecords = layoutStructure.buildLineRecords(source).filter(record => !record.blank);
+  const preserveTitledResumeUnits = profileName === 'resume_application' && mode !== 'polish'
+    && resumeReadableUnits.length >= 3
+    && titledResumeRecords.some(record => ['title', 'heading'].includes(record.role))
+    && titledResumeRecords.every(record => ['title', 'heading'].includes(record.role)
+      || (record.role === 'prose' && layoutStructure.isSentenceComplete(record.text)));
+  const sourceParagraphs = preserveTitledResumeUnits
+    ? titledResumeRecords.map(record => String(record.raw || record.text).trim())
+    : preserveResumeUnits ? resumeReadableUnits : detectedSourceParagraphs;
   const sourceCount = sourceParagraphs.length;
   const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs, readabilityOptions);
   const beforeReadability = layoutStructure.measureParagraphReadability(before, readabilityOptions);
   const readableMinimum = Math.max(sourceReadability.minimumCount, beforeReadability.minimumCount);
-  if (preserveResumeUnits) {
+  if (preserveResumeUnits || preserveTitledResumeUnits) {
     const anchored = buildSourceAnchoredParagraphLayout(layoutSourceText, layoutOutputText, {
       readabilityOptions,
       forceParagraphSeparators: true,
@@ -3703,6 +3732,7 @@ module.exports = {
   restorePostSemanticLayout,
   restoreFinalDocumentLayout,
   repairIntroducedMidSentenceParagraphBreaks,
+  measureDeliveredParagraphBoundaries,
   restoreLockedHeadingLayout,
   restoreLockedStructureLayout,
   restoreInlineLabelBodyLayout,

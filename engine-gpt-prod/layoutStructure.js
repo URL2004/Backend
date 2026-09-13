@@ -308,6 +308,7 @@ function isStandaloneMarkdownControlLine(value) {
  * 잠그지 않도록 길이와 다음 본문 비율을 동시에 제한한다.
  */
 function isStandaloneSectionHeading(text, context = {}) {
+  if (isProseContinuation(text)) return false;
   // 제목 바로 다음 행에 본문이 이어지는 워드·웹 입력도 흔하다. 앞뒤 모두
   // 빈 행이어야 한다는 옛 조건은 이런 정상 소제목을 산문으로 내려 모델이
   // 이전 문단 끝에 합치게 했다. 앞쪽 단락 경계와 뒤의 충분한 본문을 함께
@@ -436,6 +437,7 @@ function isGenericTitle(text, context = {}) {
 
 function looksLikeUnpunctuatedProse(value) {
   const text = visibleTrim(value);
+  if (isProseContinuation(text)) return true;
   if (!text || text.length < 12) return false;
   const words = text.split(/\s+/u).filter(Boolean);
   const topicOrSubject = /(?:은|는|이|가)\s/u.test(text);
@@ -454,6 +456,17 @@ function looksLikeUnpunctuatedProse(value) {
     || /(?:하며|하고|되어|이고|이지만|했지만|때문에|통해|위해)\s+\S/u.test(text);
   const longDeclarative = text.length > 45 && words.length >= 7;
   return definitionalCopula || longDeclarative || (text.length > 55 && multiClause);
+}
+
+// A non-finite prose clause is not a heading merely because its full stop is on
+// the next line. Require a multi-word clause; explicit headings/quotes remain
+// classified before these prose heuristics, and short poetic labels stay intact.
+function isProseContinuation(value) {
+  const text = visibleTrim(value);
+  if (text.length < 16 || text.split(/\s+/u).length < 4) return false;
+  if (/^(?:[#>*]|[「『《〈“‘"'])/u.test(text)) return false;
+  return /(?:하며|하면서|했으며|하였으며|되었으며|됐으며|이며|되었고|되었지만|했고|하였고|였고|있었고|있으며|없으며|하지만|했지만|하였지만|되지만|되면|하면서도)\s*$/u.test(text)
+    || /[,;，；]\s*$/u.test(text);
 }
 
 /**
@@ -948,6 +961,7 @@ module.exports = {
   tableColumnCount,
   isFlowSequenceLine,
   looksLikeUnpunctuatedProse,
+  isProseContinuation,
   detectParallelSloganTitleIndices,
   detectParallelSectionHeadingIndices,
   detectLabelGroupHeadingIndices,

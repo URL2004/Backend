@@ -2,6 +2,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { evaluatePairedScores, wilson } = require('../lib/detectEvaluation');
+const { evaluateMinimalEditStability } = require('../lib/detectEvaluation');
+test('minimal edit audit distinguishes repeat variance, equivalent edits and meaningful controls', () => {
+  const rows = [{ id: 'stable', editKind: 'equivalent', beforeRepeats: [41,42,43], afterRepeats: [42,43,44] },
+    { id: 'noisy', editKind: 'equivalent', beforeRepeats: [58,46,36], afterRepeats: [43,42,55] },
+    { id: 'control', editKind: 'meaning_changed', beforeRepeats: [35,36,37], afterRepeats: [62,63,64] }];
+  const report = evaluateMinimalEditStability(rows);
+  assert.deepEqual(report.pairs[0].reasons, []);
+  assert.deepEqual(report.pairs[1].reasons, ['same_input_variance']);
+  assert.deepEqual(report.pairs[2].reasons, []);
+  assert.equal(report.diagnosticPass, false);
+  assert.equal(report.releaseEligible, false);
+  assert.throws(() => evaluateMinimalEditStability([{ ...rows[0], beforeRepeats: [42] }]), /repeats_required/);
+  assert.throws(() => evaluateMinimalEditStability([rows[0], rows[0]]), /duplicate_id/);
+});
 function fixture(split = 'holdout') {
   return Array.from({ length: 20 }, (_, i) => [
     { id: 'h' + i, group: 'g' + i, split, authorship: 'human_reference', baselineScore: 10, candidateScore: 10 },

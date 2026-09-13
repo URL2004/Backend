@@ -498,7 +498,9 @@ function linePolicyFor(text, documentProfile, layout, { lineBreakSensitive = fal
   // 분할이 모두 거절되므로 질문지는 구조 행 정책을 사용한다.
   if (questionnaire) return 'structural';
   const profiles = new Set([context.profile, ...context.safetyProfiles]);
-  if (hasDenseStandaloneObservationLayout(text, profiles, layout)) return 'all';
+  // Safety profiles broaden factual/voice audits, not layout authority. A resume
+  // can contain reflection without becoming a line-locked student record.
+  if (hasDenseStandaloneObservationLayout(text, new Set([context.profile]), layout)) return 'all';
   const sensitiveProfile = [...profiles].some(profile => [
     'academic_paper',
     'report_assignment',

@@ -399,6 +399,9 @@ function repairBrokenBlankLineProseContinuations(value) {
     const rightRole = layoutStructure.classifyLine(right);
     const leftToken = (left.trim().match(/[가-힣A-Za-z]+$/u) || [''])[0];
     const rightText = right.trimStart();
+    // '이 연구는 ...' starts a new clause, unlike a detached particle '는 ...'.
+    // Never use this ambiguous demonstrative to dissolve a paragraph/heading.
+    const demonstrativeStart = /^이\s+\S/u.test(rightText);
     const contextualFusedProse = left.length >= 60
       && /[.!?。！？]/u.test(left)
       && ['title', 'heading', 'list'].includes(leftRole)
@@ -406,7 +409,7 @@ function repairBrokenBlankLineProseContinuations(value) {
     const safeRole = (!['heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole)
         || contextualFusedProse)
       && !['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole);
-    const continuation = safeRole
+    const continuation = safeRole && !demonstrativeStart
       && leftToken
       && !/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left.trim())
       && ((/[가-힣]$/u.test(leftToken) && RIGHT_STANDALONE_PARTICLE_RE.test(rightText))
@@ -453,7 +456,8 @@ function preservesExistingStructuralLines(before, after) {
       if (role === 'heading' && looksLikeFusedStructuralLine(record.text)) return false;
       if (role === 'title') {
         const tail = (String(record.text || '').match(/[가-힣A-Za-z]+$/u) || [''])[0];
-        const splitWordContinuation = !/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(String(record.text || '').trim())
+        const splitWordContinuation = !/^이\s+\S/u.test(String(next?.text || '').trimStart())
+          && !/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(String(record.text || '').trim())
           && (RIGHT_STANDALONE_PARTICLE_RE.test(String(next?.text || '').trimStart())
             || RIGHT_WORD_CONTINUATION_RE.test(String(next?.text || '').trimStart()));
         // 첫 강제개행 조각은 문맥 없는 title 휴리스틱에 자주 걸린다.
@@ -997,6 +1001,7 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
       || isQuoteAttributionLine(left) || isQuoteAttributionLine(right)) return false;
   if (WEB_LITERAL_TEST_RE.test(left) || WEB_LITERAL_TEST_RE.test(right)) return false;
   if (/^\s*(?:`{3,}|~{3,})/u.test(left) || /^\s*(?:`{3,}|~{3,})/u.test(right)) return false;
+  if (layoutStructure.isProseContinuation(left)) return true;
   if (/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left)) return false;
   if (!/^[가-힣A-Za-z0-9(“"'‘「『《〈]/u.test(right)) return false;
   if (!leftToken) return false;
@@ -1018,6 +1023,7 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
 }
 
 function shouldAttachWithoutSpace(left, right) {
+  if (/^이\s+\S/u.test(right)) return false;
   if (!/[가-힣]$/u.test(left) || !/^[가-힣]/u.test(right)) return false;
   if (RIGHT_STANDALONE_PARTICLE_RE.test(right)) return true;
   const leftToken = (String(left).match(/[가-힣]+$/u) || [''])[0];

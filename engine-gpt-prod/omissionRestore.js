@@ -39,7 +39,8 @@ function restoreConfirmedSemanticOmissions({
   }
 
   const sourceSpans = splitSentenceSpans(rawSource);
-  if (sourceSpans.length < 2) return restoreResult(before, [], violations, []);
+  const dangling = restoreDanglingSourceClauses(rawSource, before, boundedRestoreCount(maxRestoreCount));
+  if (sourceSpans.length < 2) return restoreResult(dangling.text, dangling.restored, violations, []);
   const candidates = [];
   const claimedSourceIndices = new Set();
   for (const violation of omissions) {
@@ -52,9 +53,9 @@ function restoreConfirmedSemanticOmissions({
   }
   candidates.sort((left, right) => left.index - right.index);
 
-  let current = before;
-  const restored = [];
-  for (const candidate of candidates.slice(0, boundedRestoreCount(maxRestoreCount))) {
+  let current = dangling.text;
+  const restored = dangling.restored;
+  for (const candidate of candidates.slice(0, boundedRestoreCount(maxRestoreCount) - restored.length)) {
     if (!isMateriallyMissing(candidate.span.text, current)) continue;
     const insertion = locateInsertion(rawSource, sourceSpans, candidate.index, current);
     if (!insertion) continue;
@@ -88,6 +89,35 @@ function restoreConfirmedSemanticOmissions({
   const restoredViolationKeys = new Set(restored.map(item => violationKey(item.violation)));
   const remainingViolations = violations.filter(item => !restoredViolationKeys.has(violationKey(item)));
   return restoreResult(current, restored, remainingViolations, candidates);
+}
+
+// Called only after an omission verdict. A preserved non-finite prefix is not
+// evidence that its entire source sentence survived. Restore only a unique,
+// exact prefix with a missing finite tail, never an inferred new experience.
+function restoreDanglingSourceClauses(source, output, limit) {
+  const sentences = String(source).replace(/\r\n?/gu, '\n').split(/\n\s*\n/u)
+    .filter(paragraph => layoutStructure.buildLineRecords(paragraph).filter(row => !row.blank)
+      .every(row => row.role === 'prose'))
+    .flatMap(paragraph => splitSentenceSpans(paragraph.replace(/\n/gu, ' ')).map(span => span.text))
+    .filter(text => layoutStructure.isSentenceComplete(text) && !isProtectedSourceSentence(text));
+  let text = output;
+  const restored = [];
+  const spans = splitSentenceSpans(output);
+  for (const span of spans.slice().reverse()) {
+    if (restored.length >= limit || !layoutStructure.isProseContinuation(span.text)) continue;
+    const prefix = span.text.trim();
+    const matches = sentences.filter(sentence => sentence.startsWith(prefix));
+    if (matches.length !== 1) continue;
+    const sentence = matches[0];
+    const tail = sentence.slice(prefix.length).trim();
+    if (!tail || !isMateriallyMissing(tail, text)) continue;
+    text = text.slice(0, span.start) + sentence + text.slice(span.end);
+    // Do not clear a broad judge verdict on a deterministic substring match.
+    // The final semantic revalidation owns clearing the remaining warning.
+    restored.push({ sourceSentenceIndex: -1, sentence, anchorType: 'exact_dangling_prefix',
+      violation: { type: 'source_clause_restored', span: '', detail: '' } });
+  }
+  return { text, restored };
 }
 
 function findTrailingParagraphOmission(source, outputText, violation) {

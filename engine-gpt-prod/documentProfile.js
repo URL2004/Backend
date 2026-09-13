@@ -827,6 +827,18 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   if (compactLength <= 100 && lines.length <= 2) scores.general += 0.55;
   if (formatProfile.flags.includes('script_cues')) scores.creative += 8;
 
+  const attendedLectureSignals = count(text, /(?:강연|특강|강의)(?:에서|에서는|을|를|은|는|의|이|가)|(?:강연|특강|강의)[^.!?\n]{0,24}(?:들었|들으며|듣고|통해)/gu);
+  const lectureReflectionSignals = count(text, /(?:알\s*수\s*있었다|이해할\s*수\s*있었다|생각해\s*볼\s*수\s*있었다|느꼈다|깨달았다|배웠다|생각하게\s*되었다)/gu);
+  const attendedLectureReflection = attendedLectureSignals >= 4 && lectureReflectionSignals >= 2
+    && explicitApplicationSignals === 0
+    && applicationSectionSignals === 0 && universityApplicationSignals === 0
+    && programApplicationSignals === 0 && futureContributionSignals === 0;
+  if (attendedLectureReflection) {
+    // A lecture about careers is not itself a job application. Require repeated
+    // retrospective learning evidence, and exclude explicit application frames.
+    scores.report_assignment += 7.2;
+    scores.resume_application = Math.min(scores.resume_application, 1.8);
+  }
   const ranked = CONTENT_GENRES
     .filter(profile => profile !== 'unknown')
     .map(profile => ({ profile, score: scores[profile] }))
@@ -890,6 +902,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     formatProfile,
     riskFlags,
     signals: {
+      attendedLectureReflection,
       compactLength,
       lineCount: lines.length,
       sentenceCount: sentences.length,

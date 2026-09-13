@@ -69,7 +69,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.50';
+const VERSION = 'gpt-prod-v2.5.51';
 const DETECT_VERSION = 'gpt-detect-v1.32';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -4097,6 +4097,7 @@ async function runEngine({
     reasonCodes: safeFailureCodeList(pipelineFixedPointReasonCodes)
   };
   const candidateLedgerMeta = candidateLedger.snapshot();
+  const deliveredParagraphBoundaries = structureChunk.measureDeliveredParagraphBoundaries(rawSource, outputText);
   result.engineMeta = {
     schemaVersion: 3,
     engineVersion: VERSION,
@@ -4160,6 +4161,9 @@ async function runEngine({
     finalLayoutMidSentenceParagraphRepairCount: Number(
       layoutRepair?.deliveryIntegrityFixedPoint?.midSentenceParagraphRepairCount || 0
     ),
+    deliveredIncompleteParagraphCount: deliveredParagraphBoundaries.incompleteParagraphCount,
+    deliveredNewIncompleteParagraphCount: deliveredParagraphBoundaries.newIncompleteParagraphCount,
+    deliveredMaxParagraphChars: deliveredParagraphBoundaries.maxParagraphChars,
     finalLayoutMissingCount: Number(layoutRepair?.finalFixedPoint?.missingCount || 0),
     inlineLabelBodyRepairCount: Number(layoutRepair?.inlineLabels?.repairCount || 0)
       + Number(layoutRepair?.finalLockedStructure?.inlineLabelBodyRepairCount || 0),

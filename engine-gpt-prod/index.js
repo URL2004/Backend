@@ -5457,6 +5457,12 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   const source = String(text || '').trim();
   const cfg = await loadConfig(config);
   const diagnostics = require('../lib/detectDiagnostics');
+  const consistency = require('../lib/detectConsistency');
+  const consistencyEnabled = consistency.enabled();
+  const criteriaEnabled = consistency.criteriaEnabled();
+  const detectPromptVersion = criteriaEnabled ? consistency.PROMPT_VERSION : prompts.DETECT_PROMPT_VERSION;
+  const detectPrompt = prompts.buildDetectPrompt(lang, { consistency: criteriaEnabled });
+  let consistencyDiagnostics = null;
   const attempts = [];
   let recheckReason = 'none';
   const finish = out => {
@@ -5471,7 +5477,9 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       version: diagnostics.VERSION, attempts, recheckReason,
       recheckFailed: out.gptMeta?.escalationFailed === true,
       selectedModelScore: out.probability, evidenceAlignedScore: aligned.probability,
-      stageVersion: diagnostics.STAGE_VERSION, selectedPhase: attempts.at(-1)?.phase,
+      stageVersion: diagnostics.STAGE_VERSION,
+      selectedPhase: consistencyDiagnostics ? attempts[consistencyDiagnostics.selectedIndex]?.phase : attempts.at(-1)?.phase,
+      ...(consistencyDiagnostics ? { consistency: consistencyDiagnostics } : {}),
       statisticalScore: assisted.probability, engineFinalScore: result.probability
     });
     return result;
@@ -5488,7 +5496,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   let primaryError = null;
   try {
     primary = await callDetectModel({
-      prompt: prompts.buildDetectPrompt(lang),
+      prompt: detectPrompt,
       user,
       cfg,
       signal,
@@ -5512,16 +5520,54 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       task: route,
       escalated: false,
       engine: DETECT_VERSION,
-      detectPromptVersion: prompts.DETECT_PROMPT_VERSION
+      detectPromptVersion
     });
     recheckReason = diagnostics.recheckReason(out, source, cfg);
+    if (consistencyEnabled) {
+      const responses = [primary];
+      let failedUsage = emptyUsage();
+      const useEscalation = ['low_confidence', 'cause_mismatch', 'long_mixed_input'].includes(recheckReason);
+      const reviewed = await consistency.review({ primary: out, source, existingReason: recheckReason,
+        deadlineMs: detectDeadlineMs, signal,
+        invoke: async phase => {
+          let response;
+          try {
+            response = await callDetectModel({ prompt: detectPrompt, user, cfg, signal, route,
+              phase: `detect:consistency_${phase}`,
+              model: useEscalation ? cfg.models.detectEscalation : cfg.models.detect,
+              reasoningEffort: useEscalation ? cfg.reasoning.escalation : cfg.reasoning.detect,
+              safetyIdentifier: safetyId, escalated: useEscalation, deadlineMs: detectDeadlineMs, documentProfile });
+          } catch (error) {
+            failedUsage = addUsage(failedUsage, error.usage);
+            throw error;
+          }
+          responses.push(response);
+          attempts.push(diagnostics.summarizeAttempt(response.json, source, phase));
+          return normalizeDetectResult(response.json, source);
+        }
+      });
+      consistencyDiagnostics = reviewed.diagnostics;
+      recheckReason = consistencyDiagnostics.reason;
+      const selectedResponse = responses[consistencyDiagnostics.selectedIndex];
+      const usage = responses.reduce((sum, response) => addUsage(sum, response.usage), failedUsage);
+      out = { ...reviewed.selected,
+        gptMeta: { ...metaFromResponse(selectedResponse, cfg, {
+          task: route, engine: DETECT_VERSION, detectPromptVersion,
+          escalated: useEscalation && consistencyDiagnostics.selectedIndex > 0,
+          escalationFailed: consistencyDiagnostics.failedCalls > 0,
+          consistencyVersion: consistency.VERSION
+        }), usage, cachedInputTokens: usage.cachedInputTokens, reasoningTokens: usage.reasoningTokens,
+        estimatedUsd: usage.estimatedUsd }
+      };
+      return finish(out);
+    }
     if (!shouldEscalateDetect(out, source, cfg)) {
       return finish(out);
     }
 
     try {
       const escalated = await callDetectModel({
-        prompt: prompts.buildDetectPrompt(lang),
+        prompt: detectPrompt,
         user,
         cfg,
         signal,
@@ -5541,7 +5587,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
         escalated: true,
         primaryConfidence: primary.json.confidence || '',
         engine: DETECT_VERSION,
-        detectPromptVersion: prompts.DETECT_PROMPT_VERSION
+        detectPromptVersion
       });
       return finish(out);
     } catch (escalationError) {
@@ -5561,7 +5607,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
   recheckReason = 'primary_failed';
   try {
     const escalated = await callDetectModel({
-      prompt: prompts.buildDetectPrompt(lang),
+      prompt: detectPrompt,
       user,
       cfg,
       signal,
@@ -5581,7 +5627,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       escalated: true,
       primaryError: primaryError?.message || '',
       engine: DETECT_VERSION,
-      detectPromptVersion: prompts.DETECT_PROMPT_VERSION
+      detectPromptVersion
     });
     return finish(out);
   } catch (error) {
@@ -5632,9 +5678,14 @@ async function callDetectModel({ prompt, user, cfg, signal, route, phase, model,
       safetyIdentifier,
       meta: { task: route, phase, mode: 'detect', profile: PROFILE, escalated }
     });
-  assertNoPromptLeak(result.json);
-  if (typeof result.json?.probability !== 'number' || !Number.isFinite(result.json.probability)) {
-    throw Object.assign(new Error('DETECT_INCOMPLETE'), { code: 'DETECT_INCOMPLETE' });
+  try {
+    assertNoPromptLeak(result.json);
+    if (typeof result.json?.probability !== 'number' || !Number.isFinite(result.json.probability)) {
+      throw Object.assign(new Error('DETECT_INCOMPLETE'), { code: 'DETECT_INCOMPLETE' });
+    }
+  } catch (error) {
+    error.usage = result.usage;
+    throw error;
   }
   return result;
 }

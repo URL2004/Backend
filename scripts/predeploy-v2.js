@@ -66,6 +66,10 @@ async function main() {
   );
 
   if (args['skip-env'] !== '1') {
+    const detectConsistency = require('../lib/detectConsistency');
+    add('detect_consistency_research_flags_off',
+      !detectConsistency.enabled() && !detectConsistency.criteriaEnabled(),
+      'Research candidates failed repeat/cost screening; do not enable before labelled holdout review.');
     add(
       'v2_single_production_path',
       importGraph.pass && /^gpt-prod-v2\.\d+\.\d+$/u.test(EXPECTED_ENGINE_VERSION),

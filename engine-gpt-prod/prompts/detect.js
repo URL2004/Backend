@@ -2,7 +2,7 @@
 
 const DETECT_PROMPT_VERSION = 'detect-prompt-v6-document-scope';
 
-function buildDetectPrompt(lang = 'ko') {
+function buildBaselineDetectPrompt(lang = 'ko') {
   if (lang === 'en') {
     return [
       `[GPT-PROD-DETECT:${DETECT_PROMPT_VERSION}]`,
@@ -39,6 +39,13 @@ function buildDetectPrompt(lang = 'ko') {
     'confidence는 점수 확신이 아니라 분석 근거의 충분성을 뜻한다. 편집 가능한 일반 산문이 4문장 미만이거나 보호·손상된 입력이 대부분일 때만 low, 표본이 작거나 혼합됐으면 medium, 일반 산문이 8문장 이상이고 근거를 일관되게 관찰할 수 있으면 high로 둔다. 점수가 구간 경계에 가깝다는 이유만으로 low를 선택하지 않는다.',
     '구조화된 응답만 반환한다.'
   ].join('\n');
+}
+
+function buildDetectPrompt(lang = 'ko', { consistency = false } = {}) {
+  const baseline = buildBaselineDetectPrompt(lang);
+  if (!consistency) return baseline;
+  return [baseline.replace(DETECT_PROMPT_VERSION, require('../../lib/detectConsistency').PROMPT_VERSION),
+    require('./detectConsistency').buildConsistencyCriteria(lang)].join('\n');
 }
 
 module.exports = { DETECT_PROMPT_VERSION, buildDetectPrompt };

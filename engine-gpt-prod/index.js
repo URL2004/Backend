@@ -69,8 +69,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.49';
-const DETECT_VERSION = 'gpt-detect-v1.31';
+const VERSION = 'gpt-prod-v2.5.50';
+const DETECT_VERSION = 'gpt-detect-v1.32';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -3567,6 +3567,20 @@ async function runEngine({
       if (Number(finalStructureCandidateAudit.sourceLineAnchorLossCount || 0) > 0) {
         addUniqueCode(structureIntegrityRollbackCodes, 'source_line_anchor_lost');
       }
+    }
+  }
+  // 원문 인용 복원·구조 안전 후보 롤백은 앞선 공백 수리 이후에도 실행된다.
+  // 최종 문자열에서만 공백 고정점을 적용하고 어휘/인용/구조 보존을 재검증한다.
+  {
+    const deliveredFormatting = koreanRefinement.applySafeFormattingRepairs({
+      source: rawSource, outputText, documentProfile
+    });
+    if (deliveredFormatting.applied
+        && deliveredFormatting.text.replace(/\s/gu, '') === outputText.replace(/\s/gu, '')
+        && auditDirectQuoteIntegrity(rawSource, deliveredFormatting.text).pass !== false
+        && preservesFinalStructure(rawSource, deliveredFormatting.text, chunks, chunkPlan, boundaryRepair)) {
+      outputText = deliveredFormatting.text;
+      finalFormattingRepair = mergeFormattingRepairReports(finalFormattingRepair, deliveredFormatting);
     }
   }
   finalGeneratedDuplicateAudit = dedupe.auditGeneratedDuplicateIntegrity(rawSource, outputText);

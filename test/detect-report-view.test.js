@@ -60,7 +60,7 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
   assert.equal(reportView.professorRadar.label, 'AI식 문체 신호 높음');
   assert.deepEqual(reportView.contentEvidence, {
     status: 'mixed', label: '구체 근거 일부', lived: 1, specific: 0,
-    generic: 3, total: 8, groundedRatio: 0.125
+    grounded: 1, generic: 3, total: 8, groundedRatio: 0.125
   });
   assert.equal(reportView.measuredEvidence.maxEndingRun, 5);
   assert.equal(reportView.measuredEvidence.avgLength, 57);

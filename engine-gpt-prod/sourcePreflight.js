@@ -158,7 +158,10 @@ function auditAndSanitizeSource(value) {
   const documentQuoteWrapper = rewriteWrapper ? null : extractDocumentQuoteWrapper(original);
   const wrapper = rewriteWrapper || documentQuoteWrapper;
   const workingSource = wrapper?.payload || original;
-  const extractedLayout = repairExtractedPageLayout(workingSource);
+  const scriptFrame = require('./scriptStructure').detectScriptStructure(workingSource).isScript;
+  const extractedLayout = scriptFrame
+    ? { text: workingSource, removedPages: [], changes: [] }
+    : repairExtractedPageLayout(workingSource);
   const lines = extractedLayout.text.split('\n');
   const removals = wrapper
     ? [issue(
@@ -188,7 +191,7 @@ function auditAndSanitizeSource(value) {
       inReference = false;
     }
 
-    const removable = text && REMOVABLE_LINE_RULES.find(rule => (
+    const removable = text && !scriptFrame && REMOVABLE_LINE_RULES.find(rule => (
       (!rule.boundaryOnly || isBoundaryContentLine(lines, index))
       && !fenceState.protectedLineIndexes.has(index)
       && !isQuotedInstructionLine(text)
@@ -536,6 +539,7 @@ function repairIsolatedTerminalPunctuationLines(value) {
 }
 
 function looksLikeCreativeLineLayout(value) {
+  if (require('./scriptStructure').detectScriptStructure(value).isScript) return true;
   const text = String(value || '').replace(/\r\n?/gu, '\n');
   if (/^\s*(?:`{3,}|~{3,})/mu.test(text)) return false;
   const lines = text.split('\n');

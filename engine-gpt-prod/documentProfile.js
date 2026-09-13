@@ -825,6 +825,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   if (compactLength > 100 && sentences.length >= 3) scores.general += 1.35;
   if (compactLength >= 1500 && sentences.length >= 10) scores.general += 0.38;
   if (compactLength <= 100 && lines.length <= 2) scores.general += 0.55;
+  if (formatProfile.flags.includes('script_cues')) scores.creative += 8;
 
   const ranked = CONTENT_GENRES
     .filter(profile => profile !== 'unknown')
@@ -1254,7 +1255,8 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
   const appendixPresent = lines.some(line => /^(?:부록|Appendix)(?:\s|$)/iu.test(line));
   const poemLikeLines = lines.filter(line => line.length <= 40 && !/[.!?。！？]$/u.test(line)).length;
   const assessmentItem = assessment?.isAssessmentItem === true;
-  const lineSensitive = questionnaire.isQuestionnaire
+  const scriptFrame = require('./scriptStructure').detectScriptStructure(text).isScript;
+  const lineSensitive = scriptFrame || questionnaire.isQuestionnaire
     || assessmentItem
     || editableBlockquoteWrapper
     || (tableLineCount < 2
@@ -1265,6 +1267,7 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
       && poemLikeLines / lines.length >= 0.6
       && median(lines.map(line => line.length)) <= 36);
   const flags = [];
+  if (scriptFrame) flags.push('script_cues');
   if (headingCountValue >= 2) flags.push('sectioned');
   if (questionnaire.isQuestionnaire) flags.push('questionnaire');
   if (assessmentItem) flags.push('assessment_item');

@@ -64,6 +64,7 @@ function splitExplicitParagraphs(value) {
 
 function buildLineRecords(value) {
   const source = String(value || '');
+  const scriptCues = new Set(require('./scriptStructure').detectScriptStructure(source).cueIndices);
   const records = [];
   let start = 0;
   let index = 0;
@@ -126,6 +127,10 @@ function buildLineRecords(value) {
       : (tableIndices.has(record.index) && /^\s*\|.*\|\s*$/u.test(String(record.raw || '')) ? 'pipe' : 'spacing');
     if (codeIndices.has(record.index)) {
       record.role = 'code';
+      continue;
+    }
+    if (scriptCues.has(record.index)) {
+      record.role = 'heading';
       continue;
     }
     const position = nonEmpty.findIndex(item => item.index === record.index);

@@ -689,7 +689,10 @@ const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|�
 const QUOTE_ATTRIBUTION_CONTEXT = `${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}\\s+(?:말|이야기|발언|경고|제안|요청|답변|약속|다짐|인사|주장|설명|대답|강조|외침)`;
 const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
 const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
-const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
+// 격조사 뒤 보조사가 결합한 형태도 하나의 붙임 단위다.
+// 단일 조사 목록만 검사하면 정상적인 ‘기준’만으로/로서를 띄워 버린다.
+const QUOTE_COMPOUND_PARTICLE_SUFFIX = '(?:(?:만|부터|까지|조차|마저|밖에|처럼|보다)(?:으로|로|의|은|는|도|만)?|(?:으로|로)(?:서|써)(?:는|도|만)?|(?:와|과|에|에서|에게|으로|로)(?:의|는|도|만))';
+const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
 const CLOSE_QUOTE_CLASS = '[”’」』》〉]';
 const QUOTE_SUFFIX_BOUNDARY = '(?=$|[\\s,.;:!?。！？])';
 // U+2019는 한글 닫는 작은따옴표이면서 영문 apostrophe이기도 하다.
@@ -1838,8 +1841,16 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
     // `항목명 : 본문`과 표 머리의 정렬용 콜론은 허용한다. 콜론까지
     // 일반 문장부호 오류로 세면 행 분리 방식만 달라진 동일 표기가 신규
     // 오류로 집계되므로, 문장 종결·쉼표·세미콜론 공백만 이 규칙에서 잡는다.
-    sentence => /[\p{L}\p{N}”’」』》〉)\]][ \t]+[.!?。！？,，;；]/u
-      .test(stripProtectedQuotedText(sentence))
+    sentence => {
+      // 인용을 공백으로 치환해 검사하면 `설명 "인용",`에서 없던
+      // '설명  ,'가 생긴다. 수리와 동일한 보호 span 안팎을 검사한다.
+      let found = false;
+      replaceOutsideProtectedRanges(sentence, segment => {
+        if (/[\p{L}\p{N}”’」』》〉)\]][ \t]+[.!?。！？,，;；]/u.test(segment)) found = true;
+        return segment;
+      });
+      return found;
+    }
   );
   pushSentenceIssue(
     issues,
@@ -4947,5 +4958,6 @@ module.exports = {
   restoreIntroducedIntegritySentences,
   removeIntroducedConnectorOpeners,
   removeIntroducedGroundedDuplicateSentences,
+  repairIntroducedResidualClauseDuplications,
   isImprovedAudit
 };

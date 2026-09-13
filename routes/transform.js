@@ -3595,7 +3595,10 @@ router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (r
     });
     const parsed = gptAnalyze.extractGptResult(resp, refineTool.name);
     // 문단 하나로 정규화 — 모델이 빈 줄을 넣으면 스플라이스 후 문단 수·인덱스가 틀어진다.
-    const refined = String(parsed && parsed.outputText || '').trim().replace(/\n[ \t]*\n+/g, '\n');
+    const refined = require('../lib/refinementValidation').prepareRefinementCandidate({
+      source: paraText, candidate: parsed && parsed.outputText,
+      documentProfile: detectDocumentProfile(paraText)
+    });
     // 무날조·길이 결정론 게이트 — 허용 세계 = 원 문단 ∪ 메모. 그 밖의 새 사실·과증축은 차단(무과금 유지).
     const floorGuard = require('../engine/floor');
     const novelty = refined ? floorGuard.measureNovelty(paraText, refined, memo) : { count: 0, items: [] };

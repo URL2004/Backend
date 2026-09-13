@@ -159,7 +159,10 @@ const DOMAIN_STOP = new Set(['그리고','하지만','그런데','그러나','�
 function buildSourceAnchorPool(rawText) {
   const R = rawText || '';
   // 1) 강한 구체(specific): 연도·수치+단위·한자·따옴표 인용 → 가장 강한 anchor
-  const specifics = [...new Set((R.match(SPECIFIC_RE_G) || []).map(s => s.trim()))].filter(Boolean);
+  const specifics = [...new Set([
+    ...(R.match(SPECIFIC_RE_G) || []),
+    ...(R.match(new RegExp(PERCENT_SPECIFIC_RE.source, 'gu')) || [])
+  ].map(s => s.trim()))].filter(Boolean);
   // 2) 약어/영문 개념(AI, ESG, SNS, IT, MVP, ...)
   const acronyms = [...new Set((R.match(/[A-Za-z]{2,}/g) || []))];
   // 3) 반복 등장하는 도메인 명사(2~6자, 2회+) — buzzword급이지만 추상문장 grounding엔 유효
@@ -365,7 +368,10 @@ function hasFirstPersonSpeaker(value) {
 //   purpose 에세이처럼 1인칭 일화가 아니라 고유명사·수치로 구체적인 글이 카피킬러를 통과하는 경로.
 const SPECIFIC_RE = /(19|20)\d{2}|\d+\s*(명|개|건|배|원|시간|분|초|개월|주|일|차례|번|미터|m|km|kg|살|세|층|위|등)|[一-鿿]|"[^"]{2,}"|“[^”]{2,}”|'[^']{3,}'|‘[^’]{3,}’/;
 const SPECIFIC_RE_G = /(19|20)\d{2}|\d+\s*(명|개|건|배|원|시간|분|초|개월|주|일|차례|번|미터|m|km|kg|살|세|층|위|등)|[一-鿿]{1,}|"[^"]{2,}"|“[^”]{2,}”/g;
-function isSpecific(s) { return SPECIFIC_RE.test(s); }
+// 백분율은 명·건과 같은 수량 근거다. 숫자 자체가 진실/사람 작성의
+// 증거인 것은 아니며, 여기서는 보존할 구체 표기의 존재만 측정한다.
+const PERCENT_SPECIFIC_RE = /(?<![\d.])\d+(?:\.\d+)?\s*(?:[%％]|퍼센트|퍼센트포인트)(?:p|포인트)?/u;
+function isSpecific(s) { return SPECIFIC_RE.test(s) || PERCENT_SPECIFIC_RE.test(s); }
 
 // ── 보고서용 문단 분리(2026-07-20): 빈 줄 없는 붙여넣기(워드·한글·모바일)에서 전체 글이
 //   1문단으로 뭉쳐 문단 지도가 무의미해지던 실사고(1,418자 자소서 → "총 1문단"·앞 90자만 표시).
@@ -416,12 +422,13 @@ function analyzeParagraphs(text) {
     if (!sents.length) continue;
     const lived = sents.filter(isLivedScene).length;
     const specific = sents.filter(isSpecific).length;
+    const grounded = sents.filter(s => isLivedScene(s) || isSpecific(s)).length;
     const stanced = sents.filter(s => STANCE_RE.test(s)).length;
     const generic = sents.filter(s => GENERIC_SUBJECT_RE.test(s.trim()) || ABSTRACT_NOUN_RE.test(s) || GENERIC_ENDING_RE.test(s)).length;
     let kind;
     if (lived >= 1 || specific >= 1) { concrete++; kind = 'concrete'; }     // 실제 장면 또는 구체 사실 → 안전
     else { abstractRisk++; kind = (generic / sents.length) >= 0.34 ? 'abstract_risk' : 'thin'; } // 구체 grounding 없음
-    detail.push({ lived, specific, stanced, generic, sents: sents.length, kind });
+    detail.push({ lived, specific, grounded, stanced, generic, sents: sents.length, kind });
   }
   const total = paras.length || 1;
   // 위험비율 = 구체 grounding(장면·사실)이 없는 문단 비율 ≈ 카피킬러 AI 의심 구간 비율.

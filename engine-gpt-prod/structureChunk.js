@@ -3236,6 +3236,23 @@ function compareStructuralRoleSignatures(source, output) {
   const outputSignature = structuralRoleSignature(output);
   const losses = [];
   const additions = [];
+  // 전체 제목 수가 같아도 큐 하나가 본문에 붙고 다른 행이 제목으로
+  // 오분류되면 누락을 숨긴다. 반복 큐는 개수뿐 아니라 순서까지 비교한다.
+  const script = require('./scriptStructure');
+  const sourceScript = script.detectScriptStructure(source);
+  if (sourceScript.isScript) {
+    const outputScript = script.detectScriptStructure(output);
+    const cueSequence = (text, indices) => {
+      const lines = String(text || '').split(/\r?\n/);
+      return indices.map(i => lines[i].trim().replace(/\s+/gu, ' '));
+    };
+    const before = cueSequence(source, sourceScript.cueIndices);
+    const after = cueSequence(output, outputScript.cueIndices);
+    if (before.length !== after.length || before.some((cue, i) => cue !== after[i])) {
+      losses.push({ role: 'scriptCueSequence', code: 'script_cue_boundary_or_order_changed',
+        sourceCount: before.length, outputCount: after.length });
+    }
+  }
   for (const key of Object.keys(sourceSignature)) {
     if (key === 'tableCellSequence') continue;
     const before = Number(sourceSignature[key] || 0);

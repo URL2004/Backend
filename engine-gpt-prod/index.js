@@ -1847,7 +1847,8 @@ async function runEngine({
       const restoredOmissions = omissionRestore.restoreConfirmedSemanticOmissions({
         source: auditSource,
         outputText: semanticOutput,
-        semanticReport
+        semanticReport,
+        allowedExtra
       });
       if (restoredOmissions.applied) {
         const beforeRestoreStructure = structureChunk.buildStructureAudit({
@@ -8557,6 +8558,8 @@ function shouldDeferLabelMicroFragment({
 }
 
 function reconcileSemanticOmissionRestores(report, restored) {
+  const numericOnly = (restored?.restored || []).length > 0
+    && restored.restored.every(item => item.anchorType === 'quantified_paragraph_endpoints');
   const restoredKeys = new Set(restored?.restoredViolationKeys || []);
   const keyOf = item => `${item?.type || ''}\u0000${item?.span || ''}\u0000${item?.detail || ''}`;
   const reports = (report?.reports || []).map(section => {
@@ -8579,7 +8582,7 @@ function reconcileSemanticOmissionRestores(report, restored) {
     outputText: restored?.text || report?.outputText || '',
     reports,
     violations: remainingViolations,
-    pass: remainingViolations.length === 0 && !uncertain,
+    pass: remainingViolations.length === 0 && !uncertain && (!numericOnly || report?.pass === true),
     uncertain,
     deterministicOmissionRestoreCount: Number(report?.deterministicOmissionRestoreCount || 0)
       + Number(restored?.restoredCount || 0)

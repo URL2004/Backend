@@ -6,6 +6,7 @@ const {
   normalizeCompact
 } = require('../engine/koreanText');
 const layoutStructure = require('./layoutStructure');
+const { compareNumberMultiset, extractNumberTokens } = require('./factAudit');
 
 const MAX_RESTORE_COUNT = 5;
 const MIN_SOURCE_SENTENCE_CHARS = 14;
@@ -26,6 +27,7 @@ function restoreConfirmedSemanticOmissions({
   source = '',
   outputText = '',
   semanticReport = null,
+  allowedExtra = '',
   maxRestoreCount = MAX_RESTORE_COUNT
 } = {}) {
   const rawSource = String(source || '');
@@ -34,12 +36,16 @@ function restoreConfirmedSemanticOmissions({
     ? semanticReport.violations
     : [];
   const omissions = violations.filter(item => item?.type === 'omission');
-  if (!rawSource.trim() || !before.trim() || !omissions.length) {
+  if (!rawSource.trim() || !before.trim()) {
     return restoreResult(before, [], violations, []);
   }
+  const numeric = String(allowedExtra || '').trim() ? { text: before, restored: [] }
+    : restoreMissingQuantifiedParagraphs(rawSource, before, boundedRestoreCount(maxRestoreCount));
+  if (!omissions.length) return restoreResult(numeric.text, numeric.restored, violations, []);
 
   const sourceSpans = splitSentenceSpans(rawSource);
-  const dangling = restoreDanglingSourceClauses(rawSource, before, boundedRestoreCount(maxRestoreCount));
+  const dangling = restoreDanglingSourceClauses(rawSource, numeric.text, boundedRestoreCount(maxRestoreCount) - numeric.restored.length);
+  dangling.restored.unshift(...numeric.restored);
   if (sourceSpans.length < 2) return restoreResult(dangling.text, dangling.restored, violations, []);
   const candidates = [];
   const claimedSourceIndices = new Set();
@@ -89,6 +95,55 @@ function restoreConfirmedSemanticOmissions({
   const restoredViolationKeys = new Set(restored.map(item => violationKey(item.violation)));
   const remainingViolations = violations.filter(item => !restoredViolationKeys.has(violationKey(item)));
   return restoreResult(current, restored, remainingViolations, candidates);
+}
+
+// A near-paraphrase can lose a quantity even though lexical sentence coverage
+// remains high. Never splice a naked value into generated syntax. Restore a
+// bounded source paragraph only when both endpoints map uniquely, in order,
+// and the intervening prose has no unrelated/approved-extra content to erase.
+// The caller still validates candidate integrity and re-runs the semantic audit.
+function restoreMissingQuantifiedParagraphs(source, output, limit = MAX_RESTORE_COUNT) {
+  const paragraphs = sourceProseParagraphs(source);
+  let text = String(output || '');
+  const restored = [];
+  if (paragraphs.length < 2) return { text, restored };
+  for (const paragraph of paragraphs) {
+    if (restored.length >= limit || paragraph.length > 1600) continue;
+    if (layoutStructure.buildLineRecords(paragraph).some(row => !row.blank && row.role !== 'prose')) continue;
+    if (/[“”‘’「」『』《》〈〉"`]/u.test(paragraph)) continue;
+    const missing = compareNumberMultiset(source, text).removedTokens;
+    const tokens = extractNumberTokens(paragraph);
+    if (!tokens.some(token => /\d[^\d]+$/u.test(token) && missing.some(item => item.token === token))) continue;
+    const ss = splitSentenceSpans(paragraph), os = splitSentenceSpans(text);
+    if (ss.length < 3 || ss.length > 12) continue;
+    const rank = sentence => os.map((span, index) => ({ span, index, score: alignmentScore(sentence, span.text) }))
+      .sort((a, b) => b.score - a.score);
+    const first = rank(ss[0].text), last = rank(ss.at(-1).text);
+    if (!first[0] || !last[0] || first[0].score < 0.58 || last[0].score < 0.58
+      || first[0].score - (first[1]?.score || 0) < 0.16
+      || last[0].score - (last[1]?.score || 0) < 0.16) continue;
+    const a = first[0].index, b = last[0].index;
+    if (a >= b || b - a > ss.length + 2) continue;
+    const selected = os.slice(a, b + 1), segment = text.slice(os[a].start, os[b].end);
+    if (segment.length > paragraph.length * 1.4 || /[“”‘’「」『』《》〈〉"`]/u.test(segment)) continue;
+    if (layoutStructure.buildLineRecords(segment).some(row => !row.blank && row.role !== 'prose')) continue;
+    if (selected.some(span => Math.max(...ss.map(s => alignmentScore(s.text, span.text))) < 0.3)) continue;
+    // Do not discard a new claim hidden inside an otherwise matching sentence.
+    const sourceWords = contentTokens(paragraph);
+    if (selected.some(span => {
+      const words = [...contentTokens(span.text)];
+      return words.filter(word => sourceWords.has(word)).length / Math.max(1, words.length) < 0.5;
+    })) continue;
+    if (compareNumberMultiset(paragraph, segment).addedCount > 0) continue;
+    const candidate = text.slice(0, os[a].start) + paragraph + text.slice(os[b].end);
+    const prior = compareNumberMultiset(source, text), next = compareNumberMultiset(source, candidate);
+    if (next.removedCount >= prior.removedCount || next.addedCount > prior.addedCount) continue;
+    text = candidate;
+    restored.push({ sourceSentenceIndex: -1, sentence: paragraph, paragraphRestore: true,
+      restoredSentenceCount: ss.length, anchorType: 'quantified_paragraph_endpoints',
+      violation: { type: 'numeric_fact_restored', span: '', detail: '' } });
+  }
+  return { text, restored };
 }
 
 // Called only after an omission verdict. A preserved non-finite prefix is not
@@ -356,5 +411,6 @@ module.exports = {
   isProtectedSourceSentence,
   alignmentScore,
   findTrailingParagraphOmission,
-  sourceProseParagraphs
+  sourceProseParagraphs,
+  restoreMissingQuantifiedParagraphs
 };

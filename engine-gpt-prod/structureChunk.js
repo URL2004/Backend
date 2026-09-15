@@ -1549,7 +1549,19 @@ function restoreParagraphLayout({
       readabilityOptions
     });
     if (roleLayout.applicable || additiveTailLayout.applied) {
-      const roleLayoutText = roleLayout.applicable ? roleLayout.text : additiveTailLayout.text;
+      const semanticText = roleLayout.applicable ? roleLayout.text : additiveTailLayout.text;
+      // Semantic boundaries do not replace the per-paragraph readability pass.
+      // Previously this early return skipped it whenever a document already had
+      // enough paragraphs, even if one of those paragraphs was still overlong.
+      const semanticGroups = splitParagraphs(semanticText);
+      const readableGroups = semanticGroups.flatMap(paragraph =>
+        layoutStructure.isStructureDominatedParagraph(paragraph)
+          // Bibliographic punctuation is not evidence of prose sentences.
+          || hasReadabilityLiteralPunctuation(paragraph)
+          ? [paragraph]
+          : splitSourceRoleForReadability(paragraph, readabilityOptions));
+      const readableText = normalizeParagraphWhitespace(readableGroups.join('\n\n'));
+      const roleLayoutText = bare(readableText) === bare(semanticText) ? readableText : semanticText;
       const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(roleLayoutText), readabilityOptions);
       const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(roleLayoutText).length;
       return {
@@ -1562,7 +1574,7 @@ function restoreParagraphLayout({
         afterCount: splitParagraphs(roleLayoutText).length,
         roleBoundaryCount: Number(roleLayout.roleBoundaryCount) || 0,
         additiveTailMergeCount: additiveTailLayout.applied ? 1 : 0,
-        proseSplitCount: 0,
+        proseSplitCount: Math.max(0, splitParagraphs(roleLayoutText).length - semanticGroups.length),
         visualGapRepairCount: outputVisualLayout.repairCount,
         explicitParagraphCountBefore,
         explicitParagraphCountAfter,
@@ -1711,6 +1723,16 @@ function mergeOrphanAdditiveTailParagraph(value, { sourceParagraphCount = 0, rea
     text,
     applied: text !== normalized
   };
+}
+
+function hasReadabilityLiteralPunctuation(value) {
+  let punctuatedQuote = false;
+  const remainder = String(value || '').replace(
+    /「[^」\n]*」|『[^』\n]*』|《[^》\n]*》|〈[^〉\n]*〉|“[^”\n]*”|‘[^’\n]*’|"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)|\[[^\[\]\n]*\]/gu,
+    quote => { if (/[.!?。！？]["'”’」』)\]]*\s/u.test(quote.slice(1, -1))) punctuatedQuote = true; return ''; });
+  // A short quoted term has no sentence boundary to cut. Parenthetical
+  // citations and unmatched opening quotes require a more conservative pass.
+  return punctuatedQuote || /[()[\]{}「『《〈“‘"'`]/u.test(remainder);
 }
 
 function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOptions = {} } = {}) {

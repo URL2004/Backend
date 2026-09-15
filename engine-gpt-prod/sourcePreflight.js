@@ -336,7 +336,8 @@ function repairSourceLayoutArtifacts(value) {
   }
   const punctuation = repairIsolatedTerminalPunctuationLines(before);
   const heading = repairInlineHeadingBoundaries(punctuation.text);
-  const blankWrapped = repairBrokenBlankLineProseContinuations(heading.text);
+  const wordWrapped = repairDocumentAttestedWordWraps(heading.text);
+  const blankWrapped = repairBrokenBlankLineProseContinuations(wordWrapped.text);
   const wrapped = repairForcedProseWraps(blankWrapped.text);
   const sentenceSpacing = repairMissingSentenceSpacing(wrapped.text);
   const structurallySafe = preservesExistingStructuralLines(before, sentenceSpacing.text);
@@ -345,6 +346,7 @@ function repairSourceLayoutArtifacts(value) {
     ? [
         ...punctuation.changes,
         ...heading.changes,
+        ...wordWrapped.changes,
         ...blankWrapped.changes,
         ...wrapped.changes,
         ...sentenceSpacing.changes
@@ -360,6 +362,36 @@ function repairSourceLayoutArtifacts(value) {
     changed: finalText !== before,
     changes: appliedChanges
   };
+}
+
+// Use a correctly written word elsewhere in this document as evidence, not a
+// topic-specific replacement dictionary. Never join a title/quote/table or a
+// short verse merely because its syllables could form a Korean word.
+function repairDocumentAttestedWordWraps(value) {
+  const source = String(value || '');
+  const stem = word => word.replace(/(?:에서는|으로|에서|에게|은|는|이|가|을|를|의|와|과|도|만)$/u, '');
+  const attested = new Set((source.match(/[가-힣]{2,}/gu) || []).map(stem).filter(word => word.length >= 2));
+  const lines = source.split('\n'), changes = [];
+  const records = layoutStructure.buildLineRecords(source);
+  for (let i = 0; i < lines.length - 1; i++) {
+    const left = lines[i];
+    if (left.length < 80 || !/[.!?。！？]/u.test(left)) continue;
+    const fusedSectionProse = records[i]?.role === 'list'
+      && /^\d+(?:\.\d+){1,3}\s/u.test(left)
+      && (left.match(/[가-힣][.!?。！？](?:\s|$)/gu) || []).length >= 1;
+    if (records[i]?.role !== 'prose' && !fusedSectionProse) continue;
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim()) j++;
+    if (j >= lines.length || records[j]?.role !== 'prose') continue;
+    const a = left.match(/(?:^|\s)([가-힣]{1,3})$/u);
+    const b = lines[j].match(/^([가-힣]{1,6})(?=\s)/u);
+    if (!a || !b || !attested.has(stem(a[1] + b[1])) || attested.has(a[1])) continue;
+    lines[i] += lines[j];
+    for (let k = i + 1; k <= j; k++) lines[k] = '';
+    changes.push({ code: 'source_attested_word_wrap_repaired', lineOrdinal: i + 1,
+      message: '문서 안의 동일한 단어 표기를 근거로 갈라진 어절을 이었어요.' });
+  }
+  return { text: lines.join('\n'), changes };
 }
 
 /**
@@ -696,6 +728,10 @@ function repairInlineHeadingBoundaries(value) {
 }
 
 function replaceInlineHeadingBoundary(match, terminal, marker, offset, whole) {
+  // A dot inside 2.1.3 is not a sentence ending before heading 1.3.
+  // Splitting it changes numeric atoms, causing the entire safe line repair
+  // to be rejected downstream, including genuine later section boundaries.
+  if (terminal === '.' && /\d/u.test(String(whole || '')[Number(offset) - 1] || '')) return match;
   const boundary = Number(offset) + String(match || '').length;
   if (isCalendarDateContinuation(whole, boundary, marker)) return match;
   return `${terminal}\n\n`;

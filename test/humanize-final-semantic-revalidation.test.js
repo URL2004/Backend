@@ -55,6 +55,9 @@ function installMock(t, options = {}) {
     }
     if (name === 'gpt_prod_semantic_judge') {
       judgeCalls += 1;
+      if (options.failFinal && judgeCalls >= 2) {
+        return new Response(JSON.stringify({ error: { message: 'test audit unavailable' } }), { status: 400 });
+      }
       const rewrite = extractPromptDataSection(body.input, 'REWRITE');
       const violation = typeof options.violation === 'function' ? options.violation(body, judgeCalls, rewrite) : false;
       return apiResponse({
@@ -83,6 +86,19 @@ function revalidationSignals(calls) {
     .filter(call => call.name === 'gpt_prod_semantic_judge')
     .map(call => extractPromptDataSection(call.body.input, 'DETERMINISTIC_DISCOURSE_SIGNALS'));
 }
+
+test('어절 공백 교정은 최종 의미 재검증보다 먼저 완료하고 이후 본문을 수정하지 않는다', () => {
+  const source = require('node:fs').readFileSync(require.resolve('../engine-gpt-prod'), 'utf8');
+  const start = source.indexOf('let finalSemanticRevalidation =');
+  const end = source.indexOf('const result = buildResult({', start);
+  assert.ok(source.lastIndexOf('const deliveredFormatting =', start) > 0);
+  assert.ok(!source.slice(start, end).includes('applySafeFormattingRepairs'));
+  const mandatoryStart = source.indexOf('let depthTugRejudgeCount = 0;');
+  const decisionStart = source.indexOf('const semanticDecision =', mandatoryStart);
+  assert.ok(!source.slice(mandatoryStart, decisionStart).includes('!polishStrictFailure'));
+  assert.match(source.slice(mandatoryStart, decisionStart), /if \(outputText\.trim\(\) && !polishTerminalFailure\)/);
+  assert.doesNotMatch(source.slice(mandatoryStart, decisionStart), /includes\(polishStrictFailure\)[\s\S]*polish_excessive_change/);
+});
 
 test('공백 배치만 달라진 최종본은 결정론 투영으로 같은 판정을 유지하고 띄어쓰기 변경은 stale로 남긴다', () => {
   const source = '행사에는 30명이 참석했다. 이후 보고서를 정리했다.';
@@ -170,24 +186,24 @@ test('의미 심사 뒤 늦은 원문 복원이 본문을 바꾸면 최종 본�
   assert.doesNotMatch(out.result.outputText, /심각한/u);
   assert.equal(out.qualityWarnings.some(item => item.code === 'semantic_validation_stale'), false);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 0);
-  assert.equal(out.engineMeta.recoveryBudgetStageUsageUsd.final_semantic_revalidation > 0, true);
+  assert.equal(out.result.humanizeMeta.callLedger.entries.filter(item => item.stage === 'final_semantic_revalidation').length, 1);
+  assert.equal(out.engineMeta.recoveryBudgetStageUsageUsd.final_semantic_revalidation, undefined);
 });
 
-test('늦은 회복 예산이 소진되면 재검증 없이 지금처럼 stale·검토 상태로 전달한다', { concurrency: false }, async t => {
+test('선택적 회복 금액이 부족해도 필수 최종 재검증을 수행한다', { concurrency: false }, async t => {
   const mock = installMock(t, { humanize: LATE_RESTORED_OUTPUT });
   const out = await engine.run({
     text: SOURCE, mode: 'blog', uid: 'final-revalidation-budget-user', config: config(), recoveryBudgetUsd: 0.000001
   });
 
-  assert.equal(out.status, 'needs_review');
-  assert.equal(out.engineMeta.semanticValidationStatus, 'stale');
-  assert.ok(out.qualityWarnings.some(item => item.code === 'semantic_validation_stale'));
-  assert.equal(out.engineMeta.finalSemanticRevalidationAttempted, false);
-  assert.equal(out.engineMeta.finalSemanticRevalidationApplied, false);
-  assert.equal(out.engineMeta.finalSemanticRevalidationReason, 'recovery_budget_exhausted');
-  assert.ok(out.engineMeta.recoveryBudgetSkippedCodes.includes('recovery_budget_exhausted'));
-  assert.equal(mock.judgeCalls(), 1);
-  assert.equal(out.engineMeta.semanticModelCallCount, 1);
+  assert.equal(out.status, 'clean');
+  assert.equal(out.engineMeta.semanticValidationStatus, 'pass');
+  assert.ok(!out.qualityWarnings.some(item => item.code === 'semantic_validation_stale'));
+  assert.equal(out.engineMeta.finalSemanticRevalidationAttempted, true);
+  assert.equal(out.engineMeta.finalSemanticRevalidationApplied, true);
+  assert.equal(out.engineMeta.finalSemanticRevalidationReason, 'revalidated_pass');
+  assert.equal(mock.judgeCalls(), 2);
+  assert.equal(out.engineMeta.semanticModelCallCount, 2);
   assert.doesNotMatch(out.result.outputText, /심각한/u);
 });
 
@@ -221,4 +237,18 @@ test('본문이 심사한 후보 그대로면 재검증 호출이 없다', { con
   assert.equal(out.engineMeta.finalSemanticRevalidationAttempted, false);
   assert.equal(out.engineMeta.finalSemanticRevalidationReason, 'not_needed');
   assert.equal(mock.judgeCalls(), 1);
+});
+
+test('최종 심사 HTTP 실패는 완료로 표시하지 않고 검증된 후보 또는 기존 검토 정책을 사용한다', { concurrency: false }, async t => {
+  installMock(t, { humanize: LATE_RESTORED_OUTPUT, failFinal: true });
+  const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'final-audit-unavailable', config: config() });
+  assert.equal(out.engineMeta.finalSemanticRevalidationAttempted, true);
+  assert.equal(out.engineMeta.finalSemanticRevalidationApplied, false);
+  assert.equal(out.engineMeta.finalSemanticRevalidationReason, 'audit_incomplete');
+  if (out.engineMeta.semanticValidationStatus !== 'pass') assert.notEqual(out.status, 'clean');
+  if (out.engineMeta.semanticValidationStatus === 'pass') {
+    assert.equal(provenance.verifySemanticValidation(out.result.semanticAudit, {
+      source: SOURCE, candidate: out.result.outputText, requireDigest: true
+    }).status, 'pass');
+  }
 });

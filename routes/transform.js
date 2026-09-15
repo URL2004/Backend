@@ -93,6 +93,7 @@ async function executeOwned(job, feature, run) {
   const controller = feature === 'main' ? job.ac : new AbortController();
   if (feature !== 'main') job.auxAc = controller;
   const limit = Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000));
+  job.executionDeadlineMs = Date.now() + limit;
   const timer = setTimeout(() => controller.abort(Object.assign(new Error('Job deadline exceeded'), { code: 'JOB_DEADLINE' })), limit);
   const heartbeat = setInterval(() => {
     const lost = () => controller.abort(Object.assign(new Error('Execution lease lost'), { code: 'EXECUTION_LEASE_LOST' }));
@@ -105,6 +106,7 @@ async function executeOwned(job, feature, run) {
     await executionCoordinator.release(lease).catch(error => logger.warn('transform.lease_release_failed', { jobId: job.id, error }));
     delete job.executionToken;
     delete job.auxAc;
+    delete job.executionDeadlineMs;
   }
 }
 
@@ -1488,6 +1490,22 @@ function buildArchiveObservability(job) {
     recoveryTimeLimitExhausted: engineMeta.recoveryTimeLimitExhausted === true,
     recoveryLastDeniedReason: archiveString(engineMeta.recoveryLastDeniedReason, 80),
     recoveryBudgetStageUsageUsd: compactArchiveCodeCountMap(engineMeta.recoveryBudgetStageUsageUsd),
+    recoveryReservedUsd: archiveFinite(engineMeta.recoveryReservedUsd),
+    recoveryUnknownUsageUsd: archiveFinite(engineMeta.recoveryUnknownUsageUsd),
+    paragraphAlignmentElapsedMs: archiveFinite(engineMeta.paragraphAlignmentElapsedMs),
+    paragraphAlignmentFastPath: engineMeta.paragraphAlignmentFastPath === true,
+    paragraphAlignmentLimitReached: engineMeta.paragraphAlignmentLimitReached === true,
+    semanticPairAlignment: uniqueStrictArchiveCodes(engineMeta.semanticPairAlignment),
+    semanticVerificationCompleted: engineMeta.semanticVerificationCompleted === true,
+    finalSemanticRevalidationElapsedMs: archiveFinite(engineMeta.finalSemanticRevalidationElapsedMs),
+    httpAttemptCount: archiveFinite(engineMeta.httpAttemptCount),
+    failedEstimatedUsd: archiveFinite(engineMeta.failedEstimatedUsd),
+    unknownEstimatedUsd: archiveFinite(engineMeta.unknownEstimatedUsd),
+    unknownUsageCount: archiveFinite(engineMeta.unknownUsageCount),
+    shortChunkBatchEnabled: engineMeta.shortChunkBatchEnabled === true,
+    shortChunkBatchCallCount: archiveFinite(engineMeta.shortChunkBatchCallCount),
+    shortChunkBatchedChunkCount: archiveFinite(engineMeta.shortChunkBatchedChunkCount),
+    shortChunkIndividualRecoveryCount: archiveFinite(engineMeta.shortChunkIndividualRecoveryCount),
     sectionRecoveryBudgetSkippedCount: archiveFinite(engineMeta.sectionRecoveryBudgetSkippedCount),
     sectionRecoveryBudgetSkippedCodes: uniqueStrictArchiveCodes(engineMeta.sectionRecoveryBudgetSkippedCodes),
     polishSpeakerRestoreCount: archiveFinite(engineMeta.polishSpeakerRestoreCount),
@@ -2154,6 +2172,7 @@ async function tryBlogPreservationFallback(job, text) {
           mode: 'polish',
           lang: job.lang || 'ko',
           signal: job.ac.signal,
+          deadlineMs: job.executionDeadlineMs,
           userNotes: job.memo || '',
           config: gptCfg,
           styleProfile: 'production_blog_preservation_fallback',
@@ -2431,6 +2450,7 @@ async function runAdminQualityPatternAudit({
     mode,
     lang,
     signal: job.ac.signal,
+    deadlineMs: job.executionDeadlineMs,
     userNotes: job.memo || '',
     evidence: evidence || '',
     config,
@@ -2464,6 +2484,7 @@ async function runAdminGptLabWithOptionalNiklCompare({
     mode,
     lang,
     signal: job.ac.signal,
+    deadlineMs: job.executionDeadlineMs,
     userNotes: job.memo || '',
     evidence: evidence || '',
     layoutNlp: layoutNlpTest ? false : null,
@@ -2802,6 +2823,7 @@ async function runHumanizeJob(job, text, evidence = '') {
           mode: engineMode,
           lang: job.lang || 'ko',
           signal: job.ac.signal,
+          deadlineMs: job.executionDeadlineMs,
           userNotes: job.memo || '',
           evidence: evidence || '',
           config: gptCfg,

@@ -2,7 +2,7 @@
 
 const { splitSentences } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v2';
+const VERSION = 'relation-candidates-v3';
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
@@ -52,6 +52,13 @@ function auditRelationCandidates(source, outputText) {
     const original = matched.sentence;
     const add = code => candidates.push({ code, sourceOrdinal: matched.index + 1,
       outputOrdinal: outputIndex + 1, sourceSpan: original, outputSpan: sentence });
+    const actionNouns = '(?:질문|교육|훈련|요청|제안|설명|안내|지원|지시|평가|조언|피드백)';
+    const received = new RegExp(`(${actionNouns})(?:을|를)?\\s*받(?:아|았|는|고|으며|음|은|을)`, 'gu');
+    for (const match of original.matchAll(received)) {
+      const active = new RegExp(`${match[1]}(?:을|를)?\\s*(?:하(?:고|며|는|였|겠|려|기)|해(?:서|\\s|[.,]|$)|했)`, 'u');
+      const stillReceived = new RegExp(`${match[1]}(?:을|를)?\\s*받`, 'u');
+      if (active.test(sentence) && !stillReceived.test(sentence)) { add('action_direction_candidate'); break; }
+    }
     if (/(?:이후|직후|그\s*후|\s뒤|\s후(?=\s|$)|\s후에|다음에|나서)/u.test(original)
         && count(sentence, CAUSAL_MARKER) > count(original, CAUSAL_MARKER)) add('causal_relation_candidate');
     const left = subjectObject(original), right = subjectObject(sentence);

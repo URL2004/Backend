@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 19;
+const VERSION = 20;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -799,6 +799,12 @@ function splitGenericNumberedHeadingBody(value) {
     if (!/^[가-힣A-Z]/u.test(prose)) continue;
     if (/^(?:은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/u.test(prose)) continue;
     if (/^(?:적|성|화|론|학|형|별|상|물|값|표)/u.test(prose)) continue;
+    // A title-like noun inside prose can be the stem of a predicate:
+    // 기능하는/분석하고/구성되는. Never freeze its first half as a heading.
+    if (/^(?:하(?:는|고|며|면|여|지|기|려)|되(?:는|고|며|면|어|지|기)|한다|된다|했다|된|될|시킨)/u.test(prose)) continue;
+    // An already-present sentence subject is evidence that the proposed title
+    // swallowed the body. Ambiguous OCR spacing must not invent that boundary.
+    if (/\S+(?:은|는|이|가)\s/u.test(title)) continue;
     if (!looksLikeFusedProse(prose)) continue;
     candidate = { title, prose };
   }
@@ -932,6 +938,15 @@ function isCompactAnswerKeyLine(value) {
 function repairForcedProseWraps(value) {
   const lines = String(value || '').split('\n');
   const contextualRecords = layoutStructure.buildLineRecords(value);
+  const nominal = line => {
+    const text = String(line || '').trim();
+    return text.length >= 40 && text.split(/\s/u).length >= 6
+      && /(?:활용(?:\s*가능)?|구축|마련|실정|확보|개선|해결|추진|검토|확대|지원|유지|완료|요소|수단)$/u.test(text)
+      && !/[.!?。！？]\s/u.test(text);
+  };
+  const nonempty = lines.filter(line => line.trim());
+  const nominalDocument = nonempty.filter(nominal).length >= 3
+    && nonempty.filter(nominal).length / Math.max(1, nonempty.length) >= .7;
   const output = [];
   const changes = [];
   let fence = null;
@@ -952,6 +967,15 @@ function repairForcedProseWraps(value) {
       continue;
     }
     const next = String(lines[index + 1] || '');
+    if (nominalDocument && nominal(current) && nominal(next)) {
+      // Repeated full nominal statements are separate report items, not PDF
+      // fragments. Preserve their ownership as explicit paragraph boundaries.
+      output.push(current, '');
+      changes.push({ code: 'source_nominal_item_boundary_preserved', lineOrdinal: index + 1,
+        message: '독립된 명사형 보고서 항목 사이의 경계를 보존했어요.' });
+      index += 1;
+      continue;
+    }
     if (shouldJoinForcedWrap(current, next, {
       leftRole: contextualRecords[index]?.role,
       rightRole: contextualRecords[index + 1]?.role

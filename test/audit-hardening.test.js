@@ -182,7 +182,7 @@ test('semantic sections run with bounded concurrency, preserve order and share o
       const rounds = options.reserveRepair() ? 1 : 0; repaired += rounds; active--;
       return { pass: true, outputText: output, rounds };
     } };
-  context.require = name => name === './concurrency' ? require('../engine-gpt-prod/concurrency') : require(name);
+  context.require = name => ['./concurrency', './callLedger'].includes(name) ? require('../engine-gpt-prod/' + name.slice(2)) : require(name);
   vm.createContext(context); vm.runInContext(source.slice(start, end), context);
   const result = await context.runSemanticDocumentAudit({ source: 'source', outputText: 'output' });
   assert.equal(maximum, 2); assert.equal(repaired, 3); assert.equal(result.outputText, '012345');

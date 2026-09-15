@@ -50,6 +50,47 @@ test('schema retries include usage from every billed model response', { concurre
   assert.equal(calls, 2); assert.equal(result.usage.inputTokens, 20); assert.equal(result.usage.outputTokens, 10);
 });
 
+test('billed HTTP failure followed by success retains both usage and physical attempt count', async t => {
+  const oldFetch=global.fetch, oldKey=process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY='test-key';let calls=0;
+  global.fetch=async()=>++calls===1
+    ? responseJson({error:{message:'server unavailable'},usage:{input_tokens:100,output_tokens:50,total_tokens:150}},500,{'retry-after':'0'})
+    : responseJson(completed({value:'ok'}));
+  t.after(()=>{global.fetch=oldFetch;if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;});
+  const result=await completeJson({system:'synthetic',user:'synthetic',schema:SIMPLE_SCHEMA,model:'gpt-5.6-luna'});
+  assert.equal(result.httpAttemptCount,2);assert.equal(result.usage.inputTokens,110);
+  assert.equal(result.usage.outputTokens,55);assert.ok(result.failedEstimatedUsd>0);
+});
+
+test('unknown HTTP failure holds its reservation before the next transport retry', async t => {
+  const oldFetch=global.fetch,oldKey=process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY='test-key';let calls=0;
+  global.fetch=async()=>{calls++;return responseJson({error:{message:'server unavailable'}},500,{'retry-after':'0'});};
+  t.after(()=>{global.fetch=oldFetch;if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;});
+  const ledger=require('../engine-gpt-prod/callLedger');
+  const budget=require('../engine-gpt-prod/recoveryBudget').createRecoveryBudget(.02);
+  await assert.rejects(ledger.run(async()=>{
+    ledger.setRecoveryBudget(budget);
+    await completeJson({system:'synthetic',user:'synthetic',schema:SIMPLE_SCHEMA,model:'gpt-5.6-luna',maxOutputTokens:10000});
+  }),error=>{
+    assert.equal(error.code,'RECOVERY_BUDGET_EXHAUSTED');
+    assert.equal(error.httpAttemptCount,1);
+    assert.equal(error.callLedger.unknownUsageCount,1);
+    assert.ok(error.callLedger.unknownEstimatedUsd>0);
+    return true;
+  });
+  assert.equal(calls,1);assert.ok(budget.snapshot().unknownUsageUsd>0);
+  assert.equal(budget.snapshot().reservedUsd,0);
+});
+
+test('an expired call before transport is not counted as an HTTP attempt', async t => {
+  const oldKey=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='test-key';
+  t.after(()=>{if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;});
+  await assert.rejects(completeJson({system:'synthetic',user:'synthetic',schema:SIMPLE_SCHEMA,model:'gpt-5.6-luna',deadlineMs:Date.now()-1}),error=>{
+    assert.equal(error.httpAttemptCount,0);assert.equal(error.unknownUsageCount,0);return true;
+  });
+});
+
 test('refusal content는 일반 출력으로 파싱하지 않는다', () => {
   assert.throws(() => extractOutputText({
     output: [{ type: 'message', content: [{ type: 'refusal', refusal: '요청을 처리할 수 없습니다.' }] }]

@@ -45,7 +45,11 @@ function promptCacheKey(config, { task, mode, profile, schemaName, phase, model 
   return `${prefixKey}:${modelKey}:${taskKey}:${hash}`.slice(0, 64);
 }
 
-async function completeJson({
+async function completeJson(options = {}) {
+  return require('./callLedger').track(options, completeJsonRequest);
+}
+
+async function completeJsonRequest({
   system,
   user,
   schema,
@@ -132,13 +136,33 @@ async function completeJson({
   let schemaAttempt = 0;
   let truncationRetryUsed = false;
   let usage = emptyUsage();
+  const accounting = { usage, httpAttemptCount: 0, unknownUsageCount: 0, unknownEstimatedUsd: 0, failedEstimatedUsd: 0 };
   try {
   while (schemaAttempt < 2) {
     const request = requestForSchemaAttempt(schemaAttempt);
-    const fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, chunkDeadlineMs);
+    const context = require('./callLedger').current();
+    // A mandatory audit's verdict is exempt; its optional rewrite is not.
+    // Nested repair calls still reserve against the shared recovery balance.
+    const budget = context?.policy?.optional === false && meta.task !== 'repair' ? null : context?.recoveryBudget;
+    const price = require('./usageCost').priceFor(model);
+    accounting.budget = budget;
+    accounting.model = model;
+    accounting.stage = meta.phase || 'unknown';
+    accounting.reserveUsd = (
+      // UTF-8 bytes bound input tokens, including schema; a cache write must
+      // not cost more than the reservation's assumed input price.
+      Buffer.byteLength(request.body, 'utf8') * Math.max(price.input, price.cacheWrite, price.cachedInput)
+      + body.max_output_tokens * price.output
+    ) / 1000000;
+    let fetched;
+    try {
+      const requestDeadlineMs = Math.min(chunkDeadlineMs, budget?.deadlineMs() ?? Infinity);
+      fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, requestDeadlineMs, accounting);
+      raw = await fetched.response.json();
+    } catch (error) {
+      throw error;
+    }
     mergeRetryCounts(retryCounts, fetched.retryCounts);
-    raw = await fetched.response.json();
-    usage = addUsage(usage, normalizeUsage(raw.usage, model, raw));
     status = raw.status || 'completed';
     incompleteReason = raw.incomplete_details?.reason || '';
     if (status !== 'completed') {
@@ -181,6 +205,11 @@ async function completeJson({
   }
   } catch (error) {
     error.usage = usage;
+    error.httpAttemptCount = accounting.httpAttemptCount;
+    error.unknownUsageCount = accounting.unknownUsageCount;
+    error.unknownEstimatedUsd = accounting.unknownEstimatedUsd;
+    error.failedEstimatedUsd = accounting.failedEstimatedUsd;
+    error.retryCounts = { ...retryCounts, ...error.retryCounts };
     logger.info('gpt_prod.usage', { ...meta, provider: 'openai', model, ...usage,
       failed: true, retryCounts, elapsedMs: Date.now() - startedAt });
     throw error;
@@ -223,6 +252,10 @@ async function completeJson({
     rawText: outputText,
     raw,
     usage,
+    httpAttemptCount: accounting.httpAttemptCount,
+    unknownUsageCount: accounting.unknownUsageCount,
+    unknownEstimatedUsd: accounting.unknownEstimatedUsd,
+    failedEstimatedUsd: accounting.failedEstimatedUsd,
     retryCounts,
     status,
     incompleteReason,
@@ -249,7 +282,7 @@ function supportsExtendedPromptCache(model) {
   return false;
 }
 
-async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0) {
+async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, accounting = null) {
   const configuredRetries = Number(process.env.OPENAI_API_MAX_RETRIES ?? process.env.OPENAI_API_RETRY_ATTEMPTS);
   const retryCap = Math.max(0, Math.min(3, Number.isFinite(configuredRetries) ? configuredRetries : DEFAULT_MAX_RETRIES));
   const retryLimits = {
@@ -274,7 +307,7 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0) {
     if (parentSignal?.aborted) throw abortError();
     try {
       const remainingMs = Math.max(1000, totalLimitMs - (Date.now() - startedAt));
-      const response = await fetchWithTimeout(url, init, parentSignal, remainingMs);
+      const response = await fetchWithTimeout(url, init, parentSignal, remainingMs, accounting);
       if (response.ok) return { response, retryCounts };
       const message = await readErrorMessage(response);
       const err = new Error(`OpenAI Responses API ${response.status}: ${message}`);
@@ -306,7 +339,7 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0) {
   throw error;
 }
 
-async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity) {
+async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity, accounting = null) {
   const configured = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
   const timeoutMs = Math.max(1000, Math.min(configured, Number.isFinite(remainingMs) ? remainingMs : configured));
   const controller = new AbortController();
@@ -315,20 +348,46 @@ async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity)
   let rejectAbort;
   const aborted = new Promise((_, reject) => { rejectAbort = () => reject(abortError()); });
   controller.signal.addEventListener('abort', rejectAbort, { once: true });
+  let reservation = null, settled = false, sent = false;
+  const settle = (payload, ok = false) => {
+    if (settled || !sent || !accounting) return;
+    settled = true;
+    const rawUsage = payload?.usage;
+    const hasCount = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+    const known = rawUsage && hasCount(rawUsage.input_tokens ?? rawUsage.prompt_tokens)
+      && hasCount(rawUsage.output_tokens ?? rawUsage.completion_tokens)
+      ? normalizeUsage(rawUsage, accounting.model, payload) : null;
+    if (known) {
+      addUsage(accounting.usage, known);
+      if (!ok) accounting.failedEstimatedUsd += Number(known.estimatedUsd || 0);
+    } else {
+      accounting.unknownUsageCount++;
+      accounting.unknownEstimatedUsd += accounting.reserveUsd;
+    }
+    if (reservation) accounting.budget.settleCall(reservation, known);
+  };
   try {
     if (parentSignal?.aborted) throw abortError();
+    if (accounting?.budget) {
+      reservation = accounting.budget.reserveCall(accounting.reserveUsd, { priority: 'late', stage: accounting.stage });
+      if (!reservation) throw Object.assign(new Error('Optional recovery reservation exhausted'), { code: 'RECOVERY_BUDGET_EXHAUSTED' });
+    }
     if (parentSignal) parentSignal.addEventListener('abort', onAbort, { once: true });
     return await Promise.race([aborted, (async () => {
+      sent = true;
+      if (accounting) accounting.httpAttemptCount++;
       const response = await outboundFetch('openai', url, { ...init, signal: controller.signal });
       // Keep the deadline and transport signal alive until the body is consumed.
       let payload;
       try { payload = await response.json(); }
       catch (error) { if (response.ok) throw error; payload = null; }
+      settle(payload, response.ok);
       if (controller.signal.aborted) throw abortError();
       return { ok: response.ok, status: response.status, statusText: response.statusText,
         headers: response.headers, json: async () => payload };
     })()]);
   } catch (err) {
+    settle(null);
     if (controller.signal.aborted && !parentSignal?.aborted) {
       const timeoutError = new Error(`OpenAI Responses API request timed out after ${timeoutMs}ms`);
       timeoutError.code = 'ETIMEDOUT';

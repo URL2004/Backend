@@ -69,8 +69,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.52';
-const DETECT_VERSION = 'gpt-detect-v1.33';
+const VERSION = 'gpt-prod-v2.5.53';
+const DETECT_VERSION = 'gpt-detect-v1.34';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -179,6 +179,26 @@ function effectiveModeForProfile(requestedMode, normalizedMode, documentProfile)
 }
 
 async function run(options = {}) {
+  // A structural fallback is still the same job, not a fresh time allowance.
+  options = { ...options, deadlineMs: Number(options.deadlineMs) > 0 ? Number(options.deadlineMs)
+    : Date.now() + Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000)) };
+  return require('./callLedger').run(() => require('./callLedger').withPolicy(
+    { deadlineMs: options.deadlineMs }, () => runWithStructureFallback(options)), (out, ledger) => {
+    if (!ledger.modelCallCount) return; // injected test/provider adapters may not expose accounting
+    const meta = out.result?.humanizeMeta;
+    if (meta) Object.assign(meta, { usage: ledger.usage, estimatedUsd: ledger.usage.estimatedUsd,
+      modelCallCount: ledger.modelCallCount, callLedger: ledger });
+    for (const target of [out.engineMeta, out.result?.engineMeta]) if (target) Object.assign(target, {
+      modelCallCount: ledger.modelCallCount, httpAttemptCount: ledger.httpAttemptCount,
+      semanticModelCallCount: ledger.semanticModelCallCount,
+      failedEstimatedUsd: ledger.failedEstimatedUsd, unknownUsageCount: ledger.unknownUsageCount,
+      unknownEstimatedUsd: ledger.unknownEstimatedUsd,
+      paragraphAlignmentElapsedMs: ledger.layout.elapsedMs, paragraphAlignmentFastPath: ledger.layout.fastPath,
+      paragraphAlignmentLimitReached: ledger.layout.limitReached });
+  });
+}
+
+async function runWithStructureFallback(options = {}) {
   const first = await runEngine(options);
   if (options.approvedStructure && first.result?.structureImprovement?.deliveryVerified === false) {
     const fallback = await runEngine({ ...options, approvedStructure: null });
@@ -218,9 +238,13 @@ async function runEngine({
   niklQualityTest = false,
   layoutNlp = null,
   recoveryBudgetUsd = 0,
+  deadlineMs = 0,
   approvedStructure = null
 } = {}) {
   const submittedSource = String(text || '').trim();
+  require('./callLedger').setRecoveryBudget(null);
+  const jobDeadlineMs = Number(deadlineMs) > 0 ? Number(deadlineMs)
+    : Date.now() + Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000));
   if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   let rawSource = sourcePreflightAudit?.text || submittedSource;
@@ -377,8 +401,14 @@ async function runEngine({
     signal
   });
   const chunkConcurrency = configuredChunkConcurrency();
-  const records = await mapWithConcurrency(chunks, chunkConcurrency, async (chunk, i) => {
-    return processChunk({
+  const batching = require('./shortChunkBatch');
+  const shortChunkBatch = batching.createShortChunkBatch(completeJson, { concurrency: chunkConcurrency });
+  const records = new Array(chunks.length);
+  const workUnits = batching.buildChunkWorkUnits(chunks, shortChunkBatch.metrics.enabled);
+  await mapWithConcurrency(workUnits, chunkConcurrency, async indices => Promise.all(indices.map(async i => {
+    const chunk = chunks[i];
+    const record = await processChunk({
+      shortChunkBatch,
       chunk: chunks[i],
       chunks,
       index: i,
@@ -402,7 +432,8 @@ async function runEngine({
       safetyIdentifier: safetyId,
       signal
     });
-  }, signal);
+    records[i] = { ...record, sourceSpanId: chunk.sourceSpanId, sourceStart: chunk.start, sourceEnd: chunk.end };
+  })), signal);
   const editableRecords = records.filter(record => record?.locked !== true && record?.skipped !== true);
   const allEditableModelCallsFailed = editableRecords.length > 0
     && editableRecords.every(record => isModelFailureRecord(record));
@@ -413,8 +444,10 @@ async function runEngine({
   // 작동한다. 0% 또는 승인 편집 0건 문서는 비용 상한 때문에 회복이 생략되어
   // 기술 차단으로 굳지 않도록 반드시 회복을 계속 시도한다.
   const recoveryBudget = createRecoveryBudget(recoveryBudgetUsd, {
-    enforced: primaryApprovedModelChunkCount > 0
+    enforced: primaryApprovedModelChunkCount > 0,
+    jobDeadlineMs
   });
+  require('./callLedger').setRecoveryBudget(recoveryBudget);
 
   let sectionRecoveryReport = {
     metrics: {
@@ -1757,7 +1790,10 @@ async function runEngine({
   let depthTugRecoveryRounds = 0;
   let depthTugSemanticRepairRounds = 0;
   let depthTugRejudgeCount = 0;
-  if (!polishStrictFailure) {
+  // Range warnings can later be delivered; unlike a proven unchanged output
+  // or evaluative padding, they cannot exempt polish from its mandatory audit.
+  const polishTerminalFailure = ['polish_unchanged', 'polish_evaluative_padding_added'].includes(polishStrictFailure);
+  if (outputText.trim() && !polishTerminalFailure) {
     const semanticDecision = experienceCandidateAudit?.candidate === true
       ? { run: true, reason: 'experience_novelty_candidate' }
       : resumeCoverageRetryApplied
@@ -2077,6 +2113,7 @@ async function runEngine({
           break;
         }
         const candidateSemantic = await qualityV2.runSemanticDocumentAudit({
+          optional: true,
           source: auditSource,
           outputText: candidate,
           lang,
@@ -2191,7 +2228,8 @@ async function runEngine({
     inlineCodeIntegrity = literalSpans.restoreInlineCode(outputText, inlineCodeFreeze);
     outputText = inlineCodeIntegrity.text;
   }
-  const layoutRepair = structureChunk.restorePostSemanticLayout({
+  const layoutRepair = await structureChunk.restorePostSemanticLayoutAsync({
+    signal,
     source: rawSource,
     outputText,
     chunks,
@@ -2863,7 +2901,8 @@ async function runEngine({
   // 전체 레이아웃 고정점을 실행한다. 이전에는 이들 후단 변경 뒤에 잠긴
   // 구조만 재감사해 표 경계·무번호 소제목·일반 문단이 다시 붙을 수 있었다.
   {
-    const fixedPointLayout = structureChunk.restoreFinalDocumentLayout({
+    const fixedPointLayout = await structureChunk.restoreFinalDocumentLayoutAsync({
+      signal,
       source: rawSource,
       outputText,
       chunks,
@@ -2967,7 +3006,8 @@ async function runEngine({
   }
   {
     const previousFixedPoint = layoutRepair.finalFixedPoint || {};
-    const finalLayout = structureChunk.restoreFinalDocumentLayout({
+    const finalLayout = await structureChunk.restoreFinalDocumentLayoutAsync({
+      signal,
       source: rawSource,
       outputText,
       chunks,
@@ -3091,6 +3131,7 @@ async function runEngine({
             rejectFinalDepthRecovery(denied);
           } else {
             const candidateSemantic = await qualityV2.runSemanticDocumentAudit({
+              optional: true,
               source: depthPair.source,
               outputText: candidate,
               lang,
@@ -3106,7 +3147,8 @@ async function runEngine({
             depthTugSemanticRepairRounds += Number(candidateSemantic.repairCount || 0);
             depthTugRejudgeCount += 1;
 
-            const settled = settleLateDepthCandidate({
+            const settled = await settleLateDepthCandidate({
+              signal,
               source: rawSource,
               candidate: String(candidateSemantic.outputText || candidate).trim(),
               chunks,
@@ -3483,7 +3525,8 @@ async function runEngine({
   // 중복 삭제·원문 문장 복원이 구조 슬롯 주변의 구분자만 바꾼 경우에는
   // 문자 내용을 건드리지 않는 레이아웃 고정점을 한 번 적용한다.
   {
-    const finalIntegrityLayout = structureChunk.restoreFinalDocumentLayout({
+    const finalIntegrityLayout = await structureChunk.restoreFinalDocumentLayoutAsync({
+      signal,
       source: rawSource,
       outputText,
       chunks,
@@ -3570,8 +3613,8 @@ async function runEngine({
       }
     }
   }
-  // 원문 인용 복원·구조 안전 후보 롤백은 앞선 공백 수리 이후에도 실행된다.
-  // 최종 문자열에서만 공백 고정점을 적용하고 어휘/인용/구조 보존을 재검증한다.
+  // 조사 붙임 등 공백 삽입/삭제도 어절을 바꾸므로 반드시 최종 의미 감사 전에
+  // 완료한다. 감사 이후에는 검증한 문자열을 그대로 전달한다.
   {
     const deliveredFormatting = koreanRefinement.applySafeFormattingRepairs({
       source: rawSource, outputText, documentProfile
@@ -3584,6 +3627,97 @@ async function runEngine({
       finalFormattingRepair = mergeFormattingRepairReports(finalFormattingRepair, deliveredFormatting);
     }
   }
+  // 최종 의미 재검증. 의미 심사 뒤의 늦은 단계(원문 문장 복원·중복 삭제·
+  // 구체성 제거·늦은 깊이 회복 등)가 본문을 실제로 바꾸면 검증 digest가
+  // 달라진다. 공백 배치만 바뀐 경우는 provenance의 결정론 투영이 같은 판정을
+  // 유지하므로 여기서 모델을 부르지 않는다. 그 밖의 변경은 옛 pass를 재사용하지
+  // 않고 최종 문자열 자체를 판정만 다시 한다(수리 없음). 선택적 회복과
+  // 예산을 분리하며 실패하면 이미 검증된 편집 후보부터 선택한다.
+  let finalSemanticRevalidation = {
+    attempted: false,
+    applied: false,
+    reason: 'not_needed',
+    judgeCallCount: 0,
+    priorStatus: ''
+  };
+  if (semanticReport?.ran === true) {
+    const preliminary = semanticProvenance.verifySemanticValidation(
+      semanticReportForCandidate(semanticReport),
+      { source: rawSource, candidate: outputText, requireDigest: true }
+    );
+    finalSemanticRevalidation.priorStatus = preliminary.status;
+    if (preliminary.status === 'stale') {
+      const finalDeadlineMs = Math.min(jobDeadlineMs, Date.now() + 120000);
+      if (signal?.aborted || finalDeadlineMs <= Date.now()) {
+        finalSemanticRevalidation.reason = signal?.aborted ? 'aborted' : 'job_deadline_exhausted';
+      } else {
+        finalSemanticRevalidation.attempted = true;
+        const finalAuditStartedAt = Date.now();
+        const priorReport = semanticReport;
+        try {
+          const recheck = await qualityV2.runSemanticDocumentAudit({
+            source: rawSource,
+            outputText,
+            lang,
+            signal,
+            config: cfg,
+            allowedExtra,
+            mode: selectedMode,
+            discourseSignals: ['final_semantic_revalidation'],
+            safetyIdentifier: safetyId,
+            documentProfile,
+            allowRepair: false,
+            deadlineMs: finalDeadlineMs
+          });
+          addSupplementalUsage(recheck.usage, 'final_semantic_revalidation');
+          const recheckCallCount = semanticCallCount(recheck);
+          finalSemanticRevalidation.judgeCallCount = recheckCallCount;
+          // 판정 전용 호출은 본문을 바꾸지 않는다. 만약 바뀌었다면 그 판정은
+          // 최종 문자열에 대한 것이 아니므로 사용하지 않는다.
+          if (recheck.verificationCompleted === false) {
+            finalSemanticRevalidation.reason = 'audit_incomplete';
+          } else if (normalizeBare(String(recheck.outputText ?? outputText)) !== normalizeBare(outputText)) {
+            finalSemanticRevalidation.reason = 'recheck_text_mismatch';
+          } else {
+            semanticReport = {
+              ...recheck,
+              outputText,
+              repairCount: Number(priorReport.repairCount || 0),
+              repairRoundBudget: Number(priorReport.repairRoundBudget || 0),
+              repairStyleWarnings: priorReport.repairStyleWarnings || [],
+              unchangedRepairCount: Number(priorReport.unchangedRepairCount || 0),
+              decisionReason: 'final_semantic_revalidation',
+              finalRevalidation: {
+                priorDecisionReason: String(priorReport.decisionReason || ''),
+                priorCandidateDigest: String(priorReport.validation?.candidateDigest || ''),
+                priorJudgeCallCount: semanticCallCount(priorReport),
+                judgeCallCount: recheckCallCount
+              }
+            };
+            finalSemanticRevalidation.applied = true;
+            finalSemanticRevalidation.reason = recheck.pass === true
+              ? 'revalidated_pass'
+              : (recheck.uncertain === true ? 'revalidated_uncertain' : 'revalidated_fail');
+          }
+        } catch (error) {
+          finalSemanticRevalidation.reason = modelCallFailureCode(error);
+        } finally {
+          finalSemanticRevalidation.elapsedMs = Date.now() - finalAuditStartedAt;
+        }
+      }
+    }
+  }
+  if (finalSemanticRevalidation.priorStatus === 'stale' && !finalSemanticRevalidation.applied) {
+    const currentEntry = recordCandidateCheckpoint('final_revalidation_unavailable', semanticReportForCandidate(semanticReport));
+    const choice = candidateLedger.chooseFinal(currentEntry?.id);
+    if (choice.applied && choice.entry?.semanticStatus === 'pass') {
+      outputText = choice.entry.text;
+      semanticReport = choice.entry.semanticReport;
+      candidateLedgerDecision = { ...choice, entry: undefined };
+      finalSemanticRevalidation.fallbackStage = choice.entry.stage;
+    }
+  }
+
   finalGeneratedDuplicateAudit = dedupe.auditGeneratedDuplicateIntegrity(rawSource, outputText);
   statisticalAtomIntegrity = statisticalAtoms.auditStatisticalAtoms(rawSource, outputText);
   unsupportedSpecificityAudit = unsupportedSpecificity.auditUnsupportedSpecificity(
@@ -3757,87 +3891,6 @@ async function runEngine({
   const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
   result.floorReport = delivery.report;
 
-  // 최종 의미 재검증. 의미 심사 뒤의 늦은 단계(원문 문장 복원·중복 삭제·
-  // 구체성 제거·늦은 깊이 회복 등)가 본문을 실제로 바꾸면 검증 digest가
-  // 달라진다. 공백 배치만 바뀐 경우는 provenance의 결정론 투영이 같은 판정을
-  // 유지하므로 여기서 모델을 부르지 않는다. 그 밖의 변경은 옛 pass를 재사용하지
-  // 않고 최종 문자열 자체를 판정만 다시 한다(수리 없음). 늦은 회복 예산이
-  // 없으면 지금처럼 stale·검토 상태로 남긴다. 건너뛴 심사는 그대로 건너뛴다.
-  let finalSemanticRevalidation = {
-    attempted: false,
-    applied: false,
-    reason: 'not_needed',
-    judgeCallCount: 0,
-    priorStatus: ''
-  };
-  if (semanticReport?.ran === true) {
-    const preliminary = semanticProvenance.verifySemanticValidation(
-      semanticReportForCandidate(semanticReport),
-      { source: rawSource, candidate: outputText, requireDigest: true }
-    );
-    finalSemanticRevalidation.priorStatus = preliminary.status;
-    if (preliminary.status === 'stale') {
-      const latePriority = { priority: 'late' };
-      if (!recoveryBudget.tryStart(latePriority)) {
-        const denied = recoveryBudget.denialReason(latePriority) || 'recovery_budget_exhausted';
-        recoveryBudget.recordSkip(denied);
-        finalSemanticRevalidation.reason = denied;
-      } else {
-        finalSemanticRevalidation.attempted = true;
-        const priorReport = semanticReport;
-        try {
-          const recheck = await qualityV2.runSemanticDocumentAudit({
-            source: rawSource,
-            outputText,
-            lang,
-            signal,
-            config: cfg,
-            allowedExtra,
-            mode: selectedMode,
-            discourseSignals: ['final_semantic_revalidation'],
-            safetyIdentifier: safetyId,
-            documentProfile,
-            allowRepair: false,
-            reserveEscalation: () => {
-              if (recoveryBudget.tryStart(latePriority)) return true;
-              recoveryBudget.recordSkip(recoveryBudget.denialReason(latePriority) || 'recovery_budget_exhausted');
-              return false;
-            }
-          });
-          addSupplementalUsage(recheck.usage, 'final_semantic_revalidation');
-          const recheckCallCount = semanticCallCount(recheck);
-          finalSemanticRevalidation.judgeCallCount = recheckCallCount;
-          // 판정 전용 호출은 본문을 바꾸지 않는다. 만약 바뀌었다면 그 판정은
-          // 최종 문자열에 대한 것이 아니므로 사용하지 않는다.
-          if (normalizeBare(String(recheck.outputText ?? outputText)) !== normalizeBare(outputText)) {
-            finalSemanticRevalidation.reason = 'recheck_text_mismatch';
-          } else {
-            semanticReport = {
-              ...recheck,
-              outputText,
-              repairCount: Number(priorReport.repairCount || 0),
-              repairRoundBudget: Number(priorReport.repairRoundBudget || 0),
-              repairStyleWarnings: priorReport.repairStyleWarnings || [],
-              unchangedRepairCount: Number(priorReport.unchangedRepairCount || 0),
-              decisionReason: 'final_semantic_revalidation',
-              finalRevalidation: {
-                priorDecisionReason: String(priorReport.decisionReason || ''),
-                priorCandidateDigest: String(priorReport.validation?.candidateDigest || ''),
-                priorJudgeCallCount: semanticCallCount(priorReport),
-                judgeCallCount: recheckCallCount
-              }
-            };
-            finalSemanticRevalidation.applied = true;
-            finalSemanticRevalidation.reason = recheck.pass === true
-              ? 'revalidated_pass'
-              : (recheck.uncertain === true ? 'revalidated_uncertain' : 'revalidated_fail');
-          }
-        } catch (error) {
-          finalSemanticRevalidation.reason = modelCallFailureCode(error);
-        }
-      }
-    }
-  }
 
   const usage = addUsage(records.reduce((acc, r) => addUsage(acc, r.usage), emptyUsage()), supplementalUsage);
   const escalatedCount = records.filter(r => r.escalated).length;
@@ -4100,6 +4153,17 @@ async function runEngine({
   const candidateLedgerMeta = candidateLedger.snapshot();
   const deliveredParagraphBoundaries = structureChunk.measureDeliveredParagraphBoundaries(rawSource, outputText);
   result.engineMeta = {
+    shortChunkBatchEnabled: shortChunkBatch.metrics.enabled,
+    shortChunkBatchCallCount: shortChunkBatch.metrics.batchCallCount,
+    shortChunkBatchedChunkCount: shortChunkBatch.metrics.batchedChunkCount,
+    shortChunkIndividualRecoveryCount: shortChunkBatch.metrics.individualRecoveryCount,
+    paragraphAlignmentElapsedMs: Number(layoutRepair.alignmentMetrics?.elapsedMs || 0),
+    paragraphAlignmentFastPath: layoutRepair.alignmentMetrics?.fastPath === true,
+    paragraphAlignmentLimitReached: layoutRepair.alignmentMetrics?.limitReached === true,
+    finalSemanticRevalidationElapsedMs: Number(finalSemanticRevalidation.elapsedMs || 0),
+    semanticPairAlignment: [...new Set((semanticReport?.reports || []).map(report => report.alignment || 'whole_document'))],
+    recoveryReservedUsd: recoveryBudgetMeta.reservedUsd,
+    recoveryUnknownUsageUsd: recoveryBudgetMeta.unknownUsageUsd,
     schemaVersion: 3,
     engineVersion: VERSION,
     candidateLedgerVersion: candidateLedgerMeta.version,
@@ -4194,6 +4258,7 @@ async function runEngine({
     niklExternalErrorCount: niklAdvisorMeta.externalErrorCount,
     niklExternalTimeoutCount: niklAdvisorMeta.externalTimeoutCount,
     semanticJudgeRan: semanticReport.ran === true,
+    semanticVerificationCompleted: semanticReport.ran === true && semanticReport.verificationCompleted !== false,
     semanticValidationStatus: result.semanticValidation.status,
     semanticValidationVersion: semanticProvenance.VERSION,
     finalCandidateDigest: result.semanticValidation.finalCandidateDigest,
@@ -4771,6 +4836,7 @@ async function runEngine({
 }
 
 async function processChunk({
+  shortChunkBatch = null,
   chunk,
   chunks,
   index,
@@ -4849,6 +4915,7 @@ async function processChunk({
     + Math.max(10000, Number(process.env.OPENAI_CHUNK_TOTAL_TIMEOUT_MS) || 180000);
 
   const first = await callHumanize({
+    shortChunkBatch,
     original,
     chunk,
     chunks,
@@ -4898,6 +4965,7 @@ async function processChunk({
   const escalationPatchTargets = buildV2EscalationPatchTargets(patchTargets, first.record);
 
   const second = await callHumanize({
+    shortChunkBatch,
     original,
     chunk,
     chunks,
@@ -5195,7 +5263,7 @@ async function callHumanize(args) {
   const {
     original, chunk, chunks, index, source, contract, inputRisk, sourceSurface, mode, requestStrength, lang, userNotes, evidence,
     cfg, model, reasoningEffort, phase, protectedTerms, patchTargets, styleProfile, documentProfile, humanizeContract, voiceProfile,
-    chunkHumanizationPlan = null, escalationReason = '',
+    chunkHumanizationPlan = null, escalationReason = '', shortChunkBatch = null,
     niklQualityTest = false, niklAdvisorContext = null, safetyIdentifier = '', chunkDeadlineMs, signal
   } = args;
   const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
@@ -5251,7 +5319,8 @@ async function callHumanize(args) {
       error.code = 'HUMANIZE_PROMPT_INTEGRITY_FAILED';
       throw error;
     }
-    const response = await completeJson({
+    const invoke = options => shortChunkBatch ? shortChunkBatch.complete(options, original.length) : completeJson(options);
+    const response = await invoke({
       system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
       user: prompts.buildHumanizeUser({
         chunk,
@@ -5454,13 +5523,26 @@ async function callHumanize(args) {
   }
 }
 
-async function detect({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '', documentProfile = null, referenceContext = '' } = {}) {
+async function detect(options = {}) {
+  return require('./callLedger').run(() => detectInternal(options), (out, ledger) => {
+    if (ledger.modelCallCount && out.gptMeta) Object.assign(out.gptMeta, {
+      usage: ledger.usage, estimatedUsd: ledger.usage.estimatedUsd, modelCallCount: ledger.modelCallCount,
+      httpAttemptCount: ledger.httpAttemptCount, callLedger: ledger });
+  });
+}
+
+async function detectInternal({ text, lang = 'ko', signal, config, route = 'detect', allowLocalFallback = true, uid = '', safetyIdentifier = '', documentProfile = null, referenceContext = '' } = {}) {
   const source = String(text || '').trim();
   const cfg = await loadConfig(config);
   const diagnostics = require('../lib/detectDiagnostics');
   const attempts = [];
+  let failedUsage = emptyUsage();
   let recheckReason = 'none';
   const finish = out => {
+    if (out.gptMeta) {
+      out.gptMeta.usage = addUsage(addUsage(emptyUsage(), out.gptMeta.usage), failedUsage);
+      out.gptMeta.estimatedUsd = out.gptMeta.usage.estimatedUsd;
+    }
     const aligned = applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
     const assisted = require('../lib/detectStatisticalAssist').applyAssist(aligned, source, {
       profile: documentProfile?.profile
@@ -5504,6 +5586,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
     });
   } catch (error) {
     primaryError = error;
+    failedUsage = addUsage(failedUsage, error.usage);
   }
 
   if (primary) {
@@ -5547,6 +5630,7 @@ async function detect({ text, lang = 'ko', signal, config, route = 'detect', all
       return finish(out);
     } catch (escalationError) {
       if (signal?.aborted) throw escalationError;
+      failedUsage = addUsage(failedUsage, escalationError.usage);
       // A valid primary result is safer than making the same escalation call a
       // second time through the outer failure path.  Keep it, align its score
       // to the causes, and expose only a bounded diagnostic flag.
@@ -7830,7 +7914,8 @@ function isModelFailureRecord(record) {
     .test(String(value || '')));
 }
 
-function settleLateDepthCandidate({
+async function settleLateDepthCandidate({
+  signal,
   source,
   candidate,
   chunks,
@@ -7863,7 +7948,8 @@ function settleLateDepthCandidate({
   });
   if (formatting.applied) text = formatting.text;
 
-  const layout = structureChunk.restoreFinalDocumentLayout({
+  const layout = await structureChunk.restoreFinalDocumentLayoutAsync({
+    signal,
     source,
     outputText: text,
     chunks,

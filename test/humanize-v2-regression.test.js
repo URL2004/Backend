@@ -1369,13 +1369,14 @@ test('의미 심사 트리거는 formal·polish·장문 blog·저유사도·복�
   assert.equal(qualityV2.shouldRunSemanticJudge({ requestedMode: 'blog', effectiveMode: 'blog', source: '짧은 답변', documentProfile: questionnaire, audit: base }).reason, 'questionnaire');
 });
 
-test('12,000자 초과 심사는 원문과 결과 중 더 긴 쪽 기준으로 겹침 섹션을 만든다', () => {
+test('대응을 확정할 수 없는 반복 장문은 전체 판정만 수행하고 추측한 위치를 수리하지 않는다', () => {
   const source = '원문 문장이다. '.repeat(1800);
   const output = '결과 문장이다. '.repeat(500);
   const pairs = qualityV2.buildReviewPairs(source, output);
-  assert.ok(pairs.length >= 2);
+  assert.equal(pairs.length, 1);
   assert.equal(pairs.map(pair => pair.output).join(''), output);
-  assert.ok(pairs.every(pair => pair.sourceContext.length < source.length));
+  assert.equal(pairs[0].sourceContext, source);
+  assert.equal(pairs[0].repairSafe, false);
 });
 
 test('의미 심사는 원문 핵심 내용 누락을 사용자 경고 코드로 변환한다', () => {

@@ -385,7 +385,14 @@ function detectLabelGroupHeadingIndices(records, excluded = new Set()) {
     const text = String(record.text || '').trim();
     const nextText = String(next.text || '').trim();
     const nextLabel = labelParts(nextText) || bracketLabelParts(nextText);
-    if (!nextLabel || !nextLabel.rest) continue;
+    // A label's value may be on the following line. Requiring inline text
+    // misclassified repeated form headings as prose and glued them to answers.
+    if (!nextLabel) continue;
+    if (!nextLabel.rest) {
+      const valueLine = nonEmpty[position + 2];
+      if (!valueLine || excluded.has(valueLine.index) || labelParts(valueLine.text)
+          || bracketLabelParts(valueLine.text) || !isSentenceComplete(valueLine.text)) continue;
+    }
     if (text.length < 2 || text.length > 80) continue;
     if (/[.!?。！？:：]\s*["”’')\]）]*$/u.test(text)) continue;
     if (isListLine(text) || labelParts(text) || bracketLabelParts(text)
@@ -553,7 +560,7 @@ function isListLine(value) {
 function listPrefixParts(value) {
   const raw = String(value || '');
   const match = raw.match(
-    /^(\s*(?:[-*+]\s+|[•▪◦·]\s*|(?:\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s*|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
+    /^(\s*(?:[-*+]\s+|[•▪◦·]\s*|\d+(?:\.\d+)+[.)]?\s+|(?:\d+(?:[-.]\d+)*[.)](?!\d)|[가-힣][.)]|[①-⑳])\s*|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
   );
   if (!match) return null;
   // `+특히 ...` 같은 현장 메모는 목록이지만 `+5%`, `+3건`은 수치다.

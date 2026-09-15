@@ -124,7 +124,7 @@ test('v2.5.41: 제목 없는 장문도 원문 구간을 겹치지 않고 정확�
   assert.equal(pairs.map(item => item.sourceContext).join(''), source);
   assert.equal(pairs.map(item => item.output).join(''), output);
   assert.equal(pairs.filter(item => item.sourceContext.includes('원문 130번째')).length, 1);
-  assert.ok(pairs.every(item => item.alignment === 'relative_non_overlapping'));
+  assert.ok(pairs.every(item => item.alignment === 'shared_monotonic_sentence'));
 });
 
 test('v2.5.41: 의미 수리 후보가 다음 절 제목을 복제하면 공통 후보 감사가 거부한다', () => {
@@ -289,5 +289,5 @@ test('v2.5.41: 완결된 원문을 조사에서 잘라낸 결과는 문장 절�
 });
 
 test('v2.5.43 엔진 버전을 노출한다', () => {
-  assert.equal(engine.VERSION, 'gpt-prod-v2.5.52');
+  assert.equal(engine.VERSION, 'gpt-prod-v2.5.53');
 });

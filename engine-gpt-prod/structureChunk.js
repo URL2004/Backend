@@ -59,6 +59,10 @@ function splitChunksForGpt(text, {
   if (lineBoundaryPolicy !== 'none') addLineBoundaryMarkers(plannedChunks, lineBoundaryPolicy);
   if (preserveSentenceBoundaries) addSentenceBoundaryMarkers(plannedChunks, sentenceBoundaryMinimum);
   reindexChunks(plannedChunks);
+  const documentId = require('node:crypto').createHash('sha256').update(String(text)).digest('hex').slice(0, 16);
+  for (const chunk of plannedChunks) {
+    chunk.sourceSpanId = `${documentId}:${chunk.start}:${chunk.end}:${chunk.index}`;
+  }
   return {
     version: VERSION,
     humanizeContractVersion: resolvedContract.version,
@@ -1922,6 +1926,16 @@ function buildSourceAnchoredParagraphLayout(source, value, {
     return unchangedSourceAnchoredLayout(normalized, currentParagraphs, 0);
   }
 
+  // Verify all sentence ownership, not just equal counts or first/last edges.
+  // Unique identities/exact sentences make the common case linear.
+  const currentEdges = currentParagraphs.map(paragraph => splitSentences(paragraph));
+  const sourceEdges = sourceParagraphs.map(paragraph => splitSentences(paragraph));
+  const stableEdges = require('./paragraphAlignment').hasStableSentenceOwnership(sourceEdges, currentEdges);
+  if (stableEdges && !forceParagraphSeparators
+      && layoutStructure.measureParagraphReadability(currentParagraphs, readabilityOptions).overlongCount === 0) {
+    require('./paragraphAlignment').recordFastPath();
+    return unchangedSourceAnchoredLayout(normalized, currentParagraphs, 1);
+  }
   const alignment = alignSentencesToSourceParagraphs(sourceParagraphs, outputSentences);
   if (!alignment) return unchangedSourceAnchoredLayout(normalized, currentParagraphs, 0);
 
@@ -2007,66 +2021,7 @@ function hasSequentialEnumeratedParagraphRoles(paragraphs) {
 }
 
 function alignSentencesToSourceParagraphs(sourceParagraphs, outputSentences) {
-  const paragraphCount = sourceParagraphs.length;
-  const sentenceCount = outputSentences.length;
-  // 통상적인 지원서·보고서를 넘는 초대형 문서는 청크 경계가 이미 원문 문단을
-  // 보존한다. 여기서 O(P*S²) 정렬을 반복하지 않고 현재 경계를 유지한다.
-  if (paragraphCount > 30 || sentenceCount > 180) return null;
-  const sourceLengths = sourceParagraphs.map(paragraph => Math.max(1, bare(paragraph).length));
-  const totalSourceLength = sourceLengths.reduce((sum, length) => sum + length, 0);
-  const expectedEnds = [];
-  let cumulativeLength = 0;
-  for (const length of sourceLengths) {
-    cumulativeLength += length;
-    expectedEnds.push(Math.round(sentenceCount * cumulativeLength / totalSourceLength));
-  }
-
-  const scores = Array.from({ length: paragraphCount + 1 }, () => Array(sentenceCount + 1).fill(-Infinity));
-  const previous = Array.from({ length: paragraphCount + 1 }, () => Array(sentenceCount + 1).fill(-1));
-  scores[0][0] = 0;
-  for (let paragraphIndex = 1; paragraphIndex <= paragraphCount; paragraphIndex += 1) {
-    const minimumEnd = paragraphIndex;
-    const maximumEnd = sentenceCount - (paragraphCount - paragraphIndex);
-    for (let end = minimumEnd; end <= maximumEnd; end += 1) {
-      const minimumStart = paragraphIndex - 1;
-      const maximumStart = end - 1;
-      for (let candidateStart = minimumStart; candidateStart <= maximumStart; candidateStart += 1) {
-        const prior = scores[paragraphIndex - 1][candidateStart];
-        if (!Number.isFinite(prior)) continue;
-        const segment = outputSentences.slice(candidateStart, end).join(' ');
-        const segmentScore = sourceParagraphSegmentScore(
-          sourceParagraphs[paragraphIndex - 1],
-          segment,
-          outputSentences[candidateStart],
-          outputSentences[end - 1]
-        );
-        const expectedEnd = expectedEnds[paragraphIndex - 1];
-        const positionPenalty = paragraphIndex === paragraphCount
-          ? 0
-          : Math.abs(end - expectedEnd) / Math.max(sentenceCount, 1) * 0.35;
-        const score = prior + segmentScore - positionPenalty;
-        if (score > scores[paragraphIndex][end]) {
-          scores[paragraphIndex][end] = score;
-          previous[paragraphIndex][end] = candidateStart;
-        }
-      }
-    }
-  }
-  if (!Number.isFinite(scores[paragraphCount][sentenceCount])) return null;
-  const boundaries = [];
-  let end = sentenceCount;
-  for (let paragraphIndex = paragraphCount; paragraphIndex > 0; paragraphIndex -= 1) {
-    const start = previous[paragraphIndex][end];
-    if (start < 0) return null;
-    if (paragraphIndex > 1) boundaries.unshift(start);
-    end = start;
-  }
-  const score = scores[paragraphCount][sentenceCount] / paragraphCount;
-  return {
-    boundaries,
-    score,
-    confidence: Math.max(0, Math.min(1, score))
-  };
+  return require('./paragraphAlignment').requestAlignment(sourceParagraphs, outputSentences);
 }
 
 function sourceParagraphSegmentScore(sourceParagraph, segment, firstOutputSentence, lastOutputSentence) {
@@ -3751,7 +3706,10 @@ module.exports = {
   coalesceEditableChunks,
   restoreBoundaryMarkers,
   restorePostSemanticLayout,
+  restorePostSemanticLayoutAsync: options => require('./paragraphAlignment').runLayout(restorePostSemanticLayout, options),
   restoreFinalDocumentLayout,
+  restoreFinalDocumentLayoutAsync: options => require('./paragraphAlignment').runLayout(restoreFinalDocumentLayout, options),
+  restoreParagraphLayoutAsync: options => require('./paragraphAlignment').runLayout(restoreParagraphLayout, options),
   repairIntroducedMidSentenceParagraphBreaks,
   measureDeliveredParagraphBoundaries,
   restoreLockedHeadingLayout,

@@ -182,7 +182,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.52');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.53');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1449,7 +1449,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.52');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.53');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);
@@ -1493,20 +1493,18 @@ test('검증 완료 후 일반 청크 기본 동시성은 2이며 환경변수�
   assert.equal(engine.configuredChunkConcurrency(), 2);
 });
 
-test('장문 섹션 심사는 서로 다른 문제 구간을 최대 3곳까지 국소 수리한다', { concurrency: false }, async t => {
+test('대응이 불명확한 반복 장문은 의미 판정만 하고 위치를 추측한 수리를 하지 않는다', { concurrency: false }, async t => {
   const mock = installEngineMock(t, { semanticViolation: true, multipleLedgerClaims: true });
   const source = '원문의 핵심 주장과 근거를 보존해야 합니다. '.repeat(650);
   const output = '원문의 핵심 주장과 근거를 자연스럽게 보존해야 합니다. '.repeat(560);
   const report = await qualityV2.runSemanticDocumentAudit({ source, outputText: output, mode: 'assignment', config: config() });
-  assert.ok(report.sectionCount >= 2);
-  assert.equal(report.repairRoundBudget, Math.min(3, report.sectionCount));
-  assert.equal(report.repairCount, report.repairRoundBudget);
+  assert.equal(report.sectionCount, 1);
+  assert.equal(report.reports[0].repairSafe, false);
+  assert.equal(report.repairCount, 0);
   assert.equal(
     mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length,
-    report.repairRoundBudget
+    0
   );
-  const repairCall = mock.calls.find(call => call.name === 'gpt_prod_judge_repair');
-  assert.match(String(repairCall?.body?.instructions || ''), /인접 절·제목을 중복 삽입하지 않는다/u);
 });
 
 test('결정론 claim 원장은 원문 구절만 사용하고 실제 의미 심사를 계속한다', { concurrency: false }, async t => {

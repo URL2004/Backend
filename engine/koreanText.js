@@ -3,6 +3,7 @@
 // JavaScript의 \b는 ASCII 단어 경계만 이해한다. 한국어 뒤 경계 검사는 모두 이 유틸을 쓴다.
 const KOREAN_CHAR = '가-힣ㄱ-ㅎㅏ-ㅣ';
 const WORD_CHAR = `${KOREAN_CHAR}A-Za-z0-9_`;
+const { syntaxSpans } = require('./textSyntax');
 
 function koreanEnd(source, flags = 'u') {
   const normalizedFlags = flags.includes('u') ? flags : `${flags}u`;
@@ -36,9 +37,17 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
   const text = String(value || '');
   if (!text.trim()) return [];
   const out = [];
+  const syntax = syntaxSpans(text);
+  const codeSpans = syntax.filter(span => span.spanType === 'code');
+  let codeCursor = 0;
   let start = 0;
   let i = 0;
   while (i < text.length) {
+    while (codeCursor < codeSpans.length && codeSpans[codeCursor].end <= i) codeCursor += 1;
+    if (codeSpans[codeCursor]?.start === i) {
+      i = codeSpans[codeCursor].end;
+      continue;
+    }
     const ch = text[i];
     if (ch === '\r' || ch === '\n') {
       const end = i;
@@ -63,13 +72,13 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
       i += 1;
       continue;
     }
-    if (ch === '.' && isProtectedPeriod(text, i, start)) {
+    if (ch === '.' && (isProtectedPeriod(text, i, start) || isInitialPeriod(text, i, start, syntax))) {
       i += 1;
       continue;
     }
     let end = i + 1;
     while (end < text.length && /[.!?…。！？]/u.test(text[end])) end += 1;
-    while (end < text.length && /["'”’」』】)\]]/u.test(text[end])) end += 1;
+    while (end < text.length && /["'”’」』》〉】)）\]]/u.test(text[end])) end += 1;
     if (end >= text.length || /\s/u.test(text[end])) {
       pushSpan(out, text, start, end);
       while (end < text.length && /[ \t]/u.test(text[end])) end += 1;
@@ -85,6 +94,26 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
 
 function isSentencePunctuation(text, index) {
   return /[.!?…。！？]/u.test(text[index] || '');
+}
+
+function isInitialPeriod(text, index, start, syntax) {
+  if (!/(?:^|[^A-Za-z])[A-Z]$/u.test(text.slice(Math.max(start, index - 2), index))) return false;
+  return syntax.some(span => span.spanType === 'parenthetical' && span.start < index && span.end > index)
+    || /^\s*[A-Z]\./u.test(text.slice(index + 1, index + 6))
+    || /(?:^|[^A-Za-z])[A-Z]\.\s+[A-Z]$/u.test(text.slice(Math.max(start, index - 12), index));
+}
+
+// Used for quoted detection eligibility as well as sentence segmentation. A
+// quoted name such as "A. B." is emphasis/reference, not a complete quotation.
+function hasSentenceTerminator(value) {
+  const text = String(value || ''), syntax = syntaxSpans(text);
+  for (let i = 0; i < text.length; i++) {
+    if (!isSentencePunctuation(text, i)) continue;
+    if (syntax.some(span => span.spanType === 'code' && span.start <= i && span.end > i)) continue;
+    if (text[i] === '.' && (isProtectedPeriod(text, i, 0) || isInitialPeriod(text, i, 0, syntax))) continue;
+    if (i === text.length - 1 || /[\s"'”’」』》〉】)）\]]/u.test(text[i + 1])) return true;
+  }
+  return false;
 }
 
 function isProtectedPeriod(text, index, sentenceStart) {
@@ -213,6 +242,7 @@ module.exports = {
   normalizeSpace,
   splitSentences,
   splitSentenceSpans,
+  hasSentenceTerminator,
   ngramSet,
   ngramJaccard,
   levenshteinDistance,

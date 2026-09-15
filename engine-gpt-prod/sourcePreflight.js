@@ -992,7 +992,15 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   const leftRole = String(context.leftRole || layoutStructure.classifyLine(left));
   const rightRole = String(context.rightRole || layoutStructure.classifyLine(right));
   const leftToken = (left.match(/[가-힣A-Za-z]+$/u) || [''])[0];
-  const weakTitleFragment = leftRole === 'title' && FORCE_WRAP_TAIL_RE.test(leftToken);
+  // Bound particles also occur at the end of nouns (의의, 효과, 결과...).
+  // They are not sufficient evidence to demote a contextual title to a PDF wrap.
+  const weakTitleFragment = leftRole === 'title'
+    && (/^(?:대한|관한|위한|대해|대해서|관해|관해서|위해|통해|하며|하고|하는|되는|된|할|했던|필요한|가능한)$/u.test(leftToken)
+      || layoutStructure.isProseContinuation(left)
+      // A multi-word object clause followed by an overt predicate is different
+      // from a nominal heading followed by a new subject ("효과 / 이 연구는...").
+      || (left.split(/\s+/u).length >= 3 && /[가-힣]{2,}(?:을|를)$/u.test(leftToken)
+        && /^[가-힣]{1,20}(?:시킬|시키|시켜|하는|하며|하고|하여|했던|했다|한다|됩니다|되는|되며|되었다)/u.test(right)));
   if ((!weakTitleFragment && ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole))
       || ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole)) {
     return false;

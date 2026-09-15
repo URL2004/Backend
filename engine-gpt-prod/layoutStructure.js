@@ -465,8 +465,18 @@ function isProseContinuation(value) {
   const text = visibleTrim(value);
   if (text.length < 16 || text.split(/\s+/u).length < 4) return false;
   if (/^(?:[#>*]|[「『《〈“‘"'])/u.test(text)) return false;
-  return /(?:하며|하면서|했으며|하였으며|되었으며|됐으며|이며|되었고|되었지만|했고|하였고|였고|있었고|있으며|없으며|하지만|했지만|하였지만|되지만|되면|하면서도)\s*$/u.test(text)
+  return /(?:하며|하면서|했으며|하였으며|되었으며|됐으며|이며|되었고|되었지만|했고|하였고|였고|있었고|있으며|없으며|하지만|했지만|하였지만|되지만|되면|하면서도|대해서|대해|관해서|관해)\s*$/u.test(text)
     || /[,;，；]\s*$/u.test(text);
+}
+
+// Question detection and chunk protection must recognize the same prompt.
+// A trailing instruction or question may follow several introductory sentences.
+function isQuestionPromptLine(value) {
+  const text = visibleTrim(value);
+  const ending = text.replace(/\s*[（(][^()（）\n]{1,120}[）)]\s*$/u, '').trim();
+  return /[?？]\s*$/u.test(ending)
+    || /(?:무엇|어떻게|어떠했|왜|어떤|얼마나|서술(?:하시오|하세요)?|작성(?:하시오|하세요)?|설명(?:하시오|하세요)?|적어\s*(?:보세요|주세요)|말해\s*(?:보세요|주세요)|기술(?:하시오|하세요)?)(?:[?.？]|\s*$)/u.test(ending)
+    || /(?:서술|작성|설명|기술|제시|정리|비교)(?:해\s*(?:주세요|주십시오)|하(?:시오|세요|십시오))[.!?。！？]?\s*$/u.test(ending);
 }
 
 /**
@@ -962,6 +972,7 @@ module.exports = {
   isFlowSequenceLine,
   looksLikeUnpunctuatedProse,
   isProseContinuation,
+  isQuestionPromptLine,
   detectParallelSloganTitleIndices,
   detectParallelSectionHeadingIndices,
   detectLabelGroupHeadingIndices,

@@ -3525,8 +3525,7 @@ function isHeadingLine(s) {
 function isQuestionnaireQuestionLine(s) {
   const value = String(s || '').trim();
   if (/^(?:\d{1,2}[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s+\S/u.test(value)) return true;
-  return /[?？]\s*$/u.test(value)
-    || /(?:무엇|어떻게|어떠했|왜|어떤|얼마나|서술(?:하시오|하세요)?|작성(?:하시오|하세요)?|설명(?:하시오|하세요)?|적어\s*(?:보세요|주세요)|말해\s*(?:보세요|주세요)|기술(?:하시오|하세요)?)(?:[?.？]|\s*$)/u.test(value);
+  return layoutStructure.isQuestionPromptLine(value);
 }
 
 function sourceInlineSeparator(text, boundary, direction) {

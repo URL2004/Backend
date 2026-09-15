@@ -579,6 +579,14 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     // 회신·양해 요청이 없는 경우 메일 점수가 지원 의도를 덮지 못하게 한다.
     scores.mail_notice = Math.min(scores.mail_notice, 1.65);
   }
+  // A spoken presentation has greetings too, but no mail recipient/reply action.
+  // Require both the speaker's opening and closing, not a topical mention of talks.
+  const presentationFrame = /(?:발표|설명)(?:를|을)?\s*(?:하겠습니다|시작하겠습니다)/u.test(text.slice(0, 400))
+    && /(?:발표|설명)(?:를|을)?\s*마치(?:겠습니다|도록\s*하겠습니다)/u.test(text.slice(-300));
+  if (presentationFrame && mailApologyRequestSignals === 0) {
+    scores.mail_notice = Math.min(scores.mail_notice, 1.65);
+    scores.long_explainer += 3;
+  }
 
   const quoteLines = lines.filter(line => /^(?:[>“"'‘]|[-*]\s)/u.test(line)).length;
   const poemLikeLines = lines.filter(line => line.length <= 34 && !/[.!?。！？]$/u.test(line)).length;
@@ -829,8 +837,12 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
 
   const attendedLectureSignals = count(text, /(?:강연|특강|강의)(?:에서|에서는|을|를|은|는|의|이|가)|(?:강연|특강|강의)[^.!?\n]{0,24}(?:들었|들으며|듣고|통해)/gu);
   const lectureReflectionSignals = count(text, /(?:알\s*수\s*있었다|이해할\s*수\s*있었다|생각해\s*볼\s*수\s*있었다|느꼈다|깨달았다|배웠다|생각하게\s*되었다)/gu);
+  // Merely discussing resumes/interviews in a lecture is not an application.
+  // Keep direct addressee/own application intent as exclusions instead of topic words.
+  const ownApplicationFrame = applicationIntentSignals > 0
+    || /(?:귀사|귀원|귀교|입사\s*후\s*포부|저의\s*(?:강점|경쟁력|성장\s*과정))/u.test(text);
   const attendedLectureReflection = attendedLectureSignals >= 4 && lectureReflectionSignals >= 2
-    && explicitApplicationSignals === 0
+    && !ownApplicationFrame
     && applicationSectionSignals === 0 && universityApplicationSignals === 0
     && programApplicationSignals === 0 && futureContributionSignals === 0;
   if (attendedLectureReflection) {
@@ -1278,6 +1290,8 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
       && headingCountValue < 2
       && lines.length >= 4
       && poemLikeLines / lines.length >= 0.6
+      && lines.filter(line => line.length <= 40).reduce((sum, line) => sum + line.length, 0)
+        / Math.max(1, lines.reduce((sum, line) => sum + line.length, 0)) >= 0.5
       && median(lines.map(line => line.length)) <= 36);
   const flags = [];
   if (scriptFrame) flags.push('script_cues');
@@ -1484,9 +1498,7 @@ function calibrateConfidence(top, second, compactLength) {
 }
 
 function isQuestionLike(line) {
-  const value = String(line || '').trim();
-  return /[?？]\s*$/u.test(value)
-    || /(?:무엇|어떻게|어떠했|왜|어떤|얼마나|서술(?:하시오|하세요)?|작성(?:하시오|하세요)?|설명(?:하시오|하세요)?|적어\s*(?:보세요|주세요)|말해\s*(?:보세요|주세요)|기술(?:하시오|하세요)?)(?:[?.？]|\s*$)/u.test(value);
+  return layoutStructure.isQuestionPromptLine(line);
 }
 
 function isNumberedLine(line) {

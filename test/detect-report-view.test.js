@@ -40,6 +40,7 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
     probability: 72,
     probSource: 'llm',
     riskLevel: 'high',
+    documentProfile: { profile: 'report_assignment', confidence: 0.9, profileMargin: 1 },
     signalEvidence: [
       { category: 'sentence_uniformity', strength: 'strong', scope: 'recurring', description: '비슷한 문장 호흡이 여러 문단에서 반복됨' },
       { category: 'formulaic_transition', strength: 'moderate', scope: 'recurring', description: '정형적인 결론 연결이 반복됨' }
@@ -59,8 +60,10 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
   assert.equal(reportView.professorRadar.band, 'hard');
   assert.equal(reportView.professorRadar.label, 'AI식 문체 신호 높음');
   assert.deepEqual(reportView.contentEvidence, {
-    status: 'mixed', label: '구체 근거 일부', lived: 1, specific: 0,
-    grounded: 1, generic: 3, total: 8, groundedRatio: 0.125
+    status: 'mixed', label: '구체 근거 비율 일부 확인', lived: 1, specific: 0,
+    grounded: 1, generic: 3, total: 8, groundedRatio: 0.125,
+    policyVersion: 'axis-policy-v3-ops1077', metric: 'grounded', target: 0.2,
+    assessmentStatus: 'on', assessedRatio: 0.125, reason: null
   });
   assert.equal(reportView.measuredEvidence.maxEndingRun, 5);
   assert.equal(reportView.measuredEvidence.avgLength, 57);
@@ -68,7 +71,7 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
   assert.equal(reportView.measuredEvidence.genericCount, 3);
   assert.equal(reportView.measuredEvidence.livedCount, 1);
   assert.equal(reportView.measuredEvidence.specificCount, 0);
-  assert.equal(reportView.synthesis.headline, '문장 패턴은 정형적이고, 구체적인 근거는 일부만 확인됐어요.');
+  assert.equal(reportView.synthesis.headline, '문장 패턴은 정형적이고, 구체 근거 비율은 참고 기준보다 낮게 측정됐어요.');
   assert.equal(reportView.causeAnalysis.status, 'aligned');
   assert.equal(reportView.causeAnalysis.qualifyingIndependentSignals, 2);
   assert.match(reportView.synthesis.limitation, /작성 주체나 외부 검사 결과를 확정하지 않아요/u);

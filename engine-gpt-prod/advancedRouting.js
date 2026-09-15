@@ -2,6 +2,7 @@
 
 const inputRouting = require('../engine/inputrouting');
 const { detectDocumentProfile } = require('./documentProfile');
+const { buildRecommendationSignals, selectRecommendation } = require('./humanizeRecommendation');
 
 const ADVANCED_DOCUMENT_PROFILES = new Set([
   'academic_paper',
@@ -77,19 +78,18 @@ function resolveAdvancedRouting(text, inputRisk = {}) {
   const effectiveUnfit = academicOverride || profileSafeAdvancedOverride
     ? { unfit: false, kind: null, reason: '' }
     : legacyUnfit;
-  const recommendAdvanced = effectiveUnfit.unfit !== true
-    && highConfidenceAcademic
-    && (complexFormat || formalStructure);
+  const recommendation = selectRecommendation({
+    advancedEligible: effectiveUnfit.unfit !== true,
+    profile, confidence, personalSafety,
+    academicStructure: highConfidenceAcademic && (complexFormat || formalStructure),
+    signals: buildRecommendationSignals(source, documentProfile, inputRisk)
+  });
 
   return {
     legacyUnfit,
     effectiveUnfit,
     advancedEligible: effectiveUnfit.unfit !== true,
-    recommendedMode: recommendAdvanced ? 'formal' : 'blog',
-    recommendationCode: recommendAdvanced ? 'complex_academic_document' : '',
-    recommendationReason: recommendAdvanced
-      ? '긴 논문·구조화 보고서로 판정됐어요. 고급 휴머나이징은 더 넓은 문장 범위와 전체 문서의 의미·사실·구조 검증을 적용하므로 이 글에 더 적합해요. 실행 전 예상 시간과 크레딧을 확인해 주세요.'
-      : '',
+    ...recommendation,
     routingOverride: academicOverride
       ? 'legacy_inquiry_false_positive'
       : (profileSafeAdvancedOverride ? 'v2_profile_safe_advanced' : ''),

@@ -692,6 +692,8 @@ router.post('/detect-report', async (req, res) => {
       recommendedMode: advancedRouting.recommendedMode,
       recommendationCode: advancedRouting.recommendationCode || null,
       recommendationReason: advancedRouting.recommendationReason || null,
+      recommendationVersion: advancedRouting.recommendationVersion,
+      recommendationSignals: advancedRouting.recommendationSignals,
       documentProfile: advancedRouting.profile,
       profileConfidence: Number(advancedRouting.confidence.toFixed(4)),
       profileMargin: advancedRouting.profileMargin,
@@ -959,6 +961,10 @@ router.post('/detect-report', async (req, res) => {
 
   const metric = artifact.metric;
   logger.info('detect_report.completed', {
+    recommendedMode: responseBody.recommendedMode,
+    recommendationVersion: responseBody.recommendationVersion,
+    recommendationCode: responseBody.recommendationCode,
+    recommendationSignals: responseBody.recommendationSignals,
     uid,
     grade: metric.grade,
     probability: metric.probability,

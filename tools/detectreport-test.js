@@ -94,6 +94,16 @@ const server = app.listen(0, '127.0.0.1', async () => {
     check('개발 무인증 보고서는 200', result.status === 200 && result.body.ok, result);
     check('무료 상품으로 오인시키지 않음', result.body.free === false, result.body.free);
     check('개발 호출은 차감 0', result.body.charged === 0, result.body.charged);
+    const recommendation = require('../engine-gpt-prod/advancedRouting').resolveAdvancedRouting(
+      TEXT, require('../engine/surfaceguard').classifyInputRisk(TEXT)
+    );
+    check('유료 감지에도 동일한 추천 정책·사유·신호를 제공',
+      result.body.recommendedMode === recommendation.recommendedMode
+      && result.body.recommendationVersion === recommendation.recommendationVersion
+      && result.body.recommendationCode === recommendation.recommendationCode
+      && result.body.recommendationReason === recommendation.recommendationReason
+      && result.body.recommendationSignals?.additionalCredits === recommendation.recommendationSignals.additionalCredits,
+      {mode:result.body.recommendedMode,version:result.body.recommendationVersion,code:result.body.recommendationCode});
     check('GPT 판정 88% 수신', result.body.probability === 88 && result.body.probSource === 'llm', {
       probability: result.body.probability,
       probSource: result.body.probSource
@@ -132,7 +142,9 @@ const server = app.listen(0, '127.0.0.1', async () => {
     check('실패 응답에 엔진 추정 숫자를 노출하지 않음',
       !Object.prototype.hasOwnProperty.call(unavailable.body, 'probability')
       && !Object.prototype.hasOwnProperty.call(unavailable.body, 'probSource'), unavailable.body);
-    check('운영과 같은 총 2회 모델 시도', detectAttempts.get(failedText) === 2, {
+    // The route invokes runDetect once. Provider retries live below this stub;
+    // counting route invocations as physical model attempts is incorrect.
+    check('실패한 감지 파이프라인을 라우트에서 중복 호출하지 않음', detectAttempts.get(failedText) === 1, {
       attempts: detectAttempts.get(failedText)
     });
   } catch (error) {

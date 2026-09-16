@@ -5,7 +5,8 @@ const { computeEditMetrics, splitSentenceSpans } = require('../engine/koreanText
 const { hasPovKind } = require('../engine/pov');
 const { auditVoice, buildVoiceProfile, auditDirectQuoteIntegrity } = require('./voiceProfile');
 const { compareNaturalnessShadow } = require('./naturalnessShadow');
-const { judgeAndRepair } = require('./judge');
+const { judgeAndRepair, assessRepairCandidate } = require('./judge');
+const { restoreConfirmedRelations } = require('./confirmedRelationRestore');
 const { completeJson } = require('./openaiClient');
 const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
@@ -400,7 +401,7 @@ async function runSemanticDocumentAuditInternal({
       const relationSignals = auditRelationCandidates(pair.sourceContext, pair.output);
       const pairDiscourseSignals = [...baseDiscourseSignals, ...relationSignals.codes,
         ...(relationSignals.candidates || []).map(item => JSON.stringify(item))];
-      const report = await judgeAndRepair(pair.sourceContext, pair.output, {
+      let report = await judgeAndRepair(pair.sourceContext, pair.output, {
         lang,
         signal,
         config,
@@ -415,6 +416,31 @@ async function runSemanticDocumentAuditInternal({
         safetyIdentifier,
         documentProfile
       });
+      if (allowRepair && pair.repairSafe !== false && !signal?.aborted) {
+        const current = report.outputText || pair.output;
+        const restored = restoreConfirmedRelations(pair.sourceContext, current, report);
+        if (restored.applied && assessRepairCandidate(pair.sourceContext, current, restored.text,
+          { mode, allowedExtra, documentProfile }).pass) {
+          // One local restoration, then verdict only: no unbounded repair loop
+          // and no heuristic may certify its own output as semantically safe.
+          let verified;
+          const repairedSignals = auditRelationCandidates(pair.sourceContext, restored.text);
+          try { verified = await judgeAndRepair(pair.sourceContext, restored.text, {
+            lang, signal, config, maxRounds: 0, reserveEscalation, allowedExtra, mode,
+            safetyIdentifier, documentProfile, discourseSignals: [
+              ...discourse.compareDiscourse(pair.sourceContext, restored.text).codes,
+              ...repairedSignals.codes, ...repairedSignals.candidates.map(c => JSON.stringify(c))]
+          }); } catch (error) {
+            verified = { pass: false, uncertain: true, usage: error.usage || null };
+          }
+          const usage = addUsageLocal(report.usage, verified.usage);
+          if (verified.pass === true && !verified.uncertain && !verified.skipped) {
+            report = { ...verified, usage, rounds: report.rounds || 0,
+              initialViolations: [...(report.initialViolations || []), ...(report.violations || [])],
+              confirmedRelationRestoreCount: restored.restoredCount };
+          } else report = { ...report, usage, confirmedRelationRestoreRejected: true };
+        }
+      }
       outputs[index] = restoreReviewPairBoundaryWhitespace(
         pair.output,
         report.outputText || pair.output
@@ -434,6 +460,8 @@ async function runSemanticDocumentAuditInternal({
         skipped: report.skipped === true,
         reason: report.reason || '',
         rounds: report.rounds || 0,
+        confirmedRelationRestoreCount: report.confirmedRelationRestoreCount || 0,
+        confirmedRelationRestoreRejected: report.confirmedRelationRestoreRejected === true,
         repairRejected: report.repairRejected === true,
         repairRejectReasons: report.repairRejectReasons || [],
         repairStyleWarnings: report.repairStyleWarnings || [],

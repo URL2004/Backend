@@ -2,7 +2,7 @@
 
 const { splitSentences } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v3';
+const VERSION = 'relation-candidates-v4';
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
@@ -52,6 +52,18 @@ function auditRelationCandidates(source, outputText) {
     const original = matched.sentence;
     const add = code => candidates.push({ code, sourceOrdinal: matched.index + 1,
       outputOrdinal: outputIndex + 1, sourceSpan: original, outputSpan: sentence });
+    if (/(?:기보다|보다는)/u.test(original) && !/(?:아니라|아니다|아닌)/u.test(original)
+        && /(?:아니라|아니다|아닌)/u.test(sentence)) add('comparison_negation_candidate');
+    // A domain-confusable pair is a review hint, not an autocorrect dictionary.
+    // Compare within a matched claim: another occurrence elsewhere cannot
+    // legitimize changing this sentence's concept.
+    const containsTerm = (text, term) => new RegExp(`(?<![가-힣])${term}(?=$|[^가-힣]|(?:은|는|이|가|을|를|의|와|과|에|도|만|로)(?=$|[^가-힣]))`, 'u').test(text);
+    for (const [a,b] of [['지대','지가'],['유속','유량'],['정확도','정밀도']]) {
+      if ((containsTerm(original,a) && !containsTerm(original,b) && containsTerm(sentence,b) && !containsTerm(sentence,a))
+          || (containsTerm(original,b) && !containsTerm(original,a) && containsTerm(sentence,a) && !containsTerm(sentence,b))) {
+        add('technical_concept_substitution_candidate'); break;
+      }
+    }
     const actionNouns = '(?:질문|교육|훈련|요청|제안|설명|안내|지원|지시|평가|조언|피드백)';
     const received = new RegExp(`(${actionNouns})(?:을|를)?\\s*받(?:아|았|는|고|으며|음|은|을)`, 'gu');
     for (const match of original.matchAll(received)) {

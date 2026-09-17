@@ -31,6 +31,12 @@ function normalizeCode(input) {
   return String(input || '').replace(/[-\s]/g, '').toUpperCase();
 }
 
+// Accept numeric JSON integers and complete decimal form values, never prefixes.
+function couponInteger(value) {
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) value = Number(value.trim());
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : NaN;
+}
+
 // ───────────────────────────────────────────
 // 관리자: 쿠폰 일괄 발급
 // ───────────────────────────────────────────
@@ -43,8 +49,8 @@ router.post('/admin/create-coupons', async (req, res) => {
   if (!adminUid) return res.status(401).json({ error: '로그인이 필요해요.' });
   setLogContext({ uid: adminUid, actorUid: adminUid });
 
-  const creditsInt = parseInt(credits, 10);
-  const countInt = parseInt(count, 10);
+  const creditsInt = couponInteger(credits);
+  const countInt = couponInteger(count);
   if (!Number.isInteger(creditsInt) || creditsInt < 1 || creditsInt > MAX_CREDITS_PER_CODE) {
     return res.status(400).json({ error: `크레딧은 1~${MAX_CREDITS_PER_CODE} 사이의 정수여야 해요.` });
   }

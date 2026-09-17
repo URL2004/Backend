@@ -1622,7 +1622,7 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'temporal_anchor_detachment') return 'SOURCE에서 특정 주체나 사건 뒤에 붙은 “이후”를 문장 앞으로 옮겨 앞 문장의 연도·사건에 걸리게 하지 말고 원래 시간 기준을 분명히 한다.';
   if (item?.code === 'causal_connector_strengthening') return 'SOURCE의 시간·맥락 연결인 “이때·뒤·후”를 “따라서·그 결과·~자” 같은 인과 결론으로 강화하지 말고 원래 논리 강도를 복원한다.';
   if (item?.code === 'sequential_connector_inflation') return '새로 반복된 “뒤·후·다음”을 줄이고 같은 업무 묶음은 자연스럽게 연결한다. 실제 수행 순서는 그대로 유지한다.';
-  if (item?.code === 'discourse_connector_inflation') return 'SOURCE에 없던 “또한·따라서·이러한·이를 통해·한편” 같은 정형 접속어를 여러 문장에 새로 붙이지 않는다. 논리 관계는 유지하되 주어와 서술어를 직접 연결하고, 필요한 접속어만 남긴다.';
+  if (item?.code === 'discourse_connector_inflation') return 'SOURCE에 없던 “또한·따라서·이를 통해·한편” 같은 정형 접속어를 여러 문장에 새로 붙이지 않는다. 논리 관계는 유지하되 주어와 서술어를 직접 연결하고, 필요한 접속어만 남긴다. 명사를 수식하며 앞 내용을 받는 이·이런·이러한 등의 지시 관형어는 접속어로 취급해 삭제하지 않는다.';
   if (item?.code === 'affective_anchor_omission') {
     const omissions = Array.isArray(item?.details?.omissions) ? item.details.omissions : [];
     const anchors = omissions.slice(0, 6).map(value => `${value.sourceOrdinal}번=${value.sourceSentence}`);

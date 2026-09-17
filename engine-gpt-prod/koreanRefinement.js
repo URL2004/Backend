@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences, splitSentenceSpans, koreanStart, normalizeCompact } = require('../engine/koreanText');
+const { syntaxSpans } = require('../engine/textSyntax');
 const freezeBlocks = require('../engine/freezeblocks');
 const layoutStructure = require('./layoutStructure');
 const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
@@ -11,7 +12,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 29;
+const VERSION = 30;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -25,6 +26,24 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  introduced_demonstrative_loss: {
+    weight: 6,
+    repairable: true,
+    deterministicSafe: true,
+    message: '원문에서 앞 내용을 가리키던 지시 관형어가 빠져 문장 연결이 약해졌어요.'
+  },
+  introduced_connective_corruption: {
+    weight: 7,
+    repairable: true,
+    deterministicSafe: true,
+    message: '원문의 비교 연결 어미가 비문 형태로 바뀌었어요. 대응하는 원문 어미를 복원해야 해요.'
+  },
+  introduced_naming_frame_inversion: {
+    weight: 7,
+    repairable: true,
+    deterministicSafe: true,
+    message: '이름을 붙이는 문장에서 주체·대상·명칭의 관계가 뒤바뀌었어요. 원문의 논항 관계를 복원해야 해요.'
+  },
   missing_sentence_space: {
     weight: 3,
     repairable: true,
@@ -1551,11 +1570,119 @@ function emptyFormattingResult(text, reason) {
   };
 }
 
+// Keep offsets in the original text while excluding locked lines and inline literals.
+// Repairs below copy only unambiguous source evidence, never infer a new referent.
+function editableIntegritySpans(value) {
+  const text = String(value || '');
+  const lines = text.split('\n');
+  const guards = buildLineGuards(lines);
+  let masked = lines.map((line, index) => {
+    if (guards[index]?.protected) return ' '.repeat(line.length);
+    let result = line;
+    for (const range of [...inlineProtectedRanges(line)].reverse()) {
+      result = result.slice(0, range.start) + ' '.repeat(range.end - range.start) + result.slice(range.end);
+    }
+    return result;
+  }).join('\n');
+  for (const span of syntaxSpans(text).filter(item => ['quote', 'code'].includes(item.spanType))) {
+    masked = masked.slice(0, span.start) + ' '.repeat(span.end - span.start) + masked.slice(span.end);
+  }
+  return splitSentenceSpans(text).map((span, index) => ({
+    ...span, ordinal: index + 1, editable: masked.slice(span.start, span.end)
+  }));
+}
+
+function sourceBackedEditRepairs(source, outputText) {
+  const sources = editableIntegritySpans(source);
+  const outputs = editableIntegritySpans(outputText);
+  const headPattern = /^\s*(?:(이러한|그러한|이런|그런|이|그)\s+)?([가-힣]{1,20}(?:은|는|이|가))(?=\s)/u;
+  const startsInProse = span => !span.text.slice(0, span.editable.search(/\S/u)).trim();
+  const sourceHeads = sources.filter(startsInProse)
+    .map(span => ({ span, head: span.editable.match(headPattern) })).filter(row => row.head);
+  const repairs = [];
+  for (const output of outputs) {
+    const head = output.editable.match(headPattern);
+    if (head && !head[1] && startsInProse(output)) {
+      const matches = sourceHeads.filter(row => row.head[2] === head[2]).map(row => ({
+        ...row,
+        score: sentenceSimilarity(row.span.editable.replace(headPattern, `${head[2]} `), output.editable)
+      })).sort((a, b) => b.score - a.score);
+      const best = matches[0];
+      // Ambiguous repetition, an unchanged generic subject, and rewritten nouns
+      // do not establish that a demonstrative was dropped.
+      if (best?.head[1] && best.score >= 0.5
+          && (!matches[1] || best.score - matches[1].score >= 0.08)) {
+        const start = output.start + output.editable.search(/\S/u);
+        repairs.push({ start, end: start, replacement: `${best.head[1]} `,
+          code: 'introduced_demonstrative_loss', ordinal: output.ordinal });
+      }
+    }
+    for (const match of output.editable.matchAll(/(?<![가-힣])(있|없)기라면(?=$|[\s,，])/gu)) {
+      // The two preceding words must also occur directly before the source
+      // comparison ending. Quoted nominal uses and real conditions stay intact.
+      const context = output.editable.slice(0, match.index).trimEnd().split(/\s+/u).slice(-2).join(' ');
+      if (context.split(' ').length < 2) continue;
+      const replacement = `${match[1]}듯이`;
+      const evidence = `${context} ${replacement}`;
+      const best = sources.filter(span => span.editable.replace(/\s+/gu, ' ').includes(evidence))
+        .map(span => ({ span, score: sentenceSimilarity(span.editable, output.editable) }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (!best || best.score < 0.45) continue;
+      if (sources.some(span => span.editable.replace(/\s+/gu, ' ').includes(`${context} ${match[0]}`)
+          && sentenceSimilarity(span.editable, output.editable) >= best.score - 0.08)) continue;
+      repairs.push({ start: output.start + match.index, end: output.start + match.index + match[0].length,
+        replacement, code: 'introduced_connective_corruption', ordinal: output.ordinal });
+    }
+  }
+  const namingRepairs = namingFrameRepairs(sources.filter(startsInProse), outputs.filter(startsInProse));
+  const replacedOrdinals = new Set(namingRepairs.map(item => item.ordinal));
+  return [...repairs.filter(item => !replacedOrdinals.has(item.ordinal)), ...namingRepairs];
+}
+
+function repairSourceBackedEdits(source, outputText) {
+  const before = String(outputText || '');
+  const repairs = sourceBackedEditRepairs(source, before);
+  let text = before;
+  for (const repair of [...repairs].sort((a, b) => b.start - a.start)) {
+    text = text.slice(0, repair.start) + repair.replacement + text.slice(repair.end);
+  }
+  return { text, applied: text !== before, changeCodes: repairs.map(item => item.code) };
+}
+
+function namingFrameRepairs(sources, outputs) {
+  const proposals = [];
+  const pattern = /^\s*([가-힣A-Za-z]{1,30})(?:은|는|이|가)\s+([가-힣A-Za-z ]{1,45}?)(?:을|를)\s+([가-힣A-Za-z]{1,30}?)(?:이라|라)(?:고)?\s*(부르|칭하|명명하|일컫)/u;
+  for (const sourceSpan of sources) {
+    const match = sourceSpan.editable.match(pattern);
+    if (!match) continue;
+    const [, actor, object, name, predicate] = match;
+    const reversed = new RegExp(`^\\s*${escapeRegexLiteral(name)}(?:이|가)\\s+${escapeRegexLiteral(object)}(?:이)?라고\\s+${escapeRegexLiteral(actor)}(?:은|는|이|가)\\s*${escapeRegexLiteral(predicate)}`, 'u');
+    for (const output of outputs) {
+      if (reversed.test(output.editable) && sentenceSimilarity(sourceSpan.editable, output.editable) >= 0.4) {
+        proposals.push({
+          start: output.start + output.editable.search(/\S/u), end: output.end,
+          replacement: sourceSpan.text.slice(sourceSpan.editable.search(/\S/u)),
+          ordinal: output.ordinal, code: 'introduced_naming_frame_inversion'
+        });
+      }
+    }
+  }
+  // An exact actor/object/name match proves the single affected sentence. Do
+  // not let general 1:N alignment absorb a neighboring sentence into restoration.
+  return proposals.filter((item, index) => proposals.findIndex(other => other.start === item.start) === index
+    && !proposals.some(other => other.start === item.start && other.replacement !== item.replacement));
+}
+
 function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile = null, mode = '' } = {}) {
   const profile = profileName(documentProfile);
   const targetRegister = String(documentProfile?.targetRegister || documentProfile?.tonePolicy || '');
   const sourceIssues = detectTextIssues(source, { profile, targetRegister, includeSourceNotation: true });
   const outputIssues = detectTextIssues(outputText, { profile, targetRegister, includeSourceNotation: false });
+  const sourceBackedEdits = sourceBackedEditRepairs(source, outputText);
+  for (const code of new Set(sourceBackedEdits.map(item => item.code))) {
+    const rows = sourceBackedEdits.filter(item => item.code === code);
+    outputIssues.push(makeIssue(code, rows.length, rows.map(item => item.ordinal)));
+  }
   const duplicated = detectIntroducedTokenDuplications(source, outputText);
   if (duplicated) outputIssues.push(duplicated);
   const fragment = detectIntroducedStudentRecordFragments(source, outputText, profile);
@@ -2128,6 +2255,9 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   const before = String(outputText || '');
   let text = before;
   const changes = [];
+  const groundedEditRepair = repairSourceBackedEdits(source, text);
+  text = groundedEditRepair.text;
+  changes.push(...groundedEditRepair.changeCodes);
   const sourceLanguageRepair = repairCommonSourceLanguage(text);
   text = sourceLanguageRepair.text;
   changes.push(...sourceLanguageRepair.changes);
@@ -2497,10 +2627,11 @@ function repairLeadingSentencePeriodArtifacts(value, context) {
 }
 
 function restoreIntroducedIntegritySentences({ source = '', outputText = '', audit = null } = {}) {
-  const connectorRepair = removeIntroducedConnectorOpeners({ source, outputText, audit });
+  const groundedEditRepair = repairSourceBackedEdits(source, outputText);
+  const connectorRepair = removeIntroducedConnectorOpeners({ source, outputText: groundedEditRepair.text, audit });
   const ordinals = [];
   const affectiveSourceOrdinals = [];
-  const restoredCodes = [...(connectorRepair.removedCodes || [])];
+  const restoredCodes = [...groundedEditRepair.changeCodes, ...(connectorRepair.removedCodes || [])];
   for (const issue of audit?.issues || []) {
     if (!SOURCE_RESTORABLE_ISSUES.has(issue.code) || Number(issue.introducedCount || 0) <= 0) continue;
     // 두 결과 문장이 같은 원문 주장 하나에 정렬되면 원문 문장 치환이 그
@@ -2563,15 +2694,16 @@ function restoreIntroducedIntegritySentences({ source = '', outputText = '', aud
   return {
     ...affectiveRestore,
     text: duplicateRepair.text,
-    applied: connectorRepair.applied === true
+    applied: groundedEditRepair.applied === true || connectorRepair.applied === true
       || regularRestore.applied === true
       || affectiveRestore.applied === true
       || duplicateRepair.applied === true,
     restoredSentenceCount: restoredSentenceOrdinals.length
+      + groundedEditRepair.changeCodes.length
       + Number(connectorRepair.removedCount || 0)
       + Number(duplicateRepair.removedCount || 0),
     restoredSentenceOrdinals,
-    reason: connectorRepair.applied === true
+    reason: groundedEditRepair.applied === true || connectorRepair.applied === true
       || regularRestore.applied === true
       || affectiveRestore.applied === true
       || duplicateRepair.applied === true
@@ -2614,7 +2746,7 @@ function removeIntroducedGroundedDuplicateSentences({ source = '', outputText = 
 
 const INTRODUCED_CONNECTOR_OPENERS = Object.freeze({
   sequential_connector_inflation: /^(?:이후|그\s*다음|다음으로)[,，]?[ \t]+/u,
-  discourse_connector_inflation: /^(?:또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로)[,，]?[ \t]+/u
+  discourse_connector_inflation: /^(?:또한|따라서|이에\s*따라|이를\s*통해|나아가|한편|결론적으로)[,，]?[ \t]+/u
 });
 const ANY_GROUNDED_CONNECTOR_OPENER_RE = /^(?:이후|그\s*다음|다음으로|또한|따라서|이에\s*따라|이러한|이를\s*통해|나아가|한편|결론적으로|그러나|하지만|반면|다만|결국)[,，]?[ \t]+/u;
 
@@ -2722,6 +2854,9 @@ function buildSourcePromptHints(source, { documentProfile = null, mode = '' } = 
 }
 
 const HIGH_PRIORITY_REPAIR_CODES = new Set([
+  'introduced_demonstrative_loss',
+  'introduced_connective_corruption',
+  'introduced_naming_frame_inversion',
   'role_definition_inversion',
   'case_frame_corruption',
   'contrast_clause_attachment',

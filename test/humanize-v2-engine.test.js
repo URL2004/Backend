@@ -176,13 +176,25 @@ function installEngineMock(t, options = {}) {
   return { calls, semanticCalls: () => semanticCalls };
 }
 
+test('model-introduced referent loss and comparison typo are repaired before delivery', { concurrency: false }, async t => {
+  const source = '자료의 범위를 먼저 정했다. 이 기준은 조사 대상의 범위를 제한한다. 차이가 측정 조건에 있듯이, 결과도 조건에 따라 달라진다.';
+  const output = '자료의 범위를 우선 정했다. 기준은 조사 대상의 범위를 제한한다. 차이가 측정 조건에 있기라면, 결과도 조건에 따라 달라진다.';
+  installEngineMock(t, { humanize: output, koreanRefinementOutput: output, generalRetryOutput: output, retryOutput: output, repairOutput: output });
+  const result = await engine.run({ text: source, mode: 'blog', uid: 'test-edit-integrity', config: config() });
+  assert.match(result.result.outputText, /이 기준은/u);
+  assert.match(result.result.outputText, /조건에 있듯이/u);
+  assert.doesNotMatch(result.result.outputText, /있기라면/u);
+  assert.match(result.result.outputText, /우선 정했다/u);
+  assert.equal(result.engineMeta.koreanRefinementVersion, 30);
+});
+
 test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·engineMeta를 기록한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t);
   const uid = 'firebase-user-123';
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.53');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.54');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1449,7 +1461,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.53');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.54');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

@@ -72,6 +72,23 @@ require.cache[configPath] = {
 
 const history = require('../lib/historyService');
 
+test('paragraph refinement clears merged stale engine verification and calibration proof', async () => {
+  const target = 'users/history-user/history/refined-metadata';
+  rows.set(target, { type: 'humanize', engineMeta: { semanticValidationStatus: 'pass' },
+    historyLinkIntegrity: { signature: 'stale' }, calibrationTextHash: 'stale' });
+  await history.saveAnalyzeHistory({ uid: 'history-user', requestId: 'refined-metadata',
+    opType: 'humanize', text: '합성 원문이다.', needed: 10, mode: 'blog',
+    result: { outputText: '보강한 합성 결과다.' }, engineMeta: null,
+    qualityStatus: 'needs_review', qualityWarningCodes: ['refined_document_review'],
+    auditScope: 'refined_paragraph', auditVersion: 2 });
+  const saved = rows.get(target);
+  assert.equal(saved.engineMeta, null);
+  assert.equal(saved.historyLinkIntegrity, null);
+  assert.equal(saved.calibrationTextHash, null);
+  assert.equal(saved.auditScope, 'refined_paragraph');
+  assert.equal(saved.auditVersion, 2);
+});
+
 test('server history readback retains the exact analysis interpretation and bounded model evidence', async () => {
   const { buildDetectInterpretation } = require('../lib/detectInterpretation');
   const { locatePublicEvidence } = require('../lib/detectInputDocument');

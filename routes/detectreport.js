@@ -410,19 +410,15 @@ router.post('/detect-report', async (req, res) => {
     usedCachedArtifact = true;
   } else {
     // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
-    let ir, paras, detail, reportMeasurements;
+    let ir, paras, analysisParas, previewParas, detail, reportMeasurements;
     try {
       paras = sg.splitParagraphsForReport(text);
-      const joined = paras.join('\n\n');
-      ir = sg.classifyInputRisk(joined);
-      detail = sg.analyzeParagraphs(joined).detail;
-      reportMeasurements = {
-        uniformity: sg.measureUniformity(joined),
-        genericness: sg.measureGenericness(joined),
-        realAnchorDensity: sg.measureRealAnchorDensity(joined),
-        stance: sg.measureStance(joined),
-        detail
-      };
+      const surface = require('../lib/detectSurfaceInput').buildDetectSurfaceInput(paras);
+      analysisParas = surface.analysisParagraphs;
+      previewParas = surface.previewParagraphs;
+      ir = sg.classifyInputRisk(surface.text);
+      detail = surface.detail;
+      reportMeasurements = surface.measurements;
     } catch (error) {
       if (requestBinding) await detectRequests.releaseAfterModelFailure(requestBinding);
       logger.error('detect_report.surface_failed', { uid, err: error });
@@ -495,7 +491,7 @@ router.post('/detect-report', async (req, res) => {
       return null;
     });
 
-    const before = pickAiSentence(paras, detail);
+    const before = pickAiSentence(previewParas, detail);
     const previewTask = startDetectPreview(async signal => {
           if (!before) return null;
           const gptCfg = await activeGptConfig();
@@ -581,7 +577,7 @@ router.post('/detect-report', async (req, res) => {
     // 공개 보고서에 결합하고, 지도 생성 실패는 점수·과금 흐름과 분리한다.
     let sentenceMap = null;
     try {
-      sentenceMap = buildSentenceMap(paras, detail);
+      sentenceMap = buildSentenceMap(analysisParas, detail, { sourceParagraphs: paras });
     } catch (error) {
       logger.warn('detect_report.sentence_map_failed', { uid, err: error && error.message });
     }
@@ -704,17 +700,19 @@ router.post('/detect-report', async (req, res) => {
         return {
           idx: index,
           kind,
-          reason: PARA_REASON[kind],
+          reason: detail[index]?.excluded ? '인용·코드·제목 등 보존 영역이라 문체 측정에서 제외했어요.' : PARA_REASON[kind],
+          ...(detail[index]?.excluded ? { excluded: true } : {}),
           snippet: paragraph.slice(0, 140),
           text: paragraph.length > 140 ? paragraph : undefined,
-          coach: predictCoach(paragraph)
+          coach: detail[index]?.excluded ? null : predictCoach(analysisParas[index])
         };
       }),
-      coach: predictCoach(text, 0.5),
+      coach: predictCoach(analysisParas.join('\n\n'), 0.5),
       counts: {
         total: paras.length,
         risk: detail.filter(item => item.kind === 'abstract_risk').length,
-        thin: detail.filter(item => item.kind === 'thin').length,
+        thin: detail.filter(item => item.kind === 'thin' && !item.excluded).length,
+        excluded: detail.filter(item => item.excluded).length,
         safe: detail.filter(item => item.kind === 'concrete').length
       },
       example,

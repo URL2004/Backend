@@ -346,7 +346,7 @@ test('보고서 상단 계측은 문장 지도와 같은 종결 기준으로 통
 test('라우트는 문장 지도 값을 상단 계측에 넘겨 한 화면이 두 숫자를 말하지 않게 한다', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'routes', 'detectreport.js'), 'utf8');
   assert.match(src, /maxEndingRun: sentenceMap\.maxEndingRun/u);
-  const mapAt = src.indexOf('buildSentenceMap(paras, detail)');
+  const mapAt = src.indexOf('buildSentenceMap(analysisParas, detail, { sourceParagraphs: paras })');
   const viewAt = src.indexOf('buildDetectReportView({');
   assert.ok(mapAt > 0 && viewAt > mapAt, '문장 지도를 먼저 만든 뒤 판정 뷰를 만든다');
 });

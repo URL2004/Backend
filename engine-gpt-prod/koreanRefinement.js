@@ -1,6 +1,6 @@
 'use strict';
 
-const { splitSentences, splitSentenceSpans, koreanStart, normalizeCompact } = require('../engine/koreanText');
+const { splitSentences, splitSentenceSpans, missingTerminalBoundaries, koreanStart, normalizeCompact } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 const freezeBlocks = require('../engine/freezeblocks');
 const layoutStructure = require('./layoutStructure');
@@ -12,7 +12,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 30;
+const VERSION = 31;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -26,6 +26,18 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  source_restore_echo: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '앞에서 나눠 쓴 주장 뒤에 같은 원문 문장이 다시 붙었을 수 있어요. 원문과 대응해 중복된 내용만 제거하고 다른 주장·조건은 보존하세요.'
+  },
+  introduced_sentence_chain: {
+    weight: 5,
+    repairable: true,
+    deterministicSafe: false,
+    message: '원문의 독립 문장 여러 개를 연결 어미로 길게 합쳤어요. 사실·순서를 유지하며 원래의 의미 단위에서 문장을 나누세요. 길다는 이유만으로 내용을 삭제하지 마세요.'
+  },
   introduced_demonstrative_loss: {
     weight: 6,
     repairable: true,
@@ -1117,11 +1129,14 @@ function repairIntroducedSourceBackedWordLineBreaks(value, source, context = {})
     const leftGuard = guards[index] || {};
     const rightGuard = guards[next] || {};
     if (!left || !right
+        || ['heading', 'label', 'label_inline', 'list', 'flow'].includes(leftGuard.role)
+        || ['heading', 'label', 'label_inline', 'list', 'flow'].includes(rightGuard.role)
         || leftGuard.code || rightGuard.code
         || leftGuard.reference || rightGuard.reference
         || leftGuard.table || rightGuard.table
         || leftGuard.role === 'quote' || rightGuard.role === 'quote'
         || /[.!?。！？…,:;：；][”’」』》〉"')\]]*$/u.test(left)
+        || /(?:습니다|입니다|했다|하였다|되었다|있다|없다)$/u.test(left)
         || NEW_UNIT_START_RE.test(right)) {
       index = next;
       continue;
@@ -1305,6 +1320,12 @@ function repairContextualSpacing(value, source, context) {
     );
     return replaceOutsideProtectedRanges(workingLine, segment => {
       let out = segment;
+      if (guard.role === 'prose' && !context.lineSensitive) {
+        for (const end of missingTerminalBoundaries(out).reverse()) {
+          out = `${out.slice(0, end)}.${out.slice(end)}`;
+          addCount(counts, 'missing_terminal_between_sentences');
+        }
+      }
       out = repairHighConfidenceLockedSpacing(out, counts);
       out = replaceTracked(
         out,
@@ -1678,6 +1699,10 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   const targetRegister = String(documentProfile?.targetRegister || documentProfile?.tonePolicy || '');
   const sourceIssues = detectTextIssues(source, { profile, targetRegister, includeSourceNotation: true });
   const outputIssues = detectTextIssues(outputText, { profile, targetRegister, includeSourceNotation: false });
+  const chained = detectIntroducedSentenceChains(source, outputText);
+  if (chained) outputIssues.push(chained);
+  const restoredEcho = detectSourceRestoreEcho(source, outputText);
+  if (restoredEcho) outputIssues.push(restoredEcho);
   const sourceBackedEdits = sourceBackedEditRepairs(source, outputText);
   for (const code of new Set(sourceBackedEdits.map(item => item.code))) {
     const rows = sourceBackedEdits.filter(item => item.code === code);
@@ -1733,6 +1758,53 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
     residualWarnings,
     sourceReviewWarnings: buildSourceReviewWarnings(sourceIssues)
   };
+}
+
+// Length is only a review signal when several independently aligned source
+// sentences were newly fused. Long originals, quotations and lists are not errors.
+function detectIntroducedSentenceChains(source, outputText) {
+  const from = splitSentences(source);
+  const to = splitSentences(outputText);
+  const ordinals = [];
+  to.forEach((sentence, index) => {
+    if (sentence.length < 180 || syntaxSpans(sentence).some(span => span.spanType === 'quote' || span.spanType === 'code')) return;
+    if ((sentence.match(/(?:했|하였|있었|없었|되었|였|었|았)(?:고|으며|지만)|(?:하고|하며|면서)(?=[\s,])/gu) || []).length < 3) return;
+    const match = alignedOutputCandidates(sentence, index, to.length, from, { maxOutputGroup: 4, window: 5 })[0];
+    if (!match || match.end - match.start < 3 || Number(match.rawScore ?? match.score) < 0.45) return;
+    const originals = from.slice(match.start, match.end);
+    if (sentence.length <= Math.max(...originals.map(item => item.length)) * 1.35) return;
+    if (originals.some(item => layoutStructure.isStructureDominatedParagraph(item))) return;
+    ordinals.push(index + 1);
+  });
+  return ordinals.length ? makeIssue('introduced_sentence_chain', ordinals.length, ordinals) : null;
+}
+
+function detectSourceRestoreEcho(source, outputText) {
+  const key = value => normalizeCompact(value).replace(/[\p{P}\p{S}]/gu, '');
+  const sourceCounts = new Map();
+  for (const sentence of splitSentences(source)) {
+    const value = key(sentence);
+    sourceCounts.set(value, (sourceCounts.get(value) || 0) + 1);
+  }
+  const collect = text => {
+    const spans = splitSentenceSpans(text);
+    const matches = [];
+    for (let i = 2; i < spans.length; i++) {
+      const current = spans[i];
+      const currentKey = key(current.text);
+      if (current.text.length < 70 || sourceCounts.get(currentKey) !== 1) continue;
+      if (syntaxSpans(current.text).length || layoutStructure.isStructureDominatedParagraph(current.text)) continue;
+      if (/\n[ \t]*\r?\n/u.test(String(text).slice(spans[i - 2].start, current.start))) continue;
+      const originals = new Set(contentTokensLocal(current.text));
+      const previous = new Set(contentTokensLocal(spans[i - 2].text + ' ' + spans[i - 1].text));
+      const shared = [...originals].filter(token => previous.has(token)).length;
+      if (originals.size >= 8 && shared / originals.size >= .72 && shared / Math.max(1, previous.size) >= .6) matches.push({ ordinal: i + 1, key: currentKey });
+    }
+    return matches;
+  };
+  const existing = new Set(collect(source).map(match => match.key));
+  const ordinals = collect(outputText).filter(match => !existing.has(match.key)).map(match => match.ordinal);
+  return ordinals.length ? makeIssue('source_restore_echo', ordinals.length, ordinals) : null;
 }
 
 // 단일 결과 문장만 보면 성립해 보이지만, 원문과 정렬해 보면 단계·논리

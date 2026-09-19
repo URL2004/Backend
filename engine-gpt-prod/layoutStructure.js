@@ -637,7 +637,15 @@ function tableColumnCount(value) {
     return text.trim().slice(1, -1).split('|').length;
   }
   if (/\t/u.test(text)) return text.split('\t').length;
-  if (/\S\s{2,}\S/u.test(text)) return text.split(/\s{2,}/u).filter(cell => visibleTrim(cell)).length;
+  if (/\S\s{2,}\S/u.test(text)) {
+    const cells = text.split(/\s{2,}/u).filter(cell => visibleTrim(cell));
+    // A double-space typo inside extended prose is not a table column. In
+    // particular, several unpunctuated finite sentences before the first gap
+    // are positive prose evidence, not a row label. Explicit tabs/pipes above
+    // keep their stronger structural ownership even with long cell contents.
+    if (cells[0].length >= 120 && splitSentences(cells[0]).length >= 2) return 0;
+    return cells.length;
+  }
   return 0;
 }
 

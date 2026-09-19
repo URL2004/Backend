@@ -39,6 +39,7 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
   const out = [];
   const syntax = syntaxSpans(text);
   const codeSpans = syntax.filter(span => span.spanType === 'code');
+  const implicitEnds = new Set(missingTerminalBoundaries(text, syntax));
   let codeCursor = 0;
   let start = 0;
   let i = 0;
@@ -49,6 +50,12 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
       continue;
     }
     const ch = text[i];
+    if (implicitEnds.has(i)) {
+      pushSpan(out, text, start, i);
+      while (i < text.length && /[ \t]/u.test(text[i])) i += 1;
+      start = i;
+      continue;
+    }
     if (ch === '\r' || ch === '\n') {
       const end = i;
       let lineBreakCount = 0;
@@ -72,6 +79,7 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
       i += 1;
       continue;
     }
+    if (isEmbeddedPunctuation(text, i, syntax)) { i += 1; continue; }
     if (ch === '.' && (isProtectedPeriod(text, i, start) || isInitialPeriod(text, i, start, syntax))) {
       i += 1;
       continue;
@@ -96,6 +104,27 @@ function isSentencePunctuation(text, index) {
   return /[.!?…。！？]/u.test(text[index] || '');
 }
 
+// Only explicit formal finite endings, never ambiguous nouns ending in 요/다.
+// Return original offsets; segmentation does not insert punctuation or rewrite text.
+function missingTerminalBoundaries(value, syntax = syntaxSpans(String(value || ''))) {
+  const text = String(value || '');
+  const ends = [];
+  for (const match of text.matchAll(/[가-힣]+(?:습니다|입니다)([ \t]+)(?=[가-힣A-Za-z0-9])/gu)) {
+    const end = match.index + match[0].length - match[1].length;
+    if (syntax.some(span => span.start <= end && span.end > end)) continue;
+    const next = text.slice(end).trimStart();
+    if (/^(?:라고|라는|라며|라니|란|하고|하며|하는|하면|의|를|을|는|은)(?=\s|$)/u.test(next)) continue;
+    ends.push(end);
+  }
+  return ends;
+}
+
+function isEmbeddedPunctuation(text, index, syntax) {
+  return syntax.some(span => span.start < index && span.end > index
+    && (span.spanType === 'parenthetical'
+      || (span.spanType === 'quote' && /^[가-힣]/u.test(text.slice(span.end)))));
+}
+
 function isInitialPeriod(text, index, start, syntax) {
   if (!/(?:^|[^A-Za-z])[A-Z]$/u.test(text.slice(Math.max(start, index - 2), index))) return false;
   return syntax.some(span => span.spanType === 'parenthetical' && span.start < index && span.end > index)
@@ -110,6 +139,7 @@ function hasSentenceTerminator(value) {
   for (let i = 0; i < text.length; i++) {
     if (!isSentencePunctuation(text, i)) continue;
     if (syntax.some(span => span.spanType === 'code' && span.start <= i && span.end > i)) continue;
+    if (isEmbeddedPunctuation(text, i, syntax)) continue;
     if (text[i] === '.' && (isProtectedPeriod(text, i, 0) || isInitialPeriod(text, i, 0, syntax))) continue;
     if (i === text.length - 1 || /[\s"'”’」』》〉】)）\]]/u.test(text[i + 1])) return true;
   }
@@ -120,6 +150,11 @@ function isProtectedPeriod(text, index, sentenceStart) {
   const prev = text[index - 1] || '';
   const next = text[index + 1] || '';
   if (/\d/u.test(prev) && /\d/u.test(next)) return true; // 3.14
+  const dateStart = Math.max(0, index - 20);
+  const dateWindow = text.slice(dateStart, index + 21);
+  for (const match of dateWindow.matchAll(/(?<![\d.])\d{4}\.[ \t]*(?:0?[1-9]|1[0-2])\.[ \t]*(?:0?[1-9]|[12]\d|3[01])\./gu)) {
+    if (dateStart + match.index <= index && index < dateStart + match.index + match[0].length) return true;
+  }
   const left = text.slice(Math.max(sentenceStart, index - 12), index + 1);
   if (/(?:e\.g|i\.e|etc|vs|Dr|Mr|Ms|Prof|No|Fig|Vol|Inc|Ltd)\.$/i.test(left)) return true;
   if (/(?:[A-Za-z]\.){1,5}$/u.test(left) && /[A-Za-z]/u.test(next)) return true;
@@ -132,7 +167,10 @@ function isProtectedPeriod(text, index, sentenceStart) {
 }
 
 function looksCompleteWithoutPunctuation(value) {
-  return koreanEnd('(?:다|요|죠|까|음|함|임|됨|있음|없음)', 'u').test(String(value || '').trim());
+  const text = String(value || '').trim();
+  if (/^(?:#{1,6}\s|제\s*\d+\s*[장절항][.\s])/u.test(text)) return true;
+  if (/(?:주요|수요|필요|개요)$/u.test(text)) return false;
+  return /(?:다|요|죠|까|음|함|임|됨|있음|없음)$/u.test(text);
 }
 
 function pushSpan(out, source, start, end) {
@@ -243,6 +281,7 @@ module.exports = {
   splitSentences,
   splitSentenceSpans,
   hasSentenceTerminator,
+  missingTerminalBoundaries,
   ngramSet,
   ngramJaccard,
   levenshteinDistance,

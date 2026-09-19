@@ -185,7 +185,7 @@ test('model-introduced referent loss and comparison typo are repaired before del
   assert.match(result.result.outputText, /조건에 있듯이/u);
   assert.doesNotMatch(result.result.outputText, /있기라면/u);
   assert.match(result.result.outputText, /우선 정했다/u);
-  assert.equal(result.engineMeta.koreanRefinementVersion, 30);
+  assert.equal(result.engineMeta.koreanRefinementVersion, 31);
 });
 
 test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·engineMeta를 기록한다', { concurrency: false }, async t => {
@@ -194,7 +194,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.54');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.55');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -513,6 +513,27 @@ test('고급 연구개발 자소서의 전문 개념을 구어적 동사로 낮�
   assert.match(String(repairCall.body.instructions || ''), /최적화·상관관계·원인 분석·재현성 검증·수치화·데이터 해석/u);
   assert.doesNotMatch(String(repairCall.body.instructions || ''), /cause_analysis/u);
   assert.match(String(repairCall.body.input || ''), /cause_analysis/u);
+});
+
+test('새로 합친 장문은 한국어 수리 경로를 거쳐 의미 검증된 문장으로 전달한다', { concurrency: false }, async t => {
+  const sentences = [
+    '지역의 여러 기관에서 운영하는 다양한 교육 프로그램과 주민들에게 제공되는 참여 기회를 자세히 조사했습니다.',
+    '조사 결과를 바탕으로 기관별 신청 절차와 이용 가능한 시설의 종류를 정리했습니다.',
+    '담당자에게 연락하여 운영 시간과 참가자의 준비 사항을 추가로 확인했습니다.',
+    '확인한 자료를 동료들에게 공유하여 각자의 일정에 맞게 함께 이용할 수 있는 프로그램을 신중하게 선정했습니다.'
+  ];
+  const source = sentences.join(' ');
+  const fused = sentences.slice(0, -1).map(s => s.replace(/했습니다\.$/u, '했으며,')).join(' ') + ' ' + sentences.at(-1);
+  const repaired = source.replace('자세히 조사했습니다', '상세히 조사했습니다');
+  const mock = installEngineMock(t, { humanize: fused, koreanRefinementOutput: repaired, generalRetryOutput: repaired });
+  const out = await engine.run({ text: source, mode: 'formal', uid: 'synthetic-clause-chain-user', config: config() });
+  const call = mock.calls.find(c => c.name === 'gpt_prod_korean_refinement_retry');
+  assert.ok(call);
+  assert.match(String(call.body.input), /introduced_sentence_chain/u);
+  assert.equal(out.engineMeta.koreanRefinementRetryApplied, true);
+  assert.equal(out.engineMeta.semanticJudgeRan, true);
+  assert.notEqual(out.status, 'blocked');
+  assert.equal(out.result.outputText.replace(/\s+/gu, ' '), repaired);
 });
 
 test('원문부터 있던 비인접 반복은 결과에서 늘지 않으면 needs_review로 올리지 않는다', { concurrency: false }, async t => {
@@ -1254,7 +1275,8 @@ test('구두점 없는 장문을 균등 분할하면 상위 모델로 1회 재�
     '서로 질문을 주고받으면서 다른 관점을 존중하는 태도도 배웠습니다.',
     '마지막에는 함께 문제를 해결한 과정이 확실한 복습이 되었고 앞으로도 배운 내용을 꾸준히 나누겠다는 생각을 갖게 되었으며, 이 경험을 바탕으로 이후의 학습에서도 필요한 내용을 스스로 점검하는 습관을 이어 가기로 했습니다.'
   ].join(' ');
-  const source = varied.replace(/[.!?]/gu, ' ');
+  // Ambiguous plain endings still need sparse-punctuation recovery.
+  const source = varied.replace(/습니다/gu, '다').replace(/[.!?]/gu, ' ');
   const words = source.trim().split(/\s+/u);
   const targetLength = source.replace(/\s+/gu, '').length / 5;
   const groups = [];
@@ -1461,7 +1483,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.54');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.55');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

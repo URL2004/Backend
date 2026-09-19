@@ -1748,6 +1748,8 @@ function saveJobHistory(job, text, outputText) {
     qualityWarningCodes: finalQualityWarningCodes(job.result),
     sourceReviewWarningCodes: (job.result?.sourceReviewWarnings || []).map(item => item?.code).filter(Boolean),
     engineMeta: job.result?.engineMeta || null,
+    auditScope: job.result?.auditScope || null,
+    auditVersion: job.result?.auditVersion || null,
     sourceProbability: job.sourceProbability ?? null,
     sourceEvidence: job.sourceEvidence || null,
     sourceBand: job.sourceBand ?? null,

@@ -1378,6 +1378,10 @@ function restoreParagraphLayout({
     profileName
   };
   const rawOutputText = normalizeParagraphWhitespace(outputText);
+  const sourceTransitions = mode !== 'polish' && !creativeLayout
+    && ((chunks || []).some(chunk => chunk?.locked) || allowsLayoutRecomposition(resolvedContract))
+    ? require('./sourceParagraphTransitions').restoreSourceParagraphTransitions(source, rawOutputText)
+    : { text: rawOutputText, repairedCount: 0 };
   const explicitParagraphCountBefore = layoutStructure.splitExplicitParagraphs(rawOutputText).length;
   const canRepairVisualGaps = mode !== 'polish' && !creativeLayout;
   const visualGapExcludedBlocks = buildVisualGapExcludedBlocks(chunks);
@@ -1385,8 +1389,9 @@ function restoreParagraphLayout({
     ? restoreStructuralVisualGaps(source, { excludedBlocks: visualGapExcludedBlocks })
     : { text: normalizeParagraphWhitespace(source), repairCount: 0 };
   const outputVisualLayout = canRepairVisualGaps
-    ? restoreStructuralVisualGaps(rawOutputText, { excludedBlocks: visualGapExcludedBlocks })
-    : { text: rawOutputText, repairCount: 0 };
+    ? restoreStructuralVisualGaps(sourceTransitions.text, { excludedBlocks: visualGapExcludedBlocks })
+    : { text: sourceTransitions.text, repairCount: 0 };
+  outputVisualLayout.repairCount += sourceTransitions.repairedCount;
   const layoutSourceText = sourceVisualLayout.text;
   const layoutOutputText = outputVisualLayout.text;
   const detectedSourceParagraphs = splitParagraphs(layoutSourceText);

@@ -909,20 +909,22 @@ function repairIntroducedQuoteAttributionLineBreaks(value, source) {
   let index = 0;
   while (index < lines.length - 1) {
     const left = String(lines[index] || '').trim();
-    const right = String(lines[index + 1] || '').trim();
+    let rightIndex = index + 1;
+    while (rightIndex < lines.length && !String(lines[rightIndex] || '').trim()) rightIndex++;
+    const right = String(lines[rightIndex] || '').trim();
     const attribution = right.match(/^(라고|라며|라는|하며|하고|며|고)(?=\s|[‘“"'「『《〈(（\[【])/u);
     const quoteEnd = /[”’」』》〉"']$/u.test(left);
     if (!left || !right || !attribution || !quoteEnd
-        || guards[index]?.code || guards[index + 1]?.code
-        || guards[index]?.reference || guards[index + 1]?.reference
-        || guards[index]?.table || guards[index + 1]?.table
+        || guards[index]?.code || guards[rightIndex]?.code
+        || guards[index]?.reference || guards[rightIndex]?.reference
+        || guards[index]?.table || guards[rightIndex]?.table
         || !sourceSupportsQuoteAttributionJoin(source, left, right, attribution[1])) {
       index += 1;
       continue;
     }
-    lines[index] = `${String(lines[index] || '').trimEnd()}${String(lines[index + 1] || '').trimStart()}`;
-    lines.splice(index + 1, 1);
-    guards.splice(index + 1, 1);
+    lines[index] = `${String(lines[index] || '').trimEnd()}${String(lines[rightIndex] || '').trimStart()}`;
+    lines.splice(index + 1, rightIndex - index);
+    guards.splice(index + 1, rightIndex - index);
     addCount(counts, 'quote_attribution_linebreak_join');
   }
   return { text: lines.join('\n'), changeCounts: counts };
@@ -1342,6 +1344,13 @@ function repairContextualSpacing(value, source, context) {
         }
       }
       out = repairHighConfidenceLockedSpacing(out, counts);
+      out = replaceTracked(out, /([가-힣]+)\s+수(?=(?:있|없)(?:다|는|어|었|겠|습니다|다고|지만|고|으))/gu,
+        (match, verb) => verb.endsWith('을') || (verb.charCodeAt(verb.length-1)-0xAC00)%28===8
+          ? `${verb} 수 ` : match, 'dependent_noun_su_spacing', counts);
+      out = replaceTracked(out, /(\d{1,2}월)말(?=(?:까지|부터|에|에는|의|은|$|\s))/gu,
+        (_m, month) => `${month} 말`, 'month_end_spacing', counts);
+      out = replaceTracked(out, /([가-힣]{2,}해)둘(?=\s+만(?:하다|한|하다고|합니다))/gu,
+        (_m, verb) => `${verb} 둘`, 'compound_auxiliary_spacing', counts);
       out = replaceTracked(
         out,
         /([\p{L}\p{N}”’」』》〉)\]])[ \t]+([.!?。！？,，;；])/gu,

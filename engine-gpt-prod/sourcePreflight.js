@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 23;
+const VERSION = 24;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -441,7 +441,8 @@ function repairBrokenBlankLineProseContinuations(value) {
     const safeRole = (!['heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole)
         || contextualFusedProse)
       && !['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole);
-    const continuation = safeRole && !demonstrativeStart
+    const contextualContinuation = safeRole && layoutStructure.isContextualProseContinuation(left, right);
+    const continuation = contextualContinuation || safeRole && !demonstrativeStart
       && leftToken
       && !/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left.trim())
       && ((/[가-힣]$/u.test(leftToken) && RIGHT_STANDALONE_PARTICLE_RE.test(rightText))
@@ -1058,6 +1059,7 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   const weakTitleFragment = leftRole === 'title'
     && (/^(?:대한|관한|위한|대해|대해서|관해|관해서|위해|통해|하며|하고|하는|되는|된|할|했던|필요한|가능한)$/u.test(leftToken)
       || layoutStructure.isProseContinuation(left)
+      || layoutStructure.isContextualProseContinuation(left, right)
       // A multi-word object clause followed by an overt predicate is different
       // from a nominal heading followed by a new subject ("효과 / 이 연구는...").
       || (left.split(/\s+/u).length >= 3 && /[가-힣]{2,}(?:을|를)$/u.test(leftToken)
@@ -1070,7 +1072,7 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
       || isQuoteAttributionLine(left) || isQuoteAttributionLine(right)) return false;
   if (WEB_LITERAL_TEST_RE.test(left) || WEB_LITERAL_TEST_RE.test(right)) return false;
   if (/^\s*(?:`{3,}|~{3,})/u.test(left) || /^\s*(?:`{3,}|~{3,})/u.test(right)) return false;
-  if (layoutStructure.isProseContinuation(left)) return true;
+  if (layoutStructure.isProseContinuation(left) || layoutStructure.isContextualProseContinuation(left, right)) return true;
   if (/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left)) return false;
   if (!/^[가-힣A-Za-z0-9(“"'‘「『《〈]/u.test(right)) return false;
   if (!leftToken) return false;

@@ -16,19 +16,40 @@ function role(text) {
 }
 function introducesNewRole(sentences, i) {
   const current = sentences[i].text;
+  const before = sentences.slice(0,i).map(s=>s.text).join(' ');
+  const after = sentences.slice(i).map(s=>s.text).join(' ');
   const kind = role(current);
   if (kind && !sentences.slice(0, i).some(s => role(s.text) === kind)) return kind;
   // A contrast must compare substantive subjects, not merely qualify the
   // immediately preceding claim. Both sides must have developed prose.
   if (/^(?:반면|이에 반해)\s/u.test(current)) {
     const subject = current.split(/(?:에서는|은|는|이|가)\s/u)[0].replace(/^(?:반면|이에 반해)\s/u,'');
-    if (subject.length >= 8 && !/^(?:그|이|같은)\s/u.test(subject)) {
+    if (subject.length >= 3 && !/^(?:그|이|같은|이런|그런)\s/u.test(subject)
+        && !before.includes(subject)) {
       const grams = ngramSet(subject, 2);
       const prior = ngramSet(sentences.slice(0,i).map(s=>s.text).join(' '), 2);
-      if (grams.size && [...grams].filter(g=>prior.has(g)).length / grams.size < .4) return 'comparison';
+      const head = subject.split(/\s+/u).at(-1);
+      const sharedCategory = subject.split(/\s+/u).length >= 2 && head.length >= 2 && before.includes(head);
+      if (sharedCategory || grams.size && [...grams].filter(g=>prior.has(g)).length / grams.size < .4) return 'comparison';
     }
   }
-  const before = sentences.slice(0,i).map(s=>s.text).join(' ');
+  // Recognize a functional change by both sides: observed situation/problem
+  // becomes an action plan with a developed continuation. A connector alone
+  // cannot trigger this path, and conditions remain with their intervention.
+  const finding = /(?:조사|검토|관측|측정|분석|발견|확인|접수|실패|오류|문제)/u.test(before)
+    && /(?:했다|하였다|되었다|있었다|걸렸|확인되어)/u.test(before);
+  const actionPlan = /(?:대책|방안|조치|개선|안내문|계획|지원)/u.test(current)
+    && /(?:마련|수정|정비|제공|시행|지원|개선)/u.test(current)
+    && /(?:계획|예정|기로\s*했다|해야|마련했다)/u.test(after);
+  const priorPlan = /(?:대책|개선\s*방안|조치\s*계획)(?:은|는|을|를)/u.test(before)
+    || /(?:하기로\s*했다|할\s*예정)/u.test(before);
+  if (finding && actionPlan && !priorPlan && sentences.length-i >= 2) return 'findings_to_plan';
+  // Coarse temporal scene changes differ from within-event sequencing such as
+  // 이어/그다음/마지막으로. Require an earlier phase and a later action phase.
+  if (/^(?:[한두세네]|\d+)\s*(?:달|개월|년|주)\s*(?:뒤|후)(?:에는|에|부터)?\s/u.test(current)
+      && /(?:첫\s*(?:주|날|달)|초기|처음|시작)/u.test(before)
+      && /(?:작성|발표|제출|정리|완료|검토|수정)/u.test(after)
+      && sentences.length-i >= 2) return 'later_phase';
   if (/^(?:무엇보다|또한|한편)\s/u.test(current)
       && /(?:교육|인식|문화|미디어)/u.test(current)
       && /(?:제도|정책|법제|공시|할당제|규제)/u.test(before)
@@ -51,14 +72,17 @@ function splitProseParagraphs(value) {
     run = [];
     const paragraph = text.slice(start,end);
     const sentences = splitSentenceSpans(paragraph);
-    if (paragraph.replace(/\s/gu,'').length < 140 || sentences.length < 4 || sentences.length > 100) return;
+    if (sentences.length < 4 || sentences.length > 100) return;
     let last = 0;
     for (let i=2;i<sentences.length;i++) {
       if (i-last < 2) continue;
       const reason = introducesNewRole(sentences,i);
       if (!reason) continue;
       const suffix = paragraph.slice(sentences[i].start);
-      if (suffix.replace(/\s/gu,'').length < 60) continue;
+      const developedTransition = ['findings_to_plan', 'later_phase'].includes(reason);
+      const minimumSide = developedTransition ? 45 : 60;
+      if (suffix.replace(/\s/gu,'').length < minimumSide
+          || paragraph.slice(sentences[last].start, sentences[i].start).replace(/\s/gu,'').length < minimumSide) continue;
       // Contrast alone needs evidence on both sides; a developed final role
       // such as an educational intervention may be a single long sentence.
       if (reason==='comparison' && sentences.length-i < 2) continue;

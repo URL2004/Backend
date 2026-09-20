@@ -178,6 +178,7 @@ function classifyLine(value, context = {}) {
   if (isColonTitleLine(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
+  if (isContextualProseContinuation(text, context.next?.text)) return 'prose';
   if (context.labelGroupHeading) return 'heading';
   if (isContextualStrongNominalHeading(text, context)) return 'heading';
   if (isGenericTitle(text, context)) return 'title';
@@ -471,6 +472,20 @@ function looksLikeUnpunctuatedProse(value) {
 // A non-finite prose clause is not a heading merely because its full stop is on
 // the next line. Require a multi-word clause; explicit headings/quotes remain
 // classified before these prose heuristics, and short poetic labels stay intact.
+// Explicit syntax plus the following predicate, not a bare particle or length,
+// distinguishes a forced prose wrap from a nominal heading.
+function isContextualProseContinuation(leftValue, rightValue) {
+  const left = visibleTrim(leftValue), right = visibleTrim(rightValue);
+  if (!left || right.length < 12 || /^(?:[#>*]|\d+[.)]|[「『《〈“‘"'])/u.test(left)
+      || isKnownHeadingLine(left) || isKnownHeadingLine(right)
+      || /[.!?。！？:：]$/u.test(left) || !isSentenceComplete(right)) return false;
+  if (left.split(/\s+/u).length < 2) return false;
+  if (/(?:되면|한다면|된다면|했다면|다면|으면)$/u.test(left)) return true;
+  if (/(?:것은|것이|것만은)$/u.test(left) && /^아니/u.test(right)) return true;
+  return left.split(/\s+/u).length >= 3 && /[가-힣]{2,}(?:을|를)$/u.test(left)
+    && /^[가-힣]{1,20}(?:시킬|시키|시켜|하는|하며|하고|하여|했던|했다|한다|됩니다|되는|되며|되었다)/u.test(right);
+}
+
 function isProseContinuation(value) {
   const text = visibleTrim(value);
   if (text.length < 16 || text.split(/\s+/u).length < 4) return false;
@@ -645,8 +660,9 @@ function tableColumnCount(value) {
     return text.trim().slice(1, -1).split('|').length;
   }
   if (/\t/u.test(text)) return text.split('\t').length;
-  if (/\S\s{2,}\S/u.test(text)) {
-    const cells = text.split(/\s{2,}/u).filter(cell => visibleTrim(cell));
+  // Unicode line separators from PDF copies are not horizontal table columns.
+  if (/\S {2,}\S/u.test(text)) {
+    const cells = text.split(/ {2,}/u).filter(cell => visibleTrim(cell));
     // A double-space typo inside extended prose is not a table column. In
     // particular, several unpunctuated finite sentences before the first gap
     // are positive prose evidence, not a row label. Explicit tabs/pipes above
@@ -860,7 +876,7 @@ function resolveParagraphReadabilityLimits(options = {}) {
 }
 
 function paragraphSplitNeed(paragraph, options = {}) {
-  if (isStructureDominatedParagraph(paragraph)) return 1;
+  if (isStructureDominatedParagraph(paragraph) || isProtectedReadabilityParagraph(paragraph, options)) return 1;
   const limits = resolveParagraphReadabilityLimits(options);
   const compact = bare(paragraph).length;
   const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
@@ -884,7 +900,7 @@ function measureParagraphReadability(paragraphsOrText, options = {}) {
     // 라벨 행의 문장 수를 한 산문 문단으로 합산해 과장문으로 판정하지 않는다.
     // 이전에는 이 묶음을 억지로 분할한 뒤 최종 구조 복원이 다시 합치면서
     // layoutRepair만 실패로 남고 실제 결과의 시각 여백도 사라졌다.
-    const structureDominated = isStructureDominatedParagraph(paragraph)
+    const structureDominated = isProtectedReadabilityParagraph(paragraph, options) || isStructureDominatedParagraph(paragraph)
       || isReadableInlineLabelGroup(paragraph);
     const splitNeed = structureDominated ? 1 : paragraphSplitNeed(paragraph, options);
     return { index, compact, sentenceCount, structureDominated, splitNeed, overlong: splitNeed > 1 };
@@ -927,9 +943,17 @@ function measureParagraphReadabilityDetails(paragraphsOrText, options = {}) {
   return paragraphs.map((paragraph, index) => {
     const compact = bare(paragraph).length;
     const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
-    const structureDominated = isStructureDominatedParagraph(paragraph)
+    const structureDominated = isProtectedReadabilityParagraph(paragraph, options) || isStructureDominatedParagraph(paragraph)
       || isReadableInlineLabelGroup(paragraph);
     return { index, compact, sentenceCount, structureDominated };
+  });
+}
+
+function isProtectedReadabilityParagraph(value, options) {
+  const key = bare(value);
+  return key.length > 0 && (options?.protectedBlocks || []).some(block => {
+    const protectedKey = bare(block);
+    return protectedKey.length > 0 && protectedKey.includes(key);
   });
 }
 
@@ -995,6 +1019,7 @@ module.exports = {
   isFlowSequenceLine,
   looksLikeUnpunctuatedProse,
   isProseContinuation,
+  isContextualProseContinuation,
   isQuestionPromptLine,
   detectParallelSloganTitleIndices,
   detectParallelSectionHeadingIndices,

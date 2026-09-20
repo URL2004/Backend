@@ -66,9 +66,10 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
         else i += 1;
         lineBreakCount += 1;
       }
-      const isBoundary = preserveLines
+      const embedded = isEmbeddedPunctuation(text, end, syntax);
+      const isBoundary = !embedded && (preserveLines
         || lineBreakCount >= 2
-        || looksCompleteWithoutPunctuation(text.slice(start, end));
+        || looksCompleteWithoutPunctuation(text.slice(start, end)));
       if (isBoundary) {
         pushSpan(out, text, start, end);
         start = i;
@@ -122,7 +123,8 @@ function missingTerminalBoundaries(value, syntax = syntaxSpans(String(value || '
 function isEmbeddedPunctuation(text, index, syntax) {
   return syntax.some(span => span.start < index && span.end > index
     && (span.spanType === 'parenthetical'
-      || (span.spanType === 'quote' && /^[가-힣]/u.test(text.slice(span.end)))));
+      || (span.spanType === 'quote' && (/^[가-힣]/u.test(text.slice(span.end))
+        || /^[ \t\r\n]*(?:라고|라는|라며|란|이라고|이라는|이라며)(?=\s|[가-힣])/u.test(text.slice(span.end))))));
 }
 
 function isInitialPeriod(text, index, start, syntax) {

@@ -194,7 +194,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.58');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.59');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -463,8 +463,11 @@ test('최종 전달 전 문장 중간 줄바꿈과 문맥형 띄어쓰기를 공
   assert.doesNotMatch(out.result.outputText, /의식을\s*\n\s*\n\s*바꿀/u);
   assert.match(out.result.outputText, /보여 주는 사례/u);
   assert.match(out.result.outputText, /가치 소비와 지속 이용 의도를/u);
-  assert.ok(out.engineMeta.finalFormattingRepairCount >= 4);
-  assert.equal(out.engineMeta.brokenParagraphBreakRepairCount, 1);
+  // Broken source boundaries are now repaired before chunking. Do not count
+  // that same repair again as a late formatting change.
+  assert.equal(out.engineMeta.sourceLayoutRepairCount, 1);
+  assert.ok(out.engineMeta.finalFormattingRepairCount >= 3);
+  assert.equal(out.engineMeta.brokenParagraphBreakRepairCount, 0);
   assert.ok(out.engineMeta.contextualSpacingRepairCount >= 3);
 });
 
@@ -1483,7 +1486,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.58');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.59');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

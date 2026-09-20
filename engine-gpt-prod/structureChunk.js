@@ -622,7 +622,9 @@ function restoreFinalDocumentLayout({
     );
     midSentenceParagraphRepairCount += Number(midSentenceParagraphs.repairCount || 0);
     const citationTails = restoreCitationOnlyTails(source, midSentenceParagraphs.text);
-    text = citationTails.text;
+    // Code whitespace is semantic (e.g. Python indentation). Restore whole
+    // literal spans, not blank-line-split chunks whose edges were trimmed.
+    text = restoreCodeWhitespace(source, citationTails.text).text;
     citationTailRepairCount += Number(citationTails.repairCount || 0);
     if (text === before) {
       converged = true;
@@ -635,7 +637,8 @@ function restoreFinalDocumentLayout({
   // 중간 paragraphizer가 반복 라벨·제목 cursor를 잠시 놓쳐도 마지막 잠금
   // 복원에서 모든 구조가 회복되고 문자 내용이 보존되면 전달 구조는 정상이다.
   // transient 실패는 원인 관측으로 남기되 최종 pass에 다시 섞지 않는다.
-  const structuralPass = finalLocked.pass !== false && contentPreserved;
+  const codePass = restoreCodeWhitespace(source, text).pass;
+  const structuralPass = finalLocked.pass !== false && contentPreserved && codePass;
   return {
     text,
     applied: text !== normalizeNewlines(outputText),
@@ -644,6 +647,7 @@ function restoreFinalDocumentLayout({
     readabilityPass: paragraphs.readabilityPass !== false,
     pass: structuralPass,
     contentPreserved,
+    codePass,
     iterationCount,
     converged,
     citationTailRepairCount,
@@ -652,6 +656,24 @@ function restoreFinalDocumentLayout({
     paragraphs,
     finalLocked
   };
+}
+
+function restoreCodeWhitespace(source, value) {
+  const { syntaxSpans } = require('../engine/textSyntax');
+  const original = normalizeNewlines(source);
+  let text = normalizeNewlines(value);
+  const expected = syntaxSpans(original).filter(s => s.spanType === 'code');
+  const actual = syntaxSpans(text).filter(s => s.spanType === 'code');
+  if (expected.length !== actual.length) return { text, pass: false };
+  let pass = true;
+  for (let i = expected.length - 1; i >= 0; i--) {
+    const wanted = original.slice(expected[i].start, expected[i].end);
+    const current = text.slice(actual[i].start, actual[i].end);
+    // Never map an uncertain/different code block to another position.
+    if (bare(wanted) !== bare(current)) { pass = false; continue; }
+    text = text.slice(0, actual[i].start) + wanted + text.slice(actual[i].end);
+  }
+  return { text, pass };
 }
 
 /**
@@ -663,14 +685,23 @@ function restoreFinalDocumentLayout({
 function repairIntroducedMidSentenceParagraphBreaks(source, value) {
   const original = normalizeNewlines(value);
   const sourceText = normalizeNewlines(source);
-  const isConnectedClause = (left, right) => layoutStructure.isProseContinuation(left)
+  const isConnectedClause = (left, right) => (layoutStructure.isProseContinuation(left)
+    || layoutStructure.isContextualProseContinuation(left, right))
     && bare(right).length >= 12
     && bare(sourceText).includes(bare(left) + bare(right).slice(0, 12));
   const lines = original.split('\n');
+  const literalSpans = require('../engine/textSyntax').syntaxSpans(original);
+  const protectedLines = new Set(layoutStructure.buildLineRecords(original)
+    .filter(r => literalSpans.some(s => ['code', 'quote', 'parenthetical'].includes(s.spanType)
+      && s.start <= r.end && s.end > r.start)).map(r => r.index));
   const output = [];
   let repairCount = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] || '');
+    if (protectedLines.has(index) || protectedLines.has(index - 1)) {
+      output.push(line);
+      continue;
+    }
     if (line.trim()) {
       const leftIndex = output.length - 1;
       const left = leftIndex >= 0 ? String(output[leftIndex] || '') : '';
@@ -695,6 +726,7 @@ function repairIntroducedMidSentenceParagraphBreaks(source, value) {
     const leftIndex = output.length - 1;
     const left = leftIndex >= 0 ? String(output[leftIndex] || '') : '';
     const right = nextIndex < lines.length ? String(lines[nextIndex] || '') : '';
+    if (protectedLines.has(nextIndex)) { output.push(line); continue; }
     const leftTrimmed = left.trimEnd();
     const rightTrimmed = right.trimStart();
     const rightRole = rightTrimmed ? layoutStructure.classifyLine(rightTrimmed) : '';
@@ -1388,7 +1420,8 @@ function restoreParagraphLayoutBase({
     mode,
     requestStrength,
     documentProfile,
-    profileName
+    profileName,
+    protectedBlocks: (chunks || []).filter(c => c?.locked).map(c => c.text)
   };
   const rawOutputText = normalizeParagraphWhitespace(outputText);
   const sourceTransitions = mode !== 'polish' && !creativeLayout
@@ -1687,7 +1720,7 @@ function restoreParagraphLayoutBase({
     );
   }
   while (paragraphs.length < targetCount) {
-    const candidate = findSplitCandidate(paragraphs, protectedBlocks, readabilityOptions);
+    const candidate = findSplitCandidate(paragraphs, protectedBlocks, { ...readabilityOptions, onlyOverlong: policy === 'readability_cap' });
     if (!candidate) break;
     paragraphs.splice(candidate.index, 1, candidate.left, candidate.right);
     proseSplitCount += 1;
@@ -2370,6 +2403,8 @@ function findSplitCandidate(paragraphs, protectedBlocks, readabilityOptions = {}
     // 행 구분자를 공백으로 다시 조립할 수 있다. 구조 단위는 레이아웃
     // 가독성 목표를 채우는 재료로 사용하지 않는다.
     .filter(item => !layoutStructure.isStructureDominatedParagraph(item.paragraph))
+    .filter(item => !readabilityOptions.onlyOverlong
+      || layoutStructure.measureParagraphReadability([item.paragraph], readabilityOptions).overlongCount > 0)
     .sort((a, b) => b.length - a.length);
   for (const item of ranked) {
     const sentences = splitSentences(item.paragraph);

@@ -69,8 +69,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.59';
-const DETECT_VERSION = 'gpt-detect-v1.37';
+const VERSION = 'gpt-prod-v2.5.60';
+const DETECT_VERSION = 'gpt-detect-v1.38';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -3541,6 +3541,17 @@ async function runEngine({
     if (finalIntegrityLayout.applied && finalIntegrityLayout.contentPreserved) {
       outputText = finalIntegrityLayout.text;
       rememberStructureSafeOutput(outputText, 'delivery_integrity_layout');
+    }
+    if (finalIntegrityLayout.contentPreserved && finalIntegrityLayout.paragraphs?.paragraphs) {
+      const delivered = finalIntegrityLayout.paragraphs.paragraphs;
+      const previous = layoutRepair.paragraphs || {};
+      layoutRepair.paragraphs = { ...delivered,
+        policy: delivered.policy === 'none' && previous.afterCount === delivered.afterCount
+          ? previous.policy || delivered.policy : delivered.policy,
+        beforeCount: previous.beforeCount ?? delivered.beforeCount,
+        roleBoundaryCount: Math.max(previous.roleBoundaryCount || 0, delivered.roleBoundaryCount || 0),
+        proseSplitCount: Math.max(previous.proseSplitCount || 0, delivered.proseSplitCount || 0)
+      };
     }
     layoutRepair.deliveryIntegrityFixedPoint = {
       applied: finalIntegrityLayout.applied === true,

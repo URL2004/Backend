@@ -57,9 +57,53 @@ function introducesNewRole(sentences, i) {
   return '';
 }
 
+// Classify work performed by the sentence, not its opening connector. Evidence
+// must span both sides of a candidate boundary; a keyword alone is insufficient.
+function activityEvidence(value) {
+  let text = String(value || '');
+  let coveredEnd = -1;
+  const literals = syntaxSpans(text).filter(s => {
+    if (!['quote', 'code'].includes(s.spanType) || s.start < coveredEnd) return false;
+    coveredEnd = s.end;
+    return true;
+  });
+  // Remove outer spans only: nested quotes must not shift an outer span's
+  // offsets and accidentally consume the author's following prose.
+  for (const s of literals.reverse()) {
+    text = text.slice(0,s.start) + ' ' + text.slice(s.end);
+  }
+  return {
+    orientation: /(?:고민|주제|목표|선정|동기|기획|필요성|문제의식|선택한\s*이유)/u.test(text),
+    execution: /(?:구성|배치|제작|설계|수행|개발|구현|수집|관찰|측정|작성|조절|채색|분석|적용|설명|표현)/u.test(text),
+    validation: /(?:검증|시험|테스트|점검|시제품|불편|문제.{0,18}발견|규격.{0,15}조정|수정|보완)/u.test(text),
+    reflection: /(?:배웠|배우고|깨달|체감|익혔|익힐|기를\s*수|기르|길렀|인식했다|인식하게|이해하게|바라보게)/u.test(text),
+    feedback: /(?:반응|칭찬|평가\s*결과|성과|효과.{0,12}확인|완성.{0,25}공유)/u.test(text)
+  };
+}
+
+function activityTransition(sentences, features, i, strength) {
+  if (i < 2 || sentences.length-i < 2) return '';
+  const before = features.slice(0,i), after = features.slice(i), current = features[i];
+  const hasWork = before.filter(f => f.execution || f.validation).length >= 2;
+  // A conclusion needs sustained interpretation/feedback, not one "확인했다".
+  if (hasWork && !before.some(f => f.reflection)
+      && (current.reflection || current.feedback)
+      && after.some(f => f.reflection)
+      && after.filter(f => f.reflection || f.feedback).length >= 2
+      && (strength === 'advanced' || sentences.length >= 5)) return 'activity_result';
+  if (strength !== 'advanced') return '';
+  if (before.filter(f => f.orientation).length >= 2
+      && current.execution && !current.orientation && !current.reflection
+      && after.slice(0,2).every(f => f.execution || f.validation)) return 'activity_execution';
+  if (before.filter(f => f.execution).length >= 2 && !before.some(f => f.validation)
+      && current.validation && !current.reflection
+      && after[1].validation) return 'activity_validation';
+  return '';
+}
+
 // Operates inside ordinary prose runs only, never across headings or existing
 // paragraphs. Inserts whitespace at original sentence offsets; no word moves.
-function splitProseParagraphs(value) {
+function splitProseParagraphs(value, { strength = 'basic', protectedBlocks = [] } = {}) {
   const text = String(value || '');
   if (!text || text.length > 60000) return { text, splitCount: 0, reasons: [] };
   const records = buildLineRecords(text);
@@ -71,12 +115,15 @@ function splitProseParagraphs(value) {
     const start = run[0].start, end = run.at(-1).end;
     run = [];
     const paragraph = text.slice(start,end);
+    const key = paragraph.replace(/\s/gu,'');
+    if (protectedBlocks.some(b => String(b).replace(/\s/gu,'').includes(key))) return;
     const sentences = splitSentenceSpans(paragraph);
     if (sentences.length < 4 || sentences.length > 100) return;
+    const features = sentences.map(s => activityEvidence(s.text));
     let last = 0;
     for (let i=2;i<sentences.length;i++) {
       if (i-last < 2) continue;
-      const reason = introducesNewRole(sentences,i);
+      const reason = activityTransition(sentences,features,i,strength) || introducesNewRole(sentences,i);
       if (!reason) continue;
       const suffix = paragraph.slice(sentences[i].start);
       const developedTransition = ['findings_to_plan', 'later_phase'].includes(reason);
@@ -152,4 +199,4 @@ function isStructuralLine(line) {
   if (/^[A-Za-z][.)]\s+\S/u.test(value)) return true;
   return /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|References|Bibliography|Works\s+Cited)$/iu.test(value);
 }
-module.exports={splitProseParagraphs, splitLogicalProseParagraphs, isStandaloneProseLineGroup};
+module.exports={splitProseParagraphs, splitLogicalProseParagraphs, isStandaloneProseLineGroup, activityEvidence};

@@ -113,7 +113,9 @@ function voicePromptBlock(profile, { requestStrength = '', mode = '' } = {}) {
       ? `원문 문장별 길이 순서≈${sentenceSequence.join('→')}자. 개별 길이를 복제할 필요는 없지만 전체 호흡을 비슷한 중간 길이로 획일화하지 않는다.`
       : '',
     `직접 인용=${profile.directQuoteCount || 0}, 목록=${profile.listItemCount || 0}, 제목=${profile.headingCount || 0}`,
-    '원문의 인칭과 종결체를 유지한다. 평균 길이만 맞추지 말고 문장·문단 길이 분포를 보존한다.',
+    strength === 'polish'
+      ? '원문의 인칭과 종결체를 유지한다. 평균 길이만 맞추지 말고 문장·문단 길이 분포를 보존한다.'
+      : '원문의 인칭과 종결체, 장단문 대비를 유지한다. 개별 문장 길이와 최종 문단 수를 복제하지 않는다. 본문 문단의 의미 단위 정리는 최종 레이아웃 단계가 담당한다.',
     profile.register === 'unknown' && profile.compactLength <= 240
       ? '짧은 원문의 종결체 판정이 불확실하다. 별도로 요청한 목표 문체가 없다면 구어체·명사형 끝맺음·감탄과 평가의 강도를 원문에 맞춰 유지한다. 문법을 고치더라도 모든 문장을 차분한 설명문으로 통일하거나 원문에 없는 설명을 덧붙이지 않는다.'
       : '',
@@ -122,7 +124,7 @@ function voicePromptBlock(profile, { requestStrength = '', mode = '' } = {}) {
     profile.lineBoundaryPolicy === 'all'
       ? `원문의 행 수=${profile.lineCount || 1}다. 각 행의 역할과 줄바꿈 위치를 그대로 유지한다.`
       : (profile.lineBoundaryPolicy === 'structural'
-          ? '제목·항목 라벨·표·목록과 완결된 문단 행의 경계를 유지한다. 단순 자동 줄바꿈만 합칠 수 있다.'
+          ? '제목·항목 라벨·표·목록과 본문의 소속 경계를 유지한다. 본문 안의 최종 문단 경계는 레이아웃 정책에 따른다.'
           : ''),
     profile.lineBreakSensitive ? '이 글은 줄바꿈 자체가 구조다. 행을 합치거나 새로 나누지 않는다.' : ''
   ].filter(Boolean).join('\n');
@@ -237,7 +239,7 @@ function auditVoice(sourceProfile, output, {
   const currentParagraphs = current.paragraph?.count || 0;
   const paragraphLimit = paragraphExpansionLimit(sourceParagraphs, sourceProfile?.compactLength || 0);
   const readablePolish = mode === 'polish' && layoutPolicy === 'readable_polish';
-  const layoutAuthorizedParagraphs = [
+  const allowedLayoutPolicies = [
     'semantic_prose_roles',
     'source_paragraph_roles',
     'source_readable_units',
@@ -246,8 +248,10 @@ function auditVoice(sourceProfile, output, {
     'bounded_source_paragraphs',
     'cohesive_prose_merge',
     'structural_visual_gaps',
-    'creative_preserve'
-  ].includes(layoutPolicy)
+    'creative_preserve', 'none', 'block_semantic_roles', 'basic_block_roles', 'advanced_block_roles', 'approved_structure'
+  ];
+  const layoutAuthorizedParagraphs = layoutPolicy !== 'none'
+    && String(layoutPolicy).split('+').every(policy => allowedLayoutPolicies.includes(policy))
     && Number(layoutTargetCount) >= 1;
   const formattingRemovalCount = Math.max(0, Number(formattingParagraphRemovalCount) || 0);
   const formattingMinimum = sourceParagraphs > 0

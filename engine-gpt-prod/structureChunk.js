@@ -585,6 +585,7 @@ function restoreFinalDocumentLayout({
   let text = normalizeNewlines(outputText);
   let initialLocked = null;
   let paragraphs = null;
+  let paragraphSummary = null;
   let finalLocked = null;
   let iterationCount = 0;
   let converged = false;
@@ -616,6 +617,14 @@ function restoreFinalDocumentLayout({
       chunks,
       normalizeVisualGaps
     });
+    const report = paragraphs.paragraphs;
+    if (report?.applied && report.policy !== 'none') {
+      paragraphSummary = {
+        policy: report.policy,
+        roleBoundaryCount: Math.max(paragraphSummary?.roleBoundaryCount || 0, report.roleBoundaryCount || 0),
+        proseSplitCount: Math.max(paragraphSummary?.proseSplitCount || 0, report.proseSplitCount || 0)
+      };
+    }
     const midSentenceParagraphs = repairIntroducedMidSentenceParagraphBreaks(
       source,
       finalLocked.text
@@ -632,6 +641,7 @@ function restoreFinalDocumentLayout({
     }
   }
   const contentPreserved = bare(text) === bare(outputText);
+  if (paragraphSummary) Object.assign(paragraphs.paragraphs, paragraphSummary);
   const transientStructuralPass = initialLocked.pass !== false
     && paragraphs.structuralPass !== false;
   // 중간 paragraphizer가 반복 라벨·제목 cursor를 잠시 놓쳐도 마지막 잠금
@@ -692,8 +702,12 @@ function repairIntroducedMidSentenceParagraphBreaks(source, value) {
   const lines = original.split('\n');
   const literalSpans = require('../engine/textSyntax').syntaxSpans(original);
   const protectedLines = new Set(layoutStructure.buildLineRecords(original)
-    .filter(r => literalSpans.some(s => ['code', 'quote', 'parenthetical'].includes(s.spanType)
-      && s.start <= r.end && s.end > r.start)).map(r => r.index));
+    .filter(r => literalSpans.some(s => s.spanType === 'code'
+      ? s.start <= r.end && s.end > r.start
+      : (s.start < r.start && s.end > r.start) || (s.start < r.end && s.end > r.end)))
+    .map(r => r.index));
+  // A quote spanning a line boundary owns that boundary. An inline title does
+  // not freeze the surrounding prose or prevent fixing a detached clause.
   const output = [];
   let repairCount = 0;
   for (let index = 0; index < lines.length; index += 1) {
@@ -1380,14 +1394,36 @@ function isOrderedSectionRecord(record) {
 }
 
 function restoreParagraphLayout(options = {}) {
+  const contract = resolveHumanizeContract(options);
+  if (contract.paragraph.prosePolicy === 'approved_plan') {
+    // SOURCE already contains the user-approved plan, not the old layout.
+    // Neither role heuristics nor readability quotas may undo that approval.
+    const anchored = buildSourceAnchoredParagraphLayout(options.source, options.outputText, {
+      minimumSourceCount: 2, preserveApprovedBoundaries: true
+    });
+    const count = splitParagraphs(anchored.text).length;
+    return { ...anchored, policy: 'approved_structure', sourceCount: splitParagraphs(options.source).length,
+      beforeCount: splitParagraphs(options.outputText).length, afterCount: count, targetCount: count,
+      explicitParagraphCountBefore: layoutStructure.splitExplicitParagraphs(options.outputText).length,
+      explicitParagraphCountAfter: layoutStructure.splitExplicitParagraphs(anchored.text).length,
+      readability: compactReadability(layoutStructure.measureParagraphReadability(anchored.text, options)),
+      pass: anchored.contentPreserved };
+  }
   const result = restoreParagraphLayoutBase(options);
   const profile = canonicalProfileName(options.documentProfile);
-  if (options.mode === 'polish' || ['creative', 'legal_contract'].includes(profile)) return result;
-  const extra = require('./proseParagraphs').splitProseParagraphs(result.text);
+  if (contract.paragraph.prosePolicy === 'preserve' || options.mode === 'polish' || ['creative', 'legal_contract', 'clinical_record'].includes(profile)
+      || (options.chunks || []).some(c => c.lineBoundaryPolicy === 'all')) return result;
+  const extra = require('./proseParagraphs').splitProseParagraphs(result.text, {
+    strength: contract.strength,
+    protectedBlocks: (options.chunks || []).filter(c => c.locked).map(c => c.text)
+  });
   if (!extra.splitCount && !extra.boundaryMoveCount) return result;
   const count = splitParagraphs(extra.text).length;
-  return { ...result, text: extra.text, applied: true, policy: `${result.policy}+block_semantic_roles`,
+  return { ...result, text: extra.text, applied: true, policy: `${result.policy}+${contract.strength === 'advanced' ? 'advanced' : 'basic'}_block_roles`,
     targetCount: count, afterCount: count, explicitParagraphCountAfter: layoutStructure.splitExplicitParagraphs(extra.text).length,
+    readability: compactReadability(layoutStructure.measureParagraphReadability(extra.text, {
+      ...options, protectedBlocks: (options.chunks || []).filter(c => c.locked).map(c => c.text)
+    })),
     proseSplitCount: Number(result.proseSplitCount || 0) + extra.splitCount,
     roleBoundaryCount: Number(result.roleBoundaryCount || 0) + extra.splitCount + Number(extra.boundaryMoveCount || 0) };
 }
@@ -1968,7 +2004,8 @@ function buildSourceAnchoredParagraphLayout(source, value, {
   readabilityOptions = {},
   forceParagraphSeparators = false,
   sourceParagraphsOverride = null,
-  minimumSourceCount = 3
+  minimumSourceCount = 3,
+  preserveApprovedBoundaries = false
 } = {}) {
   const normalized = normalizeParagraphWhitespace(value);
   const sourceParagraphs = Array.isArray(sourceParagraphsOverride) && sourceParagraphsOverride.length
@@ -1990,7 +2027,7 @@ function buildSourceAnchoredParagraphLayout(source, value, {
   const sourceEdges = sourceParagraphs.map(paragraph => splitSentences(paragraph));
   const stableEdges = require('./paragraphAlignment').hasStableSentenceOwnership(sourceEdges, currentEdges);
   if (stableEdges && !forceParagraphSeparators
-      && layoutStructure.measureParagraphReadability(currentParagraphs, readabilityOptions).overlongCount === 0) {
+      && (preserveApprovedBoundaries || layoutStructure.measureParagraphReadability(currentParagraphs, readabilityOptions).overlongCount === 0)) {
     require('./paragraphAlignment').recordFastPath();
     return unchangedSourceAnchoredLayout(normalized, currentParagraphs, 1);
   }
@@ -2004,7 +2041,8 @@ function buildSourceAnchoredParagraphLayout(source, value, {
     start = end;
   }
   sourceRoleGroups.push(outputSentences.slice(start).join(' '));
-  const groups = sourceRoleGroups.flatMap(paragraph => splitSourceRoleForReadability(paragraph, readabilityOptions));
+  const groups = preserveApprovedBoundaries ? sourceRoleGroups
+    : sourceRoleGroups.flatMap(paragraph => splitSourceRoleForReadability(paragraph, readabilityOptions));
   const proseSplitCount = Math.max(0, groups.length - sourceRoleGroups.length);
   const proposed = normalizeParagraphWhitespace(groups.join('\n\n'));
   const contentPreserved = bare(proposed) === bare(normalized);

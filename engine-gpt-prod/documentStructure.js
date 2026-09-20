@@ -5,7 +5,9 @@ const layout = require('./layoutStructure');
 const preflight = require('./sourcePreflight');
 const { detectDocumentProfile } = require('./documentProfile');
 const { sourceSentences } = require('../lib/detectGrounding');
-const VERSION = 'document-structure-v1';
+const { syntaxSpans } = require('../engine/textSyntax');
+const { activityEvidence } = require('./proseParagraphs');
+const VERSION = 'document-structure-v2';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const MAX_BLOCKS = 160;
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -27,7 +29,9 @@ function buildDocument(text) {
     const heading = ['heading', 'title'].includes(role);
     const top = heading && (TOP.test(value) || (!hasTop && NUMBERED.test(value)));
     if (heading && /참고\s*문헌|references|bibliography/iu.test(value)) references = true;
-    const protectedBlock = !heading && (references || role !== 'prose' || /[“”「」『』"]|https?:\/\/|\[[0-9, –-]+\]/u.test(value));
+    // An inline book title/quotation protects that span, not the entire body.
+    // Standalone quotations, tables, code and reference blocks stay barriers.
+    const protectedBlock = !heading && (references || role !== 'prose' || /https?:\/\/|\[[0-9, –-]+\]/u.test(value));
     blocks.push({ id, text: value, start: lines[0].start, end: lines[lines.length-1].end,
       kind: top ? 'top' : heading ? 'heading' : protectedBlock ? 'protected' : 'paragraph',
       parent, section, barrier, numbered: heading && NUMBERED.test(value) });
@@ -89,13 +93,15 @@ function applyPlan(doc, plan) {
     if (blocks.some(b=>b.section!==blocks[0].section||b.barrier!==blocks[0].barrier)) fail('STRUCTURE_GROUP_BOUNDARY');
     const value=blocks.map(b=>b.text).join('\n\n');
     const sentences=sourceSentences(value);
+    const literals=syntaxSpans(value);
     const breaks=g.breakAfterSentences;
     if (breaks.length>20 || breaks.some((n,i)=>!Number.isInteger(n)||n<0||n>=sentences.length-1||(i>0&&n<=breaks[i-1]))) fail('STRUCTURE_SPLIT_INVALID');
+    if (breaks.some(n=>literals.some(s=>s.start<sentences[n].end && s.end>sentences[n].end))) fail('STRUCTURE_LITERAL_BOUNDARY');
     if (!editable) output.push(value);
     else {
       let start=0; const pieces=[];
-      for (const n of breaks) { const end=sentences[n].end; pieces.push(value.slice(start,end).trim().replace(/\n+/gu,' '));start=end; }
-      pieces.push(value.slice(start).trim().replace(/\n+/gu,' ')); output.push(pieces.join('\n\n'));
+      for (const n of breaks) { const end=sentences[n].end; pieces.push(collapseProseLines(value.slice(start,end).trim()));start=end; }
+      pieces.push(collapseProseLines(value.slice(start).trim())); output.push(pieces.join('\n\n'));
     }
     const moved=g.ids.some(id=>ids.indexOf(id)!==doc.blocks.findIndex(b=>b.id===id));
     if (moved||blocks.length>1||breaks.length) changes.push({ blockIds:g.ids,
@@ -111,6 +117,11 @@ function applyPlan(doc, plan) {
   return { text:changed?result:doc.source, applied:changed, changes:changed?changes:[], sourceHash:doc.sourceHash, version:VERSION };
 }
 
+function collapseProseLines(value) {
+  const spans=syntaxSpans(value);
+  return value.replace(/\n+/gu,(match,offset)=>spans.some(s=>s.start<offset && s.end>offset)?match:' ');
+}
+
 async function createPlan({ text, config, uid, signal, complete }) {
   const doc=buildDocument(text);
   if (!doc.eligible) return { ...identityPlan(doc), applicable:false, applied:false, changes:[], reason:'이 글은 고정된 형식과 원문 구조를 유지합니다.' };
@@ -118,7 +129,7 @@ async function createPlan({ text, config, uid, signal, complete }) {
   const schema={type:'object',additionalProperties:false,required:['groups'],properties:{groups:{type:'array',items:{type:'object',additionalProperties:false,required:['ids','breakAfterSentences','reason'],properties:{ids:{type:'array',items:{type:'string'}},breakAfterSentences:{type:'array',items:{type:'integer'}},reason:{type:'string'}}}}}};
   const response=await (complete||client.completeJson)({
     system:security.appendPromptSecurityRule('한국어 글의 구조 편집 계획만 반환한다. 모든 block id를 정확히 한 번 포함한다. top 및 numbered 제목의 순서는 고정한다. 제목과 소속 본문은 함께 이동하고 parent/section/barrier 경계를 넘지 않는다. protected는 원문 그대로 단독 그룹으로 둔다. paragraph끼리만 합치거나 문장 경계에서 분리한다. ids는 최종 문단 순서이며 breakAfterSentences는 그룹 전체 문장의 0부터 시작하는 번호다. 분리가 불필요하면 빈 배열이다. 제목을 새로 만들거나 이름·수치·인용을 수정하지 않는다. 개선이 분명한 경우만 이동·분리·합침을 제안하고 각 변경 이유를 짧게 설명한다. 지시어·시간 순서·주장과 근거의 연결이 깨지는 이동은 하지 않는다. 현재 구조가 좋으면 원래 순서를 유지한다.'),
-    user:security.envelopeUntrustedText(JSON.stringify(doc.blocks.map(b=>({...b,sentences:sourceSentences(b.text).map((s,index)=>({index,text:s.text}))}))), 'STRUCTURE_BLOCKS').text,
+    user:security.envelopeUntrustedText(JSON.stringify(doc.blocks.map(b=>({...b,sentences:sourceSentences(b.text).map((s,index)=>({index,text:s.text,roleEvidence:Object.entries(activityEvidence(s.text)).filter(([,present])=>present).map(([role])=>role)}))}))), 'STRUCTURE_BLOCKS').text,
     schema,schemaName:'document_structure_plan',model:config.models.detectEscalation,reasoningEffort:'low',maxOutputTokens:6500,config,signal,deadlineMs:Date.now()+60000,safetyIdentifier:client.safetyIdentifierForUid(uid),meta:{task:'structure_plan',phase:'structure_plan',mode:'formal'}
   });
   security.assertNoPromptLeak(response.json);

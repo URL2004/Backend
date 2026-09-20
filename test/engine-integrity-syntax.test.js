@@ -31,6 +31,23 @@ test('nested quotation and apostrophes do not swallow adjacent prose', () => {
   assert.equal(splitSentenceSpans("It's valid. Another result follows.").length, 2);
 });
 
+test('Korean particles close nested term quotes while Latin contractions stay words', () => {
+  const { syntaxSpans } = require('../engine/textSyntax');
+  for (const [open, close] of [['‘','’'], ["'","'"]]) {
+    const text = `“먼저 ${open}검증${close}을 했다. 결과를 기록했다.” 다음 문장을 분석했다.`;
+    const quotes = syntaxSpans(text).filter(s => s.spanType === 'quote');
+    assert.equal(quotes.length, 2);
+    assert.equal(text.slice(quotes[0].start, quotes[0].end), text.slice(0, text.indexOf('”') + 1));
+    assert.equal(buildDetectInputDocument(text).eligibleSentenceCount, 1);
+    // Two quoted sentences plus one author sentence; detection excludes the former.
+    assert.equal(splitSentenceSpans(text).length, 3);
+  }
+  for (const text of ["Don't stop. It's valid.", 'Don’t stop. It’s valid.']) {
+    assert.equal(syntaxSpans(text).filter(s => s.spanType === 'quote').length, 0);
+    assert.equal(splitSentenceSpans(text).length, 2);
+  }
+});
+
 test('initial sequences remain intact in names and quotation variants, not just parentheses', () => {
   for (const text of [
     '연구자 A. B. Smith는 결과를 발표했다. 다음 문장이다.',

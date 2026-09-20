@@ -12,7 +12,36 @@ const { extractPromptDataSection } = require('../engine-gpt-prod/promptEnvelope'
 const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
+
+for (const mode of ['blog', 'formal']) test(`v2.5.60 ${mode}: 편집된 항목 본문의 문단 개선이 최종 감사까지 유지된다`, { concurrency: false }, async t => {
+  const {activity} = require('./fixtures/mode-paragraphs');
+  const source = '1. 지역 조사 활동\n\n자기평가의견\n\n' + activity;
+  installEngineMock(t, { humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT').replace(/했다/gu, '하였다') });
+  const out = await engine.run({text: source, mode, uid:'mode-paragraph-unit', config:config()});
+  assert.notEqual(out.status,'blocked');
+  assert.match(out.result.outputText,/표현하였다\.\n\n완성한/u);
+  if (mode === 'formal') assert.match(out.result.outputText,/세웠다\.\n\n수집한/u);
+  assert.equal(out.qualityWarnings.some(w=>w.code==='paragraph_structure_changed'),false);
+  assert.ok(out.engineMeta.paragraphRoleBoundaryCount > 0);
+  assert.equal(out.engineMeta.paragraphRepairAfterCount, layoutStructure.splitExplicitParagraphs(out.result.outputText).length);
+});
 const SAFE_POLISH = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지 않습니다.';
+
+test('v2.5.60 승인 구조는 전체 엔진을 거쳐도 일반 문단화에 덮어써지지 않는다', { concurrency: false }, async t => {
+  const {activity}=require('./fixtures/mode-paragraphs');
+  const structure=require('../engine-gpt-prod/documentStructure');
+  const doc=structure.buildDocument(activity),plan=structure.identityPlan(doc);
+  plan.groups[0].breakAfterSentences=[2];
+  const expected=structure.applyPlan(doc,plan).text;
+  installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT').replace(/했다/gu,'하였다')});
+  const out=await engine.run({text:activity,mode:'formal',approvedStructure:plan,uid:'approved-paragraph-unit',config:config()});
+  assert.notEqual(out.status,'blocked');
+  assert.equal(out.result.structureImprovement.applied,true);
+  assert.equal(out.result.structureImprovement.deliveryVerified,true);
+  assert.equal(structure.auditDelivery(expected,out.result.outputText).pass,true);
+  assert.equal(out.result.outputText.split(/\n\n/u).length,2);
+  assert.equal(out.engineMeta.paragraphRepairPolicy,'approved_structure');
+});
 const EVALUATIVE_POLISH = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 효율적이지 않습니다.';
 
 function config() {
@@ -194,7 +223,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.59');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.60');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1486,7 +1515,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.59');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.60');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

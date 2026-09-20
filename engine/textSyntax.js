@@ -31,7 +31,9 @@ function syntaxSpans(value) {
     if (codeSpans[codeCursor] && codeSpans[codeCursor].start <= i) { i = codeSpans[codeCursor].end - 1; continue; }
     if (text[i - 1] === '\\') continue;
     const ch = text[i];
-    if ((ch === "'" || ch === '’') && /[\p{L}\p{N}]/u.test(text[i - 1] || '') && /[\p{L}\p{N}]/u.test(text[i + 1] || '')) continue;
+    // Apostrophes inside Latin words (don't / don’t) are not quote ends.
+    // Korean quoted terms attach particles directly: ‘검증’을 must close.
+    if ((ch === "'" || ch === '’') && /[\p{Script=Latin}\p{N}]/u.test(text[i - 1] || '') && /[\p{Script=Latin}\p{N}]/u.test(text[i + 1] || '')) continue;
     if (stack.length && stack.at(-1).close === ch) {
       const open = stack.pop();
       spans.push({ start: open.start, end: i + 1, spanType: open.type });

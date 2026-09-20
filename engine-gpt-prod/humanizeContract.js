@@ -67,7 +67,13 @@ function buildHumanizeContract({
       modelBoundary: 'source_locked',
       localizedRepairBoundary: 'source_locked',
       layoutAuthority: advancedNarrativeLayout ? 'semantic_role' : 'source_role',
-      advancedNarrativeLayout
+      advancedNarrativeLayout,
+      approvedStructure: approvedStructure === true,
+      // Source anchors constrain model ownership, not the delivered prose
+      // layout. Structural slots remain fixed independently of this policy.
+      prosePolicy: approvedStructure ? 'approved_plan'
+        : strength === 'polish' || ['creative', 'legal_contract', 'clinical_record'].includes(profile)
+          ? 'preserve' : strength === 'basic' ? 'basic_readability' : 'advanced_roles'
     }
   });
 }
@@ -98,10 +104,13 @@ function priorityPromptLines(contract) {
 
 function paragraphPromptLine(contract) {
   const resolved = resolveHumanizeContract({ humanizeContract: contract });
-  if (resolved.paragraph.advancedNarrativeLayout) {
-    return '모델 편집 단계에서는 원문 문단 경계를 그대로 유지한다. 고급 서사·감상형 글의 같은 담화 역할 문단 정리는 검증 가능한 최종 레이아웃 단계가 담당하므로, 문단을 합치거나 새로 나누거나 내용을 다른 문단으로 옮기지 않는다.';
-  }
-  return '모델 편집 단계에서는 원문 문단 경계와 각 문단의 역할·순서를 유지한다. 같은 문단 안의 일반 산문에서는 문장 분리·결합과 절 배치를 바꿀 수 있지만, 문단을 합치거나 새로 나누거나 내용을 다른 문단으로 옮기지 않는다.';
+  const delivery = resolved.paragraph.approvedStructure
+    ? '사용자가 승인한 구조가 현재 SOURCE에 적용돼 있다. 이전 원문 구조로 되돌리지 않는다.'
+    : resolved.strength === 'polish' ? ''
+      : `최종 문단 수 보존 목표가 아니다. 최종 레이아웃이 항목 안의 ${resolved.strength === 'basic' ? '내용 전환과 가독성' : '동기·실행·검증·결과·성찰 전환'}을 정리한다.`;
+  return '모델 편집 단계에서는 원문 문단 경계를 그대로 유지한다. '
+    + (resolved.strength === 'polish' ? '문장 분리·결합도 하지 않는다. '
+      : '문장 분리·결합·절 배치는 허용하나 문단·내용 소속은 고정한다. ') + delivery;
 }
 
 function paragraphMarkerPromptLine(contract) {

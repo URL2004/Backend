@@ -1163,6 +1163,8 @@ function buildArchiveObservability(job) {
     semanticAdditionCount: archiveFinite(engineMeta.semanticAdditionCount),
     semanticDistortionCount: archiveFinite(engineMeta.semanticDistortionCount),
     deterministicOmissionRestoreCount: archiveFinite(engineMeta.deterministicOmissionRestoreCount),
+    initialCompoundClaimCandidateCount: archiveFinite(engineMeta.initialCompoundClaimCandidateCount),
+    confirmedCompoundClauseRestoreCount: archiveFinite(engineMeta.confirmedCompoundClauseRestoreCount),
     deterministicOmissionRestoreRejectedCount: archiveFinite(engineMeta.deterministicOmissionRestoreRejectedCount),
     deterministicOmissionRestoreRejectionCodes: uniqueStrictArchiveCodes(
       engineMeta.deterministicOmissionRestoreRejectionCodes

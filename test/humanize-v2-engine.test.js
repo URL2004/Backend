@@ -184,7 +184,7 @@ function installEngineMock(t, options = {}) {
       // quotation is now an uncertain finding and cannot authorize repair.
       const span = options.semanticViolationSpan || (rewrite.includes('미래연구원') ? '미래연구원' : rewrite);
       const violations = semanticViolation
-        ? [{ type: 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정' }]
+        ? [{ type: options.semanticViolationType || 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정' }]
         : [];
       return apiResponse({ violations });
     }
@@ -205,6 +205,22 @@ function installEngineMock(t, options = {}) {
   return { calls, semanticCalls: () => semanticCalls };
 }
 
+test('compound result omission is restored once and semantically revalidated', { concurrency: false }, async t => {
+  const f=require('./fixtures/compound-claims');
+  const mock=installEngineMock(t,{humanize:f.output,repairOutput:f.output,generalRetryOutput:f.output,
+    semanticViolationType:'omission',semanticViolationSpan:f.tail,
+    semanticViolation:body=>!extractPromptDataSection(body.input,'REWRITE').includes(f.tail)});
+  const result=await engine.run({text:f.source,mode:'blog',uid:'compound-unit',config:config()});
+  assert.notEqual(result.status,'blocked');
+  assert.equal(result.result.outputText.split(f.tail).length,2);
+  assert.ok(result.result.outputText.includes(f.rewritten));
+  assert.equal(result.result.outputText.includes(f.left),false);
+  assert.equal(result.engineMeta.initialCompoundClaimCandidateCount,1);
+  assert.equal(result.engineMeta.confirmedCompoundClauseRestoreCount,1);
+  assert.equal(result.engineMeta.finalSemanticRevalidationApplied,true);
+  assert.ok(mock.calls.some(c=>c.name==='gpt_prod_semantic_judge'&&String(c.body.input).includes('compound_claim_omission_candidate')));
+});
+
 test('model-introduced referent loss and comparison typo are repaired before delivery', { concurrency: false }, async t => {
   const source = '자료의 범위를 먼저 정했다. 이 기준은 조사 대상의 범위를 제한한다. 차이가 측정 조건에 있듯이, 결과도 조건에 따라 달라진다.';
   const output = '자료의 범위를 우선 정했다. 기준은 조사 대상의 범위를 제한한다. 차이가 측정 조건에 있기라면, 결과도 조건에 따라 달라진다.';
@@ -223,7 +239,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.60');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.61');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1515,7 +1531,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.60');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.61');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

@@ -44,11 +44,16 @@ function restoreConfirmedSemanticOmissions({
   if (!omissions.length) return restoreResult(numeric.text, numeric.restored, violations, []);
 
   const sourceSpans = splitSentenceSpans(rawSource);
-  const dangling = restoreDanglingSourceClauses(rawSource, numeric.text, boundedRestoreCount(maxRestoreCount) - numeric.restored.length);
-  dangling.restored.unshift(...numeric.restored);
+  const partial = require('./clauseCoverage').restoreConfirmedClauseOmissions(rawSource, numeric.text,
+    semanticReport?.uncertain === true ? [] : omissions, boundedRestoreCount(maxRestoreCount) - numeric.restored.length);
+  const dangling = restoreDanglingSourceClauses(rawSource, partial.text,
+    boundedRestoreCount(maxRestoreCount) - numeric.restored.length - partial.restored.length);
+  dangling.restored.unshift(...numeric.restored, ...partial.restored);
   if (sourceSpans.length < 2) return restoreResult(dangling.text, dangling.restored, violations, []);
   const candidates = [];
-  const claimedSourceIndices = new Set();
+  // A detected partial omission must not fall through to whole-sentence
+  // insertion, which would duplicate its surviving first arm.
+  const claimedSourceIndices = new Set(partial.candidates.map(c => c.sourceOrdinal - 1));
   for (const violation of omissions) {
     const match = findSourceSentenceForViolation(rawSource, sourceSpans, violation);
     if (!match || claimedSourceIndices.has(match.index)) continue;

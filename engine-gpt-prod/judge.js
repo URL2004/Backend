@@ -73,6 +73,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         '관계 후보 신호는 오류 확정이 아니다. SOURCE와 REWRITE를 직접 대조하고 숫자의 귀속, 정의 대상, 시간과 인과, 주어가 생략된 경험의 실제 추가 여부를 확인한다. 단순한 명시화나 같은 의미의 의역은 위반이 아니다.',
         'span에는 왜곡·추가의 경우 REWRITE의 실제 문제 구절을, 누락의 경우 SOURCE의 빠진 구절을 정확히 복사한다. 위치를 찾을 수 없으면 span은 빈 문자열로 두며 내용을 만들어 인용하지 않는다.',
         'SOURCE CLAIM LEDGER는 원문 구절을 그대로 뽑은 검증 인덱스이며 완전한 목록은 아니다.',
+        '복합 문장은 절별 주장·비교 대상·각 결과·결론의 근거 연결까지 대조한다. 앞 절이 남아 있어도 뒷 절의 비교 결과나 조건이 빠지면 omission이다. 다른 문단의 일반 설명만으로 해당 탐구·비교 결과가 보존됐다고 판단하지 않는다. compound_claim_omission_candidate는 의심 위치일 뿐이며 가까운 문장으로 분리·의역되어 남았다면 위반이 아니다. 수리할 때 이미 남은 절을 중복 삽입하지 않는다.',
         '새 사실 추가, 의미 왜곡, 핵심 주장 누락뿐 아니라 원문에 없던 주제 확장(scope_expansion), 교훈·평가(new_evaluation), 강한 수식(intensity_amplification), 반복 결론(duplicate_conclusion/repeated_reflection_conclusion), 문단마다 같은 인과-결론 구조(overstructured_causality), 문단 역할 변화(rhetorical_role_shift), 결론 뒤 새 탐구 시작(topic_restart), 실제 활동 비중 축소(personal_balance_shift)를 판정한다.',
         '결정론 신호에 experience_novelty_candidate가 있으면 원문·허용 메모에 없는 실제 개인 경험·시점·행동이 새로 생겼는지 확인한다. 단순 의역이나 원문 경험의 자연스러운 재표현은 위반이 아니다. 실제 신규 경험이면 experience_novelty로 판정한다.',
         '학술·보고서에서 “~자체보다”가 “~에서 나아가”로, “~에 그치지 않고”가 “~이/가 아니라”로 바뀐 것처럼 대조·부정·제한·가능성의 범위가 달라지면 distortion이다.',
@@ -95,7 +96,8 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     { label: 'ALLOWED_EXTRA', value: allowedExtra },
     {
       label: 'DETERMINISTIC_DISCOURSE_SIGNALS',
-      value: discourseSignals.length ? discourseSignals.join('\n') : ''
+      value: [...discourseSignals, ...require('./clauseCoverage').auditClauseCoverage(rawText, outputText).candidates
+        .map(({code,sourceOrdinal,outputOrdinal,sourceSpan,missingSpan,outputSpan})=>JSON.stringify({code,sourceOrdinal,outputOrdinal,sourceSpan,missingSpan,outputSpan}))].join('\n')
     },
     { label: 'MODE', value: mode || 'assignment' },
     { label: 'REWRITE', value: outputText }

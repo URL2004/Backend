@@ -69,7 +69,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.60';
+const VERSION = 'gpt-prod-v2.5.61';
 const DETECT_VERSION = 'gpt-detect-v1.38';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -722,6 +722,7 @@ async function runEngine({
   let resumeCoverageDeterministicRestoreCount = 0;
   let experienceCandidateAudit = null;
   let deterministicOmissionRestoreCount = 0;
+  let confirmedCompoundClauseRestoreCount = 0;
   let deterministicOmissionRestoreRejectedCount = 0;
   const deterministicOmissionRestoreRejectionCodes = [];
   let finalFormattingRepair = {
@@ -1786,6 +1787,7 @@ async function runEngine({
     allowedExtra
   });
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
+  const clauseCoverageAudit = require('./clauseCoverage').auditClauseCoverage(auditSource, outputText);
   const depthTugUsageStartUsd = Number(supplementalUsage?.estimatedUsd || 0);
   let depthTugRecoveryRounds = 0;
   let depthTugSemanticRepairRounds = 0;
@@ -1794,7 +1796,9 @@ async function runEngine({
   // or evaluative padding, they cannot exempt polish from its mandatory audit.
   const polishTerminalFailure = ['polish_unchanged', 'polish_evaluative_padding_added'].includes(polishStrictFailure);
   if (outputText.trim() && !polishTerminalFailure) {
-    const semanticDecision = experienceCandidateAudit?.candidate === true
+    const semanticDecision = clauseCoverageAudit.semanticRequired
+      ? { run: true, reason: 'compound_claim_omission_candidate' }
+      : experienceCandidateAudit?.candidate === true
       ? { run: true, reason: 'experience_novelty_candidate' }
       : resumeCoverageRetryApplied
           || resumeCoverageDeterministicRestoreCount > 0
@@ -1918,6 +1922,7 @@ async function runEngine({
         if (restoreIntegrity.pass === true && structureSafe && restoredNumberRisk <= beforeNumberRisk) {
           outputText = restoredOmissions.text;
           deterministicOmissionRestoreCount += restoredOmissions.restoredCount;
+          confirmedCompoundClauseRestoreCount += restoredOmissions.restored.filter(item => item.anchorType === 'confirmed_compound_tail').length;
           semanticReport = reconcileSemanticOmissionRestores(semanticReport, restoredOmissions);
         } else {
           outputText = semanticOutput;
@@ -4288,6 +4293,8 @@ async function runEngine({
     semanticAdditionCount: countSemanticViolations(semanticReport, 'added_claim'),
     semanticDistortionCount: countSemanticViolations(semanticReport, 'distortion'),
     deterministicOmissionRestoreCount,
+    initialCompoundClaimCandidateCount: clauseCoverageAudit.candidates.length,
+    confirmedCompoundClauseRestoreCount,
     deterministicOmissionRestoreRejectedCount,
     deterministicOmissionRestoreRejectionCodes: safeFailureCodeList(deterministicOmissionRestoreRejectionCodes),
     discourseAuditVersion: Number(deliveryAudit?.discourseAudit?.version || 0),

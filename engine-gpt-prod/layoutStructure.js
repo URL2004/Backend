@@ -243,6 +243,9 @@ function isKnownHeadingLine(value) {
   if (/^\s*[-*+]\s+(?:\*\*[^*\n]{1,120}\*\*|__[^_\n]{1,120}__)\s*$/u.test(text)) return true;
   if (/^#{1,6}\s+\S/u.test(text)) return true;
   if (/^[\[【<][^\]】>\n]{1,80}[\]】>]$/u.test(text)) return true;
+  // An explicit numbered section remains a heading with a presentational copula.
+  // Do not freeze arbitrary bracketed nouns followed by ordinary prose.
+  if (/^[\[【<](?:쟁점|문제|문항|주제|항목)\s*\d{1,3}[.：:\s][^\]】>\n]{1,80}[\]】>]\s*(?:입니다|이다)[.]?$/u.test(text)) return true;
   if (/^[-–—]\s*(?:서론|본론|결론|초록|요약|목\s*차|참고\s*문헌|참고\s*자료|부록)$/u.test(text)) return true;
   if (/^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[.)．]?\s*\S.{0,100}$/u.test(text)) return true;
   if (/^[IVX]{1,8}[.)．]\s*\S.{0,100}$/u.test(text)) return true;
@@ -472,6 +475,7 @@ function isProseContinuation(value) {
   const text = visibleTrim(value);
   if (text.length < 16 || text.split(/\s+/u).length < 4) return false;
   if (/^(?:[#>*]|[「『《〈“‘"'])/u.test(text)) return false;
+  if (/(?:한다고|했다고|하였다고|된다고|되었다고|있다고|없다고|이라고|라고|겠다고)\s*$/u.test(text)) return true;
   return /(?:하며|하면서|했으며|하였으며|되었으며|됐으며|이며|되었고|되었지만|했고|하였고|였고|있었고|있으며|없으며|하지만|했지만|하였지만|되지만|되면|하면서도|대해서|대해|관해서|관해)\s*$/u.test(text)
     || /[,;，；]\s*$/u.test(text);
 }

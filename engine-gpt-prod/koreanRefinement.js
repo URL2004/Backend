@@ -12,7 +12,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 31;
+const VERSION = 32;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -718,12 +718,16 @@ const QUOTE_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게
 const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|이나|나|조차|마저|밖에|마다|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|하며)';
 const QUOTE_ATTRIBUTION_CONTEXT = `${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}\\s+(?:말|이야기|발언|경고|제안|요청|답변|약속|다짐|인사|주장|설명|대답|강조|외침)`;
-const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
+const QUOTE_SHORT_COPULA_SUFFIX = '다(?=$|[.!?。！？])';
+const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
 const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
 // 격조사 뒤 보조사가 결합한 형태도 하나의 붙임 단위다.
 // 단일 조사 목록만 검사하면 정상적인 ‘기준’만으로/로서를 띄워 버린다.
 const QUOTE_COMPOUND_PARTICLE_SUFFIX = '(?:(?:만|부터|까지|조차|마저|밖에|처럼|보다)(?:으로|로|의|은|는|도|만)?|(?:으로|로)(?:서|써)(?:는|도|만)?|(?:와|과|에|에서|에게|으로|로)(?:의|는|도|만))';
-const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
+const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
+// A demonstrative beginning a new sentence is not the subject particle 이.
+// Require explicit sentence punctuation inside the closing quote and a noun.
+const CLOSED_QUOTE_SENTENCE_START_RE = /([.!?。！？][”’」』》〉])(?=(?:이|그|저)\s+(?:문장|말씀|구절|발언|문구|이야기|인용|말)(?:은|는|이|가|을|를|에서|로|에|도)?(?:\s|[,.!?。！？]|$))/gu;
 const CLOSE_QUOTE_CLASS = '[”’」』》〉]';
 const QUOTE_SUFFIX_BOUNDARY = '(?=$|[\\s,.;:!?。！？])';
 // U+2019는 한글 닫는 작은따옴표이면서 영문 apostrophe이기도 하다.
@@ -754,7 +758,8 @@ const CLOSED_QUOTE_ATTRIBUTION_SPACING_RE = new RegExp(
 // 띄어쓰기를 유지한다. 명사 인용의 ‘학생’하고와 서술격 ‘전환점’이었다는
 // 계속 붙여 쓰도록 두 문법을 분리한다.
 const CLOSED_QUOTE_PARTICLE_GAP_RE = new RegExp(
-  `(?:(${CLOSE_QUOTE_CLASS})[ \\t]+(?=${QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX}${QUOTE_SUFFIX_BOUNDARY})`
+  `(?!(?<=[.!?。！？])${CLOSE_QUOTE_CLASS}[ \\t]+(?:이|그|저)\\s+(?:문장|말씀|구절|발언|문구|이야기|인용|말)(?:은|는|이|가|을|를|에서|로|에|도)?(?:\\s|[,.!?。！？]|$))`
+  + `(?:(${CLOSE_QUOTE_CLASS})[ \\t]+(?=${QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX}${QUOTE_SUFFIX_BOUNDARY})`
   + `|(${CLOSE_QUOTE_CLASS})(?<![.!?。！？…]${CLOSE_QUOTE_CLASS})(?![ \\t]+${QUOTE_ATTRIBUTION_CONTEXT})[ \\t]+(?=${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}${QUOTE_SUFFIX_BOUNDARY}))`,
   'gu'
 );
@@ -771,6 +776,14 @@ const DURING_NOUNS = [
   '수업', '회의', '작업', '사용', '진행', '탐구', '학습', '근무', '운전', '공사', '시험', '준비', '치료', '상담', '통화', '출장', '여행'
 ];
 const COMMON_ORTHOGRAPHY_REPAIRS = Object.freeze([
+  Object.freeze({
+    pattern: /(없을|있을|할|될|볼|알|갈|올|낼)수(?=(?:도|는|가)?(?:\s|없|있|[,.;!?。！？]|$))/gu,
+    replacement: '$1 수'
+  }),
+  Object.freeze({
+    pattern: /스펙드럼(?=(?:은|는|이|가|을|를|의|에|도|만|으로|에서)?(?:$|[\s,.;:!?。！？]))/gu,
+    replacement: '스펙트럼'
+  }),
   Object.freeze({
     pattern: /에계(?=(?:는|도|만|서)?(?:$|[\s,.;:!?。！？]))/gu,
     replacement: '에게'
@@ -1297,6 +1310,8 @@ function repairContextualSpacing(value, source, context) {
       // 공백 하나만 추가하는 고신뢰 표기만 허용한다.
       return repairHighConfidenceLockedSpacing(workingLine, counts);
     }
+    workingLine = replaceTracked(workingLine, CLOSED_QUOTE_SENTENCE_START_RE,
+      (_match, closing) => `${closing} `, 'closed_quote_spacing', counts);
     workingLine = replaceTracked(
       workingLine,
       CLOSED_QUOTE_ATTRIBUTION_SPACING_RE,
@@ -1768,9 +1783,9 @@ function detectIntroducedSentenceChains(source, outputText) {
   const ordinals = [];
   to.forEach((sentence, index) => {
     if (sentence.length < 180 || syntaxSpans(sentence).some(span => span.spanType === 'quote' || span.spanType === 'code')) return;
-    if ((sentence.match(/(?:했|하였|있었|없었|되었|였|었|았)(?:고|으며|지만)|(?:하고|하며|면서)(?=[\s,])/gu) || []).length < 3) return;
+    if ((sentence.match(/(?:했|하였|있었|없었|되었|였|었|았)(?:고|으며|지만)|(?:하고|하며|면서)(?=[\s,])/gu) || []).length < 1) return;
     const match = alignedOutputCandidates(sentence, index, to.length, from, { maxOutputGroup: 4, window: 5 })[0];
-    if (!match || match.end - match.start < 3 || Number(match.rawScore ?? match.score) < 0.45) return;
+    if (!match || match.end - match.start < 2 || Number(match.rawScore ?? match.score) < 0.45) return;
     const originals = from.slice(match.start, match.end);
     if (sentence.length <= Math.max(...originals.map(item => item.length)) * 1.35) return;
     if (originals.some(item => layoutStructure.isStructureDominatedParagraph(item))) return;
@@ -2030,6 +2045,7 @@ function detectTextIssues(value, { profile = 'unknown', targetRegister = '', inc
   const issues = [];
   pushOrphanStructuralParticleIssue(issues, text);
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
+  pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SENTENCE_START_RE);
   pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_ATTRIBUTION_SPACING_RE);
   pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SPACING_RE);
   pushPatternIssue(issues, text, 'closed_quote_particle_spacing', CLOSED_QUOTE_PARTICLE_GAP_RE);
@@ -2403,6 +2419,7 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
     );
   }
   text = replaceAndCount(text, /([.!?。！？])(?=[가-힣])/gu, '$1 ', 'missing_sentence_space', changes);
+  text = replaceAndCount(text, CLOSED_QUOTE_SENTENCE_START_RE, '$1 ', 'closed_quote_spacing', changes);
   text = replaceAndCount(text, CLOSED_QUOTE_ATTRIBUTION_SPACING_RE, '$1 ', 'closed_quote_spacing', changes);
   text = replaceAndCount(text, CLOSED_QUOTE_SPACING_RE, '$1 ', 'closed_quote_spacing', changes);
   text = replaceAndCount(

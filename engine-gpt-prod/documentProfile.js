@@ -636,7 +636,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   add(scores, 'creative', strongCreativeSignals, 1.05);
   if (!structuredFunctionalFormat
       && lines.length >= 4
-      && poemLikeLines / lines.length >= 0.65
+      && (poemLikeLines / lines.length >= 0.65 || require('./verseLayout').hasStanzaRefrainLayout(text))
       && median(lines.map(line => line.length)) <= 32) scores.creative += 3.4;
   if (quoteLines >= 3 && /[“”"']/u.test(text)) scores.creative += 1.1;
   if ((formatProfile.flags.includes('line_sensitive') || quoteLines >= 3 || strongCreativeSignals >= 1)
@@ -1273,7 +1273,7 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
   // blockquote로 감싸져 들어오는 경우다. 문서 바깥 행은 제목뿐이고,
   // 본문에 실제 작성자 발화 신호가 있을 때만 인용이 아닌 표시 래퍼로
   // 판단한다. 일반 인용문과 논문 인용 블록은 계속 원문 그대로 잠긴다.
-  const editableBlockquoteWrapper = markdownQuoteLines.length >= 2
+  const editableBlockquoteWrapper = require('../lib/blockquoteDocument').isAuthoredBlockquoteDocument(text) || markdownQuoteLines.length >= 2
     && compactLength >= 120
     && blockquoteOutsideLines.every(line => layoutStructure.isKnownHeadingLine(line))
     && /(?:안녕하세요|드립니다|부탁드|감사합니다|저는|제가|저희|생각합니다|바랍니다|약속드립니다|선생님)/u.test(blockquoteBody);
@@ -1281,7 +1281,7 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
   const poemLikeLines = lines.filter(line => line.length <= 40 && !/[.!?。！？]$/u.test(line)).length;
   const assessmentItem = assessment?.isAssessmentItem === true;
   const scriptFrame = require('./scriptStructure').detectScriptStructure(text).isScript;
-  const lineSensitive = scriptFrame || questionnaire.isQuestionnaire
+  const lineSensitive = require('./verseLayout').hasStanzaRefrainLayout(text) || scriptFrame || questionnaire.isQuestionnaire
     || assessmentItem
     || editableBlockquoteWrapper
     || (tableLineCount < 2

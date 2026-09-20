@@ -1553,12 +1553,13 @@ function restoreParagraphLayout({
       sourceParagraphCount: sourceCount,
       readabilityOptions
     });
-    const roleLayout = buildSemanticProseRoleLayout(additiveTailLayout.text, {
+    const topicalText = repairDanglingTopicLead(additiveTailLayout.text);
+    const roleLayout = buildSemanticProseRoleLayout(topicalText, {
       profileName,
       readabilityOptions
     });
-    if (roleLayout.applicable || additiveTailLayout.applied) {
-      const semanticText = roleLayout.applicable ? roleLayout.text : additiveTailLayout.text;
+    if (roleLayout.applicable || additiveTailLayout.applied || topicalText !== additiveTailLayout.text) {
+      const semanticText = roleLayout.applicable ? roleLayout.text : topicalText;
       // Semantic boundaries do not replace the per-paragraph readability pass.
       // Previously this early return skipped it whenever a document already had
       // enough paragraphs, even if one of those paragraphs was still overlong.
@@ -1569,7 +1570,7 @@ function restoreParagraphLayout({
           || hasReadabilityLiteralPunctuation(paragraph)
           ? [paragraph]
           : splitSourceRoleForReadability(paragraph, readabilityOptions));
-      const readableText = normalizeParagraphWhitespace(readableGroups.join('\n\n'));
+      const readableText = repairDanglingTopicLead(readableGroups.join('\n\n'));
       const roleLayoutText = bare(readableText) === bare(semanticText) ? readableText : semanticText;
       const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(roleLayoutText), readabilityOptions);
       const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(roleLayoutText).length;
@@ -1890,6 +1891,7 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
 
 function semanticTransitionKind(value, profileName = '') {
   const sentence = String(value || '').trim();
+  if (isEnumeratedTopicLead(sentence)) return 'topic_shift';
   if (/^(?:(?:이를\s*통해|이\s*과정에서|이\s*경험(?:을\s*통해|에서)?|이\s*모습에서|그\s*과정에서|그\s*결과|여기서)|현장에서는)[^.!?。！？]{0,180}(?:배웠|알게\s*되었|깨달|확인할\s*수\s*있었|느꼈|체감했|중요하다는|필요하다는|의미한다)/u.test(sentence)) return 'backward_takeaway';
   if (/^(?:(?:이러한|이런|이와\s*같은)\s*(?:경험|과정|논의|분석|결과|역량|노력)(?:을|를)?\s*(?:통해|바탕으로)|이를\s*바탕으로|종합하면|결론적으로|결과적으로|따라서|그러므로|입사\s*후|앞으로(?:도)?)/u.test(sentence)) return 'conclusion';
   if (/^(?:반면|그러나|하지만|다만|한편|그럼에도|이에\s*반해)/u.test(sentence)) return 'contrast';
@@ -2433,6 +2435,36 @@ function realignTwoParagraphBoundary(paragraphs, sentences, profileName = '') {
       sentences.slice(proposedBoundary).join(' ')
     ].join('\n\n'))
   };
+}
+
+// Keep a new topic's lead with its immediately following explanation. This only
+// moves whitespace, never sentences, and applies to every boundary, not only
+// documents with exactly two paragraphs. Structural/quoted paragraphs are exempt.
+function repairDanglingTopicLead(value) {
+  const paragraphs = splitParagraphs(normalizeParagraphWhitespace(value));
+  for (let i = 0; i < paragraphs.length - 1; i += 1) {
+    if (layoutStructure.isStructureDominatedParagraph(paragraphs[i])
+        || layoutStructure.isStructureDominatedParagraph(paragraphs[i + 1])
+        || hasReadabilityLiteralPunctuation(paragraphs[i])) continue;
+    const left = splitSentences(paragraphs[i]).filter(Boolean);
+    const right = splitSentences(paragraphs[i + 1]).filter(Boolean);
+    if (left.length < 3 || !right.length) continue;
+    const lead = left.at(-1);
+    const explicitItem = isEnumeratedTopicLead(lead);
+    const anaphor = right[0].match(/^(?:(?:이|해당)\s+)?(활동|실험|훈련|프로젝트|조사)\s*(?:중|과정|동안|에서는|에서)/u)?.[1];
+    const attachedDetail = anaphor && lead.includes(anaphor)
+      && !left.slice(0, -1).some(sentence => sentence.includes(anaphor));
+    if (!explicitItem && !attachedDetail) continue;
+    left.pop();
+    paragraphs[i] = left.join(' ');
+    paragraphs[i + 1] = `${lead} ${paragraphs[i + 1]}`;
+  }
+  const result = normalizeParagraphWhitespace(paragraphs.join('\n\n'));
+  return bare(result) === bare(value) ? result : value;
+}
+
+function isEnumeratedTopicLead(value) {
+  return /^(?:(?:(?:또|다른)\s*)?하나는|(?:첫째|둘째|셋째|넷째|다섯째)는|(?:첫|두|세|네)\s*번째는)\s+[‘“"'][^’”"']+[’”"']\s*(?:이?다|입니다)[.]?$/u.test(String(value || '').trim());
 }
 
 function paragraphBoundaryCohesionScore(sentences, index) {

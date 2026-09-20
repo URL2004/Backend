@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 13;
+const VERSION = 14;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -170,6 +170,24 @@ function auditFingerprint(source, output, documentProfile = null) {
 
 const SEMANTIC_RELATION_RULES = Object.freeze([
   {
+    family: 'difficulty_strengthened_to_impossibility',
+    source: /(?:어려웠|어렵|쉽지\s*않)/u,
+    output: /(?:할|갈|볼|낼|올|될|쓸|참여할|수행할)\s*수\s*없|불가능/u,
+    retained: /(?:어려웠|어렵|쉽지\s*않)/u
+  },
+  {
+    family: 'current_responsibility_changed_to_past',
+    source: /(?:현재|지금)[^.!?。！？]{0,70}(?:맡고|담당하고|수행하고)\s*있/u,
+    output: /(?:맡았던|맡았습니다|담당했던|담당했습니다|수행했던|수행했습니다)/u,
+    retained: /(?:맡고|담당하고|수행하고)\s*있/u
+  },
+  {
+    family: 'reflective_emotion_removed',
+    source: /(?:큰\s*감명|깊은\s*감동|절감했|절감하였|뿌듯함을\s*느|보람을\s*느)/u,
+    output: /(?:확인|관찰|알게|이해|분석)(?:하|했|되|한)/u,
+    retained: /(?:감명|감동|절감|뿌듯|보람|가슴|깊이\s*느)/u
+  },
+  {
     family: 'proof_goal_weakened_to_check',
     source: /증명(?:하|해|했|하기|하고|하려)/u,
     output: /확인(?:하|해|했|하기|하고|하려)/u,
@@ -299,6 +317,8 @@ function detectSemanticRelationShifts(source, output) {
     const alignedText = alignment.text;
     for (const rule of SEMANTIC_RELATION_RULES) {
       if (!matches(rule.source, sourceSentence)) continue;
+      if (rule.family === 'difficulty_strengthened_to_impossibility'
+          && matches(rule.output, sourceSentence)) continue;
       const shifted = matches(rule.output, alignedText)
         && !matches(rule.retained, alignedText);
       if (shifted) add(rule.family, sourceIndex + 1);

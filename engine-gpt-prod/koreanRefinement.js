@@ -12,7 +12,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 32;
+const VERSION = 33;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -1350,6 +1350,9 @@ function repairContextualSpacing(value, source, context) {
         counts
       );
       out = replaceTracked(out, /([.!?。！？])(?=[가-힣])/gu, (_match, mark) => `${mark} `, 'missing_sentence_space', counts);
+      out = replaceTracked(out, /([가-힣]),(?=[가-힣])/gu, (_match, left) => `${left}, `, 'missing_comma_space', counts);
+      out = replaceTracked(out, /(상황|과정|현장|환경|활동)[ \t]+(에서|에서는|에서도)(?=\s|$)/gu,
+        (_match, noun, particle) => `${noun}${particle}`, 'noun_particle_spacing', counts);
       out = replaceTracked(out, /(\d+(?:[.,]\d+)?(?:가지|개|명|건|번|년|월|일|%|％|점|배|시간|분)[)）])([가-힣]{1,20})/gu, (match, left, right) => {
         return PARTICLE_AFTER_PAREN.test(right) ? match : `${left} ${right}`;
       }, 'numeric_parenthesis_join', counts);
@@ -4003,6 +4006,12 @@ function hasQuoteAttributionParticleMismatch(sentence) {
 
 function hasDoubleTopicChain(sentence) {
   const value = String(sentence || '');
+  // A topic about one actor followed by the same actor's existential frame
+  // often results from splicing two rewrites. Review, never delete blindly:
+  // plural/group contrasts and genuine existence statements remain valid.
+  const actor = /^(대상자|참가자|신청자|환자|학생|지원자)(?:은|는)\s/u.exec(value);
+  if (actor && !/(?:중에서|가운데|다른|일부|반면|한편)/u.test(value)
+      && new RegExp(`(?:려는|하려는)\\s+${actor[1]}(?:이|가)\\s+있(?:다|습니다)[.!?]?$`, 'u').test(value)) return true;
   const firstPersonTopic = '(?:나는|저는|우리는|저희는)';
   const boundedFirstPerson = koreanStart(firstPersonTopic, 'u').source;
   // 관형형은 `살펴보는·만드는·고르는·다루는`처럼 열린 계열이므로

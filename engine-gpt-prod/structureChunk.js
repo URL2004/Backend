@@ -1391,6 +1391,11 @@ function restoreParagraphLayout({
   const outputVisualLayout = canRepairVisualGaps
     ? restoreStructuralVisualGaps(sourceTransitions.text, { excludedBlocks: visualGapExcludedBlocks })
     : { text: sourceTransitions.text, repairCount: 0 };
+  const discourseLayout = canRepairVisualGaps
+    ? require('./sourceParagraphTransitions').restoreSourceDiscourseRoles(source, outputVisualLayout.text)
+    : { text: outputVisualLayout.text, repairedCount: 0 };
+  outputVisualLayout.text = discourseLayout.text;
+  outputVisualLayout.repairCount += discourseLayout.repairedCount;
   outputVisualLayout.repairCount += sourceTransitions.repairedCount;
   const layoutSourceText = sourceVisualLayout.text;
   const layoutOutputText = outputVisualLayout.text;

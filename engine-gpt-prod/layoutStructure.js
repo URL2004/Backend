@@ -897,11 +897,12 @@ function measureParagraphReadability(paragraphsOrText, options = {}) {
     const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
     // 빈 줄 없이 이어진 `라벨: 본문` 묶음은 각 행 자체가 이미 독립적인
     // 읽기 단위다. 행 전체를 잠그지는 않되(본문은 계속 편집해야 함), 여러
-    // 라벨 행의 문장 수를 한 산문 문단으로 합산해 과장문으로 판정하지 않는다.
+    // 짧은 라벨 행의 문장 수를 한 산문 문단으로 합산하지 않는다. 단, 어느
+    // 한 행의 본문 자체가 과장문이면 라벨 그룹이라는 이유로 면제하지 않는다.
     // 이전에는 이 묶음을 억지로 분할한 뒤 최종 구조 복원이 다시 합치면서
     // layoutRepair만 실패로 남고 실제 결과의 시각 여백도 사라졌다.
     const structureDominated = isProtectedReadabilityParagraph(paragraph, options) || isStructureDominatedParagraph(paragraph)
-      || isReadableInlineLabelGroup(paragraph);
+      || isReadableInlineLabelGroup(paragraph, options);
     const splitNeed = structureDominated ? 1 : paragraphSplitNeed(paragraph, options);
     return { index, compact, sentenceCount, structureDominated, splitNeed, overlong: splitNeed > 1 };
   });
@@ -944,7 +945,7 @@ function measureParagraphReadabilityDetails(paragraphsOrText, options = {}) {
     const compact = bare(paragraph).length;
     const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
     const structureDominated = isProtectedReadabilityParagraph(paragraph, options) || isStructureDominatedParagraph(paragraph)
-      || isReadableInlineLabelGroup(paragraph);
+      || isReadableInlineLabelGroup(paragraph, options);
     return { index, compact, sentenceCount, structureDominated };
   });
 }
@@ -957,10 +958,11 @@ function isProtectedReadabilityParagraph(value, options) {
   });
 }
 
-function isReadableInlineLabelGroup(value) {
+function isReadableInlineLabelGroup(value, options = {}) {
   const records = buildLineRecords(value).filter(record => !record.blank);
   return records.length >= 2
-    && records.every(record => String(record?.role || '') === 'label_inline');
+    && records.every(record => String(record?.role || '') === 'label_inline'
+      && paragraphSplitNeed(labelParts(record.text)?.rest || '', options) === 1);
 }
 
 function isStructureDominatedParagraph(value) {

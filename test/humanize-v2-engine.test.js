@@ -13,6 +13,17 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+for (const mode of ['blog', 'formal']) test(`${mode}: 긴 라벨 본문 문단 개선이 전체 엔진 전달까지 유지된다`, { concurrency: false }, async t => {
+  const first='측정 장비는 시료에 빛을 비추고 투과한 빛의 세기를 기록하여 농도를 비교하는 방식으로 작동합니다. 관찰자는 시료의 양과 용기의 재질을 일정하게 유지하면서 반복 측정한 결과를 표에 기록하고 측정 조건에 따른 차이를 확인하며 장비의 영점을 조절한 시각과 주변 조명 상태도 함께 기록합니다.';
+  const second='기존 측정을 대신할 수 있는 방법으로는 표준 색상표를 사용하는 관찰 실험이 있습니다. 이 방법에서는 같은 조명 아래 시료와 표준 색상표를 나란히 놓고 비교하며 관찰자마다 판단이 달라질 수 있다는 한계를 기록하고 서로의 관찰 기록을 대조하여 차이를 논의합니다.';
+  const text=`1. 관찰 방법\n측정 원리:${first} ${second}\n주의 사항: 같은 조건에서 관찰합니다.`;
+  installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT').replace(/기록합니다/gu,'작성합니다')});
+  const out=await engine.run({text,mode,uid:'label-layout-unit',config:config()});
+  assert.notEqual(out.status,'blocked');
+  assert.match(out.result.outputText,/합니다\.\n\n기존 측정을 대신할/u);
+  assert.equal(out.engineMeta.structureSignaturePass,true);
+});
+
 for (const mode of ['blog', 'formal']) test(`v2.5.60 ${mode}: 편집된 항목 본문의 문단 개선이 최종 감사까지 유지된다`, { concurrency: false }, async t => {
   const {activity} = require('./fixtures/mode-paragraphs');
   const source = '1. 지역 조사 활동\n\n자기평가의견\n\n' + activity;
@@ -252,7 +263,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.62');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.63');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1545,7 +1556,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.62');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.63');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

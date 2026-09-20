@@ -591,6 +591,12 @@ function restoreFinalDocumentLayout({
   let converged = false;
   let citationTailRepairCount = 0;
   let midSentenceParagraphRepairCount = 0;
+  let labelBodySplitCount = 0;
+  let labelBodyGapCount = 0;
+  const labelContract = resolveHumanizeContract({ mode, requestStrength, documentProfile, humanizeContract });
+  const improveLabelBodies = normalizeVisualGaps && !['preserve', 'approved_plan'].includes(labelContract.paragraph.prosePolicy)
+    && mode !== 'polish' && !['creative','legal_contract','clinical_record'].includes(canonicalProfileName(documentProfile))
+    && !(chunks || []).some(c => c.lineBoundaryPolicy === 'all');
   const maximumIterations = 5;
   for (let attempt = 0; attempt < maximumIterations; attempt += 1) {
     iterationCount = attempt + 1;
@@ -634,6 +640,16 @@ function restoreFinalDocumentLayout({
     // Code whitespace is semantic (e.g. Python indentation). Restore whole
     // literal spans, not blank-line-split chunks whose edges were trimmed.
     text = restoreCodeWhitespace(source, citationTails.text).text;
+    if (improveLabelBodies) {
+      const labels = require('./inlineLabelParagraphs').improveInlineLabelLayout(text, {
+        strength: labelContract.strength, protectedBlocks: (chunks || []).filter(c => c.locked).map(c => c.text)
+      });
+      if (labels.contentPreserved) {
+        text = labels.text;
+        labelBodySplitCount = Math.max(labelBodySplitCount, labels.splitCount);
+        labelBodyGapCount = Math.max(labelBodyGapCount, labels.gapCount);
+      }
+    }
     citationTailRepairCount += Number(citationTails.repairCount || 0);
     if (text === before) {
       converged = true;
@@ -642,13 +658,27 @@ function restoreFinalDocumentLayout({
   }
   const contentPreserved = bare(text) === bare(outputText);
   if (paragraphSummary) Object.assign(paragraphs.paragraphs, paragraphSummary);
+  if (labelBodySplitCount || labelBodyGapCount) {
+    const count = splitParagraphs(text).length;
+    const readability = layoutStructure.measureParagraphReadability(text, { mode, requestStrength, documentProfile, humanizeContract });
+    Object.assign(paragraphs.paragraphs, {
+      text, applied: true, pass: readability.overlongCount === 0, afterCount: count, targetCount: count,
+      explicitParagraphCountAfter: layoutStructure.splitExplicitParagraphs(text).length,
+      policy: `${paragraphs.paragraphs.policy}+inline_label_prose`,
+      proseSplitCount: Number(paragraphs.paragraphs.proseSplitCount || 0) + labelBodySplitCount,
+      readability: compactReadability(readability)
+    });
+    paragraphs.text = text;
+    paragraphs.readabilityPass = readability.overlongCount === 0;
+  }
   const transientStructuralPass = initialLocked.pass !== false
     && paragraphs.structuralPass !== false;
   // 중간 paragraphizer가 반복 라벨·제목 cursor를 잠시 놓쳐도 마지막 잠금
   // 복원에서 모든 구조가 회복되고 문자 내용이 보존되면 전달 구조는 정상이다.
   // transient 실패는 원인 관측으로 남기되 최종 pass에 다시 섞지 않는다.
   const codePass = restoreCodeWhitespace(source, text).pass;
-  const structuralPass = finalLocked.pass !== false && contentPreserved && codePass;
+  const structuralPass = finalLocked.pass !== false && contentPreserved && codePass
+    && compareInlineLabelBodyLayout(source, text).pass;
   return {
     text,
     applied: text !== normalizeNewlines(outputText),
@@ -662,6 +692,8 @@ function restoreFinalDocumentLayout({
     converged,
     citationTailRepairCount,
     midSentenceParagraphRepairCount,
+    labelBodySplitCount,
+    labelBodyGapCount,
     initialLocked,
     paragraphs,
     finalLocked
@@ -852,7 +884,8 @@ function restoreInlineLabelBodyLayout(source, outputText) {
     while (bodyEnd > bodyStart && /\s/u.test(text[bodyEnd - 1])) bodyEnd -= 1;
     const body = text.slice(bodyStart, bodyEnd);
     const newlineGroups = body.match(/[ \t]*\n+[ \t]*/gu) || [];
-    if (body.trim() && newlineGroups.length > 0) {
+    if (body.trim() && newlineGroups.length > 0
+        && !require('./inlineLabelParagraphs').isSafeLabelBodyLayout(body)) {
       const joined = body.replace(/[ \t]*\n+[ \t]*/gu, ' ');
       text = text.slice(0, bodyStart) + joined + text.slice(bodyEnd);
       const delta = joined.length - body.length;
@@ -3078,7 +3111,8 @@ function compareInlineLabelBodyLayout(source, output) {
       continue;
     }
     if (!region.nextAnchor) {
-      if (current !== outputLines.length - 1) {
+      const body = outputLines.slice(current).map((line,i)=>i===0 ? (layoutStructure.labelParts(line.text)?.rest || '') : line.text).join('\n');
+      if (current !== outputLines.length - 1 && !require('./inlineLabelParagraphs').isSafeLabelBodyLayout(body)) {
         violations.push({ ordinal: ordinal + 1, reason: 'label_body_split_before_document_end' });
       }
       cursor = current + 1;
@@ -3093,7 +3127,8 @@ function compareInlineLabelBodyLayout(source, output) {
       cursor = current + 1;
       continue;
     }
-    if (next !== current + 1) {
+    const body = outputLines.slice(current,next).map((line,i)=>i===0 ? (layoutStructure.labelParts(line.text)?.rest || '') : line.text).join('\n');
+    if (next !== current + 1 && !require('./inlineLabelParagraphs').isSafeLabelBodyLayout(body)) {
       violations.push({
         ordinal: ordinal + 1,
         reason: 'single_line_label_body_split',

@@ -205,6 +205,19 @@ function installEngineMock(t, options = {}) {
   return { calls, semanticCalls: () => semanticCalls };
 }
 
+for (const mode of ['blog', 'formal', 'polish']) test(`naturalness regression repair stays local through ${mode} delivery`, { concurrency: false }, async t => {
+  const source='향후에는 교통 약자의 이동 문제를 깊이 탐구하고 싶습니다. 여러 지역에서 수집한 자료를 비교하여 지원 방식의 차이를 살피겠습니다. 참여자의 의견을 듣고 실제 이용 경험을 기록하겠습니다.';
+  const bad=source.replace('향후에는','앞으로는').replace('탐구하고','탐구하는 일을 이어가고');
+  const fixed=source.replace('향후에는','앞으로는');
+  const mock=installEngineMock(t,{humanize:bad,koreanRefinementOutput:bad,generalRetryOutput:bad,retryOutput:fixed,repairOutput:fixed});
+  const result=await engine.run({text:source,mode,uid:'naturalness-synthetic-unit',config:config()});
+  assert.notEqual(result.status,'blocked');
+  assert.doesNotMatch(result.result.outputText,/탐구하는 일을 이어가/u);
+  assert.match(result.result.outputText,/앞으로는/u);
+  assert.match(result.result.outputText,/참여자의 의견/u);
+  assert.ok(mock.calls.some(c=>c.name==='gpt_prod_semantic_judge'));
+});
+
 test('compound result omission is restored once and semantically revalidated', { concurrency: false }, async t => {
   const f=require('./fixtures/compound-claims');
   const mock=installEngineMock(t,{humanize:f.output,repairOutput:f.output,generalRetryOutput:f.output,
@@ -230,7 +243,7 @@ test('model-introduced referent loss and comparison typo are repaired before del
   assert.match(result.result.outputText, /조건에 있듯이/u);
   assert.doesNotMatch(result.result.outputText, /있기라면/u);
   assert.match(result.result.outputText, /우선 정했다/u);
-  assert.equal(result.engineMeta.koreanRefinementVersion, 33);
+  assert.equal(result.engineMeta.koreanRefinementVersion, 34);
 });
 
 test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·engineMeta를 기록한다', { concurrency: false }, async t => {
@@ -239,7 +252,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.61');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.62');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1229,7 +1242,8 @@ test('고급의 첫 깊이 회복이 여전히 약하면 상위 모델이 두 �
   const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
   assert.equal(retryCalls[0].model, 'gpt-5.6-luna');
   assert.equal(retryCalls[1].model, 'gpt-5.6-terra');
-  assert.match(String(retryCalls[1].body.instructions || ''), /첫 문단만 고치고 멈추지 않는다/u);
+  assert.match(String(retryCalls[1].body.instructions || ''), /여러 문단의 지정 대상을 빠짐없이 검토/u);
+  assert.match(String(retryCalls[1].body.instructions || ''), /명료성이 나빠지는 어순 변경은 하지 않는다/u);
 });
 
 test('재시도 결과가 단일 깊이 지표만 약하면 사용자 경고 대신 shadow로 전달한다', { concurrency: false }, async t => {
@@ -1531,7 +1545,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.61');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.62');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

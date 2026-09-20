@@ -889,26 +889,26 @@ function buildHumanizationPromptBlock(plan) {
   return [
     '[실질 휴머나이징 계약]',
     '이 모드는 교정·다듬기가 아니다. 원문의 뜻과 사실은 그대로 두되, AI식으로 반복되는 어순·상투어·추상명사·접속 방식·균일한 호흡을 사람이 직접 쓴 문장처럼 다시 구성한다.',
-    '띄어쓰기, 쉼표, 인용부호, 조사 한 곳, 단순 축약이나 동의어 한두 개만 바꾼 결과는 실패다.',
-    `${strengthLabel} 강도는 서버가 결과에서 별도로 계산한다. 변화량을 맞추기 위해 새 설명·평가·결론을 붙이지 말고, 같은 주장 안의 절·어순·연결·호흡으로 차이를 만든다.`,
+    '문제가 있는 문장은 단순 동의어 교체보다 충분히 고치되, 변경량보다 자연스러움·호응·의미 보존이 우선이다.',
+    `${strengthLabel} 강도는 서버가 결과에서 별도로 계산한다. 숫자를 채우려고 명사화·도치·설명·평가를 추가하지 않는다. 직접적인 동사를 “~하는 일을 이어가다·시작하다”로 늘이지 않는다.`,
     plan.distribution
-      ? `문서 전체 계획을 청크에 분배했다. 이 청크는 전체 ${plan.distribution.documentSourceSentenceCount}문장 중 ${plan.distribution.globalSentenceStart + 1}~${plan.distribution.globalSentenceEnd}번 범위이며, 아래 최소 개수는 이 청크가 맡은 몫이다.`
+      ? `문서 전체 계획을 청크에 분배했다. 이 청크는 전체 ${plan.distribution.documentSourceSentenceCount}문장 중 ${plan.distribution.globalSentenceStart + 1}~${plan.distribution.globalSentenceEnd}번 범위이며, 아래 개수는 검토 범위이지 수정 의무가 아니다.`
       : '',
     `원문 위험도=${plan.riskLevel}; 이미 자연스러운 문장은 남기고 아래 우선 대상 문장을 구조적으로 다시 쓴다.`,
     plan.targetSentenceCount
       ? `우선 대상 문장 번호=${targetOrdinals.join(',') || '서버선정'}${reasons ? `; 원인=${reasons}` : ''}. 문장 번호는 편집 위치일 뿐 새 문장을 만들라는 뜻이 아니다.`
-      : '특정 위험 표현이 적더라도 일반 문장의 흐름과 어순을 국소적으로 재구성해 다듬기와 구분되는 결과를 만든다.',
+      : '특정 위험 표현이 없으면 문법·중복·호응·호흡을 검토하고, 개선할 근거가 없는 자연스러운 문장은 유지한다.',
     plan.sourceSentenceCount > 0
-      ? `변화 분포 목표: 편집 가능한 일반 문장 ${plan.sourceSentenceCount}개 가운데 최소 ${plan.requiredChangedSentenceCount}개를 한 문단에 몰지 말고 고르게 재구성한다. 우선 대상이 이 수보다 적으면 잠기지 않은 일반 문장 중 기계적인 어순·연결·호흡이 남은 문장을 추가로 고른다.`
+      ? `변화 분포 목표: 일반 문장 ${plan.sourceSentenceCount}개 가운데 최소 ${plan.requiredChangedSentenceCount}개를 고르게 검토한다. 실제 문제를 개선할 문장만 재구성하며 검토가 수정 의무는 아니다.`
       : '',
     plan.targetSentenceCount > 0
-      ? `우선 대상 이행 목표: 표시된 ${plan.targetSentenceCount}개 가운데 최소 ${plan.requiredTargetChangedCount}개는 단순 교정이 아니라 같은 뜻 안의 절 배치·주어 위치·연결·호흡을 실제로 다시 구성한다.`
+      ? `우선 대상 이행 목표: 표시된 ${plan.targetSentenceCount}개 가운데 최소 ${plan.requiredTargetChangedCount}개를 검토한다. 기계적 연결·중복·과밀은 충분히 다시 쓰되 명료한 문장은 억지로 바꾸지 않는다.`
       : '',
     plan.requiredStructuralChangedSentenceCount > 0
-      ? `구조 변화 목표: 전체 수정 문장 중 최소 ${plan.requiredStructuralChangedSentenceCount}개는 동의어 치환에 머물지 않고 절 순서·내용어 순서·문장 경계 중 하나가 분명히 달라져야 한다.`
+      ? `구조 변화 목표: 최소 ${plan.requiredStructuralChangedSentenceCount}개에서 절·어순·문장 경계 개선 가능성을 검토한다. 수식 관계가 어색해지는 도치는 채택하지 않는다.`
       : '',
     plan.paragraphCoverageApplicable === true
-      ? `문단 분포 목표: 우선 대상이 있는 ${plan.targetParagraphCount}개 일반 산문 문단 가운데 최소 ${plan.requiredTargetChangedParagraphCount}개 문단에서 실질 변화를 만든다. 한 문단만 크게 고치고 나머지를 복사하지 않는다.`
+      ? `문단 분포 목표: 우선 대상이 있는 ${plan.targetParagraphCount}개 중 최소 ${plan.requiredTargetChangedParagraphCount}개 문단을 검토한다. 개선 가능한 곳을 놓치지 않되 변화량을 위해 정상 문장을 늘이지 않는다.`
       : '',
     '문장마다 억지로 다른 단어를 끼워 넣지 말고, 바꿀 문장은 충분히 바꾸며 이미 자연스러운 문장은 남긴다.',
     '변화량을 채우려고 “뒤·후·다음·이후” 같은 순차 접속 표현만 새로 반복하지 않는다. 같은 과업·근거 묶음의 응집과 원문 문단 경계를 유지한다. 주제·역할 경계의 레이아웃 정리는 서버 전용 단계가 담당한다.',

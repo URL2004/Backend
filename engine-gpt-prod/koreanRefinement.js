@@ -12,7 +12,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 33;
+const VERSION = 34;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -26,6 +26,18 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  introduced_action_nominalization: {
+    weight: 3, repairable: true, deterministicSafe: false,
+    message: '원문의 직접적인 행동 서술을 “~하는 일을 이어가다·시작하다”로 불필요하게 늘였어요.'
+  },
+  introduced_condition_wish_mismatch: {
+    weight: 3, repairable: true, deterministicSafe: false,
+    message: '원문에 없던 조건을 열고 필요한 방법 대신 희망으로 끝냈어요.'
+  },
+  introduced_modifier_dislocation: {
+    weight: 2, repairable: true, deterministicSafe: false,
+    message: '격식 문장에서 목적어와 서술어 사이로 수식어가 이동해 읽는 흐름이 약해졌을 수 있어요.'
+  },
   source_restore_echo: {
     weight: 5,
     repairable: true,
@@ -1684,6 +1696,8 @@ function sourceBackedEditRepairs(source, outputText) {
   }
   const namingRepairs = namingFrameRepairs(sources.filter(startsInProse), outputs.filter(startsInProse));
   const replacedOrdinals = new Set(namingRepairs.map(item => item.ordinal));
+  repairs.push(...require('./naturalnessRegression').auditNaturalnessRegression(source, outputText)
+    .map(item => item.repair).filter(Boolean));
   return [...repairs.filter(item => !replacedOrdinals.has(item.ordinal)), ...namingRepairs];
 }
 
@@ -1734,6 +1748,13 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   for (const code of new Set(sourceBackedEdits.map(item => item.code))) {
     const rows = sourceBackedEdits.filter(item => item.code === code);
     outputIssues.push(makeIssue(code, rows.length, rows.map(item => item.ordinal)));
+  }
+  const naturalness = require('./naturalnessRegression').auditNaturalnessRegression(source, outputText, profile);
+  for (const code of new Set(naturalness.map(item => item.code))) {
+    const existing = outputIssues.findIndex(item => item.code === code);
+    if (existing >= 0) outputIssues.splice(existing, 1);
+    const ordinals = [...new Set(naturalness.filter(item => item.code === code).map(item => item.ordinal))];
+    outputIssues.push(makeIssue(code, ordinals.length, ordinals));
   }
   const duplicated = detectIntroducedTokenDuplications(source, outputText);
   if (duplicated) outputIssues.push(duplicated);
@@ -2550,6 +2571,7 @@ function parseParentheticalLabelLine(value) {
 }
 
 const SOURCE_RESTORABLE_ISSUES = new Set([
+  'introduced_condition_wish_mismatch',
   'adjacent_semantic_repetition',
   'causal_predicate_stack',
   'nominal_predicate_collocation',

@@ -1017,7 +1017,8 @@ test('공통 프롬프트는 불변 계약과 요청 강도를 한 번씩만 선
   assert.match(advanced, /고급은 기본보다 더 넓은 범위의 일반 문장/u);
   assert.match(advanced, /고급 범위로 실질 재구성/u);
   assert.match(basic, /눈에 띄는 실질 휴머나이징/u);
-  assert.match(basic, /띄어쓰기·쉼표·조사·단순 동의어만 바꾼 결과는 실패/u);
+  assert.match(basic, /문제가 있는 대상은 충분히 다시 쓰되 변경량보다 호응·자연스러움이 우선/u);
+  assert.doesNotMatch(basic, /단순 동의어만 바꾼 결과는 실패/u);
   assert.doesNotMatch(basic, /안전한 한 곳만|이 청크만 다듬는다/u);
   assert.doesNotMatch(basic, /보존에 머무르지|원문과 가깝게 두지|충분히 재서술/u);
   assert.doesNotMatch(advanced, /청소|청결|악취|곰팡|하수구|업체 후기/u);

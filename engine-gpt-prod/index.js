@@ -69,7 +69,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.61';
+const VERSION = 'gpt-prod-v2.5.62';
 const DETECT_VERSION = 'gpt-detect-v1.38';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -685,6 +685,7 @@ async function runEngine({
   let koreanRefinementRetryCount = 0;
   let koreanRefinementRetryApplied = false;
   let koreanSourceRestoreCount = 0;
+  let naturalnessRegressionSeen = false;
   let finalCollapsedSpacingRetryAttemptCount = 0;
   let finalCollapsedSpacingRetryApplied = false;
   let finalCollapsedSpacingRetryReason = 'not_applicable';
@@ -1302,6 +1303,9 @@ async function runEngine({
       documentProfile,
       mode: selectedMode
     });
+    naturalnessRegressionSeen = koreanRefinementAudit.issueCodes.some(code => [
+      'introduced_action_nominalization', 'introduced_condition_wish_mismatch', 'introduced_modifier_dislocation'
+    ].includes(code));
     const deterministicRepair = koreanRefinement.applySafeDeterministicRepairs({
       source: auditSource,
       outputText,
@@ -1796,7 +1800,9 @@ async function runEngine({
   // or evaluative padding, they cannot exempt polish from its mandatory audit.
   const polishTerminalFailure = ['polish_unchanged', 'polish_evaluative_padding_added'].includes(polishStrictFailure);
   if (outputText.trim() && !polishTerminalFailure) {
-    const semanticDecision = clauseCoverageAudit.semanticRequired
+    const semanticDecision = naturalnessRegressionSeen
+      ? { run: true, reason: 'naturalness_regression_review' }
+      : clauseCoverageAudit.semanticRequired
       ? { run: true, reason: 'compound_claim_omission_candidate' }
       : experienceCandidateAudit?.candidate === true
       ? { run: true, reason: 'experience_novelty_candidate' }

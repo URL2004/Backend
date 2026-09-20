@@ -1347,7 +1347,20 @@ function isOrderedSectionRecord(record) {
     && /^\s*(?:\d+(?:[-.]\d+)*[.)]|[가-힣][.)]|[①-⑳])\s+\S/u.test(String(record?.text || ''));
 }
 
-function restoreParagraphLayout({
+function restoreParagraphLayout(options = {}) {
+  const result = restoreParagraphLayoutBase(options);
+  const profile = canonicalProfileName(options.documentProfile);
+  if (options.mode === 'polish' || ['creative', 'legal_contract'].includes(profile)) return result;
+  const extra = require('./proseParagraphs').splitProseParagraphs(result.text);
+  if (!extra.splitCount && !extra.boundaryMoveCount) return result;
+  const count = splitParagraphs(extra.text).length;
+  return { ...result, text: extra.text, applied: true, policy: `${result.policy}+block_semantic_roles`,
+    targetCount: count, afterCount: count, explicitParagraphCountAfter: layoutStructure.splitExplicitParagraphs(extra.text).length,
+    proseSplitCount: Number(result.proseSplitCount || 0) + extra.splitCount,
+    roleBoundaryCount: Number(result.roleBoundaryCount || 0) + extra.splitCount + Number(extra.boundaryMoveCount || 0) };
+}
+
+function restoreParagraphLayoutBase({
   source,
   outputText,
   chunks,

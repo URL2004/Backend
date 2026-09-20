@@ -475,6 +475,10 @@ function isProseContinuation(value) {
   const text = visibleTrim(value);
   if (text.length < 16 || text.split(/\s+/u).length < 4) return false;
   if (/^(?:[#>*]|[「『《〈“‘"'])/u.test(text)) return false;
+  // Purpose clause followed by an unfinished modifier is body text even when
+  // copied onto a separate line below a heading. Do not lock it as a title.
+  if (/(?:[가-힣]{1,12}기\s*위해(?:선|서는|서)?|하려면|하기\s*위한)\s/u.test(text)
+      && /(?:적인|지속적인|구체적인|적절한|필요한|중요한|다양한|효과적인)\s*$/u.test(text)) return true;
   if (/(?:한다고|했다고|하였다고|된다고|되었다고|있다고|없다고|이라고|라고|겠다고)\s*$/u.test(text)) return true;
   return /(?:하며|하면서|했으며|하였으며|되었으며|됐으며|이며|되었고|되었지만|했고|하였고|였고|있었고|있으며|없으며|하지만|했지만|하였지만|되지만|되면|하면서도|대해서|대해|관해서|관해)\s*$/u.test(text)
     || /[,;，；]\s*$/u.test(text);

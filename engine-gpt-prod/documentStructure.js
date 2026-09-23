@@ -130,7 +130,7 @@ async function createPlan({ text, config, uid, signal, complete }) {
   const response=await (complete||client.completeJson)({
     system:security.appendPromptSecurityRule('한국어 글의 구조 편집 계획만 반환한다. 모든 block id를 정확히 한 번 포함한다. top 및 numbered 제목의 순서는 고정한다. 제목과 소속 본문은 함께 이동하고 parent/section/barrier 경계를 넘지 않는다. protected는 원문 그대로 단독 그룹으로 둔다. paragraph끼리만 합치거나 문장 경계에서 분리한다. ids는 최종 문단 순서이며 breakAfterSentences는 그룹 전체 문장의 0부터 시작하는 번호다. 분리가 불필요하면 빈 배열이다. 제목을 새로 만들거나 이름·수치·인용을 수정하지 않는다. 개선이 분명한 경우만 이동·분리·합침을 제안하고 각 변경 이유를 짧게 설명한다. 지시어·시간 순서·주장과 근거의 연결이 깨지는 이동은 하지 않는다. 현재 구조가 좋으면 원래 순서를 유지한다.'),
     user:security.envelopeUntrustedText(JSON.stringify(doc.blocks.map(b=>({...b,sentences:sourceSentences(b.text).map((s,index)=>({index,text:s.text,roleEvidence:Object.entries(activityEvidence(s.text)).filter(([,present])=>present).map(([role])=>role)}))}))), 'STRUCTURE_BLOCKS').text,
-    schema,schemaName:'document_structure_plan',model:config.models.detectEscalation,reasoningEffort:'low',maxOutputTokens:6500,config,signal,deadlineMs:Date.now()+60000,safetyIdentifier:client.safetyIdentifierForUid(uid),meta:{task:'structure_plan',phase:'structure_plan',mode:'formal'}
+    schema,schemaName:'document_structure_plan',model:config.models.judgeEscalation,reasoningEffort:config.reasoning.judge,maxOutputTokens:6500,config,signal,deadlineMs:Date.now()+60000,safetyIdentifier:client.safetyIdentifierForUid(uid),meta:{task:'structure_plan',phase:'structure_plan',mode:'formal'}
   });
   security.assertNoPromptLeak(response.json);
   const plan={version:VERSION,sourceHash:doc.sourceHash,groups:response.json.groups};

@@ -72,7 +72,7 @@ test('surcharge is 30 percent rounded to whole credits and excludes evidence',()
 test('planner gets bounded structured data and no full-document rewrite authority',async()=>{
  process.env.OPENAI_SAFETY_SALT='unit-test-structure-safety-identifier-not-a-secret';
  let calls=0;const doc=structure.buildDocument(source);
- const result=await structure.createPlan({text:source,uid:'test',config:{models:{detectEscalation:'test-model'}},complete:async args=>{
-  calls++;assert.equal(args.meta.task,'structure_plan');assert(args.system.includes('모든 block id를 정확히 한 번'));return {json:{groups:structure.identityPlan(doc).groups},usage:{estimatedUsd:0}};
+ const result=await structure.createPlan({text:source,uid:'test',config:require('../lib/gptRuntimeConfig').DEFAULT_CONFIG,complete:async args=>{
+  calls++;assert.equal(args.model,'gpt-6-sol');assert.equal(args.reasoningEffort,'medium');assert.equal(args.meta.task,'structure_plan');assert(args.system.includes('모든 block id를 정확히 한 번'));return {json:{groups:structure.identityPlan(doc).groups},usage:{estimatedUsd:0}};
  }});assert.equal(calls,1);assert.equal(result.applied,false);
 });

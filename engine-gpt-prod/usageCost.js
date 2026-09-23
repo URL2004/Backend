@@ -1,6 +1,8 @@
 'use strict';
 
 const DEFAULT_PRICES = {
+  'gpt-6-luna': { input: 0.1, cachedInput: 0.01, cacheWrite: 0.125, output: 0.5 },
+  'gpt-6-sol': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 10 },
   'gpt-5.6-terra': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 },
   'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 },
   'gpt-5.6-sol': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 }
@@ -24,7 +26,7 @@ function priceFor(model) {
 
 function canonicalPriceKey(model) {
   const value = String(model || '').trim().toLowerCase();
-  const matched = value.match(/^(gpt-5\.6-(?:luna|terra|sol))(?:-\d{4}-\d{2}-\d{2})?$/u);
+  const matched = value.match(/^(gpt-(?:5\.6-(?:luna|terra|sol)|6-(?:luna|sol)))(?:-\d{4}-\d{2}-\d{2})?$/u);
   return matched ? matched[1] : value;
 }
 

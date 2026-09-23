@@ -850,7 +850,7 @@ test('수리 후 의미 위반이 남으면 done 호환 상태인 needs_review�
   assert.equal(out.fallbackCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 1);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_soft_claim_ledger').length, 0);
 });
 
@@ -1154,8 +1154,8 @@ test('기본 첫 회복도 구두점 수준이면 mini로 한 번 더 실질 회
   assert.equal(out.engineMeta.humanizationDepthEscalationAttemptCount, 1);
   const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
   assert.equal(retryCalls.length, 2);
-  assert.equal(retryCalls[0].model, 'gpt-5.6-luna');
-  assert.equal(retryCalls[1].model, 'gpt-5.6-terra');
+  assert.equal(retryCalls[0].model, 'gpt-6-luna');
+  assert.equal(retryCalls[1].model, 'gpt-6-sol');
 });
 
 test('기본 지원서는 첫 회복이 최소 편집률을 넘어도 의미 반복이 남으면 두 번째 회복을 수행한다', { concurrency: false }, async t => {
@@ -1251,8 +1251,8 @@ test('고급의 첫 깊이 회복이 여전히 약하면 상위 모델이 두 �
   assert.equal(out.engineMeta.humanizationDepthEscalationAttemptCount, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
   const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
-  assert.equal(retryCalls[0].model, 'gpt-5.6-luna');
-  assert.equal(retryCalls[1].model, 'gpt-5.6-terra');
+  assert.equal(retryCalls[0].model, 'gpt-6-luna');
+  assert.equal(retryCalls[1].model, 'gpt-6-sol');
   assert.match(String(retryCalls[1].body.instructions || ''), /여러 문단의 지정 대상을 빠짐없이 검토/u);
   assert.match(String(retryCalls[1].body.instructions || ''), /명료성이 나빠지는 어순 변경은 하지 않는다/u);
 });
@@ -1657,7 +1657,7 @@ test('의미 수리 후보가 문서를 축약하면 폐기하고 수리 전 결
   assert.equal(report.repairRejected, true);
   assert.equal(report.reports[0].repairRejected, true);
   assert.ok(report.reports[0].repairRejectReasons.includes('repair_collapsed'));
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
 });
 
 test('의미 위반 수리가 문서 전체를 원문으로 되돌리면 폐기하고 상위 모델 재판정으로 넘긴다', { concurrency: false }, async t => {
@@ -1673,7 +1673,7 @@ test('의미 위반 수리가 문서 전체를 원문으로 되돌리면 폐기�
   assert.equal(report.repairCount, 1);
   assert.equal(report.repairRejected, true);
   assert.equal(report.reports[0].repairRejectReasons.includes('repair_erased_transform'), true);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
 });
 
 test('의미 수리가 특정 문장만 크게 축약해 원문 리듬을 훼손하면 폐기한다', { concurrency: false }, async t => {
@@ -1701,7 +1701,7 @@ test('의미 수리가 특정 문장만 크게 축약해 원문 리듬을 훼손
   assert.equal(report.outputText, beforeRepair);
   assert.equal(report.repairRejected, true);
   assert.ok(report.reports[0].repairRejectReasons.includes('sentence_shape_worsened'));
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
 });
 
 test('의미 수리가 청크와 같은 장단문 분포 계약을 깨면 폐기한다', { concurrency: false }, async t => {
@@ -1714,5 +1714,5 @@ test('의미 수리가 청크와 같은 장단문 분포 계약을 깨면 폐기
   assert.equal(report.outputText, beforeRepair);
   assert.equal(report.repairRejected, true);
   assert.ok(report.reports[0].repairRejectReasons.includes('sentence_distribution_worsened'));
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-5.6-terra'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
 });

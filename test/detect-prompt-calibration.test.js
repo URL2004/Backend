@@ -119,7 +119,7 @@ test('유효한 primary 뒤 승격 실패는 모델 선택 호출 두 번에서 
       cache: { enabled: false }
     }
   });
-  assert.deepEqual(models, ['gpt-5.6-luna', 'gpt-5.6-terra']);
+  assert.deepEqual(models, ['gpt-6-luna', 'gpt-6-sol']);
   assert.equal(result.probability, 49);
   assert.equal(result.gptMeta.escalationFailed, true);
 });

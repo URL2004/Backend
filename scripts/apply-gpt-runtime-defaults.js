@@ -5,16 +5,21 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 
 async function main() {
   if (!db) throw new Error('Firestore is not initialized');
-  const config = gptRuntimeConfig.sanitizeConfig(gptRuntimeConfig.DEFAULT_CONFIG);
-  await db.collection(gptRuntimeConfig.SETTINGS_COLLECTION).doc(gptRuntimeConfig.SETTINGS_DOC).set({
-    ...config,
+  const config = await gptRuntimeConfig.getRuntimeConfig({ db, force: true });
+  const apply = process.argv.includes('--apply');
+  // Preserve cache, thresholds and explicit stage tuning. Migration is limited
+  // to supported predecessor model aliases and obsolete effort values.
+  if (apply) await db.collection(gptRuntimeConfig.SETTINGS_COLLECTION).doc(gptRuntimeConfig.SETTINGS_DOC).set({
+    models: config.models,
+    reasoning: config.reasoning,
     version: gptRuntimeConfig.VERSION,
     updatedBy: 'apply-gpt-runtime-defaults',
     updatedAtMs: Date.now(),
-    note: 'GPT-5.6 Luna/Terra runtime defaults requested 2026-07-31'
+    note: 'GPT-6 Luna/Sol role-based migration requested 2026-09-23'
   }, { merge: true });
   console.log(JSON.stringify({
     ok: true,
+    applied: apply,
     activeProvider: config.activeProvider,
     models: config.models,
     reasoning: config.reasoning,

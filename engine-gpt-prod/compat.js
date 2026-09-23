@@ -46,8 +46,8 @@ function modelForTask(cfg, task = '', phase = '') {
 function reasoningForTask(cfg, task = '', phase = '') {
   const t = String(task || '').toLowerCase();
   const p = String(phase || '').toLowerCase();
-  if (t.includes('detect')) return cfg.reasoning.detect;
-  if (t.includes('evidence') || t.includes('search')) return cfg.reasoning.evidenceSearch;
+  if (t.includes('detect')) return p.includes('escalation') ? cfg.reasoning.escalation : cfg.reasoning.detect;
+  if (t.includes('evidence') || t.includes('search')) return p.includes('escalation') ? cfg.reasoning.escalation : cfg.reasoning.evidenceSearch;
   if (p.includes('repair') || p.includes('refine') || p.includes('rewrite')) return cfg.reasoning.repair;
   if (t.includes('coach') || t.includes('classify')) return cfg.reasoning.classify;
   if (t.includes('judge')) return p.includes('escalation') ? (cfg.reasoning.escalation || cfg.reasoning.judge) : cfg.reasoning.judge;

@@ -470,23 +470,24 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
   for (const anchor of headings) {
     const heading = anchor.text;
     const replacementHeading = anchor.replacementText || heading;
-    let sourceIndex = sourceText.indexOf(replacementHeading, sourceCursor);
+    let sourceIndex = findHeadingLiteral(sourceText, replacementHeading, sourceCursor);
     let sourceHeadingLength = replacementHeading.length;
     if (sourceIndex < 0) {
-      sourceIndex = sourceText.indexOf(heading, sourceCursor);
+      sourceIndex = findHeadingLiteral(sourceText, heading, sourceCursor);
       sourceHeadingLength = heading.length;
     }
-    let outputIndex = text.indexOf(replacementHeading, outputCursor);
+    let outputIndex = findHeadingLiteral(text, replacementHeading, outputCursor);
     let outputHeadingLength = replacementHeading.length;
     if (outputIndex < 0) {
-      outputIndex = text.indexOf(heading, outputCursor);
+      outputIndex = findHeadingLiteral(text, heading, outputCursor);
       outputHeadingLength = heading.length;
     }
     if (outputIndex < 0) {
       // 모델이 `1.지원동기및진로계획`을 `1.지원동기\n및진로계획`처럼
       // 제목 내부에서 갈라도 공백을 제외한 원문 앵커가 같으면 원래 한 행으로
       // 복원한다. 같은 행 수만 찾던 예전 fallback은 이 경우를 놓쳤다.
-      const equivalent = findWhitespaceEquivalentSpan(text, heading, outputCursor);
+      const equivalent = findWhitespaceEquivalentSpans(text, heading, outputCursor)
+        .find(span => validNumericAnchorBoundary(text, heading, span.start, span.end));
       if (!equivalent) {
         missingCount += 1;
         continue;
@@ -521,6 +522,22 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     restoredCount,
     missingCount
   };
+}
+
+// Short ordinal anchors such as `5.` can occur inside decimals, formulae or
+// another ordinal (`15.`). A literal match there must never insert a line break.
+function validNumericAnchorBoundary(text, expected, start, end) {
+  if (!/^(?:\d+[.)]|\(\d+\))$/u.test(String(expected || '').trim())) return true;
+  return !/[\p{L}\p{N}_.]/u.test(text[start - 1] || '') && !/\d/u.test(text[end] || '');
+}
+
+function findHeadingLiteral(text, expected, cursor) {
+  let index = text.indexOf(expected, cursor);
+  while (index >= 0) {
+    if (validNumericAnchorBoundary(text, expected, index, index + expected.length)) return index;
+    index = text.indexOf(expected, index + Math.max(1, expected.length));
+  }
+  return -1;
 }
 
 // 의미 감사 뒤의 국소 문장 복원은 잠긴 라벨 접두부를 보존하면서도 그 앞의
@@ -3393,11 +3410,23 @@ function structuralMarker(kind, marker, lineIndex) {
 }
 
 function countOrphanParticleLineBoundaries(value) {
-  return (
-    normalizeNewlines(value).match(
-      /[가-힣]\s*\n+\s*(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|부터만|까지는|까지도|까지만|은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/gu
-    ) || []
-  ).length;
+  const text = normalizeNewlines(value);
+  const matches = [...text.matchAll(
+    /[가-힣]\s*\n+\s*(에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|부터만|까지는|까지도|까지만|은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/gu
+  )];
+  if (!matches.length) return 0;
+  let records;
+  return matches.filter(match => {
+    // `제목\n\n이 분석을 ...` starts a demonstrative noun phrase, not a
+    // detached subject particle. Require a structural heading, paragraph gap,
+    // and a following noun with its own particle; bare `이 바뀌었다` still warns.
+    if (match[1] !== '이' || !/\n[ \t]*\n/u.test(match[0])
+        || !/^[ \t]+[가-힣]{2,}(?:은|는|이|가|을|를|의|와|과|에서|으로|도)(?=\s)/u
+          .test(text.slice(match.index + match[0].length))) return true;
+    records ||= layoutStructure.buildLineRecords(text);
+    const left = records.find(record => record.start <= match.index && record.end > match.index);
+    return !['heading', 'title', 'label'].includes(left?.role);
+  }).length;
 }
 
 function compareStructuralRoleSignatures(source, output) {

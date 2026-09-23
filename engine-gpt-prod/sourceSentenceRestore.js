@@ -4,7 +4,8 @@ const { splitSentenceSpans } = require('../engine/koreanText');
 const {
   alignSourceSentence,
   alignedOutputCandidates,
-  sentenceSimilarity: sharedSentenceSimilarity
+  sentenceSimilarity: sharedSentenceSimilarity,
+  contentTokens
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
 
@@ -35,13 +36,15 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
 
   const proposals = [];
   for (const ordinal of requested) {
-    const alignment = ordinalSpace === 'output'
+    let alignment = ordinalSpace === 'output'
       ? alignOutputOrdinalToSource(ordinal, sourceSpans, outputSpans, { minSimilarity, maxOutputGroup })
       : alignSourceOrdinalToOutput(ordinal, sourceSpans, outputSpans, {
           minSimilarity,
           maxOutputGroup,
           allowStablePositionalFallback
         });
+    if (!alignment) continue;
+    alignment = resolveSplitRestoration(alignment, sourceSpans, outputSpans, before, maxOutputGroup);
     if (!alignment) continue;
     const sourceSpan = sourceSpans[alignment.sourceIndex];
     const firstOutput = outputSpans[alignment.start];
@@ -83,6 +86,56 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
 
 function sentenceSimilarity(left, right) {
   return sharedSentenceSimilarity(left, right);
+}
+
+// A whole source sentence must not overwrite only one arm of a split result.
+// Ordinal equality and a caller's 1:1 preference are not evidence of 1:1 ownership.
+// Expand only to adjacent, source-backed arms; never dedupe a fuzzy neighbour.
+function resolveSplitRestoration(alignment, sourceSpans, outputSpans, output, maxOutputGroup) {
+  const sourceText = alignment.replacementText || sourceSpans[alignment.sourceIndex].text;
+  const sourceTokens = new Set(restorationTokens(sourceText));
+  if (sourceTokens.size < 3) return alignment;
+  let current = alignment;
+  // Three is the shared restoration contract. If a fourth arm still contributes
+  // source content, reject instead of restoring an incomplete span.
+  for (let pass = 0; pass < 3; pass += 1) {
+    const selectedText = output.slice(outputSpans[current.start].start, outputSpans[current.end - 1].end);
+    const selectedTokens = new Set(restorationTokens(selectedText));
+    const singleScore = sentenceSimilarity(sourceText, selectedText);
+    let best = null;
+    for (const neighbour of [current.start - 1, current.end]) {
+      if (!outputSpans[neighbour]) continue;
+      const text = outputSpans[neighbour].text;
+      const tokens = restorationTokens(text);
+      const shared = tokens.filter(token => sourceTokens.has(token));
+      const added = shared.filter(token => !selectedTokens.has(token));
+      if (added.length < 2 || shared.length / Math.max(1, tokens.length) < 0.4) continue;
+      const ownerScore = sentenceSimilarity(sourceText, text);
+      // Repeated vocabulary in a different source sentence is not a split arm.
+      if (sourceSpans.some((span, index) => index !== alignment.sourceIndex
+          && sentenceSimilarity(span.text, text) >= ownerScore - 0.02)) continue;
+      const start = Math.min(current.start, neighbour), end = Math.max(current.end, neighbour + 1);
+      const joined = output.slice(outputSpans[start].start, outputSpans[end - 1].end);
+      const score = sentenceSimilarity(sourceText, joined);
+      if (score < singleScore + 0.04) continue;
+      // Even if crossing a paragraph is forbidden, do not silently fall back to
+      // a partial overwrite. The caller may request a model repair instead.
+      if (/\r?\n[ \t]*\r?\n/u.test(joined) || end - start > Math.min(3, maxOutputGroup)) return null;
+      if (!best || score > best.score) best = { ...current, start, end, score };
+    }
+    if (!best) return current;
+    current = best;
+  }
+  return current;
+}
+
+function restorationTokens(text) {
+  // Compound-to-sentence inflection is expected in split arms (`혼합했고` /
+  // `혼합했다`). Normalize only these endings for the ownership guard, not the
+  // global alignment score, and keep a minimum two-syllable lexical stem.
+  return [...new Set(contentTokens(text).map(token => token.replace(
+    /(?<=[가-힣]{2})(?:했고|했으며|하였으며|하면서|하여서|했지만|하였지만)$/u, ''
+  )))];
 }
 
 function alignSourceOrdinalToOutput(ordinal, sourceSpans, outputSpans, {

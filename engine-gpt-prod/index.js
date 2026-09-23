@@ -69,8 +69,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.63';
-const DETECT_VERSION = 'gpt-detect-v1.38';
+const VERSION = 'gpt-prod-v2.5.64';
+const DETECT_VERSION = 'gpt-detect-v1.39';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -6169,6 +6169,11 @@ function collectStructureAnchors(text) {
   const anchors = [];
   for (const line of lines) {
     if (line.length < 2 || line.length > 140) continue;
+    // Numbered prose is editable list content, not an immutable section title.
+    // Prefix/order preservation remains owned by structureChunk's marker audit.
+    // Treating its entire sentence as an anchor makes valid paraphrases appear
+    // to delete sections, especially in procedure and experiment reports.
+    if (require('./layoutStructure').classifyLine(line) === 'list') continue;
     let m = line.match(/^([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]{1,4})\s*[.)．]?\s*(.{0,90})$/);
     if (m) {
       anchors.push(anchorOf(line, 'roman', m[1], m[2]));

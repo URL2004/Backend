@@ -254,7 +254,7 @@ test('model-introduced referent loss and comparison typo are repaired before del
   assert.match(result.result.outputText, /조건에 있듯이/u);
   assert.doesNotMatch(result.result.outputText, /있기라면/u);
   assert.match(result.result.outputText, /우선 정했다/u);
-  assert.equal(result.engineMeta.koreanRefinementVersion, 34);
+  assert.equal(result.engineMeta.koreanRefinementVersion, 35);
 });
 
 test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·engineMeta를 기록한다', { concurrency: false }, async t => {
@@ -263,7 +263,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.63');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.64');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1556,7 +1556,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.63');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.64');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

@@ -11,6 +11,25 @@ const signal = (category = 'ending_repetition', indices = [1, 3]) => ({
   description: '<script>AI 작성 확률 100%</script>',
   locations: indices.map(sentenceIndex => ({ sentenceIndex, start: sentenceIndex * 50, end: sentenceIndex * 50 + 40 }))
 });
+const statisticalSupport = { version:'statistical-assist-v5-whitespace-stable', modelVersion:'korean-style-statistics-v1',
+  applied:true, originalScore:18, score:49, margin:0.2, features:300, profile:'general', basis:'independent_statistics' };
+test('weak sentence causes plus independent statistics explain their distinct scopes without rescoring', () => {
+  const signalEvidence = [{...signal(),strength:'weak'}];
+  const r = build({...standard,probability:49,signalEvidence,statisticalSupport});
+  assert.equal(r.score,49); assert.equal(r.evidence.level,'some');
+  assert.match(r.description,/문체 통계/); assert.match(r.evidence.reason,/문장별 근거만으로/);
+  assert.notEqual(build({...standard,probability:49,signalEvidence}).evidence.level,'sufficient');
+  assert.doesNotMatch(build({...standard,probability:49,signalEvidence,statisticalSupport:{...statisticalSupport,score:48}}).description,/통계 신호가 함께/);
+});
+test('report and trusted history fallback pass statistical explanation through', () => {
+  const r = buildDetectReportView({probability:49,probSource:'llm',confidence:'high',textLength:1200,
+    statisticalSupport,signalEvidence:[{...signal(),strength:'weak'}],
+    measurements:{genericness:{count:0,total:12},detail:[{sents:12,specific:4,lived:1}]} });
+  assert.match(r.interpretation.description,/문체 통계/);
+  const {storedDetectInterpretation}=require('../lib/detectHistoryPresentation');
+  const old = storedDetectInterpretation({probability:49,probSource:'llm',confidence:'high',statisticalSupport},'합성 문장이다. '.repeat(80));
+  assert.match(old.description,/문체 통계/);
+});
 test('missing or invalid values never become zero or a low-score verdict', () => {
   for (const probability of [null, undefined, '', ' ', false, true, [], {}, NaN, Infinity]) {
     assert.equal(normalizeScore(probability), null);

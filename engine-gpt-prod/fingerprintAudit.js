@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 14;
+const VERSION = 15;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -314,118 +314,138 @@ function detectSemanticRelationShifts(source, output) {
       outputSentences
     );
     if (!alignment || alignment.score < 0.24) return;
-    const alignedText = alignment.text;
-    for (const rule of SEMANTIC_RELATION_RULES) {
-      if (!matches(rule.source, sourceSentence)) continue;
-      if (rule.family === 'difficulty_strengthened_to_impossibility'
-          && matches(rule.output, sourceSentence)) continue;
-      const shifted = matches(rule.output, alignedText)
-        && !matches(rule.retained, alignedText);
-      if (shifted) add(rule.family, sourceIndex + 1);
-    }
+    const assessPair = alignedText => {
+      const issues = [];
+      const add = (family, ordinal) => issues.push({ family, ordinal });
+      for (const rule of SEMANTIC_RELATION_RULES) {
+        if (!matches(rule.source, sourceSentence)) continue;
+        if (rule.family === 'difficulty_strengthened_to_impossibility'
+            && matches(rule.output, sourceSentence)) continue;
+        const shifted = matches(rule.output, alignedText)
+          && !matches(rule.retained, alignedText);
+        if (shifted) add(rule.family, sourceIndex + 1);
+      }
 
-    if (conceptNarrowedByActionModifier(sourceSentence, alignedText)) {
-      add('concept_narrowed_by_modifier', sourceIndex + 1);
-    }
-    if (explicitSpeakerEvidenceRemoved(sourceSentence, alignedText)) {
-      add('speaker_evidence_removed', sourceIndex + 1);
-    }
+      if (conceptNarrowedByActionModifier(sourceSentence, alignedText)) {
+        add('concept_narrowed_by_modifier', sourceIndex + 1);
+      }
+      if (explicitSpeakerEvidenceRemoved(sourceSentence, alignedText)) {
+        add('speaker_evidence_removed', sourceIndex + 1);
+      }
 
-    if (/(?:었|였|했|됐|였으|했으)지만/u.test(sourceSentence)) {
-      const shifted = /(?:었|였|했|됐)고/u.test(alignedText)
-        && !/(?:지만|으나|반면|그러나|하지만|그럼에도)/u.test(alignedText);
-      if (shifted) add('contrast_connector_removed', sourceIndex + 1);
-    }
+      if (/(?:었|였|했|됐|였으|했으)지만/u.test(sourceSentence)) {
+        const shifted = /(?:었|였|했|됐)고/u.test(alignedText)
+          && !/(?:지만|으나|반면|그러나|하지만|그럼에도)/u.test(alignedText);
+        if (shifted) add('contrast_connector_removed', sourceIndex + 1);
+      }
 
-    if (/(?:연구|분석|조사|검토)(?:를|을)?\s*통해[^.!?。！？\n]{0,45}(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(sourceSentence)) {
-      const shifted = !/(?:연구|분석|조사|검토)(?:를|을)?\s*통해/u.test(alignedText)
-        && !/(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(alignedText);
-      if (shifted) add('evidence_frame_removed', sourceIndex + 1);
-    }
+      if (/(?:연구|분석|조사|검토)(?:를|을)?\s*통해[^.!?。！？\n]{0,45}(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(sourceSentence)) {
+        const shifted = !/(?:연구|분석|조사|검토)(?:를|을)?\s*통해/u.test(alignedText)
+          && !/(?:확인|파악|알)(?:할)?\s*수\s*있/u.test(alignedText);
+        if (shifted) add('evidence_frame_removed', sourceIndex + 1);
+      }
 
-    if (hasMainPossibilityClaim(sourceSentence)) {
-      const possibilityRemoved = !hasPossibilityMarker(alignedText)
-        && !/(?:이해되|해석되|판단되|볼\s*수\s*있)/u.test(alignedText);
-      if (possibilityRemoved && hasGoalFrame(alignedText)) {
-        add('possibility_changed_to_goal', sourceIndex + 1);
-      } else {
-        const shifted = possibilityRemoved && (
-          /(?:한다|된다|이다|있다|확정된다|분명하다)[.!?。！？]?(?:\s|$)/u.test(alignedText)
-          || /(?:분명히|명확히|확실히)[^.!?。！？\n]{0,40}(?:보여\s*준다|드러낸다|입증한다|확인된다)/u.test(alignedText)
-        );
-        if (shifted) add('possibility_hardened_to_certainty', sourceIndex + 1);
+      if (hasMainPossibilityClaim(sourceSentence)) {
+        const possibilityRemoved = !hasPossibilityMarker(alignedText)
+          && !/(?:이해되|해석되|판단되|볼\s*수\s*있)/u.test(alignedText);
+        if (possibilityRemoved && hasGoalFrame(alignedText)) {
+          add('possibility_changed_to_goal', sourceIndex + 1);
+        } else {
+          const shifted = possibilityRemoved && (
+            /(?:한다|된다|이다|있다|확정된다|분명하다)[.!?。！？]?(?:\s|$)/u.test(alignedText)
+            || /(?:분명히|명확히|확실히)[^.!?。！？\n]{0,40}(?:보여\s*준다|드러낸다|입증한다|확인된다)/u.test(alignedText)
+          );
+          if (shifted) add('possibility_hardened_to_certainty', sourceIndex + 1);
+        }
+      }
+
+      if (hasEpistemicHedge(sourceSentence)) {
+        const hedgeRemoved = !hasEpistemicHedge(alignedText);
+        const shifted = hedgeRemoved
+          && hasDirectDeclarativeEnding(alignedText)
+          && (
+            hasCertaintyMarker(alignedText)
+            || alignedCoreSimilarity(sourceSentence, alignedText) >= 0.34
+          );
+        if (shifted) add('epistemic_hedge_hardened', sourceIndex + 1);
+      }
+
+      if (hasNecessityClaim(sourceSentence) && !hasImpossibilityClaim(sourceSentence)) {
+        const shifted = hasImpossibilityClaim(alignedText);
+        if (shifted) add('necessity_strengthened_to_impossibility', sourceIndex + 1);
+      }
+
+      if (hasTentativeNormativeClaim(sourceSentence)) {
+        const shifted = hasFirmNormativeClaim(alignedText)
+          && !hasTentativeNormativeClaim(alignedText);
+        if (shifted) add('tentative_norm_hardened', sourceIndex + 1);
+      }
+
+      if (hasCollaborativeRoleQualifier(sourceSentence)) {
+        const shifted = hasDirectCompletionClaim(alignedText)
+          && !hasCollaborativeRoleQualifier(alignedText);
+        if (shifted) add('collaborative_role_scope_removed', sourceIndex + 1);
+      }
+
+      if (hasExternalResponsibilityRejection(sourceSentence)) {
+        const shifted = hasResponsibilityTransferToPerson(alignedText)
+          && !hasExternalResponsibilityRejection(alignedText);
+        if (shifted) add('responsibility_attribution_shifted_to_person', sourceIndex + 1);
+      }
+
+      if (hasResponsibilityForChoice(sourceSentence)) {
+        const shifted = hasResponsibilityForOutcome(alignedText)
+          && !hasResponsibilityForChoice(alignedText);
+        if (shifted) add('responsibility_object_changed_to_outcome', sourceIndex + 1);
+      }
+
+      if (hasImportanceClaim(sourceSentence)) {
+        const shifted = hasObligationClaim(alignedText)
+          && !hasImportanceClaim(alignedText);
+        if (shifted) add('importance_hardened_to_obligation', sourceIndex + 1);
+      }
+
+      // `이에`처럼 중립적인 연결을 `이를 보완하기 위해`로 바꾸면 연구자가
+      // 기존 연구의 결함을 직접 보완하려 했다는 목적 관계가 새로 생긴다.
+      // 문장 유사도만으로는 사실 추가로 보이지 않으므로 관계 감사에서 별도로
+      // 잡고, 원문에 같은 보완 목적이 실제로 있을 때는 허용한다.
+      if (hasExplicitRemediationPurpose(alignedText)
+          && !hasExplicitRemediationPurpose(sourceSentence)) {
+        add('neutral_link_hardened_to_remediation', sourceIndex + 1);
+      }
+
+      // 범위를 넓히거나 예외를 없애는 부사는 짧지만 명제 강도를 바꾼다.
+      // 원문에 없던 `일괄적으로·전면적으로·반드시` 등을 문체 장식으로
+      // 주입하지 못하게 원문 대응 문장 단위로 비교한다.
+      if (introducedScopeQualifier(sourceSentence, alignedText)) {
+        add('unsupported_scope_qualifier', sourceIndex + 1);
+      }
+
+      const sourceConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(sourceSentence);
+      const sourceSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(sourceSentence);
+      const outputSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(alignedText);
+      const outputConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(alignedText);
+      if (sourceConcurrent && !sourceSequential && outputSequential && !outputConcurrent) {
+        add('concurrent_relation_hardened_to_sequence', sourceIndex + 1);
+      }
+      return issues;
+    };
+    let issues = assessPair(alignment.text);
+    // Paragraph/sentence expansion can put the true partner outside the local
+    // proportional window. Recheck only a flagged pair, with a bounded global
+    // single-sentence search. A clearly stronger, unique match is required;
+    // ambiguous repetitions and genuine split sentences keep the original audit.
+    if (issues.length && outputSentences.length <= 400) {
+      const candidates = alignedOutputCandidates(sourceSentence, sourceIndex,
+        sourceSentences.length, outputSentences,
+        { window: outputSentences.length, maxOutputGroup: 1 });
+      const best = candidates[0], runnerUp = candidates[1];
+      if (best && best.score >= 0.45 && best.score >= alignment.score + 0.1
+          && (!runnerUp || best.score - runnerUp.score >= 0.12)) {
+        issues = assessPair(best.text);
       }
     }
-
-    if (hasEpistemicHedge(sourceSentence)) {
-      const hedgeRemoved = !hasEpistemicHedge(alignedText);
-      const shifted = hedgeRemoved
-        && hasDirectDeclarativeEnding(alignedText)
-        && (
-          hasCertaintyMarker(alignedText)
-          || alignedCoreSimilarity(sourceSentence, alignedText) >= 0.34
-        );
-      if (shifted) add('epistemic_hedge_hardened', sourceIndex + 1);
-    }
-
-    if (hasNecessityClaim(sourceSentence) && !hasImpossibilityClaim(sourceSentence)) {
-      const shifted = hasImpossibilityClaim(alignedText);
-      if (shifted) add('necessity_strengthened_to_impossibility', sourceIndex + 1);
-    }
-
-    if (hasTentativeNormativeClaim(sourceSentence)) {
-      const shifted = hasFirmNormativeClaim(alignedText)
-        && !hasTentativeNormativeClaim(alignedText);
-      if (shifted) add('tentative_norm_hardened', sourceIndex + 1);
-    }
-
-    if (hasCollaborativeRoleQualifier(sourceSentence)) {
-      const shifted = hasDirectCompletionClaim(alignedText)
-        && !hasCollaborativeRoleQualifier(alignedText);
-      if (shifted) add('collaborative_role_scope_removed', sourceIndex + 1);
-    }
-
-    if (hasExternalResponsibilityRejection(sourceSentence)) {
-      const shifted = hasResponsibilityTransferToPerson(alignedText)
-        && !hasExternalResponsibilityRejection(alignedText);
-      if (shifted) add('responsibility_attribution_shifted_to_person', sourceIndex + 1);
-    }
-
-    if (hasResponsibilityForChoice(sourceSentence)) {
-      const shifted = hasResponsibilityForOutcome(alignedText)
-        && !hasResponsibilityForChoice(alignedText);
-      if (shifted) add('responsibility_object_changed_to_outcome', sourceIndex + 1);
-    }
-
-    if (hasImportanceClaim(sourceSentence)) {
-      const shifted = hasObligationClaim(alignedText)
-        && !hasImportanceClaim(alignedText);
-      if (shifted) add('importance_hardened_to_obligation', sourceIndex + 1);
-    }
-
-    // `이에`처럼 중립적인 연결을 `이를 보완하기 위해`로 바꾸면 연구자가
-    // 기존 연구의 결함을 직접 보완하려 했다는 목적 관계가 새로 생긴다.
-    // 문장 유사도만으로는 사실 추가로 보이지 않으므로 관계 감사에서 별도로
-    // 잡고, 원문에 같은 보완 목적이 실제로 있을 때는 허용한다.
-    if (hasExplicitRemediationPurpose(alignedText)
-        && !hasExplicitRemediationPurpose(sourceSentence)) {
-      add('neutral_link_hardened_to_remediation', sourceIndex + 1);
-    }
-
-    // 범위를 넓히거나 예외를 없애는 부사는 짧지만 명제 강도를 바꾼다.
-    // 원문에 없던 `일괄적으로·전면적으로·반드시` 등을 문체 장식으로
-    // 주입하지 못하게 원문 대응 문장 단위로 비교한다.
-    if (introducedScopeQualifier(sourceSentence, alignedText)) {
-      add('unsupported_scope_qualifier', sourceIndex + 1);
-    }
-
-    const sourceConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(sourceSentence);
-    const sourceSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(sourceSentence);
-    const outputSequential = /(?:한|한\s*|된|된\s*|하고\s*난)\s*(?:뒤|후)|이후|먼저[^.!?。！？\n]{0,50}(?:다음|이어)/u.test(alignedText);
-    const outputConcurrent = /(?:면서|으며|동시에|함께|및|을\s*통해|를\s*통해)/u.test(alignedText);
-    if (sourceConcurrent && !sourceSequential && outputSequential && !outputConcurrent) {
-      add('concurrent_relation_hardened_to_sequence', sourceIndex + 1);
-    }
+    for (const issue of issues) add(issue.family, issue.ordinal);
   });
 
   const sourceUrgency = countMatches(source, /(?:바로|즉시|곧바로)\s+(?:움직|착수|시작|실행|대응|신청|지원|결정|나섰)/gu);

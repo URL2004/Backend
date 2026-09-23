@@ -71,6 +71,15 @@ require.cache[configPath] = {
 };
 
 const history = require('../lib/historyService');
+test('history retains bounded numeric omission restoration provenance without raw text', async () => {
+  await history.saveAnalyzeHistory({uid:'history-user',requestId:'restore-counts',opType:'humanize',
+    text:'합성 원문이다.',needed:10,mode:'blog',result:{outputText:'합성 결과다.'},
+    engineMeta:{deterministicOmissionRestoreCount:2,confirmedCompoundClauseRestoreCount:1,privateRepairText:'never store'}});
+  const meta=rows.get('users/history-user/history/restore-counts').engineMeta;
+  assert.equal(meta.deterministicOmissionRestoreCount,2);
+  assert.equal(meta.confirmedCompoundClauseRestoreCount,1);
+  assert.equal(meta.privateRepairText,undefined);
+});
 
 test('paragraph refinement clears merged stale engine verification and calibration proof', async () => {
   const target = 'users/history-user/history/refined-metadata';

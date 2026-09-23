@@ -2,6 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, missingTerminalBoundaries, koreanStart, normalizeCompact } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
+const { repairParentheticalParticles } = require('./parentheticalParticles');
 const freezeBlocks = require('../engine/freezeblocks');
 const layoutStructure = require('./layoutStructure');
 const { restoreSourceSentenceOrdinals } = require('./sourceSentenceRestore');
@@ -12,7 +13,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 34;
+const VERSION = 35;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -2379,6 +2380,11 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   const groundedEditRepair = repairSourceBackedEdits(source, text);
   text = groundedEditRepair.text;
   changes.push(...groundedEditRepair.changeCodes);
+  const parentheticalRepair = repairParentheticalParticles(source, text);
+  text = parentheticalRepair.text;
+  for (let index = 0; index < parentheticalRepair.repairCount; index += 1) {
+    changes.push('introduced_parenthetical_particle');
+  }
   const sourceLanguageRepair = repairCommonSourceLanguage(text);
   text = sourceLanguageRepair.text;
   changes.push(...sourceLanguageRepair.changes);

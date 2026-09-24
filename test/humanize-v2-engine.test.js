@@ -13,6 +13,24 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+for (const mode of ['blog', 'formal', 'polish']) test(`${mode}: label-heavy middle paragraphs all reach primary editing`, {concurrency:false}, async t => {
+  const text = Array.from({length: 20}, (_, i) => `항목 ${i + 1}\n관찰: 시료 ${i + 1}의 색을 기록했다.\n계획: 다음 관찰에서 색의 차이를 비교한다.`).join('\n\n')
+    .replace('시료 11의 색을 기록했다.', '시료 11의 색을 기록햇다.');
+  const probe = {active:0,max:0};
+  const {calls} = installEngineMock(t, {concurrencyProbe:probe, humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT')
+    .replace('기록햇다', '기록했다').replace('색을 기록했다', '색을 관찰해 기록했다').replace('색의 차이를 비교한다','색이 어떻게 다른지 비교한다')});
+  const out = await engine.run({text,mode,uid:'structured-coverage-unit',config:config()});
+  assert.ok(out.engineMeta.primaryEligibleChunkCount > 18);
+  assert.equal(out.engineMeta.primaryAttemptedChunkCount, out.engineMeta.primaryEligibleChunkCount);
+  assert.equal(out.engineMeta.primaryUnattemptedChunkCount, 0);
+  assert.equal(out.engineMeta.deferredLabelMicroChunkCount, 0);
+  assert.ok(calls.filter(c=>c.name==='gpt_prod_humanize_result').length >= out.engineMeta.primaryEligibleChunkCount);
+  assert.ok(probe.max <= 2);
+  assert.notEqual(out.status, 'blocked');
+  assert.doesNotMatch(out.result.outputText, /기록햇다/u, 'middle-body correction must survive final reassembly');
+  assert.match(out.result.outputText, /시료 11/u);
+});
+
 test('source-backed mixed-script correction reaches a semantically verified advanced result',{concurrency:false},async t=>{
  const text='관찰을 시작하며 시료의 색을 기록했다. 관찰 기록을 바탕으로 두 시료의 차이를 분석하고 다음 조사에서 비교할 조건을 정리했다.';
  installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT').replace('관찰을 시작하며','觀찰을 시작하며').replace('색을 기록했다','색을 관찰해 기록했다')});
@@ -312,7 +330,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.65');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.66');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1605,7 +1623,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.65');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.66');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

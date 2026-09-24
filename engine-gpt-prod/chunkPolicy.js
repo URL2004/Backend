@@ -1,13 +1,28 @@
 'use strict';
 
 function shouldPassThrough(value) {
-  const compact = String(value || '').replace(/\s+/g, '');
-  return compact.length < 50 && !/[.!?…다요죠함임음까]$/.test(compact);
+  // Structural protection belongs to structureChunk, not a second length or
+  // sentence-ending heuristic. Short editable headings/answers can contain
+  // spelling errors too. Only empty/separator-only fragments bypass editing.
+  return !/[\p{L}\p{N}]/u.test(String(value || ''));
 }
 
 function shouldCallModel(chunk, mode = 'assignment') {
   if (!chunk || chunk.locked) return false;
-  return mode === 'polish' || !shouldPassThrough(chunk.text);
+  return !shouldPassThrough(chunk.text);
+}
+
+function primaryCoverage(chunks, records, mode) {
+  const eligible = (chunks || []).filter(chunk => shouldCallModel(chunk, mode));
+  const attempted = new Set((records || [])
+    .filter(record => record && !record.locked && !record.skipped)
+    .map(record => record.index));
+  const attemptedCount = eligible.filter(chunk => attempted.has(chunk.index)).length;
+  return {
+    primaryEligibleChunkCount: eligible.length,
+    primaryAttemptedChunkCount: attemptedCount,
+    primaryUnattemptedChunkCount: eligible.length - attemptedCount
+  };
 }
 
 function shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, mode = '', requestStrength = '') {
@@ -34,5 +49,6 @@ function shouldPreserveVoiceSentenceBoundaries(source, voiceProfile, mode = '', 
 module.exports = {
   shouldPassThrough,
   shouldCallModel,
+  primaryCoverage,
   shouldPreserveVoiceSentenceBoundaries
 };

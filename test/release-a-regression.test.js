@@ -697,6 +697,7 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
     humanizationOverallDepthPass: true, humanizationEditTargetMet: true,
     humanizationTargetDepthGap: 0,
     primaryApprovedModelChunkCount: 3, approvedModelChunkCount: 4,
+    primaryEligibleChunkCount: 39, primaryAttemptedChunkCount: 39, primaryUnattemptedChunkCount: 0,
     sectionRecoverySelectedCount: 6, sectionRecoveryAttemptCount: 4,
     sectionRecoveryAppliedCount: 2, sectionRecoveryEscalationCount: 1,
     sectionRecoveryTargetOnlyCount: 2,
@@ -767,6 +768,9 @@ test('이용 기록 engineMeta는 깊이·장르·한국어 관측값만 축약�
   assert.equal(compact.macroDiscourseRecomposedParagraphCount, 2);
   assert.equal(compact.substantiveCarryoverRatio, 0.18);
   assert.equal(compact.primaryApprovedModelChunkCount, 3);
+  assert.equal(compact.primaryEligibleChunkCount, 39);
+  assert.equal(compact.primaryAttemptedChunkCount, 39);
+  assert.equal(compact.primaryUnattemptedChunkCount, 0);
   assert.equal(compact.approvedModelChunkCount, 4);
   assert.equal(compact.sectionRecoverySelectedCount, 6);
   assert.equal(compact.sectionRecoveryAppliedCount, 2);

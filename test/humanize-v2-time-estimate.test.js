@@ -64,6 +64,7 @@ test('근거 검색은 같은 문서의 예상 범위를 늘리고 입력 본문
 
 test('잠긴 구조와 짧은 표제는 모델 호출 청크에서 제외한다', () => {
   assert.equal(shouldCallModel({ locked: true, text: '긴 본문 문장입니다. '.repeat(10) }), false);
-  assert.equal(shouldCallModel({ locked: false, text: 'Ⅰ. 서론' }), false);
+  assert.equal(shouldCallModel({ locked: true, text: 'Ⅰ. 서론' }), false);
+  assert.equal(shouldCallModel({ locked: false, text: '관찰 결과를 비교하는 방식' }), true);
   assert.equal(shouldCallModel({ locked: false, text: '이 문장은 실제로 변환할 수 있을 만큼 충분한 길이와 완결된 의미를 갖고 있습니다.' }), true);
 });

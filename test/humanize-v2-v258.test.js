@@ -1008,7 +1008,7 @@ test('휴머나이징 최소선 통과와 권장 목표 미달은 서로 다른 
   ]);
 });
 
-test('라벨이 많은 polish 문서는 대표 본문만 1차 호출하고 잔여 오류를 문서 감사에 맡긴다', () => {
+test('라벨이 많은 polish 문서도 짧은 답변 전체가 1차 편집 대상이다', () => {
   const chunks = Array.from({ length: 36 }, (_, index) => ({
     index,
     text: index === 35
@@ -1021,20 +1021,11 @@ test('라벨이 많은 polish 문서는 대표 본문만 1차 호출하고 잔�
       flags: ['label_heavy']
     }
   };
-  const deferred = chunks.map((chunk, index) => engine.shouldDeferLabelMicroFragment({
-    chunk,
-    chunks,
-    index,
-    documentProfile,
-    mode: 'polish'
-  }));
-
-  assert.equal(deferred.filter(Boolean).length, 28);
-  assert.equal(deferred.filter(value => !value).length, 8);
-  assert.equal(deferred[35], false, 'known Korean repair target must stay in the primary-call set');
+  const policy = require('../engine-gpt-prod/chunkPolicy');
+  assert.equal(chunks.filter(chunk => policy.shouldCallModel(chunk, 'polish')).length, 36);
 });
 
-test('라벨이 많은 일반 문서도 미세 본문 호출 수를 제한하고 대표 문장은 유지한다', () => {
+test('라벨이 많은 일반 문서는 사전 등록된 교정 힌트 없이도 전체를 편집한다', () => {
   const chunks = Array.from({ length: 30 }, (_, index) => ({
     index,
     text: index === 29
@@ -1047,17 +1038,8 @@ test('라벨이 많은 일반 문서도 미세 본문 호출 수를 제한하고
       flags: ['label_heavy']
     }
   };
-  const deferred = chunks.map((chunk, index) => engine.shouldDeferLabelMicroFragment({
-    chunk,
-    chunks,
-    index,
-    documentProfile,
-    mode: 'assignment'
-  }));
-
-  assert.equal(deferred.filter(Boolean).length, 18);
-  assert.equal(deferred.filter(value => !value).length, 12);
-  assert.equal(deferred[29], false, 'known Korean repair target must stay in the primary-call set');
+  const policy = require('../engine-gpt-prod/chunkPolicy');
+  assert.equal(chunks.filter(chunk => policy.shouldCallModel(chunk, 'assignment')).length, 30);
 });
 
 test('과도하게 긴 원문 문단을 가독성 목표 안에서 나눈 결과는 구조 손상으로 경고하지 않는다', () => {

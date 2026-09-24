@@ -54,7 +54,7 @@ const {
   classifyModelFailure,
   isNonEscalatableModelFailureCode
 } = require('./modelFailure');
-const { shouldPassThrough, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
+const { shouldCallModel, primaryCoverage, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const { createRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
@@ -69,7 +69,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.65';
+const VERSION = 'gpt-prod-v2.5.66';
 const DETECT_VERSION = 'gpt-detect-v1.41';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -386,15 +386,7 @@ async function runEngine({
     : null;
   const primaryEditableChunkIndices = new Set(chunks
     .flatMap((chunk, index) => (
-      chunk?.locked !== true
-      && !shouldDeferLabelMicroFragment({
-        chunk,
-        chunks,
-        index,
-        documentProfile,
-        mode: selectedMode
-      })
-      && !(shouldPassThrough(chunk?.text) && selectedMode !== 'polish')
+      shouldCallModel(chunk, selectedMode)
         ? [Number.isInteger(chunk?.index) ? chunk.index : index]
         : []
     )));
@@ -451,6 +443,7 @@ async function runEngine({
     });
     records[i] = { ...record, sourceSpanId: chunk.sourceSpanId, sourceStart: chunk.start, sourceEnd: chunk.end };
   })), signal);
+  const primaryChunkCoverage = primaryCoverage(chunks, records, selectedMode);
   const editableRecords = records.filter(record => record?.locked !== true && record?.skipped !== true);
   const allEditableModelCallsFailed = editableRecords.length > 0
     && editableRecords.every(record => isModelFailureRecord(record));
@@ -4354,6 +4347,7 @@ async function runEngine({
     transformedChunkCount: chunkExecution.transformedChunkCount,
     chunkConcurrency,
     primaryApprovedModelChunkCount,
+    ...primaryChunkCoverage,
     approvedModelChunkCount,
     approvedSafeEditCount: finalSafePolishEditApplied ? 1 : 0,
     modelFailureChunkCount,
@@ -4915,28 +4909,7 @@ async function processChunk({
       warnings: [chunk.skipReason || 'structure_locked']
     });
   }
-  if (shouldDeferLabelMicroFragment({
-    chunk,
-    chunks,
-    index,
-    documentProfile,
-    mode
-  })) {
-    // 라벨형 설문·기록표의 짧은 답변을 각각 모델 호출하면 5~6천 자 문서도
-    // 수십 회 호출된다. 대표 본문만 1차 변환하고 나머지는 원문으로 보존한
-    // 뒤, 절 회복·문서 단위 감사가 실제 잔여 대상을 다룬다. 라벨 접두부와
-    // 행 경계는 기존 구조 잠금을 그대로 유지한다.
-    chunk.outputText = original;
-    return chunkRecord({
-      chunk,
-      outputText: original,
-      skipped: true,
-      warnings: [mode === 'polish'
-        ? 'polish_label_micro_fragment_deferred'
-        : 'label_micro_fragment_deferred']
-    });
-  }
-  if (shouldPassThrough(original) && mode !== 'polish') {
+  if (!shouldCallModel(chunk, mode)) {
     chunk.outputText = original;
     return chunkRecord({ chunk, outputText: original, skipped: true });
   }
@@ -8650,54 +8623,6 @@ function looksGeneratedTruncated(source, outputText) {
     && !sourcePreflight.isPossiblyIncompleteSentence(before);
 }
 
-const POLISH_LABEL_FRAGMENT_MODEL_BUDGET = 8;
-const GENERAL_LABEL_FRAGMENT_MODEL_BUDGET = 12;
-
-function shouldDeferLabelMicroFragment({
-  chunk,
-  chunks,
-  index,
-  documentProfile,
-  mode = ''
-} = {}) {
-  const flags = new Set(documentProfile?.formatProfile?.flags || []);
-  if (!flags.has('label_heavy') || chunk?.locked) return false;
-  const editable = (chunks || [])
-    .map((item, itemIndex) => ({ item, itemIndex }))
-    .filter(entry => !entry.item?.locked && String(entry.item?.text || '').trim());
-  const polish = mode === 'polish';
-  const activationThreshold = polish ? 12 : 18;
-  if (editable.length <= activationThreshold) return false;
-  const modelBudget = polish
-    ? POLISH_LABEL_FRAGMENT_MODEL_BUDGET
-    : GENERAL_LABEL_FRAGMENT_MODEL_BUDGET;
-
-  const ranked = editable
-    .map(entry => {
-      const text = String(entry.item.text || '').trim();
-      const compactLength = text.replace(/\s+/gu, '').length;
-      const hasRepairHint = Boolean(koreanRefinement.buildSourcePromptHints(text, {
-        documentProfile,
-        mode: polish ? 'polish' : mode
-      }));
-      const completeSentence = /[.!?。！？]\s*[”’"'」』》〉)\]]*$/u.test(text)
-        || /(?:다|요|죠|니다|니까|까요|함|임|음)$/u.test(text);
-      return {
-        ...entry,
-        score: (hasRepairHint ? 10000 : 0)
-          + (completeSentence ? 1000 : 0)
-          + Math.min(500, compactLength)
-      };
-    })
-    .sort((left, right) => right.score - left.score || left.itemIndex - right.itemIndex);
-  const selected = new Set(
-    ranked
-      .slice(0, Math.min(modelBudget, ranked.length))
-      .map(entry => entry.itemIndex)
-  );
-  return !selected.has(Number(index));
-}
-
 function reconcileSemanticOmissionRestores(report, restored) {
   const numericOnly = (restored?.restored || []).length > 0
     && restored.restored.every(item => item.anchorType === 'quantified_paragraph_endpoints');
@@ -9023,7 +8948,6 @@ module.exports = {
   configuredChunkConcurrency,
   mapWithConcurrency,
   depthQualityWarnings,
-  shouldDeferLabelMicroFragment,
   evaluateChunkGate,
   auditGeneralSurfaceCandidate,
   auditGeneralSurfaceCandidateWithStructure,

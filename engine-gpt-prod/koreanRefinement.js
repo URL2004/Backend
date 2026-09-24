@@ -27,6 +27,10 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  introduced_mixed_script_word: {
+    weight: 3, repairable: true, deterministicSafe: true,
+    message: '원문의 한글 단어 일부가 새 한자로 바뀌었어요. 원문 대응이 확인되는 표기를 복원해 주세요.'
+  },
   introduced_action_nominalization: {
     weight: 3, repairable: true, deterministicSafe: false,
     message: '원문의 직접적인 행동 서술을 “~하는 일을 이어가다·시작하다”로 불필요하게 늘였어요.'
@@ -917,6 +921,12 @@ function repairIntroducedQuoteBoundaryLineBreaks(value, source, context = {}) {
   text = attribution.text;
   for (const [code, count] of Object.entries(attribution.changeCounts || {})) {
     addCount(counts, code, count);
+  }
+  const dependent = require('./dependentQuoteLayout');
+  if (dependent.canRepairDependentQuoteLayout(context.profile, context)) {
+    const repaired = dependent.dependentQuoteLayout(text);
+    text = repaired.text;
+    if (repaired.applied) addCount(counts, 'dependent_quote_prose_join', repaired.repairCount);
   }
   return { text, changeCounts: counts };
 }

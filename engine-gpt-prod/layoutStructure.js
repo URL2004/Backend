@@ -1,6 +1,7 @@
 'use strict';
 
 const { splitSentences } = require('../engine/koreanText');
+const { dependentQuoteLayout } = require('./dependentQuoteLayout');
 
 const MAX_PARAGRAPH_BARE = 1100;
 const MAX_PARAGRAPH_SENTENCES = 12;
@@ -120,6 +121,7 @@ function buildLineRecords(value) {
     ])
   );
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
+  const dependentQuoteLines = dependentQuoteLayout(source).proseLines;
   for (const record of nonEmpty) {
     record.cellCount = tableIndices.has(record.index) ? tableColumnCount(record.raw) : 0;
     record.tabularSeparator = tableIndices.has(record.index) && /\t/u.test(String(record.raw || ''))
@@ -151,6 +153,13 @@ function buildLineRecords(value) {
       parallelSectionHeading: parallelSectionHeadingIndices.has(record.index),
       labelGroupHeading: labelGroupHeadingIndices.has(record.index)
     });
+    if (dependentQuoteLines.has(record.index)
+        && !tableIndices.has(record.index) && !signatureIndices.has(record.index)
+        && !scriptCues.has(record.index)
+        && ['title', 'heading', 'quote', 'prose'].includes(record.role)) {
+      record.role = 'prose';
+      record.dependentQuoteProse = true;
+    }
   }
   return records;
 }

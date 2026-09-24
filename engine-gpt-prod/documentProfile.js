@@ -588,8 +588,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.long_explainer += 3;
   }
 
-  const quoteLines = lines.filter(line => /^(?:[>“"'‘]|[-*]\s)/u.test(line)).length;
-  const poemLikeLines = lines.filter(line => line.length <= 34 && !/[.!?。！？]$/u.test(line)).length;
+  const verseCandidateLines = require('./dependentQuoteLayout').dependentQuoteLayout(text).text.split(/\r?\n/u).map(line=>line.trim()).filter(Boolean);
+  const quoteLines = verseCandidateLines.filter(line => /^(?:[>“"'‘]|[-*]\s)/u.test(line)).length;
+  const poemLikeLines = verseCandidateLines.filter(line => line.length <= 34 && !/[.!?。！？]$/u.test(line)).length;
   const structuredFunctionalFormat = ['table_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'questionnaire']
     .some(flag => formatProfile.flags.includes(flag));
   const explainerConceptSignals = count(text, /(?:개념|원리|이론|역사적\s*배경|특징|구조|기능|영향|관계|차이|의미|과정|사례|쟁점|메커니즘|제도)/gu);
@@ -635,9 +636,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const proseSceneSignals = count(text, /(?:골목|창문|방\s*안|문틈|발자국|숨소리|빗소리|햇빛|달빛|어둠|냄새|바람|비가|눈이|밤(?:은|이|의)|새벽)/gu);
   add(scores, 'creative', strongCreativeSignals, 1.05);
   if (!structuredFunctionalFormat
-      && lines.length >= 4
-      && (poemLikeLines / lines.length >= 0.65 || require('./verseLayout').hasStanzaRefrainLayout(text))
-      && median(lines.map(line => line.length)) <= 32) scores.creative += 3.4;
+      && verseCandidateLines.length >= 4
+      && (poemLikeLines / verseCandidateLines.length >= 0.65 || require('./verseLayout').hasStanzaRefrainLayout(text))
+      && median(verseCandidateLines.map(line => line.length)) <= 32) scores.creative += 3.4;
   if (quoteLines >= 3 && /[“”"']/u.test(text)) scores.creative += 1.1;
   if ((formatProfile.flags.includes('line_sensitive') || quoteLines >= 3 || strongCreativeSignals >= 1)
       && weakCreativeSignals >= 1) {
@@ -1278,7 +1279,8 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
     && blockquoteOutsideLines.every(line => layoutStructure.isKnownHeadingLine(line))
     && /(?:안녕하세요|드립니다|부탁드|감사합니다|저는|제가|저희|생각합니다|바랍니다|약속드립니다|선생님)/u.test(blockquoteBody);
   const appendixPresent = lines.some(line => /^(?:부록|Appendix)(?:\s|$)/iu.test(line));
-  const poemLikeLines = lines.filter(line => line.length <= 40 && !/[.!?。！？]$/u.test(line)).length;
+  const verseCandidateLines = require('./dependentQuoteLayout').dependentQuoteLayout(text).text.split(/\r?\n/u).map(line=>line.trim()).filter(Boolean);
+  const poemLikeLines = verseCandidateLines.filter(line => line.length <= 40 && !/[.!?。！？]$/u.test(line)).length;
   const assessmentItem = assessment?.isAssessmentItem === true;
   const scriptFrame = require('./scriptStructure').detectScriptStructure(text).isScript;
   const lineSensitive = require('./verseLayout').hasStanzaRefrainLayout(text) || scriptFrame || questionnaire.isQuestionnaire
@@ -1288,11 +1290,11 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
       && listItemCount < 3
       && labelLineCount < 2
       && headingCountValue < 2
-      && lines.length >= 4
-      && poemLikeLines / lines.length >= 0.6
-      && lines.filter(line => line.length <= 40).reduce((sum, line) => sum + line.length, 0)
-        / Math.max(1, lines.reduce((sum, line) => sum + line.length, 0)) >= 0.5
-      && median(lines.map(line => line.length)) <= 36);
+      && verseCandidateLines.length >= 4
+      && poemLikeLines / verseCandidateLines.length >= 0.6
+      && verseCandidateLines.filter(line => line.length <= 40).reduce((sum, line) => sum + line.length, 0)
+        / Math.max(1, verseCandidateLines.reduce((sum, line) => sum + line.length, 0)) >= 0.5
+      && median(verseCandidateLines.map(line => line.length)) <= 36);
   const flags = [];
   if (scriptFrame) flags.push('script_cues');
   if (headingCountValue >= 2) flags.push('sectioned');

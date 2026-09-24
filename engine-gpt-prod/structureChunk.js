@@ -180,10 +180,11 @@ function buildSourceLineRoleMap(text) {
   const map = new Map();
   for (const record of layoutStructure.buildLineRecords(text)) {
     if (record.blank) continue;
-    map.set(`@${record.start}:${record.end}`, [record.role]);
+    const role = record.dependentQuoteProse ? 'dependent_quote_prose' : record.role;
+    map.set(`@${record.start}:${record.end}`, [role]);
     const key = String(record.text || '');
     const roles = map.get(key) || [];
-    roles.push(record.role);
+    roles.push(role);
     map.set(key, roles);
   }
   return map;
@@ -234,6 +235,7 @@ function classifyPiece(piece, state) {
   }
 
   const sourceRole = sourceLineRole(state.sourceLineRoles, s, piece.start, piece.end);
+  if (sourceRole === 'dependent_quote_prose') return { locked: false, lockType: '', sectionLabel: state.currentSection };
   if (sourceRole === 'title') return { locked: true, lockType: 'title', sectionLabel: s };
   if (sourceRole === 'label') return { locked: true, lockType: 'label', sectionLabel: state.currentSection };
   if (sourceRole === 'code') return { locked: true, lockType: 'code', sectionLabel: state.currentSection };

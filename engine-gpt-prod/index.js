@@ -70,7 +70,7 @@ const {
 } = require('./humanizeContract');
 
 const VERSION = 'gpt-prod-v2.5.65';
-const DETECT_VERSION = 'gpt-detect-v1.39';
+const DETECT_VERSION = 'gpt-detect-v1.40';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -324,8 +324,25 @@ async function runEngine({
     documentProfile,
     approvedStructure: structureImprovement.applied
   });
-  const voiceProfile = buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode });
-  const lineBoundaryPolicy = String(voiceProfile?.lineBoundaryPolicy || 'none');
+  let voiceProfile = buildVoiceProfile(rawSource, { documentProfile, mode: selectedMode });
+  let lineBoundaryPolicy = String(voiceProfile?.lineBoundaryPolicy || 'none');
+  // Repair grammatical quote envelopes before chunk ownership is established.
+  // Otherwise a quoted clause becomes a locked title and later layout recovery
+  // restores the very whitespace that the prose repair just removed.
+  const dependentQuoteLayout = require('./dependentQuoteLayout');
+  let sourceDependentQuoteRepairCount = 0;
+  if (dependentQuoteLayout.canRepairDependentQuoteLayout(documentProfile, {
+    mode: selectedMode,
+    lineSensitive: lineBoundaryPolicy === 'all' || documentProfile?.formatProfile?.flags?.includes('line_sensitive')
+  })) {
+    const quoteLayout = dependentQuoteLayout.dependentQuoteLayout(rawSource);
+    rawSource = quoteLayout.text;
+    sourceDependentQuoteRepairCount = quoteLayout.repairCount;
+    if (quoteLayout.applied) {
+      voiceProfile = buildVoiceProfile(rawSource, {documentProfile,mode:selectedMode});
+      lineBoundaryPolicy = String(voiceProfile?.lineBoundaryPolicy || 'none');
+    }
+  }
   const layoutStructureLocked = lineBoundaryPolicy !== 'none';
   const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !layoutStructureLocked;
   const inlineCodeFreeze = literalSpans.freezeInlineCode(rawSource);
@@ -1305,7 +1322,7 @@ async function runEngine({
     });
     naturalnessRegressionSeen = koreanRefinementAudit.issueCodes.some(code => [
       'introduced_action_nominalization', 'introduced_condition_wish_mismatch', 'introduced_modifier_dislocation',
-      'introduced_evidential_topic_frame', 'introduced_reflection_agency_shift'
+      'introduced_evidential_topic_frame', 'introduced_reflection_agency_shift', 'introduced_mixed_script_word'
     ].includes(code));
     const deterministicRepair = koreanRefinement.applySafeDeterministicRepairs({
       source: auditSource,
@@ -4772,6 +4789,7 @@ async function runEngine({
     sourcePreflightIssueCodes: safeFailureCodeList(sourcePreflightAudit?.issueCodes),
     sourceSpacingRestoreAttemptCount,
     sourceSpacingRestoreApplied,
+    sourceDependentQuoteRepairCount,
     sourceSpacingRestoreBeforeCount,
     sourceSpacingRestoreAfterCount,
     sourceSpacingRestoreReason,

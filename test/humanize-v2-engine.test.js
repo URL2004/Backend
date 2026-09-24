@@ -13,6 +13,28 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+test('source-backed mixed-script correction reaches a semantically verified advanced result',{concurrency:false},async t=>{
+ const text='관찰을 시작하며 시료의 색을 기록했다. 관찰 기록을 바탕으로 두 시료의 차이를 분석하고 다음 조사에서 비교할 조건을 정리했다.';
+ installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT').replace('관찰을 시작하며','觀찰을 시작하며').replace('색을 기록했다','색을 관찰해 기록했다')});
+ const out=await engine.run({text,mode:'formal',documentProfileOverride:'report_assignment',uid:'mixed-script-unit',config:config()});
+ assert.notEqual(out.status,'blocked');
+ assert.doesNotMatch(out.result.outputText,/觀/u);
+ assert.match(out.result.outputText,/관찰을 시작하며/u);
+ assert.equal(out.engineMeta.semanticValidationStatus,'pass');
+});
+
+for (const mode of ['blog','formal']) test(`${mode}: dependent quotation paragraphs stay joined at delivery`, {concurrency:false}, async t=>{
+  const text='조사 과정에서는 자료의 특성을 비교했다. 처음의 질문이었던\n\n“자료를 어떻게 분류할까?”\n\n는 조사를 진행하면서\n\n“분류 기준은 어떤 차이를 만드는가?”\n\n라는 질문으로 구체화되었다. 다음 조사에서는 새로운 기준을 적용하고 그 차이를 정리하려고 한다.';
+  installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT').replace('자료의 특성을 비교했다','자료가 가진 특성을 비교하였다')});
+  const out=await engine.run({text,mode,documentProfileOverride:'report_assignment',uid:'dependent-quote-unit',config:config()});
+  assert.notEqual(out.status,'blocked');
+  assert.match(out.result.outputText,/질문이었던 “자료를 어떻게 분류할까\?”는 조사를 진행하면서 “분류 기준은 어떤 차이를 만드는가\?”라는 질문으로 구체화되었다/u);
+  assert.equal(out.engineMeta.structureSignaturePass,true);
+  assert.equal(out.engineMeta.sourceDependentQuoteRepairCount,4);
+  assert.equal(out.qualityWarnings.some(w=>w.code==='paragraph_structure_changed'),false);
+  if(mode==='formal')assert.equal(out.engineMeta.semanticValidationStatus,'pass');
+});
+
 test('advanced report repairs evidenced grammar before verified delivery', { concurrency: false }, async t => {
   const text = '이번 조사를 통해 수분은 용기의 재질에 따라 이동 속도가 달라진다고 결론 내렸다. 이는 ‘상태의 변화’이라기보다 관찰 결과에 가깝다. 처음에는 모든 자극을 없애야 한다고 생각했지만, 자극도 정상적인 감각 정보 전달에 사용된다는 점을 알게 되면서 생각이 달라졌다.';
   installEngineMock(t, { humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT')

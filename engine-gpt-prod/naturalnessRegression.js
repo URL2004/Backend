@@ -13,7 +13,19 @@ const escape = value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 function auditNaturalnessRegression(source, output, profile = 'unknown') {
   const sources = proseSpans(source), outputs = proseSpans(output);
   const findings = [];
+  const sourceWords = /\p{Script=Han}/u.test(output) && !/\p{Script=Han}/u.test(source)
+    ? [...new Set(sources.flatMap(s=>s.text.match(/[가-힣]{3,24}/gu)||[]))] : [];
   for (const target of outputs) {
+    for(const word of target.text.matchAll(/[\p{Script=Han}가-힣]{3,24}/gu)) {
+      if((word[0].match(/\p{Script=Han}/gu)||[]).length!==1 || !sourceWords.length) continue;
+      const pattern=new RegExp('^'+word[0].replace(/\p{Script=Han}/u,'[가-힣]')+'$','u');
+      const next=target.text.slice(word.index+word[0].length).match(/^\s+([가-힣]{2})/u)?.[1];
+      if(!next)continue;
+      const matches=sourceWords.filter(w=>pattern.test(w) && sources.some(s=>new RegExp(`(?<![가-힣])${w}\\s+${next}`,'u').test(s.text)));
+      if(matches.length!==1)continue;
+      const code='introduced_mixed_script_word';
+      findings.push({code,ordinal:target.ordinal,repair:{start:target.start+word.index,end:target.start+word.index+word[0].length,replacement:matches[0],ordinal:target.ordinal,code}});
+    }
     const nominal = [...target.text.matchAll(/(?<![가-힣])([가-힣]{2,24})는\s+일(?:을\s+이어가|부터\s+(?:탄탄히\s+)?시작하)/gu)];
     const condition = /려면\s*,?\s*[^.!?。！？]{5,180}고\s*싶(?:습니다|다|어요)/u.test(target.text)
       && !/(?:해야|필요|조건|전제|알리|묻|물어|알아보|설명|다고|라는)/u.test(target.text);

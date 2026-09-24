@@ -63,7 +63,7 @@ function splitExplicitParagraphs(value) {
     .filter(Boolean);
 }
 
-function buildLineRecords(value) {
+function buildLineRecords(value, { quoteAnalysis = null } = {}) {
   const source = String(value || '');
   const scriptCues = new Set(require('./scriptStructure').detectScriptStructure(source).cueIndices);
   const records = [];
@@ -121,8 +121,12 @@ function buildLineRecords(value) {
     ])
   );
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
-  const dependentQuoteLines = dependentQuoteLayout(source).proseLines;
-  for (const record of nonEmpty) {
+  // The optional analysis belongs only to this invocation, never a global text
+  // cache. Require exact source identity before reusing it.
+  const dependentQuoteLines = (quoteAnalysis?.source === source
+    ? quoteAnalysis.layout : dependentQuoteLayout(source)).proseLines;
+  for (let position = 0; position < nonEmpty.length; position++) {
+    const record = nonEmpty[position];
     record.cellCount = tableIndices.has(record.index) ? tableColumnCount(record.raw) : 0;
     record.tabularSeparator = tableIndices.has(record.index) && /\t/u.test(String(record.raw || ''))
       ? 'tab'
@@ -135,7 +139,6 @@ function buildLineRecords(value) {
       record.role = 'heading';
       continue;
     }
-    const position = nonEmpty.findIndex(item => item.index === record.index);
     const previous = position > 0 ? nonEmpty[position - 1] : null;
     const next = position + 1 < nonEmpty.length ? nonEmpty[position + 1] : null;
     const previousRaw = records[record.index - 1] || null;
@@ -780,8 +783,8 @@ function shouldPreserveLineBoundary(left, right, policy = 'structural') {
   return isStructuralRole(left.role) || isStructuralRole(right.role) || isHardProseBoundary(left, right);
 }
 
-function analyzeLineStructure(value) {
-  const records = buildLineRecords(value);
+function analyzeLineStructure(value, options = {}) {
+  const records = buildLineRecords(value, options);
   const nonEmpty = records.filter(record => !record.blank);
   const roleCounts = {};
   for (const record of nonEmpty) roleCounts[record.role] = (roleCounts[record.role] || 0) + 1;
@@ -902,17 +905,15 @@ function measureParagraphReadability(paragraphsOrText, options = {}) {
     : splitReadableParagraphs(paragraphsOrText);
   const limits = resolveParagraphReadabilityLimits(options);
   const details = paragraphs.map((paragraph, index) => {
-    const compact = bare(paragraph).length;
-    const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
+    const { compact, sentenceCount, structureDominated } = readabilityFeatures(paragraph, options);
     // 빈 줄 없이 이어진 `라벨: 본문` 묶음은 각 행 자체가 이미 독립적인
     // 읽기 단위다. 행 전체를 잠그지는 않되(본문은 계속 편집해야 함), 여러
     // 짧은 라벨 행의 문장 수를 한 산문 문단으로 합산하지 않는다. 단, 어느
     // 한 행의 본문 자체가 과장문이면 라벨 그룹이라는 이유로 면제하지 않는다.
     // 이전에는 이 묶음을 억지로 분할한 뒤 최종 구조 복원이 다시 합치면서
     // layoutRepair만 실패로 남고 실제 결과의 시각 여백도 사라졌다.
-    const structureDominated = isProtectedReadabilityParagraph(paragraph, options) || isStructureDominatedParagraph(paragraph)
-      || isReadableInlineLabelGroup(paragraph, options);
-    const splitNeed = structureDominated ? 1 : paragraphSplitNeed(paragraph, options);
+    const splitNeed = structureDominated ? 1 : Math.max(1,
+      Math.ceil(compact / limits.maxBare), Math.ceil(sentenceCount / limits.maxSentences));
     return { index, compact, sentenceCount, structureDominated, splitNeed, overlong: splitNeed > 1 };
   });
   return {
@@ -950,13 +951,19 @@ function measureParagraphReadabilityDetails(paragraphsOrText, options = {}) {
   const paragraphs = Array.isArray(paragraphsOrText)
     ? paragraphsOrText
     : splitReadableParagraphs(paragraphsOrText);
-  return paragraphs.map((paragraph, index) => {
-    const compact = bare(paragraph).length;
-    const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
-    const structureDominated = isProtectedReadabilityParagraph(paragraph, options) || isStructureDominatedParagraph(paragraph)
-      || isReadableInlineLabelGroup(paragraph, options);
-    return { index, compact, sentenceCount, structureDominated };
-  });
+  return paragraphs.map((paragraph, index) => ({ index, ...readabilityFeatures(paragraph, options) }));
+}
+
+function readabilityFeatures(paragraph, options) {
+  const compact = bare(paragraph).length;
+  const sentenceCount = splitSentences(String(paragraph || '')).filter(Boolean).length;
+  const protectedParagraph = isProtectedReadabilityParagraph(paragraph, options);
+  // Three separate helpers previously rebuilt the same local line graph, and
+  // splitNeed split the same sentences again. Reuse only within this paragraph.
+  const records = protectedParagraph ? [] : buildLineRecords(paragraph).filter(record => !record.blank);
+  const structureDominated = protectedParagraph || isStructureDominatedParagraph(paragraph, records)
+    || isReadableInlineLabelGroup(paragraph, options, records);
+  return { compact, sentenceCount, structureDominated };
 }
 
 function isProtectedReadabilityParagraph(value, options) {
@@ -967,15 +974,15 @@ function isProtectedReadabilityParagraph(value, options) {
   });
 }
 
-function isReadableInlineLabelGroup(value, options = {}) {
-  const records = buildLineRecords(value).filter(record => !record.blank);
+function isReadableInlineLabelGroup(value, options = {}, suppliedRecords = null) {
+  const records = suppliedRecords || buildLineRecords(value).filter(record => !record.blank);
   return records.length >= 2
     && records.every(record => String(record?.role || '') === 'label_inline'
       && paragraphSplitNeed(labelParts(record.text)?.rest || '', options) === 1);
 }
 
-function isStructureDominatedParagraph(value) {
-  const records = buildLineRecords(value).filter(record => !record.blank);
+function isStructureDominatedParagraph(value, suppliedRecords = null) {
+  const records = suppliedRecords || buildLineRecords(value).filter(record => !record.blank);
   if (!records.length) return false;
   // 표나 목록 한 줄이 섞였다는 이유로 그 뒤의 긴 산문까지 구조 블록으로
   // 면제하지 않는다. 문단의 모든 비어 있지 않은 행이 구조 행일 때만

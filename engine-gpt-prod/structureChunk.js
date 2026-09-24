@@ -1568,25 +1568,27 @@ function restoreParagraphLayoutBase({
     };
   }
   const formatFlags = new Set(typeof documentProfile === 'object' ? (documentProfile?.formatProfile?.flags || []) : []);
-  const sourceLineLayout = layoutStructure.analyzeLineStructure(source);
-  const resumeReadableUnits = profileName === 'resume_application'
+  // These facts are only consumed by the resume ownership rule. Computing a
+  // complete source readability report here for every genre repeated all line
+  // and paragraph scans, even though its readability result was never used.
+  const titledResumeRecords = profileName === 'resume_application'
     ? layoutStructure.buildLineRecords(source)
       .filter(record => !record.blank)
+    : [];
+  const resumeReadableUnits = titledResumeRecords
       .filter(record => record.role === 'prose' && layoutStructure.isSentenceComplete(record.text))
       .map(record => String(record.raw || '').trim())
-      .filter(Boolean)
-    : [];
+      .filter(Boolean);
   const preserveResumeUnits = profileName === 'resume_application'
     && resumeReadableUnits.length >= 3
     // 빈 줄 없이 완결 행이 연속된 붙여넣기 형식만 문항 묶음으로 본다.
     // 명시적으로 나뉜 소수의 긴 문단은 기존처럼 문단 내부 역할 전환을
     // 기준으로 읽기 좋게 세분할 수 있다.
-    && Number(sourceLineLayout?.explicitParagraphCount || 0) === 1
-    && resumeReadableUnits.length === Number(sourceLineLayout?.nonEmptyLineCount || 0);
+    && layoutStructure.splitExplicitParagraphs(source).length === 1
+    && resumeReadableUnits.length === titledResumeRecords.length;
   // A heading must not disable the complete-line ownership contract beneath it.
   // Include headings as independent anchors, so unrelated experience lines are
   // never merged merely to satisfy a whole-document paragraph count.
-  const titledResumeRecords = layoutStructure.buildLineRecords(source).filter(record => !record.blank);
   const preserveTitledResumeUnits = profileName === 'resume_application' && mode !== 'polish'
     && resumeReadableUnits.length >= 3
     && titledResumeRecords.some(record => ['title', 'heading'].includes(record.role))

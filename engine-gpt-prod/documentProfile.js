@@ -64,7 +64,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const sentences = splitSentences(text, { preserveLines: false });
   const questionnaire = detectQuestionnaire(lines);
   const assessment = detectAssessmentItem(lines);
-  const formatProfile = detectFormatProfile(text, lines, sentences, questionnaire, assessment);
+  const quoteAnalysis = { source: text, layout: require('./dependentQuoteLayout').dependentQuoteLayout(text) };
+  const verseCandidateLines = quoteAnalysis.layout.text.split(/\r?\n/u).map(line=>line.trim()).filter(Boolean);
+  const formatProfile = detectFormatProfile(text, lines, sentences, questionnaire, assessment, { quoteAnalysis, verseCandidateLines });
   const scores = Object.fromEntries(CONTENT_GENRES.map(profile => [profile, 0]));
   const firstPersonSignals = computePovSeed(text).fp_singular;
   // `사진`, `오늘은`, `추천`처럼 주제 설명문에도 흔한 낱말 하나만으로 후기 장르를
@@ -588,7 +590,6 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.long_explainer += 3;
   }
 
-  const verseCandidateLines = require('./dependentQuoteLayout').dependentQuoteLayout(text).text.split(/\r?\n/u).map(line=>line.trim()).filter(Boolean);
   const quoteLines = verseCandidateLines.filter(line => /^(?:[>“"'‘]|[-*]\s)/u.test(line)).length;
   const poemLikeLines = verseCandidateLines.filter(line => line.length <= 34 && !/[.!?。！？]$/u.test(line)).length;
   const structuredFunctionalFormat = ['table_heavy', 'list_heavy', 'label_heavy', 'sectioned', 'questionnaire']
@@ -884,7 +885,8 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     questionnaire,
     formatProfile,
     firstPersonSignals,
-    commercialSignals
+    commercialSignals,
+    sentences
   });
   const candidateProfiles = ranked.slice(0, 5).map(item => ({
     profile: item.profile,
@@ -1254,10 +1256,12 @@ function isAssessmentExplanationProse(value) {
   return text.length >= 24 && /[.!?。！？]$/u.test(text);
 }
 
-function detectFormatProfile(text, lines, sentences, questionnaire, assessment = null) {
+function detectFormatProfile(text, lines, sentences, questionnaire, assessment = null, analysis = {}) {
   const compactLength = String(text || '').replace(/\s+/gu, '').length;
   const length = compactLength <= 100 ? 'short' : (compactLength >= 1500 ? 'long' : 'standard');
-  const layout = layoutStructure.analyzeLineStructure(text);
+  const quoteAnalysis = analysis.quoteAnalysis?.source === text ? analysis.quoteAnalysis
+    : { source: text, layout: require('./dependentQuoteLayout').dependentQuoteLayout(text) };
+  const layout = layoutStructure.analyzeLineStructure(text, { quoteAnalysis });
   const headingCountValue = lines.filter(line => !(questionnaire.isQuestionnaire && isQuestionLike(line))
     && layoutStructure.isKnownHeadingLine(line)).length;
   const listItemCount = Math.max(lines.filter(isListLine).length, layout.listLineCount || 0);
@@ -1279,7 +1283,8 @@ function detectFormatProfile(text, lines, sentences, questionnaire, assessment =
     && blockquoteOutsideLines.every(line => layoutStructure.isKnownHeadingLine(line))
     && /(?:안녕하세요|드립니다|부탁드|감사합니다|저는|제가|저희|생각합니다|바랍니다|약속드립니다|선생님)/u.test(blockquoteBody);
   const appendixPresent = lines.some(line => /^(?:부록|Appendix)(?:\s|$)/iu.test(line));
-  const verseCandidateLines = require('./dependentQuoteLayout').dependentQuoteLayout(text).text.split(/\r?\n/u).map(line=>line.trim()).filter(Boolean);
+  const verseCandidateLines = analysis.quoteAnalysis === quoteAnalysis && analysis.verseCandidateLines
+    ? analysis.verseCandidateLines : quoteAnalysis.layout.text.split(/\r?\n/u).map(line=>line.trim()).filter(Boolean);
   const poemLikeLines = verseCandidateLines.filter(line => line.length <= 40 && !/[.!?。！？]$/u.test(line)).length;
   const assessmentItem = assessment?.isAssessmentItem === true;
   const scriptFrame = require('./scriptStructure').detectScriptStructure(text).isScript;
@@ -1345,7 +1350,8 @@ function detectRiskFlags(text, {
   questionnaire,
   formatProfile,
   firstPersonSignals,
-  commercialSignals = null
+  commercialSignals = null,
+  sentences = null
 }) {
   const flags = [];
   // 목록·질문 번호는 사실 수치가 아니므로 위험 밀도에서 제외한다.
@@ -1356,7 +1362,7 @@ function detectRiskFlags(text, {
   const institutionCount = count(text, /[가-힣A-Za-z0-9·&()]{2,30}(?:대학교|대학|학교|연구원|연구소|기관|협회|공사|재단|위원회|병원|기업|회사)/gu);
   const citationCount = count(text, /(?:\([가-힣A-Za-z·,&\s]+,?\s*(?:19|20)\d{2}[a-z]?\)|\((?:19|20)\d{2}(?:\s*\.\s*\d{1,2}(?:\s*\.\s*\d{1,2})?\s*\.?)?\)|doi\s*:|https?:\/\/|참고\s*문헌|References)/giu);
   const experienceActionCount = count(text, /(?:참여|방문|사용해\s*보|다녀왔|맡은\s*역할|느꼈|배웠|깨달|근무|프로젝트|직접\s*(?:조사|분석|제작|작성|수행))/gu);
-  const contextualExperienceCount = splitSentences(text, { preserveLines: false }).filter(sentence => {
+  const contextualExperienceCount = (sentences || splitSentences(text, { preserveLines: false })).filter(sentence => {
     const value = String(sentence || '');
     const pov = computePovSeed(value);
     const hasContext = pov.fp_singular > 0

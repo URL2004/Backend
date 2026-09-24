@@ -38,8 +38,9 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
   if (!text.trim()) return [];
   const out = [];
   const syntax = syntaxSpans(text);
+  const punctuation = buildPunctuationContext(text, syntax);
   const codeSpans = syntax.filter(span => span.spanType === 'code');
-  const implicitEnds = new Set(missingTerminalBoundaries(text, syntax));
+  const implicitEnds = new Set(missingTerminalBoundaries(text, syntax, punctuation));
   let codeCursor = 0;
   let start = 0;
   let i = 0;
@@ -66,7 +67,7 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
         else i += 1;
         lineBreakCount += 1;
       }
-      const embedded = isEmbeddedPunctuation(text, end, syntax);
+      const embedded = punctuation.embedded(end);
       const isBoundary = !embedded && (preserveLines
         || lineBreakCount >= 2
         || looksCompleteWithoutPunctuation(text.slice(start, end)));
@@ -80,8 +81,8 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
       i += 1;
       continue;
     }
-    if (isEmbeddedPunctuation(text, i, syntax)) { i += 1; continue; }
-    if (ch === '.' && (isProtectedPeriod(text, i, start) || isInitialPeriod(text, i, start, syntax))) {
+    if (punctuation.embedded(i)) { i += 1; continue; }
+    if (ch === '.' && (isProtectedPeriod(text, i, start) || isInitialPeriod(text, i, start, punctuation))) {
       i += 1;
       continue;
     }
@@ -107,12 +108,13 @@ function isSentencePunctuation(text, index) {
 
 // Only explicit formal finite endings, never ambiguous nouns ending in 요/다.
 // Return original offsets; segmentation does not insert punctuation or rewrite text.
-function missingTerminalBoundaries(value, syntax = syntaxSpans(String(value || ''))) {
+function missingTerminalBoundaries(value, syntax = syntaxSpans(String(value || '')), punctuation = null) {
   const text = String(value || '');
   const ends = [];
+  const contains = punctuation?.any || spanMembership(syntax, false);
   for (const match of text.matchAll(/[가-힣]+(?:습니다|입니다)([ \t]+)(?=[가-힣A-Za-z0-9])/gu)) {
     const end = match.index + match[0].length - match[1].length;
-    if (syntax.some(span => span.start <= end && span.end > end)) continue;
+    if (contains(end)) continue;
     const next = text.slice(end).trimStart();
     if (/^(?:라고|라는|라며|라니|란|하고|하며|하는|하면|의|를|을|는|은)(?=\s|$)/u.test(next)) continue;
     ends.push(end);
@@ -120,16 +122,35 @@ function missingTerminalBoundaries(value, syntax = syntaxSpans(String(value || '
   return ends;
 }
 
-function isEmbeddedPunctuation(text, index, syntax) {
-  return syntax.some(span => span.start < index && span.end > index
-    && (span.spanType === 'parenthetical'
-      || (span.spanType === 'quote' && (/^[가-힣]/u.test(text.slice(span.end))
-        || /^[ \t\r\n]*(?:라고|라는|라며|란|이라고|이라는|이라며)(?=\s|[가-힣])/u.test(text.slice(span.end))))));
+// Sorted spans + prefix maximum endpoints preserve nested/crossing coverage.
+// Each punctuation/newline used to scan all quotes again. No document text is
+// cached outside this split; lookups are O(log spans), not O(spans).
+function spanMembership(spans, strictStart = true) {
+  const ends = []; let maxEnd = -1;
+  for (const span of spans) { maxEnd = Math.max(maxEnd, span.end); ends.push(maxEnd); }
+  return index => {
+    let low = 0, high = spans.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (strictStart ? spans[mid].start < index : spans[mid].start <= index) low = mid + 1;
+      else high = mid;
+    }
+    return low > 0 && ends[low - 1] > index;
+  };
 }
 
-function isInitialPeriod(text, index, start, syntax) {
+function buildPunctuationContext(text, syntax) {
+  const parenthetical = syntax.filter(span => span.spanType === 'parenthetical');
+  const embedded = syntax.filter(span => span.spanType === 'parenthetical'
+    || (span.spanType === 'quote' && (/^[가-힣]/u.test(text.slice(span.end))
+      || /^[ \t\r\n]*(?:라고|라는|라며|란|이라고|이라는|이라며)(?=\s|[가-힣])/u.test(text.slice(span.end)))));
+  return { embedded: spanMembership(embedded), parenthetical: spanMembership(parenthetical),
+    code: spanMembership(syntax.filter(span => span.spanType === 'code'), false), any: spanMembership(syntax, false) };
+}
+
+function isInitialPeriod(text, index, start, punctuation) {
   if (!/(?:^|[^A-Za-z])[A-Z]$/u.test(text.slice(Math.max(start, index - 2), index))) return false;
-  return syntax.some(span => span.spanType === 'parenthetical' && span.start < index && span.end > index)
+  return punctuation.parenthetical(index)
     || /^\s*[A-Z]\./u.test(text.slice(index + 1, index + 6))
     || /(?:^|[^A-Za-z])[A-Z]\.\s+[A-Z]$/u.test(text.slice(Math.max(start, index - 12), index));
 }
@@ -138,11 +159,12 @@ function isInitialPeriod(text, index, start, syntax) {
 // quoted name such as "A. B." is emphasis/reference, not a complete quotation.
 function hasSentenceTerminator(value) {
   const text = String(value || ''), syntax = syntaxSpans(text);
+  const punctuation = buildPunctuationContext(text, syntax);
   for (let i = 0; i < text.length; i++) {
     if (!isSentencePunctuation(text, i)) continue;
-    if (syntax.some(span => span.spanType === 'code' && span.start <= i && span.end > i)) continue;
-    if (isEmbeddedPunctuation(text, i, syntax)) continue;
-    if (text[i] === '.' && (isProtectedPeriod(text, i, 0) || isInitialPeriod(text, i, 0, syntax))) continue;
+    if (punctuation.code(i)) continue;
+    if (punctuation.embedded(i)) continue;
+    if (text[i] === '.' && (isProtectedPeriod(text, i, 0) || isInitialPeriod(text, i, 0, punctuation))) continue;
     if (i === text.length - 1 || /[\s"'”’」』》〉】)）\]]/u.test(text[i + 1])) return true;
   }
   return false;

@@ -16,25 +16,39 @@ function dependentQuoteLayout(value) {
     offset += raw.length + 1;
   }
   const spans = syntaxSpans(text);
-  const quotes = spans.filter(s => s.spanType === 'quote'
-    && !spans.some(other => other !== s && other.start < s.start && other.end > s.end));
+  // syntaxSpans is sorted by start/end. Track earlier-start coverage instead of
+  // comparing every span to every other span (quadratic on quote-heavy input).
+  const quotes = [], codeSpans = [];
+  let groupStart = -1, groupEnd = -1, earlierEnd = -1;
+  for (const span of spans) {
+    if (span.start !== groupStart) {
+      earlierEnd = Math.max(earlierEnd, groupEnd);
+      groupStart = span.start;
+      groupEnd = span.end;
+    } else groupEnd = Math.max(groupEnd, span.end);
+    if (span.spanType === 'quote' && earlierEnd <= span.end) quotes.push(span);
+    if (span.spanType === 'code') codeSpans.push(span);
+  }
   const edits = new Map(), proseLines = new Set();
-  const blocked = new Set(); let reference = false;
+  const blocked = new Set(); let reference = false, codeCursor = 0;
   for (let i = 0; i < lines.length; i++) {
     const row = lines[i];
+    while (codeCursor < codeSpans.length && codeSpans[codeCursor].end <= row.start) codeCursor++;
     if (/^(?:참고\s*문헌|참고\s*자료|출처|References|Bibliography)(?:\s|$|[:：])/iu.test(row.text)) reference = true;
     if (reference || /^(?:>|#{1,6}\s|[-*+]\s|\d+[.)]\s|[①-⑳]|제\s*\d+\s*조|표\s*\d|그림\s*\d|[-—–]\s*\S)/u.test(row.text)
         || /\t|\|/u.test(row.raw)
-        || spans.some(s => s.spanType === 'code' && s.start <= row.end && s.end > row.start)) blocked.add(i);
+        || (codeSpans[codeCursor]?.start <= row.end && codeSpans[codeCursor]?.end > row.start)) blocked.add(i);
   }
   const add = (start, end, replacement) => {
     const gap = text.slice(start, end);
     if (/\n/u.test(gap) && /^\s+$/u.test(gap)) edits.set(start, { start, end, replacement });
   };
+  let lineCursor = 0;
   for (const quote of quotes) {
     if (text.slice(quote.start, quote.end).includes('\n')) continue;
-    const index = lines.findIndex(l => l.start <= quote.start && l.end >= quote.end);
-    if (index < 0 || blocked.has(index)) continue;
+    while (lineCursor + 1 < lines.length && lines[lineCursor + 1].start <= quote.start) lineCursor++;
+    const index = lineCursor;
+    if (lines[index].end < quote.end || blocked.has(index)) continue;
     const row = lines[index];
     // Only a detached quotation, not a trailing quotation in a complete line.
     if (text.slice(row.start, quote.start).trim()) continue;
@@ -63,9 +77,17 @@ function dependentQuoteLayout(value) {
     add(lines[prev].end - (lines[prev].raw.length - lines[prev].raw.trimEnd().length), quote.start, ' ');
     proseLines.add(prev);
   }
-  let result = text;
   const changes = [...edits.values()].sort((a,b) => b.start-a.start);
-  for (const edit of changes) result = result.slice(0, edit.start) + edit.replacement + result.slice(edit.end);
+  // Assemble once; repeatedly copying the complete document per edit was also
+  // quadratic. Keep the public edit list in its original descending order.
+  const parts = []; let cursor = 0;
+  for (let i = changes.length - 1; i >= 0; i--) {
+    const edit = changes[i];
+    parts.push(text.slice(cursor, edit.start), edit.replacement);
+    cursor = edit.end;
+  }
+  parts.push(text.slice(cursor));
+  const result = changes.length ? parts.join('') : text;
   return { text: result, applied: changes.length > 0, repairCount: changes.length, proseLines, edits: changes };
 }
 

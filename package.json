@@ -20,6 +20,7 @@
     "cache:gpt": "powershell -ExecutionPolicy Bypass -File scripts/openai-cache-logs.ps1",
     "test:cache": "node --test test/openai-cache.test.js",
     "check:production-imports": "node scripts/check-production-imports.js",
+    "benchmark:text-structure": "node scripts/benchmark-text-structure.js",
     "git:check": "node scripts/git-harness.js --mode=manual --remote-ref=origin/release/prod-maintenance-test --max-worktrees=4",
     "git:check:all": "node scripts/git-harness.js --mode=manual --all-worktrees=1",
     "git:install-hooks": "node scripts/install-git-hooks.js --workspace=1",

@@ -69,7 +69,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.64';
+const VERSION = 'gpt-prod-v2.5.65';
 const DETECT_VERSION = 'gpt-detect-v1.39';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -5387,6 +5387,13 @@ async function callHumanize(args) {
     outputText = chunkPostprocess(outputText, original, {
       preserveLineBreaks: voiceProfile?.lineBreakSensitive === true
     });
+    // Normalize narrow formal surfaces before the first preservation gate.
+    // Whole-document repairs can be rejected by unrelated pre-existing layout
+    // risks; doing this here still subjects the edited text to every gate and
+    // the later document semantic audit. Never repair after final validation.
+    outputText = koreanRefinement.repairFormalSurface({
+      outputText, documentProfile
+    }).text;
     // `라벨: 본문`이 원문에서 한 행이었는데 모델이 본문만 새 문단으로
     // 분리하면, 최종 레이아웃 복원 시점에는 이미 모든 안전 후보가 같은
     // 결함을 물려받을 수 있다. 문자 순서를 바꾸지 않는 행 복원을 청크

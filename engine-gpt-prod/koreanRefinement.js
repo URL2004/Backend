@@ -13,7 +13,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 35;
+const VERSION = 36;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -433,7 +433,7 @@ const ISSUE_DEFINITIONS = Object.freeze({
     weight: 3,
     repairable: true,
     deterministicSafe: false,
-    message: '공식 문서의 핵심 서술에 구어적 별칭이나 과장된 게임·군사 은유가 남아 있어요.'
+    message: '공식 문서에 맞지 않는 구어적 표현·축약형·과장된 비유가 남아 있어요.'
   },
   purpose_modifier_collocation: {
     weight: 3,
@@ -2373,6 +2373,33 @@ function repairCommonSourceLanguage(value) {
   return { text: repaired.join('\n'), changes };
 }
 
+function repairFormalSurface({ outputText = '', documentProfile = null } = {}) {
+  const before = String(outputText || '');
+  let text = before;
+  const changes = [];
+  // Formal surface expansion happens before semantic validation, never in the
+  // final whitespace-only pass. Preserve quotations, code and non-academic voice.
+  if (isAcademicRegisterProfile(profileName(documentProfile))) {
+    const protectedSpans = syntaxSpans(text).filter(span => ['quote', 'code'].includes(span.spanType));
+    for (const match of text.matchAll(/(?:“[^”"]*[”"]|"[^"”]*["”]|‘[^’']*[’']|(?<![\p{L}\p{N}])'[^'’]*['’])/gu)) {
+      protectedSpans.push({ start: match.index, end: match.index + match[0].length });
+    }
+    const edits = [
+      ...[...text.matchAll(/됐(?=다(?:고|는)?|으며|지만|고|던|음을|으나|으면)/gu)]
+        .map(match => ({start:match.index,end:match.index+1,replacement:'되었',code:'academic_contraction_expansion'})),
+      // Only explanatory reason wording, not authenticity contrasts such as
+      // "진짜와 가짜" or emotional/personal uses. Preserve the reason's modality.
+      ...[...text.matchAll(/(?<![가-힣])진짜(?=[ \t]+(?:이유|원인)(?:는|은|이|을|에|으로|[ \t]))/gu)]
+        .map(match => ({start:match.index,end:match.index+2,replacement:'실제',code:'academic_reason_register'}))
+    ].filter(edit => !protectedSpans.some(span => span.start < edit.end && span.end > edit.start));
+    for (const edit of edits.sort((a,b)=>b.start-a.start)) {
+      text = text.slice(0, edit.start) + edit.replacement + text.slice(edit.end);
+      changes.push(edit.code);
+    }
+  }
+  return { text, applied: text !== before, changes, changeCount: changes.length };
+}
+
 function applySafeDeterministicRepairs({ source = '', outputText = '', documentProfile = null } = {}) {
   const before = String(outputText || '');
   let text = before;
@@ -2385,6 +2412,9 @@ function applySafeDeterministicRepairs({ source = '', outputText = '', documentP
   for (let index = 0; index < parentheticalRepair.repairCount; index += 1) {
     changes.push('introduced_parenthetical_particle');
   }
+  const formalRepair = repairFormalSurface({ outputText: text, documentProfile });
+  text = formalRepair.text;
+  changes.push(...formalRepair.changes);
   const sourceLanguageRepair = repairCommonSourceLanguage(text);
   text = sourceLanguageRepair.text;
   changes.push(...sourceLanguageRepair.changes);
@@ -5218,6 +5248,7 @@ module.exports = {
   ISSUE_DEFINITIONS,
   analyzeKoreanRefinement,
   applySafeDeterministicRepairs,
+  repairFormalSurface,
   applySafeFormattingRepairs,
   buildSourcePromptHints,
   buildSourceReviewWarnings,

@@ -37,6 +37,7 @@ function mockedJudge(responses) {
         calls.push(options);
         const json = responses[calls.length - 1];
         assert.ok(json, `unexpected model call: ${options.meta.phase}`);
+        if (json.throwCode) throw Object.assign(new Error(json.throwCode), { code: json.throwCode });
         return { json, model: options.model, usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, estimatedUsd: 0.001 } };
       }
     } : actualRequire(name)
@@ -53,6 +54,28 @@ test('local meaning repair can be reviewed despite a real rhythm-distribution re
   const priority = assessSemanticRepairPriority(before, candidate, violations, safety);
   assert.equal(priority.eligible, true);
   assert.equal(priority.targetCount, 1);
+});
+
+test('denied optional repair retains mandatory verdict, violations and confirmed usage', async () => {
+  const { judge, calls } = mockedJudge([
+    { violations }, { throwCode: 'RECOVERY_BUDGET_EXHAUSTED' }
+  ]);
+  const result = await judge.judgeAndRepair(source, before, { config });
+  assert.equal(result.pass, false);
+  assert.equal(result.outputText, before);
+  assert.equal(result.reason, 'recovery_budget_exhausted');
+  assert.equal(result.violations.length, 1);
+  assert.equal(result.initialViolations.length, 1);
+  assert.equal(result.usage.estimatedUsd, 0.001);
+  assert.equal(result.rounds, 0);
+  assert.equal(calls.length, 2);
+});
+
+test('transport failures and cancellation are not disguised as optional budget denial', async () => {
+  for (const throwCode of ['AbortError', 'ECONNRESET']) {
+    const { judge } = mockedJudge([{ violations }, { throwCode }]);
+    await assert.rejects(judge.judgeAndRepair(source, before, { config }), error => error.code === throwCode);
+  }
 });
 
 test('meaning repair wins over rhythm only after a fresh semantic judge passes', async () => {

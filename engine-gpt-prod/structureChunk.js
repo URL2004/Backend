@@ -5,6 +5,7 @@ const freezeBlocks = require('../engine/freezeblocks');
 const { splitSentenceSpans, splitSentences, ngramJaccard } = require('../engine/koreanText');
 const { paragraphExpansionLimit } = require('./voiceProfile');
 const layoutStructure = require('./layoutStructure');
+const { syntaxSpans } = require('../engine/textSyntax');
 const {
   resolveHumanizeContract,
   allowsLayoutRecomposition,
@@ -3021,8 +3022,58 @@ function buildStructureAudit({
  * 구조가 보존된다. 역할 개수만 비교하면 제목을 앞 문단에 붙이거나 이모지와
  * 라벨을 서로 다른 행으로 갈라도 통과하므로 원문 행 앵커를 순서대로 대조한다.
  */
+// PDF extraction can pack an existing title, numbered heading and labels into
+// one line. Re-exposing those exact anchors is not invented structure. This
+// comparison-only view inserts boundaries; it never rewrites delivered text.
+// Restrict to repeated extraction spacing, exact ordered matches, line-leading
+// nominal titles / explicit numbered headings / colon labels. No arbitrary
+// phrase promotion, quote extraction, duplicate headings or number changes.
+function recoverPackedSourceAnchorBoundaries(source, output) {
+  const text = String(source || '');
+  if ((text.match(/[^\s][ \t]{2,}(?=\S)/gu) || []).length < 8) return { text, lineMap: null };
+  const protectedSpans = syntaxSpans(text).filter(span => ['quote', 'code'].includes(span.spanType));
+  const breaks = new Set();
+  let cursor = 0;
+  for (const anchor of extractLineAnchors(output)) {
+    const display = String(anchor.display || '').trim();
+    if (!display || display.length > 120 || /[.!?。！？]$/u.test(display)) continue;
+    const pattern = [...display.replace(/[ \t]+/gu, '')]
+      .map(char => char.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('[ \\t]*');
+    const re = new RegExp(pattern, 'gu'); re.lastIndex = cursor;
+    const match = re.exec(text);
+    if (!match) continue;
+    const start = match.index, end = start + match[0].length;
+    if (start && !/\s/u.test(text[start - 1])) continue;
+    if (anchor.standalone && text[end] && !/\s/u.test(text[end])) continue;
+    if (protectedSpans.some(span => span.start < end && span.end > start)) continue;
+    const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+    const lineLeading = !text.slice(lineStart, start).trim();
+    const numbered = /^\d{1,3}(?:\.\d{1,3})*[.)]\s*[가-힣A-Za-z]/u.test(display);
+    const bracketed = /^(?:<[^<>]+>|\[[^\[\]]+\]|【[^【】]+】)$/u.test(display);
+    if (anchor.standalone && !lineLeading && !numbered && !bracketed) continue;
+    if (anchor.standalone && !numbered && /(?:다|요|니다)[.]?$/u.test(display)) continue;
+    if (!anchor.standalone && !/^[가-힣A-Za-z][가-힣A-Za-z \t]{0,24}[:：]$/u.test(display)) continue;
+    if (!lineLeading) breaks.add(start);
+    if (anchor.standalone && text[end] && text[end] !== '\n') breaks.add(end);
+    cursor = end;
+  }
+  let result = text;
+  for (const offset of [...breaks].sort((a,b)=>b-a)) result=result.slice(0,offset)+'\n'+result.slice(offset);
+  if (!breaks.size) return { text, lineMap: null };
+  const lineMap = [1], recoveredLines = new Set(); let originalLine = 1;
+  for (let offset = 0; offset < text.length; offset++) {
+    if (breaks.has(offset)) { lineMap.push(originalLine); recoveredLines.add(originalLine); }
+    if (text[offset] === '\n') lineMap.push(++originalLine);
+  }
+  return { text: result.split('\n').map((line, index) =>
+    recoveredLines.has(lineMap[index]) ? line.replace(/ {2,}/gu, ' ') : line).join('\n'), lineMap };
+}
+
 function compareLineAnchorLayout(source, output, { allowAdditions = false } = {}) {
+  const recoveredSource = recoverPackedSourceAnchorBoundaries(source, output);
+  source = recoveredSource.text;
   const sourceAnchors = extractLineAnchors(source);
+  if (recoveredSource.lineMap) for (const anchor of sourceAnchors) anchor.lineOrdinal = recoveredSource.lineMap[anchor.lineOrdinal - 1];
   const outputAnchors = extractLineAnchors(output);
   const outputLines = layoutStructure.buildLineRecords(output).filter(record => !record.blank);
   const losses = [];
@@ -3316,7 +3367,10 @@ function extractBracketedLabelAnchors(value) {
  * 갈라져도 제목 수가 늘었다는 이유로 통과할 수 있다.
  */
 function compareOriginalStructuralMarkers(source, output, { allowAdditions = false } = {}) {
+  const recoveredSource = recoverPackedSourceAnchorBoundaries(source, output);
+  source = recoveredSource.text;
   const sourceMarkers = extractOriginalStructuralMarkers(source);
+  if (recoveredSource.lineMap) for (const marker of sourceMarkers) marker.lineOrdinal = recoveredSource.lineMap[marker.lineOrdinal - 1];
   const outputMarkers = extractOriginalStructuralMarkers(output);
   const losses = [];
   let cursor = 0;
@@ -3378,7 +3432,8 @@ function extractOriginalStructuralMarkers(value) {
       markers.push(structuralMarker('markdown_number', `${match[1]} ${match[2]}`, index));
       return;
     }
-    match = text.match(/^\s*(\d{1,3}(?:\.\d{1,3}){1,3}[.)]?|\d{1,3}[.)])\s+/u);
+    match = text.match(/^\s*(\d{1,3}(?:\.\d{1,3}){1,3}[.)]?|\d{1,3}[.)])\s+/u)
+      || text.match(/^\s*(\d{1,3}[.)])(?=[가-힣A-Za-z])/u);
     if (match) {
       markers.push(structuralMarker('number', match[1], index));
       return;
@@ -3430,6 +3485,9 @@ function countOrphanParticleLineBoundaries(value) {
 }
 
 function compareStructuralRoleSignatures(source, output) {
+  // All structure audits must use the same proven PDF boundary view. Otherwise
+  // exact anchors pass while the older role-count check rejects their layout.
+  source = recoverPackedSourceAnchorBoundaries(source, output).text;
   const sourceSignature = structuralRoleSignature(source);
   const outputSignature = structuralRoleSignature(output);
   const losses = [];

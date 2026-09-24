@@ -6,6 +6,7 @@
 
 const sg = require('./surfaceguard');
 const { splitSentences, splitSentenceSpans } = require('./koreanText');
+const { syntaxSpans } = require('./textSyntax');
 
 const STOP = new Set(['그리고', '하지만', '그런데', '그러나', '그래서', '때문', '경우', '정도', '우리', '사람', '문제', '방식', '상황', '결국', '지금', '이것', '그것', '저것', '이런', '그런', '저런', '거예요', '거든요', '아니라', '있어요', '없어요', '해요', '대한', '위한', '통해', '대해']);
 function contentTokens(s) {
@@ -249,6 +250,26 @@ function removeGeneratedLocalOverlapDuplicates(source, text, { maxSentenceGap = 
   }));
   const removals = [];
   const reasons = [];
+  // A source word split by PDF page extraction can be completed by the next
+  // chunk while its prefix survives in the previous chunk. Delete that prefix
+  // only when the source itself proves the exact broken-word seam. Do not
+  // infer a repair from generic repeated headings or fuzzy semantic overlap.
+  const sourceText = String(source || '');
+  const protectedSource = syntaxSpans(sourceText).filter(s => ['quote', 'code'].includes(s.spanType));
+  const protectedOutput = syntaxSpans(original).filter(s => ['quote', 'code'].includes(s.spanType));
+  const sentenceTail = /[.!?。！？](?:\s*\[\d+\])?\s*$/u;
+  for (const seam of sourceText.matchAll(/(?<![가-힣])([가-힣]{2,8})[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*([가-힣]{1,8})(?=[ \t])/gu)) {
+    if (!sentenceTail.test(sourceText.slice(Math.max(0, seam.index - 40), seam.index))) continue;
+    if (protectedSource.some(s => s.start < seam.index + seam[0].length && s.end > seam.index)) continue;
+    const full = seam[1] + seam[2];
+    const pattern = new RegExp(`(?<![가-힣])${seam[1]}[ \\t]*\\r?\\n(?:[ \\t]*\\r?\\n)*[ \\t]*${full}(?=[ \\t])`, 'gu');
+    for (const match of original.matchAll(pattern)) {
+      if (!sentenceTail.test(original.slice(Math.max(0, match.index - 40), match.index))) continue;
+      if (protectedOutput.some(s => s.start < match.index + match[0].length && s.end > match.index)) continue;
+      removals.push({ start: match.index, end: match.index + seam[1].length });
+      reasons.push('source_proven_word_seam_prefix');
+    }
+  }
   for (const paragraph of paragraphSpans(original)) {
     const editable = editableProseWithinProtectedParagraph(paragraph.text);
     if (!editable) continue;

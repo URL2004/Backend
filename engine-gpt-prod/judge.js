@@ -330,7 +330,8 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     rounds++;
     const repairModel = phasePrefix === 'escalation' ? judgeModel : config.models.repair;
     const repairReasoning = phasePrefix === 'escalation' ? config.reasoning.escalation : config.reasoning.repair;
-    const repaired = await repairViolations(rawText, current, ledger, judge.violations, {
+    let repaired;
+    try { repaired = await repairViolations(rawText, current, ledger, judge.violations, {
       lang,
       allowedExtra,
       signal,
@@ -339,7 +340,19 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       model: repairModel,
       reasoningEffort: repairReasoning,
       phase: `${phasePrefix}:repair`
-    });
+    }); } catch (error) {
+      // A denied optional repair must not discard a completed mandatory verdict
+      // or its usage. Keep the audited text and violations, never mark it pass.
+      if (error?.code !== 'RECOVERY_BUDGET_EXHAUSTED') throw error;
+      return {
+        outputText: current, pass: false, uncertain: judge.uncertain === true,
+        violations: judge.violations || [], initialViolations, ledger,
+        rounds: rounds - 1, repairRejected: true,
+        repairRejectReasons: ['recovery_budget_exhausted'],
+        repairStyleWarnings, unchangedRepairCount,
+        reason: 'recovery_budget_exhausted', selectedJudgeModel: judgeModel, usage
+      };
+    }
     usage = addUsage(usage, repaired?.gptMeta?.usage);
     const candidate = repaired.outputText || current;
     if (candidate.trim() === String(current || '').trim()) {

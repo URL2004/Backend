@@ -13,6 +13,21 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+test('advanced report repairs evidenced grammar before verified delivery', { concurrency: false }, async t => {
+  const text = '이번 조사를 통해 수분은 용기의 재질에 따라 이동 속도가 달라진다고 결론 내렸다. 이는 ‘상태의 변화’이라기보다 관찰 결과에 가깝다. 처음에는 모든 자극을 없애야 한다고 생각했지만, 자극도 정상적인 감각 정보 전달에 사용된다는 점을 알게 되면서 생각이 달라졌다.';
+  installEngineMock(t, { humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT')
+    .replace('조사를 통해','조사에서는')
+    .replace('’이라기보다','’ 이라기보다')
+    .replace('생각했지만,','생각했다. 하지만')
+    .replace('점을 알게 되면서 생각이 달라졌다','점은 생각을 바꾸었다') });
+  const out = await engine.run({text,mode:'formal',documentProfileOverride:'report_assignment',uid:'report-grammar-unit',config:config()});
+  assert.notEqual(out.status,'blocked');
+  assert.match(out.result.outputText,/조사를 통해/u);
+  assert.match(out.result.outputText,/’이라기보다/u);
+  assert.match(out.result.outputText,/점을 알게 되면서 생각이 달라졌다/u);
+  assert.equal(out.engineMeta.semanticValidationStatus,'pass');
+});
+
 test('formal normalization reaches preservation gates and document semantic review', { concurrency: false }, async t => {
   const text = '연구팀은 시료의 질량을 측정했다. 실험은 동일한 조건에서 반복되었다. 결과가 달라진 실제 이유는 아직 확인되지 않았으며 추가 검증이 필요하다.';
   installEngineMock(t, { humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT')

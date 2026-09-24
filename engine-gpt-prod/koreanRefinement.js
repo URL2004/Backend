@@ -39,6 +39,14 @@ const ISSUE_DEFINITIONS = Object.freeze({
     weight: 2, repairable: true, deterministicSafe: false,
     message: '격식 문장에서 목적어와 서술어 사이로 수식어가 이동해 읽는 흐름이 약해졌을 수 있어요.'
   },
+  introduced_evidential_topic_frame: {
+    weight: 3, repairable: true, deterministicSafe: true,
+    message: '원문의 판단 근거 표현이 주제 표현으로 바뀌어 내포절과 어색하게 겹쳤어요.'
+  },
+  introduced_reflection_agency_shift: {
+    weight: 3, repairable: true, deterministicSafe: true,
+    message: '무엇을 알게 되어 생각이 달라졌다는 성찰이 사물이 생각을 바꾸었다는 표현으로 변했어요.'
+  },
   source_restore_echo: {
     weight: 5,
     repairable: true,
@@ -732,12 +740,13 @@ const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|
 const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|하며)';
 const QUOTE_ATTRIBUTION_CONTEXT = `${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}\\s+(?:말|이야기|발언|경고|제안|요청|답변|약속|다짐|인사|주장|설명|대답|강조|외침)`;
 const QUOTE_SHORT_COPULA_SUFFIX = '다(?=$|[.!?。！？])';
-const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
+const QUOTE_COMPARATIVE_COPULA_SUFFIX = '(?:이?라기(?:보다는|보다|보단))';
+const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
 const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
 // 격조사 뒤 보조사가 결합한 형태도 하나의 붙임 단위다.
 // 단일 조사 목록만 검사하면 정상적인 ‘기준’만으로/로서를 띄워 버린다.
 const QUOTE_COMPOUND_PARTICLE_SUFFIX = '(?:(?:만|부터|까지|조차|마저|밖에|처럼|보다)(?:으로|로|의|은|는|도|만)?|(?:으로|로)(?:서|써)(?:는|도|만)?|(?:와|과|에|에서|에게|으로|로)(?:의|는|도|만))';
-const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
+const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
 // A demonstrative beginning a new sentence is not the subject particle 이.
 // Require explicit sentence punctuation inside the closing quote and a noun.
 const CLOSED_QUOTE_SENTENCE_START_RE = /([.!?。！？][”’」』》〉])(?=(?:이|그|저)\s+(?:문장|말씀|구절|발언|문구|이야기|인용|말)(?:은|는|이|가|을|를|에서|로|에|도)?(?:\s|[,.!?。！？]|$))/gu;
@@ -1589,8 +1598,12 @@ function formattingContext(documentProfile) {
 }
 
 function replaceTracked(text, pattern, replacement, code, counts) {
+  const protectedSpans = code.startsWith('closed_quote_') ? syntaxSpans(text) : [];
   return String(text || '').replace(pattern, (...args) => {
     const before = args[0];
+    const offset = args[args.length - 2];
+    if (protectedSpans.some(s => s.start <= offset && s.end > offset
+      && (s.spanType === 'code' || (s.spanType === 'quote' && s.end > offset + before.length)))) return before;
     const after = replacement(...args);
     if (after !== before) addCount(counts, code);
     return after;
@@ -5187,7 +5200,11 @@ function sourceReviewMessage(code) {
 }
 
 function replaceAndCount(text, pattern, replacement, code, changes) {
+  const protectedSpans = code.startsWith('closed_quote_') ? syntaxSpans(text) : [];
   return String(text || '').replace(pattern, (...args) => {
+    const offset = args[args.length - 2];
+    if (protectedSpans.some(s => s.start <= offset && s.end > offset
+      && (s.spanType === 'code' || (s.spanType === 'quote' && s.end > offset + args[0].length)))) return args[0];
     changes.push(code);
     if (typeof replacement === 'function') return replacement(...args);
     // String#replace 콜백의 args[0]은 전체 일치, args[1]부터 캡처 그룹이다.

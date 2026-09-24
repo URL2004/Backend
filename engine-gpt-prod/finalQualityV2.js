@@ -1604,6 +1604,8 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'introduced_action_nominalization') return 'SOURCE의 행동·시제·의향은 그대로 두고 새로 늘어난 “~하는 일을 이어가다·시작하다”만 직접적인 서술어로 고친다. 새 지속·시작 의미를 더하지 않고 다른 교정은 유지한다.';
   if (item?.code === 'introduced_condition_wish_mismatch') return '새로 만든 “~하려면 … 하고 싶다”의 조건과 희망 불일치를 SOURCE의 목적·의향 관계로 복구한다. 희망을 의무나 확정 계획으로 바꾸지 않는다.';
   if (item?.code === 'introduced_modifier_dislocation') return 'SOURCE의 격식과 초점을 유지하면서 목적어와 서술어 사이에 새로 끼운 긴 수식어 위치를 검토한다. 단순 어순 변경 자체는 오류가 아니며 원문 전체로 되돌리지 않는다.';
+  if (item?.code === 'introduced_evidential_topic_frame') return 'SOURCE에서 판단의 근거를 나타내던 “조사·연구를 통해”가 “조사·연구에서는”으로 바뀌며 뒤 주제절과 겹친 경우 원문의 근거 관계를 복원한다. 은/는 반복 자체를 금지하거나 정상 대조 문장의 조사를 일괄 교체하지 않는다.';
+  if (item?.code === 'introduced_reflection_agency_shift') return 'SOURCE에서 무엇을 알게 되면서 자신의 생각이 바뀌었다는 경험을 무생물이 생각을 바꾸었다는 서술로 바꾸지 않는다. 원문으로 확인되는 인식 과정만 복원하고 감정이나 새 경험을 만들지 않는다.';
   if (item?.code === 'role_predicate_redundancy') return '맡다·담당하다 중 문맥에 맞는 서술어 하나만 남기고 업무 범위는 줄이거나 넓히지 않는다.';
   if (item?.code === 'analytic_object_recast') return '접수·수집된 요구사항·자료 자체를 분석 대상으로 두고, 같은 대상을 “내용”으로 다시 받아 모호하게 만들지 않는다.';
   if (item?.code === 'borrowed_standard_case_frame') return '“기준을 가져와 평가하다”로 쓰지 말고 SOURCE의 평가 주체와 대상을 유지한 채 “그 기준으로 평가하다”처럼 조사와 서술어의 논항을 바로잡는다.';

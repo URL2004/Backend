@@ -1304,7 +1304,8 @@ async function runEngine({
       mode: selectedMode
     });
     naturalnessRegressionSeen = koreanRefinementAudit.issueCodes.some(code => [
-      'introduced_action_nominalization', 'introduced_condition_wish_mismatch', 'introduced_modifier_dislocation'
+      'introduced_action_nominalization', 'introduced_condition_wish_mismatch', 'introduced_modifier_dislocation',
+      'introduced_evidential_topic_frame', 'introduced_reflection_agency_shift'
     ].includes(code));
     const deterministicRepair = koreanRefinement.applySafeDeterministicRepairs({
       source: auditSource,

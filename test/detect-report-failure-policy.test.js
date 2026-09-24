@@ -268,6 +268,7 @@ stub('routes/analyze-gpt.js', {
       summary: '문체 신호가 관찰됐습니다.',
       detail: '정형적인 문장 구조가 관찰됐습니다.',
       signals: ['정형적인 문장 구조'],
+      ...(state.modelEvidence ? { signalEvidence: state.modelEvidence } : {}),
       confidence: 'medium',
       gptMeta: {
         selectedModel: 'gpt-test',
@@ -721,4 +722,30 @@ test('report HTTP response signs the final comparison for exact-source backup an
   const replay = await post(inputText, requestId);
   assert.equal(replay.status, 200);
   assert.equal(replay.body.historyComparisonProof, response.body.historyComparisonProof);
+});
+
+test('report HTTP and paid replay keep cause clicks in the display namespace', { concurrency: false }, async t => {
+  const previousPlan = state.billingPlan, previousScore = state.modelProbability;
+  state.billingPlan = 'unlimited'; state.modelProbability = 32;
+  t.after(() => { delete state.modelEvidence; state.billingPlan = previousPlan; state.modelProbability = previousScore; });
+  const text = '"기록을 바탕으로 점검하는 사람"\n작은 변화도 기록하는 습관이 저의 장점입니다.\n지난 실습에서는 매일 관측 결과를 기록하고 담당자와 비교했습니다.\n동료들에게 확인 순서를 설명하고 다음 실습에도 같은 점검 절차를 적용했습니다.';
+  state.modelEvidence = require('../lib/detectGrounding').groundSignals([
+    {category:'formulaic_transition',strength:'moderate',scope:'recurring',evidenceSentences:[1,2]}
+  ], text.trim());
+  const modelIds = state.modelEvidence[0].locations.map(l => l.sentenceIndex);
+  const response = await post(text, 'detect-display-locations-http');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.probability, 32);
+  const locations = response.body.reportView.causeAnalysis.items[0].locations;
+  assert.ok(locations.length);
+  assert.notDeepEqual(locations.map(l => l.sentenceIndex), modelIds, 'heading split changes UI IDs');
+  for (const loc of locations) {
+    const mark = response.body.sentenceMap.sentences.find(m => m.index === loc.sentenceIndex);
+    assert.equal(loc.paragraphIndex, mark.paragraph);
+    assert.ok(loc.start >= mark.start && loc.end <= mark.end);
+  }
+  assert.equal(Object.hasOwn(response.body.sentenceMap, 'sourceLocations'), false);
+  const replay = await post(text, 'detect-display-locations-http');
+  assert.equal(replay.status, 200);
+  assert.deepEqual(replay.body.reportView.causeAnalysis.items[0].locations, locations);
 });

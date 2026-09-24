@@ -35,7 +35,7 @@ test('교수님 레이더는 공식 표시 점수와 같은 값으로 20·21·49
   }
 });
 
-test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보존한다', () => {
+test('72점 대표 사례는 측정값을 보존하되 위치 없는 원인을 완전한 설명으로 표시하지 않는다', () => {
   const reportView = buildDetectReportView({
     probability: 72,
     probSource: 'llm',
@@ -54,7 +54,7 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
   });
 
   assert.equal(reportView.version, 'evidence-v3-cause-aligned');
-  assert.equal(reportView.status, 'ready');
+  assert.equal(reportView.status, 'partial');
   assert.equal(reportView.styleSignal.score, 72);
   assert.equal(reportView.professorRadar.score, 72, '교수님 레이더 점수는 표시 점수와 달라지면 안 된다');
   assert.equal(reportView.professorRadar.band, 'hard');
@@ -71,7 +71,7 @@ test('72점 대표 사례는 엔진 측정값과 두 축 설명을 그대로 보
   assert.equal(reportView.measuredEvidence.genericCount, 3);
   assert.equal(reportView.measuredEvidence.livedCount, 1);
   assert.equal(reportView.measuredEvidence.specificCount, 0);
-  assert.equal(reportView.synthesis.headline, '문장 패턴은 정형적이고, 구체 근거 비율은 참고 기준보다 낮게 측정됐어요.');
+  assert.equal(reportView.synthesis.headline, '점수는 확인됐지만 원인 설명은 일부만 연결됐어요.');
   assert.equal(reportView.causeAnalysis.status, 'aligned');
   assert.equal(reportView.causeAnalysis.qualifyingIndependentSignals, 2);
   assert.match(reportView.synthesis.limitation, /작성 주체나 외부 검사 결과를 확정하지 않아요/u);
@@ -346,7 +346,7 @@ test('보고서 상단 계측은 문장 지도와 같은 종결 기준으로 통
 test('라우트는 문장 지도 값을 상단 계측에 넘겨 한 화면이 두 숫자를 말하지 않게 한다', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'routes', 'detectreport.js'), 'utf8');
   assert.match(src, /maxEndingRun: sentenceMap\.maxEndingRun/u);
-  const mapAt = src.indexOf('buildSentenceMap(analysisParas, detail, { sourceParagraphs: paras })');
+  const mapAt = src.indexOf('buildSentenceMap(analysisParas, detail, { sourceParagraphs: paras, source: text })');
   const viewAt = src.indexOf('buildDetectReportView({');
   assert.ok(mapAt > 0 && viewAt > mapAt, '문장 지도를 먼저 만든 뒤 판정 뷰를 만든다');
 });

@@ -577,10 +577,11 @@ router.post('/detect-report', async (req, res) => {
     // 공개 보고서에 결합하고, 지도 생성 실패는 점수·과금 흐름과 분리한다.
     let sentenceMap = null;
     try {
-      sentenceMap = buildSentenceMap(analysisParas, detail, { sourceParagraphs: paras });
+      sentenceMap = buildSentenceMap(analysisParas, detail, { sourceParagraphs: paras, source: text });
     } catch (error) {
       logger.warn('detect_report.sentence_map_failed', { uid, err: error && error.message });
     }
+    narrated.signalEvidence = require('../lib/detectReportLocations').projectReportEvidence(narrated.signalEvidence, sentenceMap);
     const reportView = buildDetectReportView({
       probability,
       probSource: 'llm',

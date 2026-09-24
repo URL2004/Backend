@@ -112,6 +112,7 @@ test('engine/archive 메타는 명시적 allowlist만 반환한다', () => {
     engineVersion: 'gpt-prod-v2.5.41', requestedMode: 'formal', semanticJudgeRan: true,
     deliveryReasonCodes: ['semantic_omission', '<bad>'], estimatedUsd: 0.12,
     sourceReviewWarningCodes: ['source_truncated_word'],
+    structureAuditScope: 'submitted_text', sourceLayoutStatus: 'reading_order_unverified',
     unsupportedSpecificityPass: false, unsupportedSpecificityIssueCount: 1,
     unsupportedSpecificityResidualCount: 1, unsupportedSpecificityIntroducedEntities: ['비밀 대상명'],
     prompt: 'system prompt', protectedTerms: ['x'], rawProviderResponse: 'raw', stack: 'trace', apiKey: 'secret'
@@ -121,6 +122,7 @@ test('engine/archive 메타는 명시적 allowlist만 반환한다', () => {
     qualityWarningCodes: ['semantic_omission'], estimatedUsd: 0.12,
     koreanRefinementIssueCodes: ['particle_spacing'],
     sourceReviewWarningCodes: ['source_truncated_word'],
+    structureAuditScope: 'submitted_text', sourceLayoutStatus: 'reading_order_unverified',
     finalSourceIntegrityRestoreCodes: ['source_quote_restored'],
     unsupportedSpecificityPass: false, unsupportedSpecificityIssueCount: 1,
     unsupportedSpecificityResidualCount: 1, unsupportedSpecificityIntroducedEntities: ['비밀 대상명'],
@@ -128,6 +130,10 @@ test('engine/archive 메타는 명시적 allowlist만 반환한다', () => {
     rawProviderResponse: 'raw', stack: 'stack', error: 'provider raw error'
   }, 'job-1');
   assert.equal(engine.engineVersion, 'gpt-prod-v2.5.41');
+  assert.equal(engine.structureAuditScope, 'submitted_text');
+  assert.equal(engine.sourceLayoutStatus, 'reading_order_unverified');
+  assert.equal(archive.structureAuditScope, 'submitted_text');
+  assert.equal(archive.sourceLayoutStatus, 'reading_order_unverified');
   assert.deepEqual(engine.deliveryReasonCodes, ['semantic_omission']);
   assert.deepEqual(engine.sourceReviewWarningCodes, ['source_truncated_word']);
   assert.equal(engine.unsupportedSpecificityPass, false);

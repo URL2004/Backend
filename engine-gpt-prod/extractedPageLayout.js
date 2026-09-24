@@ -33,13 +33,21 @@ function repairExtractedPageLayout(value) {
     && /(?:이름|성명)\s+\S+[\s\S]*학번\s+\d/u.test(pageBodies[0]);
   const headingPages = pageBodies.filter(body => SECTION_RE.test(body)).length;
   const standalonePages = pageBodies.filter(body => !body.trim()).length;
-  if (!sequential || proseLines.length < 2 || !reportEvidence
-      || (!coverEvidence && headingPages < 2 && standalonePages < 2)) {
+  // The old extractor emitted one flat line per page, with a separator added
+  // on both sides of PDF.js space items. Do not require an academic Roman
+  // outline: numbered technical reports suffer the same extraction damage.
+  const densePages = pageBodies.filter(body => body.length > 500
+    && !/[\t|]/u.test(body) && (body.match(/ {3,}/gu) || []).length >= 30).length;
+  const denseReport = densePages >= 2 && /(?:보고서|계획서|설계서|조사서|설명서)/u.test(pageBodies[0] || '');
+  if (!sequential || proseLines.length < 2 || (!denseReport && (!reportEvidence
+      || (!coverEvidence && headingPages < 2 && standalonePages < 2)))) {
     return { text: before, changed: false, removedPages: [], changes: [] };
   }
 
   const pageMap = new Map(pages.map(p => [p.index, p]));
   const changes = [];
+  if (densePages >= 2) changes.push(change('source_pdf_reading_order_unverified', 1,
+    '페이지가 한 줄로 추출된 입력이에요. 반복 공백은 정리하지만 표의 열·셀 대응은 원본 PDF 없이 확인할 수 없어요.', 'notice'));
   const withoutPages = lines.map((line, i) => pageMap.has(i) ? line.slice(pageMap.get(i).prefix.length) : line);
   const witnessedWords = new Set((withoutPages.join('\n').match(/[가-힣]{2,}/gu) || []));
   let inReference = false;
@@ -84,6 +92,12 @@ function repairExtractedPageLayout(value) {
     const right = normalized[page.index].trimStart();
     let previous = page.index - 1;
     while (previous >= 0 && !normalized[previous].trim()) previous -= 1;
+    if (previous >= 0 && right && densePages >= 2
+        && /[가-힣]$/u.test(normalized[previous].trimEnd())
+        && !/[.!?。！？][”’"'」』)\]]*$/u.test(normalized[previous].trimEnd())) {
+      changes.push(change('source_pdf_boundary_review', page.index + 1,
+        '페이지 끝 문장이 끊겼을 수 있어요. 다음 절이나 다른 표 칸과 임의로 이어 붙이지 않았어요.', 'notice'));
+    }
     if (previous < 0 || !right || SECTION_RE.test(right) || REFERENCE_RE.test(right)
         || /^[-*+•▪◦]|\t|\|/u.test(right)) continue;
     const left = normalized[previous].trimEnd();

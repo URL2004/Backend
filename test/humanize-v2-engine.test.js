@@ -13,6 +13,22 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+test('flattened PDF input is normalized before generation and text structure pass cannot certify PDF reading order', {concurrency:false}, async t => {
+  const prose = '작업자는 물품의 상태를 기록하였다. 다음 점검에서 같은 항목을 확인하고 기록된 내용을 서로 비교하였다. '.repeat(6).replaceAll(' ', '   ');
+  const text = ['- 1 - 물품 점검 보고서 1. 점검 결과 ' + prose, '- 2 - ' + prose, '- 3 - 3. 후속 점검 ' + prose].join('\n\n');
+  const {calls} = installEngineMock(t, {humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT').replaceAll('물품의 상태를 기록하였다', '물품 상태를 확인해 기록하였다')});
+  const out = await engine.run({text, mode:'formal', documentProfileOverride:'report_assignment', uid:'pdf-layout-unit', config:config()});
+  assert.notEqual(out.status, 'blocked');
+  assert.equal(out.engineMeta.structureAuditScope, 'submitted_text');
+  assert.equal(out.engineMeta.sourceLayoutStatus, 'reading_order_unverified');
+  assert.equal(out.engineMeta.deliveryDecision, 'deliver_review');
+  assert.equal(out.qualityStatus, 'needs_review');
+  assert.ok(out.qualityWarnings.some(w => w.code === 'source_pdf_reading_order_unverified'));
+  const generation = calls.filter(c => c.name === 'gpt_prod_humanize_result');
+  assert.ok(generation.length);
+  for (const call of generation) assert.doesNotMatch(extractPromptDataSection(call.body.input, 'EDITABLE_TEXT'), / {3,}/u);
+});
+
 for (const mode of ['blog', 'formal', 'polish']) test(`${mode}: label-heavy middle paragraphs all reach primary editing`, {concurrency:false}, async t => {
   const text = Array.from({length: 20}, (_, i) => `항목 ${i + 1}\n관찰: 시료 ${i + 1}의 색을 기록했다.\n계획: 다음 관찰에서 색의 차이를 비교한다.`).join('\n\n')
     .replace('시료 11의 색을 기록했다.', '시료 11의 색을 기록햇다.');

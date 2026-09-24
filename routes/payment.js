@@ -3216,6 +3216,8 @@ function serializeAdminLedgerTaskEngineMeta(value) {
     koreanRefinementPass: typeof meta.koreanRefinementPass === 'boolean' ? meta.koreanRefinementPass : null,
     koreanRefinementIssueCodes: adminLedgerTaskCodes(meta.koreanRefinementIssueCodes),
     sourceReviewWarningCodes: adminLedgerTaskCodes(meta.sourceReviewWarningCodes),
+    structureAuditScope: meta.structureAuditScope === 'submitted_text' ? 'submitted_text' : '',
+    sourceLayoutStatus: ['reading_order_unverified', 'text_only'].includes(meta.sourceLayoutStatus) ? meta.sourceLayoutStatus : '',
     finalSourceIntegrityRestoreCodes: adminLedgerTaskCodes(meta.finalSourceIntegrityRestoreCodes),
     unsupportedSpecificityPass: typeof meta.unsupportedSpecificityPass === 'boolean'
       ? meta.unsupportedSpecificityPass
@@ -3246,6 +3248,8 @@ function serializeAdminLedgerTaskArchive(value, jobId) {
     qualityWarningCodes: adminLedgerTaskCodes(row.qualityWarningCodes),
     koreanRefinementIssueCodes: adminLedgerTaskCodes(row.koreanRefinementIssueCodes),
     sourceReviewWarningCodes: adminLedgerTaskCodes(row.sourceReviewWarningCodes),
+    structureAuditScope: row.structureAuditScope === 'submitted_text' ? 'submitted_text' : '',
+    sourceLayoutStatus: ['reading_order_unverified', 'text_only'].includes(row.sourceLayoutStatus) ? row.sourceLayoutStatus : '',
     finalSourceIntegrityRestoreCodes: adminLedgerTaskCodes(row.finalSourceIntegrityRestoreCodes),
     effectStatus: typeof row.effectStatus === 'string' ? row.effectStatus.slice(0, 40) : '',
     effectNoticeCodes: adminLedgerTaskCodes(row.effectNoticeCodes),

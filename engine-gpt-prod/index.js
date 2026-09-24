@@ -4010,6 +4010,7 @@ async function runEngine({
   });
   const strictBlocked = result.floorReport?.status === 'blocked';
   const qualityWarnings = dedupeQualityWarnings([
+        ...(sourcePreflightAudit?.warnings || []).filter(item => item.code === 'source_pdf_reading_order_unverified'),
         ...(deliveryAudit?.warnings || []).filter(item => !isEffectObservationCode(item?.code)),
         ...semanticQualityWarnings.filter(item => !isEffectObservationCode(item?.code)),
         ...(delivery.reasonCodes || []).map(deliveryReasonQualityWarning),
@@ -4356,6 +4357,9 @@ async function runEngine({
     effectStatus,
     effectNoticeCodes: safeFailureCodeList(effectNotices.map(item => item.code)),
     structureSignaturePass: structureAudit?.pass === true,
+    structureAuditScope: 'submitted_text',
+    sourceLayoutStatus: sourcePreflightAudit?.issueCodes?.includes('source_pdf_reading_order_unverified')
+      ? 'reading_order_unverified' : 'text_only',
     sourceStructurePass: structureAudit?.sourceStructurePass !== false,
     structuralRoleAdditionCount: Number(structureAudit?.structuralRoleAdditionCount || 0),
     protectedBlockRestoreCount: Number(layoutRepair?.finalLockedStructure?.restoredCount || 0),

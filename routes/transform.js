@@ -1437,6 +1437,8 @@ function buildArchiveObservability(job) {
     missingSentenceSpaceRepairCount: archiveFinite(engineMeta.missingSentenceSpaceRepairCount ?? formattingRepair.missingSentenceSpaceRepairCount),
     contextualSpacingRepairCount: archiveFinite(engineMeta.contextualSpacingRepairCount ?? formattingRepair.contextualSpacingRepairCount),
     sourceReviewWarningCodes: uniqueStrictArchiveCodes(engineMeta.sourceReviewWarningCodes),
+    structureAuditScope: engineMeta.structureAuditScope === 'submitted_text' ? 'submitted_text' : undefined,
+    sourceLayoutStatus: ['reading_order_unverified', 'text_only'].includes(engineMeta.sourceLayoutStatus) ? engineMeta.sourceLayoutStatus : undefined,
     sourceReviewWarningCount: archiveFinite(engineMeta.sourceReviewWarningCount),
     sourcePreflightVersion: archiveFinite(engineMeta.sourcePreflightVersion),
     sourcePreflightChanged: engineMeta.sourcePreflightChanged === true,

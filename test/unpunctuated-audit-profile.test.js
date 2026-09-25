@@ -131,3 +131,33 @@ test('either missing hedge among two distinct claims is detected', () => {
     }
   }
 });
+
+test('conjunctive hedge inflections are not mistaken for certainty', () => {
+  for (const ending of ['것 같은데,', '것 같고,', '것 같지만,', '것 같으며,']) {
+    const result = output.replace('것 같다.', ending);
+    assert.equal(hedge(audit(source, result)), false, ending);
+  }
+});
+
+test('coarse source ordinal cannot paste an unpunctuated document into one result sentence', () => {
+  const { restoreSourceSentenceOrdinals: restore } = require('../engine-gpt-prod/sourceSentenceRestore');
+  const input = source + ' 첫 행사에는 18명이 참석했고 다음 행사에는 24명이 참석했다';
+  const changed = output.replace('것 같다', '것이 분명하다') + ' 첫 행사에는 18명이 참석했다. 다음 행사에는 24명이 참석했다.';
+  for (const ordinalSpace of ['source', 'output']) {
+    const result = restore(input, changed, [1], {ordinalSpace, maxOutputGroup:1});
+    assert.equal(result.applied, false);
+    assert.equal(result.text, changed);
+    assert.equal((result.text.match(/18명/gu)||[]).length, 1);
+  }
+});
+
+test('relation fallback refuses unverified whole-run restoration without swallowing the warning', () => {
+  const f = require('../engine-gpt-prod/fingerprintAudit');
+  const changed = output.replace('보여 주는 것 같다', '분명히 보여 준다');
+  const before = f.auditFingerprint(source, changed);
+  assert.ok(before.issueCodes.includes('semantic_relation_shift'));
+  const restored = f.restoreUnsafeRelationSentences(source, changed, before);
+  assert.equal(restored.applied, false);
+  assert.equal(restored.text, changed);
+  assert.equal(hedge(audit(source, restored.text)), true);
+});

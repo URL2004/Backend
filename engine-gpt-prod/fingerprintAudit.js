@@ -482,7 +482,7 @@ function hasPossibilityMarker(value) {
 }
 
 function hasEpistemicHedge(value) {
-  return /(?:것\s*같(?:다|습니다|았다|았다)|듯(?:하|싶)|것으로\s*보(?:인|인다|입니다)|수도\s*있|지도\s*모르|어쩌면|아마(?:도)?|확실하지\s*않)/u
+  return /(?:것\s*같(?:다|습니다|았다|아요|아|고|으며|지만|은데)|듯(?:하|싶)|것으로\s*보(?:인|인다|입니다)|수도\s*있|지도\s*모르|어쩌면|아마(?:도)?|확실하지\s*않)/u
     .test(String(value || ''));
 }
 

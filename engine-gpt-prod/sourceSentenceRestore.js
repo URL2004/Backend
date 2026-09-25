@@ -47,6 +47,11 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
     alignment = resolveSplitRestoration(alignment, sourceSpans, outputSpans, before, maxOutputGroup);
     if (!alignment) continue;
     const sourceSpan = sourceSpans[alignment.sourceIndex];
+    // A public source ordinal may cover an entire punctuation-poor document.
+    // Its inferred claims have no verified replacement coordinates here. Never
+    // paste that whole run into a partial output match (even if similarity or
+    // a caller's 1:1 preference accepts it). Leave it to model repair/review.
+    if (sourceSpan && splitSentenceSpans(sourceSpan.text, { inferPlainEndings: true }).length > 1) continue;
     const firstOutput = outputSpans[alignment.start];
     const lastOutput = outputSpans[alignment.end - 1];
     if (!sourceSpan || !firstOutput || !lastOutput) continue;

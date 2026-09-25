@@ -547,7 +547,7 @@ function findHeadingLiteral(text, expected, cursor) {
 // 의미 감사 뒤의 국소 문장 복원은 잠긴 라벨 접두부를 보존하면서도 그 앞의
 // 줄 구분자를 공백으로 재조립할 수 있다. 어휘를 다시 바꾸지 않고 잠긴
 // 제목·라벨·불릿·조문 접두부의 원래 행 위치만 마지막에 한 번 더 복원한다.
-function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVisualGaps = false } = {}) {
+function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVisualGaps = false, developedListGaps = false } = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
   const blocks = restoreExactLockedBlocks(heading.text, chunks, source);
   const markdownControls = restoreStandaloneMarkdownControlLines(source, blocks.text);
@@ -558,6 +558,7 @@ function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVis
   // 등은 buildVisualGapExcludedBlocks가 제외하며 라벨 행 사이는 벌리지 않는다.
   const visualGaps = normalizeVisualGaps
     ? restoreStructuralVisualGaps(inlineLabels.text, {
+        developedListGaps,
         excludedBlocks: buildVisualGapExcludedBlocks(chunks)
       })
     : { text: inlineLabels.text, repairCount: 0 };
@@ -643,7 +644,8 @@ function restoreFinalDocumentLayout({
       source,
       outputText: paragraphs.text,
       chunks,
-      normalizeVisualGaps
+      normalizeVisualGaps,
+      developedListGaps: improveLabelBodies
     });
     const report = paragraphs.paragraphs;
     if (report?.applied && report.policy !== 'none') {
@@ -1358,7 +1360,7 @@ function findWhitespaceEquivalentSpans(value, expected, cursor = 0, maximum = 64
   return spans;
 }
 
-function restoreStructuralVisualGaps(value, { excludedBlocks = new Set() } = {}) {
+function restoreStructuralVisualGaps(value, { excludedBlocks = new Set(), developedListGaps = false } = {}) {
   const normalized = normalizeNewlines(value);
   const records = layoutStructure.buildLineRecords(normalized);
   const nonEmpty = records.filter(record => !record.blank);
@@ -1373,7 +1375,7 @@ function restoreStructuralVisualGaps(value, { excludedBlocks = new Set() } = {})
     const right = nonEmpty[index + 1];
     const blankLineCount = Math.max(0, right.index - left.index - 1);
     if (isVisualGapExcluded(left, excludedBlocks) || isVisualGapExcluded(right, excludedBlocks)) continue;
-    if (blankLineCount > 0 || !needsVisualParagraphGap(left, right)) continue;
+    if (blankLineCount > 0 || !needsVisualParagraphGap(left, right, developedListGaps)) continue;
     // 뒤에서부터 삽입하면 앞서 계산한 원문 행 인덱스가 흔들리지 않는다.
     lines.splice(right.index + repairCount, 0, '');
     repairCount += 1;
@@ -1420,7 +1422,7 @@ function buildVisualGapExcludedBlocks(chunks) {
     .filter(Boolean));
 }
 
-function needsVisualParagraphGap(left, right) {
+function needsVisualParagraphGap(left, right, developedListGaps = false) {
   const leftRole = String(left?.role || '');
   const rightRole = String(right?.role || '');
   if (leftRole === 'prose' && rightRole === 'prose'
@@ -1429,7 +1431,7 @@ function needsVisualParagraphGap(left, right) {
 
   const leftList = leftRole === 'list';
   const rightList = rightRole === 'list';
-  if (leftList && rightList) return false;
+  if (leftList && rightList) return developedListGaps && layoutStructure.needsDevelopedListGap(left, right);
   if (leftList || rightList) {
     // 번호 절은 뒤 산문을 해당 절의 설명으로 이어 붙일 수 있게 두되,
     // 새 번호 절 앞에는 실제 빈 줄을 둔다.
@@ -1525,12 +1527,16 @@ function restoreParagraphLayoutBase({
     : { text: rawOutputText, repairedCount: 0 };
   const explicitParagraphCountBefore = layoutStructure.splitExplicitParagraphs(rawOutputText).length;
   const canRepairVisualGaps = mode !== 'polish' && !creativeLayout;
+  const developedListGaps = canRepairVisualGaps
+    && !['preserve', 'approved_plan'].includes(resolvedContract.paragraph.prosePolicy)
+    && !['legal_contract', 'clinical_record'].includes(profileName)
+    && !(chunks || []).some(c => c.lineBoundaryPolicy === 'all');
   const visualGapExcludedBlocks = buildVisualGapExcludedBlocks(chunks);
   const sourceVisualLayout = canRepairVisualGaps
-    ? restoreStructuralVisualGaps(source, { excludedBlocks: visualGapExcludedBlocks })
+    ? restoreStructuralVisualGaps(source, { excludedBlocks: visualGapExcludedBlocks, developedListGaps })
     : { text: normalizeParagraphWhitespace(source), repairCount: 0 };
   const outputVisualLayout = canRepairVisualGaps
-    ? restoreStructuralVisualGaps(sourceTransitions.text, { excludedBlocks: visualGapExcludedBlocks })
+    ? restoreStructuralVisualGaps(sourceTransitions.text, { excludedBlocks: visualGapExcludedBlocks, developedListGaps })
     : { text: sourceTransitions.text, repairCount: 0 };
   const discourseLayout = canRepairVisualGaps
     ? require('./sourceParagraphTransitions').restoreSourceDiscourseRoles(source, outputVisualLayout.text)

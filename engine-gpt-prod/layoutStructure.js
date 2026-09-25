@@ -604,6 +604,32 @@ function isListLine(value) {
   return Boolean(listPrefixParts(value));
 }
 
+// Preserve list items and their order, but distinguish developed answers from
+// compact lists. Only adjacent, consecutive, same-level numbered siblings qualify.
+function needsDevelopedListGap(left, right) {
+  const item = record => {
+    if (record?.role !== 'list') return null;
+    const raw = String(record.raw || record.text || '');
+    const match = raw.match(/^(\s*)(\d{1,3})([.)])\s+(\S[\s\S]*)$/u);
+    if (!match) return null;
+    const body = match[4];
+    if (bare(body).length < 60 || splitSentences(body).length < 2
+        || !isSentenceComplete(body)) return null;
+    return { indent: match[1], number: Number(match[2]), style: match[3] };
+  };
+  const a = item(left), b = item(right);
+  return Boolean(a && b && a.indent === b.indent && a.style === b.style && b.number === a.number + 1);
+}
+
+function missingDevelopedListGaps(value, options = {}) {
+  if (options.mode === 'polish' || ['creative', 'legal_contract', 'clinical_record'].includes(profileNameFromOptions(options))
+      || ['preserve', 'approved_plan'].includes(options.humanizeContract?.paragraph?.prosePolicy)
+      || isProtectedReadabilityParagraph(value, options)) return 0;
+  const records = buildLineRecords(value);
+  return records.slice(1).filter((right, i) => !right.blank && !records[i].blank
+    && needsDevelopedListGap(records[i], right)).length;
+}
+
 function listPrefixParts(value) {
   const raw = String(value || '');
   const match = raw.match(
@@ -928,8 +954,9 @@ function measureParagraphReadability(paragraphsOrText, options = {}) {
     // 한 행의 본문 자체가 과장문이면 라벨 그룹이라는 이유로 면제하지 않는다.
     // 이전에는 이 묶음을 억지로 분할한 뒤 최종 구조 복원이 다시 합치면서
     // layoutRepair만 실패로 남고 실제 결과의 시각 여백도 사라졌다.
-    const splitNeed = structureDominated ? 1 : Math.max(1,
-      Math.ceil(compact / limits.maxBare), Math.ceil(sentenceCount / limits.maxSentences));
+    const missingListGaps = missingDevelopedListGaps(paragraph, options);
+    const splitNeed = Math.max(1 + missingListGaps, structureDominated ? 1 : Math.max(1,
+      Math.ceil(compact / limits.maxBare), Math.ceil(sentenceCount / limits.maxSentences)));
     return { index, compact, sentenceCount, structureDominated, splitNeed, overlong: splitNeed > 1 };
   });
   return {
@@ -1063,6 +1090,7 @@ module.exports = {
   bracketLabelParts,
   isListLine,
   listPrefixParts,
+  needsDevelopedListGap,
   isSentenceComplete,
   isHardProseBoundary,
   isStructureDominatedParagraph

@@ -257,7 +257,7 @@ test('v2.5.24: 장르 프롬프트는 문장 분리 지시 대상과 기계적 �
     }
   });
 
-  assert.match(academic.stable, /본 연구와 인용 연구/u);
+  assert.match(academic.stable, /본 연구·인용 연구·결과의 지시 대상을 보존/u);
   assert.match(academic.stable, /분석 대상으로 삼았다/u);
   assert.match(resume.stable, /완료된 뒤·검토한 후·확인한 다음/u);
   assert.match(resume.stable, /우선순위를 먼저 판단/u);

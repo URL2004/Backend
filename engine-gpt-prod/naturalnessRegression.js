@@ -13,12 +13,33 @@ const escape = value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 function auditNaturalnessRegression(source, output, profile = 'unknown') {
   const sources = proseSpans(source), outputs = proseSpans(output);
   const findings = [];
-  const sourceWords = /\p{Script=Han}/u.test(output) && !/\p{Script=Han}/u.test(source)
+  const sourceWords = /\p{Script=Han}/u.test(output)
     ? [...new Set(sources.flatMap(s=>s.text.match(/[가-힣]{3,24}/gu)||[]))] : [];
   for (const target of outputs) {
+    const frame = /^(나타날|발생할|기대할|얻을)\s+수\s+있는\s+(?:증상|변화|현상|결과|효과)(?:으로는|로는|은|는)\s+/u.exec(target.text);
+    if (frame && new RegExp(`${frame[1]}\\s+수\\s+있(?:다|습니다)[.!?]?\\s*$`, 'u').test(target.text)) {
+      const body = target.text.slice(frame[0].length);
+      const sourceText = String(source), offset = sourceText.indexOf(body);
+      // PDF paste can omit the space after the previous full stop. Require
+      // the exact, uniquely located source sentence, even if coarse source
+      // segmentation grouped it with that preceding sentence.
+      const exactSource = offset >= 0 && sourceText.lastIndexOf(body) === offset
+        && (offset === 0 || /[.!?。！？\s]/u.test(sourceText[offset-1]))
+        && !syntaxSpans(sourceText).some(p => p.start < offset+body.length && p.end > offset);
+      if (exactSource && !sourceText.includes(target.text)) {
+        const code = 'introduced_predicate_echo_frame';
+        findings.push({code, ordinal:target.ordinal, repair:{start:target.start,
+          end:target.start+frame[0].length, replacement:'', ordinal:target.ordinal, code}});
+      }
+    }
     for(const word of target.text.matchAll(/[\p{Script=Han}가-힣]{3,24}/gu)) {
-      if((word[0].match(/\p{Script=Han}/gu)||[]).length!==1 || !sourceWords.length) continue;
-      const pattern=new RegExp('^'+word[0].replace(/\p{Script=Han}/u,'[가-힣]')+'$','u');
+      const hanCount = (word[0].match(/\p{Script=Han}/gu)||[]).length;
+      // Preserve native Chinese/Japanese and existing mixed notation. Only
+      // a locally source-grounded substitution inside an otherwise Korean
+      // word can be repaired; unrelated Han text elsewhere is not an exemption.
+      if(!hanCount || hanCount > 3 || word[0].length-hanCount < 2
+          || !sourceWords.length || String(source).includes(word[0])) continue;
+      const pattern=new RegExp('^'+word[0].replace(/\p{Script=Han}/gu,'[가-힣]')+'$','u');
       const next=target.text.slice(word.index+word[0].length).match(/^\s+([가-힣]{2})/u)?.[1];
       if(!next)continue;
       const matches=sourceWords.filter(w=>pattern.test(w) && sources.some(s=>new RegExp(`(?<![가-힣])${w}\\s+${next}`,'u').test(s.text)));

@@ -94,7 +94,7 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
     role: 'blank'
   });
   const nonEmpty = records.filter(record => !record.blank);
-  const codeIndices = detectCodeLineIndices(records);
+  const codeIndices = detectCodeLineIndices(records, source);
   const tableIndices = detectContextTableLineIndices(records, codeIndices);
   const signatureIndices = detectSignatureLineIndices(records, codeIndices);
   const parallelSloganTitleIndices = detectParallelSloganTitleIndices(
@@ -157,6 +157,7 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
       labelGroupHeading: labelGroupHeadingIndices.has(record.index)
     });
     if (dependentQuoteLines.has(record.index)
+        && !(record.index === firstContentIndex && isReadingResponseTitle(record.text))
         && !tableIndices.has(record.index) && !signatureIndices.has(record.index)
         && !scriptCues.has(record.index)
         && ['title', 'heading', 'quote', 'prose'].includes(record.role)) {
@@ -245,6 +246,10 @@ function isPlainListCandidate(value) {
   return /[가-힣A-Za-z0-9]/u.test(text);
 }
 
+function isReadingResponseTitle(text) {
+  return /^[『「《][^』」》\n]{1,100}[』」》](?:을|를)\s*읽고$/u.test(text);
+}
+
 function isKnownHeadingLine(value) {
   const text = visibleTrim(value);
   if (!text) return false;
@@ -255,6 +260,8 @@ function isKnownHeadingLine(value) {
   // 독립 별표 행이 생길 수 있으므로 행 전체를 제목으로 보존한다.
   if (/^\s*[-*+]\s+(?:\*\*[^*\n]{1,120}\*\*|__[^_\n]{1,120}__)\s*$/u.test(text)) return true;
   if (/^#{1,6}\s+\S/u.test(text)) return true;
+  if (isReadingResponseTitle(text)) return true;
+  if (/^(?:지은이|저자|줄거리|책\s*소개|작품\s*소개)$/u.test(text)) return true;
   if (/^[\[【<][^\]】>\n]{1,80}[\]】>]$/u.test(text)) return true;
   // An explicit numbered section remains a heading with a presentational copula.
   // Do not freeze arbitrary bracketed nouns followed by ordinary prose.
@@ -719,8 +726,12 @@ function detectContextTableLineIndices(records, excluded = new Set()) {
   return out;
 }
 
-function detectCodeLineIndices(records) {
+function detectCodeLineIndices(records, source = '') {
   const out = new Set();
+  const bare = require('../engine/bareCode').bareCodeSpans(source);
+  for (const record of records || []) {
+    if (bare.some(span => span.start <= record.start && span.end >= record.end)) out.add(record.index);
+  }
   let fence = null;
   for (const record of records || []) {
     const match = String(record.raw || '').match(/^\s*(`{3,}|~{3,})/u);

@@ -12,7 +12,7 @@ function preservationBlock(lengthPolicy, documentProfile = null, requestStrength
   });
   return [
     '[불변 계약]',
-    '숫자, 단위, 기관·고유명사, 참고문헌, URL, 직접 인용, 화자, 제목·목록과 문단의 역할·순서를 보존한다.',
+    '숫자·단위·기관·고유명사·참고문헌·URL·직접 인용·화자·제목·목록·문단 역할·순서를 보존한다. 한글 순번(첫째·여덟째)도 지킨다.',
     paragraphPromptLine(resolvedContract),
     flags.has('compressed_multicolumn')
       ? '탭·파이프로 구분된 표와 다열 행은 각 행의 셀 개수·열 구분·셀 소유권을 그대로 유지하고 산문으로 합치지 않는다.'

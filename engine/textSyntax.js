@@ -22,6 +22,9 @@ function syntaxSpans(value) {
   for (const inline of text.matchAll(/(`+)([^`\r\n]+)\1/gu)) {
     if (!insideCode(inline.index)) spans.push({ start: inline.index, end: inline.index + inline[0].length, spanType: 'code' });
   }
+  for (const bare of require('./bareCode').bareCodeSpans(text)) {
+    if (!spans.some(span => span.start < bare.end && span.end > bare.start)) spans.push(bare);
+  }
   const pairs = { '“': '”', '‘': '’', '「': '」', '『': '』', '《': '》', '〈': '〉', '"': '"', "'": "'", '(': ')', '[': ']', '（': '）' };
   const codeSpans = spans.filter(span => span.spanType === 'code').sort((a,b) => a.start-b.start);
   let codeCursor = 0;

@@ -2,7 +2,7 @@
 
 const { splitSentences } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v4';
+const VERSION = 'relation-candidates-v5';
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
@@ -52,6 +52,19 @@ function auditRelationCandidates(source, outputText) {
     const original = matched.sentence;
     const add = code => candidates.push({ code, sourceOrdinal: matched.index + 1,
       outputOrdinal: outputIndex + 1, sourceSpan: original, outputSpan: sentence });
+    // Low/high is not lowest/highest. Other sentences may legitimately supply
+    // the ranking evidence, so nominate for full-source judging, never delete
+    // the modifier or fail delivery solely on this local signal.
+    const rank = /(?<![가-힣])(?:가장\s*(?:높|낮|많|적|크|작)|(?:최고|최저|최다|최소|최대)(?=$|[^가-힣]|의|인|였|이었|이다|로|를|가|는)|제일\s*(?:높|낮|많|적|크|작))/u;
+    if (rank.test(sentence) && !rank.test(original)) add('unsupported_ranking_candidate');
+    // Splitting an embedded question out of "...인지 모르겠다" can change
+    // reflective uncertainty into a direct challenge. Nominate only; a
+    // neighbouring sentence or an actual source quotation may license it.
+    if (/[?？][”’"']?\s*$/u.test(sentence) && !/[?？]/u.test(original)
+        && /(?:어디|어떻게|왜|무엇|누구|어느|얼마|언제)/u.test(original)
+        && /(?:인지|는지|을지|할지|될지)[^.!?\n]{0,45}(?:모르|몰랐|고민|생각)/u.test(original)) {
+      add('speech_act_shift_candidate');
+    }
     if (/(?:기보다|보다는)/u.test(original) && !/(?:아니라|아니다|아닌)/u.test(original)
         && /(?:아니라|아니다|아닌)/u.test(sentence)) add('comparison_negation_candidate');
     // A domain-confusable pair is a review hint, not an autocorrect dictionary.

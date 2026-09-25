@@ -13,7 +13,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 36;
+const VERSION = 37;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -27,6 +27,10 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  introduced_predicate_echo_frame: {
+    weight: 3, repairable: true, deterministicSafe: true,
+    message: '원문에 없던 “나타날 수 있는 증상은 … 나타날 수 있다” 같은 술어 틀이 중복됐어요. 본문이 원문과 정확히 대응할 때만 추가된 틀을 제거해요.'
+  },
   introduced_mixed_script_word: {
     weight: 3, repairable: true, deterministicSafe: true,
     message: '원문의 한글 단어 일부가 새 한자로 바뀌었어요. 원문 대응이 확인되는 표기를 복원해 주세요.'
@@ -55,7 +59,7 @@ const ISSUE_DEFINITIONS = Object.freeze({
     weight: 5,
     repairable: true,
     deterministicSafe: false,
-    message: '앞에서 나눠 쓴 주장 뒤에 같은 원문 문장이 다시 붙었을 수 있어요. 원문과 대응해 중복된 내용만 제거하고 다른 주장·조건은 보존하세요.'
+    message: '원문 문장과 그 일부를 의역한 문장이 이웃해 같은 주장이 반복될 수 있어요. 원문과 대응해 중복만 제거하고 다른 주장·조건은 보존하세요.'
   },
   introduced_sentence_chain: {
     weight: 5,
@@ -738,7 +742,7 @@ const ISSUE_DEFINITIONS = Object.freeze({
 });
 
 const PARTICLE_AFTER_PAREN = /^(?:은|는|이|가|을|를|의|에|에서|에게|으로|로|와|과|도|만|부터|까지|처럼|보다|라고|라는|라며|하고)(?=$|[가-힣])/u;
-const QUOTE_COPULA_SUFFIX = '(?:라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|나|라도|든(?:지)?|기(?:도|만|는)|지(?:만)?|다|고|며|어서|므로|었(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
+const QUOTE_COPULA_SUFFIX = '(?:란|라(?:고|는|며|면)|인(?:가|데|지|바|셈|것|경우|만큼|듯|채|줄)?|이(?:라(?:고|는|며|면)?|란|나|라도|든(?:지)?|기(?:도|만|는)|지(?:만)?|다|고|며|어서|므로|었(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|었던)|였(?:습니다|다|던|고|지만|으면|다면|다는|을|는데|으며)?|입니다|일(?:수|지|까|뿐|때|경우)?|임(?:을|이|은|도)?)';
 const QUOTE_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|이나|나|조차|마저|밖에|마다|하고|하며|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX = '(?:에서는|에서도|에서만|에게는|에게도|에게만|으로는|으로도|으로만|로는|로도|로만|에는|에도|에만|부터는|부터도|까지는|까지도|에서|에게|으로|처럼|보다|부터|까지|라도|이나|나|조차|마저|밖에|마다|은|는|이|가|을|를|의|에|와|과|도|만|로|고)';
 const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|하며)';
@@ -1853,30 +1857,61 @@ function detectIntroducedSentenceChains(source, outputText) {
 
 function detectSourceRestoreEcho(source, outputText) {
   const key = value => normalizeCompact(value).replace(/[\p{P}\p{S}]/gu, '');
-  const sourceCounts = new Map();
-  for (const sentence of splitSentences(source)) {
-    const value = key(sentence);
-    sourceCounts.set(value, (sourceCounts.get(value) || 0) + 1);
-  }
+  const sourceSentences = splitSentences(source);
+  const sourceKeys = sourceSentences.map(sentence => ({sentence, key:key(sentence)}));
   const collect = text => {
     const spans = splitSentenceSpans(text);
     const matches = [];
-    for (let i = 2; i < spans.length; i++) {
+    for (let i = 0; i < spans.length; i++) {
       const current = spans[i];
       const currentKey = key(current.text);
-      if (current.text.length < 70 || sourceCounts.get(currentKey) !== 1) continue;
+      if (current.text.length < 70) continue;
+      // A restored sentence may have undergone a tiny surface repair (e.g.
+      // a particle or space). Do not lose the review signal just because its
+      // whole-string key differs. This remains a non-deleting review hint.
+      const owners = sourceKeys.filter(row => row.key === currentKey
+        || (Math.abs(row.key.length-currentKey.length) <= 8
+          && (row.key.slice(0,24) === currentKey.slice(0,24) || row.key.slice(-24) === currentKey.slice(-24))
+          && sentenceSimilarity(row.sentence, current.text) >= .94));
+      if (owners.length !== 1) continue;
+      const ownerKey = owners[0].key;
       if (syntaxSpans(current.text).length || layoutStructure.isStructureDominatedParagraph(current.text)) continue;
-      if (/\n[ \t]*\r?\n/u.test(String(text).slice(spans[i - 2].start, current.start))) continue;
       const originals = new Set(contentTokensLocal(current.text));
-      const previous = new Set(contentTokensLocal(spans[i - 2].text + ' ' + spans[i - 1].text));
-      const shared = [...originals].filter(token => previous.has(token)).length;
-      if (originals.size >= 8 && shared / originals.size >= .72 && shared / Math.max(1, previous.size) >= .6) matches.push({ ordinal: i + 1, key: currentKey });
+      if (i >= 2 && !/\n[ \t]*\r?\n/u.test(String(text).slice(spans[i - 2].start, current.start))) {
+        const previous = new Set(contentTokensLocal(spans[i - 2].text + ' ' + spans[i - 1].text));
+        const shared = [...originals].filter(token => previous.has(token)).length;
+        if (originals.size >= 8 && shared / originals.size >= .72 && shared / Math.max(1, previous.size) >= .6) matches.push({ ordinal: i + 1, key: currentKey });
+      }
+      // Restoration may also leave ONE paraphrased arm before or after the
+      // whole original. This is a repair hint, never a fuzzy deletion rule.
+      const roots = restoreEchoRoots(current.text);
+      for (const neighbour of [i - 1, i + 1]) {
+        const part = spans[neighbour];
+        if (!part || part.text.length < 20 || part.text.length > current.text.length * .65) continue;
+        if (syntaxSpans(part.text).length || layoutStructure.isStructureDominatedParagraph(part.text)) continue;
+        if (/\n[ \t]*\r?\n/u.test(String(text).slice(Math.min(current.end, part.end), Math.max(current.start, part.start)))) continue;
+        const partialRoots = restoreEchoRoots(part.text);
+        const overlap = [...partialRoots].filter(token => roots.has(token)).length;
+        if (partialRoots.size < 4 || overlap < 4 || overlap / partialRoots.size < .8) continue;
+        const tailKey = key(part.text.replace(/^(?:이를\s*통해|이에\s*따라|따라서|이처럼)\s+/u, ''));
+        const exactTail = tailKey.length >= 20 && currentKey.endsWith(tailKey);
+        const ownerScore = sentenceSimilarity(current.text, part.text);
+        if (!exactTail && sourceSentences.some(sentence => key(sentence) !== ownerKey
+          && sentenceSimilarity(sentence, part.text) >= ownerScore - .02)) continue;
+        matches.push({ ordinal: neighbour + 1, key: `partial:${currentKey}:${key(part.text)}` });
+      }
     }
     return matches;
   };
   const existing = new Set(collect(source).map(match => match.key));
-  const ordinals = collect(outputText).filter(match => !existing.has(match.key)).map(match => match.ordinal);
+  const ordinals = [...new Set(collect(outputText).filter(match => !existing.has(match.key)).map(match => match.ordinal))];
   return ordinals.length ? makeIssue('source_restore_echo', ordinals.length, ordinals) : null;
+}
+
+function restoreEchoRoots(value) {
+  return new Set(contentTokensLocal(value).map(token => token.replace(
+    /(?<=[가-힣]{2})(?:이었어서|이어서|이었다|이었|이라|했는데|했고|했으며|하면서|하지|하였다|했다)$/u, ''
+  )).filter(token => token.length >= 2 && !/^(?:않|없|있)/u.test(token)));
 }
 
 // 단일 결과 문장만 보면 성립해 보이지만, 원문과 정렬해 보면 단계·논리
@@ -3252,8 +3287,8 @@ const ABSTRACT_ECHO_PREDICATES = Object.freeze([
   // 존재할 때만 이 규칙을 사용하므로 실제 사건 서술은 건드리지 않는다.
   /(?:놓여|놓인|놓이|놓였|담겨|담긴|담기|담겼|들어)/u,
   /(?:드러나|보여|나타나|확인)/u,
-  /(?:의미|시사|보여\s*준)/u,
-  /(?:깨닫|알게|이해|인식)/u
+  /(?:의미하|의미했|시사하|시사했|보여\s*준)/u,
+  /(?:깨닫|깨달|알게|이해하|이해했|이해되|이해하게|인식하|인식했|인식되|인식하게)/u
 ]);
 
 function isAbstractPredicateEcho(leftValue, rightValue, leftTokens = null, rightTokens = null) {
@@ -3311,7 +3346,8 @@ function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
   const sourcePairs = findAdjacentSemanticRepetitionPairs(source);
   const outputPairs = findAdjacentSemanticRepetitionPairs(outputText);
   const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
-  const introduced = outputPairs.filter(pair => !sourcePairs.some(sourcePair => (
+  const introduced = outputPairs.filter(pair => !isSourceBackedClauseSplit(pair, sourceSentences)
+    && !sourcePairs.some(sourcePair => (
     sentenceSimilarity(sourcePair.left, pair.left) >= 0.62
       && sentenceSimilarity(sourcePair.right, pair.right) >= 0.62
   )));
@@ -3341,6 +3377,36 @@ function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
         { safeRemovalOrdinals, pairs: alignmentDetails }
       )
     : null;
+}
+
+// A source sentence is not an atomic claim. Its separate, independently
+// predicated arms can legitimately become adjacent sentences. In particular,
+// restoring a confirmed omitted suffix must not be vetoed (or deleted later)
+// solely because both arms align to the same original sentence.
+// This exemption needs an exact, unique source suffix and an independently
+// aligned prefix; similarity to the whole sentence alone is never sufficient.
+function isSourceBackedClauseSplit(pair, sourceSentences) {
+  const right = normalizeSentenceLocal(pair.right);
+  if (right.length < 18 || !layoutStructure.isSentenceComplete(pair.right)) return false;
+  const matches = [];
+  for (const sentence of sourceSentences) {
+    if (sentence.length > 1400 || syntaxSpans(sentence).some(s => s.spanType === 'code')) continue;
+    if (layoutStructure.buildLineRecords(sentence).some(r => !r.blank && r.role !== 'prose')) continue;
+    const literals = syntaxSpans(sentence);
+    for (const join of sentence.matchAll(/(?:었으며|았으며|였으며|됐으며|되었고|했고|했으며|지만|으나),?\s+/gu)) {
+      if (literals.some(s => s.start <= join.index && s.end > join.index)) continue;
+      const left = sentence.slice(0, join.index + join[0].length).trim();
+      const tail = sentence.slice(join.index + join[0].length).trim();
+      if (normalizeSentenceLocal(tail) !== right || left.length < 18) continue;
+      if (sentenceSimilarity(left, pair.left) < 0.60) continue;
+      // The suffix must contribute something not already repeated in the
+      // first output sentence. Otherwise keep the existing duplicate audit.
+      const leftTokens = new Set(contentTokensLocal(pair.left));
+      if (contentTokensLocal(tail).filter(t => !leftTokens.has(t)).length < 2) continue;
+      matches.push(sentence);
+    }
+  }
+  return matches.length === 1;
 }
 
 function bestSourceSentenceAlignment(value, sourceSentences) {
@@ -3642,13 +3708,12 @@ function repairIntroducedResidualClauseDuplications(source, outputText) {
   let repairCount = 0;
   for (const item of [...introduced].sort((left, right) => right.start - left.start)) {
     if (text.slice(item.start, item.end) !== item.rawText) continue;
-    text = `${text.slice(0, item.start)}${text.slice(item.end)}`;
+    const left = text.slice(0, item.start);
+    let right = text.slice(item.end);
+    if (/[ \t]$/u.test(left) && /^[ \t]/u.test(right)) right = right.replace(/^[ \t]+/u, '');
+    text = `${left}${right}`;
     repairCount += 1;
   }
-  text = text
-    .replace(/[ \t]{2,}/gu, ' ')
-    .replace(/[ \t]+\n/gu, '\n')
-    .replace(/\n[ \t]+/gu, '\n');
   return { text, repairCount };
 }
 
@@ -4257,7 +4322,9 @@ function enumerationMarker(sentence) {
 
 function enumerationPredicateShape(sentence) {
   const value = String(sentence || '').replace(/[.!?…。！？"'”’」』】)\]]+$/gu, '').trim();
-  if (/(?:것|점|방법|방식|과정)(?:이었|이었다|이다|입니다|임)$/u.test(value)) return 'nominalized';
+  // `다룬 데 있다` and `활용했다는 점이다` are both complete predicates.
+  // A nominal complement does not make an otherwise finite sentence a fragment.
+  if (/(?:것|점|방법|방식|과정)(?:이었다|이다|입니다)$/u.test(value)) return 'finite';
   if (/(?:한다|된다|이다|있다|없다|하였다|했다|준다|줄인다|높인다|낮춘다|합니다|됩니다|입니다|있습니다|없습니다)$/u.test(value)) return 'finite';
   if (/(?:함|됨|임|음)$/u.test(value)) return 'record_nominal';
   return '';

@@ -337,7 +337,7 @@ test('model-introduced referent loss and comparison typo are repaired before del
   assert.match(result.result.outputText, /조건에 있듯이/u);
   assert.doesNotMatch(result.result.outputText, /있기라면/u);
   assert.match(result.result.outputText, /우선 정했다/u);
-  assert.equal(result.engineMeta.koreanRefinementVersion, 36);
+  assert.equal(result.engineMeta.koreanRefinementVersion, 37);
 });
 
 test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·engineMeta를 기록한다', { concurrency: false }, async t => {
@@ -346,7 +346,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.67');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.68');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1541,7 +1541,10 @@ test('전체 후보가 장단문을 평탄화해도 안전한 문장 편집만 �
   assert.equal(out.status, 'clean');
   assert.notEqual(out.result.outputText, source);
   assert.equal(out.engineMeta.safePartialCandidateAppliedCount, 1);
-  assert.equal(out.engineMeta.safePartialSentenceAppliedCount, 2);
+  // The other old "safe" edit copied an arm of the retained long sentence.
+  // Reject that overlap instead of inflating the count of approved edits.
+  assert.equal(out.engineMeta.safePartialSentenceAppliedCount, 1);
+  assert.equal(out.result.outputText.includes(uniformSentences[0]), false);
   assert.ok(out.engineMeta.chunkResolvedFailureCodes.includes('voice_existing_distribution_failed'));
   assert.equal(out.engineMeta.humanizationNoBenefitDelivered, false);
 });
@@ -1560,14 +1563,17 @@ test('voice 재시도 실패 후에도 구두점 후보 대신 안전한 실질 
   assert.equal(out.status, 'clean');
   assert.notEqual(out.result.outputText, source);
   assert.notEqual(out.result.outputText, punctuationOnly);
-  assert.equal(out.engineMeta.humanizationNoBenefitDelivered, false);
+  // Excluding the duplicate leaves a limited edit; do not report it as a
+  // successful depth improvement merely to satisfy the old two-edit count.
+  assert.equal(out.engineMeta.humanizationNoBenefitDelivered, true);
   assert.equal(out.engineMeta.repairCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 0);
-  assert.equal(out.engineMeta.humanizationNoEffectRetryAttemptCount, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
+  assert.equal(out.engineMeta.humanizationNoEffectRetryAttemptCount, 1);
   assert.equal(out.engineMeta.safePartialCandidateAppliedCount, 1);
-  assert.equal(out.engineMeta.safePartialSentenceAppliedCount, 2);
-  assert.equal(out.engineMeta.humanizationDepthRetryApplied, false);
+  assert.equal(out.engineMeta.safePartialSentenceAppliedCount, 1);
+  assert.notEqual(out.status, 'blocked');
+  assert.equal(out.result.outputText.includes('학생이 여러 자료를 직접 찾아 비교한 활동 내용을 기록함.'), false);
 });
 
 test('최종 결과에 남은 신규 강한 수식은 해당 문장만 원문으로 복원한다', { concurrency: false }, async t => {
@@ -1639,7 +1645,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.67');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.68');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

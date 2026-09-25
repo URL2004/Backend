@@ -6,6 +6,7 @@ const { splitSentenceSpans, splitSentences, ngramJaccard } = require('../engine/
 const { paragraphExpansionLimit } = require('./voiceProfile');
 const layoutStructure = require('./layoutStructure');
 const { syntaxSpans } = require('../engine/textSyntax');
+const { ordinalPrefix, ordinalMarkers } = require('./koreanOrdinal');
 const {
   resolveHumanizeContract,
   allowsLayoutRecomposition,
@@ -613,6 +614,7 @@ function restoreFinalDocumentLayout({
   let midSentenceParagraphRepairCount = 0;
   let labelBodySplitCount = 0;
   let labelBodyGapCount = 0;
+  let ordinalGapCount = 0;
   const labelContract = resolveHumanizeContract({ mode, requestStrength, documentProfile, humanizeContract });
   const improveLabelBodies = normalizeVisualGaps && !['preserve', 'approved_plan'].includes(labelContract.paragraph.prosePolicy)
     && mode !== 'polish' && !['creative','legal_contract','clinical_record'].includes(canonicalProfileName(documentProfile))
@@ -669,6 +671,9 @@ function restoreFinalDocumentLayout({
         labelBodySplitCount = Math.max(labelBodySplitCount, labels.splitCount);
         labelBodyGapCount = Math.max(labelBodyGapCount, labels.gapCount);
       }
+      const ordinals = require('./koreanOrdinal').restoreOrdinalParagraphGaps(source, text);
+      text = ordinals.text;
+      ordinalGapCount = Math.max(ordinalGapCount, ordinals.repairCount);
     }
     citationTailRepairCount += Number(citationTails.repairCount || 0);
     if (text === before) {
@@ -714,6 +719,7 @@ function restoreFinalDocumentLayout({
     midSentenceParagraphRepairCount,
     labelBodySplitCount,
     labelBodyGapCount,
+    ordinalGapCount,
     initialLocked,
     paragraphs,
     finalLocked
@@ -2312,7 +2318,8 @@ function splitEditablePrefixPiece(piece, options = {}) {
   const label = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet || bracketLabel
     ? null
     : editableLabelPrefixMatch(raw);
-  const match = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet || bracketLabel || label;
+  const koreanOrdinal = ordinalPrefix(raw);
+  const match = legal || numberedInlineHeading || blockquote || emojiLabel || markdownLabelBullet || bullet || bracketLabel || label || koreanOrdinal;
   if (!match || /^\s*(?:https?|mailto):/iu.test(raw)) return [piece];
   const prefix = match[1];
   const body = match[2];
@@ -2331,7 +2338,7 @@ function splitEditablePrefixPiece(piece, options = {}) {
             ? 'heading_prefix'
             : (blockquote
                 ? 'blockquote_prefix'
-                : ((markdownLabelBullet || bullet) ? 'bullet_prefix' : 'label_prefix'))),
+                : ((markdownLabelBullet || bullet || koreanOrdinal) ? 'bullet_prefix' : 'label_prefix'))),
       forceSectionLabel: legal ? prefix.trim() : ''
     },
     {
@@ -3455,7 +3462,11 @@ function extractOriginalStructuralMarkers(value) {
     match = text.match(/^\s*([-*+•▪◦·])\s+|^\s*([●○■□◆◇▶▷※])\s*|^\s*(\+)(?=[가-힣A-Za-z“"'‘「『《〈])/u);
     if (match) markers.push(structuralMarker('bullet', match[1] || match[2] || match[3], index));
   });
-  return markers;
+  for (const ordinal of ordinalMarkers(normalizeNewlines(value))) {
+    markers.push({ ...structuralMarker('korean_ordinal', ordinal.marker, ordinal.lineOrdinal - 1),
+      key: `korean_ordinal:${ordinal.number}` });
+  }
+  return markers.sort((a, b) => a.lineOrdinal - b.lineOrdinal);
 }
 
 function structuralMarker(kind, marker, lineIndex) {

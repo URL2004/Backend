@@ -7,7 +7,7 @@ const {
 const { alignSourceSentence, sentenceSimilarity } = require('./sentenceAlignment');
 const humanizationDepth = require('./humanizationDepth');
 
-const VERSION = 1;
+const VERSION = 2;
 const MIN_ALIGNMENT_SCORE = 0.34;
 const MIN_SUBSTANTIVE_DISTANCE = 3;
 const MIN_SUBSTANTIVE_RATIO = 0.055;
@@ -50,6 +50,12 @@ function accumulateSafeEdits({
   const rejected = [];
 
   for (const proposal of proposals.slice(0, Math.max(1, Number(maxApplied) || 24))) {
+    if (proposal.ownershipConflict) {
+      const codes = ['partial_sentence_ownership_ambiguous'];
+      addCodes(rejectedCodes, codes);
+      rejected.push({ currentIndex: proposal.currentIndex, codes });
+      continue;
+    }
     const trialAccepted = [...accepted, proposal].sort((left, right) => left.currentStart - right.currentStart);
     const trial = applyProposalSet(before, trialAccepted);
     if (!trial || normalizeSubstantive(trial) === normalizeSubstantive(output)) continue;
@@ -157,10 +163,31 @@ function addProposal(proposals, currentSpans, candidateSpans, currentIndex, cand
     candidateStart,
     candidateEnd,
     alignmentScore: round4(score),
+    ownershipConflict: overlapsNeighbouringCurrentSentence(currentSpans, currentIndex, replacement),
     substantiveRatio: round4(change.ratio),
     substantiveDistance: change.distance
   });
   return true;
+}
+
+// Partial acceptance only overwrites ONE current sentence. A recovery model
+// can instead merge two current sentences into one. The old forward-only
+// alignment then overwrote the first arm and left the other arm duplicated.
+// Check reverse ownership even when total sentence counts happen to match.
+// Do not delete the neighbour or merge paragraphs on a fuzzy match: reject
+// this partial proposal while retaining unrelated safe edits.
+function overlapsNeighbouringCurrentSentence(spans, index, replacement) {
+  const single = sentenceSimilarity(spans[index].text, replacement);
+  for (let start = Math.max(0, index-2); start <= index; start++) {
+    for (let end = index+1; end <= Math.min(spans.length, start+3); end++) {
+      if (end-start < 2) continue;
+      const texts = spans.slice(start, end).map(s => s.text);
+      if (texts.some((text, n) => start+n !== index && text.length < 16)) continue;
+      const grouped = sentenceSimilarity(texts.join(' '), replacement);
+      if (grouped >= .55 && grouped >= single + .06) return true;
+    }
+  }
+  return false;
 }
 
 function prioritizeProposals(values) {

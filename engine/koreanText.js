@@ -180,10 +180,26 @@ function isProtectedPeriod(text, index, sentenceStart) {
     if (dateStart + match.index <= index && index < dateStart + match.index + match[0].length) return true;
   }
   const left = text.slice(Math.max(sentenceStart, index - 12), index + 1);
+  // Author-year citations: the period belongs to the Latin abbreviation,
+  // not to a sentence or paragraph boundary. Keep a year requirement so an
+  // ordinary English sentence ending in `et al.` may still terminate.
+  if (/(?:^|\s)et\s+al\.$/iu.test(left)
+      && /^\s*\(?\d{4}[a-z]?(?:\)|(?=$|[\s.,;:]|[은는이가의]))/iu.test(text.slice(index + 1))) return true;
   if (/(?:e\.g|i\.e|etc|vs|Dr|Mr|Ms|Prof|No|Fig|Vol|Inc|Ltd)\.$/i.test(left)) return true;
   if (/(?:[A-Za-z]\.){1,5}$/u.test(left) && /[A-Za-z]/u.test(next)) return true;
   if (/(?:[A-Za-z]\.){2,6}$/u.test(left)) return true;
   const lineLeft = text.slice(Math.max(sentenceStart, text.lastIndexOf('\n', index - 1) + 1), index);
+  // Inline enumerations are not sentence stops: `방안은 1. 기준 제시 2. 확인`.
+  // Require an adjacent ascending item, not merely a digit before a period;
+  // otherwise ordinary prose ending in a number would lose its boundary.
+  const inlineNumber = lineLeft.match(/(?:^|[ \t:：])(\d{1,2})$/u);
+  if (inlineNumber && /[ \t]/u.test(next)) {
+    const number = Number(inlineNumber[1]);
+    const after = text.slice(index + 1, index + 420);
+    const previous = lineLeft.slice(0, inlineNumber.index).match(/(?:^|[ \t])(\d{1,2})\.[ \t]+[^.!?\r\n]{1,350}$/u);
+    if ((previous && Number(previous[1]) + 1 === number)
+        || new RegExp(`^[ \\t]+[^.!?\\r\\n]{1,350}[ \\t]${number + 1}\\.[ \\t]+\\S`, 'u').test(after)) return true;
+  }
   if (/^\s*(?:\d{1,3}|[A-Za-z]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)$/u.test(lineLeft) && /\s/u.test(next)) return true;
   if (/^\s*\d+(?:\.\d+){1,4}$/u.test(lineLeft) && /\s/u.test(next)) return true;
   if (/^\s*제\s*\d{1,3}\s*(?:장|절|항)$/u.test(lineLeft) && /\s/u.test(next)) return true;

@@ -10,6 +10,11 @@ function alignedReviewPairs(source, output, maxChars = 9000) {
   const whole = () => [{ index: 0, sourceId: `${id}:0:${from.length}`, sourceStart: 0, sourceEnd: from.length,
     outputStart: 0, outputEnd: to.length, sourceContext: from, output: to,
     alignment: 'whole_document_uncertain', repairSafe: false }];
+  // Complete, unique headings in the same order are stronger ownership
+  // evidence than fuzzy sentence matches. A legitimate split/merge inside
+  // a section must not disable repair for the entire long document.
+  const headingPairs = alignedHeadingPairs(from, to, id, maxChars);
+  if (headingPairs) return headingPairs;
   const a = splitSentenceSpans(from), b = splitSentenceSpans(to);
   if (a.length < 2 || b.length < 2 || a.length > 2000 || b.length > 2000) return whole();
   const keys = list => {
@@ -105,6 +110,39 @@ function alignedReviewPairs(source, output, maxChars = 9000) {
       outputStart: left.outputStart, outputEnd: right.outputStart,
       sourceContext: from.slice(left.sourceStart, right.sourceStart), output: to.slice(left.outputStart, right.outputStart),
       alignment: 'shared_monotonic_sentence', repairSafe: true };
+  });
+}
+
+function alignedHeadingPairs(from, to, id, maxChars) {
+  const headings = text => require('./layoutStructure').buildLineRecords(text)
+    .filter(row => ['heading','title','legal_clause'].includes(row.role))
+    .map(row => ({ key: normalizeCompact(row.text), start: row.start }));
+  const a = headings(from), b = headings(to);
+  if (a.length < 2 || a.length !== b.length || new Set(a.map(h => h.key)).size !== a.length
+      || a.some((h,i) => h.key.length < 2 || h.key !== b[i].key)) return null;
+  const points = [{sourceStart:0,outputStart:0}];
+  for (let i=0;i<a.length;i++) {
+    if (a[i].start > 0 && b[i].start > 0) points.push({sourceStart:a[i].start,outputStart:b[i].start});
+    else if (a[i].start !== b[i].start) return null;
+  }
+  points.push({sourceStart:from.length,outputStart:to.length});
+  // Never cut the body of an oversized section based on a length ratio.
+  if (points.slice(1).some((p,i) => Math.max(p.sourceStart-points[i].sourceStart,
+      p.outputStart-points[i].outputStart) > maxChars)) return null;
+  const bounds = [points[0]];
+  for (let i=1;i<points.length-1;i++) {
+    const left=bounds.at(-1), next=points[i+1];
+    if (Math.max(next.sourceStart-left.sourceStart,next.outputStart-left.outputStart)>maxChars) bounds.push(points[i]);
+  }
+  bounds.push(points.at(-1));
+  if (bounds.length < 3) return null;
+  return bounds.slice(0,-1).map((left,index) => {
+    const right=bounds[index+1];
+    return {index,sourceId:`${id}:${left.sourceStart}:${right.sourceStart}`,
+      sourceStart:left.sourceStart,sourceEnd:right.sourceStart,
+      outputStart:left.outputStart,outputEnd:right.outputStart,
+      sourceContext:from.slice(left.sourceStart,right.sourceStart),output:to.slice(left.outputStart,right.outputStart),
+      alignment:'shared_unique_heading',repairSafe:true};
   });
 }
 module.exports = { alignedReviewPairs };

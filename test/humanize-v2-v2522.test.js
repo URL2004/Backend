@@ -151,8 +151,9 @@ test('v2.5.22: 장르 프롬프트가 학술 목적문과 성찰 감정을 서�
     requestStrength: 'advanced',
     documentProfile: academicProfile
   });
-  assert.match(academic.stable, /연구 목적 한 문장에 목적·핵심 단서·작동 과정·검증 조건/u);
-  assert.match(academic.stable, /이론 용어를 추정해 다른 개념으로 바꾸지 않는다/u);
+  assert.match(academic.stable, /연구 목적문은 목적·핵심 단서·작동 과정·검증 조건·적용 범위·향후 활용의 대응을 지키며 나눈다/u);
+  assert.match(academic.stable, /이론 용어를 추정해 개념을 바꾸지 않는다/u);
+  assert.match(academic.stable, /같은 주제어는 중복 주장이 아니다/u);
 
   const reflection = buildHumanizePrompt('assignment', 'ko', {
     register: 'mixed',

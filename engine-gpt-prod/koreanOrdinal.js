@@ -9,13 +9,12 @@ const PREFIX = new RegExp(`^(\\s*${ORDINAL}[,，:：]\\s*)(\\S[\\s\\S]*)$`, 'u')
 // such as "첫 번째 실험" or "첫째 아이". These may have no comma.
 const FRAME_LEAD = '(?:(?:본|이번|해당)\\s*(?:연구|조사|분석|프로젝트)의\\s+)?';
 const FRAME_TAIL = '\\s+(?:의의|이유|목적|한계|원칙|특징|과제|장점|문제|요인)(?:은|는)\\s+';
-// Lock only the enumerator. Keep the grammatical subject ("의의는")
-// with its predicate in the editable body; otherwise a model seeing only
-// the complement can turn "의의는 ... 점이다" into "의의는 ... 했다".
-const FRAME_PREFIX = new RegExp(`^(\\s*${FRAME_LEAD}${ORDINAL}\\s+)((?:의의|이유|목적|한계|원칙|특징|과제|장점|문제|요인)(?:은|는)\\s+\\S[\\s\\S]*)$`, 'u');
-
 function ordinalPrefix(value) {
-  return String(value || '').match(PREFIX) || String(value || '').match(FRAME_PREFIX);
+  // A comma enumerator is syntactically independent; a frame such as
+  // "본 연구의 첫 번째 의의는" is not. Keep the entire frame sentence
+  // editable, and enforce its ordinal through the structural signature.
+  // Splitting even just "첫 번째" can create "첫 번째 개 물림 사고...".
+  return String(value || '').match(PREFIX);
 }
 
 function ordinalNumber(value) {

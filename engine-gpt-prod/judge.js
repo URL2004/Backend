@@ -228,7 +228,8 @@ async function judgeAndRepair(rawText, outputText, {
     };
   }
 
-  const escalated = await judgeAndRepairWithModel(rawText, primary.outputText || outputText, {
+  let escalated;
+  try { escalated = await judgeAndRepairWithModel(rawText, primary.outputText || outputText, {
     lang,
     signal,
     config: cfg,
@@ -242,7 +243,13 @@ async function judgeAndRepair(rawText, outputText, {
     phasePrefix: 'escalation',
     safetyIdentifier,
     documentProfile
-  });
+  }); } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError' || ['AbortError','ABORT_ERR'].includes(error?.code)) throw error;
+    // Failure to obtain a second opinion cannot erase a completed first
+    // verdict. Retain its failed/uncertain status and all observed violations.
+    return { ...primary, escalationSkippedReason: 'escalation_call_failed',
+      escalationFailed: true, usage: addUsage(primary.usage || emptyUsage(), error.usage) };
+  }
   return {
     ...escalated,
     escalated: true,
@@ -342,16 +349,18 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       reasoningEffort: repairReasoning,
       phase: `${phasePrefix}:repair`
     }); } catch (error) {
-      // A denied optional repair must not discard a completed mandatory verdict
-      // or its usage. Keep the audited text and violations, never mark it pass.
-      if (error?.code !== 'RECOVERY_BUDGET_EXHAUSTED') throw error;
+      if (signal?.aborted || error?.name === 'AbortError' || ['AbortError','ABORT_ERR'].includes(error?.code)) throw error;
+      // No candidate was produced. Budget, transport and deadline failures
+      // must all retain the completed mandatory verdict, never turn it pass.
+      const budgetDenied = error?.code === 'RECOVERY_BUDGET_EXHAUSTED';
       return {
         outputText: current, pass: false, uncertain: judge.uncertain === true,
         violations: judge.violations || [], initialViolations, ledger,
         rounds: rounds - 1, repairRejected: true,
-        repairRejectReasons: ['recovery_budget_exhausted'],
+        repairRejectReasons: [budgetDenied ? 'recovery_budget_exhausted' : 'repair_call_failed'],
         repairStyleWarnings, unchangedRepairCount,
-        reason: 'recovery_budget_exhausted', selectedJudgeModel: judgeModel, usage
+        reason: budgetDenied ? 'recovery_budget_exhausted' : 'repair_call_failed',
+        selectedJudgeModel: judgeModel, usage: addUsage(usage, error.usage)
       };
     }
     usage = addUsage(usage, repaired?.gptMeta?.usage);

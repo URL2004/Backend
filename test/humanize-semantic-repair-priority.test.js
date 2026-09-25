@@ -72,10 +72,15 @@ test('denied optional repair retains mandatory verdict, violations and confirmed
 });
 
 test('transport failures and cancellation are not disguised as optional budget denial', async () => {
-  for (const throwCode of ['AbortError', 'ECONNRESET']) {
-    const { judge } = mockedJudge([{ violations }, { throwCode }]);
-    await assert.rejects(judge.judgeAndRepair(source, before, { config }), error => error.code === throwCode);
-  }
+  const cancelled = mockedJudge([{ violations }, { throwCode: 'AbortError' }]);
+  await assert.rejects(cancelled.judge.judgeAndRepair(source, before, { config }), error => error.code === 'AbortError');
+  const network = mockedJudge([{ violations }, { throwCode: 'ECONNRESET' }]);
+  const result = await network.judge.judgeAndRepair(source, before, { config });
+  assert.equal(result.pass, false);
+  assert.equal(result.reason, 'repair_call_failed');
+  assert.equal(result.outputText, before);
+  assert.equal(result.violations.length, 1);
+  assert.ok(!result.repairRejectReasons.includes('recovery_budget_exhausted'));
 });
 
 test('meaning repair wins over rhythm only after a fresh semantic judge passes', async () => {

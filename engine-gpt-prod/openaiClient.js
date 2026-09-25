@@ -154,6 +154,10 @@ async function completeJsonRequest({
     accounting.budget = budget;
     accounting.model = model;
     accounting.stage = meta.phase || 'unknown';
+    // General style recovery must not consume the slots/time reserved for
+    // confirmed semantic repairs. Previously EVERY HTTP call was "late".
+    accounting.priority = context?.policy?.stage === 'semantic_document' || /noop/u.test(meta.phase || '')
+      || /^(?:primary|escalation):repair$/u.test(meta.phase || '') ? 'late' : 'normal';
     accounting.reserveUsd = (
       // UTF-8 bytes bound input tokens, including schema; a cache write must
       // not cost more than the reservation's assumed input price.
@@ -162,7 +166,7 @@ async function completeJsonRequest({
     ) / 1000000;
     let fetched;
     try {
-      const requestDeadlineMs = Math.min(chunkDeadlineMs, budget?.deadlineMs() ?? Infinity);
+      const requestDeadlineMs = Math.min(chunkDeadlineMs, budget?.deadlineMs({ priority: accounting.priority }) ?? Infinity);
       fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, requestDeadlineMs, accounting);
       raw = await fetched.response.json();
     } catch (error) {
@@ -375,7 +379,7 @@ async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity,
   try {
     if (parentSignal?.aborted) throw abortError();
     if (accounting?.budget) {
-      reservation = accounting.budget.reserveCall(accounting.reserveUsd, { priority: 'late', stage: accounting.stage });
+      reservation = accounting.budget.reserveCall(accounting.reserveUsd, { priority: accounting.priority || 'normal', stage: accounting.stage });
       if (!reservation) throw Object.assign(new Error('Optional recovery reservation exhausted'), { code: 'RECOVERY_BUDGET_EXHAUSTED' });
     }
     if (parentSignal) parentSignal.addEventListener('abort', onAbort, { once: true });

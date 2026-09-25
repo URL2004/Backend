@@ -92,9 +92,9 @@ test('ordinal predicate frames retain their first item as well as later comma ma
   const text = '본 연구의 첫 번째 의의는 장비 오차를 파악했다는 데 있다.\n두 번째 의의는 지역의 자료를 함께 비교했다는 점이다.\n세 번째, 현장에서 활용할 방법을 제시했다.';
   assert.deepEqual(ordinalMarkers(text).map(x => x.number), [1,2,3]);
   const { chunks } = structure.splitChunksForGpt(text);
-  assert.ok(chunks.some(c => c.locked && c.text.trim() === '본 연구의 첫 번째'));
-  assert.ok(chunks.some(c => !c.locked && c.text.startsWith('의의는 장비 오차를')));
-  assert.ok(chunks.some(c => !c.locked && c.text.startsWith('의의는 지역의 자료를')));
+  assert.ok(!chunks.some(c => c.locked && c.text.includes('첫 번째')));
+  assert.ok(chunks.some(c => !c.locked && c.text.includes('본 연구의 첫 번째 의의는 장비 오차를')));
+  assert.ok(chunks.some(c => !c.locked && c.text.includes('두 번째 의의는 지역의 자료를')));
   assert.ok(chunks.some(c => !c.locked && c.text.includes('장비 오차')));
   assert.equal(structure.mergeChunks(chunks), text);
   assert.equal(structure.compareOriginalStructuralMarkers(text, text.replace('본 연구의 첫 번째 의의는', '본 연구는')).pass, false);

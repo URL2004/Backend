@@ -34,6 +34,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
     Math.min(absoluteCallLimit - 1, Math.floor(Number(reservedLateCalls) || 0))
   );
   const absoluteElapsedLimitMs = Math.max(30000, Math.min(900000, Math.floor(Number(maxElapsedMs) || 240000)));
+  const lateTimeReserveMs = Math.min(60000, Math.floor(absoluteElapsedLimitMs / 4));
   let lastDeniedReason = '';
 
   const enabled = enforced === true && limitUsd > 0;
@@ -51,6 +52,9 @@ function createRecoveryBudget(maxEstimatedUsd, {
       return 'recovery_final_audit_time_reserved';
     }
     const latePriority = mandatory === true || String(priority || '').toLowerCase() === 'late';
+    if (!latePriority && elapsedMs() >= absoluteElapsedLimitMs - lateTimeReserveMs) {
+      return 'recovery_late_time_reserve';
+    }
     if (!latePriority && lateCallReserve > 0
         && attemptedCallCount >= absoluteCallLimit - lateCallReserve) {
       return 'recovery_late_call_reserve';
@@ -98,6 +102,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
     absoluteCallLimit,
     lateCallReserve,
     absoluteElapsedLimitMs,
+    lateTimeReserveMs,
     elapsedMs: elapsedMs(),
     callLimitExhausted: attemptedCallCount >= absoluteCallLimit,
     timeLimitExhausted: elapsedMs() >= absoluteElapsedLimitMs,
@@ -109,7 +114,8 @@ function createRecoveryBudget(maxEstimatedUsd, {
   });
 
   return {
-    deadlineMs: () => Math.min(startedAt + absoluteElapsedLimitMs,
+    deadlineMs: ({ priority = 'late' } = {}) => Math.min(startedAt + absoluteElapsedLimitMs
+      - (priority === 'normal' ? lateTimeReserveMs : 0),
       enforced === true ? jobDeadlineMs - 120000 : Infinity),
     enableCallAccounting: () => { automaticCalls = true; },
     reserveCall: (estimatedUsd, options = {}) => {

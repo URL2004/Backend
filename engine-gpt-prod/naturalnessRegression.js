@@ -16,6 +16,25 @@ function auditNaturalnessRegression(source, output, profile = 'unknown') {
   const sourceWords = /\p{Script=Han}/u.test(output)
     ? [...new Set(sources.flatMap(s=>s.text.match(/[가-힣]{3,24}/gu)||[]))] : [];
   for (const target of outputs) {
+    // A role/description (X로서) is not a reason (X이므로). Restore only
+    // the connector when one source sentence has the same noun and exact
+    // following proposition, with a comparable preceding description.
+    // Changed predicates, ambiguous sources, quotes and code are not guessed.
+    for (const m of target.text.matchAll(/([가-힣]{2,24})(이므로|이기에|이기\s*때문에)\s+/gu)) {
+      if (sources.some(span => span.text === target.text)) continue;
+      const tail = target.text.slice(m.index + m[0].length).replace(/\s+/gu, '');
+      if (tail.length < 12) continue;
+      const role = new RegExp(`${escape(m[1])}(으로서|로서)\\s+`, 'gu');
+      const matches = sources.flatMap(span => [...span.text.matchAll(role)]
+        .filter(s => span.text.slice(s.index+s[0].length).replace(/\s+/gu, '') === tail
+          && sentenceSimilarity(span.text,target.text) >= .65)
+        .map(s => ({ span, connector:s[1] })));
+      if (matches.length !== 1) continue;
+      const code='introduced_role_causality';
+      const start=target.start+m.index+m[1].length;
+      findings.push({code,ordinal:target.ordinal,repair:{start,end:start+m[2].length,
+        replacement:matches[0].connector,ordinal:target.ordinal,code}});
+    }
     const frame = /^(나타날|발생할|기대할|얻을)\s+수\s+있는\s+(?:증상|변화|현상|결과|효과)(?:으로는|로는|은|는)\s+/u.exec(target.text);
     if (frame && new RegExp(`${frame[1]}\\s+수\\s+있(?:다|습니다)[.!?]?\\s*$`, 'u').test(target.text)) {
       const body = target.text.slice(frame[0].length);

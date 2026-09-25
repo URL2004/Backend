@@ -749,12 +749,15 @@ const QUOTE_ATTRIBUTIVE_HADA_SUFFIX = '(?:하는|한|할|하던|했던|하고|�
 const QUOTE_ATTRIBUTION_CONTEXT = `${QUOTE_ATTRIBUTIVE_HADA_SUFFIX}\\s+(?:말|이야기|발언|경고|제안|요청|답변|약속|다짐|인사|주장|설명|대답|강조|외침)`;
 const QUOTE_SHORT_COPULA_SUFFIX = '다(?=$|[.!?。！？])';
 const QUOTE_COMPARATIVE_COPULA_SUFFIX = '(?:이?라기(?:보다는|보다|보단))';
-const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
+// A bound particle followed by a copula is still attached: ‘높음’까지이며.
+// Share this grammar with gap insertion/removal to keep normalization stable.
+const QUOTE_PARTICLE_COPULA_SUFFIX = `(?:까지|부터|만)(?:${QUOTE_COPULA_SUFFIX}|다)`;
+const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
 const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
 // 격조사 뒤 보조사가 결합한 형태도 하나의 붙임 단위다.
 // 단일 조사 목록만 검사하면 정상적인 ‘기준’만으로/로서를 띄워 버린다.
 const QUOTE_COMPOUND_PARTICLE_SUFFIX = '(?:(?:만|부터|까지|조차|마저|밖에|처럼|보다)(?:으로|로|의|은|는|도|만)?|(?:으로|로)(?:서|써)(?:는|도|만)?|(?:와|과|에|에서|에게|으로|로)(?:의|는|도|만))';
-const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
+const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
 // A demonstrative beginning a new sentence is not the subject particle 이.
 // Require explicit sentence punctuation inside the closing quote and a noun.
 const CLOSED_QUOTE_SENTENCE_START_RE = /([.!?。！？][”’」』》〉])(?=(?:이|그|저)\s+(?:문장|말씀|구절|발언|문구|이야기|인용|말)(?:은|는|이|가|을|를|에서|로|에|도)?(?:\s|[,.!?。！？]|$))/gu;

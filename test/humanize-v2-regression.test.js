@@ -1086,8 +1086,8 @@ test('학술·보고서 프롬프트는 논리 연산자·행위 주체·표 압
   }).stable;
   assert.match(prompt, /~자체보다.*~에서 나아가/u);
   assert.match(prompt, /~에 그치지 않고.*~이\/가 아니라/u);
-  assert.match(prompt, /행위 주체와 대상/u);
-  assert.match(prompt, /설명 평서문.*명령문/u);
+  assert.match(prompt, /주체·대상을 유지/u);
+  assert.match(prompt, /설명을 명령으로 바꾸지 않는다/u);
   assert.match(prompt, /표·그림 제목·캡션·셀/u);
   assert.match(prompt, /재다·메우다/u);
   assert.match(prompt, /의인화하지 않는다/u);

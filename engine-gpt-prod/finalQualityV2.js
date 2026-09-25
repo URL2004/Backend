@@ -1,4 +1,5 @@
 'use strict';
+const { academicStyleLines } = require('./prompts/academicStyle');
 
 const floor = require('../engine/floor');
 const { computeEditMetrics, splitSentenceSpans } = require('../engine/koreanText');
@@ -1014,6 +1015,7 @@ async function retryConservativeSentenceSurface({
     '문장 수는 한 개로 유지하고 줄바꿈·목록·제목·인용을 새로 만들지 않는다.',
     '원문의 종결체와 격식을 유지한다.',
     profileRule,
+    ...academicStyleLines(profile),
     remediationRule,
     selectedStrongModifierTarget
       ? '이 문장은 문서 안에서 반복된 강한 수식의 감축 대상으로 선택됐다. 표시된 강한 수식어를 약한 동의어로만 바꾸거나 그대로 두지 말고, CURRENT와 SOURCE에 이미 있는 대상·행위·영향 관계를 문장의 중심으로 직접 서술한다. 원문의 부정·가능성·우려·평가 강도는 낮추거나 높이지 않는다.'
@@ -1492,6 +1494,7 @@ async function retryKoreanRefinement({
   });
   const system = [
     '너는 한국어 문장 국소 수리기다. CURRENT에서 아래에 열거한 한국어 결합·빈도·초점·격식 문제만 최소 범위로 고친다.',
+    ...academicStyleLines(profile),
     ...localizedRepairPromptLines(buildHumanizeContract({ mode, documentProfile })),
     'SOURCE는 의미와 사실 확인용이다. SOURCE의 주장, 수치, 기관명, 인용, 화자, 경험, 평가 강도, 제목, 목록, 질문, 문단 수와 내용 순서를 그대로 보존한다.',
     '과학·법률·게임이론 등 외부 사실의 옳고 그름을 추정해 수정하지 않는다. 원문에 없던 설명이나 예시도 추가하지 않는다.',
@@ -1602,6 +1605,11 @@ function refinementIssueInstruction(item) {
   if (item?.code === 'reflexive_subject_attachment') return '“자신도 모르게”가 누구를 가리키는지 SOURCE에서 확인하고, 그 인물을 주어로 두어 마음·태도의 변화를 자연스럽게 연결한다.';
   if (item?.code === 'meta_nominalization_injection') return '“느낀 것은 ~하는 점이었다”로 늘이지 말고 SOURCE의 직접적인 깨달음·판단 문장을 자연스럽게 유지한다.';
   if (item?.code === 'introduced_action_nominalization') return 'SOURCE의 행동·시제·의향은 그대로 두고 새로 늘어난 “~하는 일을 이어가다·시작하다”만 직접적인 서술어로 고친다. 새 지속·시작 의미를 더하지 않고 다른 교정은 유지한다.';
+  if (item?.code === 'introduced_parallel_purpose_mismatch') return 'SOURCE의 병렬 목적 범위를 유지한다. “접수 및 확인을 위해”를 “접수하고 확인을 위해”로 바꿔 첫 목적을 수행된 행동으로 만들지 않는다. 서로 다른 두 목적은 모두 남긴다.';
+  if (item?.code === 'introduced_role_causality') return 'SOURCE의 역할 설명 “로서·으로서”를 이유 “이므로·이기에”로 바꾸지 않는다. 원문에 실제 인과가 있으면 그대로 둔다.';
+  if (item?.code === 'introduced_help_subject_particle') return '“도움이 될”의 주어에 관형격 “의”가 잘못 붙었는지 SOURCE와 비교한다. 원문에서 확인되는 주격 조사만 복원하고 “도움 정도” 같은 정상 명사구는 바꾸지 않는다.';
+  if (item?.code === 'introduced_named_example_loss') return 'SOURCE에 열거된 구체적인 예시를 상위 분류명으로 요약하지 않는다. 그 문장에 속한 빠진 예시만 복원하고 다른 항목이나 내용을 추가하지 않는다.';
+  if (item?.code === 'introduced_restriction_frame_weakening') return 'SOURCE에서 범위를 국한한 조건을 단지 중심에 있었다는 설명으로 약화하지 않는다. 해당 대상·조건절만 복원하고 인용 내부와 다른 절의 편집은 그대로 둔다.';
   if (item?.code === 'introduced_condition_wish_mismatch') return '새로 만든 “~하려면 … 하고 싶다”의 조건과 희망 불일치를 SOURCE의 목적·의향 관계로 복구한다. 희망을 의무나 확정 계획으로 바꾸지 않는다.';
   if (item?.code === 'introduced_modifier_dislocation') return 'SOURCE의 격식과 초점을 유지하면서 목적어와 서술어 사이에 새로 끼운 긴 수식어 위치를 검토한다. 단순 어순 변경 자체는 오류가 아니며 원문 전체로 되돌리지 않는다.';
   if (item?.code === 'introduced_evidential_topic_frame') return 'SOURCE에서 판단의 근거를 나타내던 “조사·연구를 통해”가 “조사·연구에서는”으로 바뀌며 뒤 주제절과 겹친 경우 원문의 근거 관계를 복원한다. 은/는 반복 자체를 금지하거나 정상 대조 문장의 조사를 일괄 교체하지 않는다.';

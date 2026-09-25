@@ -563,10 +563,15 @@ function labelParts(value) {
   if (colonIndex > 0
       && /\d/u.test(text[colonIndex - 1] || '')
       && /^\s*\d/u.test(text.slice(colonIndex + 1))) return null;
-  const match = text.match(/^(?:[*#]+\s*)?(?:(?:\p{Extended_Pictographic}\uFE0F?)+\s*)?([가-힣A-Za-z][가-힣A-Za-z0-9·/&()（） _-]{0,48})\s*[:：]\s*(.*)$/u);
+  const match = text.match(/^(?:[*#]+\s*)?(?:(?:\p{Extended_Pictographic}\uFE0F?)+\s*)?([가-힣A-Za-z][가-힣A-Za-z0-9·,/&()（） _-]{0,48})\s*[:：]\s*(.*)$/u);
   if (!match) return null;
   const label = match[1].trim();
   if (/^(?:https?|ftp|file)$/iu.test(label) || /[.!?。！？]/u.test(label)) return null;
+  // A comma may join nominal categories, not whole clauses. Use the same
+  // parser for chunk locking, restoration and auditing so a compound label
+  // cannot silently turn into ordinary prose during one of those stages.
+  if (label.includes(',') && label.split(',').some(part => !part.trim()
+      || /(?:했다|한다|됐다|된다|였다|이다|렸다|[했됐였하되]고|하며|하면|지만|는데|으나|거나)\s*$/u.test(part))) return null;
   return { label, rest: match[2].trim() };
 }
 

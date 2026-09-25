@@ -12,10 +12,50 @@ const escape = value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 // Never use sentence length or edit percentage as proof of bad writing.
 function auditNaturalnessRegression(source, output, profile = 'unknown') {
   const sources = proseSpans(source), outputs = proseSpans(output);
-  const findings = [];
+  const findings = sourceFrameRegressions(source, output);
   const sourceWords = /\p{Script=Han}/u.test(output)
     ? [...new Set(sources.flatMap(s=>s.text.match(/[가-힣]{3,24}/gu)||[]))] : [];
   for (const target of outputs) {
+    // A newly introduced possessive must not replace the subject of
+    // "도움이 되다". Require the original subject AND following local clause;
+    // do not blanket-replace valid nominal phrases such as "교육의 도움 정도".
+    for (const m of target.text.matchAll(/(?<![가-힣])([가-힣]{2,24})의(\s+도움이\s+될)\s+/gu)) {
+      if (sources.some(s => s.text.includes(m[0]))) continue;
+      const localTail = target.text.slice(m.index + m[0].length)
+        .replace(/^것이라고\s+(?:본|답한|응답한|판단한)\s+/u, '것이라는 ');
+      const tail = localTail.match(/^\S+\s+\S+/u)?.[0];
+      if (!tail || tail.length < 6) continue;
+      // A quoted prediction can be expressed as "것이라는 응답" or
+      // "것이라고 본 응답". Their shared noun, not an exact surface string,
+      // anchors the clause. Other complement nouns still do not match.
+      const tailPattern = escape(tail).replace(/^것이라는 /u,
+        '(?:것이라는|것이라고\\s+(?:본|답한|응답한|판단한))\\s+');
+      const frame = new RegExp(`(?<![가-힣])${escape(m[1])}([이가])\\s+도움이\\s+될\\s+${tailPattern}`, 'u');
+      const particles = new Set(sources.map(s => frame.exec(s.text)?.[1]).filter(Boolean));
+      if (particles.size !== 1) continue;
+      const code = 'introduced_help_subject_particle';
+      const start = target.start + m.index + m[1].length;
+      findings.push({code, ordinal:target.ordinal, repair:{start, end:start+1,
+        replacement:[...particles][0], ordinal:target.ordinal, code}});
+    }
+    // A coordinated purpose must not become a completed first action plus
+    // an unrelated purpose. Only restore a unique source nominal frame with
+    // the same two actions and exact following proposition; no synonym guess.
+    for (const m of target.text.matchAll(/(?<![가-힣])([가-힣]{2,24})(?:을|를)\s+([가-힣]{2,12})하고\s+([가-힣]{2,20}(?:\s+[가-힣]{2,20}){0,3})(을|를)\s+위해/gu)) {
+      if (sources.some(s => s.text === target.text)) continue;
+      const tail = target.text.slice(m.index + m[0].length).replace(/\s+/gu, '');
+      if (tail.length < 8) continue;
+      const frame = new RegExp(`(?<![가-힣])${escape(m[1])}\\s+${escape(m[2])}\\s*(?:및|과|와)\\s+${escape(m[3])}${m[4]}\\s+위해`, 'gu');
+      const matches = sources.flatMap(s => [...s.text.matchAll(frame)].filter(found =>
+        s.text.slice(found.index + found[0].length).replace(/\s+/gu, '') === tail
+        && sentenceSimilarity(s.text, target.text) >= .65));
+      if (matches.length !== 1) continue;
+      const code = 'introduced_parallel_purpose_mismatch';
+      findings.push({code, ordinal:target.ordinal, repair:{
+        start:target.start+m.index, end:target.start+m.index+m[0].length,
+        replacement:matches[0][0], ordinal:target.ordinal, code
+      }});
+    }
     // A role/description (X로서) is not a reason (X이므로). Restore only
     // the connector when one source sentence has the same noun and exact
     // following proposition, with a comparable preceding description.
@@ -141,6 +181,53 @@ function auditNaturalnessRegression(source, output, profile = 'unknown') {
         findings.push({code:'introduced_modifier_dislocation',ordinal:target.ordinal});
       }
     }
+  }
+  return findings;
+}
+
+// Preserve source-backed local frames, including label bodies and the prose
+// outside a quotation. A source example list is not redundant just because
+// its class name survives. Never infer missing members of a partial list.
+function sourceFrameRegressions(source, output) {
+  const before=String(source || ''),after=String(output || ''),findings=[];
+  const ss=splitSentenceSpans(before),os=splitSentenceSpans(after);
+  const protectedBefore=syntaxSpans(before),protectedAfter=syntaxSpans(after);
+  const blocked=(spans,start,end)=>spans.some(p=>['quote','code'].includes(p.spanType)&&p.start<end&&p.end>start);
+  const lists=/(?<![가-힣A-Za-z0-9])((?:[가-힣A-Za-z][가-힣A-Za-z0-9/-]{1,23},\s*){2,}[가-힣A-Za-z][가-힣A-Za-z0-9/-]{1,23})\s+등\s+((?:각|여러|해당)\s+[가-힣]{2,16}?)(?=별|의|에|을|를|은|는|이|가|\s|[.,]|$)/gu;
+  for(const m of before.matchAll(lists)) {
+    if(blocked(protectedBefore,m.index,m.index+m[0].length))continue;
+    const anchor=m[2],items=m[1].split(',').map(x=>x.trim());
+    const locations=[...after.matchAll(new RegExp(escape(anchor),'gu'))];
+    if(before.split(anchor).length!==2 || locations.length!==1)continue;
+    const start=locations[0].index;
+    if(blocked(protectedAfter,start,start+anchor.length))continue;
+    const s=ss.find(x=>x.start<=m.index&&x.end>=m.index+m[0].length);
+    const ordinal=os.findIndex(x=>x.start<=start&&x.end>=start+anchor.length),o=os[ordinal];
+    if(!s||!o||items.some(item=>new RegExp(`(?<![가-힣A-Za-z0-9])${escape(item)}(?=$|[^가-힣A-Za-z0-9]|(?:에서|은|는|이|가|을|를|의|에|와|과|도)(?=$|[^가-힣A-Za-z0-9]))`,'u').test(after)))continue;
+    const sourceBody=s.text.replace(m[0],anchor);
+    if(sentenceSimilarity(sourceBody,o.text)<.6)continue;
+    const code='introduced_named_example_loss';
+    findings.push({code,ordinal:ordinal+1,repair:{start,end:start,
+      replacement:m[0].slice(0,m[0].length-anchor.length),ordinal:ordinal+1,code}});
+  }
+  // A uniquely shared quoted category plus the same conditional boundary
+  // anchors the claim. Restore only its source clause; never rewrite quotes
+  // or turn "not limited" into "limited". Broader scope changes need judging.
+  for(const [i,o] of os.entries()) {
+    const tail=/에\s+있었다면\s*,/u.exec(o.text);
+    if(!tail || !/중심/u.test(o.text.slice(0,tail.index)))continue;
+    const oq=syntaxSpans(o.text).filter(p=>p.spanType==='quote'&&p.end<=tail.index);
+    if(oq.length!==1||o.text.slice(oq[0].end,tail.index).trim())continue;
+    const literal=o.text.slice(oq[0].start,oq[0].end);
+    const matches=ss.map(s=>({s,m:/에\s+국한되었다면\s*,/u.exec(s.text)}))
+      .filter(({s,m})=>m&&s.text.slice(0,m.index).endsWith(literal)
+        && !s.text.slice(0,m.index).includes('\n')&&sentenceSimilarity(s.text,o.text)>=.6);
+    if(matches.length!==1||blocked(protectedAfter,o.start,o.start+oq[0].start))continue;
+    const {s,m}=matches[0];
+    if(blocked(protectedBefore,s.start,s.start+s.text.indexOf(literal)))continue;
+    const code='introduced_restriction_frame_weakening';
+    findings.push({code,ordinal:i+1,repair:{start:o.start,end:o.start+tail.index+tail[0].length,
+      replacement:s.text.slice(0,m.index+m[0].length),ordinal:i+1,code}});
   }
   return findings;
 }

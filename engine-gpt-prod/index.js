@@ -1315,7 +1315,9 @@ async function runEngine({
     });
     naturalnessRegressionSeen = koreanRefinementAudit.issueCodes.some(code => [
       'introduced_action_nominalization', 'introduced_condition_wish_mismatch', 'introduced_modifier_dislocation',
-      'introduced_evidential_topic_frame', 'introduced_reflection_agency_shift', 'introduced_mixed_script_word'
+      'introduced_evidential_topic_frame', 'introduced_reflection_agency_shift', 'introduced_mixed_script_word',
+      'introduced_parallel_purpose_mismatch', 'introduced_role_causality', 'introduced_help_subject_particle',
+      'introduced_named_example_loss', 'introduced_restriction_frame_weakening'
     ].includes(code));
     const deterministicRepair = koreanRefinement.applySafeDeterministicRepairs({
       source: auditSource,

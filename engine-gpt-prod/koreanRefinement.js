@@ -27,6 +27,26 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  introduced_named_example_loss: {
+    weight: 4, repairable: true, deterministicSafe: true,
+    message: '원문의 구체적인 예시 목록이 상위 분류명만 남긴 채 빠졌어요. 같은 분류와 문장이 유일하게 대응할 때 목록만 복원해요.'
+  },
+  introduced_restriction_frame_weakening: {
+    weight: 4, repairable: true, deterministicSafe: true,
+    message: '원문의 범위 제한이 중심에 관한 설명으로 약해졌어요. 인용된 대상과 조건절이 유일하게 대응할 때 그 절만 복원해요.'
+  },
+  introduced_help_subject_particle: {
+    weight: 3, repairable: true, deterministicSafe: true,
+    message: '원문의 주격 조사가 관형격으로 바뀌어 “도움이 될”과 연결되지 않아요. 원문에서 확인된 조사만 복원해요.'
+  },
+  introduced_parallel_purpose_mismatch: {
+    weight: 3, repairable: true, deterministicSafe: true,
+    message: '원문에서 나란히 묶인 두 목적 중 하나가 수행된 행동으로 바뀌었어요. 대응이 확실한 목적 표현만 복원해요.'
+  },
+  introduced_role_causality: {
+    weight: 3, repairable: true, deterministicSafe: true,
+    message: '역할을 설명하던 연결이 원인으로 바뀌었어요. 원문과 대응하는 연결만 복원해요.'
+  },
   introduced_predicate_echo_frame: {
     weight: 3, repairable: true, deterministicSafe: true,
     message: '원문에 없던 “나타날 수 있는 증상은 … 나타날 수 있다” 같은 술어 틀이 중복됐어요. 본문이 원문과 정확히 대응할 때만 추가된 틀을 제거해요.'

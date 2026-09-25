@@ -8,7 +8,8 @@ const PREFIX = new RegExp(`^(\\s*${ORDINAL}[,，:：]\\s*)(\\S[\\s\\S]*)$`, 'u')
 // Explicit enumerative predicate frames, not arbitrary ordinal adjectives
 // such as "첫 번째 실험" or "첫째 아이". These may have no comma.
 const FRAME_LEAD = '(?:(?:본|이번|해당)\\s*(?:연구|조사|분석|프로젝트)의\\s+)?';
-const FRAME_TAIL = '\\s+(?:의의|이유|목적|한계|원칙|특징|과제|장점|문제|요인)(?:은|는)\\s+';
+const FRAME_NOUN = '(?:의의|이유|목적|한계|원칙|특징|과제|장점|문제|요인)';
+const FRAME_TAIL = `\\s+${FRAME_NOUN}(?:(?:은|는|로는|으로는)\\s+|(?:로|으로)[,，:：]\\s*)`;
 function ordinalPrefix(value) {
   // A comma enumerator is syntactically independent; a frame such as
   // "본 연구의 첫 번째 의의는" is not. Keep the entire frame sentence
@@ -43,6 +44,17 @@ function ordinalMarkers(value) {
     markers.push({ marker: match[3].replace(/\s+/gu, ''), number: ordinalNumber(match[3]), start,
       boundaryStart, lineOrdinal: text.slice(0, start).split('\n').length });
   }
+  // An editable frame may move its ordinal into the predicate without
+  // losing the enumeration: "첫 번째 의의는 X다" -> "X가 첫 번째 의의다".
+  // Count only explicit affirmative copulas, never arbitrary ordinal nouns,
+  // quoted discussion, negation or references to another item's contents.
+  const predicates = new RegExp(`(?<![가-힣])(${ORDINAL})\\s+${FRAME_NOUN}(?:이다|다|입니다)(?=[.!?。！？\\s(]|$)`, 'gu');
+  for (const match of text.matchAll(predicates)) {
+    const start = match.index;
+    if (literals.some(span => span.start <= start && span.end > start)) continue;
+    markers.push({ marker: match[1].replace(/\s+/gu, ''), number: ordinalNumber(match[1]), start,
+      predicateFrame: true, lineOrdinal: text.slice(0, start).split('\n').length });
+  }
   return markers.sort((a, b) => a.start - b.start);
 }
 
@@ -56,6 +68,8 @@ function restoreOrdinalParagraphGaps(source, value) {
       || before.some((item, i) => item.number !== after[i].number)) return { text, repairCount: 0 };
   let repairCount = 0;
   for (let i = after.length - 1; i >= 0; i--) {
+    // A predicate is part of its sentence, not an item-start boundary.
+    if (after[i].predicateFrame || before[i].predicateFrame) continue;
     const sourceStart = before[i].boundaryStart ?? before[i].start;
     const sourceLine = sourceText.slice(sourceText.lastIndexOf('\n', sourceStart - 1) + 1, sourceStart);
     if (sourceLine.trim()) continue;

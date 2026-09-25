@@ -61,7 +61,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const text = String(source || '').trim();
   const compactLength = text.replace(/\s+/gu, '').length;
   const lines = text.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
-  const sentences = splitSentences(text, { preserveLines: false });
+  const sentences = splitSentences(text, { preserveLines: false, inferPlainEndings: true });
   const questionnaire = detectQuestionnaire(lines);
   const assessment = detectAssessmentItem(lines);
   const quoteAnalysis = { source: text, layout: require('./dependentQuoteLayout').dependentQuoteLayout(text) };

@@ -13,6 +13,27 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+for (const mode of ['blog', 'formal']) test(`${mode}: missing plain punctuation does not become a final relation review`, {concurrency:false}, async t => {
+  const units = [
+    '지역 전시관은 소장품뿐 아니라 주민들의 생활 변화를 보여 주는 것 같다',
+    '초기 전시에서는 생활 도구와 오래된 사진이 주요 자료로 등장했다',
+    '이후에는 산업 기술과 교통수단을 설명하는 자료가 점차 늘어났다',
+    '새로운 공간이 마련되면서 관람객이 직접 참여하는 활동도 생겼다',
+    '최근에는 여러 지역의 자료를 함께 소개하면서 전시의 주제가 다양해졌다',
+    '이러한 전시관은 지역의 경험을 함께 돌아보는 장소라고 생각한다'
+  ];
+  const text = units.join(' ');
+  const target = units.join('. ') + '.';
+  installEngineMock(t, {humanize: () => target.replace('생활 도구와 오래된 사진이 주요 자료로 등장했다', '오래된 사진과 생활 도구를 주요 자료로 소개했다')});
+  const out = await engine.run({text, mode, uid:'unpunctuated-audit-unit',config:config()});
+  assert.notEqual(out.status, 'blocked');
+  assert.equal(out.engineMeta.documentProfile, 'general');
+  assert.equal(out.engineMeta.semanticValidationStatus, 'pass');
+  assert.equal(out.engineMeta.semanticRelationShiftCount, 0);
+  assert.equal(out.qualityWarnings.some(w => w.code === 'semantic_relation_shift'), false);
+  assert.match(out.result.outputText, /보여 주는 것 같다/u);
+});
+
 test('flattened PDF input is normalized before generation and text structure pass cannot certify PDF reading order', {concurrency:false}, async t => {
   const prose = '작업자는 물품의 상태를 기록하였다. 다음 점검에서 같은 항목을 확인하고 기록된 내용을 서로 비교하였다. '.repeat(6).replaceAll(' ', '   ');
   const text = ['- 1 - 물품 점검 보고서 1. 점검 결과 ' + prose, '- 2 - ' + prose, '- 3 - 3. 후속 점검 ' + prose].join('\n\n');

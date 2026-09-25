@@ -29,11 +29,11 @@ function normalizeSpace(value) {
 }
 
 // 소수점, 목차 번호, 영문 약어를 문장 끝으로 잘못 자르지 않는 결정론적 Node 분리기.
-function splitSentences(value, { preserveLines = false } = {}) {
-  return splitSentenceSpans(value, { preserveLines }).map(item => item.text);
+function splitSentences(value, { preserveLines = false, inferPlainEndings = false } = {}) {
+  return splitSentenceSpans(value, { preserveLines, inferPlainEndings }).map(item => item.text);
 }
 
-function splitSentenceSpans(value, { preserveLines = false } = {}) {
+function splitSentenceSpans(value, { preserveLines = false, inferPlainEndings = false } = {}) {
   const text = String(value || '');
   if (!text.trim()) return [];
   const out = [];
@@ -41,6 +41,11 @@ function splitSentenceSpans(value, { preserveLines = false } = {}) {
   const punctuation = buildPunctuationContext(text, syntax);
   const codeSpans = syntax.filter(span => span.spanType === 'code');
   const implicitEnds = new Set(missingTerminalBoundaries(text, syntax, punctuation));
+  // Analysis only, explicitly opted in by genre/relation audit. Do not change
+  // detector offsets, public sentence ordinals or formatting by default.
+  if (inferPlainEndings) {
+    for (const end of plainTerminalBoundaries(text, punctuation)) implicitEnds.add(end);
+  }
   let codeCursor = 0;
   let start = 0;
   let i = 0;
@@ -137,6 +142,28 @@ function spanMembership(spans, strictStart = true) {
     }
     return low > 0 && ends[low - 1] > index;
   };
+}
+
+function plainTerminalBoundaries(text, punctuation) {
+  const ends = [];
+  // Finite declarative forms, not arbitrary words ending in 다/요 (바다, 주요,
+  // 필요), modifiers or connective endings. Quoted/code/parenthetical text is
+  // never inferred. This only returns original positions, never edits text.
+  for (const match of text.matchAll(/([가-힣]+다)([ \t]+)(?=[가-힣A-Za-z0-9])/gu)) {
+    const word = match[1];
+    // Past tense may be contracted into one syllable: 났/겼/졌/봤 + 다.
+    const pastTense = (word.charCodeAt(word.length - 2) - 0xAC00) % 28 === 20;
+    if (!pastTense && !/(?:한다|된다|있다|없다|같다|보인다|모른다|않다)$/u.test(word)) continue;
+    const end = match.index + match[0].length - match[2].length;
+    if (punctuation.any(end - 1)) continue;
+    const next = text.slice(end).trimStart();
+    if (/^(?:라고|라는|라며|라니|란|하고|하며|하는|하면|한다|했다|하였다|합니다|했습니다|해도|하더라도|하더라|하니|해서|치고|치더라도|보니|보면|는|은|을|를|의)(?=\s|$)/u.test(next)
+        || /^싶(?:다|었|어|은|으|고|지)/u.test(next)) continue;
+    const previous = text.slice(Math.max(ends.at(-1) || 0, text.lastIndexOf('\n', end - 1) + 1, text.lastIndexOf('.', end - 1) + 1), end).trim();
+    if (previous.length < 12) continue;
+    ends.push(end);
+  }
+  return ends;
 }
 
 function buildPunctuationContext(text, syntax) {

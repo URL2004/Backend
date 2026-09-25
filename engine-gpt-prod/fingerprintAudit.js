@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 15;
+const VERSION = 16;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -298,8 +298,13 @@ const SEMANTIC_RELATION_RULES = Object.freeze([
 ]);
 
 function detectSemanticRelationShifts(source, output) {
-  const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
-  const outputSentences = splitSentences(String(output || '')).map(value => String(value || '').trim()).filter(Boolean);
+  // Segment punctuation-poor prose for matching, but retain the public source
+  // ordinal used by restoration. Never pass inferred ordinals to a restorer
+  // that still operates on the original sentence list.
+  const sourceUnits = splitSentences(String(source || '')).flatMap((text, index) =>
+    splitSentences(text, { inferPlainEndings: true }).map(text => ({ text, ordinal: index + 1 })));
+  const sourceSentences = sourceUnits.map(unit => unit.text);
+  const outputSentences = splitSentences(String(output || ''), { inferPlainEndings: true });
   const grouped = new Map();
   const add = (family, ordinal) => {
     if (!grouped.has(family)) grouped.set(family, new Set());
@@ -360,7 +365,7 @@ function detectSemanticRelationShifts(source, output) {
       }
 
       if (hasEpistemicHedge(sourceSentence)) {
-        const hedgeRemoved = !hasEpistemicHedge(alignedText);
+        const hedgeRemoved = !hasClaimScopedEpistemicHedge(sourceSentence, alignedText);
         const shifted = hedgeRemoved
           && hasDirectDeclarativeEnding(alignedText)
           && (
@@ -445,7 +450,7 @@ function detectSemanticRelationShifts(source, output) {
         issues = assessPair(best.text);
       }
     }
-    for (const issue of issues) add(issue.family, issue.ordinal);
+    for (const issue of issues) add(issue.family, sourceUnits[sourceIndex].ordinal);
   });
 
   const sourceUrgency = countMatches(source, /(?:바로|즉시|곧바로)\s+(?:움직|착수|시작|실행|대응|신청|지원|결정|나섰)/gu);
@@ -479,6 +484,22 @@ function hasPossibilityMarker(value) {
 function hasEpistemicHedge(value) {
   return /(?:것\s*같(?:다|습니다|았다|았다)|듯(?:하|싶)|것으로\s*보(?:인|인다|입니다)|수도\s*있|지도\s*모르|어쩌면|아마(?:도)?|확실하지\s*않)/u
     .test(String(value || ''));
+}
+
+function hasClaimScopedEpistemicHedge(source, alignedText) {
+  if (!hasEpistemicHedge(alignedText)) return false;
+  const sentences = splitSentences(alignedText, { inferPlainEndings: true });
+  if (sentences.length <= 1) return true;
+  // A neighbouring claim's hedge cannot license hardening this claim. Require
+  // a strongly matching declarative clause and a clear content-coverage gap;
+  // ordinary split clauses with distributed content keep their group context.
+  let hedgedCoverage = 0, directCoverage = 0;
+  for (const sentence of sentences) {
+    const coverage = alignedCoreSimilarity(source, sentence);
+    if (hasEpistemicHedge(sentence)) hedgedCoverage = Math.max(hedgedCoverage, coverage);
+    else if (hasDirectDeclarativeEnding(sentence)) directCoverage = Math.max(directCoverage, coverage);
+  }
+  return !(directCoverage >= 0.65 && directCoverage - hedgedCoverage >= 0.25);
 }
 
 function hasCertaintyMarker(value) {

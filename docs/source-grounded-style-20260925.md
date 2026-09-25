@@ -41,4 +41,4 @@ Conservative cost accounting: approximately KRW 1,316 for this follow-up, KRW 6,
 
 Stylistic preference is not an automatic license to delete emphasis, lower recommendation strength or replace technical concepts. Remaining subjective repetition is not presented as completely solved. API samples and local replay are not production-wide accuracy or latency estimates.
 
-This follow-up is not deployed. Version labels remain at the baseline until a separately verified release. The private comparison report and API ledger are stored outside the repository.
+Release target: v2.5.69. Deployment is subject to the full release tests, production preflight and an idle-job check. The rollback target is the verified pre-release live commit 6286bff (v2.5.68). The private comparison report, API ledger and final deployment receipt are stored outside the repository.

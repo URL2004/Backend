@@ -2,12 +2,12 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v6-ownership';
+const VERSION = 'relation-candidates-v7-clause-modality';
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
 // sentence, or appears where the source asserted plainly, is a scope candidate.
-const STRONG_HEDGE = /(?:가능성|것으로\s*(?:보|추정|판단|여겨|알려)|보인다|보입니다|보였다|것\s*같|듯\s*하|듯하|듯\s*싶|수\s*있|수도\s*있|추정|추측|짐작|시사|생각(?:한다|합니다|된다|했다|했습니다)|여겨진다|판단된다|아마|어쩌면|일지도|지도\s*모른다|모르겠)/gu;
+const STRONG_HEDGE = /(?:가능성|것으로\s*(?:보|추정|판단|여겨|알려)|보인다|보입니다|보였다|것\s*같|듯\s*하|듯하|듯\s*싶|수\s*있|수도\s*있|추정|추측|짐작|시사|생각(?:한다|합니다|된다|했다|했습니다|이\s*(?:든다|듭니다|들었다|들었습니다))|여겨진다|판단된다|아마|어쩌면|일지도|지도\s*모른다|모르겠)/gu;
 const WEAK_HEDGE = /편이|편입니다/gu;
 // Explicit order markers between events (뒤/후/다음/나서/먼저…). A -고/-며
 // coordination that gains or loses one changes the temporal relation.
@@ -153,6 +153,10 @@ function subjectObject(value) {
   return match ? { subject: match[1], object: match[2] } : null;
 }
 function closestSentence(originals, value) {
+  // An unchanged body sentence must not be paired with a short heading whose
+  // token set happens to be a subset. This is also the common cheap path.
+  const exactIndex = originals.indexOf(value);
+  if (exactIndex >= 0) return { sentence: value, index: exactIndex, similarity: 1 };
   // Light normalization is only for locating a comparable sentence. It never
   // certifies a relation or acts as an authorship feature.
   const tokens = value => new Set((String(value).match(/[가-힣A-Za-z0-9]{2,}/gu) || [])
@@ -164,11 +168,20 @@ function closestSentence(originals, value) {
   const overlapRatio = (source, target) => [...target].filter(token => source.has(token)).length
     / Math.max(1, Math.min(source.size, target.size));
   const target = tokens(value), targetStems = stems(target);
-  return originals.map((sentence, index) => {
+  let best;
+  for (const [index, sentence] of originals.entries()) {
     const source = tokens(sentence);
-    const similarity = Math.max(overlapRatio(source, target), overlapRatio(stems(source), targetStems));
-    return { sentence, index, similarity };
-  }).sort((a, b) => b.similarity - a.similarity)[0];
+    const sourceStems = stems(source);
+    const similarity = Math.max(overlapRatio(source, target), overlapRatio(sourceStems, targetStems));
+    // Preserve the existing match threshold; resolve equal scores by coverage
+    // of BOTH spans instead of preferring whichever short label appears first.
+    const coverage = Math.max(
+      [...target].filter(token => source.has(token)).length / Math.max(1, source.size, target.size),
+      [...targetStems].filter(token => sourceStems.has(token)).length / Math.max(1, sourceStems.size, targetStems.size));
+    if (!best || similarity > best.similarity || (similarity === best.similarity && coverage > best.coverage))
+      best = { sentence, index, similarity, coverage };
+  }
+  return best;
 }
 function certaintyScopeShift(original, sentence) {
   const sourceHedges = count(original, STRONG_HEDGE) + count(original, WEAK_HEDGE);
@@ -177,6 +190,18 @@ function certaintyScopeShift(original, sentence) {
   if (sourceHedges > 0 && outputHedges === 0) return true;
   // Hedge added: a plain statement is now qualified as inferred or possible.
   if (sourceHedges === 0 && count(sentence, STRONG_HEDGE) > 0) return true;
+  // One clause can lose its modality while a later clause still says 수 있다.
+  // Nominate only an explicitly matched predicate, not a raw hedge-count drop:
+  // shared final modality and legitimate sentence splitting need semantic review.
+  for (const match of original.matchAll(/([가-힣]{2,20})할\s*수\s*있(?:고|으며|지만)/gu)) {
+    const predicate = escapeRegExp(match[1]);
+    const plain = new RegExp(`${predicate}하(?:고|며|지만)(?=\\s|,)`, 'u').exec(sentence);
+    // Without a new explicit topic, final 수 있다 can govern both actions.
+    const followingTopics = plain ? topics(sentence.slice(plain.index + plain[0].length)) : [];
+    if (plain && followingTopics.length > 0
+        && topics(sentence.slice(0, plain.index)).some(topic => !followingTopics.includes(topic))
+        && !new RegExp(`${predicate}할\\s*수`, 'u').test(sentence)) return true;
+  }
   // Scope narrowed inside one compound sentence: an embedded 이/가 subject of
   // the source was promoted to its own 은/는 topic clause ahead of the hedge.
   if (sourceHedges > 0 && outputHedges > 0 && COORDINATION.test(original) && CLAUSE_JOIN.test(sentence)) {

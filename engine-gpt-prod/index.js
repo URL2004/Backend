@@ -71,7 +71,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.76';
+const VERSION = 'gpt-prod-v2.5.77';
 const DETECT_VERSION = 'gpt-detect-v1.44';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';

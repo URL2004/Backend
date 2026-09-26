@@ -123,3 +123,7 @@ and holdout cases. Release checks also cover grounding, feature guards, cache
 invalidation, private metadata, report wording, and existing charge/replay
 behavior. Monitor the score stages and disable the flag if operational errors
 or verified human false positives increase.
+
+## detect-scale-calibration-v1.json
+
+표시 척도 후보(개발 단계). `DETECT_SCALE_CALIBRATION_ENABLED=1`과 `DETECT_SCALE_CALIBRATION_RULES=<id,…>`가 모두 있어야 켜지며 기본은 꺼짐. 엔진·이력 보정 뒤 표시 직전 점수만 바꾸고 캐시·rawProbability·과금은 바꾸지 않는다. 평가와 켜기 조건은 `docs/detect-scale-calibration.md`.

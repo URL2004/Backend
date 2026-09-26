@@ -570,7 +570,13 @@ router.post('/detect-report', async (req, res) => {
         cost
       });
     }
-    const probability = calibration.probability;
+    // 표시 척도(개발 후보, 기본 OFF): 엔진·이력 보정 뒤 화면에 내보내는 숫자만 바꾼다. rawProbability·캐시·원글 상한은 그대로.
+    const scale = require('../lib/detectScaleCalibration').applyScaleCalibration({
+      probability: calibration.probability, chars: text.length, profile: advancedRouting.profile, probSource: 'llm'
+    });
+    const probability = scale.probability;
+    // 척도가 적용된 점수는 이력의 원글 점수와 같은 자가 아니므로 증감 비교는 내보내지 않는다.
+    const historyComparison = scale.applied ? null : (calibration.comparison || null);
     const narrated = applyDetectNarrativePolicy(det, probability);
     narrated.signalEvidence = locatePublicEvidence(narrated.signalEvidence, text);
     // 문장 지도와 보고서 계측은 무LLM·무추가비용이다. 권위 점수 모델이 성공한 뒤에만
@@ -625,7 +631,8 @@ router.post('/detect-report', async (req, res) => {
       probability,
       ...require('../lib/detectScorePresentation').scorePresentation(calibration),
       statisticalReference: require('../lib/detectStatisticalAssist').sanitizeReference(det.statisticalReference),
-      historyComparison: calibration.comparison || null,
+      historyComparison,
+      ...(scale.meta ? { scaleCalibration: scale.meta } : {}),
       riskLevel: narrated.riskLevel,
       riskLabel: narrated.riskLabel,
       summary: publicSummary,
@@ -669,8 +676,9 @@ router.post('/detect-report', async (req, res) => {
       charged: chargeEligible ? cost : 0,
       historySaved: false,
       probability,
-      historyComparison: calibration.comparison || null,
-      historyComparisonProof: signHistoryComparison(uid, text, probability, calibration.comparison),
+      historyComparison,
+      historyComparisonProof: signHistoryComparison(uid, text, probability, historyComparison),
+      ...(scale.meta ? { scaleCalibration: scale.meta, rawProbability } : {}),
       ...(calibration.applied ? {
         rawProbability: calibration.rawProbability,
         calibrated: true,
@@ -752,6 +760,7 @@ router.post('/detect-report', async (req, res) => {
         causeScoreAdjustmentCode: det.causeScoreAdjustmentCode || null,
         calibrated: calibration.applied,
         calibration: calibration.applied ? calibration.meta : null,
+        scaleCalibration: scale.meta,
         riskLevel: narrated.riskLevel,
         riskLabel: narrated.riskLabel,
         narrativeConsistencyAdjusted: narrated.narrativeConsistencyAdjusted,
@@ -978,6 +987,7 @@ router.post('/detect-report', async (req, res) => {
     rawProbability: metric.calibrated ? metric.rawProbability : undefined,
     calibrated: metric.calibrated,
     calibration: metric.calibrated ? metric.calibration : undefined,
+    scaleCalibration: metric.scaleCalibration || undefined,
     probSource: 'llm',
     riskLevel: metric.riskLevel,
     riskLabel: metric.riskLabel,
@@ -1035,6 +1045,7 @@ router.post('/detect-report', async (req, res) => {
     detectCacheHit: metric.detectCacheHit,
     detectCacheSource: metric.detectCacheSource,
     calibrated: metric.calibrated,
+    scaleCalibration: metric.scaleCalibration || undefined,
     charged,
     latencyMs: metric.scoreLatencyMs,
     lengthBucket: detectTextLengthBucket(text.length)

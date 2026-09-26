@@ -10,9 +10,11 @@ const { userAgentFamily } = require('../lib/cronAuth');
 const metaConversions = require('../lib/metaConversions');
 const { bearerToken } = require('../lib/reqtoken');
 const paymentFailures = require('../lib/paymentFailureTaxonomy');
+const { normalizeAuthDiagnostic, createDiagnosticLimiter } = require('../lib/authDiagnostics');
+const authDiagnosticLimited = createDiagnosticLimiter();
 
 const router = express.Router();
-const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error', 'client_error']);
+const ALLOWED = new Set(['inquiry', 'signup', 'referral', 'payment_error', 'client_error', 'auth_diagnostic']);
 
 // 카드사/사용자 사유로 결제가 안 된 경우는 "정상 이탈"이라 깨울 일이 아니다.
 // 반대로 SDK 로드 실패·네트워크·승인 API 오류는 우리 쪽 장애다. 둘을 다른 이벤트로 나눠
@@ -115,6 +117,15 @@ function logPaymentError(req, uid) {
 
 router.post('/events', async (req, res) => {
   const { type } = req.body || {};
+  if (type === 'auth_diagnostic') {
+    if (authDiagnosticLimited(realClientIp(req))) return res.status(429).json({ error: 'rate_limited' });
+    const diagnostic = normalizeAuthDiagnostic(req.body, req.get('user-agent'));
+    if (!diagnostic) return res.status(400).json({ error: 'invalid_auth_diagnostic' });
+    // Anonymous, client-reported observation, never an authoritative auth result.
+    // info is intentionally outside the alert catalog: no Discord notification.
+    logger.info('client.auth_diagnostic', diagnostic);
+    return res.json({ ok: true });
+  }
   const idToken = bearerToken(req);
   if (!ALLOWED.has(type)) return res.status(400).json({ error: 'unknown event' });
   let decoded = null;

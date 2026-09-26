@@ -161,9 +161,11 @@ function auditAndSanitizeSource(value) {
   const scriptFrame = require('./scriptStructure').detectScriptStructure(workingSource).isScript;
   const furniture = scriptFrame ? { text: workingSource, removed: [] }
     : require('./documentFurniture').removeRunningHeaders(workingSource);
+  const captions = scriptFrame ? { text: furniture.text, applied: false }
+    : require('./documentFurniture').separateFusedCaptions(furniture.text);
   const extractedLayout = scriptFrame
-    ? { text: furniture.text, removedPages: [], changes: [] }
-    : repairExtractedPageLayout(furniture.text);
+    ? { text: captions.text, removedPages: [], changes: [] }
+    : repairExtractedPageLayout(captions.text);
   // Canonicalize only proven physical row seams before assigning paragraph,
   // title or list ownership. The helper preserves all non-whitespace content
   // and explicit structure; both the planner and engine use this same baseline.
@@ -188,6 +190,8 @@ function auditAndSanitizeSource(value) {
   for (const item of furniture.removed) removals.push(issue(item.code, item.lineOrdinal, item.action, item.message));
   const notices = [...extractedLayout.changes, ...physicalLayout.changes]
     .map(item => issue(item.code, item.lineOrdinal, item.action, item.message));
+  if (captions.applied) notices.push(issue('source_caption_boundary_repaired', 0, 'repaired',
+    '완결된 본문과 작품 캡션 사이의 줄 경계를 분리했어요.'));
   const kept = [];
   let inReference = false;
   const fenceState = analyzeFences(lines);
@@ -264,7 +268,10 @@ function auditAndSanitizeSource(value) {
   const integrityText = creativeLineLayout
     ? joinedIntegrityText
     : joinedIntegrityText.replace(/\n{3,}/gu, '\n\n');
-  const layoutRepair = repairSourceLayoutArtifacts(integrityText);
+  const labelRows = require('./inlineLabelParagraphs').repairInlineLabelContinuations(integrityText);
+  const layoutRepair = repairSourceLayoutArtifacts(labelRows.text);
+  if (labelRows.applied) notices.push(issue('source_label_continuation_repaired', 0, 'repaired',
+    '라벨 뒤 본문 문장 중간에 끊긴 물리적 줄바꿈을 연결했어요.'));
   for (const change of layoutRepair.changes) {
     notices.push(issue(change.code, change.lineOrdinal, change.action || 'repaired', change.message));
   }

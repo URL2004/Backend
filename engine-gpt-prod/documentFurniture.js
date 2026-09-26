@@ -50,9 +50,52 @@ function analyzeFurniture(value) {
 function removeRunningHeaders(value) {
   const source=String(value||''),{rows,removable}=analyzeFurniture(source);
   const ids=new Set(removable.map(r=>r.index));
-  return {text:rows.filter(r=>!ids.has(r.index)).map(r=>r.raw).join('\n'),
-    removed:removable.map(r=>({lineOrdinal:r.index+1,code:'source_running_header_removed',action:'removed',
+  const edits=removable.map(r=>({start:r.start,end:Math.min(source.length,r.end+1),ordinal:r.index+1}));
+  const literals=syntaxSpans(source).filter(s=>['quote','code'].includes(s.spanType)),referenceStart=rows.find(r=>/^(?:참고\s*문헌|References|Bibliography)$/iu.test(r.text))?.start ?? source.length;
+  // A previous rewrite may have embedded the SAME evidenced running header.
+  // Recover only exact parenthetical furniture, or a row seam with unfinished
+  // prose / a caption on its right. Ordinary quoted mentions remain untouched.
+  for(const literal of new Set(removable.map(r=>r.text))) {
+    let cursor=0;
+    while(cursor<referenceStart) {
+      const start=source.indexOf(literal,cursor);if(start<0||start>=referenceStart)break;
+      const end=start+literal.length;cursor=end;
+      const row=rows.find(r=>r.start<=start&&r.end>=end);
+      if(!row||ids.has(row.index)||literals.some(s=>s.start<end&&s.end>start))continue;
+      const left=source.slice(row.start,start),right=source.slice(end,row.end);
+      if(/\t|\S {2,}\S/u.test(row.raw))continue;
+      const parentheses=/\($/u.test(left)&&/^\)/u.test(right);
+      const seam=left.trim()&&!/[.!?。！？][”’"']?\s*$/u.test(left)
+        && /(?:을|를|의|과|와|해도|이고|에서|으로|대한|인)\s*$/u.test(left)
+        && /^\s+[가-힣]/u.test(right);
+      if(!parentheses&&!seam&&!isCaption(right.trim()))continue;
+      edits.push({start:parentheses?start-1:start,end:parentheses?end+1:end,ordinal:row.index+1});
+    }
+  }
+  let text=source;
+  for(const e of edits.sort((a,b)=>b.start-a.start))text=text.slice(0,e.start)+text.slice(e.end);
+  return {text,removed:edits.map(e=>({lineOrdinal:e.ordinal,code:'source_running_header_removed',action:'removed',
       message:'표지의 제목·작성자와 일치하며 반복되는 페이지 머리말을 본문에서 분리했어요.'}))};
+}
+function separateFusedCaptions(value) {
+  const source=String(value||''),spans=syntaxSpans(source),edits=[];
+  const referenceStart=source.search(/^(?:참고\s*문헌|References|Bibliography)\s*$/imu);
+  const pattern=/(?:(?:영화|도서|작품|사진)\s*[<〈《][^<>〈〉《》\n]{1,100}[>〉》][ \t]*)+/gu;
+  for(const m of source.matchAll(pattern)) {
+    const start=m.index,end=start+m[0].trimEnd().length;
+    if(referenceStart>=0&&start>=referenceStart)continue;
+    if(spans.some(s=>(s.spanType==='code'||s.start<start)&&s.start<end&&s.end>start))continue;
+    const rowStart=source.lastIndexOf('\n',start-1)+1,next=source.indexOf('\n',end),rowEnd=next<0?source.length:next;
+    const left=source.slice(rowStart,start),right=source.slice(end,rowEnd);
+    if(left.trim()&&!/[.!?。！？][”’"']?\s*$/u.test(left))continue;
+    // A particle attached to a work title makes it a prose mention, not a caption.
+    if(right.trim()&&(!/^\s+[가-힣]/u.test(right)||/^(?:은|는|이|가|을|를|의|와|과|에서)(?:\s|[가-힣])/u.test(right.trim())
+        ||right.trim().length<20||!/[.!?。！？]$/u.test(right.trim())))continue;
+    if(left.trim())edits.push({start:rowStart+left.trimEnd().length,end:start});
+    if(right.trim())edits.push({start:end,end:end+right.length-right.trimStart().length});
+  }
+  let text=source;for(const e of edits.sort((a,b)=>b.start-a.start))text=text.slice(0,e.start)+'\n'+text.slice(e.end);
+  return {text,applied:edits.length>0,count:edits.length};
 }
 function auditFurnitureBoundaries(source, output) {
   const rows=analyzeFurniture(source).rows;
@@ -78,4 +121,4 @@ function auditFurnitureBoundaries(source, output) {
   }
   return issues;
 }
-module.exports={isCaption,isBylineHeader,analyzeFurniture,removeRunningHeaders,auditFurnitureBoundaries};
+module.exports={isCaption,isBylineHeader,analyzeFurniture,removeRunningHeaders,separateFusedCaptions,auditFurnitureBoundaries};

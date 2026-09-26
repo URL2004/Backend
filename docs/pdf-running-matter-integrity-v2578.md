@@ -2,6 +2,20 @@
 
 Status: locally verified candidate, **not approved for production**.
 
+## Follow-up — 2026-09-27 KST
+
+The original residual meaning findings were addressed by independently validating source restoration targets. One unsafe caption-crossing restoration no longer vetoes unrelated safe repairs. A background-to-chronology audit and inline-label physical-row repair were added. Restoring meaning no longer reinstates an intra-sentence PDF wrap. A further real audit caught a duplicated introductory clause caused by restoring across an unpunctuated caption; the common source restorer now rejects such composite spans. Limitative `그냥 … 아니라` is treated consistently with `단지 … 아니라`, not as categorical exclusion.
+
+Fresh whole-document semantic revalidation of the deterministically amended prior generation passed with verification complete, no uncertainty and zero violations. This was **not a new whole-document generation**. The final full suite, including the references-only caption guard, passed 2,281 tests, zero failures/skips (63.0 seconds). Focused structure/furniture tests: 36 passing.
+
+The independent `engine_phrase_fingerprint` style warning remains; zero semantic violations is not equivalent to all quality warnings being cleared.
+
+A newly reported production run was confirmed to use the previous damaged output as its complete input. It was still on v2.5.77; its approved plan contained 11 changes, but delivery fell back (`STRUCTURE_DELIVERY_UNVERIFIED`, `structureApplied=false`, `structureFallback=true`, structure surcharge zero). Thus text entry alone cannot remove metadata already embedded in its content.
+
+Follow-up fixes remove exact embedded headers only when independently repeated rows and the cover attest the same title/byline, and separate safely identifiable fused work captions. Replayed new input has zero remaining repeated headers and four separate caption groups. Ordinary prose mentions, quotes, code and references remain protected. The structure delivery audit now distinguishes editable list/inline-label bodies from locked prefixes and references; the previous whole-row comparison rejected legitimate body edits.
+
+The structured ON path for this newly reported long document still needs fresh planning and full engine execution before release. Do not infer delivery success from the prior non-structured semantic pass or from local tests. An additional KRW 3,000 was requested but has not yet been approved. Existing accounting is KRW 2,285.55 including unknown reservation, leaving KRW 714.45 of the original approval. No production push or deployment has occurred.
+
 ## Root causes and changes
 
 - Physical-row joining ran before repeated page furniture was recognized. Remove only independently repeated title/byline rows attested by a cover title and author line; preserve ambiguous rows, quotations, code, tables and references.

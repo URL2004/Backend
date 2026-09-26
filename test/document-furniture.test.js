@@ -106,3 +106,77 @@ test('priority comparison cannot become categorical exclusion during a rewrite',
  assert.ok(f.auditFingerprint(s,bad).semanticRelations.shifts.some(x=>x.family==='priority_changed_to_exclusion'));
  assert.ok(!f.auditFingerprint(s,s).semanticRelations.shifts.some(x=>x.family==='priority_changed_to_exclusion'));
 });
+
+test('independent meaning repairs survive a rejected neighboring restoration',()=>{
+ const f=require('../engine-gpt-prod/fingerprintAudit');
+ const source='이 장치는 변화의 대표적인 사례로 볼 수 있다.\n정책은 지역 개발을 배경으로 등장한 것으로 공공시설을 확충하는 목적이 강하게 나타난다.';
+ const output='이 장치는 변화의 대표적인 사례이다.\n정책은 지역을 개발하던 시기에 등장한 것으로 공공시설을 확충하는 목적이 강하게 나타난다.';
+ let rejected=0;
+ const r=f.restoreValidatedRelationSentences(source,output,'report_assignment',(_before,candidate)=>{
+   if(candidate.includes('지역 개발을 배경으로')){rejected++;return false;}
+   return true;
+ });
+ assert.ok(rejected>0);assert.ok(r.applied);assert.equal(r.restoredSentenceCount,1);
+ assert.match(r.text,/사례로 볼 수 있다/);assert.match(r.text,/개발하던 시기에/);
+ const all=f.restoreValidatedRelationSentences(source,output,'report_assignment',()=>true);
+ assert.equal(f.auditFingerprint(source,all.text,'report_assignment').semanticRelations.count,0);
+ assert.equal(f.restoreValidatedRelationSentences(source,all.text,'report_assignment',()=>true).applied,false);
+ const already='정책은 지역 개발을 배경으로 삼았으며 지역을 개발하던 시기에 등장했다.';
+ assert.ok(!f.auditFingerprint(already,already).semanticRelations.shifts.some(x=>x.family==='background_changed_to_chronology'));
+});
+
+test('inline-label physical continuation joins only an adjacent unfinished prose sentence',()=>{
+ const repair=require('../engine-gpt-prod/inlineLabelParagraphs').repairInlineLabelContinuations;
+ const left='사회적 역할: 공동체의 구성원이라는 관점에서｜이 인물은 지역의 여러 문제를 해결하려 노력하며 자신의';
+ const right='능력을 시민을 돕는 데 사용하고 공동체에 기여한다.';
+ const s=left+'\n'+right;
+ assert.equal(repair(s).text,left+' '+right);
+ assert.equal(preflight(s).text.includes('자신의\n능력을'),false);
+ for(const bad of [left+'\n\n'+right,left+'\n2. 다음 절','```\n'+s+'\n```','“'+s+'”'])assert.equal(repair(bad).text,bad);
+ assert.equal(repair(repair(s).text).applied,false);
+});
+
+test('source sentence restoration does not reintroduce a physical prose wrap',()=>{
+ const restore=require('../engine-gpt-prod/sourceSentenceRestore').restoreSourceSentenceOrdinals;
+ const s='이 정책은 지역 개발을 배경으로 등장한 것으로 공공시설을 확충하는 목적이\n강하게 나타난다.';
+ const o='이 정책은 지역을 개발하던 시기에 등장한 것으로 공공시설을 확충하는 목적이 강하게 나타난다.';
+ const r=restore(s,o,[1],{ordinalSpace:'source',maxOutputGroup:1});
+ assert.ok(r.applied);assert.equal(r.text,s.replace('\n',' '));
+});
+
+test('re-entered text recovers embedded headers only with independent cover-attested evidence',()=>{
+ const embedded='이 지역의 변화('+header+') 속에서 주민들은 여러 경험을 기록하였다.';
+ const input=source+'\n'+embedded+'\n“'+embedded+'”';
+ const r=furniture.removeRunningHeaders(input);
+ assert.ok(r.text.includes('이 지역의 변화 속에서'));
+ assert.ok(r.text.includes('“'+embedded+'”'));
+ assert.equal(furniture.removeRunningHeaders(embedded).text,embedded);
+ assert.equal(furniture.removeRunningHeaders(r.text).text,r.text);
+});
+
+test('fused work captions separate from complete prose but ordinary mentions remain prose',()=>{
+ const caption='영화 <가상의 지역(2020)> 영화 <가상의 마을(2022)>',body='주민들은 이 지역의 변화와 관련된 다양한 경험을 기록하였다.';
+ const s=body+' '+caption+' '+body;
+ assert.equal(furniture.separateFusedCaptions(s).text,body+'\n'+caption+'\n'+body);
+ for(const t of ['영화 <가상의 지역(2020)>은 여러 주민의 경험을 기록하였다.','“'+s+'”','```\n'+s+'\n```','참고문헌\n'+s])assert.equal(furniture.separateFusedCaptions(t).text,t);
+});
+
+test('structure delivery protects prefixes and references, not editable list/label prose',()=>{
+ const ds=require('../engine-gpt-prod/documentStructure');
+ const s='I. 서론\n\n지역 주민들은 시설의 이용 현황을 확인했다. 조사자는 의견을 정리했다.\n\nII. 본론\n\n· 지역의 공공시설은 주민들이 함께 사용하는 공간으로 운영된다.\n\n사회적 역할: 공공시설은 지역 주민들의 공동 활동을 지원하는 장소이다.\n\nIII. 결론\n\n주민들은 공동 활동에 참여했다. 조사자는 결과를 정리했다.';
+ const o=s.replace('함께 사용하는 공간으로 운영된다','함께 이용하는 공간으로 운영된다').replace('지원하는 장소이다','돕는 장소이다');
+ assert.equal(ds.auditDelivery(s,o).pass,true);
+ assert.equal(ds.auditDelivery(s,o.replace('사회적 역할:','개인적 역할:')).pass,false);
+ const refs=s+'\n\n참고문헌\n\n· 지역 주민들의 공공시설 이용에 관한 조사 보고서. 2020.';
+ assert.equal(ds.auditDelivery(refs,refs.replace('이용에 관한 조사 보고서','참여에 관한 조사 보고서')).pass,false);
+});
+
+test('source restoration cannot duplicate a lead across a caption hidden inside its sentence ordinal',()=>{
+ const restore=require('../engine-gpt-prod/sourceSentenceRestore').restoreSourceSentenceOrdinals;
+ const s='이 관점으로 지역 공간을 들여다보자\n영화 <가상의 도시(2020)>\n이 도시는 그냥 배경이 아니라 주민들의 경험을 보여주는 공간이다.';
+ const o='이 관점에서 지역 공간을 살펴보자.\n영화 <가상의 도시(2020)>\n이 도시는 배경에 머무르지 않고 주민들의 경험을 보여주는 공간이다.';
+ assert.equal(restore(s,o,[1],{ordinalSpace:'source'}).applied,false);
+ const f=require('../engine-gpt-prod/fingerprintAudit');
+ assert.equal(f.detectContrastRelationShift(s,o).detected,false);
+ assert.equal(f.detectContrastRelationShift('이 도시는 배경이 아니라 주민들의 경험을 보여주는 공간이다.',o).detected,true);
+});

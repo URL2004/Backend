@@ -895,9 +895,10 @@ function restoreCitationOnlyTails(source, value) {
  */
 function restoreInlineLabelBodyLayout(source, outputText) {
   const regions = buildInlineLabelBodyRegions(source);
-  let text = normalizeNewlines(outputText);
+  const continuations = require('./inlineLabelParagraphs').repairInlineLabelContinuations(normalizeNewlines(outputText));
+  let text = continuations.text;
   let cursor = 0;
-  let repairCount = 0;
+  let repairCount = continuations.repairCount;
   let missingCount = 0;
   for (const region of regions) {
     const current = findWhitespaceEquivalentSpan(text, region.prefix, cursor);

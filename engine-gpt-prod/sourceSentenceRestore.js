@@ -61,7 +61,13 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
     const lastOutput = outputSpans[alignment.end - 1];
     if (!sourceSpan || !firstOutput || !lastOutput) continue;
     const replacedSlice = before.slice(firstOutput.start, lastOutput.end);
-    const replacementText = alignment.replacementText || sourceSpan.text;
+    const replacementText = normalizeRestoredSentenceLayout(alignment.replacementText || sourceSpan.text);
+    // A punctuation-poor source sentence may straddle a caption or heading.
+    // Its numeric sentence ordinal does not establish ownership of the prose
+    // on BOTH sides. Copying the entire span can duplicate an already rewritten
+    // lead sentence. Leave this composite to paired-window repair, not guessing.
+    if (layoutStructure.buildLineRecords(replacementText).slice(1).some(row =>
+      !row.blank && ['heading','title','signature','table','code','legal_clause'].includes(row.role))) continue;
     if (normalize(replacementText) === normalize(replacedSlice)) continue;
     // 한 원문 문장이 결과에서 두 문단으로 찢어진 경우에는 여기서 문단을
     // 합치지 않는다. 구조 복원기가 담당하도록 보수적으로 중단한다.
@@ -92,6 +98,21 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
       restoredSourceSentenceOrdinals: replacements.map(item => item.sourceOrdinal)
     }
   );
+}
+
+// Restoring meaning must not reintroduce physical PDF line breaks inside the
+// same sentence. Never cross paragraphs or metadata/quote/code ownership.
+function normalizeRestoredSentenceLayout(value) {
+  const text = String(value || '');
+  if (!text.includes('\n') || /\n[ \t]*\n/u.test(text)
+      || /\t|\S {2,}\S/u.test(text)
+      || require('../engine/textSyntax').syntaxSpans(text).length) return text;
+  const rows = layoutStructure.buildLineRecords(text);
+  // This is an aligned complete sentence, not a document's first title row.
+  if (rows.length < 2 || !['prose', 'list', 'label_inline'].includes(layoutStructure.classifyLine(rows[0].text))
+      || rows.slice(1).some(r => r.blank || r.role !== 'prose')
+      || rows.slice(0, -1).some(r => layoutStructure.isSentenceComplete(r.text))) return text;
+  return text.replace(/[ \t]*\n[ \t]*/gu, ' ');
 }
 
 function hasReciprocalOwnership(alignment, sourceSpans, outputSpans, output) {

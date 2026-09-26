@@ -224,6 +224,12 @@ const SEMANTIC_RELATION_RULES = Object.freeze([
     retained: /자체보다/u
   },
   {
+    family: 'background_changed_to_chronology',
+    source: /(?:을|를)\s*배경으로\s*(?:등장|형성|발전|탄생)/u,
+    output: /(?:하던|했던|한|되던|된)\s*(?:시기|당시|때)(?:에|의)?\s*(?:등장|형성|발전|탄생)/u,
+    retained: /배경으로/u
+  },
+  {
     family: 'priority_changed_to_exclusion',
     source: /자체보다/u,
     output: /(?:이|가)\s*아니라/u,
@@ -333,6 +339,8 @@ function detectSemanticRelationShifts(source, output) {
         if (rule.family === 'difficulty_strengthened_to_impossibility'
             && matches(rule.output, sourceSentence)) continue;
         if (rule.family === 'priority_changed_to_exclusion'
+            && matches(rule.output, sourceSentence)) continue;
+        if (rule.family === 'background_changed_to_chronology'
             && matches(rule.output, sourceSentence)) continue;
         const shifted = matches(rule.output, alignedText)
           && !matches(rule.retained, alignedText);
@@ -652,7 +660,7 @@ function detectContrastRelationShift(source, output) {
     // 한정하지 않는 관계다. 이 경우 `X에 머무르지 않고 Y`는 같은 제한적
     // 기능을 유지하므로 부정→가산 반전으로 보지 않는다. `단순한 X가 아니라`는
     // 명사구 대조이므로 이 예외에 포함하지 않는다.
-    const limitativeSource = /(?:단순히|단지|그저|오직)[^.!?。！？\n]{0,55}(?:아니라|아닌\s+것이(?:라|고))/u
+    const limitativeSource = /(?:단순히|단지|그저|그냥|오직)[^.!?。！？\n]{0,55}(?:아니라|아닌\s+것이(?:라|고))/u
       .test(sourceSentence);
     const candidates = alignedOutputCandidates(
       sourceSentence,
@@ -825,6 +833,38 @@ function restoreUnsafeRelationSentences(source, output, audit) {
   };
 }
 
+// One unsafe style restoration must not veto a separate, well-grounded meaning
+// repair. Re-audit after every accepted edit: source/output ordinals can shift.
+// The caller retains all quote, structure and candidate integrity gates.
+function restoreValidatedRelationSentences(source, output, profile, validate) {
+  let text = String(output || ''), restoredSentenceCount = 0;
+  const rejected = new Set();
+  for (let round = 0; round < 8; round++) {
+    const before = auditFingerprint(source, text, profile);
+    let accepted = false;
+    for (const violation of before.violations || []) {
+      for (const ordinal of violation.sentenceOrdinals || []) {
+        const key = JSON.stringify([text, violation.code, violation.family, ordinal]);
+        if (rejected.has(key)) continue;
+        const restored = restoreUnsafeRelationSentences(source, text, {
+          violations: [{ ...violation, sentenceOrdinals: [ordinal] }]
+        });
+        if (restored.applied && isImproved(before, auditFingerprint(source, restored.text, profile))
+            && validate(text, restored.text) === true) {
+          text = restored.text;
+          restoredSentenceCount += restored.restoredSentenceCount;
+          accepted = true;
+          break;
+        }
+        rejected.add(key);
+      }
+      if (accepted) break;
+    }
+    if (!accepted) break;
+  }
+  return { text, applied: text !== output, restoredSentenceCount };
+}
+
 function conceptNarrowedByActionModifier(source, output) {
   const before = String(source || '');
   const after = String(output || '');
@@ -859,5 +899,6 @@ module.exports = {
   detectSemanticRelationShifts,
   guardedFamilyAllowance,
   restoreUnsafeRelationSentences,
+  restoreValidatedRelationSentences,
   isImproved
 };

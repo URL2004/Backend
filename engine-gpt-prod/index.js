@@ -3421,10 +3421,12 @@ async function runEngine({
   if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
     const relationBefore = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
     if (relationBefore.pass === false) {
-      const restored = fingerprint.restoreUnsafeRelationSentences(
-        rawSource,
-        outputText,
-        relationBefore
+      const restored = fingerprint.restoreValidatedRelationSentences(
+        rawSource, outputText, documentProfile,
+        (before, candidate) => candidateIntegrity.auditCandidateIntegrity({
+          source: rawSource, before, candidate, documentProfile, mode: selectedMode
+        }).pass === true && preservesFinalStructure(
+          rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair)
       );
       if (restored.applied) {
         const candidate = restored.text;

@@ -69,4 +69,30 @@ function isSafeLabelBodyLayout(value) {
   return lines.length>=2&&lines.every(line=>layout.classifyLine(line)==='prose'
     &&layout.isSentenceComplete(line)&&splitSentenceSpans(line).length>=2&&bare(line).length>=60);
 }
-module.exports={improveInlineLabelLayout,isSafeLabelBodyLayout};
+// A physical PDF row can split the prose after an inline label. Join only the
+// immediately adjacent, unfinished sentence: no blank paragraphs, new labels,
+// tables, quotations or code may be crossed. Preserve every non-space byte.
+function repairInlineLabelContinuations(value) {
+  let text = String(value || '');
+  let repairCount = 0;
+  const records = layout.buildLineRecords(text), literals = syntaxSpans(text);
+  const edits = [];
+  for (let i = 0; i < records.length - 1; i++) {
+    const left = records[i], right = records[i + 1];
+    if (left.role !== 'label_inline' || right.role !== 'prose' || right.blank
+        || layout.isSentenceComplete(left.text) || !layout.isSentenceComplete(right.text)
+        || left.text.length < 40 || right.text.length < 12
+        || /\t|\S {2,}\S/u.test(left.raw + right.raw)) continue;
+    const start = left.end - (left.raw.length - left.raw.trimEnd().length);
+    const end = right.start + right.raw.length - right.raw.trimStart().length;
+    if (!/^[ \t]*\n[ \t]*$/u.test(text.slice(start, end))) continue;
+    if (literals.some(s => s.start < right.end && s.end > left.start)) continue;
+    edits.push({ start, end });
+  }
+  for (const e of edits.reverse()) {
+    text = text.slice(0, e.start) + ' ' + text.slice(e.end);
+    repairCount++;
+  }
+  return { text, applied: repairCount > 0, repairCount, contentPreserved: bare(text) === bare(value) };
+}
+module.exports={improveInlineLabelLayout,isSafeLabelBodyLayout,repairInlineLabelContinuations};

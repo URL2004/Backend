@@ -33,9 +33,9 @@ function buildDocument(text) {
     // An inline book title/quotation protects that span, not the entire body.
     // Standalone quotations, tables, code and reference blocks stay barriers.
     const protectedBlock = !heading && (references || role !== 'prose' || /https?:\/\/|\[[0-9, –-]+\]/u.test(value));
-    blocks.push({ id, text: value, start: lines[0].start, end: lines[lines.length-1].end,
+    blocks.push({ id, text: value, start: lines[0].start, end: lines[lines.length-1].end, role,
       kind: top ? 'top' : heading ? 'heading' : protectedBlock ? 'protected' : 'paragraph',
-      parent, section, barrier, numbered: heading && NUMBERED.test(value),
+      parent, section, barrier, numbered: heading && NUMBERED.test(value), reference: references,
       ...(role === 'numeric_series' ? { layoutRole: 'numeric_series' } : {}) });
     if (top) { parent=id; section=id; barrier=id; }
     else if (heading) { section=id; barrier=id; }
@@ -156,6 +156,19 @@ function auditDelivery(source, output) {
   const sourceGrams=before.map(b=>grams(b.text));
   for(let i=0;i<before.length;i++) {
     if (before[i].kind!=='paragraph') {
+      // The editing engine freezes a list/inline label PREFIX, not its prose.
+      // Demanding an unchanged full row here falsely rejects every valid edit.
+      if (!before[i].reference && ['list','label_inline'].includes(before[i].role) && before[i].role===after[i].role) {
+        const split = require('./structureChunk').splitEditablePrefixPiece;
+        const a=split({text:before[i].text}), b=split({text:after[i].text});
+        if(a.length===2&&b.length===2&&a[1].forceEditable&&b[1].forceEditable) {
+          if(a[0].text.replace(/\s/gu,'')!==b[0].text.replace(/\s/gu,''))return {pass:false,reason:'protected_prefix'};
+          if(similarity(grams(a[1].text),grams(b[1].text))<0.18)return {pass:false,reason:'uncertain_correspondence'};
+          if(before.some((other,j)=>j!==i&&other.role===before[i].role
+              &&similarity(grams(other.text),grams(b[1].text))>similarity(grams(a[1].text),grams(b[1].text))+0.05))return {pass:false,reason:'paragraph_order'};
+          continue;
+        }
+      }
       if (before[i].layoutRole === 'numeric_series') {
         const rows = value => value.split('\n').map(row => row.trim().replace(/[ \t]+/gu, ' ')).filter(Boolean).join('\n');
         if (after[i].layoutRole !== 'numeric_series' || rows(before[i].text) !== rows(after[i].text)) return {pass:false,reason:'protected_row_boundary'};

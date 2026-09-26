@@ -1197,7 +1197,7 @@ function buildArchiveObservability(job) {
       ? undefined
       : Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(archiveFinite(engineMeta.fragmentIntegrityIssueCount)))),
     fragmentIntegrityCodes: uniqueStrictArchiveCodes(engineMeta.fragmentIntegrityCodes).filter(code => [
-      'introduced_orphan_ending', 'introduced_duplicate_predicate_tail'
+      'introduced_orphan_ending', 'introduced_duplicate_predicate_tail', 'introduced_dependent_tail_owner_shift'
     ].includes(code)),
     sectionPathErrorCount: archiveFinite(engineMeta.sectionPathErrorCount),
     originalStructurePass: typeof engineMeta.originalStructurePass === 'boolean' ? engineMeta.originalStructurePass : undefined,

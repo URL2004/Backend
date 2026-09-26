@@ -62,3 +62,15 @@ test('an explicitly failed audit with missing codes still receives a nonblocking
   assert.equal(delivery.isTechnicalCritical(warnings[0]), false);
   assert.equal(delivery.reconcileFinalDelivery({ qualityWarnings: warnings }).decision, 'deliver_review');
 });
+
+test('dependent tail ownership warning is nonblocking and reveals no source text', () => {
+  const source = '이러한 판단은 여러 조건을 확인하고 절차로 보완하는\n\n방식처럼 보였다.';
+  const outputText = '여러 조건을 확인하고 절차로 보완하려는 판단은\n\n방식처럼 보였다.';
+  const structure = buildStructureAudit({source, outputText, chunks:[]});
+  const warnings = quality(source,outputText,structure).warnings;
+  const item = warnings.find(w=>w.code==='introduced_dependent_tail_owner_shift');
+  assert(item);
+  assert.equal(delivery.isTechnicalCritical(item),false);
+  assert.equal(JSON.stringify(item).includes('여러 조건'),false);
+  assert.equal(delivery.reconcileFinalDelivery({qualityWarnings:[item]}).decision,'deliver_review');
+});

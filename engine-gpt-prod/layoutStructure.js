@@ -762,8 +762,9 @@ function tableColumnCount(value) {
 
 function detectContextTableLineIndices(records, excluded = new Set()) {
   const out = new Set();
+  const proseTabs = require('./proseTabLayout').proseTabLineIndices(records.map(r => r.raw).join('\n'));
   for (const record of records || []) {
-    if (record.blank || excluded.has(record.index)) continue;
+    if (record.blank || excluded.has(record.index) || proseTabs.has(record.index)) continue;
     if (isExplicitTableLine(record.text)) out.add(record.index);
     // 탭은 워드·스프레드시트가 실제 열 경계로 내보내는 강한 구조 신호다.
     // 목록 들여쓰기용 탭은 tableColumnCount에서 이미 제거되므로, 남은
@@ -784,7 +785,7 @@ function detectContextTableLineIndices(records, excluded = new Set()) {
     group = [];
   };
   for (const record of records || []) {
-    if (record.blank || excluded.has(record.index) || tableColumnCount(record.raw) < 2) {
+    if (record.blank || excluded.has(record.index) || proseTabs.has(record.index) || tableColumnCount(record.raw) < 2) {
       flush();
       continue;
     }

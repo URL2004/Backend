@@ -22,6 +22,7 @@ function wordSeam(left, right, witnessed) {
   if (!a || !b) return false;
   if (/(?:습니?|[합입됩했겠였않없있]니)$/u.test(a) && /^(?:니다|다)$/u.test(b)) return true;
   if (a.length >= 1 && /^습니다$/u.test(b)) return true;
+  if (/(?:했|됐|였|었|랐|렸|겠)$/u.test(a) && b === '다') return true;
   if (/^[이그저]$/u.test(a) && /^(?:러한|렇게|런|렇다)$/u.test(b)) return true;
   if (/^(?:은|는|을|를|의|와|과|도|만|에서|에게|으로|까지|부터|처럼)(?:도|는|만)?$/u.test(b)) return true;
   if (/[하되]$/u.test(a) && /^(?:고|게|는|여|지|면|며|면서|었다|였다|도록)$/u.test(b)) return true;
@@ -34,8 +35,9 @@ function wordSeam(left, right, witnessed) {
 function repairPhysicalProseLines(value) {
   const source = String(value || '');
   const rows = []; let start = 0;
-  for (const raw of source.split('\n')) { rows.push({ raw, text: raw.trim(), start, end: start + raw.length }); start += raw.length + 1; }
+  for (const raw of source.split('\n')) { rows.push({ index: rows.length, raw, text: raw.trim(), start, end: start + raw.length }); start += raw.length + 1; }
   const literals = syntaxSpans(source);
+  const proseTabs = require('./proseTabLayout').proseTabLineIndices(source);
   const standaloneQuotes = literals.filter(span => {
     if (span.spanType !== 'quote' || !source.slice(span.start, span.end).includes('\n')) return false;
     const lineStart = source.lastIndexOf('\n', span.start - 1) + 1;
@@ -53,7 +55,8 @@ function repairPhysicalProseLines(value) {
       || /^\d+(?:\.\d+)*[.)](?!\d)[ \t]*(?=[가-힣A-Za-z“‘"'「『《〈])/u.test(row.text)
       || /^[A-Za-z][.)](?=\s*\S)/u.test(row.text)
       || standaloneQuotes.some(span => span.start <= row.end && span.end > row.start)
-      || /\t|\||\S {2,}\S|https?:\/\/|www\./u.test(row.raw)
+      || (/\t/u.test(row.raw) && !proseTabs.has(row.index))
+      || /\||\S {2,}\S|https?:\/\/|www\./u.test(row.raw)
       || /^[-+]?\d[\d.,%\s~–-]*$/u.test(row.text)
       || /^[^.!?]{1,60}[:：]$/u.test(row.text)
       || /^[가-힣A-Za-z][^.!?()（）\n]{0,25}[:：]/u.test(row.text)
@@ -100,7 +103,7 @@ function repairPhysicalProseLines(value) {
     const attach = wordSeam(a.text, b.text, witnessed);
     // A real 가나다 item is never swallowed without a preceding broken polite
     // ending. A chart label, short heading or verse is not a continuation.
-    if (NUMBERED.test(b.text) && !(attach && /(?:습니?|[합입됩했겠였않없있]니)$/u.test(a.text))) continue;
+    if (NUMBERED.test(b.text) && !(attach && /(?:습니?|[합입됩했겠였않없있]니|했|됐|였|었|랐|렸|겠)$/u.test(a.text))) continue;
     // A finite clause need not carry a copied terminal point. Keep this
     // allowance narrower than ordinary punctuated continuations.
     const finiteEnding = b.text.length >= 12 && b.text.split(/\s+/u).length >= 3 && FINITE.test(b.text);
@@ -121,7 +124,10 @@ function repairPhysicalProseLines(value) {
     continuations.add(b.index);
   }
   let text = source;
-  for (const j of [...joins].reverse()) text = text.slice(0, j.start) + j.separator + text.slice(j.end);
+  const tabEdits = rows.flatMap((row, index) => proseTabs.has(index) && !row.protected
+    ? [...row.raw.matchAll(/\t/gu)].filter(m => !literals.some(s => s.start <= row.start + m.index && s.end > row.start + m.index))
+      .map(m => ({ start: row.start + m.index, end: row.start + m.index + 1, separator: ' ' })) : []);
+  for (const j of [...joins, ...tabEdits].sort((a,b) => b.start - a.start)) text = text.slice(0, j.start) + j.separator + text.slice(j.end);
   if (text.replace(/\s/gu, '') !== source.replace(/\s/gu, '')) return { text: source, changed: false, changes: [], joins: [] };
   return { text, changed: text !== source, joins, changes: joins.map(j => ({
     code: 'source_physical_prose_wrap_repaired', lineOrdinal: j.lineOrdinal, action: 'repaired',

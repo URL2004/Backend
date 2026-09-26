@@ -1,5 +1,22 @@
 'use strict';
 
+// ASCII quote glyphs also occur in angles, imperial dimensions and derivatives.
+// Recognize these from local positive evidence; never rewrite the source glyphs.
+function isNotationPrime(text, index) {
+  const ch = text[index];
+  if (ch !== "'" && ch !== '"') return false;
+  const left = text.slice(Math.max(0, index - 64), index);
+  const right = text.slice(index + 1, index + 40);
+  if (ch === "'" && /\d+(?:\.\d+)?\s*°\s*\d+(?:\.\d+)?\s*$/u.test(left)) return true;
+  if (ch === '"' && /\d+(?:\.\d+)?\s*°\s*\d+(?:\.\d+)?\s*['′]\s*\d+(?:\.\d+)?\s*$/u.test(left)) return true;
+  if (ch === "'" && /\d+(?:\.\d+)?$/u.test(left) && /^\s*\d+(?:\.\d+)?\s*["″]/u.test(right)) return true;
+  if (ch === '"' && /\d+(?:\.\d+)?\s*['′]\s*\d+(?:\.\d+)?\s*$/u.test(left)) return true;
+  // A single function symbol followed by primes and an argument, not an English
+  // word or a quoted single letter. Closing quotes are handled by the caller.
+  return ch === "'" && /(?:^|[^\p{L}\p{N}_])(?:[A-Za-zα-ωΑ-Ω])'{0,3}$/u.test(left)
+    && /^'{0,3}\s*\(/u.test(right);
+}
+
 // Offset-only syntax ownership, shared by sentence counting and detection.
 // No normalization: all offsets are UTF-16 offsets into the submitted text.
 function syntaxSpans(value) {
@@ -39,6 +56,17 @@ function analyzeSyntaxSpans(text) {
     if (codeSpans[codeCursor] && codeSpans[codeCursor].start <= i) { i = codeSpans[codeCursor].end - 1; continue; }
     if (text[i - 1] === '\\') continue;
     const ch = text[i];
+    // A numeral immediately followed by a mark with no quote to close is a
+    // postfix notation (feet/inches/arcminutes), not a new quote opener.
+    if ((ch === "'" || ch === '"') && /\d/u.test(text[i - 1] || '') && stack.at(-1)?.close !== ch) continue;
+    const quotedSingleSymbol = ch === "'" && stack.at(-1)?.close === ch
+      && i - stack.at(-1).start === 2;
+    // If the entire quote is a numeric/angle literal, its final mark closes
+    // that quote. Do not let a quoted coordinate consume the next quotation.
+    const quotedNumericLiteral = stack.at(-1)?.close === ch
+      && /^\d[\d.°′″'"\s]*$/u.test(text.slice(stack.at(-1).start + 1, i))
+      && !/^\s*\d/u.test(text.slice(i + 1));
+    if (!quotedSingleSymbol && !quotedNumericLiteral && isNotationPrime(text, i)) continue;
     // Apostrophes inside Latin words (don't / don’t) are not quote ends.
     // Korean quoted terms attach particles directly: ‘검증’을 must close.
     if ((ch === "'" || ch === '’') && /[\p{Script=Latin}\p{N}]/u.test(text[i - 1] || '') && /[\p{Script=Latin}\p{N}]/u.test(text[i + 1] || '')) continue;

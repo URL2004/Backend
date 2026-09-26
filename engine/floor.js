@@ -57,7 +57,9 @@ const NATIVE_NUM_RE = /(?<![가-힣])(?:두|세|네|다섯|여섯|일곱|여덟|
 // 단위 없는 소수 (0.42). 연도·% 와 별개.
 // ★ 목차/개요 번호("2.1 시장 규모", "3.2 ...") 오탐 제외(2026-06-15 실측 lostFacts FP): 소수 뒤가 공백이면
 //   문서 구조 번호일 확률이 높다 → 데이터 소수는 보통 단위·조사가 붙음(0.42였다·2.1배·1.44℃). 공백 동반 소수는 사실에서 제외.
-const DECIMAL_RE = /(?<![\d.])\d+\.\d+(?![\d%％\s])/g;
+// Whitespace after a decimal is formatting, not evidence that it is absent.
+// Percent quantities have their own canonical extractor, spaced or unspaced.
+const DECIMAL_RE = /(?<![\d.])\d+\.\d+(?![\d%％]|\s*[%％])/g;
 // URL / 이메일 / DOI.
 const URL_RE = /(?:https?:\/\/[^\s)]+|www\.[^\s)]+|\b10\.\d{4,}\/\S+|[\w.+-]+@[\w-]+\.[\w.-]+)/gi;
 // 라틴 약어 + 대문자 영단어.

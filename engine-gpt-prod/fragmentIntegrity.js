@@ -2,7 +2,7 @@
 
 const { syntaxSpans } = require('../engine/textSyntax');
 
-const VERSION = 'fragment-integrity-v1';
+const VERSION = 'fragment-integrity-v2';
 const MAX_ISSUES = 40;
 const ORPHAN_ENDING = /^(다|니다|습니다)[.!?。！？](?=\s|$)/u;
 const KOREAN_MARKERS = '가나다라마바사아자차카타파하';
@@ -70,6 +70,20 @@ function auditFragmentIntegrity(sourceText, outputText) {
       outputEnd: line.start + head.length,
       predecessorStart: previous.start
     });
+  }
+  // A page-split dependent predicate may survive while only its left owner is
+  // rewritten ("...하는 / 방식처럼 보였다" -> "...태도는 / 방식처럼 보였다").
+  // Source-relative, unique and blank-line bounded; warning only, no deletion.
+  for (let i = 1; i < outputInfo.lines.length; i++) {
+    const tail = outputInfo.lines[i], left = outputInfo.lines[i - 1];
+    if (tail.protected || left.protected || !/\n\s*\n/u.test(output.slice(left.end, tail.start))) continue;
+    if (!/^[가-힣]{2,12}(?:처럼|으로)\s*(?:읽혔다|느껴졌다|보였다|여겨졌다)[.!?]$/u.test(tail.text)) continue;
+    if (!/[가-힣]{2,}(?:은|는)$/u.test(left.text) || /(?:하는|되는|한|된|할|될|인)$/u.test(left.text)) continue;
+    const owners = sourceInfo.lines.flatMap((line, j) => j > 0 && !line.protected && line.text === tail.text
+      && !sourceInfo.lines[j - 1].protected ? [{ tail: line, left: sourceInfo.lines[j - 1] }] : []);
+    if (owners.length !== 1 || !/(?:하는|되는|한|된|할|될|인)$/u.test(owners[0].left.text)) continue;
+    issues.push({ code: 'introduced_dependent_tail_owner_shift', sourceStart: owners[0].left.start,
+      sourceEnd: owners[0].tail.end, outputStart: left.start, outputEnd: tail.end });
   }
   return result(issues);
 }

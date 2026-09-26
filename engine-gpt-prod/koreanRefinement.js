@@ -13,7 +13,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 37;
+const VERSION = 38;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -3230,7 +3230,7 @@ function pushFunctionalGreetingDuplication(issues, text) {
   }
 }
 
-function findAdjacentSemanticRepetitionPairs(text) {
+function findAdjacentSemanticRepetitionPairs(text, sourceSentences = []) {
   const sentences = splitSentences(String(text || '')).map(value => String(value || '').trim()).filter(Boolean);
   const pairs = [];
   for (let index = 0; index < sentences.length - 1; index += 1) {
@@ -3251,22 +3251,41 @@ function findAdjacentSemanticRepetitionPairs(text) {
     const lengthRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
     const connectorSubsetEcho = isConnectorSubsetEcho(left, right, leftTokens);
     const conclusionRestatementEcho = isConclusionRestatementEcho(left, right);
+    const sourceRestatement = isSourceReplayRestatement(left, right, sourceSentences);
     if ((containment >= 0.8 && lengthRatio >= 0.68)
         || shortCognitiveEcho
         || abstractPredicateEcho
         || connectorSubsetEcho
-        || conclusionRestatementEcho) {
+        || conclusionRestatementEcho || sourceRestatement) {
       pairs.push({
         ordinal: index + 2,
         left,
         right,
-        kind: conclusionRestatementEcho
+        kind: sourceRestatement ? 'source_restatement_candidate' : conclusionRestatementEcho
           ? 'conclusion_restatement'
           : (connectorSubsetEcho ? 'connector_subset' : 'semantic_echo')
       });
     }
   }
   return pairs;
+}
+
+// A rewritten sentence followed by an exact replay of its unique source owner
+// can repeat a claim despite different predicates. Flag for contextual repair,
+// not deterministic deletion: shared nouns alone do not prove equivalence.
+function isSourceReplayRestatement(left, right, sourceSentences) {
+  if (!sourceSentences.length || left.length < 24 || right.length < 24 || left.length > 450 || right.length > 450) return false;
+  if (/\t|\|/u.test(left + right) || syntaxSpans(left + '\n' + right).some(s => s.spanType === 'code' || s.spanType === 'quote')) return false;
+  const exact = normalizeSentenceLocal(right);
+  if (sourceSentences.filter(s => normalizeSentenceLocal(s) === exact).length !== 1) return false;
+  if (sourceSentences.some(s => normalizeSentenceLocal(s) === normalizeSentenceLocal(left))) return false;
+  if ((left.match(/[-+]?\d+(?:[.,]\d+)?%?/gu) || []).join('|') !== (right.match(/[-+]?\d+(?:[.,]\d+)?%?/gu) || []).join('|')) return false;
+  if ((left.match(RELATION_DIRECTION_RE) || []).join('|') !== (right.match(RELATION_DIRECTION_RE) || []).join('|')) return false;
+  const roots = value => new Set(contentTokensLocal(value));
+  const a = roots(left), b = roots(right);
+  if ([...a].filter(t => b.has(t)).length < 5 || sentenceSimilarity(left, right) < 0.50) return false;
+  const owner = sourceSentences.findIndex(s => normalizeSentenceLocal(s) === exact);
+  return bestSourceSentenceAlignment(left, sourceSentences)?.index === owner;
 }
 
 function findAdjacentSemanticRepetitions(text) {
@@ -3367,8 +3386,8 @@ function isShortCognitiveEcho(leftValue, rightValue) {
 
 function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
   const sourcePairs = findAdjacentSemanticRepetitionPairs(source);
-  const outputPairs = findAdjacentSemanticRepetitionPairs(outputText);
   const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const outputPairs = findAdjacentSemanticRepetitionPairs(outputText, sourceSentences);
   const introduced = outputPairs.filter(pair => !isSourceBackedClauseSplit(pair, sourceSentences)
     && !sourcePairs.some(sourcePair => (
     sentenceSimilarity(sourcePair.left, pair.left) >= 0.62
@@ -3379,7 +3398,7 @@ function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
   for (const pair of introduced) {
     const leftAlignment = bestSourceSentenceAlignment(pair.left, sourceSentences);
     const rightAlignment = bestSourceSentenceAlignment(pair.right, sourceSentences);
-    const sameGroundedClaim = leftAlignment
+    const sameGroundedClaim = pair.kind !== 'source_restatement_candidate' && leftAlignment
       && rightAlignment
       && leftAlignment.index === rightAlignment.index
       && leftAlignment.score >= 0.30

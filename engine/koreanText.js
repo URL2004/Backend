@@ -35,6 +35,11 @@ function splitSentences(value, { preserveLines = false, inferPlainEndings = fals
 
 function splitSentenceSpans(value, { preserveLines = false, inferPlainEndings = false } = {}) {
   const text = String(value || '');
+  return require('./textAnalysisCache').memoizeSpans(`sentences:${!!preserveLines}:${!!inferPlainEndings}`, text,
+    () => analyzeSentenceSpans(text, { preserveLines, inferPlainEndings }));
+}
+
+function analyzeSentenceSpans(text, { preserveLines, inferPlainEndings }) {
   if (!text.trim()) return [];
   const out = [];
   const syntax = syntaxSpans(text);

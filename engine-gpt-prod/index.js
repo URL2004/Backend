@@ -2285,11 +2285,14 @@ async function runEngine({
     inlineCodeIntegrity = literalSpans.restoreInlineCode(outputText, inlineCodeFreeze);
     outputText = inlineCodeIntegrity.text;
   }
+  const materializedChunks = literalSpans.materializeChunkLiterals(chunks, {
+    inlineMathFreeze, inlineCodeFreeze
+  });
   const layoutRepair = await structureChunk.restorePostSemanticLayoutAsync({
     signal,
     source: rawSource,
     outputText,
-    chunks,
+    chunks: materializedChunks,
     mode: selectedMode,
     requestStrength,
     documentProfile,
@@ -2341,7 +2344,7 @@ async function runEngine({
         source: rawSource,
         integritySource: structureImprovement.applied ? rawSource : integritySource,
         outputText: text,
-        chunks,
+        chunks: materializedChunks,
         plan: chunkPlan,
         boundaryRepair,
         layoutRepair
@@ -2505,7 +2508,7 @@ async function runEngine({
           localLengthPurpose: 'source_restore',
           allowDepthRegression: true
         })
-        && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
+        && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair);
       if (safeCandidate) {
         outputText = candidate;
         koreanRefinementAudit = candidateKorean;
@@ -2554,7 +2557,7 @@ async function runEngine({
             localLengthPurpose: 'source_restore',
             allowDepthRegression: true
           })
-          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
+          && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair);
         if (safeCandidate) {
           outputText = candidate;
           fingerprintAudit = candidateFingerprint;
@@ -2612,7 +2615,7 @@ async function runEngine({
             localLengthPurpose: 'source_restore',
             allowDepthRegression: true
           })
-          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
+          && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair);
         if (safeCandidate) {
           outputText = candidate;
           currentDiscourse = candidateDiscourse;
@@ -2638,7 +2641,7 @@ async function runEngine({
         mode: selectedMode
       });
       if (integrity.pass
-          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+          && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair)) {
         outputText = candidate;
         finalSourceIntegrityRestoreCount += restored.restoredCount || 1;
         addUniqueCode(finalSourceIntegrityRestoreCodes, 'personal_scope_source_restore');
@@ -2691,7 +2694,7 @@ async function runEngine({
     const finalLockedStructure = structureChunk.restoreLockedStructureLayout({
       source: rawSource,
       outputText,
-      chunks,
+      chunks: materializedChunks,
       normalizeVisualGaps: selectedMode !== 'polish'
         && String(documentProfile?.profile || '') !== 'creative'
     });
@@ -2749,7 +2752,7 @@ async function runEngine({
   const finalGeneratedDedupe = applyFinalGeneratedDedupe({
     source: rawSource,
     outputText,
-    chunks,
+    chunks: materializedChunks,
     plan: chunkPlan,
     boundaryRepair,
     documentProfile,
@@ -2804,7 +2807,7 @@ async function runEngine({
             localLengthPurpose: 'resume_restore',
             allowDepthRegression: true
           })
-          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair);
+          && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair);
         if (safeCandidate) {
           outputText = candidate;
           resumeCoverageAudit = candidateCoverage;
@@ -2824,7 +2827,7 @@ async function runEngine({
     const fixedPointLockedStructure = structureChunk.restoreLockedStructureLayout({
       source: rawSource,
       outputText,
-      chunks,
+      chunks: materializedChunks,
       normalizeVisualGaps: selectedMode !== 'polish'
         && String(documentProfile?.profile || '') !== 'creative'
     });
@@ -2929,7 +2932,7 @@ async function runEngine({
         });
         finalCollapsedSpacingRetryReason = restored.reason || 'candidate_rejected';
         if (restored.applied === true && restored.outputText
-            && preservesFinalStructure(rawSource, restored.outputText, chunks, chunkPlan, boundaryRepair)) {
+            && preservesFinalStructure(rawSource, restored.outputText, materializedChunks, chunkPlan, boundaryRepair)) {
           outputText = restored.outputText;
           finalCollapsedSpacingRetryApplied = true;
         }
@@ -2962,7 +2965,7 @@ async function runEngine({
       signal,
       source: rawSource,
       outputText,
-      chunks,
+      chunks: materializedChunks,
       mode: selectedMode,
       requestStrength,
       documentProfile,
@@ -2995,7 +2998,7 @@ async function runEngine({
       documentProfile
     });
     if (lateFormatting.applied
-        && preservesFinalStructure(rawSource, lateFormatting.text, chunks, chunkPlan, boundaryRepair)) {
+        && preservesFinalStructure(rawSource, lateFormatting.text, materializedChunks, chunkPlan, boundaryRepair)) {
       outputText = lateFormatting.text;
       finalFormattingRepair = mergeFormattingRepairReports(finalFormattingRepair, lateFormatting);
     }
@@ -3018,7 +3021,7 @@ async function runEngine({
         mode: selectedMode
       });
       if (koreanRefinement.isImprovedAudit(beforeAudit, candidateAudit)
-          && preservesFinalStructure(rawSource, deterministic.text, chunks, chunkPlan, boundaryRepair)) {
+          && preservesFinalStructure(rawSource, deterministic.text, materializedChunks, chunkPlan, boundaryRepair)) {
         outputText = deterministic.text;
         koreanDeterministicRepairCount += Number(deterministic.changeCount || deterministic.changes?.length || 1);
       }
@@ -3067,7 +3070,7 @@ async function runEngine({
       signal,
       source: rawSource,
       outputText,
-      chunks,
+      chunks: materializedChunks,
       mode: selectedMode,
       requestStrength,
       documentProfile,
@@ -3207,8 +3210,8 @@ async function runEngine({
             const settled = await settleLateDepthCandidate({
               signal,
               source: rawSource,
-              candidate: String(candidateSemantic.outputText || candidate).trim(),
-              chunks,
+              candidate: materializeExactLineCandidate(candidateSemantic.outputText || candidate).trim(),
+              chunks: materializedChunks,
               mode: selectedMode,
               requestStrength,
               documentProfile,
@@ -3224,7 +3227,7 @@ async function runEngine({
               contract,
               documentProfile,
               mode: selectedMode,
-              chunks: frozen ? frozen.auditChunks : chunks,
+              chunks: materializedChunks,
               plan: chunkPlan,
               boundaryRepair,
               humanizationPlan
@@ -3419,7 +3422,7 @@ async function runEngine({
         });
         if (fingerprint.isImproved(relationBefore, relationAfter)
             && integrity.pass === true
-            && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+            && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair)) {
           outputText = candidate;
           fingerprintAudit = relationAfter;
           const restoredCount = Number(restored.restoredSentenceCount || 1);
@@ -3464,7 +3467,7 @@ async function runEngine({
       });
       if (koreanRefinement.isImprovedAudit(deliveryKoreanBefore, deliveryKoreanAfter)
           && integrity.pass === true
-          && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+          && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair)) {
         outputText = candidate;
         koreanRefinementAudit = deliveryKoreanAfter;
         const restoredCount = Number(restored.restoredSentenceCount || 1);
@@ -3513,7 +3516,7 @@ async function runEngine({
         });
         if (Number(specificityAfter.issueCount || 0) < Number(specificityBefore.issueCount || 0)
             && integrity.pass === true
-            && preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+            && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair)) {
           outputText = candidate;
           unsupportedSpecificityAudit = specificityAfter;
           unsupportedSpecificityRestoreCount += Number(restored.restoredCount || 0);
@@ -3537,7 +3540,7 @@ async function runEngine({
               addUniqueCode(unsupportedSpecificityRestoreRejectionCodes, code);
             }
           }
-          if (!preservesFinalStructure(rawSource, candidate, chunks, chunkPlan, boundaryRepair)) {
+          if (!preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair)) {
             addUniqueCode(unsupportedSpecificityRestoreRejectionCodes, 'structure_regression');
           }
         }
@@ -3562,7 +3565,7 @@ async function runEngine({
   const deliveryGeneratedDedupe = applyFinalGeneratedDedupe({
     source: rawSource,
     outputText,
-    chunks,
+    chunks: materializedChunks,
     plan: chunkPlan,
     boundaryRepair,
     documentProfile,
@@ -3586,7 +3589,7 @@ async function runEngine({
       signal,
       source: rawSource,
       outputText,
-      chunks,
+      chunks: materializedChunks,
       mode: selectedMode,
       requestStrength,
       documentProfile,
@@ -3636,7 +3639,7 @@ async function runEngine({
         mode: selectedMode
       });
       if (integrity.pass === true
-          && preservesFinalStructure(rawSource, restored.text, chunks, chunkPlan, boundaryRepair)) {
+          && preservesFinalStructure(rawSource, restored.text, materializedChunks, chunkPlan, boundaryRepair)) {
         outputText = restored.text;
         statisticalAtomRepairCount += Number(restored.repairCount || 0);
         rememberStructureSafeOutput(outputText, 'delivery_statistical_atom_restore');
@@ -3690,7 +3693,7 @@ async function runEngine({
     if (deliveredFormatting.applied
         && deliveredFormatting.text.replace(/\s/gu, '') === outputText.replace(/\s/gu, '')
         && auditDirectQuoteIntegrity(rawSource, deliveredFormatting.text).pass !== false
-        && preservesFinalStructure(rawSource, deliveredFormatting.text, chunks, chunkPlan, boundaryRepair)) {
+        && preservesFinalStructure(rawSource, deliveredFormatting.text, materializedChunks, chunkPlan, boundaryRepair)) {
       outputText = deliveredFormatting.text;
       finalFormattingRepair = mergeFormattingRepairReports(finalFormattingRepair, deliveredFormatting);
     }
@@ -3703,7 +3706,7 @@ async function runEngine({
           documentProfile, mode: selectedMode
         }).pass
         && preservesFinalStructure(rawSource, restored.text,
-          chunks, chunkPlan, boundaryRepair)) {
+          materializedChunks, chunkPlan, boundaryRepair)) {
       outputText = restored.text;
       technicalRelationRestoreCount += restored.restoredCount;
     }
@@ -3716,7 +3719,7 @@ async function runEngine({
           documentProfile, mode: selectedMode
         }).pass
         && preservesFinalStructure(rawSource, clarified.text,
-          chunks, chunkPlan, boundaryRepair)) {
+          materializedChunks, chunkPlan, boundaryRepair)) {
       outputText = clarified.text;
       technicalExplanationClarifyCount += clarified.clarifiedCount;
     }
@@ -3773,11 +3776,40 @@ async function runEngine({
           if (recheck.pass === false && recheck.verificationCompleted === true
               && !recheck.uncertain && !signal?.aborted
               && finalDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2)) {
-            const restored = require('./confirmedRelationRestore').restoreConfirmedRelations(rawSource, outputText, recheck);
-            if (restored.applied && candidateIntegrity.auditCandidateIntegrity({
+            let restored = require('./confirmedRelationRestore').restoreConfirmedRelations(rawSource, outputText, recheck);
+            let restoreSafety = restored.applied ? require('./confirmedRelationRestore').assessConfirmedRestorationSafety(candidateIntegrity.auditCandidateIntegrity({
               source: rawSource, before: outputText, candidate: restored.text,
               documentProfile, mode: selectedMode
-            }).pass && preservesFinalStructure(rawSource, restored.text, chunks, chunkPlan, boundaryRepair)) {
+            })) : null;
+            // Split/merged sentences may have no safe literal source restore.
+            // An exact grounded patch is the sole alternative, never a whole
+            // rewrite. Reserve the SAME final deadline for its fresh verdict;
+            // optional cost admission still uses the request's shared ledger.
+            const patchTargets = require('./relationPatch').buildRelationPatchTargets(outputText, recheck.violations);
+            const verifyReserveMs = Math.max(30000, Math.ceil(recheckElapsed * 1.2));
+            if ((!restored.applied || !restoreSafety?.eligible) && patchTargets.length
+                && finalDeadlineMs - Date.now() >= verifyReserveMs + 20000) {
+              finalSemanticRevalidation.relationPatchAttempted = true;
+              try {
+                const patch = await require('./callLedger').withPolicy({ optional: true,
+                  deadlineMs: Math.min(finalDeadlineMs - verifyReserveMs, Date.now() + 30000),
+                  stage: 'final_relation_patch' }, () => require('./judge').repairViolations(
+                  rawSource, outputText, null, recheck.violations,
+                  { lang, signal, config: cfg, allowedExtra, safetyIdentifier: safetyId, phase: 'final_relation_patch' }));
+                addSupplementalUsage(patch.gptMeta?.usage, 'final_relation_patch');
+                const candidate = String(patch.outputText || '');
+                const safety = require('./judge').assessRepairCandidate(rawSource, outputText, candidate,
+                  { mode: selectedMode, allowedExtra, documentProfile });
+                if (patch.repaired && safety.pass) {
+                  restored = { text: candidate, applied: true, restoredCount: patchTargets.length };
+                  restoreSafety = { eligible: true, warnings: [] };
+                }
+              } catch (error) {
+                addSupplementalUsage(error.usage, 'final_relation_patch');
+                finalSemanticRevalidation.relationPatchReason = modelCallFailureCode(error);
+              }
+            }
+            if (restored.applied && restoreSafety.eligible && preservesFinalStructure(rawSource, restored.text, materializedChunks, chunkPlan, boundaryRepair)) {
               finalSemanticRevalidation.relationRestorationAttempted = true;
               try {
                 const verified = await qualityV2.runSemanticDocumentAudit({
@@ -3795,6 +3827,7 @@ async function runEngine({
                     }).status === 'pass') {
                   outputText = restored.text;
                   recheck = verified;
+                  recheck.repairStyleWarnings = [...new Set([...(recheck.repairStyleWarnings || []), ...restoreSafety.warnings])];
                   finalSemanticRevalidation.relationRestoredCount = restored.restoredCount;
                 } else finalSemanticRevalidation.relationRestorationRejected = true;
               } catch (error) {
@@ -3816,7 +3849,7 @@ async function runEngine({
               outputText,
               repairCount: Number(priorReport.repairCount || 0),
               repairRoundBudget: Number(priorReport.repairRoundBudget || 0),
-              repairStyleWarnings: priorReport.repairStyleWarnings || [],
+              repairStyleWarnings: [...new Set([...(priorReport.repairStyleWarnings || []), ...(recheck.repairStyleWarnings || [])])],
               unchangedRepairCount: Number(priorReport.unchangedRepairCount || 0),
               decisionReason: 'final_semantic_revalidation',
               finalRevalidation: {
@@ -3901,7 +3934,7 @@ async function runEngine({
     source: rawSource,
     integritySource: structureImprovement.applied ? rawSource : integritySource,
     outputText,
-    chunks,
+    chunks: materializedChunks,
     plan: chunkPlan,
     boundaryRepair,
     layoutRepair
@@ -4414,6 +4447,8 @@ async function runEngine({
     finalRelationRestorationAttempted: finalSemanticRevalidation.relationRestorationAttempted === true,
     finalRelationRestoredCount: Number(finalSemanticRevalidation.relationRestoredCount || 0),
     finalRelationRestorationRejected: finalSemanticRevalidation.relationRestorationRejected === true,
+    finalRelationPatchAttempted: finalSemanticRevalidation.relationPatchAttempted === true,
+    finalRelationPatchReason: String(finalSemanticRevalidation.relationPatchReason || ''),
     semanticSourceIssueCount: (semanticReport.sourceIssues || []).length,
     semanticRelationContract: String(semanticReport.relationContract || ''),
     semanticRepairStyleWarnings: semanticReport.repairStyleWarnings || [],
@@ -6670,8 +6705,22 @@ function auditGeneralSurfaceCandidate(
   const metrics = computeEditMetrics(before, after);
   const editLimits = generalRecoveryEditLimits(humanizationPlan);
   if (metrics.charEditRatio <= 0 || metrics.charEditRatio > editLimits.maxEdit) add('edit_range_exceeded');
+  // A primary rewrite can already be outside the optional rewrite length band.
+  // Do not discard a freshly verified, tiny factual correction merely because
+  // it inherits that length. It must not worsen the distance to the SAME band,
+  // and all content/number/quote/structure checks below still apply.
+  const baselineMetrics = computeEditMetrics(before, baseline);
+  const patchMetrics = computeEditMetrics(baseline, after);
+  const verifiedLocalLengthRepair = verifiedSemanticRepair?.verificationCompleted === true
+    && semanticProvenance.verifySemanticValidation(verifiedSemanticRepair, {
+      source: before, candidate: after, requireDigest: true
+    }).status === 'pass'
+    && patchMetrics.charEditRatio <= 0.05
+    && patchMetrics.lengthRatio >= 0.97 && patchMetrics.lengthRatio <= 1.03
+    && distanceToRange(metrics.lengthRatio, editLimits.minLength, editLimits.maxLength)
+      <= distanceToRange(baselineMetrics.lengthRatio, editLimits.minLength, editLimits.maxLength);
   if (metrics.lengthRatio < editLimits.minLength || metrics.lengthRatio > editLimits.maxLength) {
-    add('length_range_failed');
+    if (!verifiedLocalLengthRepair) add('length_range_failed');
   }
 
   const beforeVoice = buildVoiceProfile(before, { documentProfile: documentProfile || 'unknown' });
@@ -6762,7 +6811,13 @@ function auditGeneralSurfaceCandidate(
     documentProfile,
     mode
   });
+  const verifiedSourceRegisterRestore = verifiedSemanticRepair?.ran === true
+    && verifiedSemanticRepair?.pass === true
+    && (verifiedSemanticRepair.repairStyleWarnings || []).includes('restored_source_register')
+    && String(verifiedSemanticRepair.outputText || '').trim() === after
+    && require('./confirmedRelationRestore').assessConfirmedRestorationSafety(integrity).eligible;
   for (const reason of integrity.reasons || []) {
+    if (reason === 'korean_integrity_worsened' && verifiedSourceRegisterRestore) continue;
     const mapped = {
       empty_candidate: 'empty_candidate',
       korean_integrity_worsened: 'korean_integrity',

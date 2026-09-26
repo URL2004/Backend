@@ -48,7 +48,9 @@ function installMock(t, options = {}) {
     const body = JSON.parse(init.body);
     const name = body.text?.format?.name;
     calls.push({ name, model: body.model, body });
-    if (name === 'gpt_prod_humanize_result') return apiResponse({ outputText: options.humanize });
+    if (name === 'gpt_prod_humanize_result') return apiResponse({
+      outputText: typeof options.humanize === 'function' ? options.humanize(body) : options.humanize
+    });
     if (name === 'gpt_prod_soft_claim_ledger') {
       const source = extractPromptDataSection(body.input, 'SOURCE') || SOURCE;
       return apiResponse({ claims: [{ claim: '원문의 핵심 내용을 보존한다.', evidence_text: source.replace(/\s+/gu, ' ').trim().slice(0, 20) }] });
@@ -69,6 +71,8 @@ function installMock(t, options = {}) {
     if (name === 'gpt_prod_judge_repair') {
       throw new Error('final revalidation must never call repair');
     }
+    if (name === 'gpt_prod_relation_patch' && options.patch)
+      return apiResponse({ patches: typeof options.patch === 'function' ? options.patch(body) : options.patch });
     throw new Error(`unexpected schema: ${name}`);
   };
   t.after(() => {
@@ -80,6 +84,52 @@ function installMock(t, options = {}) {
   });
   return { calls, judgeCalls: () => judgeCalls };
 }
+
+for (const accept of [true, false]) test(`late split relation patch is bounded and needs a fresh verdict (${accept})`, async t => {
+  const a = '과거 연출가인 수민은 공연을 제안했지만 현재에는 기자인 하준이 자료를 공개한 경위를 추궁한다.';
+  const b = '과거의 수민은 공연을 제안했다. 공연을 허용해야 한다는 입장이었다. 현재 하준은 기자가 되어 자료를 공개했다. 공개 경위를 두고 추궁이 이어진다.';
+  const fixed = b.replace('공개 경위를 두고 추궁이 이어진다.', '수민은 하준이 자료를 공개한 경위를 추궁한다.');
+  const tail = '관찰 기록은 날짜 순으로 보관한다. 다음 연구는 새로운 자료를 사용한다. 이후 담당자는 결과를 분류한다.';
+  const source = SOURCE + ' ' + a + ' ' + tail;
+  const mock = installMock(t, { humanize: LATE_RESTORED_OUTPUT + ' ' + b + ' ' + tail,
+    patch: body => JSON.parse(extractPromptDataSection(body.input, 'TARGETS')).map(target => ({ id:target.id,
+      replacement:target.text.replace('공개 경위를 두고 추궁이 이어진다.', '수민은 하준이 자료를 공개한 경위를 추궁한다.') })),
+    violation: (_body, call, rewrite) => {
+      const current = rewrite.slice(rewrite.indexOf('과거의 수민'),rewrite.indexOf('관찰 기록은')).trim();
+      const wrong = rewrite.includes('공개 경위를 두고 추궁이 이어진다.');
+      if (call < 2 || (!wrong && accept)) return [];
+      if (!wrong) return [{ type: 'distortion', span: current, sourceSpan: a, candidateSpan: current,
+        relation: 'actor_action_target', origin: 'introduced', detail: '검증 실패 모의: 통과로 바꾸지 않는다.' }];
+      return [{ type: 'distortion', span: current, sourceSpan: a, candidateSpan: current,
+        relation: 'actor_action_target', origin: 'introduced', detail: '추궁한 행위자가 사라졌다.' }];
+    }
+  });
+  const out = await engine.run({ text: source, mode: 'blog', config: config() });
+  assert.equal(out.engineMeta.finalRelationPatchAttempted, true, JSON.stringify({output:out.result.outputText,
+    final:out.engineMeta.finalSemanticRevalidationReason, prior:out.engineMeta.finalSemanticRevalidationPriorStatus,
+    names:mock.calls.map(c=>c.name), findings:out.result.semanticAudit.violations}));
+  assert.equal(mock.calls.filter(c => c.name === 'gpt_prod_relation_patch').length, 1);
+  assert.equal(out.engineMeta.finalRelationRestorationAttempted, true);
+  assert.equal(provenance.verifySemanticValidation(out.result.semanticAudit, {
+    source, candidate: out.result.outputText, requireDigest: true
+  }).status, accept ? 'pass' : 'fail');
+  assert.equal(out.result.outputText.includes('수민은 하준이 자료를 공개한 경위를 추궁한다.'), accept);
+  assert.ok(out.result.outputText.includes(tail));
+});
+
+test('full pipeline audits materialized equations against materialized source chunks', async t => {
+  const source = '1. 적분 성질\n\n이 식은 적분 결과를 나타낸다. 계산 결과를 기록하고 기준값과 비교한다.\n\n∫ δ(t)dt = 1\n\n설정값은 `delay = 3`이다. 이후 결과를 확인한다.';
+  installMock(t, { humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT')
+    .replace('이 식은 적분 결과를 나타낸다.', '적분 결과는 이 식으로 나타낸다.')
+    .replace('이후 결과를 확인한다.', '그 뒤 결과를 확인한다.') });
+  const out = await engine.run({ text: source, mode: 'blog', config: config() });
+  assert.ok(out.result.outputText.includes('∫ δ(t)dt = 1'));
+  assert.ok(out.result.outputText.includes('`delay = 3`'));
+  assert.doesNotMatch(out.result.outputText, /ZXQ(?:MATH|CODE|LOCK)/u);
+  assert.equal(out.result.structureLock.lostLockedCount, 0);
+  assert.equal(out.result.structureLock.protectedBlockChangedCount, 0);
+  assert.equal(out.result.structureLock.pass, true);
+});
 
 function revalidationSignals(calls) {
   return calls

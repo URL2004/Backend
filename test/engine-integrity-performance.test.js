@@ -55,6 +55,22 @@ test('reordered or ambiguous anchors permit whole-document judgement only', () =
   assert.equal(pair.length, 1); assert.equal(pair[0].repairSafe, false);
 });
 
+test('one crossed region expands both review windows without disabling the other sections', () => {
+  const a = Array.from({ length: 30 }, (_, i) => `고유 자료 ${i}번의 독립적인 관측 내용을 조사하고 결과를 기록하였다.`);
+  const b = [...a];
+  [b[10], b[11]] = [b[11], b[10]];
+  const pairs = alignedReviewPairs(a.join(' '), b.join(' '), 230);
+  assert.ok(pairs.length > 2);
+  assert.equal(pairs.map(p => p.sourceContext).join(''), a.join(' '));
+  assert.equal(pairs.map(p => p.output).join(''), b.join(' '));
+  const crossed = pairs.find(p => p.sourceContext.includes('자료 10번'));
+  assert.ok(crossed.sourceContext.includes('자료 11번'));
+  assert.ok(crossed.output.includes('자료 10번') && crossed.output.includes('자료 11번'));
+  for (const p of pairs) assert.deepEqual(
+    [...p.sourceContext.matchAll(/자료 (\d+)번/g)].map(m => m[1]).sort(),
+    [...p.output.matchAll(/자료 (\d+)번/g)].map(m => m[1]).sort());
+});
+
 test('unique shared headings align differently sized bodies; merged sentence anchors are not repair positions', () => {
   const a = ['Ⅰ. 서론\n'+'가'.repeat(3000), 'Ⅱ. 방법\n'+'나'.repeat(600), 'Ⅲ. 결론\n'+'다'.repeat(1800)].join('\n\n');
   const b = ['Ⅰ. 서론\n'+'라'.repeat(600), 'Ⅱ. 방법\n'+'마'.repeat(3000), 'Ⅲ. 결론\n'+'바'.repeat(1800)].join('\n\n');

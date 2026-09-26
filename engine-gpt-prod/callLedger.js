@@ -13,10 +13,10 @@ function withPolicy(policy, fn) {
 async function run(fn, attach) {
   if (current()) return fn();
   const store = createLedger();
-  return storage.run(store, async () => {
+  return require('../engine/textAnalysisCache').withTextAnalysisCache(() => storage.run(store, async () => {
     try { const result = await fn(); attach?.(result, snapshot(store)); return result; }
     catch (error) { error.callLedger = snapshot(store); throw error; }
-  });
+  }));
 }
 async function track(options, fn) {
   const store = current();

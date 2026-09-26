@@ -132,6 +132,26 @@ function restoreMath(value, frozen) {
   };
 }
 
+// After document literals are restored, audit the same representation in the
+// source chunks. Keep the original masked chunks (and their stable IDs/offsets)
+// untouched for depth accounting and masked recovery. This is a projection of
+// known source literals, not a repair of missing/generated output content.
+function materializeChunkLiterals(chunks, { inlineMathFreeze, inlineCodeFreeze } = {}) {
+  const project = value => {
+    let text = String(value || '');
+    for (const frozen of [inlineMathFreeze, inlineCodeFreeze]) {
+      const replacements = new Map((frozen?.blocks || []).map(block => [block.token, block.value]));
+      text = text.replace(/ZXQ(?:MATH|CODE)\d+QXZ/gu, token => replacements.get(token) ?? token);
+    }
+    return text;
+  };
+  return (chunks || []).map(chunk => ({
+    ...chunk,
+    text: project(chunk.text),
+    ...(chunk.outputText != null ? { outputText: project(chunk.outputText) } : {})
+  }));
+}
+
 // 토큰을 복원한 뒤의 공백·레이아웃 보정이나 제한적 후단 수리가 수식 내부를
 // 건드렸는지 마지막 고정점에서 다시 확인한다. 수식 구획의 개수와 순서가
 // 그대로일 때만 원문의 리터럴을 같은 위치에 되돌리며, 누락된 수식을 추측해
@@ -178,5 +198,6 @@ module.exports = {
   restoreInlineCodeByOrder,
   freezeMath,
   restoreMath,
+  materializeChunkLiterals,
   restoreMathByOrder
 };

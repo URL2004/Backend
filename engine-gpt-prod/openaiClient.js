@@ -154,6 +154,10 @@ async function completeJsonRequest({
     accounting.budget = budget;
     accounting.model = model;
     accounting.stage = meta.phase || 'unknown';
+    // Restarting a slow semantic verdict discards its work and can use the
+    // entire final audit reserve twice. One longer attempt, bounded by the
+    // same caller deadline, keeps model/effort and failure semantics intact.
+    accounting.semanticVerdict = meta.task === 'judge';
     // General style recovery must not consume the slots/time reserved for
     // confirmed semantic repairs. Previously EVERY HTTP call was "late".
     accounting.priority = context?.policy?.stage === 'semantic_document' || /noop/u.test(meta.phase || '')
@@ -176,7 +180,8 @@ async function completeJsonRequest({
     status = raw.status || 'completed';
     incompleteReason = raw.incomplete_details?.reason || '';
     if (status !== 'completed') {
-      if (incompleteReason === 'max_output_tokens' && !truncationRetryUsed) {
+      if (incompleteReason === 'max_output_tokens' && !truncationRetryUsed
+          && meta.profile !== 'gpt_prod_judge') {
         // reasoning과 구조화 JSON도 같은 출력 예산을 사용한다. 첫 응답이
         // max_output_tokens로 끝났다고 원문 fallback/전체 차단으로 보내지 않고,
         // 같은 모델·같은 절대 마감시간 안에서 출력 여유만 한 번 확장한다.
@@ -299,7 +304,7 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
     rateLimit: Math.min(3, retryCap),
     server: Math.min(2, retryCap),
     network: Math.min(2, retryCap),
-    timeout: Math.min(1, retryCap)
+    timeout: accounting?.semanticVerdict ? 0 : Math.min(1, retryCap)
   };
   const retryCounts = emptyRetryCounts();
   const startedAt = Date.now();
@@ -350,7 +355,8 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
 }
 
 async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity, accounting = null) {
-  const configured = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+  const configured = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS)
+    || (accounting?.semanticVerdict ? 100000 : DEFAULT_TIMEOUT_MS));
   const timeoutMs = Math.max(1000, Math.min(configured, Number.isFinite(remainingMs) ? remainingMs : configured));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

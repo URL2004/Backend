@@ -83,6 +83,37 @@ test('transport failures and cancellation are not disguised as optional budget d
   assert.ok(!result.repairRejectReasons.includes('recovery_budget_exhausted'));
 });
 
+test('actor or variable repair is confirmed before an initial judge can invert a correct relation', async () => {
+  for (const relation of ['actor_action_target', 'variable_definition']) {
+    const original = '담당자는 연구자가 자료를 공개한 경위를 확인했다. 이후 결과를 기록했다.';
+    const rewritten = '연구자의 자료 공개 경위는 담당자가 확인했다. 그 뒤 결과를 기록했다.';
+    const finding = { type: 'distortion', span: '연구자의 자료 공개 경위는 담당자가 확인했다.',
+      sourceSpan: '담당자는 연구자가 자료를 공개한 경위를 확인했다.',
+      candidateSpan: '연구자의 자료 공개 경위는 담당자가 확인했다.', relation, origin: 'introduced',
+      detail: '테스트용 1차 오판: 주체 관계가 바뀌었다.' };
+    const { judge, calls } = mockedJudge([{ violations: [finding] }, { violations: [] }]);
+    const result = await judge.judgeAndRepair(original, rewritten, {
+      config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol', repair: 'gpt-6-luna' } }
+    });
+    assert.equal(result.pass, true);
+    assert.equal(result.outputText, rewritten);
+    assert.equal(result.rounds, 0);
+    assert.deepEqual(calls.map(c => c.meta.phase), ['primary:semantic', 'escalation:semantic']);
+    assert.ok(calls[1].user.includes('prior_semantic_findings'));
+    assert.equal(calls[0].maxOutputTokens, 6000);
+    assert.equal(calls[1].maxOutputTokens, 10000);
+  }
+});
+
+test('an escalation timeout preserves the completed primary verdict and its confirmed findings', async () => {
+  const {judge}=mockedJudge([{violations},{throwCode:'ETIMEDOUT'}]);
+  const result=await judge.judgeAndRepair(source,before,{maxRounds:0,
+    config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-sol',repair:'gpt-6-luna'}}});
+  assert.equal(result.pass,false);assert.equal(result.outputText,before);
+  assert.equal(result.violations.length,1);assert.equal(result.escalationFailed,true);
+  assert.equal(result.escalationSkippedReason,'escalation_call_failed');
+});
+
 test('meaning repair wins over rhythm only after a fresh semantic judge passes', async () => {
   const { judge, calls } = mockedJudge([
     { violations },
@@ -199,6 +230,29 @@ test('the full-document gate only relaxes rhythm for the exact verified semantic
   assert.ok(audit(wrongQuote, { ...verified, outputText: wrongQuote }).codes.includes('quote_loss'));
 });
 
+test('a verified local repair may inherit but never worsen an existing document length violation', () => {
+  const { auditGeneralSurfaceCandidate } = require('../engine-gpt-prod');
+  const { buildContract } = require('../engine/contract');
+  const { bindSemanticValidation } = require('../engine-gpt-prod/semanticProvenance');
+  const body = '관측 기록은 날짜에 맞춰 보관한다. 계산 결과는 담당자에게 전달한다. ';
+  const source = body.repeat(12) + '변환은 수식 조작에 그치는 것이 아니라 자료 해석에도 쓰인다.';
+  const before = body.repeat(10) + '변환은 수식 조작이 아니라 자료 해석에도 쓰인다.';
+  const fixed = before.replace('수식 조작이 아니라', '수식 조작에 그치는 것이 아니라');
+  const contract = buildContract(source, { mode: 'assignment', lang: 'ko' });
+  const report = bindSemanticValidation({ ran: true, pass: true, verificationCompleted: true,
+    outputText: fixed }, source, fixed);
+  const audit = (text, proof) => auditGeneralSurfaceCandidate(source, text, contract, null, 'assignment', before, null, proof);
+  assert.ok(audit(fixed, null).codes.includes('length_range_failed'));
+  assert.equal(audit(fixed, report).codes.includes('length_range_failed'), false);
+  assert.ok(audit(fixed, { ...report, pass: false }).codes.includes('length_range_failed'));
+  assert.ok(audit(fixed, { ...report, verificationCompleted: false }).codes.includes('length_range_failed'));
+  assert.ok(audit(fixed + ' 추가했다.', report).codes.includes('length_range_failed'));
+  const shorter = before.replace('자료 해석에도 쓰인다.', '해석한다.');
+  const shorterProof = bindSemanticValidation({ ran: true, pass: true, verificationCompleted: true,
+    outputText: shorter }, source, shorter);
+  assert.ok(audit(shorter, shorterProof).codes.includes('length_range_failed'));
+});
+
 test('full humanization delivers the verified relation fix instead of restoring the distorted rewrite', { concurrency: false }, async t => {
   const engine = require('../engine-gpt-prod');
   const { extractPromptDataSection } = require('../engine-gpt-prod/promptEnvelope');
@@ -224,6 +278,7 @@ test('full humanization delivers the verified relation fix instead of restoring 
       const rewrite = extractPromptDataSection(body.input, 'REWRITE');
       json = { violations: rewrite.includes(violations[0].span) ? violations.map(v => ({ ...v, sourceSpan: sourceRelation, candidateSpan: wrongRelation, relation: 'condition_result', origin: 'introduced' })) : [] };
     } else if (name === 'gpt_prod_judge_repair') json = { outputText: candidate, repaired: true, notes: [] };
+    else if (name === 'gpt_prod_relation_patch') json = { patches: [{ id: 'R1', replacement: fixedRelation }] };
     else if (/retry$/u.test(name)) json = { outputText: extractPromptDataSection(body.input, 'CURRENT') || before, safeChangeFound: false, notes: [] };
     else throw new Error(`unexpected schema: ${name}`);
     return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(json) }] }], usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 } }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -235,5 +290,5 @@ test('full humanization delivers the verified relation fix instead of restoring 
   assert.ok(result.result.outputText.includes('30만원'));
   assert.deepEqual(result.engineMeta.semanticRepairStyleWarnings, ['sentence_distribution_worsened']);
   assert.equal(result.qualityWarnings.some(warning => ['semantic_distortion', 'semantic_repair_rejected'].includes(warning.code)), false);
-  assert.equal(calls.filter(name => name === 'gpt_prod_judge_repair').length, 1);
+  assert.equal(calls.filter(name => name === 'gpt_prod_relation_patch').length, 1);
 });

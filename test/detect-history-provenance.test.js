@@ -127,9 +127,12 @@ test('history does not preserve malformed or oversized interpretation descriptor
 });
 
 test('humanization history retains bounded semantic repair diagnostics', () => {
-  const compact = history.compactHistoryEngineMeta({ semanticUnchangedRepairCount: 2, semanticRepairStyleWarnings: ['sentence_distribution_worsened', 'sentence_distribution_worsened'] });
+  const compact = history.compactHistoryEngineMeta({ semanticUnchangedRepairCount: 2, semanticRepairStyleWarnings: ['sentence_distribution_worsened', 'sentence_distribution_worsened'],
+    finalRelationPatchAttempted: true, finalRelationPatchReason: 'recovery_budget_exhausted' });
   assert.equal(compact.semanticUnchangedRepairCount, 2);
   assert.deepEqual(compact.semanticRepairStyleWarnings, ['sentence_distribution_worsened']);
+  assert.equal(compact.finalRelationPatchAttempted, true);
+  assert.equal(compact.finalRelationPatchReason, 'recovery_budget_exhausted');
 });
 
 test('휴머나이징 이력 저장은 누락 원점수를 0으로 만들지 않는다', async () => {

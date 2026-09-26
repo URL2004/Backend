@@ -132,6 +132,9 @@ function requestAlignment(source, output) {
   return step.value;
 }
 async function runLayout(fn, options = {}) {
+  return require('../engine/textAnalysisCache').withTextAnalysisCache(() => runCachedLayout(fn, options));
+}
+async function runCachedLayout(fn, options = {}) {
   const started = performance.now();
   const job = require('./callLedger').current();
   const store = { cache: job?.layoutCache || new Map(), features: job?.layoutFeatures || new Map(), pending: new Map(), metrics: { states: 0, limitReached: false, fastPath: false } };

@@ -50,6 +50,19 @@ test('schema retries include usage from every billed model response', { concurre
   assert.equal(calls, 2); assert.equal(result.usage.inputTokens, 20); assert.equal(result.usage.outputTokens, 10);
 });
 
+test('a semantic verdict timeout is not restarted and retains its unknown-cost reservation', { concurrency:false }, async t => {
+  const oldFetch=global.fetch,oldKey=process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY='test-key';let calls=0;
+  global.fetch=async()=>{calls++;throw Object.assign(new Error('provider timed out'),{code:'ETIMEDOUT'});};
+  t.after(()=>{global.fetch=oldFetch;if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;});
+  await assert.rejects(completeJson({system:'synthetic',user:'synthetic',schema:SIMPLE_SCHEMA,
+    model:'gpt-6-luna',meta:{task:'judge',phase:'escalation:semantic'}}),error=>{
+    assert.equal(error.httpAttemptCount,1);assert.equal(error.retryCounts.timeout,0);
+    assert.equal(error.unknownUsageCount,1);assert.ok(error.unknownEstimatedUsd>0);return true;
+  });
+  assert.equal(calls,1);
+});
+
 test('billed HTTP failure followed by success retains both usage and physical attempt count', async t => {
   const oldFetch=global.fetch, oldKey=process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY='test-key';let calls=0;
@@ -346,4 +359,23 @@ test('max_output_tokens가 두 번 연속 발생하면 잘린 출력을 전달�
     system: 'test', user: 'test', schema: SIMPLE_SCHEMA, schemaName: 'test_schema', model: 'gpt-5.6-luna'
   }), error => error.code === 'OPENAI_TRUNCATED_OUTPUT' && error.retryCounts?.truncation === 1);
   assert.equal(calls, 2);
+});
+
+test('semantic audit reserves its full output envelope once and never restarts a truncated verdict', async t => {
+  const originalFetch = global.fetch, originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let calls = 0;
+  global.fetch = async (_url, init) => {
+    calls++;
+    assert.equal(JSON.parse(init.body).max_output_tokens, 10000);
+    return responseJson({ ...completed({ value: 'partial verdict' }), status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' } });
+  };
+  t.after(() => { global.fetch = originalFetch; if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalKey; });
+  await assert.rejects(completeJson({ system: 'test', user: 'test', schema: SIMPLE_SCHEMA,
+    model: 'gpt-6-sol', maxOutputTokens: 10000, meta: { task: 'judge', profile: 'gpt_prod_judge' }
+  }), error => error.code === 'OPENAI_TRUNCATED_OUTPUT' && error.retryCounts.truncation === 0
+    && error.usage.inputTokens === 10 && error.usage.outputTokens === 5);
+  assert.equal(calls, 1);
 });

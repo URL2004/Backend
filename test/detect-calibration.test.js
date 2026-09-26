@@ -197,6 +197,20 @@ test('공백·호환문자만 다른 기존 결과는 짧은 글에서도 정확
   assert.ok(state.selectedFields.includes('outputText'));
 });
 
+test('해시가 같아도 한국어 어절 경계가 달라진 글은 서명된 이력으로 보정하지 않는다', async () => {
+  const output = '아버지가 방에 들어간 뒤 관찰 기록을 정리하였다. '.repeat(8);
+  const input = output.replace('아버지가 방에', '아버지 가방에');
+  assert.equal(calibration.lookupHash(output), calibration.lookupHash(input));
+  const match = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb([historyDoc('word-boundary', { type: 'humanize', mode: 'blog', outputText: output })]),
+    uid: 'same-user', text: input
+  });
+  assert.equal(match, null);
+  const metrics = calibration.approximateMatchMetrics(calibration.normalizeText(input),
+    calibration.normalizeText(output), calibration.sanitizeConfig({}), null, { target: input, candidate: output });
+  assert.equal(metrics.matched, false);
+});
+
 test('원문 100자면 내부 공백 제거 후 100자 미만이어도 검증된 정확 이력을 보정한다', async () => {
   const output = '관찰 기록을 차례로 확인하고 다음 활동을 준비했다. '.repeat(4).slice(0, 100);
   assert.equal(output.trim().length, 100);

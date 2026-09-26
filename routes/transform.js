@@ -1158,6 +1158,8 @@ function buildArchiveObservability(job) {
     semanticJudgeRan: engineMeta.semanticJudgeRan === true,
     semanticUnchangedRepairCount: archiveFinite(engineMeta.semanticUnchangedRepairCount),
     semanticRepairStyleWarnings: uniqueStrictArchiveCodes(engineMeta.semanticRepairStyleWarnings),
+    finalRelationPatchAttempted: engineMeta.finalRelationPatchAttempted === true,
+    finalRelationPatchReason: archiveString(engineMeta.finalRelationPatchReason, 80),
     semanticViolationCount: archiveFinite(engineMeta.semanticViolationCount),
     semanticOmissionCount: archiveFinite(engineMeta.semanticOmissionCount),
     semanticAdditionCount: archiveFinite(engineMeta.semanticAdditionCount),

@@ -61,6 +61,8 @@ function auditRelationCandidates(source, outputText) {
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    if (/(?:만큼|못지않)/u.test(original) !== /(?:만큼|못지않)/u.test(sentence)
+        && /(?:중요|가치|크|작|높|낮|정도|뿐|도\s)/u.test(original + sentence)) add('comparison_degree_candidate');
     if (/각각/u.test(sentence) && !/각각/u.test(original)
         && /(?:와|과|및|하고|,)/u.test(original)) add('explicit_mapping_candidate');
     if (/범위(?:에서|\s*안|\s*내)/u.test(original)

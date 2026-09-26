@@ -95,4 +95,19 @@ function restoreConfirmedRelations(source, output, report) {
   return { text: restored, applied: restored !== text, restoredCount: replacements.length };
 }
 
-module.exports = { restoreConfirmedRelations };
+function assessConfirmedRestorationSafety(safety) {
+  if (safety?.pass === true) return { eligible: true, warnings: [] };
+  const integrity = safety?.sharedIntegrity || safety;
+  const korean = integrity?.candidate?.korean;
+  // Copying an attested source sentence may restore its informal connector.
+  // That is not a NEW grammar error and cannot outrank the confirmed meaning
+  // repair. This exception is only for this exact-source proposal; the caller
+  // still needs a fresh semantic pass, and preserves the register warning.
+  const sourceRegisterOnly = safety?.reasons?.length > 0
+    && safety.reasons.every(reason => reason === 'korean_integrity_worsened')
+    && korean?.introducedIssueCount === 0 && korean.issueCodes?.length > 0
+    && korean.issueCodes.every(code => code === 'formal_register_residual');
+  return { eligible: sourceRegisterOnly, warnings: sourceRegisterOnly ? ['restored_source_register'] : [] };
+}
+
+module.exports = { restoreConfirmedRelations, assessConfirmedRestorationSafety };

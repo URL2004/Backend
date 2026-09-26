@@ -79,19 +79,33 @@ function alignedReviewPairs(source, output, maxChars = 9000) {
     return map;
   };
   const ah = headingKeys(from), bh = headingKeys(to);
-  const shared = matches.map(match => ({ sourceStart: a[match.i].start, outputStart: b[match.j].start }));
+  const shared = matches.filter(match => !require('./relationAudit').hasAdjacentRelationCoverage(
+    a[match.i].text, b[match.j].text, to))
+    .map(match => ({ sourceStart: a[match.i].start, outputStart: b[match.j].start }));
   for (const [key, sourceStart] of ah) if (sourceStart >= 0 && bh.get(key) >= 0) {
     shared.push({ sourceStart, outputStart: bh.get(key) });
   }
   shared.sort((x, y) => x.sourceStart - y.sourceStart || x.outputStart - y.outputStart);
   const unique = shared.filter((point, index) => !index || point.sourceStart !== shared[index - 1].sourceStart
     || point.outputStart !== shared[index - 1].outputStart);
-  if (unique.length < 2) return whole();
-  for (let i = 1; i < unique.length; i++) {
-    if (unique[i].sourceStart <= unique[i - 1].sourceStart || unique[i].outputStart <= unique[i - 1].outputStart) return whole();
-  }
+  // A copied phrase can create one crossed anchor in an otherwise aligned
+  // document. Do not choose either side of that ambiguity, or disable all
+  // local review: discard EVERY anchor participating in a crossing. The gap
+  // is then reviewed together between the surrounding uncontested boundaries.
+  const suffixMin = new Array(unique.length + 1).fill(Infinity);
+  for (let i = unique.length - 1; i >= 0; i--)
+    suffixMin[i] = Math.min(unique[i].outputStart, suffixMin[i + 1]);
+  let prefixMax = -1;
+  const monotonic = unique.filter((point, i) => {
+    const safe = point.outputStart > prefixMax && point.outputStart < suffixMin[i + 1]
+      && (!i || point.sourceStart !== unique[i - 1].sourceStart)
+      && (i + 1 === unique.length || point.sourceStart !== unique[i + 1].sourceStart);
+    prefixMax = Math.max(prefixMax, point.outputStart);
+    return safe;
+  });
+  if (monotonic.length < 2) return whole();
   const anchors = [{ sourceStart: 0, outputStart: 0 }];
-  for (const { sourceStart, outputStart } of unique) {
+  for (const { sourceStart, outputStart } of monotonic) {
     if (sourceStart > anchors.at(-1).sourceStart && outputStart > anchors.at(-1).outputStart) anchors.push({ sourceStart, outputStart });
   }
   anchors.push({ sourceStart: from.length, outputStart: to.length });

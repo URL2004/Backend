@@ -4,6 +4,10 @@
 // No normalization: all offsets are UTF-16 offsets into the submitted text.
 function syntaxSpans(value) {
   const text = String(value || '');
+  return require('./textAnalysisCache').memoizeSpans('syntax', text, () => analyzeSyntaxSpans(text));
+}
+
+function analyzeSyntaxSpans(text) {
   const spans = [];
   const code = /^(?:[ \t]*)(`{3,}|~{3,})[^\r\n]*(?:\r\n|\n|\r)/gm;
   let match;
@@ -25,6 +29,7 @@ function syntaxSpans(value) {
   for (const bare of require('./bareCode').bareCodeSpans(text)) {
     if (!spans.some(span => span.start < bare.end && span.end > bare.start)) spans.push(bare);
   }
+  if (!/[“‘「『《〈"'(\[（]/u.test(text)) return spans.sort((a, b) => a.start - b.start || b.end - a.end);
   const pairs = { '“': '”', '‘': '’', '「': '」', '『': '』', '《': '》', '〈': '〉', '"': '"', "'": "'", '(': ')', '[': ']', '（': '）' };
   const codeSpans = spans.filter(span => span.spanType === 'code').sort((a,b) => a.start-b.start);
   let codeCursor = 0;

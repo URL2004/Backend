@@ -7,7 +7,7 @@ const { hasPovKind } = require('../engine/pov');
 const { auditVoice, buildVoiceProfile, auditDirectQuoteIntegrity } = require('./voiceProfile');
 const { compareNaturalnessShadow } = require('./naturalnessShadow');
 const { judgeAndRepair, assessRepairCandidate } = require('./judge');
-const { restoreConfirmedRelations } = require('./confirmedRelationRestore');
+const { restoreConfirmedRelations, assessConfirmedRestorationSafety } = require('./confirmedRelationRestore');
 const { completeJson } = require('./openaiClient');
 const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
@@ -421,8 +421,9 @@ async function runSemanticDocumentAuditInternal({
       if (allowRepair && pair.repairSafe !== false && !signal?.aborted) {
         const current = report.outputText || pair.output;
         const restored = restoreConfirmedRelations(pair.sourceContext, current, report);
-        if (restored.applied && assessRepairCandidate(pair.sourceContext, current, restored.text,
-          { mode, allowedExtra, documentProfile }).pass) {
+        const restoreSafety = restored.applied ? assessConfirmedRestorationSafety(
+          assessRepairCandidate(pair.sourceContext, current, restored.text, { mode, allowedExtra, documentProfile })) : null;
+        if (restored.applied && restoreSafety.eligible) {
           // One local restoration, then verdict only: no unbounded repair loop
           // and no heuristic may certify its own output as semantically safe.
           let verified;
@@ -439,6 +440,7 @@ async function runSemanticDocumentAuditInternal({
           if (verified.pass === true && !verified.uncertain && !verified.skipped) {
             report = { ...verified, usage, rounds: report.rounds || 0,
               initialViolations: [...(report.initialViolations || []), ...(report.violations || [])],
+              repairStyleWarnings: [...new Set([...(report.repairStyleWarnings || []), ...restoreSafety.warnings])],
               confirmedRelationRestoreCount: restored.restoredCount };
           } else report = { ...report, usage, confirmedRelationRestoreRejected: true };
         }

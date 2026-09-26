@@ -16,7 +16,8 @@ const DETECT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    probability: { type: 'number' },
+    // Observe evidence before committing to a document-wide score. Public
+    // field names/types stay unchanged; structured output order is internal.
     signals: {
       type: 'array',
       items: {
@@ -39,6 +40,7 @@ const DETECT_SCHEMA = {
         required: ['category', 'strength', 'scope', 'evidenceSentences']
       }
     },
+    probability: { type: 'number' },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] }
   },
   required: ['probability', 'signals', 'confidence']

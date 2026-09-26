@@ -139,6 +139,10 @@ function _numberUnitMatches(t, signed = true) {
   let m;
   while ((m = NUM_UNIT_RE.exec(t)) !== null) {
     if (!m[0]) { NUM_UNIT_RE.lastIndex += 1; continue; }
+    // A quantity cannot borrow its unit from a different paragraph. Formula
+    // `= 3` followed by a new paragraph beginning `주파수...` is not `3주`.
+    // A single PDF line wrap (e.g. `12\n명`) remains eligible for the audit.
+    if (/\r?\n[^\S\r\n]*\r?\n/u.test(m[0])) continue;
     if (isCopularDayExpression(t, m)) continue;
     let tok = m[0].trim();
     const i = m.index;

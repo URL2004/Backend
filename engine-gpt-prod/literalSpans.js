@@ -163,6 +163,28 @@ function restoreMathByOrder(value, frozen) {
     return { text: before, pass: true, orderPass: true, applied: false, restoredCount: 0, missingCount: 0 };
   }
   const spans = mathSpans(before);
+  // A model may wrap an existing plain variable in new inline LaTeX. This is
+  // presentation, not a missing original equation. Remove ONLY that wrapper
+  // when every original literal remains exact and ordered; otherwise keep the
+  // mismatch visible. Never align a new/changed formula by count alone here.
+  if (spans.length > expected.length) {
+    let cursor = 0;
+    const extras = [];
+    for (const span of spans) {
+      if (span.value === expected[cursor]?.value) { cursor += 1; continue; }
+      const atom = span.value.match(/^(?:\\\(([A-Za-z][A-Za-z0-9_]*)\\\)|\$([A-Za-z][A-Za-z0-9_]*)\$)$/u);
+      const plain = atom?.[1] || atom?.[2];
+      const inPlainSource = plain && new RegExp(`(?<![A-Za-z0-9_])${plain}(?![A-Za-z0-9_])`, 'u').test(String(frozen?.text || ''));
+      if (!inPlainSource || expected.some(block => block.value === span.value)) break;
+      extras.push({ ...span, plain });
+    }
+    if (cursor === expected.length && extras.length === spans.length - expected.length) {
+      let text = before;
+      for (const span of extras.reverse()) text = text.slice(0, span.start) + span.plain + text.slice(span.end);
+      return { text, pass: true, orderPass: true, applied: true,
+        restoredCount: extras.length, addedWrapperCount: extras.length, missingCount: 0 };
+    }
+  }
   if (spans.length !== expected.length) {
     return {
       text: before,

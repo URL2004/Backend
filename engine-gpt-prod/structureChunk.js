@@ -1100,15 +1100,23 @@ function restoreExactLockedBlocks(outputText, chunks, source = '') {
     // 동일 인용문이 본문 안과 독립 인용 행에 함께 있으면 단순 첫 substring은
     // 본문 속 인용을 구조 블록으로 오인한다. 원문 블록의 앞뒤 행 경계와 가장
     // 잘 맞는 동등 span을 고른 뒤, 후보가 하나뿐일 때만 경계 손상 복구로 쓴다.
+    // 단, 반복 수식의 뒤쪽 행이 더 반듯하다는 이유로 다음 구조 앵커를
+    // 건너뛰면 첫 수식과 그 사이의 블록까지 누락으로 오인한다. 다음의
+    // 서로 다른 잠금 블록이 유일한 독립 행으로 확인되면 탐색 상한으로 쓴다.
+    const nextDistinct = blocks.slice(blockIndex + 1).find(next => bare(next.text) !== bare(expected));
+    const nextSpans = nextDistinct ? findWhitespaceEquivalentSpans(text, nextDistinct.text, cursor, 2) : [];
+    const nextAnchor = nextSpans.length === 1 && isStandaloneLockedSpan(text, nextSpans[0])
+      ? nextSpans[0].start : text.length;
+    const searchText = text.slice(0, nextAnchor);
     const equivalent = findBestLockedBlockSpan(
-      text,
+      searchText,
       expected,
       cursor,
       sourceBefore,
       sourceAfter
     );
     const approximate = equivalent || findDamagedLockedBlockSpan(
-      text,
+      searchText,
       block,
       cursor,
       blocks[blockIndex + 1]?.text || ''
@@ -1146,6 +1154,13 @@ function restoreExactLockedBlocks(outputText, chunks, source = '') {
     missingCount,
     missingBlocks
   };
+}
+
+function isStandaloneLockedSpan(text, span) {
+  const before = text.slice(text.lastIndexOf('\n', span.start - 1) + 1, span.start);
+  const nextLine = text.indexOf('\n', span.end);
+  const after = text.slice(span.end, nextLine < 0 ? text.length : nextLine);
+  return !before.trim() && !after.trim();
 }
 
 // `**`처럼 한 행을 차지하는 마크다운 제어 표식은 다른 굵은 글씨 안에도

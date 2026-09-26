@@ -8,7 +8,7 @@ const { DETECT_SCHEMA } = require('../engine-gpt-prod/schemas');
 
 test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 근거와 점수 앵커를 요구한다', () => {
   const ko = prompt.buildDetectPrompt('ko');
-  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v6-document-scope');
+  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v8-evidence-coverage');
   assert.match(ko, /실제 작성 주체를 판정하는 확률이 아니다/u);
   assert.match(ko, /학술문·보고서·자소서·SEO 글/u);
   assert.match(ko, /만으로 점수를 올리지 않는다/u);
@@ -48,6 +48,22 @@ test('감지 스키마는 자유 서술·원문 인용 없이 닫힌 원인 범�
   assert.equal(signal.additionalProperties, false);
   assert.equal(signal.properties.description, undefined);
   assert.ok(signal.properties.category.enum.includes('insufficient_grounding'));
+});
+
+test('저점수 검토는 일괄 가산 대신 본문 신호 관찰과 국소 반대 근거를 요구한다', () => {
+  const ko = prompt.buildDetectPrompt('ko');
+  assert.match(ko, /먼저 위치가 확인되는 신호/u);
+  assert.match(ko, /이름·숫자·전문용어·일인칭·경험했다는 주장·오탈자의 존재만으로 문체 신호를 상쇄하지/u);
+  assert.match(ko, /해당 구간에서만 평가/u);
+  assert.match(ko, /같은 반복을 category만 바꾸어 독립 신호로 중복 채점하지/u);
+  assert.match(ko, /특정 평균 분포를 목표로 삼지도/u);
+  assert.match(ko, /사람이 썼을 수도 있다는 가능성을 뜻하지 않는다/u);
+  assert.match(ko, /관례적 마무리 한 문장만으로/u);
+  assert.deepEqual(Object.keys(DETECT_SCHEMA.properties), ['signals', 'probability', 'confidence']);
+  const en = prompt.buildDetectPrompt('en');
+  assert.match(en, /Observe located signals first/u);
+  assert.match(en, /does not by itself cancel a style signal/u);
+  assert.match(en, /not the same repetition counted again/u);
 });
 
 test('감지 장르 힌트는 충분히 확실하고 서로 분리된 세부 프로필에만 붙는다', () => {

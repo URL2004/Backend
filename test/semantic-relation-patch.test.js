@@ -5,6 +5,39 @@ const { buildRelationPatchTargets, applyRelationPatches } = require('../engine-g
 const { groundViolation } = require('../engine-gpt-prod/judge');
 const { auditRelationCandidates } = require('../engine-gpt-prod/relationAudit');
 
+test('short limiting words are located inside exact paired evidence, never guessed globally', () => {
+  const sourceSpan = '초반에는 활동을 단순한 연습이라고만 생각했다.';
+  const candidateSpan = '처음에는 활동을 단순한 연습이라고 생각했다.';
+  const source = '별도 항목은 실습이라고만 적었다. ' + sourceSpan;
+  const output = '별도 항목은 실습이라고만 적었다. ' + candidateSpan + ' 이후에는 관점이 달라졌다.';
+  const finding = { type: 'omission', span: '라고만', sourceSpan, candidateSpan,
+    relation: 'modality_negation_causality', origin: 'introduced' };
+  const grounded = groundViolation(finding, source, output);
+  assert.equal(grounded.repairable, true);
+  assert.equal(source.slice(grounded.spanRange.start, grounded.spanRange.end), '라고만');
+  assert.ok(grounded.spanRange.start > source.indexOf('라고만'));
+  assert.equal(buildRelationPatchTargets(output, [grounded]).length, 1);
+  for (const change of [{ sourceSpan: sourceSpan + sourceSpan }, { candidateSpan: '없는 설명이 담긴 문장이다.' },
+    { origin: 'unconfirmed' }, { origin: 'source_issue' }, { span: '없는말' }])
+    assert.equal(groundViolation({ ...finding, ...change }, source, output).repairable, false);
+  assert.equal(groundViolation(finding, source + ' ' + sourceSpan, output).repairable, false);
+  const repeated = '이름이라고만 썼고 내용이라고만 생각했다.';
+  assert.equal(groundViolation({ ...finding, sourceSpan: repeated }, repeated, output).repairable, false);
+  assert.equal(groundViolation({ type: 'omission', span: '라고만' }, source, output).repairable, false);
+});
+
+test('a wide paired finding cannot fall through to unrestricted whole-document repair', async () => {
+  const source = '조사자는 결과를 잠정적인 관찰이라고 설명했다.';
+  const output = '조사자는 결과가 확정적인 사실이라고 설명했다.';
+  const result = await require('../engine-gpt-prod/judge').repairViolations(source, output, null, [{
+    type: 'distortion', span: output, sourceSpan: source, candidateSpan: output,
+    relation: 'modality_negation_causality', origin: 'introduced'
+  }], { config: { models: { repair: 'gpt-6-luna' } } });
+  assert.equal(result.repaired, false);
+  assert.equal(result.outputText, output);
+  assert.equal(result.reason, 'no_bounded_relation_patch');
+});
+
 test('a confirmed relation split across four sentences has a local patch target without copying the source', () => {
   const source = '과거 연출가인 수민은 공연을 제안했지만 현재에는 기자인 하준이 자료를 공개한 경위를 추궁한다.';
   const candidate = '과거의 수민은 공연을 제안했다. 공연을 허용해야 한다는 입장이었다. 현재 하준은 기자가 되어 자료를 공개했다. 공개 경위를 두고 추궁이 이어진다.';

@@ -8,7 +8,10 @@
 // ── (1) 의존명사 "수": [동사ㄹ어간]+수 → 띄움. "수록"(어미)·"수밖에"는 별도 처리. ──
 //   단음절 어간은 다른 명사와 충돌 없는 것만(밀수/살수대첩/물수건 등 회피).
 const SU_STEM = /(할|볼|될|줄|들|갈|올|알|풀|쓸|낼|열|걸|둘|쉴|깰|빠질|만들|지킬|느낄|찾을|얻을|막을|챙길|바꿀|이어질|견딜|키울|잃을|잊을|받을|먹을|잡을|넘을|늘릴|다닐|멈출|기댈|버틸|지낼|돌볼|해낼|살아갈|만나)수(?!록)/g;
-const SU_AUX = /수(있|없)/g;   // 수있/수없 — 한국어에 이런 결합명사 없음 → 안전
+// ‘수없이’, ‘재수없다’도 있으므로 수+있/없만으로 분리하면 정상어를
+// 후처리에서 훼손한다. 앞에 ㄹ 관형형이 확인된 의존명사만 분리한다.
+// SU_STEM이 붙은 형태를 먼저 풀어 주며, 줄바꿈은 이 규칙의 대상이 아니다.
+const SU_AUX = /([가-힣]+)([ \t]+)수(있|없)/gu;
 
 // ── (2,3) 의존명사 "것/게"·수사+단위 등 명시 교정(오탐 0) ──
 const LITERAL = [
@@ -49,7 +52,11 @@ function fixSpacing(text) {
   const count = (re) => { const m = out.match(re); return m ? m.length : 0; };
 
   fixes += count(SU_STEM); out = out.replace(SU_STEM, '$1 수');
-  fixes += count(SU_AUX);  out = out.replace(SU_AUX, '수 $1');
+  out = out.replace(SU_AUX, (match, stem, gap, auxiliary) => {
+    if ((stem.charCodeAt(stem.length - 1) - 0xAC00) % 28 !== 8) return match;
+    fixes++;
+    return `${stem}${gap}수 ${auxiliary}`;
+  });
   for (const [re, rep] of LITERAL) { fixes += count(re); out = out.replace(re, rep); }
 
   // 이중 공백 정리(치환 부작용 방지) — 줄바꿈은 보존.

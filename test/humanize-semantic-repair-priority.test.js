@@ -114,6 +114,53 @@ test('an escalation timeout preserves the completed primary verdict and its conf
   assert.equal(result.escalationSkippedReason,'escalation_call_failed');
 });
 
+test('server mapping candidates preserve the repair round until the confirming judge reviews all findings', async () => {
+  const { judge, calls } = mockedJudge([
+    { violations },
+    { outputText: candidate, repaired: true, notes: [] }, { violations: [] }
+  ]);
+  let reserved = 0;
+  const result = await judge.judgeAndRepair(source, before, {
+    maxRounds: 1, reserveRepair: () => { reserved++; return true; },
+    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol', repair: 'gpt-6-luna' } },
+    discourseSignals: ['explicit_mapping_candidate']
+  });
+  assert.equal(result.pass, true);
+  assert.equal(result.outputText, candidate);
+  assert.equal(reserved, 1);
+  assert.equal(result.rounds, 1);
+  assert.deepEqual(calls.map(c => c.meta.phase), [
+    'primary:semantic', 'primary:repair', 'primary:semantic_after_repair'
+  ]);
+  assert.ok(calls.every(c => c.model === 'gpt-6-sol'));
+  assert.equal(result.relationConfirmationFirst, true);
+});
+
+test('mapping hints are review hints, not automatic failures or extra model calls on a passing primary', async () => {
+  const { judge, calls } = mockedJudge([{ violations: [] }]);
+  const result = await judge.judgeAndRepair(source, before, {
+    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol' } },
+    discourseSignals: ['explicit_mapping_candidate']
+  });
+  assert.equal(result.pass, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'gpt-6-sol');
+});
+
+test('a failed mapping confirmation never repeats the same judge or invents a pass', async () => {
+  const omission = { type: 'omission', span: prefix[0], detail: '테스트용 정확 원문 누락 후보' };
+  const { judge, calls } = mockedJudge([{ violations: [omission] }]);
+  const result = await judge.judgeAndRepair(source, before, {
+    maxRounds: 0,
+    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol' } },
+    discourseSignals: ['number_ownership_candidate']
+  });
+  assert.equal(result.pass, false);
+  assert.equal(result.outputText, before);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'gpt-6-sol');
+});
+
 test('meaning repair wins over rhythm only after a fresh semantic judge passes', async () => {
   const { judge, calls } = mockedJudge([
     { violations },

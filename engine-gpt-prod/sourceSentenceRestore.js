@@ -46,6 +46,11 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
     if (!alignment) continue;
     alignment = resolveSplitRestoration(alignment, sourceSpans, outputSpans, before, maxOutputGroup);
     if (!alignment) continue;
+    // Positional proximity retrieves a proposal; it does not establish which
+    // claim owns it. Long documents drift after 1:N rewrites. A similar clause
+    // about another condition must never be replaced merely because the true
+    // counterpart is outside the proportional +/-3 window.
+    if (!hasReciprocalOwnership(alignment, sourceSpans, outputSpans, before)) continue;
     const sourceSpan = sourceSpans[alignment.sourceIndex];
     // A public source ordinal may cover an entire punctuation-poor document.
     // Its inferred claims have no verified replacement coordinates here. Never
@@ -89,6 +94,42 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
   );
 }
 
+function hasReciprocalOwnership(alignment, sourceSpans, outputSpans, output) {
+  const original = alignment.replacementText || sourceSpans[alignment.sourceIndex].text;
+  const selected = output.slice(outputSpans[alignment.start].start, outputSpans[alignment.end - 1].end);
+  const score = sentenceSimilarity(original, selected);
+  const numbers = value => (String(value).match(/\d+(?:\.\d+)?/gu) || []).join('|');
+  const numericAnchor = numbers(original);
+  const sameNumericAnchor = numericAnchor && numericAnchor === numbers(selected);
+  // Check all unselected sentences, not the positional search window. Copying
+  // a source sentence already better represented elsewhere duplicates one
+  // condition and erases another. Ties are not enough to authorize a write.
+  for (let i = 0; i < outputSpans.length; i++) {
+    if (i >= alignment.start && i < alignment.end) continue;
+    const competing = sentenceSimilarity(original, outputSpans[i].text);
+    if (competing < score - 0.02) continue;
+    if (sameNumericAnchor && numbers(outputSpans[i].text) !== numericAnchor) continue;
+    // Shared vocabulary may belong to a separate, already intact claim. That
+    // is not a competing owner of this source sentence.
+    const separatelyOwned = sourceSpans.some((s, index) => index !== alignment.sourceIndex
+      && sentenceSimilarity(sourceTextWithoutLeadingHeading(s.text, outputSpans[i].text), outputSpans[i].text)
+        >= Math.max(0.5, competing + 0.06));
+    if (!separatelyOwned) return false;
+  }
+  for (let i = 0; i < sourceSpans.length; i++) {
+    if (i === alignment.sourceIndex) continue;
+    const other = sourceTextWithoutLeadingHeading(sourceSpans[i].text, selected);
+    const competing = sentenceSimilarity(other, selected);
+    if (competing < score - 0.02) continue;
+    if (normalize(other) === normalize(original)) return false;
+    if (sameNumericAnchor && numbers(other) !== numericAnchor) continue;
+    const representedElsewhere = outputSpans.some((s, index) => (index < alignment.start || index >= alignment.end)
+      && sentenceSimilarity(other, s.text) >= Math.max(0.5, competing + 0.06));
+    if (!representedElsewhere) return false;
+  }
+  return true;
+}
+
 function sentenceSimilarity(left, right) {
   return sharedSentenceSimilarity(left, right);
 }
@@ -116,16 +157,25 @@ function resolveSplitRestoration(alignment, sourceSpans, outputSpans, output, ma
       const added = shared.filter(token => !selectedTokens.has(token));
       if (added.length < 2 || shared.length / Math.max(1, tokens.length) < 0.4) continue;
       const ownerScore = sentenceSimilarity(sourceText, text);
-      // Repeated vocabulary in a different source sentence is not a split arm.
-      if (sourceSpans.some((span, index) => index !== alignment.sourceIndex
-          && sentenceSimilarity(span.text, text) >= ownerScore - 0.02)) continue;
+      // A shorter source sentence can score higher on shared broad vocabulary
+      // than one arm of a long compound. Only a strong alternative owner can
+      // dismiss that arm. Ambiguity must prevent the overwrite, not authorize
+      // copying the whole compound over an incomplete span.
+      const otherOwner = Math.max(0, ...sourceSpans.map((span, index) =>
+        index === alignment.sourceIndex ? 0 : sentenceSimilarity(span.text, text)));
+      if (otherOwner >= ownerScore - 0.02) {
+        if (otherOwner >= Math.max(0.5, ownerScore + 0.06)) continue;
+        return null;
+      }
       const start = Math.min(current.start, neighbour), end = Math.max(current.end, neighbour + 1);
       const joined = output.slice(outputSpans[start].start, outputSpans[end - 1].end);
       const score = sentenceSimilarity(sourceText, joined);
-      if (score < singleScore + 0.04) continue;
       // Even if crossing a paragraph is forbidden, do not silently fall back to
-      // a partial overwrite. The caller may request a model repair instead.
+      // a partial overwrite. Ownership is already established above; a small
+      // similarity gain cannot make the unselected source-backed arm vanish.
+      // The caller may request a model repair instead.
       if (/\r?\n[ \t]*\r?\n/u.test(joined) || end - start > Math.min(3, maxOutputGroup)) return null;
+      if (score < singleScore + 0.04) continue;
       if (!best || score > best.score) best = { ...current, start, end, score };
     }
     if (!best) return current;

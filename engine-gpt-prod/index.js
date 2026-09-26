@@ -2354,7 +2354,9 @@ async function runEngine({
         outputText: text,
         mode: selectedMode,
         contract,
-        voiceProfile: auditVoiceProfile,
+        // This candidate has already materialized headings/quotes/code. Its
+        // profile must use the same raw source, not the masked audit source.
+        voiceProfile,
         documentProfile,
         structureAudit: candidateStructureAudit,
         protectedTerms: extractProtectedTerms(rawSource, documentProfile),
@@ -6858,10 +6860,16 @@ function prepareGeneralSurfaceCandidate({ source, candidate, chunks, documentPro
     outputText: String(restored.text).trim(),
     documentProfile
   });
+  // Formatting can join an opaque lock token to adjacent prose. Re-establish
+  // the exact protected boundaries AFTER formatting as the final operation;
+  // otherwise the validator rejects even a one-character meaning repair.
+  const finalLocked = structureChunk.restoreLockedStructureLayout({
+    source, outputText: String(formatting.text || restored.text).trim(), chunks
+  });
   return {
-    text: String(formatting.text || restored.text).trim(),
-    applied: restored.applied === true || formatting.applied === true,
-    restoredCount: Number(restored.restoredCount || 0),
+    text: finalLocked.pass === true ? finalLocked.text.trim() : String(restored.text).trim(),
+    applied: restored.applied === true || formatting.applied === true || finalLocked.applied === true,
+    restoredCount: Number(restored.restoredCount || 0) + Number(finalLocked.restoredCount || 0),
     formattingRepairCount: Number(formatting.changeCount || 0)
   };
 }
@@ -8331,17 +8339,12 @@ function normalizeDetectResult(json, source) {
 }
 
 function shouldEscalateDetect(out, source, cfg) {
-  if (!cfg?.models?.detectEscalation || cfg.models.detectEscalation === cfg.models.detect) return false;
-  const probability = Number(out?.probability);
   // The public `signals` array is derived presentation copy and can be filtered
   // by the narrative policy. Escalation must use the canonical evidence that
   // actually supports the score, otherwise a cache/narrative change can alter
   // model routing without any change in evidence.
-  if (out?.confidence === 'low' && !require('../lib/detectConfidence').insufficientSample(source)) return true;
-  if (assessCauseCoverage(probability, out?.signalEvidence, { source: 'llm' }).status === 'partial') return true;
-  if (out?.confidence === 'low') return false;
-  if (String(source || '').length >= 6000 && out?.confidence !== 'high') return true;
-  return false;
+  return ['low_confidence', 'cause_mismatch', 'evidence_score_tension', 'long_mixed_input']
+    .includes(require('../lib/detectDiagnostics').recheckReason(out, source, cfg));
 }
 
 function collectWebSearchUrls(raw) {

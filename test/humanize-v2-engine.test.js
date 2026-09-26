@@ -299,7 +299,8 @@ function installEngineMock(t, options = {}) {
       // quotation is now an uncertain finding and cannot authorize repair.
       const span = options.semanticViolationSpan || (rewrite.includes('미래연구원') ? '미래연구원' : rewrite);
       const violations = semanticViolation
-        ? [{ type: options.semanticViolationType || 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정', sourceSpan: extractPromptDataSection(body.input, 'SOURCE'), candidateSpan: rewrite, relation: 'other', origin: 'introduced' }]
+        ? [{ type: options.semanticViolationType || 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정',
+          sourceSpan: extractPromptDataSection(body.input, 'SOURCE'), candidateSpan: rewrite, relation: 'other', origin: 'introduced' }]
         : [];
       return apiResponse({ violations });
     }
@@ -943,7 +944,7 @@ test('polish 모델이 무변환이어도 최종 안전 교정이 남으면 stal
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
 });
 
-test('수리 후 의미 위반이 남으면 done 호환 상태인 needs_review로 전달하고 상위 모델은 판정만 승격한다', { concurrency: false }, async t => {
+test('국소 위치가 없는 의미 위반은 전체 재작성 없이 needs_review로 전달하고 상위 모델로 판정한다', { concurrency: false }, async t => {
   const source = Array.from({ length: 3 }, () => SOURCE).join(' ');
   const output = `${source} 미래연구원이 새로운 결과를 발표했습니다.`;
   const mock = installEngineMock(t, { humanize: output, repairOutput: output, semanticViolation: true });
@@ -953,7 +954,7 @@ test('수리 후 의미 위반이 남으면 done 호환 상태인 needs_review�
   assert.ok(out.qualityWarnings.some(item => item.code === 'semantic_addition'));
   assert.equal(out.fallbackCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 1);
+  assert.equal(mock.calls.filter(call => ['gpt_prod_judge_repair', 'gpt_prod_relation_patch'].includes(call.name)).length, 0);
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_soft_claim_ledger').length, 0);
 });
@@ -1384,14 +1385,14 @@ test('재시도 결과가 단일 깊이 지표만 약하면 사용자 경고 대
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
 });
 
-test('의미 수리 뒤 결과가 원문으로 돌아가면 최종 회복과 재심사를 거쳐 안전 결과를 전달한다', { concurrency: false }, async t => {
+test('전문서 수리만 가능한 의미 오류는 안전검사를 우회하지 않고 검토 판정을 유지한다', { concurrency: false }, async t => {
   const source = '한국대학교 연구팀은 학생 20명을 조사해 도서관 이용 방식과 학습 환경의 관계를 살펴봤습니다. 연구팀은 설문 문항과 면담 기록을 함께 분석했고, 조사 절차와 관찰 결과를 구분해 충분한 분량의 보고서로 정리했습니다.';
   const safe = '한국대학교 연구팀은 학생 20명을 대상으로 조사하면서 도서관 이용 방식과 학습 환경이 어떻게 연결되는지 살펴봤습니다. 설문 문항과 면담 기록은 함께 분석하되 조사 절차와 관찰 결과를 구분했고, 이를 충분한 분량의 보고서로 정리했습니다.';
   const unsafe = `${safe} 후속 조사를 시작합니다.`;
   const mock = installEngineMock(t, {
     humanizationDepth: true,
     humanize: unsafe,
-    semanticViolation: (_body, callNumber) => callNumber === 1,
+    semanticViolation: body => extractPromptDataSection(body.input, 'REWRITE').includes('후속 조사를 시작합니다.'),
     semanticViolationSpan: '후속 조사를 시작합니다.',
     repairOutput: source,
     generalRetryOutput: safe
@@ -1402,14 +1403,9 @@ test('의미 수리 뒤 결과가 원문으로 돌아가면 최종 회복과 재
     engineMeta: out.engineMeta,
     calls: mock.calls.map(call => ({ name: call.name, model: call.model }))
   }));
-  assert.equal(out.result.outputText, safe, JSON.stringify({
-    semanticAudit: out.semanticAudit,
-    engineMeta: out.engineMeta
-  }));
-  assert.equal(out.engineMeta.finalNoopRecoveryAttempted, true);
-  assert.equal(out.engineMeta.finalNoopRecoveryApplied, true);
-  assert.equal(out.engineMeta.finalNoopRecoveryCount, 1);
-  assert.equal(out.engineMeta.finalNoopRecoveryMethod, 'post_semantic_model');
+  assert.equal(out.status, 'needs_review');
+  assert.notEqual(out.result.semanticValidation.status, 'pass');
+  assert.equal(mock.calls.filter(call => ['gpt_prod_judge_repair', 'gpt_prod_relation_patch'].includes(call.name)).length, 0);
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, true);
   assert.ok(out.engineMeta.candidateLedgerCheckpointCount >= 5);
@@ -1418,9 +1414,7 @@ test('의미 수리 뒤 결과가 원문으로 돌아가면 최종 회복과 재
   const depthStages = out.engineMeta.humanizationDepthStages;
   assert.ok(depthStages.some(item => item.stage === 'pre_semantic'), JSON.stringify(depthStages));
   assert.ok(depthStages.some(item => item.stage === 'post_semantic'), JSON.stringify(depthStages));
-  assert.ok(depthStages.some(item => item.stage === 'post_semantic_recovery'), JSON.stringify(depthStages));
   assert.equal(out.engineMeta.humanizationFinalDepthRegressed, false, JSON.stringify(out.engineMeta.humanizationFinalDepthRegression));
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 1);
 });
 
 test('잠긴 제목을 재조립한 뒤에도 깊이 단계는 같은 보호 범위로 비교한다', { concurrency: false }, async t => {
@@ -1763,10 +1757,10 @@ test('의미 수리 후보가 문서를 축약하면 폐기하고 수리 전 결
   const beforeRepair = SAFE_POLISH.repeat(8);
   const report = await qualityV2.runSemanticDocumentAudit({ source, outputText: beforeRepair, mode: 'polish', config: config() });
   assert.equal(report.outputText, beforeRepair);
-  assert.equal(report.repairCount, 1);
-  assert.equal(report.repairRejected, true);
-  assert.equal(report.reports[0].repairRejected, true);
-  assert.ok(report.reports[0].repairRejectReasons.includes('repair_collapsed'));
+  assert.equal(report.repairCount, 0);
+  assert.equal(report.pass, false);
+  assert.ok(require('../engine-gpt-prod/judge').assessRepairCandidate(source, beforeRepair, '핵심만 요약합니다.', { mode: 'polish' }).reasons.includes('repair_collapsed'));
+  assert.equal(mock.calls.some(call => call.name === 'gpt_prod_judge_repair'), false);
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
 });
 
@@ -1780,9 +1774,10 @@ test('의미 위반 수리가 문서 전체를 원문으로 되돌리면 폐기�
   });
   const report = await qualityV2.runSemanticDocumentAudit({ source, outputText: beforeRepair, mode: 'assignment', config: config() });
   assert.equal(report.outputText, beforeRepair);
-  assert.equal(report.repairCount, 1);
-  assert.equal(report.repairRejected, true);
-  assert.equal(report.reports[0].repairRejectReasons.includes('repair_erased_transform'), true);
+  assert.equal(report.repairCount, 0);
+  assert.equal(report.pass, false);
+  assert.ok(require('../engine-gpt-prod/judge').assessRepairCandidate(source, beforeRepair, source, { mode: 'assignment' }).reasons.includes('repair_erased_transform'));
+  assert.equal(mock.calls.some(call => call.name === 'gpt_prod_judge_repair'), false);
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
 });
 
@@ -1809,8 +1804,10 @@ test('의미 수리가 특정 문장만 크게 축약해 원문 리듬을 훼손
   });
   const report = await qualityV2.runSemanticDocumentAudit({ source, outputText: beforeRepair, mode: 'assignment', config: config() });
   assert.equal(report.outputText, beforeRepair);
-  assert.equal(report.repairRejected, true);
-  assert.ok(report.reports[0].repairRejectReasons.includes('sentence_shape_worsened'));
+  assert.equal(report.repairCount, 0);
+  assert.equal(report.pass, false);
+  assert.ok(require('../engine-gpt-prod/judge').assessRepairCandidate(source, beforeRepair, repairOutput, { mode: 'assignment' }).reasons.includes('sentence_shape_worsened'));
+  assert.equal(mock.calls.some(call => call.name === 'gpt_prod_judge_repair'), false);
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
 });
 
@@ -1822,7 +1819,9 @@ test('의미 수리가 청크와 같은 장단문 분포 계약을 깨면 폐기
   const mock = installEngineMock(t, { semanticViolation: true, repairOutput });
   const report = await qualityV2.runSemanticDocumentAudit({ source, outputText: beforeRepair, mode: 'assignment', config: config() });
   assert.equal(report.outputText, beforeRepair);
-  assert.equal(report.repairRejected, true);
-  assert.ok(report.reports[0].repairRejectReasons.includes('sentence_distribution_worsened'));
+  assert.equal(report.repairCount, 0);
+  assert.equal(report.pass, false);
+  assert.ok(require('../engine-gpt-prod/judge').assessRepairCandidate(source, beforeRepair, repairOutput, { mode: 'assignment' }).reasons.includes('sentence_distribution_worsened'));
+  assert.equal(mock.calls.some(call => call.name === 'gpt_prod_judge_repair'), false);
   assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
 });

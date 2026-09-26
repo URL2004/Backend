@@ -154,29 +154,41 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
 }
 
 function groundViolation(violation, source, candidate) {
-  const span = String(violation?.span || '').trim();
+  let span = String(violation?.span || '').trim();
   const world = String(violation?.type === 'omission' ? source : candidate);
-  const start = span.length >= 4 ? world.indexOf(span) : -1;
-  const unique = start >= 0 && world.indexOf(span, start + 1) < 0;
-  const locate = (text, value) => {
-    const quote = String(value || '').trim();
-    const start = quote.length >= 4 ? String(text).indexOf(quote) : -1;
-    return start >= 0 && String(text).indexOf(quote, start + 1) < 0
-      ? { start, end: start + quote.length } : null;
-  };
+  const locate = require('./evidenceSpan').locateEvidenceSpan;
+  const spanLocation = locate(world, span);
+  let start = spanLocation?.start ?? -1;
+  let unique = !!spanLocation;
+  if (spanLocation) span = world.slice(spanLocation.start, spanLocation.end);
   const relationContract = Object.hasOwn(violation || {}, 'sourceSpan');
   const sourceRange = locate(source, violation.sourceSpan);
   const candidateRange = locate(candidate, violation.candidateSpan);
+  const sourceSpan = sourceRange ? String(source).slice(sourceRange.start, sourceRange.end) : violation.sourceSpan;
+  const candidateSpan = candidateRange ? String(candidate).slice(candidateRange.start, candidateRange.end) : violation.candidateSpan;
   const ownerRange = violation?.type === 'omission' ? sourceRange : candidateRange;
+  // A short limiting/negating phrase (e.g. 라고만) is meaningful even when it
+  // cannot locate a document on its own. Exact, unique paired context owns the
+  // location; repeated phrases elsewhere must not point to the first section.
+  // Missing/duplicate context or repeated occurrences INSIDE it stay uncertain.
+  if (relationContract && sourceRange && candidateRange && span.length >= 2
+      && sourceRange.end - sourceRange.start >= 12 && candidateRange.end - candidateRange.start >= 12) {
+    const owner = world.slice(ownerRange.start, ownerRange.end);
+    const local = locate(owner, span, 2);
+    unique = !!local;
+    start = unique ? ownerRange.start + local.start : -1;
+    if (local) span = owner.slice(local.start, local.end);
+  }
   const adjacentCoverage = relationContract && violation?.type === 'omission'
     && sourceRange && candidateRange
-    && require('./relationAudit').hasAdjacentRelationCoverage(violation.sourceSpan, violation.candidateSpan, candidate);
+    && require('./relationAudit').hasAdjacentRelationCoverage(sourceSpan, candidateSpan, candidate);
   const relationGrounded = !relationContract || (sourceRange && candidateRange
     && !adjacentCoverage && violation.origin === 'introduced' && ownerRange.start <= start
     && start + span.length <= ownerRange.end);
   return { ...violation, span,
     ...(adjacentCoverage ? { relationContextStatus: 'adjacent_overlap_requires_review' } : {}),
-    ...(relationContract ? { sourceRange, candidateRange, relationGrounded: Boolean(relationGrounded) } : {}),
+    ...(relationContract ? { sourceSpan, candidateSpan, sourceRange, candidateRange, relationGrounded: Boolean(relationGrounded) } : {}),
+    ...(unique ? { spanRange: { start, end: start + span.length } } : {}),
     spanVerified: Boolean(span && String(candidate).includes(span)),
     sourceSpanVerified: Boolean(span && String(source).includes(span)),
     repairable: Boolean(unique && relationGrounded),
@@ -208,6 +220,12 @@ async function repairViolations(rawText, outputText, ledger, violations, {
       meta:{task:'repair',phase,mode:'repair',profile:'gpt_prod_judge'}
     });
     return { ...applyRelationPatches(outputText, targets, res.json.patches), gptMeta:responseMeta(res) };
+  }
+  // A paired verdict that has no safe bounded window must not silently become
+  // a full-document rewrite. Keep the failed/uncertain finding for review and
+  // source-attested recovery; the legacy contract remains backward compatible.
+  if (grounded.some(v => Object.hasOwn(v, 'sourceSpan'))) {
+    return { outputText, repaired: false, notes: [], reason: 'no_bounded_relation_patch' };
   }
   const system = lang === 'en'
     ? `Repair only the listed violations while preserving the original rewrite as much as possible. Do not add facts. ${promptEnvelopeSystemRule()}`
@@ -257,6 +275,14 @@ async function judgeAndRepair(rawText, outputText, {
   documentProfile = null
 } = {}) {
   const cfg = await loadConfig(config);
+  const escalationModel = cfg.models.judgeEscalation || cfg.models.humanizeEscalation || cfg.models.judge;
+  // New explicit correspondences and ownership swaps are easy to miss in a
+  // fluent long rewrite. Use the configured confirming judge first, rather
+  // than accepting an inexpensive false pass or spending the repair round
+  // before the relevant relation has been checked. This is routing, not a
+  // deterministic error verdict, and it adds no judge/repair retry round.
+  const relationConfirmationFirst = escalationModel !== cfg.models.judge
+    && hasMappingReviewCandidate(discourseSignals);
   const primary = await judgeAndRepairWithModel(rawText, outputText, {
     lang,
     signal,
@@ -266,19 +292,19 @@ async function judgeAndRepair(rawText, outputText, {
     allowedExtra,
     mode,
     discourseSignals,
-    judgeModel: cfg.models.judge,
-    judgeReasoning: cfg.reasoning.judge,
+    judgeModel: relationConfirmationFirst ? escalationModel : cfg.models.judge,
+    judgeReasoning: relationConfirmationFirst ? cfg.reasoning.escalation : cfg.reasoning.judge,
+    useJudgeForRepair: relationConfirmationFirst,
     phasePrefix: 'primary',
-    deferHighRiskRepair: Boolean((cfg.models.judgeEscalation || cfg.models.humanizeEscalation)
+    deferHighRiskRepair: !relationConfirmationFirst && Boolean((cfg.models.judgeEscalation || cfg.models.humanizeEscalation)
       && (cfg.models.judgeEscalation || cfg.models.humanizeEscalation) !== cfg.models.judge),
     safetyIdentifier,
     documentProfile
   });
+  if (relationConfirmationFirst) return { ...primary, relationConfirmationFirst: true };
   if (primary.pass === true) return primary;
-
-  const escalationModel = cfg.models.judgeEscalation || cfg.models.humanizeEscalation || cfg.models.judge;
   if (!escalationModel || escalationModel === cfg.models.judge) return primary;
-  if (!shouldEscalateSemanticReport(primary, rawText)) {
+  if (!primary.repairDeferredForConfirmation && !shouldEscalateSemanticReport(primary, rawText)) {
     return {
       ...primary,
       escalationSkippedReason: 'deterministic_omission_restore'
@@ -343,6 +369,13 @@ function dedupeViolations(violations) {
   });
 }
 
+function hasMappingReviewCandidate(discourseSignals) {
+  return (discourseSignals || []).some(code => [
+    'explicit_mapping_candidate', 'number_ownership_candidate',
+    'argument_ownership_candidate', 'definition_target_candidate'
+  ].includes(code));
+}
+
 function shouldEscalateSemanticReport(report, rawText) {
   const violations = Array.isArray(report?.violations) ? report.violations : [];
   if (!violations.length) return false;
@@ -372,6 +405,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   judgeReasoning,
   phasePrefix,
   deferHighRiskRepair = false,
+  useJudgeForRepair = false,
   safetyIdentifier,
   documentProfile
 }) {
@@ -399,19 +433,27 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   let rounds = 0;
   const repairStyleWarnings = [];
   let unchangedRepairCount = 0;
+  let repairSkippedReason = '';
   // A wrong actor/variable diagnosis can CREATE a factual error during repair.
   // Use the already-configured escalation judge on the untouched candidate
   // first; do not let the primary repair bias that second opinion. The same
   // repair-round/cost/deadline limits still apply.
-  const repairDeferredForConfirmation = deferHighRiskRepair && (judge.violations || []).some(v =>
-    v.origin === 'introduced' && v.relationGrounded && v.repairable
-    && ['actor_action_target', 'variable_definition'].includes(v.relation));
+  const repairDeferredForConfirmation = deferHighRiskRepair && !judge.pass
+    && (judge.violations || []).some(v =>
+      v.origin === 'introduced' && v.relationGrounded && v.repairable
+      && ['actor_action_target', 'variable_definition'].includes(v.relation));
   while (!judge.pass && rounds < maxRounds && !repairDeferredForConfirmation) {
-    if (!(judge.violations || []).some(v => groundViolation(v, rawText, current).repairable)) break;
+    const grounded = (judge.violations || []).map(v => groundViolation(v, rawText, current)).filter(v => v.repairable);
+    if (!grounded.length) break;
+    if (grounded.some(v => Object.hasOwn(v, 'sourceSpan'))
+        && !require('./relationPatch').buildRelationPatchTargets(current, grounded).length) {
+      repairSkippedReason = 'no_bounded_relation_patch';
+      break;
+    }
     if (reserveRepair && !reserveRepair()) break;
     rounds++;
-    const repairModel = phasePrefix === 'escalation' ? judgeModel : config.models.repair;
-    const repairReasoning = phasePrefix === 'escalation' ? config.reasoning.escalation : config.reasoning.repair;
+    const repairModel = useJudgeForRepair || phasePrefix === 'escalation' ? judgeModel : config.models.repair;
+    const repairReasoning = useJudgeForRepair || phasePrefix === 'escalation' ? config.reasoning.escalation : config.reasoning.repair;
     let repaired;
     try { repaired = await repairViolations(rawText, current, ledger, judge.violations, {
       lang,
@@ -515,6 +557,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   return {
     outputText: current,
     pass: judge.pass,
+    ...(repairSkippedReason ? { repairSkippedReason } : {}),
     uncertain: judge.uncertain === true,
     violations: judge.violations || [],
     initialViolations,

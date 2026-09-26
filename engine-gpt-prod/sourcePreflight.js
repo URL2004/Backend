@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 27;
+const VERSION = 28;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -680,6 +680,7 @@ function repairInlineHeadingBoundaries(value) {
           .replace(INLINE_KNOWN_HEADING_ANYWHERE_RE, '\n\n')
       );
       repaired = repaired.split('\n').map(piece => {
+        if (isSectionReferenceProse(piece)) return piece;
         if (INLINE_HEADING_AFTER_RE.test(piece)) return piece.replace(INLINE_HEADING_AFTER_RE, '$1\n');
         const spacedHeading = piece.match(INLINE_HEADING_SPACED_BODY_RE);
         if (spacedHeading && shouldSplitSpacedHeadingBody(spacedHeading[3])) {
@@ -735,6 +736,7 @@ function replaceInlineHeadingBoundary(match, terminal, marker, offset, whole) {
   // to be rejected downstream, including genuine later section boundaries.
   if (terminal === '.' && /\d/u.test(String(whole || '')[Number(offset) - 1] || '')) return match;
   const boundary = Number(offset) + String(match || '').length;
+  if (isSectionReferenceProse(String(whole || '').slice(boundary))) return match;
   if (isCalendarDateContinuation(whole, boundary, marker)) return match;
   // A lone inline `1) 이는 ...` after a complete sentence is ambiguous: it
   // often marks the preceding citation, not a new numbered section. Do not
@@ -744,6 +746,12 @@ function replaceInlineHeadingBoundary(match, terminal, marker, offset, whole) {
         String(whole || '').slice(boundary + marker.length).trimStart())
       && [...String(whole || '').matchAll(/(?:^|\s)\d{1,2}\)(?=\s|[가-힣])/gu)].length === 1) return match;
   return `${terminal}\n\n`;
+}
+
+// A section number followed by a particle is a reference inside a sentence,
+// not a new heading (e.g. "2.4에서는 ..."). Keep its body editable and joined.
+function isSectionReferenceProse(value) {
+  return /^\s*\d{1,3}(?:\.\d{1,3}){1,3}(?:장|절|항)?[ \t]*(?:에서는|에서도|에서|에는|에도|으로는|으로|까지는|까지|부터|은|는|을|를|과|와|의|에)(?=$|\s|[,;:])/u.test(String(value || ''));
 }
 
 // `2026. 8. 30.`과 `2026. 8. ~ 11. 30.`의 마지막 일자는 절 번호와

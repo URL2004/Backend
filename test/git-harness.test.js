@@ -42,6 +42,32 @@ test('clean 저장소만 manual·deploy 게이트를 통과한다', () => {
   assert.ok(dirty.errors.some(item => item.code === 'uncommitted_changes'));
 });
 
+test('only a resolved merge containing the current remote can commit while HEAD is behind', () => {
+  const root = makeRepository();
+  git(root,['checkout','-b','feature']);
+  git(root,['branch','production']);
+  fs.writeFileSync(path.join(root,'feature.txt'),'feature');
+  git(root,['add','.']);git(root,['commit','-m','feature']);
+  git(root,['checkout','production']);
+  fs.writeFileSync(path.join(root,'production.txt'),'production');
+  git(root,['add','.']);git(root,['commit','-m','production']);
+  git(root,['checkout','feature']);
+  const check=mode=>evaluateRepository({root,mode,remoteRef:'production'});
+  assert.ok(check('pre-commit').errors.some(e=>e.code==='remote_behind'));
+  git(root,['merge','--no-commit','--no-ff','production']);
+  assert.equal(check('pre-commit').ok,true);
+  assert.ok(check('deploy').errors.some(e=>e.code==='remote_behind'));
+  // If remote advances during conflict resolution, an old pending merge is
+  // not an exception and must not commit as if it contained current remote.
+  git(root,['update-ref','refs/heads/old-production','production']);
+  git(root,['merge','--abort']);
+  git(root,['checkout','production']);
+  fs.appendFileSync(path.join(root,'production.txt'),'new');
+  git(root,['add','.']);git(root,['commit','-m','advanced']);
+  git(root,['checkout','feature']);git(root,['merge','--no-commit','--no-ff','old-production']);
+  assert.ok(check('pre-commit').errors.some(e=>e.code==='remote_behind'));
+});
+
 test('전체 worktree 감사에서는 clean detached 작업공간을 경고로만 분리한다', () => {
   const root = makeRepository();
   git(root, ['checkout', '--detach']);

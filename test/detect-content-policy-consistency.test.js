@@ -31,7 +31,7 @@ test('resume evidence uses lived experience, not a count of dates or names',()=>
 test('stale riskLevel cannot contradict the numeric score across report surfaces',()=>{
  const v=view('report_assignment',{probability:9,riskLevel:'high',signalEvidence:[]});
  assert.equal(v.styleSignal.band,'low');assert.equal(v.professorRadar.band,'low');
- assert.equal(v.interpretation.band,'low');assert.match(v.synthesis.headline,/신호는 낮고/);
+ assert.equal(v.interpretation.band,'low');assert.match(v.synthesis.headline,/점수는 낮은 구간이고/);
 });
 test('missing and two-sentence inputs still cannot trigger paid recommendations',()=>{
  for(const m of [{},{genericness:{total:2},detail:[{sents:2,lived:0,specific:0}]}]){

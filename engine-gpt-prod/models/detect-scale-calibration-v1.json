@@ -1,0 +1,41 @@
+{
+  "version": "detect-scale-calibration-v1",
+  "status": "development_only",
+  "note": "표시 점수 척도 후보. 모델·프롬프트·원인 상한·통계 보조·이력 보정 뒤, 화면에 내보내기 직전에만 적용한다. 기본 OFF. 규칙은 DETECT_SCALE_CALIBRATION_RULES에 id를 적은 것만 켜진다. 평가 자료(2026-09-07 검증 519편)는 이미 보고서에 쓰인 자료라 개발 단계 추정이며 출시 전 새 홀드아웃이 필요하다.",
+  "rules": [
+    {
+      "id": "short_review_scale",
+      "title": "짧은 글 척도 — 엔진 점수 18을 표시 50에 대응",
+      "scope": { "maxChars": 299, "profiles": ["general", "unknown", "review_blog"], "sources": ["llm"] },
+      "points": [[0, 0], [18, 50], [36, 74], [100, 100]],
+      "evaluation": {
+        "data": "reports/detect-validation-v3-20260907 short_review 200편(사람 100·AI 100, 전부 300자 미만, 프로필 general/unknown/review_blog)",
+        "auc": 0.9606,
+        "humanScoreMedian": 5,
+        "aiScoreMedian": 18,
+        "at50AfterMapping": { "humanFalsePositive": "4/100 (4.0%)", "fprUpper95": "9.8%", "aiRecall": "74/100 (74%)" },
+        "before": { "humanFalsePositive": "0/100", "aiRecall": "0/100" },
+        "pairedPointCriteria": "미달 — 사람 오탐이 0→4로 늘어 비증가 조건에 걸림",
+        "fixedFpr5Point": "통과(4.0%)",
+        "fixedFpr5Upper95": "미달(9.8%)",
+        "outOfScope": "300자 미만 자소서·과제 발췌는 대조군이 없어 검증 범위 밖. 프로필 resume_application·report_assignment·long_explainer·personal_essay는 적용하지 않는다."
+      }
+    },
+    {
+      "id": "long_prose_boundary_40",
+      "title": "긴 글 경계 50→40 (동치 매핑 40→50) — 개발 평가에서 기각",
+      "status": "rejected_development",
+      "scope": { "minChars": 300, "sources": ["llm"] },
+      "points": [[0, 0], [40, 50], [74, 74], [100, 100]],
+      "evaluation": {
+        "data": "reports/detect-validation-v3-20260907 300자 이상 319편(사람 160·AI 159)",
+        "auc": 0.9001,
+        "at50Current": { "humanFalsePositive": "23/160 (14.4%)", "aiRecall": "142/159 (89.3%)" },
+        "at50AfterMapping": { "humanFalsePositive": "31/160 (19.4%)", "aiRecall": "147/159 (92.5%)" },
+        "pairedPointCriteria": "미달 — 사람 오탐 증가",
+        "fixedFpr5Point": "미달 — 25~60 어떤 경계도 5% 이하가 없음(60에서 6.9%, 검출 35%)",
+        "conclusion": "경계를 낮추면 오탐만 늘고, 5% 오탐을 맞추려면 경계를 60 넘게 올려 검출이 무너진다. 긴 글의 문제는 경계가 아니라 판별력(사람 설명문 오탐 10%)이다."
+      }
+    }
+  ]
+}

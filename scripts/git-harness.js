@@ -132,7 +132,13 @@ function evaluateRepository({
     if (!remote.exists) {
       errors.push(issue('remote_ref_missing', `원격 기준 ${remoteRef}를 찾지 못했습니다.`));
     } else {
-      if (remote.behind > 0) {
+      // During a resolved merge HEAD is necessarily behind until this commit.
+      // Permit only the pre-commit that actually brings the current remote in;
+      // ordinary stale commits, unresolved merges and deployment stay blocked.
+      const integratesRemote = mode === 'pre-commit' && state.conflicted.length === 0
+        && gitCheck(state.root, ['rev-parse', '--verify', 'MERGE_HEAD'])
+        && gitCheck(state.root, ['merge-base', '--is-ancestor', remoteRef, 'MERGE_HEAD']);
+      if (remote.behind > 0 && !integratesRemote) {
         errors.push(issue(
           'remote_behind',
           `${remoteRef}보다 ${remote.behind}개 커밋 뒤에 있습니다. 먼저 원격을 반영하세요.`

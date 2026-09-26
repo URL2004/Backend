@@ -18,9 +18,9 @@ test('1% 결과에 AI 작성 가능성이 높다는 설명을 노출하지 않�
 
   assert.equal(result.probability, 1);
   assert.equal(result.riskLevel, 'low');
-  assert.equal(result.riskLabel, 'AI식 문체 신호 · 낮음');
-  assert.match(result.summary, /낮게 관찰/);
-  assert.match(result.detail, /문체 신호 1\/100/);
+  assert.equal(result.riskLabel, 'AI식 문체 점수 · 낮은 구간');
+  assert.match(result.summary, /낮은 구간/);
+  assert.match(result.detail, /AI식 문체 점수 1\/100/);
   assert.equal(narrativeContradictsRisk(`${result.summary}\n${result.detail}`, 'low'), false);
   assert.equal(result.narrativeConsistencyAdjusted, true);
 });
@@ -48,7 +48,7 @@ test('중간 구간은 높음이나 낮음으로 단정하지 않는다', () => 
   });
 
   assert.equal(result.riskLevel, 'moderate');
-  assert.match(result.summary, /일부 관찰/);
+  assert.match(result.summary, /중간 구간/);
   assert.equal(narrativeContradictsRisk(`${result.summary}\n${result.detail}`, 'moderate'), false);
 });
 

@@ -193,9 +193,14 @@ router.post('/analyze', async (req, res) => {
       result.rawProbability = calibration.rawProbability;
       result.probabilityCalibration = calibration.meta;
     }
-    result = applyDetectNarrativePolicy(result, calibration.probability);
+    // 표시 척도(개발 후보, 기본 OFF): 감지 보고서 라우트와 같은 규칙·같은 순서(이력 보정 뒤)로 적용한다.
+    const scale = require('../lib/detectScaleCalibration').applyScaleCalibration({
+      probability: calibration.probability, chars: text.length, profile: routing.profile, probSource: 'llm'
+    });
+    result = applyDetectNarrativePolicy(result, scale.probability);
     Object.assign(result, require('../lib/detectScorePresentation').scorePresentation(calibration));
-    if (calibration.comparison) {
+    if (scale.meta) { result.scaleCalibration = scale.meta; if (scale.applied) result.rawProbability = calibration.rawProbability; }
+    if (calibration.comparison && !scale.applied) {
       result.historyComparison = calibration.comparison;
       // Backup resubmits the browser's exact request source, before this legacy
       // route's deterministic input normalization.

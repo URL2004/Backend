@@ -194,6 +194,7 @@ router.post('/analyze', async (req, res) => {
       result.probabilityCalibration = calibration.meta;
     }
     result = applyDetectNarrativePolicy(result, calibration.probability);
+    Object.assign(result, require('../lib/detectScorePresentation').scorePresentation(calibration));
     if (calibration.comparison) {
       result.historyComparison = calibration.comparison;
       // Backup resubmits the browser's exact request source, before this legacy

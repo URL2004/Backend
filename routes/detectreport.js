@@ -31,7 +31,7 @@ const gptAnalyze = require('./analyze-gpt');
 const inputrouting = require('../engine/inputrouting');
 const publicMetrics = require('../lib/publicMetrics');
 const { buildDetectReportView, buildSentenceMap, pickAiSentence, splitExamplePreview } = require('../lib/detectReportView');
-const { locatePublicEvidence } = require('../lib/detectInputDocument');
+const { locatePublicEvidence, buildDetectInputDocument } = require('../lib/detectInputDocument');
 const { signDetectInterpretation } = require('../lib/detectHistoryPresentation');
 const { signHistoryComparison } = require('../lib/detectHistoryComparison');
 const { startDetectPreview } = require('../lib/detectPreviewTask');
@@ -582,6 +582,7 @@ router.post('/detect-report', async (req, res) => {
       logger.warn('detect_report.sentence_map_failed', { uid, err: error && error.message });
     }
     narrated.signalEvidence = require('../lib/detectReportLocations').projectReportEvidence(narrated.signalEvidence, sentenceMap);
+    const publicInputDocument = buildDetectInputDocument(text);
     const reportView = buildDetectReportView({
       probability,
       probSource: 'llm',
@@ -591,6 +592,9 @@ router.post('/detect-report', async (req, res) => {
       calibrationApplied: calibration.applied,
       preCalibrationProbability: rawProbability,
       statisticalSupport: det.statisticalSupport,
+      statisticalReference: det.statisticalReference,
+      inputIncomplete: publicInputDocument.inputIncomplete,
+      eligibleSentenceCount: publicInputDocument.eligibleSentenceCount,
       // 원인 레이더 축 정책용 — 글 종류·신뢰도(이미 계산된 값, 추가 비용 없음)
       documentProfile: {
         profile: advancedRouting.profile,
@@ -619,6 +623,8 @@ router.post('/detect-report', async (req, res) => {
     const B = BANDS;
     const historyResult = {
       probability,
+      ...require('../lib/detectScorePresentation').scorePresentation(calibration),
+      statisticalReference: require('../lib/detectStatisticalAssist').sanitizeReference(det.statisticalReference),
       historyComparison: calibration.comparison || null,
       riskLevel: narrated.riskLevel,
       riskLabel: narrated.riskLabel,
@@ -657,6 +663,8 @@ router.post('/detect-report', async (req, res) => {
     };
     const publicResponse = {
       ok: true,
+      ...require('../lib/detectScorePresentation').scorePresentation(calibration),
+      statisticalReference: require('../lib/detectStatisticalAssist').sanitizeReference(det.statisticalReference),
       free: false,
       charged: chargeEligible ? cost : 0,
       historySaved: false,

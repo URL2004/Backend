@@ -60,9 +60,9 @@ const SHORT = [
   '그 결과 기존 프로젝트의 핵심 내용을 유지하면서 변경된 양식에 맞는 보고서를 완성할 수 있었습니다.'
 ].join(' ');   // 공백 제외 약 330자 · 6문장 — 자소서 한 문항의 전형
 
-test('자소서 한 문항 길이(공백 제외 300자대)의 결과를 한 단어 고쳐도 근사 일치로 보정한다', async () => {
+test('자소서 한 문항 길이의 동일 결과는 동등한 마침표 표기도 근사 일치로 보정한다', async () => {
   const uid = 'u1';
-  const edited = SHORT.replace('보고서 양식이', '리포트 양식이');
+  const edited = SHORT.replace('재구성했습니다.', '재구성했습니다。');
   const r = await calibration.applyHistoryCalibration({
     db: stubDb([humanizeRecord(uid, SHORT)]), uid, text: edited, probability: 72, logger, route: 't'
   });
@@ -73,10 +73,10 @@ test('자소서 한 문항 길이(공백 제외 300자대)의 결과를 한 단�
 
 test('문장 수 기준은 절대 하한(200자)을 지켜 짧은 반복문에는 열리지 않는다', () => {
   const cfg = calibration.sanitizeConfig({});
-  const tiny = '관찰기록을확인하고다음활동을준비했습니다.'.repeat(6);   // 6문장 · 약 120자
+  const tiny = '관찰기록을확인하고다음활동을준비했습니다. '.repeat(6);   // 6문장 · 약 120자
   assert.equal(calibration.countSentenceMarks(tiny), 6);
   assert.equal(calibration.approximateEligible(tiny, cfg), false);
-  const sixSentences = '이번 학기 프로젝트에서 제가 맡은 역할은 실험 데이터를 정리하는 일이었습니다.'.replace(/\s/g, '').repeat(6);
+  const sixSentences = ('이번 학기 프로젝트에서 제가 맡은 역할은 실험 데이터를 정리하는 일이었습니다.'.replace(/\s/g, '') + ' ').repeat(6);
   assert.ok(sixSentences.length >= 200 && sixSentences.length < 300, `len=${sixSentences.length}`);
   assert.equal(calibration.approximateEligible(sixSentences, cfg), true, '200자 이상 5문장 이상은 근사 일치 대상');
 });

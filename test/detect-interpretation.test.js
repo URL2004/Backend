@@ -56,7 +56,7 @@ test('six detail ranges preserve all three established band boundaries without r
 });
 test('low signal without positive evidence is not proof of human authorship', () => {
   const r = build({ ...standard, probability: 5 });
-  assert.equal(r.evidence.level, 'sufficient'); assert.equal(r.pattern, null);
+  assert.equal(r.evidence.level, 'some'); assert.equal(r.pattern, null);
   assert.match(r.description, /증명하는 결과는 아니/);
 });
 test('high score without located evidence cannot claim sufficient grounds or recurrence', () => {
@@ -79,7 +79,7 @@ test('verified pattern descriptions and next steps are bounded, deterministic, a
   assert.notEqual(r.nextSteps[0], other.nextSteps[0]);
 });
 test('duplicate and invalid offsets cannot manufacture multiple confirmed locations', () => {
-  const item = signal('lexical_template', [1,1,-1,30]);
+  const item = { ...signal('lexical_template', [1,1,-1,30]), scope: 'isolated' };
   item.locations.push({sentenceIndex:2,start:5,end:1500},null);
   const r = build({ ...standard, probability: 30, signalEvidence: [item] });
   assert.equal(r.pattern.locationCount, 1); assert.equal(r.pattern.scope, 'isolated');

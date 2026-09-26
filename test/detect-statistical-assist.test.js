@@ -33,17 +33,19 @@ test('negative statistics and failed optional model keep completed model result 
   assert.equal(assist.enabled(''), false);
 });
 
-test('independent statistics require stronger evidence, preserve causes, and cannot enter the high band alone', () => {
+test('independent statistics remain reference-only even when the old environment flag is enabled', () => {
   const prose = Array.from({ length: 5 }, (_, i) => source.slice(i * 120, (i + 1) * 120) + '.').join(' ');
   const low = { probability: 8, confidence: 'high', signalEvidence: [], modelProbability: 8 };
   const options = { profile: 'general', active: true, independentActive: true, modelValue: positiveModel };
   const out = assist.applyAssist(low, prose, options);
-  assert.equal(out.probability, 49);
+  assert.equal(out.probability, 8);
   assert.equal(out.modelProbability, 8);
   assert.deepEqual(out.signalEvidence, []);
-  assert.equal(out.statisticalSupport.basis, 'independent_statistics');
-  assert.equal(out.statisticalSupport.originalScore, 8);
-  for (const patch of [{ active: false }, { independentActive: false }, { profile: 'resume_application' }, { profile: 'unknown' }]) {
+  assert.equal(out.statisticalReference.basis, 'independent_statistics');
+  assert.equal(out.statisticalReference.scoreApplied, false);
+  assert.equal(out.statisticalSupport, undefined);
+  assert.deepEqual(assist.applyAssist(low, prose, { ...options, independentActive: false }), out);
+  for (const patch of [{ active: false }, { profile: 'resume_application' }, { profile: 'unknown' }]) {
     assert.equal(assist.applyAssist(low, prose, { ...options, ...patch }), low);
   }
   const limited = { ...low, confidence: 'low' };
@@ -53,13 +55,13 @@ test('independent statistics require stronger evidence, preserve causes, and can
   }
   const weak = { ...positiveModel, weights: features.map(() => 0), intercept: 0.049 };
   assert.equal(assist.applyAssist(low, prose, { ...options, modelValue: weak }), low);
-  assert.equal(assist.applyAssist(low, prose, { ...options, modelValue: { ...weak, intercept: 0.05 } }).probability, 49);
+  assert.equal(assist.applyAssist(low, prose, { ...options, modelValue: { ...weak, intercept: 0.05 } }).probability, 8);
   assert.equal(assist.independentEnabled(''), false);
-  assert.equal(assist.independentEnabled('true'), true);
+  assert.equal(assist.independentEnabled('true'), false);
 });
 
 test('independent support remains explicit internally and never fabricates sentence-level causes', t => {
-  const meta = { version: assist.VERSION, applied: true, originalScore: 8, score: 49, margin: 0.16, features: 300, profile: 'general', basis: 'independent_statistics' };
+  const meta = { version: 'statistical-assist-v5-whitespace-stable', applied: true, originalScore: 8, score: 49, margin: 0.16, features: 300, profile: 'general', basis: 'independent_statistics' };
   assert.equal(assist.sanitizeSupport({ ...meta, margin: 0.01 }), null);
   assert.equal(assist.sanitizeSupport({ ...meta, version: 'statistical-assist-v1' }), null);
   const legacy = { version: 'statistical-assist-v1', applied: true, originalScore: 32, score: 54, margin: 0.16, features: 300, profile: 'general' };
@@ -73,7 +75,7 @@ test('independent support remains explicit internally and never fabricates sente
   t.after(() => { if (previous === undefined) delete process.env.DETECT_INDEPENDENT_STATISTICS_ENABLED; else process.env.DETECT_INDEPENDENT_STATISTICS_ENABLED = previous; });
   const cache = require('../lib/detectResultStability');
   process.env.DETECT_INDEPENDENT_STATISTICS_ENABLED = '0'; const off = cache.variantForConfig({});
-  process.env.DETECT_INDEPENDENT_STATISTICS_ENABLED = '1'; assert.notEqual(cache.variantForConfig({}), off);
+  process.env.DETECT_INDEPENDENT_STATISTICS_ENABLED = '1'; assert.equal(cache.variantForConfig({}), off);
   assert.deepEqual(cache.cleanResult({ probability: 49, statisticalSupport: meta }).statisticalSupport, assist.sanitizeSupport(meta));
 });
 

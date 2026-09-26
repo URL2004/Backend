@@ -384,7 +384,7 @@ test('기존 v2 clean 서명은 배포 뒤에도 계속 검증한다', () => {
   assert.equal(historyIntegrity.verify('other-user', output, record, legacy, HISTORY_TEST_SECRET), false);
 });
 
-test('같은 사용자의 장문 휴머나이징 결과를 소폭 수정해도 보수적 유사 일치로 찾는다', async () => {
+test('소폭 어휘 수정도 의미 보존 증거 없이 유사도로 자동 보정하지 않는다', async () => {
   const output = longDocument('휴머나이징');
   const input = output
     .replace('교육 현장의 구체적인 관찰과 실행 과정', '교육 현장의 관찰 및 실행 과정')
@@ -397,9 +397,7 @@ test('같은 사용자의 장문 휴머나이징 결과를 소폭 수정해도 �
     limit: 50
   });
 
-  assert.equal(match.match, 'near_normalized');
-  assert.ok(match.similarity >= 0.88, `similarity=${match.similarity}`);
-  assert.ok(match.lengthRatio >= 0.97, `lengthRatio=${match.lengthRatio}`);
+  assert.equal(match, null);
 });
 
 test('짧은 글의 부분 유사와 길이가 크게 달라진 장문은 유사 보정하지 않는다', async () => {
@@ -444,7 +442,7 @@ test('비슷한 길이지만 내용이 다른 장문은 같은 사용자의 기�
 
 test('최근 감지 기록이 많아도 최근 휴머나이징 결과 50개 범위를 따로 확보한다', async () => {
   const output = longDocument('보정 대상');
-  const input = output.replace('자료 87건', '관련 자료 87건');
+  const input = output.replace('설명한다.', '설명한다。');
   const rows = [
     ...Array.from({ length: 80 }, (_, index) => historyDoc(`d${index}`, {
       type: 'detect',
@@ -471,7 +469,7 @@ test('최근 감지 기록이 많아도 최근 휴머나이징 결과 50개 범�
 
 test('운영 보정은 유사 매칭 메타와 원점수를 남기고 88점을 58점으로 조정한다', async () => {
   const output = longDocument('운영 결과');
-  const input = output.replace('자료 93건', '관련 자료 93건');
+  const input = output.replace('설명한다.', '설명한다。');
   const storedConfig = {
     enabled: true,
     limit: 50,

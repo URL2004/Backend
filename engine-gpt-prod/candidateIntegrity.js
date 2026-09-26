@@ -8,6 +8,7 @@ const structureChunk = require('./structureChunk');
 const statisticalAtoms = require('./statisticalAtoms');
 const dedupe = require('../engine/dedupe');
 const technicalRelationAudit = require('./technicalRelationAudit');
+const technicalExplanationAudit = require('./technicalExplanationAudit');
 const {
   auditDirectQuoteIntegrity,
   auditVoice,
@@ -142,6 +143,11 @@ function auditCandidateIntegrity({
   const candidateTechnicalRelations = technicalRelationAudit.auditTechnicalRelations(source, after);
   if (candidateTechnicalRelations.issues.length > beforeTechnicalRelations.issues.length) {
     add('technical_relation_worsened');
+  }
+  const beforeTechnicalExplanation = technicalExplanationAudit.auditConvolutionPrecision(source, current);
+  const candidateTechnicalExplanation = technicalExplanationAudit.auditConvolutionPrecision(source, after);
+  if (candidateTechnicalExplanation.issues.length > beforeTechnicalExplanation.issues.length) {
+    add('technical_explanation_worsened');
   }
 
   return {

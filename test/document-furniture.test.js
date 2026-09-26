@@ -8,6 +8,31 @@ const document=require('../engine-gpt-prod/documentStructure');
 const title='지역 생활 공간의 변화에 대한 연구',authors='김가람 이누리',header=title+' ｜ 김가람, 이누리';
 const prose='주민들은 지역의 생활 공간과 공동체의 변화에 관해 여러 경험을 기록하였다. 기록의 맥락을 비교하고 시간에 따른 차이를 검토하였다. '.repeat(6);
 const source=[title,authors,header,'1. 연구 배경',prose+' 연구자는 공동체의 책임을',header,'중요하게 다룬다. '+prose,'영화 <가상의 마을(2020)> 영화 <가상의 도시(2022)>',prose,header,'2. 결론',prose].join('\n');
+
+test('list boundary restoration does not turn an inline interpunct into a new list',()=>{
+ const sc=require('../engine-gpt-prod/structureChunk');
+ for(const marker of ['·','•','ㆍ','・']) {
+  const s=`분석 자료\n\n정치${marker}사회적 배경을 검토했다.\n\n${marker} 첫 번째 조건을 검토했다.\n${marker} 두 번째 조건을 검토했다.`;
+  // Explicit locked markers isolate the shared boundary helper independently
+  // of whether a genre-specific parser enables each glyph as a list marker.
+  const locked=[{locked:true,lockType:'bullet_prefix',text:marker+' '},{locked:true,lockType:'bullet_prefix',text:marker+' '}];
+  assert.equal(sc.restoreLockedHeadingLayout(s,s,locked).text,s);
+  const edited=s.replace('배경을 검토했다','배경을 분석했다');
+  assert.equal(sc.restoreLockedHeadingLayout(s,edited,locked).text,edited);
+  const flat=edited.replace(`\n\n${marker} 첫`, ` ${marker} 첫`).replace(`\n${marker} 두`, ` ${marker} 두`);
+  assert.equal(sc.restoreLockedHeadingLayout(s,flat,locked).text,edited);
+  assert.equal(sc.restoreLockedHeadingLayout(s,edited.replaceAll(marker+' ',marker),locked).text,edited);
+ }
+});
+
+test('list glyph search skips operators, quotations and inline code before real list rows',()=>{
+ const sc=require('../engine-gpt-prod/structureChunk');
+ const s='검토 결과\n\n벡터의 곱 a · b를 확인했다. “기록. · 강조”와 `A. · B`는 원문 표기다.\n\n· 확인한 조건을 기록했다.';
+ const locked=[{locked:true,lockType:'bullet_prefix',text:'· '}];
+ assert.equal(sc.restoreLockedHeadingLayout(s,s,locked).text,s);
+ const compact=s.replace('\n\n· 확인', ' · 확인');
+ assert.equal(sc.restoreLockedHeadingLayout(s,compact,locked).text,s);
+});
 test('repeated cover-attested title/byline is removed before prose joins without losing cover attribution',()=>{
  const r=furniture.removeRunningHeaders(source);assert.equal(r.removed.length,3);
  assert.ok(r.text.startsWith(title+'\n'+authors));assert.ok(!r.text.includes(header));

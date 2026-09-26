@@ -2,6 +2,20 @@
 
 Status: locally verified candidate, **not approved for production**.
 
+## Additional KRW 3,000 verification — 2026-09-27 KST
+
+The user subsequently authorized a separate additional KRW 3,000. Fresh planning and full advanced execution completed on `4ac406f`: nine approved changes (four merges, five splits), 81 planned/delivered blocks, structure delivery verified, no structure fallback and no running-furniture boundary findings. The full run took 520.3 seconds. All 81 source/output blocks were read in context. Existing duplicate patrol prose was reduced; damaged source TOC spacing remains.
+
+Final semantic escalation initially exceeded the runner's KRW 2,400 admission slice, not the total authorization. A strict continuation released the existing KRW 600 contingency and reused 39 matching successful responses. It produced the identical final text and completed a fresh final escalation: `revalidated_fail`, `needs_review`. This is one generation with a continuation, not two independent samples. Clear epistemic hardening and relation changes remain; a judge's borderline modality observations are not all treated as confirmed errors. Production release remains on hold.
+
+Additional approval accounting: KRW 966.48 confirmed token-priced usage plus KRW 503.34 unknown reservations (two interrupted attempts), total KRW 1,469.82; KRW 1,530.18 remains. Conservative planning conversion: KRW 2,000/USD. Forty-two HTTP attempts include failures/retries. No customer credit or production-data mutations occurred. Prior approval accounting is retained separately.
+
+Offline tracing identified a further deterministic defect: list-prefix restoration could mistake a compound-word interpunct for a bullet, insert a newline and cause downstream structural rejection/rollback. A synthetic identity transformation reproduces the old failure. Boundary matching now requires a genuine line start or a whitespace-delimited marker following a complete sentence, and excludes quote/code spans. Numbered-anchor safeguards are retained. Focused tests cover four glyphs, actual flattened/compact lists, operators and quoted/code punctuation. This additional patch has **not** had a fresh paid full-generation run. An instrumented offline replay had two missing responses and a different final candidate; it diagnoses the layout path only and is not a semantic pass or an exact production replay.
+
+Host timing measurements were variable: candidate three-job layout batch p95 208–252 ms and event-loop p95 71–79 ms; the baseline measured 904 ms/185 ms under the same non-isolated host conditions. Ordering/content/cancellation checks passed, but the 50 ms event-loop target was not met in these runs. Do not advertise an operational performance win from these measurements.
+
+Final patch verification: 38 focused tests passed; production import graph 247 files/zero violations. Default-concurrency full suite passed 2,282/2,283 with the wall-clock layout p95 test exceeding 500 ms. That file passed all 15 tests in isolation. A complete rerun with `--test-concurrency=2` passed 2,283/2,283, zero skipped, in 108.8 seconds; no timing threshold was relaxed. These local passes do not replace the missing fresh full-model verification of this last boundary patch.
+
 ## Follow-up — 2026-09-27 KST
 
 The original residual meaning findings were addressed by independently validating source restoration targets. One unsafe caption-crossing restoration no longer vetoes unrelated safe repairs. A background-to-chronology audit and inline-label physical-row repair were added. Restoring meaning no longer reinstates an intra-sentence PDF wrap. A further real audit caught a duplicated introductory clause caused by restoring across an unpunctuated caption; the common source restorer now rejects such composite spans. Limitative `그냥 … 아니라` is treated consistently with `단지 … 아니라`, not as categorical exclusion.

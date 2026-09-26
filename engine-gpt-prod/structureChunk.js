@@ -500,7 +500,7 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
       // 제목 내부에서 갈라도 공백을 제외한 원문 앵커가 같으면 원래 한 행으로
       // 복원한다. 같은 행 수만 찾던 예전 fallback은 이 경우를 놓쳤다.
       const equivalent = findWhitespaceEquivalentSpans(text, heading, outputCursor)
-        .find(span => validNumericAnchorBoundary(text, heading, span.start, span.end));
+        .find(span => validHeadingAnchorBoundary(text, heading, span.start, span.end));
       if (!equivalent) {
         missingCount += 1;
         continue;
@@ -539,7 +539,19 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
 
 // Short ordinal anchors such as `5.` can occur inside decimals, formulae or
 // another ordinal (`15.`). A literal match there must never insert a line break.
-function validNumericAnchorBoundary(text, expected, start, end) {
+function validHeadingAnchorBoundary(text, expected, start, end) {
+  // A shared list glyph is not an occurrence ID. In particular the Korean
+  // interpunct in compound words must never acquire a paragraph/list boundary.
+  // Accept an existing line-start marker (including compact lists), or a
+  // whitespace-delimited marker after a complete sentence. An operator or a
+  // quoted/code glyph does not provide evidence of a flattened list boundary.
+  if (/^[·•∙ㆍ・‧●○▪▫■□◆◇▶▷►▸▹]$/u.test(String(expected || '').trim())) {
+    if (syntaxSpans(text).some(span => span.start <= start && span.end > start)) return false;
+    const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+    return !text.slice(lineStart, start).trim()
+      || (/\s/u.test(text[start - 1] || '') && /\s/u.test(text[end] || '')
+        && /[.!?。！？]$/u.test(text.slice(lineStart, start).trim()));
+  }
   if (!/^(?:\d+[.)]|\(\d+\))$/u.test(String(expected || '').trim())) return true;
   return !/[\p{L}\p{N}_.]/u.test(text[start - 1] || '') && !/\d/u.test(text[end] || '');
 }
@@ -547,7 +559,7 @@ function validNumericAnchorBoundary(text, expected, start, end) {
 function findHeadingLiteral(text, expected, cursor) {
   let index = text.indexOf(expected, cursor);
   while (index >= 0) {
-    if (validNumericAnchorBoundary(text, expected, index, index + expected.length)) return index;
+    if (validHeadingAnchorBoundary(text, expected, index, index + expected.length)) return index;
     index = text.indexOf(expected, index + Math.max(1, expected.length));
   }
   return -1;

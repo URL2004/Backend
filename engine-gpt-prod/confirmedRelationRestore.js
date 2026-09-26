@@ -3,7 +3,7 @@
 const { splitSentenceSpans } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { sentenceSimilarity } = require('./sentenceAlignment');
-const { auditRelationCandidates } = require('./relationAudit');
+const { auditRelationCandidates, hasAdjacentRelationCoverage } = require('./relationAudit');
 
 // A relation heuristic is not proof. Only a judge-confirmed, uniquely grounded
 // distortion may nominate a sentence; mutual, unambiguous one-to-one matching
@@ -33,14 +33,54 @@ function restoreConfirmedRelations(source, output, report) {
     && typeof v.span === 'string' && v.span.length >= 8
     && text.indexOf(v.span) >= 0 && text.indexOf(v.span) === text.lastIndexOf(v.span));
   const replacements = [];
+  // The relation may cover an antecedent plus its next sentence (3 -> 2 is a
+  // legitimate rewrite). Restore only an exact, judge-confirmed paired window,
+  // never an inferred insertion. Full sentence boundaries, stable quotations,
+  // source order and downstream integrity/re-judging remain mandatory.
+  const rawOriginals = splitSentenceSpans(String(source || ''));
+  const completeWindow = (spans, start, end) => spans.some(s => s.start === start)
+    && spans.some(s => s.end === end) && spans.filter(s => s.start >= start && s.end <= end).length <= 3;
+  const protectedText = s => syntaxSpans(s).filter(p => p.spanType !== 'parenthetical')
+    .map(p => s.slice(p.start,p.end)).sort().join('\n');
+  const pairedFindings=(report.violations||[]).filter(v=>['distortion','omission'].includes(v.type)
+    && v.repairable===true && v.grounding==='unique_exact_span');
+  for (const v of pairedFindings) {
+    if (replacements.length >= limit || v.origin !== 'introduced' || v.relationGrounded !== true
+        || !['actor_action_target','condition_result','quantity_target','variable_definition',
+          'antecedent','modality_negation_causality'].includes(v.relation)) continue;
+    const a=String(v.sourceSpan||''),b=String(v.candidateSpan||'');
+    const from=String(source).indexOf(a),start=text.indexOf(b),end=start+b.length;
+    if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
+      ||from<0||start<0||String(source).indexOf(a,from+1)>=0||text.indexOf(b,start+1)>=0
+      ||!completeWindow(rawOriginals,from,from+a.length)||!completeWindow(results,start,end)
+      // Multi-sentence paraphrases need not share single-sentence surface
+      // similarity. This is proposal retrieval only; the exact paired judge
+      // finding and the caller's fresh semantic pass are the safety gates.
+      ||sentenceSimilarity(a,b)<.35||protectedText(a)!==protectedText(b)
+      ||hasAdjacentRelationCoverage(a,b,text)
+      ||[a,b].some(s=>require('./layoutStructure').buildLineRecords(s).some(r=>!r.blank&&r.role!=='prose'))
+      ||replacements.some(r=>start<r.end&&end>r.start||from<=r.sourceStart)
+      ||replacements.reduce((n,r)=>n+r.end-r.start,0)+b.length>text.length*.3)continue;
+    replacements.push({start,end,text:a,sourceStart:from,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
+  }
   for (let i = 0; i < results.length && replacements.length < limit; i++) {
     const target = results[i];
-    if (!violations.some(v => { const start = text.indexOf(v.span); return start >= target.start && start + v.span.length <= target.end; })) continue;
-    if (!candidates.some(c => c.outputOrdinal === i + 1 && ['certainty_scope_candidate', 'comparison_negation_candidate', 'action_direction_candidate', 'technical_concept_substitution_candidate'].includes(c.code))) continue;
+    if(replacements.some(r=>target.start<r.end&&target.end>r.start))continue;
+    const located = violations.filter(v => { const start = text.indexOf(v.span); return start >= target.start && start + v.span.length <= target.end; });
+    if (!located.length) continue;
+    // A paired, introduced relation finding is stronger than a keyword hint.
+    // It still needs the same reciprocal, unambiguous sentence alignment below;
+    // a guessed source span or merged/split target is never enough to restore.
+    const paired = located.filter(v => v.origin === 'introduced' && v.relationGrounded === true
+      && ['actor_action_target','condition_result','quantity_target','variable_definition',
+        'modality_negation_causality'].includes(v.relation)
+      && v.candidateSpan === target.text);
+    if (!paired.length && !candidates.some(c => c.outputOrdinal === i + 1 && ['certainty_scope_candidate', 'comparison_negation_candidate', 'action_direction_candidate', 'technical_concept_substitution_candidate'].includes(c.code))) continue;
     const ranked = originals.map((s, index) => ({ index, score: sentenceSimilarity(s.text, target.text) })).sort((a,b) => b.score-a.score);
     const best = ranked[0];
     if (!best || best.score < .55 || (ranked[1] && best.score - ranked[1].score < .08)) continue;
     const original = originals[best.index];
+    if (paired.length && !paired.some(v => v.sourceSpan === original.text)) continue;
     if (original.prefixes?.some(label => text.indexOf(label.trim()) >= target.start)) continue;
     const reverse = results.map((s,index) => ({ index, score: sentenceSimilarity(original.text, s.text) })).sort((a,b) => b.score-a.score);
     if (reverse[0].index !== i || (reverse[1] && reverse[0].score - reverse[1].score < .08)) continue;
@@ -51,7 +91,7 @@ function restoreConfirmedRelations(source, output, report) {
     replacements.push({ start: target.start, end: target.end, text: original.text, sourceIndex: best.index });
   }
   let restored = text;
-  for (const r of replacements.reverse()) restored = restored.slice(0,r.start) + r.text + restored.slice(r.end);
+  for (const r of replacements.sort((a,b)=>b.start-a.start)) restored = restored.slice(0,r.start) + r.text + restored.slice(r.end);
   return { text: restored, applied: restored !== text, restoredCount: replacements.length };
 }
 

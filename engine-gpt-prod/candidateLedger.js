@@ -101,7 +101,7 @@ function createCandidateLedger({ enabled = true, assess, source = null, requireS
     return entry;
   }
 
-  function chooseFinal(currentId) {
+  function chooseFinal(currentId, { knownViolations = [] } = {}) {
     if (!enabled) return { ...selection, entry: null };
     const current = entries.find(entry => entry.id === currentId) || entries[entries.length - 1] || null;
     if (!current) {
@@ -111,7 +111,14 @@ function createCandidateLedger({ enabled = true, assess, source = null, requireS
       };
       return { ...selection, entry: null };
     }
-    const eligible = entries.filter(entry => entry.eligible);
+    // A later exact finding may also invalidate an older "pass". Do not
+    // resurrect that same damaged passage merely because its earlier judge
+    // missed it. Omission fallbacks conservatively require the original span.
+    const contradicted = entry => knownViolations.some(v => v?.origin === 'introduced'
+      && v.repairable === true && (v.type === 'omission'
+        ? !v.sourceSpan || !entry.text.includes(v.sourceSpan)
+        : v.candidateSpan && entry.text.includes(v.candidateSpan)));
+    const eligible = entries.filter(entry => entry.eligible && !contradicted(entry));
     const best = eligible.reduce((winner, candidate) => (
       !winner || compareCandidatePriority(candidate, winner) > 0 ? candidate : winner
     ), null);

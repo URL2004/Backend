@@ -1,8 +1,8 @@
 'use strict';
 
-const { splitSentences } = require('../engine/koreanText');
+const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v5';
+const VERSION = 'relation-candidates-v6-ownership';
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
@@ -46,12 +46,29 @@ function auditRelationCandidates(source, outputText) {
     }
   }
   const originals = splitSentences(before);
-  for (const [outputIndex, sentence] of splitSentences(after).entries()) {
+  const rewritten = splitSentences(after);
+  for (const [outputIndex, sentence] of rewritten.entries()) {
     const matched = closestSentence(originals, sentence);
-    if (!matched || matched.similarity < 0.42 || matched.sentence === sentence) continue;
+    if (!matched || matched.similarity < 0.42) continue;
     const original = matched.sentence;
     const add = code => candidates.push({ code, sourceOrdinal: matched.index + 1,
       outputOrdinal: outputIndex + 1, sourceSpan: original, outputSpan: sentence });
+    // Unchanged words can point at a different antecedent after a move.
+    if (/^(?:이|그|이러한|그러한)\s*(?:부분|내용|관점|문제|결과)/u.test(sentence)
+        && matched.index > 0 && outputIndex > 0) {
+      const previousMatch = closestSentence(originals, rewritten[outputIndex - 1]);
+      if (previousMatch && previousMatch.similarity >= .6 && previousMatch.index !== matched.index - 1)
+        add('antecedent_ownership_candidate');
+    }
+    if (matched.sentence === sentence) continue;
+    if (/각각/u.test(sentence) && !/각각/u.test(original)
+        && /(?:와|과|및|하고|,)/u.test(original)) add('explicit_mapping_candidate');
+    if (/범위(?:에서|\s*안|\s*내)/u.test(original)
+        && /범위(?:를|에서)?\s*(?:벗어|이탈|초과)/u.test(sentence)
+        && !/(?:벗어|이탈|초과)/u.test(original)) add('condition_domain_candidate');
+    if (/(?:만들|제작|수행|구현|설계)/u.test(original)
+        && /(?:내세우|표방|주장)/u.test(sentence)
+        && !/(?:내세우|표방|주장)/u.test(original)) add('performed_role_candidate');
     // Low/high is not lowest/highest. Other sentences may legitimately supply
     // the ranking evidence, so nominate for full-source judging, never delete
     // the modifier or fail delivery solely on this local signal.
@@ -194,4 +211,23 @@ const escapeRegExp = value => String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$
 const bag = values => JSON.stringify([...values].sort());
 const count = (value, pattern) => (String(value).match(pattern) || []).length;
 
-module.exports = { VERSION, auditRelationCandidates, numberBindings };
+// A selected output window can be only one half of a legitimate sentence
+// split. Material source coverage immediately outside that window makes an
+// insertion/replacement unsafe. This is an abstention signal, NOT proof that
+// the meaning is correct and never converts a failed audit into a pass.
+function hasAdjacentRelationCoverage(sourceSpan, candidateSpan, output) {
+  const text = String(output || ''), target = String(candidateSpan || '');
+  const start = target.length >= 20 ? text.indexOf(target) : -1;
+  if (start < 0 || text.indexOf(target, start + 1) >= 0) return false;
+  const end = start + target.length, spans = splitSentenceSpans(text);
+  const left = spans.filter(s => s.end <= start).slice(-2);
+  const right = spans.filter(s => s.start >= end).slice(0, 2);
+  const local = ngramSet(target, 3);
+  const absent = [...ngramSet(String(sourceSpan || ''), 3)].filter(g => !local.has(g));
+  if (absent.length < 12) return false;
+  const nearby = ngramSet([...left, ...right].map(s => s.text).join(' '), 3);
+  const covered = absent.filter(g => nearby.has(g)).length;
+  return covered >= 12 && covered / absent.length >= .25;
+}
+
+module.exports = { VERSION, auditRelationCandidates, numberBindings, hasAdjacentRelationCoverage };

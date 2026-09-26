@@ -61,8 +61,8 @@ function installMock(t, options = {}) {
       const rewrite = extractPromptDataSection(body.input, 'REWRITE');
       const violation = typeof options.violation === 'function' ? options.violation(body, judgeCalls, rewrite) : false;
       return apiResponse({
-        violations: violation
-          ? [{ type: 'added_claim', span: rewrite, detail: '최종 본문 재검증에서 반환하는 테스트 판정' }]
+        violations: Array.isArray(violation) ? violation : violation
+          ? [{ type: 'added_claim', span: rewrite, detail: '최종 본문 재검증에서 반환하는 테스트 판정', sourceSpan: extractPromptDataSection(body.input, 'SOURCE'), candidateSpan: rewrite, relation: 'other', origin: 'introduced' }]
           : []
       });
     }
@@ -250,5 +250,41 @@ test('최종 심사 HTTP 실패는 완료로 표시하지 않고 검증된 후�
     assert.equal(provenance.verifySemanticValidation(out.result.semanticAudit, {
       source: SOURCE, candidate: out.result.outputText, requireDigest: true
     }).status, 'pass');
+  }
+});
+
+for (const accept of [true, false]) test(`최종 관계 복구는 같은 기한 안에서 재검증하고 ${accept ? '새 pass만 채택한다' : '거절 시 실패를 숨기지 않는다'}`, { concurrency: false }, async t => {
+  const unchanged = '마지막 단계에서는 측정 장비를 점검했습니다. 정리한 자료는 다음 실험에서도 참고할 수 있도록 보관했습니다.';
+  const a = '전압 차이는 정상 범위 안에서 나타나는 차이를 의미합니다.';
+  const b = '전압 차이는 정상 범위를 벗어난 정도를 의미합니다.';
+  const source = SOURCE + ' ' + a + ' ' + unchanged;
+  const mock = installMock(t, {
+    humanize: LATE_RESTORED_OUTPUT + ' ' + b + ' ' + unchanged,
+    violation: (_body, call, rewrite) => {
+      if (call < 2 || (!rewrite.includes(b) && accept)) return [];
+      if (!rewrite.includes(b)) return [{ type: 'added_claim', span: rewrite,
+        sourceSpan: source, candidateSpan: rewrite, relation: 'other', origin: 'introduced', detail: '재검증 실패를 정상으로 덮지 않는 회귀 사례' }];
+      return [{ type: 'distortion', span: b, sourceSpan: a, candidateSpan: b,
+        relation: 'condition_result', origin: 'introduced', detail: '범위 내 차이가 범위 이탈로 바뀌었다.' }];
+    }
+  });
+  const out = await engine.run({ text: source, mode: 'blog', config: config() });
+  assert.equal(out.engineMeta.finalRelationRestorationAttempted, true);
+  assert.equal(out.engineMeta.finalSemanticRevalidationJudgeCallCount, mock.judgeCalls() - 1);
+  assert.equal(mock.calls.filter(c => c.name === 'gpt_prod_judge_repair').length, 0);
+  assert.ok(mock.judgeCalls() >= 3);
+  assert.equal(out.engineMeta.semanticModelCallCount, mock.judgeCalls());
+  assert.equal(out.result.humanizeMeta.callLedger.entries.filter(e => e.stage === 'final_relation_restoration_verification').length, accept ? 1 : 2);
+  assert.equal(provenance.verifySemanticValidation(out.result.semanticAudit, {
+    source, candidate: out.result.outputText, requireDigest: true
+  }).status, accept ? 'pass' : 'fail');
+  if (accept) {
+    assert.ok(out.result.outputText.includes(a));
+    assert.ok(!out.result.outputText.includes(b));
+    assert.equal(out.engineMeta.finalRelationRestoredCount, 1);
+  } else {
+    assert.ok(out.result.outputText.includes(b));
+    assert.equal(out.engineMeta.finalRelationRestorationRejected, true);
+    assert.notEqual(out.status, 'clean');
   }
 });

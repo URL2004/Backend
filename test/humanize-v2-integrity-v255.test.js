@@ -286,6 +286,7 @@ test('구조 모듈이 승인한 원문 역할·읽기 단위 문단 수를 voic
   for (const policy of [
     'source_paragraph_roles',
     'source_readable_units',
+    'cohesive_resume_units',
     'readability_cap',
     'bounded_sensitive_report',
     'bounded_source_paragraphs',

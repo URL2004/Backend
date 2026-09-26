@@ -417,16 +417,18 @@ function restorePostSemanticLayout({
     humanizeContract
   });
   const inlineLabels = restoreInlineLabelBodyLayout(source, paragraphs.text);
+  const conditions = require('./layoutRelations').separateAttestedConditions(source, inlineLabels.text);
   const structuralPass = heading.missingCount === 0
     && inlineLabels.pass
     && bare(paragraphs.text) === bare(heading.text);
   const readabilityPass = paragraphs.pass !== false;
   return {
-    text: inlineLabels.text,
-    applied: heading.applied || paragraphs.applied || inlineLabels.applied,
+    text: conditions.text,
+    applied: heading.applied || paragraphs.applied || inlineLabels.applied || conditions.repairedCount > 0,
     heading,
     paragraphs,
     inlineLabels,
+    conditionBoundaryRepairCount: conditions.repairedCount,
     structuralPass,
     readabilityPass,
     // 구조 무결성과 읽기 권장치를 한 pass에 섞으면 긴 문단 하나만 남아도
@@ -1478,7 +1480,7 @@ function restoreParagraphLayout(options = {}) {
     strength: contract.strength,
     protectedBlocks: (options.chunks || []).filter(c => c.locked).map(c => c.text)
   });
-  if (!extra.splitCount && !extra.boundaryMoveCount) return result;
+  if (!extra.splitCount && !extra.boundaryMoveCount && !extra.dependentLeadRepairCount) return result;
   const count = splitParagraphs(extra.text).length;
   return { ...result, text: extra.text, applied: true, policy: `${result.policy}+${contract.strength === 'advanced' ? 'advanced' : 'basic'}_block_roles`,
     targetCount: count, afterCount: count, explicitParagraphCountAfter: layoutStructure.splitExplicitParagraphs(extra.text).length,
@@ -1580,10 +1582,10 @@ function restoreParagraphLayoutBase({
     };
   }
   const formatFlags = new Set(typeof documentProfile === 'object' ? (documentProfile?.formatProfile?.flags || []) : []);
-  // These facts are only consumed by the resume ownership rule. Computing a
+  // These facts are consumed by resume ownership and continuous narrative rules. Computing a
   // complete source readability report here for every genre repeated all line
   // and paragraph scans, even though its readability result was never used.
-  const titledResumeRecords = profileName === 'resume_application'
+  const titledResumeRecords = ['resume_application', 'personal_essay', 'general_essay'].includes(profileName)
     ? layoutStructure.buildLineRecords(source)
       .filter(record => !record.blank)
     : [];
@@ -1606,15 +1608,27 @@ function restoreParagraphLayoutBase({
     && titledResumeRecords.some(record => ['title', 'heading'].includes(record.role))
     && titledResumeRecords.every(record => ['title', 'heading'].includes(record.role)
       || (record.role === 'prose' && layoutStructure.isSentenceComplete(record.text)));
+  const continuousNarrativeLines = layoutStructure.splitExplicitParagraphs(source).length === 1
+    && resumeReadableUnits.length === titledResumeRecords.length;
+  const proposedResumeGroups = continuousNarrativeLines && mode !== 'polish'
+    ? require('./layoutRelations').groupContinuousResumeLines(resumeReadableUnits) : null;
+  const outputResumeGroups = proposedResumeGroups
+    ? require('./layoutRelations').groupContinuousResumeLines(splitSentences(layoutOutputText)) : null;
+  const continuousResumeGroups = proposedResumeGroups && outputResumeGroups
+    && proposedResumeGroups.length === outputResumeGroups.length ? proposedResumeGroups : null;
   const sourceParagraphs = preserveTitledResumeUnits
     ? titledResumeRecords.map(record => String(record.raw || record.text).trim())
-    : preserveResumeUnits ? resumeReadableUnits : detectedSourceParagraphs;
+    : continuousResumeGroups || (preserveResumeUnits ? resumeReadableUnits : detectedSourceParagraphs);
   const sourceCount = sourceParagraphs.length;
   const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs, readabilityOptions);
   const beforeReadability = layoutStructure.measureParagraphReadability(before, readabilityOptions);
   const readableMinimum = Math.max(sourceReadability.minimumCount, beforeReadability.minimumCount);
-  if (preserveResumeUnits || preserveTitledResumeUnits) {
-    const anchored = buildSourceAnchoredParagraphLayout(layoutSourceText, layoutOutputText, {
+  if (preserveResumeUnits || preserveTitledResumeUnits || continuousResumeGroups) {
+    const anchored = continuousResumeGroups ? {
+      text: outputResumeGroups.join('\n\n'), applied: outputResumeGroups.join('\n\n') !== layoutOutputText,
+      paragraphCount: outputResumeGroups.length, contentPreserved: bare(outputResumeGroups.join(' ')) === bare(layoutOutputText),
+      sourceBoundaryRepairCount: 0, backwardConclusionRepairCount: 0, alignmentConfidence: 1, proseSplitCount: 0
+    } : buildSourceAnchoredParagraphLayout(layoutSourceText, layoutOutputText, {
       readabilityOptions,
       forceParagraphSeparators: true,
       sourceParagraphsOverride: sourceParagraphs
@@ -1625,7 +1639,7 @@ function restoreParagraphLayoutBase({
     return {
       text: anchored.text,
       applied: anchored.applied || outputVisualLayout.repairCount > 0,
-      policy: 'source_readable_units',
+      policy: continuousResumeGroups ? 'cohesive_resume_units' : 'source_readable_units',
       sourceCount,
       beforeCount,
       targetCount: anchored.paragraphCount,

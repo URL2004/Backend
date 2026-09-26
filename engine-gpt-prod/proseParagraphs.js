@@ -104,7 +104,8 @@ function activityTransition(sentences, features, i, strength) {
 // Operates inside ordinary prose runs only, never across headings or existing
 // paragraphs. Inserts whitespace at original sentence offsets; no word moves.
 function splitProseParagraphs(value, { strength = 'basic', protectedBlocks = [] } = {}) {
-  const text = String(value || '');
+  const leadRepair = require('./layoutRelations').repairDependentLeads(value);
+  const text = leadRepair.text;
   if (!text || text.length > 60000) return { text, splitCount: 0, reasons: [] };
   const records = buildLineRecords(text);
   const literals = syntaxSpans(text);
@@ -147,7 +148,8 @@ function splitProseParagraphs(value, { strength = 'basic', protectedBlocks = [] 
   let result=text;
   for(const e of edits.sort((a,b)=>b.left-a.left)) result=result.slice(0,e.left)+'\n\n'+result.slice(e.right);
   const moved = rebalanceReflectionLead(result);
-  return {text:moved.text,splitCount:edits.length,reasons,boundaryMoveCount:moved.count};
+  return {text:moved.text,splitCount:edits.length,reasons,boundaryMoveCount:moved.count,
+    dependentLeadRepairCount: leadRepair.repairedCount};
 }
 
 function rebalanceReflectionLead(text) {

@@ -299,7 +299,7 @@ function installEngineMock(t, options = {}) {
       // quotation is now an uncertain finding and cannot authorize repair.
       const span = options.semanticViolationSpan || (rewrite.includes('미래연구원') ? '미래연구원' : rewrite);
       const violations = semanticViolation
-        ? [{ type: options.semanticViolationType || 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정' }]
+        ? [{ type: options.semanticViolationType || 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정', sourceSpan: extractPromptDataSection(body.input, 'SOURCE'), candidateSpan: rewrite, relation: 'other', origin: 'introduced' }]
         : [];
       return apiResponse({ violations });
     }
@@ -367,7 +367,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.73');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.74');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -383,7 +383,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   assert.equal(out.engineMeta.tonePolicy, 'source_preserve');
   assert.equal(out.engineMeta.semanticJudgeRan, true);
   assert.equal(out.engineMeta.semanticValidationStatus, 'pass');
-  assert.equal(out.engineMeta.semanticValidationVersion, 'semantic-provenance-v1');
+  assert.equal(out.engineMeta.semanticValidationVersion, 'semantic-provenance-v2-layout-relations');
   assert.equal(out.engineMeta.finalCandidateDigest, textDigest(out.result.outputText));
   assert.equal(out.result.semanticValidation.finalCandidateDigest, out.engineMeta.finalCandidateDigest);
   assert.equal(out.engineMeta.discourseAuditVersion, 9);
@@ -914,7 +914,7 @@ test('실제 위치 없는 의미 지적은 수리를 승인하지 않고 최종
   });
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'ungrounded-judge-user', config: config() });
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_judge_repair').length, 0);
-  assert.equal(out.engineMeta.semanticValidationStatus, 'unknown');
+  assert.equal(out.engineMeta.semanticValidationStatus, 'uncertain');
   assert.equal(out.result.semanticAudit.uncertain, true);
   assert.equal(out.engineMeta.finalCandidateDigest, textDigest(out.result.outputText));
   assert.notEqual(out.status, 'blocked');
@@ -1666,7 +1666,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.73');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.74');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

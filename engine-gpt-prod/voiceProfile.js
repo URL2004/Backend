@@ -243,6 +243,7 @@ function auditVoice(sourceProfile, output, {
     'semantic_prose_roles',
     'source_paragraph_roles',
     'source_readable_units',
+    'cohesive_resume_units',
     'readability_cap',
     'bounded_sensitive_report',
     'bounded_source_paragraphs',

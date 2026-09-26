@@ -365,7 +365,8 @@ async function runSemanticDocumentAudit(options) {
   const remaining = deadlineMs ? Math.max(1, deadlineMs - Date.now()) : 0;
   const signal = remaining ? AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(remaining)]) : options.signal;
   return require('./callLedger').withPolicy({ optional: options.optional === true, deadlineMs,
-    stage: options.allowRepair === false ? 'final_semantic_revalidation' : 'semantic_document' },
+    stage: options.auditStage === 'final_relation_restoration_verification'
+      ? options.auditStage : (options.allowRepair === false ? 'final_semantic_revalidation' : 'semantic_document') },
   () => runSemanticDocumentAuditInternal({ ...options, signal }));
 }
 
@@ -470,6 +471,8 @@ async function runSemanticDocumentAuditInternal({
         escalated: report.escalated === true,
         initialViolations: report.initialViolations || [],
         violations: report.violations || [],
+        sourceIssues: report.sourceIssues || [],
+        relationContract: report.relationContract || '',
         selectedJudgeModel: report.selectedJudgeModel || '',
         usage: report.usage || null
       };
@@ -496,7 +499,9 @@ async function runSemanticDocumentAuditInternal({
     reports,
     usage: reports.reduce((acc, report) => addUsageLocal(acc, report.usage), null),
     initialViolations: reports.flatMap(report => report.initialViolations || []),
-    violations: residual.flatMap(report => report.violations || [])
+    violations: residual.flatMap(report => report.violations || []),
+    sourceIssues: reports.flatMap(report => report.sourceIssues || []),
+    relationContract: 'semantic-relations-v2'
   }, source, repairedText, { phase: 'semantic_document', model: [...new Set(reports.map(r => r.selectedJudgeModel).filter(Boolean))].join(',') });
 }
 

@@ -160,7 +160,19 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     && inlineAcademicCitationSignals >= 2
     && academicMethodEvidenceSignals >= 3
     && academicFormalEndingRatio >= 0.45;
-  if (academicAbstractFrame || academicExcerptFrame) {
+  // Qualitative excerpts often lack statistical notation, citations and an
+  // abstract. Require a research population + method + analytic operation,
+  // rather than treating any quoted interview as a paper.
+  const qualitativeMethodFrame = /(?:연구\s*참여자|연구\s*대상|본\s*연구|면담\s*참여자)/u.test(text)
+    && /(?:심층\s*면담|반구조화|질적\s*연구|현상학|근거\s*이론|주제\s*분석|내용\s*분석)/u.test(text)
+    && /(?:자료.{0,24}(?:수집|분석)|코딩|범주(?:화|를|로)|도출|진술.{0,20}분석)/u.test(text);
+  const codedParticipantFrame = new Set([...text.matchAll(/\bP\d{2}\b/gu)].map(m=>m[0])).size >= 2
+    && count(text, /(?:회고|진술|기억하고|설명하였|말하였|면담|참여자)/gu) >= 2
+    && /(?:본\s*사례|판단|해석|분석|협의)/u.test(text)
+    && /[“”‘’]/u.test(text);
+  const qualitativeResearchFrame = compactLength >= 180 && sentences.length >= 4 && firstPersonSignals === 0
+    && (qualitativeMethodFrame || codedParticipantFrame);
+  if (academicAbstractFrame || academicExcerptFrame || qualitativeResearchFrame) {
     scores.academic_paper += 6.25
       + Math.min(academicFramingSignals, 5) * 0.2
       + Math.min(inlineAcademicCitationSignals, 6) * 0.12;
@@ -384,6 +396,15 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   if (directApplicationContextSignals >= 1) {
     add(scores, 'resume_application', Math.min(firstPersonSignals, 3), 0.22);
   }
+  const shortApplicationFrame = compactLength >= 100 && compactLength <= 650
+      && /(?:저는|제가|저의|제\s*(?:경험|강점|역량))/u.test(text)
+      && /(?:경험|수행|담당|기여|역량|강점)/u.test(text)
+      && (/(?:입사\s*(?:초기|후|하면)|지원(?:합니다|했습니다|하였습니다|하게|한\s*이유|동기)|귀사|직무)/u.test(text)
+        || (/저의[^.!?]{0,45}(?:도전|강점)[^.!?]{0,35}경험/u.test(text)
+          && /(?:팀|조직)[^.!?]{0,80}(?:구현|기여|발휘)[^.!?]{0,15}겠습니다/u.test(text)));
+  if (shortApplicationFrame) {
+    scores.resume_application += 3.5;
+  }
 
   // 주차별 `수업 내용 요약 / 내 시합·일상 적용 / 활용 방안` 형식은
   // 명사형 종결을 많이 쓰지만 교사가 학생을 관찰한 세특이 아니라 학생의
@@ -583,11 +604,25 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   }
   // A spoken presentation has greetings too, but no mail recipient/reply action.
   // Require both the speaker's opening and closing, not a topical mention of talks.
-  const presentationFrame = /(?:발표|설명)(?:를|을)?\s*(?:하겠습니다|시작하겠습니다)/u.test(text.slice(0, 400))
-    && /(?:발표|설명)(?:를|을)?\s*마치(?:겠습니다|도록\s*하겠습니다)/u.test(text.slice(-300));
-  if (presentationFrame && mailApologyRequestSignals === 0) {
+  const presentationFrame = /(?:발표|설명|입론)(?:를|을)?\s*(?:하겠습니다|시작하겠습니다)/u.test(text.slice(0, 400))
+    && /(?:발표|설명|입론)(?:를|을)?\s*마치(?:겠습니다|도록\s*하겠습니다)/u.test(text.slice(-300));
+  const debateFrame = /(?:찬성|반대)\s*측.{0,30}(?:입론|토론)/u.test(text.slice(0, 500))
+    && /(?:근거|논거|쟁점|주장)/u.test(text);
+  if ((presentationFrame || debateFrame) && mailApologyRequestSignals === 0) {
     scores.mail_notice = Math.min(scores.mail_notice, 1.65);
     scores.long_explainer += 3;
+  }
+  const intimateMessageFrame = count(text, /(?:네가|너를|너와|너에게|네\s*마음|우리(?:가|는))/gu) >= 5
+    && count(text, /(?:보고\s*싶|좋아해|함께|소중|행복|마음|만났)/gu) >= 2
+    && count(text, /(?:했어|같아|아니잖아|할게|좋아해|싶어)[.!?\s]/gu) >= 3
+    && !/(?:고객|귀사|회신|담당자|발송|이메일|문의\s*드립니다)/u.test(text);
+  const personalLetterFrame = (/(?:^|\n)\s*(?:사랑하는\s*)?(?:[가-힣]{2,10}에게|엄마|아빠|어머니|아버지|친구야)[,，!\s]/u.test(text.slice(0, 150)) || intimateMessageFrame)
+    && /(?:너와|네가|너에게|우리|엄마|아빠)/u.test(text)
+    && /(?:고마|보고\s*싶|함께|기억|마음)/u.test(text)
+    && mailApologyRequestSignals === 0 && applicationIntentSignals === 0;
+  if (personalLetterFrame) {
+    scores.personal_essay += 4;
+    scores.review_blog = Math.min(scores.review_blog, 1.5);
   }
 
   const quoteLines = verseCandidateLines.filter(line => /^(?:[>“"'‘]|[-*]\s)/u.test(line)).length;
@@ -853,6 +888,10 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.report_assignment += 7.2;
     scores.resume_application = Math.min(scores.resume_application, 1.8);
   }
+  if (qualitativeResearchFrame) {
+    scores.long_explainer = Math.min(scores.long_explainer, 4.3);
+    scores.report_assignment = Math.min(scores.report_assignment, 3.5);
+  }
   const ranked = CONTENT_GENRES
     .filter(profile => profile !== 'unknown')
     .map(profile => ({ profile, score: scores[profile] }))
@@ -951,6 +990,10 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       academicFormalEndingRatio: round(academicFormalEndingRatio, 4),
       academicAbstractFrame,
       academicExcerptFrame,
+      qualitativeResearchFrame,
+      debateFrame,
+      personalLetterFrame,
+      shortApplicationFrame,
       reportHeadingSignals,
       assignmentProblemHeadingSignals,
       universityApplicationSignals,

@@ -175,6 +175,9 @@ function classifyLine(value, context = {}) {
   // 이를 산문으로 보내면 모델이 주변 제목·목록과 합쳐 구조를 바꾸므로
   // 내용 없는 마크다운 제어 행으로 잠근다.
   if (isStandaloneMarkdownControlLine(text)) return 'code';
+  // Equations are literal material, never nominal section headings. Reuse the
+  // existing code/literal protection through chunking and the final audit.
+  if (isFormulaLine(text)) return 'code';
   if (legalClauseParts(text)) return 'legal_clause';
   if (isExactMetadataLine(text)) return 'signature';
   if (context.signatureLike) return 'signature';
@@ -191,6 +194,7 @@ function classifyLine(value, context = {}) {
   if (isColonTitleLine(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
+  if (isDependentLead(text) && context.next) return 'prose';
   if (isContextualProseContinuation(text, context.next?.text)) return 'prose';
   if (context.labelGroupHeading) return 'heading';
   if (isContextualStrongNominalHeading(text, context)) return 'heading';
@@ -252,7 +256,7 @@ function isReadingResponseTitle(text) {
 
 function isKnownHeadingLine(value) {
   const text = visibleTrim(value);
-  if (!text) return false;
+  if (!text || isFormulaLine(text)) return false;
   if (isBracketHeadingLine(text)) return true;
   if (text.length > 140) return false;
   // 중첩 목록에서 본문이 없는 굵은 라벨은 실제로 다음 하위 항목을 묶는
@@ -261,7 +265,8 @@ function isKnownHeadingLine(value) {
   if (/^\s*[-*+]\s+(?:\*\*[^*\n]{1,120}\*\*|__[^_\n]{1,120}__)\s*$/u.test(text)) return true;
   if (/^#{1,6}\s+\S/u.test(text)) return true;
   if (isReadingResponseTitle(text)) return true;
-  if (/^(?:지은이|저자|줄거리|책\s*소개|작품\s*소개)$/u.test(text)) return true;
+  if (/^(?:지은이|저자|줄거리|책\s*소개|작품\s*소개|후기)$/u.test(text)) return true;
+  if (/^[A-Za-z]?[①-⑳]\s*(?:Why|What|How|When|Where|Who)\b/iu.test(text)) return true;
   if (/^[\[【<][^\]】>\n]{1,80}[\]】>]$/u.test(text)) return true;
   // An explicit numbered section remains a heading with a presentational copula.
   // Do not freeze arbitrary bracketed nouns followed by ordinary prose.
@@ -307,13 +312,14 @@ function isStrongNominalSectionHeading(value) {
   const text = visibleTrim(value);
   if (text.length < 4 || text.length > 70 || /[.!?。！？:：;；]$/u.test(text)) return false;
   if (/(?:합니다|했습니다|됩니다|되었습니다|이다|였다|있다|없다|않다|한다|했다|해요|예요|이에요)$/u.test(text)) return false;
-  return /(?:경험|역량|목표|계획|성과|전략|정체성|문제\s*해결|커뮤니케이션|업무\s*이해|직무\s*이해|지원\s*동기|활동\s*내용|배운\s*점|느낀\s*점)$/u.test(text);
+  return /(?:경험|역량|목표|계획|성과|전략|정체성|문제\s*해결|커뮤니케이션|이해|지원\s*동기|활동\s*내용|배운\s*점|느낀\s*점)$/u.test(text);
 }
 
 function isContextualStrongNominalHeading(text, context = {}) {
   if (!isStrongNominalSectionHeading(text) || !context.next) return false;
   const nextText = String(context.next.text || '').trim();
-  if (nextText.length < Math.max(70, Math.ceil(text.length * 1.45))) return false;
+  const bodyMinimum = text.length <= 30 && isSentenceComplete(nextText) ? 18 : 70;
+  if (nextText.length < Math.max(bodyMinimum, Math.ceil(text.length * 1.45))) return false;
   if (context.blankBefore) return true;
   if (['table', 'list', 'flow', 'quote'].includes(String(context.previous?.role || ''))) return true;
   const previousText = String(context.previous?.text || '').trim();
@@ -331,7 +337,7 @@ function isStandaloneMarkdownControlLine(value) {
  * 잠그지 않도록 길이와 다음 본문 비율을 동시에 제한한다.
  */
 function isStandaloneSectionHeading(text, context = {}) {
-  if (isProseContinuation(text)) return false;
+  if (isProseContinuation(text) || isDependentLead(text) || isFormulaLine(text)) return false;
   // 제목 바로 다음 행에 본문이 이어지는 워드·웹 입력도 흔하다. 앞뒤 모두
   // 빈 행이어야 한다는 옛 조건은 이런 정상 소제목을 산문으로 내려 모델이
   // 이전 문단 끝에 합치게 했다. 앞쪽 단락 경계와 뒤의 충분한 본문을 함께
@@ -452,6 +458,7 @@ function isBracketHeadingLine(value) {
 }
 
 function isGenericTitle(text, context = {}) {
+  if (isFormulaLine(text) || isDependentLead(text)) return false;
   if (!context.firstContent || !context.next) return false;
   if (text.length < 2 || text.length > 100) return false;
   if (/[.!?。！？]\s*["”’')\]]*$/u.test(text)) return false;
@@ -486,6 +493,25 @@ function looksLikeUnpunctuatedProse(value) {
     || /(?:하며|하고|되어|이고|이지만|했지만|때문에|통해|위해)\s+\S/u.test(text);
   const longDeclarative = text.length > 45 && words.length >= 7;
   return definitionalCopula || longDeclarative || (text.length > 55 && multiClause);
+}
+
+function isFormulaLine(value) {
+  const text = visibleTrim(value);
+  if (!text || text.length > 600 || /[가-힣]/u.test(text)) return false;
+  // Existing statistical data rows retain their stat_line contract rather
+  // than acquiring a second, incompatible literal-code role.
+  if (/\b(?:M|SD|SE|df|p|F|t|r|N)\s*[=<>≤≥]/u.test(text) && /[,;]/u.test(text)) return false;
+  if (/^(?:\\\[|\\\]|\${1,2}$)/u.test(text)) return true;
+  return /[=∫∑∏≈≠≤≥]/u.test(text) && /[\d_()[\]{}α-ωΑ-Ω^]/u.test(text)
+    && !/[.!?]\s*$/u.test(text) && !/https?:\/\//u.test(text);
+}
+
+function isDependentLead(value) {
+  const text = visibleTrim(value);
+  // An unfinished topic/condition clause needs its following predicate. A
+  // short label like "운영 계획" is not covered, even at a paragraph boundary.
+  return text.length >= 6 && text.length <= 120 && !/[.!?。！？:：]$/u.test(text)
+    && /(?:에서는|중에서는|에 대해서는|에 관해서는|인 경우에는|한다면|된다면|이므로|이기 때문에)$/u.test(text);
 }
 
 // A non-finite prose clause is not a heading merely because its full stop is on
@@ -1072,6 +1098,8 @@ module.exports = {
   shouldPreserveLineBoundary,
   isStructuralRole,
   isKnownHeadingLine,
+  isFormulaLine,
+  isDependentLead,
   isTitleContinuation,
   isExactMetadataLine,
   isBracketHeadingLine,

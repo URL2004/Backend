@@ -1,13 +1,14 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const VERSION = 'semantic-provenance-v1';
+const VERSION = 'semantic-provenance-v2-layout-relations';
+const { relationDigest } = require('./layoutRelations');
 const textDigest = value => createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
 
 // Whitespace-run projection. Replacing one whitespace run with another
-// (space, line break, paragraph gap, CRLF) never changes a token or Korean
-// word segmentation, so a judge verdict for the exact text also holds for
-// this projection. Inserting or removing whitespace between characters is
+// (space, line break, paragraph gap, CRLF) preserves tokens but can destroy
+// ownership in tables/lists. Reuse also requires the relation digest below.
+// Inserting or removing whitespace between characters is
 // NOT covered: `한 뒤` and `한뒤` project to different digests.
 const layoutProjection = value => String(value || '').replace(/\s+/gu, ' ').trim();
 const layoutDigest = value => textDigest(layoutProjection(value));
@@ -22,6 +23,8 @@ function bindSemanticValidation(report, source, candidate, { model = '', phase =
       candidateDigest: textDigest(candidate),
       sourceLayoutDigest: layoutDigest(source),
       candidateLayoutDigest: layoutDigest(candidate),
+      sourceRelationDigest: relationDigest(source),
+      candidateRelationDigest: relationDigest(candidate),
       status: value.ran !== true ? 'skipped' : value.uncertain === true ? 'uncertain'
         : value.pass === true && value.repairRejected !== true ? 'validated_pass' : 'validated_fail',
       model: String(model || value.selectedJudgeModel || '').slice(0, 80),
@@ -38,13 +41,15 @@ function digestMatch(validation, { source, candidate }) {
   if (!validation.sourceLayoutDigest || !validation.candidateLayoutDigest) return '';
   const layout = (source == null || validation.sourceLayoutDigest === layoutDigest(source))
     && (candidate == null || validation.candidateLayoutDigest === layoutDigest(candidate));
-  return layout ? 'whitespace_layout' : '';
+  const relations = layout
+    && (source == null || validation.sourceRelationDigest === relationDigest(source))
+    && (candidate == null || validation.candidateRelationDigest === relationDigest(candidate));
+  return relations ? 'whitespace_layout' : '';
 }
 
 function verifySemanticValidation(report, { source, candidate, requireDigest = false } = {}) {
   if (!report || typeof report !== 'object') return { status: 'unknown', rank: 1 };
   if (report.ran === false || report.skipped === true) return { status: 'skipped', rank: 1 };
-  if (report.uncertain === true) return { status: 'unknown', rank: 1 };
   const validation = report.validation;
   let materialization = '';
   if (validation?.version === VERSION) {
@@ -52,6 +57,7 @@ function verifySemanticValidation(report, { source, candidate, requireDigest = f
     if (!materialization) return { status: 'stale', rank: 1 };
     if (validation.status === 'skipped') return { status: 'skipped', rank: 1 };
   } else if (requireDigest) return { status: 'unknown', rank: 1 };
+  if (report.uncertain === true || validation?.status === 'uncertain') return { status: 'uncertain', rank: 1, materialization };
   if (report.pass === false || report.repairRejected === true) return { status: 'fail', rank: 0, materialization };
   if (report.ran === true && report.pass === true) return { status: 'pass', rank: 2, materialization };
   return { status: 'unknown', rank: 1 };
@@ -72,7 +78,7 @@ function projectSemanticValidation(report, { source, candidate, project } = {}) 
 }
 
 function finalValidationWarnings(report, validation) {
-  if (report?.ran !== true || !['stale', 'unknown'].includes(validation?.status)) return [];
+  if (report?.ran !== true || !['stale', 'unknown', 'uncertain'].includes(validation?.status)) return [];
   return [{
     code: validation.status === 'stale' ? 'semantic_validation_stale' : 'semantic_validation_unconfirmed',
     severity: 'warning',

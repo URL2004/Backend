@@ -222,7 +222,7 @@ test('full humanization delivers the verified relation fix instead of restoring 
     if (name === 'gpt_prod_humanize_result') json = { outputText: before };
     else if (name === 'gpt_prod_semantic_judge') {
       const rewrite = extractPromptDataSection(body.input, 'REWRITE');
-      json = { violations: rewrite.includes(violations[0].span) ? violations : [] };
+      json = { violations: rewrite.includes(violations[0].span) ? violations.map(v => ({ ...v, sourceSpan: sourceRelation, candidateSpan: wrongRelation, relation: 'condition_result', origin: 'introduced' })) : [] };
     } else if (name === 'gpt_prod_judge_repair') json = { outputText: candidate, repaired: true, notes: [] };
     else if (/retry$/u.test(name)) json = { outputText: extractPromptDataSection(body.input, 'CURRENT') || before, safeChangeFound: false, notes: [] };
     else throw new Error(`unexpected schema: ${name}`);

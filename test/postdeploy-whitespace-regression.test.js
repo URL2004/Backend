@@ -23,7 +23,8 @@ test('whitespace padding cannot enable short-prose statistical support', () => {
 test('whitespace padding cannot disable eligible prose or alter its numeric support', () => {
   const prose = Array.from({ length: 5 }, (_, i) => letters.slice(i * 120, (i + 1) * 120) + '.').join(' ');
   const expected = assist.applyAssist(low, prose, options);
-  assert.equal(expected.probability, 49);
+  assert.equal(expected.probability, 18);
+  assert.equal(expected.statisticalReference.scoreApplied, false);
   for (const whitespace of [' '.repeat(2700), '\t'.repeat(2700), '\u00a0'.repeat(2700), '\r\n'.repeat(1400)]) {
     assert.deepEqual(assist.applyAssist(low, prose.replace(' ', whitespace), options), expected);
   }

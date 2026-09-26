@@ -71,8 +71,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.73';
-const DETECT_VERSION = 'gpt-detect-v1.42';
+const VERSION = 'gpt-prod-v2.5.74';
+const DETECT_VERSION = 'gpt-detect-v1.43';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -3749,7 +3749,7 @@ async function runEngine({
         const finalAuditStartedAt = Date.now();
         const priorReport = semanticReport;
         try {
-          const recheck = await qualityV2.runSemanticDocumentAudit({
+          let recheck = await qualityV2.runSemanticDocumentAudit({
             source: rawSource,
             outputText,
             lang,
@@ -3764,7 +3764,45 @@ async function runEngine({
             deadlineMs: finalDeadlineMs
           });
           addSupplementalUsage(recheck.usage, 'final_semantic_revalidation');
-          const recheckCallCount = semanticCallCount(recheck);
+          let recheckCallCount = semanticCallCount(recheck);
+          // A final verdict can reveal a relation missed by an earlier judge.
+          // One exact paired-window restoration is permitted, but only while
+          // enough of the SAME 120s final budget remains to verify it. No free
+          // rewrite, extra repair loop, guessed insertion or unverified pass.
+          const recheckElapsed = Date.now() - finalAuditStartedAt;
+          if (recheck.pass === false && recheck.verificationCompleted === true
+              && !recheck.uncertain && !signal?.aborted
+              && finalDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2)) {
+            const restored = require('./confirmedRelationRestore').restoreConfirmedRelations(rawSource, outputText, recheck);
+            if (restored.applied && candidateIntegrity.auditCandidateIntegrity({
+              source: rawSource, before: outputText, candidate: restored.text,
+              documentProfile, mode: selectedMode
+            }).pass && preservesFinalStructure(rawSource, restored.text, chunks, chunkPlan, boundaryRepair)) {
+              finalSemanticRevalidation.relationRestorationAttempted = true;
+              try {
+                const verified = await qualityV2.runSemanticDocumentAudit({
+                  source: rawSource, outputText: restored.text, lang, signal,
+                  config: cfg, allowedExtra, mode: selectedMode, safetyIdentifier: safetyId,
+                  documentProfile, allowRepair: false, deadlineMs: finalDeadlineMs,
+                  auditStage: 'final_relation_restoration_verification',
+                  discourseSignals: ['final_confirmed_relation_restoration']
+                });
+                addSupplementalUsage(verified.usage, 'final_relation_restoration_verification');
+                recheckCallCount += semanticCallCount(verified);
+                if (verified.verificationCompleted === true && verified.pass === true
+                    && semanticProvenance.verifySemanticValidation(verified, {
+                      source: rawSource, candidate: restored.text, requireDigest: true
+                    }).status === 'pass') {
+                  outputText = restored.text;
+                  recheck = verified;
+                  finalSemanticRevalidation.relationRestoredCount = restored.restoredCount;
+                } else finalSemanticRevalidation.relationRestorationRejected = true;
+              } catch (error) {
+                addSupplementalUsage(error.usage, 'final_relation_restoration_verification');
+                finalSemanticRevalidation.relationRestorationRejected = true;
+              }
+            }
+          }
           finalSemanticRevalidation.judgeCallCount = recheckCallCount;
           // 판정 전용 호출은 본문을 바꾸지 않는다. 만약 바뀌었다면 그 판정은
           // 최종 문자열에 대한 것이 아니므로 사용하지 않는다.
@@ -3801,9 +3839,13 @@ async function runEngine({
       }
     }
   }
-  if (finalSemanticRevalidation.priorStatus === 'stale' && !finalSemanticRevalidation.applied) {
-    const currentEntry = recordCandidateCheckpoint('final_revalidation_unavailable', semanticReportForCandidate(semanticReport));
-    const choice = candidateLedger.chooseFinal(currentEntry?.id);
+  if (finalSemanticRevalidation.priorStatus === 'stale'
+      && (!finalSemanticRevalidation.applied || semanticReport.pass !== true)) {
+    const currentEntry = recordCandidateCheckpoint(finalSemanticRevalidation.applied
+      ? 'final_revalidation_not_passed' : 'final_revalidation_unavailable', semanticReportForCandidate(semanticReport));
+    const choice = candidateLedger.chooseFinal(currentEntry?.id, {
+      knownViolations: finalSemanticRevalidation.applied ? semanticReport.violations || [] : []
+    });
     if (choice.applied && choice.entry?.semanticStatus === 'pass') {
       outputText = choice.entry.text;
       semanticReport = choice.entry.semanticReport;
@@ -4369,6 +4411,11 @@ async function runEngine({
     finalSemanticRevalidationReason: String(finalSemanticRevalidation.reason || ''),
     finalSemanticRevalidationPriorStatus: String(finalSemanticRevalidation.priorStatus || ''),
     finalSemanticRevalidationJudgeCallCount: Number(finalSemanticRevalidation.judgeCallCount || 0),
+    finalRelationRestorationAttempted: finalSemanticRevalidation.relationRestorationAttempted === true,
+    finalRelationRestoredCount: Number(finalSemanticRevalidation.relationRestoredCount || 0),
+    finalRelationRestorationRejected: finalSemanticRevalidation.relationRestorationRejected === true,
+    semanticSourceIssueCount: (semanticReport.sourceIssues || []).length,
+    semanticRelationContract: String(semanticReport.relationContract || ''),
     semanticRepairStyleWarnings: semanticReport.repairStyleWarnings || [],
     semanticUnchangedRepairCount: semanticReport.unchangedRepairCount || 0,
     semanticSectionCount: Number(semanticReport?.sectionCount || 0),

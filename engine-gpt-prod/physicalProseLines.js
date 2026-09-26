@@ -52,6 +52,8 @@ function repairPhysicalProseLines(value) {
     const referenceHeading = row.text.replace(/^#{1,6}\s+/u, '').replace(/\s+#+$/u, '');
     if (!fenced && (REFERENCE.test(referenceHeading) || isRefHeadingLine(referenceHeading))) references = true;
     row.protected = references || fenced || EXPLICIT.test(row.text)
+      || require('./documentFurniture').isCaption(row.text)
+      || require('./documentFurniture').isBylineHeader(row.text)
       || /^\d+(?:\.\d+)*[.)](?!\d)[ \t]*(?=[가-힣A-Za-z“‘"'「『《〈])/u.test(row.text)
       || /^[A-Za-z][.)](?=\s*\S)/u.test(row.text)
       || standaloneQuotes.some(span => span.start <= row.end && span.end > row.start)

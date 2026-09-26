@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 30;
+const VERSION = 31;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -159,9 +159,11 @@ function auditAndSanitizeSource(value) {
   const wrapper = rewriteWrapper || documentQuoteWrapper;
   const workingSource = wrapper?.payload || original;
   const scriptFrame = require('./scriptStructure').detectScriptStructure(workingSource).isScript;
+  const furniture = scriptFrame ? { text: workingSource, removed: [] }
+    : require('./documentFurniture').removeRunningHeaders(workingSource);
   const extractedLayout = scriptFrame
-    ? { text: workingSource, removedPages: [], changes: [] }
-    : repairExtractedPageLayout(workingSource);
+    ? { text: furniture.text, removedPages: [], changes: [] }
+    : repairExtractedPageLayout(furniture.text);
   // Canonicalize only proven physical row seams before assigning paragraph,
   // title or list ownership. The helper preserves all non-whitespace content
   // and explicit structure; both the planner and engine use this same baseline.
@@ -183,6 +185,7 @@ function auditAndSanitizeSource(value) {
     removals.push(issue('source_pdf_page_marker_removed', lineOrdinal, 'removed',
       '연속된 페이지 번호를 본문에서 분리했어요. 문서의 절 번호와 수치는 유지했어요.'));
   }
+  for (const item of furniture.removed) removals.push(issue(item.code, item.lineOrdinal, item.action, item.message));
   const notices = [...extractedLayout.changes, ...physicalLayout.changes]
     .map(item => issue(item.code, item.lineOrdinal, item.action, item.message));
   const kept = [];

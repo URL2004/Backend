@@ -50,6 +50,10 @@ function auditCandidateIntegrity({
   const current = String(before || '');
   const after = String(candidate || '');
   if (!after.trim()) add('empty_candidate');
+  if (require('./clauseCoverage').droppedSourceContrastLead(source, current, after)) {
+    add('source_contrast_lead_deleted');
+  }
+  if (introducedExactProseCopy(source, current, after)) add('source_sentence_copy_added');
 
   const beforeKorean = koreanRefinement.analyzeKoreanRefinement({
     source,
@@ -367,7 +371,30 @@ function koreanIntegrityWorsened({ before, candidate, beforeCounts, candidateCou
   return !(onlyOneReviewNotice && materiallyImproved);
 }
 
+// Reject a repair that copies an already source/current-owned full sentence
+// into another place. Unlike fuzzy deduplication, this does not delete text or
+// collapse distinct claims, quotations, code, headings, tables or list items.
+function introducedExactProseCopy(source, before, candidate) {
+  const { splitSentenceSpans } = require('../engine/koreanText');
+  const { syntaxSpans } = require('../engine/textSyntax');
+  const layout = require('./layoutStructure');
+  const counts = value => {
+    const text=String(value||''),literals=syntaxSpans(text),map=new Map();
+    for(const s of splitSentenceSpans(text)) {
+      if(s.text.length<30||!layout.isSentenceComplete(s.text)
+          ||literals.some(l=>l.start<s.end&&l.end>s.start)
+          ||layout.buildLineRecords(s.text).some(r=>!r.blank&&r.role!=='prose'))continue;
+      const key=s.text.normalize('NFKC').replace(/[\s\p{P}]/gu,'');
+      map.set(key,(map.get(key)||0)+1);
+    }
+    return map;
+  };
+  const a=counts(source),b=counts(before),c=counts(candidate);
+  return [...c].some(([key,n])=>n>=2&&(a.has(key)||b.has(key))&&n>Math.max(a.get(key)||0,b.get(key)||0));
+}
+
 module.exports = {
+  introducedExactProseCopy,
   auditCandidateIntegrity,
   koreanIntegrityWorsened,
   fingerprintRisk,

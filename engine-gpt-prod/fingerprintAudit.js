@@ -9,7 +9,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 16;
+const VERSION = 17;
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
@@ -224,6 +224,12 @@ const SEMANTIC_RELATION_RULES = Object.freeze([
     retained: /자체보다/u
   },
   {
+    family: 'priority_changed_to_exclusion',
+    source: /자체보다/u,
+    output: /(?:이|가)\s*아니라/u,
+    retained: /자체보다/u
+  },
+  {
     family: 'additive_scope_changed_to_exclusion',
     source: /(?:에|로)\s*그치지\s*않고/u,
     output: /(?:이|가)\s*아니라/u,
@@ -325,6 +331,8 @@ function detectSemanticRelationShifts(source, output) {
       for (const rule of SEMANTIC_RELATION_RULES) {
         if (!matches(rule.source, sourceSentence)) continue;
         if (rule.family === 'difficulty_strengthened_to_impossibility'
+            && matches(rule.output, sourceSentence)) continue;
+        if (rule.family === 'priority_changed_to_exclusion'
             && matches(rule.output, sourceSentence)) continue;
         const shifted = matches(rule.output, alignedText)
           && !matches(rule.retained, alignedText);

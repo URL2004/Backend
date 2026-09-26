@@ -186,6 +186,10 @@ function classifyLine(value, context = {}) {
   // 이를 산문으로 보내면 모델이 주변 제목·목록과 합쳐 구조를 바꾸므로
   // 내용 없는 마크다운 제어 행으로 잠근다.
   if (isStandaloneMarkdownControlLine(text)) return 'code';
+  // Captions and title/byline furniture are literal metadata, not a new
+  // section or an editable continuation of the preceding body sentence.
+  const furniture = require('./documentFurniture');
+  if (furniture.isCaption(text) || furniture.isBylineHeader(text)) return 'signature';
   // Equations are literal material, never nominal section headings. Reuse the
   // existing code/literal protection through chunking and the final audit.
   if (isFormulaLine(text)) return 'code';
@@ -289,6 +293,12 @@ function isKnownHeadingLine(value) {
   // 이 경계를 놓치면 다음 본문과 합쳐지고 이후 재처리에서도 손상이
   // 원문처럼 굳어지므로 제목 행으로 잠근다.
   if (/^[（(]\d{1,2}[）)]\s+[^.!?。！？\n]{2,100}$/u.test(text)) return true;
+  // Hyphenated subsection IDs are structural in the same way as 2.1.
+  // Keep complete numbered prose editable; only a nominal, standalone label
+  // is protected. Otherwise masking the prefix changes list -> heading and a
+  // later meaning repair is rejected for a fictitious heading loss.
+  const hyphenSection = text.match(/^\d{1,2}(?:\s*-\s*\d{1,2}){1,3}[.)]?\s+([^.!?。！？\n]{2,100})$/u);
+  if (hyphenSection && !isSentenceComplete(hyphenSection[1])) return true;
   const numberedBody = text.match(/^\d{1,2}[.)]\s*([\s\S]+)$/u)?.[1] || '';
   // `1. 소제목`과 `1. 완결된 본문 문장`을 길이만으로 함께 잠그지 않는다.
   // 번호 뒤에 충분히 긴 완결 서술이 있으면 목록 본문이며, 청커가 번호만

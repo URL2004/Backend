@@ -2,7 +2,7 @@
 
 const { syntaxSpans } = require('../engine/textSyntax');
 
-const VERSION = 'fragment-integrity-v2';
+const VERSION = 'fragment-integrity-v3';
 const MAX_ISSUES = 40;
 const ORPHAN_ENDING = /^(다|니다|습니다)[.!?。！？](?=\s|$)/u;
 const KOREAN_MARKERS = '가나다라마바사아자차카타파하';
@@ -85,6 +85,7 @@ function auditFragmentIntegrity(sourceText, outputText) {
     issues.push({ code: 'introduced_dependent_tail_owner_shift', sourceStart: owners[0].left.start,
       sourceEnd: owners[0].tail.end, outputStart: left.start, outputEnd: tail.end });
   }
+  issues.push(...require('./documentFurniture').auditFurnitureBoundaries(source, output));
   return result(issues);
 }
 

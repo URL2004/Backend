@@ -406,9 +406,10 @@ function restorePostSemanticLayout({
   humanizeContract = null
 } = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
+  const initialBlocks = restoreExactLockedBlocks(heading.text, chunks, source);
   const paragraphs = restoreParagraphLayout({
     source,
-    outputText: heading.text,
+    outputText: initialBlocks.text,
     chunks,
     mode,
     requestStrength,
@@ -418,14 +419,20 @@ function restorePostSemanticLayout({
   });
   const inlineLabels = restoreInlineLabelBodyLayout(source, paragraphs.text);
   const conditions = require('./layoutRelations').separateAttestedConditions(source, inlineLabels.text);
+  // The paragraph planner may coalesce a literal caption with adjacent prose.
+  // Reapply its witnessed line boundaries before this candidate is audited or
+  // recorded; do not wait until delivery to repair an invalid intermediate.
+  const finalBlocks = restoreExactLockedBlocks(conditions.text, chunks, source);
   const structuralPass = heading.missingCount === 0
+    && initialBlocks.missingCount === 0 && finalBlocks.missingCount === 0
     && inlineLabels.pass
-    && bare(paragraphs.text) === bare(heading.text);
+    && bare(finalBlocks.text) === bare(outputText);
   const readabilityPass = paragraphs.pass !== false;
   return {
-    text: conditions.text,
-    applied: heading.applied || paragraphs.applied || inlineLabels.applied || conditions.repairedCount > 0,
+    text: finalBlocks.text,
+    applied: heading.applied || initialBlocks.applied || finalBlocks.applied || paragraphs.applied || inlineLabels.applied || conditions.repairedCount > 0,
     heading,
+    literalBoundaryRestoredCount: initialBlocks.boundaryRestoredCount + finalBlocks.boundaryRestoredCount,
     paragraphs,
     inlineLabels,
     conditionBoundaryRepairCount: conditions.repairedCount,

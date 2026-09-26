@@ -84,4 +84,30 @@ function restoreConfirmedClauseOmissions(source, output, violations, limit=5) {
   return {text,restored,candidates:audit.candidates};
 }
 
-module.exports={VERSION,auditClauseCoverage,restoreConfirmedClauseOmissions};
+// Detect a narrowly grounded deletion, not a semantic similarity guess: a
+// source-attested lead is removed between unchanged context and an unchanged
+// contrasting sentence. Never remove the remaining sentence automatically.
+function droppedSourceContrastLead(source, before, candidate) {
+  const spans=splitSentenceSpans(String(before||''));
+  const bare=value=>String(value||'').replace(/\s/gu,'');
+  const sourceBare=bare(source),afterBare=bare(candidate),beforeBare=bare(before);
+  const literals=syntaxSpans(before);
+  for(let i=1;i<spans.length;i++) {
+    const right=spans[i],left=spans[i-1];
+    if(!/^(?:하지만|그러나|반면(?:에)?)\s/u.test(right.text.trim()))continue;
+    const lead=left.text.trim();
+    if(lead.length<18||lead.length>180||literals.some(s=>s.start<right.end&&s.end>left.start))continue;
+    const stem=bare(lead.replace(/(?:이다|였다|한다|했다|있다|없다)[.!?。！？]$/u,''));
+    if(stem===bare(lead)||stem.length<15||!sourceBare.includes(stem)||afterBare.includes(stem))continue;
+    const prior=beforeBare.slice(Math.max(0,beforeBare.indexOf(bare(lead))-45),beforeBare.indexOf(bare(lead)));
+    const follower=bare(right.text);
+    if(prior.length<15||follower.length<20)continue;
+    // Ambiguous/repeated anchors are never grounds for dropping a candidate.
+    const unique=(text,needle)=>text.indexOf(needle)>=0&&text.indexOf(needle)===text.lastIndexOf(needle);
+    if(unique(beforeBare,bare(lead))&&unique(afterBare,follower)
+        &&unique(sourceBare,stem)&&afterBare.includes(prior+follower))return true;
+  }
+  return false;
+}
+
+module.exports={VERSION,auditClauseCoverage,restoreConfirmedClauseOmissions,droppedSourceContrastLead};

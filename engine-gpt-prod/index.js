@@ -45,6 +45,7 @@ const candidateIntegrity = require('./candidateIntegrity');
 const candidateLedgerPolicy = require('./candidateLedger');
 const semanticProvenance = require('./semanticProvenance');
 const statisticalAtoms = require('./statisticalAtoms');
+const technicalRelationAudit = require('./technicalRelationAudit');
 const safeEditAccumulator = require('./safeEditAccumulator');
 const commercialSignals = require('./commercialSignals');
 const omissionRestore = require('./omissionRestore');
@@ -69,7 +70,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.71';
+const VERSION = 'gpt-prod-v2.5.72';
 const DETECT_VERSION = 'gpt-detect-v1.42';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -1778,6 +1779,23 @@ async function runEngine({
       outputText,
       allowedExtra
     );
+  }
+
+  // A frozen equation can still acquire the next paragraph's explanation.
+  // Restore only a unique, source-attested proof sentence before model review.
+  let technicalRelationRestoreCount = 0;
+  {
+    const restored = technicalRelationAudit.restoreAttestedRelations(auditSource, outputText);
+    if (restored.applied && restored.after.pass
+        && candidateIntegrity.auditCandidateIntegrity({
+          source: auditSource, before: outputText, candidate: restored.text,
+          documentProfile, mode: selectedMode
+        }).pass
+        && preservesFinalStructure(auditSource, restored.text,
+          frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair)) {
+      outputText = restored.text;
+      technicalRelationRestoreCount += restored.restoredCount;
+    }
   }
 
   if (humanizationDepthEnabled && selectedMode !== 'polish') {
@@ -3662,6 +3680,19 @@ async function runEngine({
       finalFormattingRepair = mergeFormattingRepairReports(finalFormattingRepair, deliveredFormatting);
     }
   }
+  {
+    const restored = technicalRelationAudit.restoreAttestedRelations(rawSource, outputText);
+    if (restored.applied && restored.after.pass
+        && candidateIntegrity.auditCandidateIntegrity({
+          source: rawSource, before: outputText, candidate: restored.text,
+          documentProfile, mode: selectedMode
+        }).pass
+        && preservesFinalStructure(rawSource, restored.text,
+          chunks, chunkPlan, boundaryRepair)) {
+      outputText = restored.text;
+      technicalRelationRestoreCount += restored.restoredCount;
+    }
+  }
   // 최종 의미 재검증. 의미 심사 뒤의 늦은 단계(원문 문장 복원·중복 삭제·
   // 구체성 제거·늦은 깊이 회복 등)가 본문을 실제로 바꾸면 검증 digest가
   // 달라진다. 공백 배치만 바뀐 경우는 provenance의 결정론 투영이 같은 판정을
@@ -4012,6 +4043,9 @@ async function runEngine({
   });
   const strictBlocked = result.floorReport?.status === 'blocked';
   const qualityWarnings = dedupeQualityWarnings([
+        ...(technicalRelationAudit.auditTechnicalRelations(rawSource, outputText).pass
+          ? []
+          : [{ code: 'technical_relation_mismatch', severity: 'warning', message: '수식의 대상·계수와 설명 문장의 근거가 달라 원문 대조가 필요해요.' }]),
         ...(sourcePreflightAudit?.warnings || []).filter(item => item.code === 'source_pdf_reading_order_unverified'),
         ...(deliveryAudit?.warnings || []).filter(item => !isEffectObservationCode(item?.code)),
         ...semanticQualityWarnings.filter(item => !isEffectObservationCode(item?.code)),
@@ -4732,6 +4766,8 @@ async function runEngine({
       statisticalAtomIntegrity?.whitespaceBrokenCount || 0
     ),
     statisticalAtomRepairCount,
+    technicalRelationRestoreCount,
+    technicalRelationMismatchCount: technicalRelationAudit.auditTechnicalRelations(rawSource, outputText).issues.length,
     removedLocalOverlapCount: Number(postprocessMeta?.dedupe?.removedLocalOverlapCount || 0),
     localOverlapReasons: safeFailureCodeList(postprocessMeta?.dedupe?.localOverlapReasons),
     removedAdjacentRestatementCount: Number(postprocessMeta?.dedupe?.removedAdjacentRestatementCount || 0),

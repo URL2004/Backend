@@ -7,6 +7,7 @@ const legalAudit = require('./legalAudit');
 const structureChunk = require('./structureChunk');
 const statisticalAtoms = require('./statisticalAtoms');
 const dedupe = require('../engine/dedupe');
+const technicalRelationAudit = require('./technicalRelationAudit');
 const {
   auditDirectQuoteIntegrity,
   auditVoice,
@@ -135,6 +136,12 @@ function auditCandidateIntegrity({
   const candidateStatisticalAtoms = statisticalAtoms.auditStatisticalAtoms(source, after);
   if (statisticalAtomWorsened(beforeStatisticalAtoms, candidateStatisticalAtoms)) {
     add('statistical_atom_worsened');
+  }
+
+  const beforeTechnicalRelations = technicalRelationAudit.auditTechnicalRelations(source, current);
+  const candidateTechnicalRelations = technicalRelationAudit.auditTechnicalRelations(source, after);
+  if (candidateTechnicalRelations.issues.length > beforeTechnicalRelations.issues.length) {
+    add('technical_relation_worsened');
   }
 
   return {

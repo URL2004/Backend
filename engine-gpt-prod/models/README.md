@@ -127,3 +127,7 @@ or verified human false positives increase.
 ## detect-scale-calibration-v1.json
 
 표시 척도 후보(개발 단계). `DETECT_SCALE_CALIBRATION_ENABLED=1`과 `DETECT_SCALE_CALIBRATION_RULES=<id,…>`가 모두 있어야 켜지며 기본은 꺼짐. 엔진·이력 보정 뒤 표시 직전 점수만 바꾸고 캐시·rawProbability·과금은 바꾸지 않는다. 평가와 켜기 조건은 `docs/detect-scale-calibration.md`.
+
+## korean-assignment-classifier-v1.json
+
+과제 도메인 독립 분류기(문자 2~4-gram TF-IDF 로지스틱, Platt 보정). 국립국어원 글쓰기 채점 말뭉치(로컬 평가 승인 언어정보과-1498) 대학생 논술 과제 300편과 같은 지시문의 GPT-6 일반형 AI 과제 293편으로 학습. `DETECT_ASSIGNMENT_CLASSIFIER_ENABLED=1`일 때만 `lib/detectAssignmentClassifier.js`가 표시 점수를 50~74 구간으로 올린다(기본 OFF). 원문·식별 정보 미포함. 평가와 켜기 조건은 `docs/detect-assignment-classifier.md`.

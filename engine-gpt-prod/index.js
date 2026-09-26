@@ -72,7 +72,7 @@ const {
 } = require('./humanizeContract');
 
 const VERSION = 'gpt-prod-v2.5.77';
-const DETECT_VERSION = 'gpt-detect-v1.44';
+const DETECT_VERSION = 'gpt-detect-v1.45';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -5764,15 +5764,19 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
     const assisted = require('../lib/detectStatisticalAssist').applyAssist(aligned, source, {
       profile: documentProfile?.profile
     });
+    // 과제 도메인 독립 분류기(기본 OFF): 통계 보조 뒤, 표시 상한 74 안에서만 올린다. 캐시 변형 키에 플래그·버전이 들어간다.
+    const classified = require('../lib/detectAssignmentClassifier').applyClassifier(assisted, source, {
+      profile: documentProfile?.profile
+    });
     const result = require('../lib/detectConfidence').limitConfidenceToSample(
-      assisted === aligned ? aligned : applyDetectNarrativePolicy(assisted), source
+      classified === aligned ? aligned : applyDetectNarrativePolicy(classified), source
     );
     result.detectDiagnostics = diagnostics.sanitizeDiagnostics({
       version: diagnostics.VERSION, attempts, recheckReason,
       recheckFailed: out.gptMeta?.escalationFailed === true,
       selectedModelScore: out.probability, evidenceAlignedScore: aligned.probability,
       stageVersion: diagnostics.STAGE_VERSION, selectedPhase: attempts.at(-1)?.phase,
-      statisticalScore: assisted.probability, engineFinalScore: result.probability
+      statisticalScore: classified.probability, engineFinalScore: result.probability
     });
     return result;
   };

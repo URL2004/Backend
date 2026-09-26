@@ -8,11 +8,14 @@ const { DETECT_SCHEMA } = require('../engine-gpt-prod/schemas');
 
 test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 근거와 점수 앵커를 요구한다', () => {
   const ko = prompt.buildDetectPrompt('ko');
-  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v8-evidence-coverage');
+  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9c-current-generation-guarded');
   assert.match(ko, /실제 작성 주체를 판정하는 확률이 아니다/u);
-  assert.match(ko, /학술문·보고서·자소서·SEO 글/u);
+  assert.match(ko, /학술문·보고서·자소서처럼 원래 정돈된 장르/u);
   assert.match(ko, /만으로 점수를 올리지 않는다/u);
-  assert.match(ko, /반대 근거도 반드시 반영/u);
+  assert.match(ko, /반대 근거로 반영한다/u);
+  assert.match(ko, /조직의 균일함/u, 'v9: 현세대 생성문의 조직 균일성 단서');
+  assert.match(ko, /overstructured_progression·formulaic_transition·sentence_uniformity로 센다/u);
+  assert.doesNotMatch(ko, /같은 반복을 category만 바꾸어/u, 'v8의 검출 억제 규칙은 제외');
   assert.match(ko, /0~20[\s\S]*21~49[\s\S]*50~74[\s\S]*75~100/u);
   assert.match(ko, /대표값이나 둥근 수에 몰지/u);
   assert.match(ko, /제목·표·목록 표지·직접 인용·참고문헌/u);
@@ -22,7 +25,7 @@ test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 
   assert.match(ko, /21~49점에는 other_observed_style이 아닌 적격 category가 최소 1개/u);
   assert.match(ko, /moderate 또는 strong이면서 recurring 또는 pervasive/u);
   assert.match(ko, /other_observed_style은 보조 관찰 정보일 뿐이며 20점을 넘는 점수의 근거로 사용할 수 없다/u);
-  assert.match(ko, /strength와 scope/u);
+  assert.match(ko, /signals에는 서로 독립된 실제 원인만/u);
   assert.match(ko, /evidenceSentences/u);
   assert.match(ko, /4문장 미만/u);
   assert.match(ko, /8문장 이상/u);
@@ -31,11 +34,12 @@ test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 
 test('영문 감지 프롬프트와 엔진 provenance도 같은 정책 버전을 노출한다', () => {
   const en = prompt.buildDetectPrompt('en');
   assert.match(en, /not a claim about who actually wrote/u);
-  assert.match(en, /genre conventions and clean grammar alone are not AI evidence/u);
+  assert.match(en, /genre conventions and clean grammar alone are not evidence/u);
+  assert.match(en, /uniformity of organization/u);
   assert.match(en, /21-49 requires at least one eligible category other than other_observed_style/u);
   assert.match(en, /moderate or strong strength and recurring or pervasive scope/u);
   assert.match(en, /other_observed_style is supplementary context only and can never support a score above 20/u);
-  assert.equal(engine.DETECT_VERSION, 'gpt-detect-v1.44');
+  assert.equal(engine.DETECT_VERSION, 'gpt-detect-v1.45');
   assert.equal(engine.DETECT_PROMPT_VERSION, prompt.DETECT_PROMPT_VERSION);
 });
 
@@ -55,15 +59,14 @@ test('저점수 검토는 일괄 가산 대신 본문 신호 관찰과 국소 �
   assert.match(ko, /먼저 위치가 확인되는 신호/u);
   assert.match(ko, /이름·숫자·전문용어·일인칭·경험했다는 주장·오탈자의 존재만으로 문체 신호를 상쇄하지/u);
   assert.match(ko, /해당 구간에서만 평가/u);
-  assert.match(ko, /같은 반복을 category만 바꾸어 독립 신호로 중복 채점하지/u);
   assert.match(ko, /특정 평균 분포를 목표로 삼지도/u);
   assert.match(ko, /사람이 썼을 수도 있다는 가능성을 뜻하지 않는다/u);
-  assert.match(ko, /관례적 마무리 한 문장만으로/u);
+  assert.match(ko, /불균일한 전개가 관찰된 패턴을 실제로 끊는 해당 구간에서만/u);
   assert.deepEqual(Object.keys(DETECT_SCHEMA.properties), ['signals', 'probability', 'confidence']);
   const en = prompt.buildDetectPrompt('en');
   assert.match(en, /Observe located signals first/u);
   assert.match(en, /does not by itself cancel a style signal/u);
-  assert.match(en, /not the same repetition counted again/u);
+  assert.match(en, /uneven development actually interrupts the observed pattern/u);
 });
 
 test('감지 장르 힌트는 충분히 확실하고 서로 분리된 세부 프로필에만 붙는다', () => {

@@ -25,6 +25,20 @@ test('semantic repair counters survive terminal archiving without copying raw te
  assert.deepEqual(archive.semanticRepairStyleWarnings,['sentence_distribution_worsened']);
  assert(!JSON.stringify(archive).includes(source));
 });
+test('fragment diagnostics archive only optional status, count and known codes, never raw spans',()=>{
+ const archive=router.buildArchiveDocument({id:'fragment',uid:'owner',status:'done',text:source,
+  result:{outputText:source,engineMeta:{fragmentIntegrityPass:false,fragmentIntegrityIssueCount:3,
+   fragmentIntegrityCodes:['introduced_orphan_ending','introduced_duplicate_predicate_tail','introduced_orphan_ending',source,'unknown_private_payload'],
+   fragmentIntegrity:{issues:[{sourceStart:123,outputStart:456,text:source}]},fragmentIntegrityIssues:[{text:source}]}}});
+ assert.equal(archive.fragmentIntegrityPass,false);
+ assert.equal(archive.fragmentIntegrityIssueCount,3);
+ assert.deepEqual(archive.fragmentIntegrityCodes,['introduced_orphan_ending','introduced_duplicate_predicate_tail']);
+ assert.equal(archive.fragmentIntegrity,undefined);assert.equal(archive.fragmentIntegrityIssues,undefined);
+ assert(!JSON.stringify(archive).includes(source));
+ const old=router.buildArchiveDocument({id:'old-fragment',uid:'owner',status:'done',result:{engineMeta:{}}});
+ assert.equal(Object.hasOwn(old,'fragmentIntegrityPass'),false);
+ assert.equal(Object.hasOwn(old,'fragmentIntegrityIssueCount'),false);
+});
 test('real structure HTTP admission, free preview, stale/owner rejection, pricing and replay',async()=>{
  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base='http://127.0.0.1:'+server.address().port;
  const request=async(p,body,uid='owner')=>{const r=await fetch(base+p,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+uid,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {http:r.status,...await r.json()};};

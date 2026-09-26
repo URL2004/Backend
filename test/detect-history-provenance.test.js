@@ -135,6 +135,22 @@ test('humanization history retains bounded semantic repair diagnostics', () => {
   assert.equal(compact.finalRelationPatchReason, 'recovery_budget_exhausted');
 });
 
+test('humanization history keeps fragment status optional and excludes private boundary evidence', () => {
+  const raw = '개인적인 문서의 실제 내용은 기록하지 않는다.';
+  const compact = history.compactHistoryEngineMeta({ fragmentIntegrityPass: false, fragmentIntegrityIssueCount: 3,
+    fragmentIntegrityCodes: ['introduced_orphan_ending', 'introduced_duplicate_predicate_tail', 'introduced_orphan_ending', raw, 'private_payload'],
+    fragmentIntegrity: { issues: [{ sourceStart: 123, outputStart: 456, text: raw }] }, fragmentIntegrityIssues: [{ text: raw }] });
+  assert.equal(compact.fragmentIntegrityPass, false);
+  assert.equal(compact.fragmentIntegrityIssueCount, 3);
+  assert.deepEqual(compact.fragmentIntegrityCodes, ['introduced_orphan_ending', 'introduced_duplicate_predicate_tail']);
+  assert.equal(compact.fragmentIntegrity, undefined);
+  assert.equal(compact.fragmentIntegrityIssues, undefined);
+  assert.equal(JSON.stringify(compact).includes(raw), false);
+  const old = history.compactHistoryEngineMeta({});
+  assert.equal(Object.hasOwn(old, 'fragmentIntegrityPass'), false);
+  assert.equal(Object.hasOwn(old, 'fragmentIntegrityIssueCount'), false);
+});
+
 test('휴머나이징 이력 저장은 누락 원점수를 0으로 만들지 않는다', async () => {
   for (const sourceProbability of [null, undefined, '', false, [], 0]) {
     await history.saveAnalyzeHistory({

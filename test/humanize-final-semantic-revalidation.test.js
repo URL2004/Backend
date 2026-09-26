@@ -338,3 +338,34 @@ for (const accept of [true, false]) test(`최종 관계 복구는 같은 기한 
     assert.notEqual(out.status, 'clean');
   }
 });
+
+test('final restoration receives bounded request-local audit history without treating it as a new verdict', async t => {
+  const restorer = require('../engine-gpt-prod/confirmedRelationRestore');
+  const original = restorer.restoreConfirmedRelations;
+  const observed = [];
+  restorer.restoreConfirmedRelations = (source, output, report, options) => {
+    if (options?.priorReports) observed.push(options.priorReports);
+    return original(source, output, report, options);
+  };
+  t.after(() => { restorer.restoreConfirmedRelations = original; });
+  const a = '전압 차이는 정상 범위 안에서 나타나는 차이를 의미합니다.';
+  const b = '전압 차이는 정상 범위를 벗어난 정도를 의미합니다.';
+  const tail = '마지막 단계에서는 측정 장비를 점검했습니다. 정리한 자료는 다음 실험을 위해 보관했습니다.';
+  const source = SOURCE + ' ' + a + ' ' + tail;
+  const mock = installMock(t, {
+    humanize: LATE_RESTORED_OUTPUT + ' ' + b + ' ' + tail,
+    violation: (_body, call, rewrite) => call < 2 || !rewrite.includes(b) ? [] : [{
+      type: 'distortion', span: b, sourceSpan: a, candidateSpan: b,
+      relation: 'condition_result', origin: 'introduced', detail: '범위 내 차이와 이탈 정도는 다릅니다.'
+    }]
+  });
+  const out = await engine.run({ text: source, mode: 'blog', config: config() });
+  assert.equal(observed.length, 1);
+  assert.ok(observed[0].length >= 2 && observed[0].length <= 9);
+  assert.ok(observed[0].some(report => report.ran === true && report.validation));
+  assert.ok(mock.judgeCalls() >= 3);
+  assert.equal(out.engineMeta.finalRelationRestorationAttempted, true);
+  assert.equal(provenance.verifySemanticValidation(out.result.semanticAudit, {
+    source, candidate: out.result.outputText, requireDigest: true
+  }).status, 'pass');
+});

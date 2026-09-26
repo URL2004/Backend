@@ -71,7 +71,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.74';
+const VERSION = 'gpt-prod-v2.5.75';
 const DETECT_VERSION = 'gpt-detect-v1.43';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -605,6 +605,7 @@ async function runEngine({
     if (!candidate.trim() || normalizeBare(candidate) === normalizeBare(rawSource)) return false;
     const audit = structureChunk.buildStructureAudit({
       source: rawSource,
+      fragmentSource: submittedSource,
       outputText: candidate,
       chunks: finalStructurePlan.chunks,
       plan: finalStructurePlan
@@ -1837,6 +1838,16 @@ async function runEngine({
     allowedExtra
   });
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
+  // Request-local nomination history only. A later judge can miss an earlier
+  // finding; never turn that absence into evidence that an unchanged passage
+  // was repaired. Exact current-pair grounding is checked again by the restorer,
+  // and the resulting candidate still requires a fresh final semantic pass.
+  const semanticRestorationEvidence = [];
+  const rememberSemanticRestorationEvidence = report => {
+    if (!report || report.uncertain || report.skipped || report.verificationCompleted === false) return;
+    semanticRestorationEvidence.push(report);
+    if (semanticRestorationEvidence.length > 8) semanticRestorationEvidence.shift();
+  };
   const clauseCoverageAudit = require('./clauseCoverage').auditClauseCoverage(auditSource, outputText);
   const depthTugUsageStartUsd = Number(supplementalUsage?.estimatedUsd || 0);
   let depthTugRecoveryRounds = 0;
@@ -1900,6 +1911,7 @@ async function runEngine({
         documentProfile
       });
       addSupplementalUsage(semanticReport.usage, 'semantic_document_audit');
+      rememberSemanticRestorationEvidence(semanticReport);
       depthTugSemanticRepairRounds += Number(semanticReport.repairCount || 0);
       let semanticOutput = semanticReport.outputText || semanticInputText;
       if (normalizeBare(semanticOutput) !== normalizeBare(semanticInputText)) {
@@ -2183,6 +2195,7 @@ async function runEngine({
           documentProfile
         });
         addSupplementalUsage(candidateSemantic.usage, 'post_semantic_rejudge');
+        rememberSemanticRestorationEvidence(candidateSemantic);
         depthTugSemanticRepairRounds += Number(candidateSemantic.repairCount || 0);
         depthTugRejudgeCount += 1;
         let auditedCandidate = String(candidateSemantic.outputText || candidate).trim();
@@ -3206,6 +3219,7 @@ async function runEngine({
               documentProfile
             });
             addSupplementalUsage(candidateSemantic.usage, 'delivery_depth_rejudge');
+            rememberSemanticRestorationEvidence(candidateSemantic);
             depthTugSemanticRepairRounds += Number(candidateSemantic.repairCount || 0);
             depthTugRejudgeCount += 1;
 
@@ -3664,6 +3678,7 @@ async function runEngine({
   {
     const finalStructureCandidateAudit = structureChunk.buildStructureAudit({
       source: rawSource,
+      fragmentSource: submittedSource,
       outputText,
       chunks: finalStructurePlan.chunks,
       plan: finalStructurePlan
@@ -3672,6 +3687,9 @@ async function runEngine({
       outputText = lastStructureSafeOutput;
       structureIntegrityRollbackCount += 1;
       addUniqueCode(structureIntegrityRollbackCodes, 'final_structure_safe_candidate_restore');
+      for (const code of finalStructureCandidateAudit.fragmentIntegrityCodes || []) {
+        addUniqueCode(structureIntegrityRollbackCodes, code);
+      }
       if (Number(finalStructureCandidateAudit.structuralRoleAdditionCount || 0) > 0) {
         addUniqueCode(structureIntegrityRollbackCodes, 'structural_role_added');
       }
@@ -3778,7 +3796,9 @@ async function runEngine({
           if (recheck.pass === false && recheck.verificationCompleted === true
               && !recheck.uncertain && !signal?.aborted
               && finalDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2)) {
-            let restored = require('./confirmedRelationRestore').restoreConfirmedRelations(rawSource, outputText, recheck);
+            let restored = require('./confirmedRelationRestore').restoreConfirmedRelations(rawSource, outputText, recheck, {
+              priorReports: [...semanticRestorationEvidence, priorReport]
+            });
             let restoreSafety = restored.applied ? require('./confirmedRelationRestore').assessConfirmedRestorationSafety(candidateIntegrity.auditCandidateIntegrity({
               source: rawSource, before: outputText, candidate: restored.text,
               documentProfile, mode: selectedMode
@@ -3935,6 +3955,7 @@ async function runEngine({
   const structureAudit = structureChunk.buildStructureAudit({
     source: rawSource,
     integritySource: structureImprovement.applied ? rawSource : integritySource,
+    fragmentSource: submittedSource,
     outputText,
     chunks: materializedChunks,
     plan: chunkPlan,
@@ -4250,7 +4271,18 @@ async function runEngine({
   result.naturalnessShadow = deliveryAudit?.naturalnessShadow || null;
   result.documentProfile = documentProfile;
   result.voiceProfile = voiceProfile;
-  result.semanticAudit = semanticReport;
+  // Nomination evidence belongs only to this request's final verification.
+  // Preserve the existing public audit fields, but never serialize the new
+  // internal recovery reports (including those attached to section reports).
+  function serializeSemanticAudit(report) {
+    if (!report || typeof report !== 'object') return report;
+    const { restorationNominationReports, ...publicReport } = report;
+    if (Array.isArray(publicReport.reports)) {
+      publicReport.reports = publicReport.reports.map(serializeSemanticAudit);
+    }
+    return publicReport;
+  }
+  result.semanticAudit = serializeSemanticAudit(semanticReport);
   result.semanticValidation = finalSemanticValidation;
   result.editMetrics = finalEditMetrics;
   result.humanizationDepth = humanizationDepthReport;
@@ -4406,6 +4438,9 @@ async function runEngine({
     ),
     deliveredIncompleteParagraphCount: deliveredParagraphBoundaries.incompleteParagraphCount,
     deliveredNewIncompleteParagraphCount: deliveredParagraphBoundaries.newIncompleteParagraphCount,
+    fragmentIntegrityPass: structureAudit.fragmentIntegrityPass !== false,
+    fragmentIntegrityIssueCount: Number(structureAudit.fragmentIntegrityIssueCount || 0),
+    fragmentIntegrityCodes: safeFailureCodeList(structureAudit.fragmentIntegrityCodes),
     deliveredMaxParagraphChars: deliveredParagraphBoundaries.maxParagraphChars,
     finalLayoutMissingCount: Number(layoutRepair?.finalFixedPoint?.missingCount || 0),
     inlineLabelBodyRepairCount: Number(layoutRepair?.inlineLabels?.repairCount || 0)

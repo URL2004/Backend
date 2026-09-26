@@ -4,11 +4,12 @@ const { splitSentenceSpans } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { sentenceSimilarity } = require('./sentenceAlignment');
 const { auditRelationCandidates, hasAdjacentRelationCoverage } = require('./relationAudit');
+const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion']);
 
 // A relation heuristic is not proof. Only a judge-confirmed, uniquely grounded
 // distortion may nominate a sentence; mutual, unambiguous one-to-one matching
 // supplies its original. The caller must verify the resulting candidate again.
-function restoreConfirmedRelations(source, output, report) {
+function restoreConfirmedRelations(source, output, report, { priorReports = [] } = {}) {
   const text = String(output || '');
   const unchanged = { text, applied: false, restoredCount: 0 };
   if (!report || report.pass !== false || report.uncertain || report.skipped) return unchanged;
@@ -26,9 +27,17 @@ function restoreConfirmedRelations(source, output, report) {
   });
   const results = splitSentenceSpans(text);
   const limit = Math.min(4, Math.floor(results.length / 2));
+  // Exact paired findings do not use guessed nearest-sentence ownership. They
+  // may nominate up to eight local windows, still bounded by half the sentence
+  // count and 30% of both replaced and replacement text. Legacy retrieval
+  // keeps its original four-window cap. Every proposal needs a fresh verdict.
+  const pairedLimit = Math.min(8, Math.floor(results.length / 2));
   if (!limit) return unchanged;
   const candidates = auditRelationCandidates(source, text).candidates;
   const violations = (report.violations || []).filter(v => v.type === 'distortion'
+    // A paired finding that fails its stronger ownership/budget checks must
+    // not bypass them through the legacy nearest-sentence route below.
+    && !Object.hasOwn(v, 'sourceSpan') && !Object.hasOwn(v, 'candidateSpan')
     && v.spanVerified === true && v.repairable === true && v.grounding === 'unique_exact_span'
     && typeof v.span === 'string' && v.span.length >= 8
     && text.indexOf(v.span) >= 0 && text.indexOf(v.span) === text.lastIndexOf(v.span));
@@ -42,12 +51,13 @@ function restoreConfirmedRelations(source, output, report) {
     && spans.some(s => s.end === end) && spans.filter(s => s.start >= start && s.end <= end).length <= 3;
   const protectedText = s => syntaxSpans(s).filter(p => p.spanType !== 'parenthetical')
     .map(p => s.slice(p.start,p.end)).sort().join('\n');
-  const pairedFindings=(report.violations||[]).filter(v=>['distortion','omission'].includes(v.type)
-    && v.repairable===true && v.grounding==='unique_exact_span');
+  const pairedFindings = collectPairedNominations(report, priorReports)
+    .sort((left, right) => String(source).indexOf(left.sourceSpan) - String(source).indexOf(right.sourceSpan)
+      || text.indexOf(left.candidateSpan) - text.indexOf(right.candidateSpan));
   for (const v of pairedFindings) {
-    if (replacements.length >= limit || v.origin !== 'introduced' || v.relationGrounded !== true
+    if (replacements.length >= pairedLimit || v.origin !== 'introduced' || v.relationGrounded !== true
         || !['actor_action_target','condition_result','quantity_target','variable_definition',
-          'antecedent','modality_negation_causality'].includes(v.relation)) continue;
+          'antecedent','modality_negation_causality','other'].includes(v.relation)) continue;
     const a=String(v.sourceSpan||''),b=String(v.candidateSpan||'');
     const from=String(source).indexOf(a),start=text.indexOf(b),end=start+b.length;
     if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
@@ -59,9 +69,10 @@ function restoreConfirmedRelations(source, output, report) {
       ||sentenceSimilarity(a,b)<.35||protectedText(a)!==protectedText(b)
       ||hasAdjacentRelationCoverage(a,b,text)
       ||[a,b].some(s=>require('./layoutStructure').buildLineRecords(s).some(r=>!r.blank&&r.role!=='prose'))
-      ||replacements.some(r=>start<r.end&&end>r.start||from<=r.sourceStart)
-      ||replacements.reduce((n,r)=>n+r.end-r.start,0)+b.length>text.length*.3)continue;
-    replacements.push({start,end,text:a,sourceStart:from,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
+      ||replacements.some(r=>start<r.end&&end>r.start||from<r.sourceEnd||start<=r.start)
+      ||replacements.reduce((n,r)=>n+r.end-r.start,0)+b.length>text.length*.3
+      ||replacements.reduce((n,r)=>n+r.text.length,0)+a.length>text.length*.3)continue;
+    replacements.push({start,end,text:a,sourceStart:from,sourceEnd:from+a.length,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
   }
   for (let i = 0; i < results.length && replacements.length < limit; i++) {
     const target = results[i];
@@ -95,6 +106,34 @@ function restoreConfirmedRelations(source, output, report) {
   return { text: restored, applied: restored !== text, restoredCount: replacements.length };
 }
 
+// A later judge can omit a previously confirmed finding without repairing its
+// text. Preserve that finding only as a proposal, never as the official verdict.
+// Stale/ambiguous source or candidate pairs are rejected again by the exact
+// complete-window checks above. No taxonomy inference or fuzzy relocation.
+function collectPairedNominations(report, priorReports) {
+  const findings = [], seen = new Set(), visited = new Set();
+  const visit = value => {
+    if (!value || typeof value !== 'object' || visited.has(value) || findings.length >= 64) return;
+    visited.add(value);
+    if (value.pass !== false || value.uncertain || value.skipped || value.verificationCompleted === false) return;
+    for (const v of [...(value.violations || []), ...(value.initialViolations || [])]) {
+      if (findings.length >= 64) break;
+      if (!PAIRED_RESTORATION_TYPES.includes(v?.type) || v.origin !== 'introduced'
+          || v.relationGrounded !== true || v.repairable !== true || v.grounding !== 'unique_exact_span'
+          || typeof v.sourceSpan !== 'string' || typeof v.candidateSpan !== 'string') continue;
+      const key = `${v.sourceSpan}\u0000${v.candidateSpan}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push(v);
+    }
+    for (const child of Array.isArray(value.reports) ? value.reports : []) visit(child);
+    for (const child of Array.isArray(value.restorationNominationReports) ? value.restorationNominationReports : []) visit(child);
+  };
+  visit(report);
+  for (const prior of Array.isArray(priorReports) ? priorReports : []) visit(prior);
+  return findings;
+}
+
 function assessConfirmedRestorationSafety(safety) {
   if (safety?.pass === true) return { eligible: true, warnings: [] };
   const integrity = safety?.sharedIntegrity || safety;
@@ -110,4 +149,4 @@ function assessConfirmedRestorationSafety(safety) {
   return { eligible: sourceRegisterOnly, warnings: sourceRegisterOnly ? ['restored_source_register'] : [] };
 }
 
-module.exports = { restoreConfirmedRelations, assessConfirmedRestorationSafety };
+module.exports = { restoreConfirmedRelations, assessConfirmedRestorationSafety, PAIRED_RESTORATION_TYPES };

@@ -7,7 +7,7 @@ const { detectDocumentProfile } = require('./documentProfile');
 const { sourceSentences } = require('../lib/detectGrounding');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { activityEvidence } = require('./proseParagraphs');
-const VERSION = 'document-structure-v2';
+const VERSION = 'document-structure-v3';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const MAX_BLOCKS = 160;
 const fail = code => { throw Object.assign(new Error(code), { code }); };
@@ -20,6 +20,7 @@ function buildDocument(text) {
   const profile = detectDocumentProfile(source);
   const forbidden = ['clinical_record', 'legal_contract', 'student_record_teacher', 'student_self_assessment', 'resume_application', 'creative', 'mail_notice', 'social', 'marketing', 'review_blog'];
   const records = layout.buildLineRecords(source);
+  const numericSeries = new Map(records.filter(r => Number.isInteger(r.numericSeriesEnd)).map(r => [r.index, r.numericSeriesEnd]));
   const blocks = []; let pending = [], offset = 0, parent = 'root', section = 'root', barrier = 'root', references = false;
   const hasTop = records.some(r => ['heading','title'].includes(r.role) && TOP.test(r.raw.trim()));
   function push(lines, role) {
@@ -34,13 +35,21 @@ function buildDocument(text) {
     const protectedBlock = !heading && (references || role !== 'prose' || /https?:\/\/|\[[0-9, –-]+\]/u.test(value));
     blocks.push({ id, text: value, start: lines[0].start, end: lines[lines.length-1].end,
       kind: top ? 'top' : heading ? 'heading' : protectedBlock ? 'protected' : 'paragraph',
-      parent, section, barrier, numbered: heading && NUMBERED.test(value) });
+      parent, section, barrier, numbered: heading && NUMBERED.test(value),
+      ...(role === 'numeric_series' ? { layoutRole: 'numeric_series' } : {}) });
     if (top) { parent=id; section=id; barrier=id; }
     else if (heading) { section=id; barrier=id; }
     else if (protectedBlock) barrier=id;
   }
   const flush = () => { push(pending, 'prose'); pending=[]; };
-  for (const r of records) {
+  for (let index = 0; index < records.length; index++) {
+    const r = records[index];
+    if (numericSeries.has(index)) {
+      flush();
+      const last = numericSeries.get(index), lines = records.slice(index, last + 1);
+      push(lines, 'numeric_series');
+      offset = records[last].end + 1; index = last; continue;
+    }
     const raw=r.raw; const line={raw,start:offset,end:offset+raw.length}; offset+=raw.length+1;
     if (!raw.trim()) { flush(); continue; }
     if (r.role==='prose' || r.role==='body' || r.role==='text') pending.push(line);
@@ -147,6 +156,10 @@ function auditDelivery(source, output) {
   const sourceGrams=before.map(b=>grams(b.text));
   for(let i=0;i<before.length;i++) {
     if (before[i].kind!=='paragraph') {
+      if (before[i].layoutRole === 'numeric_series') {
+        const rows = value => value.split('\n').map(row => row.trim().replace(/[ \t]+/gu, ' ')).filter(Boolean).join('\n');
+        if (after[i].layoutRole !== 'numeric_series' || rows(before[i].text) !== rows(after[i].text)) return {pass:false,reason:'protected_row_boundary'};
+      }
       if (before[i].text.replace(/\s/gu,'')!==after[i].text.replace(/\s/gu,'')) return {pass:false,reason:'protected_block'};
       continue;
     }

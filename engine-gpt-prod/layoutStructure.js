@@ -2,6 +2,7 @@
 
 const { splitSentences } = require('../engine/koreanText');
 const { dependentQuoteLayout } = require('./dependentQuoteLayout');
+const { numericSeriesRanges } = require('./numericSeriesLayout');
 
 const MAX_PARAGRAPH_BARE = 1100;
 const MAX_PARAGRAPH_SENTENCES = 12;
@@ -163,6 +164,16 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
         && ['title', 'heading', 'quote', 'prose'].includes(record.role)) {
       record.role = 'prose';
       record.dependentQuoteProse = true;
+    }
+  }
+  // The shared chart ownership is used by planning, chunk locks and final
+  // layout checks. Keep each literal row; never turn an axis value into prose.
+  for (const [first, last] of numericSeriesRanges(records, source)) {
+    records[first].numericSeriesEnd = last;
+    for (let i = first; i <= last; i++) {
+      if (records[i].blank) continue;
+      records[i].role = 'table';
+      records[i].cellCount = i === last ? Math.max(1, tableColumnCount(records[i].raw)) : 1;
     }
   }
   return records;

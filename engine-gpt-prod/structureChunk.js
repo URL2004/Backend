@@ -2891,6 +2891,7 @@ function repairUnsafeChunkBoundaries(chunks) {
 function buildStructureAudit({
   source,
   integritySource,
+  fragmentSource,
   outputText,
   chunks,
   plan,
@@ -2967,6 +2968,9 @@ function buildStructureAudit({
   const protectedBlockChangedCount = lost
     .filter(item => EXACT_LAYOUT_LOCK_TYPES.has(String(item.lockType || '')))
     .length;
+  // Keep physical-row evidence for boundary accidents while auditing roles
+  // against the whitespace-normalized source used by the editor.
+  const fragmentIntegrity = require('./fragmentIntegrity').auditFragmentIntegrity(fragmentSource ?? original, output);
   return {
     version: VERSION,
     enabled: true,
@@ -2977,6 +2981,9 @@ function buildStructureAudit({
     lostLockedCount: lost.length,
     lostLocked: lost.slice(0, 20),
     protectedBlockChangedCount,
+    fragmentIntegrityPass: fragmentIntegrity.pass,
+    fragmentIntegrityIssueCount: fragmentIntegrity.issueCount,
+    fragmentIntegrityCodes: fragmentIntegrity.codes,
     lockedOrderChanged: outOfOrder.length > 0,
     lockedOutOfOrderCount: outOfOrder.length,
     lockedOutOfOrder: outOfOrder.slice(0, 20),
@@ -3047,6 +3054,7 @@ function buildStructureAudit({
     exactNonEmptyOutputCount: Number(exactLineStructure.outputNonEmptyLineCount || 0),
     introducedOrphanParticleBoundaryCount,
     pass: lost.length === 0
+      && fragmentIntegrity.pass
       && outOfOrder.length === 0
       && boundaryWarnings.length === 0
       && sectionPathErrors.length === 0

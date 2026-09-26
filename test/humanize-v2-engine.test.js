@@ -159,6 +159,26 @@ test('v2.5.60 승인 구조는 전체 엔진을 거쳐도 일반 문단화에 �
 });
 const EVALUATIVE_POLISH = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 효율적이지 않습니다.';
 
+test('fresh approved structure keeps a numeric chart literal through final delivery', { concurrency: false }, async t => {
+  const structure = require('../engine-gpt-prod/documentStructure');
+  const chart = '구역별 서비스 이용률\n0.30\n\n0.20\n\n0.10\n\n0.00\n2020\t2021\t2022\t2023';
+  const text = 'I. 서론\n\n지역별 서비스 이용률을 조사하여 차이를 비교했다. 응답을 모아 운영 계획을 세웠다.\n\n조사에서는 지역 간 차이가 나타났다. 여건을 고려한 계획을 세울 필요가 있다.\n\n' + chart
+    + '\n\n출처: 지역 서비스 조사\n\nIII. 결론\n\n이용 현황을 토대로 안내 방법을 수정한다. 현장에서 의견을 더 확인하여 운영 과정을 고친다.';
+  const doc = structure.buildDocument(text), plan = structure.identityPlan(doc);
+  plan.groups[1].ids.push(plan.groups[2].ids[0]); plan.groups.splice(2, 1);
+  const expected = structure.applyPlan(doc, plan).text;
+  const {calls} = installEngineMock(t, {humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT').replace('비교했다', '비교하였다')});
+  const out = await engine.run({text, mode:'formal', approvedStructure:plan, uid:'numeric-chart-unit', config:config()});
+  assert.notEqual(out.status, 'blocked');
+  assert.equal(out.result.structureImprovement.applied, true);
+  assert.equal(out.result.structureImprovement.deliveryVerified, true);
+  assert(out.result.outputText.includes(chart));
+  assert.equal(structure.auditDelivery(expected, out.result.outputText).pass, true);
+  for (const call of calls.filter(c => c.name === 'gpt_prod_humanize_result')) {
+    assert.doesNotMatch(extractPromptDataSection(call.body.input, 'EDITABLE_TEXT'), /구역별 서비스 이용률|0\.30/u);
+  }
+});
+
 function config() {
   return runtime.publicConfig(runtime.DEFAULT_CONFIG, 'test');
 }
@@ -368,7 +388,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.74');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.75');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1660,7 +1680,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.74');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.75');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 28;
+const VERSION = 29;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -162,7 +162,13 @@ function auditAndSanitizeSource(value) {
   const extractedLayout = scriptFrame
     ? { text: workingSource, removedPages: [], changes: [] }
     : repairExtractedPageLayout(workingSource);
-  const lines = extractedLayout.text.split('\n');
+  // Canonicalize only proven physical row seams before assigning paragraph,
+  // title or list ownership. The helper preserves all non-whitespace content
+  // and explicit structure; both the planner and engine use this same baseline.
+  const physicalLayout = scriptFrame || looksLikeCreativeLineLayout(extractedLayout.text)
+    ? { text: extractedLayout.text, changes: [] }
+    : require('./physicalProseLines').repairPhysicalProseLines(extractedLayout.text);
+  const lines = physicalLayout.text.split('\n');
   const removals = wrapper
     ? [issue(
         rewriteWrapper ? 'source_rewrite_request_artifact' : 'source_document_quote_wrapper_removed',
@@ -177,7 +183,8 @@ function auditAndSanitizeSource(value) {
     removals.push(issue('source_pdf_page_marker_removed', lineOrdinal, 'removed',
       '연속된 페이지 번호를 본문에서 분리했어요. 문서의 절 번호와 수치는 유지했어요.'));
   }
-  const notices = extractedLayout.changes.map(item => issue(item.code, item.lineOrdinal, item.action, item.message));
+  const notices = [...extractedLayout.changes, ...physicalLayout.changes]
+    .map(item => issue(item.code, item.lineOrdinal, item.action, item.message));
   const kept = [];
   let inReference = false;
   const fenceState = analyzeFences(lines);
@@ -1038,13 +1045,16 @@ function repairMissingSentenceSpacing(value) {
     }
     const repaired = transformOutsideWebLiterals(
       String(line || ''),
-      text => text.replace(
-        // 닫는 따옴표를 새 문장의 여는 따옴표로 오인해 `문장. "`처럼
-        // 원문에 없던 공백을 만들지 않는다. 닫는 부호가 있으면 부호까지
-        // 소비한 뒤 실제 한글·영문 문장이 바로 이어질 때만 띄운다.
-        /([가-힣][.!?。！？](?:[”’"'」』》〉)])?)(?=[가-힣A-Z(])/gu,
-        '$1 '
-      )
+      text => {
+        const spans = require('../engine/textSyntax').syntaxSpans(text).filter(s => s.spanType === 'code');
+        const repair = require('./sentenceSpacing').repairMissingSentenceSpacingLine;
+        let cursor = 0, next = '';
+        for (const span of spans) {
+          next += repair(text.slice(cursor, span.start)) + text.slice(span.start, span.end);
+          cursor = span.end;
+        }
+        return next + repair(text.slice(cursor));
+      }
     );
     if (repaired !== line) {
       changes.push({

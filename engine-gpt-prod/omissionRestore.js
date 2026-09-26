@@ -44,17 +44,24 @@ function restoreConfirmedSemanticOmissions({
   if (!omissions.length) return restoreResult(numeric.text, numeric.restored, violations, []);
 
   const sourceSpans = splitSentenceSpans(rawSource);
+  const partialOwnership = pairedPartialOmissionOwners(rawSource, before, sourceSpans, omissions);
+  const insertionOmissions = omissions.filter(item => !partialOwnership.findings.has(item));
   const partial = require('./clauseCoverage').restoreConfirmedClauseOmissions(rawSource, numeric.text,
     semanticReport?.uncertain === true ? [] : omissions, boundedRestoreCount(maxRestoreCount) - numeric.restored.length);
-  const dangling = restoreDanglingSourceClauses(rawSource, partial.text,
-    boundedRestoreCount(maxRestoreCount) - numeric.restored.length - partial.restored.length);
+  const dangling = insertionOmissions.length
+    ? restoreDanglingSourceClauses(rawSource, partial.text,
+      boundedRestoreCount(maxRestoreCount) - numeric.restored.length - partial.restored.length)
+    : { text: partial.text, restored: [] };
   dangling.restored.unshift(...numeric.restored, ...partial.restored);
   if (sourceSpans.length < 2) return restoreResult(dangling.text, dangling.restored, violations, []);
   const candidates = [];
   // A detected partial omission must not fall through to whole-sentence
   // insertion, which would duplicate its surviving first arm.
-  const claimedSourceIndices = new Set(partial.candidates.map(c => c.sourceOrdinal - 1));
-  for (const violation of omissions) {
+  const claimedSourceIndices = new Set([
+    ...partial.candidates.map(c => c.sourceOrdinal - 1),
+    ...partialOwnership.sourceIndices
+  ]);
+  for (const violation of insertionOmissions) {
     const match = findSourceSentenceForViolation(rawSource, sourceSpans, violation);
     if (!match || claimedSourceIndices.has(match.index)) continue;
     if (isProtectedSourceSentence(match.span.text)) continue;
@@ -86,11 +93,14 @@ function restoreConfirmedSemanticOmissions({
   // 사라졌고 바로 앞 문단은 결과 끝부분에 확실히 대응할 때만, 그 결론
   // 문단을 원문 그대로 한 번 복원한다.
   const restoredKeysBeforeTrailing = new Set(restored.map(item => violationKey(item.violation)));
-  const unresolvedOmissions = omissions.filter(item => !restoredKeysBeforeTrailing.has(violationKey(item)));
+  const unresolvedOmissions = insertionOmissions.filter(item => !restoredKeysBeforeTrailing.has(violationKey(item)));
   const remainingCapacity = boundedRestoreCount(maxRestoreCount) - restored.length;
   if (remainingCapacity > 0 && unresolvedOmissions.length) {
     const trailing = findTrailingParagraphOmission(rawSource, current, unresolvedOmissions[0]);
-    if (trailing) {
+    const containsPairedPartial = trailing && [...partialOwnership.sourceIndices].some(index => (
+      normalizeForMatch(trailing.paragraph).includes(normalizeForMatch(sourceSpans[index].text))
+    ));
+    if (trailing && !containsPairedPartial) {
       current = `${current.trimEnd()}\n\n${trailing.paragraph}`.trim();
       restored.push(trailing);
       candidates.push(trailing);
@@ -100,6 +110,38 @@ function restoreConfirmedSemanticOmissions({
   const restoredViolationKeys = new Set(restored.map(item => violationKey(item.violation)));
   const remainingViolations = violations.filter(item => !restoredViolationKeys.has(violationKey(item)));
   return restoreResult(current, restored, remainingViolations, candidates);
+}
+
+// A judge-owned surviving rewrite is not a missing whole sentence. A short
+// limiting/negating phrase may be missing even when surface similarity to that
+// rewrite is low. Reserve only exact, unique paired context with a strict
+// sub-sentence source span; never guess its location from neighbouring prose.
+// Existing paired repair/revalidation owns fixing it. Keep the finding unresolved.
+function pairedPartialOmissionOwners(source, output, sourceSpans, omissions) {
+  const findings = new Set(), sourceIndices = new Set();
+  const locate = require('./evidenceSpan').locateEvidenceSpan;
+  for (const item of omissions) {
+    if (item.origin !== 'introduced' || item.relationGrounded !== true
+        || item.repairable !== true || item.sourceSpanVerified !== true
+        || item.grounding !== 'unique_exact_span') continue;
+    const sourceRange = locate(source, item.sourceSpan);
+    const candidateRange = locate(output, item.candidateSpan);
+    if (!sourceRange || !candidateRange
+        || sourceRange.end - sourceRange.start < 12
+        || candidateRange.end - candidateRange.start < 12) continue;
+    const ownedSource = source.slice(sourceRange.start, sourceRange.end);
+    const missing = locate(ownedSource, item.span, 2);
+    if (!missing) continue;
+    const start = sourceRange.start + missing.start, end = sourceRange.start + missing.end;
+    const index = sourceSpans.findIndex(span => span.start <= start && span.end >= end);
+    if (index < 0) continue;
+    const sentence = sourceSpans[index];
+    if (sourceRange.start > sentence.start || sourceRange.end < sentence.end) continue;
+    if (start === sentence.start && end === sentence.end) continue;
+    findings.add(item);
+    sourceIndices.add(index);
+  }
+  return { findings, sourceIndices };
 }
 
 // A near-paraphrase can lose a quantity even though lexical sentence coverage

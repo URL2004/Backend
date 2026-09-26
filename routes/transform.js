@@ -1192,6 +1192,13 @@ function buildArchiveObservability(job) {
     retryCounts: compactArchiveCodeCountMap(engineMeta.retryCounts),
     chunkConcurrency: archiveFinite(engineMeta.chunkConcurrency),
     structureSignaturePass: typeof engineMeta.structureSignaturePass === 'boolean' ? engineMeta.structureSignaturePass : undefined,
+    fragmentIntegrityPass: typeof engineMeta.fragmentIntegrityPass === 'boolean' ? engineMeta.fragmentIntegrityPass : undefined,
+    fragmentIntegrityIssueCount: archiveFinite(engineMeta.fragmentIntegrityIssueCount) == null
+      ? undefined
+      : Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(archiveFinite(engineMeta.fragmentIntegrityIssueCount)))),
+    fragmentIntegrityCodes: uniqueStrictArchiveCodes(engineMeta.fragmentIntegrityCodes).filter(code => [
+      'introduced_orphan_ending', 'introduced_duplicate_predicate_tail'
+    ].includes(code)),
     sectionPathErrorCount: archiveFinite(engineMeta.sectionPathErrorCount),
     originalStructurePass: typeof engineMeta.originalStructurePass === 'boolean' ? engineMeta.originalStructurePass : undefined,
     originalStructuralMarkerLossCount: archiveFinite(engineMeta.originalStructuralMarkerLossCount),

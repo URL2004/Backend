@@ -7,7 +7,7 @@ const { hasPovKind } = require('../engine/pov');
 const { auditVoice, buildVoiceProfile, auditDirectQuoteIntegrity } = require('./voiceProfile');
 const { compareNaturalnessShadow } = require('./naturalnessShadow');
 const { judgeAndRepair, assessRepairCandidate } = require('./judge');
-const { restoreConfirmedRelations, assessConfirmedRestorationSafety } = require('./confirmedRelationRestore');
+const { restoreConfirmedRelations, assessConfirmedRestorationSafety, PAIRED_RESTORATION_TYPES } = require('./confirmedRelationRestore');
 const { completeJson } = require('./openaiClient');
 const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
@@ -226,6 +226,21 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   if (structureAudit?.unsafeBoundaryCount > 0) {
     warnings.push(warning('unsafe_chunk_boundary', '청크 경계에서 문장이 자연스럽게 이어지지 않을 수 있어요.', { count: structureAudit.unsafeBoundaryCount }));
   }
+  if (structureAudit?.fragmentIntegrityPass === false) {
+    // A failed fragment audit must not disappear merely because all locked
+    // headings survived. These are review warnings, not technical blockers or
+    // new model-call triggers; candidate selection owns any bounded recovery.
+    const messages = {
+      introduced_orphan_ending: '완결된 문장 뒤에 분리된 어미가 남아 있어 문장 연결을 확인해 주세요.',
+      introduced_duplicate_predicate_tail: '앞 문장에서 완성한 서술어가 다음 행에 다시 남아 있어 원문 대조가 필요해요.'
+    };
+    const codes = [...new Set((Array.isArray(structureAudit.fragmentIntegrityCodes)
+      ? structureAudit.fragmentIntegrityCodes : []).filter(code => Object.hasOwn(messages, code)))];
+    const value = Number(structureAudit.fragmentIntegrityIssueCount);
+    const count = Number.isFinite(value) ? Math.min(10000, Math.max(1, Math.floor(value))) : 1;
+    for (const code of codes) warnings.push(warning(code, messages[code], { count }));
+    if (!codes.length) warnings.push(warning('fragment_boundary_review', '문장 경계 검사에서 확인이 필요한 항목이 남아 있어 원문과 대조해 주세요.', { count }));
+  }
   if (structureAudit?.sectionPathErrorCount > 0) {
     warnings.push(warning('section_path_mismatch', '본문 일부가 잘못된 절 경로에 연결됐을 수 있어요.', { count: structureAudit.sectionPathErrorCount }));
   }
@@ -442,7 +457,17 @@ async function runSemanticDocumentAuditInternal({
               initialViolations: [...(report.initialViolations || []), ...(report.violations || [])],
               repairStyleWarnings: [...new Set([...(report.repairStyleWarnings || []), ...restoreSafety.warnings])],
               confirmedRelationRestoreCount: restored.restoredCount };
-          } else report = { ...report, usage, confirmedRelationRestoreRejected: true };
+          } else {
+            // Rejected proposals never replace the official verdict. Their
+            // completed, grounded findings may still identify unchanged errors
+            // elsewhere. Retain bounded nomination-only evidence so the final
+            // pass can re-locate exact pairs instead of forgetting them.
+            const nomination = restorationNominationReport(verified);
+            report = { ...report, usage, confirmedRelationRestoreRejected: true,
+              ...(nomination ? { restorationNominationReports: [
+                ...(report.restorationNominationReports || []), nomination
+              ].slice(-4) } : {}) };
+          }
         }
       }
       outputs[index] = restoreReviewPairBoundaryWhitespace(
@@ -472,6 +497,7 @@ async function runSemanticDocumentAuditInternal({
         unchangedRepairCount: report.unchangedRepairCount || 0,
         escalated: report.escalated === true,
         initialViolations: report.initialViolations || [],
+        restorationNominationReports: report.restorationNominationReports || [],
         violations: report.violations || [],
         sourceIssues: report.sourceIssues || [],
         relationContract: report.relationContract || '',
@@ -501,10 +527,24 @@ async function runSemanticDocumentAuditInternal({
     reports,
     usage: reports.reduce((acc, report) => addUsageLocal(acc, report.usage), null),
     initialViolations: reports.flatMap(report => report.initialViolations || []),
+    restorationNominationReports: reports.flatMap(report => report.restorationNominationReports || []).slice(-8),
     violations: residual.flatMap(report => report.violations || []),
     sourceIssues: reports.flatMap(report => report.sourceIssues || []),
     relationContract: 'semantic-relations-v2'
   }, source, repairedText, { phase: 'semantic_document', model: [...new Set(reports.map(r => r.selectedJudgeModel).filter(Boolean))].join(',') });
+}
+
+function restorationNominationReport(report) {
+  if (!report || report.pass !== false || report.uncertain || report.skipped || report.verificationCompleted === false) return null;
+  const grounded = values => (Array.isArray(values) ? values : []).filter(v => (
+    PAIRED_RESTORATION_TYPES.includes(v?.type) && v.origin === 'introduced'
+    && v.relationGrounded === true && v.repairable === true && v.grounding === 'unique_exact_span'
+    && typeof v.sourceSpan === 'string' && typeof v.candidateSpan === 'string'
+  )).slice(0, 64);
+  const violations = grounded(report.violations), initialViolations = grounded(report.initialViolations);
+  if (!violations.length && !initialViolations.length) return null;
+  // No complete source/candidate copy, usage duplication or public metadata.
+  return { pass: false, uncertain: false, verificationCompleted: true, violations, initialViolations };
 }
 
 function restoreReviewPairBoundaryWhitespace(originalPart, candidatePart) {

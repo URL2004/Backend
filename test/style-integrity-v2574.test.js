@@ -218,7 +218,8 @@ test('paired subject-action findings permit bounded restoration without keyword 
   const {restoreConfirmedRelations}=require('../engine-gpt-prod/confirmedRelationRestore');
   const a='지난 절에서 설명한 행렬이 연산의 기본 틀이었다면, 다음 절에서는 그 구조를 살펴봅니다.';
   const b='지난 절에서 행렬이 연산의 기본 틀을 설명했다면, 다음 절에서는 그 구조를 살펴봅니다.';
-  const tail='각 항목의 입력값은 별도의 표에 기록했습니다. 결과를 비교할 때 같은 계산 조건을 유지했습니다.';
+  // Keep the local replacement within the paired path's 30% document cap.
+  const tail='각 항목의 입력값은 별도의 표에 기록했습니다. 결과를 비교할 때 같은 계산 조건을 유지했습니다. 자료의 수집 경로와 날짜는 부록에 설명했습니다. 검증 과정에서는 원자료의 위치를 추적할 수 있도록 기록을 남겼습니다. 다른 실험의 결론을 이 사례에 그대로 적용하지 않았습니다.';
   const v=judge.groundViolation({type:'distortion',span:b,sourceSpan:a,candidateSpan:b,origin:'introduced',relation:'actor_action_target'},a+' '+tail,b+' '+tail);
   const report={pass:false,violations:[v]};
   assert.equal(restoreConfirmedRelations(a+' '+tail,b+' '+tail,report).text,a+' '+tail);

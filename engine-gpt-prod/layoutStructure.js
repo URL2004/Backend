@@ -98,6 +98,19 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
   const codeIndices = detectCodeLineIndices(records, source);
   const tableIndices = detectContextTableLineIndices(records, codeIndices);
   const signatureIndices = detectSignatureLineIndices(records, codeIndices);
+  // Explicit application-form consent is supplied wording, not the author's
+  // essay. Require a form heading AND a bounded checkbox-terminated clause.
+  if (/(?:참가|가입|지원)\s*신청서/u.test(source) && /[■□☑☐]\s*동의/u.test(source)) {
+    for (let i = 0; i < records.length; i++) {
+      if (!/^(?:상기\s*)?본인은?\s/u.test(records[i].text)) continue;
+      const end = records.slice(i, i + 30).findIndex(r => /[■□☑☐]\s*동의/u.test(r.text));
+      if (end < 0) continue;
+      const block = records.slice(i, i + end + 1).map(r => r.text).join(' ');
+      if (block.length > 1800 || !/(?:개인정보|입상|수상|책임|응모작)/u.test(block)) continue;
+      for (let j = i; j <= i + end; j++) if (!codeIndices.has(j)) signatureIndices.add(j);
+      i += end;
+    }
+  }
   const parallelSloganTitleIndices = detectParallelSloganTitleIndices(
     records,
     new Set([...codeIndices, ...tableIndices, ...signatureIndices])
@@ -207,6 +220,7 @@ function classifyLine(value, context = {}) {
   if (context.parallelSloganTitle) return 'title';
   if (isQuoteLine(text)) return 'quote';
   if (isColonTitleLine(text, context)) return 'title';
+  if (isColonSubtitledTitle(text, context) || isColonSubtitle(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
   if (isDependentLead(text) && context.next) return 'prose';
@@ -466,6 +480,40 @@ function isTitleContinuation(text, context = {}) {
   if (bracketLabelParts(text) || labelParts(text) || looksLikeUnpunctuatedProse(text)) return false;
   const nextLength = String(context.next?.text || '').length;
   return context.blankAfter || nextLength >= Math.max(70, Math.ceil(text.length * 1.45));
+}
+
+// A report cover can carry `제목` and a separate `: 부제` row. The subtitle row
+// is short, so the length-based continuation rule above treated both rows as
+// prose; structure planning then joined them and the subtitle was rewritten.
+// Only a nominal title row directly after cover furniture (or at the start)
+// and an adjacent colon-led nominal row qualify. Sentences, labels and lists
+// keep their existing roles.
+function colonSubtitleBody(value) {
+  return (visibleTrim(value).match(/^[:：]\s*(\S[\s\S]*)$/u) || [])[1] || '';
+}
+
+function isNominalTitleRow(text, maxLength) {
+  return text.length >= 2 && text.length <= maxLength
+    && !/[.!?。！？]\s*["”’')\]）]*$/u.test(text)
+    && !/^(?:https?:|www\.|[A-Za-z]:\\)/iu.test(text)
+    && !isListLine(text) && !isQuoteLine(text) && !isExplicitTableLine(text)
+    && !labelParts(text) && !bracketLabelParts(text)
+    && !looksLikeUnpunctuatedProse(text) && !isDependentLead(text);
+}
+
+function isColonSubtitledTitle(text, context = {}) {
+  const previousRole = String(context.previous?.role || '');
+  if (!context.firstContent && !['title', 'heading'].includes(previousRole)) return false;
+  if (context.blankAfter || !isNominalTitleRow(text, 60)) return false;
+  const subtitle = colonSubtitleBody(context.next?.text);
+  return subtitle.length >= 4 && isNominalTitleRow(subtitle, 90);
+}
+
+function isColonSubtitle(text, context = {}) {
+  if (String(context.previous?.role || '') !== 'title' || context.blankBefore) return false;
+  const subtitle = colonSubtitleBody(text);
+  return subtitle.length >= 4 && isNominalTitleRow(subtitle, 90)
+    && isNominalTitleRow(visibleTrim(context.previous?.text), 60);
 }
 
 function isBracketHeadingLine(value) {

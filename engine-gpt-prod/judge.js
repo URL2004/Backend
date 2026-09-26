@@ -92,6 +92,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         '결정론 신호에 experience_novelty_candidate가 있으면 원문·허용 메모에 없는 실제 개인 경험·시점·행동이 새로 생겼는지 확인한다. 단순 의역이나 원문 경험의 자연스러운 재표현은 위반이 아니다. 실제 신규 경험이면 experience_novelty로 판정한다.',
         '학술·보고서에서 “~자체보다”가 “~에서 나아가”로, “~에 그치지 않고”가 “~이/가 아니라”로 바뀐 것처럼 대조·부정·제한·가능성의 범위가 달라지면 distortion이다.',
         'comparison_negation_candidate가 있으면 비교·우선순위와 배제를 구별한다. “X가 되기보다 Y로 활용”은 X를 부정하지 않지만 “X가 아니라 Y”는 X를 배제한다. 방향이 비슷하다는 이유로 같은 뜻으로 처리하지 않는다. 원문 자체가 X를 부정하는 경우에만 부정의 재표현을 허용한다.',
+        'concession_scope_candidate: “능력이 있어도 어렵다”는 능력이 있는 경우까지 포함하는 양보이고 “능력만으로 어렵다”는 단독 충분성 부정이다. 전제와 범위가 달라지는지 확인한다. procedure_order_candidate: 문장이 모두 남아 있어도 준비·확인과 실행·결과의 선후가 뒤집히면 distortion이다. 의료·실험·공정·조리 등에서 원문이 정한 순서를 기준으로 여러 문장을 함께 대조한다. 결과 먼저 소개 후 명시적으로 과거를 회상하는 정상 서술은 구분한다. 오류 쌍에는 순서가 바뀐 구간 전체를 정확히 복사한다.',
         'certainty_scope_candidate는 오류 확정이 아닌 심사 후보다. 같은 주체의 “업무를 빠르게 처리하고 비용을 줄일 수 있다”는 두 행동 모두 가능성의 범위에 들어가므로 “처리하고”만 떼어 실제 수행의 단정으로 판정하지 않는다. 반면 서로 다른 주체의 독립된 절에서는 뒤 주체의 “수 있다”가 앞 주체의 가능성을 대신하지 않는다. “생각이 든다” 같은 의견도 주변 문맥의 수식 범위까지 확인한다. 원문이 고장 발생을 단정했는데 결과에서 가능성으로 바꾼 경우처럼 반대 방향의 강도 변화도 distortion이다. 과학적으로 더 신중해 보여도 원문의 확신 수준을 대신 교정하지 않는다.',
         '생략 심사에서는 현재 문단의 설명 관계를 확인한다. 앞 문장의 시점·수단·대상·조건을 뒤 문장이 이어받는데 그 연결 정보가 사라졌다면, 다른 절에 같은 단어가 있어도 omission 후보다. 정보를 뒤 문장에 옮겨 자연스럽게 합친 것은 오류가 아니다. 확정할 때 sourceSpan에는 연결 정보를 포함한 원문 구간, candidateSpan에는 실제 남은 대응 문장을 지정한다. 대응이 불확실하면 추측 복원하지 않는다.',
         '가능성·의견 표지의 개수나 종결어미만으로 오류를 확정하지 않는다. 같은 주체의 “자료를 검색하고 복사할 수 있다”는 두 행동 모두 가능성을 나타낼 수 있다. 의견문 바로 뒤에 그 이유를 설명한 문장이 같은 화자의 의견 범위에 포함되거나 “생각해 보니”가 뒤 판단을 수식하면, 단정형 종결만으로 사실의 단정으로 바뀌었다고 보지 않는다. 다른 주체·조건으로 범위가 바뀌거나 실제 완료·실행을 새로 확정한 경우와 구별한다.',
@@ -374,7 +375,8 @@ function dedupeViolations(violations) {
 function hasMappingReviewCandidate(discourseSignals) {
   return (discourseSignals || []).some(code => [
     'explicit_mapping_candidate', 'number_ownership_candidate',
-    'argument_ownership_candidate', 'definition_target_candidate'
+    'argument_ownership_candidate', 'definition_target_candidate',
+    'procedure_order_candidate', 'concession_scope_candidate', 'comparison_negation_candidate'
   ].includes(code));
 }
 

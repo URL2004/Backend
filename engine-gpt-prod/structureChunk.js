@@ -3091,6 +3091,73 @@ function buildStructureAudit({
   };
 }
 
+// A defect that the CURRENT text already has must not veto an unrelated local
+// repair. Compare the two audits by defect content (positions ignored, since
+// an edit elsewhere shifts ordinals) as multisets: every candidate defect must
+// already exist in the baseline, no count may grow and no passing dimension
+// may start failing. A candidate that trades one defect for another is worse.
+const STRUCTURE_DEFECT_POSITION_FIELDS = new Set(['index', 'ordinal', 'lineOrdinal', 'line', 'lineIndex',
+  'start', 'end', 'offset', 'position', 'outputIndex', 'sourceIndex', 'outputOrdinal', 'sourceOrdinal', 'chunkIndex']);
+const STRUCTURE_DEFECT_LISTS = Object.freeze([
+  'lostLocked', 'lockedOutOfOrder', 'unsafeBoundaries', 'sectionPathErrors', 'structuralRoleLosses',
+  'structuralRoleAdditions', 'originalStructuralMarkerLosses', 'sourceStructuralMarkerLosses',
+  'sourceStructuralMarkerAdditions', 'bracketedLabelLosses', 'bracketedLabelBoundaryChanges', 'lineAnchorLosses',
+  'lineAnchorBoundaryChanges', 'sourceLineAnchorLosses', 'sourceLineAnchorAdditions',
+  'sourceLineAnchorBoundaryChanges', 'inlineLabelBodySplits', 'fragmentIntegrityCodes'
+]);
+const STRUCTURE_DEFECT_COUNTS = Object.freeze([
+  'lostLockedCount', 'protectedBlockChangedCount', 'fragmentIntegrityIssueCount', 'lockedOutOfOrderCount',
+  'unsafeBoundaryCount', 'sectionPathErrorCount', 'structuralRoleLossCount', 'structuralRoleAdditionCount',
+  'tableColumnOwnershipLossCount', 'originalStructuralMarkerLossCount', 'sourceStructuralMarkerLossCount',
+  'sourceStructuralMarkerAdditionCount', 'bracketedLabelLossCount', 'bracketedLabelBoundaryChangeCount',
+  'lineAnchorLossCount', 'lineAnchorBoundaryChangeCount', 'sourceLineAnchorLossCount',
+  'sourceLineAnchorAdditionCount', 'sourceLineAnchorBoundaryChangeCount', 'inlineLabelBodySplitCount',
+  'introducedOrphanParticleBoundaryCount'
+]);
+const STRUCTURE_DEFECT_FLAGS = Object.freeze([
+  'fragmentIntegrityPass', 'structureSignaturePass', 'tableColumnOwnershipPass', 'originalStructurePass',
+  'sourceStructurePass', 'bracketedLabelLayoutPass', 'lineAnchorLayoutPass', 'sourceLineAnchorLayoutPass',
+  'inlineLabelBodyLayoutPass', 'exactLineStructurePass'
+]);
+
+function structureDefectKey(kind, item) {
+  if (!item || typeof item !== 'object') return `${kind}:${JSON.stringify(item)}`;
+  const stable = Object.keys(item).filter(key => !STRUCTURE_DEFECT_POSITION_FIELDS.has(key)).sort()
+    .map(key => [key, item[key]]);
+  return `${kind}:${JSON.stringify(stable)}`;
+}
+
+function structureAuditNotWorseThan(baseline, candidate) {
+  if (candidate?.pass === true) return true;
+  if (!baseline || !candidate) return false;
+  if (baseline.lockedOrderChanged !== true && candidate.lockedOrderChanged === true) return false;
+  for (const key of STRUCTURE_DEFECT_FLAGS) {
+    if (baseline[key] !== false && candidate[key] === false) return false;
+  }
+  for (const key of STRUCTURE_DEFECT_COUNTS) {
+    if (Number(candidate[key] || 0) > Number(baseline[key] || 0)) return false;
+  }
+  if (candidate.exactLineStructurePass === false
+      && (candidate.exactLineOutputCount !== baseline.exactLineOutputCount
+        || candidate.exactNonEmptyOutputCount !== baseline.exactNonEmptyOutputCount)) return false;
+  const remaining = new Map();
+  for (const kind of STRUCTURE_DEFECT_LISTS) {
+    for (const item of baseline[kind] || []) {
+      const key = structureDefectKey(kind, item);
+      remaining.set(key, (remaining.get(key) || 0) + 1);
+    }
+  }
+  for (const kind of STRUCTURE_DEFECT_LISTS) {
+    for (const item of candidate[kind] || []) {
+      const key = structureDefectKey(kind, item);
+      const left = remaining.get(key) || 0;
+      if (left <= 0) return false;
+      remaining.set(key, left - 1);
+    }
+  }
+  return true;
+}
+
 /**
  * 제목·부제·날짜·라벨은 문자열이 남는 것뿐 아니라 같은 행에 묶여 있어야
  * 구조가 보존된다. 역할 개수만 비교하면 제목을 앞 문단에 붙이거나 이모지와
@@ -4025,6 +4092,7 @@ function bare(text) {
 }
 
 module.exports = {
+  structureAuditNotWorseThan,
   VERSION,
   splitChunksForGpt,
   mergeChunks,

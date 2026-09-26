@@ -50,6 +50,8 @@ const technicalExplanationAudit = require('./technicalExplanationAudit');
 const safeEditAccumulator = require('./safeEditAccumulator');
 const commercialSignals = require('./commercialSignals');
 const omissionRestore = require('./omissionRestore');
+const repairBlockAdoption = require('./repairBlockAdoption');
+const certaintyEndingRestore = require('./certaintyEndingRestore');
 const unsupportedSpecificity = require('./unsupportedSpecificityAudit');
 const niklAdvisor = require('./niklAdvisor');
 const {
@@ -71,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.78';
+const VERSION = 'gpt-prod-v2.5.79';
 const DETECT_VERSION = 'gpt-detect-v1.45';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -1818,6 +1820,20 @@ async function runEngine({
     humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     recordHumanizationDepthStage('pre_semantic', humanizationDepthReport);
   }
+  // Repair attested local scope before the normal judge/repair cycle, so its
+  // surrounding rewritten grammar is checked and can still be repaired.
+  let relationScopeRestoreCount = 0;
+  {
+    const restored = require('./relationScopeRestore').restoreRelationScopes(auditSource, outputText);
+    if (restored.applied
+        && candidateIntegrity.auditCandidateIntegrity({ source: auditSource, before: outputText,
+          candidate: restored.text, documentProfile, mode: selectedMode }).pass === true
+        && preservesFinalStructure(auditSource, restored.text, frozen ? frozen.auditChunks : chunks,
+          chunkPlan, boundaryRepair, { current: outputText })) {
+      outputText = restored.text;
+      relationScopeRestoreCount += restored.restoredCount;
+    }
+  }
   let preSemanticStructureAudit = structureChunk.buildStructureAudit({
     source: auditSource,
     outputText,
@@ -1838,6 +1854,7 @@ async function runEngine({
     allowedExtra
   });
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
+  let semanticRepairPartialAdoption = { attempted: false, applied: false, adoptedCount: 0, rejectedCount: 0, reason: '' };
   // Request-local nomination history only. A later judge can miss an earlier
   // finding; never turn that absence into evidence that an unchanged passage
   // was repaired. Exact current-pair grounding is checked again by the restorer,
@@ -1915,10 +1932,12 @@ async function runEngine({
       depthTugSemanticRepairRounds += Number(semanticReport.repairCount || 0);
       let semanticOutput = semanticReport.outputText || semanticInputText;
       if (normalizeBare(semanticOutput) !== normalizeBare(semanticInputText)) {
-        const semanticCandidateValidation = auditGeneralSurfaceCandidateWithStructure({
+        const repairedOutput = semanticOutput;
+        const verifiedRepairReport = semanticReport;
+        const validateSemanticCandidate = (current, candidate) => auditGeneralSurfaceCandidateWithStructure({
           source: auditSource,
-          current: semanticInputText,
-          candidate: semanticOutput,
+          current,
+          candidate,
           contract,
           documentProfile,
           mode: selectedMode,
@@ -1926,26 +1945,45 @@ async function runEngine({
           plan: chunkPlan,
           boundaryRepair,
           humanizationPlan,
-          verifiedSemanticRepair: semanticReport
+          verifiedSemanticRepair: verifiedRepairReport
         });
+        const semanticCandidateValidation = validateSemanticCandidate(semanticInputText, semanticOutput);
         semanticOutput = semanticCandidateValidation.candidate || semanticOutput;
         if (semanticCandidateValidation.pass !== true) {
           const rejectionCodes = safeFailureCodeList([
             ...(semanticReport.repairRejectReasons || []),
             ...(semanticCandidateValidation.codes || []).map(code => `full_document_${code}`)
           ]);
+          // 문서 전체 수리본 하나가 거절되면 그 안의 정상 국소 수리까지 모두
+          // 버려졌다. 문단 단위로 같은 검증을 다시 통과한 수리만 남기고, 이
+          // 결과는 검증 완료로 표시하지 않는다(최종 재검증이 다시 판정한다).
+          const partial = repairBlockAdoption.adoptValidatedRepairBlocks({
+            current: semanticInputText,
+            repaired: repairedOutput,
+            validate: validateSemanticCandidate
+          });
+          semanticRepairPartialAdoption = {
+            attempted: true,
+            applied: partial.applied === true,
+            adoptedCount: Number(partial.adoptedCount || 0),
+            rejectedCount: Number(partial.rejectedCount || 0),
+            reason: partial.reason || ''
+          };
           semanticReport = {
             ...semanticReport,
-            outputText: semanticInputText,
+            outputText: partial.applied ? partial.text : semanticInputText,
             pass: false,
             repairRejected: true,
+            repairPartiallyApplied: partial.applied === true,
             repairRejectReasons: rejectionCodes,
             violations: (semanticReport.initialViolations || []).length
               ? semanticReport.initialViolations
               : (semanticReport.violations || []),
-            reason: 'full_document_repair_candidate_rejected'
+            reason: partial.applied
+              ? 'full_document_repair_candidate_partially_applied'
+              : 'full_document_repair_candidate_rejected'
           };
-          semanticOutput = semanticInputText;
+          semanticOutput = partial.applied ? partial.text : semanticInputText;
         }
       }
       const restoredOmissions = omissionRestore.restoreConfirmedSemanticOmissions({
@@ -3426,7 +3464,7 @@ async function runEngine({
         (before, candidate) => candidateIntegrity.auditCandidateIntegrity({
           source: rawSource, before, candidate, documentProfile, mode: selectedMode
         }).pass === true && preservesFinalStructure(
-          rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair)
+          rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair, { current: before })
       );
       if (restored.applied) {
         const candidate = restored.text;
@@ -3440,7 +3478,8 @@ async function runEngine({
         });
         if (fingerprint.isImproved(relationBefore, relationAfter)
             && integrity.pass === true
-            && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair)) {
+            && preservesFinalStructure(rawSource, candidate, materializedChunks, chunkPlan, boundaryRepair,
+              { current: outputText })) {
           outputText = candidate;
           fingerprintAudit = relationAfter;
           const restoredCount = Number(restored.restoredSentenceCount || 1);
@@ -3450,6 +3489,27 @@ async function runEngine({
           rememberStructureSafeOutput(outputText, 'delivery_relation_source_restore');
         }
       }
+    }
+  }
+
+  // 해석 판단 표지(“~로 볼 수 있다”)가 단정(“~다”)으로 바뀐 경우, 같은
+  // 수식어·명사 서술어에 원문의 표지만 되돌린다. 원문에 없는 표지는 만들지
+  // 않으며, 뒤의 최종 의미 재검증이 이 문자열을 다시 판정한다.
+  let certaintyEndingRestoreCount = 0;
+  {
+    const restored = certaintyEndingRestore.restoreCertaintyEndings(rawSource, outputText);
+    if (restored.applied
+        && candidateIntegrity.auditCandidateIntegrity({
+          source: rawSource, before: outputText, candidate: restored.text,
+          documentProfile, mode: selectedMode
+        }).pass === true
+        && preservesFinalStructure(rawSource, restored.text, materializedChunks, chunkPlan, boundaryRepair,
+          { current: outputText })) {
+      outputText = restored.text;
+      certaintyEndingRestoreCount = restored.restoredCount;
+      finalSourceIntegrityRestoreCount += restored.restoredCount;
+      addUniqueCode(finalSourceIntegrityRestoreCodes, 'certainty_ending_restore');
+      rememberStructureSafeOutput(outputText, 'certainty_ending_restore');
     }
   }
 
@@ -3746,6 +3806,18 @@ async function runEngine({
       technicalExplanationClarifyCount += clarified.clarifiedCount;
     }
   }
+  {
+    const restored = require('./relationScopeRestore').restoreRelationScopes(rawSource, outputText);
+    if (restored.applied
+        && candidateIntegrity.auditCandidateIntegrity({ source: rawSource, before: outputText,
+          candidate: restored.text, documentProfile, mode: selectedMode }).pass === true
+        && preservesFinalStructure(rawSource, restored.text, materializedChunks, chunkPlan, boundaryRepair,
+          { current: outputText })) {
+      outputText = restored.text;
+      relationScopeRestoreCount += restored.restoredCount;
+      rememberStructureSafeOutput(outputText, 'relation_scope_restore');
+    }
+  }
   // 최종 의미 재검증. 의미 심사 뒤의 늦은 단계(원문 문장 복원·중복 삭제·
   // 구체성 제거·늦은 깊이 회복 등)가 본문을 실제로 바꾸면 검증 digest가
   // 달라진다. 공백 배치만 바뀐 경우는 provenance의 결정론 투영이 같은 판정을
@@ -3774,6 +3846,37 @@ async function runEngine({
         const finalAuditStartedAt = Date.now();
         const priorReport = semanticReport;
         try {
+          // 최종 판정 뒤의 복원은 같은 120초 창에서 전체 재심사를 한 번 더
+          // 받아야 해서, 심사가 54초를 넘는 긴 문서에서는 실행될 수 없었다.
+          // 앞선 판정이 이미 확정한 정확한 쌍의 복원은 최종 판정 전에 적용해
+          // 추가 모델 호출 없이 이 한 번의 최종 판정으로 검증한다.
+          if (priorReport?.pass === false && priorReport.verificationCompleted !== false
+              && !priorReport.uncertain && !priorReport.skipped) {
+            const confirmedRelationRestore = require('./confirmedRelationRestore');
+            const preRestored = confirmedRelationRestore.restoreConfirmedRelations(rawSource, outputText, priorReport, {
+              priorReports: semanticRestorationEvidence
+            });
+            const preSafety = preRestored.applied
+              ? confirmedRelationRestore.assessConfirmedRestorationSafety(candidateIntegrity.auditCandidateIntegrity({
+                source: rawSource, before: outputText, candidate: preRestored.text,
+                documentProfile, mode: selectedMode
+              }))
+              : null;
+            if (!preRestored.applied) {
+              finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'no_grounded_target';
+            } else if (!preSafety.eligible) {
+              finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'safety_ineligible';
+            } else if (!preservesFinalStructure(rawSource, preRestored.text, materializedChunks, chunkPlan,
+              boundaryRepair, { current: outputText })) {
+              finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'structure_not_preserved';
+            } else {
+              outputText = preRestored.text;
+              finalSemanticRevalidation.preFinalRelationRestoredCount = preRestored.restoredCount;
+              finalSemanticRevalidation.preFinalRelationRestoreWarnings = preSafety.warnings;
+            }
+          } else {
+            finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'prior_verdict_not_failed';
+          }
           let recheck = await qualityV2.runSemanticDocumentAudit({
             source: rawSource,
             outputText,
@@ -3795,9 +3898,17 @@ async function runEngine({
           // enough of the SAME 120s final budget remains to verify it. No free
           // rewrite, extra repair loop, guessed insertion or unverified pass.
           const recheckElapsed = Date.now() - finalAuditStartedAt;
+          const relationRestoreTimeAvailable = finalDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2);
+          if (recheck.pass === false) {
+            finalSemanticRevalidation.relationRestoreSkipReason = recheck.verificationCompleted !== true
+              ? 'verification_incomplete'
+              : recheck.uncertain ? 'uncertain'
+                : signal?.aborted ? 'aborted'
+                  : relationRestoreTimeAvailable ? '' : 'deadline_insufficient';
+          }
           if (recheck.pass === false && recheck.verificationCompleted === true
               && !recheck.uncertain && !signal?.aborted
-              && finalDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2)) {
+              && relationRestoreTimeAvailable) {
             let restored = require('./confirmedRelationRestore').restoreConfirmedRelations(rawSource, outputText, recheck, {
               priorReports: [...semanticRestorationEvidence, priorReport]
             });
@@ -3833,7 +3944,17 @@ async function runEngine({
                 finalSemanticRevalidation.relationPatchReason = modelCallFailureCode(error);
               }
             }
-            if (restored.applied && restoreSafety.eligible && preservesFinalStructure(rawSource, restored.text, materializedChunks, chunkPlan, boundaryRepair)) {
+            const restoredStructurePreserved = restored.applied && restoreSafety?.eligible === true
+              && preservesFinalStructure(rawSource, restored.text, materializedChunks, chunkPlan, boundaryRepair, { current: outputText });
+            if (!restored.applied) {
+              finalSemanticRevalidation.relationRestoreSkipReason = finalSemanticRevalidation.relationPatchAttempted
+                ? 'patch_rejected' : 'no_grounded_target';
+            } else if (restoreSafety?.eligible !== true) {
+              finalSemanticRevalidation.relationRestoreSkipReason = 'safety_ineligible';
+            } else if (!restoredStructurePreserved) {
+              finalSemanticRevalidation.relationRestoreSkipReason = 'structure_not_preserved';
+            }
+            if (restoredStructurePreserved) {
               finalSemanticRevalidation.relationRestorationAttempted = true;
               try {
                 const verified = await qualityV2.runSemanticDocumentAudit({
@@ -3853,10 +3974,14 @@ async function runEngine({
                   recheck = verified;
                   recheck.repairStyleWarnings = [...new Set([...(recheck.repairStyleWarnings || []), ...restoreSafety.warnings])];
                   finalSemanticRevalidation.relationRestoredCount = restored.restoredCount;
-                } else finalSemanticRevalidation.relationRestorationRejected = true;
+                } else {
+                  finalSemanticRevalidation.relationRestorationRejected = true;
+                  finalSemanticRevalidation.relationRestoreSkipReason = 'verification_failed';
+                }
               } catch (error) {
                 addSupplementalUsage(error.usage, 'final_relation_restoration_verification');
                 finalSemanticRevalidation.relationRestorationRejected = true;
+                finalSemanticRevalidation.relationRestoreSkipReason = 'verification_failed';
               }
             }
           }
@@ -4488,6 +4613,16 @@ async function runEngine({
     finalRelationRestorationRejected: finalSemanticRevalidation.relationRestorationRejected === true,
     finalRelationPatchAttempted: finalSemanticRevalidation.relationPatchAttempted === true,
     finalRelationPatchReason: String(finalSemanticRevalidation.relationPatchReason || ''),
+    finalRelationRestoreSkipReason: String(finalSemanticRevalidation.relationRestoreSkipReason || ''),
+    preFinalRelationRestoredCount: Number(finalSemanticRevalidation.preFinalRelationRestoredCount || 0),
+    preFinalRelationRestoreSkipReason: String(finalSemanticRevalidation.preFinalRelationRestoreSkipReason || ''),
+    certaintyEndingRestoreCount,
+    relationScopeRestoreCount,
+    semanticRepairPartialAdoptionAttempted: semanticRepairPartialAdoption.attempted === true,
+    semanticRepairPartialAdoptionApplied: semanticRepairPartialAdoption.applied === true,
+    semanticRepairPartialAdoptedBlockCount: semanticRepairPartialAdoption.adoptedCount,
+    semanticRepairPartialRejectedBlockCount: semanticRepairPartialAdoption.rejectedCount,
+    semanticRepairPartialAdoptionReason: semanticRepairPartialAdoption.reason,
     semanticSourceIssueCount: (semanticReport.sourceIssues || []).length,
     semanticRelationContract: String(semanticReport.relationContract || ''),
     semanticRepairStyleWarnings: semanticReport.repairStyleWarnings || [],
@@ -6708,7 +6843,8 @@ function auditGeneralSurfaceCandidateWithStructure({
     verifiedSemanticRepair
   );
   const codes = [...(audit.codes || [])];
-  if (!preservesFinalStructure(source, preparedCandidate, chunks, plan, boundaryRepair)
+  if (!preservesFinalStructure(source, preparedCandidate, chunks, plan, boundaryRepair,
+    { current: current ? String(current) : null })
       && !codes.includes('structure_loss')) {
     codes.push('structure_loss');
   }
@@ -7130,7 +7266,7 @@ function isSafeLocalizedLanguageCandidate({
   return true;
 }
 
-function preservesFinalStructure(source, candidate, chunks, plan, boundaryRepair) {
+function preservesFinalStructure(source, candidate, chunks, plan, boundaryRepair, { current = null } = {}) {
   const audit = structureChunk.buildStructureAudit({
     source,
     outputText: candidate,
@@ -7141,7 +7277,19 @@ function preservesFinalStructure(source, candidate, chunks, plan, boundaryRepair
   // 제목·목록이 사라지지 않았다는 것만으로는 구조 보존이 아니다. 긴 문서
   // 수리에서 다음 절 제목과 본문이 한 번 더 복사된 사고처럼, 구조가 늘어난
   // 후보와 라벨·행 경계가 달라진 후보도 모두 거부한다.
-  return audit.pass === true;
+  if (audit.pass === true) return true;
+  // 후보를 버리면 current가 그대로 남는 국소 수리에서는, current에 이미 있던
+  // 구조 결함 하나가 다른 문단의 정상 수리까지 모두 막았다. 새 결함이 전혀
+  // 없는 경우에만 허용하며, 전달 직전의 절대 구조 검사는 그대로 유지한다.
+  if (current == null || String(current) === String(candidate)) return false;
+  const baseline = structureChunk.buildStructureAudit({
+    source,
+    outputText: current,
+    chunks,
+    plan,
+    boundaryRepair
+  });
+  return baseline.pass !== true && structureChunk.structureAuditNotWorseThan(baseline, audit);
 }
 
 function acceptGeneralSurfaceRecovery(records, selectedIndices = null) {

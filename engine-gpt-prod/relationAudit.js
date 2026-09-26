@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v7-clause-modality';
+const VERSION = 'relation-candidates-v10-procedure-scope';
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
@@ -15,6 +15,8 @@ const SEQUENCE_MARKER = /(?:^|[\s(])(?:그\s*)?(?:뒤|후|이후|직후|다음|�
 const COORDINATION = /[가-힣](?:고|며)\s/u;
 const CLAUSE_JOIN = /[가-힣](?:고|며|지만)\s*,?\s/u;
 const CAUSAL_MARKER = /(?:그\s*결과|때문에|따라서|덕분에|덕에|탓에|으므로|(?:로|으로)\s*인해)/gu;
+const COMPARATIVE_PREFERENCE = /(?:기보다|보다는|(?<![가-힣])(?!무엇보다|누구보다)[가-힣]{2,}보다\s)/u;
+const INTERPRETIVE_FRAME = /(?:(?:으로|로)\s*(?:볼|해석할)\s*수\s*있|(?:이라고|라고)\s*(?:할|볼)\s*수\s*있|것으로\s*(?:보인|보이|볼\s*수|해석|판단)|(?:으로|로)\s*해석(?:된|할|하))/u;
 // Claim strength tiers: partial (1) < general (2) < universal/intense (3).
 // A comparable sentence whose tier set changes is a strength candidate.
 const PARTICLE_END = '(?=$|[\\s,.;!?)]|(?:은|는|이|가|의|도|만|을|를|에|로|으로|와|과)(?![가-힣]))';
@@ -84,8 +86,12 @@ function auditRelationCandidates(source, outputText) {
         && /(?:인지|는지|을지|할지|될지)[^.!?\n]{0,45}(?:모르|몰랐|고민|생각)/u.test(original)) {
       add('speech_act_shift_candidate');
     }
-    if (/(?:기보다|보다는)/u.test(original) && !/(?:아니라|아니다|아닌)/u.test(original)
+    // "A보다 B를 통해" ranks A below B; "A가 아니라 B" excludes A. A plain
+    // nominal comparison is nominated too (무엇보다/누구보다 are emphasis).
+    if (COMPARATIVE_PREFERENCE.test(original) && !/(?:아니라|아니다|아닌)/u.test(original)
         && /(?:아니라|아니다|아닌)/u.test(sentence)) add('comparison_negation_candidate');
+    if (/(?:이|가)\s+있어도/u.test(original) && /만으로(?:는)?\s/u.test(sentence)
+        && !/만으로/u.test(original)) add('concession_scope_candidate');
     // A domain-confusable pair is a review hint, not an autocorrect dictionary.
     // Compare within a matched claim: another occurrence elsewhere cannot
     // legitimize changing this sentence's concept.
@@ -105,6 +111,11 @@ function auditRelationCandidates(source, outputText) {
     }
     if (/(?:이후|직후|그\s*후|\s뒤|\s후(?=\s|$)|\s후에|다음에|나서)/u.test(original)
         && count(sentence, CAUSAL_MARKER) > count(original, CAUSAL_MARKER)) add('causal_relation_candidate');
+    // "X를 Y의 한 요소로 볼 수 있다" -> "X 때문에 Y할 수 있었다": the writer's
+    // interpretation became a direct cause. The output may still say 수 있다,
+    // so compare the interpretive frame itself, not the hedge count.
+    else if (INTERPRETIVE_FRAME.test(original) && !INTERPRETIVE_FRAME.test(sentence)
+        && count(sentence, CAUSAL_MARKER) > count(original, CAUSAL_MARKER)) add('causal_relation_candidate');
     const left = subjectObject(original), right = subjectObject(sentence);
     if (left && right && left.subject === right.object && left.object === right.subject
         && left.subject !== left.object) add('argument_ownership_candidate');
@@ -116,6 +127,37 @@ function auditRelationCandidates(source, outputText) {
     else if (strengthShift(original, sentence)) add('claim_strength_candidate');
     if (certaintyScopeShift(original, sentence)) add('certainty_scope_candidate');
     if (temporalSequenceShift(original, sentence, before, after)) add('temporal_sequence_candidate');
+  }
+  // A bag of intact sentences can still reverse a procedure. Nominate a
+  // bounded pair using reciprocal, unambiguous alignment, not word counts.
+  const { sentenceSimilarity } = require('./sentenceAlignment');
+  let procedurePairs = 0;
+  for (let i = 0; i + 1 < originals.length; i++) {
+    const a = originals[i], b = originals[i + 1];
+    if (!/(?:확인|점검|준비|세척|소독|측정|살폈)/u.test(a)
+        || !/(?:뒤|후|먼저|준비)/u.test(a)
+        || !/(?:시도|시행|실시|작동|가열|투입|삽입|주입|체결|혼합)/u.test(b)) continue;
+    const exactA = rewritten.indexOf(a), exactB = rewritten.indexOf(b);
+    if (exactA >= 0 && exactB > exactA && rewritten.lastIndexOf(a) === exactA
+        && rewritten.lastIndexOf(b) === exactB) continue;
+    if (++procedurePairs > 12) break;
+    const rank = original => rewritten.flatMap((sentence, index) => [1,2,3]
+      .filter(size => index + size <= rewritten.length)
+      .map(size => ({ index, end: index + size,
+        score: sentenceSimilarity(original, rewritten.slice(index,index + size).join(' ')) - (size-1)*.015 })))
+      .sort((a,b) => b.score-a.score);
+    const left = rank(a), right = rank(b);
+    const rival = rows => rows.find(r => r.end <= rows[0].index || r.index >= rows[0].end);
+    if (left[0]?.score < .55 || right[0]?.score < .55
+        || !left[0] || !right[0] || left[0].index <= right[0].index
+        || left[0].index - right[0].index > 3
+        || right[0].end > left[0].index
+        || (rival(left) && left[0].score-rival(left).score < .1)
+        || (rival(right) && right[0].score-rival(right).score < .1)) continue;
+    const window = rewritten.slice(right[0].index, left[0].end).join(' ');
+    if (/(?:앞서|이전에|하기\s*전|회상|돌이켜)/u.test(window)) continue;
+    candidates.unshift({ code: 'procedure_order_candidate', sourceOrdinal: i + 1,
+      outputOrdinal: right[0].index + 1, sourceSpan: `${a} ${b}`, outputSpan: window });
   }
   const seen = new Set();
   const unique = candidates.filter(row => {

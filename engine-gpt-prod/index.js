@@ -3837,33 +3837,7 @@ async function runEngine({
       { source: rawSource, candidate: outputText, requireDigest: true }
     );
     finalSemanticRevalidation.priorStatus = preliminary.status;
-    // A failed verdict on the exact current text is not stale, but it can still
-    // contain a confirmed, locally restorable error. Prepare a bounded proposal
-    // before deciding whether a fresh final audit is needed. Never re-judge an
-    // unchanged failure merely to obtain a different verdict.
-    let preparedFinalRelationRestore = null;
-    if (['stale', 'fail'].includes(preliminary.status) && !signal?.aborted
-        && semanticReport.pass === false && semanticReport.verificationCompleted !== false
-        && !semanticReport.skipped) {
-      const restoration = require('./confirmedRelationRestore');
-      const proposal = restoration.restoreConfirmedRelations(rawSource, outputText, semanticReport, {
-        priorReports: semanticRestorationEvidence
-      });
-      const safety = proposal.applied ? restoration.assessConfirmedRestorationSafety(
-        candidateIntegrity.auditCandidateIntegrity({ source: rawSource, before: outputText,
-          candidate: proposal.text, documentProfile, mode: selectedMode })) : null;
-      if (!proposal.applied) {
-        finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'no_grounded_target';
-      } else if (!safety.eligible) {
-        finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'safety_ineligible';
-      } else if (!preservesFinalStructure(rawSource, proposal.text, materializedChunks, chunkPlan,
-        boundaryRepair, { current: outputText })) {
-        finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'structure_not_preserved';
-      } else {
-        preparedFinalRelationRestore = { ...proposal, warnings: safety.warnings };
-      }
-    }
-    if (preliminary.status === 'stale' || preparedFinalRelationRestore) {
+    if (preliminary.status === 'stale') {
       const finalDeadlineMs = Math.min(jobDeadlineMs, Date.now() + 120000);
       if (signal?.aborted || finalDeadlineMs <= Date.now()) {
         finalSemanticRevalidation.reason = signal?.aborted ? 'aborted' : 'job_deadline_exhausted';
@@ -3876,11 +3850,31 @@ async function runEngine({
           // 받아야 해서, 심사가 54초를 넘는 긴 문서에서는 실행될 수 없었다.
           // 앞선 판정이 이미 확정한 정확한 쌍의 복원은 최종 판정 전에 적용해
           // 추가 모델 호출 없이 이 한 번의 최종 판정으로 검증한다.
-          if (preparedFinalRelationRestore) {
-            outputText = preparedFinalRelationRestore.text;
-            finalSemanticRevalidation.preFinalRelationRestoredCount = preparedFinalRelationRestore.restoredCount;
-            finalSemanticRevalidation.preFinalRelationRestoreWarnings = preparedFinalRelationRestore.warnings;
-          } else if (!finalSemanticRevalidation.preFinalRelationRestoreSkipReason) {
+          if (priorReport?.pass === false && priorReport.verificationCompleted !== false
+              && !priorReport.skipped) {
+            const confirmedRelationRestore = require('./confirmedRelationRestore');
+            const preRestored = confirmedRelationRestore.restoreConfirmedRelations(rawSource, outputText, priorReport, {
+              priorReports: semanticRestorationEvidence
+            });
+            const preSafety = preRestored.applied
+              ? confirmedRelationRestore.assessConfirmedRestorationSafety(candidateIntegrity.auditCandidateIntegrity({
+                source: rawSource, before: outputText, candidate: preRestored.text,
+                documentProfile, mode: selectedMode
+              }))
+              : null;
+            if (!preRestored.applied) {
+              finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'no_grounded_target';
+            } else if (!preSafety.eligible) {
+              finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'safety_ineligible';
+            } else if (!preservesFinalStructure(rawSource, preRestored.text, materializedChunks, chunkPlan,
+              boundaryRepair, { current: outputText })) {
+              finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'structure_not_preserved';
+            } else {
+              outputText = preRestored.text;
+              finalSemanticRevalidation.preFinalRelationRestoredCount = preRestored.restoredCount;
+              finalSemanticRevalidation.preFinalRelationRestoreWarnings = preSafety.warnings;
+            }
+          } else {
             finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'prior_verdict_not_failed';
           }
           let recheck = await qualityV2.runSemanticDocumentAudit({
@@ -3993,7 +3987,6 @@ async function runEngine({
             }
           }
           finalSemanticRevalidation.judgeCallCount = recheckCallCount;
-          finalSemanticRevalidation.progress = recheck.progress || null;
           // 판정 전용 호출은 본문을 바꾸지 않는다. 만약 바뀌었다면 그 판정은
           // 최종 문자열에 대한 것이 아니므로 사용하지 않는다.
           if (recheck.verificationCompleted === false) {
@@ -4029,7 +4022,7 @@ async function runEngine({
       }
     }
   }
-  if ((finalSemanticRevalidation.priorStatus === 'stale' || finalSemanticRevalidation.attempted)
+  if (finalSemanticRevalidation.priorStatus === 'stale'
       && (!finalSemanticRevalidation.applied || semanticReport.pass !== true)) {
     const currentEntry = recordCandidateCheckpoint(finalSemanticRevalidation.applied
       ? 'final_revalidation_not_passed' : 'final_revalidation_unavailable', semanticReportForCandidate(semanticReport));
@@ -4506,10 +4499,6 @@ async function runEngine({
     paragraphAlignmentFastPath: layoutRepair.alignmentMetrics?.fastPath === true,
     paragraphAlignmentLimitReached: layoutRepair.alignmentMetrics?.limitReached === true,
     finalSemanticRevalidationElapsedMs: Number(finalSemanticRevalidation.elapsedMs || 0),
-    finalSemanticExpectedSections: Number(finalSemanticRevalidation.progress?.expectedSections || 0),
-    finalSemanticStartedSections: Number(finalSemanticRevalidation.progress?.startedSections || 0),
-    finalSemanticCompletedSections: Number(finalSemanticRevalidation.progress?.completedSections || 0),
-    finalSemanticUnfinishedSections: Number(finalSemanticRevalidation.progress?.unfinishedSections?.length || 0),
     semanticPairAlignment: [...new Set((semanticReport?.reports || []).map(report => report.alignment || 'whole_document'))],
     recoveryReservedUsd: recoveryBudgetMeta.reservedUsd,
     recoveryUnknownUsageUsd: recoveryBudgetMeta.unknownUsageUsd,

@@ -137,38 +137,6 @@ function revalidationSignals(calls) {
     .map(call => extractPromptDataSection(call.body.input, 'DETERMINISTIC_DISCOURSE_SIGNALS'));
 }
 
-test('an exact failed candidate receives a grounded restoration and a fresh final verdict', async t => {
-  const a = '시민들은 변화를 바랐고 현재의 제도 안에서 해결 방법을 찾았다.';
-  const b = '시민들은 변화를 바라지만 현재의 제도 안에서 해결 방법을 찾았다.';
-  const tail = '위원회는 매주 의견을 수집했다. 회의 내용은 문서로 보관했다. 후속 일정은 다음 달에 안내한다. 참석자는 각자의 의견을 자유롭게 제시할 수 있다. 담당자는 모든 의견을 같은 기준으로 분류한다.';
-  const source = a + ' ' + tail;
-  const mock = installMock(t, { humanize:b + ' ' + tail,
-    violation: (_body, _call, rewrite) => rewrite.includes(b) ? [{type:'distortion', span:b,
-      sourceSpan:a, candidateSpan:b, relation:'modality_negation_causality',origin:'introduced',
-      detail:'동시 행동에 없던 반대 관계가 추가되었다.'}] : [] });
-  const out = await engine.run({text:source,mode:'blog',config:config(),recoveryBudgetUsd:0.000001});
-  assert.equal(out.engineMeta.finalSemanticRevalidationPriorStatus,'fail');
-  assert.equal(out.engineMeta.finalSemanticRevalidationAttempted,true);
-  assert.ok(out.engineMeta.preFinalRelationRestoredCount > 0, JSON.stringify(out.engineMeta));
-  assert.ok(out.result.outputText.includes(a));
-  assert.equal(provenance.verifySemanticValidation(out.result.semanticAudit, {
-    source,candidate:out.result.outputText,requireDigest:true}).status,'pass');
-  assert.ok(mock.judgeCalls() >= 2);
-});
-
-test('an unchanged failure with no safe local restoration is not re-judged until it passes', async t => {
-  const source = '시민들은 제도 안에서 해결 방법을 찾았다. 위원회는 의견을 수집했다.';
-  const candidate = '시민들은 제도 안에서 해결책을 찾아보았다. 위원회에서는 의견을 모았다.';
-  installMock(t, {humanize:candidate,violation:(_body,_call,rewrite)=>[{
-    type:'distortion',span:rewrite,sourceSpan:source,candidateSpan:rewrite,relation:'other',origin:'introduced',
-    detail:'문서 전체의 지적은 국소 복원 범위를 초과한다.'
-  }]});
-  const out=await engine.run({text:source,mode:'blog',config:config(),recoveryBudgetUsd:0.000001});
-  assert.equal(out.engineMeta.finalSemanticRevalidationPriorStatus,'fail');
-  assert.equal(out.engineMeta.finalSemanticRevalidationAttempted,false);
-  assert.notEqual(out.status,'clean');
-});
-
 test('어절 공백 교정은 최종 의미 재검증보다 먼저 완료하고 이후 본문을 수정하지 않는다', () => {
   const source = require('node:fs').readFileSync(require.resolve('../engine-gpt-prod'), 'utf8');
   const start = source.indexOf('let finalSemanticRevalidation =');

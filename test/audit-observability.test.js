@@ -3,7 +3,6 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const { historyEvidence } = require('../lib/detectEvidenceHistory');
 const { buildDetectInputDocument } = require('../lib/detectInputDocument');
 const { createRefinementAudit, sanitizeRefinementAudit } = require('../lib/refinementAudit');
-const { auditRelationCandidates } = require('../engine-gpt-prod/relationAudit');
 
 test('outline headings do not override a lived personal narrative or erase a real report purpose', () => {
   const profile = require('../engine-gpt-prod/documentProfile').detectDocumentProfile;
@@ -59,46 +58,12 @@ test('refinement keeps parent/candidate provenance without claiming whole-docume
   assert.equal(Object.hasOwn(sanitizeRefinementAudit({...result,rawMemo:args.memo}),'rawMemo'),false);
 });
 
-test('new contrast and lost comparison qualification are review candidates, never verdicts', () => {
-  const source = '시민들은 변화를 바랐고 현재의 제도 안에서 해결 방법을 찾았다.';
-  const changed = '시민들은 변화를 바라지만 현재의 제도 안에서 해결 방법을 찾았다.';
-  const result = auditRelationCandidates(source,changed);
-  assert.ok(result.codes.includes('coordination_contrast_candidate'));
-  assert.equal(result.candidateOnly,true);
-  assert.ok(!auditRelationCandidates(source,source.replace('바랐고','바라며')).codes.includes('coordination_contrast_candidate'));
-  const limited = '두 활동은 목적과 배경에서 차이가 있지만 서로 협력하는 태도는 비슷하다.';
-  assert.ok(auditRelationCandidates(limited,'두 활동은 서로 협력하는 태도가 비슷하다.').codes.includes('comparison_limitation_candidate'));
-  assert.ok(!auditRelationCandidates(limited,'두 활동은 목적과 배경이 다르지만 서로 협력하는 태도는 비슷하다.').codes.includes('comparison_limitation_candidate'));
-});
-
-test('cancelled semantic audit retains completed usage and marks all unfinished sections', async () => {
-  const fs = require('node:fs'), vm = require('node:vm');
-  const source = fs.readFileSync(require.resolve('../engine-gpt-prod/finalQualityV2'),'utf8');
-  const start = source.indexOf('async function runSemanticDocumentAudit(');
-  const end = source.indexOf('function restoreReviewPairBoundaryWhitespace',start);
-  const controller = new AbortController(); let calls = 0;
-  const context = { AbortSignal,
-    require: name => ['./concurrency','./callLedger'].includes(name) ? require('../engine-gpt-prod/'+name.slice(2)) : require(name),
-    buildReviewPairs:()=>Array.from({length:6},(_,index)=>({index,output:String(index),sourceContext:'source'})),
-    auditRelationCandidates:()=>({codes:[],candidates:[]}),
-    discourse:{compareDiscourse:()=>({codes:[]})},
-    bindSemanticValidation: report=>report, restoreReviewPairBoundaryWhitespace:(_a,b)=>b,
-    safeMessage:e=>e.message, addUsageLocal:(a,b)=>({estimatedUsd:(a?.estimatedUsd||0)+(b?.estimatedUsd||0)}),
-    judgeAndRepair:async(_s,output)=>{
-      calls++;
-      if(output==='0') {
-        await new Promise(resolve=>setImmediate(resolve)); controller.abort();
-        return {pass:true,outputText:output,usage:{estimatedUsd:.01}};
-      }
-      await new Promise(resolve=>setTimeout(resolve,10));
-      throw Object.assign(new Error('cancelled'),{usage:{estimatedUsd:.03}});
-    }
-  };
-  vm.createContext(context); vm.runInContext(source.slice(start,end),context);
-  const result = await context.runSemanticDocumentAudit({source:'source',outputText:'012345',signal:controller.signal,allowRepair:false});
-  assert.equal(calls,2); assert.equal(result.outputText,'012345');
-  assert.equal(result.pass,false); assert.equal(result.verificationCompleted,false);
-  assert.equal(result.usage.estimatedUsd,.04);
-  assert.equal(result.progress.expectedSections,6); assert.equal(result.progress.completedSections,1);
-  assert.equal(result.progress.startedSections,2); assert.equal(result.progress.unfinishedSections.length,5);
+test('refinement provenance uses the returned judge model without changing its pass gate', async () => {
+  const {validateRefinement}=require('../lib/refinementValidation');
+  const args={source:'자료를 함께 정리했다.',candidate:'발표 자료를 함께 정리하면서 동료의 설명을 들었다.',
+    memo:'발표 자료 정리 중 동료의 설명을 들었다.',config:{models:{judge:'requested-test'}}};
+  const result=await validateRefinement(args,async()=>({model:'resolved-test',json:{preservesMeaning:true,integratesMemo:true}}));
+  assert.equal(result.pass,true);assert.equal(result.model,'resolved-test');
+  const failed=await validateRefinement(args,async()=>({model:'resolved-test',json:{preservesMeaning:false,integratesMemo:true}}));
+  assert.equal(failed.pass,false);
 });

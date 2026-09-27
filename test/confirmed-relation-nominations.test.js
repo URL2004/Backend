@@ -21,7 +21,7 @@ function fixture(count = 2) {
 const report = violations => ({ pass: false, uncertain: false, verificationCompleted: true, violations });
 
 test('restoration and nomination retention share one bounded type contract', () => {
-  assert.deepEqual(PAIRED_RESTORATION_TYPES, ['distortion', 'omission', 'scope_expansion']);
+  assert.deepEqual(PAIRED_RESTORATION_TYPES, ['distortion', 'omission', 'scope_expansion', 'experience_novelty']);
   assert.equal(Object.isFrozen(PAIRED_RESTORATION_TYPES), true);
 });
 
@@ -31,6 +31,23 @@ test('exact paired other findings are restored in source order, not model findin
   assert.equal(actual.text, f.source);
   assert.equal(actual.restoredCount, 2);
   assert.equal(actual.pass, undefined, 'a proposal never certifies itself');
+});
+
+test('confirmed simulated-to-lived drift can restore across quote glyph variants only', () => {
+  const a = "조원들은 '모의 면접' 과제로 질문을 준비했다. 면접 준비 단계에서 질문표를 작성했다.";
+  const b = '조원들은 ‘모의 면접’ 과제로 질문을 준비했다. 면접을 시작하자마자 질문표를 작성했다.';
+  const source = a + ' ' + tail, output = b + ' ' + tail;
+  const finding = groundViolation({type:'experience_novelty',origin:'introduced',relation:'condition_result',
+    span:b,sourceSpan:a,candidateSpan:b},source,output);
+  const actual = restoreConfirmedRelations(source,output,report([finding]));
+  assert.equal(actual.text,source);
+  assert.equal(actual.restoredCount,1);
+  assert.equal(actual.pass,undefined);
+  for (const changed of [b.replace('모의 면접','실제 면접'),b.replace('‘모의 면접’','“모의 면접”'),b.replace('‘모의 면접’','`모의 면접`')]) {
+    const text=changed+' '+tail;
+    const f=groundViolation({...finding,span:changed,candidateSpan:changed},source,text);
+    assert.equal(restoreConfirmedRelations(source,text,report([f])).applied,false);
+  }
 });
 
 test('earlier still-exact grounded findings supplement nominations without mutating the official verdict', () => {

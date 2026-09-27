@@ -4,7 +4,7 @@ const { splitSentenceSpans } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { sentenceSimilarity } = require('./sentenceAlignment');
 const { auditRelationCandidates, hasAdjacentRelationCoverage } = require('./relationAudit');
-const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion']);
+const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion', 'experience_novelty']);
 
 // A relation heuristic is not proof. Only a judge-confirmed, uniquely grounded
 // distortion may nominate a sentence; mutual, unambiguous one-to-one matching
@@ -50,7 +50,15 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
   const completeWindow = (spans, start, end) => spans.some(s => s.start === start)
     && spans.some(s => s.end === end) && spans.filter(s => s.start >= start && s.end <= end).length <= 3;
   const protectedText = s => syntaxSpans(s).filter(p => p.spanType !== 'parenthetical')
-    .map(p => s.slice(p.start,p.end)).sort().join('\n');
+    .map(p => {
+      const literal = s.slice(p.start,p.end);
+      // Paired semantic evidence may contain straight/typographic variants of
+      // the SAME quotation. Canonicalize only matched outer glyphs, never the
+      // contents, quote class, nested marks, whitespace or code literals.
+      if (p.spanType === 'quote' && /^(?:'[^]*'|‘[^]*’)$/u.test(literal)) return 'single:' + literal.slice(1,-1);
+      if (p.spanType === 'quote' && /^(?:"[^]*"|“[^]*”)$/u.test(literal)) return 'double:' + literal.slice(1,-1);
+      return p.spanType + ':' + literal;
+    }).sort().join('\n');
   const pairedFindings = collectPairedNominations(report, priorReports)
     .sort((left, right) => String(source).indexOf(left.sourceSpan) - String(source).indexOf(right.sourceSpan)
       || text.indexOf(left.candidateSpan) - text.indexOf(right.candidateSpan));

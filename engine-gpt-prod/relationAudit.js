@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v10-procedure-scope';
+const VERSION = 'relation-candidates-v13-observation-ownership';
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
@@ -55,6 +55,15 @@ function auditRelationCandidates(source, outputText) {
     const original = matched.sentence;
     const add = code => candidates.push({ code, sourceOrdinal: matched.index + 1,
       outputOrdinal: outputIndex + 1, sourceSpan: original, outputSpan: sentence });
+    // Explicit nominal alternatives with the same two operands can become a
+    // conjunction during paraphrasing. Review locally; never globally replace
+    // 과/와 or infer an error merely from connective counts.
+    for (const alternative of original.matchAll(/(?<![가-힣])([가-힣]{2,16}?)(?:이나|나)[ \t]+((?:[가-힣]{1,12}[ \t]+)?[가-힣]{2,16}?)(?=(?:을|를|에|의|이|가|은|는)(?:[ \t]|$))/gu)) {
+      const [, left, right] = alternative;
+      if (new RegExp(`(?<![가-힣])${escapeRegExp(left)}(?:과|와)[ \\t]+${escapeRegExp(right)}(?=(?:을|를|에|의|이|가|은|는)(?:[ \\t]|$))`, 'u').test(sentence)) {
+        add('alternative_conjunction_candidate'); break;
+      }
+    }
     // A backward link is a relation, not a disposable introductory filler.
     // Nominate only; an explicit antecedent substitution may still be valid.
     if (/^(?:이는|이것은|이러한\s|이같은\s)/u.test(original)
@@ -68,6 +77,17 @@ function auditRelationCandidates(source, outputText) {
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    // In a split observation, turning the observed plural subject into an
+    // object under a different subject may move the predicate's ownership.
+    // Active/passive paraphrases can be valid: nominate, never auto-restore.
+    const observation = /(?:모습|장면|걸|것을|것이)[^.!?\n]{0,25}(?:보[며면았]|관찰)/u;
+    if (observation.test(original) && observation.test(sentence)) {
+      const subjects = [...original.matchAll(/(?<![가-힣])([가-힣]{2,16}?)들이(?=\s)/gu)].map(m => m[1]);
+      if (subjects.some(noun => new RegExp(`(?<![가-힣])${escapeRegExp(noun)}(?:들)?(?:을|를)(?=\\s)`, 'u').test(sentence)
+          && !new RegExp(`(?<![가-힣])${escapeRegExp(noun)}들이(?=\\s)`, 'u').test(sentence))) {
+        add('observation_ownership_candidate');
+      }
+    }
     if (/(?:만큼|못지않)/u.test(original) !== /(?:만큼|못지않)/u.test(sentence)
         && /(?:중요|가치|크|작|높|낮|정도|뿐|도\s)/u.test(original + sentence)) add('comparison_degree_candidate');
     if (/각각/u.test(sentence) && !/각각/u.test(original)
@@ -231,6 +251,14 @@ function closestSentence(originals, value) {
   return best;
 }
 function certaintyScopeShift(original, sentence) {
+  // An outer "생각했다" is not a replacement for an inner tentative negation.
+  // These nominate paired spans for semantic review; they never restore text.
+  if (/아닐\s*수도\s*있/u.test(original)
+      && /(?:아니(?:다|며|라고|라는)|아닌)/u.test(sentence)
+      && !/(?:아닐\s*수|아닐지도|아닌\s*것\s*같|아니라고\s*(?:볼|할)\s*수|아닌\s*것으로\s*보)/u.test(sentence)) return true;
+  if (/생각하는\s*모습(?:을|이|에서)/u.test(original)
+      && /생각(?:했다|한다|했습니다|합니다)/u.test(sentence)
+      && !/(?:모습|보였|관찰|것\s*같|듯|것으로\s*보)/u.test(sentence)) return true;
   const sourceHedges = count(original, STRONG_HEDGE) + count(original, WEAK_HEDGE);
   const outputHedges = count(sentence, STRONG_HEDGE) + count(sentence, WEAK_HEDGE);
   // Hedge dropped: a possibility or opinion is now stated plainly.

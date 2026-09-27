@@ -13,7 +13,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 38;
+const VERSION = 39;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -27,6 +27,10 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  source_editing_fragment_candidate: {
+    weight: 6, repairable: true, deterministicSafe: false,
+    message: '목적어와 서술어 사이에 별도 주제의 미완성 편집 잔재가 끼었을 수 있어요. 앞뒤 문맥에서 주체·목적어·서술어를 연결해 확인하세요. 실제 주장·조건·인용은 삭제하지 말고, 독립된 의미가 없는 삽입 잔재로 확인된 부분만 최소 교정하세요. 대응이 불확실하면 추측 삭제하지 마세요.'
+  },
   introduced_named_example_loss: {
     weight: 4, repairable: true, deterministicSafe: true,
     message: '원문의 구체적인 예시 목록이 상위 분류명만 남긴 채 빠졌어요. 같은 분류와 문장이 유일하게 대응할 때 목록만 복원해요.'
@@ -2158,6 +2162,14 @@ function introducedConnectorSentenceOrdinals(sourceOccurrences, outputOccurrence
 function detectTextIssues(value, { profile = 'unknown', targetRegister = '', includeSourceNotation = false } = {}) {
   const text = String(value || '').replace(/\r\n?/gu, '\n');
   const issues = [];
+  // Candidate only: never delete text from a regex match. Reuse the existing
+  // source hints / budgeted Korean repair / final residual audit for inherited
+  // syntax defects as well as newly introduced ones. Protect literal spans.
+  const fragmentPattern = /(?:은|는)\s+[^.!?。！？\n]{0,100}(?:그것을|이것을|이를)\s+(?:[가-힣A-Za-z]+\s+){1,5}(?:내|제|나의|저의|우리의)\s+[가-힣]{1,12}(?:은|는)\s+[가-힣]{2,12}기\s*위해/u;
+  // Most inputs need no extra syntax pass at all.
+  const fragmentOrdinals = fragmentPattern.test(text) ? editableIntegritySpans(text)
+    .filter(span => fragmentPattern.test(span.editable)).map(span => span.ordinal) : [];
+  if (fragmentOrdinals.length) issues.push(makeIssue('source_editing_fragment_candidate', fragmentOrdinals.length, fragmentOrdinals));
   pushOrphanStructuralParticleIssue(issues, text);
   pushPatternIssue(issues, text, 'missing_sentence_space', /[.!?。！？](?=[가-힣])/gu);
   pushPatternIssue(issues, text, 'closed_quote_spacing', CLOSED_QUOTE_SENTENCE_START_RE);
@@ -3094,6 +3106,7 @@ function buildSourcePromptHints(source, { documentProfile = null, mode = '' } = 
 }
 
 const HIGH_PRIORITY_REPAIR_CODES = new Set([
+  'source_editing_fragment_candidate',
   'introduced_demonstrative_loss',
   'introduced_connective_corruption',
   'introduced_naming_frame_inversion',

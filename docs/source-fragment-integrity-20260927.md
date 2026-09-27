@@ -1,7 +1,8 @@
 # Source syntax and semantic recovery verification
 
 Date: 2026-09-27. Base: `c9dc0ca`. Proposed engine: `gpt-prod-v2.5.81`.
-Release status: **HOLD — paid end-to-end semantic acceptance remains incomplete.**
+Historical checkpoint at `17f0ea2`: **HOLD — paid end-to-end semantic acceptance remained incomplete.**
+Follow-up fixes, paid acceptance and remaining limits are recorded in [predicate-scope-followup-20260927.md](predicate-scope-followup-20260927.md). The findings below describe the earlier checkpoint, not the final follow-up result.
 
 ## Confirmed defects and changes
 

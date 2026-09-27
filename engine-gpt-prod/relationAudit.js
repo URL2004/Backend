@@ -2,7 +2,8 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v13-observation-ownership';
+const VERSION = 'relation-candidates-v14-predicate-scope';
+const { predicateScopeCandidates } = require('./predicateScope');
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
@@ -77,6 +78,7 @@ function auditRelationCandidates(source, outputText) {
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    for (const code of predicateScopeCandidates(original, sentence)) add(code);
     // In a split observation, turning the observed plural subject into an
     // object under a different subject may move the predicate's ownership.
     // Active/passive paraphrases can be valid: nominate, never auto-restore.

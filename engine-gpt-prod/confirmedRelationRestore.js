@@ -68,19 +68,20 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
           'antecedent','modality_negation_causality','genre_naturalness','other'].includes(v.relation)) continue;
     const a=String(v.sourceSpan||''),b=String(v.candidateSpan||'');
     const from=String(source).indexOf(a),start=text.indexOf(b),end=start+b.length;
+    const minimal = restoreConfirmedAlternative(a, b, v);
     if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
       ||from<0||start<0||String(source).indexOf(a,from+1)>=0||text.indexOf(b,start+1)>=0
       ||!completeWindow(rawOriginals,from,from+a.length)||!completeWindow(results,start,end)
       // Multi-sentence paraphrases need not share single-sentence surface
       // similarity. This is proposal retrieval only; the exact paired judge
       // finding and the caller's fresh semantic pass are the safety gates.
-      ||sentenceSimilarity(a,b)<.35||protectedText(a)!==protectedText(b)
-      ||hasAdjacentRelationCoverage(a,b,text)
+      ||(!minimal && sentenceSimilarity(a,b)<.35)||protectedText(a)!==protectedText(b)
+      ||(!minimal && hasAdjacentRelationCoverage(a,b,text))
       ||[a,b].some(s=>require('./layoutStructure').buildLineRecords(s).some(r=>!r.blank&&r.role!=='prose'))
       ||replacements.some(r=>start<r.end&&end>r.start||from<r.sourceEnd||start<=r.start)
       ||replacements.reduce((n,r)=>n+r.end-r.start,0)+b.length>text.length*.3
-      ||replacements.reduce((n,r)=>n+r.text.length,0)+a.length>text.length*.3)continue;
-    replacements.push({start,end,text:a,sourceStart:from,sourceEnd:from+a.length,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
+      ||replacements.reduce((n,r)=>n+r.text.length,0)+(minimal || a).length>text.length*.3)continue;
+    replacements.push({start,end,text:minimal || a,sourceStart:from,sourceEnd:from+a.length,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
   }
   for (let i = 0; i < results.length && replacements.length < limit; i++) {
     const target = results[i];
@@ -112,6 +113,28 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
   let restored = text;
   for (const r of replacements.sort((a,b)=>b.start-a.start)) restored = restored.slice(0,r.start) + r.text + restored.slice(r.end);
   return { text: restored, applied: restored !== text, restoredCount: replacements.length };
+}
+
+// If a source sentence was legitimately split, copying it back can duplicate
+// its continuation. For a CONFIRMED alternative/conjunction finding only,
+// restore the attested connective between identical operands instead. All
+// paired grounding, window, ordering, quote, budget and re-judge gates remain.
+function restoreConfirmedAlternative(source, candidate, finding) {
+  if (finding.type !== 'distortion' || finding.relation !== 'modality_negation_causality'
+      || finding.spanVerified !== true || String(finding.span || '').length < 8) return '';
+  const changes = [];
+  const escape = value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  for (const match of source.matchAll(/(?<![가-힣])([가-힣]{2,16}?)(?:이나|나)[ \t]+((?:[가-힣]{1,12}[ \t]+)?[가-힣]{2,16}?)(?=(?:을|를|에|의|이|가|은|는)(?:[ \t]|$))/gu)) {
+    const pattern = new RegExp(`(?<![가-힣])${escape(match[1])}(?:과|와)[ \\t]+${escape(match[2])}(?=(?:을|를|에|의|이|가|은|는)(?:[ \\t]|$))`, 'gu');
+    for (const target of candidate.matchAll(pattern)) {
+      if (!String(finding.span).includes(target[0])) continue;
+      if (syntaxSpans(candidate).some(p => p.start < target.index + target[0].length && p.end > target.index)) continue;
+      changes.push({ start: target.index, end: target.index + target[0].length, text: match[0] });
+    }
+  }
+  if (changes.length !== 1) return '';
+  const change = changes[0];
+  return candidate.slice(0, change.start) + change.text + candidate.slice(change.end);
 }
 
 // A later judge can omit a previously confirmed finding without repairing its
@@ -158,14 +181,26 @@ function assessConfirmedRestorationSafety(safety) {
   if (safety?.pass === true) return { eligible: true, warnings: [] };
   const integrity = safety?.sharedIntegrity || safety;
   const korean = integrity?.candidate?.korean;
+  const before = integrity?.before?.korean;
+  const oldCounts = before?.issueCounts, newCounts = korean?.issueCounts;
+  // A pre-existing warning elsewhere must not veto restoring an attested
+  // source register. Compare every family; never allow a NEW non-register
+  // defect or a newly introduced register expression through this exception.
+  const registerOnlyDelta = oldCounts && newCounts
+    && Number(newCounts.formal_register_residual?.count || 0) > Number(oldCounts.formal_register_residual?.count || 0)
+    && Number(newCounts.formal_register_residual?.introduced || 0) === 0
+    && Number(korean.introducedIssueCount || 0) <= Number(before.introducedIssueCount || 0)
+    && Object.entries(newCounts).every(([code, value]) => code === 'formal_register_residual'
+      || (Number(value.count || 0) <= Number(oldCounts[code]?.count || 0)
+        && Number(value.introduced || 0) <= Number(oldCounts[code]?.introduced || 0)));
   // Copying an attested source sentence may restore its informal connector.
   // That is not a NEW grammar error and cannot outrank the confirmed meaning
   // repair. This exception is only for this exact-source proposal; the caller
   // still needs a fresh semantic pass, and preserves the register warning.
   const sourceRegisterOnly = safety?.reasons?.length > 0
     && safety.reasons.every(reason => reason === 'korean_integrity_worsened')
-    && korean?.introducedIssueCount === 0 && korean.issueCodes?.length > 0
-    && korean.issueCodes.every(code => code === 'formal_register_residual');
+    && (registerOnlyDelta || (korean?.introducedIssueCount === 0 && korean.issueCodes?.length > 0
+      && korean.issueCodes.every(code => code === 'formal_register_residual')));
   return { eligible: sourceRegisterOnly, warnings: sourceRegisterOnly ? ['restored_source_register'] : [] };
 }
 

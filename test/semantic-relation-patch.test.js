@@ -96,3 +96,24 @@ test('full-document guard retains source register only for the exact freshly ver
   assert.ok(check({ ...report, pass: false }).codes.includes('korean_integrity'));
   assert.ok(check({ ...report, outputText: before }).codes.includes('korean_integrity'));
 });
+
+test('existing unrelated warnings do not veto an old-register-only restoration delta', () => {
+  const { assessConfirmedRestorationSafety: assess } = require('../engine-gpt-prod/confirmedRelationRestore');
+  const counts = { sequential_connector_inflation: { count: 2, introduced: 2 } };
+  const safety = { pass: false, reasons: ['korean_integrity_worsened'],
+    before: { korean: { introducedIssueCount: 2, issueCounts: counts } },
+    candidate: { korean: { introducedIssueCount: 2, issueCodes: ['formal_register_residual','sequential_connector_inflation'],
+      issueCounts: { ...counts, formal_register_residual: { count: 1, introduced: 0 } } } } };
+  assert.equal(assess(safety).eligible, true);
+  for (const [code, value] of [
+    ['sequential_connector_inflation', { count: 3, introduced: 2 }],
+    ['sequential_connector_inflation', { count: 2, introduced: 3 }],
+    ['adjacent_semantic_repetition', { count: 1, introduced: 1 }],
+    ['formal_register_residual', { count: 1, introduced: 1 }]
+  ]) {
+    const candidate = { korean: { ...safety.candidate.korean,
+      issueCounts: { ...safety.candidate.korean.issueCounts, [code]: value } } };
+    assert.equal(assess({ ...safety, candidate }).eligible, false);
+  }
+  assert.equal(assess({ ...safety, reasons: ['korean_integrity_worsened','source_replay_worsened'] }).eligible, false);
+});

@@ -321,7 +321,12 @@ function compactKorean(value) {
     weightedRisk: Number(value?.weightedRisk || 0),
     repairableIssueCount: Number(value?.repairableIssueCount || 0),
     introducedIssueCount: Number(value?.introducedIssueCount || 0),
-    issueCodes: value?.issueCodes || []
+    issueCodes: value?.issueCodes || [],
+    // Counts only: restoration gates need the delta, not unrelated old risks.
+    issueCounts: Object.fromEntries((value?.issues || []).map(issue => [issue.code, {
+      count: Number(issue.afterCount ?? issue.count ?? 0),
+      introduced: Number(issue.introducedCount || 0)
+    }]))
   };
 }
 

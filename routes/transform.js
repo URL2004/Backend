@@ -791,7 +791,8 @@ async function finishRefinement(job) {
     engineMeta: null, humanizeMeta: null, registerLeak: null, preserveLab: null, finalReportEngine: null,
     effectStatus: 'normal', effectNotices: [],
     noOpScore: null, weakTransform: false, preservationCheck: measurePreservation(outputText),
-    auditScope: 'refined_paragraph', auditVersion: outputVersion };
+    auditScope: 'refined_paragraph', auditVersion: outputVersion,
+    refinementAudit: require('../lib/refinementAudit').sanitizeRefinementAudit(pending.refinementAudit) };
   draft.refineCount = n;
   draft.refineHistory = [...(job.refineHistory || []).filter(item => item.n !== n),
     { n, paragraphIndex, memoLength, atMs: Date.now(), outLen: outputText.length }];
@@ -1763,6 +1764,7 @@ function saveJobHistory(job, text, outputText) {
     engineMeta: job.result?.engineMeta || null,
     auditScope: job.result?.auditScope || null,
     auditVersion: job.result?.auditVersion || null,
+    refinementAudit: job.result?.refinementAudit || null,
     sourceProbability: job.sourceProbability ?? null,
     sourceEvidence: job.sourceEvidence || null,
     sourceBand: job.sourceBand ?? null,
@@ -3647,11 +3649,12 @@ router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (r
       documentProfile: detectDocumentProfile(paraText)
     });
     let gateBlocked = !!refined && (novelty.count > 0 || lost.count > 0 || !integrity.pass || lenRatio < 0.9 || lenRatio > 1.8);
+    let refinementValidation = null;
     if (refined && !gateBlocked) {
-      const verified = await require('../lib/refinementValidation').validateRefinement({
+      refinementValidation = await require('../lib/refinementValidation').validateRefinement({
         source: paraText, candidate: refined, memo, signal: ac.signal, config: gptCfg
       });
-      gateBlocked = !verified.pass;
+      gateBlocked = !refinementValidation.pass;
     }
     if (gateBlocked) {
       logger.warn('transform.refine_gate_blocked', { jobId: job.id, uid: job.uid, paragraphIndex: idx, n, noveltyCount: novelty.count, lostFactCount: lost.count, lenRatio: Number(lenRatio.toFixed(2)) });
@@ -3674,7 +3677,13 @@ router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (r
     const current = surfaceguard.splitParagraphsForRefine(job.result.outputText || '');
     current[idx] = { ...current[idx], text: refined };
     const nextOutput = current.map(p => p.lead + p.text + p.sep).join('');
-    job.pendingRefinement = { outputText: nextOutput, n, needed, paraLen, paragraphIndex: idx, memoLength: memo.length, outputVersion: (job.outputVersion || 1) + 1 };
+    const refinementAudit = require('../lib/refinementAudit').createRefinementAudit({
+      parent: job.result.outputText, output: nextOutput, source: paraText, candidate: refined, memo,
+      paragraphIndex: idx, parentEngineVersion: job.result.engineMeta?.engineVersion,
+      generationModel: resp?.model || resp?.gptMeta?.selectedModel, validation: refinementValidation
+    });
+    job.pendingRefinement = { outputText: nextOutput, n, needed, paraLen, paragraphIndex: idx,
+      memoLength: memo.length, outputVersion: (job.outputVersion || 1) + 1, refinementAudit };
     const staged = await persistJob(job, { requireClaim: true });
     if (!staged.ok) throw new Error('REFINE_RESULT_PERSIST_UNAVAILABLE');
     await finishRefinement(job);

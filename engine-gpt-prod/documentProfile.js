@@ -349,7 +349,9 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       + Math.min(selfReflectivePredicateSignals - 1, 3) * 0.16;
   }
 
-  const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|직무\s*역량|직업\s*윤리(?:관)?|자기\s*소개서|자소서|저의\s*(?:(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|성장\s*과정)|귀사|지원(?:하게\s*)?(?:되었습니다|하였습니다|했습니다)|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다)/gu);
+  const explicitApplicationSignals = count(text, /(?:지원\s*동기|입사\s*후\s*포부|직무\s*역량|자기\s*소개서|자소서|저의\s*(?:(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|성장\s*과정)|귀사|지원(?:하게\s*)?(?:되었습니다|하였습니다|했습니다)|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다)/gu)
+    + (/(?:^|\s)(?:저는|제가|저의|나는|내가|나의|제\s)/u.test(text)
+      ? count(text, /직업\s*윤리(?:관)?/gu) : 0);
   const applicationIntentSignals = count(text, /(?:신청\s*(?:동기|이유)|신청(?:하게\s*)?(?:되었습니다|하였습니다|했습니다|하고자|하려고|하고\s*싶)|지원(?:하게\s*)?(?:되었습니다|하였습니다|했습니다|하고자|하려고|하고\s*싶)|참여하게\s*된다면|선발된다면)/gu);
   const programApplicationSignals = count(text, /(?:(?:캠프|프로그램|교육\s*과정|체험\s*활동|학과\s*탐방|멘토링)[^.!?\n]{0,90}(?:신청|지원|참여|선발|체험)|(?:신청|지원|참여|선발)[^.!?\n]{0,90}(?:캠프|프로그램|교육\s*과정|체험\s*활동|학과\s*탐방|멘토링))/gu);
   const careerActionSignals = count(text, /(?:수집|정리|분석|비교|조사|기획|설계|운영|관리|지원|발표|협업|조율|응대|개선|제작|시각화|학습|연습|근무|실험|조정|최적화|도출|검증|측정|해석|문서화|작성|유지)/gu);
@@ -723,6 +725,21 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   add(scores, 'personal_essay', personalReflectionSignals, 0.55);
   add(scores, 'personal_essay', firstPersonSignals, 0.22);
   if (firstPersonSignals >= 2 && personalReflectionSignals >= 1) scores.personal_essay += 0.8;
+  // 서론/본론/결론은 형식이지 목적이 아니다. 시간 순으로 자신이 겪은
+  // 사건과 감정을 회고하는 글을 목차 낱말만으로 보고서로 보내지 않는다.
+  // 실제 연구·조사·직무·교과 성찰의 증거가 있으면 이 보조 신호를 쓰지 않는다.
+  const livedEventSignals = count(text, /(?:도착(?:했|해|하자)|떠났|돌아(?:왔|와|가는)|보냈|마주쳤|만났|겪었|참여했|기다렸|걸었|뛰었|들어갔|나눴)/gu);
+  const livedTimeSignals = count(text, /(?:그날|그때|당시|며칠|처음에는|저녁에는|아침에는|주말|방학|어릴\s*때|지난\s*(?:주|달|해))/gu);
+  const livedReflectionSignals = count(text, /(?:느꼈|깨달았|기억에\s*남|생각이\s*들었|마음(?:은|이)\s*[^.!?\n]{0,25}(?:편해|가벼|무거|복잡)|돌이켜\s*보면)/gu);
+  const livedExperienceFrame = firstPersonSignals >= 1 && livedEventSignals >= 3
+    && livedTimeSignals >= 2 && livedReflectionSignals >= 2
+    && academicFramingSignals === 0 && inlineAcademicCitationSignals === 0
+    && reportInquirySignals + reportMethodSignals + analyticalFrameworkSignals === 0
+    && directApplicationContextSignals === 0 && reflectiveActivitySignals === 0
+    && clinicalAssessmentSignals + psychologicalAssessmentSignals === 0;
+  if (livedExperienceFrame) {
+    scores.personal_essay += 3.8 + Math.min(livedReflectionSignals - 2, 3) * 0.2;
+  }
   const bookReflectionSignals = count(
     text,
     /(?:독후감|독서\s*(?:감상|기록)|이\s*(?:책|소설|작품)(?:은|을|에서|의)|(?:책|소설|작품)을\s*(?:읽|선택)|읽(?:고|으면서|은)\s*(?:뒤|후|작품|소설)|저자(?:는|가)|작가(?:는|가)|지은이|지음|부제|인상\s*깊었던\s*(?:내용|구절|장면)|(?:책|작품)을\s*선택한\s*이유)/gu
@@ -993,6 +1010,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       qualitativeResearchFrame,
       debateFrame,
       personalLetterFrame,
+      livedExperienceFrame,
       shortApplicationFrame,
       reportHeadingSignals,
       assignmentProblemHeadingSignals,

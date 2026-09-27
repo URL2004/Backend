@@ -273,7 +273,8 @@ test('감지 이력은 공개 점수 provenance만 allowlist로 저장한다', a
   assert.equal(stored.value.detectProfileMargin, 0.32);
   assert.equal(stored.value.detectProfileAmbiguous, true);
   assert.deepEqual(stored.value.detectCauseEvidence, [{
-    category: 'sentence_uniformity', strength: 'strong', scope: 'recurring'
+    category: 'sentence_uniformity', strength: 'strong', scope: 'recurring',
+    locations: [], locationStatus: 'unlocated'
   }]);
   assert.deepEqual(stored.value.detectCauseAlignment, {
     version: 'cause-coverage-v1', status: 'aligned', coverage: 1, codes: []

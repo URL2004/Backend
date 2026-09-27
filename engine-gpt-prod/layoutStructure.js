@@ -124,6 +124,8 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
     records,
     new Set([...codeIndices, ...tableIndices, ...signatureIndices])
   );
+  const numberedLabelHeadingIndices = detectNumberedLabelHeadingIndices(records,
+    new Set([...codeIndices, ...tableIndices, ...signatureIndices]));
   const plainListIndices = detectPlainListLineIndices(
     records,
     new Set([
@@ -132,7 +134,8 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
       ...signatureIndices,
       ...parallelSloganTitleIndices,
       ...parallelSectionHeadingIndices,
-      ...labelGroupHeadingIndices
+      ...labelGroupHeadingIndices,
+      ...numberedLabelHeadingIndices
     ])
   );
   const firstContentIndex = nonEmpty[0]?.index ?? -1;
@@ -177,7 +180,8 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
       plainListLike: plainListIndices.has(record.index),
       parallelSloganTitle: parallelSloganTitleIndices.has(record.index),
       parallelSectionHeading: parallelSectionHeadingIndices.has(record.index),
-      labelGroupHeading: labelGroupHeadingIndices.has(record.index)
+      labelGroupHeading: labelGroupHeadingIndices.has(record.index),
+      numberedLabelHeading: numberedLabelHeadingIndices.has(record.index)
     });
     if (wrappedWord && ['prose', 'list', 'heading', 'title'].includes(record.role)) {
       record.role = 'prose';
@@ -187,6 +191,7 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
         && !(record.index === firstContentIndex && isReadingResponseTitle(record.text))
         && !tableIndices.has(record.index) && !signatureIndices.has(record.index)
         && !scriptCues.has(record.index)
+        && !numberedLabelHeadingIndices.has(record.index)
         && ['title', 'heading', 'quote', 'prose'].includes(record.role)) {
       record.role = 'prose';
       record.dependentQuoteProse = true;
@@ -226,6 +231,7 @@ function classifyLine(value, context = {}) {
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
   if (isFlowSequenceLine(text)) return 'flow';
   if (context.plainListLike) return 'list';
+  if (context.numberedLabelHeading) return 'heading';
   // 번호·불릿이 명시된 긴 완결 문장은 유사한 행이 반복되더라도 제목
   // 묶음이 아니라 목록이다. 공백 유무가 달라졌다는 이유로 한 항목만
   // 목록으로 바뀌면 최종 voice 감사가 구조 손실을 잘못 보고한다.
@@ -236,8 +242,10 @@ function classifyLine(value, context = {}) {
   if (isColonSubtitledTitle(text, context) || isColonSubtitle(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
-  if (isDependentLead(text) && context.next) return 'prose';
-  if (isContextualProseContinuation(text, context.next?.text)) return 'prose';
+  // A document-level pattern is stronger than a local unfinished-clause guess.
+  // Otherwise an attested parallel heading ending in a particle is glued to prose.
+  if (isDependentLead(text) && context.next) return context.parallelSectionHeading ? 'heading' : 'prose';
+  if (isContextualProseContinuation(text, context.next?.text)) return context.parallelSectionHeading ? 'heading' : 'prose';
   if (context.labelGroupHeading) return 'heading';
   if (isContextualStrongNominalHeading(text, context)) return 'heading';
   if (isGenericTitle(text, context)) return 'title';
@@ -432,13 +440,42 @@ function detectParallelSectionHeadingIndices(records, excluded = new Set()) {
     const text = String(record.text || '').trim();
     const nextText = String(next.text || '').trim();
     if (text.length < 4 || text.length > 70 || nextText.length < Math.max(100, text.length * 2)) continue;
-    if (/[.!?。！？]\s*$/u.test(text)) continue;
+    // Infinitive-style headings may end in a full stop. Keep the same three
+    // parallel sections requirement, and require two nominal peers below.
+    const actionHeading = text.length <= 45 && /(?:하다|되다|찾다|배우다|잇다|지키다|살피다|바꾸다|키우다|만들다|돌아보다)[.。]$/u.test(text)
+      && !/(?:저는|제가|나는|내가|우리는|그는|그녀는)\s/u.test(text);
+    if (/[.!?。！？]\s*$/u.test(text) && !actionHeading) continue;
     if (isListLine(text) || labelParts(text) || bracketLabelParts(text)
         || isKnownHeadingLine(text) || isQuoteLine(text) || isExplicitTableLine(text)
         || looksLikeUnpunctuatedProse(text)) continue;
-    candidates.push(record.index);
+    candidates.push({ index: record.index, actionHeading });
   }
-  return candidates.length >= 3 ? new Set(candidates) : new Set();
+  return candidates.length >= 3 && candidates.filter(x => !x.actionHeading).length >= 2
+    ? new Set(candidates.map(x => x.index)) : new Set();
+}
+
+// Repeated named/numbered prompts followed by a labelled response are one
+// section family even when a longer prompt contains an internal quotation.
+// Do not promote numbered prose, isolated labels or unrelated repeated digits.
+function detectNumberedLabelHeadingIndices(records, excluded = new Set()) {
+  const lines = records.filter(r => !r.blank), groups = new Map();
+  for (let i = 0; i < lines.length - 1; i++) {
+    const row = lines[i], next = lines[i + 1];
+    if (excluded.has(row.index) || excluded.has(next.index) || row.text.length > 280) continue;
+    const m = row.text.match(/^([가-힣A-Za-z]{1,12})\s*(\d{1,3})[.)]\s+(.+)$/u);
+    const label = labelParts(next.text) || bracketLabelParts(next.text);
+    if (!m || !label || /[.!?。！？]\s*$/u.test(row.text)
+        || /(?:한다|된다|했다|있다|없다|합니다|됩니다|했습니다|입니다)$/u.test(m[3])) continue;
+    const key = `${m[1]}:${label.label.replace(/\d+/gu, '#')}`;
+    const group = groups.get(key) || [];
+    group.push({ index: row.index, number: Number(m[2]) }); groups.set(key, group);
+  }
+  const found = new Set();
+  for (const group of groups.values()) {
+    if (group.length < 2 || !group.every((x, i) => !i || x.number > group[i - 1].number)) continue;
+    for (const item of group) found.add(item.index);
+  }
+  return found;
 }
 
 /**
@@ -664,6 +701,8 @@ function detectParallelSloganTitleIndices(records, excluded = new Set()) {
 
 function labelParts(value) {
   const text = visibleTrim(value);
+  const numberedResponse = text.match(/^((?:이유|답변|근거)\s*\d{1,3}[.)])[ \t]+(.+)$/u);
+  if (numberedResponse) return {label:numberedResponse[1],rest:numberedResponse[2].trim()};
   const colonIndex = text.search(/[:：]/u);
   // `1:1 방문학습`, `08:30 출근`의 콜론은 라벨 구분자가 아니다. 이를
   // `라벨: 본문`으로 잠그면 정상적인 어순 변경도 line_anchor_changed로

@@ -97,7 +97,7 @@ function completionContext(overrides = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../routes/transform.js'), 'utf8');
   const start = source.indexOf('async function finishRefinement(');
   const end = source.indexOf('async function commitRefineBilling(', start);
-  const context = { classifyBillingDisposition: () => 'charged', commitJobBilling: async () => {},
+  const context = { require, classifyBillingDisposition: () => 'charged', commitJobBilling: async () => {},
     commitRefineBilling: async () => true, persistJob: async () => ({ ok: true }),
     attachRefineTargets() {}, measurePreservation: () => ({ total: 3 }), saveJobHistory: async () => {}, ...overrides };
   vm.createContext(context); vm.runInContext(source.slice(start, end), context);

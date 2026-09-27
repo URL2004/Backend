@@ -1102,8 +1102,10 @@ function findUniqueNormalizedEvidenceSpan(value, evidenceValue) {
       for (const normalizedChar of normalized) {
         if (!/[\p{L}\p{N}]/u.test(normalizedChar)) continue;
         compact.push(normalizedChar);
-        starts.push(index);
-        ends.push(next);
+        for (let unit = 0; unit < normalizedChar.length; unit += 1) {
+          starts.push(index);
+          ends.push(next);
+        }
       }
     }
     index = next;
@@ -1114,7 +1116,9 @@ function findUniqueNormalizedEvidenceSpan(value, evidenceValue) {
   const last = first + evidence.length - 1;
   const start = starts[first];
   const end = ends[last];
-  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+  if (!Number.isInteger(start) || !Number.isInteger(end)
+      || start < 0 || end <= start || end > text.length
+      || normalizeQuoteEvidence(text.slice(start, end)) !== evidence) return null;
   const previous = text[start - 1] || '';
   const next = text[end] || '';
   const attributionTail = text.slice(end, end + 10);

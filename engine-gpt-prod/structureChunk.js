@@ -114,7 +114,9 @@ function expandBaseChunk(chunk, state) {
     const editableBlockquotePieces = state.editableBlockquoteWrapper
       ? splitEditablePrefixPiece(sourcePiece, { editableBlockquoteWrapper: true })
       : null;
-    const expandedPieces = assessmentExplanationPieces
+    const expandedPieces = wholeLineRole === 'physical_word_continuation'
+      ? [{ ...sourcePiece, forceEditable: true }]
+      : assessmentExplanationPieces
       || editableBlockquotePieces
       || (preserveWholeStructuralLine
       || (state.assessment && shouldKeepAssessmentLineWhole(sourceText, state.assessmentSection))
@@ -181,7 +183,8 @@ function buildSourceLineRoleMap(text) {
   const map = new Map();
   for (const record of layoutStructure.buildLineRecords(text)) {
     if (record.blank) continue;
-    const role = record.dependentQuoteProse ? 'dependent_quote_prose' : record.role;
+    const role = record.physicalWordContinuation ? 'physical_word_continuation'
+      : (record.dependentQuoteProse ? 'dependent_quote_prose' : record.role);
     map.set(`@${record.start}:${record.end}`, [role]);
     const key = String(record.text || '');
     const roles = map.get(key) || [];
@@ -1376,9 +1379,14 @@ function findWhitespaceEquivalentSpans(value, expected, cursor = 0, maximum = 64
     const char = String.fromCodePoint(codePoint);
     const next = index + char.length;
     if (!/\s/u.test(char)) {
-      compact.push(char === '“' || char === '”' ? '"' : (char === '‘' || char === '’' ? "'" : char));
-      starts.push(index);
-      ends.push(next);
+      const normalized = char === '“' || char === '”' ? '"' : (char === '‘' || char === '’' ? "'" : char);
+      compact.push(normalized);
+      // indexOf/length/slice use UTF-16 code units, not Unicode code points.
+      // Every unit in an emoji or supplementary letter must own a map entry.
+      for (let unit = 0; unit < normalized.length; unit += 1) {
+        starts.push(index);
+        ends.push(next);
+      }
     }
     index = next;
   }
@@ -1391,7 +1399,15 @@ function findWhitespaceEquivalentSpans(value, expected, cursor = 0, maximum = 64
     const found = compactText.indexOf(expectedKey, search);
     if (found < 0) break;
     const last = found + expectedKey.length - 1;
-    spans.push({ start: starts[found], end: ends[last] });
+    const start = starts[found], end = ends[last];
+    // A projection is evidence for an exact whitespace/quote-equivalent span.
+    // Never let an invalid coordinate reach slice(undefined) or replace a
+    // different literal block, even if a future normalizer changes its width.
+    if (Number.isInteger(start) && Number.isInteger(end)
+        && start >= cursor && end > start && end <= text.length
+        && bare(text.slice(start, end)) === expectedKey) {
+      spans.push({ start, end });
+    }
     search = found + 1;
   }
   return spans;

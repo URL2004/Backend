@@ -13,6 +13,22 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+for (const mode of ['blog', 'formal', 'polish']) test(`${mode}: emoji guide keeps labels, dates and edited prose through final delivery`, { concurrency: false }, async t => {
+  const source = '📅 동아리 발표 준비\n\n① 자기소개\n저는 친구들과 함께 자료를 자세하게 살펴보려고 합니다. 준비한 내용을 발표하면서 서로의 의견을 듣겠습니다.\n\n키워드: 성실 → 협력\n\n② 활동 계획\n발표 전에 내용을 자세하게 살펴보려고 합니다. 발표가 끝난 뒤에는 질문에 답하겠습니다.\n\n🗓 일정\n날짜\t할 일\n4/12\t신청 완료\n4/13\t발표 연습\n\n[ ] 준비물 확인';
+  const rewrite = body => extractPromptDataSection(body.input, 'EDITABLE_TEXT').replaceAll('자세하게 살펴보려고 합니다', '꼼꼼히 살펴보겠습니다');
+  installEngineMock(t, { humanize: rewrite });
+  const out = await engine.run({ text: source, mode, uid: 'unicode-guide-synthetic-unit', config: config() });
+  assert.notEqual(out.status, 'blocked');
+  const result = out.result.outputText;
+  assert.match(result, /꼼꼼히 살펴보겠습니다/u);
+  for (const anchor of ['키워드:', '① 자기소개', '② 활동 계획', '4/12', '4/13', '[ ] 준비물 확인']) {
+    assert.equal(result.split(anchor).length - 1, 1, `${anchor} must keep its own location and count`);
+  }
+  assert.doesNotMatch(result, /^키워\s*$/mu);
+  assert.equal(out.engineMeta.finalLayoutContentPreserved, true);
+  assert.equal(out.engineMeta.structureSignaturePass, true);
+});
+
 for (const mode of ['blog', 'formal']) test(`${mode}: missing plain punctuation does not become a final relation review`, {concurrency:false}, async t => {
   const units = [
     '지역 전시관은 소장품뿐 아니라 주민들의 생활 변화를 보여 주는 것 같다',
@@ -388,7 +404,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.79');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.80');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -1680,7 +1696,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.79');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.80');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

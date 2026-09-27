@@ -12,6 +12,8 @@ const REFERENCE = /^(?:\[|【)?(?:참고\s*문헌|참고\s*자료|References|Bib
 const EXPLICIT = /^(?:#{1,6}\s|>|[-*+•▪◦·●○■□◆◇▶▷※]\s|\d+(?:\.\d+)*[.)]\s|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?\s|[IVX]+[.)]\s|제\s*\d+\s*(?:장|절|조)|\[[^\]\n]{1,80}\]$|【[^】\n]{1,80}】$)/u;
 const NUMBERED = /^[가-하][.)](?=\s*\S)/u;
 const stripParticle = word => word.replace(/(?:에서는|으로|에서|에게|처럼|은|는|이|가|을|를|의|와|과|도|만|에)$/u, '');
+const witnessedWords = source => new Set((String(source).match(/[가-힣]{2,}/gu) || [])
+  .map(stripParticle).filter(word => word.length >= 2));
 const isNominalHeading = text => !/[.!?。！？,]/u.test(text) && text.length <= 80
   && /(?:계획|현황|목적|방법|배경|필요성|분석|정의|개념|결과|시사점|참고문헌)$/u.test(text)
   && !/(?:은|는|을|를)\s/u.test(text);
@@ -45,7 +47,7 @@ function repairPhysicalProseLines(value) {
     const lineEnd = nextLine < 0 ? source.length : nextLine;
     return !source.slice(lineStart, span.start).trim() && !source.slice(span.end, lineEnd).trim();
   });
-  const witnessed = new Set((source.match(/[가-힣]{2,}/gu) || []).map(stripParticle).filter(w => w.length >= 2));
+  const witnessed = witnessedWords(source);
   let references = false, fenced = false;
   for (const row of rows) {
     if (/^\s*(?:`{3,}|~{3,})/u.test(row.raw)) { row.protected = true; fenced = !fenced; continue; }
@@ -137,4 +139,4 @@ function repairPhysicalProseLines(value) {
   })) };
 }
 
-module.exports = { repairPhysicalProseLines };
+module.exports = { repairPhysicalProseLines, wordSeam, witnessedWords };

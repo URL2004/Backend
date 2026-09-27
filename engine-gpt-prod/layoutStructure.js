@@ -95,6 +95,7 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
     role: 'blank'
   });
   const nonEmpty = records.filter(record => !record.blank);
+  const witnessedWords = require('./physicalProseLines').witnessedWords(source);
   const codeIndices = detectCodeLineIndices(records, source);
   const tableIndices = detectContextTableLineIndices(records, codeIndices);
   const signatureIndices = detectSignatureLineIndices(records, codeIndices);
@@ -157,6 +158,14 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
     const next = position + 1 < nonEmpty.length ? nonEmpty[position + 1] : null;
     const previousRaw = records[record.index - 1] || null;
     const nextRaw = records[record.index + 1] || null;
+    // A physical wrap inside a witnessed word is not a new 가나다 item or
+    // nominal heading. Do not cross blank lines, tables, code or real lists.
+    const wrappedWord = previous && previous.index === record.index - 1
+      && !tableIndices.has(record.index) && !tableIndices.has(previous.index)
+      && !signatureIndices.has(record.index) && !codeIndices.has(previous.index)
+      && !['list', 'heading', 'title', 'code', 'table', 'signature'].includes(previous.role)
+      && previous.text.length >= 16
+      && require('./physicalProseLines').wordSeam(previous.text, record.text, witnessedWords);
     record.role = classifyLine(record.text, {
       firstContent: record.index === firstContentIndex,
       previous,
@@ -170,6 +179,10 @@ function buildLineRecords(value, { quoteAnalysis = null } = {}) {
       parallelSectionHeading: parallelSectionHeadingIndices.has(record.index),
       labelGroupHeading: labelGroupHeadingIndices.has(record.index)
     });
+    if (wrappedWord && ['prose', 'list', 'heading', 'title'].includes(record.role)) {
+      record.role = 'prose';
+      record.physicalWordContinuation = true;
+    }
     if (dependentQuoteLines.has(record.index)
         && !(record.index === firstContentIndex && isReadingResponseTitle(record.text))
         && !tableIndices.has(record.index) && !signatureIndices.has(record.index)

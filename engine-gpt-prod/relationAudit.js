@@ -55,6 +55,11 @@ function auditRelationCandidates(source, outputText) {
     const original = matched.sentence;
     const add = code => candidates.push({ code, sourceOrdinal: matched.index + 1,
       outputOrdinal: outputIndex + 1, sourceSpan: original, outputSpan: sentence });
+    // A backward link is a relation, not a disposable introductory filler.
+    // Nominate only; an explicit antecedent substitution may still be valid.
+    if (/^(?:이는|이것은|이러한\s|이같은\s)/u.test(original)
+        && /(?:점|사실|해석)(?:과|와)도?\s*(?:이어|연결)/u.test(original)
+        && !/(?:이어|연결)/u.test(sentence)) add('antecedent_link_loss_candidate');
     // Unchanged words can point at a different antecedent after a move.
     if (/^(?:이|그|이러한|그러한)\s*(?:부분|내용|관점|문제|결과)/u.test(sentence)
         && matched.index > 0 && outputIndex > 0) {

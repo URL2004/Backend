@@ -13,6 +13,22 @@ test('restore only attested comparison and concession frames, preserving rewritt
   assert.equal(restoreRelationScopes(a,r.text).applied,false);
 });
 
+test('concession restoration cannot introduce a double concessive ending', () => {
+  const source='연구자에게는 책임이 있고, 현장 담당자로서는 전문적인 기술이 있어도 낯선 설비에서 어려움을 겪는다.';
+  const output='연구자에게 책임이 있으며, 현장에서 활동할 때도 전문적인 기술만으로 낯선 설비에서 어려움을 겪는다.';
+  const restored=restoreRelationScopes(source,output);
+  assert.equal(restored.applied,true);
+  assert.equal(restored.text,'연구자에게 책임이 있으며, 현장 담당자로서는 전문적인 기술이 있어도 낯선 설비에서 어려움을 겪는다.');
+  assert.equal(restoreRelationScopes(source,restored.text).applied,false);
+});
+
+test('losing an explicit backward connection is reviewable, not automatically erroneous', () => {
+  const source='이는 지역의 문화가 공동체의 생활 방식과 함께 형성된다는 점과도 이어진다.';
+  const result='지역의 문화는 공동체의 생활 방식과 함께 형성된다.';
+  assert.ok(auditRelationCandidates(source,result).codes.includes('antecedent_link_loss_candidate'));
+  assert.ok(!auditRelationCandidates(source,source).codes.includes('antecedent_link_loss_candidate'));
+});
+
 test('do not restore unrelated, ambiguous, quoted or legitimately excluded relations', () => {
   for (const [a,b] of [
     ['무엇보다 반복이 중요하다.', '무엇이 아니라 반복이 중요하다.'],

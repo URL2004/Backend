@@ -12,7 +12,7 @@ const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope
 function restoreConfirmedRelations(source, output, report, { priorReports = [] } = {}) {
   const text = String(output || '');
   const unchanged = { text, applied: false, restoredCount: 0 };
-  if (!report || report.pass !== false || report.uncertain || report.skipped) return unchanged;
+  if (!canNominateConfirmed(report)) return unchanged;
   const originals = splitSentenceSpans(String(source || '')).map(s => {
     const lines = s.text.split(/\r?\n/u);
     // Some sources attach standalone labels to the first sentence. They may
@@ -34,7 +34,7 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
   const pairedLimit = Math.min(8, Math.floor(results.length / 2));
   if (!limit) return unchanged;
   const candidates = auditRelationCandidates(source, text).candidates;
-  const violations = (report.violations || []).filter(v => v.type === 'distortion'
+  const violations = (report.uncertain ? [] : report.violations || []).filter(v => v.type === 'distortion'
     // A paired finding that fails its stronger ownership/budget checks must
     // not bypass them through the legacy nearest-sentence route below.
     && !Object.hasOwn(v, 'sourceSpan') && !Object.hasOwn(v, 'candidateSpan')
@@ -57,7 +57,7 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
   for (const v of pairedFindings) {
     if (replacements.length >= pairedLimit || v.origin !== 'introduced' || v.relationGrounded !== true
         || !['actor_action_target','condition_result','quantity_target','variable_definition',
-          'antecedent','modality_negation_causality','other'].includes(v.relation)) continue;
+          'antecedent','modality_negation_causality','genre_naturalness','other'].includes(v.relation)) continue;
     const a=String(v.sourceSpan||''),b=String(v.candidateSpan||'');
     const from=String(source).indexOf(a),start=text.indexOf(b),end=start+b.length;
     if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
@@ -115,7 +115,10 @@ function collectPairedNominations(report, priorReports) {
   const visit = value => {
     if (!value || typeof value !== 'object' || visited.has(value) || findings.length >= 64) return;
     visited.add(value);
-    if (value.pass !== false || value.uncertain || value.skipped || value.verificationCompleted === false) return;
+    // One ungrounded finding must not veto an unrelated, exactly grounded
+    // introduced error. This only nominates a bounded source replacement;
+    // uncertainty is never cleared here and a fresh whole verdict is required.
+    if (!canNominateConfirmed(value)) return;
     for (const v of [...(value.violations || []), ...(value.initialViolations || [])]) {
       if (findings.length >= 64) break;
       if (!PAIRED_RESTORATION_TYPES.includes(v?.type) || v.origin !== 'introduced'
@@ -132,6 +135,15 @@ function collectPairedNominations(report, priorReports) {
   visit(report);
   for (const prior of Array.isArray(priorReports) ? priorReports : []) visit(prior);
   return findings;
+}
+
+function canNominateConfirmed(report) {
+  if (!report || report.pass !== false || report.skipped || report.verificationCompleted === false) return false;
+  // Only split an aggregate uncertainty with an explicit unresolved member.
+  // An unexplained global uncertainty (e.g. incomplete correspondence) must
+  // not be downgraded just because the surviving findings look grounded.
+  return !report.uncertain || (report.violations || []).some(v => v?.origin === 'unconfirmed'
+    || v?.repairable === false || v?.relationGrounded === false);
 }
 
 function assessConfirmedRestorationSafety(safety) {

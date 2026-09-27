@@ -46,6 +46,22 @@ function restoreRelationScopes(source, output) {
       if (overlaps(protectedOutput, start, end) || overlaps(changes, start, end)) continue;
       // Never turn a source's own explicit exclusion into a mere comparison.
       if (new RegExp(rule.target(anchor), 'u').test(original.text)) continue;
+      // Particle-only restoration may create "...할 때도 ... 있어도".
+      // In that case restore the uniquely aligned source clause, not invented
+      // grammar or the entire document. Existing quoted/code clauses abstain.
+      const clauseStart = best.span.text.lastIndexOf(',', best.target.index) + 1;
+      const targetPrefix = best.span.text.slice(clauseStart, best.target.index);
+      if (rule.code === 'concession_sufficiency' && /때도\s/u.test(targetPrefix)
+          && !/때도\s/u.test(clause)) {
+        const left = best.span.start + clauseStart;
+        const right = best.span.end;
+        if (clause.length <= 250 && right-left <= 250
+            && !overlaps(protectedOutput,left,right) && !overlaps(changes,left,right)
+            && !syntaxSpans(clause).some(s=>s.spanType!=='parenthetical')) {
+          changes.push({start:left,end:right,text:(clauseStart ? ' ' : '')+clause,code:rule.code});
+        }
+        continue;
+      }
       changes.push({ start, end, text: match[0], code: rule.code });
     }
   }

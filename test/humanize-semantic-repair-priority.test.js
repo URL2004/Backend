@@ -134,6 +134,56 @@ test('server mapping candidates preserve the repair round until the confirming j
   ]);
   assert.ok(calls.every(c => c.model === 'gpt-6-sol'));
   assert.equal(result.relationConfirmationFirst, true);
+  assert.equal(calls[0].maxOutputTokens, 10000);
+  assert.equal(calls[2].maxOutputTokens, 10000);
+});
+
+test('direct final confirmation uses the configured confirming envelope without a phase-name workaround', async () => {
+  const { judge, calls } = mockedJudge([{ violations: [] }, { violations: [] }]);
+  const cfg = { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol' } };
+  await judge.semanticJudge(source, before, null, { config: cfg, model: 'gpt-6-sol', phase: 'final_validation' });
+  await judge.semanticJudge(source, before, null, { config: cfg, phase: 'primary:semantic' });
+  assert.equal(calls[0].maxOutputTokens, 10000);
+  assert.equal(calls[1].maxOutputTokens, 6000);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].system, /검토했던 후보 목록이나 사고 과정이 아니라/);
+  assert.match(calls[0].system, /실제 미확인 문제를 지우지 않는다/);
+});
+
+test('final revalidation after a failed audit starts with confirmation instead of consuming the deadline twice', async () => {
+  const cfg = { models: { judge:'gpt-6-luna', judgeEscalation:'gpt-6-sol' } };
+  const direct = mockedJudge([{violations:[]}]);
+  const result = await direct.judge.judgeAndRepair(source,before,{config:cfg,maxRounds:0,
+    discourseSignals:['final_semantic_revalidation','prior_failed_semantic_confirmation']});
+  assert.equal(result.pass,true);
+  assert.equal(direct.calls.length,1);
+  assert.equal(direct.calls[0].model,'gpt-6-sol');
+  assert.equal(direct.calls[0].maxOutputTokens,10000);
+  const ordinary=mockedJudge([{violations:[]}]);
+  await ordinary.judge.judgeAndRepair(source,before,{config:cfg,maxRounds:0,discourseSignals:['final_semantic_revalidation']});
+  assert.equal(ordinary.calls[0].model,'gpt-6-luna');
+});
+
+test('contradictory or genuinely unresolved findings cannot be silently filtered into a pass', async () => {
+  for (const detail of ['두 표현의 뜻이 같아서 위반이 아니다.', '대응 문장을 확정하지 못했다.']) {
+    const finding = { type: 'new_evaluation', span: '세밀하게 검토한다', detail,
+      sourceSpan: '', candidateSpan: '', relation: 'other', origin: 'unconfirmed' };
+    const { judge, calls } = mockedJudge([{ violations: [finding] }]);
+    const report = await judge.semanticJudge('연구팀은 자료를 자세히 검토한다.', '연구팀은 자료를 세밀하게 검토한다.', null, { config });
+    assert.equal(report.pass, false);
+    assert.equal(report.uncertain, true);
+    assert.equal(report.violations.length, 1);
+    assert.equal(report.violations[0].repairable, false);
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('English verdict contract also separates disproved candidates from unresolved findings', async () => {
+  const { judge, calls } = mockedJudge([{ violations: [] }]);
+  const report = await judge.semanticJudge('The team checked the data.', 'The data were checked by the team.', null, { config, lang: 'en' });
+  assert.equal(report.pass, true);
+  assert.match(calls[0].system, /not a review checklist/);
+  assert.match(calls[0].system, /Never clear a genuine unresolved problem/);
 });
 
 test('mapping hints are review hints, not automatic failures or extra model calls on a passing primary', async () => {

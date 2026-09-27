@@ -3851,7 +3851,7 @@ async function runEngine({
           // 앞선 판정이 이미 확정한 정확한 쌍의 복원은 최종 판정 전에 적용해
           // 추가 모델 호출 없이 이 한 번의 최종 판정으로 검증한다.
           if (priorReport?.pass === false && priorReport.verificationCompleted !== false
-              && !priorReport.uncertain && !priorReport.skipped) {
+              && !priorReport.skipped) {
             const confirmedRelationRestore = require('./confirmedRelationRestore');
             const preRestored = confirmedRelationRestore.restoreConfirmedRelations(rawSource, outputText, priorReport, {
               priorReports: semanticRestorationEvidence
@@ -3885,7 +3885,8 @@ async function runEngine({
             config: cfg,
             allowedExtra,
             mode: selectedMode,
-            discourseSignals: ['final_semantic_revalidation'],
+            discourseSignals: ['final_semantic_revalidation', ...(priorReport.pass === false
+              ? ['prior_failed_semantic_confirmation'] : [])],
             safetyIdentifier: safetyId,
             documentProfile,
             allowRepair: false,

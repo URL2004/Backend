@@ -8,7 +8,10 @@ const { DETECT_SCHEMA } = require('../engine-gpt-prod/schemas');
 
 test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 근거와 점수 앵커를 요구한다', () => {
   const ko = prompt.buildDetectPrompt('ko');
-  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9d-length-independent-evidence');
+  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9e-consistent-local-rubric');
+  assert.match(ko, /반복 원인 하나 또는 실제 반대 근거/u);
+  assert.match(ko, /최소 2개가 필요/u);
+  assert.match(ko, /신호 강도는 길이와 무관/u);
   assert.match(ko, /실제 작성 주체를 판정하는 확률이 아니다/u);
   assert.match(ko, /학술문·보고서·자소서처럼 원래 정돈된 장르/u);
   assert.match(ko, /만으로 점수를 올리지 않는다/u);

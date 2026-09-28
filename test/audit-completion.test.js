@@ -78,7 +78,8 @@ test('short dense independent evidence is reviewed once, not boosted; insufficie
     const out = { probability:32, signalEvidence:ground(signals,text) };
     assert.equal(review(out,text),true); assert.equal(out.probability,32);
     assert.equal(review({...out,signalEvidence:[out.signalEvidence[0],out.signalEvidence[0]]},text),false);
-    assert.equal(review({...out,signalEvidence:out.signalEvidence.map(s=>({...s,strength:'moderate'}))},text),false);
+    assert.equal(review({...out,signalEvidence:out.signalEvidence.map(s=>({...s,strength:'moderate'}))},text),true);
+    assert.equal(review({...out,signalEvidence:out.signalEvidence.map(s=>({...s,strength:'weak'}))},text),false);
     assert.equal(review({...out,signalEvidence:out.signalEvidence.map(s=>({...s,category:'ending_repetition'}))},text),false);
     assert.equal(review({...out,signalEvidence:out.signalEvidence.map(s=>({...s,locations:s.locations.slice(0,1)}))},text),false);
   }

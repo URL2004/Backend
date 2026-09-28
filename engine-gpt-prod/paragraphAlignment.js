@@ -139,7 +139,14 @@ async function runCachedLayout(fn, options = {}) {
   const job = require('./callLedger').current();
   const store = { cache: job?.layoutCache || new Map(), features: job?.layoutFeatures || new Map(), pending: new Map(), metrics: { states: 0, limitReached: false, fastPath: false } };
   return context.run(store, async () => {
-    let result = await scheduleSlice(() => fn(options), options.signal);
+    const prepare = async () => {
+      const value = await scheduleSlice(() => fn(options), options.signal);
+      if (!value || typeof value.next !== 'function') return value;
+      let step = await scheduleSlice(() => value.next(), options.signal);
+      while (!step.done) step = await scheduleSlice(() => value.next(), options.signal);
+      return step.value;
+    };
+    let result = await prepare();
     for (let round = 0; store.pending.size && round < 4; round++) {
       const pending = [...store.pending]; store.pending.clear();
       for (const [key, pair] of pending) {
@@ -150,7 +157,7 @@ async function runCachedLayout(fn, options = {}) {
         store.cache.set(key, step.value);
         if (store.cache.size > 100) store.cache.delete(store.cache.keys().next().value);
       }
-      result = await scheduleSlice(() => fn(options), options.signal);
+      result = await prepare();
     }
     const alignmentMetrics = { ...store.metrics, elapsedMs: Math.round(performance.now() - started) };
     job?.layoutMetrics.push(alignmentMetrics);

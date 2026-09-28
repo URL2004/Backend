@@ -398,7 +398,17 @@ function restoreBoundaryMarkers(outputText, chunk) {
 
 // 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 이 단계는 동결 제목을
 // 독립 행으로 되돌리고, 구조가 잠기지 않은 일반 산문의 문단 경계만 조정한다.
-function restorePostSemanticLayout({
+function finishLayoutSteps(iterator) {
+  let step = iterator.next();
+  while (!step.done) step = iterator.next();
+  return step.value;
+}
+
+function restorePostSemanticLayout(options = {}) {
+  return finishLayoutSteps(restorePostSemanticLayoutSteps(options));
+}
+
+function* restorePostSemanticLayoutSteps({
   source,
   outputText,
   chunks,
@@ -409,8 +419,10 @@ function restorePostSemanticLayout({
   humanizeContract = null
 } = {}) {
   const heading = restoreLockedHeadingLayout(source, outputText, chunks);
+  yield;
   const initialBlocks = restoreExactLockedBlocks(heading.text, chunks, source);
-  const paragraphs = restoreParagraphLayout({
+  yield;
+  const paragraphs = yield* restoreParagraphLayoutSteps({
     source,
     outputText: initialBlocks.text,
     chunks,
@@ -420,6 +432,7 @@ function restorePostSemanticLayout({
     profileConfidence,
     humanizeContract
   });
+  yield;
   const inlineLabels = restoreInlineLabelBodyLayout(source, paragraphs.text);
   const conditions = require('./layoutRelations').separateAttestedConditions(source, inlineLabels.text);
   // The paragraph planner may coalesce a literal caption with adjacent prose.
@@ -617,7 +630,11 @@ function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVis
 // 슬롯(표·제목·인용·코드 등)의 내용과 경계를 복원한 뒤에만 산문 레이아웃을
 // 정리하고, 마지막으로 구조 슬롯을 한 번 더 잠근다. 이 순서를 지키면
 // paragraphizer가 손상된 표를 산문으로 오인해 행을 더 줄이는 일을 막는다.
-function restoreFinalDocumentLayout({
+function restoreFinalDocumentLayout(options = {}) {
+  return finishLayoutSteps(restoreFinalDocumentLayoutSteps(options));
+}
+
+function* restoreFinalDocumentLayoutSteps({
   source,
   outputText,
   chunks,
@@ -654,7 +671,8 @@ function restoreFinalDocumentLayout({
       chunks,
       normalizeVisualGaps: false
     });
-    paragraphs = restorePostSemanticLayout({
+    yield;
+    paragraphs = yield* restorePostSemanticLayoutSteps({
       source,
       outputText: initialLocked.text,
       chunks,
@@ -664,6 +682,7 @@ function restoreFinalDocumentLayout({
       profileConfidence,
       humanizeContract
     });
+    yield;
     finalLocked = restoreLockedStructureLayout({
       source,
       outputText: paragraphs.text,
@@ -671,6 +690,7 @@ function restoreFinalDocumentLayout({
       normalizeVisualGaps,
       developedListGaps: improveLabelBodies
     });
+    yield;
     const report = paragraphs.paragraphs;
     if (report?.applied && report.policy !== 'none') {
       paragraphSummary = {
@@ -1508,6 +1528,12 @@ function isOrderedSectionRecord(record) {
 }
 
 function restoreParagraphLayout(options = {}) {
+  return finishLayoutSteps(restoreParagraphLayoutSteps(options));
+}
+
+// Share exactly the same decisions with synchronous callers. Production
+// schedules these preparation stages separately, not just the alignment DP.
+function* restoreParagraphLayoutSteps(options = {}) {
   const contract = resolveHumanizeContract(options);
   if (contract.paragraph.prosePolicy === 'approved_plan') {
     // SOURCE already contains the user-approved plan, not the old layout.
@@ -1523,7 +1549,8 @@ function restoreParagraphLayout(options = {}) {
       readability: compactReadability(layoutStructure.measureParagraphReadability(anchored.text, options)),
       pass: anchored.contentPreserved };
   }
-  const result = restoreParagraphLayoutBase(options);
+  const result = yield* restoreParagraphLayoutBase(options);
+  yield;
   const profile = canonicalProfileName(options.documentProfile);
   if (contract.paragraph.prosePolicy === 'preserve' || options.mode === 'polish' || ['creative', 'legal_contract', 'clinical_record'].includes(profile)
       || (options.chunks || []).some(c => c.lineBoundaryPolicy === 'all')) return result;
@@ -1531,6 +1558,7 @@ function restoreParagraphLayout(options = {}) {
     strength: contract.strength,
     protectedBlocks: (options.chunks || []).filter(c => c.locked).map(c => c.text)
   });
+  yield;
   if (!extra.splitCount && !extra.boundaryMoveCount && !extra.dependentLeadRepairCount) return result;
   const count = splitParagraphs(extra.text).length;
   return { ...result, text: extra.text, applied: true, policy: `${result.policy}+${contract.strength === 'advanced' ? 'advanced' : 'basic'}_block_roles`,
@@ -1542,7 +1570,7 @@ function restoreParagraphLayout(options = {}) {
     roleBoundaryCount: Number(result.roleBoundaryCount || 0) + extra.splitCount + Number(extra.boundaryMoveCount || 0) };
 }
 
-function restoreParagraphLayoutBase({
+function* restoreParagraphLayoutBase({
   source,
   outputText,
   chunks,
@@ -1578,6 +1606,7 @@ function restoreParagraphLayoutBase({
     && ((chunks || []).some(chunk => chunk?.locked) || allowsLayoutRecomposition(resolvedContract))
     ? require('./sourceParagraphTransitions').restoreSourceParagraphTransitions(source, rawOutputText)
     : { text: rawOutputText, repairedCount: 0 };
+  yield;
   const explicitParagraphCountBefore = layoutStructure.splitExplicitParagraphs(rawOutputText).length;
   const canRepairVisualGaps = mode !== 'polish' && !creativeLayout;
   const developedListGaps = canRepairVisualGaps
@@ -1588,12 +1617,15 @@ function restoreParagraphLayoutBase({
   const sourceVisualLayout = canRepairVisualGaps
     ? restoreStructuralVisualGaps(source, { excludedBlocks: visualGapExcludedBlocks, developedListGaps })
     : { text: normalizeParagraphWhitespace(source), repairCount: 0 };
+  yield;
   const outputVisualLayout = canRepairVisualGaps
     ? restoreStructuralVisualGaps(sourceTransitions.text, { excludedBlocks: visualGapExcludedBlocks, developedListGaps })
     : { text: sourceTransitions.text, repairCount: 0 };
+  yield;
   const discourseLayout = canRepairVisualGaps
     ? require('./sourceParagraphTransitions').restoreSourceDiscourseRoles(source, outputVisualLayout.text)
     : { text: outputVisualLayout.text, repairedCount: 0 };
+  yield;
   outputVisualLayout.text = discourseLayout.text;
   outputVisualLayout.repairCount += discourseLayout.repairedCount;
   outputVisualLayout.repairCount += sourceTransitions.repairedCount;
@@ -1672,7 +1704,9 @@ function restoreParagraphLayoutBase({
     : continuousResumeGroups || (preserveResumeUnits ? resumeReadableUnits : detectedSourceParagraphs);
   const sourceCount = sourceParagraphs.length;
   const sourceReadability = layoutStructure.measureParagraphReadability(sourceParagraphs, readabilityOptions);
+  yield;
   const beforeReadability = layoutStructure.measureParagraphReadability(before, readabilityOptions);
+  yield;
   const readableMinimum = Math.max(sourceReadability.minimumCount, beforeReadability.minimumCount);
   if (preserveResumeUnits || preserveTitledResumeUnits || continuousResumeGroups) {
     const anchored = continuousResumeGroups ? {
@@ -1740,11 +1774,13 @@ function restoreParagraphLayoutBase({
     // 빈 줄 문단뿐 아니라 워드·입력창에서 한 줄만 내려 쓴 완결 산문도
     // layoutStructure가 판정한 원문 역할 경계로 존중한다.
     && sourceParagraphs.every(paragraph => !layoutStructure.isStructureDominatedParagraph(paragraph));
+  yield;
   if (sourceParagraphRolesAreAuthoritative) {
     const anchored = buildSourceAnchoredParagraphLayout(layoutSourceText, layoutOutputText, {
       readabilityOptions,
       minimumSourceCount: sequentialEnumeratedParagraphRoles ? 2 : 3
     });
+    yield;
     const afterReadability = layoutStructure.measureParagraphReadability(splitParagraphs(anchored.text), readabilityOptions);
     const explicitParagraphCountAfter = layoutStructure.splitExplicitParagraphs(anchored.text).length;
     return {
@@ -1870,6 +1906,7 @@ function restoreParagraphLayoutBase({
   let proseSplitCount = 0;
   let targetConstrained = false;
   while (paragraphs.length > targetCount) {
+    yield;
     const candidate = policy === 'cohesive_prose_merge'
       ? findCohesiveMergeCandidate(paragraphs, protectedBlocks, readabilityOptions)
       : findMergeCandidate(paragraphs, protectedBlocks, readabilityOptions);
@@ -1888,6 +1925,7 @@ function restoreParagraphLayoutBase({
     );
   }
   while (paragraphs.length < targetCount) {
+    yield;
     const candidate = findSplitCandidate(paragraphs, protectedBlocks, { ...readabilityOptions, onlyOverlong: policy === 'readability_cap' });
     if (!candidate) break;
     paragraphs.splice(candidate.index, 1, candidate.left, candidate.right);
@@ -4118,10 +4156,10 @@ module.exports = {
   coalesceEditableChunks,
   restoreBoundaryMarkers,
   restorePostSemanticLayout,
-  restorePostSemanticLayoutAsync: options => require('./paragraphAlignment').runLayout(restorePostSemanticLayout, options),
+  restorePostSemanticLayoutAsync: options => require('./paragraphAlignment').runLayout(restorePostSemanticLayoutSteps, options),
   restoreFinalDocumentLayout,
-  restoreFinalDocumentLayoutAsync: options => require('./paragraphAlignment').runLayout(restoreFinalDocumentLayout, options),
-  restoreParagraphLayoutAsync: options => require('./paragraphAlignment').runLayout(restoreParagraphLayout, options),
+  restoreFinalDocumentLayoutAsync: options => require('./paragraphAlignment').runLayout(restoreFinalDocumentLayoutSteps, options),
+  restoreParagraphLayoutAsync: options => require('./paragraphAlignment').runLayout(restoreParagraphLayoutSteps, options),
   repairIntroducedMidSentenceParagraphBreaks,
   measureDeliveredParagraphBoundaries,
   restoreLockedHeadingLayout,

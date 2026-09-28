@@ -50,20 +50,37 @@ function reviewSchema(base, obligations) {
     required:['id','status','sourceSpan','candidateSpan','detail']}}},required:[...base.required,'obligationReviews']};
 }
 
-function reviewPayload(obligations) {
+function currentCandidateReferences(obligations, candidate) {
+  const refs = Object.create(null);
+  for (const { id, finding } of obligations) {
+    // Exact, unique current quotations only. This locates evidence, never
+    // decides whether its meaning or surrounding ownership is preserved.
+    const spans = [finding.sourceSpan, finding.candidateSpan];
+    const span = spans.find(s => unique(candidate, s) && s.trim().length >= 8);
+    if (span) refs[id] = span;
+  }
+  return refs;
+}
+
+function reviewPayload(obligations, references = {}) {
   return obligations.map(({id,finding:v,questions})=>({id,type:v.type,sourceSpan:v.sourceSpan,
     previousCandidateSpan:v.candidateSpan,previousProblemSpan:v.span,relation:v.relation,previousDetail:v.detail,
+    ...(references[id] ? {currentCandidateReference: references[id] === v.sourceSpan ? 'sourceSpan' : 'previousCandidateSpan'} : {}),
     previousQuestions:(questions||[]).filter(q=>q.previousCandidateSpan!==v.candidateSpan
       || q.previousProblemSpan!==v.span || q.detail!==(v.detail||''))}));
 }
 
-function assessReviews(obligations, reviews, source, candidate, {allowDismiss=false}={}) {
+function assessReviews(obligations, reviews, source, candidate, {allowDismiss=false,candidateReferences={}}={}) {
   const result=[], pending=[];
   for (const {id,finding} of obligations) {
     const matches=(reviews||[]).filter(r=>r?.id===id),answer=matches[0];
     // An explicit empty source quote references the immutable source anchor ID;
-    // the CURRENT candidate quote must still be supplied and uniquely grounded.
-    const r=answer && {...answer,sourceSpan:answer.sourceSpan===''?finding.sourceSpan:answer.sourceSpan};
+    // the CURRENT candidate quote must be supplied or explicitly referenced
+    // from this request's verified unique quotations. Absence is not a reference.
+    const ref=candidateReferences[id];
+    const validRef=ref && [finding.sourceSpan,finding.candidateSpan].includes(ref) && unique(candidate,ref);
+    const r=answer && {...answer,sourceSpan:answer.sourceSpan===''?finding.sourceSpan:answer.sourceSpan,
+      candidateSpan:answer.candidateSpan==='' && validRef ? ref : answer.candidateSpan};
     const valid=matches.length===1 && ['resolved','not_error','unresolved'].includes(r.status)
       && r.sourceSpan===finding.sourceSpan && unique(source,r.sourceSpan)
       && unique(candidate,r.candidateSpan) && r.candidateSpan.trim().length>=8 && r.detail?.trim().length>=8
@@ -94,4 +111,4 @@ function allExplicitlyReviewed(obligations, report) {
   return obligations.every(o=>reviews.some(r=>r.id===o.id && ['resolved','not_error'].includes(r.status)));
 }
 
-module.exports={hasGroundedSpan,collectObligations,reviewSchema,reviewPayload,assessReviews,obligationId,projectEvidence,allExplicitlyReviewed};
+module.exports={hasGroundedSpan,collectObligations,reviewSchema,reviewPayload,assessReviews,obligationId,projectEvidence,allExplicitlyReviewed,currentCandidateReferences};

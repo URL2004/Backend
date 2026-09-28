@@ -69,10 +69,15 @@ async function loadConfig(config) {
 async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, config, allowedExtra = '', mode = '', discourseSignals = [], priorReports = [], model, reasoningEffort, phase = 'semantic', safetyIdentifier = '' } = {}) {
   const obligationPolicy = require('./semanticObligations');
   const allObligations = obligationPolicy.collectObligations(rawText, priorReports);
-  const obligations = allObligations.slice(0,16);
+  // The response is checked against EVERY target below. Silently truncating
+  // this list guaranteed an unresolved finding which the model was never
+  // permitted to answer. Keep the full schema/payload target set; the existing
+  // request, output-token and deadline limits still fail closed on overflow.
+  const obligations = allObligations;
+  const candidateReferences = obligationPolicy.currentCandidateReferences(obligations, outputText);
   const operatorPolicy = require('./semanticOperatorReview');
   const operatorTargets = operatorPolicy.targets(rawText, outputText);
-  const selectedOperators = operatorTargets.slice(0, 12);
+  const selectedOperators = operatorTargets;
   const cfg = await loadConfig(config);
   const selectedModel = model || cfg.models.judge;
   const confirmingModel = cfg.models.judgeEscalation || cfg.models.humanizeEscalation || cfg.models.judge;
@@ -130,7 +135,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         '원문에 있던 1인칭 화자·관점이 결과에서 완전히 사라지거나 원문에 없던 화자가 생긴 경우도 의미 왜곡으로 판정한다. JSON만 반환한다.'
       ].join('\n');
   if (selectedOperators.length) system += '\n' + operatorPolicy.instruction;
-  if (obligations.length) system += '\nPRIOR_FINDING_OBLIGATIONS의 각 id는 고정된 sourceSpan을 가리킨다. obligationReviews의 sourceSpan은 입력과 같으면 빈 문자열로 참조한다. candidateSpan은 현재 REWRITE의 실제 유일 구절을 반드시 인용한다. detail은 판정의 관계 근거 한 문장으로만 쓴다. 검사 항목이나 검수 범위는 생략하지 않는다.';
+  if (obligations.length) system += '\nPRIOR_FINDING_OBLIGATIONS의 각 id는 고정된 sourceSpan을 가리킨다. obligationReviews의 sourceSpan은 입력과 같으면 빈 문자열로 참조한다. candidateSpan은 현재 REWRITE의 실제 유일 구절을 인용한다. currentCandidateReference가 있으면 해당 필드의 구절이 현재 결과에서 유일하게 확인된 참조이므로 candidateSpan을 빈 문자열로 반환해 참조할 수 있다. 참조가 없거나 앞뒤 문맥 확장이 필요하면 현재 구절을 정확히 인용한다. 참조는 위치만 정하며 의미 판정은 대신하지 않는다. detail은 판정의 관계 근거 한 문장으로만 쓴다. 검사 항목이나 검수 범위는 생략하지 않는다.';
   const user = buildPromptDataSections([
     { label: 'SOURCE', value: rawText },
     { label: 'SOURCE_CLAIM_LEDGER', value: claimsText },
@@ -143,10 +148,10 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     { label: 'MODE', value: mode || 'assignment' },
     { label: 'REWRITE', value: outputText },
     ...(selectedOperators.length ? [{label:'OPERATOR_REVIEW_TARGETS',value:JSON.stringify(selectedOperators)}] : []),
-    ...(obligations.length ? [{label:'PRIOR_FINDING_OBLIGATIONS',value:JSON.stringify(obligationPolicy.reviewPayload(obligations))}] : [])
+    ...(obligations.length ? [{label:'PRIOR_FINDING_OBLIGATIONS',value:JSON.stringify(obligationPolicy.reviewPayload(obligations, candidateReferences))}] : [])
   ]).text;
   const res = await completeJson({
-    system: system + (obligations.length ? '\nPRIOR_FINDING_OBLIGATIONS are earlier reviewer claims, NOT established facts. For EVERY id, explicitly return obligationReviews: resolved (the current rewrite preserves the original relation), not_error (the previous diagnosis was mistaken or source ambiguity), or unresolved. Adjudicate the primary claim AND every distinct previousQuestions claim at the same source/relation anchor; leave unresolved if any remains. Compare the entire present section, including neighboring sentences. previousCandidateSpan is an OLD quotation and may no longer occur; never assert it as current. Return an empty sourceSpan to reference the immutable sourceSpan of that id, or copy it exactly; candidateSpan MUST cite a unique exact CURRENT quotation with concrete reasoning. Keyword presence alone is not resolution: confirm its actor, scope and context. If unresolved, ALSO return the current grounded substantive violation in violations. An empty violations list is not dismissal. No new call or extra repair round is authorized.' : '') + '\n' + (lang === 'en'
+    system: system + (obligations.length ? '\nPRIOR_FINDING_OBLIGATIONS are earlier reviewer claims, NOT established facts. For EVERY id, explicitly return obligationReviews: resolved (the current rewrite preserves the original relation), not_error (the previous diagnosis was mistaken or source ambiguity), or unresolved. Adjudicate the primary claim AND every distinct previousQuestions claim at the same source/relation anchor; leave unresolved if any remains. Compare the entire present section, including neighboring sentences. previousCandidateSpan is an OLD quotation and may no longer occur; never assert it as current. Return an empty sourceSpan to reference the immutable sourceSpan of that id, or copy it exactly; candidateSpan MUST cite a unique exact CURRENT quotation, or may be an explicit empty string ONLY when currentCandidateReference identifies the input field whose quote is verified unique in the current rewrite. A reference locates evidence, NOT a semantic verdict; compare its ownership and neighboring context and supply concrete reasoning. Without a reference or when expanded context is needed, quote the current text explicitly. Keyword presence alone is not resolution: confirm its actor, scope and context. If unresolved, ALSO return the current grounded substantive violation in violations. An empty violations list is not dismissal. No new call or extra repair round is authorized.' : '') + '\n' + (lang === 'en'
       ? 'VERDICT CONTRACT: violations is the final list of unresolved substantive problems, not a review checklist or a transcript of considered candidates. Before returning, reconcile each detail with its type and origin. If direct comparison establishes equivalent meaning, omit that candidate; do not list it as unconfirmed merely because it was considered. If correspondence or meaning really remains uncertain, retain it with origin=unconfirmed and state the concrete unresolved difference. Never clear a genuine unresolved problem to obtain an empty list. If every candidate was disproved and the whole document has been checked, return {"violations":[]}.'
       : '최종 판정 계약: violations는 검토했던 후보 목록이나 사고 과정이 아니라, 끝까지 남은 실질 문제의 목록이다. 반환 전에 각 detail의 결론과 type·origin이 일치하는지 확인한다. 직접 대조하여 같은 의미라고 확인된 후보는 목록에서 제외하며, 검토했다는 이유만으로 unconfirmed로 남기지 않는다. 대응이나 의미가 실제로 불확실한 경우에는 origin=unconfirmed로 유지하고 해결되지 않은 구체적인 차이를 적는다. 빈 목록을 만들기 위해 실제 미확인 문제를 지우지 않는다. 모든 후보가 해소되고 문서 전체 검수를 마쳤다면 {"violations":[]}를 반환한다.'),
     user,
@@ -176,7 +181,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
       || !allowedWorld.includes(String(v.span).trim()))
     .map(v => groundViolation(v, rawText, outputText));
   const obligationAssessment = obligationPolicy.assessReviews(allObligations,res.json.obligationReviews,rawText,outputText,
-    {allowDismiss:selectedModel===confirmingModel});
+    {allowDismiss:selectedModel===confirmingModel,candidateReferences});
   const violations = allFindings.filter(v => v.origin !== 'source_issue');
   for (const pending of obligationAssessment.pending) {
     if (!violations.some(v=>v.sourceSpan===pending.sourceSpan && v.repairable)) violations.push(pending);

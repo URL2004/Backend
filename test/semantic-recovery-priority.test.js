@@ -45,6 +45,36 @@ const out='관측 자료는 원인을 입증했다.';
 const violation={type:'distortion',span:'원인을 입증했다',detail:'관측 경향을 인과 입증으로 바꾸었다.'};
 const reply={json:{violations:[violation]},usage:{estimatedUsd:.01,inputTokens:10,outputTokens:5,totalTokens:15},model:'gpt-6-luna'};
 
+for(const verdict of ['pass','fail','timeout']) test(`confirmed operator repair requires fresh verdict: ${verdict}`,async()=>{
+  const a='참여자들이 새로운 관측 기구를 함께 만드는 과정은 흥미로웠다.';
+  const b='새로운 관측 기구를 참여자들이 함께 만드는 과정이 무척 흥미로웠다.';
+  const tail=' 담당자는 다음 날 측정 장비를 점검했다. 관찰 기록은 자료실에 따로 보관했다.'.repeat(12);
+  const source=a+tail,output=b+tail,expected=b.replace('무척 ','')+tail;
+  const finding={type:'intensity_amplification',span:'무척 흥미로웠다',sourceSpan:a,candidateSpan:b,
+    detail:'원문에 없던 정도 강화',origin:'introduced',relation:'modality_negation_causality'};
+  const phases=[];
+  await withJudgeStub(async opts=>{
+    phases.push(opts.meta.phase);
+    if(phases.length===1)return {...reply,json:{violations:[finding]}};
+    assert.equal(phases.length,2);
+    assert.ok(opts.user.includes(expected));
+    if(verdict==='timeout')throw Object.assign(new Error('timeout'),{code:'OPENAI_TIMEOUT',usage:{estimatedUsd:.03}});
+    return {...reply,json:{violations:verdict==='pass'?[]:[{type:'distortion',span:'찾을 수 없는 문장',detail:'대응 불명'}]}};
+  },async judge=>{
+    const options={maxRounds:1,config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-luna',repair:'gpt-6-luna'}}};
+    if(verdict==='timeout')await assert.rejects(judge.judgeAndRepair(source,output,options),e=>{
+      assert.equal(e.partialSemanticReport.outputText,output);
+      assert.equal(e.partialSemanticReport.pass,false);assert.equal(e.usage.estimatedUsd,.04);return true;
+    });
+    else {
+      const result=await judge.judgeAndRepair(source,output,options);
+      assert.equal(result.pass,verdict==='pass');assert.equal(result.outputText,expected);
+      assert.equal(result.usage.estimatedUsd,.02);
+    }
+  });
+  assert.deepEqual(phases,['primary:semantic','primary:semantic_after_repair']);
+});
+
 test('a timed-out optional repair retains completed verdict and failed-call cost',async()=>{
   let calls=0;
   await withJudgeStub(async()=>{if(++calls===1)return reply;throw Object.assign(new Error('timeout'),{code:'OPENAI_TIMEOUT',usage:{estimatedUsd:.03,totalTokens:30}});},async judge=>{

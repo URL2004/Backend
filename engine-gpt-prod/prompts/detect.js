@@ -7,7 +7,7 @@
 //   - 개발군(NIKL 과제 사람 120 · GPT-6 AI 120): 사람 오탐 1/120, AI 검출 75/120, AUROC 0.76 (v8: 2/120, 1/120, 0.17).
 //   - v8이 추가했던 strength=weak 규칙, 중복 채점 금지, "구체적 전개=사람다움" 대조 예시, sampleUnitIndex 분산 요건은
 //     GPT-6 글에서 신호를 0으로 만들어 검출을 억제했으므로 제외했다. 스키마·category 어휘는 그대로다.
-const DETECT_PROMPT_VERSION = 'detect-prompt-v9e-consistent-local-rubric';
+const DETECT_PROMPT_VERSION = 'detect-prompt-v9f-pattern-taxonomy';
 
 function buildDetectPrompt(lang = 'ko') {
   if (lang === 'en') {
@@ -29,6 +29,7 @@ function buildDetectPrompt(lang = 'ko') {
       'Confidence describes evidence sufficiency, not score certainty: low only for fewer than four editable prose sentences or input dominated by protected/corrupted content; medium for a small or mixed sample; high for at least eight editable prose sentences.',
       'Length limits confidence, not the style score itself. In short prose, assess repetition and independence across the available eligible sentences. Two or more sentences may contain recurring independent signals; do not require eight sentences or multiple paragraphs. Conversely, a single sentence, clean grammar or ordinary genre conventions do not establish repetition. Never invent missing context or multiply one pattern into several causes.',
       'Use the same intensity rubric at every length: weak is ambiguous/conventional or incidental; moderate is a clearly located repeated pattern; strong is a conspicuous repeated pattern that materially substitutes for information or argument. Ordinary shared verb endings alone are conventional. Repeated semantic padding is generic_abstraction; repeated clause skeletons are sentence_uniformity. They can coexist in the same sentences only when each is independently demonstrable. No missing-paragraph penalty and no automatic boost for any category.',
+      'Distinguish grammatical endings from content-bearing templates. ending_repetition is a shared grammatical ending, not a whole evaluative or concluding clause. A repeated multi-word evaluative template belongs to lexical_template, and repeated clause structure to sentence_uniformity. Reclassify the same observation rather than counting it twice; ordinary discipline-specific terminology and grammatical endings remain conventional.',
       'Return a structured response only.'
     ].join('\n');
   }
@@ -51,6 +52,7 @@ function buildDetectPrompt(lang = 'ko') {
     'confidence는 점수 확신이 아니라 분석 근거의 충분성을 뜻한다. 편집 가능한 일반 산문이 4문장 미만이거나 보호·손상된 입력이 대부분일 때만 low, 표본이 작거나 혼합됐으면 medium, 일반 산문이 8문장 이상이면 high로 둔다.',
     '분량은 confidence의 제한이지 문체 점수 자체의 감점 사유가 아니다. 단문에서도 실제 분석 가능한 문장 사이의 반복성과 독립성을 평가한다. 두 문장 이상에 독립된 신호가 반복될 수 있으며, 이를 인정하기 위해 8문장이나 여러 문단을 요구하지 않는다. 반대로 한 문장·정확한 문법·일반적인 장르 관습만으로 반복을 인정하지 않는다. 없는 문맥을 추측하거나 같은 패턴을 여러 원인으로 부풀리지 않는다.',
     '신호 강도는 길이와 무관하게 같은 기준으로 정한다. weak는 모호하거나 통상적인 표현·우연한 일치, moderate는 위치가 명확한 반복 패턴, strong은 정보나 논증을 대신할 정도로 두드러지는 반복 패턴이다. 일반적인 종결어미 일치만으로는 통상적인 표현이다. 내용 전진 없이 가치·중요성을 되풀이하는 것은 generic_abstraction, 같은 절 골격 반복은 sentence_uniformity이며 각각 독립적으로 확인될 때만 같은 문장에 둘 다 인정한다. 없는 문단에 대한 감점이나 특정 범주에 대한 자동 가산은 하지 않는다.',
+    '문법적인 어미 일치와 내용을 담은 상투적 틀을 구별한다. ending_repetition은 문법적인 종결어미의 반복이지 평가·결론절 전체의 반복이 아니다. 여러 단어로 된 평가 틀이 반복되면 lexical_template, 절의 구성 방식이 반복되면 sentence_uniformity로 분류한다. 동일 관찰을 재분류하는 것이지 두 번 세는 것이 아니다. 통상적인 전공 용어와 문법 어미는 여전히 장르 관습으로 본다.',
     '구조화된 응답만 반환한다.'
   ].join('\n');
 }

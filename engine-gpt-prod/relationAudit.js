@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v15-connective-scope';
+const VERSION = 'relation-candidates-v16-operator-ownership';
 const { predicateScopeCandidates } = require('./predicateScope');
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
@@ -50,8 +50,13 @@ function auditRelationCandidates(source, outputText) {
   }
   const originals = splitSentences(before);
   const rewritten = splitSentences(after);
+  const matches = rewritten.map(sentence => closestSentence(originals, sentence));
+  const connector = s => {
+    const word=s.match(/^(다만|하지만|그러나|반면|따라서|그러므로)\s+/u)?.[1];
+    return ({하지만:'contrast',그러나:'contrast',따라서:'consequence',그러므로:'consequence'})[word]||word||'';
+  };
   for (const [outputIndex, sentence] of rewritten.entries()) {
-    const matched = closestSentence(originals, sentence);
+    const matched = matches[outputIndex];
     if (!matched || matched.similarity < 0.42) continue;
     const original = matched.sentence;
     const add = code => candidates.push({ code, sourceOrdinal: matched.index + 1,
@@ -78,6 +83,22 @@ function auditRelationCandidates(source, outputText) {
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    const oldLink=connector(original),newLink=connector(sentence);
+    // Same-owner synonyms and simple omission are not ownership moves. For
+    // an inserted link, require a nearby original owner whose uniquely paired
+    // rewritten sentence has lost that link. Full semantic audit decides it.
+    const displaced = newLink && !oldLink && matched.similarity>=.6 && originals.some((s,i)=>{
+      if(i===matched.index||Math.abs(i-matched.index)>5||connector(s)!==newLink)return false;
+      const owners=matches.flatMap((m,j)=>m?.index===i&&m.similarity>=.6?[j]:[]);
+      return owners.length===1&&Math.abs(owners[0]-outputIndex)<=5&&!connector(rewritten[owners[0]]);
+    });
+    if ((oldLink && newLink && oldLink!==newLink) || displaced)
+      add('connective_ownership_candidate');
+    for(const m of original.matchAll(/(?<![가-힣])([가-힣]{2,20})기\s+위한\s+(과정|단계|준비)/gu))
+      if(new RegExp(`(?<![가-힣])${escapeRegExp(m[1])}는\\s+${m[2]}`,'u').test(sentence)) add('purpose_action_candidate');
+    if (/(?<![가-힣])(?:무척|매우|몹시|상당히|훨씬|대단히|극히|엄청나게|지극히)\s/u.test(sentence)
+        && !/(?<![가-힣])(?:무척|매우|몹시|상당히|훨씬|대단히|극히|엄청나게|지극히)\s/u.test(original))
+      add('claim_strength_candidate');
     // Coordination is not opposition. This is a paired review nomination,
     // not a regex verdict: a nearby source sentence may license the contrast.
     const opposition = /(?:지만|반면|그러나|하지만|그럼에도)/u;

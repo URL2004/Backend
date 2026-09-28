@@ -4,7 +4,7 @@ const { splitSentenceSpans } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { sentenceSimilarity } = require('./sentenceAlignment');
 const { auditRelationCandidates, hasAdjacentRelationCoverage } = require('./relationAudit');
-const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion', 'experience_novelty']);
+const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification']);
 
 // A relation heuristic is not proof. Only a judge-confirmed, uniquely grounded
 // distortion may nominate a sentence; mutual, unambiguous one-to-one matching
@@ -47,8 +47,8 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
   // never an inferred insertion. Full sentence boundaries, stable quotations,
   // source order and downstream integrity/re-judging remain mandatory.
   const rawOriginals = splitSentenceSpans(String(source || ''));
-  const completeWindow = (spans, start, end) => spans.some(s => s.start === start)
-    && spans.some(s => s.end === end) && spans.filter(s => s.start >= start && s.end <= end).length <= 3;
+  const completeWindow = (spans, start, end, limit = 3, leadingBoundary = false) => (leadingBoundary || spans.some(s => s.start === start))
+    && spans.some(s => s.end === end) && spans.filter(s => s.end > start && s.start < end).length <= limit;
   const protectedText = s => syntaxSpans(s).filter(p => p.spanType !== 'parenthetical')
     .map(p => {
       const literal = s.slice(p.start,p.end);
@@ -68,16 +68,22 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
           'antecedent','modality_negation_causality','genre_naturalness','other'].includes(v.relation)) continue;
     const a=String(v.sourceSpan||''),b=String(v.candidateSpan||'');
     const from=String(source).indexOf(a),start=text.indexOf(b),end=start+b.length;
-    const minimal = restoreConfirmedAlternative(a, b, v);
+    const sourcePrefix = boundaryPrefix(rawOriginals,from,String(source));
+    const outputPrefix = boundaryPrefix(results,start,text);
+    const sharedLeadingBoundary = sourcePrefix !== null && sourcePrefix === outputPrefix
+      && uniqueProtectedLines(sourcePrefix,String(source),text);
+    const minimal = restoreConfirmedAlternative(a, b, v)
+      || require('./confirmedMicroRepair').confirmedMicroRepair(a, b, v);
     if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
       ||from<0||start<0||String(source).indexOf(a,from+1)>=0||text.indexOf(b,start+1)>=0
-      ||!completeWindow(rawOriginals,from,from+a.length)||!completeWindow(results,start,end)
+      ||!completeWindow(rawOriginals,from,from+a.length,minimal?6:3,sharedLeadingBoundary)||!completeWindow(results,start,end,minimal?6:3,sharedLeadingBoundary)
       // Multi-sentence paraphrases need not share single-sentence surface
       // similarity. This is proposal retrieval only; the exact paired judge
       // finding and the caller's fresh semantic pass are the safety gates.
       ||(!minimal && sentenceSimilarity(a,b)<.35)||protectedText(a)!==protectedText(b)
+      ||(!minimal && require('./restorationOwnership').hasOutsideSourceContribution(String(source),from,from+a.length,b,a))
       ||(!minimal && hasAdjacentRelationCoverage(a,b,text))
-      ||[a,b].some(s=>require('./layoutStructure').buildLineRecords(s).some(r=>!r.blank&&r.role!=='prose'))
+      ||!sameProtectedPrefix(a,b,String(source),text)
       ||replacements.some(r=>start<r.end&&end>r.start||from<r.sourceEnd||start<=r.start)
       ||replacements.reduce((n,r)=>n+r.end-r.start,0)+b.length>text.length*.3
       ||replacements.reduce((n,r)=>n+r.text.length,0)+(minimal || a).length>text.length*.3)continue;
@@ -100,6 +106,7 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
     const best = ranked[0];
     if (!best || best.score < .55 || (ranked[1] && best.score - ranked[1].score < .08)) continue;
     const original = originals[best.index];
+    if(require('./restorationOwnership').hasOutsideSourceContribution(String(source),original.start,original.end,target.text,original.text))continue;
     if (paired.length && !paired.some(v => v.sourceSpan === original.text)) continue;
     if (original.prefixes?.some(label => text.indexOf(label.trim()) >= target.start)) continue;
     const reverse = results.map((s,index) => ({ index, score: sentenceSimilarity(original.text, s.text) })).sort((a,b) => b.score-a.score);
@@ -113,6 +120,38 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
   let restored = text;
   for (const r of replacements.sort((a,b)=>b.start-a.start)) restored = restored.slice(0,r.start) + r.text + restored.slice(r.end);
   return { text: restored, applied: restored !== text, restoredCount: replacements.length };
+}
+
+// The sentence analyzer may include a standalone heading with its first body
+// sentence. A paired repair can retain that EXACT, unique leading heading;
+// it cannot copy a changed heading, cross a later structural block, or infer
+// a missing label. All complete-window, ownership and fresh-audit gates apply.
+function sameProtectedPrefix(a,b,source,output) {
+  const records=s=>require('./layoutStructure').buildLineRecords(s).filter(r=>!r.blank);
+  const split=s=>{
+    const rows=records(s), firstBody=rows.findIndex(r=>r.role==='prose');
+    if(firstBody<0)return null;
+    const prefix=rows.slice(0,firstBody),body=rows.slice(firstBody);
+    if(body.some(r=>r.role!=='prose')||prefix.some(r=>!['title','heading','label','list'].includes(r.role)
+      ||r.raw.length>60||/[.!?。！？]$/u.test(r.raw.trim())))return null;
+    return prefix.map(r=>r.raw);
+  };
+  const left=split(a),right=split(b);
+  if(!left||!right||left.length!==right.length||left.some((line,i)=>line!==right[i]))return false;
+  return left.every(line=>[source,output].every(document=>document.split(/\r?\n/u).filter(l=>l===line).length===1));
+}
+
+function boundaryPrefix(spans,start,text) {
+  const span=spans.find(s=>s.start<start&&s.end>start);
+  if(!span)return null;
+  const prefix=text.slice(span.start,start);
+  return /\n[ \t]*$/u.test(prefix)?prefix:null;
+}
+function uniqueProtectedLines(prefix,source,output) {
+  const rows=require('./layoutStructure').buildLineRecords(prefix).filter(r=>!r.blank);
+  return rows.length>0&&rows.every(r=>['title','heading','label','list'].includes(r.role)
+    &&r.raw.length<=60&&!/[.!?。！？]$/u.test(r.raw.trim())
+    &&[source,output].every(document=>document.split(/\r?\n/u).filter(line=>line===r.raw).length===1));
 }
 
 // If a source sentence was legitimately split, copying it back can duplicate

@@ -109,6 +109,33 @@ test('unknown HTTP failure holds its reservation before the next transport retry
   assert.equal(budget.snapshot().reservedUsd,0);
 });
 
+for (const deadline of [100000, 30000]) test(`large medium-effort rewrite uses one attempt within ${deadline}ms`, {concurrency:false}, async t=>{
+  const oldFetch=global.fetch,oldKey=process.env.OPENAI_API_KEY,oldTimeout=process.env.OPENAI_API_TIMEOUT_MS;
+  process.env.OPENAI_API_KEY='test-key';delete process.env.OPENAI_API_TIMEOUT_MS;
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:Date.now()});
+  let calls=0,finished=false;
+  global.fetch=async(_url,init)=>{calls++;return new Promise((resolve,reject)=>{
+    init.signal.addEventListener('abort',()=>reject(Object.assign(new Error('aborted'),{name:'AbortError'})),{once:true});
+  });};
+  t.after(()=>{global.fetch=oldFetch;
+    if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;
+    if(oldTimeout===undefined)delete process.env.OPENAI_API_TIMEOUT_MS;else process.env.OPENAI_API_TIMEOUT_MS=oldTimeout;
+    t.mock.timers.reset();});
+  const pending=completeJson({system:'synthetic',user:'synthetic',schema:SIMPLE_SCHEMA,model:'gpt-6-luna',
+    reasoningEffort:'medium',maxOutputTokens:12000,deadlineMs:Date.now()+deadline,meta:{task:'repair',phase:'general_surface'}})
+    .then(()=>{throw new Error('unexpected success');},error=>{finished=true;return error;});
+  for(let i=0;i<20&&calls===0;i++)await Promise.resolve();
+  assert.equal(calls,1);
+  t.mock.timers.tick(deadline===100000?60001:29999);
+  for(let i=0;i<20;i++)await Promise.resolve();
+  assert.equal(finished,false);
+  t.mock.timers.tick(deadline===100000?40000:2);
+  const error=await pending;
+  assert.equal(error.code,'ETIMEDOUT');assert.equal(error.httpAttemptCount,1);
+  assert.equal(error.retryCounts.timeout,0);assert.equal(error.unknownUsageCount,1);
+  assert.ok(error.unknownEstimatedUsd>0);assert.equal(calls,1);
+});
+
 test('an expired call before transport is not counted as an HTTP attempt', async t => {
   const oldKey=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='test-key';
   t.after(()=>{if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;});

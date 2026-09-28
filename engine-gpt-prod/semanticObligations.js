@@ -53,13 +53,17 @@ function reviewSchema(base, obligations) {
 function reviewPayload(obligations) {
   return obligations.map(({id,finding:v,questions})=>({id,type:v.type,sourceSpan:v.sourceSpan,
     previousCandidateSpan:v.candidateSpan,previousProblemSpan:v.span,relation:v.relation,previousDetail:v.detail,
-    previousQuestions:questions||[]}));
+    previousQuestions:(questions||[]).filter(q=>q.previousCandidateSpan!==v.candidateSpan
+      || q.previousProblemSpan!==v.span || q.detail!==(v.detail||''))}));
 }
 
 function assessReviews(obligations, reviews, source, candidate, {allowDismiss=false}={}) {
   const result=[], pending=[];
   for (const {id,finding} of obligations) {
-    const matches=(reviews||[]).filter(r=>r?.id===id),r=matches[0];
+    const matches=(reviews||[]).filter(r=>r?.id===id),answer=matches[0];
+    // An explicit empty source quote references the immutable source anchor ID;
+    // the CURRENT candidate quote must still be supplied and uniquely grounded.
+    const r=answer && {...answer,sourceSpan:answer.sourceSpan===''?finding.sourceSpan:answer.sourceSpan};
     const valid=matches.length===1 && ['resolved','not_error','unresolved'].includes(r.status)
       && r.sourceSpan===finding.sourceSpan && unique(source,r.sourceSpan)
       && unique(candidate,r.candidateSpan) && r.candidateSpan.trim().length>=8 && r.detail?.trim().length>=8

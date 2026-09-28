@@ -8,6 +8,7 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
+const { retainAttestedRestorationSpacing } = require('./restorationSpacing');
 
 // 모델 수리까지 실패했을 때 문서 전체를 버리지 않고, 원문과 결과의 문장
 // 하나가 둘 이상의 결과 문장으로 분리된 경우까지 공통 정렬기로 추적해
@@ -61,7 +62,9 @@ function restoreSourceSentenceOrdinals(source, outputText, sentenceOrdinals, {
     const lastOutput = outputSpans[alignment.end - 1];
     if (!sourceSpan || !firstOutput || !lastOutput) continue;
     const replacedSlice = before.slice(firstOutput.start, lastOutput.end);
-    const replacementText = normalizeRestoredSentenceLayout(alignment.replacementText || sourceSpan.text);
+    const replacementText = retainAttestedRestorationSpacing(
+      normalizeRestoredSentenceLayout(alignment.replacementText || sourceSpan.text), replacedSlice
+    );
     // A punctuation-poor source sentence may straddle a caption or heading.
     // Its numeric sentence ordinal does not establish ownership of the prose
     // on BOTH sides. Copying the entire span can duplicate an already rewritten

@@ -476,11 +476,14 @@ async function runSemanticDocumentAuditInternal({
             verified = { pass: false, uncertain: true, usage: error.usage || null };
           }
           const usage = addUsageLocal(report.usage, verified.usage);
-          if (verified.pass === true && !verified.uncertain && !verified.skipped) {
+          const verifiedPartial = require('./partialSemanticRepair').canRetainPartialSemanticRepair(
+            pair.sourceContext,current,restored.text,report,verified);
+          if ((verified.pass === true && !verified.uncertain && !verified.skipped) || verifiedPartial) {
             report = { ...verified, usage, rounds: report.rounds || 0,
               initialViolations: [...(report.initialViolations || []), ...(report.violations || [])],
               repairStyleWarnings: [...new Set([...(report.repairStyleWarnings || []), ...restoreSafety.warnings])],
-              confirmedRelationRestoreCount: restored.restoredCount };
+              confirmedRelationRestoreCount: restored.restoredCount,
+              partialSemanticRepairRetained: verifiedPartial };
           } else {
             // Rejected proposals never replace the official verdict. Their
             // completed, grounded findings may still identify unchanged errors

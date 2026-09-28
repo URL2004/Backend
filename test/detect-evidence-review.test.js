@@ -37,6 +37,18 @@ test('a low score, genre conventions or a sparse/short sample alone cannot reque
   assert.equal(needsEvidenceReview(make(),source+' '+source),false);
   assert.equal(needsEvidenceReview(make(),source.split('. ').slice(0,4).join('. ')),false);
 });
+
+test('short recurring patterns use their joint coverage, not identical exhaustive example lists',()=>{
+ const text='첫 관찰에서 추상적인 공통 설명이 반복된다. 둘째 관찰에서도 정형적인 설명이 반복된다. 셋째 관찰에서는 같은 일반론을 반복한다.';
+ const signals=[{category:'generic_abstraction',strength:'moderate',scope:'recurring',evidenceSentences:[0,1,2]},
+  {category:'sentence_uniformity',strength:'moderate',scope:'recurring',evidenceSentences:[0,1]}];
+ const out={probability:34,signalEvidence:groundSignals(signals,text)};
+ assert.equal(needsEvidenceReview(out,text),true);assert.equal(out.probability,34);
+ const sparse={...out,signalEvidence:groundSignals(signals.map(s=>({...s,evidenceSentences:[0,1]})),text)};
+ assert.equal(needsEvidenceReview(sparse,text),false);
+ const duplicateCategory={...out,signalEvidence:groundSignals(signals.map(s=>({...s,category:'generic_abstraction'})),text)};
+ assert.equal(needsEvidenceReview(duplicateCategory,text),false);
+});
 test('second opinion replaces the primary even when LOWER; no max-score selection or retry loop', {concurrency:false}, async t => {
   const engine=require('../engine-gpt-prod'); const fetch=global.fetch, key=process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY='test-key'; let calls=0;

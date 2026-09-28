@@ -158,8 +158,13 @@ async function completeJsonRequest({
     // entire final audit reserve twice. One longer attempt, bounded by the
     // same caller deadline, keeps model/effort and failure semantics intact.
     accounting.semanticVerdict = meta.task === 'judge';
-    accounting.longAttempt = accounting.semanticVerdict || (['high', 'xhigh', 'max'].includes(effort)
+    const largeRewrite = ['humanize', 'repair'].includes(meta.task) && body.max_output_tokens >= 10000;
+    accounting.longAttempt = accounting.semanticVerdict || largeRewrite || (['high', 'xhigh', 'max'].includes(effort)
       && ((meta.task === 'humanize' && meta.escalated === true) || meta.task === 'repair'));
+    // A medium-effort full-text repair also needs time to emit its large
+    // response. Restarting it at 60s inside a 100s caller window discards the
+    // first paid attempt and leaves too little time for the duplicate. One
+    // bounded attempt preserves the SAME caller deadline and output contract.
     // General style recovery must not consume the slots/time reserved for
     // confirmed semantic repairs. Previously EVERY HTTP call was "late".
     accounting.priority = context?.policy?.stage === 'semantic_document' || /noop/u.test(meta.phase || '')

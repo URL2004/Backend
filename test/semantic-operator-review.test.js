@@ -33,6 +33,14 @@ test('overflow target answers cannot be silently omitted',()=>{
  const answers=all.slice(0,12).map(t=>({...t,status:'preserved',detail:'동일한 시점 관계를 검토했다는 가상 판정이다.'}));
  assert.equal(policy.assess(all,answers,[],a,b).pending.length,2);
 });
+test('compact ID references preserve exact nominated ownership without accepting missing fields',()=>{
+ const[a,b]=cases[0],t=policy.targets(a,b),r={id:t[0].id,status:'preserved',sourceSpan:'',candidateSpan:'',detail:'해당 고정 구절 쌍의 관계가 유지된다는 가상 심사다.'};
+ assert.equal(policy.assess(t,[r],[],a,b).pending.length,0);
+ const {sourceSpan,...missing}=r;
+ assert.equal(policy.assess(t,[missing],[],a,b).pending.length,1);
+ assert.equal(policy.assess(t,[{...r,id:'wrong'}],[],a,b).pending.length,1);
+ assert.equal(policy.assess(t,[{...r,status:'changed'}],[],a,b).pending.length,1);
+});
 test('actual judge rejects an empty verdict for unreviewed operators',async()=>{
  const path=require.resolve('../engine-gpt-prod/openaiClient'),jp=require.resolve('../engine-gpt-prod/judge');
  const old=require.cache[path],oldJudge=require.cache[jp];

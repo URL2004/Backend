@@ -56,8 +56,17 @@ test('same-anchor reviews share stable identity without dropping any previous qu
  const second={...finding,detail:'관찰 횟수에 대한 제한까지 빠졌다.'};
  const groups=p.collectObligations(source,[report,{violations:[second]},{violations:[second]}]);
  assert.equal(groups.length,1);assert.equal(groups[0].questions.length,2);
- assert.equal(p.reviewPayload(groups)[0].previousQuestions[1].detail,second.detail);
+ const payload=p.reviewPayload(groups)[0];
+ assert.equal(payload.previousDetail,finding.detail);
+ assert.equal(payload.previousQuestions.length,1);
+ assert.equal(payload.previousQuestions[0].detail,second.detail);
  assert.equal(p.assessReviews(groups,[],source,after).pending.length,1);
+});
+
+test('compact obligation source reference still requires an explicit current candidate quote',()=>{
+ const groups=p.collectObligations(source,[report]);
+ assert.equal(p.assessReviews(groups,[{...review(),sourceSpan:''}],source,after).pending.length,0);
+ assert.equal(p.assessReviews(groups,[{...review(),sourceSpan:'',candidateSpan:''}],source,after).pending.length,1);
 });
 
 for(const verdict of ['silent','resolved','wrong_id','not_error_primary','not_error_confirming'])

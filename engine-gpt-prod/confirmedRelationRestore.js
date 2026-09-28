@@ -87,7 +87,8 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
       ||replacements.some(r=>start<r.end&&end>r.start||from<r.sourceEnd||start<=r.start)
       ||replacements.reduce((n,r)=>n+r.end-r.start,0)+b.length>text.length*.3
       ||replacements.reduce((n,r)=>n+r.text.length,0)+(minimal || a).length>text.length*.3)continue;
-    replacements.push({start,end,text:minimal || a,sourceStart:from,sourceEnd:from+a.length,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
+    const replacement = minimal || require('./restorationSpacing').retainAttestedRestorationSpacing(a,b);
+    replacements.push({start,end,text:replacement,sourceStart:from,sourceEnd:from+a.length,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
   }
   for (let i = 0; i < results.length && replacements.length < limit; i++) {
     const target = results[i];
@@ -115,7 +116,8 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
     // replacement. Uncertain merged/split or reordered ownership is left alone.
     if ([original.text, target.text].some(s => /[\r\n]/u.test(s) || syntaxSpans(s).some(p => p.spanType !== 'parenthetical'))) continue;
     if (replacements.some(r => r.sourceIndex >= best.index)) continue;
-    replacements.push({ start: target.start, end: target.end, text: original.text, sourceIndex: best.index });
+    replacements.push({ start: target.start, end: target.end,
+      text: require('./restorationSpacing').retainAttestedRestorationSpacing(original.text,target.text), sourceIndex: best.index });
   }
   let restored = text;
   for (const r of replacements.sort((a,b)=>b.start-a.start)) restored = restored.slice(0,r.start) + r.text + restored.slice(r.end);

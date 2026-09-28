@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { performance, monitorEventLoopDelay } = require('node:perf_hooks');
 const { dependentQuoteLayout } = require('../engine-gpt-prod/dependentQuoteLayout');
 const { detectDocumentProfile } = require('../engine-gpt-prod/documentProfile');
-const { restoreParagraphLayoutAsync } = require('../engine-gpt-prod/structureChunk');
+const { restoreParagraphLayoutAsync, restoreFinalDocumentLayoutAsync } = require('../engine-gpt-prod/structureChunk');
 const rounds = 10;
 const stats = values => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -55,6 +55,20 @@ async function main() {
   result.concurrent = { jobs: 3, paragraphs: 20, sentences: 120, batch: stats(times),
     eventLoopP95Ms: lag.percentile(95) / 1e6, eventLoopMaxMs: lag.max / 1e6,
     ordered: true, contentPreserved: true, queuedCancellation: true };
+  // Exercise the actual production fixed-point wrapper too, not only its
+  // paragraph helper. Inner yields must survive every surrounding stage.
+  const finalLag=monitorEventLoopDelay({resolution:1}), finalTimes=[];
+  await restoreFinalDocumentLayoutAsync(args);
+  finalLag.enable();await new Promise(resolve=>setTimeout(resolve,20));
+  for(let i=0;i<rounds;i++){
+    const start=performance.now();
+    const docs=await Promise.all([0,1,2].map(()=>restoreFinalDocumentLayoutAsync(args)));
+    finalTimes.push(performance.now()-start);
+    docs.forEach(doc=>assert.equal(doc.text,outputText));
+  }
+  await new Promise(resolve=>setTimeout(resolve,20));finalLag.disable();
+  result.productionFinalLayout={jobs:3,batch:stats(finalTimes),eventLoopP95Ms:finalLag.percentile(95)/1e6,
+    eventLoopMaxMs:finalLag.max/1e6,contentPreserved:true};
   console.log(JSON.stringify(result, null, 2));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

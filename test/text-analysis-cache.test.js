@@ -2,6 +2,22 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { withTextAnalysisCache, memoizeSpans } = require('../engine/textAnalysisCache');
+
+test('layout record memoization preserves roles, offsets and caller isolation',async()=>{
+  const {buildLineRecords}=require('../engine-gpt-prod/layoutStructure');
+  const source='1. 결과\n\n측정값을 기록했다.\n\n|항목|결과|\n|가|3|';
+  const original=buildLineRecords(source);
+  await withTextAnalysisCache(async()=>{
+    const first=buildLineRecords(source);assert.deepEqual(first,original);
+    assert.ok(first.every(row=>Object.values(row).every(v=>v===null||typeof v!=='object')));
+    first[0].role='prose';first.splice(1,1);
+    assert.deepEqual(buildLineRecords(source),original);
+    const explicit=buildLineRecords(source,{quoteAnalysis:{source,layout:{proseLines:new Set([0])}}});
+    assert.equal(explicit[0].role,'prose');
+    assert.deepEqual(buildLineRecords(source),original);
+  });
+  assert.deepEqual(buildLineRecords(source),original);
+});
 const { splitSentenceSpans } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 

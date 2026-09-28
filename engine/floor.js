@@ -212,9 +212,28 @@ function measureNovelty(rawText, outputText, allowedExtra) {
   const seen = new Set(), items = [];
   for (const f of extractFacts(outputText, hasHangul)) {
     const k = factKey(f);
-    if (!inKeys.has(k) && !seen.has(k)) { seen.add(k); items.push(f); }
+    if (!inKeys.has(k) && !seen.has(k)
+        && !isAttestedSpacedOrganization(rawText, f)
+        && !isAttestedSpacedOrganization(allowedExtra, f)) { seen.add(k); items.push(f); }
   }
   return { items, count: items.length };
+}
+
+// A PDF soft wrap inside an organization suffix used to extract only the
+// suffix from the source, then flag the repaired full name as a new fact.
+// Compare the EXACT same letters across horizontal space / ONE line break.
+// Do not cross paragraphs, punctuation, digits, or a larger entity prefix.
+// This exception is organization-only; numeric/sign/negation audits stay exact.
+function isAttestedSpacedOrganization(source, fact) {
+  const name = String(fact || '').replace(/[ \t]/gu, '');
+  if (!/^[가-힣]{4,50}$/u.test(name) || !(name.match(ORG_RE) || []).includes(name)) return false;
+  const gap = '[ \\t]*(?:\\r?\\n[ \\t]*)?';
+  const pattern = new RegExp('(?<![가-힣A-Za-z0-9])' + [...name].join(gap)
+    + '(?=$|[^가-힣A-Za-z0-9]|(?:은|는|이|가|을|를|의|에|과|와|등|에서|으로|로)(?=$|[^가-힣A-Za-z0-9]))', 'gu');
+  for (const match of String(source || '').matchAll(pattern)) {
+    if ((match[0].match(/\n/gu) || []).length <= 1) return true;
+  }
+  return false;
 }
 
 // ── 분량 과확장 가드 (C18: lengthOverrun — 공개 요청 모드별 정책) ──

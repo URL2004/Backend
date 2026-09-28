@@ -31,6 +31,30 @@ test('uncertain paragraph alignment yields to cancellation and preserves charact
   await assert.rejects(pending, { name: 'AbortError' });
 });
 
+test('sliced preparation has identical output and audits to synchronous layout across policies', async()=>{
+  for(const args of [options,{...options,mode:'polish'},
+    {...options,source:'1. 확인 항목\n'+source,outputText:'1. 확인 항목\n'+outputText},
+    {...options,documentProfile:'creative'},
+    {...options,source:source.slice(0,700),outputText:outputText.slice(0,700),requestStrength:'advanced'}]){
+    for(const name of ['restoreParagraphLayout','restorePostSemanticLayout','restoreFinalDocumentLayout']){
+      const {alignmentMetrics,...asyncResult}=await structure[name+'Async'](args);
+      assert.deepEqual(asyncResult,structure[name](args));
+      assert.equal(alignmentMetrics.limitReached,false);
+    }
+  }
+});
+
+test('preparation slices interleave requests and cancellation skips remaining work',async()=>{
+  const {runLayout}=require('../engine-gpt-prod/paragraphAlignment');
+  const trace=[], controller=new AbortController();
+  function* steps({id}){trace.push(id+':first');yield;trace.push(id+':second');return{text:id};}
+  const rows=await Promise.all(['a','b','c'].map(id=>runLayout(steps,{id})));
+  assert.deepEqual(rows.map(r=>r.text),['a','b','c']);
+  assert.ok(trace.indexOf('c:first')<trace.indexOf('a:second'));
+  await assert.rejects(runLayout(function*(){controller.abort();yield;assert.fail('cancelled preparation resumed');},
+    {signal:controller.signal}),{name:'AbortError'});
+});
+
 test('same paragraph counts and matching edges do not hide moved interior sentences', () => {
   const { hasStableSentenceOwnership } = require('../engine-gpt-prod/paragraphAlignment');
   const groups = Array.from({length:3},(_,i)=>Array.from({length:3},(_,j)=>`자료 ${i}번의 단계 ${j}를 검토하고 분석하였다.`));

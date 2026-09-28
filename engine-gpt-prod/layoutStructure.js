@@ -66,6 +66,15 @@ function splitExplicitParagraphs(value) {
 
 function buildLineRecords(value, { quoteAnalysis = null } = {}) {
   const source = String(value || '');
+  // Pure deterministic records; all fields are primitives. Repeated layout
+  // checks share request-local analysis, never mutable records or global text.
+  // Caller-supplied quote analysis is an explicit input and bypasses this key.
+  if (quoteAnalysis) return analyzeLineRecords(source, quoteAnalysis);
+  return require('../engine/textAnalysisCache').memoizeSpans('layout-lines-v1', source,
+    () => analyzeLineRecords(source, null));
+}
+
+function analyzeLineRecords(source, quoteAnalysis) {
   const scriptCues = new Set(require('./scriptStructure').detectScriptStructure(source).cueIndices);
   const records = [];
   let start = 0;
@@ -227,6 +236,7 @@ function classifyLine(value, context = {}) {
   if (legalClauseParts(text)) return 'legal_clause';
   if (isExactMetadataLine(text)) return 'signature';
   if (context.signatureLike) return 'signature';
+  if (isAttributedCoverTitle(text, context)) return 'title';
   if (isKnownHeadingLine(text)) return 'heading';
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
   if (isFlowSequenceLine(text)) return 'flow';
@@ -530,6 +540,17 @@ function isTitleContinuation(text, context = {}) {
   if (bracketLabelParts(text) || labelParts(text) || looksLikeUnpunctuatedProse(text)) return false;
   const nextLength = String(context.next?.text || '').length;
   return context.blankAfter || nextLength >= Math.max(70, Math.ceil(text.length * 1.45));
+}
+
+// Explicit cover metadata plus a separator is stronger evidence than a
+// sentence-ending mark in the title. Without it, an imperative title ending
+// in ! is glued to the first body paragraph. Never infer this from a name or
+// an ordinary short sentence alone, or from an in-body citation.
+function isAttributedCoverTitle(text, context = {}) {
+  if (!context.firstContent || !context.next || text.length > 140) return false;
+  const m = text.match(/^(?:<([^<>\n]{4,45})>|\[([^\[\]\n]{4,45})\])[ \t]*[_|｜—:：][ \t]*(.{2,80})$/u);
+  if (!m || !/\d{4,}/u.test(m[1] || m[2] || '')) return false;
+  return !/[.!?。！？][ \t]+\S/u.test(m[3]) && !/https?:\/\//iu.test(m[3]);
 }
 
 // A report cover can carry `제목` and a separate `: 부제` row. The subtitle row

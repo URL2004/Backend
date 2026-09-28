@@ -1,5 +1,10 @@
 # Audit completion candidate v2.5.83 / detector v1.47
 
+Historical checkpoint only. Subsequent fixes and additional paid evaluation are
+recorded in [the current resolution report](audit-resolution-v2583-20260928.md).
+The counts, budget and limitations below describe the earlier checkpoint, not
+the latest candidate. Production remains unchanged.
+
 Status: **HOLD — not deployed** (2026-09-28). Baseline: f1b5b85, engine v2.5.82 / detector v1.46.
 
 ## Implementation

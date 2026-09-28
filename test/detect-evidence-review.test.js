@@ -14,6 +14,19 @@ test('dense located observations can request a second opinion, never change the 
   assert.equal(JSON.stringify(out),before);
   assert.equal(recheckReason(out,source,{models:{detect:'gpt-6-luna',detectEscalation:'gpt-6-sol'}}),'evidence_score_tension');
 });
+
+test('two moderate independent short-text content patterns are reviewed; length/ending alone are not',()=>{
+  const text='협력의 활성화는 긍정적인 성과를 창출하는 중요한 기반이다. 소통의 강화는 지속 가능한 가치를 실현하는 핵심 요소이다.';
+  const signals=['generic_abstraction','sentence_uniformity'].map(category=>({category,strength:'moderate',scope:'recurring',evidenceSentences:[0,1]}));
+  const out={probability:28,confidence:'low',signalEvidence:groundSignals(signals,text)};
+  assert.equal(needsEvidenceReview(out,text),true);
+  assert.equal(recheckReason(out,text,{models:{detect:'gpt-6-luna',detectEscalation:'gpt-6-sol'}}),'evidence_score_tension');
+  assert.equal(out.probability,28);
+  for(const replacement of [{category:'ending_repetition'},{strength:'weak'},{evidenceSentences:[0]}]){
+    const changed={...out,signalEvidence:groundSignals([signals[0],{...signals[1],...replacement}],text)};
+    assert.equal(needsEvidenceReview(changed,text),false);
+  }
+});
 test('a low score, genre conventions or a sparse/short sample alone cannot request review', () => {
   for(const out of [ {probability:3,signalEvidence:[]}, make({strength:'weak'}),
     make({category:'ending_repetition'}),make({category:'insufficient_grounding'}),

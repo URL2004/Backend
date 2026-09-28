@@ -25,7 +25,7 @@ function bindSemanticValidation(report, source, candidate, { model = '', phase =
       candidateLayoutDigest: layoutDigest(candidate),
       sourceRelationDigest: relationDigest(source),
       candidateRelationDigest: relationDigest(candidate),
-      status: value.ran !== true ? 'skipped' : value.uncertain === true ? 'uncertain'
+      status: value.ran !== true ? 'skipped' : value.uncertain === true || value.verificationCompleted === false ? 'uncertain'
         : value.pass === true && value.repairRejected !== true ? 'validated_pass' : 'validated_fail',
       model: String(model || value.selectedJudgeModel || '').slice(0, 80),
       phase: String(phase).slice(0, 80),
@@ -57,7 +57,7 @@ function verifySemanticValidation(report, { source, candidate, requireDigest = f
     if (!materialization) return { status: 'stale', rank: 1 };
     if (validation.status === 'skipped') return { status: 'skipped', rank: 1 };
   } else if (requireDigest) return { status: 'unknown', rank: 1 };
-  if (report.uncertain === true || validation?.status === 'uncertain') return { status: 'uncertain', rank: 1, materialization };
+  if (report.verificationCompleted === false || report.uncertain === true || validation?.status === 'uncertain') return { status: 'uncertain', rank: 1, materialization };
   if (report.pass === false || report.repairRejected === true) return { status: 'fail', rank: 0, materialization };
   if (report.ran === true && report.pass === true) return { status: 'pass', rank: 2, materialization };
   return { status: 'unknown', rank: 1 };

@@ -90,6 +90,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         'span에는 왜곡·추가의 경우 REWRITE의 실제 문제 구절을, 누락의 경우 SOURCE의 빠진 구절을 정확히 복사한다. 위치를 찾을 수 없으면 span은 빈 문자열로 두며 내용을 만들어 인용하지 않는다.',
         '관계 감사 계약=semantic-relations-v2. 각 오류에 sourceSpan과 candidateSpan으로 원문·결과의 대응 문장(필요하면 바로 앞뒤 문맥)을 정확히 복사하고 relation과 origin을 반환한다. 누락도 삽입 위치를 확인할 결과의 앞뒤 구절을 candidateSpan에 넣는다. 대응이 불확실하면 빈 문자열과 origin=unconfirmed를 사용한다.',
         '누락 판정 전에는 결과의 바로 앞뒤 문장과 같은 절 전체에서 해당 의미가 분리되어 남았는지 확인한다. 어휘가 달라도 대상·조건·서술이 모두 같으면 정상 의역이다. 완전한 문장 쌍의 끝 문장부호까지 복사한다. 비교의 동등성(만큼), 우선순위(보다), 추가(뿐 아니라), 선택(또는), 결합(그리고)은 서로 다른 관계이며 modality_negation_causality로 대조한다.',
+        '누락이라고 지목한 짧은 한정어가 자신이 인용한 candidateSpan에 같은 대상·서술을 한정하며 그대로 있는지 다시 읽는다. 그대로 남은 말을 빠졌다고 보고하지 않는다. 같은 단어가 다른 대상에 붙거나 부정·조건의 범위가 바뀌었다면 단어 누락이 아니라 해당 관계의 distortion으로 정확히 설명한다. 단어의 존재만으로 의미 보존을 확정하지 않는다.',
         '주체–행위–대상, 조건–결과, 수치–대상, 변수–정의, 지시어–선행 내용, 가능성·부정·인과 강도를 각각 대조한다. 숫자나 단어가 그대로인지는 관계 보존의 충분조건이 아니다. 지시어는 앞뒤 문단에서 실제로 가리키는 내용을 비교한다. 문장 합치기·나누기와 중복 축약은 같은 관계를 유지하면 정상 개선이다.',
         '행위자가 둘 이상인 긴 문장은 주제어부터 주절의 마지막 서술어까지 연결하고 안긴절의 주어를 따로 추적한다. 앞부분에 인물 이름이 남아 있어도 다른 문장에서 그 사람의 행위를 안긴절 주체에게 붙이면 introduced/actor_action_target이다. 특히 “A는 B가 공개한 경위를 추궁한다”를 “B가 공개한 뒤 그 경위를 추궁한다”로 나누면 추궁 주체가 A에서 B로 바뀐다. 대응 candidateSpan은 해당 행위와 주어를 포함한 인접 문장 전체로 잡는다. 원문에도 모호함이 있었고 결과가 더 확정하지 않았다면 source_issue이며 외부 지식으로 인물을 추정하지 않는다.',
         '내용 없는 강조·홍보 수식만 줄인 것은 누락이 아니다. 예: “이를 계산하는 강력한 도구임을 명확히 보여 준다”→“이를 계산하는 도구임을 보여 준다”는 기능·조건·근거가 그대로면 허용한다. 단, 실제 수량·비례·소요 시간·가능성·부정이나 저자의 명시적인 가치 판단까지 지우는 것은 별도로 심사한다. ‘아니다’와 ‘그치는 것이 아니다’를 같은 뜻으로 취급하지 않는다.',
@@ -112,7 +113,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         '기술·수학 설명은 수식 표기만 아니라 해당 문단의 대상·계수·피연산자·논증 단계·결론의 대응을 확인한다. 인접 문단의 다른 조건에 속한 참인 근거라도 현재 문단의 증명에 옮기면 distortion이다. 원문에 없던 외부 지식으로 참·거짓을 추측하지 않는다.',
         'SOURCE에 정확한 정의식과 모호한 직관 표현이 함께 있으면 정의식에 근거한 국소 명료화는 허용한다. 정의식에 없는 외부 공식·조건·결론을 새로 쓰면 added_claim이며, 비유를 근거 없는 사실 주장으로 바꾸면 distortion이다.',
         '증명하려는 목적을 확인하려는 목적으로 낮추거나, 재발견을 되살리기로 바꾸거나, 적극적 태도를 바로·직접 행동했다는 즉시성으로 바꾸면 distortion이다.',
-        '“~이었지만”의 대조를 “~이었고”로 지우거나, “연구를 통해 확인할 수 있었다”의 근거·가능성 틀을 빼고 사실처럼 단정하거나, 외부 요인에 내몰린 방향을 대상이 몰려온 방향으로 뒤집으면 distortion이다.',
+        '“~이었지만”의 대조를 “~이었고”로 지우거나, 원문에 대조가 없는데 대등한 “~고/~며”를 “~지만”으로 바꾸어 반대 관계를 새로 만드는지 양방향으로 확인한다. coordination_contrast_candidate는 이를 살필 후보일 뿐이며 원문의 앞뒤 문장에 실제 대조 근거가 있는 정상 재표현은 허용한다. comparison_limitation_candidate는 공통점을 설명하면서 차이·예외·비교의 한계를 지웠는지 확인한다. 한계를 다른 문장으로 옮긴 것은 누락이 아니므로 SOURCE와 REWRITE의 대응 구간 전체에서 먼저 찾는다. “연구를 통해 확인할 수 있었다”의 근거·가능성 틀을 빼고 사실처럼 단정하거나, 외부 요인에 내몰린 방향을 대상이 몰려온 방향으로 뒤집으면 distortion이다.',
         '행위 주체와 대상이 뒤바뀌는 오류, 평서문의 명령·반문 전환, 표·캡션 개념의 장황한 치환, 학술 어휘의 과도한 구어화도 의미·장르를 해치면 distortion이다. speech_act_shift_candidate는 간접 의문을 직접 질문으로 분리해 고민·불확실성·발언 의도가 달라졌는지 앞뒤 문장까지 확인하며, 같은 의도를 유지하는 분리와 실제 원문 질문은 허용한다.',
         'action_direction_candidate는 수신과 수행의 방향을 대조할 신호다. 질문·교육·평가 등을 받은 사람이 이를 한 사람으로 바뀌면 distortion이다. 다만 수동문을 능동문으로 풀면서 누가 누구에게 했는지가 그대로인 표현은 허용한다. 후보 신호만으로 위반을 확정하지 않는다.',
         '서로 다른 SOURCE 문장의 앞조각과 뒷조각이 기계적으로 붙어 목적어·서술어가 맞지 않거나, 어절·절이 미완성인 채 다음 문장 내용으로 이어지거나, 한 문장 안에 서로 다른 논점이 접착된 경우도 distortion이다. 단순한 인접 문장 병합은 문법과 의미 관계가 모두 자연스러울 때만 허용한다.',
@@ -354,7 +355,7 @@ async function judgeAndRepair(rawText, outputText, {
     documentProfile
   }); } catch (error) {
     if ((signal?.aborted || error?.name === 'AbortError' || ['AbortError','ABORT_ERR'].includes(error?.code))
-        && signal?.reason?.name !== 'TimeoutError') throw error;
+        && signal?.reason?.name !== 'TimeoutError') throw retainInterruptedReview(error, primary);
     // Failure to obtain a second opinion cannot erase a completed first
     // verdict. Retain its failed/uncertain status and all observed violations.
     return { ...primary, escalationSkippedReason: 'escalation_call_failed',
@@ -485,7 +486,10 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       phase: `${phasePrefix}:repair`
     }); } catch (error) {
       if ((signal?.aborted || error?.name === 'AbortError' || ['AbortError','ABORT_ERR'].includes(error?.code))
-          && signal?.reason?.name !== 'TimeoutError') throw error;
+          && signal?.reason?.name !== 'TimeoutError') throw retainInterruptedReview(error, {
+            outputText: current, violations: judge.violations || [], initialViolations,
+            sourceIssues: judge.sourceIssues || [], rounds: rounds - 1, usage
+          });
       // No candidate was produced. Budget, transport and deadline failures
       // must all retain the completed mandatory verdict, never turn it pass.
       const budgetDenied = error?.code === 'RECOVERY_BUDGET_EXHAUSTED';
@@ -537,7 +541,8 @@ async function judgeAndRepairWithModel(rawText, outputText, {
         usage
       };
     }
-    const candidateJudge = await semanticJudge(rawText, candidate, ledger, {
+    let candidateJudge;
+    try { candidateJudge = await semanticJudge(rawText, candidate, ledger, {
       lang,
       signal,
       config,
@@ -548,7 +553,13 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       reasoningEffort: judgeReasoning,
       phase: `${phasePrefix}:semantic_after_repair`,
       safetyIdentifier
-    });
+    }); } catch (error) {
+      // The candidate has not been validated. Preserve the earlier text and
+      // findings, including all calls that completed before this interruption.
+      throw retainInterruptedReview(error, { outputText: current,
+        violations: judge.violations || [], initialViolations,
+        sourceIssues: judge.sourceIssues || [], rounds, usage });
+    }
     usage = addUsage(usage, candidateJudge?.gptMeta?.usage);
     if (priority.eligible && !candidateJudge.pass) {
       return {
@@ -590,6 +601,13 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     repairDeferredForConfirmation,
     usage
   };
+}
+
+function retainInterruptedReview(error, report) {
+  error.usage = addUsage(addUsage(emptyUsage(), report.usage), error.usage);
+  error.partialSemanticReport = { ...report, pass: false, uncertain: true,
+    verificationCompleted: false, usage: error.usage };
+  return error;
 }
 
 function summarizeJudge(report) {

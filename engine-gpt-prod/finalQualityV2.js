@@ -413,12 +413,27 @@ async function runSemanticDocumentAuditInternal({
   const repairRoundBudget = allowRepair === false ? 0 : (pairs.length <= 1 ? 1 : Math.min(3, pairs.length));
   let remainingRepairRounds = repairRoundBudget;
   await require('./concurrency').mapWithConcurrency(pairs, 2, async (pair, index) => {
+    const startedAt = Date.now();
+    // Keep the completed section reports and usage when cancellation occurs.
+    // Passing signal to the outer mapper used to throw between sections,
+    // discarding all already-completed reports. No new model request starts
+    // after cancellation; untouched sections keep their exact original text.
+    if (signal?.aborted) {
+      outputs[index] = pair.output;
+      reports[index] = { index: pair.index, verificationCompleted: false,
+        pass: false, uncertain: true, skipped: true, started: false,
+        reason: 'audit_cancelled_before_section', rounds: 0, violations: [], usage: null, elapsedMs: 0 };
+      return;
+    }
     try {
       const baseDiscourseSignals = pairs.length === 1
         ? discourseSignals
         : discourse.compareDiscourse(pair.sourceContext, pair.output).codes;
       const relationSignals = auditRelationCandidates(pair.sourceContext, pair.output);
-      const pairDiscourseSignals = [...baseDiscourseSignals, ...relationSignals.codes,
+      const auditControlSignals = discourseSignals.filter(code => [
+        'final_semantic_revalidation', 'prior_failed_semantic_confirmation'
+      ].includes(code));
+      const pairDiscourseSignals = [...new Set([...baseDiscourseSignals, ...auditControlSignals]), ...relationSignals.codes,
         ...(relationSignals.candidates || []).map(item => JSON.stringify(item))];
       let report = await judgeAndRepair(pair.sourceContext, pair.output, {
         lang,
@@ -485,7 +500,9 @@ async function runSemanticDocumentAuditInternal({
         outputEnd: pair.outputEnd,
         alignment: pair.alignment || 'whole_document',
         repairSafe: pair.repairSafe !== false,
-        verificationCompleted: report.skipped !== true,
+        verificationCompleted: report.skipped !== true && report.verificationCompleted !== false,
+        started: true,
+        elapsedMs: Date.now() - startedAt,
         pass: report.pass === true,
         uncertain: report.uncertain === true,
         skipped: report.skipped === true,
@@ -508,16 +525,32 @@ async function runSemanticDocumentAuditInternal({
       };
     } catch (error) {
       outputs[index] = pair.output;
-      reports[index] = { index: pair.index, verificationCompleted: false, pass: false, uncertain: true, reason: safeMessage(error), rounds: 0, violations: [], usage: error.usage || null };
+      reports[index] = { index: pair.index, verificationCompleted: false, pass: false, uncertain: true,
+        started: true, elapsedMs: Date.now() - startedAt,
+        reason: signal?.aborted ? 'audit_cancelled_during_section' : safeMessage(error),
+        rounds: error.partialSemanticReport?.rounds || 0,
+        // Findings remain tied to the text the last completed judge saw. They
+        // are diagnostic evidence, never a verdict on this unfinished section.
+        partialProgress: error.partialSemanticReport ? {
+          priorFindingCount: error.partialSemanticReport.violations?.length || 0,
+          priorInitialFindingCount: error.partialSemanticReport.initialViolations?.length || 0,
+          verificationCompleted: false
+        } : null,
+        violations: [], usage: error.usage || null };
     }
-  }, signal);
+  });
   const repairedText = outputs.join('');
   const residual = reports.filter(report => report.pass !== true);
+  const verificationCompleted = reports.length === pairs.length && reports.every(report => report.verificationCompleted === true);
   return bindSemanticValidation({
     outputText: repairedText,
     ran: true,
-    verificationCompleted: reports.length === pairs.length && reports.every(report => report.verificationCompleted === true),
-    pass: residual.length === 0,
+    verificationCompleted,
+    pass: verificationCompleted && residual.length === 0,
+    progress: { expectedSections: pairs.length, startedSections: reports.filter(r => r.started).length,
+      completedSections: reports.filter(r => r.verificationCompleted).length,
+      unfinishedSections: reports.filter(r => !r.verificationCompleted).map(r => r.index),
+      cancelled: signal?.aborted === true },
     uncertain: residual.some(report => report.uncertain || report.skipped),
     repairCount: reports.reduce((sum, report) => sum + (report.rounds || 0), 0),
     repairRoundBudget,
@@ -562,6 +595,12 @@ function buildReviewPairs(source, outputText, maxChars = 9000) {
   const rawSource = String(source || '');
   const rawOutput = String(outputText || '');
   if (rawSource.length <= 12000 && rawOutput.length <= 12000) {
+    if (Math.max(rawSource.length, rawOutput.length) > 6000) {
+      // Use only complete, unique, ordered section ownership for this earlier
+      // split. Uncertain/fuzzy boundaries keep the historical whole-doc audit.
+      const pairs = require('./reviewAlignment').alignedReviewPairs(rawSource, rawOutput, Math.min(maxChars, 4500));
+      if (pairs.length > 1 && pairs.every(pair => pair.alignment === 'shared_unique_heading')) return pairs;
+    }
     return [{ index: 0, sourceContext: rawSource, output: rawOutput }];
   }
   return require('./reviewAlignment').alignedReviewPairs(rawSource, rawOutput, maxChars);

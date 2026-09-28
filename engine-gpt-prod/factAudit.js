@@ -22,7 +22,11 @@ function compareNumberMultiset(source, outputText, allowedExtra = '') {
 }
 
 function extractNumberTokens(value) {
-  const text = String(value || '').normalize('NFC');
+  // A flattened cover date can touch the first section number (20일1.).
+  // Recover only the same explicit source anchors used by layout auditing;
+  // never discard units or normalize real number changes away.
+  const text = require('./fusedReportLayout').repairFusedReportLayout(
+    String(value || '').normalize('NFC')).text;
   return [...text.matchAll(NUMBER_TOKEN_RE)].map(match => normalizeNumberToken(match[0])).filter(Boolean);
 }
 

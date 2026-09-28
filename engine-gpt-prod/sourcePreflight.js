@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 32;
+const VERSION = 33;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -43,7 +43,7 @@ const GENERIC_NUMBERED_HEADING_RE = new RegExp(
   String.raw`^(\s*(?:\d{1,2}(?:\.\d{1,2}){1,3}[.)]?|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?|[IVX]{1,8}[.)．])\s*)(\S[\s\S]*)$`,
   'u'
 );
-const GENERIC_HEADING_END_RE = /(?:개념|정의|의의|유형론|특성|배경|목적|방법|결과|논의|시사점|한계|방안|과제|다원화|혼재|체제|요인|과정|현황|전략|원리|역할|기능|영향|관계|구조|사례|요약|제언|문제점|필요성|정치학|메커니즘|이데올로기|구성\s*요소|조직\s*상황|발달이론)/gu;
+const GENERIC_HEADING_END_RE = /(?:개념|정의|의의|유형론|특성|배경|목적|방법|결과|논의|시사점|한계점|한계|방안|과제|다원화|혼재|체제|요인|과정|현황|전략|원리|역할|기능|영향|관계|구조|사례|요약|제언|문제점|필요성|정치학|메커니즘|이데올로기|구성\s*요소|조직\s*상황|발달이론)/gu;
 const STRUCTURAL_LINE_RE = new RegExp(
   String.raw`^(?:#{1,6}\s+|[-*+•▪◦·●○■□◆◇▶▷※]\s+|\d{1,3}(?:\.\d{1,3}){1,3}\s+|\d{1,3}[.)]\s+|[①-⑳]\s*|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]\s*|[IVX]{1,8}[.)．]\s*|제\s*\d{1,3}\s*(?:장|절|항|조)|\|.+\||(?:참고\s*문헌|참고\s*자료|References|Bibliography|부록|Appendix)(?:\s|$))`,
   'iu'
@@ -351,7 +351,8 @@ function repairSourceLayoutArtifacts(value) {
   if (creativeLayout) {
     return { text: before, changed: false, changes: [] };
   }
-  const pairedLabels = require('./pairedLabelLayout').repairPairedLabelLayout(before);
+  const explicitReport = require('./fusedReportLayout').repairFusedReportLayout(before);
+  const pairedLabels = require('./pairedLabelLayout').repairPairedLabelLayout(explicitReport.text);
   const punctuation = repairIsolatedTerminalPunctuationLines(pairedLabels.text);
   const heading = repairInlineHeadingBoundaries(punctuation.text);
   const wordWrapped = repairDocumentAttestedWordWraps(heading.text);
@@ -362,6 +363,7 @@ function repairSourceLayoutArtifacts(value) {
   const finalText = structurallySafe ? sentenceSpacing.text : before;
   const appliedChanges = structurallySafe
     ? [
+        ...explicitReport.changes,
         ...pairedLabels.changes,
         ...punctuation.changes,
         ...heading.changes,
@@ -834,7 +836,14 @@ function splitGenericNumberedHeadingBody(value) {
     // 경계에 공백이 있으면 두 어절은 애초에 붙어 있지 않다.
     if (!/^[가-힣A-Z]/u.test(prose)) continue;
     if (/^(?:은|는|이|가|을|를|와|과|의|도|만|에|에서|으로|로|에게|께서|부터|까지|보다)(?=$|\s|[,.;:!?。！？])/u.test(prose)) continue;
-    if (/^(?:적|성|화|론|학|형|별|상|물|값|표)/u.test(prose)) continue;
+    if (/^(?:적|성|화|론|학|형|별|상|물|값|표|점|력|율|률)/u.test(prose)) continue;
+    // A finite predicate later in the line does not establish the boundary
+    // immediately after a heading-like noun. Reject compounds/inflections
+    // (한계점, 영향력, 결과적으로) and candidates that swallowed field/table
+    // labels. Requiring nearby prose evidence also avoids freezing a whole
+    // collapsed table header as a section heading.
+    if (/[.?!。！？:：\[\]【】]/u.test(title)) continue;
+    if (!hasImmediateHeadingBodyEvidence(prose)) continue;
     // A title-like noun inside prose can be the stem of a predicate:
     // 기능하는/분석하고/구성되는. Never freeze its first half as a heading.
     if (/^(?:하(?:는|고|며|면|여|지|기|려)|되(?:는|고|며|면|어|지|기)|한다|된다|했다|된|될|시킨)/u.test(prose)) continue;
@@ -845,6 +854,21 @@ function splitGenericNumberedHeadingBody(value) {
     candidate = { title, prose };
   }
   return candidate ? `${marker}${candidate.title}\n${candidate.prose}` : null;
+}
+
+function hasImmediateHeadingBodyEvidence(value) {
+  const text = String(value || '');
+  const first = text.slice(0, 100);
+  const firstWord = first.match(/^[가-힣A-Za-z0-9·-]+/u)?.[0] || '';
+  // A one-syllable tail (한계점검 -> 한계점 / 검) is not a body.
+  // Nominal analysis/assessment continuations are ambiguous compounds
+  // (영향평가, 결과분석), not sufficient evidence for a new paragraph.
+  if (firstWord.length < 2 || /^(?:평가|분석|검토|검증|조사)(?:\s|[은는이가을를의])/u.test(first)) return false;
+  // Explicit label+body, e.g. "점검 절차: ...", or a nearby grammatical
+  // subject/object. No arbitrary split based only on a distant full stop.
+  return /^[가-힣A-Za-z][^.!?。！？\n:：]{1,45}[:：]/u.test(first)
+    || /^(?:본문|이번|본\s|이\s|그\s|해당\s|다음\s)/u.test(first)
+    || /^(?:[가-힣A-Za-z0-9·-]{1,24}[ \t]+){0,2}[가-힣A-Za-z0-9·-]{2,24}?(?:에서는|으로|에서|에게|은|는|이|가|을|를)\s/u.test(first);
 }
 
 function looksLikeNumberedQuestionPrompt(value) {

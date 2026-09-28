@@ -983,7 +983,12 @@ function restoreInlineLabelBodyLayout(source, outputText) {
 }
 
 function buildInlineLabelBodyRegions(value) {
-  const records = layoutStructure.buildLineRecords(value).filter(record => !record.blank);
+  // A flattened report is not one enormous "과제명: body" field. Recover
+  // only explicit, source-derived anchors here (never from model output).
+  // Shared with preflight so restoration cannot rejoin the whole document
+  // and final validation still checks every actual field in source order.
+  const anchoredSource = require('./fusedReportLayout').repairFusedReportLayout(value).text;
+  const records = layoutStructure.buildLineRecords(anchoredSource).filter(record => !record.blank);
   const regions = [];
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];

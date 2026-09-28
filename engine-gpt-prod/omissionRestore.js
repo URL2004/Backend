@@ -35,7 +35,11 @@ function restoreConfirmedSemanticOmissions({
   const violations = Array.isArray(semanticReport?.violations)
     ? semanticReport.violations
     : [];
-  const omissions = violations.filter(item => item?.type === 'omission');
+  // A rejected/unlocated model finding is not permission to insert source
+  // prose via the looser keyword fallback below. Keep it unresolved instead.
+  const omissions = violations.filter(item => item?.type === 'omission'
+    && item.origin !== 'unconfirmed' && item.repairable !== false
+    && item.relationGrounded !== false);
   if (!rawSource.trim() || !before.trim()) {
     return restoreResult(before, [], violations, []);
   }
@@ -300,10 +304,23 @@ function locateInsertion(source, sourceSpans, sourceIndex, outputText) {
   const outputSpans = splitSentenceSpans(outputText);
   if (!outputSpans.length) return null;
 
-  const previous = bestAnchor(sourceSpans, outputSpans, sourceIndex, -1);
-  const next = bestAnchor(sourceSpans, outputSpans, sourceIndex, 1);
+  const previousMatch = bestAnchor(sourceSpans, outputSpans, sourceIndex, -1);
+  const nextMatch = bestAnchor(sourceSpans, outputSpans, sourceIndex, 1);
+  // A gap containing other source sentences is not an insertion boundary.
+  const previous = previousMatch?.sourceIndex === sourceIndex-1 ? previousMatch : null;
+  const next = nextMatch?.sourceIndex === sourceIndex+1 ? nextMatch : null;
   if (previous && next && previous.outputIndex >= next.outputIndex) return null;
 
+  // Preserve paragraph ownership on ties: a paragraph's final sentence stays
+  // after its predecessor, while its first sentence stays before its successor.
+  const leftBreak = previous && /\n/u.test(source.slice(sourceSpans[previous.sourceIndex].end,sourceSpans[sourceIndex].start));
+  const rightBreak = next && /\n/u.test(source.slice(sourceSpans[sourceIndex].end,sourceSpans[next.sourceIndex].start));
+  if (next && (!previous || leftBreak && !rightBreak)) {
+    return {
+      anchorType: 'before_next', position: next.span.start,
+      separator: sourceSeparator(source, sourceSpans[sourceIndex], sourceSpans[next.sourceIndex])
+    };
+  }
   if (previous) {
     return {
       anchorType: 'after_previous',

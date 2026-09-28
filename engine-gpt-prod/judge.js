@@ -128,7 +128,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     { label: 'ALLOWED_EXTRA', value: allowedExtra },
     {
       label: 'DETERMINISTIC_DISCOURSE_SIGNALS',
-      value: [...discourseSignals, ...require('./clauseCoverage').auditClauseCoverage(rawText, outputText).candidates
+      value: [...require('./currentReviewHints').currentReviewHints(discourseSignals, rawText, outputText), ...require('./clauseCoverage').auditClauseCoverage(rawText, outputText).candidates
         .map(({code,sourceOrdinal,outputOrdinal,sourceSpan,missingSpan,outputSpan})=>JSON.stringify({code,sourceOrdinal,outputOrdinal,sourceSpan,missingSpan,outputSpan}))].join('\n')
     },
     { label: 'MODE', value: mode || 'assignment' },
@@ -475,7 +475,19 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     const repairModel = useJudgeForRepair || phasePrefix === 'escalation' ? judgeModel : config.models.repair;
     const repairReasoning = useJudgeForRepair || phasePrefix === 'escalation' ? config.reasoning.escalation : config.reasoning.repair;
     let repaired;
-    try { repaired = await repairViolations(rawText, current, ledger, judge.violations, {
+    // Attested operator/source restorations are cheaper and less inventive
+    // than asking the model to regenerate the same correction. They still
+    // consume the existing repair round and require the SAME fresh judge.
+    // Patch only unresolved exact windows, re-grounded on the literal proposal.
+    const literal = require('./confirmedRelationRestore').restoreConfirmedRelations(rawText, current, {
+      ...judge, verificationCompleted: true
+    });
+    const literalSafety = literal.applied ? require('./confirmedRelationRestore').assessConfirmedRestorationSafety(
+      assessRepairCandidate(rawText, current, literal.text, { mode, allowedExtra, documentProfile })) : null;
+    const repairBase = literalSafety?.eligible ? literal.text : current;
+    const remainingFindings = repairBase === current ? judge.violations : judge.violations.filter(v =>
+      !v.candidateSpan || repairBase.includes(v.candidateSpan));
+    try { repaired = remainingFindings.length ? await repairViolations(rawText, repairBase, ledger, remainingFindings, {
       lang,
       allowedExtra,
       signal,
@@ -484,7 +496,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       model: repairModel,
       reasoningEffort: repairReasoning,
       phase: `${phasePrefix}:repair`
-    }); } catch (error) {
+    }) : { outputText: repairBase, repaired: repairBase !== current }; } catch (error) {
       if ((signal?.aborted || error?.name === 'AbortError' || ['AbortError','ABORT_ERR'].includes(error?.code))
           && signal?.reason?.name !== 'TimeoutError') throw retainInterruptedReview(error, {
             outputText: current, violations: judge.violations || [], initialViolations,

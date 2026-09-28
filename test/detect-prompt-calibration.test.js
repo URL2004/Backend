@@ -8,7 +8,9 @@ const { DETECT_SCHEMA } = require('../engine-gpt-prod/schemas');
 
 test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 근거와 점수 앵커를 요구한다', () => {
   const ko = prompt.buildDetectPrompt('ko');
-  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9e-consistent-local-rubric');
+  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9f-pattern-taxonomy');
+  assert.match(ko, /문법적인 어미 일치와 내용을 담은 상투적 틀을 구별/u);
+  assert.match(ko, /동일 관찰을 재분류하는 것이지 두 번 세는 것이 아니다/u);
   assert.match(ko, /반복 원인 하나 또는 실제 반대 근거/u);
   assert.match(ko, /최소 2개가 필요/u);
   assert.match(ko, /신호 강도는 길이와 무관/u);
@@ -42,7 +44,8 @@ test('영문 감지 프롬프트와 엔진 provenance도 같은 정책 버전을
   assert.match(en, /21-49 requires at least one eligible category other than other_observed_style/u);
   assert.match(en, /moderate or strong strength and recurring or pervasive scope/u);
   assert.match(en, /other_observed_style is supplementary context only and can never support a score above 20/u);
-  assert.equal(engine.DETECT_VERSION, 'gpt-detect-v1.47');
+  assert.match(en, /Reclassify the same observation rather than counting it twice/u);
+  assert.equal(engine.DETECT_VERSION, 'gpt-detect-v1.48');
   assert.equal(engine.DETECT_PROMPT_VERSION, prompt.DETECT_PROMPT_VERSION);
 });
 

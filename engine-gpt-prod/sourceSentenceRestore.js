@@ -179,7 +179,7 @@ function resolveSplitRestoration(alignment, sourceSpans, outputSpans, output, ma
       const tokens = restorationTokens(text);
       const shared = tokens.filter(token => sourceTokens.has(token));
       const added = shared.filter(token => !selectedTokens.has(token));
-      if (added.length < 2 || shared.length / Math.max(1, tokens.length) < 0.4) continue;
+      if (added.length < 2) continue;
       const ownerScore = sentenceSimilarity(sourceText, text);
       // A shorter source sentence can score higher on shared broad vocabulary
       // than one arm of a long compound. Only a strong alternative owner can
@@ -187,6 +187,16 @@ function resolveSplitRestoration(alignment, sourceSpans, outputSpans, output, ma
       // copying the whole compound over an incomplete span.
       const otherOwner = Math.max(0, ...sourceSpans.map((span, index) =>
         index === alignment.sourceIndex ? 0 : sentenceSimilarity(span.text, text)));
+      // Mixed 1:N / N:1 neighbours contain words from TWO source claims, so
+      // their shared-token ratio can be below the ordinary split-arm cutoff.
+      // This guard only vetoes an overwrite; it never deletes the neighbour.
+      if (shared.length >= 3 && otherOwner >= Math.max(0.5, ownerScore + 0.06)) {
+        const ownerTokens = new Set(sourceSpans.flatMap((span, index) =>
+          index !== alignment.sourceIndex && sentenceSimilarity(span.text, text) >= otherOwner - 0.02
+            ? restorationTokens(span.text) : []));
+        if (added.some(token => !ownerTokens.has(token))) return null;
+      }
+      if (shared.length / Math.max(1, tokens.length) < 0.4) continue;
       if (otherOwner >= ownerScore - 0.02) {
         if (otherOwner >= Math.max(0.5, ownerScore + 0.06)) continue;
         return null;

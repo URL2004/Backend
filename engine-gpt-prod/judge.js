@@ -596,9 +596,21 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     }); } catch (error) {
       // The candidate has not been validated. Preserve the earlier text and
       // findings, including all calls that completed before this interruption.
-      throw retainInterruptedReview(error, { outputText: current,
-        violations: judge.violations || [], initialViolations,
-        sourceIssues: judge.sourceIssues || [], rounds, usage });
+      if (signal?.aborted || error?.name === 'AbortError' || ['AbortError','ABORT_ERR'].includes(error?.code))
+        throw retainInterruptedReview(error, { outputText: current,
+          violations: judge.violations || [], initialViolations,
+          sourceIssues: judge.sourceIssues || [], rounds, usage });
+      // A truncated/failed confirming response says nothing about the repair.
+      // Keep the completed verdict on CURRENT, not the unverified proposal.
+      // Returning it preserves the existing escalation/final-repair route;
+      // throwing here used to discard all confirmed findings at document level.
+      return { outputText: current, pass: false, verificationCompleted: true,
+        uncertain: judge.uncertain === true, violations: judge.violations || [], initialViolations,
+        sourceIssues: judge.sourceIssues || [], relationContract: judge.relationContract,
+        obligationReviews: judge.obligationReviews || [], rounds, repairRejected: true,
+        repairRejectReasons: ['repair_verification_failed'], repairStyleWarnings, unchangedRepairCount,
+        reason: 'repair_verification_failed', selectedJudgeModel: judgeModel,
+        usage: addUsage(usage, error.usage) };
     }
     usage = addUsage(usage, candidateJudge?.gptMeta?.usage);
     const verifiedPartial = priority.eligible && require('./partialSemanticRepair').canRetainPartialSemanticRepair(

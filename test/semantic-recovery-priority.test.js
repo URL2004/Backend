@@ -62,10 +62,13 @@ for(const verdict of ['pass','fail','timeout']) test(`confirmed operator repair 
     return {...reply,json:require('./helpers/semantic-review-fixture.cjs')({violations:verdict==='pass'?[]:[{type:'distortion',span:'찾을 수 없는 문장',detail:'대응 불명'}]},opts.user)};
   },async judge=>{
     const options={maxRounds:1,config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-luna',repair:'gpt-6-luna'}}};
-    if(verdict==='timeout')await assert.rejects(judge.judgeAndRepair(source,output,options),e=>{
-      assert.equal(e.partialSemanticReport.outputText,output);
-      assert.equal(e.partialSemanticReport.pass,false);assert.equal(e.usage.estimatedUsd,.04);return true;
-    });
+    if(verdict==='timeout') {
+      const result=await judge.judgeAndRepair(source,output,options);
+      assert.equal(result.outputText,output);assert.equal(result.pass,false);
+      assert.equal(result.reason,'repair_verification_failed');
+      assert.equal(result.verificationCompleted,true);assert.equal(result.usage.estimatedUsd,.04);
+      assert.equal(result.violations.length,1);
+    }
     else {
       const result=await judge.judgeAndRepair(source,output,options);
       assert.equal(result.pass,verdict==='pass');assert.equal(result.outputText,expected);
@@ -83,6 +86,29 @@ test('a timed-out optional repair retains completed verdict and failed-call cost
     assert.equal(result.violations[0].span,violation.span);
     assert.equal(result.reason,'repair_call_failed');assert.equal(result.usage.estimatedUsd,.04);
   });
+});
+
+test('truncated repair verification reaches the existing escalation on the last verified text',async()=>{
+  const a='참여자들이 새로운 관측 기구를 함께 만드는 과정은 흥미로웠다.';
+  const b='새로운 관측 기구를 참여자들이 함께 만드는 과정이 무척 흥미로웠다.';
+  const tail=' 담당자는 다음 날 측정 장비를 점검했다. 관찰 기록은 자료실에 따로 보관했다.'.repeat(12);
+  const finding={type:'intensity_amplification',span:'무척 흥미로웠다',sourceSpan:a,candidateSpan:b,
+    detail:'원문에 없던 정도 강화',origin:'introduced',relation:'modality_negation_causality'};
+  const phases=[];let repairReservations=0;
+  await withJudgeStub(async opts=>{
+    phases.push(opts.meta.phase);
+    if(phases.length===2)throw Object.assign(new Error('truncated'),{code:'OPENAI_TRUNCATED',usage:{estimatedUsd:.03}});
+    if(phases.length===3){assert.equal(opts.model,'gpt-6-sol');assert.ok(opts.user.includes(b+tail));}
+    return {...reply,json:require('./helpers/semantic-review-fixture.cjs')({violations:[finding]},opts.user)};
+  },async judge=>{
+    const result=await judge.judgeAndRepair(a+tail,b+tail,{maxRounds:1,reserveRepair:()=>{repairReservations++;return true;},
+      config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-sol',repair:'gpt-6-luna'}}});
+    assert.equal(result.pass,false);assert.equal(result.escalated,true);
+    assert.equal(result.outputText,b+tail);assert.equal(result.rounds,1);
+    assert.equal(repairReservations,1);assert.equal(result.usage.estimatedUsd,.05);
+    assert.ok(result.repairRejectReasons.includes('repair_verification_failed'));
+  });
+  assert.deepEqual(phases,['primary:semantic','primary:semantic_after_repair','escalation:semantic']);
 });
 
 test('failed escalation cannot discard a completed primary violation report',async()=>{

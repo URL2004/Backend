@@ -80,7 +80,8 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
       // Multi-sentence paraphrases need not share single-sentence surface
       // similarity. This is proposal retrieval only; the exact paired judge
       // finding and the caller's fresh semantic pass are the safety gates.
-      ||(!minimal && sentenceSimilarity(a,b)<.35)||protectedText(a)!==protectedText(b)
+      ||(!minimal && sentenceSimilarity(a,b)<.35
+        && !hasBilateralSentenceAnchors(rawOriginals,results,from,from+a.length,start,end))||protectedText(a)!==protectedText(b)
       ||(!minimal && require('./restorationOwnership').hasOutsideSourceContribution(String(source),from,from+a.length,b,a))
       ||(!minimal && hasAdjacentRelationCoverage(a,b,text))
       ||!sameProtectedPrefix(a,b,String(source),text)
@@ -122,6 +123,34 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
   let restored = text;
   for (const r of replacements.sort((a,b)=>b.start-a.start)) restored = restored.slice(0,r.start) + r.text + restored.slice(r.end);
   return { text: restored, applied: restored !== text, restoredCount: replacements.length };
+}
+
+// A confirmed one-sentence distortion can have little surface resemblance.
+// Do not lower the retrieval threshold: alternatively establish its position
+// from BOTH immediate neighbours. Each anchor must be a strong, reciprocal,
+// uniquely best match across the document. No missing/split/merged anchors,
+// section prefixes, or multi-sentence windows qualify. This only proposes a
+// repair; all ownership/quote/structure/budget gates and fresh auditing remain.
+function hasBilateralSentenceAnchors(sourceSpans,outputSpans,from,to,start,end) {
+  // Bound the optional reciprocal search; large/uncertain windows retain the
+  // existing model-repair path instead of extending synchronous alignment.
+  if(sourceSpans.length>256||outputSpans.length>256)return false;
+  const si=sourceSpans.findIndex(s=>s.start===from&&s.end===to);
+  const oi=outputSpans.findIndex(s=>s.start===start&&s.end===end);
+  if(si<1||oi<1||si+1>=sourceSpans.length||oi+1>=outputSpans.length)return false;
+  const isBody = text => text.length<=400&&!/[\r\n]/u.test(text)
+    && require('./layoutStructure').buildLineRecords(text).filter(r=>!r.blank).every(r=>r.role==='prose');
+  if(![sourceSpans[si],outputSpans[oi]].every(s=>isBody(s.text)))return false;
+  const uniqueBest=(needle,rows,index)=>{
+    const expected=sentenceSimilarity(needle,rows[index].text);
+    if(expected<.8)return false;
+    return rows.every((row,i)=>i===index||expected-sentenceSimilarity(needle,row.text)>=.12);
+  };
+  return [-1,1].every(offset=>{
+    const a=sourceSpans[si+offset],b=outputSpans[oi+offset];
+    return a.text.length>=25&&b.text.length>=25&&isBody(a.text)&&isBody(b.text)
+      &&uniqueBest(a.text,outputSpans,oi+offset)&&uniqueBest(b.text,sourceSpans,si+offset);
+  });
 }
 
 // The sentence analyzer may include a standalone heading with its first body

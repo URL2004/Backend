@@ -7,6 +7,15 @@ const {restoreUnsafeRelationSentences} = require('../engine-gpt-prod/fingerprint
 const source = '학생들이 좁은 계단에서 이동에 큰 부담을 느낄 수 있겠다는 생각을 하였고, 그렇기 때문에 교사는 학생들의 자율성을 존중하며 이동을 도와야 한다.';
 const first = '좁은 계단에서 이동하는 일도 학생들에게 큰 부담이 될 수 있다고 생각했다.';
 const second = '따라서 교사는 이동을 돕는 것에서 멈추지 않고 학생들의 자율성을 존중해야 한다.';
+test('a split tail merged into the next source claim forbids partial restoration', () => {
+  const source='훈련을 마친 연구원은 시설에서 숙식하며 장비를 배우면서 일했다. 30세까지 연구원은 시설과 실험실에서 장비를 조작했다.';
+  const output='훈련을 마친 연구원은 시설에서 일했다. 시설에서 숙식하며 장비를 배웠고, 30세까지 시설과 실험실에서 장비를 조작했다.';
+  for (const maxOutputGroup of [1,3]) {
+    const result=restore(source,output,[1],{maxOutputGroup});
+    assert.equal(result.text,output);assert.equal(result.applied,false);
+  }
+  assert.equal(restoreUnsafeRelationSentences(source,output,{violations:[{code:'semantic_relation_shift',sentenceOrdinals:[1]}]}).text,output);
+});
 test('single restoration cannot leave a paraphrased arm next to its whole source sentence', () => {
   const output = first + ' ' + second;
   assert.equal(restore(source, output, [1], {maxOutputGroup:1}).applied, false);

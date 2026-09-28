@@ -7,7 +7,7 @@
 //   - 개발군(NIKL 과제 사람 120 · GPT-6 AI 120): 사람 오탐 1/120, AI 검출 75/120, AUROC 0.76 (v8: 2/120, 1/120, 0.17).
 //   - v8이 추가했던 strength=weak 규칙, 중복 채점 금지, "구체적 전개=사람다움" 대조 예시, sampleUnitIndex 분산 요건은
 //     GPT-6 글에서 신호를 0으로 만들어 검출을 억제했으므로 제외했다. 스키마·category 어휘는 그대로다.
-const DETECT_PROMPT_VERSION = 'detect-prompt-v9c-current-generation-guarded';
+const DETECT_PROMPT_VERSION = 'detect-prompt-v9d-length-independent-evidence';
 
 function buildDetectPrompt(lang = 'ko') {
   if (lang === 'en') {
@@ -27,6 +27,7 @@ function buildDetectPrompt(lang = 'ko') {
       'other_observed_style is supplementary context only and can never support a score above 20.',
       'Each signal includes evidenceSentences: up to 8 exact zero-based sentence indices from the supplied array, or [] if unlocated. Recurring signals need several sentences. Do not quote submitted text or assert authorship. Return [] signals when unsupported.',
       'Confidence describes evidence sufficiency, not score certainty: low only for fewer than four editable prose sentences or input dominated by protected/corrupted content; medium for a small or mixed sample; high for at least eight editable prose sentences.',
+      'Length limits confidence, not the style score itself. In short prose, assess repetition and independence across the available eligible sentences. Two or more sentences may contain recurring independent signals; do not require eight sentences or multiple paragraphs. Conversely, a single sentence, clean grammar or ordinary genre conventions do not establish repetition. Never invent missing context or multiply one pattern into several causes.',
       'Return a structured response only.'
     ].join('\n');
   }
@@ -47,6 +48,7 @@ function buildDetectPrompt(lang = 'ko') {
     'other_observed_style은 보조 관찰 정보일 뿐이며 20점을 넘는 점수의 근거로 사용할 수 없다.',
     '각 signal의 evidenceSentences에는 제공된 배열에서 원인이 보이는 문장 번호(0부터 시작)를 최대 8개 적고 위치가 없으면 []로 둔다. recurring은 여러 문장이 필요하다. 원문은 인용·복사하지 않고 근거 없는 category는 만들지 않는다.',
     'confidence는 점수 확신이 아니라 분석 근거의 충분성을 뜻한다. 편집 가능한 일반 산문이 4문장 미만이거나 보호·손상된 입력이 대부분일 때만 low, 표본이 작거나 혼합됐으면 medium, 일반 산문이 8문장 이상이면 high로 둔다.',
+    '분량은 confidence의 제한이지 문체 점수 자체의 감점 사유가 아니다. 단문에서도 실제 분석 가능한 문장 사이의 반복성과 독립성을 평가한다. 두 문장 이상에 독립된 신호가 반복될 수 있으며, 이를 인정하기 위해 8문장이나 여러 문단을 요구하지 않는다. 반대로 한 문장·정확한 문법·일반적인 장르 관습만으로 반복을 인정하지 않는다. 없는 문맥을 추측하거나 같은 패턴을 여러 원인으로 부풀리지 않는다.',
     '구조화된 응답만 반환한다.'
   ].join('\n');
 }

@@ -3,7 +3,7 @@
 const { splitSentenceSpans } = require('../engine/koreanText');
 const { restoreSourceSentenceOrdinals, sentenceSimilarity } = require('./sourceSentenceRestore');
 
-const VERSION = 1;
+const VERSION = 2;
 const MIN_ALIGNMENT_SCORE = 0.24;
 const MIN_ALIGNMENT_MARGIN = 0.08;
 
@@ -19,6 +19,10 @@ const OUTCOME_FAMILIES = Object.freeze({
 const TARGET_CLASSIFIER = /([\p{L}][\p{L}\p{N}+&._-]{1,30})(?:(?:과|와)\s*같은|처럼|같은)?\s*(?:다른\s*)?(?:장르|카테고리|제품|서비스|작품|IP|브랜드|시장|고객군|세그먼트)/giu;
 const UPPER_ENTITY = /(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9+&._-]{1,19})(?=$|[^A-Za-z0-9])/gu;
 const QUOTED_ENTITY = /[“‘"'「『《〈]([^\n”’"'」』》〉]{2,40})[”’"'」』》〉]/gu;
+// A classifier noun can follow a relative clause, not only a name. Restrict
+// this exemption to productive, recognizable verbal endings; do not drop all
+// Korean words ending in 는/한. Explicitly quoted names use a separate path.
+const RELATIVE_MODIFIER = /(?:하|되|시키|받|주|보이|나타나|살아가|살아오|이어지|이루어지|달라지|만들|다루|알려지|늘어나|줄어드)(?:는|던)$|(?:했던|되었던|되어온|해온|만든|다룬)$/u;
 const ENTITY_STOP = new Set(['IP', 'CRM', 'SNS', 'AI', 'API', 'SEO', 'UI', 'UX', 'KPI']);
 const GENERIC_ENTITY_STOP = new Set([
   '같은', '다른', '신규', '기존', '해당', '여러', '다양한', '일반', '관련',
@@ -167,6 +171,7 @@ function extractEntityCandidates(value) {
     let match;
     while ((match = pattern.exec(text)) !== null) {
       const entity = String(match[1] || '').trim();
+      if (pattern === TARGET_CLASSIFIER && RELATIVE_MODIFIER.test(entity)) continue;
       // ASCII apostrophe in P'(x) or a full direct quotation is not an entity.
       // Quoted names remain useful, but only short title/name-like spans enter
       // the unsupported-target audit.

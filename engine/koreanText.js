@@ -99,7 +99,12 @@ function analyzeSentenceSpans(text, { preserveLines, inferPlainEndings }) {
     let end = i + 1;
     while (end < text.length && /[.!?…。！？]/u.test(text[end])) end += 1;
     while (end < text.length && /["'”’」』》〉】)）\]]/u.test(text[end])) end += 1;
-    if (end >= text.length || /\s/u.test(text[end])) {
+    // A missing space after an explicit Korean finite ending is not one long
+    // sentence. Keep exact offsets and require an unquoted terminal period;
+    // decimal/initial/URL protection above and attached quote particles stay.
+    if (end >= text.length || /\s/u.test(text[end]) || (ch === '.' && end === i + 1
+        && /[가-힣]/u.test(text[end])
+        && /(?:[가-힣]+(?:습니다|입니다|한다|된다|했다|였다|이다|있다|없다|었다|았다)|[0-9]이다)$/u.test(text.slice(start, i)))) {
       pushSpan(out, text, start, end);
       while (end < text.length && /[ \t]/u.test(text[end])) end += 1;
       start = end;

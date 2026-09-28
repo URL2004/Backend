@@ -75,6 +75,18 @@ test('billed HTTP failure followed by success retains both usage and physical at
   assert.equal(result.usage.outputTokens,55);assert.ok(result.failedEstimatedUsd>0);
 });
 
+test('high-reasoning escalated generation is one deadline-bounded attempt, not two billed timeouts', {concurrency:false}, async t => {
+  const oldFetch=global.fetch,oldKey=process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY='test-key';let calls=0;
+  global.fetch=async()=>{calls++;throw Object.assign(new Error('provider timed out'),{code:'ETIMEDOUT'});};
+  t.after(()=>{global.fetch=oldFetch;if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;});
+  await assert.rejects(completeJson({system:'synthetic',user:'synthetic',schema:SIMPLE_SCHEMA,model:'gpt-6-sol',
+    reasoningEffort:'high',deadlineMs:Date.now()+120000,meta:{task:'humanize',escalated:true}}),error=>{
+    assert.equal(error.httpAttemptCount,1);assert.equal(error.retryCounts.timeout,0);assert.ok(error.unknownEstimatedUsd>0);return true;
+  });
+  assert.equal(calls,1);
+});
+
 test('unknown HTTP failure holds its reservation before the next transport retry', async t => {
   const oldFetch=global.fetch,oldKey=process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY='test-key';let calls=0;

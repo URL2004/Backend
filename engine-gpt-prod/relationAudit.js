@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v14-predicate-scope';
+const VERSION = 'relation-candidates-v15-connective-scope';
 const { predicateScopeCandidates } = require('./predicateScope');
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
@@ -78,6 +78,16 @@ function auditRelationCandidates(source, outputText) {
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    // Coordination is not opposition. This is a paired review nomination,
+    // not a regex verdict: a nearby source sentence may license the contrast.
+    const opposition = /(?:지만|반면|그러나|하지만|그럼에도)/u;
+    if (COORDINATION.test(original) && !opposition.test(original) && opposition.test(sentence))
+      add('coordination_contrast_candidate');
+    // A shared comparison may retain the commonality while dropping its
+    // qualification. The judge must search the whole aligned context for a
+    // moved/reworded qualification before calling this an omission.
+    if (/(?:차이(?:가|는|도)?\s*있지만|다르지만|다름에도)/u.test(original)
+        && !/(?:차이|다르|다름|서로\s*다른)/u.test(sentence)) add('comparison_limitation_candidate');
     for (const code of predicateScopeCandidates(original, sentence)) add(code);
     // In a split observation, turning the observed plural subject into an
     // object under a different subject may move the predicate's ownership.

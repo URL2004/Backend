@@ -63,3 +63,14 @@ test('failed escalation cannot discard a completed primary violation report',asy
     assert.equal(result.violations[0].span,violation.span);assert.equal(result.usage.estimatedUsd,.04);
   });
 });
+
+for(const phase of ['repair','escalation']) test(`cancelled ${phase} preserves prior findings and both billed costs`,async()=>{
+  let calls=0;
+  await withJudgeStub(async()=>{if(++calls===1)return reply;throw Object.assign(new Error('cancelled'),{code:'ABORT_ERR',usage:{estimatedUsd:.03,totalTokens:30}});},async judge=>{
+    await assert.rejects(judge.judgeAndRepair(src,out,{maxRounds:phase==='repair'?1:0,config:{models:{judge:'gpt-6-luna',judgeEscalation:phase==='repair'?'gpt-6-luna':'gpt-6-sol',repair:'gpt-6-luna'}}}),error=>{
+      assert.equal(error.usage.estimatedUsd,.04);assert.equal(error.partialSemanticReport.pass,false);
+      assert.equal(error.partialSemanticReport.verificationCompleted,false);
+      assert.equal(error.partialSemanticReport.violations[0].span,violation.span);return true;
+    });
+  });
+});

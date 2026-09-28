@@ -180,6 +180,7 @@ function buildPunctuationContext(text, syntax) {
   const parenthetical = syntax.filter(span => span.spanType === 'parenthetical');
   const embedded = syntax.filter(span => span.spanType === 'parenthetical'
     || (span.spanType === 'quote' && (/^[가-힣]/u.test(text.slice(span.end))
+      || /^[ \t]*(?:하는|하고|하며|했던|하던)[ \t]+(?:생각|의문|질문|말|고민|느낌|물음)/u.test(text.slice(span.end))
       || /^[ \t\r\n]*(?:라고|라는|라며|란|이라고|이라는|이라며)(?=\s|[가-힣])/u.test(text.slice(span.end)))));
   return { embedded: spanMembership(embedded), parenthetical: spanMembership(parenthetical),
     code: spanMembership(syntax.filter(span => span.spanType === 'code'), false), any: spanMembership(syntax, false) };

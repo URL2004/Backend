@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v16-operator-ownership';
+const VERSION = 'relation-candidates-v17-qualifier-scope';
 const { predicateScopeCandidates } = require('./predicateScope');
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
@@ -31,7 +31,7 @@ const SHARP_CHANGE = /(?:급증|급감|폭증|폭락|급등|급락|치솟|곤두
 
 // These are review triggers, never findings of factual error or block gates.
 // Exact ownership swaps are screened separately from broad semantic changes.
-function auditRelationCandidates(source, outputText) {
+function auditRelationCandidates(source, outputText, { includeAllCandidates = false } = {}) {
   const before = String(source || '');
   const after = String(outputText || '');
   const candidates = [];
@@ -83,6 +83,18 @@ function auditRelationCandidates(source, outputText) {
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    // Nominations only: search adjacent sentences for equivalent wording.
+    const immediate = /(?<![가-힣])(?:곧바로|즉시|당장|바로)(?=\s)/u;
+    if (immediate.test(original) && !immediate.test(sentence)) add('temporal_limit_candidate');
+    if (/(?:이유|사실|조건|경험|기준)만으로/u.test(sentence)
+        && !/(?:만으로|오직|유일|단지|하나만)/u.test(original)) add('sole_reason_candidate');
+    for (const m of original.matchAll(/(의문|의심|관심|걱정|불안)(?:이|가)\s*(?:들었|생겼|일었)/gu)) {
+      if (new RegExp(`${m[1]}(?:이|가)\\s*(?:커졌|깊어졌|늘었|강해졌)`, 'u').test(sentence))
+        add('mental_onset_strength_candidate');
+    }
+    if (/(?:그와\s*함께|이와\s*함께|또한)/u.test(original)
+        && /(?:그러면서도|그럼에도|그런데도)/u.test(sentence)
+        && !/(?:지만|반면|그럼에도|그런데도)/u.test(original)) add('additive_concession_candidate');
     const oldLink=connector(original),newLink=connector(sentence);
     // Same-owner synonyms and simple omission are not ownership moves. For
     // an inserted link, require a nearby original owner whose uniquely paired
@@ -220,7 +232,10 @@ function auditRelationCandidates(source, outputText) {
   const seen = new Set();
   const unique = candidates.filter(row => {
     const key = JSON.stringify(row); if (seen.has(key)) return false; seen.add(key); return true;
-  }).slice(0, 12);
+  });
+  // Existing display/route consumers remain bounded. The explicit operator
+  // reviewer needs later-section questions too, not only the first 12 hints.
+  if (!includeAllCandidates) unique.splice(12);
   return { version: VERSION, candidateOnly: true, semanticRequired: unique.length > 0,
     codes: [...new Set(unique.map(row => row.code))], candidates: unique };
 }

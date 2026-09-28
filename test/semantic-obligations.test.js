@@ -70,7 +70,9 @@ test(`actual semantic judge enforces the obligation contract: ${verdict}`,async(
    assert.ok(opts.user.includes(obligations[0].id));
    const dismiss=verdict.startsWith('not_error'), r=review(dismiss?'not_error':'resolved',dismiss?before:after);
    if(verdict==='wrong_id')r.id='invented';
-   return {json:{violations:[],obligationReviews:verdict==='silent'?[]:[r]},model:opts.model,usage:{estimatedUsd:0}};
+   const operators=require('../engine-gpt-prod/promptEnvelope').extractPromptDataSection(opts.user,'OPERATOR_REVIEW_TARGETS');
+   const operatorReviews=operators?JSON.parse(operators).map(t=>({...t,status:'preserved',detail:'Separate synthetic operator review explicitly confirms this intended false-positive fixture.'})):[];
+   return {json:{violations:[],operatorReviews,obligationReviews:verdict==='silent'?[]:[r]},model:opts.model,usage:{estimatedUsd:0}};
  }}};
  delete require.cache[judgePath];
  try {

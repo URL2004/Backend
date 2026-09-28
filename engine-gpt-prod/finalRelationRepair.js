@@ -65,6 +65,32 @@ async function prepareFinalRelationRepair(source, output, report, {
 // current exact pass is never reopened. These findings nominate a proposal;
 // they are not a replacement verdict and cannot grant a pass.
 function selectFinalRepairEvidence(source, output, report, status, priorReports = []) {
+  // An incomplete DOCUMENT cannot certify anything, but its completed child
+  // verdicts are not incomplete. Nominate only their exact unchanged windows
+  // before the existing whole-document recheck; never reuse their old offsets
+  // or promote the unfinished parent's aggregate findings into authority.
+  if (['stale', 'fail', 'uncertain'].includes(status) && report?.pass === false
+      && report.verificationCompleted === false && !report.skipped) {
+    const findings = [], seen = new Set(), visited = new Set();
+    const visit = value => {
+      if (!value || visited.has(value) || value.skipped) return;
+      visited.add(value);
+      if (value.verificationCompleted === true && value.pass === false && !value.uncertain) {
+        for (const v of confirmedRepairFindings(value)) {
+          const a = v.sourceSpan, b = v.candidateSpan;
+          if (typeof a !== 'string' || typeof b !== 'string' || a.length < 20 || b.length < 20
+              || a === b || !source.includes(a) || !output.includes(b)
+              || source.indexOf(a) !== source.lastIndexOf(a) || output.indexOf(b) !== output.lastIndexOf(b)) continue;
+          const key = a + '\u0000' + b;
+          if (!seen.has(key) && findings.length < 8) { seen.add(key); findings.push(v); }
+        }
+      }
+      for (const child of value.reports || []) visit(child);
+    };
+    for (const child of report.reports || []) visit(child);
+    return findings.length ? { pass: false, uncertain: false, verificationCompleted: true,
+      violations: findings, nominationOnly: true, partialDocumentEvidence: true } : null;
+  }
   if (status==='uncertain')return confirmedRepairFindings(report).length?report:null;
   if (!['stale', 'fail'].includes(status)) return null;
   if (report?.pass === false && !report.skipped && report.verificationCompleted !== false) return report;

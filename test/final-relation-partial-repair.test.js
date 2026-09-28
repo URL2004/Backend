@@ -73,3 +73,28 @@ test('prior uncertain, incomplete, repeated or source-only findings never nomina
     assert.equal(selectFinalRepairEvidence(source,output,later,'stale',[r]),null);
   assert.equal(selectFinalRepairEvidence(source,output+' '+output,later,'stale',[report]),null);
 });
+
+test('a completed child may nominate repair without certifying its incomplete document',async()=>{
+  const child={...report,uncertain:false},unfinished={pass:false,uncertain:true,verificationCompleted:false,violations:[]};
+  const aggregate={pass:false,uncertain:true,verificationCompleted:false,reports:[child,unfinished]};
+  for(const status of ['stale','uncertain']){
+    const selected=selectFinalRepairEvidence(source,output,aggregate,status);
+    assert.equal(selected.nominationOnly,true);assert.equal(selected.partialDocumentEvidence,true);
+    assert.equal(selected.pass,false);assert.equal(selected.violations.length,2);
+    const proposal=await prepareFinalRelationRepair(source,output,selected,{...opts,allowPatch:false});
+    assert.equal(proposal.restoredCount,1);assert.equal(proposal.pass,undefined);
+    assert.equal(aggregate.verificationCompleted,false);assert.equal(aggregate.uncertain,true);
+  }
+  assert.equal(selectFinalRepairEvidence(source,output,aggregate,'pass'),null);
+});
+
+test('partial document proposals exclude unfinished, uncertain, stale and repeated child windows',()=>{
+  for(const child of [{...report,verificationCompleted:false},{...report,uncertain:true},
+    {...report,skipped:true},{...report,violations:report.violations.map(v=>({...v,origin:'source_issue'}))}]){
+    const agg={pass:false,verificationCompleted:false,violations:report.violations,reports:[child]};
+    assert.equal(selectFinalRepairEvidence(source,output,agg,'uncertain'),null);
+  }
+  const agg={pass:false,verificationCompleted:false,reports:[report]};
+  assert.equal(selectFinalRepairEvidence(source,output+' '+output,agg,'stale'),null);
+  assert.equal(selectFinalRepairEvidence(source,`${a} ${fixed} ${tail}`,agg,'stale'),null);
+});

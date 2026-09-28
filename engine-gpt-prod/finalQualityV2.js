@@ -403,13 +403,57 @@ async function runSemanticDocumentAuditInternal({
   // vocabulary-producing post-processing may follow.
   allowRepair = true,
   priorReports = [],
-  reserveEscalation
+  reserveEscalation,
+  // Request-local section receipts (semanticSegmentReceipts). Optional; when
+  // absent every section is judged fresh exactly as before.
+  receiptStore = null,
+  prepareCandidateText = null
 }) {
+  const receipts = receiptStore ? require('./semanticSegmentReceipts') : null;
+  const store = receipts?.isReceiptStore(receiptStore) ? receiptStore : null;
   let pairs = buildReviewPairs(source, outputText);
+  const basePairs = pairs;
   pairs = require('./semanticAuditSchedule').planVerdictPairs(source, outputText, pairs, allowRepair);
   const priorObligations = require('./semanticObligations').collectObligations(source, priorReports);
+  const pairObligations = (pair, count) => priorObligations
+    .filter(o => count === 1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o => o.finding);
+  const pairSignals = (pair, count) => {
+    const baseDiscourseSignals = count === 1
+      ? discourseSignals
+      : discourse.compareDiscourse(pair.sourceContext, pair.output).codes;
+    const relationSignals = auditRelationCandidates(pair.sourceContext, pair.output, { documentSource: source });
+    const auditControlSignals = discourseSignals.filter(code => [
+      'final_semantic_revalidation', 'prior_failed_semantic_confirmation'
+    ].includes(code));
+    return [...new Set([...baseDiscourseSignals, ...auditControlSignals]), ...relationSignals.codes,
+      ...(relationSignals.candidates || []).map(item => JSON.stringify(item))];
+  };
+  const pairMaxRounds = pair => allowRepair === false || pair.repairSafe === false ? 0 : 1;
+  const keyFor = (list, index, signals) => store ? receipts.receiptKey({
+    source, pairs: list, index, signals, lang, mode, allowedExtra, documentProfile, safetyIdentifier, config
+  }) : '';
+  // The new request's required verdict tier and the obligations it would give.
+  const lookupOptions = (list, index, signals) => ({
+    route: receipts.expectedRoute(signals, pairMaxRounds(list[index]), config),
+    obligations: pairObligations(list[index], list.length)
+  });
+  const coversObligations = list => !priorObligations.some(o => !list.some(p => p.sourceContext.includes(o.finding.sourceSpan)));
+  // Verdict-only audits may choose the finer, already-valid heading-owned
+  // segmentation when it lets exact receipts replace fresh judge calls.
+  if (store && store.size > 0 && allowRepair === false && basePairs !== pairs && basePairs.length > 1
+      && coversObligations(basePairs)) {
+    const countFresh = list => {
+      let reused = 0;
+      list.forEach((pair, index) => {
+        const signals = pairSignals(pair, list.length);
+        if (store.has(keyFor(list, index, signals), lookupOptions(list, index, signals))) reused += 1;
+      });
+      return { reused, fresh: list.length - reused };
+    };
+    try { pairs = receipts.preferReusableSegmentation(pairs, basePairs, countFresh); } catch { /* keep plan */ }
+  }
   // Never lose an earlier relation at a new section boundary.
-  if (priorObligations.some(o=>!pairs.some(p=>p.sourceContext.includes(o.finding.sourceSpan))))
+  if (!coversObligations(pairs))
     pairs = [{index:0,sourceContext:source,output:outputText,repairSafe:false}];
   const outputs = [];
   const reports = [];
@@ -424,6 +468,33 @@ async function runSemanticDocumentAuditInternal({
   const schedule = require('./semanticAuditSchedule').scheduleReviewPairs(pairs, allowRepair);
   await require('./concurrency').mapWithConcurrency(schedule, 2, async ({ pair, index }) => {
     const startedAt = Date.now();
+    // An exact request-local receipt needs no model request, so it remains
+    // usable even after cancellation. Key construction failure is a miss.
+    let pairDiscourseSignals = null, receiptKey = '', receipt = null;
+    if (store) {
+      try {
+        pairDiscourseSignals = pairSignals(pair, pairs.length);
+        receiptKey = keyFor(pairs, index, pairDiscourseSignals);
+        receipt = store.lookup(receiptKey, lookupOptions(pairs, index, pairDiscourseSignals));
+      } catch { pairDiscourseSignals = null; receiptKey = ''; receipt = null; }
+    }
+    // Mint a receipt for the exact candidate a completed judge validated. The
+    // key binds that candidate in this pair position with the neighbours as
+    // audited now; `given` are the obligations that judge was given.
+    const mint = (judged, candidate, signals, given) => {
+      if (!store) return;
+      try {
+        if (typeof candidate !== 'string' || restoreReviewPairBoundaryWhitespace(pair.output, candidate) !== candidate) return;
+        const list = candidate === pair.output ? pairs : pairs.map((p, i) => i === index ? { ...p, output: candidate } : p);
+        store.record(keyFor(list, index, signals), judged,
+          { sourceContext: pair.sourceContext, candidate, obligations: given, config });
+      } catch { /* a receipt is optional; never affects the verdict */ }
+    };
+    if (receipt) {
+      outputs[index] = pair.output;
+      reports[index] = receipts.reusedSectionReport(pair, receipt);
+      return;
+    }
     // Keep the completed section reports and usage when cancellation occurs.
     // Passing signal to the outer mapper used to throw between sections,
     // discarding all already-completed reports. No new model request starts
@@ -436,31 +507,37 @@ async function runSemanticDocumentAuditInternal({
       return;
     }
     try {
-      const baseDiscourseSignals = pairs.length === 1
-        ? discourseSignals
-        : discourse.compareDiscourse(pair.sourceContext, pair.output).codes;
-      const relationSignals = auditRelationCandidates(pair.sourceContext, pair.output);
-      const auditControlSignals = discourseSignals.filter(code => [
-        'final_semantic_revalidation', 'prior_failed_semantic_confirmation'
-      ].includes(code));
-      const pairDiscourseSignals = [...new Set([...baseDiscourseSignals, ...auditControlSignals]), ...relationSignals.codes,
-        ...(relationSignals.candidates || []).map(item => JSON.stringify(item))];
+      if (!pairDiscourseSignals) pairDiscourseSignals = pairSignals(pair, pairs.length);
       let report = await judgeAndRepair(pair.sourceContext, pair.output, {
-        priorReports: [{violations:priorObligations.filter(o=>pairs.length===1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o=>o.finding)}],
+        priorReports: [{violations:pairObligations(pair, pairs.length)}],
         lang,
         signal,
         config,
         // 한 구간이 문서 전체 예산을 독점하지 않게 각 구간은 1회만 수리한다.
         // 남은 위반은 상위 판정으로 확인하되 다음 문제 구간에도 예산을 남긴다.
-        maxRounds: allowRepair === false || pair.repairSafe === false ? 0 : 1,
+        maxRounds: pairMaxRounds(pair),
         reserveRepair: () => { if (remainingRepairRounds <= 0) return false; remainingRepairRounds--; return true; },
         reserveEscalation,
         allowedExtra,
         mode,
         discourseSignals: pairDiscourseSignals,
         safetyIdentifier,
-        documentProfile
+        documentProfile,
+        prepareCandidateText
       });
+      // Mint immediately so a completed pass survives a later timeout of a
+      // sibling section. The judged candidate may be a repaired text only when
+      // the judge's own bound provenance validated exactly that text. In every
+      // judge.js chain ending in a pass, the final judge was given the pair's
+      // obligations and every earlier finding in initialViolations (post-repair
+      // and escalation judges receive them as prior reports); all of them must
+      // be explicitly adjudicated in its obligationReviews to mint.
+      if (store && report?.pass === true) {
+        const judgedText = report.outputText == null ? pair.output : report.outputText;
+        mint(report, judgedText, pairDiscourseSignals, require('./semanticObligations').collectObligations(
+          pair.sourceContext, [{ violations: pairObligations(pair, pairs.length) },
+            { initialViolations: report.initialViolations || [] }]).map(o => o.finding));
+      }
       if (allowRepair && pair.repairSafe !== false && !signal?.aborted) {
         const current = report.outputText || pair.output;
         const restored = restoreConfirmedRelations(pair.sourceContext, current, report);
@@ -474,11 +551,18 @@ async function runSemanticDocumentAuditInternal({
           try { verified = await judgeAndRepair(pair.sourceContext, restored.text, {
             priorReports: [{violations:priorObligations.filter(o=>pairs.length===1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o=>o.finding)}, report],
             lang, signal, config, maxRounds: 0, reserveEscalation, allowedExtra, mode,
-            safetyIdentifier, documentProfile, discourseSignals: [
+            safetyIdentifier, documentProfile, prepareCandidateText, discourseSignals: [
               ...discourse.compareDiscourse(pair.sourceContext, restored.text).codes,
               ...repairedSignals.codes, ...repairedSignals.candidates.map(c => JSON.stringify(c))]
           }); } catch (error) {
             verified = { pass: false, uncertain: true, usage: error.usage || null };
+          }
+          if (verified?.pass === true && !signal?.aborted) {
+            mint(verified, restored.text, [
+              ...discourse.compareDiscourse(pair.sourceContext, restored.text).codes,
+              ...repairedSignals.codes, ...repairedSignals.candidates.map(c => JSON.stringify(c))],
+            require('./semanticObligations').collectObligations(pair.sourceContext, [
+              { violations: pairObligations(pair, pairs.length) }, report]).map(o => o.finding));
           }
           const usage = addUsageLocal(report.usage, verified.usage);
           const verifiedPartial = require('./partialSemanticRepair').canRetainPartialSemanticRepair(
@@ -565,6 +649,7 @@ async function runSemanticDocumentAuditInternal({
     pass: verificationCompleted && residual.length === 0,
     progress: { expectedSections: pairs.length, startedSections: reports.filter(r => r.started).length,
       completedSections: reports.filter(r => r.verificationCompleted).length,
+      reusedSections: reports.filter(r => r.receiptReused === true).length,
       unfinishedSections: reports.filter(r => !r.verificationCompleted).map(r => r.index),
       cancelled: signal?.aborted === true },
     uncertain: residual.some(report => report.uncertain || report.skipped),

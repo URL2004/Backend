@@ -153,7 +153,7 @@ for (const mode of ['blog', 'formal']) test(`v2.5.60 ${mode}: 편집된 항목 �
   assert.match(out.result.outputText,/표현하였다\.\n\n완성한/u);
   if (mode === 'formal') assert.match(out.result.outputText,/세웠다\.\n\n수집한/u);
   assert.equal(out.qualityWarnings.some(w=>w.code==='paragraph_structure_changed'),false);
-  assert.ok(out.engineMeta.paragraphRoleBoundaryCount > 0);
+  assert.ok(out.engineMeta.paragraphRoleBoundaryCount + out.engineMeta.semanticAuditFormatting.paragraphRoleBoundaryCount > 0);
   assert.equal(out.engineMeta.paragraphRepairAfterCount, layoutStructure.splitExplicitParagraphs(out.result.outputText).length);
 });
 const SAFE_POLISH = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지 않습니다.';
@@ -395,7 +395,7 @@ test('model-introduced referent loss and comparison typo are repaired before del
   assert.match(result.result.outputText, /조건에 있듯이/u);
   assert.doesNotMatch(result.result.outputText, /있기라면/u);
   assert.match(result.result.outputText, /우선 정했다/u);
-  assert.equal(result.engineMeta.koreanRefinementVersion, 39);
+  assert.equal(result.engineMeta.koreanRefinementVersion, 40);
 });
 
 test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·engineMeta를 기록한다', { concurrency: false }, async t => {
@@ -404,7 +404,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.88');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.89');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -676,9 +676,11 @@ test('최종 전달 전 문장 중간 줄바꿈과 문맥형 띄어쓰기를 공
   // Broken source boundaries are now repaired before chunking. Do not count
   // that same repair again as a late formatting change.
   assert.equal(out.engineMeta.sourceLayoutRepairCount, 1);
-  assert.ok(out.engineMeta.finalFormattingRepairCount >= 3);
+  // Formatting may now settle before the semantic judge; keep stage counters
+  // separate rather than pretending these are late mutations of a judged text.
+  assert.ok(out.engineMeta.finalFormattingRepairCount + out.engineMeta.semanticAuditFormatting.formattingChangeCount >= 3);
   assert.equal(out.engineMeta.brokenParagraphBreakRepairCount, 0);
-  assert.ok(out.engineMeta.contextualSpacingRepairCount >= 3);
+  assert.ok(out.engineMeta.contextualSpacingRepairCount + out.engineMeta.semanticAuditFormatting.contextualSpacingCount >= 3);
 });
 
 test('빈도 충돌은 국소 한국어 수리 후 의미 심사를 거치고 원문 알림과 분리한다', { concurrency: false }, async t => {
@@ -1696,7 +1698,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.88');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.89');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

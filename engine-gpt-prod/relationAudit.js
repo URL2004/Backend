@@ -2,8 +2,9 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v17-qualifier-scope';
+const VERSION = 'relation-candidates-v18-alias-owner';
 const { predicateScopeCandidates } = require('./predicateScope');
+const { auditParentheticalAliasOwners } = require('./entityParentheticalIntegrity');
 
 // Certainty markers. Strong hedges qualify a claim as possible/inferred; weak
 // ones (편이다) only soften it. A hedge that disappears from a comparable
@@ -31,7 +32,9 @@ const SHARP_CHANGE = /(?:급증|급감|폭증|폭락|급등|급락|치솟|곤두
 
 // These are review triggers, never findings of factual error or block gates.
 // Exact ownership swaps are screened separately from broad semantic changes.
-function auditRelationCandidates(source, outputText, { includeAllCandidates = false } = {}) {
+// documentSource is optional section context for alias ownership only: the
+// whole source when `source` is one section. It changes no other candidate.
+function auditRelationCandidates(source, outputText, { includeAllCandidates = false, documentSource = '' } = {}) {
   const before = String(source || '');
   const after = String(outputText || '');
   const candidates = [];
@@ -236,6 +239,12 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
   // Existing display/route consumers remain bounded. The explicit operator
   // reviewer needs later-section questions too, not only the first 12 hints.
   if (!includeAllCandidates) unique.splice(12);
+  // Alias-owner nominations are appended AFTER the cap: they neither displace
+  // one of the first 12 hints nor get dropped by it (own bound: 6 rows).
+  for (const row of auditParentheticalAliasOwners(before, after, { documentSource }).candidates) {
+    const key = JSON.stringify(row);
+    if (!seen.has(key)) { seen.add(key); unique.push(row); }
+  }
   return { version: VERSION, candidateOnly: true, semanticRequired: unique.length > 0,
     codes: [...new Set(unique.map(row => row.code))], candidates: unique };
 }

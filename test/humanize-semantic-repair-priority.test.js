@@ -226,6 +226,44 @@ test('meaning repair wins over rhythm only after a fresh semantic judge passes',
   assert.equal(result.usage.inputTokens, 300);
 });
 
+test('semantic formatting runs before both initial and repaired candidate judgments', async () => {
+  const { judge, calls } = mockedJudge([
+    { violations }, { outputText: candidate, repaired: true, notes: [] }, { violations: [] }
+  ]);
+  const seen = [];
+  const result = await judge.judgeAndRepair(source, before, { config,
+    prepareCandidateText: async (raw, text) => {
+      assert.equal(raw, source);
+      seen.push({ text, callsBeforeFormatting: calls.length });
+      return text;
+    }
+  });
+  assert.equal(result.pass, true);
+  assert.deepEqual(seen, [
+    { text: before, callsBeforeFormatting: 0 },
+    { text: candidate, callsBeforeFormatting: 2 }
+  ]);
+  assert.equal(calls.length, 3);
+  assert.equal(result.outputText, candidate);
+});
+
+test('cancellation during post-repair formatting preserves paid usage and last verified candidate', async () => {
+  const { judge, calls } = mockedJudge([
+    { violations }, { outputText: candidate, repaired: true, notes: [] }
+  ]);
+  await assert.rejects(judge.judgeAndRepair(source, before, { config,
+    prepareCandidateText: async (_raw, text) => {
+      if (calls.length) throw Object.assign(new Error('cancelled'), { code: 'AbortError' });
+      return text;
+    }
+  }), error => {
+    assert.equal(error.code, 'AbortError');
+    assert.equal(error.usage.estimatedUsd, 0.002);
+    return true;
+  });
+  assert.equal(calls.length, 2);
+});
+
 test('a rhythm exception cannot deliver a repair whose meaning is still unverified', async () => {
   const { judge, calls } = mockedJudge([
     { violations },

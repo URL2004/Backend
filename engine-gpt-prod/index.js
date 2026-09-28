@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.88';
+const VERSION = 'gpt-prod-v2.5.89';
 const DETECT_VERSION = 'gpt-detect-v1.51';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -539,6 +539,17 @@ async function runEngine({
   const frozen = freezeLockedBlocks(source, outputText, chunks);
   const auditSource = frozen?.source || source;
   outputText = frozen?.output || outputText;
+  // Earlier semantic audits judge the exact raw materialization of the frozen
+  // pair (the same representation the final audit judges) only when the map
+  // is provably reversible; otherwise the existing frozen audit runs as-is.
+  const semanticCanonicalAudit = require('./semanticCanonicalAudit');
+  const semanticCanonical = semanticCanonicalAudit.createCanonicalAudit({
+    rawSource,
+    frozenSource: auditSource,
+    lockedBlocks: frozen?.blocks || [],
+    mathBlocks: inlineMathFreeze.blocks,
+    codeBlocks: inlineCodeFreeze.blocks
+  });
   let depthLockFreezeMissCount = Number(initialDepthFrozen?.missCount || 0);
   let depthLockFreezeAttemptCount = 1;
   const buildDocumentDepthPair = value => {
@@ -1860,6 +1871,17 @@ async function runEngine({
   // was repaired. Exact current-pair grounding is checked again by the restorer,
   // and the resulting candidate still requires a fresh final semantic pass.
   const semanticRestorationEvidence = [];
+  // Request-local exact section receipts shared by every semantic audit of
+  // this job (earlier audit, rejudges, final re-validation). Digests and
+  // minimal verdicts only; never global, persisted or exposed publicly.
+  const semanticSectionReceipts = require('./semanticSegmentReceipts').createReceiptStore();
+  // Attempt-stage counters, separate from late/delivered formatting counters.
+  // No text is retained, and rejected/unchanged formatter proposals are absent.
+  const semanticFormatting = { formattingChangeCount: 0, contextualSpacingCount: 0, paragraphRoleBoundaryCount: 0 };
+  const prepareSemanticCandidate = (source, candidate) => require('./semanticAuditFormatting').prepareSemanticAuditText(
+    source, candidate, { signal, mode: selectedMode, requestStrength, documentProfile, humanizeContract: contract,
+      onApplied: metrics => { for (const key of Object.keys(semanticFormatting)) semanticFormatting[key] += Number(metrics[key] || 0); }
+    });
   const rememberSemanticRestorationEvidence = report => {
     if (!report || report.skipped) return;
     semanticRestorationEvidence.push(report);
@@ -1908,23 +1930,29 @@ async function runEngine({
     semanticReport.decisionReason = semanticDecision.reason;
     if (semanticDecision.run) {
       const semanticInputText = outputText;
-      semanticReport = await qualityV2.runSemanticDocumentAudit({
-        source: auditSource,
-        outputText,
-        lang,
-        signal,
-        config: cfg,
-        allowedExtra,
-        mode: selectedMode,
-        discourseSignals: [
-          ...(deterministicAudit?.discourseAudit?.codes || []),
-          ...(fingerprintAudit?.issueCodes || []),
-          ...((fingerprintAudit?.semanticRelations?.shifts || [])
-            .map(item => `semantic_relation_shift:${item.family}`)),
-          ...(experienceCandidateAudit?.candidate ? ['experience_novelty_candidate'] : [])
-        ],
-        safetyIdentifier: safetyId,
-        documentProfile
+      semanticReport = await semanticCanonicalAudit.runCanonicalSemanticAudit({
+        runAudit: options => qualityV2.runSemanticDocumentAudit(options),
+        canonical: semanticCanonical,
+        options: {
+          source: auditSource,
+          outputText,
+          lang,
+          signal,
+          config: cfg,
+          allowedExtra,
+          mode: selectedMode,
+          discourseSignals: [
+            ...(deterministicAudit?.discourseAudit?.codes || []),
+            ...(fingerprintAudit?.issueCodes || []),
+            ...((fingerprintAudit?.semanticRelations?.shifts || [])
+              .map(item => `semantic_relation_shift:${item.family}`)),
+            ...(experienceCandidateAudit?.candidate ? ['experience_novelty_candidate'] : [])
+          ],
+          safetyIdentifier: safetyId,
+          documentProfile,
+          prepareCandidateText: prepareSemanticCandidate,
+          receiptStore: semanticSectionReceipts
+        }
       });
       addSupplementalUsage(semanticReport.usage, 'semantic_document_audit');
       rememberSemanticRestorationEvidence(semanticReport);
@@ -2218,18 +2246,24 @@ async function runEngine({
           addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
           break;
         }
-        const candidateSemantic = await qualityV2.runSemanticDocumentAudit({
-          optional: true,
-          source: auditSource,
-          outputText: candidate,
-          lang,
-          signal,
-          config: cfg,
-          allowedExtra,
-          mode: selectedMode,
-          discourseSignals: ['post_semantic_noop_recovery'],
-          safetyIdentifier: safetyId,
-          documentProfile
+        const candidateSemantic = await semanticCanonicalAudit.runCanonicalSemanticAudit({
+          runAudit: options => qualityV2.runSemanticDocumentAudit(options),
+          canonical: semanticCanonical,
+          options: {
+            optional: true,
+            source: auditSource,
+            outputText: candidate,
+            lang,
+            signal,
+            config: cfg,
+            allowedExtra,
+            mode: selectedMode,
+            discourseSignals: ['post_semantic_noop_recovery'],
+            safetyIdentifier: safetyId,
+            documentProfile,
+            prepareCandidateText: prepareSemanticCandidate,
+            receiptStore: semanticSectionReceipts
+          }
         });
         addSupplementalUsage(candidateSemantic.usage, 'post_semantic_rejudge');
         rememberSemanticRestorationEvidence(candidateSemantic);
@@ -3253,7 +3287,8 @@ async function runEngine({
               mode: selectedMode,
               discourseSignals: ['delivery_depth_recovery'],
               safetyIdentifier: safetyId,
-              documentProfile
+              documentProfile,
+              receiptStore: semanticSectionReceipts
             });
             addSupplementalUsage(candidateSemantic.usage, 'delivery_depth_rejudge');
             rememberSemanticRestorationEvidence(candidateSemantic);
@@ -3920,7 +3955,8 @@ async function runEngine({
             safetyIdentifier: safetyId,
             documentProfile,
             allowRepair: false,
-            deadlineMs: finalDeadlineMs
+            deadlineMs: finalDeadlineMs,
+            receiptStore: semanticSectionReceipts
           });
           addSupplementalUsage(recheck.usage, 'final_semantic_revalidation');
           let recheckCallCount = semanticCallCount(recheck);
@@ -3966,7 +4002,8 @@ async function runEngine({
                   config: cfg, allowedExtra, mode: selectedMode, safetyIdentifier: safetyId,
                   documentProfile, allowRepair: false, deadlineMs: finalDeadlineMs,
                   auditStage: 'final_relation_restoration_verification',
-                  discourseSignals: ['final_confirmed_relation_restoration']
+                  discourseSignals: ['final_confirmed_relation_restoration'],
+                  receiptStore: semanticSectionReceipts
                 });
                 addSupplementalUsage(verified.usage, 'final_relation_restoration_verification');
                 recheckCallCount += semanticCallCount(verified);
@@ -5122,6 +5159,7 @@ async function runEngine({
     inlineMathRestoredCount: Number(inlineMathIntegrity.restoredCount || 0),
     inlineMathFixedPointRestoreCount: Number(inlineMathIntegrity.fixedPointRestoreCount || 0),
     finalFormattingRepairCount: Number(finalFormattingRepair.changeCount || 0),
+    semanticAuditFormatting: { ...semanticFormatting },
     finalFormattingRepairCodes: safeFailureCodeList(finalFormattingRepair.changeCodes),
     brokenLineBreakRepairCount: Number(finalFormattingRepair.brokenLineBreakRepairCount || 0),
     brokenParagraphBreakRepairCount: Number(finalFormattingRepair.brokenParagraphBreakRepairCount || 0),
@@ -8441,6 +8479,9 @@ function semanticCallCount(report) {
   const sections = Array.isArray(report.reports) ? report.reports : [];
   if (!sections.length) return priorCalls + Math.max(1, Number(report.sectionCount) || 1);
   return priorCalls + sections.reduce((sum, section) => {
+    // A reused request-local receipt, or a section cancelled before it
+    // started, made no model request in this audit.
+    if (section?.receiptReused === true || section?.started === false) return sum;
     const baseJudges = section?.escalated === true ? 2 : 1;
     const rounds = Math.max(0, Number(section?.rounds) || 0);
     const rejectedRecheck = section?.repairRejected === true && rounds > 0 ? 1 : 0;

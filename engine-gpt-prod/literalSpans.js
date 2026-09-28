@@ -24,7 +24,9 @@ function restoreInlineCode(value, frozen) {
       missing.push(block.token);
       continue;
     }
-    text = text.replace(block.token, block.value);
+    // Literal values may contain $&, $$, $` or $'. A replacement string
+    // interprets these as substitutions and corrupts the protected content.
+    text = text.replace(block.token, () => block.value);
   }
   return {
     text,
@@ -120,7 +122,7 @@ function restoreMath(value, frozen) {
   const orderPass = positions.every((position, index) => index === 0 || position > positions[index - 1]);
   for (const block of frozen?.blocks || []) {
     if (missing.includes(block.token)) continue;
-    text = text.replace(block.token, block.value);
+    text = text.replace(block.token, () => block.value);
   }
   return {
     text,

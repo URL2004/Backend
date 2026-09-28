@@ -13,7 +13,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 39;
+const VERSION = 40;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -27,6 +27,10 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  introduced_terminal_syllable_candidate: {
+    weight: 3, repairable: true, deterministicSafe: false,
+    message: '원문의 단어 말음이 같은 뒤 문맥 앞에서 한 음절 늘어났을 수 있어요. 조사·어미·의미 있는 접미사는 보존하고, 원문과 문맥을 대조해 실제 중복 오타인 경우만 최소 교정하세요. 반복 음절이라는 이유로 자동 삭제하지 마세요.'
+  },
   source_editing_fragment_candidate: {
     weight: 6, repairable: true, deterministicSafe: false,
     message: '목적어와 서술어 사이에 별도 주제의 미완성 편집 잔재가 끼었을 수 있어요. 앞뒤 문맥에서 주체·목적어·서술어를 연결해 확인하세요. 실제 주장·조건·인용은 삭제하지 말고, 독립된 의미가 없는 삽입 잔재로 확인된 부분만 최소 교정하세요. 대응이 불확실하면 추측 삭제하지 마세요.'
@@ -776,11 +780,11 @@ const QUOTE_COMPARATIVE_COPULA_SUFFIX = '(?:이?라기(?:보다는|보다|보단
 // A bound particle followed by a copula is still attached: ‘높음’까지이며.
 // Share this grammar with gap insertion/removal to keep normalization stable.
 const QUOTE_PARTICLE_COPULA_SUFFIX = `(?:까지|부터|만)(?:${QUOTE_COPULA_SUFFIX}|다)`;
-const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
-const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
 // 격조사 뒤 보조사가 결합한 형태도 하나의 붙임 단위다.
 // 단일 조사 목록만 검사하면 정상적인 ‘기준’만으로/로서를 띄워 버린다.
-const QUOTE_COMPOUND_PARTICLE_SUFFIX = '(?:(?:만|부터|까지|조차|마저|밖에|처럼|보다)(?:으로|로|의|은|는|도|만)?|(?:으로|로)(?:서|써)(?:는|도|만)?|(?:와|과|에|에서|에게|으로|로)(?:의|는|도|만))';
+const QUOTE_COMPOUND_PARTICLE_SUFFIX = '(?:(?:만|부터|까지|조차|마저|밖에|처럼|보다)(?:으로|로|의|은|는|도|만)?|(?:으로|로)(?:서|써)(?:의|는|도|만)?|(?:와|과|에|에서|에게|으로|로)(?:의|는|도|만))';
+const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
+const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
 const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
 // A demonstrative beginning a new sentence is not the subject particle 이.
 // Require explicit sentence punctuation inside the closing quote and a noun.
@@ -1805,6 +1809,7 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
     outputIssues.push(makeIssue(code, rows.length, rows.map(item => item.ordinal)));
   }
   const naturalness = require('./naturalnessRegression').auditNaturalnessRegression(source, outputText, profile);
+  naturalness.push(...require('./terminalSyllableReview').terminalSyllableCandidates(source, outputText));
   for (const code of new Set(naturalness.map(item => item.code))) {
     const existing = outputIssues.findIndex(item => item.code === code);
     if (existing >= 0) outputIssues.splice(existing, 1);

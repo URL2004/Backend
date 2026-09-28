@@ -76,7 +76,7 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
   const obligations = allObligations;
   const candidateReferences = obligationPolicy.currentCandidateReferences(obligations, outputText);
   const operatorPolicy = require('./semanticOperatorReview');
-  const operatorTargets = operatorPolicy.targets(rawText, outputText);
+  const operatorTargets = operatorPolicy.targets(rawText, outputText, discourseSignals);
   const selectedOperators = operatorTargets;
   const cfg = await loadConfig(config);
   const selectedModel = model || cfg.models.judge;
@@ -317,7 +317,8 @@ async function judgeAndRepair(rawText, outputText, {
   discourseSignals = [],
   priorReports = [],
   safetyIdentifier = '',
-  documentProfile = null
+  documentProfile = null,
+  prepareCandidateText = null
 } = {}) {
   const cfg = await loadConfig(config);
   const escalationModel = cfg.models.judgeEscalation || cfg.models.humanizeEscalation || cfg.models.judge;
@@ -347,7 +348,8 @@ async function judgeAndRepair(rawText, outputText, {
     deferHighRiskRepair: !relationConfirmationFirst && Boolean((cfg.models.judgeEscalation || cfg.models.humanizeEscalation)
       && (cfg.models.judgeEscalation || cfg.models.humanizeEscalation) !== cfg.models.judge),
     safetyIdentifier,
-    documentProfile
+    documentProfile,
+    prepareCandidateText
   });
   if (relationConfirmationFirst) return { ...primary, relationConfirmationFirst: true };
   if (primary.pass === true) return primary;
@@ -382,7 +384,8 @@ async function judgeAndRepair(rawText, outputText, {
     judgeReasoning: cfg.reasoning.escalation || cfg.reasoning.judge,
     phasePrefix: 'escalation',
     safetyIdentifier,
-    documentProfile
+    documentProfile,
+    prepareCandidateText
   }); } catch (error) {
     if ((signal?.aborted || error?.name === 'AbortError' || ['AbortError','ABORT_ERR'].includes(error?.code))
         && signal?.reason?.name !== 'TimeoutError') throw retainInterruptedReview(error, primary);
@@ -422,7 +425,8 @@ function hasMappingReviewCandidate(discourseSignals) {
   return (discourseSignals || []).some(code => [
     'explicit_mapping_candidate', 'number_ownership_candidate',
     'argument_ownership_candidate', 'definition_target_candidate',
-    'procedure_order_candidate', 'concession_scope_candidate', 'comparison_negation_candidate', 'antecedent_link_loss_candidate'
+    'procedure_order_candidate', 'concession_scope_candidate', 'comparison_negation_candidate', 'antecedent_link_loss_candidate',
+    'alias_owner_binding_candidate'
   ].includes(code));
 }
 
@@ -458,7 +462,8 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   deferHighRiskRepair = false,
   useJudgeForRepair = false,
   safetyIdentifier,
-  documentProfile
+  documentProfile,
+  prepareCandidateText = null
 }) {
   // 원문 구절을 그대로 균등 추출한 결정론 원장을 mini와 상위 판정기가
   // 공통 사용한다. 판정 모델은 SOURCE 전체를 함께 받으므로 원장은 단지
@@ -466,7 +471,8 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   // 이 경로는 정확도를 낮추는 캐시가 아니라 중복 모델 호출 제거다.
   const ledger = buildDeterministicLedger(rawText);
   let usage = emptyUsage();
-  let current = outputText;
+  let current = typeof prepareCandidateText === 'function'
+    ? await prepareCandidateText(rawText, outputText) : outputText;
   let judge = await semanticJudge(rawText, current, ledger, {
     lang,
     signal,
@@ -549,7 +555,18 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       };
     }
     usage = addUsage(usage, repaired?.gptMeta?.usage);
-    const candidate = repaired.outputText || current;
+    let candidate;
+    try {
+      candidate = typeof prepareCandidateText === 'function'
+        ? await prepareCandidateText(rawText, repaired.outputText || current)
+        : repaired.outputText || current;
+    } catch (error) {
+      // Formatting can yield to cancellation after the paid repair returned.
+      // Preserve its cost and the last completed verdict, never the proposal.
+      throw retainInterruptedReview(error, { outputText: current,
+        violations: judge.violations || [], initialViolations,
+        sourceIssues: judge.sourceIssues || [], rounds, usage });
+    }
     if (candidate.trim() === String(current || '').trim()) {
       // The same text has already been checked by this exact judge/config.
       // Spending another call cannot validate a repair that did not happen.

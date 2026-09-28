@@ -404,7 +404,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.82');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.83');
   assert.equal(out.engineMeta.candidateLedgerVersion, 'candidate-ledger-v1');
   assert.equal(out.engineMeta.candidateLedgerEnabled, false);
   assert.equal(out.engineMeta.niklAdvisorVersion, 'nikl-lexical-advisor-v2');
@@ -508,7 +508,7 @@ test('v2.5.42 최종 고정점은 일반 계획에 새 대상의 출시·성과�
 
   assert.doesNotMatch(out.result.outputText, /ZX/u);
   assert.match(out.result.outputText, /데이터 기반 마케팅을 연계해 콘텐츠 다양성을 확대/u);
-  assert.equal(out.engineMeta.unsupportedSpecificityAuditVersion, 1);
+  assert.equal(out.engineMeta.unsupportedSpecificityAuditVersion, 2);
   assert.equal(out.engineMeta.unsupportedSpecificityPass, true, JSON.stringify(out.engineMeta));
   assert.equal(out.engineMeta.unsupportedSpecificityIssueCount, 0);
   assert.ok(out.engineMeta.unsupportedSpecificityRemovalCount >= 0);
@@ -1696,7 +1696,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.82');
+  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.83');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

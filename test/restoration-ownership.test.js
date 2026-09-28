@@ -26,6 +26,14 @@ test('a correctly bounded two-source relation repair is still available',()=>{
  assert.equal(outside(source,0,(a+' '+b).length,merged,a+' '+b),false);
  assert.equal(restore(source,output,{pass:false,violations:[finding(source,output,a+' '+b,merged)]}).text,source);
 });
+test('a short adjacent outcome is not erased merely because it has fewer than eight grams',()=>{
+ const a='담당자는 실험을 다시 시작하고 결과를 기다렸다.';
+ const b='그러나 실패했다.';
+ const source=a+' '+b;
+ const merged='담당자는 실험을 다시 시작하고 결과를 기다렸으나 실패했다.';
+ assert.equal(outside(source,0,a.length,merged,a),true);
+ assert.equal(outside(source,0,source.length,merged,source),false);
+});
 test('same-topic neighboring words do not veto a fully owned sentence split',()=>{
  const source='측정 결과가 불안정할 때에는 장비를 다시 점검하고 센서를 바꿀 수 있다. 다음 측정도 같은 장비를 사용한다.';
  const original=source.split('. ')[0]+'.';

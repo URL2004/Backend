@@ -23,7 +23,7 @@ function completedFinalFindings(report, source, candidate) {
     for (const finding of section.violations || []) {
       const a = finding.sourceSpan, b = finding.candidateSpan;
       if (finding.origin !== 'introduced' || finding.repairable !== true
-          || finding.spanVerified !== true || finding.grounding !== 'unique_exact_span'
+          || !require('./semanticObligations').hasGroundedSpan(finding)
           || typeof a !== 'string' || !a || typeof b !== 'string' || !b
           || !source.includes(a) || !candidate.includes(b)
           || source.indexOf(a) !== source.lastIndexOf(a)

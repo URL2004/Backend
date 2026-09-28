@@ -62,11 +62,11 @@ function installMock(t, options = {}) {
       }
       const rewrite = extractPromptDataSection(body.input, 'REWRITE');
       const violation = typeof options.violation === 'function' ? options.violation(body, judgeCalls, rewrite) : false;
-      return apiResponse({
+      return apiResponse(require('./helpers/semantic-review-fixture.cjs')({
         violations: Array.isArray(violation) ? violation : violation
           ? [{ type: 'added_claim', span: rewrite, detail: '최종 본문 재검증에서 반환하는 테스트 판정', sourceSpan: extractPromptDataSection(body.input, 'SOURCE'), candidateSpan: rewrite, relation: 'other', origin: 'introduced' }]
           : []
-      });
+      },body.input));
     }
     if (name === 'gpt_prod_judge_repair') {
       throw new Error('final revalidation must never call repair');

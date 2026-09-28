@@ -66,7 +66,10 @@ async function loadConfig(config) {
   return config ? gptRuntimeConfig.publicConfig(config, config.source || 'inline') : gptRuntimeConfig.getRuntimeConfig({ force: false });
 }
 
-async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, config, allowedExtra = '', mode = '', discourseSignals = [], model, reasoningEffort, phase = 'semantic', safetyIdentifier = '' } = {}) {
+async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal, config, allowedExtra = '', mode = '', discourseSignals = [], priorReports = [], model, reasoningEffort, phase = 'semantic', safetyIdentifier = '' } = {}) {
+  const obligationPolicy = require('./semanticObligations');
+  const allObligations = obligationPolicy.collectObligations(rawText, priorReports);
+  const obligations = allObligations.slice(0,16);
   const cfg = await loadConfig(config);
   const selectedModel = model || cfg.models.judge;
   const confirmingModel = cfg.models.judgeEscalation || cfg.models.humanizeEscalation || cfg.models.judge;
@@ -132,14 +135,15 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
         .map(({code,sourceOrdinal,outputOrdinal,sourceSpan,missingSpan,outputSpan})=>JSON.stringify({code,sourceOrdinal,outputOrdinal,sourceSpan,missingSpan,outputSpan}))].join('\n')
     },
     { label: 'MODE', value: mode || 'assignment' },
-    { label: 'REWRITE', value: outputText }
+    { label: 'REWRITE', value: outputText },
+    ...(obligations.length ? [{label:'PRIOR_FINDING_OBLIGATIONS',value:JSON.stringify(obligationPolicy.reviewPayload(obligations))}] : [])
   ]).text;
   const res = await completeJson({
-    system: system + '\n' + (lang === 'en'
+    system: system + (obligations.length ? '\nPRIOR_FINDING_OBLIGATIONS are earlier reviewer claims, NOT established facts. For EVERY id, explicitly return obligationReviews: resolved (the current rewrite preserves the original relation), not_error (the previous diagnosis was mistaken or source ambiguity), or unresolved. previousQuestions groups ALL earlier claims at the same source/relation anchor: adjudicate every claim, not just its first paraphrase; leave unresolved if any remains. Compare the entire present section, including neighboring sentences. previousCandidateSpan is an OLD quotation and may no longer occur; never assert it as current. Copy sourceSpan exactly from that obligation and cite a unique exact CURRENT candidateSpan with concrete reasoning. Keyword presence alone is not resolution: confirm its actor, scope and context. If unresolved, ALSO return the current grounded substantive violation in violations. An empty violations list is not dismissal. No new call or extra repair round is authorized.' : '') + '\n' + (lang === 'en'
       ? 'VERDICT CONTRACT: violations is the final list of unresolved substantive problems, not a review checklist or a transcript of considered candidates. Before returning, reconcile each detail with its type and origin. If direct comparison establishes equivalent meaning, omit that candidate; do not list it as unconfirmed merely because it was considered. If correspondence or meaning really remains uncertain, retain it with origin=unconfirmed and state the concrete unresolved difference. Never clear a genuine unresolved problem to obtain an empty list. If every candidate was disproved and the whole document has been checked, return {"violations":[]}.'
       : '최종 판정 계약: violations는 검토했던 후보 목록이나 사고 과정이 아니라, 끝까지 남은 실질 문제의 목록이다. 반환 전에 각 detail의 결론과 type·origin이 일치하는지 확인한다. 직접 대조하여 같은 의미라고 확인된 후보는 목록에서 제외하며, 검토했다는 이유만으로 unconfirmed로 남기지 않는다. 대응이나 의미가 실제로 불확실한 경우에는 origin=unconfirmed로 유지하고 해결되지 않은 구체적인 차이를 적는다. 빈 목록을 만들기 위해 실제 미확인 문제를 지우지 않는다. 모든 후보가 해소되고 문서 전체 검수를 마쳤다면 {"violations":[]}를 반환한다.'),
     user,
-    schema: JUDGE_SCHEMA,
+    schema: obligationPolicy.reviewSchema(JUDGE_SCHEMA, obligations),
     schemaName: 'gpt_prod_semantic_judge',
     model: selectedModel,
     reasoningEffort: reasoningEffort || cfg.reasoning.judge,
@@ -162,9 +166,15 @@ async function semanticJudge(rawText, outputText, ledger, { lang = 'ko', signal,
     .filter(v => v.type !== 'added_claim' || !String(v.span || '').trim()
       || !allowedWorld.includes(String(v.span).trim()))
     .map(v => groundViolation(v, rawText, outputText));
+  const obligationAssessment = obligationPolicy.assessReviews(allObligations,res.json.obligationReviews,rawText,outputText,
+    {allowDismiss:selectedModel===confirmingModel});
   const violations = allFindings.filter(v => v.origin !== 'source_issue');
+  for (const pending of obligationAssessment.pending) {
+    if (!violations.some(v=>v.sourceSpan===pending.sourceSpan && v.repairable)) violations.push(pending);
+  }
   return bindSemanticValidation({ ran: true, pass: violations.length === 0, violations,
     relationContract: 'semantic-relations-v2',
+    obligationReviews: obligationAssessment.reviews,
     sourceIssues: allFindings.filter(v => v.origin === 'source_issue'),
     uncertain: violations.some(v => !v.repairable), gptMeta: responseMeta(res)
   }, rawText, outputText, { model: res.model, phase });
@@ -288,6 +298,7 @@ async function judgeAndRepair(rawText, outputText, {
   allowedExtra = '',
   mode = '',
   discourseSignals = [],
+  priorReports = [],
   safetyIdentifier = '',
   documentProfile = null
 } = {}) {
@@ -311,6 +322,7 @@ async function judgeAndRepair(rawText, outputText, {
     allowedExtra,
     mode,
     discourseSignals,
+    priorReports,
     judgeModel: relationConfirmationFirst ? escalationModel : cfg.models.judge,
     judgeReasoning: relationConfirmationFirst ? cfg.reasoning.escalation : cfg.reasoning.judge,
     useJudgeForRepair: relationConfirmationFirst,
@@ -348,6 +360,7 @@ async function judgeAndRepair(rawText, outputText, {
     discourseSignals: [...discourseSignals, JSON.stringify({ code: 'prior_semantic_findings',
       findings: (primary.violations || []).slice(0, 8).map(({ type, span, sourceSpan, candidateSpan, relation, origin, detail }) =>
         ({ type, span, sourceSpan, candidateSpan, relation, origin, detail })) })],
+    priorReports: [...priorReports, primary],
     judgeModel: escalationModel,
     judgeReasoning: cfg.reasoning.escalation || cfg.reasoning.judge,
     phasePrefix: 'escalation',
@@ -421,6 +434,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   allowedExtra,
   mode,
   discourseSignals,
+  priorReports = [],
   judgeModel,
   judgeReasoning,
   phasePrefix,
@@ -443,6 +457,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     allowedExtra,
     mode,
     discourseSignals,
+    priorReports,
     model: judgeModel,
     reasoningEffort: judgeReasoning,
     phase: `${phasePrefix}:semantic`,
@@ -561,6 +576,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
       allowedExtra,
       mode,
       discourseSignals,
+      priorReports: [...priorReports, judge, {initialViolations}],
       model: judgeModel,
       reasoningEffort: judgeReasoning,
       phase: `${phasePrefix}:semantic_after_repair`,
@@ -605,6 +621,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     initialViolations,
     sourceIssues: judge.sourceIssues || [],
     relationContract: judge.relationContract || 'semantic-relations-v2',
+    obligationReviews: judge.obligationReviews || [],
     ledger,
     rounds,
     repairStyleWarnings: [...new Set(repairStyleWarnings)],

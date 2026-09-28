@@ -1861,9 +1861,8 @@ async function runEngine({
   // and the resulting candidate still requires a fresh final semantic pass.
   const semanticRestorationEvidence = [];
   const rememberSemanticRestorationEvidence = report => {
-    if (!report || report.uncertain || report.skipped || report.verificationCompleted === false) return;
+    if (!report || report.skipped) return;
     semanticRestorationEvidence.push(report);
-    if (semanticRestorationEvidence.length > 8) semanticRestorationEvidence.shift();
   };
   const clauseCoverageAudit = require('./clauseCoverage').auditClauseCoverage(auditSource, outputText);
   const depthTugUsageStartUsd = Number(supplementalUsage?.estimatedUsd || 0);
@@ -3824,6 +3823,7 @@ async function runEngine({
   // 유지하므로 여기서 모델을 부르지 않는다. 그 밖의 변경은 옛 pass를 재사용하지
   // 않고 최종 문자열 자체를 판정만 다시 한다(수리 없음). 선택적 회복과
   // 예산을 분리하며 실패하면 이미 검증된 편집 후보부터 선택한다.
+  let finalReviewObligations = [];
   let finalSemanticRevalidation = {
     attempted: false,
     applied: false,
@@ -3832,11 +3832,17 @@ async function runEngine({
     priorStatus: ''
   };
   if (semanticReport?.ran === true) {
+    const obligationPolicy = require('./semanticObligations');
+    const finalPriorReports = semanticRestorationEvidence.map(r=>obligationPolicy.projectEvidence(r,projectSemanticText));
+    const finalObligations = obligationPolicy.collectObligations(rawSource, finalPriorReports);
+    finalReviewObligations = finalObligations;
     const preliminary = semanticProvenance.verifySemanticValidation(
       semanticReportForCandidate(semanticReport),
       { source: rawSource, candidate: outputText, requireDigest: true }
     );
     finalSemanticRevalidation.priorStatus = preliminary.status;
+    const needsObligationReview = preliminary.status === 'pass' && finalObligations.length > 0
+      && !obligationPolicy.allExplicitlyReviewed(finalObligations,semanticReport);
     const finalAuditStartedAt = Date.now();
     const finalDeadlineMs = Math.min(jobDeadlineMs, finalAuditStartedAt + 120000);
     const prepareRelationRepair = (report, priorReports, verifyReserveMs) =>
@@ -3869,10 +3875,10 @@ async function runEngine({
     // unchanged failure merely to obtain a different verdict.
     let preparedFinalRelationRestore = null;
     const finalRepairEvidence = require('./finalRelationRepair').selectFinalRepairEvidence(
-      rawSource, outputText, semanticReport, preliminary.status, semanticRestorationEvidence);
-    if (['stale', 'fail'].includes(preliminary.status) && !signal?.aborted
+      rawSource, outputText, semanticReport, preliminary.status, finalPriorReports);
+    if (['stale', 'fail', 'uncertain'].includes(preliminary.status) && !signal?.aborted
         && finalRepairEvidence) {
-      const proposal = await prepareRelationRepair(finalRepairEvidence, semanticRestorationEvidence, 90000);
+      const proposal = await prepareRelationRepair(finalRepairEvidence, finalPriorReports, 90000);
       finalSemanticRevalidation.preFinalRelationPatchAttempted = proposal.patchAttempted;
       finalSemanticRevalidation.preFinalRelationPatchReason = proposal.patchReason || '';
       finalSemanticRevalidation.preFinalRelationPatchedCount = proposal.patchedCount;
@@ -3882,7 +3888,7 @@ async function runEngine({
         preparedFinalRelationRestore = proposal;
       }
     }
-    if (preliminary.status === 'stale' || preparedFinalRelationRestore) {
+    if (preliminary.status === 'stale' || preparedFinalRelationRestore || needsObligationReview) {
       if (signal?.aborted || finalDeadlineMs <= Date.now()) {
         finalSemanticRevalidation.reason = signal?.aborted ? 'aborted' : 'job_deadline_exhausted';
       } else {
@@ -3901,6 +3907,7 @@ async function runEngine({
             finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'prior_verdict_not_failed';
           }
           let recheck = await qualityV2.runSemanticDocumentAudit({
+            priorReports: finalPriorReports,
             source: rawSource,
             outputText,
             lang,
@@ -3908,7 +3915,7 @@ async function runEngine({
             config: cfg,
             allowedExtra,
             mode: selectedMode,
-            discourseSignals: ['final_semantic_revalidation', ...(priorReport.pass === false || finalRepairEvidence
+            discourseSignals: ['final_semantic_revalidation', ...(priorReport.pass === false || finalRepairEvidence || needsObligationReview
               ? ['prior_failed_semantic_confirmation'] : [])],
             safetyIdentifier: safetyId,
             documentProfile,
@@ -3923,19 +3930,20 @@ async function runEngine({
           // rewrite, extra repair loop, guessed insertion or unverified pass.
           const recheckElapsed = Date.now() - finalAuditStartedAt;
           const relationRestoreTimeAvailable = finalDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2);
+          const hasConfirmedRepair = require('./finalRelationRepair').confirmedRepairFindings(recheck).length > 0;
           if (recheck.pass === false) {
             finalSemanticRevalidation.relationRestoreSkipReason = recheck.verificationCompleted !== true
               ? 'verification_incomplete'
-              : recheck.uncertain ? 'uncertain'
+              : recheck.uncertain && !hasConfirmedRepair ? 'uncertain'
                 : signal?.aborted ? 'aborted'
                   : relationRestoreTimeAvailable ? '' : 'deadline_insufficient';
           }
           if (recheck.pass === false && recheck.verificationCompleted === true
-              && !recheck.uncertain && !signal?.aborted
+              && (!recheck.uncertain || hasConfirmedRepair) && !signal?.aborted
               && relationRestoreTimeAvailable) {
             const verifyReserveMs = Math.max(30000, Math.ceil(recheckElapsed * 1.2));
             const restored = await prepareRelationRepair(recheck,
-              [...semanticRestorationEvidence, priorReport], verifyReserveMs);
+              [...finalPriorReports, priorReport], verifyReserveMs);
             const restoreSafety = { eligible: restored.applied, warnings: restored.warnings };
             finalSemanticRevalidation.relationPatchAttempted = restored.patchAttempted;
             finalSemanticRevalidation.relationPatchReason = restored.patchReason || '';
@@ -3953,6 +3961,7 @@ async function runEngine({
               finalSemanticRevalidation.relationRestorationAttempted = true;
               try {
                 const verified = await qualityV2.runSemanticDocumentAudit({
+                  priorReports: [...finalPriorReports, recheck],
                   source: rawSource, outputText: restored.text, lang, signal,
                   config: cfg, allowedExtra, mode: selectedMode, safetyIdentifier: safetyId,
                   documentProfile, allowRepair: false, deadlineMs: finalDeadlineMs,
@@ -4020,12 +4029,18 @@ async function runEngine({
         }
       }
     }
+    if (needsObligationReview && !finalSemanticRevalidation.applied) {
+      semanticReport = semanticProvenance.bindSemanticValidation({...semanticReport,
+        pass:false,uncertain:true,verificationCompleted:false,
+        decisionReason:'prior_semantic_obligations_unverified'},rawSource,outputText);
+    }
   }
   if ((finalSemanticRevalidation.priorStatus === 'stale' || finalSemanticRevalidation.attempted)
       && (!finalSemanticRevalidation.applied || semanticReport.pass !== true)) {
     const currentEntry = recordCandidateCheckpoint(finalSemanticRevalidation.applied
       ? 'final_revalidation_not_passed' : 'final_revalidation_unavailable', semanticReportForCandidate(semanticReport));
     const choice = candidateLedger.chooseFinal(currentEntry?.id, {
+      reviewObligations: finalReviewObligations,
       knownViolations: finalSemanticRevalidation.applied ? semanticReport.violations || []
         : finalSemanticRevalidation.completedFindings || []
     });

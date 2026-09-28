@@ -101,7 +101,7 @@ function createCandidateLedger({ enabled = true, assess, source = null, requireS
     return entry;
   }
 
-  function chooseFinal(currentId, { knownViolations = [] } = {}) {
+  function chooseFinal(currentId, { knownViolations = [], reviewObligations = [] } = {}) {
     if (!enabled) return { ...selection, entry: null };
     const current = entries.find(entry => entry.id === currentId) || entries[entries.length - 1] || null;
     if (!current) {
@@ -118,7 +118,8 @@ function createCandidateLedger({ enabled = true, assess, source = null, requireS
       && v.repairable === true && (v.type === 'omission'
         ? !v.sourceSpan || !entry.text.includes(v.sourceSpan)
         : v.candidateSpan && entry.text.includes(v.candidateSpan)));
-    const eligible = entries.filter(entry => entry.eligible && !contradicted(entry));
+    const eligible = entries.filter(entry => entry.eligible && !contradicted(entry)
+      && require('./semanticObligations').allExplicitlyReviewed(reviewObligations,entry.semanticReport));
     const best = eligible.reduce((winner, candidate) => (
       !winner || compareCandidatePriority(candidate, winner) > 0 ? candidate : winner
     ), null);

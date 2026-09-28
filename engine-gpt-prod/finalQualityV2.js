@@ -402,9 +402,14 @@ async function runSemanticDocumentAuditInternal({
   // for the final re-validation after late deterministic edits, where no
   // vocabulary-producing post-processing may follow.
   allowRepair = true,
+  priorReports = [],
   reserveEscalation
 }) {
-  const pairs = buildReviewPairs(source, outputText);
+  let pairs = buildReviewPairs(source, outputText);
+  const priorObligations = require('./semanticObligations').collectObligations(source, priorReports);
+  // Never lose an earlier relation at a new section boundary.
+  if (priorObligations.some(o=>!pairs.some(p=>p.sourceContext.includes(o.finding.sourceSpan))))
+    pairs = [{index:0,sourceContext:source,output:outputText,repairSafe:false}];
   const outputs = [];
   const reports = [];
   // 장문을 여러 구간으로 나눠 검사하면서 수리 예산은 문서 전체 1회로
@@ -436,6 +441,7 @@ async function runSemanticDocumentAuditInternal({
       const pairDiscourseSignals = [...new Set([...baseDiscourseSignals, ...auditControlSignals]), ...relationSignals.codes,
         ...(relationSignals.candidates || []).map(item => JSON.stringify(item))];
       let report = await judgeAndRepair(pair.sourceContext, pair.output, {
+        priorReports: [{violations:priorObligations.filter(o=>pairs.length===1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o=>o.finding)}],
         lang,
         signal,
         config,
@@ -461,6 +467,7 @@ async function runSemanticDocumentAuditInternal({
           let verified;
           const repairedSignals = auditRelationCandidates(pair.sourceContext, restored.text);
           try { verified = await judgeAndRepair(pair.sourceContext, restored.text, {
+            priorReports: [{violations:priorObligations.filter(o=>pairs.length===1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o=>o.finding)}, report],
             lang, signal, config, maxRounds: 0, reserveEscalation, allowedExtra, mode,
             safetyIdentifier, documentProfile, discourseSignals: [
               ...discourse.compareDiscourse(pair.sourceContext, restored.text).codes,
@@ -520,6 +527,7 @@ async function runSemanticDocumentAuditInternal({
         violations: report.violations || [],
         sourceIssues: report.sourceIssues || [],
         relationContract: report.relationContract || '',
+        obligationReviews: report.obligationReviews || [],
         selectedJudgeModel: report.selectedJudgeModel || '',
         usage: report.usage || null
       };

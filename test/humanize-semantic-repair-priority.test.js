@@ -35,7 +35,7 @@ function mockedJudge(responses) {
     require: name => name === './openaiClient' ? {
       completeJson: async options => {
         calls.push(options);
-        const json = responses[calls.length - 1];
+        const json = require('./helpers/semantic-review-fixture.cjs')(responses[calls.length - 1], options.user);
         assert.ok(json, `unexpected model call: ${options.meta.phase}`);
         if (json.throwCode) throw Object.assign(new Error(json.throwCode), { code: json.throwCode });
         return { json, model: options.model, usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, estimatedUsd: 0.001 } };
@@ -378,6 +378,7 @@ test('full humanization delivers the verified relation fix instead of restoring 
     else if (name === 'gpt_prod_relation_patch') json = { patches: [{ id: 'R1', replacement: fixedRelation }] };
     else if (/retry$/u.test(name)) json = { outputText: extractPromptDataSection(body.input, 'CURRENT') || before, safeChangeFound: false, notes: [] };
     else throw new Error(`unexpected schema: ${name}`);
+    json = require('./helpers/semantic-review-fixture.cjs')(json,body.input);
     return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(json) }] }], usage: { input_tokens: 40, output_tokens: 20, total_tokens: 60 } }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const result = await engine.run({ text: source, mode: 'formal', requestStrength: 'advanced', uid: 'semantic-repair-test', config });

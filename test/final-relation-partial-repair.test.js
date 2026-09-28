@@ -15,6 +15,19 @@ const report = { pass:false, verificationCompleted:true, violations:[
   sourceSpan,candidateSpan,relation,origin:'introduced'},source,output)) };
 const opts = {deadlineMs:120000,now:()=>0,assessLiteral:()=>({pass:true}),assessPatch:()=>({pass:true}),structurePreserved:()=>true};
 
+test('explicit unrelated uncertainty cannot veto confirmed targets or grant semantic pass',async()=>{
+ const mixed={...report,uncertain:true,violations:[...report.violations,
+   {type:'omission',origin:'unconfirmed',repairable:false,relationGrounded:false,span:'unlocated'}]};
+ assert.equal(selectFinalRepairEvidence(source,output,mixed,'uncertain'),mixed);
+ let calls=0;
+ const result=await prepareFinalRelationRepair(source,output,mixed,{...opts,repair:async(base,findings)=>{
+   calls++;assert.equal(findings.length,1);assert.equal(findings[0].origin,'introduced');
+   return {outputText:base.replace(d,fixed),repaired:true};
+ }});
+ assert.equal(calls,1);assert.equal(result.text,`${a} ${fixed} ${tail}`);assert.equal(result.pass,undefined);
+ assert.equal(selectFinalRepairEvidence(source,output,{...report,uncertain:true},'uncertain'),null);
+});
+
 test('partial literal restoration does not suppress remaining exact patch; shifted offsets are rebuilt', async()=>{
   let count=0;
   const result=await prepareFinalRelationRepair(source,output,report,{...opts,repair:async(base,findings,deadline)=>{

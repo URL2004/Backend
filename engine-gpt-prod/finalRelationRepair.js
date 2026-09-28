@@ -3,6 +3,14 @@
 const restoration = require('./confirmedRelationRestore');
 const { buildRelationPatchTargets } = require('./relationPatch');
 
+function confirmedRepairFindings(report) {
+  if(!report || report.pass!==false || report.skipped || report.verificationCompleted===false)return [];
+  if(report.uncertain && !(report.violations||[]).some(v=>v.origin==='unconfirmed'
+    || v.repairable===false || v.relationGrounded===false))return [];
+  return (report.violations||[]).filter(v=>v.origin==='introduced'
+    && require('./semanticObligations').hasGroundedSpan(v));
+}
+
 // A literal repair of one finding must not suppress another grounded finding.
 // Re-ground remaining windows on the repaired text; never reuse old offsets or
 // infer that a changed/absent window has passed. The entire proposal still
@@ -22,11 +30,10 @@ async function prepareFinalRelationRepair(source, output, report, {
     else if (!structurePreserved(literal.text)) proposal.skipReason = 'structure_not_preserved';
     else proposal = { ...proposal, ...literal, warnings: safety.warnings, skipReason: '' };
   }
-  // An uncertain aggregate is not authority for an additional model repair.
-  // Exact, current grounded findings only; old findings remain literal-only.
-  const findings = report.uncertain ? [] : (report.violations || []).filter(v =>
-    v.spanVerified === true && v.grounding === 'unique_exact_span'
-      && typeof v.sourceSpan === 'string' && source.includes(v.sourceSpan)
+  // Explicit uncertainty in another member must not veto a confirmed current
+  // target. Unexplained global uncertainty is still not repair authority.
+  const findings = confirmedRepairFindings(report).filter(v =>
+    typeof v.sourceSpan === 'string' && source.includes(v.sourceSpan)
       && source.indexOf(v.sourceSpan) === source.lastIndexOf(v.sourceSpan));
   const targets = buildRelationPatchTargets(proposal.text, findings);
   if (!targets.length) return proposal;
@@ -58,6 +65,7 @@ async function prepareFinalRelationRepair(source, output, report, {
 // current exact pass is never reopened. These findings nominate a proposal;
 // they are not a replacement verdict and cannot grant a pass.
 function selectFinalRepairEvidence(source, output, report, status, priorReports = []) {
+  if (status==='uncertain')return confirmedRepairFindings(report).length?report:null;
   if (!['stale', 'fail'].includes(status)) return null;
   if (report?.pass === false && !report.skipped && report.verificationCompleted !== false) return report;
   if (status !== 'stale' || report?.pass !== true) return null;
@@ -66,7 +74,7 @@ function selectFinalRepairEvidence(source, output, report, status, priorReports 
     if (!value || value.uncertain || value.skipped || value.verificationCompleted === false) return;
     for (const v of [...(value.violations || []), ...(value.initialViolations || [])]) {
       if (v.origin !== 'introduced' || v.relationGrounded !== true || v.repairable !== true
-          || v.grounding !== 'unique_exact_span' || v.spanVerified !== true) continue;
+          || !require('./semanticObligations').hasGroundedSpan(v)) continue;
       const a = v.sourceSpan, b = v.candidateSpan;
       if (typeof a !== 'string' || typeof b !== 'string' || a.length < 20 || b.length < 20
           || a === b || !source.includes(a) || !output.includes(b)
@@ -82,4 +90,4 @@ function selectFinalRepairEvidence(source, output, report, status, priorReports 
     nominationOnly: true };
 }
 
-module.exports = { prepareFinalRelationRepair, selectFinalRepairEvidence };
+module.exports = { prepareFinalRelationRepair, selectFinalRepairEvidence, confirmedRepairFindings };

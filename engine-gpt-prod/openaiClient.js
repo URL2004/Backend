@@ -358,7 +358,10 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
 
 async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity, accounting = null) {
   const configured = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS)
-    || (accounting?.longAttempt ? 100000 : DEFAULT_TIMEOUT_MS));
+    // Mandatory verdicts already have an absolute caller deadline and parent
+    // cancellation. Do not discard a paid verdict at 100s when its 120s final
+    // audit still has time. No extra retry; normal edit attempts stay bounded.
+    || (accounting?.semanticVerdict ? 180000 : accounting?.longAttempt ? 100000 : DEFAULT_TIMEOUT_MS));
   const timeoutMs = Math.max(1000, Math.min(configured, Number.isFinite(remainingMs) ? remainingMs : configured));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

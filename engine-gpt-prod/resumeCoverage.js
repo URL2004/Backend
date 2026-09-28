@@ -360,7 +360,7 @@ function restoreMissingClaimsLocally({
     const previousMinimum = learningClaim ? 0.42 : 0.5;
     const nextMinimum = learningClaim ? 0.48 : 0.5;
     const sourceFinalClaim = !String(omission.nextContext || '').trim();
-    if (sourceFinalClaim && previous && previous.score >= 0.55) {
+    if (sourceFinalClaim && previous && previous.score >= 0.55 && previous.index === spans.length-1) {
       const insertion = previous.span.end;
       text = `${text.slice(0, insertion)} ${sentence}${text.slice(insertion)}`;
       restoredSourceOrdinals.push(Number(omission.sourceOrdinal || Number(omission.sourceIndex || 0) + 1));
@@ -370,7 +370,10 @@ function restoreMissingClaimsLocally({
         || previous.score < previousMinimum
         || next.score < nextMinimum
         || previous.index >= next.index
-        || next.index - previous.index > 3) continue;
+        // An occupied gap may already contain a legitimate paraphrase. Low
+        // lexical recall does not prove omission; never insert a second claim
+        // beside it. The existing model repair/judge handles that ambiguity.
+        || next.index - previous.index !== 1) continue;
     text = `${text.slice(0, next.span.start)}${sentence} ${text.slice(next.span.start)}`;
     restoredSourceOrdinals.push(Number(omission.sourceOrdinal || Number(omission.sourceIndex || 0) + 1));
   }

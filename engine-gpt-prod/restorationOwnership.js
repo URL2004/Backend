@@ -12,7 +12,20 @@ function hasOutsideSourceContribution(source,start,end,candidate,replacement){
   for(const s of [...before,...after]){
     const distinctive=[...grams(s.text)].filter(g=>!owned.has(g)&&!kept.has(g));
     const lost=distinctive.filter(g=>out.has(g));
-    if(lost.length>=8&&lost.length/Math.max(1,distinctive.length)>=.35)return true;
+    const ratio=lost.length/Math.max(1,distinctive.length);
+    if(lost.length>=8&&ratio>=.35)return true;
+    // Short adjacent claims cannot reach an absolute eight-gram threshold.
+    // Near-complete distinctive overlap is sufficient to DEFER a destructive
+    // source copy, never to declare coverage or approve generated meaning.
+    if(s.text.replace(/[^\p{L}\p{N}]/gu,'').length<=24) {
+      const core=s.text.trimStart().replace(/^(?:그러나|하지만|그런데|그리고|또한)\s+/u,'');
+      const parts=[...grams(core)].filter(g=>!owned.has(g)&&!kept.has(g));
+      const shared=parts.filter(g=>out.has(g));
+      const compactCore=core.replace(/[^\p{L}\p{N}]/gu,'').toLowerCase();
+      const compactCandidate=String(candidate).normalize('NFC').replace(/[^\p{L}\p{N}]/gu,'').toLowerCase();
+      if(shared.length>=2 && shared.length/Math.max(1,parts.length)>=.9
+        && compactCore.length>=4 && compactCandidate.includes(compactCore))return true;
+    }
   }
   return false;
 }

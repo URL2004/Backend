@@ -59,7 +59,7 @@ for(const verdict of ['pass','fail','timeout']) test(`confirmed operator repair 
     assert.equal(phases.length,2);
     assert.ok(opts.user.includes(expected));
     if(verdict==='timeout')throw Object.assign(new Error('timeout'),{code:'OPENAI_TIMEOUT',usage:{estimatedUsd:.03}});
-    return {...reply,json:{violations:verdict==='pass'?[]:[{type:'distortion',span:'찾을 수 없는 문장',detail:'대응 불명'}]}};
+    return {...reply,json:require('./helpers/semantic-review-fixture.cjs')({violations:verdict==='pass'?[]:[{type:'distortion',span:'찾을 수 없는 문장',detail:'대응 불명'}]},opts.user)};
   },async judge=>{
     const options={maxRounds:1,config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-luna',repair:'gpt-6-luna'}}};
     if(verdict==='timeout')await assert.rejects(judge.judgeAndRepair(source,output,options),e=>{

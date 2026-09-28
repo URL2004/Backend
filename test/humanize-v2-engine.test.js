@@ -338,7 +338,7 @@ function installEngineMock(t, options = {}) {
         ? [{ type: options.semanticViolationType || 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정',
           sourceSpan: extractPromptDataSection(body.input, 'SOURCE'), candidateSpan: rewrite, relation: 'other', origin: 'introduced' }]
         : [];
-      return apiResponse({ violations });
+      return apiResponse(require('./helpers/semantic-review-fixture.cjs')({ violations },body.input));
     }
     if (name === 'gpt_prod_judge_repair') {
       return apiResponse({ outputText: options.repairOutput || options.humanize || SAFE_POLISH, repaired: true, notes: [] });

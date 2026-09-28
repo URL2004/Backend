@@ -4,7 +4,7 @@ const { splitSentenceSpans } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { sentenceSimilarity } = require('./sentenceAlignment');
 const { auditRelationCandidates, hasAdjacentRelationCoverage } = require('./relationAudit');
-const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification']);
+const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification', 'duplicate_conclusion']);
 
 // A relation heuristic is not proof. Only a judge-confirmed, uniquely grounded
 // distortion may nominate a sentence; mutual, unambiguous one-to-one matching

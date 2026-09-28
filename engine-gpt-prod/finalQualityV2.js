@@ -406,6 +406,7 @@ async function runSemanticDocumentAuditInternal({
   reserveEscalation
 }) {
   let pairs = buildReviewPairs(source, outputText);
+  pairs = require('./semanticAuditSchedule').planVerdictPairs(source, outputText, pairs, allowRepair);
   const priorObligations = require('./semanticObligations').collectObligations(source, priorReports);
   // Never lose an earlier relation at a new section boundary.
   if (priorObligations.some(o=>!pairs.some(p=>p.sourceContext.includes(o.finding.sourceSpan))))
@@ -417,7 +418,11 @@ async function runSemanticDocumentAuditInternal({
   // 구조였으므로, 실제 위반이 있는 구간에 한해 최대 3곳까지 국소 수리한다.
   const repairRoundBudget = allowRepair === false ? 0 : (pairs.length <= 1 ? 1 : Math.min(3, pairs.length));
   let remainingRepairRounds = repairRoundBudget;
-  await require('./concurrency').mapWithConcurrency(pairs, 2, async (pair, index) => {
+  // Verdict-only work has no shared repair budget to reorder. Start its largest
+  // requests first so a long tail is not queued behind short sections. Original
+  // indices still own every output/report; concurrency and deadline are unchanged.
+  const schedule = require('./semanticAuditSchedule').scheduleReviewPairs(pairs, allowRepair);
+  await require('./concurrency').mapWithConcurrency(schedule, 2, async ({ pair, index }) => {
     const startedAt = Date.now();
     // Keep the completed section reports and usage when cancellation occurs.
     // Passing signal to the outer mapper used to throw between sections,

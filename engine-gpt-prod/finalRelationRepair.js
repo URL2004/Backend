@@ -65,6 +65,62 @@ async function prepareFinalRelationRepair(source, output, report, {
 // current exact pass is never reopened. These findings nominate a proposal;
 // they are not a replacement verdict and cannot grant a pass.
 function selectFinalRepairEvidence(source, output, report, status, priorReports = []) {
+  let selected = selectCurrentRepairEvidence(source, output, report, status, priorReports);
+  if (!['stale', 'fail', 'uncertain'].includes(status) || report?.skipped) return selected;
+  // These reports are from this request, not a persistent/cross-version cache.
+  // A later incomplete/empty verdict cannot dismiss an earlier exact pair.
+  // Explicit dismissal must itself be complete and grounded on THIS pair.
+  const dismissed = new Set(), seenReports = new Set();
+  const collectDismissals = value => {
+    if (!value || seenReports.has(value)) return;
+    seenReports.add(value);
+    if (!value.skipped && value.verificationCompleted !== false) {
+      for (const review of value.obligationReviews || []) {
+        if (review.status === 'not_error' && typeof review.sourceSpan === 'string'
+            && typeof review.candidateSpan === 'string' && review.detail?.trim().length >= 8
+            && source.includes(review.sourceSpan) && output.includes(review.candidateSpan)
+            && source.indexOf(review.sourceSpan) === source.lastIndexOf(review.sourceSpan)
+            && output.indexOf(review.candidateSpan) === output.lastIndexOf(review.candidateSpan))
+          dismissed.add(`${review.id}\u0000${review.candidateSpan}`);
+      }
+    }
+    for (const child of value.reports || []) collectDismissals(child);
+  };
+  for (const previous of priorReports.slice(-8)) collectDismissals(previous);
+  collectDismissals(report);
+  const obligationId = require('./semanticObligations').obligationId;
+  if (selected?.nominationOnly) {
+    const retained = selected.violations.filter(v => !dismissed.has(`${obligationId(v)}\u0000${v.candidateSpan}`));
+    if (retained.length !== selected.violations.length)
+      selected = retained.length ? { ...selected, violations: retained } : null;
+  }
+  const findings = [...(selected?.violations || [])], keys = new Set(findings.map(v =>
+    `${v.type}\u0000${v.sourceSpan}\u0000${v.candidateSpan}`)), visited = new Set();
+  const visit = value => {
+    if (!value || visited.has(value) || value.skipped) return;
+    visited.add(value);
+    if (!value.uncertain && value.verificationCompleted !== false) {
+      for (const v of [...(value.violations || []), ...(value.initialViolations || [])]) {
+        const a = v.sourceSpan, b = v.candidateSpan;
+        if (v.origin !== 'introduced' || !require('./semanticObligations').hasGroundedSpan(v)
+            || typeof a !== 'string' || typeof b !== 'string' || a.length < 20 || b.length < 20
+            || a === b || !source.includes(a) || !output.includes(b)
+            || source.indexOf(a) !== source.lastIndexOf(a) || output.indexOf(b) !== output.lastIndexOf(b)
+            || dismissed.has(`${obligationId(v)}\u0000${b}`)) continue;
+        const key = `${v.type}\u0000${a}\u0000${b}`;
+        if (!keys.has(key) && findings.length < 8) { keys.add(key); findings.push(v); }
+      }
+    }
+    for (const child of [...(value.reports || []), ...(value.restorationNominationReports || [])]) visit(child);
+  };
+  for (const previous of priorReports.slice(-8)) visit(previous);
+  if (findings.length === (selected?.violations || []).length) return selected;
+  return { pass: false, uncertain: selected?.uncertain === true, verificationCompleted: true,
+    violations: findings, nominationOnly: true, priorEvidenceRetained: true,
+    partialDocumentEvidence: report?.verificationCompleted === false };
+}
+
+function selectCurrentRepairEvidence(source, output, report, status, priorReports = []) {
   // An incomplete DOCUMENT cannot certify anything, but its completed child
   // verdicts are not incomplete. Nominate only their exact unchanged windows
   // before the existing whole-document recheck; never reuse their old offsets

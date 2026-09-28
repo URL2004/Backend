@@ -106,7 +106,7 @@ test('cancelled semantic audit retains completed usage and marks all unfinished 
   let secondStarted;
   const bothStarted = new Promise(resolve => { secondStarted = resolve; });
   const context = { AbortSignal,
-    require: name => ['./concurrency','./callLedger','./semanticObligations'].includes(name) ? require('../engine-gpt-prod/'+name.slice(2)) : require(name),
+    require: name => ['./concurrency','./callLedger','./semanticObligations','./semanticAuditSchedule'].includes(name) ? require('../engine-gpt-prod/'+name.slice(2)) : require(name),
     buildReviewPairs:()=>Array.from({length:6},(_,index)=>({index,output:String(index),sourceContext:'source'})),
     auditRelationCandidates:()=>({codes:[],candidates:[]}),
     discourse:{compareDiscourse:()=>({codes:[]})},

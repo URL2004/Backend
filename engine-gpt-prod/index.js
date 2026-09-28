@@ -73,8 +73,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.85';
-const DETECT_VERSION = 'gpt-detect-v1.50';
+const VERSION = 'gpt-prod-v2.5.86';
+const DETECT_VERSION = 'gpt-detect-v1.51';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -5915,6 +5915,7 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
   const attempts = [];
   let failedUsage = emptyUsage();
   let recheckReason = 'none';
+  let selectedPhase = 'primary';
   const finish = out => {
     if (out.gptMeta) {
       out.gptMeta.usage = addUsage(addUsage(emptyUsage(), out.gptMeta.usage), failedUsage);
@@ -5935,7 +5936,7 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
       version: diagnostics.VERSION, attempts, recheckReason,
       recheckFailed: out.gptMeta?.escalationFailed === true,
       selectedModelScore: out.probability, evidenceAlignedScore: aligned.probability,
-      stageVersion: diagnostics.STAGE_VERSION, selectedPhase: attempts.at(-1)?.phase,
+      stageVersion: diagnostics.STAGE_VERSION, selectedPhase,
       statisticalScore: classified.probability, engineFinalScore: result.probability
     });
     return result;
@@ -6000,10 +6001,14 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
         documentProfile
       });
       attempts.push(diagnostics.summarizeAttempt(escalated.json, source, 'recheck'));
-      out = normalizeDetectResult(escalated.json, source);
+      const reviewed = normalizeDetectResult(escalated.json, source);
+      out = recheckReason === 'short_evidence_consistency'
+        ? require('../lib/detectEvidenceReview').selectShortConsistencyResult(out, reviewed, source) : reviewed;
+      selectedPhase = out === reviewed ? 'recheck' : 'primary';
       out.gptMeta = metaFromDetectResponses(primary, escalated, cfg, {
         task: route,
         escalated: true,
+        selectedModel: selectedPhase === 'primary' ? primary.model : escalated.model,
         primaryConfidence: primary.json.confidence || '',
         engine: DETECT_VERSION,
         detectPromptVersion: prompts.DETECT_PROMPT_VERSION
@@ -6025,6 +6030,7 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
   }
 
   recheckReason = 'primary_failed';
+  selectedPhase = 'recheck';
   try {
     const escalated = await callDetectModel({
       prompt: prompts.buildDetectPrompt(lang),
@@ -8555,7 +8561,7 @@ function shouldEscalateDetect(out, source, cfg) {
   // by the narrative policy. Escalation must use the canonical evidence that
   // actually supports the score, otherwise a cache/narrative change can alter
   // model routing without any change in evidence.
-  return ['low_confidence', 'cause_mismatch', 'evidence_score_tension', 'long_mixed_input']
+  return ['low_confidence', 'cause_mismatch', 'evidence_score_tension', 'short_evidence_consistency', 'long_mixed_input']
     .includes(require('../lib/detectDiagnostics').recheckReason(out, source, cfg));
 }
 

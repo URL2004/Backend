@@ -128,9 +128,20 @@ function alignedReviewPairs(source, output, maxChars = 9000) {
 }
 
 function alignedHeadingPairs(from, to, id, maxChars) {
-  const headings = text => require('./layoutStructure').buildLineRecords(text)
-    .filter(row => ['heading','title','legal_clause'].includes(row.role))
-    .map(row => ({ key: normalizeCompact(row.text), start: row.start }));
+  const headings = text => {
+    const records = require('./layoutStructure').buildLineRecords(text).filter(row => !row.blank);
+    return records.filter((row, index) => ['heading','title','legal_clause'].includes(row.role)
+      // Standalone circled section labels are intentionally classified as list
+      // tokens by layout protection. They can still be exact ownership anchors
+      // when followed by prose. Do not change their global structural role or
+      // treat complete list sentences / dense inventories as section headings.
+      || (row.role === 'list' && records[index + 1]?.role === 'prose'
+        && /^[①-⑳㉑-㉟㊱-㊿]\s+\S+(?:\s+\S+)+$/u.test(row.text.trim())
+        && row.text.trim().length <= 120
+        && !/[.!?。！？]$/u.test(row.text.trim())
+        && !/(?:습니다|합니다|이다|한다|된다|했다|였다|있다|없다)$/u.test(row.text.trim())))
+      .map(row => ({ key: normalizeCompact(row.text), start: row.start }));
+  };
   const a = headings(from), b = headings(to);
   if (a.length < 2 || a.length !== b.length || new Set(a.map(h => h.key)).size !== a.length
       || a.some((h,i) => h.key.length < 2 || h.key !== b[i].key)) return null;

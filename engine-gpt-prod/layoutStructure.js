@@ -154,7 +154,7 @@ function analyzeLineRecords(source, quoteAnalysis) {
     ? quoteAnalysis.layout : dependentQuoteLayout(source)).proseLines;
   for (let position = 0; position < nonEmpty.length; position++) {
     const record = nonEmpty[position];
-    record.cellCount = tableIndices.has(record.index) ? tableColumnCount(record.raw) : 0;
+    record.cellCount = tableIndices.has(record.index) ? Math.max(1, tableColumnCount(record.raw)) : 0;
     record.tabularSeparator = tableIndices.has(record.index) && /\t/u.test(String(record.raw || ''))
       ? 'tab'
       : (tableIndices.has(record.index) && /^\s*\|.*\|\s*$/u.test(String(record.raw || '')) ? 'pipe' : 'spacing');
@@ -892,7 +892,7 @@ function tableColumnCount(value) {
 }
 
 function detectContextTableLineIndices(records, excluded = new Set()) {
-  const out = new Set();
+  const out = require('./verticalTable').verticalTableIndices(records, excluded);
   const proseTabs = require('./proseTabLayout').proseTabLineIndices(records.map(r => r.raw).join('\n'));
   for (const record of records || []) {
     if (record.blank || excluded.has(record.index) || proseTabs.has(record.index)) continue;

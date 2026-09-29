@@ -1148,7 +1148,12 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   if (left.length >= 24
       && /[가-힣]{2,}(?:아|어|여|해)$/u.test(leftToken)
       && RIGHT_SHORT_PREDICATE_CONTINUATION_RE.test(right)) return true;
-  if (FORCE_WRAP_TAIL_RE.test(leftToken)) return true;
+  // A nominal cell ending in 경로/평가/의의 is not a bound particle.
+  // Single-character suffix matches need an actual clause on both sides;
+  // standalone connective words remain sufficient evidence.
+  if (FORCE_WRAP_TAIL_RE.test(leftToken)
+      && (/^(?:및|그리고|그러나|하지만|또한|따라서|대한|관한|위해|통해|하며|하고|하는|되는|된|할|했던|필요한|가능한)$/u.test(leftToken)
+        || (left.split(/\s+/u).length >= 3 && right.split(/\s+/u).length >= 2))) return true;
   // PDF의 고정 폭 줄바꿈은 대체로 긴 행 여러 개가 문장부호 없이 이어진다.
   // 매우 짧은 독립 행은 시·제목일 수 있으므로 이 일반 규칙에서 제외한다.
   return left.length >= 48 && right.length >= 12;

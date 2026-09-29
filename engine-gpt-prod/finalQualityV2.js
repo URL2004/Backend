@@ -408,6 +408,17 @@ async function runSemanticDocumentAuditInternal({
   // absent every section is judged fresh exactly as before.
   receiptStore = null,
   prepareCandidateText = null,
+  // Internal staging (semanticStaging.js). Only the caller's main repair-
+  // capable document audit opts in; every other audit is unchanged.
+  stagedConfirmation = false,
+  // Per-call admission for each added sweep call (the caller's optional
+  // recovery cost/deadline reservation). Denied => that section stays
+  // unconfirmed and the caller must force the final confirming verdict.
+  reserveConfirmation = null,
+  // Called (at most once, never throws into the audit) as soon as staging
+  // learns that the final confirming verdict is required, so the caller's
+  // job-scoped requirement is established even if this audit later throws.
+  onConfirmationRequired = null,
   // Absolute deadline already applied to `signal` by runSemanticDocumentAudit.
   // Read only for scheduling diagnostics; it never changes a request.
   deadlineMs = undefined
@@ -421,12 +432,15 @@ async function runSemanticDocumentAuditInternal({
   const priorObligations = require('./semanticObligations').collectObligations(source, priorReports);
   const pairObligations = (pair, count) => priorObligations
     .filter(o => count === 1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o => o.finding);
-  const pairSignals = (pair, count) => {
+  // documentSignals: the audit's caller signals by default. The staged sweep
+  // passes [] so its signals are exactly those of the final verdict minus the
+  // pure control markers, which receipt keys exclude.
+  const pairSignals = (pair, count, documentSignals = discourseSignals) => {
     const baseDiscourseSignals = count === 1
-      ? discourseSignals
+      ? documentSignals
       : discourse.compareDiscourse(pair.sourceContext, pair.output).codes;
     const relationSignals = auditRelationCandidates(pair.sourceContext, pair.output, { documentSource: source });
-    const auditControlSignals = discourseSignals.filter(code => [
+    const auditControlSignals = documentSignals.filter(code => [
       'final_semantic_revalidation', 'prior_failed_semantic_confirmation'
     ].includes(code));
     return [...new Set([...baseDiscourseSignals, ...auditControlSignals]), ...relationSignals.codes,
@@ -437,8 +451,8 @@ async function runSemanticDocumentAuditInternal({
     source, pairs: list, index, signals, lang, mode, allowedExtra, documentProfile, safetyIdentifier, config
   }) : '';
   // The new request's required verdict tier and the obligations it would give.
-  const lookupOptions = (list, index, signals) => ({
-    route: receipts.expectedRoute(signals, pairMaxRounds(list[index]), config),
+  const lookupOptions = (list, index, signals, requireConfirmation = false) => ({
+    route: receipts.expectedRoute(signals, pairMaxRounds(list[index]), config, { requireConfirmation }),
     obligations: pairObligations(list[index], list.length)
   });
   const coversObligations = list => !priorObligations.some(o => !list.some(p => p.sourceContext.includes(o.finding.sourceSpan)));
@@ -459,6 +473,24 @@ async function runSemanticDocumentAuditInternal({
   // Never lose an earlier relation at a new section boundary.
   if (!coversObligations(pairs))
     pairs = [{index:0,sourceContext:source,output:outputText,repairSafe:false}];
+  const staging = require('./semanticStaging');
+  const stagingDiagnostics = staging.stagingEligible({ stagedConfirmation, allowRepair, store, config, basePairs, pairs })
+    ? staging.createStagingDiagnostics(true) : null;
+  // A. Document-wide: once any grounded failure is known, the final will need
+  // a confirming verdict for every section. Sections starting after that
+  // point use the confirming judge from their first call (no added call).
+  let confirmationKnown = Boolean(stagingDiagnostics) && priorObligations.length > 0;
+  // Sticky: once confirmation is known to be required it never reverts.
+  const markRequired = () => {
+    if (!stagingDiagnostics) return;
+    const first = stagingDiagnostics.required !== true;
+    stagingDiagnostics.required = true;
+    stagingDiagnostics.complete = false;
+    if (first && typeof onConfirmationRequired === 'function') {
+      try { onConfirmationRequired(); } catch { /* caller notification only */ }
+    }
+  };
+  if (confirmationKnown) markRequired();
   // Diagnostics only: any failure here leaves the audit exactly as before.
   let recorder = null;
   const trace = fn => { try { if (recorder) fn(recorder); } catch { /* diagnostics are optional */ } };
@@ -473,12 +505,18 @@ async function runSemanticDocumentAuditInternal({
   // 구조였으므로, 실제 위반이 있는 구간에 한해 최대 3곳까지 국소 수리한다.
   const repairRoundBudget = allowRepair === false ? 0 : (pairs.length <= 1 ? 1 : Math.min(3, pairs.length));
   let remainingRepairRounds = repairRoundBudget;
+  const reserveRepairRound = () => { if (remainingRepairRounds <= 0) return false; remainingRepairRounds--; return true; };
   // Verdict-only work has no shared repair budget to reorder. Start its largest
   // requests first so a long tail is not queued behind short sections. Original
   // indices still own every output/report; concurrency and deadline are unchanged.
   const schedule = require('./semanticAuditSchedule').scheduleReviewPairs(pairs, allowRepair);
   await require('./concurrency').mapWithConcurrency(schedule, 2, async ({ pair, index }) => {
     const startedAt = Date.now();
+    const requireConfirmation = confirmationKnown === true;
+    const confirmationOption = requireConfirmation ? { requireConfirmation: true } : {};
+    // judge.js stagedConfirmation: a failed primary verdict defers its repair
+    // to the existing confirming path instead of primary repair + re-judge.
+    const stagedJudgeOption = stagingDiagnostics ? { stagedConfirmation: true } : {};
     // An exact request-local receipt needs no model request, so it remains
     // usable even after cancellation. Key construction failure is a miss.
     let pairDiscourseSignals = null, receiptKey = '', receipt = null;
@@ -486,13 +524,13 @@ async function runSemanticDocumentAuditInternal({
       try {
         pairDiscourseSignals = pairSignals(pair, pairs.length);
         receiptKey = keyFor(pairs, index, pairDiscourseSignals);
-        receipt = store.lookup(receiptKey, lookupOptions(pairs, index, pairDiscourseSignals));
+        receipt = store.lookup(receiptKey, lookupOptions(pairs, index, pairDiscourseSignals, requireConfirmation));
       } catch { pairDiscourseSignals = null; receiptKey = ''; receipt = null; }
     }
     trace(r => {
       r.describe(index, { pair, obligationCount: pairObligations(pair, pairs.length).length,
         signals: pairDiscourseSignals,
-        route: store && pairDiscourseSignals ? lookupOptions(pairs, index, pairDiscourseSignals).route : '' });
+        route: store && pairDiscourseSignals ? lookupOptions(pairs, index, pairDiscourseSignals, requireConfirmation).route : '' });
       r.receipt(index, !store ? 'disabled' : !receiptKey ? 'key_error' : receipt ? 'hit' : 'miss');
       r.start(index);
     });
@@ -533,6 +571,7 @@ async function runSemanticDocumentAuditInternal({
         trace(r => r.describe(index, { pair, obligationCount: pairObligations(pair, pairs.length).length,
           signals: pairDiscourseSignals }));
       }
+      if (requireConfirmation && stagingDiagnostics) stagingDiagnostics.earlyConfirmedSections += 1;
       let report = await judgeAndRepair(pair.sourceContext, pair.output, {
         priorReports: [{violations:pairObligations(pair, pairs.length)}],
         lang,
@@ -541,14 +580,16 @@ async function runSemanticDocumentAuditInternal({
         // 한 구간이 문서 전체 예산을 독점하지 않게 각 구간은 1회만 수리한다.
         // 남은 위반은 상위 판정으로 확인하되 다음 문제 구간에도 예산을 남긴다.
         maxRounds: pairMaxRounds(pair),
-        reserveRepair: () => { if (remainingRepairRounds <= 0) return false; remainingRepairRounds--; return true; },
+        reserveRepair: reserveRepairRound,
         reserveEscalation,
         allowedExtra,
         mode,
         discourseSignals: pairDiscourseSignals,
         safetyIdentifier,
         documentProfile,
-        prepareCandidateText
+        prepareCandidateText,
+        ...confirmationOption,
+        ...stagedJudgeOption
       });
       // Mint immediately so a completed pass survives a later timeout of a
       // sibling section. The judged candidate may be a repaired text only when
@@ -577,7 +618,7 @@ async function runSemanticDocumentAuditInternal({
           try { verified = await judgeAndRepair(pair.sourceContext, restored.text, {
             priorReports: [{violations:priorObligations.filter(o=>pairs.length===1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o=>o.finding)}, report],
             lang, signal, config, maxRounds: 0, reserveEscalation, allowedExtra, mode,
-            safetyIdentifier, documentProfile, prepareCandidateText, discourseSignals: [
+            safetyIdentifier, documentProfile, prepareCandidateText, ...confirmationOption, discourseSignals: [
               ...discourse.compareDiscourse(pair.sourceContext, restored.text).codes,
               ...repairedSignals.codes, ...repairedSignals.candidates.map(c => JSON.stringify(c))]
           }); } catch (error) {
@@ -647,8 +688,22 @@ async function runSemanticDocumentAuditInternal({
         relationContract: report.relationContract || '',
         obligationReviews: report.obligationReviews || [],
         selectedJudgeModel: report.selectedJudgeModel || '',
+        ...(requireConfirmation ? { relationConfirmationFirst: report.relationConfirmationFirst === true,
+          stagedConfirmation: 'early' } : {}),
         usage: report.usage || null
       };
+      // A grounded failure seen in this section is now known document-wide.
+      if (stagingDiagnostics && !confirmationKnown) {
+        try {
+          if (require('./semanticObligations').collectObligations(source, [reports[index]]).length > 0) {
+            confirmationKnown = true;
+            markRequired();
+          }
+        } catch {
+          // Cannot tell whether a grounded failure exists: fail closed.
+          markRequired();
+        }
+      }
       trace(r => r.finish(index, { outcome: require('./semanticAuditSchedule').outcomeFor(reports[index]),
         report: { ...report, usage: reports[index].usage }, verifyCount }));
     } catch (error) {
@@ -668,9 +723,54 @@ async function runSemanticDocumentAuditInternal({
       trace(r => r.finish(index, { outcome: require('./semanticAuditSchedule').errorOutcome(signal), error, verifyCount }));
     }
   });
+  // B. Explicit confirmation of the remaining sections, in the final's exact
+  // receipt shape, while repair is still possible. Only when every section
+  // passed; a failing audit already goes to the existing failure path.
+  if (stagingDiagnostics) {
+    try {
+      const obligations = staging.documentObligations(source, priorReports, reports);
+      if (obligations.length > 0) markRequired();
+      const completedPass = reports.length === pairs.length
+        && reports.every(report => report?.pass === true && report.verificationCompleted === true);
+      if (stagingDiagnostics.required !== true) stagingDiagnostics.skipReason = 'not_required';
+      else if (!completedPass) stagingDiagnostics.skipReason = 'audit_not_passed';
+      else if (signal?.aborted) stagingDiagnostics.skipReason = 'aborted';
+      else {
+        // runConfirmationSweep does not reject: every section keeps its own
+        // usage/findings. The catch below covers the pre-call obligation
+        // collection and fails closed.
+        const swept = await staging.runConfirmationSweep({
+          source, pairs, outputs, reports, obligations, diagnostics: stagingDiagnostics, priorReports,
+          buildPairs: buildReviewPairs, prepareCandidateText,
+          signalsFor: (pair, count) => pairSignals(pair, count, []),
+          keyFor, store, config, judge: judgeAndRepair,
+          judgeOptions: { lang, allowedExtra, mode, safetyIdentifier, documentProfile,
+            reserveRepair: reserveRepairRound, reserveEscalation },
+          pairMaxRounds, restoreBoundary: restoreReviewPairBoundaryWhitespace, signal,
+          addUsage: addUsageLocal, mapWithConcurrency: require('./concurrency').mapWithConcurrency,
+          // No admission gate supplied => no added call is admitted.
+          reserve: typeof reserveConfirmation === 'function' ? reserveConfirmation : () => false,
+          withOptionalPolicy: fn => require('./callLedger').withPolicy(
+            { optional: true, stage: 'staged_semantic_confirmation' }, fn)
+        });
+        outputs.splice(0, outputs.length, ...swept.outputs);
+        reports.splice(0, reports.length, ...swept.reports);
+      }
+    } catch {
+      // Unknown state: require the confirming final, never claim completion.
+      stagingDiagnostics.skipReason = 'sweep_error';
+      markRequired();
+    }
+  }
   const repairedText = outputs.join('');
   const residual = reports.filter(report => report.pass !== true);
   const verificationCompleted = reports.length === pairs.length && reports.every(report => report.verificationCompleted === true);
+  if (stagingDiagnostics) {
+    try {
+      staging.bindProof(stagingDiagnostics, { source, candidate: repairedText, sections: pairs.length,
+        report: { pass: verificationCompleted && residual.length === 0, verificationCompleted } });
+    } catch { stagingDiagnostics.complete = false; }
+  }
   let scheduleDiagnostics = null;
   trace(r => { scheduleDiagnostics = r.result({ signal }); });
   return bindSemanticValidation({
@@ -698,7 +798,8 @@ async function runSemanticDocumentAuditInternal({
     violations: residual.flatMap(report => report.violations || []),
     sourceIssues: reports.flatMap(report => report.sourceIssues || []),
     relationContract: 'semantic-relations-v2',
-    ...(scheduleDiagnostics ? { scheduleDiagnostics } : {})
+    ...(scheduleDiagnostics ? { scheduleDiagnostics } : {}),
+    ...(stagingDiagnostics ? { stagedConfirmation: stagingDiagnostics } : {})
   }, source, repairedText, { phase: 'semantic_document', model: [...new Set(reports.map(r => r.selectedJudgeModel).filter(Boolean))].join(',') });
 }
 

@@ -22,6 +22,29 @@ const rows = [
 ];
 const source = '[서론]\n\n' + rows.join('\n\n') + '\n\n[결론]\n\n측정 조건을 구분하고 기록을 보존한다.';
 
+test('proven PDF prose repairs bound word seams inside inline quotes before freezing', () => {
+  const quote = '자료를 읽으며 연구자가 설명한 문장을 다시 살펴보았다. 저자는 “이것은 허\n\n구나 단순한 이야기가 아니다. 사람들이 함께 받아들이는 중요한 가치\n\n와 규범”이라고 설명했다.';
+  const input = source + '\n\n' + quote;
+  const out = repair(input);
+  assert.match(out.text, /이것은 허구나/u);
+  assert.match(out.text, /중요한 가치와 규범/u);
+  assert.equal(compact(out.text), compact(input));
+  assert.equal(repair(out.text).text, out.text);
+  const canonical = preflight.auditAndSanitizeSource(input);
+  assert.match(canonical.text, /이것은 허구나/u);
+  assert.match(canonical.integrityText, /중요한 가치와 규범/u);
+  assert.match(chunks.splitChunksForGpt(canonical.text, { coalesceEditable: true }).chunks.map(c => c.text).join('\n'), /허구나/u);
+});
+
+test('quote reflow does not guess unknown words or change intentional verse and code', () => {
+  for (const fragment of [
+    '“이것은 허\n\n구나 단순한 이야기가 아니다.”',
+    '그는 “작은 바람\n\n멀리 흐르는 강”이라는 시를 읽었다.',
+    '자료의 설명을 살펴보며 저자는 여러 조건을 구분한 뒤 “새로운 작은\n\n세계를 확인했다”라고 말했다.',
+    '```text\n자료를 읽으며 저자는 여러 조건을 구분한 뒤 “이것은 허\n\n구나 단순한 이야기가 아니다”라고 말했다.\n```'
+  ]) assert.ok(repair(source + '\n\n' + fragment).text.endsWith(fragment), fragment);
+});
+
 test('physical PDF prose seams are joined before title/list ownership; content unchanged', () => {
   const fixed = repair(source);
   assert.equal(fixed.changed, true);

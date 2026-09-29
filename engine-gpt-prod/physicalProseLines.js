@@ -8,6 +8,15 @@ const { isRefHeadingLine } = require('../engine/freezeblocks');
 const END = /[.!?。！？…][”’"'」』》〉)\]]*$/u;
 const FINITE = /[가-힣]{2,}(?:습니다|입니다|합니다|됩니다|했다|한다|된다|이다|였다|있다|없다|않다)$/u;
 const isComplete = text => END.test(text) || FINITE.test(text);
+// Lexically unambiguous broken words only. Unknown Korean seams must not be
+// guessed inside quotations. Document-attested words remain the primary rule.
+const QUOTE_WORDS = /^(?:허구|상상력|공동체|구성원|정체성|가치관|가능성|필요성|연구방법|실용주의)(?:나|는|은|이|가|을|를|의|와|과|도|만|에서|으로)?$/u;
+function quoteWordSeam(left, right, witnessed) {
+  if (wordSeam(left, right, witnessed)) return true;
+  const a = left.match(/([가-힣]+)$/u)?.[1] || '';
+  const b = right.match(/^([가-힣]+)/u)?.[1] || '';
+  return !!a && !!b && QUOTE_WORDS.test(a + b);
+}
 const REFERENCE = /^(?:\[|【)?(?:참고\s*문헌|참고\s*자료|References|Bibliography)(?:\]|】|\s|$)/iu;
 const EXPLICIT = /^(?:#{1,6}\s|>|[-*+•▪◦·●○■□◆◇▶▷※]\s|\d+(?:\.\d+)*[.)]\s|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?\s|[IVX]+[.)]\s|제\s*\d+\s*(?:장|절|조)|\[[^\]\n]{1,80}\]$|【[^】\n]{1,80}】$)/u;
 const NUMBERED = /^[가-하][.)](?=\s*\S)/u;
@@ -104,7 +113,14 @@ function repairPhysicalProseLines(value) {
     // the next iteration. A row already joined as proven prose is different:
     // its final noun alone cannot create a new section boundary.
     if (!continuations.has(a.index) && isNominalHeading(a.text)) continue;
-    const attach = wordSeam(a.text, b.text, witnessed);
+    const owners = literals.filter(s => s.start < b.start && s.end > a.end);
+    // Only an inline quotation embedded in proven physical prose is eligible.
+    // Standalone quotations, verse, code, completed sentences and unknown
+    // word seams retain their original layout. Never edit quotation letters.
+    const inlineQuote = owners.length > 0 && owners.every(s => s.spanType === 'quote'
+      && s.start < a.end && s.end > b.start && !standaloneQuotes.includes(s));
+    const attach = inlineQuote ? quoteWordSeam(a.text, b.text, witnessed)
+      : wordSeam(a.text, b.text, witnessed);
     // A real 가나다 item is never swallowed without a preceding broken polite
     // ending. A chart label, short heading or verse is not a continuation.
     if (NUMBERED.test(b.text) && !(attach && /(?:습니?|[합입됩했겠였않없있]니|했|됐|였|었|랐|렸|겠)$/u.test(a.text))) continue;
@@ -123,7 +139,8 @@ function repairPhysicalProseLines(value) {
     if (!attach && !shortEnding && !dateTail && (b.text.length < Math.max(28, median * 0.72) || b.text.split(/\s/u).length < 3)) continue;
     // Do not alter exact quotations or code even if they wrap at the same width.
     if (literals.some(s => s.start < to && s.end > from
-      && !(dateTail && s.spanType === 'parenthetical'))) continue;
+      && !(dateTail && s.spanType === 'parenthetical')
+      && !(inlineQuote && attach && s.spanType === 'quote'))) continue;
     joins.push({ start: from, end: to, separator: attach ? '' : ' ', lineOrdinal: a.index + 1 });
     continuations.add(b.index);
   }

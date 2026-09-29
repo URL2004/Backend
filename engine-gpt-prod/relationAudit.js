@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v19-volitional-repeat';
+const VERSION = 'relation-candidates-v20-repetition-condition-prefix';
 const { predicateScopeCandidates } = require('./predicateScope');
 const { auditParentheticalAliasOwners } = require('./entityParentheticalIntegrity');
 
@@ -376,18 +376,46 @@ function volitionalModalityShift(original,sentence,before,after,syntaxForOperato
 }
 
 function introducedConditionalRepetition(original,sentence,before,after,syntaxForOperators) {
-  // Bind the added marker to the SAME literal conditional action, not to any
-  // occurrence of 다시 elsewhere. 다음 날에도 may already imply repetition:
+  // Bind the added marker to the same conditional action, not to any
+  // occurrence of 다시 elsewhere. A unique literal verbal prefix can retain
+  // action ownership while the conditional tail is paraphrased. 다음 날에도
+  // may already imply repetition:
   // the full-context judge decides whether scope changed or was preserved.
   for (const m of sentence.matchAll(/(?<![가-힣])(?:다시|재차)\s+([^.!?\n]{2,80}?(?:다면|라면|으면|면))(?=[,\s.!?]|$)/gu)) {
-    const action=m[1],at=original.indexOf(action);
+    const action=m[1];
+    let at=original.indexOf(action),length=action.length;
+    if (at<0) {
+      const anchor=paraphrasedConditionalAction(original,sentence,action);
+      if (!anchor) continue;
+      at=anchor.start; length=anchor.length;
+    }
     if (action.length<8||at<0||original.indexOf(action,at+1)>=0
-        || !unprotectedOperator(before,original,at,at+action.length,syntaxForOperators)
+        || !unprotectedOperator(before,original,at,at+length,syntaxForOperators)
         || !unprotectedOperator(after,sentence,m.index,m.index+m[0].length,syntaxForOperators)) continue;
     if (/(?:^|\s)(?:다시|재차|또|반복해서|반복하여)\s*$/u.test(original.slice(0,at))) continue;
     return true;
   }
   return false;
+}
+
+function paraphrasedConditionalAction(original,sentence,action) {
+  // Deliberately narrower than arbitrary shared words: keep an exact verbal
+  // wish-action prefix, not a shared noun phrase whose following action may
+  // differ. Ambiguous/multiple conditional owners or coordinated extra actions
+  // abstain; this fallback does not expand the modality detector.
+  const prefix=action.match(/^([가-힣]{1,24}고\s+(?:싶은|싶었던|싶을))(?=\s)/u)?.[1];
+  if (!prefix || prefix.replace(/\s/gu,'').length<5) return null;
+  const boundary=new RegExp(`(?<![가-힣])${escapeRegExp(prefix)}(?=\\s)`,'gu');
+  const left=[...original.matchAll(boundary)],right=[...sentence.matchAll(boundary)];
+  if (left.length!==1||right.length!==1) return null;
+  const conditional=/(?:다면|라면|으면|면)(?=[,\s.!?]|$)/gu;
+  if (count(original,conditional)!==1||count(sentence,conditional)!==1) return null;
+  const tail=original.slice(left[0].index+prefix.length)
+    .match(/^[^.!?\n,;]{1,80}?(?:다면|라면|으면|면)(?=[,\s.!?]|$)/u)?.[0];
+  if (!tail) return null;
+  const extraAction=/[,;]|[가-힣](?:고|며|거나|면서|는데)\s/u;
+  if (extraAction.test(tail)||extraAction.test(action.slice(prefix.length))) return null;
+  return {start:left[0].index,length:prefix.length+tail.length};
 }
 
 function unprotectedOperator(document,sentence,start,end,syntaxForOperators) {

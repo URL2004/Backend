@@ -12,6 +12,8 @@ function createRecoveryBudget(maxEstimatedUsd, {
   maxCalls = Number(process.env.HUMANIZE_RECOVERY_MAX_CALLS) || 16,
   reservedLateCalls = Number(process.env.HUMANIZE_RECOVERY_RESERVED_LATE_CALLS) || 6,
   maxElapsedMs = Number(process.env.HUMANIZE_RECOVERY_MAX_ELAPSED_MS) || 240000,
+  finalAuditReserveMs = 120000,
+  getFinalAuditReserveMs,
   jobDeadlineMs = Infinity,
   clock = Date.now
 } = {}) {
@@ -50,17 +52,27 @@ function createRecoveryBudget(maxEstimatedUsd, {
   );
   const absoluteElapsedLimitMs = Math.max(30000, Math.min(900000, Math.floor(Number(maxElapsedMs) || 240000)));
   const lateTimeReserveMs = Math.min(60000, Math.floor(absoluteElapsedLimitMs / 4));
+  let finalReserveMs = Math.max(120000, Math.min(180000, Number(finalAuditReserveMs) || 120000));
+  const refreshFinalReserve = () => {
+    if (typeof getFinalAuditReserveMs === 'function') {
+      try { finalReserveMs = Math.max(finalReserveMs, Math.min(180000, Number(getFinalAuditReserveMs()) || 120000)); }
+      catch { finalReserveMs = 180000; }
+    }
+    return finalReserveMs;
+  };
   let lastDeniedReason = '';
 
   const enabled = enforced === true && limitUsd > 0;
   const elapsedMs = updateTime;
   const denialReason = ({ mandatory = false, priority = 'normal', estimatedUsd = 0 } = {}) => {
+    refreshFinalReserve();
     if (attemptedCallCount >= absoluteCallLimit) return 'recovery_call_limit_exhausted';
     if (elapsedMs() >= absoluteElapsedLimitMs) return 'recovery_time_limit_exhausted';
     // Optional work must leave time for both its own response (up to 120s)
-    // and the mandatory final verdict (up to 120s). This is admission, not
+    // and the mandatory final verdict (120s, or the approved long-text 180s).
+    // This is admission, not
     // an extension of the existing job deadline or a new delivery gate.
-    if (mandatory !== true && enforced === true && Number(clock()) + 240000 > jobDeadlineMs) {
+    if (mandatory !== true && enforced === true && Number(clock()) + 120000 + finalReserveMs > jobDeadlineMs) {
       return 'recovery_final_audit_time_reserved';
     }
     const latePriority = mandatory === true || String(priority || '').toLowerCase() === 'late';
@@ -115,6 +127,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
     lateCallReserve,
     absoluteElapsedLimitMs,
     lateTimeReserveMs,
+    finalAuditReserveMs: refreshFinalReserve(),
     elapsedMs: elapsedMs(),
     wallElapsedMs: Math.max(0, lastClock - startedAt),
     mandatoryExcludedMs,
@@ -128,9 +141,13 @@ function createRecoveryBudget(maxEstimatedUsd, {
   });
 
   return {
+    raiseFinalAuditReserve: value => {
+      finalReserveMs = Math.max(finalReserveMs, Math.min(180000, Number(value) || 120000));
+      return finalReserveMs;
+    },
     deadlineMs: ({ priority = 'late' } = {}) => Math.min(Number(clock())
       + Math.max(0, absoluteElapsedLimitMs - elapsedMs() - (priority === 'normal' ? lateTimeReserveMs : 0)),
-      enforced === true ? jobDeadlineMs - 120000 : Infinity),
+      enforced === true ? jobDeadlineMs - refreshFinalReserve() : Infinity),
     beginMandatoryAudit: () => {
       updateTime(); mandatoryAudits += 1;
       let ended = false;

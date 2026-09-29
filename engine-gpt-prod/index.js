@@ -457,9 +457,23 @@ async function runEngine({
   // 추가 회복 비용 상한은 이미 전달 가능한 모델 편집이 확보된 문서에서만
   // 작동한다. 0% 또는 승인 편집 0건 문서는 비용 상한 때문에 회복이 생략되어
   // 기술 차단으로 굳지 않도록 반드시 회복을 계속 시도한다.
+  // Section recovery runs before the merged candidate exists. Read its current
+  // chunks until the full materializer is ready; never size frozen literals.
+  let readFinalAuditCandidate = () => {
+    let candidate = structureChunk.mergeChunks(chunks);
+    if (inlineMathFreeze.count > 0) candidate = literalSpans.restoreMath(candidate, inlineMathFreeze).text;
+    if (inlineCodeFreeze.count > 0) candidate = literalSpans.restoreInlineCode(candidate, inlineCodeFreeze).text;
+    return candidate;
+  };
   const recoveryBudget = createRecoveryBudget(recoveryBudgetUsd, {
     enforced: primaryApprovedModelChunkCount > 0,
-    jobDeadlineMs
+    jobDeadlineMs,
+    // Reserve the actual final audit envelope before optional recovery starts.
+    // Use materialized source length, not shorter frozen literal placeholders.
+    finalAuditReserveMs: require('./finalSemanticDeadline').finalSemanticDeadline({ source: rawSource }).limitMs,
+    getFinalAuditReserveMs: () => require('./finalSemanticDeadline').finalSemanticDeadline({
+      source: rawSource, candidate: readFinalAuditCandidate()
+    }).limitMs
   });
   require('./callLedger').setRecoveryBudget(recoveryBudget);
 
@@ -596,6 +610,9 @@ async function runEngine({
     }
     return candidate;
   };
+  // Every subsequent optional admission reads the latest adopted text, including
+  // pre-semantic repairs that do not create a candidate-ledger checkpoint.
+  readFinalAuditCandidate = () => materializeExactLineCandidate(outputText);
   const finalStructurePlan = structureChunk.splitChunksForGpt(rawSource, {
     coalesceEditable: true,
     preserveSentenceBoundaries: shouldPreserveVoiceSentenceBoundaries(

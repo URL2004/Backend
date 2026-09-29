@@ -29,8 +29,9 @@ test('HTTP admission distinguishes style recovery from semantic repair',async t=
     await client.completeJson(opts);
     await ledger.withPolicy({optional:false,stage:'semantic_document'},()=>client.completeJson({...opts,meta:{task:'repair',phase:'primary:repair'}}));
     await client.completeJson({...opts,meta:{task:'repair',phase:'post_semantic_noop_recovery'}});
+    await ledger.withPolicy({optional:true,stage:'final_relation_patch'},()=>client.completeJson({...opts,meta:{task:'repair',phase:'final_relation_patch'}}));
   });
-  assert.deepEqual(priorities,['normal','late','late']);assert.deepEqual(deadlines,['normal','late','late']);
+  assert.deepEqual(priorities,['normal','late','late','late']);assert.deepEqual(deadlines,['normal','late','late','late']);
 });
 
 async function withJudgeStub(stub,fn){

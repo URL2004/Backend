@@ -89,6 +89,36 @@ async function withAudit(count, fn) {
 const primaryRepairOf = n => call => (!call.strong && call.section === n && call.text === section(n)
   ? { outputText: repaired(n), rounds: 1, initialViolations: [finding(n)] } : {});
 
+test('adoption baseline joins initial per-section preparation in order, never later repaired words', async()=>{
+  await withAudit(4,async({SOURCE,run,state})=>{
+    const prepared=text=>text.replace(/합성 문장/gu,'합성  문장');
+    state.delay=call=>call.section===1?10:0;
+    state.verdict=async call=>{
+      const initial=await call.options.prepareCandidateText(call.src,call.text);
+      const changed=initial.replace('설명입니다.','수정입니다.');
+      await call.options.prepareCandidateText(call.src,changed);
+      return {outputText:changed};
+    };
+    let baseline;
+    const report=await run(SOURCE,{prepareCandidateText:async (_source,text)=>prepared(text),
+      onPreparedCandidate:text=>{baseline=text;}});
+    assert.equal(baseline,prepared(SOURCE));
+    assert.notEqual(baseline,report.outputText);
+    assert.doesNotMatch(baseline,/수정입니다/u);
+  });
+});
+
+test('cancelled untouched sections keep their original input in the prepared baseline',async()=>{
+  await withAudit(4,async({SOURCE,run,calls})=>{
+    const controller=new AbortController();controller.abort();let baseline;
+    const report=await run(SOURCE,{signal:controller.signal,
+      prepareCandidateText:async (_source,text)=>text.replace(/합성 문장/gu,'합성  문장'),
+      onPreparedCandidate:text=>{baseline=text;}});
+    assert.equal(baseline,SOURCE);assert.equal(calls.length,0);
+    assert.equal(report.pass,false);assert.equal(report.verificationCompleted,false);
+  });
+});
+
 test('route mirror: requireConfirmation selects confirmation_first only with a distinct confirming model', () => {
   assert.equal(receipts.expectedRoute([], 1, config, { requireConfirmation: true }), 'confirmation_first');
   assert.equal(receipts.expectedRoute([], 1, config), 'primary_first');

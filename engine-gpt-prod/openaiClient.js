@@ -167,7 +167,7 @@ async function completeJsonRequest({
     // bounded attempt preserves the SAME caller deadline and output contract.
     // General style recovery must not consume the slots/time reserved for
     // confirmed semantic repairs. Previously EVERY HTTP call was "late".
-    accounting.priority = context?.policy?.stage === 'semantic_document' || /noop/u.test(meta.phase || '')
+    accounting.priority = ['semantic_document', 'final_relation_patch'].includes(context?.policy?.stage) || /noop/u.test(meta.phase || '')
       || /^(?:primary|escalation):repair$/u.test(meta.phase || '') ? 'late' : 'normal';
     accounting.reserveUsd = (
       // UTF-8 bytes bound input tokens, including schema; a cache write must

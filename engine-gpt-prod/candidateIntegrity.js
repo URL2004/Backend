@@ -68,10 +68,28 @@ function auditCandidateIntegrity({
     mode
   });
   const beforeKoreanIssueCounts = koreanIssueCounts(beforeKorean);
-  const candidateKoreanIssueCounts = koreanIssueCounts(candidateKorean);
+  const inheritedKoreanReviewCodes = [];
+  let comparisonKorean = candidateKorean;
+  const repeatedCode = 'repeated_vague_demonstrative';
+  const repeated = candidateKorean.issues.find(item => item.code === repeatedCode);
+  if (repeated && repeated.introducedCount > 0
+      && !beforeKorean.issues.some(item => item.code === repeatedCode && item.afterCount > 0)) {
+    const origins = koreanRefinement.demonstrativeOriginDelta(source, current, after);
+    if (origins.addedIntroducedCount === 0) {
+      // Discount only the comparison artifact, not the document's warning.
+      // Every non-source opener is an identical pre-existing instance; source
+      // multiplicity is preserved, so a new variant or duplicate cannot pass.
+      inheritedKoreanReviewCodes.push(repeatedCode);
+      comparisonKorean = { ...candidateKorean,
+        issues: candidateKorean.issues.filter(item => item.code !== repeatedCode),
+        weightedRisk: candidateKorean.weightedRisk - repeated.introducedCount * repeated.weight,
+        introducedIssueCount: candidateKorean.introducedIssueCount - repeated.introducedCount };
+    }
+  }
+  const candidateKoreanIssueCounts = koreanIssueCounts(comparisonKorean);
   if (koreanIntegrityWorsened({
     before: beforeKorean,
-    candidate: candidateKorean,
+    candidate: comparisonKorean,
     beforeCounts: beforeKoreanIssueCounts,
     candidateCounts: candidateKoreanIssueCounts
   })) {
@@ -158,6 +176,7 @@ function auditCandidateIntegrity({
     version: 3,
     pass: reasons.length === 0,
     reasons,
+    inheritedKoreanReviewCodes,
     before: {
       korean: compactKorean(beforeKorean),
       fingerprintRisk: beforeFingerprintRisk,

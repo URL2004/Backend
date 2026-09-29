@@ -636,11 +636,17 @@ async function runSemanticDocumentAuditInternal({
           // and no heuristic may certify its own output as semantically safe.
           let verified;
           const repairedSignals = auditRelationCandidates(pair.sourceContext, restored.text);
+          // The completed section can have reached confirmation without the
+          // document staging flag (ordinary escalation or a relation route).
+          // Its grounded repair must not restart at the weaker primary tier.
+          const restoreConfirmation = requireConfirmation || report.escalated === true
+            || report.relationConfirmationFirst === true;
           verifyCount += 1;
           try { verified = await judgeAndRepair(pair.sourceContext, restored.text, {
             priorReports: [{violations:priorObligations.filter(o=>pairs.length===1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o=>o.finding)}, report],
             lang, signal, config, maxRounds: 0, reserveEscalation, allowedExtra, mode,
-            safetyIdentifier, documentProfile, prepareCandidateText, ...confirmationOption, discourseSignals: [
+            safetyIdentifier, documentProfile, prepareCandidateText,
+            ...(restoreConfirmation ? { requireConfirmation: true } : {}), discourseSignals: [
               ...discourse.compareDiscourse(pair.sourceContext, restored.text).codes,
               ...repairedSignals.codes, ...repairedSignals.candidates.map(c => JSON.stringify(c))]
           }); } catch (error) {

@@ -5100,20 +5100,41 @@ function pushRepeatedVagueDemonstrative(issues, text) {
 function attributeDemonstrativeOrigins(rows, source, output) {
   const row = rows.find(item => item.code === 'repeated_vague_demonstrative');
   if (!row || row.afterCount < 2) return;
+  row.introducedCount = introducedDemonstrativeInstances(source, output).length;
+}
+
+// Observe individual openers even below the repetition-notice threshold.
+// Relative repair validation needs their identity: restoring a source-owned
+// opener cannot make a different, unchanged baseline opener newly generated.
+function introducedDemonstrativeInstances(source, output) {
   const key = text => String(text).replace(/\s+/gu, ' ').trim();
   const owned = new Map();
   for (const sentence of splitSentences(String(source || ''))) {
     const value = key(sentence);
     owned.set(value, (owned.get(value) || 0) + 1);
   }
-  let introduced = 0;
+  const introduced = [];
   for (const paragraph of String(output || '').split(/\n[ \t]*\n+/u)) {
     if (!/^(?:이러한|이런|그러한)\s*(?:변화|과정|경험|결과|점|부분)(?:은|는|이|가)/u.test(paragraph.trim())) continue;
     const value = key(splitSentences(paragraph.trim())[0] || '');
     if (value && (owned.get(value) || 0) > 0) owned.set(value, owned.get(value) - 1);
-    else introduced += 1;
+    else introduced.push(value);
   }
-  row.introducedCount = introduced;
+  return introduced;
+}
+
+function demonstrativeOriginDelta(source, before, candidate) {
+  const previous = introducedDemonstrativeInstances(source, before);
+  const next = introducedDemonstrativeInstances(source, candidate);
+  const available = new Map();
+  for (const value of previous) available.set(value, (available.get(value) || 0) + 1);
+  let addedIntroducedCount = 0;
+  for (const value of next) {
+    if ((available.get(value) || 0) > 0) available.set(value, available.get(value) - 1);
+    else addedIntroducedCount += 1;
+  }
+  return { beforeIntroducedCount: previous.length, candidateIntroducedCount: next.length,
+    addedIntroducedCount };
 }
 
 function mergeIssueComparison(sourceIssues, outputIssues) {
@@ -5426,6 +5447,7 @@ module.exports = {
   VERSION,
   ISSUE_DEFINITIONS,
   analyzeKoreanRefinement,
+  demonstrativeOriginDelta,
   applySafeDeterministicRepairs,
   repairFormalSurface,
   applySafeFormattingRepairs,

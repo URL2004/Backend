@@ -239,7 +239,11 @@ function collectPairedNominations(report, priorReports) {
       if (!PAIRED_RESTORATION_TYPES.includes(v?.type) || v.origin !== 'introduced'
           || v.relationGrounded !== true || v.repairable !== true || v.grounding !== 'unique_exact_span'
           || typeof v.sourceSpan !== 'string' || typeof v.candidateSpan !== 'string') continue;
-      const key = `${v.sourceSpan}\u0000${v.candidateSpan}`;
+      // A paired window is not a finding identity. Different relations or
+      // problem spans can require different micro repairs, so an ineligible
+      // residual must not erase a usable initial/prior finding on that pair.
+      // Actual replacement overlap is still rejected by the window gates.
+      const key = JSON.stringify([v.type, v.relation, v.sourceSpan, v.candidateSpan, v.span]);
       if (seen.has(key)) continue;
       seen.add(key);
       findings.push(v);

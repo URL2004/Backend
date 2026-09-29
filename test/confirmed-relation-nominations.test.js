@@ -21,7 +21,7 @@ function fixture(count = 2) {
 const report = violations => ({ pass: false, uncertain: false, verificationCompleted: true, violations });
 
 test('restoration and nomination retention share one bounded type contract', () => {
-  assert.deepEqual(PAIRED_RESTORATION_TYPES, ['distortion', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification', 'duplicate_conclusion']);
+  assert.deepEqual(PAIRED_RESTORATION_TYPES, ['distortion', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification', 'duplicate_conclusion', 'new_evaluation']);
   assert.equal(Object.isFrozen(PAIRED_RESTORATION_TYPES), true);
 });
 

@@ -27,6 +27,8 @@ async function track(options, fn) {
     model: safe(options.model), outcome: 'pending', elapsedMs: 0, usage: null, httpAttemptCount: 0,
     retryCounts: {}, usageKnown: false };
   store.entries.push(entry);
+  const endMandatoryAudit = store.policy.optional === false && options.meta?.task === 'judge'
+    ? store.recoveryBudget?.beginMandatoryAudit?.() : null;
   const deadline = Math.min(Number(options.deadlineMs) || Infinity, Number(store.policy.deadlineMs) || Infinity);
   try {
     const result = await fn({ ...options, ...(Number.isFinite(deadline) ? { deadlineMs: deadline } : {}) });
@@ -42,7 +44,7 @@ async function track(options, fn) {
       failedEstimatedUsd: Number(error.failedEstimatedUsd || 0),
       code: safe(error.code || error.name), retryCounts: { ...error.retryCounts }, httpAttemptCount: error.httpAttemptCount || 0 });
     throw error;
-  } finally { entry.elapsedMs = Date.now() - started; Object.freeze(entry); }
+  } finally { endMandatoryAudit?.(); entry.elapsedMs = Date.now() - started; Object.freeze(entry); }
 }
 function snapshot(store = current()) {
   const entries = (store?.entries || []).filter(entry => entry.outcome !== 'pending');

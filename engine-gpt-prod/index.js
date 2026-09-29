@@ -1935,9 +1935,11 @@ async function runEngine({
     semanticReport.decisionReason = semanticDecision.reason;
     if (semanticDecision.run) {
       const semanticInputText = outputText;
+      let semanticPreparedInputText = semanticInputText;
       semanticReport = await semanticCanonicalAudit.runCanonicalSemanticAudit({
         runAudit: options => qualityV2.runSemanticDocumentAudit(options),
         canonical: semanticCanonical,
+        onPreparedCandidate: text => { semanticPreparedInputText = text; },
         options: {
           source: auditSource,
           outputText,
@@ -1980,7 +1982,7 @@ async function runEngine({
         const verifiedRepairReport = semanticReport;
         const validateSemanticCandidate = (current, candidate) => auditGeneralSurfaceCandidateWithStructure({
           source: auditSource,
-          current,
+          current: current === semanticInputText ? semanticPreparedInputText : current,
           candidate,
           contract,
           documentProfile,
@@ -2002,7 +2004,7 @@ async function runEngine({
           // 버려졌다. 문단 단위로 같은 검증을 다시 통과한 수리만 남기고, 이
           // 결과는 검증 완료로 표시하지 않는다(최종 재검증이 다시 판정한다).
           const partial = repairBlockAdoption.adoptValidatedRepairBlocks({
-            current: semanticInputText,
+            current: semanticPreparedInputText,
             repaired: repairedOutput,
             validate: validateSemanticCandidate
           });
@@ -4598,6 +4600,8 @@ async function runEngine({
     semanticPairAlignment: [...new Set((semanticReport?.reports || []).map(report => report.alignment || 'whole_document'))],
     recoveryReservedUsd: recoveryBudgetMeta.reservedUsd,
     recoveryUnknownUsageUsd: recoveryBudgetMeta.unknownUsageUsd,
+    recoveryMandatoryAuditExcludedMs: recoveryBudgetMeta.mandatoryExcludedMs,
+    recoveryWallElapsedMs: recoveryBudgetMeta.wallElapsedMs,
     schemaVersion: 3,
     engineVersion: VERSION,
     candidateLedgerVersion: candidateLedgerMeta.version,

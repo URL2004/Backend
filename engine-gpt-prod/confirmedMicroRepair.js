@@ -12,6 +12,25 @@ function confirmedMicroRepair(source, candidate, finding) {
   const protectedRange = (text, start, end) => syntaxSpans(text)
     .some(p => p.spanType !== 'parenthetical' && p.start < end && p.end > start);
   if (finding.type === 'intensity_amplification') {
+    // A source sentence split across two output sentences can retain its
+    // lead in the preceding sentence. Copying the whole original to repair
+    // only an intensified predicate duplicates that lead. Restore the exact
+    // attested predicate after an identical subject instead, never invent it.
+    const predicateChanges=[];
+    for(const m of source.matchAll(/(?<![가-힣])([가-힣]{2,20}(?:이|가))\s+(들었다|생겼다)(?=[.!?。！？]|$)/gu)) {
+      const pattern=new RegExp(`(?<![가-힣])${m[1]}\\s+(?:커졌다|높아졌다|강해졌다|깊어졌다)(?=[.!?。！？]|$)`,'gu');
+      const matches=[...candidate.matchAll(pattern)];
+      if(matches.length!==1)continue;
+      const target=matches[0];
+      if(!String(finding.span).includes(target[0])
+          ||source.indexOf(m[0])!==source.lastIndexOf(m[0])
+          ||protectedRange(source,m.index,m.index+m[0].length)
+          ||protectedRange(candidate,target.index,target.index+target[0].length))continue;
+      predicateChanges.push({start:target.index,end:target.index+target[0].length,text:m[0]});
+    }
+    if(predicateChanges.length===1){
+      const p=predicateChanges[0];return candidate.slice(0,p.start)+p.text+candidate.slice(p.end);
+    }
     const pattern = /(?<![가-힣])(?:무척|매우|몹시|상당히|훨씬|대단히|극히|엄청나게|지극히)[ \t]+/gu;
     const additions = [...candidate.matchAll(pattern)].filter(m => !source.includes(m[0].trim())
       && String(finding.span).includes(m[0].trim())

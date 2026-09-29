@@ -1842,6 +1842,7 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   if (affectiveAnchorOmission) outputIssues.push(affectiveAnchorOmission);
   outputIssues.push(...detectIntroducedCrossSentenceIssues(source, outputText, profile));
   const rows = mergeIssueComparison(sourceIssues, outputIssues);
+  attributeDemonstrativeOrigins(rows, source, outputText);
   const repairableIssues = rows.filter(item => item.afterCount > 0 && item.repairable);
   const residualWarnings = rows
     // 원문부터 있던 표현은 sourceReviewWarnings에서 안내한다. 변환이 새로
@@ -1858,7 +1859,8 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
     issueCount: rows.reduce((sum, item) => sum + item.afterCount, 0),
     repairableIssueCount: repairableIssues.reduce((sum, item) => sum + item.afterCount, 0),
     introducedIssueCount: rows.reduce((sum, item) => sum + item.introducedCount, 0),
-    weightedRisk: rows.reduce((sum, item) => sum + item.afterCount * item.weight, 0),
+    weightedRisk: rows.reduce((sum, item) => sum + (item.code === 'repeated_vague_demonstrative'
+      ? item.introducedCount : item.afterCount) * item.weight, 0),
     issueCodes: rows.filter(item => item.afterCount > 0).map(item => item.code),
     repairableCodes: repairableIssues.map(item => item.code),
     issues: rows,
@@ -5089,6 +5091,29 @@ function pushRepeatedVagueDemonstrative(issues, text) {
     if (/^(?:이러한|이런|그러한)\s*(?:변화|과정|경험|결과|점|부분)(?:은|는|이|가)/u.test(paragraph)) ordinals.push(index + 1);
   });
   if (ordinals.length >= 2) issues.push(makeIssue('repeated_vague_demonstrative', ordinals.length, ordinals));
+}
+
+// A paragraph split or a literal semantic restoration must not turn an exact
+// source-owned sentence into a newly generated vague expression. Attribute only
+// this non-repairable style notice by complete sentence, with multiplicity.
+// Different wording and extra copies still count; no semantic verdict is made.
+function attributeDemonstrativeOrigins(rows, source, output) {
+  const row = rows.find(item => item.code === 'repeated_vague_demonstrative');
+  if (!row || row.afterCount < 2) return;
+  const key = text => String(text).replace(/\s+/gu, ' ').trim();
+  const owned = new Map();
+  for (const sentence of splitSentences(String(source || ''))) {
+    const value = key(sentence);
+    owned.set(value, (owned.get(value) || 0) + 1);
+  }
+  let introduced = 0;
+  for (const paragraph of String(output || '').split(/\n[ \t]*\n+/u)) {
+    if (!/^(?:이러한|이런|그러한)\s*(?:변화|과정|경험|결과|점|부분)(?:은|는|이|가)/u.test(paragraph.trim())) continue;
+    const value = key(splitSentences(paragraph.trim())[0] || '');
+    if (value && (owned.get(value) || 0) > 0) owned.set(value, owned.get(value) - 1);
+    else introduced += 1;
+  }
+  row.introducedCount = introduced;
 }
 
 function mergeIssueComparison(sourceIssues, outputIssues) {

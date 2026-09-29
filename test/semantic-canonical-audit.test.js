@@ -197,6 +197,56 @@ const judged = (report, source, candidate) => provenance.bindSemanticValidation(
 const isPass = (report, source, candidate) => provenance.verifySemanticValidation(
   report, { source, candidate, requireDigest: true }).status === 'pass';
 
+test('prepared adoption baseline is the exact refrozen whitespace-only judge input, not a verdict', async () => {
+  const f=fixture(); let baseline, called=false;
+  const report=await canonicalAudit.runCanonicalSemanticAudit({canonical:f.canonical,
+    options:{source:f.frozen.source,outputText:f.frozen.output,
+      prepareCandidateText:async (_source,text)=>text.replace('첫 문단은','첫  문단은')},
+    onPreparedCandidate:text=>{assert.equal(called,false);baseline=text;},
+    runAudit:async o=>{called=true;assert.equal(f.project(baseline),o.outputText);
+      return judged({pass:false,uncertain:true,violations:[]},o.source,o.outputText);}
+  });
+  assert.notEqual(baseline,f.frozen.output);
+  assert.equal(report.pass,false);assert.equal(report.uncertain,true);
+  assert.equal(Object.hasOwn(report.canonicalAudit,'preparedCandidate'),false);
+});
+
+test('a word-changing formatter cannot replace the candidate adoption baseline', async () => {
+  const f=fixture();let callbacks=0;
+  await canonicalAudit.runCanonicalSemanticAudit({canonical:f.canonical,
+    options:{source:f.frozen.source,outputText:f.frozen.output,
+      prepareCandidateText:async (_source,text)=>text.replace('첫 문단은','마지막 문단은')},
+    onPreparedCandidate:()=>callbacks++,runAudit:async o=>judged({pass:false},o.source,o.outputText)});
+  assert.equal(callbacks,0);
+});
+
+test('unavailable canonical mapping never provides a prepared baseline', async () => {
+  let callbacks=0;
+  await canonicalAudit.runCanonicalSemanticAudit({canonical:{ok:false,reason:'unavailable'},
+    options:{source:'원문이다.',outputText:'고친 문장이다.'},onPreparedCandidate:()=>callbacks++,
+    runAudit:async o=>judged({pass:false},o.source,o.outputText)});
+  assert.equal(callbacks,0);
+});
+
+test('per-section preparation can update the baseline but repairs and structural changes cannot', async () => {
+  const f=fixture();const baselines=[];
+  await canonicalAudit.runCanonicalSemanticAudit({canonical:f.canonical,
+    options:{source:f.frozen.source,outputText:f.frozen.output},
+    onPreparedCandidate:text=>baselines.push(text),
+    runAudit:async o=>{
+      assert.equal(typeof o.onPreparedCandidate,'function');
+      const spaced=o.outputText.replace('첫 문단은','첫  문단은');
+      o.onPreparedCandidate(spaced);
+      assert.equal(f.project(baselines.at(-1)),spaced);
+      const count=baselines.length;
+      o.onPreparedCandidate(spaced.replace('첫  문단은','다른 문단은'));
+      o.onPreparedCandidate(spaced.replace('`core`\n','`core` '));
+      assert.equal(baselines.length,count);
+      return judged({pass:false,uncertain:true},o.source,spaced);
+    }});
+  assert.equal(baselines.length,2);
+});
+
 test('adapter: opt-in formatting is judged before an exact frozen verdict is issued', async () => {
   const f = fixture();
   let calls = 0;

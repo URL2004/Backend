@@ -408,6 +408,7 @@ async function runSemanticDocumentAuditInternal({
   // absent every section is judged fresh exactly as before.
   receiptStore = null,
   prepareCandidateText = null,
+  onPreparedCandidate = null,
   // Internal staging (semanticStaging.js). Only the caller's main repair-
   // capable document audit opts in; every other audit is unchanged.
   stagedConfirmation = false,
@@ -500,6 +501,7 @@ async function runSemanticDocumentAuditInternal({
   } catch { recorder = null; }
   const outputs = [];
   const reports = [];
+  const preparedInputs = pairs.map(pair => pair.output);
   // 장문을 여러 구간으로 나눠 검사하면서 수리 예산은 문서 전체 1회로
   // 묶여 있었다. 첫 위반 뒤의 누락·왜곡은 판정만 하고 그대로 전달되는
   // 구조였으므로, 실제 위반이 있는 구간에 한해 최대 3곳까지 국소 수리한다.
@@ -513,6 +515,16 @@ async function runSemanticDocumentAuditInternal({
   await require('./concurrency').mapWithConcurrency(schedule, 2, async ({ pair, index }) => {
     const startedAt = Date.now();
     const requireConfirmation = confirmationKnown === true;
+    let preparationCaptured = false;
+    const prepareTrackedCandidate = typeof prepareCandidateText === 'function'
+      ? async (raw, candidate) => {
+        const prepared = await prepareCandidateText(raw, candidate);
+        if (!preparationCaptured && raw === pair.sourceContext && candidate === pair.output) {
+          preparationCaptured = true;
+          preparedInputs[index] = restoreReviewPairBoundaryWhitespace(pair.output, prepared);
+        }
+        return prepared;
+      } : null;
     const confirmationOption = requireConfirmation ? { requireConfirmation: true } : {};
     // judge.js stagedConfirmation: a failed primary verdict defers its repair
     // to the existing confirming path instead of primary repair + re-judge.
@@ -587,7 +599,7 @@ async function runSemanticDocumentAuditInternal({
         discourseSignals: pairDiscourseSignals,
         safetyIdentifier,
         documentProfile,
-        prepareCandidateText,
+        prepareCandidateText: prepareTrackedCandidate,
         ...confirmationOption,
         ...stagedJudgeOption
       });
@@ -762,6 +774,10 @@ async function runSemanticDocumentAuditInternal({
       markRequired();
     }
   }
+  // This is the settled INPUT to each judge, never a repair or a pass receipt.
+  // The canonical adapter independently checks bytes, roles and reversible
+  // literal mapping before the caller may use it as an adoption baseline.
+  if (typeof onPreparedCandidate === 'function') onPreparedCandidate(preparedInputs.join(''));
   const repairedText = outputs.join('');
   const residual = reports.filter(report => report.pass !== true);
   const verificationCompleted = reports.length === pairs.length && reports.every(report => report.verificationCompleted === true);

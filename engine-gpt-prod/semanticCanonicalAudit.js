@@ -271,7 +271,7 @@ function frozenView(report, { canonical, frozenCandidate, canonicalCandidate } =
 
 // Judge the exact canonical pair when available; otherwise run the existing
 // frozen audit unchanged. Errors from runAudit propagate exactly as before.
-async function runCanonicalSemanticAudit({ runAudit, options = {}, canonical } = {}) {
+async function runCanonicalSemanticAudit({ runAudit, options = {}, canonical, onPreparedCandidate } = {}) {
   let prepared = prepareCandidate(canonical, options.source, options.outputText);
   if (!prepared.ok) {
     const report = await runAudit(options);
@@ -286,8 +286,24 @@ async function runCanonicalSemanticAudit({ runAudit, options = {}, canonical } =
   const mapped = canonical.refreeze(formatted, prepared.frozenCandidate, { scan: true });
   if (mapped.ok) prepared = { ...prepared, frozenCandidate: mapped.text, canonicalCandidate: formatted };
   else prepareCandidateText = null;
+  // Candidate adoption must compare against the SAME settled layout the judge
+  // received. Otherwise added visual gaps look like new structure/style risk
+  // and can discard verified local repairs. This callback grants no verdict.
+  // Only whitespace-only, role-preserving preparation can replace the baseline.
+  const originalMaterialized = canonical.materialize(String(options.outputText ?? ''));
+  const forwardPreparedCandidate = text => {
+    if (typeof onPreparedCandidate !== 'function' || !originalMaterialized.ok
+        || typeof text !== 'string'
+        || text.replace(/\s/gu, '') !== originalMaterialized.text.replace(/\s/gu, '')
+        || require('./layoutRelations').preparationRelationDigest(text)
+          !== require('./layoutRelations').preparationRelationDigest(originalMaterialized.text)) return;
+    const frozen = canonical.refreeze(text, prepared.frozenCandidate);
+    if (frozen.ok) onPreparedCandidate(frozen.text);
+  };
+  forwardPreparedCandidate(prepared.canonicalCandidate);
   const report = await runAudit({ ...options, source: canonical.canonicalSource,
-    outputText: prepared.canonicalCandidate, prepareCandidateText });
+    outputText: prepared.canonicalCandidate, prepareCandidateText,
+    ...(typeof onPreparedCandidate === 'function' ? { onPreparedCandidate: forwardPreparedCandidate } : {}) });
   return frozenView(report, { canonical, ...prepared });
 }
 

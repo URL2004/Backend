@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v18-alias-owner';
+const VERSION = 'relation-candidates-v19-volitional-repeat';
 const { predicateScopeCandidates } = require('./predicateScope');
 const { auditParentheticalAliasOwners } = require('./entityParentheticalIntegrity');
 
@@ -38,6 +38,14 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
   const before = String(source || '');
   const after = String(outputText || '');
   const candidates = [];
+  // Marker checks share one lazy syntax parse per document for this audit
+  // only. Do not retain private document text in a process-global cache.
+  const operatorSyntax = new Map();
+  const syntaxForOperators = document => {
+    if (!operatorSyntax.has(document)) operatorSyntax.set(document,
+      require('../engine/textSyntax').syntaxSpans(document));
+    return operatorSyntax.get(document);
+  };
   const sourceBindings = numberBindings(before);
   const outputBindings = numberBindings(after);
   const owners = [...new Set(sourceBindings.map(row => row.owner))];
@@ -86,6 +94,8 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    if (volitionalModalityShift(original,sentence,before,after,syntaxForOperators)) add('volitional_modality_candidate');
+    if (introducedConditionalRepetition(original,sentence,before,after,syntaxForOperators)) add('repetition_condition_candidate');
     // Nominations only: search adjacent sentences for equivalent wording.
     const immediate = /(?<![가-힣])(?:곧바로|즉시|당장|바로)(?=\s)/u;
     if (immediate.test(original) && !immediate.test(sentence)) add('temporal_limit_candidate');
@@ -342,6 +352,49 @@ function certaintyScopeShift(original, sentence) {
         && new RegExp(`(?:^|\\s)${escapeRegExp(noun)}(?:이|가)(?=\\s)`, 'u').test(original))) return true;
   }
   return false;
+}
+
+// Narrow same-action questions, not a ranking of wishes and intentions or an
+// instruction to copy endings. Exact predicate/polarity ownership is required;
+// ambiguous multiple markers, quotations and unrelated predicates abstain.
+function volitionalModalityShift(original,sentence,before,after,syntaxForOperators) {
+  const markers = (value,document) => {
+    const found=[];
+    for (const [family,pattern] of [
+      ['wish', /(?<![가-힣])([가-힣]{1,24}?)고\s*싶(지\s*않)?(?:다|습니다)(?=[.!?,\s]|$)/gu],
+      ['intention', /(?<![가-힣])([가-힣]{1,24}?)(지\s*않)?으?려(?:고)?\s*(?:한다|합니다)(?=[.!?,\s]|$)/gu]
+    ]) for (const m of value.matchAll(pattern)) {
+      if (unprotectedOperator(document,value,m.index,m.index+m[0].length,syntaxForOperators))
+        found.push({family,predicate:m[1],negative:Boolean(m[2])});
+    }
+    return found;
+  };
+  const left=markers(original,before),right=markers(sentence,after);
+  return left.some(a => left.filter(x=>x.predicate===a.predicate).length===1
+    && right.filter(x=>x.predicate===a.predicate).length===1
+    && right.some(b=>a.predicate===b.predicate&&a.negative===b.negative&&a.family!==b.family));
+}
+
+function introducedConditionalRepetition(original,sentence,before,after,syntaxForOperators) {
+  // Bind the added marker to the SAME literal conditional action, not to any
+  // occurrence of 다시 elsewhere. 다음 날에도 may already imply repetition:
+  // the full-context judge decides whether scope changed or was preserved.
+  for (const m of sentence.matchAll(/(?<![가-힣])(?:다시|재차)\s+([^.!?\n]{2,80}?(?:다면|라면|으면|면))(?=[,\s.!?]|$)/gu)) {
+    const action=m[1],at=original.indexOf(action);
+    if (action.length<8||at<0||original.indexOf(action,at+1)>=0
+        || !unprotectedOperator(before,original,at,at+action.length,syntaxForOperators)
+        || !unprotectedOperator(after,sentence,m.index,m.index+m[0].length,syntaxForOperators)) continue;
+    if (/(?:^|\s)(?:다시|재차|또|반복해서|반복하여)\s*$/u.test(original.slice(0,at))) continue;
+    return true;
+  }
+  return false;
+}
+
+function unprotectedOperator(document,sentence,start,end,syntaxForOperators) {
+  const at=document.indexOf(sentence);
+  if(at<0||document.indexOf(sentence,at+1)>=0)return false;
+  return !syntaxForOperators(document).some(p=>p.spanType!=='parenthetical'
+    &&p.start<at+end&&p.end>at+start);
 }
 function temporalSequenceShift(original, sentence, before, after) {
   const sourceMarkers = count(original, SEQUENCE_MARKER), outputMarkers = count(sentence, SEQUENCE_MARKER);

@@ -1888,6 +1888,9 @@ async function runEngine({
   // text being delivered, or by the final confirming verdict itself.
   const stagedConfirmationRequirement = require('./semanticStaging').createConfirmationRequirement();
   let semanticRepairPartialAdoption = { attempted: false, applied: false, adoptedCount: 0, rejectedCount: 0, reason: '' };
+  // Attempt diagnostics survive a later final-verdict report replacement.
+  // Codes only: never retain source text or rejected candidate contents here.
+  let semanticRepairFullDocumentRejectCodes = [];
   // Request-local nomination history only. A later judge can miss an earlier
   // finding; never turn that absence into evidence that an unchanged passage
   // was repaired. Exact current-pair grounding is checked again by the restorer,
@@ -2013,6 +2016,7 @@ async function runEngine({
         const semanticCandidateValidation = validateSemanticCandidate(semanticInputText, semanticOutput);
         semanticOutput = semanticCandidateValidation.candidate || semanticOutput;
         if (semanticCandidateValidation.pass !== true) {
+          semanticRepairFullDocumentRejectCodes = safeFailureCodeList(semanticCandidateValidation.codes || []);
           const rejectionCodes = safeFailureCodeList([
             ...(semanticReport.repairRejectReasons || []),
             ...(semanticCandidateValidation.codes || []).map(code => `full_document_${code}`)
@@ -4744,6 +4748,7 @@ async function runEngine({
     semanticRepairPartialAdoptedBlockCount: semanticRepairPartialAdoption.adoptedCount,
     semanticRepairPartialRejectedBlockCount: semanticRepairPartialAdoption.rejectedCount,
     semanticRepairPartialAdoptionReason: semanticRepairPartialAdoption.reason,
+    semanticRepairFullDocumentRejectCodes,
     semanticSourceIssueCount: (semanticReport.sourceIssues || []).length,
     semanticRelationContract: String(semanticReport.relationContract || ''),
     semanticRepairStyleWarnings: semanticReport.repairStyleWarnings || [],

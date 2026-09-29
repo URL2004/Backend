@@ -66,13 +66,16 @@ const MAPPING_ROUTE_SIGNALS = new Set([
   'procedure_order_candidate', 'concession_scope_candidate', 'comparison_negation_candidate',
   'antecedent_link_loss_candidate', 'alias_owner_binding_candidate'
 ]);
-function expectedRoute(signals, maxRounds, config) {
+// requireConfirmation mirrors judge.js judgeAndRepair({ requireConfirmation }),
+// the internal staged-confirmation route (semanticStaging.js).
+function expectedRoute(signals, maxRounds, config, { requireConfirmation = false } = {}) {
   const models = config?.models || {};
   const escalation = models.judgeEscalation || models.humanizeEscalation || models.judge;
   const list = Array.isArray(signals) ? signals : [];
   const control = maxRounds === 0
     && list.includes('final_semantic_revalidation') && list.includes('prior_failed_semantic_confirmation');
-  return escalation !== models.judge && (control || list.some(code => MAPPING_ROUTE_SIGNALS.has(code)))
+  return escalation !== models.judge
+    && (requireConfirmation === true || control || list.some(code => MAPPING_ROUTE_SIGNALS.has(code)))
     ? 'confirmation_first' : 'primary_first';
 }
 

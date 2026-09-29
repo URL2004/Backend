@@ -86,8 +86,8 @@ test(`actual semantic judge enforces the obligation contract: ${verdict}`,async(
  delete require.cache[judgePath];
  try {
    const r=await require(judgePath).semanticJudge(source,verdict.startsWith('not_error')?before:after,{},
-     {priorReports:[report],model:verdict==='not_error_confirming'?'gpt-6-sol':'gpt-6-luna',
-       config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-sol'}}});
+     {priorReports:[report],model:verdict==='not_error_confirming'?'gpt-6.1-sol':'gpt-6-luna',
+       config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6.1-sol'}}});
    assert.equal(calls,1);assert.equal(r.pass,['resolved','not_error_confirming'].includes(verdict));
    if(!r.pass)assert.equal(r.uncertain,true);
  } finally {

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const realJudge = require('../engine-gpt-prod/judge');
-const config = { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol', repair: 'gpt-6-luna' },
+const config = { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6.1-sol', repair: 'gpt-6-luna' },
   reasoning: { judge: 'medium', escalation: 'high', repair: 'medium' } };
 const source = '설비의 가동 결과는 현장의 조건에 따라 달라질 수 있다. 담당자는 점검 항목을 기록했다. 자료는 다음 조사에 활용했다. 별도의 기록은 유지했다. 연구팀은 시설의 이용 현황을 따로 집계했다. 분석 결과는 다음 달 회의에서 공유했다. 조사는 정해진 일정에 따라 진행했다.';
 const expected = source.replace('자료는 다음 조사에 활용했다.', '다음 조사에는 자료를 활용했다.');

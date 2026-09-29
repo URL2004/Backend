@@ -99,11 +99,11 @@ test('truncated repair verification reaches the existing escalation on the last 
   await withJudgeStub(async opts=>{
     phases.push(opts.meta.phase);
     if(phases.length===2)throw Object.assign(new Error('truncated'),{code:'OPENAI_TRUNCATED',usage:{estimatedUsd:.03}});
-    if(phases.length===3){assert.equal(opts.model,'gpt-6-sol');assert.ok(opts.user.includes(b+tail));}
+    if(phases.length===3){assert.equal(opts.model,'gpt-6.1-sol');assert.ok(opts.user.includes(b+tail));}
     return {...reply,json:require('./helpers/semantic-review-fixture.cjs')({violations:[finding]},opts.user)};
   },async judge=>{
     const result=await judge.judgeAndRepair(a+tail,b+tail,{maxRounds:1,reserveRepair:()=>{repairReservations++;return true;},
-      config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-sol',repair:'gpt-6-luna'}}});
+      config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6.1-sol',repair:'gpt-6-luna'}}});
     assert.equal(result.pass,false);assert.equal(result.escalated,true);
     assert.equal(result.outputText,b+tail);assert.equal(result.rounds,1);
     assert.equal(repairReservations,1);assert.equal(result.usage.estimatedUsd,.05);
@@ -115,7 +115,7 @@ test('truncated repair verification reaches the existing escalation on the last 
 test('failed escalation cannot discard a completed primary violation report',async()=>{
   let calls=0;
   await withJudgeStub(async()=>{if(++calls===1)return reply;throw Object.assign(new Error('timeout'),{code:'OPENAI_TIMEOUT',usage:{estimatedUsd:.03,totalTokens:30}});},async judge=>{
-    const result=await judge.judgeAndRepair(src,out,{maxRounds:0,config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-sol'}}});
+    const result=await judge.judgeAndRepair(src,out,{maxRounds:0,config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6.1-sol'}}});
     assert.equal(result.pass,false);assert.equal(result.escalationFailed,true);
     assert.equal(result.violations[0].span,violation.span);assert.equal(result.usage.estimatedUsd,.04);
   });
@@ -124,7 +124,7 @@ test('failed escalation cannot discard a completed primary violation report',asy
 for(const phase of ['repair','escalation']) test(`cancelled ${phase} preserves prior findings and both billed costs`,async()=>{
   let calls=0;
   await withJudgeStub(async()=>{if(++calls===1)return reply;throw Object.assign(new Error('cancelled'),{code:'ABORT_ERR',usage:{estimatedUsd:.03,totalTokens:30}});},async judge=>{
-    await assert.rejects(judge.judgeAndRepair(src,out,{maxRounds:phase==='repair'?1:0,config:{models:{judge:'gpt-6-luna',judgeEscalation:phase==='repair'?'gpt-6-luna':'gpt-6-sol',repair:'gpt-6-luna'}}}),error=>{
+    await assert.rejects(judge.judgeAndRepair(src,out,{maxRounds:phase==='repair'?1:0,config:{models:{judge:'gpt-6-luna',judgeEscalation:phase==='repair'?'gpt-6-luna':'gpt-6.1-sol',repair:'gpt-6-luna'}}}),error=>{
       assert.equal(error.usage.estimatedUsd,.04);assert.equal(error.partialSemanticReport.pass,false);
       assert.equal(error.partialSemanticReport.verificationCompleted,false);
       assert.equal(error.partialSemanticReport.violations[0].span,violation.span);return true;

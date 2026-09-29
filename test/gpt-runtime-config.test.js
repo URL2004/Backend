@@ -27,15 +27,15 @@ test('GPT-6 운영 기본값은 Luna 우선, Sol 승격으로 고정한다', () 
   assert.equal(runtime.VERSION, 'gpt-runtime-config-v3');
   assert.deepEqual(runtime.DEFAULT_CONFIG.models, {
     humanizePrimary: 'gpt-6-luna',
-    humanizeEscalation: 'gpt-6-sol',
+    humanizeEscalation: 'gpt-6.1-sol',
     judge: 'gpt-6-luna',
-    judgeEscalation: 'gpt-6-sol',
+    judgeEscalation: 'gpt-6.1-sol',
     repair: 'gpt-6-luna',
     classify: 'gpt-6-luna',
     detect: 'gpt-6-luna',
-    detectEscalation: 'gpt-6-sol',
+    detectEscalation: 'gpt-6.1-sol',
     evidenceSearch: 'gpt-6-luna',
-    evidenceEscalation: 'gpt-6-sol'
+    evidenceEscalation: 'gpt-6.1-sol'
   });
   assert.deepEqual(runtime.DEFAULT_CONFIG.reasoning, {
     humanize: 'medium',
@@ -61,7 +61,7 @@ test('구형 GPT-5.4 모델 ID와 max reasoning을 안전하게 정규화한다'
     }
   });
   assert.equal(config.models.humanizePrimary, 'gpt-6-luna');
-  assert.equal(config.models.humanizeEscalation, 'gpt-6-sol');
+  assert.equal(config.models.humanizeEscalation, 'gpt-6.1-sol');
   assert.equal(config.models.judge, 'gpt-6-luna');
   assert.equal(config.reasoning.humanize, 'max');
 });

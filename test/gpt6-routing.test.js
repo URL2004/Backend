@@ -11,7 +11,7 @@ test('v2 stored models migrate without replacing custom reasoning/cache/escalati
   const db = {collection:()=>({doc:()=>({get:async()=>({exists:true,data:()=>stored})})})};
   const cfg = await runtime.getRuntimeConfig({db,force:true});
   assert.equal(cfg.models.humanizePrimary,'gpt-6-luna');
-  assert.equal(cfg.models.humanizeEscalation,'gpt-6-sol');
+  assert.equal(cfg.models.humanizeEscalation,'gpt-6.1-sol');
   assert.equal(cfg.reasoning.humanize,'low');assert.equal(cfg.reasoning.escalation,'medium');
   assert.equal(cfg.cache.keyPrefix,'custom');assert.equal(cfg.escalation.longTextChars,12345);
   assert.equal(runtime.sanitizeConfig({models:{judge:'custom-model'},reasoning:{repair:'minimal'}}).models.judge,'custom-model');
@@ -44,6 +44,6 @@ test('GPT-6 requests use Responses, new cache TTL and supported efforts', async 
   }
   for(const task of ['detect','evidence_search','judge']) {
     await callGpt({userText:'test',systemText:'test',tool:{name:'test_result',input_schema:schema},task,phase:'escalation',config:runtime.DEFAULT_CONFIG});
-    assert.equal(bodies.at(-1).model,'gpt-6-sol');assert.equal(bodies.at(-1).reasoning.effort,'high');
+    assert.equal(bodies.at(-1).model,'gpt-6.1-sol');assert.equal(bodies.at(-1).reasoning.effort,'high');
   }
 });

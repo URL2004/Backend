@@ -183,7 +183,7 @@ const priorReports = [{ pass: false, verificationCompleted: true, violations: [f
 const ledger = { claims: [{ claim: source, evidence_text: source }] };
 const FINAL = ['final_semantic_revalidation', 'prior_failed_semantic_confirmation'];
 
-async function runJudge({ signals, model = 'gpt-6-sol', candidate = after, status = 'resolved', span = after }) {
+async function runJudge({ signals, model = 'gpt-6.1-sol', candidate = after, status = 'resolved', span = after }) {
   const clientPath = require.resolve('../engine-gpt-prod/openaiClient'), judgePath = require.resolve('../engine-gpt-prod/judge');
   const oldClient = require.cache[clientPath], oldJudge = require.cache[judgePath];
   let sent = null, calls = 0;
@@ -200,7 +200,7 @@ async function runJudge({ signals, model = 'gpt-6-sol', candidate = after, statu
   delete require.cache[judgePath];
   try {
     const report = await require(judgePath).semanticJudge(source, candidate, ledger, { priorReports, discourseSignals: signals,
-      model, reasoningEffort: 'high', config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol' } } });
+      model, reasoningEffort: 'high', config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6.1-sol' } } });
     return { sent, report, calls };
   } finally {
     if (oldClient) require.cache[clientPath] = oldClient; else delete require.cache[clientPath];
@@ -236,7 +236,7 @@ test('final verdict request carries the same obligations, questions and texts in
   assert.deepEqual(final.sent.schema, plain.sent.schema);
   for (const key of ['model', 'reasoningEffort', 'maxOutputTokens', 'verbosity', 'schemaName'])
     assert.equal(final.sent[key], plain.sent[key]);
-  assert.equal(final.sent.model, 'gpt-6-sol');
+  assert.equal(final.sent.model, 'gpt-6.1-sol');
   assert.equal(final.sent.reasoningEffort, 'high');
   assert.equal(final.sent.maxOutputTokens, 10500); // one losslessly retained obligation
   assert.equal(final.report.pass, true);

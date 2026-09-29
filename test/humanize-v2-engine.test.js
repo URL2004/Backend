@@ -993,7 +993,7 @@ test('국소 위치가 없는 의미 위반은 전체 재작성 없이 needs_rev
   assert.equal(out.fallbackCount, 0);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_humanize_result').length, 2);
   assert.equal(mock.calls.filter(call => ['gpt_prod_judge_repair', 'gpt_prod_relation_patch'].includes(call.name)).length, 0);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6.1-sol'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_soft_claim_ledger').length, 0);
 });
 
@@ -1298,7 +1298,7 @@ test('기본 첫 회복도 구두점 수준이면 mini로 한 번 더 실질 회
   const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
   assert.equal(retryCalls.length, 2);
   assert.equal(retryCalls[0].model, 'gpt-6-luna');
-  assert.equal(retryCalls[1].model, 'gpt-6-sol');
+  assert.equal(retryCalls[1].model, 'gpt-6.1-sol');
 });
 
 test('기본 지원서는 첫 회복이 최소 편집률을 넘어도 의미 반복이 남으면 두 번째 회복을 수행한다', { concurrency: false }, async t => {
@@ -1395,7 +1395,7 @@ test('고급의 첫 깊이 회복이 여전히 약하면 상위 모델이 두 �
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry').length, 2);
   const retryCalls = mock.calls.filter(call => call.name === 'gpt_prod_general_surface_retry');
   assert.equal(retryCalls[0].model, 'gpt-6-luna');
-  assert.equal(retryCalls[1].model, 'gpt-6-sol');
+  assert.equal(retryCalls[1].model, 'gpt-6.1-sol');
   assert.match(String(retryCalls[1].body.instructions || ''), /여러 문단의 지정 대상을 빠짐없이 검토/u);
   assert.match(String(retryCalls[1].body.instructions || ''), /명료성이 나빠지는 어순 변경은 하지 않는다/u);
 });
@@ -1799,7 +1799,7 @@ test('의미 수리 후보가 문서를 축약하면 폐기하고 수리 전 결
   assert.equal(report.pass, false);
   assert.ok(require('../engine-gpt-prod/judge').assessRepairCandidate(source, beforeRepair, '핵심만 요약합니다.', { mode: 'polish' }).reasons.includes('repair_collapsed'));
   assert.equal(mock.calls.some(call => call.name === 'gpt_prod_judge_repair'), false);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6.1-sol'));
 });
 
 test('의미 위반 수리가 문서 전체를 원문으로 되돌리면 폐기하고 상위 모델 재판정으로 넘긴다', { concurrency: false }, async t => {
@@ -1816,7 +1816,7 @@ test('의미 위반 수리가 문서 전체를 원문으로 되돌리면 폐기�
   assert.equal(report.pass, false);
   assert.ok(require('../engine-gpt-prod/judge').assessRepairCandidate(source, beforeRepair, source, { mode: 'assignment' }).reasons.includes('repair_erased_transform'));
   assert.equal(mock.calls.some(call => call.name === 'gpt_prod_judge_repair'), false);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6.1-sol'));
 });
 
 test('의미 수리가 특정 문장만 크게 축약해 원문 리듬을 훼손하면 폐기한다', { concurrency: false }, async t => {
@@ -1846,7 +1846,7 @@ test('의미 수리가 특정 문장만 크게 축약해 원문 리듬을 훼손
   assert.equal(report.pass, false);
   assert.ok(require('../engine-gpt-prod/judge').assessRepairCandidate(source, beforeRepair, repairOutput, { mode: 'assignment' }).reasons.includes('sentence_shape_worsened'));
   assert.equal(mock.calls.some(call => call.name === 'gpt_prod_judge_repair'), false);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6.1-sol'));
 });
 
 test('의미 수리가 청크와 같은 장단문 분포 계약을 깨면 폐기한다', { concurrency: false }, async t => {
@@ -1861,5 +1861,5 @@ test('의미 수리가 청크와 같은 장단문 분포 계약을 깨면 폐기
   assert.equal(report.pass, false);
   assert.ok(require('../engine-gpt-prod/judge').assessRepairCandidate(source, beforeRepair, repairOutput, { mode: 'assignment' }).reasons.includes('sentence_distribution_worsened'));
   assert.equal(mock.calls.some(call => call.name === 'gpt_prod_judge_repair'), false);
-  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6-sol'));
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge' && call.model === 'gpt-6.1-sol'));
 });

@@ -93,7 +93,7 @@ test('actor or variable repair is confirmed before an initial judge can invert a
       detail: '테스트용 1차 오판: 주체 관계가 바뀌었다.' };
     const { judge, calls } = mockedJudge([{ violations: [finding] }, { violations: [] }]);
     const result = await judge.judgeAndRepair(original, rewritten, {
-      config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol', repair: 'gpt-6-luna' } }
+      config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6.1-sol', repair: 'gpt-6-luna' } }
     });
     assert.equal(result.pass, true);
     assert.equal(result.outputText, rewritten);
@@ -108,7 +108,7 @@ test('actor or variable repair is confirmed before an initial judge can invert a
 test('an escalation timeout preserves the completed primary verdict and its confirmed findings', async () => {
   const {judge}=mockedJudge([{violations},{throwCode:'ETIMEDOUT'}]);
   const result=await judge.judgeAndRepair(source,before,{maxRounds:0,
-    config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6-sol',repair:'gpt-6-luna'}}});
+    config:{models:{judge:'gpt-6-luna',judgeEscalation:'gpt-6.1-sol',repair:'gpt-6-luna'}}});
   assert.equal(result.pass,false);assert.equal(result.outputText,before);
   assert.equal(result.violations.length,1);assert.equal(result.escalationFailed,true);
   assert.equal(result.escalationSkippedReason,'escalation_call_failed');
@@ -122,7 +122,7 @@ test('server mapping candidates preserve the repair round until the confirming j
   let reserved = 0;
   const result = await judge.judgeAndRepair(source, before, {
     maxRounds: 1, reserveRepair: () => { reserved++; return true; },
-    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol', repair: 'gpt-6-luna' } },
+    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6.1-sol', repair: 'gpt-6-luna' } },
     discourseSignals: ['explicit_mapping_candidate']
   });
   assert.equal(result.pass, true);
@@ -132,7 +132,7 @@ test('server mapping candidates preserve the repair round until the confirming j
   assert.deepEqual(calls.map(c => c.meta.phase), [
     'primary:semantic', 'primary:repair', 'primary:semantic_after_repair'
   ]);
-  assert.ok(calls.every(c => c.model === 'gpt-6-sol'));
+  assert.ok(calls.every(c => c.model === 'gpt-6.1-sol'));
   assert.equal(result.relationConfirmationFirst, true);
   assert.equal(calls[0].maxOutputTokens, 10000);
   assert.equal(calls[2].maxOutputTokens, 10000);
@@ -140,8 +140,8 @@ test('server mapping candidates preserve the repair round until the confirming j
 
 test('direct final confirmation uses the configured confirming envelope without a phase-name workaround', async () => {
   const { judge, calls } = mockedJudge([{ violations: [] }, { violations: [] }]);
-  const cfg = { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol' } };
-  await judge.semanticJudge(source, before, null, { config: cfg, model: 'gpt-6-sol', phase: 'final_validation' });
+  const cfg = { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6.1-sol' } };
+  await judge.semanticJudge(source, before, null, { config: cfg, model: 'gpt-6.1-sol', phase: 'final_validation' });
   await judge.semanticJudge(source, before, null, { config: cfg, phase: 'primary:semantic' });
   assert.equal(calls[0].maxOutputTokens, 10000);
   assert.equal(calls[1].maxOutputTokens, 6000);
@@ -151,13 +151,13 @@ test('direct final confirmation uses the configured confirming envelope without 
 });
 
 test('final revalidation after a failed audit starts with confirmation instead of consuming the deadline twice', async () => {
-  const cfg = { models: { judge:'gpt-6-luna', judgeEscalation:'gpt-6-sol' } };
+  const cfg = { models: { judge:'gpt-6-luna', judgeEscalation:'gpt-6.1-sol' } };
   const direct = mockedJudge([{violations:[]}]);
   const result = await direct.judge.judgeAndRepair(source,before,{config:cfg,maxRounds:0,
     discourseSignals:['final_semantic_revalidation','prior_failed_semantic_confirmation']});
   assert.equal(result.pass,true);
   assert.equal(direct.calls.length,1);
-  assert.equal(direct.calls[0].model,'gpt-6-sol');
+  assert.equal(direct.calls[0].model,'gpt-6.1-sol');
   assert.equal(direct.calls[0].maxOutputTokens,10000);
   const ordinary=mockedJudge([{violations:[]}]);
   await ordinary.judge.judgeAndRepair(source,before,{config:cfg,maxRounds:0,discourseSignals:['final_semantic_revalidation']});
@@ -189,12 +189,12 @@ test('English verdict contract also separates disproved candidates from unresolv
 test('mapping hints are review hints, not automatic failures or extra model calls on a passing primary', async () => {
   const { judge, calls } = mockedJudge([{ violations: [] }]);
   const result = await judge.judgeAndRepair(source, before, {
-    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol' } },
+    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6.1-sol' } },
     discourseSignals: ['explicit_mapping_candidate']
   });
   assert.equal(result.pass, true);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].model, 'gpt-6-sol');
+  assert.equal(calls[0].model, 'gpt-6.1-sol');
 });
 
 test('a failed mapping confirmation never repeats the same judge or invents a pass', async () => {
@@ -202,13 +202,13 @@ test('a failed mapping confirmation never repeats the same judge or invents a pa
   const { judge, calls } = mockedJudge([{ violations: [omission] }]);
   const result = await judge.judgeAndRepair(source, before, {
     maxRounds: 0,
-    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol' } },
+    config: { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6.1-sol' } },
     discourseSignals: ['number_ownership_candidate']
   });
   assert.equal(result.pass, false);
   assert.equal(result.outputText, before);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].model, 'gpt-6-sol');
+  assert.equal(calls[0].model, 'gpt-6.1-sol');
 });
 
 test('meaning repair wins over rhythm only after a fresh semantic judge passes', async () => {

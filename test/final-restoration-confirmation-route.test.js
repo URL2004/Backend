@@ -10,7 +10,7 @@ const { extractPromptDataSection } = require('../engine-gpt-prod/promptEnvelope'
 
 // Execute the real audit scheduler, judge router, grounding and provenance.
 // Only model transport is replaced; all text and verdicts are synthetic.
-const config = { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6-sol', repair: 'gpt-6-luna' },
+const config = { models: { judge: 'gpt-6-luna', judgeEscalation: 'gpt-6.1-sol', repair: 'gpt-6-luna' },
   reasoning: { judge: 'medium', escalation: 'high', repair: 'medium' } };
 const short = '조사팀은 지역별 자료를 검토했다. 결과 보고서는 기록실에 보관했다.';
 const long = [1, 2, 3, 4].map(n => `## 구역 ${n}\n` + Array.from({ length: 65 }, (_, i) =>

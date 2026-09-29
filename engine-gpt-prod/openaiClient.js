@@ -98,7 +98,7 @@ async function completeJsonRequest({
 
   const cacheKey = promptCacheKey(config, { ...meta, schemaName, model });
   if (cacheKey) body.prompt_cache_key = cacheKey;
-  if (/^gpt-6-(?:luna|sol)(?:-|$)/i.test(model)) {
+  if (/^gpt-(?:6-(?:luna|sol)|6\.1-sol)(?:-|$)/i.test(model)) {
     // GPT-6 only supports the new 30m cache TTL. Do not forward a stored
     // legacy 24h/in_memory retention value to this API generation.
     if (config?.cache?.enabled !== false) body.prompt_cache_options = { ttl: '30m' };

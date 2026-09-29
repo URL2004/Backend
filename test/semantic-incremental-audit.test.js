@@ -602,3 +602,169 @@ test('canonical earlier audit uses heading sections and its receipts reach the r
     assert.equal(legacyFinal.progress.reusedSections, 0);
   });
 });
+
+// Scheduling diagnostics: numbers and fixed codes only; never text or verdict authority.
+const FINAL_MARKERS = ['final_semantic_revalidation', 'prior_failed_semantic_confirmation'];
+const assertNoText = value => {
+  const json = JSON.stringify(value);
+  for (const fragment of ['절', '합성', '구역', '문장']) assert.equal(json.includes(fragment), false, fragment);
+};
+
+test('schedule diagnostics: confirming final windows record plan, route, receipt miss and timing', async () => {
+  await withAudit(async ({ run, calls }) => {
+    const store = receipts.createReceiptStore();
+    await run(SOURCE, { receiptStore: store });
+    calls.length = 0;
+    const final = await run(SOURCE, { receiptStore: store, allowRepair: false,
+      discourseSignals: FINAL_MARKERS, deadlineMs: Date.now() + 120000 });
+    const d = final.scheduleDiagnostics;
+    assert.equal(calls.length, 2);
+    assert.equal(d.version, 'semantic-schedule-diagnostics-v1');
+    assert.equal(d.planKind, 'balanced_heading');
+    assert.deepEqual([d.basePairCount, d.plannedPairCount, d.finalPairCount], [4, 2, 2]);
+    assert.equal(d.allowRepair, false);
+    assert.equal(d.concurrency, 2);
+    assert.ok(d.budgetMsAtStart > 0 && d.budgetMsAtStart <= 120000);
+    assert.equal(d.aborted, false);
+    assert.equal(d.windows.length, 2);
+    for (const w of d.windows) {
+      // Primary receipts cannot satisfy the confirming route: miss, not reuse.
+      assert.equal(w.route, 'confirmation_first');
+      assert.equal(w.receipt, 'miss');
+      assert.equal(w.outcome, 'pass');
+      assert.equal(w.judgeTier, 'confirmation_first');
+      assert.equal(w.judgeModel, 'judge-b');
+      assert.equal(w.alignment, 'shared_unique_heading');
+      assert.ok(w.sourceChars > 0 && w.outputChars === w.sourceChars);
+      assert.equal(w.obligationCount, 0);
+      assert.ok(w.remainingMsAtStart > 0 && w.remainingMsAtStart <= 120000);
+      assert.ok(w.queuedMs >= 0 && w.elapsedMs >= 0);
+      assert.equal(w.inputTokens, 10);
+    }
+    assert.equal(d.windows.reduce((n, w) => n + w.sourceChars, 0), SOURCE.length);
+    assertNoText(d);
+    // Diagnostics never alter the verdict or its binding.
+    assert.equal(final.pass, true);
+    assert.equal(final.validation.status, 'validated_pass');
+    calls.length = 0;
+    const again = await run(SOURCE, { receiptStore: store, allowRepair: false, discourseSignals: FINAL_MARKERS });
+    assert.equal(calls.length, 0);
+    assert.deepEqual(again.scheduleDiagnostics.windows.map(w => [w.receipt, w.outcome, w.elapsedMs >= 0]),
+      [['hit', 'receipt_reused', true], ['hit', 'receipt_reused', true]]);
+    assert.equal(again.scheduleDiagnostics.budgetMsAtStart, null);
+  });
+});
+
+test('schedule diagnostics: receipt-driven base plan and disabled store are named', async () => {
+  await withAudit(async ({ run }) => {
+    const store = receipts.createReceiptStore();
+    await run(SOURCE, { receiptStore: store });
+    const late = doc({ 4: section(4, ' 늦은 단계에서 추가된 합성 문장입니다.') });
+    const final = await run(late, { receiptStore: store, allowRepair: false,
+      discourseSignals: ['final_semantic_revalidation'] });
+    const d = final.scheduleDiagnostics;
+    assert.equal(d.planKind, 'receipt_base');
+    assert.deepEqual([d.basePairCount, d.plannedPairCount, d.finalPairCount], [4, 2, 4]);
+    assert.deepEqual(d.windows.map(w => w.receipt), ['hit', 'hit', 'miss', 'miss']);
+    assert.deepEqual(d.windows.map(w => w.outcome), ['receipt_reused', 'receipt_reused', 'pass', 'pass']);
+    assert.deepEqual(d.windows.map(w => w.route), Array(4).fill('primary_first'));
+    assertNoText(d);
+    const plain = await run(SOURCE);
+    assert.equal(plain.scheduleDiagnostics.planKind, 'base_heading');
+    assert.deepEqual(plain.scheduleDiagnostics.windows.map(w => [w.receipt, w.route, w.judgeTier]),
+      Array(4).fill(['disabled', undefined, 'primary']));
+  });
+});
+
+test('schedule diagnostics: shared deadline abort is a timeout of both concurrent windows, not a pass', async () => {
+  await withAudit(async ({ run, state }) => {
+    state.verdict = (_src, _text, options) => new Promise((_, reject) => {
+      options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError',
+        usage: { inputTokens: 7 } })), { once: true });
+    });
+    const final = await run(SOURCE, { allowRepair: false, discourseSignals: FINAL_MARKERS, deadlineMs: Date.now() + 60 });
+    const d = final.scheduleDiagnostics;
+    assert.equal(final.pass, false);
+    assert.equal(final.verificationCompleted, false);
+    assert.equal(d.aborted, true);
+    assert.equal(d.deadlineExceeded, true);
+    assert.equal(d.windows.length, 2);
+    for (const w of d.windows) {
+      assert.equal(w.outcome, 'deadline_timeout');
+      assert.equal(w.errorCode, 'AbortError');
+      assert.equal(w.inputTokens, 7);
+      // Both windows started before the deadline: the budget was spent in
+      // flight, not in a queue.
+      assert.ok(w.queuedMs < 60 && w.remainingMsAtStart > 0);
+    }
+    assert.equal(d.admittedWindowCount, 2);
+    assert.equal(d.outcomeCounts.deadline_timeout, 2);
+    assert.equal(d.outcomeCounts.pass, 0);
+    assert.ok(d.minRemainingMsAtStart > 0 && d.minRemainingMsAtStart <= 60);
+    assert.equal(d.overflowWindowCount, 0);
+    assertNoText(d);
+  });
+});
+
+test('schedule diagnostics: sections queued behind a cancellation never start a model call and are counted', async () => {
+  await withAudit(async ({ run, calls, state }) => {
+    const controller = new AbortController();
+    // Four heading sections under the repair path: concurrency 2, so two are queued.
+    // Both workers reach their judge before the abort (it fires on the second
+    // admitted call); the two queued sections must then never call a model.
+    let seen = 0;
+    state.verdict = async () => { if (++seen === 2) controller.abort(); return { pass: true }; };
+    const result = await run(SOURCE, { signal: controller.signal });
+    const d = result.scheduleDiagnostics;
+    assert.equal(calls.length, 2);
+    assert.equal(result.pass, false);
+    assert.equal(d.planKind, 'base_heading');
+    assert.equal(d.aborted, true);
+    assert.equal(d.deadlineExceeded, false);
+    assert.equal(d.outcomeCounts.pass, 2);
+    assert.equal(d.outcomeCounts.cancelled_before_start, 2);
+    assert.deepEqual(d.windows.map(w => w.outcome).sort(),
+      ['cancelled_before_start', 'cancelled_before_start', 'pass', 'pass']);
+    for (const w of d.windows.filter(x => x.outcome === 'cancelled_before_start')) {
+      assert.equal(w.elapsedMs, 0);
+      assert.equal(w.judgeTier, '');
+      assert.equal(w.inputTokens, null);
+    }
+    assert.equal(d.budgetMsAtStart, null);
+    assert.equal(d.minRemainingMsAtStart, null);
+  });
+});
+
+test('schedule recorder is text-free and tolerant of unknown values', () => {
+  const schedule = require('../engine-gpt-prod/semanticAuditSchedule');
+  let t = 1000;
+  const pairs = [{ sourceContext: '가'.repeat(5), output: '나'.repeat(4), alignment: 'bad value!' }];
+  const r = schedule.createScheduleRecorder({ basePairs: pairs, plannedPairs: pairs, finalPairs: pairs,
+    deadlineMs: 1500, now: () => t });
+  r.describe(0, { pair: pairs[0], obligationCount: 3, signals: ['code_a', '{"x":1}'], route: 'primary' });
+  r.receipt(0, 'miss');
+  t = 1100; r.start(0);
+  t = 1400; r.finish(0, { outcome: 'not-a-code', error: { code: 'contains text 가' } });
+  const out = r.result({ signal: { aborted: false } });
+  assert.equal(out.planKind, 'single');
+  assert.equal(out.budgetMsAtStart, 500);
+  assert.deepEqual(out.windows[0], { index: 0, order: 0, sourceChars: 5, outputChars: 4, alignment: 'other',
+    obligationCount: 3, hintCount: 1, relationCandidateCount: 1, route: 'primary', receipt: 'miss',
+    queuedMs: 100, remainingMsAtStart: 400, elapsedMs: 300, outcome: 'error', errorCode: 'other',
+    judgeTier: '', judgeModel: '', verifyCount: 0, inputTokens: null, outputTokens: null, reasoningTokens: null });
+  assert.equal(schedule.errorOutcome({ aborted: true, reason: { name: 'TimeoutError' } }), 'deadline_timeout');
+  assert.equal(schedule.errorOutcome({ aborted: true, reason: { name: 'AbortError' } }), 'cancelled');
+  assert.equal(schedule.errorOutcome(null), 'error');
+  assert.equal(schedule.outcomeFor({ pass: true, uncertain: true }), 'uncertain');
+  assert.equal(schedule.outcomeFor({ pass: false, verificationCompleted: true }), 'fail');
+  // Bounded: rows stop at the cap, outcome counters still cover every window.
+  const many = Array.from({ length: schedule.MAX_DIAGNOSTIC_WINDOWS + 5 }, () => pairs[0]);
+  const big = schedule.createScheduleRecorder({ basePairs: many, plannedPairs: many, finalPairs: many });
+  many.forEach((pair, i) => { big.describe(i, { pair }); big.start(i); big.finish(i, { outcome: 'pass' }); });
+  const bounded = big.result({});
+  assert.equal(bounded.windows.length, schedule.MAX_DIAGNOSTIC_WINDOWS);
+  assert.equal(bounded.overflowWindowCount, 5);
+  assert.equal(bounded.outcomeCounts.pass, many.length);
+  assert.equal(bounded.admittedWindowCount, many.length);
+  assert.equal(bounded.planKind, 'base_heading');
+});

@@ -4,7 +4,7 @@ const { splitSentenceSpans } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { sentenceSimilarity } = require('./sentenceAlignment');
 const { auditRelationCandidates, hasAdjacentRelationCoverage } = require('./relationAudit');
-const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification', 'duplicate_conclusion']);
+const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification', 'duplicate_conclusion', 'new_evaluation']);
 
 // A relation heuristic is not proof. Only a judge-confirmed, uniquely grounded
 // distortion may nominate a sentence; mutual, unambiguous one-to-one matching
@@ -81,7 +81,7 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
       // similarity. This is proposal retrieval only; the exact paired judge
       // finding and the caller's fresh semantic pass are the safety gates.
       ||(!minimal && sentenceSimilarity(a,b)<.35
-        && !hasBilateralSentenceAnchors(rawOriginals,results,from,from+a.length,start,end))||protectedText(a)!==protectedText(b)
+        && !hasBilateralSentenceAnchors(rawOriginals,results,from,from+a.length,start,end,replacements))||protectedText(a)!==protectedText(b)
       ||(!minimal && require('./restorationOwnership').hasOutsideSourceContribution(String(source),from,from+a.length,b,a))
       ||(!minimal && hasAdjacentRelationCoverage(a,b,text))
       ||!sameProtectedPrefix(a,b,String(source),text)
@@ -131,10 +131,19 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
 // uniquely best match across the document. No missing/split/merged anchors,
 // section prefixes, or multi-sentence windows qualify. This only proposes a
 // repair; all ownership/quote/structure/budget gates and fresh auditing remain.
-function hasBilateralSentenceAnchors(sourceSpans,outputSpans,from,to,start,end) {
+function hasBilateralSentenceAnchors(sourceSpans,outputSpans,from,to,start,end,replacements = []) {
   // Bound the optional reciprocal search; large/uncertain windows retain the
   // existing model-repair path instead of extending synchronous alignment.
   if(sourceSpans.length>256||outputSpans.length>256)return false;
+  // Earlier grounded repairs in this same bounded proposal can restore an
+  // immediate neighbour. Match against that proposed neighbour, not its known
+  // erroneous wording. Only whole one-sentence replacements qualify; offsets,
+  // reciprocal uniqueness, both anchors, total limits and fresh re-judging stay.
+  outputSpans=outputSpans.map(span=>{
+    const replacement=replacements.find(r=>r.start===span.start&&r.end===span.end);
+    return replacement&&splitSentenceSpans(replacement.text).length===1
+      ? {...span,text:replacement.text}:span;
+  });
   const si=sourceSpans.findIndex(s=>s.start===from&&s.end===to);
   const oi=outputSpans.findIndex(s=>s.start===start&&s.end===end);
   if(si<1||oi<1||si+1>=sourceSpans.length||oi+1>=outputSpans.length)return false;

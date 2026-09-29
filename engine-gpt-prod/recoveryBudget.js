@@ -28,6 +28,21 @@ function createRecoveryBudget(maxEstimatedUsd, {
   const stageUsageUsd = {};
   const initialNow = Number(clock());
   const startedAt = Number.isFinite(initialNow) ? initialNow : Date.now();
+  let lastClock = startedAt;
+  let recoveryElapsedMs = 0;
+  let mandatoryExcludedMs = 0;
+  let mandatoryAudits = 0;
+  const updateTime = () => {
+    const value = Number(clock());
+    const current = Math.max(lastClock, Number.isFinite(value) ? value : Date.now());
+    const delta = current - lastClock;
+    // Exclude only mandatory-audit wall time with NO optional call in flight.
+    // Concurrent optional work still spends the same shared 240-second cap.
+    if (mandatoryAudits > 0 && reservations.size === 0) mandatoryExcludedMs += delta;
+    else recoveryElapsedMs += delta;
+    lastClock = current;
+    return recoveryElapsedMs;
+  };
   const absoluteCallLimit = Math.max(1, Math.min(64, Math.floor(Number(maxCalls) || 16)));
   const lateCallReserve = Math.max(
     0,
@@ -38,10 +53,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
   let lastDeniedReason = '';
 
   const enabled = enforced === true && limitUsd > 0;
-  const elapsedMs = () => {
-    const current = Number(clock());
-    return Math.max(0, (Number.isFinite(current) ? current : Date.now()) - startedAt);
-  };
+  const elapsedMs = updateTime;
   const denialReason = ({ mandatory = false, priority = 'normal', estimatedUsd = 0 } = {}) => {
     if (attemptedCallCount >= absoluteCallLimit) return 'recovery_call_limit_exhausted';
     if (elapsedMs() >= absoluteElapsedLimitMs) return 'recovery_time_limit_exhausted';
@@ -104,6 +116,8 @@ function createRecoveryBudget(maxEstimatedUsd, {
     absoluteElapsedLimitMs,
     lateTimeReserveMs,
     elapsedMs: elapsedMs(),
+    wallElapsedMs: Math.max(0, lastClock - startedAt),
+    mandatoryExcludedMs,
     callLimitExhausted: attemptedCallCount >= absoluteCallLimit,
     timeLimitExhausted: elapsedMs() >= absoluteElapsedLimitMs,
     lastDeniedReason,
@@ -114,9 +128,17 @@ function createRecoveryBudget(maxEstimatedUsd, {
   });
 
   return {
-    deadlineMs: ({ priority = 'late' } = {}) => Math.min(startedAt + absoluteElapsedLimitMs
-      - (priority === 'normal' ? lateTimeReserveMs : 0),
+    deadlineMs: ({ priority = 'late' } = {}) => Math.min(Number(clock())
+      + Math.max(0, absoluteElapsedLimitMs - elapsedMs() - (priority === 'normal' ? lateTimeReserveMs : 0)),
       enforced === true ? jobDeadlineMs - 120000 : Infinity),
+    beginMandatoryAudit: () => {
+      updateTime(); mandatoryAudits += 1;
+      let ended = false;
+      return () => {
+        if (ended) return;
+        updateTime(); mandatoryAudits -= 1; ended = true;
+      };
+    },
     enableCallAccounting: () => { automaticCalls = true; },
     reserveCall: (estimatedUsd, options = {}) => {
       const amount = Math.ceil(Math.max(0, Number(estimatedUsd) || 0) * 1000000) / 1000000;
@@ -131,6 +153,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
     settleCall: (id, usage) => {
       const reservation = reservations.get(id);
       if (!reservation) return false;
+      updateTime();
       reservations.delete(id);
       reservedUsd = Math.max(0, roundedUsd(reservedUsd - reservation.amount));
       if (usage == null) unknownUsageUsd = roundedUsd(unknownUsageUsd + reservation.amount);

@@ -238,7 +238,7 @@ test('final verdict request carries the same obligations, questions and texts in
     assert.equal(final.sent[key], plain.sent[key]);
   assert.equal(final.sent.model, 'gpt-6-sol');
   assert.equal(final.sent.reasoningEffort, 'high');
-  assert.equal(final.sent.maxOutputTokens, 10000);
+  assert.equal(final.sent.maxOutputTokens, 10500); // one losslessly retained obligation
   assert.equal(final.report.pass, true);
   assert.deepEqual(final.report.obligationReviews, plain.report.obligationReviews);
 });

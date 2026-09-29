@@ -230,7 +230,8 @@ test('문서 회복 비용 예산은 누적 USD와 생략 사유를 원문 없�
   const snapshot = budget.snapshot();
   assert.deepEqual({
     ...snapshot,
-    elapsedMs: 0
+    elapsedMs: 0,
+    wallElapsedMs: 0
   }, {
     enabled: true,
     enforced: true,
@@ -244,6 +245,8 @@ test('문서 회복 비용 예산은 누적 USD와 생략 사유를 원문 없�
     absoluteElapsedLimitMs: 240000,
     lateTimeReserveMs: 60000,
     elapsedMs: 0,
+    wallElapsedMs: 0,
+    mandatoryExcludedMs: 0,
     callLimitExhausted: false,
     timeLimitExhausted: false,
     lastDeniedReason: '',

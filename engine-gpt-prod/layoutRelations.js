@@ -10,6 +10,17 @@ const hash = value => createHash('sha256').update(value, 'utf8').digest('hex');
 // new ordinary paragraph at a complete sentence is harmless, but a heading,
 // list/label, table row or code line cannot silently acquire different content.
 function relationDigest(value) {
+  return relationSignature(value, false);
+}
+
+// Preparation is not verdict reuse: the formatted text is still judged fresh.
+// Intra-prose spacing before a heading must not move its apparent ownership.
+// Keep structural bodies/cells/code and dependent-lead boundaries exact.
+function preparationRelationDigest(value) {
+  return relationSignature(value, true);
+}
+
+function relationSignature(value, compactOffsets) {
   const records = layout.buildLineRecords(value).filter(r => !r.blank);
   const edges = [];
   let offset = 0;
@@ -29,9 +40,9 @@ function relationDigest(value) {
     if (/^(?:(?:pH|온도|압력)\s*\d|(?:실험|대조|비교)\s*군(?:은|는|에서)|(?:첫째|둘째|셋째|넷째|다섯째|여섯째|일곱째|여덟째|아홉째|열째)\s*[,，])/iu.test(text)) {
       edges.push([offset, 'condition_or_enumeration']);
     }
-    offset += text.length + 1;
+    offset += compactOffsets ? text.replace(/\s/gu, '').length : text.length + 1;
   }
-  return hash(JSON.stringify({ version: VERSION, edges }));
+  return hash(JSON.stringify({ version: compactOffsets ? 'layout-preparation-v1' : VERSION, edges }));
 }
 
 // Only glue a clearly unfinished introductory clause to its explanation.
@@ -109,4 +120,4 @@ function groupContinuousResumeLines(lines) {
   return groups;
 }
 
-module.exports = { VERSION, relationDigest, repairDependentLeads, separateAttestedConditions, groupContinuousResumeLines };
+module.exports = { VERSION, relationDigest, preparationRelationDigest, repairDependentLeads, separateAttestedConditions, groupContinuousResumeLines };

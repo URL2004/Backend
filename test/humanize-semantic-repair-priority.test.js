@@ -101,7 +101,7 @@ test('actor or variable repair is confirmed before an initial judge can invert a
     assert.deepEqual(calls.map(c => c.meta.phase), ['primary:semantic', 'escalation:semantic']);
     assert.ok(calls[1].user.includes('prior_semantic_findings'));
     assert.equal(calls[0].maxOutputTokens, 6000);
-    assert.equal(calls[1].maxOutputTokens, 10000);
+    assert.equal(calls[1].maxOutputTokens, 10500); // one explicit prior-finding review
   }
 });
 

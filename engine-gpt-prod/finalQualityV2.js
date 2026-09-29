@@ -378,6 +378,16 @@ function shouldRunSemanticJudge({ requestedMode, effectiveMode, source, document
 }
 
 async function runSemanticDocumentAudit(options) {
+  // A repair of a confirmed final failure must be verified at the same verdict
+  // tier. The diagnostic restoration marker alone is not a judge route, and
+  // multi-section audits drop non-control document signals. Carry the existing
+  // confirmation controls through both receipt admission and every section.
+  if (options.auditStage === 'final_relation_restoration_verification') {
+    options = { ...options, allowRepair: false, discourseSignals: [...new Set([
+      ...(options.discourseSignals || []),
+      'final_semantic_revalidation', 'prior_failed_semantic_confirmation'
+    ])] };
+  }
   const deadlineMs = Number(options.deadlineMs) || undefined;
   const remaining = deadlineMs ? Math.max(1, deadlineMs - Date.now()) : 0;
   const signal = remaining ? AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(remaining)]) : options.signal;

@@ -4,6 +4,7 @@
 const KOREAN_CHAR = '가-힣ㄱ-ㅎㅏ-ㅣ';
 const WORD_CHAR = `${KOREAN_CHAR}A-Za-z0-9_`;
 const { syntaxSpans } = require('./textSyntax');
+const textAnalysisCache = require('./textAnalysisCache');
 
 function koreanEnd(source, flags = 'u') {
   const normalizedFlags = flags.includes('u') ? flags : `${flags}u`;
@@ -281,12 +282,18 @@ function ngramJaccard(a, b, n = 5) {
 }
 
 // Myers bit-vector Levenshtein. 문서 길이에서도 O(n) 행렬 메모리 없이 정확한 문자 편집 거리를 계산한다.
+// 같은 요청 안에서 정확히 같은 (a, b) 순서쌍이 반복되면 계산값만 재사용한다.
+// 강제 변환과 빠른 반환은 저장소 밖에서 이전과 같은 순서로 실행한다.
 function levenshteinDistance(a, b) {
-  let pattern = String(a || '');
-  let text = String(b || '');
+  const pattern = String(a || '');
+  const text = String(b || '');
   if (pattern === text) return 0;
   if (!pattern.length) return text.length;
   if (!text.length) return pattern.length;
+  return textAnalysisCache.memoizeDistance(pattern, text, computeLevenshteinDistance);
+}
+
+function computeLevenshteinDistance(pattern, text) {
   if (pattern.length > text.length) [pattern, text] = [text, pattern];
 
   const m = pattern.length;

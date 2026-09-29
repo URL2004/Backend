@@ -7,8 +7,20 @@ const { syntaxSpans } = require('../engine/textSyntax');
 // explicit source paragraph boundary. Never cut by length, move words, or
 // reconstruct an uncertain alignment. Works even with a locked preamble.
 function restoreSourceParagraphTransitions(source, output) {
+  const iterator=restoreSourceParagraphTransitionsSteps(source,output);
+  let step=iterator.next();
+  while(!step.done)step=iterator.next();
+  return step.value;
+}
+function* restoreSourceParagraphTransitionsSteps(source, output, local = false) {
+  if (!local) {
+    const sections = yield* restoreSectionParagraphTransitions(source, output);
+    if (sections.applicable) return sections;
+  }
   const text = String(output || '');
-  const paragraphs = String(source || '').split(/\r?\n[ \t]*\r?\n+/u).map(s => s.trim()).filter(Boolean);
+  const paragraphs = local
+    ? require('./layoutStructure').splitReadableParagraphs(source)
+    : String(source || '').split(/\r?\n[ \t]*\r?\n+/u).map(s => s.trim()).filter(Boolean);
   const spans = splitSentenceSpans(text);
   if (paragraphs.length < 2 || paragraphs.length > 40 || spans.length > 180 || text.length > 30000) return { text, repairedCount: 0 };
   const cache = new Map();
@@ -23,13 +35,16 @@ function restoreSourceParagraphTransitions(source, output) {
     return shared / Math.max(1, a.size + b.size - shared);
   };
   const replacements = new Map();
+  const literals = syntaxSpans(text);
   for (let p = 1; p < paragraphs.length; p++) {
+    yield;
     const left = paragraphs[p - 1], right = paragraphs[p];
     if (isStructureDominatedParagraph(left) || isStructureDominatedParagraph(right)) continue;
     const last = splitSentences(left).at(-1), first = splitSentences(right)[0];
     if (!last || !first || Math.min(last.length, first.length) < 25) continue;
     const candidates = [];
     for (let i = 1; i < spans.length; i++) {
+      if(i%32===0)yield;
       const l = similarity(last, spans[i - 1].text), r = similarity(first, spans[i].text);
       if (l < .6 || r < .45) continue;
       if (similarity(first.slice(0, 45), spans[i].text.slice(0, 45)) < .35) continue;
@@ -40,6 +55,7 @@ function restoreSourceParagraphTransitions(source, output) {
     const i = candidates[0].i, start = spans[i - 1].end, end = spans[i].start;
     const separator = text.slice(start, end);
     if (!/^[ \t\r\n]*$/u.test(separator) || /\n[ \t]*\r?\n/u.test(separator)) continue;
+    if (literals.some(s => s.spanType !== 'parenthetical' && s.start < end && s.end > start)) continue;
     replacements.set(start, end);
   }
   let repaired = text;
@@ -47,6 +63,34 @@ function restoreSourceParagraphTransitions(source, output) {
     repaired = `${repaired.slice(0, start)}\n\n${repaired.slice(end)}`;
   }
   return { text: repaired, repairedCount: replacements.size };
+}
+
+// A long, sectioned paper must not become an all-or-nothing alignment task.
+// Only identical unique headings in the same consecutive order own a window.
+// Existing per-window bounds and adjacent-sentence confidence stay unchanged.
+function* restoreSectionParagraphTransitions(source, output) {
+  const a=String(source||'').replace(/\r\n?/gu,'\n'), b=String(output||'').replace(/\r\n?/gu,'\n');
+  if (a.length>60000||b.length>60000) return {text:output,repairedCount:0,applicable:false};
+  const {buildLineRecords}=require('./layoutStructure');
+  const headings = text => buildLineRecords(text).filter(r=>['title','heading'].includes(r.role))
+    .map(r=>({key:r.text.trim(),start:r.start,end:r.end}));
+  const left=headings(a),right=headings(b);
+  if(left.length<2||left.length>60||right.length>60) return {text:output,repairedCount:0,applicable:false};
+  const unique=(list,key)=>list.filter(r=>r.key===key).length===1;
+  const edits=[];let count=0;
+  for(let i=0;i<left.length;i++) {
+    yield;
+    const h=left[i];
+    if(!unique(left,h.key)||!unique(right,h.key))continue;
+    const j=right.findIndex(r=>r.key===h.key),next=left[i+1],other=right[j+1];
+    if(next ? !other||next.key!==other.key||!unique(left,next.key)||!unique(right,next.key) : other)continue;
+    const from=h.end,to=next?.start??a.length,start=right[j].end,end=other?.start??b.length;
+    const result=yield* restoreSourceParagraphTransitionsSteps(a.slice(from,to),b.slice(start,end),true);
+    if(result.repairedCount){edits.push({start,end,text:result.text});count+=result.repairedCount;}
+  }
+  let text=b;
+  for(const e of edits.sort((x,y)=>y.start-x.start))text=text.slice(0,e.start)+e.text+text.slice(e.end);
+  return {text,repairedCount:count,applicable:true};
 }
 // A section heading must not disable role boundaries in the prose below it.
 // Unlike exact boundary recovery, this permits paraphrases, but only restores
@@ -103,4 +147,4 @@ function restoreSourceDiscourseRoles(source, output) {
   for (const [start, end] of [...edits].sort((a, b) => b[0] - a[0])) repaired = repaired.slice(0, start) + '\n\n' + repaired.slice(end);
   return { text: repaired, repairedCount: edits.size };
 }
-module.exports = { restoreSourceParagraphTransitions, restoreSourceDiscourseRoles };
+module.exports = { restoreSourceParagraphTransitions, restoreSourceParagraphTransitionsSteps, restoreSourceDiscourseRoles };

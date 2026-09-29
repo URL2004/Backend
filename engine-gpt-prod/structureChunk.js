@@ -1609,7 +1609,7 @@ function* restoreParagraphLayoutBase({
   const rawOutputText = normalizeParagraphWhitespace(outputText);
   const sourceTransitions = mode !== 'polish' && !creativeLayout
     && ((chunks || []).some(chunk => chunk?.locked) || allowsLayoutRecomposition(resolvedContract))
-    ? require('./sourceParagraphTransitions').restoreSourceParagraphTransitions(source, rawOutputText)
+    ? (yield* require('./sourceParagraphTransitions').restoreSourceParagraphTransitionsSteps(source, rawOutputText))
     : { text: rawOutputText, repairedCount: 0 };
   yield;
   const explicitParagraphCountBefore = layoutStructure.splitExplicitParagraphs(rawOutputText).length;

@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v20-repetition-condition-prefix';
+const VERSION = 'relation-candidates-v21-event-relations';
 const { predicateScopeCandidates } = require('./predicateScope');
 const { auditParentheticalAliasOwners } = require('./entityParentheticalIntegrity');
 
@@ -94,6 +94,9 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    for (const code of require('./eventRelationOperators').eventRelationOperators(original, sentence,
+      (side,start,end) => unprotectedOperator(side === 'source' ? before : after,
+        side === 'source' ? original : sentence,start,end,syntaxForOperators))) add(code);
     if (volitionalModalityShift(original,sentence,before,after,syntaxForOperators)) add('volitional_modality_candidate');
     if (introducedConditionalRepetition(original,sentence,before,after,syntaxForOperators)) add('repetition_condition_candidate');
     // Nominations only: search adjacent sentences for equivalent wording.

@@ -57,3 +57,48 @@ test('excluding time never changes money, attempt limits or unknown reservations
   assert.equal(b.snapshot().attemptedCallCount,1);
   assert.equal(b.snapshot().lastDeniedReason,'recovery_budget_exhausted');
 });
+
+test('long-document optional recovery reserves the full approved final audit without extending the job',()=>{
+  let now=1000;
+  const long=createRecoveryBudget(1,{clock:()=>now,jobDeadlineMs:301000,finalAuditReserveMs:180000});
+  assert.equal(long.canStart({priority:'late'}),true);
+  assert.equal(long.deadlineMs(),121000);
+  now=1001;
+  assert.equal(long.canStart({priority:'late'}),false);
+  assert.equal(long.denialReason({priority:'late'}),'recovery_final_audit_time_reserved');
+  assert.equal(long.snapshot().finalAuditReserveMs,180000);
+  const normal=createRecoveryBudget(1,{clock:()=>now,jobDeadlineMs:301000});
+  assert.equal(normal.canStart({priority:'late'}),true);
+  assert.equal(normal.snapshot().finalAuditReserveMs,120000);
+  assert.equal(createRecoveryBudget(1,{finalAuditReserveMs:999999}).snapshot().finalAuditReserveMs,180000);
+  assert.equal(createRecoveryBudget(1,{finalAuditReserveMs:-10}).snapshot().finalAuditReserveMs,120000);
+});
+
+test('a candidate growing into the long audit envelope can only increase the final reserve',()=>{
+  let now=0;
+  const budget=createRecoveryBudget(1,{clock:()=>now,jobDeadlineMs:300000});
+  assert.equal(budget.snapshot().finalAuditReserveMs,120000);
+  assert.equal(budget.raiseFinalAuditReserve(180000),180000);
+  assert.equal(budget.raiseFinalAuditReserve(120000),180000);
+  assert.equal(budget.raiseFinalAuditReserve(NaN),180000);
+  assert.equal(budget.deadlineMs(),120000);
+  now=1;
+  assert.equal(budget.canStart({priority:'late'}),false);
+});
+
+test('every admission observes current candidate growth before reserving an optional call',()=>{
+  let chars=5900;
+  const budget=createRecoveryBudget(1,{clock:()=>1,jobDeadlineMs:300000,
+    getFinalAuditReserveMs:()=>chars>6000?180000:120000});
+  assert.equal(budget.canStart({priority:'late'}),true);
+  chars=6100;
+  assert.equal(budget.reserveCall(.01,{priority:'late'}),null);
+  assert.equal(budget.snapshot().attemptedCallCount,0);
+  assert.equal(budget.deadlineMs(),120000);
+  chars=5000;
+  assert.equal(budget.snapshot().finalAuditReserveMs,180000);
+  const failedReader=createRecoveryBudget(1,{clock:()=>1,jobDeadlineMs:300000,
+    getFinalAuditReserveMs:()=>{throw new Error('synthetic');}});
+  assert.equal(failedReader.canStart({priority:'late'}),false);
+  assert.equal(failedReader.snapshot().finalAuditReserveMs,180000);
+});

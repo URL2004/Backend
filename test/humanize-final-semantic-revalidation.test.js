@@ -356,7 +356,14 @@ for (const accept of [true, false]) test(`최종 관계 복구는 같은 기한 
   assert.equal(mock.calls.filter(c => c.name === 'gpt_prod_judge_repair').length, 0);
   assert.ok(mock.judgeCalls() >= 3);
   assert.equal(out.engineMeta.semanticModelCallCount, mock.judgeCalls());
-  assert.equal(out.result.humanizeMeta.callLedger.entries.filter(e => e.stage === 'final_relation_restoration_verification').length, accept ? 1 : 2);
+  const restorationCalls = out.result.humanizeMeta.callLedger.entries
+    .filter(e => e.stage === 'final_relation_restoration_verification');
+  assert.equal(restorationCalls.length, 1);
+  const finalJudgeCall = mock.calls.filter(c => c.name === 'gpt_prod_semantic_judge').at(-1);
+  assert.equal(finalJudgeCall.model, config().models.judgeEscalation);
+  assert.equal(extractPromptDataSection(finalJudgeCall.body.input, 'REWRITE').includes(a), true);
+  assert.match(extractPromptDataSection(finalJudgeCall.body.input, 'DETERMINISTIC_DISCOURSE_SIGNALS'),
+    /prior_failed_semantic_confirmation/);
   assert.equal(provenance.verifySemanticValidation(out.result.semanticAudit, {
     source, candidate: out.result.outputText, requireDigest: true
   }).status, accept ? 'pass' : 'fail');

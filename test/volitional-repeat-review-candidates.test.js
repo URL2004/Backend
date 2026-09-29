@@ -25,6 +25,38 @@ test('introduced repetition inside the same conditional action nominates only a 
   assert.ok(codes(c,d.replace('다시','재차')).includes(repeat));
 });
 
+test('a unique same-action wish prefix nominates a paraphrased conditional ending', () => {
+  for (const [source,output] of [
+    [c,d.replace('활동이 생긴다면','마음이 든다면')],
+    ['다음 학기에도 배우고 싶은 과목이 생긴다면 수업을 신청할 생각이다.',
+      '다음 학기에도 재차 배우고 싶은 마음이 든다면 수업을 신청할 생각이다.']
+  ]) assert.ok(codes(source,output).includes(repeat));
+});
+
+test('paraphrased conditional ownership abstains on unrelated, protected, repeated or multiple actions', () => {
+  const paraphrase=d.replace('활동이 생긴다면','마음이 든다면');
+  for (const [source,output] of [
+    [c,paraphrase.replace('해보고','배우고')],
+    [c.replace('해보고 싶은','같은 장비를 사용하고 싶은'),
+      paraphrase.replace('해보고 싶은','같은 장비를 고치고 싶은')],
+    [c.replace('활동이 생긴다면','활동이나 해보고 싶은 과목이 생긴다면'),paraphrase],
+    [c.replace('활동이 생긴다면','활동을 찾고 배우고 싶은 과목이 생긴다면'),paraphrase],
+    [c.replace('실험이 즐겁고','실험이 즐겁다면'),paraphrase],
+    [c,paraphrase.replace('마음이 든다면','마음이 들고 배우고 싶은 과목이 생긴다면')],
+    [d,paraphrase], [c.replace('해보고','또 해보고'),paraphrase],
+    ['“'+c+'”','“'+paraphrase+'”'], ['`'+c+'`','`'+paraphrase+'`']
+  ]) assert.equal(codes(source,output).includes(repeat),false);
+});
+
+test('paraphrased conditional repetition remains a contextual question with preserved allowed', () => {
+  const output=d.replace('활동이 생긴다면','마음이 든다면');
+  const t=review.targets(c,output).find(t=>t.codes.includes(repeat));
+  assert.ok(t);
+  assert.equal(review.assess([t],[],[],c,output).pending[0].repairable,false);
+  assert.equal(review.assess([t],[{...t,status:'preserved',
+    detail:'The next-week context already implies repeating the same activity.'}],[],c,output).pending.length,0);
+});
+
 test('new candidates enter explicit review; missing or unsupported changed answers cannot pass', () => {
   for (const [source,output,code] of [[a,b,volition],[c,d,repeat]]) {
     const targets = review.targets(source,output);

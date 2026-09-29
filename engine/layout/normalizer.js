@@ -1,6 +1,6 @@
 'use strict';
 
-const { runLayoutNlp } = require('./pythonBridge');
+const { runLayoutNlp, isPythonNlpEnabled } = require('./pythonBridge');
 const { splitSentences: splitKoreanSentences } = require('../koreanText');
 
 const VERSION = 'layout-normalizer-v1';
@@ -538,6 +538,7 @@ function round1(v) {
 
 module.exports = {
   VERSION,
+  isPythonNlpEnabled,
   formatDocument,
   normalizeRawWhitespace,
   protectSpans,

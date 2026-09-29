@@ -7,6 +7,13 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(__dirname, 'python', 'layout_nlp.py');
 const PY_TARGET = path.join(ROOT, '.python-packages');
 
+// Frozen path (2026-09-30). Each call spawns Python and loads Kiwi from
+// scratch; on Render starter (512Mi) that caused the 2026-07-05~09 OOM crash
+// loop. Every caller, the admin lab included, must ask this one switch.
+function isPythonNlpEnabled(env = process.env) {
+  return env.LAYOUT_NLP_PYTHON_ENABLED === '1';
+}
+
 async function runLayoutNlp(text, opts = {}) {
   const payload = {
     text: String(text || ''),
@@ -106,6 +113,7 @@ function unavailableEngines(error) {
 }
 
 module.exports = {
+  isPythonNlpEnabled,
   runLayoutNlp,
   PY_TARGET
 };

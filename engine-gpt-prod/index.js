@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.94';
+const VERSION = 'gpt-prod-v2.5.95';
 const DETECT_VERSION = 'gpt-detect-v1.51';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -4603,7 +4603,21 @@ async function runEngine({
   };
   const candidateLedgerMeta = candidateLedger.snapshot();
   const deliveredParagraphBoundaries = structureChunk.measureDeliveredParagraphBoundaries(rawSource, outputText);
+  // Count-only boundary marker telemetry. Every job that sent markers logs its
+  // denominators; failures (first attempt or residual) also reach the admin
+  // ops log through the catalog. No text or marker content is recorded.
+  const boundaryMarkerStats = structureChunk.summarizeBoundaryMarkerStats(records, { mode: selectedMode });
+  if (boundaryMarkerStats.markedChunks > 0) {
+    try {
+      logger.info('gpt_prod.boundary_marker_stats', { uid, ...boundaryMarkerStats });
+      if (boundaryMarkerStats.documentAffected) logger.warn('gpt_prod.boundary_marker_failed', { uid, ...boundaryMarkerStats });
+    } catch {}
+  }
   result.engineMeta = {
+    boundaryMarkerStats,
+    // Delivered-text relation nominations by code (e.g. antecedent_link_loss_candidate).
+    // Nominations are not confirmed errors; this only sizes them before any new check.
+    relationCandidateCounts: countRelationCandidateCodes(deliveryAudit?.relationAudit?.candidates),
     shortChunkBatchEnabled: shortChunkBatch.metrics.enabled,
     shortChunkBatchCallCount: shortChunkBatch.metrics.batchCallCount,
     shortChunkBatchedChunkCount: shortChunkBatch.metrics.batchedChunkCount,
@@ -5474,6 +5488,9 @@ async function processChunk({
   second.record.textualRefusalAttemptCount = Number(first.record?.textualRefusalAttemptCount || 0)
     + Number(second.record?.textualRefusalAttemptCount || 0);
   second.record.primaryFailureCodes = safeFailureCodesFromRecord(first.record);
+  // Every escalated path returns second.record; keep the primary attempt's
+  // count-only marker audit so retries that recovered stay measurable.
+  second.record.primaryBoundaryMarkerAudit = first.record?.boundaryMarkerAudit || null;
   if (!second.hardFail) {
     chunk.outputText = second.outputText;
     second.record.escalated = true;
@@ -5833,6 +5850,7 @@ async function callHumanize(args) {
     });
     let outputText = sanitizeOutput(response.json.outputText);
     const boundaryAudit = structureChunk.restoreBoundaryMarkers(outputText, chunk);
+    const boundaryMarkerAudit = structureChunk.summarizeBoundaryAudit(boundaryAudit, chunk);
     outputText = boundaryAudit.text;
     outputText = chunkPostprocess(outputText, original, {
       preserveLineBreaks: voiceProfile?.lineBreakSensitive === true
@@ -5876,6 +5894,8 @@ async function callHumanize(args) {
           ? `잠근 행 수가 달라졌습니다(${boundaryAudit.expectedLineCount}→${boundaryAudit.actualLineCount}).`
           : boundaryAudit.segmentationChanged
             ? `잠근 문장 수가 달라졌습니다(${boundaryAudit.expectedSentenceCount}→${boundaryAudit.actualSentenceCount}).`
+          : boundaryAudit.orderChanged && !boundaryAudit.missing.length && !boundaryAudit.duplicated.length
+            ? '병합 청크의 원문 경계 토큰 순서가 바뀌었습니다.'
           : '병합 청크의 원문 경계 토큰이 누락되거나 중복되었습니다.'
       });
     }
@@ -5962,7 +5982,8 @@ async function callHumanize(args) {
         selectedModel: response.model,
         retryCounts: response.retryCounts,
         textualRefusalAttemptCount: gate.reason === 'textual_refusal' ? 1 : 0,
-        escalated: phase === 'escalation'
+        escalated: phase === 'escalation',
+        boundaryMarkerAudit
       })
     };
   } catch (err) {
@@ -8563,6 +8584,16 @@ function serverEditIntensity(metrics = {}) {
   return 'light';
 }
 
+function countRelationCandidateCodes(candidates) {
+  const counts = {};
+  for (const item of Array.isArray(candidates) ? candidates : []) {
+    const code = String(item?.code || '');
+    if (!/^[a-z_]{3,64}$/u.test(code)) continue;
+    counts[code] = (counts[code] || 0) + 1;
+  }
+  return counts;
+}
+
 function chunkRecord({
   chunk,
   outputText,
@@ -8592,7 +8623,8 @@ function chunkRecord({
   partialRecoveryProposalCount = 0,
   partialRecoveryAppliedCount = 0,
   partialRecoveryRejectedCount = 0,
-  partialRecoveryRejectedCodes = []
+  partialRecoveryRejectedCodes = [],
+  boundaryMarkerAudit = null
 }) {
   return {
     index: chunk.index,
@@ -8626,7 +8658,8 @@ function chunkRecord({
     partialRecoveryProposalCount: Number(partialRecoveryProposalCount || 0),
     partialRecoveryAppliedCount: Number(partialRecoveryAppliedCount || 0),
     partialRecoveryRejectedCount: Number(partialRecoveryRejectedCount || 0),
-    partialRecoveryRejectedCodes: safeFailureCodeList(partialRecoveryRejectedCodes)
+    partialRecoveryRejectedCodes: safeFailureCodeList(partialRecoveryRejectedCodes),
+    boundaryMarkerAudit
   };
 }
 
@@ -8904,7 +8937,7 @@ async function safeFormatLayout(text, mode = 'assignment') {
       phase: 'post',
       // Python NLP(kiwipiepy/kss)는 변환마다 서브프로세스로 모델을 새로 로드해 Render 512Mi에서 OOM 크래시 루프를
       // 일으켰다(2026-07-05~09 실사고). 운영은 JS 포맷팅만 쓰고, Python은 메모리 여유 있는 환경에서만 opt-in.
-      enableNlp: process.env.LAYOUT_NLP_PYTHON_ENABLED === '1',
+      enableNlp: layoutNormalizer.isPythonNlpEnabled(),
       timeoutMs: Number(process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000,
       maxChars: Number(process.env.LAYOUT_NLP_MAX_CHARS || 12000) || 12000
     });

@@ -130,6 +130,7 @@ async function detailedHealth() {
         openai: !!process.env.OPENAI_API_KEY,
         maintenance: maintenanceMode.isMaintenanceEnabled(),
         uptimeSec: Math.round(process.uptime()),
+        ...memoryHealthMeta(),
         ...transformRouter.stats()
       })
     };
@@ -154,10 +155,27 @@ async function detailedHealth() {
         openai: !!process.env.OPENAI_API_KEY,
         maintenance: maintenanceMode.isMaintenanceEnabled(),
         uptimeSec: Math.round(process.uptime()),
+        ...memoryHealthMeta(),
         ...transformRouter.stats()
       })
     };
   }
+}
+
+// Render starter has a 512Mi limit shared by the API server and every running
+// transform. Any memory-bound decision (e.g. a resident NLP model) must start
+// from this process's own numbers, not from a local estimate.
+function memoryHealthMeta(usage = process.memoryUsage()) {
+  const mb = value => Math.round(Number(value || 0) / 1048576);
+  return {
+    memory: {
+      rssMb: mb(usage.rss),
+      heapUsedMb: mb(usage.heapUsed),
+      heapTotalMb: mb(usage.heapTotal),
+      externalMb: mb(usage.external),
+      arrayBuffersMb: mb(usage.arrayBuffers)
+    }
+  };
 }
 
 const readiness = require('./lib/readiness').createReadiness({

@@ -355,6 +355,48 @@ function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500,
   return out;
 }
 
+const BOUNDARY_MARKER_TOKEN_RE = /\[\[\[V2_(?:BOUNDARY|LINE|SENTENCE)_\d{3,4}\]\]\]/gu;
+const BOUNDARY_MARKER_KINDS = Object.freeze(['paragraph', 'line', 'sentence']);
+
+function boundaryMarkerKind(marker) {
+  const value = String(marker || '');
+  if (value.includes('V2_BOUNDARY_')) return 'paragraph';
+  if (value.includes('V2_LINE_')) return 'line';
+  if (value.includes('V2_SENTENCE_')) return 'sentence';
+  return '';
+}
+
+// The three marker lists are separate arrays, but the model saw them
+// interleaved in source position. The expected order is the order in the
+// text actually sent to the model, not the concatenation of the lists.
+function expectedBoundaryMarkerOrder(chunk, markers) {
+  const known = new Set(markers.map(item => item.marker));
+  const seen = new Set();
+  const order = [];
+  for (const token of String(chunk?.llmText || '').match(BOUNDARY_MARKER_TOKEN_RE) || []) {
+    if (!known.has(token) || seen.has(token)) continue;
+    seen.add(token);
+    order.push(token);
+  }
+  const rest = markers
+    .filter(item => !seen.has(item.marker))
+    .sort((a, b) => Number(a.start) - Number(b.start));
+  return [...order, ...rest.map(item => item.marker)];
+}
+
+// Missing and duplicated markers are reported separately; only markers that
+// occur exactly once can prove a swap of source-owned segments.
+function findBoundaryMarkerOrderViolation(text, expectedOrder) {
+  let lastPosition = -1;
+  for (const marker of expectedOrder) {
+    const position = text.indexOf(marker);
+    if (position < 0 || text.indexOf(marker, position + marker.length) >= 0) continue;
+    if (position < lastPosition) return marker;
+    lastPosition = position;
+  }
+  return '';
+}
+
 function restoreBoundaryMarkers(outputText, chunk) {
   const markers = [
     ...(Array.isArray(chunk?.boundaryMarkers) ? chunk.boundaryMarkers : []),
@@ -363,6 +405,8 @@ function restoreBoundaryMarkers(outputText, chunk) {
   ];
   if (!markers.length) return { text: String(outputText || ''), ok: true, applied: false, missing: [], duplicated: [] };
   let text = String(outputText || '');
+  const orderViolation = findBoundaryMarkerOrderViolation(text, expectedBoundaryMarkerOrder(chunk, markers));
+  const orderChanged = orderViolation !== '';
   const missing = [];
   const duplicated = [];
   for (const item of markers) {
@@ -383,17 +427,97 @@ function restoreBoundaryMarkers(outputText, chunk) {
     || (exactLineLocked && expectedLineCount !== actualLineCount);
   return {
     text,
-    ok: missing.length === 0 && duplicated.length === 0 && !leaked && !segmentationChanged,
+    ok: missing.length === 0 && duplicated.length === 0 && !leaked && !segmentationChanged && !orderChanged,
     applied: true,
     missing,
     duplicated,
     leaked,
     segmentationChanged,
+    orderChanged,
+    orderViolation,
     expectedSentenceCount,
     actualSentenceCount,
     expectedLineCount,
     actualLineCount
   };
+}
+
+// Count-only view of one attempt's marker audit. It never carries text, so it
+// can be stored in job metadata and logs.
+function summarizeBoundaryAudit(audit, chunk) {
+  const kinds = {
+    paragraph: Array.isArray(chunk?.boundaryMarkers) ? chunk.boundaryMarkers.length : 0,
+    line: Array.isArray(chunk?.lineBoundaryMarkers) ? chunk.lineBoundaryMarkers.length : 0,
+    sentence: Array.isArray(chunk?.sentenceBoundaryMarkers) ? chunk.sentenceBoundaryMarkers.length : 0
+  };
+  if (audit?.applied !== true || kinds.paragraph + kinds.line + kinds.sentence === 0) return null;
+  const reasons = [];
+  if (audit.missing?.length) reasons.push('missing');
+  if (audit.duplicated?.length) reasons.push('duplicated');
+  if (audit.leaked) reasons.push('leaked');
+  if (audit.segmentationChanged) reasons.push('segmentation');
+  if (audit.orderChanged) reasons.push('order');
+  const failedKinds = new Set([...(audit.missing || []), ...(audit.duplicated || []), audit.orderViolation]
+    .map(boundaryMarkerKind)
+    .filter(Boolean));
+  if (audit.segmentationChanged) {
+    if (audit.expectedSentenceCount !== null && audit.expectedSentenceCount !== audit.actualSentenceCount) failedKinds.add('sentence');
+    if (audit.expectedLineCount !== null && audit.expectedLineCount !== audit.actualLineCount) failedKinds.add('line');
+  }
+  return {
+    kinds,
+    ok: audit.ok === true,
+    reasons,
+    failedKinds: BOUNDARY_MARKER_KINDS.filter(kind => failedKinds.has(kind))
+  };
+}
+
+// Document totals over final chunk records. A chunk that escalated carries the
+// primary attempt's audit in primaryBoundaryMarkerAudit and its own in
+// boundaryMarkerAudit. Denominators are chunks that sent markers to the model.
+function summarizeBoundaryMarkerStats(records, { mode = '' } = {}) {
+  const zeroKinds = () => Object.fromEntries(BOUNDARY_MARKER_KINDS.map(kind => [kind, 0]));
+  const stats = {
+    version: 1,
+    mode: String(mode || ''),
+    markedChunks: 0,
+    markers: zeroKinds(),
+    chunksByKind: zeroKinds(),
+    firstAttemptFailedChunks: 0,
+    escalationFailedChunks: 0,
+    recoveredByEscalationChunks: 0,
+    residualChunks: 0,
+    failureReasons: { missing: 0, duplicated: 0, leaked: 0, segmentation: 0, order: 0 },
+    failedKinds: zeroKinds(),
+    documentAffected: false
+  };
+  for (const record of records || []) {
+    if (!record || record.locked || record.skipped) continue;
+    const primary = record.escalated ? (record.primaryBoundaryMarkerAudit || null) : (record.boundaryMarkerAudit || null);
+    const escalation = record.escalated ? (record.boundaryMarkerAudit || null) : null;
+    const reference = primary || escalation;
+    if (!reference) continue;
+    stats.markedChunks += 1;
+    for (const kind of BOUNDARY_MARKER_KINDS) {
+      const count = Number(reference.kinds?.[kind] || 0);
+      stats.markers[kind] += count;
+      if (count > 0) stats.chunksByKind[kind] += 1;
+    }
+    if (primary && primary.ok === false) {
+      stats.firstAttemptFailedChunks += 1;
+      for (const reason of primary.reasons || []) {
+        if (Object.hasOwn(stats.failureReasons, reason)) stats.failureReasons[reason] += 1;
+      }
+      for (const kind of primary.failedKinds || []) {
+        if (Object.hasOwn(stats.failedKinds, kind)) stats.failedKinds[kind] += 1;
+      }
+    }
+    if (escalation && escalation.ok === false) stats.escalationFailedChunks += 1;
+    if (primary && primary.ok === false && escalation && escalation.ok === true) stats.recoveredByEscalationChunks += 1;
+    if ((record.warnings || []).includes('v2_residual:structure_boundary_marker_failed')) stats.residualChunks += 1;
+  }
+  stats.documentAffected = stats.firstAttemptFailedChunks > 0 || stats.residualChunks > 0;
+  return stats;
 }
 
 // 의미 감사 이후에는 어휘를 다시 바꾸지 않는다. 이 단계는 동결 제목을
@@ -4160,6 +4284,8 @@ module.exports = {
   looksUnsafeChunkEnd,
   coalesceEditableChunks,
   restoreBoundaryMarkers,
+  summarizeBoundaryAudit,
+  summarizeBoundaryMarkerStats,
   restorePostSemanticLayout,
   restorePostSemanticLayoutAsync: options => require('./paragraphAlignment').runLayout(restorePostSemanticLayoutSteps, options),
   restoreFinalDocumentLayout,

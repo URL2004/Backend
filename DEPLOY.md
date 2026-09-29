@@ -398,6 +398,21 @@ npm run cache:gpt -- -Limit 1000 -Json
 - 정책 팩 스키마는 `npm run writing-policy:validate`로 항상 검사한다. 규제 분야 자동 출시 전에는 법무·정책 담당자가 공식 출처와 문구를 확인한 뒤 `npm run writing-policy:approve -- <medical|legal|finance|advertising> --owner=<담당자> --approved-at=YYYY-MM-DD`로 승인 파일을 만들고 코드 리뷰를 거친다. 네 팩 모두 승인된 배포는 `WRITING_LAB_REQUIRE_ALL_POLICY_APPROVAL=1`로 predeploy를 강제한다.
 - 휴머나이징 결과는 `/writing-lab/v2/finalize`에서 서명된 사실 원장으로 재검사한다. 제한 수리도 통과하지 못하면 서명 토큰에 포함된 검증 초안으로 서버가 복구하며, 클라이언트는 `delivery.source`가 `humanized`, `humanized_repaired`, `verified_generation_fallback` 중 무엇인지 사용자에게 표시한다.
 
+### Python 레이아웃 NLP(Kiwi) — 동결, 켜지 말 것 (2026-09-30)
+
+- 스위치는 `LAYOUT_NLP_PYTHON_ENABLED` 하나다(`=1`일 때만 켜짐, 기본 꺼짐). 운영 변환 경로와 관리자 랩(`layoutNlpTest`)이 모두 `engine/layout`의 `isPythonNlpEnabled()`를 따른다. v2.5.94까지는 관리자 랩이 이 스위치를 무시하고 항상 켰다.
+- 켜면 요청마다 Python을 새로 띄워 kiwipiepy 모델을 적재한다. 2026-07-05 운영에서 켰다가 Render starter(512Mi)에서 메모리 부족 종료가 7/5~7/9 39건 났고, 7/9 opt-in 전환 뒤 0건이다.
+- 2026-09-30 실측(로컬): kiwipiepy 0.24.0 적재 후 메모리는 기본 약 600MB, 부가 사전 3개를 꺼도 약 265MB다. 같은 날 Render 지표상 최근 14일 최대 사용량은 422MB(한도의 78.6%)다. 현 요금제에서는 상주·요청당·WASM 어느 형태로도 올리지 않는다.
+- 운영 빌드 명령은 `yarn install`이라 `scripts/install-layout-nlp.js`(Python 패키지 설치)는 돌지 않는다. 빌드 명령에 `npm run setup:layout-nlp`를 넣지 않는다.
+- 근거와 재도입 조건: `reports/kiwi-debate-20260930/`(저장소 밖 작업 폴더)의 1·2차 3자 토론 보고서. 재도입은 증설 또는 별도 서비스, 비용 승인, 저비용 대안 대비 잔여 결함 30% 이상 감소가 모두 있을 때만 검토한다.
+- 운영 메모리는 `/internal/health`의 `memory.rssMb`(HEALTH_CHECK_SECRET 필요)와 Render 지표로 본다.
+
+### 청크 경계 표식 카운터 (v2.5.95)
+
+- 작업마다 `engineMeta.boundaryMarkerStats`에 경계 표식을 쓴 청크 수(분모), 1차 실패, 상위 모델 재시도 회복, 잔여(원문 복귀) 청크 수와 실패 사유(누락·중복·유출·문장 수 변화·순서)가 건수로만 남는다. 원문은 남지 않는다.
+- 같은 숫자가 Render 로그 `gpt_prod.boundary_marker_stats`(info, 표식을 쓴 작업마다 1줄)에 남고, 실패가 있던 작업은 관리자 장애 로그 `gpt_prod.boundary_marker_failed`(SEV3, 디스코드 없음)에도 남는다.
+- 판단 기준(3자 토론 합의): 재시도 포함 이음매 실패가 병합 청크의 1% 이상이면 문단 블록 출력 계약(`blocks[{sourceBlockId, text}]`)의 로컬 30문서 비교를 시작한다.
+
 ### v2.4.8 활성화 순서
 
 1. 위 세 플래그를 모두 `0`으로 둔 백엔드를 먼저 배포하고 `/healthz`에서 전부 `false`인지 확인한다.

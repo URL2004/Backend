@@ -2543,10 +2543,12 @@ async function runAdminGptLabWithOptionalNiklCompare({
   if (layoutNlpTest) {
     job.stage = `관리자 테스트 · ${label || 'GPT'} · 문서 형태 입력 복원 중`;
     persistJob(job);
+    // The lab runs on the production instance. Python NLP loads a full Kiwi
+    // model per call, so it follows the same switch as the engine (default off).
     preLayout = await layoutNormalizer.formatDocument(text, {
       mode,
       phase: 'pre',
-      enableNlp: true,
+      enableNlp: layoutNormalizer.isPythonNlpEnabled(),
       timeoutMs: Number(process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000
     });
     testText = preLayout.text || text;
@@ -2568,12 +2570,13 @@ async function runAdminGptLabWithOptionalNiklCompare({
     const postLayout = await layoutNormalizer.formatDocument(testOut.result.outputText, {
       mode,
       phase: 'post',
-      enableNlp: true,
+      enableNlp: layoutNormalizer.isPythonNlpEnabled(),
       timeoutMs: Number(process.env.LAYOUT_NLP_TIMEOUT_MS || 5000) || 5000
     });
     testOut.result.outputText = postLayout.text || testOut.result.outputText;
     testOut.result.layoutFormat = {
       enabled: true,
+      pythonNlpEnabled: layoutNormalizer.isPythonNlpEnabled(),
       version: layoutNormalizer.VERSION,
       pre: preLayout?.report || null,
       post: postLayout.report || null,

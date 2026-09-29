@@ -85,7 +85,49 @@ test('모든 카탈로그 항목은 등급과 대응 안내를 갖는다(새벽�
     assert.ok(['SEV1', 'SEV2', 'SEV3'].includes(meta.sev), `${event}: 등급 누락`);
     assert.ok(meta.domain && typeof meta.domain === 'string', `${event}: 도메인 누락`);
     assert.ok(meta.action && meta.action.length >= 10, `${event}: 대응 안내가 비었다`);
+    // discord:false는 SEV3에만 허용한다 — 깨워야 하는 등급을 조용히 두면 안 된다.
+    if (meta.discord === false) assert.equal(meta.sev, 'SEV3', `${event}: discord:false는 SEV3만 가능`);
   }
+});
+
+// 2026-09-29 로그 위생 개편: "관리자 로그에만" 남기는 사건은 기록되되 Discord로는 가지 않는다.
+test('discord:false 카탈로그 항목은 opsLog에 기록되고 Discord 발송은 건너뛴다', () => {
+  reset();
+  const { logger } = require('../lib/logger');
+  const opsLog = require('../lib/opsLog');
+  for (const event of ['transform.duplicate_input_blocked', 'referral.rejected', 'coupon.invalid_code_format', 'public_metrics.unavailable', 'gpt_prod.call_failed', 'security.csp_violation_summary']) {
+    const cls = opsEvents.classify(event, 'warn');
+    assert.equal(cls.sev, 'SEV3', `${event}: 관리자 로그 대상`);
+    assert.equal(cls.discord, false, `${event}: Discord는 조용히`);
+    assert.ok(cls.action.length >= 20, `${event}: 설명이 있어야 관리자 화면에서 알아볼 수 있다`);
+  }
+  const before = opsLog.recentFromMemory(300).length;
+  logger.warn('transform.duplicate_input_blocked', { mode: 'blog', dupRatio: 0.37, dupMethod: 'paragraph_repeat', textDigest: 'abc123', message: '중복 입력 차단' });
+  assert.equal(sent.length, 0, 'discord:false는 Discord로 가면 안 된다');
+  const after = opsLog.recentFromMemory(300);
+  assert.ok(after.length > before, '관리자 로그(opsLog)에는 남아야 한다');
+  assert.equal(after[0].event, 'transform.duplicate_input_blocked');
+  assert.equal(after[0].severity, 'SEV3');
+  assert.ok(after[0].action.includes('paragraph_repeat'), '대응 안내가 함께 저장된다');
+  assert.equal(after[0].message, '중복 입력 차단');
+  // 판단 근거 필드는 details(JSON)로 보존된다 — 관리자 화면이 칸을 만들기 전에도 Firestore에서 읽을 수 있다.
+  const details = JSON.parse(after[0].details);
+  assert.equal(details.dupMethod, 'paragraph_repeat');
+  assert.equal(details.dupRatio, 0.37);
+  assert.equal(details.textDigest, 'abc123');
+  // err가 문자열인 로그(gpt_prod.call_failed)는 그 문자열이 message가 된다.
+  logger.warn('gpt_prod.call_failed', { task: 'humanize', phase: 'escalation', model: 'gpt-6-sol', err: 'OpenAI Responses API request timed out after 60000ms' });
+  const callFailed = opsLog.recentFromMemory(1)[0];
+  assert.equal(callFailed.event, 'gpt_prod.call_failed');
+  assert.match(callFailed.message, /timed out/u);
+  assert.equal(JSON.parse(callFailed.details).model, 'gpt-6-sol');
+
+  // 규칙 거절(referral.rejected)은 조용히, 진짜 실패(referral.failed)는 여전히 SEV2 알림이다.
+  assert.equal(opsEvents.classify('referral.failed', 'error').sev, 'SEV2');
+  assert.equal(opsEvents.classify('referral.failed', 'error').discord, true);
+  assert.equal(opsEvents.classify('referral.failed', 'error').domain, 'referral');
+  // 미등록 이벤트의 폴백도 discord 플래그를 갖는다(기본 true).
+  assert.equal(opsEvents.classify('some.unknown_event', 'error').discord, true);
 });
 
 test('알림 페이로드에 추적키와 비즈니스 식별자가 들어간다', () => {

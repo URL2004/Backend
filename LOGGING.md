@@ -39,6 +39,50 @@ logger.warn/error(event, fields)
 바로 앞에서 `discord.billingFailure()`를 직접 호출한 과금 실패가 여기 해당한다 — 알림은 한 번만 가지만
 관리자 화면과 급증 탐지에는 그대로 반영된다.
 
+## 관리자 로그에만 남기기 — `discord: false` (2026-09-29 로그 위생 개편)
+
+9/29 하루치 Render 로그(error 6건·warn 11,550줄)를 전수 확인한 결과 두 가지 문제가 있었다.
+
+1. **알아보는 데 필요한 사건이 관리자 화면에 없었다.** 중복 입력 차단, "편집할 본문 없음" 422, 모델 타임아웃,
+   품질 게이트 차단, 재시작 복구 같은 사건은 카탈로그에 없어 `warn`으로 stdout에만 남았다. 관리자 장애 로그
+   (`opsLogs`)는 카탈로그에 등록된 사건만 저장하므로, Render 로그를 직접 뒤지지 않으면 볼 수 없었다.
+2. **정상 동작이 알림을 만들었다.** 추천 규칙 거절(409)이 `error`라 SEV2 알림이 매일 나갔고, CSP 보고가
+   CORS에 걸려 하루 10,350줄의 warn을, 검증 전 `/public/metrics` 503이 779줄의 warn을 만들었다.
+
+그래서 카탈로그 항목에 `discord: false`를 둘 수 있게 했다. **기록(opsLogs)은 하되 Discord 발송만 건너뛴다.**
+관리자 화면에서는 `action`(설명·대응)과 함께 보이고, 알림 채널은 조용하다. `discord: false`는 SEV3에만 허용한다
+(깨워야 하는 등급을 조용히 두면 안 되므로 `test/ops-alerting.test.js`가 강제).
+
+| 이벤트 | 뜻 | 로그에서 볼 것 |
+|---|---|---|
+| `transform.duplicate_input_blocked` | 같은 내용이 반복된 입력을 차감 전 400으로 막음 | `dupMethod`(paragraph_repeat / half_window), `dupRatio`, `repeatedBlocks`, `textDigest`(같은 글 반복 여부) |
+| `transform.no_editable_content` | 표·제목·참고문헌 같은 보존 구조만 있어 422 | `lockTypes`(잠금 종류별 청크 수), `documentProfile`, `textDigest` |
+| `transform.humanize_blocked` | 품질 게이트가 결과 전달을 막음(무차감) | `gates`, `gateDetail` |
+| `transform.humanize_technical_recovery_queued` | 모델 타임아웃 등으로 자동 재시도 큐에 넣음 | `reason`, 이후 `humanize_done` 유무 |
+| `transform.restart_recovery_queued` | 배포·재시작으로 끊긴 작업을 자동 재개 | 배포 직후 1~2건은 정상 |
+| `gpt_prod.call_failed` | 모델 호출 1회 실패(대개 60초 타임아웃) | 단건은 자체 복구. 한 시간에 여러 uid면 OpenAI 장애 의심 |
+| `detect_report.preview_failed` | 감지 보고서의 예문 생성만 실패(점수는 정상 전달) | 같은 시각 `detect_report.completed` |
+| `coupon.invalid_code_format` | 허용되지 않은 문자가 든 쿠폰 코드를 400으로 거절 | `invalidCharKinds`, `length` (코드 원문은 싣지 않음) |
+| `referral.rejected` | 추천 규칙 거절(본인·동일 가입 환경·이미 적용·한도) — 정상 | `code` |
+| `public_metrics.unavailable` | 공개 지표가 503인 이유(사유별 1시간 1회) | `reason`: not_initialized / not_verified |
+| `security.csp_violation_summary` | 지난 1시간 CSP 위반 보고 집계 | `top[]`의 `blockedOrigin`이 chrome-extension이면 무시 |
+
+관리자 화면은 `message`(한 줄 요약)·`action`(대응)·`reason`을 그대로 보여주므로, 위 사건은 모두 사람이 읽을 수 있는
+`message`를 함께 남긴다. 판단 근거 숫자(`dupRatio`, `lockTypes`, `gates`, `model` 등)는 `opsLogs` 문서의
+`details`(JSON 문자열, 800자 상한)에 보존된다 — 화면에 칸이 없어도 Firestore·다이제스트에서 읽을 수 있다.
+
+같은 개편에서 바뀐 것:
+
+- `referral.failed`는 이제 **5xx(진짜 실패)만** 쓴다. 4xx 규칙 거절은 `referral.rejected`(SEV3, 조용함).
+- `/csp-report`는 `corsMiddleware`보다 앞에 마운트한다. 브라우저는 CSP 보고를 `Origin: null`로 보내므로
+  CORS 뒤에 두면 전부 403이 된다(9/29까지 실제로 그랬다). 건별 보고는 `security.csp_violation`(info, stdout만).
+- `http.request_aborted`에 `method`·`path`·`requestId`·`headersSent`가 실린다. `headersSent:false`면 서버가
+  응답을 못 만든 채 클라이언트가 포기한 것(핸들러가 멈춘 요청) — 9/29 쿠폰 사고가 이 유형이었다.
+- 라우트가 `res.locals.logExpectedStatus = true`를 두면 4xx/503 접근 로그가 warn 대신 info(`expectedStatus:true`)로 남는다.
+  검증 전 `/public/metrics` 503이 첫 사용처다.
+- 공개 지표 검증: `POST /admin/public-metrics` `{ "action": "inspect" | "verify" | "unverify" }` (관리자 ID 토큰).
+  `verified`는 "숫자를 사람이 확인했다"는 운영 결정이라 코드가 자동으로 켜지 않는다.
+
 ## 결제 실패는 세 갈래다 (2026-09-04 개편)
 
 결제 실패를 성공/실패 한 축으로만 보면 "돈이 없어서 되돌아간 사람"과 "전 사용자 결제 불능"이
@@ -197,8 +241,10 @@ curl --fail-with-body --silent --show-error --variable %CRON_SECRET --expand-hea
 | `http.request` | 요청 완료. `statusCode`, `durationMs` 포함 |
 | `http.request_error` | 4xx 처리 에러 |
 | `http.unhandled_error` | 5xx 미처리 에러 |
-| `http.request_aborted` | 클라이언트 연결 끊김 |
-| `cors.origin_rejected` | 허용되지 않은 Origin 차단 |
+| `http.request_aborted` | 클라이언트 연결 끊김. `headersSent:false`면 서버가 응답을 못 만든 요청 |
+| `cors.origin_rejected` | 허용되지 않은 Origin 차단(`/csp-report`는 CORS 앞이라 여기 안 잡힘) |
+| `security.csp_violation` | 브라우저 CSP 위반 보고 1건(info, stdout만) |
+| `security.csp_violation_summary` | CSP 위반 1시간 집계(관리자 로그) |
 
 ### Analyze / Credit
 
@@ -226,6 +272,11 @@ curl --fail-with-body --silent --show-error --variable %CRON_SECRET --expand-hea
 | `transform.humanize_done` | blog/polish job 완료 |
 | `transform.credit_deduct_failed_manual_action` | 결과 생성 후 차감 실패. 수동 확인 필요 |
 | `transform.cancelled_by_user` | 사용자 취소 |
+| `transform.duplicate_input_blocked` | 중복 입력 차단(무차감). `method`·`textDigest`로 오탐·반복 판단 |
+| `transform.no_editable_content` | 편집할 본문 없음 422(무차감). `lockTypes`로 오분류 판단 |
+| `transform.humanize_blocked` | 품질 게이트 차단(무차감). `gates` |
+| `transform.humanize_technical_recovery_queued` | 모델 타임아웃 등 기술 원인 자동 재시도 |
+| `transform.restart_recovery_queued` | 재시작으로 끊긴 작업 자동 재개 |
 
 ### Payment / Refund / Subscription
 

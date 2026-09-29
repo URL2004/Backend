@@ -68,6 +68,57 @@ test('request context logs only client hash, origin host, and bounded UA family'
   assert.equal(Object.hasOwn(record, 'userAgent'), false);
 });
 
+// 2026-09-29: 끊긴 요청 로그에 경로·requestId가 없어 "무응답으로 멈춘 요청"이 어느 경로였는지 추적이 안 됐다.
+test('aborted request log carries request context and whether any response was started', () => {
+  const originalWrite = process.stdout.write;
+  let output = '';
+  process.stdout.write = (chunk) => { output += String(chunk); return true; };
+  const req = { method: 'POST', path: '/redeem-coupon', ip: '127.0.0.1', get() { return undefined; } };
+  const res = new EventEmitter();
+  res.statusCode = 200;
+  res.writableEnded = false;
+  res.headersSent = false;
+  res.setHeader = () => {};
+  res.getHeader = () => undefined;
+  try {
+    // 'close'는 실제로는 소켓 쪽에서 요청 컨텍스트 밖에서 발화한다 — 컨텍스트 밖에서 emit해 그 상황을 재현한다.
+    requestContext(req, res, () => {});
+    res.emit('close');
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  const record = JSON.parse(output.trim());
+  assert.equal(record.event, 'http.request_aborted');
+  assert.equal(record.method, 'POST');
+  assert.equal(record.path, '/redeem-coupon');
+  assert.match(record.requestId, /\S+/u);
+  assert.equal(record.headersSent, false);
+  assert.equal(typeof record.durationMs, 'number');
+});
+
+test('routes can mark a non-2xx response as expected so the access log stays at info', () => {
+  const originalWrite = process.stdout.write;
+  let output = '';
+  process.stdout.write = (chunk) => { output += String(chunk); return true; };
+  const req = { method: 'GET', path: '/public/metrics', ip: '127.0.0.1', get() { return undefined; } };
+  const res = new EventEmitter();
+  res.statusCode = 503;
+  res.writableEnded = false;
+  res.locals = {};
+  res.setHeader = () => {};
+  res.getHeader = () => undefined;
+  try {
+    requestContext(req, res, () => { res.locals.logExpectedStatus = true; res.emit('finish'); });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  const record = JSON.parse(output.trim());
+  assert.equal(record.event, 'http.request');
+  assert.equal(record.level, 'info');
+  assert.equal(record.expectedStatus, true);
+  assert.equal(record.statusCode, 503);
+});
+
 test('client error relay logs UA family while Meta forwarding keeps its required request fields', () => {
   const fs = require('node:fs');
   const path = require('node:path');

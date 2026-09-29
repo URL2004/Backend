@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 
 function harness() {
-  const routes = {}, rows = new Map(); let sequence = 0;
+  const routes = {}, rows = new Map(), logged = []; let sequence = 0;
   const ref = p => ({ path: p, id: p.split('/').pop(), collection: n => collection(p + '/' + n) });
   const collection = p => ({ doc: id => ref(p + '/' + (id || 'test' + ++sequence)) });
   const snapshot = r => ({ exists: rows.has(r.path), data: () => rows.get(r.path) });
@@ -25,11 +25,11 @@ function harness() {
     '../config': { db, verifyAdminToken: async () => 'admin', verifyToken: async () => 'user', admin: { firestore: {
       Timestamp: { fromDate: d => ({ toMillis: () => +d }) }, FieldValue: { serverTimestamp: () => 0, increment: increment => ({ increment }) }
     }} },
-    '../lib/logger': { logger: { info: noop, error: noop }, setLogContext: noop },
+    '../lib/logger': { logger: { info: noop, warn: (event, fields) => logged.push({ event, fields }), error: noop }, setLogContext: noop },
     '../lib/reqtoken': { bearerToken: () => 'mock' }, '../lib/discord': { couponUsed: noop }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../routes/coupon.js'),'utf8'), { require: n => dependencies[n], module: { exports: {} } });
-  return { rows, call: async (route,body) => { let status = 200, result;
+  return { rows, logged, call: async (route,body) => { let status = 200, result;
     const response = { status: n => { status = n; return response; }, json: value => { result = value; } };
     await routes[route]({ body },response); return { status, result };
   }};
@@ -66,4 +66,26 @@ test('coupon redemption updates balance, ledger and batch once and rejects expir
   const second=h.rows.get('couponCodes/'+c.codes[1].raw); second.expiresAt={toMillis:()=>1};
   assert.equal((await h.call('/redeem-coupon',{code:c.codes[1].raw})).status,410);
   second.status='voided'; assert.equal((await h.call('/redeem-coupon',{code:c.codes[1].raw})).status,410);
+});
+
+// 2026-09-29 실사고: 슬래시가 섞인 12자 입력이 길이 검사를 통과해 Firestore 경로 예외(try 밖) → 응답 없이 요청 중단.
+test('coupon redemption rejects 12-char codes with characters outside CHARSET before touching Firestore', async () => {
+  for (const code of ['ABCD//EFGHJK', 'abcd/efg/hjk', 'ABC0-O1IL-EFGH', 'ABCDEFGHJKL!', '가나다라마바사아자차카타']) {
+    const h = harness();
+    h.rows.set('users/user', { credits: 7 });
+    let response;
+    await assert.doesNotReject(async () => { response = await h.call('/redeem-coupon', { code }); }, `${code}: 예외 없이 응답해야 한다`);
+    assert.equal(response.status, 400, `${code}: 형식 오류는 400`);
+    assert.equal(h.rows.get('users/user').credits, 7, `${code}: 잔액 불변`);
+    const log = h.logged.find(l => l.event === 'coupon.invalid_code_format');
+    assert.ok(log, `${code}: 관리자 로그용 이벤트가 남아야 한다`);
+    assert.equal(log.fields.uid, 'user');
+    assert.ok(log.fields.invalidCharCount >= 1 || log.fields.length !== 12, `${code}: 사유 필드`);
+    assert.equal(JSON.stringify(log.fields).includes(code.toUpperCase().replace(/[-\s]/g, '')), false, `${code}: 코드 원문은 로그에 싣지 않는다`);
+  }
+  // 관리자 무효화 경로도 같은 검사를 거친다.
+  const h = harness();
+  const voided = await h.call('/admin/void-coupons', { code: 'ABCD//EFGHJK' });
+  assert.equal(voided.status, 400);
+  assert.equal(h.logged.filter(l => l.event === 'coupon.invalid_code_format').length, 1);
 });

@@ -6168,6 +6168,22 @@ function referralError(status, code, message) {
   return Object.assign(new Error(message || code), { status, code });
 }
 
+// 추천 적용 실패를 "규칙 거절"과 "진짜 실패"로 나눠 남긴다(2026-09-29).
+// 9/29까지는 전부 logger.error('referral.failed')라 '동일 가입 환경' 같은 정상 거절(409)마다
+// SEV2 디스코드 알림이 나갔다(4일간 10건). 4xx는 warn(referral.rejected, 관리자 로그만), 그 외만 error.
+function referralFailureLog(err, status) {
+  const code = err && err.code ? String(err.code) : undefined;
+  if (status >= 400 && status < 500) {
+    const reason = (err && err.message) || code || `HTTP ${status}`;
+    return {
+      level: 'warn',
+      event: 'referral.rejected',
+      fields: { code, statusCode: status, reason, message: `추천 적용 거절(${code || status}): ${reason} — 정상 차단, 크레딧 변동 없음.` }
+    };
+  }
+  return { level: 'error', event: 'referral.failed', fields: { code, statusCode: status, err, message: `추천 적용 중 예상치 못한 실패(${status}): ${(err && err.message) || '원인 불명'}` } };
+}
+
 router.post('/apply-referral', async (req, res) => {
   try {
     const refCode = normalizeReferralCode(req.body?.refCode);
@@ -6295,8 +6311,9 @@ router.post('/apply-referral', async (req, res) => {
     try { discord.referral({ inviter: result.inviterName, invitee: result.inviteeName }); } catch {}
     res.json({ ok: true });
   } catch (err) {
-    logger.error('referral.failed', { err });
     const status = Number(err.status) || (String(err.code || '').startsWith('auth/') ? 401 : 500);
+    const failureLog = referralFailureLog(err, status);
+    logger[failureLog.level](failureLog.event, failureLog.fields);
     res.status(status).json({
       error: status < 500 ? err.message : '추천 처리 실패',
       ...(err.code && status < 500 ? { code: err.code } : {})
@@ -6304,6 +6321,7 @@ router.post('/apply-referral', async (req, res) => {
   }
 });
 
+router.referralFailureLog = referralFailureLog;       // 추천 실패 로그 등급 테스트용
 router.serializeAdminJobDoc = serializeAdminJobDoc;   // 축약 관측 계약 테스트용
 router.buildHumanizeQualityReport = buildHumanizeQualityReport;
 router.adminHistoryPolicy = {

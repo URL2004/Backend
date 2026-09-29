@@ -402,7 +402,16 @@ function detectInputDuplication(text) {
       if (seen.has(key)) dup += b.length; else seen.add(key);
     }
     const ratio = total ? dup / total : 0;
-    if (ratio >= 0.35) return { duplicated: true, ratio: Math.round(ratio * 100) / 100 };
+    // method·blocks·repeatedBlocks는 로그용(2026-09-29): 어느 판정이 걸렸고 반복 규모가 얼마인지 남겨 오탐 판단에 쓴다.
+    if (ratio >= 0.35) {
+      return {
+        duplicated: true,
+        ratio: Math.round(ratio * 100) / 100,
+        method: 'paragraph_repeat',
+        blocks: blocks.length,
+        repeatedBlocks: blocks.length - seen.size
+      };
+    }
   }
   // ② 통짜 반복(경계 무시): 앞 절반의 60자 윈도우 다수가 뒤 절반에 그대로 재등장하면 두 번 붙여넣기다.
   //   문단 경계가 재붙여넣기로 달라져 ①이 놓치는 경우(부분 줄바꿈)까지 포착. 60자 정확 일치는 정상 글에서
@@ -413,7 +422,15 @@ function detectInputDuplication(text) {
     const a = full.slice(0, h), b = full.slice(h);
     let match = 0, n = 0;
     for (let i = 0; i + 60 <= a.length; i += 60) { n++; if (b.includes(a.slice(i, i + 60))) match++; }
-    if (n >= 3 && match / n >= 0.6) return { duplicated: true, ratio: Math.round((match / n) * 100) / 100 };
+    if (n >= 3 && match / n >= 0.6) {
+      return {
+        duplicated: true,
+        ratio: Math.round((match / n) * 100) / 100,
+        method: 'half_window',
+        windows: n,
+        matchedWindows: match
+      };
+    }
   }
   return { duplicated: false, ratio: 0 };
 }

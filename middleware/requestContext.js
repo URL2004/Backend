@@ -38,9 +38,13 @@ function requestContext(req, res, next) {
         noAlert: true
       };
       const event = 'http.request';
+      // 라우트가 "이 4xx/503은 설계된 응답"이라고 표시하면(res.locals.logExpectedStatus) warn이 아니라 info로 남긴다.
+      // 예: 검증 전 /public/metrics 503 — 9/29 실측 하루 779줄이 warn으로 쌓여 진짜 경고를 가렸다.
+      const expected = !!(res.locals && res.locals.logExpectedStatus === true);
+      if (expected) fields.expectedStatus = true;
       // 503은 기대된 백프레셔(드레이닝·동시한도)라 서버 에러가 아님 → warn으로(알림도 안 감).
       if (res.statusCode >= 500 && res.statusCode !== 503) logger.error(event, fields);
-      else if (res.statusCode >= 400) logger.warn(event, fields);
+      else if (res.statusCode >= 400 && !expected) logger.warn(event, fields);
       else logger.info(event, fields);
     });
 
@@ -48,9 +52,15 @@ function requestContext(req, res, next) {
       if (res.writableEnded || loggedClose) return;
       loggedClose = true;
       const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+      // 'close'는 소켓 쪽에서 발화해 AsyncLocalStorage 밖에서 실행된다 → requestId·경로가 자동으로 붙지 않는다.
+      // 9/29 쿠폰 사고 때 "무응답으로 끊긴 요청"이 어느 경로였는지 로그만으로 알 수 없었다. 명시적으로 싣는다.
       logger.warn('http.request_aborted', {
+        ...context,
         statusCode: res.statusCode,
-        durationMs: Math.round(durationMs)
+        durationMs: Math.round(durationMs),
+        // headersSent=false: 서버가 아무 응답도 못 만든 채 클라이언트가 포기함(핸들러가 멈춘 요청).
+        // headersSent=true : 응답 도중 클라이언트가 떠남(탭 닫기 등) — 대개 조치 불필요.
+        headersSent: res.headersSent === true
       });
     });
 

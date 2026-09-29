@@ -31,6 +31,20 @@ function normalizeCode(input) {
   return String(input || '').replace(/[-\s]/g, '').toUpperCase();
 }
 
+// 정규화 뒤에는 CHARSET 12자만 허용한다. 길이만 보던 검사(2026-09-29 이전)는 슬래시가 섞인 12자를 통과시켰고,
+// 그 값으로 Firestore 문서 참조를 만들다 try 밖에서 동기 예외가 나 응답 없이 요청이 끊겼다
+// (실사고: 한 회원이 3회 재시도, 브라우저가 28초 뒤 요청을 포기, process.unhandled_rejection 3건).
+const CODE_PATTERN = new RegExp(`^[${CHARSET}]{${CODE_LENGTH}}$`);
+function describeInvalidCode(normalized) {
+  const invalid = normalized.replace(new RegExp(`[${CHARSET}]`, 'g'), '');
+  return {
+    length: normalized.length,
+    invalidCharCount: invalid.length,
+    // 어떤 종류의 문자가 섞였는지만 남긴다(코드 자체는 로그에 싣지 않는다).
+    invalidCharKinds: [...new Set([...invalid].map(ch => (/[0-9]/.test(ch) ? 'digit' : /[A-Z]/.test(ch) ? 'ambiguous_letter' : /[/\\]/.test(ch) ? 'slash' : 'symbol')))]
+  };
+}
+
 // Accept numeric JSON integers and complete decimal form values, never prefixes.
 function couponInteger(value) {
   if (typeof value === 'string' && /^\d+$/.test(value.trim())) value = Number(value.trim());
@@ -152,14 +166,21 @@ router.post('/redeem-coupon', async (req, res) => {
   setLogContext({ uid });
 
   const normalized = normalizeCode(code);
-  if (normalized.length !== CODE_LENGTH) {
+  if (!CODE_PATTERN.test(normalized)) {
+    const shape = describeInvalidCode(normalized);
+    logger.warn('coupon.invalid_code_format', {
+      uid,
+      ...shape,
+      reason: shape.invalidCharKinds.join(',') || 'length',
+      message: `쿠폰 코드 형식 오류로 400(길이 ${shape.length}, 허용 밖 문자 ${shape.invalidCharCount}개: ${shape.invalidCharKinds.join(', ') || '없음'}). 잔액 변동 없음.`
+    });
     return res.status(400).json({ error: '쿠폰 코드 형식이 올바르지 않아요.' });
   }
 
-  const couponRef = db.collection('couponCodes').doc(normalized);
-  const userRef = db.collection('users').doc(uid);
-
   try {
+    // 문서 참조 생성도 try 안에서 — 형식 검사를 통과했더라도 예외가 나면 500으로 응답하고 로그를 남긴다(무응답 금지).
+    const couponRef = db.collection('couponCodes').doc(normalized);
+    const userRef = db.collection('users').doc(uid);
     const result = await db.runTransaction(async (t) => {
       // READ 먼저
       const couponSnap = await t.get(couponRef);
@@ -380,11 +401,17 @@ router.post('/admin/void-coupons', async (req, res) => {
   // 개별 모드: code 우선
   if (code) {
     const normalized = normalizeCode(code);
-    if (normalized.length !== CODE_LENGTH) {
+    if (!CODE_PATTERN.test(normalized)) {
+      const shape = describeInvalidCode(normalized);
+      logger.warn('coupon.invalid_code_format', {
+        uid: adminUid, stage: 'void', ...shape,
+        reason: shape.invalidCharKinds.join(',') || 'length',
+        message: `관리자 무효화 입력의 쿠폰 코드 형식 오류(길이 ${shape.length}, 허용 밖 문자 ${shape.invalidCharCount}개).`
+      });
       return res.status(400).json({ error: '쿠폰 코드 형식이 올바르지 않아요.' });
     }
-    const couponRef = db.collection('couponCodes').doc(normalized);
     try {
+      const couponRef = db.collection('couponCodes').doc(normalized);
       const result = await db.runTransaction(async (t) => {
         const snap = await t.get(couponRef);
         if (!snap.exists) {

@@ -296,11 +296,25 @@ function assessEditableContent(text, { mode = 'formal', basicStyle = '', documen
     formatProfile: profile.formatProfile
   });
   const editableChunkCount = plan.chunks.filter(chunk => shouldCallModel(chunk, engineMode)).length;
+  // 편집 불가로 분류된 청크를 잠금 종류별로 센다. "본문이 없다"는 422가 났을 때 표·제목·참고문헌 중
+  // 무엇으로 묶였는지 로그만 보고 오분류 여부를 판단하기 위한 것(2026-09-29).
+  const lockTypes = {};
+  for (const chunk of plan.chunks) {
+    if (shouldCallModel(chunk, engineMode)) continue;
+    const key = chunk.lockType || (chunk.skipReason ? String(chunk.skipReason).split(':')[0] : 'not_editable');
+    lockTypes[key] = (lockTypes[key] || 0) + 1;
+  }
   return {
     documentProfile: profile.profile || 'unknown',
     editableChunkCount,
-    totalChunkCount: plan.chunks.length
+    totalChunkCount: plan.chunks.length,
+    lockTypes
   };
+}
+
+// 입력 본문은 로그에 싣지 않는다. 같은 글로 반복 시도했는지만 알면 되므로 짧은 다이제스트를 남긴다.
+function inputDigest(text) {
+  return crypto.createHash('sha256').update(String(text || '')).digest('hex').slice(0, 12);
 }
 
 function normalizeBasicStyle(value) {
@@ -1914,7 +1928,8 @@ async function reconcileRestartRecovery(jobId) {
     jobId,
     mode: persisted.mode,
     restartRecoveryCount: Number(persisted.restartRecoveryCount || 0),
-    textLength: String(persisted.text || '').length
+    textLength: String(persisted.text || '').length,
+    message: `재시작(배포)으로 끊긴 작업을 자동 재개(${persisted.mode}, ${String(persisted.text || '').length}자, ${Number(persisted.restartRecoveryCount || 0)}회째).`
   });
   scheduleQueueDrain();
   return true;
@@ -2163,7 +2178,8 @@ function queueTechnicalRecovery(job, out) {
     jobId: job.id,
     mode: job.mode,
     reason,
-    technicalRecoveryCount: job.technicalRecoveryCount
+    technicalRecoveryCount: job.technicalRecoveryCount,
+    message: `기술 원인(${reason})으로 작업을 자동 재시도 큐에 넣음(${job.technicalRecoveryCount}회째). 이후 humanize_done이 따라오면 정상.`
   });
   scheduleQueueDrain(Math.max(1000, job.retryNotBeforeMs - now));
   return true;
@@ -2866,7 +2882,9 @@ async function runHumanizeJob(job, text, evidence = '') {
         uid: job.uid,
         mode: job.mode,
         gates,
-        gateDetail
+        gateDetail,
+        reason: Array.isArray(gates) ? gates.join(',') : undefined,
+        message: `품질 게이트 차단(${job.mode}): ${(Array.isArray(gates) ? gates : []).join(', ') || '사유 없음'} — 결과 미전달·무차감.`
       });
       // 기본 작업에만 동의 기반 다듬기 선택지를 붙인다. 고급은 같은
       // 강도로 다시 시도하며 보존형으로 다운그레이드하지 않는다.
@@ -3109,7 +3127,24 @@ const startTransform = async (req, res) => {
   {
     const dup = inputrouting.detectInputDuplication(text);
     if (dup.duplicated) {
-      logger.warn('transform.duplicate_input_blocked', { mode, textLength: text.length, dupRatio: dup.ratio });
+      // 9/29 실측: 한 사용자가 같은 글로 6분간 24번 막혔는데 로그엔 비율만 있어 오탐인지 판단할 수 없었다.
+      // 어느 판정 경로가 걸렸는지(method)와 반복 규모, 같은 글 여부(textDigest)를 함께 남긴다.
+      const dupSummary = dup.method === 'half_window'
+        ? `앞 절반 60자 창 ${dup.windows}개 중 ${dup.matchedWindows}개가 뒤 절반에 재등장`
+        : `문단 ${dup.blocks}개 중 ${dup.repeatedBlocks}개가 앞 80자 동일`;
+      logger.warn('transform.duplicate_input_blocked', {
+        mode,
+        textLength: text.length,
+        dupRatio: dup.ratio,
+        dupMethod: dup.method,        // 'method'는 HTTP 메서드 자리라 이름을 다르게 둔다
+        blocks: dup.blocks,
+        repeatedBlocks: dup.repeatedBlocks,
+        windows: dup.windows,
+        matchedWindows: dup.matchedWindows,
+        textDigest: inputDigest(text),
+        reason: dup.method,
+        message: `중복 입력 차단(${mode}, ${text.length}자, 반복 ${Math.round(dup.ratio * 100)}%): ${dupSummary}. 무차감.`
+      });
       return res.status(400).json({ error: `입력에 같은 내용이 반복돼 있어요(약 ${Math.round(dup.ratio * 100)}%). 중복된 부분을 빼고 다시 시도하면 크레딧도 절약돼요.` });
     }
   }
@@ -3139,11 +3174,19 @@ const startTransform = async (req, res) => {
     documentProfileOverride
   });
   if (editable.editableChunkCount === 0) {
-    logger.info('transform.no_editable_content', {
+    // 어떤 잠금(표·제목·참고문헌…)이 본문을 전부 차지했는지 남긴다 — 구조 보존 강화 배포 뒤 오분류 회귀를 로그만으로 판별.
+    const lockSummary = Object.entries(editable.lockTypes || {}).map(([k, v]) => `${k} ${v}`).join(', ') || '없음';
+    logger.warn('transform.no_editable_content', {
       mode,
+      basicStyle: effectBasicStyle,
+      documentProfileOverride: documentProfileOverride || undefined,
       textLength: text.length,
       documentProfile: editable.documentProfile,
-      totalChunkCount: editable.totalChunkCount
+      totalChunkCount: editable.totalChunkCount,
+      lockTypes: editable.lockTypes,
+      textDigest: inputDigest(text),
+      reason: 'no_editable_content',
+      message: `변환할 본문 없음 422(${mode}, ${text.length}자, 프로필 ${editable.documentProfile}): 청크 ${editable.totalChunkCount}개가 전부 보존 구조 — ${lockSummary}. 무차감.`
     });
     return res.status(422).json({
       code: 'NO_EDITABLE_CONTENT',

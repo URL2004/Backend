@@ -194,3 +194,118 @@ test('검증된 집계는 exact public schema와 ISO-8601 날짜로 노출한다
   assert.match(response.headers.get('cache-control'), /max-age=60/u);
   assert.deepEqual(await response.json(), result.body);
 });
+
+// ── 2026-09-29 로그 위생: 검증 전 503은 설계된 응답이라 요청마다 warn을 남기지 않는다 ──
+function verifiableDb(initial = {}) {
+  const db = fakeDb(initial);
+  const baseCollection = db.collection.bind(db);
+  db.collection = (name) => {
+    const col = baseCollection(name);
+    const baseDoc = col.doc.bind(col);
+    col.doc = (id) => {
+      const ref = baseDoc(id);
+      ref.set = async (value, options = {}) => {
+        const previous = db.documents.get(ref.path) || {};
+        db.documents.set(ref.path, options.merge ? { ...previous, ...value } : value);
+      };
+      return ref;
+    };
+    return col;
+  };
+  return db;
+}
+
+async function listen(t, app) {
+  const server = app.listen(0);
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await new Promise(resolve => server.once('listening', resolve));
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+test('검증 전 503은 접근 로그를 info로 표시하고 사유별 unavailable 경고는 1시간에 한 번만 남긴다', async t => {
+  const logs = [];
+  let nowMs = Date.parse('2026-09-29T00:00:00Z');
+  const db = verifiableDb({
+    [aggregatePath()]: { schemaVersion: 1, verified: false, since: new Date('2026-08-29T00:00:00Z'), asOf: new Date('2026-09-28T00:00:00Z'), totals: { processedCharacters: 900, completedJobs: 3 } }
+  });
+  const app = express();
+  app.use((_req, res, next) => { res.on('finish', () => logs.push({ kind: 'access', expected: res.locals.logExpectedStatus === true, status: res.statusCode })); next(); });
+  app.use(createPublicMetricsRouter({ database: db, routeLogger: { warn: (event, fields) => logs.push({ kind: 'log', event, fields }) }, now: () => nowMs }));
+  const base = await listen(t, app);
+
+  for (let i = 0; i < 3; i++) {
+    const response = await fetch(`${base}/public/metrics`);
+    assert.equal(response.status, 503);
+  }
+  const access = logs.filter(l => l.kind === 'access');
+  assert.equal(access.length, 3);
+  assert.ok(access.every(l => l.expected && l.status === 503), '검증 전 503은 expected로 표시돼 warn이 아니라 info로 남는다');
+  const unavailable = logs.filter(l => l.kind === 'log' && l.event === 'public_metrics.unavailable');
+  assert.equal(unavailable.length, 1, '같은 사유는 한 시간에 한 번만');
+  assert.equal(unavailable[0].fields.reason, 'not_verified');
+  assert.deepEqual(unavailable[0].fields.totals, { processedCharacters: 900, completedJobs: 3 });
+  assert.match(unavailable[0].fields.message, /verified 플래그/u);
+
+  nowMs += 60 * 60 * 1000 + 1;
+  await fetch(`${base}/public/metrics`);
+  assert.equal(logs.filter(l => l.kind === 'log' && l.event === 'public_metrics.unavailable').length, 2, '한 시간이 지나면 다시 한 번 남긴다');
+});
+
+test('관리자 엔드포인트는 집계를 보여주고 verify/unverify로 공개 여부를 바꾼다', async t => {
+  const logs = [];
+  const nowMs = Date.parse('2026-09-29T12:00:00Z');
+  const db = verifiableDb({
+    [aggregatePath()]: { schemaVersion: 1, verified: false, asOf: new Date('2026-09-28T00:00:00Z'), totals: { processedCharacters: 12345, completedJobs: 67 } }
+  });
+  let adminResult = 'admin-1';
+  const app = express();
+  app.use(createPublicMetricsRouter({
+    database: db,
+    routeLogger: { warn: (event, fields) => logs.push({ event, fields }), error: (event, fields) => logs.push({ event, fields }) },
+    verifyAdmin: async () => adminResult,
+    tokenFromRequest: () => 'token',
+    now: () => nowMs
+  }));
+  const base = await listen(t, app);
+  const call = (body) => fetch(`${base}/admin/public-metrics`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+  const inspect = await (await call({ action: 'inspect' })).json();
+  assert.equal(inspect.ok, true);
+  assert.equal(inspect.status, 503);
+  assert.equal(inspect.reason, 'not_verified');
+  assert.equal(inspect.metrics.totals.processedCharacters, 12345);
+  assert.equal(inspect.metrics.since, null);
+
+  const verified = await (await call({ action: 'verify' })).json();
+  assert.equal(verified.ok, true);
+  assert.equal(verified.status, 200, '검증 뒤에는 공개된다');
+  assert.equal(verified.metrics.verified, true);
+  assert.equal(verified.metrics.since, '2026-09-28T00:00:00.000Z', 'since가 없으면 asOf를 시작점으로 쓴다');
+  const stored = db.documents.get(aggregatePath());
+  assert.equal(stored.verified, true);
+  assert.equal(stored.verifiedBy, 'admin-1');
+  assert.equal(stored.totals.processedCharacters, 12345, 'merge라 집계 숫자는 건드리지 않는다');
+  assert.equal(logs.filter(l => l.event === 'public_metrics.verification_changed').length, 1);
+
+  const publicResponse = await fetch(`${base}/public/metrics`);
+  assert.equal(publicResponse.status, 200);
+
+  const unverified = await (await call({ action: 'unverify' })).json();
+  assert.equal(unverified.status, 503);
+  assert.equal((await fetch(`${base}/public/metrics`)).status, 503);
+
+  assert.equal((await call({ action: 'delete' })).status, 400);
+  adminResult = false;
+  assert.equal((await call({ action: 'inspect' })).status, 403);
+  adminResult = null;
+  assert.equal((await call({ action: 'inspect' })).status, 401);
+});
+
+test('집계 문서가 없으면 verify는 409로 거절한다', async t => {
+  const app = express();
+  app.use(createPublicMetricsRouter({ database: verifiableDb(), routeLogger: { warn() {}, error() {} }, verifyAdmin: async () => 'admin-1', tokenFromRequest: () => 'token' }));
+  const base = await listen(t, app);
+  const response = await fetch(`${base}/admin/public-metrics`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'verify' }) });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).reason, 'not_initialized');
+});

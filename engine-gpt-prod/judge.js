@@ -328,6 +328,11 @@ async function judgeAndRepair(rawText, outputText, {
   priorReports = [],
   safetyIdentifier = '',
   documentProfile = null,
+  // Internal staging requirement, never a public request option. The caller
+  // moves a required confirming verdict to a repair-capable stage; the model,
+  // effort, repair-round and call-budget policies below remain unchanged.
+  requireConfirmation = false,
+  stagedConfirmation = false,
   prepareCandidateText = null
 } = {}) {
   const cfg = await loadConfig(config);
@@ -338,7 +343,7 @@ async function judgeAndRepair(rawText, outputText, {
   // before the relevant relation has been checked. This is routing, not a
   // deterministic error verdict, and it adds no judge/repair retry round.
   const relationConfirmationFirst = escalationModel !== cfg.models.judge
-    && (hasMappingReviewCandidate(discourseSignals)
+    && (requireConfirmation === true || hasMappingReviewCandidate(discourseSignals)
       || (maxRounds === 0 && discourseSignals.includes('final_semantic_revalidation')
         && discourseSignals.includes('prior_failed_semantic_confirmation')));
   const primary = await judgeAndRepairWithModel(rawText, outputText, {
@@ -357,6 +362,8 @@ async function judgeAndRepair(rawText, outputText, {
     phasePrefix: 'primary',
     deferHighRiskRepair: !relationConfirmationFirst && Boolean((cfg.models.judgeEscalation || cfg.models.humanizeEscalation)
       && (cfg.models.judgeEscalation || cfg.models.humanizeEscalation) !== cfg.models.judge),
+    deferFailedRepairForConfirmation: stagedConfirmation === true && !relationConfirmationFirst
+      && maxRounds > 0 && escalationModel !== cfg.models.judge,
     safetyIdentifier,
     documentProfile,
     prepareCandidateText
@@ -470,6 +477,7 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   judgeReasoning,
   phasePrefix,
   deferHighRiskRepair = false,
+  deferFailedRepairForConfirmation = false,
   useJudgeForRepair = false,
   safetyIdentifier,
   documentProfile,
@@ -506,10 +514,13 @@ async function judgeAndRepairWithModel(rawText, outputText, {
   // Use the already-configured escalation judge on the untouched candidate
   // first; do not let the primary repair bias that second opinion. The same
   // repair-round/cost/deadline limits still apply.
-  const repairDeferredForConfirmation = deferHighRiskRepair && !judge.pass
-    && (judge.violations || []).some(v =>
+  // Exact omissions keep their existing deterministic restoration path.
+  // Staging must not turn an omission-only report into a new strong-model call.
+  const repairDeferredForConfirmation = !judge.pass && ((deferFailedRepairForConfirmation
+    && shouldEscalateSemanticReport(judge, rawText))
+    || (deferHighRiskRepair && (judge.violations || []).some(v =>
       v.origin === 'introduced' && v.relationGrounded && v.repairable
-      && ['actor_action_target', 'variable_definition'].includes(v.relation));
+      && ['actor_action_target', 'variable_definition'].includes(v.relation))));
   while (!judge.pass && rounds < maxRounds && !repairDeferredForConfirmation) {
     const grounded = (judge.violations || []).map(v => groundViolation(v, rawText, current)).filter(v => v.repairable);
     if (!grounded.length) break;

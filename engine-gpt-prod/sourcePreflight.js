@@ -1140,8 +1140,10 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   // OCR이 한글 어절과 조사를 서로 다른 행으로 자른 경우다. 다음 행이
   // 조사로 시작하는 것은 독립 문단일 수 없으므로 짧은 왼쪽 어절도 잇는다.
   if (/[가-힣]$/u.test(leftToken) && RIGHT_STANDALONE_PARTICLE_RE.test(right)) return true;
+  // 단, 왼쪽이 서술 종결어미로 끝난 긴 문장이면 "하지만 …"·"하는 …"은 어절 조각이 아니라 새 문장의 시작이다.
   if (/[가-힣]$/u.test(leftToken)
       && !/(?:은|는|이|가|을|를|의|와|과|도|만|에|로)$/u.test(leftToken)
+      && !endsWithSentenceFinalEnding(left, leftToken)
       && RIGHT_WORD_CONTINUATION_RE.test(right)) return true;
   // 고정 폭 PDF는 `만들어\n보았다.`처럼 연결 어미 뒤의 짧은 서술부만
   // 다음 행으로 밀기도 한다. 오른쪽이 닫힌 짧은 용언일 때만 잇는다.
@@ -1154,10 +1156,31 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   if (FORCE_WRAP_TAIL_RE.test(leftToken)
       && (/^(?:및|그리고|그러나|하지만|또한|따라서|대한|관한|위해|통해|하며|하고|하는|되는|된|할|했던|필요한|가능한)$/u.test(leftToken)
         || (left.split(/\s+/u).length >= 3 && right.split(/\s+/u).length >= 2))) return true;
+  // 마침표만 빠졌을 뿐 종결어미(…다/…니다/…요)로 끝난 긴 행은 문장이 끝난 것이다. 학생 글에는 문단 끝
+  // 마침표를 빠뜨린 줄이 흔한데, 이를 PDF 줄바꿈으로 보고 다음 문단과 이으면 "…검토할 수 있다 넷째, …"처럼
+  // 문단 여러 개가 한 덩어리가 되고 뒤 단계가 그 덩어리를 엉뚱한 자리에서 다시 나눈다(2026-09-29 실사고:
+  // 26문단 → 20문단, 결론의 셋째·넷째·결국 문단이 마침표 없이 한 문단으로 붙어 나감).
+  // 예외: 다음 행이 문장을 시작할 수 없는 연결 어미·서술어 조각("고 본다", "하다")이면 진짜 줄바꿈이다.
+  if (endsWithSentenceFinalEnding(left, leftToken)) {
+    return SENTENCE_FINAL_WRAP_CONTINUATION_RE.test(right);
+  }
   // PDF의 고정 폭 줄바꿈은 대체로 긴 행 여러 개가 문장부호 없이 이어진다.
   // 매우 짧은 독립 행은 시·제목일 수 있으므로 이 일반 규칙에서 제외한다.
   return left.length >= 48 && right.length >= 12;
 }
+
+// 마침표는 없지만 서술 종결어미로 끝난 긴 행인가. 명사형 끝(필요·수요·…함·…임)은 PDF 줄바꿈 자리에도 흔하므로
+// 여기서 다루지 않고 기존 일반 규칙에 맡긴다. "마다·보다"는 '다'로 끝나지만 조사다.
+function endsWithSentenceFinalEnding(left, leftToken) {
+  if (String(left || '').length < 40 || !leftToken) return false;
+  if (/(?:마다|보다)$/u.test(leftToken)) return false;
+  return /[가-힣]다$/u.test(leftToken)
+    || /(?:[아어여해]요|에요|예요|세요|네요|군요|지요|죠|까요|나요|을까|습니까|입니까)$/u.test(leftToken);
+}
+
+// 종결어미로 끝난 행 뒤에서도 이어 붙여야 하는 다음 행의 첫 어절: 문장을 시작할 수 없는 인용 조사·연결 어미
+// ("…기여한다 / 고 본다", "…있다 / 는데"). 어절 경계(공백·문장부호)까지 정확히 일치할 때만 본다.
+const SENTENCE_FINAL_WRAP_CONTINUATION_RE = /^(?:고|라는|라고|라며|며|면|든지|거나|는데|지만|더라도|기에|기도)(?=$|[\s,.;:!?。！？])/u;
 
 function shouldAttachWithoutSpace(left, right) {
   if (/^이\s+\S/u.test(right)) return false;

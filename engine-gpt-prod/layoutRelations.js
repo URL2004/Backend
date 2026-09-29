@@ -2,7 +2,7 @@
 
 const { createHash } = require('node:crypto');
 const layout = require('./layoutStructure');
-const VERSION = 'layout-relations-v1';
+const VERSION = 'layout-relations-v2-table-boundaries';
 const flat = value => String(value || '').replace(/\s+/gu, ' ').trim();
 const hash = value => createHash('sha256').update(value, 'utf8').digest('hex');
 
@@ -27,7 +27,12 @@ function relationSignature(value, compactOffsets) {
   for (let i = 0; i < records.length; i++) {
     const r = records[i], text = flat(r.text), next = records[i + 1];
     if (layout.isStructuralRole(r.role)) {
-      const body = r.role === 'code' ? r.raw : text;
+      // Table whitespace is data: moving a tab (or a spacing separator) can
+      // move words between cells without changing the flattened row or its
+      // cell count. Neither preparation-baseline admission nor whitespace-only
+      // verdict reuse may bless that ownership change. Bind raw table rows
+      // conservatively; harmless table formatting can receive a fresh verdict.
+      const body = r.role === 'code' || r.role === 'table' ? r.raw : text;
       edges.push([offset, r.role, hash(body), r.cellCount || 0]);
     }
     // Prevent a new isolated introductory clause being treated as a harmless
@@ -42,7 +47,7 @@ function relationSignature(value, compactOffsets) {
     }
     offset += compactOffsets ? text.replace(/\s/gu, '').length : text.length + 1;
   }
-  return hash(JSON.stringify({ version: compactOffsets ? 'layout-preparation-v1' : VERSION, edges }));
+  return hash(JSON.stringify({ version: compactOffsets ? 'layout-preparation-v2-table-boundaries' : VERSION, edges }));
 }
 
 // Only glue a clearly unfinished introductory clause to its explanation.

@@ -204,6 +204,11 @@ function restoreConfirmedAlternative(source, candidate, finding) {
   const changes = [];
   const escape = value => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   for (const match of source.matchAll(/(?<![가-힣])([가-힣]{2,16}?)(?:이나|나)[ \t]+((?:[가-힣]{1,12}[ \t]+)?[가-힣]{2,16}?)(?=(?:을|를|에|의|이|가|은|는)(?:[ \t]|$))/gu)) {
+    // An unchanged quotation is not attestation for an operator in the
+    // narrator's separate claim. Protect the source side as well as the
+    // target; otherwise a quoted alternative can replace an unrelated
+    // conjunction while leaving the actual confirmed error untouched.
+    if (syntaxSpans(source).some(p => p.start < match.index + match[0].length && p.end > match.index)) continue;
     const pattern = new RegExp(`(?<![가-힣])${escape(match[1])}(?:과|와)[ \\t]+${escape(match[2])}(?=(?:을|를|에|의|이|가|은|는)(?:[ \\t]|$))`, 'gu');
     for (const target of candidate.matchAll(pattern)) {
       if (!String(finding.span).includes(target[0])) continue;

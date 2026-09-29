@@ -275,9 +275,17 @@ function auditAndSanitizeSource(value) {
   for (const change of layoutRepair.changes) {
     notices.push(issue(change.code, change.lineOrdinal, change.action || 'repaired', change.message));
   }
+  // 레이아웃 복구(공백·줄 경계만 조정) 뒤에 따로 둔다. 마침표 복원은 문자를 하나 더하는 유일한 복구라
+  // integrityText(무결성 기준선)에는 반영하지 않고 모델 입력(text)에만 반영한다. 시·대본은 건드리지 않는다.
+  const terminalPunctuation = (scriptFrame || creativeLineLayout)
+    ? { text: layoutRepair.text, changes: [] }
+    : restoreParagraphTerminalPunctuation(layoutRepair.text);
+  for (const change of terminalPunctuation.changes) {
+    notices.push(issue(change.code, change.lineOrdinal, 'repaired', change.message));
+  }
   const sanitized = (creativeLineLayout
-    ? layoutRepair.text
-    : layoutRepair.text.replace(/\n{3,}/gu, '\n\n')).trim();
+    ? terminalPunctuation.text
+    : terminalPunctuation.text.replace(/\n{3,}/gu, '\n\n')).trim();
   const usable = sanitized || original;
   if (!sanitized) {
     const fallbackNotices = [...removals, ...notices].map(item => ({ ...item, action: 'notice' }));
@@ -303,7 +311,9 @@ function auditAndSanitizeSource(value) {
     ));
   } else if (lastContentIndex >= 0 && isPossiblyIncompleteSentence(kept[lastContentIndex])) {
     notices.push(issue('source_incomplete_sentence', lastContentIndex + 1, 'notice', NOTICE_MESSAGES.source_incomplete_sentence));
-  } else if (lastContentIndex >= 0 && isPossiblyMissingTerminalPunctuation(kept[lastContentIndex])) {
+  } else if (lastContentIndex >= 0 && isPossiblyMissingTerminalPunctuation(kept[lastContentIndex])
+      // 마지막 문단의 마침표를 이미 채웠다면 "빠졌을 수 있어요" 알림은 중복이다.
+      && !terminalPunctuation.changes.some(change => change.last === true)) {
     notices.push(issue(
       'source_missing_terminal_punctuation',
       lastContentIndex + 1,
@@ -1182,6 +1192,85 @@ function endsWithSentenceFinalEnding(left, leftToken) {
 // ("…기여한다 / 고 본다", "…있다 / 는데"). 어절 경계(공백·문장부호)까지 정확히 일치할 때만 본다.
 const SENTENCE_FINAL_WRAP_CONTINUATION_RE = /^(?:고|라는|라고|라며|며|면|든지|거나|는데|지만|더라도|기에|기도)(?=$|[\s,.;:!?。！？])/u;
 
+// 문장 끝 문장부호(뒤따르는 닫는 따옴표·괄호 포함)로 끝났는가.
+const TERMINAL_PUNCTUATION_END_RE = /[.!?。！？…]\s*["”’'」』》〉)\]]*\s*$/u;
+// 마침표를 덧붙이면 안 되는 끝: 닫는 따옴표·괄호(인용·출처 표기), 쉼표·콜론·줄표 등 미완성 표지.
+const NON_SENTENCE_CLOSING_END_RE = /["”’'」』》〉)\]】,:;：；\-–—~·/]\s*$/u;
+
+/**
+ * 문단 마지막 문장에서 빠진 마침표를 채운다(v2.5.94, 2026-09-29 사장님 결정).
+ *
+ * 학생 글에는 문단 끝 마침표를 빠뜨린 줄이 흔하다. v2.5.93은 그런 문단이 다음 문단과 붙지 않게만 했고,
+ * 결과에는 마침표 없는 문단이 그대로 남았다(모델이 일부만 스스로 채워 들쭉날쭉했다).
+ *
+ * 채우는 조건은 모두 만족해야 한다.
+ *   · 역할이 산문(prose)이고 40자 이상이며 서술 종결어미(…다, …해요, …습니까)로 끝난다.
+ *   · 닫는 따옴표·괄호·쉼표 등으로 끝나지 않는다(인용·출처 표기는 건드리지 않는다).
+ *   · 이 글이 마침표를 쓰는 글이라는 증거가 있다: 같은 문단 안에 문장부호로 끝난 문장이 있거나,
+ *     문서의 긴 산문 행 절반 이상(3행 이상)이 문장부호로 끝난다.
+ *   · 다음 내용 행이 이 문장의 조각(조사·인용 조사로 시작)이 아니다.
+ * 제목·목록·표·인용·코드·참고문헌·짧은 한 줄은 대상이 아니다. 문자 내용은 마침표 하나 외에 바꾸지 않는다.
+ */
+function restoreParagraphTerminalPunctuation(value) {
+  const source = String(value || '');
+  const lines = source.split('\n');
+  // 값싼 사전 검사: 마침표 없이 종결어미로 끝난 긴 행이 하나도 없으면 역할 분석(비용이 큼)을 하지 않는다.
+  // 대부분의 글은 여기서 끝나므로 정상 문서의 전처리 시간이 늘지 않는다.
+  const hasCandidate = lines.some(line => {
+    const text = String(line || '').trim();
+    if (text.length < 40 || TERMINAL_PUNCTUATION_END_RE.test(text) || NON_SENTENCE_CLOSING_END_RE.test(text)) return false;
+    return endsWithSentenceFinalEnding(text, (text.match(/[가-힣A-Za-z]+$/u) || [''])[0]);
+  });
+  if (!hasCandidate) return { text: source, changes: [] };
+  const records = layoutStructure.buildLineRecords(source);
+  const fenceState = analyzeFences(lines);
+  const isLongProse = index => {
+    const text = String(lines[index] || '').trim();
+    return text.length >= 40
+      && !records[index]?.blank
+      && String(records[index]?.role || '') === 'prose'
+      && !fenceState.protectedLineIndexes.has(index);
+  };
+  let proseLineCount = 0;
+  let punctuatedLineCount = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!isLongProse(index)) continue;
+    proseLineCount += 1;
+    if (TERMINAL_PUNCTUATION_END_RE.test(lines[index])) punctuatedLineCount += 1;
+  }
+  const documentPunctuates = punctuatedLineCount >= 3
+    && punctuatedLineCount / Math.max(1, proseLineCount) >= 0.5;
+  const lastContentIndex = findLastContentLine(lines);
+  const changes = [];
+  let inReference = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = String(lines[index] || '').trim();
+    if (!text) continue;
+    if (freezeBlocks.isRefHeadingLine(text)) inReference = true;
+    else if (freezeBlocks.isAppendixHeadingLine(text)) inReference = false;
+    if (inReference || !isLongProse(index)) continue;
+    if (TERMINAL_PUNCTUATION_END_RE.test(text) || NON_SENTENCE_CLOSING_END_RE.test(text)) continue;
+    if (WEB_LITERAL_TEST_RE.test(text.slice(-60))) continue;
+    const token = (text.match(/[가-힣A-Za-z]+$/u) || [''])[0];
+    if (!endsWithSentenceFinalEnding(text, token)) continue;
+    const punctuatesInside = /[가-힣][.!?。！？]["”’')\]]*\s+\S/u.test(text);
+    if (!punctuatesInside && !documentPunctuates) continue;
+    let nextIndex = index + 1;
+    while (nextIndex < lines.length && !String(lines[nextIndex] || '').trim()) nextIndex += 1;
+    const nextText = nextIndex < lines.length ? String(lines[nextIndex]).trim() : '';
+    if (nextText && (RIGHT_STANDALONE_PARTICLE_RE.test(nextText)
+        || SENTENCE_FINAL_WRAP_CONTINUATION_RE.test(nextText))) continue;
+    lines[index] = `${String(lines[index]).replace(/\s+$/u, '')}.`;
+    changes.push({
+      code: 'source_terminal_punctuation_restored',
+      lineOrdinal: index + 1,
+      last: index === lastContentIndex,
+      message: '문단 마지막 문장에서 빠진 마침표를 채웠어요.'
+    });
+  }
+  return { text: lines.join('\n'), changes };
+}
+
 function shouldAttachWithoutSpace(left, right) {
   if (/^이\s+\S/u.test(right)) return false;
   if (!/[가-힣]$/u.test(left) || !/^[가-힣]/u.test(right)) return false;
@@ -1432,6 +1521,7 @@ module.exports = {
   splitNumberedDashHeadingBody,
   splitNumberedFiniteHeadingBody,
   repairForcedProseWraps,
+  restoreParagraphTerminalPunctuation,
   repairBrokenBlankLineProseContinuations,
   repairMissingSentenceSpacing,
   isUnsafeHeadingRepair,

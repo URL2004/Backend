@@ -407,13 +407,17 @@ async function runSemanticDocumentAuditInternal({
   // Request-local section receipts (semanticSegmentReceipts). Optional; when
   // absent every section is judged fresh exactly as before.
   receiptStore = null,
-  prepareCandidateText = null
+  prepareCandidateText = null,
+  // Absolute deadline already applied to `signal` by runSemanticDocumentAudit.
+  // Read only for scheduling diagnostics; it never changes a request.
+  deadlineMs = undefined
 }) {
   const receipts = receiptStore ? require('./semanticSegmentReceipts') : null;
   const store = receipts?.isReceiptStore(receiptStore) ? receiptStore : null;
   let pairs = buildReviewPairs(source, outputText);
   const basePairs = pairs;
   pairs = require('./semanticAuditSchedule').planVerdictPairs(source, outputText, pairs, allowRepair);
+  const plannedPairs = pairs;
   const priorObligations = require('./semanticObligations').collectObligations(source, priorReports);
   const pairObligations = (pair, count) => priorObligations
     .filter(o => count === 1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o => o.finding);
@@ -455,6 +459,13 @@ async function runSemanticDocumentAuditInternal({
   // Never lose an earlier relation at a new section boundary.
   if (!coversObligations(pairs))
     pairs = [{index:0,sourceContext:source,output:outputText,repairSafe:false}];
+  // Diagnostics only: any failure here leaves the audit exactly as before.
+  let recorder = null;
+  const trace = fn => { try { if (recorder) fn(recorder); } catch { /* diagnostics are optional */ } };
+  try {
+    recorder = require('./semanticAuditSchedule').createScheduleRecorder({
+      basePairs, plannedPairs, finalPairs: pairs, allowRepair, concurrency: 2, deadlineMs });
+  } catch { recorder = null; }
   const outputs = [];
   const reports = [];
   // 장문을 여러 구간으로 나눠 검사하면서 수리 예산은 문서 전체 1회로
@@ -478,6 +489,13 @@ async function runSemanticDocumentAuditInternal({
         receipt = store.lookup(receiptKey, lookupOptions(pairs, index, pairDiscourseSignals));
       } catch { pairDiscourseSignals = null; receiptKey = ''; receipt = null; }
     }
+    trace(r => {
+      r.describe(index, { pair, obligationCount: pairObligations(pair, pairs.length).length,
+        signals: pairDiscourseSignals,
+        route: store && pairDiscourseSignals ? lookupOptions(pairs, index, pairDiscourseSignals).route : '' });
+      r.receipt(index, !store ? 'disabled' : !receiptKey ? 'key_error' : receipt ? 'hit' : 'miss');
+      r.start(index);
+    });
     // Mint a receipt for the exact candidate a completed judge validated. The
     // key binds that candidate in this pair position with the neighbours as
     // audited now; `given` are the obligations that judge was given.
@@ -493,6 +511,7 @@ async function runSemanticDocumentAuditInternal({
     if (receipt) {
       outputs[index] = pair.output;
       reports[index] = receipts.reusedSectionReport(pair, receipt);
+      trace(r => r.finish(index, { outcome: 'receipt_reused' }));
       return;
     }
     // Keep the completed section reports and usage when cancellation occurs.
@@ -504,10 +523,16 @@ async function runSemanticDocumentAuditInternal({
       reports[index] = { index: pair.index, verificationCompleted: false,
         pass: false, uncertain: true, skipped: true, started: false,
         reason: 'audit_cancelled_before_section', rounds: 0, violations: [], usage: null, elapsedMs: 0 };
+      trace(r => r.finish(index, { outcome: 'cancelled_before_start' }));
       return;
     }
+    let verifyCount = 0;
     try {
-      if (!pairDiscourseSignals) pairDiscourseSignals = pairSignals(pair, pairs.length);
+      if (!pairDiscourseSignals) {
+        pairDiscourseSignals = pairSignals(pair, pairs.length);
+        trace(r => r.describe(index, { pair, obligationCount: pairObligations(pair, pairs.length).length,
+          signals: pairDiscourseSignals }));
+      }
       let report = await judgeAndRepair(pair.sourceContext, pair.output, {
         priorReports: [{violations:pairObligations(pair, pairs.length)}],
         lang,
@@ -548,6 +573,7 @@ async function runSemanticDocumentAuditInternal({
           // and no heuristic may certify its own output as semantically safe.
           let verified;
           const repairedSignals = auditRelationCandidates(pair.sourceContext, restored.text);
+          verifyCount += 1;
           try { verified = await judgeAndRepair(pair.sourceContext, restored.text, {
             priorReports: [{violations:priorObligations.filter(o=>pairs.length===1 || pair.sourceContext.includes(o.finding.sourceSpan)).map(o=>o.finding)}, report],
             lang, signal, config, maxRounds: 0, reserveEscalation, allowedExtra, mode,
@@ -623,6 +649,8 @@ async function runSemanticDocumentAuditInternal({
         selectedJudgeModel: report.selectedJudgeModel || '',
         usage: report.usage || null
       };
+      trace(r => r.finish(index, { outcome: require('./semanticAuditSchedule').outcomeFor(reports[index]),
+        report: { ...report, usage: reports[index].usage }, verifyCount }));
     } catch (error) {
       outputs[index] = pair.output;
       reports[index] = { index: pair.index, verificationCompleted: false, pass: false, uncertain: true,
@@ -637,11 +665,14 @@ async function runSemanticDocumentAuditInternal({
           verificationCompleted: false
         } : null,
         violations: [], usage: error.usage || null };
+      trace(r => r.finish(index, { outcome: require('./semanticAuditSchedule').errorOutcome(signal), error, verifyCount }));
     }
   });
   const repairedText = outputs.join('');
   const residual = reports.filter(report => report.pass !== true);
   const verificationCompleted = reports.length === pairs.length && reports.every(report => report.verificationCompleted === true);
+  let scheduleDiagnostics = null;
+  trace(r => { scheduleDiagnostics = r.result({ signal }); });
   return bindSemanticValidation({
     outputText: repairedText,
     ran: true,
@@ -666,7 +697,8 @@ async function runSemanticDocumentAuditInternal({
     restorationNominationReports: reports.flatMap(report => report.restorationNominationReports || []).slice(-8),
     violations: residual.flatMap(report => report.violations || []),
     sourceIssues: reports.flatMap(report => report.sourceIssues || []),
-    relationContract: 'semantic-relations-v2'
+    relationContract: 'semantic-relations-v2',
+    ...(scheduleDiagnostics ? { scheduleDiagnostics } : {})
   }, source, repairedText, { phase: 'semantic_document', model: [...new Set(reports.map(r => r.selectedJudgeModel).filter(Boolean))].join(',') });
 }
 

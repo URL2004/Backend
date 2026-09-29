@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.89';
+const VERSION = 'gpt-prod-v2.5.90';
 const DETECT_VERSION = 'gpt-detect-v1.51';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -3879,10 +3879,14 @@ async function runEngine({
     const needsObligationReview = preliminary.status === 'pass' && finalObligations.length > 0
       && !obligationPolicy.allExplicitlyReviewed(finalObligations,semanticReport);
     const finalAuditStartedAt = Date.now();
-    const finalDeadlineMs = Math.min(jobDeadlineMs, finalAuditStartedAt + 120000);
-    const prepareRelationRepair = (report, priorReports, verifyReserveMs) =>
+    const finalDeadlinePolicy = require('./finalSemanticDeadline').finalSemanticDeadline({
+      source: rawSource, candidate: outputText, startedAt: finalAuditStartedAt, jobDeadlineMs
+    });
+    const finalDeadlineMs = finalDeadlinePolicy.deadlineMs;
+    finalSemanticRevalidation.limitMs = finalDeadlinePolicy.limitMs;
+    const prepareRelationRepair = (report, priorReports, verifyReserveMs, repairDeadlineMs = finalDeadlineMs) =>
       require('./finalRelationRepair').prepareFinalRelationRepair(rawSource, outputText, report, {
-        priorReports, deadlineMs: finalDeadlineMs, verifyReserveMs, signal,
+        priorReports, deadlineMs: repairDeadlineMs, verifyReserveMs, signal,
         allowPatch: finalSemanticRevalidation.preFinalRelationPatchAttempted !== true,
         assessLiteral: candidate => candidateIntegrity.auditCandidateIntegrity({ source: rawSource,
           before: outputText, candidate, documentProfile, mode: selectedMode }),
@@ -3913,7 +3917,7 @@ async function runEngine({
       rawSource, outputText, semanticReport, preliminary.status, finalPriorReports);
     if (['stale', 'fail', 'uncertain'].includes(preliminary.status) && !signal?.aborted
         && finalRepairEvidence) {
-      const proposal = await prepareRelationRepair(finalRepairEvidence, finalPriorReports, 90000);
+      const proposal = await prepareRelationRepair(finalRepairEvidence, finalPriorReports, finalDeadlinePolicy.verifyReserveMs);
       finalSemanticRevalidation.preFinalRelationPatchAttempted = proposal.patchAttempted;
       finalSemanticRevalidation.preFinalRelationPatchReason = proposal.patchReason || '';
       finalSemanticRevalidation.preFinalRelationPatchedCount = proposal.patchedCount;
@@ -3965,7 +3969,8 @@ async function runEngine({
           // enough of the SAME 120s final budget remains to verify it. No free
           // rewrite, extra repair loop, guessed insertion or unverified pass.
           const recheckElapsed = Date.now() - finalAuditStartedAt;
-          const relationRestoreTimeAvailable = finalDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2);
+          const postRepairDeadlineMs = finalDeadlinePolicy.postRepairDeadlineMs;
+          const relationRestoreTimeAvailable = postRepairDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2);
           const hasConfirmedRepair = require('./finalRelationRepair').confirmedRepairFindings(recheck).length > 0;
           if (recheck.pass === false) {
             finalSemanticRevalidation.relationRestoreSkipReason = recheck.verificationCompleted !== true
@@ -3979,7 +3984,7 @@ async function runEngine({
               && relationRestoreTimeAvailable) {
             const verifyReserveMs = Math.max(30000, Math.ceil(recheckElapsed * 1.2));
             const restored = await prepareRelationRepair(recheck,
-              [...finalPriorReports, priorReport], verifyReserveMs);
+              [...finalPriorReports, priorReport], verifyReserveMs, postRepairDeadlineMs);
             const restoreSafety = { eligible: restored.applied, warnings: restored.warnings };
             finalSemanticRevalidation.relationPatchAttempted = restored.patchAttempted;
             finalSemanticRevalidation.relationPatchReason = restored.patchReason || '';
@@ -4000,7 +4005,7 @@ async function runEngine({
                   priorReports: [...finalPriorReports, recheck],
                   source: rawSource, outputText: restored.text, lang, signal,
                   config: cfg, allowedExtra, mode: selectedMode, safetyIdentifier: safetyId,
-                  documentProfile, allowRepair: false, deadlineMs: finalDeadlineMs,
+                  documentProfile, allowRepair: false, deadlineMs: postRepairDeadlineMs,
                   auditStage: 'final_relation_restoration_verification',
                   discourseSignals: ['final_confirmed_relation_restoration'],
                   receiptStore: semanticSectionReceipts
@@ -4028,6 +4033,7 @@ async function runEngine({
           }
           finalSemanticRevalidation.judgeCallCount = recheckCallCount;
           finalSemanticRevalidation.progress = recheck.progress || null;
+          finalSemanticRevalidation.scheduleDiagnostics = recheck.scheduleDiagnostics || null;
           // 판정 전용 호출은 본문을 바꾸지 않는다. 만약 바뀌었다면 그 판정은
           // 최종 문자열에 대한 것이 아니므로 사용하지 않는다.
           if (recheck.verificationCompleted === false) {
@@ -4551,6 +4557,8 @@ async function runEngine({
     paragraphAlignmentFastPath: layoutRepair.alignmentMetrics?.fastPath === true,
     paragraphAlignmentLimitReached: layoutRepair.alignmentMetrics?.limitReached === true,
     finalSemanticRevalidationElapsedMs: Number(finalSemanticRevalidation.elapsedMs || 0),
+    finalSemanticRevalidationLimitMs: Number(finalSemanticRevalidation.limitMs || 0),
+    finalSemanticScheduleDiagnostics: finalSemanticRevalidation.scheduleDiagnostics || null,
     finalSemanticExpectedSections: Number(finalSemanticRevalidation.progress?.expectedSections || 0),
     finalSemanticStartedSections: Number(finalSemanticRevalidation.progress?.startedSections || 0),
     finalSemanticCompletedSections: Number(finalSemanticRevalidation.progress?.completedSections || 0),

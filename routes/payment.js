@@ -2,6 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
+const { validateAdminNotificationMessage } = require('../lib/adminNotification');
 const { admin, db, verifyToken, verifyAdminToken, verifyFirebaseIdToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
@@ -4070,7 +4071,9 @@ router.post('/admin/notify-users', async (req, res) => {
   if (!adminUid) return;
   const uids = Array.isArray(req.body && req.body.uids) ? [...new Set(req.body.uids.filter(Boolean))].slice(0, 500) : [];
   const title = String((req.body && req.body.title) || '').trim().slice(0, 60);
-  const message = String((req.body && req.body.message) || '').trim().slice(0, 500);
+  const validatedMessage = validateAdminNotificationMessage(req.body && req.body.message);
+  if (validatedMessage.error) return res.status(400).json({ error: validatedMessage.error });
+  const message = validatedMessage.message;
   const clientId = (String((req.body && req.body.clientId) || '').trim() || ('admin_notice_' + Date.now())).slice(0, 80);
   if (!uids.length) return res.status(400).json({ error: '대상 사용자가 없습니다.' });
   if (title.length < 1 || message.length < 2) return res.status(400).json({ error: '제목과 메시지를 입력해주세요.' });

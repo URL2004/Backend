@@ -1865,6 +1865,11 @@ async function runEngine({
     allowedExtra
   });
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
+  // Job-scoped, sticky staged-confirmation requirement (semanticStaging.js).
+  // Only the opt-in staged audit can set it (default OFF). It survives every
+  // later report replacement and is satisfied only by exact proof for the
+  // text being delivered, or by the final confirming verdict itself.
+  const stagedConfirmationRequirement = require('./semanticStaging').createConfirmationRequirement();
   let semanticRepairPartialAdoption = { attempted: false, applied: false, adoptedCount: 0, rejectedCount: 0, reason: '' };
   // Request-local nomination history only. A later judge can miss an earlier
   // finding; never turn that absence into evidence that an unchanged passage
@@ -1951,9 +1956,21 @@ async function runEngine({
           safetyIdentifier: safetyId,
           documentProfile,
           prepareCandidateText: prepareSemanticCandidate,
-          receiptStore: semanticSectionReceipts
+          receiptStore: semanticSectionReceipts,
+          // Opt-in, default OFF until whole-run validation: move the confirming
+          // verdict that the final will require (after any grounded failure)
+          // into this repair-capable audit, keyed so the final can reuse it
+          // exactly. Each added call is optional recovery work admitted here.
+          stagedConfirmation: process.env.HUMANIZE_STAGED_CONFIRMATION_ENABLED === '1',
+          reserveConfirmation: () => {
+            if (recoveryBudget.tryStart({})) return true;
+            recoveryBudget.recordSkip(recoveryBudget.denialReason({}) || 'recovery_budget_exhausted');
+            return false;
+          },
+          onConfirmationRequired: () => stagedConfirmationRequirement.require()
         }
       });
+      stagedConfirmationRequirement.note(semanticReport);
       addSupplementalUsage(semanticReport.usage, 'semantic_document_audit');
       rememberSemanticRestorationEvidence(semanticReport);
       depthTugSemanticRepairRounds += Number(semanticReport.repairCount || 0);
@@ -3876,8 +3893,15 @@ async function runEngine({
       { source: rawSource, candidate: outputText, requireDigest: true }
     );
     finalSemanticRevalidation.priorStatus = preliminary.status;
-    const needsObligationReview = preliminary.status === 'pass' && finalObligations.length > 0
-      && !obligationPolicy.allExplicitlyReviewed(finalObligations,semanticReport);
+    // Staged confirmation (semanticStaging.js) that the job requires but that
+    // is not proven for THIS exact text can never be delivered on the primary
+    // verdict: the final confirming verdict is forced. The requirement is
+    // job-scoped, so a replaced report cannot drop it.
+    const stagedConfirmationPending = stagedConfirmationRequirement.pending(semanticReport, {
+      source: rawSource, candidate: outputText, preliminaryStatus: preliminary.status });
+    finalSemanticRevalidation.stagedConfirmationPending = stagedConfirmationPending;
+    const needsObligationReview = preliminary.status === 'pass' && ((finalObligations.length > 0
+      && !obligationPolicy.allExplicitlyReviewed(finalObligations,semanticReport)) || stagedConfirmationPending);
     const finalAuditStartedAt = Date.now();
     const finalDeadlinePolicy = require('./finalSemanticDeadline').finalSemanticDeadline({
       source: rawSource, candidate: outputText, startedAt: finalAuditStartedAt, jobDeadlineMs
@@ -3954,7 +3978,8 @@ async function runEngine({
             config: cfg,
             allowedExtra,
             mode: selectedMode,
-            discourseSignals: ['final_semantic_revalidation', ...(priorReport.pass === false || finalRepairEvidence || needsObligationReview
+            discourseSignals: ['final_semantic_revalidation', ...(priorReport.pass === false || finalRepairEvidence
+              || needsObligationReview || stagedConfirmationPending
               ? ['prior_failed_semantic_confirmation'] : [])],
             safetyIdentifier: safetyId,
             documentProfile,
@@ -4087,7 +4112,14 @@ async function runEngine({
       knownViolations: finalSemanticRevalidation.applied ? semanticReport.violations || []
         : finalSemanticRevalidation.completedFindings || []
     });
-    if (choice.applied && choice.entry?.semanticStatus === 'pass') {
+    // A fallback may never lower the verdict tier: when the job requires the
+    // confirming verdict, only an entry proven for its own exact text counts.
+    const fallbackProven = stagedConfirmationRequirement.allowsFallback(choice.entry, { source: rawSource });
+    if (choice.applied && choice.entry?.semanticStatus === 'pass' && !fallbackProven) {
+      // The earlier delivery decision (and its text) stays exactly as it was.
+      finalSemanticRevalidation.fallbackRejectedReason = 'staged_confirmation_unproven';
+      finalSemanticRevalidation.fallbackRejectedStage = String(choice.entry.stage || '').slice(0, 48);
+    } else if (choice.applied && choice.entry?.semanticStatus === 'pass') {
       outputText = choice.entry.text;
       semanticReport = choice.entry.semanticReport;
       candidateLedgerDecision = { ...choice, entry: undefined };

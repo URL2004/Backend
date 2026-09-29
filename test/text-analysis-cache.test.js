@@ -55,3 +55,59 @@ test('many paragraphs evict old entries instead of accumulating unbounded text',
   for (let i = 0; i < 300; i++) read('paragraph-' + i);
   read('old'); assert.equal(calls, 302);
 }));
+
+test('span arrays stay independent copies next to the distance store', async () => {
+  const { levenshteinDistance } = require('../engine/koreanText');
+  const text = '첫 문장이다. 둘째 문장이다.';
+  const original = splitSentenceSpans(text);
+  await withTextAnalysisCache(async () => {
+    const first = splitSentenceSpans(text);
+    assert.deepEqual(first, original);
+    levenshteinDistance(first[0].text, first[1].text);
+    first[0].text = 'changed'; first.reverse(); first.length = 1;
+    await new Promise(setImmediate);
+    levenshteinDistance(original[0].text, original[1].text);
+    const second = splitSentenceSpans(text);
+    assert.deepEqual(second, original);
+    assert.notEqual(second, splitSentenceSpans(text));
+    assert.notEqual(second[0], splitSentenceSpans(text)[0]);
+  });
+  assert.deepEqual(splitSentenceSpans(text), original);
+});
+
+test('the owner releases at the end; sync values and foreign thenables are returned untouched', async () => {
+  const { AsyncResource } = require('node:async_hooks');
+  const { textAnalysisCacheStats } = require('../engine/textAnalysisCache');
+  let calls = 0, probe;
+  const read = () => memoizeSpans('test', 'release', () => { calls++; return [{ start: 0, end: 7 }]; });
+  const value = {};
+  assert.equal(withTextAnalysisCache(() => { probe = new AsyncResource('probe'); read(); read(); return value; }), value);
+  assert.equal(calls, 1);
+  probe.runInAsyncScope(() => {
+    assert.equal(textAnalysisCacheStats().released, true);
+    assert.deepEqual(read(), [{ start: 0, end: 7 }]); read();
+    assert.equal(textAnalysisCacheStats().spans.entries, 0);
+  });
+  assert.equal(calls, 3);
+  // A foreign thenable is returned untouched and its `then` is never read.
+  let thenReads = 0, thenCalls = 0;
+  const thenable = { get then() { thenReads += 1; return resolve => { thenCalls += 1; resolve(5); }; } };
+  assert.equal(withTextAnalysisCache(() => { probe = new AsyncResource('probe'); read(); return thenable; }), thenable);
+  assert.deepEqual([thenReads, thenCalls], [0, 0]);
+  probe.runInAsyncScope(() => {
+    assert.equal(textAnalysisCacheStats().released, true);
+    assert.equal(textAnalysisCacheStats().spans.entries, 0);
+  });
+  assert.equal(await thenable, 5);
+  assert.deepEqual([thenReads, thenCalls], [1, 1]);
+  const hostile = Object.defineProperty({}, 'then', { get() { throw new Error('synthetic getter'); } });
+  assert.equal(withTextAnalysisCache(() => { probe = new AsyncResource('probe'); read(); return hostile; }), hostile);
+  probe.runInAsyncScope(() => assert.equal(textAnalysisCacheStats().released, true));
+  // An object that only inherits from Promise.prototype is not a promise.
+  const fake = Object.create(Promise.prototype);
+  assert.equal(withTextAnalysisCache(() => { probe = new AsyncResource('probe'); return fake; }), fake);
+  probe.runInAsyncScope(() => assert.equal(textAnalysisCacheStats().released, true));
+  for (const plain of [undefined, null, 0, '', false]) assert.equal(withTextAnalysisCache(() => plain), plain);
+  assert.equal(await withTextAnalysisCache(async () => { probe = new AsyncResource('probe'); read(); return 3; }), 3);
+  probe.runInAsyncScope(() => assert.equal(textAnalysisCacheStats().released, true));
+});

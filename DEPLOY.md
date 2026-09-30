@@ -208,6 +208,15 @@ node -e "const {db}=require('./config');if(!db)throw new Error('Firebase disable
 
 권장 관찰 시점은 배포 후 1시간·6시간·24시간·72시간·7일이다. 공유 NAT에서 정상 가입이 막힌 증거가 없으면 hard cap을 즉시 낮추지 않는다.
 
+## 10월 가을이 온다 이벤트 2026-10-01 배포·관측
+
+추가 크레딧 이벤트는 `lib/conversionOffers.js`의 `CREDIT_EVENTS` 일정표 한 곳에서 정한다. 끝난 이벤트 행은 지우지 않는다.
+- 9월 개강(`extra-credit-2026-09`): 2026-08-29 ~ 09-30 KST, 5,900원 제외 기준 크레딧 +5%.
+- 10월 가을이 온다(`autumn-credit-2026-10`): 2026-10-01 ~ 10-31 KST, **14,500원부터**(스탠다드 675·프로 1,450·맥스 3,100·팀·기관 6,400) 기준 크레딧 +10%. 스타터 5,900원은 200 그대로.
+- 카탈로그 정책 버전 `credit-offer-v5-202610`. Frontend `conversion-flow.js`·`app-main.js` 미러와 같아야 한다.
+- 지급량은 결제 확인 선점(`checkout_prepared`) 시각의 이벤트로 intent에 고정된다. 11/1 0시에 자동 종료(재배포 불필요), 즉시 중단은 `EXTRA_CREDIT_EVENT_ENABLED=0`.
+- 스모크: 아래 `/checkout-context` 명령에서 `creditEvent.id=autumn-credit-2026-10`, 오퍼 `5900:0:200,14500:50:675,29000:100:1450,58000:200:3100`.
+
 ## 요금제 개편 2026-09-04 배포·관측
 
 2,900·8,700원 결제를 종료하고 5,900원(200크레딧) 스타터로 시작 상품을 바꾼 릴리스. 팀·기관 116,000원은 문의 전용(수동 지급).
@@ -360,7 +369,7 @@ $r.Content -match 'lavAutoCoach'
 | `WRITING_LAB_REQUIRE_ALL_POLICY_APPROVAL` | `1`이면 의료·법률·금융·광고 정책 팩의 실제 담당자 승인 전 `predeploy:v2` 실패. 비규제 베타에서는 `0`으로 두고 규제 입력을 `MANUAL_REVIEW`로 차단 |
 | `WRITING_LAB_V1_PUBLIC` | 기본 `0`. 알려진 품질 문제가 있는 v1을 일반 사용자에게 다시 열지 말 것 |
 | `TOSS_SECRET_KEY` | `live_` 키 |
-| `EXTRA_CREDIT_EVENT_ENABLED` | 기본 `1`. `0`이면 9월 개강 이벤트(+5%) 지급 즉시 중단 — 재배포 없이 지급량을 바꾸는 유일한 레버 |
+| `EXTRA_CREDIT_EVENT_ENABLED` | 기본 `1`. `0`이면 진행 중인 추가 크레딧 이벤트(2026-10: 가을이 온다, 14,500원부터 +10%) 지급 즉시 중단 — 재배포 없이 지급량을 바꾸는 유일한 레버. 일정은 `lib/conversionOffers.js` `CREDIT_EVENTS` |
 | `CREDIT_LEGACY_CHECKOUT_ENABLED` | 기본 `0`. `1`이면 종료 상품(2,900·8,700원) 결제 재허용. Frontend 롤백과 함께만 켠다. 문의 전용 116,000원은 영향 없음 |
 | `STARTER_STANDARD_UPGRADE_ENABLED` / `STARTER_STANDARD_UPGRADE_LINKED_REFUND_ENABLED` | 둘 다 `1`일 때만 스타터→스탠다드 차액 업그레이드(8,600원) 노출. 운영 기본 `0` |
 | `CRON_SECRET` | cron 인증 |

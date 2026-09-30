@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  CREDIT_EVENTS,
   CREDIT_OFFER_POLICY_VERSION,
   CREDIT_PRODUCT_BASES,
   CREDIT_PRODUCTS,
@@ -28,6 +29,10 @@ const {
 const DURING_EVENT_MS = Date.parse('2026-09-15T12:00:00+09:00');
 const EVENT_LAST_MS = Date.parse('2026-09-30T23:59:59.999+09:00');
 const EVENT_END_MS = Date.parse('2026-10-01T00:00:00+09:00');
+// 2026-10 '가을이 온다' 이벤트: 14,500원부터 기준 크레딧 +10%, 10월 31일 KST 끝까지.
+const AUTUMN_DURING_MS = Date.parse('2026-10-15T12:00:00+09:00');
+const AUTUMN_LAST_MS = Date.parse('2026-10-31T23:59:59.999+09:00');
+const AUTUMN_END_MS = Date.parse('2026-11-01T00:00:00+09:00');
 // 2026-09 요금제 개편: 구매 가능 상품은 일반 3종 + 맥스. 2,900·8,700은 종료(해석만), 116,000은 문의 전용.
 const AMOUNTS = [5900, 14500, 29000, 58000];
 const RETIRED = [2900, 8700];
@@ -52,7 +57,7 @@ test('5,900원 스타터는 이벤트 0%, 나머지 상품은 상시 보너스�
     [116000, 4000, false]
   ]);
   assert.equal(ENTRY_PRODUCT_AMOUNT, 5900);
-  assert.equal(CREDIT_OFFER_POLICY_VERSION, 'credit-offer-v4-202609');
+  assert.equal(CREDIT_OFFER_POLICY_VERSION, 'credit-offer-v5-202610');
   assert.deepEqual(PACKAGE_BONUS_RATES, { 2900: 0, 5900: 0, 8700: 10, 14500: 25, 29000: 35, 58000: 45, 116000: 50 });
   assert.deepEqual(AMOUNTS.map((amount) => {
     const product = getCreditProduct(amount, { nowMs: DURING_EVENT_MS, env: {} });
@@ -65,11 +70,11 @@ test('5,900원 스타터는 이벤트 0%, 나머지 상품은 상시 보너스�
     };
   }), expected);
 
-  // 정적 카탈로그도 현재 이벤트 표시와 동일해야 한다.
-  assert.deepEqual(AMOUNTS.map((amount) => CREDIT_PRODUCTS[amount].credits), [200, 650, 1400, 3000]);
-  assert.equal(CREDIT_PRODUCTS[2900].credits, 105);
-  assert.equal(CREDIT_PRODUCTS[8700].credits, 345);
-  assert.equal(CREDIT_PRODUCTS[INQUIRY].credits, 6200);
+  // 정적 카탈로그는 가장 최근 이벤트(10월 가을이 온다) 표시와 동일해야 한다.
+  assert.deepEqual(AMOUNTS.map((amount) => CREDIT_PRODUCTS[amount].credits), [200, 675, 1450, 3100]);
+  assert.equal(CREDIT_PRODUCTS[2900].credits, 100);
+  assert.equal(CREDIT_PRODUCTS[8700].credits, 330);
+  assert.equal(CREDIT_PRODUCTS[INQUIRY].credits, 6400);
 
   const starter = getCreditProduct(5900, { nowMs: DURING_EVENT_MS, env: {} });
   assert.equal(starter.eventActive, true, '개강 이벤트 기간 자체는 활성 상태다');
@@ -79,8 +84,47 @@ test('5,900원 스타터는 이벤트 0%, 나머지 상품은 상시 보너스�
   for (const amount of [2900, 8700, 14500, 29000, 58000, INQUIRY]) {
     const product = getCreditProduct(amount, { nowMs: DURING_EVENT_MS, env: {} });
     assert.equal(product.eventBonusRate, 5, `${amount}원은 +5% 유지`);
-    assert.equal(product.eventId, EXTRA_CREDIT_EVENT.id, `${amount}원은 이벤트 ID 유지`);
+    assert.equal(product.eventId, 'extra-credit-2026-09', `${amount}원은 이벤트 ID 유지`);
   }
+});
+
+test('10월 가을이 온다 이벤트는 14,500원부터 기준 크레딧 +10%를 더하고 스타터는 제외한다', () => {
+  assert.equal(EXTRA_CREDIT_EVENT.id, 'autumn-credit-2026-10');
+  assert.equal(EXTRA_CREDIT_EVENT.name, '10월 가을이 온다 이벤트');
+  assert.equal(EXTRA_CREDIT_EVENT.rate, 10);
+  assert.equal(EXTRA_CREDIT_EVENT.minAmount, 14500);
+  assert.equal(EXTRA_CREDIT_EVENT.displayEndsOn, '2026-10-31');
+  assert.equal(EXTRA_CREDIT_EVENT.startsAtMs, EVENT_END_MS, '9월 이벤트가 끝나는 순간 바로 이어진다');
+  assert.equal(EXTRA_CREDIT_EVENT.endsAtMs, AUTUMN_END_MS);
+  assert.deepEqual(CREDIT_EVENTS.map((event) => event.id), ['extra-credit-2026-09', 'autumn-credit-2026-10']);
+
+  assert.deepEqual(AMOUNTS.map((amount) => {
+    const product = getCreditProduct(amount, { nowMs: AUTUMN_DURING_MS, env: {} });
+    return [amount, product.packageBonusCredits, product.eventBonusRate, product.eventBonusCredits, product.totalCredits, product.eventId];
+  }), [
+    [5900, 0, 0, 0, 200, null],
+    [14500, 125, 10, 50, 675, 'autumn-credit-2026-10'],
+    [29000, 350, 10, 100, 1450, 'autumn-credit-2026-10'],
+    [58000, 900, 10, 200, 3100, 'autumn-credit-2026-10']
+  ]);
+  const inquiry = getCreditProduct(INQUIRY, { nowMs: AUTUMN_DURING_MS, env: {} });
+  assert.equal(inquiry.eventBonusCredits, 400);
+  assert.equal(inquiry.totalCredits, 6400);
+  // 14,500원 미만인 종료 상품은 10월 이벤트 대상이 아니다.
+  assert.equal(getCreditProduct(2900, { nowMs: AUTUMN_DURING_MS, env: {} }).eventBonusCredits, 0);
+  assert.equal(getCreditProduct(8700, { nowMs: AUTUMN_DURING_MS, env: {} }).eventBonusCredits, 0);
+  // 스타터는 이벤트 기간이어도 추가 지급이 없다.
+  assert.equal(getCreditProduct(5900, { nowMs: AUTUMN_DURING_MS, env: {} }).eventActive, true);
+
+  assert.equal(getCreditProduct(14500, { nowMs: AUTUMN_LAST_MS, env: {} }).totalCredits, 675, '10월 31일 끝까지 포함');
+  const after = getCreditProduct(14500, { nowMs: AUTUMN_END_MS, env: {} });
+  assert.equal(after.eventActive, false);
+  assert.equal(after.eventBonusCredits, 0);
+  assert.equal(after.totalCredits, 625);
+  assert.equal(extraCreditEventActive(AUTUMN_DURING_MS, {}), true);
+  assert.equal(extraCreditEventActive(AUTUMN_END_MS, {}), false);
+  assert.equal(extraCreditEventActive(AUTUMN_DURING_MS, { EXTRA_CREDIT_EVENT_ENABLED: '0' }), false, '스위치로 즉시 중단');
+  assert.equal(getCreditProduct(58000, { nowMs: AUTUMN_DURING_MS, env: { EXTRA_CREDIT_EVENT_ENABLED: '0' } }).totalCredits, 2900);
 });
 
 test('종료 상품은 해석만 되고 새 결제로는 열리지 않으며, 비상 스위치로만 되돌린다', () => {
@@ -114,7 +158,8 @@ test('팀·기관 116,000원은 지급량만 계산하고 어떤 스위치로도
   assert.equal(during.totalCredits, 6200);
   assert.equal(during.inquiryOnly, true);
   assert.equal(during.purchasable, false);
-  assert.equal(getCreditProduct(INQUIRY, { nowMs: EVENT_END_MS, env: {} }).totalCredits, 6000);
+  assert.equal(getCreditProduct(INQUIRY, { nowMs: AUTUMN_DURING_MS, env: {} }).totalCredits, 6400);
+  assert.equal(getCreditProduct(INQUIRY, { nowMs: AUTUMN_END_MS, env: {} }).totalCredits, 6000);
   assert.equal(isPurchasableCreditAmount(INQUIRY, {}), false);
   assert.equal(isPurchasableCreditAmount(INQUIRY, { CREDIT_LEGACY_CHECKOUT_ENABLED: '1' }), false, '문의 전용은 비상 스위치로도 안 열린다');
   assert.equal(getPurchasableCreditProduct(INQUIRY, { env: { CREDIT_LEGACY_CHECKOUT_ENABLED: '1' } }), null);
@@ -128,23 +173,32 @@ test('스타터 단가 대비 상시 지급량 차이는 가격표 카드 값과
   assert.equal(starterComparisonCredits(null, starter), 0);
 });
 
-test('이벤트는 2026-09-30 KST 끝까지 포함하고 10월 1일 0시에 종료한다', () => {
-  assert.equal(EXTRA_CREDIT_EVENT.displayEndsOn, '2026-09-30');
-  assert.equal(EXTRA_CREDIT_EVENT.endsAtMs, EVENT_END_MS);
+test('9월 개강 이벤트는 2026-09-30 KST 끝까지 포함하고 10월 1일 0시에 가을 이벤트로 넘어간다', () => {
+  const september = CREDIT_EVENTS[0];
+  assert.equal(september.displayEndsOn, '2026-09-30');
+  assert.equal(september.endsAtMs, EVENT_END_MS);
   assert.equal(extraCreditEventActive(EVENT_LAST_MS, {}), true);
-  assert.equal(extraCreditEventActive(EVENT_END_MS, {}), false);
   assert.equal(extraCreditEventActive(DURING_EVENT_MS, { EXTRA_CREDIT_EVENT_ENABLED: '0' }), false);
 
   const atDeadline = getCreditProduct(58000, { nowMs: EVENT_LAST_MS, env: {} });
+  assert.equal(atDeadline.eventId, 'extra-credit-2026-09');
   assert.equal(atDeadline.eventBonusCredits, 100);
   assert.equal(atDeadline.totalCredits, 3000);
 
-  const afterDeadline = getCreditProduct(58000, { nowMs: EVENT_END_MS, env: {} });
-  assert.equal(afterDeadline.eventActive, false);
-  assert.equal(afterDeadline.eventBonusRate, 0);
-  assert.equal(afterDeadline.eventBonusCredits, 0);
-  assert.equal(afterDeadline.packageBonusCredits, 900);
-  assert.equal(afterDeadline.totalCredits, 2900);
+  const handover = getCreditProduct(58000, { nowMs: EVENT_END_MS, env: {} });
+  assert.equal(handover.eventActive, true);
+  assert.equal(handover.eventId, 'autumn-credit-2026-10');
+  assert.equal(handover.eventBonusRate, 10);
+  assert.equal(handover.eventBonusCredits, 200);
+  assert.equal(handover.packageBonusCredits, 900);
+  assert.equal(handover.totalCredits, 3100);
+  assert.equal(handover.eventEndsAtMs, AUTUMN_END_MS);
+
+  const afterAll = getCreditProduct(58000, { nowMs: AUTUMN_END_MS, env: {} });
+  assert.equal(afterAll.eventActive, false);
+  assert.equal(afterAll.eventBonusRate, 0);
+  assert.equal(afterAll.eventId, null);
+  assert.equal(afterAll.totalCredits, 2900);
 
   const starterAfter = getCreditProduct(5900, { nowMs: EVENT_END_MS, env: {} });
   assert.equal(starterAfter.eventBonusCredits, 0);
@@ -188,7 +242,10 @@ test('체크아웃 컨텍스트는 구매 가능 4종만 내려보내고 종료�
   );
   assert.deepEqual(context.creditEvent, {
     id: 'extra-credit-2026-09',
+    name: '9월 개강 추가 크레딧 이벤트',
     active: true,
+    rate: 5,
+    minAmount: 0,
     displayEndsOn: '2026-09-30',
     endsAtMs: EVENT_END_MS
   });
@@ -215,8 +272,32 @@ test('체크아웃 컨텍스트는 구매 가능 4종만 내려보내고 종료�
     eventBonusCredits: 0,
     totalCredits: 200
   });
-  assert.equal(context.pricingPolicyVersion, 'credit-offer-v4-202609');
-  assert.ok(context.creditOffers.every((offer) => offer.offerPolicyVersion === 'credit-offer-v4-202609'));
+  assert.equal(context.pricingPolicyVersion, 'credit-offer-v5-202610');
+  assert.ok(context.creditOffers.every((offer) => offer.offerPolicyVersion === 'credit-offer-v5-202610'));
+
+  const autumn = buildCheckoutContext({ uid: 'new', credits: 10, orders: [], conversion: {} }, {}, AUTUMN_DURING_MS);
+  assert.deepEqual(autumn.creditEvent, {
+    id: 'autumn-credit-2026-10',
+    name: '10월 가을이 온다 이벤트',
+    active: true,
+    rate: 10,
+    minAmount: 14500,
+    displayEndsOn: '2026-10-31',
+    endsAtMs: AUTUMN_END_MS
+  });
+  assert.deepEqual(autumn.creditOffers.map((offer) => [offer.amount, offer.eventBonusRate, offer.eventBonusCredits, offer.totalCredits]), [
+    [5900, 0, 0, 200],
+    [14500, 10, 50, 675],
+    [29000, 10, 100, 1450],
+    [58000, 10, 200, 3100]
+  ]);
+  assert.equal(autumn.starterOffer.totalCredits, 200);
+
+  // 모든 이벤트가 끝나면 가장 최근 이벤트 정보를 비활성으로 내려 프런트가 이벤트 표기를 접는다.
+  const ended = buildCheckoutContext({ uid: 'new', credits: 10, orders: [], conversion: {} }, {}, AUTUMN_END_MS);
+  assert.equal(ended.creditEvent.id, 'autumn-credit-2026-10');
+  assert.equal(ended.creditEvent.active, false);
+  assert.deepEqual(ended.creditOffers.map((offer) => offer.totalCredits), [200, 625, 1350, 2900]);
 });
 
 test('20크레딧 가입 지급액을 기준으로 신규·체험 사용자 세그먼트를 나눈다', () => {
@@ -357,7 +438,7 @@ test('스타터→스탠다드 업그레이드 grant는 서버 주문 스냅샷�
   assert.equal(buildStarterUpgradeGrant(legacySource, { nowMs, env: {} }), null);
 });
 
-test('이벤트 중 산 스타터를 이벤트 종료 후 업그레이드해도 당시 목표 총량을 넘지 않는다', () => {
+test('9월 이벤트 중 산 스타터를 이벤트 종료 후 업그레이드해도 그 시점 목표 총량을 넘지 않는다', () => {
   const source = {
     id: 'order_starter_event_boundary',
     amount: 5900,
@@ -368,15 +449,28 @@ test('이벤트 중 산 스타터를 이벤트 종료 후 업그레이드해도 
     eventBonusCredits: 10,
     createdAt: '2026-09-29T12:00:00+09:00'
   };
+  // 진행 중인 이벤트가 없을 때(스위치로 중단): 목표 총량 625
   const grant = buildStarterUpgradeGrant(source, {
     nowMs: Date.parse('2026-10-01T12:00:00+09:00'),
-    env: {}
+    env: { EXTRA_CREDIT_EVENT_ENABLED: '0' }
   });
   assert.equal(grant.paidCredits, 300);
   assert.equal(grant.packageBonusCredits, 115);
   assert.equal(grant.eventBonusCredits, 0);
   assert.equal(grant.totalCredits, 415);
   assert.equal(grant.cumulativeCredits, 625);
+
+  // 10월 가을 이벤트 중: 목표 총량 675(500 + 상시 125 + 이벤트 50)
+  const autumnGrant = buildStarterUpgradeGrant(source, {
+    nowMs: Date.parse('2026-10-01T12:00:00+09:00'),
+    env: {}
+  });
+  assert.equal(autumnGrant.paidCredits, 300);
+  assert.equal(autumnGrant.packageBonusCredits, 125);
+  assert.equal(autumnGrant.eventBonusCredits, 40);
+  assert.equal(autumnGrant.totalCredits, 465);
+  assert.equal(autumnGrant.cumulativeCredits, 675);
+  assert.equal(autumnGrant.eventId, 'autumn-credit-2026-10');
 });
 
 test('정확한 주문 lot 소진율이 70% 이상일 때만 스탠다드 추천을 만든다', () => {

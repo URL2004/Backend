@@ -859,6 +859,15 @@ function isSafeMalformedQuoteRepair(source, output, sourceQuotes, outputQuotes) 
 }
 
 function auditDirectQuoteIntegrity(source, output) {
+  const legacy = auditDirectQuoteIntegrityLegacy(source, output);
+  const ownership = require('./quoteOwnership').auditQuoteOwnership(source, output);
+  return { ...legacy, version: 3, ownership,
+    pass: legacy.pass && ownership.pass,
+    contentChanged: legacy.contentChanged || ownership.contentChanged,
+    changedCount: Math.max(legacy.changedCount, ownership.missingCount + ownership.unresolvedCount) };
+}
+
+function auditDirectQuoteIntegrityLegacy(source, output) {
   const sourceQuotes = directQuoteContents(source);
   const outputQuotes = directQuoteContents(output);
   const countChanged = sourceQuotes.length !== outputQuotes.length;
@@ -985,7 +994,28 @@ function isOrderedSubsequence(needle, haystack) {
  */
 function restoreDirectQuoteContents(source, output) {
   const before = String(output || '');
+  const ownership = require('./quoteOwnership');
+  const owned = ownership.restoreOwnedQuotes(source, before);
+  let text = owned.text;
+  const legacy = restoreDirectQuoteContentsLegacy(source, text);
+  const decision = ownership.assessLegacyQuoteRestore(source, text, legacy.text);
+  if (legacy.applied && !decision.veto) text = legacy.text;
+  const auditAfter = auditDirectQuoteIntegrity(source, text);
   const auditBefore = auditDirectQuoteIntegrity(source, before);
+  const applied = text !== before && (auditAfter.pass || (owned.applied
+    && ownership.quoteOwnershipNotWorse(auditBefore.ownership, auditAfter.ownership)
+    && auditAfter.missingUniqueCount <= auditBefore.missingUniqueCount
+    && auditAfter.introducedQuoteCount <= auditBefore.introducedQuoteCount));
+  return { text: applied ? text : before, applied,
+    restoredCount: applied ? owned.restoredCount + (decision.veto ? 0 : legacy.restoredCount) : 0,
+    reason: decision.veto ? decision.reason : (applied ? 'restored' : legacy.reason),
+    auditBefore,
+    auditAfter: applied ? auditAfter : auditDirectQuoteIntegrity(source, before) };
+}
+
+function restoreDirectQuoteContentsLegacy(source, output) {
+  const before = String(output || '');
+  const auditBefore = auditDirectQuoteIntegrityLegacy(source, before);
   if (auditBefore.benignDuplicateReduction) {
     return {
       text: before,
@@ -1019,14 +1049,14 @@ function restoreDirectQuoteContents(source, output) {
     };
   }
   const sourceQuotes = directQuoteContents(source);
-  let quoteIndex = 0;
-  const repairedText = before.replace(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags), match => {
-    const content = match.slice(1, -1);
-    const sourceContent = sourceQuotes[quoteIndex] ?? content;
-    quoteIndex += 1;
-    return `${match.slice(0, 1)}${sourceContent}${match.at(-1)}`;
-  });
-  const auditAfter = auditDirectQuoteIntegrity(source, repairedText);
+  let repairedText = before;
+  const outputSpans = directQuoteSpans(before);
+  for (let i = outputSpans.length - 1; i >= 0; i -= 1) {
+    const span = outputSpans[i];
+    repairedText = repairedText.slice(0, span.start) + span.full[0]
+      + (sourceQuotes[i] ?? span.content) + span.full.at(-1) + repairedText.slice(span.end);
+  }
+  const auditAfter = auditDirectQuoteIntegrityLegacy(source, repairedText);
   const applied = repairedText !== before && auditAfter.pass;
   return {
     // 검증에 실패한 중간 문자열은 절대 호출자에게 돌려주지 않는다.
@@ -1043,7 +1073,7 @@ function restoreDirectQuoteContents(source, output) {
 
 function restoreMissingQuoteDelimiters(source, output) {
   const before = String(output || '');
-  const auditBefore = auditDirectQuoteIntegrity(source, before);
+  const auditBefore = auditDirectQuoteIntegrityLegacy(source, before);
   const sourceSpans = directQuoteSpans(source);
   if (!sourceSpans.length || sourceSpans.length <= auditBefore.outputCount) {
     return {
@@ -1064,7 +1094,7 @@ function restoreMissingQuoteDelimiters(source, output) {
     text = `${text.slice(0, target.start)}${sourceSpan.full}${text.slice(target.end)}`;
     restoredCount += 1;
   }
-  const auditAfter = auditDirectQuoteIntegrity(source, text);
+  const auditAfter = auditDirectQuoteIntegrityLegacy(source, text);
   const applied = restoredCount > 0 && auditAfter.pass;
   return {
     text: applied ? text : before,
@@ -1077,13 +1107,31 @@ function restoreMissingQuoteDelimiters(source, output) {
 }
 
 function directQuoteSpans(value) {
-  return [...String(value || '').matchAll(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags))]
+  const raw = String(value || '');
+  // The bounded parser sees legitimate multiline quotes without allowing an
+  // unclosed delimiter to capture a later section. Other legacy delimiters
+  // (book titles and ASCII single quotes) retain their existing semantics.
+  const spans = [...raw.matchAll(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags))]
+    .filter(match => !['“', '‘', '"'].includes(match[0][0]))
     .map(match => ({
       full: match[0],
       content: match[0].slice(1, -1),
       start: Number(match.index || 0),
       end: Number(match.index || 0) + match[0].length
     }));
+  const coordinates = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    coordinates.push(i);
+    if (raw[i] === '\r' && raw[i + 1] === '\n') i += 1;
+  }
+  coordinates.push(raw.length);
+  for (const candidate of require('./quoteOwnership').parseQuoteOwnership(raw).candidates) {
+    if (candidate.kind !== 'closed') continue;
+    const start = coordinates[candidate.start], end = coordinates[candidate.end];
+    const full = raw.slice(start, end);
+    spans.push({ full, content: full.slice(1, -1), start, end });
+  }
+  return spans.sort((a, b) => a.start - b.start);
 }
 
 function findUniqueNormalizedEvidenceSpan(value, evidenceValue) {
@@ -1133,11 +1181,7 @@ function spanInsideDirectQuote(value, span) {
 }
 
 function directQuoteContents(value) {
-  const contents = [];
-  for (const match of String(value || '').matchAll(new RegExp(QUOTED_SPAN_RE.source, QUOTED_SPAN_RE.flags))) {
-    contents.push(match[0].slice(1, -1));
-  }
-  return contents;
+  return directQuoteSpans(value).map(span => span.content);
 }
 
 function normalizeExactQuote(value) {

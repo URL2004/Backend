@@ -147,9 +147,16 @@ function materializeChunkLiterals(chunks, { inlineMathFreeze, inlineCodeFreeze }
     }
     return text;
   };
+  const maskedSource = inlineMathFreeze?.text ?? inlineCodeFreeze?.text;
   return (chunks || []).map(chunk => ({
     ...chunk,
     text: project(chunk.text),
+    // Stable IDs retain masked coordinates; layout witnesses must instead
+    // refer to the restored source used by downstream boundary repair.
+    ...(typeof maskedSource === 'string' && Number.isInteger(chunk.start) ? {
+      layoutSourceStart: project(maskedSource.slice(0, chunk.start)).length,
+      layoutSourceEnd: project(maskedSource.slice(0, chunk.end)).length
+    } : {}),
     ...(chunk.outputText != null ? { outputText: project(chunk.outputText) } : {})
   }));
 }

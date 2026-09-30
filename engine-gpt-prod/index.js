@@ -736,6 +736,9 @@ async function runEngine({
   let inlineCodeIntegrity = { pass: true, restoredCount: 0, missingCount: 0 };
   let inlineMathIntegrity = { pass: true, orderPass: true, restoredCount: 0, missingCount: 0, applied: false };
   let quoteIntegrityRestoreCount = 0;
+  let citationIntegrityRestoreCount = 0;
+  let sourceLiteralRecoveryRefusedCount = 0;
+  const sourceLiteralSlotEdits = [];
   let finalQuoteIntegrityRestoreCount = 0;
   let fingerprintAudit = null;
   let fingerprintRetryAttemptCount = 0;
@@ -2412,6 +2415,14 @@ async function runEngine({
   const materializedChunks = literalSpans.materializeChunkLiterals(chunks, {
     inlineMathFreeze, inlineCodeFreeze
   });
+  {
+    const literals = require('./sourceLiteralRecovery').recoverSourceLiterals(rawSource, outputText, materializedChunks);
+    outputText = literals.text;
+    citationIntegrityRestoreCount += literals.citationRestoredCount;
+    sourceLiteralRecoveryRefusedCount += literals.refusedCount;
+    sourceLiteralSlotEdits.push(...literals.quoteSlotEdits);
+    quoteIntegrityRestoreCount += literals.quoteRestoredCount;
+  }
   const layoutRepair = await structureChunk.restorePostSemanticLayoutAsync({
     signal,
     source: rawSource,
@@ -3805,6 +3816,20 @@ async function runEngine({
       quoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
       finalQuoteIntegrityRestoreCount += restoredQuotes.restoredCount || 1;
       rememberStructureSafeOutput(outputText, 'delivery_quote_restore');
+    }
+  }
+  {
+    const literals = require('./sourceLiteralRecovery').recoverSourceLiterals(rawSource, outputText, materializedChunks);
+    sourceLiteralRecoveryRefusedCount += literals.refusedCount;
+    sourceLiteralSlotEdits.push(...literals.quoteSlotEdits);
+    if (literals.applied) {
+      outputText = literals.text;
+      citationIntegrityRestoreCount += literals.citationRestoredCount;
+      quoteIntegrityRestoreCount += literals.quoteRestoredCount;
+      finalQuoteIntegrityRestoreCount += literals.quoteRestoredCount;
+      if (literals.citationPass && literals.quotePass) {
+        rememberStructureSafeOutput(outputText, 'delivery_source_literal_restore');
+      }
     }
   }
   // 전달 직전의 모든 후처리가 끝난 문자열을 source 기준으로 다시 본다.
@@ -5228,6 +5253,9 @@ async function runEngine({
     quoteMissingUniqueCount: Number(quoteIntegrityAudit?.missingUniqueCount || 0),
     quoteContentChangedCount: Number(quoteIntegrityAudit?.changedCount || 0),
     quoteIntegrityRestoreCount,
+    citationIntegrityRestoreCount,
+    sourceLiteralRecoveryRefusedCount,
+    sourceLiteralSlotEdits: sourceLiteralSlotEdits.slice(0, 40),
     finalQuoteIntegrityRestoreCount,
     inlineCodeSpanCount: Number(inlineCodeFreeze.count || 0),
     inlineCodeIntegrityPass: inlineCodeIntegrity.pass === true,
@@ -8504,6 +8532,8 @@ async function settleLateDepthCandidate({
   });
   if (formatting.applied) text = formatting.text;
 
+  const literals = require('./sourceLiteralRecovery').recoverSourceLiterals(source, text, chunks);
+  text = literals.text;
   const layout = await structureChunk.restoreFinalDocumentLayoutAsync({
     signal,
     source,
@@ -8521,6 +8551,8 @@ async function settleLateDepthCandidate({
 
   const quotes = restoreDirectQuoteContents(source, text);
   if (quotes.applied) text = quotes.text;
+  quotes.restoredCount += literals.quoteRestoredCount;
+  quotes.applied = quotes.applied || literals.quoteRestoredCount > 0;
   return {
     text: String(text || '').trim(),
     layout,

@@ -276,7 +276,7 @@ test('최종 레이아웃은 citation-only tail을 독립 문단으로 남기지
   assert.equal(restored.contentPreserved, true);
 });
 
-test('중간 heading cursor 오탐은 최종 잠금 복원과 내용 보존이 통과하면 전달 구조를 실패시키지 않는다', () => {
+test('반복 라벨 위치는 보존하되 최종 문서의 탭 열 손실을 중간 pass로 숨기지 않는다', () => {
   const firstHeading = '1. Alpha heading with a sufficiently descriptive nominal phrase';
   const secondHeading = '2. Beta heading with another sufficiently descriptive nominal phrase';
   const label = '\tLabel: ';
@@ -309,13 +309,17 @@ test('중간 heading cursor 오탐은 최종 잠금 복원과 내용 보존이 �
     normalizeVisualGaps: true
   });
 
-  assert.equal(restored.paragraphs.structuralPass, false);
-  assert.ok(restored.paragraphs.heading.missingCount > 0);
-  assert.equal(restored.transientStructuralPass, false);
+  assert.equal(restored.paragraphs.structuralPass, true);
+  assert.equal(restored.paragraphs.heading.missingCount, 0);
+  assert.equal(restored.transientStructuralPass, true);
   assert.equal(restored.finalLocked.pass, true);
   assert.equal(restored.contentPreserved, true);
-  assert.equal(restored.structuralPass, true);
-  assert.equal(restored.pass, true);
+  // The legacy classifier treats leading tabs as table columns. Heading
+  // recovery succeeds, but the returned document no longer has those tabs;
+  // final delivery must expose that disagreement instead of using a stale pass.
+  assert.equal(restored.returnedStructureAudit.tableColumnOwnershipPass, false);
+  assert.equal(restored.structuralPass, false);
+  assert.equal(restored.pass, false);
 });
 
 test('후단 공백 수리가 건드린 인라인 코드는 최종 순서 고정점에서 원문으로 복원한다', () => {

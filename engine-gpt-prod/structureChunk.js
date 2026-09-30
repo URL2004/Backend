@@ -7,6 +7,7 @@ const { paragraphExpansionLimit } = require('./voiceProfile');
 const layoutStructure = require('./layoutStructure');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { ordinalPrefix, ordinalMarkers } = require('./koreanOrdinal');
+const { restoreCitationLayout, citationProtectedBlocks } = require('./citationOwnership');
 const {
   resolveHumanizeContract,
   allowsLayoutRecomposition,
@@ -52,9 +53,10 @@ function splitChunksForGpt(text, {
   }
 
   const resolvedContract = resolveHumanizeContract({ humanizeContract });
+  const literalChunks = protectCitationLiteralChunks(chunks, text);
   const plannedChunks = coalesceEditable
-    ? coalesceEditableChunks(chunks, 1600, 2500, { humanizeContract: resolvedContract })
-    : chunks;
+    ? coalesceEditableChunks(literalChunks, 1600, 2500, { humanizeContract: resolvedContract })
+    : literalChunks;
   const lineBoundaryPolicy = preserveLineBoundaries === true
     ? 'all'
     : String(preserveLineBoundaries || 'none');
@@ -76,6 +78,56 @@ function splitChunksForGpt(text, {
 
 function mergeChunks(chunks) {
   return baseChunk.mergeChunks(chunks);
+}
+
+// Explicit reference literals and the direct quotations attributed to them
+// must not enter the prose rewriter. Keep unrelated narrative editable and
+// preserve the existing chunk/merge coordinate contract exactly.
+function protectCitationLiteralChunks(chunks, value) {
+  const raw = String(value || '');
+  const source = normalizeNewlines(raw);
+  const citations = require('./citationOwnership').buildCitationOwnership(source).atoms;
+  if (!citations.length) return chunks;
+  const quotes = require('./quoteOwnership').parseQuoteOwnership(source).candidates
+    .filter(span => span.owned && span.kind !== 'unresolved'
+      && citations.some(citation => citation.srcStart >= span.end
+        && !source.slice(span.end, citation.srcStart).trim()));
+  const coordinates = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    coordinates.push(i);
+    if (raw[i] === '\r' && raw[i + 1] === '\n') i += 1;
+  }
+  coordinates.push(raw.length);
+  const atoms = [
+    ...citations.map(atom => ({ start: coordinates[atom.srcStart], end: coordinates[atom.srcEnd], type: 'reference_item' })),
+    ...quotes.map(span => ({ start: coordinates[span.start], end: coordinates[span.end], type: 'quote' }))
+  ].sort((a, b) => a.start - b.start);
+  return chunks.flatMap(chunk => {
+    if (chunk.locked || raw.slice(chunk.start, chunk.end) !== chunk.text) return [chunk];
+    const owned = atoms.filter(atom => atom.start < chunk.end && atom.end > chunk.start);
+    if (!owned.length) return [chunk];
+    const cuts = [...new Set([chunk.start, chunk.end,
+      ...owned.flatMap(atom => [Math.max(chunk.start, atom.start), Math.min(chunk.end, atom.end)])])].sort((a, b) => a - b);
+    return cuts.slice(0, -1).map((start, i) => {
+      const end = cuts[i + 1];
+      const atom = owned.find(item => item.start <= start && item.end >= end);
+      const piece = { ...chunk, start, end, text: raw.slice(start, end),
+        sep: end === chunk.end ? chunk.sep : '', _lead: i === 0 ? chunk._lead : undefined };
+      if (atom) Object.assign(piece, { locked: true, lockType: atom.type, skipReason: `structure_lock:${atom.type}` });
+      else if (!piece.text.trim()) Object.assign(piece, { locked: true, lockType: 'literal_gap', skipReason: 'structure_lock:literal_gap' });
+      else {
+        // A prose model may trim its output. Keep the source separator out
+        // of the editable text so an inline citation cannot fuse to prose.
+        const trailing = piece.text.match(/\s+$/u)?.[0] || '';
+        if (trailing) {
+          piece.text = piece.text.slice(0, -trailing.length);
+          piece.end -= trailing.length;
+          piece.sep = trailing + (piece.sep || '');
+        }
+      }
+      return piece;
+    });
+  });
 }
 
 function expandBaseChunk(chunk, state) {
@@ -607,10 +659,12 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     .filter(chunk => String(chunk.lockType || '') !== 'bullet_prefix'
       || !/^\s*[-*+]\s*$/u.test(String(chunk.text || '')))
     .map(chunk => {
-      const rawText = String(chunk.text || '').replace(/[ \t]+$/gu, '');
+      const rawText = String(chunk.text || '').replace(/[ \t\r]+$/gu, '');
       return {
         text: rawText.trim(),
         replacementText: rawText,
+        sourceStart: chunk.layoutSourceStart ?? chunk.start,
+        lockType: chunk.lockType,
         prefix: String(chunk.lockType || '').endsWith('_prefix')
       };
     });
@@ -634,6 +688,33 @@ function restoreLockedHeadingLayout(source, outputText, chunks) {
     if (outputIndex < 0) {
       outputIndex = findHeadingLiteral(text, heading, outputCursor);
       outputHeadingLength = heading.length;
+    }
+    // The chunk already witnesses which source field this prefix belongs to.
+    // A global first match may instead select the identical inline citation
+    // and copy its space separator onto a standalone field (or vice versa).
+    if (anchor.lockType === 'label_prefix' && Number.isInteger(anchor.sourceStart)) {
+      const sourceStart = normalizeNewlines(String(source || '').slice(0, anchor.sourceStart)).length;
+      const witnessed = anchor.sourceStart >= 0 && anchor.sourceStart <= String(source || '').length
+        ? findWhitespaceEquivalentSpan(sourceText, heading, sourceStart) : null;
+      if (witnessed && !sourceText.slice(sourceStart, witnessed.start).trim()) {
+        const occurrences = findWhitespaceEquivalentSpans(sourceText, heading, 0, Infinity);
+        const owned = findInlineLabelOccurrence(text, {
+          anchor: heading,
+          ordinal: occurrences.findIndex(span => span.start === witnessed.start),
+          count: occurrences.length
+        }, outputCursor);
+        if (!owned) {
+          missingCount += 1;
+          continue;
+        }
+        sourceIndex = witnessed.start;
+        sourceHeadingLength = witnessed.end - witnessed.start;
+        outputIndex = owned.start;
+        outputHeadingLength = owned.end - owned.start;
+      } else {
+        missingCount += 1;
+        continue;
+      }
     }
     if (outputIndex < 0) {
       // 모델이 `1.지원동기및진로계획`을 `1.지원동기\n및진로계획`처럼
@@ -723,13 +804,15 @@ function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVis
         excludedBlocks: buildVisualGapExcludedBlocks(chunks)
       })
     : { text: inlineLabels.text, repairCount: 0 };
+  const citations = restoreCitationLayout(source, visualGaps.text, chunks);
+  const quotes = require('./quoteOwnership').restoreOwnedQuoteLayout(source, citations.text);
   return {
-    text: visualGaps.text,
+    text: quotes.text,
     applied: heading.applied
       || blocks.applied
       || markdownControls.applied
       || inlineLabels.applied
-      || visualGaps.repairCount > 0,
+      || visualGaps.repairCount > 0 || citations.repairCount > 0 || quotes.applied,
     headingCount: heading.headingCount,
     blockCount: blocks.blockCount,
     restoredCount: heading.restoredCount + blocks.restoredCount + markdownControls.restoredCount + inlineLabels.repairCount,
@@ -742,11 +825,18 @@ function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVis
     markdownControls,
     inlineLabels,
     visualGapRepairCount: Number(visualGaps.repairCount || 0),
+    citationOwnership: citationLayoutSummary(citations),
+    quoteOwnership: quotes.auditAfter,
     pass: heading.missingCount === 0
       && blocks.missingCount === 0
       && markdownControls.missingCount === 0
-      && inlineLabels.pass
+      && inlineLabels.pass && citations.pass && quotes.auditAfter.pass
   };
+}
+
+function citationLayoutSummary(result) {
+  return { pass: result.pass, count: result.atoms.length, missingCount: result.missingCount,
+    extraCount: result.extraCount, refusedCount: result.refusedCount, repairCount: result.repairCount };
 }
 
 // 최종 어휘 수리·중복 제거·자소서 주장 복원은 잠긴 구조 주변의 구분자를
@@ -781,6 +871,7 @@ function* restoreFinalDocumentLayoutSteps({
   let labelBodySplitCount = 0;
   let labelBodyGapCount = 0;
   let ordinalGapCount = 0;
+  let citations = null;
   const labelContract = resolveHumanizeContract({ mode, requestStrength, documentProfile, humanizeContract });
   const improveLabelBodies = normalizeVisualGaps && !['preserve', 'approved_plan'].includes(labelContract.paragraph.prosePolicy)
     && mode !== 'polish' && !['creative','legal_contract','clinical_record'].includes(canonicalProfileName(documentProfile))
@@ -846,6 +937,8 @@ function* restoreFinalDocumentLayoutSteps({
       ordinalGapCount = Math.max(ordinalGapCount, ordinals.repairCount);
     }
     citationTailRepairCount += Number(citationTails.repairCount || 0);
+    citations = restoreCitationLayout(source, text, chunks);
+    text = require('./quoteOwnership').restoreOwnedQuoteLayout(source, citations.text).text;
     if (text === before) {
       converged = true;
       break;
@@ -872,8 +965,12 @@ function* restoreFinalDocumentLayoutSteps({
   // 복원에서 모든 구조가 회복되고 문자 내용이 보존되면 전달 구조는 정상이다.
   // transient 실패는 원인 관측으로 남기되 최종 pass에 다시 섞지 않는다.
   const codePass = restoreCodeWhitespace(source, text).pass;
-  const structuralPass = finalLocked.pass !== false && contentPreserved && codePass
-    && compareInlineLabelBodyLayout(source, text).pass;
+  // The last five mutators run after finalLocked was measured. Audit the
+  // returned document, not that earlier snapshot, and never report a cycle as
+  // a successful final layout.
+  const returnedStructureAudit = buildStructureAudit({ source, outputText: text, chunks });
+  const structuralPass = converged && finalLocked.pass !== false && contentPreserved && codePass
+    && returnedStructureAudit.pass && citations.pass;
   return {
     text,
     applied: text !== normalizeNewlines(outputText),
@@ -883,6 +980,8 @@ function* restoreFinalDocumentLayoutSteps({
     pass: structuralPass,
     contentPreserved,
     codePass,
+    returnedStructureAudit,
+    citationOwnership: citationLayoutSummary(citations),
     iterationCount,
     converged,
     citationTailRepairCount,
@@ -1060,7 +1159,7 @@ function restoreInlineLabelBodyLayout(source, outputText) {
   let repairCount = continuations.repairCount;
   let missingCount = 0;
   for (const region of regions) {
-    const current = findWhitespaceEquivalentSpan(text, region.prefix, cursor);
+    const current = findInlineLabelOccurrence(text, region.owner, cursor);
     if (!current) {
       missingCount += 1;
       continue;
@@ -1069,7 +1168,7 @@ function restoreInlineLabelBodyLayout(source, outputText) {
     while (bodyStart < text.length && /[ \t]/u.test(text[bodyStart])) bodyStart += 1;
     let nextStart = text.length;
     if (region.nextAnchor) {
-      const next = findWhitespaceEquivalentSpan(text, region.nextAnchor, bodyStart);
+      const next = findInlineLabelOccurrence(text, region.nextOwner, bodyStart);
       if (!next) {
         missingCount += 1;
         cursor = current.end;
@@ -1083,6 +1182,14 @@ function restoreInlineLabelBodyLayout(source, outputText) {
     const newlineGroups = body.match(/[ \t]*\n+[ \t]*/gu) || [];
     if (body.trim() && newlineGroups.length > 0
         && !require('./inlineLabelParagraphs').isSafeLabelBodyLayout(body)) {
+      // A source field owns prose only. Even a wrongly matched/added anchor
+      // must not let a join erase headings, fields, code or quotations.
+      if (layoutStructure.buildLineRecords(body).some((record, index) =>
+        index > 0 && !record.blank && record.role !== 'prose')) {
+        missingCount += 1;
+        cursor = nextStart;
+        continue;
+      }
       const joined = body.replace(/[ \t]*\n+[ \t]*/gu, ' ');
       text = text.slice(0, bodyStart) + joined + text.slice(bodyEnd);
       const delta = joined.length - body.length;
@@ -1111,9 +1218,16 @@ function buildInlineLabelBodyRegions(value) {
   // only explicit, source-derived anchors here (never from model output).
   // Shared with preflight so restoration cannot rejoin the whole document
   // and final validation still checks every actual field in source order.
-  const anchoredSource = require('./fusedReportLayout').repairFusedReportLayout(value).text;
+  const anchoredSource = require('./fusedReportLayout').repairFusedReportLayout(normalizeNewlines(value)).text;
   const records = layoutStructure.buildLineRecords(anchoredSource).filter(record => !record.blank);
   const regions = [];
+  const occurrences = new Map();
+  const ownerAt = (anchor, start) => {
+    if (!occurrences.has(anchor)) occurrences.set(anchor,
+      findWhitespaceEquivalentSpans(anchoredSource, anchor, 0, Infinity));
+    const spans = occurrences.get(anchor);
+    return { anchor, ordinal: spans.findIndex(span => span.start >= start), count: spans.length };
+  };
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     if (String(record?.role || '') !== 'label_inline') continue;
@@ -1126,12 +1240,24 @@ function buildInlineLabelBodyRegions(value) {
     if (nextRecord && !isInlineLabelRegionBoundary(nextRecord)) continue;
     const nextAnchor = nextRecord ? structuralLineAnchor(nextRecord) : '';
     if (nextRecord && !nextAnchor) continue;
-    regions.push({
-      prefix: String(match[1] || '').trimStart().trimEnd(),
-      nextAnchor
+    const prefix = String(match[1] || '').trimStart().trimEnd();
+    regions.push({ prefix, nextAnchor,
+      owner: ownerAt(prefix, record.start),
+      nextOwner: nextRecord ? ownerAt(nextAnchor, nextRecord.start) : null
     });
   }
   return regions.filter(region => region.prefix.length >= 2);
+}
+
+// Include inline occurrences in the inventory: a standalone citation with the
+// same prefix is not the first occurrence in its section. If occurrences were
+// added/deleted, refuse the ambiguous repair instead of shifting ownership.
+function findInlineLabelOccurrence(text, owner, cursor = 0) {
+  if (!owner || owner.ordinal < 0) return null;
+  const spans = findWhitespaceEquivalentSpans(text, owner.anchor, 0, Infinity);
+  if (spans.length !== owner.count) return null;
+  const span = spans[owner.ordinal];
+  return span && span.start >= cursor ? span : null;
 }
 
 function isInlineLabelRegionBoundary(record) {
@@ -1663,6 +1789,8 @@ function restoreParagraphLayout(options = {}) {
 // Share exactly the same decisions with synchronous callers. Production
 // schedules these preparation stages separately, not just the alignment DP.
 function* restoreParagraphLayoutSteps(options = {}) {
+  options = { ...options, literalProtectedBlocks: citationProtectedBlocks(options.source, options.outputText, options.chunks)
+    .map(block => block.raw).filter(Boolean) };
   const contract = resolveHumanizeContract(options);
   if (contract.paragraph.prosePolicy === 'approved_plan') {
     // SOURCE already contains the user-approved plan, not the old layout.
@@ -1707,7 +1835,8 @@ function* restoreParagraphLayoutBase({
   requestStrength = '',
   documentProfile = '',
   profileConfidence = 0,
-  humanizeContract = null
+  humanizeContract = null,
+  literalProtectedBlocks = []
 } = {}) {
   const resolvedContract = resolveHumanizeContract({
     humanizeContract,
@@ -1728,7 +1857,8 @@ function* restoreParagraphLayoutBase({
     requestStrength,
     documentProfile,
     profileName,
-    protectedBlocks: (chunks || []).filter(c => c?.locked).map(c => c.text)
+    literalProtectedBlocks,
+    protectedBlocks: [...(chunks || []).filter(c => c?.locked).map(c => c.text), ...literalProtectedBlocks]
   };
   const rawOutputText = normalizeParagraphWhitespace(outputText);
   const sourceTransitions = mode !== 'polish' && !creativeLayout
@@ -2027,9 +2157,8 @@ function* restoreParagraphLayoutBase({
     };
   }
 
-  const protectedBlocks = new Set((chunks || [])
-    .filter(chunk => chunk?.locked)
-    .map(chunk => bare(chunk.text))
+  const protectedBlocks = new Set(readabilityOptions.protectedBlocks
+    .map(block => bare(block))
     .filter(Boolean));
   const paragraphs = [...before];
   let proseSplitCount = 0;
@@ -2471,7 +2600,7 @@ function splitSourceRoleForReadability(paragraph, readabilityOptions = {}) {
       if (current) out.push(current);
       continue;
     }
-    const sentences = splitSentences(current).map(sentence => String(sentence || '').trim()).filter(Boolean);
+    const sentences = splitLayoutSentences(current, readabilityOptions);
     if (sentences.length < 2) {
       if (current) out.push(current);
       continue;
@@ -2745,7 +2874,7 @@ function findSplitCandidate(paragraphs, protectedBlocks, readabilityOptions = {}
       || layoutStructure.measureParagraphReadability([item.paragraph], readabilityOptions).overlongCount > 0)
     .sort((a, b) => b.length - a.length);
   for (const item of ranked) {
-    const sentences = splitSentences(item.paragraph);
+    const sentences = splitLayoutSentences(item.paragraph, readabilityOptions);
     if (sentences.length < 2) continue;
     const splitIndex = selectReadableSplitIndex(sentences, readabilityOptions.profileName || '');
     const left = sentences.slice(0, splitIndex).join(' ').trim();
@@ -2753,6 +2882,25 @@ function findSplitCandidate(paragraphs, protectedBlocks, readabilityOptions = {}
     if (left && right) return { index: item.index, left, right };
   }
   return null;
+}
+
+// A page/section number inside a reference is not a prose sentence boundary.
+// Merge sentence spans intersecting an attested literal before scoring splits,
+// keeping its original internal whitespace instead of rejoining its fragments.
+function splitLayoutSentences(value, { literalProtectedBlocks = [] } = {}) {
+  const text = String(value || '');
+  if (!literalProtectedBlocks.length) return splitSentences(text);
+  const ranges = literalProtectedBlocks.flatMap(block =>
+    findWhitespaceEquivalentSpans(text, block, 0, Infinity));
+  const spans = splitSentenceSpans(text);
+  const groups = [];
+  for (const span of spans) {
+    const previous = groups.at(-1);
+    if (previous && ranges.some(range => range.start < span.start && range.end > previous.end)) {
+      previous.end = span.end;
+    } else groups.push({ start: span.start, end: span.end });
+  }
+  return groups.map(span => text.slice(span.start, span.end).trim()).filter(Boolean);
 }
 
 function selectReadableSplitIndex(sentences, profileName = '') {
@@ -3160,6 +3308,8 @@ function buildStructureAudit({
   const lineAnchorLayout = compareLineAnchorLayout(original, output, { allowAdditions: true });
   const sourceLineAnchorLayout = compareLineAnchorLayout(source, output);
   const inlineLabelBodyLayout = compareInlineLabelBodyLayout(original, output);
+  const citations = restoreCitationLayout(source, output, chunks);
+  const citationOwnershipPass = citations.pass && citations.text === normalizeNewlines(output);
   const exactLinePolicy = (chunks || []).some(chunk => String(chunk?.lineBoundaryPolicy || '') === 'all');
   const exactLineStructure = exactLinePolicy
     ? auditExactLineStructure(original, output)
@@ -3249,6 +3399,9 @@ function buildStructureAudit({
     inlineLabelBodyApplicableCount: inlineLabelBodyLayout.applicableCount,
     inlineLabelBodySplitCount: inlineLabelBodyLayout.violations.length,
     inlineLabelBodySplits: inlineLabelBodyLayout.violations,
+    citationOwnershipPass,
+    citationOwnership: citationLayoutSummary(citations),
+    citationOwnershipViolationCount: citations.missingCount + citations.extraCount + citations.refusedCount + citations.repairCount,
     exactLineStructurePass: exactLineStructure.pass,
     exactLineStructureApplicable: exactLineStructure.applicable === true,
     exactLineSourceCount: Number(exactLineStructure.sourceLineCount || 0),
@@ -3268,6 +3421,7 @@ function buildStructureAudit({
       && bracketedLabelLayout.pass
       && lineAnchorLayout.pass
       && inlineLabelBodyLayout.pass
+      && citationOwnershipPass
       && exactLineStructure.pass
       && introducedOrphanParticleBoundaryCount === 0
       && (layoutRepair?.structuralPass ?? layoutRepair?.pass) !== false
@@ -3295,12 +3449,12 @@ const STRUCTURE_DEFECT_COUNTS = Object.freeze([
   'sourceStructuralMarkerAdditionCount', 'bracketedLabelLossCount', 'bracketedLabelBoundaryChangeCount',
   'lineAnchorLossCount', 'lineAnchorBoundaryChangeCount', 'sourceLineAnchorLossCount',
   'sourceLineAnchorAdditionCount', 'sourceLineAnchorBoundaryChangeCount', 'inlineLabelBodySplitCount',
-  'introducedOrphanParticleBoundaryCount'
+  'introducedOrphanParticleBoundaryCount', 'citationOwnershipViolationCount'
 ]);
 const STRUCTURE_DEFECT_FLAGS = Object.freeze([
   'fragmentIntegrityPass', 'structureSignaturePass', 'tableColumnOwnershipPass', 'originalStructurePass',
   'sourceStructurePass', 'bracketedLabelLayoutPass', 'lineAnchorLayoutPass', 'sourceLineAnchorLayoutPass',
-  'inlineLabelBodyLayoutPass', 'exactLineStructurePass'
+  'inlineLabelBodyLayoutPass', 'exactLineStructurePass', 'citationOwnershipPass'
 ]);
 
 function structureDefectKey(kind, item) {
@@ -3488,15 +3642,17 @@ function lineAnchorInventoryKey(item) {
 }
 
 function compareInlineLabelBodyLayout(source, output) {
+  output = normalizeNewlines(output);
   const regions = buildInlineLabelBodyRegions(source);
   const outputLines = layoutStructure.buildLineRecords(output).filter(record => !record.blank);
   const violations = [];
   let cursor = 0;
   for (let ordinal = 0; ordinal < regions.length; ordinal += 1) {
     const region = regions[ordinal];
-    const prefixKey = lineAnchorKey(region.prefix);
+    const currentSpan = findInlineLabelOccurrence(output, region.owner);
     const current = outputLines.findIndex((line, index) => (
-      index >= cursor && lineAnchorPrefixKey(line.text).startsWith(prefixKey)
+      index >= cursor && currentSpan
+        && line.start + line.raw.length - line.raw.trimStart().length === currentSpan.start
     ));
     if (current < 0) {
       violations.push({ ordinal: ordinal + 1, reason: 'label_prefix_missing_or_merged' });
@@ -3510,9 +3666,10 @@ function compareInlineLabelBodyLayout(source, output) {
       cursor = current + 1;
       continue;
     }
-    const nextKey = lineAnchorKey(region.nextAnchor);
+    const nextSpan = findInlineLabelOccurrence(output, region.nextOwner, currentSpan.end);
     const next = outputLines.findIndex((line, index) => (
-      index > current && lineAnchorPrefixKey(line.text).startsWith(nextKey)
+      index > current && nextSpan
+        && line.start + line.raw.length - line.raw.trimStart().length === nextSpan.start
     ));
     if (next < 0) {
       violations.push({ ordinal: ordinal + 1, reason: 'next_structure_anchor_missing_or_merged' });

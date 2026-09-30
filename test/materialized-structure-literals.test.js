@@ -36,3 +36,17 @@ test('projection restores only known literals, including output text, and never 
   assert.equal(result[1].outputText, null);
   assert.equal(chunks[0].outputText, 'ZXQMATH0000QXZ');
 });
+
+test('materialized label witnesses use restored offsets after a variable length code token', () => {
+  const source = '설정은 `x`를 사용한다.\n항목: 첫 설명입니다.\n\n다음 절입니다.\n항목: 두 번째 설명입니다.';
+  const inlineCodeFreeze = literal.freezeInlineCode(source);
+  const inlineMathFreeze = literal.freezeMath(inlineCodeFreeze.text);
+  const plan = structure.splitChunksForGpt(inlineMathFreeze.text);
+  const chunks = literal.materializeChunkLiterals(plan.chunks, { inlineMathFreeze, inlineCodeFreeze });
+  const labels = chunks.filter(c => c.lockType === 'label_prefix');
+  assert.equal(labels.length, 2);
+  assert.ok(labels.every(c => source.slice(c.layoutSourceStart).startsWith(c.text)));
+  const result = structure.restoreLockedStructureLayout({ source, outputText: source, chunks });
+  assert.equal(result.heading.missingCount, 0);
+  assert.equal(result.text, source);
+});

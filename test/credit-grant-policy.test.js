@@ -37,7 +37,7 @@ test('5,900원 스타터(2026-09 정책 v4)의 새 지급은 기준 200·상시 
   assert.equal(grant.eventBonusRate, 0);
   assert.equal(grant.eventId, null);
   assert.equal(grant.totalCredits, 200);
-  assert.equal(grant.offerPolicyVersion, 'credit-offer-v4-202609');
+  assert.equal(grant.offerPolicyVersion, 'credit-offer-v5-202610');
   assert.equal(grant.grantPolicyVersion, 'credit-grant-base-v1');
 });
 

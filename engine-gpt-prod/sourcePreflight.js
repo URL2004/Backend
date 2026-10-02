@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 34;
+const VERSION = 35;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -363,7 +363,8 @@ function repairSourceLayoutArtifacts(value) {
   }
   const explicitReport = require('./fusedReportLayout').repairFusedReportLayout(before);
   const pairedLabels = require('./pairedLabelLayout').repairPairedLabelLayout(explicitReport.text);
-  const punctuation = repairIsolatedTerminalPunctuationLines(pairedLabels.text);
+  const embeddedLabels = require('./inlineLabelParagraphs').repairEmbeddedLabelBoundaries(pairedLabels.text);
+  const punctuation = repairIsolatedTerminalPunctuationLines(embeddedLabels.text);
   const heading = repairInlineHeadingBoundaries(punctuation.text);
   const wordWrapped = repairDocumentAttestedWordWraps(heading.text);
   const blankWrapped = repairBrokenBlankLineProseContinuations(wordWrapped.text);
@@ -375,6 +376,7 @@ function repairSourceLayoutArtifacts(value) {
     ? [
         ...explicitReport.changes,
         ...pairedLabels.changes,
+        ...embeddedLabels.changes,
         ...punctuation.changes,
         ...heading.changes,
         ...wordWrapped.changes,
@@ -727,6 +729,11 @@ function repairInlineHeadingBoundaries(value) {
       );
       repaired = repaired.split('\n').map(piece => {
         if (isSectionReferenceProse(piece)) return piece;
+        // A short nominal numbered label may itself end in a period. That
+        // punctuation is a witnessed boundary, not a reason to merge its body.
+        const parenthetical = piece.match(/^(\s*[（(]\d{1,2}[）)]\s+[^.!?。！？\n]{2,100}[.])[ \t]+(\S[\s\S]{25,})$/u);
+        if (parenthetical && layoutStructure.isKnownHeadingLine(parenthetical[1])
+            && looksLikeFusedProse(parenthetical[2])) return `${parenthetical[1]}\n${parenthetical[2]}`;
         const nestedHeading = splitNestedOutlineHeading(piece);
         if (nestedHeading) return nestedHeading;
         if (INLINE_HEADING_AFTER_RE.test(piece)) return piece.replace(INLINE_HEADING_AFTER_RE, '$1\n');

@@ -95,4 +95,37 @@ function repairInlineLabelContinuations(value) {
   }
   return { text, applied: repairCount > 0, repairCount, contentPreserved: bare(text) === bare(value) };
 }
-module.exports={improveInlineLabelLayout,isSafeLabelBodyLayout,repairInlineLabelContinuations};
+// A witnessed standalone colon label followed by two more short labels at
+// sentence boundaries is an explicit section sequence. Restore only the
+// start of each label, never guess where its subtitle ends or invent a title.
+function repairEmbeddedLabelBoundaries(value) {
+  const text=String(value||'');
+  const tokens=[...text.matchAll(/([.!?。！？])[ \t]*([가-힣A-Za-z][가-힣A-Za-z _-]{0,15})[:：][ \t]+/gu)];
+  if(tokens.length<2||tokens.length>40)return {text,changes:[]};
+  const records=layout.buildLineRecords(text), literals=syntaxSpans(text);
+  const protectedAt=(start,end)=>literals.some(s=>['quote','code'].includes(s.spanType)&&s.start<end&&s.end>start);
+  const witness=records.find(r=>r.role==='label_inline'&&r.text.length<=100
+    && !layout.isSentenceComplete(r.text) && !protectedAt(r.start,r.end));
+  if(!witness)return {text,changes:[]};
+  const matches=tokens
+    .filter(m=>{
+      const start=m.index+1+m[0].slice(1).search(/\S/u);
+      const r=records.find(r=>r.start<=start&&r.end>=start);
+      return r && ['prose','label_inline'].includes(r.role) && start>witness.end
+        && !protectedAt(m.index,m.index+m[0].length)
+        && !/(?:한다|했다|이다|였다|있다|없다|하는|하면|하며)$/u.test(m[2]);
+    });
+  if(matches.length<2||matches.length>40||new Set(matches.map(m=>m[2])).size!==matches.length)return {text,changes:[]};
+  for(let i=0;i<matches.length;i++){
+    const m=matches[i],body=text.slice(m.index+m[0].length,matches[i+1]?.index??text.length);
+    if(bare(body).length<60||!/[.!?。！？]/u.test(body))return {text,changes:[]};
+  }
+  let result=text;
+  for(const m of matches.reverse()){
+    const start=m.index+1,end=start+m[0].slice(1).search(/\S/u);
+    result=result.slice(0,start)+'\n\n'+result.slice(end);
+  }
+  return {text:result,changes:[{code:'source_embedded_label_boundary',lineOrdinal:1,
+    message:'반복되는 명시적 라벨 앞의 문단 경계를 복원했어요.'}]};
+}
+module.exports={improveInlineLabelLayout,isSafeLabelBodyLayout,repairInlineLabelContinuations,repairEmbeddedLabelBoundaries};

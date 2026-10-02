@@ -375,6 +375,10 @@ function isKnownHeadingLine(value) {
   // 이 경계를 놓치면 다음 본문과 합쳐지고 이후 재처리에서도 손상이
   // 원문처럼 굳어지므로 제목 행으로 잠근다.
   if (/^[（(]\d{1,2}[）)]\s+[^.!?。！？\n]{2,100}$/u.test(text)) return true;
+  const dottedParenthetical = text.match(/^[（(]\d{1,2}[）)]\s+([^.!?。！？\n]{2,100})[.]$/u);
+  if (dottedParenthetical && !isSentenceComplete(dottedParenthetical[1])
+      && !/[가-힣](?:다|요)$/u.test(dottedParenthetical[1])
+      && !isProseContinuation(dottedParenthetical[1]) && !isDependentLead(dottedParenthetical[1])) return true;
   // Hyphenated subsection IDs are structural in the same way as 2.1.
   // Keep complete numbered prose editable; only a nominal, standalone label
   // is protected. Otherwise masking the prefix changes list -> heading and a
@@ -415,7 +419,7 @@ function isStrongNominalSectionHeading(value) {
   const text = visibleTrim(value);
   if (text.length < 4 || text.length > 70 || /[.!?。！？:：;；]$/u.test(text)) return false;
   if (/(?:합니다|했습니다|됩니다|되었습니다|이다|였다|있다|없다|않다|한다|했다|해요|예요|이에요)$/u.test(text)) return false;
-  return /(?:경험|역량|목표|계획|성과|전략|정체성|문제\s*해결|커뮤니케이션|이해|지원\s*동기|활동\s*내용|배운\s*점|느낀\s*점)$/u.test(text);
+  return /(?:경험|역량|목표|계획|성과|전략|정체성|문제\s*해결|커뮤니케이션|이해|지원\s*동기|활동\s*내용|배운\s*점|느낀\s*점|의의|효과|의미|가치|원리)$/u.test(text);
 }
 
 function isContextualStrongNominalHeading(text, context = {}) {
@@ -426,6 +430,12 @@ function isContextualStrongNominalHeading(text, context = {}) {
   if (context.blankBefore) return true;
   if (['table', 'list', 'flow', 'quote'].includes(String(context.previous?.role || ''))) return true;
   const previousText = String(context.previous?.text || '').trim();
+  // Web citation counters may sit between a complete paragraph and its next
+  // heading. Require a short coordinated nominal phrase and a complete body;
+  // the counter alone must not promote an unfinished clause to a heading.
+  if (/^\+\d{1,2}$/u.test(previousText) && text.length <= 36
+      && /[가-힣]{2,}(?:과|와)\s+[가-힣]{2,}$/u.test(text)
+      && isSentenceComplete(nextText) && nextText.length >= 45) return true;
   return previousText.length >= 70 && isSentenceComplete(previousText);
 }
 
@@ -839,6 +849,11 @@ function missingDevelopedListGaps(value, options = {}) {
 
 function listPrefixParts(value) {
   const raw = String(value || '');
+  // PDF font bullets can survive text paste as private-use glyphs. Only a
+  // single leading glyph + whitespace + explicit short label is a list item;
+  // private-use characters in ordinary prose/formulas are not bullet evidence.
+  const fontBullet = raw.match(/^(\s*[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}][ \t]+)([가-힣A-Za-z][^\n.!?。！？:：|\t]{0,31}[:：][ \t]*\S[^\n]*)$/u);
+  if (fontBullet) return { prefix: fontBullet[1], body: fontBullet[2] };
   const match = raw.match(
     /^(\s*(?:[-*+]\s+|[•▪◦·]\s*|\d+(?:\.\d+)+[.)]?\s+|(?:\d+(?:[-.]\d+)*[.)](?!\d)|[가-힣][.)]|[①-⑳])\s*|[●○■□◆◇▶▷※]\s*|\+(?=[가-힣A-Za-z“"'‘「『《〈])))(\S[\s\S]*)$/u
   );

@@ -871,6 +871,9 @@ function* restoreFinalDocumentLayoutSteps({
   let labelBodySplitCount = 0;
   let labelBodyGapCount = 0;
   let ordinalGapCount = 0;
+  let relationBoundaryCount = 0;
+  let relationBoundaryReasons = {};
+  let subtitleBoundaryCount = 0;
   let citations = null;
   const labelContract = resolveHumanizeContract({ mode, requestStrength, documentProfile, humanizeContract });
   const improveLabelBodies = normalizeVisualGaps && !['preserve', 'approved_plan'].includes(labelContract.paragraph.prosePolicy)
@@ -935,6 +938,18 @@ function* restoreFinalDocumentLayoutSteps({
       const ordinals = require('./koreanOrdinal').restoreOrdinalParagraphGaps(source, text);
       text = ordinals.text;
       ordinalGapCount = Math.max(ordinalGapCount, ordinals.repairCount);
+      const subtitles = require('./inlineLabelParagraphs').repairLabelSubtitleBoundaries(text);
+      text = subtitles.text;
+      subtitleBoundaryCount = Math.max(subtitleBoundaryCount, subtitles.changes[0]?.count || 0);
+      const relations = require('./paragraphRelations').refineParagraphRelations(text, {
+        protectedBlocks: (chunks || []).filter(c => c.locked).map(c => c.text)
+      });
+      if (relations.contentPreserved) {
+        text = relations.text;
+        relationBoundaryCount = Math.max(relationBoundaryCount, relations.repairCount);
+        for (const [key, count] of Object.entries(relations.reasons))
+          relationBoundaryReasons[key] = Math.max(relationBoundaryReasons[key] || 0, count);
+      }
     }
     citationTailRepairCount += Number(citationTails.repairCount || 0);
     citations = restoreCitationLayout(source, text, chunks);
@@ -946,13 +961,14 @@ function* restoreFinalDocumentLayoutSteps({
   }
   const contentPreserved = bare(text) === bare(outputText);
   if (paragraphSummary) Object.assign(paragraphs.paragraphs, paragraphSummary);
-  if (labelBodySplitCount || labelBodyGapCount) {
+  if (labelBodySplitCount || labelBodyGapCount || relationBoundaryCount || subtitleBoundaryCount) {
     const count = splitParagraphs(text).length;
     const readability = layoutStructure.measureParagraphReadability(text, { mode, requestStrength, documentProfile, humanizeContract });
     Object.assign(paragraphs.paragraphs, {
       text, applied: true, pass: readability.overlongCount === 0, afterCount: count, targetCount: count,
       explicitParagraphCountAfter: layoutStructure.splitExplicitParagraphs(text).length,
-      policy: `${paragraphs.paragraphs.policy}+inline_label_prose`,
+      policy: paragraphs.paragraphs.policy + (relationBoundaryCount || subtitleBoundaryCount
+        ? '+relation_boundaries' : '+inline_label_prose'),
       proseSplitCount: Number(paragraphs.paragraphs.proseSplitCount || 0) + labelBodySplitCount,
       readability: compactReadability(readability)
     });
@@ -989,6 +1005,9 @@ function* restoreFinalDocumentLayoutSteps({
     labelBodySplitCount,
     labelBodyGapCount,
     ordinalGapCount,
+    relationBoundaryCount,
+    relationBoundaryReasons,
+    subtitleBoundaryCount,
     initialLocked,
     paragraphs,
     finalLocked

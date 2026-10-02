@@ -4,7 +4,7 @@ const { syntaxSpans } = require('../engine/textSyntax');
 // Explicit punctuation distinguishes enumeration from family/order nouns
 // (첫째 아이, 두 번째 실험). Never infer or renumber a missing item.
 const ORDINAL = '(?:(?:첫|둘|셋|넷|다섯|여섯|일곱|여덟|아홉|열|열한|열두|열세|열네|열다섯|열여섯|열일곱|열여덟|열아홉|스무)째|(?:첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\\s*번째)';
-const PREFIX = new RegExp(`^(\\s*${ORDINAL}[,，:：]\\s*)(\\S[\\s\\S]*)$`, 'u');
+const PREFIX = new RegExp(`^(\\s*${ORDINAL}(?:[,，:：]\\s*|[.．]\\s+))(\\S[\\s\\S]*)$`, 'u');
 // Explicit enumerative predicate frames, not arbitrary ordinal adjectives
 // such as "첫 번째 실험" or "첫째 아이". These may have no comma.
 const FRAME_LEAD = '(?:(?:본|이번|해당)\\s*(?:연구|조사|분석|프로젝트)의\\s+)?';
@@ -28,7 +28,7 @@ function ordinalNumber(value) {
 function ordinalMarkers(value) {
   const text = String(value || '');
   const literals = syntaxSpans(text);
-  const re = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})[,，:：](?=\\s|[가-힣A-Za-z])`, 'gu');
+  const re = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:[,，:：](?=\\s|[가-힣A-Za-z])|[.．](?=\\s))`, 'gu');
   const markers = [];
   for (const match of text.matchAll(re)) {
     const start = match.index + match[1].length;
@@ -72,7 +72,18 @@ function restoreOrdinalParagraphGaps(source, value) {
     if (after[i].predicateFrame || before[i].predicateFrame) continue;
     const sourceStart = before[i].boundaryStart ?? before[i].start;
     const sourceLine = sourceText.slice(sourceText.lastIndexOf('\n', sourceStart - 1) + 1, sourceStart);
-    if (sourceLine.trim()) continue;
+    if (sourceLine.trim()) {
+      // A developed, consecutive inline item also starts a paragraph. Period
+      // vs comma is presentation, not a new ordinal. Do not split compact
+      // summaries, family nouns or quoted examples.
+      const prev = before[i - 1];
+      if (!prev || before[i].number !== prev.number + 1) continue;
+      const body = sourceText.slice(prev.start, sourceStart);
+      const nextBody = sourceText.slice(sourceStart, before[i + 1]?.start ?? sourceText.length);
+      if (body.length < 100 || nextBody.length < 80
+          || require('../engine/koreanText').splitSentenceSpans(body).length < 2
+          || require('./layoutStructure').buildLineRecords(body).some(r => ['heading','title','code','table'].includes(r.role))) continue;
+    }
     const right = after[i].boundaryStart ?? after[i].start;
     let left = right;
     while (left > 0 && /\s/u.test(text[left - 1])) left--;

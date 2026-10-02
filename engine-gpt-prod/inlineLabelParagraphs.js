@@ -128,4 +128,53 @@ function repairEmbeddedLabelBoundaries(value) {
   return {text:result,changes:[{code:'source_embedded_label_boundary',lineOrdinal:1,
     message:'반복되는 명시적 라벨 앞의 문단 경계를 복원했어요.'}]};
 }
-module.exports={improveInlineLabelLayout,isSafeLabelBodyLayout,repairInlineLabelContinuations,repairEmbeddedLabelBoundaries};
+// Require a document-attested "label: nominal subtitle / prose" pattern.
+// An arbitrary colon sentence is not a subtitle. Accept only one grammatically
+// supported cut before the first complete sentence, outside literal material.
+function repairLabelSubtitleBoundaries(value) {
+  const text = String(value || '');
+  const records = layout.buildLineRecords(text), literals = syntaxSpans(text);
+  const protectedAt = (a, b) => literals.some(s => s.start < b && s.end > a);
+  const nominal = /(?:깨달음|태도|모습|경험|과정|계획|변화|시간|계기|목표|의미|이유|관점|선택|전환|성장|발견)$/u;
+  const labels = records.filter(r => r.role === 'label_inline');
+  const witness = labels.some(r => {
+    const index = records.indexOf(r);
+    const next = records.slice(index + 1).find(n => !n.blank);
+    const rest = layout.labelParts(r.text)?.rest || '';
+    return rest.length >= 6 && rest.length <= 90 && nominal.test(rest)
+      && !layout.isSentenceComplete(rest) && next?.role === 'prose'
+      && layout.isSentenceComplete(next.text) && !protectedAt(r.start, r.end);
+  });
+  if (!witness || labels.length < 2) return { text, changes: [] };
+  const edits = [];
+  for (const r of labels) {
+    const colon = r.raw.search(/[:：]/u);
+    const restStart = colon + 1 + (r.raw.slice(colon + 1).match(/^\s*/u)?.[0].length || 0);
+    const rest = r.raw.slice(restStart);
+    if (!layout.isSentenceComplete(rest) || /\t|\S {2,}\S/u.test(r.raw)) continue;
+    const first = splitSentenceSpans(rest)[0];
+    if (!first) continue;
+    const cuts = [];
+    for (const gap of first.text.matchAll(/[ \t]+/gu)) {
+      const a = gap.index, b = a + gap[0].length;
+      const subtitle = rest.slice(0, a), body = rest.slice(b);
+      if (a < 6 || a > 90 || !nominal.test(subtitle)) continue;
+      const repeatedLead = subtitle.match(/^(.{2,24}?)(?:을|를|은|는|이|가)\s/u)?.[1];
+      const proseStart = /^(?:저는|나는|제가|내가|우리는|우리가)\s/u.test(body)
+        || /^(?:이|그|해당)\s+\S{1,15}(?:을|를|은|는|이|가)\s/u.test(body)
+        || (repeatedLead && body.startsWith(repeatedLead)
+          && /^(?:을|를|은|는|이|가|에서|에)\s/u.test(body.slice(repeatedLead.length)));
+      if (!proseStart || !layout.isSentenceComplete(body)) continue;
+      const start = r.start + restStart + a, end = r.start + restStart + b;
+      if (!protectedAt(start, end)) cuts.push({ start, end });
+    }
+    if (cuts.length === 1) edits.push(cuts[0]);
+  }
+  let result = text;
+  for (const e of edits.reverse()) result = result.slice(0, e.start) + '\n' + result.slice(e.end);
+  return { text: result, changes: edits.length ? [{
+    code: 'source_label_subtitle_boundary', count: edits.length, lineOrdinal: 1,
+    message: '문서에서 확인된 라벨·부제와 본문 사이의 경계를 정리했어요.'
+  }] : [] };
+}
+module.exports={improveInlineLabelLayout,isSafeLabelBodyLayout,repairInlineLabelContinuations,repairEmbeddedLabelBoundaries,repairLabelSubtitleBoundaries};

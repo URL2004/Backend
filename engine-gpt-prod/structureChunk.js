@@ -917,10 +917,14 @@ function* restoreFinalDocumentLayoutSteps({
         proseSplitCount: Math.max(paragraphSummary?.proseSplitCount || 0, report.proseSplitCount || 0)
       };
     }
-    const midSentenceParagraphs = repairIntroducedMidSentenceParagraphBreaks(
-      source,
-      finalLocked.text
-    );
+    // Prose continuation repair must not override a creative/all-lines
+    // contract. Rewritten words no longer exactly match the original seam,
+    // but that does not turn an intentional poetic line into a broken clause.
+    const preserveAllLines = canonicalProfileName(documentProfile) === 'creative'
+      || (chunks || []).some(c => c.lineBoundaryPolicy === 'all');
+    const midSentenceParagraphs = preserveAllLines
+      ? {text: finalLocked.text, repairCount: 0}
+      : repairIntroducedMidSentenceParagraphBreaks(source, finalLocked.text);
     midSentenceParagraphRepairCount += Number(midSentenceParagraphs.repairCount || 0);
     const citationTails = restoreCitationOnlyTails(source, midSentenceParagraphs.text);
     // Code whitespace is semantic (e.g. Python indentation). Restore whole

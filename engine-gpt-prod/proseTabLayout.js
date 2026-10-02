@@ -11,6 +11,20 @@ function proseTabLineIndices(source) {
   const flush = () => {
     const plain = group.filter(r => !r.text.includes('\t'));
     const tabs = group.filter(r => r.text.includes('\t'));
+    // A leading tab can be paragraph indentation, not an empty first cell.
+    // Require an adjacent developed prose witness and no actual column
+    // separators anywhere in this uninterrupted block. Lone/short rows and
+    // a blank first cell under a TSV header remain tables.
+    const developed = s => s.trim().length >= 100 && /[가-힣](?:다|요|니다)[.!?][”’"']?$/u.test(s.trim())
+      && require('../engine/koreanText').splitSentenceSpans(s.trim()).length >= 2;
+    const indentationOnly = s => /^[ ]*\t[ ]*\S/u.test(s)
+      && !s.trimStart().includes('\t') && !/[|\x60]/u.test(s);
+    if (group.length >= 2 && tabs.length && plain.length
+        && !group.some(r => /[|\x60]|^\s*(?:>|#|\[표|표\s*\d)/u.test(r.text))
+        && plain.every(r => developed(r.text) && !/\S {2,}\S/u.test(r.text))
+        && tabs.every(r => indentationOnly(r.text) && developed(r.text))) {
+      tabs.forEach(r => out.add(r.index));
+    }
     if (group.length >= 6 && tabs.length && tabs.length <= group.length / 3
         && plain.filter(r => r.text.length >= 25).length >= 4
         && complete(group[0].text) && complete(group[group.length - 1].text)

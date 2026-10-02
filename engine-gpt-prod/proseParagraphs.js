@@ -4,6 +4,17 @@ const layoutStructure = require('./layoutStructure');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { buildLineRecords } = require('./layoutStructure');
 
+// Explicit exploration progression names a completed inquiry and a fresh
+// selection/purpose in the same sentence. Mere "after reviewing" sequencing
+// in a single procedure, or another person's quoted plan, is insufficient.
+function isResearchProgression(value) {
+  const text = String(value || '').trim();
+  const progression = /(?:알아봤다면|알아보았다면|알아본\s*(?:뒤|후)|살펴봤다면|살펴보았다면|살펴본\s*(?:데\s*이어|뒤|후)|조사한\s*(?:데\s*이어|뒤|후)|검토한\s*(?:데\s*이어|뒤|후)|분석한\s*(?:데\s*이어|뒤|후))/u.test(text)
+    && /(?:알아보|살펴보|확인|조사|검토|분석)[^.!?。！？]{0,30}(?:싶|위해|하고자)/u.test(text)
+    && /(?:선정했|선정하였|골랐|선택했|선택하였)/u.test(text);
+  return progression && !syntaxSpans(text).some(s => ['quote','code'].includes(s.spanType));
+}
+
 function role(text) {
   if (/^(?:이때|이 경우|이러한 상황에서|이런 상황에서)\s/u.test(text)
       && /(?:제시|제공|지도|지원|활용|조정|설명|대응|마련)/u.test(text)) return 'response';
@@ -16,6 +27,7 @@ function role(text) {
 }
 function introducesNewRole(sentences, i) {
   const current = sentences[i].text;
+  if (isResearchProgression(current)) return 'research_progression';
   const before = sentences.slice(0,i).map(s=>s.text).join(' ');
   const after = sentences.slice(i).map(s=>s.text).join(' ');
   const kind = role(current);
@@ -201,4 +213,4 @@ function isStructuralLine(line) {
   if (/^[A-Za-z][.)]\s+\S/u.test(value)) return true;
   return /^(?:참고\s*문헌|참고\s*자료|인용\s*문헌|References|Bibliography|Works\s+Cited)$/iu.test(value);
 }
-module.exports={splitProseParagraphs, splitLogicalProseParagraphs, isStandaloneProseLineGroup, activityEvidence};
+module.exports={splitProseParagraphs, splitLogicalProseParagraphs, isStandaloneProseLineGroup, activityEvidence, isResearchProgression};

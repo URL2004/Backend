@@ -301,6 +301,14 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const educationSignals = count(text, /(?:수업|학습|교과|과제|활동|탐구|발표|수행|모둠|진로|역량|협업|학교)/gu);
   const selfAssessmentActionSignals = count(text, /(?:활동|수업|과제|탐구|발표)[^.!?\n]{0,70}(?:어려|힘들|해결|배우|느끼|알게|깨닫|보완|개선|계획)|(?:어려움|문제)[^.!?\n]{0,55}(?:해결|극복|보완)|(?:앞으로|다음에는|향후)[^.!?\n]{0,55}(?:하겠|해\s*볼|보완|개선|계획)/gu);
   const selfReflectivePredicateSignals = count(text, /(?:알게\s*되|이해하게\s*되|이해할\s*수\s*있었|배우게\s*되|배울\s*수\s*있었|깨달|인상\s*깊|생각하게\s*되|어려웠|힘들었|태도(?:가|를)[^.!?\n]{0,24}(?:생기|기르|갖)|습관을\s*기르|키워\s*나가고자)/gu);
+  // Restoring existing colon-label boundaries must not turn a personal
+  // reflection into a report merely by increasing the number of label lines.
+  // Keep the report's independent content evidence and genuine table signal.
+  if ((formatProfile.labelLineCount || 0) >= 2 && (formatProfile.tableLineCount || 0) < 2
+      && firstPersonSignals > 0 && selfReflectivePredicateSignals >= 3
+      && reportInquirySignals + reportMethodSignals + analyticalFrameworkSignals === 0) {
+    scores.report_assignment -= 1.25;
+  }
   const reflectiveActivitySignals = count(text, /(?:이번|해당)?\s*(?:탐구|수업|활동|과제|발표|프로젝트)(?:를|을|에서|에서는|하면서|하며|\s*과정)/gu);
   add(scores, 'student_self_assessment', count(text, /(?:학생\s*자기\s*평가|자기\s*성찰|활동\s*소감|수업\s*소감|학습\s*성찰)/gu), 1.4);
   add(scores, 'student_self_assessment', reflectionSignals, 0.58);
@@ -909,6 +917,18 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     scores.long_explainer = Math.min(scores.long_explainer, 4.3);
     scores.report_assignment = Math.min(scores.report_assignment, 3.5);
   }
+  // A generic "학생은" is a subject, not evidence of an individual student
+  // observation. Educational policy prose states repeated duties/requirements
+  // in present tense; do not route it into the all-lines-locked record policy.
+  const educationPolicyFrame = educationSignals >= 3
+    && formalNormativeOperatorSignals >= 2 && formalExpositionRatio >= 0.6
+    && nominalObservationEndings === 0 && firstPersonSignals === 0
+    && !/(?:세부\s*능력\s*및\s*특기\s*사항|세특|생활\s*기록부|관찰\s*기록|관찰한\s*결과)/u.test(text)
+    && !/(?:학생|학습자)[^.!?\n]{0,90}(?:보였|참여했|참여하였|발표했|발표하였|관찰되었|수행했|수행하였)(?:다|으며|고|음)/u.test(text);
+  if (educationPolicyFrame) {
+    scores.student_record_teacher = Math.min(scores.student_record_teacher, 0.8);
+    scores.report_assignment += 2.4;
+  }
   const ranked = CONTENT_GENRES
     .filter(profile => profile !== 'unknown')
     .map(profile => ({ profile, score: scores[profile] }))
@@ -973,6 +993,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     formatProfile,
     riskFlags,
     signals: {
+      educationPolicyFrame,
       attendedLectureReflection,
       compactLength,
       lineCount: lines.length,

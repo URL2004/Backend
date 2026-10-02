@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 33;
+const VERSION = 35;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -363,7 +363,8 @@ function repairSourceLayoutArtifacts(value) {
   }
   const explicitReport = require('./fusedReportLayout').repairFusedReportLayout(before);
   const pairedLabels = require('./pairedLabelLayout').repairPairedLabelLayout(explicitReport.text);
-  const punctuation = repairIsolatedTerminalPunctuationLines(pairedLabels.text);
+  const embeddedLabels = require('./inlineLabelParagraphs').repairEmbeddedLabelBoundaries(pairedLabels.text);
+  const punctuation = repairIsolatedTerminalPunctuationLines(embeddedLabels.text);
   const heading = repairInlineHeadingBoundaries(punctuation.text);
   const wordWrapped = repairDocumentAttestedWordWraps(heading.text);
   const blankWrapped = repairBrokenBlankLineProseContinuations(wordWrapped.text);
@@ -375,6 +376,7 @@ function repairSourceLayoutArtifacts(value) {
     ? [
         ...explicitReport.changes,
         ...pairedLabels.changes,
+        ...embeddedLabels.changes,
         ...punctuation.changes,
         ...heading.changes,
         ...wordWrapped.changes,
@@ -506,7 +508,15 @@ function hasTemplatePlaceholder(value) {
 
 function preservesExistingStructuralLines(before, after) {
   const structuralRoles = new Set(['title', 'heading', 'table', 'quote', 'code', 'legal_clause', 'signature', 'flow']);
-  const allSourceRecords = layoutStructure.buildLineRecords(before);
+  // Compare the same proven heading/body boundaries that preparation uses.
+  // Exact matching a fused source heading (including its entire prose body)
+  // against individual repaired lines rejected even "VII. Conclusion + body".
+  // This is not a waiver: every canonical structural line must still occur in
+  // order, and the boundary repair is whitespace-only and number-preserving.
+  const canonical = repairInlineHeadingBoundaries(before).text;
+  if (canonical.replace(/\s/gu, '') !== String(before).replace(/\s/gu, '')
+      || compareNumberMultiset(before, canonical).changed) return false;
+  const allSourceRecords = layoutStructure.buildLineRecords(canonical);
   const sourceRecords = allSourceRecords
     .filter((record, recordIndex) => {
       if (record.blank) return false;
@@ -674,11 +684,17 @@ function extractDocumentQuoteWrapper(value) {
 }
 
 function repairInlineHeadingBoundaries(value) {
-  const lines = String(value || '').split('\n');
+  const source = String(value || '');
+  const lines = source.split('\n');
+  const multilineQuotes = require('../engine/textSyntax').syntaxSpans(source)
+    .filter(s => s.spanType === 'quote' && source.slice(s.start,s.end).includes('\n'));
+  let offset = 0;
   const output = [];
   const changes = [];
   let fence = null;
   lines.forEach((line, index) => {
+    const lineStart = offset;
+    offset += line.length + 1;
     const fenceMatch = String(line || '').match(/^\s*(`{3,}|~{3,})/u);
     if (fenceMatch) {
       if (!fence) fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
@@ -686,7 +702,8 @@ function repairInlineHeadingBoundaries(value) {
       output.push(line);
       return;
     }
-    if (fence || isWholeQuotedLine(line)) {
+    if (fence || isWholeQuotedLine(line)
+        || multilineQuotes.some(s => s.start < lineStart + line.length && s.end > lineStart)) {
       output.push(line);
       return;
     }
@@ -712,6 +729,13 @@ function repairInlineHeadingBoundaries(value) {
       );
       repaired = repaired.split('\n').map(piece => {
         if (isSectionReferenceProse(piece)) return piece;
+        // A short nominal numbered label may itself end in a period. That
+        // punctuation is a witnessed boundary, not a reason to merge its body.
+        const parenthetical = piece.match(/^(\s*[（(]\d{1,2}[）)]\s+[^.!?。！？\n]{2,100}[.])[ \t]+(\S[\s\S]{25,})$/u);
+        if (parenthetical && layoutStructure.isKnownHeadingLine(parenthetical[1])
+            && looksLikeFusedProse(parenthetical[2])) return `${parenthetical[1]}\n${parenthetical[2]}`;
+        const nestedHeading = splitNestedOutlineHeading(piece);
+        if (nestedHeading) return nestedHeading;
         if (INLINE_HEADING_AFTER_RE.test(piece)) return piece.replace(INLINE_HEADING_AFTER_RE, '$1\n');
         const spacedHeading = piece.match(INLINE_HEADING_SPACED_BODY_RE);
         if (spacedHeading && shouldSplitSpacedHeadingBody(spacedHeading[3])) {
@@ -734,6 +758,8 @@ function repairInlineHeadingBoundaries(value) {
         if (dashHeading) return dashHeading;
         const finiteHeading = splitNumberedFiniteHeadingBody(piece);
         if (finiteHeading) return finiteHeading;
+        const spacedNominalHeading = splitSpacedNominalHeadingBody(piece);
+        if (spacedNominalHeading) return spacedNominalHeading;
         const genericHeading = splitGenericNumberedHeadingBody(piece);
         if (genericHeading) return genericHeading;
         return piece;
@@ -814,6 +840,50 @@ function normalizeSourceLineSeparators(value) {
   return String(value || '')
     .replace(/\r\n?/gu, '\n')
     .replace(/[\u000b\u000c\u0085\u2028\u2029]/gu, '\n');
+}
+
+// A Roman parent followed by an Arabic child is an explicit hierarchy, not
+// a sentence-ending pattern. Require an actual child heading/body split;
+// dates, cross-references and undelimited tables are not enough evidence.
+function splitNestedOutlineHeading(value) {
+  const match = String(value || '').match(/^(\s*(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|[IVX]{1,8})[.)．][ \t]+)([^\n.!?。！？:：|\t]{2,100}?)[ \t]+(\d{1,2}[.)][ \t]+[\s\S]+)$/u);
+  if (!match || /(?:은|는|을|를|에서|에는|이었다|한다|했다)$/u.test(match[2])) return null;
+  const child = splitSpacedNominalHeadingBody(match[3]);
+  if (!child) return null;
+  return `${match[1]}${match[2]}\n${child}`;
+}
+
+// A space between title and prose is still a lost line boundary. Previously
+// only a small list of known titles or *space-less* suffixes was supported.
+// Demand a nominal/infinitive title, an immediate grammatical subject, and a
+// complete body. Multiple plausible boundaries remain untouched.
+function splitSpacedNominalHeadingBody(value) {
+  const source = String(value || '');
+  const match = source.match(GENERIC_NUMBERED_HEADING_RE);
+  if (!match || looksLikeNumberedQuestionPrompt(source) || /[|\t]/u.test(source)) return null;
+  const rest = match[2], candidates = [];
+  let literals;
+  for (const gap of rest.matchAll(/[ ]+/gu)) {
+    const title = rest.slice(0, gap.index), prose = rest.slice(gap.index + gap[0].length);
+    if (title.length < 4 || title.length > 100 || !title.includes(' ')) continue;
+    const infinitive = /(?:하기|않기|두기|알기|보기|갖기|맡기기|지키기)$/u.test(title);
+    const nominal = /(?:개념|정의|의의|특성|배경|목적|방법|결과|논의|시사점|한계점|방안|과제|요인|과정|현황|전략|원리|역할|기능|영향|관계|구조|사례|요약|제언|문제점|필요성|협력|운영|교육|지원|책임|조정)$/u.test(title);
+    if (!infinitive && !nominal) continue;
+    if (/[.!?。！？:：\[\]【】]/u.test(title)) continue;
+    if (/\S+(?:은|는|이|가)[ ]/u.test(title) || /(?:하면|하며|하고|하지만|때문에)[ ]/u.test(title)) continue;
+    const subject = prose.match(/^([가-힣A-Za-z]{2,24}?)(?:에서는|은|는|이|가)[ ]/u);
+    if (!subject) continue;
+    // "지역 사업의 운영 담당자는 ..." is one subject, not a heading.
+    // For nominal titles require the body to reintroduce an already named
+    // entity; infinitive titles have their own explicit grammatical ending.
+    if (!infinitive && !title.includes(subject[1])) continue;
+    if (!looksLikeFusedProse(prose) || !/[.!?。！？][”’"'」』》〉)\]]*\s*$/u.test(prose)) continue;
+    const position = match[1].length + gap.index;
+    literals ||= require('../engine/textSyntax').syntaxSpans(source);
+    if (literals.some(s => s.start <= position && s.end > position)) continue;
+    candidates.push(`${match[1]}${title}\n${prose}`);
+  }
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 /**

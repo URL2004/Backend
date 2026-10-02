@@ -2295,7 +2295,16 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
   }
   sentences.forEach((sentence, index) => {
     const kind = semanticTransitionKind(sentence, profileName);
+    // A qualification immediately before a new research-selection lead
+    // belongs to the preceding inquiry, not to the following topic.
+    if (kind === 'contrast' && /^(?:다만|단)\s/u.test(sentence)
+        && /(?:중요|필요|한계)/u.test(sentence)
+        && require('./proseParagraphs').isResearchProgression(sentences[index + 1])) {
+      candidates.delete(index);
+      return;
+    }
     if (kind === 'backward_takeaway') addCandidate(index + 1, 10, 'after_takeaway');
+    else if (kind === 'research_progression') addCandidate(index, 12, kind);
     else if (kind) addCandidate(index, kind === 'conclusion' ? 10 : 9, kind);
   });
   const semanticBoundaryCount = [...candidates.values()]
@@ -2406,6 +2415,7 @@ function buildSemanticProseRoleLayout(value, { profileName = '', readabilityOpti
 
 function semanticTransitionKind(value, profileName = '') {
   const sentence = String(value || '').trim();
+  if (require('./proseParagraphs').isResearchProgression(sentence)) return 'research_progression';
   if (isEnumeratedTopicLead(sentence)) return 'topic_shift';
   if (/^(?:(?:이를\s*통해|이\s*과정에서|이\s*경험(?:을\s*통해|에서)?|이\s*모습에서|그\s*과정에서|그\s*결과|여기서)|현장에서는)[^.!?。！？]{0,180}(?:배웠|알게\s*되었|깨달|확인할\s*수\s*있었|느꼈|체감했|중요하다는|필요하다는|의미한다)/u.test(sentence)) return 'backward_takeaway';
   if (/^(?:(?:이러한|이런|이와\s*같은)\s*(?:경험|과정|논의|분석|결과|역량|노력)(?:을|를)?\s*(?:통해|바탕으로)|이를\s*바탕으로|종합하면|결론적으로|결과적으로|따라서|그러므로|입사\s*후|앞으로(?:도)?)/u.test(sentence)) return 'conclusion';

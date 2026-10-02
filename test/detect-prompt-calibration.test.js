@@ -8,7 +8,7 @@ const { DETECT_SCHEMA } = require('../engine-gpt-prod/schemas');
 
 test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 근거와 점수 앵커를 요구한다', () => {
   const ko = prompt.buildDetectPrompt('ko');
-  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9f-pattern-taxonomy');
+  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9g-eligible-prose-contract');
   assert.match(ko, /문법적인 어미 일치와 내용을 담은 상투적 틀을 구별/u);
   assert.match(ko, /동일 관찰을 재분류하는 것이지 두 번 세는 것이 아니다/u);
   assert.match(ko, /반복 원인 하나 또는 실제 반대 근거/u);
@@ -23,7 +23,9 @@ test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 
   assert.doesNotMatch(ko, /같은 반복을 category만 바꾸어/u, 'v8의 검출 억제 규칙은 제외');
   assert.match(ko, /0~20[\s\S]*21~49[\s\S]*50~74[\s\S]*75~100/u);
   assert.match(ko, /대표값이나 둥근 수에 몰지/u);
-  assert.match(ko, /제목·표·목록 표지·직접 인용·참고문헌/u);
+  assert.match(ko, /제목·표의 틀과 숫자 셀·목록 표지·직접 인용·참고문헌/u);
+  assert.match(ko, /표 안의 자연어 답변도 table_prose이며 eligibleForDetection=true이면 분석/u);
+  assert.match(ko, /행·열의 소속을 유지/u);
   assert.match(ko, /eligibleForDetection=true/u);
   assert.match(ko, /referenceContext는 문맥 참고 자료/u);
   assert.match(ko, /독립 신호가 최소 2개/u);
@@ -45,7 +47,7 @@ test('영문 감지 프롬프트와 엔진 provenance도 같은 정책 버전을
   assert.match(en, /moderate or strong strength and recurring or pervasive scope/u);
   assert.match(en, /other_observed_style is supplementary context only and can never support a score above 20/u);
   assert.match(en, /Reclassify the same observation rather than counting it twice/u);
-  assert.equal(engine.DETECT_VERSION, 'gpt-detect-v1.51');
+  assert.equal(engine.DETECT_VERSION, 'gpt-detect-v1.52');
   assert.equal(engine.DETECT_PROMPT_VERSION, prompt.DETECT_PROMPT_VERSION);
 });
 

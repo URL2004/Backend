@@ -71,6 +71,33 @@ require.cache[configPath] = {
 };
 
 const history = require('../lib/historyService');
+
+test('history preserves optional statistical stages and classifier reference without private prose', async () => {
+  const assist = require('../lib/detectStatisticalAssist');
+  const classifier = require('../lib/detectAssignmentClassifier');
+  const first = assist.sanitizeSupport({ version: assist.VERSION, applied: true,
+    originalScore: 37, score: 52, margin: 0.1, features: 300, profile: 'general' });
+  const last = classifier.sanitizeAssignmentSupport({ version: classifier.VERSION, modelVersion: classifier.MODEL_VERSION,
+    applied: true, basis: 'independent_statistics', originalScore: 52, score: 54, margin: 0.3,
+    features: 640, profile: 'general', classifierScore: 58.4, rawClassifierScore: 58.4, threshold: 50 });
+  const reference = classifier.sanitizeClassifierReference({ version: classifier.VERSION, modelVersion: classifier.MODEL_VERSION,
+    basis: 'independent_statistics', scoreApplied: false, classifierScore: 50, rawClassifierScore: 49.95,
+    threshold: 50, margin: -0.001, features: 640, profile: 'general' });
+  await history.saveAnalyzeHistory({ uid: 'history-user', requestId: 'statistical-stages', opType: 'detect',
+    text: '합성 입력이다.', needed: 0, result: { probability: 54, probSource: 'llm', statisticalSupport: last,
+      statisticalStages: [first, { ...last, rawText: 'private-sentinel' }] } });
+  const stages = rows.get('users/history-user/history/statistical-stages');
+  assert.deepEqual(stages.detectStatisticalStages, [first, last]);
+  assert.deepEqual(stages.detectStatisticalSupport, last);
+  assert.equal(JSON.stringify(stages).includes('private-sentinel'), false);
+  await history.saveAnalyzeHistory({ uid: 'history-user', requestId: 'classifier-reference', opType: 'detect',
+    text: '합성 입력이다.', needed: 0, result: { probability: 12, probSource: 'llm',
+      classifierReference: { ...reference, rawText: 'private-sentinel' } } });
+  const saved = rows.get('users/history-user/history/classifier-reference');
+  assert.deepEqual(saved.detectClassifierReference, reference);
+  assert.equal(Object.hasOwn(saved, 'detectStatisticalStages'), false);
+  assert.equal(JSON.stringify(saved).includes('private-sentinel'), false);
+});
 test('history retains bounded numeric omission restoration provenance without raw text', async () => {
   await history.saveAnalyzeHistory({uid:'history-user',requestId:'restore-counts',opType:'humanize',
     text:'합성 원문이다.',needed:10,mode:'blog',result:{outputText:'합성 결과다.'},

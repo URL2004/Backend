@@ -323,9 +323,36 @@ test('신규 근거 좌표와 계약 버전은 최초 응답·메모리·Firesto
 });
 
 test('누락·빈 점수는 0점 결과로 캐시하지 않고 유효한 0점은 보존한다', () => {
-  for (const probability of [null, undefined, '', ' ', false, [], {}, NaN]) {
+  for (const probability of [null, undefined, '', ' ', false, [], {}, NaN, -1, 101, 0.43, 49.95, Infinity]) {
     assert.equal(stability.cleanResult({ probability }), null);
   }
   assert.equal(stability.cleanResult({ probability: 0 }).probability, 0);
   assert.equal(Object.hasOwn(stability.cleanResult({ probability: 4, modelProbability: null }), 'modelProbability'), false);
+});
+
+test('optional statistical provenance survives live, memory and persisted cache projections', async () => {
+  const assist = require('../lib/detectStatisticalAssist');
+  const classifier = require('../lib/detectAssignmentClassifier');
+  const prior = assist.sanitizeSupport({ version: assist.VERSION, applied: true,
+    originalScore: 37, score: 52, margin: 0.1, features: 300, profile: 'general' });
+  const last = classifier.sanitizeAssignmentSupport({ version: classifier.VERSION, modelVersion: classifier.MODEL_VERSION,
+    applied: true, basis: 'independent_statistics', originalScore: 52, score: 54,
+    margin: 0.3, features: 640, profile: 'general', classifierScore: 58.4, rawClassifierScore: 58.4, threshold: 50 });
+  const reference = classifier.sanitizeClassifierReference({ version: classifier.VERSION, modelVersion: classifier.MODEL_VERSION,
+    basis: 'independent_statistics', scoreApplied: false, classifierScore: 50, rawClassifierScore: 49.95,
+    threshold: 50, margin: -0.001, features: 640, profile: 'general' });
+  for (const metadata of [{ statisticalSupport: last, statisticalStages: [prior, last] }, { classifierReference: reference }]) {
+    stability.resetForTests();
+    const firestore = fakeFirestore();
+    const opts = { firestore, hmacSecret: PERSISTENT_SECRET, now: 10000,
+      firebaseAdmin: { firestore: { Timestamp: { fromMillis: value => value } } } };
+    const first = await stability.getOrCompute(input(), async () => ({ ...modelResult(54), ...metadata }), opts);
+    const memory = await stability.getOrCompute(input(), async () => assert.fail('cache missed'), opts);
+    stability.resetForTests();
+    const persisted = await stability.getOrCompute(input(), async () => assert.fail('cache missed'), opts);
+    for (const response of [first, memory, persisted]) {
+      for (const [key, value] of Object.entries(metadata)) assert.deepEqual(response.result[key], value);
+    }
+    assert.equal(persisted.source, 'firestore');
+  }
 });

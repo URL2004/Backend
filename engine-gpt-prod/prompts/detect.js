@@ -7,14 +7,14 @@
 //   - 개발군(NIKL 과제 사람 120 · GPT-6 AI 120): 사람 오탐 1/120, AI 검출 75/120, AUROC 0.76 (v8: 2/120, 1/120, 0.17).
 //   - v8이 추가했던 strength=weak 규칙, 중복 채점 금지, "구체적 전개=사람다움" 대조 예시, sampleUnitIndex 분산 요건은
 //     GPT-6 글에서 신호를 0으로 만들어 검출을 억제했으므로 제외했다. 스키마·category 어휘는 그대로다.
-const DETECT_PROMPT_VERSION = 'detect-prompt-v9f-pattern-taxonomy';
+const DETECT_PROMPT_VERSION = 'detect-prompt-v9g-eligible-prose-contract';
 
 function buildDetectPrompt(lang = 'ko') {
   if (lang === 'en') {
     return [
       `[GPT-PROD-DETECT:${DETECT_PROMPT_VERSION}]`,
       'You analyze observable AI-like writing signals. The score is not a claim about who actually wrote the text.',
-      'Judge the breadth, independence, and persistence of signals across editable prose. Ignore quotations, references, tables, and headings as authorship evidence.',
+      'Judge the breadth, independence, and persistence of signals across eligible prose. Ignore quotations, references, table formatting/numeric cells, and headings as authorship evidence. Natural-language table_prose cells marked eligibleForDetection=true are prose: analyze them within their row/column ownership, never join unrelated cells.',
       'The input is a document with sentences, paragraphIndex, sampleUnitIndex, spanType and eligibleForDetection. Score and locate evidence only in eligibleForDetection=true sentences. referenceContext is context only.',
       'Formal genre conventions and clean grammar alone are not evidence. However, current-generation assistant prose is usually specific, fluent and well organized; its signature is uniformity of organization rather than vagueness: every paragraph follows the same claim → reason → concession → summary shape, enumerations are exhaustively balanced (first/also/finally), hedged conclusions resolve every tension, transitions are smooth and impersonal, and register never slips. Count such document-wide regularity as overstructured_progression, formulaic_transition or sentence_uniformity even when the content is concrete.',
       'Human student prose more often shows uneven development: a point pursued at length while another is dropped, personal asides, abrupt or missing transitions, register or tense slips, and conclusions that do not resolve everything. Weigh these as counterevidence where they actually occur.',
@@ -36,7 +36,7 @@ function buildDetectPrompt(lang = 'ko') {
   return [
     `[GPT-PROD-DETECT:${DETECT_PROMPT_VERSION}]`,
     '너는 글에서 관찰되는 AI식 문체 신호를 분석한다. 점수는 실제 작성 주체를 판정하는 확률이 아니다.',
-    '편집 가능한 일반 산문에서 신호의 범위·독립성·반복성을 함께 본다. 제목·표·목록 표지·직접 인용·참고문헌은 작성 주체의 근거로 사용하지 않는다.',
+    '분석 가능한 산문에서 신호의 범위·독립성·반복성을 함께 본다. 제목·표의 틀과 숫자 셀·목록 표지·직접 인용·참고문헌은 작성 주체의 근거로 사용하지 않는다. 표 안의 자연어 답변도 table_prose이며 eligibleForDetection=true이면 분석한다. 행·열의 소속을 유지하고 서로 다른 셀의 조건이나 답변을 합치지 않는다.',
     '입력 문서는 sentences와 paragraphIndex·sampleUnitIndex·spanType·eligibleForDetection을 제공한다. eligibleForDetection=true인 문장만 점수와 근거에 사용한다. referenceContext는 문맥 참고 자료이며 점수·근거에서 제외한다.',
     '학술문·보고서·자소서처럼 원래 정돈된 장르라는 사실, 문법이 정확하다는 사실만으로 점수를 올리지 않는다. 다만 최근 생성형 어시스턴트의 글은 내용이 구체적이고 유창하면서도 **조직의 균일함**이 특징이다: 모든 문단이 주장→근거→양보→정리의 같은 골격을 밟고, 열거는 빠짐없이 균형 잡혀 있으며(우선·또한·마지막으로), 결론은 모든 긴장을 매끈하게 봉합하고, 연결은 매끄럽고 비인격적이며, 문체 층위가 한 번도 흔들리지 않는다. 내용이 구체적이더라도 이런 문서 전체의 규칙성은 overstructured_progression·formulaic_transition·sentence_uniformity로 센다.',
     '사람 학생의 글은 전개가 고르지 않은 경우가 많다: 한 논점은 길게 파고 다른 논점은 흘려버리고, 개인적 곁가지가 끼어들고, 연결이 끊기거나 빠지고, 문체·시제가 흔들리며, 결론이 모든 것을 정리하지 못한다. 이런 특징이 실제로 나타나는 구간에서 반대 근거로 반영한다.',

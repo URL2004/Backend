@@ -629,6 +629,7 @@ router.post('/detect-report', async (req, res) => {
     const B = BANDS;
     const historyResult = {
       probability,
+      ...require('../lib/detectStatisticalAssist').projectProvenance(det),
       ...require('../lib/detectScorePresentation').scorePresentation(calibration),
       statisticalReference: require('../lib/detectStatisticalAssist').sanitizeReference(det.statisticalReference),
       historyComparison,
@@ -670,6 +671,7 @@ router.post('/detect-report', async (req, res) => {
     };
     const publicResponse = {
       ok: true,
+      ...require('../lib/detectStatisticalAssist').projectProvenance(det),
       ...require('../lib/detectScorePresentation').scorePresentation(calibration),
       statisticalReference: require('../lib/detectStatisticalAssist').sanitizeReference(det.statisticalReference),
       free: false,
@@ -750,6 +752,7 @@ router.post('/detect-report', async (req, res) => {
       historyResult,
       metric: {
         grade,
+        ...require('../lib/detectStatisticalAssist').projectProvenance(det),
         probability,
         rawProbability,
         modelProbability: Number.isFinite(Number(det.modelProbability)) ? det.modelProbability : rawProbability,
@@ -1023,6 +1026,7 @@ router.post('/detect-report', async (req, res) => {
     modelProbability: metric.modelProbability,
     detectDiagnostics: metric.detectDiagnostics,
     statisticalSupport: metric.statisticalSupport,
+    ...require('../lib/detectStatisticalAssist').projectProvenance(metric),
     causeScoreAdjusted: metric.causeScoreAdjusted,
     causeScoreCeiling: metric.causeScoreCeiling,
     causeScoreAdjustmentCode: metric.causeScoreAdjustmentCode || undefined,

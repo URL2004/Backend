@@ -40,7 +40,7 @@ const DETECT_SCHEMA = {
         required: ['category', 'strength', 'scope', 'evidenceSentences']
       }
     },
-    probability: { type: 'number' },
+    probability: { type: 'integer', minimum: 0, maximum: 100 },
     confidence: { type: 'string', enum: ['low', 'medium', 'high'] }
   },
   required: ['probability', 'signals', 'confidence']

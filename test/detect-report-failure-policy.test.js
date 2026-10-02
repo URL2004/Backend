@@ -325,6 +325,44 @@ const BASE_TEXT = (
   + '저는 결과표의 오류 세 건을 직접 찾아 수정했고, 회의에서 확인 순서를 다시 정했습니다. '
 ).repeat(2);
 
+test('report API, history input and replay retain optional statistical provenance', { concurrency: false }, async t => {
+  const oldPlan = state.billingPlan;
+  state.billingPlan = 'unlimited';
+  t.after(() => { state.billingPlan = oldPlan; state.stabilityResult = null; });
+  const assist = require('../lib/detectStatisticalAssist');
+  const classifier = require('../lib/detectAssignmentClassifier');
+  const first = assist.sanitizeSupport({ version: assist.VERSION, applied: true,
+    originalScore: 37, score: 52, margin: 0.1, features: 300, profile: 'general' });
+  const last = classifier.sanitizeAssignmentSupport({ version: classifier.VERSION, modelVersion: classifier.MODEL_VERSION,
+    applied: true, basis: 'independent_statistics', originalScore: 52, score: 54, margin: 0.3,
+    features: 640, profile: 'general', classifierScore: 58.4, rawClassifierScore: 58.4, threshold: 50 });
+  const reference = classifier.sanitizeClassifierReference({ version: classifier.VERSION, modelVersion: classifier.MODEL_VERSION,
+    basis: 'independent_statistics', scoreApplied: false, classifierScore: 50, rawClassifierScore: 49.95,
+    threshold: 50, margin: -0.001, features: 640, profile: 'general' });
+  for (const [suffix, metadata] of [['stages', { statisticalSupport: last, statisticalStages: [first, last] }],
+    ['reference', { classifierReference: reference }]]) {
+    state.stabilityResult = { probability: 54, confidence: 'medium', signalEvidence: [], ...metadata };
+    const requestId = `detect-statistical-provenance-${suffix}`;
+    const response = await post(BASE_TEXT, requestId);
+    assert.equal(response.status, 200);
+    const projected = assist.projectProvenance(metadata);
+    const historyInput = state.historyCalls.find(item => item.requestId === requestId);
+    for (const [key, value] of Object.entries(projected)) {
+      assert.deepEqual(response.body[key], value);
+      assert.deepEqual(historyInput.result[key], value);
+    }
+    const replay = await post(BASE_TEXT, requestId);
+    assert.equal(replay.status, 200);
+    for (const [key, value] of Object.entries(projected)) assert.deepEqual(replay.body[key], value);
+  }
+  // Other legacy tests below assert absolute mock counters.
+  state.historyCalls.length = 0;
+  state.historyDocs.clear();
+  state.requestJobs.clear();
+  state.metricRegistrations = 0;
+  state.logs.length = 0;
+});
+
 test('차감 대상 요청은 유효한 client requestId 없이는 모델 호출 전에 400으로 거절한다', { concurrency: false }, async () => {
   const missing = await post(BASE_TEXT);
   assert.equal(missing.status, 400);

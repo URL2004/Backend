@@ -142,6 +142,10 @@ async function completeJsonRequest({
   let schemaAttempt = 0;
   let truncationRetryUsed = false;
   let usage = emptyUsage();
+  // Detector-only, numeric/enum projection of parsed score contracts. The
+  // schema validator may reject before the detector sees a response; retain
+  // both existing schema attempts without copying its JSON or source text.
+  const detectScoreAttempts = [];
   const accounting = { usage, httpAttemptCount: 0, unknownUsageCount: 0, unknownEstimatedUsd: 0, failedEstimatedUsd: 0 };
   try {
   while (schemaAttempt < 2) {
@@ -206,6 +210,16 @@ async function completeJsonRequest({
     outputText = extractOutputText(raw);
     try {
       parsed = JSON.parse(outputText);
+      if (schemaName === 'gpt_prod_detect_result' && detectScoreAttempts.length < 2) {
+        const probability = parsed?.probability;
+        const contract = require('../lib/detectScoreContract').scoreContract(probability);
+        detectScoreAttempts.push({
+          httpAttempt: accounting.httpAttemptCount,
+          providerScore: typeof probability === 'number' && Number.isFinite(probability) ? probability : null,
+          modelScore: contract.valid ? probability : null,
+          scoreContractReason: contract.reason
+        });
+      }
       validateStructuredOutput(parsed, schema);
       // 모든 Responses API 소비 경로가 같은 출력 경계를 통과한다. 개별 엔진이
       // 이 검사를 빠뜨려도 nonce marker·안정 프롬프트 조각은 전달되지 않는다.
@@ -232,6 +246,7 @@ async function completeJsonRequest({
     error.unknownEstimatedUsd = accounting.unknownEstimatedUsd;
     error.failedEstimatedUsd = accounting.failedEstimatedUsd;
     error.retryCounts = { ...retryCounts, ...error.retryCounts };
+    if (detectScoreAttempts.length) error.detectScoreAttempts = detectScoreAttempts;
     logger.info('gpt_prod.usage', { ...meta, provider: 'openai', model, ...usage,
       failed: true, retryCounts, elapsedMs: Date.now() - startedAt });
     throw error;
@@ -279,6 +294,7 @@ async function completeJsonRequest({
     unknownEstimatedUsd: accounting.unknownEstimatedUsd,
     failedEstimatedUsd: accounting.failedEstimatedUsd,
     retryCounts,
+    ...(detectScoreAttempts.length ? { detectScoreAttempts } : {}),
     status,
     incompleteReason,
     elapsedMs

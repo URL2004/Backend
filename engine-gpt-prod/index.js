@@ -73,8 +73,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.96';
-const DETECT_VERSION = 'gpt-detect-v1.51';
+const VERSION = 'gpt-prod-v2.5.97';
+const DETECT_VERSION = 'gpt-detect-v1.52';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -3917,6 +3917,11 @@ async function runEngine({
       rememberStructureSafeOutput(outputText, 'relation_scope_restore');
     }
   }
+  const attestedProseLayout = require('./layoutRelations').restoreAttestedProseGaps(rawSource, outputText);
+  if (attestedProseLayout.repairedCount > 0) {
+    outputText = attestedProseLayout.text;
+    rememberStructureSafeOutput(outputText, 'attested_prose_gap_restore');
+  }
   // 최종 의미 재검증. 의미 심사 뒤의 늦은 단계(원문 문장 복원·중복 삭제·
   // 구체성 제거·늦은 깊이 회복 등)가 본문을 실제로 바꾸면 검증 digest가
   // 달라진다. 공백 배치만 바뀐 경우는 provenance의 결정론 투영이 같은 판정을
@@ -3987,7 +3992,7 @@ async function runEngine({
     let preparedFinalRelationRestore = null;
     const finalRepairEvidence = require('./finalRelationRepair').selectFinalRepairEvidence(
       rawSource, outputText, semanticReport, preliminary.status, finalPriorReports);
-    if (['stale', 'fail', 'uncertain'].includes(preliminary.status) && !signal?.aborted
+    if (['stale', 'fail', 'uncertain', 'unknown'].includes(preliminary.status) && !signal?.aborted
         && finalRepairEvidence) {
       const proposal = await prepareRelationRepair(finalRepairEvidence, finalPriorReports, finalDeadlinePolicy.verifyReserveMs);
       finalSemanticRevalidation.preFinalRelationPatchAttempted = proposal.patchAttempted;
@@ -3999,7 +4004,8 @@ async function runEngine({
         preparedFinalRelationRestore = proposal;
       }
     }
-    if (preliminary.status === 'stale' || preparedFinalRelationRestore || needsObligationReview) {
+    if (require('./finalSemanticOutcome').needsFinalSemanticAudit({ report: semanticReport,
+      priorStatus: preliminary.status, preparedRestore: Boolean(preparedFinalRelationRestore), needsObligationReview })) {
       if (signal?.aborted || finalDeadlineMs <= Date.now()) {
         finalSemanticRevalidation.reason = signal?.aborted ? 'aborted' : 'job_deadline_exhausted';
       } else {
@@ -4151,7 +4157,7 @@ async function runEngine({
         decisionReason:'prior_semantic_obligations_unverified'},rawSource,outputText);
     }
   }
-  if ((finalSemanticRevalidation.priorStatus === 'stale' || finalSemanticRevalidation.attempted)
+  if ((['stale', 'unknown'].includes(finalSemanticRevalidation.priorStatus) || finalSemanticRevalidation.attempted)
       && (!finalSemanticRevalidation.applied || semanticReport.pass !== true)) {
     const currentEntry = recordCandidateCheckpoint(finalSemanticRevalidation.applied
       ? 'final_revalidation_not_passed' : 'final_revalidation_unavailable', semanticReportForCandidate(semanticReport));
@@ -4723,7 +4729,7 @@ async function runEngine({
     finalLayoutBoundaryRestoreCount: Number(layoutRepair?.finalFixedPoint?.boundaryRestoredCount || 0),
     finalLayoutMidSentenceParagraphRepairCount: Number(
       layoutRepair?.deliveryIntegrityFixedPoint?.midSentenceParagraphRepairCount || 0
-    ),
+    ) + Number(attestedProseLayout.repairedCount || 0),
     deliveredIncompleteParagraphCount: deliveredParagraphBoundaries.incompleteParagraphCount,
     deliveredNewIncompleteParagraphCount: deliveredParagraphBoundaries.newIncompleteParagraphCount,
     fragmentIntegrityPass: structureAudit.fragmentIntegrityPass !== false,
@@ -4761,6 +4767,9 @@ async function runEngine({
     semanticJudgeRan: semanticReport.ran === true,
     semanticVerificationCompleted: semanticReport.ran === true && semanticReport.verificationCompleted !== false,
     semanticValidationStatus: result.semanticValidation.status,
+    finalSemanticState: require('./finalSemanticOutcome').finalSemanticState(semanticReport,
+      result.semanticValidation, { confirmationPending: stagedConfirmationRequirement.pending(semanticReport, {
+        source: rawSource, candidate: outputText, preliminaryStatus: result.semanticValidation.status }) }),
     semanticValidationVersion: semanticProvenance.VERSION,
     finalCandidateDigest: result.semanticValidation.finalCandidateDigest,
     semanticValidationMaterialization: String(result.semanticValidation.materialization || ''),
@@ -6069,6 +6078,23 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
   let failedUsage = emptyUsage();
   let recheckReason = 'none';
   let selectedPhase = 'primary';
+  let reviewSelectionReason = '';
+  let httpAttemptCount = 0;
+  const recordFailure = (error, phase) => {
+    attempts.push(diagnostics.summarizeFailure(error, phase));
+    failedUsage = addUsage(failedUsage, error.usage);
+    httpAttemptCount += Number(error.httpAttemptCount) || 0;
+  };
+  const attachFailure = error => {
+    // failedUsage already includes this error exactly once. A valid primary
+    // response is additional paid work when its review aborts the request.
+    error.usage = addUsage(addUsage(emptyUsage(), failedUsage), primary?.usage);
+    if (httpAttemptCount) error.httpAttemptCount = httpAttemptCount;
+    error.detectDiagnostics = diagnostics.sanitizeDiagnostics({ version: diagnostics.VERSION,
+      attempts, recheckReason, recheckFailed: attempts.some(a => a.phase === 'recheck' && a.failed),
+      selectedModelScore: null, evidenceAlignedScore: null });
+    return error;
+  };
   const finish = out => {
     if (out.gptMeta) {
       out.gptMeta.usage = addUsage(addUsage(emptyUsage(), out.gptMeta.usage), failedUsage);
@@ -6089,6 +6115,8 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
       version: diagnostics.VERSION, attempts, recheckReason,
       recheckFailed: out.gptMeta?.escalationFailed === true,
       selectedModelScore: out.probability, evidenceAlignedScore: aligned.probability,
+      reviewSelectionReason,
+      finalCandidateConsistency: require('../lib/detectEvidenceReview').candidateConsistency(out, source),
       stageVersion: diagnostics.STAGE_VERSION, selectedPhase,
       statisticalScore: classified.probability, engineFinalScore: result.probability
     });
@@ -6121,11 +6149,13 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
     });
   } catch (error) {
     primaryError = error;
-    failedUsage = addUsage(failedUsage, error.usage);
+    recordFailure(error, 'primary');
+    if (signal?.aborted) throw attachFailure(error);
   }
 
   if (primary) {
-    attempts.push(diagnostics.summarizeAttempt(primary.json, source, 'primary'));
+    httpAttemptCount += Number(primary.httpAttemptCount) || 0;
+    attempts.push(diagnostics.summarizeAttempt(primary.json, source, 'primary', primary));
     let out = normalizeDetectResult(primary.json, source);
     out.gptMeta = metaFromResponse(primary, cfg, {
       task: route,
@@ -6153,10 +6183,13 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
         deadlineMs: detectDeadlineMs,
         documentProfile
       });
-      attempts.push(diagnostics.summarizeAttempt(escalated.json, source, 'recheck'));
+      httpAttemptCount += Number(escalated.httpAttemptCount) || 0;
+      attempts.push(diagnostics.summarizeAttempt(escalated.json, source, 'recheck', escalated));
       const reviewed = normalizeDetectResult(escalated.json, source);
-      out = recheckReason === 'short_evidence_consistency'
-        ? require('../lib/detectEvidenceReview').selectShortConsistencyResult(out, reviewed, source) : reviewed;
+      const selection = require('../lib/detectEvidenceReview').selectReviewedCandidate(out, reviewed, source,
+        { shortConsistency: recheckReason === 'short_evidence_consistency' });
+      out = selection.result;
+      reviewSelectionReason = selection.reason;
       selectedPhase = out === reviewed ? 'recheck' : 'primary';
       out.gptMeta = metaFromDetectResponses(primary, escalated, cfg, {
         task: route,
@@ -6168,8 +6201,8 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
       });
       return finish(out);
     } catch (escalationError) {
-      if (signal?.aborted) throw escalationError;
-      failedUsage = addUsage(failedUsage, escalationError.usage);
+      recordFailure(escalationError, 'recheck');
+      if (signal?.aborted) throw attachFailure(escalationError);
       // A valid primary result is safer than making the same escalation call a
       // second time through the outer failure path.  Keep it, align its score
       // to the causes, and expose only a bounded diagnostic flag.
@@ -6199,7 +6232,8 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
       deadlineMs: detectDeadlineMs,
       documentProfile
     });
-    attempts.push(diagnostics.summarizeAttempt(escalated.json, source, 'recheck'));
+    httpAttemptCount += Number(escalated.httpAttemptCount) || 0;
+    attempts.push(diagnostics.summarizeAttempt(escalated.json, source, 'recheck', escalated));
     const out = normalizeDetectResult(escalated.json, source);
     out.gptMeta = metaFromResponse(escalated, cfg, {
       task: route,
@@ -6210,9 +6244,15 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
     });
     return finish(out);
   } catch (error) {
-    if (signal?.aborted) throw error;
-    if (!allowLocalFallback) throw error;
-    return deterministicDetectFallback(source, primaryError || error);
+    recordFailure(error, 'recheck');
+    attachFailure(error);
+    if (signal?.aborted || !allowLocalFallback) throw error;
+    const fallback = deterministicDetectFallback(source, primaryError || error);
+    fallback.detectDiagnostics = error.detectDiagnostics;
+    fallback.gptMeta.usage = error.usage;
+    fallback.gptMeta.estimatedUsd = error.usage.estimatedUsd;
+    if (httpAttemptCount) fallback.gptMeta.httpAttemptCount = httpAttemptCount;
+    return fallback;
   }
 }
 
@@ -6258,8 +6298,16 @@ async function callDetectModel({ prompt, user, cfg, signal, route, phase, model,
       meta: { task: route, phase, mode: 'detect', profile: PROFILE, escalated }
     });
   assertNoPromptLeak(result.json);
-  if (typeof result.json?.probability !== 'number' || !Number.isFinite(result.json.probability)) {
-    throw Object.assign(new Error('DETECT_INCOMPLETE'), { code: 'DETECT_INCOMPLETE' });
+  try { require('../lib/detectScoreContract').assertScore(result.json?.probability); }
+  catch (error) {
+    // The provider answered and may bill this invalid response. Preserve its
+    // usage and closed diagnostics through the existing bounded failure path.
+    error.usage = result.usage;
+    error.httpAttemptCount = result.httpAttemptCount;
+    if (result.detectScoreAttempts) error.detectScoreAttempts = result.detectScoreAttempts;
+    error.detectAttempt = require('../lib/detectDiagnostics').summarizeAttempt(result.json,
+      '', phase === 'detect:primary' ? 'primary' : 'recheck');
+    throw error;
   }
   return result;
 }
@@ -8715,7 +8763,7 @@ function deterministicDetectFallback(text, err) {
 }
 
 function normalizeDetectResult(json, source) {
-  const probability = Math.max(0, Math.min(100, Math.round(Number(json.probability) || 0)));
+  const probability = require('../lib/detectScoreContract').assertScore(json.probability);
   return applyDetectNarrativePolicy({
     probability,
     // Public verdict prose is derived from the final server-aligned score.
@@ -8733,7 +8781,7 @@ function shouldEscalateDetect(out, source, cfg) {
   // by the narrative policy. Escalation must use the canonical evidence that
   // actually supports the score, otherwise a cache/narrative change can alter
   // model routing without any change in evidence.
-  return ['low_confidence', 'cause_mismatch', 'evidence_score_tension', 'short_evidence_consistency', 'long_mixed_input']
+  return ['low_confidence', 'cause_mismatch', 'evidence_score_tension', 'low_score_evidence_conflict', 'short_evidence_consistency', 'long_mixed_input']
     .includes(require('../lib/detectDiagnostics').recheckReason(out, source, cfg));
 }
 

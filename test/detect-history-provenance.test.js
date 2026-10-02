@@ -71,6 +71,60 @@ require.cache[configPath] = {
 };
 
 const history = require('../lib/historyService');
+test('final semantic state is optional and enum-only in stored engine metadata', () => {
+  for (const finalSemanticState of ['verified_pass', 'verified_fail', 'incomplete', 'uncertain', 'stale',
+    'unconfirmed', 'not_run', 'confirmation_pending']) {
+    assert.equal(history.compactHistoryEngineMeta({ finalSemanticState }).finalSemanticState, finalSemanticState);
+  }
+  for (const finalSemanticState of [undefined, null, 'not_needed', 'private-sentinel', true]) {
+    assert.equal(Object.hasOwn(history.compactHistoryEngineMeta({ finalSemanticState }), 'finalSemanticState'), false);
+  }
+});
+test('history keeps bounded final schedule and HTTP counts without private text', () => {
+  const schedule = require('../engine-gpt-prod/semanticAuditSchedule');
+  const raw = { version: schedule.SCHEDULE_DIAGNOSTICS_VERSION, planKind: 'single', finalPairCount: 1,
+    budgetMsAtStart: 120000, totalElapsedMs: 120001, aborted: true, deadlineExceeded: true,
+    outcomeCounts: { deadline_timeout: 1, 'private-sentinel': 99 }, rawText: 'private-sentinel',
+    windows: [{ index: 0, sourceChars: 730, outputChars: 695, outcome: 'deadline_timeout',
+      receipt: 'miss', remainingMsAtStart: 120000, elapsedMs: 120001,
+      judgeModel: 'private-sentinel', errorCode: 'private-sentinel', prompt: 'private-sentinel' }] };
+  const clean = history.compactHistoryEngineMeta({ finalSemanticScheduleDiagnostics: raw, httpAttemptCount: 3 });
+  assert.equal(clean.httpAttemptCount, 3);
+  assert.equal(clean.finalSemanticScheduleDiagnostics.windows[0].outcome, 'deadline_timeout');
+  assert.equal(JSON.stringify(clean).includes('private-sentinel'), false);
+  assert.deepEqual(schedule.sanitizeScheduleDiagnostics(clean.finalSemanticScheduleDiagnostics), clean.finalSemanticScheduleDiagnostics);
+  assert.equal(Object.hasOwn(history.compactHistoryEngineMeta({}), 'finalSemanticScheduleDiagnostics'), false);
+  assert.equal(Object.hasOwn(history.compactHistoryEngineMeta({ httpAttemptCount: '3' }), 'httpAttemptCount'), false);
+  assert.equal(schedule.sanitizeScheduleDiagnostics({ ...raw, version: 'unknown' }), null);
+  assert.equal(schedule.sanitizeScheduleDiagnostics({ ...raw, planKind: 'private-sentinel' }), null);
+  assert.equal(schedule.sanitizeScheduleDiagnostics({ ...raw, windows: Array.from({ length: 40 }, (_, index) => ({ index })) }).windows.length, 32);
+});
+test('history preserves optional statistical stages and classifier reference without private prose', async () => {
+  const assist = require('../lib/detectStatisticalAssist');
+  const classifier = require('../lib/detectAssignmentClassifier');
+  const first = assist.sanitizeSupport({ version: assist.VERSION, applied: true,
+    originalScore: 37, score: 52, margin: 0.1, features: 300, profile: 'general' });
+  const last = classifier.sanitizeAssignmentSupport({ version: classifier.VERSION, modelVersion: classifier.MODEL_VERSION,
+    applied: true, basis: 'independent_statistics', originalScore: 52, score: 54, margin: 0.3,
+    features: 640, profile: 'general', classifierScore: 58.4, rawClassifierScore: 58.4, threshold: 50 });
+  const reference = classifier.sanitizeClassifierReference({ version: classifier.VERSION, modelVersion: classifier.MODEL_VERSION,
+    basis: 'independent_statistics', scoreApplied: false, classifierScore: 50, rawClassifierScore: 49.95,
+    threshold: 50, margin: -0.001, features: 640, profile: 'general' });
+  await history.saveAnalyzeHistory({ uid: 'history-user', requestId: 'statistical-stages', opType: 'detect',
+    text: '합성 입력이다.', needed: 0, result: { probability: 54, probSource: 'llm', statisticalSupport: last,
+      statisticalStages: [first, { ...last, rawText: 'private-sentinel' }] } });
+  const stages = rows.get('users/history-user/history/statistical-stages');
+  assert.deepEqual(stages.detectStatisticalStages, [first, last]);
+  assert.deepEqual(stages.detectStatisticalSupport, last);
+  assert.equal(JSON.stringify(stages).includes('private-sentinel'), false);
+  await history.saveAnalyzeHistory({ uid: 'history-user', requestId: 'classifier-reference', opType: 'detect',
+    text: '합성 입력이다.', needed: 0, result: { probability: 12, probSource: 'llm',
+      classifierReference: { ...reference, rawText: 'private-sentinel' } } });
+  const saved = rows.get('users/history-user/history/classifier-reference');
+  assert.deepEqual(saved.detectClassifierReference, reference);
+  assert.equal(Object.hasOwn(saved, 'detectStatisticalStages'), false);
+  assert.equal(JSON.stringify(saved).includes('private-sentinel'), false);
+});
 test('history retains bounded numeric omission restoration provenance without raw text', async () => {
   await history.saveAnalyzeHistory({uid:'history-user',requestId:'restore-counts',opType:'humanize',
     text:'합성 원문이다.',needed:10,mode:'blog',result:{outputText:'합성 결과다.'},

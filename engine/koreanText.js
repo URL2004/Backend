@@ -105,7 +105,7 @@ function analyzeSentenceSpans(text, { preserveLines, inferPlainEndings }) {
     // decimal/initial/URL protection above and attached quote particles stay.
     if (end >= text.length || /\s/u.test(text[end]) || (ch === '.' && end === i + 1
         && /[가-힣]/u.test(text[end])
-        && /(?:[가-힣]+(?:습니다|입니다|한다|된다|했다|였다|이다|있다|없다|었다|았다)|[0-9]이다)$/u.test(text.slice(start, i)))) {
+        && hasExplicitKoreanEnding(text.slice(start, i)))) {
       pushSpan(out, text, start, end);
       while (end < text.length && /[ \t]/u.test(text[end])) end += 1;
       start = end;
@@ -116,6 +116,12 @@ function analyzeSentenceSpans(text, { preserveLines, inferPlainEndings }) {
   }
   pushSpan(out, text, start, text.length);
   return out;
+}
+
+function hasExplicitKoreanEnding(value) {
+  const word = String(value).match(/([가-힣]+다)$/u)?.[1];
+  const contractedPast = word && (word.charCodeAt(word.length - 2) - 0xAC00) % 28 === 20;
+  return !!contractedPast || /(?:[가-힣]+(?:습니다|입니다|한다|된다|했다|였다|이다|있다|없다|었다|았다|싶다)|[0-9]이다)$/u.test(value);
 }
 
 function isSentencePunctuation(text, index) {

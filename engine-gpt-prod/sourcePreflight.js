@@ -1007,6 +1007,7 @@ function isCompactAnswerKeyLine(value) {
 
 function repairForcedProseWraps(value) {
   const lines = String(value || '').split('\n');
+  const labelSeams = require('./sourceArtifactRelations').labelSeamLines(value);
   const contextualRecords = layoutStructure.buildLineRecords(value);
   const nominal = line => {
     const text = String(line || '').trim();
@@ -1046,7 +1047,7 @@ function repairForcedProseWraps(value) {
       index += 1;
       continue;
     }
-    if (shouldJoinForcedWrap(current, next, {
+    if (!labelSeams.has(index) && shouldJoinForcedWrap(current, next, {
       leftRole: contextualRecords[index]?.role,
       rightRole: contextualRecords[index + 1]?.role
     })) {

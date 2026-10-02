@@ -27,7 +27,8 @@ test('diagnostic projection strips untrusted fields and preserves missing score 
 
 test('unrounded provider scores and delivered score stages survive only the closed projection', () => {
   const attempt = diagnostics.summarizeAttempt({ probability: 20.49, confidence: 'low', signals: [] }, text, 'primary');
-  assert.equal(attempt.providerScore, 20.49); assert.equal(attempt.modelScore, 20);
+  assert.equal(attempt.providerScore, 20.49); assert.equal(attempt.modelScore, null);
+  assert.equal(attempt.scoreContractReason, 'non_integer');
   const clean = diagnostics.withDisplayedScore({ version: diagnostics.VERSION, stageVersion: diagnostics.STAGE_VERSION,
     attempts: [attempt], selectedPhase: 'primary', selectedModelScore: 20, evidenceAlignedScore: 20, statisticalScore: 52, engineFinalScore: 52, text: 'secret' }, 40);
   assert.equal(clean.engineFinalScore, 52); assert.equal(clean.displayedScore, 40); assert.equal(clean.attempts[0].providerScore, 20.49);
@@ -60,7 +61,9 @@ test('actual detect chain records both model scores and final cap; cache retains
   responses = [{ probability: 65, confidence: 'high', signals: [signal] }, new Error('provider secret')];
   const fallback = await engine.detect({ text, config, allowLocalFallback: false });
   assert.equal(fallback.probability, 49);
-  assert.equal(fallback.detectDiagnostics.attempts.length, 1);
+  assert.equal(fallback.detectDiagnostics.attempts.length, 2);
+  assert.equal(fallback.detectDiagnostics.attempts[1].failed, true);
+  assert.equal(fallback.detectDiagnostics.attempts[1].evidenceAvailable, false);
   assert.equal(fallback.detectDiagnostics.recheckFailed, true);
   assert.equal(fallback.detectDiagnostics.selectedModelScore, 65);
   assert.equal(fallback.detectDiagnostics.evidenceAlignedScore, 49);

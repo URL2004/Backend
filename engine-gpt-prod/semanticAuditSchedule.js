@@ -143,5 +143,44 @@ function errorOutcome(signal) {
   if (!signal?.aborted) return 'error';
   return signal.reason?.name === 'TimeoutError' ? 'deadline_timeout' : 'cancelled';
 }
+
+// Persistence/export projection: no prompt, model prose, arbitrary strings or
+// error messages. Missing legacy diagnostics stay absent rather than zeroed.
+function sanitizeScheduleDiagnostics(value) {
+  if (!value || value.version !== SCHEDULE_DIAGNOSTICS_VERSION || !PLAN_KINDS.has(value.planKind)) return null;
+  const clean = { version: SCHEDULE_DIAGNOSTICS_VERSION, planKind: value.planKind };
+  const numbers = (source, target, fields, signed = false) => {
+    for (const field of fields) {
+      const n = source?.[field];
+      if (n === null) target[field] = null;
+      else if (Number.isSafeInteger(n) && (signed || n >= 0)) target[field] = Math.max(signed ? -1000000000 : 0, Math.min(1000000000, n));
+    }
+  };
+  numbers(value, clean, ['basePairCount', 'plannedPairCount', 'finalPairCount', 'concurrency', 'totalElapsedMs',
+    'admittedWindowCount', 'maxQueuedMs', 'overflowWindowCount']);
+  numbers(value, clean, ['budgetMsAtStart', 'minRemainingMsAtStart'], true);
+  for (const key of ['allowRepair', 'aborted', 'deadlineExceeded']) {
+    if (typeof value[key] === 'boolean') clean[key] = value[key];
+  }
+  if (value.outcomeCounts && typeof value.outcomeCounts === 'object') {
+    clean.outcomeCounts = {};
+    numbers(value.outcomeCounts, clean.outcomeCounts, [...OUTCOMES]);
+  }
+  const enums = {
+    alignment: ['whole_document', 'whole_document_uncertain', 'shared_monotonic_sentence', 'shared_unique_heading'],
+    route: ['primary_first', 'confirmation_first'], receipt: ['disabled', 'key_error', 'hit', 'miss'],
+    outcome: [...OUTCOMES], judgeTier: ['primary', 'escalated', 'confirmation_first']
+  };
+  if (Array.isArray(value.windows)) clean.windows = value.windows.slice(0, MAX_DIAGNOSTIC_WINDOWS)
+    .filter(row => row && Number.isSafeInteger(row.index) && row.index >= 0).map(row => {
+      const out = {};
+      numbers(row, out, ['index', 'order', 'sourceChars', 'outputChars', 'obligationCount', 'hintCount',
+        'relationCandidateCount', 'queuedMs', 'elapsedMs', 'verifyCount', 'inputTokens', 'outputTokens', 'reasoningTokens']);
+      numbers(row, out, ['remainingMsAtStart'], true);
+      for (const [key, options] of Object.entries(enums)) if (options.includes(row[key])) out[key] = row[key];
+      return out;
+    });
+  return clean;
+}
 module.exports = { scheduleReviewPairs, planVerdictPairs, createScheduleRecorder, outcomeFor, errorOutcome,
-  SCHEDULE_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_WINDOWS };
+  SCHEDULE_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_WINDOWS, sanitizeScheduleDiagnostics };

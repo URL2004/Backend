@@ -117,7 +117,8 @@ function policyFingerprint() {
   if (policyFingerprintCache) return policyFingerprintCache;
   const fs = require('node:fs'), path = require('node:path');
   const files = ['judge.js', 'semanticObligations.js', 'currentReviewHints.js', 'relationAudit.js',
-    'semanticOperatorReview.js', 'clauseCoverage.js', 'discourseAudit.js', 'promptEnvelope.js',
+    'semanticOperatorReview.js', 'adjacentDuplicateReview.js', 'eventRelationOperators.js', 'sourceArtifactRelations.js',
+    'clauseCoverage.js', 'discourseAudit.js', 'promptEnvelope.js',
     'entityParentheticalIntegrity.js', 'semanticSegmentReceipts.js',
     'semanticAuditPayload.js', 'semanticReviewEnvelope.js'];
   policyFingerprintCache = digest(files.map(file => {

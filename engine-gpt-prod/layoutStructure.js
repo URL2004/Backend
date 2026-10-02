@@ -257,6 +257,7 @@ function classifyLine(value, context = {}) {
   if (isDependentLead(text) && context.next) return context.parallelSectionHeading ? 'heading' : 'prose';
   if (isContextualProseContinuation(text, context.next?.text)) return context.parallelSectionHeading ? 'heading' : 'prose';
   if (context.labelGroupHeading) return 'heading';
+  if (isContextualNominalHeading(text, context)) return 'heading';
   if (isContextualStrongNominalHeading(text, context)) return 'heading';
   if (isGenericTitle(text, context)) return 'title';
   if (isTitleContinuation(text, context)) return 'title';
@@ -276,20 +277,56 @@ function detectPlainListLineIndices(records, excluded = new Set()) {
   const values = Array.isArray(records) ? records : [];
   for (let index = 0; index < values.length; index += 1) {
     const intro = values[index];
-    if (!intro || intro.blank || excluded.has(intro.index) || !isPlainListIntroducer(intro.text)) continue;
+    if (!intro || intro.blank || excluded.has(intro.index)) continue;
+    const introduced = isPlainListIntroducer(intro.text);
+    // A pointing instruction can introduce a proper-name catalogue without a
+    // colon. Require matching ownership syntax across the following rows too;
+    // neither a long English name nor "below" alone proves a list.
+    const pointed = /(?:아래|다음)(?:에|의|과)?\s/u.test(intro.text)
+      && /(?:첨부|제시|선택|사용|시작|추천|참고)/u.test(intro.text);
+    if (!introduced && !pointed) continue;
     const candidates = [];
     let cursor = index + 1;
     while (cursor < values.length) {
       const record = values[cursor];
-      if (!record || record.blank || excluded.has(record.index) || !isPlainListCandidate(record.text)) break;
+      if (!record || record.blank || excluded.has(record.index)
+          || !(isPlainListCandidate(record.text) || (pointed && isOwnedCatalogueItem(record.text)))) break;
       candidates.push(record.index);
       cursor += 1;
     }
     if (candidates.length < 3) continue;
+    if (!introduced && !candidates.every(i => isOwnedCatalogueItem(values[i].text))) continue;
     for (const lineIndex of candidates) selected.add(lineIndex);
     index = cursor - 1;
   }
   return selected;
+}
+
+function isOwnedCatalogueItem(value) {
+  const text = visibleTrim(value);
+  return text.length <= 140 && !/[.!?。！？:：;；]$/u.test(text)
+    && /^[\p{L}\p{N}][\p{L}\p{N} '&’().,\-]{1,75}의\s+[\p{L}\p{N}][\p{L}\p{N} '&’().,\-]{1,75}$/u.test(text)
+    && !/(?:한다|했다|이다|합니다|있다|없다)$/u.test(text);
+}
+
+// A short relative-clause noun phrase between two developed, complete prose
+// units functions as a section label even without blank lines or a known
+// heading suffix. Do not promote purpose clauses, hanging particles, dates,
+// physical sentence continuations, or isolated poetic lines.
+function isContextualNominalHeading(text, context = {}) {
+  const previous = String(context.previous?.text || '').trim();
+  const next = String(context.next?.text || '').trim();
+  if (text.length < 4 || text.length > 36 || /[.!?。！？:：;；]/u.test(text)
+      || isSentenceComplete(text) || isProseContinuation(text) || isDependentLead(text)
+      || /(?:을|를|의|에서|에게|으로|하며|하고|이미|아직)$/u.test(text)) return false;
+  if (previous.length < 40 || next.length < 45
+      || !isSentenceComplete(previous) || !isSentenceComplete(next)) return false;
+  const words = text.split(/\s+/u);
+  const modifier = words.at(-2) || '';
+  const coda = (modifier.charCodeAt(modifier.length - 1) - 0xAC00) % 28;
+  return words.length >= 2 && /^[가-힣]{2,12}$/u.test(words.at(-1))
+    && /^[가-힣]{2,}$/u.test(modifier) && [4, 8].includes(coda)
+    && !/(?:위한|위해|하려고|하려면)\s/u.test(text);
 }
 
 function isPlainListIntroducer(value) {
@@ -404,6 +441,7 @@ function isStandaloneMarkdownControlLine(value) {
  */
 function isStandaloneSectionHeading(text, context = {}) {
   if (isProseContinuation(text) || isDependentLead(text) || isFormulaLine(text)) return false;
+  if (/[.!?。！？]["”’')\]]*\s+\S/u.test(text)) return false;
   // 제목 바로 다음 행에 본문이 이어지는 워드·웹 입력도 흔하다. 앞뒤 모두
   // 빈 행이어야 한다는 옛 조건은 이런 정상 소제목을 산문으로 내려 모델이
   // 이전 문단 끝에 합치게 했다. 앞쪽 단락 경계와 뒤의 충분한 본문을 함께
@@ -599,6 +637,7 @@ function isBracketHeadingLine(value) {
 
 function isGenericTitle(text, context = {}) {
   if (isFormulaLine(text) || isDependentLead(text)) return false;
+  if (/[.!?。！？]["”’')\]]*\s+\S/u.test(text)) return false;
   if (!context.firstContent || !context.next) return false;
   if (text.length < 2 || text.length > 100) return false;
   if (/[.!?。！？]\s*["”’')\]]*$/u.test(text)) return false;

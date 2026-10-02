@@ -18,17 +18,17 @@ test('unfinished/empty current verdict retains exact prior proposal, never a pas
     assert.equal(result.violations.length,1);assert.equal(JSON.stringify(current),before);
   }
 });
-test('explicit current dismissal applies only to its grounded exact pair',()=>{
+for (const status of ['uncertain','unknown']) test(`explicit current dismissal applies only to its grounded exact pair (${status})`,()=>{
   const review={id:obligationId(finding),status:'not_error',sourceSpan:a,candidateSpan:b,
     detail:'The same meaning is present in the current context.'};
   const current={pass:false,verificationCompleted:false,reports:[{
     pass:true,verificationCompleted:true,obligationReviews:[review]}]};
-  assert.equal(selectFinalRepairEvidence(a,b,current,'uncertain',[prior]),null);
-  assert.equal(selectFinalRepairEvidence(a,b,{pass:false,verificationCompleted:false},'uncertain',
+  assert.equal(selectFinalRepairEvidence(a,b,current,status,[prior]),null);
+  assert.equal(selectFinalRepairEvidence(a,b,{pass:false,verificationCompleted:false},status,
     [prior,current.reports[0]]),null);
   for(const change of [{verificationCompleted:false},{obligationReviews:[{...review,candidateSpan:'unlocated'}]}]) {
     const changed={...current,reports:[{...current.reports[0],...change}]};
-    assert.equal(selectFinalRepairEvidence(a,b,changed,'uncertain',[prior]).violations.length,1);
+    assert.equal(selectFinalRepairEvidence(a,b,changed,status,[prior]).violations.length,1);
   }
 });
 test('prior nomination never uses changed, repeated, unconfirmed or incomplete evidence',()=>{

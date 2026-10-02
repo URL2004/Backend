@@ -59,8 +59,8 @@ test('support meta survives the shared sanitizer and cache projection, tampering
   assert.equal(assist.sanitizeSupport({ ...out.statisticalSupport, originalScore: 70 }), null, 'must raise');
   assert.equal(assist.sanitizeSupport({ ...out.statisticalSupport, modelVersion: 'other' }), null);
   assert.equal(assist.sanitizeSupport({ ...out.statisticalSupport, features: 5 }), null);
-  const cleaned = stability.__test?.cleanResult ? stability.__test.cleanResult({ ...base, ...out }) : null;
-  if (cleaned) assert.equal(cleaned.statisticalSupport.version, classifier.VERSION);
+  const cleaned = stability.cleanResult({ ...base, ...out });
+  assert.equal(cleaned.statisticalSupport.version, classifier.VERSION);
 });
 
 test('cache variant separates enabled, disabled and threshold states', () => {
@@ -86,4 +86,59 @@ test('interpretation explains the statistical contribution for this path', () =>
   const info = buildDetectInterpretation({ probability: out.probability, probSource: 'llm', confidence: 'high', textLength: prose.length, sentenceTotal: 16, signalEvidence: [], statisticalSupport: out.statisticalSupport, causeCoverageStatus: 'partial' });
   assert.equal(info.evidenceDetails.statisticalContribution, true);
   assert.match(info.headline, /문체 통계/u);
+});
+
+test('threshold comparison uses the raw prediction, not the displayed tenth', () => {
+  for (const threshold of [50, 60]) {
+    for (const score of [threshold - 0.051, threshold - 0.05, threshold - 0.001, threshold, threshold + 0.001]) {
+      const out = classifier.applyClassifier(base, prose, { active: true, threshold,
+        predictor: () => ({ ...high(), score }) });
+      if (score < threshold) {
+        assert.equal(out.probability, base.probability);
+        assert.equal(out.classifierReference.rawClassifierScore, score);
+        assert.equal(out.classifierReference.threshold, threshold);
+        assert.deepEqual(stability.cleanResult(out).classifierReference, out.classifierReference);
+      } else {
+        assert.equal(out.probability, classifier.mapScore(Math.round(score * 10) / 10, threshold));
+        assert.equal(out.statisticalSupport.rawClassifierScore, score);
+      }
+    }
+  }
+});
+
+test('two applied statistical stages retain execution order and legacy final support', () => {
+  // Synthetic numeric reproductions of the two audited chains, without source text.
+  for (const [originalScore, assistedScore, prediction, finalScore] of [[37, 52, 58.4, 54], [29, 53, 60.5, 55]]) {
+    const prior = assist.sanitizeSupport({ version: assist.VERSION, applied: true,
+      originalScore, score: assistedScore, margin: 0.1, features: 300, profile: 'general' });
+    for (const statisticalStages of [undefined, [prior]]) {
+      const input = { ...base, probability: assistedScore, statisticalSupport: prior,
+        ...(statisticalStages ? { statisticalStages } : {}) };
+      const out = classifier.applyClassifier(input, prose, { active: true, threshold: 50,
+        predictor: () => ({ ...high(), score: prediction }) });
+      assert.equal(out.probability, finalScore);
+      assert.deepEqual(out.statisticalStages, [prior, out.statisticalSupport]);
+      assert.equal(out.statisticalSupport.originalScore, assistedScore);
+      assert.equal(input.statisticalSupport, prior, 'input metadata is not mutated');
+      assert.deepEqual(stability.cleanResult(out).statisticalStages, out.statisticalStages);
+    }
+  }
+});
+
+test('reference and stages are bounded closed projections and legacy absence stays absent', () => {
+  const low = classifier.applyClassifier(base, prose, { active: true, predictor: () => ({ ...high(), score: 49.95 }) });
+  const clean = stability.cleanResult({ ...low, classifierReference: { ...low.classifierReference,
+    profile: 'private-sentinel', rawText: 'private-sentinel' } });
+  assert.equal(clean.classifierReference.profile, 'unknown');
+  assert.equal(JSON.stringify(clean).includes('private-sentinel'), false);
+  assert.equal(classifier.sanitizeClassifierReference({ ...low.classifierReference, features: 0 }), null);
+  assert.equal(classifier.sanitizeClassifierReference({ ...low.classifierReference, rawClassifierScore: NaN }), null);
+  assert.equal(classifier.sanitizeClassifierReference({ ...low.classifierReference, scoreApplied: true }), null);
+  assert.equal(Object.hasOwn(stability.cleanResult(base), 'statisticalStages'), false);
+  assert.equal(Object.hasOwn(stability.cleanResult(base), 'classifierReference'), false);
+  const support = classifier.applyClassifier(base, prose, { active: true, predictor: high }).statisticalSupport;
+  assert.equal(assist.sanitizeStages([support, support]), null);
+  assert.equal(assist.sanitizeStages([support, support, support]), null);
+  assert.equal(assist.sanitizeStages([{ ...support, score: 99 }]), null);
+  assert.equal(JSON.stringify(assist.sanitizeStages([{ ...support, rawText: 'private-sentinel', profile: 'private-sentinel' }])).includes('private-sentinel'), false);
 });

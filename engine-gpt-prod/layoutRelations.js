@@ -2,7 +2,7 @@
 
 const { createHash } = require('node:crypto');
 const layout = require('./layoutStructure');
-const VERSION = 'layout-relations-v2-table-boundaries';
+const VERSION = 'layout-relations-v3-prose-boundaries';
 const flat = value => String(value || '').replace(/\s+/gu, ' ').trim();
 const hash = value => createHash('sha256').update(value, 'utf8').digest('hex');
 
@@ -41,13 +41,35 @@ function relationSignature(value, compactOffsets) {
       const gap = String(value).slice(r.end, next.start);
       if (/\n[ \t\r]*\n/u.test(gap)) edges.push([offset, 'detached_lead']);
     }
+    // Role classification is not proof that every whitespace edit is safe.
+    // In particular, an ordinary prose line may be the first half of a
+    // sentence. A new paragraph there must receive a fresh judgment, even if
+    // both sides remain classified as prose. Complete-sentence reflow remains
+    // reusable. This witness is intentionally independent of heading lexicons.
+    if (next && r.role === 'prose' && next.role === 'prose'
+        && !layout.isSentenceComplete(text)) {
+      const gap = String(value).slice(r.end, next.start);
+      if (/\n[ \t\r]*\n/u.test(gap)) edges.push([
+        offset + (compactOffsets ? text.replace(/\s/gu, '').length : text.length),
+        'nonfinite_prose_paragraph'
+      ]);
+    }
+    const previous = records[i - 1];
+    if (r.role === 'prose' && text.length <= 70 && !layout.isSentenceComplete(text)
+        && previous && next && layout.isSentenceComplete(previous.text)
+        && layout.isSentenceComplete(next.text)) {
+      // An unresolved standalone label is uncertainty, not a guaranteed prose
+      // continuation. Retain its exact row ownership for verdict reuse without
+      // automatically freezing or changing the user's words.
+      edges.push([offset, 'unresolved_standalone_line', hash(text)]);
+    }
     // Explicit condition/group paragraphs are relations, not decoration.
     if (/^(?:(?:pH|온도|압력)\s*\d|(?:실험|대조|비교)\s*군(?:은|는|에서)|(?:첫째|둘째|셋째|넷째|다섯째|여섯째|일곱째|여덟째|아홉째|열째)\s*[,，])/iu.test(text)) {
       edges.push([offset, 'condition_or_enumeration']);
     }
     offset += compactOffsets ? text.replace(/\s/gu, '').length : text.length + 1;
   }
-  return hash(JSON.stringify({ version: compactOffsets ? 'layout-preparation-v2-table-boundaries' : VERSION, edges }));
+  return hash(JSON.stringify({ version: compactOffsets ? 'layout-preparation-v3-prose-boundaries' : VERSION, edges }));
 }
 
 // Only glue a clearly unfinished introductory clause to its explanation.
@@ -65,6 +87,46 @@ function repairDependentLeads(value) {
   }
   let output = text;
   for (const e of edits.reverse()) output = output.slice(0, e.start) + ' ' + output.slice(e.end);
+  return { text: output, repairedCount: edits.length };
+}
+
+// Repair only an introduced blank line inside a source-attested prose seam.
+// Two independently unique, unchanged anchors must flank ordinary source
+// whitespace. A guessed syntactic continuation is never enough to join text.
+// Raw-source roles outrank a candidate's inferred title (a fragment followed
+// by a long paragraph can otherwise misclassify itself as a heading).
+function restoreAttestedProseGaps(source, candidate) {
+  const raw = String(source || ''), text = String(candidate || '');
+  const sourceRows = layout.buildLineRecords(raw).filter(r => !r.blank);
+  const rows = layout.buildLineRecords(text).filter(r => !r.blank);
+  const { locateEvidenceSpan } = require('./evidenceSpan');
+  const edits = [];
+  for (let i = 0; i < rows.length - 1; i++) {
+    const left = rows[i], right = rows[i + 1];
+    const gap = text.slice(left.end, right.start);
+    if (!/^[ \t\r\n]+$/u.test(gap) || !/\n[ \t\r]*\n/u.test(gap)
+        || layout.isSentenceComplete(left.text)
+        || !['prose', 'heading', 'title'].includes(left.role)
+        || !['prose', 'heading', 'title'].includes(right.role)) continue;
+    let before = null, after = null;
+    // Rewording away from the seam is allowed. Shrink only to a bounded,
+    // independently unique anchor, never to a lone connective or particle.
+    for (const size of [40, 32, 24, 16]) {
+      const a = flat(left.text).slice(-size), b = flat(right.text).slice(0, size);
+      if (a.length < 16 || b.length < 16) continue;
+      before = locateEvidenceSpan(raw, a); after = locateEvidenceSpan(raw, b);
+      if (before && after) break;
+    }
+    if (!before || !after || before.end > after.start) continue;
+    const sourceGap = raw.slice(before.end, after.start);
+    if (!/^\s+$/u.test(sourceGap) || /\n[ \t\r]*\n/u.test(sourceGap)) continue;
+    const sourceLeft = sourceRows.find(r => r.start <= before.end - 1 && r.end >= before.end);
+    const sourceRight = sourceRows.find(r => r.start <= after.start && r.end > after.start);
+    if (sourceLeft?.role !== 'prose' || sourceRight?.role !== 'prose') continue;
+    edits.push({ start: left.end, end: right.start });
+  }
+  let output = text;
+  for (const edit of edits.reverse()) output = output.slice(0, edit.start) + ' ' + output.slice(edit.end);
   return { text: output, repairedCount: edits.length };
 }
 
@@ -125,4 +187,4 @@ function groupContinuousResumeLines(lines) {
   return groups;
 }
 
-module.exports = { VERSION, relationDigest, preparationRelationDigest, repairDependentLeads, separateAttestedConditions, groupContinuousResumeLines };
+module.exports = { VERSION, relationDigest, preparationRelationDigest, repairDependentLeads, restoreAttestedProseGaps, separateAttestedConditions, groupContinuousResumeLines };

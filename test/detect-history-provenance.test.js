@@ -72,6 +72,34 @@ require.cache[configPath] = {
 
 const history = require('../lib/historyService');
 
+test('final semantic state is optional and enum-only in stored engine metadata', () => {
+  for (const finalSemanticState of ['verified_pass', 'verified_fail', 'incomplete', 'uncertain', 'stale',
+    'unconfirmed', 'not_run', 'confirmation_pending']) {
+    assert.equal(history.compactHistoryEngineMeta({ finalSemanticState }).finalSemanticState, finalSemanticState);
+  }
+  for (const finalSemanticState of [undefined, null, 'not_needed', 'private-sentinel', true]) {
+    assert.equal(Object.hasOwn(history.compactHistoryEngineMeta({ finalSemanticState }), 'finalSemanticState'), false);
+  }
+});
+test('history keeps bounded final schedule and HTTP counts without private text', () => {
+  const schedule = require('../engine-gpt-prod/semanticAuditSchedule');
+  const raw = { version: schedule.SCHEDULE_DIAGNOSTICS_VERSION, planKind: 'single', finalPairCount: 1,
+    budgetMsAtStart: 120000, totalElapsedMs: 120001, aborted: true, deadlineExceeded: true,
+    outcomeCounts: { deadline_timeout: 1, 'private-sentinel': 99 }, rawText: 'private-sentinel',
+    windows: [{ index: 0, sourceChars: 730, outputChars: 695, outcome: 'deadline_timeout',
+      receipt: 'miss', remainingMsAtStart: 120000, elapsedMs: 120001,
+      judgeModel: 'private-sentinel', errorCode: 'private-sentinel', prompt: 'private-sentinel' }] };
+  const clean = history.compactHistoryEngineMeta({ finalSemanticScheduleDiagnostics: raw, httpAttemptCount: 3 });
+  assert.equal(clean.httpAttemptCount, 3);
+  assert.equal(clean.finalSemanticScheduleDiagnostics.windows[0].outcome, 'deadline_timeout');
+  assert.equal(JSON.stringify(clean).includes('private-sentinel'), false);
+  assert.deepEqual(schedule.sanitizeScheduleDiagnostics(clean.finalSemanticScheduleDiagnostics), clean.finalSemanticScheduleDiagnostics);
+  assert.equal(Object.hasOwn(history.compactHistoryEngineMeta({}), 'finalSemanticScheduleDiagnostics'), false);
+  assert.equal(Object.hasOwn(history.compactHistoryEngineMeta({ httpAttemptCount: '3' }), 'httpAttemptCount'), false);
+  assert.equal(schedule.sanitizeScheduleDiagnostics({ ...raw, version: 'unknown' }), null);
+  assert.equal(schedule.sanitizeScheduleDiagnostics({ ...raw, planKind: 'private-sentinel' }), null);
+  assert.equal(schedule.sanitizeScheduleDiagnostics({ ...raw, windows: Array.from({ length: 40 }, (_, index) => ({ index })) }).windows.length, 32);
+});
 test('history preserves optional statistical stages and classifier reference without private prose', async () => {
   const assist = require('../lib/detectStatisticalAssist');
   const classifier = require('../lib/detectAssignmentClassifier');

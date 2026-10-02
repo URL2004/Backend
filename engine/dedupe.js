@@ -257,6 +257,25 @@ function removeGeneratedLocalOverlapDuplicates(source, text, { maxSentenceGap = 
   const sourceText = String(source || '');
   const protectedSource = syntaxSpans(sourceText).filter(s => ['quote', 'code'].includes(s.spanType));
   const protectedOutput = syntaxSpans(original).filter(s => ['quote', 'code'].includes(s.spanType));
+  // Only collapse a new adjacent phrase copy when the WHOLE repaired sentence
+  // is uniquely attested in source. No synonym or rhetorical-repeat inference.
+  for (const span of splitSentenceSpans(original)) {
+    const sentence = String(span.text || '');
+    for (const copy of sentence.matchAll(/(?<![가-힣A-Za-z0-9])([가-힣A-Za-z]{1,16}(?:[ \t]+[가-힣A-Za-z]{1,16}){1,3})[ \t]+\1(?=[ \t]|[,.!?。！？])/gu)) {
+      if (copy[1].replace(/\s/gu, '').length < 3) continue;
+      const start = span.start + copy.index;
+      if (protectedOutput.some(s => s.start < start + copy[0].length && s.end > start)) continue;
+      const fixed = sentence.slice(0, copy.index) + copy[1] + sentence.slice(copy.index + copy[0].length);
+      const key = _normSent(fixed);
+      if (key.length < 16 || sourceRows.some(row => _normSent(row.text) === _normSent(sentence))) continue;
+      const support = sourceRows.filter(row => _normSent(row.text) === key);
+      if (support.length !== 1) continue;
+      const sourceSpan = sourceSpans[support[0].index];
+      if (protectedSource.some(s => s.start < sourceSpan.end && s.end > sourceSpan.start)) continue;
+      removals.push({ start, end: start + copy[0].length - copy[1].length, exact: true });
+      reasons.push('source_attested_adjacent_phrase_copy');
+    }
+  }
   const sentenceTail = /[.!?。！？](?:\s*\[\d+\])?\s*$/u;
   for (const seam of sourceText.matchAll(/(?<![가-힣])([가-힣]{2,8})[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*([가-힣]{1,8})(?=[ \t])/gu)) {
     if (!sentenceTail.test(sourceText.slice(Math.max(0, seam.index - 40), seam.index))) continue;
@@ -621,6 +640,7 @@ function removeSentenceSpans(value, ranges) {
     .map(range => {
       let start = range.start;
       let end = range.end;
+      if (range.exact) return { start, end };
       while (end < text.length && /[ \t]/u.test(text[end])) end += 1;
       if (end === range.end) while (start > 0 && /[ \t]/u.test(text[start - 1])) start -= 1;
       return { start, end };

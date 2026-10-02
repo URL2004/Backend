@@ -60,13 +60,13 @@ async function prepareFinalRelationRepair(source, output, report, {
   return proposal;
 }
 
-// Only a stale verdict is eligible for this fallback. A later empty verdict
+// A stale or unbound verdict can nominate this fallback. A later empty verdict
 // must not erase a prior confirmed pair that STILL occurs unchanged, but a
 // current exact pass is never reopened. These findings nominate a proposal;
 // they are not a replacement verdict and cannot grant a pass.
 function selectFinalRepairEvidence(source, output, report, status, priorReports = []) {
   let selected = selectCurrentRepairEvidence(source, output, report, status, priorReports);
-  if (!['stale', 'fail', 'uncertain'].includes(status) || report?.skipped) return selected;
+  if (!['stale', 'fail', 'uncertain', 'unknown'].includes(status) || report?.skipped) return selected;
   // These reports are from this request, not a persistent/cross-version cache.
   // A later incomplete/empty verdict cannot dismiss an earlier exact pair.
   // Explicit dismissal must itself be complete and grounded on THIS pair.
@@ -99,7 +99,8 @@ function selectFinalRepairEvidence(source, output, report, status, priorReports 
   const visit = value => {
     if (!value || visited.has(value) || value.skipped) return;
     visited.add(value);
-    if (!value.uncertain && value.verificationCompleted !== false) {
+    if (!value.uncertain && (status === 'unknown'
+      ? value.verificationCompleted === true : value.verificationCompleted !== false)) {
       for (const v of [...(value.violations || []), ...(value.initialViolations || [])]) {
         const a = v.sourceSpan, b = v.candidateSpan;
         if (v.origin !== 'introduced' || !require('./semanticObligations').hasGroundedSpan(v)
@@ -114,6 +115,10 @@ function selectFinalRepairEvidence(source, output, report, status, priorReports 
     for (const child of [...(value.reports || []), ...(value.restorationNominationReports || [])]) visit(child);
   };
   for (const previous of priorReports.slice(-8)) visit(previous);
+  // Missing document provenance is not a failed verdict. Only independently
+  // completed, grounded, exact current pairs may nominate a repair proposal;
+  // the existing mandatory final audit still decides the document's outcome.
+  if (status === 'unknown') visit(report);
   if (findings.length === (selected?.violations || []).length) return selected;
   return { pass: false, uncertain: selected?.uncertain === true, verificationCompleted: true,
     violations: findings, nominationOnly: true, priorEvidenceRetained: true,
@@ -125,7 +130,7 @@ function selectCurrentRepairEvidence(source, output, report, status, priorReport
   // verdicts are not incomplete. Nominate only their exact unchanged windows
   // before the existing whole-document recheck; never reuse their old offsets
   // or promote the unfinished parent's aggregate findings into authority.
-  if (['stale', 'fail', 'uncertain'].includes(status) && report?.pass === false
+  if (['stale', 'fail', 'uncertain', 'unknown'].includes(status) && report?.pass === false
       && report.verificationCompleted === false && !report.skipped) {
     const findings = [], seen = new Set(), visited = new Set();
     const visit = value => {

@@ -783,9 +783,13 @@ const QUOTE_PARTICLE_COPULA_SUFFIX = `(?:까지|부터|만)(?:${QUOTE_COPULA_SUF
 // 격조사 뒤 보조사가 결합한 형태도 하나의 붙임 단위다.
 // 단일 조사 목록만 검사하면 정상적인 ‘기준’만으로/로서를 띄워 버린다.
 const QUOTE_COMPOUND_PARTICLE_SUFFIX = '(?:(?:만|부터|까지|조차|마저|밖에|처럼|보다)(?:으로|로|의|은|는|도|만)?|(?:으로|로)(?:서|써)(?:의|는|도|만)?|(?:와|과|에|에서|에게|으로|로)(?:의|는|도|만))';
-const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
+// Quotation particles may carry a bound auxiliary particle: ”라고만, ”고도.
+// Keep this grammar shared by detection, gap insertion and gap removal; an
+// exact suffix boundary must not mistake the auxiliary for a new sentence.
+const QUOTE_REPORTED_COMPOUND_SUFFIX = '(?:이?라고|고)(?:만|도|는|까지|조차)';
+const QUOTE_ATTACHED_SUFFIX = `(?:${QUOTE_REPORTED_COMPOUND_SUFFIX}|${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_PARTICLE_SUFFIX})`;
 const QUOTE_TIGHT_SUFFIX = QUOTE_ATTACHED_SUFFIX;
-const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
+const QUOTE_NON_ATTRIBUTION_TIGHT_SUFFIX = `(?:${QUOTE_REPORTED_COMPOUND_SUFFIX}|${QUOTE_PARTICLE_COPULA_SUFFIX}|${QUOTE_SHORT_COPULA_SUFFIX}|${QUOTE_COMPARATIVE_COPULA_SUFFIX}|${QUOTE_COPULA_SUFFIX}|${QUOTE_COMPOUND_PARTICLE_SUFFIX}|${QUOTE_NON_ATTRIBUTION_PARTICLE_SUFFIX})`;
 // A demonstrative beginning a new sentence is not the subject particle 이.
 // Require explicit sentence punctuation inside the closing quote and a noun.
 const CLOSED_QUOTE_SENTENCE_START_RE = /([.!?。！？][”’」』》〉])(?=(?:이|그|저)\s+(?:문장|말씀|구절|발언|문구|이야기|인용|말)(?:은|는|이|가|을|를|에서|로|에|도)?(?:\s|[,.!?。！？]|$))/gu;
@@ -4309,7 +4313,18 @@ function hasCaseFrameCorruption(sentence) {
   return /(?:^|[^가-힣A-Za-z0-9_])[^.!?。！？\n]{0,24}에서[^.!?。！？\n]{1,80}이르기까지를\s*(?:포괄|아우르|포함)/u
     .test(value)
     || /(?:에는|에서는)[^.!?。！？\n]{1,120}(?:적용|활용|구현|반영)된\s+예로\s+(?:볼|평가할|해석할)\s+수\s+있(?:다|습니다)[.!?。！？]?$/u
-      .test(value.trim());
+      .test(value.trim())
+    || hasDanglingReasonFrame(value);
+}
+
+// A topic ending in "…데에는," cannot itself take "…때문이다" as
+// its predicate. Submit only this narrow hanging frame for the existing
+// Korean review; do not manufacture a replacement subject or edit a quote.
+function hasDanglingReasonFrame(value) {
+  // A numeric reference or video timestamp is attribution, not the predicate.
+  const prose = String(value).replace(/\s*\[\d+(?::\d{2})?(?:,\s*\d+)*\](?=[.!?。！？]?\s*$)/u, '');
+  const tail = prose.match(/데에는\s*[,，]\s*([^.!?。！？\n]{8,180})\s*때문(?:이다|입니다|이었다|이었습니다)[.!?。！？]?\s*$/u)?.[1];
+  return !!tail && !/(?:이유|원인|까닭|것은|이는|때문에|는데|지만|므로)/u.test(tail);
 }
 
 function hasMetaNominalizationInjection(sentence) {

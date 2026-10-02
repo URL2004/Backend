@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.96';
+const VERSION = 'gpt-prod-v2.5.97';
 const DETECT_VERSION = 'gpt-detect-v1.52';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -3917,6 +3917,11 @@ async function runEngine({
       rememberStructureSafeOutput(outputText, 'relation_scope_restore');
     }
   }
+  const attestedProseLayout = require('./layoutRelations').restoreAttestedProseGaps(rawSource, outputText);
+  if (attestedProseLayout.repairedCount > 0) {
+    outputText = attestedProseLayout.text;
+    rememberStructureSafeOutput(outputText, 'attested_prose_gap_restore');
+  }
   // 최종 의미 재검증. 의미 심사 뒤의 늦은 단계(원문 문장 복원·중복 삭제·
   // 구체성 제거·늦은 깊이 회복 등)가 본문을 실제로 바꾸면 검증 digest가
   // 달라진다. 공백 배치만 바뀐 경우는 provenance의 결정론 투영이 같은 판정을
@@ -3987,7 +3992,7 @@ async function runEngine({
     let preparedFinalRelationRestore = null;
     const finalRepairEvidence = require('./finalRelationRepair').selectFinalRepairEvidence(
       rawSource, outputText, semanticReport, preliminary.status, finalPriorReports);
-    if (['stale', 'fail', 'uncertain'].includes(preliminary.status) && !signal?.aborted
+    if (['stale', 'fail', 'uncertain', 'unknown'].includes(preliminary.status) && !signal?.aborted
         && finalRepairEvidence) {
       const proposal = await prepareRelationRepair(finalRepairEvidence, finalPriorReports, finalDeadlinePolicy.verifyReserveMs);
       finalSemanticRevalidation.preFinalRelationPatchAttempted = proposal.patchAttempted;
@@ -3999,7 +4004,8 @@ async function runEngine({
         preparedFinalRelationRestore = proposal;
       }
     }
-    if (preliminary.status === 'stale' || preparedFinalRelationRestore || needsObligationReview) {
+    if (require('./finalSemanticOutcome').needsFinalSemanticAudit({ report: semanticReport,
+      priorStatus: preliminary.status, preparedRestore: Boolean(preparedFinalRelationRestore), needsObligationReview })) {
       if (signal?.aborted || finalDeadlineMs <= Date.now()) {
         finalSemanticRevalidation.reason = signal?.aborted ? 'aborted' : 'job_deadline_exhausted';
       } else {
@@ -4151,7 +4157,7 @@ async function runEngine({
         decisionReason:'prior_semantic_obligations_unverified'},rawSource,outputText);
     }
   }
-  if ((finalSemanticRevalidation.priorStatus === 'stale' || finalSemanticRevalidation.attempted)
+  if ((['stale', 'unknown'].includes(finalSemanticRevalidation.priorStatus) || finalSemanticRevalidation.attempted)
       && (!finalSemanticRevalidation.applied || semanticReport.pass !== true)) {
     const currentEntry = recordCandidateCheckpoint(finalSemanticRevalidation.applied
       ? 'final_revalidation_not_passed' : 'final_revalidation_unavailable', semanticReportForCandidate(semanticReport));
@@ -4723,7 +4729,7 @@ async function runEngine({
     finalLayoutBoundaryRestoreCount: Number(layoutRepair?.finalFixedPoint?.boundaryRestoredCount || 0),
     finalLayoutMidSentenceParagraphRepairCount: Number(
       layoutRepair?.deliveryIntegrityFixedPoint?.midSentenceParagraphRepairCount || 0
-    ),
+    ) + Number(attestedProseLayout.repairedCount || 0),
     deliveredIncompleteParagraphCount: deliveredParagraphBoundaries.incompleteParagraphCount,
     deliveredNewIncompleteParagraphCount: deliveredParagraphBoundaries.newIncompleteParagraphCount,
     fragmentIntegrityPass: structureAudit.fragmentIntegrityPass !== false,
@@ -4761,6 +4767,9 @@ async function runEngine({
     semanticJudgeRan: semanticReport.ran === true,
     semanticVerificationCompleted: semanticReport.ran === true && semanticReport.verificationCompleted !== false,
     semanticValidationStatus: result.semanticValidation.status,
+    finalSemanticState: require('./finalSemanticOutcome').finalSemanticState(semanticReport,
+      result.semanticValidation, { confirmationPending: stagedConfirmationRequirement.pending(semanticReport, {
+        source: rawSource, candidate: outputText, preliminaryStatus: result.semanticValidation.status }) }),
     semanticValidationVersion: semanticProvenance.VERSION,
     finalCandidateDigest: result.semanticValidation.finalCandidateDigest,
     semanticValidationMaterialization: String(result.semanticValidation.materialization || ''),

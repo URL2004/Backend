@@ -258,6 +258,10 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
     const key = JSON.stringify(row);
     if (!seen.has(key)) { seen.add(key); unique.push(row); }
   }
+  for (const row of require('./sourceArtifactRelations').candidates(before, after, { documentSource })) {
+    const key = JSON.stringify(row);
+    if (!seen.has(key)) { seen.add(key); unique.push(row); }
+  }
   return { version: VERSION, candidateOnly: true, semanticRequired: unique.length > 0,
     codes: [...new Set(unique.map(row => row.code))], candidates: unique };
 }

@@ -77,7 +77,7 @@ test('prior uncertain, incomplete, repeated or source-only findings never nomina
 test('a completed child may nominate repair without certifying its incomplete document',async()=>{
   const child={...report,uncertain:false},unfinished={pass:false,uncertain:true,verificationCompleted:false,violations:[]};
   const aggregate={pass:false,uncertain:true,verificationCompleted:false,reports:[child,unfinished]};
-  for(const status of ['stale','uncertain']){
+  for(const status of ['stale','uncertain','unknown']){
     const selected=selectFinalRepairEvidence(source,output,aggregate,status);
     assert.equal(selected.nominationOnly,true);assert.equal(selected.partialDocumentEvidence,true);
     assert.equal(selected.pass,false);assert.equal(selected.violations.length,2);
@@ -86,6 +86,37 @@ test('a completed child may nominate repair without certifying its incomplete do
     assert.equal(aggregate.verificationCompleted,false);assert.equal(aggregate.uncertain,true);
   }
   assert.equal(selectFinalRepairEvidence(source,output,aggregate,'pass'),null);
+});
+
+test('unknown provenance nominates completed exact findings but never promotes the unknown verdict',async()=>{
+  const unknown={ran:true,pass:false,verificationCompleted:true,violations:report.violations};
+  const selected=selectFinalRepairEvidence(source,output,unknown,'unknown');
+  assert.notEqual(selected,unknown);
+  assert.equal(selected.nominationOnly,true);
+  assert.equal(selected.violations.length,2);
+  assert.equal(unknown.validation,undefined);
+  const proposal=await prepareFinalRelationRepair(source,output,selected,{...opts,allowPatch:false});
+  assert.equal(proposal.restoredCount,1);
+  assert.equal(proposal.pass,undefined);
+  const empty={ran:true,pass:false,verificationCompleted:false,violations:[]};
+  assert.equal(selectFinalRepairEvidence(source,output,empty,'unknown',[report]).violations.length,2);
+  assert.equal(selectFinalRepairEvidence(source,output,empty,'unknown'),null);
+});
+
+test('unknown nominations reject incomplete, uncertain, ambiguous, changed and source-owned evidence',()=>{
+  const empty={ran:true,pass:false,verificationCompleted:false,violations:[]};
+  for(const previous of [{...report,verificationCompleted:false},
+    {...report,verificationCompleted:undefined},{...report,uncertain:true},{...report,skipped:true},
+    {...report,violations:report.violations.map(v=>({...v,origin:'source_issue'}))},
+    {...report,violations:report.violations.map(v=>({...v,relationGrounded:false,repairable:false}))}]) {
+    assert.equal(selectFinalRepairEvidence(source,output,empty,'unknown',[previous]),null);
+    assert.equal(selectFinalRepairEvidence(source,output,previous,'unknown'),null);
+  }
+  assert.equal(selectFinalRepairEvidence(source+' '+source,output,empty,'unknown',[report]),null);
+  assert.equal(selectFinalRepairEvidence(source,output+' '+output,empty,'unknown',[report]),null);
+  assert.equal(selectFinalRepairEvidence(source,`${a} ${fixed} ${tail}`,empty,'unknown',[report]),null);
+  assert.equal(selectFinalRepairEvidence(source,output,{...empty,skipped:true},'unknown',[report]),null);
+  assert.equal(selectFinalRepairEvidence(source,output,{...empty,pass:true},'pass',[report]),null);
 });
 
 test('partial document proposals exclude unfinished, uncertain, stale and repeated child windows',()=>{

@@ -3,6 +3,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { validateAdminNotificationMessage } = require('../lib/adminNotification');
+const { hiddenFromAdminLedger, collectVisibleAdminLedger, createAdminLedgerLoader } = require('../lib/adminLedgerVisibility');
 const { admin, db, verifyToken, verifyAdminToken, verifyFirebaseIdToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
@@ -2225,13 +2226,13 @@ async function getUserMap(uids) {
 }
 
 async function loadCreditHistoryViaCollectionGroup(maxRows) {
-  const snap = await db.collectionGroup('creditHistory')
-    .orderBy('createdAt', 'desc')
-    .limit(maxRows)
-    .get();
-  const uids = snap.docs.map(d => d.ref.parent.parent && d.ref.parent.parent.id);
+  const { docs, scanned, hidden } = await collectVisibleAdminLedger(
+    db.collectionGroup('creditHistory').orderBy('createdAt', 'desc'), maxRows
+  );
+  const uids = docs.map(d => d.ref.parent.parent && d.ref.parent.parent.id);
   const userByUid = await getUserMap(uids);
-  return snap.docs.map(d => serializeCreditHistoryDoc(d, userByUid));
+  logger.info('admin.credit_history_visibility', { scanned, hidden, visible: docs.length });
+  return docs.map(d => serializeCreditHistoryDoc(d, userByUid));
 }
 
 async function loadCreditHistoryViaUsers(maxRows) {
@@ -2246,26 +2247,28 @@ async function loadCreditHistoryViaUsers(maxRows) {
       .orderBy('createdAt', 'desc')
       .limit(perUserLimit)
       .get();
-    histSnap.docs.forEach(d => rows.push(serializeCreditHistoryDoc(d, userByUid)));
+    histSnap.docs.filter(d => !hiddenFromAdminLedger(d.data(), d.id))
+      .forEach(d => rows.push(serializeCreditHistoryDoc(d, userByUid)));
   }));
   rows.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
   return rows.slice(0, maxRows);
 }
 
-async function getAdminCreditHistory(maxRows) {
+const getAdminCreditHistory = createAdminLedgerLoader(async function(maxRows) {
   try {
     return {
       source: 'collectionGroup',
       rows: await loadCreditHistoryViaCollectionGroup(maxRows)
     };
   } catch (err) {
+    if (err.code === 'ADMIN_LEDGER_SCAN_LIMIT') throw err;
     logger.warn('admin.credit_history_collection_group_failed_fallback', { err });
     return {
       source: 'usersFallback',
       rows: await loadCreditHistoryViaUsers(maxRows)
     };
   }
-}
+});
 
 async function loadAdminUserBundle(uid) {
   const userRef = db.collection('users').doc(uid);

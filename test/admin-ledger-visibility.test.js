@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { hiddenFromAdminLedger, collectVisibleAdminLedger, createAdminLedgerLoader } = require('../lib/adminLedgerVisibility');
+const { hiddenFromAdminLedger, collectVisibleAdminLedger, collectIndexedAdminLedger, createAdminLedgerLoader } = require('../lib/adminLedgerVisibility');
 const grant = { type: 'admin_adjust', amount: 100, campaignId: 'humanize-incident-20261002-100' };
 function fixture(rows) {
   const docs = rows.map((data, index) => ({ index, id: data.id || `entry${index}`, data: () => data }));
@@ -65,4 +65,51 @@ test('filter is not applied to the user audit/balance bundle', () => {
   const source = fs.readFileSync(path.join(__dirname, '../routes/payment.js'), 'utf8');
   const bundle = source.slice(source.indexOf('async function loadAdminUserBundle('), source.indexOf('\nasync function ', source.indexOf('async function loadAdminUserBundle(')+1));
   assert.doesNotMatch(bundle, /hiddenFromAdminLedger|collectVisibleAdminLedger/);
+});
+
+function indexedFixture(rows, fail = false) {
+  const reads = [];
+  const docs = rows.map((data, i) => ({id: data.id || `r${i}`, ref: {path: `users/u${i}/creditHistory/${data.id || 'entry'}`}, data: () => data}));
+  return { reads, query: { where(field, op, value) {
+    const selected = docs.filter(d => op === '!=' ? d.data()[field] != null && d.data()[field] !== value : d.data()[field] === value);
+    return {orderBy(field, direction) {
+      assert.equal(field, 'createdAt'); assert.equal(direction, 'desc');
+      return {limit(n) { return {async get() {
+        if (fail) throw Error('index unavailable');
+        const result = selected.sort((a,b) => (b.data().createdAt?.seconds || 0) - (a.data().createdAt?.seconds || 0)).slice(0,n);
+        reads.push(result.length); return {docs: result};
+      }}; }};
+    }};
+  }}};
+}
+test('indexed reader ignores 38k grants at query time and retains ordinary adjustments and legacy rows', async () => {
+  const rows = Array.from({length:38247}, () => ({...grant,createdAt:{seconds:2000,nanoseconds:0}}));
+  rows.push(...Array.from({length:1200}, (_,i) => ({type:'detect',createdAt:{seconds:1200-i,nanoseconds:0}})));
+  rows.push({type:'admin_adjust',adminLedgerVisible:true,createdAt:{seconds:3000,nanoseconds:0}});
+  rows.push({adminLedgerVisible:true,createdAt:{seconds:2500,nanoseconds:0}});
+  const f=indexedFixture(rows),result=await collectIndexedAdminLedger(f.query,1000);
+  assert.equal(result.docs.length,1000); assert.equal(result.scanned,1002);
+  assert.equal(result.docs[0].data().type,'admin_adjust');
+  assert.equal(result.docs[1].data().type,undefined);
+  assert.equal(result.docs[2].data().type,'detect');
+  assert.deepEqual(f.reads,[1000,2]);
+});
+test('indexed reader deduplicates paths, keeps nanos ordering and defensively hides a marked grant',async()=>{
+  const f=indexedFixture([
+    {type:'detect',adminLedgerVisible:true,createdAt:{seconds:10,nanoseconds:1}},
+    {type:'future_type',createdAt:{seconds:10,nanoseconds:2}},
+    {...grant,adminLedgerVisible:true,createdAt:{seconds:20,nanoseconds:0}},
+    {type:'admin_adjust',adminLedgerVisible:true,createdAt:null}
+  ]);
+  const result=await collectIndexedAdminLedger(f.query,10);
+  assert.equal(result.docs.length,3);assert.equal(result.docs[0].data().type,'future_type');
+  assert.equal(new Set(result.docs.map(d=>d.ref.path)).size,3);
+});
+test('indexed errors propagate rather than starting a global per-user scan',async()=>{
+  await assert.rejects(collectIndexedAdminLedger(indexedFixture([],true).query,1000),/index unavailable/);
+  const source=fs.readFileSync(path.join(__dirname,'../routes/payment.js'),'utf8');
+  assert.doesNotMatch(source,/loadCreditHistoryViaUsers|usersFallback|collectVisibleAdminLedger/);
+  assert.match(source,/type: 'admin_adjust',\s+adminLedgerVisible: true/);
+  const billing=fs.readFileSync(path.join(__dirname,'../lib/usageBilling.js'),'utf8');
+  assert.match(billing,/opType === 'admin_adjust' \? \{ adminLedgerVisible: true \}/);
 });

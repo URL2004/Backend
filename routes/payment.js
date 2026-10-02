@@ -3,7 +3,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { validateAdminNotificationMessage } = require('../lib/adminNotification');
-const { hiddenFromAdminLedger, collectVisibleAdminLedger, createAdminLedgerLoader } = require('../lib/adminLedgerVisibility');
+const { collectIndexedAdminLedger, createAdminLedgerLoader } = require('../lib/adminLedgerVisibility');
 const { admin, db, verifyToken, verifyAdminToken, verifyFirebaseIdToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
 const discord = require('../lib/discord');
@@ -2226,48 +2226,22 @@ async function getUserMap(uids) {
 }
 
 async function loadCreditHistoryViaCollectionGroup(maxRows) {
-  const { docs, scanned, hidden } = await collectVisibleAdminLedger(
-    db.collectionGroup('creditHistory').orderBy('createdAt', 'desc'), maxRows
+  const { docs, scanned, elapsedMs } = await collectIndexedAdminLedger(
+    db.collectionGroup('creditHistory'), maxRows
   );
   const uids = docs.map(d => d.ref.parent.parent && d.ref.parent.parent.id);
   const userByUid = await getUserMap(uids);
-  logger.info('admin.credit_history_visibility', { scanned, hidden, visible: docs.length });
+  logger.info('admin.credit_history_visibility', { strategy: 'indexed', scanned, elapsedMs, visible: docs.length });
   return docs.map(d => serializeCreditHistoryDoc(d, userByUid));
 }
 
-async function loadCreditHistoryViaUsers(maxRows) {
-  const usersSnap = await db.collection('users').get();
-  const perUserLimit = Math.min(Math.max(maxRows, 1), 200);
-  const rows = [];
-  const userByUid = {};
-  await Promise.all(usersSnap.docs.map(async userDoc => {
-    const uid = userDoc.id;
-    userByUid[uid] = userDoc.data() || {};
-    const histSnap = await userDoc.ref.collection('creditHistory')
-      .orderBy('createdAt', 'desc')
-      .limit(perUserLimit)
-      .get();
-    histSnap.docs.filter(d => !hiddenFromAdminLedger(d.data(), d.id))
-      .forEach(d => rows.push(serializeCreditHistoryDoc(d, userByUid)));
-  }));
-  rows.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-  return rows.slice(0, maxRows);
-}
-
 const getAdminCreditHistory = createAdminLedgerLoader(async function(maxRows) {
-  try {
-    return {
-      source: 'collectionGroup',
-      rows: await loadCreditHistoryViaCollectionGroup(maxRows)
-    };
-  } catch (err) {
-    if (err.code === 'ADMIN_LEDGER_SCAN_LIMIT') throw err;
-    logger.warn('admin.credit_history_collection_group_failed_fallback', { err });
-    return {
-      source: 'usersFallback',
-      rows: await loadCreditHistoryViaUsers(maxRows)
-    };
-  }
+  // Missing indexes/network failures must not fan out to every user's ledger.
+  // The endpoint reports the error and the loader permits a subsequent retry.
+  return {
+    source: 'collectionGroup',
+    rows: await loadCreditHistoryViaCollectionGroup(maxRows)
+  };
 });
 
 async function loadAdminUserBundle(uid) {
@@ -4184,6 +4158,7 @@ router.post('/admin/adjust-credits', async (req, res) => {
       });
       t.set(userRef.collection('creditHistory').doc(), {
         type: 'admin_adjust',
+        adminLedgerVisible: true,
         used: delta < 0 ? Math.abs(delta) : 0,
         amount: delta,
         remaining: next,

@@ -66,6 +66,8 @@ test('versioned index config preserves every pre-existing production index', () 
     index.fields.map(field => `${field.fieldPath}:${field.order || field.arrayConfig}`).join('|'),
   ].join(':'));
   assert.deepEqual(compositeSignatures.sort(), [
+    'creditHistory:COLLECTION_GROUP:adminLedgerVisible:ASCENDING|createdAt:DESCENDING|__name__:DESCENDING',
+    'creditHistory:COLLECTION_GROUP:createdAt:DESCENDING|type:DESCENDING|__name__:DESCENDING',
     'history:COLLECTION:calibrationTextHash:ASCENDING|createdAt:DESCENDING',
     'history:COLLECTION:detectInputHash:ASCENDING|createdAt:DESCENDING',
     'orders:COLLECTION:status:ASCENDING|createdAt:DESCENDING|__name__:DESCENDING',

@@ -67,6 +67,14 @@ const ISSUE_DEFINITIONS = Object.freeze({
     weight: 3, repairable: true, deterministicSafe: false,
     message: '원문의 직접적인 행동 서술을 “~하는 일을 이어가다·시작하다”로 불필요하게 늘였어요.'
   },
+  introduced_recursive_reason_frame: {
+    weight: 3, repairable: true, deterministicSafe: true,
+    message: '이유를 설명하는 명사구가 반복된 의문절로 바뀌었어요. 유일하게 대응하는 원문 표현만 복원해요.'
+  },
+  introduced_ratio_token_spacing: {
+    weight: 1, repairable: true, deterministicSafe: true,
+    message: '관계 표기 안에 새 공백이 들어갔어요. 원문에서 확인되는 동일한 표기만 복원해요.'
+  },
   introduced_condition_wish_mismatch: {
     weight: 3, repairable: true, deterministicSafe: false,
     message: '원문에 없던 조건을 열고 필요한 방법 대신 희망으로 끝냈어요.'

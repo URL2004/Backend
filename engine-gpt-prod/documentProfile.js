@@ -191,7 +191,11 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     text,
     /(?:귀\s*(?:대학|학교|교)|지망\s*(?:학과|전공|대학)|대학\s*지원\s*동기|입학\s*후|재학\s*중[^.!?\n]{0,45}(?:수강|이수|연구|활동)|졸업\s*후\s*(?:진로|계획)|학년\s*(?:별)?\s*(?:수강|이수)\s*계획|전공\s*(?:심화|탐색)\s*계획|교수님?(?:의)?\s*(?:연구|지도))/gu
   );
-  const universityApplicationFrame = universityApplicationSignals >= 2 && firstPersonSignals >= 1;
+  const universityFitPlanFrame = firstPersonSignals >= 1
+    && /입학\s*후[^.!?\n]{0,160}(?:싶|겠|계획)/u.test(text)
+    && /(?:대학교|대학|학과)의?[^.!?\n]{0,100}(?:교육\s*방향|교육\s*과정|과목|수업)/u.test(text)
+    && /(?:제가|저의|제|나의)\s*[^.!?\n]{0,70}(?:맞는|맞다고|부합|갖추고|배우고)/u.test(text);
+  const universityApplicationFrame = (universityApplicationSignals >= 2 || universityFitPlanFrame) && firstPersonSignals >= 1;
   const structuredCareerPlanSignals = count(
     text,
     /(?:진로\s*설계|학교\s*생활|학업\s*계획|졸업\s*후|학부\s*연구생|현장\s*실습|1\s*~\s*2학년|[1-4]학년에는|연구실\s*활동|캡스톤\s*디자인)/gu
@@ -366,7 +370,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   const achievementSignals = count(text, /(?:합격|취득|등급|자격증|성과|역량|능력|강점|경쟁력|목표를\s*(?:달성|이뤄)|키웠|길렀|향상|보완|다졌|갖췄|갖추었|확보|구현|재현성|신뢰성)/gu);
   const roleFitSignals = count(text, /(?:직무|실무|업무|입사|채용|지원서|지원\s*분야|회사|조직|고객|수강생|교육\s*운영|운영\s*지원|연구\s*개발|연구원|소재\s*개발|업무에\s*(?:활용|적용)|도움이\s*될|기여(?:할|하는|하고자))/gu);
   const experienceNarrativeSignals = count(text, /(?:당시|그\s*과정에서|이\s*과정에서|이\s*경험(?:은|을|으로|을\s*통해)|경험을\s*바탕으로|준비\s*기간|아르바이트|프로젝트)/gu);
-  const applicationValuePropositionSignals = count(text, /(?:^|\n|[.!?]\s*)(?:저의\s*(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|제가\s*(?:갖춘|보유한)\s*(?:강점|경쟁력|역량)|저는\s+[^.!?\n]{0,70}(?:강점|경쟁력|역량)(?:을|를|이|가|은|는))/gmu);
+  const applicationValuePropositionSignals = count(text, /(?:^|\n|[.!?]\s*)(?:(?:저의|제)\s*(?:가장\s*(?:큰|뛰어난)\s*)?(?:강점|경쟁력|핵심\s*역량)|제가\s*(?:갖춘|보유한)\s*(?:강점|경쟁력|역량)|저는\s+[^.!?\n]{0,70}(?:강점|경쟁력|역량)(?:을|를|이|가|은|는))/gmu);
   const careerAspirationSignals = count(text, /(?:입사\s*후|귀사|지원(?:하게\s*)?(?:되었습니다|하였습니다|하고자|했습니다)|(?:연구원|전문가|인재|구성원)(?:이|가)?\s*되겠습니다|[가-힣]{2,20}(?:관리사|간호사|공무원|제작자|실무자|전문가|연구원|담당자)(?:이|가|로)?\s*(?:되(?:겠습니다|는\s*것|고\s*싶)|성장(?:하겠습니다|하고\s*싶))|(?:직무|업무|연구\s*개발|소재\s*개발|기관|조직|병원)[^.!?\n]{0,55}기여(?:하겠습니다|하고자\s*합니다|하는))/gu);
   const researchCareerContextSignals = count(text, /(?:연구실|연구\s*개발|실험\s*(?:설계|조건|데이터|결과)|공정\s*(?:조건|변수|최적화)|분석\s*장비|시편|재현성|연구\s*과제|투고\s*논문)/gu);
   const applicationSectionSignals = lines.filter(line => /^(?:#{1,6}\s*)?(?:\d+(?:\.\d+)*[.)]?\s*)?(?:성장\s*과정|성격의?\s*(?:장단점|강점|약점)|강점과\s*약점|보유\s*역량|핵심\s*역량|직무\s*경험|경력\s*사항|자격(?:증|\s*및\s*교육)|협업\s*및\s*문제\s*해결\s*경험|지원\s*동기|입사\s*후\s*포부)\s*$/u.test(line)).length;
@@ -400,7 +404,7 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
   add(scores, 'resume_application', programApplicationSignals, 0.85);
   if (universityApplicationFrame) {
     scores.resume_application += 4.4
-      + Math.min(universityApplicationSignals - 2, 5) * 0.3
+      + Math.min(Math.max(0, universityApplicationSignals - 2), 5) * 0.3
       + Math.min(applicationIntentSignals, 3) * 0.25;
   }
   if (directApplicationContextSignals >= 1) {
@@ -452,6 +456,11 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       + Math.min(applicationEvidenceSignals, 3) * 0.2;
   }
   const professionalPastEndingSignals = sentences.filter(sentence => /(?:했습니다|하였습니다|맡았습니다|기여했습니다|해결했습니다|구현했습니다|개선했습니다)[.!?。！？]?$/u.test(sentence.trim())).length;
+  const strengthEvidencePlanFrame = applicationValuePropositionSignals >= 1
+    && firstPersonSignals >= 1 && professionalPastEndingSignals >= 3
+    && (careerActionSignals >= 2 || count(text, /(?:구현|점검|테스트|협력)/gu) >= 2) && applicationEvidenceSignals >= 1
+    && sentences.filter(s => /겠습니다[.!?]?$/u.test(s.trim())).length >= 2;
+  if (strengthEvidencePlanFrame) scores.resume_application += 3.2;
   const technicalCareerDeliverableSignals = count(
     text,
     /(?:요구\s*사항|설계\s*검토|기능\s*시험|시험\s*절차|시험\s*문서|회로|PCB|펌웨어|F\/W|레지스터|FPGA|PLL|RF|PIC|MCU|Gerber|BOM|인수인계|양산|시제품|모듈|디버깅|검증값)/giu
@@ -747,6 +756,20 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
     && clinicalAssessmentSignals + psychologicalAssessmentSignals === 0;
   if (livedExperienceFrame) {
     scores.personal_essay += 3.8 + Math.min(livedReflectionSignals - 2, 3) * 0.2;
+  }
+  // Definitions may mention "나/자신" as their subject matter. Multiple
+  // concept definitions plus an expository majority outweigh one closing
+  // opinion, but never a real autobiographical sequence or application.
+  const definitionSummarySignals = sentences.filter(sentence =>
+    /(?:은|는|란)\s+[^.!?\n]{6,180}(?:방법|방식|과정|것|행위|개념)(?:이다|이며|으로)/u.test(sentence)).length;
+  const definitionSummaryFrame = sentences.length >= 5 && definitionSummarySignals >= 3
+    && formalExpositionRatio >= 0.45 && livedEventSignals === 0
+    && directApplicationContextSignals === 0 && reflectiveActivitySignals === 0
+    && scores.report_assignment < 1.35 && academicFramingSignals === 0
+    && inlineAcademicCitationSignals === 0;
+  if (definitionSummaryFrame) {
+    scores.long_explainer += 3.4;
+    scores.personal_essay = Math.min(scores.personal_essay, 1.2);
   }
   const bookReflectionSignals = count(
     text,
@@ -1054,6 +1077,10 @@ function detectDocumentProfile(source, { basicStyle = '' } = {}) {
       assessmentProtectedLineCount: assessment.protectedLineCount,
       assessmentExplanationLineCount: assessment.explanationLineCount,
       applicationValuePropositionSignals,
+      strengthEvidencePlanFrame,
+      universityFitPlanFrame,
+      definitionSummaryFrame,
+      definitionSummarySignals,
       careerAspirationSignals,
       researchCareerContextSignals,
       applicationSectionSignals,

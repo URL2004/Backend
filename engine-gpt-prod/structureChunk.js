@@ -946,6 +946,7 @@ function* restoreFinalDocumentLayoutSteps({
       text = subtitles.text;
       subtitleBoundaryCount = Math.max(subtitleBoundaryCount, subtitles.changes[0]?.count || 0);
       const relations = require('./paragraphRelations').refineParagraphRelations(text, {
+        documentProfile,
         protectedBlocks: (chunks || []).filter(c => c.locked).map(c => c.text)
       });
       if (relations.contentPreserved) {
@@ -958,6 +959,9 @@ function* restoreFinalDocumentLayoutSteps({
     citationTailRepairCount += Number(citationTails.repairCount || 0);
     citations = restoreCitationLayout(source, text, chunks);
     text = require('./quoteOwnership').restoreOwnedQuoteLayout(source, citations.text).text;
+    if (improveLabelBodies && !preserveAllLines) {
+      text = require('./citedQuoteParagraphs').separateCitedQuoteCommentary(source, text).text;
+    }
     if (text === before) {
       converged = true;
       break;
@@ -2951,6 +2955,7 @@ function splitLayoutSentences(value, { literalProtectedBlocks = [] } = {}) {
 function selectReadableSplitIndex(sentences, profileName = '') {
   const rows = (sentences || []).map(sentence => String(sentence || '').trim()).filter(Boolean);
   if (rows.length < 2) return 1;
+  const definitionScores = require('./paragraphDependency').definitionBoundaryScores(rows, profileName);
   const lengths = rows.map(sentence => Math.max(1, bare(sentence).length));
   const total = lengths.reduce((sum, length) => sum + length, 0);
   const minimumSide = Math.max(24, Math.floor(total * 0.16));
@@ -2962,6 +2967,7 @@ function selectReadableSplitIndex(sentences, profileName = '') {
     if (running < minimumSide || right < minimumSide) continue;
     const previousKind = semanticTransitionKind(rows[index - 1], profileName);
     const nextKind = semanticTransitionKind(rows[index], profileName);
+    const dependent = require('./paragraphDependency').dependentBoundary(rows[index - 1], rows[index]);
     let semanticScore = 0;
     if (previousKind === 'backward_takeaway') semanticScore += 150;
     if (nextKind === 'backward_takeaway') semanticScore -= 130;
@@ -2969,7 +2975,8 @@ function selectReadableSplitIndex(sentences, profileName = '') {
     else if (['evidence', 'development'].includes(nextKind)) semanticScore += 80;
     const balance = Math.min(running, right) / Math.max(1, total);
     const cohesionScore = Math.max(-28, Math.min(28, paragraphBoundaryCohesionScore(rows, index)));
-    const score = semanticScore
+    const score = semanticScore - (dependent ? 200 : 0)
+      + (definitionScores[index] || 0)
       + cohesionScore
       + balance * 24
       - (Math.abs(running - right) / Math.max(1, total)) * 8;

@@ -8,7 +8,7 @@ const bare = s => s.replace(/\s/gu, '');
 // Last-mile boundary edits, not rewriting. A dependent explanation stays with
 // its claim; only the dependent sentence moves across the *blank*, never words
 // across another sentence. Shared syntax offsets protect quotes, code and notes.
-function refineParagraphRelations(value, { protectedBlocks = [] } = {}) {
+function refineParagraphRelations(value, { protectedBlocks = [], documentProfile = null } = {}) {
   const text = String(value || '');
   const records = layout.buildLineRecords(text);
   const literals = syntaxSpans(text);
@@ -87,6 +87,37 @@ function refineParagraphRelations(value, { protectedBlocks = [] } = {}) {
     const first = rightSentences[0], second = rightSentences[1];
     const previousSentences = splitSentenceSpans(left.text);
     const previous = previousSentences.at(-1)?.text || '';
+    if (documentProfile?.signals?.definitionSummaryFrame && previousSentences.length >= 4) {
+      const subject = require('./paragraphDependency').definitionSubject;
+      const subjects = previousSentences.map(s=>subject(s.text));
+      let cut = -1;
+      for (let n=2;n<subjects.length;n++) {
+        const a=subjects[n-2],b=subjects[n-1],c=subjects[n];
+        if(a&&b&&c&&(a.endsWith(b)||b.endsWith(a))&&!c.endsWith(b)&&!b.endsWith(c)) {cut=n;break;}
+      }
+      if(cut>=2 && previousSentences.length-cut+rightSentences.length<=6
+          && left.text.slice(previousSentences[cut].start).length+right.text.length<800) {
+        const a=contentStart(left)+previousSentences[cut-1].end,b=contentStart(left)+previousSentences[cut].start;
+        if(safeGap(a,b)) {
+          add(a,b,'\n\n','definition_topic_group');
+          add(left.end,right.start,' ','definition_topic_group');
+          continue;
+        }
+      }
+    }
+    // Move the preceding claim together with its dependent continuation,
+    // instead of merging both paragraphs into another overlong block.
+    const dependency = require('./paragraphDependency').dependentBoundary(previous, first.text);
+    if (dependency && previousSentences.length >= 3 && rightSentences.length <= 5
+        && previous.length + right.text.length < 750) {
+      const penultimate = previousSentences.at(-2), last = previousSentences.at(-1);
+      const a = contentStart(left) + penultimate.end, b = contentStart(left) + last.start;
+      if (safeGap(a,b) && !protectedAt(a,b) && layout.isSentenceComplete(penultimate.text)) {
+        add(a,b,'\n\n',dependency);
+        add(left.end,right.start,' ',dependency);
+        continue;
+      }
+    }
     const joined = left.text + ' ' + first.text;
     // No new overlong wall of text. Moving an existing boundary must leave
     // both a complete explanation and a developed following paragraph.

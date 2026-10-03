@@ -16,6 +16,19 @@ function auditNaturalnessRegression(source, output, profile = 'unknown') {
   const sourceWords = /\p{Script=Han}/u.test(output)
     ? [...new Set(sources.flatMap(s=>s.text.match(/[가-힣]{3,24}/gu)||[]))] : [];
   for (const target of outputs) {
+    // A nominal reason frame may be paraphrased, but not into a recursive
+    // subject ("X하는 것이 왜 X하는 것인지"). Restore the uniquely attested
+    // local nominal phrase, not its whole sentence or the document.
+    for (const m of target.text.matchAll(/(?<![가-힣])([가-힣]{2,20}는)\s+것이\s+왜\s+\1\s+것인지/gu)) {
+      if (sources.some(s => s.text.includes(m[0]))) continue;
+      const pattern = new RegExp(`${escape(m[1])}\\s+것의\\s+이유(?:를|는|가)`, 'gu');
+      const matches = sources.flatMap(s => [...s.text.matchAll(pattern)]
+        .filter(() => sentenceSimilarity(s.text, target.text) >= .45));
+      if (matches.length !== 1) continue;
+      const code = 'introduced_recursive_reason_frame';
+      findings.push({code,ordinal:target.ordinal,repair:{start:target.start+m.index,
+        end:target.start+m.index+m[0].length,replacement:matches[0][0],ordinal:target.ordinal,code}});
+    }
     // A newly introduced possessive must not replace the subject of
     // "도움이 되다". Require the original subject AND following local clause;
     // do not blanket-replace valid nominal phrases such as "교육의 도움 정도".
@@ -193,6 +206,20 @@ function sourceFrameRegressions(source, output) {
   const ss=splitSentenceSpans(before),os=splitSentenceSpans(after);
   const protectedBefore=syntaxSpans(before),protectedAfter=syntaxSpans(after);
   const blocked=(spans,start,end)=>spans.some(p=>['quote','code'].includes(p.spanType)&&p.start<end&&p.end>start);
+  // Relationship/cardinality notation is a token, not a label plus prose.
+  // Normalize only a unique source-attested token; never invent its values.
+  for(const m of before.matchAll(/(?<![A-Za-z0-9])(?:1:[A-Z]|[A-Z]:[A-Z])(?![A-Za-z0-9])/gu)) {
+    if(blocked(protectedBefore,m.index,m.index+m[0].length)||before.split(m[0]).length!==2)continue;
+    const [left,right]=m[0].split(':');
+    const found=[...after.matchAll(new RegExp(`(?<![A-Za-z0-9])${left}[ \\t]*:[ \\t]*${right}(?![A-Za-z0-9])`,'gu'))];
+    if(found.length!==1||found[0][0]===m[0])continue;
+    const target=found[0],end=target.index+target[0].length;
+    if(blocked(protectedAfter,target.index,end))continue;
+    const ordinal=os.findIndex(s=>s.start<=target.index&&s.end>=end)+1;
+    if(ordinal<1)continue;
+    const code='introduced_ratio_token_spacing';
+    findings.push({code,ordinal,repair:{start:target.index,end,replacement:m[0],ordinal,code}});
+  }
   const lists=/(?<![가-힣A-Za-z0-9])((?:[가-힣A-Za-z][가-힣A-Za-z0-9/-]{1,23},\s*){2,}[가-힣A-Za-z][가-힣A-Za-z0-9/-]{1,23})\s+등\s+((?:각|여러|해당)\s+[가-힣]{2,16}?)(?=별|의|에|을|를|은|는|이|가|\s|[.,]|$)/gu;
   for(const m of before.matchAll(lists)) {
     if(blocked(protectedBefore,m.index,m.index+m[0].length))continue;

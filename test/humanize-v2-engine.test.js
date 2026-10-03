@@ -13,6 +13,20 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+for(const mode of ['blog','formal','polish'])test(`${mode}: source-backed reason frame repair survives final semantic validation`,{concurrency:false},async t=>{
+  const text='나는 아직 내가 선택하는 것의 이유를 정확하게 알지 못한다. 오늘은 여러 자료를 자세하게 살펴보았다. 각 설명의 차이를 기록하고 다음에 다시 비교하려고 한다.';
+  installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT')
+    .replace('선택하는 것의 이유를','선택하는 것이 왜 선택하는 것인지')
+    .replace('자세하게 살펴보았다','꼼꼼히 검토했다')});
+  const out=await engine.run({text,mode,uid:'source-reason-frame-unit',config:config()});
+  assert.notEqual(out.status,'blocked');
+  assert.match(out.result.outputText,/선택하는 것의 이유를/u);
+  assert.doesNotMatch(out.result.outputText,/것이 왜 선택하는/u);
+  assert.match(out.result.outputText,/꼼꼼히 검토했다/u);
+  assert.equal(out.engineMeta.finalLayoutStructuralPass,true);
+  assert.notEqual(out.engineMeta.semanticValidationStatus,'fail');
+});
+
 for (const mode of ['blog','formal','polish']) test(`${mode}: cover subtitle stays locked through generation and final layout`, {concurrency:false}, async t=>{
   const text='도서관 창가에서\n— 한 작가의 《낯선 길》을 읽고\n1. 첫 만남\n나는 도서관에서 자료를 자세하게 살펴보았다. 책의 질문을 따라 나의 경험을 되돌아보았다.\n2. 다시 생각하기\n나는 친구와 기록을 자세하게 살펴보았다. 같은 장면을 다르게 받아들일 수 있다는 사실을 알았다.';
   const {calls}=installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT')

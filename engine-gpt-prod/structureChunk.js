@@ -991,12 +991,24 @@ function* restoreFinalDocumentLayoutSteps({
   const returnedStructureAudit = buildStructureAudit({ source, outputText: text, chunks });
   const structuralPass = converged && finalLocked.pass !== false && contentPreserved && codePass
     && returnedStructureAudit.pass && citations.pass;
+  // Quote/citation ownership runs after the paragraphizer. Measure the actual
+  // returned layout: restoring a quotation can rejoin split paragraphs.
+  const returnedReadability = layoutStructure.measureParagraphReadability(text, {
+    mode, requestStrength, documentProfile, humanizeContract,
+    protectedBlocks: (chunks || []).filter(c => c.locked).map(c => c.text)
+  });
+  if (paragraphs.paragraphs) Object.assign(paragraphs.paragraphs, {
+    text, afterCount: returnedReadability.paragraphCount,
+    explicitParagraphCountAfter: layoutStructure.splitExplicitParagraphs(text).length,
+    readability: compactReadability(returnedReadability),
+    pass: returnedReadability.overlongCount === 0
+  });
   return {
     text,
     applied: text !== normalizeNewlines(outputText),
     structuralPass,
     transientStructuralPass,
-    readabilityPass: paragraphs.readabilityPass !== false,
+    readabilityPass: returnedReadability.overlongCount === 0,
     pass: structuralPass,
     contentPreserved,
     codePass,
@@ -4127,6 +4139,8 @@ function compactLayoutRepair(value) {
     pass: value.pass !== false,
     structuralPass: (value.structuralPass ?? value.pass) !== false,
     readabilityPass: value.readabilityPass !== false,
+    finalDelivered: value.finalDelivered || null,
+    preDeliverySnapshot: value.preDeliverySnapshot || null,
     heading: value.heading ? {
       applied: value.heading.applied === true,
       headingCount: Number(value.heading.headingCount) || 0,

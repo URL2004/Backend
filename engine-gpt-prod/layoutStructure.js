@@ -586,6 +586,10 @@ function isTitleContinuation(text, context = {}) {
   if (/^(?:https?:|www\.|[A-Za-z]:\\)/iu.test(text)) return false;
   if (isListLine(text) || isQuoteLine(text) || isExplicitTableLine(text)) return false;
   if (bracketLabelParts(text) || labelParts(text) || looksLikeUnpunctuatedProse(text)) return false;
+  // A cover reading subtitle is metadata even when the next line is a short
+  // numbered heading. Its role must not depend on blank lines added later.
+  if (previousRole === 'title'
+      && /^[—–―][ \t]+[^\n]{0,60}(?:《[^》\n]+》|〈[^〉\n]+〉|『[^』\n]+』|「[^」\n]+」)[을를]?[ \t]*(?:읽고|읽으며|읽은 후)$/u.test(text)) return true;
   const nextLength = String(context.next?.text || '').length;
   return context.blankAfter || nextLength >= Math.max(70, Math.ceil(text.length * 1.45));
 }

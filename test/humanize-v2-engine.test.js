@@ -13,6 +13,38 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+for (const mode of ['blog','formal','polish']) test(`${mode}: cover subtitle stays locked through generation and final layout`, {concurrency:false}, async t=>{
+  const text='도서관 창가에서\n— 한 작가의 《낯선 길》을 읽고\n1. 첫 만남\n나는 도서관에서 자료를 자세하게 살펴보았다. 책의 질문을 따라 나의 경험을 되돌아보았다.\n2. 다시 생각하기\n나는 친구와 기록을 자세하게 살펴보았다. 같은 장면을 다르게 받아들일 수 있다는 사실을 알았다.';
+  const {calls}=installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT')
+    .replaceAll('자세하게 살펴보았다','꼼꼼히 검토했다').replace('《낯선 길》을 읽고','《낯선 길》을 읽으며')});
+  const out=await engine.run({text,mode,uid:'cover-subtitle-unit',config:config()});
+  assert.notEqual(out.status,'blocked');
+  assert.match(out.result.outputText,/— 한 작가의 《낯선 길》을 읽고/u);
+  for(const c of calls.filter(c=>c.name==='gpt_prod_humanize_result'))
+    assert.doesNotMatch(extractPromptDataSection(c.body.input,'EDITABLE_TEXT'),/《낯선 길》/u);
+  assert.equal(out.engineMeta.structureIntegrityRollbackCount,0);
+  assert.equal(out.engineMeta.finalLayoutStructuralPass,true);
+  assert.equal(out.engineMeta.deliveredLayoutAuditVersion,'delivered-layout-v1');
+  assert.equal(out.engineMeta.explicitParagraphCountAfter,layoutStructure.splitExplicitParagraphs(out.result.outputText).length);
+});
+
+test('late invalid layout rolls back without stale delivered metrics or audit failure', {concurrency:false}, async t=>{
+  const st=require('../engine-gpt-prod/structureChunk');
+  const original=st.restoreFinalDocumentLayoutAsync;
+  t.mock.method(st,'restoreFinalDocumentLayoutAsync',async options=>{
+    const result=await original(options);
+    return {...result,text:result.text+'\n\n9. 새로 만든 제목',applied:true,contentPreserved:true,structuralPass:false};
+  });
+  installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT').replace('자세하게 살펴보았다','꼼꼼히 검토했다')});
+  const text='1. 자료 확인\n나는 자료를 자세하게 살펴보았다. 서로 다른 설명을 비교하고 차이를 기록했다.\n2. 후속 계획\n다음 조사에서는 같은 자료를 다른 기준으로 살펴보려고 한다.';
+  const out=await engine.run({text,mode:'blog',uid:'layout-rollback-unit',config:config()});
+  assert.doesNotMatch(out.result.outputText,/새로 만든 제목/u);
+  assert.ok(out.engineMeta.structureIntegrityRollbackCount>0||out.engineMeta.candidateLedgerRollbackApplied);
+  assert.equal(out.engineMeta.finalLayoutStructuralPass,true);
+  assert.equal(out.engineMeta.explicitParagraphCountAfter,layoutStructure.splitExplicitParagraphs(out.result.outputText).length);
+  assert.equal(out.qualityWarnings.some(w=>w.code==='post_semantic_layout_incomplete'),false);
+});
+
 for (const mode of ['blog', 'formal', 'polish']) test(`${mode}: emoji guide keeps labels, dates and edited prose through final delivery`, { concurrency: false }, async t => {
   const source = '📅 동아리 발표 준비\n\n① 자기소개\n저는 친구들과 함께 자료를 자세하게 살펴보려고 합니다. 준비한 내용을 발표하면서 서로의 의견을 듣겠습니다.\n\n키워드: 성실 → 협력\n\n② 활동 계획\n발표 전에 내용을 자세하게 살펴보려고 합니다. 발표가 끝난 뒤에는 질문에 답하겠습니다.\n\n🗓 일정\n날짜\t할 일\n4/12\t신청 완료\n4/13\t발표 연습\n\n[ ] 준비물 확인';
   const rewrite = body => extractPromptDataSection(body.input, 'EDITABLE_TEXT').replaceAll('자세하게 살펴보려고 합니다', '꼼꼼히 살펴보겠습니다');
@@ -404,7 +436,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.99');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.100');
   assert.equal(out.engineMeta.boundaryMarkerStats.version, 1);
   assert.equal(typeof out.engineMeta.boundaryMarkerStats.markedChunks, 'number');
   assert.equal(typeof out.engineMeta.relationCandidateCounts, 'object');
@@ -1701,7 +1733,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-  assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.99');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.100');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

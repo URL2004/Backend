@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.99';
+const VERSION = 'gpt-prod-v2.5.100';
 const DETECT_VERSION = 'gpt-detect-v1.52';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -3219,6 +3219,8 @@ async function runEngine({
     if (finalLayout.applied && finalLayout.contentPreserved) outputText = finalLayout.text;
     layoutRepair.finalFixedPoint = {
       applied: previousFixedPoint.applied === true || finalLayout.applied === true,
+      candidateDigest: require('./deliveredLayoutAudit').digest(finalLayout.text),
+      converged: finalLayout.converged === true,
       structuralPass: finalLayout.structuralPass !== false,
       readabilityPass: finalLayout.readabilityPass !== false,
       contentPreserved: finalLayout.contentPreserved === true,
@@ -3778,6 +3780,7 @@ async function runEngine({
     }
     layoutRepair.deliveryIntegrityFixedPoint = {
       applied: finalIntegrityLayout.applied === true,
+      candidateDigest: require('./deliveredLayoutAudit').digest(finalIntegrityLayout.text),
       structuralPass: finalIntegrityLayout.structuralPass !== false,
       contentPreserved: finalIntegrityLayout.contentPreserved === true,
       converged: finalIntegrityLayout.converged === true,
@@ -4224,6 +4227,13 @@ async function runEngine({
     koreanRefinementAudit,
     'collapsed_korean_spacing_run'
   );
+  require('./deliveredLayoutAudit').refreshDeliveredLayoutAudit({
+    source: rawSource,
+    integritySource: structureImprovement.applied ? rawSource : integritySource,
+    fragmentSource: submittedSource,
+    outputText, chunks: materializedChunks, plan: chunkPlan,
+    mode: selectedMode, requestStrength, documentProfile, humanizeContract, layoutRepair
+  });
   const structureAudit = structureChunk.buildStructureAudit({
     source: rawSource,
     integritySource: structureImprovement.applied ? rawSource : integritySource,
@@ -4723,8 +4733,9 @@ async function runEngine({
     explicitParagraphCountAfter: Number(layoutRepair?.paragraphs?.explicitParagraphCountAfter || 0),
     paragraphReadability: layoutRepair?.paragraphs?.readability || null,
     finalLayoutFixedPointApplied: layoutRepair?.finalFixedPoint?.applied === true,
-    finalLayoutStructuralPass: layoutRepair?.finalFixedPoint?.structuralPass !== false,
-    finalLayoutReadabilityPass: layoutRepair?.finalFixedPoint?.readabilityPass !== false,
+    finalLayoutStructuralPass: layoutRepair?.finalDelivered?.structuralPass !== false,
+    finalLayoutReadabilityPass: layoutRepair?.finalDelivered?.readabilityPass !== false,
+    deliveredLayoutAuditVersion: layoutRepair?.finalDelivered?.version || '',
     finalLayoutContentPreserved: layoutRepair?.finalFixedPoint?.contentPreserved === true,
     finalLayoutBoundaryRestoreCount: Number(layoutRepair?.finalFixedPoint?.boundaryRestoredCount || 0),
     finalLayoutMidSentenceParagraphRepairCount: Number(

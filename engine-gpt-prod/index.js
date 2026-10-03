@@ -3925,6 +3925,17 @@ async function runEngine({
     outputText = attestedProseLayout.text;
     rememberStructureSafeOutput(outputText, 'attested_prose_gap_restore');
   }
+  const settledLayout = await require('./deliveredLayoutAudit').settleDeliveredLayout({
+    signal, submittedSource, source: rawSource,
+    integritySource: structureImprovement.applied ? rawSource : integritySource,
+    fragmentSource: submittedSource, outputText, chunks: materializedChunks, plan: chunkPlan,
+    mode: selectedMode, requestStrength, documentProfile, humanizeContract, layoutRepair,
+    normalizeVisualGaps: selectedMode !== 'polish' && documentProfile?.profile !== 'creative'
+  });
+  if (settledLayout.applied) {
+    outputText = settledLayout.text;
+    rememberStructureSafeOutput(outputText, 'delivery_settled_layout');
+  }
   // 최종 의미 재검증. 의미 심사 뒤의 늦은 단계(원문 문장 복원·중복 삭제·
   // 구체성 제거·늦은 깊이 회복 등)가 본문을 실제로 바꾸면 검증 digest가
   // 달라진다. 공백 배치만 바뀐 경우는 provenance의 결정론 투영이 같은 판정을
@@ -4184,6 +4195,25 @@ async function runEngine({
     }
   }
 
+  // Final semantic recovery can select an older layout. Settle that selection
+  // only when the existing semantic verdict remains valid for the new text;
+  // word-seam changes needing a fresh judge belong to the pre-validation pass.
+  if (outputText !== settledLayout.text) {
+    const currentSemanticReport = semanticReportForCandidate(semanticReport);
+    const currentValidation = semanticProvenance.verifySemanticValidation(currentSemanticReport,
+      { source: rawSource, candidate: outputText, requireDigest: true });
+    const finalSelectionLayout = await require('./deliveredLayoutAudit').settleDeliveredLayout({
+      signal, source: rawSource, integritySource: structureImprovement.applied ? rawSource : integritySource,
+      fragmentSource: submittedSource, outputText, chunks: materializedChunks, plan: chunkPlan,
+      mode: selectedMode, requestStrength, documentProfile, humanizeContract, layoutRepair,
+      normalizeVisualGaps: selectedMode !== 'polish' && documentProfile?.profile !== 'creative',
+      acceptCandidate: candidate => semanticProvenance.layoutDigest(candidate) === semanticProvenance.layoutDigest(outputText)
+        && require('./layoutRelations').relationDigest(candidate) === require('./layoutRelations').relationDigest(outputText)
+        && semanticProvenance.verifySemanticValidation(currentSemanticReport,
+          { source: rawSource, candidate, requireDigest: true }).status === currentValidation.status
+    });
+    outputText = finalSelectionLayout.text;
+  }
   finalGeneratedDuplicateAudit = dedupe.auditGeneratedDuplicateIntegrity(rawSource, outputText);
   statisticalAtomIntegrity = statisticalAtoms.auditStatisticalAtoms(rawSource, outputText);
   unsupportedSpecificityAudit = unsupportedSpecificity.auditUnsupportedSpecificity(
@@ -4747,6 +4777,11 @@ async function runEngine({
     fragmentIntegrityIssueCount: Number(structureAudit.fragmentIntegrityIssueCount || 0),
     fragmentIntegrityCodes: safeFailureCodeList(structureAudit.fragmentIntegrityCodes),
     deliveredMaxParagraphChars: deliveredParagraphBoundaries.maxParagraphChars,
+    deliveredReadableParagraphCount: Number(layoutRepair?.finalDelivered?.paragraphCount || 0),
+    deliveredExplicitParagraphCount: Number(layoutRepair?.finalDelivered?.explicitParagraphCount || 0),
+    deliveredMaxReadableParagraphChars: Number(layoutRepair?.finalDelivered?.maxReadableParagraphChars || 0),
+    deliveredOverlongReadableParagraphCount: Number(layoutRepair?.finalDelivered?.overlongReadableParagraphCount || 0),
+    deliveredWordSeamRepairCount: Number(layoutRepair?.deliverySettledFixedPoint?.wordSeamRepairCount || 0),
     finalLayoutMissingCount: Number(layoutRepair?.finalFixedPoint?.missingCount || 0),
     inlineLabelBodyRepairCount: Number(layoutRepair?.inlineLabels?.repairCount || 0)
       + Number(layoutRepair?.finalLockedStructure?.inlineLabelBodyRepairCount || 0),

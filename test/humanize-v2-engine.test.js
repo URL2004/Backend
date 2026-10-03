@@ -13,6 +13,24 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+test('physical endings reach generation intact and delivered counts describe the final candidate', {concurrency:false}, async t=>{
+  const text='1. 관찰 결과\n'+Array.from({length:9},(_,i)=>
+    `연구팀은 여러 지역의 자료를 비교하면서 각 시설의 운영 조건을 자세하게 확인하고 있\n다. 담당자는 ${i+1}차 관찰에서 얻은 자료를 검토하고 다음 측정의 절차를 다시 준비하였다.`).join('\n');
+  const {calls}=installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT')
+    .replaceAll('자세하게 확인하고','꼼꼼하게 확인하고')});
+  const out=await engine.run({text,mode:'formal',documentProfileOverride:'report_assignment',uid:'physical-ending-layout-unit',config:config()});
+  assert.notEqual(out.status,'blocked');
+  for(const call of calls.filter(c=>c.name==='gpt_prod_humanize_result'))
+    assert.doesNotMatch(extractPromptDataSection(call.body.input,'EDITABLE_TEXT'),/있\s+다\./u);
+  assert.match(out.result.outputText,/꼼꼼하게/u);
+  assert.doesNotMatch(out.result.outputText,/있\s+다\./u);
+  assert.equal(out.engineMeta.finalLayoutStructuralPass,true);
+  assert.equal(out.engineMeta.deliveredReadableParagraphCount,layoutStructure.splitReadableParagraphs(out.result.outputText).length);
+  assert.equal(out.engineMeta.deliveredExplicitParagraphCount,layoutStructure.splitExplicitParagraphs(out.result.outputText).length);
+  assert.equal(out.engineMeta.deliveredOverlongReadableParagraphCount,0);
+  assert.equal(out.engineMeta.semanticValidationStatus,'pass');
+});
+
 for(const mode of ['blog','formal','polish'])test(`${mode}: source-backed reason frame repair survives final semantic validation`,{concurrency:false},async t=>{
   const text='나는 아직 내가 선택하는 것의 이유를 정확하게 알지 못한다. 오늘은 여러 자료를 자세하게 살펴보았다. 각 설명의 차이를 기록하고 다음에 다시 비교하려고 한다.';
   installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT')

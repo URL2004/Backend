@@ -224,6 +224,7 @@ function restoreMathByOrder(value, frozen) {
 }
 
 module.exports = {
+  mathSpans,
   freezeInlineCode,
   restoreInlineCode,
   restoreInlineCodeByOrder,

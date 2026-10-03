@@ -72,6 +72,16 @@ require.cache[configPath] = {
 
 const history = require('../lib/historyService');
 
+test('stored layout observations retain measured zeros and failures without certifying legacy rows', () => {
+  const metrics={deliveredReadableParagraphCount:12,deliveredExplicitParagraphCount:10,
+    deliveredMaxReadableParagraphChars:280,deliveredOverlongReadableParagraphCount:0,
+    deliveredWordSeamRepairCount:2,finalLayoutStructuralPass:false,finalLayoutReadabilityPass:true};
+  const stored=history.compactHistoryEngineMeta({...metrics,outputText:'private-sentinel'});
+  for(const [key,value] of Object.entries(metrics)) assert.equal(stored[key],value);
+  assert.equal(Object.hasOwn(stored,'outputText'),false);
+  for(const key of Object.keys(metrics)) assert.equal(Object.hasOwn(history.compactHistoryEngineMeta({}),key),false);
+});
+
 test('final semantic state is optional and enum-only in stored engine metadata', () => {
   for (const finalSemanticState of ['verified_pass', 'verified_fail', 'incomplete', 'uncertain', 'stale',
     'unconfirmed', 'not_run', 'confirmation_pending']) {

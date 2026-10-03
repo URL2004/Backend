@@ -20,26 +20,37 @@ function quoteWordSeam(left, right, witnessed) {
 const REFERENCE = /^(?:\[|【)?(?:참고\s*문헌|참고\s*자료|References|Bibliography)(?:\]|】|\s|$)/iu;
 const EXPLICIT = /^(?:#{1,6}\s|>|[-*+•▪◦·●○■□◆◇▶▷※]\s|\d+(?:\.\d+)*[.)]\s|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?\s|[IVX]+[.)]\s|제\s*\d+\s*(?:장|절|조)|\[[^\]\n]{1,80}\]$|【[^】\n]{1,80}】$)/u;
 const NUMBERED = /^[가-하][.)](?=\s*\S)/u;
-const stripParticle = word => word.replace(/(?:에서는|으로|에서|에게|처럼|은|는|이|가|을|를|의|와|과|도|만|에)$/u, '');
-const witnessedWords = source => new Set((String(source).match(/[가-힣]{2,}/gu) || [])
-  .map(stripParticle).filter(word => word.length >= 2));
+const stripParticle = word => word.replace(/(?:에서는|으로|에서|에게|처럼|은|는|이|가|을|를|의|와|과|도|만|에|로)$/u, '');
+// Evidence may use another particle or an inflection of the same word. Keep
+// the complete form as well: stripping the last syllable alone loses 기술이다.
+function wordForms(word) {
+  return [word, stripParticle(word),
+    word.replace(/(?:입니다|이었다|이다|이며|이므로|이라는|이라고)$/u, ''),
+    word.replace(/(?:하고자|하려고|하였다|하면서|합니다|하는|하고|하여|하지|하면|했다|한다)$/u, ''),
+    word.replace(/(?:이고|이기|이는|이면)$/u, '이')].filter(value => value.length >= 2);
+}
+const witnessedWords = source => new Set((String(source).match(/[가-힣]{2,}/gu) || []).flatMap(wordForms));
+const brokenEndingSeam = (a, b) => /^(?:다|니다|습니다)$/u.test(b)
+  && (/(?:습니?|[합입됩했겠였않없있]니)$/u.test(a)
+    || b === '습니다' || b === '다' && /(?:했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(a));
 const isNominalHeading = text => !/[.!?。！？,]/u.test(text) && text.length <= 80
   && /(?:계획|현황|목적|방법|배경|필요성|분석|정의|개념|결과|시사점|참고문헌)$/u.test(text)
   && !/(?:은|는|을|를)\s/u.test(text);
 
 function wordSeam(left, right, witnessed) {
+  // The source's numeric unit is one lexical atom, not a new word/paragraph.
+  if (/\d$/u.test(left) && /^(?:년|월|일|명|개|대|회|배|분|초)(?=$|\s|[.,!?]|[은는이가을를의에])/u.test(right)) return true;
   const a = left.match(/([가-힣]+)$/u)?.[1] || '';
   const b = right.match(/^([가-힣]+)(?=$|\s|[.,!?。！？(])/u)?.[1] || '';
   if (!a || !b) return false;
-  if (/(?:습니?|[합입됩했겠였않없있]니)$/u.test(a) && /^(?:니다|다)$/u.test(b)) return true;
-  if (a.length >= 1 && /^습니다$/u.test(b)) return true;
-  if (/(?:했|됐|였|었|랐|렸|겠)$/u.test(a) && b === '다') return true;
+  if (brokenEndingSeam(a, b)) return true;
   if (/^[이그저]$/u.test(a) && /^(?:러한|렇게|런|렇다)$/u.test(b)) return true;
   if (/^(?:은|는|을|를|의|와|과|도|만|에서|에게|으로|까지|부터|처럼)(?:도|는|만)?$/u.test(b)) return true;
-  if (/[하되]$/u.test(a) && /^(?:고|게|는|여|지|면|며|면서|었다|였다|도록)$/u.test(b)) return true;
+  if (/[하되]$/u.test(a) && /^(?:고|고자|게|는|여|지|면|며|면서|었다|였다|도록)$/u.test(b)) return true;
+  if (/이라$/u.test(a) && /^고$/u.test(b)) return true;
   if (/^(?:다|니다|습니다)$/u.test(b)) return false;
-  const full = stripParticle(a + b);
-  return full.length >= 2 && full.length <= 16 && witnessed.has(full)
+  const full = a + b;
+  return full.length >= 2 && full.length <= 20 && wordForms(full).some(word => witnessed.has(word))
     && !(witnessed.has(stripParticle(a)) && witnessed.has(stripParticle(b)));
 }
 
@@ -123,7 +134,7 @@ function repairPhysicalProseLines(value) {
       : wordSeam(a.text, b.text, witnessed);
     // A real 가나다 item is never swallowed without a preceding broken polite
     // ending. A chart label, short heading or verse is not a continuation.
-    if (NUMBERED.test(b.text) && !(attach && /(?:습니?|[합입됩했겠였않없있]니|했|됐|였|었|랐|렸|겠)$/u.test(a.text))) continue;
+    if (NUMBERED.test(b.text) && !(attach && brokenEndingSeam(a.text, b.text.match(/^([가-힣]+)/u)?.[1] || ''))) continue;
     // A finite clause need not carry a copied terminal point. Keep this
     // allowance narrower than ordinary punctuated continuations.
     const finiteEnding = b.text.length >= 12 && b.text.split(/\s+/u).length >= 3 && FINITE.test(b.text);
@@ -156,4 +167,47 @@ function repairPhysicalProseLines(value) {
   })) };
 }
 
-module.exports = { repairPhysicalProseLines, wordSeam, witnessedWords };
+// Replay only joins proved on the submitted physical rows, never arbitrary
+// output word pairs merely because their concatenation appears elsewhere.
+function restoreSourceWordSeams(source, value) {
+  const original = String(source || ''), output = String(value || '');
+  const repair = repairPhysicalProseLines(original);
+  const seams = new Set(repair.joins.filter(join => join.separator === '').map(join => {
+    const left = original.slice(0, join.start).match(/([가-힣A-Za-z0-9]+)$/u)?.[1];
+    const right = original.slice(join.end).match(/^([가-힣A-Za-z0-9]+)/u)?.[1];
+    return left && right ? left + '\t' + right : '';
+  }).filter(Boolean));
+  const protectedSpans = [...syntaxSpans(output), ...require('./literalSpans').mathSpans(output)], edits = [];
+  for (const seam of seams) {
+    const [left, right] = seam.split('\t');
+    const re = new RegExp(`(?<![가-힣A-Za-z0-9])${left}([ \\t\\r\\n]+)${right}(?![가-힣A-Za-z0-9])`, 'gu');
+    for (const m of output.matchAll(re)) {
+      const start = m.index + left.length, end = start + m[1].length;
+      if (protectedSpans.some(span => span.start < end && span.end > start)) continue;
+      if (edits.some(edit => edit.start === start)) continue;
+      edits.push({ start, end });
+    }
+  }
+  // A generated predicate can be split before 다. and then mistaken for a
+  // new Hangul list item. Require an excess marker AND an attested verb form;
+  // existing source list items never supply permission to consume a marker.
+  const markerCount = text => (text.match(/^\s*다\.(?=\s|$)/gmu) || []).length;
+  let excess = markerCount(output) - markerCount(original);
+  const witnessed = witnessedWords(original);
+  for (const m of output.matchAll(/([^\n]{28,})\n(?:[ \t]*\n)*[ \t]*다\.(?=\s|$)/gu)) {
+    if (excess <= 0) break;
+    const left = m[1].trimEnd(), word = left.match(/([가-힣]+)$/u)?.[1] || '';
+    if (left.split(/\s+/u).length < 4 || !/(?:한|된|했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(word)
+        || !wordForms(word + '다').some(form => witnessed.has(form))) continue;
+    const start = m.index + left.length, end = m.index + m[0].length - 2;
+    if (protectedSpans.some(span => span.start < end && span.end > start)
+        || edits.some(edit => edit.start === start)) continue;
+    edits.push({ start, end });
+    excess--;
+  }
+  let text = output;
+  for (const edit of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, edit.start) + text.slice(edit.end);
+  return { text, repairCount: edits.length, contentPreserved: text.replace(/\s/gu, '') === output.replace(/\s/gu, '') };
+}
+
+module.exports = { repairPhysicalProseLines, restoreSourceWordSeams, wordSeam, witnessedWords };

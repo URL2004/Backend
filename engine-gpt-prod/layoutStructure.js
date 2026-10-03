@@ -190,7 +190,8 @@ function analyzeLineRecords(source, quoteAnalysis) {
       parallelSloganTitle: parallelSloganTitleIndices.has(record.index),
       parallelSectionHeading: parallelSectionHeadingIndices.has(record.index),
       labelGroupHeading: labelGroupHeadingIndices.has(record.index),
-      numberedLabelHeading: numberedLabelHeadingIndices.has(record.index)
+      numberedLabelHeading: numberedLabelHeadingIndices.has(record.index),
+      witnessedWords
     });
     if (wrappedWord && ['prose', 'list', 'heading', 'title'].includes(record.role)) {
       record.role = 'prose';
@@ -237,8 +238,8 @@ function classifyLine(value, context = {}) {
   if (isExactMetadataLine(text)) return 'signature';
   if (context.signatureLike) return 'signature';
   if (isAttributedCoverTitle(text, context)) return 'title';
-  if (isKnownHeadingLine(text)) return 'heading';
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
+  if (isKnownHeadingLine(text)) return 'heading';
   if (isFlowSequenceLine(text)) return 'flow';
   if (context.plainListLike) return 'list';
   if (context.numberedLabelHeading) return 'heading';
@@ -255,6 +256,11 @@ function classifyLine(value, context = {}) {
   // A document-level pattern is stronger than a local unfinished-clause guess.
   // Otherwise an attested parallel heading ending in a particle is glued to prose.
   if (isDependentLead(text) && context.next) return context.parallelSectionHeading ? 'heading' : 'prose';
+  // Adding visual gaps must not turn a broken predicate into a new subtitle.
+  if (context.next && text.length >= 16 && text.split(/\s+/u).length >= 4
+      && !/^(?:은|는|이|가|을|를|의|와|과|도|만|에서|에게|으로)(?=\s)/u.test(context.next.text)
+      && require('./physicalProseLines').wordSeam(text, context.next.text,
+        context.witnessedWords || new Set())) return 'prose';
   if (isContextualProseContinuation(text, context.next?.text)) return context.parallelSectionHeading ? 'heading' : 'prose';
   if (context.labelGroupHeading) return 'heading';
   if (isContextualNominalHeading(text, context)) return 'heading';
@@ -987,8 +993,11 @@ function detectContextTableLineIndices(records, excluded = new Set()) {
 function detectCodeLineIndices(records, source = '') {
   const out = new Set();
   const bare = require('../engine/bareCode').bareCodeSpans(source);
+  const displayMath = require('./literalSpans').mathSpans(source)
+    .filter(span => /^(?:\\\[|\$\$)/u.test(span.value));
+  const protectedSpans = [...bare, ...displayMath];
   for (const record of records || []) {
-    if (bare.some(span => span.start <= record.start && span.end >= record.end)) out.add(record.index);
+    if (protectedSpans.some(span => span.start <= record.start && span.end >= record.end)) out.add(record.index);
   }
   let fence = null;
   for (const record of records || []) {

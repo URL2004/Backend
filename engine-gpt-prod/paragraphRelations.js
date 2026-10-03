@@ -47,6 +47,17 @@ function refineParagraphRelations(value, { protectedBlocks = [], documentProfile
     return [...atoms(b)].some(w => words.has(w));
   };
 
+  // A short nominal label introduces the following developed prose. Preserve
+  // that attachment while separating it from the preceding completed body.
+  for (let i = 1; i < records.length - 1; i++) {
+    const r = records[i], prev = records[i - 1], next = records[i + 1];
+    const rest = r.role === 'label_inline' ? layout.labelParts(r.text)?.rest || '' : '';
+    if (plain(prev) && plain(next) && prev.text.length >= 80 && next.text.length >= 80
+        && rest.length >= 4 && rest.length <= 60 && !layout.isSentenceComplete(rest)
+        && layout.isSentenceComplete(prev.text) && layout.isSentenceComplete(next.text))
+      add(prev.end, r.start, '\n\n', 'nominal_label_section');
+  }
+
   // Label groups are an alternative/step list, not the end of a preceding
   // evaluation paragraph. Do not add gaps between short form fields.
   for (let i = 1; i < records.length - 1; i++) {
@@ -66,6 +77,16 @@ function refineParagraphRelations(value, { protectedBlocks = [], documentProfile
     while (records[j]?.blank) j++;
     const right = records[j];
     if (!right || j === i + 1 || !safeGap(left.end, right.start)) continue;
+    const leftSentences = plain(left) ? splitSentenceSpans(left.text) : [];
+    const lastLeft = leftSentences.at(-1);
+    if (lastLeft && leftSentences.length >= 2 && /^(?:첫째[,，]|첫\s*번째(?:는|,))/u.test(right.text)
+        && /(?:장점|단점|이유|목적|방법|특징|원칙|요인)[^.!?]{0,45}(?:두|세|네|다섯|여섯|\d+)\s*가지(?:이다|입니다|가\s*있다|가\s*있습니다)[.!]$/u.test(lastLeft.text)) {
+      const a = contentStart(left) + leftSentences.at(-2).end, b = contentStart(left) + lastLeft.start;
+      if (safeGap(a, b)) {
+        add(a, b, '\n\n', 'enumeration_intro');
+        continue;
+      }
+    }
     const numberedClaim = ['list', 'heading'].includes(left.role) && /^\d+[.)]\s/u.test(left.text)
       && layout.isSentenceComplete(left.text);
     // A complete reason explains its numbered claim; keep the number as a

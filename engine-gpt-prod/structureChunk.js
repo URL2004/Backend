@@ -773,6 +773,10 @@ function validHeadingAnchorBoundary(text, expected, start, end) {
       || (/\s/u.test(text[start - 1] || '') && /\s/u.test(text[end] || '')
         && /[.!?。！？]$/u.test(text.slice(lineStart, start).trim()));
   }
+  if (/^[가-하][.)]$/u.test(String(expected || '').trim())) {
+    return !/[\p{L}\p{N}_]/u.test(text[start - 1] || '')
+      && !syntaxSpans(text).some(span => span.start <= start && span.end > start);
+  }
   if (!/^(?:\d+[.)]|\(\d+\))$/u.test(String(expected || '').trim())) return true;
   return !/[\p{L}\p{N}_.]/u.test(text[start - 1] || '') && !/\d/u.test(text[end] || '');
 }
@@ -1038,8 +1042,14 @@ function restoreCodeWhitespace(source, value) {
   const { syntaxSpans } = require('../engine/textSyntax');
   const original = normalizeNewlines(source);
   let text = normalizeNewlines(value);
-  const expected = syntaxSpans(original).filter(s => s.spanType === 'code');
-  const actual = syntaxSpans(text).filter(s => s.spanType === 'code');
+  const protectedSpans = value => {
+    const code = syntaxSpans(value).filter(s => s.spanType === 'code');
+    return [...code, ...require('./literalSpans').mathSpans(value)
+      .filter(s => /^(?:\\\[|\$\$)/u.test(s.value) && !code.some(c => c.start <= s.start && c.end >= s.end))]
+      .sort((a, b) => a.start - b.start);
+  };
+  const expected = protectedSpans(original);
+  const actual = protectedSpans(text);
   if (expected.length !== actual.length) return { text, pass: false };
   let pass = true;
   for (let i = expected.length - 1; i >= 0; i--) {
@@ -1741,8 +1751,12 @@ function restoreStructuralVisualGaps(value, { excludedBlocks = new Set(), develo
     const left = nonEmpty[index];
     const right = nonEmpty[index + 1];
     const blankLineCount = Math.max(0, right.index - left.index - 1);
-    if (isVisualGapExcluded(left, excludedBlocks) || isVisualGapExcluded(right, excludedBlocks)) continue;
-    if (blankLineCount > 0 || !needsVisualParagraphGap(left, right, developedListGaps)) continue;
+    // A reference block owns its internal lines, not the boundary separating
+    // the preceding prose from its heading. Keep the bibliography intact.
+    const referenceOpening = left.role === 'prose' && layoutStructure.isSentenceComplete(left.text)
+      && /^(?:참고\s*(?:문헌|자료)|References|Bibliography)\s*$/iu.test(right.text);
+    if (!referenceOpening && (isVisualGapExcluded(left, excludedBlocks) || isVisualGapExcluded(right, excludedBlocks))) continue;
+    if (blankLineCount > 0 || (!referenceOpening && !needsVisualParagraphGap(left, right, developedListGaps))) continue;
     // 뒤에서부터 삽입하면 앞서 계산한 원문 행 인덱스가 흔들리지 않는다.
     lines.splice(right.index + repairCount, 0, '');
     repairCount += 1;
@@ -1845,11 +1859,40 @@ function* restoreParagraphLayoutSteps(options = {}) {
       readability: compactReadability(layoutStructure.measureParagraphReadability(anchored.text, options)),
       pass: anchored.contentPreserved };
   }
-  const result = yield* restoreParagraphLayoutBase(options);
+  let result = yield* restoreParagraphLayoutBase(options);
   yield;
   const profile = canonicalProfileName(options.documentProfile);
   if (contract.paragraph.prosePolicy === 'preserve' || options.mode === 'polish' || ['creative', 'legal_contract', 'clinical_record'].includes(profile)
       || (options.chunks || []).some(c => c.lineBoundaryPolicy === 'all')) return result;
+  // Aggregate target counts are insufficient: a balanced split can leave one
+  // side at eight sentences after reaching the whole-document target. Check
+  // each editable reading unit, preserving literal bytes and source roles.
+  const readabilityOptions = { ...options,
+    protectedBlocks: (options.chunks || []).filter(c => c.locked).map(c => c.text) };
+  const edits = [];
+  const protectedKeys = new Set(readabilityOptions.protectedBlocks.map(bare));
+  let cursor = 0;
+  for (const paragraph of splitParagraphs(result.text)) {
+    const start = result.text.indexOf(paragraph, cursor);
+    if (start < 0) continue;
+    cursor = start + paragraph.length;
+    if (layoutStructure.isStructureDominatedParagraph(paragraph)
+        || touchesProtectedBlock(paragraph, protectedKeys)) continue;
+    const groups = splitSourceRoleForReadability(paragraph, readabilityOptions);
+    if (groups.length > 1) edits.push({ start, end: cursor, text: groups.join('\n\n'), splits: groups.length - 1 });
+  }
+  if (edits.length) {
+    let text = result.text;
+    for (const edit of edits.reverse()) text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+    if (bare(text) === bare(result.text)) {
+      const measured = layoutStructure.measureParagraphReadability(text, readabilityOptions);
+      result = { ...result, text, applied: true, policy: `${result.policy}+readability_cap`,
+        targetCount: measured.paragraphCount, afterCount: measured.paragraphCount,
+        explicitParagraphCountAfter: layoutStructure.splitExplicitParagraphs(text).length,
+        proseSplitCount: Number(result.proseSplitCount || 0) + edits.reduce((n, e) => n + e.splits, 0),
+        readability: compactReadability(measured), pass: measured.overlongCount === 0 };
+    }
+  }
   const extra = require('./proseParagraphs').splitProseParagraphs(result.text, {
     strength: contract.strength,
     protectedBlocks: (options.chunks || []).filter(c => c.locked).map(c => c.text)
@@ -2938,9 +2981,9 @@ function findSplitCandidate(paragraphs, protectedBlocks, readabilityOptions = {}
 // keeping its original internal whitespace instead of rejoining its fragments.
 function splitLayoutSentences(value, { literalProtectedBlocks = [] } = {}) {
   const text = String(value || '');
-  if (!literalProtectedBlocks.length) return splitSentences(text);
-  const ranges = literalProtectedBlocks.flatMap(block =>
-    findWhitespaceEquivalentSpans(text, block, 0, Infinity));
+  const ranges = [...syntaxSpans(text), ...require('./literalSpans').mathSpans(text),
+    ...literalProtectedBlocks.flatMap(block => findWhitespaceEquivalentSpans(text, block, 0, Infinity))];
+  if (!ranges.length) return splitSentences(text);
   const spans = splitSentenceSpans(text);
   const groups = [];
   for (const span of spans) {

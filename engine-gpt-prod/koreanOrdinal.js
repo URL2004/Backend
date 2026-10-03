@@ -7,7 +7,7 @@ const ORDINAL = '(?:(?:첫|둘|셋|넷|다섯|여섯|일곱|여덟|아홉|열|�
 const PREFIX = new RegExp(`^(\\s*${ORDINAL}(?:[,，:：]\\s*|[.．]\\s+))(\\S[\\s\\S]*)$`, 'u');
 // Explicit enumerative predicate frames, not arbitrary ordinal adjectives
 // such as "첫 번째 실험" or "첫째 아이". These may have no comma.
-const FRAME_LEAD = '(?:(?:본|이번|해당)\\s*(?:연구|조사|분석|프로젝트)의\\s+)?';
+const FRAME_LEAD = '(?:(?:본|이번|해당)\\s*(?:연구|조사|분석|프로젝트)의\\s+|[가-힣]{2,16}(?:이|가|은|는)\\s+(?:중요한|필요한|유용한|효과적인)\\s+)?';
 const FRAME_NOUN = '(?:의의|이유|목적|한계|원칙|특징|과제|장점|문제|요인)';
 const FRAME_TAIL = `\\s+${FRAME_NOUN}(?:(?:은|는|로는|으로는)\\s+|(?:로|으로)[,，:：]\\s*)`;
 function ordinalPrefix(value) {
@@ -31,6 +31,18 @@ function ordinalMarkers(value) {
   const re = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:[,，:：](?=\\s|[가-힣A-Za-z])|[.．](?=\\s))`, 'gu');
   const markers = [];
   for (const match of text.matchAll(re)) {
+    const start = match.index + match[1].length;
+    if (literals.some(span => span.start <= start && span.end > start)) continue;
+    markers.push({ marker: match[2].replace(/\s+/gu, ''), number: ordinalNumber(match[2]), start,
+      lineOrdinal: text.slice(0, start).split('\n').length });
+  }
+  // An enumerator used as the topic still owns its item: 둘째, X -> 둘째는 X.
+  // A predicate is required so family references (첫째는 학교에 갔다) are not
+  // promoted to structural markers merely because they contain an ordinal.
+  const topics = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:은|는)\\s+([^.!?。！？\\n]{1,160}(?:이다|입니다|것이다|것입니다))(?=[.!?。！？]|$)`, 'gu');
+  const hasEnumeration = markers.length > 0 || /(?:이유|목적|원칙|특징|과제|장점|단점|문제|요인|항목|방법)[^.!?\n]{0,30}(?:[두세네]|다섯|여섯|\d+)\s*가지/u.test(text);
+  for (const match of text.matchAll(topics)) {
+    if (!hasEnumeration) continue;
     const start = match.index + match[1].length;
     if (literals.some(span => span.start <= start && span.end > start)) continue;
     markers.push({ marker: match[2].replace(/\s+/gu, ''), number: ordinalNumber(match[2]), start,

@@ -1,7 +1,7 @@
 # Post-deployment sentence and paragraph recovery — local validation
 
 Base: production commit `a21a58b33916d0f1053a1d1a19836dfef4b2af79`.
-Branch: `fix/postdeploy-structure-20261003`. Unreleased; no production writes.
+Branch: `fix/postdeploy-structure-20261003`. Release candidate: `gpt-prod-v2.5.101`. Local validation did not modify production data.
 
 The audit covered 86 humanization histories after the October 3 deployment,
 plus 88 earlier histories for regression comparison. Successful model chunks

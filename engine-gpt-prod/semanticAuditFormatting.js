@@ -6,7 +6,7 @@
 const korean = require('./koreanRefinement');
 const structure = require('./structureChunk');
 const literals = require('./literalSpans');
-const { relationDigest } = require('./layoutRelations');
+const { preparationRelationDigest } = require('./layoutRelations');
 const content = text => String(text).replace(/\s/gu, '');
 const literalValues = text => JSON.stringify([
   literals.freezeInlineCode(text).blocks.map(block => block.value),
@@ -45,7 +45,7 @@ async function prepareSemanticAuditText(source, candidate, options = {}) {
   const first = await once(before);
   if (content(first) !== content(before)
       || literalValues(first) !== literalValues(before)
-      || relationDigest(first) !== relationDigest(before)) return before;
+      || preparationRelationDigest(first) !== preparationRelationDigest(before)) return before;
   // A context-dependent or oscillating formatter cannot establish the final
   // form. Keep the prior candidate and let the existing final audit handle it.
   const second = await once(first);

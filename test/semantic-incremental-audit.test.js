@@ -88,6 +88,27 @@ test('without a store behaviour is unchanged: every section is judged every time
   });
 });
 
+test('document preparation precedes segmentation and receipt lookup; final bytes reuse exact verdicts', async () => {
+  await withAudit(async ({ run, calls }) => {
+    const store = receipts.createReceiptStore();
+    const prepared = SOURCE.replaceAll('검사용으로', '검사용 으로');
+    let baseline;
+    const first = await run(SOURCE, { receiptStore: store,
+      prepareCandidateText: async (_source, candidate) => candidate.replaceAll('검사용으로', '검사용 으로'),
+      onPreparedCandidate: text => { baseline = text; } });
+    assert.equal(baseline, prepared);
+    assert.equal(first.outputText, prepared);
+    assert.equal(calls.length, 4);
+    const final = await run(prepared, { receiptStore: store, allowRepair: false,
+      discourseSignals: ['final_semantic_revalidation'] });
+    assert.equal(final.pass, true);
+    assert.equal(calls.length, 4, 'same exact prepared bytes need no additional model request');
+    assert.equal(final.reports.filter(r => r.receiptReused).length, 4);
+    await run(prepared.replace('합성 문장 1번', '달라진 문장 1번'), { receiptStore: store, allowRepair: false });
+    assert.ok(calls.length > 4, 'changed text still requires a new verdict');
+  });
+});
+
 test('earlier audit receipts connect to the final verdict-only audit for unchanged sections', async () => {
   await withAudit(async ({ run, calls }) => {
     const store = receipts.createReceiptStore();

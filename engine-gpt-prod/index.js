@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.101';
+const VERSION = 'gpt-prod-v2.5.102';
 const DETECT_VERSION = 'gpt-detect-v1.52';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -195,6 +195,7 @@ async function run(options = {}) {
     for (const target of [out.engineMeta, out.result?.engineMeta]) if (target) Object.assign(target, {
       modelCallCount: ledger.modelCallCount, httpAttemptCount: ledger.httpAttemptCount,
       semanticModelCallCount: ledger.semanticModelCallCount,
+      modelCost: ledger.modelCost,
       failedEstimatedUsd: ledger.failedEstimatedUsd, unknownUsageCount: ledger.unknownUsageCount,
       unknownEstimatedUsd: ledger.unknownEstimatedUsd,
       paragraphAlignmentElapsedMs: ledger.layout.elapsedMs, paragraphAlignmentFastPath: ledger.layout.fastPath,

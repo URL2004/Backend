@@ -6,7 +6,7 @@ const DEFAULT_PRICES = {
   'gpt-6-sol': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 10 },
   'gpt-5.6-terra': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 },
   'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 },
-  'gpt-5.6-sol': { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 }
+  'gpt-5.6-sol': { input: 4, cachedInput: 0.4, cacheWrite: 5, output: 20 }
 };
 
 function priceFor(model) {

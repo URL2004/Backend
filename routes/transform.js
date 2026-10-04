@@ -1518,6 +1518,7 @@ function buildArchiveObservability(job) {
     recoveryTimeLimitExhausted: engineMeta.recoveryTimeLimitExhausted === true,
     recoveryLastDeniedReason: archiveString(engineMeta.recoveryLastDeniedReason, 80),
     recoveryBudgetStageUsageUsd: compactArchiveCodeCountMap(engineMeta.recoveryBudgetStageUsageUsd),
+    modelCost: require('../engine-gpt-prod/modelCostSummary').sanitize(engineMeta.modelCost) || undefined,
     recoveryReservedUsd: archiveFinite(engineMeta.recoveryReservedUsd),
     recoveryUnknownUsageUsd: archiveFinite(engineMeta.recoveryUnknownUsageUsd),
     paragraphAlignmentElapsedMs: archiveFinite(engineMeta.paragraphAlignmentElapsedMs),
@@ -2140,6 +2141,9 @@ function recoverableTechnicalBlockReason(out) {
     ...(Array.isArray(engineMeta.chunkFailureCodes) ? engineMeta.chunkFailureCodes : []),
     ...(Array.isArray(engineMeta.chunkResidualFailureCodes) ? engineMeta.chunkResidualFailureCodes : [])
   ].map(value => String(value || '').toLowerCase());
+  // A concurrent chunk may also report a temporary error. Account-wide
+  // exhausted credit still makes a whole-job retry futile.
+  if (modelFailureCodes.includes('openai_quota_exhausted')) return '';
   const recoverableModelFailure = modelFailureCodes.find(code => /^(?:openai_(?:truncated_output|incomplete_output|empty_output|timeout|network_error|server_error|rate_limited))$/u.test(code));
   if (recoverableModelFailure) return recoverableModelFailure;
   // refusal·quota·prompt 계약 실패처럼 반복해도 나아지지 않는 원인이 명시된

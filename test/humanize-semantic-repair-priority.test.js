@@ -404,7 +404,7 @@ test('full humanization delivers the verified relation fix instead of restoring 
     }
   });
   global.fetch = async (_url, options) => {
-    const body = JSON.parse(options.body);
+    const body = require('./helpers/responses-request.cjs')(options.body);
     const name = body.text?.format?.name;
     calls.push(name);
     let json;

@@ -44,7 +44,9 @@ function collectObligations(source, reports = [], project = value => value) {
 function reviewSchema(base, obligations) {
   if (!obligations.length) return base;
   return {...base,properties:{...base.properties,obligationReviews:{type:'array',items:{type:'object',additionalProperties:false,
-    properties:{id:{type:'string',enum:obligations.map(o=>o.id)},
+    // IDs are request data. Embedding them in the schema invalidates the
+    // provider's cached instruction prefix for every document.
+    properties:{id:{type:'string'},
       status:{type:'string',enum:['resolved','not_error','unresolved']},
       sourceSpan:{type:'string'},candidateSpan:{type:'string'},detail:{type:'string'}},
     required:['id','status','sourceSpan','candidateSpan','detail']}}},required:[...base.required,'obligationReviews']};
@@ -72,6 +74,8 @@ function reviewPayload(obligations, references = {}) {
 
 function assessReviews(obligations, reviews, source, candidate, {allowDismiss=false,candidateReferences={}}={}) {
   const result=[], pending=[];
+  const expectedIds = new Set(obligations.map(o => o.id));
+  const validIds = Array.isArray(reviews) && reviews.every(r => expectedIds.has(r?.id));
   for (const {id,finding} of obligations) {
     const matches=(reviews||[]).filter(r=>r?.id===id),answer=matches[0];
     // An explicit empty source quote references the immutable source anchor ID;
@@ -81,7 +85,7 @@ function assessReviews(obligations, reviews, source, candidate, {allowDismiss=fa
     const validRef=ref && [finding.sourceSpan,finding.candidateSpan].includes(ref) && unique(candidate,ref);
     const r=answer && {...answer,sourceSpan:answer.sourceSpan===''?finding.sourceSpan:answer.sourceSpan,
       candidateSpan:answer.candidateSpan==='' && validRef ? ref : answer.candidateSpan};
-    const valid=matches.length===1 && ['resolved','not_error','unresolved'].includes(r.status)
+    const valid=validIds && matches.length===1 && ['resolved','not_error','unresolved'].includes(r.status)
       && r.sourceSpan===finding.sourceSpan && unique(source,r.sourceSpan)
       && unique(candidate,r.candidateSpan) && r.candidateSpan.trim().length>=8 && r.detail?.trim().length>=8
       && (r.status!=='not_error'||allowDismiss)

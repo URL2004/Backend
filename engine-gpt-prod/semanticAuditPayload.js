@@ -89,7 +89,7 @@ const OBLIGATION_INSTRUCTION = [
 
 // Returns the rows to serialise. `compacted` is true only when the compact
 // form is proven to expand to the original wire payload and is smaller.
-function compactObligationPayload(rows) {
+function compactObligationPayload(rows, { includeInstructionCost = false } = {}) {
   const original = Array.isArray(rows) ? rows : [];
   // An unserialisable payload is returned untouched; the caller's own
   // serialisation then behaves exactly as it did before this module existed.
@@ -124,6 +124,11 @@ function compactObligationPayload(rows) {
     return keep('compaction_error');
   }
   if (text.length >= fullChars) return keep('not_smaller');
+  // A small repeated quotation can cost less than explaining its shorthand.
+  // Account for that instruction at the actual judge boundary, not just for
+  // the JSON reduction. Byte count is a conservative size proxy, not tokens.
+  if (includeInstructionCost && Buffer.byteLength(text) + Buffer.byteLength(OBLIGATION_INSTRUCTION) + 1
+      >= Buffer.byteLength(JSON.stringify(original))) return keep('instruction_overhead');
   return { rows: compact.rows, compacted: true, reason: 'repeated_quotation', instruction: OBLIGATION_INSTRUCTION,
     omittedFields: compact.omitted, fullChars, compactChars: text.length, version: VERSION };
 }

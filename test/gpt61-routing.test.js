@@ -46,7 +46,7 @@ test('6.1 Responses requests preserve supported efforts and replace legacy reten
     const body = JSON.parse(init.body);
     assert.match(String(url), /\/responses$/);
     assert.equal(body.model, 'gpt-6.1-sol');
-    assert.deepEqual(body.prompt_cache_options, { ttl: '30m' });
+    assert.deepEqual(body.prompt_cache_options, { mode: 'explicit', ttl: '30m' });
     assert.equal(body.prompt_cache_retention, undefined);
     assert.ok(['low', 'medium', 'high'].includes(body.reasoning.effort));
     return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{"ok":true}' }] }], usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200 });

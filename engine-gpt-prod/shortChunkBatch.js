@@ -1,6 +1,7 @@
 'use strict';
 const { createHash } = require('node:crypto');
-const { emptyUsage } = require('./usageCost');
+const { emptyUsage, addUsage } = require('./usageCost');
+const { classifyModelFailure, isNonEscalatableModelFailureCode } = require('./modelFailure');
 function createShortChunkBatch(providerCall, { enabled = process.env.HUMANIZE_SHORT_CHUNK_BATCH_ENABLED === '1', concurrency = 2 } = {}) {
   let active = 0;
   const waiting = [];
@@ -30,7 +31,7 @@ function createShortChunkBatch(providerCall, { enabled = process.env.HUMANIZE_SH
     if (items.length === 1) { try { items[0].resolve(await call(items[0].options)); } catch (e) { items[0].reject(e); } return; }
     metrics.batchCallCount++; metrics.batchedChunkCount += items.length;
     const first = items[0].options;
-    let response;
+    let response, batchError;
     try {
       response = await call({ ...first,
         system: first.system + '\n[Independent chunk batch] Each item is an independent task. Follow its task contract. Return its exact id and result. Never move text, facts, headings or paragraphs between ids.',
@@ -43,21 +44,33 @@ function createShortChunkBatch(providerCall, { enabled = process.env.HUMANIZE_SH
         maxOutputTokens: items.reduce((sum, item) => sum + item.options.maxOutputTokens, 0),
         meta: { ...first.meta, phase: 'primary_short_batch' }
       });
-    } catch (error) { if (first.signal?.aborted) { items.forEach(item => item.reject(error)); return; } }
+    } catch (error) {
+      // The provider has already applied its bounded transport/schema retry
+      // policy. Never fan quota, timeout or refusal into N individual retries.
+      if (first.signal?.aborted || isNonEscalatableModelFailureCode(classifyModelFailure(error))) {
+        items.forEach((item, index) => item.reject(Object.assign(new Error(error.message), error,
+          { name: error.name, usage: allocateUsage(error.usage, index, items.length) }))); return;
+      }
+      batchError = error;
+    }
     const rows = Array.isArray(response?.json?.items) ? response.json.items : [];
     await Promise.all(items.map(async (item, index) => {
       try {
+        // Allocate the batch cost to EVERY item, including an item whose
+        // missing/duplicate ID requires a fresh individual result.
+        const usage = allocateUsage((response || batchError)?.usage, index, items.length);
         const matches = rows.filter(row => row.id === item.id);
         if (matches.length !== 1) {
-          item.options.signal?.throwIfAborted();
           metrics.individualRecoveryCount++;
-          item.resolve(await call(item.options)); return;
-        }
-        const usage = emptyUsage();
-        for (const field of Object.keys(usage)) {
-          const value = Number(response.usage?.[field] || 0);
-          const portion = /Usd$/.test(field) ? Math.floor(value * 1e6 / items.length) / 1e6 : Math.floor(value / items.length);
-          usage[field] = index === 0 ? value - portion * (items.length - 1) : portion;
+          try {
+            item.options.signal?.throwIfAborted();
+            const recovered = await call(item.options);
+            item.resolve({ ...recovered, usage: addUsage(usage, recovered.usage) });
+          } catch (error) {
+            const combined = Object.assign(new Error(error.message), error, { usage: addUsage(usage, error.usage) });
+            item.reject(combined);
+          }
+          return;
         }
         item.resolve({ ...response, json: matches[0].result, usage, batchId: item.id });
       } catch (error) { item.reject(error); }
@@ -65,7 +78,9 @@ function createShortChunkBatch(providerCall, { enabled = process.env.HUMANIZE_SH
   }
   return { metrics, complete: (options, chars) => {
     if (!enabled || chars >= 400 || options.meta?.phase !== 'primary') return call(options);
-    const key = createHash('sha256').update(JSON.stringify([options.system, options.model, options.reasoningEffort, options.meta?.mode, options.schema])).digest('hex');
+    const key = createHash('sha256').update(JSON.stringify([options.system, options.model, options.reasoningEffort,
+      options.verbosity, options.safetyIdentifier, options.tools, options.toolChoice, options.include,
+      options.meta?.mode, options.schema])).digest('hex');
     return new Promise((resolve, reject) => {
       let queue = queues.get(key);
       if (queue && (queue.items.length >= 4 || queue.chars + chars > 1600)) { void flush(key, queue); queue = null; }
@@ -77,6 +92,15 @@ function createShortChunkBatch(providerCall, { enabled = process.env.HUMANIZE_SH
       queue.items.push({ id: String(options.meta.chunkIndex), options, resolve, reject });
     });
   } };
+}
+function allocateUsage(value, index, count) {
+  const usage = emptyUsage();
+  for (const field of Object.keys(usage)) {
+    const total = Number(value?.[field] || 0);
+    const portion = /Usd$/.test(field) ? Math.floor(total * 1e6 / count) / 1e6 : Math.floor(total / count);
+    usage[field] = index === 0 ? total - portion * (count - 1) : portion;
+  }
+  return usage;
 }
 function buildChunkWorkUnits(chunks, enabled) {
   if (!enabled) return chunks.map((_, index) => [index]);

@@ -5,6 +5,7 @@ const { logger } = require('../lib/logger');
 const { estimateUsd, addUsage, emptyUsage } = require('./usageCost');
 const { outboundFetch } = require('../lib/outboundPolicy');
 const { assertNoPromptLeak } = require('./promptSecurity');
+const { isQuotaExhaustionMessage } = require('./modelFailure');
 
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 60000;
@@ -51,6 +52,7 @@ async function completeJson(options = {}) {
 
 async function completeJsonRequest({
   system,
+  cacheableSystem,
   user,
   schema,
   schemaName,
@@ -101,7 +103,22 @@ async function completeJsonRequest({
   if (/^gpt-(?:6-(?:luna|sol)|6\.1-sol)(?:-|$)/i.test(model)) {
     // GPT-6 only supports the new 30m cache TTL. Do not forward a stored
     // legacy 24h/in_memory retention value to this API generation.
-    if (config?.cache?.enabled !== false) body.prompt_cache_options = { ttl: '30m' };
+    // Cache only reusable application instructions. The request-specific
+    // nonce, source and candidate stay outside the cache-write boundary.
+    // https://developers.openai.com/api/docs/guides/prompt-caching
+    body.prompt_cache_options = { mode: 'explicit', ttl: '30m' };
+    const instructions = String(system || '');
+    const prefix = typeof cacheableSystem === 'string' && cacheableSystem.length > 0
+      && instructions.startsWith(cacheableSystem) ? cacheableSystem : instructions;
+    body.input = [
+      { role: 'developer', content: [{ type: 'input_text', text: prefix,
+        ...(config?.cache?.enabled !== false && prefix
+          ? { prompt_cache_breakpoint: { mode: 'explicit' } } : {}) }] },
+      ...(prefix.length < instructions.length
+        ? [{ role: 'developer', content: instructions.slice(prefix.length) }] : []),
+      { role: 'user', content: String(user || '') }
+    ];
+    delete body.instructions;
   } else {
     const retention = promptCacheRetention(config, model);
     if (retention) body.prompt_cache_retention = String(retention);
@@ -117,6 +134,7 @@ async function completeJsonRequest({
   const chunkDeadlineMs = Number.isFinite(suppliedDeadline) && suppliedDeadline > 0
     ? suppliedDeadline
     : startedAt + chunkTotalLimitMs;
+  const schemaRetryInstruction = '[구조화 출력 재시도] 직전 응답이 JSON Schema 계약을 위반했습니다. 이번 응답은 지정된 필수 필드·자료형·additionalProperties 제한을 정확히 지키고, JSON 밖의 설명을 쓰지 마세요.';
   const requestForSchemaAttempt = schemaAttempt => ({
     method: 'POST',
     headers: {
@@ -126,10 +144,9 @@ async function completeJsonRequest({
     body: JSON.stringify(schemaAttempt > 0
       ? {
           ...body,
-          instructions: [
-            body.instructions,
-            '[구조화 출력 재시도] 직전 응답이 JSON Schema 계약을 위반했습니다. 이번 응답은 지정된 필수 필드·자료형·additionalProperties 제한을 정확히 지키고, JSON 밖의 설명을 쓰지 마세요.'
-          ].filter(Boolean).join('\n\n')
+          ...(Array.isArray(body.input) ? {
+            input: [body.input[0], { role: 'developer', content: schemaRetryInstruction }, ...body.input.slice(1)]
+          } : { instructions: [body.instructions, schemaRetryInstruction].filter(Boolean).join('\n\n') })
         }
       : body)
   });
@@ -247,8 +264,9 @@ async function completeJsonRequest({
     error.failedEstimatedUsd = accounting.failedEstimatedUsd;
     error.retryCounts = { ...retryCounts, ...error.retryCounts };
     if (detectScoreAttempts.length) error.detectScoreAttempts = detectScoreAttempts;
-    logger.info('gpt_prod.usage', { ...meta, provider: 'openai', model, ...usage,
-      failed: true, retryCounts, elapsedMs: Date.now() - startedAt });
+    logger.info('gpt_prod.usage', { ...meta, stage: require('./callLedger').current()?.policy?.stage || meta.phase || 'main',
+      provider: 'openai', model, ...usage,
+      failed: true, retryCounts: error.retryCounts, elapsedMs: Date.now() - startedAt });
     throw error;
   }
   const elapsedMs = Date.now() - startedAt;
@@ -261,6 +279,7 @@ async function completeJsonRequest({
       selectedModel: model,
       task: meta.task || 'unknown',
       phase: meta.phase || 'main',
+      stage: require('./callLedger').current()?.policy?.stage || meta.phase || 'main',
       mode: meta.mode || '',
       chunkIndex: meta.chunkIndex,
       escalated: meta.escalated === true,
@@ -470,11 +489,6 @@ function retryType(error) {
   return '';
 }
 
-function isQuotaExhaustionMessage(value) {
-  return /(?:exceeded\s+your\s+current\s+quota|check\s+your\s+plan\s+and\s+billing|insufficient[_\s-]*quota|billing\s+hard\s+limit)/iu
-    .test(String(value || ''));
-}
-
 function emptyRetryCounts() {
   return { rateLimit: 0, server: 0, network: 0, timeout: 0, schema: 0, truncation: 0 };
 }
@@ -580,7 +594,7 @@ function normalizeUsage(usage = {}, model, rawResponse = null) {
 function promptCacheDiagnostics(usage = {}, cacheKey) {
   const inputTokens = Math.max(0, Number(usage.inputTokens) || 0);
   const cachedInputTokens = Math.max(0, Math.min(inputTokens, Number(usage.cachedInputTokens) || 0));
-  const cacheWriteTokens = Math.max(0, Math.min(inputTokens, Number(usage.cacheWriteTokens) || 0));
+  const cacheWriteTokens = Math.max(0, Math.min(inputTokens - cachedInputTokens, Number(usage.cacheWriteTokens) || 0));
   const sizeEligible = inputTokens >= PROMPT_CACHE_MIN_TOKENS;
   return {
     enabled: Boolean(cacheKey),
@@ -590,7 +604,7 @@ function promptCacheDiagnostics(usage = {}, cacheKey) {
     hitRatio: inputTokens ? Number((cachedInputTokens / inputTokens).toFixed(4)) : 0,
     cachedInputTokens,
     cacheWriteTokens,
-    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens)
+    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens)
   };
 }
 

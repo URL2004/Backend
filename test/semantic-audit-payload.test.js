@@ -192,7 +192,7 @@ async function runJudge({ signals, model = 'gpt-6.1-sol', candidate = after, sta
     const operators = extractPromptDataSection(opts.user, 'OPERATOR_REVIEW_TARGETS');
     const operatorReviews = operators ? JSON.parse(operators).map(t => ({ ...t, status: 'preserved',
       detail: 'Synthetic operator review explicitly confirms this fixture.' })) : [];
-    const ids = opts.schema.properties.obligationReviews.items.properties.id.enum;
+    const ids = JSON.parse(extractPromptDataSection(opts.user, 'PRIOR_FINDING_OBLIGATIONS')).map(row => row.id);
     return { json: { violations: [], operatorReviews, obligationReviews: ids.map(id => ({ id, status, sourceSpan: '',
       candidateSpan: span, detail: '같은 연구자의 확신 시점과 첫 관찰만이라는 한정을 확인했다.' })) },
       model: opts.model, usage: { estimatedUsd: 0 } };
@@ -212,7 +212,7 @@ const legacyRows = candidate => {
   return policy.reviewPayload(obligations, policy.currentCandidateReferences(obligations, candidate));
 };
 
-test('final verdict request carries the same obligations, questions and texts in compact form', async () => {
+test('initial and final requests preserve all evidence without paying more to explain small abbreviations', async () => {
   const final = await runJudge({ signals: FINAL }), plain = await runJudge({ signals: [] });
   assert.equal(final.calls, 1);
   const rows = legacyRows(after);
@@ -220,18 +220,18 @@ test('final verdict request carries the same obligations, questions and texts in
   assert.equal(rows[0].previousQuestions.length, 2);
   const section = extractPromptDataSection(final.sent.user, 'PRIOR_FINDING_OBLIGATIONS');
   assert.deepEqual(payload.expandObligationRows(JSON.parse(section)), wire(rows));
-  assert.ok(section.length < JSON.stringify(rows).length);
+  assert.equal(section, JSON.stringify(rows));
   assert.deepEqual(JSON.parse(section)[0].previousQuestions.map(q => q.detail), rows[0].previousQuestions.map(q => q.detail));
-  assert.equal(count(section, before), 1);
-  assert.ok(final.sent.system.includes(payload.OBLIGATION_INSTRUCTION));
+  assert.equal(count(section, before), count(JSON.stringify(rows), before));
+  assert.equal(final.sent.system.includes(payload.OBLIGATION_INSTRUCTION), false);
   assert.equal(extractPromptDataSection(final.sent.user, 'SOURCE'), source);
   assert.equal(extractPromptDataSection(final.sent.user, 'REWRITE'), after);
   assert.equal(extractPromptDataSection(final.sent.user, 'SOURCE_CLAIM_LEDGER'), `1. 근거(원문): "${source}"`);
-  // Nothing but the rendering differs from the ordinary request.
-  assert.equal(extractPromptDataSection(plain.sent.user, 'PRIOR_FINDING_OBLIGATIONS'), JSON.stringify(rows));
-  assert.equal(extractPromptDataSection(plain.sent.user, 'SOURCE_CLAIM_LEDGER'), payload.legacyLedgerText(ledger));
+  // Initial and final audits use the same lossless rendering now.
+  assert.equal(extractPromptDataSection(plain.sent.user, 'PRIOR_FINDING_OBLIGATIONS'), section);
+  assert.equal(extractPromptDataSection(plain.sent.user, 'SOURCE_CLAIM_LEDGER'), payload.ledgerText(ledger));
   assert.equal(plain.sent.system.includes(payload.OBLIGATION_INSTRUCTION), false);
-  assert.equal(final.sent.system.replace('\n' + payload.OBLIGATION_INSTRUCTION, ''), plain.sent.system);
+  assert.equal(final.sent.system, plain.sent.system);
   assert.ok(final.sent.system.startsWith(plain.sent.system.slice(0, 2000)));
   assert.deepEqual(final.sent.schema, plain.sent.schema);
   for (const key of ['model', 'reasoningEffort', 'maxOutputTokens', 'verbosity', 'schemaName'])
@@ -241,6 +241,20 @@ test('final verdict request carries the same obligations, questions and texts in
   assert.equal(final.sent.maxOutputTokens, 10500); // one losslessly retained obligation
   assert.equal(final.report.pass, true);
   assert.deepEqual(final.report.obligationReviews, plain.report.obligationReviews);
+});
+
+test('request compaction includes the instruction cost and still compresses large repeated evidence', () => {
+  const small = [row({ previousQuestions: [question(), question({ detail: '다른 검토 질문이다.' })] })];
+  assert.equal(payload.compactObligationPayload(small, { includeInstructionCost: true }).reason, 'instruction_overhead');
+  const quote = '독립적으로 생성한 긴 합성 문장의 근거를 반복하여 기록한다. '.repeat(30);
+  const large = [row({ previousCandidateSpan: quote, previousQuestions: [
+    question({ previousCandidateSpan: quote }), question({ previousCandidateSpan: quote, detail: '두 번째 별개의 질문이다.' })
+  ] })];
+  const result = payload.compactObligationPayload(large, { includeInstructionCost: true });
+  assert.equal(result.compacted, true);
+  assert.deepEqual(payload.expandObligationRows(result.rows), large);
+  assert.ok(Buffer.byteLength(JSON.stringify(result.rows)) + Buffer.byteLength(result.instruction)
+    < Buffer.byteLength(JSON.stringify(large)));
 });
 
 test('compact form does not relax adjudication: silence, primary dismissal and stale quotes stay open', async () => {

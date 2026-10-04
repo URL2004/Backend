@@ -25,6 +25,7 @@ async function track(options, fn) {
   const entry = { id: store.entries.length + 1, stage: safe(store.policy.stage || options.meta?.phase),
     task: safe(options.meta?.task), phase: safe(options.meta?.phase),
     model: safe(options.model), outcome: 'pending', elapsedMs: 0, usage: null, httpAttemptCount: 0,
+    mandatoryAudit: store.policy.optional === false && options.meta?.task === 'judge',
     retryCounts: {}, usageKnown: false };
   store.entries.push(entry);
   const endMandatoryAudit = store.policy.optional === false && options.meta?.task === 'judge'
@@ -61,6 +62,7 @@ function snapshot(store = current()) {
     failedEstimatedUsd: entries.reduce((sum, entry) => sum + (['failed', 'refused'].includes(entry.outcome)
       ? Number(entry.usage?.estimatedUsd || 0) : Number(entry.failedEstimatedUsd || 0)), 0),
     usage: entries.reduce((sum, entry) => addUsage(sum, entry.usage), emptyUsage()),
+    modelCost: require('./modelCostSummary').summarize(entries),
     entries: entries.map(entry => ({ ...entry })) };
 }
 function setRecoveryBudget(budget) { const store = current(); if (store) { store.recoveryBudget = budget; budget?.enableCallAccounting(); } }

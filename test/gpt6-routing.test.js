@@ -34,7 +34,7 @@ test('GPT-6 requests use Responses, new cache TTL and supported efforts', async 
   t.after(()=>{global.fetch=oldFetch;if(oldKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=oldKey;});
   for(const model of ['gpt-6-luna','gpt-6-sol']) for(const effort of ['none','low','medium','high','xhigh','max','minimal']) {
     await completeJson({system:'test',user:'test',schema,model,reasoningEffort:effort,config:{cache:{retention:'24h'}}});
-    const b=bodies.at(-1);assert.deepEqual(b.prompt_cache_options,{ttl:'30m'});assert.equal(b.prompt_cache_retention,undefined);
+    const b=bodies.at(-1);assert.deepEqual(b.prompt_cache_options,{mode:'explicit',ttl:'30m'});assert.equal(b.prompt_cache_retention,undefined);
     assert.equal(b.reasoning.effort,effort==='minimal'?'low':effort);assert.equal(b.temperature,undefined);assert.equal(b.top_p,undefined);
   }
   const {callGpt}=require('../engine-gpt-prod/compat');

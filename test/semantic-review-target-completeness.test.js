@@ -10,7 +10,7 @@ test('more than sixteen obligations and twelve operator questions all reach the 
  const policy={collectObligations:()=>obligations,currentCandidateReferences:()=>({}),reviewPayload:rows=>rows,
   reviewSchema:(base,rows)=>({...base,obligationIds:rows.map(o=>o.id)}),
   assessReviews:(all,answers)=>({reviews:answers,pending:all.filter(o=>!answers.some(a=>a.id===o.id)).map(()=>({repairable:false}))})};
- const operator={targets:()=>operators,instruction:'synthetic questions',
+ const operator={targets:()=>operators,instructionsFor:()=> 'synthetic questions',
   schema:(base,rows)=>({...base,operatorIds:rows.map(o=>o.id)}),
   assess:(all,answers)=>({reviews:answers,pending:all.filter(o=>!answers.some(a=>a.id===o.id)).map(()=>({repairable:false}))})};
  const client={completeJson:async opts=>{

@@ -1,5 +1,10 @@
 'use strict';
 
+function isQuotaExhaustionMessage(value) {
+  return /exceeded\s+your\s+current\s+quota|check\s+your\s+plan\s+and\s+billing|insufficient[_\s-]*quota|billing\s+hard\s+limit|\bno\s+credits?\s+remaining\b|\bcredit\s+balance\s+(?:is\s+)?(?:exhausted|depleted)\b/iu
+    .test(String(value || ''));
+}
+
 /**
  * 모델 호출 실패를 모든 회복 경로에서 같은 코드로 기록한다. OpenAI
  * 클라이언트가 오류 유형별 재시도를 이미 마친 뒤 던진 오류는 품질 문제가
@@ -17,7 +22,7 @@ function classifyModelFailure(error) {
     return 'openai_refusal';
   }
   if (rawCode === 'OPENAI_QUOTA_EXHAUSTED'
-      || /exceeded\s+your\s+current\s+quota|check\s+your\s+plan\s+and\s+billing|insufficient[_\s-]*quota|billing\s+hard\s+limit/u.test(message)) {
+      || isQuotaExhaustionMessage(message)) {
     return 'openai_quota_exhausted';
   }
   if (status === 429 || /\b429\b|rate.?limit|too many requests/u.test(message)) {
@@ -58,6 +63,7 @@ function isNonEscalatableModelFailureCode(value) {
 }
 
 module.exports = {
+  isQuotaExhaustionMessage,
   classifyModelFailure,
   isTransportFailureCode,
   isNonEscalatableModelFailureCode

@@ -7,7 +7,7 @@ test('relation contract distinguishes implicit adjacent references from changed 
   t.after(()=>{global.fetch=old;if(key===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=key;});
   let instructions='';
   global.fetch=async(_url,init)=>{
-    const body=JSON.parse(init.body);instructions=body.instructions;
+    const body=require('./helpers/responses-request.cjs')(init.body);instructions=body.instructions;
     return Response.json({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({violations:[]})}]}],
       usage:{input_tokens:10,output_tokens:10,total_tokens:20}});
   };

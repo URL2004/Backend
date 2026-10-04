@@ -99,4 +99,9 @@ test('승인 편집 0건의 일시적 모델 실패는 사용자 차단 전에 �
     engineMeta: { chunkFailureCodes: ['openai_refusal'] }
   });
   assert.equal(refusal, '', 'refusal은 같은 문서 전체를 반복 호출하는 근거로 쓰지 않는다');
+  const exhausted = transformRouter.recoverableTechnicalBlockReason({
+    floorReport: { status: 'blocked', criticals: [{ gate: 'no_approved_model_chunks' }] },
+    engineMeta: { chunkFailureCodes: ['openai_rate_limited', 'openai_quota_exhausted'] }
+  });
+  assert.equal(exhausted, '', '잔액 소진이 함께 있으면 일시적 실패가 있어도 전체 작업을 재시도하지 않는다');
 });

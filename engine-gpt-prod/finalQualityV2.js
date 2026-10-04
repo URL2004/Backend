@@ -436,6 +436,15 @@ async function runSemanticDocumentAuditInternal({
 }) {
   const receipts = receiptStore ? require('./semanticSegmentReceipts') : null;
   const store = receipts?.isReceiptStore(receiptStore) ? receiptStore : null;
+  // Settle deterministic document layout before choosing section boundaries,
+  // hints and receipt keys. Preparing only inside judgeAndRepair made the
+  // initial key describe the old layout while its verdict covered new bytes.
+  // Verdict-only calls must still judge exactly their supplied candidate.
+  if (allowRepair !== false && typeof prepareCandidateText === 'function' && !signal?.aborted) {
+    const prepared = await prepareCandidateText(source, outputText);
+    if (typeof prepared === 'string' && prepared.trim())
+      outputText = restoreReviewPairBoundaryWhitespace(outputText, prepared);
+  }
   let pairs = buildReviewPairs(source, outputText);
   const basePairs = pairs;
   pairs = require('./semanticAuditSchedule').planVerdictPairs(source, outputText, pairs, allowRepair);

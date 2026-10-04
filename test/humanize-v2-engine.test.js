@@ -302,7 +302,7 @@ function installEngineMock(t, options = {}) {
   const calls = [];
   let semanticCalls = 0;
   global.fetch = async (_url, init) => {
-    const body = JSON.parse(init.body);
+    const body = require('./helpers/responses-request.cjs')(init.body);
     const name = body.text?.format?.name;
     calls.push({ name, model: body.model, body });
     if (name === 'gpt_prod_humanize_result' && options.concurrencyProbe) {
@@ -468,7 +468,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.101');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.102');
   assert.equal(out.engineMeta.boundaryMarkerStats.version, 1);
   assert.equal(typeof out.engineMeta.boundaryMarkerStats.markedChunks, 'number');
   assert.equal(typeof out.engineMeta.relationCandidateCounts, 'object');
@@ -1765,7 +1765,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.101');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.102');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

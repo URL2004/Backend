@@ -152,7 +152,7 @@ test('짧은 학술 문단의 숫자 6개만으로 상위 reasoning 경로를 �
 test('날짜 접미 모델과 알 수 없는 모델의 비용을 Luna로 과소계산하지 않는다', () => {
   assert.equal(canonicalPriceKey('gpt-5.6-terra-2026-07-30'), 'gpt-5.6-terra');
   assert.deepEqual(priceFor('gpt-5.6-terra-2026-07-30'), priceFor('gpt-5.6-terra'));
-  assert.equal(priceFor('gpt-5.6-unknown').output, priceFor('gpt-5.6-terra').output);
+  assert.equal(priceFor('gpt-5.6-unknown').output, priceFor('gpt-5.6-sol').output);
 });
 
 test('후보 무결성은 위험 총량이 줄 때 비수리 알림 1건만 허용한다', () => {

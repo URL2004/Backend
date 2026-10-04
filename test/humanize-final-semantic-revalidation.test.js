@@ -45,7 +45,7 @@ function installMock(t, options = {}) {
   const calls = [];
   let judgeCalls = 0;
   global.fetch = async (_url, init) => {
-    const body = JSON.parse(init.body);
+    const body = require('./helpers/responses-request.cjs')(init.body);
     const name = body.text?.format?.name;
     calls.push({ name, model: body.model, body });
     if (name === 'gpt_prod_humanize_result') return apiResponse({

@@ -31,6 +31,7 @@ const surfaceguard = require('../engine/surfaceguard');
 const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const restartRecovery = require('../lib/transformRestartRecovery');
+const completionState = require('../lib/transformCompletionState');
 const publicMetrics = require('../lib/publicMetrics');
 const {
   COLLECTION: ACCOUNT_ACTIVITY_COLLECTION,
@@ -522,7 +523,7 @@ function countActive(uid, mode) {
     if (j.status === 'running' && poolOf(j.mode) === pool) running++;
     if (j.status === 'queued' && poolOf(j.mode) === pool) queued++;
     // 승인·대기는 LLM을 안 쓰지만 사용자 기준으로는 "진행 중 작업" — 같은 사용자가 쌓아두는 건 모드 무관 차단.
-    if (j.uid === uid && (j.status === 'running' || j.status === 'queued' || j.status === 'awaiting_approval')) mine++;
+    if (j.uid === uid && completionState.ACTIVE_STATUSES.includes(j.status)) mine++;
   }
   return { running, queued, mine };
 }
@@ -531,7 +532,7 @@ function activeJobFor(uid) {
   let found = null;
   for (const j of jobs.values()) {
     if (j.uid !== uid) continue;
-    if (j.status !== 'running' && j.status !== 'queued' && j.status !== 'awaiting_approval') continue;
+    if (!completionState.ACTIVE_STATUSES.includes(j.status)) continue;
     if (!found || (j.createdAt || 0) > (found.createdAt || 0)) found = j;
   }
   return found;
@@ -607,6 +608,8 @@ function activeJobPayload(job) {
   Object.assign(base, queueDetails(job));
   if (job.note) base.note = job.note;
   if (job.status === 'awaiting_approval') base.candidates = job.candidates || [];
+  base.structurePreview = job.structurePreview === true;
+  if (job.status === 'awaiting_payment') Object.assign(base, completionState.paymentRequiredPayload(job));
   return base;
 }
 
@@ -820,6 +823,7 @@ async function finishRefinement(job) {
 }
 
 async function stageCompletion(job, result, mode = job.mode) {
+  if (job.status === 'cancelled' || job.ac?.signal.aborted) throw new Error('TRANSFORM_CANCELLED');
   job.pendingCompletion = { result, mode, creditAmount: job.needed, createdAtMs: Date.now() };
   job.status = 'running';
   const staged = await persistJob(job, { requireClaim: true });
@@ -828,11 +832,25 @@ async function stageCompletion(job, result, mode = job.mode) {
 }
 
 async function recoverCompletion(job) {
+  if (job.status === 'cancelled') { completionState.normalizeCancelledJob(job); return; }
   const pending = job.pendingCompletion;
   if (!pending) return;
   const disposition = classifyBillingDisposition({ adminNoCharge: job.devNoAuth === true || job.adminHumanizeLab === true, plan: job.plan });
-  if (disposition === 'charged') await commitJobBilling(job, { creditAmount: pending.creditAmount,
-    mode: pending.mode, operation: pending.mode === 'formal' ? 'restructure' : 'humanize' });
+  try {
+    if (disposition === 'charged') await commitJobBilling(job, { creditAmount: pending.creditAmount,
+      mode: pending.mode, operation: pending.mode === 'formal' ? 'restructure' : 'humanize' });
+  } catch (error) {
+    if (!completionState.isPaymentRequired(error)) throw error;
+    job.status = 'awaiting_payment';
+    job.stage = '결과 보관 중 · 결제 확인 필요';
+    job.error = completionState.paymentRequiredPayload(job).error;
+    job.retryNotBeforeMs = null;
+    job.terminalAtMs = null;
+    const held = await persistJob(job, { requireClaim: true });
+    if (!held.ok) throw new Error('PAYMENT_HOLD_PERSIST_UNAVAILABLE');
+    logger.info('transform.payment_required', { jobId: job.id, uid: job.uid, needed: pending.creditAmount });
+    return;
+  }
   const draft = { ...job, billingDisposition: disposition, status: 'done', pendingCompletion: null,
     result: { ...pending.result, billingDisposition: disposition, outputVersion: (job.outputVersion || 1) } };
   if (draft.result.creditBreakdown) draft.result.creditBreakdown = { ...draft.result.creditBreakdown,
@@ -927,7 +945,8 @@ function pruneUndefinedForFirestore(value) {
   return value;
 }
 
-function persistJob(job, { requireClaim = false } = {}) {
+function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
+  completionState.normalizeCancelledJob(job);
   normalizeCompletedJobState(job);
   ensureTerminalTimestamp(job);
   if (!db) return Promise.resolve({ ok: true, localOnly: true });
@@ -959,12 +978,25 @@ function persistJob(job, { requireClaim = false } = {}) {
         const deletionSnapshot = await transaction.get(deletionRef);
         const activitySnapshot = await transaction.get(activityRef);
         const executionSnapshot = await transaction.get(leaseRef);
+        const currentSnapshot = await transaction.get(primaryRef);
+        if (currentSnapshot.exists && currentSnapshot.data().status === 'cancelled' && doc.status !== 'cancelled') {
+          return { ok: false, code: 'TRANSFORM_CANCELLED' };
+        }
+        if (doc.status === 'cancelled' && currentSnapshot.exists) {
+          const current = currentSnapshot.data();
+          if (current.deducted || (current.pendingCompletion && !['awaiting_payment', 'cancelled'].includes(current.status))) {
+            return { ok: false, code: 'TRANSFORM_COMPLETION_IN_PROGRESS' };
+          }
+        }
+        if (expectedStatus && (!currentSnapshot.exists || currentSnapshot.data().status !== expectedStatus)) {
+          return { ok: false, code: 'TRANSFORM_STATE_CHANGED' };
+        }
         const nowMs = Date.now();
         const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
         const lease = executionSnapshot.exists ? executionSnapshot.data()?.slots?.[executionPolicy.keyOf(job.id)] : null;
         if (lease && lease.expiresAtMs > nowMs && lease.token !== job.executionToken) return { ok: false, code: 'EXECUTION_OWNED_ELSEWHERE' };
         if (job.executionToken && (!lease || lease.token !== job.executionToken || lease.expiresAtMs <= nowMs)) return { ok: false, code: 'EXECUTION_LEASE_LOST' };
-        const active = ['queued', 'running', 'awaiting_approval'].includes(String(doc.status || ''))
+        const active = completionState.ACTIVE_STATUSES.includes(String(doc.status || ''))
           || doc.refine?.status === 'running';
         if (active && requireClaim && Object.values(executionSnapshot.exists ? executionSnapshot.data()?.slots || {} : {})
           .some(slot => slot.uid === job.uid && slot.jobId !== job.id && slot.expiresAtMs > nowMs)) {
@@ -1740,12 +1772,16 @@ function launchQueuedJob(job) {
     job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 30000;
     if (db) {
       const snapshot = await db.collection('transformJobs').doc(job.id).get();
-      if (snapshot.exists && TERMINAL_JOB_STATUSES.has(snapshot.data().status)) {
+      if (snapshot.exists && (TERMINAL_JOB_STATUSES.has(snapshot.data().status) || snapshot.data().status === 'awaiting_payment')) {
         const persisted = snapshot.data(); delete persisted.executionToken;
         Object.assign(job, persisted);
       }
     }
   }).catch(error => {
+    if (job.status === 'cancelled' || job.status === 'awaiting_payment') {
+      void persistJob(job);
+      return;
+    }
     job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
     logger.warn('transform.execution_unavailable', { jobId: job.id, error });
   });
@@ -1810,6 +1846,12 @@ function maybeNotifyOrphan(job) {
 
 function handleAbortedJob(job) {
   if (!job) return 'missing';
+  if (job.status === 'cancelled') {
+    completionState.normalizeCancelledJob(job);
+    persistJob(job);
+    return 'cancelled';
+  }
+  if (job.status === 'awaiting_payment') return 'awaiting_payment';
   if (job.pendingCompletion) {
     job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
     job.stage = '저장된 결과의 완료 상태를 확인하고 있어요.';
@@ -1877,9 +1919,10 @@ async function reconcileRestartRecovery(jobId) {
   }
 
   const persisted = { ...(snap.data() || {}), id: (snap.data() || {}).id || jobId };
+  completionState.normalizeCancelledJob(persisted);
   delete persisted.executionToken;
   const persistedStatus = String(persisted.status || '');
-  if (TERMINAL_JOB_STATUSES.has(persistedStatus) || persistedStatus === 'awaiting_approval') {
+  if (TERMINAL_JOB_STATUSES.has(persistedStatus) || ['awaiting_approval', 'awaiting_payment'].includes(persistedStatus)) {
     persisted.ac = new AbortController();
     restartRecovery.releaseRestartRecoveryHold(persisted);
     jobs.set(jobId, persisted);
@@ -1957,13 +2000,14 @@ async function restoreJobs() {
     let kept = 0, recovering = 0, expired = 0;
     snap.forEach(d => {
       const j = d.data();
+      completionState.normalizeCancelledJob(j);
       delete j.executionToken;
       if (TERMINAL_JOB_STATUSES.has(j.status) && !j.pendingCompletion && !j.pendingRefinement
           && j.refine?.status !== 'running' && (j.terminalAtMs || j.createdAt || 0) < cutoff) {
         expired++; archiveJob({ ...j, id: j.id || d.id }, { expiredAtMs: Date.now() }); deletePersisted(d.id); return;
       }
       if (!j.createdAt) j.createdAt = Date.now();
-      if (j.pendingCompletion) { j.status = 'queued'; j.terminalAtMs = null; }
+      if (completionState.canResumeCompletion(j)) { j.status = 'queued'; j.terminalAtMs = null; }
       j.id = j.id || d.id;
       j.ac = new AbortController();
       // 재시작으로 끊긴 문단 보강은 error로 정규화 — 프론트가 무한 폴링하지 않게.
@@ -1978,6 +2022,8 @@ async function restoreJobs() {
         void persistJob(j, { requireClaim: true }).then(result => {
           if (result?.blocked) jobs.delete(j.id);
         });
+      } else if (j.status === 'cancelled') {
+        void persistJob(j);
       } else {
         archiveJob(j);
       }
@@ -2276,6 +2322,7 @@ async function tryBlogPreservationFallback(job, text) {
       fallbackCount: out.fallbackCount
     };
     await stageCompletion(job, completionResult, 'polish');
+    if (job.status !== 'done') return true;
     persistJob(job);
     saveJobHistory(job, text, out.result.outputText);
     logger.info('transform.blog_fallback_done', {
@@ -2292,6 +2339,7 @@ async function tryBlogPreservationFallback(job, text) {
       return true;
     }
     logger.error('transform.blog_fallback_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
+    if (job.status === 'awaiting_payment') { persistJob(job); return true; }
     if (job.pendingCompletion) {
       job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
       job.stage = '저장된 결과의 완료 상태를 확인하고 있어요.';
@@ -2983,6 +3031,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       preservationCheck: measurePreservation(finalText)
     };
     await stageCompletion(job, completionResult);
+    if (job.status !== 'done') return;
     attachRefineTargets(job);   // 사후 문단 보강 타겟(PARAGRAPH_REFINE=1일 때만 부착)
     persistJob(job);
     if (!job.adminHumanizeLab) saveJobHistory(job, text, finalText);   // 이용 기록(서버) 노출
@@ -3002,6 +3051,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       return;
     }
     logger.error('transform.humanize_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
+    if (job.status === 'awaiting_payment') { persistJob(job); return; }
     job.status = 'error';
     job.error = '처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     if (job.pendingCompletion) {
@@ -3112,6 +3162,12 @@ const startTransform = async (req, res) => {
   }
   // ★ 글자분리(PDF 추출 깨짐) 복원(2026-06-19 실측 #57·#58): 모든 글자가 공백 분리된 입력을 billing·엔진 처리 전에
   const structureUid = authenticatedUser?.uid || adminLabUid || (devNoAuth ? 'dev-local' : '');
+  const waitingJob = activeJobFor(structureUid);
+  if (waitingJob && ['awaiting_approval', 'awaiting_payment'].includes(waitingJob.status)) {
+    return res.status(409).json({ code: 'USER_TRANSFORM_ACTIVE',
+      error: waitingJob.status === 'awaiting_payment' ? '결제 확인을 기다리는 작업이 있어요. 기존 결과를 받거나 취소한 뒤 다시 시작해 주세요.' : '근거 승인을 기다리는 작업이 있어요. 기존 작업을 확인해 주세요.',
+      activeJobId: waitingJob.id, activeStatus: waitingJob.status });
+  }
   if ((structurePreview || structureMode === 'improve') && process.env.HUMANIZE_STRUCTURE_ENABLED !== '1' && !isAdminUid(structureUid) && !devNoAuth) {
     return res.status(503).json({ code: 'STRUCTURE_DISABLED', error: '구조 개선 옵션을 준비 중입니다.' });
   }
@@ -3473,7 +3529,7 @@ router.get('/transform/active', async (req, res, next) => {
     for (const claim of claims) {
       const persisted = await db.collection('transformJobs').doc(claim.id).get();
       if (persisted.exists && persisted.data().uid === uid
-          && ['queued', 'running', 'awaiting_approval'].includes(persisted.data().status)) {
+          && completionState.ACTIVE_STATUSES.includes(persisted.data().status)) {
         job = persisted.data(); break;
       }
     }
@@ -3490,6 +3546,9 @@ router.post('/transform/:id/cancel', async (req, res) => {
   if (job.status === 'done' || job.status === 'blocked' || job.status === 'error') {
     return res.status(409).json({ error: '이미 끝난 작업이에요.' });
   }
+  if (job.deducted || (job.pendingCompletion && !['awaiting_payment', 'cancelled'].includes(job.status))) {
+    return res.status(409).json({ error: '결제 완료 상태를 확인하고 있어요. 잠시 후 작업 상태를 다시 확인해 주세요.' });
+  }
   // ★ 30초 취소 창(2026-06-15): running 작업이 시작 후 일정 시간을 넘기면 취소 거부 — LLM 원가를 거의
   //   다 쓴 뒤 무과금으로 빠져나가는 손실을 차단(UI 버튼도 30초 후 사라짐). 대기열·근거승인 대기는
   //   비싼 생성 전이라 그대로 허용(원가 미발생).
@@ -3499,13 +3558,38 @@ router.post('/transform/:id/cancel', async (req, res) => {
       return res.status(409).json({ error: '취소 가능 시간이 지났어요. 변환이 이미 진행돼, 완료되면 결과를 받게 돼요.' });
     }
   }
+  const cancelled = completionState.normalizeCancelledJob({ ...job, status: 'cancelled', stage: '중단됨' });
+  const saved = await persistJob(cancelled);
+  if (!saved.ok) return res.status(saved.code === 'TRANSFORM_COMPLETION_IN_PROGRESS' ? 409 : 503).json({ error: '중단 상태를 저장하지 못했어요. 작업 상태를 다시 확인해 주세요.' });
   job.ac.abort();
-  job.status = 'cancelled';
-  job.stage = '중단됨';
-  persistJob(job);
+  Object.assign(job, cancelled);
+  clearRestartRecoveryTimer(job.id);
   scheduleQueueDrain();
   logger.info('transform.cancelled_by_user', { jobId: job.id, uid: job.uid, mode: job.mode });
   res.json({ ok: true });
+});
+
+// Only an explicit owner action may retry payment for an already generated result.
+router.post('/transform/:id/resume-payment', async (req, res, next) => {
+  try {
+    const job = jobs.get(req.params.id);
+    if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
+    if (!(await requireJobOwner(req, res, job))) return;
+    if (job.status !== 'awaiting_payment' || !job.pendingCompletion) return res.status(409).json({ error: '결제 확인 대기 중인 작업이 아니에요.' });
+    if (draining || !restorationReady) return res.status(503).json({ error: '서버 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
+    try { await precheckExistingJobBilling(job, tokenFromReq(req), job.pendingCompletion.creditAmount); }
+    catch (error) {
+      return res.status(error.status || 402).json({ ...completionState.paymentRequiredPayload(job), error: usageBilling.authErrorMessage(error.message) });
+    }
+    // Precheck awaited network I/O; cancellation or another resume may have won.
+    if (job.status !== 'awaiting_payment') return res.status(409).json({ error: '작업 상태가 바뀌었어요. 다시 확인해 주세요.' });
+    const resumed = { ...job, status: 'queued', stage: '저장된 결과 전달 준비 중', queuedAt: Date.now(), retryNotBeforeMs: null, error: null };
+    const saved = await persistJob(resumed, { requireClaim: true, expectedStatus: 'awaiting_payment' });
+    if (!saved.ok) return res.status(['TRANSFORM_CANCELLED', 'TRANSFORM_STATE_CHANGED'].includes(saved.code) ? 409 : 503).json({ error: '작업 상태를 저장하지 못했어요. 다시 확인해 주세요.' });
+    Object.assign(job, resumed);
+    scheduleQueueDrain();
+    res.json({ ok: true, job: activeJobPayload(job) });
+  } catch (error) { next(error); }
 });
 
 // 기본 휴머나이징 차단 작업만 사용자의 명시적 동의로 다듬기 처리한다.
@@ -3822,6 +3906,7 @@ router.get('/transform/:id', async (req, res, next) => {
     const snapshot = await db.collection('transformJobs').doc(req.params.id).get();
     if (snapshot.exists) {
       const restored = snapshot.data();
+      completionState.normalizeCancelledJob(restored);
       if (!TERMINAL_JOB_STATUSES.has(restored.status) || restored.pendingCompletion || restored.pendingRefinement
           || Date.now() - (restored.terminalAtMs || restored.createdAt) < JOB_TTL_MS) {
         job = { ...restored, ac: new AbortController() };
@@ -3899,6 +3984,7 @@ router.get('/transform/:id', async (req, res, next) => {
   }
   if (job.status === 'queued') return res.json(base);
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
+  if (job.status === 'awaiting_payment') return res.json({ ...base, ...completionState.paymentRequiredPayload(job) });
   if (job.status === 'cancelled') return res.json(base);
   if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, blockOffer: job.blockOffer || null, ...blockedResponse(job) });
   if (job.status === 'error') return res.json({ ...base, error: job.error });

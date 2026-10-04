@@ -97,7 +97,7 @@ function completionContext(overrides = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../routes/transform.js'), 'utf8');
   const start = source.indexOf('async function finishRefinement(');
   const end = source.indexOf('async function commitRefineBilling(', start);
-  const context = { require, classifyBillingDisposition: () => 'charged', commitJobBilling: async () => {},
+  const context = { require, completionState: require('../lib/transformCompletionState'), logger: { info() {} }, classifyBillingDisposition: () => 'charged', commitJobBilling: async () => {},
     commitRefineBilling: async () => true, persistJob: async () => ({ ok: true }),
     attachRefineTargets() {}, measurePreservation: () => ({ total: 3 }), saveJobHistory: async () => {}, ...overrides };
   vm.createContext(context); vm.runInContext(source.slice(start, end), context);
@@ -199,7 +199,7 @@ test('real admission persistence rejects simultaneous same-owner jobs and stale 
   const source = fs.readFileSync(path.join(__dirname, '../routes/transform.js'), 'utf8');
   const claims = require('../lib/accountActivityClaims');
   const db = database();
-  const context = { db, normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
+  const context = { db, completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
     PERSIST_FIELDS: ['id', 'uid', 'status', 'executionToken'], pruneUndefinedForFirestore: value => value,
     buildArchiveDocument: () => ({}), jobPersistChains: new Map(), JOB_ARCHIVE_COLLECTION: 'archive',
     ACCOUNT_ACTIVITY_COLLECTION: claims.COLLECTION, TRANSFORM_LANE: claims.TRANSFORM_LANE,
@@ -218,6 +218,15 @@ test('real admission persistence rejects simultaneous same-owner jobs and stale 
   } } });
   const stale = await context.persistJob({ ...jobs[0], status: 'done', executionToken: 'old-owner' });
   assert.equal(stale.ok, false); assert.equal(db.rows.get('transformJobs/first').status, 'queued');
+  db.rows.set('transformExecutionLeases/active', { slots: {} });
+  db.rows.set('transformJobs/first', { ...jobs[0], status: 'cancelled' });
+  assert.equal((await context.persistJob({ ...jobs[0], status: 'queued' })).code, 'TRANSFORM_CANCELLED');
+  db.rows.set('transformJobs/first', { ...jobs[0], status: 'running', pendingCompletion: { result: {} } });
+  assert.equal((await context.persistJob({ ...jobs[0], status: 'cancelled' })).code, 'TRANSFORM_COMPLETION_IN_PROGRESS');
+  db.rows.set('transformJobs/first', { ...jobs[0], status: 'awaiting_payment' });
+  const resumes = await Promise.all([1, 2].map(() => context.persistJob({ ...jobs[0], status: 'queued' }, { expectedStatus: 'awaiting_payment' })));
+  assert.equal(resumes.filter(result => result.ok).length, 1);
+  assert.equal(resumes.find(result => !result.ok).code, 'TRANSFORM_STATE_CHANGED');
 });
 
 // Pessimistic document locks expose cycles hidden by the serial transaction
@@ -262,7 +271,7 @@ test('execution acquisition and actual route persistence finish without a docume
   const job = { id: 'lock-race', uid: 'synthetic-owner', status: 'queued', mode: 'formal' };
   db.rows.set('transformJobs/lock-race', job);
   const claims = require('../lib/accountActivityClaims');
-  const context = { db, normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
+  const context = { db, completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
     PERSIST_FIELDS: ['id', 'uid', 'status', 'executionToken'], pruneUndefinedForFirestore: value => value,
     buildArchiveDocument: () => ({}), jobPersistChains: new Map(), JOB_ARCHIVE_COLLECTION: 'archive',
     ACCOUNT_ACTIVITY_COLLECTION: claims.COLLECTION, TRANSFORM_LANE: claims.TRANSFORM_LANE,

@@ -262,6 +262,7 @@ app.use('/', require('./routes/revenue'));   // 매출 조회: 관리자 온디�
 app.use('/', require('./routes/writinglab'));   // Public paid writing feature; authentication, quotas and billing are enforced in the router.
 app.use('/', require('./routes/opsLogs'));   // 장애 로그: 관리자 조회·확인(/admin/ops-*) + 부재 감지 워치독·다이제스트 cron
 app.use('/', require('./routes/signupCreditMonitoring')); // 신규 가입 무료 크레딧 소진 코호트(관리자 전용)
+app.use('/', require('./routes/signupAttribution')); // 가입자 DB 기반 영상·캠페인별 신규 가입 집계(관리자 전용)
 
 app.use(errorHandler);
 

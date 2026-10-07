@@ -253,6 +253,14 @@ function classifyLine(value, context = {}) {
   if (isColonSubtitledTitle(text, context) || isColonSubtitle(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
+  // Numeric citation tails do not make a completed sentence a nominal title.
+  // Check before contextual heading heuristics: adding a blank line must not
+  // promote cited prose to a new locked anchor and roll back the entire reflow.
+  // Explicit headings, lists, labels and literal blocks above keep their roles.
+  // A citation can also occur before the next sentence or a wrapped word on
+  // this row. That completed sentence is prose evidence in the same way.
+  // Require a Korean/quoted sentence ending, not an abbreviation such as U.S.[1].
+  if (/[가-힣"”’')\]][.!?。！？…]["”’')\]]*\s*(?:[⁰¹²³⁴⁵⁶⁷⁸⁹]|\[\^?\d{1,4}(?:[ \t]*[,;–—-][ \t]*\d{1,4})*\])/u.test(text)) return 'prose';
   // A document-level pattern is stronger than a local unfinished-clause guess.
   // Otherwise an attested parallel heading ending in a particle is glued to prose.
   if (isDependentLead(text) && context.next) return context.parallelSectionHeading ? 'heading' : 'prose';
@@ -1030,8 +1038,28 @@ function isQuoteLine(value) {
   return /^(?:“[^”\n]{1,500}”|‘[^’\n]{1,500}’|"[^"\n]{1,500}"|'[^'\n]{1,500}'|「[^」\n]{1,500}」|『[^』\n]{1,500}』|《[^》\n]{1,500}》|〈[^〉\n]{1,500}〉)(?:\s*[-–—]\s*\S.{0,120})?$/u.test(text);
 }
 
-function isSentenceComplete(value) {
+function withoutTrailingCitationMarkers(value) {
+  // Classification view only. Never remove or rewrite citations in the text.
+  // Keep numbers, units and arbitrary parenthesized prose out of this grammar.
+  // Scan backwards instead of nesting repetition in a suffix regex: a long
+  // run of superscripts followed by prose must not backtrack exponentially.
   const text = visibleTrim(value);
+  let end = text.length;
+  while (end > 0) {
+    if (/[⁰¹²³⁴⁵⁶⁷⁸⁹]/u.test(text[end - 1])) {
+      end -= 1;
+    } else if (text[end - 1] === ']') {
+      const start = text.lastIndexOf('[', end - 1);
+      if (start < 0 || !/^\[\^?\d{1,4}(?:[ \t]*[,;–—-][ \t]*\d{1,4})*\]$/u.test(text.slice(start, end))) break;
+      end = start;
+    } else break;
+    while (end > 0 && /\s/u.test(text[end - 1])) end -= 1;
+  }
+  return text.slice(0, end);
+}
+
+function isSentenceComplete(value) {
+  const text = withoutTrailingCitationMarkers(value);
   if (!text) return false;
   if (/[.!?。！？…]\s*["”’')\]]*$/u.test(text)) return true;
   return text.length >= 40 && /(?:다|요|니다|했다|된다|였다|있다|없다|않다|함|됨|임|음)$/u.test(text);

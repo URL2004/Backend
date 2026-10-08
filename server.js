@@ -34,6 +34,7 @@ app.set('trust proxy', 1);
 
 // 미들웨어
 app.use(requestContext);
+app.use(require('./middleware/errorEnvelope'));
 
 // CSP 위반 보고는 CORS보다 앞에 둔다. 브라우저는 report-uri 보고를 `Origin: null`로 보내므로
 // corsMiddleware 뒤에 두면 전부 403으로 거절돼 위반 내용이 한 번도 기록되지 않았다

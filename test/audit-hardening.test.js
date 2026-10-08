@@ -199,7 +199,7 @@ test('real admission persistence rejects simultaneous same-owner jobs and stale 
   const source = fs.readFileSync(path.join(__dirname, '../routes/transform.js'), 'utf8');
   const claims = require('../lib/accountActivityClaims');
   const db = database();
-  const context = { db, attemptTrace: require('../lib/transformAttemptTrace'), completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
+  const context = { db, jobNotification: require('../lib/jobNotification').jobNotification, attemptTrace: require('../lib/transformAttemptTrace'), completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
     PERSIST_FIELDS: ['id', 'uid', 'status', 'executionToken'], pruneUndefinedForFirestore: value => value,
     buildArchiveDocument: () => ({}), jobPersistChains: new Map(), JOB_ARCHIVE_COLLECTION: 'archive',
     ACCOUNT_ACTIVITY_COLLECTION: claims.COLLECTION, TRANSFORM_LANE: claims.TRANSFORM_LANE,
@@ -227,6 +227,18 @@ test('real admission persistence rejects simultaneous same-owner jobs and stale 
   const resumes = await Promise.all([1, 2].map(() => context.persistJob({ ...jobs[0], status: 'queued' }, { expectedStatus: 'awaiting_payment' })));
   assert.equal(resumes.filter(result => result.ok).length, 1);
   assert.equal(resumes.find(result => !result.ok).code, 'TRANSFORM_STATE_CHANGED');
+  // Real persistence publishes the notification in the same transaction and
+  // uses the stored revision to make retries idempotent.
+  assert.equal((await context.persistJob({ ...jobs[0], status: 'done' })).ok, true);
+  assert.equal(db.rows.get('transformJobs/first').notificationRevision, 1);
+  assert.equal(db.rows.get('users/owner/notifications/job_event_first_1').jobStatus, 'done');
+  await context.persistJob({ ...jobs[0], status: 'done' });
+  assert.equal([...db.rows.keys()].filter(k => k.startsWith('users/owner/notifications/')).length, 1);
+  await context.persistJob({ ...jobs[0], status: 'awaiting_payment' });
+  assert.equal(db.rows.get('users/owner/notifications/job_event_first_2').jobStatus, 'awaiting_payment');
+  db.rows.set('accountDeletionJobs/owner', { status: 'processing' });
+  assert.equal((await context.persistJob({ ...jobs[0], status: 'error' })).code, 'ACCOUNT_DELETION_IN_PROGRESS');
+  assert.equal(db.rows.has('users/owner/notifications/job_event_first_3'), false);
 });
 
 // Pessimistic document locks expose cycles hidden by the serial transaction
@@ -271,7 +283,7 @@ test('execution acquisition and actual route persistence finish without a docume
   const job = { id: 'lock-race', uid: 'synthetic-owner', status: 'queued', mode: 'formal' };
   db.rows.set('transformJobs/lock-race', job);
   const claims = require('../lib/accountActivityClaims');
-  const context = { db, attemptTrace: require('../lib/transformAttemptTrace'), completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
+  const context = { db, jobNotification: require('../lib/jobNotification').jobNotification, attemptTrace: require('../lib/transformAttemptTrace'), completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
     PERSIST_FIELDS: ['id', 'uid', 'status', 'executionToken'], pruneUndefinedForFirestore: value => value,
     buildArchiveDocument: () => ({}), jobPersistChains: new Map(), JOB_ARCHIVE_COLLECTION: 'archive',
     ACCOUNT_ACTIVITY_COLLECTION: claims.COLLECTION, TRANSFORM_LANE: claims.TRANSFORM_LANE,

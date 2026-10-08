@@ -117,6 +117,19 @@ function logPaymentError(req, uid) {
 
 router.post('/events', async (req, res) => {
   const { type } = req.body || {};
+  if (type === 'workflow_issue') {
+    if (rateLimited(`workflow:${realClientIp(req)}`)) return res.status(429).json({ ok: false, code: 'RATE_LIMITED', error: '잠시 후 다시 시도해 주세요.' });
+    const b = req.body || {};
+    const feature = ['pdf', 'detect', 'humanize', 'writing', 'notification'].includes(b.feature) ? b.feature : null;
+    const code = /^[A-Z][A-Z0-9_]{2,60}$/.test(String(b.code || '')) ? b.code : null;
+    const stage = ['import', 'request', 'render', 'poll', 'persist'].includes(b.stage) ? b.stage : null;
+    if (!feature || !code || !stage) return res.status(400).json({ ok: false, code: 'INVALID_EVENT', error: '올바르지 않은 이벤트입니다.' });
+    const bounded = (n, max) => Math.max(0, Math.min(max, Math.round(Number(n) || 0)));
+    const fields = { feature, code, stage, pages: bounded(b.pages, 10000), emptyPages: bounded(b.emptyPages, 10000), durationMs: bounded(b.durationMs, 3600000), clientReported: true };
+    if (code === 'PDF_IMPORTED' || code === 'PDF_CANCELLED') logger.info('client.workflow_observation', fields);
+    else logger.warn('client.workflow_issue', fields);
+    return res.json({ ok: true });
+  }
   if (type === 'auth_diagnostic') {
     if (authDiagnosticLimited(realClientIp(req))) return res.status(429).json({ error: 'rate_limited' });
     const diagnostic = normalizeAuthDiagnostic(req.body, req.get('user-agent'));

@@ -96,9 +96,9 @@ router.post('/analyze', async (req, res) => {
     : '';
   const text = normalizeDetectInput(req.body?.text);
   if (text.length < 5) return res.status(400).json({ error: '텍스트가 너무 짧습니다.' });
-  const hardMax = billingMode === 'coupon' ? 50000 : 30000;
+  const hardMax = 30000;
   if (text.length > hardMax) {
-    return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${hardMax.toLocaleString()}자)` });
+    return res.status(400).json({ code: 'INPUT_TOO_LONG', limit: hardMax, actual: text.length, charged: 0, error: `텍스트가 너무 깁니다. (최대 ${hardMax.toLocaleString()}자)` });
   }
   const readability = inputrouting.assessInputReadability(text);
   if (!readability.readable) {

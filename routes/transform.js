@@ -8,6 +8,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
+const { jobNotification } = require('../lib/jobNotification');
 const router = express.Router();
 const usageBilling = require('../lib/usageBilling');
 const historyService = require('../lib/historyService');
@@ -1031,7 +1032,11 @@ function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
           }
           return { ok: false, blocked: true, code: 'ACCOUNT_DELETION_IN_PROGRESS' };
         }
-        transaction.set(primaryRef, doc, { merge: true });
+        const notification = jobNotification({ ...doc, id: job.id, uid: job.uid }, currentSnapshot.exists ? currentSnapshot.data() : null, nowMs);
+        if (notification) {
+          transaction.set(db.collection(`users/${job.uid}/notifications`).doc(notification.id), notification.data);
+        }
+        transaction.set(primaryRef, notification ? { ...doc, notificationRevision: notification.revision } : doc, { merge: true });
         transaction.set(archiveRef, archiveDoc, { merge: true });
         if (active || activitySnapshot.exists || requireClaim) {
           transaction.set(activityRef, {
@@ -3138,9 +3143,9 @@ const startTransform = async (req, res) => {
   if (typeof text !== 'string' || text.length < minLen) {
     return res.status(400).json({ error: `변환하려면 최소 ${minLen}자가 필요해요.` });
   }
-  const hardMax = billingMode === 'coupon' ? 50000 : 30000;
+  const hardMax = 30000;
   if (text.length > hardMax) {
-    return res.status(400).json({ error: `텍스트가 너무 깁니다. (최대 ${hardMax.toLocaleString()}자)` });
+    return res.status(400).json({ code: 'INPUT_TOO_LONG', limit: hardMax, actual: text.length, charged: 0, error: `텍스트가 너무 깁니다. (최대 ${hardMax.toLocaleString()}자)` });
   }
   const readability = inputrouting.assessInputReadability(text);
   if (!readability.readable) {

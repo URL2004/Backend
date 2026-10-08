@@ -43,7 +43,7 @@ router.post('/diagnose', (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   const bare = text.replace(/\s+/g, '');
   if (bare.length < 50) return res.status(400).json({ error: '진단하려면 최소 50자가 필요해요.' });
-  if (text.length > 50000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 50,000자)' });
+  if (text.length > 30000) return res.status(400).json({ ok: false, code: 'INPUT_TOO_LONG', limit: 30000, actual: text.length, charged: 0, error: '한 번에 30,000자까지 처리할 수 있어요. 글을 나눠 다시 시도해 주세요.' });
   const readability = assessInputReadability(text);
   if (!readability.readable) {
     logger.warn('diagnose.unreadable_input_blocked', { reason: readability.reason, textLength: text.length });

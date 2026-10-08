@@ -8,7 +8,9 @@ const CODES = new Set(['temporal_limit_candidate', 'sole_reason_candidate',
   'action_exclusivity_candidate', 'experienced_conditional_candidate', 'purpose_simultaneity_candidate',
   'subject_exclusivity_candidate', 'parallel_dependency_candidate', 'coordination_causal_candidate',
   'necessity_condition_candidate', 'temporal_actor_candidate',
-  'source_suffix_replay_candidate', 'source_label_binding_candidate', 'introduced_delimiter_imbalance_candidate']);
+  'source_suffix_replay_candidate', 'introduced_adjacent_duplicate_candidate',
+  ...require('./auditMeaningRelations').CODES,
+  'source_label_binding_candidate', 'introduced_delimiter_imbalance_candidate']);
 const unique = (text, span) => typeof span === 'string' && span.length >= 12
   && text.indexOf(span) >= 0 && text.indexOf(span) === text.lastIndexOf(span);
 
@@ -23,7 +25,8 @@ function targets(source, candidate, discourseSignals = []) {
     catch { return []; }
   });
   for (const c of [...require('./relationAudit').auditRelationCandidates(source, candidate, { includeAllCandidates: true }).candidates,
-    ...require('./adjacentDuplicateReview').candidates(source,candidate), ...contextual]) {
+    ...require('./adjacentDuplicateReview').candidates(source,candidate),
+    ...require('./adjacentDuplicateReview').introducedCandidates(source,candidate), ...contextual]) {
     if (!CODES.has(c.code) || !unique(source, c.sourceSpan) || !unique(candidate, c.outputSpan)) continue;
     const id = textDigest(c.sourceSpan + '\u0000' + c.outputSpan).slice(0, 24);
     if (!grouped.has(id)) grouped.set(id, { id, sourceSpan: c.sourceSpan, candidateSpan: c.outputSpan, codes: [] });
@@ -89,7 +92,8 @@ function instructionsFor(selected) {
     has(['action_exclusivity_candidate', 'experienced_conditional_candidate', 'purpose_simultaneity_candidate',
       'subject_exclusivity_candidate', 'parallel_dependency_candidate', 'coordination_causal_candidate',
       'necessity_condition_candidate', 'temporal_actor_candidate']) ? require('./eventRelationOperators').instruction : '',
-    has(['source_suffix_replay_candidate']) ? require('./adjacentDuplicateReview').instruction : '',
+    has(['source_suffix_replay_candidate', 'introduced_adjacent_duplicate_candidate']) ? require('./adjacentDuplicateReview').instruction : '',
+    has(require('./auditMeaningRelations').CODES) ? require('./auditMeaningRelations').instruction : '',
     has(['source_label_binding_candidate', 'introduced_delimiter_imbalance_candidate']) ? require('./sourceArtifactRelations').instruction : ''
   ].filter(Boolean).join('\n');
 }

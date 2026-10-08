@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 37;
+const VERSION = 38;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -154,10 +154,12 @@ function auditAndSanitizeSource(value) {
   // 남기면 목차와 본문이 한 행으로 합쳐져 구조 잠금 범위가 본문까지 번진다.
   const original = normalizeSourceLineSeparators(value).trim();
   if (!original) return emptyResult('');
-  const rewriteWrapper = extractQuotedRewritePayload(original);
-  const documentQuoteWrapper = rewriteWrapper ? null : extractDocumentQuoteWrapper(original);
+  const encodingNormalization = require('./sourceInputIntegrity').normalizeProseEntities(original);
+  const decoded = encodingNormalization.text;
+  const rewriteWrapper = extractQuotedRewritePayload(decoded);
+  const documentQuoteWrapper = rewriteWrapper ? null : extractDocumentQuoteWrapper(decoded);
   const wrapper = rewriteWrapper || documentQuoteWrapper;
-  const workingSource = wrapper?.payload || original;
+  const workingSource = wrapper?.payload || decoded;
   const scriptFrame = require('./scriptStructure').detectScriptStructure(workingSource).isScript;
   const furniture = scriptFrame ? { text: workingSource, removed: [] }
     : require('./documentFurniture').removeRunningHeaders(workingSource);
@@ -330,10 +332,15 @@ function auditAndSanitizeSource(value) {
       NOTICE_MESSAGES.source_unclosed_delimiter
     ));
   }
+  if (encodingNormalization.changed) notices.push(issue('source_prose_entity_decoded', 0, 'repaired',
+    '일반 본문의 HTML 공백·앰퍼샌드 표기를 복구했어요. 인용과 코드는 유지했어요.'));
+  if (require('./sourceInputIntegrity').clippedOpening(usable)) notices.push(issue('source_clipped_opening_review', 1, 'notice',
+    '글의 첫 단어가 잘렸을 수 있어요. 빠진 단어를 추정해 채우지 않고 입력 확인 대상으로 남겼어요.'));
   const issues = aggregateIssues([...removals, ...notices]);
   return {
     version: VERSION,
     text: usable,
+    encodingNormalization,
     integrityText: integrityText || usable,
     changed: usable !== original,
     removedLineCount: removals.length,

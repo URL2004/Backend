@@ -57,6 +57,31 @@ function sanitizeFinalValidation(value) {
 
 function compactAuditTrace(meta = {}) {
   const result = {};
+  if (meta.inputStatus?.version === 'source-input-integrity-v1') {
+    const value = meta.inputStatus;
+    result.inputStatus = {
+      version: value.version,
+      completeness: ['review_required', 'no_issue_detected'].includes(value.completeness) ? value.completeness : 'unknown',
+      structure: ['review_required', 'normalized', 'unchanged'].includes(value.structure) ? value.structure : 'unknown',
+      semantic: ['pass', 'fail', 'stale', 'uncertain', 'skipped'].includes(value.semantic) ? value.semantic : 'unknown',
+      style: ['normal', 'limited', 'effective', 'improved', 'not_applicable'].includes(value.style) ? value.style : 'unknown',
+      issueCodes: [...new Set((Array.isArray(value.issueCodes) ? value.issueCodes : []).filter(code))].slice(0, 30),
+      entityRepairCount: count(value.entityRepairCount) ?? 0
+    };
+  }
+  const encoding = meta.encodingNormalization;
+  if (encoding?.version === 'source-input-integrity-v1' && digest(encoding.sourceDigest) && digest(encoding.normalizedDigest)) {
+    const edits = Array.isArray(encoding.changes) ? encoding.changes : [];
+    result.encodingNormalization = { version: encoding.version, unit: 'utf16',
+      coordinateBase: 'trimmed_line_normalized_input', sourceDigest: encoding.sourceDigest,
+      normalizedDigest: encoding.normalizedDigest, changed: encoding.changed === true,
+      changeCount: Math.max(count(encoding.changeCount) ?? 0, edits.length),
+      truncated: encoding.truncated === true || edits.length > 40,
+      changes: edits.slice(0, 40).filter(edit => ['sourceStart', 'sourceEnd', 'normalizedStart', 'normalizedEnd'].every(k => count(edit?.[k]) !== undefined)
+        && edit.sourceEnd > edit.sourceStart && edit.normalizedEnd > edit.normalizedStart).map(edit => ({
+          sourceStart: edit.sourceStart, sourceEnd: edit.sourceEnd,
+          normalizedStart: edit.normalizedStart, normalizedEnd: edit.normalizedEnd })) };
+  }
   // Persist optional fields only: an older job without a ledger is unknown.
   for (const field of ['candidateLedgerVersion', 'candidateLedgerSelectedStage', 'candidateLedgerSelectionReason']) {
     if (code(meta[field])) result[field] = code(meta[field]);

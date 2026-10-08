@@ -33,7 +33,7 @@ test('assessed content uses the radar threshold and paragraph sample limits', ()
   assert.equal(filterContentCoach([{ tag: '구체적 근거 부족' }], report, { sentenceCount: 10 }), null);
   const weak = view('report_assignment');
   assert.equal(filterContentCoach([{ tag: '구체적 근거 부족' }, { tag: '주관성의 지나친 배제' }], weak,
-    { sentenceCount: 10 }).length, 1);
+    { sentenceCount: 10 }), null, 'finding no heuristic evidence does not prove a deficiency');
 });
 
 function candidateView(source, indexes) {

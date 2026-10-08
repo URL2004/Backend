@@ -61,5 +61,59 @@ function candidates(source, output) {
   }
   return result;
 }
-const instruction='source_suffix_replay_candidate는 원문 강제 개행의 뒷조각이 새 완결문 다음에도 남아 있는지 확인하는 질문이다. sourceSpan 전체와 candidateSpan의 앞뒤 두 단위를 대조하여 앞문장이 이미 같은 주장을 완결했는지 확인한다. 원문부터 반복된 내용·다른 주체·조건·보충 설명·정상 문장 분리는 preserved이며, 실제 신규 중복이 확인될 때만 정확한 위치를 갖춘 introduced violation을 반환한다. 후보 위치 자체는 삭제 허가가 아니며 uncertain이면 추측 복구하지 않는다.';
-module.exports={CODE,candidates,instruction};
+function introducedCandidates(source, output) {
+  const before = String(source || ''), after = String(output || '');
+  if (!before || before === after) return [];
+  const originals = splitSentenceSpans(before), rewritten = splitSentenceSpans(after);
+  const protectedSource = syntaxSpans(before), protectedOutput = syntaxSpans(after);
+  const overlap = (spans, start, end) => spans.some(s => s.start < end && s.end > start);
+  const result = [];
+  // A repeated explanation can be split into two sentences in the preceding
+  // paragraph. Inspect bounded windows, never distant chapter summaries.
+  const units = [];
+  for (let i = 0; i < rewritten.length; i += 1) {
+    const row = rewritten[i];
+    const paragraph = (after.slice(0, row.start).match(/\n\s*\n/gu) || []).length;
+    units.push({ ...row, paragraph, first: i, last: i });
+    const next = rewritten[i + 1];
+    if (next && !/\n\s*\n/u.test(after.slice(row.end, next.start))) units.push({
+      start: row.start, end: next.end, text: after.slice(row.start, next.end), paragraph, first: i, last: i + 1
+    });
+  }
+  for (let i = 1; i < units.length && result.length < 4; i += 1) {
+    const right = units[i];
+    for (let j = i - 1; j >= 0 && result.length < 4; j -= 1) {
+    const left = units[j];
+    if (right.first - left.last > 6 || right.paragraph - left.paragraph > 1) break;
+    if (left.last >= right.first) continue;
+    if (left.text.length < 28 || right.text.length < 28 || !terminal(left.text) || !terminal(right.text)) continue;
+    // Separate paragraph roles are useful evidence, but headings, questions,
+    // conditions and source repetition remain outside this cheap nomination.
+    if (guarded(left.text) || guarded(right.text)
+        || overlap(protectedOutput, left.start, left.end)
+        || overlap(protectedOutput, right.start, right.end)) continue;
+    const a = tokens(left.text), b = tokens(right.text);
+    if (a.size < 6 || b.size < 6 || Math.min(coverage(a, b), coverage(b, a)) < 0.65) continue;
+    const sourceMatches = originals.filter(row => {
+      const t = tokens(row.text);
+      return Math.min(coverage(a, t), coverage(b, t)) >= 0.55 && coverage(t, a) >= 0.55;
+    });
+    // Two source claims may repeat legitimately in an answer/conclusion.
+    if (sourceMatches.length !== 1) continue;
+    const original = sourceMatches[0];
+    if (overlap(protectedSource, original.start, original.end)) continue;
+    const originalOwners = owners(original.text);
+    const hasOwner = (text, owner) => new RegExp(`(?<![가-힣])${owner}`, 'u').test(text);
+    if ([...owners(left.text), ...owners(right.text)].some(owner => !hasOwner(original.text, owner))
+        || [...originalOwners].some(owner => !hasOwner(left.text, owner) || !hasOwner(right.text, owner))) continue;
+    const sourceSpan = before.slice(original.start, original.end), outputSpan = after.slice(left.start, right.end);
+    if (!locateEvidenceSpan(before, sourceSpan, 20) || !locateEvidenceSpan(after, outputSpan, 20)) continue;
+    if (result.some(row => row.sourceSpan === sourceSpan && row.outputStart <= left.start && row.outputEnd >= right.end)) continue;
+    result.push({ code: 'introduced_adjacent_duplicate_candidate', sourceSpan, outputSpan,
+      sourceStart: original.start, sourceEnd: original.end, outputStart: left.start, outputEnd: right.end });
+    }
+  }
+  return result;
+}
+const instruction='source_suffix_replay_candidate는 원문 강제 개행의 뒷조각이 새 완결문 다음에도 남아 있는지 확인하는 질문이다. introduced_adjacent_duplicate_candidate는 한 원문 설명에 대응한 인접 두 완결문이 새로 같은 주장을 반복하는지 확인하는 질문이다. sourceSpan 전체와 candidateSpan의 앞뒤 두 단위를 대조하여 앞문장이 이미 같은 주장을 완결했는지 확인한다. 원문부터 반복된 내용·다른 주체·조건·보충 설명·다른 문항·논증의 결론 재확인·정상 문장 분리는 preserved이며, 실제 신규 중복이 확인될 때만 정확한 위치를 갖춘 introduced violation을 반환한다. 후보 위치 자체는 삭제 허가가 아니며 uncertain이면 추측 복구하지 않는다.';
+module.exports={CODE,candidates,introducedCandidates,instruction};

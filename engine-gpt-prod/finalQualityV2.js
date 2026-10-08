@@ -231,6 +231,7 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
     // headings survived. These are review warnings, not technical blockers or
     // new model-call triggers; candidate selection owns any bounded recovery.
     const messages = {
+      source_clipped_opening_replaced: '잘렸을 수 있는 원문의 첫 단어가 다른 말로 바뀌어 입력과의 대조가 필요해요.',
       introduced_orphan_ending: '완결된 문장 뒤에 분리된 어미가 남아 있어 문장 연결을 확인해 주세요.',
       introduced_duplicate_predicate_tail: '앞 문장에서 완성한 서술어가 다음 행에 다시 남아 있어 원문 대조가 필요해요.',
       introduced_dependent_tail_owner_shift: '문장 중간에서 나뉜 앞부분과 뒤의 서술 연결이 달라져 원문 대조가 필요해요.',

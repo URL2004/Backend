@@ -583,6 +583,7 @@ router.post('/detect-report', async (req, res) => {
     const publicInputDocument = buildDetectInputDocument(text);
     const reportView = buildDetectReportView({
       sourceText: text,
+      sourceParagraphs: analysisParas,
       probability,
       probSource: 'llm',
       confidence: det.confidence,
@@ -718,7 +719,8 @@ router.post('/detect-report', async (req, res) => {
           snippet: paragraph.slice(0, 140),
           text: paragraph.length > 140 ? paragraph : undefined,
           coach: detail[index]?.excluded ? null : filterContentCoach(predictCoach(analysisParas[index]), reportView,
-            { evidenceStatus: presentation.assessmentStatus, sentenceCount: detail[index]?.sents || 0 })
+            { evidenceStatus: presentation.assessmentStatus, findingStatus: presentation.findingStatus,
+              contentContext: presentation.contentContext, sentenceCount: detail[index]?.sents || 0 })
         };
       }),
       coach: filterContentCoach(predictCoach(analysisParas.join('\n\n'), 0.5), reportView,

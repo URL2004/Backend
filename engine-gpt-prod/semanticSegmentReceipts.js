@@ -121,7 +121,9 @@ function policyFingerprint() {
     'clauseCoverage.js', 'discourseAudit.js', 'promptEnvelope.js',
     'entityParentheticalIntegrity.js', 'semanticSegmentReceipts.js',
     'semanticAuditPayload.js', 'semanticReviewEnvelope.js', 'layoutStructure.js',
-    'layoutRelations.js', 'verticalTable.js', 'koreanEndingSeam.js'];
+    'layoutRelations.js', 'verticalTable.js', 'koreanEndingSeam.js',
+    'sourceInputIntegrity.js', 'sourcePreflight.js', 'fragmentIntegrity.js', 'humanizeContract.js',
+    'auditMeaningRelations.js', 'voiceProfile.js', 'humanizationDepth.js'];
   policyFingerprintCache = digest(files.map(file => {
     try { return `${file}:${digest(fs.readFileSync(path.join(__dirname, file)))}`; } catch { return `${file}:absent`; }
   }).join('\n'));

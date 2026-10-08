@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.104';
+const VERSION = 'gpt-prod-v2.5.105';
 const DETECT_VERSION = 'gpt-detect-v1.52';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -323,6 +323,7 @@ async function runEngine({
     { requestStrength, basicStyle }
   );
   const selectedMode = effectiveModeForProfile(requestedMode, normalizedMode, documentProfile);
+  const preservationOnly = humanizationDepth.isPreservationOnly(rawSource, { documentProfile });
   const humanizeContract = buildHumanizeContract({
     mode: selectedMode,
     requestStrength,
@@ -930,6 +931,7 @@ async function runEngine({
     wholeDocumentDepthRetrySkippedAfterSectionRecovery = true;
   }
   if (!skipWholeDocumentDepthRetry
+      && !preservationOnly
       && !allEditableModelCallsFailed
       && selectedMode !== 'polish'
       && (generalSurfaceRetryPending
@@ -2151,6 +2153,7 @@ async function runEngine({
   // 수 있다. 앞 단계에서 무변환이 아니었다면 기존 회복 루프가 이를 볼 수 없으므로,
   // 최종 레이아웃 전에 한 번 더 재작성하고 의미 심사까지 다시 통과한 후보만 쓴다.
   if (!allEditableModelCallsFailed
+      && !preservationOnly
       && selectedMode !== 'polish'
       && (postSemanticDepthRegression
         || semanticRepairErasedTransform
@@ -3239,7 +3242,7 @@ async function runEngine({
   // post_semantic 이후의 안전 후보 최고점을 기준선으로 삼고, 실질 퇴행이 남은
   // 경우에만 한 번 국소 회복한다. 회복 후보는 의미 심사와 모든 서버 소유
   // 레이아웃·리터럴 고정점을 다시 통과해야 채택된다.
-  if (humanizationDepthEnabled && selectedMode !== 'polish' && !allEditableModelCallsFailed) {
+  if (humanizationDepthEnabled && !preservationOnly && selectedMode !== 'polish' && !allEditableModelCallsFailed) {
     const depthBeforeRecovery = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
     const beforeRecoverySnapshot = buildDepthStageSnapshot(
       'pre_delivery_depth_recovery',
@@ -4604,6 +4607,8 @@ async function runEngine({
   const niklAdvisorMeta = niklAdvisor.compactMeta(niklAdvisorContext);
   result.niklAdvisor = niklAdvisorMeta;
   result.sourceReviewWarnings = sourceReviewWarnings;
+  result.inputStatus = require('./sourceInputIntegrity').inputStatus(
+    sourcePreflightAudit, finalSemanticValidation?.status, effectStatus);
   result.sourcePreflight = sourcePreflightAudit ? {
     version: sourcePreflightAudit.version || 1,
     changed: sourcePreflightAudit.changed === true,
@@ -4687,6 +4692,8 @@ async function runEngine({
     } catch {}
   }
   result.engineMeta = {
+    inputStatus: result.inputStatus,
+    ...require('./auditTrace').compactAuditTrace({ encodingNormalization: sourcePreflightAudit?.encodingNormalization }),
     sourceNormalization: require('./auditTrace').sourceNormalization(submittedSource, rawSource, integritySource),
     finalValidationReceipt: require('./auditTrace').finalValidationReceipt(
       semanticReportForCandidate(semanticReport), rawSource, outputText),
@@ -6636,7 +6643,8 @@ function evaluateChunkGate({ outputText, original, contract, mode, protectedTerm
   if (directPreservationReason) {
     return { hardFail: true, reason: directPreservationReason, warnings, violations };
   }
-  if (normalizeBare(original).length > 120 && isNoopEquivalent(original, outputText, mode)) {
+  if (!humanizationDepth.isPreservationOnly(original, { documentProfile })
+      && normalizeBare(original).length > 120 && isNoopEquivalent(original, outputText, mode)) {
     warnings.push('noop_unchanged');
     violations.push({ gate: 'noop_unchanged', detail: 'output equivalent to source' });
     return { hardFail: true, reason: 'noop_unchanged', warnings, violations };
@@ -6720,7 +6728,8 @@ function evaluateWholeDocumentGate({
     });
     warnings.push('number_multiset_changed');
   }
-  if (normalizeBare(source).length > 120 && isNoopEquivalent(source, outputText, mode)) {
+  if (!humanizationDepth.isPreservationOnly(source, { documentProfile })
+      && normalizeBare(source).length > 120 && isNoopEquivalent(source, outputText, mode)) {
     warnings.push('noop_unchanged');
     violations.push({ gate: 'noop_unchanged', detail: 'final output equivalent to source' });
     return { hardFail: true, reason: 'noop_unchanged', warnings, violations };

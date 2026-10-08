@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v21-event-relations';
+const VERSION = 'relation-candidates-v22-audit-meaning';
 const { predicateScopeCandidates } = require('./predicateScope');
 const { auditParentheticalAliasOwners } = require('./entityParentheticalIntegrity');
 
@@ -61,6 +61,7 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
   }
   const originals = splitSentences(before);
   const rewritten = splitSentences(after);
+  candidates.push(...require('./auditMeaningRelations').directionalPairs(originals, rewritten));
   const matches = rewritten.map(sentence => closestSentence(originals, sentence));
   const connector = s => {
     const word=s.match(/^(다만|하지만|그러나|반면|따라서|그러므로)\s+/u)?.[1];
@@ -94,6 +95,7 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
         add('antecedent_ownership_candidate');
     }
     if (matched.sentence === sentence) continue;
+    for (const code of require('./auditMeaningRelations').sentenceCodes(original, sentence)) add(code);
     for (const code of require('./eventRelationOperators').eventRelationOperators(original, sentence,
       (side,start,end) => unprotectedOperator(side === 'source' ? before : after,
         side === 'source' ? original : sentence,start,end,syntaxForOperators))) add(code);

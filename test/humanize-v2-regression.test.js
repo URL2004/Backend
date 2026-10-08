@@ -1225,11 +1225,12 @@ test('운영 프롬프트는 원문에 없던 보고서식 완충 표현을 새�
   assert.match(built.stable, /다듬기 모드에서도/u);
 });
 
-test('voice 프롬프트는 기존 1인칭을 최소 한 곳 남기고 새 화자는 만들지 않게 한다', () => {
+test('voice 프롬프트는 기존 화자 귀속을 보존하고 근거 있는 대명사 생략만 허용한다', () => {
   const personal = voicePromptBlock(buildVoiceProfile('저는 자료를 읽었습니다. 결론을 다시 정리했습니다.', { documentProfile: 'general_essay' }));
   const impersonal = voicePromptBlock(buildVoiceProfile('자료를 읽었습니다. 결론을 다시 정리했습니다.', { documentProfile: 'general_essay' }));
-  assert.match(personal, /1인칭 단수.*종류별로 최소 한 곳 남긴다/u);
-  assert.match(personal, /화자를 완전히 지우지 않는다/u);
+  assert.match(personal, /1인칭 단수.*귀속을 유지한다/u);
+  assert.match(personal, /같은 화자가 분명하면 대명사 생략은 허용/u);
+  assert.match(personal, /합니다체 자체를 1인칭 근거로 삼거나/u);
   assert.match(impersonal, /원문에 없는 나는·저는·제가·우리·저희/u);
 });
 

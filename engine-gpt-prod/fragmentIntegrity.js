@@ -2,7 +2,7 @@
 
 const { syntaxSpans } = require('../engine/textSyntax');
 
-const VERSION = 'fragment-integrity-v3';
+const VERSION = 'fragment-integrity-v4';
 const MAX_ISSUES = 40;
 const ORPHAN_ENDING = /^(다|니다|습니다)[.!?。！？](?=\s|$)/u;
 const KOREAN_MARKERS = '가나다라마바사아자차카타파하';
@@ -16,7 +16,7 @@ function auditFragmentIntegrity(sourceText, outputText) {
   if (!source || !output || source === output) return result([]);
   const sourceInfo = analyzeLines(source);
   const outputInfo = analyzeLines(output);
-  const issues = [];
+  const issues = require('./sourceInputIntegrity').auditInputCompletion(source, output);
   const oldOrphans = orphanEndings(sourceInfo);
   const newOrphans = orphanEndings(outputInfo);
 

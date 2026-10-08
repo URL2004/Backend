@@ -32,6 +32,7 @@ const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const restartRecovery = require('../lib/transformRestartRecovery');
 const completionState = require('../lib/transformCompletionState');
+const attemptTrace = require('../lib/transformAttemptTrace');
 const publicMetrics = require('../lib/publicMetrics');
 const {
   COLLECTION: ACCOUNT_ACTIVITY_COLLECTION,
@@ -100,9 +101,15 @@ async function executeOwned(job, feature, run) {
     const lost = () => controller.abort(Object.assign(new Error('Execution lease lost'), { code: 'EXECUTION_LEASE_LOST' }));
     void executionCoordinator.renew(lease).then(ok => { if (!ok) lost(); }, lost);
   }, 20000);
-  try { await run(controller.signal); return true; }
+  const attemptId = attemptTrace.begin(job, feature);
+  try {
+    await require('../engine-gpt-prod/callLedger').observe(() => run(controller.signal), ledger => attemptTrace.capture(job, attemptId, ledger));
+    return true;
+  }
   finally {
     clearTimeout(timer); clearInterval(heartbeat);
+    attemptTrace.finish(job, attemptId, { aborted: controller.signal.aborted, reason: controller.signal.reason?.code || controller.signal.reason?.name });
+    await persistJob(job);
     if (jobPersistChains.has(job.id)) await jobPersistChains.get(job.id);
     await executionCoordinator.release(lease).catch(error => logger.warn('transform.lease_release_failed', { jobId: job.id, error }));
     delete job.executionToken;
@@ -882,7 +889,7 @@ async function commitRefineBilling(job, n, creditAmount, textLength) {
 // ── job 영속화(2026-06-12): Firestore transformJobs — 재시작에도 결과·승인대기 생존.
 //   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
-const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
+const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted', 'attemptTrace',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
   'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts',
@@ -949,6 +956,7 @@ function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
   completionState.normalizeCancelledJob(job);
   normalizeCompletedJobState(job);
   ensureTerminalTimestamp(job);
+  attemptTrace.observeStatus(job);
   if (!db) return Promise.resolve({ ok: true, localOnly: true });
   const doc = {};
   for (const k of PERSIST_FIELDS) {
@@ -1099,6 +1107,7 @@ function buildArchiveDocument(job, extra = {}, now = Date.now()) {
     if (createdAtMs > 0) doc.totalDurationMs = Math.max(0, terminalAtMs - createdAtMs);
   }
   Object.assign(doc, buildArchiveObservability(job));
+  doc.attemptLifecycle = attemptTrace.summary(job);
   Object.assign(doc, require('../engine-gpt-prod/auditTrace').compactAuditTrace(
     job.result?.engineMeta || job.result?.humanizeMeta?.engineMeta || job.engineMeta || {}));
   for (const [k, v] of Object.entries(extra || {})) {

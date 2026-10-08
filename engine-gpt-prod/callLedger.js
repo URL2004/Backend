@@ -2,6 +2,13 @@
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { emptyUsage, addUsage } = require('./usageCost');
 const storage = new AsyncLocalStorage();
+const observers = new AsyncLocalStorage();
+function observe(fn, listener, checkpoint) { return observers.run({ listener, checkpoint }, fn); }
+function publish(value) { try { observers.getStore()?.listener?.(value); } catch { /* Accounting is observational. */ } }
+function observationSink() {
+  const listener = observers.getStore()?.listener;
+  return value => { try { listener?.(value); } catch { /* Retain the admitting job context across the worker queue. */ } };
+}
 const safe = value => String(value || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80);
 function createLedger() { return { entries: [], policy: {}, recoveryBudget: null, layoutMetrics: [], layoutCache: new Map(), layoutFeatures: new Map() }; }
 function current() { return storage.getStore(); }
@@ -16,6 +23,7 @@ async function run(fn, attach) {
   return require('../engine/textAnalysisCache').withTextAnalysisCache(() => storage.run(store, async () => {
     try { const result = await fn(); attach?.(result, snapshot(store)); return result; }
     catch (error) { error.callLedger = snapshot(store); throw error; }
+    finally { publish(snapshot(store)); }
   }));
 }
 async function track(options, fn) {
@@ -45,7 +53,10 @@ async function track(options, fn) {
       failedEstimatedUsd: Number(error.failedEstimatedUsd || 0),
       code: safe(error.code || error.name), retryCounts: { ...error.retryCounts }, httpAttemptCount: error.httpAttemptCount || 0 });
     throw error;
-  } finally { endMandatoryAudit?.(); entry.elapsedMs = Date.now() - started; Object.freeze(entry); }
+  } finally {
+    endMandatoryAudit?.(); entry.elapsedMs = Date.now() - started; Object.freeze(entry);
+    try { observers.getStore()?.checkpoint?.(snapshot({ ...store, entries: [entry], layoutMetrics: [] })); } catch { /* Worker observation is best effort. */ }
+  }
 }
 function snapshot(store = current()) {
   const entries = (store?.entries || []).filter(entry => entry.outcome !== 'pending');
@@ -66,4 +77,4 @@ function snapshot(store = current()) {
     entries: entries.map(entry => ({ ...entry })) };
 }
 function setRecoveryBudget(budget) { const store = current(); if (store) { store.recoveryBudget = budget; budget?.enableCallAccounting(); } }
-module.exports = { current, run, track, snapshot, withPolicy, setRecoveryBudget };
+module.exports = { current, run, track, snapshot, withPolicy, setRecoveryBudget, observe, publish, observationSink };

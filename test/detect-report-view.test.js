@@ -63,7 +63,7 @@ test('72점 대표 사례는 측정값을 보존하되 위치 없는 원인을 �
     status: 'mixed', label: '구체 근거 비율 일부 확인', lived: 1, specific: 0,
     grounded: 1, generic: 3, total: 8, groundedRatio: 0.125,
     policyVersion: 'axis-policy-v3-ops1077', metric: 'grounded', target: 0.2,
-    assessmentStatus: 'on', assessedRatio: 0.125, reason: null
+    assessmentStatus: 'on', findingStatus: 'present', assessedRatio: 0.125, reason: null
   });
   assert.equal(reportView.measuredEvidence.maxEndingRun, 5);
   assert.equal(reportView.measuredEvidence.avgLength, 57);

@@ -199,7 +199,7 @@ test('real admission persistence rejects simultaneous same-owner jobs and stale 
   const source = fs.readFileSync(path.join(__dirname, '../routes/transform.js'), 'utf8');
   const claims = require('../lib/accountActivityClaims');
   const db = database();
-  const context = { db, completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
+  const context = { db, attemptTrace: require('../lib/transformAttemptTrace'), completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
     PERSIST_FIELDS: ['id', 'uid', 'status', 'executionToken'], pruneUndefinedForFirestore: value => value,
     buildArchiveDocument: () => ({}), jobPersistChains: new Map(), JOB_ARCHIVE_COLLECTION: 'archive',
     ACCOUNT_ACTIVITY_COLLECTION: claims.COLLECTION, TRANSFORM_LANE: claims.TRANSFORM_LANE,
@@ -271,7 +271,7 @@ test('execution acquisition and actual route persistence finish without a docume
   const job = { id: 'lock-race', uid: 'synthetic-owner', status: 'queued', mode: 'formal' };
   db.rows.set('transformJobs/lock-race', job);
   const claims = require('../lib/accountActivityClaims');
-  const context = { db, completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
+  const context = { db, attemptTrace: require('../lib/transformAttemptTrace'), completionState: require('../lib/transformCompletionState'), normalizeCompletedJobState() {}, ensureTerminalTimestamp() {},
     PERSIST_FIELDS: ['id', 'uid', 'status', 'executionToken'], pruneUndefinedForFirestore: value => value,
     buildArchiveDocument: () => ({}), jobPersistChains: new Map(), JOB_ARCHIVE_COLLECTION: 'archive',
     ACCOUNT_ACTIVITY_COLLECTION: claims.COLLECTION, TRANSFORM_LANE: claims.TRANSFORM_LANE,

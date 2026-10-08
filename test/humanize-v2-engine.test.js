@@ -13,6 +13,30 @@ const { textDigest } = require('../engine-gpt-prod/semanticProvenance');
 
 const SOURCE = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
 
+test('source input defects stay distinct from semantic pass through engine delivery', { concurrency:false }, async t => {
+  const text = '제를 정리하기 위해 여러 자료를&nbsp;자세하게 살펴보았습니다. 각 설명의 차이를 기록했습니다.';
+  installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT')
+    .replace('자세하게 살펴보았습니다','꼼꼼히 검토했습니다')});
+  const out = await engine.run({text,mode:'formal',uid:'source-input-status-unit',config:config()});
+  assert.match(out.result.outputText,/^제를/u);
+  assert.equal(out.engineMeta.inputStatus.completeness,'review_required');
+  assert.equal(out.engineMeta.inputStatus.entityRepairCount,1);
+  assert.equal(out.result.inputStatus.completeness,'review_required');
+  assert.equal(out.engineMeta.encodingNormalization.changed,true);
+  assert.equal(out.engineMeta.encodingNormalization.text,undefined);
+});
+
+test('creative unchanged output avoids prose depth escalation and preserves input status', { concurrency:false }, async t => {
+  const text = Array.from({length:8}, (_,i) => `아아, ${i+1}번째 밤의 창가에\n꼬박꼬박 고여 있는 빛\n내 발자국은 조용히 남는다`).join('\n\n');
+  const {calls} = installEngineMock(t,{humanize:body=>extractPromptDataSection(body.input,'EDITABLE_TEXT')});
+  const out = await engine.run({text,mode:'blog',documentProfileOverride:'creative',uid:'creative-preservation-unit',config:config()});
+  assert.equal(out.engineMeta.postSemanticNoopRecoveryAttemptCount || 0,0);
+  assert.equal(out.engineMeta.humanizationDepthRetryCount || 0,0);
+  assert.equal(out.engineMeta.inputStatus.completeness,'no_issue_detected');
+  assert.ok(!calls.some(call => /post_semantic_noop|humanization_depth_retry/u.test(JSON.stringify(call.body?.metadata || {}))));
+  assert.equal(out.result.outputText,text);
+});
+
 test('physical endings reach generation intact and delivered counts describe the final candidate', {concurrency:false}, async t=>{
   const text='1. 관찰 결과\n'+Array.from({length:9},(_,i)=>
     `연구팀은 여러 지역의 자료를 비교하면서 각 시설의 운영 조건을 자세하게 확인하고 있\n다. 담당자는 ${i+1}차 관찰에서 얻은 자료를 검토하고 다음 측정의 절차를 다시 준비하였다.`).join('\n');
@@ -468,7 +492,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.104');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.105');
   assert.equal(out.engineMeta.boundaryMarkerStats.version, 1);
   assert.equal(typeof out.engineMeta.boundaryMarkerStats.markedChunks, 'number');
   assert.equal(typeof out.engineMeta.relationCandidateCounts, 'object');
@@ -1770,7 +1794,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.104');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.105');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

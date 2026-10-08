@@ -33,7 +33,9 @@ function buildVoiceProfile(source, { documentProfile = 'unknown', safetyProfiles
   const firstSingular = povSeed.fp_singular;
   const firstPlural = povSeed.fp_plural;
   const endings = endingHistogram(sentences);
-  const lineBreakSensitive = profileName === 'creative' && isLineBreakSensitive(text);
+  const lineBreakSensitive = (profileName === 'creative' && isLineBreakSensitive(text))
+    || (context.formatProfile?.flags?.includes?.('line_sensitive') === true
+      && require('./auditMeaningRelations').hasPoeticLineEvidence(text));
   const layout = layoutStructure.analyzeLineStructure(text);
   const lineBoundaryPolicy = linePolicyFor(text, context, layout, { lineBreakSensitive, mode });
   const lineStructureSensitive = lineBoundaryPolicy !== 'none';
@@ -86,7 +88,9 @@ function voicePromptBlock(profile, { requestStrength = '', mode = '' } = {}) {
   if ((profile.pov?.firstSingular || 0) > 0) povAnchors.push('1인칭 단수(나는·저는·제가 등)');
   if ((profile.pov?.firstPlural || 0) > 0) povAnchors.push('1인칭 복수(우리·저희 등)');
   const povAnchorInstruction = povAnchors.length
-    ? `원문에 있는 ${povAnchors.join('와 ')} 표현은 종류별로 최소 한 곳 남긴다. 자연스러운 주어 생략을 이유로 화자를 완전히 지우지 않는다.`
+    ? (strength === 'polish'
+      ? `원문에 있는 ${povAnchors.join('와 ')} 표현은 종류별로 최소 한 곳 남긴다. 다듬기에서 화자를 완전히 지우지 않는다.`
+      : `원문에 있는 ${povAnchors.join('와 ')}의 귀속을 유지한다. 문맥과 생각합니다·동의합니다 같은 실제 의견 술어로 같은 화자가 분명하면 대명사 생략은 허용한다. 합니다체 자체를 1인칭 근거로 삼거나 다른 문단의 화자만으로 현재 문단의 성찰 귀속을 대신하지 않는다.`)
     : '원문에 없는 나는·저는·제가·우리·저희 같은 1인칭 화자를 새로 만들지 않는다.';
   const sparseRunOnInstruction = profile.sentence?.punctuationSparse && sparseSplitTarget
     ? [
@@ -126,7 +130,7 @@ function voicePromptBlock(profile, { requestStrength = '', mode = '' } = {}) {
       : (profile.lineBoundaryPolicy === 'structural'
           ? '제목·항목 라벨·표·목록과 본문의 소속 경계를 유지한다. 본문 안의 최종 문단 경계는 레이아웃 정책에 따른다.'
           : ''),
-    profile.lineBreakSensitive ? '이 글은 줄바꿈 자체가 구조다. 행을 합치거나 새로 나누지 않는다.' : ''
+    profile.lineBreakSensitive ? '이 글은 줄바꿈 자체가 구조다. 행을 합치거나 새로 나누지 않는다. 감탄사·의성어·반복 시어와 호흡을 보존하고, 뜻풀이·교훈을 덧붙이거나 낯선 시어를 평범한 산문으로 바꾸지 않는다.' : ''
   ].filter(Boolean).join('\n');
 }
 
@@ -347,6 +351,13 @@ function auditVoice(sourceProfile, output, {
   if (context.profile !== 'creative' && (currentLayout.readability?.overlongCount || 0) > 0) {
     warnings.push(warning('paragraph_readability', '한 문단이 지나치게 길어 읽기 어려울 수 있어요.'));
   }
+  if (sourceText && sourceProfile?.lineBreakSensitive) {
+    const sounds = [...new Set(String(sourceText).match(/(?<![가-힣])(?:아아|오오|([가-힣]{1,3})\1)(?![가-힣])/gu) || [])];
+    const countSound = (text, sound) => (String(text).match(new RegExp(`(?<![가-힣])${sound}(?![가-힣])`, 'gu')) || []).length;
+    if (sounds.some(sound => countSound(output, sound) < countSound(sourceText, sound))) {
+      warnings.push(warning('creative_sound_repetition_changed', '시의 감탄·반복 시어가 줄어 원문의 호흡이 달라졌을 수 있어요.'));
+    }
+  }
   return {
     profile: current,
     directQuoteIntegrity,
@@ -375,6 +386,10 @@ function hasSafeImplicitSingularRetention({
   personalScopeAudit = null
 } = {}) {
   if (String(mode || '') === 'polish') return false;
+  // A present opinion can retain a Korean zero subject. Require the same
+  // source-attested opinion and comparable content, not polite endings alone.
+  if (Number(sourceFirstSingularCount) > 0 && !personalScopeAudit?.introducedCount
+      && hasImplicitOpinionRetention(source, output)) return true;
   if (!['resume_application', 'personal_essay', 'general_essay', 'student_self_assessment']
     .includes(String(documentProfile || ''))) return false;
   if (Number(sourceFirstSingularCount || 0) <= 0 || Number(sourceFirstSingularCount || 0) > 2) return false;
@@ -388,6 +403,25 @@ function hasSafeImplicitSingularRetention({
     /(?:맡았|정했|확인했|살펴보았|살펴봤|공유했|조치했|마쳤|받았|배웠|느꼈|얻었|취득했|진학했|근무했|참여했|지원했|수행했|작성했|정리했|경험했|생각했|깨달았|알게\s*되었|하고자\s*합니다|하겠습니다|했습니다|하였습니다)/gu
   ) || [];
   return ownedPredicates.length >= 2;
+}
+
+function hasImplicitOpinionRetention(source, output) {
+  const opinion = /(?:생각합니다|동의합니다|공감합니다|믿습니다|판단합니다)[.!?。！？]?\s*$/u;
+  const sourceRows = splitSentences(source).filter(row => computePovSeed(row).fp_singular > 0);
+  const outputRows = splitSentences(output);
+  if (!sourceRows.length || sourceRows.length > 2) return false;
+  return sourceRows.every(row => {
+    const predicate = row.match(opinion)?.[0]?.replace(/[.!?。！？\s]/gu, '');
+    if (!predicate || directQuoteContents(row).length) return false;
+    return outputRows.some(candidate => candidate.endsWith(predicate) || candidate.endsWith(`${predicate}.`)
+      ? !directQuoteContents(candidate).length
+        && !/(?:그|그녀|그들|학생|교수|저자|필자|연구자|사람들|독자)(?:은|는|이|가)\s|(?:다고|라고)\s*(?:말|전|설명)/u.test(candidate)
+        && ![...candidate.matchAll(/(?<![가-힣])([가-힣]{1,20}?)(?:은|는|이|가)\s/gu)]
+          .some(subject => !row.includes(subject[1]))
+        && ngramJaccard(row, candidate, 3) >= 0.35
+        && normalizeCompact(candidate).length >= normalizeCompact(row).length * 0.6
+      : false);
+  });
 }
 
 function sentenceDistributionShift(sourceSentence, currentSentence, { toleranceMultiplier = 1 } = {}) {

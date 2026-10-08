@@ -6,7 +6,9 @@ const controller = new AbortController();
 parentPort.on('message', message => { if (message === 'abort') controller.abort(); });
 runWithLogContext(workerData.context, async () => {
   try {
-    const result = await engine.run({ ...workerData.options, signal: controller.signal });
+    const result = await require('./callLedger').observe(
+      () => engine.run({ ...workerData.options, signal: controller.signal }), null,
+      ledger => parentPort.postMessage({ callLedger: ledger }));
     parentPort.postMessage({ result });
   } catch (error) {
     parentPort.postMessage({ error: { message: error.message, code: error.code, noCharge: error.noCharge } });

@@ -59,6 +59,25 @@ const CREATIVE_POLICY = Object.freeze({
   high: Object.freeze({ minEdit: 0.075, targetMin: 0.09, targetMax: 0.13, minSentence: 0.32, minTarget: 0.50 })
 });
 
+function isPreservationOnly(source, { documentProfile = null } = {}) {
+  const text = String(source || '').trim();
+  const profile = String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
+  const flags = new Set(documentProfile?.formatProfile?.flags || []);
+  const lines = text.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
+  if (!lines.length) return false;
+  if (flags.has('line_sensitive') && require('./auditMeaningRelations').hasPoeticLineEvidence(text)) return true;
+  if ((profile === 'creative' || flags.has('creative_lines')) && lines.length >= 3
+      && lines.filter(line => line.length <= 60).length / lines.length >= 0.6) return true;
+  // Only a wholly nominal short title/list document. Do not exempt ordinary
+  // short prose, paragraphs with headings, formulas or unfinished body text.
+  return lines.length >= 2 && lines.length <= 12 && lines.every(line => {
+    const body = line.replace(/^(?:#{1,6}\s+|\d{1,2}[.)]\s*|[-•]\s+)/u, '');
+    return body.length >= 3 && body.length <= 70 && /[가-힣]/u.test(body)
+      && !/[.!?。！？=<>|]/u.test(body)
+      && !/(?:다|요|고|며|지만|으니|아서|어서|을|를|에서|에게|으로)\s*$/u.test(body);
+  });
+}
+
 function buildHumanizationPlan(source, {
   requestStrength = 'basic',
   documentProfile = null,
@@ -102,6 +121,14 @@ function buildHumanizationPlan(source, {
   const text = stripLockTokens(source);
   const sentences = meaningfulSentences(text);
   const profile = String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
+  if (isPreservationOnly(source, { documentProfile })) return {
+    ...buildHumanizationPlan(source, { requestStrength: 'polish' }),
+    requestStrength: strength, profile, preservationOnly: true,
+    preservationPolicyVersion: 'genre-preservation-v1',
+    creative: profile === 'creative', sourceChars: normalizeSubstantive(text).length,
+    sourceSentenceCount: sentences.length, riskLevel: 'preserve',
+    targetIndices: [], requiredTargetChangedCount: 0
+  };
   const rhetoricalRemediationPlan = buildRemediationPlan(text);
   const resumeRepetitionPlan = resumeRepetitionAudit.buildResumeRepetitionPlan(text, documentProfile);
   const sourceRedundancyPlan = sourceRedundancy.buildSourceRedundancyPlan(text, documentProfile);
@@ -285,6 +312,10 @@ function buildDistributedHumanizationPlans(chunks, documentPlan, {
   inputRisk = null,
   editableChunkIndices = null
 } = {}) {
+  if (documentPlan?.preservationOnly) return new Map((chunks || []).map((chunk, index) => [
+    Number.isInteger(chunk?.index) ? chunk.index : index,
+    { ...documentPlan, sourceChars: normalizeSubstantive(chunk?.text || '').length }
+  ]));
   const constrainedEditableChunks = editableChunkIndices instanceof Set;
   const rows = [];
   const targets = new Set((documentPlan?.targetIndices || []).filter(Number.isInteger));
@@ -855,6 +886,7 @@ function measureSubstantiveEdit(source, output) {
 }
 
 function buildHumanizationPromptBlock(plan) {
+  if (plan?.preservationOnly) return '[시·제목 보존 계약]\n원문 행·연·명사형 제목과 시어·감탄·반복·호흡을 보존한다. 변환량의 최소 목표는 없다. 명백한 국소 오탈자나 호응 문제만 근거 안에서 다듬고, 수정할 근거가 없으면 그대로 유지한다. 뜻풀이·새 결론·산문 문장·마침표를 억지로 추가하지 않는다.';
   if (!plan?.applicable) return '';
   if (plan.editObjective === 'issue_focused_v1') return [
     '[실질 휴머나이징 계약]',
@@ -1572,6 +1604,7 @@ function progress(value, target) {
 }
 
 module.exports = {
+  isPreservationOnly,
   POLICY_VERSION,
   PLAN_SIGNAL_SOURCE,
   buildHumanizationPlan,

@@ -787,3 +787,32 @@ test('report HTTP and paid replay keep cause clicks in the display namespace', {
   assert.equal(replay.status, 200);
   assert.deepEqual(replay.body.reportView.causeAnalysis.items[0].locations, locations);
 });
+
+test('report and replay separate an isolated ending from rewriting while retaining the calibrated score', { concurrency: false }, async t => {
+  const previousPlan = state.billingPlan, previousScore = state.modelProbability;
+  state.billingPlan = 'unlimited'; state.modelProbability = 18; state.stabilityResult = null;
+  state.comparisonCalibration = { probability: 11, rawProbability: 18, applied: true,
+    meta: { applied: true, rawProbability: 18, calibratedProbability: 11, match: 'exact_normalized' } };
+  t.after(() => { delete state.modelEvidence; delete state.comparisonCalibration;
+    state.billingPlan = previousPlan; state.modelProbability = previousScore; state.stabilityResult = null; });
+  const text = '자료실에서 제공한 첫 기록을 차례로 읽었다. 서로 다른 분류 기준을 옆에 적었다. '
+    + '다음 기록에서도 같은 항목이 있는지 확인했다. 종이에 표시한 부분을 다시 비교했다. '
+    + '마지막으로 확인할 질문을 별도 문서에 정리했다. 입니다.';
+  const doc = require('../lib/detectInputDocument').buildDetectInputDocument(text);
+  const index = doc.sentences.findIndex(s => s.text === '입니다.');
+  const fragment = doc.sentences[index];
+  assert.ok(index >= 0);
+  state.modelEvidence = [{ category: 'other_observed_style', strength: 'weak', scope: 'isolated',
+    description: '문체 관찰', locationStatus: 'source_range_verified',
+    locations: [{ sentenceIndex: index, start: fragment.start, end: fragment.end }] }];
+  const response = await post(text, 'audit-fragment-response');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.probability, 11);
+  assert.equal(response.body.rawProbability, 18);
+  assert.equal(response.body.reportView.conversion.candidateSentences, 0);
+  assert.equal(response.body.reportView.conversion.recommend, false);
+  assert.match(response.body.interpretation.nextSteps[0], /문장 조각/);
+  const replay = await post(text, 'audit-fragment-response');
+  assert.equal(replay.body.probability, 11);
+  assert.deepEqual(replay.body.reportView.conversion, response.body.reportView.conversion);
+});

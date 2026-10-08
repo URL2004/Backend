@@ -72,6 +72,27 @@ require.cache[configPath] = {
 
 const history = require('../lib/historyService');
 
+test('candidate choice and final validation survive JSON/history round trips without the full ledger', () => {
+  const trace = require('../engine-gpt-prod/auditTrace');
+  const provenance = require('../engine-gpt-prod/semanticProvenance');
+  const source = '자료를 확인했다. 결과를 기록했다.';
+  const receipt = provenance.bindSemanticValidation({ ran: true, pass: true }, source, source);
+  const summary = {
+    candidateLedgerVersion: 'candidate-ledger-v1', candidateLedgerEnabled: true,
+    candidateLedgerRollbackApplied: true, candidateLedgerSelectedStage: 'delivery_final',
+    candidateLedgerSelectionReason: 'semantic_audit_pass', candidateLedgerCheckpointCount: 6,
+    candidateLedgerEligibleCount: 2, candidateLedgerSelectedDigest: provenance.textDigest(source),
+    finalValidationReceipt: trace.finalValidationReceipt(receipt, source, source),
+    sourceNormalization: trace.sourceNormalization(source, source, source)
+  };
+  const stored = history.compactHistoryEngineMeta(JSON.parse(JSON.stringify({ ...summary,
+    candidateLedger: { checkpoints: [{ text: source }] } })));
+  for (const [key, value] of Object.entries(summary)) assert.deepEqual(stored[key], value);
+  assert.equal(Object.hasOwn(stored, 'candidateLedger'), false);
+  assert.ok(!JSON.stringify(stored).includes(source));
+  for (const key of Object.keys(summary)) assert.equal(Object.hasOwn(history.compactHistoryEngineMeta({}), key), false);
+});
+
 test('stored layout observations retain measured zeros and failures without certifying legacy rows', () => {
   const metrics={deliveredReadableParagraphCount:12,deliveredExplicitParagraphCount:10,
     deliveredMaxReadableParagraphChars:280,deliveredOverlongReadableParagraphCount:0,

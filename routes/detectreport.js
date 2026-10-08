@@ -12,7 +12,7 @@
 const express = require('express');
 const router = express.Router();
 const billing = require('../lib/usageBilling');
-const { BANDS, COPY } = require('../lib/detectPresentation');
+const { BANDS, contentPresentation, filterContentCoach } = require('../lib/detectPresentation');
 const { restructureCredit, shortHumanizeCredit } = require('../lib/humanizePricing');
 const sg = require('../engine/surfaceguard');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
@@ -55,23 +55,16 @@ function clientIp(req) {
   return realClientIp(req);
 }
 
-// 문단 종류 → 사용자 언어 사유(보고서의 "알아듣기 쉬운 정리" 핵심)
-const PARA_REASON = {
-  concrete: '실제 경험처럼 유지할 근거가 관찰돼요. 이 분류는 문체 판정과 별개예요.',
-  abstract_risk: '구체적 사례·경험 없이 일반론 비중이 높아 문체 신호가 커질 수 있어요.',
-  thin: '구체적 근거가 부족해요. 원문에 있는 경험이나 확인 가능한 수치를 보강해 보세요.'
-};
-
 // ★ 카피킬러-risk 프록시 코칭(2026-06-17): 실제 카피킬러 PDF 라벨로 학습한 모델(JS 이식, Python 일치 검증)이
 //   문단별로 카피킬러가 붙일 태그를 예측 → '경험 메모' 어느 칸을 채우면 되는지 구체 안내. 무LLM·무비용·무날조.
 //   "메모로 해결되는" 태그만 코칭(균일성 등 문체 태그는 엔진 자동 처리라 제외). 모델 없으면 조용히 skip.
 const ckProxy = require('../engine/copykiller-proxy');
 const TAG_COACH = {
-  '구체적 근거 부족':        { fields: ['③ 정확히 아는 수치·출처', '② 구체 사례'], why: '주장만 있고 뒷받침 근거가 약해요' },
-  '추상적, 일반적 내용 구성': { fields: ['② 구체적인 사례·예시'],                why: '일반론 위주예요 — 실제 사례가 필요해요' },
-  '주관성의 지나친 배제':    { fields: ['④ 내 생각·입장'],                     why: '글쓴이 입장이 안 보여요' },
-  '무견해, 판단 회피적 성향': { fields: ['④ 내 생각·입장'],                     why: '판단이 흐릿해 AI스럽게 보여요' },
-  '간접 화법, 비인칭 서술':   { fields: ['④ 내 생각(능동 단정문)'],            why: '비인칭·간접 표현이 많아요' }
+  '구체적 근거 부족':        { fields: ['③ 정확히 아는 수치·출처', '② 구체 사례'], why: '구체 근거로 분류된 문장 비율이 낮아요. 원문에서 확인되는 근거의 연결을 살펴보세요.' },
+  '추상적, 일반적 내용 구성': { fields: ['② 구체적인 사례·예시'],                why: '일반적인 설명이 반복되는지 확인하고, 필요한 곳에서 원문에 있는 사례를 연결해 보세요.' },
+  '주관성의 지나친 배제':    { fields: ['④ 내 생각·입장'],                     why: '입장이 필요한 문단이라면 원문에 드러난 생각과 판단 근거를 연결해 보세요.' },
+  '무견해, 판단 회피적 성향': { fields: ['④ 내 생각·입장'],                     why: '판단을 설명하는 문단이라면 원문에 있는 입장과 이유를 함께 살펴보세요.' },
+  '간접 화법, 비인칭 서술':   { fields: ['④ 내 생각·입장'],                     why: '행위나 판단의 주체가 원문과 같게 드러나는지 확인해 보세요.' }
 };
 const COACH_TAGS = Object.keys(TAG_COACH);
 function predictCoach(text, minP) {
@@ -425,7 +418,6 @@ router.post('/detect-report', async (req, res) => {
       return res.status(500).json({ error: '감지 처리 중 오류가 발생했어요.', charged: 0, cost });
     }
     const grade = ir.grade || 'B';
-    const copy = COPY[grade] || COPY.B;
     const advancedRouting = resolveAdvancedRouting(text, ir);
     let advancedTimeEstimate = null;
     try {
@@ -590,6 +582,7 @@ router.post('/detect-report', async (req, res) => {
     narrated.signalEvidence = require('../lib/detectReportLocations').projectReportEvidence(narrated.signalEvidence, sentenceMap);
     const publicInputDocument = buildDetectInputDocument(text);
     const reportView = buildDetectReportView({
+      sourceText: text,
       probability,
       probSource: 'llm',
       confidence: det.confidence,
@@ -622,6 +615,7 @@ router.post('/detect-report', async (req, res) => {
         : reportMeasurements
     });
     const interpretation = reportView.interpretation;
+    const contentDisplay = contentPresentation(reportView, detail);
     const publicSummary = interpretation.headline;
     const publicDetail = [interpretation.description, interpretation.evidence.reason,
       ...interpretation.nextSteps, ...interpretation.limitations].join('\n\n');
@@ -697,9 +691,10 @@ router.post('/detect-report', async (req, res) => {
       sentenceMap,
       // 퍼널 계측용 — 화면에 표시하지 않고 휴머나이징 요청·이벤트에 최초 감지기 버전으로 실린다.
       detectorVersion: det.gptMeta?.engine || null,
-      grade,
-      title: copy.title,
-      abstractRiskRatio: ir.abstractRiskRatio,
+      grade: contentDisplay.grade,
+      title: contentDisplay.title,
+      contentAssessmentStatus: contentDisplay.assessmentStatus,
+      abstractRiskRatio: contentDisplay.grade === null ? null : ir.abstractRiskRatio,
       restructureUnfit: advancedRouting.effectiveUnfit.unfit === true,
       restructureUnfitReason: advancedRouting.effectiveUnfit.reason || null,
       restructureUnfitKind: advancedRouting.effectiveUnfit.kind || null,
@@ -715,24 +710,26 @@ router.post('/detect-report', async (req, res) => {
       routingOverride: advancedRouting.routingOverride || null,
       advancedTimeEstimate,
       paragraphs: paras.map((paragraph, index) => {
-        const kind = (detail[index] && detail[index].kind) || 'thin';
+        const presentation = contentDisplay.paragraphs[index];
         return {
           idx: index,
-          kind,
-          reason: detail[index]?.excluded ? '인용·코드·제목 등 보존 영역이라 문체 측정에서 제외했어요.' : PARA_REASON[kind],
+          ...presentation,
           ...(detail[index]?.excluded ? { excluded: true } : {}),
           snippet: paragraph.slice(0, 140),
           text: paragraph.length > 140 ? paragraph : undefined,
-          coach: detail[index]?.excluded ? null : predictCoach(analysisParas[index])
+          coach: detail[index]?.excluded ? null : filterContentCoach(predictCoach(analysisParas[index]), reportView,
+            { evidenceStatus: presentation.assessmentStatus, sentenceCount: detail[index]?.sents || 0 })
         };
       }),
-      coach: predictCoach(analysisParas.join('\n\n'), 0.5),
+      coach: filterContentCoach(predictCoach(analysisParas.join('\n\n'), 0.5), reportView,
+        { sentenceCount: reportView.contentEvidence.total }),
       counts: {
         total: paras.length,
-        risk: detail.filter(item => item.kind === 'abstract_risk').length,
-        thin: detail.filter(item => item.kind === 'thin' && !item.excluded).length,
+        risk: contentDisplay.paragraphs.filter(item => item.kind === 'abstract_risk').length,
+        thin: contentDisplay.paragraphs.filter(item => item.kind === 'thin').length,
+        notAssessed: contentDisplay.paragraphs.filter(item => item.kind === 'not_assessed').length,
         excluded: detail.filter(item => item.excluded).length,
-        safe: detail.filter(item => item.kind === 'concrete').length
+        safe: contentDisplay.paragraphs.filter(item => item.kind === 'concrete').length
       },
       example,
       exampleStatus: example ? 'ready' : (before ? 'unavailable' : 'no_candidate'),
@@ -751,7 +748,7 @@ router.post('/detect-report', async (req, res) => {
       publicResponse,
       historyResult,
       metric: {
-        grade,
+        grade: contentDisplay.grade,
         ...require('../lib/detectStatisticalAssist').projectProvenance(det),
         probability,
         rawProbability,

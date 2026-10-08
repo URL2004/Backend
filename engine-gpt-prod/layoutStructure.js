@@ -105,6 +105,8 @@ function analyzeLineRecords(source, quoteAnalysis) {
   });
   const nonEmpty = records.filter(record => !record.blank);
   const witnessedWords = require('./physicalProseLines').witnessedWords(source);
+  const koreanEnding = require('./koreanEndingSeam');
+  const koreanListSiblings = koreanEnding.siblingIndices(records);
   const codeIndices = detectCodeLineIndices(records, source);
   const tableIndices = detectContextTableLineIndices(records, codeIndices);
   const signatureIndices = detectSignatureLineIndices(records, codeIndices);
@@ -177,7 +179,9 @@ function analyzeLineRecords(source, quoteAnalysis) {
       && !signatureIndices.has(record.index) && !codeIndices.has(previous.index)
       && !['list', 'heading', 'title', 'code', 'table', 'signature'].includes(previous.role)
       && previous.text.length >= 16
-      && require('./physicalProseLines').wordSeam(previous.text, record.text, witnessedWords);
+      && !koreanListSiblings.has(record.index)
+      && (require('./physicalProseLines').wordSeam(previous.text, record.text, witnessedWords)
+        || koreanEnding.isEndingSeam(previous.text, record.text));
     record.role = classifyLine(record.text, {
       firstContent: record.index === firstContentIndex,
       previous,
@@ -191,6 +195,9 @@ function analyzeLineRecords(source, quoteAnalysis) {
       parallelSectionHeading: parallelSectionHeadingIndices.has(record.index),
       labelGroupHeading: labelGroupHeadingIndices.has(record.index),
       numberedLabelHeading: numberedLabelHeadingIndices.has(record.index),
+      endingContinuation: next?.index === record.index + 1
+        && !koreanListSiblings.has(next.index)
+        && koreanEnding.isEndingSeam(record.text, next.text),
       witnessedWords
     });
     if (wrappedWord && ['prose', 'list', 'heading', 'title'].includes(record.role)) {
@@ -253,6 +260,7 @@ function classifyLine(value, context = {}) {
   if (isColonSubtitledTitle(text, context) || isColonSubtitle(text, context)) return 'title';
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
+  if (context.endingContinuation) return 'prose';
   // Numeric citation tails do not make a completed sentence a nominal title.
   // Check before contextual heading heuristics: adding a blank line must not
   // promote cited prose to a new locked anchor and roll back the entire reflow.

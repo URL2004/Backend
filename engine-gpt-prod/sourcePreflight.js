@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 36;
+const VERSION = 37;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -1125,7 +1125,8 @@ function repairForcedProseWraps(value) {
     })) {
       const left = current.trimEnd();
       const right = next.trimStart();
-      const separator = shouldAttachWithoutSpace(left, right) ? '' : ' ';
+      const separator = (contextualRecords[index + 1]?.physicalWordContinuation
+        || shouldAttachWithoutSpace(left, right)) ? '' : ' ';
       current = `${left}${separator}${right}`;
       lines[index + 1] = current;
       changes.push({
@@ -1216,6 +1217,7 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
       || isQuoteAttributionLine(left) || isQuoteAttributionLine(right)) return false;
   if (WEB_LITERAL_TEST_RE.test(left) || WEB_LITERAL_TEST_RE.test(right)) return false;
   if (/^\s*(?:`{3,}|~{3,})/u.test(left) || /^\s*(?:`{3,}|~{3,})/u.test(right)) return false;
+  if (require('./koreanEndingSeam').isEndingSeam(left, right)) return true;
   if (layoutStructure.isProseContinuation(left) || layoutStructure.isContextualProseContinuation(left, right)) return true;
   if (/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left)) return false;
   if (!/^[가-힣A-Za-z0-9(“"'‘「『《〈]/u.test(right)) return false;

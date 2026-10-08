@@ -126,6 +126,27 @@ function longDocument(prefix = '원문') {
   )).join('\n');
 }
 
+test('audit preservation fixtures keep 62→37, 18→11 and matched floor 10 unchanged', async () => {
+  const output = longDocument('합성 검수');
+  const cfg = { enabled: true, limit: 50, factor: .4, maxReduction: 30, floor: 10,
+    sourceCapEnabled: true, approximateMatchEnabled: true };
+  for (const [raw, expected, sourceProbability] of [[62, 37, 59], [18, 11, null], [10, 10, 17]]) {
+    calibration.clearRuntimeConfigCache();
+    const result = await calibration.applyHistoryCalibration({
+      db: fakeDb([historyDoc('fixed-audit-history', { type: 'humanize', mode: 'formal', outputText: output, sourceProbability,
+        historySourceScoreIntegrity: require('../lib/detectSourceScore').signSourceScore('same-user', output, sourceProbability, HISTORY_TEST_SECRET) })], cfg),
+      uid: 'same-user', text: output, probability: raw, route: 'detect_report'
+    });
+    assert.equal(result.rawProbability, raw);
+    assert.equal(result.probability, expected);
+    assert.equal(result.applied, expected !== raw);
+    assert.equal(result.meta.match, 'exact_normalized');
+    assert.equal(result.comparison.adjustment, expected - raw);
+    assert.equal(result.comparison.sourceProbability, sourceProbability);
+  }
+  calibration.clearRuntimeConfigCache();
+});
+
 test('숫자·부정·직접 인용이 바뀌거나 긴 문장 순서를 바꾸면 유사도만으로 보정하지 않는다', () => {
   const original = longDocument('근거') + '최종 인원은 30명이며 실패하지 않았다. “원문 보존”을 확인했다.';
   for (const changed of [

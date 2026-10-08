@@ -1099,6 +1099,8 @@ function buildArchiveDocument(job, extra = {}, now = Date.now()) {
     if (createdAtMs > 0) doc.totalDurationMs = Math.max(0, terminalAtMs - createdAtMs);
   }
   Object.assign(doc, buildArchiveObservability(job));
+  Object.assign(doc, require('../engine-gpt-prod/auditTrace').compactAuditTrace(
+    job.result?.engineMeta || job.result?.humanizeMeta?.engineMeta || job.engineMeta || {}));
   for (const [k, v] of Object.entries(extra || {})) {
     const cleaned = pruneUndefinedForFirestore(v);
     if (cleaned !== undefined) doc[k] = cleaned;

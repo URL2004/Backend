@@ -220,11 +220,14 @@ test('미리보기는 구체 문단 전체가 아니라 문장별로 골라 경�
 });
 
 test('문단 사유는 작성 주체를 단정하지 않고 관찰 가능한 내용 근거만 설명한다', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'routes', 'detectreport.js'), 'utf8');
-  const concreteReason = src.match(/concrete:\s*'([^']+)'/u)?.[1] || '';
-  assert.ok(concreteReason);
+  const report = buildDetectReportView({ probability: 11, probSource: 'llm',
+    documentProfile: { profile: 'report_assignment', confidence: .9, profileMargin: 1 },
+    measurements: { detail: [{ sents: 10, specific: 4, grounded: 4 }] } });
+  const concreteReason = require('../lib/detectPresentation').contentPresentation(report,
+    [{ sents: 10, specific: 4, grounded: 4 }]).paragraphs[0].reason;
   assert.doesNotMatch(concreteReason, /사람이\s*쓴\s*글/u);
-  assert.match(concreteReason, /관찰/u);
+  assert.match(concreteReason, /비율/);
+  assert.match(concreteReason, /단정하지 않아요/u);
 });
 
 // ── 문장 지도 ────────────────────────────────────────────────────────────────

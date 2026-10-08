@@ -468,7 +468,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.103');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.104');
   assert.equal(out.engineMeta.boundaryMarkerStats.version, 1);
   assert.equal(typeof out.engineMeta.boundaryMarkerStats.markedChunks, 'number');
   assert.equal(typeof out.engineMeta.relationCandidateCounts, 'object');
@@ -1515,6 +1515,11 @@ test('전문서 수리만 가능한 의미 오류는 안전검사를 우회하�
   assert.equal(out.engineMeta.candidateLedgerEnabled, true);
   assert.ok(out.engineMeta.candidateLedgerCheckpointCount >= 5);
   assert.equal(out.engineMeta.candidateLedger.checkpoints.some(item => 'text' in item), false);
+  assert.equal(out.engineMeta.finalValidationReceipt.finalCandidateDigest,
+    require('../engine-gpt-prod/semanticProvenance').textDigest(out.result.outputText));
+  assert.equal(out.engineMeta.finalValidationReceipt.status, out.result.semanticValidation.status);
+  assert.equal(out.engineMeta.sourceNormalization.submittedDigest,
+    require('../engine-gpt-prod/semanticProvenance').textDigest(source));
   assert.ok(Array.isArray(out.engineMeta.humanizationDepthStages));
   const depthStages = out.engineMeta.humanizationDepthStages;
   assert.ok(depthStages.some(item => item.stage === 'pre_semantic'), JSON.stringify(depthStages));
@@ -1765,7 +1770,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.103');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.104');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

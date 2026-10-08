@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.103';
+const VERSION = 'gpt-prod-v2.5.104';
 const DETECT_VERSION = 'gpt-detect-v1.52';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -3488,6 +3488,7 @@ async function runEngine({
     applied: ledgerChoice.applied === true,
     currentStage: ledgerChoice.currentStage || '',
     selectedStage: ledgerChoice.selectedStage || '',
+    selectedDigest: selectedLedgerEntry?.candidateDigest,
     reason: ledgerChoice.reason || '',
     currentHardViolationCodes: safeFailureCodeList(ledgerChoice.currentHardViolationCodes),
     currentSemanticStatus: ledgerChoice.currentSemanticStatus || ''
@@ -4191,7 +4192,7 @@ async function runEngine({
     } else if (choice.applied && choice.entry?.semanticStatus === 'pass') {
       outputText = choice.entry.text;
       semanticReport = choice.entry.semanticReport;
-      candidateLedgerDecision = { ...choice, entry: undefined };
+      candidateLedgerDecision = { ...choice, entry: undefined, selectedDigest: choice.entry.candidateDigest };
       finalSemanticRevalidation.fallbackStage = choice.entry.stage;
     }
   }
@@ -4686,6 +4687,9 @@ async function runEngine({
     } catch {}
   }
   result.engineMeta = {
+    sourceNormalization: require('./auditTrace').sourceNormalization(submittedSource, rawSource, integritySource),
+    finalValidationReceipt: require('./auditTrace').finalValidationReceipt(
+      semanticReportForCandidate(semanticReport), rawSource, outputText),
     boundaryMarkerStats,
     // Delivered-text relation nominations by code (e.g. antecedent_link_loss_candidate).
     // Nominations are not confirmed errors; this only sizes them before any new check.
@@ -4717,6 +4721,7 @@ async function runEngine({
     candidateLedgerEligibleCount: Number(candidateLedgerMeta.eligibleCount || 0),
     candidateLedgerRollbackApplied: candidateLedgerDecision.applied === true,
     candidateLedgerSelectedStage: candidateLedgerDecision.selectedStage || '',
+    candidateLedgerSelectedDigest: candidateLedgerDecision.selectedDigest,
     candidateLedgerSelectionReason: candidateLedgerDecision.reason || '',
     candidateLedgerRejectedFinalCodes: safeFailureCodeList(
       candidateLedgerDecision.currentHardViolationCodes

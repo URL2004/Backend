@@ -120,7 +120,8 @@ function policyFingerprint() {
     'semanticOperatorReview.js', 'adjacentDuplicateReview.js', 'eventRelationOperators.js', 'sourceArtifactRelations.js',
     'clauseCoverage.js', 'discourseAudit.js', 'promptEnvelope.js',
     'entityParentheticalIntegrity.js', 'semanticSegmentReceipts.js',
-    'semanticAuditPayload.js', 'semanticReviewEnvelope.js'];
+    'semanticAuditPayload.js', 'semanticReviewEnvelope.js', 'layoutStructure.js',
+    'layoutRelations.js', 'verticalTable.js', 'koreanEndingSeam.js'];
   policyFingerprintCache = digest(files.map(file => {
     try { return `${file}:${digest(fs.readFileSync(path.join(__dirname, file)))}`; } catch { return `${file}:absent`; }
   }).join('\n'));

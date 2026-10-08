@@ -25,6 +25,21 @@ test('semantic repair counters survive terminal archiving without copying raw te
  assert.deepEqual(archive.semanticRepairStyleWarnings,['sentence_distribution_worsened']);
  assert(!JSON.stringify(archive).includes(source));
 });
+
+test('terminal archive preserves final selection and validation trace for exports', () => {
+ const trace=require('../engine-gpt-prod/auditTrace'), provenance=require('../engine-gpt-prod/semanticProvenance');
+ const report=provenance.bindSemanticValidation({ran:true,pass:true},source,source);
+ const meta={candidateLedgerVersion:'candidate-ledger-v1',candidateLedgerEnabled:true,
+  candidateLedgerRollbackApplied:true,candidateLedgerSelectedStage:'delivery_final',
+  candidateLedgerSelectedDigest:provenance.textDigest(source),candidateLedgerSelectionReason:'semantic_audit_pass',
+  finalValidationReceipt:trace.finalValidationReceipt(report,source,source),
+  sourceNormalization:trace.sourceNormalization(source,source,source)};
+ const archive=JSON.parse(JSON.stringify(router.buildArchiveDocument({id:'receipt',uid:'owner',status:'done',
+  result:{outputText:source,engineMeta:{...meta,candidateLedger:{checkpoints:[{text:source}]}}}})));
+ for(const [key,value] of Object.entries(meta)) assert.deepEqual(archive[key],value);
+ assert(!JSON.stringify(archive).includes(source));
+ assert.equal(Object.hasOwn(router.buildArchiveDocument({id:'old',status:'done'}),'finalValidationReceipt'),false);
+});
 test('fragment diagnostics archive only optional status, count and known codes, never raw spans',()=>{
  const archive=router.buildArchiveDocument({id:'fragment',uid:'owner',status:'done',text:source,
   result:{outputText:source,engineMeta:{fragmentIntegrityPass:false,fragmentIntegrityIssueCount:3,

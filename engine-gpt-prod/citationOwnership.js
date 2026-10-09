@@ -507,7 +507,14 @@ function analyze(source, output, chunks, repair) {
 }
 
 function restoreCitationLayout(source, output, chunks) {
-  return analyze(source, output, chunks, true);
+  const result = analyze(source, output, chunks, true);
+  const inline = require('./inlineCitationLayout').restoreInlineCitationLayout(source, result.text);
+  // Recompute ranges only when whitespace changed; callers use these offsets
+  // to protect literals during the next paragraph pass.
+  const final = inline.text === result.text ? result : analyze(source, inline.text, chunks, false);
+  return { ...final, text: inline.text, pass: result.pass && final.pass && inline.pass,
+    repairCount: result.repairCount + inline.repairCount,
+    refusedCount: result.refusedCount + inline.unresolvedCount };
 }
 
 // 분할기용: 출력을 고치지 않고, 끊으면 안 되는 인용 리터럴 범위만 돌려준다.

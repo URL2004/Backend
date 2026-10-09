@@ -17,9 +17,18 @@ test('weak sentence causes plus independent statistics explain their distinct sc
   const signalEvidence = [{...signal(),strength:'weak'}];
   const r = build({...standard,probability:49,signalEvidence,statisticalSupport});
   assert.equal(r.score,49); assert.equal(r.evidence.level,'some');
+  assert.ok(r.limitations.some(s=>s.includes('18점에서 반영 후 49점')));
   assert.match(r.description,/문체 통계/); assert.match(r.evidence.reason,/문장별 근거만으로/);
   assert.notEqual(build({...standard,probability:49,signalEvidence}).evidence.level,'sufficient');
   assert.doesNotMatch(build({...standard,probability:49,signalEvidence,statisticalSupport:{...statisticalSupport,score:48}}).description,/통계 신호가 함께/);
+});
+
+test('statistics and history adjustment remain distinct without changing either score',()=>{
+ const r=build({...standard,probability:29,calibrationApplied:true,preCalibrationProbability:49,
+   statisticalSupport,statisticalReference:{basis:'independent_statistics',scoreApplied:false}});
+ assert.equal(r.score,29);
+ assert.ok(r.limitations.some(s=>s.includes('18점에서 반영 후 49점')&&s.includes('이력 보정')));
+ assert.ok(r.limitations.some(s=>s.includes('참고용 추가 통계')));
 });
 test('report and trusted history fallback pass statistical explanation through', () => {
   const r = buildDetectReportView({probability:49,probSource:'llm',confidence:'high',textLength:1200,

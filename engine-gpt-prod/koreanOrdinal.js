@@ -39,7 +39,7 @@ function ordinalMarkers(value) {
   // An enumerator used as the topic still owns its item: 둘째, X -> 둘째는 X.
   // A predicate is required so family references (첫째는 학교에 갔다) are not
   // promoted to structural markers merely because they contain an ordinal.
-  const topics = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:은|는)\\s+([^.!?。！？\\n]{1,160}(?:이다|입니다|것이다|것입니다))(?=[.!?。！？]|$)`, 'gu');
+  const topics = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:은|는)\\s+([^.!?。！？\\n]{1,160}(?:이다|입니다|것이다|것입니다|여부다|여부입니다))(?=[.!?。！？]|$)`, 'gu');
   const hasEnumeration = markers.length > 0 || /(?:이유|목적|원칙|특징|과제|장점|단점|문제|요인|항목|방법)[^.!?\n]{0,30}(?:[두세네]|다섯|여섯|\d+)\s*가지/u.test(text);
   for (const match of text.matchAll(topics)) {
     if (!hasEnumeration) continue;

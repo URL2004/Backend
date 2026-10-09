@@ -173,11 +173,12 @@ test('paragraph refinement clears merged stale engine verification and calibrati
     historyLinkIntegrity: { signature: 'stale' }, calibrationTextHash: 'stale' });
   await history.saveAnalyzeHistory({ uid: 'history-user', requestId: 'refined-metadata',
     opType: 'humanize', text: '합성 원문이다.', needed: 10, mode: 'blog',
-    result: { outputText: '보강한 합성 결과다.' }, engineMeta: null,
+    result: { outputText: '보강한 합성 결과다.' }, engineMeta: null, engineVersion: 'gpt-prod-v2.5.106',
     qualityStatus: 'needs_review', qualityWarningCodes: ['refined_document_review'],
     auditScope: 'refined_paragraph', auditVersion: 2 });
   const saved = rows.get(target);
   assert.equal(saved.engineMeta, null);
+  assert.equal(saved.engineVersion, 'gpt-prod-v2.5.106');
   assert.equal(saved.historyLinkIntegrity, null);
   assert.equal(saved.calibrationTextHash, null);
   assert.equal(saved.auditScope, 'refined_paragraph');

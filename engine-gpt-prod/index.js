@@ -73,7 +73,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.105';
+const VERSION = 'gpt-prod-v2.5.106';
 const DETECT_VERSION = 'gpt-detect-v1.52';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -2177,6 +2177,15 @@ async function runEngine({
     let lastRecoveryReason = 'no_substantive_change';
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const escalation = attempt > 0;
+      if (require('./confirmedDeliveryIntegrity').stopUnproductiveShortEscalation({
+        attempt, sourceLength: auditSource.length, semantic: semanticReport,
+        metrics: postNoopDepthReport.metrics, reason: lastRecoveryReason
+      })) {
+        lastRecoveryReason = 'short_recovery_no_progress';
+        recoveryBudget.recordSkip(lastRecoveryReason);
+        addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
+        break;
+      }
       const technicalNoopRecovery = normalizeBare(auditSource) === normalizeBare(outputText)
         || isSevereHumanizationNoEffect(postNoopDepthReport);
       if (!recoveryBudget.tryStart({ mandatory: technicalNoopRecovery })) {
@@ -4397,6 +4406,15 @@ async function runEngine({
             : 'Model calls completed, but no approved edit remained after safety recovery.')
     });
   }
+  const confirmedMissingClaims = require('./confirmedDeliveryIntegrity').confirmedOmissions(
+    rawSource, outputText, semanticReportForCandidate(semanticReport), semanticRestorationEvidence);
+  if (confirmedMissingClaims.length) addFloorCriticals(result.floorReport, [{
+    gate: 'confirmed_semantic_omission', detail: '재검증 후에도 원문 주장의 누락이 남아 결과를 전달하지 않았습니다.'
+  }], 'confirmed_semantic_omission');
+  const finalInlineCitations = require('./inlineCitationLayout').restoreInlineCitationLayout(rawSource, outputText);
+  if (!finalInlineCitations.pass || finalInlineCitations.repairCount) addFloorCriticals(result.floorReport, [{
+    gate: 'citation_integrity_unresolved', detail: '인용 표기와 문장의 연결을 안전하게 보존하지 못했습니다.'
+  }], 'citation_integrity_unresolved');
   const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
   result.floorReport = delivery.report;
 

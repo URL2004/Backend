@@ -657,6 +657,8 @@ function recordStart(uid) {
 
 function blockedReason(gates, mode) {
   const set = new Set(Array.isArray(gates) ? gates : []);
+  if (set.has('confirmed_semantic_omission')) return '재검증 후에도 원문의 일부 내용이 빠져 결과를 전달하지 않았어요.';
+  if (set.has('citation_integrity_unresolved')) return '인용 표기와 문장의 연결을 보존하지 못해 결과를 전달하지 않았어요.';
   if (set.has('semanticJudge')) return '변환 결과에 원문에 없던 사실이나 주장이 남아 안전하게 작업을 멈췄어요.';
   if (set.has('lostFacts')) return '변환 결과에서 원문의 핵심 사실이나 수치 누락이 확인돼 작업을 멈췄어요.';
   if (set.has('novelty')) return '변환 결과에 새 정보가 추가된 흔적이 남아 작업을 멈췄어요.';
@@ -670,6 +672,8 @@ function blockedReason(gates, mode) {
 // 관리자/사용자 표시용 짧은 차단 단계 라벨 — blocked인데 "재처리 중"으로 멈춰 보이던 표시 버그 해결.
 function blockedStage(gates) {
   const set = new Set(Array.isArray(gates) ? gates : []);
+  if (set.has('confirmed_semantic_omission')) return '안전 중단 · 원문 내용 누락';
+  if (set.has('citation_integrity_unresolved')) return '안전 중단 · 인용 연결 확인 필요';
   if (set.has('lostFacts')) return '안전 중단 · 원문 사실 누락';
   if (set.has('semanticJudge') || set.has('novelty')) return '안전 중단 · 원문에 없는 주장 추가';
   if (set.has('restructure_unfit')) return '보류됨 · 고급에 맞지 않는 글(자소서·짧은 글)';
@@ -682,6 +686,10 @@ function blockedStage(gates) {
 
 function blockedNextActions(gates, mode) {
   const set = new Set(Array.isArray(gates) ? gates : []);
+  if (set.has('confirmed_semantic_omission') || set.has('citation_integrity_unresolved')) return [
+    '원문을 유지하려면 다듬기 모드를 선택하거나 해당 문단을 따로 처리해 주세요.',
+    '같은 문제가 반복되면 작업 기록과 함께 고객센터에 알려 주세요.'
+  ];
   if (set.has('restructure_unfit')) {
     return [
       '이 글은 「그대로 다듬기」가 가장 잘 맞아요 — 사실·분량을 지키며 AI 티만 줄여요.',
@@ -1185,7 +1193,7 @@ function buildArchiveObservability(job) {
     qualityWarningCodes: warningCodes,
     preservationFallback: result.preservationFallback === true,
     fallbackFromMode: archiveString(result.engineMeta?.fallbackFromMode || engineMeta.fallbackFromMode, 24),
-    engineVersion: archiveString(engineMeta.engineVersion || humanizeMeta.engine, 80),
+    engineVersion: archiveString(engineMeta.engineVersion || humanizeMeta.engine || result.refinementAudit?.parentEngineVersion, 80),
     requestedMode: archiveString(engineMeta.requestedMode, 24),
     effectiveMode: archiveString(engineMeta.effectiveMode, 24),
     requestStrength: archiveString(engineMeta.requestStrength, 24),
@@ -1591,7 +1599,8 @@ function buildArchiveObservability(job) {
     naturalnessRiskIncreased: naturalnessShadow.riskIncreased === true,
     naturalnessOverallRiskDelta: archiveFinite(naturalnessShadow.delta?.overallRisk),
     rhythmUniformityDelta: archiveFinite(naturalnessShadow.rhythmUniformityDelta),
-    estimatedUsd: archiveFinite(humanizeMeta.estimatedUsd ?? usage.estimatedUsd),
+    estimatedUsd: archiveFinite(humanizeMeta.estimatedUsd ?? usage.estimatedUsd ?? engineMeta.modelCost?.knownUsd),
+    unknownReservedUsd: archiveFinite(engineMeta.modelCost?.unknownReservedUsd),
     dedupeRemovedBlockCount: archiveFinite(dedupeAudit.removedBlockCount),
     dedupeRemovedBlockSentenceCount: archiveFinite(dedupeAudit.removedBlockSentenceCount),
     finalGeneratedDedupeApplied:
@@ -1829,6 +1838,7 @@ function saveJobHistory(job, text, outputText) {
     qualityWarningCodes: finalQualityWarningCodes(job.result),
     sourceReviewWarningCodes: (job.result?.sourceReviewWarnings || []).map(item => item?.code).filter(Boolean),
     engineMeta: job.result?.engineMeta || null,
+    engineVersion: job.result?.engineMeta?.engineVersion || job.result?.refinementAudit?.parentEngineVersion || null,
     auditScope: job.result?.auditScope || null,
     auditVersion: job.result?.auditVersion || null,
     refinementAudit: job.result?.refinementAudit || null,
@@ -3829,7 +3839,7 @@ router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (r
     const nextOutput = current.map(p => p.lead + p.text + p.sep).join('');
     const refinementAudit = require('../lib/refinementAudit').createRefinementAudit({
       parent: job.result.outputText, output: nextOutput, source: paraText, candidate: refined, memo,
-      paragraphIndex: idx, parentEngineVersion: job.result.engineMeta?.engineVersion,
+      paragraphIndex: idx, parentEngineVersion: job.result.engineMeta?.engineVersion || job.result.refinementAudit?.parentEngineVersion,
       generationModel: resp?.model || resp?.gptMeta?.selectedModel, validation: refinementValidation
     });
     job.pendingRefinement = { outputText: nextOutput, n, needed, paraLen, paragraphIndex: idx,

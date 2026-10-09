@@ -805,6 +805,7 @@ function restoreLockedStructureLayout({ source, outputText, chunks, normalizeVis
   const visualGaps = normalizeVisualGaps
     ? restoreStructuralVisualGaps(inlineLabels.text, {
         developedListGaps,
+        attestedHeadings: buildVisualGapHeadings(chunks),
         excludedBlocks: buildVisualGapExcludedBlocks(chunks)
       })
     : { text: inlineLabels.text, repairCount: 0 };
@@ -1737,10 +1738,16 @@ function findWhitespaceEquivalentSpans(value, expected, cursor = 0, maximum = 64
   return spans;
 }
 
-function restoreStructuralVisualGaps(value, { excludedBlocks = new Set(), developedListGaps = false } = {}) {
+function restoreStructuralVisualGaps(value, { excludedBlocks = new Set(), attestedHeadings = new Set(), developedListGaps = false } = {}) {
   const normalized = normalizeNewlines(value);
   const records = layoutStructure.buildLineRecords(normalized);
   const nonEmpty = records.filter(record => !record.blank);
+  const occurrences = new Map();
+  for (const row of nonEmpty) occurrences.set(row.text, (occurrences.get(row.text) || 0) + 1);
+  // A unique standalone source heading retains its role after prose edits.
+  // A matching phrase inside a distant table is not ownership of this line.
+  const attested = row => attestedHeadings.has(row.text) && occurrences.get(row.text) === 1
+    && !['table', 'code', 'quote', 'flow', 'list', 'signature', 'legal_clause'].includes(row.role);
   if (nonEmpty.length < 2) {
     return { text: normalizeParagraphWhitespace(normalized), repairCount: 0 };
   }
@@ -1748,14 +1755,17 @@ function restoreStructuralVisualGaps(value, { excludedBlocks = new Set(), develo
   const lines = normalized.split('\n');
   let repairCount = 0;
   for (let index = 0; index < nonEmpty.length - 1; index += 1) {
-    const left = nonEmpty[index];
-    const right = nonEmpty[index + 1];
+    const leftRow = nonEmpty[index], rightRow = nonEmpty[index + 1];
+    const leftHeading = attested(leftRow), rightHeading = attested(rightRow);
+    const left = leftHeading ? { ...leftRow, role: 'heading' } : leftRow;
+    const right = rightHeading ? { ...rightRow, role: 'heading' } : rightRow;
     const blankLineCount = Math.max(0, right.index - left.index - 1);
     // A reference block owns its internal lines, not the boundary separating
     // the preceding prose from its heading. Keep the bibliography intact.
     const referenceOpening = left.role === 'prose' && layoutStructure.isSentenceComplete(left.text)
       && /^(?:참고\s*(?:문헌|자료)|References|Bibliography)\s*$/iu.test(right.text);
-    if (!referenceOpening && (isVisualGapExcluded(left, excludedBlocks) || isVisualGapExcluded(right, excludedBlocks))) continue;
+    if (!referenceOpening && ((!leftHeading && isVisualGapExcluded(left, excludedBlocks))
+        || (!rightHeading && isVisualGapExcluded(right, excludedBlocks)))) continue;
     if (blankLineCount > 0 || (!referenceOpening && !needsVisualParagraphGap(left, right, developedListGaps))) continue;
     // 뒤에서부터 삽입하면 앞서 계산한 원문 행 인덱스가 흔들리지 않는다.
     lines.splice(right.index + repairCount, 0, '');
@@ -1765,6 +1775,12 @@ function restoreStructuralVisualGaps(value, { excludedBlocks = new Set(), develo
     text: normalizeParagraphWhitespace(lines.join('\n')),
     repairCount
   };
+}
+
+function buildVisualGapHeadings(chunks) {
+  return new Set((chunks || []).filter(c => c?.locked && ['title', 'heading'].includes(c.lockType))
+    .flatMap(c => String(c.text || '').split('\n').map(s => s.trim()))
+    .filter(s => s && !/^(?:목\s*차|참고\s*(?:문헌|자료)|References|Bibliography)\s*$/iu.test(s)));
 }
 
 function isVisualGapExcluded(record, excludedBlocks) {
@@ -1955,12 +1971,13 @@ function* restoreParagraphLayoutBase({
     && !['legal_contract', 'clinical_record'].includes(profileName)
     && !(chunks || []).some(c => c.lineBoundaryPolicy === 'all');
   const visualGapExcludedBlocks = buildVisualGapExcludedBlocks(chunks);
+  const attestedHeadings = buildVisualGapHeadings(chunks);
   const sourceVisualLayout = canRepairVisualGaps
-    ? restoreStructuralVisualGaps(source, { excludedBlocks: visualGapExcludedBlocks, developedListGaps })
+    ? restoreStructuralVisualGaps(source, { excludedBlocks: visualGapExcludedBlocks, attestedHeadings, developedListGaps })
     : { text: normalizeParagraphWhitespace(source), repairCount: 0 };
   yield;
   const outputVisualLayout = canRepairVisualGaps
-    ? restoreStructuralVisualGaps(sourceTransitions.text, { excludedBlocks: visualGapExcludedBlocks, developedListGaps })
+    ? restoreStructuralVisualGaps(sourceTransitions.text, { excludedBlocks: visualGapExcludedBlocks, attestedHeadings, developedListGaps })
     : { text: sourceTransitions.text, repairCount: 0 };
   yield;
   const discourseLayout = canRepairVisualGaps

@@ -820,6 +820,14 @@ function labelParts(value) {
 
 function isExactMetadataLine(value) {
   const text = visibleTrim(value);
+  // Cover fields and bibliography access dates are independent rows even
+  // without a colon. Nominal field values must not be joined as PDF prose.
+  if (text.length <= 240 && /^학번\s*[:：]?\s*\d{5,14}(?=\s|$)/u.test(text)
+      && /(?:^|\s)(?:이름|성명)\s*[:：]?\s*\S+/u.test(text) && !/[.!?。！？]/u.test(text)) return true;
+  if (text.length <= 140 && /^(?:게임\s*제목|장르|플랫폼)\s*[:：]?\s+\S/u.test(text)
+      && !/[.!?。！？]/u.test(text)
+      && !/(?:한다|했다|이다|된다|있다|없다|니다|해요|예요|이에요)\s*$/u.test(text)) return true;
+  if (text.length <= 180 && /^(?:웹\s*)?자료\s*확인일\s*[:：]?\s*(?:19|20)\d{2}\s*(?:[.\-/년]\s*\d{1,2})\s*(?:[.\-/월]\s*\d{1,2})(?:\s*일)?(?:\s|$)/u.test(text)) return true;
   // A flattened cover-sheet row is identity metadata, not editable prose.
   if (text.length <= 240 && /^(?:이름|성명)\s*[:：]?\s*\S+/u.test(text)
       && /(?:^|\s)학번\s*[:：]?\s*\d{5,14}(?=\s|$)/u.test(text)

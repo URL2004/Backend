@@ -1,0 +1,31 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const pre=require('../engine-gpt-prod/sourcePreflight');
+const structure=require('../engine-gpt-prod/structureChunk');
+const layout=require('../engine-gpt-prod/layoutStructure');
+const {settleDeliveredLayout}=require('../engine-gpt-prod/deliveredLayoutAudit');
+test('nominal cover fields and access dates retain independent line ownership',()=>{
+ const source='기획 검토 보고서\n학번 2099012345 이름 예시학생 게임 제목 별빛 항해\n장르 로그라이크 액션 RPG\n플랫폼 PC 또는 모바일 중 미정\n참고문헌\n[1] Example Author. A Synthetic Reference. 2026. 원문\n웹 자료 확인일 2026년 10월 9일 각 출처 링크 확인';
+ const r=pre.auditAndSanitizeSource(source);
+ assert.equal(r.text,source);assert.ok(!r.issueCodes.includes('source_forced_linewrap_repaired'));
+ assert.equal(layout.isExactMetadataLine('플랫폼 특성은 사용자 요구를 중심으로 검토한다.'),false);
+ assert.equal(layout.isExactMetadataLine('장르 분석은 계속 진행한다'),false);
+ const wrapped='1. 관찰 절차\n이 글은 관찰 결과와 비교 절차를 차례로 정리한 것이다.\n실험 결과를 정확하게 이해하기 위해 기록한 자료를 검토하고\n관찰 내용을 비교했다.';
+ assert.equal(pre.repairForcedProseWraps(wrapped).text,wrapped.replace('검토하고\n','검토하고 '));
+});
+test('an attested heading matching a distant table phrase retains visual boundaries',async()=>{
+ const intro='설계의 방향은 장치의 성격과 운용 조건을 함께 고려하는 것이다. 부품의 특성과 기계의 움직임을 알아볼 수 있도록 표현 기준을 정하는 것이 좋다.';
+ const body='전체 설계는 부품을 선택하고 장치를 조합하는 과정으로 구성한다. 각 요소의 차이를 확인하면서 새로운 배치에 필요한 조건을 검토한다. 여러 조건에서 안정적으로 작동하는지도 확인해야 한다.';
+ const table='비교 항목\t검토 내용\n설계 요소\t부품과 장치의 조합 및 활용';
+ const source='설계 검토서\n\n'+intro+'\n\n부품과 장치의 조합\n\n'+body+'\n\n'+table;
+ const output=source.replace(/\n\n/g,'\n');
+ const plan=structure.splitChunksForGpt(source,{coalesceEditable:true,preserveLineBoundaries:'structural'});
+ const options={source,outputText:output,chunks:plan.chunks,plan,mode:'assignment',requestStrength:'basic',documentProfile:{profile:'report_assignment'},normalizeVisualGaps:true};
+ const r=await settleDeliveredLayout({...options,layoutRepair:{}});
+ assert.equal(r.accepted,true);assert.match(r.text,/\n\n부품과 장치의 조합\n\n/u);
+ assert.ok(r.text.includes(table));assert.equal(r.text.replace(/\s/g,''),output.replace(/\s/g,''));
+ const again=await settleDeliveredLayout({...options,outputText:r.text,layoutRepair:{}});
+ assert.equal(again.text,r.text);
+ const missing=r.text.replace('부품과 장치의 조합\n\n','');
+ assert.equal(structure.buildStructureAudit({...options,outputText:missing}).pass,false);
+});

@@ -1882,6 +1882,7 @@ async function runEngine({
   });
   const auditVoiceProfile = buildVoiceProfile(auditSource, { documentProfile, mode: selectedMode });
   let deterministicAudit = qualityV2.buildDeterministicAudit({
+    submittedSource,
     source: auditSource,
     outputText,
     mode: selectedMode,
@@ -2128,6 +2129,7 @@ async function runEngine({
         boundaryRepair
       });
       deterministicAudit = qualityV2.buildDeterministicAudit({
+        submittedSource,
         source: auditSource,
         outputText,
         mode: selectedMode,
@@ -2372,6 +2374,7 @@ async function runEngine({
           boundaryRepair
         });
         deterministicAudit = qualityV2.buildDeterministicAudit({
+          submittedSource,
           source: auditSource,
           outputText,
           mode: selectedMode,
@@ -2503,6 +2506,7 @@ async function runEngine({
         layoutRepair
       });
       const candidateDeterministicAudit = qualityV2.buildDeterministicAudit({
+        submittedSource,
         source: rawSource,
         outputText: text,
         mode: selectedMode,
@@ -2548,6 +2552,7 @@ async function runEngine({
         pass: candidateMathAudit.pass !== false && candidateMathAudit.applied !== true
       };
       const candidateGate = evaluateWholeDocumentGate({
+        submittedSource,
         outputText: text,
         source: rawSource,
         integritySource,
@@ -4308,6 +4313,7 @@ async function runEngine({
     layoutRepair
   });
   const deliveryAudit = qualityV2.buildDeterministicAudit({
+    submittedSource,
     source: rawSource,
     outputText,
     mode: selectedMode,
@@ -4329,7 +4335,7 @@ async function runEngine({
     niklQualityTest: niklQualityEnabled,
     structureAudit
   });
-  calibrateV2RepetitionReport(result, rawSource, outputText);
+  calibrateV2RepetitionReport(result, rawSource, outputText, submittedSource);
   if (layoutNlpEnabled) {
     result.layoutFormat = buildLayoutFormatMeta(postLayout, rawSource, outputText);
   }
@@ -4337,6 +4343,7 @@ async function runEngine({
     addStructureWarnings(result.floorReport, structureAudit);
   }
   const finalGate = evaluateWholeDocumentGate({
+    submittedSource,
     outputText,
     source: rawSource,
     integritySource,
@@ -6725,6 +6732,7 @@ function evaluateChunkGate({ outputText, original, contract, mode, protectedTerm
 }
 
 function evaluateWholeDocumentGate({
+  submittedSource,
   outputText,
   source,
   integritySource,
@@ -6750,7 +6758,7 @@ function evaluateWholeDocumentGate({
   if (looksGeneratedTruncated(source, outputText)) {
     return { hardFail: true, reason: 'sentence_truncated', warnings, violations };
   }
-  const repetitionAudit = qualityV2.compareRepetitionDelta(source, outputText);
+  const repetitionAudit = qualityV2.compareRepetitionDelta(source, outputText, { submittedSource });
   if (isBlockingGeneratedRepetition(repetitionAudit)) {
     const violation = {
       gate: 'generated_duplicate_block',
@@ -8564,9 +8572,9 @@ function addStructureWarnings(report, audit) {
   }
 }
 
-function calibrateV2RepetitionReport(result, source, outputText) {
+function calibrateV2RepetitionReport(result, source, outputText, submittedSource) {
   if (!result) return null;
-  const audit = qualityV2.compareRepetitionDelta(source, outputText);
+  const audit = qualityV2.compareRepetitionDelta(source, outputText, { submittedSource });
   result.repetitionAudit = audit;
   if (audit.increased || !result.floorReport) return audit;
   const report = result.floorReport;
@@ -9705,6 +9713,8 @@ module.exports = {
   mapWithConcurrency,
   depthQualityWarnings,
   evaluateChunkGate,
+  evaluateWholeDocumentGate,
+  calibrateV2RepetitionReport,
   auditGeneralSurfaceCandidate,
   auditGeneralSurfaceCandidateWithStructure,
   prepareGeneralSurfaceCandidate,

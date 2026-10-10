@@ -140,10 +140,10 @@ const SEMANTIC_WARNING_TYPES = new Set([
   ...discourse.VIOLATION_CODES
 ]);
 
-function buildDeterministicAudit({ source, outputText, mode, contract, voiceProfile, documentProfile, structureAudit, protectedTerms = [], allowedExtra = '' }) {
+function buildDeterministicAudit({ source, submittedSource, outputText, mode, contract, voiceProfile, documentProfile, structureAudit, protectedTerms = [], allowedExtra = '' }) {
   const warnings = [];
   const editMetrics = computeEditMetrics(source, outputText);
-  const repetitionAudit = compareRepetitionDelta(source, outputText);
+  const repetitionAudit = compareRepetitionDelta(source, outputText, { submittedSource });
   const numberAudit = compareNumberMultiset(source, outputText, allowedExtra);
   const relationAudit = auditRelationCandidates(source, outputText);
   let floorViolations = [];
@@ -314,9 +314,20 @@ function buildDeterministicAudit({ source, outputText, mode, contract, voiceProf
   };
 }
 
-function compareRepetitionDelta(source, outputText) {
-  const before = floor.measureRepetition(source);
+function compareRepetitionDelta(source, outputText, { submittedSource } = {}) {
+  const normalizedBefore = floor.measureRepetition(source);
+  // Physical row repair can attach a repeated footnote to a neighboring
+  // sentence. Count repetition against both layouts of the same input; only
+  // an increase beyond both baselines is attributable to the engine.
   const after = floor.measureRepetition(outputText);
+  const sameContent = String(source || '').replace(/\s/gu, '') === String(outputText || '').replace(/\s/gu, '');
+  // This also covers a chunk whose only change is physical line wrapping;
+  // never borrow repetition counts from other chunks in the document.
+  const submittedBefore = sameContent ? after
+    : typeof submittedSource === 'string' && submittedSource !== source
+      ? floor.measureRepetition(submittedSource) : normalizedBefore;
+  const before = Object.fromEntries(['count', 'maxRepeat', 'fuzzyCount', 'shortFragCount', 'total']
+    .map(key => [key, Math.max(normalizedBefore[key], submittedBefore[key])]));
   const delta = {
     exactGroups: (after.count || 0) - (before.count || 0),
     maxRepeat: (after.maxRepeat || 1) - (before.maxRepeat || 1),

@@ -4,6 +4,7 @@
 // Protect evidenced cell sequences, never invent a rectangular representation.
 function verticalTableIndices(records, excluded = new Set()) {
   const result = new Set();
+  addCaptionedTables(records, excluded, result);
   const header = /^(?:항목|구분|영역|상황|목적|[^.!?\n]{1,22}(?:유형|종류|사례|특징|주의점|고려사항|경로|의미|기준|장점|단점|내용|방법|비용|기간|요인|과제|대책|지표))$/u;
   let group = [];
   const flush = () => {
@@ -42,6 +43,51 @@ function verticalTableIndices(records, excluded = new Set()) {
   }
   flush();
   return result;
+}
+
+function addCaptionedTables(records, excluded, result) {
+  const caption = /^(?:[<〈《\[]\s*)?표\s*\d+(?:[-.]\d+)*(?:\s*[>〉》\]]|[. :：]|$)/u;
+  const numeric = /^[+-]?\d+(?:[.,]\d+)*(?:%|배)?$/u;
+  for (let i = 0; i < records.length; i++) {
+    if (excluded.has(records[i].index) || !caption.test(records[i].text.trim())) continue;
+    let start = i + 1;
+    while (start < records.length && !records[start].text.trim()) start++;
+    const cells = [];
+    for (let j = start; j < records.length && cells.length <= 300; j++) {
+      const row = records[j], text = row.text.trim();
+      if (!text || excluded.has(row.index) || text.length > 140 || caption.test(text)
+          || /[\t|]|[.!?。！？][”’"')\]]*$|^(?:#|>|[-*•]\s|\d+[.)]\s|[①-⑳])/u.test(text)) break;
+      cells.push(row);
+    }
+    const values = cells.map(row => row.text.trim());
+    let accepted = false;
+    // Definition tables need an explicit header pair and at least three
+    // repeated short-key / developed-description pairs under a caption.
+    if (values.length >= 8 && values.length % 2 === 0
+        && /(?:항목|요인|용어|개념|구분)$/u.test(values[0])
+        && /(?:정의|설명|의미|내용)$/u.test(values[1])) {
+      const keys = values.filter((_, n) => n >= 2 && n % 2 === 0);
+      accepted = new Set(keys).size === keys.length && keys.every(key => key.length <= 24)
+        && values.filter((_, n) => n >= 2 && n % 2 === 1)
+          .every((text, n) => text.length >= keys[n].length + 4 && /\s/u.test(text));
+    }
+    // A ranking column and a repeated numeric measure establish column
+    // ownership even when the other header labels are unfamiliar.
+    for (let width = 3; !accepted && width <= 6; width++) {
+      if (values.length < width * 4 || values.length % width) continue;
+      const labels = values.slice(0, width), rank = labels.indexOf('순위');
+      if (rank < 0 || labels.some(s => s.length > 28 || numeric.test(s))) continue;
+      const rows = [];
+      for (let j = width; j < values.length; j += width) rows.push(values.slice(j, j + width));
+      const ranks = rows.map(row => Number(row[rank]));
+      if (!ranks.every((n, j) => Number.isInteger(n) && n === j + 1)) continue;
+      const measure = labels.some((_, col) => col !== rank && rows.every(row => numeric.test(row[col])));
+      const key = labels.some((_, col) => col !== rank && rows.every(row => !numeric.test(row[col]))
+        && new Set(rows.map(row => row[col])).size === rows.length);
+      accepted = measure && key;
+    }
+    if (accepted) for (const row of cells) result.add(row.index);
+  }
 }
 
 module.exports = { verticalTableIndices };

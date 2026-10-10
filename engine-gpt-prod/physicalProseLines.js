@@ -8,6 +8,8 @@ const { isRefHeadingLine } = require('../engine/freezeblocks');
 const END = /[.!?。！？…][”’"'」』》〉)\]]*$/u;
 const FINITE = /[가-힣]{2,}(?:습니다|입니다|합니다|됩니다|했다|한다|된다|이다|였다|있다|없다|않다)$/u;
 const isComplete = text => END.test(text) || FINITE.test(text);
+// 문장이 끝난 뒤 붙은 짧은 괄호 출처(“…했다.” (23p))도 끝난 줄이다. 그 뒤 해설과의 문단 간격을 강제 개행으로 되돌리지 않는다.
+const CITED_SENTENCE_END = /[.!?。！？]["”’」』]?[ \t]*\([^()\r\n]{1,40}\)[ \t]*$/u;
 // Lexically unambiguous broken words only. Unknown Korean seams must not be
 // guessed inside quotations. Document-attested words remain the primary rule.
 const QUOTE_WORDS = /^(?:허구|상상력|공동체|구성원|정체성|가치관|가능성|필요성|연구방법|실용주의)(?:나|는|은|이|가|을|를|의|와|과|도|만|에서|으로)?$/u;
@@ -244,7 +246,7 @@ function restoreSubmittedSourceSeams(source, value) {
     }
     while (rowIndex + 1 < records.length && records[rowIndex + 1].start <= start) rowIndex++;
     const left = records[rowIndex], right = records[rowIndex + 1];
-    if (!left || !right || (left.text.length < 28 && !/\($/u.test(left.text)) || isComplete(left.text)
+    if (!left || !right || (left.text.length < 28 && !/\($/u.test(left.text)) || isComplete(left.text) || CITED_SENTENCE_END.test(left.text)
         || literals.some(s => s.start <= start && s.end > start)) { conflicts.add(key); continue; }
     const url = /https?:\/\/\S+=$/u.test(left.text) && /^\d/u.test(right.text);
     const ending = b === '다' && /(?:한|된|했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(a)

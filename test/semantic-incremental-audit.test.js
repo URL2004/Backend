@@ -508,8 +508,12 @@ test('canonical refreeze fails closed on changed, added, moved or re-anchored li
 test('canonical prepare refuses inexact candidates and unsafe sources (legacy frozen audit runs)', async () => {
   const { frozenSource, canonical } = canonicalFixture(RAW, LOCKED);
   const reason = candidate => canonicalAudit.prepareCandidate(canonical, frozenSource, candidate).reason;
-  assert.equal(reason(frozenSource.replace('ZXQMATH0000QXZ', '')), 'canonical_candidate_token_sequence');
-  assert.equal(reason(`${frozenSource}ZXQCODE0000QXZ`), 'canonical_candidate_token_sequence');
+  // 표식 번호는 요청마다 달라진다. 고정 번호 대신 이 원문에 실제로 들어간 표식을 쓴다.
+  const mathToken = frozenSource.match(/ZXQMATH\d{4}QXZ/u)?.[0];
+  const codeToken = frozenSource.match(/ZXQCODE\d{4}QXZ/u)?.[0];
+  assert.ok(mathToken && codeToken);
+  assert.equal(reason(frozenSource.replace(mathToken, '')), 'canonical_candidate_token_sequence');
+  assert.equal(reason(`${frozenSource}${codeToken}`), 'canonical_candidate_token_sequence');
   const lines = frozenSource.split('\n');
   assert.equal(reason([lines[0], lines[2], lines[1], ...lines.slice(3)].join('\n')), 'canonical_candidate_token_sequence');
   assert.equal(reason(frozenSource.replace('본문', 'ZXQ본문')), 'canonical_token_residue');
@@ -524,7 +528,7 @@ test('canonical prepare refuses inexact candidates and unsafe sources (legacy fr
   assert.equal(canonicalFixture('평문만 있는 합성 문장입니다.', []).canonical.reason, 'canonical_no_frozen_literals');
   const seen = [];
   const legacy = await canonicalAudit.runCanonicalSemanticAudit({ canonical,
-    options: { source: frozenSource, outputText: frozenSource.replace('ZXQMATH0000QXZ', '') },
+    options: { source: frozenSource, outputText: frozenSource.replace(mathToken, '') },
     runAudit: async options => { seen.push(options); return bound(options.source, options.outputText); } });
   assert.equal(seen[0].source, frozenSource);
   assert.equal(legacy.canonicalAudit.applied, false);

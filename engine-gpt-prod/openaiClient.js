@@ -110,12 +110,19 @@ async function completeJsonRequest({
     const instructions = String(system || '');
     const prefix = typeof cacheableSystem === 'string' && cacheableSystem.length > 0
       && instructions.startsWith(cacheableSystem) ? cacheableSystem : instructions;
+    const remainder = instructions.slice(prefix.length);
+    // Reuse the existing content[] / input_text wire format. For generation
+    // and repair, keep both pieces inside the original developer message so
+    // no new role boundary (or separator text) is introduced. Judge retains
+    // its existing message layout, including schema-retry placement.
+    const sameMessage = meta.task === 'humanize' || meta.task === 'repair';
     body.input = [
       { role: 'developer', content: [{ type: 'input_text', text: prefix,
-        ...(config?.cache?.enabled !== false && prefix
-          ? { prompt_cache_breakpoint: { mode: 'explicit' } } : {}) }] },
-      ...(prefix.length < instructions.length
-        ? [{ role: 'developer', content: instructions.slice(prefix.length) }] : []),
+        ...(config?.cache?.enabled !== false && cacheableSystem !== false && prefix
+          ? { prompt_cache_breakpoint: { mode: 'explicit' } } : {}) },
+        ...(sameMessage && remainder ? [{ type: 'input_text', text: remainder }] : [])] },
+      ...(!sameMessage && remainder
+        ? [{ role: 'developer', content: remainder }] : []),
       { role: 'user', content: String(user || '') }
     ];
     delete body.instructions;

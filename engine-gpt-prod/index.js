@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const net = require('net');
 const secureEvidenceFetch = require('../lib/secureEvidenceFetch');
 const { completeJson, webSearchTool, safetyIdentifierForUid } = require('./openaiClient');
+const { humanizeCacheableSystem } = require('./promptCachePolicy');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const { alignScoreToCauseEvidence, assessCauseCoverage } = require('../lib/detectSignalPolicy');
@@ -5988,6 +5989,7 @@ async function callHumanize(args) {
     const invoke = options => shortChunkBatch ? shortChunkBatch.complete(options, original.length) : completeJson(options);
     const response = await invoke({
       system: [hp.stable, retryInstruction].filter(Boolean).join('\n\n'),
+      cacheableSystem: humanizeCacheableSystem(hp, { model, phase }),
       user: prompts.buildHumanizeUser({
         chunk,
         chunks,

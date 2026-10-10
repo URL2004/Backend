@@ -73,7 +73,12 @@ function buildHumanizePrompt(mode = 'assignment', lang = 'ko', {
   ].join('\n');
 
   const dynamic = dynamicContextBlock({ riskProfile, userNotes, evidence, styleProfile, requestStrength, documentProfile });
-  return { stable, dynamic, taskContract, humanizeContract: resolvedContract,
+  // Stop at the existing paragraph boundary before the preservation block:
+  // its paragraph policy and length limits vary with the request. No text is
+  // moved or inserted; concatenating this prefix and the remainder is stable.
+  const cacheBoundary = stable.indexOf('[불변 계약]');
+  const cacheableSystem = cacheBoundary >= 0 ? stable.slice(0, cacheBoundary) : '';
+  return { stable, cacheableSystem, dynamic, taskContract, humanizeContract: resolvedContract,
     promptVariant: promptVariant === 'compact_v1' ? 'compact_v1' : 'full', editObjective: humanizationPlan?.editObjective || 'perceived',
     relationGuard: resolvedRelationGuard };
 }

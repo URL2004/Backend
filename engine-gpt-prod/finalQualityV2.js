@@ -9,6 +9,7 @@ const { compareNaturalnessShadow } = require('./naturalnessShadow');
 const { judgeAndRepair, assessRepairCandidate } = require('./judge');
 const { restoreConfirmedRelations, assessConfirmedRestorationSafety, PAIRED_RESTORATION_TYPES } = require('./confirmedRelationRestore');
 const { completeJson } = require('./openaiClient');
+const { repairCacheableSystem } = require('./promptCachePolicy');
 const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
 const humanizationDepth = require('./humanizationDepth');
@@ -1182,6 +1183,7 @@ async function retryPolishSurface({ source, currentOutput, policy, reason = '', 
   assertRepairPrompt(system, { family: 'polish' });
   const response = await completeJson({
     system: withPromptDataRule(system),
+    cacheableSystem: repairCacheableSystem(system, { family: 'polish' }),
     user: sourceCurrentPrompt(source, currentOutput),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_polish_surface_retry',
@@ -1288,6 +1290,7 @@ async function retryGeneralSurface({
   assertRepairPrompt(system, { family: 'general_surface', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
+    cacheableSystem: repairCacheableSystem(system, { family: 'general_surface', phase, model: model || config.models.repair }),
     user: sourceCurrentPrompt(source, currentOutput),
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_general_surface_retry',
@@ -1409,6 +1412,7 @@ async function retryConservativeSentenceSurface({
   assertRepairPrompt(system, { family: 'conservative_sentence' });
   const response = await completeJson({
     system: withPromptDataRule(system),
+    cacheableSystem: repairCacheableSystem(system, { family: 'conservative_sentence' }),
     user: buildPromptDataSections([
       { label: 'DOCUMENT_PROFILE', value: profile },
       { label: 'SOURCE_SENTENCE', value: sourceSpan.text },
@@ -1727,6 +1731,7 @@ async function retryCollapsedKoreanSpacing({
   assertRepairPrompt(system, { family: 'collapsed_spacing' });
   const response = await completeJson({
     system: withPromptDataRule(system),
+    cacheableSystem: repairCacheableSystem(system, { family: 'collapsed_spacing' }),
     user: buildPromptDataSections([{ label: 'SOURCE', value: original }]).text,
     schema: POLISH_REPAIR_SCHEMA,
     schemaName: 'gpt_prod_collapsed_korean_spacing_retry',
@@ -1901,6 +1906,7 @@ async function retryKoreanRefinement({
   assertRepairPrompt(system, { family: 'korean_refinement', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
+    cacheableSystem: repairCacheableSystem(system, { family: 'korean_refinement' }),
     user: sourceCurrentPrompt(source, currentOutput, [
       { label: 'REPAIR_TARGETS', value: issueLines.join('\n') }
     ]),
@@ -2120,6 +2126,7 @@ async function retryEndingStyleAudit({
   assertRepairPrompt(system, { family: 'ending_style', localized: true });
   const response = await completeJson({
     system: withPromptDataRule(system),
+    cacheableSystem: repairCacheableSystem(system, { family: 'ending_style' }),
     user: sourceCurrentPrompt(source, currentOutput, [
       { label: 'REPAIR_TARGETS', value: issueLines.join('\n') }
     ]),

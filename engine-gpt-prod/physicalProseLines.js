@@ -265,9 +265,8 @@ function restoreSubmittedSourceSeams(source, value) {
     const rightBody = right.role === 'prose' || right.role === 'quote' || ending || url;
     if ((!leftBody || !rightBody) && !url) { conflicts.add(key); continue; }
     if (['table','code'].includes(left.role) && !url) { conflicts.add(key); continue; }
-    // An ordinary single row break may separate two words. Collapse excess
-    // paragraph gaps to that row break; remove all whitespace only with a
-    // lexical witness. This also retains uncertain noun/number spacing.
+    // Keep an uncertain physical row as a single row. A witnessed word space
+    // elsewhere below can canonicalize it without guessing a compound word.
     seams.set(key, lexical ? '' : '\n');
   }
   const outputSyntax = syntaxSpans(output);
@@ -281,7 +280,7 @@ function restoreSubmittedSourceSeams(source, value) {
         || protectedOutput.some(s => s.start <= start && s.end > start)) continue;
     const key = a + '\t' + b;
     let replacement = seams.get(key);
-    if (spaced.has(key)) replacement = seams.has(key) && /\n[ \t]*\n/u.test(gap[0]) ? ' ' : undefined;
+    if (spaced.has(key)) replacement = seams.has(key) && gap[0].includes('\n') ? ' ' : undefined;
     // A complete source token is evidence only for this exact token, including
     // its inflection, and only when there is no authored boundary for the pair.
     if (replacement === undefined && gap[0].includes('\n') && !spaced.has(key)

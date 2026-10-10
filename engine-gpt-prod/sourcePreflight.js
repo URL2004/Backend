@@ -154,7 +154,8 @@ function auditAndSanitizeSource(value) {
   // 남기면 목차와 본문이 한 행으로 합쳐져 구조 잠금 범위가 본문까지 번진다.
   const original = normalizeSourceLineSeparators(value).trim();
   if (!original) return emptyResult('');
-  const encodingNormalization = require('./sourceInputIntegrity').normalizeProseEntities(original);
+  const trailingRequest = stripTrailingToolRequest(original);
+  const encodingNormalization = require('./sourceInputIntegrity').normalizeProseEntities(trailingRequest.text);
   const decoded = encodingNormalization.text;
   const rewriteWrapper = extractQuotedRewritePayload(decoded);
   const documentQuoteWrapper = rewriteWrapper ? null : extractDocumentQuoteWrapper(decoded);
@@ -343,6 +344,10 @@ function auditAndSanitizeSource(value) {
   return {
     version: VERSION,
     text: usable,
+    submittedContentText: trailingRequest.text,
+    // Diagnostics only. Do not add these to warnings: the existing warning
+    // path renders removal messages to users.
+    engineMeta: trailingRequest.engineMeta,
     encodingNormalization,
     integrityText: integrityText || usable,
     changed: usable !== original,
@@ -350,10 +355,46 @@ function auditAndSanitizeSource(value) {
     removedArtifactCount: removals.length,
     noticeCount: notices.length,
     issueCount: issues.reduce((sum, item) => sum + item.count, 0),
-    issueCodes: issues.map(item => item.code),
+    issueCodes: [...issues.map(item => item.code), ...(trailingRequest.removedChars
+      ? ['source_trailing_tool_request_removed'] : [])],
     issues,
     warnings: buildWarnings([...removals, ...notices])
   };
+}
+
+function stripTrailingToolRequest(value) {
+  const source = String(value || '');
+  const lines = source.split('\n');
+  const content = lines.map((line, index) => ({text:line.trim(), index})).filter(row => row.text);
+  const request = /(?:써\s*줘(?:요)?|써\s*주세요|적어\s*줘(?:요)?|적어\s*주세요|바꿔\s*줘(?:요)?|바꿔\s*주세요|다듬어\s*줘(?:요)?|다듬어\s*주세요)[.!?~]*$/u;
+  const style = /(?:사람처럼|사람이\s*쓴|내가\s*쓴|자연스럽게|간단하게|어려운\s*단어|쉬운\s*(?:말|단어)|(?:이|위|해당)\s*(?:글|문장|내용)|논문\s*과제)/u;
+  const protectedLines = analyzeFences(lines).protectedLineIndexes;
+  const literals = require('../engine/textSyntax').syntaxSpans(source);
+  const removed = [];
+  for (let pos = content.length - 1; pos >= Math.max(1, content.length - 2); pos--) {
+    const row = content[pos];
+    if (row.text.length > 160 || !request.test(row.text) || !style.test(row.text)
+        || isQuotedInstructionLine(row.text) || protectedLines.has(row.index)
+        || /[\t|]|^(?:[-*•>#]|\d+[.)]|[가-하][.)])\s/u.test(row.text)
+        || /[.!?。！？].+\S/u.test(row.text)) break;
+    const start = lines.slice(0, row.index).join('\n').length + (row.index ? 1 : 0);
+    if (literals.some(span => span.start <= start && span.end > start)) break;
+    const previous = content[pos - 1].text;
+    // A dialogue/request sequence, an assignment or an ordinary letter can
+    // end with a real request. Require a preceding documentary statement.
+    if (!removed.length && !/(?:다[.!?。！？]?|[함됨음임][.]?|[.!?。！？])\s*$/u.test(previous)
+        && !request.test(previous)) break;
+    removed.push(row);
+  }
+  const first = removed.at(-1);
+  if (!first || content.filter(row => row.index < first.index).map(row => row.text).join('').length < 60)
+    return {text:source, removedChars:0, engineMeta:{}};
+  const text = lines.slice(0, first.index).join('\n').trimEnd();
+  const removedChars = removed.reduce((n,row) => n + row.text.length, 0);
+  return {text, removedChars, engineMeta:{
+    sourceToolRequestRemovalCode:'source_trailing_tool_request_removed',
+    sourceToolRequestRemovedChars:removedChars
+  }};
 }
 
 /**
@@ -1607,6 +1648,7 @@ module.exports = {
   VERSION,
   REMOVABLE_LINE_RULES,
   auditAndSanitizeSource,
+  stripTrailingToolRequest,
   extractQuotedRewritePayload,
   extractDocumentQuoteWrapper,
   repairSourceLayoutArtifacts,

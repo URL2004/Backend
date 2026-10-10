@@ -254,14 +254,14 @@ async function runEngine({
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   // Citation attachment is witnessed by the submitted document, never by
   // a heading/paragraph repair applied to the model's working source.
-  const citationSource = submittedSource;
+  const citationSource = sourcePreflightAudit?.submittedContentText || submittedSource;
   let rawSource = sourcePreflightAudit?.text || submittedSource;
   let integritySource = sourcePreflightAudit?.integrityText || rawSource;
   let structureImprovement = { requested: !!approvedStructure, applied: false, changes: [] };
   if (approvedStructure) {
     try {
       const structure = require('./documentStructure');
-      const applied = structure.applyPlan(structure.buildDocument(submittedSource), approvedStructure);
+      const applied = structure.applyPlan(structure.buildDocument(citationSource), approvedStructure);
       rawSource = applied.text;
       structureImprovement = { requested: true, applied: applied.applied, changes: applied.changes, version: applied.version };
     } catch (error) {

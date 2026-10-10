@@ -4073,7 +4073,7 @@ function countOrphanParticleLineBoundaries(value) {
     // detached subject particle. Require a structural heading, paragraph gap,
     // and a following noun with its own particle; bare `이 바뀌었다` still warns.
     if (match[1] !== '이' || !/\n[ \t]*\n/u.test(match[0])
-        || !/^[ \t]+[가-힣]{2,}(?:은|는|이|가|을|를|의|와|과|에서|으로|도)(?=\s)/u
+        || !/^[ \t]+[가-힣]{1,}(?:은|는|이|가|을|를|의|와|과|에서|으로|도)(?=\s)/u
           .test(text.slice(match.index + match[0].length))) return true;
     records ||= layoutStructure.buildLineRecords(text);
     const left = records.find(record => record.start <= match.index && record.end > match.index);

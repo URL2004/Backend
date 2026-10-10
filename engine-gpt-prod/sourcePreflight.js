@@ -201,6 +201,7 @@ function auditAndSanitizeSource(value) {
   const kept = [];
   let inReference = false;
   const fenceState = analyzeFences(lines);
+  const boundaryContentLines = boundaryContentLineIndices(lines);
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] || '');
@@ -212,10 +213,10 @@ function auditAndSanitizeSource(value) {
     }
 
     const removable = text && !scriptFrame && REMOVABLE_LINE_RULES.find(rule => (
-      (!rule.boundaryOnly || isBoundaryContentLine(lines, index))
+      rule.pattern.test(text)
+      && (!rule.boundaryOnly || boundaryContentLines.has(index))
       && !fenceState.protectedLineIndexes.has(index)
       && !isQuotedInstructionLine(text)
-      && rule.pattern.test(text)
     ));
     if (removable) {
       removals.push(issue(removable.code, index + 1, 'removed', removable.message));
@@ -1440,13 +1441,12 @@ function transformOutsideWebLiterals(value, transform) {
   ));
 }
 
-function isBoundaryContentLine(lines, index) {
-  const contentIndexes = (lines || [])
-    .map((line, lineIndex) => String(line || '').trim() ? lineIndex : -1)
-    .filter(lineIndex => lineIndex >= 0);
-  if (!contentIndexes.length) return false;
-  const position = contentIndexes.indexOf(index);
-  return position >= 0 && (position <= 1 || position >= contentIndexes.length - 2);
+function boundaryContentLineIndices(lines) {
+  const contentIndexes = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (String(lines[index] || '').trim()) contentIndexes.push(index);
+  }
+  return new Set([...contentIndexes.slice(0, 2), ...contentIndexes.slice(-2)]);
 }
 
 function isQuotedInstructionLine(value) {

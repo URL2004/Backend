@@ -9,14 +9,27 @@ const {
   contentTokens
 } = require('./sentenceAlignment');
 
-const VERSION = 17;
+const VERSION = 20;
+// 의미 보존용 배제 탐지는 항상 넓은 범위를 사용한다. 아래 상투구 정책의
+// 환경변수와 무관하며, 정책을 끄더라도 의미 약화 탐지를 줄이지 않는다.
+// "~에/데(서) 그치지·멈추지·머무르지·머물지 않-", "~에 한정되지·국한되지 않-",
+// "~데(서) 끝나지 않-"의 실제 출력 형태 전체. 2026-10-09 점검(F-04)에서 종전
+// 정규식(`데서·데에·것에·선에 + 그치지/멈추지 않고`, `에 머무르지 않고`)은 결과
+// 81회 가운데 6회만 인식했다. 앞에 조사·의존명사가 없는 `오래 머물지 않는다`,
+// `전쟁이 끝나지 않고` 같은 문자 그대로의 쓰임은 계속 세지 않는다.
+const ADDITIVE_RELATION_PATTERNS = Object.freeze([
+  /(?:데서|데에|데|것에|것|선에|수준에|차원에|[가-힣A-Za-z0-9'’"”」』)\]]+(?:에서|에|로|으로|에만|만으로|만))\s*(?:그치지|멈추지|머무르지|머물지)\s*않(?:고|는|습|으며|을|았|음|기|지|다|아)/gu,
+  /(?:데서|데에|데|것에|[가-힣A-Za-z0-9'’"”」』)\]]+(?:에서|에|로|으로|에만|만으로))\s*(?:한정되지|한정하지|국한되지|국한하지|끝나지)\s*않(?:고|는|습|으며|을|았|음|기|지|다|아)/gu
+]);
+// X1 이전 운영의 문체 정책 범위. 넓은 의미 탐지 정규식과 섞지 않는다.
+const LEGACY_LIMITATIVE_STYLE_PATTERNS = Object.freeze([
+  /(?:데서|데에|것에|선에)\s*(?:그치지|멈추지)\s*않고/gu,
+  /에\s*머무르지\s*않고/gu
+]);
 const GUARDED_FAMILIES = Object.freeze([
   {
     code: 'limitative_additive',
-    patterns: [
-      /(?:데서|데에|것에|선에)\s*(?:그치지|멈추지)\s*않고/gu,
-      /에\s*머무르지\s*않고/gu
-    ]
+    patterns: LEGACY_LIMITATIVE_STYLE_PATTERNS
   },
   {
     code: 'possibility_point',
@@ -60,6 +73,11 @@ function isEnabled() {
   return isV248FeatureEnabled('fingerprintAudit');
 }
 
+function isExpandedLimitativeStyleEnabled() {
+  // 명시적 1일 때만 X1의 넓힌 상투구 감사·재시도·복원을 켠다.
+  return process.env.GPT_FINGERPRINT_EXPANDED_LIMITATIVE_STYLE === '1';
+}
+
 const ZERO_NEW_FINGERPRINT_PROFILES = new Set([
   'academic_paper',
   'report_assignment',
@@ -87,7 +105,11 @@ function auditFingerprint(source, output, documentProfile = null) {
   const before = String(source || '');
   const after = String(output || '');
   const profile = profileName(documentProfile);
-  const families = GUARDED_FAMILIES.map(family => {
+  const expandedLimitativeStyleEnabled = isExpandedLimitativeStyleEnabled();
+  const families = GUARDED_FAMILIES.map(legacyFamily => {
+    const family = expandedLimitativeStyleEnabled && legacyFamily.code === 'limitative_additive'
+      ? { ...legacyFamily, patterns: ADDITIVE_RELATION_PATTERNS }
+      : legacyFamily;
     const sourceCount = countFamily(before, family);
     const outputCount = countFamily(after, family);
     const allowedIntroducedCount = guardedFamilyAllowance(profile, { sourceCount });
@@ -141,6 +163,18 @@ function auditFingerprint(source, output, documentProfile = null) {
     const outputCount = countMatches(after, item.pattern);
     return { code: item.code, sourceCount, outputCount, delta: outputCount - sourceCount };
   });
+  // 넓은 문체 계열은 두 모드 모두 관측한다. shadow는 위반이나 개선 판단에
+  // 사용하지 않으며, 기존 index.js의 fingerprintShadow로 숫자만 전달한다.
+  const expandedStyleFamily = { patterns: ADDITIVE_RELATION_PATTERNS };
+  const expandedSourceCount = countFamily(before, expandedStyleFamily);
+  const expandedOutputCount = countFamily(after, expandedStyleFamily);
+  shadow.push({
+    code: 'limitative_additive_expanded',
+    sourceCount: expandedSourceCount,
+    outputCount: expandedOutputCount,
+    delta: expandedOutputCount - expandedSourceCount,
+    introducedCount: Math.max(0, expandedOutputCount - expandedSourceCount)
+  });
   const lexicalTransitions = LEXICAL_TRANSITIONS.map(item => {
     const sourceFromCount = countMatches(before, item.from);
     const outputFromCount = countMatches(after, item.from);
@@ -160,6 +194,7 @@ function auditFingerprint(source, output, documentProfile = null) {
   return {
     version: VERSION,
     enabled: isEnabled(),
+    expandedLimitativeStyleEnabled,
     profile,
     pass: violations.length === 0,
     families,
@@ -656,36 +691,166 @@ function hasResponsibilityForOutcome(value) {
     .test(String(value || ''));
 }
 
+// 원문의 `아니라`가 X를 배제하지 않고 "X만으로 한정하지 않음"을 뜻하는 꼴.
+// 이때 `X에 그치지 않고 Y`는 같은 관계라 반전이 아니다(상투구 주입으로는 계속 센다).
+// - `단순히·단지·그저·그냥 X가 아니라`: 부사가 부정되는 X(최대 다섯 어절) 바로
+//   앞에 올 때만. `오직`은 범위를 좁히는 부사라 넣지 않는다.
+// - `X뿐(만) 아니라`, `X만이·만은 아니라`, `X만(으로) …하는 것이 아니라`.
+// - `X에 그치는·머무는·한정된·국한된 (것이) 아니라`.
+const LIMITATIVE_ADVERB_EXCEPTION = /(?:단순히|단지|그저|그냥)\s*(?:[가-힣A-Za-z0-9·'‘’"“”]+\s*){0,5}?(?:이|가|은|는|을|를|만|만이|만은|만으로|것이|것만이|것만은|뿐)\s*(?:아니라|아닌\s+것이(?:라|고))/u;
+const LIMITATIVE_MARKER_EXCEPTION = /(?:(?:뿐|뿐만|만이|만은)\s*(?:아니라|아닌\s+것이(?:라|고))|만(?:으로)?\s*(?:[가-힣A-Za-z0-9·]+\s*){0,3}?(?:것이|것은|것만이|것만은)\s*(?:아니라|아닌\s+것이(?:라|고))|(?:에|로|으로)(?:만)?\s*(?:그치는|머무는|머무르는|한정된|국한된|한정되는|국한되는)\s*(?:[가-힣]+\s*){0,2}?(?:것이|것은|현상이|문제가|일이)?\s*(?:아니라|아닌\s+것이(?:라|고)))/u;
+
 function detectContrastRelationShift(source, output) {
   const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
   const outputSentences = splitSentences(String(output || '')).map(value => String(value || '').trim()).filter(Boolean);
   const sentenceOrdinals = [];
+  const shifts = [];
   for (let index = 0; index < sourceSentences.length; index += 1) {
     const sourceSentence = sourceSentences[index];
     if (!/(?:아니라|아닌\s+것이(?:라|고)|아님을)/u.test(sourceSentence)) continue;
     // `단순히/단지 X가 아니라 Y`는 X를 완전히 부정하기보다 X만으로 범위를
     // 한정하지 않는 관계다. 이 경우 `X에 머무르지 않고 Y`는 같은 제한적
     // 기능을 유지하므로 부정→가산 반전으로 보지 않는다. `단순한 X가 아니라`는
-    // 명사구 대조이므로 이 예외에 포함하지 않는다.
-    const limitativeSource = /(?:단순히|단지|그저|그냥|오직)[^.!?。！？\n]{0,55}(?:아니라|아닌\s+것이(?:라|고))/u
-      .test(sourceSentence);
+    // 명사구 대조이므로 이 예외에 포함하지 않는다. 부사가 부정되는 X 바로
+    // 앞에 붙어 그 범위를 한정할 때만 예외다. 문장 앞쪽 다른 자리의 `단순히`
+    // (`단순히 인사이동으로 대응할 경우 … 해결하는 것이 아니라`)는 예외가 아니다.
+    const limitativeSource = LIMITATIVE_ADVERB_EXCEPTION.test(sourceSentence)
+      || LIMITATIVE_MARKER_EXCEPTION.test(sourceSentence);
     const candidates = alignedOutputCandidates(
       sourceSentence,
       index,
       sourceSentences.length,
       outputSentences
     ).filter(item => item.score >= 0.24).slice(0, 4);
+    // Sentence splitting can drift beyond the proportional window. Add only a
+    // globally best single comparison counterpart, still subject to X/Y and
+    // reciprocal ownership checks below. Additive retrieval stays unchanged.
+    const comparisonCandidate = outputSentences.some(text => weakenedComparisonPattern(sourceSentence, text))
+      ? alignedOutputCandidates(sourceSentence, index, sourceSentences.length, outputSentences,
+        { window: outputSentences.length, maxOutputGroup: 1 })[0]
+      : null;
+    if (comparisonCandidate?.score >= 0.24
+        && weakenedComparisonPattern(sourceSentence, comparisonCandidate.text)) candidates.push(comparisonCandidate);
     const sourceTokens = contentTokens(sourceSentence);
+    let found = null;
     const shifted = candidates.some(candidate => {
-      if (!/(?:데서\s*(?:그치지|멈추지)\s*않고|에\s*머무르지\s*않고)/u.test(candidate.text)) return false;
-      if (/(?:아니라|아닌\s+것이(?:라|고)|아님을)/u.test(candidate.text)) return false;
-      const candidateTokens = new Set(contentTokens(candidate.text));
-      const shared = sourceTokens.filter(token => candidateTokens.has(token)).length;
-      return sourceTokens.length >= 2 && shared / sourceTokens.length >= 0.35;
+      // 1:N 묶음이면 계열 표현이 실제로 들어 있는 결과 문장이 원문과 겹쳐야
+      // 한다. 이웃 문장의 `그치지 않고`를 이 문장의 반전으로 세지 않는다.
+      const members = Array.isArray(candidate.sentences) && candidate.sentences.length
+        ? candidate.sentences
+        : [candidate.text];
+      return members.some((member, memberIndex) => {
+        if (/(?:아니라|아닌\s+것이(?:라|고)|아님을|아니다|아닙니다|아니었다)/u.test(member)) return false;
+        const additive = ADDITIVE_RELATION_PATTERNS.some(pattern => matches(pattern, member));
+        const pattern = additive ? 'limitative_additive' : weakenedComparisonPattern(sourceSentence, member);
+        if (!pattern) return false;
+        const candidateTokens = new Set(contentTokens(member));
+        const shared = sourceTokens.filter(token => candidateTokens.has(token)).length;
+        if (sourceTokens.length < 2 || shared / sourceTokens.length < 0.35) return false;
+        if (!additive) {
+          // A shared topic in an adjacent sentence is insufficient. The selected
+          // member must be the best single counterpart, with no stronger owner.
+          const best = comparisonCandidate;
+          if (!best || best.start !== candidate.start + memberIndex) return false;
+          const ownScore = alignSourceSentence(sourceSentence, 0, 1, [member]).rawScore;
+          if (sourceSentences.some((other, otherIndex) => otherIndex !== index
+              && alignSourceSentence(other, 0, 1, [member]).rawScore >= ownScore - 0.02)) return false;
+        }
+        found = { sourceOrdinal: index + 1, outputOrdinal: candidate.start + memberIndex + 1, pattern };
+        return true;
+      });
     });
-    if (shifted && !limitativeSource) sentenceOrdinals.push(index + 1);
+    if (shifted && !limitativeSource) {
+      sentenceOrdinals.push(index + 1);
+      shifts.push(found);
+    }
   }
-  return { detected: sentenceOrdinals.length > 0, count: sentenceOrdinals.length, sentenceOrdinals };
+  const patternCounts = { limitative_additive: 0, action_comparison: 0, nominal_comparison: 0, recharacterizing_comparison: 0 };
+  for (const shift of shifts) patternCounts[shift.pattern] += 1;
+  return { detected: sentenceOrdinals.length > 0, count: sentenceOrdinals.length, sentenceOrdinals, patternCounts, shifts };
+}
+
+// Attested in the saved corpus: 압도하기보다, 경쟁시키기보다, 능력보다,
+// 개념이라기보다. Require the excluded X head and an affirmative Y anchor;
+// synonyms, multiple exclusions and idiomatic "다름이 아니라" remain unclassified.
+function weakenedComparisonPattern(source, output) {
+  const exclusions = [...source.matchAll(/아니라/gu)];
+  if (exclusions.length !== 1 || /보다|다름이\s*아니라|다른\s*것이\s*아니라/u.test(source)) return null;
+  // A comparison can coexist with an explicit retained exclusion. Scope of a
+  // second negation is uncertain without parsing, so prefer a missed detection.
+  if (/아닌|아니며|아니고|아니었다|않(?:는|다|았|습)/u.test(output)) return null;
+  const at = exclusions[0].index;
+  const left = source.slice(0, at).trim()
+    .replace(/(?:는|은)\s*(?:것|방식|일)(?:이|가)?$/u, '')
+    .replace(/(?:이|가)$/u, '').trim();
+  const head = left.match(/[가-힣]+$/u)?.[0];
+  if (!head || head.length < 2) return null;
+  const modifier = contentTokens(left.slice(0, -head.length)).at(-1);
+  const rightTokens = contentTokens(source.slice(at + 3));
+  for (const match of output.matchAll(/[가-힣]+보다(?:는)?(?=[\s,.;!?]|$)/gu)) {
+    let target = match[0].replace(/보다(?:는)?$/u, '');
+    let pattern = 'nominal_comparison';
+    if (/(?:이)?라기$/u.test(target)) {
+      target = target.replace(/(?:이)?라기$/u, '');
+      pattern = 'recharacterizing_comparison';
+    } else if (/기$/u.test(target)) {
+      target = target.slice(0, -1);
+      pattern = 'action_comparison';
+    }
+    if (target !== head && target !== `${head}하`) continue;
+    // Matching just "속도" would conflate "구매 속도" and "판매 속도".
+    // Keep the immediately preceding lexical anchor too; uncertain paraphrases
+    // of that modifier are deliberately left for the existing model judge.
+    if (modifier && contentTokens(output.slice(0, match.index)).at(-1) !== modifier) continue;
+    const afterTokens = new Set(contentTokens(output.slice(match.index + match[0].length)));
+    if (!rightTokens.some(token => afterTokens.has(token))) continue;
+    return pattern;
+  }
+  return null;
+}
+
+// Internal sets contain source sentence keys only for this run. Engine metadata
+// exposes numbers, never source text. Ordinals may change after preprocessing.
+function createContrastShiftMetrics() {
+  const detected = new Set(), retried = new Set(), restored = new Set();
+  const patterns = new Map();
+  function entries(source, audit) {
+    const sentences = splitSentences(String(source || ''));
+    const occurrences = new Map();
+    const keys = sentences.map(sentence => {
+      const text = String(sentence || '').replace(/\s+/gu, ' ').trim();
+      const occurrence = (occurrences.get(text) || 0) + 1;
+      occurrences.set(text, occurrence);
+      return `${text}\u0000${occurrence}`;
+    });
+    return (audit?.relationShift?.shifts || []).map(shift => ({
+      key: keys[shift.sourceOrdinal - 1],
+      pattern: shift.pattern
+    })).filter(item => item.key);
+  }
+  function observe(source, audit) {
+    for (const {key, pattern} of entries(source, audit)) {
+      detected.add(key);
+      if (!patterns.has(pattern)) patterns.set(pattern, new Set());
+      patterns.get(pattern).add(key);
+    }
+  }
+  function resolved(source, before, after, kind) {
+    observe(source, before); observe(source, after);
+    const remaining = new Set(entries(source, after).map(item => item.key));
+    const target = kind === 'retry' ? retried : restored;
+    for (const {key} of entries(source, before)) if (!remaining.has(key)) target.add(key);
+  }
+  function snapshot() {
+    return {
+      contrastRelationDetectedSentenceCount: detected.size,
+      contrastRelationPatternCounts: Object.fromEntries(['limitative_additive', 'action_comparison',
+        'nominal_comparison', 'recharacterizing_comparison'].map(code => [code, patterns.get(code)?.size || 0])),
+      contrastRelationRetryResolvedSentenceCount: retried.size,
+      contrastRelationSourceRestoreSentenceCount: restored.size
+    };
+  }
+  return { observe, resolved, snapshot };
 }
 
 function countFamily(text, family) {
@@ -756,6 +921,7 @@ function isImproved(before, after) {
   if (after.violations.length < before.violations.length) return true;
   if (after.excessIntroducedCount < before.excessIntroducedCount) return true;
   if (before.relationShift?.detected === true && after.relationShift?.detected !== true) return true;
+  if (Number(after.relationShift?.count || 0) < Number(before.relationShift?.count || 0)) return true;
   return Number(after.semanticRelations?.count || 0) < Number(before.semanticRelations?.count || 0);
 }
 
@@ -769,7 +935,7 @@ function restoreUnsafeRelationSentences(source, output, audit) {
       : sourceOrdinals;
     target.push(...(violation.sentenceOrdinals || []));
   }
-  const restoredOutput = restoreSourceSentenceOrdinals(
+  const restoredOutput = restoreFingerprintOutputSentences(
     source,
     output,
     outputOrdinals,
@@ -834,10 +1000,41 @@ function restoreUnsafeRelationSentences(source, output, audit) {
       ...(restoredSourceSingle.restoredSourceSentenceOrdinals || []),
       ...(restoredSourceGrouped.restoredSourceSentenceOrdinals || [])
     ],
+    rejectedOutputSentenceOrdinals: restoredOutput.rejectedOutputSentenceOrdinals || [],
     reason: sourceApplied || restoredOutput.applied
       ? 'restored'
-      : (restoredSourceGrouped.reason || restoredSourceSingle.reason || restoredOutput.reason)
+      : (sourceOrdinals.length ? restoredSourceGrouped.reason : restoredOutput.reason)
   };
+}
+
+function restoreFingerprintOutputSentences(source, output, ordinals, options) {
+  let remaining = [...new Set(ordinals)], restored;
+  const rejected = new Set(), owners = new Map();
+  const sources = splitSentences(String(source || ''));
+  const outputs = splitSentences(String(output || ''));
+  // A group can have a high score because of the NEXT output sentence, even
+  // though the fingerprint belongs to this one. Require independent ownership
+  // of the actual flagged member before accepting the existing restorer's edit.
+  for (let round = 0; round <= ordinals.length; round++) {
+    restored = restoreSourceSentenceOrdinals(source, output, remaining, options);
+    const invalid = [];
+    for (let i = 0; i < restored.restoredSentenceOrdinals.length; i++) {
+      const ordinal = restored.restoredSentenceOrdinals[i];
+      if (!owners.has(ordinal)) {
+        const candidates = alignedOutputCandidates(outputs[ordinal - 1], ordinal - 1, outputs.length,
+          sources, {window: sources.length, maxOutputGroup: 1}).sort((a,b) => b.rawScore - a.rawScore);
+        const best = candidates[0];
+        owners.set(ordinal, best && (!candidates[1] || best.rawScore > candidates[1].rawScore + 0.02)
+          ? best.start + 1 : null);
+      }
+      if (owners.get(ordinal) !== restored.restoredSourceSentenceOrdinals?.[i]) invalid.push(ordinal);
+    }
+    if (!invalid.length) break;
+    for (const ordinal of invalid) rejected.add(ordinal);
+    remaining = remaining.filter(ordinal => !rejected.has(ordinal));
+  }
+  return {...restored, rejectedOutputSentenceOrdinals: [...rejected],
+    reason: !restored.applied && rejected.size ? 'ambiguous_fingerprint_source_owner' : restored.reason};
 }
 
 // One unsafe style restoration must not veto a separate, well-grounded meaning
@@ -903,6 +1100,7 @@ module.exports = {
   isEnabled,
   auditFingerprint,
   detectContrastRelationShift,
+  createContrastShiftMetrics,
   detectSemanticRelationShifts,
   guardedFamilyAllowance,
   restoreUnsafeRelationSentences,

@@ -759,6 +759,7 @@ async function runEngine({
   let fingerprintRepairCount = 0;
   let fingerprintRetryApplied = false;
   let fingerprintSourceRestoreCount = 0;
+  const contrastShiftMetrics = fingerprint.createContrastShiftMetrics();
   let finalSourceIntegrityRestoreCount = 0;
   const finalSourceIntegrityRestoreCodes = [];
   let statisticalAtomRepairCount = 0;
@@ -1524,6 +1525,7 @@ async function runEngine({
 
   if (!polishStrictFailure && selectedMode !== 'polish' && fingerprint.isEnabled()) {
     fingerprintAudit = fingerprint.auditFingerprint(auditSource, outputText, documentProfile);
+    contrastShiftMetrics.observe(auditSource, fingerprintAudit);
     if (!fingerprintAudit.pass) {
       const retryReserved = recoveryBudget.tryStart({ priority: 'late' });
       if (!retryReserved) {
@@ -1561,6 +1563,7 @@ async function runEngine({
           })
           && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
         if (safeCandidate) {
+          contrastShiftMetrics.resolved(auditSource, fingerprintAudit, candidateFingerprint, 'retry');
           outputText = candidate;
           fingerprintAudit = candidateFingerprint;
           fingerprintRepairCount = 1;
@@ -1598,6 +1601,7 @@ async function runEngine({
             })
             && preservesFinalStructure(auditSource, candidate, frozen ? frozen.auditChunks : chunks, chunkPlan, boundaryRepair);
           if (safeCandidate) {
+            contrastShiftMetrics.resolved(auditSource, fingerprintAudit, candidateFingerprint, 'restore');
             outputText = candidate;
             fingerprintAudit = candidateFingerprint;
             fingerprintSourceRestoreCount += restored.restoredSentenceCount || 1;
@@ -2697,6 +2701,7 @@ async function runEngine({
   // 감사를 다시 통과해야 하므로 다른 문장의 휴머나이징은 유지된다.
   if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
     const finalFingerprintBefore = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+    contrastShiftMetrics.observe(rawSource, finalFingerprintBefore);
     if (finalFingerprintBefore.pass === false) {
       const restored = fingerprint.restoreUnsafeRelationSentences(
         rawSource,
@@ -2729,6 +2734,7 @@ async function runEngine({
           outputText = candidate;
           fingerprintAudit = candidateFingerprint;
           fingerprintSourceRestoreCount += restored.restoredSentenceCount || 1;
+          contrastShiftMetrics.resolved(rawSource, finalFingerprintBefore, candidateFingerprint, 'restore');
           finalSourceIntegrityRestoreCount += restored.restoredSentenceCount || 1;
           finalSourceIntegrityRestoreCodes.push('fingerprint_source_restore');
           if (candidateDepth) humanizationDepthReport = candidateDepth;
@@ -3073,6 +3079,8 @@ async function runEngine({
   }
   if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
     fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+
+    contrastShiftMetrics.observe(rawSource, fingerprintAudit);
   }
   endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
   resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
@@ -3501,6 +3509,8 @@ async function runEngine({
   }
   if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
     fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+
+    contrastShiftMetrics.observe(rawSource, fingerprintAudit);
   }
   endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
   resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
@@ -3557,6 +3567,8 @@ async function runEngine({
     }
     if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
       fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+
+      contrastShiftMetrics.observe(rawSource, fingerprintAudit);
     }
     endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
     resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
@@ -3576,6 +3588,7 @@ async function runEngine({
   // 이 단계 뒤에는 어휘를 생성하는 후처리를 두지 않는다.
   if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
     const relationBefore = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+    contrastShiftMetrics.observe(rawSource, relationBefore);
     if (relationBefore.pass === false) {
       const restored = fingerprint.restoreValidatedRelationSentences(
         rawSource, outputText, documentProfile,
@@ -3600,6 +3613,7 @@ async function runEngine({
               { current: outputText })) {
           outputText = candidate;
           fingerprintAudit = relationAfter;
+          contrastShiftMetrics.resolved(rawSource, relationBefore, relationAfter, 'restore');
           const restoredCount = Number(restored.restoredSentenceCount || 1);
           fingerprintSourceRestoreCount += restoredCount;
           finalSourceIntegrityRestoreCount += restoredCount;
@@ -4282,6 +4296,8 @@ async function runEngine({
   }
   if (selectedMode !== 'polish' && fingerprint.isEnabled()) {
     fingerprintAudit = fingerprint.auditFingerprint(rawSource, outputText, documentProfile);
+
+    contrastShiftMetrics.observe(rawSource, fingerprintAudit);
   }
   endingStyleAudit = endingStyle.auditEndingStyle(rawSource, outputText, documentProfile);
   resumeCoverageAudit = resumeCoverage.auditResumeCoverage(rawSource, outputText, documentProfile);
@@ -5256,6 +5272,8 @@ async function runEngine({
     fingerprintRepairCount,
     fingerprintRetryApplied,
     fingerprintSourceRestoreCount,
+    ...contrastShiftMetrics.snapshot(),
+    contrastRelationResidualSentenceCount: Number(fingerprintAudit?.relationShift?.count || 0),
     unsupportedSpecificityAuditVersion: Number(unsupportedSpecificityAudit?.version || 0),
     unsupportedSpecificityPass: unsupportedSpecificityAudit
       ? unsupportedSpecificityAudit.pass === true

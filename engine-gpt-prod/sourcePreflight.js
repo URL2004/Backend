@@ -171,9 +171,12 @@ function auditAndSanitizeSource(value) {
   // Canonicalize only proven physical row seams before assigning paragraph,
   // title or list ownership. The helper preserves all non-whitespace content
   // and explicit structure; both the planner and engine use this same baseline.
-  const physicalLayout = scriptFrame || looksLikeCreativeLineLayout(extractedLayout.text)
-    ? { text: extractedLayout.text, changes: [] }
-    : require('./physicalProseLines').repairPhysicalProseLines(extractedLayout.text);
+  const seamLayout = scriptFrame || looksLikeCreativeLineLayout(extractedLayout.text)
+    ? { text: extractedLayout.text, repairCount: 0 }
+    : require('./physicalProseLines').restoreSubmittedSourceSeams(extractedLayout.text, extractedLayout.text);
+  const physicalLayout = scriptFrame || looksLikeCreativeLineLayout(seamLayout.text)
+    ? { text: seamLayout.text, changes: [] }
+    : require('./physicalProseLines').repairPhysicalProseLines(seamLayout.text);
   const lines = physicalLayout.text.split('\n');
   const removals = wrapper
     ? [issue(

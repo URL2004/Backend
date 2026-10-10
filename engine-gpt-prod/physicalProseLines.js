@@ -210,4 +210,92 @@ function restoreSourceWordSeams(source, value) {
   return { text, repairCount: edits.length, contentPreserved: text.replace(/\s/gu, '') === output.replace(/\s/gu, '') };
 }
 
-module.exports = { repairPhysicalProseLines, restoreSourceWordSeams, wordSeam, witnessedWords };
+// Match the actual adjacent source tokens. Never infer a word from a remote
+// substring: authored spaces/paragraphs and conflicting occurrences veto it.
+function restoreSubmittedSourceSeams(source, value) {
+  const original = String(source || '').replace(/\r\n?/gu, '\n');
+  const output = String(value || '').replace(/\r\n?/gu, '\n');
+  if (!original || !output) return { text: output, repairCount: 0, contentPreserved: true };
+  const layout = require('./layoutStructure');
+  const records = layout.buildLineRecords(original);
+  const siblings = require('./koreanEndingSeam').siblingIndices(records);
+  const words = witnessedWords(original);
+  const atoms = new Set(original.match(/[\p{L}\p{N}=()]+/gu) || []);
+  const seams = new Map(), conflicts = new Set(), spaced = new Set();
+  const parts = (text, start, end) => [
+    text.slice(Math.max(0, start - 100), start).match(/[\p{L}\p{N}=()]+$/u)?.[0] || '',
+    text.slice(end, end + 100).match(/^[\p{L}\p{N})]+/u)?.[0] || ''
+  ];
+  const originalSyntax = syntaxSpans(original);
+  const literals = originalSyntax.filter(s => s.spanType === 'code');
+  let rowIndex = 0;
+  for (const gap of original.matchAll(/\s+/gu)) {
+    const start = gap.index, end = start + gap[0].length;
+    const [a, b] = parts(original, start, end);
+    if (!a || !b) continue;
+    const key = a + '\t' + b;
+    if (gap[0] !== '\n') {
+      if (/^[ ]+$/u.test(gap[0])) spaced.add(key);
+      else conflicts.add(key);
+      continue;
+    }
+    while (rowIndex + 1 < records.length && records[rowIndex + 1].start <= start) rowIndex++;
+    const left = records[rowIndex], right = records[rowIndex + 1];
+    if (!left || !right || (left.text.length < 28 && !/\($/u.test(left.text)) || isComplete(left.text)
+        || literals.some(s => s.start <= start && s.end > start)) { conflicts.add(key); continue; }
+    const url = /https?:\/\/\S+=$/u.test(left.text) && /^\d/u.test(right.text);
+    const ending = b === '다' && /(?:한|된|했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(a)
+      && !siblings.has(right.index);
+    const lexical = ending || wordSeam(a, b, words) || words.has(a + b) && a.length + b.length >= 4
+      || (a.length === 1 && !/^[나너저그이내네제왜더또다한두세네몇수것줄중전후각및의을를은는에와과도만로큰벽명]$/u.test(a)
+        && /^(?:[가-힣]{2,12}|서|대)$/u.test(b))
+      || /하$/u.test(a) && b === '기'
+      || (a.charCodeAt(a.length - 1) - 0xAC00) % 28 === 8 && b === '까'
+      || /[가-힣]$/u.test(a) && /^에도$/u.test(b)
+      || a.includes('(') && !a.slice(a.lastIndexOf('(')).includes(')') || url;
+    const leftBody = ['prose','quote','reference_item'].includes(left.role)
+      || ['list','label_inline'].includes(left.role)
+        && (left.text.length >= 45 || /\($/u.test(left.text))
+      || left.role === 'heading' && lexical && left.text.length >= 45
+      || left.role === 'title' && left.text.split(/\s+/u).length >= 6
+        && /(?:하고|하며|거쳐|통해)\s/u.test(left.text);
+    const rightBody = right.role === 'prose' || right.role === 'quote' || ending || url;
+    if ((!leftBody || !rightBody) && !url) { conflicts.add(key); continue; }
+    if (['table','code'].includes(left.role) && !url) { conflicts.add(key); continue; }
+    // An ordinary single row break may separate two words. Collapse excess
+    // paragraph gaps to that row break; remove all whitespace only with a
+    // lexical witness. This also retains uncertain noun/number spacing.
+    seams.set(key, lexical ? '' : '\n');
+  }
+  const outputSyntax = syntaxSpans(output);
+  const protectedOutput = [...outputSyntax.filter(s => s.spanType === 'code'),
+    ...require('./literalSpans').mathSpans(output)];
+  const edits = [];
+  for (const gap of output.matchAll(/\s+/gu)) {
+    const start = gap.index, end = start + gap[0].length;
+    const [a, b] = parts(output, start, end);
+    if (!a || !b || conflicts.has(a + '\t' + b)
+        || protectedOutput.some(s => s.start <= start && s.end > start)) continue;
+    const key = a + '\t' + b;
+    let replacement = seams.get(key);
+    if (spaced.has(key)) replacement = seams.has(key) && /\n[ \t]*\n/u.test(gap[0]) ? ' ' : undefined;
+    // A complete source token is evidence only for this exact token, including
+    // its inflection, and only when there is no authored boundary for the pair.
+    if (replacement === undefined && gap[0].includes('\n') && !spaced.has(key)
+        && atoms.has(a + b) && a.length + b.length >= 3) replacement = '';
+    if (replacement === undefined || replacement === gap[0]) continue;
+    if (replacement === '\n' && !/\n[ \t]*\n/u.test(gap[0])) continue;
+    // An output quotation can be corrected only when the same broken seam
+    // is witnessed inside a source quotation, not from unrelated prose.
+    const quote = outputSyntax.find(s => s.spanType === 'quote' && s.start < start && s.end > end);
+    if (quote && !originalSyntax.some(s => s.spanType === 'quote'
+      && new RegExp(`${a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u')
+        .test(original.slice(s.start, s.end)))) continue;
+    edits.push({start, end, text: replacement});
+  }
+  let text = output;
+  for (const edit of edits.reverse()) text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  return {text, repairCount: edits.length, contentPreserved: text.replace(/\s/gu, '') === output.replace(/\s/gu, '')};
+}
+
+module.exports = { repairPhysicalProseLines, restoreSourceWordSeams, restoreSubmittedSourceSeams, wordSeam, witnessedWords };

@@ -870,6 +870,7 @@ function restoreFinalDocumentLayout(options = {}) {
 
 function* restoreFinalDocumentLayoutSteps({
   source,
+  fragmentSource = '',
   outputText,
   chunks,
   mode = '',
@@ -981,6 +982,11 @@ function* restoreFinalDocumentLayoutSteps({
     text = require('./quoteOwnership').restoreOwnedQuoteLayout(source, citations.text).text;
     if (improveLabelBodies && !preserveAllLines) {
       text = require('./citedQuoteParagraphs').separateCitedQuoteCommentary(source, text).text;
+    }
+    if (!preserveAllLines) {
+      const seams = require('./physicalProseLines').restoreSubmittedSourceSeams(fragmentSource || source, text);
+      text = seams.text;
+      midSentenceParagraphRepairCount += seams.repairCount;
     }
     if (text === before) {
       converged = true;

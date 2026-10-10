@@ -832,8 +832,15 @@ function countRoleShifts(beforeParagraphs, afterParagraphs) {
     if (outputParagraph.primaryRole === 'reflection') {
       const sourceReflection = Number(sourceParagraph.reflectionCount || 0);
       const outputReflection = Number(outputParagraph.reflectionCount || 0);
+      // `마음을 돌아보며`, `수용성을 돌아보도록`처럼 목적어를 받는 `돌아보다`는
+      // 글이 다루는 행위의 서술이지 글쓴이의 성찰 결론이 아니다. 이 용법만으로
+      // 설명·활동 문단이 성찰 문단으로 바뀌었다고 세지 않는다.
+      const outputReflectionFunction = matchesPattern(
+        stripObjectReflectionVerbs(outputParagraph.text),
+        REFLECTION_FUNCTION_PATTERN
+      );
       if (outputReflection > sourceReflection
-          || (matchesPattern(outputParagraph.text, REFLECTION_FUNCTION_PATTERN)
+          || (outputReflectionFunction
             && !matchesPattern(sourceParagraph.text, REFLECTION_FUNCTION_PATTERN))) count += 1;
       return;
     }
@@ -842,6 +849,15 @@ function countRoleShifts(beforeParagraphs, afterParagraphs) {
         && !matchesPattern(sourceParagraph.text, CONCLUSION_PREDICATE_PATTERN)) count += 1;
   });
   return count;
+}
+
+// 목적어(을/를)를 받아 행위를 서술하는 `돌아보-`(돌아보며·돌아보고·돌아보도록·
+// 돌아보게·돌아보는·돌아보기)만 지운다. `돌아보면·돌아보니`처럼 성찰의 틀을
+// 여는 용법과 `깨달-`, `알게 되-` 같은 다른 성찰 표지는 그대로 남긴다.
+const OBJECT_REFLECTION_VERB_PATTERN = /[가-힣]+(?:을|를)\s*(?:되)?돌아보(?:며|고|도록|게|는|기|ㄹ|아|았)/gu;
+
+function stripObjectReflectionVerbs(value) {
+  return String(value || '').replace(OBJECT_REFLECTION_VERB_PATTERN, ' ');
 }
 
 function countNovelReflectionFunctions(source, outputText) {

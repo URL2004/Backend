@@ -3939,6 +3939,9 @@ async function runEngine({
     outputText = attestedProseLayout.text;
     rememberStructureSafeOutput(outputText, 'attested_prose_gap_restore');
   }
+  const ordinalMarkerRepair = require('./koreanOrdinal').restoreMissingOrdinalMarkers(integritySource, outputText);
+  outputText = ordinalMarkerRepair.text;
+  let ordinalMarkerRestoreCount = ordinalMarkerRepair.repairCount;
   const settledLayout = await require('./deliveredLayoutAudit').settleDeliveredLayout({
     signal, submittedSource, source: rawSource,
     integritySource: structureImprovement.applied ? rawSource : integritySource,
@@ -4208,6 +4211,12 @@ async function runEngine({
       finalSemanticRevalidation.fallbackStage = choice.entry.stage;
     }
   }
+
+  // A selected older candidate may carry the same missing prefix. Re-audit
+  // the restored text below; semantic provenance remains bound to its judged text.
+  const selectedOrdinalRepair = require('./koreanOrdinal').restoreMissingOrdinalMarkers(integritySource, outputText);
+  outputText = selectedOrdinalRepair.text;
+  ordinalMarkerRestoreCount += selectedOrdinalRepair.repairCount;
 
   // Final semantic recovery can select an older layout. Settle that selection
   // only when the existing semantic verdict remains valid for the new text;
@@ -4716,6 +4725,7 @@ async function runEngine({
     finalValidationReceipt: require('./auditTrace').finalValidationReceipt(
       semanticReportForCandidate(semanticReport), rawSource, outputText),
     boundaryMarkerStats,
+    ordinalMarkerRestoreCount,
     // Delivered-text relation nominations by code (e.g. antecedent_link_loss_candidate).
     // Nominations are not confirmed errors; this only sizes them before any new check.
     relationCandidateCounts: countRelationCandidateCodes(deliveryAudit?.relationAudit?.candidates),

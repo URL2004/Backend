@@ -132,4 +132,50 @@ function restoreOrdinalParagraphGaps(source, value) {
   return { text, repairCount };
 }
 
-module.exports = { ordinalPrefix, ordinalMarkers, restoreOrdinalParagraphGaps };
+
+// Restore only a missing punctuation prefix, at a unique unchanged body
+// anchor, with a unique monotone alignment of every surviving ordinal.
+function restoreMissingOrdinalMarkers(source, value) {
+  const original = String(source || ''), output = String(value || '');
+  const before = ordinalMarkers(original), after = ordinalMarkers(output, { source: original });
+  const unchanged = { text: output, repairCount: 0 };
+  if (before.length < 2 || !after.length || before.length <= after.length || before.length > 64) return unchanged;
+  const ways = Array.from({ length: before.length + 1 }, () => Array(after.length + 1).fill(0));
+  ways[before.length][after.length] = 1;
+  for (let i = before.length - 1; i >= 0; i--) {
+    for (let j = after.length; j >= 0; j--) {
+      ways[i][j] = Math.min(2, ways[i + 1][j]
+        + (j < after.length && before[i].number === after[j].number ? ways[i + 1][j + 1] : 0));
+    }
+  }
+  if (ways[0][0] !== 1) return unchanged;
+  const positions = [], edits = [], literals = syntaxSpans(output);
+  let cursor = 0;
+  for (let i = 0; i < before.length; i++) {
+    if (cursor < after.length && before[i].number === after[cursor].number && ways[i + 1][cursor + 1]) {
+      positions.push(after[cursor++].start);
+      continue;
+    }
+    const prefix = ordinalPrefix(original.slice(before[i].start));
+    if (!prefix) return unchanged;
+    const bodyStart = before[i].start + prefix[1].length;
+    const body = original.slice(bodyStart).split(/[.!?。！？\n]/u)[0];
+    const anchor = body.match(/^\S+(?:[ \t]+\S+){3}/u)?.[0];
+    if (!anchor || anchor.replace(/\s/gu, '').length < 12
+        || original.indexOf(anchor) !== bodyStart || original.indexOf(anchor, bodyStart + 1) !== -1) return unchanged;
+    const position = output.indexOf(anchor);
+    if (position < 0 || output.indexOf(anchor, position + 1) !== -1
+        || !/(?:^|\n|[.!?。！？][ \t]+)$/u.test(output.slice(0, position))
+        || literals.some(span => span.start <= position && span.end > position)) return unchanged;
+    positions.push(position);
+    edits.push({ position, prefix: prefix[1] });
+  }
+  if (positions.some((position, i) => i > 0 && position <= positions[i - 1])) return unchanged;
+  let text = output;
+  for (const edit of edits.reverse()) text = text.slice(0, edit.position) + edit.prefix + text.slice(edit.position);
+  const repaired = ordinalMarkers(text, { source: original });
+  if (repaired.length !== before.length || repaired.some((item, i) => item.number !== before[i].number)) return unchanged;
+  return { text, repairCount: edits.length };
+}
+
+module.exports = { ordinalPrefix, ordinalMarkers, restoreOrdinalParagraphGaps, restoreMissingOrdinalMarkers };

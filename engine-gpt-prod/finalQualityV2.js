@@ -532,7 +532,13 @@ async function runSemanticDocumentAuditInternal({
   // requests first so a long tail is not queued behind short sections. Original
   // indices still own every output/report; concurrency and deadline are unchanged.
   const schedule = require('./semanticAuditSchedule').scheduleReviewPairs(pairs, allowRepair);
-  await require('./concurrency').mapWithConcurrency(schedule, 2, async ({ pair, index }) => {
+  // The section body below is unchanged. `signal` inside it is the section's
+  // own signal: the audit signal, plus the per-section limit when the caller
+  // set a final verdict schedule (semanticAuditSchedule.runSectionSchedule).
+  // A verdict-only section that ended without a verdict is asked once more.
+  await require('./semanticAuditSchedule').runSectionSchedule({ schedule, concurrency: 2, signal, allowRepair,
+    isUnfinished: index => reports[index]?.started === true && reports[index].verificationCompleted !== true
+  }, async ({ pair, index }, signal) => {
     const startedAt = Date.now();
     const requireConfirmation = confirmationKnown === true;
     let preparationCaptured = false;

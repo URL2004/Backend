@@ -230,7 +230,18 @@ function auditVoice(sourceProfile, output, {
   } else if ((sourceProfile?.listItemCount || 0) > 0 && current.listItemCount < sourceProfile.listItemCount) {
     warnings.push(warning('list_structure_changed', '목록 항목 일부가 합쳐지거나 누락됐을 수 있어요.'));
   }
-  if (current.headingCount !== (sourceProfile?.headingCount || 0)) {
+  // A standalone line may switch title/heading role with surrounding spacing.
+  // Suppress count-only warnings only when the entire ordered heading inventory
+  // is identical; merged, missing, repeated or reordered lines still warn.
+  const headingLines = value => layoutStructure.buildLineRecords(value)
+    .filter(record => ['title', 'heading'].includes(record.role))
+    .map(record => String(record.text || '').trim());
+  const sourceHeadings = sourceText ? headingLines(sourceText) : [];
+  const outputHeadings = sourceText ? headingLines(output) : [];
+  const sameStandaloneHeadings = sourceHeadings.length > 0
+    && sourceHeadings.length === outputHeadings.length
+    && sourceHeadings.every((line, index) => line === outputHeadings[index]);
+  if (!sameStandaloneHeadings && current.headingCount !== (sourceProfile?.headingCount || 0)) {
     warnings.push(warning('heading_structure_changed', '제목이나 절 구조의 개수가 달라졌을 수 있어요.'));
   }
   if (context.formatProfile?.flags?.includes?.('questionnaire')
@@ -313,7 +324,7 @@ function auditVoice(sourceProfile, output, {
   if (sparseDistributionShift || existingDistribution.shift) {
     warnings.push(warning('sentence_distribution_shift', '원문의 짧고 긴 문장 차이가 결과에서 지나치게 평탄해졌을 수 있어요.'));
   }
-  if ((sourceLayout.titleLineCount || 0) > (currentLayout.titleLineCount || 0)) {
+  if (!sameStandaloneHeadings && (sourceLayout.titleLineCount || 0) > (currentLayout.titleLineCount || 0)) {
     warnings.push(warning('title_line_merged', '원문의 제목 줄이 본문에 붙었을 수 있어요.'));
   }
   if ((sourceLayout.labelLineCount || 0) > (currentLayout.labelLineCount || 0)

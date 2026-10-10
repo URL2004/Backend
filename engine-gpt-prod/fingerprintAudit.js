@@ -35,7 +35,14 @@ const SHADOW_PATTERNS = Object.freeze([
     pattern: /(?:이런|이러한)\s+경험(?:은|이)?[^.!?。！？\n]{0,80}(?:이어졌|이어지|연결되)/gu
   },
   { code: 'review_together', pattern: /함께\s+(?:살펴봤|살펴보|살피|검토하)/gu },
-  { code: 'contribution_cliche', pattern: /보탬이\s+되(?:고자|도록|겠습니다|었다|었|는|길)/gu }
+  { code: 'contribution_cliche', pattern: /보탬이\s+되(?:고자|도록|겠습니다|었다|었|는|길)/gu },
+  // 2026-10-09 점검(F-04)에서 문서마다 한 번씩 주입되는 것으로 확인된 계열.
+  // 기록만 하고 재시도·경고에 연결하지 않는다.
+  { code: 'touching_adjacent', pattern: /맞닿아\s*있/gu },
+  { code: 'advance_from_there', pattern: /데서\s*나아가/gu },
+  { code: 'because_of_this', pattern: /(?<![가-힣])이\s*때문에/gu },
+  { code: 'interlocked', pattern: /맞물려/gu },
+  { code: 'also_especially_impressive', pattern: /도\s*특히\s*인상/gu }
 ]);
 
 // 흔한 낱말 자체는 오류가 아니다. 다만 엔진이 여러 장르에서 같은 방향으로

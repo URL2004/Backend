@@ -5253,7 +5253,7 @@ async function runEngine({
     finalSourceIntegrityRestoreCodes: safeFailureCodeList(finalSourceIntegrityRestoreCodes),
     finalKoreanSourceRestoreCount,
     finalKoreanSourceRestoreCodes: safeFailureCodeList(finalKoreanSourceRestoreCodes),
-    fingerprintShadow: Array.isArray(fingerprintAudit?.shadow) ? fingerprintAudit.shadow.slice(0, 8) : [],
+    fingerprintShadow: Array.isArray(fingerprintAudit?.shadow) ? fingerprintAudit.shadow.slice(0, 12) : [],
     fingerprintShadowPositiveCodes: safeFailureCodeList((fingerprintAudit?.shadow || [])
       .filter(item => Number(item?.delta || 0) > 0)
       .map(item => item.code)),

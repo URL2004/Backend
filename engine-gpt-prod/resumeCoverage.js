@@ -7,9 +7,17 @@ const {
 } = require('./sentenceAlignment');
 const layoutStructure = require('./layoutStructure');
 
-const VERSION = 9;
+const VERSION = 10;
 const MIN_CONTENT_RECALL = 0.50;
 const MIN_SEMANTIC_FALLBACK = 0.62;
+// 한 원문 주장이 결과에서 두세 문장으로 나뉘면 어느 한 문장도 단독으로는
+// 회수율 기준을 넘지 못한다. 나뉜 문장들이 각각 주장의 일부를 담고 있고
+// 합쳐서 충분히 겹칠 때만 분할 보존으로 인정한다.
+const SPLIT_MEMBER_MIN_RECALL = 0.15;
+const SPLIT_UNION_MIN_RECALL = 0.42;
+const SPLIT_UNION_MIN_SEMANTIC = 0.35;
+const RESUME_PRIMARY_PROFILES = new Set(['resume_application', 'student_self_assessment']);
+const UNDECIDED_PROFILES = new Set(['', 'unknown', 'general', 'personal_essay', 'general_essay']);
 const CLAIM_PATTERNS = Object.freeze({
   action: /(?:수행|담당|개발|분석|설계|운영|개선|협업|해결|참여|작성|구축|기획|관리|제작|조사|발표|주도|실행|근무|프로젝트)/u,
   competency: /(?:역량|능력|기술|활용|소통|협업|책임|전문성|문제\s*해결|리더십|성실|강점)/u,
@@ -23,10 +31,13 @@ function auditResumeCoverage(source, output, documentProfile = null) {
   const safetyProfiles = Array.isArray(documentProfile?.safetyProfiles)
     ? documentProfile.safetyProfiles.map(value => String(value || ''))
     : [];
-  // 사용자 지정 프로필과 저신뢰 라우팅에서도 자소서의 행동·성과·직무 연결
-  // 누락은 동일한 사고다. 분류 신뢰도를 안전 감사의 ON/OFF 스위치로 쓰지 않는다.
-  const applicable = profile === 'resume_application'
-    || safetyProfiles.includes('resume_application');
+  // 자소서 주장 누락 감사는 글의 장르가 자기소개서·자기평가일 때만 뜻이 있다.
+  // 분류기가 보고서·설명문으로 확정한 글에 안전 프로필 꼬리표만으로 이 감사를
+  // 걸면 역사 노트에 "자기소개서 내용 누락" 경고가 붙는다(2026-10-09 운영 기록).
+  // 분류가 비어 있거나 일반 수필 수준으로만 잡힌 저신뢰 라우팅은 안전 프로필을
+  // 계속 존중해 실제 자소서를 놓치지 않는다.
+  const applicable = RESUME_PRIMARY_PROFILES.has(profile)
+    || (safetyProfiles.includes('resume_application') && UNDECIDED_PROFILES.has(profile));
   if (!applicable) return emptyReport(false);
   const sourceSentences = meaningfulSentences(source);
   const outputSentences = meaningfulSentences(output);
@@ -117,12 +128,13 @@ function compareClaim(claim, sourceCount, outputSentences) {
     best.semanticSimilarity,
     aligned,
     best.learningEquivalent === true,
-    learningChangedToPossession(claim.sentence, best.text)
+    learningChangedToPossession(claim.sentence, best.text),
+    best.splitCovered === true
   );
 }
 
 function bestCandidate(claim, candidates) {
-  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0, learningEquivalent: false, text: '' };
+  let best = { index: -1, recall: 0, similarity: 0, semanticSimilarity: 0, learningEquivalent: false, splitCovered: false, text: '' };
   for (const candidate of candidates) {
     const candidateTokens = new Set(contentTokens(candidate.text));
     const recall = claim.tokens.filter(token => candidateTokens.has(token)).length / Math.max(1, claim.tokens.length);
@@ -134,10 +146,25 @@ function bestCandidate(claim, candidates) {
       && hasLearningFunction(claim.sentence)
       && hasLearningFunction(candidate.text)
       && recall >= 0.28;
-    const current = { index: candidate.start, recall, similarity, semanticSimilarity, learningEquivalent, text: candidate.text };
+    const splitCovered = isSplitCoverage(claim, candidate, recall, semanticSimilarity);
+    const current = { index: candidate.start, recall, similarity, semanticSimilarity, learningEquivalent, splitCovered, text: candidate.text };
     if (isBetterCandidate(current, best)) best = current;
   }
   return best;
+}
+
+// 분할 보존: 결과 문장 묶음(2~3문장)의 각 문장이 주장의 내용어를 일부씩 나눠
+// 갖고, 묶음 전체의 회수율과 의미 유사도가 함께 기준을 넘는 경우다. 한
+// 문장만 주장과 닿고 나머지는 무관한 묶음은 분할이 아니라 누락 후보다.
+function isSplitCoverage(claim, candidate, unionRecall, semanticSimilarity) {
+  const members = Array.isArray(candidate.sentences) ? candidate.sentences : [];
+  if (members.length < 2) return false;
+  if (unionRecall < SPLIT_UNION_MIN_RECALL || semanticSimilarity < SPLIT_UNION_MIN_SEMANTIC) return false;
+  return members.every(sentence => {
+    const tokens = new Set(contentTokens(sentence));
+    const memberRecall = claim.tokens.filter(token => tokens.has(token)).length / Math.max(1, claim.tokens.length);
+    return memberRecall >= SPLIT_MEMBER_MIN_RECALL;
+  });
 }
 
 function isBetterCandidate(candidate, current) {
@@ -158,6 +185,7 @@ function globalOutputCandidates(sentences, maxGroup = 3) {
       rows.push({
         start,
         end: start + size - 1,
+        sentences: sentences.slice(start, start + size),
         text: sentences.slice(start, start + size).join(' ')
       });
     }
@@ -167,13 +195,14 @@ function globalOutputCandidates(sentences, maxGroup = 3) {
 
 function candidateCovered(candidate) {
   return candidate.learningEquivalent === true
+    || candidate.splitCovered === true
     || candidate.recall >= 0.55
     || (candidate.recall >= MIN_CONTENT_RECALL && candidate.semanticSimilarity >= 0.40)
     || (candidate.recall >= 0.42 && candidate.semanticSimilarity >= MIN_SEMANTIC_FALLBACK);
 }
 
-function row(claim, outputIndex, recall, semanticSimilarity, aligned, learningEquivalent = false, strengthShift = false) {
-  const covered = aligned && candidateCovered({ recall, semanticSimilarity, learningEquivalent });
+function row(claim, outputIndex, recall, semanticSimilarity, aligned, learningEquivalent = false, strengthShift = false, splitCovered = false) {
+  const covered = aligned && candidateCovered({ recall, semanticSimilarity, learningEquivalent, splitCovered });
   return {
     sourceIndex: claim.index,
     outputIndex,
@@ -182,6 +211,7 @@ function row(claim, outputIndex, recall, semanticSimilarity, aligned, learningEq
     contentRecall: round4(recall),
     semanticSimilarity: round4(semanticSimilarity),
     learningEquivalent,
+    splitCovered,
     strengthShift,
     aligned,
     covered

@@ -308,16 +308,27 @@ function assessEditableContent(text, { mode = 'formal', basicStyle = '', documen
   // 편집 불가로 분류된 청크를 잠금 종류별로 센다. "본문이 없다"는 422가 났을 때 표·제목·참고문헌 중
   // 무엇으로 묶였는지 로그만 보고 오분류 여부를 판단하기 위한 것(2026-09-29).
   const lockTypes = {};
+  // 청크 수만으로는 "한 가지 잠금이 문서 대부분을 덮었다"를 알 수 없다(10/9 점검 F-02: 참고문헌 잠금이
+  // 12,669자 중 98%를 덮어 12번 차단됐는데 로그에는 "reference_item 89"만 남았다). 잠금 종류별로
+  // 원문에서 차지한 글자 비율(0~1)을 함께 센다. 로그 전용이며 응답·과금에는 쓰지 않는다.
+  const lockChars = {};
   for (const chunk of plan.chunks) {
     if (shouldCallModel(chunk, engineMode)) continue;
     const key = chunk.lockType || (chunk.skipReason ? String(chunk.skipReason).split(':')[0] : 'not_editable');
     lockTypes[key] = (lockTypes[key] || 0) + 1;
+    lockChars[key] = (lockChars[key] || 0) + String(chunk.text || '').length;
   }
+  const share = chars => (source.length ? Math.round((chars / source.length) * 1000) / 1000 : 0);
+  const lockCharShare = Object.fromEntries(Object.entries(lockChars).map(([key, chars]) => [key, share(chars)]));
+  const dominant = Object.entries(lockChars).sort((a, b) => b[1] - a[1])[0] || null;
   return {
     documentProfile: profile.profile || 'unknown',
     editableChunkCount,
     totalChunkCount: plan.chunks.length,
-    lockTypes
+    lockTypes,
+    lockCharShare,
+    dominantLockType: dominant ? dominant[0] : '',
+    dominantLockShare: dominant ? share(dominant[1]) : 0
   };
 }
 
@@ -3265,6 +3276,12 @@ const startTransform = async (req, res) => {
   if (editable.editableChunkCount === 0) {
     // 어떤 잠금(표·제목·참고문헌…)이 본문을 전부 차지했는지 남긴다 — 구조 보존 강화 배포 뒤 오분류 회귀를 로그만으로 판별.
     const lockSummary = Object.entries(editable.lockTypes || {}).map(([k, v]) => `${k} ${v}`).join(', ') || '없음';
+    // 한 가지 잠금이 글 대부분을 덮어 본문이 0이 됐는지(오분류 의심)와 여러 구조가 고르게 섞인 글인지를
+    // 로그만으로 가른다. 참고문헌 목록만 붙여 넣은 글처럼 정말 전부 잠긴 입력도 같은 값이 나오므로,
+    // 판단은 textLength·documentProfile과 함께 본다.
+    const dominantSummary = editable.dominantLockType
+      ? ` 가장 큰 잠금 ${editable.dominantLockType}이 원문의 ${Math.round(editable.dominantLockShare * 100)}%.`
+      : '';
     logger.warn('transform.no_editable_content', {
       mode,
       basicStyle: effectBasicStyle,
@@ -3273,9 +3290,12 @@ const startTransform = async (req, res) => {
       documentProfile: editable.documentProfile,
       totalChunkCount: editable.totalChunkCount,
       lockTypes: editable.lockTypes,
+      lockCharShare: editable.lockCharShare,
+      dominantLockType: editable.dominantLockType || undefined,
+      dominantLockShare: editable.dominantLockShare,
       textDigest: inputDigest(text),
       reason: 'no_editable_content',
-      message: `변환할 본문 없음 422(${mode}, ${text.length}자, 프로필 ${editable.documentProfile}): 청크 ${editable.totalChunkCount}개가 전부 보존 구조 — ${lockSummary}. 무차감.`
+      message: `변환할 본문 없음 422(${mode}, ${text.length}자, 프로필 ${editable.documentProfile}): 청크 ${editable.totalChunkCount}개가 전부 보존 구조 — ${lockSummary}.${dominantSummary} 무차감.`
     });
     return res.status(422).json({
       code: 'NO_EDITABLE_CONTENT',

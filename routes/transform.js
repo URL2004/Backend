@@ -3283,6 +3283,8 @@ const startTransform = async (req, res) => {
       ? ` 가장 큰 잠금 ${editable.dominantLockType}이 원문의 ${Math.round(editable.dominantLockShare * 100)}%.`
       : '';
     logger.warn('transform.no_editable_content', {
+      // 이 차단도 사전 검사보다 앞이라 로그 문맥에 uid가 없다. 같은 사람이 같은 글로 몇 번 막혔는지 셀 수 있게 싣는다.
+      ...(structureUid ? { uid: structureUid } : {}),
       mode,
       basicStyle: effectBasicStyle,
       documentProfileOverride: documentProfileOverride || undefined,
@@ -3356,7 +3358,20 @@ const startTransform = async (req, res) => {
             ? await usageBilling.precheckCoupon(idToken, text.length, authenticatedUser)
             : await usageBilling.precheckCredits(idToken, needed, authenticatedUser));
   } catch (e) {
-    logger.warn('transform.precheck_failed', { mode, needed, creditNeeded, billingMode, err: e });
+    // 사전 검사 실패(잔액 부족 등)도 인증은 끝난 요청이다. 10/9 점검 C-09: 잔액 부족 82건이 모두 사용자 식별 없이
+    // 남아 누가 몇 번 막혔는지, 그 뒤 충전했는지를 셀 수 없었다(uid를 로그 문맥에 넣는 호출이 이 뒤에 있다).
+    // 성공 경로와 같은 식별(uid)만 싣는다. 이 요청의 접근 로그에도 실리도록 문맥에 넣고, 문맥 없이 도는
+    // 실행에서도 남도록 필드로도 적는다. 인증이 실패한 요청은 위에서 이미 응답했으므로 여기 오지 않는다.
+    const precheckUid = authenticatedUser?.uid || '';
+    if (precheckUid) setLogContext({ uid: precheckUid });
+    logger.warn('transform.precheck_failed', {
+      ...(precheckUid ? { uid: precheckUid } : {}),
+      mode,
+      needed,
+      creditNeeded,
+      billingMode,
+      err: e
+    });
     return res.status(e.status || 500).json({
       error: usageBilling.authErrorMessage(e.message),
       ...(e.charLimit !== undefined ? { charLimit: e.charLimit } : {})

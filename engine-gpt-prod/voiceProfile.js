@@ -4,6 +4,7 @@ const { splitSentences, normalizeCompact, ngramJaccard, mean, standardDeviation 
 const { detectRegister, endingHistogram: sharedEndingHistogram } = require('../engine/endingStyle');
 const { computePovSeed, countPovKind } = require('../engine/pov');
 const layoutStructure = require('./layoutStructure');
+const { alignSourceSentence } = require('./sentenceAlignment');
 
 const OUR_LEXICAL_NOUNS = Object.freeze([
   '나라', '학교', '사회', '집', '말', '몸', '지역', '동네', '회사', '팀', '반', '가족'
@@ -181,12 +182,32 @@ function auditVoice(sourceProfile, output, {
         personalScopeAudit
       })
     : false;
+  // `나의 생각을 넓히고 … 노력하고 싶다`에서 `나의`만 빠지고 1인칭 서술어가
+  // 그대로 남은 결과는 화자 삭제가 아니다. 대명사가 한두 번만 쓰인 원문에서
+  // 그 문장들이 모두 같은 1인칭 서술어로 결과에 대응되면 경고하지 않는다.
+  const singularPredicateRetained = sourceText
+    && !implicitSingularRetained
+    && hasRetainedFirstPersonPredicates({
+      source: sourceText,
+      output,
+      sourceFirstSingularCount: sourceProfile?.pov?.firstSingular || 0,
+      mode,
+      personalScopeAudit
+    });
   if ((sourceProfile?.pov?.firstSingular || 0) > 0
       && current.pov.firstSingular === 0
-      && !implicitSingularRetained) {
+      && !implicitSingularRetained
+      && !singularPredicateRetained) {
     warnings.push(warning('speaker_removed', '원문의 1인칭 화자가 결과에서 사라졌을 수 있어요.'));
   }
-  if (pluralRemoved) {
+  // `우리의 생활을` → `생활을`처럼 소유·관형 위치의 `우리`만 빠진 것은 집단
+  // 화자 삭제가 아니다. 주어 자리의 `우리는·우리가`가 없고 해당 문장이
+  // 결과에 그대로 대응되면 경고하지 않는다.
+  const pluralPossessiveOnlyDropped = pluralRemoved
+    && sourceText
+    && String(mode || '') !== 'polish'
+    && isPossessiveOnlyPluralDrop(sourceText, output, sourcePluralSignature);
+  if (pluralRemoved && !pluralPossessiveOnlyDropped) {
     warnings.push(warning('speaker_removed', '원문의 집단 화자가 결과에서 사라졌을 수 있어요.'));
   }
   if (personalScopeAudit?.introducedCount > 0) {
@@ -414,6 +435,71 @@ function hasSafeImplicitSingularRetention({
     /(?:맡았|정했|확인했|살펴보았|살펴봤|공유했|조치했|마쳤|받았|배웠|느꼈|얻었|취득했|진학했|근무했|참여했|지원했|수행했|작성했|정리했|경험했|생각했|깨달았|알게\s*되었|하고자\s*합니다|하겠습니다|했습니다|하였습니다)/gu
   ) || [];
   return ownedPredicates.length >= 2;
+}
+
+// 글쓴이에게 귀속되는 서술어다. 생각·느낌·배움·의지·평가를 끝맺는 술어가
+// 결과의 대응 문장에 그대로 남아 있으면 대명사 하나가 빠져도 화자는 남는다.
+const FIRST_PERSON_PREDICATE_RE = /(?:생각(?:이|도)?\s*(?:들었|든다|듭니다|들었습니다)|생각(?:한다|했다|합니다|했습니다|하게\s*되)|(?:라고|고)\s*(?:본다|봤다|보았다|봅니다|보았습니다|믿는다|믿습니다|여긴다|여겼다)|느꼈(?:다|습니다|고|으며)|느낀다|느낍니다|배웠(?:다|습니다|고|으며)|배운다|깨달(?:았다|았습니다|았고|았으며)|알게\s*되(?:었다|었습니다|었고)|싶(?:다|었다|습니다|었습니다)|다짐(?:했다|했습니다|한다|합니다)|바란다|바랍니다|의미(?:가|를)?\s*(?:있었다|있었습니다|가졌다)|(?:수|기를)\s*있었(?:다|습니다))/u;
+const SINGULAR_POSSESSIVE_RE = /(?<![가-힣])(?:나의|저의|내|제)\s+[가-힣]/u;
+
+function hasRetainedFirstPersonPredicates({
+  source,
+  output,
+  sourceFirstSingularCount = 0,
+  mode = '',
+  personalScopeAudit = null
+} = {}) {
+  if (String(mode || '') === 'polish') return false;
+  if (Number(sourceFirstSingularCount || 0) <= 0 || Number(sourceFirstSingularCount || 0) > 3) return false;
+  if (Number(personalScopeAudit?.introducedCount || 0) > 0) return false;
+  const sourceSentences = splitSentences(String(source || ''));
+  const outputSentences = splitSentences(String(output || ''));
+  const speakerRows = sourceSentences
+    .map((text, index) => ({ text, index }))
+    .filter(row => computePovSeed(row.text).fp_singular > 0);
+  if (!speakerRows.length || speakerRows.length > 3 || !outputSentences.length) return false;
+  return speakerRows.every(row => {
+    if (!FIRST_PERSON_PREDICATE_RE.test(row.text)) return false;
+    const alignment = alignSourceSentence(row.text, row.index, sourceSentences.length, outputSentences, {
+      window: 3,
+      maxOutputGroup: 2
+    });
+    if (!alignment || Number(alignment.score || 0) < 0.4) return false;
+    const aligned = String(alignment.text || '');
+    if (directQuoteContents(aligned).length && !directQuoteContents(row.text).length) return false;
+    // `그는·연구자는 …라고 생각합니다`처럼 다른 주어가 화자를 가로챈 결과는
+    // 서술어가 같아도 1인칭 유지가 아니다.
+    if (/(?:그|그녀|그들|학생|교수|저자|필자|연구자|사람들|독자)(?:은|는|이|가)\s|(?:다고|라고)\s*(?:말|전|설명)/u.test(aligned)) return false;
+    if ([...aligned.matchAll(/(?<![가-힣])([가-힣]{1,20}?)(?:은|는|이|가)\s/gu)]
+      .some(subject => !row.text.includes(subject[1]))) return false;
+    return FIRST_PERSON_PREDICATE_RE.test(aligned);
+  });
+}
+
+function isPossessiveOnlyPluralDrop(source, output, sourcePluralSignature = null) {
+  const text = String(source || '');
+  // `우리는·우리가`와 `우리 팀은·저희 회사가`처럼 주어 자리의 집단 화자는
+  // 소유격이 아니다. `우리의 생활을`, `우리 동네에서`처럼 소유·부사 위치만 센다.
+  const explicitSubject = /(?<![가-힣A-Za-z0-9_])(?:우리|저희)(?:\s*[가-힣]{1,6})?(?:는|가|도|를|에게|와|로서|에게서|한테|은|이)(?![가-힣A-Za-z0-9_])/u;
+  if (explicitSubject.test(text)) return false;
+  const possessive = /(?<![가-힣A-Za-z0-9_])(?:우리|저희)(?:의[ \t]*[가-힣]|[ \t]+[가-힣]{1,6}(?:을|를|에|에서|으로|로|과|와|도)(?![가-힣]))/gu;
+  const possessiveCount = (text.match(possessive) || []).length;
+  if (possessiveCount < 1 || possessiveCount > 2) return false;
+  if (Number(sourcePluralSignature?.explicit || 0) > possessiveCount) return false;
+  const sourceSentences = splitSentences(text);
+  const outputSentences = splitSentences(String(output || ''));
+  if (!outputSentences.length) return false;
+  const rows = sourceSentences
+    .map((value, index) => ({ text: value, index }))
+    .filter(row => computePovSeed(row.text).fp_plural > 0);
+  if (!rows.length) return false;
+  return rows.every(row => {
+    const alignment = alignSourceSentence(row.text, row.index, sourceSentences.length, outputSentences, {
+      window: 3,
+      maxOutputGroup: 2
+    });
+    return Boolean(alignment) && Number(alignment.score || 0) >= 0.4;
+  });
 }
 
 function hasImplicitOpinionRetention(source, output) {

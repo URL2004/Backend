@@ -804,13 +804,19 @@ function replaceInlineHeadingBoundary(match, terminal, marker, offset, whole) {
   const boundary = Number(offset) + String(match || '').length;
   if (isSectionReferenceProse(String(whole || '').slice(boundary))) return match;
   if (isCalendarDateContinuation(whole, boundary, marker)) return match;
+  // A number attached directly to sentence punctuation belongs to that
+  // sentence unless the following text explicitly names a section. Counting
+  // only whitespace-prefixed markers misses precisely these footnotes.
+  if (/^\d{1,2}\)$/u.test(marker) && match === terminal
+      && !new RegExp(`^\\s*${INLINE_HEADING_LABEL}(?=\\s|$)`, 'u').test(
+        String(whole || '').slice(boundary + marker.length))) return match;
   // A lone inline `1) 이는 ...` after a complete sentence is ambiguous: it
   // often marks the preceding citation, not a new numbered section. Do not
   // manufacture a list/heading boundary without structural evidence.
   if (/^\d{1,2}\)$/u.test(marker)
       && /^(?:이는|이것은|이러한|이를|그것은|그러한)(?=\s)/u.test(
         String(whole || '').slice(boundary + marker.length).trimStart())
-      && [...String(whole || '').matchAll(/(?:^|\s)\d{1,2}\)(?=\s|[가-힣])/gu)].length === 1) return match;
+      && [...String(whole || '').matchAll(/(?<![\d(])\d{1,2}\)(?=\s|[가-힣])/gu)].length === 1) return match;
   return `${terminal}\n\n`;
 }
 

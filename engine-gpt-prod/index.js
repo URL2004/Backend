@@ -252,6 +252,9 @@ async function runEngine({
     : Date.now() + Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000));
   if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
+  // Citation attachment is witnessed by the submitted document, never by
+  // a heading/paragraph repair applied to the model's working source.
+  const citationSource = submittedSource;
   let rawSource = sourcePreflightAudit?.text || submittedSource;
   let integritySource = sourcePreflightAudit?.integrityText || rawSource;
   let structureImprovement = { requested: !!approvedStructure, applied: false, changes: [] };
@@ -4422,7 +4425,7 @@ async function runEngine({
   if (confirmedMissingClaims.length) addFloorCriticals(result.floorReport, [{
     gate: 'confirmed_semantic_omission', detail: '재검증 후에도 원문 주장의 누락이 남아 결과를 전달하지 않았습니다.'
   }], 'confirmed_semantic_omission');
-  const finalInlineCitations = require('./inlineCitationLayout').restoreInlineCitationLayout(rawSource, outputText);
+  const finalInlineCitations = require('./inlineCitationLayout').restoreInlineCitationLayout(citationSource, outputText);
   if (!finalInlineCitations.pass || finalInlineCitations.repairCount) addFloorCriticals(result.floorReport, [{
     gate: 'citation_integrity_unresolved', detail: '인용 표기와 문장의 연결을 안전하게 보존하지 못했습니다.'
   }], 'citation_integrity_unresolved');

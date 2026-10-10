@@ -3199,6 +3199,7 @@ const startTransform = async (req, res) => {
   }
   // ★ 글자분리(PDF 추출 깨짐) 복원(2026-06-19 실측 #57·#58): 모든 글자가 공백 분리된 입력을 billing·엔진 처리 전에
   const structureUid = authenticatedUser?.uid || adminLabUid || (devNoAuth ? 'dev-local' : '');
+  if (structureUid) setLogContext({ uid: structureUid });
   const waitingJob = activeJobFor(structureUid);
   if (waitingJob && ['awaiting_approval', 'awaiting_payment'].includes(waitingJob.status)) {
     return res.status(409).json({ code: 'USER_TRANSFORM_ACTIVE',

@@ -171,3 +171,31 @@ test('C-09 변환할 본문이 없어 막힌 요청의 로그에도 사용자 �
   assert.match(blocked[0].fields.message, /가장 큰 잠금 reference_item이 원문의 \d+%/u);
   assert.doesNotMatch(JSON.stringify(blocked[0].fields), /한가람|Dorim/u);   // 원문은 로그에 싣지 않는다
 });
+
+test('C-09 인증 직후 영어 입력 차단과 접근 로그에 uid만 남고 동시 요청끼리 섞이지 않는다', { concurrency: false }, async t => {
+  let prechecks = 0;
+  stubBilling(t, {
+    authenticate: async token => ({ uid: `uid-${token}`, email: 'student@example.invalid', name: '지어낸 이름' }),
+    precheckCredits: async () => { prechecks += 1; throw new Error('unreachable'); }
+  });
+  const records = captureLogs(t);
+  const base = await startApp(t);
+  const text = 'The students visited a local library to review its collection and discuss the history of the neighborhood. '
+    + 'Each participant selected a different book and prepared a short presentation about its author. '
+    + 'After the meeting, the librarian organized their notes and explained how the archive would be maintained.';
+  const responses = await Promise.all(['early-a', 'early-b'].map(token => post(base, {text,mode:'formal'}, token)));
+  for (const response of responses) {
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'HUMANIZE_KOREAN_ONLY');
+  }
+  assert.equal(prechecks, 0);
+  for (let waited = 0; waited < 50 && records.filter(r => r.event === 'http.request').length < 2; waited++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  for (const event of ['transform.english_input_blocked', 'http.request']) {
+    const selected = records.filter(r => r.event === event);
+    assert.equal(selected.length, 2);
+    assert.deepEqual(selected.map(r => r.context.uid).sort(), ['uid-early-a','uid-early-b']);
+    assert.doesNotMatch(JSON.stringify(selected), /example\.invalid|지어낸 이름/u);
+  }
+});

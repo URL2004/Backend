@@ -4,11 +4,34 @@ const INLINE_CODE_RE = /(?<!`)`([^`\n]+)`(?!`)/gu;
 const URL_LITERAL_RE = /https?:\/\/[^\s<>"'“”‘’]+|www\.[^\s<>"'“”‘’]+/giu;
 const MATH_LITERAL_RE = /\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<![$\\])\$(?!\$)(?:\\.|[^$\n\\]){1,500}(?<!\\)\$(?!\$)|(?<![A-Za-z0-9_])R_?\d+\s*(?:←|<-|=)\s*R_?\d+(?:\s*[+−-]\s*(?:\d+(?:\.\d+)?\s*)?R_?\d+)?|(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]*\s*=\s*[−-]?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?(?:\s*,\s*[A-Za-z][A-Za-z0-9_]*\s*=\s*[−-]?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?){0,8}(?![A-Za-z0-9_])/gu;
 
-function freezeInlineCode(value) {
+
+// Keep the four-digit wire grammar used by semantic/depth consumers. Each
+// request gets a random starting namespace; source-owned tokens are skipped.
+// Reuse this context for re-freezing the same pair so its IDs stay stable.
+function createMarkerContext(source) {
+  const original = String(source || '');
+  const seed = require('node:crypto').randomInt(10000);
+  const families = new Map();
+  return {
+    token(prefix, index, suffix = 'QXZ') {
+      const key = prefix + '\0' + suffix;
+      if (!families.has(key)) families.set(key, { tokens: [], next: seed, tried: 0 });
+      const family = families.get(key);
+      while (family.tokens.length <= index) {
+        if (family.tried++ >= 10000) throw new RangeError('internal_marker_namespace_exhausted');
+        const token = prefix + String(family.next++ % 10000).padStart(4, '0') + suffix;
+        if (!original.includes(token)) family.tokens.push(token);
+      }
+      return family.tokens[index];
+    }
+  };
+}
+
+function freezeInlineCode(value, markerContext = createMarkerContext(value)) {
   const source = String(value || '');
   const blocks = [];
   const text = source.replace(INLINE_CODE_RE, match => {
-    const token = `ZXQCODE${String(blocks.length).padStart(4, '0')}QXZ`;
+    const token = markerContext.token('ZXQCODE', blocks.length);
     blocks.push({ token, value: match });
     return token;
   });
@@ -80,10 +103,10 @@ function restoreInlineCodeByOrder(value, frozen) {
   };
 }
 
-function freezeMath(value) {
+function freezeMath(value, markerContext = createMarkerContext(value)) {
   const source = String(value || '');
   const spans = mathSpans(source);
-  const blocks = spans.map((span, index) => ({ token: `ZXQMATH${String(index).padStart(4, '0')}QXZ`, value: span.value }));
+  const blocks = spans.map((span, index) => ({ token: markerContext.token('ZXQMATH', index), value: span.value }));
   let text = source;
   for (let index = spans.length - 1; index >= 0; index -= 1) {
     const span = spans[index];
@@ -224,6 +247,7 @@ function restoreMathByOrder(value, frozen) {
 }
 
 module.exports = {
+  createMarkerContext,
   mathSpans,
   freezeInlineCode,
   restoreInlineCode,

@@ -351,8 +351,9 @@ async function runEngine({
   }
   const layoutStructureLocked = lineBoundaryPolicy !== 'none';
   const layoutNlpEnabled = isLayoutNlpEnabled(layoutNlp) && !layoutStructureLocked;
-  const inlineCodeFreeze = literalSpans.freezeInlineCode(rawSource);
-  const inlineMathFreeze = literalSpans.freezeMath(inlineCodeFreeze.text);
+  const literalMarkerContext = literalSpans.createMarkerContext(rawSource);
+  const inlineCodeFreeze = literalSpans.freezeInlineCode(rawSource, literalMarkerContext);
+  const inlineMathFreeze = literalSpans.freezeMath(inlineCodeFreeze.text, literalMarkerContext);
   const source = inlineMathFreeze.text;
   const niklQualityEnabled = isNiklQualityEnabled(niklQualityTest, styleProfile);
   const allowedExtra = deliveryPolicy.buildAllowedExtra({ evidence, userNotes });
@@ -375,13 +376,14 @@ async function runEngine({
     sentenceBoundaryMinimum: selectedMode === 'polish' ? 3 : 4,
     preserveLineBoundaries: lineBoundaryPolicy,
     formatProfile: documentProfile.formatProfile,
-    humanizeContract
+    humanizeContract,
+    markerContext: literalMarkerContext
   });
   const chunks = chunkPlan.chunks;
   // 깊이 계약은 청크마다 독립적으로 만들지 않는다. 잠긴 구조를 제외한 문서
   // 전체에서 한 번 계산한 뒤 각 청크가 맡을 문장 번호와 최소 개수를 분배한다.
   // 이 계획을 최종 채점에도 그대로 사용해야 모델 지시와 서버 판정이 일치한다.
-  const initialDepthFrozen = freezeLockedBlocks(source, source, chunks);
+  const initialDepthFrozen = freezeLockedBlocks(source, source, chunks, literalMarkerContext);
   const depthAuditSource = initialDepthFrozen?.source || source;
   const humanizationPlan = humanizationDepthEnabled
     ? humanizationDepth.buildHumanizationPlan(depthAuditSource, {
@@ -552,7 +554,7 @@ async function runEngine({
 
   const boundaryRepair = structureChunk.repairUnsafeChunkBoundaries(chunks);
   let outputText = structureChunk.mergeChunks(chunks);
-  const frozen = freezeLockedBlocks(source, outputText, chunks);
+  const frozen = freezeLockedBlocks(source, outputText, chunks, literalMarkerContext);
   const auditSource = frozen?.source || source;
   outputText = frozen?.output || outputText;
   // Earlier semantic audits judge the exact raw materialization of the frozen
@@ -8065,7 +8067,8 @@ function mergeFinalDedupeAudit(initial = null, finalPass = null) {
   };
 }
 
-function freezeLockedBlocks(source, outputText, chunks) {
+function freezeLockedBlocks(source, outputText, chunks, markerContext = literalSpans.createMarkerContext(`${source || ''}
+${outputText || ''}`)) {
   let frozenSource = String(source || '');
   let frozenOutput = String(outputText || '');
   const blocks = [];
@@ -8079,7 +8082,7 @@ function freezeLockedBlocks(source, outputText, chunks) {
     const value = String(chunk.text);
     // 성공한 블록 수가 아니라 원문 잠금 순번으로 토큰을 만든다. 한 블록의
     // literal match가 실패해도 뒤 블록의 토큰 번호가 최초 계획과 달라지지 않는다.
-    const token = `ZXQLOCK${String(expectedIndex).padStart(4, '0')}QXZ`;
+    const token = markerContext.token('ZXQLOCK', expectedIndex);
     const sourceReplaced = replaceFirstExact(frozenSource, value, token);
     const outputReplaced = replaceFirstExact(frozenOutput, value, token);
     if (!sourceReplaced.replaced || !outputReplaced.replaced) {
@@ -8107,6 +8110,7 @@ function freezeLockedBlocks(source, outputText, chunks) {
     output: frozenOutput,
     blocks,
     auditChunks,
+    markerContext,
     expectedLockedCount,
     frozenLockedCount: blocks.length,
     missCount: misses.length,
@@ -8128,10 +8132,13 @@ function buildHumanizationDepthPair({
   let frozen;
   let pairedSource;
   let pairedOutput;
+  const markerContext = primaryFrozen?.markerContext
+    || literalSpans.createMarkerContext(`${source || ''}
+${withLockedValues}`);
   if (primaryFrozen) {
-    const withInlineCodeTokens = literalSpans.freezeInlineCode(withLockedValues).text;
-    const withLiteralTokens = literalSpans.freezeMath(withInlineCodeTokens).text;
-    frozen = freezeLockedBlocks(source, withLiteralTokens, resolvedChunks);
+    const withInlineCodeTokens = literalSpans.freezeInlineCode(withLockedValues, markerContext).text;
+    const withLiteralTokens = literalSpans.freezeMath(withInlineCodeTokens, markerContext).text;
+    frozen = freezeLockedBlocks(source, withLiteralTokens, resolvedChunks, markerContext);
     pairedSource = String(canonicalSource || frozen?.source || source || '');
     pairedOutput = frozen?.output || withLiteralTokens;
   } else {
@@ -8143,11 +8150,11 @@ function buildHumanizationDepthPair({
       outputText: withLockedValues,
       chunks: resolvedChunks
     });
-    frozen = freezeLockedBlocks(source, restored.text, resolvedChunks);
-    const sourceWithCode = literalSpans.freezeInlineCode(frozen?.source || String(source || '')).text;
-    const outputWithCode = literalSpans.freezeInlineCode(frozen?.output || restored.text).text;
-    pairedSource = literalSpans.freezeMath(sourceWithCode).text;
-    pairedOutput = literalSpans.freezeMath(outputWithCode).text;
+    frozen = freezeLockedBlocks(source, restored.text, resolvedChunks, markerContext);
+    const sourceWithCode = literalSpans.freezeInlineCode(frozen?.source || String(source || ''), markerContext).text;
+    const outputWithCode = literalSpans.freezeInlineCode(frozen?.output || restored.text, markerContext).text;
+    pairedSource = literalSpans.freezeMath(sourceWithCode, markerContext).text;
+    pairedOutput = literalSpans.freezeMath(outputWithCode, markerContext).text;
   }
   const sourceHash = crypto.createHash('sha1').update(pairedSource).digest('hex').slice(0, 12);
   return {

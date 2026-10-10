@@ -46,7 +46,7 @@ test('identical two-character bullet prefixes freeze by ordinal and thaw exactly
   const frozen = engine.freezeLockedBlocks(source, output, chunks);
   assert.equal(frozen.missCount, 0);
   assert.deepEqual(frozen.blocks.map(b => b.token),
-    ['ZXQLOCK0000QXZ', 'ZXQLOCK0001QXZ', 'ZXQLOCK0002QXZ', 'ZXQLOCK0003QXZ']);
+    [0, 1, 2, 3].map(index => frozen.markerContext.token('ZXQLOCK', index)));
   for (const text of [frozen.source, frozen.output]) {
     for (const block of frozen.blocks) assert.equal(count(text, block.token), 1);
     // Ordinal assignment: tokens appear in block order, one per bullet line.
@@ -116,13 +116,13 @@ test('math and inline-code thaw report pass:false and keep tokens when the censu
   assert.equal(restoredMath.pass, false);
 });
 
-test('a source that already contains a token-shaped string cannot be thawed exactly', () => {
+test('source token-shaped text round-trips with collision-free tokens; legacy ambiguous maps still fail', () => {
   const raw = '기록에 ZXQCODE0000QXZ 라는 문자열과 `limit` 가 함께 있다.';
   const code = literalSpans.freezeInlineCode(raw);
-  assert.equal(count(code.text, 'ZXQCODE0000QXZ'), 2);
+  assert.equal(count(code.text, 'ZXQCODE0000QXZ'), 1);
   const restored = literalSpans.restoreInlineCode(code.text, code);
-  assert.equal(restored.pass, false);
-  assert.notEqual(restored.text, raw);
+  assert.equal(restored.pass, true);
+  assert.equal(restored.text, raw);
   const blocks = [{ token: 'ZXQLOCK0000QXZ', value: '## 배경' }];
   const lockedRaw = '## 배경\n본문에 ZXQLOCK0000QXZ 라는 문자열이 있다.';
   const frozen = lockedRaw.replace('## 배경', 'ZXQLOCK0000QXZ');
@@ -147,15 +147,16 @@ test('display math and dollar patterns survive the existing thaw helpers', t => 
 
 test('depth pair renumbers output literals in output order, so the source map does not thaw it', () => {
   const rawSource = 'Ⅰ. 설정\n\n먼저 `alpha` 를 쓰고 다음에 `beta` 를 쓴다.';
-  const inline = literalSpans.freezeInlineCode(rawSource);
+  const markerContext = literalSpans.createMarkerContext(rawSource);
+  const inline = literalSpans.freezeInlineCode(rawSource, markerContext);
   const chunks = [locked(0, 'Ⅰ. 설정', 'heading'), editable(1, 'x')];
-  const initial = engine.freezeLockedBlocks(inline.text, inline.text, chunks);
-  const primaryFrozen = engine.freezeLockedBlocks(inline.text, inline.text, chunks);
+  const initial = engine.freezeLockedBlocks(inline.text, inline.text, chunks, markerContext);
+  const primaryFrozen = engine.freezeLockedBlocks(inline.text, inline.text, chunks, markerContext);
   const finalRaw = 'Ⅰ. 설정\n\n먼저 `beta` 를 쓰고 다음에 `alpha` 를 쓴다.';
   const pair = engine.buildHumanizationDepthPair({
     source: inline.text, outputText: finalRaw, chunks, primaryFrozen, canonicalSource: initial.source
   });
-  assert.match(pair.output, /ZXQCODE0000QXZ[\s\S]*ZXQCODE0001QXZ/u);
+  assert.equal((pair.output.match(/ZXQCODE\d{4}QXZ/gu) || []).length, 2);
   const thawed = literalSpans.materializeChunkLiterals(
     [{ text: restoreLocked(pair.output, primaryFrozen.blocks) }],
     { inlineCodeFreeze: inline }
@@ -177,7 +178,7 @@ function fixture() {
   const math = literalSpans.freezeMath(code.text);
   const source = math.text;
   const output = source.replace('값을 설명한다', '값을 풀어 쓴다').replace('결과를 적는다', '결과를 기록한다');
-  const chunks = [locked(0, '## 배경 ZXQCODE0000QXZ', 'heading'), editable(1, 'x'),
+  const chunks = [locked(0, `## 배경 ${code.blocks[0].token}`, 'heading'), editable(1, 'x'),
     locked(2, '1. ', 'bullet_prefix'), editable(3, 'y'), locked(4, '2. ', 'bullet_prefix'), editable(5, 'z')];
   const frozen = engine.freezeLockedBlocks(source, output, chunks);
   const canonical = canonicalAudit.createCanonicalAudit({ rawSource: raw, frozenSource: frozen.source,

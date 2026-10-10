@@ -657,11 +657,11 @@ test('v2 청커는 작은 본문 문단을 묶되 문단 구분과 동결 구조
   assert.ok(v2Plan.chunks.some(item => item.locked && item.lockType === 'heading'));
   assert.ok(v2Plan.chunks.some(item => !item.locked && item.text.includes('\n\n')));
   const coalesced = v2Plan.chunks.find(item => item.boundaryMarkers?.length);
-  assert.ok(coalesced.llmText.includes('[[[V2_BOUNDARY_001]]]'));
+  assert.ok(coalesced.llmText.includes(coalesced.boundaryMarkers[0].marker));
   const restored = structure.restoreBoundaryMarkers(coalesced.llmText.replaceAll('본문', '내용'), coalesced);
   assert.equal(restored.ok, true);
   assert.equal(restored.text, coalesced.text.replaceAll('본문', '내용'));
-  const missing = structure.restoreBoundaryMarkers(coalesced.llmText.replace('[[[V2_BOUNDARY_001]]]', ''), coalesced);
+  const missing = structure.restoreBoundaryMarkers(coalesced.llmText.replace(coalesced.boundaryMarkers[0].marker, ''), coalesced);
   assert.equal(missing.ok, false);
 });
 
@@ -671,12 +671,12 @@ test('길이 변동이 큰 짧은 문서는 문장 경계 토큰을 왕복 보�
   const body = plan.chunks.find(item => item.sentenceBoundaryMarkers?.length);
   assert.ok(body);
   assert.equal(body.sentenceBoundaryMarkers.length, 3);
-  assert.match(body.llmText, /\[\[\[V2_SENTENCE_0001\]\]\]/);
+  assert.ok(body.llmText.includes(body.sentenceBoundaryMarkers[0].marker));
   const rewritten = body.llmText.replace('짧은 관찰문임', '짧게 관찰함');
   const restored = structure.restoreBoundaryMarkers(rewritten, body);
   assert.equal(restored.ok, true);
   assert.equal(restored.text, source.replace('짧은 관찰문임', '짧게 관찰함'));
-  const missing = structure.restoreBoundaryMarkers(rewritten.replace('[[[V2_SENTENCE_0002]]]', ''), body);
+  const missing = structure.restoreBoundaryMarkers(rewritten.replace(body.sentenceBoundaryMarkers[1].marker, ''), body);
   assert.equal(missing.ok, false);
   const extraSentence = structure.restoreBoundaryMarkers(rewritten.replace('이 문장은', '추가 문장임. 이 문장은'), body);
   assert.equal(extraSentence.ok, false);

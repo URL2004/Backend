@@ -152,23 +152,24 @@ test('1차 호출에서 보류되는 청크에는 문서 최소 편집 몫을 �
 
 test('최종 깊이 측정은 inline code와 잠긴 블록을 최초 계획과 같은 토큰으로 다시 동결한다', () => {
   const rawSource = 'Ⅰ. 설정\n\n`timeout` 값은 30초입니다. 또한 실행 결과를 체계적으로 확인할 수 있습니다.';
-  const inline = literalSpans.freezeInlineCode(rawSource);
+  const markerContext = literalSpans.createMarkerContext(rawSource);
+  const inline = literalSpans.freezeInlineCode(rawSource, markerContext);
   const chunks = [
     { index: 0, text: 'Ⅰ. 설정', locked: true, lockType: 'heading' },
     {
       index: 1,
-      text: 'ZXQCODE0000QXZ 값은 30초입니다. 또한 실행 결과를 체계적으로 확인할 수 있습니다.'
+      text: `${inline.blocks[0].token} 값은 30초입니다. 또한 실행 결과를 체계적으로 확인할 수 있습니다.`
     }
   ];
-  const initial = engine.freezeLockedBlocks(inline.text, inline.text, chunks);
+  const initial = engine.freezeLockedBlocks(inline.text, inline.text, chunks, markerContext);
   const primaryOutput = inline.text.replace(
     '또한 실행 결과를 체계적으로 확인할 수 있습니다.',
     '실행 결과는 절차에 따라 직접 확인합니다.'
   );
-  const primaryFrozen = engine.freezeLockedBlocks(inline.text, primaryOutput, chunks);
+  const primaryFrozen = engine.freezeLockedBlocks(inline.text, primaryOutput, chunks, markerContext);
   const finalRaw = primaryFrozen.output
     .replace(primaryFrozen.blocks[0].token, primaryFrozen.blocks[0].value)
-    .replace('ZXQCODE0000QXZ', '`timeout`');
+    .replace(inline.blocks[0].token, '`timeout`');
   const pair = engine.buildHumanizationDepthPair({
     source: inline.text,
     outputText: finalRaw,
@@ -179,8 +180,8 @@ test('최종 깊이 측정은 inline code와 잠긴 블록을 최초 계획과 �
 
   assert.equal(pair.source, initial.source);
   assert.equal(pair.missCount, 0);
-  assert.match(pair.output, /ZXQLOCK0000QXZ/u);
-  assert.match(pair.output, /ZXQCODE0000QXZ/u);
+  assert.ok(pair.output.includes(initial.blocks[0].token));
+  assert.ok(pair.output.includes(inline.blocks[0].token));
   assert.doesNotMatch(pair.output, /Ⅰ\. 설정|`timeout`/u);
 });
 
@@ -196,7 +197,7 @@ test('잠금 literal match 실패가 뒤 블록의 토큰 번호를 당기지 �
   assert.equal(frozen.expectedLockedCount, 2);
   assert.equal(frozen.frozenLockedCount, 1);
   assert.equal(frozen.missCount, 1);
-  assert.equal(frozen.blocks[0].token, 'ZXQLOCK0001QXZ');
+  assert.equal(frozen.blocks[0].token, frozen.markerContext.token('ZXQLOCK', 1));
   assert.deepEqual(frozen.misses[0], {
     index: 0,
     lockType: 'heading',

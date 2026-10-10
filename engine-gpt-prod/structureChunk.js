@@ -23,7 +23,8 @@ function splitChunksForGpt(text, {
   sentenceBoundaryMinimum = 4,
   preserveLineBoundaries = false,
   formatProfile = null,
-  humanizeContract = null
+  humanizeContract = null,
+  markerContext = require('./literalSpans').createMarkerContext(text)
 } = {}) {
   const base = protectStructuralLineChunkBoundaries(baseChunk.splitChunks(text), text);
   const academicSpans = freezeBlocks.detectAcademicSpans(text);
@@ -55,13 +56,13 @@ function splitChunksForGpt(text, {
   const resolvedContract = resolveHumanizeContract({ humanizeContract });
   const literalChunks = protectCitationLiteralChunks(chunks, text);
   const plannedChunks = coalesceEditable
-    ? coalesceEditableChunks(literalChunks, 1600, 2500, { humanizeContract: resolvedContract })
+    ? coalesceEditableChunks(literalChunks, 1600, 2500, { humanizeContract: resolvedContract, markerContext })
     : literalChunks;
   const lineBoundaryPolicy = preserveLineBoundaries === true
     ? 'all'
     : String(preserveLineBoundaries || 'none');
-  if (lineBoundaryPolicy !== 'none') addLineBoundaryMarkers(plannedChunks, lineBoundaryPolicy);
-  if (preserveSentenceBoundaries) addSentenceBoundaryMarkers(plannedChunks, sentenceBoundaryMinimum);
+  if (lineBoundaryPolicy !== 'none') addLineBoundaryMarkers(plannedChunks, lineBoundaryPolicy, markerContext);
+  if (preserveSentenceBoundaries) addSentenceBoundaryMarkers(plannedChunks, sentenceBoundaryMinimum, markerContext);
   reindexChunks(plannedChunks);
   const documentId = require('node:crypto').createHash('sha256').update(String(text)).digest('hex').slice(0, 16);
   for (const chunk of plannedChunks) {
@@ -358,8 +359,10 @@ function reindexChunks(chunks) {
 }
 
 function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500, {
-  humanizeContract = null
+  humanizeContract = null,
+  markerContext = require('./literalSpans').createMarkerContext((chunks || []).map(chunk => `${chunk.text || ''}${chunk.sep || ''}${chunk.llmText || ''}`).join(''))
 } = {}) {
+  let paragraphMarkerIndex = 0;
   const resolvedContract = resolveHumanizeContract({ humanizeContract });
   const out = [];
   let current = null;
@@ -383,7 +386,7 @@ function coalesceEditableChunks(chunks, targetChars = 1600, hardMaxChars = 2500,
     const joinText = `${current.text || ''}${boundary}${chunk.text || ''}`;
     if (sameSection && current.text.length < targetChars && joinText.length <= hardMaxChars) {
       const existingMarkers = Array.isArray(current.boundaryMarkers) ? current.boundaryMarkers : [];
-      const marker = `[[[V2_BOUNDARY_${String(existingMarkers.length + 1).padStart(3, '0')}]]]`;
+      const marker = markerContext.token('[[[V2_BOUNDARY_', paragraphMarkerIndex++, ']]]');
       const start = String(current.text || '').length;
       current.llmText = `${current.llmText || current.text || ''}${marker}${chunk.llmText || chunk.text || ''}`;
       current.boundaryMarkers = [...existingMarkers, {
@@ -465,9 +468,21 @@ function restoreBoundaryMarkers(outputText, chunk) {
     const count = text.split(item.marker).length - 1;
     if (count === 0) missing.push(item.marker);
     if (count > 1) duplicated.push(item.marker);
-    if (count === 1) text = text.replace(item.marker, item.boundary);
+    if (count === 1) text = text.replace(item.marker, () => item.boundary);
   }
-  const leaked = /\[\[\[V2_(?:BOUNDARY|LINE|SENTENCE)_\d{3,4}\]\]\]/.test(text);
+  // Token-shaped user text belongs to the source, not to the marker map.
+  // Count it too: an extra copy or an unknown generated token still leaks.
+  const owned = new Set(markers.map(item => item.marker));
+  const sourceTokens = new Map();
+  for (const token of String(chunk?.text || '').match(BOUNDARY_MARKER_TOKEN_RE) || []) {
+    sourceTokens.set(token, (sourceTokens.get(token) || 0) + 1);
+  }
+  const leaked = (text.match(BOUNDARY_MARKER_TOKEN_RE) || []).some(token => {
+    if (owned.has(token)) return true;
+    const remaining = sourceTokens.get(token) || 0;
+    sourceTokens.set(token, remaining - 1);
+    return remaining <= 0;
+  });
   const sentenceLocked = Array.isArray(chunk?.sentenceBoundaryMarkers) && chunk.sentenceBoundaryMarkers.length > 0;
   const lineLocked = Array.isArray(chunk?.lineBoundaryMarkers) && chunk.lineBoundaryMarkers.length > 0;
   const exactLineLocked = lineLocked && String(chunk?.lineBoundaryPolicy || 'all') === 'all';
@@ -3243,7 +3258,7 @@ function normalizeParagraphWhitespace(value) {
   return normalizeNewlines(value).replace(/[ \t]+\n/gu, '\n').replace(/\n[ \t]+/gu, '\n').replace(/\n{3,}/gu, '\n\n').trim();
 }
 
-function addLineBoundaryMarkers(chunks, policy = 'all') {
+function addLineBoundaryMarkers(chunks, policy = 'all', markerContext) {
   let markerIndex = 1;
   for (const chunk of chunks || []) {
     if (!chunk || chunk.locked) continue;
@@ -3260,7 +3275,7 @@ function addLineBoundaryMarkers(chunks, policy = 'all') {
       const start = left.end;
       const end = right.start;
       if (paragraphEvents.some(event => rangesOverlap(start, end, event.start, event.end))) continue;
-      const marker = `[[[V2_LINE_${String(markerIndex).padStart(4, '0')}]]]`;
+      const marker = markerContext.token('[[[V2_LINE_', markerIndex - 1, ']]]');
       markerIndex += 1;
       lineEvents.push({ marker, boundary: text.slice(start, end) || '\n', start, end, kind: 'line' });
     }
@@ -3271,7 +3286,7 @@ function addLineBoundaryMarkers(chunks, policy = 'all') {
   }
 }
 
-function addSentenceBoundaryMarkers(chunks, minimumSentenceCount = 4) {
+function addSentenceBoundaryMarkers(chunks, minimumSentenceCount = 4, markerContext) {
   let markerIndex = 1;
   for (const chunk of chunks || []) {
     if (!chunk || chunk.locked) continue;
@@ -3289,7 +3304,7 @@ function addSentenceBoundaryMarkers(chunks, minimumSentenceCount = 4) {
       const start = spans[i].end;
       const end = spans[i + 1].start;
       if ([...paragraphEvents, ...lineEvents].some(event => rangesOverlap(start, end, event.start, event.end))) continue;
-      const marker = `[[[V2_SENTENCE_${String(markerIndex).padStart(4, '0')}]]]`;
+      const marker = markerContext.token('[[[V2_SENTENCE_', markerIndex - 1, ']]]');
       markerIndex += 1;
       sentenceEvents.push({ marker, boundary: text.slice(start, end), start, end, kind: 'sentence' });
     }

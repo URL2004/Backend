@@ -361,7 +361,7 @@ async function judgeAndRepair(rawText, outputText, {
     discourseSignals,
     priorReports,
     judgeModel: relationConfirmationFirst ? escalationModel : cfg.models.judge,
-    judgeReasoning: relationConfirmationFirst ? cfg.reasoning.escalation : cfg.reasoning.judge,
+    judgeReasoning: relationConfirmationFirst ? (cfg.reasoning.judgeEscalation || cfg.reasoning.escalation) : cfg.reasoning.judge,
     useJudgeForRepair: relationConfirmationFirst,
     phasePrefix: 'primary',
     deferHighRiskRepair: !relationConfirmationFirst && Boolean((cfg.models.judgeEscalation || cfg.models.humanizeEscalation)
@@ -402,7 +402,7 @@ async function judgeAndRepair(rawText, outputText, {
         ({ type, span, sourceSpan, candidateSpan, relation, origin, detail })) })],
     priorReports: [...priorReports, primary],
     judgeModel: escalationModel,
-    judgeReasoning: cfg.reasoning.escalation || cfg.reasoning.judge,
+    judgeReasoning: cfg.reasoning.judgeEscalation || cfg.reasoning.escalation || cfg.reasoning.judge,
     phasePrefix: 'escalation',
     safetyIdentifier,
     documentProfile,

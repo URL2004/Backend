@@ -261,6 +261,7 @@ async function completeJsonRequest({
   }
   } catch (error) {
     error.usage = usage;
+    error.reasoningEffort = effort;
     error.httpAttemptCount = accounting.httpAttemptCount;
     error.unknownUsageCount = accounting.unknownUsageCount;
     error.unknownEstimatedUsd = accounting.unknownEstimatedUsd;
@@ -270,7 +271,7 @@ async function completeJsonRequest({
     error.retryCounts = { ...retryCounts, ...error.retryCounts };
     if (detectScoreAttempts.length) error.detectScoreAttempts = detectScoreAttempts;
     logger.info('gpt_prod.usage', { ...meta, stage: require('./callLedger').current()?.policy?.stage || meta.phase || 'main',
-      provider: 'openai', model, ...usage,
+      provider: 'openai', model, ...usage, reasoningEffort: effort,
       ...timeObservations(accounting),
       failed: true, maxOutputTokens: body.max_output_tokens,
       requiredAttemptMs: accounting.timeBudget?.protectedCall ? accounting.timeBudget.requiredMs : null,
@@ -286,6 +287,7 @@ async function completeJsonRequest({
       provider: 'openai',
       model,
       selectedModel: model,
+      reasoningEffort: effort,
       task: meta.task || 'unknown',
       phase: meta.phase || 'main',
       stage: require('./callLedger').current()?.policy?.stage || meta.phase || 'main',
@@ -317,6 +319,7 @@ async function completeJsonRequest({
     provider: 'openai',
     model,
     json: parsed,
+    reasoningEffort: effort,
     rawText: outputText,
     raw,
     usage,

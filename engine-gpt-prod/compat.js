@@ -50,7 +50,7 @@ function reasoningForTask(cfg, task = '', phase = '') {
   if (t.includes('evidence') || t.includes('search')) return p.includes('escalation') ? cfg.reasoning.escalation : cfg.reasoning.evidenceSearch;
   if (p.includes('repair') || p.includes('refine') || p.includes('rewrite')) return cfg.reasoning.repair;
   if (t.includes('coach') || t.includes('classify')) return cfg.reasoning.classify;
-  if (t.includes('judge')) return p.includes('escalation') ? (cfg.reasoning.escalation || cfg.reasoning.judge) : cfg.reasoning.judge;
+  if (t.includes('judge')) return p.includes('escalation') ? (cfg.reasoning.judgeEscalation || cfg.reasoning.escalation || cfg.reasoning.judge) : cfg.reasoning.judge;
   return cfg.reasoning.humanize;
 }
 

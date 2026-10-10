@@ -68,6 +68,7 @@ async function track(options, fn) {
   }
 }
 function recordAdmission(entry, result) {
+  if (result.reasoningEffort) entry.reasoningEffort = result.reasoningEffort;
   for (const key of ['windowCompletedCallCount', 'windowOverrunMs', 'windowMaxOverrunMs', 'httpCeilingTimeoutCount'])
     entry[key] = Math.max(0, Number(result[key]) || 0);
   if (result.timeBudget?.protectedCall) {

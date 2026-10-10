@@ -52,7 +52,8 @@ function policyIdentity(config) {
     humanizeEscalation: models.humanizeEscalation || '',
     repair: models.repair || '',
     reasoning: reasoning && typeof reasoning === 'object' ? {
-      judge: reasoning.judge || '', escalation: reasoning.escalation || '', repair: reasoning.repair || ''
+      judge: reasoning.judge || '', escalation: reasoning.escalation || '', repair: reasoning.repair || '',
+      judgeEscalation: reasoning.judgeEscalation || reasoning.escalation || ''
     } : null
   }));
 }

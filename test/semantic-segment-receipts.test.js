@@ -40,10 +40,15 @@ test('receipt key is exact and changes with every bound input', () => {
     profile: key({ documentProfile: { profile: 'academic_paper' } }),
     model: key({ config: { ...config, models: { ...config.models, judge: 'judge-c' } } }),
     escalationModel: key({ config: { ...config, models: { ...config.models, judgeEscalation: 'judge-d' } } }),
-    reasoning: key({ config: { ...config, reasoning: { ...config.reasoning, escalation: 'medium' } } })
+    reasoning: key({ config: { ...config, reasoning: { ...config.reasoning, escalation: 'medium' } } }),
+    judgeReasoning: key({ config: { ...config, reasoning: { ...config.reasoning, judgeEscalation: 'medium' } } })
   };
   for (const [name, value] of Object.entries(variants)) assert.notEqual(value, k, name);
   assert.equal(new Set(Object.values(variants)).size, Object.keys(variants).length);
+});
+
+test('an explicit confirming effort matching inheritance retains equivalent receipt identity', () => {
+  assert.equal(key(), key({ config: { ...config, reasoning: { ...config.reasoning, judgeEscalation: 'high' } } }));
 });
 
 test('pure control markers and stale unpaired hints do not change key; unknown identity disables reuse', () => {

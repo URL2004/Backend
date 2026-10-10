@@ -22,7 +22,9 @@ function load(name, overrides) {
 }
 
 for (const route of ['escalated', 'relationConfirmationFirst', 'primary']) {
-  for (const verdict of ['pass', 'fail', 'timeout']) test(`section restoration preserves ${route} verdict tier: ${verdict}`, async () => {
+  for (const judgeEscalation of [undefined, 'medium']) {
+  const routeConfig = { ...config, reasoning: { ...config.reasoning, ...(judgeEscalation ? { judgeEscalation } : {}) } };
+  for (const verdict of ['pass', 'fail', 'timeout']) test(`section restoration preserves ${route} verdict tier: ${verdict}, effort: ${judgeEscalation || 'inherited'}`, async () => {
     const calls = [];
     const judge = load('../engine-gpt-prod/judge', { './openaiClient': { completeJson: async options => {
       calls.push(options);
@@ -46,13 +48,14 @@ for (const route of ['escalated', 'relationConfirmationFirst', 'primary']) {
       }
     } });
     const result = await quality.runSemanticDocumentAudit({ source, outputText: output,
-      config, allowRepair: true, stagedConfirmation: false });
+      config: routeConfig, allowRepair: true, stagedConfirmation: false });
     assert.ok(calls.length > 0, 'the literal proposal requires a fresh verdict');
     assert.equal(calls[0].model, route === 'primary' ? config.models.judge : config.models.judgeEscalation);
-    assert.equal(calls[0].reasoningEffort, route === 'primary' ? config.reasoning.judge : config.reasoning.escalation);
+    assert.equal(calls[0].reasoningEffort, route === 'primary' ? config.reasoning.judge : judgeEscalation || config.reasoning.escalation);
     if (route !== 'primary') assert.equal(calls.length, 1, 'no weaker fallback or nested repair');
     assert.equal(result.pass, verdict === 'pass');
     assert.equal(result.outputText, verdict === 'pass' ? expected : output);
     if (verdict !== 'pass') assert.equal(result.reports[0].confirmedRelationRestoreRejected, true);
   });
+  }
 }

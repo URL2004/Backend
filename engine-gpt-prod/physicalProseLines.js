@@ -247,7 +247,7 @@ function restoreSubmittedSourceSeams(source, value) {
     const ending = b === '다' && /(?:한|된|했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(a)
       && !siblings.has(right.index);
     const lexical = ending || wordSeam(a, b, words) || words.has(a + b) && a.length + b.length >= 4
-      || (a.length === 1 && !/^[나너저그이내네제왜더또다한두세네몇수것줄중전후각및의을를은는에와과도만로큰벽명]$/u.test(a)
+      || (a.length === 1 && !/^[나너저그이내네제왜더또다한두세네몇수것줄중전후앞뒤각및의을를은는에와과도만로큰작새옛긴흰벽명성]$/u.test(a)
         && /^(?:[가-힣]{2,12}|서|대)$/u.test(b))
       || /하$/u.test(a) && b === '기'
       || (a.charCodeAt(a.length - 1) - 0xAC00) % 28 === 8 && b === '까'

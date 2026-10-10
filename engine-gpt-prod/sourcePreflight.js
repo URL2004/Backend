@@ -172,12 +172,9 @@ function auditAndSanitizeSource(value) {
   // Canonicalize only proven physical row seams before assigning paragraph,
   // title or list ownership. The helper preserves all non-whitespace content
   // and explicit structure; both the planner and engine use this same baseline.
-  const seamLayout = scriptFrame || looksLikeCreativeLineLayout(extractedLayout.text)
-    ? { text: extractedLayout.text, repairCount: 0 }
-    : require('./physicalProseLines').restoreSubmittedSourceSeams(extractedLayout.text, extractedLayout.text);
-  const physicalLayout = scriptFrame || looksLikeCreativeLineLayout(seamLayout.text)
-    ? { text: seamLayout.text, changes: [] }
-    : require('./physicalProseLines').repairPhysicalProseLines(seamLayout.text);
+  const physicalLayout = scriptFrame || looksLikeCreativeLineLayout(extractedLayout.text)
+    ? { text: extractedLayout.text, changes: [] }
+    : require('./physicalProseLines').repairPhysicalProseLines(extractedLayout.text);
   const lines = physicalLayout.text.split('\n');
   const removals = wrapper
     ? [issue(
@@ -290,9 +287,14 @@ function auditAndSanitizeSource(value) {
   for (const change of terminalPunctuation.changes) {
     notices.push(issue(change.code, change.lineOrdinal, 'repaired', change.message));
   }
+  // Keep the original physical-row census intact for the existing PDF pass.
+  // Joining a few words before that census can make a regular PDF fail its
+  // width/continuation threshold and strand other, previously repaired rows.
+  const sourceSeams = scriptFrame || creativeLineLayout ? {text:terminalPunctuation.text}
+    : require('./physicalProseLines').restoreSubmittedSourceSeams(trailingRequest.text, terminalPunctuation.text);
   const sanitized = (creativeLineLayout
-    ? terminalPunctuation.text
-    : terminalPunctuation.text.replace(/\n{3,}/gu, '\n\n')).trim();
+    ? sourceSeams.text
+    : sourceSeams.text.replace(/\n{3,}/gu, '\n\n')).trim();
   const usable = sanitized || original;
   if (!sanitized) {
     const fallbackNotices = [...removals, ...notices].map(item => ({ ...item, action: 'notice' }));

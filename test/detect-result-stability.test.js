@@ -98,7 +98,10 @@ test('raw detector identity shares Korean empty-context results across routes wi
   assert.equal(analyze, report);
   assert.notEqual(analyze, stability.payloadFingerprint({ text, lang: 'en' }));
   assert.notEqual(analyze, stability.payloadFingerprint({ text, referenceContext: '앞 문맥이다.' }));
-  assert.notEqual(analyze, stability.payloadFingerprint({ text: ' ' + text }));
+  // 2026-10-09 F-16: 검출기는 앞뒤 공백을 뗀 글을 채점하고 근거 좌표도 그 글 기준이다. 앞 공백만 다른 요청은
+  // 같은 검출 결과를 써야 한다(이전 기대값은 notEqual이었다). 본문 안쪽 공백은 여전히 다른 글이다.
+  assert.equal(analyze, stability.payloadFingerprint({ text: ' ' + text }));
+  assert.notEqual(analyze, stability.payloadFingerprint({ text: text.replace('근거 위치', '근거  위치') }));
   const options = { firestore: null, hmacSecret: '', now: 10000 };
   const first = await stability.getOrCompute(input(analyze), async () => modelResult(44), options);
   const second = await stability.getOrCompute(input(report), async () => assert.fail('second route recomputed raw score'), options);

@@ -220,7 +220,10 @@ function restoreSubmittedSourceSeams(source, value) {
   const records = layout.buildLineRecords(original);
   const siblings = require('./koreanEndingSeam').siblingIndices(records);
   const words = witnessedWords(original);
-  const atoms = new Set(original.match(/[\p{L}0-9=()]+/gu) || []);
+  // Fused metadata/headings are not lexical evidence. Their deliberate
+  // boundary recovery can split an originally adjacent character run.
+  const atoms = new Set(records.filter(row => ['prose','quote'].includes(row.role))
+    .flatMap(row => row.text.match(/[\p{L}0-9=()]+/gu) || []));
   const seams = new Map(), conflicts = new Set(), spaced = new Set();
   const parts = (text, start, end) => [
     text.slice(Math.max(0, start - 100), start).match(/[\p{L}0-9=()]+$/u)?.[0] || '',

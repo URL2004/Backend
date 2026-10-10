@@ -8,10 +8,9 @@ const { DETECT_SCHEMA } = require('../engine-gpt-prod/schemas');
 
 test('감지 프롬프트는 장르 자체를 AI 근거로 쓰지 않고 반대 근거와 점수 앵커를 요구한다', () => {
   const ko = prompt.buildDetectPrompt('ko');
-  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9g-eligible-prose-contract');
+  assert.equal(prompt.DETECT_PROMPT_VERSION, 'detect-prompt-v9h-recurring-cause-band');
   assert.match(ko, /문법적인 어미 일치와 내용을 담은 상투적 틀을 구별/u);
   assert.match(ko, /동일 관찰을 재분류하는 것이지 두 번 세는 것이 아니다/u);
-  assert.match(ko, /반복 원인 하나 또는 실제 반대 근거/u);
   assert.match(ko, /최소 2개가 필요/u);
   assert.match(ko, /신호 강도는 길이와 무관/u);
   assert.match(ko, /실제 작성 주체를 판정하는 확률이 아니다/u);
@@ -47,7 +46,7 @@ test('영문 감지 프롬프트와 엔진 provenance도 같은 정책 버전을
   assert.match(en, /moderate or strong strength and recurring or pervasive scope/u);
   assert.match(en, /other_observed_style is supplementary context only and can never support a score above 20/u);
   assert.match(en, /Reclassify the same observation rather than counting it twice/u);
-  assert.equal(engine.DETECT_VERSION, 'gpt-detect-v1.52');
+  assert.equal(engine.DETECT_VERSION, 'gpt-detect-v1.53');
   assert.equal(engine.DETECT_PROMPT_VERSION, prompt.DETECT_PROMPT_VERSION);
 });
 
@@ -68,13 +67,50 @@ test('저점수 검토는 일괄 가산 대신 본문 신호 관찰과 국소 �
   assert.match(ko, /이름·숫자·전문용어·일인칭·경험했다는 주장·오탈자의 존재만으로 문체 신호를 상쇄하지/u);
   assert.match(ko, /해당 구간에서만 평가/u);
   assert.match(ko, /특정 평균 분포를 목표로 삼지도/u);
-  assert.match(ko, /사람이 썼을 수도 있다는 가능성을 뜻하지 않는다/u);
+  assert.match(ko, /구체적 정보 한두 개, 사람이 썼을 가능성, strong 신호가 없다는 사실은 그런 균형이 아니다/u);
   assert.match(ko, /불균일한 전개가 관찰된 패턴을 실제로 끊는 해당 구간에서만/u);
   assert.deepEqual(Object.keys(DETECT_SCHEMA.properties), ['signals', 'probability', 'confidence']);
   const en = prompt.buildDetectPrompt('en');
   assert.match(en, /Observe located signals first/u);
   assert.match(en, /does not by itself cancel a style signal/u);
   assert.match(en, /uneven development actually interrupts the observed pattern/u);
+});
+
+test('두 독립 moderate 반복 원인이 주된 전개를 이루면 strong 없이도 50~74에서 판단한다', () => {
+  const ko = prompt.buildDetectPrompt('ko');
+  const en = prompt.buildDetectPrompt('en');
+  assert.match(ko, /독립된 moderate 반복 패턴 두 개 이상이 함께 본문의 주된 전개를 특징지으면 50~74 구간을 선택/u);
+  assert.match(ko, /50~74는 위치가 확인된 독립적 적격 원인 두 개 이상이 moderate 이상의 강도로 반복되어 함께 주된 전개를 이루고 비슷한 범위의 반대 근거는 없는 상태/u);
+  assert.match(ko, /50~74에는 moderate 반복으로 충분하며 strong·내용 부실·빈틈없는 균일함을 추가로 요구하지 않는다/u);
+  assert.match(en, /two independent moderate recurring patterns jointly characterize the main development, choose the 50-74 band/u);
+  assert.match(en, /50-74 two or more independent located recurring causes of at least moderate strength that jointly shape the main development without comparably broad counterevidence/u);
+  assert.match(en, /Moderate recurring evidence is sufficient for 50-74: do not require strong strength, empty content, or flawless uniformity/u);
+});
+
+test('국소 반복이나 비슷한 범위의 실질적 반대 근거는 21~49이며 원인 개수만으로 올리지 않는다', () => {
+  const ko = prompt.buildDetectPrompt('ko');
+  const en = prompt.buildDetectPrompt('en');
+  assert.match(ko, /같은 반복 패턴을 실제로 끊는 반대 근거가 분석 가능 본문의 비슷한 범위에 있어야/u);
+  assert.match(ko, /반복이 작은 국소 구간에만 있거나 실질적인 불균일 전개가 실제로 균형을 이루면 21~49/u);
+  assert.match(ko, /개수만 보지 말고 범위와 강도를 판단/u);
+  assert.match(ko, /0~20은 적격 반복 원인이 없거나 약한·일회성 신호뿐인 상태, 21~49는 적격 반복 원인 하나 또는 여러 원인의 범위가 작거나 실제 반대 근거와 균형을 이루는 혼합 상태/u);
+  assert.match(en, /located counterevidence that interrupts the same recurring patterns across a comparable part of the eligible prose/u);
+  assert.match(en, /keep 21-49 when their repetition is confined to a small local part or substantive uneven development actually balances it/u);
+  assert.match(en, /Judge scope and intensity, never count alone/u);
+  assert.match(en, /0-20 no eligible recurring cause or only weak\/isolated evidence; 21-49 one eligible recurring cause, or multiple causes whose limited reach or actual counterevidence makes the overall evidence mixed/u);
+});
+
+test('입증된 반복을 장르 이름만으로 약화하지 않고 전개를 지배하는 규칙성도 strong으로 본다', () => {
+  const ko = prompt.buildDetectPrompt('ko');
+  const en = prompt.buildDetectPrompt('en');
+  assert.match(ko, /weak는 모호하거나 우연한 일치 또는 일반적인 장르 관습만으로 설명되는 표현/u);
+  assert.match(ko, /moderate는 그 관습을 넘어 위치가 명확하게 반복되는 패턴/u);
+  assert.match(ko, /strong은 전개를 지배하는 두드러지고 지속적인 규칙성 또는 정보나 논증을 거듭 대신하는 반복 패턴/u);
+  assert.match(ko, /장르 이름만으로 독립적으로 입증된 패턴을 약하게 낮추지 않는다/u);
+  assert.match(en, /weak is ambiguous or incidental, or explained solely by an ordinary genre convention/u);
+  assert.match(en, /moderate is a clearly located repeated pattern that exceeds that convention/u);
+  assert.match(en, /strong is conspicuous persistent regularity that controls development or repeatedly substitutes for information or argument/u);
+  assert.match(en, /A genre label alone does not weaken an independently demonstrated pattern/u);
 });
 
 test('감지 장르 힌트는 충분히 확실하고 서로 분리된 세부 프로필에만 붙는다', () => {
@@ -148,5 +184,7 @@ test('유효한 primary 뒤 승격 실패는 모델 선택 호출 두 번에서 
   });
   assert.deepEqual(models, ['gpt-6-luna', 'gpt-6.1-sol']);
   assert.equal(result.probability, 49);
+  assert.equal(result.gptMeta.engine, engine.DETECT_VERSION);
+  assert.equal(result.gptMeta.detectPromptVersion, prompt.DETECT_PROMPT_VERSION);
   assert.equal(result.gptMeta.escalationFailed, true);
 });

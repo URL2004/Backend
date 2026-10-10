@@ -440,6 +440,7 @@ test('성공 결과만 LLM 출처로 전달·저장하고 권위 측정 이벤�
   assert.notEqual(state.lastStabilityInput.payloadFingerprint, fingerprint({ opType: 'detect', needed: cost, text: BASE_TEXT }));
   assert.notEqual(result.body.idempotentReplay, true, 'fresh serialized result must not masquerade as replay');
   assert.equal(result.body.probSource, 'llm');
+  assert.equal(result.body.detectorVersion, 'detect-test-v1', 'public response forwards the selected detector version');
   assert.equal(typeof result.body.interpretationProof, 'string');
   assert.match(result.body.interpretationProof, /^detect-interpretation-proof-v1\.[A-Za-z0-9_-]{43}$/u);
   // The browser forwards only string proofs; exercise that actual wire

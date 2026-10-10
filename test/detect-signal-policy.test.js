@@ -23,6 +23,23 @@ const recurring = (category, strength = 'moderate', scope = 'recurring') => ({
   description: `${category} 문체 특징이 여러 문장에서 반복됨`
 });
 
+test('v9h도 20/49/74/100 상한과 20/21·49/50 경계를 유지하며 원인 수로 자동 가산하지 않는다', () => {
+  const evidenceSets = [
+    [],
+    [recurring('sentence_uniformity')],
+    [recurring('sentence_uniformity'), recurring('formulaic_transition')],
+    [recurring('sentence_uniformity', 'strong'), recurring('formulaic_transition', 'strong'), recurring('generic_abstraction')]
+  ];
+  for (const [index, ceiling] of [20, 49, 74, 100].entries()) {
+    const signalEvidence = evidenceSets[index];
+    assert.equal(supportedScoreCeiling(normalizeSignalEvidence(signalEvidence)), ceiling);
+    for (const probability of [0, 20, 21, 49, 50, 74, 75, 100]) {
+      const result = alignScoreToCauseEvidence({ probability, signalEvidence, signalContractVersion: 'model-signals-v2-grounded' });
+      assert.equal(result.probability, Math.min(probability, ceiling));
+    }
+  }
+});
+
 test('grounded v2의 빈 근거도 현재 계약으로 해석하고 낮은 원점수를 메타데이터에 남긴다', () => {
   const result = alignScoreToCauseEvidence({ probability: 6, signalContractVersion: 'model-signals-v2-grounded', signalEvidence: [] });
   assert.equal(result.probability, 6);

@@ -91,6 +91,53 @@ function fakeFirestore() {
 
 test.beforeEach(() => stability.resetForTests());
 
+test('v1.53/v9h는 버전별 캐시를 분리하고 이전 영속 캐시를 삭제하지 않는다', async () => {
+  const engine = require('../engine-gpt-prod');
+  const previousVersions = {
+    detectorVersion: 'gpt-detect-v1.52',
+    promptVersion: 'detect-prompt-v9g-eligible-prose-contract'
+  };
+  const currentVersions = {
+    detectorVersion: engine.DETECT_VERSION,
+    promptVersion: engine.DETECT_PROMPT_VERSION
+  };
+  assert.equal(currentVersions.detectorVersion, 'gpt-detect-v1.53');
+  assert.equal(currentVersions.promptVersion, 'detect-prompt-v9h-recurring-cause-band');
+  const previous = stability.variantForConfig(CONFIG, previousVersions);
+  const detectorOnly = stability.variantForConfig(CONFIG, { ...previousVersions, detectorVersion: currentVersions.detectorVersion });
+  const promptOnly = stability.variantForConfig(CONFIG, { ...previousVersions, promptVersion: currentVersions.promptVersion });
+  const current = stability.variantForConfig(CONFIG, currentVersions);
+  assert.equal(new Set([previous, detectorOnly, promptOnly, current]).size, 4);
+  assert.equal(current, stability.variantForConfig(CONFIG, currentVersions));
+
+  const firestore = fakeFirestore();
+  const options = { firestore, now: 10_000, hmacSecret: PERSISTENT_SECRET };
+  let calls = 0;
+  const compute = (probability, versions) => async () => {
+    calls += 1;
+    const result = modelResult(probability);
+    result.gptMeta.engine = versions.detectorVersion;
+    result.gptMeta.detectPromptVersion = versions.promptVersion;
+    return result;
+  };
+  const old = await stability.getOrCompute(input(FP_A, previous), compute(32, previousVersions), options);
+  assert.equal(old.cacheHit, false);
+  stability.resetForTests();
+  const fresh = await stability.getOrCompute(input(FP_A, current), compute(56, currentVersions), options);
+  assert.equal(fresh.cacheHit, false, 'new versions must not read the old persisted score');
+  assert.equal(firestore.rows.size, 2, 'both versions remain stored without a cache deletion');
+  stability.resetForTests();
+  for (const [variant, probability, versions] of [[previous, 32, previousVersions], [current, 56, currentVersions]]) {
+    const cached = await stability.getOrCompute(input(FP_A, variant), async () => assert.fail('persisted version should be reusable'), options);
+    assert.equal(cached.cacheHit, true);
+    assert.equal(cached.source, 'firestore');
+    assert.equal(cached.result.probability, probability);
+    assert.equal(cached.result.gptMeta.engine, versions.detectorVersion);
+    assert.equal(cached.result.gptMeta.detectPromptVersion, versions.promptVersion);
+  }
+  assert.equal(calls, 2);
+});
+
 test('raw detector identity shares Korean empty-context results across routes without sharing billing identity', async () => {
   const text = '같은 본문의 근거 위치를 그대로 보존한다.';
   const analyze = stability.payloadFingerprint({ text, lang: 'ko', referenceContext: '', route: 'analyze', needed: 1 });

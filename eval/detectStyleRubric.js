@@ -76,7 +76,7 @@ function buildStyleRubricCandidate(basePrompt) {
   // Remove the conflicting Korean band/count/confidence rules; appending a
   // competing rubric would not test a coherent alternative. Fail closed when
   // the production prompt changes instead of silently leaving a hard gate.
-  const replacedPrefixes = ['혼합 신호란', '점수 기준:', 'signals에는', 'other_observed_style은',
+  const replacedPrefixes = ['혼합 신호로 낮추려면', '점수 기준:', 'signals에는', 'other_observed_style은',
     '각 signal의 evidenceSentences에는', 'confidence는', '분량은 confidence의', '신호 강도는'];
   const lines = basePrompt.split('\n');
   for (const prefix of replacedPrefixes) {

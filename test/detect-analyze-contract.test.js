@@ -63,6 +63,8 @@ test('analyze caches only raw detector output, scopes context/language, and fail
   assert.equal(second.body.result.historyComparison.rawProbability, 50);
   assert.equal(second.body.result.historyComparison.adjustment, -10);
   for (const response of [first, second]) {
+    assert.equal(response.body.result.gptMeta.engine, 'gpt-detect-v1.53');
+    assert.equal(response.body.result.gptMeta.detectPromptVersion, 'detect-prompt-v9h-recurring-cause-band');
     const backup = { ...response.body.result, inputText: text };
     assert.deepEqual(require('../lib/detectHistoryComparison').verifiedBackupHistoryComparison('detect-contract-test', backup), response.body.result.historyComparison);
   }

@@ -22,9 +22,12 @@ test('Korean eval candidate replaces conflicting hard gates without editing the 
   const candidate = buildStyleRubricCandidate(base);
   assert(candidate.endsWith(STYLE_RUBRIC_APPENDIX));
   assert(!candidate.includes('점수 기준:'));
+  assert(!candidate.includes('혼합 신호로 낮추려면'));
+  assert(!candidate.includes('독립된 moderate 반복 패턴 두 개 이상'));
   assert(!candidate.includes('최소 3개'));
   assert(!candidate.includes('8문장 이상이면 high'));
   assert.equal(buildDetectPrompt('ko'), base);
+  assert.throws(() => buildStyleRubricCandidate(base.replace('혼합 신호로 낮추려면', '알 수 없는 혼합 규칙')), /Unsupported Korean base prompt rule/u);
   assert.throws(() => buildStyleRubricCandidate(buildDetectPrompt('en')), /Unsupported Korean base prompt/u);
   assert.throws(() => buildStyleRubricCandidate(''), TypeError);
   assert.match(STYLE_RUBRIC_APPENDIX, /실제 작성 주체는 알 수 없다/u);

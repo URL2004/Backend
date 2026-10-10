@@ -220,11 +220,11 @@ function restoreSubmittedSourceSeams(source, value) {
   const records = layout.buildLineRecords(original);
   const siblings = require('./koreanEndingSeam').siblingIndices(records);
   const words = witnessedWords(original);
-  const atoms = new Set(original.match(/[\p{L}\p{N}=()]+/gu) || []);
+  const atoms = new Set(original.match(/[\p{L}0-9=()]+/gu) || []);
   const seams = new Map(), conflicts = new Set(), spaced = new Set();
   const parts = (text, start, end) => [
-    text.slice(Math.max(0, start - 100), start).match(/[\p{L}\p{N}=()]+$/u)?.[0] || '',
-    text.slice(end, end + 100).match(/^[\p{L}\p{N})]+/u)?.[0] || ''
+    text.slice(Math.max(0, start - 100), start).match(/[\p{L}0-9=()]+$/u)?.[0] || '',
+    text.slice(end, end + 100).match(/^[\p{L}0-9)]+/u)?.[0] || ''
   ];
   const originalSyntax = syntaxSpans(original);
   const literals = originalSyntax.filter(s => s.spanType === 'code');

@@ -396,12 +396,22 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
   throw error;
 }
 
+function verdictAttemptLimitMs() {
+  let policyLimit = 0;
+  try { policyLimit = Number(require('./callLedger').current()?.policy?.verdictCallLimitMs) || 0; } catch { policyLimit = 0; }
+  // Never shorter than before, never past the HTTP client's 300s header wait.
+  return Math.max(180000, Math.min(290000, policyLimit));
+}
+
 async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity, accounting = null) {
   const configured = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS)
     // Mandatory verdicts already have an absolute caller deadline and parent
     // cancellation. Do not discard a paid verdict at 100s when its 120s final
     // audit still has time. No extra retry; normal edit attempts stay bounded.
-    || (accounting?.semanticVerdict ? 180000 : accounting?.longAttempt ? 100000 : DEFAULT_TIMEOUT_MS));
+    // The final verdict audit sets its own section limit (callLedger policy
+    // verdictCallLimitMs): a confirming verdict's permitted output cannot be
+    // received in 180s. Every other verdict keeps 180s.
+    || (accounting?.semanticVerdict ? verdictAttemptLimitMs() : accounting?.longAttempt ? 100000 : DEFAULT_TIMEOUT_MS));
   const timeoutMs = Math.max(1000, Math.min(configured, Number.isFinite(remainingMs) ? remainingMs : configured));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

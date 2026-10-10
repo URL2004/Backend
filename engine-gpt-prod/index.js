@@ -4059,7 +4059,12 @@ async function runEngine({
           } else if (!finalSemanticRevalidation.preFinalRelationRestoreSkipReason) {
             finalSemanticRevalidation.preFinalRelationRestoreSkipReason = 'prior_verdict_not_failed';
           }
-          let recheck = await qualityV2.runSemanticDocumentAudit({
+          // F-01: 확인 판정 한 번은 출력량에 따라 120~180초를 넘긴다. 구간마다
+          // 제 시간을 주고(semanticAuditSchedule), 판정 시계는 직전 수리가 끝난
+          // 지금부터 잰다. 작업 전체 마감은 넘지 않는다.
+          const finalVerdictDeadlineMs = finalDeadlinePolicy.verdictDeadlineMs(Date.now());
+          let recheck = await require('./callLedger').withPolicy(finalDeadlinePolicy.verdictPolicy,
+            () => qualityV2.runSemanticDocumentAudit({
             priorReports: finalPriorReports,
             source: rawSource,
             outputText,
@@ -4074,9 +4079,9 @@ async function runEngine({
             safetyIdentifier: safetyId,
             documentProfile,
             allowRepair: false,
-            deadlineMs: finalDeadlineMs,
+            deadlineMs: finalVerdictDeadlineMs,
             receiptStore: semanticSectionReceipts
-          });
+          }));
           addSupplementalUsage(recheck.usage, 'final_semantic_revalidation');
           let recheckCallCount = semanticCallCount(recheck);
           // A final verdict can reveal a relation missed by an earlier judge.

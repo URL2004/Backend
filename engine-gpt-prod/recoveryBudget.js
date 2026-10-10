@@ -7,6 +7,14 @@ function normalizedLimit(value) {
     : 0;
 }
 
+// The final verdict audit's reserve follows finalSemanticDeadline().limitMs:
+// one full section limit per expected wave (270s, 540s, ... for very long
+// documents). The old 180s ceiling let optional recovery spend time the final
+// verdict needs when the job deadline is close.
+const MAX_FINAL_AUDIT_RESERVE_MS = 1200000;
+// An unreadable candidate is treated as a long document (two verdict waves).
+const UNKNOWN_FINAL_AUDIT_RESERVE_MS = 540000;
+
 function createRecoveryBudget(maxEstimatedUsd, {
   enforced = true,
   maxCalls = Number(process.env.HUMANIZE_RECOVERY_MAX_CALLS) || 16,
@@ -52,11 +60,11 @@ function createRecoveryBudget(maxEstimatedUsd, {
   );
   const absoluteElapsedLimitMs = Math.max(30000, Math.min(900000, Math.floor(Number(maxElapsedMs) || 240000)));
   const lateTimeReserveMs = Math.min(60000, Math.floor(absoluteElapsedLimitMs / 4));
-  let finalReserveMs = Math.max(120000, Math.min(180000, Number(finalAuditReserveMs) || 120000));
+  let finalReserveMs = Math.max(120000, Math.min(MAX_FINAL_AUDIT_RESERVE_MS, Number(finalAuditReserveMs) || 120000));
   const refreshFinalReserve = () => {
     if (typeof getFinalAuditReserveMs === 'function') {
-      try { finalReserveMs = Math.max(finalReserveMs, Math.min(180000, Number(getFinalAuditReserveMs()) || 120000)); }
-      catch { finalReserveMs = 180000; }
+      try { finalReserveMs = Math.max(finalReserveMs, Math.min(MAX_FINAL_AUDIT_RESERVE_MS, Number(getFinalAuditReserveMs()) || 120000)); }
+      catch { finalReserveMs = Math.max(finalReserveMs, UNKNOWN_FINAL_AUDIT_RESERVE_MS); }
     }
     return finalReserveMs;
   };
@@ -69,7 +77,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
     if (attemptedCallCount >= absoluteCallLimit) return 'recovery_call_limit_exhausted';
     if (elapsedMs() >= absoluteElapsedLimitMs) return 'recovery_time_limit_exhausted';
     // Optional work must leave time for both its own response (up to 120s)
-    // and the mandatory final verdict (120s, or the approved long-text 180s).
+    // and the mandatory final verdict (its section limit per expected wave).
     // This is admission, not
     // an extension of the existing job deadline or a new delivery gate.
     if (mandatory !== true && enforced === true && Number(clock()) + 120000 + finalReserveMs > jobDeadlineMs) {
@@ -142,7 +150,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
 
   return {
     raiseFinalAuditReserve: value => {
-      finalReserveMs = Math.max(finalReserveMs, Math.min(180000, Number(value) || 120000));
+      finalReserveMs = Math.max(finalReserveMs, Math.min(MAX_FINAL_AUDIT_RESERVE_MS, Number(value) || 120000));
       return finalReserveMs;
     },
     deadlineMs: ({ priority = 'late' } = {}) => Math.min(Number(clock())
@@ -201,5 +209,7 @@ function safeStage(value) {
 
 module.exports = {
   createRecoveryBudget,
-  normalizedLimit
+  normalizedLimit,
+  MAX_FINAL_AUDIT_RESERVE_MS,
+  UNKNOWN_FINAL_AUDIT_RESERVE_MS
 };

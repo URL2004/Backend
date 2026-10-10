@@ -70,7 +70,10 @@ test('long-document optional recovery reserves the full approved final audit wit
   const normal=createRecoveryBudget(1,{clock:()=>now,jobDeadlineMs:301000});
   assert.equal(normal.canStart({priority:'late'}),true);
   assert.equal(normal.snapshot().finalAuditReserveMs,120000);
-  assert.equal(createRecoveryBudget(1,{finalAuditReserveMs:999999}).snapshot().finalAuditReserveMs,180000);
+  // F-01: the reserve follows the final verdict schedule (270s per expected wave),
+  // so its ceiling is no longer the old 180s limit.
+  assert.equal(createRecoveryBudget(1,{finalAuditReserveMs:540000}).snapshot().finalAuditReserveMs,540000);
+  assert.equal(createRecoveryBudget(1,{finalAuditReserveMs:99999999}).snapshot().finalAuditReserveMs,1200000);
   assert.equal(createRecoveryBudget(1,{finalAuditReserveMs:-10}).snapshot().finalAuditReserveMs,120000);
 });
 
@@ -100,5 +103,6 @@ test('every admission observes current candidate growth before reserving an opti
   const failedReader=createRecoveryBudget(1,{clock:()=>1,jobDeadlineMs:300000,
     getFinalAuditReserveMs:()=>{throw new Error('synthetic');}});
   assert.equal(failedReader.canStart({priority:'late'}),false);
-  assert.equal(failedReader.snapshot().finalAuditReserveMs,180000);
+  // An unreadable candidate is reserved as a long document: two verdict waves.
+  assert.equal(failedReader.snapshot().finalAuditReserveMs,540000);
 });

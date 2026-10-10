@@ -188,14 +188,20 @@ async function run(options = {}) {
   options = { ...options, deadlineMs: Number(options.deadlineMs) > 0 ? Number(options.deadlineMs)
     : Date.now() + Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000)) };
   return require('./callLedger').run(() => require('./callLedger').withPolicy(
-    { deadlineMs: options.deadlineMs }, () => runWithStructureFallback(options)), (out, ledger) => {
-    if (!ledger.modelCallCount) return; // injected test/provider adapters may not expose accounting
+    { deadlineMs: options.deadlineMs, jobDeadlineMs: options.deadlineMs }, () => runWithStructureFallback(options)), (out, ledger) => {
+    if (!ledger.modelCallCount && !ledger.admissionSkippedCallCount) return; // injected adapters may not expose accounting
     const meta = out.result?.humanizeMeta;
     if (meta) Object.assign(meta, { usage: ledger.usage, estimatedUsd: ledger.usage.estimatedUsd,
       modelCallCount: ledger.modelCallCount, callLedger: ledger });
     for (const target of [out.engineMeta, out.result?.engineMeta]) if (target) Object.assign(target, {
       modelCallCount: ledger.modelCallCount, httpAttemptCount: ledger.httpAttemptCount,
       semanticModelCallCount: ledger.semanticModelCallCount,
+      callWindowCompletedCount: ledger.windowCompletedCallCount,
+      callWindowOverrunMs: ledger.windowOverrunMs,
+      callWindowMaxOverrunMs: ledger.windowMaxOverrunMs,
+      callHttpCeilingTimeoutCount: ledger.httpCeilingTimeoutCount,
+      callAdmissionSkippedCount: ledger.admissionSkippedCallCount,
+      callAdmissionSkippedReasonCounts: ledger.admissionSkippedReasonCounts,
       modelCost: ledger.modelCost,
       failedEstimatedUsd: ledger.failedEstimatedUsd, unknownUsageCount: ledger.unknownUsageCount,
       unknownEstimatedUsd: ledger.unknownEstimatedUsd,

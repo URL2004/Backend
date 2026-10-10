@@ -6,6 +6,7 @@ const { estimateUsd, addUsage, emptyUsage } = require('./usageCost');
 const { outboundFetch } = require('../lib/outboundPolicy');
 const { assertNoPromptLeak } = require('./promptSecurity');
 const { isQuotaExhaustionMessage } = require('./modelFailure');
+const { callTimeBudget, admitCall, HTTP_ATTEMPT_CEILING_MS, DEADLINE_GUARD_MS } = require('./callTimeBudget');
 
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
 const DEFAULT_TIMEOUT_MS = 60000;
@@ -170,7 +171,8 @@ async function completeJsonRequest({
   // schema validator may reject before the detector sees a response; retain
   // both existing schema attempts without copying its JSON or source text.
   const detectScoreAttempts = [];
-  const accounting = { usage, httpAttemptCount: 0, unknownUsageCount: 0, unknownEstimatedUsd: 0, failedEstimatedUsd: 0 };
+  const accounting = { usage, httpAttemptCount: 0, unknownUsageCount: 0, unknownEstimatedUsd: 0, failedEstimatedUsd: 0,
+    windowCompletedCallCount: 0, windowOverrunMs: 0, windowMaxOverrunMs: 0, httpCeilingTimeoutCount: 0 };
   try {
   while (schemaAttempt < 2) {
     const request = requestForSchemaAttempt(schemaAttempt);
@@ -182,17 +184,12 @@ async function completeJsonRequest({
     accounting.budget = budget;
     accounting.model = model;
     accounting.stage = meta.phase || 'unknown';
-    // Restarting a slow semantic verdict discards its work and can use the
-    // entire final audit reserve twice. One longer attempt, bounded by the
-    // same caller deadline, keeps model/effort and failure semantics intact.
+    // Recompute after a permitted truncation retry changes the output cap.
+    accounting.timeBudget = callTimeBudget({ model, maxOutputTokens: body.max_output_tokens,
+      reasoningEffort: effort, meta });
+    accounting.jobDeadlineMs = Number(context?.policy?.jobDeadlineMs) || Infinity;
     accounting.semanticVerdict = meta.task === 'judge';
-    const largeRewrite = ['humanize', 'repair'].includes(meta.task) && body.max_output_tokens >= 10000;
-    accounting.longAttempt = accounting.semanticVerdict || largeRewrite || (['high', 'xhigh', 'max'].includes(effort)
-      && ((meta.task === 'humanize' && meta.escalated === true) || meta.task === 'repair'));
-    // A medium-effort full-text repair also needs time to emit its large
-    // response. Restarting it at 60s inside a 100s caller window discards the
-    // first paid attempt and leaves too little time for the duplicate. One
-    // bounded attempt preserves the SAME caller deadline and output contract.
+    accounting.longAttempt = accounting.timeBudget.protectedCall;
     // General style recovery must not consume the slots/time reserved for
     // confirmed semantic repairs. Previously EVERY HTTP call was "late".
     accounting.priority = ['semantic_document', 'final_relation_patch'].includes(context?.policy?.stage) || /noop/u.test(meta.phase || '')
@@ -205,8 +202,7 @@ async function completeJsonRequest({
     ) / 1000000;
     let fetched;
     try {
-      const requestDeadlineMs = Math.min(chunkDeadlineMs, budget?.deadlineMs({ priority: accounting.priority }) ?? Infinity);
-      fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, requestDeadlineMs, accounting);
+      fetched = await fetchOpenAIWithRetry(`${OPENAI_API_BASE}/responses`, request, signal, chunkDeadlineMs, accounting);
       raw = await fetched.response.json();
     } catch (error) {
       throw error;
@@ -269,11 +265,17 @@ async function completeJsonRequest({
     error.unknownUsageCount = accounting.unknownUsageCount;
     error.unknownEstimatedUsd = accounting.unknownEstimatedUsd;
     error.failedEstimatedUsd = accounting.failedEstimatedUsd;
+    error.timeBudget = accounting.timeBudget;
+    Object.assign(error, timeObservations(accounting));
     error.retryCounts = { ...retryCounts, ...error.retryCounts };
     if (detectScoreAttempts.length) error.detectScoreAttempts = detectScoreAttempts;
     logger.info('gpt_prod.usage', { ...meta, stage: require('./callLedger').current()?.policy?.stage || meta.phase || 'main',
       provider: 'openai', model, ...usage,
-      failed: true, retryCounts: error.retryCounts, elapsedMs: Date.now() - startedAt });
+      ...timeObservations(accounting),
+      failed: true, maxOutputTokens: body.max_output_tokens,
+      requiredAttemptMs: accounting.timeBudget?.protectedCall ? accounting.timeBudget.requiredMs : null,
+      admissionSkipped: error.admissionSkipped === true, admissionReason: error.admissionReason || '',
+      retryCounts: error.retryCounts, elapsedMs: Date.now() - startedAt });
     throw error;
   }
   const elapsedMs = Date.now() - startedAt;
@@ -304,6 +306,9 @@ async function completeJsonRequest({
       promptCacheRead: cacheDiagnostics.read,
       promptCacheSizedMiss: cacheDiagnostics.sizedMiss,
       retryCounts,
+      ...timeObservations(accounting),
+      maxOutputTokens: body.max_output_tokens,
+      requiredAttemptMs: accounting.timeBudget?.protectedCall ? accounting.timeBudget.requiredMs : null,
       elapsedMs
     });
   } catch {}
@@ -320,6 +325,8 @@ async function completeJsonRequest({
     unknownEstimatedUsd: accounting.unknownEstimatedUsd,
     failedEstimatedUsd: accounting.failedEstimatedUsd,
     retryCounts,
+    timeBudget: accounting.timeBudget,
+    ...timeObservations(accounting),
     ...(detectScoreAttempts.length ? { detectScoreAttempts } : {}),
     status,
     incompleteReason,
@@ -361,6 +368,10 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
     const error = new Error('OpenAI Responses API request exceeded the chunk time limit');
     error.code = 'OPENAI_CHUNK_TIMEOUT';
     error.retryCounts = emptyRetryCounts();
+    if (accounting?.timeBudget?.protectedCall) Object.assign(error, {
+      admissionSkipped: true, admissionReason: accounting.jobDeadlineMs <= startedAt ? 'job_deadline' : 'request_deadline',
+      requiredAttemptMs: accounting.timeBudget.requiredMs, remainingAttemptMs: 0
+    });
     throw error;
   }
   const totalLimitMs = deadlineMs > startedAt
@@ -370,8 +381,7 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
   while (Date.now() - startedAt < totalLimitMs) {
     if (parentSignal?.aborted) throw abortError();
     try {
-      const remainingMs = Math.max(1000, totalLimitMs - (Date.now() - startedAt));
-      const response = await fetchWithTimeout(url, init, parentSignal, remainingMs, accounting);
+      const response = await fetchWithTimeout(url, init, parentSignal, startedAt + totalLimitMs, accounting);
       if (response.ok) return { response, retryCounts };
       const message = await readErrorMessage(response);
       const err = new Error(`OpenAI Responses API ${response.status}: ${message}`);
@@ -410,18 +420,40 @@ function verdictAttemptLimitMs() {
   return Math.max(180000, Math.min(290000, policyLimit));
 }
 
-async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity, accounting = null) {
+async function fetchWithTimeout(url, init, parentSignal, deadlineMs = Infinity, accounting = null) {
+  if (parentSignal?.aborted) throw abortError();
+  const deadlines = { job_deadline: accounting?.jobDeadlineMs ?? Infinity,
+    recovery_deadline: accounting?.budget?.deadlineMs({ priority: accounting.priority }) ?? Infinity,
+    request_deadline: deadlineMs };
+  const protectedCall = accounting?.timeBudget?.protectedCall === true;
+  const admissionAt = Date.now();
+  if (protectedCall) {
+    const admission = admitCall(accounting.timeBudget, deadlines, admissionAt);
+    if (!admission.admitted) {
+      accounting.budget?.recordSkip(`call_admission_${admission.reason}`);
+      throw Object.assign(new Error('OpenAI Responses API request exceeded the chunk time limit'), {
+        code: 'OPENAI_CHUNK_TIMEOUT', retryable: false, admissionSkipped: true,
+        admissionReason: admission.reason, requiredAttemptMs: admission.requiredMs,
+        remainingAttemptMs: admission.remainingMs
+      });
+    }
+  }
+  const remainingMs = Math.min(...Object.values(deadlines)) - admissionAt;
+  if (remainingMs <= 0) throw Object.assign(new Error('OpenAI Responses API request exceeded the chunk time limit'),
+    { code: 'OPENAI_CHUNK_TIMEOUT', retryable: false });
   const configured = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS)
-    // Mandatory verdicts already have an absolute caller deadline and parent
-    // cancellation. Do not discard a paid verdict at 100s when its 120s final
-    // audit still has time. No extra retry; normal edit attempts stay bounded.
-    // The final verdict audit sets its own section limit (callLedger policy
-    // verdictCallLimitMs): a confirming verdict's permitted output cannot be
-    // received in 180s. Every other verdict keeps 180s.
+    // Keep F-01's preferred 270s verdict allowance when there is room. The
+    // measured full-output allowance below is always the minimum.
     || (accounting?.semanticVerdict ? verdictAttemptLimitMs() : accounting?.longAttempt ? 100000 : DEFAULT_TIMEOUT_MS));
-  const timeoutMs = Math.max(1000, Math.min(configured, Number.isFinite(remainingMs) ? remainingMs : configured));
+  // A window closes admission, not an in-flight protected response. Parent
+  // signals now carry only cancellation, lease loss or absolute job expiry.
+  const timeoutMs = protectedCall
+    ? Math.min(HTTP_ATTEMPT_CEILING_MS, Math.max(configured, accounting.timeBudget.requiredMs),
+      deadlines.job_deadline - admissionAt - DEADLINE_GUARD_MS)
+    : Math.max(1, Math.min(configured, remainingMs));
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   const onAbort = () => controller.abort();
   let rejectAbort;
   const aborted = new Promise((_, reject) => { rejectAbort = () => reject(abortError()); });
@@ -461,12 +493,21 @@ async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity,
       catch (error) { if (response.ok) throw error; payload = null; }
       settle(payload, response.ok);
       if (controller.signal.aborted) throw abortError();
+      if (protectedCall && response.ok) {
+        const overrun = Math.max(0, Date.now() - Math.min(deadlines.request_deadline, deadlines.recovery_deadline));
+        if (overrun > 0) {
+          accounting.windowCompletedCallCount++;
+          accounting.windowOverrunMs += overrun;
+          accounting.windowMaxOverrunMs = Math.max(accounting.windowMaxOverrunMs, overrun);
+        }
+      }
       return { ok: response.ok, status: response.status, statusText: response.statusText,
         headers: response.headers, json: async () => payload };
     })()]);
   } catch (err) {
     settle(null);
-    if (controller.signal.aborted && !parentSignal?.aborted) {
+    if (timedOut && !parentSignal?.aborted) {
+      if (timeoutMs === HTTP_ATTEMPT_CEILING_MS && accounting) accounting.httpCeilingTimeoutCount++;
       const timeoutError = new Error(`OpenAI Responses API request timed out after ${timeoutMs}ms`);
       timeoutError.code = 'ETIMEDOUT';
       timeoutError.retryable = true;
@@ -479,6 +520,12 @@ async function fetchWithTimeout(url, init, parentSignal, remainingMs = Infinity,
     controller.signal.removeEventListener('abort', rejectAbort);
     if (parentSignal) parentSignal.removeEventListener('abort', onAbort);
   }
+}
+
+// Numeric observations per logical call; physical completions are counted once.
+function timeObservations(accounting) {
+  return Object.fromEntries(['windowCompletedCallCount', 'windowOverrunMs', 'windowMaxOverrunMs',
+    'httpCeilingTimeoutCount'].map(key => [key, Number(accounting[key] || 0)]));
 }
 
 async function readErrorMessage(response) {
@@ -497,6 +544,7 @@ function backoffMs(attempt) {
 }
 
 function retryType(error) {
+  if (error?.retryable === false) return '';
   if (String(error?.code || '').toUpperCase() === 'OPENAI_QUOTA_EXHAUSTED'
       || isQuotaExhaustionMessage(error?.message)) return '';
   if (Number(error?.status) === 429) return 'rateLimit';

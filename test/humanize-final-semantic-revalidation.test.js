@@ -48,6 +48,7 @@ function installMock(t, options = {}) {
     const body = require('./helpers/responses-request.cjs')(init.body);
     const name = body.text?.format?.name;
     calls.push({ name, model: body.model, body });
+    await options.beforeResponse?.(require('../engine-gpt-prod/callLedger').current()?.policy?.stage, init.signal);
     if (name === 'gpt_prod_humanize_result') return apiResponse({
       outputText: typeof options.humanize === 'function' ? options.humanize(body) : options.humanize
     });
@@ -335,12 +336,19 @@ test('최종 심사 HTTP 실패는 완료로 표시하지 않고 검증된 후�
   }
 });
 
-for (const accept of [true, false]) test(`최종 관계 복구는 같은 기한 안에서 재검증하고 ${accept ? '새 pass만 채택한다' : '거절 시 실패를 숨기지 않는다'}`, { concurrency: false }, async t => {
+for (const accept of [true, false]) test(`최종 관계 복구는 창이 닫힌 뒤의 판정도 받아서 ${accept ? '새 pass만 채택한다' : '거절 시 실패를 숨기지 않는다'}`, { concurrency: false }, async t => {
   const unchanged = '마지막 단계에서는 측정 장비를 점검했습니다. 정리한 자료는 다음 실험에서도 참고할 수 있도록 보관했습니다.';
   const a = '전압 차이는 정상 범위 안에서 나타나는 차이를 의미합니다.';
   const b = '전압 차이는 정상 범위를 벗어난 정도를 의미합니다.';
   const source = SOURCE + ' ' + a + ' ' + unchanged;
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1800000000000});
+  t.after(()=>t.mock.timers.reset());
+  let delayed=0;
   const mock = installMock(t, {
+    beforeResponse: async(stage,signal)=>{
+      if(stage!=='final_relation_restoration_verification')return;
+      delayed++;await new Promise(resolve=>setTimeout(resolve,150000));assert.equal(signal.aborted,false);
+    },
     humanize: LATE_RESTORED_OUTPUT + ' ' + b + ' ' + unchanged,
     violation: (_body, call, rewrite) => {
       if (call < 2 || (!rewrite.includes(b) && accept)) return [];
@@ -350,7 +358,10 @@ for (const accept of [true, false]) test(`최종 관계 복구는 같은 기한 
         relation: 'condition_result', origin: 'introduced', detail: '범위 내 차이가 범위 이탈로 바뀌었다.' }];
     }
   });
-  const out = await engine.run({ text: source, mode: 'blog', config: config() });
+  let settled=false;
+  const pending=engine.run({text:source,mode:'blog',config:config()}).finally(()=>{settled=true;});
+  for(let i=0;i<4000&&!settled;i++){t.mock.timers.tick(100);await new Promise(resolve=>setImmediate(resolve));}
+  const out=await pending;assert.equal(delayed,1);
   assert.equal(out.engineMeta.finalRelationRestorationAttempted, true);
   assert.equal(out.engineMeta.finalSemanticRevalidationJudgeCallCount, mock.judgeCalls() - 1);
   assert.equal(mock.calls.filter(c => c.name === 'gpt_prod_judge_repair').length, 0);
@@ -359,6 +370,12 @@ for (const accept of [true, false]) test(`최종 관계 복구는 같은 기한 
   const restorationCalls = out.result.humanizeMeta.callLedger.entries
     .filter(e => e.stage === 'final_relation_restoration_verification');
   assert.equal(restorationCalls.length, 1);
+  assert.equal(restorationCalls[0].httpAttemptCount,1);
+  assert.equal(restorationCalls[0].windowCompletedCallCount,1);
+  assert.ok(restorationCalls[0].windowOverrunMs>=30000);
+  assert.equal(out.engineMeta.callWindowCompletedCount,1);
+  assert.equal(out.engineMeta.callWindowOverrunMs,restorationCalls[0].windowOverrunMs);
+  assert.equal(out.engineMeta.callAdmissionSkippedCount,0);
   const finalJudgeCall = mock.calls.filter(c => c.name === 'gpt_prod_semantic_judge').at(-1);
   assert.equal(finalJudgeCall.model, config().models.judgeEscalation);
   assert.equal(extractPromptDataSection(finalJudgeCall.body.input, 'REWRITE').includes(a), true);

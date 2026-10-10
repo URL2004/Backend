@@ -701,13 +701,14 @@ test('schedule diagnostics: receipt-driven base plan and disabled store are name
   });
 });
 
-test('schedule diagnostics: shared deadline abort is a timeout of both concurrent windows, not a pass', async () => {
+test('schedule diagnostics: absolute parent timeout still interrupts both concurrent verdicts', async () => {
   await withAudit(async ({ run, state }) => {
     state.verdict = (_src, _text, options) => new Promise((_, reject) => {
       options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError',
         usage: { inputTokens: 7 } })), { once: true });
     });
-    const final = await run(SOURCE, { allowRepair: false, discourseSignals: FINAL_MARKERS, deadlineMs: Date.now() + 60 });
+    const final = await run(SOURCE, { allowRepair: false, discourseSignals: FINAL_MARKERS,
+      signal: AbortSignal.timeout(60), deadlineMs: Date.now() + 60000 });
     const d = final.scheduleDiagnostics;
     assert.equal(final.pass, false);
     assert.equal(final.verificationCompleted, false);
@@ -720,12 +721,12 @@ test('schedule diagnostics: shared deadline abort is a timeout of both concurren
       assert.equal(w.inputTokens, 7);
       // Both windows started before the deadline: the budget was spent in
       // flight, not in a queue.
-      assert.ok(w.queuedMs < 60 && w.remainingMsAtStart > 0);
+      assert.ok(w.queuedMs < 60000 && w.remainingMsAtStart > 0);
     }
     assert.equal(d.admittedWindowCount, 2);
     assert.equal(d.outcomeCounts.deadline_timeout, 2);
     assert.equal(d.outcomeCounts.pass, 0);
-    assert.ok(d.minRemainingMsAtStart > 0 && d.minRemainingMsAtStart <= 60);
+    assert.ok(d.minRemainingMsAtStart > 0 && d.minRemainingMsAtStart <= 60000);
     assert.equal(d.overflowWindowCount, 0);
     assertNoText(d);
   });
@@ -792,4 +793,28 @@ test('schedule recorder is text-free and tolerant of unknown values', () => {
   assert.equal(bounded.outcomeCounts.pass, many.length);
   assert.equal(bounded.admittedWindowCount, many.length);
   assert.equal(bounded.planKind, 'base_heading');
+});
+
+test('shared audit window keeps in-flight passes and receipts, but starts no queued verdict after closure', async t => {
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1800000000000});
+  t.after(()=>t.mock.timers.reset());
+  await withAudit(async ({run,calls,state})=>{
+    const store=receipts.createReceiptStore(), controller=new AbortController();
+    state.verdict=async(_src,_text,options)=>{
+      await new Promise(resolve=>setTimeout(resolve,120000));
+      assert.equal(options.signal.aborted,false);return {pass:true};
+    };
+    const pending=run(SOURCE,{allowRepair:true,deadlineMs:Date.now()+60000,signal:controller.signal,receiptStore:store});
+    for(let i=0;i<30;i++)await Promise.resolve();
+    assert.equal(calls.length,2);t.mock.timers.tick(120000);
+    const out=await pending;
+    assert.equal(calls.length,2);assert.equal(out.progress.completedSections,2);
+    assert.equal(out.pass,false);assert.equal(out.verificationCompleted,false);
+    assert.equal(out.scheduleDiagnostics.aborted,false);
+    assert.deepEqual(out.reports.map(r=>r.pass),[true,true,false,false]);
+    assert.ok(out.reports.slice(2).every(r=>r.reason==='audit_window_closed_before_section'));
+    assert.equal(out.scheduleDiagnostics.outcomeCounts.pass,2);
+    assert.equal(out.scheduleDiagnostics.outcomeCounts.deadline_timeout,2);
+    assert.equal(store.size,2,'late completed passes mint receipts');
+  });
 });

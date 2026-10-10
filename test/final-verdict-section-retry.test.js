@@ -53,10 +53,10 @@ test('every section owns a full limit instead of the remainder of a shared deadl
   assert.deepEqual(result, { sectionLimitMs: 270000, retriedSections: 0 });
 });
 
-test('a section past its limit is cut alone and asked once more; finished sections are not', async t => {
+test('a section past its start window finishes without being asked again', async t => {
   clock(t);
   const attempts = new Map(), done = new Set(), reasons = [];
-  const needed = (index, attempt) => index === 1 && attempt === 1 ? 400000 : 90000;
+  const needed = (index, attempt) => index === 1 && attempt === 1 ? 280000 : 90000;
   const worker = async (item, signal) => {
     const attempt = (attempts.get(item.index) || 0) + 1;
     attempts.set(item.index, attempt);
@@ -66,12 +66,11 @@ test('a section past its limit is cut alone and asked once more; finished sectio
   const t0 = Date.now();
   const result = await drive(t, schedule.runSectionSchedule({ schedule: items(3), allowRepair: false, policy: POLICY,
     isUnfinished: index => !done.has(index) }, worker));
-  assert.deepEqual([...attempts], [[0, 1], [1, 2], [2, 1]]);
-  assert.deepEqual(reasons.map(r => [r[0], r[1], r[2] - t0]), [[1, 'TimeoutError', 270000]]);
+  assert.deepEqual([...attempts], [[0, 1], [1, 1], [2, 1]]);
+  assert.deepEqual(reasons.map(r => [r[0], r[1], r[2] - t0]), []);
   assert.deepEqual([...done].sort(), [0, 1, 2]);
-  assert.deepEqual(result, { sectionLimitMs: 270000, retriedSections: 1 });
-  // 270s (cut) + 90s (retry): the retry had its own limit.
-  assert.equal(Date.now() - t0, 360000);
+  assert.deepEqual(result, { sectionLimitMs: 270000, retriedSections: 0 });
+  assert.equal(Date.now() - t0, 280000);
 });
 
 test('a section that fails twice is not asked a third time', async t => {
@@ -79,14 +78,14 @@ test('a section that fails twice is not asked a third time', async t => {
   const attempts = new Map();
   const worker = async (item, signal) => {
     attempts.set(item.index, (attempts.get(item.index) || 0) + 1);
-    try { await sleep(Infinity, signal); } catch { /* cut by its limit */ }
+    await sleep(290000, signal); // stand-in for the HTTP client's own timeout
   };
   const t0 = Date.now();
   const result = await drive(t, schedule.runSectionSchedule({ schedule: items(1), allowRepair: false, policy: POLICY,
     isUnfinished: () => true }, worker));
   assert.deepEqual([...attempts], [[0, 2]]);
   assert.equal(result.retriedSections, 1);
-  assert.equal(Date.now() - t0, 540000);
+  assert.equal(Date.now() - t0, 580000);
 });
 
 test('most sections failing is an outage: no second limit is spent on it', async t => {
@@ -94,14 +93,14 @@ test('most sections failing is an outage: no second limit is spent on it', async
   const attempts = new Map();
   const worker = async (item, signal) => {
     attempts.set(item.index, (attempts.get(item.index) || 0) + 1);
-    try { await sleep(Infinity, signal); } catch { /* cut by its limit */ }
+    await sleep(290000, signal); // stand-in for the HTTP client's own timeout
   };
   const t0 = Date.now();
   const result = await drive(t, schedule.runSectionSchedule({ schedule: items(4), allowRepair: false, policy: POLICY,
     isUnfinished: () => true }, worker));
   assert.deepEqual([...attempts.values()], [1, 1, 1, 1]);
   assert.equal(result.retriedSections, 0);
-  assert.equal(Date.now() - t0, 540000, 'two waves of one limit each');
+  assert.equal(Date.now() - t0, 580000, 'two waves of one limit each');
 });
 
 test('the audit signal still cancels every section and prevents the retry', async t => {

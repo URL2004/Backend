@@ -8,12 +8,12 @@ const ledger=require('../engine-gpt-prod/callLedger');
 // F-01: a final verdict request used to be cut at the 120s/180s audit deadline
 // (or the fixed 180s request limit). The final audit now runs under its verdict
 // policy: one request may take the 270s section limit, still one attempt, and
-// the job deadline still wins when it is closer. A verdict outside that policy
-// keeps the 180s request limit.
+// a near job deadline denies the send. Outside that policy the full output
+// allowance is 240s (20s + 10,000 * 22ms), with no timeout retry.
 // [chars, job remaining, use the final verdict policy, expected cut, cut by]
 for(const [chars,jobRemaining,finalPolicy,expected,cutBy] of [
  [6000,5000000,true,270000,'request'],[6001,5000000,true,270000,'request'],[20000,5000000,true,270000,'request'],
- [8000,90000,true,90000,'job'],[6000,5000000,false,180000,'request']])
+ [8000,90000,true,90000,'job'],[6000,5000000,false,240000,'request']])
 test(`final transport ${chars} chars / job ${jobRemaining}ms / policy ${finalPolicy} stays one attempt`,{concurrency:false},async t=>{
  const oldFetch=global.fetch,keys=['OPENAI_API_KEY','OPENAI_API_TIMEOUT_MS','OPENAI_CHUNK_TOTAL_TIMEOUT_MS'];
  const env=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
@@ -30,9 +30,14 @@ test(`final transport ${chars} chars / job ${jobRemaining}ms / policy ${finalPol
   maxOutputTokens:10000,signal:controller.signal,deadlineMs,meta:{task:'judge',phase:'primary:semantic'},
   schema:{type:'object',additionalProperties:false,properties:{value:{type:'string'}},required:['value']}
  });
- const pending=ledger.run(()=>finalPolicy?ledger.withPolicy(policy.verdictPolicy,request):request())
+ const pending=ledger.run(()=>ledger.withPolicy({jobDeadlineMs:Date.now()+jobRemaining},()=>finalPolicy?ledger.withPolicy(policy.verdictPolicy,request):request()))
   .then(()=>{throw Error('unexpected success');},error=>{finished=true;return error;});
  for(let i=0;i<20&&calls===0;i++)await new Promise(resolve=>setImmediate(resolve));
+ if(cutBy==='job'){
+   const error=await pending;assert.equal(calls,0);assert.equal(error.admissionSkipped,true);
+   assert.equal(error.httpAttemptCount,0);assert.equal(error.unknownUsageCount,0);
+   assert.equal(controller.signal.aborted,false);return;
+ }
  assert.equal(calls,1);t.mock.timers.tick(expected-1);
  for(let i=0;i<20;i++)await new Promise(resolve=>setImmediate(resolve));
  assert.equal(finished,false);assert.equal(controller.signal.aborted,false);

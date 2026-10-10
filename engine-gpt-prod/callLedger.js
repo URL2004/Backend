@@ -15,6 +15,12 @@ function current() { return storage.getStore(); }
 function withPolicy(policy, fn) {
   const parent = current();
   const defined = Object.fromEntries(Object.entries(policy).filter(([, value]) => value !== undefined));
+  // A nested audit/section can narrow a deadline, never renew its parent's
+  // allowance. Keep the absolute job deadline separately for admission.
+  for (const key of ['deadlineMs', 'jobDeadlineMs']) {
+    const limit = Math.min(Number(parent?.policy?.[key]) || Infinity, Number(defined[key]) || Infinity);
+    if (Number.isFinite(limit)) defined[key] = limit;
+  }
   return parent ? storage.run({ ...parent, policy: { ...parent.policy, ...defined } }, fn) : fn();
 }
 async function run(fn, attach) {
@@ -38,13 +44,15 @@ async function track(options, fn) {
   store.entries.push(entry);
   const endMandatoryAudit = store.policy.optional === false && options.meta?.task === 'judge'
     ? store.recoveryBudget?.beginMandatoryAudit?.() : null;
-  const deadline = Math.min(Number(options.deadlineMs) || Infinity, Number(store.policy.deadlineMs) || Infinity);
+  const deadline = Math.min(Number(options.deadlineMs) || Infinity, Number(store.policy.deadlineMs) || Infinity,
+    Number(store.policy.jobDeadlineMs) || Infinity);
   try {
     const result = await fn({ ...options, ...(Number.isFinite(deadline) ? { deadlineMs: deadline } : {}) });
     Object.assign(entry, { outcome: 'success', usage: result.usage ? { ...result.usage } : null, usageKnown: result.usage != null && !result.unknownUsageCount,
       unknownUsageCount: Number(result.unknownUsageCount || 0), unknownEstimatedUsd: Number(result.unknownEstimatedUsd || 0),
       failedEstimatedUsd: Number(result.failedEstimatedUsd || 0),
       retryCounts: { ...result.retryCounts }, httpAttemptCount: result.httpAttemptCount || 0 });
+    recordAdmission(entry, result);
     return result;
   } catch (error) {
     Object.assign(entry, { outcome: error.refusal || error.code === 'OPENAI_REFUSAL' ? 'refused' : 'failed', usage: error.usage ? { ...error.usage } : null,
@@ -52,16 +60,38 @@ async function track(options, fn) {
       unknownUsageCount: Number(error.unknownUsageCount || 0), unknownEstimatedUsd: Number(error.unknownEstimatedUsd || 0),
       failedEstimatedUsd: Number(error.failedEstimatedUsd || 0),
       code: safe(error.code || error.name), retryCounts: { ...error.retryCounts }, httpAttemptCount: error.httpAttemptCount || 0 });
+    recordAdmission(entry, error);
     throw error;
   } finally {
     endMandatoryAudit?.(); entry.elapsedMs = Date.now() - started; Object.freeze(entry);
     try { observers.getStore()?.checkpoint?.(snapshot({ ...store, entries: [entry], layoutMetrics: [] })); } catch { /* Worker observation is best effort. */ }
   }
 }
+function recordAdmission(entry, result) {
+  for (const key of ['windowCompletedCallCount', 'windowOverrunMs', 'windowMaxOverrunMs', 'httpCeilingTimeoutCount'])
+    entry[key] = Math.max(0, Number(result[key]) || 0);
+  if (result.timeBudget?.protectedCall) {
+    entry.maxOutputTokens = result.timeBudget.outputTokens;
+    entry.requiredAttemptMs = result.timeBudget.requiredMs;
+  }
+  if (result.admissionSkipped === true) {
+    entry.admissionSkipped = true;
+    entry.admissionReason = safe(result.admissionReason);
+    entry.remainingAttemptMs = result.remainingAttemptMs ?? null;
+  }
+}
 function snapshot(store = current()) {
   const entries = (store?.entries || []).filter(entry => entry.outcome !== 'pending');
   const executed = entries.filter(entry => entry.httpAttemptCount > 0);
   return { version: 1, modelCallCount: executed.length, notExecutedCallCount: entries.length - executed.length,
+    windowCompletedCallCount: entries.reduce((n, e) => n + Number(e.windowCompletedCallCount || 0), 0),
+    windowOverrunMs: entries.reduce((n, e) => n + Number(e.windowOverrunMs || 0), 0),
+    windowMaxOverrunMs: entries.reduce((n, e) => Math.max(n, Number(e.windowMaxOverrunMs || 0)), 0),
+    httpCeilingTimeoutCount: entries.reduce((n, e) => n + Number(e.httpCeilingTimeoutCount || 0), 0),
+    admissionSkippedCallCount: entries.filter(entry => entry.admissionSkipped).length,
+    admissionSkippedReasonCounts: entries.filter(entry => entry.admissionSkipped).reduce((counts, entry) => {
+      counts[entry.admissionReason] = (counts[entry.admissionReason] || 0) + 1; return counts;
+    }, {}),
     semanticModelCallCount: executed.filter(entry => entry.task === 'judge').length,
     layout: { callCount: store?.layoutMetrics.length || 0,
       elapsedMs: (store?.layoutMetrics || []).reduce((sum, item) => sum + item.elapsedMs, 0),

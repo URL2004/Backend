@@ -402,12 +402,14 @@ async function runSemanticDocumentAudit(options) {
     ])] };
   }
   const deadlineMs = Number(options.deadlineMs) || undefined;
-  const remaining = deadlineMs ? Math.max(1, deadlineMs - Date.now()) : 0;
-  const signal = remaining ? AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(remaining)]) : options.signal;
-  return require('./callLedger').withPolicy({ optional: options.optional === true, deadlineMs,
+  const signal = options.signal;
+  // Preserve an admission context even for standalone audits. Window expiry
+  // must never masquerade as user cancellation or discard an arriving verdict.
+  const ledger = require('./callLedger');
+  return ledger.run(() => ledger.withPolicy({ optional: options.optional === true, deadlineMs,
     stage: options.auditStage === 'final_relation_restoration_verification'
       ? options.auditStage : (options.allowRepair === false ? 'final_semantic_revalidation' : 'semantic_document') },
-  () => runSemanticDocumentAuditInternal({ ...options, signal }));
+  () => runSemanticDocumentAuditInternal({ ...options, signal })));
 }
 
 async function runSemanticDocumentAuditInternal({
@@ -443,8 +445,7 @@ async function runSemanticDocumentAuditInternal({
   // learns that the final confirming verdict is required, so the caller's
   // job-scoped requirement is established even if this audit later throws.
   onConfirmationRequired = null,
-  // Absolute deadline already applied to `signal` by runSemanticDocumentAudit.
-  // Read only for scheduling diagnostics; it never changes a request.
+  // Admission window, separate from the caller's absolute cancellation signal.
   deadlineMs = undefined
 }) {
   const receipts = receiptStore ? require('./semanticSegmentReceipts') : null;
@@ -545,8 +546,8 @@ async function runSemanticDocumentAuditInternal({
   // indices still own every output/report; concurrency and deadline are unchanged.
   const schedule = require('./semanticAuditSchedule').scheduleReviewPairs(pairs, allowRepair);
   // The section body below is unchanged. `signal` inside it is the section's
-  // own signal: the audit signal, plus the per-section limit when the caller
-  // set a final verdict schedule (semanticAuditSchedule.runSectionSchedule).
+  // cancellation signal. The per-section window is carried by ledger policy
+  // and only stops new requests (semanticAuditSchedule.runSectionSchedule).
   // A verdict-only section that ended without a verdict is asked once more.
   await require('./semanticAuditSchedule').runSectionSchedule({ schedule, concurrency: 2, signal, allowRepair,
     isUnfinished: index => reports[index]?.started === true && reports[index].verificationCompleted !== true
@@ -606,12 +607,12 @@ async function runSemanticDocumentAuditInternal({
     // Passing signal to the outer mapper used to throw between sections,
     // discarding all already-completed reports. No new model request starts
     // after cancellation; untouched sections keep their exact original text.
-    if (signal?.aborted) {
+    if (signal?.aborted || Date.now() >= (Number(require('./callLedger').current()?.policy?.deadlineMs) || Infinity)) {
       outputs[index] = pair.output;
       reports[index] = { index: pair.index, verificationCompleted: false,
         pass: false, uncertain: true, skipped: true, started: false,
-        reason: 'audit_cancelled_before_section', rounds: 0, violations: [], usage: null, elapsedMs: 0 };
-      trace(r => r.finish(index, { outcome: 'cancelled_before_start' }));
+        reason: signal?.aborted ? 'audit_cancelled_before_section' : 'audit_window_closed_before_section', rounds: 0, violations: [], usage: null, elapsedMs: 0 };
+      trace(r => r.finish(index, { outcome: signal?.aborted ? 'cancelled_before_start' : 'deadline_timeout' }));
       return;
     }
     let verifyCount = 0;
@@ -776,7 +777,7 @@ async function runSemanticDocumentAuditInternal({
           verificationCompleted: false
         } : null,
         violations: [], usage: error.usage || null };
-      trace(r => r.finish(index, { outcome: require('./semanticAuditSchedule').errorOutcome(signal), error, verifyCount }));
+      trace(r => r.finish(index, { outcome: require('./semanticAuditSchedule').errorOutcome(signal, error), error, verifyCount }));
     }
   });
   // B. Explicit confirmation of the remaining sections, in the final's exact

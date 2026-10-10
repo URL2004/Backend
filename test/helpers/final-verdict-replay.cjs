@@ -99,6 +99,7 @@ async function replayFinalVerdict(t, { windows, shape = 'policy', legacyLimitMs 
       reasoning: { judge: 'medium', escalation: 'high', repair: 'medium' } };
     const caller = new AbortController();
     if (abortAfterMs > 0) setTimeout(() => caller.abort(abortError()), abortAfterMs);
+    setTimeout(() => caller.abort(new DOMException('Job deadline', 'TimeoutError')), jobRemainingMs);
     const startedAt = Date.now();
     let report, error, settled = false, policy = null;
     ledger.run(async () => {
@@ -109,8 +110,10 @@ async function replayFinalVerdict(t, { windows, shape = 'policy', legacyLimitMs 
       if (preludeMs > 0) await sleep(preludeMs);
       const options = { source, outputText: candidate, config, mode: 'assignment', allowRepair: false, signal: caller.signal,
         discourseSignals: ['final_semantic_revalidation', 'prior_failed_semantic_confirmation'] };
-      if (shape === 'legacy') return audit({ ...options, deadlineMs: Math.min(finalAuditStartedAt + jobRemainingMs,
-        finalAuditStartedAt + legacyLimitMs) });
+      if (shape === 'legacy') {
+        const deadlineMs = Math.min(finalAuditStartedAt + jobRemainingMs, finalAuditStartedAt + legacyLimitMs);
+        return audit({ ...options, signal: AbortSignal.any([caller.signal, AbortSignal.timeout(Math.max(1, deadlineMs-Date.now()))]), deadlineMs });
+      }
       return ledger.withPolicy(policy.verdictPolicy,
         () => audit({ ...options, deadlineMs: policy.verdictDeadlineMs(Date.now()) }));
     }).then(value => { report = value; settled = true; }, e => { error = e; settled = true; });

@@ -27,8 +27,8 @@ function scheduleReviewPairs(pairs, allowRepair = true) {
 // 10,000-16,000 tokens (semanticReviewEnvelope), i.e. 198-315s, while the final
 // audit allowed 120s (<= 6,000 chars) or one 180s shared by every section.
 // 36% of confirming calls were still running at 120s and 11% at 180s.
-// The limit below is the time ONE section's verdict may take. It stays under
-// the HTTP client's 300s response-header limit; nothing about the model,
+// The limit below is ONE section's start window. An admitted request keeps
+// its own HTTP allowance (at most 290s); nothing about the model,
 // effort, prompt, output envelope or verdict tier changes.
 const FINAL_VERDICT_SECTION_LIMIT_MS = 270000;
 const FINAL_VERDICT_CONCURRENCY = 2;
@@ -92,21 +92,13 @@ async function runSectionSchedule({ schedule = [], concurrency = FINAL_VERDICT_C
   }
   const ledger = require('./callLedger');
   const runSection = async item => {
-    const controller = new AbortController();
-    const forward = () => controller.abort(signal.reason);
-    if (signal?.aborted) forward(); else signal?.addEventListener('abort', forward, { once: true });
-    const timer = setTimeout(() => controller.abort(new DOMException('Final verdict section limit', 'TimeoutError')),
-      active.sectionLimitMs);
-    try {
-      const outer = Number(ledger.current()?.policy?.deadlineMs);
-      const sectionDeadline = Date.now() + active.sectionLimitMs;
-      return await ledger.withPolicy({ verdictCallLimitMs: active.sectionLimitMs,
-        deadlineMs: Number.isFinite(outer) && outer > 0 ? Math.min(outer, sectionDeadline) : sectionDeadline },
-      () => worker(item, controller.signal));
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', forward);
-    }
+    // 270s is a start window, not an AbortSignal. The HTTP client owns the
+    // admitted call's timer; the original signal retains absolute cancellation.
+    const outer = Number(ledger.current()?.policy?.deadlineMs);
+    const sectionDeadline = Date.now() + active.sectionLimitMs;
+    return ledger.run(() => ledger.withPolicy({ verdictCallLimitMs: active.sectionLimitMs,
+      deadlineMs: Number.isFinite(outer) && outer > 0 ? Math.min(outer, sectionDeadline) : sectionDeadline },
+    () => worker(item, signal)));
   };
   await map(schedule, concurrency, runSection);
   let retriedSections = 0;
@@ -256,8 +248,8 @@ function outcomeFor(report) {
   if (report.uncertain || report.skipped || report.verificationCompleted === false) return 'uncertain';
   return 'fail';
 }
-function errorOutcome(signal) {
-  if (!signal?.aborted) return 'error';
+function errorOutcome(signal, error) {
+  if (!signal?.aborted) return ['ETIMEDOUT', 'OPENAI_CHUNK_TIMEOUT'].includes(error?.code) ? 'deadline_timeout' : 'error';
   return signal.reason?.name === 'TimeoutError' ? 'deadline_timeout' : 'cancelled';
 }
 

@@ -4737,6 +4737,7 @@ async function runEngine({
   }
   result.engineMeta = {
     inputStatus: result.inputStatus,
+    ...(sourcePreflightAudit?.engineMeta || {}),
     ...require('./auditTrace').compactAuditTrace({ encodingNormalization: sourcePreflightAudit?.encodingNormalization }),
     sourceNormalization: require('./auditTrace').sourceNormalization(submittedSource, rawSource, integritySource),
     finalValidationReceipt: require('./auditTrace').finalValidationReceipt(

@@ -695,6 +695,10 @@ function extractDocumentQuoteWrapper(value) {
 function repairInlineHeadingBoundaries(value) {
   const source = String(value || '');
   const lines = source.split('\n');
+  // Decide table ownership before interpreting punctuation or circled cell
+  // values as headings. Use the same contextual roles as the chunk planner.
+  const tableLines = new Set(layoutStructure.buildLineRecords(source)
+    .filter(row => row.role === 'table').map(row => row.index));
   const multilineQuotes = require('../engine/textSyntax').syntaxSpans(source)
     .filter(s => s.spanType === 'quote' && source.slice(s.start,s.end).includes('\n'));
   let offset = 0;
@@ -711,7 +715,7 @@ function repairInlineHeadingBoundaries(value) {
       output.push(line);
       return;
     }
-    if (fence || isWholeQuotedLine(line)
+    if (fence || tableLines.has(index) || isWholeQuotedLine(line)
         || multilineQuotes.some(s => s.start < lineStart + line.length && s.end > lineStart)) {
       output.push(line);
       return;

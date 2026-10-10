@@ -56,7 +56,8 @@ logger.warn/error(event, fields)
 | 이벤트 | 뜻 | 로그에서 볼 것 |
 |---|---|---|
 | `transform.duplicate_input_blocked` | 같은 내용이 반복된 입력을 차감 전 400으로 막음 | `dupMethod`(paragraph_repeat / half_window), `dupRatio`, `repeatedBlocks`, `textDigest`(같은 글 반복 여부) |
-| `transform.no_editable_content` | 표·제목·참고문헌 같은 보존 구조만 있어 422 | `lockTypes`(잠금 종류별 청크 수), `documentProfile`, `textDigest` |
+| `transform.no_editable_content` | 표·제목·참고문헌 같은 보존 구조만 있어 422 | `lockTypes`(잠금 종류별 청크 수), `lockCharShare`(종류별 잠금 글자 수/전체 원문 글자 수), `dominantLockType`(가장 큰 잠금 종류), `dominantLockShare`(그 잠금의 원문 대비 글자 비율), `uid`, `documentProfile`, `textDigest` |
+| `transform.precheck_failed` | 인증 후 잔액·쿠폰 사전 검사 실패 | `uid`(인증된 사용자 식별), `mode`, `billingMode`, `needed`, `creditNeeded`, `err` |
 | `transform.humanize_blocked` | 품질 게이트가 결과 전달을 막음(무차감) | `gates`, `gateDetail` |
 | `transform.humanize_technical_recovery_queued` | 모델 타임아웃 등으로 자동 재시도 큐에 넣음 | `reason`, 이후 `humanize_done` 유무 |
 | `transform.restart_recovery_queued` | 배포·재시작으로 끊긴 작업을 자동 재개 | 배포 직후 1~2건은 정상 |
@@ -273,7 +274,8 @@ curl --fail-with-body --silent --show-error --variable %CRON_SECRET --expand-hea
 | `transform.credit_deduct_failed_manual_action` | 결과 생성 후 차감 실패. 수동 확인 필요 |
 | `transform.cancelled_by_user` | 사용자 취소 |
 | `transform.duplicate_input_blocked` | 중복 입력 차단(무차감). `method`·`textDigest`로 오탐·반복 판단 |
-| `transform.no_editable_content` | 편집할 본문 없음 422(무차감). `lockTypes`로 오분류 판단 |
+| `transform.no_editable_content` | 편집할 본문 없음 422(무차감). `uid`, `lockTypes`, `lockCharShare`, `dominantLockType`, `dominantLockShare`로 사용자와 잠금 오분류 판단 |
+| `transform.precheck_failed` | 잔액·쿠폰 사전 검사 실패. `uid`로 인증된 사용자 식별(이메일·이름 제외) |
 | `transform.humanize_blocked` | 품질 게이트 차단(무차감). `gates` |
 | `transform.humanize_technical_recovery_queued` | 모델 타임아웃 등 기술 원인 자동 재시도 |
 | `transform.restart_recovery_queued` | 재시작으로 끊긴 작업 자동 재개 |

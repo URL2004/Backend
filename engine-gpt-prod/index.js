@@ -4425,6 +4425,13 @@ async function runEngine({
             : 'Model calls completed, but no approved edit remained after safety recovery.')
     });
   }
+  // F-03: 아래 확정 누락 판정이 왜 걸리거나 걸리지 않는지 조건별로 남긴다. 관측만
+  // 하며 판정에는 쓰지 않는다. 구절 본문 없이 개수·길이·짧은 해시·겹침 비율만 담는다.
+  let confirmedOmissionGate = null;
+  try {
+    confirmedOmissionGate = require('./confirmedDeliveryIntegrity').explainConfirmedOmissions(
+      rawSource, outputText, semanticReportForCandidate(semanticReport), semanticRestorationEvidence);
+  } catch { confirmedOmissionGate = null; }
   const confirmedMissingClaims = require('./confirmedDeliveryIntegrity').confirmedOmissions(
     rawSource, outputText, semanticReportForCandidate(semanticReport), semanticRestorationEvidence);
   if (confirmedMissingClaims.length) addFloorCriticals(result.floorReport, [{
@@ -4749,6 +4756,7 @@ async function runEngine({
     finalSemanticRevalidationElapsedMs: Number(finalSemanticRevalidation.elapsedMs || 0),
     finalSemanticRevalidationLimitMs: Number(finalSemanticRevalidation.limitMs || 0),
     finalSemanticScheduleDiagnostics: finalSemanticRevalidation.scheduleDiagnostics || null,
+    confirmedOmissionGate,
     finalSemanticExpectedSections: Number(finalSemanticRevalidation.progress?.expectedSections || 0),
     finalSemanticStartedSections: Number(finalSemanticRevalidation.progress?.startedSections || 0),
     finalSemanticCompletedSections: Number(finalSemanticRevalidation.progress?.completedSections || 0),

@@ -58,14 +58,19 @@ test('optional judge effort is omitted on read/save until valid; same normalizat
   }
 });
 
-test('Firestore overrides env; missing optional key preserves env or follows merged escalation', async t => {
+test('Firestore overrides env; missing optional key takes the env value or the production default', async t => {
   const names = ['OPENAI_REASONING_JUDGE_ESCALATION', 'OPENAI_REASONING_ESCALATION'];
   const old = names.map(n => process.env[n]);
   t.after(() => { names.forEach((n, i) => old[i] === undefined ? delete process.env[n] : process.env[n] = old[i]); runtime.clearRuntimeConfigCache(); });
   process.env.OPENAI_REASONING_ESCALATION = 'low';
   const cases = [
-    [undefined, {}, undefined, 'low'],
-    [undefined, { escalation: 'xhigh' }, undefined, 'xhigh'],
+    // 환경변수가 없으면 운영 기본값 medium(2026-10-11 결정). escalation을 따르지 않는다.
+    [undefined, {}, 'medium', 'low'],
+    [undefined, { escalation: 'xhigh' }, 'medium', 'xhigh'],
+    // 허용되지 않는 값을 주면 키가 빠지고 escalation을 따른다(이전 동작으로 돌아가는 방법).
+    ['inherit', {}, undefined, 'low'],
+    ['inherit', { escalation: 'xhigh' }, undefined, 'xhigh'],
+    ['high', {}, 'high', 'low'],
     ['medium', { escalation: 'xhigh' }, 'medium', 'xhigh'],
     ['medium', { judgeEscalation: 'high' }, 'high', 'low'],
     ['high', { judgeEscalation: ' MINIMAL ' }, 'low', 'low'],

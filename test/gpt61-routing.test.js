@@ -17,7 +17,8 @@ test('stored Sol roles migrate to 6.1 without changing Luna, efforts or routing 
   const db = { collection: () => ({ doc: () => ({ get: async () => ({ exists: true, data: () => stored }) }) }) };
   const actual = await runtime.getRuntimeConfig({ db, force: true });
   assert.deepEqual(actual.models, runtime.DEFAULT_CONFIG.models);
-  assert.deepEqual(actual.reasoning, stored.reasoning);
+  // 저장된 강도는 그대로다. 저장 설정에 없는 확인 판정 강도만 운영 기본값(medium)을 받는다.
+  assert.deepEqual(actual.reasoning, { ...stored.reasoning, judgeEscalation: 'medium' });
   assert.deepEqual(actual.cache, stored.cache);
   assert.deepEqual(actual.escalation, stored.escalation);
   const old = process.env.OPENAI_MODEL_MAIN;

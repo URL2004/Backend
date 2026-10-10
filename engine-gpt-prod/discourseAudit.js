@@ -998,6 +998,63 @@ function isDiscourseViolationCode(value) {
   return VIOLATION_CODES.includes(String(value || ''));
 }
 
+// ---------------------------------------------------------------------------
+// 문두 접속·순서 표지 삭제 관측값 (기록 전용, 경고·재시도·전달 상태에 연결하지 않음)
+//
+// 원문 문장 첫머리의 "먼저/또한/따라서/결론적으로/그러나/즉/예를 들어" 같은
+// 표지가 대응 결과 문장에서 사라진 횟수를 센다(2026-10-09 H0117 17곳, H0074 3곳).
+// 결과 문장이 다른 표지로 시작하면 교체, 대응 문장을 찾지 못하면 미정렬로 따로 센다.
+// ---------------------------------------------------------------------------
+const LEADING_CONNECTOR_VERSION = 1;
+const LEADING_CONNECTOR_PATTERN = /^[\s"'“‘(\[]*(먼저|우선|또한|그리고|따라서|그러므로|그래서|결론적으로|결국|그러나|하지만|그런데|반면에|반면|즉|예를\s*들어|예컨대|마지막으로|다음으로|한편|특히|첫째|둘째|셋째|넷째|다섯째)(?=$|[\s,，])/u;
+
+function leadingConnectorOf(sentence) {
+  const match = String(sentence || '').match(LEADING_CONNECTOR_PATTERN);
+  return match ? match[1].replace(/\s+/gu, ' ') : '';
+}
+
+function countLeadingConnectorRemovals(source, outputText) {
+  const sourceSentences = splitSentences(String(source || ''));
+  const outputSentences = splitSentences(String(outputText || ''));
+  const removedByMarker = {};
+  let sourceMarkedCount = 0;
+  let retainedCount = 0;
+  let replacedCount = 0;
+  let removedCount = 0;
+  let unalignedCount = 0;
+  sourceSentences.forEach((sentence, index) => {
+    const marker = leadingConnectorOf(sentence);
+    if (!marker) return;
+    sourceMarkedCount += 1;
+    const alignment = outputSentences.length
+      ? alignSourceSentence(sentence, index, sourceSentences.length, outputSentences, { window: 3, maxOutputGroup: 2 })
+      : null;
+    if (!alignment || Number(alignment.score || 0) < 0.2) {
+      unalignedCount += 1;
+      return;
+    }
+    const outputMarker = leadingConnectorOf(alignment.text);
+    if (outputMarker === marker) {
+      retainedCount += 1;
+    } else if (outputMarker) {
+      replacedCount += 1;
+    } else {
+      removedCount += 1;
+      removedByMarker[marker] = (removedByMarker[marker] || 0) + 1;
+    }
+  });
+  return {
+    version: LEADING_CONNECTOR_VERSION,
+    sourceMarkedCount,
+    retainedCount,
+    replacedCount,
+    removedCount,
+    unalignedCount,
+    removedRatio: round4(sourceMarkedCount ? removedCount / sourceMarkedCount : 0),
+    removedByMarker
+  };
+}
+
 module.exports = {
   VERSION,
   VIOLATION_CODES,
@@ -1016,5 +1073,7 @@ module.exports = {
   introducedReflectionOutputOrdinals,
   introducedStrongModifierOutputOrdinals,
   restoreIntroducedEvaluationSentences,
-  restoreIntroducedIntensitySentences
+  restoreIntroducedIntensitySentences,
+  countLeadingConnectorRemovals,
+  leadingConnectorOf
 };

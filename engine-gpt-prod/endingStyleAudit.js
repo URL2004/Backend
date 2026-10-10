@@ -372,6 +372,123 @@ function normalizedSentenceKey(value) {
   return String(value || '').normalize('NFKC').toLowerCase().replace(/[^가-힣a-z0-9]/gu, '');
 }
 
+// ---------------------------------------------------------------------------
+// 종결 변이형 혼용 관측값 (기록 전용, 경고·재시도·전달 상태에 연결하지 않음)
+//
+// 기존 ending_style_mixed는 격식(한다/합니다/해요/명사형)이 섞일 때만 올린다.
+// 같은 격식 안의 변이형(하였다/했다, 되었다/됐다)이 반반으로 섞이는 손상은
+// 잡지 못했다(2026-10-09 H0126 39:10→16:29, H0135, H0049). 원문과 결과의
+// 소수형 비율을 문서·절 단위로 재서 "새로 생긴 혼용"의 크기를 숫자로 남긴다.
+// ---------------------------------------------------------------------------
+const VARIANT_VERSION = 1;
+const LONG_PAST_ENDING = /(?:하였|되었|이었)(?:다|습니다|고|으며|지만|는데|음|기)$/u;
+const SHORT_PAST_ENDING = /(?:했|됐|였)(?:다|습니다|고|으며|지만|는데|음|기)$/u;
+
+function pastVariantOf(sentence) {
+  const text = String(sentence || '').replace(/[.!?…。！？"'”’」』】)\]]+$/gu, '').trim();
+  if (!text) return '';
+  if (LONG_PAST_ENDING.test(text)) return 'long';
+  if (SHORT_PAST_ENDING.test(text)) return 'short';
+  return '';
+}
+
+function registerVariantOf(sentence) {
+  const style = classifySentenceEnding(sentence);
+  return style === 'plain' || style === 'polite' ? style : '';
+}
+
+function variantCounts(sentences, classify, keys) {
+  const counts = Object.fromEntries(keys.map(key => [key, 0]));
+  for (const sentence of sentences || []) {
+    const key = classify(sentence);
+    if (key && key in counts) counts[key] += 1;
+  }
+  return counts;
+}
+
+function minorityShare(counts, keys) {
+  const values = keys.map(key => Number(counts[key] || 0));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return total ? Math.min(...values) / total : 0;
+}
+
+function dominantKey(counts, keys, { minTotal = 4, minShare = 0.6 } = {}) {
+  const total = keys.reduce((sum, key) => sum + Number(counts[key] || 0), 0);
+  if (total < minTotal) return '';
+  const best = keys.reduce((left, right) => (Number(counts[right] || 0) > Number(counts[left] || 0) ? right : left));
+  return Number(counts[best] || 0) / total >= minShare ? best : '';
+}
+
+// 2:0→1:1처럼 표본이 몇 문장뿐이면 비율이 0.5까지 튄다. 원문·결과 모두 해당
+// 계열 문장이 넷 이상일 때만 혼용 순증을 계산하고, 그 미만은 개수만 남긴다.
+const MIN_VARIANT_EVIDENCE = 4;
+
+function compareVariantPair(sourceSentences, outputSentences, classify, keys) {
+  const source = variantCounts(sourceSentences, classify, keys);
+  const output = variantCounts(outputSentences, classify, keys);
+  const sourceTotal = keys.reduce((sum, key) => sum + Number(source[key] || 0), 0);
+  const outputTotal = keys.reduce((sum, key) => sum + Number(output[key] || 0), 0);
+  const enoughEvidence = sourceTotal >= MIN_VARIANT_EVIDENCE && outputTotal >= MIN_VARIANT_EVIDENCE;
+  const sourceMinorityShare = minorityShare(source, keys);
+  const outputMinorityShare = minorityShare(output, keys);
+  const sourceDominant = dominantKey(source, keys);
+  const outputDominant = dominantKey(output, keys);
+  return {
+    source,
+    output,
+    enoughEvidence,
+    sourceMinorityShare: round4(sourceMinorityShare),
+    outputMinorityShare: round4(outputMinorityShare),
+    introducedMixShare: enoughEvidence ? round4(Math.max(0, outputMinorityShare - sourceMinorityShare)) : 0,
+    dominantFlipped: Boolean(sourceDominant && outputDominant && sourceDominant !== outputDominant)
+  };
+}
+
+/**
+ * 원문·결과 두 문자열만 받는 순수 함수다. 문서 전체와 절(소제목 단위)마다
+ * 하였다/했다 계열과 한다/합니다 계열의 소수형 비율을 비교한다.
+ * `introducedMixShare`는 결과 소수형 비율에서 원문 소수형 비율을 뺀 값(0 이상)으로,
+ * 원문에 없던 혼용이 얼마나 새로 생겼는지를 뜻한다. 값이 클수록 섞임이 커졌다.
+ */
+function measureEndingVariantMix(source, output) {
+  const pastKeys = ['long', 'short'];
+  const registerKeys = ['plain', 'polite'];
+  const document = {
+    pastVariant: compareVariantPair(eligibleSentences(source), eligibleSentences(output), pastVariantOf, pastKeys),
+    register: compareVariantPair(eligibleSentences(source), eligibleSentences(output), registerVariantOf, registerKeys)
+  };
+  const sourceSections = splitSections(source);
+  const outputSections = splitSections(output);
+  let sectionMaxPastVariant = 0;
+  let sectionMaxRegister = 0;
+  for (let index = 0; index < sourceSections.length; index += 1) {
+    const before = eligibleSentences(sourceSections[index].body);
+    const after = eligibleSentences((outputSections[index] || { body: '' }).body);
+    if (before.length < 4 || after.length < 4) continue;
+    sectionMaxPastVariant = Math.max(
+      sectionMaxPastVariant,
+      compareVariantPair(before, after, pastVariantOf, pastKeys).introducedMixShare
+    );
+    sectionMaxRegister = Math.max(
+      sectionMaxRegister,
+      compareVariantPair(before, after, registerVariantOf, registerKeys).introducedMixShare
+    );
+  }
+  return {
+    version: VARIANT_VERSION,
+    pastVariant: document.pastVariant,
+    register: document.register,
+    sectionMaxPastVariantMixIntroduced: round4(sectionMaxPastVariant),
+    sectionMaxRegisterMixIntroduced: round4(sectionMaxRegister),
+    mixIntroduced: round4(Math.max(
+      document.pastVariant.introducedMixShare,
+      document.register.introducedMixShare,
+      sectionMaxPastVariant,
+      sectionMaxRegister
+    ))
+  };
+}
+
 function endingRestoreResult(text, applied, ordinals, audit, reason, extra = {}) {
   return {
     text,
@@ -400,5 +517,7 @@ module.exports = {
   endingStyle,
   isStructuredNominalMemo,
   isImproved,
-  restoreIntroducedEndingSentences
+  restoreIntroducedEndingSentences,
+  measureEndingVariantMix,
+  pastVariantOf
 };

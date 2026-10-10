@@ -5466,6 +5466,40 @@ function profileName(documentProfile) {
   return String(documentProfile?.profile || documentProfile?.contentGenre || documentProfile || 'unknown');
 }
 
+// ---------------------------------------------------------------------------
+// 자동사에 목적격이 붙은 비문 관측값 (기록 전용, 경고·재시도·전달 상태에 연결하지 않음)
+//
+// "조사 결과를 보고서 작성에만 그친다면"(2026-10-09 H0067), "이 책의 가치는 단순한
+// 자기계발서에 머물지 않고"(H0053)처럼 자동사 그치다·머물다가 목적어나 추상명사
+// 주어와 호응하지 않는 꼴만 좁게 센다. `노력을 기울이는 데 그치지 않고`처럼 목적어가
+// 사이의 용언에 걸리는 정상 문장은 제외한다. 원문에도 있던 꼴은 순증에서 뺀다.
+// ---------------------------------------------------------------------------
+const OBJECT_MARKED_INTRANSITIVE_VERSION = 1;
+const OBJECT_MARKED_LIMIT_VERB = /[가-힣]+(?:을|를)\s+(?:[가-힣]+(?<![는은던할될된])\s+)?[가-힣]+(?:에만|에|으로만|으로|로)\s*(?:그친다면|그친다|그치지|그쳤|그칠|그치고|머문다면|머문다|머물지|머물렀|머무르지|머물고)/gu;
+const ABSTRACT_SUBJECT_LIMIT_VERB = /(?:가치|의미|중요성|의의|매력)(?:은|는|이|가)\s+[^.!?。！？\n]{0,40}?(?:서|책|도구|수단|기술|제품|작품|문서|보고서|활동|행사|사례|설명|기록|장르)(?:에|에만)\s*(?:머물지|머무르지|그치지)\s*않/gu;
+
+function countObjectMarkedIntransitive(source, outputText) {
+  const count = value => {
+    const text = stripProtectedQuotedText(value);
+    return {
+      objectMarked: countMatches(text, OBJECT_MARKED_LIMIT_VERB),
+      abstractSubject: countMatches(text, ABSTRACT_SUBJECT_LIMIT_VERB)
+    };
+  };
+  const before = count(source);
+  const after = count(outputText);
+  const sourceCount = before.objectMarked + before.abstractSubject;
+  const outputCount = after.objectMarked + after.abstractSubject;
+  return {
+    version: OBJECT_MARKED_INTRANSITIVE_VERSION,
+    sourceCount,
+    outputCount,
+    introducedCount: Math.max(0, outputCount - sourceCount),
+    objectMarked: { source: before.objectMarked, output: after.objectMarked },
+    abstractSubject: { source: before.abstractSubject, output: after.abstractSubject }
+  };
+}
+
 module.exports = {
   VERSION,
   ISSUE_DEFINITIONS,
@@ -5484,5 +5518,6 @@ module.exports = {
   removeIntroducedConnectorOpeners,
   removeIntroducedGroundedDuplicateSentences,
   repairIntroducedResidualClauseDuplications,
-  isImprovedAudit
+  isImprovedAudit,
+  countObjectMarkedIntransitive
 };

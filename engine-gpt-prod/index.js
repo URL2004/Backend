@@ -4735,6 +4735,12 @@ async function runEngine({
       if (boundaryMarkerStats.documentAffected) logger.warn('gpt_prod.boundary_marker_failed', { uid, ...boundaryMarkerStats });
     } catch {}
   }
+  // 2026-10-09 점검 관측값. 기록 전용이라 실패해도 결과·전달 상태에 영향을 주지 않는다.
+  const auditObservations = {};
+  try { auditObservations.endingVariantMix = endingStyle.measureEndingVariantMix(rawSource, outputText); } catch {}
+  try { auditObservations.objectMarkedIntransitive = koreanRefinement.countObjectMarkedIntransitive(rawSource, outputText); } catch {}
+  try { auditObservations.leadingConnectorRemoval = discourseAudit.countLeadingConnectorRemovals(rawSource, outputText); } catch {}
+  try { auditObservations.wordEdit = humanizationDepth.measureWordEditRatio(rawSource, outputText); } catch {}
   result.engineMeta = {
     inputStatus: result.inputStatus,
     ...(sourcePreflightAudit?.engineMeta || {}),
@@ -5283,6 +5289,25 @@ async function runEngine({
     resumeCoverageRepairCount,
     resumeCoverageRetryApplied,
     resumeCoverageDeterministicRestoreCount,
+    // 2026-10-09 점검 관측값(기록 전용): 종결 변이형 혼용·자동사 목적격·문두 표지 삭제·어절 편집 비율
+    endingPastVariantSourceLongCount: Number(auditObservations.endingVariantMix?.pastVariant?.source?.long || 0),
+    endingPastVariantSourceShortCount: Number(auditObservations.endingVariantMix?.pastVariant?.source?.short || 0),
+    endingPastVariantOutputLongCount: Number(auditObservations.endingVariantMix?.pastVariant?.output?.long || 0),
+    endingPastVariantOutputShortCount: Number(auditObservations.endingVariantMix?.pastVariant?.output?.short || 0),
+    endingPastVariantMixIntroduced: Number(auditObservations.endingVariantMix?.pastVariant?.introducedMixShare || 0),
+    endingRegisterMixIntroduced: Number(auditObservations.endingVariantMix?.register?.introducedMixShare || 0),
+    endingVariantMixIntroduced: Number(auditObservations.endingVariantMix?.mixIntroduced || 0),
+    objectMarkedIntransitiveSourceCount: Number(auditObservations.objectMarkedIntransitive?.sourceCount || 0),
+    objectMarkedIntransitiveOutputCount: Number(auditObservations.objectMarkedIntransitive?.outputCount || 0),
+    objectMarkedIntransitiveIntroducedCount: Number(auditObservations.objectMarkedIntransitive?.introducedCount || 0),
+    leadingConnectorSourceCount: Number(auditObservations.leadingConnectorRemoval?.sourceMarkedCount || 0),
+    leadingConnectorRemovedCount: Number(auditObservations.leadingConnectorRemoval?.removedCount || 0),
+    leadingConnectorReplacedCount: Number(auditObservations.leadingConnectorRemoval?.replacedCount || 0),
+    wordEditRatio: Number(auditObservations.wordEdit?.wordEditRatio || 0),
+    wordReplacementRatio: Number(auditObservations.wordEdit?.wordReplacementRatio || 0),
+    sourceWordRetainedRatio: Number(auditObservations.wordEdit?.sourceWordRetainedRatio || 0),
+    deepRewrittenSentenceRatio: Number(auditObservations.wordEdit?.deepRewrittenSentenceRatio || 0),
+    sentenceWordEditMedian: Number(auditObservations.wordEdit?.sentenceWordEditMedian || 0),
     experienceCandidateVersion: Number(experienceCandidateAudit?.version || 0),
     experienceNoveltyCandidate: experienceCandidateAudit?.candidate === true,
     experienceNoveltyCandidateCount: Number(experienceCandidateAudit?.candidateCount || 0),

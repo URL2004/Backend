@@ -1555,6 +1555,176 @@ function stripLockTokens(value) {
   return String(value || '').replace(LOCK_TOKEN, ' ');
 }
 
+// ---------------------------------------------------------------------------
+// 어절 단위 편집 비율 (기록 전용 보조 지표, 경고·재시도·전달 상태에 연결하지 않음)
+//
+// 무엇을 재는가: 원문과 결과를 어절(공백 단위)로 나누고, 각 어절에서 조사·어미를
+// 떼어 낸 어간만 남긴 뒤, 두 어간 열의 최장 공통 부분열(LCS)을 구한다.
+// wordEditRatio = 1 − 2·LCS / (원문 어절 수 + 결과 어절 수). 0이면 어간 순서까지
+// 그대로, 1이면 어절이 하나도 이어지지 않은 전면 재작성이다. "하였다→했다",
+// "생각을→생각은" 같은 어미·조사 교체는 어간이 같아 편집으로 세지 않으므로,
+// 문장 수준 지표가 "바뀐 문장"으로 세는 얕은 교체와 실제 재작성이 갈린다.
+// wordReplacementRatio는 순서를 무시한 어간 다중집합 겹침으로 같은 식을 계산해,
+// 어절을 바꿨는지(replacement)와 자리만 옮겼는지(edit − replacement)를 가른다.
+//
+// 기존 지표와의 관계: substantiveChangedSentenceRatio는 "문자 편집이 6.5% 이상인
+// 문장의 비율"이라 한 문장에 어미 하나만 바뀌어도 1로 세고, structuralChanged
+// SentenceRatio는 절 경계·어순·분할이 바뀐 문장의 비율이다. 둘 다 문장이 분모라
+// 전 문장이 얕게 바뀐 글과 전 문장이 다시 쓰인 글이 같은 값을 받을 수 있다.
+// 어절 편집 비율은 분모가 어절이라 그 둘 사이를 연속값으로 가른다.
+// ---------------------------------------------------------------------------
+const WORD_EDIT_VERSION = 1;
+const WORD_STEM_SUFFIXES = [
+  /(?:하였습니다|했습니다|되었습니다|됐습니다|이었습니다|였습니다|하겠습니다|합니다|됩니다|입니다|습니다)$/u,
+  /(?:하였으며|하였고|했으며|했고|되었으며|되었고|됐으며|됐고|하였다|했다|되었다|됐다|이었다|였다|하였|했|되었|됐)$/u,
+  /(?:하면서|하였기|했기|하기|하는|하며|하고|하여|해서|하면|한다|했던|하던|한|해)$/u,
+  /(?:되면서|되기|되는|되며|되고|되어|되면|된다|되던|된|돼)$/u,
+  /(?:이라는|이라고|이라서|이라면|이며|이고|이다|인데|인|임)$/u,
+  /(?:으면서|면서|으며|며|으니|니|으나|나|으므로|므로|으려고|려고|지만|는데|던|든|음|기|게|지)$/u,
+  /(?:에서는|으로는|에게는|까지는|부터는|에게서|으로써|으로서|에서|에게|으로|부터|까지|보다|처럼|마다|조차|밖에|만큼|로서|로써|은|는|이|가|을|를|의|에|도|만|와|과|로|께)$/u
+];
+
+function stemWord(value) {
+  let token = String(value || '')
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]/gu, '');
+  if (!token) return '';
+  for (let pass = 0; pass < 3; pass += 1) {
+    let changed = false;
+    for (const pattern of WORD_STEM_SUFFIXES) {
+      const next = token.replace(pattern, '');
+      if (next !== token && next.length >= 1) {
+        token = next;
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) break;
+  }
+  return token;
+}
+
+function wordStems(value) {
+  return stripLockTokens(value)
+    .split(/\s+/u)
+    .map(stemWord)
+    .filter(Boolean);
+}
+
+function longestCommonSubsequenceLength(left, right) {
+  const n = left.length;
+  const m = right.length;
+  if (!n || !m) return 0;
+  const index = new Map();
+  let nextId = 1;
+  const encode = token => {
+    if (!index.has(token)) index.set(token, nextId++);
+    return index.get(token);
+  };
+  const a = left.map(encode);
+  const b = right.map(encode);
+  let previous = new Int32Array(m + 1);
+  let current = new Int32Array(m + 1);
+  for (let i = 1; i <= n; i += 1) {
+    const ai = a[i - 1];
+    for (let j = 1; j <= m; j += 1) {
+      current[j] = ai === b[j - 1]
+        ? previous[j - 1] + 1
+        : (previous[j] >= current[j - 1] ? previous[j] : current[j - 1]);
+    }
+    const swap = previous;
+    previous = current;
+    current = swap;
+    current[0] = 0;
+  }
+  return previous[m];
+}
+
+function multisetOverlapCount(left, right) {
+  const available = new Map();
+  for (const token of right) available.set(token, (available.get(token) || 0) + 1);
+  let count = 0;
+  for (const token of left) {
+    const remaining = available.get(token) || 0;
+    if (remaining <= 0) continue;
+    count += 1;
+    available.set(token, remaining - 1);
+  }
+  return count;
+}
+
+// 문장 하나를 "깊게 다시 썼다"고 보는 어절 편집 비율 경계. 동의어 몇 개를
+// 바꾼 문장은 0.2~0.35에 머물고, 절 구성을 새로 짠 문장은 0.45를 넘는다
+// (2026-10-09 141건에서 정독이 얕다고 본 쌍은 이 비율이 0.45 이상인 문장이
+// 거의 없었고, 긴 formal 재작성은 절반 안팎이었다).
+const DEEP_SENTENCE_WORD_EDIT = 0.45;
+
+/**
+ * 원문·결과 두 문자열만 받는 순수 함수다. 반환값 가운데
+ * - wordEditRatio: 문서 전체 어절 편집 비율(어간 LCS 기준).
+ * - deepRewrittenSentenceRatio: 대응 결과 문장과의 어절 편집 비율이 0.45 이상인
+ *   원문 문장의 비율. 문서 전체 비율은 동의어 교체가 고르게 퍼진 글과 실제로
+ *   다시 쓴 글을 가르지 못하므로, "변환 깊이"의 대표값으로는 이 값을 쓴다.
+ * - sentenceWordEditMedian: 문장별 어절 편집 비율의 중앙값.
+ */
+function measureWordEditRatio(source, output) {
+  const sourceStems = wordStems(source);
+  const outputStems = wordStems(output);
+  const sourceWordCount = sourceStems.length;
+  const outputWordCount = outputStems.length;
+  const total = sourceWordCount + outputWordCount;
+  const commonWordCount = longestCommonSubsequenceLength(sourceStems, outputStems);
+  const overlapWordCount = multisetOverlapCount(sourceStems, outputStems);
+  const sentence = measureSentenceWordEdits(source, output);
+  return {
+    version: WORD_EDIT_VERSION,
+    sourceWordCount,
+    outputWordCount,
+    commonWordCount,
+    overlapWordCount,
+    wordEditRatio: round4(total ? 1 - (2 * commonWordCount) / total : 0),
+    wordReplacementRatio: round4(total ? 1 - (2 * overlapWordCount) / total : 0),
+    sourceWordRetainedRatio: round4(sourceWordCount ? commonWordCount / sourceWordCount : 0),
+    outputNewWordRatio: round4(outputWordCount ? 1 - overlapWordCount / outputWordCount : 0),
+    measuredSentenceCount: sentence.count,
+    deepRewrittenSentenceCount: sentence.deepCount,
+    deepRewrittenSentenceRatio: round4(sentence.count ? sentence.deepCount / sentence.count : 0),
+    sentenceWordEditMedian: round4(sentence.median)
+  };
+}
+
+function measureSentenceWordEdits(source, output) {
+  const sourceSentences = meaningfulSentences(source);
+  const outputSentences = meaningfulSentences(output);
+  const ratios = [];
+  sourceSentences.forEach((sentence, index) => {
+    const stems = wordStems(sentence);
+    if (stems.length < 3) return;
+    if (!outputSentences.length) {
+      ratios.push(1);
+      return;
+    }
+    const alignment = alignSourceSentence(sentence, index, sourceSentences.length, outputSentences, {
+      window: 3,
+      maxOutputGroup: 2
+    });
+    if (!alignment) {
+      ratios.push(1);
+      return;
+    }
+    const alignedStems = wordStems(alignment.text);
+    const common = longestCommonSubsequenceLength(stems, alignedStems);
+    ratios.push(1 - (2 * common) / Math.max(1, stems.length + alignedStems.length));
+  });
+  const sorted = [...ratios].sort((a, b) => a - b);
+  return {
+    count: ratios.length,
+    deepCount: ratios.filter(value => value >= DEEP_SENTENCE_WORD_EDIT).length,
+    median: sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0
+  };
+}
+
 function publicPlan(plan) {
   const {
     targetIndices: _targetIndices,
@@ -1622,5 +1792,7 @@ module.exports = {
   assessDepthReview,
   buildHumanizationPromptBlock,
   normalizeSubstantive,
-  normalizePerceivedSubstantive
+  normalizePerceivedSubstantive,
+  measureWordEditRatio,
+  wordStems
 };

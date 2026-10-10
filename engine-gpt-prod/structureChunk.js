@@ -3964,7 +3964,7 @@ function compareOriginalStructuralMarkers(source, output, { allowAdditions = fal
   source = recoveredSource.text;
   const sourceMarkers = extractOriginalStructuralMarkers(source);
   if (recoveredSource.lineMap) for (const marker of sourceMarkers) marker.lineOrdinal = recoveredSource.lineMap[marker.lineOrdinal - 1];
-  const outputMarkers = extractOriginalStructuralMarkers(output);
+  const outputMarkers = extractOriginalStructuralMarkers(output, { source });
   const losses = [];
   let cursor = 0;
   for (const marker of sourceMarkers) {
@@ -4015,7 +4015,7 @@ function unmatchedStructuralItems(sourceItems, outputItems, keyOf) {
   return additions;
 }
 
-function extractOriginalStructuralMarkers(value) {
+function extractOriginalStructuralMarkers(value, { source } = {}) {
   const markers = [];
   const lines = normalizeNewlines(value).split('\n');
   lines.forEach((line, index) => {
@@ -4044,7 +4044,7 @@ function extractOriginalStructuralMarkers(value) {
     match = text.match(/^\s*([-*+•▪◦·])\s+|^\s*([●○■□◆◇▶▷※])\s*|^\s*(\+)(?=[가-힣A-Za-z“"'‘「『《〈])/u);
     if (match) markers.push(structuralMarker('bullet', match[1] || match[2] || match[3], index));
   });
-  for (const ordinal of ordinalMarkers(normalizeNewlines(value))) {
+  for (const ordinal of ordinalMarkers(normalizeNewlines(value), { source })) {
     markers.push({ ...structuralMarker('korean_ordinal', ordinal.marker, ordinal.lineOrdinal - 1),
       key: `korean_ordinal:${ordinal.number}` });
   }

@@ -25,7 +25,7 @@ function ordinalNumber(value) {
   return roots.indexOf(({ 두: '둘', 세: '셋', 네: '넷' })[root] || root) + 1;
 }
 
-function ordinalMarkers(value) {
+function ordinalMarkers(value, { source } = {}) {
   const text = String(value || '');
   const literals = syntaxSpans(text);
   const re = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:[,，:：](?=\\s|[가-힣A-Za-z])|[.．](?=\\s))`, 'gu');
@@ -47,6 +47,23 @@ function ordinalMarkers(value) {
     if (literals.some(span => span.start <= start && span.end > start)) continue;
     markers.push({ marker: match[2].replace(/\s+/gu, ''), number: ordinalNumber(match[2]), start,
       lineOrdinal: text.slice(0, start).split('\n').length });
+  }
+  // Admit output topics through a unique source item/body witness, without
+  // inferring a new list from the rewritten document's vocabulary.
+  if (source != null) {
+    const before = ordinalMarkers(source);
+    const topicRe = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:은|는)\\s+`, 'gu');
+    const candidates = [...text.matchAll(topicRe)].map(match => ({
+      marker: match[2].replace(/\s+/gu, ''), number: ordinalNumber(match[2]),
+      start: match.index + match[1].length
+    })).filter(item => !literals.some(span => span.start <= item.start && span.end > item.start));
+    const pairs = candidates.map(item => before.filter(original => original.number === item.number
+      && ordinalBodyMatches(source, original.start, text, item.start)));
+    candidates.forEach((item, index) => {
+      if (markers.some(marker => marker.start === item.start)
+          || pairs[index].length !== 1 || pairs.filter(pair => pair.includes(pairs[index][0])).length !== 1) return;
+      markers.push({ ...item, lineOrdinal: text.slice(0, item.start).split('\n').length });
+    });
   }
   const frames = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${FRAME_LEAD})(${ORDINAL})${FRAME_TAIL}`, 'gu');
   for (const match of text.matchAll(frames)) {
@@ -70,12 +87,21 @@ function ordinalMarkers(value) {
   return markers.sort((a, b) => a.start - b.start);
 }
 
+function ordinalBodyMatches(source, sourceStart, output, outputStart) {
+  const words = (text, start) => new Set(String(text).slice(start)
+    .replace(new RegExp(`^${ORDINAL}(?:[,，:：.．]\\s*|(?:은|는)\\s+)`, 'u'), '')
+    .split(/[.!?。！？\n]/u)[0].match(/[가-힣A-Za-z0-9]{2,}/gu) || []);
+  const before = words(source, sourceStart), after = words(output, outputStart);
+  const common = [...before].filter(word => after.has(word)).length;
+  return common >= 3 && common / Math.max(before.size, after.size) >= 0.6;
+}
+
 // Only restore a visual boundary for a source-backed list. Never invent a
 // missing ordinal, infer a list from family nouns, or move an item's words.
 function restoreOrdinalParagraphGaps(source, value) {
   let text = String(value || '');
   const sourceText = String(source || '');
-  const before = ordinalMarkers(sourceText), after = ordinalMarkers(text);
+  const before = ordinalMarkers(sourceText), after = ordinalMarkers(text, { source: sourceText });
   if (before.length < 2 || before.length !== after.length
       || before.some((item, i) => item.number !== after[i].number)) return { text, repairCount: 0 };
   let repairCount = 0;

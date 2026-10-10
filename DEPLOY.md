@@ -352,6 +352,8 @@ $r.Content -match 'lavAutoCoach'
 | `OPENAI_MODEL_JUDGE` / `OPENAI_MODEL_JUDGE_ESCALATION` / `OPENAI_MODEL_REPAIR` / `OPENAI_MODEL_DETECT` / `OPENAI_MODEL_EVIDENCE` | 계층별 GPT 모델 fallback |
 | `OPENAI_REASONING_HUMANIZE` / `OPENAI_REASONING_FACT_DENSE` / `OPENAI_REASONING_ESCALATION` | 변환·고위험·승격 reasoning fallback. 기본 `medium` / `high` / `high` |
 | `OPENAI_REASONING_JUDGE` / `OPENAI_REASONING_REPAIR` / `OPENAI_REASONING_DETECT` / `OPENAI_REASONING_EVIDENCE` | 판정·수리·감지·근거검색 reasoning fallback. 판정/수리 기본 `medium` |
+| `OPENAI_REASONING_JUDGE_ESCALATION` | 확인 판정(상위 모델의 의미 판정) reasoning. 미설정 시 `medium`(v2.5.107). `high`로 두면 이전 강도로 돌아가고, 허용되지 않는 값이면 `OPENAI_REASONING_ESCALATION`을 따른다. 관리자 저장 설정에 값이 있으면 그 값이 우선 |
+| `GPT_FINGERPRINT_EXPANDED_LIMITATIVE_STYLE` | 기본 꺼짐. `1`이면 넓힌 "~에 그치지 않고" 계열 범위를 상투구 정책에도 적용한다. 뜻이 같은 문장까지 되돌릴 수 있어 운영 기록을 본 뒤에만 켠다 |
 | `OPENAI_PROMPT_CACHE_ENABLED` / `OPENAI_PROMPT_CACHE_KEY_PREFIX` | GPT prompt caching 설정. 기본 prefix `gp-v9-cksafe-ko-p20260704` |
 | `OPENAI_PROMPT_CACHE_KEY_INCLUDE_MODE` / `OPENAI_PROMPT_CACHE_KEY_INCLUDE_PHASE` | 기본 `0`. 같은 고정 프롬프트 코어의 캐시 재사용을 위해 mode/phase를 키에서 제외한다. 특정 키가 약 15 RPM을 넘거나 프롬프트 계열을 강제로 격리해야 할 때만 `1` |
 | `OPENAI_WEB_SEARCH_TOOL_TYPE` | 기본 `web_search` |
@@ -421,6 +423,16 @@ npm run cache:gpt -- -Limit 1000 -Json
 - 작업마다 `engineMeta.boundaryMarkerStats`에 경계 표식을 쓴 청크 수(분모), 1차 실패, 상위 모델 재시도 회복, 잔여(원문 복귀) 청크 수와 실패 사유(누락·중복·유출·문장 수 변화·순서)가 건수로만 남는다. 원문은 남지 않는다.
 - 같은 숫자가 Render 로그 `gpt_prod.boundary_marker_stats`(info, 표식을 쓴 작업마다 1줄)에 남고, 실패가 있던 작업은 관리자 장애 로그 `gpt_prod.boundary_marker_failed`(SEV3, 디스코드 없음)에도 남는다.
 - 판단 기준(3자 토론 합의): 재시도 포함 이음매 실패가 병합 청크의 1% 이상이면 문단 블록 출력 계약(`blocks[{sourceBlockId, text}]`)의 로컬 30문서 비교를 시작한다.
+
+### v2.5.107 호출 시간·캐시·확인 판정 강도 (2026-10-11)
+
+- 보낸 모델 호출은 구간 시간 창이 지나도 끝까지 받는다. 작업 마감·취소와 요청 한 번의 상한 290초만 끊는다. 구간 창은 새 호출을 시작할지만 정한다.
+- 확인 판정 reasoning 기본값은 `medium`이다. 되돌릴 때는 Render 환경변수 `OPENAI_REASONING_JUDGE_ESCALATION=high`(재시작)만 넣는다. 수리·보강 호출의 강도는 바뀌지 않는다.
+- 상위 모델 보강·일반 수리 호출은 지시문 공통 앞부분에만 캐시 경계를 둔다. 1,024토큰 미만이면 경계를 붙이지 않는다.
+- 배제가 약해진 재작성("A만이 아니라 B" → "A와 B" 등)은 규칙으로 찾아 원문 문장으로 되돌린다. 건수는 `engineMeta`의 `contrastRelation*`에 남는다.
+- 감지 엔진은 `gpt-detect-v1.53`(지시문 v9h)이다. 이력 일치 조건·점수 보정·표시 정책은 그대로다.
+- 관측(1h·6h·24h·72h): Render 로그 `gpt_prod.usage`의 `reasoningEffort`(확인 판정이 `medium`인지), `engineMeta`의 `callWindowOverrunMs`·`callHttpCeilingTimeoutCount`·`callAdmissionSkippedCount`, 검토 필요 비율, 작업당 비용.
+- 의미 사고가 늘면 먼저 `OPENAI_REASONING_JUDGE_ESCALATION=high`로 강도만 되돌리고, 그래도 남으면 Render의 직전 정상 `live` 배포로 전체 복귀한다.
 
 ### v2.4.8 활성화 순서
 

@@ -35,6 +35,7 @@ function restoreInlineCitationLayout(source, output) {
   }
   const sourceNumbers = inventory(src, NUMBER), outputNumbers = inventory(out, NUMBER);
   let lineStart = 0, lineContentStart = 0, scanned = 0;
+  let listLineStart = -1, listNumber = -1;
   const sourceGaps = [];
   const inline = sourceNumbers.map(p => {
     // Scan each source character once. Re-scanning the entire paragraph for
@@ -47,6 +48,19 @@ function restoreInlineCitationLayout(source, output) {
     let gapStart = p.start;
     while (gapStart > lineStart && /[ \t]/u.test(src[gapStart - 1])) gapStart--;
     sourceGaps.push(src.slice(gapStart, p.start));
+    // A witnessed list starting at the beginning of this source row keeps
+    // ownership of consecutive inline items when preflight separates them.
+    // Inline footnotes have no leading list anchor and still attach left.
+    const number = Number(p.key.slice(0, -1));
+    if (gapStart === lineContentStart) {
+      listLineStart = lineStart;
+      listNumber = number;
+      return false;
+    }
+    if (listLineStart === lineStart && number === listNumber + 1) {
+      listNumber = number;
+      return false;
+    }
     // Parenthesized page numbers are handled above. A genuine standalone
     // numbered item, equation, date, or code line is never an inline footnote.
     return gapStart - lineContentStart >= 8 && /[\p{L}.!?。！？”’"']/u.test(src[gapStart - 1] || '')

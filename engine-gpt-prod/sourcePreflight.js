@@ -858,7 +858,9 @@ function replaceInlineHeadingBoundary(match, terminal, marker, offset, whole) {
   // A number attached directly to sentence punctuation belongs to that
   // sentence unless the following text explicitly names a section. Counting
   // only whitespace-prefixed markers misses precisely these footnotes.
-  if (/^\d{1,2}\)$/u.test(marker) && match === terminal
+  const leadingItem = String(whole || '').match(/^\s*(\d{1,2})\)/u);
+  const sequentialItem = leadingItem && Number(marker.slice(0, -1)) === Number(leadingItem[1]) + 1;
+  if (/^\d{1,2}\)$/u.test(marker) && match === terminal && !sequentialItem
       && !new RegExp(`^\\s*${INLINE_HEADING_LABEL}(?=\\s|$)`, 'u').test(
         String(whole || '').slice(boundary + marker.length))) return match;
   // A lone inline `1) 이는 ...` after a complete sentence is ambiguous: it

@@ -44,7 +44,7 @@ test('repeated cover-attested title/byline is removed before prose joins without
 test('no cover evidence, two occurrences, close repeated rows, body prose and literal references are not removed',()=>{
  for(const text of [source.replace(title+'\n'+authors+'\n',''),source.replace(header,'다른 행'),
   [title,authors,header,header,header].join('\n'),prose.repeat(3),
-  '```text\n'+source+'\n```','“'+source+'”','참고문헌\n'+source])assert.equal(furniture.removeRunningHeaders(text).text,text);
+  '```text\n'+source+'\n```','“'+source+'”'])assert.equal(furniture.removeRunningHeaders(text).text,text);
 });
 test('ambiguous byline and captions use literal ownership across layout, chunks and structure planning',()=>{
  const p=preflight(source).text;
@@ -183,7 +183,7 @@ test('fused work captions separate from complete prose but ordinary mentions rem
  const caption='영화 <가상의 지역(2020)> 영화 <가상의 마을(2022)>',body='주민들은 이 지역의 변화와 관련된 다양한 경험을 기록하였다.';
  const s=body+' '+caption+' '+body;
  assert.equal(furniture.separateFusedCaptions(s).text,body+'\n'+caption+'\n'+body);
- for(const t of ['영화 <가상의 지역(2020)>은 여러 주민의 경험을 기록하였다.','“'+s+'”','```\n'+s+'\n```','참고문헌\n'+s])assert.equal(furniture.separateFusedCaptions(t).text,t);
+ for(const t of ['영화 <가상의 지역(2020)>은 여러 주민의 경험을 기록하였다.','“'+s+'”','```\n'+s+'\n```','참고문헌\n가상연구자. (2031). '+s])assert.equal(furniture.separateFusedCaptions(t).text,t);
 });
 
 test('structure delivery protects prefixes and references, not editable list/label prose',()=>{
@@ -204,4 +204,27 @@ test('source restoration cannot duplicate a lead across a caption hidden inside 
  const f=require('../engine-gpt-prod/fingerprintAudit');
  assert.equal(f.detectContrastRelationShift(s,o).detected,false);
  assert.equal(f.detectContrastRelationShift('이 도시는 배경이 아니라 주민들의 경험을 보여주는 공간이다.',o).detected,true);
+});
+
+test('running headers and fused captions resume after an intervening reference list', () => {
+ const prefix='참고문헌\n가상연구자. (2031). 공간 기록 연구. 가상학회, 12(3), 20-30.\n\n';
+ const text=prefix+'1. 새 보고서\n'+source;
+ const result=furniture.removeRunningHeaders(text);
+ assert.equal(result.removed.length,3);
+ assert.ok(result.text.startsWith(prefix));
+ const caption='영화 <가상의 도시(2031)>',inline='공간의 변화를 살펴본다. '+caption+' 주민들은 지역의 생활 모습을 상세하게 검토한다.';
+ assert.equal(furniture.separateFusedCaptions(prefix+'1. 새 보고서\n'+inline).text,
+   prefix+'1. 새 보고서\n공간의 변화를 살펴본다.\n'+caption+'\n주민들은 지역의 생활 모습을 상세하게 검토한다.');
+});
+
+test('actual trailing bibliography preserves repeated bylines, embedded headers, and fused captions', () => {
+ const entry='가상연구자. (2031). 공간 기록 연구. 가상학회, 12(3), 20-30.';
+ const refs='\n참고문헌\n'+[header,entry,header,entry,header,entry,
+   `가상연구자. (2032). 지역을 (${header}) 조사한 기록. 가상학회.`,
+   '가상연구자. (2033). 공간 기록. 영화 <가상의 도시(2031)> 주민들은 지역의 생활 모습을 상세하게 검토한다.'
+ ].join('\n');
+ const result=furniture.removeRunningHeaders(source+refs);
+ assert.equal(result.removed.length,3);
+ assert.ok(result.text.endsWith(refs));
+ assert.ok(furniture.separateFusedCaptions(source+refs).text.endsWith(refs));
 });

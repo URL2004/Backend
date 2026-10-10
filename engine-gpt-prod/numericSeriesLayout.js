@@ -1,5 +1,6 @@
 'use strict';
 
+const { referenceLineFlags } = require('../engine/freezeblocks');
 const { syntaxSpans } = require('../engine/textSyntax');
 const TOP = /^(?:#{1}\s|[IVXLCDMⅠⅡⅢⅣⅤⅥ]+[.．)]?\s|제\s*\d+\s*장|(?:서론|본론|결론|참고\s*문헌|목차)$)/u;
 const NUMBERED = /^(?:#+\s*)?(?:\d+[.)]|\d+(?:\.\d+)+\s|[가-하][.)])/u;
@@ -13,11 +14,10 @@ function numericSeriesRanges(records, source) {
   const nonEmpty = records.filter(r => r.raw.trim());
   const spans = syntaxSpans(source);
   const ranges = new Map();
-  let references = false;
+  const referenceFlags = referenceLineFlags(source);
   for (let i = 0; i < nonEmpty.length; i++) {
     const caption = nonEmpty[i], label = caption.raw.trim();
-    if (['heading', 'title'].includes(caption.role) && /참고\s*문헌|references|bibliography/iu.test(label)) references = true;
-    if (references || !['prose', 'body', 'text', 'heading', 'title'].includes(caption.role)
+    if (referenceFlags[caption.index] || !['prose', 'body', 'text', 'heading', 'title'].includes(caption.role)
         || label.length > 100 || !/[\p{L}]/u.test(label) || TOP.test(label) || NUMBERED.test(label)
         || /[\t|]|[.!?。！？:：]$|(?:다|요|니다)$/u.test(label)) continue;
     let end = i + 1;

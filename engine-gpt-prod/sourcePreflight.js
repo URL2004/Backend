@@ -196,18 +196,14 @@ function auditAndSanitizeSource(value) {
   if (captions.applied) notices.push(issue('source_caption_boundary_repaired', 0, 'repaired',
     '완결된 본문과 작품 캡션 사이의 줄 경계를 분리했어요.'));
   const kept = [];
-  let inReference = false;
+  const referenceFlags = freezeBlocks.referenceLineFlags(physicalLayout.text);
   const fenceState = analyzeFences(lines);
   const boundaryContentLines = boundaryContentLineIndices(lines);
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] || '');
     const text = line.trim();
-    if (freezeBlocks.isRefHeadingLine(text)) {
-      inReference = true;
-    } else if (freezeBlocks.isAppendixHeadingLine(text)) {
-      inReference = false;
-    }
+    const inReference = referenceFlags[index];
 
     const removable = text && !scriptFrame && REMOVABLE_LINE_RULES.find(rule => (
       rule.pattern.test(text)
@@ -1383,13 +1379,11 @@ function restoreParagraphTerminalPunctuation(value) {
     && punctuatedLineCount / Math.max(1, proseLineCount) >= 0.5;
   const lastContentIndex = findLastContentLine(lines);
   const changes = [];
-  let inReference = false;
+  const referenceFlags = freezeBlocks.referenceLineFlags(source);
   for (let index = 0; index < lines.length; index += 1) {
     const text = String(lines[index] || '').trim();
     if (!text) continue;
-    if (freezeBlocks.isRefHeadingLine(text)) inReference = true;
-    else if (freezeBlocks.isAppendixHeadingLine(text)) inReference = false;
-    if (inReference || !isLongProse(index)) continue;
+    if (referenceFlags[index] || !isLongProse(index)) continue;
     if (TERMINAL_PUNCTUATION_END_RE.test(text) || NON_SENTENCE_CLOSING_END_RE.test(text)) continue;
     if (WEB_LITERAL_TEST_RE.test(text.slice(-60))) continue;
     const token = (text.match(/[가-힣A-Za-z]+$/u) || [''])[0];

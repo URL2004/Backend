@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { referenceLineFlags } = require('../engine/freezeblocks');
 const layout = require('./layoutStructure');
 const preflight = require('./sourcePreflight');
 const { detectDocumentProfile } = require('./documentProfile');
@@ -21,7 +22,8 @@ function buildDocument(text) {
   const forbidden = ['clinical_record', 'legal_contract', 'student_record_teacher', 'student_self_assessment', 'resume_application', 'creative', 'mail_notice', 'social', 'marketing', 'review_blog'];
   const records = layout.buildLineRecords(source);
   const numericSeries = new Map(records.filter(r => Number.isInteger(r.numericSeriesEnd)).map(r => [r.index, r.numericSeriesEnd]));
-  const blocks = []; let pending = [], offset = 0, parent = 'root', section = 'root', barrier = 'root', references = false;
+  const blocks = []; let pending = [], offset = 0, parent = 'root', section = 'root', barrier = 'root';
+  const referenceFlags = referenceLineFlags(source);
   const hasTop = records.some(r => ['heading','title'].includes(r.role) && TOP.test(r.raw.trim()));
   function push(lines, role) {
     if (!lines.length) return;
@@ -29,7 +31,7 @@ function buildDocument(text) {
     const id = 'b' + String(blocks.length).padStart(3, '0');
     const heading = ['heading', 'title'].includes(role);
     const top = heading && (TOP.test(value) || (!hasTop && NUMBERED.test(value)));
-    if (heading && /참고\s*문헌|references|bibliography/iu.test(value)) references = true;
+    const references = lines.some(line => referenceFlags[line.index]);
     // An inline book title/quotation protects that span, not the entire body.
     // Standalone quotations, tables, code and reference blocks stay barriers.
     const protectedBlock = !heading && (references || role !== 'prose' || /https?:\/\/|\[[0-9, –-]+\]/u.test(value));
@@ -50,8 +52,9 @@ function buildDocument(text) {
       push(lines, 'numeric_series');
       offset = records[last].end + 1; index = last; continue;
     }
-    const raw=r.raw; const line={raw,start:offset,end:offset+raw.length}; offset+=raw.length+1;
+    const raw=r.raw; const line={raw,index,start:offset,end:offset+raw.length}; offset+=raw.length+1;
     if (!raw.trim()) { flush(); continue; }
+    if (pending.length && referenceFlags[pending[0].index] !== referenceFlags[index]) flush();
     if (r.role==='prose' || r.role==='body' || r.role==='text') pending.push(line);
     else { flush(); push([line],r.role); }
   }

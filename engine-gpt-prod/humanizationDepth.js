@@ -1073,22 +1073,23 @@ function buildParagraphCoveragePlan(source, targetIndices, {
 // 각 문단을 따로 분리해도 splitSentences 순서는 문서 전체 순서와 같으므로 문장
 // 인덱스를 모델 프롬프트의 문장 번호와 그대로 연결할 수 있다.
 function buildSentenceParagraphMap(value) {
-  const blocks = splitLogicalProseParagraphs(stripLockTokens(value));
+  const source = stripLockTokens(value).replace(/\r\n?/gu, '\n');
+  const blocks = splitLogicalProseParagraphs(source);
+  const sourceLines = source.split('\n');
+  const referenceFlags = freezeBlocks.referenceLineFlags(source);
+  // Logical blocks trim and discard blank rows; consume their original nonblank
+  // rows in order so a repeated line still retains its own reference ownership.
+  let lineIndex = 0;
   const sentenceParagraphIndices = [];
   let eligibleParagraphCount = 0;
-  let references = false;
   for (const block of blocks) {
     const blockSentences = meaningfulSentences(block);
     const editableLines = [];
     for (const rawLine of block.split('\n')) {
       const line = String(rawLine || '').trim();
       if (!line) continue;
-      if (freezeBlocks.isRefHeadingLine(line)) {
-        references = true;
-        continue;
-      }
-      if (references && freezeBlocks.isAppendixHeadingLine(line)) references = false;
-      if (references) continue;
+      while (lineIndex < sourceLines.length && !sourceLines[lineIndex].trim()) lineIndex++;
+      if (referenceFlags[lineIndex++]) continue;
       const structuralBody = editableStructuralBody(line);
       if (structuralBody) editableLines.push(structuralBody);
       else if (!isProtectedCarryoverLine(line)) editableLines.push(line);
@@ -1103,18 +1104,14 @@ function buildSentenceParagraphMap(value) {
 }
 
 function eligibleProseSentences(value) {
-  const lines = String(value || '').replace(/\r\n?/gu, '\n').split('\n');
+  const source = String(value || '').replace(/\r\n?/gu, '\n');
+  const lines = source.split('\n');
+  const referenceFlags = freezeBlocks.referenceLineFlags(source);
   const prose = [];
-  let references = false;
-  for (const rawLine of lines) {
+  for (const [index, rawLine] of lines.entries()) {
     const line = String(rawLine || '').trim();
     if (!line) continue;
-    if (freezeBlocks.isRefHeadingLine(line)) {
-      references = true;
-      continue;
-    }
-    if (references && freezeBlocks.isAppendixHeadingLine(line)) references = false;
-    if (references) continue;
+    if (referenceFlags[index]) continue;
     const structuralBody = editableStructuralBody(line);
     if (structuralBody) {
       prose.push(structuralBody);
@@ -1153,6 +1150,7 @@ function editableStructuralBody(line) {
 }
 
 function isProtectedCarryoverLine(line) {
+  if (freezeBlocks.isRefHeadingLine(line)) return true;
   if (LOCK_TOKEN.test(line)) {
     LOCK_TOKEN.lastIndex = 0;
     return true;

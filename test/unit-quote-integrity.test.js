@@ -52,7 +52,10 @@ test('PDF-like prose after an angular minute mark is reflowed without changing t
   assert(fixed.includes("'관찰 기준'"));
   assert.equal(fixed.replace(/\s/g,''),source.replace(/\s/g,''));
   assert.equal(auditAndSanitizeSource(fixed).text,fixed);
-  const appendix = '\n\n참고문헌\n\n' + paragraphs;
+  // Bibliographic titles may contain wrapped prose; the heading alone is not evidence.
+  const appendix = '\n\n참고문헌\n\n' + Array.from({length:5}, (_, i) =>
+    `가상연구자. (203${i}). 관찰 기준과 적용 범위를 별도의 항목으로 구분하여 기록했습니\n다. 가상관찰학회, 12(3), 20-30.`
+  ).join('\n\n');
   assert.equal(require('../engine-gpt-prod/physicalProseLines').repairPhysicalProseLines(source + appendix).text.split('참고문헌')[1], appendix.split('참고문헌')[1]);
 });
 

@@ -1,5 +1,6 @@
 'use strict';
 
+const { referenceLineFlags } = require('../engine/freezeblocks');
 const { syntaxSpans } = require('../engine/textSyntax');
 
 // A quoted clause followed by its particle is inline prose, even when copied
@@ -30,12 +31,12 @@ function dependentQuoteLayout(value) {
     if (span.spanType === 'code') codeSpans.push(span);
   }
   const edits = new Map(), proseLines = new Set();
-  const blocked = new Set(); let reference = false, codeCursor = 0;
+  const blocked = new Set(); let codeCursor = 0;
+  const referenceFlags = referenceLineFlags(text);
   for (let i = 0; i < lines.length; i++) {
     const row = lines[i];
     while (codeCursor < codeSpans.length && codeSpans[codeCursor].end <= row.start) codeCursor++;
-    if (/^(?:참고\s*문헌|참고\s*자료|출처|References|Bibliography)(?:\s|$|[:：])/iu.test(row.text)) reference = true;
-    if (reference || /^(?:>|#{1,6}\s|[-*+]\s|\d+[.)]\s|[①-⑳]|제\s*\d+\s*조|표\s*\d|그림\s*\d|[-—–]\s*\S)/u.test(row.text)
+    if (referenceFlags[i] || /^(?:>|#{1,6}\s|[-*+]\s|\d+[.)]\s|[①-⑳]|제\s*\d+\s*조|표\s*\d|그림\s*\d|[-—–]\s*\S)/u.test(row.text)
         || /\t|\|/u.test(row.raw)
         || (codeSpans[codeCursor]?.start <= row.end && codeSpans[codeCursor]?.end > row.start)) blocked.add(i);
   }

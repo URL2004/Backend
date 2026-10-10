@@ -48,7 +48,8 @@ for(const [name,text] of [
  ['byline','“자료를 분류하라.”\n\n— 작성자'],
  ['markdown quote','> “자료를 분류하라.”\n\n라는 문장을 검토한다.'],
  ['code','```txt\n'+fragment+'\n```'],
- ['reference','참고문헌\n'+fragment],
+ // A heading alone cannot turn prose into bibliography; include a real entry.
+ ['reference','분류 기준을 검토한 뒤 조사 결과를 정리했다. '.repeat(20)+'\n참고문헌\n가상연구자. (2031). 분류 기준 연구. 가상학회.\n'+fragment+'\n다른연구자. (2032). 후속 연구. 가상학회.'],
  ['table','| “자료를 분류하라.” |\n\n라는 문장을 검토한다.'],
  ['unmatched','처음에 다룬 질문은\n\n“자료를 분류하라.\n\n라는 문장이었다.'],
  ['quote-internal poem','“첫 줄\n둘째 줄”\n\n라는 문장이었다.'],

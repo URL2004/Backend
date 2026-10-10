@@ -3,6 +3,7 @@
 // Text-only evidence is weaker than PDF coordinates. Never remove arbitrary
 // repeated prose: require a witnessed cover title AND author line, separated
 // repeated title/byline rows. Ambiguous metadata stays a protected literal.
+const { referenceLineFlags } = require('../engine/freezeblocks');
 const { syntaxSpans } = require('../engine/textSyntax');
 const compact = value => String(value).replace(/\s/gu, '');
 const HEADER = /^([^｜|│\n]{8,100})[｜|│]\s*([가-힣]{2,5}(?:\s*[,·、]\s*[가-힣]{2,5}){0,5})$/u;
@@ -17,9 +18,10 @@ function isBylineHeader(value) { return HEADER.test(String(value || '').trim());
 function analyzeFurniture(value) {
   const source = String(value || '');
   const spans = syntaxSpans(source).filter(s => s.spanType === 'quote' || s.spanType === 'code');
+  const referenceFlags = referenceLineFlags(source);
   const rows=[]; let start=0;
   for(const raw of source.split('\n')) {
-    rows.push({raw,text:raw.trim(),start,end:start+raw.length,index:rows.length});start+=raw.length+1;
+    rows.push({raw,text:raw.trim(),start,end:start+raw.length,index:rows.length,reference:referenceFlags[rows.length]});start+=raw.length+1;
   }
   const protectedAt = row => spans.some(s=>s.start<row.end && s.end>row.start)
     || /^\s*>/u.test(row.raw) || /\t/u.test(row.raw);
@@ -29,10 +31,9 @@ function analyzeFurniture(value) {
     row.literal=spans.some(s=>s.start<=first&&s.end>=last)
       || /^\s*>/u.test(row.raw) || /\t/u.test(row.raw);
   }
-  const groups = new Map(); let references=false;
+  const groups = new Map();
   for(const row of rows) {
-    if(/^(?:#{1,6}\s*)?(?:참고\s*문헌|References|Bibliography)\s*$/iu.test(row.text)) references=true;
-    if(references || protectedAt(row))continue;
+    if(row.reference || protectedAt(row))continue;
     const m=row.text.match(HEADER); if(!m)continue;
     const key=compact(row.text), group=groups.get(key)||{title:m[1].trim(),authors:m[2],rows:[]};
     group.rows.push(row);groups.set(key,group);
@@ -51,17 +52,17 @@ function removeRunningHeaders(value) {
   const source=String(value||''),{rows,removable}=analyzeFurniture(source);
   const ids=new Set(removable.map(r=>r.index));
   const edits=removable.map(r=>({start:r.start,end:Math.min(source.length,r.end+1),ordinal:r.index+1}));
-  const literals=syntaxSpans(source).filter(s=>['quote','code'].includes(s.spanType)),referenceStart=rows.find(r=>/^(?:참고\s*문헌|References|Bibliography)$/iu.test(r.text))?.start ?? source.length;
+  const literals=syntaxSpans(source).filter(s=>['quote','code'].includes(s.spanType));
   // A previous rewrite may have embedded the SAME evidenced running header.
   // Recover only exact parenthetical furniture, or a row seam with unfinished
   // prose / a caption on its right. Ordinary quoted mentions remain untouched.
   for(const literal of new Set(removable.map(r=>r.text))) {
     let cursor=0;
-    while(cursor<referenceStart) {
-      const start=source.indexOf(literal,cursor);if(start<0||start>=referenceStart)break;
+    while(cursor<source.length) {
+      const start=source.indexOf(literal,cursor);if(start<0)break;
       const end=start+literal.length;cursor=end;
       const row=rows.find(r=>r.start<=start&&r.end>=end);
-      if(!row||ids.has(row.index)||literals.some(s=>s.start<end&&s.end>start))continue;
+      if(!row||row.reference||ids.has(row.index)||literals.some(s=>s.start<end&&s.end>start))continue;
       const left=source.slice(row.start,start),right=source.slice(end,row.end);
       if(/\t|\S {2,}\S/u.test(row.raw))continue;
       const parentheses=/\($/u.test(left)&&/^\)/u.test(right);
@@ -79,11 +80,13 @@ function removeRunningHeaders(value) {
 }
 function separateFusedCaptions(value) {
   const source=String(value||''),spans=syntaxSpans(source),edits=[];
-  const referenceStart=source.search(/^(?:참고\s*문헌|References|Bibliography)\s*$/imu);
+  const referenceFlags=referenceLineFlags(source);
+  let rowIndex=0,nextLine=source.indexOf('\n');
   const pattern=/(?:(?:영화|도서|작품|사진)\s*[<〈《][^<>〈〉《》\n]{1,100}[>〉》][ \t]*)+/gu;
   for(const m of source.matchAll(pattern)) {
     const start=m.index,end=start+m[0].trimEnd().length;
-    if(referenceStart>=0&&start>=referenceStart)continue;
+    while(nextLine>=0&&nextLine<start){rowIndex++;nextLine=source.indexOf('\n',nextLine+1);}
+    if(referenceFlags[rowIndex])continue;
     if(spans.some(s=>(s.spanType==='code'||s.start<start)&&s.start<end&&s.end>start))continue;
     const rowStart=source.lastIndexOf('\n',start-1)+1,next=source.indexOf('\n',end),rowEnd=next<0?source.length:next;
     const left=source.slice(rowStart,start),right=source.slice(end,rowEnd);

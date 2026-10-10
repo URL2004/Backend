@@ -837,7 +837,6 @@ const CLOSED_QUOTE_PARTICLE_GAP_RE = new RegExp(
   'gu'
 );
 const QUOTE_TERMINAL_REVIEW_RE = new RegExp(`[‘“][^’”\\n]{2,120}(?<![.!?。！？…])[’”](?!${QUOTE_ATTACHED_SUFFIX}(?=$|[\\s,.;:!?。！？]))(?=[가-힣A-Za-z0-9])`, 'gu');
-const APPENDIX_HEADING_RE = /^(?:부록|Appendix)(?:\s+[A-Za-z0-9가-힣.-]+)?$/iu;
 const NEW_UNIT_START_RE = /^(?:그리고|그러나|하지만|또한|따라서|한편|반면|이러한|이번|다음|첫째|둘째|셋째|마지막으로)(?=$|\s)/u;
 const HADA_NOUNS = [
   '구성', '재구성', '분석', '탐구', '조사', '연구', '설명', '정리', '확인', '검토',
@@ -1505,7 +1504,7 @@ function buildLineGuards(lines) {
   const guards = [];
   const plainTableLines = detectPlainTextTableLines(lines);
   let code = false;
-  let reference = false;
+  const referenceFlags = freezeBlocks.referenceLineFlags(lines.join('\n'));
   const firstContent = lines.findIndex(line => String(line || '').trim());
   const nextContentAfter = index => {
     for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
@@ -1517,8 +1516,7 @@ function buildLineGuards(lines) {
     const text = String(lines[index] || '').trim();
     const fence = /^(?:```|~~~)/u.test(text);
     if (fence) code = !code;
-    if (freezeBlocks.isAppendixHeadingLine(text) || APPENDIX_HEADING_RE.test(text)) reference = false;
-    if (freezeBlocks.isRefHeadingLine(text)) reference = true;
+    const reference = referenceFlags[index];
     const role = text ? layoutStructure.classifyLine(text, {
       firstContent: index === firstContent,
       next: nextContentAfter(index),

@@ -210,7 +210,7 @@ function isRefHeadingCandidateLine(value) {
   const text = String(value || '');
   if (isRefHeadingLine(text)) return true;
   const bare = text
-    .replace(/^\s*#{1,6}[ \t]+/u, '')
+    .replace(/^\s*#{1,6}[ \t]+/u, '').replace(/[ \t]+#+[ \t]*$/u, '')
     .replace(/^\s*(\*\*|__)\s*(.*?)\s*\1\s*$/u, '$2');
   return bare !== text && isRefHeadingLine(bare);
 }
@@ -265,6 +265,10 @@ function referenceLineKind(value) {
   const authorYear = AUTHOR_YEAR_HEAD.exec(body);
   if (authorYear && authorYear.index <= 80 && !KOREAN_SENTENCE_END.test(body.slice(0, authorYear.index))) return 'strong';
   if (REFERENCE_TAIL.test(s)) return 'strong';
+  // A bibliographic title/publisher followed by a year and a dangling comma
+  // is a truncated entry, including in a document containing only references.
+  if (/[「『《〈]|출판|학술지|학회/u.test(body)
+      && /[,，]\s*(?:19|20)\d{2}\s*[,，]$/u.test(body) && !hasKoreanSentence(body)) return 'strong';
   const sentence = hasKoreanSentence(s);
   if (!sentence && CITE_LINE.test(s)) return 'strong';
   if (sentence) return 'prose';

@@ -96,7 +96,8 @@ test('quoted text, code, headings, lists, tables and references are never edited
     `“앞 내용을 인용한다.\n\n${bad}”라는 기록이다.`,
     `확인 대상은 \`${bad}\`이다.`,
     `\`\`\`text\n${bad}\n\`\`\``,
-    `# ${bad}`, `- ${bad}`, `| 본문 | ${bad} |`, `참고문헌\n${bad}`
+    // A real bibliographic entry stays protected; a bare heading plus prose is no reference span.
+    `# ${bad}`, `- ${bad}`, `| 본문 | ${bad} |`, `참고문헌\n가상연구자. (2031). ${bad} 가상학회.`
   ]) {
     assert.deepEqual(audit(source, output).issueCodes.filter(code => newCodes.includes(code)), [], output);
   }

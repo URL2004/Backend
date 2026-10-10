@@ -251,3 +251,10 @@ test('quote particles and inline code survive preflight sentence spacing correct
   assert.ok(out.includes('말했다. 다음'));
   assert.ok(out.includes('`문장.다음`'));
 });
+
+test('physical prose repair resumes after an intervening bibliography', () => {
+  const prefix = '참고문헌\n가상연구자. (2031). 측정 조건의 연구. 가상학회, 12(3), 20-30.\n\n';
+  const result = repair(prefix + source);
+  assert.ok(result.text.startsWith(prefix));
+  assert.equal(result.text.slice(prefix.length), repair(source).text);
+});

@@ -142,3 +142,12 @@ test('URL parameters and inline code stay outside math tokenization and final ma
   assert.equal(audit.text, source);
   assert.equal(literals.freezeMath(preflight.auditAndSanitizeSource(PDF).text).count, 0);
 });
+
+test('a TOC reference label on an earlier extracted page does not suppress later body repairs', () => {
+  const withToc = PDF.replace('\n\n-   2', '\nⅠ. 서론\nⅡ. 본론\n참고문헌\n\n-   2');
+  const result = extracted.repairExtractedPageLayout(withToc);
+  assert.match(result.text, /관리 시스템 점검이 필요하다\./u);
+  assert.match(result.text, /1\. 근본적 원인 \( 확인 절차 \)\n\n도서관/u);
+  assert.match(result.text, /IV\.\s+참고문헌\n\n자료원/u);
+  assert.ok(result.text.endsWith('https://example.com/ref?date=2026.08.02&v=2'));
+});

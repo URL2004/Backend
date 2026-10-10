@@ -1,5 +1,7 @@
 'use strict';
 
+const { referenceLineFlags } = require('../engine/freezeblocks');
+
 // Repair only a positively identified, sequential paginated export. Ordinary
 // lists, creative line breaks, tables and code are not evidence of PDF damage.
 const PAGE_RE = /^[ \t]*[-–—][ \t]*(\d{1,4})[ \t]*[-–—](?:[ \t]+|$)/u;
@@ -50,7 +52,21 @@ function repairExtractedPageLayout(value) {
     '페이지가 한 줄로 추출된 입력이에요. 반복 공백은 정리하지만 표의 열·셀 대응은 원본 PDF 없이 확인할 수 없어요.', 'notice'));
   const withoutPages = lines.map((line, i) => pageMap.has(i) ? line.slice(pageMap.get(i).prefix.length) : line);
   const witnessedWords = new Set((withoutPages.join('\n').match(/[가-힣]{2,}/gu) || []));
-  let inReference = false;
+  // An extracted page can fuse the heading and first entry on one row.
+  // Split that heading for detection, then map flags back to physical pages.
+  const referenceRows = withoutPages.map(line => {
+    const m = line.match(REFERENCE_RE);
+    return m && line.slice(m[0].length).trim()
+      ? `${m[0].trim()}\n${line.slice(m[0].length).trimStart()}` : line;
+  });
+  const probeFlags = referenceLineFlags(referenceRows.join('\n'));
+  let referenceRowIndex = 0;
+  const referenceFlags = referenceRows.map(row => {
+    const count = row.split('\n').length;
+    const flags = probeFlags.slice(referenceRowIndex, referenceRowIndex + count);
+    referenceRowIndex += count;
+    return flags.some(Boolean);
+  });
   fence = null;
   const normalized = withoutPages.map((line, index) => {
     const marker = line.match(/^\s*(`{3,}|~{3,})/u);
@@ -63,14 +79,13 @@ function repairExtractedPageLayout(value) {
         && /(?:이름|성명)\s+\S+[\s\S]*학번\s+\d/u.test(line)) {
       return line.replace(/(?<=\S)[ \t]+(?=(?:이름|성명)\s)/u, '\n\n');
     }
-    if (REFERENCE_RE.test(line)) {
-      inReference = true;
+    if (referenceFlags[index] && REFERENCE_RE.test(line)) {
       // Separate the heading, but keep every reference entry and URL literal.
       const m = line.match(REFERENCE_RE);
       return m && line.slice(m[0].length).trim()
         ? `${m[0].trim()}\n\n${line.slice(m[0].length).trimStart()}` : line;
     }
-    if (inReference) return line;
+    if (referenceFlags[index]) return line;
     if (line.length < 160 || (line.match(/[가-힣]\s*\./gu) || []).length < 2) return line;
     const denseGaps = (line.match(/ {3,}/gu) || []).length;
     let next = outsideLiterals(line, part => {
@@ -98,7 +113,7 @@ function repairExtractedPageLayout(value) {
       changes.push(change('source_pdf_boundary_review', page.index + 1,
         '페이지 끝 문장이 끊겼을 수 있어요. 다음 절이나 다른 표 칸과 임의로 이어 붙이지 않았어요.', 'notice'));
     }
-    if (previous < 0 || !right || SECTION_RE.test(right) || REFERENCE_RE.test(right)
+    if (previous < 0 || referenceFlags[previous] || referenceFlags[page.index] || !right || SECTION_RE.test(right) || REFERENCE_RE.test(right)
         || /^[-*+•▪◦]|\t|\|/u.test(right)) continue;
     const left = normalized[previous].trimEnd();
     if (/\t|\|/u.test(left) || /^\s*>/u.test(left) || endsInsideQuote(left)) continue;
@@ -136,13 +151,13 @@ function repairExtractedPageLayout(value) {
 }
 
 function restoreExtractedBlockBoundaries(value) {
-  let inReference = false;
+  const source = String(value || '');
+  const referenceFlags = referenceLineFlags(source);
   let fence = null;
-  return String(value || '').split('\n').map(line => {
+  return source.split('\n').map((line, index) => {
     const marker = line.match(/^\s*(`{3,}|~{3,})/u);
     if (marker) { if (!fence) fence = marker[1][0]; else if (fence === marker[1][0]) fence = null; return line; }
-    if (REFERENCE_RE.test(line)) inReference = true;
-    if (inReference || fence || /\t|\|/u.test(line) || /^\s*>/u.test(line)) return line;
+    if (referenceFlags[index] || fence || /\t|\|/u.test(line) || /^\s*>/u.test(line)) return line;
     let next = outsideLiterals(line, part => part
       .replace(new RegExp(`([가-힣][.!?])[ \\t]+(?=${SECTION}\\s+[가-힣])`, 'gu'), '$1\n\n')
       .replace(/([가-힣][.!?])[ \t]+(?=-\s+[가-힣][^.!?\n]{1,40}[:：])/gu, '$1\n'));

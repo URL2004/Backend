@@ -4,7 +4,7 @@
 // width AND independently witnessed word seams before changing blank lines.
 // Only whitespace changes are permitted; explicit structure remains a barrier.
 const { syntaxSpans } = require('../engine/textSyntax');
-const { isRefHeadingLine } = require('../engine/freezeblocks');
+const { referenceLineFlags } = require('../engine/freezeblocks');
 const END = /[.!?。！？…][”’"'」』》〉)\]]*$/u;
 const FINITE = /[가-힣]{2,}(?:습니다|입니다|합니다|됩니다|했다|한다|된다|이다|였다|있다|없다|않다)$/u;
 const isComplete = text => END.test(text) || FINITE.test(text);
@@ -19,7 +19,6 @@ function quoteWordSeam(left, right, witnessed) {
   const b = right.match(/^([가-힣]+)/u)?.[1] || '';
   return !!a && !!b && QUOTE_WORDS.test(a + b);
 }
-const REFERENCE = /^(?:\[|【)?(?:참고\s*문헌|참고\s*자료|References|Bibliography)(?:\]|】|\s|$)/iu;
 const EXPLICIT = /^(?:#{1,6}\s|>|[-*+•▪◦·●○■□◆◇▶▷※]\s|\d+(?:\.\d+)*[.)]\s|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]?\s|[IVX]+[.)]\s|제\s*\d+\s*(?:장|절|조)|\[[^\]\n]{1,80}\]$|【[^】\n]{1,80}】$)/u;
 const NUMBERED = /^[가-하][.)](?=\s*\S)/u;
 const stripParticle = word => word.replace(/(?:에서는|으로|에서|에게|처럼|은|는|이|가|을|를|의|와|과|도|만|에|로)$/u, '');
@@ -70,12 +69,11 @@ function repairPhysicalProseLines(value) {
     return !source.slice(lineStart, span.start).trim() && !source.slice(span.end, lineEnd).trim();
   });
   const witnessed = witnessedWords(source);
-  let references = false, fenced = false;
+  const referenceFlags = referenceLineFlags(source);
+  let fenced = false;
   for (const row of rows) {
     if (/^\s*(?:`{3,}|~{3,})/u.test(row.raw)) { row.protected = true; fenced = !fenced; continue; }
-    const referenceHeading = row.text.replace(/^#{1,6}\s+/u, '').replace(/\s+#+$/u, '');
-    if (!fenced && (REFERENCE.test(referenceHeading) || isRefHeadingLine(referenceHeading))) references = true;
-    row.protected = references || fenced || EXPLICIT.test(row.text)
+    row.protected = referenceFlags[row.index] || fenced || EXPLICIT.test(row.text)
       || require('./documentFurniture').isCaption(row.text)
       || require('./documentFurniture').isBylineHeader(row.text)
       || /^\d+(?:\.\d+)*[.)](?!\d)[ \t]*(?=[가-힣A-Za-z“‘"'「『《〈])/u.test(row.text)

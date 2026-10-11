@@ -315,6 +315,77 @@ test('검토 필요로 전달된 서버 결과도 정확히 같으면 출처 서
   assert.equal(match.trust, 'history_hmac');
 });
 
+function limitedEffectHistory(data, meta = {}) {
+  const eligible = eligibleHistory(data);
+  return { ...eligible, engineMeta: { ...eligible.engineMeta, effectStatus: 'limited', ...meta } };
+}
+
+test('효과 제한으로 전달된 서버 결과도 정확히 같으면 서명하고 보정한다', async () => {
+  const output = longDocument('효과 제한 결과');
+  for (const record of [
+    limitedEffectHistory({ type: 'humanize', mode: 'formal', outputText: output }),
+    limitedEffectHistory(reviewHistory({ type: 'humanize', mode: 'blog', outputText: output }))
+  ]) {
+    assert.equal(historyIntegrity.isExactCalibrationEligible(record), true);
+    assert.equal(historyIntegrity.isEligible(record), false, 'near-match rule keeps requiring a normal effect');
+    const signed = historyIntegrity.sign('same-user', output, record, HISTORY_TEST_SECRET);
+    assert.equal(signed.version, 'history-link-hmac-v3');
+    assert.equal(historyIntegrity.verify('same-user', output, record, signed, HISTORY_TEST_SECRET), true);
+    const match = await calibration.findOwnHumanizedHistoryMatch({
+      db: fakeDb([historyDoc('job_limited-signed', record)]), uid: 'same-user', text: output, limit: 50
+    });
+    assert.equal(match.match, 'exact_normalized');
+    assert.equal(match.trust, 'history_hmac');
+  }
+  // 서명은 효과 상태를 포함한다. 저장 뒤 상태를 바꿔 치면 검증에 실패한다.
+  const record = limitedEffectHistory({ type: 'humanize', mode: 'formal', outputText: output });
+  const signed = historyIntegrity.sign('same-user', output, record, HISTORY_TEST_SECRET);
+  const tampered = { ...record, engineMeta: { ...record.engineMeta, effectStatus: 'normal' } };
+  assert.equal(historyIntegrity.verify('same-user', output, tampered, signed, HISTORY_TEST_SECRET), false);
+});
+
+test('효과 제한 결과의 보정은 다른 안전 조건을 풀지 않는다', async () => {
+  const output = longDocument('효과 제한 제외');
+  const base = { type: 'humanize', mode: 'formal', outputText: output };
+  for (const [label, record] of [
+    ['그대로 다듬기 모드', limitedEffectHistory({ ...base, mode: 'polish' })],
+    ['실질 편집 3% 미만', limitedEffectHistory(base, { substantiveEditRatio: 0.02 })],
+    ['실패 구간 있음', limitedEffectHistory(base, { modelFailureChunkCount: 1 })],
+    ['구조 불일치', limitedEffectHistory(base, { structureSignaturePass: false })],
+    ['채택 구간 없음', limitedEffectHistory(base, { approvedModelChunkCount: 0 })],
+    ['알 수 없는 효과 상태', limitedEffectHistory(base, { effectStatus: 'blocked' })],
+    ['효과 상태 없음', limitedEffectHistory(base, { effectStatus: '' })]
+  ]) {
+    assert.equal(historyIntegrity.isExactCalibrationEligible(record), false, label);
+    assert.equal(historyIntegrity.sign('same-user', output, record, HISTORY_TEST_SECRET), null, label);
+  }
+  // 효과 제한 결과를 조금 고친 글(유사 일치)은 지금처럼 보정하지 않는다.
+  const edited = output.replace('자료 87건', '관련 자료 87건');
+  const near = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb([historyDoc('job_limited-near', limitedEffectHistory(base))]), uid: 'same-user', text: edited, limit: 50
+  });
+  assert.equal(near, null);
+});
+
+test('효과 제한 결과의 서명이 아직 없으면 서버 transform 작업으로 확인해 보정한다', async () => {
+  const output = longDocument('효과 제한 복구');
+  const unsigned = { type: 'humanize', mode: 'formal', outputText: output, savedBy: 'server', qualityStatus: 'clean',
+    billingDisposition: 'charged', engineMeta: { deliveryDecision: 'deliver_clean', effectStatus: 'limited',
+      approvedModelChunkCount: 2, modelFailureChunkCount: 0, substantiveEditRatio: 0.14, structureSignaturePass: true } };
+  const job = { uid: 'same-user', status: 'done', mode: 'formal', billingDisposition: 'charged',
+    result: { outputText: output, qualityStatus: 'clean', engineMeta: unsigned.engineMeta } };
+  const rows = [{ id: 'job_limited-unsigned', data: () => unsigned }];
+  const match = await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb(rows, null, {}, { 'limited-unsigned': job }), uid: 'same-user', text: output, limit: 50
+  });
+  assert.equal(match.match, 'exact_normalized');
+  assert.equal(match.trust, 'transform_job_exact');
+  // 작업 문서가 없으면(이미 지워졌으면) 서명 없는 이력만으로는 보정하지 않는다.
+  assert.equal(await calibration.findOwnHumanizedHistoryMatch({
+    db: fakeDb(rows, null, {}, {}), uid: 'same-user', text: output, limit: 50
+  }), null);
+});
+
 test('검토 필요 결과는 서명이 있어도 수정된 유사 본문까지 보정하지 않는다', async () => {
   const output = longDocument('검토 유사');
   const input = output.replace('자료 87건', '관련 자료 87건');

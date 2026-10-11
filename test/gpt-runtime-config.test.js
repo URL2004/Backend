@@ -99,8 +99,10 @@ test('Firestore v1 기본 프로필은 배포 후 v3 모델과 추론 강도로 
 
   assert.equal(config.version, 'gpt-runtime-config-v3');
   assert.deepEqual(config.models, runtime.DEFAULT_CONFIG.models);
-  // 확인 판정 강도는 저장 설정에 없으면 환경 계층의 운영 기본값(medium)을 받는다.
-  assert.deepEqual(config.reasoning, { ...runtime.DEFAULT_CONFIG.reasoning, judgeEscalation: 'medium' });
+  // 확인 판정 강도와 짧은 글의 초안 보강 강도는 저장 설정에 없으면 환경 계층의
+  // 운영 기본값(medium)을 받는다.
+  assert.deepEqual(config.reasoning, { ...runtime.DEFAULT_CONFIG.reasoning,
+    judgeEscalation: 'medium', rewriteEscalationShort: 'medium' });
 });
 
 test('현재 v3에서 관리자가 명시한 reasoning 값은 그대로 보존한다', { concurrency: false }, async () => {

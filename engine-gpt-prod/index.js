@@ -5,6 +5,7 @@ const net = require('net');
 const secureEvidenceFetch = require('../lib/secureEvidenceFetch');
 const { completeJson, webSearchTool, safetyIdentifierForUid } = require('./openaiClient');
 const { humanizeCacheableSystem } = require('./promptCachePolicy');
+const rewriteEffort = require('./rewriteEffort');
 const { HUMANIZE_SCHEMA, DETECT_SCHEMA, REWRITE_SCHEMA, EVIDENCE_SCHEMA } = require('./schemas');
 const { applyDetectNarrativePolicy } = require('../lib/detectNarrativePolicy');
 const { alignScoreToCauseEvidence, assessCauseCoverage } = require('../lib/detectSignalPolicy');
@@ -74,7 +75,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.107';
+const VERSION = 'gpt-prod-v2.5.108';
 const DETECT_VERSION = 'gpt-detect-v1.53';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -281,7 +282,8 @@ async function runEngine({
     error.noCharge = true;
     throw error;
   }
-  const cfg = await loadConfig(config);
+  // 짧은 글이면 비싼 모델의 초안 보강·수리 강도를 이 작업에 한해 낮춘다(rewriteEffort.js).
+  const cfg = rewriteEffort.withRewriteEscalation(await loadConfig(config), submittedSource);
   const humanizationDepthEnabled = isHumanizationDepthEnabled();
   const requestedMode = normalizeRequestedMode(mode);
   const requestStrength = requestStrengthForMode(requestedMode);
@@ -543,7 +545,7 @@ async function runEngine({
         signal,
         safetyIdentifier: safetyId,
         model: entry.tier === 'escalation' ? cfg.models.humanizeEscalation : cfg.models.repair,
-        reasoningEffort: entry.tier === 'escalation' ? cfg.reasoning.escalation : cfg.reasoning.repair,
+        reasoningEffort: entry.tier === 'escalation' ? rewriteEffort.rewriteEscalationEffort(cfg) : cfg.reasoning.repair,
         phase: entry.tier === 'escalation' ? 'section_depth_escalation' : 'section_depth_recovery'
       }),
       validateCandidate: ({ entry, currentOutput, candidate }) => auditGeneralSurfaceCandidate(
@@ -1015,7 +1017,7 @@ async function runEngine({
           signal,
           safetyIdentifier: safetyId,
           model: escalation ? cfg.models.humanizeEscalation : '',
-          reasoningEffort: escalation ? cfg.reasoning.escalation : '',
+          reasoningEffort: escalation ? rewriteEffort.rewriteEscalationEffort(cfg) : '',
           phase: escalation
             ? 'humanization_depth_escalation'
             : roleRecovery
@@ -2228,7 +2230,7 @@ async function runEngine({
           signal,
           safetyIdentifier: safetyId,
           model: escalation ? cfg.models.humanizeEscalation : '',
-          reasoningEffort: escalation ? cfg.reasoning.escalation : '',
+          reasoningEffort: escalation ? rewriteEffort.rewriteEscalationEffort(cfg) : '',
           phase: escalation ? 'post_semantic_noop_escalation' : 'post_semantic_noop_recovery'
         });
         addSupplementalUsage(
@@ -5273,6 +5275,7 @@ async function runEngine({
     fingerprintRetryApplied,
     fingerprintSourceRestoreCount,
     ...contrastShiftMetrics.snapshot(),
+    rewriteEscalationEffort: String(rewriteEffort.rewriteEscalationEffort(cfg) || ''),
     contrastRelationResidualSentenceCount: Number(fingerprintAudit?.relationShift?.count || 0),
     unsupportedSpecificityAuditVersion: Number(unsupportedSpecificityAudit?.version || 0),
     unsupportedSpecificityPass: unsupportedSpecificityAudit
@@ -5669,7 +5672,7 @@ async function processChunk({
     evidence,
     cfg,
     model: cfg.models.humanizeEscalation,
-    reasoningEffort: cfg.reasoning.escalation,
+    reasoningEffort: rewriteEffort.rewriteEscalationEffort(cfg),
     phase: 'escalation',
     escalationReason: first.record?.hardFailReason || first.record?.error || '',
     protectedTerms,

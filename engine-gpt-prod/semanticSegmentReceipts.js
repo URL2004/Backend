@@ -53,7 +53,9 @@ function policyIdentity(config) {
     repair: models.repair || '',
     reasoning: reasoning && typeof reasoning === 'object' ? {
       judge: reasoning.judge || '', escalation: reasoning.escalation || '', repair: reasoning.repair || '',
-      judgeEscalation: reasoning.judgeEscalation || reasoning.escalation || ''
+      judgeEscalation: reasoning.judgeEscalation || reasoning.escalation || '',
+      // 짧은 글 규칙이 걸린 작업만 값이 있다. 없는 작업의 식별값은 예전과 같다.
+      ...(reasoning.rewriteEscalation ? { rewriteEscalation: reasoning.rewriteEscalation } : {})
     } : null
   }));
 }

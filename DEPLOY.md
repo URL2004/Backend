@@ -353,6 +353,7 @@ $r.Content -match 'lavAutoCoach'
 | `OPENAI_REASONING_HUMANIZE` / `OPENAI_REASONING_FACT_DENSE` / `OPENAI_REASONING_ESCALATION` | 변환·고위험·승격 reasoning fallback. 기본 `medium` / `high` / `high` |
 | `OPENAI_REASONING_JUDGE` / `OPENAI_REASONING_REPAIR` / `OPENAI_REASONING_DETECT` / `OPENAI_REASONING_EVIDENCE` | 판정·수리·감지·근거검색 reasoning fallback. 판정/수리 기본 `medium` |
 | `OPENAI_REASONING_JUDGE_ESCALATION` | 확인 판정(상위 모델의 의미 판정) reasoning. 미설정 시 `medium`(v2.5.107). `high`로 두면 이전 강도로 돌아가고, 허용되지 않는 값이면 `OPENAI_REASONING_ESCALATION`을 따른다. 관리자 저장 설정에 값이 있으면 그 값이 우선 |
+| `OPENAI_REASONING_REWRITE_ESCALATION_SHORT` / `GPT_ESCALATION_SHORT_REWRITE_CHARS` | 원문이 기준 글자 수 미만일 때 상위 모델의 초안 보강·수리 reasoning. 미설정 시 `medium` / `4000`(v2.5.108). 강도를 `high`로 두거나 글자 수를 `0`으로 두면 길이와 관계없이 `OPENAI_REASONING_ESCALATION`을 따른다. 확인 판정·감지·근거 검색의 승격 호출에는 영향이 없다 |
 | `GPT_FINGERPRINT_EXPANDED_LIMITATIVE_STYLE` | 기본 꺼짐. `1`이면 넓힌 "~에 그치지 않고" 계열 범위를 상투구 정책에도 적용한다. 뜻이 같은 문장까지 되돌릴 수 있어 운영 기록을 본 뒤에만 켠다 |
 | `OPENAI_PROMPT_CACHE_ENABLED` / `OPENAI_PROMPT_CACHE_KEY_PREFIX` | GPT prompt caching 설정. 기본 prefix `gp-v9-cksafe-ko-p20260704` |
 | `OPENAI_PROMPT_CACHE_KEY_INCLUDE_MODE` / `OPENAI_PROMPT_CACHE_KEY_INCLUDE_PHASE` | 기본 `0`. 같은 고정 프롬프트 코어의 캐시 재사용을 위해 mode/phase를 키에서 제외한다. 특정 키가 약 15 RPM을 넘거나 프롬프트 계열을 강제로 격리해야 할 때만 `1` |
@@ -433,6 +434,14 @@ npm run cache:gpt -- -Limit 1000 -Json
 - 감지 엔진은 `gpt-detect-v1.53`(지시문 v9h)이다. 이력 일치 조건·점수 보정·표시 정책은 그대로다.
 - 관측(1h·6h·24h·72h): Render 로그 `gpt_prod.usage`의 `reasoningEffort`(확인 판정이 `medium`인지), `engineMeta`의 `callWindowOverrunMs`·`callHttpCeilingTimeoutCount`·`callAdmissionSkippedCount`, 검토 필요 비율, 작업당 비용.
 - 의미 사고가 늘면 먼저 `OPENAI_REASONING_JUDGE_ESCALATION=high`로 강도만 되돌리고, 그래도 남으면 Render의 직전 정상 `live` 배포로 전체 복귀한다.
+
+### v2.5.108 짧은 글의 초안 보강·수리 강도 (2026-10-11)
+
+- 제출 원문이 4,000자 미만이면 상위 모델의 초안 보강(`escalation`)과 수리(`section_depth_escalation`·`post_semantic_noop_escalation`·`humanization_depth_escalation`·판정 경로의 관계 수리)를 `medium`으로 보낸다. 4,000자 이상은 `reasoning.escalation`(운영값 `high`) 그대로다.
+- 근거: 같은 날 12편·21쌍 비교에서 호출 한 번의 비용 −50%, 시간 −63%. 4,000자 미만 6편은 결과 차이가 관측되지 않았고, 4,000자 이상에서는 `medium` 쪽 다시 쓴 구간에 깨진 문장과 반복이 조금 더 나왔다.
+- 작업마다 실제로 쓴 강도가 `engineMeta.rewriteEscalationEffort`(이력에도 저장)와 Render 로그 `gpt_prod.usage`의 `reasoningEffort`에 남는다.
+- 되돌릴 때는 Render 환경변수 `OPENAI_REASONING_REWRITE_ESCALATION_SHORT=high`(재시작)만 넣는다. 관리자 저장 설정에 `reasoning.rewriteEscalationShort`·`escalation.shortRewriteChars`가 있으면 그 값이 우선한다.
+- v2.5.107의 호출 시간·배제 약화 관측값 11개(`callWindow*`, `callHttpCeilingTimeoutCount`, `callAdmissionSkipped*`, `contrastRelation*`)는 `89747f6`부터 이력에 남는다.
 
 ### v2.4.8 활성화 순서
 

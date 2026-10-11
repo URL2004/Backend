@@ -536,7 +536,8 @@ async function judgeAndRepairWithModel(rawText, outputText, {
     if (reserveRepair && !reserveRepair()) break;
     rounds++;
     const repairModel = useJudgeForRepair || phasePrefix === 'escalation' ? judgeModel : config.models.repair;
-    const repairReasoning = useJudgeForRepair || phasePrefix === 'escalation' ? config.reasoning.escalation : config.reasoning.repair;
+    const repairReasoning = useJudgeForRepair || phasePrefix === 'escalation'
+      ? (config.reasoning.rewriteEscalation || config.reasoning.escalation) : config.reasoning.repair;
     let repaired;
     // Attested operator/source restorations are cheaper and less inventive
     // than asking the model to regenerate the same correction. They still

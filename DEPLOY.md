@@ -443,6 +443,15 @@ npm run cache:gpt -- -Limit 1000 -Json
 - 되돌릴 때는 Render 환경변수 `OPENAI_REASONING_REWRITE_ESCALATION_SHORT=high`(재시작)만 넣는다. 관리자 저장 설정에 `reasoning.rewriteEscalationShort`·`escalation.shortRewriteChars`가 있으면 그 값이 우선한다.
 - v2.5.107의 호출 시간·배제 약화 관측값 11개(`callWindow*`, `callHttpCeilingTimeoutCount`, `callAdmissionSkipped*`, `contrastRelation*`)는 `89747f6`부터 이력에 남는다.
 
+### v2.5.109 원문 정리: 숨은 문자와 넓은 공백 문단 (2026-10-11)
+
+- 제출 원문에서 눈에 보이지 않는 서식 문자(U+034F, U+200B~U+200F, U+2060 계열, U+FEFF, 소프트 하이픈, 양방향 제어, 변형 선택자, 태그 문자)를 걷어낸다. 양옆이 한글·라틴·한자·숫자·문장부호·공백일 때만 지우고, 이모지 결합·키캡·국기, 아랍·인도계 문자의 연결 제어, 결합 부호 앞뒤는 그대로 둔다. 폭이 있는 채움 문자(U+3164)와 옛한글 채움 자모는 대상이 아니다.
+- 배경: 숫자 안에 낀 U+034F 때문에 숫자 보존 검사가 고친 문장을 거부해 붙은 문장이 원문 그대로 남았다(`engine-gpt-prod/invisibleCharacters.js` 머리말).
+- 줄바꿈 없이 붙여 넣은 400자 이상의 줄에서 한글 문장 끝 뒤 3칸 이상의 공백이 2곳 이상이고, 보통 공백으로 이어진 문장 경계가 그 이상이면 그 자리를 문단 경계로 되돌린다. 탭·세로선이 있는 줄, 조각이 60자 미만이 되는 경우, 모든 문장 뒤가 넓은 글은 건드리지 않는다.
+- 두 정리 모두 글자 내용은 바꾸지 않는다. 사용자 알림은 만들지 않고 `engineMeta.sourceInvisibleCharRemovedCount`·`sourceWideGapParagraphRestoreCount`(이력에도 저장)로만 남긴다. 전처리 버전은 39다.
+- 10/9·10/11 운영 원문 184편 재생: 179편은 전처리 결과가 글자 하나까지 같고, 5편만 달라진다(숨은 문자 4편, 넓은 공백 1편).
+- 감지 경로는 바꾸지 않았다. 감지는 제출된 글을 그대로 채점한다.
+
 ### v2.4.8 활성화 순서
 
 1. 위 세 플래그를 모두 `0`으로 둔 백엔드를 먼저 배포하고 `/healthz`에서 전부 `false`인지 확인한다.

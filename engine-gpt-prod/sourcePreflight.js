@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 38;
+const VERSION = 39;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
@@ -148,7 +148,25 @@ const NOTICE_MESSAGES = Object.freeze({
   source_template_placeholder: '예시·빈칸·작성 지시로 보이는 템플릿 표시가 원문에 남아 있어요. 완성본으로 쓸 내용인지 확인해 주세요.'
 });
 
+// 본문을 살피기 전에 두 가지 물리적 흔적을 먼저 정리한다: 눈에 보이지 않는 서식 문자와,
+// 줄바꿈 없이 붙여 넣은 긴 글에서 문단 구분으로 쓰인 넓은 공백. 둘 다 글자 내용은 바꾸지
+// 않는다. 건수는 사용자 알림이 아니라 진단값(engineMeta)으로만 남긴다.
 function auditAndSanitizeSource(value) {
+  const invisible = require('./invisibleCharacters').stripInvisibleCharacters(normalizeSourceLineSeparators(value));
+  const wideGap = require('./wideGapParagraphs').restoreWideGapParagraphs(invisible.text);
+  const result = auditPreparedSource(wideGap.text);
+  if (!invisible.removedCount && !wideGap.restoredCount) return result;
+  return {
+    ...result,
+    engineMeta: {
+      ...(result.engineMeta || {}),
+      ...(invisible.removedCount ? { sourceInvisibleCharRemovedCount: invisible.removedCount } : {}),
+      ...(wideGap.restoredCount ? { sourceWideGapParagraphRestoreCount: wideGap.restoredCount } : {})
+    }
+  };
+}
+
+function auditPreparedSource(value) {
   // PDF·워드·CSV 복사 과정에서 줄 경계가 LF가 아니라 세로 탭, 폼 피드,
   // Unicode line/paragraph separator로 들어오는 경우가 있다. 이를 공백으로
   // 남기면 목차와 본문이 한 행으로 합쳐져 구조 잠금 범위가 본문까지 번진다.

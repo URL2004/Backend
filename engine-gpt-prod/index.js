@@ -75,7 +75,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.108';
+const VERSION = 'gpt-prod-v2.5.109';
 const DETECT_VERSION = 'gpt-detect-v1.53';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -254,7 +254,9 @@ async function runEngine({
   deadlineMs = 0,
   approvedStructure = null
 } = {}) {
-  const submittedSource = String(text || '').trim();
+  // 제출 원문은 이후 단계에서 어절·문단 경계의 근거로 쓰인다. 눈에 보이지 않는 서식 문자가
+  // 낀 채로는 근거가 되지 못하므로 여기서 한 번 걷어낸다(invisibleCharacters.js).
+  const submittedSource = require('./invisibleCharacters').stripInvisibleCharacters(String(text || '')).text.trim();
   require('./callLedger').setRecoveryBudget(null);
   const jobDeadlineMs = Number(deadlineMs) > 0 ? Number(deadlineMs)
     : Date.now() + Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000));

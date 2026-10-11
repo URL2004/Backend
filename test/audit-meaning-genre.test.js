@@ -61,7 +61,10 @@ test('poem and nominal titles have no minimum rewrite pressure; prose still does
     assert.equal(plan.requiredChangedSentenceCount, 0);
     assert.match(depth.buildHumanizationPromptBlock(plan), /최소 목표는 없다/u);
     const distributed = depth.buildDistributedHumanizationPlans([{ index: 0, text: poem.split('\n')[0] }], plan);
-    assert.equal(distributed.get(0).preservationOnly, true);
+    // 호출부(엔진)는 일반 경로와 같은 모양({ aligned, plans })을 읽는다.
+    assert.equal(distributed.plans.get(0).preservationOnly, true);
+    assert.equal(distributed.aligned, true);
+    assert.equal(distributed.plans instanceof Map, true);
   }
   assert.equal(depth.isPreservationOnly('늦은 오후의 풍경\n여름 끝의 기록\n도시와 기억\n조용한 약속'), true);
   assert.equal(depth.isPreservationOnly('탐구 결과\n실험의 결과를 확인했다.'), false);
@@ -101,4 +104,42 @@ test('split replay across adjacent paragraphs is reviewed without confusing a qu
   assert.equal(found.length, 1);
   assert.ok(found[0].outputSpan.includes('분산 구조'));
   assert.equal(duplicates.introducedCandidates(output, output).length, 0);
+});
+
+// 2026-10-11 운영 실패 재발 방지: 형태를 지키는 글(시·명사형 제목 나열)도 엔진 전체 실행이
+// 끝까지 가야 한다. 10/8~10/11에는 구간 계획을 읽는 자리에서 TypeError로 전부 실패했다.
+test('a preservation-only document runs through the whole engine instead of crashing', async t => {
+  const { load } = require('./helpers/judge-effort-capture.cjs');
+  const names = ['OPENAI_API_KEY', 'OPENAI_SAFETY_SALT'];
+  const old = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, i) => (old[i] === undefined ? delete process.env[name] : process.env[name] = old[i])));
+  process.env.OPENAI_API_KEY = 'offline-test-key';
+  process.env.OPENAI_SAFETY_SALT = 'x'.repeat(40);
+  const poem = ['아아, 오래된 등불', '창가에 꼬박꼬박 고이는 바람', '', '빈 골목을 건너는 이름', '아직 남아 있는 그림자', '',
+    '늦은 오후의 풍경', '여름 끝의 기록', '', '도시와 기억', '조용한 약속'].join('\n');
+  assert.equal(depth.isPreservationOnly(poem, { documentProfile: 'creative' }), true);
+  const runtime = load('lib/gptRuntimeConfig.js');
+  const ledger = load('engine-gpt-prod/callLedger.js');
+  const client = load('engine-gpt-prod/openaiClient.js', {
+    './callLedger': ledger,
+    '../lib/logger': { logger: { info() {}, warn() {}, error() {} } },
+    '../lib/outboundPolicy': { outboundFetch: async (_provider, _url, init) => {
+      const body = JSON.parse(init.body);
+      const name = body.text?.format?.name || '';
+      const json = name === 'gpt_prod_humanize_result' ? { outputText: poem }
+        : { outputText: poem, safeChangeFound: false, notes: [], violations: [], pass: true };
+      return Response.json({ status: 'completed', output_text: JSON.stringify(json),
+        usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 } });
+    } }
+  });
+  const judge = load('engine-gpt-prod/judge.js', { './openaiClient': client, '../lib/gptRuntimeConfig': runtime });
+  const quality = load('engine-gpt-prod/finalQualityV2.js', { './judge': judge, './openaiClient': client });
+  const engine = load('engine-gpt-prod/index.js', { './openaiClient': client, '../lib/gptRuntimeConfig': runtime, './finalQualityV2': quality });
+  let failure = null;
+  const out = await engine.run({ text: poem, mode: 'blog', lang: 'ko', documentProfileOverride: 'creative',
+    config: runtime.sanitizeConfig({}) }).catch(error => { failure = error; return null; });
+  // 엔진이 정책상 변환을 거절하는 것은 허용한다. 코드 오류(TypeError)로 죽으면 안 된다.
+  assert.equal(failure instanceof TypeError, false, failure && failure.message);
+  assert.doesNotMatch(String(failure?.message || ''), /Cannot read properties/u);
+  if (out) assert.equal((out.engineMeta || out.result?.engineMeta || {}).humanizationPlanDistributionAligned, true);
 });

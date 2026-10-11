@@ -312,10 +312,24 @@ function buildDistributedHumanizationPlans(chunks, documentPlan, {
   inputRisk = null,
   editableChunkIndices = null
 } = {}) {
-  if (documentPlan?.preservationOnly) return new Map((chunks || []).map((chunk, index) => [
-    Number.isInteger(chunk?.index) ? chunk.index : index,
-    { ...documentPlan, sourceChars: normalizeSubstantive(chunk?.text || '').length }
-  ]));
+  if (documentPlan?.preservationOnly) {
+    // 시·제목처럼 원문 형태를 지키는 글은 구간마다 같은 보존 계약을 받는다. 반환 모양은
+    // 일반 경로와 같아야 한다. 2026-10-08부터 여기서 Map만 돌려줘 호출부의
+    // `.plans.get(...)`이 TypeError로 죽었고, 이런 글의 변환이 전부 오류로 끝났다.
+    const plans = new Map((chunks || []).map((chunk, index) => [
+      Number.isInteger(chunk?.index) ? chunk.index : index,
+      { ...documentPlan, sourceChars: normalizeSubstantive(chunk?.text || '').length }
+    ]));
+    const sentenceCount = Number(documentPlan?.sourceSentenceCount || 0);
+    return {
+      version: 1,
+      aligned: true,
+      documentSourceSentenceCount: sentenceCount,
+      mappedSourceSentenceCount: sentenceCount,
+      primaryEditableChunkCount: plans.size,
+      plans
+    };
+  }
   const constrainedEditableChunks = editableChunkIndices instanceof Set;
   const rows = [];
   const targets = new Set((documentPlan?.targetIndices || []).filter(Number.isInteger));

@@ -74,7 +74,7 @@ test('72점 대표 사례는 측정값을 보존하되 위치 없는 원인을 �
   assert.equal(reportView.synthesis.headline, '점수는 확인됐지만 원인 설명은 일부만 연결됐어요.');
   assert.equal(reportView.causeAnalysis.status, 'aligned');
   assert.equal(reportView.causeAnalysis.qualifyingIndependentSignals, 2);
-  assert.match(reportView.synthesis.limitation, /작성 주체나 외부 검사 결과를 확정하지 않아요/u);
+  assert.equal(reportView.synthesis.limitation, '문체 패턴을 바탕으로 한 참고 결과이며 작성 주체를 확정하지 않아요. 외부 검사 결과와 다를 수 있어요.');
 });
 
 test('높은 점수를 기존 문자열 원인만으로 설명하면 부분 설명으로 제한한다', () => {

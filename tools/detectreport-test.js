@@ -112,9 +112,10 @@ const server = app.listen(0, '127.0.0.1', async () => {
       riskLevel: result.body.riskLevel,
       summary: result.body.summary
     });
-    check('문단 지도에 위험·구체 문단이 모두 존재', result.body.paragraphs.length === 2
-      && result.body.paragraphs[0].kind !== 'concrete'
-      && result.body.paragraphs[1].kind === 'concrete', result.body.paragraphs);
+    // This stub returns no grounded paragraph evidence. A high global score
+    // and autobiographical wording cannot stand in for assessed locations.
+    check('근거 위치 없는 문단은 전역 점수로 추정 분류하지 않음', result.body.paragraphs.length === 2
+      && result.body.paragraphs.every(paragraph => paragraph.kind === 'not_assessed'), result.body.paragraphs);
     check('미리보기는 위험 문장에서 생성', Boolean(result.body.example)
       && RISKY.includes(result.body.example.before.slice(0, 20))
       && result.body.example.after.length > 0, result.body.example);

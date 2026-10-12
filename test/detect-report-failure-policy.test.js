@@ -159,6 +159,8 @@ stub('lib/detectCalibration.js', {
 
 stub('lib/historyService.js', {
   getDetectHistoryIdempotency: async ({ requestId, needed, requestPayloadFingerprint }) => {
+    const forced = state.historyCheckHook && state.historyCheckHook(requestId);
+    if (forced) return forced;
     const existing = state.historyDocs.get(requestId);
     if (!existing) return { state: 'NOT_FOUND' };
     if (existing.needed !== needed || existing.requestPayloadFingerprint !== requestPayloadFingerprint) {
@@ -183,18 +185,29 @@ stub('lib/historyService.js', {
   }
 });
 
+function readRequestJob(binding, claim) {
+  const forced = state.requestReadHook && state.requestReadHook(binding.requestId);
+  if (forced) return forced;
+  const existing = state.requestJobs.get(binding.requestId);
+  if (!existing) {
+    if (!claim) return { state: 'ABSENT' };
+    state.requestJobs.set(binding.requestId, { binding, state: 'PROCESSING', response: null });
+    return { state: 'NEW' };
+  }
+  if (existing.binding.payloadFingerprint !== binding.payloadFingerprint
+    || existing.binding.cost !== binding.cost) return { state: 'MISMATCH' };
+  return { state: existing.state, response: existing.response,
+    ...(existing.state === 'PROCESSING' ? { retryAfterMs: 4 * 60 * 1000 + 1 } : {}) };
+}
+
 stub('lib/detectRequestStore.js', {
-  begin: async binding => {
-    const existing = state.requestJobs.get(binding.requestId);
-    if (!existing) {
-      state.requestJobs.set(binding.requestId, { binding, state: 'PROCESSING', response: null });
-      return { state: 'NEW' };
-    }
-    if (existing.binding.payloadFingerprint !== binding.payloadFingerprint
-      || existing.binding.cost !== binding.cost) return { state: 'MISMATCH' };
-    return { state: existing.state, response: existing.response };
-  },
+  begin: async binding => readRequestJob(binding, true),
+  lookup: async binding => readRequestJob(binding, false),
   stageResult: async (binding, response) => {
+    if (state.stageHook) {
+      const forced = await state.stageHook(binding, response);
+      if (forced) return forced;
+    }
     const existing = state.requestJobs.get(binding.requestId);
     if (!existing || existing.binding.payloadFingerprint !== binding.payloadFingerprint) {
       return { state: 'MISMATCH' };
@@ -207,6 +220,7 @@ stub('lib/detectRequestStore.js', {
     return { state: 'RESULT_READY', response: structuredClone(response), reused: false };
   },
   complete: async (binding, response) => {
+    if (state.completeHook) await state.completeHook(binding, response);
     const existing = state.requestJobs.get(binding.requestId);
     if (!existing || existing.binding.payloadFingerprint !== binding.payloadFingerprint) {
       return { state: 'MISMATCH' };
@@ -216,9 +230,12 @@ stub('lib/detectRequestStore.js', {
     return { state: 'COMPLETE', response };
   },
   recordBillingFailure: async () => {},
+  STALE_PROCESSING_MS: 10 * 60 * 1000,
   releaseAfterModelFailure: async binding => {
+    if (state.releaseFails) return false;
     const existing = state.requestJobs.get(binding.requestId);
     if (existing?.state === 'PROCESSING') state.requestJobs.delete(binding.requestId);
+    return true;
   }
 });
 
@@ -317,7 +334,7 @@ async function post(text, requestId) {
     },
     body: JSON.stringify({ text, requestId })
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, retryAfter: response.headers.get('retry-after'), body: await response.json() };
 }
 
 const BASE_TEXT = (
@@ -388,6 +405,8 @@ test('모델 실패와 불완전 응답은 엔진 숫자 없이 503 무차감으
   assert.equal(failed.status, 503);
   assert.equal(failed.body.code, 'DETECT_MODEL_UNAVAILABLE');
   assert.equal(failed.body.retryable, true);
+  assert.equal(failed.retryAfter, '5');
+  assert.equal(failed.body.retryAfterSeconds, 5);
   assert.equal(failed.body.charged, 0);
   assert.equal(Object.hasOwn(failed.body, 'probability'), false);
   assert.equal(Object.hasOwn(failed.body, 'probSource'), false);
@@ -616,6 +635,7 @@ test('모델 결과 고정 뒤 과금 commit 실패는 결과를 숨기고 같�
   assert.equal(failed.status, 503);
   assert.equal(failed.body.code, 'DETECT_BILLING_UNAVAILABLE');
   assert.equal(failed.body.retryable, true);
+  assert.equal(failed.retryAfter, '5');
   assert.equal(failed.body.charged, 0);
   assert.equal(Object.hasOwn(failed.body, 'probability'), false);
   assert.equal(state.actualDeducts, deductsBefore);
@@ -816,4 +836,378 @@ test('report and replay separate an isolated ending from rewriting while retaini
   const replay = await post(text, 'audit-fragment-response');
   assert.equal(replay.body.probability, 11);
   assert.deepEqual(replay.body.reportView.conversion, response.body.reportView.conversion);
+});
+
+test('결과 고정 단계가 예외를 던져도 즉시 미차감 503으로 끝내고 PROCESSING claim을 푼다', { concurrency: false }, async () => {
+  const requestId = 'detect-stage-throws-1';
+  const deductsBefore = state.actualDeducts;
+  const historiesBefore = state.historyCalls.length;
+  state.stageHook = async () => { throw new Error('synthetic stage failure'); };
+  let failed;
+  try {
+    failed = await post(BASE_TEXT, requestId);
+  } finally {
+    state.stageHook = null;
+  }
+  assert.equal(failed.status, 503);
+  assert.equal(failed.body.code, 'DETECT_REPORT_UNAVAILABLE');
+  assert.equal(failed.body.retryable, true);
+  assert.equal(failed.body.charged, 0);
+  assert.equal(Object.hasOwn(failed.body, 'probability'), false);
+  assert.equal(state.actualDeducts, deductsBefore);
+  assert.equal(state.historyCalls.length, historiesBefore);
+  assert.equal(state.requestJobs.has(requestId), false, 'PROCESSING claim이 남으면 재시도가 202에 갇힌다');
+  assert.ok(state.logs.some(row => row.event === 'detect_report.unhandled_failure' && row.fields.billed === false));
+
+  const recovered = await post(BASE_TEXT, requestId);
+  assert.equal(recovered.status, 200);
+  assert.equal(recovered.body.charged, Math.ceil(BASE_TEXT.length / 100));
+  assert.equal(state.actualDeducts, deductsBefore + 1);
+});
+
+test('저장 한도를 넘는 결과는 재시도 불가 422로 닫고 차감·이력·claim을 남기지 않는다', { concurrency: false }, async () => {
+  const requestId = 'detect-stage-too-large-1';
+  const deductsBefore = state.actualDeducts;
+  const historiesBefore = state.historyCalls.length;
+  state.stageHook = async () => ({ state: 'TOO_LARGE', code: 'DETECT_RESPONSE_CACHE_TOO_LARGE' });
+  let failed;
+  try {
+    failed = await post(BASE_TEXT, requestId);
+  } finally {
+    state.stageHook = null;
+  }
+  assert.equal(failed.status, 422);
+  assert.equal(failed.body.code, 'DETECT_RESULT_TOO_LARGE');
+  assert.equal(failed.body.retryable, false);
+  assert.equal(failed.body.charged, 0);
+  assert.equal(Object.hasOwn(failed.body, 'probability'), false);
+  assert.equal(state.actualDeducts, deductsBefore);
+  assert.equal(state.historyCalls.length, historiesBefore);
+  assert.equal(state.requestJobs.has(requestId), false);
+});
+
+test('차감 뒤 완료 기록이 예외를 던져도 결제된 결과를 전달하고 재시도는 추가 차감 없이 같은 결과다', { concurrency: false }, async () => {
+  const requestId = 'detect-complete-throws-1';
+  const cost = Math.ceil(BASE_TEXT.length / 100);
+  const deductsBefore = state.actualDeducts;
+  const balanceBefore = state.balance;
+  state.completeHook = async () => { throw new Error('synthetic complete failure'); };
+  let delivered;
+  try {
+    delivered = await post(BASE_TEXT, requestId);
+  } finally {
+    state.completeHook = null;
+  }
+  assert.equal(delivered.status, 200);
+  assert.equal(delivered.body.ok, true);
+  assert.equal(delivered.body.probability, 72);
+  assert.equal(delivered.body.charged, cost);
+  assert.equal(delivered.body.remainingCredits, balanceBefore - cost);
+  assert.equal(state.actualDeducts, deductsBefore + 1);
+  assert.ok(state.logs.some(row => row.event === 'detect_report.unhandled_failure' && row.fields.billed === true));
+
+  const modelCalls = state.modelCalls;
+  const replay = await post(BASE_TEXT, requestId);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.probability, delivered.body.probability);
+  assert.equal(replay.body.charged, 0);
+  assert.equal(replay.body.idempotentReplay, true);
+  assert.equal(replay.body.remainingCredits, balanceBefore - cost);
+  assert.deepEqual(replay.body.reportView, delivered.body.reportView);
+  assert.equal(state.actualDeducts, deductsBefore + 1, '재시도가 다시 차감하면 안 된다');
+  assert.equal(state.modelCalls, modelCalls);
+});
+
+test('차감 뒤 이력 저장이 예외여도 결과를 전달하고 완료 상태를 남긴다', { concurrency: false }, async () => {
+  const requestId = 'detect-history-throws-1';
+  const cost = Math.ceil(BASE_TEXT.length / 100);
+  const deductsBefore = state.actualDeducts;
+  const historyService = require('../lib/historyService');
+  const originalSave = historyService.saveAnalyzeHistory;
+  historyService.saveAnalyzeHistory = async () => {
+    throw Object.assign(new Error('DETECT_RESPONSE_CACHE_TOO_LARGE'), { code: 'DETECT_RESPONSE_CACHE_TOO_LARGE' });
+  };
+  let delivered;
+  try {
+    delivered = await post(BASE_TEXT, requestId);
+  } finally {
+    historyService.saveAnalyzeHistory = originalSave;
+  }
+  assert.equal(delivered.status, 200);
+  assert.equal(delivered.body.charged, cost);
+  assert.equal(delivered.body.historySaved, false);
+  assert.equal(state.actualDeducts, deductsBefore + 1);
+  assert.equal(state.requestJobs.get(requestId).state, 'COMPLETE');
+
+  const replay = await post(BASE_TEXT, requestId);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.charged, 0);
+  assert.equal(state.actualDeducts, deductsBefore + 1);
+});
+
+test('저장소 장애로 claim도 못 풀면 남는 처리 상태와 대기 시간을 알리고 이후 202와 일관되게 답한다', { concurrency: false }, async () => {
+  const requestId = 'detect-stage-db-outage-1';
+  const deductsBefore = state.actualDeducts;
+  state.stageHook = async () => ({ state: 'UNAVAILABLE' });
+  state.releaseFails = true;
+  let failed;
+  let raw;
+  try {
+    raw = await fetch(`${baseUrl}/detect-report`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer test-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: BASE_TEXT, requestId })
+    });
+    failed = { status: raw.status, body: await raw.json() };
+  } finally {
+    state.stageHook = null;
+    state.releaseFails = false;
+  }
+  assert.equal(failed.status, 503);
+  assert.equal(failed.body.code, 'IDEMPOTENCY_CACHE_UNAVAILABLE');
+  assert.equal(failed.body.claimReleased, false);
+  assert.equal(failed.body.retryAfterSeconds, 600);
+  assert.equal(raw.headers.get('retry-after'), '600');
+  assert.equal(failed.body.charged, 0);
+  assert.match(failed.body.error, /처리 상태도 정리하지 못했어요/u);
+  assert.equal(state.actualDeducts, deductsBefore);
+
+  const modelCalls = state.modelCalls;
+  const pending = await post(BASE_TEXT, requestId);
+  assert.equal(pending.status, 202);
+  assert.equal(pending.body.code, 'DETECT_REQUEST_PROCESSING');
+  assert.equal(pending.body.retryAfterSeconds, 241);
+  assert.equal(pending.body.charged, 0);
+  assert.equal(state.modelCalls, modelCalls);
+  assert.equal(state.actualDeducts, deductsBefore);
+  state.requestJobs.delete(requestId);
+});
+
+test('30,000자 초과 입력은 모델·차감 전에 INPUT_TOO_LONG으로 닫는다', { concurrency: false }, async () => {
+  const modelCalls = state.modelCalls;
+  const deductsBefore = state.actualDeducts;
+  const result = await post('가'.repeat(30001), 'detect-input-too-long-1');
+  assert.equal(result.status, 400);
+  assert.deepEqual({ ok: result.body.ok, code: result.body.code, limit: result.body.limit,
+    actual: result.body.actual, charged: result.body.charged },
+  { ok: false, code: 'INPUT_TOO_LONG', limit: 30000, actual: 30001, charged: 0 });
+  assert.equal(state.modelCalls, modelCalls);
+  assert.equal(state.actualDeducts, deductsBefore);
+});
+
+test('차감이 확정됐는데 전달할 결과가 없으면 차감이 없었다고 말하지 않는다', { concurrency: false }, async () => {
+  const sent = {};
+  const res = { headersSent: false, set(name, value) { sent[name] = value; }, status(code) { sent.status = code; return this; }, json(body) { sent.body = body; return this; } };
+  await report.failDetectReportSafely(res, {
+    uid: 'detect-policy-user', requestId: 'detect-billed-no-body-1', cost: 3, billed: true, claimed: true,
+    requestBinding: { requestId: 'detect-billed-no-body-1' }, deliverable: () => null
+  }, new Error('synthetic post-billing failure'));
+  assert.equal(sent.status, 503);
+  assert.equal(sent.body.code, 'DETECT_DELIVERY_UNCONFIRMED');
+  assert.equal(sent.body.billingCommitted, true);
+  assert.equal(sent.body.retryable, true);
+  assert.equal(sent['Retry-After'], '5');
+  assert.equal(Object.hasOwn(sent.body, 'charged'), false);
+  assert.doesNotMatch(sent.body.error, /차감되지 않았/u);
+
+  const already = { headersSent: true, json() { throw new Error('must not write twice'); } };
+  await report.failDetectReportSafely(already, { billed: false }, new Error('late'));
+});
+
+// ── 재시도 경로: 확정 상태와 일시 장애의 구분 ──
+
+async function chargedOnce(requestId) {
+  const first = await post(BASE_TEXT, requestId);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.charged, Math.ceil(BASE_TEXT.length / 100));
+  return first;
+}
+
+function counters() {
+  return { model: state.modelCalls, deducts: state.actualDeducts, deductCalls: state.deductCalls,
+    histories: state.historyCalls.length, balance: state.balance, metrics: state.metricRegistrations };
+}
+
+test('차감이 확정됐는데 요청 캐시와 이력 보관본이 모두 없으면 재분석·재차감 없이 재시도 불가로 닫는다', { concurrency: false }, async () => {
+  const requestId = 'detect-charged-expired-1';
+  await chargedOnce(requestId);
+  // 요청 캐시 TTL 삭제 + 이력 미저장(또는 사용자 삭제) 상태.
+  state.requestJobs.delete(requestId);
+  state.historyDocs.delete(requestId);
+  const before = counters();
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const gone = await post(BASE_TEXT, requestId);
+    assert.equal(gone.status, 410);
+    assert.deepEqual(gone.body, {
+      ok: false,
+      code: 'DETECT_RESULT_NO_LONGER_AVAILABLE',
+      error: '이 작업 번호의 감지는 이미 크레딧이 차감됐지만, 보관된 결과를 더 이상 읽을 수 없어 다시 전달할 수 없어요. '
+        + '같은 작업 번호로 다시 시도해도 결과는 돌아오지 않고 추가 차감도 없어요. '
+        + '다시 분석하려면 새 작업으로 시작해 주세요. 새 분석은 크레딧이 차감돼요.',
+      retryable: false,
+      billingCommitted: true,
+      charged: 0,
+      cost: Math.ceil(BASE_TEXT.length / 100)
+    });
+    assert.equal(gone.retryAfter, null, '재시도 불가 응답에 대기 시간을 싣지 않는다');
+    assert.equal(state.requestJobs.has(requestId), false, '처리 상태를 새로 잡으면 다음 재시도가 202에 갇힌다');
+  }
+  assert.deepEqual(counters(), before, '모델·원장·이력·사용량 어느 것도 다시 호출하지 않는다');
+  const logged = state.logs.filter(row => row.event === 'detect_report.charged_result_unrecoverable'
+    && row.fields.requestId === requestId);
+  assert.equal(logged.length, 2);
+  assert.deepEqual([logged[0].fields.historyState, logged[0].fields.requestState], ['NOT_FOUND', 'ABSENT']);
+});
+
+test('같은 차감 확정 상태라도 저장소 일시 장애는 재시도 가능 503이고, 복구 뒤 같은 결과를 추가 차감 없이 받는다', { concurrency: false }, async () => {
+  const requestId = 'detect-charged-outage-1';
+  const first = await chargedOnce(requestId);
+  const savedHistory = state.historyDocs.get(requestId);
+  const before = counters();
+
+  // 이력 저장소 읽기 실패: 결과가 없는지 알 수 없으므로 확정 상태로 닫지 않는다.
+  state.historyCheckHook = () => ({ state: 'UNAVAILABLE', error: new Error('synthetic history outage') });
+  let outage;
+  try { outage = await post(BASE_TEXT, requestId); } finally { state.historyCheckHook = null; }
+  assert.equal(outage.status, 503);
+  assert.equal(outage.body.code, 'IDEMPOTENCY_CHECK_UNAVAILABLE');
+  assert.equal(outage.body.retryable, true);
+  assert.equal(outage.retryAfter, '5');
+  assert.equal(outage.body.retryAfterSeconds, 5);
+
+  // 이력에는 없고 요청 캐시 저장소를 읽지 못한 경우도 같다.
+  state.historyDocs.delete(requestId);
+  state.requestReadHook = () => ({ state: 'UNAVAILABLE' });
+  try { outage = await post(BASE_TEXT, requestId); } finally { state.requestReadHook = null; }
+  assert.equal(outage.status, 503);
+  assert.equal(outage.body.code, 'IDEMPOTENCY_CHECK_UNAVAILABLE');
+  assert.equal(outage.body.retryable, true);
+  assert.equal(outage.retryAfter, '5');
+  assert.deepEqual(counters(), before);
+  assert.equal(state.logs.some(row => row.event === 'detect_report.charged_result_unrecoverable'
+    && row.fields.requestId === requestId), false);
+
+  state.historyDocs.set(requestId, savedHistory);
+  const recovered = await post(BASE_TEXT, requestId);
+  assert.equal(recovered.status, 200);
+  assert.equal(recovered.body.probability, first.body.probability);
+  assert.deepEqual(recovered.body.reportView, first.body.reportView);
+  assert.equal(recovered.body.charged, 0);
+  assert.equal(state.actualDeducts, before.deducts);
+  assert.equal(state.modelCalls, before.model);
+});
+
+test('손상된 이력 보관본은 온전한 요청 캐시 replay를 막지 않고, 캐시도 없을 때만 확정 상태로 닫는다', { concurrency: false }, async () => {
+  const requestId = 'detect-history-corrupt-1';
+  const first = await chargedOnce(requestId);
+  assert.equal(first.body.historySaved, true);
+  const before = counters();
+  const unreadable = () => ({ state: 'UNREADABLE', error: Object.assign(new Error('x'), { code: 'DETECT_RESPONSE_CACHE_INVALID' }) });
+
+  // 이력 row는 있지만 보관본을 읽을 수 없다. 저장 단계는 같은 결과로 보관본을 다시 채운다.
+  state.historyDocs.delete(requestId);
+  state.historyCheckHook = unreadable;
+  let replay;
+  try { replay = await post(BASE_TEXT, requestId); } finally { state.historyCheckHook = null; }
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.probability, first.body.probability);
+  assert.equal(replay.body.summary, first.body.summary);
+  assert.deepEqual(replay.body.reportView, first.body.reportView);
+  assert.deepEqual(replay.body.sentenceMap, first.body.sentenceMap);
+  assert.equal(replay.body.charged, 0);
+  assert.equal(replay.body.idempotentReplay, true);
+  assert.equal(replay.body.historySaved, true);
+  assert.equal(state.modelCalls, before.model);
+  assert.equal(state.actualDeducts, before.deducts);
+  assert.equal(state.historyDocs.get(requestId).response.probability, first.body.probability);
+
+  // 응답 형태가 아닌 READY 보관본도 같은 취급이다(이전에는 영구 503).
+  state.historyCheckHook = () => ({ state: 'READY', response: { ok: true, probability: 'not-a-number' } });
+  try { replay = await post(BASE_TEXT, requestId); } finally { state.historyCheckHook = null; }
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.probability, first.body.probability);
+  assert.equal(replay.body.charged, 0);
+
+  // 요청 캐시까지 없으면 다시 시도해도 달라지지 않는다.
+  state.requestJobs.delete(requestId);
+  state.historyCheckHook = unreadable;
+  let gone;
+  try { gone = await post(BASE_TEXT, requestId); } finally { state.historyCheckHook = null; }
+  assert.equal(gone.status, 410);
+  assert.equal(gone.body.code, 'DETECT_RESULT_NO_LONGER_AVAILABLE');
+  assert.equal(gone.body.retryable, false);
+  assert.equal(state.modelCalls, before.model);
+  assert.equal(state.actualDeducts, before.deducts);
+});
+
+test('읽을 수 없는 요청 캐시는 저장소 장애가 아니라 재시도 불가로 닫고 차감 여부를 사실대로 말한다', { concurrency: false }, async () => {
+  const corrupt = () => ({ state: 'CORRUPT' });
+  const before = counters();
+
+  state.requestReadHook = corrupt;
+  let unbilled;
+  try { unbilled = await post(BASE_TEXT, 'detect-cache-corrupt-unbilled-1'); } finally { state.requestReadHook = null; }
+  assert.equal(unbilled.status, 409);
+  assert.equal(unbilled.body.code, 'DETECT_REQUEST_UNRECOVERABLE');
+  assert.equal(unbilled.body.retryable, false);
+  assert.equal(unbilled.body.charged, 0);
+  assert.match(unbilled.body.error, /차감되지 않았어요/u);
+  assert.equal(Object.hasOwn(unbilled.body, 'billingCommitted'), false);
+  assert.deepEqual(counters(), before);
+
+  // 형태가 맞지 않는 고정 결과도 같다.
+  const requestId = 'detect-cache-corrupt-billed-1';
+  await chargedOnce(requestId);
+  state.historyDocs.delete(requestId);
+  state.requestJobs.get(requestId).response = { publicResponse: { ok: true } };
+  const billed = await post(BASE_TEXT, requestId);
+  assert.equal(billed.status, 410);
+  assert.equal(billed.body.code, 'DETECT_RESULT_NO_LONGER_AVAILABLE');
+  assert.equal(billed.body.billingCommitted, true);
+  assert.doesNotMatch(billed.body.error, /차감되지 않았/u);
+  assert.equal(state.actualDeducts, before.deducts + 1);
+  state.requestJobs.delete(requestId);
+});
+
+test('요청 캐시 replay의 historySaved는 그 시점의 실제 이력 저장 결과이고 점수·보고서는 그대로다', { concurrency: false }, async () => {
+  const requestId = 'detect-replay-history-truth-1';
+  const historyService = require('../lib/historyService');
+  const originalSave = historyService.saveAnalyzeHistory;
+  const failingSave = async () => { throw new Error('synthetic history outage'); };
+
+  historyService.saveAnalyzeHistory = failingSave;
+  let first;
+  let stillFailing;
+  try {
+    first = await post(BASE_TEXT, requestId);
+    stillFailing = await post(BASE_TEXT, requestId);
+  } finally {
+    historyService.saveAnalyzeHistory = originalSave;
+  }
+  assert.equal(first.status, 200);
+  assert.equal(first.body.historySaved, false);
+  assert.equal(stillFailing.status, 200);
+  assert.equal(stillFailing.body.historySaved, false, '저장되지 않았는데 저장됐다고 답하면 안 된다');
+  assert.equal(state.historyDocs.has(requestId), false);
+  const after = counters();
+
+  // 완료 row에는 historySaved:false가 고정돼 있지만, replay는 이번에 실제로 저장된 사실을 말한다.
+  const saved = await post(BASE_TEXT, requestId);
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.historySaved, true);
+  assert.equal(saved.body.charged, 0);
+  assert.equal(saved.body.idempotentReplay, true);
+  assert.equal(state.historyDocs.get(requestId).response.historySaved, true);
+  for (const reply of [stillFailing, saved]) {
+    const { historySaved, charged, idempotentReplay, remainingCredits, activation, ...rest } = reply.body;
+    const { historySaved: h0, charged: c0, idempotentReplay: i0, remainingCredits: r0, activation: a0, ...original } = first.body;
+    assert.deepEqual(rest, original, '저장 여부 외의 점수·문구·좌표는 최초 응답과 같아야 한다');
+  }
+
+  const fromHistory = await post(BASE_TEXT, requestId);
+  assert.equal(fromHistory.body.historySaved, true);
+  assert.equal(fromHistory.body.probability, first.body.probability);
+  assert.equal(state.modelCalls, after.model);
+  assert.equal(state.actualDeducts, after.deducts);
 });

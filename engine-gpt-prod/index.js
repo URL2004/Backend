@@ -75,8 +75,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.111';
-const DETECT_VERSION = 'gpt-detect-v1.54';
+const VERSION = 'gpt-prod-v2.5.112';
+const DETECT_VERSION = 'gpt-detect-v1.55';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -4494,6 +4494,20 @@ async function runEngine({
   }], 'citation_integrity_unresolved');
   if (require('./deliveryIntegrityWitnesses').mixedScriptWordChanges(rawSource, outputText).length) {
     addFloorCriticals(result.floorReport, [{ gate: 'encoding_corruption', detail: '원문 한국어 단어에 다른 문자 체계가 섞여 결과를 전달하지 않았습니다.' }], 'encoding_corruption');
+  }
+  const finalLinePolicy = { preserveLines: documentProfile?.profile === 'creative'
+    || materializedChunks.some(chunk => chunk.lineBoundaryPolicy === 'all') };
+  if (require('./fragmentDuplication').introducedClauseDuplicates(rawSource, outputText, finalLinePolicy).length
+      || require('./fragmentDuplication').introducedResidualTails(rawSource, outputText, finalLinePolicy).length
+      || require('./sourceBoundaryIntegrity').auditIntroducedReferenceBreaks(submittedSource, outputText).length) {
+    addFloorCriticals(result.floorReport, [{ gate: 'confirmed_fragment_corruption',
+      detail: '문장 조각의 중복 또는 참조 번호의 잘못된 연결이 확인되어 결과를 전달하지 않았습니다.' }], 'confirmed_fragment_corruption');
+  }
+  if (require('./sourceBoundaryIntegrity').restoreSourceBoundaries(submittedSource, outputText,
+    finalLinePolicy).codes.some(code =>
+      ['source_url_whitespace_restored', 'source_number_join_restored'].includes(code))) {
+    addFloorCriticals(result.floorReport, [{ gate: 'literal_layout_corruption',
+      detail: '원문의 URL 또는 숫자 표기가 갈라져 결과를 전달하지 않았습니다.' }], 'literal_layout_corruption');
   }
   const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
   result.floorReport = delivery.report;

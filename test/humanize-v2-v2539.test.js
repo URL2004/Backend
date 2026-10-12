@@ -33,7 +33,7 @@ test('v2.5.39: 우선순위와 문단 권위는 하나의 불변 계약에서 �
     documentProfile: ESSAY
   });
 
-assert.equal(engine.VERSION, 'gpt-prod-v2.5.111');
+assert.equal(engine.VERSION, 'gpt-prod-v2.5.112');
   assert.deepEqual(contract.priorities.map(item => item.rank), [1, 2, 3]);
   assert.equal(contract.paragraph.modelBoundary, 'source_locked');
   assert.equal(contract.paragraph.localizedRepairBoundary, 'source_locked');
@@ -176,8 +176,11 @@ test('v2.5.39: 상시 system 프롬프트는 장르별 상한 안에서 조립�
     const relationGuard = '필요조건(-어야/-해야)을 일반 조건(-면)으로 바꾸지 않는다. 시기·시대·기간을 나타내는 배경 명칭을 행위 주체로 확정하지 않는다. 선택 관계(이나/또는)를 양쪽 모두의 주장(과/및)으로 바꾸지 않는다. 같은 관계를 유지하는 의역과 문장 분리는 허용한다.';
     assert.ok(stable.includes(relationGuard));
     assert.ok(relationGuard.length <= 150);
-    assert.ok(stable.length <= maxChars + sharedContract.length + relationGuard.length + 1, `${documentProfile.profile}: ${stable.length} chars`);
-    assert.ok(stable.split(/\n/u).length <= maxLines + meaningPreservationLines().length + 1, `${documentProfile.profile}: line budget`);
+    // v2.5.112 adds one bounded anti-restatement rule without relaxing genre budgets.
+    const restatement = stable.split('\n').find(line=>line.startsWith('이미 전달한 주장을 다시 요약하거나'));
+    assert.ok(restatement && restatement.length <= 160);
+    assert.ok(stable.length <= maxChars + sharedContract.length + relationGuard.length + restatement.length + 2, `${documentProfile.profile}: ${stable.length} chars`);
+    assert.ok(stable.split(/\n/u).length <= maxLines + meaningPreservationLines().length + 2, `${documentProfile.profile}: line budget`);
   }
 });
 

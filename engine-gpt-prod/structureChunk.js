@@ -132,7 +132,7 @@ function protectCitationLiteralChunks(chunks, value) {
 }
 
 function expandBaseChunk(chunk, state) {
-  const pieces = splitLinePieces(chunk.text, chunk.start || 0);
+  const pieces = coalesceWrappedHeadingPieces(splitLinePieces(chunk.text, chunk.start || 0), state);
   if (!pieces.length) return [];
 
   const groups = [];
@@ -149,7 +149,7 @@ function expandBaseChunk(chunk, state) {
     // 번호형 소제목을 불릿 접두부와 본문으로 먼저 분해하면 `1. 연구 배경`의
     // 제목성이 사라지고 뒤 본문이 상위 절 경로에 남는다. 구조 판정을 접두부
     // 편집 규칙보다 먼저 적용해 제목 행 전체를 하나의 잠금 단위로 유지한다.
-    const preserveWholeStructuralLine = [
+    const preserveWholeStructuralLine = Boolean(sourcePiece.forceLockType) || [
       'title',
       'heading',
       'signature',
@@ -171,7 +171,7 @@ function expandBaseChunk(chunk, state) {
       ? [{ ...sourcePiece, forceEditable: true }]
       : assessmentExplanationPieces
       || editableBlockquotePieces
-      || (preserveWholeStructuralLine
+      || (sourcePiece.forceSplitPrefix ? splitEditablePrefixPiece(sourcePiece) : preserveWholeStructuralLine
       || (state.assessment && shouldKeepAssessmentLineWhole(sourceText, state.assessmentSection))
       || (state.questionnaire && isQuestionnaireQuestionLine(sourceText))
       ? [sourcePiece]
@@ -211,6 +211,43 @@ function expandBaseChunk(chunk, state) {
   if (chunk._lead) groups[0]._lead = (groups[0]._lead || '') + chunk._lead;
   groups[groups.length - 1].sep = (groups[groups.length - 1].sep || '') + (chunk.sep || '');
   return groups;
+}
+
+// A physical first line is not the ownership unit of a wrapped question/item.
+// Keep its literal continuation with it so later layout cannot add a paragraph
+// inside an unfinished instruction. Never cross a blank or another structure.
+function coalesceWrappedHeadingPieces(pieces, state) {
+  const out = [];
+  for (let i = 0; i < pieces.length; i++) {
+    let piece = { ...pieces[i] };
+    const first = piece.text.trim();
+    if (/^\d{1,3}[.)]\s/u.test(first) && first.length >= 24
+        && !layoutStructure.isSentenceComplete(first) && !layoutStructure.isQuestionPromptLine(first)) {
+      let endIndex = i;
+      while (piece.sep === '\n' && endIndex + 1 < pieces.length && piece.text.length < 1000) {
+        const next = pieces[endIndex + 1];
+        const role = sourceLineRole(state.sourceLineRoles, next.text.trim(), next.start, next.end);
+        if (!next.text.trim() || /^(?:\d+[.)]|[①-⑳]|[-*#>|])/u.test(next.text.trim())
+            || ['table', 'code', 'heading', 'signature', 'flow'].includes(role)) break;
+        piece = { ...piece, text: piece.text + piece.sep + next.text, sep: next.sep, end: next.end };
+        endIndex++;
+        if (layoutStructure.isSentenceComplete(next.text.trim())) break;
+      }
+      // Only an explicit assignment instruction owns a literal wrapped block.
+      // Numbered report paragraphs must remain editable prose.
+      if (endIndex > i && /(?:하시오|하세요|해\s*주세요|하여라|하라|할\s*것)[.!?。！？]?(?:\s*[（(]\d+(?:\.\d+)?\s*점[）)])?$/u.test(piece.text.trim())) {
+        piece.forceLockType = 'heading'; piece.forceSectionLabel = first; i = endIndex;
+      } else if (endIndex > i && first.length >= 40 && layoutStructure.isSentenceComplete(piece.text)
+          && splitSentences(piece.text.replace(/\n/gu, ' ')).length >= 2) {
+        // A long numbered paragraph with several complete claims is prose.
+        // Coalesce its physical rows, lock only the number, and keep the body
+        // editable instead of freezing an unfinished first physical line.
+        piece.forceEditable = true; piece.forceSplitPrefix = true; i = endIndex;
+      } else piece = { ...pieces[i] };
+    }
+    out.push(piece);
+  }
+  return out;
 }
 
 function splitLinePieces(text, offset = 0) {
@@ -3380,7 +3417,8 @@ function buildStructureAudit({
   chunks,
   plan,
   boundaryRepair,
-  layoutRepair
+  layoutRepair,
+  documentProfile
 } = {}) {
   const locked = (chunks || []).filter(c => c.locked && String(c.text || '').trim());
   const output = String(outputText || '');
@@ -3456,7 +3494,8 @@ function buildStructureAudit({
     .length;
   // Keep physical-row evidence for boundary accidents while auditing roles
   // against the whitespace-normalized source used by the editor.
-  const fragmentIntegrity = require('./fragmentIntegrity').auditFragmentIntegrity(fragmentSource ?? original, output);
+  const fragmentIntegrity = require('./fragmentIntegrity').auditFragmentIntegrity(fragmentSource ?? original, output,
+    { preserveLines: exactLinePolicy || documentProfile?.profile === 'creative' || documentProfile === 'creative' });
   return {
     version: VERSION,
     enabled: true,

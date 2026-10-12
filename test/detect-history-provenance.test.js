@@ -464,3 +464,67 @@ test('감지 이력 requestId는 payload fingerprint와 비용에 결합되고 �
   }), error => error?.code === 'IDEMPOTENCY_KEY_REUSED' && error?.status === 409);
   assert.equal(rows.get(`users/history-user/history/${requestId}`).probability, 72);
 });
+
+test('500KB를 넘는 감지 응답 캐시도 이력과 함께 저장되고 같은 응답으로 replay된다', async () => {
+  const requestId = 'detect-history-large-cache-1';
+  const fingerprint = 'c'.repeat(64);
+  const sentences = Array.from({ length: 1500 }, (_, index) => ({
+    index, start: index * 60, end: index * 60 + 58,
+    text: `합성 문장 ${index}번은 캐시 형식 확인용이며 항목 ${index % 43}의 순서를 설명합니다.`
+  }));
+  const largeResponse = {
+    ok: true, probability: 61, probSource: 'llm', summary: '큰 합성 결과', charged: 3, historySaved: true,
+    sentenceMap: { sentences }, paragraphs: sentences.map(item => ({ idx: item.index, text: item.text.repeat(3) }))
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(largeResponse), 'utf8') > 500_000);
+
+  const saved = await history.saveAnalyzeHistory({
+    uid: 'history-user', requestId, opType: 'detect', text: '큰 결과의 합성 입력', needed: 3, mode: 'detect',
+    requestPayloadFingerprint: fingerprint, detectResponseCache: largeResponse,
+    result: { probability: 61, probSource: 'llm', summary: '큰 합성 결과', detail: '상세' }
+  });
+  assert.equal(saved.saved, true);
+  const row = rows.get(`users/history-user/history/${requestId}`);
+  assert.equal(row.probability, 61);
+  assert.equal(Object.hasOwn(row, 'detectResponseCache'), false);
+  assert.ok(row.detectResponseCacheEncoded.data.length < 700_000);
+
+  const ready = await history.getDetectHistoryIdempotency({
+    uid: 'history-user', requestId, needed: 3, requestPayloadFingerprint: fingerprint
+  });
+  assert.equal(ready.state, 'READY');
+  assert.deepEqual(ready.response, largeResponse);
+
+  const duplicate = await history.saveAnalyzeHistory({
+    uid: 'history-user', requestId, opType: 'detect', text: '큰 결과의 합성 입력', needed: 3, mode: 'detect',
+    requestPayloadFingerprint: fingerprint, detectResponseCache: { ...largeResponse, probability: 22 },
+    result: { probability: 22, probSource: 'llm', summary: '덮어쓰기 금지', detail: '덮어쓰기 금지' }
+  });
+  assert.equal(duplicate.duplicate, true);
+  assert.deepEqual(duplicate.response, largeResponse);
+});
+
+test('압축되지 않는 초과 캐시는 이력 저장을 통제된 오류로 거절하고, 읽을 수 없는 보관본은 저장소 장애와 구분해 UNREADABLE로 알린다', async () => {
+  const requestId = 'detect-history-oversized-cache-1';
+  const fingerprint = 'd'.repeat(64);
+  await assert.rejects(history.saveAnalyzeHistory({
+    uid: 'history-user', requestId, opType: 'detect', text: '초과 결과의 합성 입력', needed: 3, mode: 'detect',
+    requestPayloadFingerprint: fingerprint,
+    detectResponseCache: { ok: true, probability: 50, noise: require('node:crypto').randomBytes(800_000).toString('base64') },
+    result: { probability: 50, probSource: 'llm', summary: '요약', detail: '상세' }
+  }), error => error?.code === 'DETECT_RESPONSE_CACHE_TOO_LARGE' && error?.status === 503);
+  assert.equal(rows.has(`users/history-user/history/${requestId}`), false);
+
+  rows.set(`users/history-user/history/${requestId}`, {
+    type: 'detect', credits: 3, requestPayloadFingerprintVersion: 'detect-request-v1',
+    requestPayloadFingerprint: fingerprint,
+    detectResponseCacheEncoded: { v: 2, codec: 'gzip-json-dedupe', rawBytes: 10, data: Buffer.from('synthetic corruption') }
+  });
+  const fingerprintVersion = rows.get('users/history-user/history/detect-history-large-cache-1').requestPayloadFingerprintVersion;
+  rows.get(`users/history-user/history/${requestId}`).requestPayloadFingerprintVersion = fingerprintVersion;
+  const unreadable = await history.getDetectHistoryIdempotency({
+    uid: 'history-user', requestId, needed: 3, requestPayloadFingerprint: fingerprint
+  });
+  assert.equal(unreadable.state, 'UNREADABLE');
+  assert.equal(unreadable.error.code, 'DETECT_RESPONSE_CACHE_INVALID');
+});

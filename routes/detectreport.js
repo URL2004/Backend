@@ -112,24 +112,94 @@ function idempotencyReused(res, cost) {
   });
 }
 
+// 재시도 가능한 503의 최소 대기 시간. 이 응답들은 처리 상태(claim)를 남기지 않으므로 기다려야 하는
+// 고정 시간이 없다. 복구 시점을 약속하지 않는 backoff 하한이며, claim이 남는 경로는 실제 남은 시간을 쓴다.
+const RETRY_BACKOFF_SECONDS = 5;
+
+function retryable503(res, body, seconds = RETRY_BACKOFF_SECONDS) {
+  res.set('Retry-After', String(seconds));
+  return res.status(503).json({ ...body, retryable: true, retryAfterSeconds: seconds });
+}
+
+// 저장소·원장을 일시적으로 확인하지 못한 경우에만 쓴다. 다시 시도해도 달라지지 않는 상태는
+// resultUnrecoverable로 닫는다.
 function idempotencyUnavailable(res, cost, code = 'IDEMPOTENCY_RESULT_UNAVAILABLE') {
-  return res.status(503).json({
+  return retryable503(res, {
     ok: false,
     code,
     error: '이전 감지 결과를 안전하게 확인하는 중이에요. 잠시 후 같은 작업 번호로 다시 시도해 주세요.',
-    retryable: true,
     charged: 0,
     cost
   });
 }
 
-function processingResponse(res, cost) {
+// 같은 작업 번호로는 더 이상 결과를 돌려줄 수 없는 확정 상태. 재분석·재차감 없이 재시도 불가로 닫는다.
+//   billed: 원장에 차감이 확정됐지만 보관된 결과가 만료·삭제됐거나 읽을 수 없다.
+//   그 외: 차감 전이고, 이 작업 번호에 남은 기록을 읽을 수 없어 이어서 처리할 수 없다.
+function resultUnrecoverable(res, cost, billed) {
+  if (billed) {
+    return res.status(410).json({
+      ok: false,
+      code: 'DETECT_RESULT_NO_LONGER_AVAILABLE',
+      error: '이 작업 번호의 감지는 이미 크레딧이 차감됐지만, 보관된 결과를 더 이상 읽을 수 없어 다시 전달할 수 없어요. '
+        + '같은 작업 번호로 다시 시도해도 결과는 돌아오지 않고 추가 차감도 없어요. '
+        + '다시 분석하려면 새 작업으로 시작해 주세요. 새 분석은 크레딧이 차감돼요.',
+      retryable: false,
+      billingCommitted: true,
+      charged: 0,
+      cost
+    });
+  }
+  return res.status(409).json({
+    ok: false,
+    code: 'DETECT_REQUEST_UNRECOVERABLE',
+    error: '이 작업 번호에 남은 기록을 읽을 수 없어 이어서 처리할 수 없어요. 크레딧은 차감되지 않았어요. '
+      + '새 작업 번호로 다시 시도해 주세요.',
+    retryable: false,
+    charged: 0,
+    cost
+  });
+}
+
+function validCachedArtifact(value) {
+  return !!(value && cachedPublicResponse(value.publicResponse) && value.historyResult && value.metric);
+}
+
+function retryAfterSeconds(retryAfterMs) {
+  const ms = Number(retryAfterMs);
+  return Number.isFinite(ms) && ms > 0
+    ? Math.min(Math.ceil(detectRequests.STALE_PROCESSING_MS / 1000), Math.ceil(ms / 1000)) : null;
+}
+
+function processingResponse(res, cost, retryAfterMs) {
+  const seconds = retryAfterSeconds(retryAfterMs);
+  if (seconds) res.set('Retry-After', String(seconds));
   return res.status(202).json({
     ok: false,
     status: 'PROCESSING',
     code: 'DETECT_REQUEST_PROCESSING',
     error: '같은 감지 작업을 처리하고 있어요. 잠시 후 다시 확인해 주세요.',
     retryable: true,
+    charged: 0,
+    cost,
+    // 이 시간이 지나면 같은 작업 번호를 새로 처리할 수 있다(중단된 요청이 남긴 처리 상태 포함).
+    ...(seconds ? { retryAfterSeconds: seconds } : {})
+  });
+}
+
+// 과금 전 실패에서 처리 상태를 정리하지 못했을 때. 이후 같은 작업 번호는 한동안 202로 보이므로
+// 저장 상태 확인이 필요하다는 것과 기다릴 시간을 함께 알린다.
+function claimUnreleasedResponse(res, cost, code) {
+  const seconds = Math.ceil(detectRequests.STALE_PROCESSING_MS / 1000);
+  res.set('Retry-After', String(seconds));
+  return res.status(503).json({
+    ok: false,
+    code,
+    error: '감지 결과를 저장하지 못했고 처리 상태도 정리하지 못했어요. 크레딧은 차감되지 않았어요. '
+      + '같은 작업 번호는 최대 10분 동안 처리 중으로 보일 수 있으니, 그 뒤에 다시 시도해 주세요.',
+    retryable: true,
+    claimReleased: false,
+    retryAfterSeconds: seconds,
     charged: 0,
     cost
   });
@@ -188,19 +258,93 @@ function billingFailureResponse(res, error, cost, remainingCredits) {
       retryable: false
     });
   }
-  return res.status(503).json({
+  return retryable503(res, {
     ...common,
     code: code === 'CREDIT_LOT_INCONSISTENT' ? code : 'DETECT_BILLING_UNAVAILABLE',
-    error: '크레딧 처리를 완료하지 못했어요. 결과는 전달되지 않았습니다. 잠시 후 같은 작업 번호로 다시 시도해 주세요.',
-    retryable: true
+    error: '크레딧 처리를 완료하지 못했어요. 결과는 전달되지 않았습니다. 잠시 후 같은 작업 번호로 다시 시도해 주세요.'
+  });
+}
+
+// 핸들러가 던진 오류도 반드시 응답으로 끝낸다. Express 4는 async 거절을 받지 않아 그대로 두면
+// 연결이 타임아웃까지 열려 있고 PROCESSING claim이 남는다.
+//   - 차감이 확정된 뒤의 오류: 이미 고정된 결과를 그대로 전달한다(같은 작업 번호 재시도도 추가 차감 없음).
+//   - 그 전의 오류: 이 요청이 잡은 PROCESSING claim만 풀고 미차감 503으로 끝낸다. staged 결과는 보존된다.
+async function failDetectReportSafely(res, flow, error) {
+  logger.error('detect_report.unhandled_failure', {
+    uid: flow.uid || undefined,
+    requestId: flow.requestId || undefined,
+    billed: flow.billed === true,
+    err: error
+  });
+  if (res.headersSent) return;
+  let paidBody = null;
+  try {
+    paidBody = flow.deliverable ? flow.deliverable() : null;
+  } catch { /* 아래 미전달 응답으로 끝낸다 */ }
+  if (paidBody) {
+    res.json(paidBody);
+    return;
+  }
+  if (flow.billed) {
+    retryable503(res, {
+      ok: false,
+      code: 'DETECT_DELIVERY_UNCONFIRMED',
+      error: '감지 결과를 전달하지 못했어요. 같은 작업 번호로 다시 시도하면 추가 차감 없이 결과를 받을 수 있어요.',
+      // 차감은 확정됐다. 전달하지 못했다고 해서 차감이 없었다고 말하지 않는다.
+      billingCommitted: true,
+      cost: flow.cost
+    });
+    return;
+  }
+  if (flow.requestBinding && flow.claimed) {
+    let released = false;
+    try {
+      released = await detectRequests.releaseAfterModelFailure(flow.requestBinding);
+    } catch (releaseError) {
+      logger.warn('detect_report.unhandled_failure_release_failed', { requestId: flow.requestId, err: releaseError });
+    }
+    if (released === false) {
+      claimUnreleasedResponse(res, flow.cost, 'DETECT_REPORT_UNAVAILABLE');
+      return;
+    }
+  }
+  retryable503(res, {
+    ok: false,
+    code: 'DETECT_REPORT_UNAVAILABLE',
+    error: '감지 결과를 완료하지 못했어요. 크레딧은 차감되지 않았어요. 잠시 후 다시 시도해 주세요.',
+    charged: 0,
+    cost: flow.cost
   });
 }
 
 router.post('/detect-report', async (req, res) => {
+  const flow = { uid: null, requestId: null, cost: 0, requestBinding: null, claimed: false, billed: false, deliverable: null };
+  try {
+    await handleDetectReport(req, res, flow);
+  } catch (error) {
+    try {
+      await failDetectReportSafely(res, flow, error);
+    } catch (responseError) {
+      logger.error('detect_report.unhandled_failure_response_failed', { err: responseError });
+      if (!res.headersSent) res.status(503).end();
+    }
+  }
+});
+
+async function handleDetectReport(req, res, flow) {
   const text = typeof req.body?.text === 'string' ? req.body.text : '';
   // 글자수 기준 통일: 표시 카운트와 동일하게 공백 포함 raw length으로 최소 길이 판정.
   if (text.length < 100) return res.status(400).json({ error: 'AI 감지를 하려면 최소 100자가 필요해요.' });
-  if (text.length > 30000) return res.status(400).json({ error: '텍스트가 너무 깁니다. (최대 30,000자)' });
+  if (text.length > 30000) {
+    return res.status(400).json({
+      ok: false,
+      code: 'INPUT_TOO_LONG',
+      error: '텍스트가 너무 깁니다. (최대 30,000자)',
+      limit: 30000,
+      actual: text.length,
+      charged: 0
+    });
+  }
   const readability = inputrouting.assessInputReadability(text);
   if (!readability.readable) {
     logger.warn('detect_report.unreadable_input_blocked', { reason: readability.reason, textLength: text.length });
@@ -273,6 +417,7 @@ router.post('/detect-report', async (req, res) => {
     payloadFingerprint: requestPayloadFingerprint,
     cost
   } : null;
+  Object.assign(flow, { uid, requestId, cost, requestBinding });
   let creditIdempotency = { state: 'NOT_APPLICABLE', remainingCredits: null };
   let requestClaim = null;
   let cachedArtifact = null;
@@ -310,42 +455,54 @@ router.post('/detect-report', async (req, res) => {
     }
     if (historyIdempotency.state === 'MISMATCH') return idempotencyReused(res, cost);
 
-    if (creditIdempotency.state === 'DUPLICATE' && historyIdempotency.state === 'READY') {
+    // 손상됐거나 응답 형태가 아닌 이력 보관본은 다시 읽어도 같다. 저장소 장애와 달리 여기서 503으로
+    // 멈추지 않고, 온전한 요청 캐시가 있으면 그쪽에서 replay한다.
+    let historyState = historyIdempotency.state;
+    if (historyState === 'READY' && !cachedPublicResponse(historyIdempotency.response)) historyState = 'UNREADABLE';
+    if (historyState === 'UNREADABLE') {
+      logger.error('detect_report.idempotency_history_unreadable', {
+        uid,
+        requestId,
+        code: String(historyIdempotency.error?.code || 'DETECT_RESPONSE_CACHE_INVALID')
+      });
+    }
+    const billedBefore = creditIdempotency.state === 'DUPLICATE';
+
+    if (billedBefore && historyState === 'READY') {
       const replayed = replayCachedResponse(res, historyIdempotency.response, {
         charged: 0,
         remainingCredits: creditIdempotency.remainingCredits
       });
-      if (replayed) {
-        logger.info('detect_report.idempotent_replay', {
-          uid: undefined,
-          clientRequestId: requestId,
-          scoreSource: 'request_replay',
-          idempotentReplay: true,
-          probability: replayed.probability,
-          charged: replayed.charged,
-          remainingCredits: replayed.remainingCredits,
-          lengthBucket: detectTextLengthBucket(text.length)
-        });
-        return;
-      }
-      return idempotencyUnavailable(res, cost);
+      logger.info('detect_report.idempotent_replay', {
+        uid: undefined,
+        clientRequestId: requestId,
+        scoreSource: 'request_replay',
+        idempotentReplay: true,
+        probability: replayed.probability,
+        charged: replayed.charged,
+        remainingCredits: replayed.remainingCredits,
+        lengthBucket: detectTextLengthBucket(text.length)
+      });
+      return;
     }
-    if (!chargeEligible && historyIdempotency.state === 'READY') {
-      const replayed = replayCachedResponse(res, historyIdempotency.response, {
+    if (!chargeEligible && historyState === 'READY') {
+      replayCachedResponse(res, historyIdempotency.response, {
         charged: 0,
         remainingCredits: null
       });
-      if (replayed) return;
-      return idempotencyUnavailable(res, cost);
+      return;
     }
-    if (creditIdempotency.state === 'NEW' && historyIdempotency.state !== 'NOT_FOUND') {
+    if (creditIdempotency.state === 'NEW' && historyState !== 'NOT_FOUND') {
+      if (historyState === 'UNREADABLE') return resultUnrecoverable(res, cost, false);
       return idempotencyReused(res, cost);
     }
-    if (!chargeEligible && historyIdempotency.state === 'INCOMPLETE') {
-      return idempotencyUnavailable(res, cost);
-    }
 
-    requestClaim = await detectRequests.begin(requestBinding);
+    // 이미 차감된 요청은 처리 상태를 새로 잡지 않는다. 고정된 결과가 있으면 replay하고,
+    // 없으면 아래에서 재분석·재차감 없이 닫는다.
+    requestClaim = billedBefore
+      ? await detectRequests.lookup(requestBinding)
+      : await detectRequests.begin(requestBinding);
+    flow.claimed = requestClaim.state === 'NEW';
     if (requestClaim.state === 'MISMATCH') return idempotencyReused(res, cost);
     if (requestClaim.state === 'ACCOUNT_DELETION') {
       return res.status(409).json({
@@ -357,16 +514,31 @@ router.post('/detect-report', async (req, res) => {
         cost
       });
     }
+    // 저장소를 읽지 못한 일시 장애는 차감 여부와 무관하게 재시도 가능으로 남긴다.
     if (['INVALID', 'UNAVAILABLE'].includes(requestClaim.state)) {
       return idempotencyUnavailable(res, cost, 'IDEMPOTENCY_CHECK_UNAVAILABLE');
     }
-    if (requestClaim.state === 'PROCESSING') return processingResponse(res, cost);
+    if (requestClaim.state === 'PROCESSING') return processingResponse(res, cost, requestClaim.retryAfterMs);
     if (['RESULT_READY', 'COMPLETE'].includes(requestClaim.state)) {
-      cachedArtifact = requestClaim.response;
+      if (validCachedArtifact(requestClaim.response)) cachedArtifact = requestClaim.response;
+      else requestClaim = { state: 'CORRUPT' };
     }
-    if (creditIdempotency.state === 'DUPLICATE' && requestClaim.state === 'NEW') {
+    // 원장·이력·요청 캐시를 모두 읽은 뒤의 확정 상태: 차감은 됐는데 돌려줄 결과가 어디에도 없다.
+    if (billedBefore && !cachedArtifact) {
+      logger.error('detect_report.charged_result_unrecoverable', {
+        uid,
+        requestId,
+        historyState,
+        requestState: requestClaim.state,
+        cost
+      });
+      return resultUnrecoverable(res, cost, true);
+    }
+    if (requestClaim.state === 'CORRUPT') return resultUnrecoverable(res, cost, false);
+    // 차감 대상이 아닌 요청에 읽을 수 없는 이력만 남은 경우도 다시 시도해서 달라지지 않는다.
+    if (['INCOMPLETE', 'UNREADABLE'].includes(historyState) && !cachedArtifact) {
       await detectRequests.releaseAfterModelFailure(requestBinding);
-      return idempotencyUnavailable(res, cost);
+      return resultUnrecoverable(res, cost, false);
     }
     if (chargeEligible && creditIdempotency.state === 'NEW' && requestClaim.state === 'COMPLETE') {
       return idempotencyReused(res, cost);
@@ -391,12 +563,8 @@ router.post('/detect-report', async (req, res) => {
   let artifact = null;
   let usedCachedArtifact = false;
   if (cachedArtifact) {
-    const publicResponse = cachedPublicResponse(cachedArtifact.publicResponse);
-    if (!publicResponse || !cachedArtifact.historyResult || !cachedArtifact.metric) {
-      return idempotencyUnavailable(res, cost);
-    }
     artifact = {
-      publicResponse,
+      publicResponse: cachedPublicResponse(cachedArtifact.publicResponse),
       historyResult: cachedArtifact.historyResult,
       metric: cachedArtifact.metric
     };
@@ -529,11 +697,10 @@ router.post('/detect-report', async (req, res) => {
       };
       logger.warn('detect_report.scoring_unavailable', blockedMetric);
       logger.info('detect_report.score_outcome', blockedMetric);
-      return res.status(503).json({
+      return retryable503(res, {
         ok: false,
         error: 'AI 감지 모델 응답을 받지 못했어요. 크레딧은 차감되지 않았어요. 잠시 후 다시 시도해 주세요.',
         code: 'DETECT_MODEL_UNAVAILABLE',
-        retryable: true,
         charged: 0,
         cost
       });
@@ -553,11 +720,10 @@ router.post('/detect-report', async (req, res) => {
     } catch (error) {
       if (requestBinding) await detectRequests.releaseAfterModelFailure(requestBinding);
       logger.error('detect_report.calibration_failed', { uid, requestId, err: error });
-      return res.status(503).json({
+      return retryable503(res, {
         ok: false,
         code: 'DETECT_CALIBRATION_UNAVAILABLE',
         error: '감지 결과를 안전하게 확정하지 못했어요. 크레딧은 차감되지 않았습니다.',
-        retryable: true,
         charged: 0,
         cost
       });
@@ -588,6 +754,7 @@ router.post('/detect-report', async (req, res) => {
       probSource: 'llm',
       confidence: det.confidence,
       finalCandidateConsistency: det.detectDiagnostics?.finalCandidateConsistency,
+      detectDiagnostics: det.detectDiagnostics,
       textLength: text.length,
       riskLevel: narrated.riskLevel,
       calibrationApplied: calibration.applied,
@@ -803,16 +970,36 @@ router.post('/detect-report', async (req, res) => {
       if (staged.state === 'ACCOUNT_DELETION') {
         return billingFailureResponse(res, { code: 'ACCOUNT_DELETION_IN_PROGRESS' }, cost, null);
       }
-      if (!['RESULT_READY', 'COMPLETE'].includes(staged.state) || !staged.response) {
+      if (staged.state === 'TOO_LARGE') {
+        // 같은 입력은 같은 크기의 결과를 만든다. 재시도 가능으로 답하면 503이 끝없이 반복된다.
         await detectRequests.releaseAfterModelFailure(requestBinding);
+        logger.error('detect_report.result_cache_too_large', {
+          uid,
+          requestId,
+          lengthBucket: detectTextLengthBucket(text.length)
+        });
+        return res.status(422).json({
+          ok: false,
+          code: 'DETECT_RESULT_TOO_LARGE',
+          error: '분석 결과가 너무 커서 안전하게 저장하지 못했어요. 크레딧은 차감되지 않았어요. 글을 나누어 다시 분석해 주세요.',
+          retryable: false,
+          charged: 0,
+          cost
+        });
+      }
+      // 먼저 고정된 결과가 읽히지 않는다. 같은 작업 번호로는 달라지지 않으므로 재시도 불가로 닫는다(차감 전).
+      if (staged.state === 'CORRUPT' || (['RESULT_READY', 'COMPLETE'].includes(staged.state)
+          && staged.response && staged.response !== artifact && !validCachedArtifact(staged.response))) {
+        return resultUnrecoverable(res, cost, false);
+      }
+      if (!['RESULT_READY', 'COMPLETE'].includes(staged.state) || !staged.response) {
+        // 저장소 장애라면 claim 정리도 실패할 수 있다. 그때는 남는 처리 상태를 숨기지 않는다.
+        const released = await detectRequests.releaseAfterModelFailure(requestBinding);
+        if (released === false) return claimUnreleasedResponse(res, cost, 'IDEMPOTENCY_CACHE_UNAVAILABLE');
         return idempotencyUnavailable(res, cost, 'IDEMPOTENCY_CACHE_UNAVAILABLE');
       }
       if (staged.response !== artifact) {
-        const stagedPublic = cachedPublicResponse(staged.response.publicResponse);
-        if (!stagedPublic || !staged.response.historyResult || !staged.response.metric) {
-          return idempotencyUnavailable(res, cost);
-        }
-        artifact = { ...staged.response, publicResponse: stagedPublic };
+        artifact = { ...staged.response, publicResponse: cachedPublicResponse(staged.response.publicResponse) };
         // Serialization clones even a newly staged result. Object identity is
         // not evidence of replay; the transaction tells us if an older result won.
         usedCachedArtifact = usedCachedArtifact || staged.reused === true;
@@ -824,6 +1011,19 @@ router.post('/detect-report', async (req, res) => {
 
   let charged = chargeEligible && creditIdempotency.state !== 'DUPLICATE' ? cost : 0;
   let remainingCredits = creditIdempotency.remainingCredits;
+  let responseBody = null;
+  const deliveredBody = () => ({
+    ...artifact.publicResponse,
+    charged,
+    historySaved: false,
+    ...(Number.isFinite(Number(remainingCredits))
+      ? { remainingCredits: Math.max(0, Math.floor(Number(remainingCredits))) }
+      : {}),
+    ...(usedCachedArtifact ? { idempotentReplay: true } : {})
+  });
+  // 차감이 확정된 순간부터는 뒤따르는 저장·계측 오류와 무관하게 이 결과를 전달할 수 있다.
+  flow.deliverable = () => responseBody || (flow.billed ? deliveredBody() : null);
+  if (chargeEligible && creditIdempotency.state === 'DUPLICATE') flow.billed = true;
   if (chargeEligible && creditIdempotency.state !== 'DUPLICATE') {
     let deduction = null;
     let commitError = null;
@@ -853,6 +1053,7 @@ router.post('/detect-report', async (req, res) => {
           status: 503
         });
       } else {
+        flow.billed = true;
         remainingCredits = deduction.next;
         if (deduction.duplicate === true) charged = 0;
       }
@@ -880,6 +1081,7 @@ router.post('/detect-report', async (req, res) => {
         }
       }
       if (confirmedAfterError?.state === 'DUPLICATE') {
+        flow.billed = true;
         remainingCredits = confirmedAfterError.remainingCredits;
         charged = 0;
         logger.warn('detect_report.billing_commit_ambiguous_recovered', {
@@ -910,15 +1112,7 @@ router.post('/detect-report', async (req, res) => {
 
   if (req.aborted) return;
 
-  let responseBody = {
-    ...artifact.publicResponse,
-    charged,
-    historySaved: false,
-    ...(Number.isFinite(Number(remainingCredits))
-      ? { remainingCredits: Math.max(0, Math.floor(Number(remainingCredits))) }
-      : {}),
-    ...(usedCachedArtifact ? { idempotentReplay: true } : {})
-  };
+  responseBody = deliveredBody();
   try {
     const meta = require('../lib/metaConversions');
     responseBody.activation = await require('../lib/featureActivation').recordFirstSuccess({
@@ -944,18 +1138,24 @@ router.post('/detect-report', async (req, res) => {
       });
       historySaved = saved?.saved === true;
       if (saved?.duplicate && saved.response) {
+        // 이력에 먼저 저장된 응답이 이 요청의 결과다. 형태가 맞지 않으면 차감된 결과를 막지 않고
+        // 고정된 결과를 그대로 전달하되, 다시 열 수 있는 이력으로 저장됐다고 말하지 않는다.
         const existing = cachedPublicResponse(saved.response);
-        if (!existing) return idempotencyUnavailable(res, cost);
-        responseBody = {
-          ...existing,
-          charged,
-          historySaved: true,
-          ...(Number.isFinite(Number(remainingCredits))
-            ? { remainingCredits: Math.max(0, Math.floor(Number(remainingCredits))) }
-            : {}),
-          idempotentReplay: true
-        };
-        usedCachedArtifact = true;
+        if (existing) {
+          responseBody = {
+            ...existing,
+            charged,
+            historySaved: true,
+            ...(Number.isFinite(Number(remainingCredits))
+              ? { remainingCredits: Math.max(0, Math.floor(Number(remainingCredits))) }
+              : {}),
+            idempotentReplay: true
+          };
+          usedCachedArtifact = true;
+        } else {
+          historySaved = false;
+          logger.error('detect_report.idempotency_history_unreadable', { uid, requestId, code: 'DETECT_RESPONSE_CACHE_INVALID' });
+        }
       }
     } catch (error) {
       if (error?.code === 'IDEMPOTENCY_KEY_REUSED') return idempotencyReused(res, cost);
@@ -1075,7 +1275,7 @@ router.post('/detect-report', async (req, res) => {
     isTest: devNoAuth
   }, { db, logger });
   return res.json(responseBody);
-});
+}
 
 // ── 자동 코칭 후보(2026-06-18): 시작 직전 선택 모달용. 글에서 입장·경험 후보를 생성해 반환 →
 //   프론트가 체크박스로 보여주고, 사용자가 고른 것만 memo로 합쳐 /transform에 보낸다(체크=저자 승인=무날조).
@@ -1118,4 +1318,5 @@ router.post('/coach-suggest', async (req, res) => {
   }
 });
 
+router.failDetectReportSafely = failDetectReportSafely;   // 회귀 테스트용
 module.exports = router;

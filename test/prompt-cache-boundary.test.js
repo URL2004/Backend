@@ -34,7 +34,7 @@ function instructionText(body) {
   )).join('');
 }
 
-test('252 humanize assemblies preserve f9fed94 bytes and share a prefix across profiles, modes, strengths and voices', () => {
+test('252 humanize assemblies preserve the v2.5.112 prompt snapshot and share a prefix across profiles, modes, strengths and voices', () => {
   const systems = [], prefixes = new Map();
   for (const profile of profiles) for (const mode of ['assignment', 'blog', 'polish'])
     for (const strength of ['basic', 'advanced', 'polish']) for (const promptVariant of ['full', 'compact_v1'])
@@ -52,9 +52,10 @@ test('252 humanize assemblies preserve f9fed94 bytes and share a prefix across p
         assert.deepEqual(Buffer.concat([Buffer.from(hp.cacheableSystem), Buffer.from(hp.stable.slice(hp.cacheableSystem.length))]), Buffer.from(hp.stable));
         assert.equal(prompts.validateHumanizePrompt(hp.stable).pass, true);
       }
-  // Generated from the untouched f9fed94 builder, never from the new prefix.
-  assert.equal(digest(systems), 'ee9bddb7174b3361df8e52200333b12e0937d68115161de763de53d688a115fe');
-  assert.deepEqual([...prefixes.values()].map(s => s.length), [5009, 5326, 3845, 4162]);
+  // v2.5.112 intentionally adds one anti-restatement instruction to the full
+  // prompt. Byte reconstruction and cross-profile prefix equality remain exact.
+  assert.equal(digest(systems), 'f60631637bd87bec774631705a25bfceab8bbb3d407d59e5596e2628b85781e5');
+  assert.deepEqual([...prefixes.values()].map(s => s.length), [5138, 5455, 3845, 4162]);
 });
 
 test('humanize preserves Luna chunk reuse and keeps retry reasons after the Sol boundary', async t => {

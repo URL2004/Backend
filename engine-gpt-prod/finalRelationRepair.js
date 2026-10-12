@@ -11,6 +11,41 @@ function confirmedRepairFindings(report) {
     && require('./semanticObligations').hasGroundedSpan(v));
 }
 
+// F02: a paired window cannot restore a sentence that has no counterpart, so a
+// whole dropped sentence used to depend on a model patch. When the verdict
+// names it AND it is textually witnessed as dropped, propose its exact source
+// bytes at the witnessed position, with the source's own spacing. Nothing is
+// generated; quotations, code and multi-line sentences are left to the patch.
+// This is a proposal only: the caller's safety, structure and fresh verdict
+// gates decide whether it is ever delivered.
+function reinstateDroppedSentences(source, output, report) {
+  const text = String(output || ''), bare = value => String(value || '').replace(/\s/gu, '');
+  const unchanged = { text, applied: false, restoredCount: 0 };
+  const spans = confirmedRepairFindings(report).filter(v => v.type === 'omission' && typeof v.sourceSpan === 'string'
+    && v.sourceSpan.trim().length >= 12 && source.includes(v.sourceSpan)
+    && source.indexOf(v.sourceSpan) === source.lastIndexOf(v.sourceSpan) && !bare(text).includes(bare(v.sourceSpan)))
+    .map(v => ({ start: source.indexOf(v.sourceSpan), end: source.indexOf(v.sourceSpan) + v.sourceSpan.length }));
+  if (!spans.length) return unchanged;
+  const inserts = [];
+  for (const w of require('./deliveryIntegrityWitnesses').droppedSourceSentences(source, text, { spans })) {
+    const sentence = w.sourceWitness;
+    if (inserts.length >= 2 || /[\r\n]/u.test(sentence)
+        || require('../engine/textSyntax').syntaxSpans(sentence).some(p => p.spanType !== 'parenthetical')
+        || !spans.some(s => (Math.min(s.end, w.sourceEnd) - Math.max(s.start, w.sourceStart)) * 2 >= w.sourceEnd - w.sourceStart)
+        // At most two sentences; a short text that lost its last sentence can
+        // have lost a third of itself, so the bound is 40% rather than 30%.
+        || inserts.reduce((n, r) => n + r.text.length, 0) + sentence.length > text.length * .4) continue;
+    // Stay in the paragraph the source put the sentence in.
+    const afterPrevious = w.previousEnd >= 0 && w.leadingGap
+      && (w.nextStart < 0 || !/\n/u.test(w.leadingGap) || !w.trailingGap || /\n/u.test(w.trailingGap));
+    if (afterPrevious) inserts.push({ at: w.previousEnd, text: w.leadingGap + sentence });
+    else if (w.nextStart >= 0 && w.trailingGap) inserts.push({ at: w.nextStart, text: sentence + w.trailingGap });
+  }
+  let restored = text;
+  for (const r of inserts.sort((a, b) => b.at - a.at)) restored = restored.slice(0, r.at) + r.text + restored.slice(r.at);
+  return { text: restored, applied: restored !== text, restoredCount: inserts.length };
+}
+
 // A literal repair of one finding must not suppress another grounded finding.
 // Re-ground remaining windows on the repaired text; never reuse old offsets or
 // infer that a changed/absent window has passed. The entire proposal still
@@ -30,11 +65,25 @@ async function prepareFinalRelationRepair(source, output, report, {
     else if (!structurePreserved(literal.text)) proposal.skipReason = 'structure_not_preserved';
     else proposal = { ...proposal, ...literal, warnings: safety.warnings, skipReason: '' };
   }
+  const reinstated = reinstateDroppedSentences(source, proposal.text, report);
+  if (reinstated.applied) {
+    const safety = restoration.assessConfirmedRestorationSafety(assessLiteral(reinstated.text));
+    if (!safety.eligible) proposal.skipReason = proposal.skipReason || 'safety_ineligible';
+    else if (!structurePreserved(reinstated.text)) proposal.skipReason = proposal.skipReason || 'structure_not_preserved';
+    else proposal = { ...proposal, text: reinstated.text, applied: true, skipReason: '',
+      restoredCount: proposal.restoredCount + reinstated.restoredCount, reinstatedCount: reinstated.restoredCount,
+      warnings: [...new Set([...proposal.warnings, ...safety.warnings])] };
+  }
   // Explicit uncertainty in another member must not veto a confirmed current
   // target. Unexplained global uncertainty is still not repair authority.
+  // An omission whose source wording now stands in the proposal is settled:
+  // asking the model to patch it again costs a call and invites a second copy
+  // of the same claim (F05, F10).
+  const settled = proposal.text.replace(/\s/gu, '');
   const findings = confirmedRepairFindings(report).filter(v =>
     typeof v.sourceSpan === 'string' && source.includes(v.sourceSpan)
-      && source.indexOf(v.sourceSpan) === source.lastIndexOf(v.sourceSpan));
+      && source.indexOf(v.sourceSpan) === source.lastIndexOf(v.sourceSpan)
+      && !(v.type === 'omission' && proposal.applied && settled.includes(v.sourceSpan.replace(/\s/gu, ''))));
   const targets = buildRelationPatchTargets(proposal.text, findings);
   if (!targets.length) return proposal;
   if (!allowPatch) return { ...proposal, patchReason: 'patch_round_used' };
@@ -47,7 +96,12 @@ async function prepareFinalRelationRepair(source, output, report, {
     const patch = await repair(base, targets.flatMap(t => t.findings),
       Math.min(deadlineMs - verifyReserveMs, now() + 30000));
     const candidate = String(patch.outputText || '');
-    if (patch.repaired && candidate !== base && assessPatch(base, candidate).pass === true
+    // F05: a patch may not add a sentence that only restates its neighbours.
+    // Declining keeps the earlier text; no existing sentence is removed.
+    if (patch.repaired && candidate !== base
+        && require('./restatementGuard').addedRestatements(source, base, candidate).length) {
+      proposal.patchReason = 'patch_restatement_added';
+    } else if (patch.repaired && candidate !== base && assessPatch(base, candidate).pass === true
         && structurePreserved(candidate)) {
       proposal = { ...proposal, text: candidate, applied: true,
         patchedCount: targets.length, skipReason: '', patchReason: 'proposed' };
@@ -177,4 +231,4 @@ function selectCurrentRepairEvidence(source, output, report, status, priorReport
     nominationOnly: true };
 }
 
-module.exports = { prepareFinalRelationRepair, selectFinalRepairEvidence, confirmedRepairFindings };
+module.exports = { prepareFinalRelationRepair, selectFinalRepairEvidence, confirmedRepairFindings, reinstateDroppedSentences };

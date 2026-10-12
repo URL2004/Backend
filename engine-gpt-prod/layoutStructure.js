@@ -378,6 +378,10 @@ function isKnownHeadingLine(value) {
   if (!text || isFormulaLine(text)) return false;
   if (isBracketHeadingLine(text)) return true;
   if (text.length > 140) return false;
+  // Named, numbered propositions are section labels even when written as a
+  // full sentence. Keep their boundary separate from the evidence below.
+  const proposition = text.match(/^(?:주장|쟁점|논점)\s*\d{1,3}[.):：]\s*(\S.*)$/u);
+  if (proposition && text.length <= 100 && splitSentences(proposition[1]).length === 1) return true;
   // 중첩 목록에서 본문이 없는 굵은 라벨은 실제로 다음 하위 항목을 묶는
   // 소제목이다. `* `만 분리해 모델에 보내면 `**`가 불릿으로 오인되어
   // 독립 별표 행이 생길 수 있으므로 행 전체를 제목으로 보존한다.
@@ -969,6 +973,12 @@ function tableColumnCount(value) {
   // Unicode line separators from PDF copies are not horizontal table columns.
   if (/\S {2,}\S/u.test(text)) {
     const cells = text.split(/ {2,}/u).filter(cell => visibleTrim(cell));
+    // Repeated double spaces between Korean sentence words are a paste/OCR
+    // convention, not aligned columns. Require multiple grammatical endings;
+    // explicit tab/pipe tables were already handled above.
+    const grammaticalCells = cells.filter(cell => /[가-힣]{2,}(?:의|에|은|는|을|를|하고|하며|대해|대하여)$/u.test(cell.trim()));
+    if (cells.length >= 4 && grammaticalCells.length >= 3
+        && /(?:하세요|하시오|해요|한다|합니다|하였다|했다|있다|없다)[.!?。！？]?$/u.test(text.trim())) return 0;
     // A double-space typo inside extended prose is not a table column. In
     // particular, several unpunctuated finite sentences before the first gap
     // are positive prose evidence, not a row label. Explicit tabs/pipes above

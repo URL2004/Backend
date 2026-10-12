@@ -12,9 +12,12 @@ async function settleDeliveredLayout({ layoutRepair = {}, submittedSource = '', 
   const before = String(options.outputText || '');
   const preserveLines = options.documentProfile?.profile === 'creative'
     || options.documentProfile === 'creative' || (options.chunks || []).some(c => c.lineBoundaryPolicy === 'all');
-  const seams = preserveLines ? { text: before, repairCount: 0 }
-    : require('./physicalProseLines').restoreSourceWordSeams(submittedSource, before);
+  const boundary = require('./sourceBoundaryIntegrity').restoreSourceBoundaries(submittedSource || options.source, before, { preserveLines });
+  const seams = preserveLines ? { text: boundary.text, repairCount: 0 }
+    : require('./physicalProseLines').restoreSourceWordSeams(submittedSource, boundary.text);
   const result = await structure.restoreFinalDocumentLayoutAsync({ ...options, outputText: seams.text });
+  const finalBoundary = require('./sourceBoundaryIntegrity').restoreSourceBoundaries(submittedSource || options.source, result.text, { preserveLines });
+  result.text = finalBoundary.text;
   const audit = structure.buildStructureAudit({ ...options, outputText: result.text });
   const accepted = result.structuralPass === true && result.contentPreserved === true && audit.pass === true
     && (typeof acceptCandidate !== 'function' || acceptCandidate(result.text));
@@ -24,6 +27,7 @@ async function settleDeliveredLayout({ layoutRepair = {}, submittedSource = '', 
     accepted, converged: result.converged === true, structuralPass: result.structuralPass === true && audit.pass === true,
     contentPreserved: result.contentPreserved === true,
     wordSeamRepairCount: accepted ? seams.repairCount : 0,
+    sourceBoundaryRepairCount: accepted ? boundary.repairCount + finalBoundary.repairCount : 0,
     midSentenceParagraphRepairCount: accepted ? Number(result.midSentenceParagraphRepairCount || 0) : 0
   };
   if (accepted) {

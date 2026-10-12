@@ -6,6 +6,21 @@ const ledger = require('../engine-gpt-prod/callLedger');
 const cost = require('../engine-gpt-prod/modelCostSummary');
 const benchmark = require('../scripts/audit-quality-benchmark');
 
+test('auxiliary actions exclude user reading time and resumed work needs its own queue event', () => {
+  const job = { status: 'queued', queuedAt: 100 };
+  trace.observeStatus(job, 100);
+  job.status = 'running'; trace.begin(job, 'main', 200);
+  job.status = 'done'; trace.observeStatus(job, 500);
+  trace.begin(job, 'refine', 3000000);
+  trace.begin(job, 'refine', 3030000);
+  assert.deepEqual(trace.summary(job).attempts.map(a => a.queueWaitMs), [100, null, null]);
+  trace.begin(job, 'main', 3100000);
+  assert.equal(trace.summary(job).attempts.at(-1).queueWaitMs, null);
+  job.status = 'queued'; trace.observeStatus(job, 3200000);
+  job.status = 'running'; trace.begin(job, 'main', 3200500);
+  assert.equal(trace.summary(job).attempts.at(-1).queueWaitMs, 500);
+});
+
 test('attempt lifecycle keeps cancelled, preview and unfinished denominators distinct', () => {
   const job = { status: 'queued', queuedAt: 100, needed: 20 };
   trace.observeStatus(job, 100);
@@ -95,6 +110,32 @@ test('lease-owned execution saves final attempt archive before releasing ownersh
   assert.ok(archives[1].attempts[0].finishedAtMs);
   assert.equal(archives[1].outcome, 'transform_completed');
   assert.equal(job.executionToken, undefined);
+});
+
+test('owned auxiliary execution records successful and failed provider calls without charging the user', async () => {
+  const fs = require('node:fs'), vm = require('node:vm');
+  const code = fs.readFileSync(require.resolve('../routes/transform'), 'utf8');
+  const context = { attemptTrace: trace, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, process,
+    executionCoordinator: { acquire: async () => ({ token: 'owner' }), renew: async () => true, release: async () => {} },
+    require: name => name === '../engine-gpt-prod/callLedger' ? ledger : require(name),
+    persistJob: async () => ({ ok: true }), scheduleQueueDrain() {}, jobPersistChains: new Map(), logger: { warn() {} } };
+  vm.runInNewContext(code.slice(code.indexOf('async function executeOwned('), code.indexOf('function auxiliaryRoute(')), context);
+  for (const feature of ['refine', 'fallback']) {
+    for (const failed of [false, true]) {
+      const job = { id: 'fixture', status: 'done', queuedAt: 1, ac: new AbortController() };
+      const result = context.executeOwned(job, feature, () => ledger.track({ model: 'fixture', stage: feature }, async () => {
+        if (failed) throw Object.assign(new Error('provider timeout'), { httpAttemptCount: 1, unknownEstimatedUsd: .02 });
+        return { httpAttemptCount: 1, usage: { estimatedUsd: .01 } };
+      }));
+      if (failed) await assert.rejects(result, /provider timeout/); else assert.equal(await result, true);
+      const summary = trace.summary(job);
+      assert.equal(summary.attempts[0].logicalCalls, 1);
+      assert.equal(summary.attempts[0].queueWaitMs, null);
+      assert.equal(summary.userCharge.state, 'not_committed');
+      assert.equal(summary[failed ? 'unknownReservedUsd' : 'unchargedKnownUsd'], failed ? .02 : .01);
+      assert.equal(job.executionToken, undefined);
+    }
+  }
 });
 
 test('stage costs keep calls, HTTP retries, mandatory classification and wall latency separate', () => {

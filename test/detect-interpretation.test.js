@@ -127,3 +127,55 @@ test('interpretation backup supports old signatures and validates new assessabil
     assert.equal(signDetectInterpretation(uid, inputText, { ...current, assessability }, key), null);
   }
 });
+
+test('recheck wording follows the recorded attempts, and absent diagnostics make no recheck claim', () => {
+  const { resolveRecheckStatus } = require('../lib/detectInterpretation');
+  const conflict = { status: 'conflict', reason: 'unsupported_high_score' };
+  const primary = { phase: 'primary', modelScore: 62, confidence: 'medium' };
+  const recheck = { phase: 'recheck', modelScore: 58, confidence: 'medium' };
+  const diagnostics = extra => ({ version: 'detect-score-diagnostics-v1', recheckReason: 'none', recheckFailed: false,
+    attempts: [primary], finalCandidateConsistency: conflict, ...extra });
+  const cases = [
+    ['not_attempted', diagnostics(), /추가 검사를 진행하지 않았고/u],
+    ['completed', diagnostics({ recheckReason: 'cause_mismatch', attempts: [primary, recheck] }), /추가 검사 이후에도/u],
+    ['failed', diagnostics({ recheckReason: 'cause_mismatch', recheckFailed: true,
+      attempts: [primary, { phase: 'recheck', failed: true, failureCode: 'OPENAI_TIMEOUT' }] }), /추가 검사를 끝내지 못해/u],
+    ['failed', diagnostics({ recheckReason: 'low_confidence', recheckFailed: true }), /추가 검사를 끝내지 못해/u],
+    // The only successful call replaced a failed primary: nothing was compared.
+    ['unknown', diagnostics({ recheckReason: 'primary_failed', attempts: [{ phase: 'primary', failed: true }, recheck] }), null],
+    ['unknown', undefined, null], ['unknown', null, null], ['unknown', {}, null], ['unknown', { attempts: [] }, null],
+    ['unknown', { attempts: [null, 'x'], recheckFailed: true }, null]
+  ];
+  const scores = new Set();
+  for (const [status, detectDiagnostics, wording] of cases) {
+    assert.equal(resolveRecheckStatus(detectDiagnostics), status);
+    const r = build({ ...standard, probability: 62, signalEvidence: [signal()], finalCandidateConsistency: conflict, detectDiagnostics });
+    const line = r.limitations.find(item => item.includes('점수와 근거의 연결을 완전히 확인하지 못했어요'));
+    assert.ok(line, status);
+    if (wording) assert.match(line, wording);
+    else assert.doesNotMatch(JSON.stringify(r), /추가 검사/u);
+    assert.equal(r.status, 'partial');
+    scores.add(r.score);
+  }
+  assert.deepEqual([...scores], [62]);
+  // Without a conflict the diagnostics never add a recheck sentence.
+  assert.doesNotMatch(JSON.stringify(build({ ...standard, probability: 62, signalEvidence: [signal()],
+    detectDiagnostics: diagnostics({ attempts: [primary, recheck] }) })), /추가 검사/u);
+});
+test('report view and stored history pass diagnostics through to the same recheck wording', () => {
+  const conflict = { status: 'conflict', reason: 'unsupported_high_score' };
+  const detectDiagnostics = { version: 'detect-score-diagnostics-v1', recheckReason: 'none', recheckFailed: false,
+    attempts: [{ phase: 'primary', modelScore: 62, confidence: 'medium' }], finalCandidateConsistency: conflict };
+  const input = { probability: 62, probSource: 'llm', confidence: 'medium', textLength: 1200, signalEvidence: [signal()],
+    measurements: { genericness: { count: 0, total: 12 }, detail: [{ sents: 12, specific: 4, lived: 1 }] } };
+  const legacy = buildDetectReportView({ ...input, finalCandidateConsistency: conflict });
+  assert.doesNotMatch(JSON.stringify(legacy.interpretation), /추가 검사/u);
+  const current = buildDetectReportView({ ...input, finalCandidateConsistency: conflict, detectDiagnostics });
+  assert.ok(current.interpretation.limitations.some(item => /추가 검사를 진행하지 않았고/u.test(item)));
+  assert.equal(current.interpretation.score, legacy.interpretation.score);
+  const { storedDetectInterpretation, signDetectInterpretation } = require('../lib/detectHistoryPresentation');
+  const text = '합성 문장이다. '.repeat(150);
+  const stored = storedDetectInterpretation({ probability: 62, probSource: 'llm', confidence: 'medium', detectDiagnostics }, text);
+  assert.ok(stored.limitations.some(item => /추가 검사를 진행하지 않았고/u.test(item)));
+  assert.equal(typeof signDetectInterpretation('test-reader', text, stored, 'local-test-key-'.repeat(4)), 'string');
+});

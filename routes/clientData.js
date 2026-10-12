@@ -30,6 +30,16 @@ function respondError(res, error) {
   });
 }
 
+const HISTORY_REPORT_ERRORS = Object.freeze({
+  HISTORY_ID_INVALID: '기록 번호를 확인해 주세요.',
+  HISTORY_NOT_FOUND: '기록을 찾을 수 없어요.',
+  DETECT_REPORT_NOT_SAVED: '이 기록에는 저장된 결과 화면이 없어요.',
+  DETECT_REPORT_UNREADABLE: '저장된 결과 화면을 읽을 수 없어요. 기록의 요약은 그대로 볼 수 있어요.',
+  DETECT_REPORT_TOO_LARGE: '저장된 결과 화면이 너무 커서 다시 열 수 없어요. 기록의 요약은 그대로 볼 수 있어요.',
+  DETECT_REPORT_MISMATCH: '저장된 결과 화면이 이 기록과 맞지 않아 열지 않았어요.',
+  HISTORY_READ_UNAVAILABLE: '저장된 결과 화면을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'
+});
+
 function accountInitializeQuotaLogFields(error) {
   return {
     code: error?.code,
@@ -54,6 +64,9 @@ function createRouter(deps = {}) {
     : null);
   const notifyInquiry = deps.notifyInquiry || (payload => discord.inquiry(payload));
   const clientPrincipal = deps.clientPrincipal || (req => clientHashForLog(realClientIp(req)));
+  const readDetectHistoryReport = deps.readDetectHistoryReport
+    || (input => require('../lib/historyService').readDetectHistoryReport({ ...input, store: db }));
+  const historyReadLimiter = deps.historyReadLimiter || config.limiter || ((_req, _res, next) => next());
   const router = express.Router();
 
   async function requireUser(req, res) {
@@ -142,6 +155,34 @@ function createRouter(deps = {}) {
     } catch (error) {
       logger.warn('client_history.backup_failed', { uid: decoded.uid, code: error?.code, err: error });
       return respondError(res, error);
+    }
+  });
+
+  // 큰 감지 결과는 이력에 압축본으로 저장돼 브라우저가 직접 읽을 수 없다. 본인 기록만 풀어서 돌려준다.
+  // 읽기 전용: 재감지·차감·이력 쓰기가 없고, 실패해도 기록의 요약은 그대로 남는다.
+  router.post('/history/detect-report', historyReadLimiter, async (req, res) => {
+    const decoded = await requireUser(req, res);
+    if (!decoded) return;
+    setLogContext({ uid: decoded.uid });
+    res.set('Cache-Control', 'private, no-store');
+    try {
+      const result = await readDetectHistoryReport({ uid: decoded.uid, historyId: req.body?.id });
+      return res.json({ ok: true, id: result.id, report: result.report });
+    } catch (error) {
+      const known = Object.hasOwn(HISTORY_REPORT_ERRORS, String(error?.code || ''));
+      const code = known ? error.code : 'HISTORY_READ_UNAVAILABLE';
+      const status = known ? Number(error.status) || 503 : 503;
+      logger[status >= 500 ? 'error' : 'warn']('client_history.detect_report_read_failed', {
+        uid: decoded.uid,
+        code,
+        ...(status >= 500 ? { err: error?.cause || error } : {})
+      });
+      return res.status(status).json({
+        ok: false,
+        code,
+        error: HISTORY_REPORT_ERRORS[code],
+        retryable: status >= 500
+      });
     }
   });
 

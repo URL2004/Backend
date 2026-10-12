@@ -18,6 +18,9 @@ const finding = (overrides = {}) => ({ type: 'omission', origin: 'introduced', r
 const failed = (violations, extra = {}) => ({ ran: true, pass: false, verificationCompleted: true, violations, ...extra });
 const final = (violations = [finding()], extra = {}, text = candidate) => bindSemanticValidation(failed(violations, extra), source, text);
 const prior = (violations = [finding()], extra = {}) => failed(violations, extra);
+// F02 (2026-10-13): a sentence deleted whole now has its own textual witness, and `candidate` above is such a
+// deletion. Where a test pins the repeated-finding rule alone, the sentence is reworded in place instead.
+const reworded = `측정값을 손수 갈무리하는 데 능숙하다. ${candidate}`;
 const hasHangul = value => /[ㄱ-ㆎ가-힣]/u.test(JSON.stringify(value));
 
 test('the record agrees with the gate in every state and never changes it', () => {
@@ -74,7 +77,7 @@ test('every per-finding condition is counted on its own and by first failure', (
     ['source_span_not_unique', twice, candidate, finding(), [prior()]],
     ['candidate_span_not_unique', source, candidate, finding({ candidateSpan: '다.' }), [prior()]],
     ['source_span_still_present', source, `${candidate} ${A}`, finding(), [prior()]],
-    ['no_prior_same_span', source, candidate, finding(), []]
+    ['no_prior_same_span', source, reworded, finding(), []]
   ];
   for (const [code, src, out, violation, priors] of cases) {
     const report = bindSemanticValidation(failed([violation]), src, out);
@@ -92,7 +95,7 @@ test('every per-finding condition is counted on its own and by first failure', (
   assert.deepEqual([ok.conditionsMetCount, ok.confirmedCount, ok.priorOverlapCounts.exact], [1, 1, 1]);
   assert.deepEqual(ok.rows[0], { sourceSpanChars: A.replace(/\s/gu, '').length,
     candidateSpanChars: finding().candidateSpan.replace(/\s/gu, '').length, sourceSpanDigest: ok.rows[0].sourceSpanDigest,
-    introduced: true, grounded: true, sourceUnique: true, candidateUnique: true, absentFromCandidate: true, priorSameSpan: true,
+    introduced: true, grounded: true, sourceUnique: true, candidateUnique: true, absentFromCandidate: true, priorSameSpan: true, droppedSentenceWitness: false,
     priorOverlapOfShorter: 1, priorOverlapOfLonger: 1, nearestPriorChars: A.replace(/\s/gu, '').length, firstFailedCondition: '' });
   assert.match(ok.rows[0].sourceSpanDigest, /^[0-9a-f]{12}$/u);
 });
@@ -101,6 +104,7 @@ test('an earlier finding that quoted nearly the same passage is counted, not acc
   // The earlier judge quoted the sentence without its final word; the later
   // judge quoted the whole sentence. Not the same string, so the gate stays shut.
   const shorter = A.slice(0, A.length - 5);
+  const final = () => bindSemanticValidation(failed([finding()]), source, reworded), candidate = reworded;
   const near = explain(source, candidate, final(), [prior([finding({ sourceSpan: shorter })])]);
   assert.equal(near.confirmedCount, 0);
   assert.equal(confirmedOmissions(source, candidate, final(), [prior([finding({ sourceSpan: shorter })])]).length, 0);
@@ -134,7 +138,7 @@ test('rows are bounded and the stored projection keeps codes and numbers only', 
     sourceSpanDigest: row.sourceSpanDigest, firstFailedCondition: '합성 문장' })) };
   const clean = sanitize(dirty);
   assert.equal(hasHangul(clean), false);
-  assert.deepEqual(Object.keys(clean.rows[0]).sort(), ['absentFromCandidate', 'candidateSpanChars', 'candidateUnique',
+  assert.deepEqual(Object.keys(clean.rows[0]).sort(), ['absentFromCandidate', 'candidateSpanChars', 'candidateUnique', 'droppedSentenceWitness',
     'firstFailedCondition', 'grounded', 'introduced', 'nearestPriorChars', 'priorOverlapOfLonger', 'priorOverlapOfShorter',
     'priorSameSpan', 'sourceSpanChars', 'sourceSpanDigest', 'sourceUnique']);
   assert.deepEqual(sanitize(clean), clean, 'the projection is stable');
@@ -172,5 +176,6 @@ test('the engine keeps observation independent of the delivery witnesses (source
     .replace(/\r\n/gu, '\n');
   assert.ok(gateCode.includes(`  return (report.violations||[]).filter(v=>v.type==='omission' && v.origin==='introduced'
     && hasGroundedSpan(v) && unique(source,v.sourceSpan) && unique(candidate,v.candidateSpan)
-    && !candidateBare.includes(bare(v.sourceSpan)) && sameMissingClaim(bare(v.sourceSpan),previous,candidateBare));`));
+    && !candidateBare.includes(bare(v.sourceSpan))
+    && (sameMissingClaim(bare(v.sourceSpan),previous,candidateBare) || droppedWhole(source,candidate,v)));`));
 });

@@ -132,6 +132,41 @@ test('낮은 점수라도 위치가 확인된 문장이 있으면 접근과 추�
   assert.equal(view.causeAnalysis.status, 'partial');
   assert.match(view.synthesis.description, /위치가 확인된 3문장부터 다듬을 수 있어요/u);
   assert.doesNotMatch(view.synthesis.description, /유지해도 좋아요/u);
+  // 모델이 짚은 2문장과 계측만으로 찾은 1문장은 출처를 나눠 표시한다. 겹치는 5번은 문체 근거로 한 번만.
+  assert.deepEqual(view.conversion.candidateSources, { modelEvidence: 2, writingMeasurementOnly: 1 });
+  assert.deepEqual(view.conversion.reasons.map(r => r.sources),
+    [['model_evidence', 'writing_measurement'], ['writing_measurement']]);
+  assert.match(view.synthesis.description, /이 중 1문장은 점수의 근거가 아닌 일반 글쓰기 점검 항목이에요/u);
+});
+
+test('문체 근거 위치가 0개면 글쓰기 계측 후보를 점수의 근거처럼 안내하지 않는다', () => {
+  const sentenceMap = { sentences: Array.from({ length: 10 }, (_, index) => ({ index, kind: 'generic', endingRun: 0 })) };
+  const input = {
+    probability: 58, probSource: 'llm', riskLevel: 'high', textLength: 1400,
+    // 모델 신호는 위치가 없다 — 원문에 연결된 AI 문체 근거는 0개.
+    signalEvidence: [{ category: 'sentence_uniformity', strength: 'strong', scope: 'pervasive', locationStatus: 'unlocated', locations: [] }],
+    sentenceMap,
+    measurements: { genericness: { count: 10, total: 14 }, detail: [{ lived: 1, specific: 1, sents: 14 }] }
+  };
+  const view = buildDetectReportView(input);
+  assert.equal(view.interpretation.pattern, null);
+  assert.equal(view.interpretation.evidenceDetails.locatedPatterns, 0);
+  assert.deepEqual(view.conversion.candidateSources, { modelEvidence: 0, writingMeasurementOnly: 10 });
+  assert.deepEqual(view.conversion.reasons.map(r => [r.category, r.sources]), [['generic_abstraction', ['writing_measurement']]]);
+  assert.doesNotMatch(view.synthesis.description, /위치가 확인된 10문장/u);
+  assert.match(view.synthesis.description, /점수와 연결된 문체 근거의 위치는 확인되지 않았어요/u);
+  assert.match(view.synthesis.description, /일반 글쓰기 점검에서 찾은 10문장은 점수의 근거가 아니라/u);
+  // 출처 표시는 점수·추천 정책을 바꾸지 않는다.
+  assert.equal(view.styleSignal.score, 58);
+  assert.equal(view.conversion.candidateSentences, 10);
+  assert.equal(view.conversion.recommend, true);
+  assert.equal(view.conversion.action, 'review_recommendation');
+
+  const modelOnly = buildDetectReportView({ ...input, sentenceMap: null, signalEvidence: [
+    { category: 'generic_abstraction', strength: 'weak', scope: 'isolated', locationStatus: 'source_range_verified',
+      locations: [{ sentenceIndex: 2, start: 120, end: 180 }] }] });
+  assert.deepEqual(modelOnly.conversion.candidateSources, { modelEvidence: 1, writingMeasurementOnly: 0 });
+  assert.match(modelOnly.synthesis.description, /위치가 확인된 1문장부터 다듬을 수 있어요\.$/u);
 });
 
 test('낮은 점수에 지목할 문장이 없으면 접근만 열고 추천하지 않으며 유지 안내로 닫는다', () => {

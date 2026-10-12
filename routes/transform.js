@@ -105,7 +105,9 @@ async function executeOwned(job, feature, run) {
   }, 20000);
   const attemptId = attemptTrace.begin(job, feature);
   try {
-    await require('../engine-gpt-prod/callLedger').observe(() => run(controller.signal), ledger => attemptTrace.capture(job, attemptId, ledger));
+    const ledger = require('../engine-gpt-prod/callLedger');
+    await ledger.observe(() => feature === 'main' ? run(controller.signal)
+      : ledger.run(() => run(controller.signal)), snapshot => attemptTrace.capture(job, attemptId, snapshot));
     return true;
   }
   finally {

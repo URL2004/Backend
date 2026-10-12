@@ -10,7 +10,7 @@ const KOREAN_MARKERS = '가나다라마바사아자차카타파하';
 // This audit is deliberately narrower than a grammar checker. It detects new
 // source-relative boundary accidents, never deletes a tail or invents a join.
 // Evidence contains UTF-16 positions only; no source/result text is emitted.
-function auditFragmentIntegrity(sourceText, outputText) {
+function auditFragmentIntegrity(sourceText, outputText, options = {}) {
   const source = String(sourceText || '');
   const output = String(outputText || '');
   if (!source || !output || source === output) return result([]);
@@ -86,6 +86,9 @@ function auditFragmentIntegrity(sourceText, outputText) {
       sourceEnd: owners[0].tail.end, outputStart: left.start, outputEnd: tail.end });
   }
   issues.push(...require('./documentFurniture').auditFurnitureBoundaries(source, output));
+  issues.push(...require('./fragmentDuplication').introducedClauseDuplicates(source, output, options));
+  issues.push(...require('./fragmentDuplication').introducedResidualTails(source, output, options));
+  issues.push(...require('./sourceBoundaryIntegrity').auditIntroducedReferenceBreaks(source, output));
   return result(issues);
 }
 

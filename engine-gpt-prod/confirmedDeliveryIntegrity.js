@@ -8,10 +8,19 @@ const sameMissingClaim=(span,previous,candidate)=>previous.has(span) || [...prev
   Math.min(prior.length,span.length)>=24
   && Math.min(prior.length,span.length)/Math.max(prior.length,span.length)>=0.35
   && (prior.includes(span) || span.includes(prior)) && !candidate.includes(prior));
+// F02: a sentence deleted whole is usually named by the final verdict alone, so
+// the repeated-finding rule let it through. The verdict's quotation must cover
+// at least half of a sentence that is textually witnessed as dropped.
+const droppedWhole=(source,candidate,v)=>{
+  const at=source.indexOf(v.sourceSpan),end=at+v.sourceSpan.length;
+  return require('./deliveryIntegrityWitnesses').droppedSourceSentences(source,candidate,{spans:[{start:at,end}]})
+    .some(w=>(Math.min(end,w.sourceEnd)-Math.max(at,w.sourceStart))*2>=w.sourceEnd-w.sourceStart);
+};
 
 // A fail label alone is not a hard delivery gate. Require the final candidate
-// receipt, a unique current context, and a prior independent finding about the
-// same missing source claim. No additional model request is made here.
+// receipt, a unique current context, and independent evidence about the same
+// missing source claim: a prior finding, or a textual witness that the quoted
+// sentence was dropped whole. No additional model request is made here.
 function confirmedOmissions(source,candidate,report,priorReports=[]) {
   if (verifySemanticValidation(report,{source,candidate,requireDigest:true}).status!=='fail'
       || report.verificationCompleted!==true || report.uncertain || report.nominationOnly) return [];
@@ -27,7 +36,8 @@ function confirmedOmissions(source,candidate,report,priorReports=[]) {
   const candidateBare=bare(candidate);
   return (report.violations||[]).filter(v=>v.type==='omission' && v.origin==='introduced'
     && hasGroundedSpan(v) && unique(source,v.sourceSpan) && unique(candidate,v.candidateSpan)
-    && !candidateBare.includes(bare(v.sourceSpan)) && sameMissingClaim(bare(v.sourceSpan),previous,candidateBare));
+    && !candidateBare.includes(bare(v.sourceSpan))
+    && (sameMissingClaim(bare(v.sourceSpan),previous,candidateBare) || droppedWhole(source,candidate,v)));
 }
 // F-03: why the gate above did or did not fire. Observation only: it never
 // decides anything and confirmedOmissions() is not routed through it. It holds
@@ -90,17 +100,22 @@ function explainConfirmedOmissions(source,candidate,report,priorReports=[]) {
   const violations=Array.isArray(report?.violations)?report.violations:[];
   const omissions=violations.filter(v=>v?.type==='omission');
   const rows=[];
-  let conditionsMetCount=0;
+  let conditionsMetCount=0,droppedSentenceWitnessCount=0;
   for(const v of omissions){
     const sourceSpan=typeof v.sourceSpan==='string'?v.sourceSpan:'',candidateSpan=typeof v.candidateSpan==='string'?v.candidateSpan:'';
     const key=bare(sourceSpan);
+    const priorSame=sameMissingClaim(key,previous,candidateBare);
+    const eligible=v.origin==='introduced' && hasGroundedSpan(v) && unique(String(source||''),sourceSpan)
+      && unique(String(candidate||''),candidateSpan) && !candidateBare.includes(key);
+    const witnessed=eligible && !priorSame && droppedWhole(String(source),String(candidate),v);
+    if(witnessed)droppedSentenceWitnessCount+=1;
     const checks={
       not_introduced:v.origin!=='introduced',
       not_grounded:!hasGroundedSpan(v),
       source_span_not_unique:!unique(String(source||''),sourceSpan),
       candidate_span_not_unique:!unique(String(candidate||''),candidateSpan),
       source_span_still_present:candidateBare.includes(key),
-      no_prior_same_span:!sameMissingClaim(key,previous,candidateBare)
+      no_prior_same_span:!priorSame && !witnessed
     };
     const failures=GATE_CONDITIONS.filter(code=>checks[code]);
     for(const code of failures)failed[code]+=1;
@@ -121,7 +136,7 @@ function explainConfirmedOmissions(source,candidate,report,priorReports=[]) {
       sourceSpanChars:key.length,candidateSpanChars:bare(candidateSpan).length,sourceSpanDigest:key?spanDigest(sourceSpan):'',
       introduced:!checks.not_introduced,grounded:!checks.not_grounded,sourceUnique:!checks.source_span_not_unique,
       candidateUnique:!checks.candidate_span_not_unique,absentFromCandidate:!checks.source_span_still_present,
-      priorSameSpan:!checks.no_prior_same_span,
+      priorSameSpan:priorSame,droppedSentenceWitness:witnessed,
       priorOverlapOfShorter:Math.round(shorter*100)/100,priorOverlapOfLonger:Math.round(longer*100)/100,
       nearestPriorChars:priorChars,firstFailedCondition:failures[0]||''
     });
@@ -136,6 +151,8 @@ function explainConfirmedOmissions(source,candidate,report,priorReports=[]) {
     // Omission findings that meet every per-finding condition, whatever the
     // state; they block delivery only when state === 'evaluated'.
     conditionsMetCount,confirmedCount:state==='evaluated'?conditionsMetCount:0,
+    // Met through the dropped-sentence witness rather than a repeated finding.
+    droppedSentenceWitnessCount,
     priorOverlapCounts:overlap,onlyPriorMissing,
     overflowRowCount:Math.max(0,omissions.length-rows.length),rows
   };
@@ -152,7 +169,7 @@ function sanitizeOmissionGateDiagnostics(value) {
     finalVerificationCompleted:value.finalVerificationCompleted===true,
     ...counts(value,['finalViolationCount','omissionCount','priorReportCount','priorQualifiedReportCount',
       'priorOmissionFindingCount','priorOmissionUnqualifiedCount','priorOmissionSpanCount','conditionsMetCount',
-      'confirmedCount','overflowRowCount']),
+      'confirmedCount','droppedSentenceWitnessCount','overflowRowCount']),
     conditionFailedCounts:counts(value.conditionFailedCounts,GATE_CONDITIONS),
     firstFailedCounts:counts(value.firstFailedCounts,GATE_CONDITIONS),
     priorOverlapCounts:counts(value.priorOverlapCounts,['exact','high','partial','low']),
@@ -160,7 +177,7 @@ function sanitizeOmissionGateDiagnostics(value) {
   clean.rows=(Array.isArray(value.rows)?value.rows:[]).slice(0,MAX_GATE_ROWS).filter(row=>row && typeof row==='object').map(row=>({
     ...counts(row,['sourceSpanChars','candidateSpanChars','nearestPriorChars']),
     sourceSpanDigest:/^[0-9a-f]{12}$/u.test(row.sourceSpanDigest)?row.sourceSpanDigest:'',
-    ...Object.fromEntries(['introduced','grounded','sourceUnique','candidateUnique','absentFromCandidate','priorSameSpan']
+    ...Object.fromEntries(['introduced','grounded','sourceUnique','candidateUnique','absentFromCandidate','priorSameSpan','droppedSentenceWitness']
       .map(key=>[key,row[key]===true])),
     priorOverlapOfShorter:ratio(row.priorOverlapOfShorter),priorOverlapOfLonger:ratio(row.priorOverlapOfLonger),
     firstFailedCondition:GATE_CONDITIONS.includes(row.firstFailedCondition)?row.firstFailedCondition:''

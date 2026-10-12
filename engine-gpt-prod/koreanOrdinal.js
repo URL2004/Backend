@@ -35,13 +35,16 @@ function ordinalMarkers(value, { source } = {}) {
   for (const match of text.matchAll(re)) {
     const start = match.index + match[1].length;
     if (literals.some(span => span.start <= start && span.end > start)) continue;
+    // "첫 번째 사례" and "첫 번째로 볼 사례" are the same noun frame.
+    if (/^(?:로|으로)(?:는)?\s+(?:볼|살펴볼|다룰|제시할|소개할|검토할)\s+(?:표현|문장|사례|항목|대상)/u.test(text.slice(start + match[2].length))) continue;
     markers.push({ marker: match[2].replace(/\s+/gu, ''), number: ordinalNumber(match[2]), start,
       lineOrdinal: text.slice(0, start).split('\n').length });
   }
   const inlineAdverbs = new RegExp(`([,，][ \\t]+)(${ORDINAL})(?:로|으로)(?:는)?(?=\\s|[,，])`, 'gu');
   for (const match of text.matchAll(inlineAdverbs)) {
     const start = match.index + match[1].length, number = ordinalNumber(match[2]);
-    const previous = markers.filter(item => item.start < start).at(-1);
+    const previous = markers.reduce((best, item) => item.start < start
+      && (!best || item.start > best.start) ? item : best, null);
     if (!previous || previous.number + 1 !== number
         || literals.some(span => span.start <= start && span.end > start)) continue;
     markers.push({ marker: match[2].replace(/\s+/gu, ''), number, start,

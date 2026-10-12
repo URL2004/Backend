@@ -35,7 +35,9 @@ test('ordinal adverbs retain enumeration while family references remain ordinary
    assert.deepEqual(ordinalMarkers(prefix+' 자료를 정리하고 새 안내문을 배포한다.').map(x=>x.number),[2]);
  }
  assert.deepEqual(ordinalMarkers('첫째로 자료를 정리하고, 둘째로 안내문을 배포한다.').map(x=>x.number),[1,2]);
+ assert.deepEqual(ordinalMarkers('첫째로 자료를 정리하고, 둘째로 안내문을 배포한다.\n첫째로 의견을 모으고, 둘째로 계획을 세운다.').map(x=>x.number),[1,2,1,2]);
  assert.deepEqual(ordinalMarkers('첫째 아이가 왔다. 둘째 아이는 집에 있다.'),[]);
+ assert.deepEqual(ordinalMarkers('첫 번째로 볼 사례는 자료실 운영이다.'),[]);
 });
 
 test('a wrapped page citation is not counted as a removed numbered list',()=>{

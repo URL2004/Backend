@@ -4170,7 +4170,14 @@ function compareStructuralRoleSignatures(source, output) {
 
 function structuralRoleSignature(value) {
   const report = layoutStructure.analyzeLineStructure(value);
-  const roles = report.roleCounts || {};
+  const roles = { ...report.roleCounts };
+  // A wrapped page number inside a citation is not a numbered list item.
+  const ranges = syntaxSpans(String(value || ''));
+  for (const record of layoutStructure.buildLineRecords(value)) {
+    if (record.role !== 'list') continue;
+    const start = record.start + (record.raw.match(/^\s*/u)?.[0].length || 0);
+    if (ranges.some(span => span.start < start && span.end > start)) roles.list--;
+  }
   return {
     titleHeading: Number(roles.title || 0) + Number(roles.heading || 0),
     label: Number(roles.label || 0) + Number(roles.label_inline || 0),

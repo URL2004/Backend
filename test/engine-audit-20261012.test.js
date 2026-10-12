@@ -31,7 +31,22 @@ test('mixed script guard uses the local word context and keeps attested foreign 
 });
 test('ordinal adverbs retain enumeration while family references remain ordinary prose',()=>{
  assert.deepEqual(ordinalMarkers('첫째로, 자료를 정리한다. 둘째로, 지역 의견을 수집한다.').map(x=>x.number),[1,2]);
+ for (const prefix of ['두 번째로,', '두 번째로는', '두번째로']) {
+   assert.deepEqual(ordinalMarkers(prefix+' 자료를 정리하고 새 안내문을 배포한다.').map(x=>x.number),[2]);
+ }
+ assert.deepEqual(ordinalMarkers('첫째로 자료를 정리하고, 둘째로 안내문을 배포한다.').map(x=>x.number),[1,2]);
  assert.deepEqual(ordinalMarkers('첫째 아이가 왔다. 둘째 아이는 집에 있다.'),[]);
+});
+
+test('a wrapped page citation is not counted as a removed numbered list',()=>{
+ const structure=require('../engine-gpt-prod/structureChunk');
+ const source='자료를 참고했다(p.\n36) 이후 안내문을 배포했다.';
+ const output='자료를 참고했다(p.36) 이후 안내문을 배포했다.';
+ const result=structure.buildStructureAudit({source,outputText:output,chunks:[]});
+ assert.equal(result.sourceStructuralSignature.list,0);
+ assert.equal(result.structuralRoleLosses.some(item=>item.role==='list'),false);
+ const real=structure.buildStructureAudit({source:'36) 안내문을 배포했다.',outputText:'안내문을 배포했다.',chunks:[]});
+ assert.equal(real.sourceStructuralMarkerLossCount,1);
 });
 test('diagnostics retain model and final-stage consistency independently without rescaling',()=>{
  const d=sanitizeDiagnostics({version:VERSION,attempts:[{phase:'primary',modelScore:12}],stageVersion:STAGE_VERSION,

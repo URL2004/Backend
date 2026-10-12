@@ -4,7 +4,9 @@ const { syntaxSpans } = require('../engine/textSyntax');
 // Explicit punctuation distinguishes enumeration from family/order nouns
 // (첫째 아이, 두 번째 실험). Never infer or renumber a missing item.
 const ORDINAL = '(?:(?:첫|둘|셋|넷|다섯|여섯|일곱|여덟|아홉|열|열한|열두|열세|열네|열다섯|열여섯|열일곱|열여덟|열아홉|스무)째|(?:첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\\s*번째)';
-const PREFIX = new RegExp(`^(\\s*${ORDINAL}(?:로|으로)?(?:[,，:：]\\s*|[.．]\\s+))(\\S[\\s\\S]*)$`, 'u');
+const ORDINAL_END = '(?:(?:로|으로)(?:는)?(?:[,，:：]\\s*|\\s+)|[,，:：]\\s*|[.．]\\s+)';
+// Adverb particles stay editable; their ordinal identity is checked below.
+const PREFIX = new RegExp(`^(\\s*${ORDINAL}(?:[,，:：]\\s*|[.．]\\s+))(\\S[\\s\\S]*)$`, 'u');
 // Explicit enumerative predicate frames, not arbitrary ordinal adjectives
 // such as "첫 번째 실험" or "첫째 아이". These may have no comma.
 const FRAME_LEAD = '(?:(?:본|이번|해당)\\s*(?:연구|조사|분석|프로젝트)의\\s+|[가-힣]{2,16}(?:이|가|은|는)\\s+(?:중요한|필요한|유용한|효과적인)\\s+)?';
@@ -28,12 +30,21 @@ function ordinalNumber(value) {
 function ordinalMarkers(value, { source } = {}) {
   const text = String(value || '');
   const literals = syntaxSpans(text);
-  const re = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:로|으로)?(?:[,，:：](?=\\s|[가-힣A-Za-z])|[.．](?=\\s))`, 'gu');
+  const re = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:(?:로|으로)(?:는)?(?:[,，:：](?=\\s|[가-힣A-Za-z])|(?=\\s))|[,，:：](?=\\s|[가-힣A-Za-z])|[.．](?=\\s))`, 'gu');
   const markers = [];
   for (const match of text.matchAll(re)) {
     const start = match.index + match[1].length;
     if (literals.some(span => span.start <= start && span.end > start)) continue;
     markers.push({ marker: match[2].replace(/\s+/gu, ''), number: ordinalNumber(match[2]), start,
+      lineOrdinal: text.slice(0, start).split('\n').length });
+  }
+  const inlineAdverbs = new RegExp(`([,，][ \\t]+)(${ORDINAL})(?:로|으로)(?:는)?(?=\\s|[,，])`, 'gu');
+  for (const match of text.matchAll(inlineAdverbs)) {
+    const start = match.index + match[1].length, number = ordinalNumber(match[2]);
+    const previous = markers.filter(item => item.start < start).at(-1);
+    if (!previous || previous.number + 1 !== number
+        || literals.some(span => span.start <= start && span.end > start)) continue;
+    markers.push({ marker: match[2].replace(/\s+/gu, ''), number, start,
       lineOrdinal: text.slice(0, start).split('\n').length });
   }
   // An enumerator used as the topic still owns its item: 둘째, X -> 둘째는 X.
@@ -89,7 +100,7 @@ function ordinalMarkers(value, { source } = {}) {
 
 function ordinalBodyMatches(source, sourceStart, output, outputStart) {
   const words = (text, start) => new Set(String(text).slice(start)
-    .replace(new RegExp(`^${ORDINAL}(?:[,，:：.．]\\s*|(?:은|는)\\s+)`, 'u'), '')
+    .replace(new RegExp(`^${ORDINAL}(?:${ORDINAL_END}|(?:은|는)\\s+)`, 'u'), '')
     .split(/[.!?。！？\n]/u)[0].match(/[가-힣A-Za-z0-9]{2,}/gu) || []);
   const before = words(source, sourceStart), after = words(output, outputStart);
   const common = [...before].filter(word => after.has(word)).length;

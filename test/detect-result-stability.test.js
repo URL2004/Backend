@@ -91,7 +91,7 @@ function fakeFirestore() {
 
 test.beforeEach(() => stability.resetForTests());
 
-test('v1.53/v9h는 버전별 캐시를 분리하고 이전 영속 캐시를 삭제하지 않는다', async () => {
+test('v1.54/v9h는 버전별 캐시를 분리하고 이전 영속 캐시를 삭제하지 않는다', async () => {
   const engine = require('../engine-gpt-prod');
   const previousVersions = {
     detectorVersion: 'gpt-detect-v1.52',
@@ -101,7 +101,7 @@ test('v1.53/v9h는 버전별 캐시를 분리하고 이전 영속 캐시를 삭�
     detectorVersion: engine.DETECT_VERSION,
     promptVersion: engine.DETECT_PROMPT_VERSION
   };
-  assert.equal(currentVersions.detectorVersion, 'gpt-detect-v1.53');
+  assert.equal(currentVersions.detectorVersion, 'gpt-detect-v1.54');
   assert.equal(currentVersions.promptVersion, 'detect-prompt-v9h-recurring-cause-band');
   const previous = stability.variantForConfig(CONFIG, previousVersions);
   const detectorOnly = stability.variantForConfig(CONFIG, { ...previousVersions, detectorVersion: currentVersions.detectorVersion });

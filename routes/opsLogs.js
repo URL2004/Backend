@@ -22,6 +22,16 @@ const { bearerToken } = require('../lib/reqtoken');
 
 const MAX_SCAN = 600;
 
+router.post('/admin/engine-release', async (req, res, next) => {
+  try {
+    if (!(await requireAdmin(req, res))) return;
+    const engine = require('../engine-gpt-prod');
+    const commit = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '');
+    res.set('Cache-Control', 'no-store').json({ ok: true, humanizeVersion: engine.VERSION,
+      detectVersion: engine.DETECT_VERSION, commit: /^[a-f0-9]{7,40}$/i.test(commit) ? commit : null });
+  } catch (error) { next(error); }
+});
+
 // Authorization 헤더가 정본이며, 구형 캐시 화면의 body 토큰은 공통 helper가
 // deprecation 로그를 남기며 한 릴리스 동안만 호환한다.
 async function requireAdmin(req, res) {

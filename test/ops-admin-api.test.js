@@ -80,6 +80,16 @@ function seed() {
   failReads = false;
 }
 
+test('runtime release is restricted to admins and exposes only version provenance', async () => {
+  assert.equal((await post('/admin/engine-release', {})).status, 401);
+  assert.equal((await post('/admin/engine-release', {}, 'someone-else')).status, 403);
+  const response = await post('/admin/engine-release', {}, 'admin-uid');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.humanizeVersion, require('../engine-gpt-prod').VERSION);
+  assert.equal(response.body.detectVersion, require('../engine-gpt-prod').DETECT_VERSION);
+  assert.deepEqual(Object.keys(response.body).sort(), ['commit', 'detectVersion', 'humanizeVersion', 'ok']);
+});
+
 test('비로그인·비관리자는 장애 로그에 접근할 수 없다', async () => {
   seed();
   assert.equal((await post('/admin/ops-logs', {})).status, 401, '토큰 없으면 401');

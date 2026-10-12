@@ -157,20 +157,20 @@ test('history keeps the record and leaves older results without one', () => {
     'confirmedOmissionGate'), false);
 });
 
-test('the engine records the gate beside the unchanged decision (source check)', () => {
+test('the engine keeps observation independent of the delivery witnesses (source check)', () => {
   const code = require('node:fs').readFileSync(require.resolve('../engine-gpt-prod'), 'utf8');
   const decision = code.indexOf("const confirmedMissingClaims = require('./confirmedDeliveryIntegrity').confirmedOmissions(");
   const record = code.indexOf("confirmedOmissionGate = require('./confirmedDeliveryIntegrity').explainConfirmedOmissions(");
   // The record is taken just above the decision and is not one of its inputs.
   assert.ok(record > 0 && decision > record && decision - record < 400);
-  assert.match(code.slice(decision, decision + 400),
-    /semanticRestorationEvidence\);\r?\n\s+if \(confirmedMissingClaims\.length\) addFloorCriticals/u);
+  assert.match(code.slice(decision, decision + 2500),
+    /if \(confirmedMissingClaims\.length \|\| witnessedResidualLoss\.length\) addFloorCriticals/u);
   assert.equal(/confirmedOmissionGate[^\n]*addFloorCriticals|addFloorCriticals[^\n]*confirmedOmissionGate/u.test(code), false);
   assert.match(code, /\n\s+confirmedOmissionGate,\r?\n/u);
-  // The gate itself is byte-for-byte the function shipped in v2.5.106.
+  // Both candidate provenance and independent claim witnesses remain required.
   const gateCode = require('node:fs').readFileSync(require.resolve('../engine-gpt-prod/confirmedDeliveryIntegrity'), 'utf8')
     .replace(/\r\n/gu, '\n');
   assert.ok(gateCode.includes(`  return (report.violations||[]).filter(v=>v.type==='omission' && v.origin==='introduced'
     && hasGroundedSpan(v) && unique(source,v.sourceSpan) && unique(candidate,v.candidateSpan)
-    && !candidateBare.includes(bare(v.sourceSpan)) && previous.has(bare(v.sourceSpan)));`));
+    && !candidateBare.includes(bare(v.sourceSpan)) && sameMissingClaim(bare(v.sourceSpan),previous,candidateBare));`));
 });

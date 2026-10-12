@@ -50,6 +50,7 @@ const {
 } = require('../lib/humanizePricing');
 
 const jobs = new Map();
+const launchingJobs = new Set();
 const pendingAdmissions = new Set();
 const auxiliaryUsers = new Set();
 const executionPolicy = require('../lib/transformExecution');
@@ -116,6 +117,8 @@ async function executeOwned(job, feature, run) {
     delete job.executionToken;
     delete job.auxAc;
     delete job.executionDeadlineMs;
+    // A slot becomes available only after persistence and lease release.
+    scheduleQueueDrain();
   }
 }
 
@@ -539,7 +542,7 @@ function countActive(uid, mode) {
   let running = 0, queued = 0, mine = 0;
   const pool = poolOf(mode);
   for (const j of jobs.values()) {
-    if (j.status === 'running' && poolOf(j.mode) === pool) running++;
+    if ((j.status === 'running' || launchingJobs.has(j.id)) && poolOf(j.mode) === pool) running++;
     if (j.status === 'queued' && poolOf(j.mode) === pool) queued++;
     // 승인·대기는 LLM을 안 쓰지만 사용자 기준으로는 "진행 중 작업" — 같은 사용자가 쌓아두는 건 모드 무관 차단.
     if (j.uid === uid && completionState.ACTIVE_STATUSES.includes(j.status)) mine++;
@@ -586,6 +589,8 @@ function queueDetails(job) {
   return {
     queuePosition: position,
     queueSize: queued.length,
+    queueWaitSec: Math.max(0, Math.floor((Date.now() - (job.queuedAt || job.createdAt || Date.now())) / 1000)),
+    queueWaitReason: job.queueWaitReason || 'capacity',
     queueEtaSec: wave === 0 ? 15 : wave * queueUnitSec(job.mode, job.estSec)
   };
 }
@@ -1733,11 +1738,18 @@ function deletePersisted(id) {
 }
 
 let queueDrainPending = false;
+let queueDrainTimer = null;
+let queueDrainDue = 0;
 function scheduleQueueDrain(delayMs = 0) {
-  if (draining || queueDrainPending) return;
+  if (draining) return;
+  const due = Date.now() + Math.max(0, delayMs);
+  if (queueDrainPending && queueDrainDue <= due) return;
+  clearTimeout(queueDrainTimer);
   queueDrainPending = true;
-  const t = setTimeout(() => {
+  queueDrainDue = due;
+  const t = queueDrainTimer = setTimeout(() => {
     queueDrainPending = false;
+    queueDrainTimer = null;
     drainQueue();
   }, Math.max(0, delayMs));
   if (t.unref) t.unref();
@@ -1768,18 +1780,24 @@ function drainQueuePool(pool) {
 }
 
 function launchQueuedJob(job) {
-  if (!job || job.status !== 'queued') return false;
+  if (!job || job.status !== 'queued' || launchingJobs.has(job.id)) return false;
   // 시작 시 이전 인스턴스가 아직 종료 중일 수 있다. Firestore 상태를 다시
   // 확인해 소유권을 넘겨받기 전에는 같은 작업을 두 인스턴스가 동시에 실행하지 않는다.
   if (restartRecovery.isRestartRecoveryHeld(job)) return false;
   if (Number(job.retryNotBeforeMs || 0) > Date.now()) return false;
   job.retryNotBeforeMs = null;
   const isShort = job.mode !== 'formal';
-  const waitMs = Math.max(0, Date.now() - (job.queuedAt || job.createdAt || Date.now()));
-  job.status = 'running';
-  job.startedAt = Date.now();
-  job.stage = isShort ? '문장 다듬는 중' : (job.wantEvidence ? '근거 검색' : '구조 계획');
-  logger.info('transform.started', {
+  launchingJobs.add(job.id);
+  const hasApprovedEvidence = Object.prototype.hasOwnProperty.call(job, 'approvedEvidence');
+  void executeOwned(job, 'main', async () => {
+    // The persisted state loaded by executeOwned is authoritative. Start only
+    // after ownership; queued jobs must not pretend to run while acquiring it.
+    if (job.status === 'cancelled' || job.status === 'awaiting_payment') return;
+    job.status = 'running';
+    job.startedAt = Date.now();
+    job.queueWaitReason = null;
+    job.stage = isShort ? '문장 다듬는 중' : (job.wantEvidence ? '근거 검색' : '구조 계획');
+    logger.info('transform.started', {
     jobId: job.id,
     uid: job.uid,
     mode: job.mode,
@@ -1793,10 +1811,8 @@ function launchQueuedJob(job) {
     estHighSec: job.estHighSec,
     estimateBasis: job.estimateBasis,
     estimatedEditableChunks: job.estimatedEditableChunks,
-    queuedMs: waitMs
+    queuedMs: Math.max(0, job.startedAt - (job.queuedAt || job.createdAt || job.startedAt))
   });
-  const hasApprovedEvidence = Object.prototype.hasOwnProperty.call(job, 'approvedEvidence');
-  void executeOwned(job, 'main', async () => {
     if (job.pendingCompletion) return recoverCompletion(job);
     if (job.structurePreview) return runStructurePreview(job);
     if (isShort) return runHumanizeJob(job, job.text || '');
@@ -1804,8 +1820,9 @@ function launchQueuedJob(job) {
     if (job.wantEvidence) return runSearchPhase(job, job.text || '');
     return runJob(job, job.text || '', '');
   }).then(async ran => {
-    if (ran || job.status !== 'running') return;
-    job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 30000;
+    if (ran || !['queued', 'running'].includes(job.status)) return;
+    job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 2000;
+    job.queueWaitReason = 'execution_lease';
     if (db) {
       const snapshot = await db.collection('transformJobs').doc(job.id).get();
       if (snapshot.exists && (TERMINAL_JOB_STATUSES.has(snapshot.data().status) || snapshot.data().status === 'awaiting_payment')) {
@@ -1818,8 +1835,13 @@ function launchQueuedJob(job) {
       void persistJob(job);
       return;
     }
-    job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
+    job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 10000;
+    job.queueWaitReason = 'connection_retry';
     logger.warn('transform.execution_unavailable', { jobId: job.id, error });
+  }).finally(() => {
+    launchingJobs.delete(job.id);
+    if (job.status === 'queued') scheduleQueueDrain(Math.max(0, Number(job.retryNotBeforeMs || 0) - Date.now()));
+    else scheduleQueueDrain();
   });
   return true;
 }
@@ -3333,6 +3355,8 @@ const startTransform = async (req, res) => {
   }
 
   const wantEvidence = !structurePreview && mode === 'formal' && req.body.evidence === true;
+  const sourceProblem = require('../engine-gpt-prod/sourceTablePrecheck').check(text);
+  if (sourceProblem) return res.status(422).json(sourceProblem);
   let approvedStructure = null;
   if (!structurePreview && structureMode === 'improve') {
     const planId = String(req.body?.structurePlanId || '');

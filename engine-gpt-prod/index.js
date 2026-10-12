@@ -75,8 +75,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.110';
-const DETECT_VERSION = 'gpt-detect-v1.53';
+const VERSION = 'gpt-prod-v2.5.111';
+const DETECT_VERSION = 'gpt-detect-v1.54';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -261,6 +261,8 @@ async function runEngine({
   const jobDeadlineMs = Number(deadlineMs) > 0 ? Number(deadlineMs)
     : Date.now() + Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000));
   if (!submittedSource) throw new Error('engine-gpt-prod: empty text');
+  const sourceTableProblem = require('./sourceTablePrecheck').check(submittedSource);
+  if (sourceTableProblem) throw Object.assign(new Error(sourceTableProblem.error), sourceTableProblem);
   const sourcePreflightAudit = sourcePreflight.auditAndSanitizeSource(submittedSource);
   // Citation attachment is witnessed by the submitted document, never by
   // a heading/paragraph repair applied to the model's working source.
@@ -4468,13 +4470,31 @@ async function runEngine({
   } catch { confirmedOmissionGate = null; }
   const confirmedMissingClaims = require('./confirmedDeliveryIntegrity').confirmedOmissions(
     rawSource, outputText, semanticReportForCandidate(semanticReport), semanticRestorationEvidence);
-  if (confirmedMissingClaims.length) addFloorCriticals(result.floorReport, [{
+  const finalOmissionReport = semanticReportForCandidate(semanticReport);
+  const witnessedResidualLoss = semanticProvenance.verifySemanticValidation(finalOmissionReport,
+    { source: rawSource, candidate: outputText, requireDigest: true }).status === 'fail'
+    && finalOmissionReport?.verificationCompleted === true && !finalOmissionReport.uncertain
+    && (finalOmissionReport.violations || []).some(v => v.type === 'omission' && v.origin === 'introduced'
+      && require('./semanticObligations').hasGroundedSpan(v))
+      ? require('./deliveryIntegrityWitnesses').residualSourceLoss(rawSource, outputText).filter(witness =>
+        (finalOmissionReport.violations || []).some(v => {
+          if (v.type !== 'omission' || v.origin !== 'introduced' || !require('./semanticObligations').hasGroundedSpan(v)) return false;
+          const sourceSpan = String(v.sourceSpan || '').replace(/\s/gu, '');
+          const candidateSpan = String(v.candidateSpan || '').replace(/\s/gu, '');
+          return sourceSpan.length >= 12 && candidateSpan.length >= 12
+            && (witness.sourceWitness.includes(sourceSpan) || sourceSpan.includes(witness.sourceWitness))
+            && (candidateSpan.includes(witness.candidateWitness) || witness.candidateWitness.includes(candidateSpan));
+        })) : [];
+  if (confirmedMissingClaims.length || witnessedResidualLoss.length) addFloorCriticals(result.floorReport, [{
     gate: 'confirmed_semantic_omission', detail: '재검증 후에도 원문 주장의 누락이 남아 결과를 전달하지 않았습니다.'
   }], 'confirmed_semantic_omission');
   const finalInlineCitations = require('./inlineCitationLayout').restoreInlineCitationLayout(citationSource, outputText);
   if (!finalInlineCitations.pass || finalInlineCitations.repairCount) addFloorCriticals(result.floorReport, [{
     gate: 'citation_integrity_unresolved', detail: '인용 표기와 문장의 연결을 안전하게 보존하지 못했습니다.'
   }], 'citation_integrity_unresolved');
+  if (require('./deliveryIntegrityWitnesses').mixedScriptWordChanges(rawSource, outputText).length) {
+    addFloorCriticals(result.floorReport, [{ gate: 'encoding_corruption', detail: '원문 한국어 단어에 다른 문자 체계가 섞여 결과를 전달하지 않았습니다.' }], 'encoding_corruption');
+  }
   const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
   result.floorReport = delivery.report;
 
@@ -4644,6 +4664,12 @@ async function runEngine({
       severity: 'warning',
       message: '원문 보존 감사에서 확인이 필요한 항목이 남아 있어 결과를 직접 대조해 주세요.'
     });
+  }
+  const deliverySemanticState = require('./finalSemanticOutcome').finalSemanticState(semanticReport, finalSemanticValidation);
+  if (!strictBlocked && !['verified_pass', 'not_run'].includes(deliverySemanticState)
+      && !qualityWarnings.some(w => /^semantic_|^quality_review_required$/u.test(w.code || ''))) {
+    qualityWarnings.push({ code: 'semantic_validation_unconfirmed', severity: 'warning',
+      message: '최종 의미 보존을 확정하지 못했어요. 결과를 사용하기 전에 원문과 대조해 주세요.' });
   }
   const qualityStatus = qualityWarnings.length ? 'needs_review' : 'clean';
   if (!strictBlocked && qualityStatus === 'needs_review' && result.floorReport?.status === 'clean') result.floorReport.status = 'needs_review';
@@ -4913,6 +4939,8 @@ async function runEngine({
     semanticJudgeRan: semanticReport.ran === true,
     semanticVerificationCompleted: semanticReport.ran === true && semanticReport.verificationCompleted !== false,
     semanticValidationStatus: result.semanticValidation.status,
+    finalSemanticStateReason: semanticReport.verificationCompleted === false
+      ? 'verification_incomplete' : String(finalSemanticValidation.status || 'unknown'),
     finalSemanticState: require('./finalSemanticOutcome').finalSemanticState(semanticReport,
       result.semanticValidation, { confirmationPending: stagedConfirmationRequirement.pending(semanticReport, {
         source: rawSource, candidate: outputText, preliminaryStatus: result.semanticValidation.status }) }),
@@ -6285,10 +6313,12 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
       recheckFailed: out.gptMeta?.escalationFailed === true,
       selectedModelScore: out.probability, evidenceAlignedScore: aligned.probability,
       reviewSelectionReason,
-      finalCandidateConsistency: require('../lib/detectEvidenceReview').candidateConsistency(out, source),
+      modelCandidateConsistency: require('../lib/detectEvidenceReview').candidateConsistency(out, source),
+      finalCandidateConsistency: require('../lib/detectEvidenceReview').candidateConsistency(result, source),
       stageVersion: diagnostics.STAGE_VERSION, selectedPhase,
       statisticalScore: classified.probability, engineFinalScore: result.probability
     });
+    if (result.detectDiagnostics?.finalCandidateConsistency?.status === 'conflict' && result.confidence === 'high') result.confidence = 'medium';
     return result;
   };
   // Primary and escalation share one absolute request budget. Provider-level

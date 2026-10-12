@@ -82,7 +82,7 @@ test('lease-owned execution saves final attempt archive before releasing ownersh
       release: async () => { events.push('release'); } },
     require: name => name === '../engine-gpt-prod/callLedger' ? ledger : require(name),
     persistJob: async current => { assert.equal(current.executionToken, 'owner'); events.push('persist'); archives.push(structuredClone(trace.summary(current))); return { ok: true }; },
-    jobPersistChains: new Map(), logger: { warn() {} } };
+    scheduleQueueDrain: () => events.push('schedule'), jobPersistChains: new Map(), logger: { warn() {} } };
   vm.runInNewContext(code.slice(code.indexOf('async function executeOwned('), code.indexOf('function auxiliaryRoute(')), context);
   await context.executeOwned(job, 'main', async () => {
     job.status = 'done';
@@ -90,7 +90,7 @@ test('lease-owned execution saves final attempt archive before releasing ownersh
     // Earlier terminal archive exists, followed by the attempt-finalized update.
     await context.persistJob(job);
   });
-  assert.deepEqual(events, ['persist', 'persist', 'release']);
+  assert.deepEqual(events, ['persist', 'persist', 'release', 'schedule']);
   assert.equal(archives[0].attempts[0].finishedAtMs, undefined);
   assert.ok(archives[1].attempts[0].finishedAtMs);
   assert.equal(archives[1].outcome, 'transform_completed');

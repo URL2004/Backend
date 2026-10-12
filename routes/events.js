@@ -125,8 +125,8 @@ router.post('/events', async (req, res) => {
     const stage = ['import', 'request', 'render', 'poll', 'persist'].includes(b.stage) ? b.stage : null;
     if (!feature || !code || !stage) return res.status(400).json({ ok: false, code: 'INVALID_EVENT', error: '올바르지 않은 이벤트입니다.' });
     const bounded = (n, max) => Math.max(0, Math.min(max, Math.round(Number(n) || 0)));
-    const fields = { feature, code, stage, pages: bounded(b.pages, 10000), emptyPages: bounded(b.emptyPages, 10000), durationMs: bounded(b.durationMs, 3600000), clientReported: true };
-    if (code === 'PDF_IMPORTED' || code === 'PDF_CANCELLED') logger.info('client.workflow_observation', fields);
+    const fields = { feature, code, stage, release: String(b.release || '').replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 80), pages: bounded(b.pages, 10000), emptyPages: bounded(b.emptyPages, 10000), durationMs: bounded(b.durationMs, 3600000), clientReported: true };
+    if (['PDF_IMPORTED', 'PDF_CANCELLED', 'NOTIFICATION_DISPLAYED', 'NOTIFICATION_SAVED', 'NOTIFICATION_OPENED'].includes(code)) logger.info('client.workflow_observation', fields);
     else logger.warn('client.workflow_issue', fields);
     return res.json({ ok: true });
   }

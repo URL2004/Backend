@@ -25,6 +25,7 @@ function respondError(res, error) {
     ok: false,
     code: error?.code || 'CLIENT_WRITE_FAILED',
     error: status >= 500 ? '저장 중 오류가 발생했어요.' : error.message,
+    ...(Number.isFinite(error?.retryAfterSec) ? { retryAfterSec: Math.max(1, Math.min(86400, Math.ceil(error.retryAfterSec))) } : {}),
     ...(error?.quotaScope ? { quotaScope: error.quotaScope } : {})
   });
 }

@@ -4,6 +4,10 @@ const {hasGroundedSpan}=require('./semanticObligations');
 const bare=value=>String(value||'').replace(/\s/gu,'');
 const unique=(text,span)=>typeof span==='string' && span.trim().length>=12
   && text.includes(span) && text.indexOf(span)===text.lastIndexOf(span);
+const sameMissingClaim=(span,previous,candidate)=>previous.has(span) || [...previous].some(prior=>
+  Math.min(prior.length,span.length)>=24
+  && Math.min(prior.length,span.length)/Math.max(prior.length,span.length)>=0.35
+  && (prior.includes(span) || span.includes(prior)) && !candidate.includes(prior));
 
 // A fail label alone is not a hard delivery gate. Require the final candidate
 // receipt, a unique current context, and a prior independent finding about the
@@ -23,7 +27,7 @@ function confirmedOmissions(source,candidate,report,priorReports=[]) {
   const candidateBare=bare(candidate);
   return (report.violations||[]).filter(v=>v.type==='omission' && v.origin==='introduced'
     && hasGroundedSpan(v) && unique(source,v.sourceSpan) && unique(candidate,v.candidateSpan)
-    && !candidateBare.includes(bare(v.sourceSpan)) && previous.has(bare(v.sourceSpan)));
+    && !candidateBare.includes(bare(v.sourceSpan)) && sameMissingClaim(bare(v.sourceSpan),previous,candidateBare));
 }
 // F-03: why the gate above did or did not fire. Observation only: it never
 // decides anything and confirmedOmissions() is not routed through it. It holds
@@ -96,7 +100,7 @@ function explainConfirmedOmissions(source,candidate,report,priorReports=[]) {
       source_span_not_unique:!unique(String(source||''),sourceSpan),
       candidate_span_not_unique:!unique(String(candidate||''),candidateSpan),
       source_span_still_present:candidateBare.includes(key),
-      no_prior_same_span:!previous.has(key)
+      no_prior_same_span:!sameMissingClaim(key,previous,candidateBare)
     };
     const failures=GATE_CONDITIONS.filter(code=>checks[code]);
     for(const code of failures)failed[code]+=1;
@@ -110,7 +114,7 @@ function explainConfirmedOmissions(source,candidate,report,priorReports=[]) {
     }
     const shorter=probe && priorChars?run/Math.min(probe.length,priorChars):0;
     const longer=probe && priorChars?run/Math.max(probe.length,priorChars):0;
-    const band=!checks.no_prior_same_span?'exact':shorter>=0.8?'high':shorter>=0.5?'partial':'low';
+    const band=previous.has(key)?'exact':shorter>=0.8?'high':shorter>=0.5?'partial':'low';
     overlap[band]+=1;
     if(failures.length===1 && failures[0]==='no_prior_same_span'){onlyPriorMissing.count+=1;onlyPriorMissing[band]+=1;}
     if(rows.length<MAX_GATE_ROWS)rows.push({

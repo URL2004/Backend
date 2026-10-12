@@ -4038,9 +4038,15 @@ function unmatchedStructuralItems(sourceItems, outputItems, keyOf) {
 
 function extractOriginalStructuralMarkers(value, { source } = {}) {
   const markers = [];
-  const lines = normalizeNewlines(value).split('\n');
+  const normalized = normalizeNewlines(value);
+  const protectedRanges = syntaxSpans(normalized);
+  const lines = normalized.split('\n');
+  let lineOffset = 0;
   lines.forEach((line, index) => {
     const text = String(line || '');
+    const start = lineOffset + (text.match(/^\s*/u)?.[0].length || 0);
+    lineOffset += text.length + 1;
+    if (protectedRanges.some(span => span.start < start && span.end > start)) return;
     let match = text.match(/^\s*(#{1,6})\s*(\d{1,3}(?:\.\d{1,3}){0,3}[.)]?)\s+/u);
     if (match) {
       markers.push(structuralMarker('markdown_number', `${match[1]} ${match[2]}`, index));

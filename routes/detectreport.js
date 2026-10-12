@@ -587,6 +587,7 @@ router.post('/detect-report', async (req, res) => {
       probability,
       probSource: 'llm',
       confidence: det.confidence,
+      finalCandidateConsistency: det.detectDiagnostics?.finalCandidateConsistency,
       textLength: text.length,
       riskLevel: narrated.riskLevel,
       calibrationApplied: calibration.applied,

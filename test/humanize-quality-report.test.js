@@ -5,6 +5,15 @@ const assert = require('node:assert/strict');
 const { buildHumanizeQualityReport, summarizeMetric } = require('../lib/humanizeQualityReport');
 const paymentRoute = require('../routes/payment');
 
+test('completed execution timing excludes reading time and missing traces from latency percentiles', () => {
+  const traced = paymentRoute.serializeAdminJobDoc({id:'traced',data:()=>({status:'done',processingDurationMs:1300000,
+    attemptLifecycle:{observed:true,attemptCount:2,attempts:[{startedAtMs:1000,finishedAtMs:21000},{startedAtMs:1301000,finishedAtMs:1316000}]}})});
+  const missing = paymentRoute.serializeAdminJobDoc({id:'missing',data:()=>({status:'done',processingDurationMs:9999999})});
+  assert.equal(traced.executionDurationMs,35000);assert.equal(missing.executionDurationMs,null);
+  const report=buildHumanizeQualityReport([traced,missing]);
+  assert.equal(report.metrics.executionDurationMs.count,1);assert.equal(report.metrics.executionDurationMs.p95,35000);
+});
+
 test('관리자 작업 축약 직렬화는 실험실 표지를 품질 집계까지 전달한다', () => {
   const row = paymentRoute.serializeAdminJobDoc({
     id: 'lab-job',

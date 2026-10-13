@@ -8,6 +8,7 @@ const layoutStructure = require('./layoutStructure');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { ordinalPrefix, ordinalMarkers } = require('./koreanOrdinal');
 const { restoreCitationLayout, citationProtectedBlocks } = require('./citationOwnership');
+const { suppliedEvidenceSpans, suppliedEvidenceSpanAt } = require('./suppliedEvidenceSection');
 const {
   resolveHumanizeContract,
   allowsLayoutRecomposition,
@@ -33,6 +34,7 @@ function splitChunksForGpt(text, {
     currentSection: '',
     lastPiece: null,
     academicSpans,
+    suppliedEvidenceSpans: suppliedEvidenceSpans(text),
     tocEntryKeys: freezeBlocks.tocEntryKeys(text, academicSpans),
     sourceLineRoles: buildSourceLineRoleMap(text),
     questionnaire: formatProfile?.primary === 'questionnaire'
@@ -311,6 +313,12 @@ function classifyPiece(piece, state) {
       lockType: frozen.type === 'toc' ? 'toc_item' : 'reference_item',
       sectionLabel: state.currentSection
     };
+  }
+
+  // 과제가 증거로 요구한 AI 산출물 절(프롬프트·AI 답변)은 학생 글이 아니다.
+  // 번호·불릿 접두부 분해나 제목 판정보다 먼저 절 전체를 그대로 잠근다.
+  if (suppliedEvidenceSpanAt(state.suppliedEvidenceSpans, piece.start, piece.end)) {
+    return { locked: true, lockType: 'quote', sectionLabel: state.currentSection };
   }
 
   if (piece?.forceLockType) return {
@@ -2897,6 +2905,13 @@ function editableLabelPrefixMatch(value) {
   const colonIndex = raw.search(/[:：]/u);
   if (colonIndex < 0) return null;
   let bodyStart = colonIndex + 1;
+  // `**원인 분석:** 본문`의 닫는 강조 기호는 라벨의 일부다. 콜론에서 자르면
+  // 편집 본문이 `** 본문`으로 시작해 `**원인 분석: **`처럼 강조가 깨진다.
+  const emphasis = raw.match(/^\s*(\*\*|__|\*|_)(?=\S)/u)?.[1] || '';
+  if (emphasis && raw.startsWith(emphasis, bodyStart) && raw[bodyStart + emphasis.length] !== emphasis[0]
+      && !raw.slice(raw.indexOf(emphasis) + emphasis.length, colonIndex).includes(emphasis)) {
+    bodyStart += emphasis.length;
+  }
   while (bodyStart < raw.length && /[ \t]/u.test(raw[bodyStart])) bodyStart += 1;
   const prefix = raw.slice(0, bodyStart);
   const body = raw.slice(bodyStart);

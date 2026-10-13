@@ -247,7 +247,8 @@ function restoreSubmittedSourceSeams(source, value) {
     if (!left || !right || (left.text.length < 28 && !/\($/u.test(left.text)) || isComplete(left.text) || CITED_SENTENCE_END.test(left.text)
         || literals.some(s => s.start <= start && s.end > start)) { conflicts.add(key); continue; }
     const url = /https?:\/\/\S+=$/u.test(left.text) && /^\d/u.test(right.text);
-    const ending = b === '다' && /(?:한|된|했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(a)
+    const ending = b === '다' && (/(?:한|된|했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(a)
+      || require('./koreanEndingSeam').isEndingSeam(left.text, right.text))
       && !siblings.has(right.index);
     const lexical = ending || wordSeam(a, b, words) || words.has(a + b) && a.length + b.length >= 4
       || (a.length === 1 && !/^[나너저그이내네제왜더또다한두세네몇수것줄중전후앞뒤각및의을를은는에와과도만로큰작새옛긴흰벽명성]$/u.test(a)
@@ -284,7 +285,12 @@ function restoreSubmittedSourceSeams(source, value) {
     // A complete source token is evidence only for this exact token, including
     // its inflection, and only when there is no authored boundary for the pair.
     if (replacement === undefined && gap[0].includes('\n') && !spaced.has(key)
-        && atoms.has(a + b) && a.length + b.length >= 3) replacement = '';
+        && atoms.has(a + b) && a.length + b.length >= 3) {
+      // A flattened source can contain `고찰본` across a real heading/body
+      // boundary. Do not undo an explicit heading recovered by preflight.
+      const leftLine = output.slice(output.lastIndexOf('\n', start - 1) + 1, start);
+      if (!layout.isKnownHeadingLine(leftLine)) replacement = '';
+    }
     if (replacement === undefined || replacement === gap[0]) continue;
     if (replacement === '\n' && !/\n[ \t]*\n/u.test(gap[0])) continue;
     // An output quotation can be corrected only when the same broken seam

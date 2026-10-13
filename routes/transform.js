@@ -1139,6 +1139,7 @@ function buildArchiveDocument(job, extra = {}, now = Date.now()) {
   }
   Object.assign(doc, buildArchiveObservability(job));
   doc.attemptLifecycle = attemptTrace.summary(job);
+  Object.assign(doc, require('../lib/executionTiming').executionTiming(doc.attemptLifecycle));
   Object.assign(doc, require('../engine-gpt-prod/auditTrace').compactAuditTrace(
     job.result?.engineMeta || job.result?.humanizeMeta?.engineMeta || job.engineMeta || {}));
   for (const [k, v] of Object.entries(extra || {})) {

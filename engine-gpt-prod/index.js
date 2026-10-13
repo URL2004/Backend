@@ -44,6 +44,7 @@ const experienceAudit = require('./experienceAudit');
 const sourcePreflight = require('./sourcePreflight');
 const literalSpans = require('./literalSpans');
 const candidateIntegrity = require('./candidateIntegrity');
+const internalMarkerIntegrity = require('./internalMarkerIntegrity');
 const candidateLedgerPolicy = require('./candidateLedger');
 const semanticProvenance = require('./semanticProvenance');
 const statisticalAtoms = require('./statisticalAtoms');
@@ -75,8 +76,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.112';
-const DETECT_VERSION = 'gpt-detect-v1.55';
+const VERSION = 'gpt-prod-v2.5.113';
+const DETECT_VERSION = 'gpt-detect-v1.56';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -571,6 +572,10 @@ async function runEngine({
   const boundaryRepair = structureChunk.repairUnsafeChunkBoundaries(chunks);
   let outputText = structureChunk.mergeChunks(chunks);
   const frozen = freezeLockedBlocks(source, outputText, chunks, literalMarkerContext);
+  // 깊이 감사 쌍은 1차 동결이 결과에서 찾지 못한 잠금 블록도 같은 순번 토큰으로
+  // 다시 동결해 모델에 보낸다. frozen.blocks만 복원하면 그 토큰이 전달 본문에
+  // 남으므로, 복원은 잠금 순번 전체(토큰→원문 값)를 기준으로 한다.
+  if (frozen) frozen.restoreBlocks = internalMarkerIntegrity.buildLockedRestoreBlocks(chunks, literalMarkerContext);
   const auditSource = frozen?.source || source;
   outputText = frozen?.output || outputText;
   // Earlier semantic audits judge the exact raw materialization of the frozen
@@ -619,7 +624,7 @@ async function runEngine({
   let exactLineSafeOutput = lineBoundaryPolicy === 'all' ? String(rawSource || '') : '';
   let exactLineStructureFallbackCount = 0;
   const materializeExactLineCandidate = value => {
-    let candidate = frozen ? restoreLockedBlocks(String(value || ''), frozen.blocks) : String(value || '');
+    let candidate = frozen ? restoreLockedBlocks(String(value || ''), lockedRestoreBlocks(frozen)) : String(value || '');
     if (inlineMathFreeze.count > 0
         && inlineMathFreeze.blocks.some(block => candidate.includes(block.token))) {
       candidate = literalSpans.restoreMath(candidate, inlineMathFreeze).text;
@@ -2441,7 +2446,7 @@ async function runEngine({
     ? await safeFormatLayout(outputText, selectedMode)
     : null;
   if (postLayout?.text) outputText = postLayout.text;
-  if (frozen) outputText = restoreLockedBlocks(outputText, frozen.blocks);
+  if (frozen) outputText = restoreLockedBlocks(outputText, lockedRestoreBlocks(frozen));
   if (inlineMathFreeze.count > 0) {
     inlineMathIntegrity = literalSpans.restoreMath(outputText, inlineMathFreeze);
     outputText = inlineMathIntegrity.text;
@@ -2493,7 +2498,7 @@ async function runEngine({
   // 항상 같은 원문과 같은 사전식 우선순위를 사용한다.
   const projectSemanticText = value => {
     let text = String(value || '');
-    if (frozen) text = restoreLockedBlocks(text, frozen.blocks);
+    if (frozen) text = restoreLockedBlocks(text, lockedRestoreBlocks(frozen));
     if (inlineMathFreeze.count > 0) text = literalSpans.restoreMath(text, inlineMathFreeze).text;
     if (inlineCodeFreeze.count > 0) text = literalSpans.restoreInlineCode(text, inlineCodeFreeze).text;
     return text;
@@ -4508,6 +4513,12 @@ async function runEngine({
       ['source_url_whitespace_restored', 'source_number_join_restored'].includes(code))) {
     addFloorCriticals(result.floorReport, [{ gate: 'literal_layout_corruption',
       detail: '원문의 URL 또는 숫자 표기가 갈라져 결과를 전달하지 않았습니다.' }], 'literal_layout_corruption');
+  }
+  // 등록된 토큰은 위 복원 지점에서 모두 원문 값으로 돌아간다. 여기까지 남은
+  // 내부 토큰은 값을 알 수 없으므로 추측해 지우지 않고 전달을 막는다.
+  if (internalMarkerIntegrity.residualInternalMarkers(rawSource, outputText).length) {
+    addFloorCriticals(result.floorReport, [{ gate: 'internal_marker_leak',
+      detail: '내부 처리 표식이 결과에 남아 결과를 전달하지 않았습니다.' }], 'internal_marker_leak');
   }
   const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
   result.floorReport = delivery.report;
@@ -8253,7 +8264,7 @@ function buildHumanizationDepthPair({
   const resolvedChunks = Array.isArray(chunks) && chunks.length
     ? chunks
     : structureChunk.splitChunksForGpt(String(source || ''), { coalesceEditable: true }).chunks;
-  const withLockedValues = restoreLockedBlocks(String(outputText || ''), primaryFrozen?.blocks);
+  const withLockedValues = restoreLockedBlocks(String(outputText || ''), lockedRestoreBlocks(primaryFrozen));
   let frozen;
   let pairedSource;
   let pairedOutput;
@@ -8292,6 +8303,11 @@ ${withLockedValues}`);
     expectedLockedCount: Number(frozen?.expectedLockedCount || 0),
     frozenLockedCount: Number(frozen?.frozenLockedCount || 0)
   };
+}
+
+// 1차 동결이 놓친 블록의 토큰도 같은 요청의 알려진 토큰이다.
+function lockedRestoreBlocks(frozen) {
+  return frozen?.restoreBlocks || frozen?.blocks || [];
 }
 
 function restoreLockedBlocks(text, blocks) {
@@ -8783,7 +8799,7 @@ async function settleLateDepthCandidate({
   let text = String(candidate || '').trim();
   if (!text) return { text: '', layout: null, quotes: null, inlineCode: null, inlineMath: null };
 
-  if (frozen?.blocks?.length) text = restoreLockedBlocks(text, frozen.blocks);
+  if (lockedRestoreBlocks(frozen).length) text = restoreLockedBlocks(text, lockedRestoreBlocks(frozen));
   let inlineMath = null;
   if (Number(inlineMathFreeze?.count || 0) > 0) {
     inlineMath = literalSpans.restoreMathByOrder(text, inlineMathFreeze);

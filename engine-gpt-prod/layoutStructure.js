@@ -437,7 +437,7 @@ function isKnownHeadingLine(value) {
   // 번호가 없는 자기소개서·기획서 소제목도 독립 행 전체가 짧은 명사구이고
   // 강한 제목 종결어로 끝나면 구조다. 완결 서술문이나 조사가 붙은 본문은
   // 제외해 `경험이 중요하다` 같은 일반 문장을 잠그지 않는다.
-  if (/^(?:서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
+  if (/^(?:결론\s*및\s*(?:고찰|제언|시사점)|결과\s*및\s*(?:논의|고찰)|서론|본론|결론|초록|요약|연구\s*방법|연구\s*결과|연구\s*가설|분석\s*결과|결과\s*분석|논의|시사점|한계점|제언|부록|목\s*차|참고\s*문헌|결과\s*분석\s*및\s*함의)$/u.test(text)) return true;
   return /^(?:Abstract|Introduction|Methods?|Methodology|Results?|Discussion|Conclusion|References|Appendix)$/iu.test(text);
 }
 
@@ -534,8 +534,24 @@ function detectParallelSectionHeadingIndices(records, excluded = new Set()) {
         || looksLikeUnpunctuatedProse(text)) continue;
     candidates.push({ index: record.index, actionHeading });
   }
-  return candidates.length >= 3 && candidates.filter(x => !x.actionHeading).length >= 2
+  const found = candidates.length >= 3 && candidates.filter(x => !x.actionHeading).length >= 2
     ? new Set(candidates.map(x => x.index)) : new Set();
+  // `결론 / 본문 / 검토 / 본문`이 사례마다 되풀이되는 과제 양식의 한 단어
+  // 소제목은 위 길이 기준(4자 이상, 긴 다음 행)에 들지 못해 산문으로 남고
+  // 강제 줄바꿈 복구가 앞뒤 문장에 붙인다. 같은 한 단어 행이 세 번 이상,
+  // 매번 끝난 문장 뒤와 산문 앞에 단독으로 놓였을 때만 제목으로 본다.
+  const repeated = new Map();
+  for (let index = 1; index < source.length - 1; index += 1) {
+    const record = source[index], previous = source[index - 1], next = source[index + 1];
+    const text = String(record?.text || '').trim();
+    if (!/^[가-힣]{2,6}$/u.test(text) || /(?:다|요|죠|까|네)$/u.test(text) || excluded.has(record.index)
+        || previous.blank || next.blank || excluded.has(previous.index) || excluded.has(next.index)) continue;
+    if (!/[.!?。！？][”’"'」』)\]]*$/u.test(String(previous.text || '').trim())
+        || String(next.text || '').trim().length < 30 || isListLine(next.text) || isExplicitTableLine(next.text)) continue;
+    repeated.set(text, [...(repeated.get(text) || []), record.index]);
+  }
+  for (const indices of repeated.values()) if (indices.length >= 3) for (const index of indices) found.add(index);
+  return found;
 }
 
 // Repeated named/numbered prompts followed by a labelled response are one

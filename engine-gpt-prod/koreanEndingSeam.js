@@ -7,7 +7,19 @@ function isEndingSeam(left, right) {
   if (a.length < 24 || a.split(/\s+/u).length < 4) return false;
   const stem = a.match(/([가-힣]+)$/u)?.[1] || '';
   if (/^다\.(?=\s|$)/u.test(b)) {
-    return /(?:[가-힣]이|했|됐|였|었|났|랐|렸|겠|있|없|않|습니|[합입됩]니)$/u.test(stem);
+    if (/(?:[가-힣]이|했|됐|였|었|났|랐|렸|겠|있|없|않|습니|[합입됩]니)$/u.test(stem)) return true;
+    // Present-tense `-ㄴ다` cut before its last syllable (`해야 한/다.`,
+    // `초점을 둔/다.`, `검토한/다.`). Only predicate shapes are accepted: a
+    // bare noun tail (권한, 기한, 시간) before a real `다.` item is not one, and
+    // a row that is itself a 가나다 item never donates its tail to the marker.
+    if (/^[가-하][.)](?=\s|$)/u.test(a)) return false;
+    if (stem === '한') return /야\s+한$/u.test(a);
+    if (stem === '둔') return /[을를에]\s+둔$/u.test(a);
+    if (stem === '된') return /게\s+된$/u.test(a);
+    // Whole lexical stems avoid treating 기간/시간/공간 as a predicate.
+    if (/^(?:이어간|나아간|아니)$/u.test(stem)) return true;
+    return /[가-힣]된$/u.test(stem)
+      || /[가-힣]한$/u.test(stem) && !/(?:[제권기시상하무유극북남대원]한|최대한|최소한)$/u.test(stem);
   }
   return /^며\.(?=\s|$)/u.test(b) && /(?:있|없|않|했|었|였)으$/u.test(stem);
 }

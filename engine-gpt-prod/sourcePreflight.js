@@ -8,7 +8,9 @@ const { repairExtractedPageLayout } = require('./extractedPageLayout');
 const VERSION = 39;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
-const INLINE_HEADING_LABEL = String.raw`(?:서론|본론|결론|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
+// Compound section names must match before their shorter prefix. Otherwise
+// `결론 및 고찰본문` becomes the heading `결론` plus a prose fragment `및 고찰`.
+const INLINE_HEADING_LABEL = String.raw`(?:결론\s*및\s*(?:고찰|제언|시사점)|결과\s*및\s*(?:논의|고찰)|서론|본론|결론(?!적|\s*및\s*(?:고찰|제언|시사점))|초록|요약|연구\s*배경|연구\s*목적|연구\s*방법|연구\s*결과|분석\s*결과|논의|시사점|한계점|제언|지원\s*동기|성장\s*과정|직무\s*역량|입사\s*후\s*포부|합격\s*후\s*계획|활동\s*내용|느낀\s*점|배운\s*점|향후\s*계획)`;
 const INLINE_HEADING_BEFORE_RE = new RegExp(
   // 날짜·기간의 `2026. 8. ~ 11. 30.`은 절 제목이 아니다. 번호 표식 뒤에
   // 실제 제목 어휘가 시작될 때만 한 행에 붙은 새 절 경계를 복원한다.
@@ -507,6 +509,8 @@ function repairBrokenBlankLineProseContinuations(value) {
   const lines = String(value || '').split('\n');
   const output = [];
   const changes = [];
+  const koreanEndingSeam = require('./koreanEndingSeam');
+  const endingListSiblings = koreanEndingSeam.siblingIndices(lines.map((raw, index) => ({ raw, index })));
   let fence = null;
   for (let index = 0; index < lines.length; index += 1) {
     const current = String(lines[index] || '');
@@ -545,7 +549,12 @@ function repairBrokenBlankLineProseContinuations(value) {
         || contextualFusedProse)
       && !['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole);
     const contextualContinuation = safeRole && layoutStructure.isContextualProseContinuation(left, right);
-    const continuation = contextualContinuation || safeRole && !demonstrativeStart
+    // `해야 한\n\n다. 다음 문장`: the detached syllable reads as a 가나다 item,
+    // so safeRole rejects it. Developed prose with an unfinished predicate and
+    // no neighbouring 가./나. sibling is the same broken word as above.
+    const endingSeam = leftRole === 'prose' && !/[	|]/u.test(left) && !endingListSiblings.has(nextIndex)
+      && koreanEndingSeam.isEndingSeam(left, right);
+    const continuation = contextualContinuation || endingSeam || safeRole && !demonstrativeStart
       && leftToken
       && !/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left.trim())
       && ((/[가-힣]$/u.test(leftToken) && RIGHT_STANDALONE_PARTICLE_RE.test(rightText))
@@ -556,7 +565,7 @@ function repairBrokenBlankLineProseContinuations(value) {
       output.push(current);
       continue;
     }
-    const separator = shouldAttachWithoutSpace(left.trimEnd(), rightText) ? '' : ' ';
+    const separator = endingSeam || shouldAttachWithoutSpace(left.trimEnd(), rightText) ? '' : ' ';
     output[leftIndex] = `${left.trimEnd()}${separator}${rightText}`;
     lines[nextIndex] = '';
     index = nextIndex;
@@ -587,6 +596,7 @@ function preservesExistingStructuralLines(before, after) {
   if (canonical.replace(/\s/gu, '') !== String(before).replace(/\s/gu, '')
       || compareNumberMultiset(before, canonical).changed) return false;
   const allSourceRecords = layoutStructure.buildLineRecords(canonical);
+  const endingListSiblings = require('./koreanEndingSeam').siblingIndices(allSourceRecords);
   const sourceRecords = allSourceRecords
     .filter((record, recordIndex) => {
       if (record.blank) return false;
@@ -606,6 +616,9 @@ function preservesExistingStructuralLines(before, after) {
             || RIGHT_WORD_CONTINUATION_RE.test(String(next?.text || '').trimStart()));
         // 첫 강제개행 조각은 문맥 없는 title 휴리스틱에 자주 걸린다.
         if (FORCE_WRAP_TAIL_RE.test(tail) || splitWordContinuation) return false;
+        // 빈 행으로 갈라진 종결어미(`해야 한` / `다.`)의 앞 조각도 제목이 아니다.
+        if (next && !endingListSiblings.has(next.index)
+            && require('./koreanEndingSeam').isEndingSeam(record.text, next.text)) return false;
       }
       if (structuralRoles.has(role)) return true;
       // 명시 불릿은 한 행 소유권을 지키되 번호형 fused heading은 정상적인

@@ -84,3 +84,33 @@ test('the complete routing pipeline recommends a long explainer and keeps a sing
   const signals = buildRecommendationSignals(oneParagraph,detectDocumentProfile(oneParagraph),{grade:'B',abstractRiskRatio:0.2});
   assert.equal(signals.targetParagraphCount,1,'chunk splits must not manufacture multiple target paragraphs');
 });
+
+// 2026-10-14 사장님 결정: 고칠 본문이 40자 미만이면 기본·고급이 바꿀 문장이 없어 변화 없음으로 막힌다.
+// 진단은 어느 쪽도 권하지 않고, 작업 시작과 같은 함수로 잰 값을 화면에 넘긴다.
+const TABLE_WITH_ONE_SENTENCE = ['활동 보고', '| 항목 | 내용 |', '| --- | --- |', '| 주제 | 지역 도서관 소장 자료 조사 |',
+  '| 기간 | 10월 1일~10월 14일 |', '| 참여 | 김하나, 이두리 |', '직접 찾아보며 많이 배웠습니다.'].join('\n');
+
+test('a body below the minimum is never recommended and the flag uses the start-check measurement', () => {
+  const { MIN_EDITABLE_LENGTH, LITTLE_EDITABLE_MESSAGE, editableBody } = require('../engine-gpt-prod/humanizeRecommendation');
+  assert.equal(MIN_EDITABLE_LENGTH, 40);
+  const blocked = choose({}, { editableLength: 39, editableBelowMinimum: true, sourceSentenceCount: 1 });
+  assert.equal(blocked.recommendedMode, null);
+  assert.equal(blocked.recommendationCode, 'editable_below_minimum');
+  assert.equal(blocked.recommendationReason, LITTLE_EDITABLE_MESSAGE);
+  assert.equal(choose({}, { editableLength: 40, editableBelowMinimum: false, sourceSentenceCount: 1 }).recommendationCode, 'little_editable_content');
+  // 영어처럼 엔진이 지원하지 않는 입력은 기존 사유를 그대로 보여 준다.
+  assert.equal(choose({ advancedEligible: false }, { editableLength: 10, editableBelowMinimum: true }).recommendationCode, 'advanced_unavailable');
+
+  const routing = resolveAdvancedRouting(TABLE_WITH_ONE_SENTENCE, {});
+  const measured = editableBody(TABLE_WITH_ONE_SENTENCE, detectDocumentProfile(TABLE_WITH_ONE_SENTENCE, { basicStyle: 'report' }));
+  assert.equal(routing.recommendationSignals.editableLength, measured.length);
+  assert.ok(measured.length < MIN_EDITABLE_LENGTH, String(measured.length));
+  assert.equal(routing.recommendationSignals.editableBelowMinimum, true);
+  assert.equal(routing.recommendedMode, null);
+  assert.equal(routing.recommendationCode, 'editable_below_minimum');
+
+  const prose = '지난 학기 동아리에서 지역 도서관의 소장 자료를 조사했다. 조원들과 역할을 나누어 목록을 만들고 발표를 준비했다.';
+  const proseSignals = resolveAdvancedRouting(prose, {}).recommendationSignals;
+  assert.ok(proseSignals.editableLength >= MIN_EDITABLE_LENGTH, String(proseSignals.editableLength));
+  assert.equal(proseSignals.editableBelowMinimum, false);
+});

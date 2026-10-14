@@ -199,3 +199,43 @@ test('C-09 인증 직후 영어 입력 차단과 접근 로그에 uid만 남고 
     assert.doesNotMatch(JSON.stringify(selected), /example\.invalid|지어낸 이름/u);
   }
 });
+
+// 2026-10-14: 표와 짧은 한 문장뿐인 글은 기본·고급이 바꿀 문장이 없어 끝까지 돌다 gpt_noop_unchanged로
+// 막혔다. 이제 차감·대기열 전에 같은 NO_EDITABLE_CONTENT 코드로 거절한다(이미 배포된 화면도 같은 안내 경로).
+// 고급은 200자 미만을 먼저 거절하므로 표를 늘려 두 모드 모두 이 검사에 닿게 한다(본문은 마지막 한 문장뿐).
+const TABLE_WITH_ONE_SENTENCE = ['활동 보고', '| 항목 | 내용 |', '| --- | --- |',
+  ...Array.from({ length: 14 }, (_, index) => `| 자료 ${index + 1} | 지역 도서관 소장 자료 ${index + 1}권 |`),
+  '직접 찾아보며 많이 배웠습니다.'].join('\n');
+
+test('본문이 최소 길이에 못 미치는 기본·고급 요청은 차감 전에 같은 코드로 거절하고 다듬기는 막지 않는다', { concurrency: false }, async t => {
+  const { MIN_EDITABLE_LENGTH, LITTLE_EDITABLE_MESSAGE } = require('../engine-gpt-prod/humanizeRecommendation');
+  let prechecks = 0;
+  stubBilling(t, {
+    authenticate: async () => ({ uid: 'uid-little-body' }),
+    precheckCredits: async () => { prechecks += 1; return { uid: 'uid-little-body', plan: 'free' }; }
+  });
+  const records = captureLogs(t);
+  const base = await startApp(t);
+
+  for (const mode of ['blog', 'formal']) {
+    const response = await post(base, { text: TABLE_WITH_ONE_SENTENCE, mode });
+    const body = await response.json();
+    assert.equal(response.status, 422, mode);
+    assert.equal(body.code, 'NO_EDITABLE_CONTENT');
+    assert.equal(body.reason, 'editable_below_minimum');
+    assert.equal(body.error, LITTLE_EDITABLE_MESSAGE);
+    assert.equal(body.minEditableLength, MIN_EDITABLE_LENGTH);
+    assert.ok(body.editableLength < MIN_EDITABLE_LENGTH, String(body.editableLength));
+  }
+  assert.equal(prechecks, 0);
+  const blocked = records.filter(record => record.event === 'transform.little_editable_content');
+  assert.equal(blocked.length, 2);
+  assert.deepEqual(blocked.map(record => record.fields.mode), ['blog', 'formal']);
+  assert.equal(blocked[0].fields.uid, 'uid-little-body');
+  assert.doesNotMatch(JSON.stringify(blocked), /도서관|김하나|배웠습니다/u);   // 원문은 로그에 싣지 않는다
+
+  const polish = await post(base, { text: TABLE_WITH_ONE_SENTENCE, mode: 'polish' });
+  const polishBody = await polish.json().catch(() => ({}));
+  assert.notEqual(polishBody.reason, 'editable_below_minimum');
+  assert.equal(records.filter(record => record.event === 'transform.little_editable_content').length, 2);
+});

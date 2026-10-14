@@ -10,21 +10,34 @@ const BROAD_REWRITE_PROFILES = new Set([
   'academic_paper', 'report_assignment', 'long_explainer', 'general', 'review_blog', 'marketing'
 ]);
 
-function buildRecommendationSignals(source, documentProfile, inputRisk) {
-  // Use the engine's editable chunks: quoted/reference/table volume must not
-  // turn a short editable passage into a long-document upsell.
-  const chunks = splitChunksForGpt(source, { formatProfile: documentProfile.formatProfile }).chunks;
-  const editable = chunks.map(chunk => (shouldCallModel(chunk, 'blog') ? chunk.text : '') + (chunk.sep || ''))
+// 기본·고급 휴머나이징이 고칠 수 있는 본문의 최소 길이(공백 포함 글자 수). 이보다 짧으면 엔진이
+// 손댈 문장이 없어 결과가 원문과 같아지고 gpt_noop_unchanged로 막힌다. 그래서 진단과 작업 시작
+// 양쪽에서 같은 값으로 미리 안내하고 막는다(사장님 결정 2026-10-14). 10/11~10/14 운영 기록에서
+// 본문 40자 미만 5건은 모두 변화 없음 차단, 60자 이상은 모두 정상 완료였다. 다듬기는 대상이 아니다.
+const MIN_EDITABLE_LENGTH = 40;
+const LITTLE_EDITABLE_MESSAGE = '고칠 수 있는 본문이 거의 없어요. 제목·목록·표는 그대로 두는 부분이라 바꿀 문장이 없어요. 문장으로 된 본문을 더 넣어 주세요.';
+
+// Use the engine's editable chunks: quoted/reference/table volume must not
+// turn a short editable passage into a long-document upsell. The transform
+// start check measures with this same function so both always agree.
+function editableBody(source, documentProfile) {
+  const chunks = splitChunksForGpt(String(source || ''), { formatProfile: documentProfile?.formatProfile }).chunks;
+  return chunks.map(chunk => (shouldCallModel(chunk, 'blog') ? chunk.text : '') + (chunk.sep || ''))
     .join('').split('\n')
     // Delimited rows without outer pipes are not always locked by the chunker.
     // Conservatively exclude them from recommendation volume as well.
     .map(line => (line.match(/\|/gu) || []).length >= 2 || /\t/u.test(line) ? '' : line)
     .join('\n').trim();
+}
+
+function buildRecommendationSignals(source, documentProfile, inputRisk) {
+  const editable = editableBody(source, documentProfile);
   const plan = buildHumanizationPlan(editable, { requestStrength: 'basic', documentProfile, inputRisk });
   const sourceSentenceCount = Number(plan.sourceSentenceCount || 0);
   return {
     sourceLength: source.length,
     editableLength: editable.length,
+    editableBelowMinimum: editable.length < MIN_EDITABLE_LENGTH,
     sourceSentenceCount,
     targetSentenceCount: Number(plan.targetSentenceCount || 0),
     targetSentenceRatio: sourceSentenceCount
@@ -43,6 +56,8 @@ function selectRecommendation({ advancedEligible, profile, confidence, personalS
     recommendationSignals: signals
   });
   if (!advancedEligible) return choice(null, 'advanced_unavailable', '이 입력은 고급 휴머나이징 지원 대상이 아니에요.');
+  // 기본·고급 모두 시작할 수 없는 글이라 어느 쪽도 권하지 않는다.
+  if (signals.editableBelowMinimum === true) return choice(null, 'editable_below_minimum', LITTLE_EDITABLE_MESSAGE);
   if (signals.editableLength < 120 || signals.sourceSentenceCount < 2) {
     return choice('blog', 'little_editable_content', '바꿀 수 있는 본문이 적어 기본을 권해요. 표·인용 등 보호 대상은 그대로 유지해요.');
   }
@@ -82,4 +97,11 @@ function selectRecommendation({ advancedEligible, profile, confidence, personalS
   return choice('blog', 'focused_rewrite', '문제 표현을 중심으로 다시 쓰는 기본을 권해요. 더 넓은 재구성을 원하면 고급도 선택할 수 있어요.');
 }
 
-module.exports = { RECOMMENDATION_VERSION, buildRecommendationSignals, selectRecommendation };
+module.exports = {
+  RECOMMENDATION_VERSION,
+  MIN_EDITABLE_LENGTH,
+  LITTLE_EDITABLE_MESSAGE,
+  editableBody,
+  buildRecommendationSignals,
+  selectRecommendation
+};

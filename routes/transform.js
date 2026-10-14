@@ -22,6 +22,7 @@ const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const layoutNormalizer = require('../engine/layout');
 const { CONTENT_GENRES, detectDocumentProfile, applyDocumentProfileOverride } = require('../engine-gpt-prod/documentProfile');
+const humanizeRecommendation = require('../engine-gpt-prod/humanizeRecommendation');
 const { estimateAdvancedTime } = require('../engine-gpt-prod/timeEstimate');
 const structureChunk = require('../engine-gpt-prod/structureChunk');
 const documentStructure = require('../engine-gpt-prod/documentStructure');
@@ -3331,6 +3332,34 @@ const startTransform = async (req, res) => {
       documentProfile: editable.documentProfile,
       editableChunkCount: 0
     });
+  }
+  // 본문이 조금 있어도 최소 길이에 못 미치면 엔진이 바꿀 문장이 없어 결과가 원문과 같아지고
+  // gpt_noop_unchanged로 막힌다. 진단과 같은 함수·같은 기준으로 재서 차감·대기열 전에 거절한다.
+  // 코드는 위와 같은 NO_EDITABLE_CONTENT라 이미 배포된 화면도 같은 안내 경로로 받는다. 다듬기는 제외.
+  if (mode !== 'polish') {
+    const editableText = humanizeRecommendation.editableBody(text, detectDocumentProfile(text, { basicStyle: 'report' }));
+    if (editableText.length < humanizeRecommendation.MIN_EDITABLE_LENGTH) {
+      logger.warn('transform.little_editable_content', {
+        ...(structureUid ? { uid: structureUid } : {}),
+        mode,
+        textLength: text.length,
+        editableLength: editableText.length,
+        minEditableLength: humanizeRecommendation.MIN_EDITABLE_LENGTH,
+        documentProfile: editable.documentProfile,
+        lockTypes: editable.lockTypes,
+        textDigest: inputDigest(text),
+        reason: 'editable_below_minimum',
+        message: `본문 부족 422(${mode}, ${text.length}자 중 본문 ${editableText.length}자 < ${humanizeRecommendation.MIN_EDITABLE_LENGTH}자): 변화 없음 차단을 미리 막음. 무차감.`
+      });
+      return res.status(422).json({
+        code: 'NO_EDITABLE_CONTENT',
+        reason: 'editable_below_minimum',
+        error: humanizeRecommendation.LITTLE_EDITABLE_MESSAGE,
+        documentProfile: editable.documentProfile,
+        editableLength: editableText.length,
+        minEditableLength: humanizeRecommendation.MIN_EDITABLE_LENGTH
+      });
+    }
   }
   const effectAssessment = assessEffectExpectation(text, mode, effectBasicStyle);
   const effectNoticeAccepted = req.body?.effectNoticeAccepted === true;

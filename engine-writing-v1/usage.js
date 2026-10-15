@@ -3,6 +3,7 @@
 const { db, admin } = require('../config');
 const { logger } = require('../lib/logger');
 const { accountDeletionBlocksWrites } = require('../lib/accountActivityClaims');
+const { storageKey } = require('./jobStore');
 
 const memory = new Map();
 const committed = new Set();
@@ -28,24 +29,32 @@ async function successfulCount(uid) {
   }
 }
 
-async function commitSuccessful(uid, requestId, cap) {
+async function commitSuccessful(uid, requestId, cap, { transactionGuard } = {}) {
   const day = dayKey();
-  if (!db || !admin) return commitMemory(uid, requestId, cap, day);
+  if (!db || !admin) {
+    if (transactionGuard) await transactionGuard(null);
+    return commitMemory(uid, requestId, cap, day);
+  }
   try {
     const usageRef = db.collection('writingLabDailyUsage').doc(`${day}_${uid}`);
-    const requestRef = db.collection('writingLabGenerationCommits').doc(requestId);
+    const requestRef = db.collection('writingLabGenerationCommits').doc(storageKey(uid, requestId));
+    const legacyRef = db.collection('writingLabGenerationCommits').doc(requestId);
     const deletionRef = db.collection('accountDeletionJobs').doc(uid);
     return await db.runTransaction(async transaction => {
-      const [usageSnap, requestSnap, deletionSnap] = await Promise.all([
+      if (transactionGuard) await transactionGuard(transaction);
+      const [usageSnap, requestSnap, legacySnap, deletionSnap] = await Promise.all([
         transaction.get(usageRef),
         transaction.get(requestRef),
+        transaction.get(legacyRef),
         transaction.get(deletionRef),
       ]);
       if (deletionSnap.exists
         && accountDeletionBlocksWrites(deletionSnap.data() || {})) {
         return { committed: false, unavailable: true, accountDeletion: true, count: null };
       }
-      if (requestSnap.exists) {
+      const ownsCommit = snapshot => snapshot.exists && snapshot.data()?.uid === uid
+        && snapshot.data()?.operation === 'writing_lab_v2_generate';
+      if (ownsCommit(requestSnap) || ownsCommit(legacySnap)) {
         return { committed: false, duplicate: true, count: Number(usageSnap.data()?.successfulGenerations || 0) };
       }
       const count = Number(usageSnap.exists ? usageSnap.data()?.successfulGenerations : 0) || 0;
@@ -66,17 +75,19 @@ async function commitSuccessful(uid, requestId, cap) {
       return { committed: true, count: next };
     });
   } catch (error) {
+    if (['WRITING_JOB_LEASE_LOST', 'WRITING_JOB_ALREADY_RESTORED', 'ACCOUNT_DELETION_IN_PROGRESS'].includes(error?.code)) throw error;
     logger.error('writinglab.usage_commit_failed', { uid, day, requestId, err: error });
     return { committed: false, unavailable: true, count: null };
   }
 }
 
 function commitMemory(uid, requestId, cap, day = dayKey()) {
-  if (committed.has(requestId)) return { committed: false, duplicate: true, count: memory.get(memoryKey(uid, day)) || 0 };
+  const requestKey = storageKey(uid, requestId);
+  if (committed.has(requestKey)) return { committed: false, duplicate: true, count: memory.get(memoryKey(uid, day)) || 0 };
   const key = memoryKey(uid, day);
   const count = memory.get(key) || 0;
   if (count >= cap) return { committed: false, capReached: true, count };
-  committed.add(requestId);
+  committed.add(requestKey);
   memory.set(key, count + 1);
   return { committed: true, count: count + 1 };
 }

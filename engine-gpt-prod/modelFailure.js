@@ -29,6 +29,9 @@ function classifyModelFailure(error) {
     return 'openai_rate_limited';
   }
   if (Number.isFinite(status) && status >= 500) return 'openai_server_error';
+  // A socket cut while reading an OK body is a transport failure, not a
+  // model/schema failure, whichever stage the connection broke at.
+  if (rawCode === 'OPENAI_BODY_TERMINATED' || isSocketTermination(error)) return 'openai_network_error';
   if (rawCode === 'ETIMEDOUT'
       || rawCode === 'OPENAI_CHUNK_TIMEOUT'
       || /timeout|timed out|deadline/u.test(message)) {
@@ -48,6 +51,14 @@ function classifyModelFailure(error) {
     return rawCode.toLowerCase().replace(/[^a-z0-9]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 80);
   }
   return 'gpt_call_failed';
+}
+
+function isSocketTermination(error) {
+  for (let current = error, depth = 0; current && typeof current === 'object' && depth < 4; current = current.cause, depth += 1) {
+    if (/^UND_ERR_/u.test(String(current.code || ''))) return true;
+    if (/\bterminated\b|other side closed/iu.test(String(current.message || ''))) return true;
+  }
+  return false;
 }
 
 function isTransportFailureCode(value) {

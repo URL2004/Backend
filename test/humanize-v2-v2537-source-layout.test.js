@@ -43,14 +43,16 @@ test('source preflight는 날짜 범위·탭 표·인용 출처를 보존하고 
   ].join('\n');
 
   const result = preflight.auditAndSanitizeSource(source);
-  const expected = [dateHeading, table, quotation, body].join('\n');
+  // Writing context can be the author's factual narrative; it is not an
+  // instruction to this engine and must remain part of the semantic source.
+  const expected = [source.split('\n')[1], dateHeading, table, quotation, body].join('\n');
 
   assert.equal(result.text, expected);
   assert.equal(result.integrityText, expected);
-  assert.equal(result.removedLineCount, 3);
-  assert.equal(result.removedArtifactCount, 3);
+  assert.equal(result.removedLineCount, 2);
+  assert.equal(result.removedArtifactCount, 2);
   assert.equal(result.issueCodes.includes('source_generation_meta_artifact'), true);
-  assert.equal(result.issueCodes.includes('source_instruction_artifact'), true);
+  assert.equal(result.issueCodes.includes('source_instruction_artifact'), false);
   assert.equal(result.issueCodes.includes('source_rewrite_request_artifact'), true);
   assert.equal(result.text.includes('2026. 8. ~ 11. 30.'), true);
   assert.equal(result.text.split('\n').filter(line => line.includes('\t')).length, 3);

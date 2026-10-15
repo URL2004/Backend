@@ -18,7 +18,10 @@ stability.getOrCompute = (input, compute) => localGetOrCompute(input, compute, {
 const metrics = require('../lib/publicMetrics');
 let modelProbability = 18, saved = [];
 billing.precheckCredits = async () => ({ uid: 'scale-route-test', plan: 'credit' });
-billing.commitCreditDeduct = async () => {};
+billing.authenticate = async () => ({ uid: 'scale-route-test' });
+billing.getCreditAccountState = async () => ({ uid: 'scale-route-test', plan: 'credit', credits: 1000 });
+billing.precheckCreditDeductIdempotency = async () => ({ state: 'NEW' });
+billing.commitCreditDeduct = async (_uid, amount) => ({ current: 1000, next: 1000 - amount });
 billing.retryAsync = async operation => operation();
 runtime.getRuntimeConfig = async () => ({ activeProvider: 'gpt', models: { detect: 'test', detectEscalation: 'test-next' }, reasoning: { detect: 'low', escalation: 'high' } });
 runtime.isGptActive = () => true;

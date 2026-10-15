@@ -76,8 +76,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.114';
-const DETECT_VERSION = 'gpt-detect-v1.57';
+const VERSION = 'gpt-prod-v2.5.115';
+const DETECT_VERSION = 'gpt-detect-v1.58';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -6355,7 +6355,7 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
   const safetyId = uid
     ? (safetyIdentifier || safetyIdentifierForUid(uid))
     : (safetyIdentifier || '');
-  const user = JSON.stringify(require('../lib/detectInputDocument').buildDetectModelInput(source, { referenceContext }));
+  const user = require('../lib/detectInputDocument').assertDetectInputAdmissible(source, { referenceContext }).serialized;
   let primary = null;
   let primaryError = null;
   try {

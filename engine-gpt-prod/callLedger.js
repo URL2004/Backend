@@ -56,7 +56,8 @@ async function track(options, fn) {
     return result;
   } catch (error) {
     Object.assign(entry, { outcome: error.refusal || error.code === 'OPENAI_REFUSAL' ? 'refused' : 'failed', usage: error.usage ? { ...error.usage } : null,
-      usageKnown: Number(error.usage?.totalTokens || 0) > 0 && !error.unknownUsageCount,
+      usageKnown: !error.unknownUsageCount && (Number(error.usage?.totalTokens || 0) > 0
+        || Number(error.providerRejectedCount) > 0 && error.providerRejectedCount === error.httpAttemptCount),
       unknownUsageCount: Number(error.unknownUsageCount || 0), unknownEstimatedUsd: Number(error.unknownEstimatedUsd || 0),
       failedEstimatedUsd: Number(error.failedEstimatedUsd || 0),
       code: safe(error.code || error.name), retryCounts: { ...error.retryCounts }, httpAttemptCount: error.httpAttemptCount || 0 });

@@ -15,23 +15,11 @@ const { signHistoryComparison } = require('../lib/detectHistoryComparison');
 const gptRuntimeConfig = require('../lib/gptRuntimeConfig');
 const gptAnalyze = require('./analyze-gpt');
 const billing = require('../lib/usageBilling');
-const history = require('../lib/historyService');
 const inputrouting = require('../engine/inputrouting');
 const publicMetrics = require('../lib/publicMetrics');
 const { resolveAdvancedRouting } = require('../engine-gpt-prod/advancedRouting');
-
-const recentSubmits = new Map();
-const SUBMIT_DEDUP_WINDOW_MS = process.env.DEDUP_WINDOW_MS != null
-  ? Math.max(0, Number(process.env.DEDUP_WINDOW_MS) || 0)
-  : 20000;
-
-const cleanupTimer = setInterval(() => {
-  const cutoff = Date.now() - Math.max(SUBMIT_DEDUP_WINDOW_MS, 60000);
-  for (const [key, timestamp] of recentSubmits) {
-    if (timestamp < cutoff) recentSubmits.delete(key);
-  }
-}, 60000);
-if (cleanupTimer.unref) cleanupTimer.unref();
+const detectLifecycle = require('../lib/detectAnalyzeLifecycle');
+const { assertDetectInputAdmissible, locateNormalizedEvidence } = require('../lib/detectInputDocument');
 
 async function activeGptConfig() {
   const config = await gptRuntimeConfig.getRuntimeConfig({ db, logger });
@@ -45,7 +33,7 @@ async function activeGptConfig() {
 
 function requestIdOf(body = {}) {
   return typeof body.requestId === 'string' && body.requestId.trim()
-    ? body.requestId.trim().slice(0, 80).replace(/[^A-Za-z0-9:_-]/g, '')
+    ? body.requestId.trim()
     : null;
 }
 
@@ -69,10 +57,6 @@ function normalizeDetectInput(rawText) {
   return text;
 }
 
-function duplicateKey(uid, text) {
-  return `${uid}:detect:${crypto.createHash('sha256').update(text).digest('hex')}`;
-}
-
 function rejectLegacyHumanize(req, res) {
   logger.warn('analyze.legacy_humanize_rejected', {
     mode: req.body?.mode == null ? null : String(req.body.mode).slice(0, 40)
@@ -94,7 +78,8 @@ router.post('/analyze', async (req, res) => {
   const previousContext = typeof req.body?.prevContext === 'string'
     ? req.body.prevContext.trim().slice(-300)
     : '';
-  const text = normalizeDetectInput(req.body?.text);
+  const submittedText = typeof req.body?.text === 'string' ? req.body.text : '';
+  const text = normalizeDetectInput(submittedText);
   if (text.length < 5) return res.status(400).json({ error: '텍스트가 너무 짧습니다.' });
   const hardMax = 30000;
   if (text.length > hardMax) {
@@ -113,35 +98,32 @@ router.post('/analyze', async (req, res) => {
   const devNoAuth = !process.env.FIREBASE_SERVICE_ACCOUNT && process.env.DEV_NO_AUTH === '1';
   const needed = billingMode === 'coupon' ? 1 : Math.ceil(text.length / 100);
   const idToken = bearerToken(req);
-  let precheck;
+  let session;
   try {
-    precheck = devNoAuth
-      ? { uid: 'dev-local', plan: 'unlimited' }
-      : billingMode === 'coupon'
-        ? await billing.precheckCoupon(idToken, text.length)
-        : await billing.precheckCredits(idToken, needed);
+    session = await detectLifecycle.open({ idToken, requestId, text, submittedText, lang,
+      referenceContext: previousContext, billingMode, needed, devNoAuth });
   } catch (error) {
-    return res.status(error.status || 500).json({
-      error: billing.authErrorMessage(error.message),
+    return res.status(error.status || 503).json({ ok: false, code: error.code || error.message,
+      error: error.code ? error.message : billing.authErrorMessage(error.message), charged: 0,
+      retryable: error.retryable === true,
+      ...(error.billingCommitted ? { billingCommitted: true } : {}),
+      ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
       ...(error.charLimit !== undefined ? { charLimit: error.charLimit } : {})
     });
   }
+  const precheck = session;
   setLogContext({ uid: precheck.uid });
-
-  const dedupKey = duplicateKey(precheck.uid, text);
-  if (!devNoAuth && SUBMIT_DEDUP_WINDOW_MS > 0) {
-    const last = recentSubmits.get(dedupKey);
-    if (last && Date.now() - last < SUBMIT_DEDUP_WINDOW_MS) {
-      return res.status(429).json({
-        error: '같은 내용을 방금 처리 중이거나 처리했어요. 잠시 후 다시 시도해 주세요. (중복 차감 방지)',
-        duplicate: true
-      });
-    }
-    recentSubmits.set(dedupKey, Date.now());
-  }
-  const clearDedup = () => recentSubmits.delete(dedupKey);
+  if (session.replay) return res.json(session.replay);
+  const usedStaged = !!session.artifact;
+  let responseBody = session.artifact?.publicResponse;
 
   let result;
+  if (!responseBody) {
+  try { assertDetectInputAdmissible(text, { referenceContext: previousContext }); }
+  catch (error) {
+    await detectLifecycle.release(session);
+    return res.status(error.status || 422).json({ ok: false, code: error.code, error: error.message, charged: 0, retryable: false });
+  }
   try {
     const config = await activeGptConfig();
     const routing = resolveAdvancedRouting(text);
@@ -153,12 +135,12 @@ router.post('/analyze', async (req, res) => {
     });
     const payloadFingerprint = detectStability.payloadFingerprint({ text: detectInput, lang, referenceContext: previousContext });
     let liveResult = null;
-    const stable = await detectStability.getOrCompute({ uid: precheck.uid, payloadFingerprint, cacheVariant }, async () => {
+    const stable = await detectStability.getOrCompute({ uid: precheck.uid, payloadFingerprint, cacheVariant }, async sharedSignal => {
       liveResult = await gptAnalyze.runDetect(detectInput, lang, {
         text: detectInput,
         referenceContext: previousContext,
         lang,
-        signal: abortController.signal,
+        signal: sharedSignal,
         config,
         route: 'analyze',
         uid: precheck.uid,
@@ -170,7 +152,7 @@ router.post('/analyze', async (req, res) => {
         }
       });
       return liveResult;
-    });
+    }, { signal: abortController.signal });
     // The cache contains only the detector stage. History-dependent adjustment
     // runs on every request and is never fed back into this cache.
     result = stable.result;
@@ -211,8 +193,9 @@ router.post('/analyze', async (req, res) => {
     result.profileConfidence = routing.confidence;
     result.profileMargin = routing.profileMargin;
     result.profileAmbiguous = Number.isFinite(Number(routing.profileMargin)) && Number(routing.profileMargin) < 0.5;
+    result.signalEvidence = locateNormalizedEvidence(result.signalEvidence, submittedText, text);
   } catch (error) {
-    clearDedup();
+    await detectLifecycle.release(session);
     if (abortController.signal.aborted) return;
     logger.error('analyze.detect_failed', { uid: precheck.uid, requestId, err: error });
     return res.status(error?.status === 503 ? 503 : 500).json({
@@ -223,66 +206,37 @@ router.post('/analyze', async (req, res) => {
   }
 
   if (abortController.signal.aborted) {
-    clearDedup();
+    await detectLifecycle.release(session);
     return;
   }
-
-  let deducted = false;
+  responseBody = { ok: true, result, usage: result.gptMeta?.usage || null, historySaved: false };
   try {
-    if (!devNoAuth && billingMode === 'coupon') {
-      await billing.retryAsync(() => billing.commitCouponUsage(
-        precheck.uid, precheck.tier, 'detect', text.length, requestId
-      ));
-      deducted = true;
-    } else if (!devNoAuth && precheck.plan !== 'unlimited') {
-      await billing.retryAsync(() => billing.commitCreditDeduct(
-        precheck.uid, needed, 'detect', requestId, { mode: 'detect', textLength: text.length }
-      ));
-      deducted = true;
-    }
+    responseBody = (await detectLifecycle.stage(session, responseBody)).publicResponse;
   } catch (error) {
-    clearDedup();
+    return res.status(error.status || 503).json({ ok: false, code: error.code, error: error.message, charged: 0, retryable: error.retryable === true });
+  }
+  }
+  if (abortController.signal.aborted) return;
+  let receipt;
+  try { receipt = await detectLifecycle.commit(session); }
+  catch (error) {
     logger.error('analyze.billing_failed', { uid: precheck.uid, requestId, err: error });
-    return res.status(500).json({ error: '결제 처리 중 일시적인 오류가 발생했어요. 잠시 뒤 다시 시도해주세요.' });
+    return res.status(error.status || 503).json({ ok: false, code: error.code || error.message,
+      error: '결제 상태를 확인하지 못했어요. 같은 작업 번호로 다시 확인해 주세요.', retryable: true });
   }
-
-  if (abortController.signal.aborted) {
-    if (deducted) {
-      try {
-        await billing.retryAsync(() => billingMode === 'coupon'
-          ? billing.commitCouponRestore(precheck.uid, precheck.tier, 'detect', text.length, requestId)
-          : billing.commitCreditRestore(precheck.uid, needed, 'detect', requestId));
-      } catch (error) {
-        logger.error('analyze.restore_failed_manual_action', { uid: precheck.uid, requestId, err: error });
-      }
-    }
-    return;
-  }
-
-  let historySaved = false;
-  if (!devNoAuth) {
-    try {
-      await history.saveAnalyzeHistory({
-        uid: precheck.uid,
-        requestId,
-        opType: 'detect',
-        text,
-        needed,
-        result,
-        mode: 'detect'
-      });
-      historySaved = true;
-    } catch (error) {
-      logger.warn('analyze.history_persist_failed', { uid: precheck.uid, requestId, err: error });
-    }
-  }
+  // Staging grants durable delivery, never refund ownership over a previous
+  // debit. A disconnect after commit can recover this exact result by ID.
+  responseBody = { ...responseBody, ...receipt, ...(usedStaged ? { idempotentReplay: true } : {}) };
+  try { responseBody = await detectLifecycle.finish(session, responseBody, submittedText); }
+  catch (error) { logger.warn('analyze.completion_persist_failed', { uid: precheck.uid, requestId, err: error }); }
+  if (abortController.signal.aborted) return;
 
   logger.info('analyze.completed', {
     uid: precheck.uid,
     requestId,
     billingMode,
-    deducted,
-    historySaved
+    deducted: receipt.charged > 0,
+    historySaved: responseBody.historySaved
   });
   publicMetrics.trackDeliveredMetric(res, {
     operation: 'detect',
@@ -292,12 +246,7 @@ router.post('/analyze', async (req, res) => {
     isAdmin: ADMIN_UIDS.includes(precheck.uid),
     isTest: devNoAuth
   }, { db, logger });
-  return res.json({
-    ok: true,
-    result,
-    usage: result.gptMeta?.usage || null,
-    historySaved
-  });
+  return res.json(responseBody);
 });
 
 router.post('/analyze-pdf', (_req, res) => res.status(410).json({

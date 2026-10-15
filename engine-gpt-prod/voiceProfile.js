@@ -998,6 +998,37 @@ function auditDirectQuoteIntegrity(source, output) {
     changedCount: Math.max(legacy.changedCount, ownership.missingCount + ownership.unresolvedCount) };
 }
 
+// A repair may fix one quote without gaining permission to corrupt another.
+// Compare identities and multiplicities, not only total changed-count risk.
+// The ordinary pass still owns benign reference-title reductions and verified
+// delimiter repairs, so those never become regressions here.
+function directQuoteIntegrityWorsened(source, before, candidate, beforeAudit = null, candidateAudit = null) {
+  const prior = beforeAudit || auditDirectQuoteIntegrity(source, before);
+  const next = candidateAudit || auditDirectQuoteIntegrity(source, candidate);
+  if (next.pass) return false;
+  if (prior.pass) return true;
+  if (next.changedOrdinals?.some(ordinal => !prior.changedOrdinals?.includes(ordinal))
+      && prior.sourceCount === prior.outputCount && next.sourceCount === next.outputCount) return true;
+  const compareIdentities = (sourceValues, beforeValues, afterValues, allowReferenceReduction = false) => {
+    const original = countStrings(sourceValues), current = countStrings(beforeValues), after = countStrings(afterValues);
+    for (const key of new Set([...original.keys(), ...current.keys(), ...after.keys()])) {
+      const sourceCount = original.get(key) || 0, beforeCount = current.get(key) || 0, afterCount = after.get(key) || 0;
+      const benignReduction = allowReferenceReduction && sourceCount > 1 && afterCount >= 1
+        && isReferenceLikeRepeatedQuote(source, key);
+      if (!benignReduction && Math.min(sourceCount, afterCount) < Math.min(sourceCount, beforeCount)) return true;
+      if (Math.max(0, afterCount - sourceCount) > Math.max(0, beforeCount - sourceCount)) return true;
+    }
+    return false;
+  };
+  const contents = value => directQuoteContents(value).map(normalizeExactQuote);
+  if (compareIdentities(contents(source), contents(before), contents(candidate), true)) return true;
+  // The source-owned parser also covers malformed and multiline quotation
+  // windows that are deliberately absent from the legacy quote list.
+  const owned = value => require('./quoteOwnership').parseQuoteOwnership(value).candidates
+    .filter(item => item.owned).map(item => item.key);
+  return compareIdentities(owned(source), owned(before), owned(candidate));
+}
+
 function auditDirectQuoteIntegrityLegacy(source, output) {
   const sourceQuotes = directQuoteContents(source);
   const outputQuotes = directQuoteContents(output);
@@ -1357,6 +1388,7 @@ module.exports = {
   auditPersonalScopeGeneralization,
   restorePersonalScopeGeneralizations,
   auditDirectQuoteIntegrity,
+  directQuoteIntegrityWorsened,
   restoreDirectQuoteContents,
   sentenceDistributionShift,
   paragraphExpansionLimit

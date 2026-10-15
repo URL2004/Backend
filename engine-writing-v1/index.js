@@ -18,6 +18,18 @@ const {
   releaseReport
 } = require('./checks');
 const { buildDeterministicProjection } = require('./projection');
+const { classifyModelFailure } = require('../engine-gpt-prod/modelFailure');
+const {
+  isDeterministicViolation,
+  deterministicViolations,
+  repairDeterministicViolations
+} = require('./writingRepair');
+const { ABORT_CODES, abortCode } = require('./requestLifecycle');
+
+// A writer or repair step is followed by a protected semantic verdict whose
+// admission needs ~181s of the absolute deadline. Do not start a model step
+// that cannot be verified in time; the deterministic projection is free.
+const MODEL_STEP_RESERVE_MS = 240000;
 
 class WritingEngineError extends Error {
   constructor(code, message, status = 400, details = null) {
@@ -53,10 +65,14 @@ async function generate(body = {}, options = {}) {
   ensureGeneratable(prepared, shortMode);
   const targetChars = chooseTarget(prepared, shortMode);
   const claimPlan = buildClaimPlan(prepared.input, prepared.ledger);
+  const signal = options.signal || null;
+  const deadlineAtMs = Number(options.deadlineAtMs) || Infinity;
+  const clock = typeof options.clock === 'function' ? options.clock : Date.now;
   const deps = {
     callWriter: options.callWriter || defaultCallWriter,
-    semanticVerify: options.semanticVerify || defaultSemanticVerify,
-    semanticRepair: options.semanticRepair || (options.semanticVerify ? null : defaultSemanticRepair)
+    semanticVerify: guardedVerify(options.semanticVerify || defaultSemanticVerify, signal),
+    semanticRepair: options.semanticRepair || (options.semanticVerify ? null : defaultSemanticRepair),
+    signal
   };
   const attempts = [];
   const maximumAttempts = Math.max(1, Math.min(3, Number(options.maximumAttempts) || 2));
@@ -65,7 +81,22 @@ async function generate(body = {}, options = {}) {
   let best = null;
   let repairContext = null;
   let writerError = null;
-  for (let attemptIndex = 0; attemptIndex < maximumAttempts; attemptIndex += 1) {
+  // Set when further model calls cannot help (quota, deadline): the free
+  // deterministic projection is still tried below.
+  let modelStop = '';
+  let terminalError = null;
+  const stepAllowed = stage => {
+    const aborted = abortCode(signal);
+    ensureOwned(aborted, attempts);
+    if (aborted === ABORT_CODES.DEADLINE || clock() + MODEL_STEP_RESERVE_MS > deadlineAtMs) {
+      if (!modelStop) attempts.push({ stage: `${stage}_skipped`, pass: false, reasons: ['deadline_reached'] });
+      modelStop = 'deadline';
+      return false;
+    }
+    return true;
+  };
+  for (let attemptIndex = 0; attemptIndex < maximumAttempts && !modelStop; attemptIndex += 1) {
+    if (!stepAllowed(attemptIndex === 0 ? 'writer' : `repair_${attemptIndex}`)) break;
     try {
       structured = await deps.callWriter({
         input: prepared.input,
@@ -73,16 +104,20 @@ async function generate(body = {}, options = {}) {
         claimPlan,
         targetChars,
         repairContext,
-        attemptIndex
+        attemptIndex,
+        signal
       });
     } catch (error) {
+      ensureOwned(abortCode(signal), attempts);
       writerError = error;
       attempts.push({
         stage: attemptIndex === 0 ? 'writer_unavailable' : `repair_${attemptIndex}_unavailable`,
         pass: false,
         reasons: ['writer_unavailable'],
-        errorCode: safeErrorCode(error)
+        errorCode: safeErrorCode(error),
+        failureClass: classifyModelFailure(error)
       });
+      if (isQuotaFailure(error)) terminalError = error;
       break;
     }
     evaluated = await evaluateCandidate(structured, prepared, targetChars, deps.semanticVerify);
@@ -90,7 +125,26 @@ async function generate(body = {}, options = {}) {
     attempts.push(summarizeAttempt(attemptIndex === 0 ? 'draft' : `repair_${attemptIndex}`, evaluated));
     if (evaluated.release.pass) break;
     for (let semanticRound = 0; semanticRound < 2; semanticRound += 1) {
-      const semanticRecovered = await maybeRepairSemantic(evaluated, prepared, targetChars, deps, attemptIndex, semanticRound);
+      if (!stepAllowed(`semantic_repair_${attemptIndex + 1}_${semanticRound + 1}`)) break;
+      let semanticRecovered;
+      try {
+        semanticRecovered = await maybeRepairSemantic(evaluated, prepared, targetChars, deps, attemptIndex, semanticRound);
+      } catch (error) {
+        // A repair transport/provider failure is not a semantic verdict: record
+        // it, keep the current candidate, and continue with the next writer
+        // attempt or the deterministic projection instead of aborting.
+        ensureOwned(abortCode(signal), attempts);
+        attempts.push({
+          stage: `semantic_repair_${attemptIndex + 1}_${semanticRound + 1}_unavailable`,
+          pass: false,
+          reasons: ['repair_unavailable'],
+          errorCode: safeErrorCode(error),
+          failureClass: classifyModelFailure(error)
+        });
+        if (isQuotaFailure(error)) { terminalError = error; modelStop = 'quota'; }
+        else if (abortCode(signal) === ABORT_CODES.DEADLINE) modelStop = 'deadline';
+        break;
+      }
       if (!semanticRecovered) break;
       evaluated = semanticRecovered;
       structured = semanticRecovered.structured;
@@ -102,6 +156,7 @@ async function generate(body = {}, options = {}) {
     if (!best || candidatePenalty(evaluated) < candidatePenalty(best)) best = evaluated;
     repairContext = buildRepairContext(best, attemptIndex + 1);
   }
+  ensureOwned(abortCode(signal), attempts);
 
   if ((!evaluated || !evaluated.release.pass) && options.deterministicProjection !== false) {
     const projected = buildDeterministicProjection(prepared, targetChars);
@@ -115,6 +170,15 @@ async function generate(body = {}, options = {}) {
     }
   }
 
+  if ((!evaluated || !evaluated.release.pass) && terminalError) {
+    throw new WritingEngineError(
+      'OPENAI_QUOTA_EXHAUSTED',
+      'API 사용량 한도로 생성에 실패했습니다. 크레딧과 생성 한도는 사용되지 않았어요.',
+      502,
+      { attempts, retryable: false }
+    );
+  }
+
   if (!evaluated) {
     throw new WritingEngineError(
       'WRITER_UNAVAILABLE',
@@ -126,6 +190,22 @@ async function generate(body = {}, options = {}) {
 
   if (!evaluated.release.pass) {
     if (best && candidatePenalty(best) < candidatePenalty(evaluated)) evaluated = best;
+    const cause = modelStop === 'deadline' ? 'deadline_reached' : rejectionCause(evaluated);
+    if (cause === 'verification_unavailable' || cause === 'deadline_reached') {
+      throw new WritingEngineError(
+        cause === 'deadline_reached' ? 'GENERATION_DEADLINE_REACHED' : 'VERIFICATION_UNAVAILABLE',
+        cause === 'deadline_reached'
+          ? '제한 시간 안에 검수를 마치지 못했어요. 입력은 보존됐고 크레딧과 생성 한도는 사용되지 않았어요. 다시 시도해 주세요.'
+          : '검수 서버에 일시적으로 연결하지 못했어요. 입력은 보존됐고 크레딧과 생성 한도는 사용되지 않았어요. 잠시 후 다시 시도해 주세요.',
+        503,
+        {
+          fallbackReason: cause,
+          retryable: true,
+          release: evaluated.release,
+          attempts
+        }
+      );
+    }
     throw new WritingEngineError(
       'DRAFT_VERIFICATION_FAILED',
       '근거·분량 검수를 모두 통과한 글을 만들지 못했어요. 입력을 보완하면 크레딧 차감 없이 다시 시도할 수 있어요.',
@@ -139,6 +219,8 @@ async function generate(body = {}, options = {}) {
           error: evaluated.semantic?.error || null,
           violations: (evaluated.semantic?.violations || []).slice(0, 12)
         },
+        fallbackReason: cause,
+        retryable: false,
         attempts
       }
     );
@@ -186,7 +268,9 @@ async function maybeRepairSemantic(evaluated, prepared, targetChars, deps, attem
     text: evaluated.text,
     violations,
     attemptIndex,
-    semanticRound
+    semanticRound,
+    context: { targetChars, charLimitMode: prepared.input.charLimitMode, policy: prepared.policy },
+    signal: deps.signal
   });
   if (!repairedText || String(repairedText).trim() === evaluated.text.trim()) return null;
   const repairedStructured = structuredFromText(repairedText, factIds, prepared.ledger);
@@ -252,7 +336,7 @@ async function verifyExisting(text, context, options = {}) {
     charLimitMode: context.input.charLimitMode,
     policy: context.policy
   });
-  const semanticVerify = options.semanticVerify || defaultSemanticVerify;
+  const semanticVerify = guardedVerify(options.semanticVerify || defaultSemanticVerify, options.signal);
   const factIds = Array.isArray(context.usedFactIds) && context.usedFactIds.length
     ? context.usedFactIds
     : context.ledger.facts.map(fact => fact.id);
@@ -271,7 +355,7 @@ async function verifyExisting(text, context, options = {}) {
         : { ...confirmation, pass: false, confirmations: 2, initialPass: true };
     }
   }
-  const release = releaseReport(checks, semantic);
+  const release = gateReport(checks, semantic);
   return { ok: true, checks, semantic, release };
 }
 
@@ -288,7 +372,7 @@ async function confirmCandidatePass(evaluated, prepared, targetChars, semanticVe
   const semantic = confirmation.pass === true
     ? { ...evaluated.semantic, pass: true, confirmations: 2, confirmation: semanticConfirmationSummary(confirmation) }
     : { ...confirmation, pass: false, confirmations: 2, initialPass: true };
-  return { ...evaluated, semantic, release: releaseReport(evaluated.checks, semantic) };
+  return { ...evaluated, semantic, release: gateReport(evaluated.checks, semantic) };
 }
 
 function semanticConfirmationSummary(report) {
@@ -300,12 +384,15 @@ function semanticConfirmationSummary(report) {
 }
 
 async function finalizeExisting(text, context, options = {}) {
+  const signal = options.signal || null;
   const semanticVerify = options.semanticVerify || defaultSemanticVerify;
   const semanticRepair = options.semanticRepair || (options.semanticVerify ? null : defaultSemanticRepair);
   const maximumRepairRounds = Math.max(0, Math.min(2, Number(options.maximumRepairRounds ?? 2)));
+  const verifyOptions = { semanticVerify, signal };
   const attempts = [];
+  let repairUnavailable = false;
   let candidate = String(text || '').trim().slice(0, 12000);
-  let report = await verifyExisting(candidate, context, { semanticVerify });
+  let report = await verifyExisting(candidate, context, verifyOptions);
   attempts.push(finalizationAttempt('humanized', candidate, report));
 
   if (report.release.pass) {
@@ -319,6 +406,8 @@ async function finalizeExisting(text, context, options = {}) {
     : (context?.ledger?.facts || []).map(fact => fact.id);
   if (semanticRepair) {
     for (let round = 0; round < maximumRepairRounds; round += 1) {
+      ensureOwned(abortCode(signal), attempts);
+      if (abortCode(signal) === ABORT_CODES.DEADLINE) break;
       const violations = finalizationViolations(report);
       if (!violations.length) break;
       let repairedText;
@@ -330,23 +419,32 @@ async function finalizeExisting(text, context, options = {}) {
           text: candidate,
           violations,
           attemptIndex: 0,
-          semanticRound: round
+          semanticRound: round,
+          context: {
+            targetChars: Number(context.targetChars || context.input?.targetChars || 0),
+            charLimitMode: context.input?.charLimitMode,
+            policy: context.policy
+          },
+          signal
         });
       } catch (error) {
+        ensureOwned(abortCode(signal), attempts);
+        repairUnavailable = true;
         attempts.push({
           stage: `repair_${round + 1}_unavailable`,
           pass: false,
           reasons: ['repair_unavailable'],
           length: Array.from(candidate).length,
           semanticViolationCount: report?.semantic?.violations?.length || 0,
-          errorCode: safeErrorCode(error)
+          errorCode: safeErrorCode(error),
+          failureClass: classifyModelFailure(error)
         });
         break;
       }
       const next = String(repairedText || '').trim().slice(0, 12000);
       if (!next || next === candidate) break;
       candidate = next;
-      report = await verifyExisting(candidate, context, { semanticVerify });
+      report = await verifyExisting(candidate, context, verifyOptions);
       attempts.push(finalizationAttempt(`repair_${round + 1}`, candidate, report));
       if (report.release.pass) {
         return finalizationResult(candidate, report, {
@@ -356,21 +454,26 @@ async function finalizeExisting(text, context, options = {}) {
     }
   }
 
+  ensureOwned(abortCode(signal), attempts);
+  // Why the humanized candidate was not delivered. A verifier outage is not a
+  // verdict on the text, so the UI offers a retry instead of a quality notice.
+  const fallbackReason = rejectionCause(report);
+  const retryable = fallbackReason === 'verification_unavailable';
   const safeDraft = String(context?.safeDraft || '').trim().slice(0, 12000);
   if (safeDraft) {
-    const fallbackReport = await verifyExisting(safeDraft, context, { semanticVerify });
+    const fallbackReport = await verifyExisting(safeDraft, context, verifyOptions);
     attempts.push(finalizationAttempt('verified_generation_fallback', safeDraft, fallbackReport));
     if (fallbackReport.release.pass) {
       return finalizationResult(safeDraft, fallbackReport, {
         source: 'verified_generation_fallback', repaired: false, fallbackUsed: true,
-        repairRounds: Math.max(0, attempts.length - 2)
+        repairRounds: Math.max(0, attempts.length - 2), fallbackReason, retryable, repairUnavailable
       }, attempts, report);
     }
   }
 
   return finalizationResult(candidate, report, {
     source: 'blocked', repaired: attempts.some(item => item.stage.startsWith('repair_')),
-    fallbackUsed: false, repairRounds: Math.max(0, attempts.length - 1)
+    fallbackUsed: false, repairRounds: Math.max(0, attempts.length - 1), fallbackReason, retryable, repairUnavailable
   }, attempts);
 }
 
@@ -378,29 +481,82 @@ function finalizationViolations(report) {
   const violations = (report?.semantic?.violations || [])
     .filter(item => item?.spanVerified !== false)
     .map(item => ({ ...item }));
-  const length = report?.checks?.length || {};
-  if (length.applicable && !length.pass) {
-    violations.push({
-      type: length.status === 'under' ? 'length_under' : 'length_over',
-      span: '',
-      detail: length.status === 'under'
-        ? `현재 ${length.used}자를 확인된 사실만으로 ${length.minimum}~${length.maximum}자에 맞추세요. 새 사실 없이 원문에 있는 빠진 내용을 복원하세요.`
-        : `현재 ${length.used}자를 확인된 사실만 남겨 ${length.minimum}~${length.maximum}자로 줄이세요.`
-    });
-  }
-  for (const token of report?.checks?.numbers?.addedTokens || []) {
-    violations.push({ type: 'unsupported_number', span: token, detail: `SOURCE에 없는 수치 ${token}을 삭제하거나 SOURCE의 정확한 수치로 되돌리세요.` });
-  }
-  for (const phrase of report?.checks?.meta?.found || []) {
-    violations.push({ type: 'meta_filler', span: phrase, detail: '정보 부족을 설명하는 문구를 삭제하고 확인된 사실만 남기세요.' });
-  }
-  for (const issue of report?.checks?.structure?.issues || []) {
-    violations.push({ type: 'claim_structure', span: '', detail: JSON.stringify(issue) });
-  }
-  for (const item of report?.checks?.policy?.violations || []) {
-    violations.push({ type: 'policy', span: item.phrase || '', detail: item.message || item.code || '정책 위반 표현을 제거하세요.' });
-  }
+  violations.push(...deterministicViolations(report?.checks));
   return violations.slice(0, 16);
+}
+
+// 'deterministic_checks_failed' | 'verification_unavailable' | 'semantic_rejected'
+function rejectionCause(report) {
+  if (report?.release?.pass === true) return null;
+  if (report?.checks?.hardPass !== true) return 'deterministic_checks_failed';
+  if (report?.semantic?.unavailable === true) return 'verification_unavailable';
+  return 'semantic_rejected';
+}
+
+function gateReport(checks, semantic) {
+  const release = releaseReport(checks, semantic);
+  const unavailable = semantic?.pass !== true && semantic?.unavailable === true && checks?.hardPass === true;
+  return {
+    ...release,
+    verification: semantic?.pass === true ? 'passed' : unavailable ? 'unavailable' : semantic?.skipped ? 'skipped' : 'rejected',
+    reasons: unavailable
+      ? release.reasons.map(reason => (reason === 'semantic_grounding' ? 'verification_unavailable' : reason))
+      : release.reasons
+  };
+}
+
+// A thrown verifier or an error-only report (no findings) means the verdict
+// is unavailable, not that the text was rejected.
+function annotateSemantic(report) {
+  const semantic = report && typeof report === 'object' ? report : { pass: false, violations: [] };
+  if (semantic.pass === true || semantic.skipped) return semantic;
+  const violations = Array.isArray(semantic.violations) ? semantic.violations : [];
+  if (!violations.length && (semantic.error || semantic.unavailable === true)) {
+    return { ...semantic, violations, unavailable: true };
+  }
+  return semantic;
+}
+
+function verificationUnavailable(error) {
+  return {
+    pass: false,
+    unavailable: true,
+    error: 'semantic_verification_unavailable',
+    errorCode: safeErrorCode(error),
+    failureClass: classifyModelFailure(error),
+    violations: []
+  };
+}
+
+function guardedVerify(verify, signal) {
+  return async args => {
+    let report;
+    try {
+      report = await verify({ ...args, signal });
+    } catch (error) {
+      ensureOwned(abortCode(signal));
+      return verificationUnavailable(error);
+    }
+    ensureOwned(abortCode(signal));
+    return annotateSemantic(report);
+  };
+}
+
+// Lost lease or client cancellation: this request no longer owns the work and
+// must not start further model calls or deliver/persist a result.
+function ensureOwned(code, attempts = null) {
+  if (code === ABORT_CODES.LEASE_LOST) {
+    throw new WritingEngineError('WRITING_JOB_LEASE_LOST', '다른 요청이 이 작업을 이어받았어요. 잠시 후 작업 상태를 확인해 주세요.', 409,
+      attempts ? { attempts } : null);
+  }
+  if (code === ABORT_CODES.CANCELLED) {
+    throw new WritingEngineError('WRITING_REQUEST_CANCELLED', '요청이 취소돼 검수를 중단했어요. 크레딧은 사용되지 않았어요.', 409,
+      attempts ? { attempts } : null);
+  }
+}
+
+function isQuotaFailure(error) {
+  return classifyModelFailure(error) === 'openai_quota_exhausted';
 }
 
 function finalizationAttempt(stage, text, report) {
@@ -442,7 +598,7 @@ async function evaluateCandidate(structured, prepared, targetChars, semanticVeri
       phase: 'draft'
     })
     : { pass: false, skipped: 'hard_checks_failed', violations: [] };
-  const release = releaseReport(checks, semantic);
+  const release = gateReport(checks, semantic);
   return { text, checks, semantic, release };
 }
 
@@ -472,7 +628,7 @@ function evaluateProjection(projected, prepared, targetChars) {
         error: projected.proof?.code || 'projection_hard_check_failed',
         violations: []
       };
-  return { text, checks, semantic, release: releaseReport(checks, semantic) };
+  return { text, checks, semantic, release: gateReport(checks, semantic) };
 }
 
 function ensureGeneratable(prepared, shortMode) {
@@ -509,7 +665,7 @@ function chooseTarget(prepared, shortMode) {
   return prepared.assessment.requestedTarget;
 }
 
-async function defaultCallWriter({ input, ledger, claimPlan, targetChars, repairContext, attemptIndex = 0 }) {
+async function defaultCallWriter({ input, ledger, claimPlan, targetChars, repairContext, attemptIndex = 0, signal }) {
   const data = await compat.callGpt({
     userText: writerUserPrompt(input, ledger, claimPlan, targetChars, repairContext),
     systemText: writerSystemPrompt(input, targetChars, { repair: !!repairContext }),
@@ -518,12 +674,13 @@ async function defaultCallWriter({ input, ledger, claimPlan, targetChars, repair
     task: 'humanize_writing_engine_generate',
     phase: repairContext ? `repair_${attemptIndex}` : 'main',
     mode: `wl_v2_${input.genre}`,
-    verbosity: 'medium'
+    verbosity: 'medium',
+    signal: signal || undefined
   });
   return compat.extractGptResult(data, WRITER_TOOL.name);
 }
 
-async function defaultSemanticVerify({ input, ledger, factIds, text, phase }) {
+async function defaultSemanticVerify({ input, ledger, factIds, text, phase, signal }) {
   const source = factsheet(ledger, factIds);
   if (!source) return { pass: false, violations: [{ type: 'added_claim', span: text.slice(0, 120), detail: '검수할 근거가 없습니다.' }] };
   const sourceLedger = {
@@ -535,26 +692,59 @@ async function defaultSemanticVerify({ input, ledger, factIds, text, phase }) {
     return await judge.semanticJudge(source, text, sourceLedger, {
       lang: 'ko',
       mode: `writing_${input.genre}`,
-      phase: `writing_lab_${phase}`
+      phase: `writing_lab_${phase}`,
+      signal: signal || undefined
     });
   } catch (error) {
-    return { pass: false, error: error?.message || 'semantic_check_failed', violations: [] };
+    // Provider messages are not exposed; the class/code distinguishes outages.
+    return verificationUnavailable(error);
   }
 }
 
-async function defaultSemanticRepair({ input, ledger, factIds, text, violations, attemptIndex, semanticRound = 0 }) {
+/**
+ * Semantic findings (grounded judge spans) go to the shared relation repair;
+ * deterministic findings (length, short/long unsupported numbers, meta,
+ * policy) go to the writing-specific repair against the immutable ledger. The
+ * deterministic state is recomputed on the text the second step receives.
+ */
+async function defaultSemanticRepair({
+  input, ledger, factIds, text, violations = [], attemptIndex = 0, semanticRound = 0, context = null, signal
+}) {
   const source = factsheet(ledger, factIds);
   const sourceLedger = {
     claims: (ledger.facts || [])
       .filter(fact => factIds.includes(fact.id))
       .map(fact => ({ claim: `${fact.label}: ${fact.value}`, evidence_text: `[${fact.id}][${fact.label}] ${fact.value}` }))
   };
-  const repaired = await judge.repairViolations(source, text, sourceLedger, violations, {
-    lang: 'ko',
-    phase: `writing_lab_local_repair_${attemptIndex + 1}_${semanticRound + 1}`,
-    mode: `writing_${input.genre}`
-  });
-  return String(repaired?.outputText || '').trim();
+  const semanticTargets = violations.filter(item => !isDeterministicViolation(item));
+  const hasDeterministic = violations.some(isDeterministicViolation);
+  let current = String(text || '').trim();
+  if (semanticTargets.length) {
+    const repaired = await judge.repairViolations(source, current, sourceLedger, semanticTargets, {
+      lang: 'ko',
+      phase: `writing_lab_local_repair_${attemptIndex + 1}_${semanticRound + 1}`,
+      mode: `writing_${input.genre}`,
+      signal: signal || undefined
+    });
+    current = String(repaired?.outputText || current).trim() || current;
+  }
+  if (hasDeterministic || (semanticTargets.length && context)) {
+    const repaired = await repairDeterministicViolations({
+      input,
+      ledger,
+      factIds,
+      text: current,
+      context: context || {
+        targetChars: Number(input?.targetChars || 0),
+        charLimitMode: input?.charLimitMode
+      },
+      attemptIndex,
+      semanticRound,
+      signal
+    });
+    current = repaired.outputText || current;
+  }
+  return current;
 }
 
 function hardIssueSummary(checks) {
@@ -595,5 +785,8 @@ module.exports = {
   defaultSemanticVerify,
   defaultSemanticRepair,
   defaultCallWriter,
-  structuredFromText
+  structuredFromText,
+  finalizationViolations,
+  rejectionCause,
+  MODEL_STEP_RESERVE_MS
 };

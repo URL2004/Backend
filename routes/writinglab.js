@@ -27,6 +27,7 @@ const { extractCandidates } = require('../engine-writing-v1/extractor');
 const { registrySnapshot } = require('../engine-writing-v1/policy/registry');
 const writingJobs = require('../engine-writing-v1/jobStore');
 const writingTelemetry = require('../engine-writing-v1/telemetry');
+const writingLifecycle = require('../engine-writing-v1/requestLifecycle');
 
 const TOPIC_MAX = 1200;
 const MEMO_FIELD_MAX = 2000;
@@ -438,8 +439,10 @@ function sendWritingEngineError(res, error) {
       ? '검수 보안 설정이 완료되지 않아 글쓰기를 시작할 수 없어요.'
       : code === 'BILLING_COMMIT_FAILED'
         ? '결제 확인을 완료하지 못했어요. 같은 작업을 다시 시도해도 중복 차감되지 않습니다.'
-        : '글을 만드는 중 오류가 발생했어요. 크레딧과 생성 한도는 사용되지 않았어요.';
-  return res.status(502).json({ ok: false, code, error: message });
+        : code === 'WRITING_JOB_ALREADY_RESTORED'
+          ? '이번 요청의 결제는 복원됐어요. 새 작업으로 다시 시도해 주세요.'
+          : '작업을 마무리하는 중 오류가 발생했어요. 같은 작업 번호로 상태를 다시 확인해 주세요.';
+  return res.status(error?.status || 502).json({ ok: false, code, error: message });
 }
 
 function publicGenerationResult(result, { verificationToken, billing, usage, requestId }) {
@@ -586,9 +589,28 @@ router.post('/writing-lab/v2/prepare', async (req, res) => {
   }
 });
 
+// Cost/call summary fields safe to log (no text, no provider message).
+function costLogFields(cost) {
+  if (!cost) return {};
+  return {
+    modelCallCount: cost.modelCallCount,
+    httpAttemptCount: cost.httpAttemptCount,
+    retryCount: cost.retryCount,
+    unknownUsageCount: cost.unknownUsageCount,
+    knownUsd: cost.knownUsd,
+    unknownReservedUsd: cost.unknownReservedUsd
+  };
+}
+
+// Durable async contract: the generate job is owned by its processing lease,
+// not by the HTTP connection. A disconnect does not cancel (the result stays
+// recoverable by requestId); the absolute deadline and a lost lease do.
 router.post('/writing-lab/v2/generate', async (req, res) => {
   const startedAt = Date.now();
   let claimedJob = null;
+  let lease = null;
+  let generationCost = null;
+  let requestGenerationCost = null;
   let telemetryGenre = '';
   let telemetryPolicyStatus = '';
   try {
@@ -599,7 +621,19 @@ router.post('/writing-lab/v2/generate', async (req, res) => {
     telemetryGenre = prepared.input.genre;
     telemetryPolicyStatus = prepared.policy.status;
     if (!enforceWritingV2(user, prepared.input.genre, res)) return;
-    const assessed = verifyContext(req.body?.assessmentToken);
+    const requestId = writingJobs.normalizeRequestId(req.body?.requestId);
+    if (!requestId) return res.status(400).json({ ok: false, code: 'REQUEST_ID_REQUIRED', error: '작업 번호가 올바르지 않아요. 페이지를 새로고침한 뒤 다시 시도해 주세요.' });
+    const inputHash = crypto.createHash('sha256')
+      .update(`${prepared.ledger.hash}:${shortMode ? 'short' : 'full'}`).digest('hex');
+    const existingJob = await writingJobs.get(user.uid, requestId);
+    if (existingJob.inputHash && existingJob.inputHash !== inputHash) return res.status(409).json({
+      ok: false, code: 'REQUEST_ID_INPUT_MISMATCH', error: '같은 작업 번호에 다른 입력을 사용할 수 없어요. 다시 만들기를 눌러 주세요.'
+    });
+    const recoveringCompletion = existingJob.hasPendingCompletion === true;
+    // The stored, authenticated stage authorizes only its exact old result.
+    // A valid signature/owner/hash remains required; fresh generation still
+    // rejects expired assessment tokens. begin() rechecks the stage atomically.
+    const assessed = verifyContext(req.body?.assessmentToken, { allowExpired: recoveringCompletion });
     if (!assessed.ok) {
       return res.status(400).json({
         ok: false,
@@ -618,28 +652,23 @@ router.post('/writing-lab/v2/generate', async (req, res) => {
       });
     }
     const preflight = v2PreflightError(prepared, shortMode);
-    if (preflight) {
+    if (preflight && !recoveringCompletion) {
       return res.status(preflight.status).json({ ok: false, ...preflight });
     }
     const effectiveTarget = writingEngine.chooseTarget(prepared, shortMode);
-    const requestId = writingJobs.normalizeRequestId(req.body?.requestId);
-    if (!requestId) {
-      return res.status(400).json({ ok: false, code: 'REQUEST_ID_REQUIRED', error: '작업 번호가 올바르지 않아요. 페이지를 새로고침한 뒤 다시 시도해 주세요.' });
-    }
-    const inputHash = crypto.createHash('sha256')
-      .update(`${prepared.ledger.hash}:${shortMode ? 'short' : 'full'}`)
-      .digest('hex');
-
-    const existingJob = await writingJobs.get(user.uid, requestId);
     if (existingJob.inputHash && existingJob.inputHash !== inputHash) {
       return res.status(409).json({ ok: false, code: 'REQUEST_ID_INPUT_MISMATCH', error: '같은 작업 번호에 다른 입력을 사용할 수 없어요. 다시 만들기를 눌러 주세요.' });
     }
     if (existingJob.state === 'READY') return res.json(existingJob.result);
-    if (existingJob.state === 'PROCESSING') {
+    if (existingJob.state === 'FAILED' && ['DAILY_CAP', 'WRITING_JOB_ALREADY_RESTORED'].includes(existingJob.error?.code)) {
+      return res.status(429).json({ ok: false, code: existingJob.error.code, error: existingJob.error.message });
+    }
+    if (existingJob.state === 'PROCESSING' && !existingJob.leaseExpired) {
       return res.status(202).json({ ok: true, status: 'PROCESSING', jobId: requestId, requestId });
     }
+    if (existingJob.state === 'UNAVAILABLE') return res.status(503).json({ ok: false, code: 'WRITING_JOB_READ_FAILED', error: '기존 작업 상태를 확인하지 못했어요. 같은 작업 번호로 다시 시도해 주세요.' });
 
-    if (!user.admin) {
+    if (!user.admin && !recoveringCompletion) {
       const successful = await writingUsage.successfulCount(user.uid);
       if (successful >= DAILY_GENERATE_CAP) {
         return res.status(429).json({
@@ -650,9 +679,9 @@ router.post('/writing-lab/v2/generate', async (req, res) => {
       }
     }
 
-    const needed = generationCredits(effectiveTarget);
+    let needed = generationCredits(effectiveTarget);
     let billing = { applied: false, credits: 0, plan: null };
-    if (!user.admin) {
+    if (!user.admin && !recoveringCompletion) {
       try {
         const pre = await usageBilling.precheckCredits(user.idToken, needed);
         billing = { applied: pre.plan !== 'unlimited', credits: needed, plan: pre.plan };
@@ -665,7 +694,9 @@ router.post('/writing-lab/v2/generate', async (req, res) => {
       }
     }
 
-    const claim = await writingJobs.begin(user.uid, requestId, inputHash);
+    const claim = await writingJobs.begin(user.uid, requestId, inputHash, Date.now(), {
+      deadlineMs: writingLifecycle.GENERATE_DEADLINE_MS
+    });
     if (claim.state === 'ACCOUNT_DELETION') {
       return res.status(409).json({
         ok: false,
@@ -684,39 +715,98 @@ router.post('/writing-lab/v2/generate', async (req, res) => {
       return res.status(409).json({ ok: false, code: 'REQUEST_ID_INPUT_MISMATCH', error: '이 작업 번호는 현재 입력에 사용할 수 없어요.' });
     }
     if (claim.state === 'READY') return res.json(claim.result);
+    if (claim.state === 'FAILED') return res.status(429).json({ ok: false, code: claim.error?.code || 'DAILY_CAP', error: claim.error?.message || '이번 작업은 결제 복원이 완료됐어요.' });
     if (claim.state === 'PROCESSING') {
       return res.status(202).json({ ok: true, status: 'PROCESSING', jobId: requestId, requestId });
     }
     if (claim.state !== 'NEW') {
       return res.status(400).json({ ok: false, code: 'REQUEST_ID_REQUIRED', error: '작업 번호가 올바르지 않아요.' });
     }
-    claimedJob = { uid: user.uid, requestId, inputHash, completed: false };
-
-    const result = await writingEngine.generate(req.body || {}, { shortMode });
-    const recoveryFallback = result.semantic?.deterministicProjection === true;
-    const verificationToken = signContext({
+    claimedJob = { uid: user.uid, requestId, inputHash, leaseId: claim.leaseId, completed: false };
+    if (recoveringCompletion && !claim.pendingCompletion) {
+      throw new writingEngine.WritingEngineError('WRITING_RECOVERY_STATE_CHANGED',
+        '보관된 결과 상태가 바뀌었어요. 작성 가능 여부를 다시 확인한 뒤 시도해 주세요.', 409);
+    }
+    lease = writingLifecycle.createJobLease({
+      store: writingJobs,
       uid: user.uid,
-      input: prepared.input,
-      ledger: result.ledger,
-      usedFactIds: result.usedFactIds,
-      targetChars: result.assessment.effectiveTarget,
-      policy: result.policy,
-      safeDraft: result.draft,
-      safeDraftRelease: result.semantic?.deterministicProjection === true
-        ? 'deterministic_projection_v1'
-        : 'semantic_consensus_v1'
+      requestId,
+      inputHash,
+      leaseId: claim.leaseId,
+      leaseExpiresAtMs: claim.leaseExpiresAtMs,
+      deadlineAtMs: claim.deadlineAtMs
     });
 
-    if (!user.admin && billing.applied && !recoveryFallback) {
+    let staged = claim.pendingCompletion || null;
+    if (!staged) {
+      const measured = await writingLifecycle.runMeasured('generate', () => writingEngine.generate(req.body || {}, {
+        shortMode,
+        signal: lease.signal,
+        deadlineAtMs: claim.deadlineAtMs
+      }), { deadlineAtMs: claim.deadlineAtMs });
+      const generated = measured.result;
+      generationCost = measured.cost;
+      requestGenerationCost = measured.cost;
+      await lease.assertOwned();
+      const fallback = generated.semantic?.deterministicProjection === true;
+      const verificationToken = signContext({
+        uid: user.uid,
+        input: prepared.input,
+        ledger: generated.ledger,
+        usedFactIds: generated.usedFactIds,
+        targetChars: generated.assessment.effectiveTarget,
+        policy: generated.policy,
+        safeDraft: generated.draft,
+        safeDraftRelease: fallback ? 'deterministic_projection_v1' : 'semantic_consensus_v1'
+      });
+      const publicBilling = user.admin
+        ? { applied: false, credits: 0, admin: true }
+        : fallback
+          ? { applied: false, credits: 0, plan: billing.plan, waivedReason: 'deterministic_recovery_fallback' }
+          : { applied: billing.applied, credits: billing.applied ? needed : 0, plan: billing.plan };
+      staged = await lease.waitFor(() => writingJobs.stageCompletion(user.uid, requestId, inputHash, {
+        version: 'writing-completion-v1', needed, applied: publicBilling.applied,
+        cost: generationCost,
+        payload: publicGenerationResult(generated, {
+          verificationToken, billing: publicBilling, requestId,
+          usage: { elapsedMs: Date.now() - startedAt,
+            modelCalls: { count: generationCost.modelCallCount, httpAttempts: generationCost.httpAttemptCount, retries: generationCost.retryCount } }
+        })
+      }, Date.now(), { leaseId: claim.leaseId }));
+    }
+    // These server-staged values survive process death and billing ambiguity.
+    // Recovery never reruns the writer or prechecks an already spent balance.
+    const result = staged.payload;
+    generationCost = staged.cost;
+    needed = staged.needed;
+    billing = result.billing;
+    const recoveryFallback = result.semantic?.deterministicProjection === true;
+    const billingAdmin = billing.admin === true;
+    const transactionGuard = transaction => writingJobs.assertSideEffectOwnership(
+      transaction, user.uid, requestId, inputHash, claim.leaseId, { stageId: staged.stageId });
+    const debitGuard = transaction => writingJobs.prepareDebitCompletion(
+      transaction, user.uid, requestId, inputHash, claim.leaseId, staged.stageId);
+    const restoreGuard = transaction => writingJobs.prepareCompensatedCompletion(
+      transaction, user.uid, requestId, inputHash, claim.leaseId, staged.stageId);
+    await lease.assertOwned();
+
+    let billingReceipt = staged.billingReceipt || null;
+    if (staged.applied && !billingReceipt) {
       try {
-        await usageBilling.retryAsync(() => usageBilling.commitCreditDeduct(
+        billingReceipt = await lease.waitFor(() => usageBilling.retryAsync(async () => {
+          await lease.assertOwned();
+          return usageBilling.commitCreditDeduct(
           user.uid,
           needed,
           'writing_lab_v2_generate',
           requestId,
-          { mode: `wl_v2_${result.genre}`, textLength: result.draft.length, engineVersion: result.engineVersion }
-        ));
+          { mode: `wl_v2_${result.genre}`, textLength: result.draft.length, engineVersion: result.engineVersion },
+          { transactionGuard: debitGuard, returnReceipt: true }
+        ); }));
       } catch (error) {
+        if (['WRITING_JOB_LEASE_LOST', 'WRITING_JOB_ALREADY_RESTORED', 'ACCOUNT_DELETION_IN_PROGRESS'].includes(error?.code)) throw error;
+        if (error?.status === 402) throw new writingEngine.WritingEngineError('INSUFFICIENT_CREDITS',
+          `보관된 결과를 완료하려면 ${needed}크레딧이 필요해요. 충전 후 같은 작업을 다시 확인해 주세요.`, 402);
         logger.error('writinglab.v2.charge_failed', { uid: user.uid, requestId, needed, err: error });
         throw new writingEngine.WritingEngineError(
           'BILLING_COMMIT_FAILED',
@@ -725,51 +815,56 @@ router.post('/writing-lab/v2/generate', async (req, res) => {
         );
       }
     }
-    let usageCommit = user.admin
+    await lease.assertOwned();
+    const usageCommit = billingAdmin
       ? { committed: false, admin: true }
       : recoveryFallback
         ? { committed: false, recoveryFallback: true }
-        : await writingUsage.commitSuccessful(user.uid, requestId, DAILY_GENERATE_CAP);
-    if (!user.admin && (usageCommit.capReached || usageCommit.unavailable)) {
+        : await lease.waitFor(() => writingUsage.commitSuccessful(user.uid, requestId, DAILY_GENERATE_CAP, { transactionGuard }));
+    if (usageCommit.unavailable) {
+      // Its transaction may have committed before an unavailable response.
+      // Keep the staged result and reconcile the same idempotency key on retry.
+      throw new writingEngine.WritingEngineError('WRITING_USAGE_UNAVAILABLE',
+        '결과는 안전하게 보관했지만 이용 기록을 확인하지 못했어요. 같은 작업을 다시 시도해 주세요.', 503);
+    }
+    billing = writingJobs.billingFromReceipt(staged.payload.billing, billingReceipt);
+    if (usageCommit.capReached) {
       let restored = !billing.applied;
       if (billing.applied) {
         try {
-          await usageBilling.retryAsync(() => usageBilling.commitCreditRestore(
+          await lease.waitFor(() => usageBilling.retryAsync(async () => {
+            await lease.assertOwned();
+            return usageBilling.commitCreditRestore(
             user.uid,
             needed,
             'writing_lab_v2_generate',
-            requestId
-          ));
+            requestId,
+            { transactionGuard: restoreGuard }
+          ); }));
           restored = true;
         } catch (restoreError) {
+          if (['WRITING_JOB_LEASE_LOST', 'ACCOUNT_DELETION_IN_PROGRESS'].includes(restoreError?.code)) throw restoreError;
           logger.error('writinglab.v2.cap_restore_failed', { uid: user.uid, requestId, needed, err: restoreError });
         }
       }
       if (restored) {
-        throw new writingEngine.WritingEngineError(
-          usageCommit.capReached ? 'DAILY_CAP' : 'WRITING_USAGE_UNAVAILABLE',
-          usageCommit.capReached
-            ? `공개 가능한 글 생성은 하루 ${DAILY_GENERATE_CAP}회까지 이용할 수 있어요. 이번 요청은 차감하지 않았습니다.`
-            : '성공 한도 기록을 안전하게 완료하지 못해 이번 요청을 차감하지 않았어요. 잠시 후 다시 시도해 주세요.',
-          usageCommit.capReached ? 429 : 503
-        );
+        const error = new writingEngine.WritingEngineError('DAILY_CAP',
+          `공개 가능한 글 생성은 하루 ${DAILY_GENERATE_CAP}회까지 이용할 수 있어요. 이번 요청은 차감하지 않았습니다.`, 429);
+        error.discardPendingCompletion = true;
+        throw error;
       }
-      usageCommit = { ...usageCommit, reconciliationRequired: true };
+      throw new writingEngine.WritingEngineError('WRITING_REFUND_PENDING',
+        '이용 한도에 도달해 결제 복원을 확인 중이에요. 결과와 작업 번호를 보관하고 있으니 같은 작업을 다시 확인해 주세요.', 503);
     }
 
-    const publicBilling = user.admin
-      ? { applied: false, credits: 0, admin: true }
-      : recoveryFallback
-        ? { applied: false, credits: 0, plan: billing.plan, waivedReason: 'deterministic_recovery_fallback' }
-        : { applied: billing.applied, credits: billing.applied ? needed : 0, plan: billing.plan };
-    const usage = { elapsedMs: Date.now() - startedAt, daily: usageCommit };
-    const payload = publicGenerationResult(result, { verificationToken, billing: publicBilling, usage, requestId });
-    await writingJobs.complete(user.uid, requestId, inputHash, payload);
+    const payload = { ...staged.payload, billing, usage: { ...staged.payload.usage, daily: usageCommit } };
+    await lease.waitFor(() => writingJobs.complete(user.uid, requestId, inputHash, payload, Date.now(), { leaseId: claim.leaseId, cost: generationCost }));
     claimedJob.completed = true;
     void writingTelemetry.record(recoveryFallback ? 'GENERATE_FALLBACK_READY' : 'GENERATE_READY', {
       genre: result.genre,
       policyStatus: result.policy.status,
-      elapsedMs: Date.now() - startedAt
+      elapsedMs: Date.now() - startedAt,
+      cost: requestGenerationCost
     });
 
     logger.info('writinglab.v2.generate', {
@@ -786,21 +881,46 @@ router.post('/writing-lab/v2/generate', async (req, res) => {
       generationSource: recoveryFallback ? 'deterministic_projection' : 'model_verified',
       chargedCredits: !user.admin && billing.applied && !recoveryFallback ? needed : 0,
       usageCommitted: usageCommit.committed === true,
-      elapsedMs: Date.now() - startedAt
+      elapsedMs: Date.now() - startedAt,
+      ...costLogFields(requestGenerationCost)
     });
 
     return res.json(payload);
   } catch (error) {
+    const cost = requestGenerationCost || error?.writingCost || null;
+    if (claimedJob && !claimedJob.completed && error?.code === 'WRITING_JOB_LEASE_LOST') {
+      // Another request owns this job now; it will persist the result.
+      void writingTelemetry.record('GENERATE_LEASE_LOST', {
+        genre: telemetryGenre,
+        policyStatus: telemetryPolicyStatus,
+        elapsedMs: Date.now() - startedAt,
+        cost
+      });
+      logger.warn('writinglab.v2.generate_lease_lost', {
+        requestId: claimedJob.requestId,
+        lostReason: lease?.lostReason?.() || '',
+        elapsedMs: Date.now() - startedAt,
+        ...costLogFields(cost)
+      });
+      return res.status(202).json({ ok: true, status: 'PROCESSING', jobId: claimedJob.requestId, requestId: claimedJob.requestId });
+    }
     if (claimedJob && !claimedJob.completed) {
-      await writingJobs.fail(claimedJob.uid, claimedJob.requestId, claimedJob.inputHash, error);
+      await writingLifecycle.settleWithin(() => writingJobs.fail(claimedJob.uid, claimedJob.requestId, claimedJob.inputHash, error, Date.now(), {
+        leaseId: claimedJob.leaseId,
+        cost: generationCost || cost,
+        discardPendingCompletion: error?.discardPendingCompletion === true || error?.code === 'WRITING_JOB_ALREADY_RESTORED'
+      }), 5000).catch(persistError => logger.warn('writinglab.v2.failure_record_unavailable', { requestId: claimedJob.requestId, code: persistError?.code || null }));
       void writingTelemetry.record('GENERATE_FAILED', {
         genre: telemetryGenre,
         policyStatus: telemetryPolicyStatus,
-        elapsedMs: Date.now() - startedAt
+        elapsedMs: Date.now() - startedAt,
+        cost
       });
     }
-    logger.error('writinglab.v2.generate_failed', { elapsedMs: Date.now() - startedAt, err: error });
+    logger.error('writinglab.v2.generate_failed', { elapsedMs: Date.now() - startedAt, err: error, ...costLogFields(cost) });
     return sendWritingEngineError(res, error);
+  } finally {
+    lease?.stop();
   }
 });
 
@@ -824,7 +944,14 @@ router.get('/writing-lab/v2/jobs/:jobId', async (req, res) => {
         retryable: job.error?.retryable === true
       });
     }
-    return res.status(202).json({ ok: true, status: 'PROCESSING', jobId: req.params.jobId });
+    // resumable: the owner stopped (lease expired); POST /generate again with
+    // the same requestId and input to resume without a second charge.
+    return res.status(202).json({
+      ok: true,
+      status: 'PROCESSING',
+      jobId: req.params.jobId,
+      ...(job.leaseExpired ? { resumable: true } : {})
+    });
   } catch (error) {
     logger.error('writinglab.v2.job_read_failed', { jobId: req.params.jobId, err: error });
     return res.status(500).json({ ok: false, code: 'WRITING_JOB_READ_FAILED', error: '작업 상태를 불러오지 못했어요.' });
@@ -832,6 +959,8 @@ router.get('/writing-lab/v2/jobs/:jobId', async (req, res) => {
 });
 
 router.post('/writing-lab/v2/check', async (req, res) => {
+  const startedAt = Date.now();
+  let scope = null;
   try {
     const user = await requireUser(req, res);
     if (!user) return;
@@ -845,26 +974,39 @@ router.post('/writing-lab/v2/check', async (req, res) => {
     if (verified.context.uid !== user.uid) {
       return res.status(403).json({ ok: false, code: 'CONTEXT_OWNER_MISMATCH', error: '다른 사용자의 검수 기준은 사용할 수 없어요.' });
     }
-    const report = await writingEngine.verifyExisting(req.body?.text, verified.context);
-    void writingTelemetry.record(report.release.pass ? 'FINAL_CHECK_READY' : 'FINAL_CHECK_BLOCKED', {
+    scope = writingLifecycle.requestScope(res, { deadlineMs: writingLifecycle.CHECK_DEADLINE_MS });
+    const measured = await writingLifecycle.runMeasured('check',
+      () => writingEngine.verifyExisting(req.body?.text, verified.context, { signal: scope.signal }),
+      { deadlineAtMs: scope.deadlineAtMs });
+    const report = measured.result;
+    const unavailable = report.release.verification === 'unavailable';
+    void writingTelemetry.record(report.release.pass ? 'FINAL_CHECK_READY' : unavailable ? 'FINAL_CHECK_UNAVAILABLE' : 'FINAL_CHECK_BLOCKED', {
       genre: verified.context.input?.genre,
-      policyStatus: verified.context.policy?.status
+      policyStatus: verified.context.policy?.status,
+      cost: measured.cost
     });
     logger.info('writinglab.v2.check', {
       uid: user.uid,
       genre: verified.context.input?.genre,
       releaseStatus: report.release.status,
-      reasons: report.release.reasons
+      reasons: report.release.reasons,
+      verification: report.release.verification,
+      elapsedMs: Date.now() - startedAt,
+      ...costLogFields(measured.cost)
     });
-    return res.json(report);
+    return res.json({ ...report, retryable: unavailable });
   } catch (error) {
-    logger.error('writinglab.v2.check_failed', { err: error });
+    logger.error('writinglab.v2.check_failed', { err: error, ...costLogFields(error?.writingCost) });
     return sendWritingEngineError(res, error);
+  } finally {
+    scope?.stop();
   }
 });
 
 router.post('/writing-lab/v2/finalize', async (req, res) => {
   const startedAt = Date.now();
+  let scope = null;
+  let genreForTelemetry = '';
   try {
     const user = await requireUser(req, res);
     if (!user) return;
@@ -878,7 +1020,14 @@ router.post('/writing-lab/v2/finalize', async (req, res) => {
     if (verified.context.uid !== user.uid) {
       return res.status(403).json({ ok: false, code: 'CONTEXT_OWNER_MISMATCH', error: '다른 사용자의 검수 기준은 사용할 수 없어요.' });
     }
-    const report = await writingEngine.finalizeExisting(req.body?.text, verified.context);
+    genreForTelemetry = verified.context.input?.genre || '';
+    // Synchronous contract: finalize is not durable, so a client disconnect
+    // cancels the remaining model calls; the deadline bounds the whole chain.
+    scope = writingLifecycle.requestScope(res, { deadlineMs: writingLifecycle.FINALIZE_DEADLINE_MS });
+    const measured = await writingLifecycle.runMeasured('finalize',
+      () => writingEngine.finalizeExisting(req.body?.text, verified.context, { signal: scope.signal }),
+      { deadlineAtMs: scope.deadlineAtMs });
+    const report = measured.result;
     const event = report.delivery?.source === 'humanized'
       ? 'FINALIZE_HUMANIZED'
       : report.delivery?.source === 'humanized_repaired'
@@ -889,20 +1038,31 @@ router.post('/writing-lab/v2/finalize', async (req, res) => {
     void writingTelemetry.record(event, {
       genre: verified.context.input?.genre,
       policyStatus: verified.context.policy?.status,
-      elapsedMs: Date.now() - startedAt
+      elapsedMs: Date.now() - startedAt,
+      cost: measured.cost
     });
+    if (report.delivery?.fallbackReason === 'verification_unavailable') {
+      void writingTelemetry.record('FINALIZE_VERIFICATION_UNAVAILABLE', { genre: verified.context.input?.genre });
+    }
     logger.info('writinglab.v2.finalize', {
       uid: user.uid,
       genre: verified.context.input?.genre,
       deliverySource: report.delivery?.source,
+      fallbackReason: report.delivery?.fallbackReason || null,
       releaseStatus: report.release?.status,
       repairRounds: report.delivery?.repairRounds,
-      elapsedMs: Date.now() - startedAt
+      elapsedMs: Date.now() - startedAt,
+      ...costLogFields(measured.cost)
     });
     return res.json(report);
   } catch (error) {
-    logger.error('writinglab.v2.finalize_failed', { elapsedMs: Date.now() - startedAt, err: error });
+    if (error?.code === 'WRITING_REQUEST_CANCELLED') {
+      void writingTelemetry.record('FINALIZE_CANCELLED', { genre: genreForTelemetry, cost: error.writingCost });
+    }
+    logger.error('writinglab.v2.finalize_failed', { elapsedMs: Date.now() - startedAt, err: error, ...costLogFields(error?.writingCost) });
     return sendWritingEngineError(res, error);
+  } finally {
+    scope?.stop();
   }
 });
 

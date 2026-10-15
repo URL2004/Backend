@@ -102,12 +102,6 @@ const REMOVABLE_LINE_RULES = Object.freeze([
     message: '본문이 아닌 완성본·복사용 생성 안내 문구를 변환 대상에서 제외했어요.'
   },
   {
-    code: 'source_instruction_artifact',
-    boundaryOnly: true,
-    pattern: /^(?=[^\n]{1,280}$)(?=[^\n]*(?:적으라고|쓰라고|작성하라고))(?=[^\n]*(?:적어|써|작성해)\s*(?:보았|봤)(?:어|어요|습니다))[^\n]+$/u,
-    message: '본문이 아닌 작성 경위·지시 문구를 변환 대상에서 제외했어요.'
-  },
-  {
     code: 'source_rewrite_request_artifact',
     boundaryOnly: true,
     pattern: /^(?:(?:이|위|앞의|해당)\s*)?(?:내용|글|문장)(?:을|를)?\s*(?:조금\s*)?(?:보완|수정|정리|각색|재구성|확장)(?:해서|하여|한\s*뒤)?\s*(?:자연스럽게\s*)?(?:써\s*줘|써\s*주세요|작성해\s*줘|작성해\s*주세요|다듬어\s*줘|다듬어\s*주세요)(?:[.!?。！？~]+\s*(?:(?:이건|이\s*글은|이\s*내용은)\s*)?(?:보고서|논문|자소서|자기소개서|과제|발표문|블로그|게시물|원고)(?:에|로)\s*(?:들어갈|쓸|사용할|제출할)\s*(?:내용|글|거|것)?(?:이야|입니다|이에요|거야|것입니다)?[.!?。！？~]*)?$/iu,
@@ -132,7 +126,11 @@ const REMOVABLE_LINE_RULES = Object.freeze([
   {
     code: 'source_generation_meta_artifact',
     boundaryOnly: true,
-    pattern: /^(?:AI|인공지능)\s*(?:검사기|탐지기|판별기)[^\n]{0,220}(?:예측|감지|탐지|판별|회피|우회)[^\n]*[.!?。！？]*$/iu,
+    requiresGenerationWrapper: true,
+    // A detector-methodology claim or an author's writing experience is prose.
+    // Remove this process report only beside an explicit generated-output
+    // wrapper, with both evasion intent and a report of rewriting the text.
+    pattern: /^(?=[^\n]{1,280}$)(?:AI|인공지능)\s*(?:검사기|탐지기|판별기)(?=[^\n]*(?:(?:예측|감지|탐지|판별)할\s*수\s*없도록|회피|우회))(?=[^\n]*(?:문장|글|본문))(?=[^\n]*(?:늘렸|바꿨|바꾸었|다듬었|작성했|작성하였|완성했|완성하였))[^\n]+$/iu,
     message: '본문 앞에 붙은 AI 검사 회피 설명을 변환 대상에서 제외했어요.'
   },
   {
@@ -228,6 +226,11 @@ function auditPreparedSource(value) {
   const referenceFlags = freezeBlocks.referenceLineFlags(physicalLayout.text);
   const fenceState = analyzeFences(lines);
   const boundaryContentLines = boundaryContentLineIndices(lines);
+  const hasGenerationWrapper = [...boundaryContentLines].some(index =>
+    !fenceState.protectedLineIndexes.has(index) && !isQuotedInstructionLine(lines[index].trim())
+      && REMOVABLE_LINE_RULES.some(rule => rule.code === 'source_generation_meta_artifact'
+        && !rule.requiresGenerationWrapper && /(?:완성본|최종본|제출본)/u.test(lines[index])
+        && rule.pattern.test(lines[index].trim())));
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] || '');
@@ -237,6 +240,7 @@ function auditPreparedSource(value) {
     const removable = text && !scriptFrame && REMOVABLE_LINE_RULES.find(rule => (
       rule.pattern.test(text)
       && (!rule.boundaryOnly || boundaryContentLines.has(index))
+      && (!rule.requiresGenerationWrapper || hasGenerationWrapper)
       && !fenceState.protectedLineIndexes.has(index)
       && !isQuotedInstructionLine(text)
     ));

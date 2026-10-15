@@ -6,8 +6,10 @@ const { logger } = require('../lib/logger');
 const memory = new Map();
 const EVENTS = new Set([
   'PREPARE_READY', 'PREPARE_LIMITED', 'PREPARE_NEEDS_FACTS', 'PREPARE_POLICY_REVIEW', 'PREPARE_POLICY_BLOCKED',
-  'GENERATE_READY', 'GENERATE_FALLBACK_READY', 'GENERATE_FAILED', 'FINAL_CHECK_READY', 'FINAL_CHECK_BLOCKED',
+  'GENERATE_READY', 'GENERATE_FALLBACK_READY', 'GENERATE_FAILED', 'GENERATE_LEASE_LOST',
+  'FINAL_CHECK_READY', 'FINAL_CHECK_BLOCKED', 'FINAL_CHECK_UNAVAILABLE',
   'FINALIZE_HUMANIZED', 'FINALIZE_REPAIRED', 'FINALIZE_FALLBACK', 'FINALIZE_BLOCKED',
+  'FINALIZE_VERIFICATION_UNAVAILABLE', 'FINALIZE_CANCELLED',
   'HUMANIZE_READY', 'HUMANIZE_FALLBACK', 'HUMANIZE_SKIPPED',
   'CLIPBOARD_FALLBACK', 'CLIPBOARD_FAILED'
 ]);
@@ -30,7 +32,8 @@ async function record(event, details = {}) {
   const genre = safeKey(details.genre, ['resume', 'review_blog', 'marketing', 'general']);
   const policyStatus = safeKey(details.policyStatus, ['ALLOW', 'ALLOW_WITH_NOTICE', 'REQUIRE_EVIDENCE', 'MANUAL_REVIEW', 'BLOCK']);
   const bucket = details.elapsedMs != null ? latencyBucket(details.elapsedMs) : '';
-  recordMemory(day, name, genre, policyStatus, bucket, Number(details.elapsedMs) || 0);
+  const cost = costCounters(details.cost);
+  recordMemory(day, name, genre, policyStatus, bucket, Number(details.elapsedMs) || 0, cost);
   if (!db || !admin) return { recorded: true, storage: 'memory' };
   const update = {
     day,
@@ -43,6 +46,10 @@ async function record(event, details = {}) {
     update.latencyBuckets = { [bucket]: admin.firestore.FieldValue.increment(1) };
     update.latencyTotalMs = admin.firestore.FieldValue.increment(Number(details.elapsedMs) || 0);
     update.latencyCount = admin.firestore.FieldValue.increment(1);
+  }
+  if (cost) {
+    update.costs = { [cost.kind]: Object.fromEntries(Object.entries(cost.counters)
+      .map(([key, value]) => [key, admin.firestore.FieldValue.increment(value)])) };
   }
   try {
     await db.collection('writingLabV2MetricsDaily').doc(day).set(update, { merge: true });
@@ -65,7 +72,7 @@ async function snapshot(days = 14) {
   }
 }
 
-function recordMemory(day, event, genre, policyStatus, bucket, elapsedMs) {
+function recordMemory(day, event, genre, policyStatus, bucket, elapsedMs, cost = null) {
   const row = memory.get(day) || { day, events: {}, genres: {}, policyStatuses: {}, latencyBuckets: {}, latencyTotalMs: 0, latencyCount: 0 };
   increment(row.events, event);
   if (genre) increment(row.genres, genre);
@@ -75,7 +82,36 @@ function recordMemory(day, event, genre, policyStatus, bucket, elapsedMs) {
     row.latencyTotalMs += elapsedMs;
     row.latencyCount += 1;
   }
+  if (cost) {
+    row.costs ||= {};
+    const target = row.costs[cost.kind] ||= {};
+    for (const [key, value] of Object.entries(cost.counters)) target[key] = (target[key] || 0) + value;
+  }
   memory.set(day, row);
+}
+
+// Daily request-cost aggregates from a sanitized writing-cost-v1 summary.
+// USD is stored as integer micro-dollars so increments stay exact.
+function costCounters(cost) {
+  if (!cost || cost.version !== 'writing-cost-v1' || !['generate', 'check', 'finalize'].includes(cost.kind)) return null;
+  const whole = value => Math.max(0, Math.floor(Number(value) || 0));
+  const micro = value => Math.max(0, Math.round((Number(value) || 0) * 1e6));
+  return {
+    kind: cost.kind,
+    counters: {
+      requests: 1,
+      modelCalls: whole(cost.modelCallCount),
+      notExecutedCalls: whole(cost.notExecutedCallCount),
+      failedCalls: whole(cost.failedCallCount),
+      httpAttempts: whole(cost.httpAttemptCount),
+      retries: whole(cost.retryCount),
+      unknownUsageCalls: whole(cost.unknownUsageCount),
+      knownMicroUsd: micro(cost.knownUsd),
+      unknownReservedMicroUsd: micro(cost.unknownReservedUsd),
+      inputTokens: whole(cost.tokens?.input),
+      outputTokens: whole(cost.tokens?.output)
+    }
+  };
 }
 
 function increment(target, key) { target[key] = (target[key] || 0) + 1; }
@@ -91,4 +127,4 @@ function memorySnapshot(days) {
 
 function resetMemoryForTests() { memory.clear(); }
 
-module.exports = { EVENTS, dayKey, latencyBucket, record, snapshot, resetMemoryForTests };
+module.exports = { EVENTS, dayKey, latencyBucket, costCounters, record, snapshot, resetMemoryForTests };

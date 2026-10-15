@@ -91,13 +91,20 @@ function normalizeSentenceList(value) {
 }
 
 function sentenceSimilarity(left, right) {
-  const leftTokens = new Set(contentTokens(left));
-  const rightTokens = new Set(contentTokens(right));
-  const shared = [...leftTokens].filter(token => rightTokens.has(token)).length;
-  const sourceCoverage = shared / Math.max(1, leftTokens.size);
-  const outputPrecision = shared / Math.max(1, rightTokens.size);
-  const a = normalizeSentence(left);
-  const b = normalizeSentence(right);
+  return sentenceFeatureSimilarity(sentenceSimilarityFeatures(left), sentenceSimilarityFeatures(right));
+}
+
+function sentenceSimilarityFeatures(value) {
+  return { normalized: normalizeSentence(value), tokens: new Set(contentTokens(value)) };
+}
+
+// Shared formula for callers that compare the same source sentence many times.
+function sentenceFeatureSimilarity(left, right) {
+  const shared = [...left.tokens].filter(token => right.tokens.has(token)).length;
+  const sourceCoverage = shared / Math.max(1, left.tokens.size);
+  const outputPrecision = shared / Math.max(1, right.tokens.size);
+  const a = left.normalized;
+  const b = right.normalized;
   const editSimilarity = 1 - (levenshteinDistance(a, b) / Math.max(1, a.length, b.length));
   const lengthRatio = Math.min(a.length, b.length) / Math.max(1, a.length, b.length);
   return Math.max(
@@ -135,6 +142,8 @@ module.exports = {
   alignSentenceLists,
   normalizeSentenceList,
   sentenceSimilarity,
+  sentenceSimilarityFeatures,
+  sentenceFeatureSimilarity,
   contentTokens,
   normalizeSentence
 };

@@ -94,7 +94,7 @@ test('lease-owned execution saves final attempt archive before releasing ownersh
   const job = { id: 'fixture', status: 'queued', queuedAt: Date.now(), ac: new AbortController() };
   const events = [], archives = [];
   const context = { draining: false, attemptTrace: trace, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, process,
-    executionCoordinator: { acquire: async () => ({ token: 'owner' }), renew: async () => true,
+    executionCoordinator: { acquire: async () => ({ token: 'owner', expiresAtMs: Date.now() + 90000 }), renew: async () => true,
       release: async () => { events.push('release'); } },
     require: name => name === '../engine-gpt-prod/callLedger' ? ledger : require(name),
     persistJob: async current => { assert.equal(current.executionToken, 'owner'); events.push('persist'); archives.push(structuredClone(trace.summary(current))); return { ok: true }; },
@@ -119,7 +119,7 @@ test('owned auxiliary execution records successful and failed provider calls wit
   const fs = require('node:fs'), vm = require('node:vm');
   const code = fs.readFileSync(require.resolve('../routes/transform'), 'utf8');
   const context = { draining: false, attemptTrace: trace, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, process,
-    executionCoordinator: { acquire: async () => ({ token: 'owner' }), renew: async () => true, release: async () => {} },
+    executionCoordinator: { acquire: async () => ({ token: 'owner', expiresAtMs: Date.now() + 90000 }), renew: async () => true, release: async () => {} },
     require: name => name === '../engine-gpt-prod/callLedger' ? ledger : require(name),
     persistJob: async () => ({ ok: true }), scheduleQueueDrain() {}, jobPersistChains: new Map(), logger: { warn() {} } };
   vm.runInNewContext(code.slice(code.indexOf('async function executeOwned('), code.indexOf('function auxiliaryRoute(')), context);

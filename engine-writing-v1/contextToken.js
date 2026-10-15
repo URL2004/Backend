@@ -42,7 +42,7 @@ function signContext(context, { ttlMs = 2 * 60 * 60 * 1000 } = {}) {
   return `${payload}.${signature}`;
 }
 
-function verifyContext(token) {
+function verifyContext(token, { allowExpired = false } = {}) {
   const parts = String(token || '').split('.');
   if (parts.length !== 2) return { ok: false, code: 'INVALID_CONTEXT_TOKEN' };
   if (!parts.every(part => /^[A-Za-z0-9_-]+$/u.test(part))) return { ok: false, code: 'INVALID_CONTEXT_TOKEN' };
@@ -61,7 +61,7 @@ function verifyContext(token) {
   } catch { return { ok: false, code: 'INVALID_CONTEXT_TOKEN' }; }
   if (envelope?.version !== 'writing-verification-context-v1' || !envelope.context) return { ok: false, code: 'INVALID_CONTEXT_TOKEN' };
   if (!Number.isFinite(envelope.issuedAt) || envelope.issuedAt > Date.now() + 60_000) return { ok: false, code: 'INVALID_CONTEXT_TOKEN' };
-  if (!Number.isFinite(envelope.expiresAt) || envelope.expiresAt < Date.now()) return { ok: false, code: 'CONTEXT_TOKEN_EXPIRED' };
+  if (!Number.isFinite(envelope.expiresAt) || (!allowExpired && envelope.expiresAt < Date.now())) return { ok: false, code: 'CONTEXT_TOKEN_EXPIRED' };
   return { ok: true, context: envelope.context, issuedAt: envelope.issuedAt, expiresAt: envelope.expiresAt };
 }
 

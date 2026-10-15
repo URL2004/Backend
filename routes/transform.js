@@ -53,6 +53,7 @@ const {
 const jobs = new Map();
 const launchingJobs = new Set();
 const pendingAdmissions = new Set();
+const admissionRequests = new Set();
 const auxiliaryUsers = new Set();
 const executionPolicy = require('../lib/transformExecution');
 const jobPersistChains = new Map();
@@ -114,19 +115,22 @@ async function executeOwnedInContext(job, feature, run) {
   const limit = Math.max(120000, Math.min(7200000, Number(process.env.TRANSFORM_JOB_TIMEOUT_MS) || 5400000));
   job.executionDeadlineMs = Date.now() + limit;
   const timer = setTimeout(() => controller.abort(Object.assign(new Error('Job deadline exceeded'), { code: 'JOB_DEADLINE' })), limit);
-  const heartbeat = setInterval(() => {
-    const lost = () => controller.abort(Object.assign(new Error('Execution lease lost'), { code: 'EXECUTION_LEASE_LOST' }));
-    void executionCoordinator.renew(lease).then(ok => { if (!ok) lost(); }, lost);
-  }, 20000);
+  const stopLeaseGuard = require('../lib/executionLeaseGuard').guardExecutionLease({
+    coordinator: executionCoordinator, lease, controller,
+    onLost: current => {
+      if (current.cancelled) completionState.normalizeCancelledJob(Object.assign(job, { status: 'cancelled', stage: '중단됨' }));
+    }
+  });
   const attemptId = attemptTrace.begin(job, feature);
   try {
+    controller.signal.throwIfAborted();
     const ledger = require('../engine-gpt-prod/callLedger');
     await ledger.observe(() => feature === 'main' ? run(controller.signal)
       : ledger.run(() => run(controller.signal)), snapshot => attemptTrace.capture(job, attemptId, snapshot));
     return true;
   }
   finally {
-    clearTimeout(timer); clearInterval(heartbeat);
+    clearTimeout(timer); stopLeaseGuard();
     attemptTrace.finish(job, attemptId, { aborted: controller.signal.aborted, reason: controller.signal.reason?.code || controller.signal.reason?.name });
     await persistJob(job);
     if (jobPersistChains.has(job.id)) await jobPersistChains.get(job.id);
@@ -141,14 +145,16 @@ async function executeOwnedInContext(job, feature, run) {
 
 function auxiliaryRoute(feature, handler) {
   return async (req, res, next) => {
-    const job = jobs.get(req.params.id);
-    if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
-    if (!(await requireJobOwner(req, res, job))) return;
+    const job = await loadControlJob(req, res);
+    if (!job) return;
     if (draining || !restorationReady) return res.status(503).json({ error: '서버 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
     if (auxiliaryUsers.has(job.uid) || activeJobFor(job.uid)) return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
     auxiliaryUsers.add(job.uid);
     try {
       const ran = await executeOwned(job, feature, async () => {
+        // Only a newly acquired lease may turn a remote snapshot into locally
+        // executing state. Never copy another instance's execution token.
+        jobs.set(job.id, job);
         if (feature === 'fallback' && job.pendingCompletion) {
           await recoverCompletion(job);
           return res.json({ ok: true, status: job.status });
@@ -461,6 +467,35 @@ async function requireJobOwner(req, res, job) {
     return null;
   }
   return uid;
+}
+
+async function loadControlJob(req, res) {
+  try {
+    const id = req.params.id;
+    let job = jobs.get(id);
+    if (db && !job?.executionToken && !launchingJobs.has(id) && /^[a-f0-9]{16}$/u.test(id)) {
+      const snapshot = await db.collection('transformJobs').doc(id).get();
+      if (!snapshot.exists) job = null;
+      else {
+        job = { ...snapshot.data(), id, ac: new AbortController() };
+        delete job.executionToken;
+        completionState.normalizeCancelledJob(job);
+      }
+    }
+    const owned = jobs.get(id);
+    if (owned?.executionToken || launchingJobs.has(id)) job = owned || job;
+    if (!job) { res.status(404).json({ error: '작업을 찾을 수 없어요.' }); return null; }
+    if (!(await requireJobOwner(req, res, job))) return null;
+    if (jobs.has(id) && !job.executionToken && !launchingJobs.has(id)
+        && !['queued', 'running'].includes(job.status)) jobs.set(id, job);
+    // Return a detached snapshot. Controls must commit a guarded transition or
+    // acquire ownership before installing it in the local execution map.
+    return job;
+  } catch (error) {
+    logger.warn('transform.control_load_failed', { jobId: req.params.id, err: error });
+    res.status(503).json({ error: '작업 상태를 확인하지 못했어요. 잠시 후 다시 시도해 주세요.' });
+    return null;
+  }
 }
 
 function kstDay() {
@@ -935,7 +970,7 @@ async function commitRefineBilling(job, n, creditAmount, textLength) {
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted', 'attemptTrace',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
-  'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts',
+  'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts', 'cancelRequestedAtMs',
   'structurePreview', 'approvedStructure', 'structurePlanId', 'structureMode', 'basePriceCredits', 'structureCredits'];
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest',
@@ -995,7 +1030,7 @@ function pruneUndefinedForFirestore(value) {
   return value;
 }
 
-function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
+function persistJob(job, { requireClaim = false, expectedStatus = null, cancelRequest = false } = {}) {
   completionState.normalizeCancelledJob(job);
   normalizeCompletedJobState(job);
   ensureTerminalTimestamp(job);
@@ -1030,6 +1065,11 @@ function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
         const activitySnapshot = await transaction.get(activityRef);
         const executionSnapshot = await transaction.get(leaseRef);
         const currentSnapshot = await transaction.get(primaryRef);
+        const nowMs = Date.now();
+        const cancellation = cancelRequest ? require('../lib/transformCancellation').cancellationDecision(
+          currentSnapshot.exists ? currentSnapshot.data() : null, { uid: job.uid, nowMs, windowSec: CANCEL_WINDOW_SEC }) : null;
+        if (cancellation && !cancellation.ok) return cancellation;
+        const writeDoc = cancellation ? cancellation.job : doc;
         if (currentSnapshot.exists && currentSnapshot.data().status === 'cancelled' && doc.status !== 'cancelled') {
           return { ok: false, code: 'TRANSFORM_CANCELLED' };
         }
@@ -1042,13 +1082,14 @@ function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
         if (expectedStatus && (!currentSnapshot.exists || currentSnapshot.data().status !== expectedStatus)) {
           return { ok: false, code: 'TRANSFORM_STATE_CHANGED' };
         }
-        const nowMs = Date.now();
         const activity = activitySnapshot.exists ? activitySnapshot.data() || {} : {};
         const lease = executionSnapshot.exists ? executionSnapshot.data()?.slots?.[executionPolicy.keyOf(job.id)] : null;
-        if (lease && lease.expiresAtMs > nowMs && lease.token !== job.executionToken) return { ok: false, code: 'EXECUTION_OWNED_ELSEWHERE' };
-        if (job.executionToken && (!lease || lease.token !== job.executionToken || lease.expiresAtMs <= nowMs)) return { ok: false, code: 'EXECUTION_LEASE_LOST' };
-        const active = completionState.ACTIVE_STATUSES.includes(String(doc.status || ''))
-          || doc.refine?.status === 'running';
+        // Cancellation is a durable owner-authorized intent, not execution.
+        // It never releases the live slot; its owner observes it on renewal.
+        if (!cancelRequest && lease && lease.expiresAtMs > nowMs && lease.token !== job.executionToken) return { ok: false, code: 'EXECUTION_OWNED_ELSEWHERE' };
+        if (!cancelRequest && job.executionToken && (!lease || lease.token !== job.executionToken || lease.expiresAtMs <= nowMs)) return { ok: false, code: 'EXECUTION_LEASE_LOST' };
+        const active = completionState.ACTIVE_STATUSES.includes(String(writeDoc.status || ''))
+          || writeDoc.refine?.status === 'running';
         if (active && requireClaim && Object.values(executionSnapshot.exists ? executionSnapshot.data()?.slots || {} : {})
           .some(slot => slot.uid === job.uid && slot.jobId !== job.id && slot.expiresAtMs > nowMs)) {
           return { ok: false, code: 'USER_TRANSFORM_ACTIVE' };
@@ -1059,7 +1100,7 @@ function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
         const nextLane = active
           ? laneWithClaim(activity, TRANSFORM_LANE, {
             id: job.id,
-            status: doc.status,
+            status: writeDoc.status,
             ttlMs: TRANSFORM_CLAIM_TTL_MS,
           }, nowMs)
           : laneWithoutClaim(activity, TRANSFORM_LANE, job.id, nowMs);
@@ -1074,12 +1115,12 @@ function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
           }
           return { ok: false, blocked: true, code: 'ACCOUNT_DELETION_IN_PROGRESS' };
         }
-        const notification = jobNotification({ ...doc, id: job.id, uid: job.uid }, currentSnapshot.exists ? currentSnapshot.data() : null, nowMs);
+        const notification = jobNotification({ ...writeDoc, id: job.id, uid: job.uid }, currentSnapshot.exists ? currentSnapshot.data() : null, nowMs);
         if (notification) {
           transaction.set(db.collection(`users/${job.uid}/notifications`).doc(notification.id), notification.data);
         }
-        transaction.set(primaryRef, notification ? { ...doc, notificationRevision: notification.revision } : doc, { merge: true });
-        transaction.set(archiveRef, archiveDoc, { merge: true });
+        transaction.set(primaryRef, notification ? { ...writeDoc, notificationRevision: notification.revision } : writeDoc, { merge: true });
+        transaction.set(archiveRef, cancellation ? buildArchiveDocument(writeDoc) : archiveDoc, { merge: true });
         if (active || activitySnapshot.exists || requireClaim) {
           transaction.set(activityRef, {
             uid: job.uid,
@@ -1087,7 +1128,7 @@ function persistJob(job, { requireClaim = false, expectedStatus = null } = {}) {
             updatedAtMs: nowMs,
           }, { merge: true });
         }
-        return { ok: true };
+        return cancellation ? { ok: true, job: writeDoc } : { ok: true };
       });
     } catch (e) {
       logger.warn('transform.persist_failed', { jobId: job.id, uid: job.uid, status: job.status, err: e });
@@ -1983,6 +2024,14 @@ async function reconcileRestartRecovery(jobId) {
   if (!local || local._restartRecoveryPending !== true) return false;
 
   const snap = await db.collection('transformJobs').doc(jobId).get();
+  if (draining || local.executionToken || launchingJobs.has(jobId)) return false;
+  const leaseSnapshot = await db.collection(executionPolicy.COLLECTION).doc(executionPolicy.DOCUMENT).get();
+  const liveLease = leaseSnapshot.exists ? leaseSnapshot.data()?.slots?.[executionPolicy.keyOf(jobId)] : null;
+  if (liveLease && liveLease.expiresAtMs > Date.now()) {
+    scheduleRestartRecovery(jobId, Math.max(5000, Math.min(30000, liveLease.expiresAtMs - Date.now())));
+    return false;
+  }
+  if (draining || jobs.get(jobId) !== local || local.executionToken || launchingJobs.has(jobId)) return false;
   if (!snap.exists) {
     restartRecovery.markRestartRecoveryExhausted(local);
     local.error = '자동 재개할 작업 정보를 찾지 못했어요. 크레딧은 차감되지 않았습니다.';
@@ -2011,7 +2060,7 @@ async function reconcileRestartRecovery(jobId) {
       restartRecovery.markRestartRecoveryExhausted(persisted);
       persisted.ac = new AbortController();
       jobs.set(jobId, persisted);
-      await persistJob(persisted);
+      await persistJob(persisted, { expectedStatus: persistedStatus });
       logger.error('transform.restart_recovery_exhausted', {
         jobId,
         reason: prepared.reason,
@@ -2038,7 +2087,11 @@ async function reconcileRestartRecovery(jobId) {
   persisted._restartRecoveryPending = true;
   persisted._restartRecoveryHoldUntilMs = Date.now() + 5000;
   jobs.set(jobId, persisted);
-  await persistJob(persisted);
+  const recovered = await persistJob(persisted, { expectedStatus: persistedStatus });
+  if (!recovered?.ok) {
+    scheduleRestartRecovery(jobId, 10000);
+    return false;
+  }
   restartRecovery.releaseRestartRecoveryHold(persisted);
   logger.info('transform.restart_recovery_queued', {
     jobId,
@@ -2115,6 +2168,28 @@ async function restoreJobs() {
 }
 restoreJobs();
 
+const jobDiscovery = require('../lib/transformJobDiscovery').createJobDiscovery({ db,
+  enabled: () => restorationReady && !draining,
+  onJob: async persisted => {
+    const local = jobs.get(persisted.id);
+    if (draining || local?.executionToken || launchingJobs.has(persisted.id) || local?._restartRecoveryPending) return;
+    delete persisted.executionToken;
+    persisted.ac = new AbortController();
+    if (persisted.status === 'running') {
+      restartRecovery.holdRestoredRunningJob(persisted, { delayMs: 0 });
+      jobs.set(persisted.id, persisted);
+      scheduleRestartRecovery(persisted.id, 0);
+    } else if (persisted.status === 'queued') {
+      jobs.set(persisted.id, persisted);
+      scheduleQueueDrain();
+    }
+  }
+});
+const discoveryInterval = setInterval(() => {
+  void jobDiscovery.scan().catch(error => logger.warn('transform.discovery_failed', { err: error }));
+}, Math.max(5000, Number(process.env.TRANSFORM_DISCOVERY_INTERVAL_MS) || 15000));
+discoveryInterval.unref();
+
 // ── graceful shutdown(server.js가 SIGTERM/SIGINT에서 호출): 새 작업 거부 → 진행 중 LLM 중단 →
 //   동일 job ID로 queued 상태를 영속화한다. 다음 인스턴스가 자동 재개하며 완료
 //   과금의 멱등키도 그대로라 중복 차감하지 않는다.
@@ -2139,7 +2214,15 @@ router.shutdown = async function shutdown() {
       }));
     }
   }
-  await Promise.race([Promise.allSettled(writes), new Promise(r => setTimeout(r, 4000))]);
+  // An admission can already be committing when drain starts. Include its
+  // durable handoff in the same bounded shutdown wait, without starting work.
+  for (const admission of admissionRequests) {
+    writes.push(admission.done.then(() => admission.job && db
+      ? persistJob(admission.job, { requireClaim: true }) : undefined));
+  }
+  let shutdownTimer;
+  try { await Promise.race([Promise.allSettled(writes), new Promise(resolve => { shutdownTimer = setTimeout(resolve, 4000); })]); }
+  finally { clearTimeout(shutdownTimer); }
 };
 router.stats = () => {
   const formal = countActive('', 'formal');
@@ -2147,7 +2230,7 @@ router.stats = () => {
   return {
     activeJobs: formal.running + short.running,
     auxiliaryJobs: auxiliaryUsers.size,
-    pendingAdmissions: pendingAdmissions.size,
+    pendingAdmissions: admissionRequests.size,
     queuedJobs: formal.queued + short.queued,
     totalJobs: jobs.size,
     draining,
@@ -3395,6 +3478,11 @@ const startTransform = async (req, res) => {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
   }
 
+  let finishAdmission;
+  const admission = { done: new Promise(resolve => { finishAdmission = resolve; }) };
+  admissionRequests.add(admission);
+  try {
+
   const wantEvidence = !structurePreview && mode === 'formal' && req.body.evidence === true;
   const sourceProblem = require('../engine-gpt-prod/sourceTablePrecheck').check(text);
   if (sourceProblem) return res.status(422).json(sourceProblem);
@@ -3444,6 +3532,7 @@ const startTransform = async (req, res) => {
     });
   }
   setLogContext({ uid: pre.uid });
+  if (draining) return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 잠시 후 다시 시도해 주세요.' });
   const previewId = structurePreview ? crypto.createHash('sha256').update([documentStructure.VERSION, pre.uid, text, Math.floor(Date.now() / 1800000)].join('\0')).digest('hex').slice(0, 16) : null;
   const structureExecutionId = approvedStructure ? crypto.createHash('sha256').update(JSON.stringify([
     'structure-execution-v1', pre.uid, approvedStructure.id, wantEvidence, documentProfileOverride,
@@ -3581,9 +3670,11 @@ const startTransform = async (req, res) => {
     ac: new AbortController()   // 명시적 취소용(/cancel)
   };
   if (pendingAdmissions.has(job.uid) || activeJobFor(job.uid) || auxiliaryUsers.has(job.uid)) return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
+  if (draining) return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 잠시 후 다시 시도해 주세요.' });
   pendingAdmissions.add(job.uid);
-  const initialPersistence = await persistJob(job, { requireClaim: true });
-  pendingAdmissions.delete(job.uid);
+  let initialPersistence;
+  try { initialPersistence = await persistJob(job, { requireClaim: true }); }
+  finally { pendingAdmissions.delete(job.uid); }
   if (!initialPersistence?.ok) {
     if (initialPersistence?.code === 'USER_TRANSFORM_ACTIVE') return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
     if (initialPersistence?.blocked) {
@@ -3597,6 +3688,9 @@ const startTransform = async (req, res) => {
       error: '작업을 안전하게 저장하지 못했어요. 잠시 후 다시 시도해 주세요.',
     });
   }
+  // Even if drain began during the write, this is an accepted durable job.
+  // Keep it in the handoff; periodic discovery on the next instance finds it.
+  admission.job = job;
   jobs.set(id, job);
   drainQueue();   // 슬롯이 비어 있으면 같은 tick에서 queued→running 승격, 아니면 대기열에 남김.
   const payload = activeJobPayload(job);
@@ -3639,6 +3733,7 @@ const startTransform = async (req, res) => {
     queued: job.status === 'queued',
     job: payload
   });
+  } finally { admissionRequests.delete(admission); finishAdmission(); }
 };
 router.post('/transform', startTransform);
 router.post('/transform/structure-plan', startTransform);
@@ -3667,9 +3762,8 @@ router.get('/transform/active', async (req, res, next) => {
 
 // ── 명시적 취소: 진행 중 LLM 호출을 abort — 차감은 완료 시에만 일어나므로 취소=항상 무과금.
 router.post('/transform/:id/cancel', async (req, res) => {
-  const job = jobs.get(req.params.id);
-  if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
-  if (!(await requireJobOwner(req, res, job))) return;
+  const job = await loadControlJob(req, res);
+  if (!job) return;
   if (job.status === 'done' || job.status === 'blocked' || job.status === 'error') {
     return res.status(409).json({ error: '이미 끝난 작업이에요.' });
   }
@@ -3686,10 +3780,14 @@ router.post('/transform/:id/cancel', async (req, res) => {
     }
   }
   const cancelled = completionState.normalizeCancelledJob({ ...job, status: 'cancelled', stage: '중단됨' });
-  const saved = await persistJob(cancelled);
-  if (!saved.ok) return res.status(saved.code === 'TRANSFORM_COMPLETION_IN_PROGRESS' ? 409 : 503).json({ error: '중단 상태를 저장하지 못했어요. 작업 상태를 다시 확인해 주세요.' });
-  job.ac.abort();
-  Object.assign(job, cancelled);
+  const saved = await persistJob(cancelled, { cancelRequest: true });
+  if (!saved.ok) return res.status(['TRANSFORM_COMPLETION_IN_PROGRESS', 'TRANSFORM_STATE_CHANGED', 'TRANSFORM_CANCEL_WINDOW_CLOSED'].includes(saved.code) ? 409 : 503).json({ error: '중단 상태를 저장하지 못했어요. 작업 상태를 다시 확인해 주세요.' });
+  const local = jobs.get(job.id);
+  if (local) {
+    const state = { ...(saved.job || cancelled) }; delete state.executionToken;
+    Object.assign(local, state);
+    local.ac?.abort(); local.auxAc?.abort();
+  }
   clearRestartRecoveryTimer(job.id);
   scheduleQueueDrain();
   logger.info('transform.cancelled_by_user', { jobId: job.id, uid: job.uid, mode: job.mode });
@@ -3699,9 +3797,8 @@ router.post('/transform/:id/cancel', async (req, res) => {
 // Only an explicit owner action may retry payment for an already generated result.
 router.post('/transform/:id/resume-payment', async (req, res, next) => {
   try {
-    const job = jobs.get(req.params.id);
-    if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
-    if (!(await requireJobOwner(req, res, job))) return;
+    const job = await loadControlJob(req, res);
+    if (!job) return;
     if (job.status !== 'awaiting_payment' || !job.pendingCompletion) return res.status(409).json({ error: '결제 확인 대기 중인 작업이 아니에요.' });
     if (draining || !restorationReady) return res.status(503).json({ error: '서버 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
     try { await precheckExistingJobBilling(job, tokenFromReq(req), job.pendingCompletion.creditAmount); }
@@ -3710,10 +3807,12 @@ router.post('/transform/:id/resume-payment', async (req, res, next) => {
     }
     // Precheck awaited network I/O; cancellation or another resume may have won.
     if (job.status !== 'awaiting_payment') return res.status(409).json({ error: '작업 상태가 바뀌었어요. 다시 확인해 주세요.' });
+    if (draining) return res.status(503).json({ error: '서버 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
     const resumed = { ...job, status: 'queued', stage: '저장된 결과 전달 준비 중', queuedAt: Date.now(), retryNotBeforeMs: null, error: null };
     const saved = await persistJob(resumed, { requireClaim: true, expectedStatus: 'awaiting_payment' });
     if (!saved.ok) return res.status(['TRANSFORM_CANCELLED', 'TRANSFORM_STATE_CHANGED'].includes(saved.code) ? 409 : 503).json({ error: '작업 상태를 저장하지 못했어요. 다시 확인해 주세요.' });
     Object.assign(job, resumed);
+    jobs.set(job.id, job);
     scheduleQueueDrain();
     res.json({ ok: true, job: activeJobPayload(job) });
   } catch (error) { next(error); }
@@ -3965,9 +4064,8 @@ router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (r
 // ── P4: 근거 승인 — 승인된 후보만 evidence로 재구성 재개. "미승인은 엔진이 차단"의 구현부:
 //   엔진에 전달되는 허용 세계 자체가 승인 목록뿐이므로 미승인 사실은 novelty 게이트가 자동 차단.
 router.post('/transform/:id/approve', async (req, res) => {
-  const job = jobs.get(req.params.id);
-  if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요. (만료되었거나 서버가 재시작됨)' });
-  if (!(await requireJobOwner(req, res, job))) return;
+  const job = await loadControlJob(req, res);
+  if (!job) return;
   if (job.status !== 'awaiting_approval') return res.status(409).json({ error: '지금은 승인 단계가 아니에요.' });
   if (draining) return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 승인해 주세요. (작업은 사라지지 않아요)' });
   const ids = Array.isArray(req.body?.approved) ? req.body.approved : [];
@@ -3999,7 +4097,7 @@ router.post('/transform/:id/approve', async (req, res) => {
     approved: approved.length,
     candidates: (job.candidates || []).length
   });
-  const approvalClaim = await persistJob(job, { requireClaim: true });
+  const approvalClaim = await persistJob(job, { requireClaim: true, expectedStatus: 'awaiting_approval' });
   if (!approvalClaim?.ok) {
     job.status = 'awaiting_approval';
     job.stage = '근거 승인 대기';
@@ -4010,6 +4108,7 @@ router.post('/transform/:id/approve', async (req, res) => {
         : '승인 작업을 안전하게 저장하지 못했어요.',
     });
   }
+  jobs.set(job.id, job);
   drainQueue();
   const payload = activeJobPayload(job);
   if (job.status === 'queued') {

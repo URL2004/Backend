@@ -31,7 +31,7 @@ const gptAnalyze = require('./analyze-gpt');
 const inputrouting = require('../engine/inputrouting');
 const publicMetrics = require('../lib/publicMetrics');
 const { buildDetectReportView, buildSentenceMap, pickAiSentence, splitExamplePreview } = require('../lib/detectReportView');
-const { locatePublicEvidence, buildDetectInputDocument } = require('../lib/detectInputDocument');
+const { locatePublicEvidence, buildDetectInputDocument, assertDetectInputAdmissible } = require('../lib/detectInputDocument');
 const { signDetectInterpretation } = require('../lib/detectHistoryPresentation');
 const { signHistoryComparison } = require('../lib/detectHistoryComparison');
 const { startDetectPreview } = require('../lib/detectPreviewTask');
@@ -571,6 +571,11 @@ async function handleDetectReport(req, res, flow) {
     usedCachedArtifact = true;
   } else {
     // ② 결정론 분석(무LLM) — 실패하면 보고서 자체가 성립 안 되므로 여기서만 500
+    try { assertDetectInputAdmissible(text); }
+    catch (error) {
+      if (requestBinding) await detectRequests.releaseAfterModelFailure(requestBinding);
+      return res.status(error.status || 422).json({ ok: false, code: error.code, error: error.message, charged: 0, retryable: false });
+    }
     let ir, paras, analysisParas, previewParas, detail, reportMeasurements;
     try {
       paras = sg.splitParagraphsForReport(text);
@@ -616,12 +621,13 @@ async function handleDetectReport(req, res, flow) {
         uid,
         payloadFingerprint: stabilityPayloadFingerprint,
         cacheVariant
-      }, async () => {
+      }, async sharedSignal => {
         const detected = await gptAnalyze.runDetect(text, 'ko', {
           config: gptCfg,
           route: 'detect_report',
           allowLocalFallback: false,
           uid: uid || '',
+          signal: sharedSignal,
           documentProfile: {
             profile: advancedRouting.profile,
             confidence: advancedRouting.confidence,

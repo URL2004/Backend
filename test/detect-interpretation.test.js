@@ -13,6 +13,26 @@ const signal = (category = 'ending_repetition', indices = [1, 3]) => ({
 });
 const statisticalSupport = { version:'statistical-assist-v5-whitespace-stable', modelVersion:'korean-style-statistics-v1',
   applied:true, originalScore:18, score:49, margin:0.2, features:300, profile:'general', basis:'independent_statistics' };
+
+test('one canonical sentence projected across twelve paragraphs keeps full locations and a signable summary', () => {
+  const source = Array.from({ length: 12 }, (_, n) => `지역 자료의 ${n + 1}번째 관찰에서는 여러 시기에 수집한 기록의 차이를 세밀하게 살펴보며`).join('\n\n') + ' 그 결과를 정리했다.';
+  const input = require('../lib/detectInputDocument');
+  const paragraphs = require('../engine/surfaceguard').splitParagraphsForReport(source);
+  const surface = require('../lib/detectSurfaceInput').buildDetectSurfaceInput(paragraphs);
+  const map = require('../lib/detectReportView').buildSentenceMap(surface.analysisParagraphs, surface.detail, { sourceParagraphs: paragraphs, source });
+  const grounded = require('../lib/detectGrounding').groundSignals([{ category: 'generic_abstraction', strength: 'moderate', scope: 'recurring', evidenceSentences: [0] }], source);
+  const evidence = require('../lib/detectReportLocations').projectReportEvidence(input.locatePublicEvidence(grounded, source), map);
+  const interpretation = build({ probability: 35, probSource: 'llm', confidence: 'low', textLength: source.length,
+    sentenceTotal: input.buildDetectInputDocument(source).eligibleSentenceCount, signalEvidence: evidence });
+  assert.equal(evidence[0].locations.length, 12);
+  assert.deepEqual(interpretation.pattern.paragraphIndices, [0, 1, 2, 3, 4, 5, 6, 7]);
+  const { signDetectInterpretation, verifiedBackupInterpretation } = require('../lib/detectHistoryPresentation');
+  const key = 'synthetic-proof-secret-'.repeat(3);
+  const proof = signDetectInterpretation('synthetic-user', source, interpretation, key);
+  assert.equal(typeof proof, 'string');
+  assert.deepEqual(verifiedBackupInterpretation('synthetic-user', { inputText: source, probability: 35, interpretation, interpretationProof: proof }, key), interpretation);
+  assert.equal(interpretation.score, 35);
+});
 test('weak sentence causes plus independent statistics explain their distinct scopes without rescoring', () => {
   const signalEvidence = [{...signal(),strength:'weak'}];
   const r = build({...standard,probability:49,signalEvidence,statisticalSupport});

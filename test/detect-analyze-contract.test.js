@@ -18,7 +18,10 @@ stability.getOrCompute = (input, compute) => { cacheInputs.push(input); return l
 const metrics = require('../lib/publicMetrics');
 let calls = [], charges = 0, saved = 0, calibrationInputs = [], calibrationFailure = false;
 billing.precheckCredits = async () => ({ uid: 'detect-contract-test', plan: 'credit' });
-billing.commitCreditDeduct = async () => { charges += 1; };
+billing.authenticate = async () => ({ uid: 'detect-contract-test' });
+billing.getCreditAccountState = async () => ({ uid: 'detect-contract-test', plan: 'credit', credits: 1000 });
+billing.precheckCreditDeductIdempotency = async () => ({ state: 'NEW' });
+billing.commitCreditDeduct = async (_uid, amount) => { charges += 1; return { current: 1000, next: 1000 - amount }; };
 billing.retryAsync = async operation => operation();
 runtime.getRuntimeConfig = async () => ({ activeProvider: 'gpt', models: { detect: 'test', detectEscalation: 'test-next' }, reasoning: { detect: 'low', escalation: 'high' } });
 runtime.isGptActive = () => true;
@@ -63,7 +66,7 @@ test('analyze caches only raw detector output, scopes context/language, and fail
   assert.equal(second.body.result.historyComparison.rawProbability, 50);
   assert.equal(second.body.result.historyComparison.adjustment, -10);
   for (const response of [first, second]) {
-    assert.equal(response.body.result.gptMeta.engine, 'gpt-detect-v1.57');
+    assert.equal(response.body.result.gptMeta.engine, 'gpt-detect-v1.58');
     assert.equal(response.body.result.gptMeta.detectPromptVersion, 'detect-prompt-v9h-recurring-cause-band');
     const backup = { ...response.body.result, inputText: text };
     assert.deepEqual(require('../lib/detectHistoryComparison').verifiedBackupHistoryComparison('detect-contract-test', backup), response.body.result.historyComparison);

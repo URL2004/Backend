@@ -491,7 +491,10 @@ test('transform and writing persistence serialize every durable user-content wri
 
   assert.match(transform, /function persistJob[\s\S]*db\.runTransaction[\s\S]*transaction\.get\(deletionRef\)[\s\S]*transaction\.get\(activityRef\)/u);
   assert.match(transform, /accountDeletionBlocksWrites[\s\S]*transaction\.set\(primaryRef[\s\S]*transaction\.set\(archiveRef/u);
-  assert.match(transform, /const initialPersistence = await persistJob\(job, \{ requireClaim: true \}\)[\s\S]*jobs\.set\(id, job\)/u);
+  const admissionStart = transform.indexOf('let initialPersistence;');
+  const admission = transform.slice(admissionStart, transform.indexOf('jobs.set(id, job);', admissionStart) + 'jobs.set(id, job);'.length);
+  assert.match(admission, /initialPersistence = await persistJob\(job, \{ requireClaim: true \}\)/u);
+  assert.match(admission, /if \(!initialPersistence\?\.ok\)[\s\S]*ACCOUNT_DELETION_IN_PROGRESS[\s\S]*return res\.status\(503\)[\s\S]*jobs\.set\(id, job\)/u);
   assert.match(transform, /laneWithoutClaim\(activity, TRANSFORM_LANE, job\.id, nowMs\)/u);
   assert.doesNotMatch(transform, /compatibilityFallback:\s*true/u);
 

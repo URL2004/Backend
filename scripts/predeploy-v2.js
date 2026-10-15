@@ -99,6 +99,8 @@ async function main() {
       }
       const live = detail || {};
       add('active_jobs_zero', Number(live.activeJobs) === 0, `active=${live.activeJobs}, queued=${live.queuedJobs}`);
+      add('auxiliary_jobs_zero', Number(live.auxiliaryJobs) === 0, `auxiliary=${live.auxiliaryJobs}`);
+      add('pending_admissions_zero', Number(live.pendingAdmissions) === 0, `pending=${live.pendingAdmissions}`);
       if (args['expect-live-v2'] === '1') {
         add('live_v2', live.humanizeEngineV2 === true && live.activeProvider === 'gpt' && live.openai === true, `v2=${live.humanizeEngineV2}, provider=${live.activeProvider}, openai=${live.openai}`);
         add('live_humanization_depth', live.humanizationDepthGate === true, `depth=${live.humanizationDepthGate}`);

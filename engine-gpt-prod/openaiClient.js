@@ -171,7 +171,7 @@ async function completeJsonRequest({
   // schema validator may reject before the detector sees a response; retain
   // both existing schema attempts without copying its JSON or source text.
   const detectScoreAttempts = [];
-  const accounting = { usage, httpAttemptCount: 0, unknownUsageCount: 0, unknownEstimatedUsd: 0, failedEstimatedUsd: 0,
+  const accounting = { usage, httpAttemptCount: 0, unknownUsageCount: 0, unknownEstimatedUsd: 0, failedEstimatedUsd: 0, providerRejectedCount: 0,
     windowCompletedCallCount: 0, windowOverrunMs: 0, windowMaxOverrunMs: 0, httpCeilingTimeoutCount: 0 };
   try {
   while (schemaAttempt < 2) {
@@ -266,6 +266,7 @@ async function completeJsonRequest({
     error.unknownUsageCount = accounting.unknownUsageCount;
     error.unknownEstimatedUsd = accounting.unknownEstimatedUsd;
     error.failedEstimatedUsd = accounting.failedEstimatedUsd;
+    error.providerRejectedCount = accounting.providerRejectedCount;
     error.timeBudget = accounting.timeBudget;
     Object.assign(error, timeObservations(accounting));
     error.retryCounts = { ...retryCounts, ...error.retryCounts };
@@ -273,7 +274,7 @@ async function completeJsonRequest({
     logger.info('gpt_prod.usage', { ...meta, stage: require('./callLedger').current()?.policy?.stage || meta.phase || 'main',
       provider: 'openai', model, ...usage, reasoningEffort: effort,
       ...timeObservations(accounting),
-      failed: true, maxOutputTokens: body.max_output_tokens,
+      failed: true, providerRejectedCount: accounting.providerRejectedCount, maxOutputTokens: body.max_output_tokens,
       requiredAttemptMs: accounting.timeBudget?.protectedCall ? accounting.timeBudget.requiredMs : null,
       admissionSkipped: error.admissionSkipped === true, admissionReason: error.admissionReason || '',
       retryCounts: error.retryCounts, elapsedMs: Date.now() - startedAt });
@@ -327,6 +328,7 @@ async function completeJsonRequest({
     unknownUsageCount: accounting.unknownUsageCount,
     unknownEstimatedUsd: accounting.unknownEstimatedUsd,
     failedEstimatedUsd: accounting.failedEstimatedUsd,
+    providerRejectedCount: accounting.providerRejectedCount,
     retryCounts,
     timeBudget: accounting.timeBudget,
     ...timeObservations(accounting),
@@ -365,6 +367,10 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
     network: Math.min(2, retryCap),
     timeout: accounting?.longAttempt ? 0 : Math.min(1, retryCap)
   };
+  // A body cut after 200 headers may already be billed. Allow one resend for
+  // ordinary calls; protected long calls keep their no-restart policy.
+  const bodyRetryLimit = accounting?.longAttempt ? 0 : Math.min(1, retryLimits.network);
+  let bodyRetries = 0;
   const retryCounts = emptyRetryCounts();
   const startedAt = Date.now();
   if (deadlineMs && deadlineMs <= startedAt) {
@@ -398,10 +404,12 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
     } catch (err) {
       if (parentSignal?.aborted) throw err;
       const type = retryType(err);
-      if (!type || retryCounts[type] >= retryLimits[type]) {
+      if (!type || retryCounts[type] >= retryLimits[type]
+          || (err?.bodyReadFailure === true && bodyRetries >= bodyRetryLimit)) {
         err.retryCounts = { ...retryCounts };
         throw err;
       }
+      if (err?.bodyReadFailure === true) bodyRetries += 1;
       retryCounts[type] += 1;
       lastError = err;
       const delay = err?.retryAfterMs ?? backoffMs(retryCounts[type]);
@@ -462,7 +470,7 @@ async function fetchWithTimeout(url, init, parentSignal, deadlineMs = Infinity, 
   const aborted = new Promise((_, reject) => { rejectAbort = () => reject(abortError()); });
   controller.signal.addEventListener('abort', rejectAbort, { once: true });
   let reservation = null, settled = false, sent = false;
-  const settle = (payload, ok = false) => {
+  const settle = (payload, ok = false, status = 0) => {
     if (settled || !sent || !accounting) return;
     settled = true;
     const rawUsage = payload?.usage;
@@ -470,14 +478,19 @@ async function fetchWithTimeout(url, init, parentSignal, deadlineMs = Infinity, 
     const known = rawUsage && hasCount(rawUsage.input_tokens ?? rawUsage.prompt_tokens)
       && hasCount(rawUsage.output_tokens ?? rawUsage.completion_tokens)
       ? normalizeUsage(rawUsage, accounting.model, payload) : null;
+    // Only a parsed provider rejection proves that no generation started.
+    // Every 5xx, timeout, post-send abort and body failure stays unknown.
+    const rejected = !ok && !known && provenRejectedResponse(status, payload);
     if (known) {
       addUsage(accounting.usage, known);
       if (!ok) accounting.failedEstimatedUsd += Number(known.estimatedUsd || 0);
+    } else if (rejected) {
+      accounting.providerRejectedCount = Number(accounting.providerRejectedCount || 0) + 1;
     } else {
       accounting.unknownUsageCount++;
       accounting.unknownEstimatedUsd += accounting.reserveUsd;
     }
-    if (reservation) accounting.budget.settleCall(reservation, known);
+    if (reservation) accounting.budget.settleCall(reservation, known || (rejected ? { estimatedUsd: 0 } : null));
   };
   try {
     if (parentSignal?.aborted) throw abortError();
@@ -493,8 +506,13 @@ async function fetchWithTimeout(url, init, parentSignal, deadlineMs = Infinity, 
       // Keep the deadline and transport signal alive until the body is consumed.
       let payload;
       try { payload = await response.json(); }
-      catch (error) { if (response.ok) throw error; payload = null; }
-      settle(payload, response.ok);
+      catch (error) {
+        if (!response.ok) payload = null;
+        // The response may already be billed; the outer settle keeps it unknown.
+        else if (!controller.signal.aborted && isBodyTransportFailure(error)) throw bodyTerminatedError(error);
+        else throw error;
+      }
+      settle(payload, response.ok, response.status);
       if (controller.signal.aborted) throw abortError();
       if (protectedCall && response.ok) {
         const overrun = Math.max(0, Date.now() - Math.min(deadlines.request_deadline, deadlines.recovery_deadline));
@@ -553,8 +571,51 @@ function retryType(error) {
   if (Number(error?.status) === 429) return 'rateLimit';
   if (Number(error?.status) >= 500) return 'server';
   if (error?.code === 'ETIMEDOUT' || error?.code === 'OPENAI_CHUNK_TIMEOUT' || /timed?\s*out|timeout/iu.test(String(error?.message || ''))) return 'timeout';
+  if (error?.code === 'OPENAI_BODY_TERMINATED') return 'network';
   if (/network|fetch failed|econnreset|enotfound|socket hang up/iu.test(String(error?.message || ''))) return 'network';
   return '';
+}
+
+const BODY_TRANSPORT_CODE = /^(?:UND_ERR_\w+|ECONNRESET|ECONNABORTED|EPIPE|ERR_STREAM_PREMATURE_CLOSE)$/u;
+const BODY_TRANSPORT_MESSAGE = /\bterminated\b|other side closed|socket hang up|premature close|\beconnreset\b/iu;
+
+// undici reports a socket closed mid-body as TypeError('terminated') with an
+// UND_ERR_SOCKET cause. Malformed JSON (SyntaxError) is not a transport cut.
+function isBodyTransportFailure(error) {
+  if (!error || error instanceof SyntaxError || error.name === 'AbortError') return false;
+  for (let current = error, depth = 0; current && depth < 4; current = current.cause, depth += 1) {
+    if (BODY_TRANSPORT_CODE.test(String(current.code || ''))) return true;
+    if (BODY_TRANSPORT_MESSAGE.test(String(current.message || ''))) return true;
+  }
+  return false;
+}
+
+function bodyTerminatedError(cause) {
+  const error = new Error('OpenAI Responses API response body terminated before completion');
+  error.code = 'OPENAI_BODY_TERMINATED';
+  error.bodyReadFailure = true;
+  error.possiblyBilled = true;
+  error.retryable = true;
+  error.cause = cause;
+  return error;
+}
+
+const REJECTED_REQUEST_STATUSES = new Set([400, 401, 403, 404, 413, 422]);
+const REJECTED_429_CODES = /^(?:rate_limit_exceeded|insufficient_quota)$/u;
+const REJECTED_429_TYPES = /^(?:insufficient_quota|requests|tokens)$/u;
+
+// A parsed OpenAI error envelope ({ error: {...} } only, no usage/output) with
+// a request-rejection status or a typed 429 proves the request was refused
+// before generation. Anything else, including every 5xx, is not proof.
+function provenRejectedResponse(status, payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  if (Object.keys(payload).some(key => key !== 'error')) return false;
+  const error = payload.error;
+  if (!error || typeof error !== 'object' || Array.isArray(error)) return false;
+  const code = String(error.code || ''), type = String(error.type || '');
+  if (Number(status) === 429) return REJECTED_429_CODES.test(code) || REJECTED_429_TYPES.test(type);
+  if (REJECTED_REQUEST_STATUSES.has(Number(status))) return Boolean(code || type || error.message);
+  return false;
 }
 
 function emptyRetryCounts() {

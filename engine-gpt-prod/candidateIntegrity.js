@@ -11,6 +11,7 @@ const technicalRelationAudit = require('./technicalRelationAudit');
 const technicalExplanationAudit = require('./technicalExplanationAudit');
 const {
   auditDirectQuoteIntegrity,
+  directQuoteIntegrityWorsened,
   auditVoice,
   buildVoiceProfile
 } = require('./voiceProfile');
@@ -115,7 +116,8 @@ function auditCandidateIntegrity({
 
   const beforeQuote = auditDirectQuoteIntegrity(source, current);
   const candidateQuote = auditDirectQuoteIntegrity(source, after);
-  if ((!beforeQuote.pass && quoteRisk(candidateQuote) > quoteRisk(beforeQuote))
+  if (directQuoteIntegrityWorsened(source, current, after, beforeQuote, candidateQuote)
+      || (!beforeQuote.pass && quoteRisk(candidateQuote) > quoteRisk(beforeQuote))
       || (beforeQuote.pass && !candidateQuote.pass)) {
     add('direct_quote_worsened');
   }

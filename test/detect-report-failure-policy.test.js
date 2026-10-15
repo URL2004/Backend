@@ -342,6 +342,20 @@ const BASE_TEXT = (
   + '저는 결과표의 오류 세 건을 직접 찾아 수정했고, 회의에서 확인 순서를 다시 정했습니다. '
 ).repeat(2);
 
+test('report rejects no-prose and excessive span metadata before model or debit', { concurrency: false }, async () => {
+  const before = { model: state.modelCalls, debit: state.deductCalls, balance: state.balance };
+  const cases = [
+    ['| 항목 | 기록 |\n' + Array.from({ length: 20 }, (_, i) => `| 구분${i} | 보관함${i} |`).join('\n'), 'DETECT_NO_ELIGIBLE_PROSE'],
+    [Array.from({ length: 1100 }, (_, i) => `${i}번이다.`).join(' '), 'DETECT_INPUT_TOO_FRAGMENTED']
+  ];
+  for (const [index, [text, code]] of cases.entries()) {
+    const response = await post(text, `detect-admission-${index}`);
+    assert.equal(response.status, 422); assert.equal(response.body.code, code); assert.equal(response.body.charged, 0);
+    assert.equal(response.body.retryable, false); assert.equal(state.requestJobs.has(`detect-admission-${index}`), false);
+  }
+  assert.equal(state.modelCalls, before.model); assert.equal(state.deductCalls, before.debit); assert.equal(state.balance, before.balance);
+});
+
 test('report API, history input and replay retain optional statistical provenance', { concurrency: false }, async t => {
   const oldPlan = state.billingPlan;
   state.billingPlan = 'unlimited';

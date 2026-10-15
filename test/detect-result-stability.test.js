@@ -91,6 +91,82 @@ function fakeFirestore() {
 
 test.beforeEach(() => stability.resetForTests());
 
+test('shared detection survives its first caller cancelling and persists for the remaining caller', async () => {
+  let complete, sharedSignal, calls = 0;
+  const firstCaller = new AbortController();
+  const firestore = fakeFirestore();
+  const options = { firestore, hmacSecret: PERSISTENT_SECRET };
+  const first = stability.getOrCompute(input(), signal => {
+    calls++; sharedSignal = signal;
+    return new Promise(resolve => { complete = resolve; });
+  }, { ...options, signal: firstCaller.signal });
+  const firstRejected = assert.rejects(first, error => error.name === 'AbortError');
+  await new Promise(resolve => setImmediate(resolve));
+  const second = stability.getOrCompute(input(), () => assert.fail('follower recomputed'), options);
+  await new Promise(resolve => setImmediate(resolve));
+  firstCaller.abort();
+  await firstRejected;
+  assert.equal(sharedSignal.aborted, false);
+  complete(modelResult(47));
+  assert.equal((await second).result.probability, 47);
+  assert.equal(calls, 1);
+  assert.equal(firestore.rows.size, 1);
+  stability.resetForTests();
+  assert.equal((await stability.getOrCompute(input(), () => assert.fail('result was not persisted'), options)).source, 'firestore');
+});
+
+test('all callers cancelling aborts shared work and late provider completion cannot populate cache', async () => {
+  let complete, sharedSignal;
+  const caller = new AbortController();
+  const options = { firestore: null, signal: caller.signal };
+  const pending = stability.getOrCompute(input(), signal => {
+    sharedSignal = signal; return new Promise(resolve => { complete = resolve; });
+  }, options);
+  const rejected = assert.rejects(pending, error => error.name === 'AbortError');
+  await new Promise(resolve => setImmediate(resolve));
+  caller.abort(); await rejected;
+  assert.equal(sharedSignal.aborted, true);
+  complete(modelResult(99));
+  await new Promise(resolve => setImmediate(resolve));
+  const fresh = await stability.getOrCompute(input(), async () => modelResult(12), { firestore: null });
+  assert.equal(fresh.cacheHit, false); assert.equal(fresh.result.probability, 12);
+});
+
+test('shared timeout bounds an uncooperative provider and prevents late writes', async () => {
+  let complete;
+  const firestore = fakeFirestore();
+  const options = { firestore, hmacSecret: PERSISTENT_SECRET, computeTimeoutMs: 10 };
+  const pending = stability.getOrCompute(input(), () => new Promise(resolve => { complete = resolve; }), options);
+  await assert.rejects(pending, error => error.code === 'DETECT_COMPUTE_TIMEOUT');
+  complete(modelResult(99));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(firestore.rows.size, 0);
+  assert.equal((await stability.getOrCompute(input(), async () => modelResult(12), options)).cacheHit, false);
+});
+
+test('shared timeout while awaiting persistence does not write after the transaction read resumes', async () => {
+  let resume;
+  const rows = [];
+  const firestore = { collection: () => ({ doc: () => ({ get: async () => ({ exists: false }) }) }),
+    runTransaction: async callback => callback({ get: () => new Promise(resolve => { resume = () => resolve({ exists: false }); }),
+      set: (_ref, row) => rows.push(row) }) };
+  const pending = stability.getOrCompute(input(), async () => modelResult(), { firestore, hmacSecret: PERSISTENT_SECRET, computeTimeoutMs: 20 });
+  await assert.rejects(pending, error => error.code === 'DETECT_COMPUTE_TIMEOUT');
+  resume(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(rows, []);
+  assert.equal(await stability.read(input(), { firestore: null }), null);
+});
+
+test('cache reset rejects subscribers and handles late rejection without an unhandled promise', async () => {
+  let fail;
+  const pending = stability.getOrCompute(input(), () => new Promise((_resolve, reject) => { fail = reject; }), { firestore: null });
+  const rejected = assert.rejects(pending, /Cache reset/u);
+  await new Promise(resolve => setImmediate(resolve));
+  stability.resetForTests(); await rejected;
+  fail(new Error('late provider failure'));
+  await new Promise(resolve => setImmediate(resolve));
+});
+
 test('v1.55/v9h는 버전별 캐시를 분리하고 이전 영속 캐시를 삭제하지 않는다', async () => {
   const engine = require('../engine-gpt-prod');
   const previousVersions = {
@@ -101,7 +177,7 @@ test('v1.55/v9h는 버전별 캐시를 분리하고 이전 영속 캐시를 삭�
     detectorVersion: engine.DETECT_VERSION,
     promptVersion: engine.DETECT_PROMPT_VERSION
   };
-  assert.equal(currentVersions.detectorVersion, 'gpt-detect-v1.57');
+  assert.equal(currentVersions.detectorVersion, 'gpt-detect-v1.58');
   assert.equal(currentVersions.promptVersion, 'detect-prompt-v9h-recurring-cause-band');
   const previous = stability.variantForConfig(CONFIG, previousVersions);
   const detectorOnly = stability.variantForConfig(CONFIG, { ...previousVersions, detectorVersion: currentVersions.detectorVersion });

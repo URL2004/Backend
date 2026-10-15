@@ -10,6 +10,8 @@ const {
   alignedOutputCandidates,
   contentTokens: contentTokensLocal,
   normalizeSentence: normalizeSentenceLocal,
+  sentenceSimilarityFeatures,
+  sentenceFeatureSimilarity,
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
@@ -1732,13 +1734,29 @@ function sourceBackedEditRepairs(source, outputText) {
   const startsInProse = span => !span.text.slice(0, span.editable.search(/\S/u)).trim();
   const sourceHeads = sources.filter(startsInProse)
     .map(span => ({ span, head: span.editable.match(headPattern) })).filter(row => row.head);
+  const headsBySubject = new Map();
+  for (const row of sourceHeads) {
+    const subject = row.head[2];
+    if (!headsBySubject.has(subject)) headsBySubject.set(subject, { rows: [], hasDemonstrative: false, unchangedGeneric: new Set() });
+    const group = headsBySubject.get(subject);
+    group.rows.push(row);
+    group.hasDemonstrative ||= Boolean(row.head[1]);
+    if (!row.head[1]) group.unchangedGeneric.add(row.span.editable);
+  }
   const repairs = [];
   for (const output of outputs) {
     const head = output.editable.match(headPattern);
-    if (head && !head[1] && startsInProse(output)) {
-      const matches = sourceHeads.filter(row => row.head[2] === head[2]).map(row => ({
+    const group = head && headsBySubject.get(head[2]);
+    // Without a demonstrative in this subject group no loss can be proposed.
+    // An exact retained generic sentence already attains the maximum possible
+    // similarity; a demonstrative owner cannot beat it by the required .08.
+    if (head && !head[1] && startsInProse(output) && group?.hasDemonstrative
+        && !group.unchangedGeneric.has(output.editable)) {
+      const outputFeatures = sentenceSimilarityFeatures(output.editable);
+      const matches = group.rows.map(row => ({
         ...row,
-        score: sentenceSimilarity(row.span.editable.replace(headPattern, `${head[2]} `), output.editable)
+        score: sentenceFeatureSimilarity(row.features ||= sentenceSimilarityFeatures(
+          row.span.editable.replace(headPattern, `${head[2]} `)), outputFeatures)
       })).sort((a, b) => b.score - a.score);
       const best = matches[0];
       // Ambiguous repetition, an unchanged generic subject, and rewritten nouns
@@ -3271,6 +3289,11 @@ function pushFunctionalGreetingDuplication(issues, text) {
 
 function findAdjacentSemanticRepetitionPairs(text, sourceSentences = []) {
   const sentences = splitSentences(String(text || '')).map(value => String(value || '').trim()).filter(Boolean);
+  const sourceKeys = new Map();
+  sourceSentences.forEach((sentence, index) => {
+    const key = normalizeSentenceLocal(sentence);
+    sourceKeys.set(key, sourceKeys.has(key) ? -1 : index);
+  });
   const pairs = [];
   for (let index = 0; index < sentences.length - 1; index += 1) {
     const left = stripProtectedQuotedText(sentences[index]);
@@ -3290,7 +3313,7 @@ function findAdjacentSemanticRepetitionPairs(text, sourceSentences = []) {
     const lengthRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
     const connectorSubsetEcho = isConnectorSubsetEcho(left, right, leftTokens);
     const conclusionRestatementEcho = isConclusionRestatementEcho(left, right);
-    const sourceRestatement = isSourceReplayRestatement(left, right, sourceSentences);
+    const sourceRestatement = isSourceReplayRestatement(left, right, sourceSentences, sourceKeys);
     if ((containment >= 0.8 && lengthRatio >= 0.68)
         || shortCognitiveEcho
         || abstractPredicateEcho
@@ -3312,18 +3335,18 @@ function findAdjacentSemanticRepetitionPairs(text, sourceSentences = []) {
 // A rewritten sentence followed by an exact replay of its unique source owner
 // can repeat a claim despite different predicates. Flag for contextual repair,
 // not deterministic deletion: shared nouns alone do not prove equivalence.
-function isSourceReplayRestatement(left, right, sourceSentences) {
+function isSourceReplayRestatement(left, right, sourceSentences, sourceKeys) {
   if (!sourceSentences.length || left.length < 24 || right.length < 24 || left.length > 450 || right.length > 450) return false;
   if (/\t|\|/u.test(left + right) || syntaxSpans(left + '\n' + right).some(s => s.spanType === 'code' || s.spanType === 'quote')) return false;
   const exact = normalizeSentenceLocal(right);
-  if (sourceSentences.filter(s => normalizeSentenceLocal(s) === exact).length !== 1) return false;
-  if (sourceSentences.some(s => normalizeSentenceLocal(s) === normalizeSentenceLocal(left))) return false;
+  const owner = sourceKeys.get(exact);
+  if (owner == null || owner < 0) return false;
+  if (sourceKeys.has(normalizeSentenceLocal(left))) return false;
   if ((left.match(/[-+]?\d+(?:[.,]\d+)?%?/gu) || []).join('|') !== (right.match(/[-+]?\d+(?:[.,]\d+)?%?/gu) || []).join('|')) return false;
   if ((left.match(RELATION_DIRECTION_RE) || []).join('|') !== (right.match(RELATION_DIRECTION_RE) || []).join('|')) return false;
   const roots = value => new Set(contentTokensLocal(value));
   const a = roots(left), b = roots(right);
   if ([...a].filter(t => b.has(t)).length < 5 || sentenceSimilarity(left, right) < 0.50) return false;
-  const owner = sourceSentences.findIndex(s => normalizeSentenceLocal(s) === exact);
   return bestSourceSentenceAlignment(left, sourceSentences)?.index === owner;
 }
 
@@ -3427,8 +3450,13 @@ function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
   const sourcePairs = findAdjacentSemanticRepetitionPairs(source);
   const sourceSentences = splitSentences(String(source || '')).map(value => String(value || '').trim()).filter(Boolean);
   const outputPairs = findAdjacentSemanticRepetitionPairs(outputText, sourceSentences);
-  const introduced = outputPairs.filter(pair => !isSourceBackedClauseSplit(pair, sourceSentences)
-    && !sourcePairs.some(sourcePair => (
+  // An identical retained pair necessarily passes the old >= .62 comparison.
+  // Check it before any fuzzy scan, then index source clause tails once instead
+  // of parsing every source sentence for every adjacent output pair.
+  const exactSourcePairs = new Set(sourcePairs.map(pair => JSON.stringify([pair.left, pair.right])));
+  const sourceSplits = buildSourceClauseSplitIndex(sourceSentences);
+  const introduced = outputPairs.filter(pair => !exactSourcePairs.has(JSON.stringify([pair.left, pair.right]))
+    && !isSourceBackedClauseSplit(pair, sourceSplits) && !sourcePairs.some(sourcePair => (
     sentenceSimilarity(sourcePair.left, pair.left) >= 0.62
       && sentenceSimilarity(sourcePair.right, pair.right) >= 0.62
   )));
@@ -3466,28 +3494,39 @@ function detectIntroducedAdjacentSemanticRepetition(source, outputText) {
 // solely because both arms align to the same original sentence.
 // This exemption needs an exact, unique source suffix and an independently
 // aligned prefix; similarity to the whole sentence alone is never sufficient.
-function isSourceBackedClauseSplit(pair, sourceSentences) {
-  const right = normalizeSentenceLocal(pair.right);
-  if (right.length < 18 || !layoutStructure.isSentenceComplete(pair.right)) return false;
-  const matches = [];
+function buildSourceClauseSplitIndex(sourceSentences) {
+  const byTail = new Map();
   for (const sentence of sourceSentences) {
+    const joins = [...sentence.matchAll(/(?:었으며|았으며|였으며|됐으며|되었고|했고|했으며|지만|으나),?\s+/gu)];
+    if (!joins.length) continue;
     if (sentence.length > 1400 || syntaxSpans(sentence).some(s => s.spanType === 'code')) continue;
     if (layoutStructure.buildLineRecords(sentence).some(r => !r.blank && r.role !== 'prose')) continue;
     const literals = syntaxSpans(sentence);
-    for (const join of sentence.matchAll(/(?:었으며|았으며|였으며|됐으며|되었고|했고|했으며|지만|으나),?\s+/gu)) {
+    for (const join of joins) {
       if (literals.some(s => s.start <= join.index && s.end > join.index)) continue;
       const left = sentence.slice(0, join.index + join[0].length).trim();
       const tail = sentence.slice(join.index + join[0].length).trim();
-      if (normalizeSentenceLocal(tail) !== right || left.length < 18) continue;
-      if (sentenceSimilarity(left, pair.left) < 0.60) continue;
-      // The suffix must contribute something not already repeated in the
-      // first output sentence. Otherwise keep the existing duplicate audit.
-      const leftTokens = new Set(contentTokensLocal(pair.left));
-      if (contentTokensLocal(tail).filter(t => !leftTokens.has(t)).length < 2) continue;
-      matches.push(sentence);
+      if (left.length < 18) continue;
+      const key = normalizeSentenceLocal(tail);
+      if (!byTail.has(key)) byTail.set(key, []);
+      byTail.get(key).push({ left, tailTokens: contentTokensLocal(tail) });
     }
   }
-  return matches.length === 1;
+  return byTail;
+}
+
+function isSourceBackedClauseSplit(pair, sourceSplits) {
+  const right = normalizeSentenceLocal(pair.right);
+  if (right.length < 18 || !layoutStructure.isSentenceComplete(pair.right)) return false;
+  const leftTokens = new Set(contentTokensLocal(pair.left));
+  let matches = 0;
+  for (const split of sourceSplits.get(right) || []) {
+    if (sentenceSimilarity(split.left, pair.left) < 0.60) continue;
+    // Preserve the exact old multiplicity and novel-suffix requirements.
+    if (split.tailTokens.filter(token => !leftTokens.has(token)).length < 2) continue;
+    matches += 1;
+  }
+  return matches === 1;
 }
 
 function bestSourceSentenceAlignment(value, sourceSentences) {

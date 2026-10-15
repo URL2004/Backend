@@ -55,6 +55,19 @@ test('lease rejects an account under deletion and stale terminal state', async (
   assert.equal(await coordinator.acquire(job, 'refine'), null);
 });
 
+test('shared worker capacity is enforced atomically across instances and auxiliary jobs', async () => {
+  const db = database();
+  const options = { db, caps: { formal: 3, short: 3 }, totalCap: 2 };
+  const a = createExecutionCoordinator(options), b = createExecutionCoordinator(options);
+  const jobs = ['formal', 'blog', 'blog'].map((mode, i) => ({ id: 'shared-' + i, uid: 'user-' + i, mode, status: i === 2 ? 'done' : 'queued' }));
+  jobs.forEach(job => db.rows.set(`transformJobs/${job.id}`, job));
+  const leases = await Promise.all([a.acquire(jobs[0], 'main'), b.acquire(jobs[1], 'main')]);
+  assert.ok(leases.every(Boolean));
+  assert.equal(await b.acquire(jobs[2], 'refine'), null);
+  await a.release(leases[0]);
+  assert.ok(await b.acquire(jobs[2], 'refine'));
+});
+
 test('readiness bounds dependency hangs, coalesces probes and recovers configuration failures', async () => {
   let now = 0, enabled = false, calls = 0;
   const check = createReadiness({ configured: () => enabled, probe: async () => { calls++; }, clock: () => now, cacheMs: 10 });

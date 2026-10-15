@@ -76,8 +76,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.113';
-const DETECT_VERSION = 'gpt-detect-v1.56';
+const VERSION = 'gpt-prod-v2.5.114';
+const DETECT_VERSION = 'gpt-detect-v1.57';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -4691,6 +4691,8 @@ async function runEngine({
     });
   }
   const deliverySemanticState = require('./finalSemanticOutcome').finalSemanticState(semanticReport, finalSemanticValidation);
+  if (!strictBlocked) qualityWarnings.push(...require('./referenceRelationReview').unresolvedWarnings(
+    deliveryAudit?.relationAudit?.candidates, deliverySemanticState));
   if (!strictBlocked && !['verified_pass', 'not_run'].includes(deliverySemanticState)
       && !qualityWarnings.some(w => /^semantic_|^quality_review_required$/u.test(w.code || ''))) {
     qualityWarnings.push({ code: 'semantic_validation_unconfirmed', severity: 'warning',

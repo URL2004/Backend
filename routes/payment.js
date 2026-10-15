@@ -62,6 +62,9 @@ const {
   buildRefundPolicyPurchaseSnapshot
 } = require('../lib/refundPolicySnapshot');
 const gptAnalyze = require('./analyze-gpt');
+const runAdminHumanize = require('../lib/adminHumanizeExecution').createAdminHumanizeExecution({
+  db, logger, runHumanize: options => gptAnalyze.runHumanizeChunked(options)
+});
 
 const router = express.Router();
 const JOB_ARCHIVE_COLLECTION = 'transformJobArchive';
@@ -4004,6 +4007,11 @@ router.post('/admin/test-gpt-runtime-config', async (req, res) => {
       code: 'UNSUPPORTED_PROVIDER'
     });
   }
+  const testController = new AbortController();
+  const abortTest = () => testController.abort();
+  req.once('aborted', abortTest);
+  res.once('close', abortTest);
+  if (req.aborted || res.destroyed) abortTest();
   try {
     const base = await gptRuntimeConfig.getRuntimeConfig({ db, logger, force: true });
     const config = gptRuntimeConfig.publicConfig({
@@ -4014,7 +4022,8 @@ router.post('/admin/test-gpt-runtime-config', async (req, res) => {
     const task = String((req.body && req.body.task) || 'detect').toLowerCase();
     const startedAt = Date.now();
     const result = task === 'humanize'
-      ? await gptAnalyze.runHumanizeChunked({ text: sampleText, mode: 'polish', lang: 'ko', config, allowPolish: true, uid: adminUid })
+      ? await runAdminHumanize({ uid: adminUid, signal: testController.signal,
+        options: { text: sampleText, mode: 'polish', lang: 'ko', config, allowPolish: true } })
       : await gptAnalyze.runDetect(sampleText, 'ko', { config, route: 'admin_test_gpt_runtime', allowLocalFallback: false, uid: adminUid });
     logger.info('admin.gpt_runtime_config_tested', {
       adminUid,
@@ -4039,7 +4048,10 @@ router.post('/admin/test-gpt-runtime-config', async (req, res) => {
     });
   } catch (err) {
     logger.error('admin.gpt_runtime_config_test_failed', { adminUid, err });
-    res.status(500).json({ error: err && err.message || '운영 LLM 테스트 호출에 실패했습니다.' });
+    if (!res.headersSent && !res.destroyed) res.status(err?.status || 500).json({ error: err && err.message || '운영 LLM 테스트 호출에 실패했습니다.' });
+  } finally {
+    req.removeListener('aborted', abortTest);
+    res.removeListener('close', abortTest);
   }
 });
 
@@ -6375,5 +6387,8 @@ router.refundPolicy = {
   subscriptionRefundGenerationCanMutateUser,
   activeUpgradeRefundConflict
 };
+
+router.shutdownAdminHumanize = runAdminHumanize.shutdown;
+router.adminHumanizeStats = runAdminHumanize.stats;
 
 module.exports = router;

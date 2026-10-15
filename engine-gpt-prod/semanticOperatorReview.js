@@ -10,6 +10,7 @@ const CODES = new Set(['temporal_limit_candidate', 'sole_reason_candidate',
   'necessity_condition_candidate', 'temporal_actor_candidate',
   'source_suffix_replay_candidate', 'introduced_adjacent_duplicate_candidate',
   ...require('./auditMeaningRelations').CODES,
+  ...require('./referenceRelationReview').CODES,
   'source_label_binding_candidate', 'introduced_delimiter_imbalance_candidate']);
 const unique = (text, span) => typeof span === 'string' && span.length >= 12
   && text.indexOf(span) >= 0 && text.indexOf(span) === text.lastIndexOf(span);
@@ -94,6 +95,7 @@ function instructionsFor(selected) {
       'necessity_condition_candidate', 'temporal_actor_candidate']) ? require('./eventRelationOperators').instruction : '',
     has(['source_suffix_replay_candidate', 'introduced_adjacent_duplicate_candidate']) ? require('./adjacentDuplicateReview').instruction : '',
     has(require('./auditMeaningRelations').CODES) ? require('./auditMeaningRelations').instruction : '',
+    has(require('./referenceRelationReview').CODES) ? require('./referenceRelationReview').instruction : '',
     has(['source_label_binding_candidate', 'introduced_delimiter_imbalance_candidate']) ? require('./sourceArtifactRelations').instruction : ''
   ].filter(Boolean).join('\n');
 }

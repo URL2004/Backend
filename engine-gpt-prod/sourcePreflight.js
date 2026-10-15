@@ -87,6 +87,15 @@ const REMOVABLE_LINE_RULES = Object.freeze([
     message: '본문 끝에 함께 붙은 AI 문체 관련 재작성 요청을 변환 대상에서 제외했어요.'
   },
   {
+    code: 'source_assistant_reply_artifact',
+    boundaryOnly: true,
+    // `좋아. … 다듬어볼게. … 네가 직접 쓴 느낌이 나도록 바꿨어.`: a pasted chat
+    // reply, not the essay. Require the interjection, a first-person rewrite
+    // promise/report AND an address or style-meta cue; a diary line lacks them.
+    pattern: /^(?=[^\n]{1,280}$)(?:좋아(?:요)?|좋습니다|알겠어(?:요)?|알겠습니다|네|그래)[.!,~]\s*(?=[^\n]*(?:볼게|드릴게(?:요)?|봤어|바꿨어|다듬었어|고쳤어|정리했어))(?=[^\n]*(?:다듬|고쳐|고치|바꿔|바꾸|바꿨|수정|정리))(?=[^\n]*(?:네가|너의|당신|과제답게|티가\s*(?:나지|안\s*나)|느낌이\s*나도록))[^\n]+$/u,
+    message: '본문 앞뒤에 함께 붙은 대화형 답변 문구를 변환 대상에서 제외했어요.'
+  },
+  {
     code: 'source_generation_meta_artifact',
     boundaryOnly: true,
     pattern: /^(?=[^\n]{1,280}$)(?=[^\n]*(?:소제목|제목)[^\n]*(?:제외|빼고))(?=[^\n]*(?:완성본|최종본))(?=[^\n]*(?:복사|붙여\s*넣|사용))[^\n]+$/iu,

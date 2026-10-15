@@ -70,7 +70,7 @@ test('low signal without positive evidence is not proof of human authorship', ()
 });
 test('high score without located evidence cannot claim sufficient grounds or recurrence', () => {
   const r = build({ ...standard, probability: 85, signalEvidence: [{...signal(), locationStatus:'unlocated'}] });
-  assert.equal(r.status, 'partial'); assert.equal(r.evidence.level, 'some'); assert.equal(r.pattern, null);
+  assert.equal(r.status, 'partial'); assert.equal(r.evidence.level, 'limited'); assert.equal(r.pattern, null);
   assert.doesNotMatch(r.description, /글 전반에서 반복/);
 });
 test('short input outranks high score and confidence', () => {
@@ -161,6 +161,23 @@ test('recheck wording follows the recorded attempts, and absent diagnostics make
   // Without a conflict the diagnostics never add a recheck sentence.
   assert.doesNotMatch(JSON.stringify(build({ ...standard, probability: 62, signalEvidence: [signal()],
     detectDiagnostics: diagnostics({ attempts: [primary, recheck] }) })), /추가 검사/u);
+});
+
+test('all six independent disclosures roundtrip in a bounded signed history backup', () => {
+  const { signDetectInterpretation, verifiedBackupInterpretation } = require('../lib/detectHistoryPresentation');
+  const inputText = '가'.repeat(800), key = 'synthetic-disclosure-key-'.repeat(3), uid = 'fixture';
+  const interpretation = build({ ...standard, probability: 60, textLength: inputText.length, sentenceTotal: 4,
+    signalEvidence: [], finalCandidateConsistency: { status: 'conflict' },
+    statisticalSupport: { ...statisticalSupport, originalScore: 18, score: 60 },
+    statisticalReference: { basis: 'independent_statistics', scoreApplied: false } });
+  assert.equal(interpretation.limitations.length, 6);
+  const proof = signDetectInterpretation(uid, inputText, interpretation, key);
+  assert.equal(typeof proof, 'string');
+  const entry = { inputText, probability: 60, interpretation, interpretationProof: proof };
+  assert.deepEqual(verifiedBackupInterpretation(uid, entry, key), interpretation);
+  const tooMany = { ...interpretation, limitations: [...interpretation.limitations, '추가 항목'] };
+  assert.equal(signDetectInterpretation(uid, inputText, tooMany, key), null);
+  assert.equal(verifiedBackupInterpretation(uid, { ...entry, interpretation: { ...interpretation, limitations: ['변조된 설명'] } }, key), null);
 });
 test('report view and stored history pass diagnostics through to the same recheck wording', () => {
   const conflict = { status: 'conflict', reason: 'unsupported_high_score' };

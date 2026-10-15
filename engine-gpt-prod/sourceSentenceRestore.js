@@ -196,7 +196,16 @@ function resolveSplitRestoration(alignment, sourceSpans, outputSpans, output, ma
             ? restorationTokens(span.text) : []));
         if (added.some(token => !ownerTokens.has(token))) return null;
       }
-      if (shared.length / Math.max(1, tokens.length) < 0.4) continue;
+      if (shared.length / Math.max(1, tokens.length) < 0.4) {
+        // A paraphrased lead/tail arm can share too few exact tokens to prove
+        // a join (`지속가능해` / `지속될`), yet still carry this source's
+        // unselected content. Overwriting only the other arm would then print
+        // the clause twice. Too fuzzy to extend or delete, so veto the write
+        // unless the adjacent source sentence on that side owns the neighbour.
+        if (isUnownedSplitArm(alignment.sourceIndex, neighbour < current.start ? -1 : 1,
+            text, ownerScore, sourceSpans, output, outputSpans, current, neighbour)) return null;
+        continue;
+      }
       if (otherOwner >= ownerScore - 0.02) {
         if (otherOwner >= Math.max(0.5, ownerScore + 0.06)) continue;
         return null;
@@ -216,6 +225,18 @@ function resolveSplitRestoration(alignment, sourceSpans, outputSpans, output, ma
     current = best;
   }
   return current;
+}
+
+// Called only after `added >= 2` source tokens are found in the neighbour.
+// Never crosses a paragraph: a blank line is not a split-arm boundary.
+function isUnownedSplitArm(sourceIndex, side, text, ownerScore, sourceSpans, output, outputSpans, current, neighbour) {
+  const from = side < 0 ? outputSpans[neighbour].end : outputSpans[current.end - 1].end;
+  const to = side < 0 ? outputSpans[current.start].start : outputSpans[neighbour].start;
+  if (/\r?\n[ \t]*\r?\n/u.test(output.slice(from, to))) return false;
+  const adjacent = sourceSpans[sourceIndex + side];
+  if (!adjacent) return true;
+  const adjacentText = sourceTextWithoutLeadingHeading(adjacent.text, text);
+  return sentenceSimilarity(adjacentText, text) < ownerScore;
 }
 
 function restorationTokens(text) {

@@ -2,7 +2,7 @@
 
 const { splitSentences, splitSentenceSpans, ngramSet } = require('../engine/koreanText');
 const { extractNumberTokens } = require('./factAudit');
-const VERSION = 'relation-candidates-v22-audit-meaning';
+const VERSION = 'relation-candidates-v23-reference-scope';
 const { predicateScopeCandidates } = require('./predicateScope');
 const { auditParentheticalAliasOwners } = require('./entityParentheticalIntegrity');
 
@@ -261,6 +261,10 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
     if (!seen.has(key)) { seen.add(key); unique.push(row); }
   }
   for (const row of require('./sourceArtifactRelations').candidates(before, after, { documentSource })) {
+    const key = JSON.stringify(row);
+    if (!seen.has(key)) { seen.add(key); unique.push(row); }
+  }
+  for (const row of require('./referenceRelationReview').candidates(before, after)) {
     const key = JSON.stringify(row);
     if (!seen.has(key)) { seen.add(key); unique.push(row); }
   }

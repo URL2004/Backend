@@ -1,5 +1,12 @@
 'use strict';
 
+// A ㅆ-final syllable is a past/existential/future stem (배웠, 갔, 졌, 겠),
+// never a free noun, so `…ㅆ` + `다` is one predicate split by a row break.
+const hasSsangSiotFinal = stem => {
+  const code = String(stem || '').charCodeAt(String(stem || '').length - 1) - 0xAC00;
+  return code >= 0 && code < 11172 && code % 28 === 20;
+};
+
 // A list-looking syllable can be the last part of an unfinished predicate.
 // Require a developed prose clause; short verse and unknown stems stay intact.
 function isEndingSeam(left, right) {
@@ -7,7 +14,7 @@ function isEndingSeam(left, right) {
   if (a.length < 24 || a.split(/\s+/u).length < 4) return false;
   const stem = a.match(/([가-힣]+)$/u)?.[1] || '';
   if (/^다\.(?=\s|$)/u.test(b)) {
-    if (/(?:[가-힣]이|했|됐|였|었|났|랐|렸|겠|있|없|않|습니|[합입됩]니)$/u.test(stem)) return true;
+    if (/(?:[가-힣]이|없|않|습니|[합입됩]니)$/u.test(stem) || hasSsangSiotFinal(stem)) return true;
     // Present-tense `-ㄴ다` cut before its last syllable (`해야 한/다.`,
     // `초점을 둔/다.`, `검토한/다.`). Only predicate shapes are accepted: a
     // bare noun tail (권한, 기한, 시간) before a real `다.` item is not one, and
@@ -42,4 +49,4 @@ function siblingIndices(records) {
   return result;
 }
 
-module.exports = { isEndingSeam, siblingIndices };
+module.exports = { isEndingSeam, siblingIndices, hasSsangSiotFinal };

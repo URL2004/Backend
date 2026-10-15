@@ -71,6 +71,7 @@ test('worker checkpoints do not complete the job and cancelled work retains earl
   class FakeWorker extends EventEmitter { constructor() { super(); workers.push(this); } terminate() { return Promise.resolve(); } }
   const context = { module: { exports: {} }, __dirname, process: { env: { HUMANIZE_ENGINE_WORKERS: '1' } },
     require: name => name === 'node:worker_threads' ? { Worker: FakeWorker } : name === './logger' ? { currentContext: () => ({}) }
+      : name === './humanizeCapacity' ? require('../lib/humanizeCapacity')
       : name === '../engine-gpt-prod/callLedger' ? ledger : require(name) };
   vm.runInNewContext(fs.readFileSync(require.resolve('../lib/humanizeWorkerPool'), 'utf8'), context);
   const seen = [], first = new AbortController();
@@ -92,7 +93,7 @@ test('lease-owned execution saves final attempt archive before releasing ownersh
   const code = fs.readFileSync(require.resolve('../routes/transform'), 'utf8');
   const job = { id: 'fixture', status: 'queued', queuedAt: Date.now(), ac: new AbortController() };
   const events = [], archives = [];
-  const context = { attemptTrace: trace, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, process,
+  const context = { draining: false, attemptTrace: trace, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, process,
     executionCoordinator: { acquire: async () => ({ token: 'owner' }), renew: async () => true,
       release: async () => { events.push('release'); } },
     require: name => name === '../engine-gpt-prod/callLedger' ? ledger : require(name),
@@ -100,6 +101,8 @@ test('lease-owned execution saves final attempt archive before releasing ownersh
     scheduleQueueDrain: () => events.push('schedule'), jobPersistChains: new Map(), logger: { warn() {} } };
   vm.runInNewContext(code.slice(code.indexOf('async function executeOwned('), code.indexOf('function auxiliaryRoute(')), context);
   await context.executeOwned(job, 'main', async () => {
+    assert.equal(require('../lib/logger').currentContext().requestId, 'job_fixture');
+    assert.equal(require('../lib/logger').currentContext().jobId, 'fixture');
     job.status = 'done';
     trace.observeStatus(job);
     // Earlier terminal archive exists, followed by the attempt-finalized update.
@@ -115,7 +118,7 @@ test('lease-owned execution saves final attempt archive before releasing ownersh
 test('owned auxiliary execution records successful and failed provider calls without charging the user', async () => {
   const fs = require('node:fs'), vm = require('node:vm');
   const code = fs.readFileSync(require.resolve('../routes/transform'), 'utf8');
-  const context = { attemptTrace: trace, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, process,
+  const context = { draining: false, attemptTrace: trace, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, process,
     executionCoordinator: { acquire: async () => ({ token: 'owner' }), renew: async () => true, release: async () => {} },
     require: name => name === '../engine-gpt-prod/callLedger' ? ledger : require(name),
     persistJob: async () => ({ ok: true }), scheduleQueueDrain() {}, jobPersistChains: new Map(), logger: { warn() {} } };

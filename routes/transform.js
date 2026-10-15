@@ -80,14 +80,28 @@ setInterval(() => {
 //   동시·일일 한도로 최악 비용을 캡. 한도는 "운영자가 감당 가능한 하루 최대 손실" 기준으로 env 조정.
 // Python layout 프로세스 제거와 청크 worker 상한(최대 3) 적용 뒤 검증된 안전
 // 기본값. 운영 env가 유실돼도 두 풀이 1건씩으로 되돌아가 처리량이 잠기지 않는다.
-const TRANSFORM_SAFE_ACTIVE_CAP = Math.max(1, Number(process.env.TRANSFORM_SAFE_ACTIVE_CAP) || 2);
-const MAX_ACTIVE_GLOBAL = Math.min(Number(process.env.RESTRUCTURE_MAX_ACTIVE) || 3, TRANSFORM_SAFE_ACTIVE_CAP);   // 전역 동시 실행(LLM 점유) 상한 — formal(재구성)
-const BLOG_MAX_ACTIVE = Math.min(Number(process.env.BLOG_MAX_ACTIVE) || 4, TRANSFORM_SAFE_ACTIVE_CAP);            // blog(기본 피하기) 전역 동시 — 짧고 저원가라 별도 풀
-const executionCoordinator = executionPolicy.createExecutionCoordinator({ db, caps: { formal: MAX_ACTIVE_GLOBAL, short: BLOG_MAX_ACTIVE } });
+const executionLimits = require('../lib/humanizeCapacity').executionLimits();
+const MAX_ACTIVE_GLOBAL = executionLimits.caps.formal;
+const BLOG_MAX_ACTIVE = executionLimits.caps.short;
+const ENGINE_ACTIVE_CAP = executionLimits.totalCap;
+const executionCoordinator = executionPolicy.createExecutionCoordinator({ db, ...executionLimits });
 
 async function executeOwned(job, feature, run) {
+  // A queue timer inherits the previous request's async context. Give each job
+  // its own stable identity before acquiring ownership or starting any model.
+  return require('../lib/logger').runWithLogContext({ requestId: 'job_' + job.id, jobId: job.id, uid: job.uid, feature },
+    () => executeOwnedInContext(job, feature, run));
+}
+
+async function executeOwnedInContext(job, feature, run) {
   const lease = await executionCoordinator.acquire(job, feature);
   if (!lease) return false;
+  // Shutdown can begin while the ownership transaction is pending. Leave the
+  // persisted job queued for the next instance; never start a fresh model then.
+  if (draining) {
+    await executionCoordinator.release(lease);
+    return false;
+  }
   if (lease.persisted) Object.assign(job, lease.persisted);
   job.executionToken = lease.token;
   if (feature === 'main' && job.ac?.signal.aborted) job.ac = new AbortController();
@@ -538,7 +552,7 @@ async function precheckExistingJobBilling(job, idToken, creditAmount, textLength
 }
 router.precheckExistingJobBilling = precheckExistingJobBilling;   // 회귀 테스트용
 
-// 동시 실행 풀: formal(5~90분·고원가)과 short(blog·polish, 1~3분·저원가)를 분리 — 한 풀에 섞으면 서로 굶김.
+// 모드별 상한과 공유 엔진 상한을 함께 적용한다. 시작 순서는 두 모드의 접수 시각을 따른다.
 function poolOf(mode) { return (mode || 'formal') === 'formal' ? 'formal' : 'short'; }
 
 function countActive(uid, mode) {
@@ -583,12 +597,13 @@ function queuedJobsForPool(pool) {
 
 function queueDetails(job) {
   if (!job || job.status !== 'queued') return {};
-  const pool = poolOf(job.mode);
-  const queued = queuedJobsForPool(pool);
+  const queued = [...queuedJobsForPool('formal'), ...queuedJobsForPool('short')]
+    .sort((a, b) => (a.queuedAt || a.createdAt || 0) - (b.queuedAt || b.createdAt || 0));
   const position = Math.max(1, queued.findIndex(j => j.id === job.id) + 1);
   const { running } = countActive('', job.mode);
-  const free = Math.max(0, poolCap(job.mode) - running);
-  const wave = position <= free ? 0 : Math.ceil((position - free) / Math.max(1, poolCap(job.mode)));
+  const allRunning = countActive('', 'formal').running + countActive('', 'short').running;
+  const free = Math.max(0, Math.min(poolCap(job.mode) - running, ENGINE_ACTIVE_CAP - allRunning));
+  const wave = position <= free ? 0 : Math.ceil((position - free) / Math.max(1, Math.min(poolCap(job.mode), ENGINE_ACTIVE_CAP)));
   return {
     queuePosition: position,
     queueSize: queued.length,
@@ -1761,24 +1776,18 @@ function scheduleQueueDrain(delayMs = 0) {
 
 function drainQueue() {
   if (draining) return 0;
+  // One chronological admission queue across both modes. Per-mode ceilings still
+  // apply, but formal jobs must not always win the last shared worker slot.
+  const running = { formal: countActive('', 'formal').running, short: countActive('', 'short').running };
+  let free = Math.max(0, ENGINE_ACTIVE_CAP - running.formal - running.short);
   let started = 0;
-  started += drainQueuePool('formal');
-  started += drainQueuePool('short');
-  return started;
-}
-
-function drainQueuePool(pool) {
-  const cap = pool === 'short' ? BLOG_MAX_ACTIVE : MAX_ACTIVE_GLOBAL;
-  const running = countActive('', pool).running;
-  let slots = Math.max(0, cap - running);
-  if (!slots) return 0;
-  let started = 0;
-  for (const job of queuedJobsForPool(pool)) {
-    if (slots <= 0) break;
-    if (launchQueuedJob(job)) {
-      slots--;
-      started++;
-    }
+  const queued = [...queuedJobsForPool('formal'), ...queuedJobsForPool('short')]
+    .sort((a, b) => (a.queuedAt || a.createdAt || 0) - (b.queuedAt || b.createdAt || 0));
+  for (const job of queued) {
+    if (!free) break;
+    const pool = poolOf(job.mode);
+    if (running[pool] >= poolCap(job.mode)) continue;
+    if (launchQueuedJob(job)) { running[pool]++; free--; started++; }
   }
   return started;
 }

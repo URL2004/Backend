@@ -72,22 +72,50 @@ function isSafeLabelBodyLayout(value) {
 // A physical PDF row can split the prose after an inline label. Join only the
 // immediately adjacent, unfinished sentence: no blank paragraphs, new labels,
 // tables, quotations or code may be crossed. Preserve every non-space byte.
+// A numbered `1. 라벨: 본문` row is classified as a heading, yet its body is
+// the same label-owned prose. A wrapped body may span a few unfinished rows;
+// join them only when the run ends in a complete sentence row.
+const unfinishedLabelBody = text => {
+  const rest = String(text || '').match(/^\d{1,3}[.)][ \t]+(.+)$/u)?.[1] || String(text || '');
+  const body = (layout.labelParts(rest || '')?.rest || '').trim();
+  // A long nominal subtitle is still a heading. Require an unfinished clause
+  // or explicit adjunct tail before treating a numbered label as wrapped prose.
+  return body.length >= 20 && (
+    /[가-힣]{2,}(?:은|는|을|를|의|에서|으로|에게|까지|부터|하며|하고|면서|지만|도록|위해|통해)$/u.test(body)
+    || /[가-힣]{2,}(?:적|적인|하는|되는|했던|필요한|가능한)$/u.test(body)
+    || /\s(?:직접|함께)$/u.test(body)
+  );
+};
 function repairInlineLabelContinuations(value) {
   let text = String(value || '');
   let repairCount = 0;
   const records = layout.buildLineRecords(text), literals = syntaxSpans(text);
   const edits = [];
   for (let i = 0; i < records.length - 1; i++) {
-    const left = records[i], right = records[i + 1];
-    if (left.role !== 'label_inline' || right.role !== 'prose' || right.blank
-        || layout.isSentenceComplete(left.text) || !layout.isSentenceComplete(right.text)
-        || left.text.length < 40 || right.text.length < 12
-        || /\t|\S {2,}\S/u.test(left.raw + right.raw)) continue;
-    const start = left.end - (left.raw.length - left.raw.trimEnd().length);
-    const end = right.start + right.raw.length - right.raw.trimStart().length;
-    if (!/^[ \t]*\n[ \t]*$/u.test(text.slice(start, end))) continue;
-    if (literals.some(s => s.start < right.end && s.end > left.start)) continue;
-    edits.push({ start, end });
+    const left = records[i];
+    if (!(left.role === 'label_inline' || left.role === 'heading' && /^\d{1,3}[.)][ \t]+/u.test(left.text))
+        || !unfinishedLabelBody(left.text)
+        || layout.isSentenceComplete(left.text) || left.text.length < 40) continue;
+    const run = [];
+    for (let j = i + 1; j < records.length && j <= i + 4; j++) {
+      const right = records[j];
+      if (right.role !== 'prose' || right.blank) break;
+      run.push(right);
+      if (layout.isSentenceComplete(right.text)) break;
+    }
+    const last = run[run.length - 1];
+    if (!last || !layout.isSentenceComplete(last.text) || last.text.length < 12
+        || /\t|\S {2,}\S/u.test([left, ...run].map(r => r.raw).join('\n'))) continue;
+    const seams = [left, ...run].slice(0, -1).map((row, k) => ({
+      start: row.end - (row.raw.length - row.raw.trimEnd().length),
+      end: run[k].start + run[k].raw.length - run[k].raw.trimStart().length
+    }));
+    if (!seams.every(s => /^[ \t]*\n[ \t]*$/u.test(text.slice(s.start, s.end)))) continue;
+    // An inline title within one row is not crossed; a quotation or code
+    // span that owns a seam keeps its layout.
+    if (literals.some(s => seams.some(seam => s.start < seam.end && s.end > seam.start))) continue;
+    edits.push(...seams);
+    i += run.length;
   }
   for (const e of edits.reverse()) {
     text = text.slice(0, e.start) + ' ' + text.slice(e.end);

@@ -13,7 +13,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 40;
+const VERSION = 41;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -27,6 +27,10 @@ const PROFESSIONAL_PROFILES = new Set([
 const HANGUL_CONNECTIVE_ACRONYM_GLUE_RE = /([가-힣]{2,}(?:이고|이며|하고|하며|되고|되어|해서|하면서|지만|거나))(?=[A-Z]{2,}(?:$|[^A-Za-z]))/gu;
 
 const ISSUE_DEFINITIONS = Object.freeze({
+  introduced_adnominal_negation: {
+    weight: 7, repairable: true, deterministicSafe: false,
+    message: '원문의 동사 관형형이 결과에서 부정 서술어와 바로 연결되어 새 문법 오류가 생겼어요. 해당 문장을 원문과 대조해 부정의 대상·범위·시제와 뒤의 대조절을 그대로 유지하며 최소 교정하세요. 어미만 일괄 치환하거나 문장을 추측 복원하지 마세요.'
+  },
   introduced_terminal_syllable_candidate: {
     weight: 3, repairable: true, deterministicSafe: false,
     message: '원문의 단어 말음이 같은 뒤 문맥 앞에서 한 음절 늘어났을 수 있어요. 조사·어미·의미 있는 접미사는 보존하고, 원문과 문맥을 대조해 실제 중복 오타인 경우만 최소 교정하세요. 반복 음절이라는 이유로 자동 삭제하지 마세요.'
@@ -1809,6 +1813,10 @@ function analyzeKoreanRefinement({ source = '', outputText = '', documentProfile
   const targetRegister = String(documentProfile?.targetRegister || documentProfile?.tonePolicy || '');
   const sourceIssues = detectTextIssues(source, { profile, targetRegister, includeSourceNotation: true });
   const outputIssues = detectTextIssues(outputText, { profile, targetRegister, includeSourceNotation: false });
+  const adnominalNegation = require('./adnominalNegation').introducedAdnominalNegations(
+    editableIntegritySpans(source), editableIntegritySpans(outputText));
+  if (adnominalNegation.length) outputIssues.push(makeIssue('introduced_adnominal_negation',
+    adnominalNegation.length, adnominalNegation.map(item => item.ordinal)));
   const chained = detectIntroducedSentenceChains(source, outputText);
   if (chained) outputIssues.push(chained);
   const restoredEcho = detectSourceRestoreEcho(source, outputText);
@@ -3123,6 +3131,7 @@ function buildSourcePromptHints(source, { documentProfile = null, mode = '' } = 
 }
 
 const HIGH_PRIORITY_REPAIR_CODES = new Set([
+  'introduced_adnominal_negation',
   'source_editing_fragment_candidate',
   'introduced_demonstrative_loss',
   'introduced_connective_corruption',

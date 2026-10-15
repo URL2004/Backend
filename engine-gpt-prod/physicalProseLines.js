@@ -5,9 +5,11 @@
 // Only whitespace changes are permitted; explicit structure remains a barrier.
 const { syntaxSpans } = require('../engine/textSyntax');
 const { referenceLineFlags } = require('../engine/freezeblocks');
+const { hasSsangSiotFinal } = require('./koreanEndingSeam');
 const END = /[.!?。！？…][”’"'」』》〉)\]]*$/u;
 const FINITE = /[가-힣]{2,}(?:습니다|입니다|합니다|됩니다|했다|한다|된다|이다|였다|있다|없다|않다)$/u;
-const isComplete = text => END.test(text) || FINITE.test(text);
+const isComplete = text => END.test(text) || FINITE.test(text)
+  || /다$/u.test(text) && hasSsangSiotFinal(text.slice(0, -1));
 // 문장이 끝난 뒤 붙은 짧은 괄호 출처(“…했다.” (23p))도 끝난 줄이다. 그 뒤 해설과의 문단 간격을 강제 개행으로 되돌리지 않는다.
 const CITED_SENTENCE_END = /[.!?。！？]["”’」』]?[ \t]*\([^()\r\n]{1,40}\)[ \t]*$/u;
 // Lexically unambiguous broken words only. Unknown Korean seams must not be
@@ -33,7 +35,7 @@ function wordForms(word) {
 const witnessedWords = source => new Set((String(source).match(/[가-힣]{2,}/gu) || []).flatMap(wordForms));
 const brokenEndingSeam = (a, b) => /^(?:다|니다|습니다)$/u.test(b)
   && (/(?:습니?|[합입됩했겠였않없있]니)$/u.test(a)
-    || b === '습니다' || b === '다' && /(?:했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(a));
+    || b === '습니다' || b === '다' && (/(?:없|않)$/u.test(a) || hasSsangSiotFinal(a)));
 const isNominalHeading = text => !/[.!?。！？,]/u.test(text) && text.length <= 80
   && /(?:계획|현황|목적|방법|배경|필요성|분석|정의|개념|결과|시사점|참고문헌)$/u.test(text)
   && !/(?:은|는|을|를)\s/u.test(text);
@@ -77,6 +79,8 @@ function repairPhysicalProseLines(value) {
       || require('./documentFurniture').isCaption(row.text)
       || require('./documentFurniture').isBylineHeader(row.text)
       || /^\d+(?:\.\d+)*[.)](?!\d)[ \t]*(?=[가-힣A-Za-z“‘"'「『《〈])/u.test(row.text)
+      // `5-3. 제목`, `5-4 .제목`: a dash-numbered section is a heading, too.
+      || /^\d+(?:-\d+)+[ \t]*[.)]?[ \t]*(?=[가-힣A-Za-z])/u.test(row.text)
       || /^[A-Za-z][.)](?=\s*\S)/u.test(row.text)
       || standaloneQuotes.some(span => span.start <= row.end && span.end > row.start)
       || (/\t/u.test(row.raw) && !proseTabs.has(row.index))
@@ -101,8 +105,15 @@ function repairPhysicalProseLines(value) {
     if (!a.protected && !b.protected && a.text.length >= 28 && !isComplete(a.text)
         && wordSeam(a.text, b.text, witnessed)) seams++;
   }
+  // A PDF wrapped at real word spaces leaves no split-word seam. Accept that
+  // instead only on a dense census whose unfinished rows also carry internal
+  // sentence boundaries: reflowed paragraph rows, not a nominal item list.
+  const reflowedRows = unfinished.filter(r => /[가-힣][.!?。！？]["”’)\]]?\s+\S/u.test(r.text)).length;
+  const denseReflow = unfinished.length >= 20 && unfinished.length / Math.max(1, regular.length) >= 0.7
+    && regular.length / Math.max(1, prose.length) >= 0.8 && reflowedRows >= Math.max(8, regular.length * 0.3);
   const qualified = regular.length >= 8 && regular.length / Math.max(1, prose.length) >= 0.65
-    && unfinished.length >= 6 && unfinished.length / Math.max(1, regular.length) >= 0.55 && seams >= 2;
+    && unfinished.length >= 6 && unfinished.length / Math.max(1, regular.length) >= 0.55
+    && (seams >= 2 || denseReflow);
   if (!qualified) return { text: source, changed: false, changes: [], joins: [] };
   // Protect evidenced charts before physical prose reflow. Otherwise a long
   // caption can be attached to an unfinished body row before the planner sees
@@ -197,7 +208,7 @@ function restoreSourceWordSeams(source, value) {
   for (const m of output.matchAll(/([^\n]{28,})\n(?:[ \t]*\n)*[ \t]*다\.(?=\s|$)/gu)) {
     if (excess <= 0) break;
     const left = m[1].trimEnd(), word = left.match(/([가-힣]+)$/u)?.[1] || '';
-    if (left.split(/\s+/u).length < 4 || !/(?:한|된|했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(word)
+    if (left.split(/\s+/u).length < 4 || !(/(?:한|된|없|않)$/u.test(word) || hasSsangSiotFinal(word))
         || !wordForms(word + '다').some(form => witnessed.has(form))) continue;
     const start = m.index + left.length, end = m.index + m[0].length - 2;
     if (protectedSpans.some(span => span.start < end && span.end > start)
@@ -246,8 +257,12 @@ function restoreSubmittedSourceSeams(source, value) {
     const left = records[rowIndex], right = records[rowIndex + 1];
     if (!left || !right || (left.text.length < 28 && !/\($/u.test(left.text)) || isComplete(left.text) || CITED_SENTENCE_END.test(left.text)
         || literals.some(s => s.start <= start && s.end > start)) { conflicts.add(key); continue; }
+    // A demonstrative starts the body after an explicit numbered colon title;
+    // stripping its particle must not invent a lexical word across that seam.
+    if (/^\d{1,3}[.)][ \t]+[^:：\n]+[:：]/u.test(left.text)
+        && /^이[ \t]+[가-힣]{2,}/u.test(right.text)) { conflicts.add(key); continue; }
     const url = /https?:\/\/\S+=$/u.test(left.text) && /^\d/u.test(right.text);
-    const ending = b === '다' && (/(?:한|된|했|됐|였|었|났|랐|렸|겠|있|없|않)$/u.test(a)
+    const ending = b === '다' && (/(?:한|된|없|않)$/u.test(a) || hasSsangSiotFinal(a)
       || require('./koreanEndingSeam').isEndingSeam(left.text, right.text))
       && !siblings.has(right.index);
     const lexical = ending || wordSeam(a, b, words) || words.has(a + b) && a.length + b.length >= 4

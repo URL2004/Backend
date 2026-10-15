@@ -24,7 +24,7 @@ const gptRuntimeConfig = require('./lib/gptRuntimeConfig');
 const { evaluateHumanizeRuntime } = require('./lib/runtimeCompatibility');
 const { POLICY_VERSION: HUMANIZATION_DEPTH_POLICY } = require('./engine-gpt-prod/humanizationDepth');
 const { isV248FeatureEnabled } = require('./lib/humanizeV248Flags');
-const { VERSION: HUMANIZE_ENGINE_VERSION } = require('./engine-gpt-prod');
+const { VERSION: HUMANIZE_ENGINE_VERSION, DETECT_VERSION } = require('./engine-gpt-prod');
 const { registrySnapshot: writingPolicyRegistrySnapshot } = require('./engine-writing-v1/policy/registry');
 const { verifyDetailedHealthRequest } = require('./lib/healthAuth');
 
@@ -102,6 +102,19 @@ app.use('/notifications/create-self', limiter); // 작업·결제·환불 본인
 // Public liveness exposes no runtime configuration. Detailed readiness is
 // available only with HEALTH_CHECK_SECRET via /internal/health.
 const transformRouter = require('./routes/transform');
+const paymentRouter = require('./routes/payment');
+
+function executionStats() {
+  const transform = transformRouter.stats();
+  const admin = paymentRouter.adminHumanizeStats();
+  return {
+    ...transform,
+    activeJobs: transform.activeJobs + admin.activeJobs,
+    adminHumanizeJobs: admin.activeJobs,
+    pendingAdmissions: transform.pendingAdmissions + admin.pendingAdmissions,
+    draining: transform.draining || admin.draining
+  };
+}
 
 async function detailedHealth() {
   const humanizeEngineV2 = true;
@@ -119,6 +132,7 @@ async function detailedHealth() {
         runtimeConfigSource: runtimeConfig.source || 'unknown',
         humanizeEngineV2,
         humanizeEngineVersion: HUMANIZE_ENGINE_VERSION,
+        detectEngineVersion: DETECT_VERSION,
         humanizationDepthGate,
         humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
         paragraphRefineEnabled: process.env.PARAGRAPH_REFINE === '1',
@@ -132,7 +146,7 @@ async function detailedHealth() {
         maintenance: maintenanceMode.isMaintenanceEnabled(),
         uptimeSec: Math.round(process.uptime()),
         ...memoryHealthMeta(),
-        ...transformRouter.stats()
+        ...executionStats()
       })
     };
   } catch (err) {
@@ -144,6 +158,7 @@ async function detailedHealth() {
         code: 'RUNTIME_CONFIG_UNAVAILABLE',
         humanizeEngineV2,
         humanizeEngineVersion: HUMANIZE_ENGINE_VERSION,
+        detectEngineVersion: DETECT_VERSION,
         humanizationDepthGate,
         humanizationDepthPolicy: HUMANIZATION_DEPTH_POLICY,
         paragraphRefineEnabled: process.env.PARAGRAPH_REFINE === '1',
@@ -157,7 +172,7 @@ async function detailedHealth() {
         maintenance: maintenanceMode.isMaintenanceEnabled(),
         uptimeSec: Math.round(process.uptime()),
         ...memoryHealthMeta(),
-        ...transformRouter.stats()
+        ...executionStats()
       })
     };
   }
@@ -189,7 +204,7 @@ const readiness = require('./lib/readiness').createReadiness({
 });
 app.get('/livez', (_req, res) => res.status(200).json({ ok: true, status: 'up' }));
 app.get(['/healthz', '/api/health'], async (_req, res) => {
-  const state = transformRouter.stats();
+  const state = executionStats();
   const health = state.draining || !state.restorationReady ? { ok: false, status: 'unavailable' } : await readiness();
   res.set('Cache-Control', 'no-store').status(health.ok ? 200 : 503).json(health);
 });
@@ -253,7 +268,7 @@ app.use('/', require('./routes/detectreport'));   // AI 감지 분리: 무료 �
 app.use('/', transformRouter);   // 회피모드 P3: 재구성 job (POST는 자체 검증, GET 폴링은 limiter 제외)
 app.use('/', require('./routes/kakaoLogin'));
 app.use('/', require('./routes/account'));   // 회원 탈퇴(Admin SDK — 클라 재인증 의존 제거)
-app.use('/', require('./routes/payment'));
+app.use('/', paymentRouter);
 app.use('/', require('./routes/subscription'));
 app.use('/', require('./routes/coupon'));
 app.use('/', require('./routes/events'));   // 클라이언트발 이벤트(문의·가입·초대) → Discord 운영 알림 중계
@@ -287,6 +302,7 @@ let shuttingDown = false;
 async function shutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
+  paymentRouter.shutdownAdminHumanize();
   require('./lib/metaConversions').outbox().stop();
   logger.warn('server.shutdown_started', { signal: sig });
   try { await transformRouter.shutdown(); } catch (e) { logger.error('server.shutdown_persist_failed', { err: e }); }

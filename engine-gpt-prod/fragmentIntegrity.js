@@ -88,6 +88,7 @@ function auditFragmentIntegrity(sourceText, outputText, options = {}) {
   issues.push(...require('./documentFurniture').auditFurnitureBoundaries(source, output));
   issues.push(...require('./fragmentDuplication').introducedClauseDuplicates(source, output, options));
   issues.push(...require('./fragmentDuplication').introducedResidualTails(source, output, options));
+  issues.push(...require('./truncatedPrefixIntegrity').introducedTruncatedPrefixes(source, output, options));
   issues.push(...require('./sourceBoundaryIntegrity').auditIntroducedReferenceBreaks(source, output));
   return result(issues);
 }

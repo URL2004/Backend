@@ -24,3 +24,28 @@ test('Discord only counts 2xx as delivered and exposes failed inquiry delivery',
     assert.equal(discord.webhookStats().failed, statusCode === 204 ? 0 : 1);
   }
 });
+
+test('inquiry deletion alert is correlated by ID without retaining the deleted body', async () => {
+  let payload;
+  const context = { module: { exports: {} }, Buffer, URL,
+    process: { env: { DISCORD_WEBHOOK_CS: 'https://discord.com/api/webhooks/test/test' } },
+    require(name) {
+      if (name === './outboundPolicy') return { assertOutboundUrl: url => new URL(url) };
+      if (name === 'https') return { request(_options, callback) {
+        const req = new EventEmitter();
+        req.write = data => { payload = JSON.parse(data.toString()); };
+        req.end = () => { const res = new EventEmitter(); res.statusCode = 204; callback(res); res.emit('end'); };
+        return req;
+      } };
+      throw Error(name);
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../lib/discord'), 'utf8'), context);
+  assert.equal(await context.module.exports.inquiryDeleted({
+    id: 'q_synthetic', uid: 'author', actorUid: 'operator', actorRole: 'admin', body: 'private deleted content'
+  }), true);
+  const embed = payload.embeds[0];
+  assert.ok(embed.fields.some(x => x.name === '문의ID' && x.value === 'q_synthetic'));
+  assert.ok(embed.fields.some(x => x.name === '관리자 UID' && x.value === 'operator'));
+  assert.equal(JSON.stringify(payload).includes('private deleted content'), false);
+});

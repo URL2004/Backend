@@ -990,7 +990,7 @@ function* restoreFinalDocumentLayoutSteps({
       || (chunks || []).some(c => c.lineBoundaryPolicy === 'all');
     const midSentenceParagraphs = preserveAllLines
       ? {text: finalLocked.text, repairCount: 0}
-      : repairIntroducedMidSentenceParagraphBreaks(source, finalLocked.text);
+      : repairIntroducedMidSentenceParagraphBreaks(source, finalLocked.text, { witnessSource: fragmentSource || source });
     midSentenceParagraphRepairCount += Number(midSentenceParagraphs.repairCount || 0);
     const citationTails = restoreCitationOnlyTails(source, midSentenceParagraphs.text);
     // Code whitespace is semantic (e.g. Python indentation). Restore whole
@@ -1135,19 +1135,29 @@ function restoreCodeWhitespace(source, value) {
  * 구조가 아닌 일반 산문일 때만 빈 행을 단일 공백으로 되돌린다. 원문에
  * 동일한 경계가 있던 경우에는 작성자의 구조를 존중한다.
  */
-function repairIntroducedMidSentenceParagraphBreaks(source, value) {
+function repairIntroducedMidSentenceParagraphBreaks(source, value, { witnessSource = '' } = {}) {
   const original = normalizeNewlines(value);
   const sourceText = normalizeNewlines(source);
+  const lineStarts = [];
+  for (let at = 0, index = 0; index === 0 || at > 0; index += 1) {
+    lineStarts.push(at);
+    at = original.indexOf('\n', at) + 1;
+  }
+  const promotedWrap = promotedPhysicalWrapWitness(witnessSource || sourceText, original);
   const isConnectedClause = (left, right) => (layoutStructure.isProseContinuation(left)
     || layoutStructure.isContextualProseContinuation(left, right))
     && bare(right).length >= 12
     && bare(sourceText).includes(bare(left) + bare(right).slice(0, 12));
   const lines = original.split('\n');
   const literalSpans = require('../engine/textSyntax').syntaxSpans(original);
-  const protectedLines = new Set(layoutStructure.buildLineRecords(original)
+  const lineRecords = layoutStructure.buildLineRecords(original);
+  const protectedLines = new Set(lineRecords
     .filter(r => literalSpans.some(s => s.spanType === 'code'
       ? s.start <= r.end && s.end > r.start
       : (s.start < r.start && s.end > r.start) || (s.start < r.end && s.end > r.end)))
+    .map(r => r.index));
+  const codeLines = new Set(lineRecords
+    .filter(r => literalSpans.some(s => s.spanType === 'code' && s.start <= r.end && s.end > r.start))
     .map(r => r.index));
   // A quote spanning a line boundary owns that boundary. An inline title does
   // not freeze the surrounding prose or prevent fixing a detached clause.
@@ -1155,7 +1165,8 @@ function repairIntroducedMidSentenceParagraphBreaks(source, value) {
   let repairCount = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = String(lines[index] || '');
-    if (protectedLines.has(index) || protectedLines.has(index - 1)) {
+    const quoteOwnedGap = !line.trim() && !codeLines.has(index) && !codeLines.has(index - 1);
+    if ((protectedLines.has(index) || protectedLines.has(index - 1)) && !quoteOwnedGap) {
       output.push(line);
       continue;
     }
@@ -1183,15 +1194,25 @@ function repairIntroducedMidSentenceParagraphBreaks(source, value) {
     const leftIndex = output.length - 1;
     const left = leftIndex >= 0 ? String(output[leftIndex] || '') : '';
     const right = nextIndex < lines.length ? String(lines[nextIndex] || '') : '';
-    if (protectedLines.has(nextIndex)) { output.push(line); continue; }
     const leftTrimmed = left.trimEnd();
     const rightTrimmed = right.trimStart();
     const rightRole = rightTrimmed ? layoutStructure.classifyLine(rightTrimmed) : '';
     const structuralRight = ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole);
+    // A physical source wrap the model promoted to a blank line. The bare
+    // words around the gap must be unique in source and output, and the
+    // source gap is whitespace without a blank line. Quote layout may be
+    // repaired only through this exact witness, never code.
+    const witnessedWrap = Boolean(leftTrimmed && rightTrimmed && !structuralRight
+      && !codeLines.has(nextIndex) && nextIndex < lines.length
+      && promotedWrap(lineStarts[index] - 1, lineStarts[nextIndex], output.slice(0, leftIndex + 1), rightTrimmed));
+    if ((protectedLines.has(index) || protectedLines.has(index - 1) || protectedLines.has(nextIndex)) && !witnessedWrap) {
+      output.push(line);
+      continue;
+    }
     const boundaryPattern = /[,;，；]\s*[”’"'」』》〉)\]]*$/u;
     const sourceHasEquivalentBoundary = leftTrimmed && rightTrimmed
       && sourceText.includes(`${leftTrimmed}\n\n${rightTrimmed}`);
-    if (leftTrimmed && rightTrimmed && (boundaryPattern.test(leftTrimmed) || isConnectedClause(leftTrimmed, rightTrimmed))
+    if (leftTrimmed && rightTrimmed && (witnessedWrap || boundaryPattern.test(leftTrimmed) || isConnectedClause(leftTrimmed, rightTrimmed))
         && !structuralRight && !sourceHasEquivalentBoundary) {
       output[leftIndex] = `${leftTrimmed} ${rightTrimmed}`;
       lines[nextIndex] = '';
@@ -1202,6 +1223,62 @@ function repairIntroducedMidSentenceParagraphBreaks(source, value) {
     output.push(line);
   }
   return { text: output.join('\n'), repairCount, applied: repairCount > 0 };
+}
+
+/**
+ * 원문의 물리적 줄바꿈(빈 행 없음)이 출력에서 빈 행으로 승격된 경계를 증명한다.
+ * 경계 양쪽 원문 글자(공백 제외)가 원문·출력에서 각각 한 번만 나타나고, 왼쪽이
+ * 충분히 긴 산문 문단이며 조사·어미로 끝나거나 열린 인용 안에 있을 때만 참이다.
+ * 제목·소제목·라벨 행은 조사로 끝나지 않으므로 그대로 둔다.
+ */
+function promotedPhysicalWrapWitness(source, output) {
+  const sourceText = normalizeNewlines(source);
+  let projected = null;
+  const project = () => {
+    if (projected) return projected;
+    const sourceBare = bare(sourceText);
+    const positions = [];
+    for (let i = 0; i < sourceText.length; i += 1) if (!/\s/u.test(sourceText[i])) positions.push(i);
+    projected = { sourceBare, positions, outputBare: bare(output), sourceLines: layoutStructure.buildLineRecords(sourceText) };
+    return projected;
+  };
+  const unique = (text, key) => {
+    const at = text.indexOf(key);
+    return at >= 0 && at === text.lastIndexOf(key) ? at : -1;
+  };
+  const openQuote = value => ((value.match(/"/gu) || []).length % 2 === 1)
+    || ((value.match(/'/gu) || []).length % 2 === 1)
+    || (value.match(/“/gu) || []).length > (value.match(/”/gu) || []).length
+    || (value.match(/‘/gu) || []).length > (value.match(/’/gu) || []).length;
+  return (gapStart, gapEnd, leftLines, right) => {
+    if (!sourceText || gapStart < 0 || gapEnd <= gapStart) return false;
+    let first = leftLines.length - 1;
+    while (first > 0 && String(leftLines[first - 1] || '').trim()) first -= 1;
+    const paragraph = leftLines.slice(first).join('\n');
+    const leftLine = String(leftLines.at(-1) || '').trim();
+    // A list item may continue only inside its own unclosed quotation.
+    const leftRole = layoutStructure.classifyLine(leftLine);
+    const quotedListItem = leftRole === 'list' && openQuote(leftLine);
+    if (bare(paragraph).length < 40 || (leftRole !== 'prose' && !quotedListItem)
+        || /[.!?。！？:：]["”’')\]]*$/u.test(leftLine) || layoutStructure.isSentenceComplete(leftLine)) return false;
+    const dependentLeft = /(?:[이가을를은는의에로와과도만수것]|으로|에서|에게|적으로)$/u.test(leftLine)
+      || (/기$/u.test(leftLine) && /^(?:보다|위해|때문)/u.test(right));
+    if (!dependentLeft && !openQuote(paragraph) && !/^[”’'"」』]/u.test(right)) return false;
+    const leftKey = bare(output.slice(Math.max(0, gapStart - 70), gapStart)).slice(-18);
+    const rightKey = bare(output.slice(gapEnd, gapEnd + 70)).slice(0, 18);
+    if (leftKey.length < 4 || rightKey.length < 10 || leftKey.length + rightKey.length < 24) return false;
+    const { sourceBare, positions, outputBare, sourceLines } = project();
+    const at = unique(sourceBare, leftKey + rightKey);
+    if (at < 0 || unique(outputBare, leftKey + rightKey) < 0) return false;
+    const sourceStart = positions[at + leftKey.length - 1] + 1;
+    const sourceEnd = positions[at + leftKey.length];
+    const gap = sourceText.slice(sourceStart, sourceEnd);
+    if (!gap || !/^[ \t\n]*$/u.test(gap) || /\n[ \t]*\n/u.test(gap)) return false;
+    const before = sourceLines.find(row => row.start <= sourceStart - 1 && row.end >= sourceStart);
+    const after = sourceLines.find(row => row.start <= sourceEnd && row.end > sourceEnd);
+    const proseRow = row => row && ['prose', 'physical_word_continuation'].includes(row.role);
+    return (proseRow(before) || (quotedListItem && before?.role === 'list' && openQuote(before.text))) && proseRow(after);
+  };
 }
 
 function measureDeliveredParagraphBoundaries(source, value) {

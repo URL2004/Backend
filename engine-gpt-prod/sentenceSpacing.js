@@ -16,10 +16,30 @@ const ATTACHED_SUFFIX_RE = new RegExp(
 );
 const NEW_SENTENCE_DEMONSTRATIVE_RE = /^(?:이|그|저)\s+(?:문장|말씀|구절|발언|문구|이야기|인용|말)(?:은|는|이|가|을|를|에서|로|에|도)?(?:\s|[,.!?。！？]|$)/u;
 const MISSING_SENTENCE_SPACE_RE = /([가-힣][.!?。！？]+)([”’"'」』》〉）)\]】〕]*)(?=[가-힣A-Z(])/gu;
+// `생산.분배.소비` is a list of short nouns, not three sentences. Three or more
+// items qualify only when no dotted item ends like a sentence (`갔다.왔다.잤다`).
+const DOTTED_NOUN_LIST_RE = /(?<![가-힣A-Za-z0-9])[가-힣]{1,6}(?:\.[가-힣]{1,6}){2,}(?![가-힣.])/gu;
+const SENTENCE_FINAL_ITEM_RE = /(?:다|요|까|죠|음|함|임|됨)$/u;
+// A direct quotation is a literal. A space missing inside it is the quoted
+// author's text; spacing after its closing mark is still repaired.
+const DIRECT_QUOTE_RE = /“[^“”\n]*”|「[^「」\n]*」|『[^『』\n]*』|"[^"\n]*"|‘[^‘’\n]*’/gu;
+
+function protectedSpacingRanges(text) {
+  const ranges = [...text.matchAll(DIRECT_QUOTE_RE)].map(m => [m.index, m.index + m[0].length]);
+  for (const m of text.matchAll(DOTTED_NOUN_LIST_RE)) {
+    if (!m[0].split('.').slice(0, -1).some(item => SENTENCE_FINAL_ITEM_RE.test(item)))
+      ranges.push([m.index, m.index + m[0].length]);
+  }
+  return ranges;
+}
 
 function repairMissingSentenceSpacingLine(value) {
   const text = String(value || '');
+  let ranges = null;
   return text.replace(MISSING_SENTENCE_SPACE_RE, (match, terminal, closers, offset) => {
+    const insertAt = offset + match.length;
+    ranges ||= protectedSpacingRanges(text);
+    if (ranges.some(([start, end]) => start < insertAt && insertAt < end)) return match;
     if (closers) {
       const right = text.slice(offset + match.length);
       if (ATTACHED_SUFFIX_RE.test(right) && !NEW_SENTENCE_DEMONSTRATIVE_RE.test(right)) return match;

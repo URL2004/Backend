@@ -198,6 +198,14 @@ function restoreOrdinalParagraphGaps(source, value) {
 function restoreMissingOrdinalMarkers(source, value) {
   const original = String(source || ''), output = String(value || '');
   const before = ordinalMarkers(original), after = ordinalMarkers(output, { source: original });
+  const exact = restoreAnchoredOrdinalMarkers(original, output, before, after);
+  // A document whose every ordinal was removed is treated as restructured,
+  // not as a damaged list; only a series lost beside surviving ones returns.
+  if (exact.repairCount || !after.length || before.length <= after.length || before.length > 64) return exact;
+  return restoreLostOrdinalSeries(original, output, before, after) || exact;
+}
+
+function restoreAnchoredOrdinalMarkers(original, output, before, after) {
   const unchanged = { text: output, repairCount: 0 };
   if (before.length < 2 || !after.length || before.length <= after.length || before.length > 64) return unchanged;
   const ways = Array.from({ length: before.length + 1 }, () => Array(after.length + 1).fill(0));
@@ -235,6 +243,73 @@ function restoreMissingOrdinalMarkers(source, value) {
   for (const edit of edits.reverse()) text = text.slice(0, edit.position) + edit.prefix + text.slice(edit.position);
   const repaired = ordinalMarkers(text, { source: original });
   if (repaired.length !== before.length || repaired.some((item, i) => item.number !== before[i].number)) return unchanged;
+  return { text, repairCount: edits.length };
+}
+
+// One whole punctuated 1..n series (2-6 items) lost every ordinal and its
+// item bodies were paraphrased, so no exact anchor survives. Every surviving
+// output ordinal must belong to the other source series in order, and at
+// least one must survive. Each lost
+// item sentence must map to exactly one unmarked output sentence by mutual
+// best similarity with a clear margin, monotone with the survivors. Only the
+// source prefix is inserted; a lead additive connector standing in for it
+// (또, 또한, 그리고) is dropped. A removed enumeration header is not restored.
+function restoreLostOrdinalSeries(original, output, before, after) {
+  const series = [];
+  for (const [index, item] of before.entries()) {
+    if (item.number === 1 || !series.length || item.number !== before[index - 1].number + 1) series.push([]);
+    series.at(-1).push(index);
+  }
+  const results = series.filter(indices => indices.length >= 2 && indices.length <= 6)
+    .map(indices => restoreOrdinalSeriesPrefixes(original, output, before, after, indices)).filter(Boolean);
+  return results.length === 1 ? results[0] : null;
+}
+
+function restoreOrdinalSeriesPrefixes(original, output, before, after, lostIndices) {
+  const { splitSentenceSpans } = require('../engine/koreanText');
+  const { sentenceSimilarity } = require('./sentenceAlignment');
+  const lost = new Set(lostIndices);
+  const kept = before.filter((item, index) => !lost.has(index));
+  if (kept.length !== after.length || kept.some((item, i) => item.number !== after[i].number)) return null;
+  if (lostIndices.some(index => before[index].predicateFrame || before[index].boundaryStart != null)) return null;
+  const sourceSentences = splitSentenceSpans(original), outputSentences = splitSentenceSpans(output);
+  // This fallback is optional; cap both axes before mutual-owner comparisons.
+  // Long sentence inventories keep the existing anchored restoration path.
+  if (!sourceSentences.length || sourceSentences.length > 400 || outputSentences.length > 400) return null;
+  const sourceBodies = sourceSentences.map(span => String(span.text).replace(PREFIX, '$2'));
+  const literals = syntaxSpans(output);
+  const lines = require('./layoutStructure').buildLineRecords(output);
+  const best = scores => {
+    const order = scores.map((score, index) => ({ score, index })).sort((a, b) => b.score - a.score);
+    return order[0] && order[0].score - (order[1]?.score || 0) >= 0.08 ? order[0] : null;
+  };
+  const positions = new Map(kept.map((item, i) => [before.indexOf(item), after[i].start]));
+  const edits = [];
+  for (const index of lostIndices) {
+    const marker = before[index];
+    const prefix = ordinalPrefix(original.slice(marker.start));
+    const sentence = sourceSentences.findIndex(span => span.start <= marker.start && span.end > marker.start);
+    if (!prefix || sentence < 0 || original.slice(sourceSentences[sentence].start, marker.start).trim()) return null;
+    const forward = best(outputSentences.map(span => sentenceSimilarity(sourceBodies[sentence], span.text)));
+    if (!forward || forward.score < 0.55) return null;
+    const backward = best(sourceBodies.map(body => sentenceSimilarity(body, outputSentences[forward.index].text)));
+    if (!backward || backward.index !== sentence) return null;
+    const span = outputSentences[forward.index];
+    const position = span.start + output.slice(span.start).match(/^[ \t]*/u)[0].length;
+    const row = lines.find(record => record.start <= position && record.end >= position);
+    if (!row || row.role !== 'prose' || literals.some(s => s.start <= position && s.end > position)
+        || after.some(item => item.start >= span.start && item.start < span.end)) return null;
+    const connector = output.slice(position).match(/^(?:또한|또|그리고)[,，]?[ \t]+(?=[가-힣A-Za-z0-9“‘"'(])/u)?.[0] || '';
+    positions.set(index, position);
+    edits.push({ position, remove: connector.length, prefix: prefix[1] });
+  }
+  const ordered = before.map((item, index) => positions.get(index));
+  if (ordered.some((position, i) => i > 0 && position <= ordered[i - 1])) return null;
+  let text = output;
+  for (const edit of [...edits].sort((a, b) => b.position - a.position))
+    text = text.slice(0, edit.position) + edit.prefix + text.slice(edit.position + edit.remove);
+  const repaired = ordinalMarkers(text, { source: original });
+  if (repaired.length !== before.length || repaired.some((item, i) => item.number !== before[i].number)) return null;
   return { text, repairCount: edits.length };
 }
 

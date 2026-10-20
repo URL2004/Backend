@@ -10,6 +10,10 @@ const { compareNumberMultiset, extractNumberTokens } = require('./factAudit');
 
 const MAX_RESTORE_COUNT = 5;
 const MIN_SOURCE_SENTENCE_CHARS = 14;
+const MAX_COVERAGE_SENTENCES = 400;
+const MAX_OWNER_CHECKS = 3;
+const OWNER_MIN_SCORE = 0.55;
+const OWNER_MARGIN = 0.08;
 
 const STOP_TOKENS = new Set([
   '그리고', '그러나', '하지만', '또한', '따라서', '때문에', '통해', '위해',
@@ -65,22 +69,37 @@ function restoreConfirmedSemanticOmissions({
     ...partial.candidates.map(c => c.sourceOrdinal - 1),
     ...partialOwnership.sourceIndices
   ]);
+  const coverage = createCoverageContext(rawSource, sourceSpans);
   for (const violation of insertionOmissions) {
     const match = findSourceSentenceForViolation(rawSource, sourceSpans, violation);
     if (!match || claimedSourceIndices.has(match.index)) continue;
     if (isProtectedSourceSentence(match.span.text)) continue;
-    if (!isMateriallyMissing(match.span.text, before)) continue;
+    let ownedElsewhere = false;
+    if (!isMateriallyMissing(match.span.text, before)) {
+      // A sentence the result kept only as another source sentence's own
+      // restatement is still missing at its own position (one-to-one coverage).
+      if (!coverage || !isUniquelyGroundedAt(rawSource, sourceSpans, violation, match.index)
+          || !isMateriallyMissing(match.span.text, before, coverage.at(match.index))) continue;
+      ownedElsewhere = true;
+    }
     claimedSourceIndices.add(match.index);
-    candidates.push({ ...match, violation });
+    candidates.push({ ...match, violation, ownedElsewhere });
   }
   candidates.sort((left, right) => left.index - right.index);
 
   let current = dangling.text;
   const restored = dangling.restored;
   for (const candidate of candidates.slice(0, boundedRestoreCount(maxRestoreCount) - restored.length)) {
-    if (!isMateriallyMissing(candidate.span.text, current)) continue;
+    if (!isMateriallyMissing(candidate.span.text, current,
+      candidate.ownedElsewhere ? coverage.at(candidate.index) : null)) continue;
+    // Without default coverage evidence, insert only between both source
+    // neighbours, kept as unique mutual-best matches that now sit side by side.
+    const bracket = candidate.ownedElsewhere ? coverage.bracket(candidate.index, current) : null;
+    if (candidate.ownedElsewhere && !bracket) continue;
     const insertion = locateInsertion(rawSource, sourceSpans, candidate.index, current);
     if (!insertion) continue;
+    if (bracket && insertion.position !== (insertion.anchorType === 'before_next'
+      ? bracket.nextStart : bracket.previousEnd)) continue;
     const next = insertSourceSentence(current, candidate.span.text, insertion);
     if (!next || next === current) continue;
     current = next;
@@ -88,7 +107,8 @@ function restoreConfirmedSemanticOmissions({
       sourceSentenceIndex: candidate.index,
       violation: candidate.violation,
       sentence: candidate.span.text,
-      anchorType: insertion.anchorType
+      anchorType: insertion.anchorType,
+      ...(candidate.ownedElsewhere ? { coverageOwnedElsewhere: true } : {})
     });
   }
 
@@ -141,7 +161,10 @@ function pairedPartialOmissionOwners(source, output, sourceSpans, omissions) {
     if (index < 0) continue;
     const sentence = sourceSpans[index];
     if (sourceRange.start > sentence.start || sourceRange.end < sentence.end) continue;
-    if (start === sentence.start && end === sentence.end) continue;
+    // A quotation that only leaves out the sentence's own final punctuation
+    // names the whole sentence, not a surviving partial rewrite.
+    if (/^\s*$/u.test(source.slice(sentence.start, start))
+        && /^[\s.!?。！？…]*$/u.test(source.slice(end, sentence.end))) continue;
     findings.add(item);
     sourceIndices.add(index);
   }
@@ -380,21 +403,101 @@ function alignmentScore(left, right) {
   return Math.max(ngramJaccard(left, right, 5), containment * 0.86);
 }
 
-function isMateriallyMissing(sourceSentence, outputText) {
+// `context` (from createCoverageContext().at()) is only for a uniquely grounded
+// introduced finding. Without it the established global coverage test applies.
+function isMateriallyMissing(sourceSentence, outputText, context = null) {
   const sentence = String(sourceSentence || '').trim();
   if (normalizeForMatch(sentence).length < MIN_SOURCE_SENTENCE_CHARS) return false;
   const sourceCompact = normalizeForMatch(sentence);
   const outputCompact = normalizeForMatch(outputText);
-  if (outputCompact.includes(sourceCompact)) return false;
+  const outputSpans = splitSentenceSpans(outputText);
+  const contextual = Boolean(context) && outputSpans.length <= MAX_COVERAGE_SENTENCES;
+  // Literal text that no single output sentence holds is still coverage.
+  if (outputCompact.includes(sourceCompact) && (!contextual
+    || !outputSpans.some(span => normalizeForMatch(span.text).includes(sourceCompact)))) return false;
   const sourceTokens = contentTokens(sentence);
-  return splitSentenceSpans(outputText).every(span => {
+  return outputSpans.every((span, spanIndex) => {
     const candidateCompact = normalizeForMatch(span.text);
-    if (candidateCompact.includes(sourceCompact) || sourceCompact.includes(candidateCompact)) return false;
     const candidateTokens = contentTokens(span.text);
     const shared = [...sourceTokens].filter(token => candidateTokens.has(token)).length;
     const containment = shared / Math.max(1, Math.min(sourceTokens.size, candidateTokens.size));
-    return ngramJaccard(sentence, span.text, 5) < 0.42 && containment < 0.74;
+    const covers = candidateCompact.includes(sourceCompact) || sourceCompact.includes(candidateCompact)
+      || ngramJaccard(sentence, span.text, 5) >= 0.42 || containment >= 0.74;
+    return !covers || (contextual && context.ownedElsewhere(spanIndex, outputSpans));
   });
+}
+
+// One-to-one coverage for a uniquely grounded omission of source sentence i.
+// An output sentence covers i unless it is the unique mutual-best match of a
+// distinct, non-adjacent source sentence j (a remote restatement the source
+// itself makes) and holds none of i's own words. Identical repeats leave i
+// with no words of its own and stay covered. A source that restates i next to
+// itself is local redundancy and keeps the established test. Scores are cached
+// and bounded; nothing here is called for an ungrounded finding.
+function createCoverageContext(source, sourceSpans) {
+  if (sourceSpans.length < 3 || sourceSpans.length > MAX_COVERAGE_SENTENCES) return null;
+  const scores = new Map(), split = new Map();
+  const score = (left, right) => {
+    const key = `${left}\u0000${right}`;
+    if (!scores.has(key)) scores.set(key, alignmentScore(left, right));
+    return scores.get(key);
+  };
+  const spansOf = text => {
+    if (!split.has(text)) split.set(text, splitSentenceSpans(text));
+    return split.get(text);
+  };
+  const uniqueBest = (needle, rows) => {
+    let top = -1, first = 0, second = 0;
+    rows.forEach((row, index) => {
+      const value = score(needle, row.text);
+      if (value > first) { second = first; first = value; top = index; } else if (value > second) second = value;
+    });
+    return first >= OWNER_MIN_SCORE && first - second >= OWNER_MARGIN ? top : -1;
+  };
+  const mutualAnchor = (sourceIndex, outputSpans) => {
+    const row = sourceSpans[sourceIndex];
+    if (!row || isProtectedSourceSentence(row.text)) return -1;
+    const at = uniqueBest(row.text, outputSpans);
+    return at >= 0 && uniqueBest(outputSpans[at].text, sourceSpans) === sourceIndex ? at : -1;
+  };
+  return {
+    at(index) {
+      const own = sourceSpans[index]?.text;
+      if (!own || [index - 1, index + 1].some(j => sourceSpans[j]
+        && score(own, sourceSpans[j].text) >= 0.44)) return null;
+      let checked = 0;
+      return {
+        ownedElsewhere(spanIndex, outputSpans) {
+          if (checked++ >= MAX_OWNER_CHECKS) return false;
+          const span = outputSpans[spanIndex];
+          const owner = uniqueBest(span.text, sourceSpans);
+          if (owner < 0 || Math.abs(owner - index) < 2 || mutualAnchor(owner, outputSpans) !== spanIndex) return false;
+          const ownerText = sourceSpans[owner].text;
+          const ownCompact = normalizeForMatch(own);
+          if (normalizeForMatch(span.text).includes(ownCompact) && !normalizeForMatch(ownerText).includes(ownCompact)) return false;
+          const ownerTokens = contentTokens(ownerText), kept = contentTokens(span.text);
+          const ownWords = [...contentTokens(own)].filter(token => !ownerTokens.has(token));
+          return ownWords.length >= 2 && ownWords.filter(token => kept.has(token)).length / ownWords.length < 0.5;
+        }
+      };
+    },
+    // Both source neighbours survive as unique mutual-best matches that now
+    // sit next to each other: nothing rewritten stands where i was.
+    bracket(index, text) {
+      const outputSpans = spansOf(text);
+      if (outputSpans.length > MAX_COVERAGE_SENTENCES) return null;
+      const previous = mutualAnchor(index - 1, outputSpans), next = mutualAnchor(index + 1, outputSpans);
+      return previous >= 0 && next === previous + 1
+        ? { previousEnd: outputSpans[previous].end, nextStart: outputSpans[next].start } : null;
+    }
+  };
+}
+
+function isUniquelyGroundedAt(source, sourceSpans, violation, index) {
+  if (violation?.origin !== 'introduced' || !require('./semanticObligations').hasGroundedSpan(violation)) return false;
+  const range = require('./evidenceSpan').locateEvidenceSpan(source, violation.sourceSpan, 12);
+  const sentence = sourceSpans[index];
+  return Boolean(range && sentence) && range.start <= sentence.start && range.end >= sentence.end;
 }
 
 function isProtectedSourceSentence(value) {

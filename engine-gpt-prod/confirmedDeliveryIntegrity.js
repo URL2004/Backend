@@ -4,6 +4,10 @@ const {hasGroundedSpan}=require('./semanticObligations');
 const bare=value=>String(value||'').replace(/\s/gu,'');
 const unique=(text,span)=>typeof span==='string' && span.trim().length>=12
   && text.includes(span) && text.indexOf(span)===text.lastIndexOf(span);
+// A current verdict may have been materialized after whitespace-only layout
+// repair. Use the same unique locator as semantic grounding; never erase word
+// boundaries, change punctuation, or accept an ambiguous normalized match.
+const uniqueCandidate=(text,span)=>require('./evidenceSpan').locateEvidenceSpan(text,span,12)!==null;
 const sameMissingClaim=(span,previous,candidate)=>previous.has(span) || [...previous].some(prior=>
   Math.min(prior.length,span.length)>=24
   && Math.min(prior.length,span.length)/Math.max(prior.length,span.length)>=0.35
@@ -16,11 +20,97 @@ const droppedWhole=(source,candidate,v)=>{
   return require('./deliveryIntegrityWitnesses').droppedSourceSentences(source,candidate,{spans:[{start:at,end}]})
     .some(w=>(Math.min(end,w.sourceEnd)-Math.max(at,w.sourceStart))*2>=w.sourceEnd-w.sourceStart);
 };
+// A claim the source states twice has no words of its own, so droppedWhole()
+// abstains even when one statement left an empty slot. Witness that slot
+// textually: the quoted window is one missing sentence with at most its two
+// neighbours; both neighbours survive verbatim, once each, as consecutive
+// result sentences that bracket the judge's context quote; neither neighbour
+// resembles it (benign local compression); none of its own words survive; and
+// every result sentence resembling it is another source sentence's verbatim
+// copy or sits in that sentence's slot: next to its verbatim neighbour, its
+// unique best match, not grown. That owner stands in another source block.
+// Similarity alone never assigns an owner. Bounded: 400 sentences a side,
+// 3 resembling rows.
+const GAP_NEAR=0.44,GAP_MARGIN=0.08,GAP_MAX_NEAR=3,GAP_MAX_SENTENCES=400;
+function bracketedGap(source,candidate,v) {
+  const {splitSentenceSpans}=require('../engine/koreanText');
+  const {sentenceSimilarity:sim,contentTokens}=require('./sentenceAlignment');
+  const at=source.indexOf(v.sourceSpan),end=at+v.sourceSpan.length;
+  const context=require('./evidenceSpan').locateEvidenceSpan(candidate,v.candidateSpan,12);
+  const S=splitSentenceSpans(source),O=splitSentenceSpans(candidate);
+  if(at<0 || !context || S.length<3 || S.length>GAP_MAX_SENTENCES || !O.length || O.length>GAP_MAX_SENTENCES)return false;
+  const sourceBare=bare(source),outputBare=bare(candidate),outputKeys=O.map(o=>bare(o.text));
+  const once=(text,key)=>text.indexOf(key)>=0 && text.indexOf(key)===text.lastIndexOf(key);
+  // Result index of source sentence j kept verbatim and unambiguous, else -1.
+  const anchor=j=>{
+    const key=bare(S[j]?.text);
+    return key.length>=12 && once(sourceBare,key) && once(outputBare,key)?outputKeys.indexOf(key):-1;
+  };
+  const sourceOf=q=>{const key=outputKeys[q];const j=key?S.findIndex(s=>bare(s.text)===key):-1;return j>=0 && anchor(j)===q?j:-1;};
+  const touched=S.map((s,i)=>i).filter(i=>S[i].start<end && S[i].end>at);
+  const missing=touched.filter(i=>!outputBare.includes(bare(S[i].text)));
+  if(missing.length!==1)return false;
+  const k=missing[0],middle=S[k].text;
+  if(k<1 || k>=S.length-1 || S[k].start<at || S[k].end>end || touched.some(i=>Math.abs(i-k)>1)
+    || bare(middle).length<12 || !/[.!?。！？][”’"')\]]*$/u.test(bare(middle)))return false;
+  const p=anchor(k-1);
+  if(p<0 || anchor(k+1)!==p+1 || context.start<O[p].start || context.end>O[p+1].end)return false;
+  // A neighbour restating it, by score or by holding a third of its words
+  // (suffix stripping loses 창가, 바로), may already carry the claim in place.
+  const middleWords=contentTokens(middle);
+  if([S[k-1],S[k+1]].some(s=>sim(middle,s.text)>=GAP_NEAR
+    || middleWords.filter(t=>bare(s.text).includes(t)).length*3>=middleWords.length))return false;
+  const near=O.map((o,q)=>q).filter(q=>sim(middle,O[q].text)>=GAP_NEAR);
+  if(near.length>GAP_MAX_NEAR)return false;
+  // The merge guards of droppedSourceSentences(): a word no other source
+  // sentence contains (as text, so 출입문 is not its own beside 출입문이다)
+  // survives anywhere, or an owner grew past 1.3x + 8 or by 3 words it lacks.
+  const sourceKeys=S.map(s=>bare(s.text));
+  if(middleWords.some(t=>outputBare.includes(t) && !sourceKeys.some((other,j)=>j!==k && other.includes(t))))return false;
+  const clause=(kept,owner)=>{
+    const known=new Set(contentTokens(S[owner].text).map(t=>t.slice(0,2)));let run=0;
+    return contentTokens(kept).some(t=>(run=known.has(t.slice(0,2))?0:run+1)>=3);
+  };
+  // Source sentence whose slot result row q fills, else -1. A verbatim,
+  // unambiguous copy is owned by its own sentence.
+  const owner=q=>{
+    if(sourceOf(q)>=0)return sourceOf(q);
+    for(const [side,step] of [[q-1,1],[q+1,-1]]){
+      const neighbour=side>=0 && side<O.length?sourceOf(side):-1,j=neighbour<0?-1:neighbour+step;
+      if(j<0 || j>=S.length || outputBare.includes(bare(S[j].text)))continue;
+      // The row on the other side, if verbatim, must be j's other neighbour.
+      const across=q+step>=0 && q+step<O.length?sourceOf(q+step):-1;
+      if(across>=0 && across!==j+step)continue;
+      let top=-1,first=0,second=0;
+      O.forEach((o,x)=>{const value=sim(S[j].text,o.text);if(value>first){second=first;first=value;top=x;}else if(value>second)second=value;});
+      if(top===q && first>=GAP_NEAR && first-second>=GAP_MARGIN
+        && outputKeys[q].length<=bare(S[j].text).length*1.3+8 && !clause(O[q].text,j))return j;
+    }
+    return -1;
+  };
+  // The owner must stand in another source block (split by blank or heading
+  // lines): the source restating a claim within one passage makes dropping one
+  // statement a legitimate deduplication, and a text without blocks abstains.
+  const blocks=[];let block=0;
+  for(const line of source.matchAll(/[^\n]*\n?/gu)){
+    if(!line[0])break;
+    const text=line[0].trim();
+    // An unfinished physical prose line is not a new section. Only blank
+    // lines or short, explicitly numbered/marked headings separate slots.
+    const heading=text.length<=120 && !/[.!?。！？…][”’"')\]]*$/u.test(text)
+      && /^(?:\d+(?:\.\d+)*[.)]|[IVX]+[.)]|#{1,6}|첫째|둘째|셋째|넷째|다섯째)\s+\S/u.test(text);
+    if(!text || heading)block+=1;
+    blocks.push([line.index,block]);
+  }
+  const blockOf=at=>blocks.reduce((found,[start,index])=>start<=at?index:found,0);
+  return near.every(q=>{const j=owner(q);return j>=0 && blockOf(S[j].start)!==blockOf(S[k].start);});
+}
 
 // A fail label alone is not a hard delivery gate. Require the final candidate
 // receipt, a unique current context, and independent evidence about the same
 // missing source claim: a prior finding, or a textual witness that the quoted
-// sentence was dropped whole. No additional model request is made here.
+// sentence was dropped whole or left its slot empty. No additional model
+// request is made here.
 function confirmedOmissions(source,candidate,report,priorReports=[]) {
   if (verifySemanticValidation(report,{source,candidate,requireDigest:true}).status!=='fail'
       || report.verificationCompleted!==true || report.uncertain || report.nominationOnly) return [];
@@ -35,9 +125,10 @@ function confirmedOmissions(source,candidate,report,priorReports=[]) {
   priorReports.forEach(visit);
   const candidateBare=bare(candidate);
   return (report.violations||[]).filter(v=>v.type==='omission' && v.origin==='introduced'
-    && hasGroundedSpan(v) && unique(source,v.sourceSpan) && unique(candidate,v.candidateSpan)
+    && hasGroundedSpan(v) && unique(source,v.sourceSpan) && uniqueCandidate(candidate,v.candidateSpan)
     && !candidateBare.includes(bare(v.sourceSpan))
-    && (sameMissingClaim(bare(v.sourceSpan),previous,candidateBare) || droppedWhole(source,candidate,v)));
+    && (sameMissingClaim(bare(v.sourceSpan),previous,candidateBare) || droppedWhole(source,candidate,v)
+      || bracketedGap(source,candidate,v)));
 }
 // F-03: why the gate above did or did not fire. Observation only: it never
 // decides anything and confirmedOmissions() is not routed through it. It holds
@@ -100,22 +191,24 @@ function explainConfirmedOmissions(source,candidate,report,priorReports=[]) {
   const violations=Array.isArray(report?.violations)?report.violations:[];
   const omissions=violations.filter(v=>v?.type==='omission');
   const rows=[];
-  let conditionsMetCount=0,droppedSentenceWitnessCount=0;
+  let conditionsMetCount=0,droppedSentenceWitnessCount=0,bracketedGapWitnessCount=0;
   for(const v of omissions){
     const sourceSpan=typeof v.sourceSpan==='string'?v.sourceSpan:'',candidateSpan=typeof v.candidateSpan==='string'?v.candidateSpan:'';
     const key=bare(sourceSpan);
     const priorSame=sameMissingClaim(key,previous,candidateBare);
     const eligible=v.origin==='introduced' && hasGroundedSpan(v) && unique(String(source||''),sourceSpan)
-      && unique(String(candidate||''),candidateSpan) && !candidateBare.includes(key);
+      && uniqueCandidate(String(candidate||''),candidateSpan) && !candidateBare.includes(key);
     const witnessed=eligible && !priorSame && droppedWhole(String(source),String(candidate),v);
+    const gap=eligible && !priorSame && !witnessed && bracketedGap(String(source),String(candidate),v);
     if(witnessed)droppedSentenceWitnessCount+=1;
+    if(gap)bracketedGapWitnessCount+=1;
     const checks={
       not_introduced:v.origin!=='introduced',
       not_grounded:!hasGroundedSpan(v),
       source_span_not_unique:!unique(String(source||''),sourceSpan),
-      candidate_span_not_unique:!unique(String(candidate||''),candidateSpan),
+      candidate_span_not_unique:!uniqueCandidate(String(candidate||''),candidateSpan),
       source_span_still_present:candidateBare.includes(key),
-      no_prior_same_span:!priorSame && !witnessed
+      no_prior_same_span:!priorSame && !witnessed && !gap
     };
     const failures=GATE_CONDITIONS.filter(code=>checks[code]);
     for(const code of failures)failed[code]+=1;
@@ -136,7 +229,7 @@ function explainConfirmedOmissions(source,candidate,report,priorReports=[]) {
       sourceSpanChars:key.length,candidateSpanChars:bare(candidateSpan).length,sourceSpanDigest:key?spanDigest(sourceSpan):'',
       introduced:!checks.not_introduced,grounded:!checks.not_grounded,sourceUnique:!checks.source_span_not_unique,
       candidateUnique:!checks.candidate_span_not_unique,absentFromCandidate:!checks.source_span_still_present,
-      priorSameSpan:priorSame,droppedSentenceWitness:witnessed,
+      priorSameSpan:priorSame,droppedSentenceWitness:witnessed,bracketedGapWitness:gap,
       priorOverlapOfShorter:Math.round(shorter*100)/100,priorOverlapOfLonger:Math.round(longer*100)/100,
       nearestPriorChars:priorChars,firstFailedCondition:failures[0]||''
     });
@@ -153,6 +246,8 @@ function explainConfirmedOmissions(source,candidate,report,priorReports=[]) {
     conditionsMetCount,confirmedCount:state==='evaluated'?conditionsMetCount:0,
     // Met through the dropped-sentence witness rather than a repeated finding.
     droppedSentenceWitnessCount,
+    // Met through the bracketed empty-slot witness instead of either above.
+    bracketedGapWitnessCount,
     priorOverlapCounts:overlap,onlyPriorMissing,
     overflowRowCount:Math.max(0,omissions.length-rows.length),rows
   };
@@ -169,7 +264,7 @@ function sanitizeOmissionGateDiagnostics(value) {
     finalVerificationCompleted:value.finalVerificationCompleted===true,
     ...counts(value,['finalViolationCount','omissionCount','priorReportCount','priorQualifiedReportCount',
       'priorOmissionFindingCount','priorOmissionUnqualifiedCount','priorOmissionSpanCount','conditionsMetCount',
-      'confirmedCount','droppedSentenceWitnessCount','overflowRowCount']),
+      'confirmedCount','droppedSentenceWitnessCount','bracketedGapWitnessCount','overflowRowCount']),
     conditionFailedCounts:counts(value.conditionFailedCounts,GATE_CONDITIONS),
     firstFailedCounts:counts(value.firstFailedCounts,GATE_CONDITIONS),
     priorOverlapCounts:counts(value.priorOverlapCounts,['exact','high','partial','low']),
@@ -177,7 +272,7 @@ function sanitizeOmissionGateDiagnostics(value) {
   clean.rows=(Array.isArray(value.rows)?value.rows:[]).slice(0,MAX_GATE_ROWS).filter(row=>row && typeof row==='object').map(row=>({
     ...counts(row,['sourceSpanChars','candidateSpanChars','nearestPriorChars']),
     sourceSpanDigest:/^[0-9a-f]{12}$/u.test(row.sourceSpanDigest)?row.sourceSpanDigest:'',
-    ...Object.fromEntries(['introduced','grounded','sourceUnique','candidateUnique','absentFromCandidate','priorSameSpan','droppedSentenceWitness']
+    ...Object.fromEntries(['introduced','grounded','sourceUnique','candidateUnique','absentFromCandidate','priorSameSpan','droppedSentenceWitness','bracketedGapWitness']
       .map(key=>[key,row[key]===true])),
     priorOverlapOfShorter:ratio(row.priorOverlapOfShorter),priorOverlapOfLonger:ratio(row.priorOverlapOfLonger),
     firstFailedCondition:GATE_CONDITIONS.includes(row.firstFailedCondition)?row.firstFailedCondition:''

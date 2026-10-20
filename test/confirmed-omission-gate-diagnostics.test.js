@@ -95,7 +95,7 @@ test('every per-finding condition is counted on its own and by first failure', (
   assert.deepEqual([ok.conditionsMetCount, ok.confirmedCount, ok.priorOverlapCounts.exact], [1, 1, 1]);
   assert.deepEqual(ok.rows[0], { sourceSpanChars: A.replace(/\s/gu, '').length,
     candidateSpanChars: finding().candidateSpan.replace(/\s/gu, '').length, sourceSpanDigest: ok.rows[0].sourceSpanDigest,
-    introduced: true, grounded: true, sourceUnique: true, candidateUnique: true, absentFromCandidate: true, priorSameSpan: true, droppedSentenceWitness: false,
+    introduced: true, grounded: true, sourceUnique: true, candidateUnique: true, absentFromCandidate: true, priorSameSpan: true, droppedSentenceWitness: false, bracketedGapWitness: false,
     priorOverlapOfShorter: 1, priorOverlapOfLonger: 1, nearestPriorChars: A.replace(/\s/gu, '').length, firstFailedCondition: '' });
   assert.match(ok.rows[0].sourceSpanDigest, /^[0-9a-f]{12}$/u);
 });
@@ -138,7 +138,7 @@ test('rows are bounded and the stored projection keeps codes and numbers only', 
     sourceSpanDigest: row.sourceSpanDigest, firstFailedCondition: '합성 문장' })) };
   const clean = sanitize(dirty);
   assert.equal(hasHangul(clean), false);
-  assert.deepEqual(Object.keys(clean.rows[0]).sort(), ['absentFromCandidate', 'candidateSpanChars', 'candidateUnique', 'droppedSentenceWitness',
+  assert.deepEqual(Object.keys(clean.rows[0]).sort(), ['absentFromCandidate', 'bracketedGapWitness', 'candidateSpanChars', 'candidateUnique', 'droppedSentenceWitness',
     'firstFailedCondition', 'grounded', 'introduced', 'nearestPriorChars', 'priorOverlapOfLonger', 'priorOverlapOfShorter',
     'priorSameSpan', 'sourceSpanChars', 'sourceSpanDigest', 'sourceUnique']);
   assert.deepEqual(sanitize(clean), clean, 'the projection is stable');
@@ -175,7 +175,10 @@ test('the engine keeps observation independent of the delivery witnesses (source
   const gateCode = require('node:fs').readFileSync(require.resolve('../engine-gpt-prod/confirmedDeliveryIntegrity'), 'utf8')
     .replace(/\r\n/gu, '\n');
   assert.ok(gateCode.includes(`  return (report.violations||[]).filter(v=>v.type==='omission' && v.origin==='introduced'
-    && hasGroundedSpan(v) && unique(source,v.sourceSpan) && unique(candidate,v.candidateSpan)
+    && hasGroundedSpan(v) && unique(source,v.sourceSpan) && uniqueCandidate(candidate,v.candidateSpan)
     && !candidateBare.includes(bare(v.sourceSpan))
-    && (sameMissingClaim(bare(v.sourceSpan),previous,candidateBare) || droppedWhole(source,candidate,v)));`));
+    && (sameMissingClaim(bare(v.sourceSpan),previous,candidateBare) || droppedWhole(source,candidate,v)
+      || bracketedGap(source,candidate,v)));`));
+  // The whitespace-aware candidate locator is the grounding one, never a looser match.
+  assert.ok(gateCode.includes("const uniqueCandidate=(text,span)=>require('./evidenceSpan').locateEvidenceSpan(text,span,12)!==null;"));
 });

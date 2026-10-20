@@ -1,6 +1,6 @@
 // [events] 클라이언트발 이벤트(문의 등록·신규 가입·친구 초대)를 운영 알림(Discord)으로 중계.
-// 문의/가입/초대는 프론트가 Firestore에 직접 쓰는 구조라 서버를 안 거치므로, 이 얇은 relay로 알림만 보냄.
-// 스푸핑 최소화: idToken 검증(로그인 사용자만) + per-uid 레이트리밋 + 문의는 실제 문서 조회로 본인 확인.
+// 문의 알림은 저장 API만 소유한다. 구형 클라이언트의 문의 이벤트는 재전송하지 않는다.
+// 스푸핑 최소화: idToken 검증(로그인 사용자만) + per-uid 레이트리밋.
 const express = require('express');
 const { db, verifyFirebaseIdToken, ADMIN_UIDS } = require('../config');
 const { logger, setLogContext } = require('../lib/logger');
@@ -195,13 +195,7 @@ router.post('/events', async (req, res) => {
 
   try {
     if (type === 'inquiry') {
-      const id = String(req.body.id || '').slice(0, 200);
-      if (!id || !db) return res.json({ ok: true });
-      const snap = await db.collection('qna').doc(id).get();
-      if (!snap.exists) return res.json({ ok: true });
-      const q = snap.data() || {};
-      if (q.authorId !== uid) return res.json({ ok: true }); // 본인 문의만 알림
-      discord.inquiry({ id, title: q.title, body: q.body, author: q.isAnon ? '익명' : (q.authorName || '회원'), uid });
+      return res.json({ ok: true, skipped: 'inquiry_relay_retired' });
     } else if (type === 'signup') {
       if ((ADMIN_UIDS || []).includes(uid)) return res.json({ ok: true, skipped: 'internal_account' });
       if (!db) return res.json({ ok: true, skipped: 'firebase_disabled' });

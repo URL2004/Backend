@@ -63,6 +63,7 @@ function createRouter(deps = {}) {
     ? createClientWriteService({ db, admin, now: deps.now })
     : null);
   const notifyInquiry = deps.notifyInquiry || (payload => discord.inquiry(payload));
+  const notifyInquiryDeleted = deps.notifyInquiryDeleted || (payload => discord.inquiryDeleted(payload));
   const clientPrincipal = deps.clientPrincipal || (req => clientHashForLog(realClientIp(req)));
   const readDetectHistoryReport = deps.readDetectHistoryReport
     || (input => require('../lib/historyService').readDetectHistoryReport({ ...input, store: db }));
@@ -223,13 +224,7 @@ function createRouter(deps = {}) {
       if (!result.duplicate) {
         logger.info('qna.created', { uid: decoded.uid, questionId: result.id });
         try {
-          Promise.resolve(notifyInquiry({
-            id: result.id,
-            title: String(req.body?.title || '').slice(0, 160),
-            body: String(req.body?.body || '').slice(0, 10_000),
-            author: req.body?.isAnon ? '익명' : (decoded.name || '회원'),
-            uid: decoded.uid
-          })).then(sent => {
+          Promise.resolve(notifyInquiry(result.notification)).then(sent => {
             if (sent === false) logger.warn('qna.discord_notify_failed', { uid: decoded.uid, questionId: result.id });
           }).catch(error => {
             logger.warn('qna.discord_notify_failed', { uid: decoded.uid, questionId: result.id, err: error });
@@ -238,7 +233,8 @@ function createRouter(deps = {}) {
           logger.warn('qna.discord_notify_failed', { uid: decoded.uid, questionId: result.id, err: error });
         }
       }
-      return res.status(result.duplicate ? 200 : 201).json({ ok: true, ...result });
+      const { notification, ...publicResult } = result;
+      return res.status(result.duplicate ? 200 : 201).json({ ok: true, ...publicResult });
     } catch (error) {
       logger.warn('qna.create_failed', { uid: decoded.uid, code: error?.code, err: error });
       return respondError(res, error);
@@ -258,11 +254,29 @@ function createRouter(deps = {}) {
         isAdmin: adminUid === decoded.uid
       });
       logger.info('qna.deleted', { uid: decoded.uid, questionId: result.id, actorUid: decoded.uid });
-      return res.json({ ok: true, ...result });
+      if (result.notification) {
+        Promise.resolve().then(() => notifyInquiryDeleted(result.notification)).then(sent => {
+          if (sent === false) logger.warn('qna.discord_notify_failed', { phase: 'delete', uid: decoded.uid, questionId: result.id });
+        }).catch(error => logger.warn('qna.discord_notify_failed', { phase: 'delete', uid: decoded.uid, questionId: result.id, err: error }));
+      }
+      const { notification, ...publicResult } = result;
+      return res.json({ ok: true, ...publicResult });
     } catch (error) {
       logger.warn('qna.delete_failed', { uid: decoded.uid, code: error?.code, err: error });
       return respondError(res, error);
     }
+  });
+
+  for (const [path, read] of [
+    ['/admin/qna/deleted-list', req => require('../lib/inquiryArchive').listDeletedQuestions(db, req.body || {})],
+    ['/admin/qna/deleted-get', req => require('../lib/inquiryArchive').getDeletedQuestion(db, req.body?.id)]
+  ]) router.post(path, historyReadLimiter, async (req, res) => {
+    if (!requireStorage(res)) return;
+    const adminUid = await requireAdmin(req, res);
+    if (!adminUid) return;
+    res.set('Cache-Control', 'private, no-store');
+    try { return res.json({ ok: true, ...await read(req) }); }
+    catch (error) { return respondError(res, error); }
   });
 
   router.post('/admin/qna/answer', async (req, res) => {

@@ -278,6 +278,10 @@ test('Q&A creation trusts server profile, owner delete is enforced, and answer c
   const question = store.row(`qna/${created.id}`);
   assert.equal(question.authorName, '실제 사용자');
   assert.equal(question.title, '문의');
+  assert.deepEqual(created.notification, { id: created.id, uid: 'owner', title: '문의', body: '내용', author: '실제 사용자' });
+  assert.equal((await service.createQuestion({ uid: 'owner', requestId: 'question-request-01', title: '문의', body: '내용', isAnon: false })).duplicate, true);
+  await assert.rejects(service.createQuestion({ uid: 'owner', requestId: 'question-request-01', title: '문의', body: '다른 내용', isAnon: false }),
+    error => error.code === 'REQUEST_ID_INPUT_MISMATCH' && error.status === 409);
   await assert.rejects(
     service.deleteQuestion({ actorUid: 'other', questionId: created.id, isAdmin: false }),
     error => error?.status === 403
@@ -290,8 +294,75 @@ test('Q&A creation trusts server profile, owner delete is enforced, and answer c
   await service.deleteAnswer({ adminUid: 'admin', questionId: created.id });
   assert.equal(store.row(`qna/${created.id}`).status, 'pending');
   assert.equal(store.row(`users/owner/notifications/qna_answered_${created.id}`), undefined);
-  await service.deleteQuestion({ actorUid: 'owner', questionId: created.id, isAdmin: false });
+  const removed = await service.deleteQuestion({ actorUid: 'owner', questionId: created.id, isAdmin: false });
+  assert.deepEqual(removed.notification, { id: created.id, uid: 'owner', actorUid: 'owner', actorRole: 'author' });
   assert.equal(store.row(`qna/${created.id}`), undefined);
+  const archived = store.row(`qnaDeleted/${created.id}`);
+  assert.equal(archived.body, '내용');
+  assert.equal(archived.title, '문의');
+  assert.equal(archived.status, 'deleted');
+  assert.equal(archived.deletedBy, 'owner');
+  assert.equal(archived.originalContentComplete, true);
+  await assert.rejects(service.createQuestion({ uid: 'owner', requestId: 'question-request-01', title: '문의', body: '내용', isAnon: false }),
+    error => error.code === 'QNA_ALREADY_DELETED');
+});
+
+test('archival deletion preserves the complete original and answer and respects account deletion', async () => {
+  const body = '합성 문의 원문입니다.\n'.repeat(500), answer = '합성 답변입니다.\n'.repeat(300);
+  const store = createStore({ 'qna/q_full': { title: '원문 보존', body, authorId: 'owner', status: 'answered', answer: { body: answer } } });
+  const service = createClientWriteService({ db: store.db, admin: fakeAdmin, now: () => 1000 });
+  await service.deleteQuestion({ actorUid: 'admin', questionId: 'q_full', isAdmin: true });
+  const saved = store.row('qnaDeleted/q_full');
+  assert.equal(saved.body, body); assert.equal(saved.answer.body, answer);
+  assert.equal(saved.previousStatus, 'answered'); assert.equal(saved.deletedByRole, 'admin');
+  await assert.rejects(service.deleteQuestion({ actorUid: 'admin', questionId: 'q_full', isAdmin: true }), e => e.code === 'QNA_NOT_FOUND');
+  assert.deepEqual(store.row('qnaDeleted/q_full'), saved);
+  const closing = createStore({ 'qna/q_closing': { body, authorId: 'owner' }, 'accountDeletionJobs/owner': { status: 'processing' } });
+  await assert.rejects(createClientWriteService({ db: closing.db, admin: fakeAdmin }).deleteQuestion({ actorUid: 'admin', questionId: 'q_closing', isAdmin: true }), e => e.code === 'ACCOUNT_DELETION_IN_PROGRESS');
+  assert.ok(closing.row('qna/q_closing')); assert.equal(closing.row('qnaDeleted/q_closing'), undefined);
+});
+
+test('a failed archive write cannot erase the active inquiry', async () => {
+  const original = { title: '합성 문의', body: '보존할 본문', authorId: 'owner', status: 'pending' };
+  const store = createStore({ 'qna/q_atomic': original });
+  const run = store.db.runTransaction.bind(store.db);
+  store.db.runTransaction = callback => run(transaction => callback({ ...transaction,
+    set(ref, data, options) {
+      if (ref.path.startsWith('qnaDeleted/')) throw new Error('archive storage unavailable');
+      return transaction.set(ref, data, options);
+    }
+  }));
+  const service = createClientWriteService({ db: store.db, admin: fakeAdmin });
+  await assert.rejects(service.deleteQuestion({ actorUid: 'owner', questionId: 'q_atomic' }), /archive storage unavailable/);
+  assert.deepEqual(store.row('qna/q_atomic'), original);
+  assert.equal(store.row('qnaDeleted/q_atomic'), undefined);
+});
+
+test('inquiry HTTP notifications use committed data and report deletion without leaking private metadata', async t => {
+  const store = createStore({ 'users/owner': { name: '서버 이름' } });
+  const notices = [];
+  const router = createRouter({ service: createClientWriteService({ db: store.db, admin: fakeAdmin }),
+    verifyFirebaseIdToken: async () => ({ uid: 'owner', name: '토큰의 오래된 이름' }), verifyAdminToken: async () => false,
+    notifyInquiry: payload => { notices.push(['created', payload]); return true; },
+    notifyInquiryDeleted: payload => { notices.push(['deleted', payload]); return false; }
+  });
+  const { server, baseUrl } = await listen(router);
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const post = async (url, body) => {
+    const r = await fetch(baseUrl + url, { method: 'POST', headers: { authorization: 'Bearer owner', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: r.status, data: await r.json() };
+  };
+  const input = { requestId: 'inquiry-http-001', title: ' 제목 ', body: ' 본문 ', isAnon: false };
+  const made = await post('/qna/create', input);
+  assert.equal(made.status, 201); assert.equal(made.data.notification, undefined);
+  assert.equal(notices[0][1].author, '서버 이름'); assert.equal(notices[0][1].body, '본문');
+  assert.equal((await post('/qna/create', input)).status, 200); assert.equal(notices.length, 1);
+  const deleted = await post('/qna/delete', { id: made.data.id });
+  assert.equal(deleted.status, 200); assert.equal(deleted.data.notification, undefined);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(notices.length, 2); assert.equal(notices[1][0], 'deleted');
+  assert.equal(notices[1][1].actorRole, 'author'); assert.equal('body' in notices[1][1], false);
+  assert.equal((await post('/qna/delete', { id: made.data.id })).status, 404); assert.equal(notices.length, 2);
 });
 
 test('account initialization is server-owned, idempotent, and records both UID and client quotas', async () => {

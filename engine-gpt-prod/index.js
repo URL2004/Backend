@@ -76,7 +76,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.115';
+const VERSION = 'gpt-prod-v2.5.116';
 const DETECT_VERSION = 'gpt-detect-v1.58';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -4504,6 +4504,7 @@ async function runEngine({
     || materializedChunks.some(chunk => chunk.lineBoundaryPolicy === 'all') };
   if (require('./fragmentDuplication').introducedClauseDuplicates(rawSource, outputText, finalLinePolicy).length
       || require('./fragmentDuplication').introducedResidualTails(rawSource, outputText, finalLinePolicy).length
+      || require('./truncatedPrefixIntegrity').introducedTruncatedPrefixes(submittedSource, outputText, finalLinePolicy).length
       || require('./sourceBoundaryIntegrity').auditIntroducedReferenceBreaks(submittedSource, outputText).length) {
     addFloorCriticals(result.floorReport, [{ gate: 'confirmed_fragment_corruption',
       detail: '문장 조각의 중복 또는 참조 번호의 잘못된 연결이 확인되어 결과를 전달하지 않았습니다.' }], 'confirmed_fragment_corruption');

@@ -40,6 +40,29 @@ const isNominalHeading = text => !/[.!?。！？,]/u.test(text) && text.length <
   && /(?:계획|현황|목적|방법|배경|필요성|분석|정의|개념|결과|시사점|참고문헌)$/u.test(text)
   && !/(?:은|는|을|를)\s/u.test(text);
 
+// Unfenced program listings (Verilog, Python, C) keep their physical lines.
+// A run qualifies only as consecutive Hangul-free code-shaped rows with at
+// least two rows carrying a statement terminator or a code keyword. Korean
+// prose always contains Hangul, so punctuation alone never freezes it.
+const CODE_STATEMENT = /^(?:`(?:timescale|define|include|ifdef|endif)\b|#\s*include\b|#\d+\b|(?:module|endmodule|reg|wire|logic|integer|input|output|inout|parameter|localparam|assign|always|initial|task|endtask|function|endfunction|begin|end|endcase|case|def|elif)\b(?=\s*(?:$|[\w[\](`'"$#{:;=-]))|(?:for|while|if|switch)\s*\(|else\s*(?:$|[:{]|if\b|begin\b)|return\b(?=\s*(?:$|[;(\[]|\w+\s*[(\[;,+\-*/%])))|;[ \t]*(?:\/\/.*)?$/u;
+const CODE_SHAPE = /[;{}(),?:[]$|^[)}\].]|[A-Za-z_]\w*\(|\s(?:=|<=|==|!=|!==|\|\||&&)\s|^(?:\/\/|\/\*|\*)|^\$\w+/u;
+function codeRunLineIndices(lines) {
+  const out = new Set();
+  const hangulFree = line => !/[가-힣]/u.test(line.replace(/\/\/.*$/u, '').replace(/"(?:[^"\\\n]|\\.)*"/gu, ''));
+  let run = [];
+  const flush = () => {
+    if (run.length >= 2 && run.filter(row => CODE_STATEMENT.test(row.text)).length >= 2) for (const row of run) out.add(row.index);
+    run = [];
+  };
+  lines.forEach((raw, index) => {
+    const text = String(raw || '').trim();
+    if (text && hangulFree(text) && (CODE_STATEMENT.test(text) || CODE_SHAPE.test(text))) run.push({ index, text });
+    else flush();
+  });
+  flush();
+  return out;
+}
+
 function wordSeam(left, right, witnessed) {
   // The source's numeric unit is one lexical atom, not a new word/paragraph.
   if (/\d$/u.test(left) && /^(?:년|월|일|명|개|대|회|배|분|초)(?=$|\s|[.,!?]|[은는이가을를의에])/u.test(right)) return true;
@@ -72,6 +95,7 @@ function repairPhysicalProseLines(value) {
   });
   const witnessed = witnessedWords(source);
   const referenceFlags = referenceLineFlags(source);
+  const codeRows = codeRunLineIndices(rows.map(row => row.raw));
   let fenced = false;
   for (const row of rows) {
     if (/^\s*(?:`{3,}|~{3,})/u.test(row.raw)) { row.protected = true; fenced = !fenced; continue; }
@@ -124,7 +148,8 @@ function repairPhysicalProseLines(value) {
     if (!Number.isInteger(row.numericSeriesEnd)) continue;
     for (let index = row.index; index <= row.numericSeriesEnd; index++) chartLines.add(index);
   }
-  for (const row of content) if (chartLines.has(row.index)) row.protected = true;
+  // Code listings keep their rows, but they do not change the prose census.
+  for (const row of content) if (chartLines.has(row.index) || codeRows.has(row.index)) row.protected = true;
   const joins = [];
   const continuations = new Set();
   for (let i = 1; i < content.length; i++) {
@@ -321,4 +346,4 @@ function restoreSubmittedSourceSeams(source, value) {
   return {text, repairCount: edits.length, contentPreserved: text.replace(/\s/gu, '') === output.replace(/\s/gu, '')};
 }
 
-module.exports = { repairPhysicalProseLines, restoreSourceWordSeams, restoreSubmittedSourceSeams, wordSeam, witnessedWords };
+module.exports = { repairPhysicalProseLines, restoreSourceWordSeams, restoreSubmittedSourceSeams, wordSeam, witnessedWords, codeRunLineIndices };

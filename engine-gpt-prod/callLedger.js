@@ -10,7 +10,9 @@ function observationSink() {
   return value => { try { listener?.(value); } catch { /* Retain the admitting job context across the worker queue. */ } };
 }
 const safe = value => String(value || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80);
-function createLedger() { return { entries: [], policy: {}, recoveryBudget: null, layoutMetrics: [], layoutCache: new Map(), layoutFeatures: new Map() }; }
+function createLedger() { return { entries: [], policy: {}, recoveryBudget: null,
+  recoveryAttempts: require('./recoveryAttemptMemory').createAttemptMemory(),
+  layoutMetrics: [], layoutCache: new Map(), layoutFeatures: new Map() }; }
 function current() { return storage.getStore(); }
 function withPolicy(policy, fn) {
   const parent = current();

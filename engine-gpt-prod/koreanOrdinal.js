@@ -10,7 +10,8 @@ const PREFIX = new RegExp(`^(\\s*${ORDINAL}(?:[,，:：]\\s*|[.．]\\s+))(\\S[\\
 // Explicit enumerative predicate frames, not arbitrary ordinal adjectives
 // such as "첫 번째 실험" or "첫째 아이". These may have no comma.
 const FRAME_LEAD = '(?:(?:본|이번|해당)\\s*(?:연구|조사|분석|프로젝트)의\\s+|[가-힣]{2,16}(?:이|가|은|는)\\s+(?:중요한|필요한|유용한|효과적인)\\s+)?';
-const FRAME_NOUN = '(?:의의|이유|목적|한계|원칙|특징|과제|장점|문제|요인)';
+const FRAME_NOUN = '(?:의의|이유|목적|한계|원칙|특징|과제|장점|문제|요인|방안|방법|대안|해결책)';
+const LIST_INTRO = '(?:장점|단점|특징|이유|문제|방법|원칙)(?:으로는|로는|은|는)';
 const FRAME_TAIL = `\\s+${FRAME_NOUN}(?:(?:은|는|로는|으로는)\\s+|(?:로|으로)[,，:：]\\s*)`;
 function ordinalPrefix(value) {
   // A comma enumerator is syntactically independent; a frame such as
@@ -30,7 +31,7 @@ function ordinalNumber(value) {
 function ordinalMarkers(value, { source } = {}) {
   const text = String(value || '');
   const literals = syntaxSpans(text);
-  const re = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:(?:로|으로)(?:는)?(?:[,，:：](?=\\s|[가-힣A-Za-z])|(?=\\s))|[,，:：](?=\\s|[가-힣A-Za-z])|[.．](?=\\s))`, 'gu');
+  const re = new RegExp(`((?:^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(?:(?:반면|하지만|그러나|한편|또한|다만|그리고)[,，]?[ \\t]+)?)(${ORDINAL})(?:(?:로|으로)(?:는)?(?:[,，:：](?=\\s|[가-힣A-Za-z])|(?=\\s))|[,，:：](?=\\s|[가-힣A-Za-z])|[.．](?=\\s))`, 'gu');
   const markers = [];
   for (const match of text.matchAll(re)) {
     const start = match.index + match[1].length;
@@ -44,6 +45,16 @@ function ordinalMarkers(value, { source } = {}) {
         || /번째$/u.test(match[2])
           && /^(?:로|으로)(?:는)?\s+(?:소개|제시|언급|설명)되는\s/u.test(tail)) continue;
     markers.push({ marker: match[2].replace(/\s+/gu, ''), number: ordinalNumber(match[2]), start,
+      lineOrdinal: text.slice(0, start).split('\n').length });
+  }
+  // An explicit list introduction may precede the first item in its sentence.
+  // Without it a pair "장점은 첫째, ... 둘째, ..." was counted as [2], making
+  // repeated advantage/disadvantage lists impossible to align or restore.
+  const introduced = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${LIST_INTRO}[ \\t]+)(${ORDINAL})[,，:：](?=\\s|[가-힣A-Za-z])`, 'gu');
+  for (const match of text.matchAll(introduced)) {
+    const start = match.index + match[1].length + match[2].length;
+    if (literals.some(span => span.start <= start && span.end > start)) continue;
+    markers.push({ marker: match[3].replace(/\s+/gu, ''), number: ordinalNumber(match[3]), start,
       lineOrdinal: text.slice(0, start).split('\n').length });
   }
   const inlineAdverbs = new RegExp(`([,，][ \\t]+)(${ORDINAL})(?:로|으로)(?:는)?(?=\\s|[,，])`, 'gu');
@@ -202,7 +213,92 @@ function restoreMissingOrdinalMarkers(source, value) {
   // A document whose every ordinal was removed is treated as restructured,
   // not as a damaged list; only a series lost beside surviving ones returns.
   if (exact.repairCount || !after.length || before.length <= after.length || before.length > 64) return exact;
+  const owned = restoreHeadingOwnedOrdinals(original, output, before, after);
+  if (owned) return owned;
   return restoreLostOrdinalSeries(original, output, before, after) || exact;
+}
+
+function restoreHeadingOwnedOrdinals(original, output, before, after) {
+  const { splitSentenceSpans } = require('../engine/koreanText');
+  const { sentenceSimilarity } = require('./sentenceAlignment');
+  const left = splitSentenceSpans(original), right = splitSentenceSpans(output);
+  if (left.length > 400 || right.length > 400) return null;
+  const owners = require('./relationAlignment').sentenceOwners(original, output, left, right);
+  if (!owners) return null;
+  const ownerOf = (marker, spans, labels) => labels[spans.findIndex(s => s.start <= marker.start && s.end > marker.start)];
+  const surviving = new Map();
+  for (const owner of new Set(owners.source.filter(v => v != null))) {
+    const a = before.filter(m => ownerOf(m,left,owners.source) === owner);
+    const b = after.filter(m => ownerOf(m,right,owners.candidate) === owner);
+    // An unambiguous ordinal subsequence identifies the surviving PREFIXES.
+    // Their bodies may be freely paraphrased. Only the missing item below
+    // requires mutual body evidence before any insertion can be made.
+    const memo = new Map();
+    const paths = (i,j) => {
+      if (j === b.length) return [[]];
+      if (i === a.length) return [];
+      const key = `${i}:${j}`;
+      if (memo.has(key)) return memo.get(key);
+      const found = a[i].number === b[j].number
+        ? paths(i+1,j+1).map(p => [[a[i],b[j]],...p]) : [];
+      if (found.length < 2) found.push(...paths(i+1,j));
+      memo.set(key,found.slice(0,2));return memo.get(key);
+    };
+    const matches = paths(0,0);
+    if (matches.length === 1) for (const [a,b] of matches[0]) surviving.set(a,b);
+  }
+  const introPattern = new RegExp(`^${LIST_INTRO}\\s+`, 'u');
+  const bodyOf = text => text.replace(introPattern, '').replace(PREFIX, '$2');
+  const bodies = left.map(s => bodyOf(s.text));
+  const itemSentences = new Set();
+  for (const marker of before) {
+    const i = left.findIndex(s => s.start <= marker.start && s.end > marker.start);
+    const prefix = ordinalPrefix(original.slice(marker.start));
+    if (i < 0 || !prefix || itemSentences.has(i)) return null;
+    itemSentences.add(i);
+    // A markdown heading fragment can share a sentence span with the first
+    // body sentence. The explicit item prefix, not that fragment, owns its body.
+    bodies[i] = original.slice(marker.start + prefix[1].length, left[i].end);
+  }
+  const best = scores => { const sorted = scores.filter(s => s.score >= .60).sort((a,b) => b.score-a.score);
+    return sorted[0] && sorted[0].score-(sorted[1]?.score || 0) >= .10 ? sorted[0] : null; };
+  const edits = [], positions = [], covered = new Set(), literals = syntaxSpans(output);
+  for (const marker of before) {
+    const i = left.findIndex(s => s.start <= marker.start && s.end > marker.start);
+    const prefix = ordinalPrefix(original.slice(marker.start));
+    if (i < 0 || !prefix || owners.source[i] == null || marker.predicateFrame || marker.boundaryStart != null) return null;
+    if (surviving.has(marker)) {
+      const current = surviving.get(marker);
+      covered.add(current);positions.push(current.start);continue;
+    }
+    const forward = best(right.flatMap((s,j) => owners.candidate[j] === owners.source[i]
+      ? [{index:j,score:sentenceSimilarity(bodies[i],bodyOf(s.text))}] : []));
+    if (!forward) return null;
+    const j=forward.index, span=right[j];
+    const backward=best(left.flatMap((s,k) => owners.source[k] === owners.candidate[j]
+      ? [{index:k,score:sentenceSimilarity(bodies[k],bodyOf(span.text))}] : []));
+    if (!backward || backward.index !== i) return null;
+    const existing=after.filter(m=>m.start>=span.start && m.start<span.end);
+    if (existing.length) {
+      if (existing.length !== 1 || existing[0].number !== marker.number || covered.has(existing[0])) return null;
+      covered.add(existing[0]);positions.push(existing[0].start);continue;
+    }
+    // A discourse lead or an unfamiliar introduction can hide an existing
+    // prefix from the structural parser. Never prepend another ordinal to it.
+    if (new RegExp(`(?<![가-힣])${ORDINAL}(?:${ORDINAL_END}|(?:은|는)\\s+)`, 'u').test(span.text)) return null;
+    let position=span.start;
+    const intro=output.slice(position).match(introPattern)?.[0] || '';
+    position+=intro.length;
+    if (literals.some(s=>s.start<=position && s.end>position)) return null;
+    const connector=output.slice(position).match(/^(?:또한|또|그리고)[,，]?[ \t]+/u)?.[0] || '';
+    positions.push(position);edits.push({position,remove:connector.length,prefix:prefix[1]});
+  }
+  if (!edits.length || covered.size!==after.length || positions.some((p,i)=>i>0 && p<=positions[i-1])) return null;
+  let text=output;
+  for(const e of edits.sort((a,b)=>b.position-a.position)) text=text.slice(0,e.position)+e.prefix+text.slice(e.position+e.remove);
+  const repaired=ordinalMarkers(text,{source:original});
+  if(repaired.length!==before.length || repaired.some((m,i)=>m.number!==before[i].number)) return null;
+  return {text,repairCount:edits.length};
 }
 
 function restoreAnchoredOrdinalMarkers(original, output, before, after) {

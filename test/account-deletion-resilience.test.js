@@ -224,6 +224,7 @@ test('activity lanes expire, release independently, and completed tombstones blo
 });
 
 test('operational user content and counters are deleted while financial ledgers are explicitly retained', async () => {
+  assert.ok(USER_OPERATIONAL_COLLECTIONS.includes(require('../lib/semanticAuditStorage').COLLECTION));
   const initial = {};
   for (const collectionName of USER_OPERATIONAL_COLLECTIONS) {
     initial[`${collectionName}/${collectionName}-owned`] = { uid: 'u1', value: 'private' };

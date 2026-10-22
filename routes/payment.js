@@ -3395,6 +3395,7 @@ router.post('/admin/credit-history-item', async (req, res) => {
     }
 
     let archive = null;
+    let semanticAudit = { available: false, reason: 'not_recorded' };
     if (link.kind === 'transform' && link.jobId) {
       const archiveSnap = await db.collection(JOB_ARCHIVE_COLLECTION).doc(link.jobId).get();
       if (archiveSnap.exists) {
@@ -3404,6 +3405,13 @@ router.post('/admin/credit-history-item', async (req, res) => {
           return res.status(409).json({ error: '원장과 작업 기록의 소유자가 일치하지 않습니다.', code: 'TASK_OWNER_MISMATCH' });
         }
         archive = serializeAdminLedgerTaskArchive(archiveData, link.jobId);
+        const evidenceStorage = require('../lib/semanticAuditStorage');
+        const evidenceSnap = await db.collection(evidenceStorage.COLLECTION).doc(link.jobId).get();
+        semanticAudit = evidenceStorage.forHistory(evidenceSnap.exists ? evidenceSnap.data() : null,
+          { uid, jobId: link.jobId, source: historyData.inputText, candidate: historyData.outputText });
+        if (semanticAudit.reason === 'owner_mismatch') {
+          return res.status(409).json({ error: '원장과 판정 근거의 소유자가 일치하지 않습니다.', code: 'TASK_OWNER_MISMATCH' });
+        }
       }
     }
 
@@ -3417,7 +3425,8 @@ router.post('/admin/credit-history-item', async (req, res) => {
       history: serializeAdminLedgerTaskHistory(link.historyId, historyData),
       engine: {
         engineMeta: serializeAdminLedgerTaskEngineMeta(historyData.engineMeta),
-        archive
+        archive,
+        semanticAudit
       },
       ops: opsResult.items,
       opsStatus: opsResult.status

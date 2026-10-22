@@ -116,5 +116,5 @@ function candidates(source, output, { documentSource = '' } = {}) {
   if (!before || !after || before === after) return [];
   return [...labelBindingCandidates(before, after, documentSource || before), ...delimiterCandidates(before, after)];
 }
-const instruction = 'source_label_binding_candidate는 완결 문장 끝과 물리적 줄바꿈에서 반복 확인된 명목 표식에 결과가 새 조사·소유격을 붙였는지 대조하는 질문이다. 출처명이라는 단정이나 삭제 지시가 아니다. 원문의 모호함·정상 행위 주체를 존중하고 실제 귀속 변화만 changed로 판단한다. introduced_delimiter_imbalance_candidate는 코드·URL·목록 번호를 제외한 원문 대비 괄호 미대응 증가의 국소 검토 요청이다. 원문의 기존 불균형을 새 오류로 세지 말고, 닫는 괄호 자동 삭제나 여는 괄호 추측 추가를 하지 않는다. 두 후보 모두 문맥상 정상은 preserved, 실제 신규 오류는 정확한 violation과 changed, 불명확하면 uncertain으로 보고한다. 후보만으로 점수·품질을 차감하지 않는다.';
+const instruction = 'source_label_binding_candidate는 완결 문장 끝과 물리적 줄바꿈에서 반복 확인된 명목 표식에 결과가 새 조사·소유격을 붙였는지 대조하는 질문이다. 출처명이라는 단정이나 삭제 지시가 아니다. 원문의 모호함·정상 행위 주체를 존중하고 실제 귀속 변화만 changed로 판단한다. introduced_delimiter_imbalance_candidate는 코드·URL·목록 번호를 제외한 원문 대비 괄호 미대응 증가의 국소 검토 요청이다. 원문의 기존 불균형을 새 오류로 세지 말고, 닫는 괄호 자동 삭제나 여는 괄호 추측 추가를 하지 않는다. 두 후보 모두 문맥상 정상은 preserved, 실제 신규 오류는 정확한 인용과 비교 근거를 갖춘 changed, 불명확하면 uncertain으로 보고한다. 후보만으로 점수·품질을 차감하지 않는다.';
 module.exports = { VERSION, trailingLabels, labelSeamLines, unmatchedParentheses, candidates, instruction };

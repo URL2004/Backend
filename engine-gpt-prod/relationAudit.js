@@ -61,8 +61,13 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
   }
   const originals = splitSentences(before);
   const rewritten = splitSentences(after);
+  const originalProfiles = originals.map(sentenceMatchProfile);
   candidates.push(...require('./auditMeaningRelations').directionalPairs(originals, rewritten));
-  const matches = rewritten.map(sentence => closestSentence(originals, sentence));
+  const ownership = require('./relationAlignment').sentenceOwners(before, after,
+    splitSentenceSpans(before), splitSentenceSpans(after));
+  const matchAt = index => closestSentence(originals, rewritten[index], ownership?.candidate[index] != null
+    ? i => ownership.source[i] === ownership.candidate[index] : null, originalProfiles);
+  const matches = rewritten.map((sentence, index) => matchAt(index));
   const connector = s => {
     const word=s.match(/^(다만|하지만|그러나|반면|따라서|그러므로)\s+/u)?.[1];
     return ({하지만:'contrast',그러나:'contrast',따라서:'consequence',그러므로:'consequence'})[word]||word||'';
@@ -90,7 +95,7 @@ function auditRelationCandidates(source, outputText, { includeAllCandidates = fa
     // Unchanged words can point at a different antecedent after a move.
     if (/^(?:이|그|이러한|그러한)\s*(?:부분|내용|관점|문제|결과)/u.test(sentence)
         && matched.index > 0 && outputIndex > 0) {
-      const previousMatch = closestSentence(originals, rewritten[outputIndex - 1]);
+      const previousMatch = matches[outputIndex - 1];
       if (previousMatch && previousMatch.similarity >= .6 && previousMatch.index !== matched.index - 1)
         add('antecedent_ownership_candidate');
     }
@@ -299,38 +304,59 @@ function subjectObject(value) {
   const match = String(value).match(/([가-힣A-Za-z][가-힣A-Za-z0-9·-]{0,29}?)(?:은|는|이|가)\s+([가-힣A-Za-z][가-힣A-Za-z0-9·-]{0,29}?)(?:을|를)(?=\s)/u);
   return match ? { subject: match[1], object: match[2] } : null;
 }
-function closestSentence(originals, value) {
+function sentenceMatchProfile(value) {
+  // Request-local lexical features are computed once per source sentence,
+  // rather than reparsing every source for every rewritten sentence.
+  const tokens = new Set((String(value).match(/[가-힣A-Za-z0-9]{2,}/gu) || [])
+    .map(token => token.replace(/(?:에게서|에게|에서|으로|은|는|이|가|을|를|의)$/u, ''))
+    .filter(token => token.length >= 2));
+  return { tokens, stems: new Set([...tokens].map(token => token.slice(0, 2))),
+    heading: require('./layoutStructure').isKnownHeadingLine(value) };
+}
+function closestSentence(originals, value, eligible = null, profiles = originals.map(sentenceMatchProfile)) {
   // An unchanged body sentence must not be paired with a short heading whose
   // token set happens to be a subset. This is also the common cheap path.
-  const exactIndex = originals.indexOf(value);
+  const exactIndex = originals.findIndex((s, i) => s === value && (!eligible || eligible(i)));
   if (exactIndex >= 0) return { sentence: value, index: exactIndex, similarity: 1 };
   // Light normalization is only for locating a comparable sentence. It never
   // certifies a relation or acts as an authorship feature.
-  const tokens = value => new Set((String(value).match(/[가-힣A-Za-z0-9]{2,}/gu) || [])
-    .map(token => token.replace(/(?:에게서|에게|에서|으로|은|는|이|가|을|를|의)$/u, ''))
-    .filter(token => token.length >= 2));
   // Two-character stems let an inflected verb (적용할/적용하기) still locate its
   // source sentence; the stricter token overlap is kept where it is higher.
-  const stems = set => new Set([...set].map(token => token.slice(0, 2)));
-  const overlapRatio = (source, target) => [...target].filter(token => source.has(token)).length
-    / Math.max(1, Math.min(source.size, target.size));
-  const target = tokens(value), targetStems = stems(target);
+  const targetProfile = sentenceMatchProfile(value);
+  const target = targetProfile.tokens, targetStems = targetProfile.stems;
   let best;
   for (const [index, sentence] of originals.entries()) {
-    const source = tokens(sentence);
-    const sourceStems = stems(source);
-    const similarity = Math.max(overlapRatio(source, target), overlapRatio(sourceStems, targetStems));
-    // Preserve the existing match threshold; resolve equal scores by coverage
-    // of BOTH spans instead of preferring whichever short label appears first.
+    if (eligible && !eligible(index)) continue;
+    // A section label is not a plain factual assertion. Its shorter token set
+    // could previously outrank the real body sentence and fabricate a change
+    // in certainty. Heading deletion/ownership is audited by structureChunk.
+    const profile = profiles[index];
+    if (profile.heading !== targetProfile.heading) continue;
+    const source = profile.tokens, sourceStems = profile.stems;
+    const common = [...target].filter(token => source.has(token)).length;
+    const stemCommon = [...targetStems].filter(token => sourceStems.has(token)).length;
+    const similarity = Math.max(common / Math.max(1, Math.min(source.size, target.size)),
+      stemCommon / Math.max(1, Math.min(sourceStems.size, targetStems.size)));
+    // Rank by coverage of BOTH spans. A short generic sentence can be a token
+    // subset of an unrelated long sentence and score 1 on the admission ratio.
+    // Keep that ratio for admitting split sentences, never for outranking a
+    // much more complete correspondence. This remains a review question.
     const coverage = Math.max(
-      [...target].filter(token => source.has(token)).length / Math.max(1, source.size, target.size),
-      [...targetStems].filter(token => sourceStems.has(token)).length / Math.max(1, sourceStems.size, targetStems.size));
-    if (!best || similarity > best.similarity || (similarity === best.similarity && coverage > best.coverage))
+      common / Math.max(1, source.size, target.size),
+      stemCommon / Math.max(1, sourceStems.size, targetStems.size));
+    if (!best || coverage > best.coverage || (coverage === best.coverage && similarity > best.similarity))
       best = { sentence, index, similarity, coverage };
   }
   return best;
 }
 function certaintyScopeShift(original, sentence) {
+  // Inability and difficulty are different claim strengths in either
+  // direction. This paired question is especially important for short texts
+  // that otherwise would not receive a semantic audit.
+  const inability = /지\s*못(?:한다|했다|했습니다|합니다|하는|하며|하고|하던|할)/u;
+  const difficulty = /기\s*(?:어렵|어려(?:운|워|웠|울|움))/u;
+  if ((inability.test(original) && difficulty.test(sentence) && !inability.test(sentence))
+      || (difficulty.test(original) && inability.test(sentence) && !difficulty.test(sentence))) return true;
   // An outer "생각했다" is not a replacement for an inner tentative negation.
   // These nominate paired spans for semantic review; they never restore text.
   if (/아닐\s*수도\s*있/u.test(original)

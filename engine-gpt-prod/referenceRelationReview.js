@@ -67,6 +67,6 @@ function unresolvedWarnings(rows, semanticState) {
       : '원문의 관계 설명이 다른 위치나 표현으로 유지됐는지 확정하지 못했어요. 앞뒤 문장과 함께 대조해 주세요.'
   }));
 }
-const instruction = 'numbered_subset_scope_candidate는 번호로 한정된 일부 사례의 공통점이 더 많은 사례 전체로 넓어졌는지 묻는다. 뒤에 차이점이 남아 있어도 앞의 공통 서술 범위가 같다는 증거는 아니다. 원문 전체가 더 넓은 공통점을 실제로 뒷받침하면 preserved이다. anchored_relation_omission_candidate는 두 동일한 앞뒤 문장 사이의 시차·격차·간극 설명이 결과에서 사라졌는지 묻는다. 결과 전체와 인접 문장에서 이동·의역·통합된 동등한 해석 및 인과 관계를 반드시 찾아보고, 주변 사실 서술이 남은 것과 그 사실에서 도출한 별도 해석이 남은 것을 구별한다. 후보만으로 오류나 전체 의미 유실을 단정하지 않는다. 실제 변화가 확인될 때만 정확한 introduced violation을 쓰며, 불확실하면 uncertain으로 답한다. 숫자 치환·문장 자동 복원은 금지한다.';
+const instruction = 'numbered_subset_scope_candidate는 번호로 한정된 일부 사례의 공통점이 더 많은 사례 전체로 넓어졌는지 묻는다. 뒤에 차이점이 남아 있어도 앞의 공통 서술 범위가 같다는 증거는 아니다. 원문 전체가 더 넓은 공통점을 실제로 뒷받침하면 preserved이다. anchored_relation_omission_candidate는 두 동일한 앞뒤 문장 사이의 시차·격차·간극 설명이 결과에서 사라졌는지 묻는다. 결과 전체와 인접 문장에서 이동·의역·통합된 동등한 해석 및 인과 관계를 반드시 찾아보고, 주변 사실 서술이 남은 것과 그 사실에서 도출한 별도 해석이 남은 것을 구별한다. 후보만으로 오류나 전체 의미 유실을 단정하지 않는다. 실제 변화가 확인될 때만 정확한 인용과 비교 근거로 changed를 쓰며, 불확실하면 uncertain으로 답한다. 숫자 치환·문장 자동 복원은 금지한다.';
 
 module.exports = { CODES, candidates, unresolvedWarnings, instruction };

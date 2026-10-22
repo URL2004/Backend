@@ -744,6 +744,8 @@ async function runSemanticDocumentAuditInternal({
         sourceIssues: report.sourceIssues || [],
         relationContract: report.relationContract || '',
         obligationReviews: report.obligationReviews || [],
+        operatorReviews: report.operatorReviews || [],
+        validation: report.validation || null,
         selectedJudgeModel: report.selectedJudgeModel || '',
         ...(requireConfirmation ? { relationConfirmationFirst: report.relationConfirmationFirst === true,
           stagedConfirmation: 'early' } : {}),
@@ -776,6 +778,8 @@ async function runSemanticDocumentAuditInternal({
           priorInitialFindingCount: error.partialSemanticReport.initialViolations?.length || 0,
           verificationCompleted: false
         } : null,
+        initialViolations: [...(error.partialSemanticReport?.initialViolations || []),
+          ...(error.partialSemanticReport?.violations || [])],
         violations: [], usage: error.usage || null };
       trace(r => r.finish(index, { outcome: require('./semanticAuditSchedule').errorOutcome(signal, error), error, verifyCount }));
     }

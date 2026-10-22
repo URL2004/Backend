@@ -57,6 +57,7 @@ function sanitizeFinalValidation(value) {
 
 function compactAuditTrace(meta = {}) {
   const result = {};
+  if (code(meta.semanticDecisionReason)) result.semanticDecisionReason = code(meta.semanticDecisionReason);
   if (meta.inputStatus?.version === 'source-input-integrity-v1') {
     const value = meta.inputStatus;
     result.inputStatus = {

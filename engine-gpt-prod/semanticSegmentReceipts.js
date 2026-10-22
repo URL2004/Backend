@@ -121,7 +121,7 @@ function policyFingerprint() {
   const fs = require('node:fs'), path = require('node:path');
   const files = ['judge.js', 'semanticObligations.js', 'currentReviewHints.js', 'relationAudit.js',
     'semanticOperatorReview.js', 'adjacentDuplicateReview.js', 'eventRelationOperators.js', 'sourceArtifactRelations.js',
-    'clauseCoverage.js', 'discourseAudit.js', 'promptEnvelope.js',
+    'clauseCoverage.js', 'discourseAudit.js', 'promptEnvelope.js', 'evidenceSpan.js', 'relationAlignment.js',
     'entityParentheticalIntegrity.js', 'semanticSegmentReceipts.js',
     'semanticAuditPayload.js', 'semanticReviewEnvelope.js', 'layoutStructure.js',
     'layoutRelations.js', 'verticalTable.js', 'koreanEndingSeam.js',
@@ -252,7 +252,9 @@ function createReceiptStore() {
         relationContract: String(report.relationContract || ''),
         // Reviews quote the same request's exact candidate; they are needed so
         // explicitly adjudicated obligations stay adjudicated on reuse.
-        obligationReviews: Object.freeze((report.obligationReviews || []).map(r => Object.freeze({ ...r })))
+        obligationReviews: Object.freeze((report.obligationReviews || []).map(r => Object.freeze({ ...r }))),
+        operatorReviews: Object.freeze((report.operatorReviews || []).map(r => Object.freeze({ ...r }))),
+        validation: Object.freeze({ ...report.validation })
       }));
       receipts.set(key, list.slice(-4));
       stats.minted += 1;
@@ -266,13 +268,19 @@ function createReceiptStore() {
       const current = obligationDigests(obligations);
       const hit = (key ? receipts.get(key) || [] : []).find(receipt => tierSatisfies(receipt.tier, need)
         && Object.entries(current).every(([id, value]) => receipt.obligations[id] === value)) || null;
-      if (hit) stats.reused += 1; else stats.misses += 1;
+      if (hit) stats.reused += 1; else {
+        stats.misses += 1;
+        const reason = !key ? 'unidentifiedMisses' : !receipts.has(key) ? 'contextMisses'
+          : !(receipts.get(key) || []).some(r => tierSatisfies(r.tier, need)) ? 'tierMisses' : 'obligationMisses';
+        stats[reason] = (stats[reason] || 0) + 1;
+      }
       return hit;
     },
     has(key, options) {
       if (!key || !receipts.has(key)) return false;
       const before = { ...stats };
       const hit = this.lookup(key, options);
+      for (const field of Object.keys(stats)) if (!Object.hasOwn(before, field)) delete stats[field];
       Object.assign(stats, before);
       return Boolean(hit);
     },
@@ -321,6 +329,8 @@ function reusedSectionReport(pair, receipt) {
     sourceIssues: [],
     relationContract: receipt.relationContract || RELATION_CONTRACT,
     obligationReviews: receipt.obligationReviews.map(r => ({ ...r })),
+    operatorReviews: (receipt.operatorReviews || []).map(r => ({ ...r })),
+    validation: receipt.validation ? { ...receipt.validation } : null,
     selectedJudgeModel: receipt.selectedJudgeModel,
     usage: null
   };

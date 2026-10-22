@@ -167,3 +167,16 @@ test('segmentation preference only when it strictly reuses and stays within conc
   counts.set(alt, { reused: 0, fresh: 1 });
   assert.equal(r.preferReusableSegmentation(plan, alt, l => counts.get(l)), plan);
 });
+
+test('receipt misses retain reasons and read-only availability probes do not inflate counters', () => {
+  const store=r.createReceiptStore(), k=key();
+  const opts={sourceContext:'S',candidate:'O',config};
+  store.lookup('');store.lookup(k);
+  store.record(k,bound('S','O'),opts);
+  const before=store.stats();
+  assert.equal(store.has(k,{route:'confirmation_first'}),false);
+  assert.deepEqual(store.stats(),before);
+  store.lookup(k,{route:'confirmation_first'});
+  store.lookup(k,{obligations:[finding]});
+  assert.deepEqual(store.stats(),{minted:1,reused:0,misses:4,unidentifiedMisses:1,contextMisses:1,tierMisses:1,obligationMisses:1,size:1});
+});

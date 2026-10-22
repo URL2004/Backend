@@ -136,5 +136,10 @@ test('cancelled semantic audit retains completed usage and marks all unfinished 
   assert.equal(result.progress.startedSections,2); assert.equal(result.progress.unfinishedSections.length,5);
   assert.equal(result.reports[1].partialProgress.priorFindingCount,1);
   assert.equal(result.reports[1].partialProgress.verificationCompleted,false);
-  assert.equal(JSON.stringify(result.reports).includes('private'),false);
+  // Historical findings now feed the private persisted audit. They must not
+  // publish the interrupted candidate or count as a completed verdict.
+  assert.equal(JSON.stringify(result.reports).includes('private prior text'),false);
+  assert.equal(result.reports[1].initialViolations[1].span,'private');
+  assert.equal(result.reports[1].verificationCompleted,false);
+  assert.equal(result.reports[1].violations.length,0);
 });

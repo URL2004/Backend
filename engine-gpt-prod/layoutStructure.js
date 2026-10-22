@@ -376,6 +376,11 @@ function isReadingResponseTitle(text) {
 function isKnownHeadingLine(value) {
   const text = visibleTrim(value);
   if (!text || isFormulaLine(text)) return false;
+  // Emphasis changes presentation, not the role of an explicit heading.
+  // Requiring a whole, balanced wrapper keeps inline emphasis editable and
+  // uses the same numbered-prose exclusions as the unwrapped heading.
+  const emphasized = text.match(/^(?:\*\*([^*\n]+)\*\*|__([^_\n]+)__)$/u);
+  if (emphasized) return isKnownHeadingLine(emphasized[1] || emphasized[2]);
   if (isBracketHeadingLine(text)) return true;
   if (text.length > 140) return false;
   // Named, numbered propositions are section labels even when written as a

@@ -108,6 +108,8 @@ async function recoverSections({
   retrySection,
   validateCandidate,
   recoveryBudget = null,
+  recoveryContext = '',
+  attemptMemory = require('./callLedger').current()?.recoveryAttempts,
   signal
 } = {}) {
   const selected = selectRecoverySections(chunks, {
@@ -154,10 +156,36 @@ async function recoverSections({
     budgetSkippedCount: 0,
     budgetSkippedCodes: []
   };
+  metrics.attempts = [];
+  metrics.identicalAttemptSkippedCount = 0;
   if (!selected.length || typeof retrySection !== 'function') return { metrics, usages: [], selected };
 
   const usages = [];
+  const { textDigest } = require('./semanticProvenance');
+  const remembered = (entry, tier) => {
+    const key = attemptMemory?.key(entry, tier, recoveryContext);
+    const prior = attemptMemory?.get(key);
+    if (!prior) return null;
+    metrics.identicalAttemptSkippedCount++;
+    metrics.attempts.push({ index: entry.index, tier, sourceDigest: textDigest(entry.source),
+      inputDigest: textDigest(entry.output), candidateDigest: '', applied: false,
+      reason: 'identical_objective_already_attempted', previousReason: prior.rejectionCode,
+      marginalGain: 0, elapsedMs: 0, estimatedUsd: 0 });
+    return { ...entry, ...prior, applied: false };
+  };
+  const finish = (entry, tier, attempt, startedAt) => {
+    const outcome = applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics });
+    attemptMemory?.remember(attemptMemory.key(entry, tier, recoveryContext), outcome);
+    metrics.attempts.push({ index: entry.index, tier, sourceDigest: textDigest(entry.source),
+      inputDigest: textDigest(entry.output), candidateDigest: textDigest(attempt?.outputText || ''),
+      applied: outcome.applied === true, reason: outcome.applied ? 'accepted' : outcome.rejectionCode || 'not_better',
+      marginalGain: Number(outcome.marginalGain) || 0, elapsedMs: Date.now() - startedAt,
+      estimatedUsd: Number(attempt?.usage?.estimatedUsd) || 0 });
+    return outcome;
+  };
   const afterMini = await mapWithConcurrency(selected, RECOVERY_CONCURRENCY, async entry => {
+    const prior = remembered(entry, 'mini');
+    if (prior) return prior;
     if (recoveryBudget && !recoveryBudget.tryStart()) {
       const denied = recoveryBudget.denialReason() || 'recovery_budget_exhausted';
       recoveryBudget.recordSkip(denied);
@@ -176,12 +204,13 @@ async function recoverSections({
     }
     metrics.attempted += 1;
     metrics.miniAttemptCount += 1;
+    const startedAt = Date.now();
     const attempt = await safeRetry(retrySection, entry, 'mini', signal);
     if (attempt?.usage) {
       usages.push(attempt.usage);
       recoveryBudget?.recordUsage(attempt.usage, 'section_depth_recovery');
     }
-    return applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics });
+    return finish(entry, 'mini', attempt, startedAt);
   }, signal);
 
   const escalationDecisions = afterMini.map(item => ({
@@ -206,6 +235,8 @@ async function recoverSections({
   metrics.escalationAttemptCount = 0;
   metrics.escalated = 0;
   await mapWithConcurrency(escalationTargets, Math.min(RECOVERY_CONCURRENCY, metrics.escalationMaximum || 1), async entry => {
+    const prior = remembered(entry, 'escalation');
+    if (prior) return prior;
     if (recoveryBudget && !recoveryBudget.tryStart()) {
       const denied = recoveryBudget.denialReason() || 'recovery_budget_exhausted';
       recoveryBudget.recordSkip(denied);
@@ -218,12 +249,13 @@ async function recoverSections({
     }
     metrics.escalationAttemptCount += 1;
     metrics.escalated += 1;
+    const startedAt = Date.now();
     const attempt = await safeRetry(retrySection, entry, 'escalation', signal);
     if (attempt?.usage) {
       usages.push(attempt.usage);
       recoveryBudget?.recordUsage(attempt.usage, 'section_depth_escalation');
     }
-    return applyIfBetter({ entry, attempt, chunks, validateCandidate, metrics });
+    return finish(entry, 'escalation', attempt, startedAt);
   }, signal);
 
   return { metrics, usages, selected };

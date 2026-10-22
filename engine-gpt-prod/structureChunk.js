@@ -4245,6 +4245,10 @@ function compareStructuralRoleSignatures(source, output) {
   source = recoverPackedSourceAnchorBoundaries(source, output).text;
   const sourceSignature = structuralRoleSignature(source);
   const outputSignature = structuralRoleSignature(output);
+  // Contextual role counts can change after legitimate prose edits around an
+  // untouched label. Prove each original heading remains a complete line, in
+  // the same order and multiplicity, before reconciling a heading-count loss.
+  const headingLineWitness = exactHeadingLineWitness(source, output);
   const losses = [];
   const additions = [];
   // 전체 제목 수가 같아도 큐 하나가 본문에 붙고 다른 행이 제목으로
@@ -4268,7 +4272,8 @@ function compareStructuralRoleSignatures(source, output) {
     if (key === 'tableCellSequence') continue;
     const before = Number(sourceSignature[key] || 0);
     const after = Number(outputSignature[key] || 0);
-    if (after < before) losses.push({ role: key, sourceCount: before, outputCount: after });
+    if (after < before && !(key === 'titleHeading' && headingLineWitness.pass))
+      losses.push({ role: key, sourceCount: before, outputCount: after });
     if (after > before) additions.push({ role: key, sourceCount: before, outputCount: after });
   }
   const sourceCells = sourceSignature.tableCellSequence || [];
@@ -4294,9 +4299,28 @@ function compareStructuralRoleSignatures(source, output) {
     output: outputSignature,
     losses,
     additions,
+    headingLineWitness,
     tableColumnOwnershipPass,
     tableColumnOwnershipLossCount: tableColumnOwnershipPass ? 0 : 1
   };
+}
+
+function exactHeadingLineWitness(source, output) {
+  const normalize = value => String(value || '').trim().replace(/[ \t]+/gu, ' ');
+  const sourceRows = layoutStructure.buildLineRecords(source);
+  const anchors = sourceRows.filter(r => ['heading', 'title'].includes(r.role)).map(r => normalize(r.raw));
+  const left = sourceRows.filter(r => !r.blank).map(r => normalize(r.raw));
+  const right = String(output || '').split(/\r?\n/u).map(normalize).filter(Boolean);
+  if (!anchors.length) return { pass: false, count: 0 };
+  const counts = rows => { const map = new Map(); for (const s of rows) map.set(s, (map.get(s) || 0) + 1); return map; };
+  const before = counts(left), after = counts(right);
+  if (anchors.some(s => before.get(s) !== after.get(s))) return { pass: false, count: anchors.length };
+  let cursor = -1;
+  for (const anchor of anchors) {
+    cursor = right.indexOf(anchor, cursor + 1);
+    if (cursor < 0) return { pass: false, count: anchors.length };
+  }
+  return { pass: true, count: anchors.length };
 }
 
 function structuralRoleSignature(value) {

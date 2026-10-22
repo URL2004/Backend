@@ -76,7 +76,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.118';
+const VERSION = 'gpt-prod-v2.5.119';
 const DETECT_VERSION = 'gpt-detect-v1.60';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -543,6 +543,8 @@ async function runEngine({
       inputRisk,
       recoveryBudget,
       signal,
+      recoveryContext: JSON.stringify({ mode: selectedMode, requestStrength, documentProfile, inputRisk,
+        config: cfg, humanizeContract, contract }),
       retrySection: async entry => qualityV2.retryGeneralSurface({
         source: entry.source,
         currentOutput: String(chunks[entry.index]?.outputText ?? entry.output),
@@ -1919,6 +1921,7 @@ async function runEngine({
     allowedExtra
   });
   let semanticReport = { ran: false, pass: true, repairCount: 0, sectionCount: 0 };
+  let semanticDecisionReason = 'no_deliverable_candidate';
   // Job-scoped, sticky staged-confirmation requirement (semanticStaging.js).
   // Only the opt-in staged audit can set it (default OFF). It survives every
   // later report replacement and is satisfied only by exact proof for the
@@ -1990,6 +1993,7 @@ async function runEngine({
             audit: deterministicAudit
           });
     semanticReport.decisionReason = semanticDecision.reason;
+    semanticDecisionReason = semanticDecision.reason;
     if (semanticDecision.run) {
       const semanticInputText = outputText;
       let semanticPreparedInputText = semanticInputText;
@@ -4968,6 +4972,7 @@ async function runEngine({
     niklExternalErrorCount: niklAdvisorMeta.externalErrorCount,
     niklExternalTimeoutCount: niklAdvisorMeta.externalTimeoutCount,
     semanticJudgeRan: semanticReport.ran === true,
+    semanticDecisionReason: String(semanticDecisionReason),
     semanticVerificationCompleted: semanticReport.ran === true && semanticReport.verificationCompleted !== false,
     semanticValidationStatus: result.semanticValidation.status,
     finalSemanticStateReason: semanticReport.verificationCompleted === false
@@ -5588,6 +5593,19 @@ async function runEngine({
 
   return {
     result,
+    privateSemanticAudit: require('./semanticDiagnostics').buildTrace({
+      report: { ...semanticReportForCandidate(semanticReport), repairFullDocumentRejectCodes: [
+        ...semanticRepairFullDocumentRejectCodes,
+        finalSemanticRevalidation.preFinalRelationPatchReason,
+        finalSemanticRevalidation.preFinalRelationRestoreSkipReason,
+        finalSemanticRevalidation.relationPatchReason,
+        finalSemanticRevalidation.restoreSkipReason
+      ].filter(reason => reason && !['proposed', 'prior_verdict_not_failed'].includes(reason)) },
+      submittedSource: String(text || ''),
+      source: rawSource, candidate: outputText, engineVersion: VERSION,
+      decisionReason: semanticDecisionReason, recovery: sectionRecoveryReport.metrics?.attempts || [],
+      receipts: semanticSectionReceipts.stats()
+    }),
     surface: result.surface,
     inputRisk,
     mode: selectedMode,

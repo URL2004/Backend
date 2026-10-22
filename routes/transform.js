@@ -871,7 +871,7 @@ async function finishRefinement(job) {
   const { n, needed, paraLen, paragraphIndex, memoLength, outputText } = pending;
   const deducted = needed ? await commitRefineBilling(job, n, needed, paraLen) : false;
   const outputVersion = pending.outputVersion || (Number(job.outputVersion) || 1) + 1;
-  const draft = { ...job, outputVersion, terminalAtMs: Date.now(), engineMeta: null };
+  const draft = { ...job, outputVersion, terminalAtMs: Date.now(), engineMeta: null, semanticAuditTrace: null };
   const review = { code: 'refined_document_review', message: '추가한 경험이 글 전체의 주장과 맞는지 확인해 주세요.' };
   draft.result = { ...job.result, outputText, outputVersion,
     qualityStatus: 'needs_review', qualityWarnings: [...(job.result.qualityWarnings || []), review],
@@ -958,6 +958,8 @@ const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'ne
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
   'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts', 'cancelRequestedAtMs',
   'structurePreview', 'approvedStructure', 'structurePlanId', 'structureMode', 'basePriceCredits', 'structureCredits'];
+// transformJobs is owner-readable. Private judge evidence belongs only in its
+// server-only store, written by the same transaction before completion/billing.
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
   'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest',
   'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion'];
@@ -1028,6 +1030,10 @@ function persistJob(job, { requireClaim = false, expectedStatus = null, cancelRe
     if (cleaned !== undefined) doc[k] = cleaned;
   }
   const archiveDoc = buildArchiveDocument(job);
+  const evidenceStorage = job.semanticAuditTrace === undefined ? null : require('../lib/semanticAuditStorage');
+  let evidenceDoc;
+  try { evidenceDoc = evidenceStorage?.document(job); }
+  catch (error) { return Promise.resolve({ ok: false, code: 'SEMANTIC_EVIDENCE_PERSIST_UNAVAILABLE', error }); }
   const previous = jobPersistChains.get(job.id) || Promise.resolve();
   const operation = previous.catch(() => {}).then(async () => {
     try {
@@ -1107,6 +1113,12 @@ function persistJob(job, { requireClaim = false, expectedStatus = null, cancelRe
         }
         transaction.set(primaryRef, notification ? { ...writeDoc, notificationRevision: notification.revision } : writeDoc, { merge: true });
         transaction.set(archiveRef, cancellation ? buildArchiveDocument(writeDoc) : archiveDoc, { merge: true });
+        if (!cancellation && evidenceDoc) {
+          // Refinement marks old evidence stale without destroying it. A new
+          // completed audit replaces that record atomically with the job.
+          transaction.set(db.collection(evidenceStorage.COLLECTION).doc(job.id), evidenceDoc,
+            { merge: evidenceDoc.invalidated === true });
+        }
         if (active || activitySnapshot.exists || requireClaim) {
           transaction.set(activityRef, {
             uid: job.uid,
@@ -3171,6 +3183,7 @@ async function runHumanizeJob(job, text, evidence = '') {
       compressionFallback: !!out.result.compressionFallback,
       preservationCheck: measurePreservation(finalText)
     };
+    job.semanticAuditTrace = out.privateSemanticAudit || null;
     await stageCompletion(job, completionResult);
     if (job.status !== 'done') return;
     attachRefineTargets(job);   // 사후 문단 보강 타겟(PARAGRAPH_REFINE=1일 때만 부착)

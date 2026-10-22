@@ -74,6 +74,9 @@ function reviewPayload(obligations, references = {}) {
 
 function assessReviews(obligations, reviews, source, candidate, {allowDismiss=false,candidateReferences={}}={}) {
   const result=[], pending=[];
+  const createLocator=require('./evidenceSpan').createEvidenceLocator;
+  const sourceLocator=createLocator(source),candidateLocator=createLocator(candidate);
+  const canonical=(text,locate,value)=>{const at=locate(value,8);return at?text.slice(at.start,at.end):value;};
   const expectedIds = new Set(obligations.map(o => o.id));
   const validIds = Array.isArray(reviews) && reviews.every(r => expectedIds.has(r?.id));
   for (const {id,finding} of obligations) {
@@ -83,20 +86,26 @@ function assessReviews(obligations, reviews, source, candidate, {allowDismiss=fa
     // from this request's verified unique quotations. Absence is not a reference.
     const ref=candidateReferences[id];
     const validRef=ref && [finding.sourceSpan,finding.candidateSpan].includes(ref) && unique(candidate,ref);
-    const r=answer && {...answer,sourceSpan:answer.sourceSpan===''?finding.sourceSpan:answer.sourceSpan,
-      candidateSpan:answer.candidateSpan==='' && validRef ? ref : answer.candidateSpan};
+    const r=answer && {...answer,sourceSpan:answer.sourceSpan===''?finding.sourceSpan:canonical(source,sourceLocator,answer.sourceSpan),
+      candidateSpan:answer.candidateSpan==='' && validRef ? ref : canonical(candidate,candidateLocator,answer.candidateSpan)};
     const valid=validIds && matches.length===1 && ['resolved','not_error','unresolved'].includes(r.status)
       && r.sourceSpan===finding.sourceSpan && unique(source,r.sourceSpan)
       && unique(candidate,r.candidateSpan) && r.candidateSpan.trim().length>=8 && r.detail?.trim().length>=8
       && (r.status!=='not_error'||allowDismiss)
       && (r.status!=='resolved'||r.candidateSpan!==finding.candidateSpan);
     const status=valid?r.status:'unconfirmed';
+    const uncertaintyReasons = !valid ? [!validIds ? 'prior_review_unknown_id'
+      : matches.length !== 1 ? 'prior_answer_missing_or_duplicate'
+      : r?.status === 'not_error' && !allowDismiss ? 'prior_dismissal_requires_confirmation'
+      : r?.status === 'resolved' && r.candidateSpan === finding.candidateSpan ? 'prior_candidate_unchanged'
+      : 'prior_evidence_invalid'] : status === 'unresolved' ? ['prior_finding_unresolved'] : [];
     result.push({id,status,sourceSpan:finding.sourceSpan,
-      candidateSpan:valid?r.candidateSpan:'',detail:valid?r.detail:'Prior finding was not explicitly grounded and adjudicated.'});
+      candidateSpan:valid?r.candidateSpan:'',detail:valid?r.detail:'Prior finding was not explicitly grounded and adjudicated.',uncertaintyReasons,
+      ...(!valid && answer?{submittedReview:{status:answer.status,sourceSpan:answer.sourceSpan,candidateSpan:answer.candidateSpan,detail:answer.detail}}:{})});
     if (!valid || status==='unresolved') pending.push({...finding,
       // Never treat an old quotation as a current repair target.
       candidateSpan:valid?r.candidateSpan:'',origin:'unconfirmed',repairable:false,
-      relationGrounded:false,grounding:'unresolved_obligation',
+      relationGrounded:false,grounding:'unresolved_obligation',uncertaintyReasons,
       detail:valid?r.detail:'Earlier semantic finding requires explicit re-adjudication.',obligationId:id});
   }
   return {reviews:result,pending};

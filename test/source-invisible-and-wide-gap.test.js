@@ -94,7 +94,7 @@ test('spacing habits, tables, short lines and thin evidence are left alone', () 
 });
 
 test('preflight applies both repairs before every other step and reports them as diagnostics', () => {
-  assert.equal(preflight.VERSION, 39);
+  assert.equal(preflight.VERSION, 40);
   const line = [intro, first, second, closing].join('   ').replace('예측', `예${CGJ}측`);
   const result = preflight.auditAndSanitizeSource(line);
   assert.equal(paragraphs(result.text).length, 4);

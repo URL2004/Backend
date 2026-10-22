@@ -198,6 +198,20 @@ test('색인으로 오래된 결과를 찾되 해시는 출처 서명을 대체�
   assert.equal(match.trust, 'history_hmac');
 });
 
+test('500-result policy finds signed older output beyond the old 50/200 mixed-history boundary', async () => {
+  const output = longDocument('오래된 검증 결과');
+  const rows = [
+    ...Array.from({ length: 280 }, (_, i) => historyDoc('recent-' + i, { type: 'humanize', mode: 'blog', outputText: '다른 문서 ' + i })),
+    ...Array.from({ length: 600 }, (_, i) => historyDoc('detect-' + i, { type: 'detect' })),
+    historyDoc('older-signed-result', { type: 'humanize', mode: 'blog', outputText: output })
+  ];
+  assert.equal(await calibration.findOwnHumanizedHistoryMatch({ db: fakeDb(rows), uid: 'same-user', text: output, config: { limit: 50 } }), null);
+  const match = await calibration.findOwnHumanizedHistoryMatch({ db: fakeDb(rows), uid: 'same-user', text: output, config: { limit: 500 } });
+  assert.equal(match.id, 'older-signed-result');
+  assert.equal(match.trust, 'history_hmac');
+  assert.equal(await calibration.findOwnHumanizedHistoryMatch({ db: fakeDb(rows), uid: 'another-user', text: output, config: { limit: 500 } }), null);
+});
+
 test('공백·호환문자만 다른 기존 결과는 짧은 글에서도 정확 일치로 보정한다', async () => {
   const output = (`Ａ 과정에서는 학생의 관찰 기록을 차례로 확인했습니다. `
     + `그 결과를 바탕으로 다음 활동의 순서를 조정했습니다. `).repeat(3);
@@ -244,7 +258,7 @@ test('원문 100자면 내부 공백 제거 후 100자 미만이어도 검증된
   });
   assert.equal(result.applied, true);
   assert.equal(result.rawProbability, 80);
-  assert.equal(result.probability, 68);
+  assert.equal(result.probability, 40);
   assert.equal(result.meta.match, 'exact_normalized');
   calibration.clearRuntimeConfigCache();
 

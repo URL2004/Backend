@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 39;
+const VERSION = 40;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 // Compound section names must match before their shorter prefix. Otherwise
@@ -825,7 +825,12 @@ function repairInlineHeadingBoundaries(value) {
         repaired,
         text => text
           .replace(INLINE_HEADING_BEFORE_RE, replaceInlineHeadingBoundary)
-          .replace(INLINE_KNOWN_HEADING_ANYWHERE_RE, '\n\n')
+          .replace(INLINE_KNOWN_HEADING_ANYWHERE_RE, (match, at, whole) => {
+            // The number in "문항1. 성장과정" belongs to the question label.
+            // Splitting before it manufactures an orphan "문항" paragraph.
+            if (/(?:^|\s)(?:문항|질문|문제|항목|Question|Q)$/iu.test(whole.slice(0, at))) return match;
+            return '\n\n';
+          })
       );
       repaired = repaired.split('\n').map(piece => {
         if (isSectionReferenceProse(piece)) return piece;

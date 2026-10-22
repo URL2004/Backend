@@ -3882,7 +3882,8 @@ router.post('/admin/update-detect-calibration', async (req, res) => {
   const adminUid = await requireAdmin(req, res);
   if (!adminUid) return;
   try {
-    const patch = detectCalibration.sanitizeConfig(req.body && req.body.config);
+    const current = await detectCalibration.getRuntimeConfig({ db, logger, force: true });
+    const patch = detectCalibration.sanitizeConfig({ ...current, ...(req.body && req.body.config) });
     await db.collection(detectCalibration.SETTINGS_COLLECTION).doc(detectCalibration.SETTINGS_DOC).set({
       ...patch,
       version: detectCalibration.VERSION,
@@ -6248,7 +6249,7 @@ router.post('/apply-referral', async (req, res) => {
       if (referrer.refCode !== refCode) {
         throw referralError(409, 'REFERRAL_CODE_OWNER_CHANGED', '추천 코드 소유자가 변경됐습니다.');
       }
-      if (newUser.referredBy) return { applied: false };
+      if (newUser.referredBy) return { applied: false, alreadyApplied: true };
       if ((inviteeDeletionSnap.exists && accountDeletionBlocksPayment(inviteeDeletionSnap.data(), nowMs))
         || (inviterDeletionSnap.exists && accountDeletionBlocksPayment(inviterDeletionSnap.data(), nowMs))) {
         throw referralError(409, 'REFERRAL_ACCOUNT_UNAVAILABLE', '탈퇴 처리 중인 계정에는 추천을 적용할 수 없습니다.');
@@ -6293,7 +6294,7 @@ router.post('/apply-referral', async (req, res) => {
       };
     });
 
-    if (!result.applied) return res.status(400).json({ error: '이미 추천 적용됨' });
+    if (result.alreadyApplied) return res.json({ ok: true, applied: false, alreadyApplied: true, rewardCredits: 0 });
     logger.info('referral.applied', {
       referrerUid,
       newUid,

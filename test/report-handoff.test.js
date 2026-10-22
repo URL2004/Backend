@@ -10,6 +10,10 @@ const assert = require('node:assert/strict');
 
 process.env.OPENAI_SAFETY_SALT = 'report-handoff-test-secret-at-least-32-bytes';
 process.env.DETECT_HISTORY_CALIBRATION = '1';
+// Keep the legacy policy explicit: these tests exercise source-cap precedence,
+// including values above the stronger v6 adjustment, rather than its defaults.
+process.env.DETECT_HISTORY_CALIBRATION_FACTOR = '0.15';
+process.env.DETECT_HISTORY_CALIBRATION_MAX_REDUCTION = '12';
 
 const calibration = require('../lib/detectCalibration');
 const integrity = require('../lib/historyLinkIntegrity');

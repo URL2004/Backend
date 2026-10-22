@@ -70,6 +70,7 @@ test('versioned index config preserves every pre-existing production index', () 
     'creditHistory:COLLECTION_GROUP:createdAt:DESCENDING|type:DESCENDING|__name__:DESCENDING',
     'history:COLLECTION:calibrationTextHash:ASCENDING|createdAt:DESCENDING',
     'history:COLLECTION:detectInputHash:ASCENDING|createdAt:DESCENDING',
+    'history:COLLECTION:type:ASCENDING|createdAt:DESCENDING',
     'orders:COLLECTION:status:ASCENDING|createdAt:DESCENDING|__name__:DESCENDING',
     'orders:COLLECTION:uid:ASCENDING|createdAt:DESCENDING|__name__:DESCENDING',
     'users:COLLECTION:subscription.status:ASCENDING|subscription.nextBillingAt:ASCENDING|__name__:ASCENDING',

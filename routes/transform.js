@@ -655,6 +655,7 @@ function activeJobPayload(job) {
     : (job.startedAt || job.createdAt || Date.now());
   const base = {
     id: job.id,
+    ...require('../lib/transformCancellation').cancellationAvailability(job, { windowSec: CANCEL_WINDOW_SEC }),
     status: job.status,
     inputChars: typeof job.text === 'string' ? job.text.length : 0,
     durationMs: Math.max(0, (job.terminalAtMs || Date.now()) - job.createdAt),
@@ -4154,6 +4155,7 @@ router.get('/transform/:id', async (req, res, next) => {
       : job.createdAt;
   const base = {
     ok: true,
+    ...require('../lib/transformCancellation').cancellationAvailability(job, { windowSec: CANCEL_WINDOW_SEC }),
     status: job.status,
     inputChars: typeof job.text === 'string' ? job.text.length : 0,
     durationMs: Math.max(0, (job.terminalAtMs || Date.now()) - job.createdAt),

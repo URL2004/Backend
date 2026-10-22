@@ -32,7 +32,7 @@ test('같은 사용자·입력의 최신 서버 감지 점수만 제한된 조�
   const score = await source.resolveSourceScore({ db: database([record()], observe), uid: 'u1', text: '검증용 원문입니다.', claimedScore: 38 });
   assert.equal(score, 38);
   assert.equal(observe.uid, 'u1');
-  assert.equal(observe.limit, source.LOOKUP_LIMIT);
+  assert.equal(observe.limit, source.LOOKUP_LIMIT * 4);
   assert.equal(observe.reads, 1);
   assert.deepEqual(observe.order, ['createdAt', 'desc']);
 });

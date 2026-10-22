@@ -38,12 +38,22 @@ test('retry holds and unknown restart holds are not reported as an immediate sta
   held._restartRecoveryHoldUntilMs = now + 90000;
   assert.equal(eta(held, [held, target]), 90);
 });
-test('overdue and malformed runtime estimates stay finite without mutating jobs', () => {
+test('overdue predecessors keep the ETA unknown without mutating jobs or pretending a slot is free', () => {
   const target = queued('target'), active = running('active', 'formal', 300, 1000);
   const before = JSON.stringify([active, target]);
-  assert.equal(eta(target, [active, target]), 30);
+  assert.equal(eta(target, [active, target]), null);
   assert.equal(JSON.stringify([active, target]), before);
   active.estSec = NaN;
-  assert.equal(eta(target, [active, target]), 90);
+  assert.equal(eta(target, [active, target]), null);
+  active.startedAt = now - 100000;
+  assert.equal(eta(target, [active, target]), 800);
   assert.deepEqual(estimateQueue({ status: 'done' }, []), {});
+});
+test('an overdue worker does not hide another known release or an already free slot', () => {
+  const target = queued('target', 'blog'), overdue = running('overdue', 'formal', 100, 200);
+  const known = running('known', 'blog', 100, 60);
+  assert.equal(eta(target, [overdue, known, target], { sharedCap: 2 }), 40);
+  assert.equal(eta(target, [overdue, target], { sharedCap: 2 }), 15);
+  known.estHighSec = 200; known.startedAt = now - 150000;
+  assert.equal(eta(target, [overdue, known, target], { sharedCap: 2 }), 50);
 });

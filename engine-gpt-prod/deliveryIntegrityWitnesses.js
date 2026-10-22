@@ -38,7 +38,7 @@ const EDIT_REQUEST = /(?:적어|써|넣어|추가해|덧붙여|고쳐|바꿔|수
 // own key words), and its source neighbours survive as mutual best matches
 // that now sit next to each other (a rewritten sentence would still stand
 // between them) without having grown or taken on a clause of their own source
-// lacks (not merged into a neighbour). The
+  // lacks (not merged into a neighbour). The
 // sentence a following reference pointed at is then physically absent; no
 // pronoun is interpreted. `spans` limits the search to judge-quoted ranges.
 //
@@ -83,21 +83,38 @@ function droppedSourceSentences(source, candidate, { spans = null } = {}) {
   // A neighbour can stay within the length bound and still host the missing
   // claim in other words ("…확인하였고 복원력도 쟀다"). Three consecutive words
   // its own source sentence lacks, on the side facing the gap, are such a clause.
+  // Two words can also carry an entire proposition ("복원력도 쟀다"); such
+  // a neighbour is not independent evidence that the claim was deleted.
   const hosts = (kept, original, facingEnd) => {
     const known = new Set(root(original)), words = contentTokens(kept).map(t => t.slice(0, 2)), half = words.length / 2;
+    if (facingEnd) {
+      const clauses = kept.split(/(?:고|며|지만)\s*[,，]?\s+/u);
+      const tail = clauses.length > 1 ? root(clauses.at(-1)) : [];
+      if (tail.length >= 2 && tail.length <= 4 && tail.every(word => !known.has(word))) return true;
+    }
     for (let i = 0, run = 0; i < words.length; i++) {
       run = known.has(words[i]) ? 0 : run + 1;
       if (run >= 3 && (facingEnd ? i >= half : i - run + 1 < half)) return true;
     }
     return false;
   };
-  const anchor = (index, facingEnd) => {
+  const mergedContrast = (kept, original, missing, facingEnd) => {
+    const boundary = /지만\s*[,，]?\s*|반면(?:에)?\s*[,，]?\s*/u;
+    if (boundary.test(original)) return false;
+    const clauses = kept.split(boundary);
+    if (clauses.length !== 2) return false;
+    const facing = facingEnd ? clauses[1] : clauses[0];
+    const missingRoots = new Set(root(missing));
+    return bare(facing).length >= 8 && root(facing).filter(word => missingRoots.has(word)).length >= 2;
+  };
+  const anchor = (index, facingEnd, missing) => {
     const row = before[index];
     for (const score of row ? [exact, inflected] : []) {
       const at = best(row.text, after, score);
       if (at >= 0 && best(after[at].text, before, score) === index
         && bare(after[at].text).length <= bare(row.text).length * 1.3 + 8
-        && !hosts(after[at].text, row.text, facingEnd)) return { at, stemmed: score === inflected };
+        && !hosts(after[at].text, row.text, facingEnd)
+        && !mergedContrast(after[at].text, row.text, missing, facingEnd)) return { at, stemmed: score === inflected };
     }
     return { at: -1, stemmed: false };
   };
@@ -121,7 +138,7 @@ function droppedSourceSentences(source, candidate, { spans = null } = {}) {
     const absent = distinctive.filter(t => !outputBare.includes(t));
     if (absent.length < 2 || absent.length / distinctive.length < 0.67) continue;
     if (after.some(s => exact(row.text, s.text) >= 0.55)) continue;
-    const previous = anchor(i - 1, true), next = anchor(i + 1, false);
+    const previous = anchor(i - 1, true, row.text), next = anchor(i + 1, false, row.text);
     const bracketed = i === 0 ? next.at === 0 : i === tail ? previous.at === after.length - 1
       : previous.at >= 0 && next.at === previous.at + 1;
     if (!bracketed) continue;

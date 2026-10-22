@@ -232,11 +232,9 @@ test('F02 follow-up: the wider anchor does not witness rewording, merging, movin
   assert.equal(witnessed(notice.join(' '), notice.join(' ')).length, 0);
 });
 
-test('F02 follow-up known limit: a claim folded into a neighbour as two new words is still witnessed', () => {
-  // Not distinguishable from an ordinary rewrite without reading meaning; the gate
-  // therefore still needs the final verdict to name this sentence as an omission.
+test('F02 follow-up: a two-word clause in a neighbour is not independent proof of deletion', () => {
   const folded = `${K.slice(0, 3).join(' ')} 발열시험에서 완충재가 뜨거워지는 정도를, 굽힘 파괴시험에서 버티는 힘을 확인하였고 복원력도 쟀다.`;
-  assert.equal(witnessed(trials, folded).length, 1);
+  assert.equal(witnessed(trials, folded).length, 0);
   assert.equal(confirmedOmissions(trials, folded, bindSemanticValidation({ ran: true, pass: true, verificationCompleted: true,
     violations: [] }, trials, folded), []).length, 0);
 });

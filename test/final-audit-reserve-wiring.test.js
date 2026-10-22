@@ -39,7 +39,7 @@ test('materialized candidate growth reserves the long audit even when frozen tok
 test('index observes live chunks before merge and live materialized output before subsequent admissions', () => {
   const code = fs.readFileSync(require.resolve('../engine-gpt-prod'), 'utf8');
   const initial = code.indexOf('let readFinalAuditCandidate =');
-  const budget = code.indexOf('const recoveryBudget = createRecoveryBudget', initial);
+  const budget = code.indexOf('const recoveryBudget = jobRecoveryBudget', initial);
   const sectionRecovery = code.indexOf('sectionRecoveryReport = await', budget);
   const output = code.indexOf('let outputText =', sectionRecovery);
   const materializer = code.indexOf('const materializeExactLineCandidate =', output);

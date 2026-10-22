@@ -620,10 +620,6 @@ function queueCap(mode) {
   return poolOf(mode) === 'short' ? BLOG_MAX_QUEUE : MAX_QUEUE_GLOBAL;
 }
 
-function queueUnitSec(mode, estSec) {
-  return poolOf(mode) === 'short' ? 120 : Math.max(300, Math.min(1200, estSec || 900));
-}
-
 function queuedJobsForPool(pool) {
   return [...jobs.values()]
     .filter(j => j.status === 'queued' && poolOf(j.mode) === pool)
@@ -631,21 +627,10 @@ function queuedJobsForPool(pool) {
 }
 
 function queueDetails(job) {
-  if (!job || job.status !== 'queued') return {};
-  const queued = [...queuedJobsForPool('formal'), ...queuedJobsForPool('short')]
-    .sort((a, b) => (a.queuedAt || a.createdAt || 0) - (b.queuedAt || b.createdAt || 0));
-  const position = Math.max(1, queued.findIndex(j => j.id === job.id) + 1);
-  const { running } = countActive('', job.mode);
-  const allRunning = countActive('', 'formal').running + countActive('', 'short').running;
-  const free = Math.max(0, Math.min(poolCap(job.mode) - running, ENGINE_ACTIVE_CAP - allRunning));
-  const wave = position <= free ? 0 : Math.ceil((position - free) / Math.max(1, Math.min(poolCap(job.mode), ENGINE_ACTIVE_CAP)));
-  return {
-    queuePosition: position,
-    queueSize: queued.length,
-    queueWaitSec: Math.max(0, Math.floor((Date.now() - (job.queuedAt || job.createdAt || Date.now())) / 1000)),
-    queueWaitReason: job.queueWaitReason || 'capacity',
-    queueEtaSec: wave === 0 ? 15 : wave * queueUnitSec(job.mode, job.estSec)
-  };
+  return require('../lib/transformQueueEstimate').estimateQueue(job, jobs.values(), {
+    sharedCap: ENGINE_ACTIVE_CAP, formalCap: MAX_ACTIVE_GLOBAL, shortCap: BLOG_MAX_ACTIVE,
+    launching: launchingJobs
+  });
 }
 
 function activeJobPayload(job) {

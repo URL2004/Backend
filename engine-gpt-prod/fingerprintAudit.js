@@ -584,7 +584,7 @@ function isHedgeToken(token) {
 }
 
 function hasImportanceClaim(value) {
-  return /(?:것|점|태도|과정|방법|역할|기준|원칙)(?:은|는|이|가)?\s*중요(?:하|했|한|함|합|합니다|하다)/u
+  return /(?:것|일|점|태도|과정|방법|역할|기준|원칙)(?:은|는|이|가)?\s*중요(?:하|했|한|함|합|합니다|하다)/u
     .test(String(value || ''));
 }
 

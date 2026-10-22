@@ -126,6 +126,23 @@ function longDocument(prefix = '원문') {
   )).join('\n');
 }
 
+test('signed complete-sentence excerpts receive calibration without inheriting the whole-document source cap', async () => {
+  const output = longDocument('발췌 회귀');
+  const text = output.split('\n').slice(0, 130).join('\n');
+  const row = reviewHistory({ type: 'humanize', mode: 'formal', outputText: output, sourceProbability: 8,
+    historySourceScoreIntegrity: require('../lib/detectSourceScore').signSourceScore('same-user', output, 8, HISTORY_TEST_SECRET) });
+  const doc = historyDoc('owned-excerpt', row);
+  calibration.clearRuntimeConfigCache();
+  const result = await calibration.applyHistoryCalibration({ db: fakeDb([doc], { enabled: true }), uid: 'same-user', text, probability: 68 });
+  assert.equal(result.probability, 34);
+  assert.equal(result.meta.match, 'exact_excerpt');
+  assert.equal(result.meta.sourceProbability, null);
+  assert.equal(result.meta.sourceCapApplied, false);
+  assert.ok(result.meta.excerpt.sentenceCount > 3);
+  assert.equal(await calibration.findOwnHumanizedHistoryMatch({ db: fakeDb([doc]), uid: 'another-user', text }), null);
+  assert.equal(await calibration.findOwnHumanizedHistoryMatch({ db: fakeDb([doc]), uid: 'same-user', text: text + '\n새 주장을 덧붙였다.' }), null);
+});
+
 test('audit preservation fixtures keep 62→37, 18→11 and matched floor 10 unchanged', async () => {
   const output = longDocument('합성 검수');
   const cfg = { enabled: true, limit: 50, factor: .4, maxReduction: 30, floor: 10,

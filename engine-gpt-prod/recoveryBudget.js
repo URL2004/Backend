@@ -70,7 +70,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
   };
   let lastDeniedReason = '';
 
-  const enabled = enforced === true && limitUsd > 0;
+  let enabled = enforced === true && limitUsd > 0;
   const elapsedMs = updateTime;
   const denialReason = ({ mandatory = false, priority = 'normal', estimatedUsd = 0 } = {}) => {
     refreshFinalReserve();
@@ -149,6 +149,7 @@ function createRecoveryBudget(maxEstimatedUsd, {
   });
 
   return {
+    enableEnforcement: () => { enforced = true; enabled = limitUsd > 0; },
     raiseFinalAuditReserve: value => {
       finalReserveMs = Math.max(finalReserveMs, Math.min(MAX_FINAL_AUDIT_RESERVE_MS, Number(value) || 120000));
       return finalReserveMs;
@@ -207,8 +208,25 @@ function safeStage(value) {
     .slice(0, 80) || 'unknown';
 }
 
+// Structural fallback is a second candidate for one job. Do not replenish its
+// optional call/time/cost allowance. Final audits still use the current source
+// and candidate and keep their mandatory reservation.
+function jobRecoveryBudget(context, limit, options = {}) {
+  if (!context) return createRecoveryBudget(limit, options);
+  context.getFinalAuditReserveMs = options.getFinalAuditReserveMs;
+  if (!context.budget) context.budget = createRecoveryBudget(limit, {
+    ...options, getFinalAuditReserveMs: () => context.getFinalAuditReserveMs?.()
+  });
+  else {
+    context.budget.raiseFinalAuditReserve(options.finalAuditReserveMs);
+    if (options.enforced !== false) context.budget.enableEnforcement();
+  }
+  return context.budget;
+}
+
 module.exports = {
   createRecoveryBudget,
+  jobRecoveryBudget,
   normalizedLimit,
   MAX_FINAL_AUDIT_RESERVE_MS,
   UNKNOWN_FINAL_AUDIT_RESERVE_MS

@@ -263,6 +263,29 @@ test('v2.5.60 승인 구조는 전체 엔진을 거쳐도 일반 문단화에 �
 });
 const EVALUATIVE_POLISH = '이 문장은 표현이 조금 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 효율적이지 않습니다.';
 
+test('structure fallback keeps the same recovery budget through both complete engine attempts', { concurrency: false }, async t => {
+  const { activity } = require('./fixtures/mode-paragraphs');
+  const structure = require('../engine-gpt-prod/documentStructure');
+  const ledger = require('../engine-gpt-prod/callLedger');
+  const doc = structure.buildDocument(activity), plan = structure.identityPlan(doc);
+  plan.groups[0].breakAfterSentences = [2];
+  let firstBudget;
+  const budgets = [], setBudget = ledger.setRecoveryBudget;
+  t.mock.method(ledger, 'setRecoveryBudget', budget => { budgets.push(budget); return setBudget(budget); });
+  t.mock.method(structure, 'auditDelivery', () => {
+    firstBudget = ledger.current().recoveryBudget;
+    return { pass: false, reason: 'synthetic_unverified_order' };
+  });
+  installEngineMock(t, { humanize: body => extractPromptDataSection(body.input, 'EDITABLE_TEXT').replace(/했다/gu, '하였다') });
+  const out = await engine.run({ text: activity, mode: 'formal', approvedStructure: plan,
+    uid: 'fallback-budget-unit', config: config(), recoveryBudgetUsd: .5 });
+  assert.equal(out.result.engineMeta.structureFallback, true);
+  assert.ok(firstBudget);
+  assert.equal(budgets.filter(Boolean).length, 2);
+  assert.ok(budgets.filter(Boolean).every(budget => budget === firstBudget));
+  assert.equal(out.result.structureImprovement.applied, false);
+});
+
 test('fresh approved structure keeps a numeric chart literal through final delivery', { concurrency: false }, async t => {
   const structure = require('../engine-gpt-prod/documentStructure');
   const chart = '구역별 서비스 이용률\n0.30\n\n0.20\n\n0.10\n\n0.00\n2020\t2021\t2022\t2023';
@@ -492,7 +515,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.117');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.118');
   assert.equal(out.engineMeta.boundaryMarkerStats.version, 1);
   assert.equal(typeof out.engineMeta.boundaryMarkerStats.markedChunks, 'number');
   assert.equal(typeof out.engineMeta.relationCandidateCounts, 'object');
@@ -1794,7 +1817,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.117');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.118');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

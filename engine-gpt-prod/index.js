@@ -63,7 +63,7 @@ const {
 } = require('./modelFailure');
 const { shouldCallModel, primaryCoverage, shouldPreserveVoiceSentenceBoundaries } = require('./chunkPolicy');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
-const { createRecoveryBudget } = require('./recoveryBudget');
+const { jobRecoveryBudget } = require('./recoveryBudget');
 const { mapWithConcurrency } = require('./concurrency');
 const {
   appendPromptSecurityRule,
@@ -76,8 +76,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.117';
-const DETECT_VERSION = 'gpt-detect-v1.59';
+const VERSION = 'gpt-prod-v2.5.118';
+const DETECT_VERSION = 'gpt-detect-v1.60';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -213,6 +213,8 @@ async function run(options = {}) {
 }
 
 async function runWithStructureFallback(options = {}) {
+  const recoveryContext = {};
+  options = { ...options, recoveryContext };
   const first = await runEngine(options);
   if (options.approvedStructure && first.result?.structureImprovement?.deliveryVerified === false) {
     const fallback = await runEngine({ ...options, approvedStructure: null });
@@ -252,6 +254,7 @@ async function runEngine({
   niklQualityTest = false,
   layoutNlp = null,
   recoveryBudgetUsd = 0,
+  recoveryContext = null,
   deadlineMs = 0,
   approvedStructure = null
 } = {}) {
@@ -486,7 +489,7 @@ async function runEngine({
     if (inlineCodeFreeze.count > 0) candidate = literalSpans.restoreInlineCode(candidate, inlineCodeFreeze).text;
     return candidate;
   };
-  const recoveryBudget = createRecoveryBudget(recoveryBudgetUsd, {
+  const recoveryBudget = jobRecoveryBudget(recoveryContext, recoveryBudgetUsd, {
     enforced: primaryApprovedModelChunkCount > 0,
     jobDeadlineMs,
     // Reserve the actual final audit envelope before optional recovery starts.

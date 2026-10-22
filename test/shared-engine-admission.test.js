@@ -46,11 +46,11 @@ test('held recovery jobs do not idle an available slot; occupied workers admit n
 });
 
 test('queue display accounts for the other mode occupying all engine workers', () => {
-  const formal = { id: 'older', mode: 'formal', queuedAt: Date.now() - 1000 };
+  const formal = { id: 'older', mode: 'formal', status: 'queued', queuedAt: Date.now() - 1000 };
   const short = { id: 'mine', mode: 'blog', status: 'queued', queuedAt: Date.now() };
-  const ctx = { Date, ENGINE_ACTIVE_CAP: 2, poolCap: () => 2, queueUnitSec: () => 120,
-    queuedJobsForPool: pool => pool === 'formal' ? [formal] : [short],
-    countActive: (_, mode) => ({ running: mode === 'formal' ? 2 : 0 }) };
+  const running = [1, 2].map(i => ({ id: 'active-' + i, mode: 'formal', status: 'running', estSec: 120, startedAt: Date.now() }));
+  const ctx = { Date, require, ENGINE_ACTIVE_CAP: 2, MAX_ACTIVE_GLOBAL: 2, BLOG_MAX_ACTIVE: 2,
+    launchingJobs: new Set(), jobs: new Map([...running, formal, short].map(job => [job.id, job])) };
   vm.runInNewContext(source.slice(source.indexOf('function queueDetails(job)'), source.indexOf('function activeJobPayload(job)')), ctx);
   const result = ctx.queueDetails(short);
   assert.equal(result.queuePosition, 2); assert.equal(result.queueSize, 2); assert.equal(result.queueEtaSec, 120);

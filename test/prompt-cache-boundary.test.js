@@ -34,7 +34,7 @@ function instructionText(body) {
   )).join('');
 }
 
-test('252 humanize assemblies preserve the v2.5.112 prompt snapshot and share a prefix across profiles, modes, strengths and voices', () => {
+test('252 humanize assemblies preserve the v2.5.120 prompt snapshot and share a prefix across profiles, modes, strengths and voices', () => {
   const systems = [], prefixes = new Map();
   for (const profile of profiles) for (const mode of ['assignment', 'blog', 'polish'])
     for (const strength of ['basic', 'advanced', 'polish']) for (const promptVariant of ['full', 'compact_v1'])
@@ -52,9 +52,9 @@ test('252 humanize assemblies preserve the v2.5.112 prompt snapshot and share a 
         assert.deepEqual(Buffer.concat([Buffer.from(hp.cacheableSystem), Buffer.from(hp.stable.slice(hp.cacheableSystem.length))]), Buffer.from(hp.stable));
         assert.equal(prompts.validateHumanizePrompt(hp.stable).pass, true);
       }
-  // v2.5.112 intentionally adds one anti-restatement instruction to the full
-  // prompt. Byte reconstruction and cross-profile prefix equality remain exact.
-  assert.equal(digest(systems), 'f60631637bd87bec774631705a25bfceab8bbb3d407d59e5596e2628b85781e5');
+  // v2.5.120 clarifies planned versus performed actions within the existing
+  // character budget. Reconstruction and cross-profile prefixes remain exact.
+  assert.equal(digest(systems), 'e845d0e2bad910451b391b7c4d5ef6d982f5de5838eb4b25aa39e322b819b46f');
   assert.deepEqual([...prefixes.values()].map(s => s.length), [5138, 5455, 3845, 4162]);
 });
 

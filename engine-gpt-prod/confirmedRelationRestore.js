@@ -59,8 +59,11 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
       if (p.spanType === 'quote' && /^(?:"[^]*"|“[^]*”)$/u.test(literal)) return 'double:' + literal.slice(1,-1);
       return p.spanType + ':' + literal;
     }).sort().join('\n');
-  const pairedFindings = collectPairedNominations(report, priorReports)
-    .sort((left, right) => String(source).indexOf(left.sourceSpan) - String(source).indexOf(right.sourceSpan)
+  const pairedFindings = collectPairedNominations(report, priorReports);
+  const microPriority = new Map(pairedFindings.map(v => [v, Number(Boolean(
+    require('./confirmedMicroRepair').confirmedMicroRepair(v.sourceSpan, v.candidateSpan, v)))]));
+  pairedFindings.sort((left, right) => microPriority.get(right) - microPriority.get(left)
+      || String(source).indexOf(left.sourceSpan) - String(source).indexOf(right.sourceSpan)
       || text.indexOf(left.candidateSpan) - text.indexOf(right.candidateSpan));
   for (const v of pairedFindings) {
     if (replacements.length >= pairedLimit || v.origin !== 'introduced' || v.relationGrounded !== true

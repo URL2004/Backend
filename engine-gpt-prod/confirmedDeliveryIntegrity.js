@@ -130,6 +130,23 @@ function confirmedOmissions(source,candidate,report,priorReports=[]) {
     && (sameMissingClaim(bare(v.sourceSpan),previous,candidateBare) || droppedWhole(source,candidate,v)
       || bracketedGap(source,candidate,v)));
 }
+
+// A complete, current judge that explicitly confirms changed ownership,
+// condition or polarity must not be softened into charged review delivery.
+// Unlike stylistic warnings these are paired meaning errors. Unlocated,
+// stale, incomplete, source-existing and globally uncertain findings abstain.
+function confirmedRelationDefects(source, candidate, report) {
+  const status = verifySemanticValidation(report, { source, candidate, requireDigest: true }).status;
+  if (!['fail', 'uncertain'].includes(status) || report?.pass !== false || report.nominationOnly
+      || report.verificationCompleted !== true || report.skipped) return [];
+  if (report.uncertain && !(report.violations || []).some(v => v?.origin === 'unconfirmed'
+      || v?.repairable === false || v?.relationGrounded === false)) return [];
+  return (report.violations || []).filter(v => ['distortion', 'scope_expansion', 'experience_novelty'].includes(v.type)
+    && ['actor_action_target', 'condition_result', 'quantity_target', 'variable_definition', 'antecedent', 'modality_negation_causality'].includes(v.relation)
+    && v.origin === 'introduced' && hasGroundedSpan(v) && v.spanVerified === true
+    && unique(source, v.sourceSpan) && uniqueCandidate(candidate, v.candidateSpan)
+    && bare(v.sourceSpan) !== bare(v.candidateSpan));
+}
 // F-03: why the gate above did or did not fire. Observation only: it never
 // decides anything and confirmedOmissions() is not routed through it. It holds
 // counts, lengths, a short digest and overlap ratios; never a quotation.
@@ -286,5 +303,11 @@ function stopUnproductiveShortEscalation({attempt,sourceLength,semantic,metrics,
     && Number(metrics?.substantiveChangedSentenceCount)>0 && Number(metrics?.substantiveEditRatio)>=0.01
     && ['candidate_unchanged','depth_not_improved','minimum_effect_failed','safety_audit_failed'].includes(reason);
 }
-module.exports={confirmedOmissions,stopUnproductiveShortEscalation,explainConfirmedOmissions,
+function stopUnproductiveLongEscalation({attempt,sourceLength,semantic,metrics,reason}) {
+  return attempt > 0 && sourceLength >= 6000
+    && semantic?.ran === true && semantic.pass === true && !semantic.uncertain && semantic.verificationCompleted === true
+    && Number(metrics?.substantiveChangedSentenceCount) >= 4 && Number(metrics?.substantiveEditRatio) >= .1
+    && ['no_safe_change', 'candidate_unchanged'].includes(reason);
+}
+module.exports={confirmedOmissions,confirmedRelationDefects,stopUnproductiveShortEscalation,stopUnproductiveLongEscalation,explainConfirmedOmissions,
   sanitizeOmissionGateDiagnostics,GATE_DIAGNOSTICS_VERSION,GATE_STATES,GATE_CONDITIONS};

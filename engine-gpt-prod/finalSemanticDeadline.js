@@ -20,9 +20,9 @@ function finalSemanticDeadline({ source = '', candidate = '', startedAt = Date.n
     longDocument,
     limitMs,
     deadlineMs: Math.min(jobDeadline, startedAt + limitMs),
-    // The approved extension belongs to an already-running verdict, not an
-    // expanded opportunity to start another repair-and-verification cycle.
-    postRepairDeadlineMs: Math.min(jobDeadline, startedAt + 120000),
+    // One confirmed repair verification uses the ALREADY reserved final-audit
+    // window. Never renew it or borrow the verdict's transport retry extension.
+    postRepairDeadlineMs: Math.min(jobDeadline, startedAt + limitMs),
     // Do not spend the verification time on an optional repair. Keep the same
     // maximum thirty-second pre-final repair allowance.
     verifyReserveMs: limitMs - 30000,

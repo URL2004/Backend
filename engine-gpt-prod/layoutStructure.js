@@ -247,6 +247,7 @@ function classifyLine(value, context = {}) {
   if (isAttributedCoverTitle(text, context)) return 'title';
   if (context.tableLike || isExplicitTableLine(text)) return 'table';
   if (isKnownHeadingLine(text)) return 'heading';
+  if (isFollowingDraftTitle(text, context)) return 'title';
   if (isFlowSequenceLine(text)) return 'flow';
   if (context.plainListLike) return 'list';
   if (context.numberedLabelHeading) return 'heading';
@@ -373,6 +374,15 @@ function isReadingResponseTitle(text) {
   return /^[『「《][^』」》\n]{1,100}[』」》](?:을|를)\s*읽고$/u.test(text);
 }
 
+function isFollowingDraftTitle(text, context) {
+  const previous = String(context.previous?.text || '');
+  return /(?:아래|다음).{0,40}(?:글|초안).{0,40}(?:다듬어|고쳐|수정해)\s*줘[.!]?$/u.test(previous)
+    && text.length >= 4 && text.length <= 50 && !/[.!?。！？:：]/u.test(text)
+    && !isDependentLead(text) && !isProseContinuation(text) && !looksLikeUnpunctuatedProse(text)
+    && /(?:성|방법|방향|이해|의미|역할|과정|가능성)$/u.test(text)
+    && String(context.next?.text || '').length >= 100 && isSentenceComplete(context.next.text);
+}
+
 function isKnownHeadingLine(value) {
   const text = visibleTrim(value);
   if (!text || isFormulaLine(text)) return false;
@@ -394,6 +404,7 @@ function isKnownHeadingLine(value) {
   if (/^#{1,6}\s+\S/u.test(text)) return true;
   if (isReadingResponseTitle(text)) return true;
   if (/^(?:지은이|저자|줄거리|책\s*소개|작품\s*소개|후기)$/u.test(text)) return true;
+  if (/^(?:세부\s*과제|(?:양적|질적)\s*분석)$/u.test(text)) return true;
   if (/^[A-Za-z]?[①-⑳]\s*(?:Why|What|How|When|Where|Who)\b/iu.test(text)) return true;
   if (/^[\[【<][^\]】>\n]{1,80}[\]】>]$/u.test(text)) return true;
   // An explicit numbered section remains a heading with a presentational copula.
@@ -521,6 +532,7 @@ function isColonTitleLine(text, context = {}) {
  */
 function detectParallelSectionHeadingIndices(records, excluded = new Set()) {
   const source = Array.isArray(records) ? records : [];
+  const firstContentIndex = source.findIndex(r => !r.blank);
   const candidates = [];
   for (let index = 0; index < source.length - 1; index += 1) {
     const record = source[index];
@@ -528,7 +540,9 @@ function detectParallelSectionHeadingIndices(records, excluded = new Set()) {
     if (!record || !next || record.blank || next.blank || excluded.has(record.index)) continue;
     const text = String(record.text || '').trim();
     const nextText = String(next.text || '').trim();
-    if (text.length < 4 || text.length > 70 || nextText.length < Math.max(100, text.length * 2)) continue;
+    const coverPeer = index === firstContentIndex
+      && text.length <= 30 && isSentenceComplete(nextText);
+    if (text.length < 4 || text.length > 70 || nextText.length < Math.max(coverPeer ? 70 : 100, text.length * 2)) continue;
     // Infinitive-style headings may end in a full stop. Keep the same three
     // parallel sections requirement, and require two nominal peers below.
     const actionHeading = text.length <= 45 && /(?:하다|되다|찾다|배우다|잇다|지키다|살피다|바꾸다|키우다|만들다|돌아보다)[.。]$/u.test(text)

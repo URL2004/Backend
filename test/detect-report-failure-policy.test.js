@@ -797,6 +797,19 @@ test('report HTTP response signs the final comparison for exact-source backup an
   assert.equal(replay.body.historyComparisonProof, response.body.historyComparisonProof);
 });
 
+test('matched low score retains its history receipt without claiming a score reduction', { concurrency: false }, async t => {
+  const previousPlan = state.billingPlan;
+  const meta = { applied: false, reason: 'own_humanized_history_match', historyId: 'synthetic-own-history', rawProbability: 8, calibratedProbability: 8 };
+  state.comparisonCalibration = { probability: 8, rawProbability: 8, applied: false, meta };
+  state.billingPlan = 'unlimited';
+  t.after(() => { delete state.comparisonCalibration; state.billingPlan = previousPlan; });
+  const response = await post(BASE_TEXT, 'detect-no-delta-receipt');
+  assert.equal(response.status, 200); assert.equal(response.body.probability, 8);
+  assert.notEqual(response.body.calibrated, true);
+  assert.deepEqual(state.historyCalls.at(-1).result.probabilityCalibration, meta);
+  assert.equal(response.body.probabilityCalibration, undefined, 'private no-delta receipt is not added to report response');
+});
+
 test('report HTTP and paid replay keep cause clicks in the display namespace', { concurrency: false }, async t => {
   const previousPlan = state.billingPlan, previousScore = state.modelProbability;
   state.billingPlan = 'unlimited'; state.modelProbability = 32;

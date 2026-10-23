@@ -7,6 +7,8 @@ const { sentenceSimilarity } = require('./sentenceAlignment');
 // Restore only an attested particle/frame on an identical nominal anchor.
 // This is a proposal before final semantic verification, never a pass verdict.
 const RULES = [
+  { code: 'negative_condition', source: /(?<![가-힣])(?<anchor>[가-힣]{2,20})(?<frame>지\s+않(?:거나|으면|고|지만))(?=\s|[,，.!?])/gu,
+    target: (anchor, match) => `${anchor}${match.groups.frame.replace(/^지\s+않/u, '')}(?=\\s|[,，.!?])` },
   { code: 'comparison_exclusion', source: /(?<![가-힣])(?<anchor>(?!무엇|누구)[가-힣]{2,20})(?<frame>보다는|보다)(?=\s)/gu,
     target: anchor => `${anchor}(?:이|가)\\s+아니라(?=\\s)` },
   { code: 'concession_sufficiency', source: /(?<![가-힣])(?<anchor>[가-힣]{2,20})(?<frame>(?:이|가)\s+있어도)(?=\s)/gu,
@@ -29,7 +31,7 @@ function restoreRelationScopes(source, output) {
       const anchor = match.groups.anchor;
       const clause = original.text.slice(original.text.lastIndexOf(',', match.index) + 1).trim();
       const similarity = value => Math.max(sentenceSimilarity(original.text, value), sentenceSimilarity(clause, value));
-      const pattern = new RegExp(`(?<![가-힣])${rule.target(anchor)}`, 'gu');
+      const pattern = new RegExp(`(?<![가-힣])${rule.target(anchor, match)}`, 'gu');
       const candidates = after.flatMap(span => [...span.text.matchAll(pattern)].map(target => ({
         span, target, score: similarity(span.text)
       }))).sort((a, b) => b.score - a.score);
@@ -45,7 +47,7 @@ function restoreRelationScopes(source, output) {
       const start = best.span.start + best.target.index, end = start + best.target[0].length;
       if (overlaps(protectedOutput, start, end) || overlaps(changes, start, end)) continue;
       // Never turn a source's own explicit exclusion into a mere comparison.
-      if (new RegExp(rule.target(anchor), 'u').test(original.text)) continue;
+      if (new RegExp(rule.target(anchor, match), 'u').test(original.text)) continue;
       // Particle-only restoration may create "...할 때도 ... 있어도".
       // In that case restore the uniquely aligned source clause, not invented
       // grammar or the entire document. Existing quoted/code clauses abstain.

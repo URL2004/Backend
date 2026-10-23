@@ -201,7 +201,11 @@ router.post('/admin/ops-ack', async (req, res) => {
 router.post('/cron/ops-watchdog', async (req, res) => {
   if (!requireCron(req, res)) return;
   try {
+    await opsHeartbeat.ensureMonitoring();
     const beats = await opsHeartbeat.readAll();
+    if (beats.some(b => b.state !== 'disabled' && b.observation === 'storage_unavailable')) {
+      throw new Error('HEARTBEAT_STORAGE_UNAVAILABLE');
+    }
     const stale = beats.filter(b => b.state === 'stale');
     for (const b of stale) {
       logger.error('ops.watchdog_stale_heartbeat', {
@@ -245,7 +249,9 @@ router.post('/cron/ops-digest', async (req, res) => {
     const fields = [
       { name: '등급별', value: `SEV1 ${bySeverity.SEV1} · SEV2 ${bySeverity.SEV2} · SEV3 ${bySeverity.SEV3}`, inline: false },
       { name: '미확인 SEV1', value: openSev1.length ? `${openSev1.length}건 — 관리자 로그에서 확인 필요` : '없음', inline: false },
-      { name: '주기 작업', value: stale.length ? stale.map(s => `⛔ ${s.label} ${s.ageMinutes}분 지연`).join('\n') : '전부 정상', inline: false },
+      { name: '주기 작업', value: beats.filter(b => b.state !== 'disabled').map(b =>
+        b.state === 'stale' ? `⛔ ${b.label} ${b.ageMinutes}분 지연`
+          : `${b.label}: ${{ ok: '정상', pending: '첫 실행 대기', unknown: '확인 불가' }[b.state] || '확인 필요'}`).join('\n') || '감시 대상 없음', inline: false },
       { name: '많이 난 사건', value: top.length ? top.map(([e, c]) => `${e} — ${c}건`).join('\n') : '없음', inline: false }
     ];
     discord.opsDigest({

@@ -679,7 +679,10 @@ async function handleDetectReport(req, res, flow) {
             afterFocus: gate.afterFocus,     // 전체 rewrite 좌표 안의 공개 변경 교집합 — 삭제는 길이 0 위치
             gated: gate.gated
           } : null;
-        }, { onError: error => logger.warn('detect_report.preview_failed', { uid, err: error }) });
+        }, {
+          onError: error => logger.warn('detect_report.preview_failed', { uid, err: error }),
+          onOutcome: outcome => logger.info('detect_report.preview_outcome', { requestId, ...outcome })
+        });
     const det = await detectP;
     if (!det) previewTask.cancel();
     const example = await previewTask.result;
@@ -834,7 +837,7 @@ async function handleDetectReport(req, res, flow) {
       profileConfidence: advancedRouting.confidence,
       profileMargin: advancedRouting.profileMargin,
       profileAmbiguous: reportView.measuredEvidence?.axisPolicy?.ambiguousProfile === true,
-      ...(calibration.applied ? {
+      ...(calibration.meta ? {
         probabilityCalibration: calibration.meta
       } : {})
     };
@@ -909,6 +912,7 @@ async function handleDetectReport(req, res, flow) {
       },
       example,
       exampleStatus: example ? 'ready' : (before ? 'unavailable' : 'no_candidate'),
+      exampleUnavailableReason: example ? null : previewTask.outcome?.status || 'no_example',
       exampleSource: before || null,
       solutions: {
         polish: { band: B.POLISH_BAND[grade], credits: shortHumanizeCredit(len) },
@@ -935,7 +939,7 @@ async function handleDetectReport(req, res, flow) {
         causeScoreCeiling: Number.isFinite(Number(det.causeScoreCeiling)) ? det.causeScoreCeiling : null,
         causeScoreAdjustmentCode: det.causeScoreAdjustmentCode || null,
         calibrated: calibration.applied,
-        calibration: calibration.applied ? calibration.meta : null,
+        calibration: calibration.meta || null,
         scaleCalibration: scale.meta,
         riskLevel: narrated.riskLevel,
         riskLabel: narrated.riskLabel,
@@ -1195,7 +1199,7 @@ async function handleDetectReport(req, res, flow) {
     probability: metric.probability,
     rawProbability: metric.calibrated ? metric.rawProbability : undefined,
     calibrated: metric.calibrated,
-    calibration: metric.calibrated ? metric.calibration : undefined,
+    calibration: metric.calibration || undefined,
     scaleCalibration: metric.scaleCalibration || undefined,
     probSource: 'llm',
     riskLevel: metric.riskLevel,

@@ -25,3 +25,21 @@ test('ordinal repair count persists without source text',()=>{
  assert.equal(compact({ordinalMarkerRestoreCount:1}).ordinalMarkerRestoreCount,1);
  assert.equal(compact({}).ordinalMarkerRestoreCount,undefined);
 });
+
+test('an exact item-count header anchors a list whose every prefix was lost',()=>{
+ const header='검토할 과제는 두 가지이다.';
+ const first='초기 실험에서 관측한 측정 오차를 원인별로 설명한다.';
+ const second='후속 연구에 사용할 통계 자료의 수집 범위를 검토한다.';
+ const original=`${header} 첫째, ${first} 둘째, ${second}`;
+ const candidate=`${header} 먼저 ${first} 또한 ${second}`;
+ const result=restore(original,candidate);
+ assert.equal(result.text,original); assert.equal(result.repairCount,2);
+ assert.equal(restore(original,result.text).repairCount,0);
+ for(const unsafe of [
+   candidate.replace(header,'검토할 과제를 설명한다.'),
+   `${header} 또한 ${second} 먼저 ${first}`,
+   candidate+` ${first}`,
+   `“${candidate}”`,
+   candidate.replace(' 또한 ','\n\n또한 ')
+ ]) assert.equal(restore(original,unsafe).repairCount,0,unsafe);
+});

@@ -41,6 +41,18 @@ function confirmedMicroRepair(source, candidate, finding) {
     }
   }
   if (finding.type !== 'distortion' || finding.relation !== 'modality_negation_causality') return '';
+  const negations = [];
+  for (const m of source.matchAll(/(?<![가-힣])([가-힣]{2,20})지\s+않(거나|으면|고|지만)(?=\s|[,，.!?])/gu)) {
+    const plain = m[1] + m[2], start = candidate.indexOf(plain);
+    if (start < 0 || /[가-힣]/u.test(candidate[start - 1] || '')
+        || candidate.indexOf(plain, start + 1) >= 0 || !String(finding.span).includes(plain)
+        || source.includes(plain) || protectedRange(source, m.index, m.index + m[0].length)
+        || protectedRange(candidate, start, start + plain.length)) continue;
+    negations.push({ start, end: start + plain.length, text: m[0] });
+  }
+  if (negations.length === 1) {
+    const m = negations[0]; return candidate.slice(0, m.start) + m.text + candidate.slice(m.end);
+  }
   const purposes=[];
   for(const m of source.matchAll(/(?<![가-힣])([가-힣]{2,20})기\s+위한\s+(과정|단계|준비)/gu)) {
     const target=m[1]+'는 '+m[2],start=candidate.indexOf(target);

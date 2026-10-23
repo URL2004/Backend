@@ -38,7 +38,8 @@ function reinstateDroppedSentences(source, output, report) {
     // Stay in the paragraph the source put the sentence in.
     const afterPrevious = w.previousEnd >= 0 && w.leadingGap
       && (w.nextStart < 0 || !/\n/u.test(w.leadingGap) || !w.trailingGap || /\n/u.test(w.trailingGap));
-    if (afterPrevious) inserts.push({ at: w.previousEnd, text: w.leadingGap + sentence });
+    if (Number.isInteger(w.insertionAt)) inserts.push({ at: w.insertionAt, text: sentence + w.insertionGap });
+    else if (afterPrevious) inserts.push({ at: w.previousEnd, text: w.leadingGap + sentence });
     else if (w.nextStart >= 0 && w.trailingGap) inserts.push({ at: w.nextStart, text: sentence + w.trailingGap });
   }
   let restored = text;

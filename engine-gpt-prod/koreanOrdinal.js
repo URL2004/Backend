@@ -210,6 +210,24 @@ function restoreMissingOrdinalMarkers(source, value) {
   const original = String(source || ''), output = String(value || '');
   const before = ordinalMarkers(original), after = ordinalMarkers(output, { source: original });
   const exact = restoreAnchoredOrdinalMarkers(original, output, before, after);
+  // Every prefix can be lost even while the explicit enumeration header
+  // survives. Its exact, unique item count plus heading ownership and mutual
+  // body alignment below distinguish a damaged list from free restructuring.
+  if (!after.length && before.length >= 2 && before.length <= 6
+      && before.every((m, i) => m.number === i + 1)) {
+    const header = original.slice(0, before[0].start).match(/([^.!?\n]{0,100}(?:시사점|이유|원칙|특징|장점|단점|방법|과제)(?:은|는)\s*(두|세|네|다섯|여섯)\s*가지(?:입니다|이다)\.)\s*$/u);
+    const count = { 두: 2, 세: 3, 네: 4, 다섯: 5, 여섯: 6 }[header?.[2]];
+    if (header && count === before.length && original.indexOf(header[1]) === original.lastIndexOf(header[1])
+        && output.includes(header[1]) && output.indexOf(header[1]) === output.lastIndexOf(header[1])) {
+      const owned = restoreHeadingOwnedOrdinals(original, output, before, after)
+        || restoreLostOrdinalSeries(original, output, before, after);
+      if (owned) {
+        const start = owned.text.indexOf(header[1]) + header[1].length;
+        const end = owned.text.indexOf('\n\n', start);
+        if (ordinalMarkers(owned.text).every(m => m.start >= start && (end < 0 || m.start < end))) return owned;
+      }
+    }
+  }
   // A document whose every ordinal was removed is treated as restructured,
   // not as a damaged list; only a series lost beside surviving ones returns.
   if (exact.repairCount || !after.length || before.length <= after.length || before.length > 64) return exact;
@@ -290,7 +308,8 @@ function restoreHeadingOwnedOrdinals(original, output, before, after) {
     const intro=output.slice(position).match(introPattern)?.[0] || '';
     position+=intro.length;
     if (literals.some(s=>s.start<=position && s.end>position)) return null;
-    const connector=output.slice(position).match(/^(?:또한|또|그리고)[,，]?[ \t]+/u)?.[0] || '';
+    const connector=output.slice(position).match(marker.number === 1
+      ? /^(?:먼저|또한|또|그리고)[,，]?[ \t]+/u : /^(?:또한|또|그리고)[,，]?[ \t]+/u)?.[0] || '';
     positions.push(position);edits.push({position,remove:connector.length,prefix:prefix[1]});
   }
   if (!edits.length || covered.size!==after.length || positions.some((p,i)=>i>0 && p<=positions[i-1])) return null;
@@ -395,7 +414,9 @@ function restoreOrdinalSeriesPrefixes(original, output, before, after, lostIndic
     const row = lines.find(record => record.start <= position && record.end >= position);
     if (!row || row.role !== 'prose' || literals.some(s => s.start <= position && s.end > position)
         || after.some(item => item.start >= span.start && item.start < span.end)) return null;
-    const connector = output.slice(position).match(/^(?:또한|또|그리고)[,，]?[ \t]+(?=[가-힣A-Za-z0-9“‘"'(])/u)?.[0] || '';
+    const connector = output.slice(position).match(marker.number === 1
+      ? /^(?:먼저|또한|또|그리고)[,，]?[ \t]+(?=[가-힣A-Za-z0-9“‘"'(])/u
+      : /^(?:또한|또|그리고)[,，]?[ \t]+(?=[가-힣A-Za-z0-9“‘"'(])/u)?.[0] || '';
     positions.set(index, position);
     edits.push({ position, remove: connector.length, prefix: prefix[1] });
   }

@@ -116,6 +116,11 @@ for (const accept of [true, false]) test(`late split relation patch is bounded a
   }).status, accept ? 'pass' : 'fail');
   assert.equal(out.result.outputText.includes('수민은 하준이 자료를 공개한 경위를 추궁한다.'), accept);
   assert.ok(out.result.outputText.includes(tail));
+  assert.equal(out.floorReport.criticals.some(v => v.gate === 'confirmed_semantic_relation'), !accept);
+  if (!accept) {
+    assert.equal(out.engineMeta.deliveryDecision, 'block_technical');
+    assert.equal(out.status, 'blocked');
+  }
 });
 
 test('full pipeline audits materialized equations against materialized source chunks', async t => {
@@ -336,7 +341,7 @@ test('최종 심사 HTTP 실패는 완료로 표시하지 않고 검증된 후�
   }
 });
 
-for (const accept of [true, false]) test(`최종 관계 복구는 창이 닫힌 뒤의 판정도 받아서 ${accept ? '새 pass만 채택한다' : '거절 시 실패를 숨기지 않는다'}`, { concurrency: false }, async t => {
+for (const accept of [true, false]) test(`최종 관계 복구는 예약된 검사 창 안에서 ${accept ? '새 pass만 채택한다' : '거절 시 실패를 숨기지 않는다'}`, { concurrency: false }, async t => {
   const unchanged = '마지막 단계에서는 측정 장비를 점검했습니다. 정리한 자료는 다음 실험에서도 참고할 수 있도록 보관했습니다.';
   const a = '전압 차이는 정상 범위 안에서 나타나는 차이를 의미합니다.';
   const b = '전압 차이는 정상 범위를 벗어난 정도를 의미합니다.';
@@ -371,9 +376,9 @@ for (const accept of [true, false]) test(`최종 관계 복구는 창이 닫힌 
     .filter(e => e.stage === 'final_relation_restoration_verification');
   assert.equal(restorationCalls.length, 1);
   assert.equal(restorationCalls[0].httpAttemptCount,1);
-  assert.equal(restorationCalls[0].windowCompletedCallCount,1);
-  assert.ok(restorationCalls[0].windowOverrunMs>=30000);
-  assert.equal(out.engineMeta.callWindowCompletedCount,1);
+  assert.equal(restorationCalls[0].windowCompletedCallCount,0);
+  assert.equal(restorationCalls[0].windowOverrunMs,0);
+  assert.equal(out.engineMeta.callWindowCompletedCount,0);
   assert.equal(out.engineMeta.callWindowOverrunMs,restorationCalls[0].windowOverrunMs);
   assert.equal(out.engineMeta.callAdmissionSkippedCount,0);
   const finalJudgeCall = mock.calls.filter(c => c.name === 'gpt_prod_semantic_judge').at(-1);

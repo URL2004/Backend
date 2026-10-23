@@ -4235,7 +4235,10 @@ function countOrphanParticleLineBoundaries(value) {
           .test(text.slice(match.index + match[0].length))) return true;
     records ||= layoutStructure.buildLineRecords(text);
     const left = records.find(record => record.start <= match.index && record.end > match.index);
-    return !['heading', 'title', 'label'].includes(left?.role);
+    const bulletHeading = left?.role === 'list' && /^[■□●○◆◇▪▶]\s+\S/u.test(left.text)
+      && left.text.length <= 70 && !/[.!?。！？]$/u.test(left.text)
+      && !layoutStructure.isSentenceComplete(left.text);
+    return !bulletHeading && !['heading', 'title', 'label'].includes(left?.role);
   }).length;
 }
 

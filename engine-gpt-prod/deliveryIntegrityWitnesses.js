@@ -31,6 +31,45 @@ function residualSourceLoss(source, candidate) {
 // A closing request to whoever edits the text ("…도 적어줘") is not body prose.
 const EDIT_REQUEST = /(?:적어|써|넣어|추가해|덧붙여|고쳐|바꿔|수정해|다듬어|늘려|줄여|요약해|작성해|포함해|반영해|정리해|보완해)\s?(?:줘|줘요|주세요|주십시오|줄래|주라|주길\s?바람|주시기\s?바랍니다)[\s.!?~。！？]*$/u;
 
+// A heading and an author/year citation can survive while the definition
+// between them vanishes. They are sentence-splitter furniture, not evidence
+// that the body sentence survived. Require the quoted WHOLE first sentence,
+// the same unique citation, identical heading prefix and following sentence,
+// and independent lexical absence. This never infers a synonym's meaning.
+function droppedCitedLead(text, output, before, after, spans) {
+  if (!Array.isArray(spans) || before.length < 3 || !after.length) return [];
+  const { contentTokens, sentenceSimilarity } = require('./sentenceAlignment');
+  const rows = [];
+  for (const span of spans.slice(0, 32)) {
+    const claim = text.slice(span.start, span.end);
+    if (span.start < before[0].start || span.end > before[0].end
+        || claim.length < 30 || claim.length > 400 || /\n/u.test(claim)
+        || !/[.!?。！？]$/u.test(claim) || bare(output).includes(bare(claim))) continue;
+    const prefix = text.slice(0, span.start);
+    const prefixRows = require('./layoutStructure').buildLineRecords(prefix).filter(r => !r.blank);
+    if (prefixRows.some(r => !['title', 'heading', 'label'].includes(r.role))) continue;
+    const citationSentence = span.end === before[0].end
+      && /^\([^()\n]{1,80}(?:19|20)\d{2}[^()\n]{0,30}\)[.!?。！？]?$/u.test(before[1].text) ? 1 : 0;
+    const tail = text.slice(span.end, before[citationSentence].end);
+    const citation = tail.match(/^(\s*)(\([^()\n]{1,80}(?:19|20)\d{2}[^()\n]{0,30}\)[.!?。！？]?)\s*$/u);
+    if (!citation) continue;
+    const at = output.indexOf(citation[2]);
+    if (at < 0 || at !== output.lastIndexOf(citation[2]) || bare(output.slice(0, at)) !== bare(prefix)) continue;
+    const next = before[citationSentence + 1].text, following = output.slice(at + citation[2].length);
+    if (!following.trimStart().startsWith(next) || next.length < 24
+        || text.indexOf(next) !== text.lastIndexOf(next) || output.indexOf(next) !== output.lastIndexOf(next)) continue;
+    const outside = text.slice(0, span.start) + text.slice(span.end);
+    const words = contentTokens(claim).filter(w => w.length >= 2 && !bare(outside).includes(w));
+    const absent = words.filter(w => !bare(output).includes(w));
+    if (absent.length < 3 || absent.length / words.length < .75
+        || after.some(s => sentenceSimilarity(claim, s.text) >= .55)) continue;
+    rows.push({ kind: 'dropped_cited_lead', sourceStart: span.start, sourceEnd: span.end,
+      sourceChars: bare(claim).length, sourceWitness: claim, insertionAt: at, insertionGap: citation[1],
+      previousEnd: -1, nextStart: at, leadingGap: '', trailingGap: citation[1] });
+  }
+  return rows.slice(0, 1);
+}
+
 // F02: a whole source sentence that left no fragment behind. Lexical absence
 // alone cannot tell a deletion from a synonym rewrite, so every condition is
 // required: no counterpart sentence anywhere (not moved), its own key words
@@ -128,7 +167,7 @@ function droppedSourceSentences(source, candidate, { spans = null } = {}) {
   // Two body sentences leave one anchor with nothing to be a better match than.
   if (tail < 2) return [];
   const outputRoots = new Set(after.flatMap(s => root(s.text)));
-  const findings = [];
+  const findings = droppedCitedLead(text, output, before, after, spans);
   for (let i = 0; i <= tail && findings.length < 4; i++) {
     const row = before[i], kept = bare(row.text), own = stems[i];
     if (i === request) continue;

@@ -1,6 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {executionTiming}=require('../lib/executionTiming');
+const {completionTiming}=require('../lib/executionTiming');
 const row=(startedAtMs,finishedAtMs)=>({startedAtMs,finishedAtMs});
 test('later refinement excludes the time spent reading the completed result',()=>{
   assert.deepEqual(executionTiming({observed:true,attemptCount:2,attempts:[row(1000,21000),row(1301000,1316000)]}),{
@@ -15,4 +16,15 @@ test('overlapping intervals are not double counted and absent evidence is not ze
   assert.equal(executionTiming({observed:true,attemptCount:2,attempts:[row(10,40),row(20,50)]}).executionDurationMs,40);
   assert.equal(executionTiming({}).executionDurationMs,null);
   assert.equal(executionTiming({observed:true,attemptCount:1,attempts:[row(10,10)]}).executionDurationMs,0);
+});
+test('wall duration includes durable completion without moving the ready/billing timestamp', () => {
+  const job = { createdAt: 1000, startedAt: 5000, terminalAtMs: 15000 };
+  const lifecycle = { observed: true, attemptCount: 1, attempts: [row(5000, 18500)] };
+  const result = completionTiming(job, lifecycle);
+  assert.equal(result.totalDurationMs, 17500); assert.equal(result.processingDurationMs, 13500);
+  assert.equal(result.finalizationDurationMs, 3500); assert.equal(result.resultReadyDurationMs, 14000);
+  assert.ok(result.totalDurationMs >= executionTiming(lifecycle).executionDurationMs);
+  assert.equal(job.terminalAtMs, 15000);
+  assert.equal(completionTiming(job, { attempts: [row(5000, undefined)] }).totalDurationMs, 14000);
+  assert.deepEqual(completionTiming({}), {});
 });

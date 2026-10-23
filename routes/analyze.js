@@ -173,8 +173,8 @@ router.post('/analyze', async (req, res) => {
     }
     if (calibration.applied) {
       result.rawProbability = calibration.rawProbability;
-      result.probabilityCalibration = calibration.meta;
     }
+    if (calibration.meta) result.probabilityCalibration = calibration.meta;
     // 표시 척도(개발 후보, 기본 OFF): 감지 보고서 라우트와 같은 규칙·같은 순서(이력 보정 뒤)로 적용한다.
     const scale = require('../lib/detectScaleCalibration').applyScaleCalibration({
       probability: calibration.probability, chars: text.length, profile: routing.profile, probSource: 'llm'

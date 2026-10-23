@@ -713,6 +713,7 @@ function recordStart(uid) {
 function blockedReason(gates, mode) {
   const set = new Set(Array.isArray(gates) ? gates : []);
   if (set.has('confirmed_semantic_omission')) return '재검증 후에도 원문의 일부 내용이 빠져 결과를 전달하지 않았어요.';
+  if (set.has('confirmed_semantic_relation')) return '재검증 후에도 원문의 행위·조건·부정 의미가 달라진 부분이 있어 결과를 전달하지 않았어요.';
   if (set.has('citation_integrity_unresolved')) return '인용 표기와 문장의 연결을 보존하지 못해 결과를 전달하지 않았어요.';
   if (set.has('semanticJudge')) return '변환 결과에 원문에 없던 사실이나 주장이 남아 안전하게 작업을 멈췄어요.';
   if (set.has('lostFacts')) return '변환 결과에서 원문의 핵심 사실이나 수치 누락이 확인돼 작업을 멈췄어요.';
@@ -728,6 +729,7 @@ function blockedReason(gates, mode) {
 function blockedStage(gates) {
   const set = new Set(Array.isArray(gates) ? gates : []);
   if (set.has('confirmed_semantic_omission')) return '안전 중단 · 원문 내용 누락';
+  if (set.has('confirmed_semantic_relation')) return '안전 중단 · 원문 의미 변화';
   if (set.has('citation_integrity_unresolved')) return '안전 중단 · 인용 연결 확인 필요';
   if (set.has('lostFacts')) return '안전 중단 · 원문 사실 누락';
   if (set.has('semanticJudge') || set.has('novelty')) return '안전 중단 · 원문에 없는 주장 추가';
@@ -741,7 +743,7 @@ function blockedStage(gates) {
 
 function blockedNextActions(gates, mode) {
   const set = new Set(Array.isArray(gates) ? gates : []);
-  if (set.has('confirmed_semantic_omission') || set.has('citation_integrity_unresolved')) return [
+  if (set.has('confirmed_semantic_omission') || set.has('confirmed_semantic_relation') || set.has('citation_integrity_unresolved')) return [
     '원문을 유지하려면 다듬기 모드를 선택하거나 해당 문단을 따로 처리해 주세요.',
     '같은 문제가 반복되면 작업 기록과 함께 고객센터에 알려 주세요.'
   ];
@@ -1195,6 +1197,7 @@ function buildArchiveDocument(job, extra = {}, now = Date.now()) {
   Object.assign(doc, buildArchiveObservability(job));
   doc.attemptLifecycle = attemptTrace.summary(job);
   Object.assign(doc, require('../lib/executionTiming').executionTiming(doc.attemptLifecycle));
+  Object.assign(doc, require('../lib/executionTiming').completionTiming(job, doc.attemptLifecycle));
   Object.assign(doc, require('../engine-gpt-prod/auditTrace').compactAuditTrace(
     job.result?.engineMeta || job.result?.humanizeMeta?.engineMeta || job.engineMeta || {}));
   for (const [k, v] of Object.entries(extra || {})) {

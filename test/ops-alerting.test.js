@@ -342,15 +342,14 @@ test('민감정보는 알림 경로에도 실리지 않는다', () => {
   assert.ok(!raw.includes('someone@example.com'), '이메일 원문이 알림에 실리면 안 된다');
 });
 
-test('부재 감지: 하트비트가 기대 주기를 넘기면 stale로 판정한다', async () => {
+test('부재 감지: 저장소가 없으면 메모리 실행 기록과 감시 불확실성을 함께 표시한다', async () => {
   const hb = require('../lib/opsHeartbeat');
   await hb.beat('subscription.process_due', { processed: 3 });
   const rows = await hb.readAll();
   const due = rows.find(r => r.name === 'subscription.process_due');
-  assert.equal(due.state, 'ok', '방금 뛰었으면 ok여야 한다');
-  // 한 번도 안 뛴 항목은 unknown(배포 직후를 장애로 단정하지 않는다)
-  const never = rows.find(r => r.state === 'unknown');
-  assert.ok(never === undefined || never.lastBeatMs === 0);
+  assert.equal(due.state, 'unknown', '저장소 없이 전체 감시가 정상이라고 단정하지 않는다');
+  assert.equal(due.observation, 'storage_unavailable');
+  assert.ok(due.lastBeatMs > 0, '메모리에 관찰한 실행 기록은 유지한다');
   // 감시 대상에는 과거 사고 유형(구독 갱신 배치)이 반드시 포함돼야 한다
   assert.ok(hb.EXPECTED['subscription.process_due'], '구독 갱신 배치는 감시 대상이어야 한다');
 });

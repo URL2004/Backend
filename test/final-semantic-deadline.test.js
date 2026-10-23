@@ -15,7 +15,7 @@ test('the final audit limit gives every expected section its own verdict limit',
     const policy = finalSemanticDeadline({ source:'가'.repeat(chars), startedAt:1000 });
     assert.equal(policy.limitMs, expected, `${chars} chars`);
     assert.equal(policy.deadlineMs, 1000 + expected);
-    assert.equal(policy.postRepairDeadlineMs, 121000);
+    assert.equal(policy.postRepairDeadlineMs, 1000 + expected);
     assert.equal(policy.verifyReserveMs, expected - 30000);
     assert.equal(policy.sectionLimitMs, section);
     assert.ok(policy.hardLimitMs >= expected + section, 'the ceiling also covers one retry wave');
@@ -39,7 +39,7 @@ test('the final audit never exceeds or renews the existing job deadline', () => 
   for (const remaining of [-1,0,1,90000,120000,269999,270000,270001,900000]) {
     const policy=finalSemanticDeadline({source:'가'.repeat(7000),startedAt:1000,jobDeadlineMs:1000+remaining});
     assert.equal(policy.deadlineMs,1000+Math.min(remaining,270000));
-    assert.equal(policy.postRepairDeadlineMs,1000+Math.min(remaining,120000));
+    assert.equal(policy.postRepairDeadlineMs,1000+Math.min(remaining,270000));
     assert.equal(policy.verdictDeadlineMs(1000),1000+Math.min(remaining,policy.hardLimitMs));
     assert.ok(policy.verdictDeadlineMs(1000+5000)<=1000+remaining || remaining<0);
   }

@@ -76,7 +76,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.119';
+const VERSION = 'gpt-prod-v2.5.120';
 const DETECT_VERSION = 'gpt-detect-v1.60';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -2213,6 +2213,15 @@ async function runEngine({
     let lastRecoveryReason = 'no_substantive_change';
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const escalation = attempt > 0;
+      if (require('./confirmedDeliveryIntegrity').stopUnproductiveLongEscalation({
+        attempt, sourceLength: auditSource.length, semantic: semanticReport,
+        metrics: postNoopDepthReport.metrics, reason: lastRecoveryReason
+      })) {
+        lastRecoveryReason = 'long_recovery_no_progress';
+        recoveryBudget.recordSkip(lastRecoveryReason);
+        addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
+        break;
+      }
       if (require('./confirmedDeliveryIntegrity').stopUnproductiveShortEscalation({
         attempt, sourceLength: auditSource.length, semantic: semanticReport,
         metrics: postNoopDepthReport.metrics, reason: lastRecoveryReason
@@ -3983,6 +3992,16 @@ async function runEngine({
       rememberStructureSafeOutput(outputText, 'relation_scope_restore');
     }
   }
+  const connectiveBoundary = require('./sourceConnectiveBoundary').restoreSourceConnectiveBoundary(rawSource, outputText);
+  if (connectiveBoundary.applied
+      && candidateIntegrity.auditCandidateIntegrity({ source: rawSource, before: outputText,
+        candidate: connectiveBoundary.text, documentProfile, mode: selectedMode }).pass === true
+      && preservesFinalStructure(rawSource, connectiveBoundary.text, materializedChunks, chunkPlan, boundaryRepair, { current: outputText })) {
+    outputText = connectiveBoundary.text;
+    finalSourceIntegrityRestoreCount += connectiveBoundary.repairedCount;
+    addUniqueCode(finalSourceIntegrityRestoreCodes, 'source_connective_boundary_restore');
+    rememberStructureSafeOutput(outputText, 'source_connective_boundary_restore');
+  }
   const attestedProseLayout = require('./layoutRelations').restoreAttestedProseGaps(rawSource, outputText);
   if (attestedProseLayout.repairedCount > 0) {
     outputText = attestedProseLayout.text;
@@ -4130,7 +4149,7 @@ async function runEngine({
           let recheckCallCount = semanticCallCount(recheck);
           // A final verdict can reveal a relation missed by an earlier judge.
           // One exact paired-window restoration is permitted, but only while
-          // enough of the SAME 120s final budget remains to verify it. No free
+          // enough of the SAME reserved final budget remains to verify it. No free
           // rewrite, extra repair loop, guessed insertion or unverified pass.
           const recheckElapsed = Date.now() - finalAuditStartedAt;
           const postRepairDeadlineMs = finalDeadlinePolicy.postRepairDeadlineMs;
@@ -4483,6 +4502,11 @@ async function runEngine({
   const confirmedMissingClaims = require('./confirmedDeliveryIntegrity').confirmedOmissions(
     rawSource, outputText, semanticReportForCandidate(semanticReport), semanticRestorationEvidence);
   const finalOmissionReport = semanticReportForCandidate(semanticReport);
+  const confirmedRelations = require('./confirmedDeliveryIntegrity').confirmedRelationDefects(
+    rawSource, outputText, finalOmissionReport);
+  if (confirmedRelations.length) addFloorCriticals(result.floorReport, [{
+    gate: 'confirmed_semantic_relation', detail: '재검증 후에도 원문의 행위·조건·부정 의미 변화가 남아 결과를 전달하지 않았습니다.'
+  }], 'confirmed_semantic_relation');
   const witnessedResidualLoss = semanticProvenance.verifySemanticValidation(finalOmissionReport,
     { source: rawSource, candidate: outputText, requireDigest: true }).status === 'fail'
     && finalOmissionReport?.verificationCompleted === true && !finalOmissionReport.uncertain
@@ -5599,7 +5623,7 @@ async function runEngine({
         finalSemanticRevalidation.preFinalRelationPatchReason,
         finalSemanticRevalidation.preFinalRelationRestoreSkipReason,
         finalSemanticRevalidation.relationPatchReason,
-        finalSemanticRevalidation.restoreSkipReason
+        finalSemanticRevalidation.relationRestoreSkipReason
       ].filter(reason => reason && !['proposed', 'prior_verdict_not_failed'].includes(reason)) },
       submittedSource: String(text || ''),
       source: rawSource, candidate: outputText, engineVersion: VERSION,

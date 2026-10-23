@@ -16,6 +16,10 @@ let failReads = false;
 function makeDoc(id, data) { docs.set(id, { id, ...data }); }
 
 const fakeDb = {
+  async runTransaction(fn) {
+    return fn({ get: async ref => ({ exists: docs.has(ref.id), data: () => docs.get(ref.id) }),
+      set: (ref, patch) => docs.set(ref.id, { ...docs.get(ref.id), ...patch }) });
+  },
   collection(name) {
     return {
       orderBy() { return this; },
@@ -27,6 +31,7 @@ const fakeDb = {
       },
       doc(id) {
         return {
+          id,
           async update(patch) {
             if (!docs.has(id)) throw new Error('not found');
             docs.set(id, { ...docs.get(id), ...patch });

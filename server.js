@@ -29,6 +29,11 @@ const { registrySnapshot: writingPolicyRegistrySnapshot } = require('./engine-wr
 const { verifyDetailedHealthRequest } = require('./lib/healthAuth');
 
 const app = express();
+if (process.env.NODE_ENV === 'production' && db) {
+  require('./lib/opsHeartbeat').ensureMonitoring().catch(error => {
+    logger.warn('ops.heartbeat_registration_failed', { code: error.code || 'HEARTBEAT_STORAGE_UNAVAILABLE' });
+  });
+}
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 

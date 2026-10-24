@@ -10,7 +10,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const discourse = require('./discourseAudit');
 const candidateIntegrity = require('./candidateIntegrity');
 const { assessSemanticRepairPriority } = require('./semanticRepairPolicy');
-const { bindSemanticValidation } = require('./semanticProvenance');
+const { bindSemanticValidation, verifySemanticValidation } = require('./semanticProvenance');
 const { meaningPreservationLines } = require('./humanizeContract');
 const {
   buildPromptDataSections,
@@ -444,6 +444,12 @@ async function judgeAndRepair(rawText, outputText, {
     return { ...primary, escalationSkippedReason: 'escalation_call_failed',
       escalationFailed: true, usage: addUsage(primary.usage || emptyUsage(), error.usage) };
   }
+  // A rejected earlier proposal is historical evidence, not a verdict on the
+  // subsequently re-audited text. Only a fresh, digest-bound confirming pass
+  // supersedes it; failure, uncertainty and a rejected confirming repair do not.
+  const confirmingPass = escalated.verificationCompleted === true
+    && verifySemanticValidation(escalated, { source: rawText, candidate: escalated.outputText,
+      requireDigest: true }).status === 'pass';
   return {
     ...escalated,
     escalated: true,
@@ -452,7 +458,7 @@ async function judgeAndRepair(rawText, outputText, {
       ...(escalated.initialViolations || [])
     ]),
     rounds: (primary.rounds || 0) + (escalated.rounds || 0),
-    repairRejected: primary.repairRejected === true || escalated.repairRejected === true,
+    repairRejected: escalated.repairRejected === true || (primary.repairRejected === true && !confirmingPass),
     repairRejectReasons: [...new Set([...(primary.repairRejectReasons || []), ...(escalated.repairRejectReasons || [])])],
     repairStyleWarnings: [...new Set([...(primary.repairStyleWarnings || []), ...(escalated.repairStyleWarnings || [])])],
     unchangedRepairCount: (primary.unchangedRepairCount || 0) + (escalated.unchangedRepairCount || 0),

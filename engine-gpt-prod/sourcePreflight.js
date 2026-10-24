@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 40;
+const VERSION = 41;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 // Compound section names must match before their shorter prefix. Otherwise
@@ -1315,6 +1315,7 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   // They are not sufficient evidence to demote a contextual title to a PDF wrap.
   const weakTitleFragment = leftRole === 'title'
     && (/^(?:대한|관한|위한|대해|대해서|관해|관해서|위해|통해|하며|하고|하는|되는|된|할|했던|필요한|가능한)$/u.test(leftToken)
+      || isParentheticalProseWrap(left,right)
       || layoutStructure.isProseContinuation(left)
       || layoutStructure.isContextualProseContinuation(left, right)
       // A multi-word object clause followed by an overt predicate is different
@@ -1364,6 +1365,18 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   // PDF의 고정 폭 줄바꿈은 대체로 긴 행 여러 개가 문장부호 없이 이어진다.
   // 매우 짧은 독립 행은 시·제목일 수 있으므로 이 일반 규칙에서 제외한다.
   return left.length >= 48 && right.length >= 12;
+}
+
+// An unfinished prose parenthesis can look like a short title after PDF
+// extraction. Require a local balanced closing pair, a conjunction at the
+// wrap, and a following predicate; never merge actual headings or table rows.
+function isParentheticalProseWrap(left,right) {
+  if(left.length<30||!/(?:및|과|와|의|을|를)$/u.test(left)||right.length>600)return false;
+  const joined=left+'\n'+right,seam=left.length;
+  return require('../engine/textSyntax').syntaxSpans(joined).some(span=>span.spanType==='parenthetical'
+    && span.start<seam&&span.end>seam&&span.end-span.start<=600
+    && /^[（(]/u.test(joined[span.start])
+    && /^(?:하고|하며|하여|한|하는|으로|로|을|를|은|는|이|가|에|도)(?=[가-힣\s,.])/u.test(joined.slice(span.end)));
 }
 
 // 마침표는 없지만 서술 종결어미로 끝난 긴 행인가. 명사형 끝(필요·수요·…함·…임)은 PDF 줄바꿈 자리에도 흔하므로

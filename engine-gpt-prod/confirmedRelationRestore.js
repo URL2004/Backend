@@ -4,7 +4,7 @@ const { splitSentenceSpans } = require('../engine/koreanText');
 const { syntaxSpans } = require('../engine/textSyntax');
 const { sentenceSimilarity } = require('./sentenceAlignment');
 const { auditRelationCandidates, hasAdjacentRelationCoverage } = require('./relationAudit');
-const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification', 'duplicate_conclusion', 'new_evaluation']);
+const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'added_claim', 'omission', 'scope_expansion', 'experience_novelty', 'intensity_amplification', 'duplicate_conclusion', 'new_evaluation']);
 
 // A relation heuristic is not proof. Only a judge-confirmed, uniquely grounded
 // distortion may nominate a sentence; mutual, unambiguous one-to-one matching
@@ -73,8 +73,9 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
     const from=String(source).indexOf(a),start=text.indexOf(b),end=start+b.length;
     const sourcePrefix = boundaryPrefix(rawOriginals,from,String(source));
     const outputPrefix = boundaryPrefix(results,start,text);
-    const sharedLeadingBoundary = sourcePrefix !== null && sourcePrefix === outputPrefix
-      && uniqueProtectedLines(sourcePrefix,String(source),text);
+    const sharedLeadingBoundary = (sourcePrefix !== null && sourcePrefix === outputPrefix
+      && uniqueProtectedLines(sourcePrefix,String(source),text))
+      || sameAttestedLabelBoundary(String(source),from,text,start);
     const minimal = restoreConfirmedAlternative(a, b, v)
       || require('./confirmedMicroRepair').confirmedMicroRepair(a, b, v);
     if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
@@ -170,18 +171,30 @@ function hasBilateralSentenceAnchors(sourceSpans,outputSpans,from,to,start,end,r
 // it cannot copy a changed heading, cross a later structural block, or infer
 // a missing label. All complete-window, ownership and fresh-audit gates apply.
 function sameProtectedPrefix(a,b,source,output) {
-  const records=s=>require('./layoutStructure').buildLineRecords(s).filter(r=>!r.blank);
+  const layout=require('./layoutStructure');
+  const records=s=>layout.buildLineRecords(s).filter(r=>!r.blank);
   const split=s=>{
-    const rows=records(s), firstBody=rows.findIndex(r=>r.role==='prose');
+    const rows=records(s), firstBody=rows.findIndex(r=>['prose','label_inline'].includes(r.role));
     if(firstBody<0)return null;
     const prefix=rows.slice(0,firstBody),body=rows.slice(firstBody);
-    if(body.some(r=>r.role!=='prose')||prefix.some(r=>!['title','heading','label','list'].includes(r.role)
+    if(body.some((r,i)=>r.role!=='prose'&&!(i===0&&r.role==='label_inline'))||prefix.some(r=>!['title','heading','label','list'].includes(r.role)
       ||r.raw.length>60||/[.!?。！？]$/u.test(r.raw.trim())))return null;
-    return prefix.map(r=>r.raw);
+    let inline='';
+    if(body[0].role==='label_inline'){
+      const raw=body[0].raw,parts=layout.bracketLabelParts(raw)||layout.labelParts(raw);
+      if(!parts?.rest||!raw.trimEnd().endsWith(parts.rest))return null;
+      inline=raw.slice(0,raw.lastIndexOf(parts.rest));
+      if(!inline||inline.length>100)return null;
+    }
+    return {lines:prefix.map(r=>r.raw),inline};
   };
   const left=split(a),right=split(b);
-  if(!left||!right||left.length!==right.length||left.some((line,i)=>line!==right[i]))return false;
-  return left.every(line=>[source,output].every(document=>document.split(/\r?\n/u).filter(l=>l===line).length===1));
+  if(!left||!right||left.inline!==right.inline||left.lines.length!==right.lines.length
+    ||left.lines.some((line,i)=>line!==right.lines[i]))return false;
+  // An inline label belongs to its sentence. Preserve its exact prefix and
+  // unique line ownership; never copy a changed/repeated label across sections.
+  if(left.inline&&![source,output].every(document=>document.split(/\r?\n/u).filter(l=>l.startsWith(left.inline)).length===1))return false;
+  return left.lines.every(line=>[source,output].every(document=>document.split(/\r?\n/u).filter(l=>l===line).length===1));
 }
 
 function boundaryPrefix(spans,start,text) {
@@ -189,6 +202,22 @@ function boundaryPrefix(spans,start,text) {
   if(!span)return null;
   const prefix=text.slice(span.start,start);
   return /\n[ \t]*$/u.test(prefix)?prefix:null;
+}
+// Blank lines can detach an answer label from the sentence tokenizer. A
+// repeated label alone is not ownership: also require the immediately prior
+// unique, identical question/heading line. Neither line is copied or moved.
+function sameAttestedLabelBoundary(source,from,output,start) {
+  const context=(text,at)=>{
+    if(at<1||text[at-1]!=='\n')return null;
+    const lines=text.slice(0,at).split(/\r?\n/u).filter(line=>line.trim());
+    const label=lines.at(-1),anchor=lines.at(-2);
+    if(!label||!anchor||label.length>60||anchor.length<8||anchor.length>240
+      ||!['label','heading'].includes(require('./layoutStructure').classifyLine(label)))return null;
+    return {label,anchor};
+  };
+  const a=context(source,from),b=context(output,start);
+  return !!a&&!!b&&a.label===b.label&&a.anchor===b.anchor
+    &&[source,output].every(text=>text.split(/\r?\n/u).filter(line=>line===a.anchor).length===1);
 }
 function uniqueProtectedLines(prefix,source,output) {
   const rows=require('./layoutStructure').buildLineRecords(prefix).filter(r=>!r.blank);

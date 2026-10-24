@@ -15,7 +15,7 @@ const {
   sentenceSimilarity
 } = require('./sentenceAlignment');
 
-const VERSION = 41;
+const VERSION = 42;
 const PROFESSIONAL_PROFILES = new Set([
   'resume_application',
   'academic_paper',
@@ -1659,7 +1659,7 @@ function formattingContext(documentProfile) {
 }
 
 function replaceTracked(text, pattern, replacement, code, counts) {
-  const protectedSpans = code.startsWith('closed_quote_') ? syntaxSpans(text) : [];
+  const protectedSpans = code.startsWith('closed_quote_') ? quoteSpacingProtection(text) : [];
   return String(text || '').replace(pattern, (...args) => {
     const before = args[0];
     const offset = args[args.length - 2];
@@ -5041,7 +5041,10 @@ function repairIntroducedFocusParticleRedundancy(source, outputText) {
 }
 
 function pushPatternIssue(issues, text, code, pattern) {
-  const matches = [...String(text || '').matchAll(cloneGlobal(pattern))];
+  const protectedSpans = code.startsWith('closed_quote_') ? quoteSpacingProtection(text) : [];
+  const matches = [...String(text || '').matchAll(cloneGlobal(pattern))].filter(match =>
+    !protectedSpans.some(s => s.start <= match.index && s.end > match.index
+      && (s.spanType === 'code' || (s.spanType === 'quote' && s.end > match.index + match[0].length))));
   if (!matches.length) return;
   issues.push(makeIssue(code, matches.length, matches.map(match => sentenceOrdinalAt(text, match.index))));
 }
@@ -5452,7 +5455,7 @@ function sourceReviewMessage(code) {
 }
 
 function replaceAndCount(text, pattern, replacement, code, changes) {
-  const protectedSpans = code.startsWith('closed_quote_') ? syntaxSpans(text) : [];
+  const protectedSpans = code.startsWith('closed_quote_') ? quoteSpacingProtection(text) : [];
   return String(text || '').replace(pattern, (...args) => {
     const offset = args[args.length - 2];
     if (protectedSpans.some(s => s.start <= offset && s.end > offset
@@ -5464,6 +5467,19 @@ function replaceAndCount(text, pattern, replacement, code, changes) {
     // 공백만 늘어나는 오류를 만들었다.
     return replacement.replace(/\$(\d+)/gu, (_match, index) => args[Number(index)] || '');
   });
+}
+
+// Pasted text sometimes uses two right-hand glyphs: ’제목’. Treat the first
+// as protected quote content, not a closing mark needing a space. This is a
+// local abstention only: preserve the glyphs and contents, and still allow
+// spacing AFTER the closing mark. Standard syntax ownership wins on overlap.
+function quoteSpacingProtection(text) {
+  const spans = [...syntaxSpans(text)];
+  for (const match of String(text || '').matchAll(/(?<![\p{L}\p{N}])([’”])[^’”\r\n]{1,600}\1/gu)) {
+    const start=match.index,end=start+match[0].length;
+    if(!spans.some(s=>s.start<end&&s.end>start))spans.push({start,end,spanType:'quote'});
+  }
+  return spans;
 }
 
 // 워드·모바일 붙여넣기는 여는 부호와 닫는 부호가 서로 다른 형태인

@@ -17,6 +17,26 @@ function load(responses){
  }:req(n)},{filename:file});
  return {judge:module.exports,calls};
 }
+test('a fresh confirming pass supersedes a rejected earlier repair without losing its evidence or cost',async()=>{
+ const a='자료의 작성 시점은 별도의 대장에 기록했다.';
+ const rest=Array.from({length:12},(_,i)=>`자료 ${i+1}번은 보관함에 넣고 담당자에게 확인을 요청했다.`).join(' ');
+ const text=a+' '+rest;
+ const finding={type:'duplicate_conclusion',origin:'introduced',relation:'other',sourceSpan:a,candidateSpan:a,span:a,detail:'합성 지적: 이 문장이 중복 결론인지 확인한다.'};
+ for(const success of [true,false]){
+  const {judge,calls}=load([{violations:[finding]},{error:'OPENAI_TIMEOUT'},{violations:success?[]:[finding]}]);
+  const result=await judge.judgeAndRepair(text,text,{config,maxRounds:1,reserveRepair:(()=>{let calls=0;return()=>++calls===1;})()});
+  assert.equal(calls.length,3);
+  assert.equal(result.pass,success);
+  assert.equal(result.repairRejected,!success);
+  assert.equal(result.primaryJudge.repairRejected,true);
+  assert.ok(result.repairRejectReasons.includes('repair_call_failed'));
+  assert.equal(result.outputText,text);
+  assert.equal(result.usage.estimatedUsd,.02);
+  const {bindSemanticValidation,verifySemanticValidation}=require('../engine-gpt-prod/semanticProvenance');
+  const aggregate=bindSemanticValidation(result,text,text);
+  assert.equal(verifySemanticValidation(aggregate,{source:text,candidate:text,requireDigest:true}).status,success?'pass':'fail');
+ }
+});
 test('required confirmation selects configured strong model before any repair or primary pass',async()=>{
  const {judge,calls}=load([{violations:[]}]);
  const result=await judge.judgeAndRepair(source,candidate,{config,requireConfirmation:true,maxRounds:1});

@@ -141,7 +141,7 @@ function confirmedRelationDefects(source, candidate, report) {
       || report.verificationCompleted !== true || report.skipped) return [];
   if (report.uncertain && !(report.violations || []).some(v => v?.origin === 'unconfirmed'
       || v?.repairable === false || v?.relationGrounded === false)) return [];
-  return (report.violations || []).filter(v => ['distortion', 'scope_expansion', 'experience_novelty'].includes(v.type)
+  return (report.violations || []).filter(v => ['distortion', 'added_claim', 'scope_expansion', 'experience_novelty'].includes(v.type)
     && ['actor_action_target', 'condition_result', 'quantity_target', 'variable_definition', 'antecedent', 'modality_negation_causality'].includes(v.relation)
     && v.origin === 'introduced' && hasGroundedSpan(v) && v.spanVerified === true
     && unique(source, v.sourceSpan) && uniqueCandidate(candidate, v.candidateSpan)

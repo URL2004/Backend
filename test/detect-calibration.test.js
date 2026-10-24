@@ -9,6 +9,20 @@ const historyIntegrity = require('../lib/historyLinkIntegrity');
 const HISTORY_TEST_SECRET = 'history-test-secret-at-least-32-bytes';
 process.env.OPENAI_SAFETY_SALT = HISTORY_TEST_SECRET;
 
+test('signed full PDF-wrapped output matches without relaxing ownership, word edits or source caps',async()=>{
+ const output=Array.from({length:15},(_,i)=>`검토자는 실험 결과를 확인했습니다. 자료 ${i+1}번은 별도 보관함에 넣었습니다.`).join('\n\n');
+ const text=output.replaceAll('검토자는','검토\n자는').replaceAll('확인했습니다','확인했\n습니다');
+ const signed=historyDoc('wrapped-output',{type:'humanize',outputText:output,mode:'blog'});
+ const match=await calibration.findOwnHumanizedHistoryMatch({db:fakeDb([signed]),uid:'same-user',text});
+ assert.equal(match.match,'exact_linewrapped');assert.equal(match.trust,'history_hmac');assert.equal(match.sourceProbability,null);
+ for(const badText of [text.replace('실험 결과','실험결과'),text.replace('결과','내용')]){
+  assert.equal(await calibration.findOwnHumanizedHistoryMatch({db:fakeDb([signed]),uid:'same-user',text:badText}),null);
+ }
+ const unsigned={id:'wrapped-output',data:()=>({...signed.data(),historyLinkIntegrity:null})};
+ assert.equal(await calibration.findOwnHumanizedHistoryMatch({db:fakeDb([unsigned]),uid:'same-user',text}),null);
+ assert.equal(await calibration.findOwnHumanizedHistoryMatch({db:fakeDb([signed]),uid:'other-user',text}),null);
+});
+
 function eligibleHistory(data) {
   return data?.type === 'humanize' ? {
     savedBy: 'server',

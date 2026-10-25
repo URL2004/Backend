@@ -252,6 +252,7 @@ test('문서 회복 비용 예산은 누적 USD와 생략 사유를 원문 없�
     callLimitExhausted: false,
     timeLimitExhausted: false,
     lastDeniedReason: '',
+    finalRepairWindowUsed: false,
     attemptedCallCount: 1,
     skippedCallCount: 1,
     skippedCodes: ['next_depth_retry'],

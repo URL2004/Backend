@@ -69,22 +69,28 @@ function createRecoveryBudget(maxEstimatedUsd, {
     return finalReserveMs;
   };
   let lastDeniedReason = '';
+  // One final relation patch borrows at most 30s from the already reserved
+  // final-verdict window. It never renews the job deadline, money or call cap.
+  // Optional style work exhausting its clock must not consume this reservation.
+  let finalRepairWindow = null;
 
   let enabled = enforced === true && limitUsd > 0;
   const elapsedMs = updateTime;
-  const denialReason = ({ mandatory = false, priority = 'normal', estimatedUsd = 0 } = {}) => {
+  const denialReason = ({ mandatory = false, priority = 'normal', estimatedUsd = 0, finalWindow } = {}) => {
     refreshFinalReserve();
     if (attemptedCallCount >= absoluteCallLimit) return 'recovery_call_limit_exhausted';
-    if (elapsedMs() >= absoluteElapsedLimitMs) return 'recovery_time_limit_exhausted';
+    const reservedFinal = finalWindow && finalWindow === finalRepairWindow;
+    if (reservedFinal && Number(clock()) >= finalWindow.deadline) return 'final_repair_window_exhausted';
+    if (!reservedFinal && elapsedMs() >= absoluteElapsedLimitMs) return 'recovery_time_limit_exhausted';
     // Optional work must leave time for both its own response (up to 120s)
     // and the mandatory final verdict (its section limit per expected wave).
     // This is admission, not
     // an extension of the existing job deadline or a new delivery gate.
-    if (mandatory !== true && enforced === true && Number(clock()) + 120000 + finalReserveMs > jobDeadlineMs) {
+    if (!reservedFinal && mandatory !== true && enforced === true && Number(clock()) + 120000 + finalReserveMs > jobDeadlineMs) {
       return 'recovery_final_audit_time_reserved';
     }
     const latePriority = mandatory === true || String(priority || '').toLowerCase() === 'late';
-    if (!latePriority && elapsedMs() >= absoluteElapsedLimitMs - lateTimeReserveMs) {
+    if (!reservedFinal && !latePriority && elapsedMs() >= absoluteElapsedLimitMs - lateTimeReserveMs) {
       return 'recovery_late_time_reserve';
     }
     if (!latePriority && lateCallReserve > 0
@@ -142,13 +148,14 @@ function createRecoveryBudget(maxEstimatedUsd, {
     callLimitExhausted: attemptedCallCount >= absoluteCallLimit,
     timeLimitExhausted: elapsedMs() >= absoluteElapsedLimitMs,
     lastDeniedReason,
+    finalRepairWindowUsed: finalRepairWindow !== null,
     attemptedCallCount,
     skippedCallCount,
     skippedCodes: skippedCodes.slice(),
     stageUsageUsd: { ...stageUsageUsd }
   });
 
-  return {
+  const budget = {
     enableEnforcement: () => { enforced = true; enabled = limitUsd > 0; },
     raiseFinalAuditReserve: value => {
       finalReserveMs = Math.max(finalReserveMs, Math.min(MAX_FINAL_AUDIT_RESERVE_MS, Number(value) || 120000));
@@ -194,6 +201,22 @@ function createRecoveryBudget(maxEstimatedUsd, {
     recordSkip,
     snapshot
   };
+  budget.forFinalRepair = deadline => {
+    if (!finalRepairWindow) finalRepairWindow = {
+      deadline: Math.min(Number(deadline) || 0, Number(clock()) + 30000, jobDeadlineMs)
+    };
+    return {
+      deadlineMs: () => Math.min(finalRepairWindow.deadline, Number(deadline) || 0),
+      reserveCall: (amount, options) => budget.reserveCall(amount, {
+        ...options, priority: 'late', finalWindow: finalRepairWindow
+      }),
+      settleCall: (...args) => budget.settleCall(...args),
+      recordSkip: budget.recordSkip,
+      recordUsage: (...args) => budget.recordUsage(...args),
+      snapshot: budget.snapshot
+    };
+  };
+  return budget;
 }
 
 function roundedUsd(value) {

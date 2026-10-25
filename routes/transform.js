@@ -715,6 +715,9 @@ function blockedReason(gates, mode) {
   if (set.has('confirmed_semantic_omission')) return '재검증 후에도 원문의 일부 내용이 빠져 결과를 전달하지 않았어요.';
   if (set.has('confirmed_semantic_relation')) return '재검증 후에도 원문의 행위·조건·부정 의미가 달라진 부분이 있어 결과를 전달하지 않았어요.';
   if (set.has('citation_integrity_unresolved')) return '인용 표기와 문장의 연결을 보존하지 못해 결과를 전달하지 않았어요.';
+  if (set.has('polish_evaluative_padding_added')) return '다듬는 과정에서 원문에 없던 평가나 단정이 추가되어 결과를 전달하지 않았어요.';
+  if (set.has('internal_marker_leak')) return '결과에 내부 처리 표식이 남아 전달을 중단했어요. 원문을 수정할 필요는 없어요.';
+  if (set.has('confirmed_fragment_corruption') || set.has('sentence_truncated')) return '변환 결과의 문장 일부가 끊기거나 중복되어 전달하지 않았어요.';
   if (set.has('semanticJudge')) return '변환 결과에 원문에 없던 사실이나 주장이 남아 안전하게 작업을 멈췄어요.';
   if (set.has('lostFacts')) return '변환 결과에서 원문의 핵심 사실이나 수치 누락이 확인돼 작업을 멈췄어요.';
   if (set.has('novelty')) return '변환 결과에 새 정보가 추가된 흔적이 남아 작업을 멈췄어요.';
@@ -731,6 +734,9 @@ function blockedStage(gates) {
   if (set.has('confirmed_semantic_omission')) return '안전 중단 · 원문 내용 누락';
   if (set.has('confirmed_semantic_relation')) return '안전 중단 · 원문 의미 변화';
   if (set.has('citation_integrity_unresolved')) return '안전 중단 · 인용 연결 확인 필요';
+  if (set.has('polish_evaluative_padding_added')) return '안전 중단 · 다듬기 평가 표현 추가';
+  if (set.has('internal_marker_leak')) return '안전 중단 · 내부 표식 복원 실패';
+  if (set.has('confirmed_fragment_corruption') || set.has('sentence_truncated')) return '안전 중단 · 문장 연결 복원 실패';
   if (set.has('lostFacts')) return '안전 중단 · 원문 사실 누락';
   if (set.has('semanticJudge') || set.has('novelty')) return '안전 중단 · 원문에 없는 주장 추가';
   if (set.has('restructure_unfit')) return '보류됨 · 고급에 맞지 않는 글(자소서·짧은 글)';
@@ -3104,7 +3110,14 @@ async function runHumanizeJob(job, text, evidence = '') {
       job.gates = gates;
       job.gateDetail = gateDetail;
       job.blockOffer = buildBlockOffer(job, text);
-      persistJob(job);
+      job.semanticAuditTrace = out.privateSemanticAudit || null;
+      job.blockedAuditContext = out.privateBlockedContext || null;
+      // Same transaction as the terminal state, no user charge. Private
+      // evidence is not part of owner-readable job fields or public status.
+      const saved = await persistJob(job);
+      if (!saved?.ok) logger.error('transform.blocked_evidence_persist_failed', {
+        jobId: job.id, uid: job.uid, code: saved?.code || 'persist_failed'
+      });
       return;
     }
     if (!out.result || !out.result.outputText) throw new Error('humanize_incomplete');

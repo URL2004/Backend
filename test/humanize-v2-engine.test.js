@@ -447,7 +447,8 @@ function installEngineMock(t, options = {}) {
       const span = options.semanticViolationSpan || (rewrite.includes('미래연구원') ? '미래연구원' : rewrite);
       const violations = semanticViolation
         ? [{ type: options.semanticViolationType || 'added_claim', span, detail: '검사 대상 구절의 의미 위반을 반환하는 테스트 판정',
-          sourceSpan: extractPromptDataSection(body.input, 'SOURCE'), candidateSpan: rewrite, relation: 'other', origin: 'introduced' }]
+          sourceSpan: options.semanticSourceSpan || extractPromptDataSection(body.input, 'SOURCE'),
+          candidateSpan: options.semanticCandidateSpan || rewrite, relation: 'other', origin: 'introduced' }]
         : [];
       return apiResponse(require('./helpers/semantic-review-fixture.cjs')({ violations },body.input));
     }
@@ -515,7 +516,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.121');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.122');
   assert.equal(out.engineMeta.boundaryMarkerStats.version, 1);
   assert.equal(typeof out.engineMeta.boundaryMarkerStats.markedChunks, 'number');
   assert.equal(typeof out.engineMeta.relationCandidateCounts, 'object');
@@ -921,54 +922,57 @@ test('polish 무변환 재시도가 원문 숫자·내용을 잃은 무관한 �
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 0);
 });
 
-test('polish에 새 평가어가 붙으면 자연성 점수와 무관하게 보존형 표면 수리로 제거한다', { concurrency: false }, async t => {
-  const before = qualityV2.comparePolishEvaluativePadding(SOURCE, EVALUATIVE_POLISH);
-  assert.equal(before.increased, true);
-  assert.deepEqual(before.introducedCodes, ['efficiency_label']);
-
-  const mock = installEngineMock(t, {
-    humanize: EVALUATIVE_POLISH,
-    retryOutput: SAFE_POLISH,
-    safeChangeFound: true
-  });
-  const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'polish-padding-repair-user', config: config() });
-  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
-  assert.equal(out.result.outputText, SAFE_POLISH);
-  assert.equal(out.engineMeta.polishRetryReason, 'evaluative_padding');
-  assert.deepEqual(out.engineMeta.polishEvaluativePaddingCodes, ['efficiency_label']);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
-  const retry = mock.calls.find(call => call.name === 'gpt_prod_polish_surface_retry');
-  assert.match(String(retry?.body?.instructions || ''), /효율성 평가/u);
+test('polish의 동의 표현에 평가 단어가 늘어도 의미 검사 후 불필요한 복원·재작성 없이 전달한다', { concurrency: false }, async t => {
+  const text = '자료를 더 살펴보아야 한다고 생각했다. 기록한 내용은 자료실에서 보관했다.';
+  const candidate = '자료를 더 살펴볼 필요가 있다고 생각했다. 기록한 내용은 자료실에서 보관했다.';
+  assert.equal(qualityV2.comparePolishEvaluativePadding(text, candidate).increased, true);
+  const mock = installEngineMock(t, { humanize: candidate });
+  const out = await engine.run({ text, mode: 'polish', allowPolish: true, uid: 'polish-same-meaning-unit', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals));
+  assert.equal(out.result.outputText, candidate);
+  assert.equal(out.engineMeta.semanticValidationStatus, 'pass');
+  assert.equal(out.engineMeta.polishDeterministicPaddingRestoreCount, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 0);
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge'));
 });
 
-test('polish의 평가어가 특정 문장에만 추가되면 그 문장만 원문으로 복원해 다른 안전 교정을 유지한다', { concurrency: false }, async t => {
-  const mixed = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 효율적이지 않습니다.';
-  const expected = '이 문장은 표현이 다소 어색하고 연결도 매끄럽지 않습니다. 그래서 읽는 흐름도 자연스럽지가 않습니다.';
-  const restored = qualityV2.restorePolishEvaluativePaddingSentences(SOURCE, mixed);
-  assert.equal(restored.applied, true);
-  assert.equal(restored.text, expected);
-
-  const mock = installEngineMock(t, { humanize: mixed });
-  const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'polish-padding-local-restore-user', config: config() });
-  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals || []));
-  assert.equal(out.result.outputText, expected);
-  assert.equal(out.engineMeta.polishRetryReason, 'evaluative_padding');
-  assert.equal(out.engineMeta.polishDeterministicPaddingRestoreCount, 1);
-  assert.equal(out.engineMeta.surfaceRetryCallCount, 0);
+test('polish에서 새 평가가 의미 검사로 확정되면 수리 후 재검사하여 안전 교정을 전달한다', { concurrency: false }, async t => {
+  const tail = ' 발표 자료의 문장을 순서대로 기록했다. 다음 회의에서 표현을 다시 검토하려고 한다. 검토할 자료는 별도 파일에 보관했다.';
+  const changed = SAFE_POLISH.replace('자연스럽지 않습니다', '효율적이지 않습니다') + tail;
+  const mock = installEngineMock(t, {
+    humanize: changed,
+    semanticViolation: body => extractPromptDataSection(body.input, 'REWRITE').includes('효율'),
+    semanticViolationType: 'new_evaluation', semanticViolationSpan: '효율적이지 않습니다',
+    semanticSourceSpan: '그래서 읽는 흐름도 자연스럽지가 않습니다.',
+    semanticCandidateSpan: '그래서 읽는 흐름도 효율적이지 않습니다.'
+  });
+  const out = await engine.run({ text: SOURCE + tail, mode: 'polish', allowPolish: true, uid: 'polish-confirmed-repair-unit', config: config() });
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport?.criticals));
+  assert.doesNotMatch(out.result.outputText, /효율/u);
+  assert.match(out.result.outputText, /표현이 다소 어색/u);
+  assert.match(out.result.outputText, /별도 파일에 보관/u);
+  assert.equal(out.engineMeta.semanticValidationStatus, 'pass');
+  assert.ok(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length >= 2);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 0);
 });
 
-test('polish 평가어가 전용 수리 후에도 남으면 새 판단을 전달하지 않고 차단한다', { concurrency: false }, async t => {
+test('polish의 확정된 새 평가가 수리 후에도 남으면 차단하고 전달하지 않은 후보와 근거를 보관한다', { concurrency: false }, async t => {
   const mock = installEngineMock(t, {
-    humanize: EVALUATIVE_POLISH,
-    retryOutput: EVALUATIVE_POLISH,
-    safeChangeFound: true
+    humanize: EVALUATIVE_POLISH, repairOutput: EVALUATIVE_POLISH,
+    semanticViolation: true, semanticViolationType: 'new_evaluation'
   });
-  const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'polish-padding-block-user', config: config() });
+  const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'polish-confirmed-block-unit', config: config() });
   assert.equal(out.status, 'blocked');
   assert.ok(out.floorReport.criticals.some(item => item.gate === 'polish_evaluative_padding_added'));
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
-  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 0);
+  assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 0);
+  assert.ok(mock.calls.some(call => call.name === 'gpt_prod_semantic_judge'));
+  assert.equal(out.privateBlockedContext.source, SOURCE);
+  assert.equal(out.privateBlockedContext.candidate, out.result.outputText);
+  assert.ok(out.privateSemanticAudit);
+  const store = require('../lib/semanticAuditStorage');
+  const row = store.document({ id: '0123456789abcdef', uid: 'owner', status: 'blocked',
+    semanticAuditTrace: out.privateSemanticAudit, blockedAuditContext: out.privateBlockedContext });
+  assert.equal(store.forBlockedAdmin(row, {uid: 'owner',jobId: '0123456789abcdef'}).available, true);
 });
 
 test('장문 polish는 자연스러운 청크의 무변환을 허용하고 문서 한 곳이 수정되면 재시도하지 않는다', { concurrency: false }, async t => {
@@ -1817,7 +1821,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.121');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.122');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

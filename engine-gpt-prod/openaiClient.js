@@ -179,7 +179,11 @@ async function completeJsonRequest({
     const context = require('./callLedger').current();
     // A mandatory audit's verdict is exempt; its optional rewrite is not.
     // Nested repair calls still reserve against the shared recovery balance.
-    const budget = context?.policy?.optional === false && meta.task !== 'repair' ? null : context?.recoveryBudget;
+    let budget = context?.policy?.optional === false && meta.task !== 'repair' ? null : context?.recoveryBudget;
+    if (budget?.forFinalRepair && context?.policy?.reservedFinalRepair === true
+        && context.policy.stage === 'final_relation_patch' && meta.task === 'repair') {
+      budget = budget.forFinalRepair(chunkDeadlineMs);
+    }
     const price = require('./usageCost').priceFor(model);
     accounting.budget = budget;
     accounting.model = model;
@@ -450,8 +454,13 @@ async function fetchWithTimeout(url, init, parentSignal, deadlineMs = Infinity, 
     }
   }
   const remainingMs = Math.min(...Object.values(deadlines)) - admissionAt;
-  if (remainingMs <= 0) throw Object.assign(new Error('OpenAI Responses API request exceeded the chunk time limit'),
-    { code: 'OPENAI_CHUNK_TIMEOUT', retryable: false });
+  if (remainingMs <= 0) {
+    const reason = Object.entries(deadlines).sort((a,b) => a[1]-b[1])[0][0];
+    accounting?.budget?.recordSkip(`call_admission_${reason}`);
+    throw Object.assign(new Error('Model call was not sent because its admission window expired'),
+      { code: 'OPENAI_CHUNK_TIMEOUT', retryable: false, admissionSkipped: true,
+        admissionReason: reason, remainingAttemptMs: Math.max(0, remainingMs) });
+  }
   const configured = Math.max(5000, Number(process.env.OPENAI_API_TIMEOUT_MS)
     // Keep F-01's preferred 270s verdict allowance when there is room. The
     // measured full-output allowance below is always the minimum.

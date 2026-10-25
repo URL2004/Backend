@@ -9,7 +9,7 @@ const PAIRED_RESTORATION_TYPES = Object.freeze(['distortion', 'added_claim', 'om
 // A relation heuristic is not proof. Only a judge-confirmed, uniquely grounded
 // distortion may nominate a sentence; mutual, unambiguous one-to-one matching
 // supplies its original. The caller must verify the resulting candidate again.
-function restoreConfirmedRelations(source, output, report, { priorReports = [] } = {}) {
+function restoreConfirmedRelations(source, output, report, { priorReports = [], preferSourceWindows = false } = {}) {
   const text = String(output || '');
   const unchanged = { text, applied: false, restoredCount: 0 };
   if (!canNominateConfirmed(report)) return unchanged;
@@ -59,7 +59,30 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
       if (p.spanType === 'quote' && /^(?:"[^]*"|“[^]*”)$/u.test(literal)) return 'double:' + literal.slice(1,-1);
       return p.spanType + ':' + literal;
     }).sort().join('\n');
-  const pairedFindings = collectPairedNominations(report, priorReports);
+  const pairedFindings = collectPairedNominations(report, priorReports).map(v => {
+    if (!preferSourceWindows || rawOriginals.length > 512 || results.length > 512
+        || !['distortion','added_claim','scope_expansion','experience_novelty'].includes(v.type)) return v;
+    // A quoted subclause can locate one complete body sentence. Restore that
+    // whole sentence only with unique mutual ownership; never paste a fragment
+    // into a different sentence, heading, quotation or merged source claim.
+    const owner = (text, spans, quote) => {
+      const at = text.indexOf(quote || '');
+      if (!quote || quote.length < 12 || at < 0 || text.indexOf(quote, at + 1) >= 0) return null;
+      const s = spans.find(s => s.start <= at && s.end >= at + quote.length);
+      if (!s || /[\r\n]/u.test(s.text) || s.text.length > 700
+          || require('./layoutStructure').classifyLine(s.text) !== 'prose') return null;
+      return s;
+    };
+    const a = owner(String(source), rawOriginals, v.sourceSpan), b = owner(text, results, v.candidateSpan);
+    if (!a || !b || sentenceSimilarity(a.text,b.text) < .55
+        || require('./restorationOwnership').hasOutsideSourceContribution(String(source),a.start,a.end,b.text,a.text)) return v;
+    const best = (needle, spans, expected) => {
+      const score = sentenceSimilarity(needle, expected.text);
+      return spans.every(s => s === expected || score - sentenceSimilarity(needle,s.text) >= .08);
+    };
+    if (!best(a.text,results,b) || !best(b.text,rawOriginals,a)) return v;
+    return { ...v, sourceSpan: a.text, candidateSpan: b.text };
+  });
   const microPriority = new Map(pairedFindings.map(v => [v, Number(Boolean(
     require('./confirmedMicroRepair').confirmedMicroRepair(v.sourceSpan, v.candidateSpan, v)))]));
   pairedFindings.sort((left, right) => microPriority.get(right) - microPriority.get(left)
@@ -76,8 +99,10 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [] }
     const sharedLeadingBoundary = (sourcePrefix !== null && sourcePrefix === outputPrefix
       && uniqueProtectedLines(sourcePrefix,String(source),text))
       || sameAttestedLabelBoundary(String(source),from,text,start);
-    const minimal = restoreConfirmedAlternative(a, b, v)
-      || require('./confirmedMicroRepair').confirmedMicroRepair(a, b, v);
+    const restoreWhole = preferSourceWindows
+      && ['distortion','added_claim','scope_expansion','experience_novelty'].includes(v.type);
+    const minimal = !restoreWhole && (restoreConfirmedAlternative(a, b, v)
+      || require('./confirmedMicroRepair').confirmedMicroRepair(a, b, v));
     if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
       ||from<0||start<0||String(source).indexOf(a,from+1)>=0||text.indexOf(b,start+1)>=0
       ||!completeWindow(rawOriginals,from,from+a.length,minimal?6:3,sharedLeadingBoundary)||!completeWindow(results,start,end,minimal?6:3,sharedLeadingBoundary)

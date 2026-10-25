@@ -3759,6 +3759,35 @@ function serializeAdminJobDoc(docSnap) {
     estimatedUsd: finiteOrNull(j.estimatedUsd)
   };
 }
+router.post('/admin/blocked-job-audit', async (req, res) => {
+  const adminUid = await requireAdmin(req, res);
+  if (!adminUid) return;
+  const uid = String(req.body?.uid || '').trim(), jobId = String(req.body?.jobId || '').trim();
+  if (!ADMIN_LEDGER_TASK_ID_RE.test(uid) || !/^[a-f0-9]{16}$/u.test(jobId))
+    return res.status(400).json({ error: '유효한 사용자와 작업 ID가 필요합니다.' });
+  try {
+    const archive = await db.collection(JOB_ARCHIVE_COLLECTION).doc(jobId).get();
+    if (!archive.exists) return res.status(404).json({ error: '작업을 찾을 수 없습니다.' });
+    if (archive.data().uid !== uid) return res.status(409).json({ error: '작업 소유자가 일치하지 않습니다.' });
+    if (archive.data().status !== 'blocked') return res.status(409).json({ error: '안전 중단 작업만 조회할 수 있습니다.' });
+    const storage = require('../lib/semanticAuditStorage');
+    const stored = await db.collection(storage.COLLECTION).doc(jobId).get();
+    const evidence = storage.forBlockedAdmin(stored.exists ? stored.data() : null, { uid, jobId });
+    if (evidence.reason === 'owner_mismatch') return res.status(409).json({ error: '판정 근거 소유자가 일치하지 않습니다.' });
+    let retainedSource = '';
+    if (!evidence.available) {
+      const active = await db.collection('transformJobs').doc(jobId).get();
+      if (active.exists && active.data().uid === uid && active.data().status === 'blocked')
+        retainedSource = String(active.data().text || '');
+    }
+    logger.info('admin.blocked_job_audit_loaded', { adminUid, targetUid: uid, jobId, available: evidence.available });
+    res.json({ ok: true, job: serializeAdminJobDoc(archive), evidence, retainedSource });
+  } catch (error) {
+    logger.error('admin.blocked_job_audit_failed', { adminUid, targetUid: uid, jobId, err: error });
+    res.status(500).json({ error: '중단 작업의 판정 근거를 불러오지 못했습니다.' });
+  }
+});
+
 router.post('/admin/jobs', async (req, res) => {
   const adminUid = await requireAdmin(req, res);
   if (!adminUid) return;

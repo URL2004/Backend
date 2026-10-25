@@ -59,7 +59,7 @@ async function prepareFinalRelationRepair(source, output, report, {
     patchAttempted: false, patchedCount: 0, skipReason: 'no_grounded_target' };
   if (report?.pass !== false || report.skipped || report.verificationCompleted === false || signal?.aborted)
     return { ...proposal, skipReason: 'verdict_unavailable' };
-  const literal = restoration.restoreConfirmedRelations(source, output, report, { priorReports });
+  const literal = restoration.restoreConfirmedRelations(source, output, report, { priorReports, preferSourceWindows: true });
   if (literal.applied) {
     const safety = restoration.assessConfirmedRestorationSafety(assessLiteral(literal.text));
     if (!safety.eligible) proposal.skipReason = 'safety_ineligible';

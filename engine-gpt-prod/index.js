@@ -76,7 +76,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.121';
+const VERSION = 'gpt-prod-v2.5.122';
 const DETECT_VERSION = 'gpt-detect-v1.61';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -823,22 +823,15 @@ async function runEngine({
     polishReport = qualityV2.polishEditPolicy(auditSource, outputText, { documentProfile });
     polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
     polishEvaluativePaddingCodes = safeFailureCodeList(polishPaddingReport.introducedCodes);
-    if (!polishReport.noSafeChange && polishPaddingReport.increased) {
-      const restored = qualityV2.restorePolishEvaluativePaddingSentences(auditSource, outputText);
-      if (restored.applied) {
-        outputText = restored.text;
-        polishRetryReason = 'evaluative_padding';
-        polishRetryCount = 1;
-        polishDeterministicPaddingRestoreCount = restored.restoredSentenceCount || 1;
-        polishReport = qualityV2.polishEditPolicy(auditSource, outputText, { documentProfile });
-        polishPaddingReport = qualityV2.comparePolishEvaluativePadding(auditSource, outputText);
-      }
-    }
+    // Do not revert a valid paraphrase merely because words such as 필요 or
+    // 중요 occur more often. Grounded semantic findings below authorize repairs.
     // 원문 교정 항목 잔존은 아래 공통 koreanRefinement 경로가 결정론 수리 후
     // 문제 문장만 모델로 고친다. 여기서 별도 surface 재시도를 먼저 실행하면
     // 두 수리기가 같은 오류를 놓고 경쟁하고, 편집률만 맞는 무관한 후보가
     // 한국어 수리보다 먼저 채택될 수 있다.
-    if (polishReport.noSafeChange || polishPaddingReport.increased) {
+    // Lexical frequency alone must not start another paid full-text rewrite.
+    // The mandatory polish semantic audit below checks actual added meaning.
+    if (polishReport.noSafeChange) {
       const retryReserved = recoveryBudget.tryStart();
       if (!retryReserved) {
         const denied = recoveryBudget.denialReason() || 'recovery_budget_exhausted';
@@ -1956,9 +1949,9 @@ async function runEngine({
   let depthTugRecoveryRounds = 0;
   let depthTugSemanticRepairRounds = 0;
   let depthTugRejudgeCount = 0;
-  // Range warnings can later be delivered; unlike a proven unchanged output
-  // or evaluative padding, they cannot exempt polish from its mandatory audit.
-  const polishTerminalFailure = ['polish_unchanged', 'polish_evaluative_padding_added'].includes(polishStrictFailure);
+  // Neither range nor lexical-padding warnings can exempt polish from its
+  // mandatory semantic audit. Only a proven unchanged output needs no audit.
+  const polishTerminalFailure = polishStrictFailure === 'polish_unchanged';
   if (outputText.trim() && !polishTerminalFailure) {
     const semanticDecision = naturalnessRegressionSeen
       ? { run: true, reason: 'naturalness_regression_review' }
@@ -4035,6 +4028,7 @@ async function runEngine({
     judgeCallCount: 0,
     priorStatus: ''
   };
+  const finalRecoveryEvidence = [];
   if (semanticReport?.ran === true) {
     const obligationPolicy = require('./semanticObligations');
     const finalPriorReports = semanticRestorationEvidence.map(r=>obligationPolicy.projectEvidence(r,projectSemanticText));
@@ -4072,7 +4066,7 @@ async function runEngine({
           materializedChunks, chunkPlan, boundaryRepair, { current: outputText }),
         repair: async (before, findings, deadlineMs) => {
           try {
-            const patch = await require('./callLedger').withPolicy({ optional: true, deadlineMs,
+            const patch = await require('./callLedger').withPolicy({ optional: true, deadlineMs, reservedFinalRepair: true,
               stage: 'final_relation_patch' }, () => require('./judge').repairViolations(
               rawSource, before, null, findings, { lang, signal, config: cfg, allowedExtra,
                 safetyIdentifier: safetyId, phase: 'final_relation_patch' }));
@@ -4194,6 +4188,12 @@ async function runEngine({
                   receiptStore: semanticSectionReceipts
                 });
                 addSupplementalUsage(verified.usage, 'final_relation_restoration_verification');
+                finalRecoveryEvidence.push({ stage: 'final_relation_restoration_verification',
+                  candidate: restored.text, accepted: verified.pass === true && verified.verificationCompleted === true
+                    && semanticProvenance.verifySemanticValidation(verified, { source: rawSource,
+                      candidate: restored.text, requireDigest: true }).status === 'pass',
+                  trace: require('./semanticDiagnostics').buildTrace({ report: verified,
+                    submittedSource: String(text || ''), source: rawSource, candidate: restored.text, engineVersion: VERSION }) });
                 recheckCallCount += semanticCallCount(verified);
                 if (verified.verificationCompleted === true && verified.pass === true
                     && semanticProvenance.verifySemanticValidation(verified, {
@@ -4349,7 +4349,8 @@ async function runEngine({
       ? 'polish_unchanged'
       : (polishReport.excessiveChange
           ? 'polish_excessive_change'
-          : (polishPaddingReport.increased ? 'polish_evaluative_padding_added' : ''));
+          : (require('./polishPaddingDecision').polishPaddingDecision(rawSource, outputText,
+              polishPaddingReport, semanticReportForCandidate(semanticReport)).block ? 'polish_evaluative_padding_added' : ''));
   }
   const finalCollapsedSpacingCount = koreanIssueAfterCount(
     koreanRefinementAudit,
@@ -4551,6 +4552,11 @@ async function runEngine({
   if (internalMarkerIntegrity.residualInternalMarkers(rawSource, outputText).length) {
     addFloorCriticals(result.floorReport, [{ gate: 'internal_marker_leak',
       detail: '내부 처리 표식이 결과에 남아 결과를 전달하지 않았습니다.' }], 'internal_marker_leak');
+  }
+  if (selectedMode === 'polish' && require('./polishPaddingDecision').polishPaddingDecision(rawSource,
+      outputText, polishPaddingReport, semanticReportForCandidate(semanticReport)).review) {
+    addFloorWarnings(result.floorReport, [{ gate: 'polish_evaluative_padding_review',
+      detail: '일부 표현의 평가·강도가 원문과 같은지 확인해 주세요.' }]);
   }
   const delivery = deliveryPolicy.applyDeliveryPolicy(result.floorReport, { mode: selectedMode });
   result.floorReport = delivery.report;
@@ -5617,6 +5623,9 @@ async function runEngine({
 
   return {
     result,
+    privateBlockedContext: strictBlocked ? { version: 1, source: String(text || ''),
+      auditSource: rawSource, candidate: outputText, engineVersion: VERSION,
+      gates: result.floorReport.criticals.map(item => item.gate), recovery: finalRecoveryEvidence } : null,
     privateSemanticAudit: require('./semanticDiagnostics').buildTrace({
       report: { ...semanticReportForCandidate(semanticReport), repairFullDocumentRejectCodes: [
         ...semanticRepairFullDocumentRejectCodes,

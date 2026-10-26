@@ -3568,12 +3568,24 @@ function buildStructureAudit({
   const originalMarkers = compareOriginalStructuralMarkers(original, output, { allowAdditions: true });
   const sourceMarkers = compareOriginalStructuralMarkers(source, output);
   const bracketedLabelLayout = compareBracketedLabelLayout(original, output);
-  const lineAnchorLayout = compareLineAnchorLayout(original, output, { allowAdditions: true });
+  const exactLinePolicy = (chunks || []).some(chunk => String(chunk?.lineBoundaryPolicy || '') === 'all');
+  // A proven source wrap is not a heading whose unfinished prose must remain
+  // verbatim. Canonicalize only the same narrow, whitespace-only boundary
+  // repairs; never replace the factual/exact-layout baseline with model input.
+  let anchorSource = original;
+  if (original !== String(source || '') && !exactLinePolicy) {
+    const preflight = require('./sourcePreflight');
+    if (!preflight.looksLikeCreativeLineLayout(original)) {
+      const headed = preflight.repairInlineHeadingBoundaries(original).text;
+      const joined = preflight.repairForcedProseWraps(headed).text;
+      if (joined.replace(/\s/gu, '') === original.replace(/\s/gu, '')) anchorSource = joined;
+    }
+  }
+  const lineAnchorLayout = compareLineAnchorLayout(anchorSource, output, { allowAdditions: true });
   const sourceLineAnchorLayout = compareLineAnchorLayout(source, output);
   const inlineLabelBodyLayout = compareInlineLabelBodyLayout(original, output);
   const citations = restoreCitationLayout(source, output, chunks);
   const citationOwnershipPass = citations.pass && citations.text === normalizeNewlines(output);
-  const exactLinePolicy = (chunks || []).some(chunk => String(chunk?.lineBoundaryPolicy || '') === 'all');
   const exactLineStructure = exactLinePolicy
     ? auditExactLineStructure(original, output)
     : { pass: true, applicable: false };
@@ -4183,7 +4195,7 @@ function extractOriginalStructuralMarkers(value, { source } = {}) {
       markers.push(structuralMarker('markdown_number', `${match[1]} ${match[2]}`, index));
       return;
     }
-    match = text.match(/^\s*(\d{1,3}(?:\.\d{1,3}){1,3}[.)]?|\d{1,3}[.)])\s+/u)
+    match = text.match(/^\s*(\d{1,3}(?:\.\d{1,3}){1,3}[.)]?|\d{1,3}[.)])(?:\s+|$)/u)
       || text.match(/^\s*(\d{1,3}[.)])(?=[가-힣A-Za-z])/u);
     if (match) {
       markers.push(structuralMarker('number', match[1], index));

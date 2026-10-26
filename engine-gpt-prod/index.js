@@ -76,8 +76,8 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.122';
-const DETECT_VERSION = 'gpt-detect-v1.61';
+const VERSION = 'gpt-prod-v2.5.123';
+const DETECT_VERSION = 'gpt-detect-v1.62';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
 const REVIEW_WARNING_GATES = new Set([
@@ -1893,6 +1893,20 @@ async function runEngine({
       relationScopeRestoreCount += restored.restoredCount;
     }
   }
+  let wrappedListRestoreCount = 0;
+  const wrappedListPolicy = { preserveLines: documentProfile?.profile === 'creative'
+    || chunks.some(chunk => chunk.lineBoundaryPolicy === 'all') };
+  {
+    const restored = require('./wrappedListIntegrity').restore(auditSource, outputText, wrappedListPolicy);
+    if (restored.applied && candidateIntegrity.auditCandidateIntegrity({ source: auditSource, before: outputText,
+      candidate: restored.text, documentProfile, mode: selectedMode }).pass === true
+      && preservesFinalStructure(auditSource, restored.text, frozen ? frozen.auditChunks : chunks,
+        chunkPlan, boundaryRepair, { current: outputText })) {
+      outputText = restored.text;
+      wrappedListRestoreCount = restored.restoredCount;
+      if (humanizationDepthEnabled && humanizationPlan) humanizationDepthReport = evaluateDocumentHumanizationDepth(outputText, humanizationPlan);
+    }
+  }
   let preSemanticStructureAudit = structureChunk.buildStructureAudit({
     source: auditSource,
     outputText,
@@ -1953,7 +1967,9 @@ async function runEngine({
   // mandatory semantic audit. Only a proven unchanged output needs no audit.
   const polishTerminalFailure = polishStrictFailure === 'polish_unchanged';
   if (outputText.trim() && !polishTerminalFailure) {
-    const semanticDecision = naturalnessRegressionSeen
+    const semanticDecision = wrappedListRestoreCount > 0
+      ? { run: true, reason: 'wrapped_list_local_restore' }
+      : naturalnessRegressionSeen
       ? { run: true, reason: 'naturalness_regression_review' }
       : clauseCoverageAudit.semanticRequired
       ? { run: true, reason: 'compound_claim_omission_candidate' }
@@ -2204,6 +2220,7 @@ async function runEngine({
     });
     let postNoopDepthReport = evaluateDocumentHumanizationDepth(outputText, postNoopPlan);
     let lastRecoveryReason = 'no_substantive_change';
+    const reviewedRecoveryCandidates = new Set();
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const escalation = attempt > 0;
       if (require('./confirmedDeliveryIntegrity').stopUnproductiveLongEscalation({
@@ -2257,6 +2274,12 @@ async function runEngine({
         );
         humanizationDepthRetryTargetSentenceCount += retried.targetSentenceCount || 0;
         let candidate = String(retried.outputText || '').trim();
+        if (!candidate || candidate === outputText.trim()) {
+          lastRecoveryReason = 'candidate_unchanged';
+          humanizationDepthRetryRejectedCount += 1;
+          addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
+          continue;
+        }
         let candidateValidation = auditGeneralSurfaceCandidateWithStructure({
           source: auditSource,
           current: outputText,
@@ -2340,6 +2363,18 @@ async function runEngine({
           addUniqueCode(humanizationDepthRetryRejectionCodes, lastRecoveryReason);
           break;
         }
+        // A rejected candidate must not purchase the same full-document audit
+        // again on escalation. This is request-local and grants no approval;
+        // changed text still needs its own bound verdict and final audit.
+        const recoveryDigest = semanticProvenance.textDigest(candidate);
+        if (candidate === outputText.trim() || reviewedRecoveryCandidates.has(recoveryDigest)) {
+          lastRecoveryReason = 'candidate_unchanged';
+          recoveryBudget.recordSkip('duplicate_recovery_candidate');
+          humanizationDepthRetryRejectedCount += 1;
+          addUniqueCode(humanizationDepthRetryRejectionCodes, 'duplicate_recovery_candidate');
+          continue;
+        }
+        reviewedRecoveryCandidates.add(recoveryDigest);
         const candidateSemantic = await semanticCanonicalAudit.runCanonicalSemanticAudit({
           runAudit: options => qualityV2.runSemanticDocumentAudit(options),
           canonical: semanticCanonical,
@@ -4537,6 +4572,7 @@ async function runEngine({
   if (require('./fragmentDuplication').introducedClauseDuplicates(rawSource, outputText, finalLinePolicy).length
       || require('./fragmentDuplication').introducedResidualTails(rawSource, outputText, finalLinePolicy).length
       || require('./truncatedPrefixIntegrity').introducedTruncatedPrefixes(submittedSource, outputText, finalLinePolicy).length
+      || require('./wrappedListIntegrity').findings(auditSource, outputText, finalLinePolicy).length
       || require('./sourceBoundaryIntegrity').auditIntroducedReferenceBreaks(submittedSource, outputText).length) {
     addFloorCriticals(result.floorReport, [{ gate: 'confirmed_fragment_corruption',
       detail: '문장 조각의 중복 또는 참조 번호의 잘못된 연결이 확인되어 결과를 전달하지 않았습니다.' }], 'confirmed_fragment_corruption');
@@ -5031,6 +5067,7 @@ async function runEngine({
     preFinalRelationRestoreSkipReason: String(finalSemanticRevalidation.preFinalRelationRestoreSkipReason || ''),
     certaintyEndingRestoreCount,
     relationScopeRestoreCount,
+    wrappedListRestoreCount,
     semanticRepairPartialAdoptionAttempted: semanticRepairPartialAdoption.attempted === true,
     semanticRepairPartialAdoptionApplied: semanticRepairPartialAdoption.applied === true,
     semanticRepairPartialAdoptedBlockCount: semanticRepairPartialAdoption.adoptedCount,
@@ -5182,6 +5219,10 @@ async function runEngine({
       && humanizationDepthReport?.pass === false
       && humanizationDepthReport?.minimumEffectPass === true,
     humanizationNoBenefitDelivered,
+    // Legacy name is retained for older clients. This is a depth target miss,
+    // not an unchanged result or proof that the text has no benefit.
+    humanizationDepthTargetMissed: humanizationNoBenefitDelivered,
+    humanizationUnchanged: normalizeBare(auditSource) === normalizeBare(outputText),
     humanizationPolicyVersion: humanizationDepthEnabled
       ? (humanizationDepthReport?.plan?.policyVersion || humanizationDepth.POLICY_VERSION)
       : '',
@@ -6374,11 +6415,9 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
       selectedModelScore: null, evidenceAlignedScore: null });
     return error;
   };
-  const finish = out => {
-    if (out.gptMeta) {
-      out.gptMeta.usage = addUsage(addUsage(emptyUsage(), out.gptMeta.usage), failedUsage);
-      out.gptMeta.estimatedUsd = out.gptMeta.usage.estimatedUsd;
-    }
+  const stageCache = new WeakMap();
+  const candidateStages = out => {
+    if (stageCache.has(out)) return stageCache.get(out);
     const aligned = applyDetectNarrativePolicy(alignScoreToCauseEvidence(out));
     const assisted = require('../lib/detectStatisticalAssist').applyAssist(aligned, source, {
       profile: documentProfile?.profile
@@ -6387,9 +6426,21 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
     const classified = require('../lib/detectAssignmentClassifier').applyClassifier(assisted, source, {
       profile: documentProfile?.profile
     });
-    const result = require('../lib/detectConfidence').limitConfidenceToSample(
+    const candidate = require('../lib/detectConfidence').limitConfidenceToSample(
       classified === aligned ? aligned : applyDetectNarrativePolicy(classified), source
     );
+    const stages = { aligned, classified, candidate };
+    stageCache.set(out, stages);
+    return stages;
+  };
+  const finish = out => {
+    if (out.gptMeta) {
+      out.gptMeta.usage = addUsage(addUsage(emptyUsage(), out.gptMeta.usage), failedUsage);
+      out.gptMeta.estimatedUsd = out.gptMeta.usage.estimatedUsd;
+    }
+    const { aligned, classified, candidate } = candidateStages(out);
+    const resolved = require('../lib/detectEvidenceReview').resolveAssistedCandidate(aligned, candidate, source);
+    const result = { ...require('../lib/detectConfidence').limitConfidenceToSample(resolved.result, source), gptMeta: out.gptMeta };
     result.detectDiagnostics = diagnostics.sanitizeDiagnostics({
       version: diagnostics.VERSION, attempts, recheckReason,
       recheckFailed: out.gptMeta?.escalationFailed === true,
@@ -6398,7 +6449,8 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
       modelCandidateConsistency: require('../lib/detectEvidenceReview').candidateConsistency(out, source),
       finalCandidateConsistency: require('../lib/detectEvidenceReview').candidateConsistency(result, source),
       stageVersion: diagnostics.STAGE_VERSION, selectedPhase,
-      statisticalScore: classified.probability, engineFinalScore: result.probability
+      statisticalScore: classified.probability, engineFinalScore: result.probability,
+      statisticalAssistRejected: resolved.rejected
     });
     if (result.detectDiagnostics?.finalCandidateConsistency?.status === 'conflict' && result.confidence === 'high') result.confidence = 'medium';
     return result;
@@ -6445,9 +6497,12 @@ async function detectInternal({ text, lang = 'ko', signal, config, route = 'dete
       detectPromptVersion: prompts.DETECT_PROMPT_VERSION
     });
     recheckReason = diagnostics.recheckReason(out, source, cfg);
-    if (!shouldEscalateDetect(out, source, cfg)) {
+    const finalConflict = require('../lib/detectEvidenceReview').candidateConsistency(candidateStages(out).candidate, source).status === 'conflict';
+    const assistedReview = finalConflict && cfg.models.detectEscalation && cfg.models.detectEscalation !== cfg.models.detect;
+    if (!shouldEscalateDetect(out, source, cfg) && !assistedReview) {
       return finish(out);
     }
+    if (!shouldEscalateDetect(out, source, cfg) && assistedReview) recheckReason = 'post_assist_conflict';
 
     try {
       const escalated = await callDetectModel({

@@ -68,7 +68,18 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: req => realClientIp(req),
+  handler: rateLimitResponse,
 });
+
+// Browser reports can burst independently of user actions. Separate stores
+// ensure a CSP/event flood never spends the payment notification or AI budget.
+const independentLimiter = max => rateLimit({
+  windowMs: 60000, max, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: req => realClientIp(req), handler: rateLimitResponse
+});
+const cspReportLimiter = independentLimiter(30);
+const eventLimiter = independentLimiter(30);
+const notificationLimiter = independentLimiter(30);
 
 function rateLimitResponse(_req, res) {
   return res.status(429).json({
@@ -153,6 +164,9 @@ module.exports = {
   db,
   corsMiddleware,
   limiter,
+  cspReportLimiter,
+  eventLimiter,
+  notificationLimiter,
   dailyLimiter,
   kakaoAuthLimiter,
   discordInteractionLimiter,

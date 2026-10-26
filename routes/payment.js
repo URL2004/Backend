@@ -3634,6 +3634,8 @@ function serializeAdminJobDoc(docSnap) {
     humanizationMinimumEffectPass: typeof j.humanizationMinimumEffectPass === 'boolean' ? j.humanizationMinimumEffectPass : null,
     humanizationDepthSoftDelivered: j.humanizationDepthSoftDelivered === true,
     humanizationNoBenefitDelivered: j.humanizationNoBenefitDelivered === true,
+    ...(typeof j.humanizationDepthTargetMissed === 'boolean' ? { humanizationDepthTargetMissed: j.humanizationDepthTargetMissed } : {}),
+    ...(typeof j.humanizationUnchanged === 'boolean' ? { humanizationUnchanged: j.humanizationUnchanged } : {}),
     humanizationNoEffectRetryAttemptCount: finiteOrNull(j.humanizationNoEffectRetryAttemptCount),
     conservativeSentenceRetryAttemptCount: finiteOrNull(j.conservativeSentenceRetryAttemptCount),
     conservativeSentenceRetryModelCallCount: finiteOrNull(j.conservativeSentenceRetryModelCallCount),

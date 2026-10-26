@@ -155,10 +155,6 @@ function auxiliaryRoute(feature, handler) {
         // Only a newly acquired lease may turn a remote snapshot into locally
         // executing state. Never copy another instance's execution token.
         jobs.set(job.id, job);
-        if (feature === 'fallback' && job.pendingCompletion) {
-          await recoverCompletion(job);
-          return res.json({ ok: true, status: job.status });
-        }
         if (feature === 'refine' && job.pendingRefinement) {
           await finishRefinement(job);
           return res.json({ ok: true, refine: publicRefine(job) });
@@ -808,9 +804,8 @@ function blockedResponse(job) {
   };
 }
 
-// ★ 동의 기반 차단 안내 재료. 고급은 선택 강도를 끝까지 유지하므로
-// 보존형 폴백을 제공하지 않는다. 기본 차단 작업에만 사용자가 원할 때
-// 다듬기 결과를 별도로 받을 수 있다.
+// A retry keeps the selected mode, price and billing instrument. Legacy
+// downgrade offers are never advertised, even for a basic request.
 function buildBlockOffer(job, text) {
   let abstractParas = [];
   try {
@@ -823,8 +818,9 @@ function buildBlockOffer(job, text) {
       .slice(0, 5);
   } catch { /* surfaceguard 실패해도 차단 안내는 나가야 함 */ }
   return {
-    fallbackOffer: preservationFallbackAllowed(job.mode),
-    fallbackCredit: preservationFallbackCredit((text || '').length),
+    fallbackOffer: false,
+    retryOffer: ['blog', 'formal', 'polish'].includes(job.mode),
+    retryCredit: job.needed,
     canEvidence: job.mode === 'formal' && !job.wantEvidence,
     mode: job.mode || 'formal',
     abstractParas
@@ -903,6 +899,7 @@ async function finishRefinement(job) {
 
 async function stageCompletion(job, result, mode = job.mode) {
   if (job.status === 'cancelled' || job.ac?.signal.aborted) throw new Error('TRANSFORM_CANCELLED');
+  completionState.assertSelectedMode(job, result, mode);
   job.pendingCompletion = { result, mode, creditAmount: job.needed, createdAtMs: Date.now() };
   job.status = 'running';
   const staged = await persistJob(job, { requireClaim: true });
@@ -964,7 +961,7 @@ async function commitRefineBilling(job, n, creditAmount, textLength) {
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted', 'attemptTrace',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
-  'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts', 'cancelRequestedAtMs',
+  'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts', 'cancelRequestedAtMs', 'executionFeature', 'retryAcceptedAtMs', 'retryRequestId',
   'structurePreview', 'approvedStructure', 'structurePlanId', 'structureMode', 'basePriceCredits', 'structureCredits'];
 // transformJobs is owner-readable. Private judge evidence belongs only in its
 // server-only store, written by the same transaction before completion/billing.
@@ -1413,6 +1410,8 @@ function buildArchiveObservability(job) {
     humanizationDepthShadowReasons: uniqueStrictArchiveCodes(engineMeta.humanizationDepthShadowReasons),
     humanizationDepthSoftDelivered: engineMeta.humanizationDepthSoftDelivered === true,
     humanizationNoBenefitDelivered: engineMeta.humanizationNoBenefitDelivered === true,
+    ...(typeof engineMeta.humanizationDepthTargetMissed === 'boolean' ? { humanizationDepthTargetMissed: engineMeta.humanizationDepthTargetMissed } : {}),
+    ...(typeof engineMeta.humanizationUnchanged === 'boolean' ? { humanizationUnchanged: engineMeta.humanizationUnchanged } : {}),
     humanizationPolicyVersion: archiveString(engineMeta.humanizationPolicyVersion, 32),
     humanizationPlanSignalSource: archiveString(engineMeta.humanizationPlanSignalSource, 48),
     humanizationRiskLevel: archiveString(engineMeta.humanizationRiskLevel, 24),
@@ -2242,7 +2241,9 @@ router.stats = () => {
     totalJobs: jobs.size,
     draining,
     restorationReady,
-    maxActive: MAX_ACTIVE_GLOBAL
+    maxActive: MAX_ACTIVE_GLOBAL,
+    engineActiveCap: ENGINE_ACTIVE_CAP,
+    modeActiveCaps: { formal: MAX_ACTIVE_GLOBAL, short: BLOG_MAX_ACTIVE }
   };
 };
 
@@ -2308,13 +2309,6 @@ async function runSearchPhase(job, text) {
   }
 }
 
-// 기본 휴머나이징의 명시적 다듬기 폴백만 남긴다. 고급을 선택한 작업은
-// 결과 강도를 보존형으로 낮추지 않는다.
-function fallbackEnabled() {
-  const v = (process.env.TRANSFORM_BLOCK_FALLBACK || '').toLowerCase();
-  return v !== '0' && v !== 'off' && v !== 'false';
-}
-
 function compactArchiveCodeCountMap(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   return Object.fromEntries(Object.entries(source).slice(0, 20).map(([code, count]) => {
@@ -2325,22 +2319,7 @@ function compactArchiveCodeCountMap(value) {
 }
 
 function preservationFallbackAllowed(mode) {
-  return fallbackEnabled() && String(mode || '') === 'blog';
-}
-
-// 기본 작업에서 사용자가 별도로 선택한 다듬기 결과의 단가.
-function preservationFallbackCredit(len) {
-  return shortHumanizeCredit(len);
-}
-
-function buildPreservationFallbackMeta(out, job) {
-  const base = out?.engineMeta || out?.result?.engineMeta || {};
-  return {
-    ...base,
-    requestedMode: job?.mode || base.requestedMode || 'formal',
-    fallbackFromMode: job?.mode || '',
-    preservationFallback: true
-  };
+  return false; // Neither basic nor advanced requests may downgrade to polish.
 }
 
 function recoverableTechnicalBlockReason(out) {
@@ -2395,121 +2374,6 @@ function queueTechnicalRecovery(job, out) {
   });
   scheduleQueueDrain(Math.max(1000, job.retryNotBeforeMs - now));
   return true;
-}
-
-// 기본 휴머나이징이 차단됐을 때 사용자가 명시적으로 선택한 경우에만
-// 같은 입력을 다듬기 경로로 처리한다.
-async function tryBlogPreservationFallback(job, text) {
-  try {
-    if (job.ac.signal.aborted) {
-      handleAbortedJob(job);
-      return true;
-    }
-    job.stage = '원문 보존형으로 재처리 중';
-    job.note = (job.note ? job.note + ' ' : '')
-      + '자연화 결과에 원문 보존 위험이 남아, 원문을 최대한 보존하는 방식으로 처리했어요.';
-    persistJob(job);
-
-    const gptCfg = await activeGptConfig();
-    if (!gptCfg) throw technicalProviderError();
-    const out = await gptAnalyze.runHumanizeChunked({
-          text,
-          mode: 'polish',
-          lang: job.lang || 'ko',
-          signal: job.ac.signal,
-          deadlineMs: job.executionDeadlineMs,
-          userNotes: job.memo || '',
-          config: gptCfg,
-          styleProfile: 'production_blog_preservation_fallback',
-          documentProfileOverride: job.documentProfileOverride || '',
-          allowPolish: true,
-          uid: job.uid
-        });
-    const fallbackDelivery = applyRouteDeliveryPolicy(out, {
-      mode: 'polish',
-      logName: 'transform.blog_fallback_review_delivered',
-      meta: { jobId: job.id, uid: job.uid, fromMode: job.mode }
-    });
-    const fbCriticals = (out.floorReport?.criticals || [])
-      .map(deliveryPolicy.gateOf)
-      .filter(Boolean);
-    if (!out.result || !out.result.outputText || fallbackDelivery.decision === 'block_technical') {
-      logger.warn('transform.blog_fallback_blocked', {
-        jobId: job.id,
-        uid: job.uid,
-        mode: job.mode,
-        fbCriticals,
-        deliveryReasonCodes: fallbackDelivery.reasonCodes,
-        gateDetail: { criticals: (out.floorReport?.criticals || []).slice(0, 8) }
-      });
-      return false;
-    }
-
-    const fbNeeded = preservationFallbackCredit(text.length);
-    job.needed = job.billingMode === 'coupon' ? 1 : fbNeeded;
-    job.billingDisposition = classifyBillingDisposition({
-      adminNoCharge: job.devNoAuth === true || job.adminHumanizeLab === true,
-      plan: job.plan
-    });
-    const fallbackEngineMeta = buildPreservationFallbackMeta(out, job);
-    fallbackEngineMeta.billingDisposition = job.billingDisposition;
-    job.engineMeta = fallbackEngineMeta;
-    const completionResult = {
-      outputText: out.result.outputText,
-      preservationCheck: measurePreservation(out.result.outputText),
-      preservationFallback: true,
-      qualityStatus: out.qualityStatus || out.result?.qualityStatus || out.floorReport?.status || 'clean',
-      qualityWarnings: out.qualityWarnings || out.result?.qualityWarnings || [],
-      effectStatus: out.effectStatus || out.result?.effectStatus || 'normal',
-      effectNotices: out.effectNotices || out.result?.effectNotices || [],
-      billingDisposition: job.billingDisposition,
-      sourceReviewWarnings: out.sourceReviewWarnings || out.result?.sourceReviewWarnings || [],
-      engineMeta: fallbackEngineMeta,
-      humanizeMeta: out.result?.humanizeMeta || null,
-      naturalnessShadow: out.result?.naturalnessShadow || null,
-      metrics: {
-        novelty: out.floorReport?.metrics?.novelty ?? null,
-        lostFacts: out.floorReport?.metrics?.lostFacts ?? null,
-        repetition: out.floorReport?.metrics?.repetition ?? null,
-        judge: out.engineMeta?.semanticJudgeRan ? 'evaluated' : 'not_evaluated',
-        lengthRatio: out.floorReport?.metrics?.lengthRatio,
-        preservationFallback: true
-      },
-      floorReport: {
-        status: out.floorReport?.status || 'clean',
-        criticals: out.floorReport?.criticals || [],
-        warnings: out.floorReport?.warnings || []
-      },
-      chunkCount: out.chunkCount,
-      fallbackCount: out.fallbackCount
-    };
-    await stageCompletion(job, completionResult, 'polish');
-    if (job.status !== 'done') return true;
-    persistJob(job);
-    saveJobHistory(job, text, out.result.outputText);
-    logger.info('transform.blog_fallback_done', {
-      jobId: job.id,
-      uid: job.uid,
-      fromMode: 'blog',
-      needed: fbNeeded,
-      deducted: job.deducted
-    });
-    return true;
-  } catch (e) {
-    if (job.ac.signal.aborted) {
-      handleAbortedJob(job);
-      return true;
-    }
-    logger.error('transform.blog_fallback_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
-    if (job.status === 'awaiting_payment') { persistJob(job); return true; }
-    if (job.pendingCompletion) {
-      job.status = 'queued'; job.retryNotBeforeMs = Date.now() + 60000;
-      job.stage = '저장된 결과의 완료 상태를 확인하고 있어요.';
-      persistJob(job);
-      return true;
-    }
-    return false;
-  }
 }
 
 async function runAdminHumanizeLabJob(job, text, evidence) {
@@ -3081,7 +2945,7 @@ async function runHumanizeJob(job, text, evidence = '') {
           approvedStructure: job.approvedStructure || null,
           basicStyle: job.basicStyle || '',
           documentProfileOverride: job.documentProfileOverride || '',
-          allowPolish: true,
+          allowPolish: isPolish,
           recoveryBudgetUsd: Number(job.recoveryBudgetUsd)
             || recoveryBudgetUsdForCredits(job.listPriceCredits || job.needed),
           // 원본 UID는 OpenAI 요청에 직접 전달되지 않는다. 엔진 내부에서
@@ -3833,18 +3697,33 @@ router.post('/transform/:id/resume-payment', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// 기본 휴머나이징 차단 작업만 사용자의 명시적 동의로 다듬기 처리한다.
-// 고급 작업은 이 경로로 강도를 낮출 수 없다.
-router.post('/transform/:id/accept-fallback', auxiliaryRoute('fallback', async (req, res) => {
-  const job = jobs.get(req.params.id);
-  if (!job) return res.status(404).json({ error: '작업을 찾을 수 없어요.' });
-  if (!(await requireJobOwner(req, res, job))) return;
-  if (job.status !== 'blocked') return res.status(409).json({ error: '차단된 작업만 보존형으로 받을 수 있어요.' });
-  if (!preservationFallbackAllowed(job.mode)) return res.status(409).json({ error: '고급 작업은 보존형으로 전환하지 않아요. 고급 설정으로 다시 시도해 주세요.' });
-  // ★ 크레딧 사전 검증(2026-06-16): 보존형 받기도 과금 작업이다 — 잔액이 부족하면 작업을 '돌리기 전에' 막는다.
-  //   기존엔 precheck 없이 백그라운드로 돌려, 작업이 끝난 뒤 차감이 실패해도(잔액 0) 결과를 전달했다(무상 제공 구멍).
-  //   재시도 버튼(POST /transform)은 이미 precheckCredits로 막히는데 이 버튼만 빠져 있어 동작이 불일치했다.
-  const fbNeeded = preservationFallbackCredit((job.text || '').length);
+// Legacy clients must reload instead of silently downgrading their request.
+router.post('/transform/:id/accept-fallback', (_req, res) => res.status(410).json({
+  code: 'MODE_DOWNGRADE_REMOVED', error: '다듬기 전환은 더 이상 제공하지 않아요. 화면을 새로고침한 뒤 같은 모드로 재시도해 주세요.'
+}));
+router.post('/transform/:id/retry', async (req, res, next) => {
+  const job = await loadControlJob(req, res);
+  if (!job) return;
+  const retryRequestId = String(req.body?.requestId || '');
+  if (!/^[a-z0-9_-]{12,80}$/iu.test(retryRequestId)) return res.status(400).json({ error: '재시도 요청 정보를 확인해 주세요.' });
+  // A lost HTTP response must not start another paid attempt. The durable
+  // intent survives discovery, deploy handoff and completion recovery.
+  if (job.executionFeature === 'retry' && (job.retryRequestId === retryRequestId || ['queued', 'running', 'awaiting_payment', 'done'].includes(job.status))) {
+    return res.json({ ok: true, ...activeJobPayload(job) });
+  }
+  if (draining || !restorationReady) return res.status(503).json({ error: '서버 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
+  if (job.status !== 'blocked') return res.status(409).json({ error: '중단된 작업만 재시도할 수 있어요.' });
+  if (!['blog', 'formal', 'polish'].includes(job.mode)) return res.status(409).json({ error: '작업 모드를 확인할 수 없어요.' });
+  if (pendingAdmissions.has(job.uid) || auxiliaryUsers.has(job.uid) || activeJobFor(job.uid)) return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
+  if (queuedJobsForPool(poolOf(job.mode)).length >= queueCap(job.mode)) return res.status(503).json({ error: '현재 대기열이 가득 찼어요. 잠시 후 다시 시도해 주세요.' });
+  let finishAdmission;
+  const admission = { done: new Promise(resolve => { finishAdmission = resolve; }) };
+  admissionRequests.add(admission);
+  pendingAdmissions.add(job.uid);
+  try {
+  // Admission only prechecks the original price; durable completion remains
+  // the sole charging point and retains the existing idempotent job ledger.
+  const fbNeeded = job.needed;
   if (!job.devNoAuth) {
     try {
       await precheckExistingJobBilling(job, tokenFromReq(req), fbNeeded, (job.text || '').length);
@@ -3852,55 +3731,43 @@ router.post('/transform/:id/accept-fallback', auxiliaryRoute('fallback', async (
       const status = e.status || 402;
       return res.status(status).json({
         error: status === 402 && job.billingMode !== 'coupon'
-          ? `보존형으로 받으려면 ${fbNeeded}크레딧이 필요해요. 크레딧이 부족해 충전 후 다시 시도해 주세요.`
+          ? `같은 모드로 재시도하려면 ${fbNeeded}크레딧이 필요해요. 크레딧이 부족해 충전 후 다시 시도해 주세요.`
           : usageBilling.authErrorMessage(e.message),
         needed: job.billingMode === 'coupon' ? 1 : fbNeeded,
         billingMode: job.billingMode === 'coupon' ? 'coupon' : 'credit'
       });
     }
   }
-  const priorStatus = job.status;
-  const priorStage = job.stage;
-  job.status = 'running';
-  job.stage = '원문 보존형으로 재처리 중';
-  job.blockOffer = null;
-  job.startedAt = Date.now();        // 새 시작점 — 30초 취소 창이 이 보존형 재처리 기준으로 적용되게.
-  job.ac = job.auxAc || new AbortController();
-  const fallbackClaim = await persistJob(job, { requireClaim: true });
+  if (draining) return res.status(503).json({ error: '서버 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
+  const queued = { ...job, status: 'queued', stage: '같은 모드 재처리 대기 중',
+    executionFeature: 'retry', retryRequestId, retryAcceptedAtMs: Date.now(), queuedAt: Date.now(),
+    startedAt: null, terminalAtMs: null, retryNotBeforeMs: null, blockOffer: null,
+    error: null, ac: new AbortController() };
+  const fallbackClaim = await persistJob(queued, { requireClaim: true, expectedStatus: 'blocked' });
   if (!fallbackClaim?.ok) {
-    job.status = priorStatus;
-    job.stage = priorStage;
-    job.blockOffer = buildBlockOffer(job, job.text || '');
-    return res.status(fallbackClaim?.blocked ? 409 : 503).json({
-      code: fallbackClaim?.blocked ? 'ACCOUNT_DELETION_IN_PROGRESS' : 'TRANSFORM_JOB_PERSIST_UNAVAILABLE',
+    if (fallbackClaim?.code === 'TRANSFORM_STATE_CHANGED') {
+      const current = await loadControlJob(req, res);
+      if (!current) return;
+      if (current.executionFeature === 'retry' && (current.retryRequestId === retryRequestId || ['queued', 'running', 'awaiting_payment', 'done'].includes(current.status))) return res.json({ ok: true, ...activeJobPayload(current) });
+    }
+    return res.status(fallbackClaim?.blocked || fallbackClaim?.code === 'USER_TRANSFORM_ACTIVE' ? 409 : 503).json({
+      code: fallbackClaim?.code || 'TRANSFORM_JOB_PERSIST_UNAVAILABLE',
       error: fallbackClaim?.blocked
         ? '회원 탈퇴 처리가 진행 중이라 재처리를 시작할 수 없어요.'
-        : '작업을 안전하게 저장하지 못했어요. 잠시 후 다시 시도해 주세요.',
+        : fallbackClaim?.code === 'USER_TRANSFORM_ACTIVE' ? '이미 진행 중인 작업이 있어요.'
+          : '작업을 안전하게 저장하지 못했어요. 잠시 후 다시 시도해 주세요.',
     });
   }
-  res.json({ ok: true });   // 즉시 응답 — 보존형 재처리는 백그라운드, 프론트는 폴링으로 done 수신.
-  try {
-    const handled = await tryBlogPreservationFallback(job, job.text || '');
-    if (!handled && job.status !== 'cancelled') {   // 보존형도 치명 출력이면 다시 차단
-      job.status = 'blocked';
-      job.stage = blockedStage(job.gates || []);
-      job.blockOffer = buildBlockOffer(job, job.text || '');
-      persistJob(job);
-    }
-  } catch (e) {
-    logger.error('transform.accept_fallback_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
-    if (job.status !== 'done' && job.status !== 'cancelled') {
-      job.status = 'blocked';
-      job.blockOffer = buildBlockOffer(job, job.text || '');
-      persistJob(job);
-    }
-  }
+  admission.job = queued;
+  jobs.set(job.id, queued);
   scheduleQueueDrain();
-}));
+  res.json({ ok: true, ...activeJobPayload(queued) });
+  } catch (error) { next(error); }
+  finally { pendingAdmissions.delete(job.uid); admissionRequests.delete(admission); finishAdmission(); }
+});
 
-// ── 사후 문단 보강(2026-08-27): 완료된 기본(blog·polish) 결과의 추상-위험 문단 하나를 사용자의
-//   실제 경험 한 줄(memo)로 재생성해 결과에 패치한다. 문단 하나를 미니 문서로 운영 엔진에 그대로
-//   태우므로 무날조·플로어 게이트가 동일하게 적용된다. 무변화·차단·실패는 무과금·무료횟수 미소진.
+// A completed paragraph can be refined using user-supplied experience;
+// failed, unchanged or blocked attempts remain uncharged.
 router.post('/transform/:id/refine-paragraph', auxiliaryRoute('refine', async (req, res) => {
   if (!refineEnabled()) return res.status(404).json({ error: '지원하지 않는 기능이에요.' });
   const job = jobs.get(req.params.id);
@@ -4228,7 +4095,8 @@ router.get('/transform/:id', async (req, res, next) => {
   if (job.status === 'awaiting_approval') return res.json({ ...base, candidates: job.candidates });
   if (job.status === 'awaiting_payment') return res.json({ ...base, ...completionState.paymentRequiredPayload(job) });
   if (job.status === 'cancelled') return res.json(base);
-  if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail, blockOffer: job.blockOffer || null, ...blockedResponse(job) });
+  if (job.status === 'blocked') return res.json({ ...base, gates: job.gates, gateDetail: job.gateDetail,
+    blockOffer: { ...(job.blockOffer || {}), fallbackOffer: false, retryOffer: ['blog', 'formal', 'polish'].includes(job.mode), retryCredit: job.needed }, ...blockedResponse(job) });
   if (job.status === 'error') return res.json({ ...base, error: job.error });
   res.json(base);
   } catch (error) { next(error); }

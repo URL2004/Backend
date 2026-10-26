@@ -133,7 +133,8 @@ test('route execution deadline reaches worker calls and structural fallback keep
   const fs = require('node:fs'), path = require('node:path');
   const route = fs.readFileSync(path.join(__dirname,'../routes/transform.js'),'utf8');
   assert.match(route,/job\.executionDeadlineMs = Date\.now\(\) \+ limit/);
-  assert.equal((route.match(/deadlineMs: job\.executionDeadlineMs/g)||[]).length,4);
+  assert.equal((route.match(/deadlineMs: job\.executionDeadlineMs/g)||[]).length,3);
+  assert.doesNotMatch(route, /async function tryBlogPreservationFallback/u);
   const worker = fs.readFileSync(path.join(__dirname,'../lib/humanizeWorkerPool.js'),'utf8');
   assert.match(worker,/const \{ signal, \.\.\.serializable \} = options/);
   const engine = fs.readFileSync(path.join(__dirname,'../engine-gpt-prod/index.js'),'utf8');

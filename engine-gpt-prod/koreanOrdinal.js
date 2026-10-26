@@ -71,7 +71,8 @@ function ordinalMarkers(value, { source } = {}) {
   // A predicate is required so family references (첫째는 학교에 갔다) are not
   // promoted to structural markers merely because they contain an ordinal.
   const topics = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?:은|는)\\s+([^.!?。！？\\n]{1,160}(?:이다|입니다|것이다|것입니다|여부다|여부입니다))(?=[.!?。！？]|$)`, 'gu');
-  const hasEnumeration = markers.length > 0 || /(?:이유|목적|원칙|특징|과제|장점|단점|문제|요인|항목|방법)[^.!?\n]{0,30}(?:[두세네]|다섯|여섯|\d+)\s*가지/u.test(text);
+  const hasEnumeration = markers.length > 0 || /(?:이유|목적|원칙|특징|과제|장점|단점|문제|요인|항목|방법)[^.!?\n]{0,30}(?:[두세네]|다섯|여섯|\d+)\s*가지/u.test(text)
+    || /(?:[두세네]|다섯|여섯|\d+)\s*가지\s*(?:이유|목적|원칙|특징|과제|장점|단점|문제|요인|항목|방법)/u.test(text);
   // A source item inside a comma series (`…, 셋째, …`) is not a counted
   // marker; promoting it to a sentence topic is a split, not an addition.
   const sourceMarkers = source != null ? ordinalMarkers(source) : null;
@@ -128,7 +129,42 @@ function ordinalMarkers(value, { source } = {}) {
     markers.push({ marker: match[1].replace(/\s+/gu, ''), number: ordinalNumber(match[1]), start,
       predicateFrame: true, lineOrdinal: text.slice(0, start).split('\n').length });
   }
+  // Rephrasing a source topic as a noun frame (셋째는 -> 셋째 결론은,
+  // 첫 번째는 '코너'이다 -> 첫 번째 '코너'에서는) keeps the same item.
+  // Require a unique source/body witness, not ordinal vocabulary alone.
+  if (sourceMarkers?.length) {
+    const loose = new RegExp(`(^[ \\t]*|\\n[ \\t]*|[.!?。！？][ \\t]+)(${ORDINAL})(?=\\s|은\\s|는\\s)`, 'gu');
+    const candidates = [...text.matchAll(loose)].map(match => ({
+      marker: match[2].replace(/\s+/gu, ''), number: ordinalNumber(match[2]), start: match.index + match[1].length
+    })).filter(item => !literals.some(span => span.start <= item.start && span.end > item.start));
+    const pairs = candidates.map(item => sourceMarkers.filter(before => before.number === item.number
+      && (ordinalBodyMatches(source, before.start, text, item.start)
+        || ordinalFrameBodyMatches(source, before.start, text, item.start)
+        || quotedOrdinalBodyMatches(source, before.start, text, item.start))));
+    candidates.forEach((item, index) => {
+      if (markers.some(marker => marker.start === item.start) || pairs[index].length !== 1
+          || pairs.filter(pair => pair.includes(pairs[index][0])).length !== 1) return;
+      markers.push({ ...item, lineOrdinal: text.slice(0, item.start).split('\n').length });
+    });
+  }
   return markers.sort((a, b) => a.start - b.start);
+}
+
+function quotedOrdinalBodyMatches(source, sourceStart, output, outputStart) {
+  const before = String(source).slice(sourceStart).split(/[.!?。！？\n]/u)[0];
+  const after = String(output).slice(outputStart).split(/[.!?。！？\n]/u)[0];
+  const labels = [...before.matchAll(/(?:‘([^’\n]{4,60})’|“([^”\n]{4,60})”|'([^'\n]{4,60})'|"([^"\n]{4,60})")/gu)]
+    .map(match => match[1] || match[2] || match[3] || match[4]);
+  return labels.some(label => after.includes(label) && String(source).split(label).length === 2
+    && String(output).split(label).length === 2);
+}
+
+function ordinalFrameBodyMatches(source, sourceStart, output, outputStart) {
+  const words = (text, start) => new Set(String(text).slice(start).split(/[.!?。！？\n]/u)[0]
+    .replace(new RegExp(`^${ORDINAL}(?:은|는)?\\s*`, 'u'), '').match(/[가-힣A-Za-z0-9]{2,}/gu) || []);
+  const before = words(source, sourceStart), after = words(output, outputStart);
+  const common = [...before].filter(word => after.has(word)).length;
+  return common >= 4 && common * 2 / Math.max(1, before.size + after.size) >= 0.55;
 }
 
 // Only an unquoted, consecutive item in the same comma series can own a split

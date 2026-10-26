@@ -16,7 +16,7 @@ test('고급 작업은 보존형 폴백으로 다운그레이드하지 않는다
     if (previous === undefined) delete process.env.TRANSFORM_BLOCK_FALLBACK;
     else process.env.TRANSFORM_BLOCK_FALLBACK = previous;
   });
-  assert.equal(transform.preservationFallbackAllowed('blog'), true);
+  assert.equal(transform.preservationFallbackAllowed('blog'), false);
   assert.equal(transform.preservationFallbackAllowed('formal'), false);
   assert.equal(transform.preservationFallbackAllowed('polish'), false);
 });

@@ -5,7 +5,7 @@ const { compareNumberMultiset } = require('./factAudit');
 const freezeBlocks = require('../engine/freezeblocks');
 const { repairExtractedPageLayout } = require('./extractedPageLayout');
 
-const VERSION = 41;
+const VERSION = 42;
 
 const INLINE_HEADING_MARKER = String.raw`(?:\d{1,2}(?:\.\d{1,2}){1,3}|\d{1,2}[.)]|[①-⑳]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)．]|[IVX]{1,8}[.)．]|제\s*\d{1,3}\s*(?:장|절|항))`;
 // Compound section names must match before their shorter prefix. Otherwise
@@ -620,6 +620,7 @@ function preservesExistingStructuralLines(before, after) {
         && /[.!?。！？]/u.test(String(record.text || ''))
         && RIGHT_STANDALONE_PARTICLE_RE.test(String(next?.text || '').trimStart());
       if (contextualSplitWordContinuation) return false;
+      if (next && next.index === record.index + 1 && isWrappedProseItem(record.text, next.text)) return false;
       if (role === 'heading' && looksLikeFusedStructuralLine(record.text)) return false;
       if (role === 'title') {
         const tail = (String(record.text || '').match(/[가-힣A-Za-z]+$/u) || [''])[0];
@@ -780,7 +781,8 @@ function extractDocumentQuoteWrapper(value) {
 }
 
 function repairInlineHeadingBoundaries(value) {
-  const source = String(value || '');
+  const outline = require('./fusedReportLayout').repairFusedNumberedReport(value);
+  const source = outline.text;
   const lines = source.split('\n');
   // Decide table ownership before interpreting punctuation or circled cell
   // values as headings. Use the same contextual roles as the chunk planner.
@@ -790,7 +792,7 @@ function repairInlineHeadingBoundaries(value) {
     .filter(s => s.spanType === 'quote' && source.slice(s.start,s.end).includes('\n'));
   let offset = 0;
   const output = [];
-  const changes = [];
+  const changes = [...outline.changes];
   let fence = null;
   lines.forEach((line, index) => {
     const lineStart = offset;
@@ -1304,7 +1306,8 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
   const left = String(leftValue || '').trim();
   const right = String(rightValue || '').trim();
   if (!left || !right) return false;
-  if (STRUCTURAL_LINE_RE.test(left) || STRUCTURAL_LINE_RE.test(right)) return false;
+  const wrappedItem = isWrappedProseItem(left, right);
+  if ((!wrappedItem && STRUCTURAL_LINE_RE.test(left)) || STRUCTURAL_LINE_RE.test(right)) return false;
   // `자동 관개 시스템:`처럼 콜론 라벨로 시작하는 다음 행은 앞 문장이
   // 마침표 없이 끝났더라도 독립 구조다. 길이만 보고 합치면 항목명이 앞
   // 문장의 목적어처럼 붙고 이후 청크·문단 구조까지 연쇄적으로 무너진다.
@@ -1322,7 +1325,7 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
       // from a nominal heading followed by a new subject ("효과 / 이 연구는...").
       || (left.split(/\s+/u).length >= 3 && /[가-힣]{2,}(?:을|를)$/u.test(leftToken)
         && /^[가-힣]{1,20}(?:시킬|시키|시켜|하는|하며|하고|하여|했던|했다|한다|됩니다|되는|되며|되었다)/u.test(right)));
-  if ((!weakTitleFragment && ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole))
+  if ((!wrappedItem && !weakTitleFragment && ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(leftRole))
       || ['title', 'heading', 'label', 'label_inline', 'list', 'table', 'flow', 'quote', 'code', 'legal_clause', 'signature'].includes(rightRole)) {
     return false;
   }
@@ -1330,7 +1333,10 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
       || isQuoteAttributionLine(left) || isQuoteAttributionLine(right)) return false;
   if (WEB_LITERAL_TEST_RE.test(left) || WEB_LITERAL_TEST_RE.test(right)) return false;
   if (/^\s*(?:`{3,}|~{3,})/u.test(left) || /^\s*(?:`{3,}|~{3,})/u.test(right)) return false;
+  if (wrappedItem) return true;
   if (require('./koreanEndingSeam').isEndingSeam(left, right)) return true;
+  if (left.split(/\s+/u).length >= 4 && /[가-힣]+(?:이나|거나)$/u.test(leftToken)
+      && right.split(/\s+/u).length >= 3) return true;
   if (layoutStructure.isProseContinuation(left) || layoutStructure.isContextualProseContinuation(left, right)) return true;
   if (/[.!?。！？…,:;：；]\s*[”’"'」』》〉)\]]*$/u.test(left)) return false;
   if (!/^[가-힣A-Za-z0-9(“"'‘「『《〈]/u.test(right)) return false;
@@ -1370,6 +1376,21 @@ function shouldJoinForcedWrap(leftValue, rightValue, context = {}) {
 // An unfinished prose parenthesis can look like a short title after PDF
 // extraction. Require a local balanced closing pair, a conjunction at the
 // wrap, and a following predicate; never merge actual headings or table rows.
+function isWrappedProseItem(left, right) {
+  const item = layoutStructure.listPrefixParts(left);
+  if (!item || !/^\s*(?:\d+[.)]|[-*+•▪◦·])/u.test(item.prefix)) return false;
+  const body = item.body;
+  const labelled = body.match(/^.{2,65}?\s[-–—]\s+(.+)$/u)?.[1];
+  if (!labelled || labelled.length < 16 || labelled.split(/\s+/u).length < 5
+      || /[.!?。！？:：;；][”’"')\]]*$/u.test(body)
+      || endsWithSentenceFinalEnding(body, body.match(/[가-힣]+$/u)?.[0])
+      || !/(?:은|는|이|가|을|를|의|고|며|던|된|하는|위한)(?:\s|$)/u.test(labelled)) return false;
+  return right.length >= 8 && !STRUCTURAL_LINE_RE.test(right)
+    && !/[|\t]/u.test(body + right) && !isWholeQuotedLine(right)
+    && !/^(?:제\s*\d|<|>|\[|【|출처|참고문헌)/u.test(right)
+    && ['prose', 'title'].includes(layoutStructure.classifyLine(right));
+}
+
 function isParentheticalProseWrap(left,right) {
   if(left.length<30||!/(?:및|과|와|의|을|를)$/u.test(left)||right.length>600)return false;
   const joined=left+'\n'+right,seam=left.length;

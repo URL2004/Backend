@@ -114,13 +114,15 @@ test('actual detect finish preserves model and cause-stage scores when support c
   t.after(() => { assist.applyAssist = originalAssist; delete require.cache[enginePath]; });
   const text = source.match(/.{1,65}/gu).join('. ') + '.';
   const output = await engine.detect({ text, documentProfile: { profile: 'general' }, config: { models: { detect: 'primary-test', detectEscalation: 'recheck-test' }, reasoning: { detect: 'low', escalation: 'high' } }, allowLocalFallback: false });
-  assert.equal(output.probability, 74);
+  assert.equal(output.probability, 32);
   assert.equal(output.modelProbability, 32);
   assert.equal(output.detectDiagnostics.evidenceAlignedScore, 32);
   assert.equal(output.detectDiagnostics.selectedModelScore, 32);
-  assert.equal(output.statisticalSupport.originalScore, 32);
+  assert.equal(output.statisticalSupport, undefined);
+  assert.equal(output.detectDiagnostics.statisticalScore, 74);
+  assert.equal(output.detectDiagnostics.statisticalAssistRejected, true);
   assert.equal(output.signalEvidence.length, 1);
-  assert.equal(output.gptMeta.escalated, false);
+  assert.equal(output.gptMeta.escalated, true);
 });
 
 test('fixed statistical evidence yields monotone scores across 49/50 and the entire score range', () => {

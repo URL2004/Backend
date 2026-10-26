@@ -262,6 +262,10 @@ function classifyLine(value, context = {}) {
   const label = bracketLabelParts(text) || labelParts(text);
   if (label) return label.rest ? 'label_inline' : 'label';
   if (context.endingContinuation) return 'prose';
+  // A physical row containing a complete prose sentence and the beginning
+  // of the next is not a parallel nominal heading. Explicit structures were
+  // already classified above; this prevents later context from locking it.
+  if (/[가-힣]{2,}(?:다|요)[.!?。！？][”’"')\]]*\s+\S/u.test(text)) return 'prose';
   // Numeric citation tails do not make a completed sentence a nominal title.
   // Check before contextual heading heuristics: adding a blank line must not
   // promote cited prose to a new locked anchor and roll back the entire reflow.

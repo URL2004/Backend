@@ -8,6 +8,9 @@ captureProcessErrors();
 const {
   corsMiddleware,
   limiter,
+  cspReportLimiter,
+  eventLimiter,
+  notificationLimiter,
   kakaoAuthLimiter,
   discordInteractionLimiter,
   db,
@@ -45,7 +48,7 @@ app.use(require('./middleware/errorEnvelope'));
 // corsMiddleware 뒤에 두면 전부 403으로 거절돼 위반 내용이 한 번도 기록되지 않았다
 // (2026-09-29 실측: 하루 3,450건 거절 = warn 로그 10,350줄, security.csp_violation 0건).
 // 개별 보고는 info로만 남기고(stdout), 관리자 로그에는 1시간 집계(security.csp_violation_summary)만 남긴다.
-app.post('/csp-report', limiter, express.json({ type: ['application/csp-report', 'application/json'], limit: '16kb' }), (req, res) => {
+app.post('/csp-report', cspReportLimiter, express.json({ type: ['application/csp-report', 'application/json'], limit: '16kb' }), (req, res) => {
   const cspReport = require('./lib/cspReport');
   const summary = cspReport.summarizeReport(req.body);
   logger.info('security.csp_violation', summary);
@@ -96,13 +99,13 @@ app.use('/detect-report', limiter);   // 무료 감지 — 일일 한도는 라�
 app.use('/coach-suggest', limiter);   // 자동 코칭 후보 — 무인증 LLM 1콜이라 분당 폭주 방지(과금 대신 rate-limit)
 // /transform은 POST(시작·취소·승인)만 제한 — GET 폴링은 90분 job 동안 수백 회가 정상이라 제외.
 app.use('/transform', (req, res, next) => (req.method === 'POST' ? limiter(req, res, next) : next()));
-app.use('/events', limiter);   // 알림 중계 — 인증 전 폭주 방지
+app.use('/events', eventLimiter);   // 관측 이벤트는 업무 요청 한도와 분리
 app.use('/kakao-login', kakaoAuthLimiter);
 app.use('/history/backup', limiter); // 클라이언트 이력 폴백 저장(추가로 Firestore UID quota 적용)
 app.use('/qna', limiter);       // 1:1 문의 쓰기는 서버 API에서만 허용
 app.use('/admin/qna', limiter); // 관리자 답변 API도 인증 검증 전 IP 폭주를 제한
 app.use('/account/initialize', limiter); // 초기 무료 크레딧은 UID·접속지 지속 quota를 통과해야 지급
-app.use('/notifications/create-self', limiter); // 작업·결제·환불 본인 알림만 서버 검증 후 저장
+app.use('/notifications/create-self', notificationLimiter); // 작업·결제·환불 본인 알림만 서버 검증 후 저장
 
 // Public liveness exposes no runtime configuration. Detailed readiness is
 // available only with HEALTH_CHECK_SECRET via /internal/health.

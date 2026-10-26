@@ -22,6 +22,18 @@ const rows = [
 ];
 const source = '[서론]\n\n' + rows.join('\n\n') + '\n\n[결론]\n\n측정 조건을 구분하고 기록을 보존한다.';
 
+test('inline title colons and wrapped author-page citations do not freeze prose',()=>{
+  const body='연구자는 「기술: 새로운 관찰」을 읽으며 참가자들이 새로운 측정 기구를 만\n들려는 시도를 자세히 살펴보았다. 다른 참가자에게도 기구를 만들 능력이 있었다.\n'
+    +'관찰한 기록은 연구자의 설명을 뒷받침하며 반복된 측정의 중요성을 보여 준다(가상저자, 2031:\n42). 이 결과는 다음 연구에서 검토한다.';
+  const input=source+'\n\n'+body, out=preflight.auditAndSanitizeSource(input).text;
+  assert.ok(out.includes('기구를 만들려는'));
+  assert.ok(out.includes('(가상저자, 2031: 42). 이 결과'));
+  assert.ok(out.includes('「기술: 새로운 관찰」'));
+  const labels=source+'\n\n관찰 목적:\n측정 방법을 확인한다.\n\n대상: 참가자\n관찰 자료를 정리한다.';
+  assert.ok(repair(labels).text.includes('관찰 목적:\n측정 방법'));
+  assert.ok(repair(labels).text.includes('대상: 참가자\n관찰 자료'));
+});
+
 test('proven PDF prose repairs bound word seams inside inline quotes before freezing', () => {
   const quote = '자료를 읽으며 연구자가 설명한 문장을 다시 살펴보았다. 저자는 “이것은 허\n\n구나 단순한 이야기가 아니다. 사람들이 함께 받아들이는 중요한 가치\n\n와 규범”이라고 설명했다.';
   const input = source + '\n\n' + quote;

@@ -8,9 +8,27 @@ const { sentenceSimilarity } = require('./sentenceAlignment');
 // The caller retains all whole-window/structure checks and must re-judge.
 function confirmedMicroRepair(source, candidate, finding) {
   if (finding.origin !== 'introduced' || !finding.relationGrounded || !finding.repairable
-      || !finding.spanVerified || finding.grounding !== 'unique_exact_span') return '';
+      || !(finding.spanVerified || finding.type === 'omission' && finding.sourceSpanVerified)
+      || finding.grounding !== 'unique_exact_span') return '';
   const protectedRange = (text, start, end) => syntaxSpans(text)
     .some(p => p.spanType !== 'parenthetical' && p.start < end && p.end > start);
+  if (finding.type === 'omission' && finding.relation === 'modality_negation_causality') {
+    // Copy an omitted qualifier only between identical, unique lexical
+    // neighbours in the judge's exact pair. No inferred placement, global
+    // replacement or source-quote borrowing. The proposal still needs a verdict.
+    const changes = [];
+    for (const m of source.matchAll(/([가-힣]{2,20})[ \t]+(주로|대체로|일부|때때로|대부분)[ \t]+([가-힣]{2,20}[ \t]+[가-힣]{1,20})/gu)) {
+      if (!String(finding.span || '').includes(m[2])) continue;
+      const bare = m[1] + ' ' + m[3], at = candidate.indexOf(bare);
+      if (at < 0 || candidate.indexOf(bare, at + 1) >= 0 || source.indexOf(m[0]) !== source.lastIndexOf(m[0])
+          || protectedRange(source, m.index, m.index + m[0].length)
+          || protectedRange(candidate, at, at + bare.length)) continue;
+      changes.push({ start: at, end: at + bare.length, text: m[0] });
+    }
+    if (changes.length === 1) {
+      const m = changes[0]; return candidate.slice(0, m.start) + m.text + candidate.slice(m.end);
+    }
+  }
   if (finding.type === 'intensity_amplification') {
     // A source sentence split across two output sentences can retain its
     // lead in the preceding sentence. Copying the whole original to repair

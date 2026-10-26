@@ -28,7 +28,7 @@ function errorHandler(err, req, res, next) {
     });
   }
   const message = status >= 500
-    ? '서버 에러 발생'
+    ? require('../lib/providerAvailability').DELAY_MESSAGE
     : (err && err.message) || '요청을 처리할 수 없습니다.';
   res.status(status).json({ ok: false, error: message,
     code: err?.code || ({ 400: 'INVALID_REQUEST', 401: 'AUTH_REQUIRED', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 429: 'RATE_LIMITED' }[status]) || 'INTERNAL_ERROR',

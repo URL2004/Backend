@@ -24,6 +24,8 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   });
 }
 
+require('./lib/providerAvailability').configure({ db, logger });
+
 // CORS 설정 — 기본 도메인 + env CORS_ORIGINS(콤마 구분)로 추가. 도메인 바뀔 때 코드 수정 없이 env로 대응.
 const allowedOrigins = [
   'https://gpkorea.ai.kr',

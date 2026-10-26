@@ -6,6 +6,7 @@ const { estimateUsd, addUsage, emptyUsage } = require('./usageCost');
 const { outboundFetch } = require('../lib/outboundPolicy');
 const { assertNoPromptLeak } = require('./promptSecurity');
 const { isQuotaExhaustionMessage } = require('./modelFailure');
+const providerAvailability = require('../lib/providerAvailability');
 const { callTimeBudget, admitCall, HTTP_ATTEMPT_CEILING_MS, DEADLINE_GUARD_MS } = require('./callTimeBudget');
 
 const OPENAI_API_BASE = process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
@@ -393,9 +394,14 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
   let lastError = null;
   while (Date.now() - startedAt < totalLimitMs) {
     if (parentSignal?.aborted) throw abortError();
+    let recoveryTicket = null;
     try {
+      recoveryTicket = await providerAvailability.beforeRequest();
       const response = await fetchWithTimeout(url, init, parentSignal, startedAt + totalLimitMs, accounting);
-      if (response.ok) return { response, retryCounts };
+      if (response.ok) {
+        await providerAvailability.settle(recoveryTicket, true);
+        return { response, retryCounts };
+      }
       const message = await readErrorMessage(response);
       const err = new Error(`OpenAI Responses API ${response.status}: ${message}`);
       err.status = response.status;
@@ -403,9 +409,11 @@ async function fetchOpenAIWithRetry(url, init, parentSignal, deadlineMs = 0, acc
       if (response.status === 429 && isQuotaExhaustionMessage(message)) {
         err.code = 'OPENAI_QUOTA_EXHAUSTED';
         err.retryable = false;
+        err.retryAtMs = await providerAvailability.quota();
       }
       throw err;
     } catch (err) {
+      if (!providerAvailability.isUnavailable(err)) await providerAvailability.settle(recoveryTicket, false);
       if (parentSignal?.aborted) throw err;
       const type = retryType(err);
       if (!type || retryCounts[type] >= retryLimits[type]

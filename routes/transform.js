@@ -34,6 +34,8 @@ const { isV248FeatureEnabled } = require('../lib/humanizeV248Flags');
 const deliveryPolicy = require('../lib/humanizeDeliveryPolicy');
 const restartRecovery = require('../lib/transformRestartRecovery');
 const completionState = require('../lib/transformCompletionState');
+const providerAvailability = require('../lib/providerAvailability');
+const providerRecovery = require('../lib/transformProviderRecovery');
 const attemptTrace = require('../lib/transformAttemptTrace');
 const publicMetrics = require('../lib/publicMetrics');
 const {
@@ -569,7 +571,7 @@ function classifyBillingDisposition({
   const depthShortfall = meta.humanizationNoBenefitDelivered === true
     || (meta.humanizationDepthApplicable === true
       && (meta.humanizationDepthPass === false || meta.humanizationMinimumEffectPass === false));
-  const validationFailed = meta.finalSemanticState === 'verified_fail'
+  const validationFailed = ['verified_fail', 'incomplete', 'uncertain', 'stale', 'unconfirmed', 'confirmation_pending'].includes(meta.finalSemanticState)
     || (meta.candidateLedgerSelectionReason === 'no_safe_transformed_candidate'
       && meta.candidateLedgerEligibleCount === 0);
   if (unchanged || depthShortfall || validationFailed) return 'waived_quality_shortfall';
@@ -678,6 +680,7 @@ function activeJobPayload(job) {
   };
   if (job.documentProfileOverride) base.documentProfile = job.documentProfileOverride;
   Object.assign(base, queueDetails(job));
+  Object.assign(base, providerRecovery.payload(job));
   if (job.note) base.note = job.note;
   if (job.status === 'awaiting_approval') base.candidates = job.candidates || [];
   base.structurePreview = job.structurePreview === true;
@@ -973,6 +976,7 @@ async function commitRefineBilling(job, n, creditAmount, textLength) {
 //   90분짜리 job이 도는 서비스에서 영속화 없는 배포 = 누군가의 90분이 증발. 로컬(db 없음)은 무동작.
 //   AbortController 등 비직렬화 필드는 제외하고 상태 전이 시점마다 스냅샷 저장(fire-and-forget — 저장 실패가 job을 죽이면 안 됨).
 const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted', 'attemptTrace',
+  'providerRecoveryStartedAtMs', 'providerRecoveryCount', 'recoverableErrorCode', 'queueWaitReason',
   'text', 'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'gates', 'gateDetail', 'blockOffer', 'candidates', 'approvedCount', 'result', 'error',
   'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'memo', 'autoCoach', 'autoCoachApplied', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'retryNotBeforeMs', 'wantEvidence', 'approvedEvidence', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest', 'gptModel', 'engineMeta', 'refine', 'refineCount', 'refineHistory',
   'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion', 'executionToken', 'pendingCompletion', 'pendingRefinement', 'outputVersion', 'refineAttempts', 'cancelRequestedAtMs', 'executionFeature', 'retryAcceptedAtMs', 'retryRequestId',
@@ -980,6 +984,7 @@ const PERSIST_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'ne
 // transformJobs is owner-readable. Private judge evidence belongs only in its
 // server-only store, written by the same transaction before completion/billing.
 const ARCHIVE_FIELDS = ['id', 'status', 'stage', 'createdAt', 'uid', 'plan', 'needed', 'listPriceCredits', 'recoveryBudgetUsd', 'devNoAuth', 'deducted',
+  'providerRecoveryStartedAtMs', 'providerRecoveryCount', 'recoverableErrorCode', 'queueWaitReason',
   'estSec', 'estLowSec', 'estHighSec', 'estimateVersion', 'estimateBasis', 'estimatedEditableChunks', 'estimatedTotalChunks', 'note', 'error', 'mode', 'modeSource', 'billingMode', 'billingTier', 'billingDisposition', 'effectExpectation', 'effectNoticeCode', 'effectNoticeAccepted', 'lang', 'queuedAt', 'startedAt', 'terminalAtMs', 'restartRecoveryCount', 'restartRecoveryAtMs', 'restartRecoveryReason', 'technicalRecoveryCount', 'technicalRecoveryAtMs', 'technicalRecoveryReason', 'wantEvidence', 'approvedCount', 'basicStyle', 'documentProfileOverride', 'basicExperiment', 'adminHumanizeLab', 'adminLabProfile', 'niklQualityTest', 'layoutNlpTest',
   'sourceProbability', 'sourceEvidence', 'sourceBand', 'sourceDetectorVersion'];
 
@@ -1867,6 +1872,20 @@ function launchQueuedJob(job) {
     // The persisted state loaded by executeOwned is authoritative. Start only
     // after ownership; queued jobs must not pretend to run while acquiring it.
     if (job.status === 'cancelled' || job.status === 'awaiting_payment') return;
+    if (!job.pendingCompletion) {
+      try { await providerAvailability.checkAdmission(); }
+      catch (error) {
+        if (!providerAvailability.isUnavailable(error)) throw error;
+        providerRecovery.defer(job, error.retryAtMs);
+        await persistJob(job);
+        return;
+      }
+      // An outage that outlived the automatic window keeps its source and
+      // mode, but asks the owner to resume instead of polling forever.
+      if (job.providerRecoveryStartedAtMs && Date.now() - job.providerRecoveryStartedAtMs >= providerRecovery.HOLD_MS) {
+        providerRecovery.defer(job, Date.now()); await persistJob(job); return;
+      }
+    }
     job.status = 'running';
     job.startedAt = Date.now();
     job.queueWaitReason = null;
@@ -2971,6 +2990,10 @@ async function runHumanizeJob(job, text, evidence = '') {
       const gates = (out.floorReport.criticals || []).map(c => c.gate);
       const gateDetail = { criticals: (out.floorReport.criticals || []).slice(0, 8) };
       job.engineMeta = out.engineMeta || out.result?.engineMeta || null;
+      if ((job.engineMeta?.modelFailureCodes || []).includes('openai_quota_exhausted')) {
+        providerRecovery.defer(job, providerAvailability.peek()?.retryAtMs);
+        await persistJob(job); return;
+      }
       if (queueTechnicalRecovery(job, out)) return;
       logger.warn('transform.humanize_blocked', {
         jobId: job.id,
@@ -3100,6 +3123,10 @@ async function runHumanizeJob(job, text, evidence = '') {
     }
     logger.error('transform.humanize_failed', { jobId: job.id, uid: job.uid, mode: job.mode, err: e });
     if (job.status === 'awaiting_payment') { persistJob(job); return; }
+    if (!job.pendingCompletion && providerAvailability.isUnavailable(e)) {
+      providerRecovery.defer(job, e.retryAtMs);
+      await persistJob(job); return;
+    }
     job.status = 'error';
     job.error = '처리 중 오류가 발생했어요. 크레딧은 차감되지 않았어요.';
     if (job.pendingCompletion) {
@@ -3369,6 +3396,12 @@ const startTransform = async (req, res) => {
   }
   if (draining || !restorationReady) {
     return res.status(503).json({ error: '서버가 점검을 위해 재시작 중이에요. 1~2분 후 다시 시도해 주세요.' });
+  }
+  try { await providerAvailability.checkAdmission(); }
+  catch (error) {
+    if (!providerAvailability.isUnavailable(error)) throw error;
+    const failure = providerAvailability.publicFailure(error);
+    return res.set('Retry-After', String(failure.retryAfterSeconds)).status(503).json(failure);
   }
 
   let finishAdmission;
@@ -3726,7 +3759,13 @@ router.post('/transform/:id/retry', async (req, res, next) => {
     return res.json({ ok: true, ...activeJobPayload(job) });
   }
   if (draining || !restorationReady) return res.status(503).json({ error: '서버 점검 중이에요. 잠시 후 다시 시도해 주세요.' });
-  if (job.status !== 'blocked') return res.status(409).json({ error: '중단된 작업만 재시도할 수 있어요.' });
+  if (job.status !== 'blocked' && !providerRecovery.canRetry(job)) return res.status(409).json({ error: '중단된 작업만 재시도할 수 있어요.' });
+  try { await providerAvailability.checkAdmission(); }
+  catch (error) {
+    if (!providerAvailability.isUnavailable(error)) throw error;
+    const failure = providerAvailability.publicFailure(error);
+    return res.set('Retry-After', String(failure.retryAfterSeconds)).status(503).json(failure);
+  }
   if (!['blog', 'formal', 'polish'].includes(job.mode)) return res.status(409).json({ error: '작업 모드를 확인할 수 없어요.' });
   if (pendingAdmissions.has(job.uid) || auxiliaryUsers.has(job.uid) || activeJobFor(job.uid)) return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
   if (queuedJobsForPool(poolOf(job.mode)).length >= queueCap(job.mode)) return res.status(503).json({ error: '현재 대기열이 가득 찼어요. 잠시 후 다시 시도해 주세요.' });
@@ -3756,8 +3795,9 @@ router.post('/transform/:id/retry', async (req, res, next) => {
   const queued = { ...job, status: 'queued', stage: '같은 모드 재처리 대기 중',
     executionFeature: 'retry', retryRequestId, retryAcceptedAtMs: Date.now(), queuedAt: Date.now(),
     startedAt: null, terminalAtMs: null, retryNotBeforeMs: null, blockOffer: null,
+    providerRecoveryStartedAtMs: null, providerRecoveryCount: 0, recoverableErrorCode: null, queueWaitReason: null,
     error: null, ac: new AbortController() };
-  const fallbackClaim = await persistJob(queued, { requireClaim: true, expectedStatus: 'blocked' });
+  const fallbackClaim = await persistJob(queued, { requireClaim: true, expectedStatus: job.status });
   if (!fallbackClaim?.ok) {
     if (fallbackClaim?.code === 'TRANSFORM_STATE_CHANGED') {
       const current = await loadControlJob(req, res);
@@ -4069,6 +4109,8 @@ router.get('/transform/:id', async (req, res, next) => {
     restartRecoveryCount: Math.max(0, Number(job.restartRecoveryCount) || 0),
     technicalRecoveryCount: Math.max(0, Number(job.technicalRecoveryCount) || 0),
     ...queueDetails(job),
+    ...providerRecovery.payload(job),
+    billingMode: job.billingMode === 'coupon' ? 'coupon' : 'credit',
     ...(job.note ? { note: job.note } : {})
   };
   if (job.status === 'done') {

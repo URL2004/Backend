@@ -8,6 +8,32 @@ const finding=(a,b,type='distortion',span=b)=>groundViolation({type,sourceSpan:a
   origin:'introduced',relation:'modality_negation_causality'},a,b);
 const tail=' 별도의 기록은 자료실에 보관한다. 담당자는 내일 측정 장비를 점검할 예정이다.'.repeat(12);
 
+test('a grounded qualifier repair preserves the rewrite even for a short final window',()=>{
+  const a='관측소에서는 주로 온도와 습도를 측정하여 지역 환경의 변화를 조사한다.';
+  const b='그 관측소에서는 온도와 습도를 측정해 지역 환경이 어떻게 달라지는지 조사한다.';
+  const f=finding(a,b,'omission','주로');
+  const expected=b.replace('관측소에서는 ','관측소에서는 주로 ');
+  assert.equal(micro(a,b,f),expected);
+  const result=restore(a,b,{pass:false,violations:[f]},{preferSourceWindows:true});
+  assert.equal(result.text,expected); assert.equal(result.restoredCount,1); assert.equal(result.pass,undefined);
+  for(const changed of [{...f,origin:'source_issue'},{...f,spanVerified:false,sourceSpanVerified:false},{...f,span:'다른 문제'}]) assert.equal(micro(a,b,changed),'');
+  assert.equal(micro(a,b+' '+b,f),'');
+  assert.equal(micro('“'+a+'”',b,f),'');
+  const heading='1. 관측 자료의 범위';
+  const headed=restore(heading+'\n'+a,heading+'\n\n'+b,{pass:false,violations:[f]},{preferSourceWindows:true});
+  assert.equal(headed.text,heading+'\n\n'+expected);
+  const changedHeading=restore(heading+'\n'+a,'2. 다른 관측 자료\n\n'+b,{pass:false,violations:[f]},{preferSourceWindows:true});
+  assert.equal(changedHeading.applied,false);
+});
+
+test('final source preference does not turn a grounded ability repair into a whole reset',()=>{
+  const a='실험실은 참가자가 새로운 측정 방법을 자유롭게 시도할 수 있는 공간이었다.';
+  const b='이 실험실은 참가자가 새로운 측정 방법을 자유롭게 시도하는 공간이었다.';
+  const out=restore(a,b,{pass:false,violations:[finding(a,b)]},{preferSourceWindows:true});
+  assert.equal(out.text,b.replace('시도하는','시도할 수 있는'));
+  assert.equal(out.pass,undefined);
+});
+
 test('confirmed intensity removes only introduced adverb, preserving the rewrite',()=>{
   const a='우리가 함께 새로운 측정 기구를 설계하는 과정은 흥미로웠다.';
   const b='새로운 측정 기구를 함께 설계하는 과정이 무척 흥미로웠다.';

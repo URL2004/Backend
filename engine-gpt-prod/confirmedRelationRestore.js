@@ -32,7 +32,7 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [], 
   // count and 30% of both replaced and replacement text. Legacy retrieval
   // keeps its original four-window cap. Every proposal needs a fresh verdict.
   const pairedLimit = Math.min(8, Math.floor(results.length / 2));
-  if (!limit) return unchanged;
+  if (!results.length) return unchanged;
   const candidates = auditRelationCandidates(source, text).candidates;
   const violations = (report.uncertain ? [] : report.violations || []).filter(v => v.type === 'distortion'
     // A paired finding that fails its stronger ownership/budget checks must
@@ -89,7 +89,7 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [], 
       || String(source).indexOf(left.sourceSpan) - String(source).indexOf(right.sourceSpan)
       || text.indexOf(left.candidateSpan) - text.indexOf(right.candidateSpan));
   for (const v of pairedFindings) {
-    if (replacements.length >= pairedLimit || v.origin !== 'introduced' || v.relationGrounded !== true
+    if (replacements.length >= Math.max(1, pairedLimit) || v.origin !== 'introduced' || v.relationGrounded !== true
         || !['actor_action_target','condition_result','quantity_target','variable_definition',
           'antecedent','modality_negation_causality','genre_naturalness','other'].includes(v.relation)) continue;
     const a=String(v.sourceSpan||''),b=String(v.candidateSpan||'');
@@ -98,12 +98,16 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [], 
     const outputPrefix = boundaryPrefix(results,start,text);
     const sharedLeadingBoundary = (sourcePrefix !== null && sourcePrefix === outputPrefix
       && uniqueProtectedLines(sourcePrefix,String(source),text))
+      || sameUniqueHeadingBoundary(String(source),from,text,start)
       || sameAttestedLabelBoundary(String(source),from,text,start);
-    const restoreWhole = preferSourceWindows
-      && ['distortion','added_claim','scope_expansion','experience_novelty'].includes(v.type);
-    const minimal = !restoreWhole && (restoreConfirmedAlternative(a, b, v)
+    const minimal = (restoreConfirmedAlternative(a, b, v)
       || require('./confirmedMicroRepair').confirmedMicroRepair(a, b, v));
+    // A verified local operator repair retains the rewrite even in the final
+    // source-restoration pass. Budget the bytes actually changed, never charge
+    // an untouched surrounding sentence against the 30% restoration ceiling.
+    const cost = minimal ? replacementCost(b, minimal) : { removed: b.length, added: a.length };
     if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
+      || (!minimal && replacements.length >= pairedLimit)
       ||from<0||start<0||String(source).indexOf(a,from+1)>=0||text.indexOf(b,start+1)>=0
       ||!completeWindow(rawOriginals,from,from+a.length,minimal?6:3,sharedLeadingBoundary)||!completeWindow(results,start,end,minimal?6:3,sharedLeadingBoundary)
       // Multi-sentence paraphrases need not share single-sentence surface
@@ -115,10 +119,10 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [], 
       ||(!minimal && hasAdjacentRelationCoverage(a,b,text))
       ||!sameProtectedPrefix(a,b,String(source),text)
       ||replacements.some(r=>start<r.end&&end>r.start||from<r.sourceEnd||start<=r.start)
-      ||replacements.reduce((n,r)=>n+r.end-r.start,0)+b.length>text.length*.3
-      ||replacements.reduce((n,r)=>n+r.text.length,0)+(minimal || a).length>text.length*.3)continue;
+      ||replacements.reduce((n,r)=>n+(r.cost?.removed ?? r.end-r.start),0)+cost.removed>text.length*.3
+      ||replacements.reduce((n,r)=>n+(r.cost?.added ?? r.text.length),0)+cost.added>text.length*.3)continue;
     const replacement = minimal || require('./restorationSpacing').retainAttestedRestorationSpacing(a,b);
-    replacements.push({start,end,text:replacement,sourceStart:from,sourceEnd:from+a.length,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
+    replacements.push({start,end,text:replacement,cost,sourceStart:from,sourceEnd:from+a.length,sourceIndex:rawOriginals.findIndex(s=>s.start===from)});
   }
   for (let i = 0; i < results.length && replacements.length < limit; i++) {
     const target = results[i];
@@ -152,6 +156,13 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [], 
   let restored = text;
   for (const r of replacements.sort((a,b)=>b.start-a.start)) restored = restored.slice(0,r.start) + r.text + restored.slice(r.end);
   return { text: restored, applied: restored !== text, restoredCount: replacements.length };
+}
+
+function replacementCost(before, after) {
+  let start = 0, a = before.length, b = after.length;
+  while (start < a && start < b && before[start] === after[start]) start++;
+  while (a > start && b > start && before[a - 1] === after[b - 1]) { a--; b--; }
+  return { removed: a - start, added: b - start };
 }
 
 // A confirmed one-sentence distortion can have little surface resemblance.
@@ -227,6 +238,15 @@ function boundaryPrefix(spans,start,text) {
   if(!span)return null;
   const prefix=text.slice(span.start,start);
   return /\n[ \t]*$/u.test(prefix)?prefix:null;
+}
+function sameUniqueHeadingBoundary(source,from,output,start) {
+  const preceding=(text,at)=>at>0&&text[at-1]==='\n'
+    ? text.slice(0,at).split(/\r?\n/u).filter(line=>line.trim()).at(-1) : null;
+  const a=preceding(source,from),b=preceding(output,start);
+  return !!a&&a===b&&a.length<=60
+    && /^(?:#{1,6}\s|\d+(?:\.\d+)*[.)]\s|[가-하][.)]\s|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s)/u.test(a)
+    && require('./layoutStructure').classifyLine(a)==='heading'
+    && [source,output].every(text=>text.split(/\r?\n/u).filter(line=>line===a).length===1);
 }
 // Blank lines can detach an answer label from the sentence tokenizer. A
 // repeated label alone is not ownership: also require the immediately prior

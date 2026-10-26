@@ -29,7 +29,8 @@ const stripParticle = word => word.replace(/(?:에서는|으로|에서|에게|�
 function wordForms(word) {
   return [word, stripParticle(word),
     word.replace(/(?:입니다|이었다|이다|이며|이므로|이라는|이라고)$/u, ''),
-    word.replace(/(?:하고자|하려고|하였다|하면서|합니다|하는|하고|하여|하지|하면|했다|한다)$/u, ''),
+    word.replace(/(?:하고자|하려고|하였다|하면서|합니다|하는|하고|하여|하지|하면|하거나|했다|한다)$/u, ''),
+    word.replace(/(?:려는|려면|려고)$/u, ''),
     word.replace(/(?:이고|이기|이는|이면)$/u, '이')].filter(value => value.length >= 2);
 }
 const witnessedWords = source => new Set((String(source).match(/[가-힣]{2,}/gu) || []).flatMap(wordForms));
@@ -73,6 +74,7 @@ function wordSeam(left, right, witnessed) {
   if (/^[이그저]$/u.test(a) && /^(?:러한|렇게|런|렇다)$/u.test(b)) return true;
   if (/^(?:은|는|을|를|의|와|과|도|만|에서|에게|으로|까지|부터|처럼)(?:도|는|만)?$/u.test(b)) return true;
   if (/[하되]$/u.test(a) && /^(?:고|고자|게|는|여|지|면|며|면서|었다|였다|도록)$/u.test(b)) return true;
+  if (/[있없않]$/u.test(a) && /^(?:고|지만|으면|으며)$/u.test(b)) return true;
   if (/이라$/u.test(a) && /^고$/u.test(b)) return true;
   if (/^(?:다|니다|습니다)$/u.test(b)) return false;
   const full = a + b;
@@ -99,6 +101,8 @@ function repairPhysicalProseLines(value) {
   let fenced = false;
   for (const row of rows) {
     if (/^\s*(?:`{3,}|~{3,})/u.test(row.raw)) { row.protected = true; fenced = !fenced; continue; }
+    const colon = row.raw.search(/[:：]/u);
+    const structuralColon = colon >= 0 && !literals.some(s => s.start <= row.start + colon && s.end > row.start + colon);
     row.protected = referenceFlags[row.index] || fenced || EXPLICIT.test(row.text)
       || require('./documentFurniture').isCaption(row.text)
       || require('./documentFurniture').isBylineHeader(row.text)
@@ -110,8 +114,8 @@ function repairPhysicalProseLines(value) {
       || (/\t/u.test(row.raw) && !proseTabs.has(row.index))
       || /\||\S {2,}\S|https?:\/\/|www\./u.test(row.raw)
       || /^[-+]?\d[\d.,%\s~–-]*$/u.test(row.text)
-      || /^[^.!?]{1,60}[:：]$/u.test(row.text)
-      || /^[가-힣A-Za-z][^.!?()（）\n]{0,25}[:：]/u.test(row.text)
+      || structuralColon && /^[^.!?]{1,60}[:：]$/u.test(row.text)
+      || structuralColon && /^[가-힣A-Za-z][^.!?()（）\n]{0,25}[:：]/u.test(row.text)
       || /^\[[^\]\n]{1,40}\]\s*\S|^Q\d*[.:]\s|^\*\*[^*\n]+\*\*$/iu.test(row.text)
       || /^(?:출처|자료)\s*[:：]/u.test(row.text)
       || /^(?:“[^”]+”|‘[^’]+’|「[^」]+」|『[^』]+』|"[^"]+")$/u.test(row.text);
@@ -182,11 +186,16 @@ function repairPhysicalProseLines(value) {
     // the last opening-parenthesis regex, to establish that exact relation.
     const dateTail = /^\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}\)\.?$/u.test(b.text)
       && literals.some(s => s.spanType === 'parenthetical' && s.start < from && s.end > to);
+    // A page number closing an inline author/year citation is not a heading.
+    // Preserve every citation byte except its physical row whitespace.
+    const citationTail = /^\d{1,4}(?:[-–]\d{1,4})?\)[.!?]?(?:\s|$)/u.test(b.text)
+      && literals.some(s => s.spanType === 'parenthetical' && s.start < from && s.end > to
+        && /[,，]\s*\d{4}\s*[:：]\s*\d{1,4}(?:[-–]\d{1,4})?\)$/u.test(source.slice(s.start, s.end)));
     if (!attach && isNominalHeading(b.text)) continue;
-    if (!attach && !shortEnding && !dateTail && (b.text.length < Math.max(28, median * 0.72) || b.text.split(/\s/u).length < 3)) continue;
+    if (!attach && !shortEnding && !dateTail && !citationTail && (b.text.length < Math.max(28, median * 0.72) || b.text.split(/\s/u).length < 3)) continue;
     // Do not alter exact quotations or code even if they wrap at the same width.
     if (literals.some(s => s.start < to && s.end > from
-      && !(dateTail && s.spanType === 'parenthetical')
+      && !((dateTail || citationTail) && s.spanType === 'parenthetical')
       && !(inlineQuote && attach && s.spanType === 'quote'))) continue;
     joins.push({ start: from, end: to, separator: attach ? '' : ' ', lineOrdinal: a.index + 1 });
     continuations.add(b.index);

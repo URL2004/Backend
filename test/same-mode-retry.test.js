@@ -6,6 +6,7 @@ const routeCode = source.slice(source.indexOf("router.post('/transform/:id/retry
 function instance(store) {
   let handler, drains = 0;
   const ctx = { router: { post: (_path, fn) => { handler = fn; } }, Date, AbortController, Promise,
+    providerRecovery: require('../lib/transformProviderRecovery'), providerAvailability: require('../lib/providerAvailability'),
     jobs: new Map(), pendingAdmissions: new Set(), auxiliaryUsers: new Set(), admissionRequests: new Set(),
     draining: false, restorationReady: true, activeJobFor: () => null, queuedJobsForPool: () => [],
     poolOf: mode => mode === 'formal' ? 'formal' : 'short', queueCap: () => 50,
@@ -39,6 +40,18 @@ test('delivery staging rejects any basic or advanced downgrade before billing', 
     assert.doesNotThrow(() => assertSelectedMode({ mode }, { engineMeta: { effectiveMode: 'assignment' } }, mode));
   }
   assert.doesNotThrow(() => assertSelectedMode({ mode: 'polish' }, { engineMeta: { effectiveMode: 'polish' } }, 'polish'));
+});
+
+test('provider interruption can resume by the same id, including concurrent and lost-response retries',async()=>{
+  const store=fixture('formal');store.job.status='error';store.job.recoverableErrorCode='SERVICE_TEMPORARILY_UNAVAILABLE';
+  store.job.providerRecoveryStartedAtMs=100;store.job.providerRecoveryCount=3;
+  const a=instance(store),b=instance(store);
+  const result=await Promise.all([a.request(),b.request()]);
+  assert.ok(result.every(x=>x.statusCode===200));assert.equal(store.writes,1);
+  assert.equal(store.job.mode,'formal');assert.equal(store.job.providerRecoveryStartedAtMs,null);
+  await a.request();assert.equal(store.writes,1);
+  store.job.status='error';store.job.executionFeature=null;store.job.recoverableErrorCode='UNKNOWN';
+  assert.equal((await a.request()).statusCode,409);
 });
 
 test('two instances accept one durable retry with unchanged mode, price, evidence and style', async () => {
@@ -86,6 +99,7 @@ test('an accepted retry uses ordinary queue ownership and original mode after re
     restart.prepareRunningJobForRestart(job); restart.releaseRestartRecoveryHold(job);
     let called;
     const ctx = { Date, db: null, launchingJobs: new Set(), restartRecovery: restart,
+      providerRecovery: require('../lib/transformProviderRecovery'), providerAvailability: require('../lib/providerAvailability'),
       executeOwned: async (row, feature, run) => { assert.equal(feature, 'main'); await run(); return true; },
       logger: { info() {}, warn() {} }, scheduleQueueDrain() {}, persistJob() {},
       runHumanizeJob: async row => { called = row.mode; row.status = 'done'; },

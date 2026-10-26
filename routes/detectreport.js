@@ -116,7 +116,7 @@ function idempotencyReused(res, cost) {
 // 고정 시간이 없다. 복구 시점을 약속하지 않는 backoff 하한이며, claim이 남는 경로는 실제 남은 시간을 쓴다.
 const RETRY_BACKOFF_SECONDS = 5;
 
-function retryable503(res, body, seconds = RETRY_BACKOFF_SECONDS) {
+function retryable503(res, body, seconds = body?.retryAfterSeconds || RETRY_BACKOFF_SECONDS) {
   res.set('Retry-After', String(seconds));
   return res.status(503).json({ ...body, retryable: true, retryAfterSeconds: seconds });
 }
@@ -308,6 +308,8 @@ async function failDetectReportSafely(res, flow, error) {
       return;
     }
   }
+  const availability = require('../lib/providerAvailability');
+  if (availability.isUnavailable(error)) return retryable503(res, { ...availability.publicFailure(error), cost: flow.cost });
   retryable503(res, {
     ok: false,
     code: 'DETECT_REPORT_UNAVAILABLE',
@@ -706,6 +708,8 @@ async function handleDetectReport(req, res, flow) {
       };
       logger.warn('detect_report.scoring_unavailable', blockedMetric);
       logger.info('detect_report.score_outcome', blockedMetric);
+      const availability = require('../lib/providerAvailability');
+      if (availability.isUnavailable(detectError)) return retryable503(res, { ...availability.publicFailure(detectError), cost });
       return retryable503(res, {
         ok: false,
         error: 'AI 감지 모델 응답을 받지 못했어요. 크레딧은 차감되지 않았어요. 잠시 후 다시 시도해 주세요.',

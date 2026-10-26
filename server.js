@@ -154,7 +154,8 @@ async function detailedHealth() {
         maintenance: maintenanceMode.isMaintenanceEnabled(),
         uptimeSec: Math.round(process.uptime()),
         ...memoryHealthMeta(),
-        ...executionStats()
+        ...executionStats(),
+        providerAvailability: await require('./lib/providerAvailability').snapshot()
       })
     };
   } catch (err) {

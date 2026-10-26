@@ -198,6 +198,11 @@ router.post('/analyze', async (req, res) => {
     await detectLifecycle.release(session);
     if (abortController.signal.aborted) return;
     logger.error('analyze.detect_failed', { uid: precheck.uid, requestId, err: error });
+    const availability = require('../lib/providerAvailability');
+    if (availability.isUnavailable(error)) {
+      const failure = availability.publicFailure(error);
+      return res.set('Retry-After', String(failure.retryAfterSeconds)).status(503).json(failure);
+    }
     return res.status(error?.status === 503 ? 503 : 500).json({
       error: '처리 중 오류가 발생했습니다. 크레딧은 차감되지 않았습니다.',
       code: error?.code || 'DETECT_TECHNICAL_ERROR',

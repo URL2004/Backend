@@ -540,7 +540,8 @@ router.commitJobBilling = commitJobBilling;   // 회귀 테스트용
 async function resolveBillingDisposition(job, out) {
   const disposition = classifyBillingDisposition({
     adminNoCharge: !job || job.devNoAuth === true || job.adminHumanizeLab === true,
-    plan: job?.plan
+    plan: job?.plan, alreadyDeducted: job?.deducted === true, sourceText: job?.text,
+    result: out?.result ? { ...out.result, engineMeta: out.engineMeta || out.result.engineMeta } : out
   });
   if (disposition !== 'charged') return disposition;
 
@@ -555,11 +556,23 @@ async function resolveBillingDisposition(job, out) {
 }
 
 function classifyBillingDisposition({
-  adminNoCharge = false,
-  plan = ''
+  adminNoCharge = false, plan = '', alreadyDeducted = false, sourceText, result
 } = {}) {
+  // Restart after a ledger commit must preserve the settled disposition.
+  // Existing debits are restored through a separate audited transaction.
+  if (alreadyDeducted) return 'charged';
   if (adminNoCharge) return 'admin_no_charge';
   if (plan === 'unlimited') return 'plan_unlimited';
+  const meta = result?.engineMeta || {};
+  const unchanged = typeof sourceText === 'string' && typeof result?.outputText === 'string'
+    && sourceText.replace(/\s/gu, '') === result.outputText.replace(/\s/gu, '');
+  const depthShortfall = meta.humanizationNoBenefitDelivered === true
+    || (meta.humanizationDepthApplicable === true
+      && (meta.humanizationDepthPass === false || meta.humanizationMinimumEffectPass === false));
+  const validationFailed = meta.finalSemanticState === 'verified_fail'
+    || (meta.candidateLedgerSelectionReason === 'no_safe_transformed_candidate'
+      && meta.candidateLedgerEligibleCount === 0);
+  if (unchanged || depthShortfall || validationFailed) return 'waived_quality_shortfall';
   return 'charged';
 }
 
@@ -911,7 +924,8 @@ async function recoverCompletion(job) {
   if (job.status === 'cancelled') { completionState.normalizeCancelledJob(job); return; }
   const pending = job.pendingCompletion;
   if (!pending) return;
-  const disposition = classifyBillingDisposition({ adminNoCharge: job.devNoAuth === true || job.adminHumanizeLab === true, plan: job.plan });
+  const disposition = classifyBillingDisposition({ adminNoCharge: job.devNoAuth === true || job.adminHumanizeLab === true,
+    plan: job.plan, alreadyDeducted: job.deducted === true, sourceText: job.text, result: pending.result });
   try {
     if (disposition === 'charged') await commitJobBilling(job, { creditAmount: pending.creditAmount,
       mode: pending.mode, operation: pending.mode === 'formal' ? 'restructure' : 'humanize' });
@@ -1922,7 +1936,7 @@ function saveJobHistory(job, text, outputText) {
     requestId: 'job_' + job.id,
     opType: 'humanize',
     text: text || job.text || '',
-    needed: job.needed,
+    needed: (job.result?.billingDisposition || job.billingDisposition) === 'waived_quality_shortfall' ? 0 : job.needed,
     result: { outputText: outputText || '' },
     mode: ['blog', 'formal', 'polish'].includes(job.mode) ? job.mode : 'formal',
     modeSource: job.modeSource === 'defaulted' ? 'defaulted' : 'provided',

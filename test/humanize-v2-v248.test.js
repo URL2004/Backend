@@ -430,15 +430,13 @@ test('경험 의역은 외부 후보로 만들지 않고 새 1인칭·시점·�
   assert.equal(futureCandidate.candidate, true);
 });
 
-test('완료 작업은 품질·변화량·반복 여부와 관계없이 과금한다', () => {
+test('관리자와 이용권을 유지하고 서버의 효과 부족 판정은 무차감한다', () => {
   const classify = transformRouter.classifyBillingDisposition;
   assert.equal(classify({ adminNoCharge: true }), 'admin_no_charge');
   assert.equal(classify({ plan: 'unlimited' }), 'plan_unlimited');
-  assert.equal(classify({ protectionEnabled: true, noBenefit: true, effectExpectation: 'limited' }), 'charged');
-  assert.equal(classify({ protectionEnabled: true, depthShortfall: true, effectExpectation: 'normal' }), 'charged');
-  assert.equal(classify({ protectionEnabled: true, depthShortfall: true, previousLowBenefit: true, effectExpectation: 'limited' }), 'charged');
-  assert.equal(classify({ protectionEnabled: true, depthShortfall: true, effectExpectation: 'limited' }), 'charged');
-  assert.equal(classify({ protectionEnabled: false, depthShortfall: true, effectExpectation: 'normal' }), 'charged');
+  assert.equal(classify({ result: { engineMeta: { humanizationNoBenefitDelivered: true } } }), 'waived_quality_shortfall');
+  assert.equal(classify({ result: { qualityStatus: 'needs_review', engineMeta: { humanizationDepthPass: true } } }), 'charged');
+  assert.equal(classify({ result: { engineMeta: { humanizationDepthApplicable: false, humanizationDepthPass: false } } }), 'charged');
 });
 
 test('섹션 회복 재시도는 mini와 상위 모델 선택을 요청 본문에 정확히 반영한다', { concurrency: false }, async t => {

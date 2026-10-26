@@ -145,7 +145,7 @@ test('transform 완료 과금은 쿠폰과 크레딧을 같은 멱등 job 키로
   assert.deepEqual(calls[3], { type: 'credit_precheck', args: ['credit-token', 10] });
 });
 
-test('저효과·품질 경고가 있는 완료 결과도 정상 과금한다', { concurrency: false }, async t => {
+test('효과 기준 미달 결과는 크레딧을 차감하지 않는다', { concurrency: false }, async t => {
   const originals = {
     retryAsync: usageBilling.retryAsync,
     commitCreditDeduct: usageBilling.commitCreditDeduct
@@ -171,13 +171,9 @@ test('저효과·품질 경고가 있는 완료 결과도 정상 과금한다', 
   };
 
   const disposition = await transform.resolveBillingDisposition(job, out);
-  assert.equal(disposition, 'charged');
-  assert.equal(job.deducted, true);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], [
-    'user-quality', 18, 'humanize', 'job_quality-warning-charged-1',
-    { mode: 'blog', textLength: 900 }
-  ]);
+  assert.equal(disposition, 'waived_quality_shortfall');
+  assert.equal(job.deducted, false);
+  assert.equal(calls.length, 0);
 });
 
 test('단일 운영 엔진은 GPT만 정상으로 판정하고 다른 provider는 배포 실패 상태다', () => {

@@ -129,7 +129,13 @@ function createCandidateLedger({ enabled = true, assess, source = null, requireS
         applied: false,
         currentStage: current.stage,
         selectedStage: current.stage,
-        reason: 'no_safe_transformed_candidate',
+        // A policy skip is not a failed verdict. It remains ineligible for
+        // rollback; the route preserves the existing no-charge protection.
+        reason: current.semanticStatus === 'skipped'
+          && current.semanticReport?.decisionReason === 'not_required'
+          && current.transformed && current.minimumEffectPass && current.hardRisk === 0
+          && !knownViolations.length && !reviewObligations.length
+          ? 'semantic_verification_not_required' : 'no_safe_transformed_candidate',
         currentHardViolationCodes: [...current.hardViolationCodes],
         currentSemanticStatus: current.semanticStatus
       };

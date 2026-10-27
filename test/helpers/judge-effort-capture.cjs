@@ -10,8 +10,10 @@ const source = '조사팀은 지역별 자료를 검토했다. 결과 보고서�
 const candidate = source.replace('지역별 자료를 검토했다', '지역별 자료를 수집했다')
   .replace('결과 보고서는 기록실에 보관했다.', '기록실에는 결과 보고서를 보관했다.');
 const finding = { type: 'distortion', origin: 'introduced', relation: 'other',
-  sourceSpan: source.split('. ')[0] + '.', candidateSpan: candidate.split('. ')[0] + '.',
-  span: candidate.split('. ')[0] + '.', detail: '합성 사례: 자료를 검토한 행위가 수집한 행위로 바뀌었다.' };
+  // An intentionally partial sentence exercises MODEL repair request bodies.
+  // Whole short sentences now use deterministic restoration + fresh judging.
+  sourceSpan: source.split('. ')[0], candidateSpan: candidate.split('. ')[0],
+  span: candidate.split('. ')[0], detail: '합성 사례: 자료를 검토한 행위가 수집한 행위로 바뀌었다.' };
 
 function load(relative, overrides = {}, readSource = file => fs.readFileSync(file, 'utf8'), append = '') {
   const file = path.join(root, relative), req = createRequire(file), module = { exports: {} };

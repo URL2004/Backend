@@ -572,7 +572,7 @@ function classifyBillingDisposition({
     || (meta.humanizationDepthApplicable === true
       && (meta.humanizationDepthPass === false || meta.humanizationMinimumEffectPass === false));
   const validationFailed = ['verified_fail', 'incomplete', 'uncertain', 'stale', 'unconfirmed', 'confirmation_pending'].includes(meta.finalSemanticState)
-    || (meta.candidateLedgerSelectionReason === 'no_safe_transformed_candidate'
+    || (['no_safe_transformed_candidate', 'semantic_verification_not_required'].includes(meta.candidateLedgerSelectionReason)
       && meta.candidateLedgerEligibleCount === 0);
   if (unchanged || depthShortfall || validationFailed) return 'waived_quality_shortfall';
   return 'charged';
@@ -1873,7 +1873,7 @@ function launchQueuedJob(job) {
     // after ownership; queued jobs must not pretend to run while acquiring it.
     if (job.status === 'cancelled' || job.status === 'awaiting_payment') return;
     if (!job.pendingCompletion) {
-      try { await providerAvailability.checkAdmission(); }
+      try { providerRecovery.observeAvailability(job, await providerAvailability.checkAdmission()); }
       catch (error) {
         if (!providerAvailability.isUnavailable(error)) throw error;
         providerRecovery.defer(job, error.retryAtMs);

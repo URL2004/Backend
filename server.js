@@ -47,11 +47,10 @@ app.use(require('./middleware/errorEnvelope'));
 // CSP 위반 보고는 CORS보다 앞에 둔다. 브라우저는 report-uri 보고를 `Origin: null`로 보내므로
 // corsMiddleware 뒤에 두면 전부 403으로 거절돼 위반 내용이 한 번도 기록되지 않았다
 // (2026-09-29 실측: 하루 3,450건 거절 = warn 로그 10,350줄, security.csp_violation 0건).
-// 개별 보고는 info로만 남기고(stdout), 관리자 로그에는 1시간 집계(security.csp_violation_summary)만 남긴다.
+// 유형별 첫 보고만 info로 남기고, 전체 건수는 1시간 집계로 보존한다.
 app.post('/csp-report', cspReportLimiter, express.json({ type: ['application/csp-report', 'application/json'], limit: '16kb' }), (req, res) => {
   const cspReport = require('./lib/cspReport');
   const summary = cspReport.summarizeReport(req.body);
-  logger.info('security.csp_violation', summary);
   cspReport.recordReport(summary, { logger });
   res.status(204).end();
 });

@@ -68,3 +68,27 @@ test('saved completions, payments and cancellation bypass provider recovery', ()
     const before = JSON.stringify(job); assert.equal(recovery.defer(job, 100), false); assert.equal(JSON.stringify(job), before);
   }
 });
+
+test('confirmed recovery ends only its outage episode before a later retry or independent outage', async () => {
+  const f = fixture(), circuit = f.client(), job = { status: 'running', mode: 'formal', needed: 80, deducted: false };
+  await circuit.quota(); recovery.defer(job, 2000, f.clock());
+  f.advance(101); const ticket = await circuit.beforeRequest();
+  assert.equal(recovery.observeAvailability(job, await circuit.snapshot()), false, 'an open probe is not recovery');
+  await assert.rejects(circuit.checkAdmission(), { code: 'OPENAI_QUOTA_EXHAUSTED' });
+  await circuit.settle(ticket, true);
+  assert.equal(recovery.observeAvailability(job, await circuit.checkAdmission()), true);
+  assert.equal(job.providerRecoveryStartedAtMs, null); assert.equal(job.recoverableErrorCode, null);
+  f.advance(recovery.HOLD_MS + 1);
+  recovery.defer(job, f.clock() + 1000, f.clock());
+  assert.equal(job.status, 'queued'); assert.equal(job.providerRecoveryCount, 2);
+  assert.equal(job.providerRecoveryStartedAtMs, f.clock()); assert.equal(job.mode, 'formal');
+  assert.equal(job.deducted, false); assert.equal(job.needed, 80);
+});
+
+test('unknown, stale and still-open availability do not renew an expired hold', () => {
+  for (const state of [null, { open: false }, { open: false, updatedAtMs: 999 }, { open: true, updatedAtMs: 4000 }]) {
+    const job = { status: 'running' }; recovery.defer(job, 2000, 1000);
+    assert.equal(recovery.observeAvailability(job, state), false);
+    recovery.defer(job, 99999999, 1000 + recovery.HOLD_MS); assert.equal(job.status, 'error');
+  }
+});

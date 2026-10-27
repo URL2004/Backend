@@ -106,7 +106,9 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [], 
     // source-restoration pass. Budget the bytes actually changed, never charge
     // an untouched surrounding sentence against the 30% restoration ceiling.
     const cost = minimal ? replacementCost(b, minimal) : { removed: b.length, added: a.length };
-    if(a.length<20||b.length<20||a.length>700||b.length>700||a.length/b.length>2.5
+    // Short complete sentences can carry a unique qualifier or evaluation.
+    // Exact ownership, bounded restoration and the caller's fresh audit remain.
+    if(a.length<8||b.length<8||a.length>700||b.length>700||a.length/b.length>2.5
       || (!minimal && replacements.length >= pairedLimit)
       ||from<0||start<0||String(source).indexOf(a,from+1)>=0||text.indexOf(b,start+1)>=0
       ||!completeWindow(rawOriginals,from,from+a.length,minimal?6:3,sharedLeadingBoundary)||!completeWindow(results,start,end,minimal?6:3,sharedLeadingBoundary)

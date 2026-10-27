@@ -3986,6 +3986,10 @@ function extractLineAnchors(value) {
     }
     if (role !== 'label_inline') continue;
     const text = String(record.text || '');
+    // Bracket labels are audited by compareBracketedLabelLayout. A colon
+    // later in their editable body (including a quoted title) is not a label
+    // delimiter and must not lock the entire preceding paragraph as a heading.
+    if (layoutStructure.bracketLabelParts(text)) continue;
     const colonPositions = [text.indexOf(':'), text.indexOf('：')].filter(index => index >= 0);
     const colon = colonPositions.length ? Math.min(...colonPositions) : -1;
     if (colon < 0) continue;

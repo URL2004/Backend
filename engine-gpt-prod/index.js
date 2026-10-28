@@ -76,7 +76,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.125';
+const VERSION = 'gpt-prod-v2.5.126';
 const DETECT_VERSION = 'gpt-detect-v1.62';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -4177,9 +4177,10 @@ async function runEngine({
           addSupplementalUsage(recheck.usage, 'final_semantic_revalidation');
           let recheckCallCount = semanticCallCount(recheck);
           // A final verdict can reveal a relation missed by an earlier judge.
-          // One exact paired-window restoration is permitted, but only while
-          // enough of the SAME reserved final budget remains to verify it. No free
-          // rewrite, extra repair loop, guessed insertion or unverified pass.
+          // Exact paired-window restoration is permitted only while the SAME
+          // reserved final budget remains. A failed restoration verdict may
+          // nominate one further literal completion within a cumulative cap;
+          // no extra model patch, renewed deadline or unverified pass.
           const recheckElapsed = Date.now() - finalAuditStartedAt;
           const postRepairDeadlineMs = finalDeadlinePolicy.postRepairDeadlineMs;
           const relationRestoreTimeAvailable = postRepairDeadlineMs - Date.now() >= Math.max(30000, recheckElapsed * 1.2);
@@ -4203,8 +4204,8 @@ async function runEngine({
             const restoredStructurePreserved = restored.applied && restoreSafety?.eligible === true
               && preservesFinalStructure(rawSource, restored.text, materializedChunks, chunkPlan, boundaryRepair, { current: outputText });
             if (!restored.applied) {
-              finalSemanticRevalidation.relationRestoreSkipReason = finalSemanticRevalidation.relationPatchAttempted
-                ? 'patch_rejected' : 'no_grounded_target';
+              finalSemanticRevalidation.relationRestoreSkipReason = restored.skipReason
+                || (finalSemanticRevalidation.relationPatchAttempted ? 'patch_rejected' : 'no_grounded_target');
             } else if (restoreSafety?.eligible !== true) {
               finalSemanticRevalidation.relationRestoreSkipReason = 'safety_ineligible';
             } else if (!restoredStructurePreserved) {
@@ -4213,34 +4214,51 @@ async function runEngine({
             if (restoredStructurePreserved) {
               finalSemanticRevalidation.relationRestorationAttempted = true;
               try {
-                const verified = await qualityV2.runSemanticDocumentAudit({
-                  priorReports: [...finalPriorReports, recheck],
-                  source: rawSource, outputText: restored.text, lang, signal,
-                  config: cfg, allowedExtra, mode: selectedMode, safetyIdentifier: safetyId,
-                  documentProfile, allowRepair: false, deadlineMs: postRepairDeadlineMs,
-                  auditStage: 'final_relation_restoration_verification',
-                  discourseSignals: ['final_confirmed_relation_restoration'],
-                  receiptStore: semanticSectionReceipts
+                const completion = await require('./finalRestorationCompletion').completeFinalRestoration({
+                  source: rawSource, before: outputText, initial: restored,
+                  deadlineMs: postRepairDeadlineMs, signal,
+                  verify: async (candidate, completionReports) => {
+                    const verified = await qualityV2.runSemanticDocumentAudit({
+                      priorReports: [...finalPriorReports, recheck, ...completionReports],
+                      source: rawSource, outputText: candidate, lang, signal,
+                      config: cfg, allowedExtra, mode: selectedMode, safetyIdentifier: safetyId,
+                      documentProfile, allowRepair: false, deadlineMs: postRepairDeadlineMs,
+                      auditStage: 'final_relation_restoration_verification',
+                      discourseSignals: ['final_confirmed_relation_restoration'],
+                      receiptStore: semanticSectionReceipts
+                    });
+                    addSupplementalUsage(verified.usage, 'final_relation_restoration_verification');
+                    recheckCallCount += semanticCallCount(verified);
+                    return verified;
+                  },
+                  accepts: (report,candidate) => report.verificationCompleted === true && report.pass === true
+                    && semanticProvenance.verifySemanticValidation(report, {
+                      source: rawSource, candidate, requireDigest: true }).status === 'pass',
+                  observe: ({candidate,report,accepted}) => finalRecoveryEvidence.push({
+                    stage: 'final_relation_restoration_verification', candidate, accepted,
+                    trace: require('./semanticDiagnostics').buildTrace({ report,
+                      submittedSource: String(text || ''), source: rawSource, candidate, engineVersion: VERSION }) }),
+                  propose: (candidate, report) => {
+                    const literal = require('./confirmedRelationRestore').restoreConfirmedRelations(
+                      rawSource, candidate, report, { preferSourceWindows: true });
+                    if(!literal.applied)return literal;
+                    const safety = require('./confirmedRelationRestore').assessConfirmedRestorationSafety(
+                      candidateIntegrity.auditCandidateIntegrity({ source: rawSource, before: candidate,
+                        candidate: literal.text, documentProfile, mode: selectedMode }));
+                    if(!safety.eligible)return { applied:false, skipReason:'safety_ineligible' };
+                    if(!preservesFinalStructure(rawSource,literal.text,materializedChunks,chunkPlan,boundaryRepair,
+                        { current:candidate }))return { applied:false, skipReason:'structure_not_preserved' };
+                    return { ...literal, warnings:safety.warnings };
+                  }
                 });
-                addSupplementalUsage(verified.usage, 'final_relation_restoration_verification');
-                finalRecoveryEvidence.push({ stage: 'final_relation_restoration_verification',
-                  candidate: restored.text, accepted: verified.pass === true && verified.verificationCompleted === true
-                    && semanticProvenance.verifySemanticValidation(verified, { source: rawSource,
-                      candidate: restored.text, requireDigest: true }).status === 'pass',
-                  trace: require('./semanticDiagnostics').buildTrace({ report: verified,
-                    submittedSource: String(text || ''), source: rawSource, candidate: restored.text, engineVersion: VERSION }) });
-                recheckCallCount += semanticCallCount(verified);
-                if (verified.verificationCompleted === true && verified.pass === true
-                    && semanticProvenance.verifySemanticValidation(verified, {
-                      source: rawSource, candidate: restored.text, requireDigest: true
-                    }).status === 'pass') {
-                  outputText = restored.text;
-                  recheck = verified;
-                  recheck.repairStyleWarnings = [...new Set([...(recheck.repairStyleWarnings || []), ...restoreSafety.warnings])];
-                  finalSemanticRevalidation.relationRestoredCount = restored.restoredCount + restored.patchedCount;
+                if (completion.accepted) {
+                  outputText = completion.text;
+                  recheck = completion.report;
+                  recheck.repairStyleWarnings = [...new Set([...(recheck.repairStyleWarnings || []), ...completion.warnings])];
+                  finalSemanticRevalidation.relationRestoredCount = completion.restoredCount + completion.patchedCount;
                 } else {
                   finalSemanticRevalidation.relationRestorationRejected = true;
-                  finalSemanticRevalidation.relationRestoreSkipReason = 'verification_failed';
+                  finalSemanticRevalidation.relationRestoreSkipReason = completion.reason || 'verification_failed';
                 }
               } catch (error) {
                 addSupplementalUsage(error.usage, 'final_relation_restoration_verification');

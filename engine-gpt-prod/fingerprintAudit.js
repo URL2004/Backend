@@ -472,7 +472,7 @@ function detectSemanticRelationShifts(source, output) {
       // 기존 연구의 결함을 직접 보완하려 했다는 목적 관계가 새로 생긴다.
       // 문장 유사도만으로는 사실 추가로 보이지 않으므로 관계 감사에서 별도로
       // 잡고, 원문에 같은 보완 목적이 실제로 있을 때는 허용한다.
-      if (hasExplicitRemediationPurpose(alignedText)
+      if (hasExplicitRemediationPurpose(withoutAttestedNeighborPurpose(sourceUnits, sourceIndex, alignedText, output))
           && !hasExplicitRemediationPurpose(sourceSentence)) {
         add('neutral_link_hardened_to_remediation', sourceIndex + 1);
       }
@@ -525,6 +525,36 @@ function detectSemanticRelationShifts(source, output) {
     count: shifts.reduce((sum, item) => sum + Math.max(1, item.sentenceOrdinals.length), 0),
     shifts
   };
+}
+
+// A many-to-one alignment can include an unchanged neighbouring sentence.
+// Its attested purpose belongs to that neighbour, not to the sentence under
+// review. Remove ONLY exact, unique adjacent source sentences for this rule;
+// paraphrased/remote/ambiguous ownership still gets the ordinary audit.
+function withoutAttestedNeighborPurpose(units, index, alignedText, output) {
+  const normalized = value => String(value).replace(/\s+/gu,' ').trim();
+  let owned = normalized(alignedText);
+  for (const neighbour of [index-1,index+1]) {
+    const unit=units[neighbour];
+    if(!unit||unit.ordinal===units[index].ordinal||!hasExplicitRemediationPurpose(unit.text))continue;
+    const variants=[normalized(unit.text)],lines=unit.text.split(/\r?\n/u);
+    // A blank line in the output can separate a heading that the source
+    // tokenizer attached to the adjacent body sentence. The heading itself
+    // must still occur exactly once as an unchanged standalone output line.
+    if(lines.length>1&&lines.slice(0,-1).every(line=>line.length<=60
+        &&['heading','title','label'].includes(require('./layoutStructure').classifyLine(line))
+        &&String(output).split(/\r?\n/u).filter(x=>x===line).length===1))
+      variants.push(normalized(lines.at(-1)));
+    for(const quote of variants){
+    const at=owned.indexOf(quote);
+    if(quote.length<20||at<0||owned.indexOf(quote,at+1)>=0
+        ||(at>0&&!/[.!?。！？] $/u.test(owned.slice(0,at)))
+        ||units.filter(u=>normalized(u.text).includes(quote)).length!==1)continue;
+    const rest=(owned.slice(0,at)+' '+owned.slice(at+quote.length)).trim();
+    if(rest.length>=12){owned=rest;break;}
+    }
+  }
+  return owned;
 }
 
 function hasMainPossibilityClaim(value) {

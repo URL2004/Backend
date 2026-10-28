@@ -34,7 +34,7 @@ function instructionText(body) {
   )).join('');
 }
 
-test('252 humanize assemblies preserve the v2.5.125 prompt snapshot and share a prefix across profiles, modes, strengths and voices', () => {
+test('252 humanize assemblies preserve the v2.5.126 prompt snapshot and share a prefix across profiles, modes, strengths and voices', () => {
   const systems = [], prefixes = new Map();
   for (const profile of profiles) for (const mode of ['assignment', 'blog', 'polish'])
     for (const strength of ['basic', 'advanced', 'polish']) for (const promptVariant of ['full', 'compact_v1'])
@@ -52,9 +52,9 @@ test('252 humanize assemblies preserve the v2.5.125 prompt snapshot and share a 
         assert.deepEqual(Buffer.concat([Buffer.from(hp.cacheableSystem), Buffer.from(hp.stable.slice(hp.cacheableSystem.length))]), Buffer.from(hp.stable));
         assert.equal(prompts.validateHumanizePrompt(hp.stable).pass, true);
       }
-  // v2.5.125 preserves acquired insight and unique evaluation. The shared
-  // prefix grows by 184 characters without changing cache routing or assembly.
-  assert.equal(digest(systems), 'f090c1eff3a9cd49e98659b8cb11d8ed8de2fdc3879b4fd1624d2dbfb671e219');
+  // v2.5.126 strengthens report-specific relations after the shared prefix.
+  // Shared prefix sizes and cache routing remain unchanged.
+  assert.equal(digest(systems), '689818520b827f21713bd765426a504c9035ab99921d3d97b6b57813a8ea77cd');
   assert.deepEqual([...prefixes.values()].map(s => s.length), [5322, 5639, 4029, 4346]);
 });
 

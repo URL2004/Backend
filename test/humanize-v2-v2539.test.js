@@ -33,7 +33,7 @@ test('v2.5.39: 우선순위와 문단 권위는 하나의 불변 계약에서 �
     documentProfile: ESSAY
   });
 
-assert.equal(engine.VERSION, 'gpt-prod-v2.5.125');
+assert.equal(engine.VERSION, 'gpt-prod-v2.5.126');
   assert.deepEqual(contract.priorities.map(item => item.rank), [1, 2, 3]);
   assert.equal(contract.paragraph.modelBoundary, 'source_locked');
   assert.equal(contract.paragraph.localizedRepairBoundary, 'source_locked');
@@ -179,8 +179,14 @@ test('v2.5.39: 상시 system 프롬프트는 장르별 상한 안에서 조립�
     // v2.5.112 adds one bounded anti-restatement rule without relaxing genre budgets.
     const restatement = stable.split('\n').find(line=>line.startsWith('이미 전달한 주장을 다시 요약하거나'));
     assert.ok(restatement && restatement.length <= 160);
-    assert.ok(stable.length <= maxChars + sharedContract.length + relationGuard.length + restatement.length + 2, `${documentProfile.profile}: ${stable.length} chars`);
-    assert.ok(stable.split(/\n/u).length <= maxLines + meaningPreservationLines().length + 2, `${documentProfile.profile}: line budget`);
+    // v2.5.126 adds only two bounded report-specific instructions; other
+    // genres and the shared cache prefix keep their existing allowance.
+    const reportRelations = stable.split('\n').filter(line=>/^(보고서의 계획·가능성과|목록의 대상·수단·표식을)/u.test(line));
+    assert.equal(reportRelations.length,documentProfile.profile==='academic_paper'?2:0);
+    const reportAllowance=reportRelations.join('\n').length+(reportRelations.length?1:0);
+    assert.ok(reportAllowance<=240);
+    assert.ok(stable.length <= maxChars + sharedContract.length + relationGuard.length + restatement.length + 2 + reportAllowance, `${documentProfile.profile}: ${stable.length} chars`);
+    assert.ok(stable.split(/\n/u).length <= maxLines + meaningPreservationLines().length + 2 + reportRelations.length, `${documentProfile.profile}: line budget`);
   }
 });
 

@@ -157,7 +157,9 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [], 
   }
   let restored = text;
   for (const r of replacements.sort((a,b)=>b.start-a.start)) restored = restored.slice(0,r.start) + r.text + restored.slice(r.end);
-  return { text: restored, applied: restored !== text, restoredCount: replacements.length };
+  return { text: restored, applied: restored !== text, restoredCount: replacements.length,
+    restorationBudget: { removed: replacements.reduce((n,r)=>n+(r.cost?.removed ?? r.end-r.start),0),
+      added: replacements.reduce((n,r)=>n+(r.cost?.added ?? r.text.length),0) } };
 }
 
 function replacementCost(before, after) {
@@ -211,6 +213,21 @@ function hasBilateralSentenceAnchors(sourceSpans,outputSpans,from,to,start,end,r
 function sameProtectedPrefix(a,b,source,output) {
   const layout=require('./layoutStructure');
   const records=s=>layout.buildLineRecords(s).filter(r=>!r.blank);
+  const leftRows=records(a),rightRows=records(b);
+  if((leftRows[0]?.role==='list'||rightRows[0]?.role==='list')
+      &&(leftRows.length===1||rightRows.length===1)) {
+    // A complete, uniquely grounded list item is a body too. Keep the exact
+    // marker/ordinal and a single line owner; never turn a heading, nested list,
+    // changed ordinal or cross-item window into prose through restoration.
+    if(leftRows.length!==1||rightRows.length!==1
+        ||leftRows[0].role!=='list'||rightRows[0].role!=='list')return false;
+    const left=layout.listPrefixParts(a),right=layout.listPrefixParts(b);
+    const ordinal=/^(?:(?:첫|둘|셋|넷|다섯|여섯|일곱|여덟|아홉|열)째|\d+번째)[,.:：]?[ \t]+/u;
+    if(!left||!right||left.prefix!==right.prefix
+        ||(left.body.match(ordinal)?.[0]||'')!==(right.body.match(ordinal)?.[0]||''))return false;
+    return [ [source,a], [output,b] ].every(([text,item])=>
+      text.split(/\r?\n/u).filter(line=>line===item).length===1);
+  }
   const split=s=>{
     const rows=records(s), firstBody=rows.findIndex(r=>['prose','label_inline'].includes(r.role));
     if(firstBody<0)return null;

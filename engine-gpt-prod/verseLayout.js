@@ -16,4 +16,18 @@ function hasStanzaRefrainLayout(value) {
   return [...frequencies.values()].filter(n => n >= 2).length >= 2;
 }
 
-module.exports = { hasStanzaRefrainLayout };
+// Some creative passages have no blank stanza separators. Preserve irregular
+// short, unpunctuated lines before prose seam repair can consume their layout.
+// Regular-width PDF rows, code, lists, labels and tables are not this evidence.
+function hasUnstanzaedVerseLayout(value) {
+  const text=String(value||'').replace(/\r\n?/gu,'\n');
+  if (/\n\s*\n/u.test(text.trim())) return false;
+  const lines=text.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(lines.length<8||lines.some(s=>s.length>60||/[.!?。！？][”’"']?$/u.test(s)
+    || /^(?:#{1,6}\s|[-*•●■]\s|\d+[.)]\s|제\s*\d+\s*조|[`~]{3})|\t|\||[:：]/u.test(s)))return false;
+  const lengths=lines.map(s=>s.length).sort((a,b)=>a-b),median=lengths[Math.floor(lengths.length/2)];
+  return median<=32 && lengths.filter(n=>n<=40).length/lengths.length>=.9
+    && lengths.filter(n=>n<=median*.7).length>=2;
+}
+
+module.exports = { hasStanzaRefrainLayout, hasUnstanzaedVerseLayout };

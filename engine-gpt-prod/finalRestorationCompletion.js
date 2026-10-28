@@ -9,6 +9,11 @@ async function completeFinalRestoration({ source, before, initial, verify, propo
   let proposal=initial,report,text=initial.text,restoredCount=initial.restoredCount||0;
   const warnings=new Set(initial.warnings||[]), seen=new Set([before,text]);
   const priorReports=[];
+  // Eight tiny, independently grounded sentence repairs in a long document
+  // must not consume the same count allowance as eight large replacements in
+  // a short one. Per-proposal caps, cumulative 30% byte limits, two verdicts
+  // and the original deadline remain unchanged.
+  const countLimit=Math.min(16,Math.max(8,Math.ceil(Math.min(source.length,before.length)/1000)));
   let removed=initial.restorationBudget?.removed,added=initial.restorationBudget?.added;
   for(let round=1;round<=2;round++) {
     if(signal?.aborted||deadlineMs<=now())return {accepted:false,reason:signal?.aborted?'aborted':'deadline_insufficient'};
@@ -35,7 +40,7 @@ async function completeFinalRestoration({ source, before, initial, verify, propo
     const budget=proposal.restorationBudget;
     if(!budget||!Number.isFinite(budget.removed)||!Number.isFinite(budget.added)
         ||removed+budget.removed>before.length*.3||added+budget.added>source.length*.3
-        ||restoredCount+proposal.restoredCount>8)
+        ||restoredCount+proposal.restoredCount>countLimit)
       return {accepted:false,reason:'restoration_budget_exhausted',rounds:round};
     if(signal?.aborted||deadlineMs-now()<reserve)
       return {accepted:false,reason:signal?.aborted?'aborted':'deadline_insufficient',rounds:round};

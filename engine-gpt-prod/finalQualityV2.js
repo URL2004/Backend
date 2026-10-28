@@ -59,8 +59,8 @@ const POLISH_REPAIR_SCHEMA = {
   additionalProperties: false,
   properties: {
     outputText: { type: 'string' },
-    // 호환 필드다. 성공 여부와 진단은 아래 서버 감사에서 다시 계산하며
-    // 모델이 반환한 값은 후보 선택·전달에 사용하지 않는다.
+    // 변경 성공은 서버가 계산한다. false는 원문 완전 일치와 서버 오류
+    // 감사까지 통과한 경우에만 별도의 무수정 검토 증거로 사용할 수 있다.
     safeChangeFound: { type: 'boolean' },
     notes: { type: 'array', items: { type: 'string' } }
   },
@@ -1205,6 +1205,9 @@ async function retryPolishSurface({ source, currentOutput, policy, reason = '', 
   return {
     outputText,
     safeChangeFound: normalizeRepairText(outputText) !== normalizeRepairText(currentOutput),
+    reviewedNoChange: response.json.safeChangeFound === false
+      && String(response.json.outputText || '').trim() === String(source || '').trim()
+      && String(currentOutput || '').trim() === String(source || '').trim(),
     notes: [],
     usage: response.usage,
     model: response.model

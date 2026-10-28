@@ -76,7 +76,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.126';
+const VERSION = 'gpt-prod-v2.5.127';
 const DETECT_VERSION = 'gpt-detect-v1.62';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -697,6 +697,8 @@ async function runEngine({
   };
   let polishReport = null;
   let polishRetryCount = 0;
+  let polishNoChangeCandidate = '';
+  let polishNoChangeReviewed = false;
   let generalSurfaceRetryCount = 0;
   let polishRetryAttemptCount = 0;
   let generalSurfaceRetryAttemptCount = 0;
@@ -854,6 +856,7 @@ async function runEngine({
         addSupplementalUsage(retried.usage, 'polish_surface_retry');
         polishRetryCount = 1;
         const retryCandidate = String(retried.outputText || '').trim();
+        if (retried.reviewedNoChange === true) polishNoChangeCandidate = retryCandidate;
         const candidateReport = qualityV2.polishEditPolicy(auditSource, retryCandidate, { documentProfile });
         const candidatePadding = qualityV2.comparePolishEvaluativePadding(auditSource, retryCandidate);
         const retryContentUnsafe = compareNumberMultiset(auditSource, retryCandidate).changed
@@ -4398,7 +4401,12 @@ async function runEngine({
     // 무변환을 반환했더라도 뒤의 안전한 결정론 교정(예: 메세지→메시지)이 실제로
     // 적용된 작업까지 polish_unchanged로 차단된다. 전달 직전에는 오직 최종
     // 결과의 정책 위반만으로 strict 상태를 다시 계산한다.
-    polishStrictFailure = polishReport.noSafeChange
+    polishNoChangeReviewed = !!polishNoChangeCandidate
+      && polishNoChangeCandidate === outputText.trim()
+      && outputText.trim() === submittedSource.trim()
+      && polishReport.sourceIssueCount === 0 && !polishReport.needsIssueRecovery
+      && !records.some(isModelFailureRecord);
+    polishStrictFailure = polishReport.noSafeChange && !polishNoChangeReviewed
       ? 'polish_unchanged'
       : (polishReport.excessiveChange
           ? 'polish_excessive_change'
@@ -4525,7 +4533,7 @@ async function runEngine({
       || finalSafePolishEditApplied
   });
   const modelFailureChunkCount = records.filter(record => isModelFailureRecord(record)).length;
-  if (finalEquivalent || finalSubstantiveNoEffect || approvedModelChunkCount === 0) {
+  if (!polishNoChangeReviewed && (finalEquivalent || finalSubstantiveNoEffect || approvedModelChunkCount === 0)) {
     result.floorReport = result.floorReport || { status: 'blocked', criticals: [], warnings: [] };
     result.floorReport.status = 'blocked';
     result.floorReport.criticals = result.floorReport.criticals || [];
@@ -4693,6 +4701,8 @@ async function runEngine({
     }));
   }
   const effectNotices = dedupeQualityWarnings([
+    ...(polishNoChangeReviewed ? [{ code: 'polish_no_change_reviewed',
+      message: '다듬기 검토를 완료했어요. 명확히 교정할 부분을 찾지 못해 원문을 그대로 표시하며, 크레딧·쿠폰은 사용하지 않았어요.' }] : []),
     ...(humanizationNoBenefitDelivered ? depthEffectNotices(humanizationDepthReport) : []),
     ...deterministicEffectNotices
   ]);
@@ -5143,6 +5153,7 @@ async function runEngine({
     ...primaryChunkCoverage,
     approvedModelChunkCount,
     approvedSafeEditCount: finalSafePolishEditApplied ? 1 : 0,
+    polishNoChangeReviewed,
     modelFailureChunkCount,
     deliveryDecision: finalDeliveryDecision,
     deliveryReasonCodes: finalDeliveryReasonCodes,
@@ -6651,8 +6662,10 @@ async function callDetectModel({ prompt, user, cfg, signal, route, phase, model,
       safetyIdentifier,
       meta: { task: route, phase, mode: 'detect', profile: PROFILE, escalated }
     });
-  assertNoPromptLeak(result.json);
-  try { require('../lib/detectScoreContract').assertScore(result.json?.probability); }
+  try {
+    assertNoPromptLeak(result.json);
+    require('../lib/detectScoreContract').assertScore(result.json?.probability);
+  }
   catch (error) {
     // The provider answered and may bill this invalid response. Preserve its
     // usage and closed diagnostics through the existing bounded failure path.
@@ -9601,11 +9614,7 @@ function looksTruncated(text) {
 }
 
 function looksGeneratedTruncated(source, outputText) {
-  const before = String(source || '').trim();
-  const after = String(outputText || '').trim();
-  if (looksTruncated(after)) return true;
-  return sourcePreflight.isPossiblyIncompleteSentence(after)
-    && !sourcePreflight.isPossiblyIncompleteSentence(before);
+  return require('./generatedTruncation').looksGeneratedTruncated(source, outputText);
 }
 
 function reconcileSemanticOmissionRestores(report, restored) {

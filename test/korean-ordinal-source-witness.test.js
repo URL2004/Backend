@@ -6,6 +6,15 @@ const { ordinalMarkers } = require('../engine-gpt-prod/koreanOrdinal');
 const { compareOriginalStructuralMarkers: compare } = require('../engine-gpt-prod/structureChunk');
 const numbers = (text, source) => ordinalMarkers(text, source == null ? {} : { source }).map(item => item.number);
 
+test('a short ordinal predicate can own a split explanation within the same paragraph',()=>{
+  const source='두 번째로 확인한 문제인 냉각 장치 고장 때문에 실험실의 온도가 올라가서 연구팀은 측정을 멈추고 예비 장비를 사용했다.';
+  const output='두 번째 사례는 냉각 장치 고장이다. 실험실의 온도가 올라가서 연구팀은 측정을 멈추고 예비 장비를 사용했다.';
+  assert.deepEqual(numbers(output,source),[2]);assert.equal(compare(source,output).pass,true);
+  assert.equal(compare(source,output.replace('두 번째','세 번째')).pass,false);
+  assert.deepEqual(numbers(output.replace('실험실의 온도가 올라가서 연구팀은 측정을 멈추고 예비 장비를 사용했다.','작업자는 자료를 다시 확인했다.'),source),[]);
+  assert.deepEqual(numbers(output.replace('이다. ','이다.\n\n'),source),[]);
+});
+
 test('adjectives before procedural objects do not remove ordinal protection', () => {
   for (const source of [
     '첫째로 안전한 장비를 사용한다. 둘째로 충분한 공간을 확보한다.',

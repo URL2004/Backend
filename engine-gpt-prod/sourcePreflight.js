@@ -714,6 +714,7 @@ function repairIsolatedTerminalPunctuationLines(value) {
 }
 
 function looksLikeCreativeLineLayout(value) {
+  if (require('./verseLayout').hasUnstanzaedVerseLayout(value)) return true;
   if (require('./verseLayout').hasStanzaRefrainLayout(value)) return true;
   if (require('./scriptStructure').detectScriptStructure(value).isScript) return true;
   const text = String(value || '').replace(/\r\n?/gu, '\n');
@@ -1575,7 +1576,8 @@ function isPossiblyIncompleteSentence(value) {
   const text = String(value || '').trim();
   if (text.length < 8 || /[.!?。！？…"'”’」』】)\]]\s*$/u.test(text)) return false;
   if (/^(?:참고\s*문헌|참고\s*자료|부록|Appendix|\d+(?:\.\d+)*[.)]?\s+\S+)/iu.test(text)) return false;
-  return /(?:은|는|이|가|을|를|의|에|와|과|및|그리고|그러나|하지만|통해|위해|때문에|따라|대한|관한)$/u.test(text);
+  return /[,，;；]$/u.test(text)
+    || /(?:은|는|이|가|을|를|의|에|와|과|및|그리고|그러나|하지만|통해|위해|때문에|따라|대한|관한)$/u.test(text);
 }
 
 // 복사·붙여넣기 중 마지막 어절의 앞부분만 남은 경우를 보수적으로 찾는다.

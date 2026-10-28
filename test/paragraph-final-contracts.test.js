@@ -50,6 +50,24 @@ test('ordinary prose still repairs introduced comma and clause breaks', () => {
 const first='이 조사는 이용자가 자료를 살펴보는 과정에서 어떤 정보를 필요로 하는지 확인하기 위해 진행되었다. 조사자는 참여자에게 같은 안내를 제공하고 각자의 경험을 설명하도록 요청했으며 응답 내용은 조사 목적에 맞추어 분류하고 서로 다른 의견을 구분하여 기록하였다.';
 const second='참여자는 자료를 살펴본 뒤 자신이 이해한 내용을 설명하고 확인하기 어려운 부분에 대해 추가로 질문하였다. 조사자는 답변을 요약하되 참여자가 말하지 않은 이유를 덧붙이지 않았으며 기록한 내용이 실제 경험과 일치하는지 다시 확인하고 수정할 사항을 함께 검토하였다.';
 
+test('blank-separated developed indented paragraphs remain editable through preflight', () => {
+  const source='조사 보고서\n\n\t'+first+'\n\n\t'+second;
+  assert.deepEqual([...proseTabLineIndices(source)], [2,4]);
+  const prepared=pre.auditAndSanitizeSource(source).text;
+  const chunks=st.splitChunksForGpt(prepared).chunks;
+  assert.equal(chunks.some(c=>c.lockType==='table'),false);
+  assert.ok(chunks.filter(c=>!c.locked).reduce((n,c)=>n+c.text.length,0)>first.length+second.length-10);
+});
+
+test('blank lines do not turn actual TSV rows or isolated indented cells into prose', () => {
+  for(const source of ['항목\t설명\n\t'+first+'\n\n\t'+second,
+    '항목\t설명\n\n\t'+first+'\n\n\t'+second,
+    '\t'+first+'\n\n항목\t설명\n\n\t'+second,
+    '\t'+first+'\t비고\n\n\t'+second]) {
+    assert.equal(proseTabLineIndices(source).size,0);
+  }
+});
+
 for(const prefix of ['\t', ' \t ', '\t   ']) test('a single leading tab is indentation with developed prose evidence: '+JSON.stringify(prefix), () => {
   const source=first+'\n'+prefix+second;
   assert.deepEqual([...proseTabLineIndices(source)],[1]);
@@ -96,4 +114,24 @@ test('a real table losing its leading empty cell still fails its column ownershi
   const audit=st.buildStructureAudit({source,outputText:source.replace('\n\t','\n'),chunks});
   assert.equal(audit.pass,false);
   assert.equal(audit.tableColumnOwnershipPass,false);
+});
+
+test('semester cover metadata remains its own locked row, never a title continuation',()=>{
+  const source='경험과 태도의 형성:\n나는 어떤 길을 선택할 것인가\n\n성장 (2027-1학기)\n과제: 학기 보고서\n\n'+first;
+  const prepared=pre.auditAndSanitizeSource(source).text;
+  assert.ok(prepared.includes('\n성장 (2027-1학기)\n'));
+  assert.equal(layout.classifyLine('성장 (2027-1학기)'),'signature');
+  const chunks=st.splitChunksForGpt(prepared).chunks;
+  assert.ok(chunks.some(c=>c.locked&&c.text.includes('성장 (2027-1학기)')));
+  assert.equal(layout.classifyLine('나는 새로운 과제를 준비한다 (2027-1학기)'),'prose');
+});
+
+test('unpunctuated irregular verse without stanza gaps survives preflight and repeated repair',()=>{
+  const source='먼 길을 돌아온 작은 바람이\n창문을 천천히 두드리는\n밤\n조용한 나뭇가지 사이에서 들리는\n소리\n마당의 돌 틈으로 조용히 스며드는\n빛을 따라 걷다가 멈추는\n오래된 골목의 모퉁이';
+  assert.equal(require('../engine-gpt-prod/verseLayout').hasUnstanzaedVerseLayout(source),true);
+  assert.equal(pre.auditAndSanitizeSource(source).text,source);
+  assert.equal(pre.repairSourceLayoutArtifacts(source).text,source);
+  const rows=Array.from({length:8},(_,i)=>'자료를 확인하고 그 결과를 기록하는 동일한 길이의 설명');
+  assert.equal(require('../engine-gpt-prod/verseLayout').hasUnstanzaedVerseLayout(rows.join('\n')),false);
+  assert.equal(require('../engine-gpt-prod/verseLayout').hasUnstanzaedVerseLayout('항목\t설명\n'+source),false);
 });

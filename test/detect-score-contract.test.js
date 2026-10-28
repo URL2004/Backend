@@ -53,6 +53,7 @@ test('actual chain rejects malformed primary/review without guessing scale or lo
   for (const [responses, expected, selected] of [
     [[{ probability: .43, signals: [], confidence: 'high' }, { probability: 12, signals: [], confidence: 'high' }], 12, 'recheck'],
     [[valid, { ...valid, probability: .57 }], 34, 'primary'],
+    [[valid, { ...valid, summary: '<<<GPT_PROD_DATA:DETECT_INPUT:0123456789abcdef01234567>>>' }], 34, 'primary'],
     [[valid, { ...valid, probability: 0 }], 34, 'primary']
   ]) {
     queue = responses;
@@ -66,4 +67,12 @@ test('actual chain rejects malformed primary/review without guessing scale or lo
   queue = [{ probability: .43 }, { probability: .57 }];
   await assert.rejects(engine.detect({ text: source, config, allowLocalFallback: false }), { code: 'DETECT_SCORE_CONTRACT' });
   assert.equal(queue.length, 0);
+});
+
+test('prompt protection failures keep a closed diagnostic code without model prose',()=>{
+  const d=require('../lib/detectDiagnostics');
+  const failure=d.summarizeFailure({code:'PROMPT_INSTRUCTION_LEAK',message:'private response'},'recheck');
+  const clean=d.sanitizeDiagnostics({version:d.VERSION,attempts:[failure],recheckFailed:true});
+  assert.equal(clean.attempts[0].failureCode,'PROMPT_INSTRUCTION_LEAK');
+  assert.equal(JSON.stringify(clean).includes('private response'),false);
 });

@@ -140,6 +140,7 @@ function ordinalMarkers(value, { source } = {}) {
     const pairs = candidates.map(item => sourceMarkers.filter(before => before.number === item.number
       && (ordinalBodyMatches(source, before.start, text, item.start)
         || ordinalFrameBodyMatches(source, before.start, text, item.start)
+        || ordinalExpandedFrameBodyMatches(source, before.start, text, item.start)
         || quotedOrdinalBodyMatches(source, before.start, text, item.start))));
     candidates.forEach((item, index) => {
       if (markers.some(marker => marker.start === item.start) || pairs[index].length !== 1
@@ -165,6 +166,24 @@ function ordinalFrameBodyMatches(source, sourceStart, output, outputStart) {
   const before = words(source, sourceStart), after = words(output, outputStart);
   const common = [...before].filter(word => after.has(word)).length;
   return common >= 4 && common * 2 / Math.max(1, before.size + after.size) >= 0.55;
+}
+
+// Splitting a long item into "두 번째 사례는 X이다. ..." does not lose its
+// ordinal. A short predicate alone has too few words for the ordinary owner
+// check. Inspect at most three sentences in that SAME paragraph, stopping
+// before any other ordinal; the caller still requires unique mutual ownership.
+function ordinalExpandedFrameBodyMatches(source, sourceStart, output, outputStart) {
+  const tail=String(output).slice(outputStart);
+  if (!new RegExp(`^${ORDINAL}\\s+[^.!?。！？\\n]{1,60}(?:이다|입니다)[.!?。！？]`, 'u').test(tail)) return false;
+  const words=(value,start)=>{
+    const body=String(value).slice(start).replace(new RegExp(`^${ORDINAL}(?:${ORDINAL_END}|(?:은|는)\\s+|\\s+)`, 'u'),'')
+      .split(/\r?\n/u)[0].split(new RegExp(`(?<![가-힣])${ORDINAL}`, 'u'))[0];
+    return new Set(require('../engine/koreanText').splitSentenceSpans(body).slice(0,3)
+      .map(s=>s.text).join(' ').match(/[가-힣A-Za-z0-9]{2,}/gu)||[]);
+  };
+  const before=words(source,sourceStart),after=words(output,outputStart);
+  const common=[...before].filter(w=>after.has(w)).length;
+  return common>=4 && common/Math.max(before.size,after.size)>=.6;
 }
 
 // Only an unquoted, consecutive item in the same comma series can own a split

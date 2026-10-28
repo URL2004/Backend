@@ -863,6 +863,10 @@ function labelParts(value) {
 
 function isExactMetadataLine(value) {
   const text = visibleTrim(value);
+  // A short course/semester cover field is a standalone nominal row. It is
+  // not a continuation of the preceding title, even with blank PDF lines.
+  if (/^[가-힣A-Za-z][가-힣A-Za-z ·]{0,29}\s*\((?:19|20)\d{2}\s*[-–]\s*[12]\s*학기\)$/u.test(text)
+      && !/(?:한다|했다|이다|된다|있다|없다|니다|한다는|했던|하는)\s*\(/u.test(text)) return true;
   // Cover fields and bibliography access dates are independent rows even
   // without a colon. Nominal field values must not be joined as PDF prose.
   if (text.length <= 240 && /^학번\s*[:：]?\s*\d{5,14}(?=\s|$)/u.test(text)

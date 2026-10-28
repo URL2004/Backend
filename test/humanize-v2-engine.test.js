@@ -516,7 +516,7 @@ test('공개 polish는 실제 polish로 연결되고 서버 편집률·HMAC·eng
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid, config: config() });
   assert.equal(out.mode, 'polish');
   assert.equal(out.engineMeta.requestedMode, 'polish');
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.126');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.127');
   assert.equal(out.engineMeta.boundaryMarkerStats.version, 1);
   assert.equal(typeof out.engineMeta.boundaryMarkerStats.markedChunks, 'number');
   assert.equal(typeof out.engineMeta.relationCandidateCounts, 'object');
@@ -1052,15 +1052,23 @@ test('질문지는 번호·질문을 잠그고 답변별로만 편집하며 기�
   assert.equal(out.result.outputText.includes('다시 확인할 계획이다'), true);
 });
 
-test('polish에서 안전한 수정이 없으면 차단하고 의미 심사 비용을 쓰지 않는다', { concurrency: false }, async t => {
+test('polish에서 명시적 무수정 검토는 원문과 안내를 전달하고 의미 심사 비용을 쓰지 않는다', { concurrency: false }, async t => {
   const mock = installEngineMock(t, { humanize: SOURCE, retryOutput: SOURCE, safeChangeFound: false });
   const out = await engine.run({ text: SOURCE, mode: 'polish', allowPolish: true, uid: 'user-2', config: config() });
-  assert.equal(out.status, 'blocked');
-  assert.ok(out.floorReport.criticals.some(item => item.gate === 'polish_unchanged'));
+  assert.notEqual(out.status, 'blocked', JSON.stringify(out.floorReport.criticals));
+  assert.equal(out.engineMeta.polishNoChangeReviewed, true);
+  assert.equal(out.result.outputText, SOURCE);
+  assert.ok(out.result.effectNotices.some(item => item.code === 'polish_no_change_reviewed'));
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_polish_surface_retry').length, 1);
   assert.equal(mock.calls.filter(call => call.name === 'gpt_prod_semantic_judge').length, 0);
   assert.equal(out.engineMeta.semanticValidationStatus, 'skipped');
   assert.equal(out.result.semanticValidation.status, 'skipped');
+});
+
+test('a missing explicit no-change review cannot complete an unchanged polish job', { concurrency:false }, async t => {
+  installEngineMock(t,{humanize:SOURCE,retryOutput:SOURCE,safeChangeFound:true});
+  const out=await engine.run({text:SOURCE,mode:'polish',allowPolish:true,uid:'no-review',config:config()});
+  assert.equal(out.status,'blocked');assert.equal(out.engineMeta.polishNoChangeReviewed,false);
 });
 
 test('실제 위치 없는 의미 지적은 수리를 승인하지 않고 최종 메타에 미확정으로 남긴다', { concurrency: false }, async t => {
@@ -1821,7 +1829,7 @@ test('운영 엔진은 폐기된 구형 플래그와 무관하게 v2.5 경로만
     else process.env.HUMANIZE_ENGINE_V2_ENABLED = previous;
   });
   const out = await engine.run({ text: SOURCE, mode: 'blog', uid: 'rollback-user', config: config() });
-assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.126');
+assert.equal(out.engineMeta.engineVersion, 'gpt-prod-v2.5.127');
   assert.ok(mock.calls.length >= 1);
   for (const call of mock.calls) {
     assert.equal(Object.prototype.hasOwnProperty.call(call.body, 'safety_identifier'), true);

@@ -27,6 +27,23 @@ test('second failure retains evidence but cannot deliver either failed candidate
   assert.equal(calls,2);assert.equal(evidence.length,2);assert(evidence.every(e=>!e.accepted));
   assert.equal(out.accepted,false);assert.equal(out.text,undefined);
 });
+for(const [size,a,b,allowed] of [[13921,8,2,true],[13921,2,7,true],[300,7,2,false],[9000,8,2,false],[30000,8,8,true],[30000,8,9,false]])
+test(`literal count budget scales with document length: ${size}/${a}+${b}`,async()=>{
+  const source='a'.repeat(size), first='b'+source.slice(1), second='bc'+source.slice(2);let calls=0;
+  const out=await complete({...options(),source,before:source,
+    initial:{...initial,text:first,restoredCount:a},
+    propose:async()=>({text:second,applied:true,restoredCount:b,restorationBudget:{removed:10,added:10}}),
+    verify:async()=>++calls===1?failed:{pass:true,verificationCompleted:true}});
+  assert.equal(out.accepted,allowed);assert.equal(calls,allowed?2:1);
+});
+test('a long document still cannot exceed cumulative literal byte limits',async()=>{
+  let calls=0;const source='a'.repeat(14000);
+  const out=await complete({...options(),source,before:source,
+    initial:{...initial,text:'b'+source.slice(1),restoredCount:8,restorationBudget:{removed:4100,added:4100}},
+    propose:async()=>({text:'bc'+source.slice(2),applied:true,restoredCount:2,restorationBudget:{removed:150,added:150}}),
+    verify:async()=>{calls++;return failed;}});
+  assert.equal(out.accepted,false);assert.equal(calls,1);
+});
 for(const reason of ['deadline','cancel','incomplete','budget','cycle','patch','no_target','stale_pass'])test(`bounded completion stops on ${reason}`,async()=>{
   let calls=0,tick=0;
   const o=options();

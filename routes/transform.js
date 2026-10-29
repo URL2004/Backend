@@ -89,16 +89,19 @@ const BLOG_MAX_ACTIVE = executionLimits.caps.short;
 const ENGINE_ACTIVE_CAP = executionLimits.totalCap;
 const executionCoordinator = executionPolicy.createExecutionCoordinator({ db, ...executionLimits });
 
-async function executeOwned(job, feature, run) {
+async function executeOwned(job, feature, run, onDenied) {
   // A queue timer inherits the previous request's async context. Give each job
   // its own stable identity before acquiring ownership or starting any model.
   return require('../lib/logger').runWithLogContext({ requestId: 'job_' + job.id, jobId: job.id, uid: job.uid, feature },
-    () => executeOwnedInContext(job, feature, run));
+    () => executeOwnedInContext(job, feature, run, onDenied));
 }
 
-async function executeOwnedInContext(job, feature, run) {
-  const lease = await executionCoordinator.acquire(job, feature);
-  if (!lease) return false;
+async function executeOwnedInContext(job, feature, run, onDenied) {
+  const admission = onDenied && executionCoordinator.acquireDetailed
+    ? await executionCoordinator.acquireDetailed(job, feature)
+    : { lease: await executionCoordinator.acquire(job, feature), reason: 'unavailable' };
+  const lease = admission.lease;
+  if (!lease) { if (onDenied) onDenied(admission.reason); return false; }
   // Shutdown can begin while the ownership transaction is pending. Leave the
   // persisted job queued for the next instance; never start a fresh model then.
   if (draining) {
@@ -153,6 +156,7 @@ function auxiliaryRoute(feature, handler) {
     if (auxiliaryUsers.has(job.uid) || activeJobFor(job.uid)) return res.status(409).json({ error: '이미 진행 중인 작업이 있어요.' });
     auxiliaryUsers.add(job.uid);
     try {
+      let deniedReason = 'unavailable';
       const ran = await executeOwned(job, feature, async () => {
         // Only a newly acquired lease may turn a remote snapshot into locally
         // executing state. Never copy another instance's execution token.
@@ -162,8 +166,13 @@ function auxiliaryRoute(feature, handler) {
           return res.json({ ok: true, refine: publicRefine(job) });
         }
         return handler(req, res);
-      });
-      if (!ran && !res.headersSent) res.status(409).json({ error: '다른 작업이 처리 중이에요. 잠시 후 다시 시도해 주세요.' });
+      }, reason => { deniedReason = reason; });
+      if (!ran && !res.headersSent) {
+        logger.info('transform.auxiliary_deferred', { jobId: job.id, uid: job.uid, feature, reason: deniedReason });
+        const admission = require('../lib/auxiliaryAdmission').responseForDenial(deniedReason);
+        if (admission.body.retryAfterMs) res.set('Retry-After', String(admission.body.retryAfterMs / 1000));
+        res.status(admission.status).json(admission.body);
+      }
     } catch (error) { next(error); }
     finally { auxiliaryUsers.delete(job.uid); scheduleQueueDrain(); }
   };

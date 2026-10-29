@@ -47,7 +47,7 @@ test('a long document still cannot exceed cumulative literal byte limits',async(
 for(const reason of ['deadline','cancel','incomplete','budget','cycle','patch','no_target','stale_pass'])test(`bounded completion stops on ${reason}`,async()=>{
   let calls=0,tick=0;
   const o=options();
-  if(reason==='patch')o.initial={...initial,patchAttempted:true};
+  if(reason==='patch')o.initial={...initial,patchAttempted:true,patchedCount:1};
   if(reason==='cancel')o.signal={aborted:false};
   const result=await complete({...o,now:()=>tick,verify:async()=>{
     calls++;if(reason==='deadline')tick=110000;if(reason==='cancel')o.signal.aborted=true;
@@ -57,4 +57,11 @@ for(const reason of ['deadline','cancel','incomplete','budget','cycle','patch','
     :{text:reason==='cycle'?first:second,applied:true,restoredCount:1,
       restorationBudget:{removed:reason==='budget'?90:10,added:10}}});
   assert.equal(result.accepted,false);assert.equal(calls,1);assert.equal(result.text,undefined);
+});
+
+test('a rejected model patch retains the literal receipt for one bounded completion',async()=>{
+  let calls=0;
+  const out=await complete({...options(),initial:{...initial,patchAttempted:true,patchedCount:0,patchReason:'patch_rejected'},
+    verify:async()=>++calls===1?failed:{pass:true,verificationCompleted:true}});
+  assert.equal(out.accepted,true);assert.equal(calls,2);assert.equal(out.text,second);
 });

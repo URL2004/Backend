@@ -12,6 +12,10 @@ function confirmedMicroRepair(source, candidate, finding) {
       || finding.grounding !== 'unique_exact_span') return '';
   const protectedRange = (text, start, end) => syntaxSpans(text)
     .some(p => p.spanType !== 'parenthetical' && p.start < end && p.end > start);
+  if (['distortion','omission'].includes(finding.type) && finding.relation === 'modality_negation_causality') {
+    const restored = require('./confirmedClauseRepair').repairConfirmedClause(source, candidate, finding);
+    if (restored) return restored;
+  }
   if (finding.type === 'omission' && finding.relation === 'modality_negation_causality') {
     // Copy an omitted qualifier only between identical, unique lexical
     // neighbours in the judge's exact pair. No inferred placement, global

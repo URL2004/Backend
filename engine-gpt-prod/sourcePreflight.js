@@ -199,9 +199,12 @@ function auditPreparedSource(value) {
   // Canonicalize only proven physical row seams before assigning paragraph,
   // title or list ownership. The helper preserves all non-whitespace content
   // and explicit structure; both the planner and engine use this same baseline.
-  const physicalLayout = scriptFrame || looksLikeCreativeLineLayout(extractedLayout.text)
+  const detachedLayout = scriptFrame || looksLikeCreativeLineLayout(extractedLayout.text)
     ? { text: extractedLayout.text, changes: [] }
-    : require('./physicalProseLines').repairPhysicalProseLines(extractedLayout.text);
+    : require('./detachedPunctuationLayout').repairDetachedPunctuationLayout(extractedLayout.text);
+  const physicalLayout = scriptFrame || looksLikeCreativeLineLayout(detachedLayout.text)
+    ? { text: detachedLayout.text, changes: [] }
+    : require('./physicalProseLines').repairPhysicalProseLines(detachedLayout.text);
   const lines = physicalLayout.text.split('\n');
   const removals = wrapper
     ? [issue(
@@ -218,7 +221,7 @@ function auditPreparedSource(value) {
       '연속된 페이지 번호를 본문에서 분리했어요. 문서의 절 번호와 수치는 유지했어요.'));
   }
   for (const item of furniture.removed) removals.push(issue(item.code, item.lineOrdinal, item.action, item.message));
-  const notices = [...extractedLayout.changes, ...physicalLayout.changes]
+  const notices = [...extractedLayout.changes, ...detachedLayout.changes, ...physicalLayout.changes]
     .map(item => issue(item.code, item.lineOrdinal, item.action, item.message));
   if (captions.applied) notices.push(issue('source_caption_boundary_repaired', 0, 'repaired',
     '완결된 본문과 작품 캡션 사이의 줄 경계를 분리했어요.'));

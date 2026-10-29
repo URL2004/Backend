@@ -29,7 +29,9 @@ async function completeFinalRestoration({ source, before, initial, verify, propo
         ||signal?.aborted)return {accepted:false,reason:'verification_incomplete',rounds:round};
     // A preceding model patch / insertion has no literal byte receipt. Do not
     // reset the cumulative 30% restoration budget around that unknown edit.
-    if(initial.patchAttempted||initial.patchedCount||initial.reinstatedCount
+    // A rejected/failed model proposal did not change the literal candidate.
+    // Only an ACCEPTED patch invalidates its byte receipt.
+    if(initial.patchedCount||initial.reinstatedCount
         ||!Number.isFinite(removed)||!Number.isFinite(added))
       return {accepted:false,reason:'restoration_budget_unavailable',rounds:round};
     const reserve=Math.max(30000,Math.ceil((now()-started)*1.2));

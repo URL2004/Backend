@@ -1027,6 +1027,12 @@ function tableColumnCount(value) {
     // are positive prose evidence, not a row label. Explicit tabs/pipes above
     // keep their stronger structural ownership even with long cell contents.
     if (cells[0].length >= 120 && splitSentences(cells[0]).length >= 2) return 0;
+    // A numbered report paragraph may put three spaces between its complete
+    // sentences. Explicit numbering + developed finite prose on BOTH sides
+    // owns this gap; short aligned cells and tab/pipe tables stay protected.
+    if (/^\d{1,2}[.)]\s+/u.test(text) && cells.length >= 2 && cells.length <= 4
+        && cells.every(cell => cell.trim().length >= 40
+          && /[가-힣]{2,}(?:다|요)[.!?。！？]$/u.test(cell.trim()))) return 0;
     return cells.length;
   }
   return 0;

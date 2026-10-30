@@ -86,7 +86,9 @@ test('eight exact local windows can be proposed while the ninth remains unchange
 
 test('paired findings cannot bypass the 30 percent cap through legacy similarity fallback', () => {
   const a = '절연 결함은 단락으로 이어지므로 정기적인 점검이 필요하다.';
-  const b = '절연 결함은 단락으로 이어질 수 있으므로 정기적인 점검이 필요하다.';
+  // A small operator edit now has its own exact byte budget. This fixture
+  // must still require a full window replacement exceeding the 30% ceiling.
+  const b = '절연 결함은 단락으로 이어질 수 있으므로 정기적인 점검을 실시하여 문제를 미리 발견해야 한다.';
   const source = `${a} 기록을 보관한다.`, output = `${b} 기록을 보관한다.`;
   const v = groundViolation({ type: 'distortion', origin: 'introduced', relation: 'modality_negation_causality',
     sourceSpan: a, candidateSpan: b, span: b }, source, output);

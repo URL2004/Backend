@@ -3577,7 +3577,8 @@ function buildStructureAudit({
     const preflight = require('./sourcePreflight');
     if (!preflight.looksLikeCreativeLineLayout(original)) {
       const headed = preflight.repairInlineHeadingBoundaries(original).text;
-      const joined = preflight.repairForcedProseWraps(headed).text;
+      const wrapped = preflight.repairForcedProseWraps(headed).text;
+      const joined = require('./numberedProseContinuation').repairNumberedProseContinuation(wrapped).text;
       if (joined.replace(/\s/gu, '') === original.replace(/\s/gu, '')) anchorSource = joined;
     }
   }

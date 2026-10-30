@@ -10,6 +10,8 @@ function confirmedMicroRepair(source, candidate, finding) {
   if (finding.origin !== 'introduced' || !finding.relationGrounded || !finding.repairable
       || !(finding.spanVerified || finding.type === 'omission' && finding.sourceSpanVerified)
       || finding.grounding !== 'unique_exact_span') return '';
+  const local = require('./confirmedLocalEdit').repairConfirmedLocalEdit(source,candidate,finding);
+  if(local)return local;
   const protectedRange = (text, start, end) => syntaxSpans(text)
     .some(p => p.spanType !== 'parenthetical' && p.start < end && p.end > start);
   if (['distortion','omission'].includes(finding.type) && finding.relation === 'modality_negation_causality') {

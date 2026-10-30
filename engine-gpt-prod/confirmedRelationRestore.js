@@ -116,7 +116,7 @@ function restoreConfirmedRelations(source, output, report, { priorReports = [], 
       // similarity. This is proposal retrieval only; the exact paired judge
       // finding and the caller's fresh semantic pass are the safety gates.
       ||(!minimal && sentenceSimilarity(a,b)<.35
-        && !hasBilateralSentenceAnchors(rawOriginals,results,from,from+a.length,start,end,replacements))||protectedText(a)!==protectedText(b)
+        && !hasBilateralSentenceAnchors(rawOriginals,results,from,from+a.length,start,end,replacements))||protectedText(a)!==protectedText(minimal||b)
       ||(!minimal && require('./restorationOwnership').hasOutsideSourceContribution(String(source),from,from+a.length,b,a))
       ||(!minimal && hasAdjacentRelationCoverage(a,b,text))
       ||!sameProtectedPrefix(a,b,String(source),text)
@@ -263,9 +263,11 @@ function sameUniqueHeadingBoundary(source,from,output,start) {
     ? text.slice(0,at).split(/\r?\n/u).filter(line=>line.trim()).at(-1) : null;
   const a=preceding(source,from),b=preceding(output,start);
   return !!a&&a===b&&a.length<=60
-    && /^(?:#{1,6}\s|\d+(?:\.\d+)*[.)]\s|[가-하][.)]\s|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[.)]?\s)/u.test(a)
-    && require('./layoutStructure').classifyLine(a)==='heading'
-    && [source,output].every(text=>text.split(/\r?\n/u).filter(line=>line===a).length===1);
+    && !/[.!?。！？]$/u.test(a.trim())
+    && [source,output].every(text=>{
+      const rows=require('./layoutStructure').buildLineRecords(text).filter(r=>r.raw===a);
+      return rows.length===1&&['title','heading'].includes(rows[0].role);
+    });
 }
 // Blank lines can detach an answer label from the sentence tokenizer. A
 // repeated label alone is not ownership: also require the immediately prior

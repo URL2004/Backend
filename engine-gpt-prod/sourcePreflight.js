@@ -324,9 +324,14 @@ function auditPreparedSource(value) {
   // width/continuation threshold and strand other, previously repaired rows.
   const sourceSeams = scriptFrame || creativeLineLayout ? {text:terminalPunctuation.text}
     : require('./physicalProseLines').restoreSubmittedSourceSeams(trailingRequest.text, terminalPunctuation.text);
+  // Run after the physical-row census and seam restoration: otherwise a
+  // numbered first row can stay locked after its continuation is reassembled.
+  const numberedLayout = scriptFrame || creativeLineLayout ? {text:sourceSeams.text,changes:[]}
+    : require('./numberedProseContinuation').repairNumberedProseContinuation(sourceSeams.text);
+  for(const change of numberedLayout.changes)notices.push(issue(change.code,change.lineOrdinal,'repaired',change.message));
   const sanitized = (creativeLineLayout
-    ? sourceSeams.text
-    : sourceSeams.text.replace(/\n{3,}/gu, '\n\n')).trim();
+    ? numberedLayout.text
+    : numberedLayout.text.replace(/\n{3,}/gu, '\n\n')).trim();
   const usable = sanitized || original;
   if (!sanitized) {
     const fallbackNotices = [...removals, ...notices].map(item => ({ ...item, action: 'notice' }));

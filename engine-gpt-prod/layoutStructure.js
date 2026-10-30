@@ -110,6 +110,19 @@ function analyzeLineRecords(source, quoteAnalysis) {
   const codeIndices = detectCodeLineIndices(records, source);
   const tableIndices = detectContextTableLineIndices(records, codeIndices);
   const signatureIndices = detectSignatureLineIndices(records, codeIndices);
+  // Repeated newspaper/source attributions between completed paragraphs are
+  // literal labels. Both occurrences need the same boundary ownership; the
+  // absence of a blank line on one side must not turn one into model prose.
+  const attributionRows = new Map();
+  for(let i=1;i<nonEmpty.length-1;i++){
+    const r=nonEmpty[i],prev=nonEmpty[i-1],next=nonEmpty[i+1];
+    if(!/^[가-힣A-Za-z]{2,18}(?:일보|신문|타임스|투데이|뉴스|저널)$/u.test(r.text)
+        ||codeIndices.has(r.index)||tableIndices.has(r.index)
+        ||!isSentenceComplete(prev.text)||!isSentenceComplete(next.text)||next.text.length<45
+        ||(!records[r.index-1]?.blank&&!records[r.index+1]?.blank))continue;
+    attributionRows.set(r.text,[...(attributionRows.get(r.text)||[]),r.index]);
+  }
+  for(const indices of attributionRows.values())if(indices.length>=2)for(const index of indices)signatureIndices.add(index);
   // Explicit application-form consent is supplied wording, not the author's
   // essay. Require a form heading AND a bounded checkbox-terminated clause.
   if (/(?:참가|가입|지원)\s*신청서/u.test(source) && /[■□☑☐]\s*동의/u.test(source)) {
@@ -503,14 +516,19 @@ function isStandaloneSectionHeading(text, context = {}) {
   // 이전 문단 끝에 합치게 했다. 앞쪽 단락 경계와 뒤의 충분한 본문을 함께
   // 확인하므로 blankAfter는 필수로 두지 않는다.
   const afterStructure = ['table', 'list', 'flow', 'quote'].includes(String(context.previous?.role || ''));
-  if ((!context.blankBefore && !afterStructure) || !context.next) return false;
+  const coordinatedNominal = text.length<=36 && /(?:과|와|및)\s+/u.test(text)
+    && !/(?:은|는|이|가|을|를|에서|으로)\s/u.test(text) && !/[,;.!?]/u.test(text)
+    && isSentenceComplete(String(context.next?.text||''));
+  const betweenCompleteParagraphs = coordinatedNominal && isSentenceComplete(String(context.previous?.text||''));
+  if ((!context.blankBefore && !afterStructure && !betweenCompleteParagraphs) || !context.next) return false;
   if (text.length < 2 || text.length > 70) return false;
   if (/[.!?。！？]\s*["”’')\]]*$/u.test(text)) return false;
   if (/^(?:https?:|www\.|[A-Za-z]:\\)/iu.test(text)) return false;
   if (isListLine(text) || isQuoteLine(text) || isExplicitTableLine(text)) return false;
   if (bracketLabelParts(text) || labelParts(text)) return false;
   const nextLength = String(context.next.text || '').length;
-  if (nextLength < Math.max(70, Math.ceil(text.length * 1.45))) return false;
+  if (nextLength < Math.max(coordinatedNominal?45:70, Math.ceil(text.length * 1.45))) return false;
+  if(coordinatedNominal)return true;
   if (!looksLikeUnpunctuatedProse(text)) return true;
   return text.length <= 36 && nextLength >= Math.max(100, text.length * 2);
 }

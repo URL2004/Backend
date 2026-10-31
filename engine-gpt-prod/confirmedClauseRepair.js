@@ -24,10 +24,11 @@ function repairConfirmedClause(source,candidate,finding) {
   if(b.length!==1||/[\r\n]/u.test(candidate)||syntaxSpans(candidate).some(p=>p.spanType!=='parenthetical'))return '';
   // Preserve the author's learning/reflection without reverting the rewritten
   // body. Only the same explicit predicate stem can own the attested ending.
-  const ending=source.match(/(?<![가-힣])([가-힣]{2,12})(하다는\s+것을\s+알게\s+되었(?:습니다|다)|이라는\s+점을\s+(?:새롭게\s+)?배웠(?:습니다|다))[.]$/u);
+  const ending=source.match(/(?<![가-힣])([가-힣]{2,12})(하다는\s+(?:것|점)(?:을|도)\s+(?:알게\s+되었|배웠|이해하였|확인하였)(?:습니다|다)|이라는\s+점을\s+(?:새롭게\s+)?배웠(?:습니다|다))[.]$/u);
   if(!ending||/(?:알게|배웠|깨달|느꼈|생각했)/u.test(candidate))return '';
-  const finite=ending[2].startsWith('하다는')?'합니다':'입니다';
-  const tail=ending[1]+finite+'.';
+  const finite=ending[2].startsWith('하다는')?'(?:합니다|하다)':'(?:입니다|이다)';
+  const tail=candidate.match(new RegExp(ending[1]+finite+'[.]$','u'))?.[0];
+  if(!tail)return '';
   if(!candidate.endsWith(tail)||candidate.indexOf(tail)!==candidate.lastIndexOf(tail)
       ||!String(finding.span||'').includes(ending[1]))return '';
   const words=s=>new Set(s.match(/[가-힣]{2,}/gu)||[]),left=words(source),right=words(candidate);

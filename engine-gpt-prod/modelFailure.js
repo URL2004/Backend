@@ -73,9 +73,20 @@ function isNonEscalatableModelFailureCode(value) {
     || /^openai_(?:quota_exhausted|rate_limited|server_error|timeout|network_error|schema_error|refusal|truncated_output|incomplete_output|empty_output)/u.test(code);
 }
 
+// One timeout may be specific to a chunk/model. Use the already reserved
+// escalation slot and absolute deadline, never a new whole-job allowance.
+function canRecoverChunkTimeout({ code, primaryModel, escalationModel, enabled, deadlineMs, signal, now=Date.now() }) {
+  return code === 'openai_timeout' && enabled !== false && !signal?.aborted
+    && typeof primaryModel === 'string' && primaryModel.length > 0
+    && typeof escalationModel === 'string' && escalationModel.length > 0
+    && primaryModel !== escalationModel
+    && Number.isFinite(deadlineMs) && deadlineMs-now >= 30000;
+}
+
 module.exports = {
   isQuotaExhaustionMessage,
   classifyModelFailure,
   isTransportFailureCode,
-  isNonEscalatableModelFailureCode
+  isNonEscalatableModelFailureCode,
+  canRecoverChunkTimeout
 };

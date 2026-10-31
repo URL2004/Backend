@@ -247,6 +247,9 @@ function classifyLine(value, context = {}) {
   // 이를 산문으로 보내면 모델이 주변 제목·목록과 합쳐 구조를 바꾸므로
   // 내용 없는 마크다운 제어 행으로 잠근다.
   if (isStandaloneMarkdownControlLine(text)) return 'code';
+  // Box diagrams encode columns with literal spaces; neither prose editing
+  // nor generic table whitespace normalization owns their interior rows.
+  if (require('./boxDrawingLayout').isBoxDrawingRow(text)) return 'code';
   // Captions and title/byline furniture are literal metadata, not a new
   // section or an editable continuation of the preceding body sentence.
   const furniture = require('./documentFurniture');

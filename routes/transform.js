@@ -2366,10 +2366,13 @@ function preservationFallbackAllowed(mode) {
 
 function recoverableTechnicalBlockReason(out) {
   const engineMeta = out?.engineMeta || out?.result?.engineMeta || {};
-  const modelFailureCodes = [
-    ...(Array.isArray(engineMeta.chunkFailureCodes) ? engineMeta.chunkFailureCodes : []),
-    ...(Array.isArray(engineMeta.chunkResidualFailureCodes) ? engineMeta.chunkResidualFailureCodes : [])
-  ].map(value => String(value || '').toLowerCase());
+  // A recovered primary timeout remains in the audit's all-failures list.
+  // Only residual failures can justify running the entire document again.
+  // Older engines without a residual inventory retain their legacy handling.
+  const modelFailureCodes = (Array.isArray(engineMeta.chunkResidualFailureCodes)
+    ? engineMeta.chunkResidualFailureCodes
+    : Array.isArray(engineMeta.chunkFailureCodes) ? engineMeta.chunkFailureCodes : [])
+    .map(value => String(value || '').toLowerCase());
   // A concurrent chunk may also report a temporary error. Account-wide
   // exhausted credit still makes a whole-job retry futile.
   if (modelFailureCodes.includes('openai_quota_exhausted')) return '';

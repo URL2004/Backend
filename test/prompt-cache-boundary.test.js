@@ -34,7 +34,7 @@ function instructionText(body) {
   )).join('');
 }
 
-test('252 humanize assemblies preserve the v2.5.126 prompt snapshot and share a prefix across profiles, modes, strengths and voices', () => {
+test('252 humanize assemblies preserve the v2.5.130 prompt snapshot and share a prefix across profiles, modes, strengths and voices', () => {
   const systems = [], prefixes = new Map();
   for (const profile of profiles) for (const mode of ['assignment', 'blog', 'polish'])
     for (const strength of ['basic', 'advanced', 'polish']) for (const promptVariant of ['full', 'compact_v1'])
@@ -52,10 +52,10 @@ test('252 humanize assemblies preserve the v2.5.126 prompt snapshot and share a 
         assert.deepEqual(Buffer.concat([Buffer.from(hp.cacheableSystem), Buffer.from(hp.stable.slice(hp.cacheableSystem.length))]), Buffer.from(hp.stable));
         assert.equal(prompts.validateHumanizePrompt(hp.stable).pass, true);
       }
-  // v2.5.126 strengthens report-specific relations after the shared prefix.
-  // Shared prefix sizes and cache routing remain unchanged.
-  assert.equal(digest(systems), '689818520b827f21713bd765426a504c9035ab99921d3d97b6b57813a8ea77cd');
-  assert.deepEqual([...prefixes.values()].map(s => s.length), [5322, 5639, 4029, 4346]);
+  // v2.5.130 adds the learning-attribution rule to shared instructions.
+  // Cache routing and per-profile boundary reconstruction remain unchanged.
+  assert.equal(digest(systems), '4ee074348ab37864af0117f8a992a227f9760e56f863b16caa875a7c48fb84e3');
+  assert.deepEqual([...prefixes.values()].map(s => s.length), [5458, 5775, 4165, 4482]);
 });
 
 test('humanize preserves Luna chunk reuse and keeps retry reasons after the Sol boundary', async t => {
@@ -141,18 +141,18 @@ test('repair callers preserve all 189 baseline assemblies and put the measured b
   }
   assert.equal(calls.length, 189);
   const expected = {
-    retryGeneralSurface: 'aff3c7b63e40db0af68ffaf1d05016f304c02f448835686d5e6157b46ccd97ae',
+    retryGeneralSurface: '1ebff4a94d41e37771bc953acdcbabf3c653e2872a52c7c277d039a422372c28',
     retryPolishSurface: '777a84bc24a3dde0a3ae68b3674c444f82cdb72c79fbca236445712548c75130',
-    retryKoreanRefinement: 'd69541f398dfdebcd86c2587dc0f8d14b931f371859b7e7a2a5dd511ca27d865',
-    retryFingerprintAudit: '61a0fa2caeadf7c9301770f954ae5a44d1b86edab3ffce14c4f50d62d7119647',
-    retryEndingStyleAudit: '6c60c1cc4ff99c74a3b2b9b22944e384150df5adbae109ee12cac40331d5de0f',
-    retryResumeCoverage: 'cb6ee6827e8f2a70034f71d61dfc08c3d253cf2146dc150ebb030d09cd9a0d20',
+    retryKoreanRefinement: '4c59fff81f91d7bbb0eefbe47d7a8d4df766ec9c4f3b1720ad912d95186e74f4',
+    retryFingerprintAudit: '8c42d0aee58b31728ffcb84ebcf8b2ff3498adb8b6681c36bac3b359225c4a00',
+    retryEndingStyleAudit: '524afaa86d03d5b3ca43990165185f3dd168ba755ea2702cca60a5afed7723dc',
+    retryResumeCoverage: '75936edfcf171da2836b5455d0e42605502b66d2a58f06f7be61eb1709e7198d',
     retryConservativeSentenceSurface: '295abf0a08b5944d066bc4bf8d5e86c5addfebf0e21c5e9bbaa453f214770221',
     retryCollapsedKoreanSpacing: '40bcf480513511a07fddbeb0ad2b73847d45772a58bd3ad72153bd096c36d9db'
   };
   for (const [fn, systems] of Object.entries(byFamily)) assert.equal(digest(systems), expected[fn], fn);
-  assert.equal(common.get('retryGeneralSurface').length, 3029);
-  assert.equal(common.get('retryEndingStyleAudit').length, 3402);
+  assert.equal(common.get('retryGeneralSurface').length, 3165);
+  assert.equal(common.get('retryEndingStyleAudit').length, 3538);
 });
 
 test('schema retry follows the complete original instructions, including the uncached tail', async t => {

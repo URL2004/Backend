@@ -76,7 +76,7 @@ const {
   allowsLocalizedParagraphChange
 } = require('./humanizeContract');
 
-const VERSION = 'gpt-prod-v2.5.129';
+const VERSION = 'gpt-prod-v2.5.130';
 const DETECT_VERSION = 'gpt-detect-v1.62';
 const HUMANIZATION_DENOMINATOR_VERSION = 'locked-prose-v1';
 const PROFILE = 'engine-gpt-prod';
@@ -5826,7 +5826,12 @@ async function processChunk({
     first.record.warnings = [...(first.record.warnings || []), 'polish_chunk_unchanged_allowed'];
     return first.record;
   }
-  if (first.hardFail && isNonEscalatableModelFailure(first.record)) {
+  const localTimeoutRecovery = require('./modelFailure').canRecoverChunkTimeout({
+    code:first.record?.hardFailReason, primaryModel:cfg.models.humanizePrimary,
+    escalationModel:cfg.models.humanizeEscalation, enabled:cfg.escalation.enabled,
+    deadlineMs:chunkDeadlineMs, signal
+  });
+  if (first.hardFail && isNonEscalatableModelFailure(first.record) && !localTimeoutRecovery) {
     chunk.outputText = original;
     return first.record;
   }
@@ -5873,6 +5878,8 @@ async function processChunk({
   second.record.textualRefusalAttemptCount = Number(first.record?.textualRefusalAttemptCount || 0)
     + Number(second.record?.textualRefusalAttemptCount || 0);
   second.record.primaryFailureCodes = safeFailureCodesFromRecord(first.record);
+  if(localTimeoutRecovery)second.record.warnings=[...(second.record.warnings||[]),
+    second.hardFail?'chunk_timeout_recovery_failed':'chunk_timeout_recovered'];
   // Every escalated path returns second.record; keep the primary attempt's
   // count-only marker audit so retries that recovered stay measurable.
   second.record.primaryBoundaryMarkerAudit = first.record?.boundaryMarkerAudit || null;

@@ -108,18 +108,21 @@ function restoreAttributedQuoteSlots(source, output, chunks) {
 // direct quotations into indirect quotations.
 function recoverSourceLiterals(source, output, chunks) {
   const before = lf(output);
+  const diagrams = require('./boxDrawingLayout').restoreBoxDrawingLayout(lf(source), before);
   const structure = require('./structureChunk');
   // Already-correct heading boundaries may carry readability blank lines.
   // Do not reset them to the source's spacing on every delivery pass.
-  const headings = structure.compareLineAnchorLayout(source, before, { allowAdditions: true }).pass
-    ? { text: before } : structure.restoreLockedHeadingLayout(source, before, chunks);
+  const headings = structure.compareLineAnchorLayout(source, diagrams.text, { allowAdditions: true }).pass
+    ? { text: diagrams.text } : structure.restoreLockedHeadingLayout(source, diagrams.text, chunks);
   const citations = citation.restoreCitationContents(source, headings.text, chunks);
-  const slots = restoreAttributedQuoteSlots(source, citations.text, chunks);
+  const tails = require('./citationTailRecovery').restoreRepeatedCitationTails(source, citations.text);
+  const slots = restoreAttributedQuoteSlots(source, tails.text, chunks);
   const quotes = require('./voiceProfile').restoreDirectQuoteContents(source, slots.text);
   const layout = quote.restoreOwnedQuoteLayout(source, quotes.text);
   const finalCitations = citation.restoreCitationLayout(source, layout.text, chunks);
   return { text: layout.text, applied: layout.text !== before,
-    citationRestoredCount: citations.restoredCount,
+    diagramRestoredCount: diagrams.restoredCount,
+    citationRestoredCount: citations.restoredCount + tails.restoredCount,
     quoteRestoredCount: slots.restoredCount + quotes.restoredCount,
     refusedCount: slots.refusedCount + citations.refusedCount,
     quoteSlotEdits: slots.edits || [],
